@@ -48,6 +48,12 @@ export interface TaskCommandRequest {
   initiator?: 'owner' | 'host';
   /** E4 ③ — the launcher's first start of a task it just made: a new epic counts against A0's window, not its tree's. */
   newTask?: boolean;
+  /**
+   * A host notice for the start's first hop only — prepended to what the model reads, never recorded
+   * as the instruction (the restart resume's guidance, `task-restart-resume.ts`). Host code sets it;
+   * no HTTP route forwards it. Joins a plan-mode notice when the task has one.
+   */
+  promptNotice?: string;
 }
 
 /**
@@ -474,7 +480,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       progress,
       chainId,
       consume,
-      planned.notice,
+      [planned.notice, request.promptNotice].filter((n): n is string => !!n).join('\n\n') || undefined,
     );
     const chain: Chain = { ownerId, id: chainId, abort, done, planning, ...(tree !== undefined ? { tree } : {}) };
     chains.set(sessionKey, chain);

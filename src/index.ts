@@ -208,6 +208,7 @@ import {
 } from './task-turn/task-notice-deliverer';
 import { TASK_NOTIFICATION_LEDGER_FILENAME, TaskNotificationLedger } from './task-turn/task-notification-ledger';
 import { createTaskPlanDecider } from './task-turn/task-plan-decision';
+import { createTaskRestartResumer } from './task-turn/task-restart-resume';
 import {
   createTaskTurnController,
   type TaskCommandResponse,
@@ -2130,6 +2131,30 @@ async function start() {
           if (rearmed > 0) timing(`Re-armed ${rearmed} pending error auto-retry(ies) after restart`);
         } catch (error) {
           logger.warn('Re-arming pending error auto-retries failed (non-critical)', error);
+        }
+        // 2026-11-03 — a dashboard task whose turn the restart cut resumes too, as a Slack
+        // thread does above (it was only recorded `interrupted`). After the goal resume, so a
+        // task with an active goal is the goal loop's; the resumer skips it.
+        try {
+          const taskRegistry = claudeHandler.getSessionRegistry();
+          const cutTasks = taskRegistry.getRestartCutTasks().slice();
+          taskRegistry.clearRestartCutTasks();
+          if (cutTasks.length > 0 && taskTurnController) {
+            createTaskRestartResumer({
+              controller: taskTurnController,
+              getSession: (key) => taskRegistry.getSessionByKey(key),
+              logger: new Logger('TaskRestartResume'),
+            })
+              .resume(cutTasks)
+              .then((outcomes) => {
+                const started = [...outcomes.values()].filter((o) => o.status === 'started').length;
+                const waiting = [...outcomes.values()].filter((o) => o.status === 'waiting').length;
+                timing(`Resumed ${started}/${cutTasks.length} dashboard task(s) the restart cut (${waiting} waiting)`);
+              })
+              .catch((error) => logger.warn('Resuming dashboard tasks after restart failed (non-critical)', error));
+          }
+        } catch (error) {
+          logger.warn('Resuming dashboard tasks after restart failed (non-critical)', error);
         }
       })
       .catch((error) => {
