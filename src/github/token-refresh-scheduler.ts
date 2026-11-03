@@ -20,6 +20,8 @@ export class TokenRefreshScheduler {
   private failedRefreshes = 0;
   /** Set by stopAutoRefresh: a refresh still in flight does not re-arm. */
   private stopped = false;
+  /** Re-writes the current token after a failed credentials write. */
+  private writeRetryTimer?: NodeJS.Timeout;
 
   constructor(
     private apiClient: GitHubApiClient,
@@ -115,12 +117,36 @@ export class TokenRefreshScheduler {
     this.tokenCache = { token: tokenInfo.token, expiresAt: tokenInfo.expiresAt };
     this.failedRefreshes = 0;
     this.scheduleRefresh();
-    // A failed write (a git config lock, a refused hosts.yml) does not re-mint: the next scheduled refresh rewrites.
+    await this.writeCredentials(tokenInfo.token);
+  }
+
+  /**
+   * Write the token to git, the env and the agents' gh hosts.yml. A failed write (a git config lock, a refused
+   * hosts.yml) does not re-mint: it retries the write of the same token in 2 minutes, so agent shells do not read the
+   * old token until the next refresh (#834 review).
+   */
+  private async writeCredentials(token: string): Promise<void> {
+    this.clearWriteRetryTimer();
     try {
-      await this.credentialsManager.updateCredentials(tokenInfo.token);
+      await this.credentialsManager.updateCredentials(token);
       logger.debug('GitHub App installation token refreshed successfully in background');
     } catch (error) {
       logger.error('GitHub App token refreshed, but writing the credentials failed:', error);
+      if (this.stopped) return;
+      this.writeRetryTimer = setTimeout(
+        () => {
+          if (!this.stopped && this.tokenCache?.token === token) void this.writeCredentials(token);
+        },
+        2 * 60 * 1000,
+      );
+      this.writeRetryTimer.unref?.();
+    }
+  }
+
+  private clearWriteRetryTimer(): void {
+    if (this.writeRetryTimer) {
+      clearTimeout(this.writeRetryTimer);
+      this.writeRetryTimer = undefined;
     }
   }
 
@@ -163,6 +189,7 @@ export class TokenRefreshScheduler {
   stopAutoRefresh(): void {
     this.stopped = true;
     this.clearRefreshTimer();
+    this.clearWriteRetryTimer();
     logger.debug('GitHub App auto-refresh stopped');
   }
 }
