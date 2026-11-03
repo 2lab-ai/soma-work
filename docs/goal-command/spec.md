@@ -254,6 +254,16 @@ A Slack-less dashboard task has goals too. Its turns get the model-command serve
 
 A task has no thread: no notice is posted to Slack and no stall form is asked. Every notice is in the task's work log (the dashboard shows it). Restart resume (`resumeActiveGoals`) includes tasks.
 
+### Goal commands on a task (#865)
+
+A person's `goal …` to a task (the command route, an approved instruction, a drained queued word) is the host's goal command, never the model's text: the task controller matches it with `CommandParser.isGoalCommand` before admission and hands it to `src/task-turn/task-goal-commands.ts`, which applies the `GoalHandler` semantics with the same parser — so `goal 12345` is the cap override there too, never an objective. The sender is admitted first (signed in, an epic tree's owner rule, not closing; someone else's word is held for the owner like any instruction). It applies at once, even while a turn runs. The answer is `{ ok, goalCommand: true, message }`; the notice is also recorded in the work log (`goal` status records nothing). The dashboard drops the optimistic turn for it and shows the answer as a toast.
+
+A goal that starts — `goal <objective>` with none in flight, `goal done` promoting the next, `goal resume` of a goal whose first turn never ran, and the dashboard goal list's add / delete-current-with-a-queue — runs its opening turn through the task controller: the objective as the user's words, as the goal's author, waiting in the task's queue behind a running turn (`goalOpening: true`, kept on the queued word, so an objective that itself begins with `goal` is never read as a command again; an edit drops the mark). A refused opening puts the goal state back exactly (`restoreGoalState`) and the refusal is the answer.
+
+The dashboard goal list (`POST /api/dashboard/session/:key/goal`) takes tasks: the route opts in (`allowSlackless`) and `index.ts` routes a task to `TaskGoalCommands.hostAction` instead of `SlackHandler.handleHostGoalAction` (which needs a thread).
+
+`SET_GOAL` does not set the same goal twice: an objective (whitespace-normalized) that is already the goal in flight or already queued is skipped with a notice (`findPendingGoalPosition`) — a model that reads the user's request again on a later turn calls `SET_GOAL` again.
+
 ## Persistence
 
 `SessionRegistry.saveSessions()` must persist sessions that have a `sessionId`, a `handoffContext`, a `goal`, a non-empty `goalQueue`, or a non-empty `goalHistory`. This preserves a goal set before the first model turn and the multi-goal queue/history across restarts. `migrateLegacyGoal` backfills `goalId` for goals persisted before the field existed.
