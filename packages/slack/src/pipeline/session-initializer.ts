@@ -601,6 +601,8 @@ export class SessionInitializer {
       }
     }
     const effectiveWorkingDir = session.sessionWorkingDir || workingDirectory;
+    // The dispatcher's work size estimate, when this call runs the dispatch (the epic switch reads it).
+    let workSize: 'small' | 'large' | undefined;
 
     // Dispatch for new sessions OR stuck sessions (e.g., after server restart)
     // Skip dispatch if onboarding was triggered (already transitioned)
@@ -690,7 +692,7 @@ export class SessionInitializer {
             if (waitTimeoutId) clearTimeout(waitTimeoutId);
           }
         } else if (dispatchText) {
-          await this.dispatchWorkflow(channel, threadTs, dispatchText, sessionKey);
+          workSize = await this.dispatchWorkflow(channel, threadTs, dispatchText, sessionKey);
         } else {
           // No text available - use default workflow
           this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', PLACEHOLDER_SESSION_TITLE);
@@ -1004,6 +1006,7 @@ export class SessionInitializer {
       userName,
       workingDirectory: effectiveWorkingDir,
       abortController,
+      ...(workSize ? { workSize } : {}),
     };
   }
 
@@ -1152,7 +1155,7 @@ export class SessionInitializer {
     text: string,
     sessionKey: string,
     forcedWorkflowHint?: WorkflowType,
-  ): Promise<void> {
+  ): Promise<'small' | 'large' | undefined> {
     // Register dispatch in-flight SYNCHRONOUSLY before any async work
     // This prevents race condition where two messages both pass the check
     let resolveTracking: () => void;
@@ -1274,6 +1277,7 @@ export class SessionInitializer {
       // Transition session to MAIN state with determined workflow
       this.deps.claudeHandler.transitionToMain(channel, threadTs, result.workflow, result.title);
       await updateDispatchPanel('사용자 액션 대기', 'idle');
+      return result.size === 'small' || result.size === 'large' ? result.size : undefined;
     } catch (error) {
       const elapsed = Date.now() - startTime;
       this.logger.error(`❌ Dispatch failed after ${elapsed}ms`, { error });
@@ -1342,6 +1346,8 @@ export class SessionInitializer {
       const fallbackTitle = MessageFormatter.generateSessionTitle(text);
       this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', fallbackTitle);
       await updateDispatchPanel('기본 워크플로우로 전환', 'idle');
+      // No estimate: the epic switch keeps the owner's choice.
+      return undefined;
     } finally {
       clearTimeout(timeoutId);
       // Clean up the in-flight tracking and resolve waiting promises
