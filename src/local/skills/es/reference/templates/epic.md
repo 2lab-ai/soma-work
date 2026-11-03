@@ -15,6 +15,11 @@ Concretely: at `epic` mode, **real artifacts are issue links, PR links, statuses
 
 ## Sections (in order)
 
+### TL;DR (before the document)
+- Exactly 3 lines, one plain sentence each (≤ 100 characters): outcome · most important fact · next step.
+- Path B wraps them in the host's `<tldr>` envelope; Path A renders them as a `TL;DR` block at the top and sends the same lines in `UPDATE_SESSION.executiveSummary.tldr` (SKILL.md §Card sync).
+- **Own artifact unfinished** (SKILL.md §Unfinished own artifacts) → line 2 starts with `⚠️` and states in bold which artifact is not complete and why it cannot be completed: `⚠️ **PR #830 not merged — needs a maintainer approval the bot does not have.**` This line moves the task card to NEEDS YOU. `⚠️` at the start of a line is reserved for this.
+
 ### 0. SSOT
 - Quote the user's instruction verbatim inside a fenced block. Multiple turns → preserve order + speaker labels.
 - This is **SSOT-LIST** per `local:using-ssot` — append-only.
@@ -23,6 +28,8 @@ Concretely: at `epic` mode, **real artifacts are issue links, PR links, statuses
 - Epic: `{label}: {url} — {state}` plus Done / Remaining counts (`5/7 sub-issues merged`).
 - Child issues: table with `# | Title | URL | State`.
 - Child PRs: table with `# | Title | URL | State | Reviewer / Approval`.
+- Documents: `{label}: {url} — {state}` per document (HTML artifact, report, spec page).
+- Mark every issue, PR and document created this session with `🆕 created this session` — these are the own artifacts the ⚠️ rule checks.
 - Session-scoped state transitions: list them ("PR #1462 Open → Merged").
 
 ### 2. SSOT-TASK-TREE result (`local:using-ssot` Hook 4)
@@ -53,6 +60,16 @@ Concretely: at `epic` mode, **real artifacts are issue links, PR links, statuses
 
 ### 8. Next Actions
 - Up to 5 concrete follow-ups. Each in its own fenced code block.
+
+### ⚠️ User follow-up required (last section — only when an own artifact is unfinished)
+- Always the very last section; omit it entirely when every own issue/PR/document is complete.
+- One block per unfinished own artifact, in this order:
+  - **Artifact** — `{label}: {url} — {state}` (the state you read this session).
+  - **Why the agent could not complete it** — bold, concrete blocker + evidence (error text, missing permission, failing check, pending decision). Never just "pending".
+  - **Who must act** — you / a reviewer / an admin (name the role or person if known).
+  - **Steps** — numbered, each runnable: a fenced command (`gh pr merge 830 --squash`) or the exact click path.
+  - **Verify** — how to confirm it is done (`gh pr view 830 --json state` → `MERGED`).
+  - **Then tell the agent** — what to reply in this thread so it continues (`"merged"` → it runs the dev deploy).
 
 ## Forbidden in epic mode
 

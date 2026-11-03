@@ -59,12 +59,18 @@ third line
 </tldr>
 - Exactly 3 lines. Each line is one plain sentence of at most 100 characters — no bullets, headings, code or tables.
 - Line 1 is the outcome: what changed, was decided or was answered. Lines 2 and 3 carry the most important supporting fact and the next step or open risk.
+- Unfinished own artifact (see below) → line 2 MUST start with ⚠️ and state in bold which issue/PR is not complete and why it cannot be completed, written as plain text like this line: ⚠️ **PR #830 not merged — merging needs a maintainer approval the bot does not have.** (bold is allowed on this line only). Several unfinished artifacts share this one line. A line that starts with ⚠️ is reserved for this signal only — the host reads it to keep the task card waiting for the user, so never start a line with ⚠️ for a risk or a note.
 - Use only facts that also appear in the document below the block.
 - The host removes this block from the document and shows it alone on the channel-visible thread surface; the full document is posted inside the thread. The block is an envelope, not part of the document — the document after it still starts with SSOT.
 
 Top-of-document invariant (applies to the document after the TL;DR block, in every mode that has artifacts):
 1. **SSOT** — quote the user's instruction verbatim. Never paraphrase.
-2. **Status** — issue/PR links with current state (Open / Draft / Merged / Closed / QA / etc.) and any state changes that happened in this session. In \`brief\` mode with no link at all, omit Status entirely rather than render an empty section.
+2. **Status** — issue/PR/document links with current state (Open / Draft / Merged / Closed / QA / etc.) and any state changes that happened in this session. Mark every issue, PR and document created this session with \`🆕 created this session\`. In \`brief\` mode with no link at all, omit Status entirely rather than render an empty section.
+
+Unfinished own artifacts (applies in every mode):
+- An own artifact is an issue, PR or document this session created. It is complete only when a PR is Merged (or Closed on purpose with the reason stated), an issue is Closed, a document is published where the user reads it. Open, Draft, review pending, approved but unmerged, CI failing, merge conflict, waiting on deploy/QA are not complete.
+- When any own artifact is not complete: the ⚠️ TL;DR line above is mandatory, and the document's very last section is **⚠️ User follow-up required** — after the mode's own sections. One block per unfinished artifact: the link and its state; **why it cannot be completed by the agent** (bold, the concrete blocker and its evidence — never just "pending"); who must act; numbered steps the user can run (a fenced command or the exact click path); how to verify it is done; what to reply in this thread so the agent continues.
+- When every own artifact is complete: no ⚠️ line, no follow-up section.
 
 Required content (omit any section that has nothing concrete to report — do NOT fabricate or hedge):
 
@@ -180,12 +186,48 @@ function capTldrLine(line: string): string {
     .trimEnd()}…`;
 }
 
+/** One TL;DR line, trimmed and without a list marker — the one normalization both es paths share (#829). */
+export function cleanTldrLine(line: string): string {
+  return line.trim().replace(LIST_MARKER, '').trim();
+}
+
 function cleanTldrLines(lines: string[]): string[] {
   return lines
-    .map((line) => line.trim().replace(LIST_MARKER, '').trim())
+    .map(cleanTldrLine)
     .filter((line) => line.length > 0)
     .slice(0, TLDR_MAX_LINES)
     .map(capTldrLine);
+}
+
+/**
+ * #829 — a TL;DR line as plain text: markdown bold (`**x**`, `__x__`) unwrapped. The Slack surface renders the
+ * bold; the dashboard card draws text as is, so it shows this form (and the follow-up reason is built from it).
+ */
+export function plainTldrLine(line: string): string {
+  return line.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/__([^_]+)__/g, '$1');
+}
+
+/** A TL;DR line that starts with ⚠️ (after any emphasis markers) — the unfinished-own-artifact signal (#829). */
+const FOLLOW_UP_LINE = /^[\s*_~]*\u26a0\ufe0f?/u;
+
+/**
+ * #829 — what the task card waits on the user for: the TL;DR's ⚠️ lines, markup stripped, joined.
+ *
+ * The es contract reserves a leading ⚠️ in a TL;DR line for "an issue/PR this session created is not
+ * complete, and why". The same line the reader sees emphasized is the host's signal — one source, so the card
+ * cannot say "waiting" while the summary says "done", or the reverse. Undefined when no line carries it.
+ */
+export function followUpFromTldr(tldr: readonly string[]): { reason: string } | undefined {
+  const reasons = tldr
+    .filter((line) => FOLLOW_UP_LINE.test(line))
+    .map((line) =>
+      plainTldrLine(line.replace(FOLLOW_UP_LINE, ''))
+        .replace(/\*\*|__/g, '')
+        .replace(/^[\s*_~:—-]+|[\s*_~]+$/g, '')
+        .trim(),
+    )
+    .filter((reason) => reason.length > 0);
+  return reasons.length > 0 ? { reason: reasons.join(' · ') } : undefined;
 }
 
 /**
@@ -395,7 +437,13 @@ export interface SummarySessionInfo {
    * SSOT 2026-11-02 T7 — the TL;DR the thread head shows, for the dashboard's task card: set by
    * `displayOnThread` (only when the summary has one), cleared by `clearDisplay` on the next input.
    */
-  executiveSummary?: { tldr: string[]; at: number };
+  executiveSummary?: { tldr: string[]; at: number; source?: 'es' };
+  /**
+   * #829 — the latest Executive Summary left an own issue/PR unfinished (its ⚠️ TL;DR line): the dashboard
+   * keeps the task card in NEEDS YOU with this reason. Set and cleared only by an Executive Summary
+   * (`displayOnThread`, or the model-run es through UPDATE_SESSION) — the next user input does not clear it.
+   */
+  followUp?: { reason: string; at: number };
   actionPanel?: {
     summaryBlocks?: any[];
     [key: string]: any;
@@ -569,10 +617,22 @@ export class SummaryService {
     // The surface is the channel-visible thread root, so it carries only the
     // TL;DR. The full ES goes inside the thread via `postInThread`.
     const { tldr, tldrSource } = parseExecutiveSummary(summaryText);
-    // The dashboard's task card shows the same lines (SSOT 2026-11-02 T7) — a task with no
-    // Slack thread (a dashboard task) included, so this comes before the thread-head guard.
-    if (tldr.length > 0) session.executiveSummary = { tldr, at: Date.now() };
-    else session.executiveSummary = undefined;
+    // #829 — the model-run es wrote this turn's card with tools (`executiveSummary.source: 'es'`): the tool-less
+    // host fork of the same turn leaves the card alone, TL;DR and verdict as one pair. The user's next input
+    // (`clearDisplay`) drops that TL;DR, so the next summary decides again.
+    if (session.executiveSummary?.source !== 'es') {
+      // The dashboard's task card shows the same lines (SSOT 2026-11-02 T7) — a task with no
+      // Slack thread (a dashboard task) included, so this comes before the thread-head guard.
+      const at = Date.now();
+      if (tldr.length > 0) session.executiveSummary = { tldr, at };
+      else session.executiveSummary = undefined;
+      // #829 — a well-formed TL;DR decides whether the card waits on its user; a reply with none keeps the
+      // previous verdict (a malformed summary is no evidence the work got finished).
+      if (tldr.length > 0) {
+        const followUp = followUpFromTldr(tldr);
+        session.followUp = followUp ? { reason: followUp.reason, at } : undefined;
+      }
+    }
 
     if (!session.actionPanel) {
       logger.warn('Cannot display summary — no actionPanel on session');
@@ -658,6 +718,7 @@ export class SummaryService {
   clearDisplay(session: SummarySessionInfo): void {
     // The dashboard card's TL;DR goes with the thread head's — even where there is no head to clear.
     session.executiveSummary = undefined;
+    // #829 — the follow-up stays: the card keeps waiting until a summary judges the work again.
     if (!session.actionPanel) return;
     if (!session.actionPanel.summaryBlocks) return;
 

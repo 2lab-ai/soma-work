@@ -9,12 +9,18 @@ For sessions producing **one durable unit of work**: one issue, one PR, one bran
 
 ## Sections (in order)
 
+### TL;DR (before the document)
+- Exactly 3 lines, one plain sentence each (≤ 100 characters): outcome · most important fact · next step.
+- Path B wraps them in the host's `<tldr>` envelope; Path A renders them as a `TL;DR` block at the top and sends the same lines in `UPDATE_SESSION.executiveSummary.tldr` (SKILL.md §Card sync).
+- **Own artifact unfinished** (SKILL.md §Unfinished own artifacts) → line 2 starts with `⚠️` and states in bold which artifact is not complete and why it cannot be completed: `⚠️ **PR #830 not merged — needs a maintainer approval the bot does not have.**` This line moves the task card to NEEDS YOU. `⚠️` at the start of a line is reserved for this.
+
 ### 0. SSOT
 - Quote the user's instruction verbatim inside a fenced block. Multiple messages → preserve order + speaker labels.
 - This is **SSOT-LIST** per `local:using-ssot` — append-only.
 
 ### 1. Status
-- One bullet per linked issue/PR: `{label}: {url} — {state}` (Open / Draft / Merged / Closed / QA / etc.).
+- One bullet per linked issue/PR/document: `{label}: {url} — {state}` (Open / Draft / Merged / Closed / QA / Published / etc.).
+- Mark every issue, PR and document created this session with `🆕 created this session` — these are the own artifacts the ⚠️ rule checks.
 - Include parent epic link if known.
 - Include state changes that happened **this session** (e.g. `Open → Merged`).
 
@@ -45,6 +51,16 @@ For sessions producing **one durable unit of work**: one issue, one PR, one bran
 - "Be specific" — `Edited src/auth/login.ts:88 to add JWT refresh, ran npm test (12 passed)` over `Refactored auth`.
 - Reference: file paths, function names, PR numbers, error messages, command names actually present in the conversation.
 - Never invent values you did not see in history.
+
+### ⚠️ User follow-up required (last section — only when an own artifact is unfinished)
+- Always the very last section; omit it entirely when every own issue/PR/document is complete.
+- One block per unfinished own artifact, in this order:
+  - **Artifact** — `{label}: {url} — {state}` (the state you read this session).
+  - **Why the agent could not complete it** — bold, concrete blocker + evidence (error text, missing permission, failing check, pending decision). Never just "pending".
+  - **Who must act** — you / a reviewer / an admin (name the role or person if known).
+  - **Steps** — numbered, each runnable: a fenced command (`gh pr merge 830 --squash`) or the exact click path.
+  - **Verify** — how to confirm it is done (`gh pr view 830 --json state` → `MERGED`).
+  - **Then tell the agent** — what to reply in this thread so it continues (`"merged"` → it runs the dev deploy).
 
 ## Anti-patterns
 
