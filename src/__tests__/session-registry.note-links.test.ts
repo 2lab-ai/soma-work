@@ -10,6 +10,8 @@
  *       a link the model or the user set is never trimmed
  *   N6  links compare by their canonical URL: the dispatch's `/pull/12/files?x` is the `/pull/12` a turn names
  *   N7  recording never moves the sequence the model's UPDATE_SESSION compares against
+ *   N8  'update' (a merge or close the session just made, #832): only a link already on the card changes — its state;
+ *       an unknown link is never added, and the current link does not move
  */
 import fs from 'fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -144,5 +146,23 @@ describe('noteSessionLinks', () => {
         operations: [{ action: 'add', resourceType: 'pr', link: PR(2) }],
       }).ok,
     ).toBe(true);
+  });
+
+  it('N8 — update: a merge or close changes the state of a link already on the card, and adds nothing', () => {
+    const { reg, s } = setup();
+    reg.noteSessionLinks('C1', '100.001', [PR(12), PR(13)], 'always');
+    expect(s.links?.pr?.url).toBe(PR(13).url);
+    // The merged PR is in the history, not current: its state changes, the current link stays.
+    expect(reg.noteSessionLinks('C1', '100.001', [{ ...PR(12), status: 'merged' }], 'update')).toBe(true);
+    expect(s.linkHistory?.prs?.find((l) => l.url === PR(12).url)?.status).toBe('merged');
+    expect(s.links?.pr?.url).toBe(PR(13).url);
+    // The current one's copy changes too (the card reads the current link first).
+    reg.noteSessionLinks('C1', '100.001', [{ ...PR(13), url: `${PR(13).url}/files`, status: 'closed' }], 'update');
+    expect(s.links?.pr?.status).toBe('closed');
+    expect(s.linkHistory?.prs?.find((l) => l.url === PR(13).url)?.status).toBe('closed');
+    // A PR the card does not know is not added; the same state again changes nothing.
+    expect(reg.noteSessionLinks('C1', '100.001', [{ ...PR(99), status: 'merged' }], 'update')).toBe(false);
+    expect(s.linkHistory?.prs?.map((l) => l.url)).toEqual([PR(12).url, PR(13).url]);
+    expect(reg.noteSessionLinks('C1', '100.001', [{ ...PR(12), status: 'merged' }], 'update')).toBe(false);
   });
 });

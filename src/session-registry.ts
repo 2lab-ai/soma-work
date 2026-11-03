@@ -124,7 +124,7 @@ const WARNING_INTERVALS = [
 /** A session's history keeps at most this many links of each kind (세션 링크 자동 기록): the oldest go first. */
 export const MAX_NOTED_LINKS = 30;
 /** Which noted link becomes the current one: see SessionRegistry.noteSessionLinks. */
-export type NoteLinksMode = 'first' | 'always' | 'if-empty';
+export type NoteLinksMode = 'first' | 'always' | 'if-empty' | 'update';
 
 const HISTORY_KEY_BY_RESOURCE: Record<SessionResourceType, keyof SessionLinkHistory> = {
   issue: 'issues',
@@ -2436,7 +2436,9 @@ export class SessionRegistry {
    *   'first'    a user message: the first link of each kind (as the dispatch does with the first message);
    *   'always'   a PR or issue the session just created;
    *   'if-empty' an assistant reply: only when the kind has no current link, so a PR mentioned in passing does not
-   *              replace the one the session works on.
+   *              replace the one the session works on;
+   *   'update'   a PR or issue the session just merged or closed (#832): only a link already on the card changes — its
+   *              `status` — and nothing is added or made current.
    * Links compare by their canonical URL (`/pull/12/files?x` is `/pull/12`), so a link the dispatch or the model
    * already set is not recorded twice. A known link changes nothing. A recorded link is tagged `auto`; only those are
    * trimmed, to the newest {@link MAX_NOTED_LINKS} of a kind (the current one always stays). The sequence the model's
@@ -2464,6 +2466,7 @@ export class SessionRegistry {
   ): boolean {
     if (!session || !Array.isArray(links) || links.length === 0) return false;
     this.ensureSessionLinkState(session);
+    if (mode === 'update') return this.updateNotedLinkStates(session, links);
     let changed = false;
     const firstTaken = new Set<SessionResourceType>();
     for (const raw of links) {
@@ -2498,6 +2501,31 @@ export class SessionRegistry {
         if (drop < 0) break;
         history.splice(drop, 1);
         recorded--;
+      }
+    }
+    if (changed) this.saveSessions();
+    return changed;
+  }
+
+  /** {@link noteSessionLinks} 'update': the state of each link already on the card (history and current copy). */
+  private updateNotedLinkStates(session: ConversationSession, links: ReadonlyArray<SessionLink>): boolean {
+    let changed = false;
+    for (const raw of links) {
+      const type = raw?.type as SessionResourceType | undefined;
+      const status = typeof raw?.status === 'string' ? raw.status.trim() : '';
+      if (!raw?.url || !status || !type || !(type in HISTORY_KEY_BY_RESOURCE)) continue;
+      const canon = canonicalLinkUrl(raw.url);
+      const history = session.linkHistory![HISTORY_KEY_BY_RESOURCE[type]]!;
+      const at = history.findIndex((l) => !!l?.url && canonicalLinkUrl(l.url) === canon);
+      if (at >= 0 && history[at].status !== status) {
+        history[at] = { ...history[at], status };
+        changed = true;
+      }
+      const activeKey = ACTIVE_KEY_BY_RESOURCE[type];
+      const current = session.links![activeKey];
+      if (current?.url && canonicalLinkUrl(current.url) === canon && current.status !== status) {
+        session.links![activeKey] = { ...current, status };
+        changed = true;
       }
     }
     if (changed) this.saveSessions();
