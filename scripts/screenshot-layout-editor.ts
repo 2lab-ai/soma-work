@@ -477,6 +477,34 @@ async function run(browser: import('playwright').Browser, width: number, height:
     `${tag} R10 #813 the open card's and the detail card's model pickers lead with Claude's mark in clay (no letter)`,
     tiles,
   );
+  // #813 — the session panel's agent tabs lead with the model's mark too (ui 0.24.0 TabItem.model): Main carries the
+  // session's model in Claude's clay, its muted label names the model instead of the raw id. Read from the element
+  // (the strip may be hidden by the layout; its data is the same).
+  const mainTab = await page.evaluate(() => {
+    const t = document.getElementById('panel-tabs')?.shadowRoot?.querySelector('.tb-tab[data-key="main"]');
+    const mk = t?.querySelector('.tb-mark') as HTMLElement | null;
+    return t
+      ? {
+          vendor: mk?.dataset.vendor || '',
+          hue: mk?.style.getPropertyValue('--model-hue').trim() || '',
+          svg: !!mk?.querySelector('svg'),
+          hidden: mk?.getAttribute('aria-hidden') || '',
+          meta: (t.querySelector('.tb-meta') as HTMLElement | null)?.textContent || '',
+          text: (t.textContent || '').trim(),
+        }
+      : null;
+  });
+  check(
+    !!mainTab &&
+      mainTab.vendor === 'claude' &&
+      mainTab.hue === '#d97757' &&
+      mainTab.svg &&
+      mainTab.hidden === 'true' &&
+      !/\[1m\]|^opus-/.test(mainTab.meta) &&
+      /Opus/.test(mainTab.meta),
+    `${tag} R10 #813 the Main agent tab leads with Claude's mark in clay and names the model (not the raw id)`,
+    mainTab,
+  );
   await page.screenshot({ path: path.join(OUT, `${tag}-6-board-after.png`) });
   check(errors.length === 0, `${tag} no page errors`, errors);
   await ctx.close();
