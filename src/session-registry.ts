@@ -4097,7 +4097,11 @@ export class SessionRegistry {
           // the same step the sweep takes when it notices — asleep from now, ended
           // only after archiveAfter more. Never ended outright on load, so a
           // restart cannot shorten the sleep a running process would have given.
-          const sessionAge = now - idleSinceMs({ lastActivity, starClearedAt: serialized.starClearedAt });
+          const sessionAge = now - idleSinceMs({
+            lastActivity,
+            starClearedAt: serialized.starClearedAt,
+            followUp: serialized.followUp,
+          });
           // A session with an active goal is resumed after restart (resumeActiveGoals),
           // which runs turns without waking a sleeper — leave it awake for that.
           const hasActiveGoal = serialized.goal?.status === 'active';
