@@ -97,6 +97,7 @@ describe('Z1 — the title bar: the layout’s items after the time, in its orde
       {
         rootStatusOf: (s: { activityState: string }) => (s.activityState === 'working' ? 'running' : 'idle'),
         REPRESENTATIVE_MODELS: [{ model: 'claude-opus-5-5[1m]', label: 'Opus 5.5' }],
+        PS_MAX_LEG_MS: 30 * MIN,
       },
     );
 
@@ -120,6 +121,17 @@ describe('Z1 — the title bar: the layout’s items after the time, in its orde
     expect(e.panelHeadMetricsOf(slow, 'working', ['speed'], NOW)[0].text).toBe('6.5 tok/s');
     const fresh = session({ activeAccumulatedMs: 0, activeLegStartedAtMs: NOW - 30_000 });
     expect(e.panelHeadMetricsOf(fresh, 'working', ['speed'], NOW)).toEqual([]);
+  });
+
+  it('the open turn counts up to the server’s cap on one turn — a turn whose end was never seen does not drag it down (review P1)', () => {
+    const e = env();
+    // 45 and 90 minutes into one open turn: it counts 30 (60 + 30 = 90 minutes → 452,000 / 5,400 s = 84 tok/s).
+    for (const open of [45, 90])
+      expect(
+        e.panelHeadMetricsOf(session({ activeLegStartedAtMs: NOW - open * MIN }), 'working', ['speed'], NOW)[0].text,
+      ).toBe('84 tok/s');
+    // The page takes the cap from the server (the same constant the session's active time folds a turn with).
+    expect(TEMPLATE).toContain('var PS_MAX_LEG_MS = ${DASHBOARD_MAX_LEG_MS};');
   });
 
   it('the old 세션 정보 line’s numbers are items too: the context (levelled), the owner, the workflow — in the layout’s order', () => {
@@ -378,14 +390,12 @@ describe('Z3 — every tab starts closed; a press opens one, a second press clos
     expect(c.bar.hidden).toBe(true);
   });
 
-  it('an empty tab is aria-disabled and a press on it does nothing (the listener checks)', () => {
+  it('an empty tab is disabled — no press, out of the Tab order (review P3); the 에이전트 tab controls the strip', () => {
     const { env, bar } = rig();
     env.__set('_sessionCache', { k1: { key: 'k1', ownerId: 'U1', agents: [] } });
     env.renderPanelMidbar();
-    expect(bar.innerHTML).toMatch(
-      /data-mid="agents" aria-expanded="false" aria-controls="panel-agents" aria-disabled="true"/,
-    );
-    expect(clientFn('renderPanelMidbar')).toContain("if (!b || b.getAttribute('aria-disabled') === 'true') return;");
+    expect(bar.innerHTML).toMatch(/data-mid="agents" aria-expanded="false" aria-controls="panel-tabs" disabled/);
+    expect(clientFn('renderPanelMidbar')).toContain('if (!b || b.disabled) return;');
   });
 });
 
@@ -416,7 +426,7 @@ describe('Z5 — the page: 입력 필요 → the tab bar → the tabs’ content
     for (const id of ['panel-goal', 'panel-artifacts', 'panel-info', 'panel-tasks'])
       expect(at(`id="${id}"`)).toBeGreaterThan(at('id="panel-midbar"'));
     expect(PAGE).toContain(
-      '<div class="panel-midbar" id="panel-midbar" role="toolbar" aria-label="작업 정보 탭" hidden></div>',
+      '<div class="panel-midbar" id="panel-midbar" role="group" aria-label="작업 정보 탭" hidden></div>',
     );
   });
 

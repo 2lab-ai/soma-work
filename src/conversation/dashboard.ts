@@ -5773,9 +5773,9 @@ body:not([data-detail~="sections"]):not([data-detail~="logtab"]) .panel-sections
 .panel-midbar { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0 2px; padding: 0 10px; min-height: 36px; }
 .panel-midbar[hidden] { display: none; }
 .pm-tab { display: inline-flex; align-items: center; gap: 5px; min-height: 36px; padding: 0 8px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--text-secondary); font: inherit; font-size: 12.5px; cursor: pointer; white-space: nowrap; }
-.pm-tab:hover:not([aria-disabled="true"]) { color: var(--text); }
+.pm-tab:hover:not(:disabled) { color: var(--text); }
 .pm-tab[aria-expanded="true"] { color: var(--text); font-weight: 600; border-bottom-color: var(--text); }
-.pm-tab[aria-disabled="true"] { cursor: default; opacity: .45; }
+.pm-tab:disabled { cursor: default; opacity: .45; }
 .pm-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; }
 .pm-count { font-variant-numeric: tabular-nums; color: var(--text-tertiary); font-weight: 500; }
 .pm-tab[aria-expanded="true"] .pm-count { color: var(--text-secondary); }
@@ -6441,8 +6441,8 @@ ${pageTokenAliases()}
         <p class="ui-sr-only" id="panel-needs-status" role="status" aria-live="polite"></p>
         <!-- The tab bar (SSOT 2026-11-03): 목표 2/5 · 작업 1/7 · 에이전트 5 … — the layout's tabs (detail.tabs), every one
              closed at first; a press opens that tab's content under the bar (and a second press closes it). Each tab
-             is a disclosure button (aria-expanded · aria-controls): renderPanelMidbar · selectPanelMid. -->
-        <div class="panel-midbar" id="panel-midbar" role="toolbar" aria-label="작업 정보 탭" hidden></div>
+             is a disclosure button (aria-expanded · aria-controls) in one group: renderPanelMidbar · selectPanelMid. -->
+        <div class="panel-midbar" id="panel-midbar" role="group" aria-label="작업 정보 탭" hidden></div>
         <!-- Goal (spec 13): the editor's home — current, queue, add / delete, completed goals. The 목표 tab. -->
         <div class="panel-goal" id="panel-goal" role="region" tabindex="-1" aria-label="목표" style="display:none"></div>
         <!-- 산출물 (SSOT 2026-10-23 T6): what the task produced, and the files the user attached. The 산출물 tab. -->
@@ -10797,13 +10797,9 @@ function renderPanelTabs() {
   if (!el) return;
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   var d = s ? panelTabsData(s, _panelAgent, rootStatusOf(s, sessionColOf(panelSessionKey))) : panelTabsData(null, '', '');
-  // A layout that shows the strip only with a subagent (detail agents = sub → subtabs) reads this.
+  // Looking at a subagent: its strip stays in view with the 에이전트 tab closed — whose chat and log these are.
   var panel = document.getElementById('slide-panel');
-  if (panel) {
-    panel.toggleAttribute('data-subagents', d.tabs.length > 1);
-    // Looking at a subagent: its strip stays in view with the 에이전트 tab closed — whose chat and log these are.
-    panel.toggleAttribute('data-agent-scoped', !!_panelAgent);
-  }
+  if (panel) panel.toggleAttribute('data-agent-scoped', !!_panelAgent);
   var sig = JSON.stringify(d);
   if (el._sig === sig) return;
   el._sig = sig;
@@ -11550,12 +11546,15 @@ function panelHeadData(s, col) {
 // the task's API-equivalent cost and its tokens (main + subagents — the old 세션 정보 line's numbers), the speed,
 // the context, the owner, the workflow — in the layout's order, each only when known. The speed is the task's pace:
 // its output tokens over its active time (every turn's, this one's so far; subagents and tool runs count), shown
-// once it has worked a minute.
+// once it has worked a minute; a turn counts up to the cap on one turn, as the session's active time does.
 var PS_SPEED_MIN_MS = 60000;
+// The open turn counts up to the server's cap on one turn (DASHBOARD_MAX_LEG_MS — the same cap the session's
+// active time folds a turn with), so a turn whose end was never seen does not drag the speed toward zero.
+var PS_MAX_LEG_MS = ${DASHBOARD_MAX_LEG_MS};
 function panelActiveMs(s, col, now) {
   var st = rootStatusOf(s, col);
   var leg = st === 'running' || st === 'waiting' ? (Number(s.activeLegStartedAtMs) || 0) : 0;
-  return toNum(s.activeAccumulatedMs) + (leg ? Math.max(0, now - leg) : 0);
+  return toNum(s.activeAccumulatedMs) + (leg ? Math.min(Math.max(0, now - leg), PS_MAX_LEG_MS) : 0);
 }
 function panelHeadMetricsOf(s, col, head, now) {
   var out = [];
@@ -11662,10 +11661,10 @@ function onPanelHeadAction(e) {
 // The layout's tabs (detail.tabs) in its order, under 입력 필요. Every opening starts with them closed — or on its
 // landing's tab (a goal → 목표, a task → 작업, an agent → 에이전트); a press opens that tab's content under the bar,
 // one at a time, and a second press closes it (.slide-panel[data-midtab] — the CSS of THE TAB BAR). A tab with
-// nothing in it yet is aria-disabled; the open one never is (its content says it is empty).
+// nothing in it yet is disabled (out of the Tab order too); the open one never is (its content says it is empty).
 var _panelMid = ''; // the open tab ('' = none)
 var MID_TAB_LABEL = { goal: '목표', tasks: '작업', agents: '에이전트', artifacts: '산출물', info: '세부' };
-var MID_TAB_PANEL = { goal: 'panel-goal', tasks: 'panel-tasks', agents: 'panel-agents', artifacts: 'panel-artifacts', info: 'panel-info' };
+var MID_TAB_PANEL = { goal: 'panel-goal', tasks: 'panel-tasks', agents: 'panel-tabs', artifacts: 'panel-artifacts', info: 'panel-info' };
 // Pure: the bar's tabs — { id, label, count, title, empty } — from the session and what only the page knows (c: the
 // goal editor's right, the focused agent's tasks and earlier plans, the files).
 function panelMidTabsOf(s, tabs, c) {
@@ -11733,7 +11732,7 @@ function renderPanelMidbar() {
     bar._wired = true;
     bar.addEventListener('click', function(e) {
       var b = e.target && e.target.closest ? e.target.closest('.pm-tab') : null;
-      if (!b || b.getAttribute('aria-disabled') === 'true') return;
+      if (!b || b.disabled) return;
       selectPanelMid(b.getAttribute('data-mid'));
     });
   }
@@ -11751,7 +11750,7 @@ function renderPanelMidbar() {
     var t = tabs[j];
     var on = t.id === _panelMid;
     html += '<button type="button" class="pm-tab" data-mid="' + t.id + '" aria-expanded="' + (on ? 'true' : 'false') + '" aria-controls="' + MID_TAB_PANEL[t.id] + '"'
-      + (t.empty && !on ? ' aria-disabled="true"' : '') + (t.title ? ' title="' + escAttr(t.title) + '"' : '') + '>'
+      + (t.empty && !on ? ' disabled' : '') + (t.title ? ' title="' + escAttr(t.title) + '"' : '') + '>'
       + '<span class="pm-label">' + esc(t.label) + '</span>' + (t.count ? '<span class="pm-count">' + esc(t.count) + '</span>' : '')
       + '<i class="pm-caret" data-ui-icon="chevron-down"></i></button>';
   }

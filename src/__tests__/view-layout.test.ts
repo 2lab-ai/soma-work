@@ -467,3 +467,33 @@ describe('L8 — 상세 카드 세 구역: title bar · 입력 필요 · tab bar
     expect(LAYOUT_CATALOG.detail.tasks.map((x) => x.value)).toEqual(['runs', 'list', 'line']);
   });
 });
+
+describe('L9 — a device copy saved before the zones reads as the server migrates it (view-layout-client.ts parity, review P2)', () => {
+  it('layoutOf gives a legacy detail card its preset’s title bar and tab bar; a hidden task list is the 작업 tab off', async () => {
+    const { VIEW_LAYOUT_CLIENT_JS } = await import('../conversation/view-layout-client');
+    const client = new Function(`${VIEW_LAYOUT_CLIENT_JS}\nreturn { layoutOf, detailSpecOf };`)() as {
+      layoutOf(doc: unknown, b: unknown, p: string, m: string, s: string): unknown;
+      detailSpecOf(d: unknown): unknown;
+    };
+    const legacy = (tasks: string) => ({
+      top: [{ id: 'info', on: true }],
+      tasks,
+      tasksMax: 50,
+      agents: 'all',
+      agenthead: true,
+      sections: true,
+      logtab: false,
+      controls: true,
+      subtitle: false,
+      open: true,
+    });
+    for (const p of PRESET_IDS)
+      for (const m of VIEW_MODES)
+        for (const tasks of ['none', 'list', 'runs']) {
+          const doc = { v: 1, presets: { [p]: { [m]: { detail: legacy(tasks) } } } };
+          const server = normalizeLayoutDoc(doc).presets![p]![m]!.detail;
+          const local = client.layoutOf(doc, BUILTIN_PRESETS, p, m, 'detail');
+          expect(client.detailSpecOf(local), `${p} ${m} ${tasks}`).toEqual(client.detailSpecOf(server));
+        }
+  });
+});
