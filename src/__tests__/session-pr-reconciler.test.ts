@@ -342,5 +342,18 @@ describe('findGitCheckouts — the real git reader (#833 R8)', () => {
     expect((await scanGitCheckouts([root], 10)).complete).toBe(true);
     const first = await scanGitCheckouts([root], 2, () => true);
     expect([first.complete, first.checkouts.length]).toEqual([true, 1]);
+    // An absent dir is complete; one past MAX_CHILDREN children, or one that cannot be read, is not (astra P2).
+    expect((await scanGitCheckouts([path.join(root, 'missing')], 10)).complete).toBe(true);
+    const wide = path.join(root, 'wide');
+    for (let i = 0; i < 201; i++) fs.mkdirSync(path.join(wide, `d${i}`), { recursive: true });
+    expect((await scanGitCheckouts([wide], 10)).complete).toBe(false);
+    const locked = path.join(root, 'locked');
+    fs.mkdirSync(locked);
+    fs.chmodSync(locked, 0o000);
+    try {
+      expect((await scanGitCheckouts([locked], 10)).complete).toBe(false);
+    } finally {
+      fs.chmodSync(locked, 0o755);
+    }
   }, 30_000);
 });
