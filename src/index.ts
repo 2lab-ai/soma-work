@@ -198,8 +198,9 @@ import {
   retireGoalCapDecision,
   setGoalCapDecisionSurfaces,
 } from './slack/goal-cap-decision';
+import { HostGoalActionError } from './slack/goal-host-actions';
 import { GoalLoopController } from './slack/goal-loop-controller';
-import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
+import { resumeGoalLoop, setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
 import { createPendingUserRequest, notifyAdminsNewUser } from './slack/new-user-decision';
 import { type StreamExecutorProviders, setStreamExecutorProviders } from './slack/pipeline/stream-executor';
 import {
@@ -227,6 +228,7 @@ import { setPlanHost } from './task-turn/plan-server';
 import { composeTaskApprovalListeners } from './task-turn/task-approver';
 import { createDashboardCloseHandler } from './task-turn/task-close';
 import { planGoalObjective } from './task-turn/task-goal';
+import { createTaskGoalCommands, type TaskGoalCommands } from './task-turn/task-goal-commands';
 import { createTaskGoalLoop, type TaskGoalLoop } from './task-turn/task-goal-loop';
 import { createTaskLauncher } from './task-turn/task-launcher';
 import {
@@ -237,7 +239,13 @@ import {
 import { TASK_NOTIFICATION_LEDGER_FILENAME, TaskNotificationLedger } from './task-turn/task-notification-ledger';
 import type { TaskPlanDoc } from './task-turn/task-plan';
 import { createSlackPlanDecider, createTaskPlanDecider } from './task-turn/task-plan-decision';
-import { createRestartNoticeStart, createTaskRestartResumer, cutTurnAuthor } from './task-turn/task-restart-resume';
+import {
+  createRestartNoticeStart,
+  createTaskRestartResumer,
+  cutTurnAuthor,
+  type RestartResumeOutcome,
+  runRestoredFollowups,
+} from './task-turn/task-restart-resume';
 import {
   createTaskTurnController,
   type TaskCommandRequest,
@@ -907,6 +915,8 @@ async function start() {
     // #598 ④c — the caller of Slack-less tasks' turns, built below once the
     // work-log appender exists; Close and shutdown reach it through here.
     let taskTurnController: TaskTurnController | undefined;
+    /** #865 — a task's `goal …` and its goal list (wired with the task controller, below). */
+    let taskGoalCommands: TaskGoalCommands | undefined;
     /** E2 ⑤ — the notice ledger could not be read: tasks that owe their thread are kept (D6). */
     let taskNoticeLedgerUnreadable = false;
 
@@ -1169,9 +1179,16 @@ async function start() {
 
     // Connect dashboard: goal list on the work item (SSOT 2026-10-21 T3) —
     // add / delete-current (promotes the next goal) / delete-queued.
-    setDashboardGoalHandler((sessionKey, action, actorUserId) =>
-      slackHandler.handleHostGoalAction(sessionKey, action, actorUserId),
-    );
+    // A Slack-less task has no thread for the host's goal path: its goal list goes through the
+    // task's own goal commands (#865) — same rules, its notices in the work log.
+    setDashboardGoalHandler(async (sessionKey, action, actorUserId) => {
+      const session = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey);
+      if (session?.slackless === true) {
+        if (!taskGoalCommands) throw new HostGoalActionError(503, 'Task goal commands are not ready yet');
+        return taskGoalCommands.hostAction(sessionKey, action, actorUserId || session.ownerId || '');
+      }
+      return slackHandler.handleHostGoalAction(sessionKey, action, actorUserId);
+    });
 
     // Connect dashboard: choice answer handler (dashboard button click → same path as Slack button)
     setDashboardChoiceAnswerHandler(async (sessionKey, choiceId, label, question, actorUserId) => {
@@ -1430,9 +1447,48 @@ async function start() {
       holdQueued: (key, session, item) =>
         instructionApprovals.allows({ sessionKey: key, session, senderId: item.authorId })
           ? undefined
-          : holdTaskInstruction(key, item.authorId, { kind: 'task-command', text: item.text, at: Date.now() }),
+          : holdTaskInstruction(key, item.authorId, {
+              kind: 'task-command',
+              text: item.text,
+              at: Date.now(),
+              ...(item.goalOpeningId !== undefined ? { goalOpeningId: item.goalOpeningId } : {}),
+            }),
+      // #865 — `goal …` on a task is the host's goal command, as in a Slack thread.
+      goalCommands: {
+        matches: (text) => taskGoalCommands?.matches(text) ?? false,
+        run: (request, session) =>
+          taskGoalCommands
+            ? taskGoalCommands.run(request, session)
+            : Promise.resolve({ status: 503, body: { error: 'Task goal commands are not ready yet' } }),
+        opensGoal: (text) => taskGoalCommands?.opensGoal(text) ?? false,
+        openingDropped: (key, session, goalId, why) => taskGoalCommands?.openingDropped(key, session, goalId, why),
+      },
     });
     taskTurnController = taskController;
+    taskGoalCommands = createTaskGoalCommands({
+      getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+      saveSessions: () => claudeHandler.saveSessions(),
+      broadcast: () => broadcastSessionUpdate(),
+      // Same kick a Slack `goal resume` gives (setGoalLoopResumeHandler → onTurnSettled, cause kick).
+      kickLoop: (key) => resumeGoalLoop(key),
+      // A goal's opening: the objective as the user's words, waiting behind a running turn.
+      startOpening: (key, prompt, actorUserId, carry) =>
+        taskController.start({
+          sessionKey: key,
+          text: prompt,
+          actorUserId,
+          queueWhileRunning: true,
+          goalOpeningId: carry.goalId,
+          ...(carry.approvedOnce ? { approvedOnce: true } : {}),
+          ...(carry.newTask ? { newTask: true } : {}),
+        }),
+      settings: {
+        getUserGoalMaxContinuations: (userId) => userSettingsStore.getUserGoalMaxContinuations(userId),
+        setUserGoalMaxContinuations: (userId, value) => userSettingsStore.setUserGoalMaxContinuations(userId, value),
+        toggleUserAutoGoalEnabled: (userId) => userSettingsStore.toggleUserAutoGoalEnabled(userId),
+        setUserAutoGoalEnabled: (userId, enabled) => userSettingsStore.setUserAutoGoalEnabled(userId, enabled),
+      },
+    });
     // The panel's Send now / Cancel / Edit on a task's queued word.
     setDashboardTaskQueueHandler((request) => taskController.actOnQueue(request));
     // E4 ④a (.prd/19 D3) — the host the epic's tools call: registry reads, the plan writer,
@@ -1615,6 +1671,8 @@ async function start() {
                 // these very words, so the drain does not ask again unless they are edited.
                 queueWhileRunning: true,
                 approvedOnce: true,
+                // A goal's first turn stays one — and runs only if its goal still owes it (#876 R2, astra P2).
+                ...(held.goalOpeningId !== undefined ? { goalOpeningId: held.goalOpeningId } : {}),
               })
             : await taskController.answer({
                 sessionKey: request.sessionKey,
@@ -2524,6 +2582,15 @@ async function start() {
         logger.warn('Crash recovery notifications failed (non-critical)', error);
       })
       .finally(() => {
+        // SSOT 2026-11-03 — a message the restart kept from running is sent now, in a session
+        // nothing above resumes (a resumed one sends it at its resume turn; later checks catch a
+        // resume that never came). In `.finally`, so a failed notice pass cannot skip it (#879 R1, fable P2).
+        try {
+          const drained = slackHandler.drainRestartRequeuedFollowups();
+          if (drained > 0) timing(`Sending follow-ups the restart kept from running (${drained} session(s))`);
+        } catch (error) {
+          logger.warn('Sending restart-cut follow-ups failed (non-critical)', error);
+        }
         // Not tied to the Slack notices' outcome (trinity R1, fable P3): a dashboard task has no thread.
         // 2026-11-03 — a dashboard task whose turn the restart cut resumes too, as a Slack
         // thread does above (it was only recorded `interrupted`). After the goal resume, so a
@@ -2533,26 +2600,53 @@ async function start() {
           const cutTasks = taskRegistry.getRestartCutTasks().slice();
           taskRegistry.clearRestartCutTasks();
           if (cutTasks.length === 0) timing('No dashboard task was cut by the restart');
-          if (cutTasks.length > 0 && taskTurnController) {
-            createTaskRestartResumer({
-              controller: taskTurnController,
-              getSession: (key) => taskRegistry.getSessionByKey(key),
-              logger: new Logger('TaskRestartResume'),
-              goalsResumed: () => goalsResumedAtBoot,
-              // A record saved before the turn's initiator was kept: the cut turn's author, from its conversation.
-              readCutTurnAuthor: async (session, cutTurnId) => {
-                const record = session.conversationId ? await getConversation(session.conversationId) : null;
-                return record ? cutTurnAuthor(record.turns, cutTurnId) : undefined;
-              },
+          const resumed: Promise<Map<string, RestartResumeOutcome>> =
+            cutTasks.length > 0 && taskTurnController
+              ? createTaskRestartResumer({
+                  controller: taskTurnController,
+                  getSession: (key) => taskRegistry.getSessionByKey(key),
+                  logger: new Logger('TaskRestartResume'),
+                  goalsResumed: () => goalsResumedAtBoot,
+                  // A record saved before the turn's initiator was kept: the cut turn's author, from its conversation.
+                  readCutTurnAuthor: async (session, cutTurnId) => {
+                    const record = session.conversationId ? await getConversation(session.conversationId) : null;
+                    return record ? cutTurnAuthor(record.turns, cutTurnId) : undefined;
+                  },
+                })
+                  .resume(cutTasks)
+                  .then((outcomes) => {
+                    const started = [...outcomes.values()].filter((o) => o.status === 'started').length;
+                    const waiting = [...outcomes.values()].filter((o) => o.status === 'waiting').length;
+                    timing(
+                      `Resumed ${started}/${cutTasks.length} dashboard task(s) the restart cut (${waiting} waiting)`,
+                    );
+                    return outcomes;
+                  })
+                  .catch((error) => {
+                    logger.warn('Resuming dashboard tasks after restart failed (non-critical)', error);
+                    return new Map<string, RestartResumeOutcome>();
+                  })
+              : Promise.resolve(new Map<string, RestartResumeOutcome>());
+          // Owner directive 2026-11-03 — the words a task still waits with are sent after the restart,
+          // unless a person stopped the work (the load keeps them queued). A resumed chain (started, or
+          // waiting for its slot) and the goal loop drain their own at a healthy end; this sends the rest.
+          void resumed
+            .then((outcomes) => {
+              if (!taskTurnController) return;
+              const sent = runRestoredFollowups(
+                {
+                  controller: taskTurnController,
+                  sessions: () => taskRegistry.getAllSessions(),
+                  logger: new Logger('TaskRestoredFollowups'),
+                  goalsResumed: () => goalsResumedAtBoot,
+                },
+                outcomes,
+              );
+              timing(`Sent the queued instruction of ${sent} dashboard task(s) the restart left waiting`);
             })
-              .resume(cutTasks)
-              .then((outcomes) => {
-                const started = [...outcomes.values()].filter((o) => o.status === 'started').length;
-                const waiting = [...outcomes.values()].filter((o) => o.status === 'waiting').length;
-                timing(`Resumed ${started}/${cutTasks.length} dashboard task(s) the restart cut (${waiting} waiting)`);
-              })
-              .catch((error) => logger.warn('Resuming dashboard tasks after restart failed (non-critical)', error));
-          }
+            .catch((error) =>
+              logger.warn('Sending dashboard tasks’ queued instructions after restart failed (non-critical)', error),
+            );
         } catch (error) {
           logger.warn('Resuming dashboard tasks after restart failed (non-critical)', error);
         }

@@ -931,8 +931,8 @@ function resolveSelfActionKeyAndOwner(
   }
   // Fail closed (#612 review): a Slack-less task takes only the routes that opt in —
   // stop / close / trash, and `command`, which hands it to the task turn
-  // controller (#598 ④c). Goal, model, effort, the queue and answers are not
-  // supported on a task yet (answers: ⑤ #599).
+  // controller (#598 ④c), and the goal list (#865, the task's goal commands).
+  // Routes that do not opt in answer 409 for a task.
   if (!opts.allowSlackless && _getSessionsFn?.()?.get(originalKey)?.slackless === true) {
     reply.status(409).send({ error: 'not supported on a dashboard task yet' });
     return null;
@@ -1614,7 +1614,8 @@ function taskFollowupsOf(
         enqueuedAt: item.enqueuedAt,
         state: item.state === 'sending' ? 'dispatched' : item.state,
         epoch: item.epoch,
-        editable: !sending,
+        // A goal's first turn is its objective: it is not edited (#865 — cancel it, the goal pauses).
+        editable: !sending && item.goalOpeningId === undefined,
         authorId: item.authorId,
       };
       if (item.authorId !== ownerId) out.author = nameOf(item.authorId);
@@ -4303,7 +4304,8 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: "action must be 'add' or 'delete'" });
         return;
       }
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      // #865 — a task's goal list too: the handler routes it to the task's goal commands.
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true });
       if (!resolved) return;
       const { originalKey } = resolved;
       if (!_goalActionHandlerFn) {
@@ -6442,6 +6444,11 @@ body.nt-open .new-task-fab { display: none !important; }
 .pp-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .pp-title { font-size: 13px; font-weight: 650; color: var(--ib-text); }
 .pp-note { font-size: 13px; color: var(--ib-muted); line-height: 1.5; }
+/* #846 — the follow-up row in 입력 필요 (read-only). */
+.pf-row { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--tint-wait-line); background: var(--tint-wait-soft); }
+.pf-head { font-size: 12px; font-weight: 600; color: color-mix(in srgb, var(--st-wait) calc(100% * var(--chroma, 1)), var(--text)); }
+.pf-reason { font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.pf-hint { font-size: 12px; color: var(--ib-muted); }
 .pp-fold > summary { cursor: pointer; font-size: 12.5px; color: var(--ib-muted); margin-bottom: 8px; }
 .panel-plan-bar { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; padding: 8px 12px; margin-bottom: 8px; border-radius: 10px; background: var(--tint-wait-soft); border: 1px solid var(--tint-wait-line); }
 .ppb-label { flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 600; color: var(--tint-wait-fg); }
@@ -7407,10 +7414,14 @@ function renderPanelPermission(s) {
     ids['i|' + ia[j].requestId] = true;
     if (seen && !seen['i|' + ia[j].requestId]) said.push('지시 승인 요청 — ' + (ia[j].requesterName || ia[j].requesterId || ''));
   }
+  if (panelFollowUpShown(s)) {
+    ids['f|' + (s.pendingFollowUp.at || 0)] = true;
+    if (seen && !seen['f|' + (s.pendingFollowUp.at || 0)]) said.push('후속 작업 필요 — ' + s.pendingFollowUp.reason.trim());
+  }
   container._seenKey = key;
   container._seen = ids;
   renderPanelNeedsHead(s);
-  var html = s ? acPermissionsHtml(s) + acGoalDecisionHtml(s) + acInstructionApprovalsHtml(s) : '';
+  var html = s ? acPermissionsHtml(s) + acGoalDecisionHtml(s) + acInstructionApprovalsHtml(s) + acFollowUpHtml(s) : '';
   var ae = document.activeElement;
   var had = !!(ae && container.contains(ae));
   if (!html) {
@@ -7447,10 +7458,24 @@ function panelQuestionShown(s) {
   if (!q || s.activityState !== 'waiting') return false;
   return (q.type === 'user_choice' && !!q.choices) || q.type === 'user_choices';
 }
+// #846 — the follow-up the last Executive Summary left (an own issue/PR/doc not complete). Not on a sleeping or
+// closed session: the server keeps sending pendingFollowUp there, and its card sits in closed.
+function panelFollowUpShown(s) {
+  var f = s && s.pendingFollowUp;
+  if (!f || typeof f.reason !== 'string' || !f.reason.trim()) return false;
+  return s.sessionState !== 'SLEEPING' && !s.terminated;
+}
+// One read-only row in 입력 필요: the user acts outside the panel; the steps are in the summary's last section.
+function acFollowUpHtml(s) {
+  if (!panelFollowUpShown(s)) return '';
+  return '<div class="pf-row" data-pf="followup" role="note"><span class="pf-head">' + '후속 작업 필요' + '</span>'
+    + '<span class="pf-reason">' + esc(s.pendingFollowUp.reason.trim()) + '</span>'
+    + '<span class="pf-hint">' + '처리 방법은 Executive Summary 맨 아래 ⚠️ 섹션에 있어요' + '</span></div>';
+}
 function renderPanelNeedsHead(s) {
   var head = document.getElementById('panel-needs-head');
   if (!head) return;
-  var n = s ? ((s.pendingPermissions || []).length + (s.pendingGoalDecision ? 1 : 0) + (s.pendingInstructionApprovals || []).length + (panelQuestionShown(s) ? 1 : 0) + (s.taskPlan && s.taskPlan.state === 'awaiting' ? 1 : 0)) : 0;
+  var n = s ? ((s.pendingPermissions || []).length + (s.pendingGoalDecision ? 1 : 0) + (s.pendingInstructionApprovals || []).length + (panelQuestionShown(s) ? 1 : 0) + (s.taskPlan && s.taskPlan.state === 'awaiting' ? 1 : 0) + (panelFollowUpShown(s) ? 1 : 0)) : 0;
   head.hidden = n === 0;
   var count = document.getElementById('panel-needs-count');
   if (count && count.textContent !== String(n)) count.textContent = String(n);
@@ -11697,7 +11722,8 @@ function steeringData(s, mode) {
     var state = f && STEER_STATE[f.state];
     if (!state || !f.id) continue;
     // Edit: the writer's own words only (SSOT 2026-11-02 — any viewer may write here now).
-    var it = { id: String(f.id), text: String(f.text || ''), state: state, canEdit: !!f.editable && !!f.authorId && f.authorId === _viewerUserId };
+    // The stored text is Slack's (a quoted line is &gt; …): shown as written.
+    var it = { id: String(f.id), text: decodeSlackEntities(String(f.text || '')), state: state, canEdit: !!f.editable && !!f.authorId && f.authorId === _viewerUserId };
     if (f.enqueuedAt) it.at = Number(f.enqueuedAt);
     if (f.author) it.author = String(f.author);
     if (f.stateReason) it.reason = String(f.stateReason);
@@ -16052,17 +16078,26 @@ function wlGroupOf(e) {
   return e && typeof e.taskId === 'string' && e.taskId ? e.taskId : '';
 }
 // SSOT 2026-10-22 T10 — an entry made while a task was in progress carries
-// that task (taskId / taskTitle): one group per task, at the place of its
-// first entry, titled by the ledger (else its latest entry's title) with the
+// that task (taskId / taskTitle): a task's consecutive entries are one group,
+// titled by the ledger (else the task's latest entry's title) with the
 // ledger's meta under it; the entries outside a task (the instruction that
 // starts a turn, the response that ends it) in runs, each a headless group in
-// line — no head, always shown (D3-GAPS G2-2, 0.12.0). A folded task group is
+// line — no head, always shown (D3-GAPS G2-2, 0.12.0). A task that runs across
+// turns is cut by what comes between: where it resumes after an instruction,
+// an answer or another task, a new group of the same task opens (same #id,
+// title and meta), so the rows always follow the entries' order (2026-11-03 —
+// one group at the task's first entry pulled its later entries above the goal
+// instructions made before them). Ids stay put across repaints: the first
+// segment is task:<id>, a later one task:<id>:<seq of its first entry>; the
+// newest segment is the one open at first sight. A folded task group is
 // handed its count, not its entries: a long log's DOM stays the size of what
 // is open — and the element's scroller never holds the reader's place on rows
 // clipped inside a folded group (D3-GAPS G2-1).
 function wlGroupsOf(st, entries) {
   var rows = [];
-  var byTask = Object.create(null);
+  var titles = Object.create(null);
+  var seen = Object.create(null);
+  var grp = null;
   var run = null;
   var newest = '';
   for (var i = 0; i < entries.length; i++) {
@@ -16070,16 +16105,17 @@ function wlGroupsOf(st, entries) {
     var g = wlGroupOf(e);
     if (g) {
       run = null;
-      var grp = byTask[g];
-      if (!grp) {
-        grp = byTask[g] = { id: 'task:' + g, taskId: g, title: '', at: e.ts, list: [] };
+      if (!grp || grp.taskId !== g) {
+        grp = { id: 'task:' + g + (seen[g] ? ':' + Math.floor(Number(e.seq) || 0) : ''), taskId: g, at: e.ts, list: [] };
+        seen[g] = true;
         rows.push(grp);
       }
       grp.list.push(e);
-      if (e.taskTitle) grp.title = String(e.taskTitle);
+      if (e.taskTitle) titles[g] = String(e.taskTitle);
       newest = grp.id;
       continue;
     }
+    grp = null;
     if (!run) {
       run = { id: 'run:' + Math.floor(Number(e.seq) || 0), at: e.ts, list: [] };
       rows.push(run);
@@ -16096,7 +16132,7 @@ function wlGroupsOf(st, entries) {
     }
     var task = wlTaskInfo(r.taskId);
     out.ref = '#' + r.taskId;
-    out.title = (task && task.content) || r.title || '';
+    out.title = (task && task.content) || titles[r.taskId] || '';
     if (task) out.meta = wlTaskMeta(task);
     out.open = wlGroupOpen(st, r.id, r.id === newest);
     out.count = r.list.length;
@@ -17098,10 +17134,17 @@ function sysTurnInfo(t) {
   if (g) {
     var n = /Auto-continuation (\\d+)\\/(\\d+)/.exec(head);
     var reason = sysBetween(raw, '<previous-eval-reason>', '</previous-eval-reason>');
+    // A reused verdict (goal-loop-controller: the cut turn left no text, or nothing
+    // changed): its second line says no evaluation ran — the gap is the previous
+    // one (session-goal-block.ts GOAL_NO_NEW_EVAL_MARK, 2026-11-03).
+    var second = head.split('\\n')[1] || '';
+    var reusedLine = second.indexOf('No new evaluation: ') !== 0 ? ''
+      : second.indexOf('No new evaluation: the last turn was cut short') === 0 ? '끊긴 턴 이어서 — 새 평가 없음' : '바뀐 것 없음 — 새 평가 없음';
     var gf = [];
     if (n) gf.push(['회차', n[1] + ' / ' + n[2]]);
+    if (reusedLine) gf.push(['평가', '새 평가 없음 — 직전 평가를 그대로 씀']);
     if (reason) gf.push(['직전 평가에서 남은 일', reason]);
-    return { kind: 'goal', label: n ? '목표 #' + n[1] + '/' + n[2] : '목표', line: reason ? '직전 평가: ' + sysOneLine(reason, 90) : '목표 자동 계속', raw: raw, facts: gf };
+    return { kind: 'goal', label: n ? '목표 #' + n[1] + '/' + n[2] : '목표', line: reusedLine || (reason ? '직전 평가: ' + sysOneLine(reason, 90) : '목표 자동 계속'), raw: raw, facts: gf };
   }
   // The host prompt that keeps a turn going while background work still runs
   // (packages/slack/src/pipeline/background-wait.ts buildBackgroundWaitPrompt).
@@ -18043,6 +18086,7 @@ async function sendCommand(text, ref, files) {
 
   var why = '';
   var awaitsOwner = false;
+  var goalSaid = ''; // #865 — a task's goal command: the host's answer, no turn of its own
   _pcInFlight++; // until the server answered: a reload now would drop a note the composer no longer holds
   try {
     const cmdUrl = '/api/dashboard/session/' + encodeURIComponent(sendingSessionKey) + '/command';
@@ -18052,12 +18096,22 @@ async function sendCommand(text, ref, files) {
     if (!res.ok) why = ((data && data.error) || '') + ' (HTTP ' + res.status + ')';
     // #767 — someone else's task: the words wait for its owner's approval.
     else if (data && data.pendingApproval) awaitsOwner = true;
+    else if (data && data.goalCommand) goalSaid = String(data.message || '');
   } catch (e) {
     why = (e && e.message) || '네트워크 오류';
   } finally {
     _pcInFlight--;
   }
   if (awaitsOwner) dashToast({ title: '작업 소유자의 승인을 기다려요', description: '소유자가 승인하면 실행됩니다 — 소유자에게 DM과 대시보드로 요청했어요', tone: 'wait' });
+  // A goal command is the host's, not a turn: its words leave the transcript (the work log has the notice);
+  // a goal it started brings its own turn — the objective — when that turn is recorded.
+  if (goalSaid) {
+    if (optimisticId && panelSessionKey === sendingSessionKey) dropTurnFromPanel(optimisticId);
+    // Sent while a turn ran: the steering row it made waits for a queue entry that never comes
+    // (the command applied at once) — unless a goal it started queued its first turn there.
+    if (ref && !(data && data.queued)) el.setItemState(ref, 'cancelled');
+    dashToast({ title: '목표', description: goalSaid, tone: 'success' });
+  }
   // Sent: its files went with it. Failed: they stay kept by ref for the Retry.
   if (!why && ref) {
     delete _pcNoteFiles[ref];
