@@ -192,7 +192,7 @@ run. Add one `cloudflare` entry per environment, with names of 1–16 characters
       "ipCondition": false
     }
   },
-  "approvalTimeout": "5m"
+  "approvalTimeout": "10m"
 }
 ```
 <!-- policy-template:end -->

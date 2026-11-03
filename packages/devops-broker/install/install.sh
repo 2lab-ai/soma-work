@@ -640,7 +640,7 @@ policy_template() {
       "ipCondition": false
     }
   },
-  "approvalTimeout": "5m"
+  "approvalTimeout": "10m"
 }
 EOF
 }

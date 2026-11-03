@@ -285,6 +285,13 @@ function readmeTemplate(): string {
   return match[1];
 }
 
+describe('policy template', () => {
+  it('asks for the 10-minute approval timeout, the policy ceiling', () => {
+    expect(JSON.parse(readmeTemplate()).approvalTimeout).toBe('10m');
+    expect(fs.readFileSync(path.join(INSTALL_SRC, 'install.sh'), 'utf8')).toContain('"approvalTimeout": "10m"');
+  });
+});
+
 function writePolicy(): void {
   const policy = {
     admins: ['U000ADMIN'],
