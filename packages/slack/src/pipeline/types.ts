@@ -131,6 +131,11 @@ export interface MessageEvent {
    * `autoGoalEnabled` setting — in both directions. The setting is unchanged.
    */
   autoGoalOverride?: boolean;
+  /**
+   * #853 — the dashboard "New task" plan switch: the session plans first (a drafting plan
+   * gate, `applySessionPlanTurn`) and works only once its owner starts the plan.
+   */
+  planModeOverride?: boolean;
   routeContext?: {
     skipAutoBotThread?: boolean;
     sourceChannel?: string;

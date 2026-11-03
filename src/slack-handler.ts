@@ -152,6 +152,7 @@ import type { SlackTaskEntry } from './slack/task-entry';
 import { normalizeZInvocation, stripZPrefix } from './slack/z/normalize';
 import { DmZRespond } from './slack/z/respond';
 import { isDmAllowedForNonAdmin } from './slack/z/whitelist';
+import { applySessionPlanTurn, isPlanPending } from './task-turn/task-plan';
 import { TodoManager } from './todo-manager';
 import { TurnNotifier } from './turn-notifier';
 import type { ConversationSession, SessionGoal, SessionGoalStall, SessionIncidentRequest } from './types';
@@ -2156,6 +2157,21 @@ export class SlackHandler {
         }
       }
 
+      // #853 — plan mode on a Slack session: a new task opened with the plan switch starts a
+      // drafting plan, and while the plan is not started every turn plans (the notice below; the
+      // turn's context makes the plan tool attach and step 6c refuse the work). The user's own
+      // word while a plan waits is direct input (back to drafting). Saved before the turn runs.
+      const planSession = this.claudeHandler.getSessionByKey?.(sessionResult.sessionKey);
+      const planTurn = planSession
+        ? applySessionPlanTurn(planSession, {
+            planModeOverride: event.planModeOverride === true,
+            userInput: !event.synthetic,
+            now: Date.now(),
+          })
+        : { notice: undefined, changed: false };
+      if (planTurn.changed) this.claudeHandler.saveSessions();
+      const planning = isPlanPending(planSession?.taskPlan);
+
       // S2 — Autogoal mode: when the user has autogoal ON and this session has
       // NO goal in flight (no active/paused goal, no queue), the first real
       // instruction is promoted to the session goal automatically and then
@@ -2180,6 +2196,8 @@ export class SlackHandler {
         // A typed SDK slash command (`/compact focus on X`) is a request to the
         // CLI, not an instruction — promoting it would name a goal after it.
         !isLocalSlashCommand(effectiveText.trim()) &&
+        // #853 — a session that plans is not a goal yet: the goal loop would drive work the plan holds back.
+        !planning &&
         // A dashboard task carries its composer toggle (SSOT 2026-10-23 T6):
         // per task, in both directions; otherwise the user's setting decides.
         (typeof event.autoGoalOverride === 'boolean'
@@ -2355,6 +2373,8 @@ export class SlackHandler {
         // #785: a dashboard send's ref — survives the text rewrites above (routed continuation,
         // follow-up prompt, directive remainder), so the panel still finds its own instruction.
         clientRef: isClientRef(event.dashboardClientRef) ? event.dashboardClientRef : undefined,
+        // #853 — the plan-mode notice, prepended to the model's prompt (never recorded as the user's words).
+        promptNotice: planTurn.notice,
       });
 
       const continuationHandler: ContinuationHandler = {
@@ -2641,6 +2661,8 @@ export class SlackHandler {
       literalPrompt?: boolean;
       /** #785 — the dashboard send's ref (`event.dashboardClientRef`), recorded on its user turn. */
       clientRef?: string;
+      /** #853 — the plan-mode notice of a session whose plan is not started (`applySessionPlanTurn`). */
+      promptNotice?: string;
       /**
        * Turn generation this dispatch owns (`ssot.md:116-120`, A28). Captured
        * from the dispatch request and passed down verbatim — the surface
@@ -2696,6 +2718,7 @@ export class SlackHandler {
       hostTurn: context.hostTurn === true,
       literalPrompt: context.literalPrompt === true,
       clientRef: context.clientRef,
+      ...(context.promptNotice ? { promptNotice: context.promptNotice } : {}),
       // Same captured token, for the executor's own late-write fence.
       followupTurnEpoch: expectedTurnEpoch,
     };
