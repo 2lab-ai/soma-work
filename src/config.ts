@@ -316,6 +316,32 @@ export function getIncidentEvidenceConfig(): IncidentEvidenceConfig | null {
  * file). Malformed entries are dropped individually and logged here; the
  * poster also reports them in the deploy thread.
  */
+/** The daily task-card link leak report (#835): off when no channel is set. */
+export interface LinkLeakReportConfig {
+  channelId?: string;
+  /** Hour of day (0-23) in `timezone` at which the report posts. */
+  hour: number;
+  timezone: string;
+  /** The App's bot login without `[bot]` — read from `GET /app` when unset. */
+  botLogin?: string;
+}
+
+export function getLinkLeakReportConfig(): LinkLeakReportConfig {
+  const channel = process.env.SOMA_LINK_LEAK_REPORT_CHANNEL?.trim();
+  if (channel && !SLACK_CHANNEL_ID_PATTERN.test(channel)) {
+    logger.warn('SOMA_LINK_LEAK_REPORT_CHANNEL is not a Slack channel id — the link leak report is off', { channel });
+  }
+  const rawHour = process.env.SOMA_LINK_LEAK_REPORT_HOUR;
+  const hour = rawHour !== undefined && /^\d{1,2}$/.test(rawHour) && Number(rawHour) < 24 ? Number(rawHour) : 9;
+  const botLogin = process.env.SOMA_LINK_LEAK_BOT_LOGIN?.trim().replace(/\[bot\]$/, '');
+  return {
+    ...(channel && SLACK_CHANNEL_ID_PATTERN.test(channel) ? { channelId: channel } : {}),
+    hour,
+    timezone: process.env.REPORT_TIMEZONE || 'Asia/Seoul',
+    ...(botLogin ? { botLogin } : {}),
+  };
+}
+
 export function getReleaseNotesChannels(): ReleaseNotesChannelsConfig {
   const parsed = parseReleaseNotesChannels(process.env.SOMA_RELEASE_NOTES_CHANNELS);
   if (parsed.invalid.length > 0) {

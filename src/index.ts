@@ -44,6 +44,7 @@ import type { WebClient } from '@slack/web-api';
 import type { AgentTreeEvent } from '@soma/slack/agent-tree';
 import type { LiveUsageCall } from '@soma/slack/live-usage';
 import { runNewUserGate } from '@soma/slack/pipeline/session-initializer';
+import { canonicalLinkUrl } from '@soma/slack/session-link-capture';
 import { setWorkQueuesConfig } from '@soma/slack/work-queue';
 import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
@@ -61,7 +62,13 @@ import { setQueryEnvAdditional } from './auth/query-env-builder';
 import { getChannelDescription } from './channel-description-cache';
 import { getAllChannels, getChannel, scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
-import { config, getIncidentTrustedSource, runPreflightChecks, validateConfig } from './config';
+import {
+  config,
+  getIncidentTrustedSource,
+  getLinkLeakReportConfig,
+  runPreflightChecks,
+  validateConfig,
+} from './config';
 import { loadConfig } from './config-loader';
 import {
   broadcastArtifactUpdate,
@@ -140,8 +147,11 @@ import { fetchGitHubReceiptObject } from './link-metadata-fetcher';
 import { Logger } from './logger';
 import { mcpCallTracker } from './mcp-call-tracker';
 import { McpManager } from './mcp-manager';
-import { startReportScheduler, stopReportScheduler } from './metrics';
+import { startLinkLeakReport, startReportScheduler, stopLinkLeakReport, stopReportScheduler } from './metrics';
+import { MetricsEventStore } from './metrics/event-store';
+import { fetchBotItems } from './metrics/link-leak-report';
 import { calculateTokenCost, hasModelPricing } from './metrics/model-registry';
+import { ReportPublisher } from './metrics/report-publisher';
 import { clampEffortToModel } from './model-catalog';
 import { bootModelCatalog } from './model-catalog-boot';
 import {
@@ -1930,6 +1940,70 @@ async function start() {
       };
       startReportScheduler(slackApiForReports);
       timing('Report scheduler initialized');
+      // #835 (epic #831) — the daily task-card link leak report: bot PRs and issues against every card's links.
+      const leakConfig = getLinkLeakReportConfig();
+      if (isGitHubAppConfigured()) {
+        const leakChannel = leakConfig.channelId;
+        const leakPublisher = new ReportPublisher(slackApiForReports);
+        startLinkLeakReport(
+          {
+            hour: leakConfig.hour,
+            timezone: leakConfig.timezone,
+            statePath: path.join(DATA_DIR, 'link-leak-report.json'),
+            collectItems: async (sinceMs) => {
+              const auth = getGitHubAppAuth();
+              if (!auth) return undefined;
+              const botLogin = leakConfig.botLogin ?? (await auth.getAppSlug());
+              if (!botLogin) return undefined;
+              const token = await auth.getInstallationToken().catch(() => undefined);
+              if (!token) return undefined;
+              return fetchBotItems({ token, botLogin, sinceIso: new Date(sinceMs).toISOString() });
+            },
+            collectCards: () => {
+              const live = [...claudeHandler.getSessionRegistry().getAllSessions()].map(([sessionKey, s]) => ({
+                sessionKey,
+                title: s.title,
+                links: s.links,
+                linkHistory: s.linkHistory,
+              }));
+              const liveKeys = new Set(live.map((c) => c.sessionKey));
+              // The newest archive of each session that is not live any more (PRs of the last day sit on recent cards).
+              const archived = new Map<string, { sessionKey: string; at: number; links?: any; linkHistory?: any }>();
+              for (const a of getArchiveStore().listRecent(3 * 24 * 60 * 60 * 1000)) {
+                if (liveKeys.has(a.sessionKey)) continue;
+                const prev = archived.get(a.sessionKey);
+                if (!prev || a.archivedAt > prev.at)
+                  archived.set(a.sessionKey, {
+                    sessionKey: a.sessionKey,
+                    at: a.archivedAt,
+                    links: a.links,
+                    linkHistory: a.linkHistory,
+                  });
+              }
+              return [...live, ...archived.values()];
+            },
+            collectCreators: async (sinceMs) => {
+              const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+              const events = await new MetricsEventStore().readRange(
+                day(sinceMs - 24 * 60 * 60 * 1000),
+                day(Date.now()),
+              );
+              const creators = new Map<string, string>();
+              for (const e of events) {
+                const url = e.metadata?.prUrl;
+                if (e.eventType === 'pr_created' && typeof url === 'string' && e.sessionKey && e.timestamp >= sinceMs) {
+                  creators.set(canonicalLinkUrl(url), e.sessionKey);
+                }
+              }
+              return creators;
+            },
+            publish: async (text, blocks) =>
+              !!leakChannel && !!(await leakPublisher.publish(leakChannel, blocks, text)),
+          },
+          !!leakChannel,
+        );
+        timing('Link leak report initialized');
+      }
     } catch (error) {
       logger.warn('Failed to start report scheduler (non-critical)', error);
     }
@@ -2254,6 +2328,7 @@ async function start() {
 
       try {
         stopReportScheduler();
+        stopLinkLeakReport();
 
         // Stop cron scheduler
         if (cronScheduler) {
