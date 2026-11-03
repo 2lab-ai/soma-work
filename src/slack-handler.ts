@@ -3057,6 +3057,18 @@ export class SlackHandler {
       this.logger.info('Goal driver held — the host is shutting down; the restart resumes the goal', { sessionKey });
       return;
     }
+    // #891 — a turn that left no text skips the eval (#788), so the driver
+    // injects its continuation within a second: while THIS turn's own run still
+    // holds the dispatch slot. The ingress fence drops a synthetic turn on a
+    // held slot, so the continuation was lost and the goal sat idle until a
+    // person wrote — an auto-compact stop always ends this way (dev, 15 of 15).
+    // Held for this run's drain boundary instead, where `releaseDeferredGoalDriver`
+    // fires it with the slot free (an auto-compact stop is drainable).
+    if (!assistantMessages.join('').trim() && this.isFollowupSlotHeld(sessionKey)) {
+      (this.followupDeferredGoalSessions ??= new Set<string>()).add(sessionKey);
+      this.logger.info('Goal driver deferred — the turn left no text; its run releases the slot first', { sessionKey });
+      return;
+    }
     // §3.6 priority: a human follow-up goes before the next autogoal turn. The
     // evidence stash above still happens — only the DRIVER is held back — so a
     // deferred eval later runs on the real turn text, not on nothing. Released
@@ -4768,6 +4780,15 @@ export class SlackHandler {
       // user told nothing at all.
       if (!this.isSteerableText(event)) return 'queued';
 
+      // #891 — never into a dedicated `/compact` turn. Its query ends at the
+      // compaction's result: a pushed message was started by the CLI and cut
+      // off with that query, its row already consumed. Queued, it runs at the
+      // drain — the rule the initializer's compaction stash already keeps.
+      if (this.claudeHandler.getSessionByKey?.(this.canonicalFollowupKey(sessionKey))?.compactTurnActive === true) {
+        this.logger.debug('Follow-up not steered — a /compact turn is running', { sessionKey, itemId: item.id });
+        return 'queued';
+      }
+
       // Steering injects text into a turn someone else is running, so it takes
       // the SAME authorization `Send now` takes (`:3082`). Denied, the message
       // is an ordinary queued follow-up — never a refusal, because nothing was
@@ -6293,6 +6314,14 @@ export class SlackHandler {
    * goal loop deferred for the rest of the session with no door out; with
    * items still outstanding the halt is already covered by the item clause.
    */
+  /** Does a dispatcher run hold this session's slot — under its key or the source key it migrated from? */
+  private isFollowupSlotHeld(sessionKey: string): boolean {
+    const dispatcher = this.followupDispatcher;
+    if (!dispatcher) return false;
+    const slotKey = this.followupMigration?.byCanonical.get(sessionKey);
+    return dispatcher.isBusy(sessionKey) || (slotKey !== undefined && dispatcher.isBusy(slotKey));
+  }
+
   private shouldDeferGoalDriver(sessionKey: string): boolean {
     const queue = this.followupQueue;
     const dispatcher = this.followupDispatcher;
