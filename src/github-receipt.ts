@@ -1,14 +1,14 @@
 /**
- * GitHub as the receipt for a write (#832, review rounds 17-18).
+ * GitHub as the receipt for a write (#832, review rounds 17-19).
  *
  * The parser in `session-link-capture.ts` reads a tool call's input and result and proposes what it wrote — a PR or
  * issue created, merged or closed. Syntax cannot prove that a call ran and wrote: sixteen review rounds kept finding a
  * call that did not run, or did not write, whose output still held an object of that repo. So a proposal reaches the
  * card only when GitHub confirms it:
  *
- * - create — the object was created inside the window. When the call's input names a head branch (`head:"…"`,
- *   `-f head=…`, `gh pr create --head …`) the PR's head must be one of them; when it names an issue title, the title
- *   must be in the input. (Another session on the same App can create a PR in the same seconds; the branch this call
+ * - create — the object was created inside the window. When the call's input names a head branch as a complete
+ *   literal (`head:"…"`, `-f head=…`, `gh pr create --head …`) the PR's head must be one of them; when it names an issue
+ *   title as one (`--title "…"`, `title:"…"`), it must be the issue's. (Another session on the same App can create a PR in the same seconds; the branch this call
  *   named is not its branch.) A call that names neither — `gh pr create --fill`, a body read from a file — is taken on
  *   the window alone.
  * - merge — the PR was merged inside the window. The call named the PR itself, so a merge is its target's.
@@ -76,40 +76,93 @@ function within(iso: string | null | undefined, from: number, to: number, skew: 
   return host >= from - SLACK_MS && host <= to + SLACK_MS;
 }
 
-/** The longest run of a title without quote or escape characters — what survives the shell's quoting in an input. */
-function titleFragment(title: string): string {
-  return title.split(/['"`\\$]/).reduce((a, b) => (b.trim().length > a.length ? b.trim() : a), '');
+// What a call's input names as a complete literal (review round 19): a quoted key value that the closing quote ends
+// (`head:"x"`, `"title": "Bug"` — not `"feat/" + br`, not `"fix: $WHAT"`), a `-f head=x` / `-f 'title=…'` field, a
+// `gh pr create --head x` / `gh issue create --title "…"` flag read outside quotes. Anything else names nothing, and a
+// call that names nothing is taken on the window alone.
+const LITERAL = `[^"'\`$\\\\\\n]+`;
+const keyValue = (key: string) =>
+  new RegExp(`["']?\\b${key}["']?\\s*:\\s*(["'])(${LITERAL})\\1(?=\\s*[,}\\])\\n]|$)`, 'g');
+const fieldValue = (key: string) =>
+  new RegExp(`(?:^|\\s)-[fF]\\s+(?:'${key}=([^'\\n]*)'|"${key}=(${LITERAL})"|${key}=([^\\s"'\`$\\\\]+)(?=\\s|$))`, 'g');
+
+/** `text` with every quoted run blanked (same length), so a flag is found only where the shell would see it. */
+function maskQuotes(text: string): string {
+  let out = '';
+  let quote = '';
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (c === quote) {
+        quote = '';
+        out += c;
+      } else if (quote === '"' && c === '\\' && i + 1 < text.length) {
+        out += '  ';
+        i++;
+      } else out += ' ';
+    } else if (c === '\\' && i + 1 < text.length) {
+      out += '  ';
+      i++;
+    } else {
+      if (c === '"' || c === "'") quote = c;
+      out += c;
+    }
+  }
+  return out;
 }
 
-// The head branches a call's input names as literals: a quoted `head` value (`head:"x"`, `"head": "x"`), `-f head=x`,
-// `gh pr create --head x` / `-H x`. A value that is a variable (`head: branch`, `head=$B`) names nothing.
-const HEAD_NAMES = [
-  /["']?\bhead["']?\s*:\s*["']([\w./:-]+)["']/g,
-  /(?:^|\s)-[fF]\s+["']?head=([\w./:-]+)/g,
-  /\bgh\s+pr\s+create\b[^\n;|&]*?\s(?:--head|-H)(?:=|\s+)["']?([\w./:-]+)/g,
-];
-// An issue title the input names: a `title` key, `-f title=`, `gh issue create --title` / `-t`.
-const TITLE_NAMED =
-  /["']?\btitle["']?\s*:\s*["']|(?:^|\s)-[fF]\s+["']?title=|\bgh\s+issue\s+create\b[^\n;|&]*?\s(?:--title|-t)(?:=|\s)/;
+/** The complete literal that starts at `at` in `text` (`"…"` without `$`/backtick/backslash, `'…'`, or a bare word). */
+function literalAt(text: string, at: number): string | undefined {
+  const c = text[at];
+  if (c === "'") {
+    const end = text.indexOf("'", at + 1);
+    return end > at ? text.slice(at + 1, end) : undefined;
+  }
+  if (c === '"') {
+    const end = text.indexOf('"', at + 1);
+    if (end < 0) return undefined;
+    const v = text.slice(at + 1, end);
+    return /[`$\\]/.test(v) ? undefined : v;
+  }
+  const m = text.slice(at).match(/^[^\s;&|<>()]+/);
+  return m && !/["'`$\\]/.test(m[0]) ? m[0] : undefined;
+}
 
-function namedHeads(input: string): string[] {
+/** The values of a `gh <noun> create` flag, read outside quotes. */
+function ghFlagValues(text: string, noun: 'pr' | 'issue', flags: string): string[] {
   const out: string[] = [];
-  for (const re of HEAD_NAMES) for (const m of input.matchAll(re)) out.push(m[1]);
+  const masked = maskQuotes(text);
+  const re = new RegExp(`\\bgh\\s+${noun}\\s+create\\b[^\\n;|&]*?\\s(?:${flags})(?:=|\\s+)`, 'g');
+  for (const m of masked.matchAll(re)) {
+    const v = literalAt(text, (m.index ?? 0) + m[0].length);
+    if (v !== undefined) out.push(v);
+  }
   return out;
+}
+
+function namedValues(text: string, key: 'head' | 'title'): string[] {
+  const out: string[] = [];
+  for (const m of text.matchAll(keyValue(key))) out.push(m[2]);
+  for (const m of text.matchAll(fieldValue(key))) {
+    const v = m[1] ?? m[2] ?? m[3];
+    if (v !== undefined && !/[`$\\]/.test(v)) out.push(v);
+  }
+  if (key === 'head') out.push(...ghFlagValues(text, 'pr', '--head|-H'));
+  else out.push(...ghFlagValues(text, 'issue', '--title|-t'));
+  return out.map((v) => v.trim()).filter((v) => v.length > 0);
 }
 
 function correlated(kind: 'pr' | 'issue', obj: GitHubReceiptObject, input: string | undefined): boolean {
   const text = input ?? '';
   if (kind === 'pr') {
-    const heads = namedHeads(text);
+    const heads = namedValues(text, 'head');
     if (heads.length === 0) return true;
     const head = obj.headRef;
     return typeof head === 'string' && heads.some((h) => h === head || h.endsWith(`:${head}`));
   }
-  if (!TITLE_NAMED.test(text)) return true;
-  if (typeof obj.title !== 'string') return false;
-  const fragment = titleFragment(obj.title);
-  return fragment.length > 0 && fragment.length >= Math.min(8, obj.title.trim().length) && text.includes(fragment);
+  const titles = namedValues(text, 'title');
+  if (titles.length === 0) return true;
+  return typeof obj.title === 'string' && titles.includes(obj.title.trim());
 }
 
 /** `p`, or undefined once `ms` passed — a hung GET (or token fetch) must not hold the answer. */
