@@ -2117,6 +2117,8 @@ export class SessionRegistry {
       activityStateChangedAt: doneAt,
       links: archived.links,
       linkHistory: archived.linkHistory,
+      // When the task started, as recorded (#833) — never the revive time, which would hide its earlier PRs.
+      startedAt: finiteStamp(archived.startedAt),
       instructions: Array.isArray(archived.instructions)
         ? archived.instructions.map((i) => ({ ...i, status: i.status ?? 'active' }))
         : [],
