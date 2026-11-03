@@ -284,6 +284,12 @@ export interface NewTaskSubmission {
   autogoal: boolean;
   autoz: boolean;
   attachments: NewTaskAttachment[];
+  /**
+   * #853 — the plan switch: the session plans first and works only once its owner starts the
+   * plan. Present only when on; autogoal and autoz are then off (a goal or a forced skill would
+   * drive work the plan holds back).
+   */
+  plan?: true;
 }
 
 export type NewTaskParseResult = { ok: true; value: NewTaskSubmission } | { ok: false; error: string };
@@ -434,6 +440,8 @@ export function parseNewTaskSubmission(body: unknown, ctx: NewTaskContext): NewT
   if (typeof b.autogoal !== 'boolean' || typeof b.autoz !== 'boolean') {
     return { ok: false, error: 'autogoal and autoz must be booleans' };
   }
+  if (b.plan !== undefined && typeof b.plan !== 'boolean') return { ok: false, error: 'plan must be a boolean' };
+  const plan = b.plan === true;
 
   const parsed = parseAttachments(b.attachments);
   if (!parsed.ok) return parsed;
@@ -450,9 +458,10 @@ export function parseNewTaskSubmission(body: unknown, ctx: NewTaskContext): NewT
       model: model.model,
       effort: b.effort,
       channelId: b.channelId,
-      autogoal: b.autogoal,
-      autoz: b.autoz,
+      autogoal: plan ? false : b.autogoal,
+      autoz: plan ? false : b.autoz,
       attachments,
+      ...(plan ? { plan: true as const } : {}),
     },
   };
 }
@@ -481,6 +490,8 @@ export interface NewTaskRootMessageInput {
   effort: string;
   autogoal: boolean;
   autoz: boolean;
+  /** #853 — the task plans first. */
+  plan?: boolean;
   attachmentNames: string[];
 }
 
@@ -523,6 +534,7 @@ export function buildNewTaskRootMessage(input: NewTaskRootMessageInput): { text:
     `🎯 autogoal ${input.autogoal ? 'on' : 'off'}`,
     `⚡ autoz ${input.autoz ? 'on' : 'off'}`,
   ];
+  if (input.plan) parts.push('📋 작업 계획 먼저');
   if (input.attachmentNames.length) parts.push(`📎 ${input.attachmentNames.length}개 첨부`);
   blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: parts.join('  ·  ') }] });
 

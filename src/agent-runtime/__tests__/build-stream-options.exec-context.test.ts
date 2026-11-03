@@ -606,3 +606,43 @@ describe('plan mode — a task whose plan is not started researches (SSOT 2026-1
     expect(decisionOf(await hook(call('Write', { file_path: `${WORK_DIR}/a.txt`, content: 'x' })))).toBe('allow');
   });
 });
+
+describe('#853 — a Slack session in plan mode researches, like a task', () => {
+  const planningSession = (state: 'drafting' | 'awaiting' | 'approved') =>
+    ({ ownerId: USER, workflow: 'default', taskPlan: { state, revision: 1, updatedAt: 1 } }) as ConversationSession;
+
+  it('its turn’s context is planning: the hook refuses the work, no skill shell, every tool reaches the hook', async () => {
+    const deps = makeDeps({
+      mcpConfigBuilder: { buildConfig: vi.fn(async () => makeMcpConfig({ somaPermissionMode: 'bypass' })) },
+    });
+    const { options } = await buildStreamOptions(
+      { queryEnv: {}, workingDirectory: WORK_DIR, session: planningSession('awaiting'), slackContext },
+      deps,
+    );
+    const ctx = (deps.mcpConfigBuilder.buildConfig as ReturnType<typeof vi.fn>).mock.calls[0][2] as ExecutionContext;
+    expect(ctx.origin).toBe('slack');
+    expect((ctx as { planPending?: true }).planPending).toBe(true);
+    const hook = policyHook(options as { hooks?: Record<string, unknown> });
+    expect(decisionOf(await hook(call('Write', { file_path: `${WORK_DIR}/a.txt`, content: 'x' })))).toBe('deny');
+    expect(decisionOf(await hook(call('Bash', { command: 'git log -3' })))).toBe('deny');
+    expect(decisionOf(await hook(call('Read', { file_path: `${WORK_DIR}/a.txt` })))).toBe('allow');
+    expect((options.settings as { disableSkillShellExecution?: boolean }).disableSkillShellExecution).toBe(true);
+    const entries = (options.hooks?.PreToolUse ?? []) as Array<{ matcher?: string }>;
+    expect(entries[0].matcher).toBeUndefined();
+  });
+
+  it('a started plan’s turn is not gated', async () => {
+    const deps = makeDeps({
+      mcpConfigBuilder: { buildConfig: vi.fn(async () => makeMcpConfig({ somaPermissionMode: 'bypass' })) },
+    });
+    const { options } = await buildStreamOptions(
+      { queryEnv: {}, workingDirectory: WORK_DIR, session: planningSession('approved'), slackContext },
+      deps,
+    );
+    const ctx = (deps.mcpConfigBuilder.buildConfig as ReturnType<typeof vi.fn>).mock.calls[0][2] as ExecutionContext;
+    expect((ctx as { planPending?: true }).planPending).toBeUndefined();
+    expect(
+      (options.settings as { disableSkillShellExecution?: boolean } | undefined)?.disableSkillShellExecution,
+    ).toBeUndefined();
+  });
+});

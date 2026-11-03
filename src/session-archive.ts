@@ -199,7 +199,7 @@ function sessionToArchive(
     plan: session.plan,
     epicEvents: session.epicEvents,
     closedBy: session.closedBy,
-    taskPlan: session.slackless === true && session.taskPlan ? JSON.parse(JSON.stringify(session.taskPlan)) : undefined,
+    taskPlan: session.taskPlan ? JSON.parse(JSON.stringify(session.taskPlan)) : undefined,
 
     ownerId: session.ownerId,
     ownerName: session.ownerName,

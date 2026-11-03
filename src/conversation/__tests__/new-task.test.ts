@@ -339,6 +339,50 @@ describe('parseNewTaskSubmission — T2/T8/T9 server-side validation', () => {
   });
 });
 
+describe('#853 — the plan switch on a task that opens a Slack thread', () => {
+  const ctx = buildNewTaskContext(input());
+  const body = (overrides: Record<string, unknown> = {}) => ({
+    requestId: 'req-0123456789',
+    prompt: 'soma-work 개선해줘',
+    model: 'opus[1m]',
+    effort: 'xhigh',
+    channelId: 'C_ALPHA',
+    autogoal: true,
+    autoz: true,
+    attachments: [],
+    ...overrides,
+  });
+
+  it('plan on: the task plans first, so autogoal and autoz are off', () => {
+    expect(parseNewTaskSubmission(body({ plan: true }), ctx)).toMatchObject({
+      ok: true,
+      value: { plan: true, autogoal: false, autoz: false },
+    });
+  });
+
+  it('plan off or absent: no plan flag, the toggles as sent', () => {
+    for (const r of [parseNewTaskSubmission(body({ plan: false }), ctx), parseNewTaskSubmission(body(), ctx)]) {
+      expect(r).toMatchObject({ ok: true, value: { autogoal: true, autoz: true } });
+      expect((r as any).value.plan).toBeUndefined();
+    }
+    expect(parseNewTaskSubmission(body({ plan: 'yes' }), ctx)).toMatchObject({ ok: false });
+  });
+
+  it('the root message says the task plans first', () => {
+    const msg = buildNewTaskRootMessage({
+      userId: 'U123',
+      prompt: '개선해줘',
+      nickname: 'opus[1m]',
+      effort: 'xhigh',
+      autogoal: false,
+      autoz: false,
+      plan: true,
+      attachmentNames: [],
+    });
+    expect(JSON.stringify(msg.blocks)).toContain('작업 계획');
+  });
+});
+
 describe('buildNewTaskRootMessage — T2 the task is visible in the Slack channel', () => {
   const base = {
     userId: 'U123',

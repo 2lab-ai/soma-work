@@ -125,7 +125,7 @@ import {
   offeredNewTaskModels,
 } from './conversation/new-task-provider';
 import { setProjectRepoSource } from './conversation/project-memory-routes';
-import { createConversationDurable } from './conversation/recorder';
+import { createConversationDurable, getConversation } from './conversation/recorder';
 import { createSessionWorkLogAppender } from './conversation/session-work-log';
 import { setSettingsRegistry } from './conversation/settings-routes';
 import { createSlackDirectoryLookup } from './conversation/slack-directory-lookup';
@@ -202,7 +202,12 @@ import { GoalLoopController } from './slack/goal-loop-controller';
 import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
 import { createPendingUserRequest, notifyAdminsNewUser } from './slack/new-user-decision';
 import { type StreamExecutorProviders, setStreamExecutorProviders } from './slack/pipeline/stream-executor';
-import { setGoalCapDecisionRetirer } from './slack/session-goal';
+import {
+  enqueueOrActivateGoal,
+  restoreGoalState,
+  setGoalCapDecisionRetirer,
+  snapshotGoalState,
+} from './slack/session-goal';
 import { composeExecutiveSummaryMarkdown, parseExecutiveSummary } from './slack/summary-service';
 import { setUiSurfacesConfig } from './slack/surface-config';
 import { createSlackTaskEntry } from './slack/task-entry';
@@ -219,6 +224,7 @@ import { createEpicWaker } from './task-turn/epic-wake';
 import { setPlanHost } from './task-turn/plan-server';
 import { composeTaskApprovalListeners } from './task-turn/task-approver';
 import { createDashboardCloseHandler } from './task-turn/task-close';
+import { planGoalObjective } from './task-turn/task-goal';
 import { createTaskGoalLoop, type TaskGoalLoop } from './task-turn/task-goal-loop';
 import { createTaskLauncher } from './task-turn/task-launcher';
 import {
@@ -227,9 +233,12 @@ import {
   type TaskNoticeDeliverer,
 } from './task-turn/task-notice-deliverer';
 import { TASK_NOTIFICATION_LEDGER_FILENAME, TaskNotificationLedger } from './task-turn/task-notification-ledger';
-import { createTaskPlanDecider } from './task-turn/task-plan-decision';
+import type { TaskPlanDoc } from './task-turn/task-plan';
+import { createSlackPlanDecider, createTaskPlanDecider } from './task-turn/task-plan-decision';
+import { createRestartNoticeStart, createTaskRestartResumer, cutTurnAuthor } from './task-turn/task-restart-resume';
 import {
   createTaskTurnController,
+  type TaskCommandRequest,
   type TaskCommandResponse,
   type TaskTurnController,
 } from './task-turn/task-turn-controller';
@@ -242,6 +251,11 @@ import { productionSettingsRegistry } from './user-settings-registry-production'
 import { WorkingDirectoryManager } from './working-directory-manager';
 
 const logger = new Logger('Main');
+
+/** #853 — the thread note when a Slack session's plan waits for its owner. */
+const PLAN_WAITING_NOTE =
+  '📋 작업 계획이 올라왔어요 — 대시보드에서 확인하고 시작·취소하거나, 고칠 점을 이 스레드에 보내세요';
+const PLAN_WAITING_LINK = '카드 열기';
 
 async function start() {
   const startTime = Date.now();
@@ -957,6 +971,13 @@ async function start() {
       actorUserId?: string,
       /** #785 — the ref the panel gave its pending copy; recorded on the turn this send becomes. */
       clientRef?: string,
+      /**
+       * #853 — `onAccepted`: called once the message is taken (its turn reaches the model, or it is
+       * queued behind a running turn) — `handleMessage` resolves only after the whole run.
+       * `verbatim`: the host's own words, dispatched as written (no command routing, no `!`
+       * steer, never pushed into a running turn — its own turn, like a goal's opening).
+       */
+      extra: { onAccepted?: () => void; verbatim?: true } = {},
     ): Promise<{ channel: string; ts: string } | undefined> => {
       const session = claudeHandler.getSessionByKey(sessionKey);
       if (!session) {
@@ -1026,19 +1047,27 @@ async function start() {
       }
       const ts = echoTs || String(Date.now() / 1000);
       onSent?.({ channel: session.channelId, ts });
-      await slackHandler.handleMessage(
-        {
-          type: 'message',
-          channel: session.channelId,
-          thread_ts: session.threadTs,
-          text: message,
-          user: sender,
-          ts,
-          ...(files ? { files } : {}),
-          ...(clientRef ? { dashboardClientRef: clientRef } : {}),
-        } as any,
-        dashboardSay,
-      );
+      const unwatch = extra.onAccepted
+        ? slackHandler.onTurnAccepted(session.channelId, ts, extra.onAccepted)
+        : undefined;
+      try {
+        await slackHandler.handleMessage(
+          {
+            type: 'message',
+            channel: session.channelId,
+            thread_ts: session.threadTs,
+            text: message,
+            user: sender,
+            ts,
+            ...(files ? { files } : {}),
+            ...(clientRef ? { dashboardClientRef: clientRef } : {}),
+            ...(extra.verbatim ? { routeContext: { verbatimPrompt: true } } : {}),
+          } as any,
+          dashboardSay,
+        );
+      } finally {
+        unwatch?.();
+      }
       logger.info('Dashboard: command sent to session', {
         sessionKey,
         messageLength: message.length,
@@ -1322,9 +1351,21 @@ async function start() {
     // chain's last answer as evidence), its next turn is a host start here, and a person's
     // instruction resets its count. The loop itself (GoalLoopController) is built further down.
     let settleTaskGoal: ((key: string) => void) | undefined;
+    /** Tasks the restart cut whose goal resumes: key → the cut turn (filled at boot, read once). */
+    const goalRestartCut = new Map<string, string>();
+    /**
+     * 2026-11-03 — the first goal continuation of a task the restart cut carries the restart guidance
+     * (D10 on the goal path, as the restart resume's own start does): check the state before redoing
+     * an outside change. Only while nothing ran since the cut turn — a later continuation is not a resume.
+     */
+    const startGoalTurn = createRestartNoticeStart({
+      start: (request) => taskController.start(request),
+      getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+      cut: goalRestartCut,
+    });
     const taskGoalLoop: TaskGoalLoop = createTaskGoalLoop({
       getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
-      start: (request) => taskController.start(request),
+      start: startGoalTurn,
       readLastFinal: async (session) => {
         const turnId = session.lastTurnOutcome?.turnId;
         if (!session.conversationId || !turnId) return undefined;
@@ -1554,21 +1595,95 @@ async function start() {
       });
       return held ?? taskController.answer({ sessionKey, askId, answer, actorUserId });
     });
-    // Plan mode (SSOT 2026-11-02) — the `plan` tool saves through the registry; the dashboard's
-    // 시작 / 취소 decide the revision the user saw (시작 starts the work with the plan).
+    // Plan mode (SSOT 2026-11-02; every session since #853) — the `plan` tool saves through the
+    // registry by session key; a Slack thread hears that a plan waits. The dashboard's 시작 / 취소
+    // decide the revision the user saw (시작 starts the work with the plan).
+    /** #853 — a Slack session's thread: a plan is waiting for its owner (the card link). Never throws. */
+    const notifyPlanWaiting = (sessionKey: string, revision: number): void => {
+      const session = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey);
+      if (!session || session.slackless === true || !session.channelId || !session.threadTs) return;
+      const url = session.ownerId ? getDashboardSessionUrl(session.ownerId, sessionKey) : undefined;
+      const text = `${PLAN_WAITING_NOTE} (v${revision})${url ? ` <${url}|${PLAN_WAITING_LINK}>` : ''}`;
+      void slackHandler
+        .getSlackApi()
+        .postSystemMessage(session.channelId, text, { threadTs: session.threadTs })
+        .catch((error: unknown) => logger.warn('Plan waiting note not posted', { sessionKey, error }));
+    };
     setPlanHost({
-      submitTaskPlan: (taskId, input) => claudeHandler.getSessionRegistry().submitTaskPlan(taskId, input),
+      submitPlan: (sessionKey, input) => {
+        const gate = claudeHandler.getSessionRegistry().submitSessionPlan(sessionKey, input);
+        notifyPlanWaiting(sessionKey, gate.revision);
+        return gate;
+      },
     });
-    setDashboardTaskPlanHandler(
-      createTaskPlanDecider({
-        getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
-        setTaskPlanGate: (taskId, gate) => claudeHandler.getSessionRegistry().setTaskPlanGate(taskId, gate),
-        controller: taskController,
-        // #777 — 시작 · 취소 are the owner's call: someone the owner has not approved is refused, not held.
-        mayDecide: (sessionKey, session, actorUserId) =>
-          instructionApprovals.allows({ sessionKey, session, senderId: actorUserId }),
-        logger: new Logger('TaskPlanDecider'),
-      }),
+    /**
+     * 2026-11-03 — 시작 on a plan opens a goal for it (a task's or a Slack session's): the goal loop
+     * continues the work until the plan is done, and resumes it after a restart. Opened as the user who
+     * pressed 시작, with their continuation cap; the undo puts the goal state back when the start does not happen.
+     */
+    const openPlanGoal = (session: ConversationSession, plan: TaskPlanDoc, actorUserId: string): (() => void) => {
+      const registry = claudeHandler.getSessionRegistry();
+      const before = snapshotGoalState(session);
+      const opened = enqueueOrActivateGoal(
+        session,
+        planGoalObjective(plan),
+        actorUserId,
+        userSettingsStore.getUserGoalMaxContinuations(actorUserId),
+      );
+      // A goal already in flight keeps the session: the plan's goal waits behind it (trinity R4, grok P2).
+      if (!opened.activated) {
+        logger.info('Plan goal queued behind the goal in flight', { position: opened.position });
+      }
+      registry.saveSessions();
+      return () => {
+        restoreGoalState(session, before);
+        registry.saveSessions();
+      };
+    };
+    const taskPlanDecider = createTaskPlanDecider({
+      getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+      setTaskPlanGate: (taskId, gate) => claudeHandler.getSessionRegistry().setTaskPlanGate(taskId, gate),
+      controller: taskController,
+      // #777 — 시작 · 취소 are the owner's call: someone the owner has not approved is refused, not held.
+      mayDecide: (sessionKey, session, actorUserId) =>
+        instructionApprovals.allows({ sessionKey, session, senderId: actorUserId }),
+      // 2026-11-03 — 시작 opens the plan's goal: the goal loop continues the task until the plan is
+      // done (and resumes it after a restart). The approved plan's turn is the goal's opening turn.
+      openGoal: openPlanGoal,
+      logger: new Logger('TaskPlanDecider'),
+    });
+    // #853 — a Slack session's plan: 시작 sends it into the thread as the decider's instruction (the Slack path).
+    const slackPlanDecider = createSlackPlanDecider({
+      getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+      setPlanGate: (key, gate) => claudeHandler.getSessionRegistry().setSessionPlanGate(key, gate),
+      // Taken (its turn runs, or it waits in the queue behind a running one) — not the whole run:
+      // a turn that fails after it started is the work's failure, not a start that did not happen.
+      sendPlan: (key, text, actorUserId) =>
+        new Promise<boolean>((resolve) => {
+          injectDashboardMessage(key, text, undefined, [], actorUserId, undefined, {
+            onAccepted: () => resolve(true),
+            verbatim: true,
+          }).then(
+            () => resolve(false),
+            (error) => {
+              logger.warn('Plan start: the plan could not be sent into the thread', {
+                sessionKey: key,
+                error: (error as Error)?.message ?? String(error),
+              });
+              resolve(false);
+            },
+          );
+        }),
+      mayDecide: (sessionKey, session, actorUserId) =>
+        instructionApprovals.allows({ sessionKey, session, senderId: actorUserId }),
+      // The same on a Slack session (2026-11-03): its own goal loop drives the thread to the plan's end.
+      openGoal: openPlanGoal,
+      logger: new Logger('SlackPlanDecider'),
+    });
+    setDashboardTaskPlanHandler((request) =>
+      claudeHandler.getSessionRegistry().getSessionByKey(request.sessionKey)?.slackless === true
+        ? taskPlanDecider(request)
+        : slackPlanDecider(request),
     );
     // #600 ⑥ — the dashboard's "new task" as a Slack-less task: folder, task, first instruction.
     const taskLauncher = createTaskLauncher({
@@ -2264,6 +2379,9 @@ async function start() {
       logger.warn('Failed to install goal turn-settled driver (non-critical)', error);
     }
 
+    // Did the goal resume below run? The dashboard-task resume in `.finally` takes a cut task with an
+    // active goal itself when it did not (trinity R4, fable P2).
+    let goalsResumedAtBoot = false;
     // Notify users whose sessions were interrupted by crash (non-blocking)
     slackHandler
       .notifyCrashRecovery()
@@ -2277,7 +2395,13 @@ async function start() {
         // controller is wired above and after crash-recovery's no-double-resume
         // guard has skipped these sessions.
         try {
+          // A dashboard task the restart cut: its goal's first continuation carries the restart guidance
+          // (D10 on the goal path — trinity R1, fable P2). The goal resume gives the continuation back.
+          for (const t of claudeHandler.getSessionRegistry().getRestartCutTasks()) {
+            goalRestartCut.set(t.sessionKey, t.turnId);
+          }
           const resumed = slackHandler.resumeActiveGoals();
+          goalsResumedAtBoot = true;
           if (resumed > 0) timing(`Resumed ${resumed} active goal(s) after restart`);
         } catch (error) {
           logger.warn('Resuming active goals after restart failed (non-critical)', error);
@@ -2294,6 +2418,40 @@ async function start() {
       })
       .catch((error) => {
         logger.warn('Crash recovery notifications failed (non-critical)', error);
+      })
+      .finally(() => {
+        // Not tied to the Slack notices' outcome (trinity R1, fable P3): a dashboard task has no thread.
+        // 2026-11-03 — a dashboard task whose turn the restart cut resumes too, as a Slack
+        // thread does above (it was only recorded `interrupted`). After the goal resume, so a
+        // task with an active goal is the goal loop's; the resumer skips it.
+        try {
+          const taskRegistry = claudeHandler.getSessionRegistry();
+          const cutTasks = taskRegistry.getRestartCutTasks().slice();
+          taskRegistry.clearRestartCutTasks();
+          if (cutTasks.length === 0) timing('No dashboard task was cut by the restart');
+          if (cutTasks.length > 0 && taskTurnController) {
+            createTaskRestartResumer({
+              controller: taskTurnController,
+              getSession: (key) => taskRegistry.getSessionByKey(key),
+              logger: new Logger('TaskRestartResume'),
+              goalsResumed: () => goalsResumedAtBoot,
+              // A record saved before the turn's initiator was kept: the cut turn's author, from its conversation.
+              readCutTurnAuthor: async (session, cutTurnId) => {
+                const record = session.conversationId ? await getConversation(session.conversationId) : null;
+                return record ? cutTurnAuthor(record.turns, cutTurnId) : undefined;
+              },
+            })
+              .resume(cutTasks)
+              .then((outcomes) => {
+                const started = [...outcomes.values()].filter((o) => o.status === 'started').length;
+                const waiting = [...outcomes.values()].filter((o) => o.status === 'waiting').length;
+                timing(`Resumed ${started}/${cutTasks.length} dashboard task(s) the restart cut (${waiting} waiting)`);
+              })
+              .catch((error) => logger.warn('Resuming dashboard tasks after restart failed (non-critical)', error));
+          }
+        } catch (error) {
+          logger.warn('Resuming dashboard tasks after restart failed (non-critical)', error);
+        }
       });
 
     // Scan channels the bot is a member of (non-blocking)

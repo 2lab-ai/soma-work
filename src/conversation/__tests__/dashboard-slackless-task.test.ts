@@ -1043,4 +1043,58 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
       dashboard.setDashboardFollowupHandler(null);
     }
   });
+  it('#853 — a Slack session in plan mode: its card asks with the plan, the plan reads, and 시작/취소 reach the plan handler', async () => {
+    const dashboard = await import('../dashboard');
+    const reg = new SessionRegistry();
+    const slack = reg.createSession('U1', 'Alice', 'C1', '600.001');
+    slack.sessionId = 'sid-plan';
+    slack.activityState = 'idle';
+    slack.taskPlan = {
+      state: 'awaiting',
+      revision: 3,
+      updatedAt: 10,
+      plan: {
+        summary: '계획 요약',
+        intent: '의도',
+        phases: [{ title: '단계', steps: [{ title: '작업 1' }, { title: '작업 2' }] }],
+        revision: 3,
+        submittedAt: 10,
+      },
+    } as any;
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    const key = 'work:C1:600.001';
+    const b = await board();
+    const card = b.waiting.find((c) => c.key === key) as any;
+    expect(card?.taskPlan).toMatchObject({ state: 'awaiting', revision: 3, summary: '계획 요약', phases: 1, steps: 2 });
+
+    const read = await injectWebServer({
+      method: 'GET',
+      url: `/api/dashboard/session/${encodeURIComponent(key)}/plan`,
+      headers: AUTH_HEADER,
+    });
+    expect(read.statusCode).toBe(200);
+    expect(JSON.parse(read.body)).toMatchObject({ state: 'awaiting', revision: 3 });
+    expect(JSON.parse(read.body).html).toContain('계획 요약');
+    const page = await injectWebServer({
+      method: 'GET',
+      url: `/dashboard/plan/${encodeURIComponent(key)}`,
+      headers: AUTH_HEADER,
+    });
+    expect(page.statusCode).toBe(200);
+
+    const planHandler = vi.fn(async () => ({ status: 200, body: { ok: true, state: 'approved', revision: 3 } }));
+    dashboard.setDashboardTaskPlanHandler(planHandler);
+    try {
+      const decided = await injectWebServer({
+        method: 'POST',
+        url: `/api/dashboard/session/${encodeURIComponent(key)}/plan`,
+        headers: await signIn('U1'),
+        payload: JSON.stringify({ decision: 'start', revision: 3 }),
+      });
+      expect(decided.statusCode).toBe(200);
+      expect(planHandler).toHaveBeenCalledWith({ sessionKey: key, decision: 'start', revision: 3, actorUserId: 'U1' });
+    } finally {
+      dashboard.setDashboardTaskPlanHandler(null);
+    }
+  });
 });

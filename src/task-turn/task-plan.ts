@@ -323,6 +323,44 @@ export function planGateTurn(
   return { notice, gate: next };
 }
 
+/**
+ * #853 — plan mode on any session (a Slack thread included): the turn about to run, and what
+ * it does to the gate. `planModeOverride` (a new task opened with the plan switch) starts a
+ * drafting plan when the session has none. The user's own word while a plan is pending goes
+ * through {@link planGateTurn} (a waiting plan becomes direct input). A host turn (a goal
+ * continuation, a resume) plans too, but changes nothing: a waiting plan keeps waiting.
+ * Mutates `session.taskPlan`; `changed` says whether it needs saving.
+ */
+export function applySessionPlanTurn(
+  session: { taskPlan?: TaskPlanGate },
+  opts: { planModeOverride?: boolean; userInput: boolean; now: number },
+): { notice: string | undefined; changed: boolean } {
+  let changed = false;
+  if (opts.planModeOverride === true && !session.taskPlan) {
+    session.taskPlan = newPlanGate(opts.now);
+    changed = true;
+  }
+  const gate = session.taskPlan;
+  if (!isPlanPending(gate)) return { notice: undefined, changed };
+  if (opts.userInput) {
+    const turn = planGateTurn(gate, opts.now);
+    if (turn.gate !== gate) {
+      session.taskPlan = turn.gate;
+      changed = true;
+    }
+    return { notice: turn.notice, changed };
+  }
+  const notice = [
+    `<task-plan-mode state="${gate.state}" revision="${gate.revision}">`,
+    gate.state === 'awaiting'
+      ? `계획 v${gate.revision}이 유저의 시작을 기다리고 있다. 작업을 시작하지 않는다 — 이 턴에서 할 일이 없으면 한 줄로 그렇게 말하고 끝낸다.`
+      : '이 작업은 작업 계획 모드다. 아직 계획이 시작되지 않았다 — 작업하지 않고 계획을 세워 제출한다.',
+    ...PLAN_RULES,
+    '</task-plan-mode>',
+  ].join('\n');
+  return { notice, changed };
+}
+
 /** The approval instruction's bound — the dashboard route's own (`NEW_TASK_LIMITS.maxPromptChars`). */
 export const PLAN_APPROVED_TEXT_MAX = 12_000;
 

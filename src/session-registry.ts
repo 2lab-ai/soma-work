@@ -297,6 +297,12 @@ interface SerializedSession {
   notices?: unknown;
   /** A Slack-less task's follow-up queue; validated (and paused) on load (`sanitizeTaskFollowups`). */
   taskFollowups?: unknown;
+  /**
+   * A Slack-less task's turn's initiator (`currentInitiatorId`), saved with the turn's start: the
+   * restart resume continues a cut turn as the person who started it (never more privileged —
+   * trinity R4, astra P1). Read only by the load's reconciliation; not restored into the session.
+   */
+  taskTurnActorId?: unknown;
   // Merge code change stats
   mergeStats?: {
     totalLinesAdded: number;
@@ -630,6 +636,16 @@ export interface CrashRecoveredSession {
   shouldAutoResume: boolean;
 }
 
+/** A Slack-less task the last restart cut mid-turn — its turn reconciled `interrupted` on load. */
+export interface RestartCutTask {
+  sessionKey: string;
+  ownerId: string;
+  /** Who started the cut turn: the resume runs as them. Absent on a record saved before it was kept. */
+  actorId?: string;
+  /** The turn the restart cut (its `lastTurnOutcome`): a later turn means someone went on — no resume. */
+  turnId: string;
+}
+
 /**
  * A persisted `pendingRetryDetail` back as the session carries it — finite
  * counts and a string reason only; anything else is dropped (disk JSON is
@@ -693,6 +709,12 @@ export class SessionRegistry {
   /** E2 ⑤ — told after a save that added notices a task owes its instruction thread. */
   private taskNoticeListener?: (session: ConversationSession, sessionKey: string) => void;
   private _crashRecoveredSessions: CrashRecoveredSession[] = [];
+  /**
+   * Slack-less tasks whose turn the last restart cut (saved `working`, reconciled `interrupted`
+   * on load): the host resumes each one after boot (`task-restart-resume.ts`), as
+   * `notifyCrashRecovery` does for a Slack thread. Populated by loadSessions(), cleared after.
+   */
+  private _restartCutTasks: RestartCutTask[] = [];
   /**
    * Slack-less tasks whose turn the restart cut (reconciled `interrupted` on load). A task has no
    * `wasWorkingAtShutdown` marker and is not crash-recovered, so this is the restart's record of it
@@ -1362,8 +1384,6 @@ export class SessionRegistry {
     if (session.taskId) this.sessionsByTaskId.set(session.taskId, session);
     // E2 ② — only a Slack-less task carries an input context.
     if (session.inputContext && session.slackless !== true) session.inputContext = undefined;
-    // Plan mode — only a Slack-less task carries a plan gate.
-    if (session.taskPlan && session.slackless !== true) session.taskPlan = undefined;
     // E4 ① — only a Slack-less task carries the epic relation.
     if (session.slackless !== true) {
       session.kind = undefined;
@@ -1454,37 +1474,56 @@ export class SessionRegistry {
   /**
    * Plan mode — the plan the model submitted (`plan_submit`), checked
    * (`checkPlanSubmission`) and saved strictly as the next revision awaiting
-   * its owner. A refusal (`TaskPlanError`, a task that is not in plan mode)
-   * or a failed save leaves the gate as it was. Returns the gate now saved.
+   * its owner. Any session in plan mode — a task or a Slack thread (#853) — by
+   * its registry key. A refusal (`TaskPlanError`, a session that is not in plan
+   * mode) or a failed save leaves the gate as it was. Returns the gate now saved.
    */
-  submitTaskPlan(taskId: string, input: unknown): TaskPlanGate {
-    const task = this.sessionsByTaskId.get(taskId);
-    if (!task || task.slackless !== true || !task.taskPlan || task.terminated || task.closing) {
-      throw new Error(`submitTaskPlan: ${taskId} is not a plan-mode task`);
+  submitSessionPlan(sessionKey: string, input: unknown): TaskPlanGate {
+    const session = this.sessions.get(sessionKey);
+    if (!session || !session.taskPlan || session.terminated || session.closing) {
+      throw new Error(`submitSessionPlan: ${sessionKey} is not a plan-mode session`);
     }
-    const next = applyPlanSubmission(task.taskPlan, checkPlanSubmission(input), Date.now());
-    this.setTaskPlanGate(taskId, next);
+    const next = applyPlanSubmission(session.taskPlan, checkPlanSubmission(input), Date.now());
+    this.setSessionPlanGate(sessionKey, next);
     return next;
   }
 
   /**
-   * Plan mode — replace a task's plan gate and save it strictly (a decision,
-   * or the controller putting back a start that did not happen). A failed
-   * save puts the previous gate back and throws.
+   * Plan mode — replace a session's plan gate and save it strictly (a decision,
+   * or putting back a start that did not happen). A failed save puts the
+   * previous gate back and throws.
    */
-  setTaskPlanGate(taskId: string, next: TaskPlanGate): void {
-    const task = this.sessionsByTaskId.get(taskId);
-    if (!task || task.slackless !== true || !task.taskPlan) {
-      throw new Error(`setTaskPlanGate: ${taskId} is not a plan-mode task`);
+  setSessionPlanGate(sessionKey: string, next: TaskPlanGate): void {
+    const session = this.sessions.get(sessionKey);
+    if (!session || !session.taskPlan) {
+      throw new Error(`setSessionPlanGate: ${sessionKey} is not a plan-mode session`);
     }
-    const previous = task.taskPlan;
-    task.taskPlan = next;
+    const previous = session.taskPlan;
+    session.taskPlan = next;
     try {
       this.saveSessionsOrThrow();
     } catch (error) {
-      task.taskPlan = previous;
+      session.taskPlan = previous;
       throw error;
     }
+  }
+
+  /** {@link submitSessionPlan} by a task's id (the task turn path). */
+  submitTaskPlan(taskId: string, input: unknown): TaskPlanGate {
+    return this.submitSessionPlan(this.taskKeyOf(taskId, 'submitTaskPlan'), input);
+  }
+
+  /** {@link setSessionPlanGate} by a task's id (the task turn path). */
+  setTaskPlanGate(taskId: string, next: TaskPlanGate): void {
+    this.setSessionPlanGate(this.taskKeyOf(taskId, 'setTaskPlanGate'), next);
+  }
+
+  /** A live task's registry key, or the plan-mode refusal. */
+  private taskKeyOf(taskId: string, op: string): string {
+    const task = this.sessionsByTaskId.get(taskId);
+    if (!task) throw new Error(`${op}: ${taskId} is not a plan-mode session`);
+    for (const [key, s] of this.sessions) if (s === task) return key;
+    throw new Error(`${op}: ${taskId} is not a plan-mode session`);
   }
 
   /**
@@ -2122,7 +2161,7 @@ export class SessionRegistry {
       originThread: sanitizeOriginThread(archived.originThread),
       inputContext: sanitizeTaskInputContext(archived.inputContext),
       ...sanitizeEpicRelation(archived as unknown as Record<string, unknown>, slackless),
-      taskPlan: slackless ? sanitizeTaskPlanGate(archived.taskPlan) : undefined,
+      taskPlan: sanitizeTaskPlanGate(archived.taskPlan),
       // A task runs in its own directory: the one its transcript proves it ran in (#612 R4).
       ...(slackless ? { workingDirectory: cwd } : {}),
       sessionId: archived.sessionId,
@@ -3626,6 +3665,15 @@ export class SessionRegistry {
     this._crashRecoveredSessions = [];
   }
 
+  /** Slack-less tasks the last restart cut mid-turn (loadSessions), for the host's resume after boot. */
+  getRestartCutTasks(): RestartCutTask[] {
+    return this._restartCutTasks;
+  }
+
+  clearRestartCutTasks(): void {
+    this._restartCutTasks = [];
+  }
+
   /** The Slack-less tasks whose turn the restart cut — returned once, then cleared (a later read gets none). */
   takeRestartCutTaskKeys(): Set<string> {
     const keys = this._restartCutTaskKeys;
@@ -3698,6 +3746,8 @@ export class SessionRegistry {
           session.starred ||
           // #767 — the owner's "이 세션에서 항상 승인" is a direct instruction too.
           session.approvedInstructors?.length ||
+          // #853 — a plan gate (the plan switch, a plan waiting for its start) is the owner's choice too.
+          session.taskPlan ||
           // A Slack-less task is saved from creation, never-run included (#596):
           // createTask reported it created only because it was saved.
           session.slackless
@@ -3800,9 +3850,11 @@ export class SessionRegistry {
             childTaskIds: session.childTaskIds,
             plan: session.plan,
             epicEvents: session.epicEvents,
-            taskPlan: session.slackless === true ? session.taskPlan : undefined,
+            // Plan mode — any session (#853).
+            taskPlan: session.taskPlan,
             taskFollowups:
               session.slackless === true && session.taskFollowups?.length ? session.taskFollowups : undefined,
+            taskTurnActorId: session.slackless === true ? session.currentInitiatorId : undefined,
             closedBy: session.closedBy,
             // Merge code change stats
             mergeStats: session.mergeStats,
@@ -3952,7 +4004,7 @@ export class SessionRegistry {
         originThread: sanitizeOriginThread(serialized.originThread),
         inputContext: sanitizeTaskInputContext(serialized.inputContext),
         ...sanitizeEpicRelation(serialized as unknown as Record<string, unknown>, serialized.slackless === true),
-        taskPlan: serialized.slackless === true ? sanitizeTaskPlanGate(serialized.taskPlan) : undefined,
+        taskPlan: sanitizeTaskPlanGate(serialized.taskPlan),
         lastTurnOutcome: sanitizeTaskTurnOutcome(serialized.lastTurnOutcome),
         sessionId: serialized.sessionId,
         isActive: false,
@@ -4204,7 +4256,7 @@ export class SessionRegistry {
           originThread: sanitizeOriginThread(serialized.originThread),
           inputContext: sanitizeTaskInputContext(serialized.inputContext),
           ...sanitizeEpicRelation(serialized as unknown as Record<string, unknown>, slackless),
-          taskPlan: slackless ? sanitizeTaskPlanGate(serialized.taskPlan) : undefined,
+          taskPlan: sanitizeTaskPlanGate(serialized.taskPlan),
           // Paused on load: the chain each word waited for did not survive the restart.
           taskFollowups: slackless ? sanitizeTaskFollowups(serialized.taskFollowups) : undefined,
           openChain:
@@ -4470,6 +4522,21 @@ export class SessionRegistry {
             session.activeTaskTurnId = undefined;
             this._restartCutTaskKeys.add(derivedKey);
             reconciledTaskTurnCount++;
+            // The host resumes it after boot, as a Slack thread is (notifyCrashRecovery). Not an
+            // epic (its released events wake it) or an epic's child (its epic hears `interrupted`
+            // and decides), not one that slept while the process was down, not a closed one.
+            if (!sleptOnLoad && session.kind !== 'epic' && !session.parentTaskId && !session.terminated) {
+              const actor = serialized.taskTurnActorId;
+              this._restartCutTasks.push({
+                sessionKey: derivedKey,
+                ownerId: session.ownerId,
+                // The cut turn's initiator (an approved writer is not lifted to the owner). A record from
+                // before it was kept has none: the resume reads the turn's author from its conversation
+                // instead — never the owner by default (trinity R4, astra P1).
+                ...(typeof actor === 'string' && actor !== '' ? { actorId: actor } : {}),
+                turnId,
+              });
+            }
           }
         } else if (serialized.shutdownNotificationSent) {
           this._crashRecoveredSessions.push({

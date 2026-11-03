@@ -40,6 +40,11 @@ export interface ExecutionContext {
   readonly taskId?: string;
   /** A task's is always set and validated; a Slack turn's is the one the pipeline chose. */
   readonly workingDirectory?: string;
+  /**
+   * Plan mode (SSOT 2026-11-02; any session since #853) — the session's plan is not started yet:
+   * the turn plans instead of working (the `plan` server attaches; step 6c refuses the work).
+   */
+  readonly planPending?: true;
 }
 
 /** A Slack-less task's context: its id and its validated directory are always there. */
@@ -56,11 +61,6 @@ export interface TaskExecutionContext extends ExecutionContext {
   /** E4 ④a (.prd/19 D3) — from the saved task: an epic, or a child's epic. The epic server attaches on these. */
   readonly kind?: 'epic';
   readonly parentTaskId?: string;
-  /**
-   * Plan mode (SSOT 2026-11-02) — the task's plan is not started yet: the turn
-   * plans instead of working (the `plan` server attaches, the epic server does not).
-   */
-  readonly planPending?: true;
 }
 
 /** A turn was asked to run without a context the server can vouch for. */
@@ -90,11 +90,14 @@ export function executionContextFromSlack(input: {
   user: string;
   sessionKey: string;
   workingDirectory?: string;
+  /** #853 — the session's plan is not started yet (`isPlanPending(session.taskPlan)`). */
+  planPending?: boolean;
 }): ExecutionContext {
   if (!input.user) throw new ExecutionContextMissingError('Slack turn with no user');
   return Object.freeze({
     ...contextFor('slack', input.user, input.sessionKey),
     ...(input.workingDirectory ? { workingDirectory: input.workingDirectory } : {}),
+    ...(input.planPending === true ? { planPending: true as const } : {}),
   }) as ExecutionContext;
 }
 

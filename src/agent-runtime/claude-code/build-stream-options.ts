@@ -50,6 +50,7 @@ import { getProjectMemoryStore, projectMemoryPromptBlock } from '../../project-m
 import { extendSandboxWithGrant, loadDeploySandboxGrant } from '../../sandbox/deploy-sandbox-grant';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
 import type { SessionRegistry } from '../../session-registry';
+import { isPlanPending } from '../../task-turn/task-plan';
 import type { ConversationSession, WorkflowType } from '../../types';
 import { DEFAULT_THINKING_ENABLED, userSettingsStore } from '../../user-settings-store';
 import { createTrackedClaudeProcessSpawner } from '../claude-child-process-registry';
@@ -319,6 +320,8 @@ export async function buildStreamOptions(
           user: slackContext.user,
           sessionKey: deps.sessionRegistry.getSessionKey(slackContext.channel, slackContext.threadTs),
           workingDirectory,
+          // #853 — plan mode on a Slack session too.
+          planPending: isPlanPending(input.session?.taskPlan),
         })
       : undefined);
   const contextUser = execCtx?.userId;
@@ -402,8 +405,8 @@ export async function buildStreamOptions(
       ? { channel: slackContext.channel, threadTs: slackContext.threadTs }
       : { channel: execCtx.sessionKey };
     const envRegistry = deps.getEnvSkillRegistry?.();
-    // Plan mode (SSOT 2026-11-02): a task whose plan is not started researches; step 6c refuses the work.
-    const planPending = execCtx.origin === 'task' && (execCtx as { planPending?: true }).planPending === true;
+    // Plan mode (SSOT 2026-11-02; any session since #853): a plan not started researches; step 6c refuses the work.
+    const planPending = execCtx.planPending === true;
 
     const policyHook = async (
       input: HookInput,
@@ -820,7 +823,7 @@ export async function buildStreamOptions(
   // Plan mode (SSOT 2026-11-02): a planning turn runs no shell — a skill's or command's inline `!` lines
   // included, which the SDK runs before the content reaches the model and without the PreToolUse hook
   // (trinity R5, fable P2 · astra P1). Every planning turn, the sandbox on or off.
-  if (execCtx?.origin === 'task' && (execCtx as { planPending?: true }).planPending === true) {
+  if (execCtx?.planPending === true) {
     const base = options.settings && typeof options.settings === 'object' ? options.settings : {};
     options.settings = { ...base, disableSkillShellExecution: true };
   }

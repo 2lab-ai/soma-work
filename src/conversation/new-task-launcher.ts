@@ -78,6 +78,8 @@ export interface NewTaskEvent {
   modelOverride: string;
   effortOverride: string;
   autoGoalOverride: boolean;
+  /** #853 — the plan switch: the session plans before it works. */
+  planModeOverride?: true;
   routeContext: { skipAutoBotThread: true };
 }
 
@@ -132,6 +134,7 @@ export async function launchNewTask(
     effort: submission.effort,
     autogoal: submission.autogoal,
     autoz: submission.autoz,
+    plan: submission.plan === true,
     attachmentNames: submission.attachments.map((a) => a.name),
   });
   let rootTs: string | undefined;
@@ -171,6 +174,7 @@ export async function launchNewTask(
     modelOverride: submission.model,
     effortOverride: submission.effort,
     autoGoalOverride: submission.autogoal,
+    ...(submission.plan === true ? { planModeOverride: true as const } : {}),
     routeContext: { skipAutoBotThread: true },
   };
   if (files.length > 0) event.files = files;
