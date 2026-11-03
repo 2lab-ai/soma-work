@@ -74,7 +74,9 @@ export function settleTaskGoal(input: SettleTaskGoalInput): SettleTaskGoalResult
   const legGoalId = input.leg ? input.leg.goalId : session.activeLegGoalId;
   const legEpoch = input.leg ? input.leg.epoch : session.activeLegGoalEpoch;
   const goalChanged = legGoalId !== undefined && (legGoalId !== goal.goalId || (legEpoch ?? 0) !== (goal.epoch ?? 0));
-  if (!goalChanged && input.turnText.trim()) {
+  // A turn that left no text is stashed as none, as Slack does: the loop's "no turn text" path resumes
+  // the work, where an older text kept here would be judged again and called a stall.
+  if (!goalChanged) {
     session.goalLastTurnText = input.turnText;
     goal.lastAssistantTurnSummary = input.turnText.slice(0, input.summaryMax);
     input.save();
