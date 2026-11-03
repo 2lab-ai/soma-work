@@ -2519,13 +2519,15 @@ export class SessionRegistry {
       const same = (url: string) => canonicalLinkUrl(url).toLowerCase() === canon;
       const history = session.linkHistory![HISTORY_KEY_BY_RESOURCE[type]]!;
       const at = history.findIndex((l) => !!l?.url && same(l.url));
+      // Merged is final: a later close or PATCH of a merged PR never takes it back.
+      if (at >= 0 && history[at].status === 'merged') continue;
       if (at >= 0 && history[at].status !== status) {
         history[at] = { ...history[at], status };
         changed = true;
       }
       const activeKey = ACTIVE_KEY_BY_RESOURCE[type];
       const current = session.links![activeKey];
-      if (current?.url && same(current.url) && current.status !== status) {
+      if (current?.url && same(current.url) && current.status !== status && current.status !== 'merged') {
         session.links![activeKey] = { ...current, status };
         changed = true;
       }
