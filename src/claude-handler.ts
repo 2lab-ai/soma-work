@@ -21,6 +21,7 @@ import {
 import { consumePendingRewind, resetChainTracking, trackChainPoint } from '@soma/slack/context-anchor';
 import { adoptSdkSessionId } from '@soma/slack/session-usage-math';
 import * as fs from 'fs';
+import type { HostWriteReceipt } from 'somalib/model-commands/host-receipt';
 import type { ModelCommandContext } from 'somalib/model-commands/types';
 import { type AgentRunOptions, type AgentStreamEvent, runAgentStream, runOneShotText } from './agent-runtime';
 import { liveAgentIds } from './agent-runtime/background-keepalive';
@@ -642,6 +643,11 @@ export class ClaudeHandler implements TurnSteeringPort {
   /** #829 — the card TL;DR (and its ⚠️ follow-up) from the model-run es (UPDATE_SESSION `executiveSummary`). */
   setExecutiveSummary(channelId: string, threadTs: string | undefined, tldr: readonly string[]): boolean {
     return this.sessionRegistry.setExecutiveSummary(channelId, threadTs, tldr);
+  }
+
+  /** #846 — the host receipt the model-command server answers GET_SESSION with (`host`). */
+  writeModelCommandReceipt(channelId: string, threadTs: string | undefined, lastWrite?: HostWriteReceipt): void {
+    this.sessionRegistry.writeModelCommandReceipt(channelId, threadTs, lastWrite);
   }
 
   updateSessionTitleByKey(sessionKey: string, title: string): void {
@@ -2227,6 +2233,7 @@ export class ClaudeHandler implements TurnSteeringPort {
   ): ModelCommandContext | undefined {
     if (!slackContext) return undefined;
 
+    this.sessionRegistry.writeModelCommandReceipt(slackContext.channel, slackContext.threadTs);
     return {
       channel: slackContext.channel,
       threadTs: slackContext.threadTs,
@@ -2235,6 +2242,7 @@ export class ClaudeHandler implements TurnSteeringPort {
       renewState: session?.renewState ?? null,
       session: this.sessionRegistry.getSessionResourceSnapshot(slackContext.channel, slackContext.threadTs),
       sessionTitle: session?.title,
+      receiptFile: this.sessionRegistry.modelCommandReceiptFile(slackContext.channel, slackContext.threadTs),
     };
   }
 }
