@@ -311,3 +311,82 @@ describe('task goal list — the dashboard’s add / delete (#865)', () => {
     expect(h.openings).toEqual([{ prompt: 'ship it', actor: 'UOWNER' }]);
   });
 });
+
+describe('a goal’s opening across a restart (#865, astra-zhuge #876 R1 P2)', () => {
+  it('the load keeps its goal id: a command-shaped objective stays an opening after a restart', async () => {
+    const { sanitizeTaskFollowups } = await import('../task-followups');
+    const saved = [
+      {
+        id: 'tq-1',
+        text: 'goal clear',
+        authorId: 'UOWNER',
+        enqueuedAt: 1,
+        epoch: 0,
+        state: 'queued',
+        goalOpeningId: 'g1',
+      },
+      {
+        id: 'tq-2',
+        text: 'goal clear',
+        authorId: 'UOWNER',
+        enqueuedAt: 2,
+        epoch: 0,
+        state: 'queued',
+        goalOpeningId: 7,
+      },
+    ];
+    const loaded = sanitizeTaskFollowups(JSON.parse(JSON.stringify(saved)));
+    expect(loaded?.[0]).toMatchObject({ id: 'tq-1', goalOpeningId: 'g1', state: 'paused' });
+    // Only a goal id marks an opening — anything else is an ordinary word.
+    expect(loaded?.[1]).not.toHaveProperty('goalOpeningId');
+  });
+});
+
+describe('a goal’s opening that will not run (astra-zhuge #876 R1 P1)', () => {
+  beforeEach(() => {
+    recorded.length = 0;
+    setStreamExecutorProviders({ appendWorkLog: (id, entry) => recorded.push([id, entry]) });
+  });
+  afterEach(() => {
+    setStreamExecutorProviders({ appendWorkLog: () => {} });
+  });
+
+  it('cancelled: its goal pauses with the first turn owed; `goal resume` starts it from that turn', async () => {
+    const g = goal({ objective: 'ship it', continuationCount: 0 });
+    const session = taskSession({ goal: g });
+    const h = harness(session);
+    h.commands.openingDropped(KEY, session, 'g1', 'cancelled');
+    expect(g.status).toBe('paused');
+    expect(g.openingPending).toBe(true);
+    expect(g.epoch).toBe(4);
+    expect(notices()[0]).toMatch(/^⏸️ Goal paused — its first turn was cancelled/);
+    const res = await h.run('goal resume');
+    expect(res.status).toBe(202);
+    expect(g.status).toBe('active');
+    expect(g.openingPending).toBeUndefined();
+    expect(h.openings).toEqual([{ prompt: 'ship it', actor: 'UOWNER' }]);
+  });
+
+  it('stale because its goal moved on (cleared, replaced, done): nothing changes', () => {
+    const other = goal({ goalId: 'g2' });
+    const session = taskSession({ goal: other });
+    const h = harness(session);
+    h.commands.openingDropped(KEY, session, 'g1', 'stale');
+    expect(other.status).toBe('active');
+    expect(other.openingPending).toBeUndefined();
+    expect(h.deps.saveSessions).not.toHaveBeenCalled();
+    const cleared = taskSession();
+    harness(cleared).commands.openingDropped(KEY, cleared, 'g1', 'stale');
+    expect(cleared.goal).toBeUndefined();
+  });
+
+  it('stale because its goal was paused: still paused, its first turn owed for `goal resume`', () => {
+    const g = goal({ status: 'paused' });
+    const session = taskSession({ goal: g });
+    const h = harness(session);
+    h.commands.openingDropped(KEY, session, 'g1', 'stale');
+    expect(g.status).toBe('paused');
+    expect(g.openingPending).toBe(true);
+    expect(notices()).toEqual([]);
+  });
+});

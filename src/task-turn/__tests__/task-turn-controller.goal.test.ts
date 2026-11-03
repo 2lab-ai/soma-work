@@ -141,9 +141,37 @@ describe('TaskTurnController — goal loop turns (SSOT 2026-11-03)', () => {
           ran.push({ text: request.text, actor: request.actorUserId });
           return { status: 200, body: { ok: true, goalCommand: true, message: 'done' } };
         }),
+        openingDropped: vi.fn(),
       };
       const h = harness({ goalCommands }, steps);
       return { ...h, ran, goalCommands };
+    };
+    /** A controller whose first turn holds the task until `release()`; later turns end at once. */
+    const blocking = (h: ReturnType<typeof goalHarness>) => {
+      let release!: () => void;
+      const inputs: RunTaskTurnInput[] = [];
+      let calls = 0;
+      const controller = createTaskTurnController({
+        runner: {
+          runTaskTurn: vi.fn(async (input: RunTaskTurnInput) => {
+            inputs.push(input);
+            input.onStarted?.();
+            if (calls++ === 0) {
+              await new Promise<void>((r) => {
+                release = r;
+              });
+            }
+            return completed(`t${calls}`);
+          }),
+          abandonTurn: vi.fn(),
+        },
+        getSession: (k) => (k === KEY ? h.session : undefined),
+        coordinator: { setController: () => {}, removeController: () => {} },
+        buildExecutionContext: () => CTX,
+        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+        goalCommands: h.goalCommands,
+      });
+      return { controller, inputs, release: () => release() };
     };
 
     it('runs as the goal command: no turn, nothing to the model, the user hook not told', async () => {
@@ -210,7 +238,7 @@ describe('TaskTurnController — goal loop turns (SSOT 2026-11-03)', () => {
     it('a goal’s opening, a goal continuation and a host start are turns, never goal commands', async () => {
       const h = goalHarness();
       for (const extra of [
-        { goalOpening: true },
+        { goalOpeningId: 'g1' },
         { goalContinuation: true, initiator: 'host' as const },
         { initiator: 'host' as const },
       ]) {
@@ -222,46 +250,111 @@ describe('TaskTurnController — goal loop turns (SSOT 2026-11-03)', () => {
       expect(h.inputs.map((i) => i.text)).toEqual(['goal ship it', 'goal ship it', 'goal ship it']);
     });
 
-    it('a goal’s opening queued behind a running turn keeps its mark, and drains as the opening', async () => {
-      let release!: () => void;
+    it('a goal’s opening queued behind a running turn keeps its goal id, and drains as the opening', async () => {
       const h = goalHarness();
-      const inputs: RunTaskTurnInput[] = [];
-      let calls = 0;
-      const blocking = createTaskTurnController({
-        runner: {
-          runTaskTurn: vi.fn(async (input: RunTaskTurnInput) => {
-            inputs.push(input);
-            input.onStarted?.();
-            if (calls++ === 0) {
-              await new Promise<void>((r) => {
-                release = r;
-              });
-            }
-            return completed(`t${calls}`);
-          }),
-          abandonTurn: vi.fn(),
-        },
-        getSession: (k) => (k === KEY ? h.session : undefined),
-        coordinator: { setController: () => {}, removeController: () => {} },
-        buildExecutionContext: () => CTX,
-        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-        goalCommands: h.goalCommands,
-      });
-      const first = await blocking.start({ sessionKey: KEY, text: 'work', actorUserId: 'UOWNER' });
-      const opening = await blocking.start({
+      h.session.goal = { goalId: 'g1', status: 'active' };
+      const b = blocking(h);
+      const first = await b.controller.start({ sessionKey: KEY, text: 'work', actorUserId: 'UOWNER' });
+      const opening = await b.controller.start({
         sessionKey: KEY,
         text: 'goal of the goal',
         actorUserId: 'UOWNER',
         queueWhileRunning: true,
-        goalOpening: true,
+        goalOpeningId: 'g1',
       });
       expect(opening.body).toMatchObject({ queued: true });
-      expect(h.session.taskFollowups).toMatchObject([{ text: 'goal of the goal', goalOpening: true }]);
-      release();
+      expect(h.session.taskFollowups).toMatchObject([{ text: 'goal of the goal', goalOpeningId: 'g1' }]);
+      b.release();
       await first.done;
-      await vi.waitFor(() => expect(inputs).toHaveLength(2));
-      expect(inputs[1].text).toBe('goal of the goal');
+      await vi.waitFor(() => expect(b.inputs).toHaveLength(2));
+      expect(b.inputs[1].text).toBe('goal of the goal');
       expect(h.ran).toHaveLength(0);
+    });
+
+    // astra-zhuge #876 R1 P1 — `goal clear` while the opening waited: the objective must not run.
+    it('a queued opening whose goal moved on is skipped at the drain; the next word runs', async () => {
+      const h = goalHarness();
+      h.session.goal = { goalId: 'g1', status: 'active' };
+      const b = blocking(h);
+      const first = await b.controller.start({ sessionKey: KEY, text: 'work', actorUserId: 'UOWNER' });
+      await b.controller.start({
+        sessionKey: KEY,
+        text: 'the old objective',
+        actorUserId: 'UOWNER',
+        queueWhileRunning: true,
+        goalOpeningId: 'g1',
+      });
+      await b.controller.start({ sessionKey: KEY, text: 'next word', actorUserId: 'UOWNER', queueWhileRunning: true });
+      h.session.goal = undefined; // `goal clear` meanwhile
+      b.release();
+      await first.done;
+      await vi.waitFor(() => expect(b.inputs).toHaveLength(2));
+      expect(b.inputs.map((i) => i.text)).toEqual(['work', 'next word']);
+      expect(h.goalCommands.openingDropped).toHaveBeenCalledWith(KEY, h.session, 'g1', 'stale');
+      expect(h.session.taskFollowups ?? []).toHaveLength(0);
+    });
+
+    it('cancelling a queued opening tells the goal commands (its goal pauses, first turn owed)', async () => {
+      const h = goalHarness();
+      h.session.goal = { goalId: 'g1', status: 'active' };
+      const b = blocking(h);
+      const first = await b.controller.start({ sessionKey: KEY, text: 'work', actorUserId: 'UOWNER' });
+      await b.controller.start({
+        sessionKey: KEY,
+        text: 'objective',
+        actorUserId: 'UOWNER',
+        queueWhileRunning: true,
+        goalOpeningId: 'g1',
+      });
+      const item = h.session.taskFollowups[0];
+      const res = await b.controller.actOnQueue({
+        sessionKey: KEY,
+        itemId: item.id,
+        epoch: item.epoch,
+        op: 'cancel',
+        actorUserId: 'UOWNER',
+      });
+      expect(res.ok).toBe(true);
+      expect(h.goalCommands.openingDropped).toHaveBeenCalledWith(KEY, h.session, 'g1', 'cancelled');
+      b.release();
+      await first.done;
+    });
+
+    // astra-zhuge #876 R1 P1 — a goal command in the queue (saved before #865) is answered, not refused.
+    it('a goal command found in the queue is answered at the drain — never paused as a refusal; the next word runs', async () => {
+      const h = goalHarness();
+      const b = blocking(h);
+      const first = await b.controller.start({ sessionKey: KEY, text: 'work', actorUserId: 'UOWNER' });
+      h.session.taskFollowups = [
+        { id: 'tq-old', text: 'goal clear', authorId: 'UOWNER', enqueuedAt: 1, epoch: 0, state: 'queued' },
+        { id: 'tq-next', text: 'next word', authorId: 'UOWNER', enqueuedAt: 2, epoch: 0, state: 'queued' },
+      ];
+      b.release();
+      await first.done;
+      await vi.waitFor(() => expect(b.inputs).toHaveLength(2));
+      expect(h.ran).toEqual([{ text: 'goal clear', actor: 'UOWNER' }]);
+      expect(b.inputs[1].text).toBe('next word');
+      // Both left the queue: the answered command and the word that became the turn (never paused).
+      await vi.waitFor(() => expect(h.session.taskFollowups ?? []).toHaveLength(0));
+    });
+
+    it('a queued word cannot be edited into a goal command (it applies at once — send it)', async () => {
+      const h = goalHarness();
+      const b = blocking(h);
+      const first = await b.controller.start({ sessionKey: KEY, text: 'work', actorUserId: 'UOWNER' });
+      await b.controller.start({ sessionKey: KEY, text: 'later', actorUserId: 'UOWNER', queueWhileRunning: true });
+      const item = h.session.taskFollowups[0];
+      const res = await b.controller.actOnQueue({
+        sessionKey: KEY,
+        itemId: item.id,
+        epoch: item.epoch,
+        op: 'edit',
+        text: 'goal clear',
+        actorUserId: 'UOWNER',
+      });
+      expect(res).toMatchObject({ ok: false, status: 400 });
+      b.release();
+      await first.done;
     });
   });
 
