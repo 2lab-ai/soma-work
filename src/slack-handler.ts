@@ -6917,8 +6917,8 @@ export class SlackHandler {
     let stallsEnded = 0;
     let refunded = 0;
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
-      // A Slack-less task cannot run a turn yet (#597/#598) — never re-arm its goal (#612 review).
-      if (session.slackless) continue;
+      // A Slack-less task resumes too (SSOT 2026-11-03): it runs turns (#598), and its goal's next
+      // turn is a host start on the task controller (task-goal-loop.ts), not a thread message.
       // Repair a stranded queue (defense for the eval-complete crash window):
       // if the current goal is genuinely closed (completed) or absent but goals
       // are still queued, promote the next one so the queue can't be orphaned.
