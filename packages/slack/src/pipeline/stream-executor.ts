@@ -6344,7 +6344,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
         }
 
-        if (hasInstructionOps) {
+        if (hasInstructionOps && byKey) {
+          // The y/n confirmation is a Slack button: a dashboard task has no thread to post it in.
+          // The write is refused visibly (never a Slack call from a task turn — T9).
+          await this.reportModelCommandOutcome(
+            {
+              kind: 'notice',
+              text: '⚠️ Instruction changes were not applied: their y/n confirmation needs a Slack thread, and a dashboard task has none.',
+            },
+            session,
+            context,
+            { alwaysPost: true },
+          );
+        } else if (hasInstructionOps) {
           await this.interceptInstructionOperationsForConfirm(request, session, context);
         }
 

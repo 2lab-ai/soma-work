@@ -2599,6 +2599,11 @@ export class SessionRegistry {
     return this.buildSessionResourceSnapshot(session);
   }
 
+  /** The same by session key — the only way to reach a Slack-less task (channel '' throws on lookup). */
+  getSessionResourceSnapshotByKey(sessionKey: string): SessionResourceSnapshot {
+    return this.buildSessionResourceSnapshot(this.getSessionByKey(sessionKey));
+  }
+
   /**
    * Update session resources (issues/prs/docs + active links) with optimistic locking.
    */

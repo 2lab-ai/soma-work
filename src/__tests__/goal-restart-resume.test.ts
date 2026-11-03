@@ -56,7 +56,7 @@ function createHandler(sessions: Map<string, ConversationSession>) {
 describe('resumeActiveGoals (T1)', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('skips a Slack-less task (#612 R1): it is not runnable before the execution context exists', () => {
+  it('resumes a Slack-less task’s goal too (SSOT 2026-11-03): tasks run turns, the loop starts its next one', () => {
     const sessions = new Map<string, ConversationSession>([
       [
         'task:t1',
@@ -66,8 +66,8 @@ describe('resumeActiveGoals (T1)', () => {
     const { handler } = createHandler(sessions);
     const settled = vi.fn();
     handler.setGoalTurnSettledHandler(settled);
-    expect(handler.resumeActiveGoals()).toBe(0);
-    expect(settled).not.toHaveBeenCalled();
+    expect(handler.resumeActiveGoals()).toBe(1);
+    expect(settled).toHaveBeenCalledWith('task:t1', expect.anything());
   });
 
   it('triggers the goal loop for each active-goal session', () => {
