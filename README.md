@@ -48,9 +48,10 @@ You can install it in your own Claude Code with `/plugin marketplace add 2lab-ai
 `/plugin install zworkflow@soma-work`. Install, update, hooks, and a path that copies only the
 `using-intentfirst` and `using-ssot` skills are in the [zworkflow plugin README](./src/local/README.md).
 
-zworkflow stays portable: nothing in it calls soma-work's own MCP. The skills that do — the session task card, the
-NEEDS YOU follow-up — live in a second plugin, `local` ([`src/local-harness/`](./src/local-harness/)), which soma-work
-bundles and loads by default and the marketplace never publishes. Its `local:auto-es` is the Executive Summary inside
+zworkflow is meant to stay portable. The session task card calls (`GET_SESSION` / `UPDATE_SESSION`) and the NEEDS YOU
+follow-up live in a second plugin, `local` ([`src/local-harness/`](./src/local-harness/)), which soma-work bundles and
+loads by default and the marketplace never publishes; the other soma-work-only calls still in zworkflow
+(`ASK_USER_QUESTION`, `CONTINUE_SESSION`, cron) move there in #860. Its `local:auto-es` is the Executive Summary inside
 soma-work: it runs `zworkflow:es`, then syncs the task card, and the turn-end summary runs its turn-end contract.
 
 ---
