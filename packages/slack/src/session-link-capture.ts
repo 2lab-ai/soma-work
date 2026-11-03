@@ -213,7 +213,7 @@ function shellStatements(command: string): string[] {
         .slice(0, m.index)
         .split(/&&|\|\||[;|]/)
         .pop() ?? '';
-    if (INTERPRETERS.test(head.trim())) code.push(body.join('\n'));
+    if (INTERPRETERS.test(head.trim())) code.push(body.filter((l) => !/^\s*(?:\/\/|#)/.test(l)).join('\n'));
     i = j;
   }
   const out: string[] = [...code];
@@ -240,6 +240,11 @@ function shellStatements(command: string): string[] {
     if (c === '\\') {
       cur += c + (text[i + 1] ?? '');
       i++;
+      continue;
+    }
+    // A comment runs to the end of the line: what it says is not run.
+    if (c === '#' && (cur === '' || /\s/.test(text[i - 1] ?? ''))) {
+      while (i + 1 < text.length && text[i + 1] !== '\n') i++;
       continue;
     }
     const two = text.slice(i, i + 2);
@@ -312,7 +317,37 @@ function ghCliWrite(statement: string): GitHubWrite | undefined {
   return { op: action, kind, ...(repo ? { repo } : {}), ...(number ? { number } : {}) };
 }
 
+// Commands that only print or filter text: a request spelled in their arguments is not sent.
+const PRINTERS = new Set([
+  'echo',
+  'printf',
+  'cat',
+  'tee',
+  'grep',
+  'egrep',
+  'rg',
+  'sed',
+  'awk',
+  'head',
+  'tail',
+  'less',
+  'jq',
+  'true',
+  ':',
+]);
+
+/** The statement's command word (after env assignments and `env`/`command`/`exec`/`time`/`nohup` wrappers). */
+function commandWord(statement: string): string | undefined {
+  const words = statement.trim().split(/\s+/);
+  let i = 0;
+  while (i < words.length && (/^[A-Za-z_]\w*=/.test(words[i]) || /^(?:env|command|exec|time|nohup)$/.test(words[i])))
+    i++;
+  return words[i]?.replace(/^[({]+/, '');
+}
+
 function apiWrites(statement: string): GitHubWrite[] {
+  const word = commandWord(statement);
+  if (word && PRINTERS.has(word)) return [];
   const out: GitHubWrite[] = [];
   ENDPOINT.lastIndex = 0;
   for (const m of statement.matchAll(ENDPOINT)) {
@@ -387,13 +422,16 @@ const JSON_HTML_URL = /"html_url"\s*:\s*"(https:\/\/github\.com\/([\w.-]+)\/([\w
 const LONE_URL = /^[ \t]*(https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(pull|issues)\/(\d+))\/?[ \t]*$/gm;
 
 /** The PRs and issues a result holds as objects: a JSON `html_url` with its `"number"`, or a URL alone on a line. */
+const JSON_NUMBER = /"number"\s*:\s*(\d+)(?!\d)/g;
+
 function objectsIn(text: string): FoundObject[] {
   const found: Array<FoundObject & { at: number }> = [];
+  const numbers = new Set([...text.matchAll(JSON_NUMBER)].map((m) => Number(m[1])));
   for (const re of [JSON_HTML_URL, LONE_URL]) {
     re.lastIndex = 0;
     for (const m of text.matchAll(re)) {
       const number = Number(m[5]);
-      if (re === JSON_HTML_URL && !new RegExp(`"number"\\s*:\\s*${number}(?!\\d)`).test(text)) continue;
+      if (re === JSON_HTML_URL && !numbers.has(number)) continue;
       found.push({
         at: m.index ?? 0,
         repo: `${m[2]}/${m[3]}`.toLowerCase(),
