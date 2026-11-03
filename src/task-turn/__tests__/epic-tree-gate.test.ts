@@ -27,6 +27,12 @@ function gate(over: Record<string, unknown> = {}, kids = [kid('c1', true), kid('
 }
 
 describe('epic tree gate (#854)', () => {
+  it('G4 — children still being made take their places too (review #872: parallel spawn_child)', () => {
+    const { g } = gate({}, [kid('c1', true), kid('c2', true)]);
+    expect(g.refusal(epic, { newChild: true })).toBeUndefined();
+    expect(g.refusal(epic, { newChild: true, making: 1 })).toMatch(/at most 3 children/);
+  });
+
   it('G1 — at most 3 children running at once; the child being instructed does not count against itself', () => {
     const { g, kids } = gate();
     expect(g.refusal(epic, { child: kid('c4', false) as any })).toMatch(/at most 3 children/);
