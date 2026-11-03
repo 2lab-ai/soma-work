@@ -1313,6 +1313,7 @@ async function start() {
         return (await readTurnFinal(readWorkLog, session.conversationId, turnId))?.text;
       },
       saveSessions: () => claudeHandler.saveSessions(),
+      isRunning: (key) => taskController.isRunning(key),
       settle: (key) => settleTaskGoal?.(key),
       logger: new Logger('TaskGoalLoop'),
     });

@@ -32,6 +32,8 @@ export interface TaskGoalLoopDeps {
   /** The chain's last answer: the final of the task's last turn, from its work log. */
   readLastFinal(session: ConversationSession): Promise<string | undefined>;
   saveSessions(): void;
+  /** The task controller's `isRunning`: a newer chain owns the task (and the loop) now. */
+  isRunning(sessionKey: string): boolean;
   /** `GoalLoopController.onTurnSettled` — a turn ended: judge the goal. */
   settle(sessionKey: string): void;
   logger: {
@@ -87,25 +89,43 @@ export function createTaskGoalLoop(deps: TaskGoalLoopDeps): TaskGoalLoop {
     const session = deps.getSession(sessionKey);
     const goal = session?.goal;
     if (!session || session.slackless !== true || !goal || goal.status !== 'active') return;
+    // The fence (#861 R1, astra-zhuge P1): this end speaks for its own turn only. Pinned before the
+    // read and checked after it — a newer instruction (epoch), a newer turn, a running chain or a
+    // Stop own the loop then, and this late end neither writes evidence nor wakes the loop.
+    const goalId = goal.goalId;
+    const epoch = goal.epoch ?? 0;
+    const turnId = session.lastTurnOutcome?.turnId;
+    const fresh = (): boolean => {
+      const live = deps.getSession(sessionKey);
+      return (
+        live === session &&
+        sameGoal(live, goalId, epoch) &&
+        live.lastTurnOutcome?.turnId === turnId &&
+        !deps.isRunning(sessionKey)
+      );
+    };
     // The turn credits the goal only if the goal did not change under it (Slack's rule:
     // an update or a delete mid-turn invalidates the evidence). The loop still runs.
     const legGoalId = session.activeLegGoalId;
     const changed =
       legGoalId !== undefined && (legGoalId !== goal.goalId || (session.activeLegGoalEpoch ?? 0) !== (goal.epoch ?? 0));
+    let text: string | undefined;
     if (!changed) {
-      let text: string | undefined;
       try {
         text = await deps.readLastFinal(session);
       } catch (error) {
         deps.logger.warn('Task goal evidence could not be read', { sessionKey, error: (error as Error)?.message });
       }
-      // Read again after the await: the goal may have moved meanwhile.
-      if (session.goal === goal && goal.status === 'active') {
-        const turnText = text ?? '';
-        session.goalLastTurnText = turnText;
-        goal.lastAssistantTurnSummary = turnText.slice(0, GOAL_SUMMARY_PERSIST_MAX);
-        deps.saveSessions();
-      }
+    }
+    if (!fresh()) {
+      deps.logger.info('Task goal chain end superseded — a newer turn or instruction owns the loop', { sessionKey });
+      return;
+    }
+    if (!changed) {
+      const turnText = text ?? '';
+      session.goalLastTurnText = turnText;
+      goal.lastAssistantTurnSummary = turnText.slice(0, GOAL_SUMMARY_PERSIST_MAX);
+      deps.saveSessions();
     }
     deps.settle(sessionKey);
   }
