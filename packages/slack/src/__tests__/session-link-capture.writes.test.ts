@@ -163,11 +163,45 @@ describe('githubEffectsOf — what is not a write', () => {
     ).toEqual([['create', 'pr', 'https://github.com/a/b/pull/41']]);
   });
 
+  it('W3 — an interpreter that only prints a request is not a write (review round 2, P1)', () => {
+    const view = ' && gh pr view 12 --json url -q .url';
+    const url = 'https://github.com/a/b/pull/12';
+    expect(
+      effectsOf(
+        bash(`bash -c 'echo curl -X POST https://api.github.com/repos/a/b/pulls'${view}`, url),
+        bash(`node -e 'console.log("curl -X POST https://api.github.com/repos/a/b/pulls")'${view}`, url),
+        bash(`python3 -c 'print("curl -X POST https://api.github.com/repos/a/b/pulls")'${view}`, url),
+        bash(`python3 -c 'print("POST /repos/a/b/pulls")'${view}`, url),
+        bash(`ruby -e 'puts "curl -d @p https://api.github.com/repos/a/b/pulls"'${view}`, url),
+        // A shell heredoc is shell: its echo prints, it does not send.
+        bash(
+          "bash <<'EOF'\necho 'curl -X POST https://api.github.com/repos/a/b/pulls'\ngh pr view 12 --json url -q .url\nEOF",
+          url,
+        ),
+        // A script reading a heredoc reads data, not code.
+        bash(
+          "node scratch/render.cjs <<'EOF'\nfetch('https://api.github.com/repos/a/b/pulls', { method: 'POST' })\nEOF\ngh pr view 12 --json url -q .url",
+          url,
+        ),
+        // What a program runs is read as a command: an echo there prints too.
+        bash(
+          `node -e 'require("child_process").execSync("echo curl -X POST https://api.github.com/repos/a/b/pulls")'${view}`,
+          url,
+        ),
+      ),
+    ).toEqual([]);
+  });
+
   it('W3 — pathological commands are read in linear time (review P1)', () => {
     const inputs = [
       `curl -X${' '.repeat(199_000)}x https://api.github.com/repos/a/b/pulls`,
       `${'A=$('.repeat(49_990)} gh`,
       Array.from({ length: 5000 }, () => 'https://api.github.com/repos/a/b/pulls').join(' '),
+      `${'`'.repeat(150_001)} github`,
+      `${'$('.repeat(90_000)} github`,
+      `${"bash -c '".repeat(20_000)} github`,
+      `${'echo `x` '.repeat(19_000)} github`,
+      `node -e '${'run("'.repeat(6000)}' github`,
     ];
     for (const command of inputs) {
       const started = Date.now();
@@ -232,6 +266,61 @@ describe('githubEffectsOf — every spelling of a create', () => {
       ['create', 'issue', 'https://github.com/a/b/issues/5'],
       ['create', 'pr', 'https://github.com/a/b/pull/8'],
       ['create', 'issue', 'https://github.com/a/b/issues/6'],
+    ]);
+  });
+
+  it('W4 — what an interpreter, eval or a substitution runs is read as its own command (review round 2)', () => {
+    expect(
+      effectsOf(
+        bash(
+          `bash -lc 'cd x && curl -s -X POST https://api.github.com/repos/a/b/pulls -d @p.json | jq -r .html_url'`,
+          'https://github.com/a/b/pull/50',
+        ),
+        bash('sh -c "gh pr create --fill"', 'https://github.com/a/b/pull/51\n'),
+        bash(
+          'echo `curl -s -X POST https://api.github.com/repos/a/b/issues -d @i.json | jq -r .html_url`',
+          'https://github.com/a/b/issues/52',
+        ),
+        bash(
+          'sudo -E curl -s -X POST https://api.github.com/repos/a/b/issues -d @i.json | jq -r .html_url',
+          'https://github.com/a/b/issues/53',
+        ),
+        bash(
+          'timeout 30s curl -s -X POST https://api.github.com/repos/a/b/pulls -d @p.json | jq -r .html_url',
+          'https://github.com/a/b/pull/54',
+        ),
+        bash(
+          `node -e 'require("child_process").execSync("curl -s -X POST https://api.github.com/repos/a/b/pulls -d @p.json", {stdio: "inherit"})'`,
+          '{"number":55,"html_url":"https://github.com/a/b/pull/55"}',
+        ),
+        bash(
+          `python3 -c 'import requests; r = requests.post("https://api.github.com/repos/a/b/issues", json={"title": "x"}); print(r.json()["html_url"])'`,
+          'https://github.com/a/b/issues/56',
+        ),
+        bash(
+          "bash <<'EOF'\ncurl -s -X POST https://api.github.com/repos/a/b/pulls -d @p.json | jq -r .html_url\nEOF",
+          'https://github.com/a/b/pull/57',
+        ),
+        bash(
+          'eval "curl -s -X POST https://api.github.com/repos/a/b/pulls -d @p.json" | jq -r .html_url',
+          'https://github.com/a/b/pull/58',
+        ),
+        bash(
+          'if curl -sf -X POST https://api.github.com/repos/a/b/issues -d @i.json -o out.json; then jq -r .html_url out.json; fi',
+          'https://github.com/a/b/issues/59',
+        ),
+      ).map(short),
+    ).toEqual([
+      ['create', 'pr', 'https://github.com/a/b/pull/50'],
+      ['create', 'pr', 'https://github.com/a/b/pull/51'],
+      ['create', 'issue', 'https://github.com/a/b/issues/52'],
+      ['create', 'issue', 'https://github.com/a/b/issues/53'],
+      ['create', 'pr', 'https://github.com/a/b/pull/54'],
+      ['create', 'pr', 'https://github.com/a/b/pull/55'],
+      ['create', 'issue', 'https://github.com/a/b/issues/56'],
+      ['create', 'pr', 'https://github.com/a/b/pull/57'],
+      ['create', 'pr', 'https://github.com/a/b/pull/58'],
+      ['create', 'issue', 'https://github.com/a/b/issues/59'],
     ]);
   });
 
