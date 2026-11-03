@@ -1129,7 +1129,13 @@ export class SlackHandler {
         });
       },
       // #854 — a click's run that opened no drain still ended its chain (review #872 R2 astra).
-      chainSettled: (sessionKey, settled) => this.noteChainSettled(sessionKey, settled.outcome),
+      chainSettled: (sessionKey, settled) => {
+        this.noteChainSettled(sessionKey, settled.outcome);
+        // #891 — the click's run is over, so a driver it held for its slot (a
+        // turn that left no text) is released here too: an error or a stall
+        // opens no drain, but it must not leave the goal held (astra R2 on #892).
+        this.releaseDeferredGoalDriver(sessionKey, settled);
+      },
       // The drain is gated on a safe outcome; the sweep is not. A `Send now`
       // whose turn ended aborted/blocked/parked left every row steered into
       // it with no settlement frame and no drain behind it to clear them.

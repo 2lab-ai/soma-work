@@ -839,6 +839,22 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(goalDriver).toHaveBeenCalledTimes(1);
     });
 
+    it("releases it when a `Send now` run ends with no drain (an error) — the click's settle is the boundary", async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      const { settle } = await startBusyTurn();
+
+      handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, []);
+      handlerAny.followupActionDeps.chainSettled(SESSION_KEY, {
+        canDrain: false,
+        outcome: { result: 'error', reason: 'x' },
+      });
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+      await settle();
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+    });
+
     it('does not fire for a turn a stop cut — the last word is the stop', async () => {
       registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
       const goalDriver = vi.fn();
