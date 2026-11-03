@@ -432,7 +432,7 @@ describe('W6 — review round 7 (astra-zhuge)', () => {
     expect(
       effectsOf(
         bash(
-          `node -e 'const r = new Request("https://api.github.com/repos/a/b/pulls", {method:"POST"}); fetch(r)'`,
+          `node -e 'fetch(new Request("https://api.github.com/repos/a/b/pulls", {method:"POST"}))'`,
           '{"number":82,"html_url":"https://github.com/a/b/pull/82"}',
         ),
       ).map(short),
@@ -491,6 +491,92 @@ describe('W6 — review round 7 (astra-zhuge)', () => {
     const started = Date.now();
     effectsOf(bash(command, result));
     expect(Date.now() - started).toBeLessThan(500);
+  });
+});
+
+describe('W7 — review round 8 (astra-zhuge)', () => {
+  const view = '; gh pr view 12 -R a/b --json url -q .url';
+  const url = 'https://github.com/a/b/pull/12';
+
+  it('a Request counts only as the argument of the fetch / urlopen that sends it (P1)', () => {
+    expect(
+      effectsOf(
+        bash(
+          `node -e 'const unused = new Request("https://api.github.com/repos/a/b/pulls", {method:"POST"}); fetch("https://api.github.com/repos/a/b/pulls/12").then(r=>r.json()).then(console.log)'`,
+          '{"number":12,"html_url":"https://github.com/a/b/pull/12"}',
+        ),
+      ),
+    ).toEqual([]);
+    expect(
+      effectsOf(
+        bash(
+          `python3 -c 'import urllib.request as u; print(u.urlopen(u.Request("https://api.github.com/repos/a/b/issues", data=b"{}", method="POST")).read())'`,
+          '{"number":90,"html_url":"https://github.com/a/b/issues/90"}',
+        ),
+      ).map(short),
+    ).toEqual([['create', 'issue', 'https://github.com/a/b/issues/90']]);
+  });
+
+  it('a `url` inside a body is not the destination when the call names one (P1)', () => {
+    expect(
+      effectsOf(
+        bash(
+          `node -e 'axios.post("https://hooks.example.com/x", {url:"https://api.github.com/repos/a/b/pulls"})'${view}`,
+          url,
+        ),
+        bash(
+          `python3 -c 'import requests; requests.post("https://hooks.example.com/x", json={"url": "https://api.github.com/repos/a/b/pulls"})'${view}`,
+          url,
+        ),
+      ),
+    ).toEqual([]);
+  });
+
+  it('a REST merge is proven only by a merge response, not by a read of another merged PR (P1)', () => {
+    expect(
+      effectsOf(
+        bash(
+          'curl -s -X PUT https://api.github.com/repos/a/b/pulls/12/merge; gh api repos/a/b/pulls/13',
+          '{"message":"Pull Request is not mergeable"}\n{"number":13,"html_url":"https://github.com/a/b/pull/13","merged":true,"state":"closed"}',
+        ),
+      ),
+    ).toEqual([]);
+  });
+
+  it('a method spelled inside curl data is not curl’s method (P1)', () => {
+    expect(
+      effectsOf(
+        bash(
+          `curl -sG --data-urlencode 'q=method:"POST"' https://api.github.com/repos/a/b/pulls`,
+          '[{"number":12,"html_url":"https://github.com/a/b/pull/12"}]',
+        ),
+        bash(
+          `curl -s -d '{"note":"-X POST"}' -X GET https://api.github.com/repos/a/b/pulls`,
+          '[{"number":12,"html_url":"https://github.com/a/b/pull/12"}]',
+        ),
+      ),
+    ).toEqual([]);
+    // Real methods still count: -X, --request=, an attached -XPOST, httpie's positional method.
+    expect(
+      effectsOf(
+        bash(
+          'curl -s -XPOST https://api.github.com/repos/a/b/pulls -d @p',
+          '{"number":91,"html_url":"https://github.com/a/b/pull/91"}',
+        ),
+        bash(
+          'curl -s --request=POST https://api.github.com/repos/a/b/issues -d @i',
+          '{"number":92,"html_url":"https://github.com/a/b/issues/92"}',
+        ),
+        bash(
+          'http POST https://api.github.com/repos/a/b/pulls title=x',
+          '{"number":93,"html_url":"https://github.com/a/b/pull/93"}',
+        ),
+      ).map(short),
+    ).toEqual([
+      ['create', 'pr', 'https://github.com/a/b/pull/91'],
+      ['create', 'issue', 'https://github.com/a/b/issues/92'],
+      ['create', 'pr', 'https://github.com/a/b/pull/93'],
+    ]);
   });
 });
 
@@ -614,8 +700,8 @@ describe('githubEffectsOf — every spelling of a create', () => {
           heredoc(
             'python3',
             'import urllib.request',
-            'req = urllib.request.Request("https://api.github.com/repos/a/b/issues", data=b"{}", method="POST")',
-            'print(json.load(urllib.request.urlopen(req))["html_url"])',
+            'req = urllib.request.urlopen(urllib.request.Request("https://api.github.com/repos/a/b/issues", data=b"{}", method="POST"))',
+            'print(json.load(req)["html_url"])',
           ),
           'https://github.com/a/b/issues/62',
         ),
