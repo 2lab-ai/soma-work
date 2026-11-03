@@ -14,6 +14,10 @@
  * the child cards stay, under the epic, on the normal clock. Closing a child
  * adds a `closed` event to its epic before it goes.
  *
+ * #854 — a Slack epic and its children are Slack sessions: closing the epic marks each running
+ * child closed by its parent and stops its turn (the request coordinator's abort), then the epic
+ * is terminated; closing a child records its close on its epic. The children's threads stay.
+ *
  * A refusal is a `SessionDeleteRefusedError`, which the close route answers
  * with 409 and the reason.
  */
@@ -38,6 +42,10 @@ export interface DashboardCloseDeps {
   recordChildClosed(sessionKey: string): void;
   /** E4 ⑦ — the in-memory "being closed" mark: set before anything stops, cleared if the close fails. */
   markClosing(sessionKey: string, closing: boolean): void;
+  /** #854 — a Slack session's registry key; whether its turn runs now; stop that turn. */
+  keyOf?(session: ConversationSession): string | undefined;
+  isSlackRunning?(sessionKey: string): boolean;
+  abortSlack?(sessionKey: string): void;
   logger: { info(msg: string, meta?: unknown): void; warn(msg: string, meta?: unknown): void };
 }
 
@@ -45,6 +53,8 @@ export function createDashboardCloseHandler(deps: DashboardCloseDeps): (sessionK
   return async (sessionKey) => {
     const closing = deps.getSession(sessionKey);
     const task = closing?.slackless === true ? closing : undefined;
+    // #854 — a Slack session in an epic tree (the epic, or one of its children).
+    const slackTree = !task && !!closing && (closing.kind === 'epic' || !!closing.parentTaskId) ? closing : undefined;
     if (task) {
       if (deps.ledgerUnreadable() && owesInstructionThread(task)) {
         deps.logger.warn('Dashboard close refused: the notice ledger is unreadable and the task owes its thread', {
@@ -60,15 +70,51 @@ export function createDashboardCloseHandler(deps: DashboardCloseDeps): (sessionK
       // starts nothing; a child being closed owes no wake (fable #703 R1). Cleared if the close fails.
       deps.markClosing(sessionKey, true);
     }
+    if (slackTree) deps.markClosing(sessionKey, true);
     try {
       if (task) await closeTask(task, sessionKey);
+      if (slackTree) closeSlackTree(slackTree, sessionKey);
       deps.terminate(sessionKey);
     } catch (error) {
-      if (task) deps.markClosing(sessionKey, false);
+      if (task || slackTree) deps.markClosing(sessionKey, false);
       throw error;
     }
     deps.logger.info('Dashboard: closed session', { sessionKey });
   };
+
+  /** #854 — the Slack epic's running children stop first (marked closed by it); a child's close is its epic's event. */
+  function closeSlackTree(session: ConversationSession, sessionKey: string): void {
+    if (session.kind === 'epic' && session.taskId) {
+      const running = deps
+        .getChildTasks(session.taskId)
+        .flatMap((c) => {
+          const key = deps.keyOf?.(c);
+          return key ? [key] : [];
+        })
+        .filter((key) => deps.isSlackRunning?.(key) === true);
+      for (const key of running) {
+        try {
+          deps.markClosedByParent(key, undefined);
+        } catch (error) {
+          deps.logger.warn('Epic close: a running child could not be marked closed by its parent', {
+            sessionKey: key,
+            error: (error as Error)?.message,
+          });
+        }
+        deps.abortSlack?.(key);
+      }
+    }
+    if (session.parentTaskId) {
+      try {
+        deps.recordChildClosed(sessionKey);
+      } catch (error) {
+        deps.logger.warn('Child close: its epic could not record the close', {
+          sessionKey,
+          error: (error as Error)?.message,
+        });
+      }
+    }
+  }
 
   async function closeTask(task: ConversationSession, sessionKey: string): Promise<void> {
     if (task.kind === 'epic' && task.taskId) {

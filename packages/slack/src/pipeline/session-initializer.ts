@@ -480,8 +480,13 @@ export class SessionInitializer {
       this.logger.debug('Creating new session', { sessionKey, owner: userName });
 
       // Create session-unique working directory for isolation
-      const sessionDir = this.deps.workingDirManager.createSessionBaseDir(user);
-      if (sessionDir) {
+      // #854 — an epic's child the epic placed in its own folder works there (the epic's to keep).
+      const placedDir = event.workingDirectoryOverride;
+      const sessionDir = placedDir ? undefined : this.deps.workingDirManager.createSessionBaseDir(user);
+      if (placedDir) {
+        session.sessionWorkingDir = placedDir;
+        this.logger.info('Session works in the folder its epic placed it in', { sessionKey, dir: placedDir });
+      } else if (sessionDir) {
         session.sessionWorkingDir = sessionDir;
         // Auto-register for cleanup on session end
         const registered = this.deps.claudeHandler.addSourceWorkingDir(channel, threadTs, sessionDir);

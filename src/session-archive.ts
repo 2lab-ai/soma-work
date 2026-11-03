@@ -393,6 +393,26 @@ export class SessionArchiveStore {
     return null;
   }
 
+  /** #854 — archives found by task id (an archive never changes once written). */
+  private readonly byTaskId = new Map<string, ArchivedSession>();
+
+  /**
+   * #854 — the newest archive of the session that held this task id, or null. A Slack epic's
+   * closed child is archived under its thread's key, which its epic does not keep: the epic's
+   * cost cap finds the child's spend by its id. Scans the archive folder once per id; a hit is
+   * kept (its spend no longer moves).
+   */
+  latestByTaskId(taskId: string): ArchivedSession | null {
+    if (!taskId) return null;
+    const known = this.byTaskId.get(taskId);
+    if (known) return known;
+    const found = this.listWithFilter((a) => a?.taskId === taskId);
+    if (found.length === 0) return null;
+    const newest = found.reduce((a, b) => ((b.archivedAt ?? 0) > (a.archivedAt ?? 0) ? b : a));
+    this.byTaskId.set(taskId, newest);
+    return newest;
+  }
+
   /**
    * Internal: read and filter archive files with optional mtime pre-filtering.
    */

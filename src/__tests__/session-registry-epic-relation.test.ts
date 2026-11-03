@@ -8,8 +8,9 @@
  *   R3 refused before anything is saved: an epic with a parent, a child
  *      without a node, a missing / non-epic / other owner's parent, a bad node id.
  *   R4 a failed save removes the child AND its id from the parent (no ghost id).
- *   R5 load keeps only well-formed values, and only on Slack-less records; a
- *      child cannot be an epic; only an epic has children.
+ *   R5 load keeps only well-formed values (on any record since #854 — a Slack
+ *      session is an epic or a child too); a child cannot be an epic; only an
+ *      epic has children.
  *   R6 archive and revive keep the relation.
  *   R7 a task that is neither epic nor child saves exactly what it did before.
  *   R8 load re-mints a colliding id: the relation follows the new id, both ways.
@@ -151,7 +152,7 @@ describe('SessionRegistry — epic and child tasks (E4 ①)', () => {
     expect([...reg.getAllSessions().values()].filter((s) => s.parentTaskId)).toEqual([]);
   });
 
-  it('R5 — load keeps well-formed values on Slack-less records only; a child is never an epic; only an epic has children', () => {
+  it('R5 — load keeps well-formed values on any record; a child is never an epic; only an epic has children', () => {
     const epicId = '11111111-1111-4111-8111-111111111111';
     const childId = '22222222-2222-4222-8222-222222222222';
     const badId = '33333333-3333-4333-8333-333333333333';
@@ -164,7 +165,7 @@ describe('SessionRegistry — epic and child tasks (E4 ①)', () => {
         slacklessRecord(childId, { kind: 'epic', parentTaskId: epicId, planNodeId: 'node-a' }),
         // Malformed: unknown kind, empty parent, node without parent, children on a non-epic.
         slacklessRecord(badId, { kind: 'story', parentTaskId: '', planNodeId: 'x', childTaskIds: [epicId] }),
-        // A Slack session never carries the relation.
+        // #854 — a Slack session carries it too: here a child (a child is never an epic).
         {
           key: 'work:C1:1.1',
           ownerId: 'U1',
@@ -197,26 +198,24 @@ describe('SessionRegistry — epic and child tasks (E4 ①)', () => {
     expect(bad.planNodeId).toBeUndefined();
     expect(bad.childTaskIds).toBeUndefined();
     expect(slack.kind).toBeUndefined();
-    expect(slack.parentTaskId).toBeUndefined();
-    expect(reg.getChildTasks(epicId).map((s) => s.taskId)).toEqual([childId]);
+    expect(slack).toMatchObject({ parentTaskId: epicId, planNodeId: 'node-b' });
+    expect(reg.getChildTasks(epicId).map((s) => s.taskId)).toEqual([childId, plainId]);
   });
 
-  it('R5b — the sanitizer itself: nothing on a Slack session; a node without a parent is dropped; a bad node drops the parent too', () => {
+  it('R5b — the sanitizer itself: a node without a parent is dropped; a bad node drops the parent too', () => {
     const child = { parentTaskId: 'p1', planNodeId: 'node-a' };
-    expect(sanitizeEpicRelation(child, false)).toEqual({});
-    expect(sanitizeEpicRelation({ kind: 'epic', childTaskIds: ['c1'] }, false)).toEqual({});
-    expect(sanitizeEpicRelation(child, true)).toEqual(child);
-    expect(sanitizeEpicRelation({ planNodeId: 'node-a' }, true)).toEqual({});
-    expect(sanitizeEpicRelation({ parentTaskId: 'p1', planNodeId: 'Bad Node' }, true)).toEqual({});
-    expect(sanitizeEpicRelation({ kind: 'epic', planNodeId: 'node-a' }, true)).toEqual({ kind: 'epic' });
+    expect(sanitizeEpicRelation(child)).toEqual(child);
+    expect(sanitizeEpicRelation({ planNodeId: 'node-a' })).toEqual({});
+    expect(sanitizeEpicRelation({ parentTaskId: 'p1', planNodeId: 'Bad Node' })).toEqual({});
+    expect(sanitizeEpicRelation({ kind: 'epic', planNodeId: 'node-a' })).toEqual({ kind: 'epic' });
     // A task is not its own parent or child; a blank id is no id; a child has no children.
-    expect(sanitizeEpicRelation({ taskId: 't1', parentTaskId: 't1', planNodeId: 'node-a' }, true)).toEqual({});
-    expect(sanitizeEpicRelation({ parentTaskId: '   ', planNodeId: 'node-a' }, true)).toEqual({});
-    expect(sanitizeEpicRelation({ taskId: 't1', kind: 'epic', childTaskIds: ['t1', ' ', 'c1'] }, true)).toEqual({
+    expect(sanitizeEpicRelation({ taskId: 't1', parentTaskId: 't1', planNodeId: 'node-a' })).toEqual({});
+    expect(sanitizeEpicRelation({ parentTaskId: '   ', planNodeId: 'node-a' })).toEqual({});
+    expect(sanitizeEpicRelation({ taskId: 't1', kind: 'epic', childTaskIds: ['t1', ' ', 'c1'] })).toEqual({
       kind: 'epic',
       childTaskIds: ['c1'],
     });
-    expect(sanitizeEpicRelation({ ...child, childTaskIds: ['c9'] }, true)).toEqual(child);
+    expect(sanitizeEpicRelation({ ...child, childTaskIds: ['c9'] })).toEqual(child);
   });
 
   it('R6 — archive and revive keep the relation', () => {

@@ -1,0 +1,67 @@
+/**
+ * #854 — epics as Slack sessions, the wiring in `src/index.ts` and the session initializer (source
+ * contract, as `shutdown-followup-contract.test.ts`: importing `index.ts` would boot the bot).
+ *
+ *   W1 the epic's tools act through the Slack host: children are threads, instructions are
+ *      messages, the tree's limits gate them.
+ *   W2 a settled chain: a child reports its end to its epic; an epic may wake.
+ *   W3 an event on an epic wakes it on its own path (a dashboard task's epic on the task path,
+ *      a Slack epic on the Slack path); the boot scan wakes a Slack epic too.
+ *   W4 a new child placed in its epic's folder works there (the session initializer's override).
+ */
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+const source = fs.readFileSync(path.join(__dirname, '..', 'index.ts'), 'utf8');
+
+function section(from: string, to: string, text = source): string {
+  const start = text.indexOf(from);
+  expect(start, `missing: ${from}`).toBeGreaterThan(-1);
+  const end = text.indexOf(to, start + from.length);
+  expect(end, `missing after ${from}: ${to}`).toBeGreaterThan(start);
+  return text.slice(start, end);
+}
+
+describe('index.ts — epics as Slack sessions (#854)', () => {
+  it('W1 — the epic host is the Slack host, gated by the tree’s limits', () => {
+    const host = section('setEpicHost(\n      createSlackEpicHost({', '\n    );');
+    expect(host).toMatch(/reserveEpicChild: \(epicTaskId, planNodeId\) => epicRegistry\.reserveEpicChild/);
+    expect(host).toMatch(
+      /onTurnAccepted: \(channel, ts, accepted\) => slackHandler\.onTurnAccepted\(channel, ts, accepted\)/,
+    );
+    expect(host).toMatch(/sendToThread: sendAsOwner/);
+    expect(host).toMatch(/gate: epicTreeGate/);
+    const send = section('const sendAsOwner = ', 'setEpicHost(');
+    expect(send).toMatch(
+      /injectDashboardMessage\(key, text, undefined, \[\], undefined, undefined, \{[\s\S]*verbatim: true,[\s\S]*echoLabel: opts\.label/,
+    );
+  });
+
+  it('W2 — a settled chain: a child records its end on its epic; an epic may wake', () => {
+    const settled = section('slackHandler.setChainSettledListener((key, outcome) => {', '\n    });');
+    expect(settled).toMatch(/const end = chainEndOf\(outcome\);/);
+    expect(settled).toMatch(/epicRegistry\.recordSessionChainEnd\(key, end\)/);
+    expect(settled).toMatch(/if \(session\.kind === 'epic'\) slackEpicWaker\.wake\(key\);/);
+  });
+
+  it('W3 — an event wakes the epic on its own path; the boot scan wakes a Slack epic', () => {
+    expect(source).toMatch(
+      /setEpicEventListener\(\(key\) =>\s*claudeHandler\.getSessionRegistry\(\)\.getSessionByKey\(key\)\?\.slackless === true\s*\?\s*epicWaker\.wake\(key\)\s*:\s*slackEpicWaker\.wake\(key\),?\s*\)/,
+    );
+    expect(source).toMatch(
+      /else if \(session\.kind === 'epic' && !session\.parentTaskId\) slackEpicWaker\.wake\(key\);/,
+    );
+  });
+
+  it('W4 — a new child placed in its epic’s folder works there, not registered for cleanup', () => {
+    const init = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'packages', 'slack', 'src', 'pipeline', 'session-initializer.ts'),
+      'utf8',
+    );
+    const block = section('const placedDir = event.workingDirectoryOverride;', '} else if (sessionDir) {', init);
+    expect(block).toMatch(/createSessionBaseDir\(user\)/);
+    expect(block).toMatch(/if \(placedDir\) \{\s*session\.sessionWorkingDir = placedDir;/);
+    expect(block).not.toMatch(/addSourceWorkingDir/);
+  });
+});
