@@ -167,14 +167,20 @@ const CARD_TLDR_MAX_LINES = 5;
 const CARD_TLDR_MAX_LINE_CHARS = 140;
 
 /** A stored Executive Summary TL;DR, or undefined when what was stored is not one (T7). */
-function restoreExecutiveSummary(v: unknown): { tldr: string[]; at: number; source?: 'es' } | undefined {
+function restoreExecutiveSummary(
+  v: unknown,
+): { tldr: string[]; at: number; source?: 'es'; issuedAt?: number } | undefined {
   if (!v || typeof v !== 'object') return undefined;
-  const { tldr, at, source } = v as { tldr?: unknown; at?: unknown; source?: unknown };
+  const { tldr, at, source, issuedAt } = v as { tldr?: unknown; at?: unknown; source?: unknown; issuedAt?: unknown };
   if (!Array.isArray(tldr) || typeof at !== 'number' || !Number.isFinite(at)) return undefined;
   const lines = tldr.filter((l): l is string => typeof l === 'string' && l.trim() !== '');
   if (lines.length === 0) return undefined;
   // #829 — the model-run es's mark (its TL;DR and verdict are one pair for that turn).
-  return source === 'es' ? { tldr: lines, at, source } : { tldr: lines, at };
+  // #881 B1 — and when the model issued it (the turn end compares steered sends with it).
+  if (source !== 'es') return { tldr: lines, at };
+  return typeof issuedAt === 'number' && Number.isFinite(issuedAt)
+    ? { tldr: lines, at, source, issuedAt }
+    : { tldr: lines, at, source };
 }
 
 interface SerializedSession {
@@ -264,7 +270,7 @@ interface SerializedSession {
   actionPanel?: ActionPanelState;
   // The Executive Summary's TL;DR on the dashboard card (SSOT 2026-11-02 T7) — kept across a
   // restart like the thread head that shows the same lines.
-  executiveSummary?: { tldr: string[]; at: number; source?: 'es' };
+  executiveSummary?: { tldr: string[]; at: number; source?: 'es'; issuedAt?: number };
   // #829 — the card's follow-up (NEEDS YOU) survives a restart too: a deploy must not drop it to DONE.
   followUp?: { reason: string; at: number };
   // Bot-initiated thread metadata
@@ -2693,11 +2699,12 @@ export class SessionRegistry {
   /**
    * Refresh session activity by session key.
    */
-  refreshSessionActivityByKey(sessionKey: string): boolean {
+  /** `editWarning: false` — the caller rewrites the posted warning itself (the idle check's "keep" button). */
+  refreshSessionActivityByKey(sessionKey: string, opts: { editWarning?: boolean } = {}): boolean {
     const session = this.getSessionByKey(sessionKey);
     if (!session) return false;
     session.lastActivity = new Date();
-    this.releaseExpiryWarning(session);
+    this.releaseExpiryWarning(session, opts);
     this.saveSessions();
     return true;
   }
@@ -2806,11 +2813,11 @@ export class SessionRegistry {
    * #881 D1 — the idle clock restarts: clear the expiry-warning state and edit the warning already posted (it names
    * the old expiry). Not for sleep — onSleep turns that message into the sleep notice itself.
    */
-  private releaseExpiryWarning(session: ConversationSession): void {
+  private releaseExpiryWarning(session: ConversationSession, opts: { editWarning?: boolean } = {}): void {
     const posted = session.warningMessageTs;
     session.warningMessageTs = undefined;
     session.lastWarningSentAt = undefined;
-    if (posted) this.notifyWarningCleared(session, posted);
+    if (posted && opts.editWarning !== false) this.notifyWarningCleared(session, posted);
   }
 
   private notifyWarningCleared(session: ConversationSession, warningMessageTs: string): void {
@@ -3137,6 +3144,9 @@ export class SessionRegistry {
       session.currentInitiatorId = initiatorId;
       session.currentInitiatorName = initiatorName;
       session.lastActivity = new Date();
+      // #881 D1 — a thread reply is the activity the expiry warning asks for: the clock restarts, so the posted
+      // warning is edited and the next cycle's warnings can be sent again (fable R1 P1 on #887).
+      this.releaseExpiryWarning(session);
     }
   }
 

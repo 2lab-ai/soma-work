@@ -776,8 +776,8 @@ export class ClaudeHandler implements TurnSteeringPort {
     return this.sessionRegistry.updateSessionResources(channelId, threadTs, request);
   }
 
-  refreshSessionActivityByKey(sessionKey: string): boolean {
-    return this.sessionRegistry.refreshSessionActivityByKey(sessionKey);
+  refreshSessionActivityByKey(sessionKey: string, opts?: { editWarning?: boolean }): boolean {
+    return this.sessionRegistry.refreshSessionActivityByKey(sessionKey, opts);
   }
 
   // ===== Session State Machine =====

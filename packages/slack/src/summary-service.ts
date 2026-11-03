@@ -1,7 +1,6 @@
 import { Logger } from '@soma/common/logger';
 import type { SessionLink, SessionLinks } from './directives/session-link-directive';
 import type { HandoffContext, WorkflowType } from './handoff-budget';
-import { EXPIRY_WARNING_CLEARED_TEXT } from './lifecycle-text';
 
 export interface SessionLinkHistory {
   issues: SessionLink[];
@@ -540,8 +539,6 @@ export interface SummarySlackApi {
     text: string,
     options?: { threadTs?: string; blocks?: any[]; [key: string]: any },
   ) => Promise<any>;
-  /** #881 D1 — edits the expiry warning a new follow-up made stale. */
-  updateMessage?: (channel: string, ts: string, text: string, blocks?: any[]) => Promise<unknown>;
 }
 
 /** Construction options for {@link SummaryService}. */
@@ -551,6 +548,11 @@ export interface SummaryServiceOptions {
    * contract. soma-work reads it from the bundled harness plugin; without it the summary is the generic es one.
    */
   turnEndContract?: string;
+  /**
+   * #881 D1 — a new ⚠️ follow-up cleared an expiry warning already posted: the host edits it (behind the same
+   * live-root gate as every lifecycle notice). Fire-and-forget.
+   */
+  onWarningCleared?: (session: SummarySessionInfo, warningMessageTs: string) => void;
 }
 
 /**
@@ -587,10 +589,13 @@ export class SummaryService {
    *   when absent, `postInThread` becomes a no-op (tests and host-fork
    *   configurations without Slack credentials still work).
    */
+  private readonly onWarningCleared?: (session: SummarySessionInfo, warningMessageTs: string) => void;
+
   constructor(forkExecutor?: ForkExecutor, slackApi?: SummarySlackApi, options?: SummaryServiceOptions) {
     this.forkExecutor = forkExecutor ?? (async (prompt) => prompt);
     this.slackApi = slackApi;
     this.turnEndContract = options?.turnEndContract?.trim() || undefined;
+    this.onWarningCleared = options?.onWarningCleared;
   }
 
   /**
@@ -718,10 +723,13 @@ export class SummaryService {
       // previous verdict (a malformed summary is no evidence the work got finished).
       if (tldr.length > 0) {
         const staleWarning = applyFollowUp(session, tldr, at);
-        if (staleWarning && session.channelId) {
-          this.slackApi
-            ?.updateMessage?.(session.channelId, staleWarning, EXPIRY_WARNING_CLEARED_TEXT)
-            .catch((error) => logger.warn('Stale expiry warning not edited', { error: (error as Error).message }));
+        // #881 D1 — the host edits it, behind the same live-root gate as every lifecycle notice.
+        if (staleWarning) {
+          try {
+            this.onWarningCleared?.(session, staleWarning);
+          } catch (error) {
+            logger.warn('Stale expiry warning not edited', { error: (error as Error)?.message });
+          }
         }
       }
     }

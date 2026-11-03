@@ -49,6 +49,33 @@ describe('SessionRegistry — a cleared expiry warning is edited, not left behin
     expect(s.lastWarningSentAt).toBeUndefined();
   });
 
+  it('a thread reply — the activity the warning asks for (fable R1 P1)', () => {
+    const { reg, s, onWarningCleared } = setup('200.006');
+    reg.updateInitiator('C1', '200.006', 'U1', 'User');
+    expect(onWarningCleared).toHaveBeenCalledWith(s, 'w-1');
+    expect(s.warningMessageTs).toBeUndefined();
+    expect(s.lastWarningSentAt).toBeUndefined();
+  });
+
+  it('the idle-check "keep" button: its own reply replaces that message, so no second edit races it (fable R1 P1)', () => {
+    const { reg, s, onWarningCleared } = setup('200.007');
+    expect(reg.refreshSessionActivityByKey(reg.getSessionKey('C1', '200.007'), { editWarning: false })).toBe(true);
+    expect(onWarningCleared).not.toHaveBeenCalled();
+    expect(s.warningMessageTs).toBeUndefined();
+  });
+
+  it('the es TL;DR keeps its issue time across a restart (fable · grok R1 P2)', () => {
+    const { reg } = setup('200.008');
+    const t = 1_793_700_000_000;
+    reg.setExecutiveSummary('C1', '200.008', ['a', 'b', 'c'], `r_${t.toString(36)}_1_abcd1234`);
+    const s = reg.getSession('C1', '200.008')!;
+    s.sessionId = 'sess-8';
+    reg.saveSessions();
+    const again = new SessionRegistry();
+    again.loadSessions();
+    expect(again.getSession('C1', '200.008')?.executiveSummary?.issuedAt).toBe(t);
+  });
+
   it('a new ⚠️ follow-up; the same reason again keeps the warning', () => {
     const { reg, s, onWarningCleared } = setup('200.002');
     reg.setExecutiveSummary('C1', '200.002', ['a', '⚠️ **PR #1 open**', 'b']);
