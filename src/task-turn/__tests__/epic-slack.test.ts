@@ -146,6 +146,27 @@ describe('the epic host on the Slack path (#854)', () => {
     expect(await other).toMatchObject({ ok: true });
   });
 
+  it('H8 — parallel instructions to idle children (review #872 R2 astra): a child being started holds its place and its folder', async () => {
+    let accept!: () => void;
+    const c2: any = { taskId: 'c2', ownerId: 'U1', channelId: 'C1', threadTs: '3.0', parentTaskId: 'e1' };
+    const w = hostWorld({
+      sendToThread: vi.fn((_k: string, _t: string, opts: any) => {
+        accept = opts.onAccepted;
+        return new Promise(() => {});
+      }),
+    });
+    const first = w.host.instructChild(w.epic, w.child, 'go');
+    // Its echo is posting: not running yet, but it is being started.
+    expect(w.host.isRunning(w.child)).toBe(true);
+    w.host.admit(w.epic, { child: c2 });
+    expect(w.deps.gate.refusal).toHaveBeenLastCalledWith(w.epic, { child: c2, making: 1 });
+    accept();
+    await first;
+    expect(w.host.isRunning(w.child)).toBe(false);
+    w.host.admit(w.epic, { child: c2 });
+    expect(w.deps.gate.refusal).toHaveBeenLastCalledWith(w.epic, { child: c2, making: 0 });
+  });
+
   it('H2 — a thread that could not be made takes the reservation back', async () => {
     const w = hostWorld({ postMessage: vi.fn(async () => undefined) });
     const r = await w.host.spawnChild(w.epic, { planNodeId: 'login', instruction: 'go', title: 't' });
