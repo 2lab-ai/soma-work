@@ -80,6 +80,8 @@ export interface NewTaskEvent {
   autoGoalOverride: boolean;
   /** #853 — the plan switch: the session plans before it works. */
   planModeOverride?: true;
+  /** #854 — the epic switch: the new session is an epic. */
+  epicOverride?: true;
   routeContext: { skipAutoBotThread: true };
 }
 
@@ -135,6 +137,7 @@ export async function launchNewTask(
     autogoal: submission.autogoal,
     autoz: submission.autoz,
     plan: submission.plan === true,
+    epic: submission.epic === true,
     attachmentNames: submission.attachments.map((a) => a.name),
   });
   let rootTs: string | undefined;
@@ -175,6 +178,7 @@ export async function launchNewTask(
     effortOverride: submission.effort,
     autoGoalOverride: submission.autogoal,
     ...(submission.plan === true ? { planModeOverride: true as const } : {}),
+    ...(submission.epic === true ? { epicOverride: true as const } : {}),
     routeContext: { skipAutoBotThread: true },
   };
   if (files.length > 0) event.files = files;

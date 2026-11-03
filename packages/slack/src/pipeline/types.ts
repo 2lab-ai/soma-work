@@ -136,6 +136,23 @@ export interface MessageEvent {
    * gate, `applySessionPlanTurn`) and works only once its owner starts the plan.
    */
   planModeOverride?: boolean;
+  /**
+   * #854 — the dashboard "New task" epic switch: the new session is an epic (its turns get the
+   * epic's tools). Set only by the host's launcher; the owner's `epicTasks` flag was checked there.
+   */
+  epicOverride?: boolean;
+  /**
+   * #854 — the first message of an epic's child, in its own new thread: the new session takes
+   * the id its epic reserved, and its place under the epic (`SessionRegistry.bindEpicChild`).
+   * Set only by the epic's host (`spawn_child`).
+   */
+  epicChild?: { taskId: string; parentTaskId: string; planNodeId: string; title?: string };
+  /**
+   * #854 — the folder a NEW session works in instead of a fresh `session_*` one: an epic's child
+   * the epic placed inside its own folder (already checked to lie inside the owner's root, and
+   * made). Not registered for cleanup — it is the epic's. Set only by the epic's host.
+   */
+  workingDirectoryOverride?: string;
   routeContext?: {
     skipAutoBotThread?: boolean;
     sourceChannel?: string;

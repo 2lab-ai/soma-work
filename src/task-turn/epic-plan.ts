@@ -457,8 +457,8 @@ export function exemptEpicTreeTaskIds(
 ): Set<string> {
   const exempt = new Set<string>();
   for (const epic of records) {
-    if (epic.slackless !== true || epic.kind !== 'epic' || typeof epic.taskId !== 'string') continue;
-    const children = records.filter((r) => r.slackless === true && r.parentTaskId === epic.taskId);
+    if (epic.kind !== 'epic' || typeof epic.taskId !== 'string') continue;
+    const children = records.filter((r) => r.parentTaskId === epic.taskId);
     // Only a waiting child is still at work after this load: one saved `working` lost its turn
     // with the process and is reconciled idle in the same load (grok #703 R1).
     const busy = children.some((c) => c.activityState === 'waiting');
