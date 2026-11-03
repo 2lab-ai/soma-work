@@ -21,6 +21,7 @@ import { SessionRegistry } from '../../session-registry';
 import { RequestCoordinator } from '../../slack';
 import { TodoManager } from '../../todo-manager';
 import type { ConversationSession } from '../../types';
+import { TASK_GOAL_START_MAX_RETRIES } from '../task-goal-loop';
 import {
   createRestartNoticeStart,
   createTaskRestartResumer,
@@ -283,6 +284,35 @@ describe('R4 — skipped when resuming it would be wrong', () => {
   });
   it('the cut task itself is resumed', () => {
     expect(restartResumeSkip(base as unknown as ConversationSession, cut)).toBeNull();
+  });
+  it('an active goal is resumed here when the goal resume did not run at boot (trinity R4, fable P2)', () => {
+    const withGoal = { ...base, goal: { status: 'active' } } as unknown as ConversationSession;
+    expect(restartResumeSkip(withGoal, cut, { goalsResumed: false })).toBeNull();
+    expect(restartResumeSkip(withGoal, cut, { goalsResumed: true })).toMatch(/goal/);
+  });
+});
+
+describe('R7 — the wait for a busy slot is bounded like the goal loop’s (trinity R4, fable P2)', () => {
+  it('gives up after TASK_GOAL_START_MAX_RETRIES tries — no cut task starts by surprise hours later', async () => {
+    const start = vi.fn(async () => ({ status: 429, body: { error: 'one dashboard task runs at a time' } }));
+    const scheduled: Array<() => void> = [];
+    const session = {
+      slackless: true,
+      activityState: 'idle',
+      lastTurnOutcome: { turnId: 't1', outcome: 'interrupted' },
+    };
+    const resumer = createTaskRestartResumer({
+      controller: { start },
+      getSession: () => session as unknown as ConversationSession,
+      logger: { info: vi.fn(), warn: vi.fn() },
+      schedule: (fn) => scheduled.push(fn),
+    });
+    await resumer.resume([{ sessionKey: 'task:a', ownerId: OWNER, turnId: 't1' }]);
+    while (scheduled.length) {
+      scheduled.shift()!();
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    expect(start).toHaveBeenCalledTimes(TASK_GOAL_START_MAX_RETRIES);
   });
 });
 
