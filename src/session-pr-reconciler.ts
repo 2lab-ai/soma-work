@@ -302,15 +302,18 @@ export async function scanGitCheckouts(
 ): Promise<{ checkouts: Checkout[]; complete: boolean }> {
   const roots = [...new Set(dirs)].map((d) => path.resolve(d));
   const candidates: string[] = [];
+  // Whether every directory was read: a dir past MAX_CHILDREN or one that could not be read (not merely absent)
+  // leaves the scan incomplete — a caller asking "does anyone else have this branch" must then assume yes.
+  let read = true;
   for (const root of roots) {
     if (await isCheckout(root)) candidates.push(root);
     let entries: string[] = [];
     try {
-      entries = (await fs.readdir(root, { withFileTypes: true }))
-        .filter((e) => e.isDirectory())
-        .slice(0, MAX_CHILDREN)
-        .map((e) => path.join(root, e.name));
-    } catch {
+      const dirsOnly = (await fs.readdir(root, { withFileTypes: true })).filter((e) => e.isDirectory());
+      if (dirsOnly.length > MAX_CHILDREN) read = false;
+      entries = dirsOnly.slice(0, MAX_CHILDREN).map((e) => path.join(root, e.name));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') read = false;
       continue;
     }
     for (const child of entries) if (await isCheckout(child)) candidates.push(child);
@@ -343,7 +346,7 @@ export async function scanGitCheckouts(
     out.push(c);
     if (stop?.(c)) return { checkouts: out, complete: true };
   }
-  return { checkouts: out, complete: unique.length <= max };
+  return { checkouts: out, complete: read && unique.length <= max };
 }
 
 /** The work-branch checkouts under `dirs` (see {@link scanGitCheckouts}). */
