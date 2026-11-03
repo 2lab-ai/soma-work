@@ -13,7 +13,13 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { followUpFromTldr, SUMMARY_PROMPT, SummaryService, type SummarySessionInfo } from '../summary-service.js';
+import {
+  cleanTldrLine,
+  followUpFromTldr,
+  SUMMARY_PROMPT,
+  SummaryService,
+  type SummarySessionInfo,
+} from '../summary-service.js';
 
 const BLOCKED = [
   '<tldr>',
@@ -123,6 +129,24 @@ describe('displayOnThread — the latest Executive Summary decides the follow-up
     const s: SummarySessionInfo = { isActive: true };
     new SummaryService().displayOnThread(s, BLOCKED);
     expect(s.followUp?.reason).toContain('PR #12');
+  });
+
+  it("the model-run es's verdict (source es) survives the same turn's host summary, then the next one decides", () => {
+    const svc = new SummaryService();
+    const s = session({ followUp: { reason: 'PR #12 not merged (checked with gh)', at: 1, source: 'es' } });
+    svc.displayOnThread(s, DONE); // same turn: the host fork has no tools — the es verdict stands
+    expect(s.followUp).toEqual({ reason: 'PR #12 not merged (checked with gh)', at: 1, source: 'es' });
+    svc.displayOnThread(s, BLOCKED); // nor does a host ⚠️ line replace it in that turn
+    expect(s.followUp?.reason).toBe('PR #12 not merged (checked with gh)');
+    svc.clearDisplay(s); // the user's next input: an ordinary verdict now
+    expect(s.followUp).toEqual({ reason: 'PR #12 not merged (checked with gh)', at: 1 });
+    svc.displayOnThread(s, DONE);
+    expect(s.followUp).toBeUndefined();
+  });
+
+  it('a list marker before the ⚠️ line does not hide the signal (both paths normalize the same way)', () => {
+    expect(cleanTldrLine('- ⚠️ **PR #3 is a draft**')).toBe('⚠️ **PR #3 is a draft**');
+    expect(cleanTldrLine('  1. plain line ')).toBe('plain line');
   });
 
   it('clearDisplay (the next user input) leaves it: the card stays waiting until the next summary', () => {

@@ -681,6 +681,25 @@ export class ClaudeHandler implements TurnSteeringPort {
   }
 
   /**
+   * #829 review — UPDATE_SESSION writes for a Slack-less task, which has no channel/thread: by session key.
+   */
+  setExecutiveSummaryByKey(sessionKey: string, tldr: readonly string[]): boolean {
+    return this.sessionRegistry.setExecutiveSummaryByKey(sessionKey, tldr);
+  }
+
+  updateSessionResourcesByKey(sessionKey: string, request: SessionResourceUpdateRequest): SessionResourceUpdateResult {
+    return this.sessionRegistry.updateSessionResourcesByKey(sessionKey, request);
+  }
+
+  updateSessionTitleByKey(sessionKey: string, title: string): void {
+    this.sessionRegistry.updateSessionTitleByKey(sessionKey, title);
+  }
+
+  fillPlaceholderSessionTitleByKey(sessionKey: string, title: string): boolean {
+    return this.sessionRegistry.fillPlaceholderSessionTitleByKey(sessionKey, title);
+  }
+
+  /**
    * Record merge code change stats for a PR in this session.
    */
   addMergeStats(

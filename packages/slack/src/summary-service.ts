@@ -186,12 +186,25 @@ function capTldrLine(line: string): string {
     .trimEnd()}…`;
 }
 
+/** One TL;DR line, trimmed and without a list marker — the one normalization both es paths share (#829). */
+export function cleanTldrLine(line: string): string {
+  return line.trim().replace(LIST_MARKER, '').trim();
+}
+
 function cleanTldrLines(lines: string[]): string[] {
   return lines
-    .map((line) => line.trim().replace(LIST_MARKER, '').trim())
+    .map(cleanTldrLine)
     .filter((line) => line.length > 0)
     .slice(0, TLDR_MAX_LINES)
     .map(capTldrLine);
+}
+
+/**
+ * #829 — a TL;DR line as plain text: markdown bold (`**x**`, `__x__`) unwrapped. The Slack surface renders the
+ * bold; the dashboard card draws text as is, so it shows this form (and the follow-up reason is built from it).
+ */
+export function plainTldrLine(line: string): string {
+  return line.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/__([^_]+)__/g, '$1');
 }
 
 /** A TL;DR line that starts with ⚠️ (after any emphasis markers) — the unfinished-own-artifact signal (#829). */
@@ -208,8 +221,7 @@ export function followUpFromTldr(tldr: readonly string[]): { reason: string } | 
   const reasons = tldr
     .filter((line) => FOLLOW_UP_LINE.test(line))
     .map((line) =>
-      line
-        .replace(FOLLOW_UP_LINE, '')
+      plainTldrLine(line.replace(FOLLOW_UP_LINE, ''))
         .replace(/\*\*|__/g, '')
         .replace(/^[\s*_~:—-]+|[\s*_~]+$/g, '')
         .trim(),
@@ -431,7 +443,7 @@ export interface SummarySessionInfo {
    * keeps the task card in NEEDS YOU with this reason. Set and cleared only by an Executive Summary
    * (`displayOnThread`, or the model-run es through UPDATE_SESSION) — the next user input does not clear it.
    */
-  followUp?: { reason: string; at: number };
+  followUp?: { reason: string; at: number; source?: 'es' };
   actionPanel?: {
     summaryBlocks?: any[];
     [key: string]: any;
@@ -612,7 +624,9 @@ export class SummaryService {
     else session.executiveSummary = undefined;
     // #829 — a well-formed TL;DR decides whether the card waits on its user; a reply with none keeps the
     // previous verdict (a malformed summary is no evidence the work got finished).
-    if (tldr.length > 0) {
+    // A verdict the model-run es wrote this turn (`source: 'es'`, checked with tools) stands against the
+    // tool-less host fork of the same turn; the user's next input (`clearDisplay`) makes it an ordinary one.
+    if (tldr.length > 0 && session.followUp?.source !== 'es') {
       const followUp = followUpFromTldr(tldr);
       session.followUp = followUp ? { reason: followUp.reason, at } : undefined;
     }
@@ -701,6 +715,8 @@ export class SummaryService {
   clearDisplay(session: SummarySessionInfo): void {
     // The dashboard card's TL;DR goes with the thread head's — even where there is no head to clear.
     session.executiveSummary = undefined;
+    // #829 — the follow-up stays (the card keeps waiting); an es verdict becomes one the next summary may judge.
+    if (session.followUp?.source) session.followUp = { reason: session.followUp.reason, at: session.followUp.at };
     if (!session.actionPanel) return;
     if (!session.actionPanel.summaryBlocks) return;
 
