@@ -391,16 +391,19 @@ function faceOf(page: Page, key: string) {
   }, key);
 }
 
-/** The session the detail card shows now (the front of the deck), or '' when it is closed. */
+/**
+ * The session the detail card shows now (the front of the deck), or '' when it is closed. The page's own state:
+ * `let panelSessionKey` is a top-level binding of the dashboard's classic <script>, visible in the page's global
+ * scope — so it is read with a string expression (Playwright runs it there), not a callback (whose closure cannot
+ * see it). If that script ever becomes a module, this throws and every openCard times out: loud, never a false pass.
+ */
+const FRONT_KEY_JS = `(() => {
+  const p = document.getElementById('slide-panel');
+  const open = !!p && (p.open === true || p.hasAttribute('open') || p.classList.contains('open'));
+  return open ? String(panelSessionKey || '') : '';
+})()`;
 function frontKey(page: Page): Promise<string> {
-  return page.evaluate(() => {
-    const p = document.getElementById('slide-panel') as any;
-    const open = !!p && (p.open === true || p.hasAttribute('open') || p.classList.contains('open'));
-    // The page's own state: which session the detail card is on. `let panelSessionKey` is a top-level binding of the
-    // dashboard's classic <script>, so an indirect eval reads it from the global lexical scope. If that script ever
-    // becomes a module, this throws and every openCard times out — loud, never a false pass.
-    return open ? String((0, eval)('panelSessionKey') || '') : '';
-  });
+  return page.evaluate(FRONT_KEY_JS) as Promise<string>;
 }
 
 /**
@@ -420,11 +423,7 @@ async function openCard(page: Page, key: string) {
     await sleep(400);
   }
   await page.click(title);
-  await page.waitForFunction((k) => {
-    const p = document.getElementById('slide-panel') as any;
-    const open = !!p && (p.open === true || p.hasAttribute('open') || p.classList.contains('open'));
-    return open && (0, eval)('panelSessionKey') === k;
-  }, key);
+  await page.waitForFunction(`${FRONT_KEY_JS} === ${JSON.stringify(key)}`);
   await sleep(700);
 }
 
