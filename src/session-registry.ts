@@ -60,8 +60,10 @@ import {
   exemptEpicTreeTaskIds,
   isEpicDone,
   type PlanWriteInput,
+  releaseCutEpicWakes,
   releaseEpicEvents,
   resolveEpicApprovals,
+  SLACK_WAKE_PREFIX,
   sanitizeEpicEvents,
   sanitizeEpicPlan,
   withEpicEvent,
@@ -1688,6 +1690,33 @@ export class SessionRegistry {
     this.saveOrUndo(() => {
       epic.epicEvents = before;
     });
+  }
+
+  /**
+   * #854 — the epic's chain ended: the wakes it ran are done (their events stay delivered, no longer
+   * tied to a wake). A wake still tied to its events at a restart was cut before its chain ended, and
+   * the load delivers them again (`releaseCutEpicWakes`). Best effort: unsettled only means once more.
+   */
+  settleEpicWakes(epicKey: string): void {
+    const epic = this.sessions.get(normalizeSessionKey(epicKey));
+    if (!epic || epic.kind !== 'epic' || epic.slackless === true) return;
+    const before = epic.epicEvents;
+    if (!before?.some((e) => e.consumedBy?.startsWith(SLACK_WAKE_PREFIX))) return;
+    epic.epicEvents = before.map((e) => {
+      if (!e.consumedBy?.startsWith(SLACK_WAKE_PREFIX)) return e;
+      const { consumedBy: _done, ...rest } = e;
+      return rest;
+    });
+    try {
+      this.saveOrUndo(() => {
+        epic.epicEvents = before;
+      });
+    } catch (error) {
+      this.logger.warn('An epic’s finished wakes could not be marked done — a restart delivers them again', {
+        epicKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
   }
 
   /** #854 — a wake that was not sent: its events are pending again (they wake once more). Best effort. */
@@ -4612,6 +4641,8 @@ export class SessionRegistry {
           compactPendingDispatches: null,
           compactTurnActive: false,
         };
+        // #854 — a Slack epic's wake the restart cut (consumed, its chain never ended): delivered again.
+        if (!slackless && session.kind === 'epic') session.epicEvents = releaseCutEpicWakes(session.epicEvents);
         // Auto fallback compact: a restart that lands mid-fallback (model
         // switched to the 1M compact model, boundary restore not yet fired)
         // aborts the emergency compact. Restore the original model so the

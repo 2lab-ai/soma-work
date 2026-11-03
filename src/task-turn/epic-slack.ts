@@ -14,7 +14,7 @@
 import type { RunReport } from '@soma/slack/followup-dispatcher';
 import type { WorkLogEntry, WorkLogPage } from '../conversation/work-log';
 import type { ConversationSession, EpicPlan, TaskTurnOutcomeRecord } from '../types';
-import { epicWakeText, isEpicDone, type PlanWriteInput, wakeableEpicEvents } from './epic-plan';
+import { epicWakeText, isEpicDone, type PlanWriteInput, SLACK_WAKE_PREFIX, wakeableEpicEvents } from './epic-plan';
 import type { EpicChildSpec, EpicHost } from './epic-server';
 import type { EpicTreeGate } from './epic-tree-gate';
 
@@ -367,7 +367,7 @@ export function createSlackEpicWaker(deps: SlackEpicWakerDeps): SlackEpicWaker {
       retryLater(sessionKey);
       return;
     }
-    const by = `wake:${now()}`;
+    const by = `${SLACK_WAKE_PREFIX}${now()}`;
     deps.consume(
       sessionKey,
       events.map((e) => e.id),

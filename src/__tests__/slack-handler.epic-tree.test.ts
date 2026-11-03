@@ -156,6 +156,44 @@ describe('SlackHandler — a new session’s place in an epic tree (#854)', () =
     expect(heard).toHaveLength(1);
   });
 
+  it('T7 — a cut turn the restart could not resume (its thread unreachable) ends its chain as interrupted', async () => {
+    const { handler } = harness({ ownerId: 'U1', systemPrompt: 'cached' });
+    const heard: Array<[string, unknown]> = [];
+    handler.setChainSettledListener((key, outcome) => heard.push([key, outcome]));
+    const h = handler as any;
+    h.followupDispatcher = { isBusy: () => false };
+    h.claudeHandler.getCrashRecoveredSessions = vi.fn(() => [
+      {
+        channelId: 'C1',
+        threadTs: '9.9',
+        ownerId: 'U1',
+        activityState: 'working',
+        sessionKey: 'C1:9.9',
+        shouldAutoResume: true,
+      },
+      {
+        channelId: 'C1',
+        threadTs: '8.8',
+        ownerId: 'U1',
+        activityState: 'idle',
+        sessionKey: 'C1:8.8',
+        shouldAutoResume: false,
+      },
+    ]);
+    h.claudeHandler.clearCrashRecoveredSessions = vi.fn();
+    h.slackApi.postMessage = vi.fn().mockRejectedValue(new Error('channel_not_found'));
+    h.pendingRetryNoticeMinutes = vi.fn(() => undefined);
+    vi.useFakeTimers();
+    try {
+      const done = handler.notifyCrashRecovery();
+      await vi.runAllTimersAsync();
+      await done;
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(heard).toEqual([['C1:9.9', { result: 'interrupted', reason: 'shutdown' }]]);
+  });
+
   it('T6 — a chain a click drained (Send now / Resume / Retry) is heard too (review #872 astra)', async () => {
     const { handler } = harness({ ownerId: 'U1', systemPrompt: 'cached' });
     const heard: Array<[string, unknown]> = [];
