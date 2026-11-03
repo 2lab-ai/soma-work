@@ -1,3 +1,5 @@
+> **Archived (#855):** the Slack-instruction → dashboard-task entry and the dashboard-task stack were removed. Every task is a Slack thread; saved dashboard tasks are archived at load. Kept as history only.
+
 # Runbook: a Slack instruction as a dashboard task (E2)
 
 **In one line:** each user turns it on (`/z taskentry on`). To turn it off for everyone, use Tier 2; to remove the code, use Tier 3. A task that is already live stays a dashboard task either way.
