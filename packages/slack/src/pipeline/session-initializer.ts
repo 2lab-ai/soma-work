@@ -958,8 +958,6 @@ export class SessionInitializer {
         workingDirectory: effectiveWorkingDir,
         abortController: new AbortController(),
         halted: true,
-        // Kept for the replay: the message is not dropped (#853).
-        ...(dispatchText ? { stashed: true } : {}),
       };
     }
 

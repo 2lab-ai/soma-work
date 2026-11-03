@@ -2027,8 +2027,8 @@ export class SlackHandler {
 
       // Channel routing check: if session was halted due to wrong channel, stop processing
       if (sessionResult.halted) {
-        // Stashed for the replay after a compaction in progress: it will run — taken (#853).
-        if (sessionResult.stashed === true) this.noteTurnAccepted(event.channel, event.ts);
+        // Never taken (#853), the compaction stash included: it lives in memory only, and a
+        // restart drops it — a plan start counted as taken there could be lost with no way back.
         await this.slackApi.removeReaction(channel, ts, 'eyes');
         // Halted covers the acceptance gate too (`session-initializer.ts:403-440`)
         // — never a success, so the drain stays shut.
@@ -2859,10 +2859,12 @@ export class SlackHandler {
    */
   /**
    * #853 — hear when the message `channel:ts`, one a host hands to `handleMessage`, is taken:
-   * its turn reaches the model, or it is stored in the follow-up queue behind a running turn.
-   * `handleMessage` itself resolves only after the whole run (and its drain), so it is no
-   * receipt. A message the pipeline refuses, halts or drops never calls back. Returns the
-   * unregister (call it once `handleMessage` settled).
+   * its turn reaches the model, or it is stored in the durable follow-up queue (behind a running
+   * turn, or parked for the restart's Resume). Taken means running or durably stored — never
+   * held in memory only. `handleMessage` itself resolves only after the whole run (and its
+   * drain), so it is no receipt. A message the pipeline refuses, halts, drops or keeps only in
+   * memory (a compaction stash) never calls back. Returns the unregister (call it once
+   * `handleMessage` settled).
    */
   onTurnAccepted(channel: string, ts: string, accepted: () => void): () => void {
     const key = `${channel}:${ts}`;

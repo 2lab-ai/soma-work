@@ -8,8 +8,6 @@
  *      the decider's instruction (the normal Slack path), verbatim, and 시작 answers once the
  *      message is taken (`onAccepted`) — not after the whole turn (review #858).
  *   W3 the injection watches the message it sends and forgets the waiter once the run settles.
- *   W4 a message the session initializer stashes for the replay after a compaction says so
- *      (`stashed`) — it is taken, not dropped (review #858 R2).
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -55,13 +53,4 @@ describe('index.ts — plan mode on every session (#853)', () => {
     expect(inject).toMatch(/\} finally \{\s*unwatch\?\.\(\);\s*\}/);
   });
 
-  it('W4 — the compaction stash returns `stashed` with `halted` (the message waits for the replay)', () => {
-    const init = fs.readFileSync(
-      path.join(__dirname, '..', '..', 'packages', 'slack', 'src', 'pipeline', 'session-initializer.ts'),
-      'utf8',
-    );
-    const stash = init.slice(init.indexOf('if (shouldStashForCompaction('), init.indexOf('// Work queue'));
-    expect(stash).toMatch(/stashUserMessageDuringCompaction\(/);
-    expect(stash).toMatch(/halted: true,[\s\S]*\.\.\.\(dispatchText \? \{ stashed: true \} : \{\}\)/);
-  });
 });
