@@ -125,7 +125,7 @@ import {
   offeredNewTaskModels,
 } from './conversation/new-task-provider';
 import { setProjectRepoSource } from './conversation/project-memory-routes';
-import { createConversationDurable } from './conversation/recorder';
+import { createConversationDurable, getConversation } from './conversation/recorder';
 import { createSessionWorkLogAppender } from './conversation/session-work-log';
 import { setSettingsRegistry } from './conversation/settings-routes';
 import { createSlackDirectoryLookup } from './conversation/slack-directory-lookup';
@@ -202,7 +202,12 @@ import { GoalLoopController } from './slack/goal-loop-controller';
 import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
 import { createPendingUserRequest, notifyAdminsNewUser } from './slack/new-user-decision';
 import { type StreamExecutorProviders, setStreamExecutorProviders } from './slack/pipeline/stream-executor';
-import { setGoalCapDecisionRetirer } from './slack/session-goal';
+import {
+  enqueueOrActivateGoal,
+  restoreGoalState,
+  setGoalCapDecisionRetirer,
+  snapshotGoalState,
+} from './slack/session-goal';
 import { composeExecutiveSummaryMarkdown, parseExecutiveSummary } from './slack/summary-service';
 import { setUiSurfacesConfig } from './slack/surface-config';
 import { createSlackTaskEntry } from './slack/task-entry';
@@ -219,6 +224,7 @@ import { createEpicWaker } from './task-turn/epic-wake';
 import { setPlanHost } from './task-turn/plan-server';
 import { composeTaskApprovalListeners } from './task-turn/task-approver';
 import { createDashboardCloseHandler } from './task-turn/task-close';
+import { planGoalObjective } from './task-turn/task-goal';
 import { createTaskGoalLoop, type TaskGoalLoop } from './task-turn/task-goal-loop';
 import { createTaskLauncher } from './task-turn/task-launcher';
 import {
@@ -227,9 +233,12 @@ import {
   type TaskNoticeDeliverer,
 } from './task-turn/task-notice-deliverer';
 import { TASK_NOTIFICATION_LEDGER_FILENAME, TaskNotificationLedger } from './task-turn/task-notification-ledger';
+import type { TaskPlanDoc } from './task-turn/task-plan';
 import { createSlackPlanDecider, createTaskPlanDecider } from './task-turn/task-plan-decision';
+import { createRestartNoticeStart, createTaskRestartResumer, cutTurnAuthor } from './task-turn/task-restart-resume';
 import {
   createTaskTurnController,
+  type TaskCommandRequest,
   type TaskCommandResponse,
   type TaskTurnController,
 } from './task-turn/task-turn-controller';
@@ -1342,9 +1351,21 @@ async function start() {
     // chain's last answer as evidence), its next turn is a host start here, and a person's
     // instruction resets its count. The loop itself (GoalLoopController) is built further down.
     let settleTaskGoal: ((key: string) => void) | undefined;
+    /** Tasks the restart cut whose goal resumes: key → the cut turn (filled at boot, read once). */
+    const goalRestartCut = new Map<string, string>();
+    /**
+     * 2026-11-03 — the first goal continuation of a task the restart cut carries the restart guidance
+     * (D10 on the goal path, as the restart resume's own start does): check the state before redoing
+     * an outside change. Only while nothing ran since the cut turn — a later continuation is not a resume.
+     */
+    const startGoalTurn = createRestartNoticeStart({
+      start: (request) => taskController.start(request),
+      getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+      cut: goalRestartCut,
+    });
     const taskGoalLoop: TaskGoalLoop = createTaskGoalLoop({
       getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
-      start: (request) => taskController.start(request),
+      start: startGoalTurn,
       readLastFinal: async (session) => {
         const turnId = session.lastTurnOutcome?.turnId;
         if (!session.conversationId || !turnId) return undefined;
@@ -1595,6 +1616,30 @@ async function start() {
         return gate;
       },
     });
+    /**
+     * 2026-11-03 — 시작 on a plan opens a goal for it (a task's or a Slack session's): the goal loop
+     * continues the work until the plan is done, and resumes it after a restart. Opened as the user who
+     * pressed 시작, with their continuation cap; the undo puts the goal state back when the start does not happen.
+     */
+    const openPlanGoal = (session: ConversationSession, plan: TaskPlanDoc, actorUserId: string): (() => void) => {
+      const registry = claudeHandler.getSessionRegistry();
+      const before = snapshotGoalState(session);
+      const opened = enqueueOrActivateGoal(
+        session,
+        planGoalObjective(plan),
+        actorUserId,
+        userSettingsStore.getUserGoalMaxContinuations(actorUserId),
+      );
+      // A goal already in flight keeps the session: the plan's goal waits behind it (trinity R4, grok P2).
+      if (!opened.activated) {
+        logger.info('Plan goal queued behind the goal in flight', { position: opened.position });
+      }
+      registry.saveSessions();
+      return () => {
+        restoreGoalState(session, before);
+        registry.saveSessions();
+      };
+    };
     const taskPlanDecider = createTaskPlanDecider({
       getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
       setTaskPlanGate: (taskId, gate) => claudeHandler.getSessionRegistry().setTaskPlanGate(taskId, gate),
@@ -1602,6 +1647,9 @@ async function start() {
       // #777 — 시작 · 취소 are the owner's call: someone the owner has not approved is refused, not held.
       mayDecide: (sessionKey, session, actorUserId) =>
         instructionApprovals.allows({ sessionKey, session, senderId: actorUserId }),
+      // 2026-11-03 — 시작 opens the plan's goal: the goal loop continues the task until the plan is
+      // done (and resumes it after a restart). The approved plan's turn is the goal's opening turn.
+      openGoal: openPlanGoal,
       logger: new Logger('TaskPlanDecider'),
     });
     // #853 — a Slack session's plan: 시작 sends it into the thread as the decider's instruction (the Slack path).
@@ -1628,6 +1676,8 @@ async function start() {
         }),
       mayDecide: (sessionKey, session, actorUserId) =>
         instructionApprovals.allows({ sessionKey, session, senderId: actorUserId }),
+      // The same on a Slack session (2026-11-03): its own goal loop drives the thread to the plan's end.
+      openGoal: openPlanGoal,
       logger: new Logger('SlackPlanDecider'),
     });
     setDashboardTaskPlanHandler((request) =>
@@ -2329,6 +2379,9 @@ async function start() {
       logger.warn('Failed to install goal turn-settled driver (non-critical)', error);
     }
 
+    // Did the goal resume below run? The dashboard-task resume in `.finally` takes a cut task with an
+    // active goal itself when it did not (trinity R4, fable P2).
+    let goalsResumedAtBoot = false;
     // Notify users whose sessions were interrupted by crash (non-blocking)
     slackHandler
       .notifyCrashRecovery()
@@ -2342,7 +2395,13 @@ async function start() {
         // controller is wired above and after crash-recovery's no-double-resume
         // guard has skipped these sessions.
         try {
+          // A dashboard task the restart cut: its goal's first continuation carries the restart guidance
+          // (D10 on the goal path — trinity R1, fable P2). The goal resume gives the continuation back.
+          for (const t of claudeHandler.getSessionRegistry().getRestartCutTasks()) {
+            goalRestartCut.set(t.sessionKey, t.turnId);
+          }
           const resumed = slackHandler.resumeActiveGoals();
+          goalsResumedAtBoot = true;
           if (resumed > 0) timing(`Resumed ${resumed} active goal(s) after restart`);
         } catch (error) {
           logger.warn('Resuming active goals after restart failed (non-critical)', error);
@@ -2359,6 +2418,40 @@ async function start() {
       })
       .catch((error) => {
         logger.warn('Crash recovery notifications failed (non-critical)', error);
+      })
+      .finally(() => {
+        // Not tied to the Slack notices' outcome (trinity R1, fable P3): a dashboard task has no thread.
+        // 2026-11-03 — a dashboard task whose turn the restart cut resumes too, as a Slack
+        // thread does above (it was only recorded `interrupted`). After the goal resume, so a
+        // task with an active goal is the goal loop's; the resumer skips it.
+        try {
+          const taskRegistry = claudeHandler.getSessionRegistry();
+          const cutTasks = taskRegistry.getRestartCutTasks().slice();
+          taskRegistry.clearRestartCutTasks();
+          if (cutTasks.length === 0) timing('No dashboard task was cut by the restart');
+          if (cutTasks.length > 0 && taskTurnController) {
+            createTaskRestartResumer({
+              controller: taskTurnController,
+              getSession: (key) => taskRegistry.getSessionByKey(key),
+              logger: new Logger('TaskRestartResume'),
+              goalsResumed: () => goalsResumedAtBoot,
+              // A record saved before the turn's initiator was kept: the cut turn's author, from its conversation.
+              readCutTurnAuthor: async (session, cutTurnId) => {
+                const record = session.conversationId ? await getConversation(session.conversationId) : null;
+                return record ? cutTurnAuthor(record.turns, cutTurnId) : undefined;
+              },
+            })
+              .resume(cutTasks)
+              .then((outcomes) => {
+                const started = [...outcomes.values()].filter((o) => o.status === 'started').length;
+                const waiting = [...outcomes.values()].filter((o) => o.status === 'waiting').length;
+                timing(`Resumed ${started}/${cutTasks.length} dashboard task(s) the restart cut (${waiting} waiting)`);
+              })
+              .catch((error) => logger.warn('Resuming dashboard tasks after restart failed (non-critical)', error));
+          }
+        } catch (error) {
+          logger.warn('Resuming dashboard tasks after restart failed (non-critical)', error);
+        }
       });
 
     // Scan channels the bot is a member of (non-blocking)
