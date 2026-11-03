@@ -158,4 +158,13 @@ describe('T10 — a hand-off issue or what the user ended does not keep a finish
     expect(turnEnd).toMatch(/complete once (it is )?filed/i);
     expect(turnEnd).toMatch(/user (ended|declined|stopped)/i);
   });
+  it('both paths say the same: what waits only on the ended step, the quoted words, the own remaining work (trinity #878)', () => {
+    const rule = section('Unfinished own artifacts');
+    for (const text of [rule, turnEnd]) {
+      expect(text).toMatch(/waits only on it/i);
+      expect(text).toMatch(/quot(es|ing) their words/i);
+      expect(text).toMatch(/own remaining work is not a hand-off issue/i);
+      expect(text).toMatch(/state (you )?last s(aw|een)/i);
+    }
+  });
 });
