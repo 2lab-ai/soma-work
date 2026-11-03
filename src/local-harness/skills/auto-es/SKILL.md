@@ -104,6 +104,8 @@ same turn:
      `host.lastWrite.ok === false` — the host could not apply it (`reason`, e.g. `SEQUENCE_MISMATCH`), so the card
      did not change: retry once without `expectedSequence`, then say in the document that the card is stale.
      `host.lastWrite.instructions` tells instruction writes apart: they wait for the user's y/n, or were refused.
+   - A user message that reaches you after this write (sent while you were writing it) is not in the card: answer
+     it, then write the card again so the TL;DR covers it (#881).
    - No `host` in the answer (an older host, or the host could not write its receipt): `payload.session` is the
      model-command server's own copy, not the host's; the thread's `⚠️ Session update could not be applied on host
      (<reason>)` is then the only sign of a failed write.
