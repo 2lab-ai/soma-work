@@ -142,7 +142,7 @@ import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR } from './env-paths';
 import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
 import { createGithubReceiptChecker } from './github-receipt';
 import { type HeldInstruction, InstructionApprovals, setInstructionApprovals } from './instruction-approval';
-import { fetchGitHubReceiptObject } from './link-metadata-fetcher';
+import { fetchGitHubPullsForHead, fetchGitHubReceiptObject } from './link-metadata-fetcher';
 import { Logger } from './logger';
 import { mcpCallTracker } from './mcp-call-tracker';
 import { McpManager } from './mcp-manager';
@@ -179,6 +179,13 @@ import { applyTodoList, creditTaskUsage, emptyTaskLedger, ledgerTasks } from './
 import { createMainCallReader, reconcileTaskCalls, type TranscriptCall } from './session/task-usage-reconcile';
 import { getArchiveStore, resolveArchivedResume } from './session-archive';
 import { buildTaskSessionKey } from './session-identity';
+import {
+  createSessionPrReconciler,
+  findGitCheckouts,
+  gitContainsCommit,
+  scanGitCheckouts,
+  sessionDirs,
+} from './session-pr-reconciler';
 import { applySummaryTitle } from './session-title-policy';
 import {
   displayLangMiddleware,
@@ -1761,6 +1768,37 @@ async function start() {
     // #832 — GitHub is the receipt for a write the parser proposes: only a confirmed one reaches the card and metrics.
     workLogProviders.confirmGithubEffects = createGithubReceiptChecker({ fetchObject: fetchGitHubReceiptObject });
     setStreamExecutorProviders(workLogProviders);
+    // #833 (epic #831) — turn end: the PRs GitHub says the session's own branches have go on its card, however they
+    // were made (REST, the web UI). Recorded by key (Slack sessions and tasks alike), then the card is pushed.
+    setStreamExecutorProviders({
+      reconcileSessionPrs: createSessionPrReconciler({
+        findCheckouts: findGitCheckouts,
+        fetchPulls: fetchGitHubPullsForHead,
+        containsCommit: gitContainsCommit,
+        // Asked only when a new PR would become current: does another session check the same branch out? Read with the
+        // same directories the session's own scan uses; a scan that could not read them all counts as shared.
+        checkedOutElsewhere: async (sessionKey, owner, name, branch) => {
+          const dirs: string[] = [];
+          for (const [key, other] of claudeHandler.getSessionRegistry().getAllSessions()) {
+            if (key === sessionKey || other.terminated) continue;
+            dirs.push(...sessionDirs(other));
+          }
+          const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+          const match = (c: { owner: string; name: string; branch: string }) =>
+            same(c.owner, owner) && same(c.name, name) && c.branch === branch;
+          const scan = await scanGitCheckouts(dirs, 100, match);
+          return !scan.complete || scan.checkouts.some(match);
+        },
+        noteLinks: (sessionKey, links, mode) =>
+          claudeHandler.getSessionRegistry().noteSessionLinksByKey(sessionKey, links, mode),
+        pushCard: (sessionKey) => scheduleLiveSessionUpdate(sessionKey),
+        isCurrent: (sessionKey, session) => {
+          const live = claudeHandler.getSessionRegistry().getAllSessions().get(sessionKey);
+          return live === session && !live.terminated;
+        },
+        logger,
+      }),
+    });
     // SSOT 2026-10-26 T2 — subagents that ended before this process started
     // fire no more events: read the loaded sessions' spend once, in the
     // background, so every card shows its subagents' spend after a restart.
