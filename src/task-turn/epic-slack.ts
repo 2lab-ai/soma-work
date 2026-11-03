@@ -157,6 +157,9 @@ export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
   const starting = new Map<string, Set<string>>();
   const isStarting = (s: ConversationSession) =>
     !!s.parentTaskId && !!s.taskId && !!starting.get(s.parentTaskId)?.has(s.taskId);
+  /** Instructions to working children being handed over, per epic: starts in flight, no running place. */
+  const handing = new Map<string, number>();
+  const handingIn = (epicTaskId: string | undefined) => (epicTaskId ? (handing.get(epicTaskId) ?? 0) : 0);
   const startingIn = (epicTaskId: string | undefined, except?: string) =>
     epicTaskId ? [...(starting.get(epicTaskId) ?? [])].filter((id) => id !== except).length : 0;
   const running = (s: ConversationSession) => {
@@ -255,13 +258,14 @@ export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
     isRunning: running,
     // A new child, or an idle one about to run, takes a running place: so do the children being made
     // and the idle ones being started (the gate counts only the ones already running).
-    admit: (epic, start) =>
-      start.newChild || (start.child && !running(start.child))
-        ? deps.gate.refusal(epic, {
-            ...start,
-            making: makingIn(epic.taskId) + startingIn(epic.taskId, start.child?.taskId),
-          })
-        : deps.gate.refusal(epic, start),
+    admit: (epic, start) => {
+      const making = makingIn(epic.taskId) + startingIn(epic.taskId, start.child?.taskId);
+      const pending = making + handingIn(epic.taskId);
+      if (start.newChild || (start.child && !running(start.child))) {
+        return deps.gate.refusal(epic, { ...start, making, ...(pending !== making ? { pending } : {}) });
+      }
+      return deps.gate.refusal(epic, pending > 0 ? { ...start, pending } : start);
+    },
     ensureDirectory: (dir) => deps.ensureDirectory(dir),
 
     async spawnChild(epic, spec) {
@@ -302,6 +306,19 @@ export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
       const key = deps.keyOf(child);
       if (!key) return { taken: false, queued: false, reason: 'the child has no Slack thread' };
       const queued = deps.isRunning(key);
+      // An idle child in the folder a child being made takes does not start now: two running children
+      // never share a folder (review #872 R2 astra — a spawn first, an instruction next).
+      const theirs = child.sessionWorkingDir;
+      if (!queued && theirs && child.parentTaskId) {
+        const made = [...(making.get(child.parentTaskId)?.values() ?? [])];
+        if (made.some((dir) => dir && overlaps(dir, theirs))) {
+          return {
+            taken: false,
+            queued: false,
+            reason: 'a child being made right now works in its folder — try again shortly',
+          };
+        }
+      }
       // An idle child is being started until its instruction is taken.
       const epicTaskId = child.parentTaskId;
       const childId = child.taskId;
@@ -310,6 +327,9 @@ export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
         marks.add(childId);
         starting.set(epicTaskId, marks);
       }
+      // A working child's word: a start in flight for the window until it is taken.
+      const hands = queued && epicTaskId ? epicTaskId : undefined;
+      if (hands) handing.set(hands, handingIn(hands) + 1);
       let result: Awaited<ReturnType<typeof handOver>>;
       try {
         result = await handOver(
@@ -321,6 +341,11 @@ export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
         if (marks && epicTaskId && childId) {
           marks.delete(childId);
           if (marks.size === 0 && starting.get(epicTaskId) === marks) starting.delete(epicTaskId);
+        }
+        if (hands) {
+          const left = handingIn(hands) - 1;
+          if (left > 0) handing.set(hands, left);
+          else handing.delete(hands);
         }
       }
       if (result === 'taken') {
