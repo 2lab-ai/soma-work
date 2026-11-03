@@ -2283,8 +2283,11 @@ export class SlackHandler {
       // `docs/goal-command/spec.md` §Auto-Continuation Loop.
       // Skip for synthetic events — those ARE the ralph-loop
       // turns and self-incrementing the counter inside the
-      // continuation driver is the source of truth.
-      if (!event.synthetic) {
+      // continuation driver is the source of truth. A host turn replayed
+      // after `/compact` (`routeContext.hostTurn`: a goal continuation the
+      // compaction intercepted) is not a person's words either — reset by it,
+      // every compaction would erase the cap (#891, fable R1 on #892).
+      if (!event.synthetic && event.routeContext?.hostTurn !== true) {
         // Optional chain: many slack-handler unit tests pass a bare
         // `{}` for claudeHandler, so this method may be missing in
         // mocks. Real ClaudeHandler always exports it (claude-handler.ts:374).
