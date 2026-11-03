@@ -139,6 +139,43 @@ describe('githubEffectsOf — what is not a write', () => {
     ).toEqual([['create', 'issue', 'https://github.com/a/b/issues/40']]);
   });
 
+  it('W3 — only a sender sends: a request spelled in a commit message or a PR body is not a write (review P2)', () => {
+    expect(
+      effectsOf(
+        bash(
+          'gh pr edit 12 --body "How: curl -X POST https://api.github.com/repos/a/b/pulls" && gh pr view 12 --json url -q .url',
+          'https://github.com/a/b/pull/12',
+        ),
+        bash(
+          'git commit -q -m "feat: POST /repos/a/b/pulls helper" && gh pr view 12 --json url -q .url',
+          'https://github.com/a/b/pull/12',
+        ),
+      ),
+    ).toEqual([]);
+    // A command substitution runs its command.
+    expect(
+      effectsOf(
+        bash(
+          'URL=$(curl -s -X POST https://api.github.com/repos/a/b/pulls -d @pr.json | jq -r .html_url) && echo "$URL"',
+          'https://github.com/a/b/pull/41',
+        ),
+      ).map(short),
+    ).toEqual([['create', 'pr', 'https://github.com/a/b/pull/41']]);
+  });
+
+  it('W3 — pathological commands are read in linear time (review P1)', () => {
+    const inputs = [
+      `curl -X${' '.repeat(199_000)}x https://api.github.com/repos/a/b/pulls`,
+      `${'A=$('.repeat(49_990)} gh`,
+      Array.from({ length: 5000 }, () => 'https://api.github.com/repos/a/b/pulls').join(' '),
+    ];
+    for (const command of inputs) {
+      const started = Date.now();
+      githubWritesOf('Bash', { command });
+      expect(Date.now() - started).toBeLessThan(500);
+    }
+  });
+
   it('W3 — a large result is read in linear time (2,000 objects)', () => {
     const many = Array.from(
       { length: 2000 },
