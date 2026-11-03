@@ -70,7 +70,36 @@ export interface TaskRestartResumerDeps {
    * instruction, from the task's conversation (its last user turn's `userId`). Unknown: not resumed —
    * the owner's identity is never assumed for someone else's words (trinity R4, astra P1). Unset: none.
    */
-  readCutTurnAuthor?: (session: ConversationSession) => Promise<string | undefined>;
+  readCutTurnAuthor?: (session: ConversationSession, cutTurnId: string) => Promise<string | undefined>;
+}
+
+/** The start time a task turn's id carries (`<sessionKey>:<ms>:<uuid>`, task-turn-runner.ts), or undefined. */
+export function taskTurnStartedAt(turnId: string): number | undefined {
+  const parts = turnId.split(':');
+  if (parts.length < 3) return undefined;
+  const ms = Number(parts[parts.length - 2]);
+  return Number.isSafeInteger(ms) && ms > 0 ? ms : undefined;
+}
+
+/**
+ * The author of the cut turn's instruction, from the task's conversation: the last user turn recorded
+ * at or after the cut turn started. An earlier turn is not proof — the cut turn's own input may never
+ * have reached the disk (it is recorded after the start is saved) — so none answers undefined
+ * (trinity R4, astra P1).
+ */
+export function cutTurnAuthor(
+  turns: ReadonlyArray<{ role: string; timestamp: number; userId?: string }>,
+  cutTurnId: string,
+): string | undefined {
+  const startedAt = taskTurnStartedAt(cutTurnId);
+  if (startedAt === undefined) return undefined;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const turn = turns[i];
+    if (turn.role !== 'user') continue;
+    if (turn.timestamp < startedAt) return undefined;
+    return turn.userId || undefined;
+  }
+  return undefined;
 }
 
 export type RestartResumeOutcome =
@@ -126,7 +155,7 @@ export function createTaskRestartResumer(deps: TaskRestartResumerDeps): TaskRest
     let actor = task.actorId;
     if (!actor) {
       const session = deps.getSession(task.sessionKey);
-      actor = session ? await deps.readCutTurnAuthor?.(session).catch(() => undefined) : undefined;
+      actor = session ? await deps.readCutTurnAuthor?.(session, task.turnId).catch(() => undefined) : undefined;
       if (!actor) {
         deps.logger.info('Restart resume skipped', {
           sessionKey: task.sessionKey,
@@ -135,6 +164,14 @@ export function createTaskRestartResumer(deps: TaskRestartResumerDeps): TaskRest
         return { status: 'skipped', reason: 'who started the cut turn is not recorded' };
       }
       task = { ...task, actorId: actor };
+      // The read awaited: the task may have moved on meanwhile (a cancelled plan, a turn) — check again.
+      const late = restartResumeSkip(deps.getSession(task.sessionKey), task, {
+        goalsResumed: deps.goalsResumed?.() ?? true,
+      });
+      if (late) {
+        deps.logger.info('Restart resume skipped', { sessionKey: task.sessionKey, reason: late });
+        return { status: 'skipped', reason: late };
+      }
     }
     let response: TaskCommandResponse;
     try {
