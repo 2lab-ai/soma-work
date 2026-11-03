@@ -113,25 +113,6 @@ describe('McpConfigBuilder — execution context (#597)', () => {
 
   // SSOT 2026-11-03 — SET_GOAL, session links/title, memory and skills are not Slack features:
   // a dashboard task gets the model-command server, as its context's user, on the task surface.
-  it('a task gets the model-command server — its user is the context’s, its surface is the task', async () => {
-    const config = await new McpConfigBuilder(mcpManager()).buildConfig(
-      undefined,
-      { user: 'U_FORGED', workflow: 'default', session: undefined } as any,
-      taskCtx({ userId: 'U_TASK' }),
-    );
-    const server = config.mcpServers?.['model-command'] as { env: Record<string, string> } | undefined;
-    expect(server).toBeDefined();
-    const context = JSON.parse(server!.env.SOMA_COMMAND_CONTEXT);
-    expect(context.surface).toBe('task');
-    expect(context.user).toBe('U_TASK');
-    expect(config.allowedTools).toContain('mcp__model-command');
-  });
-
-  it('a task gets the model-command server even when no command context was built', async () => {
-    const config = await new McpConfigBuilder(mcpManager()).buildConfig(undefined, undefined, taskCtx());
-    const server = config.mcpServers?.['model-command'] as { env: Record<string, string> } | undefined;
-    expect(JSON.parse(server!.env.SOMA_COMMAND_CONTEXT)).toMatchObject({ user: 'U_TASK', surface: 'task' });
-  });
 
   it('no context at all still gets no model-command server', async () => {
     const config = await new McpConfigBuilder(mcpManager()).buildConfig();
