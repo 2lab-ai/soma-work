@@ -316,11 +316,12 @@ export interface SlackHandlerOptions {
 
 /**
  * The boot's later checks for rows a restart put back in line (SSOT 2026-11-03).
+ * The first one waits out a goal eval (120 s + grace) a restart kick may start.
  * The session's resume normally sends them; these catch a resume that never
  * came — a goal waiting on its question, a goal the eval closed, an auto-resume
  * whose notice could not be posted.
  */
-const FOLLOWUP_RESTART_SWEEP_DELAYS_MS: readonly number[] = [90_000, 10 * 60_000];
+const FOLLOWUP_RESTART_SWEEP_DELAYS_MS: readonly number[] = [150_000, 10 * 60_000];
 
 /**
  * Is this event a `/z goal` objective re-entering the pipeline
@@ -1426,13 +1427,30 @@ export class SlackHandler {
     return started;
   }
 
-  /** Drain each idle session of `keys` (busy ones are skipped — their running turn's end drains them). */
+  /**
+   * Drain each idle session of `keys`. Skipped, and left to what comes next: a busy one (its running
+   * turn's end drains it), one whose goal is being judged (the eval's continuation carries the rows —
+   * steered in when it reaches the model), and a halted lane — only a person reopens a halt (A16); the
+   * rows stay queued, and the session's next turn still gets the steer-back ones.
+   */
   private drainIdleRestartRequeued(keys: Iterable<string>): number {
     const dispatcher = this.followupDispatcher;
     if (!dispatcher || !this.followupAdmission().allowed) return 0;
     let started = 0;
     for (const sessionKey of [...keys]) {
       if (dispatcher.isBusy(sessionKey) || this.requestCoordinator.isRequestActive(sessionKey)) continue;
+      const goal = this.claudeHandler?.getSessionByKey?.(this.canonicalFollowupKey(sessionKey))?.goal as
+        | { pendingEval?: unknown }
+        | undefined;
+      if (goal?.pendingEval) continue;
+      const halt = dispatcher.drainHalt(sessionKey);
+      if (halt) {
+        this.logger.info('Restart-cut follow-ups wait — the lane is halted until a person reopens it', {
+          sessionKey,
+          reason: halt.reason,
+        });
+        continue;
+      }
       started++;
       void this.runFollowupDrainLoop(sessionKey)
         .then((last) => {

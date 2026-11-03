@@ -6979,6 +6979,42 @@ describe('SlackHandler — follow-up queue host', () => {
         }
       });
 
+      it('the later check leaves a halted lane and a goal under judgement alone, and does not count them (review R2, astra/grok P1)', async () => {
+        const { snapshot } = await steeredThenShutdown();
+        const { booted } = bootFrom(snapshot, []);
+        const bootedAny = booted as any;
+        expect(rowOf(booted).state).toBe('queued');
+
+        // A halted lane: only a person reopens it (A16).
+        bootedAny.followupDispatcher.halts.set(SESSION_KEY, { reason: 'error', detail: 'resume failed' });
+        expect(booted.sweepRestartRequeuedFollowups()).toBe(0);
+        expect(rowOf(booted).state).toBe('queued');
+        bootedAny.followupDispatcher.halts.delete(SESSION_KEY);
+
+        // A goal being judged: its continuation carries the row (steered in when it reaches the model).
+        registrySession.goal = {
+          status: 'active',
+          objective: 'x',
+          goalId: 'g-1',
+          epoch: 1,
+          pendingEval: { requestedAt: 1 },
+        };
+        try {
+          expect(booted.sweepRestartRequeuedFollowups()).toBe(0);
+          expect(rowOf(booted).state).toBe('queued');
+        } finally {
+          registrySession.goal = undefined;
+        }
+
+        // Neither any more: sent.
+        const redelivery = holdNextTurn(booted, true);
+        expect(booted.sweepRestartRequeuedFollowups()).toBe(1);
+        await redelivery.started;
+        redelivery.release();
+        for (let i = 0; i < 6; i++) await tick();
+        expect(rowOf(booted).state).toBe('resolved');
+      });
+
       it('is left with its Retry when it is more than a day old', async () => {
         const { snapshot } = await steeredThenShutdown();
         snapshot.sessions[0].items[0].enqueuedAt -= 25 * 60 * 60_000;
