@@ -565,6 +565,11 @@ export interface SessionExpiryCallbacks {
   ) => Promise<string | undefined>;
   onSleep: (session: ConversationSession) => Promise<void>;
   onExpiry: (session: ConversationSession) => Promise<void>;
+  /**
+   * #881 D1 — the idle clock restarted after an expiry warning was posted (activity, unstar, /new, a new ⚠️
+   * follow-up): edit that message, it names an expiry that no longer holds. Fire-and-forget.
+   */
+  onWarningCleared?: (session: ConversationSession, warningMessageTs: string) => Promise<void>;
 }
 
 /**
@@ -2028,8 +2033,7 @@ export class SessionRegistry {
     session.sleepStartedAt = undefined;
     session.lastActivity = new Date();
     // Clear warning state
-    session.warningMessageTs = undefined;
-    session.lastWarningSentAt = undefined;
+    this.releaseExpiryWarning(session);
 
     this.logger.info('Session woken from sleep', {
       channelId,
@@ -2072,8 +2076,7 @@ export class SessionRegistry {
       session.starred = undefined;
       session.starClearedAt = Date.now();
     }
-    session.warningMessageTs = undefined;
-    session.lastWarningSentAt = undefined;
+    this.releaseExpiryWarning(session);
     this.logger.info(starred ? 'Session starred' : 'Session unstarred', {
       sessionKey: key,
       sessionId: session.sessionId,
@@ -2259,8 +2262,7 @@ export class SessionRegistry {
     session.state = 'MAIN';
     session.sleepStartedAt = undefined;
     session.lastActivity = new Date();
-    session.warningMessageTs = undefined;
-    session.lastWarningSentAt = undefined;
+    this.releaseExpiryWarning(session);
   }
 
   /**
@@ -2695,8 +2697,7 @@ export class SessionRegistry {
     const session = this.getSessionByKey(sessionKey);
     if (!session) return false;
     session.lastActivity = new Date();
-    session.lastWarningSentAt = undefined;
-    session.warningMessageTs = undefined;
+    this.releaseExpiryWarning(session);
     this.saveSessions();
     return true;
   }
@@ -2767,7 +2768,8 @@ export class SessionRegistry {
     // (TL;DR and verdict as one pair); the user's next input drops the TL;DR and with it the mark.
     const issuedAt = receiptIssuedAt(receiptId);
     session.executiveSummary = { tldr: lines, at, source: 'es', ...(issuedAt !== undefined ? { issuedAt } : {}) };
-    applyFollowUp(session, lines, at);
+    const staleWarning = applyFollowUp(session, lines, at);
+    if (staleWarning) this.notifyWarningCleared(session, staleWarning);
     this.saveSessions();
     return true;
   }
@@ -2798,6 +2800,29 @@ export class SessionRegistry {
   /** The same by session key — the only way to reach a Slack-less task (channel '' throws on lookup). */
   writeModelCommandReceiptByKey(sessionKey: string, lastWrite?: HostWriteReceipt): void {
     this.writeModelCommandReceiptFor(sessionKey, this.getSessionByKey(sessionKey), lastWrite);
+  }
+
+  /**
+   * #881 D1 — the idle clock restarts: clear the expiry-warning state and edit the warning already posted (it names
+   * the old expiry). Not for sleep — onSleep turns that message into the sleep notice itself.
+   */
+  private releaseExpiryWarning(session: ConversationSession): void {
+    const posted = session.warningMessageTs;
+    session.warningMessageTs = undefined;
+    session.lastWarningSentAt = undefined;
+    if (posted) this.notifyWarningCleared(session, posted);
+  }
+
+  private notifyWarningCleared(session: ConversationSession, warningMessageTs: string): void {
+    const edit = this.expiryCallbacks?.onWarningCleared;
+    if (!edit) return;
+    try {
+      edit(session, warningMessageTs).catch((error) =>
+        this.logger.warn('Stale expiry warning not edited', { error: (error as Error)?.message }),
+      );
+    } catch (error) {
+      this.logger.warn('Stale expiry warning not edited', { error: (error as Error)?.message });
+    }
   }
 
   private writeModelCommandReceiptFor(
@@ -3308,9 +3333,8 @@ export class SessionRegistry {
     session.currentInitiatorId = undefined;
     session.currentInitiatorName = undefined;
 
-    // Clear expiry warning state
-    session.warningMessageTs = undefined;
-    session.lastWarningSentAt = undefined;
+    // Clear expiry warning state (and edit the posted warning, #881 D1)
+    this.releaseExpiryWarning(session);
 
     // Clear usage data to reset context percentage
     session.usage = undefined;
