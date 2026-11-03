@@ -508,8 +508,6 @@ const METHOD_TOKENS: RegExp[] = [
   /\bmethod\s*[:=]\s*['"`](GET|POST|PUT|PATCH|DELETE)['"`]/gi,
   /(?:^|[\s"'`])(GET|POST|PUT|PATCH|DELETE)\s+['"]?(?=\/?repos\/)/g,
 ];
-const CURL_DATA = /(?:^|\s)(?:-d|--data(?:-raw|-binary|-urlencode)?|--json|-F|--form)(?=\s|=|$|@)/;
-const GH_API_FIELDS = /(?:^|\s)(?:-f|-F|--field|--raw-field|--input)(?=\s|=)/;
 const GH_CLI = /^[({]*(?:[^\s/]*\/)*gh\s+(pr|issue)\s+(create|merge|close)\b([^\n]*)/;
 const REPO_FLAG =
   /(?:^|\s)(?:-R|--repo)(?:\s+|=)['"]?(?:https:\/\/)?(?:github\.com\/)?([\w.-]+\/[\w.-]+?)(?:\.git)?['"]?(?=\s|$)/;
@@ -534,16 +532,14 @@ function methodTokens(statement: string): MethodToken[] {
   return out;
 }
 
-function verbOf(statement: string, tokens: MethodToken[], at: number, curlGet: boolean): string {
+/** The method nearest the endpoint; else the client's implied one (`POST` when it sends data); else GET. */
+function verbOf(tokens: MethodToken[], at: number, implied: string | undefined): string {
   let best: { verb: string; dist: number } | undefined;
   for (const t of tokens) {
     const dist = Math.abs(t.at - at);
     if (!best || dist < best.dist) best = { verb: t.verb, dist };
   }
-  if (best) return best.verb;
-  if (/\bcurl\b/.test(statement) && CURL_DATA.test(statement) && !curlGet) return 'POST';
-  if (/\bgh\s+api\b/.test(statement) && GH_API_FIELDS.test(statement)) return 'POST';
-  return 'GET';
+  return best?.verb ?? implied ?? 'GET';
 }
 
 /** `gh pr|issue create|merge|close …`, read from the command word on. */
@@ -673,25 +669,66 @@ function curlGet(words: Word[], at: number): boolean {
  */
 function clientMethod(words: Word[], at: number, name: string): MethodToken | undefined {
   const httpie = name === 'http' || name === 'https' || name === 'xh';
+  const opts = VALUE_OPTIONS[name];
+  // curl and gh use the last method option given: `-X POST -X GET` is a GET.
+  let found: MethodToken | undefined;
+  const take = (k: number, raw: string | undefined) => {
+    const verb = (raw ?? '').toUpperCase();
+    found = VERBS.test(verb) ? { at: words[k].start, verb } : undefined;
+  };
   for (let k = at + 1; k < words.length; k++) {
     const v = words[k].value;
     const long = v.match(/^--(?:request|method)(?:=(.*))?$/);
     if (long) {
-      const verb = (long[1] ?? words[k + 1]?.value ?? '').toUpperCase();
-      return VERBS.test(verb) ? { at: words[k].start, verb } : undefined;
+      take(k, long[1] ?? words[k + 1]?.value);
+      if (long[1] === undefined) k++;
+      continue;
     }
-    if (v === '-X') {
-      const verb = (words[k + 1]?.value ?? '').toUpperCase();
-      return VERBS.test(verb) ? { at: words[k].start, verb } : undefined;
+    // `-X POST`, `-XPOST`, and a flag bundle ending in it: `-sX POST`, `-sXPOST`.
+    const short = v.match(/^-([A-Za-z0-9#]*?)X([A-Za-z]*)$/);
+    if (short && [...short[1]].every((c) => opts?.flags.includes(c))) {
+      take(k, short[2] || words[k + 1]?.value);
+      if (!short[2]) k++;
+      continue;
     }
-    if (/^-X[A-Za-z]+$/.test(v) && VERBS.test(v.slice(2)))
-      return { at: words[k].start, verb: v.slice(2).toUpperCase() };
-    if (httpie && !v.startsWith('-')) return VERBS.test(v) ? { at: words[k].start, verb: v.toUpperCase() } : undefined;
+    if (httpie && !v.startsWith('-')) return VERBS.test(v) ? { at: words[k].start, verb: v.toUpperCase() } : found;
     // The value of a data / header option is skipped whole: a `-X POST` spelled inside it is not the method.
-    const opts = VALUE_OPTIONS[name];
     if (opts && (opts.long.has(v) || (/^-[^-]$/.test(v) && opts.short.includes(v[1])))) k++;
   }
-  return undefined;
+  return found;
+}
+
+/**
+ * Whether a known client sends data — which makes curl's and `gh api`'s request a POST (wget's `--post-data` too) —
+ * read from its parsed options: a data option, attached (`--data=x`, `-dx`) or ending a flag bundle (`-sd x`). A
+ * flag spelled inside a header or another option's value does not count.
+ */
+const DATA_OPTIONS: Record<string, { long: RegExp; short: string }> = {
+  curl: { long: /^--(?:data(?:-raw|-binary|-urlencode|-ascii)?|json|form|form-string)(?:=|$)/, short: 'dF' },
+  gh: { long: /^--(?:field|raw-field|input)(?:=|$)/, short: 'fF' },
+  wget: { long: /^--(?:post-data|post-file)(?:=|$)/, short: '' },
+};
+
+function sendsData(words: Word[], at: number, name: string): boolean {
+  const opts = VALUE_OPTIONS[name];
+  const data = DATA_OPTIONS[name];
+  if (!opts || !data) return false;
+  for (let k = at + 1; k < words.length; k++) {
+    const v = words[k].value;
+    if (v.startsWith('--')) {
+      if (data.long.test(v)) return true;
+      if (opts.long.has(v)) k++;
+      continue;
+    }
+    if (!/^-[^-]/.test(v)) continue;
+    const letters = v.slice(1);
+    // `-d x` / `-sd x`: a bundle of flags ending in a data letter; `-dx`: a data letter carrying its value.
+    const bundleEnd = [...letters.slice(0, -1)].every((c) => opts.flags.includes(c));
+    if (bundleEnd && data.short.includes(letters[letters.length - 1])) return true;
+    if (data.short.includes(letters[0])) return true;
+    if (bundleEnd && opts.short.includes(letters[letters.length - 1])) k++;
+  }
+  return false;
 }
 
 /** The PR and issue writes a shell request names: its destination and the method nearest to it. */
@@ -702,11 +739,12 @@ function apiWrites(statement: string, words: Word[], at: number): GitHubWrite[] 
   // A known client's method comes from its options alone; a script's from a bare `POST /repos/…` argument.
   const own = client ? clientMethod(words, at, name) : undefined;
   const tokens = client ? (own ? [own] : []) : methodTokens(statement).filter((t) => t.bare);
+  const implied = !get && sendsData(words, at, name) ? 'POST' : undefined;
   const out: GitHubWrite[] = [];
   for (const d of destinationWords(words, at, name)) {
     ENDPOINT.lastIndex = 0;
     for (const m of d.value.matchAll(ENDPOINT)) {
-      const w = writeOf(m, verbOf(statement, tokens, d.start + (m.index ?? 0), get));
+      const w = writeOf(m, verbOf(tokens, d.start + (m.index ?? 0), implied));
       if (w) out.push(w);
     }
   }
@@ -791,7 +829,7 @@ function regexEnd(code: string, at: number): number {
  * `}` or the end. `x /re/ y` and `(0)/re/+0` divide — a call between the slashes runs.
  */
 function isRegexAt(code: string, at: number, last: string, word: string): boolean {
-  if (last === '' || /[(,=:[!&|?{};+\-*\/%<>~^]/.test(last) || BEFORE_REGEX.has(word)) return true;
+  if (last === '' || /[(,=:[!&|?{};+\-*/%<>~^]/.test(last) || BEFORE_REGEX.has(word)) return true;
   if (/\s/.test(code[at + 1] ?? ' ')) return false;
   const end = regexEnd(code, at);
   if (end < 0) return false;
@@ -907,6 +945,8 @@ function runsShell(receiver: string | undefined, dotted: boolean, name: string):
 interface CallArg extends CodeString {
   /** Directly in the call's argument list (or its options object) — not inside a nested call, array or object. */
   direct: boolean;
+  /** Inside an object literal argument (brace depth 1), not in the argument list itself. */
+  inObject: boolean;
 }
 
 /**
@@ -923,7 +963,7 @@ function callArgs(lexed: Lexed, open: number): { args: CallArg[]; end: number } 
   const limit = Math.min(masked.length, open + MAX_CALL_LENGTH);
   for (let j = open; j < limit; j++) {
     if (k < strings.length && strings[k].start === j) {
-      args.push({ ...strings[k], direct: parens === 1 && braces <= 1 && brackets === 0 });
+      args.push({ ...strings[k], direct: parens === 1 && braces <= 1 && brackets === 0, inObject: braces === 1 });
       j = strings[k].end - 1;
       k++;
       continue;
@@ -994,11 +1034,18 @@ function codeWrites(code: string, lang: CodeLang, depth: number, out: GitHubWrit
     ) {
       continue;
     }
+    // `fetch(new Request(…), init)`: the sender's own options override the Request's — not read.
+    if (
+      name === 'Request' &&
+      !/^\s*\)/.test(masked.slice(callArgs(lexed, open).end + 1, callArgs(lexed, open).end + 64))
+    ) {
+      continue;
+    }
     // `octokit.request("POST /repos/…")`, `requests.request("POST", url)`
     const leading = leadsWithString ? first.value.match(/^(GET|POST|PUT|PATCH|DELETE)(?:\s+\/?repos\/|$)/i) : null;
     const named = name.match(/\.(get|post|put|patch|delete)$/)?.[1];
     const verb = (named ?? leading?.[1] ?? methodOf(masked, args, open) ?? 'GET').toUpperCase();
-    for (const s of destinationArgs(masked, args, leadsWithString)) {
+    for (const s of destinationArgs(masked, args, leadsWithString, open)) {
       ENDPOINT.lastIndex = 0;
       for (const e of s.value.matchAll(ENDPOINT)) {
         const w = writeOf(e, verb);
@@ -1009,23 +1056,25 @@ function codeWrites(code: string, lang: CodeLang, depth: number, out: GitHubWrit
 }
 
 /**
- * Where a call sends: its leading string argument; or, when it has none (`axios({ url })`, `https.request({ path })`),
- * a direct `url` / `path` / `uri` option. A `url` inside a body (`axios.post(host, { url })`, `json={"url": …}`) is not.
+ * Where a call sends: its leading string argument; or a Python `url=` keyword in its argument list; or, when its first
+ * argument is an options object (`axios({ url })`, `https.request({ path })`), that object's `url` / `path` / `uri`.
+ * A destination held in a variable leaves the call unread: a `url` in its body never stands in for it.
  */
-function destinationArgs(masked: string, args: CallArg[], leadsWithString: boolean): CallArg[] {
+function destinationArgs(masked: string, args: CallArg[], leadsWithString: boolean, open: number): CallArg[] {
   if (leadsWithString) return [args[0]];
+  const optionsFirst = /^\(\s*\{/.test(masked.slice(open, open + 64));
   const out: CallArg[] = [];
   for (let k = 0; k < args.length; k++) {
     const s = args[k];
     if (!s.direct) continue;
-    const keyed = /\b(?:url|path|uri|baseURL|endpoint)\s*[:=]\s*$/.test(
-      masked.slice(Math.max(0, s.start - 40), s.start),
-    );
-    const quotedKey =
-      k > 0 &&
-      /^(?:url|path|uri|baseURL|endpoint)$/.test(args[k - 1].value) &&
-      /^\s*:\s*$/.test(masked.slice(args[k - 1].end, s.start));
-    if (keyed || quotedKey) out.push(s);
+    const before = masked.slice(Math.max(0, s.start - 40), s.start);
+    const kwarg = !s.inObject && /\b(?:url|uri)\s*=\s*$/.test(before);
+    const key =
+      /\b(?:url|path|uri|baseURL|endpoint)\s*:\s*$/.test(before) ||
+      (k > 0 &&
+        /^(?:url|path|uri|baseURL|endpoint)$/.test(args[k - 1].value) &&
+        /^\s*:\s*$/.test(masked.slice(args[k - 1].end, s.start)));
+    if (kwarg || (optionsFirst && s.inObject && key)) out.push(s);
   }
   return out;
 }

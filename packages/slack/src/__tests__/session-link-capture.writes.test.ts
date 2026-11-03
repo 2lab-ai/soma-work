@@ -580,6 +580,73 @@ describe('W7 — review round 8 (astra-zhuge)', () => {
   });
 });
 
+describe('W8 — review round 9 (astra-zhuge)', () => {
+  const view = '; gh pr view 12 -R a/b --json url -q .url';
+  const url = 'https://github.com/a/b/pull/12';
+  const list = '[{"number":12,"html_url":"https://github.com/a/b/pull/12"}]';
+
+  it('a destination held in a variable leaves the request unread — a body `url` never stands in for it (P1)', () => {
+    expect(
+      effectsOf(
+        bash(
+          `node -e 'const target="https://hooks.example.com/x"; axios.post(target, {url:"https://api.github.com/repos/a/b/pulls"})'${view}`,
+          url,
+        ),
+        bash(
+          `python3 -c 'import requests; t="https://hooks.example.com/x"; requests.post(t, json={"url": "https://api.github.com/repos/a/b/pulls"})'${view}`,
+          url,
+        ),
+      ),
+    ).toEqual([]);
+    // An options object as the first argument, or a Python `url=` keyword, is the destination.
+    expect(
+      effectsOf(
+        bash(
+          `python3 -c 'import requests; requests.post(url="https://api.github.com/repos/a/b/issues", json={})'`,
+          '{"number":95,"html_url":"https://github.com/a/b/issues/95"}',
+        ),
+      ).map(short),
+    ).toEqual([['create', 'issue', 'https://github.com/a/b/issues/95']]);
+  });
+
+  it('an implied POST comes from a parsed data option, not a flag spelled inside a header (P1)', () => {
+    expect(
+      effectsOf(
+        bash("curl -s -H 'X-Example: -d @p' https://api.github.com/repos/a/b/pulls", list),
+        bash("gh api -H 'X-Example: -f title=x' repos/a/b/pulls", list),
+      ),
+    ).toEqual([]);
+  });
+
+  it('curl uses its last method option; a bundled -sX is read (P1)', () => {
+    expect(
+      effectsOf(
+        bash('curl -s -X POST -X GET https://api.github.com/repos/a/b/pulls', list),
+        bash('curl -sX GET -d q=1 https://api.github.com/repos/a/b/pulls', list),
+      ),
+    ).toEqual([]);
+    expect(
+      effectsOf(
+        bash(
+          'curl -sXPOST https://api.github.com/repos/a/b/pulls -d @p',
+          '{"number":96,"html_url":"https://github.com/a/b/pull/96"}',
+        ),
+      ).map(short),
+    ).toEqual([['create', 'pr', 'https://github.com/a/b/pull/96']]);
+  });
+
+  it('a fetch that overrides its Request’s options is not read as the Request’s method (P1)', () => {
+    expect(
+      effectsOf(
+        bash(
+          `node -e 'fetch(new Request("https://api.github.com/repos/a/b/pulls", {method:"POST"}), {method:"GET"}).then(r=>r.json()).then(console.log)'`,
+          list,
+        ),
+      ),
+    ).toEqual([]);
+  });
+});
+
 describe('githubEffectsOf — every spelling of a create', () => {
   it('W4 — gh pr create and gh issue create (the output ends with the new URL)', () => {
     expect(
