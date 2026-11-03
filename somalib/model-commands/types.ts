@@ -1,3 +1,4 @@
+import type { HostReceipt } from './host-receipt';
 import type {
   Continuation,
   RenewState,
@@ -52,6 +53,10 @@ export interface ModelCommandContext {
   session?: SessionResourceSnapshot;
   /** Current session title (for GET_SESSION response) */
   sessionTitle?: string;
+  /** #846 — the host's receipt file for this session (`host-receipt.ts`); GET_SESSION reads it back. */
+  receiptFile?: string;
+  /** #846 — the `receiptId` of this server's last UPDATE_SESSION, to tell whether the host handled it yet. */
+  lastReceiptId?: string;
 }
 
 export interface ModelCommandDescriptor {
@@ -202,6 +207,10 @@ export interface ModelCommandPayloadMap {
   GET_SESSION: {
     session: SessionResourceSnapshot;
     title: string | null;
+    /** #846 — what the host applied (its receipt file), when the host wrote one for this session. */
+    host?: HostReceipt;
+    /** #846 — the host has not handled this server's last UPDATE_SESSION yet: read again before trusting `host`. */
+    hostPending?: boolean;
   };
   UPDATE_SESSION: {
     session: SessionResourceSnapshot;
@@ -224,6 +233,8 @@ export interface ModelCommandPayloadMap {
     titleFillOnly?: true;
     /** #829 — the card TL;DR for the host to apply (its ⚠️ line keeps the card waiting for the user). */
     executiveSummary?: { tldr: string[] };
+    /** #846 — names this write; the host echoes it in its receipt (`lastWrite.receiptId`) once it handled it. */
+    receiptId?: string;
   };
   ASK_USER_QUESTION: {
     question: UserChoice | UserChoices;
