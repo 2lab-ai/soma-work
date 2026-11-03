@@ -766,7 +766,9 @@ describe('GET_SESSION waits for the host ack', () => {
   let n = 0;
   const setup = () => {
     const file = path.join(dir, `r${++n}.json`);
-    const c = parseModelCommandContext(JSON.stringify({ channel: 'C1', threadTs: '1.1', user: 'U1', receiptFile: file }));
+    const c = parseModelCommandContext(
+      JSON.stringify({ channel: 'C1', threadTs: '1.1', user: 'U1', receiptFile: file }),
+    );
     return { file, c };
   };
   const add = {
@@ -775,7 +777,14 @@ describe('GET_SESSION waits for the host ack', () => {
   };
   const receipt = (sequence: number, ackId?: string) => ({
     sequence,
-    session: { issues: [], prs: [{ url: 'https://github.com/o/r/pull/9', type: 'pr' }], docs: [], active: {}, instructions: [], sequence },
+    session: {
+      issues: [],
+      prs: [{ url: 'https://github.com/o/r/pull/9', type: 'pr' }],
+      docs: [],
+      active: {},
+      instructions: [],
+      sequence,
+    },
     ...(ackId ? { acks: { [ackId]: { receiptId: ackId, ok: true, at: 5 } } } : {}),
     at: 1,
   });
@@ -798,7 +807,11 @@ describe('GET_SESSION waits for the host ack', () => {
     const k = clock((t) => {
       if (t >= 2_000) fs.writeFileSync(file, JSON.stringify(receipt(4, w.payload.receiptId)));
     });
-    const g = (await runModelCommandAwaitingHost({ commandId: 'GET_SESSION', params: { waitForAckMs: 30_000 } }, c, k)) as any;
+    const g = (await runModelCommandAwaitingHost(
+      { commandId: 'GET_SESSION', params: { waitForAckMs: 30_000 } },
+      c,
+      k,
+    )) as any;
     expect(g.ok).toBe(true);
     expect(g.payload.hostPending).toBe(false);
     expect(g.payload.host.lastWrite.receiptId).toBe(w.payload.receiptId);
@@ -811,7 +824,11 @@ describe('GET_SESSION waits for the host ack', () => {
     buildModelCommandRunResponse(add, c);
     fs.writeFileSync(file, JSON.stringify(receipt(3)));
     const k = clock();
-    const g = (await runModelCommandAwaitingHost({ commandId: 'GET_SESSION', params: { waitForAckMs: 3_000 } }, c, k)) as any;
+    const g = (await runModelCommandAwaitingHost(
+      { commandId: 'GET_SESSION', params: { waitForAckMs: 3_000 } },
+      c,
+      k,
+    )) as any;
     expect(g.payload.hostPending).toBe(true);
     expect(g.payload.hostWaitedMs).toBe(3_000);
   });
@@ -820,7 +837,11 @@ describe('GET_SESSION waits for the host ack', () => {
     const { file, c } = setup();
     fs.writeFileSync(file, JSON.stringify(receipt(3)));
     const k = clock();
-    const noWrite = (await runModelCommandAwaitingHost({ commandId: 'GET_SESSION', params: { waitForAckMs: 30_000 } }, c, k)) as any;
+    const noWrite = (await runModelCommandAwaitingHost(
+      { commandId: 'GET_SESSION', params: { waitForAckMs: 30_000 } },
+      c,
+      k,
+    )) as any;
     expect(noWrite.payload.hostWaitedMs).toBeUndefined();
     expect(k.now()).toBe(0);
     buildModelCommandRunResponse(add, c);

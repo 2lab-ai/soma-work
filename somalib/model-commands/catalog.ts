@@ -583,7 +583,8 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
             type: 'number',
             minimum: 0,
             maximum: 30_000,
-            description: 'Wait up to this many ms for the host to handle your last UPDATE_SESSION (hostWaitedMs says how long it waited).',
+            description:
+              'Wait up to this many ms for the host to handle your last UPDATE_SESSION (hostWaitedMs says how long it waited).',
           },
         },
         additionalProperties: false,

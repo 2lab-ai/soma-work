@@ -245,7 +245,8 @@ describe('SummaryService', () => {
     describe('buildSummaryBlocks() — markdown → Slack mrkdwn conversion (full in-thread ES)', () => {
       it('converts **bold** to *bold*; double underscores stay (identifiers, #881 B3)', () => {
         const service = new SummaryService();
-        const text = (service.buildSummaryBlocks('a **bold** word and the __init__ module')[1] as any).text.text as string;
+        const text = (service.buildSummaryBlocks('a **bold** word and the __init__ module')[1] as any).text
+          .text as string;
         expect(text).toContain('*bold*');
         expect(text).not.toContain('**bold**');
         // `__x__` used to become `_x_`, which broke `__init__` / `obj.__dict__` (summary-mrkdwn-identifiers.test.ts).

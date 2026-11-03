@@ -2562,7 +2562,8 @@ export class SessionRegistry {
   ): boolean {
     if (!session || !Array.isArray(links) || links.length === 0) return false;
     this.ensureSessionLinkState(session);
-    const changed = mode === 'update' ? this.updateNotedLinkStates(session, links) : this.noteNewLinks(session, links, mode);
+    const changed =
+      mode === 'update' ? this.updateNotedLinkStates(session, links) : this.noteNewLinks(session, links, mode);
     // #881 C2 — the receipt is the host's state: a link the host noted itself reaches it now, not at the next write.
     if (changed) this.writeModelCommandReceiptFor(this.receiptKeyOf(session), session, undefined);
     return changed;
