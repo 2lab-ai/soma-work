@@ -308,7 +308,7 @@ export class SessionArchiveStore {
   /**
    * Archive a session to disk.
    * MUST be called before the session is deleted from the Map.
-   * Never throws — errors are logged and swallowed.
+   * Never throws — errors are logged and swallowed; the result says whether the file was written.
    *
    * Trace: Scenario 1 Section 3b, Scenario 2 Section 3a
    */
@@ -317,7 +317,7 @@ export class SessionArchiveStore {
     sessionKey: string,
     reason: 'terminated' | 'sleep_expired',
     marks?: ArchiveMarks,
-  ): void {
+  ): boolean {
     try {
       this.ensureDir();
       const archived = sessionToArchive(session, sessionKey, reason, marks);
@@ -335,6 +335,7 @@ export class SessionArchiveStore {
       }
 
       logger.info('Session archived', { sessionKey, reason });
+      return true;
     } catch (err) {
       logger.error('Failed to archive session', { sessionKey, error: err });
       // Clean up orphaned tmp file (best-effort)
@@ -344,6 +345,7 @@ export class SessionArchiveStore {
       } catch {
         /* ignore cleanup errors */
       }
+      return false;
     }
   }
 

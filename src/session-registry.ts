@@ -3178,7 +3178,8 @@ export class SessionRegistry {
         fs.mkdirSync(DATA_DIR, { recursive: true });
       }
 
-      const sessionsArray: SerializedSession[] = [];
+      // #855 — a dashboard task the load could not archive stays, as it was, for the next load.
+      const sessionsArray: SerializedSession[] = [...this.unarchivedDashboardTasks];
       for (const session of this.sessions.values()) {
         // Save sessions that have conversation history (sessionId) OR a pending
         // handoff context (AD-12, issue #695). The handoffContext branch covers
@@ -3402,6 +3403,12 @@ export class SessionRegistry {
   }
 
   /**
+   * #855 — dashboard tasks the load could not archive: written back to sessions.json as they were
+   * (never loaded), so the next load archives them instead of losing them.
+   */
+  private unarchivedDashboardTasks: SerializedSession[] = [];
+
+  /**
    * A save that died between its temp write and its rename leaves
    * `sessions.json.<pid>.<uuid>.tmp` behind (megabytes each). Nothing is
    * saving while the registry loads, so every such file is an orphan (#612 R5).
@@ -3430,13 +3437,13 @@ export class SessionRegistry {
    * Archive a serialized session during loadSessions() when it's being discarded (#401).
    * Creates a minimal ConversationSession from serialized data to pass to the archive store.
    * A dashboard task's record (#855) keeps its mark in the archive: the board's closed column
-   * shows it, and no revive brings it back.
+   * shows it, and no revive brings it back. True when the record has an archive that holds it.
    */
   private archiveSerializedOnLoad(
     serialized: SerializedSession,
     lastActivity: Date,
     reason: 'terminated' | 'sleep_expired',
-  ): void {
+  ): boolean {
     const dashboardTask = serialized.slackless === true;
     const key =
       typeof serialized.key === 'string' && serialized.key !== ''
@@ -3445,8 +3452,14 @@ export class SessionRegistry {
           ? `task:${serialized.taskId}`
           : serialized.key;
     try {
-      // Skip if already archived (prevents duplicates on repeated restarts)
-      if (getArchiveStore().exists(key)) return;
+      // Skip if already archived (prevents duplicates on repeated restarts). A dashboard task
+      // archived once, revived and worked on since, is archived again: this record is its only
+      // copy of the work after that archive (#855, review #885 astra).
+      if (dashboardTask) {
+        const latest = getArchiveStore().latest(key);
+        const changedAt = Math.max(lastActivity.getTime() || 0, finiteStamp(serialized.activityStateChangedAt) ?? 0);
+        if (latest && latest.archivedAt >= changedAt) return true;
+      } else if (getArchiveStore().exists(key)) return true;
 
       // Coerce serialized model string against AVAILABLE_MODELS. Known-legacy
       // ids pass through unchanged; unknown or case-drifted values normalize
@@ -3504,10 +3517,11 @@ export class SessionRegistry {
         incidentAttemptFinishedId:
           typeof serialized.incidentAttemptFinishedId === 'string' ? serialized.incidentAttemptFinishedId : undefined,
       };
-      getArchiveStore().archive(session, key, reason, dashboardTask ? { slackless: true } : undefined);
+      return getArchiveStore().archive(session, key, reason, dashboardTask ? { slackless: true } : undefined) !== false;
     } catch (err) {
       // #855 — a dashboard task's archive is its only copy once the load drops it: say so.
       this.logger[dashboardTask ? 'warn' : 'debug']('Failed to archive session during load', { key, error: err });
+      return false;
     }
   }
 
@@ -3534,6 +3548,7 @@ export class SessionRegistry {
       let mintedTaskIdCount = 0;
       /** #855 — dashboard tasks (Slack-less records) archived by this load. */
       let archivedDashboardTasks = 0;
+      this.unarchivedDashboardTasks = [];
       /** E4 ⑦ (D10 a) — epic trees kept from the load-time archive (decided over the whole file). */
       const epicTreeExempt = exemptEpicTreeTaskIds(Array.isArray(sessionsArray) ? sessionsArray : []);
       this._crashRecoveredSessions = [];
@@ -3544,8 +3559,10 @@ export class SessionRegistry {
         // archived at load — its card stays readable in CLOSED — and never loaded. Its folder is
         // the owner's: nothing on disk is removed.
         if (serialized.slackless === true) {
-          this.archiveSerializedOnLoad(serialized, lastActivity, 'terminated');
-          archivedDashboardTasks++;
+          if (this.archiveSerializedOnLoad(serialized, lastActivity, 'terminated')) archivedDashboardTasks++;
+          // Not archived (the disk said no): the record stays in the file as it was, and the next
+          // load tries again — a dashboard task is never dropped without its archive (review #885 astra).
+          else this.unarchivedDashboardTasks.push(serialized);
           continue;
         }
         let sleepStartedAt = serialized.sleepStartedAt ? new Date(serialized.sleepStartedAt) : undefined;
@@ -3922,6 +3939,12 @@ export class SessionRegistry {
       if (archivedDashboardTasks > 0) {
         this.logger.warn(
           `Archived ${archivedDashboardTasks} dashboard task(s) on load — the dashboard-task stack was removed (#855)`,
+        );
+      }
+      if (this.unarchivedDashboardTasks.length > 0) {
+        this.logger.error(
+          `Could not archive ${this.unarchivedDashboardTasks.length} dashboard task(s) on load — kept in sessions.json for the next load (#855)`,
+          { keys: this.unarchivedDashboardTasks.map((r) => r.key) },
         );
       }
       if (sleptOnLoadCount > 0 || mintedTaskIdCount > 0 || archivedDashboardTasks > 0) {
