@@ -646,12 +646,21 @@ function regexEnd(code: string, at: number): number {
   return -1;
 }
 
-/** Whether the `/` at `at` opens a regex literal, given the last code character and word before it. */
+/**
+ * Whether the `/` at `at` opens a regex literal, given the last code character and word before it. After an operator,
+ * an opening bracket, a keyword or at the start, JS reads a regex. After an operand (a name, a number, `)`, `]`, a
+ * string — on the same line or the line before) JS reads a division, so it is masked only when a division could not
+ * compile: no space after the `/`, and the would-be closing `/` (and flags) followed by `.name`, `)`, `,`, `;`, `]`,
+ * `}` or the end. `x /re/ y` and `(0)/re/+0` divide — a call between the slashes runs.
+ */
 function isRegexAt(code: string, at: number, last: string, word: string): boolean {
   if (last === '' || /[(,=:[!&|?{};+\-*\/%<>~^]/.test(last) || BEFORE_REGEX.has(word)) return true;
   if (/\s/.test(code[at + 1] ?? ' ')) return false;
   const end = regexEnd(code, at);
-  return end > 0 && (end >= code.length || /[.),;\]}\s]/.test(code[end]));
+  if (end < 0) return false;
+  let j = end;
+  while (j < code.length && /\s/.test(code[j])) j++;
+  return j >= code.length || /[),;\]}]/.test(code[j]) || (code[j] === '.' && /[A-Za-z_$]/.test(code[j + 1] ?? ''));
 }
 
 function lexCode(code: string, lang: CodeLang): Lexed {
@@ -678,10 +687,7 @@ function lexCode(code: string, lang: CodeLang): Lexed {
       blank(close < 0 ? n : close + 2);
       continue;
     }
-    // A regex literal (JS, Ruby). Masking only ever hides code, so a doubtful `/` leans to a regex: after an
-    // operator, an opening bracket, a keyword or at the start it is one; anywhere else (an operand, `)`, `]`, the
-    // start of a line) when it looks like one — no space after the opening `/`, and the closing `/` and its flags
-    // followed by `.`, `)`, `,`, `;`, `]`, `}`, a space or the end (`(s) /re/.test(s)`, a line that starts `/re/`).
+    // A regex literal (JS, Ruby) — where JS reads one, or where a division could not compile (see isRegexAt).
     if (c === '/' && lang !== 'py' && isRegexAt(code, i, last, word)) {
       const end = regexEnd(code, i);
       if (end > 0) {
@@ -720,11 +726,6 @@ function lexCode(code: string, lang: CodeLang): Lexed {
     }
     masked.push(c);
     i++;
-    if (c === '\n') {
-      last = '\n';
-      word = '';
-      continue;
-    }
     if (/\s/.test(c)) continue;
     if (/[\w$]/.test(c)) word = /[\w$]/.test(last) ? word + c : c;
     else word = '';
