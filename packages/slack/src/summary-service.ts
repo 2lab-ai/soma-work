@@ -24,7 +24,9 @@ const MAX_PROMPT_HISTORY_ENTRIES = 10;
 /**
  * Executive-summary mode (host-selected from session state).
  *
- * Design: `src/local/skills/es/SKILL.md`. The three modes mirror
+ * Design: `src/local/skills/es/SKILL.md` (zworkflow es). soma-work's turn-end summary is `local:auto-es` run
+ * without tools: the es contract below plus the skill's turn-end contract, which soma-work reads from
+ * `src/local-harness/skills/auto-es/reference/turn-end.md` and hands in as `turnEndContract` (#857). The three modes mirror
  * `using-epic-tasks` Case A/B/C but for the *report* layer — the legacy fixed
  * 8-section format becomes the `epic` tier, and the previous lighter
  * "What was done / Decisions / Open threads / Next actions" recap is the
@@ -59,18 +61,12 @@ third line
 </tldr>
 - Exactly 3 lines. Each line is one plain sentence of at most 100 characters — no bullets, headings, code or tables.
 - Line 1 is the outcome: what changed, was decided or was answered. Lines 2 and 3 carry the most important supporting fact and the next step or open risk.
-- Unfinished own artifact (see below) → line 2 MUST start with ⚠️ and state in bold which issue/PR is not complete and why it cannot be completed, written as plain text like this line: ⚠️ **PR #830 not merged — merging needs a maintainer approval the bot does not have.** (bold is allowed on this line only). Several unfinished artifacts share this one line. A line that starts with ⚠️ is reserved for this signal only — the host reads it to keep the task card waiting for the user, so never start a line with ⚠️ for a risk or a note.
 - Use only facts that also appear in the document below the block.
 - The host removes this block from the document and shows it alone on the channel-visible thread surface; the full document is posted inside the thread. The block is an envelope, not part of the document — the document after it still starts with SSOT.
 
 Top-of-document invariant (applies to the document after the TL;DR block, in every mode that has artifacts):
 1. **SSOT** — quote the user's instruction verbatim. Never paraphrase.
-2. **Status** — issue/PR/document links with current state (Open / Draft / Merged / Closed / QA / etc.) and any state changes that happened in this session. Mark every issue, PR and document created this session with \`🆕 created this session\`. In \`brief\` mode with no link at all, omit Status entirely rather than render an empty section.
-
-Unfinished own artifacts (applies in every mode):
-- An own artifact is an issue, PR or document this session created. It is complete only when a PR is Merged (or Closed on purpose with the reason stated), an issue is Closed, a document is published where the user reads it. Open, Draft, review pending, approved but unmerged, CI failing, merge conflict, waiting on deploy/QA are not complete.
-- When any own artifact is not complete: the ⚠️ TL;DR line above is mandatory, and the document's very last section is **⚠️ User follow-up required** — after the mode's own sections. One block per unfinished artifact: the link and its state; **why it cannot be completed by the agent** (bold, the concrete blocker and its evidence — never just "pending"); who must act; numbered steps the user can run (a fenced command or the exact click path); how to verify it is done; what to reply in this thread so the agent continues.
-- When every own artifact is complete: no ⚠️ line, no follow-up section.
+2. **Status** — issue/PR links with current state (Open / Draft / Merged / Closed / QA / etc.) and any state changes that happened in this session. In \`brief\` mode with no link at all, omit Status entirely rather than render an empty section.
 
 Required content (omit any section that has nothing concrete to report — do NOT fabricate or hedge):
 
@@ -213,7 +209,7 @@ const FOLLOW_UP_LINE = /^[\s*_~]*\u26a0\ufe0f?/u;
 /**
  * #829 — what the task card waits on the user for: the TL;DR's ⚠️ lines, markup stripped, joined.
  *
- * The es contract reserves a leading ⚠️ in a TL;DR line for "an issue/PR this session created is not
+ * The `local:auto-es` contract (#857) reserves a leading ⚠️ in a TL;DR line for "an issue/PR this session created is not
  * complete, and why". The same line the reader sees emphasized is the host's signal — one source, so the card
  * cannot say "waiting" while the summary says "done", or the reverse. Undefined when no line carries it.
  */
@@ -481,6 +477,15 @@ export interface SummarySlackApi {
   ) => Promise<any>;
 }
 
+/** Construction options for {@link SummaryService}. */
+export interface SummaryServiceOptions {
+  /**
+   * #857 — the harness skill's turn-end contract (`local:auto-es`, reference/turn-end.md), appended after the es
+   * contract. soma-work reads it from the bundled harness plugin; without it the summary is the generic es one.
+   */
+  turnEndContract?: string;
+}
+
 /**
  * Handles executive summary generation and display.
  *
@@ -495,6 +500,7 @@ export interface SummarySlackApi {
 export class SummaryService {
   private forkExecutor: ForkExecutor;
   private slackApi?: SummarySlackApi;
+  private turnEndContract?: string;
 
   /**
    * @param forkExecutor - Injected function that executes prompt via forked session.
@@ -503,15 +509,17 @@ export class SummaryService {
    *   when absent, `postInThread` becomes a no-op (tests and host-fork
    *   configurations without Slack credentials still work).
    */
-  constructor(forkExecutor?: ForkExecutor, slackApi?: SummarySlackApi) {
+  constructor(forkExecutor?: ForkExecutor, slackApi?: SummarySlackApi, options?: SummaryServiceOptions) {
     this.forkExecutor = forkExecutor ?? (async (prompt) => prompt);
     this.slackApi = slackApi;
+    this.turnEndContract = options?.turnEndContract?.trim() || undefined;
   }
 
   /**
    * Build the full summary prompt from session context + tier template + global rules.
    *
-   * Composition: `<Session Context with mode header>\n\n<MODE_TEMPLATES[mode]>\n\n<SUMMARY_PROMPT>`.
+   * Composition: `<Session Context with mode header>\n\n<MODE_TEMPLATES[mode]>\n\n<SUMMARY_PROMPT>`, then the
+   * `local:auto-es` turn-end contract when one was handed in (#857).
    * The host computes the mode; the LLM is told not to reclassify because a
    * one-shot, no-tools forked summary cannot reliably count artifacts from
    * transcript noise.
@@ -542,7 +550,9 @@ export class SummaryService {
       contextParts.push(`- Parent epic: ${session.handoffContext.parentEpicUrl}`);
     }
 
-    return `${contextParts.join('\n')}\n\n${MODE_TEMPLATES[mode]}\n\n${SUMMARY_PROMPT}`;
+    const base = `${contextParts.join('\n')}\n\n${MODE_TEMPLATES[mode]}\n\n${SUMMARY_PROMPT}`;
+    // #857 — soma-work's turn end runs `local:auto-es`: its harness rules come last, on top of the es contract.
+    return this.turnEndContract ? `${base}\n\n${this.turnEndContract}` : base;
   }
 
   /**
