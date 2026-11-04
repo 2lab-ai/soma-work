@@ -155,6 +155,8 @@ const TRUSTED_ASSOCIATION = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 export const BOT_ROUNDS = 3;
 /** #930 — the first look at a PR reads this far back, so turning the watch on does not replay a PR's history. */
 export const FIRST_LOOK_MS = 10 * 60_000;
+/** #930 round 3 — an unreadable App login (GET /app refused) is asked again after this, not every tick. */
+const LOGIN_RETRY_MS = 10 * 60_000;
 const MAX_ACTIVITY_MESSAGE = 1500;
 
 function activityMessage(number: number, url: string, items: ActivityItem[]): string {
@@ -287,6 +289,16 @@ export function createSessionPrWatch(deps: PrWatchDeps): SessionPrWatch {
   /** #930 — PRs whose activity message waits in the delivery queue. */
   const activityInflight = new Set<string>();
   let loginMissingLogged = false;
+  /** #930 round 3 — the bot's login once known; an unreadable one is asked again only after LOGIN_RETRY_MS. */
+  let login: string | undefined;
+  let loginRetryAt = 0;
+  const myLogin = async (read: () => Promise<string | undefined>): Promise<string | undefined> => {
+    if (login || now() < loginRetryAt) return login;
+    const got = (await read())?.toLowerCase();
+    if (got) login = got;
+    else loginRetryAt = now() + LOGIN_RETRY_MS;
+    return login;
+  };
   const askedAt = new Map<string, number>();
   let running: Promise<void> | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -363,6 +375,7 @@ export function createSessionPrWatch(deps: PrWatchDeps): SessionPrWatch {
     if (FINAL.has(state.status)) {
       // A finished PR has no more CI to tell about.
       deps.store?.delete(key);
+      activityDirty.delete(key);
       for (const k of [...checksKnown.keys()]) if (k.startsWith(`${key}@`)) checksKnown.delete(k);
       if (!missed) {
         known.delete(key);
@@ -388,7 +401,7 @@ export function createSessionPrWatch(deps: PrWatchDeps): SessionPrWatch {
       activityDirty.add(key);
       return;
     }
-    const me = (await ownLogin())?.toLowerCase();
+    const me = await myLogin(ownLogin);
     if (!me) {
       activityDirty.add(key);
       if (!loginMissingLogged) {

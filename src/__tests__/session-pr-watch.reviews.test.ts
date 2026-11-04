@@ -302,9 +302,17 @@ describe('session PR watch — reviews and comments, round 2 (#930)', () => {
     expect(h.state.delivered[1]).not.toContain('@alice');
   });
 
-  it("the bot's own login unknown at first: the changed PR is read once it is known, even on a 304", async () => {
+  it("the bot's own login unknown at first: the changed PR is read once it is known, even on a 304 — asked again only every 10 minutes (#930 round 3)", async () => {
     let login: string | undefined;
-    const h = harness({ ownLogin: async () => login });
+    let t = NOW;
+    let loginAsks = 0;
+    const h = harness({
+      now: () => t,
+      ownLogin: async () => {
+        loginAsks++;
+        return login;
+      },
+    });
     h.data.set(KEY, { since: iso(10) });
     h.state.activity = [item({ at: iso(2) })];
     const watch = createSessionPrWatch(h.deps);
@@ -312,8 +320,18 @@ describe('session PR watch — reviews and comments, round 2 (#930)', () => {
     expect(h.state.asks).toEqual([]);
     login = 'zhuge-liang-bot[bot]';
     h.state.pull = 'not-modified';
+    // A failed login read is not repeated every tick (GET /app warns on each failure).
     await watch.tick();
+    expect(loginAsks).toBe(1);
+    expect(h.state.delivered).toEqual([]);
+    t = NOW + 10 * 60_000 + 1;
+    await watch.tick();
+    expect(loginAsks).toBe(2);
     expect(h.state.delivered).toHaveLength(1);
+    // Known now: not asked again.
+    t += 60_000;
+    await watch.tick();
+    expect(loginAsks).toBe(2);
   });
 
   it('an allowed bot that comes with a person does not use up a bot round; bot-only activity does', async () => {
