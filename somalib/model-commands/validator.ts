@@ -50,8 +50,9 @@ const ASK_USER_QUESTION_EXAMPLES = {
       question: 'Choose next step',
       recommendedChoiceId: '1',
       choices: [
-        { id: '1', label: 'Write implementation spec', description: 'Document API and tasks first' },
+        { id: '1', label: 'Write implementation spec', description: 'Recommended — document API and tasks first' },
         { id: '2', label: 'Start implementation', description: 'Code immediately from current context' },
+        { id: '3', label: 'Prototype first', description: 'Throwaway spike, then decide' },
       ],
     },
   },
@@ -65,8 +66,9 @@ const ASK_USER_QUESTION_EXAMPLES = {
           question: 'Which approach?',
           recommendedChoiceId: '1',
           options: [
-            { id: '1', label: 'Option A' },
+            { id: '1', label: 'Option A (recommended)' },
             { id: '2', label: 'Option B' },
+            { id: '3', label: 'Option C' },
           ],
         },
       ],
@@ -74,17 +76,33 @@ const ASK_USER_QUESTION_EXAMPLES = {
   },
 };
 
+/**
+ * #917 — every question to the user has one shape: choice 1 is the recommended action, the next 2–3 are
+ * alternatives, and the host adds 직접 입력 (direct input) as the last option on every surface (Slack form,
+ * dashboard card). 4 is Slack's cap (`ChoiceMessageBuilder` shows 4 choices).
+ */
+export const ASK_USER_QUESTION_MIN_CHOICES = 3;
+export const ASK_USER_QUESTION_MAX_CHOICES = 4;
+export const ASK_USER_QUESTION_SHAPE_RULE =
+  'Each question needs 3–4 choices: choice 1 = the recommended action, choices 2–4 = alternative actions. ' +
+  'Do not add a "직접 입력" / "Other" choice — the host adds 직접 입력 (direct input) as the last option itself.';
+
+/** A choice the model wrote for free text — the host's own 직접 입력 replaces it. */
+const DIRECT_INPUT_LABEL_RE =
+  /^\s*(?:\u270f\ufe0f?\s*)?(?:(?:직접\s*입력(?:하기)?|기타)(?:\s*(?:[:(—…-].*)?)?|(?:other|custom(?:\s+input)?|type your own|free[\s-]?text)(?:\s*(?:\(.*\)|…|\.\.\.))?)\s*$/iu;
+
 const ASK_USER_QUESTION_INVALID_MESSAGE = [
   'ASK_USER_QUESTION params must follow a strict schema.',
   'Required top-level shape: params.payload = { ... }',
   'Allowed payload.type values: "user_choice" | "user_choice_group".',
   'Do not send wrapper formats like params.user_choice or root question/options.',
   'Minimum user_choice schema:',
-  '{ "type":"user_choice", "question":"...", "recommendedChoiceId":"1", "choices":[{ "id":"1", "label":"Option A", "description":"optional" }] }',
+  '{ "type":"user_choice", "question":"...", "recommendedChoiceId":"1", "choices":[{ "id":"1", "label":"Recommended action" }, { "id":"2", "label":"Alternative A" }, { "id":"3", "label":"Alternative B" }] }',
   'Minimum user_choice_group schema:',
-  '{ "type":"user_choice_group", "question":"...", "choices":[{ "question":"...", "recommendedChoiceId":"1", "options":[{ "id":"1", "label":"Option A" }] }] }',
-  'Rules: "choices" or "options" must be a non-empty array of objects, and each item requires "label" (string).',
-  'Optional: "recommendedChoiceId" must match one of the option ids; if it does not, it is silently dropped.',
+  '{ "type":"user_choice_group", "question":"...", "choices":[{ "question":"...", "recommendedChoiceId":"1", "options":[{ "id":"1", "label":"Recommended action" }, { "id":"2", "label":"Alternative A" }, { "id":"3", "label":"Alternative B" }] }] }',
+  'Rules: "choices" or "options" must be an array of objects, and each item requires "label" (string).',
+  ASK_USER_QUESTION_SHAPE_RULE,
+  'Optional: "recommendedChoiceId" — when given it must be the first choice; when missing, choice 1 is the recommended one.',
 ].join('\n');
 
 export function validateModelCommandRunArgs(args: unknown): ValidationResult {
@@ -687,12 +705,60 @@ function parseAskUserQuestionParams(
     return invalidAskUserQuestionArgs(raw, 'payload_schema_invalid');
   }
 
+  const shaped = shapeQuestion(normalized);
+  if (typeof shaped === 'string') {
+    return invalidArgs(`${shaped}\n${ASK_USER_QUESTION_SHAPE_RULE}`, {
+      reason: 'question_shape',
+      minChoices: ASK_USER_QUESTION_MIN_CHOICES,
+      maxChoices: ASK_USER_QUESTION_MAX_CHOICES,
+      examples: ASK_USER_QUESTION_EXAMPLES,
+    });
+  }
+
   return {
     ok: true,
     value: {
-      question: normalized,
+      question: shaped,
     },
   };
+}
+
+/**
+ * #917 — the one shape of a question (see {@link ASK_USER_QUESTION_SHAPE_RULE}): a model-written direct-input
+ * choice is dropped (the host adds its own last), 3–4 choices are left, the recommended one is the first — named
+ * so when the model named none. Returns the shaped question, or why it cannot be asked.
+ */
+function shapeQuestion(question: UserChoice | UserChoices): UserChoice | UserChoices | string {
+  if (question.type === 'user_choice') {
+    const shaped = shapeChoices(question.choices, question.recommendedChoiceId, '');
+    return typeof shaped === 'string' ? shaped : { ...question, ...shaped };
+  }
+  const questions: UserChoiceQuestion[] = [];
+  for (const item of question.questions) {
+    const shaped = shapeChoices(item.choices, item.recommendedChoiceId, `question "${item.question}": `);
+    if (typeof shaped === 'string') return shaped;
+    questions.push({ ...item, ...shaped });
+  }
+  return { ...question, questions };
+}
+
+function shapeChoices(
+  choices: UserChoiceOption[],
+  recommendedChoiceId: string | undefined,
+  where: string,
+): { choices: UserChoiceOption[]; recommendedChoiceId: string } | string {
+  const kept = choices.filter((c) => !DIRECT_INPUT_LABEL_RE.test(c.label));
+  if (kept.length < ASK_USER_QUESTION_MIN_CHOICES) {
+    return `ASK_USER_QUESTION ${where}needs at least ${ASK_USER_QUESTION_MIN_CHOICES} choices (got ${kept.length}) — 1 = the recommended action, 2 and 3 = alternatives; the host adds 직접 입력 last.`;
+  }
+  if (kept.length > ASK_USER_QUESTION_MAX_CHOICES) {
+    return `ASK_USER_QUESTION ${where}takes at most ${ASK_USER_QUESTION_MAX_CHOICES} choices (got ${kept.length}) — Slack shows ${ASK_USER_QUESTION_MAX_CHOICES}, and the host adds 직접 입력 after them.`;
+  }
+  const recommended = kept.some((c) => c.id === recommendedChoiceId) ? recommendedChoiceId : undefined;
+  if (recommended !== undefined && recommended !== kept[0].id) {
+    return `ASK_USER_QUESTION ${where}the recommended choice must be the first (1 = recommended; got "${recommended}" at position ${kept.findIndex((c) => c.id === recommended) + 1}). Put it first.`;
+  }
+  return { choices: kept, recommendedChoiceId: kept[0].id };
 }
 
 /**

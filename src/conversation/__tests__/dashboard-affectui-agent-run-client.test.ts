@@ -726,8 +726,6 @@ function cards(
       'acPermissionsHtml',
       'acGoalDecisionHtml',
       'acInstructionApprovalsHtml',
-      'acFollowUpHtml',
-      'panelFollowUpShown',
       'acQuestionHtml',
       'stripRecommendedMarker',
       'resolveRecommendedId',
@@ -806,13 +804,9 @@ describe('needs-input header (D8/D9)', () => {
 
   it('the count is the prompts plus an open question; none hides the header', () => {
     const els: Record<string, El> = { 'panel-needs-head': box({ hidden: true }), 'panel-needs-count': box() };
-    const m = load<{ renderPanelNeedsHead(s: unknown): void }>(
-      ['panelQuestionShown', 'panelFollowUpShown', 'renderPanelNeedsHead'],
-      [],
-      {
-        document: { getElementById: (id: string) => els[id] ?? null },
-      },
-    );
+    const m = load<{ renderPanelNeedsHead(s: unknown): void }>(['panelQuestionShown', 'renderPanelNeedsHead'], [], {
+      document: { getElementById: (id: string) => els[id] ?? null },
+    });
     const q = { type: 'user_choice', question: '?', choices: [{ id: '1', label: 'a' }] };
     m.renderPanelNeedsHead(
       SESSION({ pendingPermissions: [PERM(), PERM({ approvalId: 'approval_b' })], pendingQuestion: q }),
@@ -1124,8 +1118,6 @@ describe('after an answer (D15)', () => {
       document: { getElementById: (id: string) => els[id] ?? null, activeElement: null },
       acGoalDecisionHtml: () => '',
       acInstructionApprovalsHtml: () => '',
-      acFollowUpHtml: () => '',
-      panelFollowUpShown: () => false,
       acPermissionsHtml: (s: { pendingPermissions: Array<{ approvalId: string }> }) =>
         s.pendingPermissions.map((p) => `<${p.approvalId}>`).join(''),
       acHydrate: () => {},
@@ -1299,8 +1291,6 @@ describe('live repaint never rebinds an answer to another request (D14, review R
       document,
       acGoalDecisionHtml: () => '',
       acInstructionApprovalsHtml: () => '',
-      acFollowUpHtml: () => '',
-      panelFollowUpShown: () => false,
       acPermissionsHtml: (s: { pendingPermissions: Array<{ approvalId: string }> }) =>
         s.pendingPermissions.map((p) => p.approvalId).join(','),
       acHydrate: () => {},
@@ -1649,7 +1639,8 @@ describe('question card (D17)', () => {
         { id: 'run', label: 'run. Run on production', description: 'Applies 0042' },
         { id: 'wait', label: 'wait. Wait for the backup' },
       ],
-      allowOther: false,
+      // #917 — the last option is direct input, as on Slack.
+      allowOther: true,
       recommendedId: 'wait',
     });
     // A legacy "(Recommended)" label: recommended, the marker stripped.
@@ -1924,8 +1915,6 @@ describe('template hygiene', () => {
       'acPermissionsHtml',
       'acGoalDecisionHtml',
       'acInstructionApprovalsHtml',
-      'acFollowUpHtml',
-      'panelFollowUpShown',
       'acQuestionHtml',
       'acHydrate',
       'acRepaint',

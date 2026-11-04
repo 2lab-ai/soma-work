@@ -73,8 +73,6 @@ const FNS = [
   'acInstructionApprovalLock',
   'acInstructionApprovalData',
   'acInstructionApprovalsHtml',
-  'acFollowUpHtml',
-  'panelFollowUpShown',
   'acPost',
   'acRefusal',
   'acDrop',
