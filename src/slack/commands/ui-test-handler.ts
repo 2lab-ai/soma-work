@@ -8,7 +8,7 @@ import type { CommandContext, CommandDependencies, CommandHandler, CommandResult
 const execAsync = promisify(exec);
 
 /** Anchored match for `ui-test` and its subcommands. Case-insensitive. */
-const UI_TEST_RE = /^ui-test(?:\s+(stream|plan|task_card|work))?$/i;
+const UI_TEST_RE = /^\/?ui-test(?:\s+(stream|plan|task_card|work))?$/i;
 
 /**
  * UI test harness for Phase 0 of #525 — Slack Agents UI migration.

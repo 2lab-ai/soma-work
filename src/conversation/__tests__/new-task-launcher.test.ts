@@ -146,6 +146,61 @@ describe('launchNewTask', () => {
     expect(result.status).toBe('running');
   });
 
+  it('answer-only (/help): runs the message, answers once it was handled — no session awaited — with the thread link', async () => {
+    const d = deps({
+      handleMessage: vi.fn(async () => {
+        d.calls.push('handleMessage');
+      }),
+    });
+    const result = await launchNewTask('U123', submission({ prompt: '/help', autoz: false, answerOnly: true }), d);
+    expect(result).toMatchObject({
+      status: 'answered',
+      channel: 'C_ALPHA',
+      permalink: 'https://slack.example/archives/C_ALPHA/p1792735000000100',
+    });
+    expect(d.handleMessage).toHaveBeenCalledTimes(1);
+    expect((d.handleMessage as any).mock.calls[0][0].text).toBe('/help');
+    expect(d.postThreadNotice).not.toHaveBeenCalled();
+  });
+
+  it('answer-only still being handled when the wait ends: answered, but not claimed handled (trinity R3, grok-elon)', async () => {
+    let fail: (e: Error) => void = () => {};
+    const d = deps({
+      handleMessage: vi.fn(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            fail = reject;
+          }),
+      ),
+    });
+    const result = await launchNewTask(
+      'U123',
+      submission({ prompt: '/model opus', autoz: false, answerOnly: true }),
+      d,
+    );
+    expect(result).toMatchObject({ status: 'answered', handled: false });
+    // It fails later: the thread hears that the command failed — not that a task's run did.
+    fail(new Error('catalog refresh timed out'));
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    const notices = (d.postThreadNotice as any).mock.calls.map((c: unknown[]) => c[2]);
+    expect(notices).toEqual(['⚠️ 명령을 처리하지 못했습니다. 대시보드에서 다시 시도해 주세요.']);
+  });
+
+  it('answer-only handled in time says so', async () => {
+    const d = deps({ handleMessage: vi.fn(async () => {}) });
+    const result = await launchNewTask('U123', submission({ prompt: '/help', autoz: false, answerOnly: true }), d);
+    expect(result).toMatchObject({ status: 'answered', handled: true });
+  });
+
+  it('answer-only whose handling fails → 500 and a notice in the thread', async () => {
+    const d = deps({ handleMessage: vi.fn(async () => Promise.reject(new Error('boom'))) });
+    await expect(
+      launchNewTask('U123', submission({ prompt: '/help', autoz: false, answerOnly: true }), d),
+    ).rejects.toMatchObject({ statusCode: 500 });
+    expect(d.postThreadNotice).toHaveBeenCalled();
+  });
+
   it('a session that does not appear in time is reported as starting, not as running', async () => {
     const d = deps({ handleMessage: vi.fn(() => new Promise(() => {})) });
     const result = await launchNewTask('U123', submission(), d);
