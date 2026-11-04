@@ -38,6 +38,12 @@ export interface ComposerCommand {
   group: string;
   /** Needs the thread's session: not offered in the new-task composer. */
   session?: true;
+  /**
+   * Its example starts (or stops) a turn — the work shows on the board. Without it the command only answers, and
+   * the answer is posted in the Slack thread (the router's `control` kind; composer-menus.test.ts holds the two
+   * equal). The new task offers only these: a first message that only answers makes no task.
+   */
+  turn?: true;
   /** Admins only. */
   admin?: true;
 }
@@ -76,12 +82,14 @@ export const COMPOSER_COMMANDS: readonly ComposerCommand[] = [
     example: '/new 로그인 버그부터 고쳐줘',
     group: SESSION,
     session: true,
+    turn: true,
   },
   {
     value: '/goal',
     description: '세션 목표를 정하거나 보기 — 목표를 이룰 때까지 이어서 작업',
     example: '/goal 대시보드 E2E 테스트 전부 통과',
     group: SESSION,
+    turn: true,
   },
   {
     value: '!',
@@ -89,18 +97,21 @@ export const COMPOSER_COMMANDS: readonly ComposerCommand[] = [
     example: '! 이거 말고 테스트부터 고쳐줘',
     group: SESSION,
     session: true,
+    turn: true,
   },
   {
     value: '%model',
     description: '이 세션에서만 모델 바꾸기 (뒤에 지시를 붙이면 바꾼 뒤 실행)',
     example: '%model opus 이 PR 리뷰해줘',
     group: SESSION,
+    turn: true,
   },
   {
     value: '%nogoal',
     description: '자동 목표 없이 이 지시만 실행',
     example: '%nogoal 이 함수 이름만 바꿔줘',
     group: SESSION,
+    turn: true,
   },
   {
     value: '%effort',
@@ -138,11 +149,12 @@ export const COMPOSER_COMMANDS: readonly ComposerCommand[] = [
     session: true,
   },
   {
-    value: '/compact',
-    description: '대화를 요약해 컨텍스트 비우기 (--yes면 확인 없이 바로)',
+    value: '/compact --yes',
+    description: '대화를 요약해 컨텍스트 비우기 (확인 없이 바로)',
     example: '/compact --yes',
     group: SESSION,
     session: true,
+    turn: true,
   },
   {
     value: '/context',
@@ -157,6 +169,7 @@ export const COMPOSER_COMMANDS: readonly ComposerCommand[] = [
     example: '/renew',
     group: SESSION,
     session: true,
+    turn: true,
   },
   {
     value: '/rollback',
@@ -204,6 +217,7 @@ export const COMPOSER_COMMANDS: readonly ComposerCommand[] = [
     description: '온보딩 워크플로 실행',
     example: '/onboarding',
     group: SESSION,
+    turn: true,
   },
   // ── 설정 — yours, for every session ──
   {
@@ -436,11 +450,20 @@ export const COMPOSER_COMMANDS: readonly ComposerCommand[] = [
   },
 ];
 
-/** The commands offered in one composer, in the viewer's language. */
+/**
+ * The commands offered in one composer, in the viewer's language. The new task offers only what starts the work; an
+ * open session offers every command, and one that only answers says its answer is in the Slack thread.
+ */
 export function composerCommandItems(opts: { where: ComposerMenuWhere; admin: boolean }): ComposerSuggestionRow[] {
-  return COMPOSER_COMMANDS.filter((c) => (opts.admin || !c.admin) && (opts.where === 'session' || !c.session)).map(
-    (c) => ({ value: c.value, description: t(c.description), example: c.example, group: t(c.group) }),
-  );
+  const inThread = t('답은 Slack 스레드에');
+  return COMPOSER_COMMANDS.filter(
+    (c) => (opts.admin || !c.admin) && (opts.where === 'session' || (!c.session && c.turn)),
+  ).map((c) => ({
+    value: c.value,
+    description: c.turn ? t(c.description) : `${t(c.description)} · ${inThread}`,
+    example: c.example,
+    group: t(c.group),
+  }));
 }
 
 // ── Skills ──

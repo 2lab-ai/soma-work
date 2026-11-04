@@ -4,7 +4,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -195,5 +195,94 @@ describe('page — both composers take the menus', () => {
     expect(boot).toContain('cmLoadMenus();');
     const open = clientFn('openNewTask');
     expect(open).toContain('cmLoadMenus()');
+  });
+});
+
+describe('POST /api/dashboard/session/:key/command — where a command answers', () => {
+  let injectWebServer: any;
+  let stopWebServer: any;
+  let dashboard: any;
+
+  // The first import transforms the whole web server: pay it once (dashboard-command-attachments.test.ts).
+  beforeAll(async () => {
+    await import('../web-server');
+    await import('../dashboard');
+  }, 300_000);
+
+  beforeEach(async () => {
+    vi.resetModules();
+    const webServer = await import('../web-server');
+    injectWebServer = webServer.injectWebServer;
+    stopWebServer = webServer.stopWebServer;
+    dashboard = await import('../dashboard');
+    const sessions = new Map<string, any>();
+    sessions.set('C1:t1', {
+      sessionId: 'sid1',
+      ownerId: 'U1',
+      channelId: 'C1',
+      threadTs: 't1',
+      activityState: 'idle',
+      state: 'MAIN',
+      lastActivity: new Date(),
+    });
+    dashboard.setDashboardSessionAccessor(() => sessions);
+    dashboard.setDashboardCommandHandler(vi.fn().mockResolvedValue(undefined));
+    await webServer.startWebServer({ listen: false });
+  }, 60_000);
+
+  afterEach(async () => {
+    await stopWebServer?.();
+  });
+
+  const send = (message: string) =>
+    injectWebServer({
+      method: 'POST',
+      url: `/api/dashboard/session/${encodeURIComponent('C1:t1')}/command`,
+      headers: { Authorization: 'Bearer test-token' },
+      payload: { message },
+    });
+
+  it('a command the router answers and consumes: its answer is in the Slack thread', async () => {
+    const classify = vi.fn(() => 'control');
+    dashboard.setDashboardCommandClassifier(classify);
+    const res = await send('/help');
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ ok: true, answer: 'thread' });
+    expect(classify).toHaveBeenCalledWith('/help', undefined);
+  });
+
+  it('an instruction, or a command that starts a turn: the turn is on the board — no answer field', async () => {
+    dashboard.setDashboardCommandClassifier(() => 'control-with-dispatch');
+    expect(JSON.parse((await send('/goal ship it')).body)).toEqual({ ok: true });
+    dashboard.setDashboardCommandClassifier(() => 'instruction');
+    expect(JSON.parse((await send('로그인 버그 고쳐줘')).body)).toEqual({ ok: true });
+  });
+
+  it('no classifier wired: as before', async () => {
+    expect(JSON.parse((await send('/help')).body)).toEqual({ ok: true });
+  });
+});
+
+describe('page — a command answered in the Slack thread', () => {
+  it('says where the answer is, with the thread link when the card has one', () => {
+    const page = loadWith<{ pcThreadAnswerToast(s: unknown): any }>(['pcThreadAnswerToast'], {});
+    expect(page.pcThreadAnswerToast({ slackThreadUrl: 'https://slack.example/p1' })).toEqual({
+      title: '명령을 보냈어요',
+      description: '답은 Slack 스레드에 있어요',
+      tone: 'success',
+      link: { label: 'Slack에서 보기', href: 'https://slack.example/p1' },
+    });
+    expect(page.pcThreadAnswerToast(null)).toEqual({
+      title: '명령을 보냈어요',
+      description: '답은 Slack 스레드에 있어요',
+      tone: 'success',
+    });
+  });
+
+  it('sendCommand drops the turn it showed and says so when the answer went to the thread', () => {
+    const src = clientFn('sendCommand');
+    expect(src).toContain("data.answer === 'thread'");
+    expect(src).toMatch(/answeredInThread[\s\S]*dropTurnFromPanel\(optimisticId\)/);
+    expect(src).toContain('pcThreadAnswerToast(_sessionCache[sendingSessionKey])');
   });
 });

@@ -2022,7 +2022,6 @@
   "이 세션의 확장 사고 켜기·끄기": "Turn extended thinking on or off for this session",
   "이 세션의 사고 요약 표시 켜기·끄기": "Show or hide the thinking summary in this session",
   "이 세션의 설정 보기 (모델 · effort · 상세도 · 컨텍스트)": "Show this session's settings (model · effort · detail · context)",
-  "대화를 요약해 컨텍스트 비우기 (--yes면 확인 없이 바로)": "Summarise the conversation to free the context (--yes skips the confirmation)",
   "이 세션의 토큰 사용량과 비용": "This session's token use and cost",
   "컨텍스트를 저장하고 세션을 새로 불러오기 (긴 세션용)": "Save the context and reload the session (for long sessions)",
   "모델의 컨텍스트를 몇 입력 전으로 되돌리기": "Roll the model's context back a few inputs",
@@ -2066,5 +2065,7 @@
   "이 세션의 시스템 프롬프트 보기": "Show this session's system prompt",
   "이 세션에 저장된 사용자 지시 보기": "Show the user instructions stored in this session",
   "Claude 자격 증명을 백업에서 되살리기": "Restore the Claude credentials from the backup",
-  "Slack UI 렌더링 시험": "Test Slack UI rendering"
+  "Slack UI 렌더링 시험": "Test Slack UI rendering",
+  "답은 Slack 스레드에": "the answer is in the Slack thread",
+  "대화를 요약해 컨텍스트 비우기 (확인 없이 바로)": "Summarise the conversation to free the context (no confirmation)"
 }
