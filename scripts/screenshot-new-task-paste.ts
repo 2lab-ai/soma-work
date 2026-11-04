@@ -10,7 +10,8 @@
  *     - a paste that would take it past 12,000 does not go into the field: a pasted-text-<stamp>.txt chip appears,
  *       and 작업 시작 posts the typed instruction plus that file as text/plain carrying the whole paste;
  *     - a dashboard task (no attachments yet) leaves the long paste alone;
- *     - with 10 files already attached the composer refuses the file and the paste goes into the field (not lost).
+ *     - with 10 files already attached the composer refuses the file and the paste goes into the field (not lost);
+ *     - a long paste over a selection replaces it: the selected text leaves the field and the draft.
  *
  * Run from the repo root (keeps state out of the checkout):
  *   env -i HOME="$HOME" PATH="$PATH" SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst \
@@ -108,27 +109,28 @@ async function composerView(page: Page) {
   });
 }
 
-/** Focus the composer's field (its shadow root) with the caret at the end. */
-async function focusField(page: Page) {
-  await page.evaluate(() => {
+/** Focus the composer's field (its shadow root): the caret at the end, or everything selected. */
+async function focusField(page: Page, select: 'end' | 'all' = 'end') {
+  await page.evaluate((sel) => {
     const el = document.getElementById('nt-composer') as any;
     const ta = (el.shadowRoot || el).querySelector('textarea') as HTMLTextAreaElement;
     ta.focus();
-    ta.setSelectionRange(ta.value.length, ta.value.length);
-  });
+    if (sel === 'all') ta.select();
+    else ta.setSelectionRange(ta.value.length, ta.value.length);
+  }, select);
 }
 
 /** A real paste from the system clipboard (Chromium: clipboard permissions + the platform shortcut). */
-async function realPaste(page: Page, text: string) {
+async function realPaste(page: Page, text: string, select: 'end' | 'all' = 'end') {
   await page.evaluate((t) => navigator.clipboard.writeText(t), text);
-  await focusField(page);
+  await focusField(page, select);
   await page.keyboard.press('ControlOrMeta+V');
   await page.waitForTimeout(200);
 }
 
 /** A paste event dispatched on the field, as a browser fires it (bubbles, composed, cancelable). */
-async function dispatchedPaste(page: Page, text: string) {
-  await focusField(page);
+async function dispatchedPaste(page: Page, text: string, select: 'end' | 'all' = 'end') {
+  await focusField(page, select);
   await page.evaluate((t) => {
     const el = document.getElementById('nt-composer') as any;
     const ta = (el.shadowRoot || el).querySelector('textarea') as HTMLTextAreaElement;
@@ -248,6 +250,21 @@ async function run(browser: Browser, engine: string) {
   );
   await third.page.screenshot({ path: path.join(OUT, `${tag}-refused.png`) });
   await third.context.close();
+
+  // Everything selected, then a long paste: it replaces the selection — the old text leaves the field (and the
+  // draft), the paste is the file.
+  const fourth = await openPage(browser, []);
+  if (real) await fourth.context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: BASE_URL });
+  await typeInto(fourth.page, 'OLD instruction to replace');
+  await paste(fourth.page, BIG, 'all');
+  const sel = await composerView(fourth.page);
+  const draft = await fourth.page.evaluate(() => (window as any)._ntState.prompt);
+  check(
+    `${tag}: a long paste over a selection replaces it (field and draft empty, one file)`,
+    sel.value === '' && draft === '' && sel.files.length === 1 && /^pasted-text-/.test(sel.files[0].name),
+    JSON.stringify({ value: sel.value, draft, files: sel.files.map((f: { name: string }) => f.name) }),
+  );
+  await fourth.context.close();
 }
 
 async function main() {
