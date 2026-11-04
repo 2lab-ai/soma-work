@@ -322,6 +322,14 @@ export class GoalLoopController {
     }
     const activeGoal = session.goal!;
 
+    // Anthropic safeguards halted the session (ssot T2): no eval spend, no
+    // continuation. The goal stays active — once an admin lifts the lock, the
+    // admin's retry turn settles and drives the loop again.
+    if (session.safeguardHalt) {
+      logger.info('Goal loop run skipped — session halted by a safeguards flag', { sessionKey });
+      return;
+    }
+
     // Transient-failure backoff gate: while a scheduled eval retry is waiting
     // out a rate-limit window, ordinary settles (e.g. a duplicate trigger that
     // was already queued behind the failing run) must NOT re-dispatch — they
@@ -439,6 +447,16 @@ export class GoalLoopController {
     // the eval ran, the live goal no longer matches what we evaluated.
     // Discard the verdict entirely: no mutate / persist / notice / inject.
     const live = registry.getSessionByKey(sessionKey)?.goal;
+    // A safeguards halt that landed while the eval ran: the verdict is moot —
+    // nothing may be injected. Release our lease, apply nothing.
+    if (registry.getSessionByKey(sessionKey)?.safeguardHalt) {
+      if (live && live.goalId === snapshot.goalId && live.pendingEval?.requestedAt === startedAt) {
+        live.pendingEval = undefined;
+        this.persist();
+      }
+      logger.info('Goal eval verdict discarded — session halted by a safeguards flag during the eval', { sessionKey });
+      return;
+    }
     if (!this.epochStillValid(live, snapshot)) {
       logger.info('Goal eval verdict discarded — goal epoch moved during eval', { sessionKey });
       // Clear OUR stale lease so the loop isn't wedged: same goal object

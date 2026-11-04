@@ -5,6 +5,7 @@
 
 import { stripEchoedDisplayLangTag } from '@soma/common/i18n';
 import { Logger } from '@soma/common/logger';
+import { parseSafeguardFlag, type SafeguardFlagInfo } from '@soma/common/safeguard';
 import type { AgentStreamEvent, AgentStreamEventOf, AgentUsage } from './agent-stream-types';
 import { type AgentTreeEvent, isAgentSpawnTool, isBackgroundAckText } from './agent-tree';
 import type { SlackMessagePayload } from './choice-message-builder';
@@ -710,6 +711,12 @@ export interface StreamResult {
    * keeps every segment.
    */
   guardText?: string;
+  /**
+   * Set when any segment of the turn was an Anthropic safeguards block (kept
+   * off Slack like the other leaks). Sticky: text that arrives after the
+   * block does not clear it, so the executor halts the session either way.
+   */
+  safeguardFlag?: SafeguardFlagInfo;
   /** Usage data from the result message */
   usage?: UsageData;
   /** Whether the response ended with a user choice/form prompt */
@@ -886,6 +893,19 @@ export class AgentStreamProcessor {
    * it), and earlier withheld narration must not be posted as its answer.
    */
   private lastShownSegment: SegmentFate | undefined;
+  /** See {@link StreamResult.safeguardFlag}. */
+  private safeguardFlag: SafeguardFlagInfo | undefined;
+
+  /**
+   * A safeguards block in `text` → remember it (sticky) and report true, so
+   * the caller suppresses the segment like any other transport leak.
+   */
+  private noteSafeguardFlag(text: string): boolean {
+    const flag = parseSafeguardFlag(text);
+    if (!flag) return false;
+    this.safeguardFlag ??= flag;
+    return true;
+  }
   private pendingNarration: PendingNarration | undefined;
   /**
    * Set by every assistant-text post (narration, final, choice, incident);
@@ -1385,6 +1405,7 @@ export class AgentStreamProcessor {
         collectedText: currentMessages.join('\n'),
         ...this.transportLeakResult(),
         guardText: this.guardTextFor(currentMessages),
+        ...(this.safeguardFlag ? { safeguardFlag: this.safeguardFlag } : {}),
         usage: lastUsage,
         hasUserChoice: this._hasUserChoice,
         endTurnInfo: this._endTurnInfo,
@@ -1832,6 +1853,14 @@ export class AgentStreamProcessor {
     // turn. Do not stream that raw transport error to Slack; stream-executor
     // inspects collectedText after process() and routes it into fallback compact.
     if (textIndicatesPromptTooLong(textContent)) {
+      this.suppressLeak(context, segment);
+      return;
+    }
+
+    // Anthropic safeguards block (dev, 2026-11-04): the SDK returns it as the
+    // turn's text. Never post it as the answer — the executor halts the
+    // session and posts one "세이프가드 에러" notice instead.
+    if (this.noteSafeguardFlag(textContent)) {
       this.suppressLeak(context, segment);
       return;
     }
@@ -2476,6 +2505,7 @@ export class AgentStreamProcessor {
     // executor's recovery as `transportLeak`.
     if (
       textIndicatesPromptTooLong(processedResult) ||
+      this.noteSafeguardFlag(processedResult) ||
       textIndicatesCompactionErrorLeak(processedResult, context.isCompactTurn)
     ) {
       this.suppressLeak(context, segment);
@@ -2588,7 +2618,11 @@ export class AgentStreamProcessor {
     }
     // The partial text never reaches handleTextMessage, so it joins the work
     // log here — before the suppressions below, like every other segment.
-    if (textIndicatesPromptTooLong(pending) || textIndicatesCompactionErrorLeak(pending)) {
+    if (
+      textIndicatesPromptTooLong(pending) ||
+      this.noteSafeguardFlag(pending) ||
+      textIndicatesCompactionErrorLeak(pending)
+    ) {
       this.emitWorkLog(context, { kind: 'error', text: pending });
       textBuf.length = 0;
       return { delivered: false };

@@ -783,3 +783,48 @@ describe('GoalLoopController — dashboard visibility of loop steps', () => {
     expect(s.goal.evalRetryReason).toBeUndefined();
   });
 });
+
+/**
+ * ssot-task: T2 — a session the safeguards stopped runs no goal eval and gets
+ * no continuation. Field log (dev, 2026-11-04T00:42Z): the loop ran an opus
+ * xhigh eval and injected another turn into the blocked session, which hit
+ * the same safeguard again.
+ */
+describe('GoalLoopController — safeguard halt (T2)', () => {
+  it('skips the eval and injects nothing while the session is halted', async () => {
+    let dispatched = 0;
+    const h = makeHarness({
+      dispatcher: async () => {
+        dispatched += 1;
+        return JSON.stringify({ completed: false, reason: 'not yet', remaining: ['do X'] });
+      },
+    });
+    (h.session as any).safeguardHalt = { atMs: 1, detail: 'reasoning_extraction' };
+
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect(dispatched).toBe(0);
+    expect(h.injected).toHaveLength(0);
+    expect(h.goal.status).toBe('active');
+  });
+
+  it('runs again once the halt is cleared (admin retry)', async () => {
+    let dispatched = 0;
+    const h = makeHarness({
+      dispatcher: async () => {
+        dispatched += 1;
+        return JSON.stringify({ completed: false, reason: 'not yet', remaining: ['do X'] });
+      },
+    });
+    (h.session as any).safeguardHalt = { atMs: 1 };
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    (h.session as any).safeguardHalt = undefined;
+
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect(dispatched).toBe(1);
+  });
+});

@@ -7,6 +7,12 @@ import {
   textIndicatesRetryableRateLimit,
   textIndicatesUsageLimit,
 } from '@soma/common/rate-limit';
+import {
+  parseSafeguardFlag,
+  type SafeguardFlagInfo,
+  type SafeguardHalt,
+  safeguardFlagOf,
+} from '@soma/common/safeguard';
 import type { ActionHandlers } from '../actions';
 import { buildMarkerBlocks, SUPERSEDED_TEXT } from '../actions/click-classifier';
 import type { PendingInstructionConfirmStore } from '../actions/pending-instruction-confirm-store';
@@ -47,6 +53,12 @@ import {
   SESSION_ROUTING,
 } from '../release-notes-poster';
 import type { RequestAbortReason, RequestCoordinator } from '../request-coordinator';
+import {
+  buildSafeguardHaltBlocks,
+  SAFEGUARD_ERROR_LABEL,
+  safeguardCardMessage,
+  safeguardHaltNoticeText,
+} from '../safeguard';
 // Issue #1082 T2: shared goal-apply helpers (same pair T1's slack-handler
 // uses for goal-prefixed first messages) — epoch bump + cache invalidation
 // semantics live in one place.
@@ -2813,6 +2825,30 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // that do not set it.
       const guardText = streamResult.guardText ?? streamResult.transportLeak ?? streamResult.collectedText;
 
+      // Safeguards-flag-as-content guard (dev, 2026-11-04T00:42Z). Anthropic's
+      // safeguards block comes back as the turn's TEXT with a successful result
+      // (`end_turn`, `isError=false`), so nothing threw: the block posted as
+      // the answer and the goal loop re-ran the blocked session. The session
+      // cannot go on with this model, so convert it into a typed throw —
+      // `handleError`'s safeguard rail halts the session (no retry) and only an
+      // admin may unlock it. Checked FIRST (before the compaction guard: a flag
+      // during `/compact` must halt, not read as a compaction failure) and on
+      // every non-incident turn — a tool continuation can be flagged too. The
+      // stream processor's flag is sticky: it survives later text replacing
+      // the suppressed segment.
+      const safeguardFlag = incidentAttempt ? null : (streamResult.safeguardFlag ?? parseSafeguardFlag(guardText));
+      if (safeguardFlag) {
+        this.logger.warn('Safeguards flag surfaced as turn content — halting the session', {
+          sessionKey,
+          ...safeguardFlag,
+        });
+        const flagError = new Error(
+          `Anthropic safeguards flagged this request${safeguardFlag.detail ? ` [${safeguardFlag.detail}]` : ''}`,
+        );
+        (flagError as { safeguardFlag?: SafeguardFlagInfo }).safeguardFlag = safeguardFlag;
+        throw flagError;
+      }
+
       // Compaction-failure-as-content guard (field incident 2026-07-07,
       // session ccee16e0). The SDK seals a FAILED `/compact` as a successful
       // turn (`end_turn`, `isError=false`) whose content is the stderr line
@@ -3703,21 +3739,24 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // the helper sets `session.autoCompactPending=true` synchronously
       // before the Slack post, so the next user turn sees the flag
       // immediately; the decorative post must not block cleanup.
-      void checkAndSchedulePendingCompact({
-        session,
-        userId: user,
-        channel,
-        threadTs,
-        userSettings: userSettingsStore,
-        slackApi: this.deps.slackApi,
-        logger: this.logger,
-        workLog: emitWorkLog,
-      }).catch((err: unknown) => {
-        this.logger.warn('stream-executor: compact threshold check failed', {
-          turnId,
-          error: (err as Error)?.message ?? String(err),
+      // A safeguards-halted session runs nothing until an admin unlocks it —
+      // arming auto-compact would make the admin's retry compact first.
+      if (!session.safeguardHalt)
+        void checkAndSchedulePendingCompact({
+          session,
+          userId: user,
+          channel,
+          threadTs,
+          userSettings: userSettingsStore,
+          slackApi: this.deps.slackApi,
+          logger: this.logger,
+          workLog: emitWorkLog,
+        }).catch((err: unknown) => {
+          this.logger.warn('stream-executor: compact threshold check failed', {
+            turnId,
+            error: (err as Error)?.message ?? String(err),
+          });
         });
-      });
       // Dashboard v2.1 — turn timer: idempotent fold. If the catch branch
       // already ran endTurn, activeLegStartedAtMs is undefined and this is
       // a no-op. Guarantees the accumulator is correct on every exit path.
@@ -3821,7 +3860,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // the newer / outer turn the queue is left parked for).
       let replayTookOver = false;
       if (queue && queue.length > 0 && !session.terminated) {
-        if (this.deps.requestCoordinator.isRequestActive(sessionKey)) {
+        if (session.safeguardHalt) {
+          // A safeguards flag stopped the session: nothing runs in it until an
+          // admin unlocks it. The stash stays parked — dispatching it would be
+          // refused at the gate and lost from this queue.
+          replayTookOver = true;
+          this.logger.info('Deferred post-compact dispatch left parked — session halted by a safeguards flag', {
+            sessionKey,
+            queued: queue.length,
+          });
+        } else if (this.deps.requestCoordinator.isRequestActive(sessionKey)) {
           replayTookOver = true;
           this.logger.info('Deferred post-compact dispatch left parked — a newer turn is active', {
             sessionKey,
@@ -3956,6 +4004,116 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   }
 
   /**
+   * The safeguards-flag rail. Anthropic's safeguards blocked the request, and
+   * the session cannot go on with this model — so the work stops here:
+   *   - the session is locked (`safeguardHalt`, persisted): no goal eval, no
+   *     continuation, no auto-resume, no retry, and no user message runs until
+   *     an admin presses the unlock button on the notice;
+   *   - every recovery producer is quiesced (retry budget and context, a
+   *     pending retry marker, armed auto-compact, an in-flight fallback compact
+   *     — restored exactly as compaction Rail 2 does);
+   *   - every surface says "세이프가드 에러": the status, ONE thread notice
+   *     (with the admin button) and the turn card (`errorKind: 'safeguard'`).
+   * Never returns a retry delay.
+   */
+  private async haltOnSafeguardFlag(
+    flag: SafeguardFlagInfo,
+    session: ConversationSession,
+    sessionKey: string,
+    channel: string,
+    threadTs: string,
+    processedFiles: ProcessedFile[],
+    say: SayFn,
+    expectedTurnEpoch?: number,
+  ): Promise<undefined> {
+    const halt: SafeguardHalt = { atMs: Date.now(), ...flag };
+    session.safeguardHalt = halt;
+    session.errorRetryCount = 0;
+    session.fileAccessRetryCount = 0;
+    session.lastErrorContext = undefined;
+    session.pendingRetryAt = undefined;
+    session.pendingRetrySessionId = undefined;
+    session.pendingRetryDetail = undefined;
+    session.autoCompactPending = false;
+
+    // An in-flight fallback compact is unwound like compaction Rail 2: the
+    // boundary callback that restores it only fires on success.
+    if (session.fallbackCompactActive) {
+      const restoredModel = session.fallbackCompactOriginalModel ?? null;
+      if (restoredModel) session.model = restoredModel as typeof session.model;
+      session.fallbackCompactActive = false;
+      session.fallbackCompactOriginalModel = null;
+      session.fallbackCompactPendingUserText = null;
+      session.fallbackCompactPendingEventContext = null;
+    }
+    if (session.compactTickInterval) {
+      clearInterval(session.compactTickInterval);
+      session.compactTickInterval = undefined;
+    }
+    const epoch = session.compactEpoch ?? 0;
+    if (session.compactPostedByEpoch?.[epoch]) {
+      session.compactPostedByEpoch[epoch].post = true;
+    }
+
+    try {
+      this.deps.claudeHandler.saveSessions?.();
+    } catch (saveErr) {
+      this.logger.error('Safeguard halt: saving the lock failed — it holds in memory only', {
+        sessionKey,
+        error: (saveErr as Error)?.message ?? String(saveErr),
+      });
+    }
+    this.logger.error('Anthropic safeguards flagged the request — session halted, admin retry required', {
+      sessionKey,
+      ...flag,
+    });
+
+    this.setActivity(session, sessionKey, channel, threadTs, 'idle');
+    await this.updateRuntimeStatus(
+      session,
+      sessionKey,
+      { agentPhase: SAFEGUARD_ERROR_LABEL, activeTool: undefined, waitingForChoice: false },
+      expectedTurnEpoch,
+    );
+    await this.deps.reactionManager.updateReaction(sessionKey, this.deps.statusReporter.getStatusEmoji('error'));
+
+    if (this.deps.turnNotifier) {
+      this.deps.turnNotifier
+        .notify({
+          category: 'Exception',
+          errorKind: 'safeguard',
+          userId: session.ownerId || '',
+          channel,
+          threadTs,
+          sessionTitle: session.title,
+          message: safeguardCardMessage(halt),
+          durationMs: 0,
+        })
+        .catch((err: any) => this.logger.warn('Safeguard notification failed', { error: err?.message }));
+    }
+
+    await runWithTimeout(
+      () =>
+        say({
+          text: safeguardHaltNoticeText(halt),
+          blocks: buildSafeguardHaltBlocks(halt, sessionKey),
+          thread_ts: threadTs,
+        }),
+      DEFAULT_CLEANUP_TIMEOUT_MS,
+      { what: 'handleError say(safeguardHalt)', logger: this.logger },
+    );
+
+    if (processedFiles.length > 0) {
+      await cleanupWithTimeout(
+        () => this.deps.fileHandler.cleanupTempFiles(processedFiles),
+        DEFAULT_CLEANUP_TIMEOUT_MS,
+        this.logger,
+      );
+    }
+    return undefined;
+  }
+
+  /**
    * Handle execution errors. Returns retryAfterMs if the error is recoverable
    * and retry budget remains, so the caller can schedule an auto-retry.
    */
@@ -3989,6 +4147,23 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
      */
     interruptFlushFailed?: InterruptFlushFailure,
   ): Promise<number | undefined> {
+    // ── Safeguards flag (T2/T3/T4): stop at once, lock the session, say so.
+    // Runs before the idle transition so the lock is on the session (and on
+    // disk) before anything can see it idle and start the next turn.
+    const safeguardFlag = safeguardFlagOf(error);
+    if (safeguardFlag) {
+      return this.haltOnSafeguardFlag(
+        safeguardFlag,
+        session,
+        sessionKey,
+        channel,
+        threadTs,
+        processedFiles,
+        say,
+        expectedTurnEpoch,
+      );
+    }
+
     this.setActivity(session, sessionKey, channel, threadTs, 'idle');
 
     // ── Compaction-failure recovery rails (content-shaped SDK compact

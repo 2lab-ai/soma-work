@@ -5,6 +5,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { atomicWriteJson } from '@soma/common/atomic-write';
+import { restoreSafeguardHalt, type SafeguardHalt } from '@soma/common/safeguard';
 import {
   type ContextRewindRecord,
   decodeContextAnchor,
@@ -104,6 +105,13 @@ import type {
 import { coerceToAvailableModel, type EffortLevel, userSettingsStore } from './user-settings-store';
 
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
+/**
+ * Safeguard halts of threads whose session record is gone (closed, archived,
+ * deleted). Keyed by session key; a session created again under the key
+ * inherits the halt, so ending the session is not a way around the admin
+ * retry (trinity design consult). Lifted only by the admin unlock.
+ */
+const SAFEGUARD_TOMBSTONES_FILE = path.join(DATA_DIR, 'safeguard-halts.json');
 
 // Dashboard improvements (v2.1): max duration of a single active-leg before we
 // assume the process missed an endTurn (crash / OS sleep) and cap the accumulator.
@@ -239,6 +247,8 @@ interface SerializedSession {
   pendingRetryDetail?: { attempt?: number; maxAttempts?: number; reason?: string };
   errorRetryCount?: number;
   lastErrorContext?: string;
+  // Anthropic safeguards lock — only an admin lifts it (`@soma/slack/safeguard`).
+  safeguardHalt?: SafeguardHalt;
   // Log verbosity bitmask
   logVerbosity?: number;
   /**
@@ -576,6 +586,10 @@ export class SessionRegistry {
   /** E4 ① — live child tasks by their epic's task id; rebuilt from the records on load. */
   private childrenByParent: Map<string, Set<ConversationSession>> = new Map();
   private logger = new Logger('SessionRegistry');
+  /** See {@link SAFEGUARD_TOMBSTONES_FILE}. */
+  private safeguardTombstones = new Map<string, SafeguardHalt>();
+  /** The tombstone file could not be read: never overwrite it with a partial set. */
+  private safeguardTombstonesUnreadable = false;
   private expiryCallbacks?: SessionExpiryCallbacks;
   private beforeSessionDelete?: BeforeSessionDeleteCallback;
   private _crashRecoveredSessions: CrashRecoveredSession[] = [];
@@ -873,6 +887,33 @@ export class SessionRegistry {
    * keys (e.g. from Slack action payloads posted before the Step 4d key
    * format switch) via normalization.
    */
+  /** The safeguard lock on this thread — its live session's, or the tombstone of a removed one. */
+  getSafeguardHalt(channelId: string, threadTs?: string): SafeguardHalt | undefined {
+    return this.getSafeguardHaltByKey(this.getSessionKey(channelId, threadTs));
+  }
+
+  getSafeguardHaltByKey(sessionKey: string): SafeguardHalt | undefined {
+    const key = normalizeSessionKey(sessionKey);
+    return this.sessions.get(key)?.safeguardHalt ?? this.safeguardTombstones.get(key);
+  }
+
+  /**
+   * Lift the safeguard lock (the admin unlock button — the only caller). The
+   * write must reach disk: a lock lifted in memory only would come back after
+   * a restart, and one reported lifted but not saved would mislead the admin.
+   * Returns false when the thread was not halted.
+   */
+  liftSafeguardHalt(sessionKey: string): boolean {
+    const key = normalizeSessionKey(sessionKey);
+    const session = this.sessions.get(key);
+    const had = Boolean(session?.safeguardHalt) || this.safeguardTombstones.has(key);
+    if (!had) return false;
+    if (session) session.safeguardHalt = undefined;
+    this.safeguardTombstones.delete(key);
+    this.saveSessionsOrThrow();
+    return true;
+  }
+
   getSessionByKey(sessionKey: string): ConversationSession | undefined {
     return this.sessions.get(normalizeSessionKey(sessionKey));
   }
@@ -913,6 +954,13 @@ export class SessionRegistry {
 
   /** Insert under `key`; a different session already there loses its task-id entry. */
   private putSession(key: string, session: ConversationSession): void {
+    // A thread whose halted session was removed stays halted: the session
+    // that comes back under the key inherits the lock.
+    const tombstone = this.safeguardTombstones.get(key);
+    if (tombstone) {
+      if (!session.safeguardHalt) session.safeguardHalt = tombstone;
+      this.safeguardTombstones.delete(key);
+    }
     const previous = this.sessions.get(key);
     if (previous && previous !== session) this.unindexTask(previous);
     this.sessions.set(key, session);
@@ -930,6 +978,7 @@ export class SessionRegistry {
 
   private removeSession(key: string): void {
     const session = this.sessions.get(key);
+    if (session?.safeguardHalt) this.safeguardTombstones.set(key, session.safeguardHalt);
     this.sessions.delete(key);
     if (session) this.unindexTask(session);
     // #846 — the model-command receipt goes with the session (a later session under the key writes its own).
@@ -3323,6 +3372,9 @@ export class SessionRegistry {
           // even before the SDK assigns a sessionId — otherwise a crash in
           // that window would bring the thread back unrestricted.
           session.incidentRequest ||
+          // A safeguards-halted session is saved from the moment it is halted —
+          // a restart must not bring the thread back unlocked.
+          session.safeguardHalt ||
           session.autoCompactTokens != null ||
           // The task's spend (and its subagents') must not vanish with a
           // `/new` that cleared the sessionId before the next SDK turn.
@@ -3397,6 +3449,7 @@ export class SessionRegistry {
             pendingRetryAt: session.pendingRetryAt,
             pendingRetrySessionId: session.pendingRetrySessionId,
             pendingRetryDetail: session.pendingRetryDetail,
+            safeguardHalt: session.safeguardHalt,
             errorRetryCount: session.errorRetryCount,
             lastErrorContext: session.lastErrorContext,
             logVerbosity: session.logVerbosity,
@@ -3512,6 +3565,7 @@ export class SessionRegistry {
         fs.writeFileSync(tempFile, JSON.stringify(sessionsArray, null, 2), { mode });
         fs.chmodSync(tempFile, mode); // writeFileSync's mode is masked by the umask
         fs.renameSync(tempFile, SESSIONS_FILE);
+        this.writeSafeguardTombstones();
       } catch (writeError) {
         try {
           fs.rmSync(tempFile, { force: true });
@@ -3659,8 +3713,40 @@ export class SessionRegistry {
   /**
    * Load sessions from file after restart
    */
+  /** Persist {@link safeguardTombstones} (removes the file once none is left). */
+  private writeSafeguardTombstones(): void {
+    if (this.safeguardTombstonesUnreadable) return;
+    if (this.safeguardTombstones.size === 0) {
+      if (fs.existsSync(SAFEGUARD_TOMBSTONES_FILE)) fs.unlinkSync(SAFEGUARD_TOMBSTONES_FILE);
+      return;
+    }
+    atomicWriteJson(SAFEGUARD_TOMBSTONES_FILE, Object.fromEntries(this.safeguardTombstones));
+  }
+
+  /**
+   * Read {@link SAFEGUARD_TOMBSTONES_FILE}. Loaded BEFORE the sessions, so a
+   * restored session under a tombstoned key inherits it (`putSession`). An
+   * unreadable file is logged loudly and kept — never read as "no locks".
+   */
+  private loadSafeguardTombstones(): void {
+    this.safeguardTombstones.clear();
+    this.safeguardTombstonesUnreadable = false;
+    if (!fs.existsSync(SAFEGUARD_TOMBSTONES_FILE)) return;
+    try {
+      const raw = JSON.parse(fs.readFileSync(SAFEGUARD_TOMBSTONES_FILE, 'utf-8')) as Record<string, unknown>;
+      for (const [key, value] of Object.entries(raw ?? {})) {
+        const halt = restoreSafeguardHalt(value);
+        if (halt) this.safeguardTombstones.set(normalizeSessionKey(key), halt);
+      }
+    } catch (error) {
+      this.safeguardTombstonesUnreadable = true;
+      this.logger.error('Safeguard halt tombstones unreadable — removed-session locks are not restored', error);
+    }
+  }
+
   loadSessions(): number {
     this.sweepOrphanSaveTempFiles();
+    this.loadSafeguardTombstones();
     try {
       if (!fs.existsSync(SESSIONS_FILE)) {
         this.logger.debug('No sessions file found');
@@ -3790,6 +3876,7 @@ export class SessionRegistry {
               : undefined,
           pendingRetryDetail:
             restoredRetryAt !== undefined ? restorePendingRetryDetail(serialized.pendingRetryDetail) : undefined,
+          safeguardHalt: restoreSafeguardHalt(serialized.safeguardHalt),
           errorRetryCount:
             typeof serialized.errorRetryCount === 'number' && Number.isFinite(serialized.errorRetryCount)
               ? serialized.errorRetryCount
