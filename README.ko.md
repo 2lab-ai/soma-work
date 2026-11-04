@@ -393,6 +393,7 @@ GITHUB_PRIVATE_KEY="-----BEGIN RSA..."
 GITHUB_INSTALLATION_ID=12345678
 GITHUB_TOKEN=ghp_...               # GitHub App 미설정 시 폴백
 SOMA_PR_WATCH=off                  # 턴이 끝난 뒤 세션 PR 감시 끄기 (기본 켜짐: 머지·닫힘이 카드와 스레드에 반영)
+SOMA_PR_WATCH_BOTS=coderabbitai[bot]  # PR 리뷰로 세션을 깨워도 되는 리뷰 봇 (기본 없음; 레포 멤버는 항상 됨)
 CLAUDE_CODE_USE_BEDROCK=1          # AWS Bedrock 사용
 CLAUDE_CODE_USE_VERTEX=1           # Google Vertex AI 사용
 DEBUG=true

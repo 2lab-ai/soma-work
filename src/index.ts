@@ -132,6 +132,7 @@ import { createGithubReceiptChecker } from './github-receipt';
 import { InstructionApprovals, setInstructionApprovals } from './instruction-approval';
 import {
   fetchGitHubCheckRuns,
+  fetchGitHubPullActivity,
   fetchGitHubPullState,
   fetchGitHubPullsForHead,
   fetchGitHubReceiptObject,
@@ -2021,6 +2022,13 @@ async function start() {
         // #929 — a finished CI reaches the session as a host turn: now when it is idle, else when it settles.
         fetchChecks: fetchGitHubCheckRuns,
         deliver: (sessionKey, text, done, current) => delivery.deliver(sessionKey, text, done, current),
+        // #930 — reviews and comments on the PR reach the session too; never the bot's own (unknown login = off).
+        fetchActivity: fetchGitHubPullActivity,
+        botLogins: config.github.prWatchBots,
+        ownLogin: async () => {
+          const slug = await getGitHubAppAuth()?.getAppSlug();
+          return slug ? `${slug}[bot]` : undefined;
+        },
         store: createFilePrWatchStore(path.join(DATA_DIR, 'pr-watch.json'), (message, detail) =>
           logger.warn(message, detail),
         ),
