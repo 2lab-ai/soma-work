@@ -146,6 +146,31 @@ describe('launchNewTask', () => {
     expect(result.status).toBe('running');
   });
 
+  it('answer-only (/help): runs the message, answers once it was handled — no session awaited — with the thread link', async () => {
+    const d = deps({
+      handleMessage: vi.fn(async () => {
+        d.calls.push('handleMessage');
+      }),
+    });
+    const result = await launchNewTask('U123', submission({ prompt: '/help', autoz: false, answerOnly: true }), d);
+    expect(result).toMatchObject({
+      status: 'answered',
+      channel: 'C_ALPHA',
+      permalink: 'https://slack.example/archives/C_ALPHA/p1792735000000100',
+    });
+    expect(d.handleMessage).toHaveBeenCalledTimes(1);
+    expect((d.handleMessage as any).mock.calls[0][0].text).toBe('/help');
+    expect(d.postThreadNotice).not.toHaveBeenCalled();
+  });
+
+  it('answer-only whose handling fails → 500 and a notice in the thread', async () => {
+    const d = deps({ handleMessage: vi.fn(async () => Promise.reject(new Error('boom'))) });
+    await expect(
+      launchNewTask('U123', submission({ prompt: '/help', autoz: false, answerOnly: true }), d),
+    ).rejects.toMatchObject({ statusCode: 500 });
+    expect(d.postThreadNotice).toHaveBeenCalled();
+  });
+
   it('a session that does not appear in time is reported as starting, not as running', async () => {
     const d = deps({ handleMessage: vi.fn(() => new Promise(() => {})) });
     const result = await launchNewTask('U123', submission(), d);

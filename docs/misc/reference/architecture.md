@@ -201,7 +201,7 @@ updates inside its terminal-cleanup boundary, including setup failures.
   프롬프트 주입: `build-stream-options.ts`가 `<channel-repository>` 뒤에 `projectMemoryPromptBlock(slackContext.repos)`.
   `src/index.ts`가 채널 레지스트리(`getAllChannels`)를 저장소 목록 소스로, 변경 훅을 `SessionRegistry.invalidateSystemPromptWhere`(해당 저장소 채널 세션)로 연결
 - **입력창 메뉴 (대시보드 `/`·`%`·`$`, 2026-11-04)**: `GET /api/dashboard/composer-menus` (`dashboard.ts`, `authMiddleware`; 유저 = `signedInUserId`, 어드민 = `isSlackAdmin`) →
-  `composerTriggers` (`src/conversation/composer-menus.ts`, 테스트는 `setDashboardComposerMenus`로 교체). 명령 = `COMPOSER_COMMANDS`(새 작업은 턴을 여는 `turn` 행만, 어드민 행은 어드민만, 문구는 `t()`·en-text.json; 답만 하는 행은 "· 답은 Slack 스레드에") ·
+  `composerTriggers` (`src/conversation/composer-menus.ts`, 테스트는 `setDashboardComposerMenus`로 교체). 명령 = `COMPOSER_COMMANDS`(새 작업은 `session` 행을 뺀 전부 — 답만 하는 첫 메시지는 `answerOnly`로 실행해 `status: 'answered'`, 카드 없음 — 어드민 행은 어드민만, 문구는 `t()`·en-text.json; 답만 하는 행은 "· 답은 Slack 스레드에") ·
   스킬 = `listAvailableSkills(userId)` + SKILL.md frontmatter `description`(`skillMdFile`), 토큰 `$<source>:<name>`, 환경 스킬은 승인 없는 비어드민에게 "관리자 승인 필요", 유저당 60초 캐시.
   페이지: `cmLoadMenus`(부팅 · 새 작업 창 열 때) → `ntComposerData` / `pcComposerData`의 `triggers` → `@2lab.ai/ui` `<ui-composer>` `data.triggers`(0.27.0). 고른 텍스트는 기존 경로(`/session/:key/command`, `/new-task`)로 같은 `CommandRouter`에 간다. `/session/:key/command`는 `setDashboardCommandClassifier`(← `SlackHandler.classifyInstruction` = `classifyText`)가 `control`이면 `{ ok, answer: 'thread' }`를 돌려주고 패널은 "답은 Slack 스레드에 있어요" 토스트를 띄운다
 - **새 작업 (대시보드 New task, 2026-10-23)**: `GET /api/dashboard/new-task/context` · `POST /api/dashboard/new-task` (`dashboard.ts`, 로그인한 Slack 유저 본인으로만 — body의 userId·admin mode 무시, CSRF, 라우트 bodyLimit) →

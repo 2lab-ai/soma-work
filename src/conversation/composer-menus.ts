@@ -41,7 +41,7 @@ export interface ComposerCommand {
   /**
    * Its example starts (or stops) a turn — the work shows on the board. Without it the command only answers, and
    * the answer is posted in the Slack thread (the router's `control` kind; composer-menus.test.ts holds the two
-   * equal). The new task offers only these: a first message that only answers makes no task.
+   * equal). A new task whose first message only answers is launched answer-only (its answer in the new thread).
    */
   turn?: true;
   /** Admins only. */
@@ -451,19 +451,19 @@ export const COMPOSER_COMMANDS: readonly ComposerCommand[] = [
 ];
 
 /**
- * The commands offered in one composer, in the viewer's language. The new task offers only what starts the work; an
- * open session offers every command, and one that only answers says its answer is in the Slack thread.
+ * The commands offered in one composer, in the viewer's language: an open session every command, a new task every
+ * command that works without the thread's session. One that only answers says its answer is in the Slack thread.
  */
 export function composerCommandItems(opts: { where: ComposerMenuWhere; admin: boolean }): ComposerSuggestionRow[] {
   const inThread = t('답은 Slack 스레드에');
-  return COMPOSER_COMMANDS.filter(
-    (c) => (opts.admin || !c.admin) && (opts.where === 'session' || (!c.session && c.turn)),
-  ).map((c) => ({
-    value: c.value,
-    description: c.turn ? t(c.description) : `${t(c.description)} · ${inThread}`,
-    example: c.example,
-    group: t(c.group),
-  }));
+  return COMPOSER_COMMANDS.filter((c) => (opts.admin || !c.admin) && (opts.where === 'session' || !c.session)).map(
+    (c) => ({
+      value: c.value,
+      description: c.turn ? t(c.description) : `${t(c.description)} · ${inThread}`,
+      example: c.example,
+      group: t(c.group),
+    }),
+  );
 }
 
 // ── Skills ──
@@ -619,14 +619,9 @@ export function composerTriggers(
   opts: { where: ComposerMenuWhere; userId?: string; admin: boolean },
   deps?: ComposerSkillDeps,
 ): ComposerTriggerRow[] {
-  // `$user` alone answers with the skills card and starts nothing: an open session's menu only (the new task's
-  // first message must start the work).
-  const card: ComposerSuggestionRow[] =
-    opts.where === 'session'
-      ? [{ value: '$user', description: t('내 스킬 목록 카드 (보기 · 편집 · 공유)'), group: t('내 스킬') }]
-      : [];
+  // `$user` alone answers with the skills card (in the thread; a new task's is launched answer-only).
   const skills: ComposerSuggestionRow[] = [
-    ...card,
+    { value: '$user', description: t('내 스킬 목록 카드 (보기 · 편집 · 공유)'), group: t('내 스킬') },
     ...composerSkillItems({ userId: opts.userId, admin: opts.admin }, deps),
   ];
   return [

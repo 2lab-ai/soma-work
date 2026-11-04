@@ -1264,5 +1264,6 @@
   "타이틀 바 바로 아래 — 탭에 넣지 않고 항상 보입니다": "Right under the title bar — never in a tab, always shown",
   "탭 바": "Tab bar",
   "명령을 보냈어요": "Command sent",
-  "답은 Slack 스레드에 있어요": "Its answer is in the Slack thread"
+  "답은 Slack 스레드에 있어요": "Its answer is in the Slack thread",
+  " · 답은 Slack 스레드에 있어요": " · its answer is in the Slack thread"
 }

@@ -1424,10 +1424,6 @@ function classifyCommand(text: string, user?: string): ReturnType<DashboardComma
   }
 }
 
-/** Why a new task whose first message only answers is refused (en-text.json has its English). */
-const NEW_TASK_ANSWER_ONLY =
-  '이 명령은 답만 하고 작업을 시작하지 않아요 — 뒤에 지시를 붙이거나(예: /goal 테스트 전부 통과) 열린 세션에서 보내세요';
-
 /**
  * Task star + revive (SSOT 2026-10-30), wired to the session registry in
  * src/index.ts: star / unstar a live session (starring a sleeping one wakes
@@ -4713,21 +4709,21 @@ export async function registerDashboardRoutes(
           const context = await provider.context(userId, { fresh: true });
           const parsed = parseNewTaskSubmission(request.body, context);
           if (!parsed.ok) throw new NewTaskError(400, parsed.error);
-          // A first message the router only answers (`/help`, `/goal` with no objective, `%model` alone) makes no
-          // session: the launch would wait for a task that never starts. Refused before anything is posted — the
-          // dialog keeps the text (trinity R2).
-          // Judged as the launch sends it (autoz appends `$autoz` — a skill turn — unless plan or epic is on).
-          if (classifyCommand(composeTaskText(parsed.value.prompt, parsed.value.autoz), userId) === 'control') {
-            throw new NewTaskError(400, NEW_TASK_ANSWER_ONLY);
-          }
+          // A first message the router only answers (`/help`, `/model opus`, `/goal` with no objective) makes no
+          // session: it is launched answer-only — the command answers in the new thread, no session is awaited, and
+          // the launch says where the answer is (`status: 'answered'`, no board card). Judged as the launch sends it
+          // (autoz appends `$autoz` — a skill turn — unless plan or epic is on).
+          const answerOnly =
+            classifyCommand(composeTaskText(parsed.value.prompt, parsed.value.autoz), userId) === 'control';
           // #854 — an epic only behind the owner's flag (the composer offers it only then).
           if (parsed.value.epic === true && !epicTasksFor(userId)) {
             throw new NewTaskError(403, '에픽은 꺼져 있습니다 — `/z epictasks on`으로 켜세요');
           }
-          return provider.start(userId, parsed.value);
+          return provider.start(userId, answerOnly ? { ...parsed.value, answerOnly: true } : parsed.value);
         });
-        // Its session is on the board from its creation, before its SDK session (SSOT 2026-11-02).
-        rememberDashboardLaunch(result.sessionKey);
+        // Its session is on the board from its creation, before its SDK session (SSOT 2026-11-02). An answered
+        // command has no session.
+        if (result.status !== 'answered') rememberDashboardLaunch(result.sessionKey);
         reply.send({ ok: true, ...result });
       } catch (error) {
         if (error instanceof NewTaskError) {
@@ -21431,6 +21427,20 @@ function ntOnLaunched(data, submitted, launch) {
   launch.answeredAt = Date.now();
   launch.permalink = data.permalink ? String(data.permalink) : '';
   launch.phase = '에이전트를 시작하는 중…';
+  // A command that only answers (/help, /model opus …): its answer is in the new thread, and no task comes — no
+  // 시작 중 card waits for one.
+  if (data.status === 'answered') {
+    ntPendingDrop(launch);
+    _ntBusy = ntPendingUnsent();
+    ntPendingRepaint();
+    var answeredIn = data.channel
+      ? ((_ntCtx && _ntCtx.channels) || []).find(function (c) {
+          return c.id === data.channel;
+        })
+      : null;
+    dashToast(ntLaunchToast(data, answeredIn ? answeredIn.name : null, true));
+    return;
+  }
   var notStarted = data.status === 'not-started';
   var restored = notStarted ? ntRestoreLaunch(launch, true) : true;
   if (!restored) ntKeepFailed(launch, String(data.reason || '시작하지 못했어요'), true);
@@ -21494,6 +21504,11 @@ function ntLaunchToast(data, channelName, restored) {
       action: { id: 'open', label: '카드 열기' },
       duration: 12000,
     };
+  }
+  if (data.status === 'answered') {
+    var said = { title: '명령을 보냈어요', description: '#' + (channelName || data.channel) + ' · 답은 Slack 스레드에 있어요', tone: 'success', duration: 12000 };
+    if (data.permalink) said.link = { label: 'Slack에서 보기', href: String(data.permalink) };
+    return said;
   }
   var toast = {
     title: data.status === 'running' ? '작업을 시작했어요' : '작업을 접수했어요',
