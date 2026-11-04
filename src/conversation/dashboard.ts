@@ -6592,7 +6592,7 @@ ${pageTokenAliases()}
     </div>
     <!-- Phone chrome T4 (SSOT 2026-11-04): while the reader scrolls back through the chat or the log the composer is
          tucked away (data-tuck); this brings it back. -->
-    <button type="button" class="ui-icon-btn is-bordered pc-reveal" id="pc-reveal" aria-label="입력창 보이기" title="입력창 보이기" onclick="rdTuck(false)"><i data-ui-icon="chevron-up"></i></button>
+    <button type="button" class="ui-icon-btn is-bordered pc-reveal" id="pc-reveal" aria-label="입력창 보이기" title="입력창 보이기" onclick="pcReveal(event)"><i data-ui-icon="chevron-up"></i></button>
   </ui-drawer>
 
   <!-- New task (SSOT 2026-10-23): floating button (phones, and PC once the top-bar
@@ -6837,7 +6837,7 @@ function syncPhoneStatus() {
 // T2 · T4 — reading on a phone. data-read="1": the section box takes the whole view (sizePanelSections) and the panel's
 // scroll puts it right under the title bar — the status bar, the tab bar and the section tabs scroll out; "leaving"
 // while they scroll back in. data-tuck: the composer is away (#pc-reveal shows).
-var _rd = { gesture: 0, last: -1, vp: null, leave: 0 };
+var _rd = { touch: false, until: 0, last: -1, vp: null, leave: 0 };
 function panelReading() {
   var p = document.getElementById('slide-panel');
   return !!p && p.hasAttribute('data-read');
@@ -6858,7 +6858,12 @@ function rdRead(on) {
   if (!p || !sc) return;
   var how = rdHow();
   if (on) {
-    if (p.getAttribute('data-read') === '1') return;
+    // Already reading: only when something stopped the glide short (a live repaint's instant scroll) does it go again.
+    if (p.getAttribute('data-read') === '1') {
+      var target = rdBoxTop();
+      if (sc.scrollTop < target - 2) sc.scrollTo({ top: target, behavior: how });
+      return;
+    }
     clearTimeout(_rd.leave);
     p.setAttribute('data-read', '1');
     sizePanelSections();
@@ -6871,17 +6876,32 @@ function rdRead(on) {
   // The box keeps the whole view while the head scrolls back in, then takes the rest of the panel again.
   p.setAttribute('data-read', 'leaving');
   _panelScrollGen++;
-  sc.scrollTo({ top: 0, behavior: how });
-  _rd.leave = setTimeout(function() {
+  var done = function() {
+    clearTimeout(_rd.leave);
+    sc.removeEventListener('scrollend', done);
+    if (p.getAttribute('data-read') !== 'leaving') return;
     p.removeAttribute('data-read');
     sizePanelSections();
-  }, how === 'smooth' ? 420 : 0);
+  };
+  // When the scroll lands (scrollend; a timer where there is none, or when it never fires).
+  if (how === 'smooth' && sc.scrollTop > 0) sc.addEventListener('scrollend', done);
+  _rd.leave = setTimeout(done, how === 'smooth' && sc.scrollTop > 0 ? 900 : 0);
+  sc.scrollTo({ top: 0, behavior: how });
 }
 function rdTuck(on) {
   var p = document.getElementById('slide-panel');
   if (!p || p.hasAttribute('data-tuck') === !!on) return;
   if (on) p.setAttribute('data-tuck', '');
   else p.removeAttribute('data-tuck');
+}
+// ^ (#pc-reveal): the composer back where the reader is. From a key (a click with no pointer: detail 0) focus follows
+// into it — the button itself steps aside, and focus must not fall to the page.
+function pcReveal(e) {
+  rdTuck(false);
+  if (e && e.detail === 0) {
+    var c = document.getElementById('pc-composer');
+    if (c && typeof c.focus === 'function') c.focus();
+  }
 }
 // A new view (another card, section, tab or agent; the phone turned): the card as it opens — head and composer in.
 function rdReset() {
@@ -6904,15 +6924,17 @@ function psecViewport() {
 // Pure: what one scroll of the reader's box asks of the panel — { read, tuck }, each true / false / null (leave it).
 // Any scroll that lands at the very bottom brings the composer back; the reader's own scroll (user) away from it
 // scrolls the head out and tucks the composer (not while they type in it); back up at the start of everything
-// (no older page left) the head comes back.
-function rdStep(top, max, prev, user, olderLeft, typing) {
+// (no older page left) the head comes back. grow: how much taller the box gets when the composer tucks (and the
+// head goes) — it tucks only when the reader stays off the bottom after that, or the grown box would land on the
+// bottom and bring it straight back.
+function rdStep(top, max, prev, user, olderLeft, typing, grow) {
   var atBottom = max - top <= 8;
   var r = { read: null, tuck: null };
   if (atBottom) r.tuck = false;
   if (!user || prev < 0 || Math.abs(top - prev) < 1) return r;
   if (!atBottom) {
     r.read = true;
-    if (!typing) r.tuck = true;
+    if (!typing && max - top > (grow || 0) + 8) r.tuck = true;
   }
   if (top < prev && top <= 2 && !olderLeft) r.read = false;
   return r;
@@ -6920,23 +6942,35 @@ function rdStep(top, max, prev, user, olderLeft, typing) {
 function rdOnScroll(e) {
   var vp = e.currentTarget;
   if (vp !== _rd.vp || !isPhone() || !panelOpen) return;
-  var now = Date.now();
-  // The reader's own scroll: a touch, the wheel or a key just now — and the fling after the finger lifts.
-  var user = now - _rd.gesture < 700;
-  if (user) _rd.gesture = now;
+  // The reader's own scroll: a finger on the box, or the fling / wheel / key just after it (a fixed window — the
+  // page's own scrolls, a place kept or a box grown, never extend it).
+  var user = _rd.touch || Date.now() < _rd.until;
   var host = vp.getRootNode && vp.getRootNode().host;
   var cmd = document.getElementById('panel-command');
+  var sc = document.getElementById('panel-scroll');
+  var box = psecBox();
+  var p = document.getElementById('slide-panel');
   var act = document.activeElement;
+  // The box's height once reading with the composer away: the whole view, plus the composer's row.
+  var grow = sc && box && cmd && p && !p.hasAttribute('data-tuck') ? Math.max(0, sc.clientHeight + cmd.offsetHeight - box.clientHeight) : 0;
   var r = rdStep(vp.scrollTop, vp.scrollHeight - vp.clientHeight, _rd.last, user,
-    !!(host && host.data && host.data.hasMore), !!(cmd && act && act !== document.body && cmd.contains(act)));
+    !!(host && host.data && host.data.hasMore), !!(cmd && act && act !== document.body && cmd.contains(act)), grow);
   _rd.last = vp.scrollTop;
   if (r.tuck !== null) rdTuck(r.tuck);
   if (r.read !== null) rdRead(r.read);
 }
-// A touch, the wheel or a key in the sections: the reader is about to scroll — the box listens from now on.
-function rdGesture() {
+// A touch, the wheel or a key in the sections: the reader is about to scroll — the box listens from now on. A lifted
+// finger leaves its fling a second; the wheel and a key a moment.
+function rdGesture(e) {
   if (!isPhone()) return;
-  _rd.gesture = Date.now();
+  var t = e && e.type;
+  if (t === 'touchend' || t === 'touchcancel') {
+    _rd.touch = false;
+    _rd.until = Date.now() + 1200;
+    return;
+  }
+  if (t === 'touchstart' || t === 'touchmove') _rd.touch = true;
+  else _rd.until = Date.now() + 400;
   var vp = psecViewport();
   if (vp && !vp._rdBound) {
     vp._rdBound = true;
@@ -6973,10 +7007,13 @@ function syncPickerDock() {
     var r = end.children[i].getBoundingClientRect();
     if (r.width > 0) to = Math.min(to, r.left);
   }
-  ctl.style.setProperty('--pd-l', Math.round(from - c.left + 6) + 'px');
-  ctl.style.setProperty('--pd-r', Math.round(c.right - to + 6) + 'px');
-  ctl.style.setProperty('--pd-t', Math.round(b.top - c.top) + 'px');
-  ctl.style.setProperty('--pd-h', Math.round(b.height) + 'px');
+  var pd = [Math.round(from - c.left + 6), Math.round(c.right - to + 6), Math.round(b.top - c.top), Math.round(b.height)];
+  if (ctl._pd === pd.join(' ')) return; // a live repaint with the row where it was writes nothing
+  ctl._pd = pd.join(' ');
+  ctl.style.setProperty('--pd-l', pd[0] + 'px');
+  ctl.style.setProperty('--pd-r', pd[1] + 'px');
+  ctl.style.setProperty('--pd-t', pd[2] + 'px');
+  ctl.style.setProperty('--pd-h', pd[3] + 'px');
 }
 function syncPhoneChrome() {
   syncPhoneScope();
@@ -6994,7 +7031,7 @@ function syncPhoneChrome() {
     else if (typeof _phoneMq.addListener === 'function') _phoneMq.addListener(syncPhoneChrome);
   }
   var secs = document.getElementById('panel-sections-body');
-  if (secs) ['touchstart', 'touchmove', 'wheel', 'keydown'].forEach(function(t) {
+  if (secs) ['touchstart', 'touchmove', 'touchend', 'touchcancel', 'wheel', 'keydown'].forEach(function(t) {
     secs.addEventListener(t, rdGesture, { passive: true });
   });
   // A tap on the title bar (not on its buttons) scrolls the head back in.
@@ -13309,6 +13346,8 @@ function planDirectInput(key) {
 }
 function focusPanelComposer(hint) {
   if (hint) dashToast({ title: '직접 입력', description: hint, tone: 'neutral' });
+  // Phone chrome T4: a composer tucked away cannot take focus — it comes back first.
+  rdTuck(false);
   setTimeout(function() {
     var c = document.getElementById('pc-composer');
     if (c && typeof c.focus === 'function') c.focus();
@@ -14491,6 +14530,7 @@ async function rbConfirm() {
     if (c) {
       c.value = String(p.text);
       _rbPrefill = { key: pick.key, text: String(p.text) };
+      rdTuck(false); // phone chrome T4: the field it goes back into is in view
       if (typeof c.focus === 'function') c.focus();
     }
   }
@@ -16830,6 +16870,8 @@ function landPanel() {
     if (onQuestion && _panelOnQuestion) return;
     _panelOnQuestion = onQuestion;
     if (onQuestion) {
+      // Phone chrome: what waits on the reader brings the head and the composer back (it lives in the head).
+      rdReset();
       // The question sits under the session info that scrolls with the
       // conversation (SSOT 2026-10-24), so land on its own offset, not on 0.
       // The 입력 필요 head sits right above it: land with the head in view (re-agent-run D9).
