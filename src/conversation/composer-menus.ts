@@ -619,8 +619,14 @@ export function composerTriggers(
   opts: { where: ComposerMenuWhere; userId?: string; admin: boolean },
   deps?: ComposerSkillDeps,
 ): ComposerTriggerRow[] {
+  // `$user` alone answers with the skills card and starts nothing: an open session's menu only (the new task's
+  // first message must start the work).
+  const card: ComposerSuggestionRow[] =
+    opts.where === 'session'
+      ? [{ value: '$user', description: t('내 스킬 목록 카드 (보기 · 편집 · 공유)'), group: t('내 스킬') }]
+      : [];
   const skills: ComposerSuggestionRow[] = [
-    { value: '$user', description: t('내 스킬 목록 카드 (보기 · 편집 · 공유)'), group: t('내 스킬') },
+    ...card,
     ...composerSkillItems({ userId: opts.userId, admin: opts.admin }, deps),
   ];
   return [
