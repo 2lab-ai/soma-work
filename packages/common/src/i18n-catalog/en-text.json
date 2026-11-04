@@ -2067,5 +2067,6 @@
   "Claude 자격 증명을 백업에서 되살리기": "Restore the Claude credentials from the backup",
   "Slack UI 렌더링 시험": "Test Slack UI rendering",
   "답은 Slack 스레드에": "the answer is in the Slack thread",
-  "대화를 요약해 컨텍스트 비우기 (확인 없이 바로)": "Summarise the conversation to free the context (no confirmation)"
+  "대화를 요약해 컨텍스트 비우기 (확인 없이 바로)": "Summarise the conversation to free the context (no confirmation)",
+  "이 명령은 답만 하고 작업을 시작하지 않아요 — 뒤에 지시를 붙이거나(예: /goal 테스트 전부 통과) 열린 세션에서 보내세요": "This command only answers and starts no task — add an instruction after it (for example /goal all tests pass) or send it in an open session"
 }

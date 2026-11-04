@@ -248,7 +248,17 @@ describe('POST /api/dashboard/session/:key/command — where a command answers',
     const res = await send('/help');
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toEqual({ ok: true, answer: 'thread' });
-    expect(classify).toHaveBeenCalledWith('/help', undefined);
+    // Classified as whoever it runs as: the sender, else the session's owner (a viewer token names nobody).
+    expect(classify).toHaveBeenCalledWith('/help', 'U1');
+  });
+
+  it('a classifier that throws after the command went out still answers ok — a 500 would make Retry send it twice', async () => {
+    dashboard.setDashboardCommandClassifier(() => {
+      throw new Error('probe broke');
+    });
+    const res = await send('/help');
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ ok: true });
   });
 
   it('an instruction, or a command that starts a turn: the turn is on the board — no answer field', async () => {
@@ -284,5 +294,99 @@ describe('page — a command answered in the Slack thread', () => {
     expect(src).toContain("data.answer === 'thread'");
     expect(src).toMatch(/answeredInThread[\s\S]*dropTurnFromPanel\(optimisticId\)/);
     expect(src).toContain('pcThreadAnswerToast(_sessionCache[sendingSessionKey])');
+  });
+});
+
+describe('POST /api/dashboard/new-task — a first message that only answers starts no task (trinity R2, grok-elon)', () => {
+  let injectWebServer: any;
+  let stopWebServer: any;
+  let dashboard: any;
+  let start: ReturnType<typeof vi.fn>;
+  const CONTEXT = {
+    models: [
+      {
+        nickname: 'opus[1m]',
+        model: 'claude-opus-5-5[1m]',
+        label: 'Opus 5.5 (1M)',
+        battery: { level: 0.5, best: 0.5, windows: [], accounts: { measured: 1, total: 1, available: 1 } },
+      },
+    ],
+    defaultModel: 'opus[1m]',
+    efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+    defaultEffort: 'xhigh',
+    channels: [{ id: 'C_ALPHA', name: 'workspace-alpha', repos: ['2lab-ai/soma-work'] }],
+    defaultChannelId: 'C_ALPHA',
+    membershipUnknown: false,
+    autogoalDefault: true,
+    usage: { scope: 'shared-pool', source: 'llmux', fetchedAt: 1 },
+    limits: { maxPromptChars: 12000, maxFiles: 10, maxFileBytes: 20971520, maxTotalBytes: 31457280 },
+  };
+
+  beforeAll(async () => {
+    await import('../web-server');
+    await import('../dashboard');
+  }, 300_000);
+
+  beforeEach(async () => {
+    vi.resetModules();
+    const webServer = await import('../web-server');
+    injectWebServer = webServer.injectWebServer;
+    stopWebServer = webServer.stopWebServer;
+    dashboard = await import('../dashboard');
+    start = vi.fn(async () => ({
+      channel: 'C_ALPHA',
+      threadTs: '1.1',
+      sessionKey: 'C_ALPHA:1.1',
+      permalink: '',
+      status: 'running',
+    }));
+    dashboard.setDashboardNewTaskProvider({ context: vi.fn(async () => structuredClone(CONTEXT)), start });
+    await webServer.startWebServer({ listen: false });
+  }, 60_000);
+
+  afterEach(async () => {
+    await stopWebServer?.();
+  });
+
+  async function launch(prompt: string, requestId: string) {
+    const { issueSlackToken } = await import('../oauth');
+    const token = issueSlackToken({ slackUserId: 'U_PLAIN', email: 'U_PLAIN@slack.local', name: 'Plain' });
+    const sso = await injectWebServer({ method: 'GET', url: `/auth/sso?token=${encodeURIComponent(token)}` });
+    const setCookie = sso.headers['set-cookie'];
+    const cookie = (Array.isArray(setCookie) ? setCookie[0] : String(setCookie)).split(';')[0];
+    const me = await injectWebServer({ method: 'GET', url: '/auth/me', headers: { cookie } });
+    const csrf = JSON.parse(me.body).csrfToken as string;
+    return injectWebServer({
+      method: 'POST',
+      url: '/api/dashboard/new-task',
+      headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' },
+      payload: {
+        requestId,
+        prompt,
+        model: 'opus[1m]',
+        effort: 'xhigh',
+        channelId: 'C_ALPHA',
+        autogoal: true,
+        autoz: false,
+        attachments: [],
+      },
+    });
+  }
+
+  it('/goal alone (picked from the menu, sent at once) is refused before anything is posted; the reason says what to do', async () => {
+    const classify = vi.fn((text: string) => (text === '/goal' ? 'control' : 'control-with-dispatch'));
+    dashboard.setDashboardCommandClassifier(classify);
+    const res = await launch('/goal ', 'req-goal-bare-0001');
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toContain('작업을 시작하지 않아요');
+    expect(classify).toHaveBeenCalledWith('/goal', 'U_PLAIN');
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('/goal with its objective starts the task', async () => {
+    dashboard.setDashboardCommandClassifier(() => 'control-with-dispatch');
+    const res = await launch('/goal 대시보드 테스트 전부 통과', 'req-goal-full-0001');
+    expect(res.statusCode).toBe(200);
+    expect(start).toHaveBeenCalledTimes(1);
   });
 });
