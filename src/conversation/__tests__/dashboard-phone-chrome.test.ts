@@ -176,10 +176,66 @@ describe('T2 — only the title bar stays while the reader scrolls', () => {
     expect(surface.children).toEqual([needs]);
   });
 
-  it('reading gives the section box the whole view (sizePanelSections)', () => {
+  it('reading gives the section box the whole view under the section tabs (sizePanelSections, T5)', () => {
     expect(clientFn('sizePanelSections')).toContain(
-      'var h = panelReading() ? view : psecHeightOf(view, top, panelTabsHeight() + strip);',
+      'var h = panelReading() ? Math.max(0, view - strip) : psecHeightOf(view, top, panelTabsHeight() + strip);',
     );
+    // A short screen (sideways, the composer back): no floor in CSS either, or the newest rows hide behind the composer.
+    expect(cssRule('.slide-panel[data-read] .psec')).toContain('min-height: 0;');
+  });
+
+  it('T5: reading lands on the section tabs (대화 · 작업 로그) — they stay right under the title bar', () => {
+    const rect = (top: number) => ({ getBoundingClientRect: () => ({ top }) });
+    const sc = Object.assign(rect(52), { scrollTop: 300 });
+    const m = load<{ rdBoxTop: () => number }>(['rdBoxTop'], {
+      document: {
+        getElementById: (id: string) => (id === 'panel-scroll' ? sc : id === 'panel-sections' ? rect(200) : null),
+      },
+    });
+    // The tabs are 148px under the scroll area's top, 300px into its content: land at 448.
+    expect(m.rdBoxTop()).toBe(448);
+  });
+
+  it('T5: a glide stopped short is finished once it settles — the tabs end exactly under the title bar', () => {
+    const panel = new FakeNode('slide-panel');
+    const calls: string[] = [];
+    const scroll = Object.assign(new FakeNode('panel-scroll'), {
+      scrollTop: 0,
+      scrollTo(o: { top: number; behavior: string }) {
+        calls.push(`scroll ${o.top} ${o.behavior}`);
+      },
+    });
+    const timers: Array<() => void> = [];
+    const m = load<{ rdRead: (on: boolean) => void }>(['rdRead'], {
+      document: fakeDocument([panel, scroll as unknown as FakeNode]),
+      rdHow: () => 'smooth',
+      rdBoxTop: () => 240,
+      sizePanelSections: () => {},
+      _rd: { leave: 0, land: 0 },
+      _panelScrollGen: 0,
+      setTimeout: (f: () => void) => {
+        timers.push(f);
+        return timers.length;
+      },
+      clearTimeout: () => {},
+    });
+    m.rdRead(true);
+    expect(calls).toEqual(['scroll 240 smooth']);
+    scroll.scrollTop = 234; // the reader's fling cut the glide 6px short
+    timers[0]();
+    expect(calls[1]).toBe('scroll 240 instant');
+    expect(clientFn('rdRead')).toMatch(/if \(Math\.abs\(sc\.scrollTop - t\) <= 1\) return;\s*_panelScrollGen\+\+;/);
+    // The reader's own input in the scroll area cancels it — never a pull-back of a place scrolled to by hand.
+    expect(TEMPLATE).toMatch(
+      /pscroll\.addEventListener\(t, function\(\) \{ clearTimeout\(_rd\.land\); \}, \{ passive: true \}\);/,
+    );
+    scroll.scrollTop = 240;
+    timers[0](); // landed: nothing more
+    expect(calls).toHaveLength(2);
+    panel.removeAttribute('data-read'); // the reader left meanwhile: nothing
+    scroll.scrollTop = 0;
+    timers[0]();
+    expect(calls).toHaveLength(2);
   });
 
   it('rdRead: in — the box grows, the panel scrolls it under the title bar; out — back to the top, the box shrinks when the scroll lands', () => {
@@ -249,14 +305,14 @@ describe('T2 — only the title bar stays while the reader scrolls', () => {
       rdHow: () => 'smooth',
       rdBoxTop: () => 240,
       sizePanelSections: () => calls.push('size'),
-      _rd: { leave: 7 },
+      _rd: { leave: 7, land: 9 },
       _panelScrollGen: 0,
       setTimeout: () => 0,
       clearTimeout: (id: number) => calls.push(`clear ${id}`),
     });
     m.rdRead(true);
     expect(panel.getAttribute('data-read')).toBe('1');
-    expect(calls).toEqual(['clear 7', 'size', 'scroll 240']);
+    expect(calls).toEqual(['clear 7', 'size', 'scroll 240', 'clear 9']);
   });
 
   it('what waits on the reader (a question, a permission, a plan) brings the head and the composer back', () => {
@@ -266,7 +322,8 @@ describe('T2 — only the title bar stays while the reader scrolls', () => {
 
   it('reading moves the reader’s place: a layout anchor taken before it is stale (_panelScrollGen)', () => {
     const fn = clientFn('rdRead');
-    expect(fn.match(/_panelScrollGen\+\+;/g)).toHaveLength(2);
+    // Entering, leaving, and the settle correction (T5) each move the reader's place.
+    expect(fn.match(/_panelScrollGen\+\+;/g)).toHaveLength(3);
   });
 
   it('nothing sticks above the box while reading; a tap on the title bar (not its buttons) brings the head back', () => {
@@ -276,11 +333,70 @@ describe('T2 — only the title bar stays while the reader scrolls', () => {
     );
   });
 
-  it('a new view starts as the card opens: another card, section, tab or agent resets reading', () => {
-    for (const fn of ['selectPanelSection', 'selectPanelMid', 'selectPanelAgent'])
+  it('a new view starts as the card opens: another card, tab or agent resets reading', () => {
+    for (const fn of ['selectPanelMid', 'selectPanelAgent'])
       expect(clientFn(fn).split('\n').slice(0, 4).join('\n'), fn).toContain('rdReset();');
     expect(clientFn('openPanel')).toMatch(
       /\/\/ Phone chrome: every opening starts with the head and the composer in\.\n\s*rdReset\(\);/,
+    );
+  });
+
+  it('T5: a section tab pressed while reading keeps reading — the tabs stay, the old box is let go, the composer is back', () => {
+    const calls: string[] = [];
+    const panel = new FakeNode('slide-panel');
+    panel.setAttribute('data-read', '1');
+    const _rd = { vp: { old: true } as unknown, last: 300 };
+    const m = load<{ selectPanelSection: (sec: string) => void }>(['selectPanelSection'], {
+      PSEC_ORDER: ['conv', 'log', 'tree'],
+      _psec: 'log',
+      _rd,
+      panelSessionKey: 'k',
+      document: fakeDocument([panel]),
+      rdTuck: (on: boolean) => calls.push(`tuck ${on}`),
+      rdReset: () => calls.push('reset'),
+      rdRead: (on: boolean) => calls.push(`read ${on}`),
+      renderPanelSections: () => calls.push('render'),
+      psecClear: () => {},
+      paintSection: (sec: string) => calls.push(`paint ${sec}`),
+      psecToNewest: () => calls.push('newest'),
+    });
+    m.selectPanelSection('conv');
+    expect(calls).toEqual(['tuck false', 'render', 'paint conv', 'newest', 'read true']);
+    expect(_rd.vp).toBeNull();
+    expect(_rd.last).toBe(-1);
+    calls.length = 0;
+    panel.setAttribute('data-read', 'leaving'); // the head is coming back (the title bar was tapped): it keeps coming
+    m.selectPanelSection('log');
+    expect(calls).toEqual(['reset', 'render', 'paint log', 'newest']);
+    calls.length = 0;
+    panel.removeAttribute('data-read'); // not reading: the card starts as it opens
+    m.selectPanelSection('conv');
+    expect(calls).toEqual(['reset', 'render', 'paint conv', 'newest']);
+  });
+
+  it('a section tab never reads as an agent choice: the agent strip answers only its own ui-change', () => {
+    const listeners: Array<(e: unknown) => void> = [];
+    const strip = {
+      _bound: false,
+      addEventListener: (_t: string, f: (e: unknown) => void) => listeners.push(f),
+    };
+    const picked: string[] = [];
+    const m = load<{ bindPanelTabs: () => void }>(['bindPanelTabs'], {
+      document: { getElementById: (id: string) => (id === 'panel-tabs' ? strip : null) },
+      selectPanelAgent: (id: string) => picked.push(id),
+      panelTabAgent: (v: string) => (v.startsWith('a:') ? v.slice(2) : ''),
+      renderPanelTabs: () => {},
+    });
+    m.bindPanelTabs();
+    listeners[0]({ target: { id: 'panel-sections' }, detail: { value: 'conv' } }); // bubbled from 대화 · 작업 로그
+    expect(picked).toEqual([]);
+    listeners[0]({ target: strip, detail: { value: 'a:toolu_1' } });
+    expect(picked).toEqual(['toolu_1']);
+  });
+
+  it('T6: on a phone the card’s title bar is the top bar’s height (52px), over the sheet’s notch rule', () => {
+    expect(TEMPLATE).toMatch(
+      /@media \(max-width: 639px\), \(max-height: 560px\) \{[\s\S]{0,400}ui-drawer\.slide-panel \.panel-header \{\s*min-height: calc\(52px \+ env\(safe-area-inset-top, 0px\)\);\s*padding: env\(safe-area-inset-top, 0px\) 12px 0 16px;/,
     );
   });
 
