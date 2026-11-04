@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { App } from '@slack/bolt';
+import type { SafeguardHalt } from '@soma/common/safeguard';
 import {
   type AuthDecision,
   type DispatcherNotice,
@@ -25,6 +26,7 @@ import { FollowupQueueStore } from '@soma/slack/followup-queue-store';
 import { OutputFlag } from '@soma/slack/output-flags';
 import { isLocalSlashCommand, shouldForwardAsLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
+import { decideSafeguardGate, safeguardRefusalNotice } from '@soma/slack/safeguard';
 import { sayPostSwitches } from '@soma/slack/stream-processor';
 import { getWorkQueues, WorkQueueService } from '@soma/slack/work-queue';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
@@ -1825,6 +1827,17 @@ export class SlackHandler {
       return { result: 'safe' };
     }
 
+    // Anthropic safeguards halted this thread (ssot T3): nothing runs here
+    // until an admin presses the unlock button on the "세이프가드 에러"
+    // notice. Before command routing, so `new` / `reset` / `help` cannot slip
+    // through either. A person's message is answered with why it did not run;
+    // a host turn (goal continuation, auto-resume, cron, epic wake, replay) is
+    // dropped silently. Both are `safe` — the dispatch owes nothing, and a
+    // `blocked` would freeze the follow-up lane behind a lock only an admin
+    // can lift (so an admin's queued message would wait on a manual Resume).
+    const safeguardGate = await this.applySafeguardGate(event, channel, originalThreadTs);
+    if (safeguardGate) return safeguardGate;
+
     // SSOT 2026-10-23 T5 — "the channel the user last gave a command in" is the
     // dashboard composer's default channel. Real user messages only: a goal
     // loop / cron / auto-resume turn is not the user commanding anything.
@@ -3286,6 +3299,41 @@ export class SlackHandler {
   }
 
   /** Hold the message for the owner (`ownerApprovalHold` decided it): ask, tell the thread. */
+  /** See the gate in {@link processMessage}. Undefined = the turn may run. */
+  private async applySafeguardGate(
+    event: MessageEvent,
+    channel: string,
+    threadTs: string,
+  ): Promise<DispatchOutcome | undefined> {
+    const registry =
+      typeof (this.claudeHandler as any).getSessionRegistry === 'function'
+        ? (this.claudeHandler as any).getSessionRegistry()
+        : undefined;
+    const halt: SafeguardHalt | undefined = registry?.getSafeguardHalt?.(channel, threadTs);
+    const hostTurn = event.synthetic === true || event.routeContext?.hostTurn === true;
+    const decision = decideSafeguardGate({ halt, hostTurn });
+    if (decision === 'pass' || !halt) return undefined;
+    if (decision === 'drop') {
+      this.logger.info('Safeguard halt: host turn dropped', { channel, threadTs });
+      return { result: 'safe' };
+    }
+    this.logger.info('Safeguard halt: message refused', { channel, threadTs, user: event.user });
+    try {
+      await this.slackApi.postSystemMessage(
+        channel,
+        safeguardRefusalNotice(halt, { isAdmin: !!event.user && isAdminUser(event.user) }),
+        { threadTs },
+      );
+    } catch (error) {
+      this.logger.warn('Safeguard halt: refusal notice failed', {
+        channel,
+        threadTs,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
+    return { result: 'safe' };
+  }
+
   private async holdForOwnerApproval(
     event: MessageEvent,
     { approvals, sessionKey, session }: NonNullable<ReturnType<SlackHandler['ownerApprovalHold']>>,
@@ -7236,6 +7284,14 @@ export class SlackHandler {
       // back to `activityState === 'working'`.
       const isWorking =
         typeof session.shouldAutoResume === 'boolean' ? session.shouldAutoResume : session.activityState === 'working';
+      // A safeguards-halted session is not resumed and not told to retry: it
+      // waits for an admin to lift the lock (its notice already says so).
+      if (this.claudeHandler.getSessionByKey?.(session.sessionKey)?.safeguardHalt) {
+        this.logger.info('Crash recovery skipped — session halted by a safeguards flag', {
+          sessionKey: session.sessionKey,
+        });
+        continue;
+      }
       if (isWorking) this.restartCutSessionKeys.add(session.sessionKey);
 
       // #351: an idle session whose error auto-retry is still pending is
@@ -7415,6 +7471,12 @@ export class SlackHandler {
         }
       }
       if (session.goal?.status !== 'active') continue;
+      // A safeguards-halted session runs nothing until an admin lifts the
+      // lock — the goal stays active and resumes on the admin's retry.
+      if (session.safeguardHalt) {
+        this.logger.info('Goal resume skipped — session halted by a safeguards flag', { sessionKey });
+        continue;
+      }
       // A stall judged on no turn text is not a real stall: a turn the restart
       // cut short was taken for "the same failure" (2026-11-02, before the loop
       // stopped judging empty turns). End it — its question is withdrawn and
@@ -7527,8 +7589,9 @@ export class SlackHandler {
       // Already armed in this process (e.g. a crash-recovery resume that failed
       // again and scheduled a fresh retry) — arming again would fire it twice.
       if (session.pendingRetryTimer) continue;
-      const dropReason =
-        session.state === 'SLEEPING'
+      const dropReason = session.safeguardHalt
+        ? 'session is halted by a safeguards flag'
+        : session.state === 'SLEEPING'
           ? 'session is asleep'
           : session.sessionId !== session.pendingRetrySessionId
             ? 'retry belongs to a previous run'
