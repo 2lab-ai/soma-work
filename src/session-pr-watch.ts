@@ -375,8 +375,9 @@ export interface SettledDeliveryDeps {
  * #929 review (trinity) — `SlackHandler.handleMessage` drops a synthetic turn while the session's dispatch slot is
  * held, and the registry's onIdle callbacks fire before a finishing turn releases it. So a host message waits here
  * and is injected only into a session that reads 'ready', checked again every `retryMs` — one message per settle,
- * since an injected turn makes the session busy again. In memory: a restart drops what still waits (the record
- * already said delivered — at most once).
+ * since an injected turn makes the session busy again. In memory: a restart drops what still waits, and the watch
+ * queues it again, because it records a message only when `done` reports it injected (or expired). An injection that
+ * fails after that is not retried — at most once.
  */
 export function createSettledDelivery(deps: SettledDeliveryDeps): {
   deliver: (sessionKey: string, text: string, done?: (outcome: DeliveryOutcome) => void) => Promise<boolean>;
