@@ -5755,6 +5755,11 @@ ui-breadcrumbs.pa-path { flex: 1 1 auto; min-width: 0; }
   white-space: nowrap;
 }
 .panel-header { flex-wrap: wrap; row-gap: 8px; }
+/* The owner pill (SSOT 2026-11-04): top right, before the deck and ✕, centred on them (the header's top line). It gives
+   way before the title does (shrinks to its ellipsis from 40% of the row); the kit's display: inline-block must not
+   beat [hidden]. */
+.panel-header > .panel-owner { flex: 0 1 auto; min-width: 0; max-inline-size: min(40%, 168px); align-self: center; }
+.panel-header > .panel-owner[hidden] { display: none; }
 /* The title's actions (SSOT 2026-11-04): 퍼머링크 · 전체 문맥 복사 right after the title text, small. The title keeps
    its own width (no flex: 1) and ellipsizes first, so the two stay beside its last letter; the -2px margins keep the
    row the title's height (no shift when they appear). Scoped to the row so the kit's .ui-icon-btn (32px) never wins. */
@@ -6448,6 +6453,10 @@ ${pageTokenAliases()}
           <button type="button" id="panel-title-sub-regen" class="ui-icon-btn is-sm" style="display:none" aria-label="부제 다시 만들기" title="부제 다시 만들기" onclick="event.stopPropagation();generateTitleSub(panelConvId, !!_panelTitleSub)"><i data-ui-icon="refresh"></i></button>
         </div>
       </div>
+      <!-- The card's owner (SSOT 2026-11-04): the board's name pill at the top right, in their board colour — the
+           viewer's own orbits (the kit's .ui-owner-badge, @2lab.ai/ui ≥ 0.27.0). renderPanelOwner fills it from the
+           open card; hidden until then. -->
+      <span id="panel-owner" class="ui-owner-badge panel-owner" hidden></span>
       <!-- Detail deck (SSOT 2026-10-29 T2, D3 E-05): every open card has its detail card here; <ui-deck-nav>'s ‹ n / m › (and ←/→ on it) go through them, round the end. -->
       <ui-deck-nav class="panel-deck" id="panel-deck" lang="ko" wrap hidden></ui-deck-nav>
       <button type="button" class="ui-icon-btn is-bordered panel-close" aria-label="작업 카드 닫기" title="작업 카드 닫기 (카드도 접힘)" onclick="closeDetailCard()"><i data-ui-icon="close"></i></button>
@@ -9782,7 +9791,15 @@ function cardOf(s, col) {
   // The star is a toggle on the face (SSOT 2026-11-01 — viewCardOf, cardStarOf), no longer a ★ lead (2026-10-30 T1.3).
   // Owner badge (§3.1-3): in the All Users view every card names its owner.
   var owner = currentUserId ? '' : s.ownerName || s.ownerId || '';
-  if (owner) card.badge = { text: String(owner), hue: ownerBadgeHue(s.ownerId || owner), title: String(owner) };
+  if (owner) {
+    card.badge = { text: String(owner), hue: ownerBadgeHue(s.ownerId || owner), title: String(owner) };
+    // The viewer's own card (SSOT 2026-11-04): the element's moving ring makes it stand out among everyone's, and it
+    // says the name "(나)" — its own title and screen-reader words, so no host title.
+    if (viewerOwns(s)) {
+      card.badge.self = true;
+      delete card.badge.title;
+    }
+  }
   return card;
 }
 
@@ -11429,6 +11446,7 @@ function repaintPanelSession() {
   var anchor = panelLiveAnchor();
   renderPanelHead();
   renderPanelTitleActions(s);
+  renderPanelOwner(s);
   renderPanelMidbar();
   renderPanelInfo();
   renderPanelGoal();
@@ -17836,6 +17854,41 @@ function renderPanelTitleActions(s) {
     link.hidden = !href;
   }
   if (copy) copy.hidden = !(s && s.conversationId) || isSiblingSession(s);
+}
+// The open card's owner pill (SSOT 2026-11-04) — the board's badge at the detail card's top right, shown in every
+// board mode (the board names owners in All Users only; one card's detail always says whose it is). Pure: null
+// without an owner; self for the signed-in viewer's own — its ring orbits, and the name is followed by "(나)".
+function panelOwnerOf(s) {
+  var name = s ? String(s.ownerName || s.ownerId || '') : '';
+  if (!name) return null;
+  var self = viewerOwns(s);
+  return { text: name, hue: ownerBadgeHue(s.ownerId || name), self: self, title: self ? name + ' (나)' : name };
+}
+// Writes the pill only when what it says changes: a rewrite would restart the orbit mid-turn.
+function renderPanelOwner(s) {
+  var el = document.getElementById('panel-owner');
+  if (!el) return;
+  var o = panelOwnerOf(s);
+  var sig = o ? JSON.stringify(o) : '';
+  if (el._sig === sig) return;
+  el._sig = sig;
+  el.hidden = !o;
+  el.classList.toggle('is-self', !!(o && o.self));
+  if (!o) {
+    el.textContent = '';
+    el.removeAttribute('data-hue');
+    el.removeAttribute('title');
+    return;
+  }
+  el.setAttribute('data-hue', String(o.hue));
+  el.setAttribute('title', o.title);
+  el.textContent = o.text;
+  if (o.self) {
+    var sr = document.createElement('span');
+    sr.className = 'ui-sr-only';
+    sr.textContent = ' (나)';
+    el.appendChild(sr);
+  }
 }
 // Copy text — or a promise of it (the full context waits for its export) — to the clipboard; true once copied.
 // A ClipboardItem holding the pending text is written inside the press, so Safari keeps the press's permission
