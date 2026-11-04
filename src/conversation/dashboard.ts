@@ -14346,8 +14346,10 @@ var _deepLinkSession = (function() {
 })();
 var _deepLinkDeadline = Date.now() + DEEP_LINK_WINDOW_MS;
 // Pure: which board key does a ?session= value point at? Exact key first, then
-// this instance's prefixed key, then the one card whose key ends in "::<ref>".
-// Ambiguous suffix matches (same thread on two siblings) resolve to nothing.
+// this instance's prefixed key, then (a bare ref) this instance's latest archive
+// of the thread, then the one card whose key ends in "::<ref>" — ambiguous suffix
+// matches (same thread on two siblings) resolve to nothing — then the thread's
+// latest archive (a ref naming its instance: only that instance's).
 function resolveDeepLinkKey(ref, keys, selfInstance) {
   if (!ref) return null;
   if (keys.indexOf(ref) >= 0) return ref;
