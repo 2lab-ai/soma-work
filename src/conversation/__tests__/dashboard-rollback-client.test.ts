@@ -209,6 +209,8 @@ describe('되돌리기 sends the point; the instruction goes back into the compo
       ['setRollbackStatus', 'closeRollbackDialog', 'rbConfirm', 'rbRedo', 'postRollback', 'rbOn'],
       {
         document: { getElementById: (id: string) => nodes[id] ?? null },
+        // Phone chrome T4 (SSOT 2026-11-04): the composer comes back before it takes the instruction — a seam here.
+        rdTuck: () => {},
         fetch: vi.fn(async (_u: string, init?: { body?: string }) => {
           posts.push(JSON.parse(String(init?.body)));
           return { ok: true, status: 200, json: async () => ({ ok: true }) };

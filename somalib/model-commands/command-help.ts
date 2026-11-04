@@ -227,8 +227,9 @@ const SAVE_CONTEXT_RESULT_HELP: CommandHelp = {
 const ASK_USER_QUESTION_HELP: CommandHelp = {
   commandId: 'ASK_USER_QUESTION',
   summary:
-    'Render a user-choice UI in Slack. params.payload.type must be "user_choice" or "user_choice_group". ' +
-    'choices/options must be a non-empty array of { label, ... }.',
+    'Ask the user (Slack thread form + dashboard card). params.payload.type must be "user_choice" or "user_choice_group". ' +
+    'Every question takes 3–4 choices/options { label, ... }: choice 1 = the recommended action (recommendedChoiceId, ' +
+    'defaults to it), choices 2–4 = alternatives. The host adds 직접 입력 (direct input) as the last option — never add one.',
   examples: [
     {
       action: 'user_choice',
@@ -239,8 +240,9 @@ const ASK_USER_QUESTION_HELP: CommandHelp = {
           question: 'Choose next step',
           recommendedChoiceId: '1',
           choices: [
-            { id: '1', label: 'Write implementation spec', description: 'Document API and tasks first' },
+            { id: '1', label: 'Write implementation spec', description: 'Recommended — document API and tasks first' },
             { id: '2', label: 'Start implementation', description: 'Code immediately from current context' },
+            { id: '3', label: 'Prototype first', description: 'Throwaway spike, then decide' },
           ],
         },
       },
@@ -258,8 +260,9 @@ const ASK_USER_QUESTION_HELP: CommandHelp = {
               question: 'Which approach?',
               recommendedChoiceId: '1',
               options: [
-                { id: '1', label: 'Option A' },
+                { id: '1', label: 'Option A (recommended)' },
                 { id: '2', label: 'Option B' },
+                { id: '3', label: 'Option C' },
               ],
             },
           ],

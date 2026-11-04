@@ -522,6 +522,7 @@ describe('Integration — catalog handler + JSON round-trip', () => {
           choices: [
             { id: '1', label: 'Write tests first (Recommended · 1/2)' },
             { id: '2', label: 'Ship implementation now' },
+            { id: '3', label: 'Spike first, then decide' },
           ],
         },
       },
@@ -558,6 +559,7 @@ describe('Integration — catalog handler + JSON round-trip', () => {
               options: [
                 { id: '1', label: 'Merge now (Recommended · 1/2)' },
                 { id: '2', label: 'Request rework' },
+                { id: '3', label: 'Hold the merge for a re-review' },
               ],
             },
           ],
@@ -589,6 +591,7 @@ describe('Integration — catalog handler + JSON round-trip', () => {
               options: [
                 { id: '1', label: 'Merge now (Recommended · 1/2)' },
                 { id: '2', label: 'Request rework' },
+                { id: '3', label: 'Hold the merge for a re-review' },
               ],
             },
           ],
@@ -638,27 +641,28 @@ function parsePayload(args: unknown): UserChoice | UserChoices | null {
 
 describe('validator — ASK_USER_QUESTION recommendedChoiceId', () => {
   describe('user_choice (single)', () => {
-    it('preserves explicit recommendedChoiceId when it matches an option id', () => {
+    it('preserves explicit recommendedChoiceId when it names the first option (#917: 1 = recommended)', () => {
       const question = parsePayload({
         commandId: 'ASK_USER_QUESTION',
         params: {
           payload: {
             type: 'user_choice',
             question: 'Choose',
-            recommendedChoiceId: '2',
+            recommendedChoiceId: 'b',
             choices: [
-              { id: '1', label: 'A' },
-              { id: '2', label: 'B' },
+              { id: 'b', label: 'B' },
+              { id: 'a', label: 'A' },
+              { id: 'c', label: 'C' },
             ],
           },
         },
       }) as UserChoice | null;
       expect(question).not.toBeNull();
       expect(question?.type).toBe('user_choice');
-      expect(question?.recommendedChoiceId).toBe('2');
+      expect(question?.recommendedChoiceId).toBe('b');
     });
 
-    it('drops explicit recommendedChoiceId silently when it does not match any option id', () => {
+    it('an explicit recommendedChoiceId that matches no option is dropped — choice 1 is the recommended one', () => {
       const question = parsePayload({
         commandId: 'ASK_USER_QUESTION',
         params: {
@@ -669,12 +673,13 @@ describe('validator — ASK_USER_QUESTION recommendedChoiceId', () => {
             choices: [
               { id: '1', label: 'A' },
               { id: '2', label: 'B' },
+              { id: '3', label: 'C' },
             ],
           },
         },
       }) as UserChoice | null;
       expect(question).not.toBeNull();
-      expect(question?.recommendedChoiceId).toBeUndefined();
+      expect(question?.recommendedChoiceId).toBe('1');
     });
 
     it('infers recommendedChoiceId from legacy "(Recommended · 3/3)" label suffix when field is missing', () => {
@@ -685,14 +690,33 @@ describe('validator — ASK_USER_QUESTION recommendedChoiceId', () => {
             type: 'user_choice',
             question: 'Choose',
             choices: [
-              { id: '1', label: 'A' },
-              { id: '2', label: 'B (Recommended · 3/3)' },
+              { id: '1', label: 'A (Recommended · 3/3)' },
+              { id: '2', label: 'B' },
+              { id: '3', label: 'C' },
             ],
           },
         },
       }) as UserChoice | null;
       expect(question).not.toBeNull();
-      expect(question?.recommendedChoiceId).toBe('2');
+      expect(question?.recommendedChoiceId).toBe('1');
+    });
+
+    it('a legacy "(Recommended)" marker on a later option is refused — the recommended one goes first (#917)', () => {
+      const result = validateModelCommandRunArgs({
+        commandId: 'ASK_USER_QUESTION',
+        params: {
+          payload: {
+            type: 'user_choice',
+            question: 'Choose',
+            choices: [
+              { id: '1', label: 'A' },
+              { id: '2', label: 'B (Recommended · 3/3)' },
+              { id: '3', label: 'C' },
+            ],
+          },
+        },
+      });
+      expect(result.ok).toBe(false);
     });
 
     it('falls back to legacy label scan when explicit id is unknown', () => {
@@ -706,6 +730,7 @@ describe('validator — ASK_USER_QUESTION recommendedChoiceId', () => {
             choices: [
               { id: '1', label: 'A (Recommended)' },
               { id: '2', label: 'B' },
+              { id: '3', label: 'C' },
             ],
           },
         },
@@ -713,7 +738,7 @@ describe('validator — ASK_USER_QUESTION recommendedChoiceId', () => {
       expect(question?.recommendedChoiceId).toBe('1');
     });
 
-    it('leaves recommendedChoiceId undefined when neither explicit nor legacy marker is present', () => {
+    it('neither an explicit id nor a legacy marker → choice 1 is the recommended one (#917)', () => {
       const question = parsePayload({
         commandId: 'ASK_USER_QUESTION',
         params: {
@@ -723,12 +748,13 @@ describe('validator — ASK_USER_QUESTION recommendedChoiceId', () => {
             choices: [
               { id: '1', label: 'A' },
               { id: '2', label: 'B' },
+              { id: '3', label: 'C' },
             ],
           },
         },
       }) as UserChoice | null;
       expect(question).not.toBeNull();
-      expect(question?.recommendedChoiceId).toBeUndefined();
+      expect(question?.recommendedChoiceId).toBe('1');
     });
   });
 
@@ -747,6 +773,7 @@ describe('validator — ASK_USER_QUESTION recommendedChoiceId', () => {
                 options: [
                   { id: '1', label: 'A' },
                   { id: '2', label: 'B' },
+                  { id: '3', label: 'C' },
                 ],
               },
             ],
@@ -772,15 +799,17 @@ describe('validator — ASK_USER_QUESTION recommendedChoiceId', () => {
                 question: 'First?',
                 recommendedChoiceId: '2',
                 options: [
-                  { id: '1', label: 'A' },
                   { id: '2', label: 'B' },
+                  { id: '1', label: 'A' },
+                  { id: '3', label: 'C' },
                 ],
               },
               {
                 question: 'Second?',
                 options: [
-                  { id: 'x', label: 'X' },
                   { id: 'y', label: 'Y (Recommended · 2/3)' },
+                  { id: 'x', label: 'X' },
+                  { id: 'z', label: 'Z' },
                 ],
               },
             ],
@@ -810,6 +839,7 @@ describe('validator — ASK_USER_QUESTION recommendedChoiceId', () => {
                 options: [
                   { id: '1', label: 'A' },
                   { id: '2', label: 'B' },
+                  { id: '3', label: 'C' },
                 ],
               },
             ],
@@ -818,7 +848,8 @@ describe('validator — ASK_USER_QUESTION recommendedChoiceId', () => {
       });
       expect(result).not.toBeNull();
       const choices = result as UserChoices;
-      expect(choices.questions[0].recommendedChoiceId).toBeUndefined();
+      // #917 — the unknown id is dropped and choice 1 is the recommended one.
+      expect(choices.questions[0].recommendedChoiceId).toBe('1');
     });
   });
 });
@@ -871,16 +902,19 @@ describe('Rule 5 × recommendedChoiceId — explicit id satisfies invariant', ()
           question: '[small] Which env?',
           context: withLen(80),
           choices: [
-            { id: '1', label: 'Option A (Recommended for staging only)' },
-            { id: '2', label: 'Option B' },
+            { id: '1', label: 'Option A' },
+            { id: '2', label: 'Option B (Recommended for staging only)' },
+            { id: '3', label: 'Option C' },
           ],
         },
       },
     });
+    // A mid-label "(Recommended …)" is no marker: choice 2 is not taken as recommended (it would be refused as
+    // not first), and choice 1 is the recommended one by default (#917).
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const q = (result.request.params as AskUserQuestionParams).question as UserChoice;
-    expect(q.recommendedChoiceId).toBeUndefined();
+    expect(q.recommendedChoiceId).toBe('1');
   });
 
   it('user_choice: trailing "(Recommended)" (no N/M) is matched as legacy fallback', () => {
@@ -894,6 +928,7 @@ describe('Rule 5 × recommendedChoiceId — explicit id satisfies invariant', ()
           choices: [
             { id: '1', label: 'Option A (Recommended)' },
             { id: '2', label: 'Option B' },
+            { id: '3', label: 'Option C' },
           ],
         },
       },
@@ -921,10 +956,9 @@ describe('Rule 5 × recommendedChoiceId — explicit id satisfies invariant', ()
     expect(w).toContain('Recommended marker in description (option [1]) — must be in label only');
   });
 
-  it('user_choice: unknown recommendedChoiceId + clean labels → still warns (id did not resolve)', () => {
-    // When the explicit id doesn't match any option, validator drops it during
-    // normalization — so by the time quality checker runs the field is gone and the
-    // legacy-suffix check should fire normally.
+  it('user_choice: unknown recommendedChoiceId + clean labels → choice 1 is the recommended one (#917)', () => {
+    // The explicit id matches no option, so normalization drops it — and the question's shape names choice 1
+    // as the recommended one, which satisfies Rule 5 (no "no Recommended marker" warning).
     const result = validateModelCommandRunArgs({
       commandId: 'ASK_USER_QUESTION',
       params: {
@@ -936,6 +970,7 @@ describe('Rule 5 × recommendedChoiceId — explicit id satisfies invariant', ()
           choices: [
             { id: '1', label: 'A' },
             { id: '2', label: 'B' },
+            { id: '3', label: 'C' },
           ],
         },
       },
@@ -944,9 +979,9 @@ describe('Rule 5 × recommendedChoiceId — explicit id satisfies invariant', ()
     if (!result.ok) return;
     const params = result.request.params as AskUserQuestionParams;
     const q = params.question as UserChoice;
-    expect(q.recommendedChoiceId).toBeUndefined();
+    expect(q.recommendedChoiceId).toBe('1');
     const w = checkAskUserQuestionQuality(params);
-    expect(w).toContain("no Recommended marker — mark one option as '(Recommended · N/M)'");
+    expect(w.some((x) => x.startsWith('no Recommended marker'))).toBe(false);
   });
 
   it('user_choices: per-question recommendedChoiceId satisfies Rule 5 with prefix', () => {
@@ -1486,6 +1521,7 @@ describe('ASK_USER_QUESTION payload.type "user_choices" — decided by shape', (
   const choices = [
     { id: '1', label: 'A', description: 'first' },
     { id: '2', label: 'B', description: 'second' },
+    { id: '3', label: 'C', description: 'third' },
   ];
 
   it('treats a user_choice-shaped body (question + choices with labels) as user_choice', () => {

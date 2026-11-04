@@ -429,10 +429,11 @@ export interface ConversationSession {
   };
   /**
    * #829 — the latest Executive Summary left an issue/PR this session created unfinished (its ⚠️ TL;DR
-   * line): the dashboard keeps the idle card in NEEDS YOU with this reason. Set and cleared by an Executive
-   * Summary only (SummaryService, or UPDATE_SESSION `executiveSummary` from the model-run es) and by `/new`.
+   * line). Set and cleared by an Executive Summary only (SummaryService, or UPDATE_SESSION `executiveSummary` from
+   * the model-run es) and by `/new`. #917 — the user is asked about it through the host's follow-up question
+   * (`src/slack/follow-up-question.ts`): `askedAt` / `questionTurnId` mark that this verdict was asked.
    */
-  followUp?: { reason: string; at: number };
+  followUp?: { reason: string; at: number; askedAt?: number; questionTurnId?: string };
   ownerId: string; // User who started the session
   ownerName?: string; // Display name of owner
   currentInitiatorId?: string; // User who triggered the current response

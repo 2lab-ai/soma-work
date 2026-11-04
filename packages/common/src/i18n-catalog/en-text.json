@@ -2000,5 +2000,13 @@
   "🪄 전체 메모리 개선": "🪄 Improve all memory",
   "🪄 전체 프로필 개선": "🪄 Improve all profile",
   "재시작으로 전달되지 못해 다시 보냅니다": "Not delivered because of a restart — sending it again",
-  "재시작 전에 모델이 읽었습니다": "The model read it before the restart"
+  "재시작 전에 모델이 읽었습니다": "The model read it before the restart",
+  "⚠️ 후속 작업 필요 — 다음에 할 일을 골라 주세요": "⚠️ Follow-up needed — choose what to do next",
+  "작업이 끝나지 않은 채 멈췄습니다.\n이유: {0}": "The work stopped before it was finished.\nReason: {0}",
+  "멈춘 작업을 어떻게 할까요": "What should happen to the stopped work",
+  "막힌 부분을 직접 해결해서 끝까지 진행해": "Resolve the blocker yourself and finish the work",
+  "막힌 부분은 건너뛰고 남은 작업부터 진행해": "Skip the blocked part and do the remaining work first",
+  "여기서 마무리하고 남은 일과 할 사람을 정리해 보고해": "Wrap up here and report what is left and who should do it",
+  "✅ *{0}*\n직접 입력: _{1}_ _(대시보드)_": "✅ *{0}*\nCustom input: _{1}_ _(dashboard)_",
+  "✅ *{0}*\n직접 입력: _{1}_ (대시보드)": "✅ *{0}*\nCustom input: _{1}_ (dashboard)"
 }

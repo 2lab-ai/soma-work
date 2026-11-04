@@ -2017,6 +2017,11 @@ async function start() {
         postOwnerDm: postGoalOwnerDm,
         // Same failure twice → ask the owner (thread form + dashboard card).
         askStallQuestion: (question) => slackHandler.askGoalStallQuestion(question),
+        // #917 — a run that did not continue the work, with no run behind it: the follow-up may be asked now.
+        // Deferred: this runs inside the loop's queue entry, which `isActing` still sees until it drains.
+        onRunSettled: (sessionKey, { continued, queued }) => {
+          if (!continued && !queued) setImmediate(() => void slackHandler.askFollowUpQuestion(sessionKey));
+        },
         // #788: while the host stops, no loop run starts and a landing verdict is dropped.
         isShuttingDown: () => slackHandler.isShuttingDown(),
         logger,
@@ -2037,8 +2042,11 @@ async function start() {
       // kick the loop without holding a direct controller reference.
       // A kick: no turn ran, so an unchanged summary is not re-judged.
       setGoalLoopResumeHandler((sessionKey: string) => {
+        // #917 — the owner let the goal act again: a follow-up question it left must not hold the session waiting.
+        slackHandler.retractFollowUpQuestion(sessionKey);
         goalLoopController.onTurnSettled(sessionKey, { cause: 'kick' });
       });
+      slackHandler.setGoalLoopActingProbe((sessionKey) => goalLoopController.isActing(sessionKey));
       // SSOT 2026-10-21: the goal-list Delete button and the dashboard share
       // ONE host path for goal-list changes (opening turn through the fence).
       setHostGoalActionHandler((sessionKey, action, actorUserId) =>

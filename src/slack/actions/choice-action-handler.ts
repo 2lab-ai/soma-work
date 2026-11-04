@@ -1,3 +1,4 @@
+import { escapeSlackMrkdwn } from '@soma/slack/mrkdwn-escape';
 import type { ClaudeHandler } from '../../claude-handler';
 import { getInstructionApprovals } from '../../instruction-approval';
 import { Logger } from '../../logger';
@@ -1075,7 +1076,7 @@ export class ChoiceActionHandler {
         channel: session.channelId,
         threadTs: session.threadRootTs || session.threadTs,
         ts: String(Date.now() / 1000),
-        text: String(choiceId),
+        text: choiceId === CUSTOM_INPUT_CHOICE_ID ? label : String(choiceId),
         tellClicker: false,
       });
       return;
@@ -1089,9 +1090,10 @@ export class ChoiceActionHandler {
       throw new Error('Session is not waiting for a choice');
     }
 
-    // Validate choiceId against actual pending choices to prevent arbitrary input reaching Claude
+    // Validate choiceId against actual pending choices to prevent arbitrary input reaching Claude.
+    // #917 — the direct-input sentinel is the question's last option: its label is the user's own answer.
     const pendingQ = session.actionPanel?.pendingQuestion;
-    if (pendingQ && pendingQ.type === 'user_choice' && pendingQ.choices) {
+    if (choiceId !== CUSTOM_INPUT_CHOICE_ID && pendingQ && pendingQ.type === 'user_choice' && pendingQ.choices) {
       const validIds = pendingQ.choices.map((c: { id: string }) => c.id);
       if (!validIds.includes(choiceId)) {
         this.logger.warn('Dashboard choice rejected — invalid choiceId', { sessionKey, choiceId, validIds });
@@ -1122,6 +1124,12 @@ export class ChoiceActionHandler {
     const channel = session.channelId;
     const threadTs = this.resolveSessionThreadTs(session, session.threadTs);
     const choiceMessageTs = session.actionPanel?.choiceMessageTs;
+    // #917 — direct input: the user's own words are the turn (not an id), and the thread shows them as such.
+    const own = choiceId === CUSTOM_INPUT_CHOICE_ID;
+    const turnText = own ? label : choiceId;
+    const picked = own
+      ? `직접 입력: _${escapeSlackMrkdwn(label.substring(0, 200))}${label.length > 200 ? '...' : ''}_`
+      : `선택: *${choiceId}. ${label}*`;
 
     // P3 (PHASE>=3) — when a pendingChoice exists, route through resolveChoice.
     // Dashboard payloads don't carry turnId, but pc.turnId always matches itself,
@@ -1129,7 +1137,7 @@ export class ChoiceActionHandler {
     const pcSingle = session.actionPanel?.pendingChoice;
     const canUseDashboardP3 = !!this.ctx.threadPanel && !!pcSingle && pcSingle.kind === 'single';
     if (canUseDashboardP3 && channel) {
-      const completedText = `✅ *${question}*\n선택: *${choiceId}. ${label}* _(대시보드)_`;
+      const completedText = `✅ *${question}*\n${picked} _(대시보드)_`;
       const completedBlocks = [
         {
           type: 'section',
@@ -1150,7 +1158,7 @@ export class ChoiceActionHandler {
           await this.afterP3Resolve(session, sessionKey, channel);
           const say = this.createSayFn(channel);
           await this.ctx.messageHandler(
-            { user: userId, channel, thread_ts: threadTs, ts: String(Date.now() / 1000), text: choiceId },
+            { user: userId, channel, thread_ts: threadTs, ts: String(Date.now() / 1000), text: turnText },
             say,
           );
         } catch (error) {
@@ -1170,7 +1178,7 @@ export class ChoiceActionHandler {
           type: 'section',
           text: {
             type: 'mrkdwn',
-            text: `✅ *${question}*\n선택: *${choiceId}. ${label}* _(대시보드)_`,
+            text: `✅ *${question}*\n${picked} _(대시보드)_`,
           },
         },
       ];
@@ -1180,7 +1188,7 @@ export class ChoiceActionHandler {
           await this.ctx.slackApi.updateMessage(
             channel,
             targetTs,
-            `✅ *${question}*\n선택: *${choiceId}. ${label}* (대시보드)`,
+            `✅ *${question}*\n${picked} (대시보드)`,
             completedBlocks,
             [],
           );
@@ -1242,10 +1250,10 @@ export class ChoiceActionHandler {
       }
 
       // The session is already `working` (the claim above).
-      // Send choiceId as user message to Claude
+      // Send choiceId (or the direct input) as user message to Claude
       const say = this.createSayFn(channel);
       await this.ctx.messageHandler(
-        { user: userId, channel, thread_ts: threadTs, ts: String(Date.now() / 1000), text: choiceId },
+        { user: userId, channel, thread_ts: threadTs, ts: String(Date.now() / 1000), text: turnText },
         say,
       );
     } catch (error) {

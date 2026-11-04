@@ -7,13 +7,18 @@
   "choices": [
     {
       "id": "a",
-      "label": "Option A: Confirm scenarios and start Phase 1 trace (Recommended · 1/2)",
+      "label": "Option A: Confirm scenarios and start Phase 1 trace (Recommended · 2/3)",
       "description": "시나리오 확정 → Phase 1 소스 전수 탐색 + 메서드 시그니처 수집 시작."
     },
     {
       "id": "b",
       "label": "Option B: Revise scenarios — add or remove entries",
       "description": "시나리오 목록 보정. 구체적으로 어떤 것을 추가/제거할지 지시."
+    },
+    {
+      "id": "c",
+      "label": "Option C: Trace the primary scenario first, the rest after",
+      "description": "가장 중요한 시나리오 하나만 먼저 Phase 1~2로 추적하고, 나머지 시나리오는 그 결과를 본 뒤 확정."
     }
   ]
 }

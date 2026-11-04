@@ -7,13 +7,18 @@
   "choices": [
     {
       "id": "a",
-      "label": "Option A: Start zwork with this plan (Recommended · 1/2)",
+      "label": "Option A: Start zwork with this plan (Recommended · 2/3)",
       "description": "계획대로 local:zwork 디스패치. 변경 범위·테스트 전략·엔트리포인트 와이어링 모두 확정."
     },
     {
       "id": "b",
       "label": "Option B: Revise plan — specify what to change",
       "description": "계획 수정 필요. 구체적으로 어떤 부분을 바꿀지 지시하면 phase1부터 다시 수립."
+    },
+    {
+      "id": "c",
+      "label": "Option C: Start with the first slice of the plan only",
+      "description": "계획의 첫 단위(가장 작은 독립 변경)만 먼저 local:zwork로 진행하고, 나머지는 그 결과를 본 뒤 이어서 진행."
     }
   ]
 }

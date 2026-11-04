@@ -10,7 +10,7 @@
   - Stream integration: `src/slack/stream-processor.ts`, `src/slack/pipeline/stream-executor.ts`
   - Action handling/state: `src/slack/actions/index.ts`, `src/slack/actions/choice-action-handler.ts`, `src/slack/actions/form-action-handler.ts`, `src/slack/actions/pending-form-store.ts`
   - Types: `src/types.ts`
-- Last Updated: 2026-02-03
+- Last Updated: 2026-11-04
 
 ## 1. Overview
 
@@ -288,6 +288,24 @@ Slack의 partial-fill 동작과 의도적으로 다릅니다. 1000+ sub-question
 
 **Telemetry**: `logger.info('hero_recommended_clicked', { surface, n, m, sessionKey, formId? })`
 및 blocked 분기는 `'hero_recommended_blocked'`.
+
+## 7.9 질문의 모양 — 입력 대기에는 반드시 질문 (#917, 2026-11-04)
+
+요청: "유저 입력대기는 반드시 최소한 질문 하나에 해당 질문에 1번은 추천 행동 2번 3번은 대안행동 그리고 맨 마지막에는
+직접입력하는 유저에게 질문이 있어야함."
+
+- **모양**: 질문마다 선택지 3–4개 — 1번 = 추천 행동, 나머지 = 대안 행동. 마지막 선택지 `✏️ 직접 입력`은 호스트가 붙인다
+  (Slack 버튼, 대시보드 단일 질문 카드의 자유 입력(`allowOther`)과 카드 얼굴의 `✏️ 직접 입력` 버튼, 복수 질문 폼의 자유 입력).
+- **검증** (`somalib/model-commands/validator.ts` `shapeQuestion`): `ASK_USER_QUESTION`은 선택지 3개 미만·4개 초과,
+  첫 번째가 아닌 `recommendedChoiceId`를 거절한다. `recommendedChoiceId`가 없으면 1번이 추천이 된다. 모델이 쓴
+  "직접 입력" / "Other" 선택지는 버린다(호스트가 마지막에 붙이므로). 코드 블록 fallback 경로는 검증하지 않는다 — 렌더러가
+  추천을 앞에, 직접 입력을 끝에 둔다.
+- **대시보드 직접 입력**: 단일 질문의 자유 입력은 `answer-choice`에 `choiceId: '직접입력'`과 그 글로 간다. 그 글이 유저 턴이 된다.
+- **입력 대기 = 열린 질문**: Executive Summary의 ⚠️ 후속 작업(`session.followUp`)만으로는 카드를 NEEDS YOU에 두지 않는다
+  (`sessionToKanban`). 아무것도 묻거나 움직이지 않을 때(열린 질문·도는 턴·goal 평가·재시도 없음) 호스트가 후속 작업 질문을
+  올린다(`src/slack/follow-up-question.ts`, goal stall 질문과 같은 `askUserQuestionFromHost` 경로): 다음 행동 3개, 1번 추천,
+  마지막 직접 입력. 판정마다 한 번(`followUp.askedAt`). 트리거는 체인 종료(goal 없는 세션), 요약 판정(`setFollowUpListener`),
+  goal 루프 실행 종료(`onRunSettled`, 이어서 일하지 않은 실행만). 후속 작업이 풀리거나 이유가 바뀌면 그 질문을 거둔다.
 
 ## 8. Session/Status Integration
 

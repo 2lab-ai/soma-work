@@ -502,9 +502,12 @@ describe('dashboard permission prompt — wiring in the page', () => {
     handlers['ui-decide']({ target: card('perm', 'k1') });
     handlers['ui-answer']({ target: card('question', 'k2'), detail: { id: 'q|x', choiceId: 2 } });
     handlers['ui-answer']({ target: card('perm', 'k2'), detail: { id: 'q|x', choiceId: '1' } });
+    // #917 — a free-text answer (no choiceId) is the direct input: its text travels too.
+    handlers['ui-answer']({ target: card('question', 'k2'), detail: { id: 'q|x', text: '스테이징 먼저' } });
     expect(answered).toEqual([
       ['perm', 'k1', 'ap7', 'approve_disable_rule'],
-      ['choice', 'k2', 'q|x', '2'],
+      ['choice', 'k2', 'q|x', '2', undefined],
+      ['choice', 'k2', 'q|x', '', '스테이징 먼저'],
     ]);
     expect(TEMPLATE).not.toMatch(/answerPermission\(\\'/);
     expect(TEMPLATE).not.toContain('data-perm-decision');

@@ -296,11 +296,14 @@ const ASK_USER_QUESTION_SCHEMA = {
             context: { type: 'string' },
             recommendedChoiceId: {
               type: 'string',
-              description: 'ID of the recommended choice option (must match one of choices[].id)',
+              description: 'ID of the recommended choice — must be the FIRST choice (defaults to it when omitted)',
             },
             choices: {
               type: 'array',
-              minItems: 1,
+              description:
+                '3–4 choices: 1 = the recommended action, 2–4 = alternatives. The host adds 직접 입력 (direct input) last — do not add one.',
+              minItems: 3,
+              maxItems: 4,
               items: {
                 type: 'object',
                 properties: {
@@ -330,11 +333,13 @@ const ASK_USER_QUESTION_SCHEMA = {
                   context: { type: 'string' },
                   recommendedChoiceId: {
                     type: 'string',
-                    description: 'ID of the recommended option for this question',
+                    description: 'ID of the recommended option — must be the FIRST option (defaults to it)',
                   },
                   options: {
                     type: 'array',
-                    minItems: 1,
+                    description: '3–4 options: 1 = recommended, 2–4 = alternatives; the host adds 직접 입력 last',
+                    minItems: 3,
+                    maxItems: 4,
                     items: {
                       type: 'object',
                       properties: {
@@ -347,7 +352,8 @@ const ASK_USER_QUESTION_SCHEMA = {
                   },
                   choices: {
                     type: 'array',
-                    minItems: 1,
+                    minItems: 3,
+                    maxItems: 4,
                     items: {
                       type: 'object',
                       properties: {
@@ -603,7 +609,8 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
     },
     {
       id: 'ASK_USER_QUESTION',
-      description: 'Render user-choice UI in Slack thread',
+      description:
+        'Ask the user (Slack thread + dashboard card): 3–4 choices per question, 1 = recommended, the rest alternatives; the host adds 직접 입력 last',
       paramsSchema: ASK_USER_QUESTION_SCHEMA,
     },
     {

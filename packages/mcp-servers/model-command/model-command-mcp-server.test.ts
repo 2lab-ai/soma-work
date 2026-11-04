@@ -127,6 +127,7 @@ describe('model-command MCP server helpers', () => {
                 options: [
                   { id: '1', label: 'A' },
                   { id: '2', label: 'B' },
+                  { id: '3', label: 'C' },
                 ],
               },
             ],
@@ -292,7 +293,11 @@ describe('model-command MCP server helpers', () => {
         commandId: 'ASK_USER_QUESTION',
         params: {
           question: 'MIN-63 브레인스토밍 완료. 다음 단계로 무엇을 진행할까요?',
-          options: [{ label: 'Implementation Spec 작성 (권장)' }, { label: '바로 구현 시작' }],
+          options: [
+            { label: 'Implementation Spec 작성 (권장)' },
+            { label: '바로 구현 시작' },
+            { label: '프로토타입 먼저' },
+          ],
         },
       },
       { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } },
@@ -310,7 +315,7 @@ describe('model-command MCP server helpers', () => {
         commandId: 'ASK_USER_QUESTION',
         params: {
           question: '어떤 방식으로 진행할까요?',
-          choices: [{ label: 'Option A' }, { label: 'Option B' }],
+          choices: [{ label: 'Option A' }, { label: 'Option B' }, { label: 'Option C' }],
         },
       },
       { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } },
@@ -335,6 +340,7 @@ describe('model-command MCP server helpers', () => {
               options: [
                 { id: '1', label: 'A' },
                 { id: '2', label: 'B' },
+                { id: '3', label: 'C' },
               ],
             },
           ],
@@ -360,6 +366,7 @@ describe('model-command MCP server helpers', () => {
             choices: [
               { id: '1', label: 'Implementation Spec 작성 (권장)' },
               { id: '2', label: '바로 구현 시작' },
+              { id: '3', label: '프로토타입 먼저' },
             ],
           },
         },
@@ -373,7 +380,7 @@ describe('model-command MCP server helpers', () => {
     if (result.commandId !== 'ASK_USER_QUESTION') return;
     expect(result.payload.question.type).toBe('user_choice');
     if (result.payload.question.type !== 'user_choice') return;
-    expect(result.payload.question.choices).toHaveLength(2);
+    expect(result.payload.question.choices).toHaveLength(3);
   });
 
   it('rejects SAVE_CONTEXT_RESULT outside renew pending_save state', () => {

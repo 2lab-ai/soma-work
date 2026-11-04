@@ -7,13 +7,18 @@
   "choices": [
     {
       "id": "a",
-      "label": "Option A: Merge PR and run local:es executive summary (Recommended · 1/2)",
+      "label": "Option A: Merge PR and run local:es executive summary (Recommended · 2/3)",
       "description": "squash merge + branch delete → phase3 local:es로 stakeholder 요약 생성 → Slack post."
     },
     {
       "id": "b",
       "label": "Option B: Request rework — specify which checks failed",
       "description": "리팩토링 필요. 어떤 검증이 통과 못 했는지 지시하면 phase2 zwork로 복귀하여 fix."
+    },
+    {
+      "id": "c",
+      "label": "Option C: Hold the merge — re-run CI and review first",
+      "description": "PR은 열어 둔 채 CI와 trinity 리뷰를 한 번 더 돌린 뒤 다시 승인을 묻는다."
     }
   ]
 }

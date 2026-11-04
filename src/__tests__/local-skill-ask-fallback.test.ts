@@ -39,7 +39,7 @@ describe('UIAskUserQuestion — no mcp__model-command__run (#661)', () => {
     const { choice, choices } = UserChoiceExtractor.extractUserChoice(reply);
     expect(choices).toBeNull();
     expect(choice?.type).toBe('user_choice');
-    expect(choice?.choices.map((c) => c.id)).toEqual(['1', '2']);
+    expect(choice?.choices.map((c) => c.id)).toEqual(['1', '2', '3']);
     expect(choice?.question).toBeTruthy();
     expect(choice?.recommendedChoiceId).toBe('1');
   });
@@ -56,7 +56,8 @@ describe('UIAskUserQuestion — no mcp__model-command__run (#661)', () => {
     expect(choice).toBeNull();
     expect(choices?.type).toBe('user_choices');
     expect(choices?.questions.map((q) => q.id)).toEqual(['q1', 'q2']);
-    expect(choices?.questions.map((q) => q.recommendedChoiceId)).toEqual(['1', '2']);
+    // #917 — the recommended option is the first of each question.
+    expect(choices?.questions.map((q) => q.recommendedChoiceId)).toEqual(['1', '1']);
     expect(section).toContain('Do not hand-write `user_choices`');
   });
 });
