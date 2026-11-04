@@ -438,6 +438,16 @@ describe('page — a new task whose first message only answers', () => {
     });
   });
 
+  it('a command still being handled: the toast says its answer is on its way, not that it is there', () => {
+    const page = loadWith<{ ntLaunchToast(d: unknown, c: string | null, r?: boolean): any }>(['ntLaunchToast'], {});
+    expect(page.ntLaunchToast({ channel: 'C1', status: 'answered', handled: false }, 'general')).toEqual({
+      title: '명령을 보냈어요',
+      description: '#general · 답이 곧 Slack 스레드에 올라와요',
+      tone: 'success',
+      duration: 12000,
+    });
+  });
+
   it('an answered launch leaves no 시작 중 card waiting for a task', () => {
     const src = clientFn('ntOnLaunched');
     expect(src).toMatch(/data\.status === 'answered'/);

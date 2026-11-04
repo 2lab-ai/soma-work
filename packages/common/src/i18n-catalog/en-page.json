@@ -1265,5 +1265,6 @@
   "탭 바": "Tab bar",
   "명령을 보냈어요": "Command sent",
   "답은 Slack 스레드에 있어요": "Its answer is in the Slack thread",
-  " · 답은 Slack 스레드에 있어요": " · its answer is in the Slack thread"
+  " · 답은 Slack 스레드에 있어요": " · its answer is in the Slack thread",
+  " · 답이 곧 Slack 스레드에 올라와요": " · its answer will appear in the Slack thread shortly"
 }

@@ -21506,7 +21506,9 @@ function ntLaunchToast(data, channelName, restored) {
     };
   }
   if (data.status === 'answered') {
-    var said = { title: '명령을 보냈어요', description: '#' + (channelName || data.channel) + ' · 답은 Slack 스레드에 있어요', tone: 'success', duration: 12000 };
+    // handled false: the command was still running when the launch answered — its answer is on its way.
+    var where = data.handled === false ? ' · 답이 곧 Slack 스레드에 올라와요' : ' · 답은 Slack 스레드에 있어요';
+    var said = { title: '명령을 보냈어요', description: '#' + (channelName || data.channel) + where, tone: 'success', duration: 12000 };
     if (data.permalink) said.link = { label: 'Slack에서 보기', href: String(data.permalink) };
     return said;
   }
