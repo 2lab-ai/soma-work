@@ -72,6 +72,13 @@ describe('parseSafeguardFlag (T1)', () => {
   });
 });
 
+describe('parseSafeguardFlag — several errors (review round 2, astra P1 #6)', () => {
+  it('finds the block behind a generic API error in the same error source', () => {
+    const joined = `API Error: 500 internal server error\n${SSOT_2_EXAMPLE}`;
+    expect(parseSafeguardFlag(joined, { source: 'error' })?.detail).toBe('reasoning_extraction');
+  });
+});
+
 describe('isSafeguardFlagError (T1)', () => {
   it('is true for an error tagged by the content guard', () => {
     const tagged = Object.assign(new Error('blocked'), { safeguardFlag: { detail: 'reasoning_extraction' } });

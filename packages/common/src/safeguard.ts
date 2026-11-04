@@ -65,16 +65,24 @@ const MESSAGE_ID_RE = /^[ \t]*Message ID:[ \t]*`?(msg_[A-Za-z0-9]+)/im;
  */
 export function parseSafeguardFlag(text: unknown, opts: { source?: 'turn' | 'error' } = {}): SafeguardFlagInfo | null {
   if (typeof text !== 'string' || text.length === 0) return null;
-  let tail: string;
   if ((opts.source ?? 'turn') === 'turn') {
     if (text.length > TURN_TEXT_MAX_CHARS) return null;
-    tail = text.trimStart();
-    if (!tail.startsWith('API Error:')) return null;
-  } else {
-    const at = text.search(/(?:^|\n)[ \t]*API Error:/);
-    if (at < 0) return null;
-    tail = text.slice(at).trimStart();
+    const tail = text.trimStart();
+    return tail.startsWith('API Error:') ? parseBlockAt(tail) : null;
   }
+  // An error source may carry several `API Error:` lines (an SDK result's
+  // `errors[]` joined, stderr): a generic one first must not hide the block.
+  const starts = /(?:^|\n)[ \t]*(?=API Error:)/g;
+  for (let m = starts.exec(text); m; m = starts.exec(text)) {
+    const found = parseBlockAt(text.slice(m.index + m[0].length));
+    if (found) return found;
+    if (m[0].length === 0) starts.lastIndex++;
+  }
+  return null;
+}
+
+/** The block when `tail` STARTS with it (and carries an anchor line), else null. */
+function parseBlockAt(tail: string): SafeguardFlagInfo | null {
   const block = BLOCK_RE.exec(tail);
   if (!block || block.index !== 0) return null;
   const detail = DETAIL_RE.exec(tail)?.[1];
