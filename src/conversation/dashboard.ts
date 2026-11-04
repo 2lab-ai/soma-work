@@ -17909,7 +17909,9 @@ function ownerBadgeOrbitSync(el, self, again) {
       found = true;
     }
   }
-  if (!found && !again && typeof requestAnimationFrame === 'function') {
+  // Under reduced motion there is no arc to find: no retry.
+  var still = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!found && !again && !still && typeof requestAnimationFrame === 'function') {
     requestAnimationFrame(function() { ownerBadgeOrbitSync(el, self, true); });
   }
 }
