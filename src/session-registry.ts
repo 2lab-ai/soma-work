@@ -604,8 +604,14 @@ export class SessionRegistry {
    * the file names, not open for all of them.
    */
   private safeguardTombstonesRaw = '';
-  /** Keys an admin lifted while the file was unreadable (in memory; the file is never rewritten then). */
+  /** Keys an admin lifted that the raw evidence names (persisted in the sidecar). */
   private safeguardLiftedWhileUnreadable = new Set<string>();
+  /**
+   * Raw text of an unreadable SIDECAR (review R7, astra P1): carried into the
+   * next sidecar write as `rawEvidence`, so overwriting the corrupt sidecar
+   * never drops the locks it named. Part of {@link safeguardTombstonesRaw}.
+   */
+  private safeguardCarriedRaw = '';
   private expiryCallbacks?: SessionExpiryCallbacks;
   private beforeSessionDelete?: BeforeSessionDeleteCallback;
   private _crashRecoveredSessions: CrashRecoveredSession[] = [];
@@ -912,8 +918,13 @@ export class SessionRegistry {
     const key = normalizeSessionKey(sessionKey);
     const known = this.sessions.get(key)?.safeguardHalt ?? this.safeguardTombstones.get(key);
     if (known) return known;
+    return this.rawEvidenceHalt(key);
+  }
+
+  /** Fail closed on a key the unreadable tombstone text names (not lifted since). */
+  private rawEvidenceHalt(key: string): SafeguardHalt | undefined {
     if (
-      this.safeguardTombstonesUnreadable &&
+      this.safeguardTombstonesRaw &&
       !this.safeguardLiftedWhileUnreadable.has(key) &&
       this.safeguardTombstonesRaw.includes(JSON.stringify(key))
     ) {
@@ -936,7 +947,7 @@ export class SessionRegistry {
     const before = { session: session?.safeguardHalt, tombstone: this.safeguardTombstones.get(key) };
     if (session) session.safeguardHalt = undefined;
     this.safeguardTombstones.delete(key);
-    if (this.safeguardTombstonesUnreadable) this.safeguardLiftedWhileUnreadable.add(key);
+    if (this.safeguardTombstonesRaw) this.safeguardLiftedWhileUnreadable.add(key);
     try {
       this.saveSessionsOrThrow();
     } catch (error) {
@@ -1016,7 +1027,9 @@ export class SessionRegistry {
     // that comes back under the key inherits the lock.
     // The tombstone is NOT consumed here: it stays until the admin lifts the
     // lock, so no save ordering can ever leave the lock in neither file.
-    const tombstone = this.safeguardTombstones.get(key);
+    // A key only the unreadable file's raw text names is locked too (review R7,
+    // astra P1): goal resume and the goal loop read the session's own field.
+    const tombstone = this.safeguardTombstones.get(key) ?? this.rawEvidenceHalt(key);
     if (tombstone && !session.safeguardHalt) session.safeguardHalt = tombstone;
     const previous = this.sessions.get(key);
     if (previous && previous !== session) this.unindexTask(previous);
@@ -3780,23 +3793,27 @@ export class SessionRegistry {
    */
   /** Persist {@link safeguardTombstones} (removes the file once none is left). */
   private writeSafeguardTombstones(): void {
+    const lifted = [...this.safeguardLiftedWhileUnreadable];
+    const rawEvidence = this.safeguardCarriedRaw;
     if (this.safeguardTombstonesUnreadable) {
       // The main file stays as found; what changed since goes to the sidecar.
       atomicWriteJson(
         SAFEGUARD_TOMBSTONES_SIDECAR,
-        { halts: Object.fromEntries(this.safeguardTombstones), lifted: [...this.safeguardLiftedWhileUnreadable] },
+        { halts: Object.fromEntries(this.safeguardTombstones), lifted, rawEvidence },
         { backup: true },
       );
       return;
     }
-    if (this.safeguardTombstones.size === 0 && !fs.existsSync(SAFEGUARD_TOMBSTONES_FILE)) return;
-    // Never unlinked: an empty set is written as `{}` so the `.bak` (the
-    // previous contents) can never be read back as the current set.
-    atomicWriteJson(SAFEGUARD_TOMBSTONES_FILE, Object.fromEntries(this.safeguardTombstones), { backup: true });
-    // The sidecar's locks are in the main file now: empty it so a lock lifted
-    // since never comes back from it.
-    if (fs.existsSync(SAFEGUARD_TOMBSTONES_SIDECAR)) {
-      atomicWriteJson(SAFEGUARD_TOMBSTONES_SIDECAR, { halts: {}, lifted: [] }, { backup: true });
+    if (this.safeguardTombstones.size > 0 || fs.existsSync(SAFEGUARD_TOMBSTONES_FILE)) {
+      // Never unlinked: an empty set is written as `{}` so the `.bak` (the
+      // previous contents) can never be read back as the current set.
+      atomicWriteJson(SAFEGUARD_TOMBSTONES_FILE, Object.fromEntries(this.safeguardTombstones), { backup: true });
+    }
+    // The sidecar's locks are in the main file now: empty its `halts` so a lock
+    // lifted since never comes back from it — but keep the carried evidence of
+    // a corrupt sidecar and the keys lifted against it.
+    if (fs.existsSync(SAFEGUARD_TOMBSTONES_SIDECAR) || rawEvidence || lifted.length > 0) {
+      atomicWriteJson(SAFEGUARD_TOMBSTONES_SIDECAR, { halts: {}, lifted, rawEvidence }, { backup: true });
     }
   }
 
@@ -3809,6 +3826,7 @@ export class SessionRegistry {
     this.safeguardTombstones.clear();
     this.safeguardTombstonesUnreadable = false;
     this.safeguardTombstonesRaw = '';
+    this.safeguardCarriedRaw = '';
     this.safeguardLiftedWhileUnreadable.clear();
     try {
       // The live file, else its `.bak` (rules/config.md §4) — a torn write
@@ -3841,8 +3859,12 @@ export class SessionRegistry {
     try {
       const raw = loadJsonWithBackup(SAFEGUARD_TOMBSTONES_SIDECAR, (value) => {
         if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('not an object');
-        return value as { halts?: unknown; lifted?: unknown };
+        return value as { halts?: unknown; lifted?: unknown; rawEvidence?: unknown };
       });
+      if (typeof raw?.rawEvidence === 'string' && raw.rawEvidence) {
+        this.safeguardCarriedRaw = raw.rawEvidence;
+        this.safeguardTombstonesRaw += raw.rawEvidence;
+      }
       const lifted = Array.isArray(raw?.lifted)
         ? raw.lifted.filter((key): key is string => typeof key === 'string').map((key) => normalizeSessionKey(key))
         : [];
@@ -3859,15 +3881,17 @@ export class SessionRegistry {
         this.safeguardLiftedWhileUnreadable.delete(normalized);
       }
     } catch (error) {
-      // Fail closed on whatever keys it names, like the main file.
-      this.safeguardTombstonesUnreadable = true;
+      // Fail closed on whatever keys it names, like the main file — and carry
+      // its text into the next sidecar write, so overwriting it never drops
+      // them (review R7, astra P1). The main file's state is its own.
       for (const file of [SAFEGUARD_TOMBSTONES_SIDECAR, `${SAFEGUARD_TOMBSTONES_SIDECAR}.bak`]) {
         try {
-          this.safeguardTombstonesRaw += fs.readFileSync(file, 'utf-8');
+          this.safeguardCarriedRaw += fs.readFileSync(file, 'utf-8');
         } catch {
           // gone or unreadable
         }
       }
+      this.safeguardTombstonesRaw += this.safeguardCarriedRaw;
       this.logger.error('Safeguard halt sidecar unreadable — failing closed on the keys it names', error);
     }
   }

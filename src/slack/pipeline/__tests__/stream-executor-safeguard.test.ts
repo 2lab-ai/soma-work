@@ -559,3 +559,96 @@ describe('safeguards — review round 6', () => {
     expect(deps.summaryService.execute).not.toHaveBeenCalled();
   });
 });
+
+describe('safeguards — review round 7 (astra P1)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
+  });
+
+  it('a failed render of the prose before the block does not lose the block', async () => {
+    async function* proseThenBlock(): AsyncGenerator<any> {
+      yield { type: 'assistant', message: { content: [{ type: 'text', text: 'Let me look at that file.' }] } };
+      yield { type: 'assistant', message: { content: [{ type: 'text', text: SAFEGUARD_TEXT }] } };
+      yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: {} };
+    }
+    const deps = createDeps(proseThenBlock);
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    // The first post (the prose) fails with an ordinary Slack error.
+    const say = vi.fn().mockRejectedValueOnce(new Error('channel_not_found')).mockResolvedValue({ ts: 'msg_ts' });
+
+    await executor.execute(createParams(say, session));
+
+    expect(session.safeguardHalt?.detail).toBe('reasoning_extraction');
+  });
+
+  it('a foreground agent that ended on the block (the CLI wraps it) halts the session', async () => {
+    async function* foregroundAgentBlocked(): AsyncGenerator<any> {
+      yield {
+        type: 'assistant',
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_fg_1',
+              name: 'Agent',
+              input: { description: 'look', prompt: 'look', run_in_background: false },
+            },
+          ],
+        },
+      };
+      yield {
+        type: 'user',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_fg_1',
+              is_error: true,
+              content: `Agent terminated early due to an API error: ${SAFEGUARD_TEXT}`,
+            },
+          ],
+        },
+      };
+      await new Promise(() => {}); // the parent would go on
+    }
+    const deps = createDeps(foregroundAgentBlocked);
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+
+    const result = await Promise.race([
+      executor.execute(createParams(vi.fn().mockResolvedValue({ ts: 'msg_ts' }), session)),
+      new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 3_000)),
+    ]);
+
+    expect(result).not.toBe('hung');
+    expect(session.safeguardHalt?.detail).toBe('reasoning_extraction');
+  });
+
+  it('the halt rail locks the LIVE session when the turn’s session was replaced, and stops its turn', async () => {
+    const deps = createDeps(safeguardAsContentStream);
+    const live = { replaced: true };
+    const haltSafeguardByKey = vi.fn();
+    deps.claudeHandler.getSessionRegistry.mockReturnValue({
+      beginTurn: vi.fn(),
+      endTurn: vi.fn(),
+      broadcastSessionUpdate: vi.fn(),
+      getActivityState: vi.fn().mockReturnValue('idle'),
+      getSessionByKey: vi.fn(() => live),
+      haltSafeguardByKey,
+    });
+    deps.requestCoordinator.isRequestActive = vi.fn(() => true);
+    deps.requestCoordinator.abortSession = vi.fn(() => true);
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+
+    await executor.execute(createParams(vi.fn().mockResolvedValue({ ts: 'msg_ts' }), session));
+
+    expect(haltSafeguardByKey).toHaveBeenCalledWith(
+      'C777:thread777',
+      expect.objectContaining({ detail: 'reasoning_extraction' }),
+    );
+    expect(deps.requestCoordinator.abortSession).toHaveBeenCalledWith('C777:thread777', 'safeguard');
+  });
+});

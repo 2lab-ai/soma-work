@@ -4096,6 +4096,24 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
    *     (with the admin button) and the turn card (`errorKind: 'safeguard'`).
    * Never returns a retry delay.
    */
+  /** See {@link haltOnSafeguardFlag}: the thread's live session, when it is not `session`. */
+  private haltLiveSessionToo(session: ConversationSession, sessionKey: string, halt: SafeguardHalt): void {
+    try {
+      const registry = this.deps.claudeHandler?.getSessionRegistry?.();
+      if (!registry || typeof registry.getSessionByKey !== 'function') return;
+      if (registry.getSessionByKey(sessionKey) === session) return;
+      registry.haltSafeguardByKey?.(sessionKey, halt);
+      if (this.deps.requestCoordinator?.isRequestActive?.(sessionKey)) {
+        this.deps.requestCoordinator.abortSession?.(sessionKey, 'safeguard' satisfies RequestAbortReason);
+      }
+    } catch (error) {
+      this.logger.warn('Safeguard halt: locking the live session failed', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
+  }
+
   private async haltOnSafeguardFlag(
     flag: SafeguardFlagInfo,
     session: ConversationSession,
@@ -4108,6 +4126,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   ): Promise<undefined> {
     const halt: SafeguardHalt = { atMs: Date.now(), ...flag };
     session.safeguardHalt = halt;
+    // The lock belongs to the THREAD: when the session was closed or replaced
+    // during this turn's teardown, lock the live one (or leave a tombstone),
+    // and stop a turn it started (review R7, astra P1).
+    this.haltLiveSessionToo(session, sessionKey, halt);
     session.errorRetryCount = 0;
     session.fileAccessRetryCount = 0;
     session.lastErrorContext = undefined;

@@ -238,4 +238,32 @@ describe('SessionRegistry — safeguardHalt survives a restart', () => {
     after.loadSessions();
     expect(after.getSafeguardHalt('C1', '171.951')).toEqual(HALT);
   });
+  // Review gate round 7 (astra-zhuge P1, PR #906).
+  it('an unreadable sidecar is never overwritten into "no locks": the threads it names stay locked', () => {
+    const reg = unreadableRegistry();
+    const b = reg.createSession('U1', 'Tester', 'C1', '171.960');
+    b.sessionId = 'sdk-S1';
+    b.safeguardHalt = { atMs: 3_000 };
+    reg.saveSessions();
+    reg.terminateSession(reg.getSessionKey('C1', '171.960')); // its lock is in the sidecar now
+    const sidecar = path.join(TEST_DATA_DIR, 'safeguard-halts.while-unreadable.json');
+    const raw = fs.readFileSync(sidecar, 'utf-8');
+    fs.writeFileSync(sidecar, raw.slice(0, raw.length - 2)); // torn
+    fs.writeFileSync(`${sidecar}.bak`, '{ torn');
+
+    const next = new SessionRegistry();
+    next.loadSessions();
+    expect(next.getSafeguardHalt('C1', '171.960')).toBeDefined();
+    next.saveSessions(); // rewrites the sidecar
+
+    const after = new SessionRegistry();
+    after.loadSessions();
+    expect(after.getSafeguardHalt('C1', '171.960')).toBeDefined();
+  });
+
+  it('a session restored under a key only the unreadable text names inherits the lock', () => {
+    const reg = unreadableRegistry();
+    const reborn = reg.createSession('U1', 'Tester', 'C1', '171.901');
+    expect(reborn.safeguardHalt).toBeDefined();
+  });
 });

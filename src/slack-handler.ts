@@ -3325,6 +3325,7 @@ export class SlackHandler {
     const hostTurn = event.synthetic === true || event.routeContext?.hostTurn === true;
     const decision = decideSafeguardGate({ halt, hostTurn });
     if (decision === 'pass' || !halt) return undefined;
+    this.settleRefusedIncidentAttempt(event, channel, threadTs, registry);
     // A button path (choice, form, session action) marks the session working
     // BEFORE dispatching; nothing will run, so put it back — otherwise the card
     // shows a halted session as running until the admin unlocks it.
@@ -3354,6 +3355,34 @@ export class SlackHandler {
       });
     }
     return { result: 'safe' };
+  }
+
+  /**
+   * An incident attempt refused by the safeguards gate (review R7, astra P1):
+   * the ingress already handed the thread to it and cleared the finished
+   * marker, and nothing will run to write it again — so without this the
+   * thread reads "attempt in progress" forever, and even after the admin
+   * unlocks, every retry is turned away. Mark the refused attempt finished
+   * (host-written, like the stream's own marker).
+   */
+  private settleRefusedIncidentAttempt(event: MessageEvent, channel: string, threadTs: string, registry: any): void {
+    const attemptId = (event.routeContext as { incidentRequest?: { attempt_id?: string } } | undefined)?.incidentRequest
+      ?.attempt_id;
+    if (!attemptId) return;
+    const session = this.claudeHandler.getSession?.(channel, threadTs);
+    if (!session || session.incidentRequest?.attempt_id !== attemptId) return;
+    if (session.incidentAttemptFinishedId === attemptId) return;
+    session.incidentAttemptFinishedId = attemptId;
+    try {
+      registry?.saveSessions?.();
+    } catch (error) {
+      this.logger.warn('Safeguard halt: saving the refused incident attempt failed', {
+        channel,
+        threadTs,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
+    this.logger.info('Safeguard halt: incident attempt refused and settled', { channel, threadTs, attemptId });
   }
 
   private async holdForOwnerApproval(

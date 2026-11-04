@@ -43,6 +43,10 @@ import { WORK_LOG_RAW_MAX_BYTES, type WorkLogInput } from './work-log';
 /**
  * Context for stream processing
  */
+
+/** The CLI's wrapper around a foreground agent that ended on an API error (its own text is filtered). */
+const AGENT_API_ERROR_PREFIX = /^\s*Agent terminated early due to an API error:\s*/i;
+
 export interface StreamContext {
   channel: string;
   threadTs: string;
@@ -1293,9 +1297,12 @@ export class AgentStreamProcessor {
             // prose posts on its own first; the block then sits alone in the
             // buffer, where the flush recognises and suppresses it.
             if (!this.safeguardFlag && parseSafeguardFlag(event.text)) {
+              // Recorded (and the query stopped) BEFORE any await: a failed
+              // render of the earlier prose must not lose the block (review
+              // R7, astra P1) — the thrown error carries the flag out.
+              this.noteSafeguardFlag(event.text);
               await flushText();
               textBuf.push(event.text);
-              this.noteSafeguardFlag(event.text);
               break;
             }
             textBuf.push(event.text);
@@ -1321,6 +1328,13 @@ export class AgentStreamProcessor {
             });
             break;
           case 'tool_result':
+            // A delegated agent's returned block stops the query on ARRIVAL —
+            // the results batch only flushes on the next event, which a
+            // stalled parent may never send (review R7, astra P1).
+            if (!this.safeguardFlag && this.spawnedAgents.has(event.toolCallId)) {
+              const arrived = toolResultRaw(event.rawOutput ?? event.content)?.raw;
+              if (arrived) this.noteSafeguardFlag(arrived.replace(AGENT_API_ERROR_PREFIX, ''));
+            }
             await flushThinking();
             await flushText();
             await flushToolCalls();
@@ -2227,7 +2241,10 @@ export class AgentStreamProcessor {
       // starts with it, anchored, bounded) — never an ordinary tool's output,
       // which may quote the error from a file.
       if (spawned !== undefined && !this.safeguardFlag && rawFields?.raw) {
-        this.noteSafeguardFlag(rawFields.raw);
+        // A foreground agent's refusal returns as the CLI's error result,
+        // "Agent terminated early due to an API error: API Error: …" (review
+        // R7, astra P1): read the block behind that fixed prefix.
+        this.noteSafeguardFlag(rawFields.raw.replace(AGENT_API_ERROR_PREFIX, ''));
       }
       this.emitWorkLog(context, {
         kind: 'tool_result',
