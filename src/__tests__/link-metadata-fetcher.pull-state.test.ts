@@ -18,7 +18,12 @@ vi.mock('../logger', () => ({
   },
 }));
 
-import { fetchGitHubCheckRuns, fetchGitHubPullState, peekLinkMetadata } from '../link-metadata-fetcher';
+import {
+  fetchGitHubCheckRuns,
+  fetchGitHubPullActivity,
+  fetchGitHubPullState,
+  peekLinkMetadata,
+} from '../link-metadata-fetcher';
 
 const answer = (body: Record<string, unknown>, etag?: string) => ({
   ok: true,
@@ -122,5 +127,165 @@ describe('fetchGitHubCheckRuns (#929)', () => {
     await expect(fetchGitHubCheckRuns('a', 'b', 'abc1234')).resolves.toBeUndefined();
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('timeout')));
     await expect(fetchGitHubCheckRuns('a', 'b', 'abc1234')).resolves.toBeUndefined();
+  });
+});
+
+describe('fetchGitHubPullActivity (#930)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const SINCE = '2026-11-04T11:50:00.000Z';
+
+  const page = (body: unknown, link?: string) => ({
+    ok: true,
+    status: 200,
+    headers: { get: (h: string) => (h.toLowerCase() === 'link' ? (link ?? null) : null) },
+    json: async () => body,
+  });
+  function route(map: Record<string, { body: unknown; link?: string }>) {
+    return vi.fn(async (url: string) => {
+      const hit = Object.keys(map)
+        .sort((a, b) => b.length - a.length)
+        .find((k) => url.includes(k));
+      if (!hit) return { ok: false, status: 404, headers: { get: () => null }, json: async () => ({}) };
+      return page(map[hit].body, map[hit].link);
+    });
+  }
+
+  it('A1 — comments, review comments and submitted reviews after since, with author facts', async () => {
+    const fetchMock = route({
+      '/issues/12/comments': {
+        body: [
+          {
+            id: 1,
+            user: { login: 'alice', type: 'User' },
+            author_association: 'MEMBER',
+            body: 'rename it',
+            html_url: 'https://github.com/a/b/pull/12#issuecomment-1',
+            created_at: '2026-11-04T11:55:00Z',
+          },
+        ],
+      },
+      '/pulls/12/comments': {
+        body: [
+          {
+            id: 2,
+            user: { login: 'coderabbitai[bot]', type: 'Bot' },
+            author_association: 'NONE',
+            body: 'off by one',
+            path: 'src/x.ts',
+            html_url: 'https://github.com/a/b/pull/12#discussion_r2',
+            created_at: '2026-11-04T11:56:00Z',
+          },
+        ],
+      },
+      '/pulls/12/reviews': {
+        body: [
+          {
+            id: 3,
+            user: { login: 'bob' },
+            author_association: 'COLLABORATOR',
+            state: 'APPROVED',
+            body: '',
+            html_url: 'https://github.com/a/b/pull/12#pullrequestreview-3',
+            submitted_at: '2026-11-04T11:57:00Z',
+          },
+          {
+            id: 4,
+            user: { login: 'bob' },
+            state: 'COMMENTED',
+            body: 'old',
+            html_url: 'u4',
+            submitted_at: '2026-11-04T11:00:00Z',
+          },
+          { id: 5, user: { login: 'carol' }, state: 'PENDING', body: 'draft', html_url: 'u5' },
+        ],
+      },
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const answer = await fetchGitHubPullActivity('a', 'b', 12, SINCE);
+    expect(answer?.until).toBeUndefined();
+    expect(answer?.items.map((i) => [i.kind, i.author, i.bot, i.association, i.state, i.path])).toEqual([
+      ['comment', 'alice', false, 'MEMBER', undefined, undefined],
+      ['review-comment', 'coderabbitai[bot]', true, 'NONE', undefined, 'src/x.ts'],
+      ['review', 'bob', false, 'COLLABORATOR', 'APPROVED', undefined],
+    ]);
+    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.includes(`/issues/12/comments?since=${encodeURIComponent(SINCE)}&per_page=100`))).toBe(
+      true,
+    );
+    expect(urls.some((u) => u.includes(`/pulls/12/comments?since=${encodeURIComponent(SINCE)}&per_page=100`))).toBe(
+      true,
+    );
+  });
+
+  it('A2 — a full page of comments sets until to its last item: nothing after it is claimed', async () => {
+    const full = Array.from({ length: 100 }, (_, i) => ({
+      id: i,
+      user: { login: 'alice' },
+      author_association: 'MEMBER',
+      body: 'x',
+      html_url: `u${i}`,
+      created_at: new Date(Date.parse(SINCE) + (i + 1) * 1000).toISOString(),
+    }));
+    vi.stubGlobal(
+      'fetch',
+      route({
+        '/issues/12/comments': { body: full },
+        '/pulls/12/comments': { body: [] },
+        '/pulls/12/reviews': { body: [] },
+      }),
+    );
+    const answer = await fetchGitHubPullActivity('a', 'b', 12, SINCE);
+    expect(answer?.items).toHaveLength(100);
+    expect(answer?.until).toBe(full[99].created_at);
+  });
+
+  it('A3 — reviews past the first page: the newest pages are read too', async () => {
+    const lastUrl = 'https://api.github.com/repos/a/b/pulls/12/reviews?per_page=100&page=3';
+    const fetchMock = route({
+      '/issues/12/comments': { body: [] },
+      '/pulls/12/comments': { body: [] },
+      '/pulls/12/reviews?per_page=100&page=3': {
+        body: [
+          {
+            id: 9,
+            user: { login: 'bob' },
+            author_association: 'MEMBER',
+            state: 'APPROVED',
+            html_url: 'u9',
+            submitted_at: '2026-11-04T11:59:00Z',
+          },
+        ],
+      },
+      '/pulls/12/reviews?per_page=100&page=2': {
+        body: [
+          {
+            id: 8,
+            user: { login: 'bob' },
+            author_association: 'MEMBER',
+            state: 'COMMENTED',
+            html_url: 'u8',
+            submitted_at: '2026-11-04T11:40:00Z',
+          },
+        ],
+      },
+      '/pulls/12/reviews?per_page=100': {
+        body: [
+          { id: 1, user: { login: 'bob' }, state: 'COMMENTED', html_url: 'u1', submitted_at: '2026-11-01T00:00:00Z' },
+        ],
+        link: `<${lastUrl}>; rel="last"`,
+      },
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const answer = await fetchGitHubPullActivity('a', 'b', 12, SINCE);
+    expect(answer?.items.map((i) => i.url)).toEqual(['u9']);
+    // Walked back from the last page until a page started before `since`.
+    expect(fetchMock.mock.calls.map((c) => String(c[0])).filter((u) => u.includes('/reviews'))).toHaveLength(3);
+  });
+
+  it('A4 — one failed read is undefined (the cursor must not move past it)', async () => {
+    vi.stubGlobal('fetch', route({ '/issues/12/comments': { body: [] }, '/pulls/12/comments': { body: [] } }));
+    await expect(fetchGitHubPullActivity('a', 'b', 12, SINCE)).resolves.toBeUndefined();
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('timeout')));
+    await expect(fetchGitHubPullActivity('a', 'b', 12, SINCE)).resolves.toBeUndefined();
   });
 });
