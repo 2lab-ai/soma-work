@@ -4,7 +4,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { atomicWriteJson } from '@soma/common/atomic-write';
+import { atomicWriteJson, loadJsonWithBackup } from '@soma/common/atomic-write';
 import { restoreSafeguardHalt, type SafeguardHalt } from '@soma/common/safeguard';
 import {
   type ContextRewindRecord,
@@ -3564,8 +3564,10 @@ export class SessionRegistry {
       try {
         fs.writeFileSync(tempFile, JSON.stringify(sessionsArray, null, 2), { mode });
         fs.chmodSync(tempFile, mode); // writeFileSync's mode is masked by the umask
-        fs.renameSync(tempFile, SESSIONS_FILE);
+        // Tombstones first: a crash between the two writes must never leave
+        // the lock of a just-removed halted session in neither file.
         this.writeSafeguardTombstones();
+        fs.renameSync(tempFile, SESSIONS_FILE);
       } catch (writeError) {
         try {
           fs.rmSync(tempFile, { force: true });
@@ -3627,6 +3629,12 @@ export class SessionRegistry {
         : dashboardTask && typeof serialized.taskId === 'string'
           ? `task:${serialized.taskId}`
           : serialized.key;
+    // A halted session ended at load (removeSession is not on this path) leaves
+    // its thread's tombstone, like any other removal — a restart must not unlock it.
+    const halt = restoreSafeguardHalt(serialized.safeguardHalt);
+    if (halt && typeof key === 'string' && key) {
+      this.safeguardTombstones.set(normalizeSessionKey(key), halt);
+    }
     // #846 — an ended session's model-command receipt goes with it (removeSession is not on this path). The receipt
     // is named by the live key the loader derives, not the persisted `key` field (kept in the legacy form); a
     // dashboard task's (#855) by its own key.
@@ -3716,11 +3724,10 @@ export class SessionRegistry {
   /** Persist {@link safeguardTombstones} (removes the file once none is left). */
   private writeSafeguardTombstones(): void {
     if (this.safeguardTombstonesUnreadable) return;
-    if (this.safeguardTombstones.size === 0) {
-      if (fs.existsSync(SAFEGUARD_TOMBSTONES_FILE)) fs.unlinkSync(SAFEGUARD_TOMBSTONES_FILE);
-      return;
-    }
-    atomicWriteJson(SAFEGUARD_TOMBSTONES_FILE, Object.fromEntries(this.safeguardTombstones));
+    if (this.safeguardTombstones.size === 0 && !fs.existsSync(SAFEGUARD_TOMBSTONES_FILE)) return;
+    // Never unlinked: an empty set is written as `{}` so the `.bak` (the
+    // previous contents) can never be read back as the current set.
+    atomicWriteJson(SAFEGUARD_TOMBSTONES_FILE, Object.fromEntries(this.safeguardTombstones), { backup: true });
   }
 
   /**
@@ -3731,9 +3738,13 @@ export class SessionRegistry {
   private loadSafeguardTombstones(): void {
     this.safeguardTombstones.clear();
     this.safeguardTombstonesUnreadable = false;
-    if (!fs.existsSync(SAFEGUARD_TOMBSTONES_FILE)) return;
     try {
-      const raw = JSON.parse(fs.readFileSync(SAFEGUARD_TOMBSTONES_FILE, 'utf-8')) as Record<string, unknown>;
+      // The live file, else its `.bak` (rules/config.md §4) — a torn write
+      // never reads as "no locks".
+      const raw = loadJsonWithBackup(SAFEGUARD_TOMBSTONES_FILE, (value) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('not an object');
+        return value as Record<string, unknown>;
+      });
       for (const [key, value] of Object.entries(raw ?? {})) {
         const halt = restoreSafeguardHalt(value);
         if (halt) this.safeguardTombstones.set(normalizeSessionKey(key), halt);

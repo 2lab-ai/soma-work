@@ -26,7 +26,7 @@ import { FollowupQueueStore } from '@soma/slack/followup-queue-store';
 import { OutputFlag } from '@soma/slack/output-flags';
 import { isLocalSlashCommand, shouldForwardAsLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
-import { decideSafeguardGate, safeguardRefusalNotice } from '@soma/slack/safeguard';
+import { buildSafeguardRefusalBlocks, decideSafeguardGate, safeguardRefusalNotice } from '@soma/slack/safeguard';
 import { sayPostSwitches } from '@soma/slack/stream-processor';
 import { getWorkQueues, WorkQueueService } from '@soma/slack/work-queue';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
@@ -3329,11 +3329,11 @@ export class SlackHandler {
     }
     this.logger.info('Safeguard halt: message refused', { channel, threadTs, user: event.user });
     try {
-      await this.slackApi.postSystemMessage(
-        channel,
-        safeguardRefusalNotice(halt, { isAdmin: !!event.user && isAdminUser(event.user) }),
-        { threadTs },
-      );
+      const isAdmin = !!event.user && isAdminUser(event.user);
+      await this.slackApi.postSystemMessage(channel, safeguardRefusalNotice(halt, { isAdmin }), {
+        threadTs,
+        blocks: buildSafeguardRefusalBlocks(halt, sessionKey, { isAdmin }),
+      });
     } catch (error) {
       this.logger.warn('Safeguard halt: refusal notice failed', {
         channel,

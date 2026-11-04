@@ -37,7 +37,9 @@
 
 import { createHash } from 'node:crypto';
 import { boundRateLimitDelayMs, parseRetryAfterMs, textIndicatesRetryableRateLimit } from '@soma/common/rate-limit';
+import { parseSafeguardFlag, safeguardFlagOf } from '@soma/common/safeguard';
 import { OutputFlag } from '@soma/slack/output-flags';
+import { safeguardEvalHaltNoticeText } from '@soma/slack/safeguard';
 import type { SyntheticMessageEvent } from '../cron-scheduler';
 import { buildGoalContinuationPrompt, type GoalVerdictReuse } from '../prompt/session-goal-block';
 import { retryReasonLine } from '../retry-reason';
@@ -51,6 +53,7 @@ import {
   evaluateGoalCompletion,
   GOAL_EVAL_DISPATCH_MAX_RETRIES,
   type GoalEvalDispatcher,
+  GoalEvalParseError,
   type GoalEvalPreviousVerdict,
   type GoalEvalVerdict,
   shouldRunGoalIdleDriver,
@@ -869,6 +872,30 @@ export class GoalLoopController {
       // between "판정 중" and "재시도"; the retry/exhausted branch below
       // persists and pushes the settled state.
       this.deps.registry.saveSessions();
+    }
+
+    // Anthropic safeguards blocked the eval query itself (ssot T2): that is
+    // no transient failure — the work stops here. Lock the session (no
+    // retries, no continuation) exactly as a blocked work turn does; only an
+    // admin may lift it.
+    const evalFlag =
+      safeguardFlagOf(err) ??
+      (err instanceof GoalEvalParseError ? parseSafeguardFlag(err.raw, { source: 'error' }) : null);
+    if (evalFlag) {
+      const halt = { atMs: this.now(), ...evalFlag };
+      session.safeguardHalt = halt;
+      if (live) {
+        live.evalDispatchRetryCount = undefined;
+        live.evalRetryReason = undefined;
+        live.evalBackoffUntil = undefined;
+      }
+      this.persist();
+      logger.warn('Goal eval blocked by Anthropic safeguards — session halted, admin retry required', {
+        sessionKey,
+        ...evalFlag,
+      });
+      void this.postLooseNotice(session, safeguardEvalHaltNoticeText(halt)).catch(() => undefined);
+      return;
     }
 
     // Self-heal transient API failures (429 pool rate limit, 529, timeouts,

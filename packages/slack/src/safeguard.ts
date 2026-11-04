@@ -38,6 +38,20 @@ export function safeguardHaltNoticeText(halt: SafeguardHalt): string {
   );
 }
 
+/**
+ * The thread notice when the goal completion eval — its own query — was the
+ * one blocked. Text only (the loop's notice seam); the admin button comes with
+ * the refusal of the next message in the thread.
+ */
+export function safeguardEvalHaltNoticeText(halt: SafeguardHalt): string {
+  return (
+    `${SAFEGUARD_ERROR_EMOJI} *${SAFEGUARD_ERROR_LABEL}* — goal 완료 판정 요청이 Anthropic safeguards에 차단되어 작업을 즉시 중단했습니다.\n` +
+    '이 세션은 같은 모델로 더 진행할 수 없습니다. 다시 시도하려면 관리자(admin) 허용이 필요합니다 — ' +
+    '이 스레드에 메시지를 보내면 *관리자 재시도 허용* 버튼이 표시됩니다.' +
+    detailSuffix(halt)
+  );
+}
+
 /** The turn card body (`TurnCompletionEvent.message`); its first line is the card header suffix. */
 export function safeguardCardMessage(halt: SafeguardHalt): string {
   return (
@@ -52,9 +66,26 @@ export interface SafeguardButtonValue {
 }
 
 export function buildSafeguardHaltBlocks(halt: SafeguardHalt, sessionKey: string): any[] {
+  return withSafeguardRetryButton(safeguardHaltNoticeText(halt), halt, sessionKey);
+}
+
+/**
+ * The refusal of a message in a halted thread carries the admin button too:
+ * the halt notice may never have reached Slack (a failed post), and the button
+ * is the only way to lift the lock — every refusal re-offers it.
+ */
+export function buildSafeguardRefusalBlocks(
+  halt: SafeguardHalt,
+  sessionKey: string,
+  opts: { isAdmin: boolean },
+): any[] {
+  return withSafeguardRetryButton(safeguardRefusalNotice(halt, opts), halt, sessionKey);
+}
+
+function withSafeguardRetryButton(text: string, halt: SafeguardHalt, sessionKey: string): any[] {
   const value: SafeguardButtonValue = { sessionKey, atMs: halt.atMs };
   return [
-    { type: 'section', text: { type: 'mrkdwn', text: safeguardHaltNoticeText(halt) } },
+    { type: 'section', text: { type: 'mrkdwn', text } },
     {
       type: 'actions',
       elements: [

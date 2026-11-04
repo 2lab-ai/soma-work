@@ -67,4 +67,59 @@ describe('SessionRegistry — safeguardHalt survives a restart', () => {
     reader.loadSessions();
     expect(reader.getSession('C1', '171.503')?.safeguardHalt).toBeUndefined();
   });
+
+  // Review gate (astra-zhuge P1 #5–#7, PR #906).
+  const HALT = { atMs: 1_793_752_964_388, detail: 'reasoning_extraction', requestId: 'req_x' };
+
+  it('a halted session closed by its owner stays halted after a restart — the next session inherits the lock', () => {
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U1', 'Tester', 'C1', '171.601');
+    session.sessionId = 'sdk-D';
+    session.safeguardHalt = HALT;
+    writer.saveSessions();
+    expect(writer.terminateSession(writer.getSessionKey('C1', '171.601'))).toBe(true);
+    expect(writer.getSafeguardHalt('C1', '171.601')).toEqual(HALT);
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    expect(reader.getSession('C1', '171.601')).toBeUndefined();
+    expect(reader.getSafeguardHalt('C1', '171.601')).toEqual(HALT);
+    const reborn = reader.createSession('U1', 'Tester', 'C1', '171.601');
+    expect(reborn.safeguardHalt).toEqual(HALT);
+  });
+
+  it('a halted session archived at load (slept past the limit) leaves its lock behind', () => {
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U1', 'Tester', 'C1', '171.602');
+    session.sessionId = 'sdk-E';
+    session.safeguardHalt = HALT;
+    session.state = 'SLEEPING';
+    session.sleepStartedAt = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000);
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    expect(reader.getSession('C1', '171.602')).toBeUndefined();
+    expect(reader.getSafeguardHalt('C1', '171.602')).toEqual(HALT);
+  });
+
+  it('a corrupt tombstone file falls back to its .bak instead of reading as "no locks"', () => {
+    const writer = new SessionRegistry();
+    const a = writer.createSession('U1', 'Tester', 'C1', '171.603');
+    a.sessionId = 'sdk-F';
+    a.safeguardHalt = HALT;
+    writer.saveSessions();
+    writer.terminateSession(writer.getSessionKey('C1', '171.603'));
+    // A second write leaves the first as the .bak.
+    const b = writer.createSession('U1', 'Tester', 'C1', '171.604');
+    b.sessionId = 'sdk-G';
+    writer.saveSessions();
+    const file = path.join(TEST_DATA_DIR, 'safeguard-halts.json');
+    expect(fs.existsSync(`${file}.bak`)).toBe(true);
+    fs.writeFileSync(file, '{ torn');
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    expect(reader.getSafeguardHalt('C1', '171.603')).toEqual(HALT);
+  });
 });

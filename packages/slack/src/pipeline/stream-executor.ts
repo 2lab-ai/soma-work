@@ -834,6 +834,8 @@ const KNOWN_ABORT_REASONS: ReadonlySet<RequestAbortReason> = new Set([
   'ghost-session',
   // auto-compact — the turn crossed the auto-compact threshold (quiet).
   'auto-compact',
+  // safeguard — the safeguards block was seen; the halt rail reports it.
+  'safeguard',
 ]);
 
 /**
@@ -889,6 +891,7 @@ const QUIET_ABORT_REASONS: ReadonlySet<CoercedAbortReason> = new Set<CoercedAbor
   'shutdown',
   'user-interrupted',
   'auto-compact',
+  'safeguard',
 ]);
 
 function coerceAbortReason(raw: unknown): CoercedAbortReason {
@@ -2067,6 +2070,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         onIdleTimeout: () => {
           abortController.abort('stall-timeout' satisfies RequestAbortReason);
         },
+        // The safeguards block was seen: stop the query NOW (background agents
+        // included) — the session cannot go on with this model. The executor
+        // reads the flag off the result before the abort, so the turn ends in
+        // the safeguard rail, not as an abort. Incident attempts are exempt
+        // (their text is host-authored).
+        onSafeguardFlag: () => {
+          if (!incidentAttempt) abortController.abort('safeguard' satisfies RequestAbortReason);
+        },
         onToolUse: async (allToolUses, ctx) => {
           // Ghost Session Fix #99: self-terminate if session was terminated while streaming.
           // Tag the abort with `'ghost-session'` so handleError surfaces a
@@ -2801,6 +2812,32 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
       interruptFlushFailed = streamResult.interruptFlushFailed;
 
+      // Safeguards flag (dev, 2026-11-04T00:42Z). Anthropic's safeguards block
+      // comes back as the turn's TEXT with a successful result (`end_turn`,
+      // `isError=false`), so nothing threw: the block posted as the answer and
+      // the goal loop re-ran the blocked session. The session cannot go on with
+      // this model, so convert it into a typed throw — `handleError`'s safeguard
+      // rail halts the session (no retry) and only an admin may unlock it.
+      // Checked FIRST, before the abort check (the processor stops the query
+      // the moment it sees the block, so a flagged turn usually ends aborted)
+      // and before every content guard (a flag during `/compact` must halt, not
+      // read as a compaction failure). Every non-incident turn — a tool
+      // continuation can be flagged too. Sources: the processor's sticky flag,
+      // the turn text, and an SDK error result's `errors[]`.
+      const safeguardFlag = incidentAttempt
+        ? null
+        : (streamResult.safeguardFlag ??
+          parseSafeguardFlag(streamResult.guardText ?? streamResult.transportLeak ?? streamResult.collectedText) ??
+          parseSafeguardFlag((streamResult.sdkResultError?.errors ?? []).join('\n'), { source: 'error' }));
+      if (safeguardFlag) {
+        this.logger.warn('Safeguards flag in the turn — halting the session', { sessionKey, ...safeguardFlag });
+        const flagError = new Error(
+          `Anthropic safeguards flagged this request${safeguardFlag.detail ? ` [${safeguardFlag.detail}]` : ''}`,
+        );
+        (flagError as { safeguardFlag?: SafeguardFlagInfo }).safeguardFlag = safeguardFlag;
+        throw flagError;
+      }
+
       if (streamResult.aborted) {
         const abortError = new Error('Request was aborted');
         abortError.name = 'AbortError';
@@ -2824,30 +2861,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // turn that had answered. `collectedText` is the fallback for producers
       // that do not set it.
       const guardText = streamResult.guardText ?? streamResult.transportLeak ?? streamResult.collectedText;
-
-      // Safeguards-flag-as-content guard (dev, 2026-11-04T00:42Z). Anthropic's
-      // safeguards block comes back as the turn's TEXT with a successful result
-      // (`end_turn`, `isError=false`), so nothing threw: the block posted as
-      // the answer and the goal loop re-ran the blocked session. The session
-      // cannot go on with this model, so convert it into a typed throw —
-      // `handleError`'s safeguard rail halts the session (no retry) and only an
-      // admin may unlock it. Checked FIRST (before the compaction guard: a flag
-      // during `/compact` must halt, not read as a compaction failure) and on
-      // every non-incident turn — a tool continuation can be flagged too. The
-      // stream processor's flag is sticky: it survives later text replacing
-      // the suppressed segment.
-      const safeguardFlag = incidentAttempt ? null : (streamResult.safeguardFlag ?? parseSafeguardFlag(guardText));
-      if (safeguardFlag) {
-        this.logger.warn('Safeguards flag surfaced as turn content — halting the session', {
-          sessionKey,
-          ...safeguardFlag,
-        });
-        const flagError = new Error(
-          `Anthropic safeguards flagged this request${safeguardFlag.detail ? ` [${safeguardFlag.detail}]` : ''}`,
-        );
-        (flagError as { safeguardFlag?: SafeguardFlagInfo }).safeguardFlag = safeguardFlag;
-        throw flagError;
-      }
 
       // Compaction-failure-as-content guard (field incident 2026-07-07,
       // session ccee16e0). The SDK seals a FAILED `/compact` as a successful
