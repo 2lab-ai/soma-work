@@ -7,6 +7,7 @@
  */
 
 import { Logger } from '@soma/common/logger';
+import { SAFEGUARD_ERROR_EMOJI, SAFEGUARD_ERROR_LABEL } from './safeguard';
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
@@ -43,6 +44,15 @@ export interface TurnCompletionEvent {
   threadTs: string;
   sessionTitle?: string;
   message?: string;
+  /**
+   * What kind of `Exception` this is, when it is not a plain error. Only the
+   * card's label and emoji follow it (`getTurnEventLabel` /
+   * `getTurnEventEmoji`); every other Exception behaviour (colour, error body,
+   * no feedback buttons, completion-tracker exclusion) stays the category's.
+   *  - `safeguard` — Anthropic safeguards blocked the request; the session is
+   *    halted until an admin allows a retry ("🛡️ 세이프가드 에러").
+   */
+  errorKind?: 'safeguard';
   durationMs: number;
   /**
    * Stable per-turn id (`sessionKey:ts:uuid`, generated in stream-executor).
@@ -136,6 +146,18 @@ const CATEGORY_LABEL: Record<TurnCategory, string> = {
 
 export function getCategoryLabel(category: TurnCategory): string {
   return CATEGORY_LABEL[category];
+}
+
+/** The card label for one event: its `errorKind` wins over the category's ("세이프가드 에러"). */
+export function getTurnEventLabel(event: Pick<TurnCompletionEvent, 'category' | 'errorKind'>): string {
+  if (event.category === 'Exception' && event.errorKind === 'safeguard') return SAFEGUARD_ERROR_LABEL;
+  return getCategoryLabel(event.category);
+}
+
+/** The card emoji for one event — see {@link getTurnEventLabel}. */
+export function getTurnEventEmoji(event: Pick<TurnCompletionEvent, 'category' | 'errorKind'>): string {
+  if (event.category === 'Exception' && event.errorKind === 'safeguard') return SAFEGUARD_ERROR_EMOJI;
+  return getCategoryEmoji(event.category);
 }
 
 // --- Slack workspace URL singleton (set once at startup) ---

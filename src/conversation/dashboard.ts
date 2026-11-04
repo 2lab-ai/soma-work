@@ -433,6 +433,11 @@ export interface KanbanSession {
    */
   autoResume?: KanbanAutoResume;
   /**
+   * Anthropic safeguards halted the session: nothing runs in it until an admin
+   * lifts the lock from the Slack notice. The card says so instead of "대기".
+   */
+  safeguardHalt?: { atMs: number; detail?: string };
+  /**
    * SSOT 2026-10-23 T1/T5 — what the model produced in this conversation: the
    * files it sent to Slack (never a final answer, SSOT 2026-11-02 T6). The count
    * and the few newest, so the card face shows them without a fetch; the full list is
@@ -2543,6 +2548,16 @@ function sessionToKanban(key: string, s: any): KanbanSession {
         }
       : {}),
     ...(autoResume ? { autoResume } : {}),
+    ...(s.safeguardHalt && Number.isFinite(Number(s.safeguardHalt.atMs))
+      ? {
+          safeguardHalt: {
+            atMs: Number(s.safeguardHalt.atMs),
+            ...(typeof s.safeguardHalt.detail === 'string' && s.safeguardHalt.detail
+              ? { detail: String(s.safeguardHalt.detail).slice(0, 80) }
+              : {}),
+          },
+        }
+      : {}),
     artifacts: cardArtifacts(s.conversationId),
     userMedia: cardUserMedia(s.conversationId),
     ...esTldrOf(s),
@@ -6734,6 +6749,7 @@ var STRINGS = {
   statusIdle: '대기',
   statusSleeping: '휴면',
   statusArchived: '보관됨',
+  statusSafeguard: '세이프가드 에러 · 관리자만 재시도',
   archives: '보관함',
   sleeping: '휴면',
   // #814: why a sibling instance's session cannot be acted on here (the actions' lock, 지금 압축's reason).
@@ -10011,7 +10027,11 @@ function cardOf(s, col) {
   // Status (the tinted tag, re-agent-inbox D1): an armed automatic resume waits.
   var resume = pendingAutoResume(s, col);
   var acc = Number(s.activeAccumulatedMs) || 0;
-  if (resume) {
+  if (s.safeguardHalt && col !== 'working') {
+    // Anthropic safeguards halted it: nothing runs until an admin lifts the lock.
+    card.status = 'waiting';
+    card.statusText = STRINGS.statusSafeguard;
+  } else if (resume) {
     card.status = 'waiting';
     card.statusText = autoResumeLabel(resume);
   } else if (col === 'waiting') {

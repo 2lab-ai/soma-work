@@ -29,8 +29,8 @@ import type { CompletionMessageTracker } from '../slack/completion-message-track
 import {
   buildThreadPermalink,
   getCategoryColor,
-  getCategoryEmoji,
-  getCategoryLabel,
+  getTurnEventEmoji,
+  getTurnEventLabel,
   type NotificationChannel,
   type TurnCompletionEvent,
 } from '../turn-notifier.js';
@@ -108,8 +108,8 @@ export class SlackBlockKitChannel implements NotificationChannel {
     withFeedback: boolean;
     usedConfigDerivedBlocks: boolean;
   } {
-    const emoji = getCategoryEmoji(event.category);
-    const label = getCategoryLabel(event.category);
+    const emoji = getTurnEventEmoji(event);
+    const label = getTurnEventLabel(event);
 
     // Turn-end surface guarantee: the terminal card must NEVER be lost to a
     // render bug. Config is clamped at normalize time, but any unexpected
@@ -160,8 +160,8 @@ export class SlackBlockKitChannel implements NotificationChannel {
 
   async send(event: TurnCompletionEvent): Promise<void> {
     const color = getCategoryColor(event.category);
-    const emoji = getCategoryEmoji(event.category);
-    const label = getCategoryLabel(event.category);
+    const emoji = getTurnEventEmoji(event);
+    const label = getTurnEventLabel(event);
 
     const { blocks, fallbackText, withFeedback, usedConfigDerivedBlocks } = this.buildCompletionBlocks(event);
 

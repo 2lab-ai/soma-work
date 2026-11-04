@@ -1,4 +1,5 @@
 import { Logger } from '@soma/common/logger';
+import { type SafeguardFlagInfo, safeguardFlagOf } from '@soma/common/safeguard';
 import type { SessionLink, SessionLinks } from './directives/session-link-directive';
 import type { HandoffContext, WorkflowType } from './handoff-budget';
 
@@ -593,6 +594,12 @@ export interface SummaryServiceOptions {
    * live-root gate as every lifecycle notice). Fire-and-forget.
    */
   onWarningCleared?: (session: SummarySessionInfo, warningMessageTs: string) => void;
+  /**
+   * #904 — Anthropic's safeguards blocked the summary query itself (it resumes
+   * the session's own conversation): the host halts the session. The summary
+   * returns null as for any failure.
+   */
+  onSafeguardFlag?: (session: SummarySessionInfo, flag: SafeguardFlagInfo) => void;
 }
 
 /**
@@ -636,7 +643,10 @@ export class SummaryService {
     this.slackApi = slackApi;
     this.turnEndContract = options?.turnEndContract?.trim() || undefined;
     this.onWarningCleared = options?.onWarningCleared;
+    this.onSafeguardFlag = options?.onSafeguardFlag;
   }
+
+  private readonly onSafeguardFlag?: SummaryServiceOptions['onSafeguardFlag'];
 
   /**
    * Build the full summary prompt from session context + tier template + global rules.
@@ -728,6 +738,16 @@ export class SummaryService {
       });
       return response;
     } catch (err: any) {
+      const blocked = safeguardFlagOf(err);
+      if (blocked) {
+        logger.warn('Summary fork blocked by Anthropic safeguards — halting the session', { ...blocked });
+        try {
+          this.onSafeguardFlag?.(session, blocked);
+        } catch (haltErr: any) {
+          logger.error('Summary safeguard halt failed', { error: haltErr?.message || String(haltErr) });
+        }
+        return null;
+      }
       if (err?.name === 'AbortError' || abortSignal?.aborted) {
         logger.info('Summary fork aborted', { reason: err?.message });
         return null;

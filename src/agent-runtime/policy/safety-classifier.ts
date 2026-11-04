@@ -17,6 +17,7 @@
  * grant) are decided *before* the classifier and are never reachable here.
  */
 
+import { parseSafeguardFlag, type SafeguardFlagInfo, safeguardFlagOf } from '@soma/common/safeguard';
 import type { PermissionAdvice } from 'somalib/permission/shared-store';
 
 export type SafetyVerdictKind = 'allow' | 'ask';
@@ -31,6 +32,13 @@ export interface SafetyVerdict {
    * none (or no usable one): the prompt then says the AI gave no advice.
    */
   advice?: PermissionAdvice;
+  /**
+   * Anthropic's safeguards blocked the guardian call itself (#904). The verdict
+   * is never `allow`; the caller halts the session instead of asking anyone —
+   * the guardian is a Claude call about this session's own tool call, and only
+   * an admin may let the session go on.
+   */
+  safeguardFlag?: SafeguardFlagInfo;
 }
 
 /** Longest summary / risk kept from a guardian reply (the Slack card and the dashboard show it whole). */
@@ -198,6 +206,15 @@ export function parseSafetyVerdict(raw: string): SafetyVerdict {
   }
 }
 
+/** The verdict for a guardian call Anthropic's safeguards blocked (#904): never `allow`, flag attached. */
+function safeguardBlockedVerdict(flag: SafeguardFlagInfo): SafetyVerdict {
+  return {
+    verdict: 'ask',
+    reason: `blocked by Anthropic safeguards${flag.detail ? ` [${flag.detail}]` : ''} (fail-closed)`,
+    safeguardFlag: flag,
+  };
+}
+
 /**
  * LLM-backed guardian classifier. Calls the injected chat backend with a short
  * timeout and fails closed to `ask` on any error / timeout / malformed output.
@@ -218,8 +235,12 @@ export class LlmSafetyClassifier implements SafetyClassifier {
         model: req.model,
         ...(req.signal ? { signal: req.signal } : {}),
       });
+      const blocked = typeof raw === 'string' ? parseSafeguardFlag(raw) : null;
+      if (blocked) return safeguardBlockedVerdict(blocked);
       return parseSafetyVerdict(raw);
     } catch (err) {
+      const blocked = safeguardFlagOf(err);
+      if (blocked) return safeguardBlockedVerdict(blocked);
       return {
         verdict: 'ask',
         reason: `classifier error (fail-closed): ${err instanceof Error ? err.message : String(err)}`,
