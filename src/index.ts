@@ -2017,9 +2017,9 @@ async function start() {
         postOwnerDm: postGoalOwnerDm,
         // Same failure twice → ask the owner (thread form + dashboard card).
         askStallQuestion: (question) => slackHandler.askGoalStallQuestion(question),
-        // #917 — a run that did not continue the work: the session's follow-up may be asked now.
-        onRunSettled: (sessionKey, { continued }) => {
-          if (!continued) void slackHandler.askFollowUpQuestion(sessionKey);
+        // #917 — a run that did not continue the work, with no run behind it: the follow-up may be asked now.
+        onRunSettled: (sessionKey, { continued, queued }) => {
+          if (!continued && !queued) void slackHandler.askFollowUpQuestion(sessionKey);
         },
         // #788: while the host stops, no loop run starts and a landing verdict is dropped.
         isShuttingDown: () => slackHandler.isShuttingDown(),

@@ -84,27 +84,36 @@ export function shouldAskFollowUpQuestion(
   const f = session?.followUp;
   if (!session || !f || typeof f.reason !== 'string' || !f.reason.trim()) return false;
   if (f.askedAt !== undefined) return false;
-  if (session.terminated === true || session.state === 'SLEEPING') return false;
-  if (input.requestActive || (session.activityState || 'idle') !== 'idle') return false;
   const panel = session.actionPanel;
   if (panel?.pendingQuestion || panel?.pendingChoice || panel?.waitingForChoice === true) return false;
-  if (session.taskPlan?.state === 'awaiting') return false;
+  return !somethingElseActsOrAsks(session, input);
+}
+
+/**
+ * The session is not idle, a turn runs, or something else is about to act or ask: a plan awaiting its start, the
+ * goal's eval, backoff, stall or cap question, an armed error retry. Checked before the ask and again when the
+ * posted question is committed (the post takes a moment; a goal eval or a continuation may start meanwhile).
+ */
+export function somethingElseActsOrAsks(
+  session: FollowUpQuestionSession,
+  input: { requestActive: boolean; now: number },
+): boolean {
+  if (session.terminated === true || session.state === 'SLEEPING') return true;
+  if (input.requestActive || (session.activityState || 'idle') !== 'idle') return true;
+  if (session.taskPlan?.state === 'awaiting') return true;
   const goal = session.goal;
   if (goal?.status === 'active') {
-    if (goal.pendingEval || goal.stall) return false;
-    if (typeof goal.evalBackoffUntil === 'number' && goal.evalBackoffUntil > input.now) return false;
-    if (typeof goal.capDecisionId === 'string' && goal.capDecisionId && goal.capDmPendingAt !== undefined) return false;
+    if (goal.pendingEval || goal.stall) return true;
+    if (typeof goal.evalBackoffUntil === 'number' && goal.evalBackoffUntil > input.now) return true;
+    if (typeof goal.capDecisionId === 'string' && goal.capDecisionId && goal.capDmPendingAt !== undefined) return true;
   }
   const retryAt = Number(session.pendingRetryAt);
-  if (
+  return (
     Number.isFinite(retryAt) &&
     retryAt > input.now &&
     session.pendingRetrySessionId !== undefined &&
     session.pendingRetrySessionId === session.sessionId
-  ) {
-    return false;
-  }
-  return true;
+  );
 }
 
 export interface FollowUpQuestionDeps {
@@ -131,9 +140,17 @@ export async function askFollowUpQuestion(sessionKey: string, deps: FollowUpQues
   const reason = String(followUp.reason).trim();
   followUp.askedAt = deps.now();
   const sameVerdict = () => deps.getSession(sessionKey)?.followUp === followUp;
-  const turnId = await deps.ask(sessionKey, buildFollowUpQuestion(reason), {
-    stillWanted: () => sameVerdict() && !deps.isRequestActive(sessionKey),
-  });
+  // Re-checked when the posted question is committed: the post takes a moment, and a turn, a goal eval or a
+  // continuation that started meanwhile must not find a question opened beside it.
+  const stillWanted = () => {
+    const live = deps.getSession(sessionKey);
+    return (
+      !!live &&
+      live.followUp === followUp &&
+      !somethingElseActsOrAsks(live, { requestActive: deps.isRequestActive(sessionKey), now: deps.now() })
+    );
+  };
+  const turnId = await deps.ask(sessionKey, buildFollowUpQuestion(reason), { stillWanted });
   if (!turnId) {
     if (sameVerdict()) followUp.askedAt = undefined;
     return;

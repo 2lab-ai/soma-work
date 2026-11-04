@@ -304,7 +304,13 @@ export function applyFollowUp(session: object, tldr: readonly string[], at: numb
   if (!next) {
     s.followUp = undefined;
   } else if (previous?.reason === next.reason) {
-    s.followUp = { reason: next.reason, at: previous.at };
+    // A new verdict on the same follow-up: same clock, may be asked again. The question already asked for it stays
+    // bound (`questionTurnId`) — while it is open no second one is asked, and a later clear still takes it back.
+    s.followUp = {
+      reason: next.reason,
+      at: previous.at,
+      ...(previous.questionTurnId ? { questionTurnId: previous.questionTurnId } : {}),
+    };
   } else {
     s.followUp = { reason: next.reason, at };
     // #881 D1 — the warning already posted named the old expiry: hand it back so the caller edits it.
