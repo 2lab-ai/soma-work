@@ -1397,6 +1397,17 @@ export function setDashboardCommandHandler(fn: CommandHandler): void {
 }
 
 /**
+ * What the router makes of an instruction (`CommandRouter.classifyText`, read-only): a `control` command answers in
+ * the Slack thread and ends there — no turn, nothing on the board — so the panel is told where its answer is.
+ */
+type DashboardCommandClassifier = (text: string, user?: string) => 'instruction' | 'control' | 'control-with-dispatch';
+let _commandClassifierFn: DashboardCommandClassifier | null = null;
+
+export function setDashboardCommandClassifier(fn: DashboardCommandClassifier | null): void {
+  _commandClassifierFn = fn;
+}
+
+/**
  * Task star + revive (SSOT 2026-10-30), wired to the session registry in
  * src/index.ts: star / unstar a live session (starring a sleeping one wakes
  * it), revive a live (sleeping) one, restore an archived one — the resume
@@ -4004,7 +4015,9 @@ export async function registerDashboardRoutes(
           if (ref) await _commandHandlerFn(originalKey, message, files.value, sender, ref);
           else await _commandHandlerFn(originalKey, message, files.value, sender);
         }
-        reply.send(waits ? { ok: true, pendingApproval: true } : { ok: true });
+        // A command that only answers (`/help`, `/model opus`): its answer is a Slack thread message — say so.
+        const answersInThread = !waits && !!message.trim() && _commandClassifierFn?.(message.trim(), sender) === 'control';
+        reply.send(waits ? { ok: true, pendingApproval: true } : answersInThread ? { ok: true, answer: 'thread' } : { ok: true });
       } catch (error) {
         logger.error('Error sending command to session', error);
         reply.status(500).send({ error: 'Internal Server Error' });
@@ -18208,6 +18221,7 @@ async function sendCommand(text, ref, files) {
 
   var why = '';
   var awaitsOwner = false;
+  var answeredInThread = false;
   _pcInFlight++; // until the server answered: a reload now would drop a note the composer no longer holds
   try {
     const cmdUrl = '/api/dashboard/session/' + encodeURIComponent(sendingSessionKey) + '/command';
@@ -18217,12 +18231,20 @@ async function sendCommand(text, ref, files) {
     if (!res.ok) why = ((data && data.error) || '') + ' (HTTP ' + res.status + ')';
     // #767 — someone else's task: the words wait for its owner's approval.
     else if (data && data.pendingApproval) awaitsOwner = true;
+    // A command that only answers (/help, /model opus …): no turn will come — the answer is in the Slack thread.
+    else if (data && data.answer === 'thread') answeredInThread = true;
   } catch (e) {
     why = (e && e.message) || '네트워크 오류';
   } finally {
     _pcInFlight--;
   }
   if (awaitsOwner) dashToast({ title: '작업 소유자의 승인을 기다려요', description: '소유자가 승인하면 실행됩니다 — 소유자에게 DM과 대시보드로 요청했어요', tone: 'wait' });
+  if (answeredInThread) {
+    // The turn shown at once (idle) or the note's row (running) would wait for a turn that never comes.
+    if (optimisticId) dropTurnFromPanel(optimisticId);
+    if (ref) el.setItemState(ref, 'cancelled');
+    dashToast(pcThreadAnswerToast(_sessionCache[sendingSessionKey]));
+  }
   // Sent: its files went with it. Failed: they stay kept by ref for the Retry.
   if (!why && ref) {
     delete _pcNoteFiles[ref];
@@ -18251,6 +18273,12 @@ async function sendCommand(text, ref, files) {
     _pcFailed[ref] = true;
   }
   dashToast({ title: '메시지를 보내지 못했어요', description: why.trim(), tone: 'error' });
+}
+// A command that only answers was sent: where its answer is (the Slack thread, linked when the card has it).
+function pcThreadAnswerToast(s) {
+  var toast = { title: '명령을 보냈어요', description: '답은 Slack 스레드에 있어요', tone: 'success' };
+  if (s && s.slackThreadUrl) toast.link = { label: 'Slack에서 보기', href: String(s.slackThreadUrl) };
+  return toast;
 }
 // A note that did not go out at all (a file that could not be read): its row goes
 // and its text and files return to the composer — unless the user has typed or

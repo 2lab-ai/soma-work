@@ -1262,5 +1262,7 @@
   "총 토큰 — 입력 · 출력 · 캐시 (작업 합계)": "Total tokens — input · output · cache (task total)",
   "타이틀 바": "Title bar",
   "타이틀 바 바로 아래 — 탭에 넣지 않고 항상 보입니다": "Right under the title bar — never in a tab, always shown",
-  "탭 바": "Tab bar"
+  "탭 바": "Tab bar",
+  "명령을 보냈어요": "Command sent",
+  "답은 Slack 스레드에 있어요": "Its answer is in the Slack thread"
 }

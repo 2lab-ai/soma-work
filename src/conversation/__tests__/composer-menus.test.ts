@@ -38,8 +38,8 @@ import {
 
 type Claimer = { canHandle(text: string, user?: string): boolean };
 
-function productionHandlers(): Claimer[] {
-  const router = new CommandRouter({
+function productionRouter(): CommandRouter {
+  return new CommandRouter({
     workingDirManager: {
       parseSetCommand: WorkingDirectoryManager.prototype.parseSetCommand,
       isGetCommand: WorkingDirectoryManager.prototype.isGetCommand,
@@ -48,6 +48,8 @@ function productionHandlers(): Claimer[] {
     claudeHandler: { getSession: () => null },
     slackApi: {},
   } as never);
+}
+function productionHandlers(router = productionRouter()): Claimer[] {
   return (router as unknown as { handlers: Claimer[] }).handlers;
 }
 
@@ -99,25 +101,47 @@ describe('command rows — what the menu inserts is a real command', () => {
 });
 
 describe('composerCommandItems — who sees what, where', () => {
-  it('the new-task composer leaves out what needs a session; admins only see the admin rows', () => {
+  const router = productionRouter();
+
+  it('the new-task composer offers only what starts the work (trinity R1, astra-zhuge)', () => {
+    // A command that only answers (`/help`, `/model`) makes no session: the launch would wait for a task that
+    // never starts. The new task's first message must start a turn.
+    for (const admin of [false, true]) {
+      const rows = composerCommandItems({ where: 'new-task', admin });
+      expect(rows.map((r) => r.value)).toEqual(['/goal', '%model', '%nogoal', '/onboarding']);
+      for (const r of rows) expect(router.classifyText(r.example ?? '', 'U_ADMIN'), r.value).not.toBe('control');
+    }
+  });
+
+  it('an open session lists every command; admins also see the admin rows', () => {
     const session = composerCommandItems({ where: 'session', admin: false }).map((i) => i.value);
-    const newTask = composerCommandItems({ where: 'new-task', admin: false }).map((i) => i.value);
     const admin = composerCommandItems({ where: 'session', admin: true }).map((i) => i.value);
-    expect(session).toContain('/compact');
-    expect(newTask).not.toContain('/compact');
-    expect(newTask).not.toContain('!');
-    expect(newTask).toContain('/goal'); // a first message may set the goal
-    expect(newTask).toContain('%model'); // the inline directive applies before the session starts
+    expect(session).toContain('/compact --yes');
+    expect(session).toContain('/help');
     expect(session).not.toContain('/cct');
     expect(admin).toContain('/cct');
     expect(admin.length).toBeGreaterThan(session.length);
+  });
+
+  it('a command that only answers says the answer is in the Slack thread — exactly the router’s controls', () => {
+    const suffix = ' · 답은 Slack 스레드에';
+    for (const r of composerCommandItems({ where: 'session', admin: true })) {
+      if (r.value === '!') continue; // the stop marker is read before routing; the turn it stops is on the board
+      const control = router.classifyText(r.example ?? '', 'U_ADMIN') === 'control';
+      expect(r.description?.endsWith(suffix), `${r.value}: ${r.example}`).toBe(control);
+    }
+  });
+
+  it('/compact goes with --yes: its confirmation is a Slack-only button', () => {
+    const row = composerCommandItems({ where: 'session', admin: false }).find((r) => r.value.startsWith('/compact'));
+    expect(row?.value).toBe('/compact --yes');
   });
 
   it('rows carry the description, the grey example and the group', () => {
     const model = composerCommandItems({ where: 'session', admin: false }).find((i) => i.value === '/model');
     expect(model).toEqual({
       value: '/model',
-      description: '기본 모델 보기·바꾸기 (다음 세션부터)',
+      description: '기본 모델 보기·바꾸기 (다음 세션부터) · 답은 Slack 스레드에',
       example: '/model opus',
       group: '설정',
     });
@@ -267,6 +291,7 @@ describe('display language — every word of the menus has English', () => {
       '내 스킬',
       '기본 스킬',
       '관리자 승인 필요',
+      '답은 Slack 스레드에',
       '내 스킬 목록 카드 (보기 · 편집 · 공유)',
     ])
       sources.add(s);
