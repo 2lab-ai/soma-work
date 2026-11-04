@@ -296,6 +296,12 @@ export interface NewTaskSubmission {
    * Present only when on; autogoal and autoz are then off (the epic's wakes drive it).
    */
   epic?: true;
+  /**
+   * Set by the route, never by the client: the first message is a command that only answers (`/help`, `/model
+   * opus` — the router's `control`). It still goes into a new thread, where the command answers; no session is
+   * awaited (none comes) and the launch says where the answer is (`status: 'answered'`).
+   */
+  answerOnly?: true;
 }
 
 export type NewTaskParseResult = { ok: true; value: NewTaskSubmission } | { ok: false; error: string };

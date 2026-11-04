@@ -154,6 +154,21 @@ export function listAvailableSkills(userId?: string): AvailableSkill[] {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/**
+ * The SKILL.md a listed skill reads from (the dashboard's `$` menu takes its description line), or null when its
+ * source cannot name a file. `local` is zworkflow's skill, else the harness plugin's — the order the resolver uses.
+ */
+export function skillMdFile(skill: AvailableSkill, userId?: string): string | null {
+  const { name, source } = skill;
+  if (!isSafePathSegment(name) || !isSafePathSegment(source)) return null;
+  if (source === 'user') return userId && isSafePathSegment(userId) ? skillMdPath(userSkillsDir(userId), name) : null;
+  if (source === 'local') {
+    const portable = skillMdPath(LOCAL_SKILLS_DIR, name);
+    return fs.existsSync(portable) ? portable : skillMdPath(LOCAL_HARNESS_SKILLS_DIR, name);
+  }
+  return skillMdPath(path.join(PLUGINS_DIR, source, 'skills'), name);
+}
+
 /** Directory names under `dir` that contain a `SKILL.md`. Empty on any error. */
 function listSkillDirsWithMd(dir: string): string[] {
   let entries: fs.Dirent[];
