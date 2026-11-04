@@ -33,6 +33,7 @@ import { join } from 'node:path';
 import { constants as zlibConstants } from 'node:zlib';
 import type { FollowupItem, FollowupItemState } from '@soma/slack/followup-queue';
 import type { FollowupQueueView } from '@soma/slack/followup-queue-blocks';
+import { CommandParser } from '@soma/slack/command-parser';
 import { sumLiveUsage } from '@soma/slack/live-usage';
 import { livePendingModelSwitch } from '@soma/slack/model-switch';
 import { plainTldrLine } from '@soma/slack/summary-service';
@@ -124,6 +125,7 @@ import { type ArtifactSummary, getArtifactStore, type SessionArtifact } from './
 import { buildCapacityView, type CapacityView } from './capacity-view';
 import { type CardLink, cardLinksOf } from './card-links';
 import { isClientRef } from './client-ref';
+import { type ComposerMenuWhere, type ComposerTriggerRow, composerTriggers } from './composer-menus';
 import { buildCronJobsView, type CronRunSessionLookup } from './cron-view';
 import { DICTATION_BROWSER_JS } from './dictation-browser-client';
 import { DICTATION_PREF_JS } from './dictation-pref';
@@ -1390,6 +1392,32 @@ export function setDashboardCommandHandler(fn: CommandHandler): void {
 }
 
 /**
+ * What the router makes of an instruction (`CommandRouter.classifyText`, read-only): a `control` command answers in
+ * the Slack thread and ends there — no turn, nothing on the board — so the panel is told where its answer is.
+ */
+type DashboardCommandClassifier = (text: string, user?: string) => 'instruction' | 'control' | 'control-with-dispatch';
+let _commandClassifierFn: DashboardCommandClassifier | null = null;
+
+export function setDashboardCommandClassifier(fn: DashboardCommandClassifier | null): void {
+  _commandClassifierFn = fn;
+}
+
+/**
+ * The classifier's answer for what will run, or undefined when none is wired or it throws (the command already went
+ * out — never a 500). An inline directive with text after it (`%model opus /help`, `%nogoal …`) is applied and the
+ * rest is routed (slack-handler): the rest is what is classified.
+ */
+function classifyCommand(text: string, user?: string): ReturnType<DashboardCommandClassifier> | undefined {
+  try {
+    const directives = CommandParser.parseInlineSessionDirectives(text);
+    return _commandClassifierFn?.(directives?.remainder ? directives.remainder : text, user);
+  } catch (error) {
+    logger.warn('Command classifier failed — answering without where the answer is', error);
+    return undefined;
+  }
+}
+
+/**
  * Task star + revive (SSOT 2026-10-30), wired to the session registry in
  * src/index.ts: star / unstar a live session (starring a sleeping one wakes
  * it), revive a live (sleeping) one, restore an archived one — the resume
@@ -1796,6 +1824,14 @@ const _newTaskGate = createNewTaskGate();
 
 export function setDashboardNewTaskProvider(provider: DashboardNewTaskProvider | null): void {
   _newTaskProvider = provider;
+}
+
+/** The composers' `/` and `$` menus for one viewer and one composer (composer-menus.ts; tests swap it). */
+type DashboardComposerMenus = (opts: { where: ComposerMenuWhere; userId?: string; admin: boolean }) => ComposerTriggerRow[];
+let _composerMenus: DashboardComposerMenus = composerTriggers;
+
+export function setDashboardComposerMenus(fn: DashboardComposerMenus | null): void {
+  _composerMenus = fn ?? composerTriggers;
 }
 
 /**
@@ -3973,7 +4009,11 @@ export async function registerDashboardRoutes(
           if (ref) await _commandHandlerFn(originalKey, message, files.value, sender, ref);
           else await _commandHandlerFn(originalKey, message, files.value, sender);
         }
-        reply.send(waits ? { ok: true, pendingApproval: true } : { ok: true });
+        // A command that only answers (`/help`, `/model opus`): its answer is a Slack thread message — say so.
+        // Classified as whoever it runs as (the sender, else the owner — injectDashboardMessage's actor).
+        const runsAs = sender || _getSessionsFn?.()?.get(originalKey)?.ownerId;
+        const answersInThread = !waits && !!message.trim() && classifyCommand(message.trim(), runsAs) === 'control';
+        reply.send(waits ? { ok: true, pendingApproval: true } : answersInThread ? { ok: true, answer: 'thread' } : { ok: true });
       } catch (error) {
         logger.error('Error sending command to session', error);
         reply.status(500).send({ error: 'Internal Server Error' });
@@ -4596,6 +4636,23 @@ export async function registerDashboardRoutes(
     }
   });
 
+  // ── Composer menus (2026-11-04) — what `/` and `$` list in the new-task composer and an open session's ──
+  // Commands for this viewer (admin rows for a signed-in admin; no session-only rows in the new task) and the skills
+  // they can invoke. A viewer token names nobody: no personal skills, no admin rows.
+  server.get('/api/dashboard/composer-menus', { preHandler: [authMiddleware] }, async (request, reply) => {
+    const userId = signedInUserId(request);
+    const admin = isSlackAdmin((request as { authContext?: { mode?: string; userId?: string; isAdmin?: boolean } }).authContext);
+    try {
+      reply.send({
+        newTask: _composerMenus({ where: 'new-task', userId, admin }),
+        session: _composerMenus({ where: 'session', userId, admin }),
+      });
+    } catch (error) {
+      logger.error('Error building the composer menus', error);
+      reply.status(500).send({ error: 'Internal Server Error' });
+    }
+  });
+
   server.post<{ Body: unknown }>(
     '/api/dashboard/new-task',
     {
@@ -4629,14 +4686,20 @@ export async function registerDashboardRoutes(
           const context = await provider.context(userId, { fresh: true });
           const parsed = parseNewTaskSubmission(request.body, context);
           if (!parsed.ok) throw new NewTaskError(400, parsed.error);
+          // A first message the router only answers (`/help`, `/model opus`, `/goal` with no objective) makes no
+          // session: it is launched answer-only — the command answers in the new thread, no session is awaited, and
+          // the launch says where the answer is (`status: 'answered'`, no board card). It is judged as typed and sent
+          // as typed: autoz is for an instruction, and `$autoz` after a command would make it a skill turn instead.
+          const answerOnly = classifyCommand(parsed.value.prompt.trim(), userId) === 'control';
           // #854 — an epic only behind the owner's flag (the composer offers it only then).
           if (parsed.value.epic === true && !epicTasksFor(userId)) {
             throw new NewTaskError(403, '에픽은 꺼져 있습니다 — `/z epictasks on`으로 켜세요');
           }
-          return provider.start(userId, parsed.value);
+          return provider.start(userId, answerOnly ? { ...parsed.value, autoz: false, answerOnly: true } : parsed.value);
         });
-        // Its session is on the board from its creation, before its SDK session (SSOT 2026-11-02).
-        rememberDashboardLaunch(result.sessionKey);
+        // Its session is on the board from its creation, before its SDK session (SSOT 2026-11-02). An answered
+        // command has no session.
+        if (result.status !== 'answered') rememberDashboardLaunch(result.sessionKey);
         reply.send({ ok: true, ...result });
       } catch (error) {
         if (error instanceof NewTaskError) {
@@ -5735,6 +5798,11 @@ ui-breadcrumbs.pa-path { flex: 1 1 auto; min-width: 0; }
   white-space: nowrap;
 }
 .panel-header { flex-wrap: wrap; row-gap: 8px; }
+/* The owner pill (SSOT 2026-11-04): top right, before the deck and ✕, centred on them (the header's top line). It gives
+   way before the title does (shrinks to its ellipsis from 40% of the row); the kit's display: inline-block must not
+   beat [hidden]. */
+.panel-header > .panel-owner { flex: 0 1 auto; min-width: 0; max-inline-size: min(40%, 168px); align-self: center; }
+.panel-header > .panel-owner[hidden] { display: none; }
 /* The title's actions (SSOT 2026-11-04): 퍼머링크 · 전체 문맥 복사 right after the title text, small. The title keeps
    its own width (no flex: 1) and ellipsizes first, so the two stay beside its last letter; the -2px margins keep the
    row the title's height (no shift when they appear). Scoped to the row so the kit's .ui-icon-btn (32px) never wins. */
@@ -6472,6 +6540,10 @@ ${pageTokenAliases()}
           <button type="button" id="panel-title-sub-regen" class="ui-icon-btn is-sm" style="display:none" aria-label="부제 다시 만들기" title="부제 다시 만들기" onclick="event.stopPropagation();generateTitleSub(panelConvId, !!_panelTitleSub)"><i data-ui-icon="refresh"></i></button>
         </div>
       </div>
+      <!-- The card's owner (SSOT 2026-11-04): the board's name pill at the top right, in their board colour — the
+           viewer's own orbits (the kit's .ui-owner-badge, @2lab.ai/ui ≥ 0.28.0). renderPanelOwner fills it from the
+           open card; hidden until then. -->
+      <span id="panel-owner" class="ui-owner-badge panel-owner" hidden></span>
       <!-- Detail deck (SSOT 2026-10-29 T2, D3 E-05): every open card has its detail card here; <ui-deck-nav>'s ‹ n / m › (and ←/→ on it) go through them, round the end. -->
       <ui-deck-nav class="panel-deck" id="panel-deck" lang="ko" wrap hidden></ui-deck-nav>
       <button type="button" class="ui-icon-btn is-bordered panel-close" aria-label="작업 카드 닫기" title="작업 카드 닫기 (카드도 접힘)" onclick="closeDetailCard()"><i data-ui-icon="close"></i></button>
@@ -10041,7 +10113,15 @@ function cardOf(s, col) {
   // The star is a toggle on the face (SSOT 2026-11-01 — viewCardOf, cardStarOf), no longer a ★ lead (2026-10-30 T1.3).
   // Owner badge (§3.1-3): in the All Users view every card names its owner.
   var owner = currentUserId ? '' : s.ownerName || s.ownerId || '';
-  if (owner) card.badge = { text: String(owner), hue: ownerBadgeHue(s.ownerId || owner), title: String(owner) };
+  if (owner) {
+    card.badge = { text: String(owner), hue: ownerBadgeHue(s.ownerId || owner), title: String(owner) };
+    // The viewer's own card (SSOT 2026-11-04): the element's moving ring makes it stand out among everyone's, and it
+    // says the name "(나)" — its own title and screen-reader words, so no host title.
+    if (viewerOwns(s)) {
+      card.badge.self = true;
+      delete card.badge.title;
+    }
+  }
   return card;
 }
 
@@ -11689,6 +11769,7 @@ function repaintPanelSession() {
   var anchor = panelLiveAnchor();
   renderPanelHead();
   renderPanelTitleActions(s);
+  renderPanelOwner(s);
   renderPanelMidbar();
   renderPanelInfo();
   renderPanelGoal();
@@ -18116,6 +18197,66 @@ function renderPanelTitleActions(s) {
   }
   if (copy) copy.hidden = !(s && s.conversationId) || isSiblingSession(s);
 }
+// The open card's owner pill (SSOT 2026-11-04) — the board's badge at the detail card's top right, shown in every
+// board mode (the board names owners in All Users only; one card's detail always says whose it is). Pure: null
+// without an owner; self for the signed-in viewer's own — its ring orbits, and the name is followed by "(나)".
+function panelOwnerOf(s) {
+  var name = s ? String(s.ownerName || s.ownerId || '') : '';
+  if (!name) return null;
+  var self = viewerOwns(s);
+  return { text: name, hue: ownerBadgeHue(s.ownerId || name), self: self, title: self ? name + ' (나)' : name };
+}
+// Writes the pill only when what it says changes; puts its arc back on the board's orbit every time (the arc restarts
+// whenever the drawer shows it again — and exists only while the drawer is open).
+function renderPanelOwner(s) {
+  var el = document.getElementById('panel-owner');
+  if (!el) return;
+  var o = panelOwnerOf(s);
+  var sig = o ? JSON.stringify(o) : '';
+  if (el._sig === sig) {
+    ownerBadgeOrbitSync(el, !!(o && o.self));
+    return;
+  }
+  el._sig = sig;
+  el.hidden = !o;
+  el.classList.toggle('is-self', !!(o && o.self));
+  if (!o) {
+    el.textContent = '';
+    el.removeAttribute('data-hue');
+    el.removeAttribute('title');
+    return;
+  }
+  el.setAttribute('data-hue', String(o.hue));
+  el.setAttribute('title', o.title);
+  el.textContent = o.text;
+  if (o.self) {
+    var sr = document.createElement('span');
+    sr.className = 'ui-sr-only';
+    sr.textContent = ' (나)';
+    el.appendChild(sr);
+  }
+  ownerBadgeOrbitSync(el, !!o.self);
+}
+// The board's orbit: the arc starts at the document timeline's origin (as @2lab.ai/ui syncOwnerBadgeOrbit does for
+// the board's pills), so the detail card's turns in step with them. Nothing without the Web Animations API or under
+// reduced motion (no arc); only the kit's orbit is touched — any other animation on the pill is left alone. A pill the closed drawer does not draw yet
+// has no arc: once more on the next frame (an opening draws the panel before it shows the drawer).
+function ownerBadgeOrbitSync(el, self, again) {
+  if (!self || typeof el.getAnimations !== 'function') return;
+  var list = el.getAnimations({ subtree: true });
+  var found = false;
+  for (var i = 0; i < list.length; i++) {
+    if (list[i].animationName === 'ui-owner-badge-orbit') {
+      list[i].startTime = 0;
+      found = true;
+    }
+  }
+  // Under reduced motion there is no arc to find: no retry.
+  var still = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!found && !again && !still && typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(function() { ownerBadgeOrbitSync(el, self, true); });
+  }
+}
 // Copy text — or a promise of it (the full context waits for its export) — to the clipboard; true once copied.
 // A ClipboardItem holding the pending text is written inside the press, so Safari keeps the press's permission
 // across the fetch. If the engine refuses that write: writeText once the text is there; without the Clipboard API
@@ -18461,6 +18602,7 @@ async function sendCommand(text, ref, files) {
 
   var why = '';
   var awaitsOwner = false;
+  var answeredInThread = false;
   _pcInFlight++; // until the server answered: a reload now would drop a note the composer no longer holds
   try {
     const cmdUrl = '/api/dashboard/session/' + encodeURIComponent(sendingSessionKey) + '/command';
@@ -18470,12 +18612,20 @@ async function sendCommand(text, ref, files) {
     if (!res.ok) why = ((data && data.error) || '') + ' (HTTP ' + res.status + ')';
     // #767 — someone else's task: the words wait for its owner's approval.
     else if (data && data.pendingApproval) awaitsOwner = true;
+    // A command that only answers (/help, /model opus …): no turn will come — the answer is in the Slack thread.
+    else if (data && data.answer === 'thread') answeredInThread = true;
   } catch (e) {
     why = (e && e.message) || '네트워크 오류';
   } finally {
     _pcInFlight--;
   }
   if (awaitsOwner) dashToast({ title: '작업 소유자의 승인을 기다려요', description: '소유자가 승인하면 실행됩니다 — 소유자에게 DM과 대시보드로 요청했어요', tone: 'wait' });
+  if (answeredInThread) {
+    // The turn shown at once (idle) or the note's row (running) would wait for a turn that never comes.
+    if (optimisticId) dropTurnFromPanel(optimisticId);
+    if (ref) el.setItemState(ref, 'cancelled');
+    dashToast(pcThreadAnswerToast(_sessionCache[sendingSessionKey]));
+  }
   // Sent: its files went with it. Failed: they stay kept by ref for the Retry.
   if (!why && ref) {
     delete _pcNoteFiles[ref];
@@ -18504,6 +18654,12 @@ async function sendCommand(text, ref, files) {
     _pcFailed[ref] = true;
   }
   dashToast({ title: '메시지를 보내지 못했어요', description: why.trim(), tone: 'error' });
+}
+// A command that only answers was sent: where its answer is (the Slack thread, linked when the card has it).
+function pcThreadAnswerToast(s) {
+  var toast = { title: '명령을 보냈어요', description: '답은 Slack 스레드에 있어요', tone: 'success' };
+  if (s && s.slackThreadUrl) toast.link = { label: 'Slack에서 보기', href: String(s.slackThreadUrl) };
+  return toast;
 }
 // A note that did not go out at all (a file that could not be read): its row goes
 // and its text and files return to the composer — unless the user has typed or
@@ -20309,6 +20465,7 @@ async function openNewTask() {
   // The dialog covers the session panel: a dictation there stops, and the new task may take the microphone.
   ntDictateStopIn('pc');
   ntDictateAuto();
+  cmLoadMenus();
   await ntLoadContext();
 }
 
@@ -20519,6 +20676,9 @@ function ntComposerData() {
     d.submitLabel = '';
     d.mode.submitLabel = '';
   }
+  // / for commands, $ for skills (the composer's own menus, ui 0.27.0 data.triggers) — once they are loaded.
+  var cmT = cmTriggersFor('newTask');
+  if (cmT) d.triggers = cmT;
   var lim = _ntCtx && _ntCtx.limits;
   if (lim) {
     // A phone's row has no room for the counter beside the tools and the 작업 계획 switch: it gives way, and the
@@ -20533,6 +20693,27 @@ function ntComposerData() {
 function paintNtComposer() {
   var el = ntEl('nt-composer');
   if (el) el.data = ntComposerData();
+}
+// The composers' menus (2026-11-04): typing / lists every command this viewer can use (what it does, a typical use in
+// grey), % the session settings, $ every skill they can invoke — GET /api/dashboard/composer-menus, one set for the
+// new task (no session yet) and one for an open session. Loaded at start and again when the new-task dialog opens
+// (a skill made meanwhile shows up); until then, or when it fails, the composers simply have no menus.
+var _cmMenus = null;
+function cmTriggersFor(where) {
+  return _cmMenus && Array.isArray(_cmMenus[where]) ? _cmMenus[where] : null;
+}
+async function cmLoadMenus() {
+  try {
+    var res = await fetch('/api/dashboard/composer-menus');
+    if (!res.ok) return;
+    var data = await res.json();
+    if (!data || typeof data !== 'object') return;
+    _cmMenus = { newTask: data.newTask, session: data.session };
+  } catch (e) {
+    return;
+  }
+  paintNtComposer();
+  pcPaintComposer();
 }
 // Closing the sheet discards a recording in progress, stops a voice note's preview and ends a dictation (the text
 // and files stay).
@@ -21669,6 +21850,20 @@ function ntOnLaunched(data, submitted, launch) {
   launch.answeredAt = Date.now();
   launch.permalink = data.permalink ? String(data.permalink) : '';
   launch.phase = '에이전트를 시작하는 중…';
+  // A command that only answers (/help, /model opus …): its answer is in the new thread, and no task comes — no
+  // 시작 중 card waits for one.
+  if (data.status === 'answered') {
+    ntPendingDrop(launch);
+    _ntBusy = ntPendingUnsent();
+    ntPendingRepaint();
+    var answeredIn = data.channel
+      ? ((_ntCtx && _ntCtx.channels) || []).find(function (c) {
+          return c.id === data.channel;
+        })
+      : null;
+    dashToast(ntLaunchToast(data, answeredIn ? answeredIn.name : null, true));
+    return;
+  }
   var notStarted = data.status === 'not-started';
   var restored = notStarted ? ntRestoreLaunch(launch, true) : true;
   if (!restored) ntKeepFailed(launch, String(data.reason || '시작하지 못했어요'), true);
@@ -21732,6 +21927,13 @@ function ntLaunchToast(data, channelName, restored) {
       action: { id: 'open', label: '카드 열기' },
       duration: 12000,
     };
+  }
+  if (data.status === 'answered') {
+    // handled false: the command was still running when the launch answered — its answer is on its way.
+    var where = data.handled === false ? ' · 답이 곧 Slack 스레드에 올라와요' : ' · 답은 Slack 스레드에 있어요';
+    var said = { title: '명령을 보냈어요', description: '#' + (channelName || data.channel) + where, tone: 'success', duration: 12000 };
+    if (data.permalink) said.link = { label: 'Slack에서 보기', href: String(data.permalink) };
+    return said;
   }
   var toast = {
     title: data.status === 'running' ? '작업을 시작했어요' : '작업을 접수했어요',
@@ -22309,6 +22511,9 @@ function pcComposerData(takesFiles) {
   }
   // 받아쓰기 (live dictation, SSOT 2026-11-01) beside the voice note, as in the new task — text, so a task card too.
   if (ntDictationUsable(typeof window !== 'undefined' ? window : null)) d.tools = [ntDictationTool(ntDictating('pc'))];
+  // / for commands, % for the session's settings, $ for skills — an open session's set.
+  var cmT = cmTriggersFor('session');
+  if (cmT) d.triggers = cmT;
   return d;
 }
 // The composer's data with the page's part (re)applied: a session that takes
@@ -22402,6 +22607,7 @@ function pcOnSubmit(e) {
 }
 ntInit();
 pcInit();
+cmLoadMenus();
 // View mode: the device's copy first (the user's setting answers in loadMyDefaults); the agent tabs answer clicks and arrows.
 _viewMode = readViewMode();
 _viewPlan = readViewPlan();

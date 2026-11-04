@@ -81,6 +81,7 @@ import {
   setDashboardBotName,
   setDashboardChoiceAnswerHandler,
   setDashboardCloseHandler,
+  setDashboardCommandClassifier,
   setDashboardCommandHandler,
   setDashboardCronSource,
   setDashboardEffortHandler,
@@ -1038,6 +1039,9 @@ async function start() {
     setDashboardCommandHandler(async (sessionKey, message, attachments, actorUserId, clientRef) => {
       await injectDashboardMessage(sessionKey, message, undefined, attachments, actorUserId, clientRef);
     });
+    // A command the panel sends that only answers (`/help`, `/model opus` …): the route tells the panel its answer
+    // is in the Slack thread (the composer's `/` menu offers them — 2026-11-04).
+    setDashboardCommandClassifier((text, user) => slackHandler.classifyInstruction(text, user));
 
     // Connect dashboard: the session's follow-up queue on the panel
     // (<ui-agent-steering>, batch 2) — Send now / Retry / Cancel through the

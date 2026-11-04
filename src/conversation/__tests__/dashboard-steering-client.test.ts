@@ -162,19 +162,23 @@ describe('pcInit — the element’s events reach the page’s handlers on #pane
     // The slotted composer gets the panel's limits; a cancelled note forgets the files kept for its Retry.
     const composer: { data: Record<string, unknown> } = { data: { lang: 'ko' } };
     const noteFiles: Record<string, unknown> = { 'k#2': ['a.png'], 'k#9': ['b.png'] };
-    load<{ pcInit(): void }>(['pcComposerData', 'pcComposerSetup', 'pcInit'], ['PC_LIMITS'], {
-      document: {
-        getElementById: (id: string) => (id === 'panel-command' ? host : id === 'pc-composer' ? composer : null),
+    load<{ pcInit(): void }>(
+      ['pcComposerData', 'pcComposerSetup', 'pcInit', 'cmTriggersFor'],
+      ['PC_LIMITS', '_cmMenus'],
+      {
+        document: {
+          getElementById: (id: string) => (id === 'panel-command' ? host : id === 'pc-composer' ? composer : null),
+        },
+        // 받아쓰기 (live dictation, SSOT 2026-11-01) is its own suite; here: no recogniser, nothing to stop.
+        ntDictationEngine: () => null,
+        ntDictationUsable: () => false,
+        steerAct: (...a: unknown[]) => acts.push(a),
+        pcOnSubmit: (e: unknown) => submits.push(e),
+        pcOnReject: () => {},
+        _pcNoteFiles: noteFiles,
+        _pcFailed: {},
       },
-      // 받아쓰기 (live dictation, SSOT 2026-11-01) is its own suite; here: no recogniser, nothing to stop.
-      ntDictationEngine: () => null,
-      ntDictationUsable: () => false,
-      steerAct: (...a: unknown[]) => acts.push(a),
-      pcOnSubmit: (e: unknown) => submits.push(e),
-      pcOnReject: () => {},
-      _pcNoteFiles: noteFiles,
-      _pcFailed: {},
-    }).pcInit();
+    ).pcInit();
     expect(composer.data).toEqual({
       lang: 'ko',
       maxFiles: 10,

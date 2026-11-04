@@ -97,7 +97,8 @@ describe('U1 — the composer’s 작업 계획 switch (T1)', () => {
     expect(clientFn('ntRender')).not.toContain('planWrap');
     // On: the send button reads 계획 시작 (night); off: 작업 시작 (day).
     const data = (state: unknown) =>
-      load<{ ntComposerData(): any }>(['ntComposerData'], {
+      load<{ ntComposerData(): any }>(['ntComposerData', 'cmTriggersFor'], {
+        _cmMenus: null,
         _ntState: state,
         _ntCtx: null,
         _ntValue: '',

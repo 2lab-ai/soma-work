@@ -15,12 +15,12 @@ export class SkillsHandler implements CommandHandler {
   private logger = new Logger('SkillsHandler');
 
   canHandle(text: string): boolean {
-    return /^skills?\s+(list|download)/i.test(text.trim());
+    return /^\/?skills?\s+(list|download)/i.test(text.trim());
   }
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
     const { text } = ctx;
-    const trimmed = text.trim().toLowerCase();
+    const trimmed = text.trim().toLowerCase().replace(/^\//, '');
 
     if (trimmed.startsWith('skills list') || trimmed.startsWith('skill list')) {
       return this.handleList(ctx);

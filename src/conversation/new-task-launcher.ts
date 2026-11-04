@@ -106,13 +106,20 @@ export interface NewTaskLaunchResult {
   threadTs: string;
   sessionKey: string;
   permalink?: string;
-  /** `running`: the session exists. `starting`: accepted, the session is not there yet. */
-  status: 'running' | 'starting';
+  /**
+   * `running`: the session exists. `starting`: accepted, the session is not there yet. `answered`: an answer-only
+   * first message (`submission.answerOnly`) was handled — its answer is in the thread, and no session comes.
+   */
+  status: 'running' | 'starting' | 'answered';
+  /** `answered` only: the command was handled before the launch answered (false: its answer is still on its way). */
+  handled?: boolean;
 }
 
 const POLL_MS = 100;
 /** Thread / HTTP text never carries a raw error (tokens, URLs): the detail stays in the log. */
 const FAILED_AFTER_START = '⚠️ 작업 실행 중 오류가 났습니다. 자세한 내용은 서버 로그에 남겼습니다.';
+/** An answer-only command that failed — its words, not a task's (it is no task). */
+const COMMAND_FAILED = '⚠️ 명령을 처리하지 못했습니다. 대시보드에서 다시 시도해 주세요.';
 
 function reason(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -193,10 +200,43 @@ export async function launchNewTask(
       logger.error('New task: pipeline failed', { channel, rootTs, userId, error: reason(error) });
       // Before acceptance the HTTP caller hears it; after, only the thread can.
       if (accepted) {
-        return deps.postThreadNotice(channel, rootTs, FAILED_AFTER_START).catch(() => undefined);
+        const notice = submission.answerOnly === true ? COMMAND_FAILED : FAILED_AFTER_START;
+        return deps.postThreadNotice(channel, rootTs, notice).catch(() => undefined);
       }
     });
   void run;
+
+  // 4a. A command that only answers: wait for it to be handled (no session comes), then say where the answer is.
+  if (submission.answerOnly === true) {
+    let handled = false;
+    void run.then(() => {
+      handled = true;
+    });
+    const until = Date.now() + acceptTimeoutMs;
+    let rounds = Math.ceil(acceptTimeoutMs / POLL_MS);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    while (!handled && rounds-- > 0 && Date.now() <= until) {
+      await sleep(POLL_MS);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    if (failure) {
+      await deps.postThreadNotice(channel, rootTs, COMMAND_FAILED).catch(() => undefined);
+      throw new NewTaskError(500, '명령을 처리하지 못했습니다 — 잠시 후 다시 시도해 주세요');
+    }
+    // Still being handled when the wait ended (a slow command): the launch says so (`handled: false` — its answer is
+    // on its way, not there yet); a failure after this point is said in the thread (COMMAND_FAILED).
+    accepted = true;
+    let answeredLink: string | undefined;
+    try {
+      answeredLink = await deps.getPermalink(channel, rootTs);
+    } catch {
+      answeredLink = undefined;
+    }
+    logger.info('New task: answer-only command from the dashboard', { channel, rootTs, userId, handled });
+    const answered: NewTaskLaunchResult = { channel, threadTs: rootTs, sessionKey, status: 'answered', handled };
+    if (answeredLink) answered.permalink = answeredLink;
+    return answered;
+  }
 
   // 4. Answer once the session exists, the pipeline failed, or the wait ran out.
   const deadline = Date.now() + acceptTimeoutMs;

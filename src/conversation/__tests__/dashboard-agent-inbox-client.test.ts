@@ -1304,7 +1304,7 @@ const CARD_OF_VARS = [
   'OWNER_BADGE_HUES',
 ];
 type CardData = Record<string, unknown> & {
-  badge?: { text: string; hue: number; title: string };
+  badge?: { text: string; hue: number; title?: string; self?: true };
   since?: number;
   elapsedMs?: number;
 };
@@ -2737,11 +2737,19 @@ describe('All Users: owner badge on every card (shipped assignOwnerHues + ownerB
     ownerBadgeHue(id: string): number;
     cardOf(s: Record<string, unknown>, col: string): CardData;
   };
-  const badge = (currentUserId: string, owners: string[] = []) => {
+  // `viewer` — the signed-in user (_viewerUserId); unnamed, the harness's board user (viewerScope).
+  const badge = (currentUserId: string, owners: string[] = [], viewer?: string) => {
     const m = load<Badge>(
       ['assignOwnerHues', ...CARD_OF_FNS],
       CARD_OF_VARS,
-      { currentUserId, _ownerIndex: null, dhShow: () => true, dhTruncate: () => null, SELF_INSTANCE_NAME: '' },
+      {
+        currentUserId,
+        ...(viewer === undefined ? {} : { _viewerUserId: viewer }),
+        _ownerIndex: null,
+        dhShow: () => true,
+        dhTruncate: () => null,
+        SELF_INSTANCE_NAME: '',
+      },
       ['function setIndex(i) { _ownerIndex = i; }'],
     ) as Badge & { setIndex(i: unknown): void };
     m.setIndex(m.assignOwnerHues(owners));
@@ -2761,6 +2769,28 @@ describe('All Users: owner badge on every card (shipped assignOwnerHues + ownerB
     });
     expect(badgeOf(badge(TEAM[1], TEAM), { ownerId: TEAM[1], ownerName: 'Alice' })).toBeUndefined();
     expect(badgeOf(all, {})).toBeUndefined();
+  });
+
+  // SSOT 2026-11-04 (Z): "작업 카드가 내꺼면 유저 아이디 뱃지에 애니메이션 처리해서 눈에 띄게해줘"
+  it('the signed-in viewer’s own card: badge.self — the element’s moving ring — and the element says "(나)" (no host title)', () => {
+    const mine = badge('', TEAM, TEAM[1]);
+    expect(badgeOf(mine, { ownerId: TEAM[1], ownerName: 'Alice' })).toEqual({
+      text: 'Alice',
+      hue: mine.ownerBadgeHue(TEAM[1]),
+      self: true,
+    });
+    // Someone else's card on the same board: as before, still.
+    expect(badgeOf(mine, { ownerId: TEAM[2], ownerName: 'Bob' })).toEqual({
+      text: 'Bob',
+      hue: mine.ownerBadgeHue(TEAM[2]),
+      title: 'Bob',
+    });
+    // The viewer is the signed-in user, never the board filter: a token viewer (no user) owns nothing; a card
+    // without an owner id is nobody's.
+    expect(badgeOf(badge('', TEAM, ''), { ownerId: TEAM[1], ownerName: 'Alice' })).not.toHaveProperty('self');
+    expect(badgeOf(mine, { ownerName: 'Alice' })).not.toHaveProperty('self');
+    // The board of one user draws no badges at all — nothing to tell apart.
+    expect(badgeOf(badge(TEAM[1], TEAM, TEAM[1]), { ownerId: TEAM[1], ownerName: 'Alice' })).toBeUndefined();
   });
 
   it('hands the name over as text — the element escapes it (badge is text only, @2lab.ai/ui agent-inbox.test.ts)', () => {

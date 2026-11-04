@@ -214,9 +214,11 @@ function page(
       'ntDictationLive',
       'ntComposerData',
       'pcComposerData',
+      'cmTriggersFor',
       'ntReadDraft',
     ],
     {
+      _cmMenus: null,
       window: win,
       dictationEngineChoice: () => opts.choice ?? 'device',
       dictationServerStart:
@@ -394,8 +396,10 @@ describe('SSOT_3 — 받아쓰기 is added beside the voice note, which stays ("
           'ntDictationWide',
           'ntSendNarrow',
           'ntDictating',
+          'cmTriggersFor',
         ],
         {
+          _cmMenus: null,
           window: {
             navigator: { userAgent: UA.iphone },
             matchMedia: () => ({ matches: wide }),
@@ -436,8 +440,10 @@ describe('SSOT_3 — 받아쓰기 is added beside the voice note, which stays ("
           'ntDictationWide',
           'ntSendNarrow',
           'ntDictating',
+          'cmTriggersFor',
         ],
         {
+          _cmMenus: null,
           window: {
             navigator: { userAgent: UA.samsung },
             matchMedia: (q: string) => {

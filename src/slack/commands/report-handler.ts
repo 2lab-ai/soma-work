@@ -42,7 +42,7 @@ interface ReportDeps {
 // `/z` refactor (#506): `report help` is removed — users should call
 // `/z help` for the unified command list. `report` alone still shows the
 // today snapshot.
-const REPORT_COMMAND_REGEX = /^report(?:\s+(today|daily|weekly|leaks))?$/i;
+const REPORT_COMMAND_REGEX = /^\/?report(?:\s+(today|daily|weekly|leaks))?$/i;
 
 const REPORT_TIMEZONE = process.env.REPORT_TIMEZONE || 'Asia/Seoul';
 
