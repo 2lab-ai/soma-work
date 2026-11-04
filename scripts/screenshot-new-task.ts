@@ -9,7 +9,7 @@
  *   PC (Chromium + WebKit, 1280 / 820, dark + light):
  *     - the New task button sits in the top bar, animated (sheen + pulse), the
  *       page never scrolls sideways;
- *     - N opens the composer; the dialog is centered and ≤ 720px wide; the
+ *     - a bare N opens nothing; Ctrl+N opens the composer; the dialog is centered and ≤ 720px wide; the
  *       camera button is hidden (no capture on desktop), file + mic shown;
  *     - typing, toggling autoz, attaching a file and pasting a screenshot,
  *       then ⌘/Ctrl+Enter posts exactly the payload the server validates and
@@ -214,14 +214,17 @@ async function pcChecks(browser: Browser, engine: string) {
       check(`${tag}: no sideways page scroll`, await noSideScroll(page));
       await page.screenshot({ path: path.join(OUT, `${tag}-topbar.png`), clip: { x: 0, y: 0, width, height: 140 } });
 
-      // N opens the composer.
+      // A bare N opens nothing; Ctrl+N opens the composer.
       await page.keyboard.press('n');
-      await page.waitForSelector('#nt-dialog[open].is-shown');
+      await page.waitForTimeout(200);
+      check(`${tag}: a bare N does not open the composer`, !(await page.locator('#nt-dialog[open]').count()));
+      await page.keyboard.press('Control+n');
+      await page.waitForSelector('#nt-dialog[open]');
       await page.waitForFunction(() => (document.getElementById('nt-channel') as HTMLSelectElement).options.length > 0);
       await page.waitForTimeout(320);
       const dlg = await page.locator('#nt-dialog').boundingBox();
       check(
-        `${tag}: N opens a centered dialog ≤ 720px`,
+        `${tag}: Ctrl+N opens a centered dialog ≤ 720px`,
         !!dlg && dlg.width <= 722 && Math.abs(dlg.x + dlg.width / 2 - width / 2) < 4,
         JSON.stringify(dlg),
       );
@@ -341,7 +344,7 @@ async function phoneChecks(browser: Browser, engine: string, device: string) {
   await page.screenshot({ path: path.join(OUT, `${tag}-board.png`) });
 
   await page.locator('#new-task-fab').tap();
-  await page.waitForSelector('#nt-dialog[open].is-shown');
+  await page.waitForSelector('#nt-dialog[open]');
   await page.waitForFunction(() => (document.getElementById('nt-channel') as HTMLSelectElement).options.length > 0);
   await page.waitForTimeout(420);
   const sheet = await page.locator('#nt-dialog').boundingBox();

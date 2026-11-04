@@ -23,6 +23,23 @@ export interface ProcessedFile {
   unavailable?: 'too_large' | 'download_failed';
 }
 
+/** A text file's characters inlined into the prompt; a longer one is previewed and its path given. */
+const TEXT_PREVIEW_CHARS = 10_000;
+
+/**
+ * The name the dashboard's new task composer gives a paste too long for the instruction
+ * (dashboard.ts `ntPastedTextName`): the text is part of the user's message, not a file to analyse.
+ */
+const PASTED_TEXT_NAME = /^pasted-text-\d{8}-\d{6}\.txt$/;
+
+/**
+ * The prefix of the directory each long text file is kept in for the agent to read past the turn: a fresh
+ * `mkdtemp` directory (mode 0700) under the OS temp dir, outside every directory a session may write (its working
+ * directory and /tmp/{userId}, native-write-boundary.ts) — so a session cannot point it anywhere else. The OS clears
+ * its temp dir in time; the download itself is deleted when the turn ends (cleanupTempFiles).
+ */
+const KEPT_TEXT_PREFIX = 'soma-text-';
+
 /** The Slack file's id and permalink, when the event carries them (strings only). */
 function slackRef(file: any): { slackFileId?: string; permalink?: string } {
   const id = typeof file?.id === 'string' && file.id ? file.id : undefined;
@@ -284,8 +301,32 @@ export class FileHandler {
     return textTypes.some((type) => mimetype.startsWith(type));
   }
 
+  /**
+   * A copy of a long text file that outlives the turn — a plan turn is followed by the turn that does the work — or
+   * its download's path when none can be made. The copy goes into a directory this call creates (KEPT_TEXT_PREFIX),
+   * never into one a session can write.
+   */
+  private keepTextFile(file: ProcessedFile): string {
+    try {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), KEPT_TEXT_PREFIX));
+      // The download's own name (slack-file-<ts>-<basename>), never a path out of dir.
+      const kept = path.join(dir, path.basename(file.path));
+      fs.copyFileSync(file.path, kept, fs.constants.COPYFILE_EXCL);
+      return kept;
+    } catch (error) {
+      this.logger.warn('Could not keep a long text file past the turn — giving its download path', {
+        name: file.name,
+        error,
+      });
+      return file.path;
+    }
+  }
+
   async formatFilePrompt(files: ProcessedFile[], userText: string): Promise<string> {
-    let prompt = userText || 'Please analyze the uploaded files.';
+    // Only the dashboard's pasted text: it is the user's message, not files to analyse.
+    const onlyPasted = files.length > 0 && files.every((f) => f.isText && PASTED_TEXT_NAME.test(f.name));
+    let prompt =
+      userText || (onlyPasted ? "The user's message is the pasted text below." : 'Please analyze the uploaded files.');
 
     if (files.length > 0) {
       prompt += '\n\nUploaded files:\n';
@@ -343,11 +384,18 @@ export class FileHandler {
         } else if (file.isText) {
           prompt += `\n## File: ${file.name}\n`;
           prompt += `File type: ${file.mimetype}\n`;
+          if (PASTED_TEXT_NAME.test(file.name)) {
+            prompt += `Note: The user pasted this text into the message field. It was too long for the field, so it was attached as a file — treat it as part of the user's message.\n`;
+          }
 
           try {
             const content = fs.readFileSync(file.path, 'utf-8');
-            if (content.length > 10000) {
-              prompt += `Content (truncated to first 10000 characters):\n\`\`\`\n${content.substring(0, 10000)}...\n\`\`\`\n`;
+            if (content.length > TEXT_PREVIEW_CHARS) {
+              // The preview alone loses the rest of the file: say how long it is and where, so the agent reads all of it.
+              prompt += `Size: ${content.length} characters\n`;
+              prompt += `Path: ${this.keepTextFile(file)}\n`;
+              prompt += `Note: Only the first ${TEXT_PREVIEW_CHARS} characters are shown below. Read the whole file at the path above with the Read tool before you act on it.\n`;
+              prompt += `Content (truncated to first ${TEXT_PREVIEW_CHARS} characters):\n\`\`\`\n${content.substring(0, TEXT_PREVIEW_CHARS)}...\n\`\`\`\n`;
             } else {
               prompt += `Content:\n\`\`\`\n${content}\n\`\`\`\n`;
             }
@@ -367,7 +415,9 @@ export class FileHandler {
         }
       }
 
-      prompt += '\nPlease analyze these files and provide insights or assistance based on their content.';
+      if (!onlyPasted) {
+        prompt += '\nPlease analyze these files and provide insights or assistance based on their content.';
+      }
     }
 
     return prompt;

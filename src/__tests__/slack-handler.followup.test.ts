@@ -1071,6 +1071,204 @@ describe('SlackHandler — follow-up queue host', () => {
    * to it — never a copy that could outlive a supersede of the slot.
    */
   /**
+   * #911 — a turn that ends on a question halts the drain (`blocked`, "awaiting
+   * user choice"): the session is the person's until they answer. Their answer
+   * (or any message of theirs) is that answer, and the pause ends with it.
+   * Before, only a Resume/Retry click ended it, so a halt from the question
+   * outlived the answer (dev 2026-11-04 06:19→07:27Z): the next message was
+   * neither steered nor drained, the goal driver yielded to it, and when the
+   * answer's turn was cut by an auto-compact stop nothing made the next turn.
+   */
+  describe('a person ends the pause that waited for them (#911)', () => {
+    /** Turn 1 ends on a question, with `queuedText` parked behind it. */
+    async function questionTurn(queuedText?: string): Promise<void> {
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const first = handler.handleMessage(message(), say());
+      await tick();
+      if (queuedText) await handler.handleMessage(message({ ts: '333.444', text: queuedText }), say());
+      gate.resolve({ hasPendingChoice: true });
+      await first;
+      expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toMatchObject({ reason: 'blocked' });
+    }
+
+    it("reopens the drain with the person's answer — the message parked behind the question runs after it", async () => {
+      await questionTurn('다음 지시');
+      expect(items()[0].state).toBe('queued');
+
+      await handler.handleMessage(message({ ts: '555.666', text: '1. 첫 번째 안' }), say());
+      for (let i = 0; i < 4; i++) await tick();
+
+      expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toBeUndefined();
+      // The question turn, the answer, then the parked message — in that order.
+      expect(startWithContinuation).toHaveBeenCalledTimes(3);
+      expect(items()[0].state).toBe('resolved');
+    });
+
+    it("steers a message sent during the answer's turn into it — no stale 'halted' receipt", async () => {
+      await questionTurn();
+      const steerTurn = vi.fn().mockReturnValue(true);
+      claudeHandler.steerTurn = steerTurn;
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const answer = handler.handleMessage(message({ ts: '555.666', text: '1. 첫 번째 안' }), say());
+      await tick();
+
+      await handler.handleMessage(message({ ts: '666.777', text: '아무나 가입할 수 있게 해줘' }), say());
+
+      expect(steerTurn).toHaveBeenCalledTimes(1);
+      expect(items()[0].state).toBe('steered');
+      const receipts = postSystemMessage.mock.calls.map((call: any[]) => String(call[1]));
+      expect(receipts.join('\n')).not.toContain('자동 실행이 중단된 상태');
+      gate.resolve({ hasPendingChoice: false });
+      await answer;
+    });
+
+    it("keeps a goal session moving when the answer's turn is cut by an auto-compact stop", async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      await questionTurn();
+
+      // The answer's turn: a message is parked during it, then the threshold cuts it with no text.
+      const gate = deferred<any>();
+      let controller: AbortController | undefined;
+      createAgentSession.mockImplementationOnce((result: any) => {
+        controller = result.abortController;
+        return {
+          startWithContinuation: vi.fn(() => gate.promise),
+          getLastTurnSucceeded: () => true,
+          getRetryAfterMs: () => undefined,
+        };
+      });
+      const answer = handler.handleMessage(message({ ts: '555.666', text: '1. 첫 번째 안' }), say());
+      await tick();
+      await handler.handleMessage(message({ ts: '666.777', text: '아무나 가입할 수 있게 해줘' }), say());
+      handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, []);
+      const before = startWithContinuation.mock.calls.length;
+      controller?.abort('auto-compact');
+      gate.resolve({ hasPendingChoice: false });
+      await answer;
+      for (let i = 0; i < 6; i++) await tick();
+
+      // The parked message ran as the next turn (it compacts and carries on), then the goal driver.
+      expect(startWithContinuation.mock.calls.length).toBe(before + 1);
+      expect(items().find((item: any) => item.message.ts === '666.777').state).toBe('resolved');
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+    });
+
+    it('an immediate control (`help`) is not an answer — it leaves the pause', async () => {
+      await questionTurn('다음 지시');
+      // The help card answers the command; no turn reaches the model.
+      routeCommand.mockResolvedValueOnce({ handled: true });
+
+      await handler.handleMessage(message({ ts: '555.666', text: 'help' }), say());
+      for (let i = 0; i < 4; i++) await tick();
+
+      // `help` runs no turn whose end could drain the parked message.
+      expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toMatchObject({ reason: 'blocked' });
+      expect(items()[0].state).toBe('queued');
+    });
+
+    it('ends the pause held under the slot key after a bot-thread migration', async () => {
+      await questionTurn();
+      const WORK_KEY = 'C123:999.000';
+
+      handlerAny.followupMigration = {
+        bySlot: new Map([[SESSION_KEY, WORK_KEY]]),
+        byCanonical: new Map([[WORK_KEY, SESSION_KEY]]),
+      };
+
+      handlerAny.reopenDrainAfterAnswer(WORK_KEY);
+
+      expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toBeUndefined();
+    });
+
+    it('the `compact` confirmation is not an answer — it leaves the pause', async () => {
+      await questionTurn('다음 지시');
+      // CompactHandler only posts its confirmation card and answers the command.
+      routeCommand.mockResolvedValueOnce({ handled: true });
+
+      await handler.handleMessage(message({ ts: '555.666', text: 'compact' }), say());
+      for (let i = 0; i < 4; i++) await tick();
+
+      expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toMatchObject({ reason: 'blocked' });
+      expect(items()[0].state).toBe('queued');
+    });
+
+    it('a queued message sent with `Send now` answers too — the pause ends with it', async () => {
+      await questionTurn('1. 첫 번째 안');
+      const item = items()[0];
+
+      const result = await handlerAny
+        .getFollowupDispatcher()
+        .sendNow(SESSION_KEY, item.id, item.epoch, 'U_OWNER', handlerAny.getFollowupQueue().getTurnEpoch(SESSION_KEY));
+      expect(result.status).toBe('dispatched');
+      await result.run.settled;
+
+      expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toBeUndefined();
+    });
+
+    it('leaves any other `blocked` halt in place — a plain message is not a grant', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '$other:deploy 지금' }), say());
+      await handler.handleMessage(message({ ts: '333.555', text: '다음 지시' }), say());
+      routeCommand.mockResolvedValueOnce({ handled: true, awaitingPermission: true });
+      await settle();
+      expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toMatchObject({
+        reason: 'blocked',
+        detail: 'skill permission pending',
+      });
+
+      await handler.handleMessage(message({ ts: '555.666', text: '그거 말고 다른 거 해줘' }), say());
+      for (let i = 0; i < 4; i++) await tick();
+
+      expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toMatchObject({
+        detail: 'skill permission pending',
+      });
+      expect(items().find((item: any) => item.message.ts === '333.555').state).toBe('queued');
+    });
+
+    it('a goal continuation is not a person — it does not end the pause', async () => {
+      await questionTurn('다음 지시');
+
+      await handler.handleMessage(
+        message({
+          ts: '',
+          text: '[goal-continuation] Continue working toward the active session goal.',
+          synthetic: true,
+          skipDispatch: true,
+          routeContext: { skipAutoBotThread: true, goalContinuation: true },
+        }),
+        say(),
+      );
+      for (let i = 0; i < 4; i++) await tick();
+
+      expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toMatchObject({ reason: 'blocked' });
+      expect(items()[0].state).toBe('queued');
+    });
+
+    it('leaves an error halt for Resume/Retry — the lane is broken, not waiting for a person', async () => {
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const first = handler.handleMessage(message(), say());
+      await tick();
+      await handler.handleMessage(message({ ts: '333.444', text: '다음 지시' }), say());
+      lastTurnSucceeded = false;
+      gate.resolve({ hasPendingChoice: false });
+      await first;
+      lastTurnSucceeded = true;
+      expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toMatchObject({ reason: 'error' });
+
+      await handler.handleMessage(message({ ts: '555.666', text: '다시 해봐' }), say());
+      for (let i = 0; i < 4; i++) await tick();
+
+      expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toMatchObject({ reason: 'error' });
+      expect(items()[0].state).not.toBe('resolved');
+    });
+  });
+
+  /**
    * dev fleet (2026-10-22): a turn hit a 429 and the handler armed a one-hour
    * auto-retry, but the dashboard put the idle session in DONE and said
    * nothing about the retry. Arming it must record when / which attempt / why
@@ -2007,7 +2205,10 @@ describe('SlackHandler — follow-up queue host', () => {
       saveError = undefined;
       const before = startWithContinuation.mock.calls.length;
       await handler.handleMessage(message({ ts: '555.777', text: '준비 실패 후 도착' }), say());
-      expect(startWithContinuation.mock.calls.length).toBe(before + 1);
+      // The new message runs — and, being a person's, it also ends the pause the
+      // question left (#911), so the item parked behind it drains right after.
+      expect(startWithContinuation.mock.calls.length).toBe(before + 2);
+      expect(items().find((item: any) => item.message.ts === '444.555').state).toBe('resolved');
     });
 
     it('restores admission when the shutdown is cancelled after a successful prepare', async () => {

@@ -108,7 +108,7 @@ SDK 업그레이드와 Agent Sessions / task·plan 블록은 **비목표가 아�
 | A5 | 턴 종료 + cleanup 완료 | adapter yield → CAS 해제 → atomic claim 1개 → **새 user dispatch**(`isUserInput` 유지, author/text/files/context 보존) |
 | A6 | 턴 종료 시 autogoal 대기 중 | followup이 먼저, 그 다음 autogoal. 암묵적 cross-level FIFO 없음 |
 | A7 | tool_result 직후 | drain 하지 않음(경계가 아님) |
-| A8 | Security ASK 대기 / stop / error | drain 일시정지 |
+| A8 | Security ASK 대기 / stop / error | drain 일시정지. ASK 대기(`awaiting user choice`)는 그 사람의 말이 세션 입력으로 받아들여지는 순간(질문 카드가 정리되는 지점) 풀린다. 답장, 선택 버튼, 대시보드, Send now 모두 같다(#911). 그 밖의 `blocked`·error·권한 거부는 Resume/Retry로만 풀린다 |
 | A9 | 큐 3개 중 2번째 `Send now` | 그 항목만 앞당김, 나머지는 FIFO 유지 |
 | A10 | `Send now` 클릭 | interrupt → teardown await → 같은 컨텍스트 새 dispatch. 라이브 주입 주장 없음 |
 | A11 | 중단된 부분 출력 | `user-interrupted` 태그로 보존, error 아님, stale 휴리스틱과 무관 |

@@ -1760,6 +1760,41 @@ export class SlackHandler {
     if (failure) throw failure;
   }
 
+  /** The `blocked` reason of a turn that ended on the person's question — the ASK pause (A8). */
+  private static readonly AWAITING_USER_CHOICE = 'awaiting user choice';
+
+  /**
+   * #911 — a turn that ended on the person's question halts the drain
+   * ({@link SlackHandler.AWAITING_USER_CHOICE}): the session is theirs until
+   * they answer. Their own word reaching the session is that answer — the same
+   * point that completes the choice and retires the recorded question
+   * (`userWord` in `processMessage`), whichever door it came through: a Slack
+   * reply, a choice button, the dashboard, or a queued message sent with
+   * `Send now`. So it ends the pause there (`user-action`). Left standing, the
+   * halt outlived the answer (dev 2026-11-04): the next message was neither
+   * steered nor drained, a goal session yielded to it (§3.6), and when the turn
+   * ended nothing made the next one.
+   *
+   * Only that halt. Every other `blocked` reason is a refusal, a consumed
+   * message, or a wait for something a plain message is not (a grant, a route
+   * decision, a free work slot); `error` and `authorization` say the lane itself
+   * is broken. Those keep waiting for Resume/Retry. A turn that is not the
+   * person's word — a host turn, `/compact`, or a command answered without a
+   * turn (`help`, the `compact` confirmation) — never gets here.
+   */
+  private reopenDrainAfterAnswer(sessionKey: string): void {
+    const dispatcher = this.followupDispatcher;
+    if (!dispatcher) return;
+    // After a bot-thread migration the halt can sit under the slot's (source) key.
+    const slotKey = this.followupMigration?.byCanonical.get(sessionKey);
+    for (const key of slotKey !== undefined ? [sessionKey, slotKey] : [sessionKey]) {
+      const halt = dispatcher.drainHalt(key);
+      if (halt?.reason !== 'blocked' || halt.detail !== SlackHandler.AWAITING_USER_CHOICE) continue;
+      dispatcher.clearDrainHalt(key, 'user-action');
+      this.logger.info('Drain reopened — the person answered the question that paused it', { sessionKey: key });
+    }
+  }
+
   /**
    * Is this an ordinary message in an incident-owned thread?
    *
@@ -2594,6 +2629,8 @@ export class SlackHandler {
       if (userWord && sessionResult.session.actionPanel?.pendingQuestion) {
         sessionResult.session.actionPanel.pendingQuestion = undefined;
       }
+      // #911 — and the drain the question paused reopens with it.
+      if (userWord) this.reopenDrainAfterAnswer(sessionResult.sessionKey);
 
       await this.threadPanel?.create(sessionResult.session, sessionResult.sessionKey);
 
@@ -6526,7 +6563,7 @@ export class SlackHandler {
     );
     if (pendingChoice) {
       // The session belongs to the user until they answer (§3.2 ASK pause).
-      return { result: 'blocked', reason: 'awaiting user choice' };
+      return { result: 'blocked', reason: SlackHandler.AWAITING_USER_CHOICE };
     }
 
     // Legacy mocks return a bare object from `createAgentSession`; with no
