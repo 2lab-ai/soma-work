@@ -269,6 +269,7 @@ export function createSessionPrWatch(deps: PrWatchDeps): SessionPrWatch {
     if (FINAL.has(state.status)) {
       // A finished PR has no more CI to tell about.
       deps.store?.delete(key);
+      for (const k of [...checksKnown.keys()]) if (k.startsWith(`${key}@`)) checksKnown.delete(k);
       if (!missed) {
         known.delete(key);
         askedAt.delete(key);
@@ -430,14 +431,15 @@ export function createSettledDelivery(deps: SettledDeliveryDeps): {
       pending.delete(sessionKey);
       return;
     }
-    while (queue.length > 0 && now() - queue[0].at > maxWaitMs) {
-      settle(queue.shift() as Item, 'expired');
-      deps.logger?.debug('PR watch message expired before the session settled', { sessionKey });
-    }
-    // No longer worth saying (the PR merged or moved on while the session worked): dropped, not recorded.
+    // No longer worth saying (the PR merged or moved on while the session worked): dropped, not recorded. Before the
+    // expiry check — 'expired' records the message, which would write back a merged PR's record (#929 round 3).
     for (const item of queue.filter(stale)) {
       queue.splice(queue.indexOf(item), 1);
       settle(item, 'gone');
+    }
+    while (queue.length > 0 && now() - queue[0].at > maxWaitMs) {
+      settle(queue.shift() as Item, 'expired');
+      deps.logger?.debug('PR watch message expired before the session settled', { sessionKey });
     }
     let state: DeliveryState;
     try {
