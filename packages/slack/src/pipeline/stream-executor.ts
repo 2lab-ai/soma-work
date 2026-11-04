@@ -7,6 +7,12 @@ import {
   textIndicatesRetryableRateLimit,
   textIndicatesUsageLimit,
 } from '@soma/common/rate-limit';
+import {
+  parseSafeguardFlag,
+  type SafeguardFlagInfo,
+  type SafeguardHalt,
+  safeguardFlagOf,
+} from '@soma/common/safeguard';
 import type { ActionHandlers } from '../actions';
 import { buildMarkerBlocks, SUPERSEDED_TEXT } from '../actions/click-classifier';
 import type { PendingInstructionConfirmStore } from '../actions/pending-instruction-confirm-store';
@@ -47,6 +53,12 @@ import {
   SESSION_ROUTING,
 } from '../release-notes-poster';
 import type { RequestAbortReason, RequestCoordinator } from '../request-coordinator';
+import {
+  buildSafeguardHaltBlocks,
+  SAFEGUARD_ERROR_LABEL,
+  safeguardCardMessage,
+  safeguardHaltNoticeText,
+} from '../safeguard';
 // Issue #1082 T2: shared goal-apply helpers (same pair T1's slack-handler
 // uses for goal-prefixed first messages) — epoch bump + cache invalidation
 // semantics live in one place.
@@ -822,6 +834,8 @@ const KNOWN_ABORT_REASONS: ReadonlySet<RequestAbortReason> = new Set([
   'ghost-session',
   // auto-compact — the turn crossed the auto-compact threshold (quiet).
   'auto-compact',
+  // safeguard — the safeguards block was seen; the halt rail reports it.
+  'safeguard',
 ]);
 
 /**
@@ -877,6 +891,7 @@ const QUIET_ABORT_REASONS: ReadonlySet<CoercedAbortReason> = new Set<CoercedAbor
   'shutdown',
   'user-interrupted',
   'auto-compact',
+  'safeguard',
 ]);
 
 function coerceAbortReason(raw: unknown): CoercedAbortReason {
@@ -1303,6 +1318,23 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       user,
       say,
     } = params;
+
+    // Safeguards halt (ssot T2/T3): a halted session runs no query — whatever
+    // path reached here (an adapter continuation, a dispatch the classifier's
+    // block halted, a turn racing the lock, a further incident attempt). Fail
+    // closed; the halt notice and its admin button were already posted when the
+    // lock was set.
+    if (session.safeguardHalt) {
+      return this.refuseHaltedTurn(
+        session,
+        sessionKey,
+        channel,
+        threadTs,
+        abortController,
+        processedFiles,
+        params.followupTurnEpoch,
+      );
+    }
 
     // Issue #688 — capture per-turn status epoch. Every clearStatus call
     // emitted by this execute() carries `expectedEpoch: epoch` so that a
@@ -2055,6 +2087,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         onIdleTimeout: () => {
           abortController.abort('stall-timeout' satisfies RequestAbortReason);
         },
+        // The safeguards block was seen: stop the query NOW (background agents
+        // included) — the session cannot go on with this model. The executor
+        // reads the flag off the result before the abort, so the turn ends in
+        // the safeguard rail, not as an abort. Incident attempts are exempt
+        // here (their text is host-authored): the incident screener reads the
+        // model's raw text and halts the session itself (`screenIncidentStream`).
+        onSafeguardFlag: () => {
+          if (!incidentAttempt) abortController.abort('safeguard' satisfies RequestAbortReason);
+        },
         onToolUse: async (allToolUses, ctx) => {
           // Ghost Session Fix #99: self-terminate if session was terminated while streaming.
           // Tag the abort with `'ghost-session'` so handleError surfaces a
@@ -2788,6 +2829,48 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       );
 
       interruptFlushFailed = streamResult.interruptFlushFailed;
+
+      // Safeguards flag (dev, 2026-11-04T00:42Z). Anthropic's safeguards block
+      // comes back as the turn's TEXT with a successful result (`end_turn`,
+      // `isError=false`), so nothing threw: the block posted as the answer and
+      // the goal loop re-ran the blocked session. The session cannot go on with
+      // this model, so convert it into a typed throw — `handleError`'s safeguard
+      // rail halts the session (no retry) and only an admin may unlock it.
+      // Checked FIRST, before the abort check (the processor stops the query
+      // the moment it sees the block, so a flagged turn usually ends aborted)
+      // and before every content guard (a flag during `/compact` must halt, not
+      // read as a compaction failure). Every non-incident turn — a tool
+      // continuation can be flagged too. Sources: the processor's sticky flag,
+      // the turn text, and an SDK error result's `errors[]`. An incident
+      // attempt's text is the host's conclusion; its screener halts the session
+      // on the model's raw text instead (`screenIncidentStream`).
+      const safeguardFlag = incidentAttempt
+        ? null
+        : (streamResult.safeguardFlag ??
+          parseSafeguardFlag(streamResult.guardText ?? streamResult.transportLeak ?? streamResult.collectedText) ??
+          parseSafeguardFlag((streamResult.sdkResultError?.errors ?? []).join('\n'), { source: 'error' }));
+      if (safeguardFlag) {
+        this.logger.warn('Safeguards flag in the turn — halting the session', { sessionKey, ...safeguardFlag });
+        const flagError = new Error(
+          `Anthropic safeguards flagged this request${safeguardFlag.detail ? ` [${safeguardFlag.detail}]` : ''}`,
+        );
+        (flagError as { safeguardFlag?: SafeguardFlagInfo }).safeguardFlag = safeguardFlag;
+        throw flagError;
+      }
+
+      // A safeguards block seen OUTSIDE this stream halted the session while
+      // the turn ran — the permission guardian's Claude call, or the goal eval
+      // (review R6, grok-elon P1). The turn must end as the halt, never as a
+      // success ("사용자 액션 대기", a completion card). The turn could not
+      // start halted (refused at entry), so a halt now was set during it. An
+      // incident attempt is the exception: its host conclusion must still go
+      // out; the halt refuses the next attempt.
+      if (!incidentAttempt && session.safeguardHalt) {
+        if (!abortController.signal.aborted) abortController.abort('safeguard' satisfies RequestAbortReason);
+        const haltedError = new Error('Request was aborted');
+        haltedError.name = 'AbortError';
+        throw haltedError;
+      }
 
       if (streamResult.aborted) {
         const abortError = new Error('Request was aborted');
@@ -3703,21 +3786,24 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // the helper sets `session.autoCompactPending=true` synchronously
       // before the Slack post, so the next user turn sees the flag
       // immediately; the decorative post must not block cleanup.
-      void checkAndSchedulePendingCompact({
-        session,
-        userId: user,
-        channel,
-        threadTs,
-        userSettings: userSettingsStore,
-        slackApi: this.deps.slackApi,
-        logger: this.logger,
-        workLog: emitWorkLog,
-      }).catch((err: unknown) => {
-        this.logger.warn('stream-executor: compact threshold check failed', {
-          turnId,
-          error: (err as Error)?.message ?? String(err),
+      // A safeguards-halted session runs nothing until an admin unlocks it —
+      // arming auto-compact would make the admin's retry compact first.
+      if (!session.safeguardHalt)
+        void checkAndSchedulePendingCompact({
+          session,
+          userId: user,
+          channel,
+          threadTs,
+          userSettings: userSettingsStore,
+          slackApi: this.deps.slackApi,
+          logger: this.logger,
+          workLog: emitWorkLog,
+        }).catch((err: unknown) => {
+          this.logger.warn('stream-executor: compact threshold check failed', {
+            turnId,
+            error: (err as Error)?.message ?? String(err),
+          });
         });
-      });
       // Dashboard v2.1 — turn timer: idempotent fold. If the catch branch
       // already ran endTurn, activeLegStartedAtMs is undefined and this is
       // a no-op. Guarantees the accumulator is correct on every exit path.
@@ -3821,7 +3907,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // the newer / outer turn the queue is left parked for).
       let replayTookOver = false;
       if (queue && queue.length > 0 && !session.terminated) {
-        if (this.deps.requestCoordinator.isRequestActive(sessionKey)) {
+        if (session.safeguardHalt) {
+          // A safeguards flag stopped the session: nothing runs in it until an
+          // admin unlocks it. The stash stays parked — dispatching it would be
+          // refused at the gate and lost from this queue.
+          replayTookOver = true;
+          this.logger.info('Deferred post-compact dispatch left parked — session halted by a safeguards flag', {
+            sessionKey,
+            queued: queue.length,
+          });
+        } else if (this.deps.requestCoordinator.isRequestActive(sessionKey)) {
           replayTookOver = true;
           this.logger.info('Deferred post-compact dispatch left parked — a newer turn is active', {
             sessionKey,
@@ -3955,6 +4050,171 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     this.deps.claudeHandler.clearSessionId(channel, threadTs);
   }
 
+  /** A turn reached the executor on a safeguards-halted session: run nothing, keep the halt's status. */
+  private async refuseHaltedTurn(
+    session: ConversationSession,
+    sessionKey: string,
+    channel: string,
+    threadTs: string,
+    abortController: AbortController | undefined,
+    processedFiles: ProcessedFile[],
+    expectedTurnEpoch?: number,
+  ): Promise<ExecuteResult> {
+    this.logger.info('Turn not run — session halted by a safeguards flag', { sessionKey });
+    // The dispatch registered this turn's controller; nothing runs, so release
+    // it — a stale controller reads as a running request, and after the admin
+    // unlocks, `new` and the next message would wait behind it (review R6,
+    // astra P2). CAS: only this turn's own controller.
+    if (abortController) this.deps.requestCoordinator.removeController(sessionKey, abortController);
+    this.setActivity(session, sessionKey, channel, threadTs, 'idle');
+    await this.updateRuntimeStatus(
+      session,
+      sessionKey,
+      { agentPhase: SAFEGUARD_ERROR_LABEL, activeTool: undefined, waitingForChoice: false },
+      expectedTurnEpoch,
+    );
+    if (processedFiles.length > 0) {
+      await cleanupWithTimeout(
+        () => this.deps.fileHandler.cleanupTempFiles(processedFiles),
+        DEFAULT_CLEANUP_TIMEOUT_MS,
+        this.logger,
+      );
+    }
+    return { success: false, messageCount: 0, handled: true };
+  }
+
+  /**
+   * The safeguards-flag rail. Anthropic's safeguards blocked the request, and
+   * the session cannot go on with this model — so the work stops here:
+   *   - the session is locked (`safeguardHalt`, persisted): no goal eval, no
+   *     continuation, no auto-resume, no retry, and no user message runs until
+   *     an admin presses the unlock button on the notice;
+   *   - every recovery producer is quiesced (retry budget and context, a
+   *     pending retry marker, armed auto-compact, an in-flight fallback compact
+   *     — restored exactly as compaction Rail 2 does);
+   *   - every surface says "세이프가드 에러": the status, ONE thread notice
+   *     (with the admin button) and the turn card (`errorKind: 'safeguard'`).
+   * Never returns a retry delay.
+   */
+  /** See {@link haltOnSafeguardFlag}: the thread's live session, when it is not `session`. */
+  private haltLiveSessionToo(session: ConversationSession, sessionKey: string, halt: SafeguardHalt): void {
+    try {
+      const registry = this.deps.claudeHandler?.getSessionRegistry?.();
+      if (!registry || typeof registry.getSessionByKey !== 'function') return;
+      if (registry.getSessionByKey(sessionKey) === session) return;
+      registry.haltSafeguardByKey?.(sessionKey, halt);
+      if (this.deps.requestCoordinator?.isRequestActive?.(sessionKey)) {
+        this.deps.requestCoordinator.abortSession?.(sessionKey, 'safeguard' satisfies RequestAbortReason);
+      }
+    } catch (error) {
+      this.logger.warn('Safeguard halt: locking the live session failed', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
+  }
+
+  private async haltOnSafeguardFlag(
+    flag: SafeguardFlagInfo,
+    session: ConversationSession,
+    sessionKey: string,
+    channel: string,
+    threadTs: string,
+    processedFiles: ProcessedFile[],
+    say: SayFn,
+    expectedTurnEpoch?: number,
+  ): Promise<undefined> {
+    const halt: SafeguardHalt = { atMs: Date.now(), ...flag };
+    session.safeguardHalt = halt;
+    // The lock belongs to the THREAD: when the session was closed or replaced
+    // during this turn's teardown, lock the live one (or leave a tombstone),
+    // and stop a turn it started (review R7, astra P1).
+    this.haltLiveSessionToo(session, sessionKey, halt);
+    session.errorRetryCount = 0;
+    session.fileAccessRetryCount = 0;
+    session.lastErrorContext = undefined;
+    session.pendingRetryAt = undefined;
+    session.pendingRetrySessionId = undefined;
+    session.pendingRetryDetail = undefined;
+    session.autoCompactPending = false;
+
+    // An in-flight fallback compact is unwound like compaction Rail 2: the
+    // boundary callback that restores it only fires on success.
+    if (session.fallbackCompactActive) {
+      const restoredModel = session.fallbackCompactOriginalModel ?? null;
+      if (restoredModel) session.model = restoredModel as typeof session.model;
+      session.fallbackCompactActive = false;
+      session.fallbackCompactOriginalModel = null;
+      session.fallbackCompactPendingUserText = null;
+      session.fallbackCompactPendingEventContext = null;
+    }
+    if (session.compactTickInterval) {
+      clearInterval(session.compactTickInterval);
+      session.compactTickInterval = undefined;
+    }
+    const epoch = session.compactEpoch ?? 0;
+    if (session.compactPostedByEpoch?.[epoch]) {
+      session.compactPostedByEpoch[epoch].post = true;
+    }
+
+    try {
+      this.deps.claudeHandler.saveSessions?.();
+    } catch (saveErr) {
+      this.logger.error('Safeguard halt: saving the lock failed — it holds in memory only', {
+        sessionKey,
+        error: (saveErr as Error)?.message ?? String(saveErr),
+      });
+    }
+    this.logger.error('Anthropic safeguards flagged the request — session halted, admin retry required', {
+      sessionKey,
+      ...flag,
+    });
+
+    this.setActivity(session, sessionKey, channel, threadTs, 'idle');
+    await this.updateRuntimeStatus(
+      session,
+      sessionKey,
+      { agentPhase: SAFEGUARD_ERROR_LABEL, activeTool: undefined, waitingForChoice: false },
+      expectedTurnEpoch,
+    );
+    await this.deps.reactionManager.updateReaction(sessionKey, this.deps.statusReporter.getStatusEmoji('error'));
+
+    if (this.deps.turnNotifier) {
+      this.deps.turnNotifier
+        .notify({
+          category: 'Exception',
+          errorKind: 'safeguard',
+          userId: session.ownerId || '',
+          channel,
+          threadTs,
+          sessionTitle: session.title,
+          message: safeguardCardMessage(halt),
+          durationMs: 0,
+        })
+        .catch((err: any) => this.logger.warn('Safeguard notification failed', { error: err?.message }));
+    }
+
+    await runWithTimeout(
+      () =>
+        say({
+          text: safeguardHaltNoticeText(halt),
+          blocks: buildSafeguardHaltBlocks(halt, sessionKey),
+          thread_ts: threadTs,
+        }),
+      DEFAULT_CLEANUP_TIMEOUT_MS,
+      { what: 'handleError say(safeguardHalt)', logger: this.logger },
+    );
+
+    if (processedFiles.length > 0) {
+      await cleanupWithTimeout(
+        () => this.deps.fileHandler.cleanupTempFiles(processedFiles),
+        DEFAULT_CLEANUP_TIMEOUT_MS,
+        this.logger,
+      );
+    }
+    return undefined;
+  }
+
   /**
    * Handle execution errors. Returns retryAfterMs if the error is recoverable
    * and retry budget remains, so the caller can schedule an auto-retry.
@@ -3989,6 +4249,60 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
      */
     interruptFlushFailed?: InterruptFlushFailure,
   ): Promise<number | undefined> {
+    // ── Safeguards flag (T2/T3/T4): stop at once, lock the session, say so.
+    // Runs before the idle transition so the lock is on the session (and on
+    // disk) before anything can see it idle and start the next turn.
+    // A running turn stopped because the session was halted elsewhere (the
+    // goal eval was blocked): the halt rail already posted; end as the halt.
+    if (abortReason === 'safeguard' && session.safeguardHalt && !safeguardFlagOf(error)) {
+      const halt = session.safeguardHalt;
+      this.setActivity(session, sessionKey, channel, threadTs, 'idle');
+      await this.updateRuntimeStatus(
+        session,
+        sessionKey,
+        { agentPhase: SAFEGUARD_ERROR_LABEL, activeTool: undefined, waitingForChoice: false },
+        expectedTurnEpoch,
+      );
+      await this.deps.reactionManager.updateReaction(sessionKey, this.deps.statusReporter.getStatusEmoji('error'));
+      // The turn card says what stopped it (T4) — the halt's own notice was posted where it was set.
+      if (this.deps.turnNotifier) {
+        this.deps.turnNotifier
+          .notify({
+            category: 'Exception',
+            errorKind: 'safeguard',
+            userId: session.ownerId || '',
+            channel,
+            threadTs,
+            sessionTitle: session.title,
+            message: safeguardCardMessage(halt),
+            durationMs: 0,
+          })
+          .catch((err: any) => this.logger.warn('Safeguard notification failed', { error: err?.message }));
+      }
+      if (processedFiles.length > 0) {
+        await cleanupWithTimeout(
+          () => this.deps.fileHandler.cleanupTempFiles(processedFiles),
+          DEFAULT_CLEANUP_TIMEOUT_MS,
+          this.logger,
+        );
+      }
+      return undefined;
+    }
+
+    const safeguardFlag = safeguardFlagOf(error);
+    if (safeguardFlag) {
+      return this.haltOnSafeguardFlag(
+        safeguardFlag,
+        session,
+        sessionKey,
+        channel,
+        threadTs,
+        processedFiles,
+        say,
+        expectedTurnEpoch,
+      );
+    }
+
     this.setActivity(session, sessionKey, channel, threadTs, 'idle');
 
     // ── Compaction-failure recovery rails (content-shaped SDK compact
@@ -4978,6 +5292,17 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
    */
   private async onSummaryTimerFire(session: ConversationSession, sessionKey: string): Promise<void> {
     if (!this.deps.summaryService) return;
+    // A safeguards halt that landed after the turn (the goal eval was blocked):
+    // the summary is another Claude query on the halted session — never run it
+    // without an admin (review R6, astra P1). The live session too: a
+    // close/restore puts a new object under the key.
+    if (
+      session.safeguardHalt ||
+      this.deps.claudeHandler?.getSessionRegistry?.()?.getSafeguardHaltByKey?.(sessionKey) !== undefined
+    ) {
+      this.logger.info('Summary skipped — session halted by a safeguards flag', { sessionKey });
+      return;
+    }
 
     // Create AbortController for this fork — stored so new user input can abort it.
     const abortController = new AbortController();

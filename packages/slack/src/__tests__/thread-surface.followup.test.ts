@@ -541,6 +541,22 @@ describe('ThreadSurface — turn-epoch gated writes (A12/A28)', () => {
   // write. An answer that landed since (a dashboard / Slack click during
   // end-of-turn cleanup) already cleared the open-choice bit; the snapshot
   // must not re-open it — that left a NEEDS YOU card with no question.
+  // ssot-task T4 (PR #906): a safeguards-halted turn ends through the adapter's
+  // finish path (handled failure), which used to repaint the halt's
+  // "세이프가드 에러" status with "사용자 액션 대기".
+  it('finalizeOnEndTurn keeps "세이프가드 에러" on a safeguards-halted session', async () => {
+    const session = makeSession({ safeguardHalt: { atMs: 1, detail: 'reasoning_extraction' } } as any);
+    session.actionPanel!.agentPhase = '세이프가드 에러';
+    const slackApi = makeSlackApi();
+    const surface = new ThreadSurface(makeDeps(session, slackApi, { getFollowupView: () => view({ turnEpoch: 5 }) }));
+
+    await surface.finalizeOnEndTurn(session, KEY, { reason: 'end_turn', timestamp: 1 }, false, {
+      expectedTurnEpoch: 5,
+    });
+
+    expect(session.actionPanel?.agentPhase).toBe('세이프가드 에러');
+  });
+
   it('finalizeOnEndTurn does not re-open a choice answered after the turn result was taken', async () => {
     const session = makeSession();
     session.actionPanel!.waitingForChoice = false; // cleared by the answer path

@@ -16,6 +16,7 @@ import type { MessageValidator } from '../message-validator';
 import { LOG_DETAIL, OutputFlag, shouldOutput } from '../output-flags';
 import type { ReactionManager } from '../reaction-manager';
 import type { RequestAbortReason, RequestCoordinator } from '../request-coordinator';
+import { buildSafeguardHaltBlocks, SAFEGUARD_ERROR_LABEL, safeguardHaltNoticeText } from '../safeguard';
 import type { SlackApiHelper } from '../slack-api-helper';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
 import type { ThreadPanel } from '../thread-panel';
@@ -708,13 +709,30 @@ export class SessionInitializer {
       });
     }
 
+    // The classifier may have locked the THREAD while the session was closed
+    // under this dispatch (review R9, astra P1): the lock went to the thread's
+    // tombstone, not to this captured object. Carry it here, so the bot-thread
+    // migration below copies it and the executor refuses the turn.
+    if (!session.safeguardHalt) {
+      const threadHalt = this.deps.claudeHandler.getSessionRegistry?.()?.getSafeguardHaltByKey?.(sessionKey);
+      if (threadHalt) session.safeguardHalt = threadHalt;
+    }
+
     // Check channel-repo routing for PR links after dispatch
     // Only route for PR-specific workflows — default workflow (plain mention/command) skips routing
     const PR_ROUTABLE_WORKFLOWS = new Set(['pr-review', 'pr-fix-and-update', 'pr-docs-confluence']);
     const prUrl = session.links?.pr?.url;
     // Skip channel routing for synthetic events that were already routed (e.g., after "현재 채널에서 진행")
+    // A locked session is neither routed (the Move/Stay advisory's Stay replays
+    // the message into a new thread) nor migrated: it stays where it is, and the
+    // executor refuses the turn (review R10, astra P1).
+    const lockedBySafeguard = !!session.safeguardHalt;
     const shouldRoute =
-      isNewSession && !!prUrl && PR_ROUTABLE_WORKFLOWS.has(session.workflow || '') && !skipAutoBotThread;
+      isNewSession &&
+      !!prUrl &&
+      PR_ROUTABLE_WORKFLOWS.has(session.workflow || '') &&
+      !skipAutoBotThread &&
+      !lockedBySafeguard;
 
     this.logger.info('🔀 Channel routing check', {
       isNewSession,
@@ -877,7 +895,7 @@ export class SessionInitializer {
         workflow: session.workflow,
         reason: !session.links?.pr?.url ? 'no PR link' : `workflow '${session.workflow}' not routable`,
       });
-      if (!skipAutoBotThread) {
+      if (!skipAutoBotThread && !lockedBySafeguard) {
         const migrated = await this.createBotInitiatedThread(
           session,
           channel,
@@ -1231,6 +1249,50 @@ export class SessionInitializer {
 
       const result = await dispatchService.dispatch(text, abortController.signal);
 
+      // The classifier query itself was blocked by Anthropic's safeguards: the
+      // work would run on the same blocked content. Halt the session here —
+      // the executor refuses to run a halted session's turn — and post the one
+      // "세이프가드 에러" notice with its admin button.
+      if (result.safeguardFlag) {
+        const session = this.deps.claudeHandler.getSession(channel, threadTs);
+        const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
+        // Closed while the classifier ran (review R8, astra P1): the thread is
+        // still locked — its tombstone, which the next session there inherits.
+        const registry = this.deps.claudeHandler.getSessionRegistry?.();
+        const alreadyHalted = session
+          ? !!session.safeguardHalt
+          : registry?.getSafeguardHaltByKey?.(sessionKey) !== undefined;
+        if (!alreadyHalted) {
+          const halt = { atMs: Date.now(), ...result.safeguardFlag };
+          if (session) session.safeguardHalt = halt;
+          else registry?.haltSafeguardByKey?.(sessionKey, halt);
+          this.deps.claudeHandler.saveSessions?.();
+          this.logger.warn('Dispatch blocked by Anthropic safeguards — session halted', {
+            channel,
+            threadTs,
+            closedMeanwhile: !session,
+          });
+          try {
+            await this.deps.slackApi.postMessage(channel, safeguardHaltNoticeText(halt), {
+              threadTs,
+              blocks: buildSafeguardHaltBlocks(halt, sessionKey),
+            });
+          } catch (postErr) {
+            this.logger.warn('Safeguard halt notice failed — the next message re-offers the button', {
+              channel,
+              threadTs,
+              error: (postErr as Error)?.message ?? String(postErr),
+            });
+          }
+        }
+        // Applied before any optional Slack update below: a failed status edit
+        // must not drop the lock into the default-workflow fallback.
+        await this.deps.slackApi.removeReaction(channel, threadTs, 'mag').catch(() => undefined);
+        this.deps.claudeHandler.transitionToMain(channel, threadTs, result.workflow, result.title);
+        await updateDispatchPanel(SAFEGUARD_ERROR_LABEL, 'idle').catch(() => undefined);
+        return undefined;
+      }
+
       const elapsed = Date.now() - startTime;
       const complexityTag = result.complexity ? ` complexity=${result.complexity.score}/${result.complexity.tier}` : '';
       this.logger.info(
@@ -1276,6 +1338,7 @@ export class SessionInitializer {
 
       // Transition session to MAIN state with determined workflow
       this.deps.claudeHandler.transitionToMain(channel, threadTs, result.workflow, result.title);
+
       await updateDispatchPanel('사용자 액션 대기', 'idle');
       return result.size === 'small' || result.size === 'large' ? result.size : undefined;
     } catch (error) {
@@ -1429,6 +1492,9 @@ export class SessionInitializer {
     botSession.workingDirectory = session.workingDirectory;
     botSession.activityState = session.activityState;
     botSession.sessionWorkingDir = session.sessionWorkingDir;
+    // A safeguards halt travels with the work: the migrated session runs the
+    // same blocked content, so it stays locked until an admin lifts it.
+    if (session.safeguardHalt) botSession.safeguardHalt = { ...session.safeguardHalt };
     // Issue #1082 T1: carry the session goal across bot-thread migration.
     // Deep clone — the original session is terminated below and must not
     // share mutable state (incl. nested `pendingEval`). The runtime stash
@@ -1515,6 +1581,21 @@ export class SessionInitializer {
       workflow: botSession.workflow,
       title: botSession.title,
     });
+
+    // A lock that landed on the source thread during the awaits above (a goal
+    // eval of the closed session answering late) belongs to this work too: the
+    // halt was copied once, before them (review R10, astra P1).
+    if (!botSession.safeguardHalt) {
+      const late = this.deps.claudeHandler.getSessionRegistry?.()?.getSafeguardHaltByKey?.(origSessionKey);
+      if (late) {
+        botSession.safeguardHalt = { ...late };
+        this.deps.claudeHandler.saveSessions?.();
+        this.logger.warn('Safeguard lock landed on the source thread during migration — carried over', {
+          origSessionKey,
+          newSessionKey,
+        });
+      }
+    }
 
     return {
       session: botSession,

@@ -3,6 +3,7 @@
  * Uses ClaudeHandler.dispatchOneShot for classification (unified auth path)
  */
 
+import { parseSafeguardFlag, type SafeguardFlagInfo, safeguardFlagOf } from '@soma/common/safeguard';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { ClaudeHandler } from './claude-handler';
@@ -46,6 +47,12 @@ export interface DispatchResult {
   links?: SessionLinks;
   /** Complexity analysis of the input message (score, tier, signals) */
   complexity?: ComplexityResult;
+  /**
+   * The classifier query itself was blocked by Anthropic's safeguards. The
+   * session initializer halts the session (the work would run on the same
+   * blocked content) instead of starting the turn.
+   */
+  safeguardFlag?: SafeguardFlagInfo;
 }
 
 /**
@@ -186,6 +193,17 @@ class DispatchService {
         responsePreview: responseText.substring(0, 100),
       });
 
+      const blockedText = parseSafeguardFlag(responseText);
+      if (blockedText) {
+        this.logger.warn('📍 DISPATCH → blocked by Anthropic safeguards', { ...blockedText });
+        return {
+          workflow: 'default',
+          title: this.generateFallbackTitle(userMessage),
+          complexity,
+          safeguardFlag: blockedText,
+        };
+      }
+
       const result = this.parseResponse(responseText, userMessage);
 
       // Attach complexity to dispatch result
@@ -212,10 +230,12 @@ class DispatchService {
       } else {
         this.logger.error(`📍 DISPATCH → [default] (error after ${elapsed}ms: ${(error as Error).message})`, error);
       }
+      const blocked = safeguardFlagOf(error);
       return {
         workflow: 'default',
         title: this.generateFallbackTitle(userMessage),
         complexity,
+        ...(blocked ? { safeguardFlag: blocked } : {}),
       };
     }
   }

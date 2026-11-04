@@ -5,6 +5,7 @@
 
 import { stripEchoedDisplayLangTag } from '@soma/common/i18n';
 import { Logger } from '@soma/common/logger';
+import { parseSafeguardFlag, type SafeguardFlagInfo } from '@soma/common/safeguard';
 import type { AgentStreamEvent, AgentStreamEventOf, AgentUsage } from './agent-stream-types';
 import { type AgentTreeEvent, isAgentSpawnTool, isBackgroundAckText } from './agent-tree';
 import type { SlackMessagePayload } from './choice-message-builder';
@@ -42,6 +43,10 @@ import { WORK_LOG_RAW_MAX_BYTES, type WorkLogInput } from './work-log';
 /**
  * Context for stream processing
  */
+
+/** The CLI's wrapper around a foreground agent that ended on an API error (its own text is filtered). */
+const AGENT_API_ERROR_PREFIX = /^\s*Agent terminated early due to an API error:\s*/i;
+
 export interface StreamContext {
   channel: string;
   threadTs: string;
@@ -620,6 +625,12 @@ export interface StreamCallbacks {
    * Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §C-1.
    */
   onIdleTimeout?: () => void;
+  /**
+   * The turn's text was an Anthropic safeguards block. Called once, as soon as
+   * it is seen: the executor stops the query right there (background agents
+   * included) instead of letting the turn run on to its result.
+   */
+  onSafeguardFlag?: (flag: SafeguardFlagInfo) => void;
 }
 
 /**
@@ -710,6 +721,12 @@ export interface StreamResult {
    * keeps every segment.
    */
   guardText?: string;
+  /**
+   * Set when any segment of the turn was an Anthropic safeguards block (kept
+   * off Slack like the other leaks). Sticky: text that arrives after the
+   * block does not clear it, so the executor halts the session either way.
+   */
+  safeguardFlag?: SafeguardFlagInfo;
   /** Usage data from the result message */
   usage?: UsageData;
   /** Whether the response ended with a user choice/form prompt */
@@ -886,6 +903,33 @@ export class AgentStreamProcessor {
    * it), and earlier withheld narration must not be posted as its answer.
    */
   private lastShownSegment: SegmentFate | undefined;
+  /** See {@link StreamResult.safeguardFlag}. */
+  private safeguardFlag: SafeguardFlagInfo | undefined;
+
+  /**
+   * A safeguards block in `text` → remember it (sticky) and report true, so
+   * the caller suppresses the segment like any other transport leak.
+   */
+  private noteSafeguardFlag(text: string): boolean {
+    const flag = parseSafeguardFlag(text);
+    if (!flag) return false;
+    if (!this.safeguardFlag) {
+      this.safeguardFlag = flag;
+      try {
+        this.callbacks.onSafeguardFlag?.(flag);
+      } catch (err) {
+        this.logger.debug('onSafeguardFlag callback threw — ignored', {
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
+    }
+    return true;
+  }
+
+  /** `{ safeguardFlag }` once a block was seen — carried by EVERY exit, aborted ones included. */
+  private safeguardFlagResult(): Pick<StreamResult, 'safeguardFlag'> {
+    return this.safeguardFlag ? { safeguardFlag: this.safeguardFlag } : {};
+  }
   private pendingNarration: PendingNarration | undefined;
   /**
    * Set by every assistant-text post (narration, final, choice, incident);
@@ -1120,6 +1164,10 @@ export class AgentStreamProcessor {
     try {
       while (true) {
         if (abortSignal.aborted) {
+          // The safeguard stop aborts between events, with the generator
+          // suspended at a yield: close it so its cleanup (lease heartbeat,
+          // active-query entry) runs instead of leaking.
+          if (this.safeguardFlag) await this.tryReturnIterator(iterator, 'safeguard');
           const rescue = await this.flushTextOnExplicitInterrupt(textBuf, context, abortSignal);
           this.settleNarration(context);
           this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
@@ -1128,6 +1176,7 @@ export class AgentStreamProcessor {
             messageCount: currentMessages.length,
             aborted: true,
             ...(rescue.failure ? { interruptFlushFailed: rescue.failure } : {}),
+            ...this.safeguardFlagResult(),
           };
         }
 
@@ -1147,6 +1196,7 @@ export class AgentStreamProcessor {
             messageCount: currentMessages.length,
             aborted: true,
             ...(rescue.failure ? { interruptFlushFailed: rescue.failure } : {}),
+            ...this.safeguardFlagResult(),
           };
         }
         if (step.kind === 'idleTimeout') {
@@ -1166,7 +1216,7 @@ export class AgentStreamProcessor {
           await this.tryReturnIterator(iterator, 'idle timeout');
           this.settleNarration(context);
           this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
-          return { success: true, messageCount: currentMessages.length, aborted: true };
+          return { success: true, messageCount: currentMessages.length, aborted: true, ...this.safeguardFlagResult() };
         }
 
         const event = step.value;
@@ -1223,21 +1273,44 @@ export class AgentStreamProcessor {
             this.settleNarration(context);
             thinkingBuf.push(event.text);
             break;
-          case 'assistant_delta':
+          case 'assistant_delta': {
             // A subagent's text goes to that agent's work log only — never to
             // Slack, the main narration or the turn's collected text.
             if (event.parentToolUseId) {
               this.noteAgent(event.parentToolUseId, context);
+              // A delegated agent blocked by the safeguards blocks the session
+              // too: the parent would only re-delegate into the same block.
+              if (!this.safeguardFlag) this.noteSafeguardFlag(event.text);
               const text = event.text.trim();
               if (text) this.writeWorkLog(context, { kind: 'narration', text, agentId: event.parentToolUseId });
               break;
             }
+            // A safeguards block ends the work: stop the query as it arrives,
+            // not when the buffer next flushes (background agents can hold the
+            // result for minutes). The flush still suppresses the segment.
+            // The block is its own SDK message: read THIS delta, so prose
+            // buffered before it cannot hide it (review R6, astra P1), and
+            // record it (stopping the query) BEFORE any render await — a
+            // failed render of buffered thinking, tool calls, tool results or
+            // prose must not lose it; the thrown error carries the flag out
+            // (review R7/R8, astra P1). The earlier prose posts on its own;
+            // the block then sits alone in the buffer, where the flush
+            // recognises and suppresses it.
+            const blockDelta = !this.safeguardFlag && parseSafeguardFlag(event.text) !== null;
+            if (blockDelta) this.noteSafeguardFlag(event.text);
             await flushThinking();
             await flushToolCalls();
             await flushToolResults();
             this.settleNarration(context);
+            if (blockDelta) {
+              await flushText();
+              textBuf.push(event.text);
+              break;
+            }
             textBuf.push(event.text);
+            if (!this.safeguardFlag) this.noteSafeguardFlag(textBuf.join(''));
             break;
+          }
           case 'tool_call':
             await flushThinking();
             await flushText();
@@ -1258,6 +1331,13 @@ export class AgentStreamProcessor {
             });
             break;
           case 'tool_result':
+            // A delegated agent's returned block stops the query on ARRIVAL —
+            // the results batch only flushes on the next event, which a
+            // stalled parent may never send (review R7, astra P1).
+            if (!this.safeguardFlag && this.spawnedAgents.has(event.toolCallId)) {
+              const arrived = toolResultRaw(event.rawOutput ?? event.content)?.raw;
+              if (arrived) this.noteSafeguardFlag(arrived.replace(AGENT_API_ERROR_PREFIX, ''));
+            }
             await flushThinking();
             await flushText();
             await flushToolCalls();
@@ -1385,6 +1465,7 @@ export class AgentStreamProcessor {
         collectedText: currentMessages.join('\n'),
         ...this.transportLeakResult(),
         guardText: this.guardTextFor(currentMessages),
+        ...this.safeguardFlagResult(),
         usage: lastUsage,
         hasUserChoice: this._hasUserChoice,
         endTurnInfo: this._endTurnInfo,
@@ -1394,7 +1475,12 @@ export class AgentStreamProcessor {
       this.settleNarration(context);
       this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
       if (error.name === 'AbortError') {
-        return { success: true, messageCount: currentMessages.length, aborted: true };
+        return { success: true, messageCount: currentMessages.length, aborted: true, ...this.safeguardFlagResult() };
+      }
+      // A transport failure after the block was seen still ends in the halt:
+      // the executor's handleError reads the flag off the error.
+      if (this.safeguardFlag && error && typeof error === 'object' && !error.safeguardFlag) {
+        error.safeguardFlag = this.safeguardFlag;
       }
       throw error;
     }
@@ -1836,6 +1922,14 @@ export class AgentStreamProcessor {
       return;
     }
 
+    // Anthropic safeguards block (dev, 2026-11-04): the SDK returns it as the
+    // turn's text. Never post it as the answer — the executor halts the
+    // session and posts one "세이프가드 에러" notice instead.
+    if (this.noteSafeguardFlag(textContent)) {
+      this.suppressLeak(context, segment);
+      return;
+    }
+
     // Same class of leak for FAILED compaction / empty-text-block 400 errors
     // (field incident 2026-07-07): the raw transport error must not stream to
     // Slack — stream-executor routes collectedText into the transcript-repair
@@ -2146,6 +2240,15 @@ export class AgentStreamProcessor {
       }
       const spawned = this.spawnedAgents.get(toolResult.toolUseId);
       const rawFields = toolResultRaw(toolResult.result);
+      // An agent's returned text that IS a safeguards block (turn-text rules:
+      // starts with it, anchored, bounded) — never an ordinary tool's output,
+      // which may quote the error from a file.
+      if (spawned !== undefined && !this.safeguardFlag && rawFields?.raw) {
+        // A foreground agent's refusal returns as the CLI's error result,
+        // "Agent terminated early due to an API error: API Error: …" (review
+        // R7, astra P1): read the block behind that fixed prefix.
+        this.noteSafeguardFlag(rawFields.raw.replace(AGENT_API_ERROR_PREFIX, ''));
+      }
       this.emitWorkLog(context, {
         kind: 'tool_result',
         tool,
@@ -2476,6 +2579,7 @@ export class AgentStreamProcessor {
     // executor's recovery as `transportLeak`.
     if (
       textIndicatesPromptTooLong(processedResult) ||
+      this.noteSafeguardFlag(processedResult) ||
       textIndicatesCompactionErrorLeak(processedResult, context.isCompactTurn)
     ) {
       this.suppressLeak(context, segment);
@@ -2588,7 +2692,11 @@ export class AgentStreamProcessor {
     }
     // The partial text never reaches handleTextMessage, so it joins the work
     // log here — before the suppressions below, like every other segment.
-    if (textIndicatesPromptTooLong(pending) || textIndicatesCompactionErrorLeak(pending)) {
+    if (
+      textIndicatesPromptTooLong(pending) ||
+      this.noteSafeguardFlag(pending) ||
+      textIndicatesCompactionErrorLeak(pending)
+    ) {
       this.emitWorkLog(context, { kind: 'error', text: pending });
       textBuf.length = 0;
       return { delivered: false };
