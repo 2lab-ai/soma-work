@@ -140,6 +140,7 @@ import {
   NewTaskError,
   type NewTaskSubmission,
   parseAttachments,
+  composeTaskText,
   parseNewTaskSubmission,
 } from './new-task';
 import type { NewTaskLaunchResult } from './new-task-launcher';
@@ -4715,7 +4716,8 @@ export async function registerDashboardRoutes(
           // A first message the router only answers (`/help`, `/goal` with no objective, `%model` alone) makes no
           // session: the launch would wait for a task that never starts. Refused before anything is posted — the
           // dialog keeps the text (trinity R2).
-          if (classifyCommand(parsed.value.prompt.trim(), userId) === 'control') {
+          // Judged as the launch sends it (autoz appends `$autoz` — a skill turn — unless plan or epic is on).
+          if (classifyCommand(composeTaskText(parsed.value.prompt, parsed.value.autoz), userId) === 'control') {
             throw new NewTaskError(400, NEW_TASK_ANSWER_ONLY);
           }
           // #854 — an epic only behind the owner's flag (the composer offers it only then).
