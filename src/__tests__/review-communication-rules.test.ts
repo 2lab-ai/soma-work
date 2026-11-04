@@ -33,15 +33,26 @@ describe('review and communication rules (#932)', () => {
     expect(zcheck).toMatch(/사람의 지적은 이 상한이 없다/);
   });
 
+  it('the bot cap never defers a blocking defect: a P0/P1 is still checked and fixed before READY (#932 review)', () => {
+    expect(zcheck).toMatch(/P0\/P1\(정확성·보안·데이터 손실\)은 상한과 무관하게/);
+    expect(zcheck).toMatch(/결함을 후속 이슈로 미루고 READY를 내지 않는다/);
+  });
+
   it("zwork yields to a person's branch or PR that already makes the same change", () => {
     expect(zwork).toMatch(/중복 양보/);
     expect(zwork).toMatch(/내 PR을 열지 않는다/);
     expect(zwork).toMatch(/Closing in favour of #N/);
+    // Yielding is an exit: the controller gets 'yielded' and the review/approve/merge pipeline stops (#932 review).
+    expect(zwork).toMatch(/\*\*yielded\*\*/);
+    expect(zwork).toMatch(/파이프라인은 여기서 멈추고/);
   });
 
   it('the common prompt: a host-woken turn with nothing to do ends without a message; a user instruction always gets a reply', () => {
     expect(common).toMatch(/## Host-woken turns/);
     expect(common).toMatch(/end the turn without a message/);
+    // Silence is only for a turn that changed nothing: finished work still reports (#932 review).
+    expect(common).toMatch(/If it changed nothing — no new outcome/);
+    expect(common).toMatch(/A turn that finished or changed work reports as usual/);
     expect(common).toMatch(/A user's instruction always gets a reply/);
   });
 
