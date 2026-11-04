@@ -1644,6 +1644,26 @@ describe('SlackHandler — follow-up queue host', () => {
       await handler.handleMessage(message({ ts: '333.447', text: '해줘' }), say());
       expect(startWithContinuation).toHaveBeenCalledTimes(1);
     });
+
+    // Review gate round 7 (astra-zhuge P1, PR #906): the ingress handed the
+    // thread to the refused attempt and cleared the finished marker; nothing
+    // runs to write it again, so the gate settles it — otherwise every retry
+    // after the admin unlocks is turned away as "attempt in progress".
+    it('a refused incident attempt is settled (finished marker written)', async () => {
+      registrySession.incidentRequest = { incident_id: 'INC-1', lifecycle_id: 'LC-1', attempt_id: 'AT-1' };
+      registrySession.incidentAttemptFinishedId = undefined;
+      const outcome = await (handler as any).applySafeguardGate(
+        message({
+          ts: '333.449',
+          text: 'incident',
+          routeContext: { incidentRequest: { incident_id: 'INC-1', lifecycle_id: 'LC-1', attempt_id: 'AT-1' } },
+        } as any),
+        CHANNEL,
+        THREAD_TS,
+      );
+      expect(outcome).toEqual({ result: 'safe' });
+      expect(registrySession.incidentAttemptFinishedId).toBe('AT-1');
+    });
   });
 
   describe('explicit steer `!{prompt}` (U6)', () => {
