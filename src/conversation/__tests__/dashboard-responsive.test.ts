@@ -179,6 +179,30 @@ describe('drawer — <ui-drawer> (D4 E-01, E-02): the element’s sheet below 84
     expect(body).not.toContain('_wflip');
     expect(TEMPLATE).not.toContain('_layoutPanelW');
   });
+
+  it('the detail card slides in when it opens: the pinned <ui-drawer> / <ui-dialog> put their box’s scroll back', async () => {
+    // show() / showModal() focus the panel while it is still translateX(100%) past the box (the phone sheet of
+    // <ui-dialog>: translateY(100%)). Chromium scrolls the box — overflow: hidden is a scroll container — to show it,
+    // and the shrinking transform clamps that scroll with it: the panel was pinned at its open place, no slide.
+    // @2lab.ai/ui 0.26.1 puts the box's sideways scroll back at open and from its scroll event (the drawer slides on x;
+    // a vertical scroll of a short visible area stays the browser's), and keeps the box a scroll container (its
+    // overscroll-behavior fences the board behind). Measured on this page in Chromium 148: the docked
+    // panel's x 1000 → 1000 before, 1440 → 1000 after; the phone sheet 0 → 0 before, 390 → 0 after.
+    const { uiLibDistDir } = await import('../ui-lib');
+    const dir = uiLibDistDir();
+    expect(dir).toBeTruthy();
+    for (const [file, box] of [
+      ['drawer.js', 'dr'],
+      ['dialog.js', 'dg'],
+    ]) {
+      const src = readFileSync(join(dir as string, file), 'utf-8');
+      expect(src, file).toMatch(/addEventListener\("scroll", [^\n]*, true\)/);
+      expect(src, file).toMatch(/scrollLeft = 0;/);
+      expect(src, file).toMatch(new RegExp(`\\.${box} \\{[^}]*overflow: hidden;[^}]*overscroll-behavior: contain;`));
+    }
+    // The page sets nothing on the box itself.
+    expect(TEMPLATE).not.toMatch(/\.slide-panel::part\(dialog\)/);
+  });
 });
 
 describe("panel body — one scroll area: the task surface, the sticky agent tabs, the focused agent's tab", () => {
