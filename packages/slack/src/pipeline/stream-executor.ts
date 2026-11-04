@@ -1159,12 +1159,9 @@ export class StreamExecutor {
     threadTs?: string,
     mentionTs?: string,
   ): Promise<string> {
-    // Prepare the prompt with file attachments. keepDir: a long text file is copied into the working directory, so
-    // the path the prompt gives still reads after this turn's cleanup (a plan turn, then the turn that does the work).
+    // Prepare the prompt with file attachments
     const rawPrompt =
-      processedFiles.length > 0
-        ? await this.deps.fileHandler.formatFilePrompt(processedFiles, text || '', { keepDir: workingDirectory })
-        : text || '';
+      processedFiles.length > 0 ? await this.deps.fileHandler.formatFilePrompt(processedFiles, text || '') : text || '';
 
     // Wrap the prompt with speaker tag
     let finalPrompt = `<speaker>${userName}</speaker>\n${rawPrompt}`;
