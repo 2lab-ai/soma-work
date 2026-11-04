@@ -541,6 +541,35 @@ async function phone(browser: Browser, width: number, height: number) {
     );
   } else check(false, `${tag}: 작업 로그 has something to scroll (${JSON.stringify(logState)})`);
 
+  // A phone turned sideways while reading, then a tab tap (the composer back): the section box ends inside the view —
+  // its newest rows are never under the composer (no 160px floor on a short screen).
+  if (width === 390) {
+    const g0 = await panelGeometry(page);
+    if (g0.touch) await swipe(page, g0.touch.x, g0.touch.y, -300);
+    await page.setViewportSize({ width: 844, height: 390 });
+    await sleep(900);
+    await page.locator('#panel-sections .tb-tab', { hasText: '작업 로그' }).first().tap();
+    await sleep(900);
+    const fit = await page.evaluate(() => {
+      const box = document.getElementById('psec-log');
+      const sc = (document.getElementById('panel-scroll') as HTMLElement).getBoundingClientRect();
+      const b = box?.getBoundingClientRect();
+      return {
+        read: document.getElementById('slide-panel')?.getAttribute('data-read'),
+        boxBottom: b ? Math.round(b.bottom) : null,
+        clipBottom: Math.round(sc.bottom),
+        view: Math.round(sc.height),
+      };
+    });
+    await page.screenshot({ path: path.join(OUT, `phone-${width}-rotated-log.png`) });
+    check(
+      fit.boxBottom !== null && fit.boxBottom <= fit.clipBottom + 1,
+      `${tag} → 844×390 while reading, then 작업 로그: the box ends inside the view (${JSON.stringify(fit)})`,
+    );
+    await page.setViewportSize({ width, height });
+    await sleep(600);
+  }
+
   const ov = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   check(ov <= 0, `${tag}: no sideways overflow with the card open (${ov})`);
   await ctx.close();
