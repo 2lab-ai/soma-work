@@ -491,19 +491,20 @@ function skillGroup(source: string): string {
 
 const SKILL_TTL_MS = 60_000;
 const skillCache = new Map<string, { at: number; rows: Array<ComposerSuggestionRow & { needsApproval?: true }> }>();
-const descriptionCache = new Map<string, string>();
+/** Shared SKILL.md description lines (plugin files are the same for everyone), read again after SKILL_TTL_MS. */
+const descriptionCache = new Map<string, { at: number; text: string }>();
 
-function readDescription(file: string | null, reader: SkillFs): string {
+function readDescription(file: string | null, reader: SkillFs, now: number): string {
   if (!file) return '';
   const hit = descriptionCache.get(file);
-  if (hit !== undefined) return hit;
+  if (hit && now - hit.at < SKILL_TTL_MS) return hit.text;
   let text = '';
   try {
     text = shortDescription(skillDescriptionOf(reader.readFileSync(file, 'utf-8')));
   } catch (err) {
     logger.debug('skill description unreadable', { file, error: (err as Error).message });
   }
-  descriptionCache.set(file, text);
+  descriptionCache.set(file, { at: now, text });
   return text;
 }
 
@@ -553,7 +554,7 @@ export function composerSkillItems(
       const description =
         skill.source === 'user'
           ? shortDescription(own.get(skill.name) ?? '')
-          : readDescription(deps.skillFile(skill, opts.userId), deps.fs);
+          : readDescription(deps.skillFile(skill, opts.userId), deps.fs, deps.now());
       const row: ComposerSuggestionRow & { needsApproval?: true } = {
         value: skillToken(skill),
         group: skillGroup(skill.source),

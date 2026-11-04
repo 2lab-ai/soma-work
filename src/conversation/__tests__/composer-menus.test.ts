@@ -200,6 +200,22 @@ describe('composerSkillItems — every skill this user can invoke', () => {
     expect(granted.find((r) => r.value === '$envp:secret')?.description).toBe('Env-only skill');
   });
 
+  it('an edited SKILL.md description shows once the minute is up', () => {
+    resetComposerMenuCache();
+    let now = 0;
+    let text = '---\ndescription: Old words\n---';
+    const deps = skillDeps({
+      listSkills: () => [{ name: 'autoz', source: 'local' }],
+      skillFile: () => '/l/autoz',
+      fs: { readFileSync: () => text },
+      now: () => now,
+    });
+    expect(composerSkillItems({ userId: 'U1', admin: false }, deps)[0].description).toBe('Old words');
+    text = '---\ndescription: New words\n---';
+    now = 61_000;
+    expect(composerSkillItems({ userId: 'U1', admin: false }, deps)[0].description).toBe('New words');
+  });
+
   it('caches the listing for a minute per user', () => {
     resetComposerMenuCache();
     let now = 0;
