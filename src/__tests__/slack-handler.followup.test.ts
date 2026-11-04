@@ -1157,6 +1157,50 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(goalDriver).toHaveBeenCalledTimes(1);
     });
 
+    it('an immediate control (`help`) leaves the pause for the message that starts a turn', async () => {
+      await questionTurn('다음 지시');
+
+      await handler.handleMessage(message({ ts: '555.666', text: 'help' }), say());
+      for (let i = 0; i < 4; i++) await tick();
+
+      // `help` runs no turn whose end could drain the parked message.
+      expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toMatchObject({ reason: 'blocked' });
+      expect(items()[0].state).toBe('queued');
+    });
+
+    it('ends the pause held under the slot key after a bot-thread migration', async () => {
+      await questionTurn();
+      const WORK_KEY = 'C123:999.000';
+
+      handlerAny.reopenDrainForPerson(
+        message({ ts: '555.666', thread_ts: '999.000', text: '1. 첫 번째 안' }),
+        WORK_KEY,
+        SESSION_KEY,
+      );
+
+      expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toBeUndefined();
+    });
+
+    it('leaves any other `blocked` halt in place — a plain message is not a grant', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '$other:deploy 지금' }), say());
+      await handler.handleMessage(message({ ts: '333.555', text: '다음 지시' }), say());
+      routeCommand.mockResolvedValueOnce({ handled: true, awaitingPermission: true });
+      await settle();
+      expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toMatchObject({
+        reason: 'blocked',
+        detail: 'skill permission pending',
+      });
+
+      await handler.handleMessage(message({ ts: '555.666', text: '그거 말고 다른 거 해줘' }), say());
+      for (let i = 0; i < 4; i++) await tick();
+
+      expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toMatchObject({
+        detail: 'skill permission pending',
+      });
+      expect(items().find((item: any) => item.message.ts === '333.555').state).toBe('queued');
+    });
+
     it('a goal continuation is not a person — it does not end the pause', async () => {
       await questionTurn('다음 지시');
 

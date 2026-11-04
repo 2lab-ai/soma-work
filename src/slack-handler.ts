@@ -1640,9 +1640,6 @@ export class SlackHandler {
       return;
     }
 
-    // #911 — before the fence reads the halt to decide whether this message may steer.
-    this.reopenDrainForPerson(event, sessionKey);
-
     // --- synchronous fence: no await until the slot is decided ---
     // A reply in a freshly migrated work thread has a DIFFERENT key from the
     // slot the running turn opened; both are checked, or the reply would slip
@@ -1658,6 +1655,8 @@ export class SlackHandler {
         : undefined;
     const busy = slotOwner !== undefined;
     const queueable = this.isQueueableFollowup(event);
+    // #911 — before anything below reads the halt (the steer gate, the drain this turn ends with).
+    if (queueable) this.reopenDrainForPerson(event, sessionKey, slotKey);
     if (busy) {
       if (event.synthetic) {
         // A synthetic continuation must never supersede a live or reserved
@@ -1763,27 +1762,34 @@ export class SlackHandler {
     if (failure) throw failure;
   }
 
+  /** The `blocked` reason of a turn that ended on the person's question — the ASK pause (A8). */
+  private static readonly AWAITING_USER_CHOICE = 'awaiting user choice';
+
   /**
-   * #911 — a `blocked` halt waits for a person: a turn that ended on their
-   * question (the session is theirs until they answer, A8), or on something
-   * only they can settle. Their next message is that action — the answer itself
-   * arrives this way, from Slack or the dashboard — so it ends the pause
-   * (`user-action`). Left standing, the halt outlived the answer (dev
-   * 2026-11-04): the next message was neither steered nor drained, a goal
-   * session yielded to it (§3.6), and when the turn ended nothing made the next
-   * one. An `error` or `authorization` halt says the lane itself is broken and
-   * still waits for Resume/Retry. A synthetic turn or a replayed host turn is
-   * not a person.
+   * #911 — a turn that ended on the person's question halts the drain
+   * ({@link SlackHandler.AWAITING_USER_CHOICE}): the session is theirs until
+   * they answer. Their next message that starts a turn is that answer — the
+   * answer to the question arrives this way, from Slack or the dashboard — so
+   * it ends the pause (`user-action`). Left standing, the halt outlived the
+   * answer (dev 2026-11-04): the next message was neither steered nor drained,
+   * a goal session yielded to it (§3.6), and when the turn ended nothing made
+   * the next one.
+   *
+   * Only that halt. Every other `blocked` reason is a refusal, a consumed
+   * message, or a wait for something a plain message is not (a grant, a route
+   * decision, a free work slot); `error` and `authorization` say the lane itself
+   * is broken. Those keep waiting for Resume/Retry. A synthetic turn or a
+   * replayed host turn is not a person, and an immediate control (`help`, a
+   * bare `!`) starts no turn whose end could drain what the halt held.
    */
-  private reopenDrainForPerson(event: MessageEvent, sessionKey: string): void {
+  private reopenDrainForPerson(event: MessageEvent, sessionKey: string, slotKey: string | undefined): void {
     if (event.synthetic || event.routeContext?.hostTurn === true || !event.user) return;
     const dispatcher = this.followupDispatcher;
     if (!dispatcher) return;
     // After a bot-thread migration the halt sits under the slot's (source) key.
-    const slotKey = this.followupMigration?.byCanonical.get(sessionKey);
     for (const key of slotKey !== undefined ? [sessionKey, slotKey] : [sessionKey]) {
       const halt = dispatcher.drainHalt(key);
-      if (halt?.reason !== 'blocked') continue;
+      if (halt?.reason !== 'blocked' || halt.detail !== SlackHandler.AWAITING_USER_CHOICE) continue;
       dispatcher.clearDrainHalt(key, 'user-action');
       this.logger.info('Drain reopened — a person spoke after a pause that waited for one', {
         sessionKey: key,
@@ -6558,7 +6564,7 @@ export class SlackHandler {
     );
     if (pendingChoice) {
       // The session belongs to the user until they answer (§3.2 ASK pause).
-      return { result: 'blocked', reason: 'awaiting user choice' };
+      return { result: 'blocked', reason: SlackHandler.AWAITING_USER_CHOICE };
     }
 
     // Legacy mocks return a bare object from `createAgentSession`; with no
