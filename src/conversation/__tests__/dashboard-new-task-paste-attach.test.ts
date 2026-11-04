@@ -62,7 +62,19 @@ function pasteEvent(
 ) {
   const at = composer.value.length;
   const [selectionStart, selectionEnd] = opts.selection ?? [at, at];
-  const field = { selectionStart, selectionEnd };
+  // The textarea: setRangeText edits its text (and the composer's value with it), an input event follows.
+  const field = {
+    selectionStart,
+    selectionEnd,
+    inputs: 0,
+    setRangeText(text: string, start: number, end: number) {
+      composer.value = composer.value.slice(0, start) + text + composer.value.slice(end);
+    },
+    dispatchEvent(ev: Event) {
+      if (ev.type === 'input') field.inputs++;
+      return true;
+    },
+  };
   const ev = {
     prevented: false,
     currentTarget: composer,
@@ -74,6 +86,7 @@ function pasteEvent(
     preventDefault() {
       ev.prevented = true;
     },
+    field,
   };
   return ev;
 }
@@ -128,6 +141,24 @@ describe('I1.1 — a paste that would take the instruction past 12,000 character
     api({ destination: 'slack' }).ntOnComposerPaste(ev);
     expect(composer.added).toHaveLength(1); // it was offered
     expect(ev.prevented).toBe(false); // and, refused, the text is pasted as usual
+  });
+
+  it('a long paste over a selection replaces it: the selected text leaves the field, the paste is the file', () => {
+    const composer = fakeComposer('keep me OLD instruction to replace');
+    const ev = pasteEvent(composer, 'x'.repeat(13000), { selection: [8, 34] });
+    api({ destination: 'slack' }).ntOnComposerPaste(ev);
+    expect(ev.prevented).toBe(true);
+    expect(composer.added).toHaveLength(1);
+    expect(composer.value).toBe('keep me ');
+    expect(ev.field.inputs).toBe(1); // the composer's counter and the draft follow (ui-input)
+  });
+
+  it('with no selection the field is not touched', () => {
+    const composer = fakeComposer('지시');
+    const ev = pasteEvent(composer, 'x'.repeat(13000));
+    api({ destination: 'slack' }).ntOnComposerPaste(ev);
+    expect(composer.value).toBe('지시');
+    expect(ev.field.inputs).toBe(0);
   });
 
   it('a paste that fits is left to the field', () => {

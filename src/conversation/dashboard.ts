@@ -19907,7 +19907,14 @@ function ntOnComposerPaste(e) {
   // The text leaves the field only once the composer has taken the file: refused (10 files already, a size cap — its
   // error line says why), the paste goes in as usual and the limit is said on send. Nothing pasted is lost.
   var taken = el.addFiles([new File([text], ntPastedTextName(new Date()), { type: 'text/plain' })]);
-  if (taken && taken.length) e.preventDefault();
+  if (!taken || !taken.length) return;
+  e.preventDefault();
+  // A paste replaces what is selected: that text leaves the field too (the paste is the file now). The input event
+  // is the composer's own — its counter and height follow, and its ui-input keeps the draft.
+  if (field && typeof field.setRangeText === 'function' && typeof start === 'number' && typeof end === 'number' && end > start) {
+    field.setRangeText('', start, end, 'end');
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  }
 }
 
 // Would the field run past max once the paste is in: its text, less the selection the paste replaces, plus the paste.
