@@ -407,13 +407,36 @@ describe('POST /api/dashboard/new-task — a first message that only answers sta
     expect(start.mock.calls[0][1].answerOnly).toBeUndefined();
   });
 
-  it('what is judged is what the launch sends: with autoz on, %nogoal goes with $autoz after it — a skill turn, launched', async () => {
-    const classify = vi.fn((text: string) => (text.includes('$autoz') ? 'control-with-dispatch' : 'control'));
+  // The production router reads `/help` + `$autoz` as a skill turn (`$autoz` is a forced skill): this classifier
+  // answers the same way, so a launch that appended `$autoz` before judging would run autoz on "/help".
+  const routerLike = (text: string) =>
+    text.includes('$autoz')
+      ? 'control-with-dispatch'
+      : text.startsWith('/') || text.startsWith('%')
+        ? 'control'
+        : 'instruction';
+
+  it.each([
+    '/help',
+    '/model opus',
+    '%nogoal',
+  ])('with autoz on, “%s” picked from the / menu is still a command: judged and sent as typed, answer-only, no $autoz', async (prompt) => {
+    const classify = vi.fn(routerLike);
     dashboard.setDashboardCommandClassifier(classify);
-    const res = await launch('%nogoal', 'req-nogoal-autoz-01', true);
+    const res = await launch(prompt, `req-autoz-cmd-${prompt.replace(/\W/g, '')}-0001`, true);
     expect(res.statusCode).toBe(200);
+    expect(classify).toHaveBeenCalledWith(prompt, 'U_PLAIN');
+    expect(classify.mock.calls.every(([text]) => !text.includes('$autoz'))).toBe(true);
     expect(start).toHaveBeenCalledTimes(1);
-    expect(classify).toHaveBeenCalledWith('$autoz', 'U_PLAIN');
+    expect(start.mock.calls[0][1]).toMatchObject({ prompt, autoz: false, answerOnly: true });
+  });
+
+  it('with autoz on, an instruction keeps autoz (the launch appends $autoz to it)', async () => {
+    dashboard.setDashboardCommandClassifier(vi.fn(routerLike));
+    const res = await launch('로그인 버그 고쳐줘', 'req-autoz-instr-00001', true);
+    expect(res.statusCode).toBe(200);
+    expect(start.mock.calls[0][1]).toMatchObject({ prompt: '로그인 버그 고쳐줘', autoz: true });
+    expect(start.mock.calls[0][1].answerOnly).toBeUndefined();
   });
 
   it('/goal with its objective starts the task', async () => {
