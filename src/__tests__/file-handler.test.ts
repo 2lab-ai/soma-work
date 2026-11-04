@@ -1,3 +1,6 @@
+import * as fsx from 'node:fs';
+import * as os from 'node:os';
+import * as pathx from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { FileHandler, type ProcessedFile } from '../file-handler';
 
@@ -448,6 +451,73 @@ describe('FileHandler — attachments the bot could not fetch are kept as metada
     } finally {
       globalThis.fetch = original;
       server.close();
+    }
+  });
+});
+
+/**
+ * SSOT 2026-11-04 — "붙여넣는데 너무 크면 첨부 파일로 처리해줘". The dashboard attaches a paste too long for the
+ * instruction as `pasted-text-<stamp>.txt`. A text file over the inline preview used to reach the model cut to its
+ * first 10,000 characters with no path, so most of the paste was lost: now the prompt says how long it is and where
+ * it is, so the agent reads all of it. Test id I1.2.
+ */
+describe('FileHandler.formatFilePrompt — a long text file is previewed and its path given (I1.2)', () => {
+  const handler = new FileHandler();
+
+  function textFile(name: string, content: string): ProcessedFile {
+    const p = pathx.join(os.tmpdir(), `slack-file-${Date.now()}-${Math.random().toString(36).slice(2)}-${name}`);
+    fsx.writeFileSync(p, content, 'utf-8');
+    return {
+      path: p,
+      name,
+      mimetype: 'text/plain',
+      isImage: false,
+      isText: true,
+      isVideo: false,
+      isAudio: false,
+      size: Buffer.byteLength(content),
+      tempPath: p,
+    };
+  }
+
+  it('over 10,000 characters: the first 10,000 inline, the full length and the path, and a Read instruction', async () => {
+    const head = 'H'.repeat(10000);
+    const tail = 'TAIL-MARKER';
+    const f = textFile('pasted-text-20261104-090507.txt', head + 'x'.repeat(15000) + tail);
+    try {
+      const out = await handler.formatFilePrompt([f], '');
+      expect(out).toContain(head);
+      expect(out).not.toContain(tail);
+      expect(out).toContain(`Path: ${f.path}`);
+      expect(out).toContain('25011 characters');
+      expect(out).toMatch(/Read tool/);
+    } finally {
+      await handler.cleanupTempFiles([f]);
+    }
+  });
+
+  it('a short text file stays inline as before, with no path', async () => {
+    const f = textFile('notes.txt', 'short note');
+    try {
+      const out = await handler.formatFilePrompt([f], '봐줘');
+      expect(out).toContain('Content:\n```\nshort note\n```');
+      expect(out).not.toContain('Path:');
+    } finally {
+      await handler.cleanupTempFiles([f]);
+    }
+  });
+
+  it("the dashboard's pasted text is named as part of the user's message, not a file to analyse", async () => {
+    const f = textFile('pasted-text-20261104-090507.txt', '이 스펙대로 구현해줘');
+    try {
+      const out = await handler.formatFilePrompt([f], '');
+      expect(out).toMatch(/pasted/i);
+      expect(out).toMatch(/part of the user's message/);
+      // A file a user uploaded under another name gets no such note.
+      const other = await handler.formatFilePrompt([{ ...f, name: 'spec.txt' }], '');
+      expect(other).not.toMatch(/part of the user's message/);
+    } finally {
+      await handler.cleanupTempFiles([f]);
     }
   });
 });

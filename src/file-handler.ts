@@ -23,6 +23,15 @@ export interface ProcessedFile {
   unavailable?: 'too_large' | 'download_failed';
 }
 
+/** A text file's characters inlined into the prompt; a longer one is previewed and its path given. */
+const TEXT_PREVIEW_CHARS = 10_000;
+
+/**
+ * The name the dashboard's new task composer gives a paste too long for the instruction
+ * (dashboard.ts `ntPastedTextName`): the text is part of the user's message, not a file to analyse.
+ */
+const PASTED_TEXT_NAME = /^pasted-text-\d{8}-\d{6}\.txt$/;
+
 /** The Slack file's id and permalink, when the event carries them (strings only). */
 function slackRef(file: any): { slackFileId?: string; permalink?: string } {
   const id = typeof file?.id === 'string' && file.id ? file.id : undefined;
@@ -343,11 +352,18 @@ export class FileHandler {
         } else if (file.isText) {
           prompt += `\n## File: ${file.name}\n`;
           prompt += `File type: ${file.mimetype}\n`;
+          if (PASTED_TEXT_NAME.test(file.name)) {
+            prompt += `Note: The user pasted this text into the message field. It was too long for the field, so it was attached as a file — treat it as part of the user's message.\n`;
+          }
 
           try {
             const content = fs.readFileSync(file.path, 'utf-8');
-            if (content.length > 10000) {
-              prompt += `Content (truncated to first 10000 characters):\n\`\`\`\n${content.substring(0, 10000)}...\n\`\`\`\n`;
+            if (content.length > TEXT_PREVIEW_CHARS) {
+              // The preview alone loses the rest of the file: say how long it is and where, so the agent reads all of it.
+              prompt += `Size: ${content.length} characters\n`;
+              prompt += `Path: ${file.path}\n`;
+              prompt += `Note: Only the first ${TEXT_PREVIEW_CHARS} characters are shown below. Read the whole file at the path above with the Read tool before you act on it.\n`;
+              prompt += `Content (truncated to first ${TEXT_PREVIEW_CHARS} characters):\n\`\`\`\n${content.substring(0, TEXT_PREVIEW_CHARS)}...\n\`\`\`\n`;
             } else {
               prompt += `Content:\n\`\`\`\n${content}\n\`\`\`\n`;
             }
