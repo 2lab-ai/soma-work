@@ -423,3 +423,45 @@ describe('safeguards flag — the stopped stream is closed (review round 2, astr
     expect(cleanedUp).toBe(true);
   });
 });
+
+describe('safeguards — delegated agent and already-halted session (review round 3, astra P1 #2, #3)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
+  });
+
+  it("a delegated agent's text that is the block halts the session", async () => {
+    async function* subagentBlocked(): AsyncGenerator<any> {
+      yield {
+        type: 'assistant',
+        parent_tool_use_id: 'toolu_agent_1',
+        message: { content: [{ type: 'text', text: SAFEGUARD_TEXT }] },
+      };
+      await new Promise(() => {});
+    }
+    const deps = createDeps(subagentBlocked);
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+
+    const result = await Promise.race([
+      executor.execute(createParams(vi.fn().mockResolvedValue({ ts: 'msg_ts' }), session)),
+      new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 3_000)),
+    ]);
+
+    expect(result).not.toBe('hung');
+    expect(session.safeguardHalt?.detail).toBe('reasoning_extraction');
+  });
+
+  it('a session already halted runs no query (dispatch-set halt, continuation, race)', async () => {
+    const deps = createDeps(safeguardAsContentStream);
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    session.safeguardHalt = { atMs: 1, detail: 'reasoning_extraction' };
+
+    const result = await executor.execute(createParams(vi.fn().mockResolvedValue({ ts: 'msg_ts' }), session));
+
+    expect(deps.claudeHandler.streamAgentEvents).not.toHaveBeenCalled();
+    expect(result.success).toBe(false);
+    expect(result.retryAfterMs).toBeUndefined();
+  });
+});

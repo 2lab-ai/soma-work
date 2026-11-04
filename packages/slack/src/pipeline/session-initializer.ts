@@ -16,6 +16,7 @@ import type { MessageValidator } from '../message-validator';
 import { LOG_DETAIL, OutputFlag, shouldOutput } from '../output-flags';
 import type { ReactionManager } from '../reaction-manager';
 import type { RequestAbortReason, RequestCoordinator } from '../request-coordinator';
+import { buildSafeguardHaltBlocks, SAFEGUARD_ERROR_LABEL, safeguardHaltNoticeText } from '../safeguard';
 import type { SlackApiHelper } from '../slack-api-helper';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
 import type { ThreadPanel } from '../thread-panel';
@@ -1276,6 +1277,35 @@ export class SessionInitializer {
 
       // Transition session to MAIN state with determined workflow
       this.deps.claudeHandler.transitionToMain(channel, threadTs, result.workflow, result.title);
+
+      // The classifier query itself was blocked by Anthropic's safeguards: the
+      // work would run on the same blocked content. Halt the session here —
+      // the executor refuses to run a halted session's turn — and post the one
+      // "세이프가드 에러" notice with its admin button.
+      if (result.safeguardFlag) {
+        const session = this.deps.claudeHandler.getSession(channel, threadTs);
+        if (session && !session.safeguardHalt) {
+          const halt = { atMs: Date.now(), ...result.safeguardFlag };
+          session.safeguardHalt = halt;
+          this.deps.claudeHandler.saveSessions?.();
+          this.logger.warn('Dispatch blocked by Anthropic safeguards — session halted', { channel, threadTs });
+          try {
+            await this.deps.slackApi.postMessage(channel, safeguardHaltNoticeText(halt), {
+              threadTs,
+              blocks: buildSafeguardHaltBlocks(halt, this.deps.claudeHandler.getSessionKey(channel, threadTs)),
+            });
+          } catch (postErr) {
+            this.logger.warn('Safeguard halt notice failed — the next message re-offers the button', {
+              channel,
+              threadTs,
+              error: (postErr as Error)?.message ?? String(postErr),
+            });
+          }
+        }
+        await updateDispatchPanel(SAFEGUARD_ERROR_LABEL, 'idle');
+        return undefined;
+      }
+
       await updateDispatchPanel('사용자 액션 대기', 'idle');
       return result.size === 'small' || result.size === 'large' ? result.size : undefined;
     } catch (error) {

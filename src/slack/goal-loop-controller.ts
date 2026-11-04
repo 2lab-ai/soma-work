@@ -132,6 +132,8 @@ export interface GoalLoopRegistry {
 /** Request-coordinator surface the controller needs. */
 export interface GoalLoopRequestCoordinator {
   isRequestActive(sessionKey: string): boolean;
+  /** Stop the session's running turn (the safeguards halt of a blocked eval). */
+  abortSession?(sessionKey: string, reason: 'safeguard'): boolean;
 }
 
 export interface GoalLoopControllerDeps {
@@ -872,6 +874,18 @@ export class GoalLoopController {
         sessionKey,
         ...evalFlag,
       });
+      // A turn the user started while the eval ran already passed the gate:
+      // stop it now — the session is halted (it ends as the halt, quietly).
+      if (this.deps.requestCoordinator.isRequestActive(sessionKey)) {
+        try {
+          this.deps.requestCoordinator.abortSession?.(sessionKey, 'safeguard');
+        } catch (abortErr) {
+          logger.warn('Safeguard halt: stopping the running turn failed', {
+            sessionKey,
+            error: abortErr instanceof Error ? abortErr.message : String(abortErr),
+          });
+        }
+      }
       void this.postLooseNotice(session, safeguardEvalHaltNoticeText(halt)).catch(() => undefined);
       return;
     }
