@@ -96,15 +96,18 @@ describe('A1 — the page: two small buttons right after the title text', () => 
   });
 });
 
-type PermalinkApi = { panelPermalinkOf: (s: unknown, origin: string) => string };
+type PermalinkApi = { panelPermalinkOf: (s: unknown, origin: string, selfInstance?: string) => string };
+type ResolveApi = { resolveDeepLinkKey: (ref: string | null, keys: string[], selfInstance: string) => string | null };
 
 describe('A2 — 퍼머링크: the card’s deep link, the one the Slack thread head carries', () => {
-  const panelPermalinkOf = (s: unknown, origin: string) =>
-    load<PermalinkApi>(['panelPermalinkOf']).panelPermalinkOf(s, origin);
-  const env = { instanceName: 'mac-mini-dev', port: 3000, host: 'h' };
+  const SELF = 'mac-mini-dev';
+  const panelPermalinkOf = (s: unknown, origin: string, selfInstance: string = SELF) =>
+    load<PermalinkApi>(['panelPermalinkOf']).panelPermalinkOf(s, origin, selfInstance);
+  const env = { instanceName: SELF, port: 3000, host: 'h' };
+  const sib = { instanceName: 'oudwood-dev', port: 3001, host: 'o' };
   const ORIGIN = 'https://soma.example';
 
-  it('a live card: /dashboard/<owner>?session=<registry key> — the instance prefix (#814) dropped', () => {
+  it('a live card: /dashboard/<owner>?session=<registry key> — this instance’s prefix (#814) dropped', () => {
     expect(
       panelPermalinkOf({ key: 'mac-mini-dev::work:C1:1700000000.000100', ownerId: 'U1', environment: env }, ORIGIN),
     ).toBe('https://soma.example/dashboard/U1?session=work%3AC1%3A1700000000.000100');
@@ -119,14 +122,20 @@ describe('A2 — 퍼머링크: the card’s deep link, the one the Slack thread 
     ).toBe('https://soma.example/dashboard/U1?session=work%3AC1%3A1700000000.000100');
   });
 
-  it('a sibling instance’s card drops its own prefix; a key without an environment stays as it is', () => {
+  it('a sibling instance’s card keeps its instance (the same thread may be ours too); its archive wrapper goes', () => {
+    expect(panelPermalinkOf({ key: 'oudwood-dev::work:C2:1.2', ownerId: 'U2', environment: sib }, ORIGIN)).toBe(
+      'https://soma.example/dashboard/U2?session=oudwood-dev%3A%3Awork%3AC2%3A1.2',
+    );
     expect(
       panelPermalinkOf(
-        { key: 'oudwood-dev::work:C2:1.2', ownerId: 'U2', environment: { instanceName: 'oudwood-dev' } },
+        { key: 'oudwood-dev::archived_work:C2:1.2_1762000000000', ownerId: 'U2', environment: sib },
         ORIGIN,
       ),
-    ).toBe('https://soma.example/dashboard/U2?session=work%3AC2%3A1.2');
-    expect(panelPermalinkOf({ key: 'work:C3:1.3', ownerId: 'U 3' }, ORIGIN)).toBe(
+    ).toBe('https://soma.example/dashboard/U2?session=oudwood-dev%3A%3Awork%3AC2%3A1.2');
+  });
+
+  it('no instance wired (no environment — composeSessionKey adds no prefix then): the key as it is', () => {
+    expect(panelPermalinkOf({ key: 'work:C3:1.3', ownerId: 'U 3' }, ORIGIN, '')).toBe(
       'https://soma.example/dashboard/U%203?session=work%3AC3%3A1.3',
     );
   });
@@ -135,6 +144,40 @@ describe('A2 — 퍼머링크: the card’s deep link, the one the Slack thread 
     expect(panelPermalinkOf({ key: 'work:C1:1' }, ORIGIN)).toBe('');
     expect(panelPermalinkOf({ ownerId: 'U1' }, ORIGIN)).toBe('');
     expect(panelPermalinkOf(null, ORIGIN)).toBe('');
+  });
+
+  describe('round trip: the copied link opens the same card (the page’s own resolveDeepLinkKey)', () => {
+    const refOf = (url: string) => new URL(url).searchParams.get('session');
+    const resolve = (ref: string | null, keys: string[]) =>
+      load<ResolveApi>(['resolveDeepLinkKey']).resolveDeepLinkKey(ref, keys, SELF);
+    const SELF_LIVE = 'mac-mini-dev::work:C1:1.1';
+    const SIB_LIVE = 'oudwood-dev::work:C1:1.1'; // the same thread on both instances
+    const card = (key: string, e: unknown) => ({ key, ownerId: 'U1', environment: e });
+
+    it('this instance’s card and a sibling’s card on the same thread open themselves, not each other', () => {
+      const keys = [SELF_LIVE, SIB_LIVE];
+      expect(resolve(refOf(panelPermalinkOf(card(SELF_LIVE, env), ORIGIN)), keys)).toBe(SELF_LIVE);
+      expect(resolve(refOf(panelPermalinkOf(card(SIB_LIVE, sib), ORIGIN)), keys)).toBe(SIB_LIVE);
+    });
+
+    it('after the session is archived the same link opens its latest archive — on either instance', () => {
+      const selfLink = refOf(panelPermalinkOf(card(SELF_LIVE, env), ORIGIN));
+      const sibLink = refOf(panelPermalinkOf(card(SIB_LIVE, sib), ORIGIN));
+      const keys = [
+        'mac-mini-dev::archived_work:C1:1.1_1000',
+        'mac-mini-dev::archived_work:C1:1.1_2000',
+        'oudwood-dev::archived_work:C1:1.1_1500',
+        'oudwood-dev::archived_work:C1:1.1_3000',
+      ];
+      expect(resolve(selfLink, keys)).toBe('mac-mini-dev::archived_work:C1:1.1_2000');
+      expect(resolve(sibLink, keys)).toBe('oudwood-dev::archived_work:C1:1.1_3000');
+    });
+
+    it('an archived card’s own link opens that thread’s latest archive', () => {
+      const archived = card('oudwood-dev::archived_work:C1:1.1_1500', sib);
+      const keys = ['oudwood-dev::archived_work:C1:1.1_1500', 'oudwood-dev::archived_work:C1:1.1_3000'];
+      expect(resolve(refOf(panelPermalinkOf(archived, ORIGIN)), keys)).toBe('oudwood-dev::archived_work:C1:1.1_3000');
+    });
   });
 });
 
@@ -166,7 +209,7 @@ function el(over: Partial<El> = {}): El {
 }
 
 describe('A3 — the buttons follow the open card', () => {
-  it('renderPanelTitleActions: the link’s href and both shown for a recorded card; no copy without a conversation', () => {
+  const setup = () => {
     const link = el();
     const copy = el();
     const document = {
@@ -174,8 +217,18 @@ describe('A3 — the buttons follow the open card', () => {
     };
     const { renderPanelTitleActions } = load<{ renderPanelTitleActions: (s: unknown) => void }>(
       ['panelPermalinkOf', 'renderPanelTitleActions'],
-      { document, location: { origin: 'https://soma.example' } },
+      {
+        document,
+        location: { origin: 'https://soma.example' },
+        SELF_INSTANCE_NAME: 'mac-mini-dev',
+        isSiblingSession: (x: any) => !!(x?.environment && x.environment.instanceName !== 'mac-mini-dev'),
+      },
     );
+    return { link, copy, renderPanelTitleActions };
+  };
+
+  it('renderPanelTitleActions: the link’s href and both shown for a recorded card; no copy without a conversation', () => {
+    const { link, copy, renderPanelTitleActions } = setup();
     renderPanelTitleActions({ key: 'work:C1:1', ownerId: 'U1', conversationId: 'conv-1' });
     expect(link.attrs.href).toBe('https://soma.example/dashboard/U1?session=work%3AC1%3A1');
     expect(link.hidden).toBe(false);
@@ -185,6 +238,19 @@ describe('A3 — the buttons follow the open card', () => {
     expect(copy.hidden).toBe(true);
     renderPanelTitleActions({ key: 'work:C1:3' });
     expect(link.hidden).toBe(true);
+  });
+
+  it('a sibling instance’s card (#814): its link, but no 전체 문맥 복사 — its conversation is not on this server', () => {
+    const { link, copy, renderPanelTitleActions } = setup();
+    renderPanelTitleActions({
+      key: 'oudwood-dev::work:C2:1',
+      ownerId: 'U1',
+      conversationId: 'conv-2',
+      environment: { instanceName: 'oudwood-dev' },
+    });
+    expect(link.hidden).toBe(false);
+    expect(link.attrs.href).toBe('https://soma.example/dashboard/U1?session=oudwood-dev%3A%3Awork%3AC2%3A1');
+    expect(copy.hidden).toBe(true);
   });
 
   it('wiring: the panel’s live repaint (every opening and every update) renders them', () => {
@@ -257,6 +323,7 @@ describe('A5 — a press on 전체 문맥 복사 copies every turn as markdown',
   const setup = (
     responses: Array<{ status: number; body: string }>,
     session: Record<string, unknown> = { key: 'k1', conversationId: 'conv/1' },
+    opts: { refreshKeepsToken?: boolean } = {},
   ) => {
     const calls: Array<{ url: string; init: Record<string, any> }> = [];
     const copied: string[] = [];
@@ -279,11 +346,13 @@ describe('A5 — a press on 전체 문맥 복사 copies every turn as markdown',
           },
         });
       },
+      // refreshCsrfToken swallows a failed /auth/me and leaves the token as it was.
       refreshCsrfToken: () => {
         refreshed++;
-        scope._csrfToken = 'tok-2';
+        if (!opts.refreshKeepsToken) scope._csrfToken = 'tok-2';
         return Promise.resolve();
       },
+      isSiblingSession: (x: any) => !!(x?.environment && x.environment.instanceName !== 'mac-mini-dev'),
       isCsrfRejection: (status: number, data: any) => status === 403 && !!data && data.code === 'csrf_failed',
       copyToClipboard: (p: Promise<string>) =>
         Promise.resolve(p).then((t) => {
@@ -350,6 +419,27 @@ describe('A5 — a press on 전체 문맥 복사 copies every turn as markdown',
     expect(none.calls).toHaveLength(0);
     expect(none.toasts).toEqual([]);
   });
+
+  it('a refresh that got no new token does not post the same refused token again', async () => {
+    const h = setup([{ status: 403, body: JSON.stringify({ code: 'csrf_failed' }) }], undefined, {
+      refreshKeepsToken: true,
+    });
+    await h.api.copyPanelContext(el({ hidden: false }));
+    expect(h.refreshed()).toBe(1);
+    expect(h.calls).toHaveLength(1);
+    expect(h.toasts).toEqual([{ title: '전체 문맥을 복사하지 못했어요', description: 'HTTP 403', tone: 'error' }]);
+  });
+
+  it('a sibling instance’s card: nothing is posted (its conversation lives on that instance)', async () => {
+    const h = setup([{ status: 200, body: MD }], {
+      key: 'oudwood-dev::work:C2:1',
+      conversationId: 'conv-2',
+      environment: { instanceName: 'oudwood-dev' },
+    });
+    await h.api.copyPanelContext(el({ hidden: false }));
+    expect(h.calls).toHaveLength(0);
+    expect(h.copied).toEqual([]);
+  });
 });
 
 describe('A6 — the clipboard', () => {
@@ -387,6 +477,24 @@ describe('A6 — the clipboard', () => {
     const blob = await (writes[0] as ClipboardItem).items['text/plain'];
     expect(await blob.text()).toBe('hello');
     expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+  });
+
+  it('write() refused (no activation, an older engine): writeText once the text is there, before the textarea', async () => {
+    class ClipboardItem {
+      constructor(public items: Record<string, Promise<Blob>>) {}
+    }
+    const writeText = vi.fn(() => Promise.resolve());
+    const document = { createElement: vi.fn(), execCommand: vi.fn(() => true), body: { appendChild: vi.fn() } };
+    const { copyToClipboard } = load<ClipApi>(['copyToClipboard', 'copyViaTextarea'], {
+      navigator: { clipboard: { write: () => Promise.reject(new Error('NotAllowedError')), writeText } },
+      window: { ClipboardItem },
+      ClipboardItem,
+      Blob,
+      document,
+    });
+    await expect(copyToClipboard(Promise.resolve('late'))).resolves.toBe(true);
+    expect(writeText).toHaveBeenCalledWith('late');
+    expect(document.execCommand).not.toHaveBeenCalled();
   });
 
   it('no ClipboardItem: writeText once the text is there', async () => {

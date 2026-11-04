@@ -14356,19 +14356,29 @@ function resolveDeepLinkKey(ref, keys, selfInstance) {
   var hits = keys.filter(function(k) { return k.length > suffix.length && k.slice(-suffix.length) === suffix; });
   if (hits.length) return hits.length === 1 ? hits[0] : null;
   // No live card: the thread's latest archive. archivedToKanban keys it
-  // "[<instance>::]archived_<registry key>_<archivedAt ms>".
-  var mark = 'archived_' + ref + '_';
-  var best = null;
-  var bestAt = -1;
-  for (var i = 0; i < keys.length; i++) {
-    var k = keys[i];
-    var at = k.indexOf(mark);
-    if (at < 0 || (at > 0 && k.slice(at - 2, at) !== '::')) continue;
-    var tail = k.slice(at + mark.length);
-    if (!/^[0-9]+$/.test(tail)) continue;
-    if (Number(tail) > bestAt) { bestAt = Number(tail); best = k; }
+  // "[<instance>::]archived_<registry key>_<archivedAt ms>". A ref that names its
+  // instance ("<instance>::<registry key>", a sibling card's 퍼머링크) takes only
+  // that instance's archives; a bare ref this instance's first (as a live card
+  // above), then any instance's.
+  var sep = ref.indexOf('::');
+  var bare = sep > 0 ? ref.slice(sep + 2) : ref;
+  var scopes = sep > 0 ? [ref.slice(0, sep + 2)] : selfInstance ? [selfInstance + '::', ''] : [''];
+  for (var j = 0; j < scopes.length; j++) {
+    var inst = scopes[j];
+    var mark = inst + 'archived_' + bare + '_';
+    var best = null;
+    var bestAt = -1;
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      var at = k.indexOf(mark);
+      if (at < 0 || (at > 0 && (inst || k.slice(at - 2, at) !== '::'))) continue;
+      var tail = k.slice(at + mark.length);
+      if (!/^[0-9]+$/.test(tail)) continue;
+      if (Number(tail) > bestAt) { bestAt = Number(tail); best = k; }
+    }
+    if (best) return best;
   }
-  return best;
+  return null;
 }
 var _deepLinkWaiting = false; // waiting for <ui-agent-inbox> to be defined
 function openDeepLinkedSession() {
@@ -17792,50 +17802,56 @@ function titleSubCanRegen(ownerId, viewerId, viewerIsAdmin, adminModeOn) {
 }
 // ── The title's actions (SSOT 2026-11-04): 퍼머링크 · 전체 문맥 복사, small, right after the title text ──
 // Pure: the card's permalink — the deep link (§3.1-8) the Slack thread head carries too (getDashboardSessionUrl):
-// <origin>/dashboard/<ownerId>?session=<registry key>. The board key loses its instance prefix (#814) and an
+// <origin>/dashboard/<ownerId>?session=<registry key>. The board key loses this instance's prefix (#814) and an
 // archive's archived_…_<ms> wrapper, so the link keeps opening the thread's card: the live one, or once it is
-// archived its latest archive (resolveDeepLinkKey). '' without an owner or a key.
-function panelPermalinkOf(s, origin) {
+// archived its latest archive (resolveDeepLinkKey). A sibling instance's card keeps its instance
+// (<instance>::<registry key>): the same thread can have a card on this instance too. '' without an owner or a key.
+function panelPermalinkOf(s, origin, selfInstance) {
   if (!s || !s.ownerId || !s.key) return '';
   var ref = String(s.key);
   var inst = s.environment && s.environment.instanceName;
-  if (inst && ref.indexOf(inst + '::') === 0) ref = ref.slice(inst.length + 2);
+  var qualify = '';
+  if (inst && ref.indexOf(inst + '::') === 0) {
+    ref = ref.slice(inst.length + 2);
+    if (selfInstance && inst !== selfInstance) qualify = inst + '::';
+  }
   var archived = /^archived_(.+)_[0-9]{1,16}$/.exec(ref);
   if (archived) ref = archived[1];
-  return String(origin || '') + '/dashboard/' + encodeURIComponent(s.ownerId) + '?session=' + encodeURIComponent(ref);
+  return String(origin || '') + '/dashboard/' + encodeURIComponent(s.ownerId) + '?session=' + encodeURIComponent(qualify + ref);
 }
-// The open card's two title actions: the link's href (shown once there is one), the copy once a conversation is recorded.
+// The open card's two title actions: the link's href (shown once there is one); the copy once a conversation is
+// recorded — on this instance: a sibling's (#814) conversation is in its own store, not this server's export.
 function renderPanelTitleActions(s) {
   var link = document.getElementById('panel-permalink');
   var copy = document.getElementById('panel-copy-context');
-  var href = panelPermalinkOf(s, location.origin);
+  var href = panelPermalinkOf(s, location.origin, SELF_INSTANCE_NAME);
   if (link) {
     if (href && link.getAttribute('href') !== href) link.setAttribute('href', href);
     link.hidden = !href;
   }
-  if (copy) copy.hidden = !(s && s.conversationId);
+  if (copy) copy.hidden = !(s && s.conversationId) || isSiblingSession(s);
 }
 // Copy text — or a promise of it (the full context waits for its export) — to the clipboard; true once copied.
 // A ClipboardItem holding the pending text is written inside the press, so Safari keeps the press's permission
-// across the fetch; then writeText; without the Clipboard API (plain http) a hidden textarea in host (next to the
-// pressed control: a modal drawer makes everything outside it inert). Rejects when the text does.
+// across the fetch. If the engine refuses that write: writeText once the text is there; without the Clipboard API
+// (plain http) a hidden textarea in host (next to the pressed control: a modal drawer makes everything outside it
+// inert). Rejects when the text does.
 function copyToClipboard(text, host) {
   var pending = Promise.resolve(text).then(function(t) { return String(t); });
   var cb = typeof navigator !== 'undefined' && navigator ? navigator.clipboard : null;
-  if (cb && typeof cb.write === 'function' && typeof ClipboardItem === 'function') {
-    try {
-      var item = new ClipboardItem({ 'text/plain': pending.then(function(t) { return new Blob([t], { type: 'text/plain' }); }) });
-      return cb.write([item]).then(function() { return true; }, function() {
-        return pending.then(function(t) { return copyViaTextarea(t, host); });
-      });
-    } catch (_e) { /* a ClipboardItem without promise values: the paths below */ }
-  }
-  return pending.then(function(t) {
+  var plain = function(t) {
     if (cb && typeof cb.writeText === 'function') {
       return cb.writeText(t).then(function() { return true; }, function() { return copyViaTextarea(t, host); });
     }
     return copyViaTextarea(t, host);
-  });
+  };
+  if (cb && typeof cb.write === 'function' && typeof ClipboardItem === 'function') {
+    try {
+      var item = new ClipboardItem({ 'text/plain': pending.then(function(t) { return new Blob([t], { type: 'text/plain' }); }) });
+      return cb.write([item]).then(function() { return true; }, function() { return pending.then(plain); });
+    } catch (_e) { /* a ClipboardItem without promise values: the plain path */ }
+  }
+  return pending.then(plain);
 }
 function copyViaTextarea(t, host) {
   var ta = document.createElement('textarea');
@@ -17880,7 +17896,8 @@ function copyPanelPermalink(e) {
 function panelContextExportUrl(convId) {
   return '/api/conversations/' + encodeURIComponent(convId) + '/export';
 }
-// The conversation's export as text — a CSRF-protected POST: a stale token is refreshed and the post retried once.
+// The conversation's export as text — a CSRF-protected POST: a stale token is refreshed and the post retried once
+// (not when the refresh brought no new token: the same token would be refused again).
 function fetchPanelContext(convId) {
   var url = panelContextExportUrl(convId);
   var post = function() {
@@ -17891,7 +17908,9 @@ function fetchPanelContext(convId) {
   return post().then(function(res) {
     if (res.status !== 403) return res;
     return res.clone().json().catch(function() { return null; }).then(function(data) {
-      return isCsrfRejection(res.status, data) ? refreshCsrfToken().then(post) : res;
+      if (!isCsrfRejection(res.status, data)) return res;
+      var refused = _csrfToken;
+      return refreshCsrfToken().then(function() { return _csrfToken && _csrfToken !== refused ? post() : res; });
     });
   }).then(function(res) {
     if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -17902,7 +17921,7 @@ function fetchPanelContext(convId) {
 // press (copyToClipboard holds the pending text); a toast says how it went. One at a time (aria-busy).
 function copyPanelContext(btn) {
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  var cid = s && s.conversationId;
+  var cid = s && !isSiblingSession(s) && s.conversationId;
   if (!cid || (btn && btn.getAttribute('aria-busy') === 'true')) return Promise.resolve();
   if (btn) btn.setAttribute('aria-busy', 'true');
   return copyToClipboard(fetchPanelContext(cid), btn && btn.parentNode).then(function(ok) {
