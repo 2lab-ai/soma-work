@@ -29,6 +29,12 @@ interface HaltableSession {
 
 export interface SafeguardExternalHaltDeps {
   getSessionByKey(sessionKey: string): HaltableSession | undefined;
+  /**
+   * No session live under the key (closed while the guardian ran): leave the
+   * thread a tombstone so the next session there inherits the lock
+   * (`SessionRegistry.haltSafeguardByKey`).
+   */
+  haltSafeguardByKey?(sessionKey: string, halt: SafeguardHalt): unknown;
   saveSessions(): void;
   broadcastSessionUpdate?(): void;
   /** Absent → the lock still lands (fail closed); nothing stops the turn or posts. */
@@ -62,6 +68,24 @@ export function haltSessionOnSafeguardFlag(
   const { logger } = deps;
   const session = deps.getSessionByKey(sessionKey);
   if (!session) {
+    if (deps.haltSafeguardByKey) {
+      const halt: SafeguardHalt = { atMs: (deps.now ?? Date.now)(), ...flag };
+      deps.haltSafeguardByKey(sessionKey, halt);
+      try {
+        deps.saveSessions();
+      } catch (error) {
+        logger.error('Safeguard halt: saving the thread tombstone failed — halted in memory only', {
+          sessionKey,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      logger.warn('Safeguards block for a closed session — the thread is locked (tombstone)', {
+        sessionKey,
+        source: opts.source,
+        ...flag,
+      });
+      return halt;
+    }
     logger.error('Safeguards block for a session that is gone — nothing to halt', {
       sessionKey,
       source: opts.source,

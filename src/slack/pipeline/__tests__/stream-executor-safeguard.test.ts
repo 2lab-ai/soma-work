@@ -480,3 +480,82 @@ describe('safeguards — delegated agent and already-halted session (review roun
     expect(result.success).toBe(false);
   });
 });
+
+describe('safeguards — review round 6', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
+  });
+
+  // grok-elon P1: the permission guardian's block halts the session from
+  // outside this stream; the turn must end as the halt, never as a success.
+  it('a halt set outside the stream while the turn runs ends the turn as the halt, labelled', async () => {
+    const session = createSession();
+    async function* guardianHalted(): AsyncGenerator<any> {
+      yield { type: 'assistant', message: { content: [{ type: 'text', text: 'Cleaning up the build folder.' }] } };
+      session.safeguardHalt = { atMs: 5, detail: 'reasoning_extraction' }; // the policy hook locked it
+      yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: {} };
+    }
+    const deps = createDeps(guardianHalted);
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    const result = await executor.execute(createParams(say, session));
+
+    expect(result.success).toBe(false);
+    expect(result.retryAfterMs).toBeUndefined();
+    const phases = deps.threadPanel.setStatus.mock.calls.map((c: any[]) => c[2]?.agentPhase);
+    expect(phases).toContain('세이프가드 에러');
+    expect(deps.turnNotifier.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ category: 'Exception', errorKind: 'safeguard' }),
+    );
+  });
+
+  // astra-zhuge P1: prose buffered before the block must not hide it.
+  it('a block after buffered prose is still caught: the query stops and the raw block never posts', async () => {
+    async function* proseThenBlock(): AsyncGenerator<any> {
+      yield { type: 'assistant', message: { content: [{ type: 'text', text: 'Let me look at that file.' }] } };
+      yield { type: 'assistant', message: { content: [{ type: 'text', text: SAFEGUARD_TEXT }] } };
+      await new Promise(() => {}); // the result never comes
+    }
+    const deps = createDeps(proseThenBlock);
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    const result = await Promise.race([
+      executor.execute(createParams(say, session)),
+      new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 3_000)),
+    ]);
+
+    expect(result).not.toBe('hung');
+    expect(session.safeguardHalt?.detail).toBe('reasoning_extraction');
+    expect(sayTexts(say).some((t) => t.includes('safeguards flagged this message'))).toBe(false);
+  });
+
+  // astra-zhuge P2: the refused turn's controller must not outlive it.
+  it('a refused turn on a halted session releases its controller and goes idle', async () => {
+    const deps = createDeps(safeguardAsContentStream);
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    session.safeguardHalt = { atMs: 1 };
+    const params = createParams(vi.fn().mockResolvedValue({ ts: 'msg_ts' }), session);
+
+    await executor.execute(params);
+
+    expect(deps.requestCoordinator.removeController).toHaveBeenCalledWith('C777:thread777', params.abortController);
+  });
+
+  // astra-zhuge P1: the post-turn summary is another Claude query.
+  it('the summary timer runs no summary on a halted session', async () => {
+    const deps = createDeps(safeguardAsContentStream);
+    deps.summaryService = { execute: vi.fn().mockResolvedValue(null) };
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    session.safeguardHalt = { atMs: 1 };
+
+    await (executor as any).onSummaryTimerFire(session, 'C777:thread777');
+
+    expect(deps.summaryService.execute).not.toHaveBeenCalled();
+  });
+});

@@ -112,6 +112,14 @@ const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
  * retry (trinity design consult). Lifted only by the admin unlock.
  */
 const SAFEGUARD_TOMBSTONES_FILE = path.join(DATA_DIR, 'safeguard-halts.json');
+/**
+ * Where the locks go while {@link SAFEGUARD_TOMBSTONES_FILE} is unreadable
+ * (review R6, astra P1): that file is never overwritten then (its raw text is
+ * the fail-closed evidence), yet a lock set or lifted meanwhile must survive a
+ * restart. `{ halts: {key: halt}, lifted: [key] }`, read on every load and
+ * emptied (never unlinked) once the main file is written again.
+ */
+const SAFEGUARD_TOMBSTONES_SIDECAR = path.join(DATA_DIR, 'safeguard-halts.while-unreadable.json');
 
 // Dashboard improvements (v2.1): max duration of a single active-leg before we
 // assume the process missed an endTurn (crash / OS sleep) and cap the accumulator.
@@ -940,6 +948,28 @@ export class SessionRegistry {
       throw error;
     }
     return true;
+  }
+
+  /**
+   * Put a safeguards lock on the thread `sessionKey` names (#904) — on its
+   * LIVE session (a close/restore puts a new object under the key, so a lock
+   * written on an object captured earlier would be lost: review R6, astra P1),
+   * or, when no session is live there, as the thread's tombstone, which the
+   * next session under the key inherits. An existing lock is kept. The caller
+   * saves.
+   */
+  haltSafeguardByKey(sessionKey: string, halt: SafeguardHalt): 'session' | 'tombstone' | 'already' {
+    const key = normalizeSessionKey(sessionKey);
+    const session = this.sessions.get(key);
+    if (session) {
+      if (session.safeguardHalt) return 'already';
+      session.safeguardHalt = halt;
+      return 'session';
+    }
+    if (this.safeguardTombstones.has(key)) return 'already';
+    this.safeguardTombstones.set(key, halt);
+    this.safeguardLiftedWhileUnreadable.delete(key);
+    return 'tombstone';
   }
 
   getSessionByKey(sessionKey: string): ConversationSession | undefined {
@@ -3750,11 +3780,24 @@ export class SessionRegistry {
    */
   /** Persist {@link safeguardTombstones} (removes the file once none is left). */
   private writeSafeguardTombstones(): void {
-    if (this.safeguardTombstonesUnreadable) return;
+    if (this.safeguardTombstonesUnreadable) {
+      // The main file stays as found; what changed since goes to the sidecar.
+      atomicWriteJson(
+        SAFEGUARD_TOMBSTONES_SIDECAR,
+        { halts: Object.fromEntries(this.safeguardTombstones), lifted: [...this.safeguardLiftedWhileUnreadable] },
+        { backup: true },
+      );
+      return;
+    }
     if (this.safeguardTombstones.size === 0 && !fs.existsSync(SAFEGUARD_TOMBSTONES_FILE)) return;
     // Never unlinked: an empty set is written as `{}` so the `.bak` (the
     // previous contents) can never be read back as the current set.
     atomicWriteJson(SAFEGUARD_TOMBSTONES_FILE, Object.fromEntries(this.safeguardTombstones), { backup: true });
+    // The sidecar's locks are in the main file now: empty it so a lock lifted
+    // since never comes back from it.
+    if (fs.existsSync(SAFEGUARD_TOMBSTONES_SIDECAR)) {
+      atomicWriteJson(SAFEGUARD_TOMBSTONES_SIDECAR, { halts: {}, lifted: [] }, { backup: true });
+    }
   }
 
   /**
@@ -3788,6 +3831,44 @@ export class SessionRegistry {
         }
       }
       this.logger.error('Safeguard halt tombstones unreadable — removed-session locks are not restored', error);
+    }
+    this.loadSafeguardTombstoneSidecar();
+  }
+
+  /** Merge {@link SAFEGUARD_TOMBSTONES_SIDECAR}: its locks join the set, its lifted keys stay lifted. */
+  private loadSafeguardTombstoneSidecar(): void {
+    if (!fs.existsSync(SAFEGUARD_TOMBSTONES_SIDECAR) && !fs.existsSync(`${SAFEGUARD_TOMBSTONES_SIDECAR}.bak`)) return;
+    try {
+      const raw = loadJsonWithBackup(SAFEGUARD_TOMBSTONES_SIDECAR, (value) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('not an object');
+        return value as { halts?: unknown; lifted?: unknown };
+      });
+      const lifted = Array.isArray(raw?.lifted)
+        ? raw.lifted.filter((key): key is string => typeof key === 'string').map((key) => normalizeSessionKey(key))
+        : [];
+      for (const key of lifted) {
+        this.safeguardLiftedWhileUnreadable.add(key);
+        this.safeguardTombstones.delete(key);
+      }
+      const halts = raw?.halts && typeof raw.halts === 'object' ? (raw.halts as Record<string, unknown>) : {};
+      for (const [key, value] of Object.entries(halts)) {
+        const halt = restoreSafeguardHalt(value);
+        if (!halt) continue;
+        const normalized = normalizeSessionKey(key);
+        this.safeguardTombstones.set(normalized, halt);
+        this.safeguardLiftedWhileUnreadable.delete(normalized);
+      }
+    } catch (error) {
+      // Fail closed on whatever keys it names, like the main file.
+      this.safeguardTombstonesUnreadable = true;
+      for (const file of [SAFEGUARD_TOMBSTONES_SIDECAR, `${SAFEGUARD_TOMBSTONES_SIDECAR}.bak`]) {
+        try {
+          this.safeguardTombstonesRaw += fs.readFileSync(file, 'utf-8');
+        } catch {
+          // gone or unreadable
+        }
+      }
+      this.logger.error('Safeguard halt sidecar unreadable — failing closed on the keys it names', error);
     }
   }
 

@@ -1103,3 +1103,35 @@ describe('incident stream: Anthropic safeguards block', () => {
     expect(flags).toHaveLength(0);
   });
 });
+
+describe('incident stream: the block stops the attempt where it is seen (review round 6, astra P1)', () => {
+  const BLOCK =
+    "API Error: Opus 5.5 (1M context)'s safeguards flagged this message (https://www.anthropic.com/legal/aup).\n" +
+    'Details: `[reasoning_extraction]`\nRequest ID: req_r6';
+
+  it('reports the halt before pulling anything after the block, and stops consuming the source', async () => {
+    const order: string[] = [];
+    const registry = registryWith();
+    async function* source(): AsyncGenerator<SDKMessage> {
+      yield assistantMessage([{ type: 'text', text: BLOCK }]);
+      order.push('pulled-after-block');
+      yield assistantMessage([{ type: 'tool_use', id: 'tu_9', name: 'mcp__incident_evidence__collect', input: {} }]);
+      yield resultMessage();
+    }
+    const out: SDKMessage[] = [];
+    for await (const message of screenIncidentStream(source(), {
+      request: REQUEST,
+      verifiedEvidence: () => registry.verifiedAt(NOW),
+      sourceCaveat: () => registry.sourceCaveat(),
+      observe: () => ({ budgetExpired: false, aborted: false }),
+      identity: () => ({ sessionId: 'sdk-session', model: 'claude-fable-5-1' }),
+      uuid: () => 'uuid-fixed',
+      onSafeguardFlag: () => order.push('halted'),
+    } as Parameters<typeof screenIncidentStream>[1])) {
+      out.push(message);
+    }
+    expect(order).toEqual(['halted']);
+    expect(JSON.stringify(out)).not.toContain('tu_9');
+    expect(markerLines((out[out.length - 1] as unknown as { result: string }).result)).toHaveLength(1);
+  });
+});

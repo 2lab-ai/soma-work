@@ -177,4 +177,65 @@ describe('SessionRegistry — safeguardHalt survives a restart', () => {
     expect(reg.getSafeguardHalt('C1', '171.801')).toEqual(HALT);
     spy.mockRestore();
   });
+  // Review gate round 6 (astra-zhuge P1 + P2, PR #906): while the tombstone
+  // file is unreadable it is never overwritten — yet a lock set (or lifted)
+  // meanwhile must survive a restart.
+  function tearTombstoneFile(): void {
+    const file = path.join(TEST_DATA_DIR, 'safeguard-halts.json');
+    const raw = fs.readFileSync(file, 'utf-8');
+    fs.writeFileSync(file, raw.slice(0, raw.length - 3)); // torn
+    fs.writeFileSync(`${file}.bak`, '{ torn');
+  }
+
+  function unreadableRegistry(): SessionRegistry {
+    const writer = new SessionRegistry();
+    const a = writer.createSession('U1', 'Tester', 'C1', '171.901');
+    a.sessionId = 'sdk-U1';
+    a.safeguardHalt = HALT;
+    writer.saveSessions();
+    writer.terminateSession(writer.getSessionKey('C1', '171.901'));
+    tearTombstoneFile();
+    const reg = new SessionRegistry();
+    reg.loadSessions();
+    return reg;
+  }
+
+  it('unreadable tombstones: a session halted and closed meanwhile stays locked after a restart', () => {
+    const reg = unreadableRegistry();
+    const b = reg.createSession('U1', 'Tester', 'C1', '171.902');
+    b.sessionId = 'sdk-U2';
+    b.safeguardHalt = { atMs: 2_000, detail: 'reasoning_extraction' };
+    reg.saveSessions();
+    reg.terminateSession(reg.getSessionKey('C1', '171.902'));
+
+    const after = new SessionRegistry();
+    after.loadSessions();
+    expect(after.getSafeguardHalt('C1', '171.902')).toEqual({ atMs: 2_000, detail: 'reasoning_extraction' });
+    expect(after.getSafeguardHalt('C1', '171.901')).toBeDefined(); // the torn file still fails closed
+  });
+
+  it('unreadable tombstones: an admin lift survives a restart', () => {
+    const reg = unreadableRegistry();
+    expect(reg.liftSafeguardHalt(reg.getSessionKey('C1', '171.901'))).toBe(true);
+
+    const after = new SessionRegistry();
+    after.loadSessions();
+    expect(after.getSafeguardHalt('C1', '171.901')).toBeUndefined();
+  });
+
+  it('haltSafeguardByKey locks the live session, or tombstones a thread with none', () => {
+    const reg = new SessionRegistry();
+    const s = reg.createSession('U1', 'Tester', 'C1', '171.950');
+    s.sessionId = 'sdk-H';
+    expect(reg.haltSafeguardByKey(reg.getSessionKey('C1', '171.950'), HALT)).toBe('session');
+    expect(s.safeguardHalt).toEqual(HALT);
+    expect(reg.haltSafeguardByKey(reg.getSessionKey('C1', '171.950'), { atMs: 9 })).toBe('already');
+    expect(s.safeguardHalt).toEqual(HALT);
+
+    expect(reg.haltSafeguardByKey(reg.getSessionKey('C1', '171.951'), HALT)).toBe('tombstone');
+    reg.saveSessions();
+    const after = new SessionRegistry();
+    after.loadSessions();
+    expect(after.getSafeguardHalt('C1', '171.951')).toEqual(HALT);
+  });
 });

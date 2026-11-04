@@ -127,6 +127,12 @@ export interface GoalLoopRegistry {
    * Optional — hosts without a dashboard (and test doubles) omit it.
    */
   broadcastSessionUpdate?(): void;
+  /**
+   * Lock the thread's LIVE session — or, with none live, leave the thread a
+   * tombstone (`SessionRegistry.haltSafeguardByKey`). Optional for test
+   * doubles; without it the controller locks the live object it can find.
+   */
+  haltSafeguardByKey?(sessionKey: string, halt: NonNullable<ConversationSession['safeguardHalt']>): unknown;
 }
 
 /** Request-coordinator surface the controller needs. */
@@ -860,7 +866,14 @@ export class GoalLoopController {
       (err instanceof GoalEvalParseError ? parseSafeguardFlag(err.raw, { source: 'error' }) : null);
     if (evalFlag) {
       const halt = { atMs: this.now(), ...evalFlag };
-      session.safeguardHalt = halt;
+      // The lock goes on the thread's LIVE session: a close/restore while the
+      // eval ran put a new object under the key, and a lock on the captured
+      // one would be lost (review R6, astra P1). No live session → the
+      // thread's tombstone.
+      const liveSession = registry.getSessionByKey(sessionKey);
+      if (registry.haltSafeguardByKey) registry.haltSafeguardByKey(sessionKey, halt);
+      else if (liveSession && !liveSession.safeguardHalt) liveSession.safeguardHalt = halt;
+      if (!session.safeguardHalt) session.safeguardHalt = halt;
       if (live && live.goalId === snapshot.goalId && live.pendingEval?.requestedAt === startedAt) {
         live.pendingEval = undefined;
       }
@@ -886,7 +899,7 @@ export class GoalLoopController {
           });
         }
       }
-      void this.postLooseNotice(session, safeguardEvalHaltNoticeText(halt)).catch(() => undefined);
+      void this.postLooseNotice(liveSession ?? session, safeguardEvalHaltNoticeText(halt)).catch(() => undefined);
       return;
     }
 
