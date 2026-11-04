@@ -140,7 +140,6 @@ import {
   NewTaskError,
   type NewTaskSubmission,
   parseAttachments,
-  composeTaskText,
   parseNewTaskSubmission,
 } from './new-task';
 import type { NewTaskLaunchResult } from './new-task-launcher';
@@ -4711,15 +4710,14 @@ export async function registerDashboardRoutes(
           if (!parsed.ok) throw new NewTaskError(400, parsed.error);
           // A first message the router only answers (`/help`, `/model opus`, `/goal` with no objective) makes no
           // session: it is launched answer-only — the command answers in the new thread, no session is awaited, and
-          // the launch says where the answer is (`status: 'answered'`, no board card). Judged as the launch sends it
-          // (autoz appends `$autoz` — a skill turn — unless plan or epic is on).
-          const answerOnly =
-            classifyCommand(composeTaskText(parsed.value.prompt, parsed.value.autoz), userId) === 'control';
+          // the launch says where the answer is (`status: 'answered'`, no board card). It is judged as typed and sent
+          // as typed: autoz is for an instruction, and `$autoz` after a command would make it a skill turn instead.
+          const answerOnly = classifyCommand(parsed.value.prompt.trim(), userId) === 'control';
           // #854 — an epic only behind the owner's flag (the composer offers it only then).
           if (parsed.value.epic === true && !epicTasksFor(userId)) {
             throw new NewTaskError(403, '에픽은 꺼져 있습니다 — `/z epictasks on`으로 켜세요');
           }
-          return provider.start(userId, answerOnly ? { ...parsed.value, answerOnly: true } : parsed.value);
+          return provider.start(userId, answerOnly ? { ...parsed.value, autoz: false, answerOnly: true } : parsed.value);
         });
         // Its session is on the board from its creation, before its SDK session (SSOT 2026-11-02). An answered
         // command has no session.
