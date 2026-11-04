@@ -49,7 +49,7 @@ export interface SafeguardExternalHaltDeps {
 
 export interface SafeguardExternalHaltOptions {
   /** Where the block was seen — for the log. */
-  source: 'guardian' | 'incident';
+  source: 'guardian' | 'incident' | 'summary';
   /**
    * Stop the session's running turn. The guardian's block arrives while the
    * turn runs; an incident attempt's arrives as the attempt ends, and its host

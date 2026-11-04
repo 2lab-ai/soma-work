@@ -9,6 +9,7 @@
  */
 
 import { Logger } from '@soma/common/logger';
+import { safeguardFlagOf } from '@soma/common/safeguard';
 import type { ForkExecutor } from './summary-service.js';
 
 export interface ForkDispatchHandler {
@@ -119,6 +120,10 @@ export function createForkExecutor(claudeHandler: ForkDispatchHandler): ForkExec
 
       return trimmed;
     } catch (error) {
+      // An Anthropic safeguards block is not a failed summary: the session
+      // cannot go on, so it reaches the caller, which halts it (#904, review
+      // R8 astra P1) — swallowed here, nothing would ever lock the thread.
+      if (safeguardFlagOf(error)) throw error;
       // Distinguish abort (expected cancellation) from real errors to avoid noisy telemetry
       const isAbort = (error instanceof Error && error.name === 'AbortError') || abortSignal?.aborted;
       if (isAbort) {

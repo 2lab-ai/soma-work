@@ -266,4 +266,24 @@ describe('SessionRegistry — safeguardHalt survives a restart', () => {
     const reborn = reg.createSession('U1', 'Tester', 'C1', '171.901');
     expect(reborn.safeguardHalt).toBeDefined();
   });
+  // Review gate round 8 (astra-zhuge + fable-zhuge P1, PR #906): a lift recorded
+  // against the raw evidence never deletes a LATER lock on the same thread.
+  it('an old lift does not delete a new lock on the same thread after a restart', () => {
+    const reg = unreadableRegistry(); // 171.901 is locked by raw evidence only
+    expect(reg.liftSafeguardHalt(reg.getSessionKey('C1', '171.901'))).toBe(true);
+    // The operator repairs the main file.
+    fs.writeFileSync(path.join(TEST_DATA_DIR, 'safeguard-halts.json'), '{}');
+    fs.writeFileSync(path.join(TEST_DATA_DIR, 'safeguard-halts.json.bak'), '{}');
+    const repaired = new SessionRegistry();
+    repaired.loadSessions();
+    const again = repaired.createSession('U1', 'Tester', 'C1', '171.901');
+    again.sessionId = 'sdk-U3';
+    again.safeguardHalt = { atMs: 2_000, detail: 'reasoning_extraction' };
+    repaired.saveSessions();
+    repaired.terminateSession(repaired.getSessionKey('C1', '171.901'));
+
+    const after = new SessionRegistry();
+    after.loadSessions();
+    expect(after.getSafeguardHalt('C1', '171.901')).toEqual({ atMs: 2_000, detail: 'reasoning_extraction' });
+  });
 });

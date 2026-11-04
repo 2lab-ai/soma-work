@@ -564,10 +564,10 @@ export class ClaudeHandler implements TurnSteeringPort {
    * its turn's stream — the permission guardian, or an incident attempt (#904,
    * review R5). Halt the session: only an admin may let it go on.
    */
-  private reportSafeguardFlag(
+  reportSafeguardFlag(
     sessionKey: string,
     flag: SafeguardFlagInfo,
-    opts: { source: 'guardian' | 'incident'; stopRunningTurn: boolean },
+    opts: { source: 'guardian' | 'incident' | 'summary'; stopRunningTurn: boolean },
   ): void {
     haltSessionOnSafeguardFlag(
       {
