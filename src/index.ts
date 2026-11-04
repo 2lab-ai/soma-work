@@ -130,7 +130,7 @@ import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR } from './env-paths';
 import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
 import { createGithubReceiptChecker } from './github-receipt';
 import { InstructionApprovals, setInstructionApprovals } from './instruction-approval';
-import { fetchGitHubPullsForHead, fetchGitHubReceiptObject } from './link-metadata-fetcher';
+import { fetchGitHubPullState, fetchGitHubPullsForHead, fetchGitHubReceiptObject } from './link-metadata-fetcher';
 import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 import { startLinkLeakReport, startReportScheduler, stopLinkLeakReport, stopReportScheduler } from './metrics';
@@ -172,6 +172,7 @@ import {
   scanGitCheckouts,
   sessionDirs,
 } from './session-pr-reconciler';
+import { createSessionPrWatch, type SessionPrWatch } from './session-pr-watch';
 import { applySummaryTitle } from './session-title-policy';
 import {
   displayLangMiddleware,
@@ -1950,6 +1951,43 @@ async function start() {
       logger.warn('Failed to start cron scheduler (non-critical)', error);
     }
 
+    // #928 (epic #935) — a session's PR keeps its card current after the turn: a merge or a close reaches the card and
+    // the thread once (#644). Polls GitHub with ETags (a 304 is free); `SOMA_PR_WATCH=off` stops it.
+    let sessionPrWatch: SessionPrWatch | null = null;
+    if (config.github.prWatch) {
+      const prWatchRegistry = claudeHandler.getSessionRegistry();
+      sessionPrWatch = createSessionPrWatch({
+        sessions: function* () {
+          for (const [sessionKey, s] of prWatchRegistry.getAllSessions()) {
+            const at = s.lastActivity instanceof Date ? s.lastActivity.getTime() : Date.parse(String(s.lastActivity));
+            yield {
+              sessionKey,
+              terminated: s.terminated,
+              ...(Number.isFinite(at) ? { lastActivityMs: at } : {}),
+              pr: s.links?.pr ?? null,
+            };
+          }
+        },
+        fetchPull: fetchGitHubPullState,
+        updateStatus: (sessionKey, url, status) =>
+          prWatchRegistry.noteSessionLinksByKey(
+            sessionKey,
+            [{ url, type: 'pr', provider: 'github', status }],
+            'update',
+          ),
+        pushCard: (sessionKey) => scheduleLiveSessionUpdate(sessionKey),
+        notify: async (sessionKey, text) => {
+          const s = prWatchRegistry.getSessionByKey(sessionKey);
+          // A dashboard task has no Slack thread: its card is the notice.
+          if (!s?.channelId) return;
+          await app.client.chat.postMessage({ channel: s.channelId, thread_ts: s.threadTs, text });
+        },
+        logger,
+      });
+      sessionPrWatch.start();
+      timing('Session PR watch started');
+    }
+
     // Goal auto-continuation loop — idle-settle driver.
     //
     // Spec (docs/goal-command/spec.md §Auto-Continuation Loop):
@@ -2227,6 +2265,7 @@ async function start() {
         if (cronScheduler) {
           cronScheduler.stop();
         }
+        sessionPrWatch?.stop();
 
         // Stop CCT usage refresh scheduler before TM so no pump fires mid-teardown
         if (usageRefreshScheduler) {

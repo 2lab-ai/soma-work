@@ -294,6 +294,8 @@ scripts/setup/        # DEPRECATED 셸 수집기 — 도달 불가, 번들 제�
 
 Slack(Bolt 4.x, Socket Mode) · Anthropic Claude Agent SDK · GitHub(App OAuth + REST) · Jira · Telegram(알림 폴백) · Webhook · esm.sh 기반 내부 렌더러 스킬.
 
+- **세션 PR 감시 (#928, epic #935)**: `src/session-pr-watch.ts`가 60초마다 종료되지 않고 14일 안에 활동한 세션의 현재 PR(`links.pr`, 카드가 아직 머지·닫힘으로 보이지 않는 것)을 PR당 한 번, 오래 안 물어본 순으로 틱당 최대 20개 읽는다(`fetchGitHubPullState`, If-None-Match — 304는 rate limit에 안 잡힘). 상태가 바뀌면 `noteSessionLinksByKey(…, 'update')` → 카드 push, 머지·닫힘이면 스레드에 한 줄 알림(대시보드 작업은 카드만). 상태를 먼저 저장하고 알리므로 재시작해도 알림을 반복하지 않는다. 데몬 기동 때 `start`, 종료 때 `stop`(`src/index.ts`); `SOMA_PR_WATCH=off`로 끈다. 턴 안의 기록(#832 쓰기 확인, #833 턴 끝 대조)이 놓치는 "턴 뒤의 머지"를 맡는다(#644).
+
 ## Design Principles
 
 1. **Facade + Pipeline**: SlackHandler/ClaudeHandler가 진입 파사드, 실제 처리는 pipeline 3단계로 분리
