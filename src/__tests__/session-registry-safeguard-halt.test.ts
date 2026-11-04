@@ -161,4 +161,20 @@ describe('SessionRegistry — safeguardHalt survives a restart', () => {
     expect(reader.liftSafeguardHalt(reader.getSessionKey('C1', '171.702'))).toBe(true);
     expect(reader.getSafeguardHalt('C1', '171.702')).toBeUndefined();
   });
+
+  // Review gate round 4 (fable-zhuge P2, PR #906).
+  it('a lift whose save fails leaves the lock in memory too (matches "still locked")', () => {
+    const reg = new SessionRegistry();
+    const s = reg.createSession('U1', 'Tester', 'C1', '171.801');
+    s.sessionId = 'sdk-K';
+    s.safeguardHalt = HALT;
+    reg.saveSessions();
+    const spy = vi.spyOn(reg, 'saveSessionsOrThrow').mockImplementation(() => {
+      throw new Error('disk full');
+    });
+
+    expect(() => reg.liftSafeguardHalt(reg.getSessionKey('C1', '171.801'))).toThrow('disk full');
+    expect(reg.getSafeguardHalt('C1', '171.801')).toEqual(HALT);
+    spy.mockRestore();
+  });
 });

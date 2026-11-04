@@ -925,10 +925,20 @@ export class SessionRegistry {
     const session = this.sessions.get(key);
     const had = this.getSafeguardHaltByKey(key) !== undefined;
     if (!had) return false;
+    const before = { session: session?.safeguardHalt, tombstone: this.safeguardTombstones.get(key) };
     if (session) session.safeguardHalt = undefined;
     this.safeguardTombstones.delete(key);
     if (this.safeguardTombstonesUnreadable) this.safeguardLiftedWhileUnreadable.add(key);
-    this.saveSessionsOrThrow();
+    try {
+      this.saveSessionsOrThrow();
+    } catch (error) {
+      // Not on disk → not lifted: put the lock back so memory matches what the
+      // admin is told ("still locked").
+      if (session && before.session) session.safeguardHalt = before.session;
+      if (before.tombstone) this.safeguardTombstones.set(key, before.tombstone);
+      this.safeguardLiftedWhileUnreadable.delete(key);
+      throw error;
+    }
     return true;
   }
 
