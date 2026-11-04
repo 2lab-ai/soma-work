@@ -1407,6 +1407,20 @@ export function setDashboardCommandClassifier(fn: DashboardCommandClassifier | n
   _commandClassifierFn = fn;
 }
 
+/** The classifier's answer, or undefined when none is wired or it throws (the command already went out — never a 500). */
+function classifyCommand(text: string, user?: string): ReturnType<DashboardCommandClassifier> | undefined {
+  try {
+    return _commandClassifierFn?.(text, user);
+  } catch (error) {
+    logger.warn('Command classifier failed — answering without where the answer is', error);
+    return undefined;
+  }
+}
+
+/** Why a new task whose first message only answers is refused (en-text.json has its English). */
+const NEW_TASK_ANSWER_ONLY =
+  '이 명령은 답만 하고 작업을 시작하지 않아요 — 뒤에 지시를 붙이거나(예: /goal 테스트 전부 통과) 열린 세션에서 보내세요';
+
 /**
  * Task star + revive (SSOT 2026-10-30), wired to the session registry in
  * src/index.ts: star / unstar a live session (starring a sleeping one wakes
@@ -4016,7 +4030,9 @@ export async function registerDashboardRoutes(
           else await _commandHandlerFn(originalKey, message, files.value, sender);
         }
         // A command that only answers (`/help`, `/model opus`): its answer is a Slack thread message — say so.
-        const answersInThread = !waits && !!message.trim() && _commandClassifierFn?.(message.trim(), sender) === 'control';
+        // Classified as whoever it runs as (the sender, else the owner — injectDashboardMessage's actor).
+        const runsAs = sender || _getSessionsFn?.()?.get(originalKey)?.ownerId;
+        const answersInThread = !waits && !!message.trim() && classifyCommand(message.trim(), runsAs) === 'control';
         reply.send(waits ? { ok: true, pendingApproval: true } : answersInThread ? { ok: true, answer: 'thread' } : { ok: true });
       } catch (error) {
         logger.error('Error sending command to session', error);
@@ -4690,6 +4706,12 @@ export async function registerDashboardRoutes(
           const context = await provider.context(userId, { fresh: true });
           const parsed = parseNewTaskSubmission(request.body, context);
           if (!parsed.ok) throw new NewTaskError(400, parsed.error);
+          // A first message the router only answers (`/help`, `/goal` with no objective, `%model` alone) makes no
+          // session: the launch would wait for a task that never starts. Refused before anything is posted — the
+          // dialog keeps the text (trinity R2).
+          if (classifyCommand(parsed.value.prompt.trim(), userId) === 'control') {
+            throw new NewTaskError(400, NEW_TASK_ANSWER_ONLY);
+          }
           // #854 — an epic only behind the owner's flag (the composer offers it only then).
           if (parsed.value.epic === true && !epicTasksFor(userId)) {
             throw new NewTaskError(403, '에픽은 꺼져 있습니다 — `/z epictasks on`으로 켜세요');
