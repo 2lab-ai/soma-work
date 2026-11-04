@@ -310,6 +310,33 @@ describe('fetchGitHubPullActivity (#930)', () => {
     expect(answer?.items.map((i) => i.url).sort()).toEqual(['u8', 'u9']);
   });
 
+  it('A7 — a last page with only a pending review walks on back (#930 round 3)', async () => {
+    const lastUrl = 'https://api.github.com/repos/a/b/pulls/12/reviews?per_page=100&page=3';
+    vi.stubGlobal(
+      'fetch',
+      route({
+        '/issues/12/comments': { body: [] },
+        '/pulls/12/comments': { body: [] },
+        '/pulls/12/reviews?per_page=100&page=3': {
+          body: [{ id: 10, user: { login: 'carol' }, state: 'PENDING', html_url: 'u10' }],
+        },
+        '/pulls/12/reviews?per_page=100&page=2': {
+          body: [
+            { id: 8, user: { login: 'bob' }, state: 'COMMENTED', html_url: 'u8', submitted_at: '2026-11-04T11:58:00Z' },
+          ],
+        },
+        '/pulls/12/reviews?per_page=100': {
+          body: [
+            { id: 1, user: { login: 'bob' }, state: 'COMMENTED', html_url: 'u1', submitted_at: '2026-11-01T00:00:00Z' },
+          ],
+          link: `<${lastUrl}>; rel="last"`,
+        },
+      }),
+    );
+    const answer = await fetchGitHubPullActivity('a', 'b', 12, SINCE);
+    expect(answer?.items.map((i) => i.url)).toEqual(['u8']);
+  });
+
   it('A6 — what a third party wrote is not carried at all: items have no body (#930 round 2)', async () => {
     vi.stubGlobal(
       'fetch',

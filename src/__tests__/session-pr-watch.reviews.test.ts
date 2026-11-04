@@ -365,4 +365,36 @@ describe('session PR watch — reviews and comments, round 2 (#930)', () => {
     await watch.tick();
     expect(current?.()).toBe(false);
   });
+
+  it('an activity message dropped before it ran is read again, even on a 304 (#930 round 3)', async () => {
+    const h = harness();
+    h.state.holdDone = true;
+    h.data.set(KEY, { since: iso(10) });
+    h.state.activity = [item({ at: iso(2) })];
+    const watch = createSessionPrWatch(h.deps);
+    await watch.tick();
+    expect(h.state.delivered).toHaveLength(1);
+    // Dropped (the card moved away and back while it waited): not recorded, and remembered as unread.
+    h.state.waiting[0]?.('gone');
+    expect(h.data.get(KEY)?.since).toBe(iso(10));
+    h.state.pull = 'not-modified';
+    h.state.holdDone = false;
+    await watch.tick();
+    expect(h.state.delivered).toHaveLength(2);
+    expect(h.data.get(KEY)?.since).toBe(iso(2));
+  });
+
+  it('a waiting activity message asks the live sessions who owns the PR — no tick in between (#930 round 3)', async () => {
+    const h = harness();
+    h.state.holdDone = true;
+    h.data.set(KEY, { since: iso(10) });
+    h.state.activity = [item({ at: iso(2) })];
+    const sessions = h.deps.sessions;
+    await createSessionPrWatch(h.deps).tick();
+    const current = h.state.currents[0];
+    expect(current?.()).toBe(true);
+    const other: WatchCandidate = { sessionKey: 's2', lastActivityMs: NOW, pr: { url: URL_A, status: 'open' } };
+    h.deps.sessions = () => [...sessions(), other];
+    expect(current?.()).toBe(false);
+  });
 });
