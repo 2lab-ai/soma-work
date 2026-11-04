@@ -357,7 +357,7 @@ describe('POST /api/dashboard/new-task — a first message that only answers sta
     await stopWebServer?.();
   });
 
-  async function launch(prompt: string, requestId: string) {
+  async function launch(prompt: string, requestId: string, autoz = false) {
     const { issueSlackToken } = await import('../oauth');
     const token = issueSlackToken({ slackUserId: 'U_PLAIN', email: 'U_PLAIN@slack.local', name: 'Plain' });
     const sso = await injectWebServer({ method: 'GET', url: `/auth/sso?token=${encodeURIComponent(token)}` });
@@ -376,7 +376,7 @@ describe('POST /api/dashboard/new-task — a first message that only answers sta
         effort: 'xhigh',
         channelId: 'C_ALPHA',
         autogoal: true,
-        autoz: false,
+        autoz,
         attachments: [],
       },
     });
@@ -390,6 +390,15 @@ describe('POST /api/dashboard/new-task — a first message that only answers sta
     expect(JSON.parse(res.body).error).toContain('작업을 시작하지 않아요');
     expect(classify).toHaveBeenCalledWith('/goal', 'U_PLAIN');
     expect(start).not.toHaveBeenCalled();
+  });
+
+  it('what is judged is what the launch sends: with autoz on, %nogoal goes with $autoz after it — a skill turn, launched', async () => {
+    const classify = vi.fn((text: string) => (text.includes('$autoz') ? 'control-with-dispatch' : 'control'));
+    dashboard.setDashboardCommandClassifier(classify);
+    const res = await launch('%nogoal', 'req-nogoal-autoz-01', true);
+    expect(res.statusCode).toBe(200);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(classify).toHaveBeenCalledWith('$autoz', 'U_PLAIN');
   });
 
   it('/goal with its objective starts the task', async () => {
