@@ -126,6 +126,20 @@ export function consumeFollowUpVerdict(session: object | undefined, now: number)
   if (f && f.askedAt === undefined) f.askedAt = now;
 }
 
+/**
+ * The host is about to let the agent act again on its own (a goal resume, an objective update): the follow-up question
+ * no longer applies (trinity R2 fable P2 — left open, the session stays `waiting` and the kicked loop refuses to run).
+ * Consumes the verdict and returns the question's turn id to retract, if one was asked.
+ */
+export function takeFollowUpQuestion(session: object | undefined, now: number): string | undefined {
+  const f = (session as { followUp?: { askedAt?: number; questionTurnId?: string } } | undefined)?.followUp;
+  if (!f) return undefined;
+  consumeFollowUpVerdict(session, now);
+  const turnId = f.questionTurnId;
+  f.questionTurnId = undefined;
+  return turnId;
+}
+
 export interface FollowUpQuestionDeps {
   getSession(sessionKey: string): FollowUpQuestionSession | undefined;
   isRequestActive(sessionKey: string): boolean;

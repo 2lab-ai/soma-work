@@ -7,6 +7,7 @@ import {
   FOLLOW_UP_QUESTION_ID,
   type FollowUpQuestionDeps,
   shouldAskFollowUpQuestion,
+  takeFollowUpQuestion,
 } from '../follow-up-question';
 import { applyFollowUp, setFollowUpListener } from '../summary-service';
 
@@ -235,5 +236,21 @@ describe('consumeFollowUpVerdict — the user acting consumes the verdict (trini
     consumeFollowUpVerdict(s, NOW);
     applyFollowUp(s, ['done', `⚠️ **${REASON}**`, 'next'], NOW + 1);
     expect(shouldAskFollowUpQuestion(s, { requestActive: false, now: NOW + 2 })).toBe(true);
+  });
+});
+
+describe('takeFollowUpQuestion — a goal kick takes the question back (trinity R2 fable P2)', () => {
+  it('returns the asked question to retract, unbinds it and consumes the verdict', () => {
+    const s = idle({ followUp: { reason: REASON, at: 1, askedAt: 2, questionTurnId: 'host:k:9' } });
+    expect(takeFollowUpQuestion(s, NOW)).toBe('host:k:9');
+    expect(s.followUp.questionTurnId).toBeUndefined();
+    expect(s.followUp.askedAt).toBe(2);
+  });
+
+  it('an unasked verdict is consumed (the agent acts again; the next summary judges), nothing to retract', () => {
+    const s = idle();
+    expect(takeFollowUpQuestion(s, NOW)).toBeUndefined();
+    expect(s.followUp.askedAt).toBe(NOW);
+    expect(takeFollowUpQuestion(idle({ followUp: undefined }), NOW)).toBeUndefined();
   });
 });
