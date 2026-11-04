@@ -556,6 +556,7 @@ CONTINUE_SESSION payload:
 | `src/prompt/workflows/jira-planning.prompt` | Implementation Spec 작성 워크플로우 |
 | `src/dispatch-service.ts` | 디스패치 서비스 (Haiku 호출 + JSON 파싱) |
 | `src/prompt-builder.ts` | 시스템 프롬프트 조립 (include + variable + persona) |
+| `src/__tests__/prompt-budget.test.ts` | 매 턴 고정 텍스트 크기 예산 — 워크플로우별 시스템 프롬프트, dispatch·goal-eval·restart 프롬프트, 스킬·에이전트 설명. 넘으면 큰 부분을 출력하고 실패한다. 예산 상향은 이 파일의 숫자를 같은 PR에서 고친다 (#931) |
 | `src/slack/pipeline/input-processor.ts` | 입력 전처리 (파일 + 커맨드) |
 | `src/slack/pipeline/session-initializer.ts` | 세션 생성 + 디스패치 트리거 + 채널 라우팅 |
 | `src/slack/pipeline/stream-executor.ts` | Claude SDK 실행 + 스트리밍 응답 처리 |
