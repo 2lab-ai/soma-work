@@ -449,6 +449,11 @@ export const config = {
     token: process.env.GITHUB_TOKEN || '',
     /** #928 — watch each live session's PR after its turn (card state, merge/close notice). `SOMA_PR_WATCH=off` stops it. */
     prWatch: parseBool(process.env.SOMA_PR_WATCH, true),
+    /** #930 — bot logins whose PR reviews may wake a session (`a[bot],b[bot]`). Empty (default): no bot does. */
+    prWatchBots: (process.env.SOMA_PR_WATCH_BOTS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
   },
   adminUsers: (process.env.ADMIN_USERS || '')
     .split(',')
