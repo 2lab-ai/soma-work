@@ -37,6 +37,8 @@ gh run list --branch <BRANCH> --repo <OWNER/REPO> --limit 1 --json status,conclu
    - **P0/P1, 또는 심각도 태그 없음** → 코드 확인 → 수정 필요시 fix+commit+push+reply+resolve, 이미 해결됐으면 reply+resolve.
    - **P2/P3 태그** (`[P2]`·`[P3]`, `P2 Badge` 등) → 이 PR에서 코드를 고치지 않는다. PR당 **후속 이슈 하나**에 쓰레드 링크를 모으고(이미 있으면 그 이슈에 추가), 쓰레드마다 그 이슈 링크로 reply+resolve.
 3. 0 unresolved까지 루프. P2/P3 이관은 코드 변경이 아니므로 Step 1 재시작을 일으키지 않는다.
+4. **결과로 처리한다.** 고치고 확인한 지적의 reply는 결과 한 줄, 곧 고친 커밋 SHA만 남기고 resolve한다. 설명이나 감사 인사는 붙이지 않는다. 받지 않는 지적은 이유 한 문장으로 reply하고 resolve한다. 사람이 읽을 것은 결과뿐이다.
+5. **자동 리뷰어(봇)와의 왕복은 PR당 3라운드까지.** 라운드 하나는 `[bot]` 작성자(coderabbit, codex 등)의 지적에 응답해 push한 한 번이다. 라운드는 PR 타임라인(봇 리뷰 뒤의 push)으로 세므로 세션이 바뀌어도 이어진다. 3라운드 뒤 새로 온 봇 지적 중 P2/P3·스타일 지적은 코드를 고치지 않고, 후속 이슈 하나에 모아 그 링크로 reply+resolve한다. P0/P1(정확성·보안·데이터 손실) 또는 태그 없는 지적은 상한과 무관하게 위 2번대로 확인한다. 실제 결함이면 고치고, 아니면 이유 한 문장으로 resolve한다. 결함을 후속 이슈로 미루고 READY를 내지 않는다. Step 4 READY 보고에는 상한 때문에 미룬 봇 지적 수와 그 후속 이슈 링크를 적는다. 사람의 지적은 이 상한이 없다.
 
 
 ## Step 3: 유저 설득 (`local:using-ssot` Hook 4)
