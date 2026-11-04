@@ -652,3 +652,33 @@ describe('safeguards — review round 7 (astra P1)', () => {
     expect(deps.requestCoordinator.abortSession).toHaveBeenCalledWith('C777:thread777', 'safeguard');
   });
 });
+
+describe('safeguards — review round 8 (astra P1)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
+  });
+
+  it('a failed render of a buffered tool result before the block does not lose the block', async () => {
+    async function* toolThenBlock(): AsyncGenerator<any> {
+      yield {
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id: 'toolu_bash_1', name: 'Bash', input: { command: 'ls' } }] },
+      };
+      yield {
+        type: 'user',
+        message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_bash_1', content: 'a\nb' }] },
+      };
+      yield { type: 'assistant', message: { content: [{ type: 'text', text: SAFEGUARD_TEXT }] } };
+      yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: {} };
+    }
+    const deps = createDeps(toolThenBlock);
+    deps.toolEventProcessor.handleToolResult = vi.fn().mockRejectedValue(new Error('slack_render_failed'));
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+
+    await executor.execute(createParams(vi.fn().mockResolvedValue({ ts: 'msg_ts' }), session));
+
+    expect(session.safeguardHalt?.detail).toBe('reasoning_extraction');
+  });
+});

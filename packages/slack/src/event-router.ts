@@ -112,7 +112,13 @@ export type IncidentDenialReason =
   | 'attempt_in_progress'
   | 'session_busy'
   | 'ordinary_session_conflict'
-  | 'incident_session_conflict';
+  | 'incident_session_conflict'
+  /**
+   * #904 — the thread is locked by an Anthropic safeguards block; only an
+   * admin may let it run again. Denied BEFORE the handover, so the attempt is
+   * neither burned (remembered) nor left owning the thread unfinished.
+   */
+  | 'safeguard_halted';
 
 export type IncidentIngressDecision =
   /** Not an incident request — the ordinary pipeline owns this message. */
@@ -176,6 +182,11 @@ export interface ClaudeSessionEventRouter {
   setExpiryCallbacks(callbacks: SessionExpiryCallbacks): void;
   cleanupInactiveSessions(): Promise<void>;
   broadcastSessionUpdate(): void;
+  /**
+   * #904 — the thread's Anthropic-safeguards lock (its live session's, or the
+   * tombstone of a removed one). Optional for test doubles.
+   */
+  getSessionRegistry?(): { getSafeguardHalt?(channel: string, threadTs?: string): unknown } | undefined;
 }
 
 export interface SessionUiEventManager {
@@ -516,6 +527,14 @@ export class EventRouter {
     const attemptKey = `${request.lifecycle_id.length}:${request.lifecycle_id}:${request.attempt_id}`;
     if (this.dispatchedIncidentAttempts.has(attemptKey)) {
       return { kind: 'denied', reason: 'duplicate_attempt' };
+    }
+
+    // A thread locked by the safeguards runs nothing until an admin unlocks it
+    // (review R8, grok-elon P1): refuse here, before the handover clears the
+    // finished marker — a later gate refusal would leave the attempt owning
+    // the thread with no result and its id burned.
+    if (this.deps.claudeHandler.getSessionRegistry?.()?.getSafeguardHalt?.(request.channel_id, request.parent_ts)) {
+      return { kind: 'denied', reason: 'safeguard_halted' };
     }
 
     const existing = this.deps.claudeHandler.getSession(request.channel_id, request.parent_ts);

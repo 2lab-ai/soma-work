@@ -1663,6 +1663,10 @@ describe('SlackHandler — follow-up queue host', () => {
       );
       expect(outcome).toEqual({ result: 'safe' });
       expect(registrySession.incidentAttemptFinishedId).toBe('AT-1');
+      // Review round 8 (grok-elon P1): the attempt ends with ONE host result line, never silence.
+      const posted = postSystemMessage.mock.calls.map((c: any[]) => String(c[1])).join('\n');
+      expect(posted).toContain('EAGLE_INCIDENT_RESULT:');
+      expect(posted).toContain('"attempt_id":"AT-1"');
     });
   });
 

@@ -1238,15 +1238,27 @@ export class SessionInitializer {
       // "세이프가드 에러" notice with its admin button.
       if (result.safeguardFlag) {
         const session = this.deps.claudeHandler.getSession(channel, threadTs);
-        if (session && !session.safeguardHalt) {
+        const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
+        // Closed while the classifier ran (review R8, astra P1): the thread is
+        // still locked — its tombstone, which the next session there inherits.
+        const registry = this.deps.claudeHandler.getSessionRegistry?.();
+        const alreadyHalted = session
+          ? !!session.safeguardHalt
+          : registry?.getSafeguardHaltByKey?.(sessionKey) !== undefined;
+        if (!alreadyHalted) {
           const halt = { atMs: Date.now(), ...result.safeguardFlag };
-          session.safeguardHalt = halt;
+          if (session) session.safeguardHalt = halt;
+          else registry?.haltSafeguardByKey?.(sessionKey, halt);
           this.deps.claudeHandler.saveSessions?.();
-          this.logger.warn('Dispatch blocked by Anthropic safeguards — session halted', { channel, threadTs });
+          this.logger.warn('Dispatch blocked by Anthropic safeguards — session halted', {
+            channel,
+            threadTs,
+            closedMeanwhile: !session,
+          });
           try {
             await this.deps.slackApi.postMessage(channel, safeguardHaltNoticeText(halt), {
               threadTs,
-              blocks: buildSafeguardHaltBlocks(halt, this.deps.claudeHandler.getSessionKey(channel, threadTs)),
+              blocks: buildSafeguardHaltBlocks(halt, sessionKey),
             });
           } catch (postErr) {
             this.logger.warn('Safeguard halt notice failed — the next message re-offers the button', {

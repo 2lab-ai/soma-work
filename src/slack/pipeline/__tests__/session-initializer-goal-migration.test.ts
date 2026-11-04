@@ -366,4 +366,36 @@ describe('SessionInitializer — bot-thread migration copies goal (#1082)', () =
 
     expect(live.safeguardHalt).toEqual(expect.objectContaining({ requestId: 'req_r4' }));
   });
+
+  // Review gate round 8 (astra-zhuge P1, PR #906): the owner closed the session
+  // while the classifier ran — the thread is still locked (its tombstone).
+  it('a classifier block after the session closed leaves the thread a tombstone and the notice', async () => {
+    mockClaudeHandler.getSession.mockReturnValue(undefined);
+    mockClaudeHandler.setActivityState = vi.fn();
+    mockClaudeHandler.transitionToMain = vi.fn().mockReturnValue(false);
+    mockClaudeHandler.saveSessions = vi.fn();
+    const haltSafeguardByKey = vi.fn();
+    mockClaudeHandler.getSessionRegistry = vi.fn(() => ({
+      getSafeguardHaltByKey: () => undefined,
+      haltSafeguardByKey,
+    }));
+    const { getDispatchService } = await import('../../../dispatch-service');
+    vi.mocked(getDispatchService().dispatch).mockResolvedValueOnce({
+      workflow: 'default',
+      title: 'Session',
+      safeguardFlag: { detail: 'reasoning_extraction', requestId: 'req_r8' },
+    } as any);
+    const postMessage = vi.fn().mockResolvedValue({ ts: 'dispatch-msg' });
+    (sessionInitializer as any).deps.slackApi.postMessage = postMessage;
+    (sessionInitializer as any).deps.slackApi.updateMessage = vi.fn().mockResolvedValue(undefined);
+
+    await (sessionInitializer as any).dispatchWorkflow('C123', '111.901', 'do it', 'C123:111.901');
+
+    expect(haltSafeguardByKey).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ requestId: 'req_r8' }),
+    );
+    expect(mockClaudeHandler.saveSessions).toHaveBeenCalled();
+    expect(postMessage.mock.calls.map((c: any[]) => String(c[1])).join('\n')).toContain('세이프가드 에러');
+  });
 });

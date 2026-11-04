@@ -975,6 +975,7 @@ export class SessionRegistry {
     if (session) {
       if (session.safeguardHalt) return 'already';
       session.safeguardHalt = halt;
+      this.safeguardLiftedWhileUnreadable.delete(key);
       return 'session';
     }
     if (this.safeguardTombstones.has(key)) return 'already';
@@ -1048,7 +1049,11 @@ export class SessionRegistry {
 
   private removeSession(key: string): void {
     const session = this.sessions.get(key);
-    if (session?.safeguardHalt) this.safeguardTombstones.set(key, session.safeguardHalt);
+    if (session?.safeguardHalt) {
+      this.safeguardTombstones.set(key, session.safeguardHalt);
+      // A real (not raw-evidence) lock outranks an older lift of the same thread.
+      if (session.safeguardHalt.atMs !== 0) this.safeguardLiftedWhileUnreadable.delete(key);
+    }
     this.sessions.delete(key);
     if (session) this.unindexTask(session);
     // #846 — the model-command receipt goes with the session (a later session under the key writes its own).
@@ -3868,10 +3873,10 @@ export class SessionRegistry {
       const lifted = Array.isArray(raw?.lifted)
         ? raw.lifted.filter((key): key is string => typeof key === 'string').map((key) => normalizeSessionKey(key))
         : [];
-      for (const key of lifted) {
-        this.safeguardLiftedWhileUnreadable.add(key);
-        this.safeguardTombstones.delete(key);
-      }
+      // A lift recorded here answers the RAW evidence only: it suppresses the
+      // fail-closed text match, never a parsed tombstone (a later halt on the
+      // same thread is a new lock — review R8, astra/fable P1).
+      for (const key of lifted) this.safeguardLiftedWhileUnreadable.add(key);
       const halts = raw?.halts && typeof raw.halts === 'object' ? (raw.halts as Record<string, unknown>) : {};
       for (const [key, value] of Object.entries(halts)) {
         const halt = restoreSafeguardHalt(value);

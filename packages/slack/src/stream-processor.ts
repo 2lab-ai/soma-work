@@ -1273,7 +1273,7 @@ export class AgentStreamProcessor {
             this.settleNarration(context);
             thinkingBuf.push(event.text);
             break;
-          case 'assistant_delta':
+          case 'assistant_delta': {
             // A subagent's text goes to that agent's work log only — never to
             // Slack, the main narration or the turn's collected text.
             if (event.parentToolUseId) {
@@ -1285,22 +1285,24 @@ export class AgentStreamProcessor {
               if (text) this.writeWorkLog(context, { kind: 'narration', text, agentId: event.parentToolUseId });
               break;
             }
-            await flushThinking();
-            await flushToolCalls();
-            await flushToolResults();
-            this.settleNarration(context);
             // A safeguards block ends the work: stop the query as it arrives,
             // not when the buffer next flushes (background agents can hold the
             // result for minutes). The flush still suppresses the segment.
             // The block is its own SDK message: read THIS delta, so prose
-            // buffered before it cannot hide it (review R6, astra P1). That
-            // prose posts on its own first; the block then sits alone in the
-            // buffer, where the flush recognises and suppresses it.
-            if (!this.safeguardFlag && parseSafeguardFlag(event.text)) {
-              // Recorded (and the query stopped) BEFORE any await: a failed
-              // render of the earlier prose must not lose the block (review
-              // R7, astra P1) — the thrown error carries the flag out.
-              this.noteSafeguardFlag(event.text);
+            // buffered before it cannot hide it (review R6, astra P1), and
+            // record it (stopping the query) BEFORE any render await — a
+            // failed render of buffered thinking, tool calls, tool results or
+            // prose must not lose it; the thrown error carries the flag out
+            // (review R7/R8, astra P1). The earlier prose posts on its own;
+            // the block then sits alone in the buffer, where the flush
+            // recognises and suppresses it.
+            const blockDelta = !this.safeguardFlag && parseSafeguardFlag(event.text) !== null;
+            if (blockDelta) this.noteSafeguardFlag(event.text);
+            await flushThinking();
+            await flushToolCalls();
+            await flushToolResults();
+            this.settleNarration(context);
+            if (blockDelta) {
               await flushText();
               textBuf.push(event.text);
               break;
@@ -1308,6 +1310,7 @@ export class AgentStreamProcessor {
             textBuf.push(event.text);
             if (!this.safeguardFlag) this.noteSafeguardFlag(textBuf.join(''));
             break;
+          }
           case 'tool_call':
             await flushThinking();
             await flushText();

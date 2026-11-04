@@ -40,6 +40,7 @@ import { isClientRef } from './conversation/client-ref';
 import { captureUserMedia, getConversation, recordUserTurn } from './conversation/recorder';
 import { readWorkLog } from './conversation/work-log';
 import { FileHandler, type ProcessedFile } from './file-handler';
+import { buildIncidentAttemptOutput } from './incident/attempt-output';
 import type { InstructionApprovals } from './instruction-approval';
 import { getLastCommandChannelStore } from './last-command-channel-store';
 import { Logger } from './logger';
@@ -821,6 +822,15 @@ export class SlackHandler {
       // #881 D1 — a new ⚠️ follow-up from the host summary edits the stale expiry warning (live-root gated).
       onWarningCleared: (session, warningMessageTs) => {
         void this.sessionUiManager.handleExpiryWarningCleared(session as ConversationSession, warningMessageTs);
+      },
+      // #904 — the summary query itself blocked by Anthropic's safeguards halts the session.
+      onSafeguardFlag: (session, flag) => {
+        const s = session as ConversationSession;
+        if (!s.channelId) return;
+        this.claudeHandler.reportSafeguardFlag?.(this.claudeHandler.getSessionKey(s.channelId, s.threadTs), flag, {
+          source: 'summary',
+          stopRunningTurn: true,
+        });
       },
     });
 
@@ -3325,7 +3335,7 @@ export class SlackHandler {
     const hostTurn = event.synthetic === true || event.routeContext?.hostTurn === true;
     const decision = decideSafeguardGate({ halt, hostTurn });
     if (decision === 'pass' || !halt) return undefined;
-    this.settleRefusedIncidentAttempt(event, channel, threadTs, registry);
+    await this.settleRefusedIncidentAttempt(event, channel, threadTs, registry);
     // A button path (choice, form, session action) marks the session working
     // BEFORE dispatching; nothing will run, so put it back — otherwise the card
     // shows a halted session as running until the admin unlocks it.
@@ -3360,18 +3370,36 @@ export class SlackHandler {
   /**
    * An incident attempt refused by the safeguards gate (review R7, astra P1):
    * the ingress already handed the thread to it and cleared the finished
-   * marker, and nothing will run to write it again — so without this the
-   * thread reads "attempt in progress" forever, and even after the admin
-   * unlocks, every retry is turned away. Mark the refused attempt finished
-   * (host-written, like the stream's own marker).
+   * marker (the ingress refuses a halted thread itself; this is the race where
+   * the lock landed after admission), and nothing will run to write it again —
+   * so without this the thread reads "attempt in progress" forever, and even
+   * after the admin unlocks, every retry is turned away. The attempt ends like
+   * any other: ONE host-authored result line (`interrupted`, the incident
+   * contract — never silence; review R8, grok-elon P1), then the finished
+   * marker.
    */
-  private settleRefusedIncidentAttempt(event: MessageEvent, channel: string, threadTs: string, registry: any): void {
+  private async settleRefusedIncidentAttempt(
+    event: MessageEvent,
+    channel: string,
+    threadTs: string,
+    registry: any,
+  ): Promise<void> {
     const attemptId = (event.routeContext as { incidentRequest?: { attempt_id?: string } } | undefined)?.incidentRequest
       ?.attempt_id;
     if (!attemptId) return;
     const session = this.claudeHandler.getSession?.(channel, threadTs);
-    if (!session || session.incidentRequest?.attempt_id !== attemptId) return;
+    if (!session?.incidentRequest || session.incidentRequest.attempt_id !== attemptId) return;
     if (session.incidentAttemptFinishedId === attemptId) return;
+    try {
+      const output = buildIncidentAttemptOutput(session.incidentRequest, { kind: 'aborted' }, []);
+      await this.slackApi.postSystemMessage(channel, output.text, { threadTs });
+    } catch (error) {
+      this.logger.warn('Safeguard halt: posting the refused incident attempt result failed', {
+        channel,
+        threadTs,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
     session.incidentAttemptFinishedId = attemptId;
     try {
       registry?.saveSessions?.();
