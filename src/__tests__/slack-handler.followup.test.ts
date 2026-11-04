@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetAdminUsersCache } from '../admin-utils';
 
 // No autoskills — keeps the dispatch text free of <invoked_skills> noise.
 vi.mock('../slack/autoskill-fire', () => ({
@@ -1565,6 +1566,78 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(startWithContinuation).not.toHaveBeenCalled();
       expect(items()).toHaveLength(0);
       expect(processFiles).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * ssot-task T3 (PR #906): a thread the Anthropic safeguards halted runs
+   * nothing until an admin presses the unlock button — not a person's message
+   * (admin or not), not a host turn. Drives the real `processMessage` wiring
+   * (the registry lookup), not only the pure decision.
+   */
+  describe('safeguards-halted thread', () => {
+    const HALT = { atMs: 1, model: 'Opus 5.5 (1M context)', detail: 'reasoning_extraction' };
+    let previousAdmins: string | undefined;
+
+    beforeEach(() => {
+      previousAdmins = process.env.ADMIN_USERS;
+      process.env.ADMIN_USERS = 'U_ADMIN';
+      resetAdminUsersCache();
+      registrySession.safeguardHalt = HALT;
+      claudeHandler.getSessionRegistry = () => ({
+        getSafeguardHalt: (channel: string, threadTs?: string) =>
+          channel === CHANNEL && threadTs === THREAD_TS ? registrySession.safeguardHalt : undefined,
+        getActivityStateByKey: () => registrySession.activityState,
+      });
+    });
+
+    afterEach(() => {
+      if (previousAdmins === undefined) delete process.env.ADMIN_USERS;
+      else process.env.ADMIN_USERS = previousAdmins;
+      resetAdminUsersCache();
+    });
+
+    it("refuses a person's message with the safeguard notice, never dispatching it", async () => {
+      await handler.handleMessage(message({ ts: '333.444', text: '다시 해줘' }), say());
+
+      expect(startWithContinuation).not.toHaveBeenCalled();
+      expect(processFiles).not.toHaveBeenCalled();
+      expect(routeCommand).not.toHaveBeenCalled();
+      const notice = postSystemMessage.mock.calls.map((c: any[]) => String(c[1])).join('\n');
+      expect(notice).toContain('세이프가드 에러');
+      expect(notice).toContain('관리자');
+    });
+
+    it("refuses an admin's message too — only the button unlocks — and the lock stays", async () => {
+      await handler.handleMessage(message({ ts: '333.445', user: 'U_ADMIN', text: 'new 계속' }), say());
+
+      expect(startWithContinuation).not.toHaveBeenCalled();
+      expect(routeCommand).not.toHaveBeenCalled();
+      expect(postSystemMessage.mock.calls.map((c: any[]) => String(c[1])).join('\n')).toContain('관리자 재시도 허용');
+      expect(registrySession.safeguardHalt).toEqual(HALT);
+    });
+
+    it('a button path that marked the session working is put back to idle (nothing runs)', async () => {
+      registrySession.activityState = 'working';
+      await handler.handleMessage(message({ ts: '333.448', text: 'choice answer' }), say());
+      expect(startWithContinuation).not.toHaveBeenCalled();
+      expect(claudeHandler.setActivityStateByKey).toHaveBeenCalledWith(SESSION_KEY, 'idle');
+    });
+
+    it('drops a host turn silently', async () => {
+      await handler.handleMessage(
+        message({ ts: '333.446', text: 'goal continuation', synthetic: true, skipDispatch: true }),
+        say(),
+      );
+
+      expect(startWithContinuation).not.toHaveBeenCalled();
+      expect(postSystemMessage).not.toHaveBeenCalled();
+    });
+
+    it('a thread without a halt runs as before', async () => {
+      registrySession.safeguardHalt = undefined;
+      await handler.handleMessage(message({ ts: '333.447', text: '해줘' }), say());
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
     });
   });
 
