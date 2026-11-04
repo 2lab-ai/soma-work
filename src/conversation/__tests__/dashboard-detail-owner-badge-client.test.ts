@@ -56,13 +56,14 @@ interface OwnerMod {
 const ME = 'U_ME';
 const HUES: Record<string, number> = { U_ME: 2, U_BOB: 5 };
 // `board` — the board filter (currentUserId: '' = All Users); the viewer is the signed-in user, independent of it.
-const mod = (board: string, viewer: string, el: unknown = null, raf: unknown = undefined) =>
+const mod = (board: string, viewer: string, el: unknown = null, raf: unknown = undefined, reduced = false) =>
   load<OwnerMod>(['panelOwnerOf', 'renderPanelOwner', 'ownerBadgeOrbitSync'], {
     currentUserId: board,
     _viewerUserId: viewer,
     ownerBadgeHue: (id: string) => HUES[id] ?? 0,
     document: { getElementById: (id: string) => (id === 'panel-owner' ? el : null), createElement: fakeEl },
     requestAnimationFrame: raf,
+    matchMedia: (q: string) => ({ matches: reduced && q === '(prefers-reduced-motion: reduce)' }),
   });
 
 /** Enough of an element for renderPanelOwner: attributes, classList, children, text. */
@@ -257,6 +258,14 @@ describe('B4 — renderPanelOwner: follows the open card, writes only on change'
     const bob = fakeEl();
     mod('', ME, bob).renderPanelOwner({ ownerId: 'U_BOB', ownerName: 'Bob' });
     expect(bob.anims).toEqual([]); // never asked: no arc to place
+  });
+
+  it('under reduced motion (no arc) it never schedules the retry', () => {
+    const el = fakeEl();
+    el.closed = true;
+    const frames: Array<() => void> = [];
+    mod('', ME, el, (cb: () => void) => frames.push(cb), true).renderPanelOwner({ ownerId: ME, ownerName: 'Zhuge' });
+    expect(frames).toHaveLength(0);
   });
 
   it('the live path repaints it: repaintPanelSession (every update, the opening, a viewer change) calls it', () => {
