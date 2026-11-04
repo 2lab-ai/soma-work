@@ -709,6 +709,15 @@ export class SessionInitializer {
       });
     }
 
+    // The classifier may have locked the THREAD while the session was closed
+    // under this dispatch (review R9, astra P1): the lock went to the thread's
+    // tombstone, not to this captured object. Carry it here, so the bot-thread
+    // migration below copies it and the executor refuses the turn.
+    if (!session.safeguardHalt) {
+      const threadHalt = this.deps.claudeHandler.getSessionRegistry?.()?.getSafeguardHaltByKey?.(sessionKey);
+      if (threadHalt) session.safeguardHalt = threadHalt;
+    }
+
     // Check channel-repo routing for PR links after dispatch
     // Only route for PR-specific workflows — default workflow (plain mention/command) skips routing
     const PR_ROUTABLE_WORKFLOWS = new Set(['pr-review', 'pr-fix-and-update', 'pr-docs-confluence']);

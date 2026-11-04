@@ -367,6 +367,59 @@ describe('SessionInitializer — bot-thread migration copies goal (#1082)', () =
     expect(live.safeguardHalt).toEqual(expect.objectContaining({ requestId: 'req_r4' }));
   });
 
+  // Review gate round 9 (astra-zhuge P1, PR #906): the whole initialize() path —
+  // the session closed while its classifier ran and the classifier was blocked.
+  // The thread's tombstone holds the lock; the session initialize() carries on
+  // with (and migrates into a bot thread) must carry it too.
+  it('initialize(): a classifier block after a close locks the session it migrates', async () => {
+    const tombstones: Record<string, unknown> = {};
+    let closed = false;
+    let created: any;
+    mockClaudeHandler.createSession.mockImplementation(
+      (user: string, userName: string, channel: string, threadTs: string) => {
+        const s = {
+          ownerId: user,
+          ownerName: userName,
+          userId: user,
+          channelId: channel,
+          threadTs,
+          isActive: true,
+          lastActivity: new Date(),
+          activityState: 'idle',
+        };
+        if (!created) created = s;
+        botSession = s;
+        return s;
+      },
+    );
+    mockClaudeHandler.getSession.mockImplementation(() => (closed ? undefined : created));
+    mockClaudeHandler.needsDispatch.mockReturnValue(true);
+    mockClaudeHandler.setActivityState = vi.fn();
+    mockClaudeHandler.getSessionRegistry = vi.fn(() => ({
+      getSafeguardHaltByKey: (key: string) => tombstones[key],
+      haltSafeguardByKey: (key: string, halt: unknown) => {
+        tombstones[key] = halt;
+      },
+    }));
+    const { getDispatchService } = await import('../../../dispatch-service');
+    vi.mocked(getDispatchService().dispatch).mockImplementationOnce(async () => {
+      closed = true; // the owner closed the session while the classifier ran
+      return {
+        workflow: 'default',
+        title: 'Session',
+        safeguardFlag: { detail: 'reasoning_extraction', requestId: 'req_r9' },
+      } as any;
+    });
+
+    await sessionInitializer
+      .initialize({ user: 'U123', channel: 'C123', ts: '222.100', text: 'do it' } as any, '/test/dir')
+      .catch(() => undefined);
+
+    expect(tombstones['C123:222.100']).toEqual(expect.objectContaining({ requestId: 'req_r9' }));
+    expect(created.safeguardHalt).toEqual(expect.objectContaining({ requestId: 'req_r9' }));
+    expect(botSession.safeguardHalt).toEqual(expect.objectContaining({ requestId: 'req_r9' }));
+  });
+
   // Review gate round 8 (astra-zhuge P1, PR #906): the owner closed the session
   // while the classifier ran — the thread is still locked (its tombstone).
   it('a classifier block after the session closed leaves the thread a tombstone and the notice', async () => {
