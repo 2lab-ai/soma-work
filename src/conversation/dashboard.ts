@@ -471,12 +471,6 @@ export interface KanbanSession {
    * While any is pending the card reads `activityState: 'waiting'`.
    */
   pendingInstructionApprovals?: DashboardInstructionApproval[];
-  /**
-   * #829 — the session's last Executive Summary left an issue/PR it created unfinished (its ⚠️ TL;DR line):
-   * what the user must do next. While the session is idle the card reads `activityState: 'waiting'`
-   * (NEEDS YOU) instead of DONE.
-   */
-  pendingFollowUp?: { reason: string; at: number };
   /** E4 ① (.prd/19 D1) — an epic task. Absent otherwise. */
   kind?: 'epic';
   /**
@@ -2357,21 +2351,6 @@ export function taskPlanToKanban(s: { taskPlan?: TaskPlanGate }): KanbanTaskPlan
   };
 }
 
-/**
- * #829 — an idle session whose last Executive Summary left an own issue/PR unfinished waits for its user's
- * follow-up (NEEDS YOU). A running turn is the user already acting: it stays RUNNING.
- */
-function followUpOf(s: {
-  followUp?: { reason?: unknown; at?: unknown };
-  activityState?: string;
-}): { reason: string; at: number } | undefined {
-  const f = s.followUp;
-  if ((s.activityState || 'idle') !== 'idle' || !f || typeof f.reason !== 'string' || !f.reason.trim()) {
-    return undefined;
-  }
-  return { reason: f.reason.trim(), at: finiteNumber(f.at) ?? 0 };
-}
-
 /** Plan mode — an idle session whose plan waits for its owner asks for them (NEEDS YOU), Slack thread or task (#853). */
 function planAsks(s: { taskPlan?: TaskPlanGate; activityState?: string }): boolean {
   return s.taskPlan?.state === 'awaiting' && (s.activityState || 'idle') === 'idle';
@@ -2404,6 +2383,9 @@ function archivedCardLinks(archived: ArchivedSession): Pick<KanbanSession, 'card
   return cardLinks.length ? { cardLinks } : {};
 }
 
+/** #917 — the direct-input answer's choice id (the Slack form's and the dashboard forms' 직접입력 sentinel). */
+const CUSTOM_CHOICE_ID = '직접입력';
+
 function sessionToKanban(key: string, s: any): KanbanSession {
   const autoResume = deriveAutoResume(s, Date.now());
   const taskView = _getTasksFn ? _getTasksFn(key) : undefined;
@@ -2419,9 +2401,8 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     ...(goalDecision ? [{ createdAt: goalDecision.askedAt }] : []),
     ...instructionApprovals,
   ];
-  // #829 — and the follow-up its last Executive Summary left (an own issue/PR not complete). An armed
-  // automatic resume is the agent about to act again: that card stays RUNNING.
-  const followUp = autoResume ? undefined : followUpOf(s);
+  // #917 — a follow-up its last Executive Summary left (an own issue/PR not complete) is no ask by itself: the
+  // host asks the follow-up question (src/slack/follow-up-question.ts), and that question is what waits.
   return {
     // #814 Wire-format key includes the local instance prefix so sibling
     // instances can never collide on the client cache.
@@ -2441,8 +2422,8 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     threadTs: s.threadTs,
     // A turn blocked on a permission prompt waits for its user (projection
     // only — the session's own activityState is untouched).
-    // A plan waiting for its owner (plan mode) waits too.
-    activityState: asks.length > 0 || planAsks(s) || followUp ? 'waiting' : s.activityState || 'idle',
+    // A plan waiting for its owner (plan mode) waits too. Nothing waits without a question (#917).
+    activityState: asks.length > 0 || planAsks(s) ? 'waiting' : s.activityState || 'idle',
     sessionState: s.state || 'MAIN',
     terminated: s.terminated === true,
     trashed: s.trashed === true,
@@ -2452,7 +2433,6 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     ...(permissions.length > 0 ? { pendingPermissions: permissions } : {}),
     ...(goalDecision ? { pendingGoalDecision: goalDecision } : {}),
     ...(instructionApprovals.length > 0 ? { pendingInstructionApprovals: instructionApprovals } : {}),
-    ...(followUp ? { pendingFollowUp: followUp } : {}),
     issueUrl: s.links?.issue?.url,
     issueLabel: s.links?.issue?.label,
     issueTitle: s.links?.issue?.title,
@@ -2470,9 +2450,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     tokenUsage: tokenUsageOf(s),
     sessionOutputTokens: sessionOutputTokensOf(s),
     doneAt: liveDoneAt(s),
-    waitingSince: planAsks(s)
-      ? (s.taskPlan?.updatedAt ?? liveWaitingSince(s, asks))
-      : (liveWaitingSince(s, asks) ?? (followUp?.at || undefined)),
+    waitingSince: planAsks(s) ? (s.taskPlan?.updatedAt ?? liveWaitingSince(s, asks)) : liveWaitingSince(s, asks),
     finishedAt: liveFinishedAt(s),
     ...modelFields(s),
     ...contextFields(s),
@@ -4689,7 +4667,9 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: 'choiceId, label, and question are required and must be strings' });
         return;
       }
-      if (choiceId.length > 100 || label.length > 500 || question.length > 2000) {
+      // #917 — direct input (the 직접입력 sentinel) carries the user's own words: a longer label than a choice's.
+      const labelMax = choiceId === CUSTOM_CHOICE_ID ? 4000 : 500;
+      if (choiceId.length > 100 || label.length > labelMax || question.length > 2000) {
         reply.status(400).send({ error: 'Field length exceeded' });
         return;
       }
@@ -5583,7 +5563,7 @@ ui-approval-card[data-ai="approve"] { --ac-primary: color-mix(in srgb, var(--st-
 ui-drawer:not(:defined) { display: none; }
 .slide-panel { --ui-drawer-top: var(--topbar-b, 0px); --ui-drawer-z: 100; }
 .slide-panel::part(panel) { background: var(--surface); color: var(--text); padding-right: env(safe-area-inset-right, 0px); }
-.slide-panel::part(body) { display: flex; flex-direction: column; min-height: 0; padding: 0; overflow: hidden; font-size: 14px; line-height: 1.45; color: var(--text); overflow-wrap: normal; }
+.slide-panel::part(body) { position: relative; display: flex; flex-direction: column; min-height: 0; padding: 0; overflow: hidden; font-size: 14px; line-height: 1.45; color: var(--text); overflow-wrap: normal; }
 /* Panel tasks (.prd/10 §3.1-6) — pinned between the token badges and the
    scroll area: always shown (an empty line when there are none yet), with its
    own scroll so a long list never pushes the work log and turns away. */
@@ -5979,6 +5959,54 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
   .inbox-tools { flex: 1 1 auto; min-width: 0; flex-wrap: wrap; justify-content: flex-end; row-gap: 8px; }
 }
 
+/* ── PHONE CHROME (SSOT 2026-11-04) — on a phone (narrow, or sideways: PHONE_MQ) the content takes the screen.
+   T1 · the top bar is one line: the scope group (승인 · 관리자 · the board's user · the defaults) leaves the bar's
+   toolbar for the board's head (syncPhoneScope) and scrolls with the board.
+   T2 · the detail card keeps only its title bar while the reader scrolls the chat or the work log: the status bar
+   joins the scroll area (syncPhoneStatus), and reading (data-read, rdRead) grows the section box to the whole view
+   and scrolls everything above it out under the title bar; a tap on the title bar scrolls it back in.
+   T3 · the session's model picker sits on the composer's own row, left of Send (syncPickerDock measures the row).
+   T4 · reading tucks the composer away (data-tuck): it slides down; a ^ at the bottom right (#pc-reveal) brings it
+   back, and so does the very bottom of the chat or the log. ── */
+.inbox-tools > .topbar-scope { flex: 1 1 auto; flex-wrap: wrap; margin-right: auto; }
+.inbox-tools .topbar-defaults { display: flex; gap: 6px; align-items: center; flex: none; }
+.inbox-tools .topbar-defaults[hidden], .inbox-tools .td-also[hidden] { display: none; }
+.inbox-tools .td-prefix, .inbox-tools .td-status { display: none; }
+.inbox-tools .td-also { font-size: 12px; white-space: nowrap; }
+.inbox-tools .user-select { --ui-select-max: 160px; flex: 0 1 auto; }
+.inbox-tools .admin-toggle { flex: none; }
+.inbox-tools .admin-toggle[aria-pressed="true"] { background: var(--tint-fail-bg); border-color: var(--tint-fail-line); color: var(--tint-fail-fg); }
+.panel-surface > .panel-status { flex: none; padding: 10px 16px 12px; }
+/* Reading: nothing sticks above the box — the agent strip scrolls out with the rest. */
+.slide-panel[data-read] .panel-tabs::part(list) { position: static; }
+.panel-command { position: relative; transition: transform var(--dur-move) var(--ease-out); }
+.slide-panel[data-tuck] .panel-command {
+  position: absolute; left: 0; right: 0; bottom: 0; transform: translateY(100%); visibility: hidden;
+  transition: transform var(--dur-move) var(--ease-out), visibility 0s linear var(--dur-move);
+}
+.pc-reveal {
+  position: absolute; z-index: 7; right: calc(16px + env(safe-area-inset-right, 0px)); bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  width: 44px; height: 44px; border-radius: 999px; background: var(--surface); box-shadow: var(--ib-shadow-raised);
+  opacity: 0; visibility: hidden; transform: translateY(8px);
+  transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-move) var(--ease-out), visibility 0s linear var(--dur-fade);
+}
+.slide-panel[data-tuck] .pc-reveal {
+  opacity: 1; visibility: visible; transform: none;
+  transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-move) var(--ease-out), visibility 0s;
+}
+/* T3: the picker's box spans the row between the composer's tools and Send (--pd-*: syncPickerDock); it lets taps
+   through where it is empty and ends at Send. A model note floats above it. */
+.panel-command[data-pick-dock] > .panel-controls {
+  position: absolute; z-index: 2; left: var(--pd-l, 0px); right: var(--pd-r, 0px); top: var(--pd-t, 0px); height: var(--pd-h, 44px);
+  display: flex; flex-wrap: nowrap; align-items: center; justify-content: flex-end; padding: 0; pointer-events: none;
+}
+.panel-command[data-pick-dock] > .panel-controls > * { pointer-events: auto; }
+.panel-command[data-pick-dock] > .panel-controls > ui-model-picker { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+.panel-command[data-pick-dock] > .panel-controls > .cb-model-note {
+  position: absolute; right: 0; bottom: calc(100% + 6px); max-width: min(280px, 80vw); padding: 4px 8px; border-radius: 8px;
+  background: var(--surface-raised); box-shadow: var(--ib-shadow);
+}
+
 /* ── RESPONSIVE — Bauhaus grid adapts ── */
 @media (max-width: 680px) {
   .stats-grid { margin-bottom: 12px; }
@@ -6270,10 +6298,6 @@ body.nt-open .new-task-fab { display: none !important; }
 .pp-title { font-size: 13px; font-weight: 650; color: var(--ib-text); }
 .pp-note { font-size: 13px; color: var(--ib-muted); line-height: 1.5; }
 /* #846 — the follow-up row in 입력 필요 (read-only). */
-.pf-row { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--tint-wait-line); background: var(--tint-wait-soft); }
-.pf-head { font-size: 12px; font-weight: 600; color: color-mix(in srgb, var(--st-wait) calc(100% * var(--chroma, 1)), var(--text)); }
-.pf-reason { font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
-.pf-hint { font-size: 12px; color: var(--ib-muted); }
 .pp-fold > summary { cursor: pointer; font-size: 12.5px; color: var(--ib-muted); margin-bottom: 8px; }
 .panel-plan-bar { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; padding: 8px 12px; margin-bottom: 8px; border-radius: 10px; background: var(--tint-wait-soft); border: 1px solid var(--tint-wait-line); }
 .ppb-label { flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 600; color: var(--tint-wait-fg); }
@@ -6368,7 +6392,7 @@ ${pageTokenAliases()}
     <section class="inbox ui-tok" id="inbox" aria-label="에이전트 인박스">
       <div class="inbox-head">
         <ui-breadcrumbs class="crumbs" id="inbox-trail" lang="ko"></ui-breadcrumbs>
-        <div class="inbox-tools">
+        <div class="inbox-tools" id="inbox-tools">
           <button type="button" class="ui-chip archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><i data-ui-icon="archive"></i><span id="archives-label">보관함</span></button>
           <button type="button" class="ui-chip archives-btn" id="sleeping-toggle" aria-pressed="true" hidden onclick="toggleSleeping()"><i data-ui-icon="moon"></i><span id="sleeping-label">휴면</span></button>
           <button type="button" class="ui-chip archives-btn" id="lifecycle-btn" style="display:none" title="세션 수명 주기 (관리자)" onclick="openLifecycleDialog()"><i data-ui-icon="clock"></i><span>수명 주기</span></button>
@@ -6542,6 +6566,9 @@ ${pageTokenAliases()}
         <ui-agent-steering id="cmd-steer" lang="ko"><ui-composer id="pc-composer" slot="composer" lang="ko"></ui-composer></ui-agent-steering>
       </div>
     </div>
+    <!-- Phone chrome T4 (SSOT 2026-11-04): while the reader scrolls back through the chat or the log the composer is
+         tucked away (data-tuck); this brings it back. -->
+    <button type="button" class="ui-icon-btn is-bordered pc-reveal" id="pc-reveal" aria-label="입력창 보이기" title="입력창 보이기" onclick="pcReveal(event)"><i data-ui-icon="chevron-up"></i></button>
   </ui-drawer>
 
   <!-- New task (SSOT 2026-10-23): floating button (phones, and PC once the top-bar
@@ -6754,6 +6781,251 @@ function paintAppBar() {
 // ── Theme — the head script owns it (themeClientJs, soma-work 830): <html>'s data-theme / data-palette, this browser's
 // choice, the OS follow and the bar's ui-theme-change. The bar's first data comes from paintAppBar. ──
 paintAppBar();
+// ── Phone chrome (SSOT 2026-11-04) — on a phone the content takes the screen (see the PHONE CHROME rules). A phone is
+// narrow, or a short screen (a phone sideways) — the page's own breakpoints. ──
+var PHONE_MQ = '(max-width: 639px), (max-height: 560px)';
+var _phoneMq = typeof window !== 'undefined' && typeof window.matchMedia === 'function' ? window.matchMedia(PHONE_MQ) : null;
+function isPhone() {
+  return !!(_phoneMq && _phoneMq.matches);
+}
+// T1: the scope group's home — the bar's toolbar, or on a phone the board's head (the bar keeps its one line; the
+// group scrolls with the board).
+function syncPhoneScope() {
+  var scope = document.getElementById('topbar-scope');
+  var bar = document.getElementById('app-bar');
+  var tools = document.getElementById('inbox-tools');
+  if (!scope || !bar || !tools) return;
+  if (isPhone()) {
+    if (scope.parentNode !== tools) tools.insertBefore(scope, tools.firstChild);
+  } else if (scope.parentNode !== bar) bar.appendChild(scope);
+}
+// T2: the status bar's home — the detail card's title bar, or on a phone the top of its scroll area: everything but
+// the title bar scrolls out with the content.
+function syncPhoneStatus() {
+  var st = document.getElementById('panel-status');
+  var head = document.querySelector('#slide-panel .panel-header');
+  var surf = document.getElementById('panel-surface');
+  if (!st || !head || !surf) return;
+  if (isPhone()) {
+    if (st.parentNode !== surf) surf.insertBefore(st, surf.firstChild);
+  } else if (st.parentNode !== head) head.appendChild(st);
+}
+// T2 · T4 — reading on a phone. data-read="1": the section box takes the whole view (sizePanelSections) and the panel's
+// scroll puts it right under the title bar — the status bar, the tab bar and the section tabs scroll out; "leaving"
+// while they scroll back in. data-tuck: the composer is away (#pc-reveal shows).
+var _rd = { touch: false, until: 0, last: -1, vp: null, leave: 0 };
+function panelReading() {
+  var p = document.getElementById('slide-panel');
+  return !!p && p.hasAttribute('data-read');
+}
+function rdHow() {
+  return typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth';
+}
+// Where the section box starts in the panel's scroll content.
+function rdBoxTop() {
+  var sc = document.getElementById('panel-scroll');
+  var box = psecBox();
+  if (!sc || !box) return 0;
+  return Math.max(0, Math.round(box.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop));
+}
+function rdRead(on) {
+  var p = document.getElementById('slide-panel');
+  var sc = document.getElementById('panel-scroll');
+  if (!p || !sc) return;
+  var how = rdHow();
+  if (on) {
+    // Already reading: only when something stopped the glide short (a live repaint's instant scroll) does it go again.
+    if (p.getAttribute('data-read') === '1') {
+      var target = rdBoxTop();
+      if (sc.scrollTop < target - 2) sc.scrollTo({ top: target, behavior: how });
+      return;
+    }
+    clearTimeout(_rd.leave);
+    p.setAttribute('data-read', '1');
+    sizePanelSections();
+    // The reader's new place: a layout anchor taken before it must not pull the panel back (#488).
+    _panelScrollGen++;
+    sc.scrollTo({ top: rdBoxTop(), behavior: how });
+    return;
+  }
+  if (p.getAttribute('data-read') !== '1') return;
+  // The box keeps the whole view while the head scrolls back in, then takes the rest of the panel again.
+  p.setAttribute('data-read', 'leaving');
+  _panelScrollGen++;
+  var done = function() {
+    clearTimeout(_rd.leave);
+    sc.removeEventListener('scrollend', done);
+    if (p.getAttribute('data-read') !== 'leaving') return;
+    p.removeAttribute('data-read');
+    sizePanelSections();
+  };
+  // When the scroll lands (scrollend; a timer where there is none, or when it never fires).
+  if (how === 'smooth' && sc.scrollTop > 0) sc.addEventListener('scrollend', done);
+  _rd.leave = setTimeout(done, how === 'smooth' && sc.scrollTop > 0 ? 900 : 0);
+  sc.scrollTo({ top: 0, behavior: how });
+}
+function rdTuck(on) {
+  var p = document.getElementById('slide-panel');
+  if (!p || p.hasAttribute('data-tuck') === !!on) return;
+  if (on) p.setAttribute('data-tuck', '');
+  else p.removeAttribute('data-tuck');
+}
+// ^ (#pc-reveal): the composer back where the reader is. From a key (a click with no pointer: detail 0) focus follows
+// into it — the button itself steps aside, and focus must not fall to the page.
+function pcReveal(e) {
+  rdTuck(false);
+  if (e && e.detail === 0) {
+    var c = document.getElementById('pc-composer');
+    if (c && typeof c.focus === 'function') c.focus();
+  }
+}
+// A new view (another card, section, tab or agent; the phone turned): the card as it opens — head and composer in.
+function rdReset() {
+  var p = document.getElementById('slide-panel');
+  clearTimeout(_rd.leave);
+  _rd.last = -1;
+  if (!p) return;
+  var was = p.hasAttribute('data-read');
+  p.removeAttribute('data-read');
+  p.removeAttribute('data-tuck');
+  if (was) sizePanelSections();
+}
+// The open section's own scroll viewport: <ui-conversation> / <ui-work-log> → <ui-log-scroller> → .ls-vp, or the
+// tree's <ui-log-scroller> itself (open shadow roots), or null.
+function psecViewport() {
+  var el = psecEl();
+  var sc = el && el.tagName === 'UI-LOG-SCROLLER' ? el : el && el.shadowRoot ? el.shadowRoot.querySelector('ui-log-scroller') : null;
+  return (sc && sc.shadowRoot && sc.shadowRoot.querySelector('.ls-vp')) || null;
+}
+// Pure: what one scroll of the reader's box asks of the panel — { read, tuck }, each true / false / null (leave it).
+// Any scroll that lands at the very bottom brings the composer back; the reader's own scroll (user) away from it
+// scrolls the head out and tucks the composer (not while they type in it); back up at the start of everything
+// (no older page left) the head comes back. grow: how much taller the box gets when the composer tucks (and the
+// head goes) — it tucks only when the reader stays off the bottom after that, or the grown box would land on the
+// bottom and bring it straight back.
+function rdStep(top, max, prev, user, olderLeft, typing, grow) {
+  var atBottom = max - top <= 8;
+  var r = { read: null, tuck: null };
+  if (atBottom) r.tuck = false;
+  if (!user || prev < 0 || Math.abs(top - prev) < 1) return r;
+  if (!atBottom) {
+    r.read = true;
+    if (!typing && max - top > (grow || 0) + 8) r.tuck = true;
+  }
+  if (top < prev && top <= 2 && !olderLeft) r.read = false;
+  return r;
+}
+function rdOnScroll(e) {
+  var vp = e.currentTarget;
+  if (vp !== _rd.vp || !isPhone() || !panelOpen) return;
+  // The reader's own scroll: a finger on the box, or the fling / wheel / key just after it (a fixed window — the
+  // page's own scrolls, a place kept or a box grown, never extend it).
+  var user = _rd.touch || Date.now() < _rd.until;
+  var host = vp.getRootNode && vp.getRootNode().host;
+  var cmd = document.getElementById('panel-command');
+  var sc = document.getElementById('panel-scroll');
+  var box = psecBox();
+  var p = document.getElementById('slide-panel');
+  var act = document.activeElement;
+  // The box's height once reading with the composer away: the whole view, plus the composer's row.
+  var grow = sc && box && cmd && p && !p.hasAttribute('data-tuck') ? Math.max(0, sc.clientHeight + cmd.offsetHeight - box.clientHeight) : 0;
+  var r = rdStep(vp.scrollTop, vp.scrollHeight - vp.clientHeight, _rd.last, user,
+    !!(host && host.data && host.data.hasMore), !!(cmd && act && act !== document.body && cmd.contains(act)), grow);
+  _rd.last = vp.scrollTop;
+  if (r.tuck !== null) rdTuck(r.tuck);
+  if (r.read !== null) rdRead(r.read);
+}
+// A touch, the wheel or a key in the sections: the reader is about to scroll — the box listens from now on. A lifted
+// finger leaves its fling a second; the wheel and a key a moment.
+function rdGesture(e) {
+  if (!isPhone()) return;
+  var t = e && e.type;
+  if (t === 'touchend' || t === 'touchcancel') {
+    _rd.touch = false;
+    _rd.until = Date.now() + 1200;
+    return;
+  }
+  if (t === 'touchstart' || t === 'touchmove') _rd.touch = true;
+  else _rd.until = Date.now() + 400;
+  var vp = psecViewport();
+  if (vp && !vp._rdBound) {
+    vp._rdBound = true;
+    vp.addEventListener('scroll', rdOnScroll, { passive: true });
+  }
+  if (vp !== _rd.vp) {
+    _rd.vp = vp;
+    _rd.last = vp ? vp.scrollTop : -1;
+  }
+}
+// T3 — the session's model picker on the composer's row, left of Send (a phone). The row is <ui-composer>'s own
+// toolbar (its open shadow root), so the page measures it — the tools' end, Send's start, the row's top and height —
+// and lays the picker's box between them (data-pick-dock); elsewhere, or while a recording takes the row (no .cp-end),
+// the picker keeps its line above the composer.
+function syncPickerDock() {
+  var cmd = document.getElementById('panel-command');
+  var ctl = document.getElementById('panel-controls');
+  var comp = document.getElementById('pc-composer');
+  if (!cmd || !ctl) return;
+  var bar = isPhone() && comp && comp.shadowRoot ? comp.shadowRoot.querySelector('.cp-bar') : null;
+  var end = bar ? bar.querySelector('.cp-end') : null;
+  if (!end || !cmd.getBoundingClientRect().width) {
+    cmd.removeAttribute('data-pick-dock');
+    return;
+  }
+  // Docked first: the picker leaves the flow, so the row is measured where it then is.
+  cmd.setAttribute('data-pick-dock', '');
+  var c = cmd.getBoundingClientRect();
+  var b = bar.getBoundingClientRect();
+  var tools = bar.querySelector('.cp-tools');
+  var from = tools ? tools.getBoundingClientRect().right : b.left;
+  var to = b.right;
+  for (var i = 0; i < end.children.length; i++) {
+    var r = end.children[i].getBoundingClientRect();
+    if (r.width > 0) to = Math.min(to, r.left);
+  }
+  var pd = [Math.round(from - c.left + 6), Math.round(c.right - to + 6), Math.round(b.top - c.top), Math.round(b.height)];
+  if (ctl._pd === pd.join(' ')) return; // a live repaint with the row where it was writes nothing
+  ctl._pd = pd.join(' ');
+  ctl.style.setProperty('--pd-l', pd[0] + 'px');
+  ctl.style.setProperty('--pd-r', pd[1] + 'px');
+  ctl.style.setProperty('--pd-t', pd[2] + 'px');
+  ctl.style.setProperty('--pd-h', pd[3] + 'px');
+}
+function syncPhoneChrome() {
+  syncPhoneScope();
+  syncPhoneStatus();
+  rdReset();
+  syncPickerDock();
+  sizePanelSections();
+}
+(function initPhoneChrome() {
+  if (typeof document === 'undefined') return;
+  syncPhoneScope();
+  syncPhoneStatus();
+  if (_phoneMq) {
+    if (typeof _phoneMq.addEventListener === 'function') _phoneMq.addEventListener('change', syncPhoneChrome);
+    else if (typeof _phoneMq.addListener === 'function') _phoneMq.addListener(syncPhoneChrome);
+  }
+  var secs = document.getElementById('panel-sections-body');
+  if (secs) ['touchstart', 'touchmove', 'touchend', 'touchcancel', 'wheel', 'keydown'].forEach(function(t) {
+    secs.addEventListener(t, rdGesture, { passive: true });
+  });
+  // A tap on the title bar (not on its buttons) scrolls the head back in.
+  var head = document.querySelector('#slide-panel .panel-header');
+  if (head) head.addEventListener('click', function(e) {
+    var t = e.target;
+    if (!isPhone() || !panelReading() || (t && t.closest && t.closest('button, a, input, select, ui-deck-nav, ui-status-bar'))) return;
+    rdRead(false);
+  });
+  if (typeof ResizeObserver === 'function') {
+    var dock = new ResizeObserver(function() { syncPickerDock(); });
+    // The steering inside is replaced per card (pcFreshSteer): its wrapper is the one that stays.
+    ['#panel-command', '#panel-command .pc-steer-wrap'].forEach(function(sel) {
+      var el = document.querySelector(sel);
+      if (el) dock.observe(el);
+    });
+  }
+})();
 // ── Panel width — the docked drawer's inner edge (SSOT 2026-10-24, D4 E-01) ──
 // The drag and the handle's arrow keys are <ui-drawer resizable>'s: it clamps the width to
 // [min-width, min(max-width, viewport − 48)] and says ui-resize. The page keeps the saved
@@ -6928,8 +7200,9 @@ function acQuestionId(q) {
   return 'q|' + JSON.stringify([q.question, (q.choices || []).map(function(c) { return [c.id, c.label, c.description || '']; })]);
 }
 // pendingQuestion (single choice) → the card's data. The choices read as
-// before ("1. label", the recommended marker stripped); the route takes one
-// of them only (no free-text answer, so no allowOther).
+// before ("1. label", the recommended marker stripped). #917 — the last option
+// is direct input, as on Slack: the element's free-text answer (allowOther), sent
+// as the 직접입력 sentinel with its text.
 function acQuestionData(s, q) {
   var id = acQuestionId(q);
   var d = {
@@ -6941,7 +7214,7 @@ function acQuestionData(s, q) {
       if (c.description) o.description = String(c.description);
       return o;
     }),
-    allowOther: false,
+    allowOther: true,
   };
   var rec = resolveRecommendedId(q.recommendedChoiceId, q.choices);
   if (rec) d.recommendedId = String(rec);
@@ -7182,7 +7455,8 @@ document.addEventListener('ui-answer', function(e) {
   if (!el || !el.getAttribute || !e.detail) return;
   var kind = el.getAttribute('data-ac-kind');
   var choice = e.detail.choiceId === undefined ? '' : String(e.detail.choiceId);
-  if (kind === 'question') answerChoice(el.getAttribute('data-ac-key'), String(e.detail.id), choice);
+  // #917 — a free-text answer (allowOther) has no choiceId: its text is the direct input.
+  if (kind === 'question') answerChoice(el.getAttribute('data-ac-key'), String(e.detail.id), choice, e.detail.text);
   else if (kind === 'goal') answerGoalDecision(el.getAttribute('data-ac-key'), String(e.detail.id), choice);
   else if (kind === 'instr') answerInstructionApproval(el.getAttribute('data-ac-key'), String(e.detail.id), choice);
   else if (kind === 'admin') answerAdminApproval(String(e.detail.id), choice);
@@ -7250,14 +7524,10 @@ function renderPanelPermission(s) {
     ids['i|' + ia[j].requestId] = true;
     if (seen && !seen['i|' + ia[j].requestId]) said.push('지시 승인 요청 — ' + (ia[j].requesterName || ia[j].requesterId || ''));
   }
-  if (panelFollowUpShown(s)) {
-    ids['f|' + (s.pendingFollowUp.at || 0)] = true;
-    if (seen && !seen['f|' + (s.pendingFollowUp.at || 0)]) said.push('후속 작업 필요 — ' + s.pendingFollowUp.reason.trim());
-  }
   container._seenKey = key;
   container._seen = ids;
   renderPanelNeedsHead(s);
-  var html = s ? acPermissionsHtml(s) + acGoalDecisionHtml(s) + acInstructionApprovalsHtml(s) + acFollowUpHtml(s) : '';
+  var html = s ? acPermissionsHtml(s) + acGoalDecisionHtml(s) + acInstructionApprovalsHtml(s) : '';
   var ae = document.activeElement;
   var had = !!(ae && container.contains(ae));
   if (!html) {
@@ -7294,24 +7564,10 @@ function panelQuestionShown(s) {
   if (!q || s.activityState !== 'waiting') return false;
   return (q.type === 'user_choice' && !!q.choices) || q.type === 'user_choices';
 }
-// #846 — the follow-up the last Executive Summary left (an own issue/PR/doc not complete). Not on a sleeping or
-// closed session: the server keeps sending pendingFollowUp there, and its card sits in closed.
-function panelFollowUpShown(s) {
-  var f = s && s.pendingFollowUp;
-  if (!f || typeof f.reason !== 'string' || !f.reason.trim()) return false;
-  return s.sessionState !== 'SLEEPING' && !s.terminated;
-}
-// One read-only row in 입력 필요: the user acts outside the panel; the steps are in the summary's last section.
-function acFollowUpHtml(s) {
-  if (!panelFollowUpShown(s)) return '';
-  return '<div class="pf-row" data-pf="followup" role="note"><span class="pf-head">' + '후속 작업 필요' + '</span>'
-    + '<span class="pf-reason">' + esc(s.pendingFollowUp.reason.trim()) + '</span>'
-    + '<span class="pf-hint">' + '처리 방법은 Executive Summary 맨 아래 ⚠️ 섹션에 있어요' + '</span></div>';
-}
 function renderPanelNeedsHead(s) {
   var head = document.getElementById('panel-needs-head');
   if (!head) return;
-  var n = s ? ((s.pendingPermissions || []).length + (s.pendingGoalDecision ? 1 : 0) + (s.pendingInstructionApprovals || []).length + (panelQuestionShown(s) ? 1 : 0) + (s.taskPlan && s.taskPlan.state === 'awaiting' ? 1 : 0) + (panelFollowUpShown(s) ? 1 : 0)) : 0;
+  var n = s ? ((s.pendingPermissions || []).length + (s.pendingGoalDecision ? 1 : 0) + (s.pendingInstructionApprovals || []).length + (panelQuestionShown(s) ? 1 : 0) + (s.taskPlan && s.taskPlan.state === 'awaiting' ? 1 : 0)) : 0;
   head.hidden = n === 0;
   var count = document.getElementById('panel-needs-count');
   if (count && count.textContent !== String(n)) count.textContent = String(n);
@@ -7800,25 +8056,31 @@ async function answerAdminApproval(id, choiceId) {
 // The single-choice answer, from the card or the panel (the same element): the
 // choice travels with its label and the question, as the route wants. Same
 // states as a prompt; a question that changed meanwhile takes no answer.
-async function answerChoice(key, qid, choiceId) {
+// #917 — text (no choiceId): the direct input, sent as the 직접입력 sentinel.
+async function answerChoice(key, qid, choiceId, text) {
   var s = _sessionCache[key];
   var q = s && s.pendingQuestion;
   if (!q || q.type !== 'user_choice' || !q.choices || acQuestionId(q) !== qid) return null;
+  var own = !choiceId && typeof text === 'string' ? text.trim() : '';
   var c = null;
-  for (var i = 0; i < q.choices.length; i++) if (String(q.choices[i].id) === choiceId) c = q.choices[i];
-  if (!c) return null;
+  if (own) {
+    choiceId = MC_CUSTOM_ID;
+  } else {
+    for (var i = 0; i < q.choices.length; i++) if (String(q.choices[i].id) === choiceId) c = q.choices[i];
+    if (!c) return null;
+  }
   var states = _acState[key] || (_acState[key] = Object.create(null));
   var cur = states[qid];
   if (cur && (cur.status === 'sending' || cur.status === 'resolved')) return cur;
-  states[qid] = { status: 'sending', choiceId: choiceId };
+  states[qid] = own ? { status: 'sending' } : { status: 'sending', choiceId: choiceId };
   acRepaint(key);
-  var label = stripRecommendedMarker(c.label);
+  var label = own || stripRecommendedMarker(c.label);
   var st;
   try {
     var acBody = { choiceId: choiceId, label: label, question: q.question };
     var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/answer-choice', JSON.stringify(acBody));
     if (res.ok) {
-      st = { status: 'resolved', outcome: 'answered', choiceId: choiceId, at: Date.now() };
+      st = own ? { status: 'resolved', outcome: 'answered', text: own, at: Date.now() } : { status: 'resolved', outcome: 'answered', choiceId: choiceId, at: Date.now() };
       dashToast({ title: '답을 보냈어요', description: label, tone: 'success' });
     } else st = await acRefusal(res);
   } catch (e) {
@@ -9486,9 +9748,6 @@ function cardSummary(s, col, headline) {
   if (col !== 'closed' && tp && tp.state === 'awaiting') return '작업 계획 v' + tp.revision + ' — 시작할까요?' + (tp.summary ? ' · ' + tp.summary : '');
   var ia = col === 'closed' ? [] : s.pendingInstructionApprovals || [];
   if (ia.length) return (ia[0].requesterName || ia[0].requesterId || '') + '님의 지시 승인 대기' + (ia.length > 1 ? ' 외 ' + (ia.length - 1) + '건' : '');
-  // #829 — an own issue/PR the last summary left unfinished: what the user has to do next.
-  var fu = col === 'closed' ? null : s.pendingFollowUp;
-  if (fu && fu.reason) return '후속 작업 필요: ' + fu.reason;
   var q = s.pendingQuestion;
   if (col === 'waiting' && q && (q.question || q.title)) return q.question || q.title;
   // Waiting out a retry: the error behind it is what this card is "doing".
@@ -9842,7 +10101,6 @@ function cardAsks(s, col) {
   if (col !== 'closed' && s.pendingGoalDecision) return true;
   if (col !== 'closed' && s.taskPlan && s.taskPlan.state === 'awaiting') return true;
   if (col !== 'closed' && s.pendingInstructionApprovals && s.pendingInstructionApprovals.length) return true;
-  if (col !== 'closed' && s.pendingFollowUp && s.pendingFollowUp.reason) return true;
   var q = s.pendingQuestion;
   if (col === 'waiting' && q && (q.question || q.title)) return true;
   var r = pendingAutoResume(s, col);
@@ -11167,6 +11425,7 @@ function paintSection(sec) {
 // focus on the tab it moved to.)
 function selectPanelSection(sec) {
   if (PSEC_ORDER.indexOf(sec) < 0) sec = 'conv';
+  rdReset();
   _psec = sec;
   renderPanelSections();
   for (var i = 0; i < PSEC_ORDER.length; i++) if (PSEC_ORDER[i] !== sec) psecClear(PSEC_ORDER[i]);
@@ -11192,7 +11451,8 @@ function sizePanelSections() {
   var secTop = secs.getBoundingClientRect().top;
   var strip = Math.max(0, box.getBoundingClientRect().top - secTop);
   var top = secTop + strip - scroll.getBoundingClientRect().top + scroll.scrollTop;
-  var h = psecHeightOf(view, top, panelTabsHeight() + strip);
+  // Reading on a phone (rdRead): the box is the whole view — everything above it scrolls out.
+  var h = panelReading() ? view : psecHeightOf(view, top, panelTabsHeight() + strip);
   if (body._h === h) return;
   body._h = h;
   body.style.setProperty('--psec-h', h + 'px');
@@ -11800,6 +12060,7 @@ function renderPanelMidbar() {
 // A press on a tab: it opens (the one open before closes), or closes when it was open. What it shows is painted
 // now — 세부 the full record, 작업 the list unfolded, 에이전트 the strip — and the section boxes below are sized again.
 function selectPanelMid(id) {
+  rdReset();
   _panelMid = _panelMid === id || !MID_TAB_LABEL[id] ? '' : id;
   if (_panelMid === 'info') _panelInfoOpen = true;
   if (_panelMid === 'tasks') {
@@ -12190,6 +12451,7 @@ function goalCardFocusTarget() {
 // painted again for the new scope, at its newest). The work log keeps one
 // open/closed map of task groups per agent.
 function selectPanelAgent(agentId) {
+  rdReset();
   var before = document.activeElement;
   var focusInPanel = !!(before && before !== document.body && before.closest && before.closest('#slide-panel'));
   var next = agentId || '';
@@ -13046,6 +13308,8 @@ function planDirectInput(key) {
 }
 function focusPanelComposer(hint) {
   if (hint) dashToast({ title: '직접 입력', description: hint, tone: 'neutral' });
+  // Phone chrome T4: a composer tucked away cannot take focus — it comes back first.
+  rdTuck(false);
   setTimeout(function() {
     var c = document.getElementById('pc-composer');
     if (c && typeof c.focus === 'function') c.focus();
@@ -13080,7 +13344,9 @@ function quickChoiceHtml(s, q, onFace) {
     var tip = !lock && c.description ? ' title="' + escAttr(c.description) + '"' : '';
     // The model's ids travel as attribute data (cardQuickAnswer reads them), never as inline JS (.prd/10 round 2).
     return '<button type="button" class="' + cls + '"' + held + tip + ' data-quick-key="' + key + '" data-quick-ask="' + id + '" data-quick-choice="' + escAttr(cid) + '" onclick="event.stopPropagation();cardQuickAnswer(this)">' + esc(stripRecommendedMarker(c.label)) + '</button>';
-  }).join('');
+  }).join('')
+    // #917 — the last option is direct input, as on Slack: it opens the card, whose question takes free text.
+    + '<button type="button" class="ui-btn card-quick-choice card-quick-own"' + (lock ? ' disabled title="' + escAttr(lock) + '"' : sending ? ' disabled' : '') + ' data-quick-key="' + key + '" onclick="event.stopPropagation();cardQuickDirectInput(this)">' + '✏️ 직접 입력' + '</button>';
   var note = st && st.status === 'error' ? '<div class="card-quick-note" role="alert">' + esc(st.message || '보내지 못했어요') + '</div>'
     : st && st.status === 'resolved' ? '<div class="card-quick-note">답을 보냈어요</div>' : '';
   var text = onFace === true ? '' : '<div class="card-question-text">' + esc(q.question || '') + '</div>';
@@ -13089,6 +13355,13 @@ function quickChoiceHtml(s, q, onFace) {
 function cardQuickAnswer(btn) {
   if (!btn || btn.disabled) return;
   answerChoice(btn.getAttribute('data-quick-key'), btn.getAttribute('data-quick-ask'), btn.getAttribute('data-quick-choice'));
+}
+// #917 — 직접 입력 on the face: the open card's question takes the free-text answer.
+function cardQuickDirectInput(btn) {
+  if (!btn || btn.disabled) return;
+  var key = btn.getAttribute('data-quick-key');
+  if (!(panelOpen && panelSessionKey === key)) openPanel(key);
+  dashToast({ title: '직접 입력', description: '입력 필요의 질문 카드에서 직접 입력을 골라 답을 적어 보내세요', tone: 'neutral' });
 }
 var _autoOpenWait = false;
 function autoOpenWhenDefined() {
@@ -13474,6 +13747,7 @@ function renderPanelControls(s) {
     }
   }
   mpHydrate(el);
+  syncPickerDock();
 }
 // After a switch on either surface: the panel's copy follows at once.
 function repaintPanelControlsFor(key) {
@@ -14227,6 +14501,7 @@ async function rbConfirm() {
     if (c) {
       c.value = String(p.text);
       _rbPrefill = { key: pick.key, text: String(p.text) };
+      rdTuck(false); // phone chrome T4: the field it goes back into is in view
       if (typeof c.focus === 'function') c.focus();
     }
   }
@@ -16566,6 +16841,8 @@ function landPanel() {
     if (onQuestion && _panelOnQuestion) return;
     _panelOnQuestion = onQuestion;
     if (onQuestion) {
+      // Phone chrome: what waits on the reader brings the head and the composer back (it lives in the head).
+      rdReset();
       // The question sits under the session info that scrolls with the
       // conversation (SSOT 2026-10-24), so land on its own offset, not on 0.
       // The 입력 필요 head sits right above it: land with the head in view (re-agent-run D9).
@@ -16663,6 +16940,8 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // 전체 task →, a tree item) keeps the message being typed and a send in flight
   // (spec 13).
   var sameSession = panelOpen && panelSessionKey === sessionKey;
+  // Phone chrome: every opening starts with the head and the composer in.
+  rdReset();
   if (!sameSession) {
     pcFreshSteer();
     // Another session's task ids (T1 …) are other tasks: no run's detail carries over.
@@ -22047,6 +22326,8 @@ function pcComposerSetup(c, takesFiles) {
   delete d.voice;
   delete d.accept;
   c.data = Object.assign(d, pcComposerData(takesFiles));
+  // Its tools may have changed (받아쓰기): the picker beside Send follows once the composer drew them.
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(syncPickerDock);
 }
 // A fresh element for another session: what the old one showed — the text being
 // typed, its files, notes in flight, a failed send's Retry — was the other

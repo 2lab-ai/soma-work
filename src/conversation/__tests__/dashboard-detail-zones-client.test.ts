@@ -332,6 +332,8 @@ describe('Z3 — every tab starts closed; a press opens one, a second press clos
         },
         _artCache: {},
         _umList: {},
+        // Phone chrome (SSOT 2026-11-04): a tab press starts the card over — a seam here.
+        rdReset: () => {},
         currentUserId: 'U1',
         sessionColOf: () => 'working',
         isSiblingSession: () => false,

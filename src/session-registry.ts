@@ -142,13 +142,26 @@ const ACTIVE_KEY_BY_RESOURCE: Record<SessionResourceType, keyof SessionLinks> = 
  * Serialized session for file persistence
  */
 /** #829 — the card's follow-up comes back only when it is still one (a reason and a time). */
-function restoreFollowUp(v: unknown): { reason: string; at: number } | undefined {
+function restoreFollowUp(
+  v: unknown,
+): { reason: string; at: number; askedAt?: number; questionTurnId?: string } | undefined {
   if (!v || typeof v !== 'object') return undefined;
-  const { reason, at } = v as { reason?: unknown; at?: unknown };
+  const { reason, at, askedAt, questionTurnId } = v as {
+    reason?: unknown;
+    at?: unknown;
+    askedAt?: unknown;
+    questionTurnId?: unknown;
+  };
   if (typeof reason !== 'string' || reason.trim() === '' || typeof at !== 'number' || !Number.isFinite(at)) {
     return undefined;
   }
-  return { reason, at };
+  // #917 — the question asked for this verdict stays asked across a restart (no second question for it).
+  return {
+    reason,
+    at,
+    ...(typeof askedAt === 'number' && Number.isFinite(askedAt) ? { askedAt } : {}),
+    ...(typeof questionTurnId === 'string' && questionTurnId ? { questionTurnId } : {}),
+  };
 }
 
 /** #829 — UPDATE_SESSION `executiveSummary`: at most this many TL;DR lines, each capped like the host's own. */
@@ -258,8 +271,8 @@ interface SerializedSession {
   // The Executive Summary's TL;DR on the dashboard card (SSOT 2026-11-02 T7) — kept across a
   // restart like the thread head that shows the same lines.
   executiveSummary?: { tldr: string[]; at: number; source?: 'es'; issuedAt?: number };
-  // #829 — the card's follow-up (NEEDS YOU) survives a restart too: a deploy must not drop it to DONE.
-  followUp?: { reason: string; at: number };
+  // #829 — the card's follow-up survives a restart too; #917 — with whether its question was asked.
+  followUp?: { reason: string; at: number; askedAt?: number; questionTurnId?: string };
   // Bot-initiated thread metadata
   threadModel?: 'user-initiated' | 'bot-initiated';
   threadRootTs?: string;
