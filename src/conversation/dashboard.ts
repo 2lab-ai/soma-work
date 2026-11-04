@@ -17897,14 +17897,14 @@ function renderPanelOwner(s) {
 }
 // The board's orbit: the arc starts at the document timeline's origin (as @2lab.ai/ui syncOwnerBadgeOrbit does for
 // the board's pills), so the detail card's turns in step with them. Nothing without the Web Animations API or under
-// reduced motion (no arc); any other animation on the pill is left alone. A pill the closed drawer does not draw yet
+// reduced motion (no arc); only the kit's orbit is touched — any other animation on the pill is left alone. A pill the closed drawer does not draw yet
 // has no arc: once more on the next frame (an opening draws the panel before it shows the drawer).
 function ownerBadgeOrbitSync(el, self, again) {
   if (!self || typeof el.getAnimations !== 'function') return;
   var list = el.getAnimations({ subtree: true });
   var found = false;
   for (var i = 0; i < list.length; i++) {
-    if (/-orbit$/.test(list[i].animationName || '')) {
+    if (list[i].animationName === 'ui-owner-badge-orbit') {
       list[i].startTime = 0;
       found = true;
     }
