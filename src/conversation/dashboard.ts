@@ -6863,7 +6863,9 @@ function rdRead(on) {
     _rd.land = setTimeout(function() {
       if (p.getAttribute('data-read') !== '1') return;
       var t = rdBoxTop();
-      if (Math.abs(sc.scrollTop - t) > 1) sc.scrollTo({ top: t, behavior: 'instant' });
+      if (Math.abs(sc.scrollTop - t) <= 1) return;
+      _panelScrollGen++; // the reader's place: a layout anchor taken before it must not pull it back
+      sc.scrollTo({ top: t, behavior: 'instant' });
     }, how === 'smooth' ? 600 : 0);
     return;
   }
@@ -11450,7 +11452,9 @@ function selectPanelSection(sec) {
   if (PSEC_ORDER.indexOf(sec) < 0) sec = 'conv';
   // Phone chrome T5: a tab pressed while reading keeps reading — the tabs stay under the title bar, the new section
   // lands on its newest (the composer with it); otherwise the card starts as it opens.
-  var reading = panelReading();
+  // Reading, not leaving: a tab pressed while the head comes back in (the title bar was tapped) keeps it coming.
+  var sp = document.getElementById('slide-panel');
+  var reading = !!sp && sp.getAttribute('data-read') === '1';
   if (reading) {
     rdTuck(false);
     // The old section's box is about to empty (its scroll falls to 0): it is no longer the reader's.
