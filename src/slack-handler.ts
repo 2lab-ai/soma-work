@@ -7937,6 +7937,21 @@ export class SlackHandler {
     return this.slackApi;
   }
 
+  /**
+   * #929 — whether a host turn (a synthetic message) would start in this thread now rather than be dropped:
+   * no request running and no follow-up dispatch slot held, under the thread's key or the key a bot-thread
+   * migration moved its slot to — the same fence `handleMessage` applies to a synthetic event.
+   */
+  isHostTurnFree(channel: string, threadTs?: string): boolean {
+    const sessionKey = this.resolveFollowupSessionKey({ channel, thread_ts: threadTs, ts: threadTs } as MessageEvent);
+    if (!sessionKey) return false;
+    if (this.requestCoordinator.isRequestActive(sessionKey)) return false;
+    const dispatcher = this.followupDispatcher;
+    if (!dispatcher) return true;
+    const slotKey = this.followupMigration?.byCanonical.get(sessionKey);
+    return !dispatcher.isBusy(sessionKey) && !(slotKey !== undefined && dispatcher.isBusy(slotKey));
+  }
+
   /** Expose request coordinator for dashboard stop handler */
   getRequestCoordinator(): RequestCoordinator {
     return this.requestCoordinator;

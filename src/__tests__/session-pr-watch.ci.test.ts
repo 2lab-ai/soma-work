@@ -44,6 +44,8 @@ function harness(over: Partial<PrWatchDeps> = {}) {
     checkAsks: [] as Array<{ sha: string; etag?: string }>,
     delivered: [] as Array<{ sessionKey: string; text: string }>,
     store: memoryStore(),
+    holdDone: false,
+    waiting: [] as Array<((outcome: 'injected' | 'expired' | 'gone') => void) | undefined>,
   };
   const deps: PrWatchDeps = {
     sessions: () => [session],
@@ -59,8 +61,11 @@ function harness(over: Partial<PrWatchDeps> = {}) {
       state.checkAsks.push({ sha, ...(etag ? { etag } : {}) });
       return state.checks;
     },
-    deliver: async (sessionKey, text) => {
+    // Injected at once (a settled session); `holdDone` keeps the message waiting instead.
+    deliver: async (sessionKey, text, done) => {
       state.delivered.push({ sessionKey, text });
+      if (state.holdDone) state.waiting.push(done);
+      else done?.('injected');
       return true;
     },
     store: state.store,
@@ -194,6 +199,48 @@ describe('session PR watch — CI (#929)', () => {
     await expect(createSessionPrWatch(h.deps).tick()).resolves.toBeUndefined();
   });
 
+  it('the record is written when the turn is injected — a restart while it waits queues it again (#929 review)', async () => {
+    const h = harness();
+    h.state.holdDone = true;
+    h.state.checks = { conclusion: 'failure', failed: ['lint'] };
+    const watch = createSessionPrWatch(h.deps);
+    await watch.tick();
+    expect(h.state.delivered).toHaveLength(1);
+    expect(h.state.store.data.size).toBe(0);
+    // Still waiting: the next tick does not queue a second copy.
+    await watch.tick();
+    expect(h.state.delivered).toHaveLength(1);
+    // A restart before it was injected: the head is untold, so the new process queues it again.
+    await createSessionPrWatch(h.deps).tick();
+    expect(h.state.delivered).toHaveLength(2);
+    // Injected now: recorded, and nothing more.
+    h.state.waiting[0]?.('injected');
+    expect(h.state.store.data.get(URL_A.toLowerCase())).toEqual({ ciSha: 'aaa1111', ciConclusion: 'failure' });
+  });
+
+  it('a session gone before the turn ran leaves the head untold', async () => {
+    const h = harness();
+    h.state.holdDone = true;
+    h.state.checks = { conclusion: 'failure', failed: ['lint'] };
+    const watch = createSessionPrWatch(h.deps);
+    await watch.tick();
+    h.state.waiting[0]?.('gone');
+    expect(h.state.store.data.size).toBe(0);
+    await watch.tick();
+    expect(h.state.delivered).toHaveLength(2);
+  });
+
+  it('a PR on two live cards wakes neither (no clear owner) — #929 review', async () => {
+    const h = harness();
+    const other: WatchCandidate = { sessionKey: 's2', lastActivityMs: NOW, pr: { url: URL_A, status: 'open' } };
+    const sessions = h.deps.sessions;
+    h.deps.sessions = () => [...sessions(), other];
+    h.state.checks = { conclusion: 'failure', failed: ['lint'] };
+    await createSessionPrWatch(h.deps).tick();
+    expect(h.state.delivered).toEqual([]);
+    expect(h.state.checkAsks).toEqual([]);
+  });
+
   it('many failed jobs stay within the message budget', async () => {
     const h = harness();
     h.state.checks = { conclusion: 'failure', failed: Array.from({ length: 80 }, (_, i) => `job-number-${i}`) };
@@ -227,7 +274,7 @@ describe('entry point wiring (#929)', () => {
   it('the daemon gives the watch the check-run reader, a delivery path and the store', () => {
     const index = fs.readFileSync(path.join(__dirname, '..', 'index.ts'), 'utf-8');
     expect(index).toContain('fetchChecks: fetchGitHubCheckRuns');
-    expect(index).toMatch(/deliver: async \(sessionKey, text\)/);
+    expect(index).toContain('deliver: (sessionKey, text) => delivery.deliver(sessionKey, text)');
     expect(index).toContain("createFilePrWatchStore(path.join(DATA_DIR, 'pr-watch.json')");
   });
 });

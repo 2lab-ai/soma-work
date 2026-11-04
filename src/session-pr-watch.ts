@@ -77,7 +77,7 @@ export interface PrWatchDeps {
     etag?: string,
   ) => Promise<ChecksAnswer | 'not-modified' | undefined>;
   /** #929 — hand the session a host message: wake it when idle, else when it settles. */
-  deliver?: (sessionKey: string, text: string) => Promise<boolean>;
+  deliver?: (sessionKey: string, text: string, done?: (outcome: DeliveryOutcome) => void) => Promise<boolean>;
   /** #929 — what was already delivered, kept across restarts. Undefined (unreadable) = deliver nothing. */
   store?: PrWatchStore;
   now?: () => number;
@@ -200,6 +200,8 @@ export function createSessionPrWatch(deps: PrWatchDeps): SessionPrWatch {
   const known = new Map<string, { etag?: string; status: PullStatus; number: number; headSha?: string }>();
   /** `url@sha` → the checks' last ETag and answer, so a 304 repeats it. */
   const checksKnown = new Map<string, ChecksAnswer>();
+  /** `url@sha` whose message waits in the delivery queue. */
+  const inflight = new Set<string>();
   const askedAt = new Map<string, number>();
   let running: Promise<void> | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -271,31 +273,46 @@ export function createSessionPrWatch(deps: PrWatchDeps): SessionPrWatch {
   async function checkCi(d: Due, key: string, number: number, sha: string | undefined): Promise<void> {
     const { fetchChecks, deliver, store } = deps;
     if (!fetchChecks || !deliver || !store || !sha) return;
+    // Only the one live session that owns the PR is woken: a PR on several cards (a reviewer session, an
+    // orchestrator that mentioned it) has no clear owner, and two sessions pushing fixes to one branch is worse
+    // than none (#929 review). Their cards still follow the PR (the merge/close notice above).
+    if (d.cards.length !== 1) return;
     const record = store.get(key);
     if (record?.ciSha === sha) return;
     const ciKey = `${key}@${sha}`;
+    // A message for this head already waits for the session to settle.
+    if (inflight.has(ciKey)) return;
     const before = checksKnown.get(ciKey);
     const answer = await fetchChecks(d.owner, d.repo, sha, before?.etag);
     const checks = answer === 'not-modified' ? before : answer;
     if (!checks) return;
     if (answer !== 'not-modified') checksKnown.set(ciKey, answer as ChecksAnswer);
     if (checks.conclusion === 'pending') return;
-    checksKnown.delete(ciKey);
-    // Stored first: a restart reads this head as told and never delivers it again.
-    store.set(key, { ciSha: sha, ciConclusion: checks.conclusion });
+    const conclusion = checks.conclusion;
+    const commit = () => {
+      checksKnown.delete(ciKey);
+      store.set(key, { ...store.get(key), ciSha: sha, ciConclusion: conclusion });
+    };
     let text: string | undefined;
-    if (checks.conclusion === 'failure') text = ciMessage(number, d.url, sha, checks.failed);
+    if (conclusion === 'failure') text = ciMessage(number, d.url, sha, checks.failed);
     else if (record?.ciConclusion === 'failure') text = ciMessage(number, d.url, sha, undefined);
-    if (!text) return;
-    for (const card of d.cards) {
-      await Promise.resolve()
-        .then(() => deliver(card.sessionKey, text))
-        .catch((error) => {
-          deps.logger?.debug('PR watch delivery failed', {
-            sessionKey: card.sessionKey,
-            error: (error as Error)?.message,
-          });
-        });
+    if (!text) {
+      commit();
+      return;
+    }
+    // Recorded when the turn is injected (or given up as stale), not before: a restart while the message waits
+    // for the session to settle reads the head as untold and queues it again (#929 review).
+    inflight.add(ciKey);
+    const done = (outcome: DeliveryOutcome) => {
+      inflight.delete(ciKey);
+      if (outcome !== 'gone') commit();
+    };
+    const sessionKey = d.cards[0].sessionKey;
+    try {
+      if (!(await deliver(sessionKey, text, done))) inflight.delete(ciKey);
+    } catch (error) {
+      inflight.delete(ciKey);
+      deps.logger?.debug('PR watch delivery failed', { sessionKey, error: (error as Error)?.message });
     }
   }
 
@@ -334,6 +351,104 @@ export function createSessionPrWatch(deps: PrWatchDeps): SessionPrWatch {
     stop() {
       if (timer) clearInterval(timer);
       timer = undefined;
+    },
+  };
+}
+
+/** #929 review — whether a host turn can start in a session now. 'gone' = the session cannot take one at all. */
+export type DeliveryState = 'ready' | 'busy' | 'gone';
+/** How a queued message ended: injected, given up as stale, or its session went away. */
+export type DeliveryOutcome = 'injected' | 'expired' | 'gone';
+
+export interface SettledDeliveryDeps {
+  /** 'ready' = idle, no request running and no dispatch slot held (a synthetic turn would otherwise be dropped). */
+  state: (sessionKey: string) => DeliveryState;
+  inject: (sessionKey: string, text: string) => Promise<void>;
+  retryMs?: number;
+  /** A message still waiting this long is dropped: a CI result hours old would only mislead. */
+  maxWaitMs?: number;
+  now?: () => number;
+  logger?: { debug: (msg: string, meta?: Record<string, unknown>) => void };
+}
+
+/**
+ * #929 review (trinity) — `SlackHandler.handleMessage` drops a synthetic turn while the session's dispatch slot is
+ * held, and the registry's onIdle callbacks fire before a finishing turn releases it. So a host message waits here
+ * and is injected only into a session that reads 'ready', checked again every `retryMs` — one message per settle,
+ * since an injected turn makes the session busy again. In memory: a restart drops what still waits (the record
+ * already said delivered — at most once).
+ */
+export function createSettledDelivery(deps: SettledDeliveryDeps): {
+  deliver: (sessionKey: string, text: string, done?: (outcome: DeliveryOutcome) => void) => Promise<boolean>;
+  stop: () => void;
+} {
+  const now = deps.now ?? Date.now;
+  const retryMs = deps.retryMs ?? 5_000;
+  const maxWaitMs = deps.maxWaitMs ?? 6 * 60 * 60 * 1000;
+  type Item = { text: string; at: number; done?: (outcome: DeliveryOutcome) => void };
+  const pending = new Map<string, Item[]>();
+  const settle = (item: Item, outcome: DeliveryOutcome) => {
+    try {
+      item.done?.(outcome);
+    } catch (error) {
+      deps.logger?.debug('PR watch delivery callback failed', { error: (error as Error)?.message });
+    }
+  };
+  let timer: ReturnType<typeof setInterval> | undefined;
+
+  const flush = (sessionKey: string): void => {
+    const queue = pending.get(sessionKey);
+    if (!queue?.length) {
+      pending.delete(sessionKey);
+      return;
+    }
+    while (queue.length > 0 && now() - queue[0].at > maxWaitMs) {
+      settle(queue.shift() as Item, 'expired');
+      deps.logger?.debug('PR watch message expired before the session settled', { sessionKey });
+    }
+    let state: DeliveryState;
+    try {
+      state = deps.state(sessionKey);
+    } catch {
+      state = 'busy';
+    }
+    if (state === 'gone') for (const item of queue.splice(0)) settle(item, 'gone');
+    if (state === 'ready' && queue.length > 0) {
+      const next = queue.shift() as Item;
+      settle(next, 'injected');
+      deps.inject(sessionKey, next.text).catch((error) => {
+        deps.logger?.debug('PR watch injection failed', { sessionKey, error: (error as Error)?.message });
+      });
+    }
+    if (queue.length === 0) pending.delete(sessionKey);
+  };
+
+  const ensureTimer = (): void => {
+    if (timer || pending.size === 0) return;
+    timer = setInterval(() => {
+      for (const key of [...pending.keys()]) flush(key);
+      if (pending.size === 0 && timer) {
+        clearInterval(timer);
+        timer = undefined;
+      }
+    }, retryMs);
+    (timer as { unref?: () => void }).unref?.();
+  };
+
+  return {
+    async deliver(sessionKey, text, done) {
+      if (deps.state(sessionKey) === 'gone') return false;
+      const queue = pending.get(sessionKey) ?? [];
+      queue.push({ text, at: now(), ...(done ? { done } : {}) });
+      pending.set(sessionKey, queue);
+      flush(sessionKey);
+      ensureTimer();
+      return true;
+    },
+    stop() {
+      if (timer) clearInterval(timer);
+      timer = undefined;
+      pending.clear();
     },
   };
 }

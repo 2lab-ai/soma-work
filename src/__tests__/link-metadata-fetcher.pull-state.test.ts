@@ -102,6 +102,18 @@ describe('fetchGitHubCheckRuns (#929)', () => {
     expect(fetchMock.mock.calls[0][1].headers['If-None-Match']).toBe('W/"r0"');
   });
 
+  it('C3 — more runs than one page returned is pending, never a false pass (#929 review)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          answer({ total_count: 140, check_runs: [{ name: 'a', status: 'completed', conclusion: 'success' }] }),
+        ),
+    );
+    await expect(fetchGitHubCheckRuns('a', 'b', 'abc1234')).resolves.toEqual({ conclusion: 'pending', failed: [] });
+  });
+
   it('C2 — a 304 is not-modified; a bad sha, a failure or a malformed body is undefined', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 304, headers: { get: () => null } }));
     await expect(fetchGitHubCheckRuns('a', 'b', 'abc1234', 'W/"r1"')).resolves.toBe('not-modified');

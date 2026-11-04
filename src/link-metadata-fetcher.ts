@@ -665,13 +665,16 @@ export async function fetchGitHubCheckRuns(
     );
     if (response.status === 304) return 'not-modified';
     if (!response.ok) return undefined;
-    const body = (await response.json()) as { check_runs?: unknown };
+    const body = (await response.json()) as { check_runs?: unknown; total_count?: unknown };
     if (!Array.isArray(body.check_runs)) return undefined;
     const runs = body.check_runs.filter((r): r is { name?: string; status?: string; conclusion?: string | null } =>
       Boolean(r && typeof r === 'object'),
     );
     const etagOut = response.headers.get('etag');
-    return { ...checksConclusionOf(runs), ...(etagOut ? { etag: etagOut } : {}) };
+    // A run past the first page could be failing or still running: never call a partial list a pass.
+    const partial = typeof body.total_count === 'number' && body.total_count > body.check_runs.length;
+    const folded = partial ? { conclusion: 'pending' as const, failed: [] } : checksConclusionOf(runs);
+    return { ...folded, ...(etagOut ? { etag: etagOut } : {}) };
   } catch (error) {
     logger.debug('Failed to read check runs for the PR watch', { owner, repo, sha, error: (error as Error).message });
     return undefined;
