@@ -1232,6 +1232,38 @@ export class SessionInitializer {
 
       const result = await dispatchService.dispatch(text, abortController.signal);
 
+      // The classifier query itself was blocked by Anthropic's safeguards: the
+      // work would run on the same blocked content. Halt the session here —
+      // the executor refuses to run a halted session's turn — and post the one
+      // "세이프가드 에러" notice with its admin button.
+      if (result.safeguardFlag) {
+        const session = this.deps.claudeHandler.getSession(channel, threadTs);
+        if (session && !session.safeguardHalt) {
+          const halt = { atMs: Date.now(), ...result.safeguardFlag };
+          session.safeguardHalt = halt;
+          this.deps.claudeHandler.saveSessions?.();
+          this.logger.warn('Dispatch blocked by Anthropic safeguards — session halted', { channel, threadTs });
+          try {
+            await this.deps.slackApi.postMessage(channel, safeguardHaltNoticeText(halt), {
+              threadTs,
+              blocks: buildSafeguardHaltBlocks(halt, this.deps.claudeHandler.getSessionKey(channel, threadTs)),
+            });
+          } catch (postErr) {
+            this.logger.warn('Safeguard halt notice failed — the next message re-offers the button', {
+              channel,
+              threadTs,
+              error: (postErr as Error)?.message ?? String(postErr),
+            });
+          }
+        }
+        // Applied before any optional Slack update below: a failed status edit
+        // must not drop the lock into the default-workflow fallback.
+        await this.deps.slackApi.removeReaction(channel, threadTs, 'mag').catch(() => undefined);
+        this.deps.claudeHandler.transitionToMain(channel, threadTs, result.workflow, result.title);
+        await updateDispatchPanel(SAFEGUARD_ERROR_LABEL, 'idle').catch(() => undefined);
+        return undefined;
+      }
+
       const elapsed = Date.now() - startTime;
       const complexityTag = result.complexity ? ` complexity=${result.complexity.score}/${result.complexity.tier}` : '';
       this.logger.info(
@@ -1277,34 +1309,6 @@ export class SessionInitializer {
 
       // Transition session to MAIN state with determined workflow
       this.deps.claudeHandler.transitionToMain(channel, threadTs, result.workflow, result.title);
-
-      // The classifier query itself was blocked by Anthropic's safeguards: the
-      // work would run on the same blocked content. Halt the session here —
-      // the executor refuses to run a halted session's turn — and post the one
-      // "세이프가드 에러" notice with its admin button.
-      if (result.safeguardFlag) {
-        const session = this.deps.claudeHandler.getSession(channel, threadTs);
-        if (session && !session.safeguardHalt) {
-          const halt = { atMs: Date.now(), ...result.safeguardFlag };
-          session.safeguardHalt = halt;
-          this.deps.claudeHandler.saveSessions?.();
-          this.logger.warn('Dispatch blocked by Anthropic safeguards — session halted', { channel, threadTs });
-          try {
-            await this.deps.slackApi.postMessage(channel, safeguardHaltNoticeText(halt), {
-              threadTs,
-              blocks: buildSafeguardHaltBlocks(halt, this.deps.claudeHandler.getSessionKey(channel, threadTs)),
-            });
-          } catch (postErr) {
-            this.logger.warn('Safeguard halt notice failed — the next message re-offers the button', {
-              channel,
-              threadTs,
-              error: (postErr as Error)?.message ?? String(postErr),
-            });
-          }
-        }
-        await updateDispatchPanel(SAFEGUARD_ERROR_LABEL, 'idle');
-        return undefined;
-      }
 
       await updateDispatchPanel('사용자 액션 대기', 'idle');
       return result.size === 'small' || result.size === 'large' ? result.size : undefined;
@@ -1459,6 +1463,9 @@ export class SessionInitializer {
     botSession.workingDirectory = session.workingDirectory;
     botSession.activityState = session.activityState;
     botSession.sessionWorkingDir = session.sessionWorkingDir;
+    // A safeguards halt travels with the work: the migrated session runs the
+    // same blocked content, so it stays locked until an admin lifts it.
+    if (session.safeguardHalt) botSession.safeguardHalt = { ...session.safeguardHalt };
     // Issue #1082 T1: carry the session goal across bot-thread migration.
     // Deep clone — the original session is terminated below and must not
     // share mutable state (incl. nested `pendingEval`). The runtime stash

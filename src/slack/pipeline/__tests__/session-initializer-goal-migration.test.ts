@@ -335,4 +335,35 @@ describe('SessionInitializer — bot-thread migration copies goal (#1082)', () =
     expect(botSession).toBeDefined();
     expect(botSession.goal).toBeUndefined();
   });
+
+  // Review gate round 4 (astra-zhuge P1 #1, PR #906).
+  it('carries a safeguards halt across bot-thread migration', async () => {
+    const original = makeOriginalSession({ safeguardHalt: { atMs: 7, detail: 'reasoning_extraction' } });
+
+    await migrate(original);
+
+    expect(botSession.safeguardHalt).toEqual({ atMs: 7, detail: 'reasoning_extraction' });
+  });
+
+  // Review gate round 4 (astra-zhuge P1 #2, PR #906): the lock is applied
+  // before the optional dispatch-status edit, so a failed edit cannot drop it.
+  it('halts on a classifier blocked by safeguards even when the status edit fails', async () => {
+    const live = makeOriginalSession({ threadTs: '111.900', sessionId: undefined, state: 'INITIALIZING' });
+    mockClaudeHandler.getSession.mockReturnValue(live);
+    mockClaudeHandler.setActivityState = vi.fn();
+    mockClaudeHandler.transitionToMain = vi.fn().mockReturnValue(true);
+    mockClaudeHandler.saveSessions = vi.fn();
+    const { getDispatchService } = await import('../../../dispatch-service');
+    vi.mocked(getDispatchService().dispatch).mockResolvedValueOnce({
+      workflow: 'default',
+      title: 'Session',
+      safeguardFlag: { detail: 'reasoning_extraction', requestId: 'req_r4' },
+    } as any);
+    (sessionInitializer as any).deps.slackApi.postMessage = vi.fn().mockResolvedValue({ ts: 'dispatch-msg' });
+    (sessionInitializer as any).deps.slackApi.updateMessage = vi.fn().mockRejectedValue(new Error('message_not_found'));
+
+    await (sessionInitializer as any).dispatchWorkflow('C123', '111.900', 'do it', 'C123:111.900');
+
+    expect(live.safeguardHalt).toEqual(expect.objectContaining({ requestId: 'req_r4' }));
+  });
 });
