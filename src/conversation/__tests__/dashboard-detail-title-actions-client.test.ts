@@ -173,6 +173,26 @@ describe('A2 — 퍼머링크: the card’s deep link, the one the Slack thread 
       expect(resolve(sibLink, keys)).toBe('devbox-b-dev::archived_work:C1:1.1_3000');
     });
 
+    it('this instance’s card archived, a sibling’s still live on the same thread: the bare link opens ours', () => {
+      const keys = ['devbox-a-dev::archived_work:C1:1.1_2000', SIB_LIVE];
+      expect(resolve(refOf(panelPermalinkOf(card(SELF_LIVE, env), ORIGIN)), keys)).toBe(
+        'devbox-a-dev::archived_work:C1:1.1_2000',
+      );
+      // …and the sibling’s own link still opens the sibling’s live card.
+      expect(resolve(refOf(panelPermalinkOf(card(SIB_LIVE, sib), ORIGIN)), keys)).toBe(SIB_LIVE);
+    });
+
+    it('a bare link (Slack’s) with no archive here still finds the thread’s archive on another instance', () => {
+      const keys = ['devbox-b-dev::archived_work:C1:1.1_1500'];
+      expect(resolve('work:C1:1.1', keys)).toBe('devbox-b-dev::archived_work:C1:1.1_1500');
+    });
+
+    it('an instance-qualified link never matches an instance whose name only ends the same (dev vs mac-dev)', () => {
+      const keys = ['mac-dev::archived_work:C1:1.1_9000', 'dev::archived_work:C1:1.1_1000'];
+      expect(resolve('dev::work:C1:1.1', keys)).toBe('dev::archived_work:C1:1.1_1000');
+      expect(resolve('dev::work:C1:1.1', ['mac-dev::archived_work:C1:1.1_9000'])).toBeNull();
+    });
+
     it('an archived card’s own link opens that thread’s latest archive', () => {
       const archived = card('devbox-b-dev::archived_work:C1:1.1_1500', sib);
       const keys = ['devbox-b-dev::archived_work:C1:1.1_1500', 'devbox-b-dev::archived_work:C1:1.1_3000'];
@@ -323,7 +343,7 @@ describe('A5 — a press on 전체 문맥 복사 copies every turn as markdown',
   const setup = (
     responses: Array<{ status: number; body: string }>,
     session: Record<string, unknown> = { key: 'k1', conversationId: 'conv/1' },
-    opts: { refreshKeepsToken?: boolean } = {},
+    opts: { refreshKeepsToken?: boolean; rotateOnFirstPost?: string } = {},
   ) => {
     const calls: Array<{ url: string; init: Record<string, any> }> = [];
     const copied: string[] = [];
@@ -335,6 +355,8 @@ describe('A5 — a press on 전체 문맥 복사 copies every turn as markdown',
       _csrfToken: 'tok-1',
       fetch: (url: string, init: Record<string, any>) => {
         calls.push({ url, init });
+        // Another request's /auth/me refresh lands while this post is in flight.
+        if (calls.length === 1 && opts.rotateOnFirstPost) scope._csrfToken = opts.rotateOnFirstPost;
         const r = responses.shift() ?? { status: 500, body: '' };
         return Promise.resolve({
           ok: r.status >= 200 && r.status < 300,
@@ -428,6 +450,22 @@ describe('A5 — a press on 전체 문맥 복사 copies every turn as markdown',
     expect(h.refreshed()).toBe(1);
     expect(h.calls).toHaveLength(1);
     expect(h.toasts).toEqual([{ title: '전체 문맥을 복사하지 못했어요', description: 'HTTP 403', tone: 'error' }]);
+  });
+
+  it('the token is compared with the one the refused post carried (another refresh may have landed meanwhile)', async () => {
+    const h = setup(
+      [
+        { status: 403, body: JSON.stringify({ code: 'csrf_failed' }) },
+        { status: 200, body: MD },
+      ],
+      undefined,
+      { refreshKeepsToken: true, rotateOnFirstPost: 'tok-B' },
+    );
+    await h.api.copyPanelContext(el({ hidden: false }));
+    expect(h.calls).toHaveLength(2);
+    expect(h.calls[0].init.headers['X-CSRF-Token']).toBe('tok-1');
+    expect(h.calls[1].init.headers['X-CSRF-Token']).toBe('tok-B');
+    expect(h.copied).toEqual([MD]);
   });
 
   it('a sibling instance’s card: nothing is posted (its conversation lives on that instance)', async () => {

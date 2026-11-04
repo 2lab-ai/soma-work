@@ -14352,19 +14352,12 @@ function resolveDeepLinkKey(ref, keys, selfInstance) {
   if (!ref) return null;
   if (keys.indexOf(ref) >= 0) return ref;
   if (selfInstance && keys.indexOf(selfInstance + '::' + ref) >= 0) return selfInstance + '::' + ref;
-  var suffix = '::' + ref;
-  var hits = keys.filter(function(k) { return k.length > suffix.length && k.slice(-suffix.length) === suffix; });
-  if (hits.length) return hits.length === 1 ? hits[0] : null;
-  // No live card: the thread's latest archive. archivedToKanban keys it
-  // "[<instance>::]archived_<registry key>_<archivedAt ms>". A ref that names its
-  // instance ("<instance>::<registry key>", a sibling card's 퍼머링크) takes only
-  // that instance's archives; a bare ref this instance's first (as a live card
-  // above), then any instance's.
+  // The thread's latest archive. archivedToKanban keys it
+  // "[<instance>::]archived_<registry key>_<archivedAt ms>"; inst = "<instance>::"
+  // takes only that instance's, '' any instance's.
   var sep = ref.indexOf('::');
   var bare = sep > 0 ? ref.slice(sep + 2) : ref;
-  var scopes = sep > 0 ? [ref.slice(0, sep + 2)] : selfInstance ? [selfInstance + '::', ''] : [''];
-  for (var j = 0; j < scopes.length; j++) {
-    var inst = scopes[j];
+  function latestArchive(inst) {
     var mark = inst + 'archived_' + bare + '_';
     var best = null;
     var bestAt = -1;
@@ -14376,9 +14369,20 @@ function resolveDeepLinkKey(ref, keys, selfInstance) {
       if (!/^[0-9]+$/.test(tail)) continue;
       if (Number(tail) > bestAt) { bestAt = Number(tail); best = k; }
     }
-    if (best) return best;
+    return best;
   }
-  return null;
+  // A bare ref (Slack's links, this instance's 퍼머링크) is this instance's
+  // thread first: its archive before another instance's live card.
+  if (sep < 0 && selfInstance) {
+    var mine = latestArchive(selfInstance + '::');
+    if (mine) return mine;
+  }
+  var suffix = '::' + ref;
+  var hits = keys.filter(function(k) { return k.length > suffix.length && k.slice(-suffix.length) === suffix; });
+  if (hits.length) return hits.length === 1 ? hits[0] : null;
+  // No live card: a ref that names its instance ("<instance>::<registry key>",
+  // a sibling card's 퍼머링크) takes only that instance's archives; a bare one any.
+  return latestArchive(sep > 0 ? ref.slice(0, sep + 2) : '');
 }
 var _deepLinkWaiting = false; // waiting for <ui-agent-inbox> to be defined
 function openDeepLinkedSession() {
@@ -17900,17 +17904,18 @@ function panelContextExportUrl(convId) {
 // (not when the refresh brought no new token: the same token would be refused again).
 function fetchPanelContext(convId) {
   var url = panelContextExportUrl(convId);
+  var sent = ''; // the token the last post carried — the one a csrf_failed refused
   var post = function() {
+    sent = _csrfToken || '';
     var headers = { 'Content-Type': 'application/json' };
-    if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+    if (sent) headers['X-CSRF-Token'] = sent;
     return fetch(url, { method: 'POST', headers: headers, body: JSON.stringify({ turnIds: [] }) });
   };
   return post().then(function(res) {
     if (res.status !== 403) return res;
     return res.clone().json().catch(function() { return null; }).then(function(data) {
       if (!isCsrfRejection(res.status, data)) return res;
-      var refused = _csrfToken;
-      return refreshCsrfToken().then(function() { return _csrfToken && _csrfToken !== refused ? post() : res; });
+      return refreshCsrfToken().then(function() { return _csrfToken && _csrfToken !== sent ? post() : res; });
     });
   }).then(function(res) {
     if (!res.ok) throw new Error('HTTP ' + res.status);
