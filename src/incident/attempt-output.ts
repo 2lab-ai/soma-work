@@ -941,7 +941,16 @@ export async function* screenIncidentStream(
     try {
       for await (const message of source) {
         const screened = screenIncidentMessage(message, evidenceCallIds);
-        if (!safeguardFlag) safeguardFlag = safeguardFlagOfIncidentMessage(message, screened.text);
+        // A safeguards block halts the session the moment it is seen, and the
+        // attempt stops consuming its source there (review R6, astra P1) —
+        // the host's conclusion follows; nothing after the block runs.
+        const blockedHere = safeguardFlag ? null : safeguardFlagOfIncidentMessage(message, screened.text);
+        if (blockedHere) {
+          safeguardFlag = blockedHere;
+          reportSafeguardFlag(hooks, blockedHere);
+          if (message.type === 'result') sdkResult = message;
+          break;
+        }
         if (screened.text) {
           modelTextChars += screened.text.length;
           if (modelText.length + screened.text.length > MAX_MODEL_TEXT_CHARS) {
@@ -958,16 +967,11 @@ export async function* screenIncidentStream(
       }
     } catch (error) {
       threw = true;
-      if (!safeguardFlag) safeguardFlag = safeguardFlagOf(error);
-      hooks.onStreamError?.(error);
-    }
-
-    if (safeguardFlag) {
-      try {
-        hooks.onSafeguardFlag?.(safeguardFlag);
-      } catch {
-        // The halt port logs its own failure; the attempt still concludes.
+      if (!safeguardFlag) {
+        safeguardFlag = safeguardFlagOf(error);
+        if (safeguardFlag) reportSafeguardFlag(hooks, safeguardFlag);
       }
+      hooks.onStreamError?.(error);
     }
 
     const observed = hooks.observe();
@@ -993,6 +997,15 @@ export async function* screenIncidentStream(
     yield messages.result;
   } finally {
     hooks.onFinished?.();
+  }
+}
+
+/** Tell the caller (it halts the session); its failure never stops the attempt from concluding. */
+function reportSafeguardFlag(hooks: IncidentStreamHooks, flag: SafeguardFlagInfo): void {
+  try {
+    hooks.onSafeguardFlag?.(flag);
+  } catch {
+    // The halt port logs its own failure; the attempt still concludes.
   }
 }
 

@@ -125,3 +125,17 @@ describe('ClaudeHandler — safeguard halt wiring', () => {
     expect(ports.postNotice).toHaveBeenCalled();
   });
 });
+
+describe('haltSafeguardOnFlag — a session closed while the guardian ran (review round 6)', () => {
+  it('tombstones the thread through the registry and saves', () => {
+    const h = harness({ session: null });
+    const haltSafeguardByKey = vi.fn(() => 'tombstone');
+    const halt = haltSessionOnSafeguardFlag({ ...h.deps, haltSafeguardByKey }, KEY, FLAG, {
+      source: 'guardian',
+      stopRunningTurn: true,
+    });
+    expect(halt).toMatchObject(FLAG);
+    expect(haltSafeguardByKey).toHaveBeenCalledWith(KEY, expect.objectContaining(FLAG));
+    expect(h.deps.saveSessions).toHaveBeenCalled();
+  });
+});

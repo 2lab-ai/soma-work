@@ -1325,7 +1325,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // closed; the halt notice and its admin button were already posted when the
     // lock was set.
     if (session.safeguardHalt) {
-      return this.refuseHaltedTurn(session, sessionKey, processedFiles, params.followupTurnEpoch);
+      return this.refuseHaltedTurn(
+        session,
+        sessionKey,
+        channel,
+        threadTs,
+        abortController,
+        processedFiles,
+        params.followupTurnEpoch,
+      );
     }
 
     // Issue #688 — capture per-turn status epoch. Every clearStatus call
@@ -2850,6 +2858,20 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         throw flagError;
       }
 
+      // A safeguards block seen OUTSIDE this stream halted the session while
+      // the turn ran — the permission guardian's Claude call, or the goal eval
+      // (review R6, grok-elon P1). The turn must end as the halt, never as a
+      // success ("사용자 액션 대기", a completion card). The turn could not
+      // start halted (refused at entry), so a halt now was set during it. An
+      // incident attempt is the exception: its host conclusion must still go
+      // out; the halt refuses the next attempt.
+      if (!incidentAttempt && session.safeguardHalt) {
+        if (!abortController.signal.aborted) abortController.abort('safeguard' satisfies RequestAbortReason);
+        const haltedError = new Error('Request was aborted');
+        haltedError.name = 'AbortError';
+        throw haltedError;
+      }
+
       if (streamResult.aborted) {
         const abortError = new Error('Request was aborted');
         abortError.name = 'AbortError';
@@ -4032,10 +4054,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   private async refuseHaltedTurn(
     session: ConversationSession,
     sessionKey: string,
+    channel: string,
+    threadTs: string,
+    abortController: AbortController | undefined,
     processedFiles: ProcessedFile[],
     expectedTurnEpoch?: number,
   ): Promise<ExecuteResult> {
     this.logger.info('Turn not run — session halted by a safeguards flag', { sessionKey });
+    // The dispatch registered this turn's controller; nothing runs, so release
+    // it — a stale controller reads as a running request, and after the admin
+    // unlocks, `new` and the next message would wait behind it (review R6,
+    // astra P2). CAS: only this turn's own controller.
+    if (abortController) this.deps.requestCoordinator.removeController(sessionKey, abortController);
+    this.setActivity(session, sessionKey, channel, threadTs, 'idle');
     await this.updateRuntimeStatus(
       session,
       sessionKey,
@@ -4202,6 +4233,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // A running turn stopped because the session was halted elsewhere (the
     // goal eval was blocked): the halt rail already posted; end as the halt.
     if (abortReason === 'safeguard' && session.safeguardHalt && !safeguardFlagOf(error)) {
+      const halt = session.safeguardHalt;
       this.setActivity(session, sessionKey, channel, threadTs, 'idle');
       await this.updateRuntimeStatus(
         session,
@@ -4210,6 +4242,21 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         expectedTurnEpoch,
       );
       await this.deps.reactionManager.updateReaction(sessionKey, this.deps.statusReporter.getStatusEmoji('error'));
+      // The turn card says what stopped it (T4) — the halt's own notice was posted where it was set.
+      if (this.deps.turnNotifier) {
+        this.deps.turnNotifier
+          .notify({
+            category: 'Exception',
+            errorKind: 'safeguard',
+            userId: session.ownerId || '',
+            channel,
+            threadTs,
+            sessionTitle: session.title,
+            message: safeguardCardMessage(halt),
+            durationMs: 0,
+          })
+          .catch((err: any) => this.logger.warn('Safeguard notification failed', { error: err?.message }));
+      }
       if (processedFiles.length > 0) {
         await cleanupWithTimeout(
           () => this.deps.fileHandler.cleanupTempFiles(processedFiles),
@@ -5223,6 +5270,17 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
    */
   private async onSummaryTimerFire(session: ConversationSession, sessionKey: string): Promise<void> {
     if (!this.deps.summaryService) return;
+    // A safeguards halt that landed after the turn (the goal eval was blocked):
+    // the summary is another Claude query on the halted session — never run it
+    // without an admin (review R6, astra P1). The live session too: a
+    // close/restore puts a new object under the key.
+    if (
+      session.safeguardHalt ||
+      this.deps.claudeHandler?.getSessionRegistry?.()?.getSafeguardHaltByKey?.(sessionKey) !== undefined
+    ) {
+      this.logger.info('Summary skipped — session halted by a safeguards flag', { sessionKey });
+      return;
+    }
 
     // Create AbortController for this fork — stored so new user input can abort it.
     const abortController = new AbortController();

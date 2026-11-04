@@ -2006,6 +2006,8 @@ async function start() {
           // Loop steps happen while the session is idle — push each one so the
           // dashboard card leaves DONE while an eval runs or a retry waits.
           broadcastSessionUpdate: () => registry.broadcastSessionUpdate(),
+          // A blocked eval locks the thread's live session, or its tombstone (#904).
+          haltSafeguardByKey: (key, halt) => registry.haltSafeguardByKey(key, halt),
         },
         requestCoordinator: {
           isRequestActive: (key) => requestCoordinator.isRequestActive(key),

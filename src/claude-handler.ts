@@ -572,6 +572,7 @@ export class ClaudeHandler implements TurnSteeringPort {
     haltSessionOnSafeguardFlag(
       {
         getSessionByKey: (key) => this.sessionRegistry.getSessionByKey(key),
+        haltSafeguardByKey: (key, halt) => this.sessionRegistry.haltSafeguardByKey(key, halt),
         saveSessions: () => this.sessionRegistry.saveSessions(),
         broadcastSessionUpdate: () => this.sessionRegistry.broadcastSessionUpdate(),
         ports: this.safeguardHaltPorts,

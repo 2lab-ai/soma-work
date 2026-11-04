@@ -911,3 +911,37 @@ describe('GoalLoopController — blocked eval stops a running turn (review round
     expect(abortSession).toHaveBeenCalledWith(SESSION_KEY, 'safeguard');
   });
 });
+
+describe('GoalLoopController — blocked eval after a close/restore (review round 6, astra P1)', () => {
+  const BLOCK =
+    "API Error: Opus 5.5 (1M context)'s safeguards flagged this message (https://www.anthropic.com/legal/aup).\n\nDetails: `[reasoning_extraction]`\n\nRequest ID: req_r6";
+
+  it('locks the LIVE session under the key, not the object the eval captured', async () => {
+    let h: ReturnType<typeof makeHarness>;
+    let live: any;
+    h = makeHarness({
+      dispatcher: async () => {
+        // The owner closed the session and restored it: a new object under the key.
+        live = { ...h.session, goal: { ...h.session.goal }, safeguardHalt: undefined };
+        return BLOCK;
+      },
+    });
+    (h.controller as any).deps.registry.getSessionByKey = () => live ?? h.session;
+
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect(live.safeguardHalt?.requestId).toBe('req_r6');
+  });
+
+  it('hands the lock to the registry, which tombstones a thread with no live session', async () => {
+    const haltSafeguardByKey = vi.fn();
+    const h = makeHarness({ dispatcher: async () => BLOCK });
+    (h.controller as any).deps.registry.haltSafeguardByKey = haltSafeguardByKey;
+
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect(haltSafeguardByKey).toHaveBeenCalledWith(SESSION_KEY, expect.objectContaining({ requestId: 'req_r6' }));
+  });
+});

@@ -1285,10 +1285,20 @@ export class AgentStreamProcessor {
             await flushToolCalls();
             await flushToolResults();
             this.settleNarration(context);
-            textBuf.push(event.text);
             // A safeguards block ends the work: stop the query as it arrives,
             // not when the buffer next flushes (background agents can hold the
             // result for minutes). The flush still suppresses the segment.
+            // The block is its own SDK message: read THIS delta, so prose
+            // buffered before it cannot hide it (review R6, astra P1). That
+            // prose posts on its own first; the block then sits alone in the
+            // buffer, where the flush recognises and suppresses it.
+            if (!this.safeguardFlag && parseSafeguardFlag(event.text)) {
+              await flushText();
+              textBuf.push(event.text);
+              this.noteSafeguardFlag(event.text);
+              break;
+            }
+            textBuf.push(event.text);
             if (!this.safeguardFlag) this.noteSafeguardFlag(textBuf.join(''));
             break;
           case 'tool_call':
