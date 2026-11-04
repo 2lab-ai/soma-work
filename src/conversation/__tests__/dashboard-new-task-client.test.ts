@@ -209,6 +209,13 @@ describe('T1 — the New task entry is always in reach, calm', () => {
     expect(key('n', { ctrlKey: true, isComposing: true })).toBe(false);
     expect(key('m', { ctrlKey: true })).toBe(false);
     expect(ntIsNewTaskKey({ ctrlKey: true })).toBe(false); // no key at all
+    // A Korean (or other non-Latin) input source can report the letter it types; the key's place (KeyN) says N.
+    expect(key('ㅜ', { ctrlKey: true, code: 'KeyN' } as never)).toBe(true);
+    expect(key('т', { ctrlKey: true, code: 'KeyN' } as never)).toBe(true);
+    expect(key('ㅜ', { code: 'KeyN' } as never)).toBe(false); // still needs Ctrl
+    expect(key('ㅜ', { ctrlKey: true, code: 'KeyM' } as never)).toBe(false);
+    // A Latin layout keeps its own letter: Dvorak's Ctrl+B sits on KeyN and is not New task.
+    expect(key('b', { ctrlKey: true, code: 'KeyN' } as never)).toBe(false);
   });
 });
 
