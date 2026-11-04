@@ -77,7 +77,13 @@ export interface PrWatchDeps {
     etag?: string,
   ) => Promise<ChecksAnswer | 'not-modified' | undefined>;
   /** #929 — hand the session a host message: wake it when idle, else when it settles. */
-  deliver?: (sessionKey: string, text: string, done?: (outcome: DeliveryOutcome) => void) => Promise<boolean>;
+  deliver?: (
+    sessionKey: string,
+    text: string,
+    done?: (outcome: DeliveryOutcome) => void,
+    /** Still worth saying when it is the session's turn: false once the PR merged, moved on or left the card. */
+    current?: () => boolean,
+  ) => Promise<boolean>;
   /** #929 — what was already delivered, kept across restarts. Undefined (unreadable) = deliver nothing. */
   store?: PrWatchStore;
   now?: () => number;
@@ -200,6 +206,8 @@ export function createSessionPrWatch(deps: PrWatchDeps): SessionPrWatch {
   const known = new Map<string, { etag?: string; status: PullStatus; number: number; headSha?: string }>();
   /** `url@sha` → the checks' last ETag and answer, so a 304 repeats it. */
   const checksKnown = new Map<string, ChecksAnswer>();
+  /** url → the live sessions whose card shows it, from the last full scan (not just this tick's slice). */
+  let liveCards = new Map<string, Set<string>>();
   /** `url@sha` whose message waits in the delivery queue. */
   const inflight = new Set<string>();
   const askedAt = new Map<string, number>();
@@ -221,6 +229,7 @@ export function createSessionPrWatch(deps: PrWatchDeps): SessionPrWatch {
       entry.cards.push({ sessionKey: s.sessionKey, status: s.pr?.status });
       byUrl.set(key, entry);
     }
+    liveCards = new Map([...byUrl].map(([key, entry]) => [key, new Set(entry.cards.map((c) => c.sessionKey))]));
     return [...byUrl.values()]
       .sort((a, b) => (askedAt.get(a.url.toLowerCase()) ?? 0) - (askedAt.get(b.url.toLowerCase()) ?? 0))
       .slice(0, maxPerTick);
@@ -308,8 +317,13 @@ export function createSessionPrWatch(deps: PrWatchDeps): SessionPrWatch {
       if (outcome !== 'gone') commit();
     };
     const sessionKey = d.cards[0].sessionKey;
+    // A message that waited past a merge, a new head or a card that moved on is dropped, not told (#929 round 2).
+    const current = () => {
+      const pr = known.get(key);
+      return !!pr && !FINAL.has(pr.status) && pr.headSha === sha && (liveCards.get(key)?.has(sessionKey) ?? false);
+    };
     try {
-      if (!(await deliver(sessionKey, text, done))) inflight.delete(ciKey);
+      if (!(await deliver(sessionKey, text, done, current))) inflight.delete(ciKey);
     } catch (error) {
       inflight.delete(ciKey);
       deps.logger?.debug('PR watch delivery failed', { sessionKey, error: (error as Error)?.message });
@@ -375,18 +389,31 @@ export interface SettledDeliveryDeps {
  * #929 review (trinity) — `SlackHandler.handleMessage` drops a synthetic turn while the session's dispatch slot is
  * held, and the registry's onIdle callbacks fire before a finishing turn releases it. So a host message waits here
  * and is injected only into a session that reads 'ready', checked again every `retryMs` — one message per settle,
- * since an injected turn makes the session busy again. In memory: a restart drops what still waits, and the watch
+ * since an injected turn makes the session busy again. An item whose `current()` turns false while it waits is dropped
+ * as 'gone'. In memory: a restart drops what still waits, and the watch
  * queues it again, because it records a message only when `done` reports it injected (or expired). An injection that
  * fails after that is not retried — at most once.
  */
 export function createSettledDelivery(deps: SettledDeliveryDeps): {
-  deliver: (sessionKey: string, text: string, done?: (outcome: DeliveryOutcome) => void) => Promise<boolean>;
+  deliver: (
+    sessionKey: string,
+    text: string,
+    done?: (outcome: DeliveryOutcome) => void,
+    current?: () => boolean,
+  ) => Promise<boolean>;
   stop: () => void;
 } {
   const now = deps.now ?? Date.now;
   const retryMs = deps.retryMs ?? 5_000;
   const maxWaitMs = deps.maxWaitMs ?? 6 * 60 * 60 * 1000;
-  type Item = { text: string; at: number; done?: (outcome: DeliveryOutcome) => void };
+  type Item = { text: string; at: number; done?: (outcome: DeliveryOutcome) => void; current?: () => boolean };
+  const stale = (item: Item): boolean => {
+    try {
+      return item.current?.() === false;
+    } catch {
+      return false;
+    }
+  };
   const pending = new Map<string, Item[]>();
   const settle = (item: Item, outcome: DeliveryOutcome) => {
     try {
@@ -406,6 +433,11 @@ export function createSettledDelivery(deps: SettledDeliveryDeps): {
     while (queue.length > 0 && now() - queue[0].at > maxWaitMs) {
       settle(queue.shift() as Item, 'expired');
       deps.logger?.debug('PR watch message expired before the session settled', { sessionKey });
+    }
+    // No longer worth saying (the PR merged or moved on while the session worked): dropped, not recorded.
+    for (const item of queue.filter(stale)) {
+      queue.splice(queue.indexOf(item), 1);
+      settle(item, 'gone');
     }
     let state: DeliveryState;
     try {
@@ -437,10 +469,10 @@ export function createSettledDelivery(deps: SettledDeliveryDeps): {
   };
 
   return {
-    async deliver(sessionKey, text, done) {
-      if (deps.state(sessionKey) === 'gone') return false;
+    async deliver(sessionKey, text, done, current) {
+      if (deps.state(sessionKey) === 'gone' || current?.() === false) return false;
       const queue = pending.get(sessionKey) ?? [];
-      queue.push({ text, at: now(), ...(done ? { done } : {}) });
+      queue.push({ text, at: now(), ...(done ? { done } : {}), ...(current ? { current } : {}) });
       pending.set(sessionKey, queue);
       flush(sessionKey);
       ensureTimer();
