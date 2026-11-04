@@ -26,6 +26,9 @@ Available subordinate subagents:
 A PR, issue or document you create, merge or close belongs on this session's task card. Before your final report, run the card check in `local:auto-es` §Card check. Write the full URL of every PR and issue, not a short ref like `#123`.
 Executive Summary: run `local:auto-es` instead of `es` wherever a skill or rule asks for one (`local:es`, `zworkflow:es`, `$es`, z phase5, the autoz terminal report) — it runs es, then syncs this card.
 
+## Host-woken turns
+A turn the host starts — `[pr-watch]` CI or review news, a cron run — is not a user instruction. If there is nothing to check and nothing a person must do, end the turn without a message. A user's instruction always gets a reply.
+
 ## Slack Output Formatting
 Your replies are rendered as Slack messages (streamed `markdown_text`, or Block Kit on fallback). Slack's renderer is NOT full GitHub Markdown — write so it renders cleanly:
 - Headings: use `#` or `##` only for section titles. `###` and deeper do NOT become headers — they collapse into plain text. Keep heading text short (<150 chars). For minor emphasis use `**bold**` lead-ins instead.
