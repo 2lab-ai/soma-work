@@ -181,9 +181,26 @@ describe('T1 — the New task entry is always in reach, calm', () => {
 
   it('pressing Ctrl+N (outside a text field) or the buttons opens the composer', () => {
     expect(script).toContain('function openNewTask(');
-    expect(script).toContain('if (ntIsNewTaskKey(e) && !ntIsTypingTarget(e.target)) {');
+    expect(script).toContain('if (ntIsNewTaskKey(e) && !ntIsTypingTarget(ntKeyTarget(e))) {');
     // The key hint follows the platform, like the send hint: ⌃N on a Mac, Ctrl+N elsewhere.
     expect(script).toContain("if (nkbd) nkbd.textContent = isMac ? '⌃N' : 'Ctrl+N';");
+  });
+
+  it('Ctrl+N typed in a composer (its textarea is in a shadow root) is left to the field', () => {
+    const fns = loadWith<{ ntIsTypingTarget(t: unknown): boolean; ntKeyTarget(e: unknown): unknown }>(
+      ['ntIsTypingTarget', 'ntKeyTarget'],
+      { document: { querySelector: () => null }, artViewerIsOpen: () => false },
+    );
+    const host = { tagName: 'UI-COMPOSER' };
+    const field = { tagName: 'TEXTAREA' };
+    // The document hears the key retargeted to the host — not a text field by its tag.
+    expect(fns.ntIsTypingTarget(host)).toBe(false);
+    // composedPath()[0] is the textarea inside <ui-composer>'s shadow root.
+    expect(fns.ntKeyTarget({ target: host, composedPath: () => [field, host] })).toBe(field);
+    expect(fns.ntIsTypingTarget(fns.ntKeyTarget({ target: host, composedPath: () => [field, host] }))).toBe(true);
+    // No composedPath (or an empty one): the event's own target.
+    expect(fns.ntKeyTarget({ target: host })).toBe(host);
+    expect(fns.ntKeyTarget({ target: host, composedPath: () => [] })).toBe(host);
   });
 
   it('only Ctrl+N is the New task key — a bare N, ⌘N, Shift or Alt with it, or an IME composition is not', () => {

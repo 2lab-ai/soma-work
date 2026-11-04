@@ -344,7 +344,7 @@ async function phoneChecks(browser: Browser, engine: string, device: string) {
   await page.screenshot({ path: path.join(OUT, `${tag}-board.png`) });
 
   await page.locator('#new-task-fab').tap();
-  await page.waitForSelector('#nt-dialog[open].is-shown');
+  await page.waitForSelector('#nt-dialog[open]');
   await page.waitForFunction(() => (document.getElementById('nt-channel') as HTMLSelectElement).options.length > 0);
   await page.waitForTimeout(420);
   const sheet = await page.locator('#nt-dialog').boundingBox();

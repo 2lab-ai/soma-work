@@ -19916,6 +19916,13 @@ function ntIsNewTaskKey(e) {
   return key === 'n' && !!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && !e.isComposing;
 }
 
+// The element a key was typed into. A key typed inside an element's shadow root (<ui-composer>'s textarea) reaches
+// the document retargeted to the host, which is no text field by its tag; composedPath()[0] is the field itself.
+function ntKeyTarget(e) {
+  var path = typeof e.composedPath === 'function' ? e.composedPath() : null;
+  return (path && path[0]) || e.target;
+}
+
 function ntIsTypingTarget(t) {
   // A dialog on top (the page's, a <ui-dialog>, the artifact viewer's) keeps the key.
   if (document.querySelector('dialog[open], ui-dialog[open]') || artViewerIsOpen()) return true;
@@ -21841,7 +21848,7 @@ function ntInit() {
   paintNtComposer();
   // Ctrl+N opens the composer from anywhere outside a text field.
   document.addEventListener('keydown', function (e) {
-    if (ntIsNewTaskKey(e) && !ntIsTypingTarget(e.target)) {
+    if (ntIsNewTaskKey(e) && !ntIsTypingTarget(ntKeyTarget(e))) {
       e.preventDefault();
       openNewTask();
     }
