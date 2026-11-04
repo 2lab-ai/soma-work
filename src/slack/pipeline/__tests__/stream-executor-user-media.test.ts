@@ -269,6 +269,17 @@ describe('user media — captured before the turn is recorded and before cleanup
     expect(order).toEqual(['capture', 'record', 'cleanup']);
   });
 
+  // SSOT 2026-11-04 (PR #912): a long text file the prompt points at is copied into the working directory, so its
+  // path still reads after this turn's cleanup — a plan turn, then the turn that does the work.
+  it('formats the files with the working directory as keepDir', async () => {
+    const deps = createDeps();
+    const executor = new StreamExecutor(deps);
+    await executor.execute(params('아래 붙여넣은 스펙대로', [FILE]));
+    expect(deps.fileHandler.formatFilePrompt).toHaveBeenCalledWith([FILE], '아래 붙여넣은 스펙대로', {
+      keepDir: '/tmp/test',
+    });
+  });
+
   it('records a files-only message as a user turn (no text)', async () => {
     const executor = new StreamExecutor(createDeps());
     await executor.execute(params('', [FILE]));

@@ -496,6 +496,52 @@ describe('FileHandler.formatFilePrompt — a long text file is previewed and its
     }
   });
 
+  it("with the session's working directory, the path is a copy there that outlives the turn's cleanup (a plan turn, then the start turn)", async () => {
+    const keepDir = fsx.mkdtempSync(pathx.join(os.tmpdir(), 'fh-keep-'));
+    const content = 'K'.repeat(10001) + 'END';
+    const f = textFile('pasted-text-20261104-090507.txt', content);
+    try {
+      const out = await handler.formatFilePrompt([f], '', { keepDir });
+      const kept = /Path: (.+)\n/.exec(out)?.[1] ?? '';
+      expect(pathx.dirname(kept)).toBe(pathx.join(keepDir, '.soma-attachments'));
+      expect(kept).not.toBe(f.path);
+      await handler.cleanupTempFiles([f]); // the end of the turn
+      expect(fsx.existsSync(f.path)).toBe(false);
+      expect(fsx.readFileSync(kept, 'utf-8')).toBe(content);
+    } finally {
+      fsx.rmSync(keepDir, { recursive: true, force: true });
+    }
+  });
+
+  it('a copy that cannot be made falls back to the download path, still with the Read note', async () => {
+    const blocker = pathx.join(os.tmpdir(), `fh-not-a-dir-${Date.now()}`);
+    fsx.writeFileSync(blocker, 'x'); // a file where the directory should go: mkdir fails
+    const f = textFile('notes.txt', 'L'.repeat(10001));
+    try {
+      const out = await handler.formatFilePrompt([f], '', { keepDir: blocker });
+      expect(out).toContain(`Path: ${f.path}`);
+      expect(out).toMatch(/Read tool/);
+    } finally {
+      await handler.cleanupTempFiles([f]);
+      fsx.rmSync(blocker, { force: true });
+    }
+  });
+
+  it('an instruction that is only pasted text is not framed as files to analyse', async () => {
+    const f = textFile('pasted-text-20261104-090507.txt', '이 스펙대로 구현해줘');
+    const other = textFile('spec.txt', 'spec');
+    try {
+      const only = await handler.formatFilePrompt([f], '');
+      expect(only).not.toMatch(/Please analyze/);
+      expect(only).toMatch(/pasted text below/);
+      // Any other file keeps the usual framing.
+      const mixed = await handler.formatFilePrompt([f, other], '');
+      expect(mixed).toMatch(/Please analyze the uploaded files/);
+    } finally {
+      await handler.cleanupTempFiles([f, other]);
+    }
+  });
+
   it('a short text file stays inline as before, with no path', async () => {
     const f = textFile('notes.txt', 'short note');
     try {

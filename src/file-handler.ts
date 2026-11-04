@@ -32,6 +32,18 @@ const TEXT_PREVIEW_CHARS = 10_000;
  */
 const PASTED_TEXT_NAME = /^pasted-text-\d{8}-\d{6}\.txt$/;
 
+/** Under the session's working directory: the copies of long text files the agent is told to read. */
+const KEPT_ATTACHMENTS_DIR = '.soma-attachments';
+
+export interface FormatFilePromptOptions {
+  /**
+   * The session's working directory. A text file too long to inline is copied under it, so its path still reads in
+   * a later turn: the download is deleted when this turn ends (cleanupTempFiles), and a plan turn is followed by the
+   * turn that does the work. Without it, the prompt gives the download's path (this turn only).
+   */
+  keepDir?: string;
+}
+
 /** The Slack file's id and permalink, when the event carries them (strings only). */
 function slackRef(file: any): { slackFileId?: string; permalink?: string } {
   const id = typeof file?.id === 'string' && file.id ? file.id : undefined;
@@ -293,8 +305,34 @@ export class FileHandler {
     return textTypes.some((type) => mimetype.startsWith(type));
   }
 
-  async formatFilePrompt(files: ProcessedFile[], userText: string): Promise<string> {
-    let prompt = userText || 'Please analyze the uploaded files.';
+  /** A copy of a long text file under keepDir that outlives the turn, or its download's path when none can be made. */
+  private keepTextFile(file: ProcessedFile, keepDir: string | undefined): string {
+    if (!keepDir) return file.path;
+    try {
+      const dir = path.join(keepDir, KEPT_ATTACHMENTS_DIR);
+      fs.mkdirSync(dir, { recursive: true });
+      // The download's own name (slack-file-<ts>-<basename>): unique per download, and never a path out of dir.
+      const kept = path.join(dir, path.basename(file.path));
+      fs.copyFileSync(file.path, kept);
+      return kept;
+    } catch (error) {
+      this.logger.warn('Could not keep a long text file past the turn — giving its download path', {
+        name: file.name,
+        error,
+      });
+      return file.path;
+    }
+  }
+
+  async formatFilePrompt(
+    files: ProcessedFile[],
+    userText: string,
+    options: FormatFilePromptOptions = {},
+  ): Promise<string> {
+    // Only the dashboard's pasted text: it is the user's message, not files to analyse.
+    const onlyPasted = files.length > 0 && files.every((f) => f.isText && PASTED_TEXT_NAME.test(f.name));
+    let prompt =
+      userText || (onlyPasted ? "The user's message is the pasted text below." : 'Please analyze the uploaded files.');
 
     if (files.length > 0) {
       prompt += '\n\nUploaded files:\n';
@@ -361,7 +399,7 @@ export class FileHandler {
             if (content.length > TEXT_PREVIEW_CHARS) {
               // The preview alone loses the rest of the file: say how long it is and where, so the agent reads all of it.
               prompt += `Size: ${content.length} characters\n`;
-              prompt += `Path: ${file.path}\n`;
+              prompt += `Path: ${this.keepTextFile(file, options.keepDir)}\n`;
               prompt += `Note: Only the first ${TEXT_PREVIEW_CHARS} characters are shown below. Read the whole file at the path above with the Read tool before you act on it.\n`;
               prompt += `Content (truncated to first ${TEXT_PREVIEW_CHARS} characters):\n\`\`\`\n${content.substring(0, TEXT_PREVIEW_CHARS)}...\n\`\`\`\n`;
             } else {
@@ -383,7 +421,9 @@ export class FileHandler {
         }
       }
 
-      prompt += '\nPlease analyze these files and provide insights or assistance based on their content.';
+      if (!onlyPasted) {
+        prompt += '\nPlease analyze these files and provide insights or assistance based on their content.';
+      }
     }
 
     return prompt;

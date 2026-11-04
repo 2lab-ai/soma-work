@@ -9,7 +9,8 @@
  *     - a paste that keeps the instruction under 12,000 characters goes into the field (Chromium);
  *     - a paste that would take it past 12,000 does not go into the field: a pasted-text-<stamp>.txt chip appears,
  *       and 작업 시작 posts the typed instruction plus that file as text/plain carrying the whole paste;
- *     - a dashboard task (no attachments yet) leaves the long paste alone.
+ *     - a dashboard task (no attachments yet) leaves the long paste alone;
+ *     - with 10 files already attached the composer refuses the file and the paste goes into the field (not lost).
  *
  * Run from the repo root (keeps state out of the checkout):
  *   env -i HOME="$HOME" PATH="$PATH" SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst \
@@ -229,6 +230,24 @@ async function run(browser: Browser, engine: string) {
     JSON.stringify(t.files),
   );
   await second.context.close();
+
+  // Ten files already (the composer's cap): it refuses the pasted-text file, and the paste is not lost — it goes
+  // into the field (Chromium, a real paste; a dispatched paste inserts nothing, so WebKit checks no 11th file).
+  const third = await openPage(browser, []);
+  if (real) await third.context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: BASE_URL });
+  await third.page.evaluate(() => {
+    const el = document.getElementById('nt-composer') as any;
+    el.addFiles(Array.from({ length: 10 }, (_, i) => new File([`f${i}`], `f${i}.txt`, { type: 'text/plain' })));
+  });
+  await paste(third.page, BIG);
+  const r = await composerView(third.page);
+  check(
+    `${tag}: with 10 files attached the file is refused and the paste is not lost`,
+    r.files.length === 10 && (real ? r.value === BIG : true),
+    `files ${r.files.length}, field ${r.value.length} chars`,
+  );
+  await third.page.screenshot({ path: path.join(OUT, `${tag}-refused.png`) });
+  await third.context.close();
 }
 
 async function main() {
