@@ -8,7 +8,7 @@
  *   ┌ title bar   <title text> [↗] [⧉]                 (zhuge)  ‹ 1/2 ›  ✕
  *
  *   B1  the page: the pill sits in the header's top row, right of the title block, before the deck nav and ✕
- *   B2  it is the board's badge (the kit's .ui-owner-badge of @2lab.ai/ui ≥ 0.27.0): the board colour, and the
+ *   B2  it is the board's badge (the kit's .ui-owner-badge of @2lab.ai/ui ≥ 0.28.0): the board colour, and the
  *       viewer's own orbits (.is-self) — the kit's CSS is on the page
  *   B3  it names the owner in every board mode; the viewer's own says "(나)" (title + screen reader)
  *   B4  it follows the open card (repaintPanelSession) and is written only on change — a rewrite would restart the orbit
@@ -159,7 +159,7 @@ describe('B1 — the page: the owner pill at the top right of the detail card', 
   });
 });
 
-describe('B2 — the board’s badge: the kit’s .ui-owner-badge (@2lab.ai/ui ≥ 0.27.0) is on the page', () => {
+describe('B2 — the board’s badge: the kit’s .ui-owner-badge (@2lab.ai/ui ≥ 0.28.0) is on the page', () => {
   it('the kit sheet the page inlines draws the pill, its eight hues and the orbiting self ring', () => {
     const kit = uiLibKitCss().replace(/\s+/g, ' ');
     expect(kit).toContain('.ui-owner-badge { display: inline-block;');

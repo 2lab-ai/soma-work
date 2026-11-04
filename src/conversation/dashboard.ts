@@ -6454,7 +6454,7 @@ ${pageTokenAliases()}
         </div>
       </div>
       <!-- The card's owner (SSOT 2026-11-04): the board's name pill at the top right, in their board colour — the
-           viewer's own orbits (the kit's .ui-owner-badge, @2lab.ai/ui ≥ 0.27.0). renderPanelOwner fills it from the
+           viewer's own orbits (the kit's .ui-owner-badge, @2lab.ai/ui ≥ 0.28.0). renderPanelOwner fills it from the
            open card; hidden until then. -->
       <span id="panel-owner" class="ui-owner-badge panel-owner" hidden></span>
       <!-- Detail deck (SSOT 2026-10-29 T2, D3 E-05): every open card has its detail card here; <ui-deck-nav>'s ‹ n / m › (and ←/→ on it) go through them, round the end. -->
