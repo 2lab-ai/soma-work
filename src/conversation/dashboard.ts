@@ -6046,11 +6046,11 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 
 /* ═══ New task (SSOT 2026-10-23) — entry button, floating button, composer ═══
    The page's call to action, calm (ui.2lab.ai's one ink primary): PC an ink pill in
-   the top bar with its N key hint opens a centered dialog; phones an ink extended
+   the top bar with its Ctrl+N key hint (⌃N on a Mac) opens a centered dialog; phones an ink extended
    floating button in the thumb zone opens a full-screen sheet sized to the visual
    viewport, so the toolbar stays above the keyboard. No sheen, pulse, glow, ring or
    hover lift — it moves only when pressed (0.97) and when the FAB arrives. */
-/* The kit's ink primary (.ui-btn.is-primary); its N hint is a kit key tinted for the ink face. */
+/* The kit's ink primary (.ui-btn.is-primary); its Ctrl+N hint is a kit key tinted for the ink face. */
 .new-task-btn { flex: none; padding-right: 6px; }
 .new-task-btn .ui-kbd { background: color-mix(in srgb, var(--ib-card) 16%, transparent); box-shadow: none; color: color-mix(in srgb, var(--ib-card) 82%, transparent); }
 
@@ -6327,7 +6327,7 @@ ${pageTokenAliases()}
       onclick="toggleAdminMode()"
     ><span id="admin-mode-label"><span class="admin-mode-prefix">관리자 </span><span class="admin-mode-state">끔</span></span></button>
     </div>
-    <button type="button" class="ui-btn is-primary new-task-btn" id="new-task-btn" slot="actions" aria-keyshortcuts="n" title="새 작업 (N)" onclick="openNewTask()"><i data-ui-icon="plus"></i><span class="nt-btn-label">새 작업</span><kbd class="ui-kbd nt-kbd" aria-hidden="true">N</kbd></button>
+    <button type="button" class="ui-btn is-primary new-task-btn" id="new-task-btn" slot="actions" aria-keyshortcuts="Control+N" title="새 작업 (Ctrl+N)" onclick="openNewTask()"><i data-ui-icon="plus"></i><span class="nt-btn-label">새 작업</span><kbd class="ui-kbd nt-kbd" aria-hidden="true">Ctrl+N</kbd></button>
     <!-- View mode (SSOT 2026-11-01): 미니멀 by default; this toggle turns 어드밴스드 on — everything the page has.
          A button that behaves like a toggle (HIG Toggles: the background tells the state, aria-pressed), saved per
          user (the dashboardMode setting). -->
@@ -19957,6 +19957,23 @@ function ntIsTouch() {
   return !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
 }
 
+// The New task key: Ctrl+N, nothing else held. A bare N used to open it, and a stray keystroke on the board did.
+// ⌘N stays the browser's new window.
+// A Korean (or other non-Latin) input source can report the letter it types ('ㅜ'); then the key's place says N.
+// A Latin layout keeps its own letter (Dvorak's Ctrl+B sits on KeyN).
+function ntIsNewTaskKey(e) {
+  var key = String(e.key || '').toLowerCase();
+  if (!/^[a-z]$/.test(key) && e.code === 'KeyN') key = 'n';
+  return key === 'n' && !!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && !e.isComposing;
+}
+
+// The element a key was typed into. A key typed inside an element's shadow root (<ui-composer>'s textarea) reaches
+// the document retargeted to the host, which is no text field by its tag; composedPath()[0] is the field itself.
+function ntKeyTarget(e) {
+  var path = typeof e.composedPath === 'function' ? e.composedPath() : null;
+  return (path && path[0]) || e.target;
+}
+
 function ntIsTypingTarget(t) {
   // A dialog on top (the page's, a <ui-dialog>, the artifact viewer's) keeps the key.
   if (document.querySelector('dialog[open], ui-dialog[open]') || artViewerIsOpen()) return true;
@@ -21882,10 +21899,9 @@ function ntInit() {
     ntSetError(ntBlockedHint(_ntState, (e.detail && e.detail.files) || ntComposerFiles()));
   });
   paintNtComposer();
-  // N opens the composer from anywhere outside a text field.
+  // Ctrl+N opens the composer from anywhere outside a text field.
   document.addEventListener('keydown', function (e) {
-    var key = String(e.key || '').toLowerCase();
-    if (key === 'n' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.isComposing && !ntIsTypingTarget(e.target)) {
+    if (ntIsNewTaskKey(e) && !ntIsTypingTarget(ntKeyTarget(e))) {
       e.preventDefault();
       openNewTask();
     }
@@ -21914,6 +21930,7 @@ function ntInit() {
   var hint = ntEl('nt-submit-hint');
   if (hint) hint.textContent = isMac ? '⌘↵' : 'Ctrl+↵';
   var nkbd = document.querySelector('#new-task-btn .nt-kbd');
+  if (nkbd) nkbd.textContent = isMac ? '⌃N' : 'Ctrl+N';
   if (nkbd && ntIsTouch()) nkbd.hidden = true;
 }
 
