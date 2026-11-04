@@ -122,6 +122,14 @@ describe('I1.1 — a paste that would take the instruction past 12,000 character
     expect(await file.text()).toBe(big);
   });
 
+  it('a file the composer refuses (10 files already, or over a size cap): the paste goes into the field, never lost', () => {
+    const composer = fakeComposer('', { refuse: true });
+    const ev = pasteEvent(composer, 'x'.repeat(13000));
+    api({ destination: 'slack' }).ntOnComposerPaste(ev);
+    expect(composer.added).toHaveLength(1); // it was offered
+    expect(ev.prevented).toBe(false); // and, refused, the text is pasted as usual
+  });
+
   it('a paste that fits is left to the field', () => {
     const composer = fakeComposer('짧은 지시');
     const ev = pasteEvent(composer, '조금 더');
