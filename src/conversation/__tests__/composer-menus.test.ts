@@ -256,6 +256,14 @@ describe('composerSkillItems — every skill this user can invoke', () => {
 });
 
 describe('composerTriggers', () => {
+  it('the new task has no $user row: alone it only answers (the skills card) and makes no task', () => {
+    resetComposerMenuCache();
+    const newTask = composerTriggers({ where: 'new-task', userId: 'U1', admin: false }, skillDeps());
+    const dollar = newTask.find((t) => t.char === '$');
+    expect(dollar?.items.map((i) => i.value)).not.toContain('$user');
+    expect(dollar?.items.map((i) => i.value)).toContain('$local:autoz');
+  });
+
   it('/ every command, % the session settings, $ the skills led by $user', () => {
     resetComposerMenuCache();
     const triggers = composerTriggers({ where: 'session', userId: 'U1', admin: false }, skillDeps());
