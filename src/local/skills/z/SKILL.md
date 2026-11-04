@@ -61,6 +61,8 @@ If this is NOT the first instruction in the session (the user re-instructed or c
 
 Invoke `local:zcheck` with the implemented PR URL.
 
+zwork가 **yielded**(사람의 PR이 같은 변경을 담고 있어 양보)를 돌려주면 phase3·phase4를 건너뛴다. 그 사람의 PR에는 zcheck를 돌리지 않는다. phase5 보고에 그 PR 링크를 적는다.
+
 ### phase4: Persuade & Request Approve
 
 1. Invoke `local:ztrace`로 PR 변경사항이 이슈의 각 시나리오에서 어떻게 작동하는지 콜스택 수준으로 추적.

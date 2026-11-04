@@ -34,7 +34,7 @@ describe('review and communication rules (#932)', () => {
   });
 
   it('the bot cap never defers a blocking defect: a P0/P1 is still checked and fixed before READY (#932 review)', () => {
-    expect(zcheck).toMatch(/P0\/P1\(정확성·보안·데이터 손실\)은 상한과 무관하게/);
+    expect(zcheck).toMatch(/P0\/P1\(정확성·보안·데이터 손실\) 또는 태그 없는 지적은 상한과 무관하게/);
     expect(zcheck).toMatch(/결함을 후속 이슈로 미루고 READY를 내지 않는다/);
     // Rounds survive a session change; READY says what the cap deferred (#932 review, fable).
     expect(zcheck).toMatch(/라운드는 PR 타임라인/);
@@ -49,6 +49,13 @@ describe('review and communication rules (#932)', () => {
     expect(zwork).toMatch(/\*\*yielded\*\*/);
     expect(zwork).toMatch(/파이프라인은 여기서 멈추고/);
     expect(zwork).toMatch(/그 사람의 PR에 `local:zcheck`를 돌리지 않고, 그 브랜치에 push하지 않는다/);
+  });
+
+  it('the callers honour a yielded result: z skips phase3/4, autoz skips zcheck and its review gate on that PR (#932 review)', () => {
+    const z = read('local/skills/z/SKILL.md');
+    const autoz = read('local/skills/autoz/SKILL.md');
+    expect(z).toMatch(/\*\*yielded\*\*.*phase3·phase4를 건너뛴다/);
+    expect(autoz).toMatch(/except when zwork returns \*\*yielded\*\*/);
   });
 
   it('the common prompt: a host-woken turn with nothing to do ends without a message; a user instruction always gets a reply', () => {
