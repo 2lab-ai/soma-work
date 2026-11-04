@@ -74,7 +74,6 @@ export interface ActivityItem {
   state?: string;
   /** A review comment's file. */
   path?: string;
-  body: string;
   url: string;
   /** When it was written (ISO). */
   at: string;
@@ -287,6 +286,7 @@ export function createSessionPrWatch(deps: PrWatchDeps): SessionPrWatch {
   const activityDirty = new Set<string>();
   /** #930 — PRs whose activity message waits in the delivery queue. */
   const activityInflight = new Set<string>();
+  let loginMissingLogged = false;
   const askedAt = new Map<string, number>();
   let running: Promise<void> | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -382,9 +382,21 @@ export function createSessionPrWatch(deps: PrWatchDeps): SessionPrWatch {
     if (d.cards.length !== 1) return;
     // A 304 means the PR (and its comment counts) did not change — unless the last read failed or stopped early.
     if (!changed && !activityDirty.has(key)) return;
-    if (activityInflight.has(key)) return;
+    // Not read now: remembered, so a later 304 still reads it (#930 round 2, astra/fable — a change seen while the last
+    // message waited, or before the bot's login was known, was lost behind the ETag).
+    if (activityInflight.has(key)) {
+      activityDirty.add(key);
+      return;
+    }
     const me = (await ownLogin())?.toLowerCase();
-    if (!me) return;
+    if (!me) {
+      activityDirty.add(key);
+      if (!loginMissingLogged) {
+        loginMissingLogged = true;
+        deps.logger?.debug('PR watch reads no reviews or comments: the GitHub App login is unknown');
+      }
+      return;
+    }
     const record = store.get(key) ?? {};
     const since = record.since ?? new Date(now() - FIRST_LOOK_MS).toISOString();
     const sinceMs = Date.parse(since);
@@ -415,7 +427,8 @@ export function createSessionPrWatch(deps: PrWatchDeps): SessionPrWatch {
     let send = humans;
     if (bots.length > 0 && botWakes < BOT_ROUNDS) {
       send = kept;
-      botWakes++;
+      // A round is a wake the bot caused alone: with a person in the batch the session wakes anyway.
+      if (humans.length === 0) botWakes++;
     }
     const commit = () => store.set(key, { ...store.get(key), since: cursor, botWakes });
     if (send.length === 0) {
@@ -429,8 +442,14 @@ export function createSessionPrWatch(deps: PrWatchDeps): SessionPrWatch {
       if (outcome !== 'gone') commit();
     };
     const sessionKey = d.cards[0].sessionKey;
+    const current = () => {
+      const pr = known.get(key);
+      return !!pr && !FINAL.has(pr.status) && soleOwner(key) === sessionKey;
+    };
     try {
-      if (!(await deliver(sessionKey, activityMessage(number, d.url, send), done))) activityInflight.delete(key);
+      if (!(await deliver(sessionKey, activityMessage(number, d.url, send), done, current))) {
+        activityInflight.delete(key);
+      }
     } catch (error) {
       activityInflight.delete(key);
       deps.logger?.debug('PR watch delivery failed', { sessionKey, error: (error as Error)?.message });
