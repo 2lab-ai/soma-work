@@ -252,6 +252,15 @@ describe('POST /api/dashboard/session/:key/command — where a command answers',
     expect(classify).toHaveBeenCalledWith('/help', 'U1');
   });
 
+  it('an inline directive ahead of a command: what runs is the command after it (%model opus /help)', async () => {
+    const classify = vi.fn((text: string) => (text === '/help' ? 'control' : 'instruction'));
+    dashboard.setDashboardCommandClassifier(classify);
+    expect(JSON.parse((await send('%model opus /help')).body)).toEqual({ ok: true, answer: 'thread' });
+    expect(classify).toHaveBeenLastCalledWith('/help', 'U1');
+    // A directive with an instruction after it is the user's turn.
+    expect(JSON.parse((await send('%nogoal 이 함수 이름만 바꿔줘')).body)).toEqual({ ok: true });
+  });
+
   it('a classifier that throws after the command went out still answers ok — a 500 would make Retry send it twice', async () => {
     dashboard.setDashboardCommandClassifier(() => {
       throw new Error('probe broke');

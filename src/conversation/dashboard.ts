@@ -33,6 +33,7 @@ import { join } from 'node:path';
 import { constants as zlibConstants } from 'node:zlib';
 import type { FollowupItem, FollowupItemState } from '@soma/slack/followup-queue';
 import type { FollowupQueueView } from '@soma/slack/followup-queue-blocks';
+import { CommandParser } from '@soma/slack/command-parser';
 import { sumLiveUsage } from '@soma/slack/live-usage';
 import { livePendingModelSwitch } from '@soma/slack/model-switch';
 import { plainTldrLine } from '@soma/slack/summary-service';
@@ -1407,10 +1408,15 @@ export function setDashboardCommandClassifier(fn: DashboardCommandClassifier | n
   _commandClassifierFn = fn;
 }
 
-/** The classifier's answer, or undefined when none is wired or it throws (the command already went out — never a 500). */
+/**
+ * The classifier's answer for what will run, or undefined when none is wired or it throws (the command already went
+ * out — never a 500). An inline directive with text after it (`%model opus /help`, `%nogoal …`) is applied and the
+ * rest is routed (slack-handler): the rest is what is classified.
+ */
 function classifyCommand(text: string, user?: string): ReturnType<DashboardCommandClassifier> | undefined {
   try {
-    return _commandClassifierFn?.(text, user);
+    const directives = CommandParser.parseInlineSessionDirectives(text);
+    return _commandClassifierFn?.(directives?.remainder ? directives.remainder : text, user);
   } catch (error) {
     logger.warn('Command classifier failed — answering without where the answer is', error);
     return undefined;
