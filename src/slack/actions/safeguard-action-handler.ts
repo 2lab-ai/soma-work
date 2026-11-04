@@ -5,8 +5,11 @@
  * Action ID: `safeguard_admin_retry` (`@soma/slack/safeguard`). The clicker is
  * the Slack-authenticated `body.user.id`; only an admin (`ADMIN_USERS`) may
  * unlock, and only the halt the notice was posted for (`value.atMs`) — an
- * older notice's button never lifts a newer halt. Lifting saves to disk before
- * it is reported (`liftSafeguardHalt` throws on a failed write).
+ * older notice's button never lifts a newer halt. The click must also come
+ * from the thread the value names (`body.channel` + the message's thread) —
+ * the button lifts the lock of the thread it was posted in, never another.
+ * Lifting saves to disk before it is reported (`liftSafeguardHalt` throws on a
+ * failed write).
  */
 
 import {
@@ -18,6 +21,7 @@ import {
 } from '@soma/slack/safeguard';
 import { isAdminUser } from '../../admin-utils';
 import { Logger } from '../../logger';
+import { buildWorkSessionKey, normalizeSessionKey } from '../../session-identity';
 import type { RespondFn } from './types';
 
 interface SafeguardRegistry {
@@ -43,6 +47,22 @@ export class SafeguardActionHandler {
     const registry = this.ctx.getRegistry();
     if (!value || !clicker || !registry) {
       this.logger.warn('safeguard_admin_retry: unusable click', { hasValue: !!value, hasClicker: !!clicker });
+      return;
+    }
+    // The thread the clicked message lives in — never the key inside `value`.
+    const channel: string | undefined = body?.channel?.id ?? body?.container?.channel_id;
+    const messageTs: string | undefined = body?.message?.ts ?? body?.container?.message_ts;
+    const threadTs: string | undefined = body?.message?.thread_ts ?? body?.container?.thread_ts ?? messageTs;
+    if (
+      !channel ||
+      !threadTs ||
+      normalizeSessionKey(buildWorkSessionKey(channel, threadTs)) !== normalizeSessionKey(value.sessionKey)
+    ) {
+      this.logger.warn('safeguard_admin_retry: click does not come from the halted thread', {
+        sessionKey: value.sessionKey,
+        channel,
+        threadTs,
+      });
       return;
     }
     const isAdmin = (this.ctx.isAdmin ?? isAdminUser)(clicker);
