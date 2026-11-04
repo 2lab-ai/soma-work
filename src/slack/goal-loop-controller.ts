@@ -162,11 +162,11 @@ export interface GoalLoopControllerDeps {
    */
   askStallQuestion?: (question: GoalStallQuestion) => Promise<void>;
   /**
-   * #917 — told after every loop run: `continued` when that run injected a continuation (the agent acts again).
-   * A run that did not — the goal completed, a question opened, nothing to do — lets the host ask the session's
-   * follow-up question. Optional; never throws into the loop.
+   * #917 — told after every loop run: `continued` when that run injected a continuation (the agent acts again),
+   * `queued` when another run already waits behind it. A run that did neither — the goal completed, a question
+   * opened, nothing to do — lets the host ask the session's follow-up question. Optional; never throws into the loop.
    */
-  onRunSettled?: (sessionKey: string, info: { continued: boolean }) => void;
+  onRunSettled?: (sessionKey: string, info: { continued: boolean; queued: boolean }) => void;
   logger: GoalLoopLogger;
   /** Default work model when the session has none. */
   fallbackModel: string;
@@ -276,22 +276,28 @@ export class GoalLoopController {
    */
   onTurnSettled(sessionKey: string, opts: { cause?: GoalLoopTrigger } = {}): void {
     const cause = opts.cause ?? 'turn';
+    this.runsWaiting.set(sessionKey, (this.runsWaiting.get(sessionKey) ?? 0) + 1);
     this.enqueue(sessionKey, async () => {
       this.continuedThisRun.delete(sessionKey);
       try {
         await this.runOnce(sessionKey, cause);
       } finally {
-        this.noteRunSettled(sessionKey, this.continuedThisRun.delete(sessionKey));
+        const left = (this.runsWaiting.get(sessionKey) ?? 1) - 1;
+        if (left > 0) this.runsWaiting.set(sessionKey, left);
+        else this.runsWaiting.delete(sessionKey);
+        this.noteRunSettled(sessionKey, { continued: this.continuedThisRun.delete(sessionKey), queued: left > 0 });
       }
     });
   }
 
   /** #917 — sessions whose current run injected a continuation (runs are serial per session). */
   private readonly continuedThisRun = new Set<string>();
+  /** #917 — runs enqueued and not yet settled, per session (the current one included). */
+  private readonly runsWaiting = new Map<string, number>();
 
-  private noteRunSettled(sessionKey: string, continued: boolean): void {
+  private noteRunSettled(sessionKey: string, info: { continued: boolean; queued: boolean }): void {
     try {
-      this.deps.onRunSettled?.(sessionKey, { continued });
+      this.deps.onRunSettled?.(sessionKey, info);
     } catch (err: unknown) {
       this.deps.logger.warn('Goal loop run-settled listener failed', {
         sessionKey,

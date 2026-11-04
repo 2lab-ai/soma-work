@@ -35,7 +35,7 @@ function harness(verdict: GoalEvalVerdict | undefined, goalOver: Partial<Session
     goal,
     goalLastTurnText: 'did work',
   } as unknown as ConversationSession;
-  const settled: Array<[string, { continued: boolean }]> = [];
+  const settled: Array<[string, { continued: boolean; queued: boolean }]> = [];
   const controller = new GoalLoopController({
     registry: { getSessionByKey: () => session, getActivityStateByKey: () => 'idle', saveSessions: () => undefined },
     requestCoordinator: { isRequestActive: () => false },
@@ -55,7 +55,7 @@ describe('GoalLoopController.onRunSettled (#917)', () => {
     const h = harness({ completed: false, reason: 'not yet', remaining: ['x'] });
     h.controller.onTurnSettled(KEY);
     await h.controller.settled(KEY);
-    expect(h.settled).toEqual([[KEY, { continued: true }]]);
+    expect(h.settled).toEqual([[KEY, { continued: true, queued: false }]]);
   });
 
   it('a run that completed the goal says continued: false — the host may ask the follow-up', async () => {
@@ -63,13 +63,24 @@ describe('GoalLoopController.onRunSettled (#917)', () => {
     h.controller.onTurnSettled(KEY);
     await h.controller.settled(KEY);
     expect(h.goal.status).toBe('complete');
-    expect(h.settled).toEqual([[KEY, { continued: false }]]);
+    expect(h.settled).toEqual([[KEY, { continued: false, queued: false }]]);
   });
 
   it('a run that had nothing to do (the loop did not run) says continued: false', async () => {
     const h = harness(undefined, { status: 'paused' as SessionGoal['status'] });
     h.controller.onTurnSettled(KEY);
     await h.controller.settled(KEY);
-    expect(h.settled).toEqual([[KEY, { continued: false }]]);
+    expect(h.settled).toEqual([[KEY, { continued: false, queued: false }]]);
+  });
+
+  it('a run with another run queued behind it says queued: true — the host waits for the last one (trinity R1 grok P1)', async () => {
+    const h = harness(undefined, { status: 'paused' as SessionGoal['status'] });
+    h.controller.onTurnSettled(KEY);
+    h.controller.onTurnSettled(KEY);
+    await h.controller.settled(KEY);
+    expect(h.settled).toEqual([
+      [KEY, { continued: false, queued: true }],
+      [KEY, { continued: false, queued: false }],
+    ]);
   });
 });

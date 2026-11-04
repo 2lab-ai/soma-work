@@ -152,6 +152,30 @@ describe('askFollowUpQuestion', () => {
     expect(s.followUp.askedAt).toBeUndefined();
   });
 
+  it('the commit check refuses when a goal eval or a turn started during the post (trinity R1 grok P1)', async () => {
+    for (const change of [
+      (s: any) => {
+        s.goal = { status: 'active', pendingEval: { requestedAt: NOW } };
+      },
+      (s: any) => {
+        s.activityState = 'working';
+      },
+    ]) {
+      const s = idle();
+      let wanted: boolean | undefined;
+      const d = deps(s, {
+        ask: vi.fn(async (_k: string, _q: unknown, opts: { stillWanted: () => boolean }) => {
+          change(s);
+          wanted = opts.stillWanted();
+          return undefined;
+        }),
+      });
+      await askFollowUpQuestion('k', d);
+      expect(wanted).toBe(false);
+      expect(s.followUp.askedAt).toBeUndefined();
+    }
+  });
+
   it('the follow-up changed while the question was posted → the question is retracted', async () => {
     const s = idle();
     const d = deps(s, {
@@ -168,10 +192,11 @@ describe('askFollowUpQuestion', () => {
 describe('applyFollowUp — each verdict may ask once (#917)', () => {
   const WARN = (reason: string) => ['done', `⚠️ **${reason}**`, 'next'];
 
-  it('the same reason again is a new verdict: it keeps its time, and may be asked again', () => {
+  it('the same reason again is a new verdict: it keeps its time and its question binding, and may be asked again', () => {
     const s: any = { followUp: { reason: REASON, at: 1000, askedAt: 2000, questionTurnId: 'host:k:1' } };
     applyFollowUp(s, WARN(REASON), 9000);
-    expect(s.followUp).toEqual({ reason: REASON, at: 1000 });
+    // askedAt goes (the next stop asks again); questionTurnId stays, so a later clear still retracts that question.
+    expect(s.followUp).toEqual({ reason: REASON, at: 1000, questionTurnId: 'host:k:1' });
   });
 
   it('tells the host listener what it was and what it is now', () => {
