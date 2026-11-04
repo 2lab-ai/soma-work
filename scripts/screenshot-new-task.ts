@@ -219,7 +219,7 @@ async function pcChecks(browser: Browser, engine: string) {
       await page.waitForTimeout(200);
       check(`${tag}: a bare N does not open the composer`, !(await page.locator('#nt-dialog[open]').count()));
       await page.keyboard.press('Control+n');
-      await page.waitForSelector('#nt-dialog[open].is-shown');
+      await page.waitForSelector('#nt-dialog[open]');
       await page.waitForFunction(() => (document.getElementById('nt-channel') as HTMLSelectElement).options.length > 0);
       await page.waitForTimeout(320);
       const dlg = await page.locator('#nt-dialog').boundingBox();

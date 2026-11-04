@@ -19908,8 +19908,11 @@ function ntIsTouch() {
 
 // The New task key: Ctrl+N, nothing else held. A bare N used to open it, and a stray keystroke on the board did.
 // ⌘N stays the browser's new window.
+// A Korean (or other non-Latin) input source can report the letter it types ('ㅜ'); then the key's place says N.
+// A Latin layout keeps its own letter (Dvorak's Ctrl+B sits on KeyN).
 function ntIsNewTaskKey(e) {
   var key = String(e.key || '').toLowerCase();
+  if (!/^[a-z]$/.test(key) && e.code === 'KeyN') key = 'n';
   return key === 'n' && !!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && !e.isComposing;
 }
 
