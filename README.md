@@ -259,6 +259,8 @@ Four prefix families — each with a clear, non-overlapping purpose:
 
 > **Split history (#508)**: `$` used to double as both "force skill" and "session setting". It was split — `%` took over session settings, `$` is now skill-only. Legacy `$model` / `$verbosity` / `$effort` / `$thinking` / `$thinking_summary` still work during the deprecation grace period but emit a one-line notice nudging users to `%`.
 
+> **Dashboard composer menus (2026-11-04)**: in the dashboard's two inputs — **New task** and an open session's composer — typing `/` as the first thing lists every command you can use there, each with what it does and a typical use in grey (the new task leaves out the commands that need a session; admins also see the admin ones). `%` lists the session settings, and `$` at the start of any word lists every skill you can invoke, as the token that names it (`$user:…`, `$local:…`, `$<plugin>:…`). Typing filters the list; ↑↓ move, Enter or Tab picks, Esc closes. The lists come from `GET /api/dashboard/composer-menus` ([`src/conversation/composer-menus.ts`](./src/conversation/composer-menus.ts)); its test routes every command row's example through the production `CommandRouter`, so a row cannot name a command the bot would treat as chat. The menu itself is `@2lab.ai/ui` `<ui-composer>` `data.triggers` (0.27.0).
+
 ### `/z` — primary surface
 
 Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integration.md` for the full surface, `docs/runbook/rollback-z-refactor.md` for emergency rollback.

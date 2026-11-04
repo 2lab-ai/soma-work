@@ -124,6 +124,7 @@ import { type ArtifactSummary, getArtifactStore, type SessionArtifact } from './
 import { buildCapacityView, type CapacityView } from './capacity-view';
 import { type CardLink, cardLinksOf } from './card-links';
 import { isClientRef } from './client-ref';
+import { type ComposerMenuWhere, type ComposerTriggerRow, composerTriggers } from './composer-menus';
 import { buildCronJobsView, type CronRunSessionLookup } from './cron-view';
 import { DICTATION_BROWSER_JS } from './dictation-browser-client';
 import { DICTATION_PREF_JS } from './dictation-pref';
@@ -1802,6 +1803,14 @@ const _newTaskGate = createNewTaskGate();
 
 export function setDashboardNewTaskProvider(provider: DashboardNewTaskProvider | null): void {
   _newTaskProvider = provider;
+}
+
+/** The composers' `/` and `$` menus for one viewer and one composer (composer-menus.ts; tests swap it). */
+type DashboardComposerMenus = (opts: { where: ComposerMenuWhere; userId?: string; admin: boolean }) => ComposerTriggerRow[];
+let _composerMenus: DashboardComposerMenus = composerTriggers;
+
+export function setDashboardComposerMenus(fn: DashboardComposerMenus | null): void {
+  _composerMenus = fn ?? composerTriggers;
 }
 
 /**
@@ -4614,6 +4623,23 @@ export async function registerDashboardRoutes(
       reply.send({ context: epicTasks ? { ...context, epicTasks: true } : context });
     } catch (error) {
       logger.error('Error building the new-task context', error);
+      reply.status(500).send({ error: 'Internal Server Error' });
+    }
+  });
+
+  // ── Composer menus (2026-11-04) — what `/` and `$` list in the new-task composer and an open session's ──
+  // Commands for this viewer (admin rows for a signed-in admin; no session-only rows in the new task) and the skills
+  // they can invoke. A viewer token names nobody: no personal skills, no admin rows.
+  server.get('/api/dashboard/composer-menus', { preHandler: [authMiddleware] }, async (request, reply) => {
+    const userId = signedInUserId(request);
+    const admin = isSlackAdmin((request as { authContext?: { mode?: string; userId?: string; isAdmin?: boolean } }).authContext);
+    try {
+      reply.send({
+        newTask: _composerMenus({ where: 'new-task', userId, admin }),
+        session: _composerMenus({ where: 'session', userId, admin }),
+      });
+    } catch (error) {
+      logger.error('Error building the composer menus', error);
       reply.status(500).send({ error: 'Internal Server Error' });
     }
   });
@@ -19962,6 +19988,7 @@ async function openNewTask() {
   // The dialog covers the session panel: a dictation there stops, and the new task may take the microphone.
   ntDictateStopIn('pc');
   ntDictateAuto();
+  cmLoadMenus();
   await ntLoadContext();
 }
 
@@ -20172,6 +20199,9 @@ function ntComposerData() {
     d.submitLabel = '';
     d.mode.submitLabel = '';
   }
+  // / for commands, $ for skills (the composer's own menus, ui 0.27.0 data.triggers) — once they are loaded.
+  var cmT = cmTriggersFor('newTask');
+  if (cmT) d.triggers = cmT;
   var lim = _ntCtx && _ntCtx.limits;
   if (lim) {
     // A phone's row has no room for the counter beside the tools and the 작업 계획 switch: it gives way, and the
@@ -20186,6 +20216,27 @@ function ntComposerData() {
 function paintNtComposer() {
   var el = ntEl('nt-composer');
   if (el) el.data = ntComposerData();
+}
+// The composers' menus (2026-11-04): typing / lists every command this viewer can use (what it does, a typical use in
+// grey), % the session settings, $ every skill they can invoke — GET /api/dashboard/composer-menus, one set for the
+// new task (no session yet) and one for an open session. Loaded at start and again when the new-task dialog opens
+// (a skill made meanwhile shows up); until then, or when it fails, the composers simply have no menus.
+var _cmMenus = null;
+function cmTriggersFor(where) {
+  return _cmMenus && Array.isArray(_cmMenus[where]) ? _cmMenus[where] : null;
+}
+async function cmLoadMenus() {
+  try {
+    var res = await fetch('/api/dashboard/composer-menus');
+    if (!res.ok) return;
+    var data = await res.json();
+    if (!data || typeof data !== 'object') return;
+    _cmMenus = { newTask: data.newTask, session: data.session };
+  } catch (e) {
+    return;
+  }
+  paintNtComposer();
+  pcPaintComposer();
 }
 // Closing the sheet discards a recording in progress, stops a voice note's preview and ends a dictation (the text
 // and files stay).
@@ -21960,6 +22011,9 @@ function pcComposerData(takesFiles) {
   }
   // 받아쓰기 (live dictation, SSOT 2026-11-01) beside the voice note, as in the new task — text, so a task card too.
   if (ntDictationUsable(typeof window !== 'undefined' ? window : null)) d.tools = [ntDictationTool(ntDictating('pc'))];
+  // / for commands, % for the session's settings, $ for skills — an open session's set.
+  var cmT = cmTriggersFor('session');
+  if (cmT) d.triggers = cmT;
   return d;
 }
 // The composer's data with the page's part (re)applied: a session that takes
@@ -22051,6 +22105,7 @@ function pcOnSubmit(e) {
 }
 ntInit();
 pcInit();
+cmLoadMenus();
 // View mode: the device's copy first (the user's setting answers in loadMyDefaults); the agent tabs answer clicks and arrows.
 _viewMode = readViewMode();
 _viewPlan = readViewPlan();
