@@ -480,6 +480,16 @@ describe('FileHandler.formatFilePrompt — a long text file is previewed and its
     };
   }
 
+  /** The path the prompt gives (the kept copy), and a way to remove the copy's directory after the test. */
+  function keptPath(out: string): string {
+    return /Path: (.+)\n/.exec(out)?.[1] ?? '';
+  }
+  function dropKept(kept: string): void {
+    if (pathx.basename(pathx.dirname(kept)).startsWith('soma-text-')) {
+      fsx.rmSync(pathx.dirname(kept), { recursive: true, force: true });
+    }
+  }
+
   it('over 10,000 characters: the first 10,000 inline, the full length and the path, and a Read instruction', async () => {
     const head = 'H'.repeat(10000);
     const tail = 'TAIL-MARKER';
@@ -488,42 +498,75 @@ describe('FileHandler.formatFilePrompt — a long text file is previewed and its
       const out = await handler.formatFilePrompt([f], '');
       expect(out).toContain(head);
       expect(out).not.toContain(tail);
-      expect(out).toContain(`Path: ${f.path}`);
+      expect(keptPath(out)).not.toBe('');
       expect(out).toContain('25011 characters');
       expect(out).toMatch(/Read tool/);
+      dropKept(keptPath(out));
     } finally {
       await handler.cleanupTempFiles([f]);
     }
   });
 
-  it("with the session's working directory, the path is a copy there that outlives the turn's cleanup (a plan turn, then the start turn)", async () => {
-    const keepDir = fsx.mkdtempSync(pathx.join(os.tmpdir(), 'fh-keep-'));
-    const content = 'K'.repeat(10001) + 'END';
+  it("the path is a copy in a fresh soma-text- directory under the OS temp dir (0700) that outlives the turn's cleanup (a plan turn, then the start turn)", async () => {
+    const content = `${'K'.repeat(10001)}END`;
     const f = textFile('pasted-text-20261104-090507.txt', content);
+    let kept = '';
     try {
-      const out = await handler.formatFilePrompt([f], '', { keepDir });
-      const kept = /Path: (.+)\n/.exec(out)?.[1] ?? '';
-      expect(pathx.dirname(kept)).toBe(pathx.join(keepDir, '.soma-attachments'));
-      expect(kept).not.toBe(f.path);
+      const out = await handler.formatFilePrompt([f], '');
+      kept = keptPath(out);
+      expect(pathx.dirname(pathx.dirname(kept))).toBe(os.tmpdir());
+      expect(pathx.basename(pathx.dirname(kept))).toMatch(/^soma-text-/);
+      expect(fsx.statSync(pathx.dirname(kept)).mode & 0o777).toBe(0o700);
       await handler.cleanupTempFiles([f]); // the end of the turn
       expect(fsx.existsSync(f.path)).toBe(false);
       expect(fsx.readFileSync(kept, 'utf-8')).toBe(content);
+      // Each file gets its own directory: nothing waits there to be written through.
+      const g = textFile('notes.txt', 'M'.repeat(10001));
+      const again = keptPath(await handler.formatFilePrompt([g], ''));
+      expect(pathx.dirname(again)).not.toBe(pathx.dirname(kept));
+      dropKept(again);
+      await handler.cleanupTempFiles([g]);
     } finally {
-      fsx.rmSync(keepDir, { recursive: true, force: true });
+      dropKept(kept);
+      await handler.cleanupTempFiles([f]);
+    }
+  });
+
+  it('a session cannot steer the copy: a .soma-attachments link in its working directory is never written through (trinity R2, astra P1)', async () => {
+    const session = fsx.mkdtempSync(pathx.join(os.tmpdir(), 'fh-session-'));
+    const outside = fsx.mkdtempSync(pathx.join(os.tmpdir(), 'fh-outside-'));
+    fsx.symlinkSync(outside, pathx.join(session, '.soma-attachments'));
+    const f = textFile('pasted-text-20261104-090507.txt', 'S'.repeat(10001));
+    let kept = '';
+    try {
+      // Even handed the working directory the way the round-1 fix took it, the host writes nothing there.
+      const out = await (handler.formatFilePrompt as (...a: unknown[]) => Promise<string>)([f], '', {
+        keepDir: session,
+      });
+      kept = keptPath(out);
+      expect(fsx.readdirSync(outside)).toEqual([]);
+      expect(fsx.realpathSync(kept).startsWith(fsx.realpathSync(session))).toBe(false);
+    } finally {
+      dropKept(kept);
+      await handler.cleanupTempFiles([f]);
+      fsx.rmSync(session, { recursive: true, force: true });
+      fsx.rmSync(outside, { recursive: true, force: true });
     }
   });
 
   it('a copy that cannot be made falls back to the download path, still with the Read note', async () => {
-    const blocker = pathx.join(os.tmpdir(), `fh-not-a-dir-${Date.now()}`);
-    fsx.writeFileSync(blocker, 'x'); // a file where the directory should go: mkdir fails
     const f = textFile('notes.txt', 'L'.repeat(10001));
+    // os.tmpdir() reads TMPDIR on every call: a temp dir that does not exist makes the copy's mkdtemp fail.
+    const saved = process.env.TMPDIR;
+    process.env.TMPDIR = pathx.join(pathx.dirname(f.path), `fh-missing-${Date.now()}`, 'nested');
     try {
-      const out = await handler.formatFilePrompt([f], '', { keepDir: blocker });
+      const out = await handler.formatFilePrompt([f], '');
       expect(out).toContain(`Path: ${f.path}`);
       expect(out).toMatch(/Read tool/);
     } finally {
+      if (saved === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = saved;
       await handler.cleanupTempFiles([f]);
-      fsx.rmSync(blocker, { force: true });
     }
   });
 
