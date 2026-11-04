@@ -3313,6 +3313,16 @@ export class SlackHandler {
     const hostTurn = event.synthetic === true || event.routeContext?.hostTurn === true;
     const decision = decideSafeguardGate({ halt, hostTurn });
     if (decision === 'pass' || !halt) return undefined;
+    // A button path (choice, form, session action) marks the session working
+    // BEFORE dispatching; nothing will run, so put it back — otherwise the card
+    // shows a halted session as running until the admin unlocks it.
+    const sessionKey = this.claudeHandler.getSessionKey(channel, threadTs);
+    if (
+      registry?.getActivityStateByKey?.(sessionKey) === 'working' &&
+      !this.requestCoordinator.isRequestActive(sessionKey)
+    ) {
+      this.claudeHandler.setActivityStateByKey(sessionKey, 'idle');
+    }
     if (decision === 'drop') {
       this.logger.info('Safeguard halt: host turn dropped', { channel, threadTs });
       return { result: 'safe' };
