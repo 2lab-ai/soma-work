@@ -6046,11 +6046,11 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 
 /* ═══ New task (SSOT 2026-10-23) — entry button, floating button, composer ═══
    The page's call to action, calm (ui.2lab.ai's one ink primary): PC an ink pill in
-   the top bar with its N key hint opens a centered dialog; phones an ink extended
+   the top bar with its Ctrl+N key hint (⌃N on a Mac) opens a centered dialog; phones an ink extended
    floating button in the thumb zone opens a full-screen sheet sized to the visual
    viewport, so the toolbar stays above the keyboard. No sheen, pulse, glow, ring or
    hover lift — it moves only when pressed (0.97) and when the FAB arrives. */
-/* The kit's ink primary (.ui-btn.is-primary); its N hint is a kit key tinted for the ink face. */
+/* The kit's ink primary (.ui-btn.is-primary); its Ctrl+N hint is a kit key tinted for the ink face. */
 .new-task-btn { flex: none; padding-right: 6px; }
 .new-task-btn .ui-kbd { background: color-mix(in srgb, var(--ib-card) 16%, transparent); box-shadow: none; color: color-mix(in srgb, var(--ib-card) 82%, transparent); }
 
