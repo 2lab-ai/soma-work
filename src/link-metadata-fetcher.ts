@@ -6,8 +6,8 @@
 import { config } from './config';
 import { getGitHubAppAuth } from './github-auth';
 import type { GitHubReceiptObject } from './github-receipt';
-import { type ChecksAnswer, checksConclusionOf } from './session-pr-watch';
 import { Logger } from './logger';
+import { type ChecksAnswer, checksConclusionOf } from './session-pr-watch';
 import type { SessionLink } from './types';
 
 const logger = new Logger('LinkMetadataFetcher');
