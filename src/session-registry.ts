@@ -121,6 +121,32 @@ const SAFEGUARD_TOMBSTONES_FILE = path.join(DATA_DIR, 'safeguard-halts.json');
  */
 const SAFEGUARD_TOMBSTONES_SIDECAR = path.join(DATA_DIR, 'safeguard-halts.while-unreadable.json');
 
+/** The text of `file` when it exists and is not valid JSON; '' otherwise. */
+function unparseableFileText(file: string): string {
+  let text: string;
+  try {
+    text = fs.readFileSync(file, 'utf-8');
+  } catch {
+    return '';
+  }
+  try {
+    JSON.parse(text);
+    return '';
+  } catch {
+    return text;
+  }
+}
+
+/**
+ * Whether unreadable tombstone text names `key` — as a whole token, however
+ * deeply it was JSON-escaped (a corrupt sidecar carried inside another one),
+ * and never as the prefix of a longer key (`…:171.901` is not `…:171.9012`).
+ */
+function rawTextNamesKey(raw: string, key: string): boolean {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|[^A-Za-z0-9_.:-])${escaped}(?:$|[^A-Za-z0-9_.:-])`).test(raw);
+}
+
 // Dashboard improvements (v2.1): max duration of a single active-leg before we
 // assume the process missed an endTurn (crash / OS sleep) and cap the accumulator.
 // 30min default. idle은 대부분 이내 재개, OS sleep/crash는 이보다 길다고 가정.
@@ -926,7 +952,7 @@ export class SessionRegistry {
     if (
       this.safeguardTombstonesRaw &&
       !this.safeguardLiftedWhileUnreadable.has(key) &&
-      this.safeguardTombstonesRaw.includes(JSON.stringify(key))
+      rawTextNamesKey(this.safeguardTombstonesRaw, key)
     ) {
       return { atMs: 0 };
     }
@@ -956,6 +982,14 @@ export class SessionRegistry {
       if (session && before.session) session.safeguardHalt = before.session;
       if (before.tombstone) this.safeguardTombstones.set(key, before.tombstone);
       this.safeguardLiftedWhileUnreadable.delete(key);
+      // The tombstone files are written before sessions.json: one that already
+      // dropped the lock must get it back, or a restart would unlock a thread
+      // the admin was told is still locked.
+      try {
+        this.writeSafeguardTombstones();
+      } catch (restoreError) {
+        this.logger.error('Safeguard lift rollback: restoring the tombstone files failed', restoreError);
+      }
       throw error;
     }
     return true;
@@ -3708,7 +3742,10 @@ export class SessionRegistry {
     // its thread's tombstone, like any other removal — a restart must not unlock it.
     const halt = restoreSafeguardHalt(serialized.safeguardHalt);
     if (halt && typeof key === 'string' && key) {
-      this.safeguardTombstones.set(normalizeSessionKey(key), halt);
+      const normalized = normalizeSessionKey(key);
+      this.safeguardTombstones.set(normalized, halt);
+      // A real lock outranks an older lift of the same thread (like removeSession).
+      if (halt.atMs !== 0) this.safeguardLiftedWhileUnreadable.delete(normalized);
     }
     // #846 — an ended session's model-command receipt goes with it (removeSession is not on this path). The receipt
     // is named by the live key the loader derives, not the persisted `key` field (kept in the legacy form); a
@@ -3833,6 +3870,10 @@ export class SessionRegistry {
     this.safeguardTombstonesRaw = '';
     this.safeguardCarriedRaw = '';
     this.safeguardLiftedWhileUnreadable.clear();
+    // A torn LIVE file the loader replaces with its older `.bak` may name a
+    // lock the `.bak` does not: its raw text fails closed on the keys it names,
+    // and is carried in the sidecar so the next rewrite never drops it.
+    const tornMain = unparseableFileText(SAFEGUARD_TOMBSTONES_FILE);
     try {
       // The live file, else its `.bak` (rules/config.md §4) — a torn write
       // never reads as "no locks".
@@ -3856,20 +3897,28 @@ export class SessionRegistry {
       this.logger.error('Safeguard halt tombstones unreadable — removed-session locks are not restored', error);
     }
     this.loadSafeguardTombstoneSidecar();
+    this.addCarriedRaw(tornMain);
+  }
+
+  /** Add unreadable tombstone text to the carried evidence (once — a restart never doubles it). */
+  private addCarriedRaw(text: string): void {
+    if (!text || this.safeguardCarriedRaw.includes(text)) return;
+    this.safeguardCarriedRaw += text;
+    this.safeguardTombstonesRaw += text;
   }
 
   /** Merge {@link SAFEGUARD_TOMBSTONES_SIDECAR}: its locks join the set, its lifted keys stay lifted. */
   private loadSafeguardTombstoneSidecar(): void {
     if (!fs.existsSync(SAFEGUARD_TOMBSTONES_SIDECAR) && !fs.existsSync(`${SAFEGUARD_TOMBSTONES_SIDECAR}.bak`)) return;
+    // Same for a torn live sidecar replaced by its `.bak`: carried forward, so a
+    // rewrite never drops it.
+    const tornSidecar = unparseableFileText(SAFEGUARD_TOMBSTONES_SIDECAR);
     try {
       const raw = loadJsonWithBackup(SAFEGUARD_TOMBSTONES_SIDECAR, (value) => {
         if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('not an object');
         return value as { halts?: unknown; lifted?: unknown; rawEvidence?: unknown };
       });
-      if (typeof raw?.rawEvidence === 'string' && raw.rawEvidence) {
-        this.safeguardCarriedRaw = raw.rawEvidence;
-        this.safeguardTombstonesRaw += raw.rawEvidence;
-      }
+      if (typeof raw?.rawEvidence === 'string') this.addCarriedRaw(raw.rawEvidence);
       const lifted = Array.isArray(raw?.lifted)
         ? raw.lifted.filter((key): key is string => typeof key === 'string').map((key) => normalizeSessionKey(key))
         : [];
@@ -3891,14 +3940,14 @@ export class SessionRegistry {
       // them (review R7, astra P1). The main file's state is its own.
       for (const file of [SAFEGUARD_TOMBSTONES_SIDECAR, `${SAFEGUARD_TOMBSTONES_SIDECAR}.bak`]) {
         try {
-          this.safeguardCarriedRaw += fs.readFileSync(file, 'utf-8');
+          this.addCarriedRaw(fs.readFileSync(file, 'utf-8'));
         } catch {
           // gone or unreadable
         }
       }
-      this.safeguardTombstonesRaw += this.safeguardCarriedRaw;
       this.logger.error('Safeguard halt sidecar unreadable — failing closed on the keys it names', error);
     }
+    this.addCarriedRaw(tornSidecar);
   }
 
   loadSessions(): number {

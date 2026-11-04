@@ -286,4 +286,79 @@ describe('SessionRegistry — safeguardHalt survives a restart', () => {
     after.loadSessions();
     expect(after.getSafeguardHalt('C1', '171.901')).toEqual({ atMs: 2_000, detail: 'reasoning_extraction' });
   });
+  // Durability edges found by the round-9 review's tracing (PR #906).
+  it('a torn live tombstone file whose older .bak lacks a lock still fails closed on it', () => {
+    const reg = new SessionRegistry();
+    const a = reg.createSession('U1', 'Tester', 'C1', '171.980');
+    a.sessionId = 'sdk-T1';
+    a.safeguardHalt = HALT;
+    reg.saveSessions();
+    reg.terminateSession(reg.getSessionKey('C1', '171.980'));
+    const b = reg.createSession('U1', 'Tester', 'C1', '171.981');
+    b.sessionId = 'sdk-T2';
+    b.safeguardHalt = HALT;
+    reg.saveSessions();
+    reg.terminateSession(reg.getSessionKey('C1', '171.981')); // live {980, 981}, .bak {980}
+    const file = path.join(TEST_DATA_DIR, 'safeguard-halts.json');
+    const raw = fs.readFileSync(file, 'utf-8');
+    fs.writeFileSync(file, raw.slice(0, raw.length - 3)); // torn live; the .bak parses
+
+    const after = new SessionRegistry();
+    after.loadSessions();
+    expect(after.getSafeguardHalt('C1', '171.981')).toBeDefined();
+    after.saveSessions(); // rewrites the main file from the .bak's set
+    const later = new SessionRegistry();
+    later.loadSessions();
+    expect(later.getSafeguardHalt('C1', '171.981')).toBeDefined();
+  });
+
+  it('evidence carried through two sidecar corruptions (JSON-escaped) still locks its thread', () => {
+    const reg = unreadableRegistry();
+    const b = reg.createSession('U1', 'Tester', 'C1', '171.970');
+    b.sessionId = 'sdk-E1';
+    b.safeguardHalt = { atMs: 4_000 };
+    reg.saveSessions();
+    reg.terminateSession(reg.getSessionKey('C1', '171.970'));
+    const sidecar = path.join(TEST_DATA_DIR, 'safeguard-halts.while-unreadable.json');
+    const tear = () => {
+      const text = fs.readFileSync(sidecar, 'utf-8');
+      fs.writeFileSync(sidecar, text.slice(0, text.length - 2));
+      fs.writeFileSync(`${sidecar}.bak`, '{ torn');
+    };
+    tear();
+    const once = new SessionRegistry();
+    once.loadSessions();
+    once.saveSessions(); // carries the torn text as rawEvidence (escaped inside JSON)
+    tear();
+    const twice = new SessionRegistry();
+    twice.loadSessions();
+    expect(twice.getSafeguardHalt('C1', '171.970')).toBeDefined();
+  });
+
+  it('raw evidence never locks a key that is only the prefix of a named key', () => {
+    const reg = unreadableRegistry(); // the torn text names …:171.901
+    expect(reg.getSafeguardHalt('C1', '171.90')).toBeUndefined();
+  });
+
+  it('a lift whose sessions.json write fails puts the tombstone file back (a restart stays locked)', () => {
+    const reg = new SessionRegistry();
+    const s1 = reg.createSession('U1', 'Tester', 'C1', '171.990');
+    s1.sessionId = 'sdk-L1';
+    s1.safeguardHalt = HALT;
+    reg.saveSessions();
+    reg.terminateSession(reg.getSessionKey('C1', '171.990')); // the lock is a tombstone now
+    // sessions.json cannot be replaced (a non-empty directory sits at its path),
+    // while the tombstone file before it is written fine.
+    const sessionsFile = path.join(TEST_DATA_DIR, 'sessions.json');
+    fs.rmSync(sessionsFile, { force: true });
+    fs.mkdirSync(sessionsFile);
+    fs.writeFileSync(path.join(sessionsFile, 'blocker'), 'x');
+
+    expect(() => reg.liftSafeguardHalt(reg.getSessionKey('C1', '171.990'))).toThrow();
+    fs.rmSync(sessionsFile, { recursive: true, force: true });
+
+    const after = new SessionRegistry();
+    after.loadSessions();
+    expect(after.getSafeguardHalt('C1', '171.990')).toEqual(HALT);
+  });
 });
