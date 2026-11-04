@@ -6,6 +6,7 @@
 import { config } from './config';
 import { getGitHubAppAuth } from './github-auth';
 import type { GitHubReceiptObject } from './github-receipt';
+import { type ChecksAnswer, checksConclusionOf } from './session-pr-watch';
 import { Logger } from './logger';
 import type { SessionLink } from './types';
 
@@ -587,7 +588,9 @@ export async function fetchGitHubPullState(
   number: number,
   etag?: string,
 ): Promise<
-  { number: number; status: 'open' | 'draft' | 'merged' | 'closed'; etag?: string } | 'not-modified' | undefined
+  | { number: number; status: 'open' | 'draft' | 'merged' | 'closed'; headSha?: string; etag?: string }
+  | 'not-modified'
+  | undefined
 > {
   try {
     const token = await getGitHubToken();
@@ -613,6 +616,7 @@ export async function fetchGitHubPullState(
       draft?: unknown;
       merged?: unknown;
       merged_at?: unknown;
+      head?: { sha?: unknown };
     };
     const merged = p.merged === true || typeof p.merged_at === 'string';
     const status = merged ? 'merged' : p.state === 'closed' ? 'closed' : p.draft === true ? 'draft' : 'open';
@@ -620,13 +624,56 @@ export async function fetchGitHubPullState(
       const title = typeof p.title === 'string' ? p.title.slice(0, MAX_CACHED_TITLE_LENGTH) : undefined;
       metadataCache.set(p.html_url, { title, status, fetchedAt: Date.now() });
     }
+    const etagOut = response.headers.get('etag');
     return {
       number,
       status,
-      ...(response.headers.get('etag') ? { etag: response.headers.get('etag') as string } : {}),
+      ...(typeof p.head?.sha === 'string' ? { headSha: p.head.sha } : {}),
+      ...(etagOut ? { etag: etagOut } : {}),
     };
   } catch (error) {
     logger.debug('Failed to read a PR for the PR watch', { owner, repo, number, error: (error as Error).message });
+    return undefined;
+  }
+}
+
+/**
+ * #929 — the latest check runs of one commit, folded by `checksConclusionOf` (pending while any runs). `etag` goes out
+ * as If-None-Match; a 304 answers 'not-modified'. Undefined on any failure; never throws.
+ */
+export async function fetchGitHubCheckRuns(
+  owner: string,
+  repo: string,
+  sha: string,
+  etag?: string,
+): Promise<ChecksAnswer | 'not-modified' | undefined> {
+  if (!/^[0-9a-f]{7,64}$/i.test(sha)) return undefined;
+  try {
+    const token = await getGitHubToken();
+    if (!token) return undefined;
+    const response = await fetch(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${sha}/check-runs?filter=latest&per_page=100`,
+      {
+        headers: {
+          Authorization: `token ${token}`,
+          Accept: 'application/vnd.github.v3+json',
+          'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
+          ...(etag ? { 'If-None-Match': etag } : {}),
+        },
+        signal: AbortSignal.timeout(8_000),
+      },
+    );
+    if (response.status === 304) return 'not-modified';
+    if (!response.ok) return undefined;
+    const body = (await response.json()) as { check_runs?: unknown };
+    if (!Array.isArray(body.check_runs)) return undefined;
+    const runs = body.check_runs.filter((r): r is { name?: string; status?: string; conclusion?: string | null } =>
+      Boolean(r && typeof r === 'object'),
+    );
+    const etagOut = response.headers.get('etag');
+    return { ...checksConclusionOf(runs), ...(etagOut ? { etag: etagOut } : {}) };
+  } catch (error) {
+    logger.debug('Failed to read check runs for the PR watch', { owner, repo, sha, error: (error as Error).message });
     return undefined;
   }
 }
