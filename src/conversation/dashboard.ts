@@ -17889,6 +17889,15 @@ function renderPanelOwner(s) {
     sr.textContent = ' (나)';
     el.appendChild(sr);
   }
+  ownerBadgeOrbitSync(el, !!o.self);
+}
+// The board's orbit: the arc starts at the document timeline's origin (as @2lab.ai/ui syncOwnerBadgeOrbit does for
+// the board's pills), so the detail card's turns in step with them. Nothing without the Web Animations API or under
+// reduced motion (no arc); any other animation on the pill is left alone.
+function ownerBadgeOrbitSync(el, self) {
+  if (!self || typeof el.getAnimations !== 'function') return;
+  var list = el.getAnimations({ subtree: true });
+  for (var i = 0; i < list.length; i++) if (/-orbit$/.test(list[i].animationName || '')) list[i].startTime = 0;
 }
 // Copy text — or a promise of it (the full context waits for its export) — to the clipboard; true once copied.
 // A ClipboardItem holding the pending text is written inside the press, so Safari keeps the press's permission

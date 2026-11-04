@@ -57,7 +57,7 @@ const ME = 'U_ME';
 const HUES: Record<string, number> = { U_ME: 2, U_BOB: 5 };
 // `board` — the board filter (currentUserId: '' = All Users); the viewer is the signed-in user, independent of it.
 const mod = (board: string, viewer: string, el: unknown = null) =>
-  load<OwnerMod>(['panelOwnerOf', 'renderPanelOwner'], {
+  load<OwnerMod>(['panelOwnerOf', 'renderPanelOwner', 'ownerBadgeOrbitSync'], {
     currentUserId: board,
     _viewerUserId: viewer,
     ownerBadgeHue: (id: string) => HUES[id] ?? 0,
@@ -74,6 +74,8 @@ interface FakeEl {
   text: string;
   writes: number;
   _sig?: string;
+  anims: Array<{ animationName: string; startTime: number | null }>;
+  getAnimations(o: unknown): Array<{ animationName: string; startTime: number | null }>;
   classList: { toggle(c: string, on: boolean): void };
   setAttribute(k: string, v: string): void;
   removeAttribute(k: string): void;
@@ -89,6 +91,17 @@ function fakeEl(): FakeEl {
     children: [] as FakeEl[],
     text: '',
     writes: 0,
+    // The kit's arc (its ::before) and a fade; the arc only while the pill is the viewer's own.
+    anims: [] as Array<{ animationName: string; startTime: number | null }>,
+    getAnimations(o: unknown) {
+      if (!(o && (o as { subtree?: boolean }).subtree)) return [];
+      if (!el.anims.length)
+        el.anims = [
+          { animationName: el.classes.has('is-self') ? 'ui-owner-badge-orbit' : 'none', startTime: null },
+          { animationName: 'ui-fade-in', startTime: 9 },
+        ];
+      return el.anims;
+    },
     classList: {
       toggle(c: string, on: boolean) {
         if (on) el.classes.add(c);
@@ -225,6 +238,16 @@ describe('B4 — renderPanelOwner: follows the open card, writes only on change'
     expect(el.attrs).toEqual({});
   });
 
+  it('a self pill’s arc starts at the timeline origin — in step with the board’s; others and other animations untouched', () => {
+    const el = fakeEl();
+    const m = mod('', ME, el);
+    m.renderPanelOwner({ ownerId: ME, ownerName: 'Zhuge' });
+    expect(el.anims.map((a) => a.startTime)).toEqual([0, 9]);
+    const bob = fakeEl();
+    mod('', ME, bob).renderPanelOwner({ ownerId: 'U_BOB', ownerName: 'Bob' });
+    expect(bob.anims).toEqual([]); // never asked: no arc to place
+  });
+
   it('the live path repaints it: repaintPanelSession (every update, the opening, a viewer change) calls it', () => {
     expect(clientFn('repaintPanelSession')).toMatch(/renderPanelTitleActions\(s\);\n\s*renderPanelOwner\(s\);/);
     expect(clientFn('repaintViewerControls')).toContain('repaintPanelSession();');
@@ -233,7 +256,7 @@ describe('B4 — renderPanelOwner: follows the open card, writes only on change'
 
 describe('B5 — every Korean string the pill shows has an English entry', () => {
   it('panelOwnerOf and renderPanelOwner', () => {
-    const src = clientFn('panelOwnerOf') + clientFn('renderPanelOwner');
+    const src = clientFn('panelOwnerOf') + clientFn('renderPanelOwner') + clientFn('ownerBadgeOrbitSync');
     const strings = [...src.matchAll(/'([^'\n]*[가-힣][^'\n]*)'/g)].map((m) => m[1]);
     expect(strings).toEqual([' (나)', ' (나)']);
     for (const k of strings) expect(EN_PAGE[k], k).toBe(' (you)');
