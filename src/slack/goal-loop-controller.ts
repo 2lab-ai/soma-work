@@ -161,6 +161,12 @@ export interface GoalLoopControllerDeps {
    * Optional — without it the stall is announced with a plain notice.
    */
   askStallQuestion?: (question: GoalStallQuestion) => Promise<void>;
+  /**
+   * #917 — told after every loop run: `continued` when that run injected a continuation (the agent acts again).
+   * A run that did not — the goal completed, a question opened, nothing to do — lets the host ask the session's
+   * follow-up question. Optional; never throws into the loop.
+   */
+  onRunSettled?: (sessionKey: string, info: { continued: boolean }) => void;
   logger: GoalLoopLogger;
   /** Default work model when the session has none. */
   fallbackModel: string;
@@ -270,7 +276,28 @@ export class GoalLoopController {
    */
   onTurnSettled(sessionKey: string, opts: { cause?: GoalLoopTrigger } = {}): void {
     const cause = opts.cause ?? 'turn';
-    this.enqueue(sessionKey, () => this.runOnce(sessionKey, cause));
+    this.enqueue(sessionKey, async () => {
+      this.continuedThisRun.delete(sessionKey);
+      try {
+        await this.runOnce(sessionKey, cause);
+      } finally {
+        this.noteRunSettled(sessionKey, this.continuedThisRun.delete(sessionKey));
+      }
+    });
+  }
+
+  /** #917 — sessions whose current run injected a continuation (runs are serial per session). */
+  private readonly continuedThisRun = new Set<string>();
+
+  private noteRunSettled(sessionKey: string, continued: boolean): void {
+    try {
+      this.deps.onRunSettled?.(sessionKey, { continued });
+    } catch (err: unknown) {
+      this.deps.logger.warn('Goal loop run-settled listener failed', {
+        sessionKey,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /**
@@ -961,6 +988,7 @@ export class GoalLoopController {
       // after our pre-injection idle recheck (M2).
       routeContext: { skipAutoBotThread: true, goalContinuation: true },
     };
+    this.continuedThisRun.add(sessionKey);
     this.deps.logger.info('Injecting goal continuation', {
       sessionKey,
       continuationCount: activeGoal.continuationCount,

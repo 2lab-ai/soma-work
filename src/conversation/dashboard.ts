@@ -471,12 +471,6 @@ export interface KanbanSession {
    * While any is pending the card reads `activityState: 'waiting'`.
    */
   pendingInstructionApprovals?: DashboardInstructionApproval[];
-  /**
-   * #829 — the session's last Executive Summary left an issue/PR it created unfinished (its ⚠️ TL;DR line):
-   * what the user must do next. While the session is idle the card reads `activityState: 'waiting'`
-   * (NEEDS YOU) instead of DONE.
-   */
-  pendingFollowUp?: { reason: string; at: number };
   /** E4 ① (.prd/19 D1) — an epic task. Absent otherwise. */
   kind?: 'epic';
   /**
@@ -2357,21 +2351,6 @@ export function taskPlanToKanban(s: { taskPlan?: TaskPlanGate }): KanbanTaskPlan
   };
 }
 
-/**
- * #829 — an idle session whose last Executive Summary left an own issue/PR unfinished waits for its user's
- * follow-up (NEEDS YOU). A running turn is the user already acting: it stays RUNNING.
- */
-function followUpOf(s: {
-  followUp?: { reason?: unknown; at?: unknown };
-  activityState?: string;
-}): { reason: string; at: number } | undefined {
-  const f = s.followUp;
-  if ((s.activityState || 'idle') !== 'idle' || !f || typeof f.reason !== 'string' || !f.reason.trim()) {
-    return undefined;
-  }
-  return { reason: f.reason.trim(), at: finiteNumber(f.at) ?? 0 };
-}
-
 /** Plan mode — an idle session whose plan waits for its owner asks for them (NEEDS YOU), Slack thread or task (#853). */
 function planAsks(s: { taskPlan?: TaskPlanGate; activityState?: string }): boolean {
   return s.taskPlan?.state === 'awaiting' && (s.activityState || 'idle') === 'idle';
@@ -2404,6 +2383,9 @@ function archivedCardLinks(archived: ArchivedSession): Pick<KanbanSession, 'card
   return cardLinks.length ? { cardLinks } : {};
 }
 
+/** #917 — the direct-input answer's choice id (the Slack form's and the dashboard forms' 직접입력 sentinel). */
+const CUSTOM_CHOICE_ID = '직접입력';
+
 function sessionToKanban(key: string, s: any): KanbanSession {
   const autoResume = deriveAutoResume(s, Date.now());
   const taskView = _getTasksFn ? _getTasksFn(key) : undefined;
@@ -2419,9 +2401,8 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     ...(goalDecision ? [{ createdAt: goalDecision.askedAt }] : []),
     ...instructionApprovals,
   ];
-  // #829 — and the follow-up its last Executive Summary left (an own issue/PR not complete). An armed
-  // automatic resume is the agent about to act again: that card stays RUNNING.
-  const followUp = autoResume ? undefined : followUpOf(s);
+  // #917 — a follow-up its last Executive Summary left (an own issue/PR not complete) is no ask by itself: the
+  // host asks the follow-up question (src/slack/follow-up-question.ts), and that question is what waits.
   return {
     // #814 Wire-format key includes the local instance prefix so sibling
     // instances can never collide on the client cache.
@@ -2441,8 +2422,8 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     threadTs: s.threadTs,
     // A turn blocked on a permission prompt waits for its user (projection
     // only — the session's own activityState is untouched).
-    // A plan waiting for its owner (plan mode) waits too.
-    activityState: asks.length > 0 || planAsks(s) || followUp ? 'waiting' : s.activityState || 'idle',
+    // A plan waiting for its owner (plan mode) waits too. Nothing waits without a question (#917).
+    activityState: asks.length > 0 || planAsks(s) ? 'waiting' : s.activityState || 'idle',
     sessionState: s.state || 'MAIN',
     terminated: s.terminated === true,
     trashed: s.trashed === true,
@@ -2452,7 +2433,6 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     ...(permissions.length > 0 ? { pendingPermissions: permissions } : {}),
     ...(goalDecision ? { pendingGoalDecision: goalDecision } : {}),
     ...(instructionApprovals.length > 0 ? { pendingInstructionApprovals: instructionApprovals } : {}),
-    ...(followUp ? { pendingFollowUp: followUp } : {}),
     issueUrl: s.links?.issue?.url,
     issueLabel: s.links?.issue?.label,
     issueTitle: s.links?.issue?.title,
@@ -2470,9 +2450,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     tokenUsage: tokenUsageOf(s),
     sessionOutputTokens: sessionOutputTokensOf(s),
     doneAt: liveDoneAt(s),
-    waitingSince: planAsks(s)
-      ? (s.taskPlan?.updatedAt ?? liveWaitingSince(s, asks))
-      : (liveWaitingSince(s, asks) ?? (followUp?.at || undefined)),
+    waitingSince: planAsks(s) ? (s.taskPlan?.updatedAt ?? liveWaitingSince(s, asks)) : liveWaitingSince(s, asks),
     finishedAt: liveFinishedAt(s),
     ...modelFields(s),
     ...contextFields(s),
@@ -4689,7 +4667,9 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: 'choiceId, label, and question are required and must be strings' });
         return;
       }
-      if (choiceId.length > 100 || label.length > 500 || question.length > 2000) {
+      // #917 — direct input (the 직접입력 sentinel) carries the user's own words: a longer label than a choice's.
+      const labelMax = choiceId === CUSTOM_CHOICE_ID ? 4000 : 500;
+      if (choiceId.length > 100 || label.length > labelMax || question.length > 2000) {
         reply.status(400).send({ error: 'Field length exceeded' });
         return;
       }
@@ -6270,10 +6250,6 @@ body.nt-open .new-task-fab { display: none !important; }
 .pp-title { font-size: 13px; font-weight: 650; color: var(--ib-text); }
 .pp-note { font-size: 13px; color: var(--ib-muted); line-height: 1.5; }
 /* #846 — the follow-up row in 입력 필요 (read-only). */
-.pf-row { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--tint-wait-line); background: var(--tint-wait-soft); }
-.pf-head { font-size: 12px; font-weight: 600; color: color-mix(in srgb, var(--st-wait) calc(100% * var(--chroma, 1)), var(--text)); }
-.pf-reason { font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
-.pf-hint { font-size: 12px; color: var(--ib-muted); }
 .pp-fold > summary { cursor: pointer; font-size: 12.5px; color: var(--ib-muted); margin-bottom: 8px; }
 .panel-plan-bar { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; padding: 8px 12px; margin-bottom: 8px; border-radius: 10px; background: var(--tint-wait-soft); border: 1px solid var(--tint-wait-line); }
 .ppb-label { flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 600; color: var(--tint-wait-fg); }
@@ -6928,8 +6904,9 @@ function acQuestionId(q) {
   return 'q|' + JSON.stringify([q.question, (q.choices || []).map(function(c) { return [c.id, c.label, c.description || '']; })]);
 }
 // pendingQuestion (single choice) → the card's data. The choices read as
-// before ("1. label", the recommended marker stripped); the route takes one
-// of them only (no free-text answer, so no allowOther).
+// before ("1. label", the recommended marker stripped). #917 — the last option
+// is direct input, as on Slack: the element's free-text answer (allowOther), sent
+// as the 직접입력 sentinel with its text.
 function acQuestionData(s, q) {
   var id = acQuestionId(q);
   var d = {
@@ -6941,7 +6918,7 @@ function acQuestionData(s, q) {
       if (c.description) o.description = String(c.description);
       return o;
     }),
-    allowOther: false,
+    allowOther: true,
   };
   var rec = resolveRecommendedId(q.recommendedChoiceId, q.choices);
   if (rec) d.recommendedId = String(rec);
@@ -7182,7 +7159,8 @@ document.addEventListener('ui-answer', function(e) {
   if (!el || !el.getAttribute || !e.detail) return;
   var kind = el.getAttribute('data-ac-kind');
   var choice = e.detail.choiceId === undefined ? '' : String(e.detail.choiceId);
-  if (kind === 'question') answerChoice(el.getAttribute('data-ac-key'), String(e.detail.id), choice);
+  // #917 — a free-text answer (allowOther) has no choiceId: its text is the direct input.
+  if (kind === 'question') answerChoice(el.getAttribute('data-ac-key'), String(e.detail.id), choice, e.detail.text);
   else if (kind === 'goal') answerGoalDecision(el.getAttribute('data-ac-key'), String(e.detail.id), choice);
   else if (kind === 'instr') answerInstructionApproval(el.getAttribute('data-ac-key'), String(e.detail.id), choice);
   else if (kind === 'admin') answerAdminApproval(String(e.detail.id), choice);
@@ -7250,14 +7228,10 @@ function renderPanelPermission(s) {
     ids['i|' + ia[j].requestId] = true;
     if (seen && !seen['i|' + ia[j].requestId]) said.push('지시 승인 요청 — ' + (ia[j].requesterName || ia[j].requesterId || ''));
   }
-  if (panelFollowUpShown(s)) {
-    ids['f|' + (s.pendingFollowUp.at || 0)] = true;
-    if (seen && !seen['f|' + (s.pendingFollowUp.at || 0)]) said.push('후속 작업 필요 — ' + s.pendingFollowUp.reason.trim());
-  }
   container._seenKey = key;
   container._seen = ids;
   renderPanelNeedsHead(s);
-  var html = s ? acPermissionsHtml(s) + acGoalDecisionHtml(s) + acInstructionApprovalsHtml(s) + acFollowUpHtml(s) : '';
+  var html = s ? acPermissionsHtml(s) + acGoalDecisionHtml(s) + acInstructionApprovalsHtml(s) : '';
   var ae = document.activeElement;
   var had = !!(ae && container.contains(ae));
   if (!html) {
@@ -7294,24 +7268,10 @@ function panelQuestionShown(s) {
   if (!q || s.activityState !== 'waiting') return false;
   return (q.type === 'user_choice' && !!q.choices) || q.type === 'user_choices';
 }
-// #846 — the follow-up the last Executive Summary left (an own issue/PR/doc not complete). Not on a sleeping or
-// closed session: the server keeps sending pendingFollowUp there, and its card sits in closed.
-function panelFollowUpShown(s) {
-  var f = s && s.pendingFollowUp;
-  if (!f || typeof f.reason !== 'string' || !f.reason.trim()) return false;
-  return s.sessionState !== 'SLEEPING' && !s.terminated;
-}
-// One read-only row in 입력 필요: the user acts outside the panel; the steps are in the summary's last section.
-function acFollowUpHtml(s) {
-  if (!panelFollowUpShown(s)) return '';
-  return '<div class="pf-row" data-pf="followup" role="note"><span class="pf-head">' + '후속 작업 필요' + '</span>'
-    + '<span class="pf-reason">' + esc(s.pendingFollowUp.reason.trim()) + '</span>'
-    + '<span class="pf-hint">' + '처리 방법은 Executive Summary 맨 아래 ⚠️ 섹션에 있어요' + '</span></div>';
-}
 function renderPanelNeedsHead(s) {
   var head = document.getElementById('panel-needs-head');
   if (!head) return;
-  var n = s ? ((s.pendingPermissions || []).length + (s.pendingGoalDecision ? 1 : 0) + (s.pendingInstructionApprovals || []).length + (panelQuestionShown(s) ? 1 : 0) + (s.taskPlan && s.taskPlan.state === 'awaiting' ? 1 : 0) + (panelFollowUpShown(s) ? 1 : 0)) : 0;
+  var n = s ? ((s.pendingPermissions || []).length + (s.pendingGoalDecision ? 1 : 0) + (s.pendingInstructionApprovals || []).length + (panelQuestionShown(s) ? 1 : 0) + (s.taskPlan && s.taskPlan.state === 'awaiting' ? 1 : 0)) : 0;
   head.hidden = n === 0;
   var count = document.getElementById('panel-needs-count');
   if (count && count.textContent !== String(n)) count.textContent = String(n);
@@ -7800,25 +7760,31 @@ async function answerAdminApproval(id, choiceId) {
 // The single-choice answer, from the card or the panel (the same element): the
 // choice travels with its label and the question, as the route wants. Same
 // states as a prompt; a question that changed meanwhile takes no answer.
-async function answerChoice(key, qid, choiceId) {
+// #917 — text (no choiceId): the direct input, sent as the 직접입력 sentinel.
+async function answerChoice(key, qid, choiceId, text) {
   var s = _sessionCache[key];
   var q = s && s.pendingQuestion;
   if (!q || q.type !== 'user_choice' || !q.choices || acQuestionId(q) !== qid) return null;
+  var own = !choiceId && typeof text === 'string' ? text.trim() : '';
   var c = null;
-  for (var i = 0; i < q.choices.length; i++) if (String(q.choices[i].id) === choiceId) c = q.choices[i];
-  if (!c) return null;
+  if (own) {
+    choiceId = MC_CUSTOM_ID;
+  } else {
+    for (var i = 0; i < q.choices.length; i++) if (String(q.choices[i].id) === choiceId) c = q.choices[i];
+    if (!c) return null;
+  }
   var states = _acState[key] || (_acState[key] = Object.create(null));
   var cur = states[qid];
   if (cur && (cur.status === 'sending' || cur.status === 'resolved')) return cur;
-  states[qid] = { status: 'sending', choiceId: choiceId };
+  states[qid] = own ? { status: 'sending' } : { status: 'sending', choiceId: choiceId };
   acRepaint(key);
-  var label = stripRecommendedMarker(c.label);
+  var label = own || stripRecommendedMarker(c.label);
   var st;
   try {
     var acBody = { choiceId: choiceId, label: label, question: q.question };
     var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/answer-choice', JSON.stringify(acBody));
     if (res.ok) {
-      st = { status: 'resolved', outcome: 'answered', choiceId: choiceId, at: Date.now() };
+      st = own ? { status: 'resolved', outcome: 'answered', text: own, at: Date.now() } : { status: 'resolved', outcome: 'answered', choiceId: choiceId, at: Date.now() };
       dashToast({ title: '답을 보냈어요', description: label, tone: 'success' });
     } else st = await acRefusal(res);
   } catch (e) {
@@ -9486,9 +9452,6 @@ function cardSummary(s, col, headline) {
   if (col !== 'closed' && tp && tp.state === 'awaiting') return '작업 계획 v' + tp.revision + ' — 시작할까요?' + (tp.summary ? ' · ' + tp.summary : '');
   var ia = col === 'closed' ? [] : s.pendingInstructionApprovals || [];
   if (ia.length) return (ia[0].requesterName || ia[0].requesterId || '') + '님의 지시 승인 대기' + (ia.length > 1 ? ' 외 ' + (ia.length - 1) + '건' : '');
-  // #829 — an own issue/PR the last summary left unfinished: what the user has to do next.
-  var fu = col === 'closed' ? null : s.pendingFollowUp;
-  if (fu && fu.reason) return '후속 작업 필요: ' + fu.reason;
   var q = s.pendingQuestion;
   if (col === 'waiting' && q && (q.question || q.title)) return q.question || q.title;
   // Waiting out a retry: the error behind it is what this card is "doing".
@@ -9842,7 +9805,6 @@ function cardAsks(s, col) {
   if (col !== 'closed' && s.pendingGoalDecision) return true;
   if (col !== 'closed' && s.taskPlan && s.taskPlan.state === 'awaiting') return true;
   if (col !== 'closed' && s.pendingInstructionApprovals && s.pendingInstructionApprovals.length) return true;
-  if (col !== 'closed' && s.pendingFollowUp && s.pendingFollowUp.reason) return true;
   var q = s.pendingQuestion;
   if (col === 'waiting' && q && (q.question || q.title)) return true;
   var r = pendingAutoResume(s, col);
@@ -13080,7 +13042,9 @@ function quickChoiceHtml(s, q, onFace) {
     var tip = !lock && c.description ? ' title="' + escAttr(c.description) + '"' : '';
     // The model's ids travel as attribute data (cardQuickAnswer reads them), never as inline JS (.prd/10 round 2).
     return '<button type="button" class="' + cls + '"' + held + tip + ' data-quick-key="' + key + '" data-quick-ask="' + id + '" data-quick-choice="' + escAttr(cid) + '" onclick="event.stopPropagation();cardQuickAnswer(this)">' + esc(stripRecommendedMarker(c.label)) + '</button>';
-  }).join('');
+  }).join('')
+    // #917 — the last option is direct input, as on Slack: it opens the card, whose question takes free text.
+    + '<button type="button" class="ui-btn card-quick-choice card-quick-own"' + (lock ? ' disabled title="' + escAttr(lock) + '"' : sending ? ' disabled' : '') + ' data-quick-key="' + key + '" onclick="event.stopPropagation();cardQuickDirectInput(this)">' + '✏️ 직접 입력' + '</button>';
   var note = st && st.status === 'error' ? '<div class="card-quick-note" role="alert">' + esc(st.message || '보내지 못했어요') + '</div>'
     : st && st.status === 'resolved' ? '<div class="card-quick-note">답을 보냈어요</div>' : '';
   var text = onFace === true ? '' : '<div class="card-question-text">' + esc(q.question || '') + '</div>';
@@ -13089,6 +13053,13 @@ function quickChoiceHtml(s, q, onFace) {
 function cardQuickAnswer(btn) {
   if (!btn || btn.disabled) return;
   answerChoice(btn.getAttribute('data-quick-key'), btn.getAttribute('data-quick-ask'), btn.getAttribute('data-quick-choice'));
+}
+// #917 — 직접 입력 on the face: the open card's question takes the free-text answer.
+function cardQuickDirectInput(btn) {
+  if (!btn || btn.disabled) return;
+  var key = btn.getAttribute('data-quick-key');
+  if (!(panelOpen && panelSessionKey === key)) openPanel(key);
+  dashToast({ title: '직접 입력', description: '입력 필요의 질문 카드에서 직접 입력을 골라 답을 적어 보내세요', tone: 'neutral' });
 }
 var _autoOpenWait = false;
 function autoOpenWhenDefined() {
