@@ -3,8 +3,9 @@
  *
  * The watch (#928) also reads the check runs of the PR's head commit. When they all finish and one failed, the
  * session gets one host message naming the failed jobs (an idle session is woken, a busy one gets it when it settles —
- * that is `deliver`'s job). A later head that passes after a failure gets one "passed" message. The record is stored
- * before the message goes out, so a restart never repeats one; with no usable store nothing is delivered.
+ * that is `deliver`'s job). A later head that passes after a failure gets one "passed" message. The record is written
+ * when the turn is injected, so a restart while it waits queues it again; a message that waited past a merge, a new
+ * head or a card that moved on is dropped. With no usable store nothing is delivered.
  * dsh-superagent: a Subscription fans the PR's CI changes out to its Ticket, and they wake the Executor.
  */
 import fs from 'node:fs';
@@ -46,6 +47,7 @@ function harness(over: Partial<PrWatchDeps> = {}) {
     store: memoryStore(),
     holdDone: false,
     waiting: [] as Array<((outcome: 'injected' | 'expired' | 'gone') => void) | undefined>,
+    currents: [] as Array<(() => boolean) | undefined>,
   };
   const deps: PrWatchDeps = {
     sessions: () => [session],
@@ -62,8 +64,9 @@ function harness(over: Partial<PrWatchDeps> = {}) {
       return state.checks;
     },
     // Injected at once (a settled session); `holdDone` keeps the message waiting instead.
-    deliver: async (sessionKey, text, done) => {
+    deliver: async (sessionKey, text, done, current) => {
       state.delivered.push({ sessionKey, text });
+      state.currents.push(current);
       if (state.holdDone) state.waiting.push(done);
       else done?.('injected');
       return true;
@@ -230,6 +233,45 @@ describe('session PR watch — CI (#929)', () => {
     expect(h.state.delivered).toHaveLength(2);
   });
 
+  it('a waiting message stops being current when the head moves on — the new head is asked instead (#929 round 2)', async () => {
+    const h = harness();
+    h.state.holdDone = true;
+    h.state.checks = { conclusion: 'failure', failed: ['lint'] };
+    const watch = createSessionPrWatch(h.deps);
+    await watch.tick();
+    const current = h.state.currents[0];
+    expect(current?.()).toBe(true);
+    h.state.pull = { number: 12, status: 'open', headSha: 'bbb2222' };
+    h.state.checks = { conclusion: 'pending', failed: [] };
+    await watch.tick();
+    expect(current?.()).toBe(false);
+    expect(h.state.checkAsks.map((a) => a.sha)).toEqual(['aaa1111', 'bbb2222']);
+  });
+
+  it('a waiting message stops being current when the PR merges; dropping it does not bring the record back', async () => {
+    const h = harness();
+    h.state.holdDone = true;
+    h.state.checks = { conclusion: 'failure', failed: ['lint'] };
+    const watch = createSessionPrWatch(h.deps);
+    await watch.tick();
+    h.state.pull = { number: 12, status: 'merged', headSha: 'aaa1111' };
+    await watch.tick();
+    expect(h.state.currents[0]?.()).toBe(false);
+    h.state.waiting[0]?.('gone');
+    expect(h.state.store.data.size).toBe(0);
+  });
+
+  it('a waiting message stops being current when the session card moves to another PR', async () => {
+    const h = harness();
+    h.state.holdDone = true;
+    h.state.checks = { conclusion: 'failure', failed: ['lint'] };
+    const watch = createSessionPrWatch(h.deps);
+    await watch.tick();
+    h.session.pr = { url: 'https://github.com/acme/app/pull/99', status: 'open' };
+    await watch.tick();
+    expect(h.state.currents[0]?.()).toBe(false);
+  });
+
   it('a PR on two live cards wakes neither (no clear owner) — #929 review', async () => {
     const h = harness();
     const other: WatchCandidate = { sessionKey: 's2', lastActivityMs: NOW, pr: { url: URL_A, status: 'open' } };
@@ -274,8 +316,11 @@ describe('entry point wiring (#929)', () => {
   it('the daemon gives the watch the check-run reader, a delivery path and the store', () => {
     const index = fs.readFileSync(path.join(__dirname, '..', 'index.ts'), 'utf-8');
     expect(index).toContain('fetchChecks: fetchGitHubCheckRuns');
-    // The record is written only in `done` — a wrapper that drops it re-sends the same CI message every restart.
-    expect(index).toContain('deliver: (sessionKey, text, done) => delivery.deliver(sessionKey, text, done)');
+    // The record is written only in `done`, and `current` drops a stale message — a wrapper that drops either re-sends
+    // the same CI message every restart or tells a merged PR to fix its CI.
+    expect(index).toContain(
+      'deliver: (sessionKey, text, done, current) => delivery.deliver(sessionKey, text, done, current)',
+    );
     expect(index).toContain("createFilePrWatchStore(path.join(DATA_DIR, 'pr-watch.json')");
   });
 });

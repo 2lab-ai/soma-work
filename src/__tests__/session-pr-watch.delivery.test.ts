@@ -80,6 +80,25 @@ describe('createSettledDelivery (#929)', () => {
     expect(h.injected).toEqual([]);
   });
 
+  it('a message no longer current (PR merged, new head, card moved) is dropped as gone, never injected (#929 round 2)', async () => {
+    const h = harness('busy');
+    let current = true;
+    const outcomes: string[] = [];
+    await h.d.deliver(
+      's1',
+      'CI failed on the old head',
+      (o) => outcomes.push(o),
+      () => current,
+    );
+    current = false;
+    h.state.now = 'ready';
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.injected).toEqual([]);
+    expect(outcomes).toEqual(['gone']);
+    // Not current at the call: nothing is queued.
+    await expect(h.d.deliver('s1', 'x', undefined, () => false)).resolves.toBe(false);
+  });
+
   it('stop() ends the retry timer', async () => {
     const h = harness('busy');
     await h.d.deliver('s1', 'x');
