@@ -3,15 +3,18 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
- * #829 T5 — a session whose last Executive Summary left an own issue/PR unfinished waits for its user.
+ * #829 T5 → #917 — a follow-up waits for its user only through a question.
  *
  * SSOT_1 (Z, 2026-11-03): "가능하면 그럴 경우에 작업 카드가 완료가 되면 안되고 유저의 후속 작업을 입력 대기로
  * 표기해여함"
  *
- * Server: an idle session with a follow-up (`session.followUp`, from the summary's ⚠️ TL;DR line) is projected
- * to `waiting` — NEEDS YOU, like a permission prompt or a plan awaiting its start — and carries
- * `pendingFollowUp` and `waitingSince`. Its own activityState is untouched. A running session stays RUNNING.
- * Client: the card's summary line names the follow-up and the card counts as asking the user.
+ * SSOT_2 (Z, 2026-11-04): "유저 입력대기는 반드시 최소한 질문 하나에 해당 질문에 1번은 추천 행동 2번 3번은
+ * 대안행동 그리고 맨 마지막에는 직접입력하는 유저에게 질문이 있어야함."
+ *
+ * Server: a follow-up (`session.followUp`, from the summary's ⚠️ TL;DR line) no longer projects a card to `waiting`
+ * on its own. The host asks the follow-up question (`src/slack/follow-up-question.ts`); that question is what puts
+ * the card in NEEDS YOU, like any other question. A running session stays RUNNING.
+ * Client: a follow-up is no ask by itself — no summary line, no read-only row in 입력 필요.
  */
 
 const mockConfig = {
@@ -86,19 +89,45 @@ describe('server — the follow-up projects an idle card to NEEDS YOU', () => {
     return JSON.parse(res.body).board;
   }
 
-  it('idle + follow-up → waiting, with the reason and since when', async () => {
+  it('idle + follow-up and no question → NOT waiting: no 입력 대기 without a question (#917)', async () => {
     const live = session({ followUp: FOLLOW_UP });
     const b = await board(new Map([['C1:t1', live]]));
-    expect(b.idle).toHaveLength(0);
-    expect(b.waiting).toHaveLength(1);
-    expect(b.waiting[0].activityState).toBe('waiting');
-    expect(b.waiting[0].pendingFollowUp).toEqual(FOLLOW_UP);
-    expect(b.waiting[0].waitingSince).toBe(FOLLOW_UP.at);
-    // projection only — the session itself is still idle
-    expect(live.activityState).toBe('idle');
+    expect(b.waiting).toHaveLength(0);
+    expect(b.idle).toHaveLength(1);
+    expect(b.idle[0].activityState).toBe('idle');
+    expect(b.idle[0].pendingFollowUp).toBeUndefined();
+    expect(b.idle[0].waitingSince).toBeUndefined();
   });
 
-  it('a Slack-less dashboard task (no channel, no thread) waits the same way', async () => {
+  it('the follow-up with its question open → waiting, and the card carries the question (#917)', async () => {
+    const question = {
+      type: 'user_choices',
+      title: '⚠️ 후속 작업 필요 — 다음에 할 일을 골라 주세요',
+      questions: [
+        {
+          id: 'follow-up-next',
+          question: '후속 작업을 어떻게 할까요',
+          choices: [
+            { id: '1', label: 'a' },
+            { id: '2', label: 'b' },
+            { id: '3', label: 'c' },
+          ],
+          recommendedChoiceId: '1',
+        },
+      ],
+    };
+    const live = session({
+      followUp: { ...FOLLOW_UP, askedAt: FOLLOW_UP.at + 1, questionTurnId: 'host:k:1' },
+      activityState: 'waiting',
+      actionPanel: { pendingQuestion: question, waitingForChoice: true },
+    });
+    const b = await board(new Map([['C1:t1', live]]));
+    expect(b.waiting).toHaveLength(1);
+    expect(b.waiting[0].pendingQuestion.type).toBe('user_choices');
+    expect(b.waiting[0].pendingQuestion.questions[0].choices).toHaveLength(3);
+  });
+
+  it('a Slack-less dashboard task (no channel, no thread) with a follow-up and no question is not waiting', async () => {
     const task = {
       sessionId: 'sid9',
       ownerId: 'U1',
@@ -112,8 +141,7 @@ describe('server — the follow-up projects an idle card to NEEDS YOU', () => {
       followUp: FOLLOW_UP,
     };
     const b = await board(new Map([['task:t-9', task]]));
-    expect(b.waiting).toHaveLength(1);
-    expect(b.waiting[0].pendingFollowUp).toEqual(FOLLOW_UP);
+    expect(b.waiting).toHaveLength(0);
   });
 
   it('a running turn stays RUNNING (the user is already acting)', async () => {
@@ -158,7 +186,7 @@ describe('server — the follow-up projects an idle card to NEEDS YOU', () => {
         ],
       ]),
     );
-    expect(b.waiting[0].esTldr.lines).toEqual([
+    expect(b.idle[0].esTldr.lines).toEqual([
       'PR #12 opened.',
       `⚠️ ${FOLLOW_UP.reason}`,
       'Next: merge #12, then fix __init__.',
@@ -174,7 +202,6 @@ describe('server — the follow-up projects an idle card to NEEDS YOU', () => {
     );
     expect(b.waiting).toHaveLength(0);
     expect(b.idle).toHaveLength(2);
-    expect(b.idle[0].pendingFollowUp).toBeUndefined();
   });
 });
 
@@ -208,30 +235,17 @@ const face = (): Face => {
   return new Function(...names, body)(...names.map((n) => inject[n])) as Face;
 };
 
-describe('client — the card says what the user has to do', () => {
+describe('client — a follow-up alone never asks (#917)', () => {
   const s = { key: 'k', title: 'Login fix', pendingFollowUp: FOLLOW_UP };
 
-  it('the summary line is the follow-up reason on a waiting card', () => {
-    expect(face().cardSummary(s, 'waiting', 'Login fix')).toBe(`후속 작업 필요: ${FOLLOW_UP.reason}`);
+  it('a follow-up is no ask on the card: only a question, a prompt or a decision asks', () => {
+    expect(face().cardAsks(s, 'waiting')).toBe(false);
+    expect(face().cardAsks(s, 'idle')).toBe(false);
+    expect(face().cardSummary(s, 'idle', 'Login fix')).not.toContain('후속 작업 필요');
   });
 
-  it('the card asks the user (it opens like any other NEEDS YOU card)', () => {
-    expect(face().cardAsks(s, 'waiting')).toBe(true);
-    expect(face().cardAsks({ key: 'k' }, 'idle')).toBe(false);
-  });
-
-  it('not on a sleeping/archived card', () => {
-    expect(face().cardAsks(s, 'closed')).toBe(false);
-    expect(face().cardSummary(s, 'closed', 'Login fix')).not.toContain('후속 작업 필요');
-  });
-
-  it('the English page translates the label', () => {
-    const en = JSON.parse(
-      readFileSync(
-        join(__dirname, '..', '..', '..', 'packages', 'common', 'src', 'i18n-catalog', 'en-page.json'),
-        'utf-8',
-      ),
-    );
-    expect(en['후속 작업 필요: ']).toBe('Follow-up needed: ');
+  it('the page has no read-only "후속 작업 필요" row in 입력 필요 — the question is what the user answers', () => {
+    expect(TEMPLATE).not.toContain('후속 작업 필요');
+    expect(TEMPLATE).not.toContain('pendingFollowUp');
   });
 });

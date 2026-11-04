@@ -1,6 +1,6 @@
 ---
 name: auto-es
-description: "soma-work only. The Executive Summary inside soma-work — run it instead of es (z phase5, autoz terminal report, a final report, $es). Runs zworkflow:es for the document, then adds the harness rules: own issues/PRs/documents with their state, a bold ⚠️ TL;DR line when one of them is unfinished, a final user follow-up section, and the session task card sync + card check through the model-command MCP, so the card waits in NEEDS YOU while work is unfinished. The host's turn-end summary runs its turn-end contract (reference/turn-end.md)."
+description: "soma-work only. The Executive Summary inside soma-work — run it instead of es (z phase5, autoz terminal report, a final report, $es). Runs zworkflow:es for the document, then adds the harness rules: own issues/PRs/documents with their state, a bold ⚠️ TL;DR line when one of them is unfinished, a final user follow-up section, a question to the user about it (1 recommended action, 2–3 alternatives, direct input last), and the session task card sync + card check through the model-command MCP, so the card waits in NEEDS YOU — on that question — while work is unfinished. The host's turn-end summary runs its turn-end contract (reference/turn-end.md)."
 ---
 
 # auto-es — es + the soma-work harness
@@ -66,10 +66,14 @@ When **any** own artifact is unfinished, three things are mandatory — in Path 
    TL;DR stays 3 lines: outcome · ⚠️ blocker · next step. A line that starts with `⚠️` is reserved for this signal
    only — never use it for a risk, a flaky test or a note.
 2. **`⚠️ User follow-up required` as the very last section** — §Harness additions.
-3. **The card waits for the user.** The ⚠️ TL;DR line is what moves the session's task card to **NEEDS YOU**
-   (waiting for the user's follow-up input) instead of DONE, with the blocker as the card's summary line. Path A
-   writes the TL;DR to the card (§Card sync); Path B's TL;DR is parsed by the host. The card leaves NEEDS YOU when
-   the next Executive Summary's TL;DR has no ⚠️ line (the work got finished), or on `/new`.
+3. **The user is asked — never left waiting without a question (#917).** A card is in **NEEDS YOU** (입력 대기)
+   only while a question is open; the ⚠️ line alone does not put it there. Path A: after §Card sync, end the turn
+   with `ASK_USER_QUESTION` about the unfinished artifact — choice 1 = the recommended next action, choices 2–3 =
+   alternatives (who acts, a workaround, stopping here). Do not add a "직접 입력" choice: the host adds direct input
+   as the last option itself. Path B (no tools), or a Path A turn that asked nothing: the host asks the follow-up
+   question itself (three next actions, 1 recommended, then direct input). Either question moves the card to NEEDS
+   YOU with the blocker in its description. The follow-up clears when the next Executive Summary's TL;DR has no ⚠️
+   line (the work got finished), or on `/new`; a question asked for it is then taken back.
 
 No unfinished own artifact → no ⚠️ line, no follow-up section. Never invent a blocker to look diligent, and never
 hide one to look done.

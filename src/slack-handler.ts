@@ -118,6 +118,7 @@ import { createForkExecutor } from './slack/create-fork-executor';
 import { DispatchAbortError, formatDispatchAbortMessage } from './slack/dispatch-abort';
 import { requestEnvSkillPermission } from './slack/env-skill-permission-request';
 import { mintEventTs } from './slack/event-ts';
+import { askFollowUpQuestion } from './slack/follow-up-question';
 import { type FollowupReactionRole, FollowupReactionSurface, rolesForFollowupState } from './slack/followup-reactions';
 import { isRestartCutUndelivered, restartCutVerdict } from './slack/followup-restart-redelivery';
 import { isGoalCapDecisionPending, retireGoalCapDecision } from './slack/goal-cap-decision';
@@ -151,7 +152,7 @@ import {
   snapshotGoalState,
 } from './slack/session-goal';
 import { announceSessionNotice, recordSessionNotice } from './slack/session-notice';
-import { SummaryService } from './slack/summary-service';
+import { type SessionFollowUp, SummaryService, setFollowUpListener } from './slack/summary-service';
 import { SummaryTimer } from './slack/summary-timer';
 import { normalizeZInvocation, stripZPrefix } from './slack/z/normalize';
 import { DmZRespond } from './slack/z/respond';
@@ -863,6 +864,8 @@ export class SlackHandler {
     });
     // Goal stall: a question whose round ended without an answer is retracted.
     setGoalStallRetiredListener((goal, stall, cause) => this.onGoalStallRetired(goal, stall, cause));
+    // #917 — every Executive Summary verdict on a follow-up: a new one may ask its question, a gone one retracts it.
+    setFollowUpListener((session, previous) => this.onFollowUpVerdict(session, previous));
 
     // EventRouter for event handling
     const eventRouterDeps: EventRouterDeps = {
@@ -6112,6 +6115,11 @@ export class SlackHandler {
    * `Send now` / Resume / Retry click runs): heard only when nothing of the chain is in flight.
    */
   private noteChainSettled(sessionKey: string, outcome: RunReport['outcome'] | undefined): void {
+    // #917 — the chain is over: a follow-up its Executive Summary left is asked now. A session with an active goal
+    // waits for its loop instead (it continues, or asks; `onRunSettled` hands the rest back here).
+    if (outcome && !this.followupDispatcher?.isBusy(sessionKey)) {
+      void this.askFollowUpQuestion(sessionKey, { notWithActiveGoal: true });
+    }
     if (!outcome || !this.chainSettledListener || this.followupDispatcher?.isBusy(sessionKey)) return;
     try {
       this.chainSettledListener(sessionKey, outcome);
@@ -7812,6 +7820,63 @@ export class SlackHandler {
     } else {
       await this.streamExecutor.retractHostQuestion(input.sessionKey, turnId);
     }
+  }
+
+  /**
+   * #917 — the session waits on its user only through a question: when its last Executive Summary left a ⚠️
+   * follow-up and nothing else will act or ask, the host asks the follow-up question (three next actions, 1
+   * recommended, then 직접 입력) through the same surface as the goal stall's. Once per verdict; never throws.
+   */
+  async askFollowUpQuestion(sessionKey: string, opts: { notWithActiveGoal?: boolean } = {}): Promise<void> {
+    if (this.isShuttingDown()) return;
+    try {
+      // A session with an active goal is asked by its loop's run end (`onRunSettled`), never beside the loop.
+      if (opts.notWithActiveGoal && this.claudeHandler.getSessionByKey(sessionKey)?.goal?.status === 'active') return;
+      await askFollowUpQuestion(sessionKey, {
+        getSession: (key) => this.claudeHandler.getSessionByKey(key),
+        isRequestActive: (key) => this.requestCoordinator.isRequestActive(key),
+        ask: (key, question, opts) => this.streamExecutor.askUserQuestionFromHost(key, question, opts),
+        retract: (key, turnId) => this.streamExecutor.retractHostQuestion(key, turnId),
+        save: () => this.claudeHandler.saveSessions(),
+        now: () => Date.now(),
+      });
+    } catch (error) {
+      this.logger.warn('Asking the follow-up question failed', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
+  }
+
+  /**
+   * #917 — an Executive Summary judged the follow-up again. A follow-up that is gone or names another reason takes
+   * back the question asked for the old one; then the new verdict may be asked — after the write that judged it
+   * (a model-run es writes mid-turn: the chain end asks then). A session with an active goal is asked by its loop's
+   * run end only (`onRunSettled`): asking beside the loop could open a question while its continuation starts.
+   */
+  private onFollowUpVerdict(
+    session: { followUp?: SessionFollowUp; goal?: { status?: string } },
+    previous: SessionFollowUp | undefined,
+  ): void {
+    let sessionKey: string | undefined;
+    for (const [key, s] of this.claudeHandler.getSessionRegistry().getAllSessions()) {
+      if (s === session) {
+        sessionKey = key;
+        break;
+      }
+    }
+    if (!sessionKey) return;
+    const key = sessionKey;
+    const asked = previous?.questionTurnId;
+    if (asked && (!session.followUp || session.followUp.reason !== previous?.reason)) {
+      void this.streamExecutor.retractHostQuestion(key, asked).catch((error: unknown) =>
+        this.logger.warn('Retracting a follow-up question failed', {
+          sessionKey: key,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+    if (session.followUp) setImmediate(() => void this.askFollowUpQuestion(key, { notWithActiveGoal: true }));
   }
 
   /**

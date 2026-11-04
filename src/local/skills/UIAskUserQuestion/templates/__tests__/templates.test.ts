@@ -94,15 +94,19 @@ describe('UIAskUserQuestion caller templates', () => {
     expect(raw.choices).toHaveLength(4);
   });
 
-  it('other approval templates have 2 options (z-phase1, z-phase2.9, decision-gate)', () => {
-    const twoOptionTemplates: TemplateName[] = [
+  // #917 — every question: 1 = recommended, 2–3 = alternatives, the host's 직접 입력 last.
+  it('every other template has 3 options, the recommended one first', () => {
+    const threeOptionTemplates: TemplateName[] = [
       'z-phase1-plan-approval',
       'z-phase2.9-pr-approval',
       'decision-gate-tier-medium',
+      'ztrace-ambiguous-scenario',
+      'zexplore-research-scope',
     ];
-    for (const name of twoOptionTemplates) {
+    for (const name of threeOptionTemplates) {
       const raw = loadTemplate(name);
-      expect(raw.choices, `${name} must have 2 options`).toHaveLength(2);
+      expect(raw.choices, `${name} must have 3 options`).toHaveLength(3);
+      expect(raw.choices[0].label, `${name}: option 1 is the recommended one`).toMatch(/\(Recommended/);
     }
   });
 });
