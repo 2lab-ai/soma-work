@@ -464,4 +464,19 @@ describe('safeguards — delegated agent and already-halted session (review roun
     expect(result.success).toBe(false);
     expect(result.retryAfterMs).toBeUndefined();
   });
+
+  // Review R5 (astra P1): an incident attempt is no exception — a halted thread
+  // runs no further attempt until an admin unlocks it.
+  it('a halted incident session runs no further attempt', async () => {
+    const deps = createDeps(safeguardAsContentStream);
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    session.safeguardHalt = { atMs: 1, detail: 'reasoning_extraction' };
+    (session as { incidentRequest?: unknown }).incidentRequest = { incident_id: 'INC-1', attempt_id: 'AT-2' };
+
+    const result = await executor.execute(createParams(vi.fn().mockResolvedValue({ ts: 'msg_ts' }), session));
+
+    expect(deps.claudeHandler.streamAgentEvents).not.toHaveBeenCalled();
+    expect(result.success).toBe(false);
+  });
 });

@@ -938,6 +938,18 @@ export class SlackHandler {
       });
     });
 
+    // 4. Safeguards halt seen outside a turn's stream (#904): the permission
+    //    guardian's Claude call, or an incident attempt, blocked by Anthropic's
+    //    safeguards. The handler locks the session; this stops the running turn
+    //    and posts the "세이프가드 에러" notice with the admin button.
+    //    Optional-chained for the same `{}` claudeHandler mocks.
+    this.claudeHandler.setSafeguardHaltPorts?.({
+      isRequestActive: (sessionKey) => this.requestCoordinator.isRequestActive(sessionKey),
+      abortSession: (sessionKey, reason) => this.requestCoordinator.abortSession(sessionKey, reason),
+      postNotice: (channel, threadTs, text, blocks) =>
+        this.slackApi.postSystemMessage(channel, text, { threadTs, blocks: blocks as any[] }),
+    });
+
     // #666 P4 Part 1/2 — Register the Bolt Assistant container. Enables the
     // Slack Assistant sidebar + 4 suggested prompts; routes
     // `assistant_thread_started` / `assistant_thread_context_changed` and
