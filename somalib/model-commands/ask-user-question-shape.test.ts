@@ -88,6 +88,22 @@ describe('ASK_USER_QUESTION — 1 recommended, 2–3 alternatives, direct input 
     }
   });
 
+  it('keeps real actions that only start like a direct-input word (trinity R1 fable P3)', () => {
+    const q = single(
+      ask({
+        type: 'user_choice',
+        question: 'Next?',
+        recommendedChoiceId: '1',
+        choices: [
+          { id: '1', label: 'Custom: 5 workers' },
+          { id: '2', label: 'Other region first' },
+          { id: '3', label: 'Default: 2 workers' },
+        ],
+      }),
+    );
+    expect(q.choices.map((c) => c.label)).toEqual(['Custom: 5 workers', 'Other region first', 'Default: 2 workers']);
+  });
+
   it('applies to every item of a user_choice_group', () => {
     const r = ask({
       type: 'user_choice_group',

@@ -1,3 +1,4 @@
+import { escapeSlackMrkdwn } from '@soma/slack/mrkdwn-escape';
 import type { ClaudeHandler } from '../../claude-handler';
 import { getInstructionApprovals } from '../../instruction-approval';
 import { Logger } from '../../logger';
@@ -1127,7 +1128,7 @@ export class ChoiceActionHandler {
     const own = choiceId === CUSTOM_INPUT_CHOICE_ID;
     const turnText = own ? label : choiceId;
     const picked = own
-      ? `직접 입력: _${label.substring(0, 200)}${label.length > 200 ? '...' : ''}_`
+      ? `직접 입력: _${escapeSlackMrkdwn(label.substring(0, 200))}${label.length > 200 ? '...' : ''}_`
       : `선택: *${choiceId}. ${label}*`;
 
     // P3 (PHASE>=3) — when a pendingChoice exists, route through resolveChoice.

@@ -118,7 +118,7 @@ import { createForkExecutor } from './slack/create-fork-executor';
 import { DispatchAbortError, formatDispatchAbortMessage } from './slack/dispatch-abort';
 import { requestEnvSkillPermission } from './slack/env-skill-permission-request';
 import { mintEventTs } from './slack/event-ts';
-import { askFollowUpQuestion } from './slack/follow-up-question';
+import { askFollowUpQuestion, consumeFollowUpVerdict } from './slack/follow-up-question';
 import { type FollowupReactionRole, FollowupReactionSurface, rolesForFollowupState } from './slack/followup-reactions';
 import { isRestartCutUndelivered, restartCutVerdict } from './slack/followup-restart-redelivery';
 import { isGoalCapDecisionPending, retireGoalCapDecision } from './slack/goal-cap-decision';
@@ -2634,6 +2634,8 @@ export class SlackHandler {
       }
       // #911 — and the drain the question paused reopens with it.
       if (userWord) this.reopenDrainAfterAnswer(sessionResult.sessionKey);
+      // #917 — the user acts now: the follow-up the last summary left is the next summary's to judge, not asked again.
+      if (userWord) consumeFollowUpVerdict(sessionResult.session, Date.now());
 
       await this.threadPanel?.create(sessionResult.session, sessionResult.sessionKey);
 
@@ -7851,8 +7853,8 @@ export class SlackHandler {
   /**
    * #917 — an Executive Summary judged the follow-up again. A follow-up that is gone or names another reason takes
    * back the question asked for the old one; then the new verdict may be asked — after the write that judged it
-   * (a model-run es writes mid-turn: the chain end asks then). A session with an active goal is asked by its loop's
-   * run end only (`onRunSettled`): asking beside the loop could open a question while its continuation starts.
+   * (a model-run es writes mid-turn: the chain end asks then). An active goal does not skip it: the summary lands
+   * after the loop's run (the guard and the commit check refuse while an eval, backoff, stall, cap or turn is on).
    */
   private onFollowUpVerdict(
     session: { followUp?: SessionFollowUp; goal?: { status?: string } },
@@ -7876,7 +7878,7 @@ export class SlackHandler {
         }),
       );
     }
-    if (session.followUp) setImmediate(() => void this.askFollowUpQuestion(key, { notWithActiveGoal: true }));
+    if (session.followUp) setImmediate(() => void this.askFollowUpQuestion(key));
   }
 
   /**
