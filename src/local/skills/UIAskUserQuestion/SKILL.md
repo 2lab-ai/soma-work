@@ -5,7 +5,9 @@ description: Send structured user-choice questions via model-command tool (Slack
 
 # UIAskUserQuestion — Structured User Choice
 
-When your turn ends and you need the user to make a real decision, call the `ASK_USER_QUESTION` model-command with a `user_choice` or `user_choice_group` payload. Slack renders it as buttons + a `✏️ Other` button that is **added automatically by the renderer** — never put an "Other" option in your `choices`.
+When your turn ends and you need the user to make a real decision, call the `ASK_USER_QUESTION` model-command with a `user_choice` or `user_choice_group` payload. Slack renders it as buttons + a `✏️ 직접 입력` (direct input) button that is **added automatically by the renderer** — the dashboard card offers the same free-text answer. Never put a "직접 입력" / "Other" option in your `choices`.
+
+**Every question has one shape (#917):** choice 1 = the recommended action, choices 2–3 (at most 4 in total) = alternative actions, and the host's direct input last. `ASK_USER_QUESTION` refuses fewer than 3 or more than 4 choices, and a `recommendedChoiceId` that is not the first choice; with no `recommendedChoiceId`, choice 1 is the recommended one. Waiting on the user without such a question is never allowed — a turn that stops for the user ends with this call.
 
 ## Pre-requisite: decision-gate
 
@@ -30,8 +32,9 @@ Call `mcp__model-command__run`:
       "context": "<current state · problem · impact · fix code · review consensus>",
       "recommendedChoiceId": "1",
       "choices": [
-        { "id": "1", "label": "Option A: <action>", "description": "<trade-offs>" },
-        { "id": "2", "label": "Option B: <action>", "description": "<trade-offs>" }
+        { "id": "1", "label": "Option A: <recommended action>", "description": "<trade-offs>" },
+        { "id": "2", "label": "Option B: <alternative action>", "description": "<trade-offs>" },
+        { "id": "3", "label": "Option C: <alternative action>", "description": "<trade-offs>" }
       ]
     }
   }
@@ -53,8 +56,9 @@ Do not stop or give up when the tool is missing. Write the same payload, without
   "context": "<current state · what happens next>",
   "recommendedChoiceId": "1",
   "choices": [
-    { "id": "1", "label": "<action>", "description": "<trade-offs>" },
-    { "id": "2", "label": "<other action>", "description": "<trade-offs>" }
+    { "id": "1", "label": "<recommended action>", "description": "<trade-offs>" },
+    { "id": "2", "label": "<alternative action>", "description": "<trade-offs>" },
+    { "id": "3", "label": "<another alternative>", "description": "<trade-offs>" }
   ]
 }
 ```
@@ -69,18 +73,18 @@ Do not stop or give up when the tool is missing. Write the same payload, without
   "question": "[small ~20 lines] Two decisions before I continue",
   "choices": [
     { "question": "Which file name?", "recommendedChoiceId": "1",
-      "options": [{ "id": "1", "label": "summary.txt" }, { "id": "2", "label": "SUMMARY.md" }] },
-    { "question": "Overwrite if it exists?", "recommendedChoiceId": "2",
-      "options": [{ "id": "1", "label": "Overwrite" }, { "id": "2", "label": "Keep and stop" }] }
+      "options": [{ "id": "1", "label": "summary.txt" }, { "id": "2", "label": "SUMMARY.md" }, { "id": "3", "label": "notes/summary.md" }] },
+    { "question": "Overwrite if it exists?", "recommendedChoiceId": "1",
+      "options": [{ "id": "1", "label": "Keep and stop" }, { "id": "2", "label": "Overwrite" }, { "id": "3", "label": "Write next to it with a date suffix" }] }
   ]
 }
 ```
 
-- The question-writing rules below apply unchanged. No quality gate runs on this path, so make the `context` self-contained yourself.
+- The question-writing rules below apply unchanged — including the shape (3–4 choices, the recommended one first). No gate runs on this path, so keep the shape and make the `context` self-contained yourself.
 
 ## Recommended option
 
-Mark the recommended option with the top-level `recommendedChoiceId` field (single choice) or per-question `recommendedChoiceId` (group). It must match one of the option `id`s. If it doesn't match, it is silently dropped (no error).
+Put the recommended option first and name it with the top-level `recommendedChoiceId` field (single choice) or per-question `recommendedChoiceId` (group). It must be the first option's `id` — any other option is refused; an id that matches no option is dropped and the first option becomes the recommended one.
 
 - **Slack single-choice** renders the recommended option as a solo emphasized row (`style: 'primary'`) with a `⭐ Recommended — <label>` banner above and a divider between the recommended row and the other options.
 - **Slack multi-form** styles it inline (reordered to the front of the buttons row with `style='primary'` + `⭐` prefix) so the 50-block per-message budget is preserved.
@@ -98,8 +102,8 @@ Mark the recommended option with the top-level `recommendedChoiceId` field (sing
    - Specific actions for each option (files, changes, workload)
    - Trade-offs for each option
    - 3-person review consensus (trinity panel: astra-zhuge + grok-elon + fable-zhuge)
-4. **2-4 options** — Slack UI renders `1️⃣-4️⃣` buttons up to 4. The 5th and beyond get cut off. `multiSelect` not supported (single-select only).
-5. **Recommended option** — Set `recommendedChoiceId` to the id of the recommended option. (Legacy `(Recommended · N/M)` label suffix is still accepted as a fallback and is auto-stripped from display; prefer the explicit field.) N/M is the review vote count and should go into the `description` or `context` instead of the label.
+4. **3-4 options** — 1 = the recommended action, the rest = alternatives (refused otherwise). Slack UI renders `1️⃣-4️⃣` buttons up to 4, then the host's `✏️ 직접 입력`. `multiSelect` not supported (single-select only).
+5. **Recommended option first** — Set `recommendedChoiceId` to the id of the first option. (Legacy `(Recommended · N/M)` label suffix is still accepted as a fallback and is auto-stripped from display; prefer the explicit field.) N/M is the review vote count and should go into the `description` or `context` instead of the label.
 6. **Actionable label** — Specific action that can be executed immediately upon selection. Meta options like "I'll think about it" are prohibited.
 7. **Do not reference plan text in Claude Code native Plan mode (`ExitPlanMode`)** — The user cannot see the plan in the Plan mode UI, so plan approval there is `ExitPlanMode`'s responsibility, not this tool's.
    - *Outside Plan mode* — In custom controller skills like `local:z` (phase1 plan confirmation, phase2.9 PR approval), `local:zcheck` (Step 4 PR approve), `local:ztrace` (Phase 0 scenario confirmation), `local:zexplore`, and `local:decision-gate` (tier=medium branch), structured plan/PR/scope confirmation via this tool is the **correct** pattern. Use the pre-built templates below.
@@ -164,6 +168,11 @@ No tier, no code snippets, no problem description, no review consensus → User 
           "id": "option_b",
           "label": "Option B: Switch to Result<T> pattern",
           "description": "Repository stops throwing exceptions and returns Result<T> instead — 6 files, ~80 lines. Cleaner but wider scope."
+        },
+        {
+          "id": "option_c",
+          "label": "Option C: Log and rethrow non-duplicate errors",
+          "description": "Keep the catch for duplicates, rethrow everything else with a log line — 1 file, ~10 lines. Smallest change, callers see the real error."
         }
       ]
     }
@@ -173,7 +182,7 @@ No tier, no code snippets, no problem description, no review consensus → User 
 
 ## Caller templates
 
-Each caller skill has a pre-built JSON template under [`templates/`](./templates/) that satisfies all six quality rules from `checkAskUserQuestionQuality` (options 2..4, `[tier]` prefix, context ≥ 80 chars, no forbidden meta labels, exactly one `(Recommended · N/M)` marker, non-empty question). Substitute the `{placeholders}` at call-site and call `mcp__model-command__run`.
+Each caller skill has a pre-built JSON template under [`templates/`](./templates/) that satisfies the question shape (3–4 choices, the recommended one first) and all six quality rules from `checkAskUserQuestionQuality` (options 2..4, `[tier]` prefix, context ≥ 80 chars, no forbidden meta labels, exactly one `(Recommended · N/M)` marker, non-empty question). Substitute the `{placeholders}` at call-site and call `mcp__model-command__run`.
 
 | Caller | Template | Use case |
 |--------|----------|----------|
@@ -190,5 +199,5 @@ Each caller skill has a pre-built JSON template under [`templates/`](./templates
 
 1. **`decision-gate` first** — Do not use this skill if it falls within the autonomous judgment area.
 2. **Self-contained** — Tier, code, problem, options, and review consensus must all be included in `context`.
-3. **Actionable Option A/B** — Selecting an option triggers immediate execution. No additional input required. The "Other" button is added automatically by Slack.
+3. **Actionable Option A/B/C** — Selecting an option triggers immediate execution. No additional input required. The `✏️ 직접 입력` option is added automatically by the host (Slack and the dashboard).
 4. **Start from a caller template** — Six reference templates live under [`templates/`](./templates/). They pass both `validateModelCommandRunArgs` (hard gate) and `checkAskUserQuestionQuality` (soft gate, 0 warnings) — use them as starting points instead of hand-rolling payloads.

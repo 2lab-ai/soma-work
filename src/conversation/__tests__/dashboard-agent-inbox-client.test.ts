@@ -3167,8 +3167,6 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         'acPermissionsHtml',
         'acGoalDecisionHtml',
         'acInstructionApprovalsHtml',
-        'acFollowUpHtml',
-        'panelFollowUpShown',
         'acSlotHtml',
         'acQuestionId',
         'acQuestionHtml',
@@ -3237,6 +3235,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
       {
         // affectUI batch 2b: openPanel gives each opening a fresh <ui-agent-steering>; this harness has no composer.
         pcFreshSteer: () => {},
+        // Phone chrome (SSOT 2026-11-04): every opening starts with the head and the composer in — a seam here.
+        rdReset: () => {},
         // Plan mode (SSOT 2026-11-02): the panel's plan is painted with the question (none in this harness).
         renderPanelPlan: () => {},
         document: {
