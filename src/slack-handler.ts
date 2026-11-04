@@ -1532,6 +1532,15 @@ export class SlackHandler {
   }
 
   /**
+   * What the router makes of a message, without running anything (`CommandRouter.classifyText`): an instruction, a
+   * command that only answers (`control` — its answer is a thread message, no turn), or one that also starts a turn.
+   * The dashboard's command route uses it to tell the panel where a command's answer is.
+   */
+  classifyInstruction(text: string, user?: string): 'instruction' | 'control' | 'control-with-dispatch' {
+    return this.commandRouter.classifyText(text, user);
+  }
+
+  /**
    * Public ingress. Owns exactly two things the pipeline below cannot own:
    * the SYNCHRONOUS busy fence and the untouched capture of the raw message.
    *

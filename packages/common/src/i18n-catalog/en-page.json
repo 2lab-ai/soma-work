@@ -2,6 +2,7 @@
   " (+서브 ": " (+sub ",
   " (그 전 지출 미포함)": " (spend before that not included)",
   " (기본값)": " (default)",
+  " (나)": " (you)",
   " (마지막 수정 ": " (last edited ",
   " (버전은 브라우저가 숨김)": " (version hidden by the browser)",
   " (새 세션부터)": " (from new sessions)",
@@ -1265,5 +1266,9 @@
   "타이틀 바 바로 아래 — 탭에 넣지 않고 항상 보입니다": "Right under the title bar — never in a tab, always shown",
   "탭 바": "Tab bar",
   "✏️ 직접 입력": "✏️ Type your own",
-  "입력 필요의 질문 카드에서 직접 입력을 골라 답을 적어 보내세요": "In Needs input, pick Type your own on the question card and send your answer"
+  "입력 필요의 질문 카드에서 직접 입력을 골라 답을 적어 보내세요": "In Needs input, pick Type your own on the question card and send your answer",
+  "명령을 보냈어요": "Command sent",
+  "답은 Slack 스레드에 있어요": "Its answer is in the Slack thread",
+  " · 답은 Slack 스레드에 있어요": " · its answer is in the Slack thread",
+  " · 답이 곧 Slack 스레드에 올라와요": " · its answer will appear in the Slack thread shortly"
 }
