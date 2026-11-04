@@ -1655,8 +1655,6 @@ export class SlackHandler {
         : undefined;
     const busy = slotOwner !== undefined;
     const queueable = this.isQueueableFollowup(event);
-    // #911 — before anything below reads the halt (the steer gate, the drain this turn ends with).
-    if (queueable) this.reopenDrainForPerson(event, sessionKey, slotKey);
     if (busy) {
       if (event.synthetic) {
         // A synthetic continuation must never supersede a live or reserved
@@ -1768,33 +1766,32 @@ export class SlackHandler {
   /**
    * #911 — a turn that ended on the person's question halts the drain
    * ({@link SlackHandler.AWAITING_USER_CHOICE}): the session is theirs until
-   * they answer. Their next message that starts a turn is that answer — the
-   * answer to the question arrives this way, from Slack or the dashboard — so
-   * it ends the pause (`user-action`). Left standing, the halt outlived the
-   * answer (dev 2026-11-04): the next message was neither steered nor drained,
-   * a goal session yielded to it (§3.6), and when the turn ended nothing made
-   * the next one.
+   * they answer. Their own word reaching the session is that answer — the same
+   * point that completes the choice and retires the recorded question
+   * (`userWord` in `processMessage`), whichever door it came through: a Slack
+   * reply, a choice button, the dashboard, or a queued message sent with
+   * `Send now`. So it ends the pause there (`user-action`). Left standing, the
+   * halt outlived the answer (dev 2026-11-04): the next message was neither
+   * steered nor drained, a goal session yielded to it (§3.6), and when the turn
+   * ended nothing made the next one.
    *
    * Only that halt. Every other `blocked` reason is a refusal, a consumed
    * message, or a wait for something a plain message is not (a grant, a route
    * decision, a free work slot); `error` and `authorization` say the lane itself
-   * is broken. Those keep waiting for Resume/Retry. A synthetic turn or a
-   * replayed host turn is not a person, and an immediate control (`help`, a
-   * bare `!`) starts no turn whose end could drain what the halt held.
+   * is broken. Those keep waiting for Resume/Retry. A turn that is not the
+   * person's word — a host turn, `/compact`, or a command answered without a
+   * turn (`help`, the `compact` confirmation) — never gets here.
    */
-  private reopenDrainForPerson(event: MessageEvent, sessionKey: string, slotKey: string | undefined): void {
-    if (event.synthetic || event.routeContext?.hostTurn === true || !event.user) return;
+  private reopenDrainAfterAnswer(sessionKey: string): void {
     const dispatcher = this.followupDispatcher;
     if (!dispatcher) return;
-    // After a bot-thread migration the halt sits under the slot's (source) key.
+    // After a bot-thread migration the halt can sit under the slot's (source) key.
+    const slotKey = this.followupMigration?.byCanonical.get(sessionKey);
     for (const key of slotKey !== undefined ? [sessionKey, slotKey] : [sessionKey]) {
       const halt = dispatcher.drainHalt(key);
       if (halt?.reason !== 'blocked' || halt.detail !== SlackHandler.AWAITING_USER_CHOICE) continue;
       dispatcher.clearDrainHalt(key, 'user-action');
-      this.logger.info('Drain reopened — a person spoke after a pause that waited for one', {
-        sessionKey: key,
-        detail: halt.detail,
-      });
+      this.logger.info('Drain reopened — the person answered the question that paused it', { sessionKey: key });
     }
   }
 
@@ -2632,6 +2629,8 @@ export class SlackHandler {
       if (userWord && sessionResult.session.actionPanel?.pendingQuestion) {
         sessionResult.session.actionPanel.pendingQuestion = undefined;
       }
+      // #911 — and the drain the question paused reopens with it.
+      if (userWord) this.reopenDrainAfterAnswer(sessionResult.sessionKey);
 
       await this.threadPanel?.create(sessionResult.session, sessionResult.sessionKey);
 
