@@ -1,3 +1,6 @@
+import * as fsx from 'node:fs';
+import * as os from 'node:os';
+import * as pathx from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { FileHandler, type ProcessedFile } from '../file-handler';
 
@@ -448,6 +451,162 @@ describe('FileHandler — attachments the bot could not fetch are kept as metada
     } finally {
       globalThis.fetch = original;
       server.close();
+    }
+  });
+});
+
+/**
+ * SSOT 2026-11-04 — "붙여넣는데 너무 크면 첨부 파일로 처리해줘". The dashboard attaches a paste too long for the
+ * instruction as `pasted-text-<stamp>.txt`. A text file over the inline preview used to reach the model cut to its
+ * first 10,000 characters with no path, so most of the paste was lost: now the prompt says how long it is and where
+ * it is, so the agent reads all of it. Test id I1.2.
+ */
+describe('FileHandler.formatFilePrompt — a long text file is previewed and its path given (I1.2)', () => {
+  const handler = new FileHandler();
+
+  function textFile(name: string, content: string): ProcessedFile {
+    const p = pathx.join(os.tmpdir(), `slack-file-${Date.now()}-${Math.random().toString(36).slice(2)}-${name}`);
+    fsx.writeFileSync(p, content, 'utf-8');
+    return {
+      path: p,
+      name,
+      mimetype: 'text/plain',
+      isImage: false,
+      isText: true,
+      isVideo: false,
+      isAudio: false,
+      size: Buffer.byteLength(content),
+      tempPath: p,
+    };
+  }
+
+  /** The path the prompt gives (the kept copy), and a way to remove the copy's directory after the test. */
+  function keptPath(out: string): string {
+    return /Path: (.+)\n/.exec(out)?.[1] ?? '';
+  }
+  function dropKept(kept: string): void {
+    if (pathx.basename(pathx.dirname(kept)).startsWith('soma-text-')) {
+      fsx.rmSync(pathx.dirname(kept), { recursive: true, force: true });
+    }
+  }
+
+  it('over 10,000 characters: the first 10,000 inline, the full length and the path, and a Read instruction', async () => {
+    const head = 'H'.repeat(10000);
+    const tail = 'TAIL-MARKER';
+    const f = textFile('pasted-text-20261104-090507.txt', head + 'x'.repeat(15000) + tail);
+    try {
+      const out = await handler.formatFilePrompt([f], '');
+      expect(out).toContain(head);
+      expect(out).not.toContain(tail);
+      expect(keptPath(out)).not.toBe('');
+      expect(out).toContain('25011 characters');
+      expect(out).toMatch(/Read tool/);
+      dropKept(keptPath(out));
+    } finally {
+      await handler.cleanupTempFiles([f]);
+    }
+  });
+
+  it("the path is a copy in a fresh soma-text- directory under the OS temp dir (0700) that outlives the turn's cleanup (a plan turn, then the start turn)", async () => {
+    const content = `${'K'.repeat(10001)}END`;
+    const f = textFile('pasted-text-20261104-090507.txt', content);
+    let kept = '';
+    try {
+      const out = await handler.formatFilePrompt([f], '');
+      kept = keptPath(out);
+      expect(pathx.dirname(pathx.dirname(kept))).toBe(os.tmpdir());
+      expect(pathx.basename(pathx.dirname(kept))).toMatch(/^soma-text-/);
+      expect(fsx.statSync(pathx.dirname(kept)).mode & 0o777).toBe(0o700);
+      await handler.cleanupTempFiles([f]); // the end of the turn
+      expect(fsx.existsSync(f.path)).toBe(false);
+      expect(fsx.readFileSync(kept, 'utf-8')).toBe(content);
+      // Each file gets its own directory: nothing waits there to be written through.
+      const g = textFile('notes.txt', 'M'.repeat(10001));
+      const again = keptPath(await handler.formatFilePrompt([g], ''));
+      expect(pathx.dirname(again)).not.toBe(pathx.dirname(kept));
+      dropKept(again);
+      await handler.cleanupTempFiles([g]);
+    } finally {
+      dropKept(kept);
+      await handler.cleanupTempFiles([f]);
+    }
+  });
+
+  it('a session cannot steer the copy: a .soma-attachments link in its working directory is never written through (trinity R2, astra P1)', async () => {
+    const session = fsx.mkdtempSync(pathx.join(os.tmpdir(), 'fh-session-'));
+    const outside = fsx.mkdtempSync(pathx.join(os.tmpdir(), 'fh-outside-'));
+    fsx.symlinkSync(outside, pathx.join(session, '.soma-attachments'));
+    const f = textFile('pasted-text-20261104-090507.txt', 'S'.repeat(10001));
+    let kept = '';
+    try {
+      // Even handed the working directory the way the round-1 fix took it, the host writes nothing there.
+      const out = await (handler.formatFilePrompt as (...a: unknown[]) => Promise<string>)([f], '', {
+        keepDir: session,
+      });
+      kept = keptPath(out);
+      expect(fsx.readdirSync(outside)).toEqual([]);
+      expect(fsx.realpathSync(kept).startsWith(fsx.realpathSync(session))).toBe(false);
+    } finally {
+      dropKept(kept);
+      await handler.cleanupTempFiles([f]);
+      fsx.rmSync(session, { recursive: true, force: true });
+      fsx.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('a copy that cannot be made falls back to the download path, still with the Read note', async () => {
+    const f = textFile('notes.txt', 'L'.repeat(10001));
+    // os.tmpdir() reads TMPDIR on every call: a temp dir that does not exist makes the copy's mkdtemp fail.
+    const saved = process.env.TMPDIR;
+    process.env.TMPDIR = pathx.join(pathx.dirname(f.path), `fh-missing-${Date.now()}`, 'nested');
+    try {
+      const out = await handler.formatFilePrompt([f], '');
+      expect(out).toContain(`Path: ${f.path}`);
+      expect(out).toMatch(/Read tool/);
+    } finally {
+      if (saved === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = saved;
+      await handler.cleanupTempFiles([f]);
+    }
+  });
+
+  it('an instruction that is only pasted text is not framed as files to analyse', async () => {
+    const f = textFile('pasted-text-20261104-090507.txt', '이 스펙대로 구현해줘');
+    const other = textFile('spec.txt', 'spec');
+    try {
+      const only = await handler.formatFilePrompt([f], '');
+      expect(only).not.toMatch(/Please analyze/);
+      expect(only).toMatch(/pasted text below/);
+      // Any other file keeps the usual framing.
+      const mixed = await handler.formatFilePrompt([f, other], '');
+      expect(mixed).toMatch(/Please analyze the uploaded files/);
+    } finally {
+      await handler.cleanupTempFiles([f, other]);
+    }
+  });
+
+  it('a short text file stays inline as before, with no path', async () => {
+    const f = textFile('notes.txt', 'short note');
+    try {
+      const out = await handler.formatFilePrompt([f], '봐줘');
+      expect(out).toContain('Content:\n```\nshort note\n```');
+      expect(out).not.toContain('Path:');
+    } finally {
+      await handler.cleanupTempFiles([f]);
+    }
+  });
+
+  it("the dashboard's pasted text is named as part of the user's message, not a file to analyse", async () => {
+    const f = textFile('pasted-text-20261104-090507.txt', '이 스펙대로 구현해줘');
+    try {
+      const out = await handler.formatFilePrompt([f], '');
+      expect(out).toMatch(/pasted/i);
+      expect(out).toMatch(/part of the user's message/);
+      // A file a user uploaded under another name gets no such note.
+      const other = await handler.formatFilePrompt([{ ...f, name: 'spec.txt' }], '');
+      expect(other).not.toMatch(/part of the user's message/);
+    } finally {
+      await handler.cleanupTempFiles([f]);
     }
   });
 });
