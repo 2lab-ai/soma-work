@@ -103,14 +103,25 @@ describe('command rows — what the menu inserts is a real command', () => {
 describe('composerCommandItems — who sees what, where', () => {
   const router = productionRouter();
 
-  it('the new-task composer offers only what starts the work (trinity R1, astra-zhuge)', () => {
-    // A command that only answers (`/help`, `/model`) makes no session: the launch would wait for a task that
-    // never starts. The new task's first message must start a turn.
+  it('the new-task composer offers every command that works without a session; one that only answers says where', () => {
+    // A new task's first message that only answers (`/help`, `/model opus`) is launched answer-only: the command
+    // answers in the new Slack thread and the dashboard links it (no task card). Rows that need the thread's
+    // session (`/compact`, `!`, `%effort` …) are not possible in a new thread.
+    const suffix = ' · 답은 Slack 스레드에';
     for (const admin of [false, true]) {
       const rows = composerCommandItems({ where: 'new-task', admin });
-      expect(rows.map((r) => r.value)).toEqual(['/goal', '%model', '%nogoal', '/onboarding']);
-      for (const r of rows) expect(router.classifyText(r.example ?? '', 'U_ADMIN'), r.value).not.toBe('control');
+      const values = rows.map((r) => r.value);
+      const expected = COMPOSER_COMMANDS.filter((c) => !c.session && (admin || !c.admin)).map((c) => c.value);
+      expect(values).toEqual(expected);
+      for (const v of ['/goal', '%model', '/onboarding', '/help', '/model', '/lang', '/cron', '/usage', '/z'])
+        expect(values).toContain(v);
+      for (const v of ['/compact --yes', '!', '/close', '%effort', '/rollback']) expect(values).not.toContain(v);
+      for (const r of rows) {
+        const control = router.classifyText(r.example ?? '', 'U_ADMIN') === 'control';
+        expect(r.description?.endsWith(suffix), `${r.value}: ${r.example}`).toBe(control);
+      }
     }
+    expect(composerCommandItems({ where: 'new-task', admin: false }).length).toBeGreaterThan(30);
   });
 
   it('an open session lists every command; admins also see the admin rows', () => {
@@ -256,11 +267,11 @@ describe('composerSkillItems — every skill this user can invoke', () => {
 });
 
 describe('composerTriggers', () => {
-  it('the new task has no $user row: alone it only answers (the skills card) and makes no task', () => {
+  it('the new task lists every skill too, $user (the skills card, answered in the thread) first', () => {
     resetComposerMenuCache();
     const newTask = composerTriggers({ where: 'new-task', userId: 'U1', admin: false }, skillDeps());
     const dollar = newTask.find((t) => t.char === '$');
-    expect(dollar?.items.map((i) => i.value)).not.toContain('$user');
+    expect(dollar?.items[0].value).toBe('$user');
     expect(dollar?.items.map((i) => i.value)).toContain('$local:autoz');
   });
 

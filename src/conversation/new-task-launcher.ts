@@ -106,8 +106,11 @@ export interface NewTaskLaunchResult {
   threadTs: string;
   sessionKey: string;
   permalink?: string;
-  /** `running`: the session exists. `starting`: accepted, the session is not there yet. */
-  status: 'running' | 'starting';
+  /**
+   * `running`: the session exists. `starting`: accepted, the session is not there yet. `answered`: an answer-only
+   * first message (`submission.answerOnly`) was handled — its answer is in the thread, and no session comes.
+   */
+  status: 'running' | 'starting' | 'answered';
 }
 
 const POLL_MS = 100;
@@ -197,6 +200,38 @@ export async function launchNewTask(
       }
     });
   void run;
+
+  // 4a. A command that only answers: wait for it to be handled (no session comes), then say where the answer is.
+  if (submission.answerOnly === true) {
+    let handled = false;
+    void run.then(() => {
+      handled = true;
+    });
+    const until = Date.now() + acceptTimeoutMs;
+    let rounds = Math.ceil(acceptTimeoutMs / POLL_MS);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    while (!handled && rounds-- > 0 && Date.now() <= until) {
+      await sleep(POLL_MS);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    if (failure) {
+      await deps
+        .postThreadNotice(channel, rootTs, '⚠️ 명령을 처리하지 못했습니다. 대시보드에서 다시 시도해 주세요.')
+        .catch(() => undefined);
+      throw new NewTaskError(500, '명령을 처리하지 못했습니다 — 잠시 후 다시 시도해 주세요');
+    }
+    accepted = true;
+    let answeredLink: string | undefined;
+    try {
+      answeredLink = await deps.getPermalink(channel, rootTs);
+    } catch {
+      answeredLink = undefined;
+    }
+    logger.info('New task: answer-only command from the dashboard', { channel, rootTs, userId, handled });
+    const answered: NewTaskLaunchResult = { channel, threadTs: rootTs, sessionKey, status: 'answered' };
+    if (answeredLink) answered.permalink = answeredLink;
+    return answered;
+  }
 
   // 4. Answer once the session exists, the pipeline failed, or the wait ran out.
   const deadline = Date.now() + acceptTimeoutMs;

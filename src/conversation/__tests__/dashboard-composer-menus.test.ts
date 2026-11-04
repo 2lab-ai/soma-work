@@ -382,14 +382,29 @@ describe('POST /api/dashboard/new-task — a first message that only answers sta
     });
   }
 
-  it('/goal alone (picked from the menu, sent at once) is refused before anything is posted; the reason says what to do', async () => {
-    const classify = vi.fn((text: string) => (text === '/goal' ? 'control' : 'control-with-dispatch'));
+  it('a first message that only answers (/help, /goal alone) is launched answer-only: its answer is in the new thread', async () => {
+    const classify = vi.fn((text: string) => (text === '/help' ? 'control' : 'control-with-dispatch'));
     dashboard.setDashboardCommandClassifier(classify);
-    const res = await launch('/goal ', 'req-goal-bare-0001');
-    expect(res.statusCode).toBe(400);
-    expect(JSON.parse(res.body).error).toContain('작업을 시작하지 않아요');
-    expect(classify).toHaveBeenCalledWith('/goal', 'U_PLAIN');
-    expect(start).not.toHaveBeenCalled();
+    start.mockImplementationOnce(async () => ({
+      channel: 'C_ALPHA',
+      threadTs: '2.2',
+      sessionKey: 'C_ALPHA:2.2',
+      permalink: 'https://slack.example/p2',
+      status: 'answered',
+    }));
+    const res = await launch('/help', 'req-help-answer-01');
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ ok: true, status: 'answered', permalink: 'https://slack.example/p2' });
+    expect(classify).toHaveBeenCalledWith('/help', 'U_PLAIN');
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(start.mock.calls[0][1]).toMatchObject({ prompt: '/help', answerOnly: true });
+  });
+
+  it('a first message that starts the work is not answer-only', async () => {
+    dashboard.setDashboardCommandClassifier(() => 'instruction');
+    const res = await launch('로그인 버그 고쳐줘', 'req-instr-000001');
+    expect(res.statusCode).toBe(200);
+    expect(start.mock.calls[0][1].answerOnly).toBeUndefined();
   });
 
   it('what is judged is what the launch sends: with autoz on, %nogoal goes with $autoz after it — a skill turn, launched', async () => {
@@ -406,5 +421,26 @@ describe('POST /api/dashboard/new-task — a first message that only answers sta
     const res = await launch('/goal 대시보드 테스트 전부 통과', 'req-goal-full-0001');
     expect(res.statusCode).toBe(200);
     expect(start).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('page — a new task whose first message only answers', () => {
+  it('the toast says the answer is in the new Slack thread, with its link and no 카드 열기', () => {
+    const page = loadWith<{ ntLaunchToast(d: unknown, c: string | null, r?: boolean): any }>(['ntLaunchToast'], {});
+    expect(
+      page.ntLaunchToast({ channel: 'C1', status: 'answered', permalink: 'https://slack.example/p2' }, 'general'),
+    ).toEqual({
+      title: '명령을 보냈어요',
+      description: '#general · 답은 Slack 스레드에 있어요',
+      tone: 'success',
+      duration: 12000,
+      link: { label: 'Slack에서 보기', href: 'https://slack.example/p2' },
+    });
+  });
+
+  it('an answered launch leaves no 시작 중 card waiting for a task', () => {
+    const src = clientFn('ntOnLaunched');
+    expect(src).toMatch(/data\.status === 'answered'/);
+    expect(src).toMatch(/answered[\s\S]*ntPendingDrop\(launch\)/);
   });
 });
