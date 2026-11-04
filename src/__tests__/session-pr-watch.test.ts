@@ -62,7 +62,7 @@ function harness(initial: WatchCandidate[], over: Partial<PrWatchDeps> = {}): Ha
   return { deps, sessions, answers, fetched, notices, pushed };
 }
 
-const open = (sessionKey: string, url: string, extra: Partial<WatchCandidate> = {}): WatchCandidate => ({
+const openPr = (sessionKey: string, url: string, extra: Partial<WatchCandidate> = {}): WatchCandidate => ({
   sessionKey,
   lastActivityMs: NOW - 60_000,
   pr: { url, status: 'open' },
@@ -83,7 +83,7 @@ describe('pullStatusOf', () => {
 
 describe('session PR watch (#928)', () => {
   it('a merge after the turn: the card says merged, the thread gets one notice, the watch stops (#644)', async () => {
-    const h = harness([open('s1', URL_A)]);
+    const h = harness([openPr('s1', URL_A)]);
     h.answers.set(URL_A, { number: 12, status: 'merged', etag: 'W/"1"' });
     const watch = createSessionPrWatch(h.deps);
 
@@ -103,7 +103,7 @@ describe('session PR watch (#928)', () => {
   });
 
   it('a close without a merge says so, once', async () => {
-    const h = harness([open('s1', URL_A)]);
+    const h = harness([openPr('s1', URL_A)]);
     h.answers.set(URL_A, { number: 12, status: 'closed' });
     const watch = createSessionPrWatch(h.deps);
     await watch.tick();
@@ -114,7 +114,7 @@ describe('session PR watch (#928)', () => {
   });
 
   it('a restart does not repeat the notice: the state was stored before it was posted', async () => {
-    const h = harness([open('s1', URL_A)]);
+    const h = harness([openPr('s1', URL_A)]);
     h.answers.set(URL_A, { number: 12, status: 'merged' });
     await createSessionPrWatch(h.deps).tick();
     // A new process reads the stored card ('merged') — a fresh watch has nothing to do.
@@ -125,7 +125,7 @@ describe('session PR watch (#928)', () => {
   });
 
   it('draft → open is a card change without a notice', async () => {
-    const h = harness([open('s1', URL_A, { pr: { url: URL_A, status: 'draft' } })]);
+    const h = harness([openPr('s1', URL_A, { pr: { url: URL_A, status: 'draft' } })]);
     h.answers.set(URL_A, { number: 12, status: 'open' });
     await createSessionPrWatch(h.deps).tick();
     expect(h.sessions.get('s1')?.pr?.status).toBe('open');
@@ -134,7 +134,7 @@ describe('session PR watch (#928)', () => {
   });
 
   it('an unchanged PR changes nothing; the next ask carries the ETag and a 304 changes nothing', async () => {
-    const h = harness([open('s1', URL_A)]);
+    const h = harness([openPr('s1', URL_A)]);
     h.answers.set(URL_A, { number: 12, status: 'open', etag: 'W/"abc"' });
     const watch = createSessionPrWatch(h.deps);
     await watch.tick();
@@ -148,7 +148,7 @@ describe('session PR watch (#928)', () => {
   it('a 304 still applies a state the card missed earlier', async () => {
     // First answer: merged, but the card update failed (the link was being rewritten) — no notice then.
     let refuse = true;
-    const h = harness([open('s1', URL_A)]);
+    const h = harness([openPr('s1', URL_A)]);
     const update = h.deps.updateStatus;
     h.deps.updateStatus = (k, u, st) => (refuse ? false : update(k, u, st));
     h.answers.set(URL_A, { number: 12, status: 'merged', etag: 'W/"m"' });
@@ -163,14 +163,14 @@ describe('session PR watch (#928)', () => {
   });
 
   it('a failed ask changes nothing and never throws', async () => {
-    const h = harness([open('s1', URL_A)], {
+    const h = harness([openPr('s1', URL_A)], {
       fetchPull: async () => {
         throw new Error('boom');
       },
     });
     await expect(createSessionPrWatch(h.deps).tick()).resolves.toBeUndefined();
     expect(h.notices).toEqual([]);
-    const h2 = harness([open('s1', URL_A)]);
+    const h2 = harness([openPr('s1', URL_A)]);
     h2.answers.set(URL_A, undefined);
     await createSessionPrWatch(h2.deps).tick();
     expect(h2.notices).toEqual([]);
@@ -178,7 +178,7 @@ describe('session PR watch (#928)', () => {
   });
 
   it('a failed notice does not undo the card', async () => {
-    const h = harness([open('s1', URL_A)], {
+    const h = harness([openPr('s1', URL_A)], {
       notify: async () => {
         throw new Error('slack down');
       },
@@ -190,13 +190,13 @@ describe('session PR watch (#928)', () => {
 
   it('watches only live, recent sessions with an open PR on the card', async () => {
     const h = harness([
-      open('terminated', URL_A, { terminated: true }),
-      open('stale', URL_A, { lastActivityMs: NOW - 15 * 24 * 3600_000 }),
+      openPr('terminated', URL_A, { terminated: true }),
+      openPr('stale', URL_A, { lastActivityMs: NOW - 15 * 24 * 3600_000 }),
       { sessionKey: 'no-pr', lastActivityMs: NOW },
-      open('issue-url', 'https://github.com/acme/app/issues/5'),
-      open('merged', URL_A, { pr: { url: URL_A, status: 'merged' } }),
-      open('closed', URL_A, { pr: { url: URL_A, status: 'closed' } }),
-      open('live', URL_B),
+      openPr('issue-url', 'https://github.com/acme/app/issues/5'),
+      openPr('merged', URL_A, { pr: { url: URL_A, status: 'merged' } }),
+      openPr('closed', URL_A, { pr: { url: URL_A, status: 'closed' } }),
+      openPr('live', URL_B),
     ]);
     h.answers.set(URL_B, { number: 13, status: 'open' });
     await createSessionPrWatch(h.deps).tick();
@@ -204,7 +204,7 @@ describe('session PR watch (#928)', () => {
   });
 
   it('a card link with no state yet is asked about, and takes the state without a notice when open', async () => {
-    const h = harness([open('s1', URL_A, { pr: { url: URL_A } })]);
+    const h = harness([openPr('s1', URL_A, { pr: { url: URL_A } })]);
     h.answers.set(URL_A, { number: 12, status: 'open' });
     await createSessionPrWatch(h.deps).tick();
     expect(h.sessions.get('s1')?.pr?.status).toBe('open');
@@ -212,7 +212,7 @@ describe('session PR watch (#928)', () => {
   });
 
   it('two sessions on the same PR: one ask, each card changes, each thread is told', async () => {
-    const h = harness([open('s1', URL_A), open('s2', `${URL_A}/files`)]);
+    const h = harness([openPr('s1', URL_A), openPr('s2', `${URL_A}/files`)]);
     h.answers.set(URL_A, { number: 12, status: 'merged' });
     await createSessionPrWatch(h.deps).tick();
     expect(h.fetched).toHaveLength(1);
@@ -220,7 +220,7 @@ describe('session PR watch (#928)', () => {
   });
 
   it('at most maxPerTick asks per tick, the least recently asked first', async () => {
-    const h = harness([open('a', URL_A), open('b', URL_B), open('c', URL_C)], { maxPerTick: 2 });
+    const h = harness([openPr('a', URL_A), openPr('b', URL_B), openPr('c', URL_C)], { maxPerTick: 2 });
     for (const [u, n] of [
       [URL_A, 12],
       [URL_B, 13],
@@ -238,7 +238,7 @@ describe('session PR watch (#928)', () => {
     vi.useFakeTimers();
     try {
       let release: () => void = () => {};
-      const h = harness([open('s1', URL_A)], {
+      const h = harness([openPr('s1', URL_A)], {
         fetchPull: (owner, repo, number) => {
           h.fetched.push({ url: `https://github.com/${owner}/${repo}/pull/${number}` });
           return new Promise((resolve) => {
