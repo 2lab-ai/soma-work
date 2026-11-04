@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   askFollowUpQuestion,
   buildFollowUpQuestion,
+  consumeFollowUpVerdict,
   FOLLOW_UP_ACTIONS,
   FOLLOW_UP_QUESTION_ID,
   type FollowUpQuestionDeps,
@@ -209,5 +210,30 @@ describe('applyFollowUp — each verdict may ask once (#917)', () => {
     } finally {
       setFollowUpListener(undefined);
     }
+  });
+});
+
+describe('consumeFollowUpVerdict — the user acting consumes the verdict (trinity R1 fable P2)', () => {
+  it('marks an unasked verdict asked, so the turn that answered the model question does not end in a second ask', () => {
+    const s = idle();
+    consumeFollowUpVerdict(s, NOW);
+    expect(s.followUp.askedAt).toBe(NOW);
+    expect(shouldAskFollowUpQuestion(s, { requestActive: false, now: NOW })).toBe(false);
+  });
+
+  it('keeps an asked verdict as it was, and does nothing without a follow-up', () => {
+    const s = idle({ followUp: { reason: REASON, at: 1, askedAt: 5 } });
+    consumeFollowUpVerdict(s, NOW);
+    expect(s.followUp.askedAt).toBe(5);
+    const none = idle({ followUp: undefined });
+    consumeFollowUpVerdict(none, NOW);
+    expect(none.followUp).toBeUndefined();
+  });
+
+  it('the next summary verdict re-opens it (applyFollowUp drops askedAt)', () => {
+    const s: any = idle();
+    consumeFollowUpVerdict(s, NOW);
+    applyFollowUp(s, ['done', `⚠️ **${REASON}**`, 'next'], NOW + 1);
+    expect(shouldAskFollowUpQuestion(s, { requestActive: false, now: NOW + 2 })).toBe(true);
   });
 });

@@ -89,7 +89,7 @@ export const ASK_USER_QUESTION_SHAPE_RULE =
 
 /** A choice the model wrote for free text — the host's own 직접 입력 replaces it. */
 const DIRECT_INPUT_LABEL_RE =
-  /^\s*(?:\u270f\ufe0f?\s*)?(?:직접\s*입력(?:하기)?|기타|other|custom(?:\s+input)?|type your own|free[\s-]?text)(?:\s*(?:[:(—…-].*)?)?$/iu;
+  /^\s*(?:\u270f\ufe0f?\s*)?(?:(?:직접\s*입력(?:하기)?|기타)(?:\s*(?:[:(—…-].*)?)?|(?:other|custom(?:\s+input)?|type your own|free[\s-]?text)(?:\s*(?:\(.*\)|…|\.\.\.))?)\s*$/iu;
 
 const ASK_USER_QUESTION_INVALID_MESSAGE = [
   'ASK_USER_QUESTION params must follow a strict schema.',

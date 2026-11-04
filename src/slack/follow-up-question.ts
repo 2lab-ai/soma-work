@@ -116,6 +116,16 @@ export function somethingElseActsOrAsks(
   );
 }
 
+/**
+ * The user's own word consumes the verdict (trinity R1 fable P2): they act on the session now, so the follow-up the
+ * last summary left is not asked again after this turn — it is the next summary's to judge. Without this, a turn
+ * that answered the model's own question ended, and the host asked about the old ⚠️ reason at once.
+ */
+export function consumeFollowUpVerdict(session: object | undefined, now: number): void {
+  const f = (session as { followUp?: { askedAt?: number } } | undefined)?.followUp;
+  if (f && f.askedAt === undefined) f.askedAt = now;
+}
+
 export interface FollowUpQuestionDeps {
   getSession(sessionKey: string): FollowUpQuestionSession | undefined;
   isRequestActive(sessionKey: string): boolean;
