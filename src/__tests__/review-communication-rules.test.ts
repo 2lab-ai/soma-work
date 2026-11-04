@@ -36,6 +36,9 @@ describe('review and communication rules (#932)', () => {
   it('the bot cap never defers a blocking defect: a P0/P1 is still checked and fixed before READY (#932 review)', () => {
     expect(zcheck).toMatch(/P0\/P1\(정확성·보안·데이터 손실\)은 상한과 무관하게/);
     expect(zcheck).toMatch(/결함을 후속 이슈로 미루고 READY를 내지 않는다/);
+    // Rounds survive a session change; READY says what the cap deferred (#932 review, fable).
+    expect(zcheck).toMatch(/라운드는 PR 타임라인/);
+    expect(zcheck).toMatch(/미룬 봇 지적 수와 그 후속 이슈 링크/);
   });
 
   it("zwork yields to a person's branch or PR that already makes the same change", () => {
@@ -45,6 +48,7 @@ describe('review and communication rules (#932)', () => {
     // Yielding is an exit: the controller gets 'yielded' and the review/approve/merge pipeline stops (#932 review).
     expect(zwork).toMatch(/\*\*yielded\*\*/);
     expect(zwork).toMatch(/파이프라인은 여기서 멈추고/);
+    expect(zwork).toMatch(/그 사람의 PR에 `local:zcheck`를 돌리지 않고, 그 브랜치에 push하지 않는다/);
   });
 
   it('the common prompt: a host-woken turn with nothing to do ends without a message; a user instruction always gets a reply', () => {
@@ -54,6 +58,8 @@ describe('review and communication rules (#932)', () => {
     expect(common).toMatch(/If it changed nothing — no new outcome/);
     expect(common).toMatch(/A turn that finished or changed work reports as usual/);
     expect(common).toMatch(/A user's instruction always gets a reply/);
+    // The restart resume turn carries the user's request: never a quiet one (#932 review, fable).
+    expect(common).toMatch(/The restart resume turn is not one of these/);
   });
 
   it('the earlier rules are still there (added to, not replaced)', () => {
