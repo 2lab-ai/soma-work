@@ -676,7 +676,7 @@
   "새 세션의 기본 모델 · 추론 강도": "Default model · reasoning effort for new sessions",
   "새 승인 요청 — ": "New approval request — ",
   "새 작업": "New task",
-  "새 작업 (N)": "New task (N)",
+  "새 작업 (Ctrl+N)": "New task (Ctrl+N)",
   "새 작업 시작": "Start a new task",
   "새 작업 정보를 불러오지 못했습니다 (": "Couldn't load new task info (",
   "새 작업 정보를 불러오지 못했습니다 — 네트워크를 확인해 주세요": "Couldn't load new task info — check your network",
