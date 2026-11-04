@@ -848,6 +848,34 @@ export class GoalLoopController {
     const message = err instanceof Error ? err.message : String(err);
     logger.error('Goal eval dispatch failed', { sessionKey, error: message });
 
+    // Anthropic safeguards blocked the eval query itself (ssot T2): that is
+    // no transient failure — the work stops here, whatever the epoch did
+    // meanwhile (a newer instruction would run on the same blocked session). Lock the session (no
+    // retries, no continuation) exactly as a blocked work turn does; only an
+    // admin may lift it.
+    const evalFlag =
+      safeguardFlagOf(err) ??
+      (err instanceof GoalEvalParseError ? parseSafeguardFlag(err.raw, { source: 'error' }) : null);
+    if (evalFlag) {
+      const halt = { atMs: this.now(), ...evalFlag };
+      session.safeguardHalt = halt;
+      if (live && live.goalId === snapshot.goalId && live.pendingEval?.requestedAt === startedAt) {
+        live.pendingEval = undefined;
+      }
+      if (live) {
+        live.evalDispatchRetryCount = undefined;
+        live.evalRetryReason = undefined;
+        live.evalBackoffUntil = undefined;
+      }
+      this.persist();
+      logger.warn('Goal eval blocked by Anthropic safeguards — session halted, admin retry required', {
+        sessionKey,
+        ...evalFlag,
+      });
+      void this.postLooseNotice(session, safeguardEvalHaltNoticeText(halt)).catch(() => undefined);
+      return;
+    }
+
     // Epoch moved during the failed eval (user message / goal mutation): the
     // user's newer intent supersedes this eval entirely — no retry, no notice.
     // But the lease is still OURS to release (same goal object, same
@@ -872,30 +900,6 @@ export class GoalLoopController {
       // between "판정 중" and "재시도"; the retry/exhausted branch below
       // persists and pushes the settled state.
       this.deps.registry.saveSessions();
-    }
-
-    // Anthropic safeguards blocked the eval query itself (ssot T2): that is
-    // no transient failure — the work stops here. Lock the session (no
-    // retries, no continuation) exactly as a blocked work turn does; only an
-    // admin may lift it.
-    const evalFlag =
-      safeguardFlagOf(err) ??
-      (err instanceof GoalEvalParseError ? parseSafeguardFlag(err.raw, { source: 'error' }) : null);
-    if (evalFlag) {
-      const halt = { atMs: this.now(), ...evalFlag };
-      session.safeguardHalt = halt;
-      if (live) {
-        live.evalDispatchRetryCount = undefined;
-        live.evalRetryReason = undefined;
-        live.evalBackoffUntil = undefined;
-      }
-      this.persist();
-      logger.warn('Goal eval blocked by Anthropic safeguards — session halted, admin retry required', {
-        sessionKey,
-        ...evalFlag,
-      });
-      void this.postLooseNotice(session, safeguardEvalHaltNoticeText(halt)).catch(() => undefined);
-      return;
     }
 
     // Self-heal transient API failures (429 pool rate limit, 529, timeouts,

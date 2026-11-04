@@ -590,6 +590,14 @@ export class SessionRegistry {
   private safeguardTombstones = new Map<string, SafeguardHalt>();
   /** The tombstone file could not be read: never overwrite it with a partial set. */
   private safeguardTombstonesUnreadable = false;
+  /**
+   * The unreadable tombstone file's raw text (live + `.bak`). While set, a key
+   * that appears in it reads as halted — fail closed for exactly the threads
+   * the file names, not open for all of them.
+   */
+  private safeguardTombstonesRaw = '';
+  /** Keys an admin lifted while the file was unreadable (in memory; the file is never rewritten then). */
+  private safeguardLiftedWhileUnreadable = new Set<string>();
   private expiryCallbacks?: SessionExpiryCallbacks;
   private beforeSessionDelete?: BeforeSessionDeleteCallback;
   private _crashRecoveredSessions: CrashRecoveredSession[] = [];
@@ -894,7 +902,16 @@ export class SessionRegistry {
 
   getSafeguardHaltByKey(sessionKey: string): SafeguardHalt | undefined {
     const key = normalizeSessionKey(sessionKey);
-    return this.sessions.get(key)?.safeguardHalt ?? this.safeguardTombstones.get(key);
+    const known = this.sessions.get(key)?.safeguardHalt ?? this.safeguardTombstones.get(key);
+    if (known) return known;
+    if (
+      this.safeguardTombstonesUnreadable &&
+      !this.safeguardLiftedWhileUnreadable.has(key) &&
+      this.safeguardTombstonesRaw.includes(JSON.stringify(key))
+    ) {
+      return { atMs: 0 };
+    }
+    return undefined;
   }
 
   /**
@@ -906,10 +923,11 @@ export class SessionRegistry {
   liftSafeguardHalt(sessionKey: string): boolean {
     const key = normalizeSessionKey(sessionKey);
     const session = this.sessions.get(key);
-    const had = Boolean(session?.safeguardHalt) || this.safeguardTombstones.has(key);
+    const had = this.getSafeguardHaltByKey(key) !== undefined;
     if (!had) return false;
     if (session) session.safeguardHalt = undefined;
     this.safeguardTombstones.delete(key);
+    if (this.safeguardTombstonesUnreadable) this.safeguardLiftedWhileUnreadable.add(key);
     this.saveSessionsOrThrow();
     return true;
   }
@@ -956,11 +974,10 @@ export class SessionRegistry {
   private putSession(key: string, session: ConversationSession): void {
     // A thread whose halted session was removed stays halted: the session
     // that comes back under the key inherits the lock.
+    // The tombstone is NOT consumed here: it stays until the admin lifts the
+    // lock, so no save ordering can ever leave the lock in neither file.
     const tombstone = this.safeguardTombstones.get(key);
-    if (tombstone) {
-      if (!session.safeguardHalt) session.safeguardHalt = tombstone;
-      this.safeguardTombstones.delete(key);
-    }
+    if (tombstone && !session.safeguardHalt) session.safeguardHalt = tombstone;
     const previous = this.sessions.get(key);
     if (previous && previous !== session) this.unindexTask(previous);
     this.sessions.set(key, session);
@@ -3738,6 +3755,8 @@ export class SessionRegistry {
   private loadSafeguardTombstones(): void {
     this.safeguardTombstones.clear();
     this.safeguardTombstonesUnreadable = false;
+    this.safeguardTombstonesRaw = '';
+    this.safeguardLiftedWhileUnreadable.clear();
     try {
       // The live file, else its `.bak` (rules/config.md §4) — a torn write
       // never reads as "no locks".
@@ -3751,6 +3770,13 @@ export class SessionRegistry {
       }
     } catch (error) {
       this.safeguardTombstonesUnreadable = true;
+      for (const file of [SAFEGUARD_TOMBSTONES_FILE, `${SAFEGUARD_TOMBSTONES_FILE}.bak`]) {
+        try {
+          this.safeguardTombstonesRaw += fs.readFileSync(file, 'utf-8');
+        } catch {
+          // gone or unreadable — nothing to fail closed on from this copy
+        }
+      }
       this.logger.error('Safeguard halt tombstones unreadable — removed-session locks are not restored', error);
     }
   }

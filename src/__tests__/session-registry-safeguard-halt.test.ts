@@ -122,4 +122,43 @@ describe('SessionRegistry — safeguardHalt survives a restart', () => {
     reader.loadSessions();
     expect(reader.getSafeguardHalt('C1', '171.603')).toEqual(HALT);
   });
+
+  // Review gate round 2 (astra-zhuge P1 #2, #3).
+  it('a session that inherited a tombstone keeps the tombstone on disk until the admin lifts it', () => {
+    const writer = new SessionRegistry();
+    const a = writer.createSession('U1', 'Tester', 'C1', '171.701');
+    a.sessionId = 'sdk-H';
+    a.safeguardHalt = HALT;
+    writer.saveSessions();
+    writer.terminateSession(writer.getSessionKey('C1', '171.701'));
+    const reborn = writer.createSession('U1', 'Tester', 'C1', '171.701');
+    reborn.sessionId = 'sdk-I';
+    writer.saveSessions();
+
+    const file = path.join(TEST_DATA_DIR, 'safeguard-halts.json');
+    expect(fs.readFileSync(file, 'utf-8')).toContain('171.701');
+
+    expect(writer.liftSafeguardHalt(writer.getSessionKey('C1', '171.701'))).toBe(true);
+    expect(fs.readFileSync(file, 'utf-8')).not.toContain('171.701');
+  });
+
+  it('both tombstone copies unreadable: the threads the file names stay locked, others are not', () => {
+    const writer = new SessionRegistry();
+    const a = writer.createSession('U1', 'Tester', 'C1', '171.702');
+    a.sessionId = 'sdk-J';
+    a.safeguardHalt = HALT;
+    writer.saveSessions();
+    writer.terminateSession(writer.getSessionKey('C1', '171.702'));
+    const file = path.join(TEST_DATA_DIR, 'safeguard-halts.json');
+    const raw = fs.readFileSync(file, 'utf-8');
+    fs.writeFileSync(file, raw.slice(0, raw.length - 3)); // torn
+    fs.writeFileSync(`${file}.bak`, '{ torn');
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    expect(reader.getSafeguardHalt('C1', '171.702')).toBeDefined();
+    expect(reader.getSafeguardHalt('C1', '171.799')).toBeUndefined();
+    expect(reader.liftSafeguardHalt(reader.getSessionKey('C1', '171.702'))).toBe(true);
+    expect(reader.getSafeguardHalt('C1', '171.702')).toBeUndefined();
+  });
 });

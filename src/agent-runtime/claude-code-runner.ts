@@ -11,6 +11,7 @@
  */
 
 import { type Options, query } from '@anthropic-ai/claude-agent-sdk';
+import { parseSafeguardFlag } from '@soma/common/safeguard';
 import { isSdkEffortLevel } from 'soma-lib';
 import type { AgentRunOptions } from './agent-runner';
 import { createTrackedClaudeProcessSpawner } from './claude-child-process-registry';
@@ -66,6 +67,7 @@ export function toSdkOptions(opts: AgentRunOptions): Options {
 export async function runOneShotTextClaudeCode(prompt: string, opts: AgentRunOptions): Promise<string> {
   const options = toSdkOptions(opts);
   let assistantText = '';
+  let resultErrors: string[] = [];
   try {
     for await (const message of query({ prompt, options })) {
       if (message.type === 'assistant' && message.message?.content) {
@@ -74,6 +76,9 @@ export async function runOneShotTextClaudeCode(prompt: string, opts: AgentRunOpt
             assistantText += block.text;
           }
         }
+      } else if (message.type === 'result') {
+        const errors = (message as { errors?: unknown }).errors;
+        if (Array.isArray(errors)) resultErrors = errors.filter((e): e is string => typeof e === 'string');
       }
     }
   } catch (error) {
@@ -83,6 +88,13 @@ export async function runOneShotTextClaudeCode(prompt: string, opts: AgentRunOpt
     // nothing was collected. Callers still do their own parse/validation.
     if (assistantText.trim()) return assistantText;
     throw error;
+  }
+  // An Anthropic safeguards block delivered only in the result's errors[]
+  // would read as an empty answer; surface it as the error it is, so the
+  // caller (the goal eval) locks the session instead of retrying.
+  if (!assistantText.trim() && resultErrors.length > 0) {
+    const joined = resultErrors.join('\n');
+    if (parseSafeguardFlag(joined, { source: 'error' })) throw new Error(joined);
   }
   return assistantText;
 }

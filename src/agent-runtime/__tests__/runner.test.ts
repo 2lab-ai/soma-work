@@ -104,3 +104,34 @@ describe('toSdkOptions — an effort the CLI does not take', () => {
     expect(toSdkOptions({ ...base, extensions: { claudeCode: { env, effort: 'high' } } } as never).effort).toBe('high');
   });
 });
+
+// Review gate round 2 (astra-zhuge P1 #4, PR #906): a safeguards block that
+// arrives only in the result's errors[] must not read as an empty answer.
+describe('runOneShotText — safeguards block in the result errors[]', () => {
+  beforeEach(() => {
+    queryMock.mockReset();
+  });
+
+  it('throws the block instead of returning empty text', async () => {
+    queryMock.mockReturnValue(
+      makeStream([
+        {
+          type: 'result',
+          subtype: 'error_during_execution',
+          is_error: true,
+          errors: [
+            "API Error: Opus 5.5 (1M context)'s safeguards flagged this message (https://www.anthropic.com/legal/aup).\n\nDetails: `[reasoning_extraction]`\n\nRequest ID: req_r2",
+          ],
+        },
+      ]),
+    );
+    await expect(runOneShotText('p', { model: 'm' } as any)).rejects.toThrow(/safeguards flagged this message/);
+  });
+
+  it('other result errors keep the old behavior (empty text, no throw)', async () => {
+    queryMock.mockReturnValue(
+      makeStream([{ type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['boom'] }]),
+    );
+    await expect(runOneShotText('p', { model: 'm' } as any)).resolves.toBe('');
+  });
+});

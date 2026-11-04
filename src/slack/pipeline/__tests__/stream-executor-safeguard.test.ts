@@ -400,3 +400,26 @@ describe('safeguards flag — stop at once, every exit (T2)', () => {
     expect(session.safeguardHalt?.requestId).toBe('req_011CggxYZxQ7TEBU95XW3X19');
   });
 });
+
+describe('safeguards flag — the stopped stream is closed (review round 2, astra P1 #1)', () => {
+  it("closes the generator so the query's cleanup runs (no leaked lease heartbeat)", async () => {
+    let cleanedUp = false;
+    async function* safeguardThenMore(): AsyncGenerator<any> {
+      try {
+        yield { type: 'assistant', message: { content: [{ type: 'text', text: SAFEGUARD_TEXT }] } };
+        yield { type: 'assistant', message: { content: [{ type: 'text', text: 'more' }] } };
+        await new Promise(() => {});
+      } finally {
+        cleanedUp = true;
+      }
+    }
+    const deps = createDeps(safeguardThenMore);
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+
+    await executor.execute(createParams(vi.fn().mockResolvedValue({ ts: 'msg_ts' }), session));
+
+    expect(session.safeguardHalt).toBeDefined();
+    expect(cleanedUp).toBe(true);
+  });
+});

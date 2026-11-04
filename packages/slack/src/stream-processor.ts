@@ -1160,6 +1160,10 @@ export class AgentStreamProcessor {
     try {
       while (true) {
         if (abortSignal.aborted) {
+          // The safeguard stop aborts between events, with the generator
+          // suspended at a yield: close it so its cleanup (lease heartbeat,
+          // active-query entry) runs instead of leaking.
+          if (this.safeguardFlag) await this.tryReturnIterator(iterator, 'safeguard');
           const rescue = await this.flushTextOnExplicitInterrupt(textBuf, context, abortSignal);
           this.settleNarration(context);
           this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });

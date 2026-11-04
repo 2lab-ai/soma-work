@@ -870,3 +870,24 @@ Request ID: req_eval1`;
     expect(h.scheduledRetries).toHaveLength(0);
   });
 });
+
+describe('GoalLoopController — safeguards block on an eval whose epoch moved (review round 2, astra P1 #5)', () => {
+  it('still locks the session — the newer instruction would run on the same blocked session', async () => {
+    let h: ReturnType<typeof makeHarness>;
+    h = makeHarness({
+      dispatcher: async () => {
+        h.goal.epoch = (h.goal.epoch ?? 0) + 1; // a user message arrived during the eval
+        throw new Error(
+          "Claude Code process exited with code 1\nAPI Error: Opus 5.5 (1M context)'s safeguards flagged this message (https://www.anthropic.com/legal/aup).\n\nDetails: `[reasoning_extraction]`\n\nRequest ID: req_r2",
+        );
+      },
+    });
+
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect((h.session as any).safeguardHalt?.requestId).toBe('req_r2');
+    expect(h.scheduledRetries).toHaveLength(0);
+    expect(h.goal.pendingEval).toBeUndefined();
+  });
+});
