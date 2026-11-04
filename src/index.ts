@@ -177,7 +177,12 @@ import {
   scanGitCheckouts,
   sessionDirs,
 } from './session-pr-reconciler';
-import { createFilePrWatchStore, createSessionPrWatch, type SessionPrWatch } from './session-pr-watch';
+import {
+  createFilePrWatchStore,
+  createSessionPrWatch,
+  createSettledDelivery,
+  type SessionPrWatch,
+} from './session-pr-watch';
 import { applySummaryTitle } from './session-title-policy';
 import {
   displayLangMiddleware,
@@ -1958,8 +1963,35 @@ async function start() {
     // #928 (epic #935) — a session's PR keeps its card current after the turn: a merge or a close reaches the card and
     // the thread once (#644). Polls GitHub with ETags (a 304 is free); `SOMA_PR_WATCH=off` stops it.
     let sessionPrWatch: SessionPrWatch | null = null;
+    let prWatchDelivery: ReturnType<typeof createSettledDelivery> | undefined;
     if (config.github.prWatch) {
       const prWatchRegistry = claudeHandler.getSessionRegistry();
+      // A host turn is injected only into a settled session — a synthetic turn that meets a held dispatch slot is
+      // dropped, and onIdle fires before the slot is released (#929 review). Dashboard tasks have no thread: gone.
+      const delivery = createSettledDelivery({
+        state: (sessionKey) => {
+          const s = prWatchRegistry.getSessionByKey(sessionKey);
+          if (!s?.channelId || s.terminated) return 'gone';
+          if (s.activityState && s.activityState !== 'idle') return 'busy';
+          return slackHandler.isHostTurnFree(s.channelId, s.threadTs) ? 'ready' : 'busy';
+        },
+        inject: async (sessionKey, text) => {
+          const s = prWatchRegistry.getSessionByKey(sessionKey);
+          if (!s?.channelId) return;
+          await messageInjector({
+            user: s.ownerId,
+            channel: s.channelId,
+            thread_ts: s.threadTs,
+            ts: `${Date.now() / 1000}`,
+            text,
+            synthetic: true,
+            skipDispatch: true,
+            routeContext: { skipAutoBotThread: true },
+          });
+        },
+        logger,
+      });
+      prWatchDelivery = delivery;
       sessionPrWatch = createSessionPrWatch({
         sessions: function* () {
           for (const [sessionKey, s] of prWatchRegistry.getAllSessions()) {
@@ -1988,28 +2020,7 @@ async function start() {
         },
         // #929 — a finished CI reaches the session as a host turn: now when it is idle, else when it settles.
         fetchChecks: fetchGitHubCheckRuns,
-        deliver: async (sessionKey, text) => {
-          const s = prWatchRegistry.getSessionByKey(sessionKey);
-          // A dashboard task has no Slack thread to run the turn in.
-          if (!s?.channelId || s.terminated) return false;
-          const run = () => {
-            messageInjector({
-              user: s.ownerId,
-              channel: s.channelId,
-              thread_ts: s.threadTs,
-              ts: `${Date.now() / 1000}`,
-              text,
-              synthetic: true,
-              skipDispatch: true,
-              routeContext: { skipAutoBotThread: true },
-            }).catch((error) =>
-              logger.warn('PR watch delivery failed', { sessionKey, error: (error as Error)?.message }),
-            );
-          };
-          if (!s.activityState || s.activityState === 'idle') run();
-          else prWatchRegistry.registerOnIdle(sessionKey, run);
-          return true;
-        },
+        deliver: (sessionKey, text) => delivery.deliver(sessionKey, text),
         store: createFilePrWatchStore(path.join(DATA_DIR, 'pr-watch.json'), (message, detail) =>
           logger.warn(message, detail),
         ),
@@ -2297,6 +2308,7 @@ async function start() {
           cronScheduler.stop();
         }
         sessionPrWatch?.stop();
+        prWatchDelivery?.stop();
 
         // Stop CCT usage refresh scheduler before TM so no pump fires mid-teardown
         if (usageRefreshScheduler) {
