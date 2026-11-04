@@ -99,6 +99,24 @@ describe('createSettledDelivery (#929)', () => {
     await expect(h.d.deliver('s1', 'x', undefined, () => false)).resolves.toBe(false);
   });
 
+  it('a message both too old and no longer current is dropped as gone, not expired — expired would record it (#929 round 3)', async () => {
+    const h = harness('busy');
+    let current = true;
+    const outcomes: string[] = [];
+    await h.d.deliver(
+      's1',
+      'CI failed on a PR that merged',
+      (o) => outcomes.push(o),
+      () => current,
+    );
+    // Still current while it waits; the PR merges in the same interval the wait runs out.
+    await vi.advanceTimersByTimeAsync(10_500);
+    expect(outcomes).toEqual([]);
+    current = false;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(outcomes).toEqual(['gone']);
+  });
+
   it('stop() ends the retry timer', async () => {
     const h = harness('busy');
     await h.d.deliver('s1', 'x');
