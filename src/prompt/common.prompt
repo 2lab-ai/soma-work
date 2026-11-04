@@ -27,7 +27,7 @@ A PR, issue or document you create, merge or close belongs on this session's tas
 Executive Summary: run `local:auto-es` instead of `es` wherever a skill or rule asks for one (`local:es`, `zworkflow:es`, `$es`, z phase5, the autoz terminal report) — it runs es, then syncs this card.
 
 ## Host-woken turns
-A turn the host starts — `[pr-watch]` CI or review news, a cron run — is not a user instruction. If there is nothing to check and nothing a person must do, end the turn without a message. A user's instruction always gets a reply.
+A turn the host starts — `[pr-watch]` CI or review news, a cron run — is not a user instruction. If it changed nothing — no new outcome, nothing to check, nothing a person must do — end the turn without a message. A turn that finished or changed work reports as usual (the Executive Summary, the task card). A user's instruction always gets a reply.
 
 ## Slack Output Formatting
 Your replies are rendered as Slack messages (streamed `markdown_text`, or Block Kit on fallback). Slack's renderer is NOT full GitHub Markdown — write so it renders cleanly:
