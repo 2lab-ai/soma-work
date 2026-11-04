@@ -577,6 +577,61 @@ export async function fetchGitHubPRReviewStatus(
 }
 
 /**
+ * #928 — one PR's state for the session PR watch (`session-pr-watch.ts`). `etag` goes out as If-None-Match: a 304
+ * (GitHub does not count it against the rate limit) answers 'not-modified'. Undefined on any failure; never throws.
+ * An answer also fills the metadata cache, so the thread header and the card read the same state.
+ */
+export async function fetchGitHubPullState(
+  owner: string,
+  repo: string,
+  number: number,
+  etag?: string,
+): Promise<
+  { number: number; status: 'open' | 'draft' | 'merged' | 'closed'; etag?: string } | 'not-modified' | undefined
+> {
+  try {
+    const token = await getGitHubToken();
+    if (!token) return undefined;
+    const response = await fetch(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${number}`,
+      {
+        headers: {
+          Authorization: `token ${token}`,
+          Accept: 'application/vnd.github.v3+json',
+          'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
+          ...(etag ? { 'If-None-Match': etag } : {}),
+        },
+        signal: AbortSignal.timeout(8_000),
+      },
+    );
+    if (response.status === 304) return 'not-modified';
+    if (!response.ok) return undefined;
+    const p = (await response.json()) as {
+      html_url?: unknown;
+      title?: unknown;
+      state?: unknown;
+      draft?: unknown;
+      merged?: unknown;
+      merged_at?: unknown;
+    };
+    const merged = p.merged === true || typeof p.merged_at === 'string';
+    const status = merged ? 'merged' : p.state === 'closed' ? 'closed' : p.draft === true ? 'draft' : 'open';
+    if (typeof p.html_url === 'string') {
+      const title = typeof p.title === 'string' ? p.title.slice(0, MAX_CACHED_TITLE_LENGTH) : undefined;
+      metadataCache.set(p.html_url, { title, status, fetchedAt: Date.now() });
+    }
+    return {
+      number,
+      status,
+      ...(response.headers.get('etag') ? { etag: response.headers.get('etag') as string } : {}),
+    };
+  } catch (error) {
+    logger.debug('Failed to read a PR for the PR watch', { owner, repo, number, error: (error as Error).message });
+    return undefined;
+  }
+}
+
+/**
  * #832 — what GitHub says about one PR or issue, for the write receipt (`github-receipt.ts`): when it was created,
  * merged and closed, its head branch and title, and GitHub's clock (`Date`). Undefined on any failure; never throws.
  * A 5-second cap: the receipt runs after the tool result and must not pile up.

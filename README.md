@@ -659,6 +659,7 @@ GITHUB_APP_ID=123456
 GITHUB_PRIVATE_KEY="-----BEGIN RSA..."
 GITHUB_INSTALLATION_ID=12345678
 GITHUB_TOKEN=ghp_...               # Fallback when GitHub App not configured
+SOMA_PR_WATCH=off                  # Stop watching session PRs after the turn (default on: merge/close reach the card and thread)
 CLAUDE_CODE_USE_BEDROCK=1          # Use AWS Bedrock
 CLAUDE_CODE_USE_VERTEX=1           # Use Google Vertex AI
 DEBUG=true
