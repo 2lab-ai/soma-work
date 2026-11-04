@@ -5755,6 +5755,16 @@ ui-breadcrumbs.pa-path { flex: 1 1 auto; min-width: 0; }
   white-space: nowrap;
 }
 .panel-header { flex-wrap: wrap; row-gap: 8px; }
+/* The title's actions (SSOT 2026-11-04): 퍼머링크 · 전체 문맥 복사 right after the title text, small. The title keeps
+   its own width (no flex: 1) and ellipsizes first, so the two stay beside its last letter; the -2px margins keep the
+   row the title's height (no shift when they appear). Scoped to the row so the kit's .ui-icon-btn (32px) never wins. */
+.panel-title-row { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.panel-title-row > #panel-title { flex: 0 1 auto; min-width: 0; margin-right: 4px; }
+.panel-title-row > .panel-title-act { flex: none; width: 24px; height: 24px; margin: -2px 0; border-radius: 6px; color: var(--text-tertiary); }
+.panel-title-row > .panel-title-act > svg { width: 14px; height: 14px; }
+.panel-title-row > .panel-title-act:hover, .panel-title-row > .panel-title-act:focus-visible { color: var(--text); }
+.panel-title-row > .panel-title-act[hidden] { display: none; }
+.panel-title-row > .panel-title-act[aria-busy="true"] { opacity: .5; cursor: progress; }
 /* ── VIEW MODE (SSOT 2026-11-01) — 미니멀, the default: the board, and in a detail card the task list and the
    chat. The page's extras (stats, capacity, the CRON lane, the defaults, the board's user picker on the viewer's
    own board) step aside — admin write mode stays: answering an admin approval needs it; the detail card's top keeps its header (title · status · Slack · Stop) and what needs the user
@@ -6425,7 +6435,14 @@ ${pageTokenAliases()}
     <ui-deck-nav class="panel-deck-peek" id="panel-deck-peek" peek="only" lang="ko" aria-hidden="true"></ui-deck-nav>
     <div class="panel-header">
       <div style="flex:1;min-width:0">
-        <h3 id="panel-title" tabindex="-1">작업 카드</h3>
+        <!-- The title's actions (SSOT 2026-11-04): small, right after the title text — 퍼머링크 (the card's deep link; a
+             press copies it, a modified press opens it) · 전체 문맥 복사 (every instruction and answer, as markdown).
+             renderPanelTitleActions fills them from the open card; hidden until then. -->
+        <div class="panel-title-row">
+          <h3 id="panel-title" tabindex="-1">작업 카드</h3>
+          <a id="panel-permalink" class="ui-icon-btn panel-title-act" href="/dashboard" hidden aria-label="퍼머링크 복사" title="퍼머링크 복사" onclick="return copyPanelPermalink(event)"><i data-ui-icon="external"></i></a>
+          <button type="button" id="panel-copy-context" class="ui-icon-btn panel-title-act" hidden aria-label="전체 문맥 복사" title="전체 문맥 복사" onclick="copyPanelContext(this)"><i data-ui-icon="copy"></i></button>
+        </div>
         <div id="panel-title-sub" style="font-size:11px;color:var(--text-secondary);margin-top:2px;display:flex;align-items:center;gap:6px">
           <span id="panel-title-sub-text"></span>
           <button type="button" id="panel-title-sub-regen" class="ui-icon-btn is-sm" style="display:none" aria-label="부제 다시 만들기" title="부제 다시 만들기" onclick="event.stopPropagation();generateTitleSub(panelConvId, !!_panelTitleSub)"><i data-ui-icon="refresh"></i></button>
@@ -11411,6 +11428,7 @@ function repaintPanelSession() {
   if (!s) return;
   var anchor = panelLiveAnchor();
   renderPanelHead();
+  renderPanelTitleActions(s);
   renderPanelMidbar();
   renderPanelInfo();
   renderPanelGoal();
@@ -14328,29 +14346,45 @@ var _deepLinkSession = (function() {
 })();
 var _deepLinkDeadline = Date.now() + DEEP_LINK_WINDOW_MS;
 // Pure: which board key does a ?session= value point at? Exact key first, then
-// this instance's prefixed key, then the one card whose key ends in "::<ref>".
-// Ambiguous suffix matches (same thread on two siblings) resolve to nothing.
+// this instance's prefixed key, then (a bare ref) this instance's latest archive
+// of the thread, then the one card whose key ends in "::<ref>" — ambiguous suffix
+// matches (same thread on two siblings) resolve to nothing — then the thread's
+// latest archive (a ref naming its instance: only that instance's).
 function resolveDeepLinkKey(ref, keys, selfInstance) {
   if (!ref) return null;
   if (keys.indexOf(ref) >= 0) return ref;
   if (selfInstance && keys.indexOf(selfInstance + '::' + ref) >= 0) return selfInstance + '::' + ref;
+  // The thread's latest archive. archivedToKanban keys it
+  // "[<instance>::]archived_<registry key>_<archivedAt ms>"; inst = "<instance>::"
+  // takes only that instance's, '' any instance's.
+  var sep = ref.indexOf('::');
+  var bare = sep > 0 ? ref.slice(sep + 2) : ref;
+  function latestArchive(inst) {
+    var mark = inst + 'archived_' + bare + '_';
+    var best = null;
+    var bestAt = -1;
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      var at = k.indexOf(mark);
+      if (at < 0 || (at > 0 && (inst || k.slice(at - 2, at) !== '::'))) continue;
+      var tail = k.slice(at + mark.length);
+      if (!/^[0-9]+$/.test(tail)) continue;
+      if (Number(tail) > bestAt) { bestAt = Number(tail); best = k; }
+    }
+    return best;
+  }
+  // A bare ref (Slack's links, this instance's 퍼머링크) is this instance's
+  // thread first: its archive before another instance's live card.
+  if (sep < 0 && selfInstance) {
+    var mine = latestArchive(selfInstance + '::');
+    if (mine) return mine;
+  }
   var suffix = '::' + ref;
   var hits = keys.filter(function(k) { return k.length > suffix.length && k.slice(-suffix.length) === suffix; });
   if (hits.length) return hits.length === 1 ? hits[0] : null;
-  // No live card: the thread's latest archive. archivedToKanban keys it
-  // "[<instance>::]archived_<registry key>_<archivedAt ms>".
-  var mark = 'archived_' + ref + '_';
-  var best = null;
-  var bestAt = -1;
-  for (var i = 0; i < keys.length; i++) {
-    var k = keys[i];
-    var at = k.indexOf(mark);
-    if (at < 0 || (at > 0 && k.slice(at - 2, at) !== '::')) continue;
-    var tail = k.slice(at + mark.length);
-    if (!/^[0-9]+$/.test(tail)) continue;
-    if (Number(tail) > bestAt) { bestAt = Number(tail); best = k; }
-  }
-  return best;
+  // No live card: a ref that names its instance ("<instance>::<registry key>",
+  // a sibling card's 퍼머링크) takes only that instance's archives; a bare one any.
+  return latestArchive(sep > 0 ? ref.slice(0, sep + 2) : '');
 }
 var _deepLinkWaiting = false; // waiting for <ui-agent-inbox> to be defined
 function openDeepLinkedSession() {
@@ -17771,6 +17805,141 @@ function ansPendingShow(s, convId, lastRole) {
 function titleSubCanRegen(ownerId, viewerId, viewerIsAdmin, adminModeOn) {
   if (ownerId && ownerId === viewerId) return true;
   return !!(viewerIsAdmin && adminModeOn);
+}
+// ── The title's actions (SSOT 2026-11-04): 퍼머링크 · 전체 문맥 복사, small, right after the title text ──
+// Pure: the card's permalink — the deep link (§3.1-8) the Slack thread head carries too (getDashboardSessionUrl):
+// <origin>/dashboard/<ownerId>?session=<registry key>. The board key loses this instance's prefix (#814) and an
+// archive's archived_…_<ms> wrapper, so the link keeps opening the thread's card: the live one, or once it is
+// archived its latest archive (resolveDeepLinkKey). A sibling instance's card keeps its instance
+// (<instance>::<registry key>): the same thread can have a card on this instance too. '' without an owner or a key.
+function panelPermalinkOf(s, origin, selfInstance) {
+  if (!s || !s.ownerId || !s.key) return '';
+  var ref = String(s.key);
+  var inst = s.environment && s.environment.instanceName;
+  var qualify = '';
+  if (inst && ref.indexOf(inst + '::') === 0) {
+    ref = ref.slice(inst.length + 2);
+    if (selfInstance && inst !== selfInstance) qualify = inst + '::';
+  }
+  var archived = /^archived_(.+)_[0-9]{1,16}$/.exec(ref);
+  if (archived) ref = archived[1];
+  return String(origin || '') + '/dashboard/' + encodeURIComponent(s.ownerId) + '?session=' + encodeURIComponent(qualify + ref);
+}
+// The open card's two title actions: the link's href (shown once there is one); the copy once a conversation is
+// recorded — on this instance: a sibling's (#814) conversation is in its own store, not this server's export.
+function renderPanelTitleActions(s) {
+  var link = document.getElementById('panel-permalink');
+  var copy = document.getElementById('panel-copy-context');
+  var href = panelPermalinkOf(s, location.origin, SELF_INSTANCE_NAME);
+  if (link) {
+    if (href && link.getAttribute('href') !== href) link.setAttribute('href', href);
+    link.hidden = !href;
+  }
+  if (copy) copy.hidden = !(s && s.conversationId) || isSiblingSession(s);
+}
+// Copy text — or a promise of it (the full context waits for its export) — to the clipboard; true once copied.
+// A ClipboardItem holding the pending text is written inside the press, so Safari keeps the press's permission
+// across the fetch. If the engine refuses that write: writeText once the text is there; without the Clipboard API
+// (plain http) a hidden textarea in host (next to the pressed control: a modal drawer makes everything outside it
+// inert). Rejects when the text does.
+function copyToClipboard(text, host) {
+  var pending = Promise.resolve(text).then(function(t) { return String(t); });
+  var cb = typeof navigator !== 'undefined' && navigator ? navigator.clipboard : null;
+  var plain = function(t) {
+    if (cb && typeof cb.writeText === 'function') {
+      return cb.writeText(t).then(function() { return true; }, function() { return copyViaTextarea(t, host); });
+    }
+    return copyViaTextarea(t, host);
+  };
+  if (cb && typeof cb.write === 'function' && typeof ClipboardItem === 'function') {
+    try {
+      var item = new ClipboardItem({ 'text/plain': pending.then(function(t) { return new Blob([t], { type: 'text/plain' }); }) });
+      return cb.write([item]).then(function() { return true; }, function() { return pending.then(plain); });
+    } catch (_e) { /* a ClipboardItem without promise values: the plain path */ }
+  }
+  return pending.then(plain);
+}
+function copyViaTextarea(t, host) {
+  var ta = document.createElement('textarea');
+  ta.value = t;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.top = '0';
+  ta.style.left = '-9999px';
+  ta.style.opacity = '0';
+  var at = host && typeof host.appendChild === 'function' ? host : document.body;
+  var prev = document.activeElement;
+  at.appendChild(ta);
+  var ok = false;
+  try {
+    if (typeof ta.focus === 'function') ta.focus();
+    ta.select();
+    ok = document.execCommand('copy') === true;
+  } catch (_e) {
+    ok = false;
+  }
+  ta.remove();
+  if (prev && typeof prev.focus === 'function') prev.focus();
+  return ok;
+}
+// 퍼머링크: a plain press copies the link; a modified press (⌘/Ctrl/Shift/Alt) opens it, as any link does.
+function copyPanelPermalink(e) {
+  if (e && (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button > 0)) return true;
+  if (e && typeof e.preventDefault === 'function') e.preventDefault();
+  var link = document.getElementById('panel-permalink');
+  var href = link ? String(link.href || '') : '';
+  if (!href) return false;
+  var failed = { title: '퍼머링크를 복사하지 못했어요', description: href, tone: 'error' };
+  copyToClipboard(href, link.parentNode).then(function(ok) {
+    dashToast(ok ? { title: '퍼머링크를 복사했어요', description: href, tone: 'success' } : failed);
+  }, function() {
+    dashToast(failed);
+  });
+  return false;
+}
+// Pure: where the 전체 문맥 comes from — the conversation's export (every turn as markdown when no turnIds are named;
+// the conversation viewer's 내보내기 posts to the same route).
+function panelContextExportUrl(convId) {
+  return '/api/conversations/' + encodeURIComponent(convId) + '/export';
+}
+// The conversation's export as text — a CSRF-protected POST: a stale token is refreshed and the post retried once
+// (not when the refresh brought no new token: the same token would be refused again).
+function fetchPanelContext(convId) {
+  var url = panelContextExportUrl(convId);
+  var sent = ''; // the token the last post carried — the one a csrf_failed refused
+  var post = function() {
+    sent = _csrfToken || '';
+    var headers = { 'Content-Type': 'application/json' };
+    if (sent) headers['X-CSRF-Token'] = sent;
+    return fetch(url, { method: 'POST', headers: headers, body: JSON.stringify({ turnIds: [] }) });
+  };
+  return post().then(function(res) {
+    if (res.status !== 403) return res;
+    return res.clone().json().catch(function() { return null; }).then(function(data) {
+      if (!isCsrfRejection(res.status, data)) return res;
+      return refreshCsrfToken().then(function() { return _csrfToken && _csrfToken !== sent ? post() : res; });
+    });
+  }).then(function(res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.text();
+  });
+}
+// 전체 문맥 복사: every instruction and answer of the open card, as markdown, on the clipboard. The copy starts in the
+// press (copyToClipboard holds the pending text); a toast says how it went. One at a time (aria-busy).
+function copyPanelContext(btn) {
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var cid = s && !isSiblingSession(s) && s.conversationId;
+  if (!cid || (btn && btn.getAttribute('aria-busy') === 'true')) return Promise.resolve();
+  if (btn) btn.setAttribute('aria-busy', 'true');
+  return copyToClipboard(fetchPanelContext(cid), btn && btn.parentNode).then(function(ok) {
+    dashToast(ok
+      ? { title: '전체 문맥을 복사했어요', description: '지시와 답변 전부 (마크다운)', tone: 'success' }
+      : { title: '전체 문맥을 복사하지 못했어요', description: '클립보드에 쓰지 못했어요', tone: 'error' });
+  }, function(err) {
+    dashToast({ title: '전체 문맥을 복사하지 못했어요', description: (err && err.message) || undefined, tone: 'error' });
+  }).then(function() {
+    if (btn) btn.removeAttribute('aria-busy');
+  });
 }
 function panelTitleSubCanRegen() {
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
