@@ -118,7 +118,7 @@ import { createForkExecutor } from './slack/create-fork-executor';
 import { DispatchAbortError, formatDispatchAbortMessage } from './slack/dispatch-abort';
 import { requestEnvSkillPermission } from './slack/env-skill-permission-request';
 import { mintEventTs } from './slack/event-ts';
-import { askFollowUpQuestion, consumeFollowUpVerdict } from './slack/follow-up-question';
+import { askFollowUpQuestion, consumeFollowUpVerdict, takeFollowUpQuestion } from './slack/follow-up-question';
 import { type FollowupReactionRole, FollowupReactionSurface, rolesForFollowupState } from './slack/followup-reactions';
 import { isRestartCutUndelivered, restartCutVerdict } from './slack/followup-restart-redelivery';
 import { isGoalCapDecisionPending, retireGoalCapDecision } from './slack/goal-cap-decision';
@@ -7836,7 +7836,8 @@ export class SlackHandler {
       if (opts.notWithActiveGoal && this.claudeHandler.getSessionByKey(sessionKey)?.goal?.status === 'active') return;
       await askFollowUpQuestion(sessionKey, {
         getSession: (key) => this.claudeHandler.getSessionByKey(key),
-        isRequestActive: (key) => this.requestCoordinator.isRequestActive(key),
+        // A running turn, or the goal loop about to act (a queued run, a continuation not yet holding the slot).
+        isRequestActive: (key) => this.requestCoordinator.isRequestActive(key) || this.goalLoopActing?.(key) === true,
         ask: (key, question, opts) => this.streamExecutor.askUserQuestionFromHost(key, question, opts),
         retract: (key, turnId) => this.streamExecutor.retractHostQuestion(key, turnId),
         save: () => this.claudeHandler.saveSessions(),
@@ -7848,6 +7849,28 @@ export class SlackHandler {
         error: (error as Error)?.message ?? String(error),
       });
     }
+  }
+
+  /** #917 — the goal loop's "about to act" probe (wired in index.ts: `GoalLoopController.isActing`). */
+  setGoalLoopActingProbe(fn: ((sessionKey: string) => boolean) | undefined): void {
+    this.goalLoopActing = fn;
+  }
+  private goalLoopActing?: (sessionKey: string) => boolean;
+
+  /**
+   * #917 (trinity R2 fable P2) — the host lets the agent act again on its own (goal resume, an objective update, a
+   * resumed goal): the follow-up question it asked no longer applies, and while open it keeps the session `waiting`,
+   * which the kicked loop refuses. Retracted synchronously (the session is idle before the kick's run starts).
+   */
+  retractFollowUpQuestion(sessionKey: string): void {
+    const turnId = takeFollowUpQuestion(this.claudeHandler.getSessionByKey(sessionKey), Date.now());
+    if (!turnId) return;
+    void this.streamExecutor.retractHostQuestion(sessionKey, turnId).catch((error: unknown) =>
+      this.logger.warn('Retracting a follow-up question failed', {
+        sessionKey,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
   }
 
   /**
@@ -8122,6 +8145,7 @@ export class SlackHandler {
         if (result.resumedCurrent) {
           // The current goal was stopped at its budget; the add gave it the
           // budget back. No turn ends from a dashboard add, so drive the loop.
+          this.retractFollowUpQuestion(sessionKey);
           this.goalTurnSettledHandler?.(sessionKey, { cause: 'kick' });
         }
         return { outcome: 'queued', goalId: result.goal.goalId, position };

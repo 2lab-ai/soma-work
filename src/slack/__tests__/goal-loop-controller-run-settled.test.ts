@@ -14,7 +14,11 @@ import { GoalLoopController } from '../goal-loop-controller';
 
 const KEY = 'C1:T1';
 
-function harness(verdict: GoalEvalVerdict | undefined, goalOver: Partial<SessionGoal> = {}) {
+function harness(
+  verdict: GoalEvalVerdict | undefined,
+  goalOver: Partial<SessionGoal> = {},
+  injectContinuation: () => Promise<void> = async () => undefined,
+) {
   const goal: SessionGoal = {
     goalId: 'g1',
     objective: 'ship it',
@@ -40,7 +44,7 @@ function harness(verdict: GoalEvalVerdict | undefined, goalOver: Partial<Session
     registry: { getSessionByKey: () => session, getActivityStateByKey: () => 'idle', saveSessions: () => undefined },
     requestCoordinator: { isRequestActive: () => false },
     dispatcher: async () => JSON.stringify(verdict ?? { completed: false, reason: 'r', remaining: ['x'] }),
-    injectContinuation: async () => undefined,
+    injectContinuation,
     postNotice: async () => undefined,
     logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     fallbackModel: 'm',
@@ -82,5 +86,24 @@ describe('GoalLoopController.onRunSettled (#917)', () => {
       [KEY, { continued: false, queued: true }],
       [KEY, { continued: false, queued: false }],
     ]);
+  });
+
+  it('isActing: true while a run is queued or a continuation it injected has not taken the slot (trinity R2 grok P1)', async () => {
+    let release!: () => void;
+    const h = harness(
+      { completed: false, reason: 'not yet', remaining: ['x'] },
+      {},
+      () => new Promise<void>((r) => (release = r)),
+    );
+    expect(h.controller.isActing(KEY)).toBe(false);
+    h.controller.onTurnSettled(KEY);
+    expect(h.controller.isActing(KEY)).toBe(true);
+    await h.controller.settled(KEY);
+    // the run is over, but its continuation's turn has not started yet
+    expect(h.settled).toEqual([[KEY, { continued: true, queued: false }]]);
+    expect(h.controller.isActing(KEY)).toBe(true);
+    release();
+    await new Promise((r) => setImmediate(r));
+    expect(h.controller.isActing(KEY)).toBe(false);
   });
 });
