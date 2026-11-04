@@ -453,6 +453,8 @@ export function createSessionPrWatch(deps: PrWatchDeps): SessionPrWatch {
     const done = (outcome: DeliveryOutcome) => {
       activityInflight.delete(key);
       if (outcome !== 'gone') commit();
+      // Dropped unread (the card moved away while it waited): read again on the next look, even on a 304.
+      else activityDirty.add(key);
     };
     const sessionKey = d.cards[0].sessionKey;
     const current = () => {

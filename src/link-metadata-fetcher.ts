@@ -746,7 +746,8 @@ export async function fetchGitHubPullActivity(
         const first = got.items
           .map((i) => Date.parse(str((i as Raw | undefined)?.submitted_at) ?? ''))
           .find((at) => Number.isFinite(at));
-        if (first === undefined || first <= sinceMs) break;
+        // A page of pending reviews only says nothing about time: walk on back.
+        if (first !== undefined && first <= sinceMs) break;
       }
       reviews.push(...pages.flat());
     }
