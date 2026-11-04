@@ -1640,6 +1640,9 @@ export class SlackHandler {
       return;
     }
 
+    // #911 — before the fence reads the halt to decide whether this message may steer.
+    this.reopenDrainForPerson(event, sessionKey);
+
     // --- synchronous fence: no await until the slot is decided ---
     // A reply in a freshly migrated work thread has a DIFFERENT key from the
     // slot the running turn opened; both are checked, or the reply would slip
@@ -1758,6 +1761,35 @@ export class SlackHandler {
 
     const failure = this.takeInitialError(sessionKey);
     if (failure) throw failure;
+  }
+
+  /**
+   * #911 — a `blocked` halt waits for a person: a turn that ended on their
+   * question (the session is theirs until they answer, A8), or on something
+   * only they can settle. Their next message is that action — the answer itself
+   * arrives this way, from Slack or the dashboard — so it ends the pause
+   * (`user-action`). Left standing, the halt outlived the answer (dev
+   * 2026-11-04): the next message was neither steered nor drained, a goal
+   * session yielded to it (§3.6), and when the turn ended nothing made the next
+   * one. An `error` or `authorization` halt says the lane itself is broken and
+   * still waits for Resume/Retry. A synthetic turn or a replayed host turn is
+   * not a person.
+   */
+  private reopenDrainForPerson(event: MessageEvent, sessionKey: string): void {
+    if (event.synthetic || event.routeContext?.hostTurn === true || !event.user) return;
+    const dispatcher = this.followupDispatcher;
+    if (!dispatcher) return;
+    // After a bot-thread migration the halt sits under the slot's (source) key.
+    const slotKey = this.followupMigration?.byCanonical.get(sessionKey);
+    for (const key of slotKey !== undefined ? [sessionKey, slotKey] : [sessionKey]) {
+      const halt = dispatcher.drainHalt(key);
+      if (halt?.reason !== 'blocked') continue;
+      dispatcher.clearDrainHalt(key, 'user-action');
+      this.logger.info('Drain reopened — a person spoke after a pause that waited for one', {
+        sessionKey: key,
+        detail: halt.detail,
+      });
+    }
   }
 
   /**
