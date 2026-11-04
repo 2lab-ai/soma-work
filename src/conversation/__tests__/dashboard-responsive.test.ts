@@ -184,21 +184,22 @@ describe('drawer — <ui-drawer> (D4 E-01, E-02): the element’s sheet below 84
     // show() / showModal() focus the panel while it is still translateX(100%) past the box (the phone sheet of
     // <ui-dialog>: translateY(100%)). Chromium scrolls the box — overflow: hidden is a scroll container — to show it,
     // and the shrinking transform clamps that scroll with it: the panel was pinned at its open place, no slide.
-    // @2lab.ai/ui 0.26.1 puts the box's sideways scroll back at open and from its scroll event (the drawer slides on x;
-    // a vertical scroll of a short visible area stays the browser's), and keeps the box a scroll container (its
-    // overscroll-behavior fences the board behind). Measured on this page in Chromium 148: the docked
-    // panel's x 1000 → 1000 before, 1440 → 1000 after; the phone sheet 0 → 0 before, 390 → 0 after.
+    // @2lab.ai/ui 0.26.1 puts the slide's scroll back at open and from the box's scroll event — the drawer's sideways
+    // (it slides on x), the dialog's downward while its phone sheet enters — and keeps the box a scroll container (its
+    // overscroll-behavior fences the board behind). A static check of the pinned build (no DOM here), not a proof of
+    // the motion. Measured on this page in Chromium 148: the docked panel's x 1000 → 1000 before, 1440 → 1000 after;
+    // the phone sheet 0 → 0 before, 390 → 0 after.
     const { uiLibDistDir } = await import('../ui-lib');
     const dir = uiLibDistDir();
     expect(dir).toBeTruthy();
-    for (const [file, box] of [
-      ['drawer.js', 'dr'],
-      ['dialog.js', 'dg'],
-    ]) {
+    for (const [file, box, axes] of [
+      ['drawer.js', 'dr', ['scrollLeft']],
+      ['dialog.js', 'dg', ['scrollLeft', 'scrollTop']],
+    ] as const) {
       const src = readFileSync(join(dir as string, file), 'utf-8');
-      expect(src, file).toMatch(/addEventListener\("scroll", [^\n]*, true\)/);
-      expect(src, file).toMatch(/scrollLeft = 0;/);
-      expect(src, file).toMatch(new RegExp(`\\.${box} \\{[^}]*overflow: hidden;[^}]*overscroll-behavior: contain;`));
+      expect(src, file).toMatch(/addEventListener\(\s*['"]scroll['"]\s*,[^\n]*,\s*true\s*\)/);
+      for (const axis of axes) expect(src, `${file} ${axis}`).toMatch(new RegExp(`\\b${axis}\\s*=\\s*0\\b`));
+      expect(src, file).toMatch(new RegExp(`\\.${box}\\s*\\{[^}]*overflow:\\s*hidden;[^}]*overscroll-behavior:\\s*contain;`));
     }
     // The page sets nothing on the box itself.
     expect(TEMPLATE).not.toMatch(/\.slide-panel::part\(dialog\)/);
