@@ -104,3 +104,58 @@ describe('formatSafeguardDetail (T4)', () => {
     expect(line).toContain('req_011CggxYZxQ7TEBU95XW3X19');
   });
 });
+
+/**
+ * Review round 10 (astra-zhuge P1): the other shapes the installed Claude Code
+ * (2.1.284, `dot()` refusal builder) emits for the same API refusal — read from
+ * its bundled source, not guessed.
+ */
+describe('parseSafeguardFlag — every refusal shape the installed CLI emits', () => {
+  // Opus 5.5 cyber / bio / frontier_llm: "…flagged this session…" (`vPr`).
+  const SESSION_VARIANT = [
+    "API Error: Opus 5.5 (1M context)'s safeguards flagged this session (https://www.anthropic.com/legal/aup). " +
+      'You may be seeing this for the first time: Opus 5.5 (1M context) is more capable and has stronger safeguards ' +
+      'as a result, which can sometimes flag non-cybersecurity work. We’re improving these safeguards to reduce ' +
+      "the amount of incorrectly flagged messages. Claude Code can't respond to your last message with Opus 5.5 (1M context).",
+    'Learn more: https://support.claude.com/en/articles/8106465',
+    '',
+    'Details: `[cyber]`',
+    'Request ID: req_011SessionVariant1',
+    'Message ID: msg_011SessionVariant1',
+  ].join('\n');
+
+  // A model the CLI cannot name: "<model> can't help with this. Start a new session to continue."
+  const CANT_HELP_VARIANT = [
+    "API Error: Claude can't help with this. Start a new session to continue.",
+    'Learn more: https://www.anthropic.com/legal/aup',
+    'Request ID: req_011CantHelpVariant',
+    'Message ID: msg_011CantHelpVariant',
+  ].join('\n');
+
+  it('reads the "flagged this session" refusal (cyber / bio / frontier_llm)', () => {
+    expect(parseSafeguardFlag(SESSION_VARIANT)).toEqual({
+      model: 'Opus 5.5 (1M context)',
+      detail: 'cyber',
+      requestId: 'req_011SessionVariant1',
+      messageId: 'msg_011SessionVariant1',
+    });
+  });
+
+  it('reads the "can\'t help with this. Start a new session" refusal', () => {
+    expect(parseSafeguardFlag(CANT_HELP_VARIANT)).toMatchObject({
+      model: 'Claude',
+      requestId: 'req_011CantHelpVariant',
+    });
+  });
+
+  it('reads both in an error source too', () => {
+    expect(
+      parseSafeguardFlag(`Claude Code process exited with code 1\n${SESSION_VARIANT}`, { source: 'error' }),
+    ).not.toBeNull();
+    expect(parseSafeguardFlag(`exit 1\n${CANT_HELP_VARIANT}`, { source: 'error' })).not.toBeNull();
+  });
+
+  it('still needs an anchor line — the bare sentence is prose', () => {
+    expect(parseSafeguardFlag("API Error: Claude can't help with this. Start a new session to continue.")).toBeNull();
+  });
+});

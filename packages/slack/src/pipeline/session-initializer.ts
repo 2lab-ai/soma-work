@@ -723,8 +723,16 @@ export class SessionInitializer {
     const PR_ROUTABLE_WORKFLOWS = new Set(['pr-review', 'pr-fix-and-update', 'pr-docs-confluence']);
     const prUrl = session.links?.pr?.url;
     // Skip channel routing for synthetic events that were already routed (e.g., after "현재 채널에서 진행")
+    // A locked session is neither routed (the Move/Stay advisory's Stay replays
+    // the message into a new thread) nor migrated: it stays where it is, and the
+    // executor refuses the turn (review R10, astra P1).
+    const lockedBySafeguard = !!session.safeguardHalt;
     const shouldRoute =
-      isNewSession && !!prUrl && PR_ROUTABLE_WORKFLOWS.has(session.workflow || '') && !skipAutoBotThread;
+      isNewSession &&
+      !!prUrl &&
+      PR_ROUTABLE_WORKFLOWS.has(session.workflow || '') &&
+      !skipAutoBotThread &&
+      !lockedBySafeguard;
 
     this.logger.info('🔀 Channel routing check', {
       isNewSession,
@@ -887,7 +895,7 @@ export class SessionInitializer {
         workflow: session.workflow,
         reason: !session.links?.pr?.url ? 'no PR link' : `workflow '${session.workflow}' not routable`,
       });
-      if (!skipAutoBotThread) {
+      if (!skipAutoBotThread && !lockedBySafeguard) {
         const migrated = await this.createBotInitiatedThread(
           session,
           channel,
@@ -1573,6 +1581,21 @@ export class SessionInitializer {
       workflow: botSession.workflow,
       title: botSession.title,
     });
+
+    // A lock that landed on the source thread during the awaits above (a goal
+    // eval of the closed session answering late) belongs to this work too: the
+    // halt was copied once, before them (review R10, astra P1).
+    if (!botSession.safeguardHalt) {
+      const late = this.deps.claudeHandler.getSessionRegistry?.()?.getSafeguardHaltByKey?.(origSessionKey);
+      if (late) {
+        botSession.safeguardHalt = { ...late };
+        this.deps.claudeHandler.saveSessions?.();
+        this.logger.warn('Safeguard lock landed on the source thread during migration — carried over', {
+          origSessionKey,
+          newSessionKey,
+        });
+      }
+    }
 
     return {
       session: botSession,
