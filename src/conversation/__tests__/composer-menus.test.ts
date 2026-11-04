@@ -186,7 +186,8 @@ describe('composerSkillItems — every skill this user can invoke', () => {
     expect(rows).toEqual([
       { value: '$user:dev', group: '내 스킬', description: 'Deploy to dev' },
       { value: '$local:autoz', group: '기본 스킬', description: 'Autonomous z-pipeline driver.' },
-      { value: '$envp:secret', group: 'envp', description: 'Env-only skill · 관리자 승인 필요' },
+      // An environment skill this user holds no grant for: named (invoking it asks an admin), its words not shown.
+      { value: '$envp:secret', group: 'envp', description: '관리자 승인 필요' },
       { value: '$stv:debug', group: 'stv', description: 'Follow the callstack' },
     ]);
   });
