@@ -1319,6 +1319,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       say,
     } = params;
 
+    // Safeguards halt (ssot T2/T3): a halted session runs no query — whatever
+    // path reached here (an adapter continuation, a dispatch the classifier's
+    // block halted, a turn racing the lock). Fail closed; the halt notice and
+    // its admin button were already posted when the lock was set.
+    if (session.safeguardHalt && session.incidentRequest === undefined) {
+      return this.refuseHaltedTurn(session, sessionKey, processedFiles, params.followupTurnEpoch);
+    }
+
     // Issue #688 — capture per-turn status epoch. Every clearStatus call
     // emitted by this execute() carries `expectedEpoch: epoch` so that a
     // stale clear from a previous (aborted) turn cannot kill a newer
@@ -4016,6 +4024,30 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     this.deps.claudeHandler.clearSessionId(channel, threadTs);
   }
 
+  /** A turn reached the executor on a safeguards-halted session: run nothing, keep the halt's status. */
+  private async refuseHaltedTurn(
+    session: ConversationSession,
+    sessionKey: string,
+    processedFiles: ProcessedFile[],
+    expectedTurnEpoch?: number,
+  ): Promise<ExecuteResult> {
+    this.logger.info('Turn not run — session halted by a safeguards flag', { sessionKey });
+    await this.updateRuntimeStatus(
+      session,
+      sessionKey,
+      { agentPhase: SAFEGUARD_ERROR_LABEL, activeTool: undefined, waitingForChoice: false },
+      expectedTurnEpoch,
+    );
+    if (processedFiles.length > 0) {
+      await cleanupWithTimeout(
+        () => this.deps.fileHandler.cleanupTempFiles(processedFiles),
+        DEFAULT_CLEANUP_TIMEOUT_MS,
+        this.logger,
+      );
+    }
+    return { success: false, messageCount: 0, handled: true };
+  }
+
   /**
    * The safeguards-flag rail. Anthropic's safeguards blocked the request, and
    * the session cannot go on with this model — so the work stops here:
@@ -4163,6 +4195,27 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // ── Safeguards flag (T2/T3/T4): stop at once, lock the session, say so.
     // Runs before the idle transition so the lock is on the session (and on
     // disk) before anything can see it idle and start the next turn.
+    // A running turn stopped because the session was halted elsewhere (the
+    // goal eval was blocked): the halt rail already posted; end as the halt.
+    if (abortReason === 'safeguard' && session.safeguardHalt && !safeguardFlagOf(error)) {
+      this.setActivity(session, sessionKey, channel, threadTs, 'idle');
+      await this.updateRuntimeStatus(
+        session,
+        sessionKey,
+        { agentPhase: SAFEGUARD_ERROR_LABEL, activeTool: undefined, waitingForChoice: false },
+        expectedTurnEpoch,
+      );
+      await this.deps.reactionManager.updateReaction(sessionKey, this.deps.statusReporter.getStatusEmoji('error'));
+      if (processedFiles.length > 0) {
+        await cleanupWithTimeout(
+          () => this.deps.fileHandler.cleanupTempFiles(processedFiles),
+          DEFAULT_CLEANUP_TIMEOUT_MS,
+          this.logger,
+        );
+      }
+      return undefined;
+    }
+
     const safeguardFlag = safeguardFlagOf(error);
     if (safeguardFlag) {
       return this.haltOnSafeguardFlag(

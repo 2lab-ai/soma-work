@@ -1274,6 +1274,9 @@ export class AgentStreamProcessor {
             // Slack, the main narration or the turn's collected text.
             if (event.parentToolUseId) {
               this.noteAgent(event.parentToolUseId, context);
+              // A delegated agent blocked by the safeguards blocks the session
+              // too: the parent would only re-delegate into the same block.
+              if (!this.safeguardFlag) this.noteSafeguardFlag(event.text);
               const text = event.text.trim();
               if (text) this.writeWorkLog(context, { kind: 'narration', text, agentId: event.parentToolUseId });
               break;
@@ -2210,6 +2213,12 @@ export class AgentStreamProcessor {
       }
       const spawned = this.spawnedAgents.get(toolResult.toolUseId);
       const rawFields = toolResultRaw(toolResult.result);
+      // An agent's returned text that IS a safeguards block (turn-text rules:
+      // starts with it, anchored, bounded) — never an ordinary tool's output,
+      // which may quote the error from a file.
+      if (spawned !== undefined && !this.safeguardFlag && rawFields?.raw) {
+        this.noteSafeguardFlag(rawFields.raw);
+      }
       this.emitWorkLog(context, {
         kind: 'tool_result',
         tool,

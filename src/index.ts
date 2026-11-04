@@ -2009,6 +2009,7 @@ async function start() {
         },
         requestCoordinator: {
           isRequestActive: (key) => requestCoordinator.isRequestActive(key),
+          abortSession: (key, reason) => requestCoordinator.abortSession(key, reason),
         },
         dispatcher: ({ systemPrompt, userPrompt, model, effort, abortController, cwd }) =>
           claudeHandler.dispatchOneShot(userPrompt, systemPrompt, model, abortController, undefined, cwd, effort),

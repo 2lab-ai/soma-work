@@ -891,3 +891,23 @@ describe('GoalLoopController — safeguards block on an eval whose epoch moved (
     expect(h.goal.pendingEval).toBeUndefined();
   });
 });
+
+describe('GoalLoopController — blocked eval stops a running turn (review round 3, astra P1 #1)', () => {
+  it('aborts the turn the user started during the eval, with reason safeguard', async () => {
+    let h: ReturnType<typeof makeHarness>;
+    const abortSession = vi.fn().mockReturnValue(true);
+    h = makeHarness({
+      dispatcher: async () => {
+        h.setRequestActive(true); // the user started a turn while the eval ran
+        return "API Error: Opus 5.5 (1M context)'s safeguards flagged this message (https://www.anthropic.com/legal/aup).\n\nDetails: `[reasoning_extraction]`\n\nRequest ID: req_r3";
+      },
+    });
+    (h.controller as any).deps.requestCoordinator.abortSession = abortSession;
+
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect((h.session as any).safeguardHalt?.requestId).toBe('req_r3');
+    expect(abortSession).toHaveBeenCalledWith(SESSION_KEY, 'safeguard');
+  });
+});
