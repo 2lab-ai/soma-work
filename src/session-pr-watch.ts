@@ -206,15 +206,14 @@ export function createSessionPrWatch(deps: PrWatchDeps): SessionPrWatch {
   const known = new Map<string, { etag?: string; status: PullStatus; number: number; headSha?: string }>();
   /** `url@sha` → the checks' last ETag and answer, so a 304 repeats it. */
   const checksKnown = new Map<string, ChecksAnswer>();
-  /** url → the live sessions whose card shows it, from the last full scan (not just this tick's slice). */
-  let liveCards = new Map<string, Set<string>>();
   /** `url@sha` whose message waits in the delivery queue. */
   const inflight = new Set<string>();
   const askedAt = new Map<string, number>();
   let running: Promise<void> | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
 
-  function due(): Due[] {
+  /** Every open PR on a live card, with the cards that show it. */
+  function scanCards(): Map<string, Due> {
     const byUrl = new Map<string, Due>();
     for (const s of deps.sessions()) {
       if (!s?.sessionKey || s.terminated) continue;
@@ -229,8 +228,24 @@ export function createSessionPrWatch(deps: PrWatchDeps): SessionPrWatch {
       entry.cards.push({ sessionKey: s.sessionKey, status: s.pr?.status });
       byUrl.set(key, entry);
     }
-    liveCards = new Map([...byUrl].map(([key, entry]) => [key, new Set(entry.cards.map((c) => c.sessionKey))]));
-    return [...byUrl.values()]
+    return byUrl;
+  }
+
+  /**
+   * The one live session whose card shows this PR, asked of the sessions now — not the last scan: a card that moved
+   * or a second owner since then makes a waiting message stale. Unreadable sessions: no owner (#929 round 3, astra).
+   */
+  function soleOwner(key: string): string | undefined {
+    try {
+      const cards = scanCards().get(key)?.cards;
+      return cards?.length === 1 ? cards[0].sessionKey : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  function due(): Due[] {
+    return [...scanCards().values()]
       .sort((a, b) => (askedAt.get(a.url.toLowerCase()) ?? 0) - (askedAt.get(b.url.toLowerCase()) ?? 0))
       .slice(0, maxPerTick);
   }
@@ -321,7 +336,7 @@ export function createSessionPrWatch(deps: PrWatchDeps): SessionPrWatch {
     // A message that waited past a merge, a new head or a card that moved on is dropped, not told (#929 round 2).
     const current = () => {
       const pr = known.get(key);
-      return !!pr && !FINAL.has(pr.status) && pr.headSha === sha && (liveCards.get(key)?.has(sessionKey) ?? false);
+      return !!pr && !FINAL.has(pr.status) && pr.headSha === sha && soleOwner(key) === sessionKey;
     };
     try {
       if (!(await deliver(sessionKey, text, done, current))) inflight.delete(ciKey);

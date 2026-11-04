@@ -272,6 +272,32 @@ describe('session PR watch — CI (#929)', () => {
     expect(h.state.currents[0]?.()).toBe(false);
   });
 
+  it('current() asks the live sessions, not the last scan: a card moved, a second owner, or sessions that cannot be read (#929 round 3)', async () => {
+    const h = harness();
+    h.state.holdDone = true;
+    h.state.checks = { conclusion: 'failure', failed: ['lint'] };
+    const sessions = h.deps.sessions;
+    await createSessionPrWatch(h.deps).tick();
+    const current = h.state.currents[0];
+    expect(current?.()).toBe(true);
+    // A second live session takes the same PR on its card — no tick in between: no clear owner.
+    const other: WatchCandidate = { sessionKey: 's2', lastActivityMs: NOW, pr: { url: URL_A, status: 'open' } };
+    h.deps.sessions = () => [...sessions(), other];
+    expect(current?.()).toBe(false);
+    h.deps.sessions = sessions;
+    expect(current?.()).toBe(true);
+    // The card moves to another PR — no tick in between.
+    const pr = h.session.pr;
+    h.session.pr = { url: 'https://github.com/acme/app/pull/99', status: 'open' };
+    expect(current?.()).toBe(false);
+    h.session.pr = pr;
+    // The sessions cannot be read: closed, not open.
+    h.deps.sessions = () => {
+      throw new Error('registry busy');
+    };
+    expect(current?.()).toBe(false);
+  });
+
   it('a PR on two live cards wakes neither (no clear owner) — #929 review', async () => {
     const h = harness();
     const other: WatchCandidate = { sessionKey: 's2', lastActivityMs: NOW, pr: { url: URL_A, status: 'open' } };
