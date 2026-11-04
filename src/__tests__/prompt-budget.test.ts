@@ -56,6 +56,10 @@ const LISTING_BUDGET = {
   agents: { total: 11_400, each: 2_200 },
 };
 
+/**
+ * Characters (UTF-16 units), not tokens: a proxy. Korean costs more tokens per character than English, so a Korean
+ * line uses more of a budget's real cost than its character count shows (#931 review, fable).
+ */
 const chars = (text: string): number => text.length;
 
 /** What makes up a prompt file: its own text and each `{{include:…}}` (resolved from src/prompt, like PromptBuilder). */
@@ -112,11 +116,12 @@ function frontmatterDescription(md: string): string | undefined {
   return undefined;
 }
 
+/** A listed file the parser reads no description from has size -1: the budget never silently skips one. */
 function listing(files: string[]): Array<{ part: string; chars: number }> {
-  return files.map((file) => ({
-    part: path.relative(SRC, file),
-    chars: chars(frontmatterDescription(fs.readFileSync(file, 'utf-8')) ?? ''),
-  }));
+  return files.map((file) => {
+    const description = frontmatterDescription(fs.readFileSync(file, 'utf-8'));
+    return { part: path.relative(SRC, file), chars: description === undefined ? -1 : chars(description) };
+  });
 }
 
 const skillFiles = (): string[] => [
@@ -179,6 +184,11 @@ describe('per-turn fixed text budget (#931)', () => {
     const budget = LISTING_BUDGET[group];
     const total = parts.reduce((sum, p) => sum + p.chars, 0);
     expect(parts.length).toBeGreaterThan(0);
+    // A description the parser cannot read would count as 0 — fail instead (#931 review, fable).
+    expect(
+      parts.filter((p) => p.chars < 0).map((p) => p.part),
+      'no description read from these',
+    ).toEqual([]);
     expect(
       total,
       `${group} descriptions total ${total} chars, budget ${budget.total}. All, largest first:\n${largest(parts)}\nShorten them, or raise LISTING_BUDGET.${group}.total on purpose.`,
