@@ -726,7 +726,6 @@ export async function fetchGitHubPullActivity(
       id?: unknown;
       user?: { login?: unknown; type?: unknown } | null;
       author_association?: unknown;
-      body?: unknown;
       html_url?: unknown;
       created_at?: unknown;
       submitted_at?: unknown;
@@ -743,8 +742,11 @@ export async function fetchGitHubPullActivity(
         const got = await get(`${reviewsUrl}&page=${n}`);
         if (!got) return undefined;
         pages.unshift(got.items);
-        const first = Date.parse(str((got.items[0] as Raw | undefined)?.submitted_at) ?? '');
-        if (!Number.isFinite(first) || first <= sinceMs) break;
+        // A pending review has no submitted_at: the page starts at its first submitted one.
+        const first = got.items
+          .map((i) => Date.parse(str((i as Raw | undefined)?.submitted_at) ?? ''))
+          .find((at) => Number.isFinite(at));
+        if (first === undefined || first <= sinceMs) break;
       }
       reviews.push(...pages.flat());
     }
@@ -763,7 +765,6 @@ export async function fetchGitHubPullActivity(
         ...(str(r.author_association) ? { association: str(r.author_association) } : {}),
         ...(kind === 'review' ? { state: str(r.state) } : {}),
         ...(kind === 'review-comment' && str(r.path) ? { path: str(r.path) } : {}),
-        body: (str(r.body) ?? '').slice(0, 2000),
         url,
         at,
       });
