@@ -94,6 +94,8 @@ function fakeEl(): FakeEl {
     children: [] as FakeEl[],
     text: '',
     writes: 0,
+    // A closed drawer draws nothing: no CSS animation exists yet.
+    closed: false,
     // The kit's arc (its ::before) and a fade; the arc only while the pill is the viewer's own.
     anims: [] as Array<{ animationName: string; startTime: number | null }>,
     getAnimations(o: unknown) {
