@@ -6046,11 +6046,11 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 
 /* ═══ New task (SSOT 2026-10-23) — entry button, floating button, composer ═══
    The page's call to action, calm (ui.2lab.ai's one ink primary): PC an ink pill in
-   the top bar with its N key hint opens a centered dialog; phones an ink extended
+   the top bar with its Ctrl+N key hint (⌃N on a Mac) opens a centered dialog; phones an ink extended
    floating button in the thumb zone opens a full-screen sheet sized to the visual
    viewport, so the toolbar stays above the keyboard. No sheen, pulse, glow, ring or
    hover lift — it moves only when pressed (0.97) and when the FAB arrives. */
-/* The kit's ink primary (.ui-btn.is-primary); its N hint is a kit key tinted for the ink face. */
+/* The kit's ink primary (.ui-btn.is-primary); its Ctrl+N hint is a kit key tinted for the ink face. */
 .new-task-btn { flex: none; padding-right: 6px; }
 .new-task-btn .ui-kbd { background: color-mix(in srgb, var(--ib-card) 16%, transparent); box-shadow: none; color: color-mix(in srgb, var(--ib-card) 82%, transparent); }
 
@@ -6327,7 +6327,7 @@ ${pageTokenAliases()}
       onclick="toggleAdminMode()"
     ><span id="admin-mode-label"><span class="admin-mode-prefix">관리자 </span><span class="admin-mode-state">끔</span></span></button>
     </div>
-    <button type="button" class="ui-btn is-primary new-task-btn" id="new-task-btn" slot="actions" aria-keyshortcuts="n" title="새 작업 (N)" onclick="openNewTask()"><i data-ui-icon="plus"></i><span class="nt-btn-label">새 작업</span><kbd class="ui-kbd nt-kbd" aria-hidden="true">N</kbd></button>
+    <button type="button" class="ui-btn is-primary new-task-btn" id="new-task-btn" slot="actions" aria-keyshortcuts="Control+N" title="새 작업 (Ctrl+N)" onclick="openNewTask()"><i data-ui-icon="plus"></i><span class="nt-btn-label">새 작업</span><kbd class="ui-kbd nt-kbd" aria-hidden="true">Ctrl+N</kbd></button>
     <!-- View mode (SSOT 2026-11-01): 미니멀 by default; this toggle turns 어드밴스드 on — everything the page has.
          A button that behaves like a toggle (HIG Toggles: the background tells the state, aria-pressed), saved per
          user (the dashboardMode setting). -->
@@ -19884,6 +19884,57 @@ function ntTooLong(text) {
   return '지시가 너무 깁니다 — ' + max.toLocaleString('en-US') + '자까지 보낼 수 있어요 (지금 ' + n.toLocaleString('en-US') + '자)';
 }
 
+// SSOT 2026-11-04 — a paste too long for the instruction goes in as a text file. A plain-text paste that would take
+// the field past the server's limit (maxPromptChars) is attached as pasted-text-<stamp>.txt instead — a chip the
+// person sees and can remove — so the task still starts with the whole text (file-handler.ts gives the session the
+// file's path). Clipboard files stay the composer's own (it attaches them). A dashboard task takes no attachments
+// yet (D8): its paste goes into the field and the limit is said on send (ntTooLong).
+function ntOnComposerPaste(e) {
+  if (!_ntState || _ntState.destination === 'task') return;
+  var max = _ntCtx && _ntCtx.limits && _ntCtx.limits.maxPromptChars;
+  var el = e && e.currentTarget;
+  var cd = e && e.clipboardData;
+  if (!max || !cd || !el || typeof el.addFiles !== 'function') return;
+  if (el.data && el.data.disabled) return;
+  if (cd.files && cd.files.length) return;
+  var text = cd.getData('text/plain');
+  if (!text) return;
+  // The field the paste lands in (the composer's shadow root is open): what is selected there is replaced.
+  var field = typeof e.composedPath === 'function' ? e.composedPath()[0] : null;
+  var start = field && typeof field.selectionStart === 'number' ? field.selectionStart : undefined;
+  var end = field && typeof field.selectionEnd === 'number' ? field.selectionEnd : undefined;
+  if (!ntPasteOverflows(el.value, start, end, text, max)) return;
+  // The text leaves the field only once the composer has taken the file: refused (10 files already, a size cap — its
+  // error line says why), the paste goes in as usual and the limit is said on send. Nothing pasted is lost.
+  var taken = el.addFiles([new File([text], ntPastedTextName(new Date()), { type: 'text/plain' })]);
+  if (!taken || !taken.length) return;
+  e.preventDefault();
+  // A paste replaces what is selected: that text leaves the field too (the paste is the file now). The input event
+  // is the composer's own — its counter and height follow, and its ui-input keeps the draft.
+  if (field && typeof field.setRangeText === 'function' && typeof start === 'number' && typeof end === 'number' && end > start) {
+    field.setRangeText('', start, end, 'end');
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+}
+
+// Would the field run past max once the paste is in: its text, less the selection the paste replaces, plus the paste.
+function ntPasteOverflows(value, selStart, selEnd, pasted, max) {
+  if (!max || !pasted) return false;
+  var len = String(value || '').length;
+  var a = typeof selStart === 'number' ? selStart : len;
+  var b = typeof selEnd === 'number' ? selEnd : a;
+  return len - Math.max(0, b - a) + String(pasted).length > max;
+}
+
+// pasted-text-20261104-090507.txt — the stamp the composer gives a pasted screenshot (screenshot-…).
+function ntPastedTextName(d) {
+  function p(n) {
+    return (n < 10 ? '0' : '') + n;
+  }
+  var stamp = d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+  return 'pasted-text-' + stamp + '.txt';
+}
+
 function ntCanSubmit(state, attachments) {
   if (state && state.destination === 'task') {
     // A task takes no attachments yet (D8): files attached before switching are not dropped silently (#640 R1).
@@ -19904,6 +19955,23 @@ function ntNewRequestId() {
 
 function ntIsTouch() {
   return !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+}
+
+// The New task key: Ctrl+N, nothing else held. A bare N used to open it, and a stray keystroke on the board did.
+// ⌘N stays the browser's new window.
+// A Korean (or other non-Latin) input source can report the letter it types ('ㅜ'); then the key's place says N.
+// A Latin layout keeps its own letter (Dvorak's Ctrl+B sits on KeyN).
+function ntIsNewTaskKey(e) {
+  var key = String(e.key || '').toLowerCase();
+  if (!/^[a-z]$/.test(key) && e.code === 'KeyN') key = 'n';
+  return key === 'n' && !!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && !e.isComposing;
+}
+
+// The element a key was typed into. A key typed inside an element's shadow root (<ui-composer>'s textarea) reaches
+// the document retargeted to the host, which is no text field by its tag; composedPath()[0] is the field itself.
+function ntKeyTarget(e) {
+  var path = typeof e.composedPath === 'function' ? e.composedPath() : null;
+  return (path && path[0]) || e.target;
 }
 
 function ntIsTypingTarget(t) {
@@ -21821,6 +21889,8 @@ function ntInit() {
   composer.addEventListener('ui-tool', ntOnComposerTool);
   // 작업 계획 — the day / night switch beside 작업 시작.
   composer.addEventListener('ui-mode', ntOnPlanMode);
+  // A paste too long for the instruction: attached as a text file (ntOnComposerPaste).
+  composer.addEventListener('paste', ntOnComposerPaste);
   // A file the task composer refused (no type matches): why, not only "unsupported type".
   composer.addEventListener('ui-reject', ntOnReject);
   // A file added or removed while a dashboard task is chosen: the reason it cannot start, or none (#640 R2).
@@ -21829,10 +21899,9 @@ function ntInit() {
     ntSetError(ntBlockedHint(_ntState, (e.detail && e.detail.files) || ntComposerFiles()));
   });
   paintNtComposer();
-  // N opens the composer from anywhere outside a text field.
+  // Ctrl+N opens the composer from anywhere outside a text field.
   document.addEventListener('keydown', function (e) {
-    var key = String(e.key || '').toLowerCase();
-    if (key === 'n' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.isComposing && !ntIsTypingTarget(e.target)) {
+    if (ntIsNewTaskKey(e) && !ntIsTypingTarget(ntKeyTarget(e))) {
       e.preventDefault();
       openNewTask();
     }
@@ -21861,6 +21930,7 @@ function ntInit() {
   var hint = ntEl('nt-submit-hint');
   if (hint) hint.textContent = isMac ? '⌘↵' : 'Ctrl+↵';
   var nkbd = document.querySelector('#new-task-btn .nt-kbd');
+  if (nkbd) nkbd.textContent = isMac ? '⌃N' : 'Ctrl+N';
   if (nkbd && ntIsTouch()) nkbd.hidden = true;
 }
 
