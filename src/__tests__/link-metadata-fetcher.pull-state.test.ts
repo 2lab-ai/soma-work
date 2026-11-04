@@ -18,7 +18,7 @@ vi.mock('../logger', () => ({
   },
 }));
 
-import { fetchGitHubPullState, peekLinkMetadata } from '../link-metadata-fetcher';
+import { fetchGitHubCheckRuns, fetchGitHubPullState, peekLinkMetadata } from '../link-metadata-fetcher';
 
 const answer = (body: Record<string, unknown>, etag?: string) => ({
   ok: true,
@@ -49,8 +49,15 @@ describe('fetchGitHubPullState (#928)', () => {
     await expect(fetchGitHubPullState('a', 'b', 13)).resolves.toEqual({ number: 13, status: 'closed' });
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(answer({ state: 'open', draft: true })));
     await expect(fetchGitHubPullState('a', 'b', 14)).resolves.toEqual({ number: 14, status: 'draft' });
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(answer({ state: 'open', draft: false })));
-    await expect(fetchGitHubPullState('a', 'b', 15)).resolves.toEqual({ number: 15, status: 'open' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(answer({ state: 'open', draft: false, head: { sha: 'abc1234' } })),
+    );
+    await expect(fetchGitHubPullState('a', 'b', 15)).resolves.toEqual({
+      number: 15,
+      status: 'open',
+      headSha: 'abc1234',
+    });
   });
 
   it('S2 — the ETag goes out as If-None-Match; a 304 is not-modified', async () => {
@@ -65,5 +72,55 @@ describe('fetchGitHubPullState (#928)', () => {
     await expect(fetchGitHubPullState('a', 'b', 12)).resolves.toBeUndefined();
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('timeout')));
     await expect(fetchGitHubPullState('a', 'b', 12)).resolves.toBeUndefined();
+  });
+});
+
+describe('fetchGitHubCheckRuns (#929)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('C1 — asks the latest runs of the commit and folds them; the ETag goes out and comes back', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      answer(
+        {
+          check_runs: [
+            { name: 'lint', status: 'completed', conclusion: 'failure' },
+            { name: 'test', status: 'completed', conclusion: 'success' },
+          ],
+        },
+        'W/"r1"',
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(fetchGitHubCheckRuns('a', 'b', 'abc1234', 'W/"r0"')).resolves.toEqual({
+      conclusion: 'failure',
+      failed: ['lint'],
+      etag: 'W/"r1"',
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://api.github.com/repos/a/b/commits/abc1234/check-runs?filter=latest&per_page=100',
+    );
+    expect(fetchMock.mock.calls[0][1].headers['If-None-Match']).toBe('W/"r0"');
+  });
+
+  it('C3 — more runs than one page returned is pending, never a false pass (#929 review)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          answer({ total_count: 140, check_runs: [{ name: 'a', status: 'completed', conclusion: 'success' }] }),
+        ),
+    );
+    await expect(fetchGitHubCheckRuns('a', 'b', 'abc1234')).resolves.toEqual({ conclusion: 'pending', failed: [] });
+  });
+
+  it('C2 — a 304 is not-modified; a bad sha, a failure or a malformed body is undefined', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 304, headers: { get: () => null } }));
+    await expect(fetchGitHubCheckRuns('a', 'b', 'abc1234', 'W/"r1"')).resolves.toBe('not-modified');
+    await expect(fetchGitHubCheckRuns('a', 'b', '../x')).resolves.toBeUndefined();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(answer({ message: 'no' })));
+    await expect(fetchGitHubCheckRuns('a', 'b', 'abc1234')).resolves.toBeUndefined();
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('timeout')));
+    await expect(fetchGitHubCheckRuns('a', 'b', 'abc1234')).resolves.toBeUndefined();
   });
 });
