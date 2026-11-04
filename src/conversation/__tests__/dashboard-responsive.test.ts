@@ -199,7 +199,9 @@ describe('drawer — <ui-drawer> (D4 E-01, E-02): the element’s sheet below 84
       const src = readFileSync(join(dir as string, file), 'utf-8');
       expect(src, file).toMatch(/addEventListener\(\s*['"]scroll['"]\s*,[^\n]*,\s*true\s*\)/);
       for (const axis of axes) expect(src, `${file} ${axis}`).toMatch(new RegExp(`\\b${axis}\\s*=\\s*0\\b`));
-      expect(src, file).toMatch(new RegExp(`\\.${box}\\s*\\{[^}]*overflow:\\s*hidden;[^}]*overscroll-behavior:\\s*contain;`));
+      expect(src, file).toMatch(
+        new RegExp(`\\.${box}\\s*\\{[^}]*overflow:\\s*hidden;[^}]*overscroll-behavior:\\s*contain;`),
+      );
     }
     // The page sets nothing on the box itself.
     expect(TEMPLATE).not.toMatch(/\.slide-panel::part\(dialog\)/);
