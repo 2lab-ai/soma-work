@@ -263,28 +263,68 @@ export function followUpFromTldr(tldr: readonly string[]): { reason: string } | 
 }
 
 /**
+ * #829 / #917 — the follow-up the last Executive Summary left: its ⚠️ reason and when it started (`at`, the idle clock
+ * it floors). `askedAt` / `questionTurnId` — the host asked the follow-up question for this verdict
+ * (`src/slack/follow-up-question.ts`); each new verdict drops them, so the next stop asks again.
+ */
+export interface SessionFollowUp {
+  reason: string;
+  at: number;
+  askedAt?: number;
+  questionTurnId?: string;
+}
+
+type FollowUpListener = (session: { followUp?: SessionFollowUp }, previous: SessionFollowUp | undefined) => void;
+let followUpListener: FollowUpListener | undefined;
+
+/**
+ * #917 — the host hears every verdict on a session's follow-up (set, kept, cleared), with what it was before: a new
+ * verdict may ask the follow-up question, a cleared or changed one retracts the question it asked. One slot.
+ */
+export function setFollowUpListener(fn: FollowUpListener | undefined): void {
+  followUpListener = fn;
+}
+
+/**
  * #846 — the follow-up a TL;DR leaves, set on the session. It is one fact with one start time: the same ⚠️ reason again
  * keeps its time (the idle clock it floors and the panel's announcement do not restart, so re-running es on an
  * unfinished artifact cannot push sleep out forever); a new reason starts at `at` and clears the sleep warnings sent on
  * the old clock (they named the old expiry, and a sent warning is not sent again until cleared). No ⚠️ line clears it.
+ * #917 — every call is a new verdict: the same reason keeps its time but not its asked mark, so the host asks again.
  */
 export function applyFollowUp(session: object, tldr: readonly string[], at: number): string | undefined {
   const s = session as {
-    followUp?: { reason: string; at: number };
+    followUp?: SessionFollowUp;
     lastWarningSentAt?: number;
     warningMessageTs?: string;
   };
+  const previous = s.followUp ? { ...s.followUp } : undefined;
   const next = followUpFromTldr(tldr);
+  let posted: string | undefined;
   if (!next) {
     s.followUp = undefined;
-    return undefined;
+  } else if (previous?.reason === next.reason) {
+    // A new verdict on the same follow-up: same clock, may be asked again. The question already asked for it stays
+    // bound (`questionTurnId`) — while it is open no second one is asked, and a later clear still takes it back.
+    s.followUp = {
+      reason: next.reason,
+      at: previous.at,
+      ...(previous.questionTurnId ? { questionTurnId: previous.questionTurnId } : {}),
+    };
+  } else {
+    s.followUp = { reason: next.reason, at };
+    // #881 D1 — the warning already posted named the old expiry: hand it back so the caller edits it.
+    posted = s.warningMessageTs;
+    s.lastWarningSentAt = undefined;
+    s.warningMessageTs = undefined;
   }
-  if (s.followUp?.reason === next.reason) return undefined;
-  s.followUp = { reason: next.reason, at };
-  // #881 D1 — the warning already posted named the old expiry: hand it back so the caller edits it.
-  const posted = s.warningMessageTs;
-  s.lastWarningSentAt = undefined;
-  s.warningMessageTs = undefined;
+  if (previous || s.followUp) {
+    try {
+      followUpListener?.(s, previous);
+    } catch (error) {
+      logger.warn('Follow-up listener failed', { error: (error as Error)?.message ?? String(error) });
+    }
+  }
   return posted;
 }
 
@@ -499,11 +539,11 @@ export interface SummarySessionInfo {
    */
   executiveSummary?: { tldr: string[]; at: number; source?: 'es'; issuedAt?: number };
   /**
-   * #829 — the latest Executive Summary left an own issue/PR unfinished (its ⚠️ TL;DR line): the dashboard
-   * keeps the task card in NEEDS YOU with this reason. Set and cleared only by an Executive Summary
-   * (`displayOnThread`, or the model-run es through UPDATE_SESSION) — the next user input does not clear it.
+   * #829 — the latest Executive Summary left an own issue/PR unfinished (its ⚠️ TL;DR line). Set and cleared only by
+   * an Executive Summary (`displayOnThread`, or the model-run es through UPDATE_SESSION) — the next user input does
+   * not clear it. #917 — it waits on the user through the host's follow-up question, never on its own.
    */
-  followUp?: { reason: string; at: number };
+  followUp?: SessionFollowUp;
   actionPanel?: {
     summaryBlocks?: any[];
     [key: string]: any;

@@ -161,6 +161,12 @@ export interface GoalLoopControllerDeps {
    * Optional — without it the stall is announced with a plain notice.
    */
   askStallQuestion?: (question: GoalStallQuestion) => Promise<void>;
+  /**
+   * #917 — told after every loop run: `continued` when that run injected a continuation (the agent acts again),
+   * `queued` when another run already waits behind it. A run that did neither — the goal completed, a question
+   * opened, nothing to do — lets the host ask the session's follow-up question. Optional; never throws into the loop.
+   */
+  onRunSettled?: (sessionKey: string, info: { continued: boolean; queued: boolean }) => void;
   logger: GoalLoopLogger;
   /** Default work model when the session has none. */
   fallbackModel: string;
@@ -270,7 +276,45 @@ export class GoalLoopController {
    */
   onTurnSettled(sessionKey: string, opts: { cause?: GoalLoopTrigger } = {}): void {
     const cause = opts.cause ?? 'turn';
-    this.enqueue(sessionKey, () => this.runOnce(sessionKey, cause));
+    this.runsWaiting.set(sessionKey, (this.runsWaiting.get(sessionKey) ?? 0) + 1);
+    this.enqueue(sessionKey, async () => {
+      this.continuedThisRun.delete(sessionKey);
+      try {
+        await this.runOnce(sessionKey, cause);
+      } finally {
+        const left = (this.runsWaiting.get(sessionKey) ?? 1) - 1;
+        if (left > 0) this.runsWaiting.set(sessionKey, left);
+        else this.runsWaiting.delete(sessionKey);
+        this.noteRunSettled(sessionKey, { continued: this.continuedThisRun.delete(sessionKey), queued: left > 0 });
+      }
+    });
+  }
+
+  /** #917 — sessions whose current run injected a continuation (runs are serial per session). */
+  private readonly continuedThisRun = new Set<string>();
+  /** #917 — runs enqueued and not yet settled, per session (the current one included). */
+  private readonly runsWaiting = new Map<string, number>();
+  /** #917 — continuations injected whose turn has not yet taken the slot (or finished): injection is fire-and-forget. */
+  private readonly injecting = new Set<string>();
+
+  /**
+   * #917 (trinity R2 grok P1) — the loop is about to act on this session: a run is queued or running, or a
+   * continuation it injected has not yet claimed the turn slot. The host asks the follow-up question only while
+   * this is false — a question opened in that gap would outlive the continuation and park the loop in `waiting`.
+   */
+  isActing(sessionKey: string): boolean {
+    return this.queues.has(sessionKey) || this.injecting.has(sessionKey);
+  }
+
+  private noteRunSettled(sessionKey: string, info: { continued: boolean; queued: boolean }): void {
+    try {
+      this.deps.onRunSettled?.(sessionKey, info);
+    } catch (err: unknown) {
+      this.deps.logger.warn('Goal loop run-settled listener failed', {
+        sessionKey,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /**
@@ -961,6 +1005,7 @@ export class GoalLoopController {
       // after our pre-injection idle recheck (M2).
       routeContext: { skipAutoBotThread: true, goalContinuation: true },
     };
+    this.continuedThisRun.add(sessionKey);
     this.deps.logger.info('Injecting goal continuation', {
       sessionKey,
       continuationCount: activeGoal.continuationCount,
@@ -969,21 +1014,26 @@ export class GoalLoopController {
     // Fire-and-forget. Injection is the only thing that drives the loop
     // forward on 'continue'; if it throws the loop silently stalls, so
     // escalate to error + an actionable notice.
-    this.deps.injectContinuation(syntheticEvent, { sessionKey, session }).catch(async (err: unknown) => {
-      const injectErr = err instanceof Error ? err.message : String(err);
-      this.deps.logger.error('Goal continuation injection failed — loop stalled', { sessionKey, error: injectErr });
-      try {
-        await this.postLooseNotice(
-          session,
-          `⚠️ Goal continuation failed to start: ${injectErr}. The loop is paused — send a message in this thread to resume, or use \`goal pause\` / \`goal clear\`.`,
-        );
-      } catch (noticeErr: unknown) {
-        this.deps.logger.error('Failed to post goal continuation-failure notice', {
-          sessionKey,
-          error: noticeErr instanceof Error ? noticeErr.message : String(noticeErr),
-        });
-      }
-    });
+    this.injecting.add(sessionKey);
+    void this.deps
+      .injectContinuation(syntheticEvent, { sessionKey, session })
+      // Settles once the continuation's turn holds the slot or ran (handleMessage), or failed to start.
+      .finally(() => this.injecting.delete(sessionKey))
+      .catch(async (err: unknown) => {
+        const injectErr = err instanceof Error ? err.message : String(err);
+        this.deps.logger.error('Goal continuation injection failed — loop stalled', { sessionKey, error: injectErr });
+        try {
+          await this.postLooseNotice(
+            session,
+            `⚠️ Goal continuation failed to start: ${injectErr}. The loop is paused — send a message in this thread to resume, or use \`goal pause\` / \`goal clear\`.`,
+          );
+        } catch (noticeErr: unknown) {
+          this.deps.logger.error('Failed to post goal continuation-failure notice', {
+            sessionKey,
+            error: noticeErr instanceof Error ? noticeErr.message : String(noticeErr),
+          });
+        }
+      });
   }
 
   /**
