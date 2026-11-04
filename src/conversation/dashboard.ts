@@ -6060,6 +6060,18 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 .inbox-tools .admin-toggle { flex: none; }
 .inbox-tools .admin-toggle[aria-pressed="true"] { background: var(--tint-fail-bg); border-color: var(--tint-fail-line); color: var(--tint-fail-fg); }
 .panel-surface > .panel-status { flex: none; padding: 10px 16px 12px; }
+/* T6 (SSOT 2026-11-04): on a phone the card's title bar is one line of the board's top bar's height (52px) — title,
+   its actions and ✕, nothing under it (the status bar lives in the scroll area). */
+@media (max-width: 639px), (max-height: 560px) {
+  /* ui-drawer.slide-panel: above the sheet's notch rule (max(12px, safe-area) on top) — the notch keeps its inset,
+     the bar its 52px under it. */
+  ui-drawer.slide-panel .panel-header {
+    min-height: calc(52px + env(safe-area-inset-top, 0px));
+    padding: env(safe-area-inset-top, 0px) 12px 0 16px;
+  }
+}
+/* Reading: the box is exactly the view under the section tabs (sizePanelSections) — no 160px floor on a short screen. */
+.slide-panel[data-read] .psec { min-height: 0; }
 /* Reading: nothing sticks above the box — the agent strip scrolls out with the rest. */
 .slide-panel[data-read] .panel-tabs::part(list) { position: static; }
 .panel-command { position: relative; transition: transform var(--dur-move) var(--ease-out); }
@@ -6901,7 +6913,7 @@ function syncPhoneStatus() {
 // T2 · T4 — reading on a phone. data-read="1": the section box takes the whole view (sizePanelSections) and the panel's
 // scroll puts it right under the title bar — the status bar, the tab bar and the section tabs scroll out; "leaving"
 // while they scroll back in. data-tuck: the composer is away (#pc-reveal shows).
-var _rd = { touch: false, until: 0, last: -1, vp: null, leave: 0 };
+var _rd = { touch: false, until: 0, last: -1, vp: null, leave: 0, land: 0 };
 function panelReading() {
   var p = document.getElementById('slide-panel');
   return !!p && p.hasAttribute('data-read');
@@ -6909,12 +6921,13 @@ function panelReading() {
 function rdHow() {
   return typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth';
 }
-// Where the section box starts in the panel's scroll content.
+// Where reading lands in the panel's scroll content (T5): the section tabs (대화 · 작업 로그) right under the title bar,
+// the section box under them.
 function rdBoxTop() {
   var sc = document.getElementById('panel-scroll');
-  var box = psecBox();
-  if (!sc || !box) return 0;
-  return Math.max(0, Math.round(box.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop));
+  var secs = document.getElementById('panel-sections');
+  if (!sc || !secs) return 0;
+  return Math.max(0, Math.round(secs.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop));
 }
 function rdRead(on) {
   var p = document.getElementById('slide-panel');
@@ -6934,6 +6947,16 @@ function rdRead(on) {
     // The reader's new place: a layout anchor taken before it must not pull the panel back (#488).
     _panelScrollGen++;
     sc.scrollTo({ top: rdBoxTop(), behavior: how });
+    // The glide can stop short (the reader's fling, a live repaint): once it settles, the tabs go exactly under the
+    // title bar.
+    clearTimeout(_rd.land);
+    _rd.land = setTimeout(function() {
+      if (p.getAttribute('data-read') !== '1') return;
+      var t = rdBoxTop();
+      if (Math.abs(sc.scrollTop - t) <= 1) return;
+      _panelScrollGen++; // the reader's place: a layout anchor taken before it must not pull it back
+      sc.scrollTo({ top: t, behavior: 'instant' });
+    }, how === 'smooth' ? 600 : 0);
     return;
   }
   if (p.getAttribute('data-read') !== '1') return;
@@ -6971,6 +6994,7 @@ function pcReveal(e) {
 function rdReset() {
   var p = document.getElementById('slide-panel');
   clearTimeout(_rd.leave);
+  clearTimeout(_rd.land);
   _rd.last = -1;
   if (!p) return;
   var was = p.hasAttribute('data-read');
@@ -7097,6 +7121,12 @@ function syncPhoneChrome() {
   var secs = document.getElementById('panel-sections-body');
   if (secs) ['touchstart', 'touchmove', 'touchend', 'touchcancel', 'wheel', 'keydown'].forEach(function(t) {
     secs.addEventListener(t, rdGesture, { passive: true });
+  });
+  // The reader's own input anywhere in the card's scroll area ends the pending settle correction (_rd.land): it would
+  // pull back a place the reader scrolled to by hand. A glide the reader's scroll cut short is re-issued by rdRead.
+  var pscroll = document.getElementById('panel-scroll');
+  if (pscroll) ['touchstart', 'wheel', 'keydown'].forEach(function(t) {
+    pscroll.addEventListener(t, function() { clearTimeout(_rd.land); }, { passive: true });
   });
   // A tap on the title bar (not on its buttons) scrolls the head back in.
   var head = document.querySelector('#slide-panel .panel-header');
@@ -11220,6 +11250,9 @@ function bindPanelTabs() {
   if (!el || el._bound) return;
   el._bound = true;
   el.addEventListener('ui-change', function(e) {
+    // Only the agent strip's own choice: the section tabs (대화 · 작업 로그) are inside its panel and their ui-change
+    // bubbles here — read as an agent id it was '' (Main), so a section tab pressed on a subagent went back to Main.
+    if (e.target !== el) return;
     selectPanelAgent(panelTabAgent(e.detail && e.detail.value));
   });
   renderPanelTabs();
@@ -11525,12 +11558,23 @@ function paintSection(sec) {
 // focus on the tab it moved to.)
 function selectPanelSection(sec) {
   if (PSEC_ORDER.indexOf(sec) < 0) sec = 'conv';
-  rdReset();
+  // Phone chrome T5: a tab pressed while reading keeps reading — the tabs stay under the title bar, the new section
+  // lands on its newest (the composer with it); otherwise the card starts as it opens.
+  // Reading, not leaving: a tab pressed while the head comes back in (the title bar was tapped) keeps it coming.
+  var sp = document.getElementById('slide-panel');
+  var reading = !!sp && sp.getAttribute('data-read') === '1';
+  if (reading) {
+    rdTuck(false);
+    // The old section's box is about to empty (its scroll falls to 0): it is no longer the reader's.
+    _rd.vp = null;
+    _rd.last = -1;
+  } else rdReset();
   _psec = sec;
   renderPanelSections();
   for (var i = 0; i < PSEC_ORDER.length; i++) if (PSEC_ORDER[i] !== sec) psecClear(PSEC_ORDER[i]);
   if (panelSessionKey) paintSection(sec);
   psecToNewest();
+  if (reading) rdRead(true);
 }
 // The section shown, at its newest item (the element's); a later scroll up is the reader's.
 function psecToNewest() {
@@ -11551,8 +11595,10 @@ function sizePanelSections() {
   var secTop = secs.getBoundingClientRect().top;
   var strip = Math.max(0, box.getBoundingClientRect().top - secTop);
   var top = secTop + strip - scroll.getBoundingClientRect().top + scroll.scrollTop;
-  // Reading on a phone (rdRead): the box is the whole view — everything above it scrolls out.
-  var h = panelReading() ? view : psecHeightOf(view, top, panelTabsHeight() + strip);
+  // Reading on a phone (rdRead): the box is the whole view under the section tabs (T5) — everything above them scrolls out.
+  // No 160px floor here: on a short screen (a phone sideways, the composer back) a floor would run the box past the view
+  // and hide its newest rows behind the composer.
+  var h = panelReading() ? Math.max(0, view - strip) : psecHeightOf(view, top, panelTabsHeight() + strip);
   if (body._h === h) return;
   body._h = h;
   body.style.setProperty('--psec-h', h + 'px');
