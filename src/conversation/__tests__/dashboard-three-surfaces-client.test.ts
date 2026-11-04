@@ -999,7 +999,8 @@ describe('landing follows the opening intent (executed)', () => {
     const m = load<{ landPanel(): void; state(): { landed: boolean } }>(
       ['psecLandingTop', 'panelTabsHeight', 'landPanel'],
       ['_panelOnQuestion'],
-      { document: { getElementById: (id: string) => els[id] ?? null } },
+      // Phone chrome (SSOT 2026-11-04): a question landing brings the head back first — a seam here.
+      { document: { getElementById: (id: string) => els[id] ?? null }, rdReset: () => {} },
       [
         `var _panelLand = ${JSON.stringify(intent)}; var _panelLanded = false; var _panelLandAt = null; var _panelScrollGen = 0; var _panelDetail = ${!!opts.detail};`,
         'function state() { return { landed: _panelLanded }; }',
