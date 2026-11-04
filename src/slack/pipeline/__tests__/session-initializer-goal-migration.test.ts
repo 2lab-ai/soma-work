@@ -420,6 +420,57 @@ describe('SessionInitializer — bot-thread migration copies goal (#1082)', () =
     expect(botSession.safeguardHalt).toEqual(expect.objectContaining({ requestId: 'req_r9' }));
   });
 
+  // Review gate round 10 (astra-zhuge P1, PR #906): a session locked during its
+  // dispatch is neither routed nor migrated — a new thread would run unlocked.
+  it('initialize(): a session locked during dispatch stays in its thread (no migration)', async () => {
+    const tombstones: Record<string, unknown> = {};
+    let created: any;
+    mockClaudeHandler.createSession.mockImplementation(
+      (user: string, userName: string, channel: string, threadTs: string) => {
+        const s = { ownerId: user, ownerName: userName, userId: user, channelId: channel, threadTs, isActive: true };
+        if (!created) created = s;
+        botSession = s;
+        return s;
+      },
+    );
+    mockClaudeHandler.getSession.mockImplementation(() => created);
+    mockClaudeHandler.needsDispatch.mockReturnValue(true);
+    mockClaudeHandler.setActivityState = vi.fn();
+    mockClaudeHandler.getSessionRegistry = vi.fn(() => ({
+      getSafeguardHaltByKey: (key: string) => tombstones[key],
+    }));
+    const { getDispatchService } = await import('../../../dispatch-service');
+    vi.mocked(getDispatchService().dispatch).mockImplementationOnce(async () => {
+      // A late goal eval of the thread's earlier session locked the thread meanwhile.
+      tombstones['C123:222.200'] = { atMs: 5, detail: 'cyber' };
+      return { workflow: 'default', title: 'Session' } as any;
+    });
+
+    const result = await sessionInitializer.initialize(
+      { user: 'U123', channel: 'C123', ts: '222.200', text: 'do it' } as any,
+      '/test/dir',
+    );
+
+    expect(mockClaudeHandler.createSession).toHaveBeenCalledTimes(1);
+    expect(result.session).toBe(created);
+    expect(created.safeguardHalt).toEqual({ atMs: 5, detail: 'cyber' });
+  });
+
+  it('migration: a lock that lands on the source thread during its awaits is carried to the new thread', async () => {
+    const tombstones: Record<string, unknown> = {};
+    mockClaudeHandler.getSessionRegistry = vi.fn(() => ({
+      getSafeguardHaltByKey: (key: string) => tombstones[key],
+    }));
+    mockSlackApi.deleteMessage.mockImplementation(async () => {
+      tombstones['C123:orig-ts'] = { atMs: 6, detail: 'bio' };
+    });
+    const original = makeOriginalSession({ sourceThreadCleanupTs: ['cleanup-1'] });
+
+    await migrate(original);
+
+    expect(botSession.safeguardHalt).toEqual({ atMs: 6, detail: 'bio' });
+  });
+
   // Review gate round 8 (astra-zhuge P1, PR #906): the owner closed the session
   // while the classifier ran — the thread is still locked (its tombstone).
   it('a classifier block after the session closed leaves the thread a tombstone and the notice', async () => {
