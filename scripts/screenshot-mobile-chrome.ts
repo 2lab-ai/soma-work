@@ -14,7 +14,8 @@
  * The real web server serves the real page; the browser's HTTP layer is mocked (board, turns, answers, work log)
  * and the WebSocket is a stub, so every run is the same. Touch scrolls are Chromium's own gesture synthesis.
  *
- * Run from the repo root (keeps state out of the checkout):
+ * Run from the repo root in a clean env (keeps state out of the checkout; a CONVERSATION_VIEWER_TOKEN / OAuth or
+ * CONVERSATION_VIEWER_URL in the shell sends the page to /login or the canonical origin — prefix `env -i PATH="$PATH"`):
  *   SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst npx tsx scripts/screenshot-mobile-chrome.ts [outDir]
  */
 
@@ -423,6 +424,27 @@ async function phone(browser: Browser, width: number, height: number) {
   check(
     bottom.commandShown && !bottom.upShown,
     `${tag}: at the very bottom the composer is back (${JSON.stringify(bottom.vpScroll)})`,
+  );
+  // A short scroll back from the very bottom: the composer does not flap (tuck → the box grows onto the bottom →
+  // back → tuck …) — it stays or goes once.
+  const flips = await page.evaluate(() => {
+    const w = window as any;
+    w.__tuckFlips = 0;
+    new MutationObserver(() => w.__tuckFlips++).observe(document.getElementById('slide-panel') as Element, {
+      attributes: true,
+      attributeFilter: ['data-tuck'],
+    });
+    return 0;
+  });
+  await swipe(page, bottom.touch?.x ?? Math.round(width / 2), bottom.touch?.y ?? Math.round(height / 2), -60);
+  await sleep(600);
+  const near1 = await panelGeometry(page);
+  await sleep(400);
+  const near2 = await panelGeometry(page);
+  const flipCount = await page.evaluate(() => (window as any).__tuckFlips as number);
+  check(
+    flips === 0 && flipCount <= 1 && near1.commandShown === near2.commandShown,
+    `${tag}: a short scroll back near the bottom does not flap the composer (${flipCount} change(s), shown ${near2.commandShown})`,
   );
   check(!bottom.statusShown, `${tag}: the head stays out at the bottom of the chat (${JSON.stringify(bottom.outer)})`);
   if (process.env.MOBILE_CHROME_DEBUG) log((await page.evaluate(() => (window as any).__rdlog)).join('\n'));

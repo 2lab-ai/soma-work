@@ -182,11 +182,22 @@ describe('T2 — only the title bar stays while the reader scrolls', () => {
     );
   });
 
-  it('rdRead: in — the box grows, the panel scrolls it under the title bar; out — back to the top, then the box shrinks', () => {
+  it('rdRead: in — the box grows, the panel scrolls it under the title bar; out — back to the top, the box shrinks when the scroll lands', () => {
     const panel = new FakeNode('slide-panel');
     const calls: string[] = [];
+    const listeners: Record<string, () => void> = {};
     const scroll = Object.assign(new FakeNode('panel-scroll'), {
-      scrollTo: (o: { top: number; behavior: string }) => calls.push(`scroll ${o.top} ${o.behavior}`),
+      scrollTop: 0,
+      scrollTo(o: { top: number; behavior: string }) {
+        calls.push(`scroll ${o.top} ${o.behavior}`);
+        this.scrollTop = o.top;
+      },
+      addEventListener: (t: string, f: () => void) => {
+        listeners[t] = f;
+      },
+      removeEventListener: (t: string) => {
+        delete listeners[t];
+      },
     });
     const document = fakeDocument([panel, scroll as unknown as FakeNode]);
     const timers: Array<() => void> = [];
@@ -199,21 +210,58 @@ describe('T2 — only the title bar stays while the reader scrolls', () => {
       _panelScrollGen: 0,
       setTimeout: (f: () => void) => {
         timers.push(f);
-        return 1;
+        return timers.length;
       },
       clearTimeout: () => {},
     });
     m.rdRead(true);
     expect(panel.getAttribute('data-read')).toBe('1');
     expect(calls).toEqual(['size 1', 'scroll 240 smooth']);
-    m.rdRead(true); // already in: nothing more
+    m.rdRead(true); // already in, and landed: nothing more
     expect(calls).toHaveLength(2);
+    scroll.scrollTop = 90; // a live repaint stopped the glide short
+    m.rdRead(true);
+    expect(calls[2]).toBe('scroll 240 smooth');
+    calls.splice(2, 1);
     m.rdRead(false);
     expect(panel.getAttribute('data-read')).toBe('leaving');
     expect(calls[2]).toBe('scroll 0 smooth');
-    timers[0]();
+    m.rdRead(false); // a second tap while it scrolls back: nothing more
+    expect(calls).toHaveLength(3);
+    listeners.scrollend(); // the scroll landed
     expect(panel.hasAttribute('data-read')).toBe(false);
     expect(calls[3]).toBe('size null');
+    expect(listeners.scrollend).toBeUndefined();
+    timers[timers.length - 1](); // the floor timer after it: nothing more
+    expect(calls).toHaveLength(4);
+  });
+
+  it('rdRead: the reader scrolls again while the head comes back — reading again, the landing forgotten', () => {
+    const panel = new FakeNode('slide-panel');
+    panel.setAttribute('data-read', 'leaving');
+    const calls: string[] = [];
+    const scroll = Object.assign(new FakeNode('panel-scroll'), {
+      scrollTop: 100,
+      scrollTo: (o: { top: number }) => calls.push(`scroll ${o.top}`),
+    });
+    const m = load<{ rdRead: (on: boolean) => void }>(['rdRead'], {
+      document: fakeDocument([panel, scroll as unknown as FakeNode]),
+      rdHow: () => 'smooth',
+      rdBoxTop: () => 240,
+      sizePanelSections: () => calls.push('size'),
+      _rd: { leave: 7 },
+      _panelScrollGen: 0,
+      setTimeout: () => 0,
+      clearTimeout: (id: number) => calls.push(`clear ${id}`),
+    });
+    m.rdRead(true);
+    expect(panel.getAttribute('data-read')).toBe('1');
+    expect(calls).toEqual(['clear 7', 'size', 'scroll 240']);
+  });
+
+  it('what waits on the reader (a question, a permission, a plan) brings the head and the composer back', () => {
+    expect(clientFn('landPanel')).toMatch(/if \(onQuestion\) \{\n[^\n]*\n\s*rdReset\(\);/);
+    expect(clientFn('focusPanelComposer')).toContain('rdTuck(false);');
   });
 
   it('reading moves the reader’s place: a layout anchor taken before it is stale (_panelScrollGen)', () => {
@@ -265,6 +313,7 @@ describe('T2 · T4 — what one scroll of the reader’s box asks (rdStep)', () 
       user: boolean,
       olderLeft: boolean,
       typing: boolean,
+      grow?: number,
     ) => {
       read: boolean | null;
       tuck: boolean | null;
@@ -296,6 +345,12 @@ describe('T2 · T4 — what one scroll of the reader’s box asks (rdStep)', () 
   });
   it('back up at the start of everything (nothing older left), the head comes back', () => {
     expect(rdStep(0, 1000, 120, true, false, false)).toEqual({ read: false, tuck: true });
+  });
+  it('near the bottom the composer stays: the grown box would land on the bottom and bring it straight back', () => {
+    // 150px off the bottom; the composer's row and the head would add 300px to the box.
+    expect(rdStep(850, 1000, 900, true, false, false, 300)).toEqual({ read: true, tuck: null });
+    // Far enough up, it goes.
+    expect(rdStep(500, 1000, 600, true, false, false, 300)).toEqual({ read: true, tuck: true });
   });
   it('… not while an older page is still to come (the box pages it in)', () => {
     expect(rdStep(0, 1000, 120, true, true, false)).toEqual({ read: true, tuck: true });
@@ -329,7 +384,7 @@ describe('T4 — the composer slides away while reading; ^ brings it back', () =
 
   it('^ is a real button at the bottom right, named, shown only while the composer is away', () => {
     expect(TEMPLATE).toContain(
-      '<button type="button" class="ui-icon-btn is-bordered pc-reveal" id="pc-reveal" aria-label="입력창 보이기" title="입력창 보이기" onclick="rdTuck(false)"><i data-ui-icon="chevron-up"></i></button>',
+      '<button type="button" class="ui-icon-btn is-bordered pc-reveal" id="pc-reveal" aria-label="입력창 보이기" title="입력창 보이기" onclick="pcReveal(event)"><i data-ui-icon="chevron-up"></i></button>',
     );
     const r = cssRule('.pc-reveal');
     expect(r).toMatch(
@@ -340,9 +395,47 @@ describe('T4 — the composer slides away while reading; ^ brings it back', () =
     expect(cssRule('.slide-panel[data-tuck] .pc-reveal')).toContain('visibility: visible;');
   });
 
+  it('^ brings the composer back; from a key, focus follows into it (not to the page)', () => {
+    const calls: string[] = [];
+    const comp = { focus: () => calls.push('focus') };
+    const m = load<{ pcReveal: (e: { detail: number }) => void }>(['pcReveal'], {
+      rdTuck: (on: boolean) => calls.push(`tuck ${on}`),
+      document: { getElementById: (id: string) => (id === 'pc-composer' ? comp : null) },
+    });
+    m.pcReveal({ detail: 1 }); // a tap
+    expect(calls).toEqual(['tuck false']);
+    m.pcReveal({ detail: 0 }); // Enter / Space
+    expect(calls).toEqual(['tuck false', 'tuck false', 'focus']);
+  });
+
   it('the reader’s gestures in the sections arm the box’s scroll listener (touch, wheel, keys)', () => {
-    expect(TEMPLATE).toContain("['touchstart', 'touchmove', 'wheel', 'keydown'].forEach(function(t) {");
+    expect(TEMPLATE).toContain(
+      "['touchstart', 'touchmove', 'touchend', 'touchcancel', 'wheel', 'keydown'].forEach(function(t) {",
+    );
     expect(clientFn('rdGesture')).toContain("vp.addEventListener('scroll', rdOnScroll, { passive: true });");
+  });
+
+  it('the reader’s window is the finger plus a fixed fling — the page’s own scrolls never extend it', () => {
+    let now = 1000;
+    const vp = { scrollTop: 0, _rdBound: false, addEventListener: () => {} };
+    const _rd = { touch: false, until: 0, last: -1, vp: null as unknown, leave: 0 };
+    const m = load<{ rdGesture: (e: { type: string }) => void }>(['rdGesture'], {
+      isPhone: () => true,
+      psecViewport: () => vp,
+      rdOnScroll: () => {},
+      _rd,
+      Date: { now: () => now },
+    });
+    m.rdGesture({ type: 'touchstart' });
+    expect(_rd.touch).toBe(true);
+    m.rdGesture({ type: 'touchend' });
+    expect(_rd.touch).toBe(false);
+    expect(_rd.until).toBe(2200);
+    now = 1500;
+    m.rdGesture({ type: 'wheel' });
+    expect(_rd.until).toBe(1900);
+    expect(clientFn('rdOnScroll')).toContain('var user = _rd.touch || Date.now() < _rd.until;');
+    expect(clientFn('rdOnScroll')).not.toMatch(/_rd\.(until|gesture) = /);
   });
 });
 
