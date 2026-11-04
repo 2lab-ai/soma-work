@@ -821,8 +821,8 @@ describe('review r1 · a recording belongs to the card it was started for', () =
     const old: Node = { replaceWith: (n: Node) => replaced.push(n) };
     const { document } = fakeDoc(old, null);
     const env = load<{ pcFreshSteer(): void; __set(n: string, v: unknown): void }>(
-      ['pcComposerData', 'pcComposerSetup', 'pcFreshSteer'],
-      ['PC_LIMITS', '_pcNoteFiles', '_pcFailed'],
+      ['pcComposerData', 'pcComposerSetup', 'pcFreshSteer', 'cmTriggersFor'],
+      ['PC_LIMITS', '_pcNoteFiles', '_pcFailed', '_cmMenus'],
       // 받아쓰기 (SSOT 2026-11-01) has its own suite: no recogniser here, nothing to stop.
       { document, ntDictateStopIn: () => {}, ntDictationEngine: () => null, ntDictationUsable: () => false },
     );

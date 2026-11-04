@@ -78,10 +78,11 @@ describe('GET /api/dashboard/composer-menus', () => {
     menus = vi.fn((opts: { where: string }) => (opts.where === 'new-task' ? [SLASH] : [SLASH, DOLLAR]));
     dashboard.setDashboardComposerMenus(menus as never);
     await webServer.startWebServer({ listen: false });
-  });
+    // A cold import of the web server (every case resets the modules) can take longer than the default 10s.
+  }, 30_000);
 
   afterEach(async () => {
-    await stopWebServer();
+    await stopWebServer?.();
   });
 
   async function signIn(slackUserId = 'U_PLAIN') {

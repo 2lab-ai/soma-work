@@ -537,7 +537,8 @@ const defaultDeps: ComposerSkillDeps = {
 /**
  * Every skill `userId` can invoke (theirs, the built-in `local` ones, the plugins'), one row each, sorted by name,
  * with the token that names it unambiguously. An environment plugin's skill this user holds no grant for stays in
- * the list — invoking it asks an admin — and says so. No user (a viewer-token session): no personal skills.
+ * the list — invoking it asks an admin — and says so instead of its description. No user (a viewer-token session):
+ * no personal skills, and no environment skill's description.
  */
 export function composerSkillItems(
   opts: { userId?: string; admin: boolean },
@@ -575,7 +576,8 @@ export function composerSkillItems(
   const approval = t('관리자 승인 필요');
   return rows.map(({ needsApproval, ...r }) => {
     const out: ComposerSuggestionRow = { ...r, group: r.group ? t(r.group) : r.group };
-    if (needsApproval) out.description = r.description ? `${r.description} · ${approval}` : approval;
+    // Not granted yet: the name stays (invoking it asks an admin), the SKILL.md words are not shown.
+    if (needsApproval) out.description = approval;
     return out;
   });
 }

@@ -750,6 +750,7 @@ describe('ntComposerData — a dashboard task takes no files (#640 R2)', () => {
     loadWith<{ ntComposerData(): Record<string, unknown> }>(
       [
         'ntComposerData',
+        'cmTriggersFor',
         'ntReadDraft',
         'ntDictationEngine',
         'ntDictationChoice',
@@ -758,6 +759,7 @@ describe('ntComposerData — a dashboard task takes no files (#640 R2)', () => {
         'ntSendNarrow',
       ],
       {
+        _cmMenus: null,
         _ntValue: '',
         _ntDictation: null,
         _ntBusy: false,
