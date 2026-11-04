@@ -500,7 +500,8 @@ describe('mpHydrate — every picker under a root takes its session’s data, on
     m.paintCardBody(KEY);
     expect(morphs).toEqual(['[BODY:claude-opus-5-5[1m]]', '[BODY:claude-sonnet-4-6[1m]]']);
     const panel = clientFn('renderPanelControls');
-    expect(panel.trim().endsWith('mpHydrate(el);\n}')).toBe(true);
+    // Every pass hydrates, held or not — then the picker beside Send follows (phone chrome T3, SSOT 2026-11-04).
+    expect(panel.trim()).toMatch(/\n {2}mpHydrate\(el\);\n {2}syncPickerDock\(\);\n\}$/);
   });
 });
 
@@ -676,6 +677,8 @@ describe('D12 — an open menu holds its surface still', () => {
       renderModelNote: (_s: unknown, picker: boolean) => `[NOTE:${picker}]`,
       morphInnerHtml: (_e: unknown, h: string) => writes.push(h),
       mpHydrate: (root: unknown) => hydrated.push(root),
+      // Phone chrome T3 (SSOT 2026-11-04): the picker beside Send follows the controls — a seam here.
+      syncPickerDock: () => {},
     });
     m.renderPanelControls({ key: 'k', ownerId: 'U1', model: 'claude-opus-5-5[1m]', effort: 'high' });
     expect(writes[writes.length - 1]).toBe('<span class="pc-scope">이 세션</span>[M:true:panel][NOTE:true]');
@@ -719,6 +722,8 @@ describe('D12 — an open menu holds its surface still', () => {
       renderModelNote: () => '',
       morphInnerHtml: (_e: unknown, h: string) => writes.push(h),
       mpHydrate: (root: unknown) => hydrated.push(root),
+      // Phone chrome T3 (SSOT 2026-11-04): the picker beside Send follows the controls — a seam here.
+      syncPickerDock: () => {},
     });
     // Its own session: held (no write).
     m.renderPanelControls({ key: 'old', ownerId: 'U1', model: 'claude-opus-5-5[1m]' });

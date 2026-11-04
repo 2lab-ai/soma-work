@@ -5583,7 +5583,7 @@ ui-approval-card[data-ai="approve"] { --ac-primary: color-mix(in srgb, var(--st-
 ui-drawer:not(:defined) { display: none; }
 .slide-panel { --ui-drawer-top: var(--topbar-b, 0px); --ui-drawer-z: 100; }
 .slide-panel::part(panel) { background: var(--surface); color: var(--text); padding-right: env(safe-area-inset-right, 0px); }
-.slide-panel::part(body) { display: flex; flex-direction: column; min-height: 0; padding: 0; overflow: hidden; font-size: 14px; line-height: 1.45; color: var(--text); overflow-wrap: normal; }
+.slide-panel::part(body) { position: relative; display: flex; flex-direction: column; min-height: 0; padding: 0; overflow: hidden; font-size: 14px; line-height: 1.45; color: var(--text); overflow-wrap: normal; }
 /* Panel tasks (.prd/10 §3.1-6) — pinned between the token badges and the
    scroll area: always shown (an empty line when there are none yet), with its
    own scroll so a long list never pushes the work log and turns away. */
@@ -5979,6 +5979,54 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
   .inbox-tools { flex: 1 1 auto; min-width: 0; flex-wrap: wrap; justify-content: flex-end; row-gap: 8px; }
 }
 
+/* ── PHONE CHROME (SSOT 2026-11-04) — on a phone (narrow, or sideways: PHONE_MQ) the content takes the screen.
+   T1 · the top bar is one line: the scope group (승인 · 관리자 · the board's user · the defaults) leaves the bar's
+   toolbar for the board's head (syncPhoneScope) and scrolls with the board.
+   T2 · the detail card keeps only its title bar while the reader scrolls the chat or the work log: the status bar
+   joins the scroll area (syncPhoneStatus), and reading (data-read, rdRead) grows the section box to the whole view
+   and scrolls everything above it out under the title bar; a tap on the title bar scrolls it back in.
+   T3 · the session's model picker sits on the composer's own row, left of Send (syncPickerDock measures the row).
+   T4 · reading tucks the composer away (data-tuck): it slides down; a ^ at the bottom right (#pc-reveal) brings it
+   back, and so does the very bottom of the chat or the log. ── */
+.inbox-tools > .topbar-scope { flex: 1 1 auto; flex-wrap: wrap; margin-right: auto; }
+.inbox-tools .topbar-defaults { display: flex; gap: 6px; align-items: center; flex: none; }
+.inbox-tools .topbar-defaults[hidden], .inbox-tools .td-also[hidden] { display: none; }
+.inbox-tools .td-prefix, .inbox-tools .td-status { display: none; }
+.inbox-tools .td-also { font-size: 12px; white-space: nowrap; }
+.inbox-tools .user-select { --ui-select-max: 160px; flex: 0 1 auto; }
+.inbox-tools .admin-toggle { flex: none; }
+.inbox-tools .admin-toggle[aria-pressed="true"] { background: var(--tint-fail-bg); border-color: var(--tint-fail-line); color: var(--tint-fail-fg); }
+.panel-surface > .panel-status { flex: none; padding: 10px 16px 12px; }
+/* Reading: nothing sticks above the box — the agent strip scrolls out with the rest. */
+.slide-panel[data-read] .panel-tabs::part(list) { position: static; }
+.panel-command { position: relative; transition: transform var(--dur-move) var(--ease-out); }
+.slide-panel[data-tuck] .panel-command {
+  position: absolute; left: 0; right: 0; bottom: 0; transform: translateY(100%); visibility: hidden;
+  transition: transform var(--dur-move) var(--ease-out), visibility 0s linear var(--dur-move);
+}
+.pc-reveal {
+  position: absolute; z-index: 7; right: calc(16px + env(safe-area-inset-right, 0px)); bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  width: 44px; height: 44px; border-radius: 999px; background: var(--surface); box-shadow: var(--ib-shadow-raised);
+  opacity: 0; visibility: hidden; transform: translateY(8px);
+  transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-move) var(--ease-out), visibility 0s linear var(--dur-fade);
+}
+.slide-panel[data-tuck] .pc-reveal {
+  opacity: 1; visibility: visible; transform: none;
+  transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-move) var(--ease-out), visibility 0s;
+}
+/* T3: the picker's box spans the row between the composer's tools and Send (--pd-*: syncPickerDock); it lets taps
+   through where it is empty and ends at Send. A model note floats above it. */
+.panel-command[data-pick-dock] > .panel-controls {
+  position: absolute; z-index: 2; left: var(--pd-l, 0px); right: var(--pd-r, 0px); top: var(--pd-t, 0px); height: var(--pd-h, 44px);
+  display: flex; flex-wrap: nowrap; align-items: center; justify-content: flex-end; padding: 0; pointer-events: none;
+}
+.panel-command[data-pick-dock] > .panel-controls > * { pointer-events: auto; }
+.panel-command[data-pick-dock] > .panel-controls > ui-model-picker { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+.panel-command[data-pick-dock] > .panel-controls > .cb-model-note {
+  position: absolute; right: 0; bottom: calc(100% + 6px); max-width: min(280px, 80vw); padding: 4px 8px; border-radius: 8px;
+  background: var(--surface-raised); box-shadow: var(--ib-shadow);
+}
+
 /* ── RESPONSIVE — Bauhaus grid adapts ── */
 @media (max-width: 680px) {
   .stats-grid { margin-bottom: 12px; }
@@ -6368,7 +6416,7 @@ ${pageTokenAliases()}
     <section class="inbox ui-tok" id="inbox" aria-label="에이전트 인박스">
       <div class="inbox-head">
         <ui-breadcrumbs class="crumbs" id="inbox-trail" lang="ko"></ui-breadcrumbs>
-        <div class="inbox-tools">
+        <div class="inbox-tools" id="inbox-tools">
           <button type="button" class="ui-chip archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><i data-ui-icon="archive"></i><span id="archives-label">보관함</span></button>
           <button type="button" class="ui-chip archives-btn" id="sleeping-toggle" aria-pressed="true" hidden onclick="toggleSleeping()"><i data-ui-icon="moon"></i><span id="sleeping-label">휴면</span></button>
           <button type="button" class="ui-chip archives-btn" id="lifecycle-btn" style="display:none" title="세션 수명 주기 (관리자)" onclick="openLifecycleDialog()"><i data-ui-icon="clock"></i><span>수명 주기</span></button>
@@ -6542,6 +6590,9 @@ ${pageTokenAliases()}
         <ui-agent-steering id="cmd-steer" lang="ko"><ui-composer id="pc-composer" slot="composer" lang="ko"></ui-composer></ui-agent-steering>
       </div>
     </div>
+    <!-- Phone chrome T4 (SSOT 2026-11-04): while the reader scrolls back through the chat or the log the composer is
+         tucked away (data-tuck); this brings it back. -->
+    <button type="button" class="ui-icon-btn is-bordered pc-reveal" id="pc-reveal" aria-label="입력창 보이기" title="입력창 보이기" onclick="rdTuck(false)"><i data-ui-icon="chevron-up"></i></button>
   </ui-drawer>
 
   <!-- New task (SSOT 2026-10-23): floating button (phones, and PC once the top-bar
@@ -6754,6 +6805,214 @@ function paintAppBar() {
 // ── Theme — the head script owns it (themeClientJs, soma-work 830): <html>'s data-theme / data-palette, this browser's
 // choice, the OS follow and the bar's ui-theme-change. The bar's first data comes from paintAppBar. ──
 paintAppBar();
+// ── Phone chrome (SSOT 2026-11-04) — on a phone the content takes the screen (see the PHONE CHROME rules). A phone is
+// narrow, or a short screen (a phone sideways) — the page's own breakpoints. ──
+var PHONE_MQ = '(max-width: 639px), (max-height: 560px)';
+var _phoneMq = typeof window !== 'undefined' && typeof window.matchMedia === 'function' ? window.matchMedia(PHONE_MQ) : null;
+function isPhone() {
+  return !!(_phoneMq && _phoneMq.matches);
+}
+// T1: the scope group's home — the bar's toolbar, or on a phone the board's head (the bar keeps its one line; the
+// group scrolls with the board).
+function syncPhoneScope() {
+  var scope = document.getElementById('topbar-scope');
+  var bar = document.getElementById('app-bar');
+  var tools = document.getElementById('inbox-tools');
+  if (!scope || !bar || !tools) return;
+  if (isPhone()) {
+    if (scope.parentNode !== tools) tools.insertBefore(scope, tools.firstChild);
+  } else if (scope.parentNode !== bar) bar.appendChild(scope);
+}
+// T2: the status bar's home — the detail card's title bar, or on a phone the top of its scroll area: everything but
+// the title bar scrolls out with the content.
+function syncPhoneStatus() {
+  var st = document.getElementById('panel-status');
+  var head = document.querySelector('#slide-panel .panel-header');
+  var surf = document.getElementById('panel-surface');
+  if (!st || !head || !surf) return;
+  if (isPhone()) {
+    if (st.parentNode !== surf) surf.insertBefore(st, surf.firstChild);
+  } else if (st.parentNode !== head) head.appendChild(st);
+}
+// T2 · T4 — reading on a phone. data-read="1": the section box takes the whole view (sizePanelSections) and the panel's
+// scroll puts it right under the title bar — the status bar, the tab bar and the section tabs scroll out; "leaving"
+// while they scroll back in. data-tuck: the composer is away (#pc-reveal shows).
+var _rd = { gesture: 0, last: -1, vp: null, leave: 0 };
+function panelReading() {
+  var p = document.getElementById('slide-panel');
+  return !!p && p.hasAttribute('data-read');
+}
+function rdHow() {
+  return typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth';
+}
+// Where the section box starts in the panel's scroll content.
+function rdBoxTop() {
+  var sc = document.getElementById('panel-scroll');
+  var box = psecBox();
+  if (!sc || !box) return 0;
+  return Math.max(0, Math.round(box.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop));
+}
+function rdRead(on) {
+  var p = document.getElementById('slide-panel');
+  var sc = document.getElementById('panel-scroll');
+  if (!p || !sc) return;
+  var how = rdHow();
+  if (on) {
+    if (p.getAttribute('data-read') === '1') return;
+    clearTimeout(_rd.leave);
+    p.setAttribute('data-read', '1');
+    sizePanelSections();
+    // The reader's new place: a layout anchor taken before it must not pull the panel back (#488).
+    _panelScrollGen++;
+    sc.scrollTo({ top: rdBoxTop(), behavior: how });
+    return;
+  }
+  if (p.getAttribute('data-read') !== '1') return;
+  // The box keeps the whole view while the head scrolls back in, then takes the rest of the panel again.
+  p.setAttribute('data-read', 'leaving');
+  _panelScrollGen++;
+  sc.scrollTo({ top: 0, behavior: how });
+  _rd.leave = setTimeout(function() {
+    p.removeAttribute('data-read');
+    sizePanelSections();
+  }, how === 'smooth' ? 420 : 0);
+}
+function rdTuck(on) {
+  var p = document.getElementById('slide-panel');
+  if (!p || p.hasAttribute('data-tuck') === !!on) return;
+  if (on) p.setAttribute('data-tuck', '');
+  else p.removeAttribute('data-tuck');
+}
+// A new view (another card, section, tab or agent; the phone turned): the card as it opens — head and composer in.
+function rdReset() {
+  var p = document.getElementById('slide-panel');
+  clearTimeout(_rd.leave);
+  _rd.last = -1;
+  if (!p) return;
+  var was = p.hasAttribute('data-read');
+  p.removeAttribute('data-read');
+  p.removeAttribute('data-tuck');
+  if (was) sizePanelSections();
+}
+// The open section's own scroll viewport: <ui-conversation> / <ui-work-log> → <ui-log-scroller> → .ls-vp, or the
+// tree's <ui-log-scroller> itself (open shadow roots), or null.
+function psecViewport() {
+  var el = psecEl();
+  var sc = el && el.tagName === 'UI-LOG-SCROLLER' ? el : el && el.shadowRoot ? el.shadowRoot.querySelector('ui-log-scroller') : null;
+  return (sc && sc.shadowRoot && sc.shadowRoot.querySelector('.ls-vp')) || null;
+}
+// Pure: what one scroll of the reader's box asks of the panel — { read, tuck }, each true / false / null (leave it).
+// Any scroll that lands at the very bottom brings the composer back; the reader's own scroll (user) away from it
+// scrolls the head out and tucks the composer (not while they type in it); back up at the start of everything
+// (no older page left) the head comes back.
+function rdStep(top, max, prev, user, olderLeft, typing) {
+  var atBottom = max - top <= 8;
+  var r = { read: null, tuck: null };
+  if (atBottom) r.tuck = false;
+  if (!user || prev < 0 || Math.abs(top - prev) < 1) return r;
+  if (!atBottom) {
+    r.read = true;
+    if (!typing) r.tuck = true;
+  }
+  if (top < prev && top <= 2 && !olderLeft) r.read = false;
+  return r;
+}
+function rdOnScroll(e) {
+  var vp = e.currentTarget;
+  if (vp !== _rd.vp || !isPhone() || !panelOpen) return;
+  var now = Date.now();
+  // The reader's own scroll: a touch, the wheel or a key just now — and the fling after the finger lifts.
+  var user = now - _rd.gesture < 700;
+  if (user) _rd.gesture = now;
+  var host = vp.getRootNode && vp.getRootNode().host;
+  var cmd = document.getElementById('panel-command');
+  var act = document.activeElement;
+  var r = rdStep(vp.scrollTop, vp.scrollHeight - vp.clientHeight, _rd.last, user,
+    !!(host && host.data && host.data.hasMore), !!(cmd && act && act !== document.body && cmd.contains(act)));
+  _rd.last = vp.scrollTop;
+  if (r.tuck !== null) rdTuck(r.tuck);
+  if (r.read !== null) rdRead(r.read);
+}
+// A touch, the wheel or a key in the sections: the reader is about to scroll — the box listens from now on.
+function rdGesture() {
+  if (!isPhone()) return;
+  _rd.gesture = Date.now();
+  var vp = psecViewport();
+  if (vp && !vp._rdBound) {
+    vp._rdBound = true;
+    vp.addEventListener('scroll', rdOnScroll, { passive: true });
+  }
+  if (vp !== _rd.vp) {
+    _rd.vp = vp;
+    _rd.last = vp ? vp.scrollTop : -1;
+  }
+}
+// T3 — the session's model picker on the composer's row, left of Send (a phone). The row is <ui-composer>'s own
+// toolbar (its open shadow root), so the page measures it — the tools' end, Send's start, the row's top and height —
+// and lays the picker's box between them (data-pick-dock); elsewhere, or while a recording takes the row (no .cp-end),
+// the picker keeps its line above the composer.
+function syncPickerDock() {
+  var cmd = document.getElementById('panel-command');
+  var ctl = document.getElementById('panel-controls');
+  var comp = document.getElementById('pc-composer');
+  if (!cmd || !ctl) return;
+  var bar = isPhone() && comp && comp.shadowRoot ? comp.shadowRoot.querySelector('.cp-bar') : null;
+  var end = bar ? bar.querySelector('.cp-end') : null;
+  if (!end || !cmd.getBoundingClientRect().width) {
+    cmd.removeAttribute('data-pick-dock');
+    return;
+  }
+  // Docked first: the picker leaves the flow, so the row is measured where it then is.
+  cmd.setAttribute('data-pick-dock', '');
+  var c = cmd.getBoundingClientRect();
+  var b = bar.getBoundingClientRect();
+  var tools = bar.querySelector('.cp-tools');
+  var from = tools ? tools.getBoundingClientRect().right : b.left;
+  var to = b.right;
+  for (var i = 0; i < end.children.length; i++) {
+    var r = end.children[i].getBoundingClientRect();
+    if (r.width > 0) to = Math.min(to, r.left);
+  }
+  ctl.style.setProperty('--pd-l', Math.round(from - c.left + 6) + 'px');
+  ctl.style.setProperty('--pd-r', Math.round(c.right - to + 6) + 'px');
+  ctl.style.setProperty('--pd-t', Math.round(b.top - c.top) + 'px');
+  ctl.style.setProperty('--pd-h', Math.round(b.height) + 'px');
+}
+function syncPhoneChrome() {
+  syncPhoneScope();
+  syncPhoneStatus();
+  rdReset();
+  syncPickerDock();
+  sizePanelSections();
+}
+(function initPhoneChrome() {
+  if (typeof document === 'undefined') return;
+  syncPhoneScope();
+  syncPhoneStatus();
+  if (_phoneMq) {
+    if (typeof _phoneMq.addEventListener === 'function') _phoneMq.addEventListener('change', syncPhoneChrome);
+    else if (typeof _phoneMq.addListener === 'function') _phoneMq.addListener(syncPhoneChrome);
+  }
+  var secs = document.getElementById('panel-sections-body');
+  if (secs) ['touchstart', 'touchmove', 'wheel', 'keydown'].forEach(function(t) {
+    secs.addEventListener(t, rdGesture, { passive: true });
+  });
+  // A tap on the title bar (not on its buttons) scrolls the head back in.
+  var head = document.querySelector('#slide-panel .panel-header');
+  if (head) head.addEventListener('click', function(e) {
+    var t = e.target;
+    if (!isPhone() || !panelReading() || (t && t.closest && t.closest('button, a, input, select, ui-deck-nav, ui-status-bar'))) return;
+    rdRead(false);
+  });
+  if (typeof ResizeObserver === 'function') {
+    var dock = new ResizeObserver(function() { syncPickerDock(); });
+    // The steering inside is replaced per card (pcFreshSteer): its wrapper is the one that stays.
+    ['#panel-command', '#panel-command .pc-steer-wrap'].forEach(function(sel) {
+      var el = document.querySelector(sel);
+      if (el) dock.observe(el);
+    });
+  }
+})();
 // ── Panel width — the docked drawer's inner edge (SSOT 2026-10-24, D4 E-01) ──
 // The drag and the handle's arrow keys are <ui-drawer resizable>'s: it clamps the width to
 // [min-width, min(max-width, viewport − 48)] and says ui-resize. The page keeps the saved
@@ -11167,6 +11426,7 @@ function paintSection(sec) {
 // focus on the tab it moved to.)
 function selectPanelSection(sec) {
   if (PSEC_ORDER.indexOf(sec) < 0) sec = 'conv';
+  rdReset();
   _psec = sec;
   renderPanelSections();
   for (var i = 0; i < PSEC_ORDER.length; i++) if (PSEC_ORDER[i] !== sec) psecClear(PSEC_ORDER[i]);
@@ -11192,7 +11452,8 @@ function sizePanelSections() {
   var secTop = secs.getBoundingClientRect().top;
   var strip = Math.max(0, box.getBoundingClientRect().top - secTop);
   var top = secTop + strip - scroll.getBoundingClientRect().top + scroll.scrollTop;
-  var h = psecHeightOf(view, top, panelTabsHeight() + strip);
+  // Reading on a phone (rdRead): the box is the whole view — everything above it scrolls out.
+  var h = panelReading() ? view : psecHeightOf(view, top, panelTabsHeight() + strip);
   if (body._h === h) return;
   body._h = h;
   body.style.setProperty('--psec-h', h + 'px');
@@ -11800,6 +12061,7 @@ function renderPanelMidbar() {
 // A press on a tab: it opens (the one open before closes), or closes when it was open. What it shows is painted
 // now — 세부 the full record, 작업 the list unfolded, 에이전트 the strip — and the section boxes below are sized again.
 function selectPanelMid(id) {
+  rdReset();
   _panelMid = _panelMid === id || !MID_TAB_LABEL[id] ? '' : id;
   if (_panelMid === 'info') _panelInfoOpen = true;
   if (_panelMid === 'tasks') {
@@ -12190,6 +12452,7 @@ function goalCardFocusTarget() {
 // painted again for the new scope, at its newest). The work log keeps one
 // open/closed map of task groups per agent.
 function selectPanelAgent(agentId) {
+  rdReset();
   var before = document.activeElement;
   var focusInPanel = !!(before && before !== document.body && before.closest && before.closest('#slide-panel'));
   var next = agentId || '';
@@ -13474,6 +13737,7 @@ function renderPanelControls(s) {
     }
   }
   mpHydrate(el);
+  syncPickerDock();
 }
 // After a switch on either surface: the panel's copy follows at once.
 function repaintPanelControlsFor(key) {
@@ -16663,6 +16927,8 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // 전체 task →, a tree item) keeps the message being typed and a send in flight
   // (spec 13).
   var sameSession = panelOpen && panelSessionKey === sessionKey;
+  // Phone chrome: every opening starts with the head and the composer in.
+  rdReset();
   if (!sameSession) {
     pcFreshSteer();
     // Another session's task ids (T1 …) are other tasks: no run's detail carries over.
@@ -21977,6 +22243,8 @@ function pcComposerSetup(c, takesFiles) {
   delete d.voice;
   delete d.accept;
   c.data = Object.assign(d, pcComposerData(takesFiles));
+  // Its tools may have changed (받아쓰기): the picker beside Send follows once the composer drew them.
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(syncPickerDock);
 }
 // A fresh element for another session: what the old one showed — the text being
 // typed, its files, notes in flight, a failed send's Retry — was the other
