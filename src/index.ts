@@ -2020,7 +2020,7 @@ async function start() {
         },
         // #929 — a finished CI reaches the session as a host turn: now when it is idle, else when it settles.
         fetchChecks: fetchGitHubCheckRuns,
-        deliver: (sessionKey, text) => delivery.deliver(sessionKey, text),
+        deliver: (sessionKey, text, done) => delivery.deliver(sessionKey, text, done),
         store: createFilePrWatchStore(path.join(DATA_DIR, 'pr-watch.json'), (message, detail) =>
           logger.warn(message, detail),
         ),

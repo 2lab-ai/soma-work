@@ -274,7 +274,8 @@ describe('entry point wiring (#929)', () => {
   it('the daemon gives the watch the check-run reader, a delivery path and the store', () => {
     const index = fs.readFileSync(path.join(__dirname, '..', 'index.ts'), 'utf-8');
     expect(index).toContain('fetchChecks: fetchGitHubCheckRuns');
-    expect(index).toContain('deliver: (sessionKey, text) => delivery.deliver(sessionKey, text)');
+    // The record is written only in `done` — a wrapper that drops it re-sends the same CI message every restart.
+    expect(index).toContain('deliver: (sessionKey, text, done) => delivery.deliver(sessionKey, text, done)');
     expect(index).toContain("createFilePrWatchStore(path.join(DATA_DIR, 'pr-watch.json')");
   });
 });
