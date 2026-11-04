@@ -71,7 +71,8 @@ function partsOf(file: string): Array<{ part: string; chars: number }> {
   return parts;
 }
 
-function largest(parts: Array<{ part: string; chars: number }>, n = 8): string {
+/** Every part, largest first — the one that grew is in the list whatever its size (#931 review, astra). */
+function largest(parts: Array<{ part: string; chars: number }>, n = Number.POSITIVE_INFINITY): string {
   return [...parts]
     .sort((a, b) => b.chars - a.chars)
     .slice(0, n)
@@ -79,20 +80,32 @@ function largest(parts: Array<{ part: string; chars: number }>, n = 8): string {
     .join('\n');
 }
 
-/** The `description` of a markdown file's front matter: plain, quoted, or a `>`/`|` block. */
+/**
+ * The `description` of a markdown file's front matter. The value runs on over every indented or blank line up to the
+ * next key, so a `>`/`|` block (blank lines included), a plain scalar and a quoted scalar are all counted whole — a
+ * budget must not undercount (#931 review, astra).
+ */
 function frontmatterDescription(md: string): string | undefined {
   const lines = md.split('\n');
   if (lines[0]?.trim() !== '---') return undefined;
   for (let i = 1; i < lines.length && lines[i].trim() !== '---'; i++) {
     const m = /^description:\s*(.*)$/.exec(lines[i]);
     if (!m) continue;
-    const value = m[1].trim();
-    if (/^[>|][-+]?$/.test(value) || value === '') {
-      const block: string[] = [];
-      for (let j = i + 1; j < lines.length && /^\s+\S/.test(lines[j]); j++) block.push(lines[j].trim());
-      return block.join(' ');
+    const rest: string[] = [];
+    for (let j = i + 1; j < lines.length && lines[j].trim() !== '---'; j++) {
+      if (lines[j].trim() !== '' && !/^\s/.test(lines[j])) break;
+      rest.push(lines[j].trim());
     }
-    if (value.startsWith('"') && value.endsWith('"')) return JSON.parse(value) as string;
+    while (rest.length > 0 && rest[rest.length - 1] === '') rest.pop();
+    const first = m[1].trim();
+    const value = [...(/^[>|][-+]?\d*$/.test(first) ? [] : [first]), ...rest].join(' ').trim();
+    if (value.startsWith('"') && value.endsWith('"')) {
+      try {
+        return JSON.parse(value) as string;
+      } catch {
+        return value.slice(1, -1);
+      }
+    }
     if (value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1).replace(/''/g, "'");
     return value;
   }
@@ -146,7 +159,7 @@ describe('per-turn fixed text budget (#931)', () => {
       workflow === 'default' ? path.join(PROMPT_DIR, 'default.prompt') : path.join(WORKFLOWS_DIR, `${workflow}.prompt`);
     expect(
       chars(prompt),
-      `workflow '${workflow}' system prompt is ${chars(prompt)} chars, budget ${budget}. Largest parts:\n${largest(partsOf(file))}\nCut it, or raise WORKFLOW_BUDGET['${workflow}'] in this test on purpose.`,
+      `workflow '${workflow}' system prompt is ${chars(prompt)} chars, budget ${budget}. Parts, largest first:\n${largest(partsOf(file))}\nCut it, or raise WORKFLOW_BUDGET['${workflow}'] in this test on purpose.`,
     ).toBeLessThanOrEqual(budget);
   });
 
@@ -168,7 +181,7 @@ describe('per-turn fixed text budget (#931)', () => {
     expect(parts.length).toBeGreaterThan(0);
     expect(
       total,
-      `${group} descriptions total ${total} chars, budget ${budget.total}. Largest:\n${largest(parts)}\nShorten them, or raise LISTING_BUDGET.${group}.total on purpose.`,
+      `${group} descriptions total ${total} chars, budget ${budget.total}. All, largest first:\n${largest(parts)}\nShorten them, or raise LISTING_BUDGET.${group}.total on purpose.`,
     ).toBeLessThanOrEqual(budget.total);
     const over = parts.filter((p) => p.chars > budget.each);
     expect(
@@ -179,6 +192,14 @@ describe('per-turn fixed text budget (#931)', () => {
 });
 
 describe('frontmatterDescription', () => {
+  it('reads a description that runs over several lines — a block with a blank line, a plain or a quoted scalar (#931 review)', () => {
+    expect(frontmatterDescription('---\ndescription: >\n  one\n\n  two\nname: x\n---')).toMatch(/^one\s+two$/);
+    expect(frontmatterDescription('---\ndescription: first\n  second\nname: x\n---')).toBe('first second');
+    expect(frontmatterDescription('---\ndescription: "a\n  b"\n---')).toBe('a b');
+    const long = 'x'.repeat(3000);
+    expect(frontmatterDescription(`---\ndescription: >\n  short\n\n  ${long}\n---`)?.length).toBeGreaterThan(3000);
+  });
+
   it('reads plain, quoted and block descriptions', () => {
     expect(frontmatterDescription('---\nname: a\ndescription: plain text\n---\nbody')).toBe('plain text');
     expect(frontmatterDescription('---\ndescription: "say \\"hi\\""\n---')).toBe('say "hi"');
