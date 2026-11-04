@@ -1321,9 +1321,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
     // Safeguards halt (ssot T2/T3): a halted session runs no query — whatever
     // path reached here (an adapter continuation, a dispatch the classifier's
-    // block halted, a turn racing the lock). Fail closed; the halt notice and
-    // its admin button were already posted when the lock was set.
-    if (session.safeguardHalt && session.incidentRequest === undefined) {
+    // block halted, a turn racing the lock, a further incident attempt). Fail
+    // closed; the halt notice and its admin button were already posted when the
+    // lock was set.
+    if (session.safeguardHalt) {
       return this.refuseHaltedTurn(session, sessionKey, processedFiles, params.followupTurnEpoch);
     }
 
@@ -2082,7 +2083,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // included) — the session cannot go on with this model. The executor
         // reads the flag off the result before the abort, so the turn ends in
         // the safeguard rail, not as an abort. Incident attempts are exempt
-        // (their text is host-authored).
+        // here (their text is host-authored): the incident screener reads the
+        // model's raw text and halts the session itself (`screenIncidentStream`).
         onSafeguardFlag: () => {
           if (!incidentAttempt) abortController.abort('safeguard' satisfies RequestAbortReason);
         },
@@ -2831,7 +2833,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // and before every content guard (a flag during `/compact` must halt, not
       // read as a compaction failure). Every non-incident turn — a tool
       // continuation can be flagged too. Sources: the processor's sticky flag,
-      // the turn text, and an SDK error result's `errors[]`.
+      // the turn text, and an SDK error result's `errors[]`. An incident
+      // attempt's text is the host's conclusion; its screener halts the session
+      // on the model's raw text instead (`screenIncidentStream`).
       const safeguardFlag = incidentAttempt
         ? null
         : (streamResult.safeguardFlag ??
