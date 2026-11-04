@@ -56,12 +56,13 @@ interface OwnerMod {
 const ME = 'U_ME';
 const HUES: Record<string, number> = { U_ME: 2, U_BOB: 5 };
 // `board` — the board filter (currentUserId: '' = All Users); the viewer is the signed-in user, independent of it.
-const mod = (board: string, viewer: string, el: unknown = null) =>
+const mod = (board: string, viewer: string, el: unknown = null, raf: unknown = undefined) =>
   load<OwnerMod>(['panelOwnerOf', 'renderPanelOwner', 'ownerBadgeOrbitSync'], {
     currentUserId: board,
     _viewerUserId: viewer,
     ownerBadgeHue: (id: string) => HUES[id] ?? 0,
     document: { getElementById: (id: string) => (id === 'panel-owner' ? el : null), createElement: fakeEl },
+    requestAnimationFrame: raf,
   });
 
 /** Enough of an element for renderPanelOwner: attributes, classList, children, text. */
@@ -75,6 +76,7 @@ interface FakeEl {
   writes: number;
   _sig?: string;
   anims: Array<{ animationName: string; startTime: number | null }>;
+  closed?: boolean;
   getAnimations(o: unknown): Array<{ animationName: string; startTime: number | null }>;
   classList: { toggle(c: string, on: boolean): void };
   setAttribute(k: string, v: string): void;
@@ -94,7 +96,7 @@ function fakeEl(): FakeEl {
     // The kit's arc (its ::before) and a fade; the arc only while the pill is the viewer's own.
     anims: [] as Array<{ animationName: string; startTime: number | null }>,
     getAnimations(o: unknown) {
-      if (!(o && (o as { subtree?: boolean }).subtree)) return [];
+      if (!(o && (o as { subtree?: boolean }).subtree) || el.closed) return [];
       if (!el.anims.length)
         el.anims = [
           { animationName: el.classes.has('is-self') ? 'ui-owner-badge-orbit' : 'none', startTime: null },
@@ -227,6 +229,15 @@ describe('B4 — renderPanelOwner: follows the open card, writes only on change'
     expect(el.writes).toBe(writes);
   });
 
+  it('…but puts the arc back on the orbit every time: the drawer restarts it when it shows the pill again', () => {
+    const el = fakeEl();
+    const m = mod('', ME, el);
+    m.renderPanelOwner({ ownerId: ME, ownerName: 'Zhuge' });
+    el.anims[0].startTime = 777; // the browser restarted it (the drawer closed and opened)
+    m.renderPanelOwner({ ownerId: ME, ownerName: 'Zhuge' });
+    expect(el.anims[0].startTime).toBe(0);
+  });
+
   it('a card without an owner hides it and clears what it said', () => {
     const el = fakeEl();
     const m = mod('', ME, el);
@@ -251,6 +262,20 @@ describe('B4 — renderPanelOwner: follows the open card, writes only on change'
   it('the live path repaints it: repaintPanelSession (every update, the opening, a viewer change) calls it', () => {
     expect(clientFn('repaintPanelSession')).toMatch(/renderPanelTitleActions\(s\);\n\s*renderPanelOwner\(s\);/);
     expect(clientFn('repaintViewerControls')).toContain('repaintPanelSession();');
+  });
+
+  it('a pill the closed drawer does not draw yet (no arc) is synced once more on the next frame — after the opening shows it', () => {
+    const el = fakeEl();
+    el.closed = true; // the drawer is closed: no CSS animation exists yet
+    const frames: Array<() => void> = [];
+    const m = mod('', ME, el, (cb: () => void) => frames.push(cb));
+    m.renderPanelOwner({ ownerId: ME, ownerName: 'Zhuge' });
+    expect(el.anims).toEqual([]);
+    expect(frames).toHaveLength(1);
+    el.closed = false; // openPanel → panel.show(), in the same task
+    frames[0]();
+    expect(el.anims.map((a) => a.startTime)).toEqual([0, 9]);
+    expect(frames).toHaveLength(1); // once — never a loop while the drawer stays closed
   });
 });
 

@@ -17864,13 +17864,17 @@ function panelOwnerOf(s) {
   var self = viewerOwns(s);
   return { text: name, hue: ownerBadgeHue(s.ownerId || name), self: self, title: self ? name + ' (나)' : name };
 }
-// Writes the pill only when what it says changes: a rewrite would restart the orbit mid-turn.
+// Writes the pill only when what it says changes; puts its arc back on the board's orbit every time (the arc restarts
+// whenever the drawer shows it again — and exists only while the drawer is open).
 function renderPanelOwner(s) {
   var el = document.getElementById('panel-owner');
   if (!el) return;
   var o = panelOwnerOf(s);
   var sig = o ? JSON.stringify(o) : '';
-  if (el._sig === sig) return;
+  if (el._sig === sig) {
+    ownerBadgeOrbitSync(el, !!(o && o.self));
+    return;
+  }
   el._sig = sig;
   el.hidden = !o;
   el.classList.toggle('is-self', !!(o && o.self));
@@ -17893,11 +17897,21 @@ function renderPanelOwner(s) {
 }
 // The board's orbit: the arc starts at the document timeline's origin (as @2lab.ai/ui syncOwnerBadgeOrbit does for
 // the board's pills), so the detail card's turns in step with them. Nothing without the Web Animations API or under
-// reduced motion (no arc); any other animation on the pill is left alone.
-function ownerBadgeOrbitSync(el, self) {
+// reduced motion (no arc); any other animation on the pill is left alone. A pill the closed drawer does not draw yet
+// has no arc: once more on the next frame (an opening draws the panel before it shows the drawer).
+function ownerBadgeOrbitSync(el, self, again) {
   if (!self || typeof el.getAnimations !== 'function') return;
   var list = el.getAnimations({ subtree: true });
-  for (var i = 0; i < list.length; i++) if (/-orbit$/.test(list[i].animationName || '')) list[i].startTime = 0;
+  var found = false;
+  for (var i = 0; i < list.length; i++) {
+    if (/-orbit$/.test(list[i].animationName || '')) {
+      list[i].startTime = 0;
+      found = true;
+    }
+  }
+  if (!found && !again && typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(function() { ownerBadgeOrbitSync(el, self, true); });
+  }
 }
 // Copy text — or a promise of it (the full context waits for its export) — to the clipboard; true once copied.
 // A ClipboardItem holding the pending text is written inside the press, so Safari keeps the press's permission
