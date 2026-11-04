@@ -828,3 +828,45 @@ describe('GoalLoopController — safeguard halt (T2)', () => {
     expect(dispatched).toBe(1);
   });
 });
+
+/**
+ * Review gate (astra-zhuge P1 #4, PR #906): the goal completion eval is its
+ * own query. When the safeguards block IT, the work is stopped there — no
+ * transient-failure retries, no continuation — and the session is locked.
+ */
+describe('GoalLoopController — safeguards block on the completion eval (T2)', () => {
+  const BLOCK = `API Error: Opus 5.5 (1M context)'s safeguards flagged this message (https://www.anthropic.com/legal/aup).
+
+Details: \`[reasoning_extraction]\`
+
+Request ID: req_eval1`;
+
+  it('locks the session instead of scheduling eval retries', async () => {
+    const h = makeHarness({ dispatcher: async () => BLOCK });
+
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect((h.session as any).safeguardHalt).toEqual(
+      expect.objectContaining({ detail: 'reasoning_extraction', requestId: 'req_eval1' }),
+    );
+    expect(h.scheduledRetries).toHaveLength(0);
+    expect(h.injected).toHaveLength(0);
+    expect(h.notices.some((n) => n.includes('세이프가드 에러'))).toBe(true);
+    expect(h.goal.pendingEval).toBeUndefined();
+  });
+
+  it('also when the dispatcher throws the block', async () => {
+    const h = makeHarness({
+      dispatcher: async () => {
+        throw new Error(`Claude Code process exited with code 1\n${BLOCK}`);
+      },
+    });
+
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect((h.session as any).safeguardHalt?.requestId).toBe('req_eval1');
+    expect(h.scheduledRetries).toHaveLength(0);
+  });
+});

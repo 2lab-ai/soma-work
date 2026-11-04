@@ -621,6 +621,12 @@ export interface StreamCallbacks {
    * Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §C-1.
    */
   onIdleTimeout?: () => void;
+  /**
+   * The turn's text was an Anthropic safeguards block. Called once, as soon as
+   * it is seen: the executor stops the query right there (background agents
+   * included) instead of letting the turn run on to its result.
+   */
+  onSafeguardFlag?: (flag: SafeguardFlagInfo) => void;
 }
 
 /**
@@ -903,8 +909,22 @@ export class AgentStreamProcessor {
   private noteSafeguardFlag(text: string): boolean {
     const flag = parseSafeguardFlag(text);
     if (!flag) return false;
-    this.safeguardFlag ??= flag;
+    if (!this.safeguardFlag) {
+      this.safeguardFlag = flag;
+      try {
+        this.callbacks.onSafeguardFlag?.(flag);
+      } catch (err) {
+        this.logger.debug('onSafeguardFlag callback threw — ignored', {
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
+    }
     return true;
+  }
+
+  /** `{ safeguardFlag }` once a block was seen — carried by EVERY exit, aborted ones included. */
+  private safeguardFlagResult(): Pick<StreamResult, 'safeguardFlag'> {
+    return this.safeguardFlag ? { safeguardFlag: this.safeguardFlag } : {};
   }
   private pendingNarration: PendingNarration | undefined;
   /**
@@ -1148,6 +1168,7 @@ export class AgentStreamProcessor {
             messageCount: currentMessages.length,
             aborted: true,
             ...(rescue.failure ? { interruptFlushFailed: rescue.failure } : {}),
+            ...this.safeguardFlagResult(),
           };
         }
 
@@ -1167,6 +1188,7 @@ export class AgentStreamProcessor {
             messageCount: currentMessages.length,
             aborted: true,
             ...(rescue.failure ? { interruptFlushFailed: rescue.failure } : {}),
+            ...this.safeguardFlagResult(),
           };
         }
         if (step.kind === 'idleTimeout') {
@@ -1186,7 +1208,7 @@ export class AgentStreamProcessor {
           await this.tryReturnIterator(iterator, 'idle timeout');
           this.settleNarration(context);
           this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
-          return { success: true, messageCount: currentMessages.length, aborted: true };
+          return { success: true, messageCount: currentMessages.length, aborted: true, ...this.safeguardFlagResult() };
         }
 
         const event = step.value;
@@ -1257,6 +1279,10 @@ export class AgentStreamProcessor {
             await flushToolResults();
             this.settleNarration(context);
             textBuf.push(event.text);
+            // A safeguards block ends the work: stop the query as it arrives,
+            // not when the buffer next flushes (background agents can hold the
+            // result for minutes). The flush still suppresses the segment.
+            if (!this.safeguardFlag) this.noteSafeguardFlag(textBuf.join(''));
             break;
           case 'tool_call':
             await flushThinking();
@@ -1405,7 +1431,7 @@ export class AgentStreamProcessor {
         collectedText: currentMessages.join('\n'),
         ...this.transportLeakResult(),
         guardText: this.guardTextFor(currentMessages),
-        ...(this.safeguardFlag ? { safeguardFlag: this.safeguardFlag } : {}),
+        ...this.safeguardFlagResult(),
         usage: lastUsage,
         hasUserChoice: this._hasUserChoice,
         endTurnInfo: this._endTurnInfo,
@@ -1415,7 +1441,12 @@ export class AgentStreamProcessor {
       this.settleNarration(context);
       this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
       if (error.name === 'AbortError') {
-        return { success: true, messageCount: currentMessages.length, aborted: true };
+        return { success: true, messageCount: currentMessages.length, aborted: true, ...this.safeguardFlagResult() };
+      }
+      // A transport failure after the block was seen still ends in the halt:
+      // the executor's handleError reads the flag off the error.
+      if (this.safeguardFlag && error && typeof error === 'object' && !error.safeguardFlag) {
+        error.safeguardFlag = this.safeguardFlag;
       }
       throw error;
     }

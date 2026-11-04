@@ -1606,6 +1606,11 @@ describe('SlackHandler — follow-up queue host', () => {
       const notice = postSystemMessage.mock.calls.map((c: any[]) => String(c[1])).join('\n');
       expect(notice).toContain('세이프가드 에러');
       expect(notice).toContain('관리자');
+      // Every refusal re-offers the admin button (the halt notice may never have reached Slack).
+      const blocks = postSystemMessage.mock.calls[0][2]?.blocks ?? [];
+      const button = blocks.flatMap((b: any) => b.elements ?? []).find((e: any) => e.type === 'button');
+      expect(button?.action_id).toBe('safeguard_admin_retry');
+      expect(JSON.parse(button.value)).toEqual({ sessionKey: SESSION_KEY, atMs: HALT.atMs });
     });
 
     it("refuses an admin's message too — only the button unlocks — and the lock stays", async () => {

@@ -342,3 +342,61 @@ describe.each([
     );
   });
 });
+
+/**
+ * Review gate (astra-zhuge P1 #1–#3, PR #906): detection stops the query at
+ * once, survives an aborted exit, and also reads an SDK error result.
+ */
+describe('safeguards flag — stop at once, every exit (T2)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
+  });
+
+  // The block, then a stream that would never end on its own (background
+  // agents keep the query open; the result is deferred).
+  async function* safeguardThenHang(): AsyncGenerator<any> {
+    yield { type: 'assistant', message: { content: [{ type: 'text', text: SAFEGUARD_TEXT }] } };
+    await new Promise(() => {});
+  }
+
+  async function* safeguardInErrorResult(): AsyncGenerator<any> {
+    yield {
+      type: 'result',
+      subtype: 'error_during_execution',
+      is_error: true,
+      errors: [SAFEGUARD_TEXT],
+      total_cost_usd: 0,
+      usage: {},
+    };
+  }
+
+  it('stops the query as soon as the block is seen and halts — it does not wait for the stream to end', async () => {
+    const deps = createDeps(safeguardThenHang);
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = createSession();
+    const params = createParams(say, session);
+
+    const result = await Promise.race([
+      executor.execute(params),
+      new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 3_000)),
+    ]);
+
+    expect(result).not.toBe('hung');
+    expect(params.abortController.signal.aborted).toBe(true);
+    expect(session.safeguardHalt?.detail).toBe('reasoning_extraction');
+    expect((result as ExecuteResult).retryAfterMs).toBeUndefined();
+  });
+
+  it('halts when the block arrives only in an SDK error result (errors[])', async () => {
+    const deps = createDeps(safeguardInErrorResult);
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = createSession();
+
+    await executor.execute(createParams(say, session));
+
+    expect(session.safeguardHalt?.requestId).toBe('req_011CggxYZxQ7TEBU95XW3X19');
+  });
+});
