@@ -1157,8 +1157,10 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(goalDriver).toHaveBeenCalledTimes(1);
     });
 
-    it('an immediate control (`help`) leaves the pause for the message that starts a turn', async () => {
+    it('an immediate control (`help`) is not an answer — it leaves the pause', async () => {
       await questionTurn('다음 지시');
+      // The help card answers the command; no turn reaches the model.
+      routeCommand.mockResolvedValueOnce({ handled: true });
 
       await handler.handleMessage(message({ ts: '555.666', text: 'help' }), say());
       for (let i = 0; i < 4; i++) await tick();
@@ -1172,11 +1174,37 @@ describe('SlackHandler — follow-up queue host', () => {
       await questionTurn();
       const WORK_KEY = 'C123:999.000';
 
-      handlerAny.reopenDrainForPerson(
-        message({ ts: '555.666', thread_ts: '999.000', text: '1. 첫 번째 안' }),
-        WORK_KEY,
-        SESSION_KEY,
-      );
+      handlerAny.followupMigration = {
+        bySlot: new Map([[SESSION_KEY, WORK_KEY]]),
+        byCanonical: new Map([[WORK_KEY, SESSION_KEY]]),
+      };
+
+      handlerAny.reopenDrainAfterAnswer(WORK_KEY);
+
+      expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toBeUndefined();
+    });
+
+    it('the `compact` confirmation is not an answer — it leaves the pause', async () => {
+      await questionTurn('다음 지시');
+      // CompactHandler only posts its confirmation card and answers the command.
+      routeCommand.mockResolvedValueOnce({ handled: true });
+
+      await handler.handleMessage(message({ ts: '555.666', text: 'compact' }), say());
+      for (let i = 0; i < 4; i++) await tick();
+
+      expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toMatchObject({ reason: 'blocked' });
+      expect(items()[0].state).toBe('queued');
+    });
+
+    it('a queued message sent with `Send now` answers too — the pause ends with it', async () => {
+      await questionTurn('1. 첫 번째 안');
+      const item = items()[0];
+
+      const result = await handlerAny
+        .getFollowupDispatcher()
+        .sendNow(SESSION_KEY, item.id, item.epoch, 'U_OWNER', handlerAny.getFollowupQueue().getTurnEpoch(SESSION_KEY));
+      expect(result.status).toBe('dispatched');
+      await result.run.settled;
 
       expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toBeUndefined();
     });
