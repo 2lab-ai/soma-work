@@ -19884,6 +19884,48 @@ function ntTooLong(text) {
   return '지시가 너무 깁니다 — ' + max.toLocaleString('en-US') + '자까지 보낼 수 있어요 (지금 ' + n.toLocaleString('en-US') + '자)';
 }
 
+// SSOT 2026-11-04 — a paste too long for the instruction goes in as a text file. A plain-text paste that would take
+// the field past the server's limit (maxPromptChars) is attached as pasted-text-<stamp>.txt instead — a chip the
+// person sees and can remove — so the task still starts with the whole text (file-handler.ts gives the session the
+// file's path). Clipboard files stay the composer's own (it attaches them). A dashboard task takes no attachments
+// yet (D8): its paste goes into the field and the limit is said on send (ntTooLong).
+function ntOnComposerPaste(e) {
+  if (!_ntState || _ntState.destination === 'task') return;
+  var max = _ntCtx && _ntCtx.limits && _ntCtx.limits.maxPromptChars;
+  var el = e && e.currentTarget;
+  var cd = e && e.clipboardData;
+  if (!max || !cd || !el || typeof el.addFiles !== 'function') return;
+  if (el.data && el.data.disabled) return;
+  if (cd.files && cd.files.length) return;
+  var text = cd.getData('text/plain');
+  if (!text) return;
+  // The field the paste lands in (the composer's shadow root is open): what is selected there is replaced.
+  var field = typeof e.composedPath === 'function' ? e.composedPath()[0] : null;
+  var start = field && typeof field.selectionStart === 'number' ? field.selectionStart : undefined;
+  var end = field && typeof field.selectionEnd === 'number' ? field.selectionEnd : undefined;
+  if (!ntPasteOverflows(el.value, start, end, text, max)) return;
+  e.preventDefault();
+  el.addFiles([new File([text], ntPastedTextName(new Date()), { type: 'text/plain' })]);
+}
+
+// Would the field run past max once the paste is in: its text, less the selection the paste replaces, plus the paste.
+function ntPasteOverflows(value, selStart, selEnd, pasted, max) {
+  if (!max || !pasted) return false;
+  var len = String(value || '').length;
+  var a = typeof selStart === 'number' ? selStart : len;
+  var b = typeof selEnd === 'number' ? selEnd : a;
+  return len - Math.max(0, b - a) + String(pasted).length > max;
+}
+
+// pasted-text-20261104-090507.txt — the stamp the composer gives a pasted screenshot (screenshot-…).
+function ntPastedTextName(d) {
+  function p(n) {
+    return (n < 10 ? '0' : '') + n;
+  }
+  var stamp = d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+  return 'pasted-text-' + stamp + '.txt';
+}
+
 function ntCanSubmit(state, attachments) {
   if (state && state.destination === 'task') {
     // A task takes no attachments yet (D8): files attached before switching are not dropped silently (#640 R1).
@@ -21821,6 +21863,8 @@ function ntInit() {
   composer.addEventListener('ui-tool', ntOnComposerTool);
   // 작업 계획 — the day / night switch beside 작업 시작.
   composer.addEventListener('ui-mode', ntOnPlanMode);
+  // A paste too long for the instruction: attached as a text file (ntOnComposerPaste).
+  composer.addEventListener('paste', ntOnComposerPaste);
   // A file the task composer refused (no type matches): why, not only "unsupported type".
   composer.addEventListener('ui-reject', ntOnReject);
   // A file added or removed while a dashboard task is chosen: the reason it cannot start, or none (#640 R2).
