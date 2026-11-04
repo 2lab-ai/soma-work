@@ -485,8 +485,6 @@ describe('P3 — the open card follows the plan', () => {
       'acPermissionsHtml',
       'acGoalDecisionHtml',
       'acInstructionApprovalsHtml',
-      'acFollowUpHtml',
-      'panelFollowUpShown',
       'acQuestionHtml',
       'renderEpicPlan',
       'cardLinksFace',
@@ -828,6 +826,8 @@ describe('P5 — 미니멀’s detail card: the chat is a tab view with the work
         psecClear: (sec: string) => calls.push(`clear:${sec}`),
         paintSection: (sec: string) => calls.push(`paint:${sec}`),
         psecToNewest: () => {},
+        // Phone chrome (SSOT 2026-11-04): a section switch starts the card over — a seam here.
+        rdReset: () => {},
         panelSessionKey: 's1',
         _panelAgent: '',
       },

@@ -875,7 +875,7 @@ describe('T3 — the viewer: @2lab.ai/ui <ui-artifact-viewer tiles="none"> over 
       /if \(e\.key === 'Escape' && !e\.defaultPrevented && panelOpen && !artViewerIsOpen\(\) && !_cronDrawerKey\) closeDetailCard\(\);/,
     );
     expect(clientFn('artViewerIsOpen')).toContain("typeof v.index === 'number' && v.index >= 0");
-    // N (the New task key) does nothing while the viewer is up.
+    // Ctrl+N (the New task key) does nothing while the viewer is up.
     expect(clientFn('ntIsTypingTarget')).toContain(
       "document.querySelector('dialog[open], ui-dialog[open]') || artViewerIsOpen()",
     );

@@ -117,9 +117,10 @@ function mediaBlock(prelude: string): string {
 }
 
 describe('T1 — the New task entry is always in reach, calm', () => {
-  it('PC: a primary button sits in the app bar (its actions slot, before the status) with an N shortcut', () => {
+  it('PC: a primary button sits in the app bar (its actions slot, before the status) with a Ctrl+N shortcut', () => {
     const bar = html.slice(html.indexOf('<ui-app-bar id="app-bar"'), html.indexOf('</ui-app-bar>'));
-    expect(bar).toMatch(/<button[^>]*id="new-task-btn" slot="actions"[^>]*aria-keyshortcuts="n"/);
+    expect(bar).toMatch(/<button[^>]*id="new-task-btn" slot="actions"[^>]*aria-keyshortcuts="Control\+N"/);
+    expect(bar).toMatch(/id="new-task-btn"[^>]*title="새 작업 \(Ctrl\+N\)"/);
     expect(bar).toMatch(/id="new-task-btn"[^>]*onclick="openNewTask\(\)"/);
   });
 
@@ -159,7 +160,7 @@ describe('T1 — the New task entry is always in reach, calm', () => {
       expect(css, String(gone)).not.toMatch(gone);
     expect(css).not.toMatch(/\.new-task-btn\s*\{[^}]*animation:/);
     expect(css).not.toMatch(/\.new-task-btn:hover\s*\{[^}]*transform/);
-    // D1: the top-bar entry is the kit's ink primary (.ui-btn.is-primary, ui-kit.css) with a kit key for N.
+    // D1: the top-bar entry is the kit's ink primary (.ui-btn.is-primary, ui-kit.css) with a kit key for Ctrl+N.
     expect(html).toMatch(/<button type="button" class="ui-btn is-primary new-task-btn" id="new-task-btn"/);
     expect(kit).toMatch(
       /\.ui-btn\.is-primary \{ background: var\(--ui-ib-text\); border-color: var\(--ui-ib-text\); color: var\(--ui-ib-card\); \}/,
@@ -171,16 +172,67 @@ describe('T1 — the New task entry is always in reach, calm', () => {
     // D2: 작업 시작 is <ui-composer>'s send button (its ink primary, data.submitLabel).
     expect(script).toContain("submitLabel: '작업 시작',");
     expect(html).toMatch(
-      /id="new-task-btn"[^>]*>[\s\S]*?<kbd class="ui-kbd nt-kbd" aria-hidden="true">N<\/kbd><\/button>/,
+      /id="new-task-btn"[^>]*>[\s\S]*?<kbd class="ui-kbd nt-kbd" aria-hidden="true">Ctrl\+N<\/kbd><\/button>/,
     );
     // Reduced motion: the FAB's arrival and fold are stilled by the kit's own rule; the page's block is gone.
     expect(css).not.toContain('@media (prefers-reduced-motion: reduce) {\n  /* New task');
     expect(kit).toContain('.ui-fab.is-extended, .ui-fab.is-extended > span { transition: none; }');
   });
 
-  it('pressing N (outside a text field) or the buttons opens the composer', () => {
+  it('pressing Ctrl+N (outside a text field) or the buttons opens the composer', () => {
     expect(script).toContain('function openNewTask(');
-    expect(script).toMatch(/key === 'n'|key==='n'/);
+    expect(script).toContain('if (ntIsNewTaskKey(e) && !ntIsTypingTarget(ntKeyTarget(e))) {');
+    // The key hint follows the platform, like the send hint: ⌃N on a Mac, Ctrl+N elsewhere.
+    expect(script).toContain("if (nkbd) nkbd.textContent = isMac ? '⌃N' : 'Ctrl+N';");
+  });
+
+  it('Ctrl+N typed in a composer (its textarea is in a shadow root) is left to the field', () => {
+    const fns = loadWith<{ ntIsTypingTarget(t: unknown): boolean; ntKeyTarget(e: unknown): unknown }>(
+      ['ntIsTypingTarget', 'ntKeyTarget'],
+      { document: { querySelector: () => null }, artViewerIsOpen: () => false },
+    );
+    const host = { tagName: 'UI-COMPOSER' };
+    const field = { tagName: 'TEXTAREA' };
+    // The document hears the key retargeted to the host — not a text field by its tag.
+    expect(fns.ntIsTypingTarget(host)).toBe(false);
+    // composedPath()[0] is the textarea inside <ui-composer>'s shadow root.
+    expect(fns.ntKeyTarget({ target: host, composedPath: () => [field, host] })).toBe(field);
+    expect(fns.ntIsTypingTarget(fns.ntKeyTarget({ target: host, composedPath: () => [field, host] }))).toBe(true);
+    // No composedPath (or an empty one): the event's own target.
+    expect(fns.ntKeyTarget({ target: host })).toBe(host);
+    expect(fns.ntKeyTarget({ target: host, composedPath: () => [] })).toBe(host);
+  });
+
+  it('only Ctrl+N is the New task key — a bare N, ⌘N, Shift or Alt with it, or an IME composition is not', () => {
+    const { ntIsNewTaskKey } = load<{ ntIsNewTaskKey(e: Record<string, unknown>): boolean }>(['ntIsNewTaskKey']);
+    const key = (k: string, mods: Record<string, boolean> = {}) =>
+      ntIsNewTaskKey({
+        key: k,
+        ctrlKey: false,
+        metaKey: false,
+        altKey: false,
+        shiftKey: false,
+        isComposing: false,
+        ...mods,
+      });
+    expect(key('n', { ctrlKey: true })).toBe(true);
+    expect(key('N', { ctrlKey: true })).toBe(true); // Caps Lock on
+    expect(key('n')).toBe(false); // the bare key types into the page — it no longer opens anything
+    expect(key('N')).toBe(false);
+    expect(key('n', { metaKey: true })).toBe(false); // ⌘N is the browser's new window
+    expect(key('n', { ctrlKey: true, metaKey: true })).toBe(false);
+    expect(key('n', { ctrlKey: true, shiftKey: true })).toBe(false);
+    expect(key('n', { ctrlKey: true, altKey: true })).toBe(false);
+    expect(key('n', { ctrlKey: true, isComposing: true })).toBe(false);
+    expect(key('m', { ctrlKey: true })).toBe(false);
+    expect(ntIsNewTaskKey({ ctrlKey: true })).toBe(false); // no key at all
+    // A Korean (or other non-Latin) input source can report the letter it types; the key's place (KeyN) says N.
+    expect(key('ㅜ', { ctrlKey: true, code: 'KeyN' } as never)).toBe(true);
+    expect(key('т', { ctrlKey: true, code: 'KeyN' } as never)).toBe(true);
+    expect(key('ㅜ', { code: 'KeyN' } as never)).toBe(false); // still needs Ctrl
+    expect(key('ㅜ', { ctrlKey: true, code: 'KeyM' } as never)).toBe(false);
+    // A Latin layout keeps its own letter: Dvorak's Ctrl+B sits on KeyN and is not New task.
+    expect(key('b', { ctrlKey: true, code: 'KeyN' } as never)).toBe(false);
   });
 });
 
@@ -207,7 +259,7 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     for (const gone of ['is-shown', "dlg.addEventListener('cancel'", 'ntSyncViewport', '--nt-vvh', '--nt-vvt']) {
       expect(script, gone).not.toContain(gone);
     }
-    // N does nothing while a <ui-dialog> is up.
+    // Ctrl+N does nothing while a <ui-dialog> is up.
     expect(clientFn('ntIsTypingTarget')).toContain("document.querySelector('dialog[open], ui-dialog[open]')");
   });
 
