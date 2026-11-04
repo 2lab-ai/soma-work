@@ -222,6 +222,7 @@ describe('T2 — only the title bar stays while the reader scrolls', () => {
     scroll.scrollTop = 234; // the reader's fling cut the glide 6px short
     timers[0]();
     expect(calls[1]).toBe('scroll 240 instant');
+    expect(clientFn('rdRead')).toMatch(/if \(Math\.abs\(sc\.scrollTop - t\) <= 1\) return;\s*_panelScrollGen\+\+;/);
     scroll.scrollTop = 240;
     timers[0](); // landed: nothing more
     expect(calls).toHaveLength(2);
@@ -315,7 +316,8 @@ describe('T2 — only the title bar stays while the reader scrolls', () => {
 
   it('reading moves the reader’s place: a layout anchor taken before it is stale (_panelScrollGen)', () => {
     const fn = clientFn('rdRead');
-    expect(fn.match(/_panelScrollGen\+\+;/g)).toHaveLength(2);
+    // Entering, leaving, and the settle correction (T5) each move the reader's place.
+    expect(fn.match(/_panelScrollGen\+\+;/g)).toHaveLength(3);
   });
 
   it('nothing sticks above the box while reading; a tap on the title bar (not its buttons) brings the head back', () => {
@@ -335,14 +337,15 @@ describe('T2 — only the title bar stays while the reader scrolls', () => {
 
   it('T5: a section tab pressed while reading keeps reading — the tabs stay, the old box is let go, the composer is back', () => {
     const calls: string[] = [];
-    let reading = true;
+    const panel = new FakeNode('slide-panel');
+    panel.setAttribute('data-read', '1');
     const _rd = { vp: { old: true } as unknown, last: 300 };
     const m = load<{ selectPanelSection: (sec: string) => void }>(['selectPanelSection'], {
       PSEC_ORDER: ['conv', 'log', 'tree'],
       _psec: 'log',
       _rd,
       panelSessionKey: 'k',
-      panelReading: () => reading,
+      document: fakeDocument([panel]),
       rdTuck: (on: boolean) => calls.push(`tuck ${on}`),
       rdReset: () => calls.push('reset'),
       rdRead: (on: boolean) => calls.push(`read ${on}`),
@@ -356,9 +359,13 @@ describe('T2 — only the title bar stays while the reader scrolls', () => {
     expect(_rd.vp).toBeNull();
     expect(_rd.last).toBe(-1);
     calls.length = 0;
-    reading = false; // not reading: the card starts as it opens
+    panel.setAttribute('data-read', 'leaving'); // the head is coming back (the title bar was tapped): it keeps coming
     m.selectPanelSection('log');
     expect(calls).toEqual(['reset', 'render', 'paint log', 'newest']);
+    calls.length = 0;
+    panel.removeAttribute('data-read'); // not reading: the card starts as it opens
+    m.selectPanelSection('conv');
+    expect(calls).toEqual(['reset', 'render', 'paint conv', 'newest']);
   });
 
   it('a section tab never reads as an agent choice: the agent strip answers only its own ui-change', () => {
