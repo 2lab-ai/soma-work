@@ -5987,6 +5987,8 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
     padding: env(safe-area-inset-top, 0px) 12px 0 16px;
   }
 }
+/* Reading: the box is exactly the view under the section tabs (sizePanelSections) — no 160px floor on a short screen. */
+.slide-panel[data-read] .psec { min-height: 0; }
 /* Reading: nothing sticks above the box — the agent strip scrolls out with the rest. */
 .slide-panel[data-read] .panel-tabs::part(list) { position: static; }
 .panel-command { position: relative; transition: transform var(--dur-move) var(--ease-out); }
@@ -7031,6 +7033,12 @@ function syncPhoneChrome() {
   var secs = document.getElementById('panel-sections-body');
   if (secs) ['touchstart', 'touchmove', 'touchend', 'touchcancel', 'wheel', 'keydown'].forEach(function(t) {
     secs.addEventListener(t, rdGesture, { passive: true });
+  });
+  // The reader's own input anywhere in the card's scroll area ends the pending settle correction (_rd.land): it would
+  // pull back a place the reader scrolled to by hand. A glide the reader's scroll cut short is re-issued by rdRead.
+  var pscroll = document.getElementById('panel-scroll');
+  if (pscroll) ['touchstart', 'wheel', 'keydown'].forEach(function(t) {
+    pscroll.addEventListener(t, function() { clearTimeout(_rd.land); }, { passive: true });
   });
   // A tap on the title bar (not on its buttons) scrolls the head back in.
   var head = document.querySelector('#slide-panel .panel-header');
@@ -11488,7 +11496,9 @@ function sizePanelSections() {
   var strip = Math.max(0, box.getBoundingClientRect().top - secTop);
   var top = secTop + strip - scroll.getBoundingClientRect().top + scroll.scrollTop;
   // Reading on a phone (rdRead): the box is the whole view under the section tabs (T5) — everything above them scrolls out.
-  var h = panelReading() ? Math.max(160, view - strip) : psecHeightOf(view, top, panelTabsHeight() + strip);
+  // No 160px floor here: on a short screen (a phone sideways, the composer back) a floor would run the box past the view
+  // and hide its newest rows behind the composer.
+  var h = panelReading() ? Math.max(0, view - strip) : psecHeightOf(view, top, panelTabsHeight() + strip);
   if (body._h === h) return;
   body._h = h;
   body.style.setProperty('--psec-h', h + 'px');

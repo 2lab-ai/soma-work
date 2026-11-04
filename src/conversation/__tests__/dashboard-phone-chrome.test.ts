@@ -178,8 +178,10 @@ describe('T2 — only the title bar stays while the reader scrolls', () => {
 
   it('reading gives the section box the whole view under the section tabs (sizePanelSections, T5)', () => {
     expect(clientFn('sizePanelSections')).toContain(
-      'var h = panelReading() ? Math.max(160, view - strip) : psecHeightOf(view, top, panelTabsHeight() + strip);',
+      'var h = panelReading() ? Math.max(0, view - strip) : psecHeightOf(view, top, panelTabsHeight() + strip);',
     );
+    // A short screen (sideways, the composer back): no floor in CSS either, or the newest rows hide behind the composer.
+    expect(cssRule('.slide-panel[data-read] .psec')).toContain('min-height: 0;');
   });
 
   it('T5: reading lands on the section tabs (대화 · 작업 로그) — they stay right under the title bar', () => {
@@ -223,6 +225,10 @@ describe('T2 — only the title bar stays while the reader scrolls', () => {
     timers[0]();
     expect(calls[1]).toBe('scroll 240 instant');
     expect(clientFn('rdRead')).toMatch(/if \(Math\.abs\(sc\.scrollTop - t\) <= 1\) return;\s*_panelScrollGen\+\+;/);
+    // The reader's own input in the scroll area cancels it — never a pull-back of a place scrolled to by hand.
+    expect(TEMPLATE).toMatch(
+      /pscroll\.addEventListener\(t, function\(\) \{ clearTimeout\(_rd\.land\); \}, \{ passive: true \}\);/,
+    );
     scroll.scrollTop = 240;
     timers[0](); // landed: nothing more
     expect(calls).toHaveLength(2);
