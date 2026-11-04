@@ -7385,6 +7385,8 @@ export class SlackHandler {
       // Fallback in case the file is missing (e.g. in test environments)
       return (
         '서비스가 재시작되어 이전 작업이 중단되었다. 아래 순서로 작업을 이어가라:\n' +
+        // #927 — the restart may have cut the turn after an outside action took effect.
+        '0. 외부 작업(push·PR/이슈 생성·코멘트·머지·배포·메시지)을 다시 하기 전에 이미 됐는지 확인하라 (git status, git log, 원격 브랜치, gh pr list --head <branch>, 최근 코멘트). 두 번째 PR·같은 코멘트·같은 메시지·재배포 금지.\n' +
         '1. mcp__slack-mcp__get_thread_messages (offset: 0, limit: 50)으로 이 스레드의 전체 대화를 먼저 읽어라.\n' +
         '2. 유저가 마지막으로 요청한 작업이 무엇인지 파악하라.\n' +
         '3. 네가 마지막으로 어디까지 진행했는지 확인하라 (git status, 파일 상태 등).\n' +
