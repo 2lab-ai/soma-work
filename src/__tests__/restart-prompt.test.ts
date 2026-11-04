@@ -17,7 +17,10 @@ const PROMPT = fs.readFileSync(path.join(__dirname, '..', 'prompt', 'restart.pro
 describe('restart.prompt — outside actions are checked before they are repeated (#927)', () => {
   it('names the outside actions and asks whether each already happened', () => {
     expect(PROMPT).toContain('before you repeat any outside action');
-    for (const action of ['push', 'PR', 'comment', 'merge', 'deploy']) expect(PROMPT).toContain(action);
+    // The whole list, so a dropped action fails here (a bare 'PR' or 'push' would match anywhere).
+    expect(PROMPT).toContain(
+      'a push, a PR or issue you create, a comment or review reply, a merge, a deploy, a message',
+    );
   });
 
   it('says where to look: the working tree, its history, the remote branch, the branch PRs and the latest comments', () => {
