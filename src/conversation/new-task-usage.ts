@@ -87,5 +87,9 @@ export function createTtlCache<K, V>(load: (key: K) => Promise<V>, ttlMs: number
       entries.set(key, { value, at: now() });
       return value;
     },
+    /** Forget one key: its next `get` loads again. */
+    invalidate(key: K): void {
+      entries.delete(key);
+    },
   };
 }

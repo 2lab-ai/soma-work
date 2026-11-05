@@ -578,6 +578,11 @@ describe('ntDefaultState / ntBuildPayload / ntCanSubmit — T4–T9', () => {
       destination: 'slack',
       folder: '',
       plan: true, // plan mode (SSOT 2026-11-02): on by default for a dashboard task
+      // 2026-11-05 — a new repo channel's fields, empty until "＋ 새 repo 채널" is chosen
+      newRepo: '',
+      newChannelName: '',
+      newChannelNameEdited: false,
+      newChannelPrivate: false,
     });
   });
 
@@ -1050,5 +1055,123 @@ describe('the task’s model and effort — one <ui-model-picker> (ntPickerData 
   it('the picker answers its own ui-change; the session pickers’ handler leaves it alone', () => {
     expect(TEMPLATE).toContain("if (el) el.addEventListener('ui-change', ntOnPick);");
     expect(clientFn('ntRender')).toContain('ntPaintPicker();');
+  });
+});
+
+// 2026-11-05 — a new Slack channel for a repo (admins): the select's "＋ 새 repo 채널", its fields and what is sent.
+describe('a new repo channel — client', () => {
+  const fns = loadWith<{
+    ntDefaultState(ctx: any, draft: any): any;
+    ntBuildPayload(state: any, attachments: any[], requestId: string): any;
+    ntCanSubmit(state: any, attachments: any[]): boolean;
+    ntRepoOf(raw: string): string;
+    ntRepoChannelName(repo: string): string;
+    ntNewChannelProblem(state: any): string;
+    ntReconcile(state: any, ctx: any): void;
+    ntLaunchToast(data: any, channelName: string | null): any;
+    ntStateAfterLaunch(prev: any, data: any, ctx: any): any;
+  }>(
+    [
+      'ntDefaultState',
+      'ntBuildPayload',
+      'ntCanSubmit',
+      'ntRepoOf',
+      'ntRepoChannelName',
+      'ntNewChannelProblem',
+      'ntReconcile',
+      'mpLevelsOf',
+      'fitEffortLevel',
+      'ntLaunchToast',
+      'ntStateAfterLaunch',
+    ],
+    NT_GLOBALS,
+  );
+  const ctx = {
+    models: [{ nickname: 'opus[1m]', model: 'claude-opus', effortLevels: NT_LEVELS }],
+    efforts: NT_LEVELS,
+    defaultModel: 'opus[1m]',
+    defaultEffort: 'xhigh',
+    defaultChannelId: 'C_ALPHA',
+    channels: [{ id: 'C_ALPHA', name: 'workspace-alpha', repos: ['acme/alpha'] }],
+    autogoalDefault: false,
+  };
+  const newState = (extra: Record<string, unknown> = {}) => ({
+    ...fns.ntDefaultState(ctx, null),
+    channelId: '__new__',
+    newRepo: 'https://github.com/2lab-ai/Fresh-Repo',
+    newChannelName: 'workspace-fresh-repo',
+    prompt: '시작해줘',
+    ...extra,
+  });
+
+  it('reads a repo the way the server does', () => {
+    expect(fns.ntRepoOf('https://github.com/2lab-ai/Fresh-Repo/tree/main')).toBe('2lab-ai/fresh-repo');
+    expect(fns.ntRepoOf('git@github.com:2lab-ai/soma.git')).toBe('2lab-ai/soma');
+    expect(fns.ntRepoOf('2lab-ai/soma-work')).toBe('2lab-ai/soma-work');
+    expect(fns.ntRepoOf('soma-work')).toBe('');
+    expect(fns.ntRepoOf('https://gitlab.com/a/b')).toBe('');
+  });
+
+  it('names the channel workspace-<repo> like the server', () => {
+    expect(fns.ntRepoChannelName('2lab-ai/soma-work')).toBe('workspace-soma-work');
+    expect(fns.ntRepoChannelName('acme/My.Repo_v2')).toBe('workspace-my-repo_v2');
+    expect(fns.ntRepoChannelName('')).toBe('');
+  });
+
+  it('sends newChannel in place of a channel id', () => {
+    const body = fns.ntBuildPayload(newState(), [], 'req-0123456789');
+    expect(body.channelId).toBeUndefined();
+    expect(body.newChannel).toEqual({ repo: '2lab-ai/fresh-repo', name: 'workspace-fresh-repo', private: false });
+    const usual = fns.ntBuildPayload({ ...newState(), channelId: 'C_ALPHA' }, [], 'req-0123456789');
+    expect(usual.channelId).toBe('C_ALPHA');
+    expect(usual.newChannel).toBeUndefined();
+  });
+
+  it('holds the submit until the repo and the name are ones the server takes', () => {
+    expect(fns.ntCanSubmit(newState(), [])).toBe(true);
+    expect(fns.ntCanSubmit(newState({ newRepo: 'not a repo' }), [])).toBe(false);
+    expect(fns.ntNewChannelProblem(newState({ newRepo: 'not a repo' }))).toMatch(/GitHub repo/);
+    expect(fns.ntCanSubmit(newState({ newChannelName: 'Bad Name' }), [])).toBe(false);
+    expect(fns.ntNewChannelProblem(newState({ newChannelName: '' }))).toMatch(/채널 이름/);
+    expect(fns.ntNewChannelProblem(newState())).toBe('');
+  });
+
+  it('keeps the choice only while it is offered; a private one only while the bot may make one', () => {
+    const offered = newState({ newChannelPrivate: true });
+    fns.ntReconcile(offered, { ...ctx, channelCreate: true, channelCreatePrivate: true });
+    expect(offered.channelId).toBe('__new__');
+    expect(offered.newChannelPrivate).toBe(true);
+    const publicOnly = newState({ newChannelPrivate: true });
+    fns.ntReconcile(publicOnly, { ...ctx, channelCreate: true });
+    expect(publicOnly.channelId).toBe('__new__');
+    expect(publicOnly.newChannelPrivate).toBe(false);
+    const notOffered = newState();
+    fns.ntReconcile(notOffered, ctx);
+    expect(notOffered.channelId).toBe('C_ALPHA');
+  });
+
+  it('the toast says whether the channel was made or the repo already had one', () => {
+    const made = fns.ntLaunchToast(
+      { channel: 'C_NEW', status: 'running', channelCreated: true },
+      'workspace-fresh-repo',
+    );
+    expect(made.description).toBe('#workspace-fresh-repo · 새 채널을 만들었어요');
+    const found = fns.ntLaunchToast({ channel: 'C_OLD', status: 'running', channelCreated: false }, 'workspace-old');
+    expect(found.description).toMatch(/^#workspace-old · 이 repo의 채널이 이미 있어/);
+    const usual = fns.ntLaunchToast({ channel: 'C_ALPHA', status: 'running' }, 'workspace-alpha');
+    expect(usual.description).toBe('#workspace-alpha');
+  });
+});
+
+describe('a new repo channel — served page', () => {
+  it('the composer carries the new channel row: repo, name, private switch, note — hidden until chosen', () => {
+    const html = TEMPLATE;
+    expect(html).toContain('id="nt-newch"');
+    expect(html).toMatch(/<div class="nt-newch" id="nt-newch"[^>]*hidden>/);
+    expect(html).toContain('id="nt-newch-repo"');
+    expect(html).toContain('id="nt-newch-name"');
+    expect(html).toMatch(/id="nt-newch-private-wrap" hidden/);
+    // Phones: 16px fields (no iOS zoom), 44px targets.
+    expect(html).toMatch(/\.nt-newch-field input \{ height: 44px; font-size: 16px; \}/);
   });
 });
