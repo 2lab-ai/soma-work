@@ -835,6 +835,47 @@ describe('an effort pick shows at once — no loading', () => {
     expect(at).toBeLessThan(send.indexOf('await acPost(cmdUrl'));
   });
 
+  // trinity R2 (fable P3): a throw while an answer is applied must not leave the session's writer stuck.
+  it('a throw while the answer is applied still frees the session’s writer', async () => {
+    const cache: Record<string, Record<string, unknown>> = { [KEY]: sess({ effort: 'high' }) };
+    const { m, posts, releases } = effortEnv(cache);
+    const run = m.changeEffort(KEY, 'max');
+    // The session object the answer is written into refuses the write once (a live push swapped in a sealed one).
+    const sealed = sess({ effort: 'high' });
+    Object.defineProperty(sealed, 'effort', {
+      get: () => 'high',
+      set: () => {
+        throw new Error('apply');
+      },
+      configurable: true,
+    });
+    cache[KEY] = sealed;
+    releases[0](ok('max'));
+    await expect(run).rejects.toThrow('apply');
+    await m.effortSettled(KEY);
+    cache[KEY] = sess({ effort: 'high' });
+    void m.changeEffort(KEY, 'low');
+    expect(posts).toEqual(['max', 'low']); // a new write goes out — the writer is not stuck
+    expect(m.mpData(cache[KEY]).value.effort).toBe('low');
+  });
+
+  // trinity R2 (astra P2): a send waiting on a level that the server refused does not go on the old level — it
+  // fails with the reason (the note's row keeps Retry).
+  it('effortSettled answers the last write: a refused level is the send’s refusal', async () => {
+    const cache = { [KEY]: sess({ effort: 'high' }) };
+    const { m, releases } = effortEnv(cache);
+    void m.changeEffort(KEY, 'low');
+    const settled = m.effortSettled(KEY) as unknown as Promise<{ ok: boolean; error?: string } | null>;
+    releases[0]({ ok: false, error: 'HTTP 500' });
+    expect(await settled).toEqual({ ok: false, error: 'HTTP 500' });
+    expect(await (m.effortSettled(KEY) as unknown as Promise<unknown>)).toBeNull(); // nothing out
+    const send = clientFn('sendCommand');
+    expect(send).toContain('var level = await effortSettled(sendingSessionKey);');
+    expect(send).toContain(
+      "if (level && !level.ok) throw new Error('추론 강도를 바꾸지 못해 보내지 않았어요 — ' + level.error);",
+    );
+  });
+
   it('a level the session already runs writes nothing and answers unchanged', async () => {
     const cache = { [KEY]: sess({ effort: 'high' }) };
     const { m, posts } = effortEnv(cache);

@@ -9021,7 +9021,11 @@ async function pickDefault(kind, value) {
     // (changeEffort), ordered with a level picked in the session meanwhile (trinity R1 on #971).
     var level = fitEffortLevel(mpEffortLevels(session), value);
     var er = await changeEffort(session.key, level);
-    msg += er.ok ? ' · 열린 세션에도 적용' + (level !== value ? ' (' + effortLabel(level) + ')' : '') : ' · 열린 세션은 바꾸지 못함: ' + er.error;
+    // The writer answers with the level the session ended on: a level picked in the session meanwhile wins.
+    var ended = er.ok && er.result && er.result.effort;
+    if (!er.ok) msg += ' · 열린 세션은 바꾸지 못함: ' + er.error;
+    else if (ended && ended !== level) msg += ' · 열린 세션은 ' + effortLabel(ended);
+    else msg += ' · 열린 세션에도 적용' + (level !== value ? ' (' + effortLabel(level) + ')' : '');
   } else if (session && isBusy(session.key, 'model')) {
     // The session is already switching (from its card or panel): one switch at a time.
     msg += ' · 열린 세션은 전환 중이라 그대로';
@@ -13960,27 +13964,34 @@ function changeEffort(key, effort) {
   return p.done;
 }
 async function effortChain(key, p) {
-  if (_modelNotes[key] && _modelNotes[key].error) delete _modelNotes[key];
-  refreshCard(key);
-  repaintPanelControlsFor(key);
   var r;
-  for (;;) {
-    var sent = p.want;
-    try { r = await postEffortSwitch(key, sent); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
-    mpApplyEffort(key, r);
-    if (!r.ok || p.want === sent) break;
+  try {
+    if (_modelNotes[key] && _modelNotes[key].error) delete _modelNotes[key];
+    refreshCard(key);
+    repaintPanelControlsFor(key);
+    for (;;) {
+      var sent = p.want;
+      try { r = await postEffortSwitch(key, sent); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+      mpApplyEffort(key, r);
+      if (!r.ok || p.want === sent) break;
+    }
+  } finally {
+    // Whatever threw, the session's writer is free for the next pick (trinity R2 on #971).
+    if (_effortPending[key] === p) delete _effortPending[key];
   }
-  delete _effortPending[key];
   _modelNotes[key] = effortSwitchNote(r);
   refreshCard(key);
   repaintPanelControlsFor(key);
   return r;
 }
-// Until every level picked for the session is written (a pick made while it waits too).
+// Until every level picked for the session is written (a pick made while it waits too). Answers the last write's
+// result — null when nothing was out — so a send can refuse to go on a level the server refused (trinity R2 on #971).
 async function effortSettled(key) {
+  var r = null;
   while (_effortPending[key]) {
-    try { await _effortPending[key].done; } catch (_e) { return; }
+    try { r = await _effortPending[key].done; } catch (_e) { return null; }
   }
+  return r;
 }
 // What the server answered is the session's level now — the open menu's thumb
 // does not wait for the next poll (a refusal changes nothing).
@@ -18797,8 +18808,10 @@ async function sendCommand(text, ref, files) {
   var answeredInThread = false;
   _pcInFlight++; // until the server answered: a reload now would drop a note the composer no longer holds
   try {
-    // A level picked just before shows at once; the turn this starts runs it (trinity R1 on #971).
-    await effortSettled(sendingSessionKey);
+    // A level picked just before shows at once; the turn this starts runs it (trinity R1 on #971). The server refused
+    // that level: the instruction does not go on the old one — it fails with the reason, Retry on its row (R2).
+    var level = await effortSettled(sendingSessionKey);
+    if (level && !level.ok) throw new Error('추론 강도를 바꾸지 못해 보내지 않았어요 — ' + level.error);
     const cmdUrl = '/api/dashboard/session/' + encodeURIComponent(sendingSessionKey) + '/command';
     const res = await acPost(cmdUrl, JSON.stringify(pcCommandBody(msg, attachments, optimisticId)));
     var data = {};

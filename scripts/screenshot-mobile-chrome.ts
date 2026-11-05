@@ -161,6 +161,8 @@ async function installMocks(page: Page) {
     const effort = JSON.parse(r.request().postData() || '{}').effort;
     await sleep(EFFORT_DELAY_MS);
     WIRE.push(`effort:${effort}`);
+    // One level the server refuses: a 지시 waiting on it must not go on the old level.
+    if (effort === 'low') return r.fulfill({ status: 500, json: { error: 'Internal Server Error' } });
     return r.fulfill({
       json: { ok: true, result: { status: 'switched', effort, previous: 'xhigh', effective: effort } },
     });
@@ -732,6 +734,23 @@ async function desktop(browser: Browser) {
   check(
     WIRE.join(' → ') === 'effort:medium → command:지시 테스트',
     `${tag}: 지시 right after a level goes after that level is saved (${WIRE.join(' → ')})`,
+  );
+  // The server refuses the level picked just before: the 지시 is not sent on the old level; the toast says why.
+  WIRE.length = 0;
+  await page.locator('#panel-controls ui-model-picker .mp-trigger').click();
+  await page.waitForSelector('#panel-controls ui-model-picker .mp-seg-btn[data-effort="low"]', { timeout: 5000 });
+  await sleep(300);
+  await page.locator('#panel-controls ui-model-picker .mp-seg-btn[data-effort="low"]').click();
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => (window as any).sendCommand('거절 뒤 지시', ''));
+  await sleep(EFFORT_DELAY_MS + 800);
+  const refused = await page.evaluate(() => {
+    const t = document.getElementById('dash-toaster');
+    return (t?.shadowRoot?.textContent || '').includes('추론 강도를 바꾸지 못해 보내지 않았어요');
+  });
+  check(
+    WIRE.join(' → ') === 'effort:low' && refused,
+    `${tag}: a refused level holds the 지시 back and says why (${WIRE.join(' → ')}, toast ${refused})`,
   );
   await ctx.close();
 }
