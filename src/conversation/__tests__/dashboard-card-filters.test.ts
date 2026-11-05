@@ -410,6 +410,15 @@ describe('F1 — the face: 레포 · 채널 foot chips, on in every built-in lay
 });
 
 describe('F2 — the toolbar: 보관함 · 휴면, then 내 카드만 · 필터 · 정렬 · 검색', () => {
+  it('the head wraps at every width: the tools take the row under the trail and wrap there (no overflow at 640–760px)', () => {
+    const css = DASHBOARD_TS;
+    expect(css).toContain('.inbox-head { display: flex; flex-wrap: wrap;');
+    expect(css).toContain(
+      '.inbox-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end;',
+    );
+    expect(css).toContain('flex: 0 1 auto; min-width: 0; margin-left: auto; }');
+  });
+
   it('the controls follow 휴면 in this order, inside the board’s tools', () => {
     const head = TEMPLATE.slice(TEMPLATE.indexOf('id="inbox-tools"'), TEMPLATE.indexOf('id="view-seg"'));
     const order = [
@@ -742,6 +751,13 @@ describe('F5 — the researched extras: 즐겨찾기만 · 연결된 PR · 최�
     expect(pass({}, 'zhuge')).toEqual(['no']);
     expect(pass({}, 'SOMA-WORK #dev')).toEqual(['st', 'mg', 'bo', 'no']);
     expect(pass({}, 'soma nothing-like-this')).toEqual([]);
+    // What the face shows: the question it asks, its plan's conclusion, the TL;DR.
+    const asks = card({ pendingQuestion: { type: 'user_choice', question: 'dev에 먼저 배포할까요?' } });
+    const plan = card({ taskPlan: { state: 'awaiting', revision: 2, summary: '스키마 마이그레이션 계획' } });
+    const tldr = card({ esTldr: { lines: ['PR #971 merged'], at: 1 } });
+    expect(m.boardCardPasses(asks, f, '배포할까요', NOW)).toBe(true);
+    expect(m.boardCardPasses(plan, f, '마이그레이션', NOW)).toBe(true);
+    expect(m.boardCardPasses(tldr, f, '#971', NOW)).toBe(true);
   });
 
   it('the bar’s count: the filters in force (the search is not one)', () => {
@@ -845,6 +861,10 @@ describe('Wiring — the board draws the filtered view; the tools follow every r
     expect(counts(hidden, false, true)).toEqual({ waiting: 1, working: 0, done: 3 });
     expect(counts(hidden, true, false)).toEqual({ waiting: 1, working: 0, done: 3 });
     expect(counts(hidden, true, true)).toEqual({ waiting: 1, working: 0, done: 4 });
+    // An epic's sleeping child hidden by the filter in RUNNING: 휴면 hides it anyway when off.
+    const kids = { working: [card({ sessionState: 'SLEEPING' })] };
+    expect(counts(kids, false, false).working).toBe(0);
+    expect(counts(kids, false, true).working).toBe(1);
     // renderBoard: the hint only in a column the filters hid cards from.
     expect(clientFn('renderBoard')).toContain("emptyText: filteredEmpty('waiting')");
   });

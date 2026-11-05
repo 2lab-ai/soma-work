@@ -5455,14 +5455,16 @@ ui-stat-strip:not(:defined) > * { display: none; }
 /* The inbox is the size container for the board columns (SSOT 2026-10-24): a docked
    drawer narrows it, so the column layout follows its width, not the viewport. */
 .inbox { margin-bottom: 28px; container: inbox / inline-size; }
-.inbox-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 16px; min-width: 0; }
+/* SSOT 2026-11-05: the head wraps at every width — the tools (보관함 · 휴면 · 내 카드만 · 필터 · 정렬 · 검색 · the view)
+   take the row under the trail when they do not fit beside it, and wrap there in turn (a docked drawer narrows it). */
+.inbox-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin: 4px 0 16px; min-width: 0; }
 /* The trail (soma-work › 에이전트 인박스) is @2lab.ai/ui <ui-breadcrumbs> (D8b A-16): it draws the crumbs, the
    separators and the current page; it takes the row's room and gives way to the tools. */
-ui-breadcrumbs.crumbs { flex: 1 1 auto; min-width: 0; }
+ui-breadcrumbs.crumbs { flex: 1 1 160px; min-width: 0; }
 .view-seg { flex-shrink: 0; }
 /* Board header tools: Show archives, then Board | List. Below 640px the tools
    take their own row under the breadcrumb. */
-.inbox-tools { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
+.inbox-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; row-gap: 8px; flex: 0 1 auto; min-width: 0; margin-left: auto; }
 /* 보관함 · 휴면 · 수명 주기 are kit chips (.ui-chip[aria-pressed], D7 D-03); a chip the board has no use for yet stays out. */
 .archives-btn[hidden] { display: none; }
 /* Board filters and sort (SSOT 2026-11-05): 필터 and 정렬 are the triggers of their <ui-menu>s; 필터 carries the count of
@@ -14609,6 +14611,11 @@ function cardProgressAt(s) {
 function cardSearchText(s) {
   // The channel as the face shows it (#dev · DM · 대시보드), so "#dev" finds it too.
   var parts = [s.displayHeadline, s.summaryTitle, s.title, s.ownerName, s.ownerId, s.repo, cardChannelOf(s).text, s.issueTitle, s.prTitle];
+  // What the face's summary and TL;DR say: the question it asks, its plan's conclusion, the Executive Summary's lines.
+  var q = s.pendingQuestion;
+  if (q) parts.push(q.question, q.title);
+  if (s.taskPlan) parts.push(s.taskPlan.summary);
+  if (s.esTldr && Array.isArray(s.esTldr.lines)) parts = parts.concat(s.esTldr.lines);
   var links = Array.isArray(s.cardLinks) ? s.cardLinks : [];
   for (var i = 0; i < links.length; i++) if (links[i]) parts.push(links[i].text, links[i].title);
   return parts.filter(function(p) { return typeof p === 'string' && p; }).join(' ').toLowerCase();
@@ -14670,8 +14677,11 @@ function boardViewOf(board, f, query, now, keep) {
     for (var i = 0; i < list.length; i++) {
       var s = list[i];
       var kids = s && s.epic && Array.isArray(s.epic.children) ? s.epic.children : [];
-      var keptKids = kids.filter(passes);
-      for (var j = 0; j < kids.length; j++) if (keptKids.indexOf(kids[j]) < 0) hiddenCards[col].push(kids[j]);
+      var keptKids = [];
+      for (var j = 0; j < kids.length; j++) {
+        if (passes(kids[j])) keptKids.push(kids[j]);
+        else hiddenCards[col].push(kids[j]);
+      }
       if (!passes(s) && !keptKids.length) { hiddenCards[col].push(s); continue; }
       if (keptKids.length === kids.length) { kept.push(s); continue; }
       var copy = {};
@@ -14869,12 +14879,15 @@ function boardFilterView(board) {
   _bfHidden = _bfHiddenCols.waiting + _bfHiddenCols.working + _bfHiddenCols.done;
   return view.board;
 }
-// Pure: the hidden cards as the columns count them — NEEDS YOU, RUNNING, DONE (idle and the closed cards its toggles show).
+// Pure: the hidden cards as the columns count them — NEEDS YOU, RUNNING, DONE — only those the toggles would show.
 function boardHiddenCounts(cards, archives, sleeping) {
-  var closed = (cards.closed || []).filter(function(s) {
-    return s && (s.terminated === true ? !!archives : s.sessionState === 'SLEEPING' ? sleeping !== false : true);
-  });
-  return { waiting: (cards.waiting || []).length, working: (cards.working || []).length, done: (cards.idle || []).length + closed.length };
+  // A card 보관함 · 휴면 hide anyway is not the filter's — an epic's sleeping child sits in its epic's column.
+  var shown = function(list) {
+    return (list || []).filter(function(s) {
+      return s && (s.terminated === true ? !!archives : s.sessionState === 'SLEEPING' ? sleeping !== false : true);
+    }).length;
+  };
+  return { waiting: shown(cards.waiting), working: shown(cards.working), done: shown(cards.idle) + shown(cards.closed) };
 }
 function wireBoardTools() {
   ['bf-menu', 'bs-menu'].forEach(function(id) {
