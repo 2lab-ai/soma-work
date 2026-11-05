@@ -9016,23 +9016,24 @@ async function pickDefault(kind, value) {
   var msg = '기본 ' + (kind === 'model' ? '모델' : '추론 강도') + ' → ' + optionLabel(r.setting, r.setting.value) + ' (새 세션부터)';
   if (kind === 'model' && _myDefaults.effort) msg += ' · 추론 강도 ' + optionLabel(_myDefaults.effort, _myDefaults.effort.value);
   if (skipSession) msg += ' · 이 모델은 세션 전환 목록에 없어 열린 세션은 그대로';
-  if (session && isBusy(session.key, kind)) {
+  if (session && kind === 'effort') {
+    // An effort goes to the session as the nearest level its own model runs — through the session's one level writer
+    // (changeEffort), ordered with a level picked in the session meanwhile (trinity R1 on #971).
+    var level = fitEffortLevel(mpEffortLevels(session), value);
+    var er = await changeEffort(session.key, level);
+    msg += er.ok ? ' · 열린 세션에도 적용' + (level !== value ? ' (' + effortLabel(level) + ')' : '') : ' · 열린 세션은 바꾸지 못함: ' + er.error;
+  } else if (session && isBusy(session.key, 'model')) {
     // The session is already switching (from its card or panel): one switch at a time.
     msg += ' · 열린 세션은 전환 중이라 그대로';
   } else if (session) {
-    // An effort goes to the session as the nearest level its own model runs.
-    var target = kind === 'model' ? value : fitEffortLevel(mpEffortLevels(session), value);
     var sr;
-    setBusy(session.key, kind, true);
+    setBusy(session.key, 'model', true);
     refreshCard(session.key);
     repaintPanelControlsFor(session.key);
-    try {
-      sr = kind === 'model' ? await postModelSwitch(session.key, target) : await postEffortSwitch(session.key, target);
-    } catch (e) { sr = { ok: false, error: String(e && e.message || e) }; }
-    setBusy(session.key, kind, false);
-    _modelNotes[session.key] = kind === 'model' ? modelSwitchNote(sr) : effortSwitchNote(sr);
-    if (kind === 'effort') mpApplyEffort(session.key, sr);
-    msg += sr.ok ? ' · 열린 세션에도 적용' + (target !== value ? ' (' + effortLabel(target) + ')' : '') : ' · 열린 세션은 바꾸지 못함: ' + sr.error;
+    try { sr = await postModelSwitch(session.key, value); } catch (e) { sr = { ok: false, error: String(e && e.message || e) }; }
+    setBusy(session.key, 'model', false);
+    _modelNotes[session.key] = modelSwitchNote(sr);
+    msg += sr.ok ? ' · 열린 세션에도 적용' : ' · 열린 세션은 바꾸지 못함: ' + sr.error;
     refreshCard(session.key);
     repaintPanelControlsFor(session.key);
     loadSessions();
@@ -13936,22 +13937,29 @@ function effortSwitchNote(r) {
 // A level is a setting of the next turn, never a wait (SSOT 2026-11-05: "추론 강도 버튼 변경하면 왜 로딩을해"): the
 // pick is the pickers' value at once (_effortPending — mpData reads it over the session's, so a live push that left
 // before the server saved it does not pull the thumb back), nothing is busy (no progress cursor, no locked levels).
-// One write per session at a time: picks made while it is out leave only the newest, sent next. Every answer the
-// server accepted is the session's level (mpApplyEffort); a refusal ends the chain and the session's level shows
-// again with the reason. The server pushes the change to every board itself — no board reload here.
-var _effortPending = Object.create(null); // session key → { want: the level last picked } while its write is out
-async function changeEffort(key, effort) {
-  if (!effort) return;
+// One writer per session (the session's picker and the defaults' 열린 세션에도 alike), one write at a time: picks
+// made while it is out leave only the newest, sent next. Every answer the server accepted is the session's level
+// (mpApplyEffort); a refusal ends the chain and the session's level shows again with the reason. Every caller gets
+// the chain's last answer; a send waits for it (effortSettled), so a turn never starts on an older level than the
+// one shown. The server pushes the change to every board itself — no board reload here.
+var _effortPending = Object.create(null); // session key → { want: the level last picked, done } while its write is out
+function changeEffort(key, effort) {
   var p = _effortPending[key];
   var cs = _sessionCache[key];
-  if (effort === (p ? p.want : cs && cs.effort)) return;
+  if (!effort || effort === (p ? p.want : cs && cs.effort)) {
+    return p ? p.done : Promise.resolve({ ok: true, result: { status: 'unchanged', effort: effort, effective: (cs && cs.effortEffective) || effort } });
+  }
   if (p) {
     p.want = effort;
     refreshCard(key);
     repaintPanelControlsFor(key);
-    return;
+    return p.done;
   }
   p = _effortPending[key] = { want: effort };
+  p.done = effortChain(key, p);
+  return p.done;
+}
+async function effortChain(key, p) {
   if (_modelNotes[key] && _modelNotes[key].error) delete _modelNotes[key];
   refreshCard(key);
   repaintPanelControlsFor(key);
@@ -13966,6 +13974,13 @@ async function changeEffort(key, effort) {
   _modelNotes[key] = effortSwitchNote(r);
   refreshCard(key);
   repaintPanelControlsFor(key);
+  return r;
+}
+// Until every level picked for the session is written (a pick made while it waits too).
+async function effortSettled(key) {
+  while (_effortPending[key]) {
+    try { await _effortPending[key].done; } catch (_e) { return; }
+  }
 }
 // What the server answered is the session's level now — the open menu's thumb
 // does not wait for the next poll (a refusal changes nothing).
@@ -18782,6 +18797,8 @@ async function sendCommand(text, ref, files) {
   var answeredInThread = false;
   _pcInFlight++; // until the server answered: a reload now would drop a note the composer no longer holds
   try {
+    // A level picked just before shows at once; the turn this starts runs it (trinity R1 on #971).
+    await effortSettled(sendingSessionKey);
     const cmdUrl = '/api/dashboard/session/' + encodeURIComponent(sendingSessionKey) + '/command';
     const res = await acPost(cmdUrl, JSON.stringify(pcCommandBody(msg, attachments, optimisticId)));
     var data = {};

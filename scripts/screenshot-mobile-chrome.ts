@@ -160,9 +160,14 @@ async function installMocks(page: Page) {
   await page.route(/\/api\/dashboard\/session\/[^/?]+\/effort$/, async (r) => {
     const effort = JSON.parse(r.request().postData() || '{}').effort;
     await sleep(EFFORT_DELAY_MS);
+    WIRE.push(`effort:${effort}`);
     return r.fulfill({
       json: { ok: true, result: { status: 'switched', effort, previous: 'xhigh', effective: effort } },
     });
+  });
+  await page.route(/\/api\/dashboard\/session\/[^/?]+\/command$/, (r) => {
+    WIRE.push(`command:${JSON.parse(r.request().postData() || '{}').message}`);
+    return r.fulfill({ json: { ok: true } });
   });
   await page.route(/\/api\/dashboard\/session\/[^/?]+(\?.*)?$/, (r) => {
     if (r.request().method() !== 'GET') return r.fulfill({ json: { ok: true } });
@@ -184,6 +189,8 @@ function check(ok: boolean, what: string) {
 }
 const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
 const EFFORT_DELAY_MS = 1500;
+/** What the server answered, in order: an effort write (when it was saved) and a command (when it arrived). */
+const WIRE: string[] = [];
 
 /** A real touch drag (Chromium's gesture synthesis): negative dy scrolls back toward older items. */
 async function swipe(page: Page, x: number, y: number, dy: number) {
@@ -711,6 +718,20 @@ async function desktop(browser: Browser) {
   check(
     !!n0 && n0.shown && !!n1 && !n1.shown,
     `${tag}: the effort note shows, then goes after a few seconds (${JSON.stringify(n0)} → ${JSON.stringify(n1)})`,
+  );
+  // A level picked, then 지시 at once: the instruction reaches the server after the level it was picked with
+  // (trinity R1 on #971 — the turn never starts on an older level than the one shown).
+  WIRE.length = 0;
+  await page.locator('#panel-controls ui-model-picker .mp-trigger').click();
+  await page.waitForSelector('#panel-controls ui-model-picker .mp-seg-btn[data-effort="medium"]', { timeout: 5000 });
+  await sleep(300);
+  await page.locator('#panel-controls ui-model-picker .mp-seg-btn[data-effort="medium"]').click();
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => (window as any).sendCommand('지시 테스트', ''));
+  await sleep(EFFORT_DELAY_MS + 800);
+  check(
+    WIRE.join(' → ') === 'effort:medium → command:지시 테스트',
+    `${tag}: 지시 right after a level goes after that level is saved (${WIRE.join(' → ')})`,
   );
   await ctx.close();
 }
