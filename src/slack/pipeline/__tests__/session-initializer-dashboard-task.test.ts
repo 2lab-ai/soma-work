@@ -272,3 +272,65 @@ describe('the dispatcher’s work size reaches the caller (the epic switch reads
     expect('workSize' in r).toBe(false);
   });
 });
+
+/**
+ * The dashboard task's channel root is the thread header the launcher posted
+ * (`botThreadRoot`), as for a task started in Slack (createBotInitiatedThread):
+ * the session is born bot-initiated on that root, so the panel IS the root and
+ * is updated in place — never a reply re-posted at the thread's tail — and the
+ * thread carries no init clutter the Slack thread does not.
+ */
+describe('dashboard task on a header root (botThreadRoot) — the Slack thread model', () => {
+  beforeEach(() => {
+    createdSession.threadTs = ROOT_TS;
+    // The existence check sees no session; every later lookup sees the one created.
+    mockClaudeHandler.getSession.mockReset();
+    mockClaudeHandler.getSession.mockReturnValueOnce(null).mockReturnValue(createdSession);
+  });
+
+  it('the new session is bot-initiated with the task root as its surface', async () => {
+    await sessionInitializer.initialize(dashboardTaskEvent({ botThreadRoot: true }) as any, '/test/dir');
+    expect(createdSession.threadModel).toBe('bot-initiated');
+    expect(createdSession.threadRootTs).toBe(ROOT_TS);
+  });
+
+  it('posts no 작업 로그 reply: the header carries the work-log link', async () => {
+    await sessionInitializer.initialize(dashboardTaskEvent({ botThreadRoot: true }) as any, '/test/dir');
+    const linkPosts = mockSlackApi.postMessage.mock.calls.filter((call: any[]) =>
+      String(call[1]).includes('작업 로그'),
+    );
+    expect(linkPosts).toEqual([]);
+  });
+
+  it('clears the dispatch status from the thread, as the Slack migration does', async () => {
+    await sessionInitializer.initialize(dashboardTaskEvent({ botThreadRoot: true }) as any, '/test/dir');
+    expect(mockSlackApi.deleteMessage).toHaveBeenCalledWith('C123', 'dispatch-ts');
+    expect(createdSession.sourceThreadCleanupTs ?? []).toEqual([]);
+  });
+
+  it('never deletes the root itself, and opens no second header thread', async () => {
+    await sessionInitializer.initialize(dashboardTaskEvent({ botThreadRoot: true }) as any, '/test/dir');
+    expect(mockSlackApi.deleteMessage).not.toHaveBeenCalledWith('C123', ROOT_TS);
+    const rootPosts = mockSlackApi.postMessage.mock.calls.filter((call: any[]) => !call[2]?.threadTs);
+    expect(rootPosts).toEqual([]);
+  });
+
+  it('without the flag the thread model is untouched (a user-started thread keeps its link reply)', async () => {
+    await sessionInitializer.initialize(dashboardTaskEvent() as any, '/test/dir');
+    expect(createdSession.threadModel).toBeUndefined();
+    const linkPosts = mockSlackApi.postMessage.mock.calls.filter((call: any[]) =>
+      String(call[1]).includes('작업 로그'),
+    );
+    expect(linkPosts).toHaveLength(1);
+    expect(mockSlackApi.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('an existing session the message lands in is not re-stamped', async () => {
+    const existing = { ...createdSession, threadModel: undefined, threadRootTs: undefined };
+    mockClaudeHandler.getSession.mockReset();
+    mockClaudeHandler.getSession.mockReturnValue(existing);
+    await sessionInitializer.initialize(dashboardTaskEvent({ botThreadRoot: true }) as any, '/test/dir');
+    expect(existing.threadModel).toBeUndefined();
+    expect(existing.threadRootTs).toBeUndefined();
+  });
+});

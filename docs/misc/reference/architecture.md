@@ -207,8 +207,8 @@ updates inside its terminal-cleanup boundary, including setup failures.
 - **새 작업 (대시보드 New task, 2026-10-23)**: `GET /api/dashboard/new-task/context` · `POST /api/dashboard/new-task` (`dashboard.ts`, 로그인한 Slack 유저 본인으로만 — body의 userId·admin mode 무시, CSRF, 라우트 bodyLimit) →
   `setDashboardNewTaskProvider` ← `src/index.ts`의 `createNewTaskProvider` (`src/conversation/new-task-provider.ts`). 컨텍스트 = 대표 모델+공유 풀 배터리(`new-task-usage.ts`: llmux `/llmux/status` 또는 CCT 슬롯) ·
   유저 기본 effort/autogoal · 채널(ChannelRegistry repo 매핑 ∩ `users.conversations` 멤버십, 멤버십 미확인 시 빈 목록) · 기본 채널(`LastCommandChannelStore` → 최근 세션). 제출은 멱등 게이트(`createNewTaskGate`, requestId·유저당 동시 1건)와 fresh 멤버십 재검증(`parseNewTaskSubmission`) 뒤
-  `launchNewTask` (`new-task-launcher.ts`): 채널 루트 게시 → `files.uploadV2`(스레드) → `SlackHandler.handleMessage`에 비-synthetic 유저 메시지
-  `{thread_ts = ts = rootTs, modelOverride, effortOverride, autoGoalOverride, files, routeContext.skipAutoBotThread}` (autoz on → 지시 끝 `$autoz`). `setBotThread`는 부르지 않는다 — 루트에 지시 원문이 남고 진행 패널은 스레드 안에 생긴다.
+  `launchNewTask` (`new-task-launcher.ts`): 채널 루트에 스레드 헤더(`ThreadHeaderBuilder` — Slack에서 시작한 작업의 `createBotInitiatedThread`와 같은 헤더, 지시로 만든 임시 제목) 게시 → 지시 원문(`buildNewTaskInstructionMessage`, "via Dashboard")을 스레드 첫 답글로 → `files.uploadV2`(스레드) → `SlackHandler.handleMessage`에 비-synthetic 유저 메시지
+  `{thread_ts = ts = rootTs, modelOverride, effortOverride, autoGoalOverride, files, botThreadRoot, routeContext.skipAutoBotThread}` (autoz on → 지시 끝 `$autoz`). `SessionInitializer`는 `botThreadRoot`가 붙은 새 세션을 `threadModel: 'bot-initiated'` · `threadRootTs = rootTs`로 만든다 — 진행 패널이 그 루트이고 제자리에서 갱신된다(스레드 끝으로 다시 올리는 답글이 아니다). 헤더에 있는 `📋 작업 로그` 링크 답글은 올리지 않고, 디스패치 상태는 Slack 이관처럼 지운다(`deleteInitClutter`). 답만 하는 명령(`answerOnly`)은 세션이 없으니 예전처럼 지시 원문이 루트다.
   `effortOverride`는 `SessionInitializer`가 세션에, `autoGoalOverride`는 `SlackHandler`의 autogoal 판정에 적용한다.
 - 작업 로그 방출 이음매: 턴 안의 항목(지시·서술·도구·최종 답변·오류, 임계치 자동 압축 예고)은
   `StreamContext.workLog` → `streamExecutorProviders.appendWorkLog(conversationId, entry)`로 턴의 `turnId`와 함께,

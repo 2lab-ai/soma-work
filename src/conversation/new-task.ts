@@ -7,8 +7,8 @@
  * (`buildNewTaskContext`), how a submission is validated against that offer
  * (`parseNewTaskSubmission`), how the autoz toggle reaches the session
  * (`composeTaskText` — `$autoz` at the end, the same as typing it), the quota
- * battery (`computeModelBattery`), the root message posted into the channel
- * (`buildNewTaskRootMessage`) and the idempotency / per-user limit gate
+ * battery (`computeModelBattery`), the instruction message posted into the task's
+ * thread (`buildNewTaskInstructionMessage`) and the idempotency / per-user limit gate
  * (`createNewTaskGate`). The Slack side is `new-task-launcher.ts`; the
  * production wiring lives in `src/index.ts`.
  */
@@ -439,7 +439,7 @@ export function composeTaskText(prompt: string, autoz: boolean): string {
   return text ? `${text}\n\n$autoz` : '$autoz';
 }
 
-export interface NewTaskRootMessageInput {
+export interface NewTaskInstructionMessageInput {
   userId: string;
   prompt: string;
   nickname: string;
@@ -461,11 +461,15 @@ function escapeMrkdwn(text: string): string {
 }
 
 /**
- * The root message posted into the chosen channel: who asked (via Dashboard),
- * the instruction verbatim as plain text (no mention / mrkdwn injection), and
- * the settings it runs with. Progress follows in its thread.
+ * The instruction message: who asked (via Dashboard), the instruction verbatim
+ * as plain text (no mention / mrkdwn injection), and the settings it runs with.
+ * A task's first reply under its thread header — or, for a command that only
+ * answers (no session comes to keep a header current), the channel root itself.
  */
-export function buildNewTaskRootMessage(input: NewTaskRootMessageInput): { text: string; blocks: any[] } {
+export function buildNewTaskInstructionMessage(input: NewTaskInstructionMessageInput): {
+  text: string;
+  blocks: any[];
+} {
   const blocks: any[] = [
     {
       type: 'context',

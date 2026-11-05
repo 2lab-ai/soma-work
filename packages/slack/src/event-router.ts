@@ -325,14 +325,16 @@ export interface EventRouterDeps {
 /**
  * #854 — fields only the host sets on a message it hands to the pipeline itself (the dashboard's
  * new-task launcher, an epic's tools): the plan and epic switches, an epic child's binding, a
- * placed working folder. A Slack event never carries them, and one that did is not trusted: the
- * router drops them before the pipeline sees the event.
+ * placed working folder, a thread root that is the host's header (#952). A Slack event never
+ * carries them, and one that did is not trusted: the router drops them before the pipeline sees
+ * the event.
  */
 export const HOST_ONLY_EVENT_FIELDS = [
   'planModeOverride',
   'epicOverride',
   'epicChild',
   'workingDirectoryOverride',
+  'botThreadRoot',
 ] as const;
 
 /** The event without the host-only fields (the same object when it has none). */
