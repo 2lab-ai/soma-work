@@ -146,6 +146,9 @@ describe('session-goal-block / buildSessionGoalBlock', () => {
     expect(block).toContain('do not shrink it');
     expect(block).toContain('End each turn with a short summary');
     expect(block).toContain('every requirement has concrete evidence');
+    // The task gate: open tasks hold the goal open; a task that left the goal is removed.
+    expect(block).toContain('Every task on your task list must be completed too');
+    expect(block).toContain('remove a task that left the goal');
     // There is NO sentinel (N10).
     expect(block).not.toContain('goal-complete-request');
   });
@@ -154,8 +157,8 @@ describe('session-goal-block / buildSessionGoalBlock', () => {
     const block = buildSessionGoalBlock(withGoal(baseGoal));
     expect(block).not.toContain('user-provided task data');
     expect(block).not.toContain('Behavior:');
-    // Overhead beyond the objective itself.
-    expect(block.length - baseGoal.objective.length).toBeLessThanOrEqual(500);
+    // Overhead beyond the objective itself (five rules; the task-gate rule added ~90 chars).
+    expect(block.length - baseGoal.objective.length).toBeLessThanOrEqual(550);
   });
 
   it('returns an empty string when the goal is paused', () => {

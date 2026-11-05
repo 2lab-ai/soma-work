@@ -50,6 +50,8 @@ export function buildSessionGoalBlock(session?: ConversationSession): string {
     '- Pursue the full objective; do not shrink it to an easier task.',
     '- End each turn with a short summary of what you did and the evidence (files, commands, test/PR results).',
     '- Say the goal is done only when every requirement has concrete evidence.',
+    // The host's task gate (slack/goal-task-gate.ts): the evaluator's "done" holds only with no open task.
+    '- Every task on your task list must be completed too; remove a task that left the goal.',
     '</session-goal>',
   ].join('\n');
 }

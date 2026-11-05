@@ -2195,8 +2195,9 @@ async function start() {
         // T1 — after the restart notices are posted, re-enter the goal loop
         // for any session that still has an unfinished (active) goal so it is
         // driven to completion across the restart. Runs after the goal loop
-        // controller is wired above and after crash-recovery's no-double-resume
-        // guard has skipped these sessions.
+        // controller is wired above and after crash recovery resumed the cut
+        // turns: a goal session whose turn it resumed is left to that turn
+        // (no double resume).
         try {
           const resumed = slackHandler.resumeActiveGoals();
           if (resumed > 0) timing(`Resumed ${resumed} active goal(s) after restart`);
