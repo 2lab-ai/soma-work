@@ -10,11 +10,19 @@
  *      per-task model / effort / autogoal choices,
  *   4. the HTTP caller is answered once the session exists — not after the
  *      whole turn — and every failure is said out loud in the thread.
+ *
+ * The channel root is the thread header panel — the same one a task started
+ * in Slack gets — and the session is born bot-initiated on it, so the panel is
+ * that root (updated in place), not a reply re-posted at the thread's tail.
+ * The instruction itself is the thread's first reply.
  */
 
 import { describe, expect, it, vi } from 'vitest';
 import type { NewTaskSubmission } from '../new-task';
 import { launchNewTask, NewTaskError, type NewTaskLaunchDeps } from '../new-task-launcher';
+
+const ROOT_TS = '1792735000.000100';
+const REPLY_TS = '1792735000.000200';
 
 function submission(overrides: Partial<NewTaskSubmission> = {}): NewTaskSubmission {
   return {
@@ -37,10 +45,11 @@ function deps(overrides: Partial<NewTaskLaunchDeps> = {}) {
   const d: NewTaskLaunchDeps & { sessions: Set<string>; calls: string[] } = {
     sessions,
     calls,
-    postMessage: vi.fn(async () => {
-      calls.push('postMessage');
-      return { ts: '1792735000.000100' };
+    postMessage: vi.fn(async (_channel: string, _text: string, _blocks: unknown[], threadTs?: string) => {
+      calls.push(threadTs ? 'postReply' : 'postMessage');
+      return { ts: threadTs ? REPLY_TS : ROOT_TS };
     }),
+    getUserName: vi.fn(async () => 'Zhuge'),
     uploadFiles: vi.fn(async (_channel: string, _threadTs: string, files: any[]) => {
       calls.push('uploadFiles');
       return files.map((f: any, i: number) => ({
@@ -74,14 +83,63 @@ function deps(overrides: Partial<NewTaskLaunchDeps> = {}) {
 }
 
 describe('launchNewTask', () => {
-  it('posts the root message into the chosen channel, as the visible start of the task', async () => {
+  it('the channel root is the thread header panel, as for a task started in Slack', async () => {
     const d = deps();
-    const result = await launchNewTask('U123', submission(), d);
-    expect(d.postMessage).toHaveBeenCalledTimes(1);
-    const [channel, text, blocks] = (d.postMessage as any).mock.calls[0];
+    await launchNewTask('U123', submission(), d);
+    const [channel, text, blocks, threadTs] = (d.postMessage as any).mock.calls[0];
     expect(channel).toBe('C_ALPHA');
+    expect(threadTs).toBeUndefined();
+    // The header (ThreadHeaderBuilder, default theme): title header block + owner mention, not the instruction echo.
+    expect(blocks[0]).toMatchObject({ type: 'header', text: { text: 'soma-work 개선해줘' } });
+    expect(JSON.stringify(blocks)).toContain('<@U123>');
+    expect(text).toBe('soma-work 개선해줘\nZhuge');
+    expect(JSON.stringify(blocks)).not.toContain('via Dashboard');
+    expect(d.getUserName).toHaveBeenCalledWith('U123');
+  });
+
+  it('the instruction is the first reply in the task thread, before attachments and the run', async () => {
+    const d = deps();
+    await launchNewTask('U123', submission(), d);
+    expect(d.calls.slice(0, 3)).toEqual(['postMessage', 'postReply', 'handleMessage']);
+    const [channel, text, blocks, threadTs] = (d.postMessage as any).mock.calls[1];
+    expect([channel, threadTs]).toEqual(['C_ALPHA', ROOT_TS]);
     expect(text).toContain('<@U123>');
     expect(JSON.stringify(blocks)).toContain('soma-work 개선해줘');
+    expect(JSON.stringify(blocks)).toContain('via Dashboard');
+  });
+
+  it('the run is told its root is the bot’s header, so the session is born bot-initiated on it', async () => {
+    const d = deps();
+    await launchNewTask('U123', submission(), d);
+    expect((d.handleMessage as any).mock.calls[0][0].botThreadRoot).toBe(true);
+  });
+
+  it('the instruction reply failing does not stop the task (the run still gets the instruction)', async () => {
+    const d = deps({
+      postMessage: vi.fn(async (_c: string, _t: string, _b: unknown[], threadTs?: string) => {
+        if (threadTs) throw new Error('rate_limited');
+        return { ts: ROOT_TS };
+      }),
+    });
+    const result = await launchNewTask('U123', submission(), d);
+    expect(result.status).toBe('running');
+    expect((d.handleMessage as any).mock.calls[0][0].text).toBe('soma-work 개선해줘\n\n$autoz');
+  });
+
+  it('the owner name failing to load still posts the header (the session re-renders it)', async () => {
+    const d = deps({
+      getUserName: vi.fn(async () => {
+        throw new Error('users.info failed');
+      }),
+    });
+    const result = await launchNewTask('U123', submission(), d);
+    expect(result.status).toBe('running');
+    expect((d.handleMessage as any).mock.calls[0][0].botThreadRoot).toBe(true);
+  });
+
+  it('answers with the thread of the header root', async () => {
+    const d = deps();
+    const result = await launchNewTask('U123', submission(), d);
     expect(result).toEqual({
       channel: 'C_ALPHA',
       threadTs: '1792735000.000100',
@@ -126,7 +184,7 @@ describe('launchNewTask', () => {
     const photo = { name: 'photo.jpg', mimetype: 'image/jpeg', data: Buffer.from([0xff, 0xd8, 0xff, 0x00]) };
     const voice = { name: 'voice.m4a', mimetype: 'audio/mp4', data: Buffer.from('aaaa') };
     await launchNewTask('U123', submission({ attachments: [photo, voice] }), d);
-    expect(d.calls.slice(0, 3)).toEqual(['postMessage', 'uploadFiles', 'handleMessage']);
+    expect(d.calls.slice(0, 4)).toEqual(['postMessage', 'postReply', 'uploadFiles', 'handleMessage']);
     expect(d.uploadFiles).toHaveBeenCalledWith('C_ALPHA', '1792735000.000100', [photo, voice]);
     const event = (d.handleMessage as any).mock.calls[0][0];
     expect(event.files.map((f: any) => f.name)).toEqual(['photo.jpg', 'voice.m4a']);
@@ -161,6 +219,17 @@ describe('launchNewTask', () => {
     expect(d.handleMessage).toHaveBeenCalledTimes(1);
     expect((d.handleMessage as any).mock.calls[0][0].text).toBe('/help');
     expect(d.postThreadNotice).not.toHaveBeenCalled();
+  });
+
+  it('answer-only keeps the instruction as the root: no session comes to keep a header panel current', async () => {
+    const d = deps({ handleMessage: vi.fn(async () => {}) });
+    await launchNewTask('U123', submission({ prompt: '/help', autoz: false, answerOnly: true }), d);
+    expect(d.postMessage).toHaveBeenCalledTimes(1);
+    const [, text, blocks, threadTs] = (d.postMessage as any).mock.calls[0];
+    expect(threadTs).toBeUndefined();
+    expect(text).toContain('via Dashboard');
+    expect(JSON.stringify(blocks)).toContain('/help');
+    expect((d.handleMessage as any).mock.calls[0][0].botThreadRoot).toBeUndefined();
   });
 
   it('answer-only still being handled when the wait ends: answered, but not claimed handled (trinity R3, grok-elon)', async () => {

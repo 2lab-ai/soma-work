@@ -1187,6 +1187,7 @@ async function start() {
     setDashboardNewTaskProvider(
       createNewTaskProvider({
         client: app.client,
+        getUserName: (userId) => slackHandler.getSlackApi().getUserName(userId),
         handleMessage: (event, say) => slackHandler.handleMessage(event as any, say),
         getSessionKey: (channel, threadTs) => claudeHandler.getSessionKey(channel, threadTs),
         hasSession: (sessionKey) => !!claudeHandler.getSessionRegistry().getSessionByKey(sessionKey),
