@@ -1576,6 +1576,7 @@ describe('top-bar user names keep their full text (shipped syncUserSelectLabel +
         syncBoardScope: () => {},
         paintBoardTools: () => {},
         _lastBoardData: null,
+        boardFilterViewerKnown: () => false,
         autoOpenDecisions: () => {},
       },
       ['function account() { return _appBarAccount; }'],

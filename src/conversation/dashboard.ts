@@ -8764,8 +8764,9 @@ function _applyUserPill(data) {
   if (typeof paintUsageBreakdown === 'function') paintUsageBreakdown(); // the by-user view is an admin's
   _viewerUserId = (data && data.user && data.user.slackUserId) || '';
   syncBoardScope();
-  // 내 카드만 needs the viewer (SSOT 2026-11-05): the bar shows it now.
-  paintBoardTools(_lastBoardData);
+  // 내 카드만 needs the viewer (SSOT 2026-11-05): the bar shows it now (and a filter another account stored drops its users).
+  if (boardFilterViewerKnown(_viewerUserId) && _lastBoardData) renderBoard(_lastBoardData);
+  else paintBoardTools(_lastBoardData);
   // Plan mode: the viewer is known now — their cards that wait on a decision open (autoOpenDecisions).
   autoOpenDecisions();
   const lifecycleBtn = document.getElementById('lifecycle-btn');
@@ -9662,17 +9663,17 @@ function renderBoard(board, partial) {
   function keys(list, col, host) {
     return place((list || []).map(function(s) { return { s: s, col: col }; }), host, true);
   }
-  // A column the filters emptied says so (the element's own hint says the column is empty).
-  var filteredEmpty = _bfHidden > 0 ? '필터에 맞는 카드가 없습니다' : '';
+  // A column the filters emptied says so — only one they hid cards from (the element's own hint says it is empty).
+  var filteredEmpty = function(col) { return _bfHiddenCols[col] > 0 ? '필터에 맞는 카드가 없습니다' : ''; };
   if (kb) {
     kb._ibPlan = {
       cols: [
-        { id: 'waiting', label: BOARD_LABELS.waiting, emptyText: filteredEmpty, keys: pending.waiting.concat(keys(rest.waiting, 'waiting', kb)) },
-        { id: 'working', label: BOARD_LABELS.working, emptyText: filteredEmpty, keys: pending.working.concat(keys(rest.working, 'working', kb)) },
+        { id: 'waiting', label: BOARD_LABELS.waiting, emptyText: filteredEmpty('waiting'), keys: pending.waiting.concat(keys(rest.waiting, 'waiting', kb)) },
+        { id: 'working', label: BOARD_LABELS.working, emptyText: filteredEmpty('working'), keys: pending.working.concat(keys(rest.working, 'working', kb)) },
         {
           id: 'done',
           label: BOARD_LABELS.done,
-          emptyText: filteredEmpty,
+          emptyText: filteredEmpty('done'),
           keys: [],
           // A closed day's cards are counted, not drawn: they get no face until the day opens (T12).
           groups: groups.map(function(g) {
@@ -14524,8 +14525,30 @@ function readBoardFilter() {
 }
 var _bf = readBoardFilter();
 var _bfQuery = '';
+// Whose filter is stored (the signed-in viewer when it was saved): another account in this browser starts without
+// the stored 사용자 choice (내 카드만 would be someone else's cards).
+var _bfViewer = readBoardFilterViewer();
+function readBoardFilterViewer() {
+  try {
+    var raw = JSON.parse(localStorage.getItem(BOARD_FILTER_KEY) || 'null');
+    return raw && typeof raw.viewer === 'string' ? raw.viewer : '';
+  } catch (_e) { return ''; }
+}
 function saveBoardFilter() {
-  try { localStorage.setItem(BOARD_FILTER_KEY, JSON.stringify(_bf)); } catch (_e) {}
+  var out = boardFilterFrom(_bf);
+  out.viewer = _viewerUserId || _bfViewer || '';
+  try { localStorage.setItem(BOARD_FILTER_KEY, JSON.stringify(out)); } catch (_e) {}
+}
+// The viewer is known (/auth/me): a filter another account stored loses its users. True when the filter changed.
+function boardFilterViewerKnown(viewer) {
+  if (!viewer) return false;
+  var other = !!_bfViewer && _bfViewer !== viewer;
+  _bfViewer = viewer;
+  if (!other || !_bf.users.length) return false;
+  _bf = boardFilterFrom(_bf);
+  _bf.users = [];
+  saveBoardFilter();
+  return true;
 }
 
 // A card's repo and channel as the board shows and filters them: a stable key, the face's short words, the full name.
@@ -14631,19 +14654,38 @@ function sortBoardColumn(list, sort, dir) {
     })
     .map(function(x) { return x.s; });
 }
-// Pure: the board the columns draw — every column filtered and sorted — and how many cards the filter hid. keep: a
-// card key that passes regardless (a deep link's card).
+// Pure: the board the columns draw — every column filtered and sorted — and the cards the filter hid, per column
+// (hiddenCards[col]). keep: a card key that passes regardless (a deep link's card). An epic's children (its bundle,
+// drawn under it) are judged one by one: the epic stays while it or any child passes, carrying only the children that
+// pass (a copy — the data is never changed); a hidden child is counted in its epic's column.
 function boardViewOf(board, f, query, now, keep) {
   var out = {};
   var hidden = 0;
+  var hiddenCards = { working: [], waiting: [], idle: [], closed: [] };
   for (var k in board) out[k] = board[k];
+  var passes = function(s) { return (!!keep && !!s && s.key === keep) || boardCardPasses(s, f, query, now); };
   ['working', 'waiting', 'idle', 'closed'].forEach(function(col) {
     var list = Array.isArray(board[col]) ? board[col] : [];
-    var kept = list.filter(function(s) { return (!!keep && !!s && s.key === keep) || boardCardPasses(s, f, query, now); });
-    hidden += list.length - kept.length;
+    var kept = [];
+    for (var i = 0; i < list.length; i++) {
+      var s = list[i];
+      var kids = s && s.epic && Array.isArray(s.epic.children) ? s.epic.children : [];
+      var keptKids = kids.filter(passes);
+      for (var j = 0; j < kids.length; j++) if (keptKids.indexOf(kids[j]) < 0) hiddenCards[col].push(kids[j]);
+      if (!passes(s) && !keptKids.length) { hiddenCards[col].push(s); continue; }
+      if (keptKids.length === kids.length) { kept.push(s); continue; }
+      var copy = {};
+      for (var p in s) copy[p] = s[p];
+      var epic = {};
+      for (var q in s.epic) epic[q] = s.epic[q];
+      epic.children = keptKids;
+      copy.epic = epic;
+      kept.push(copy);
+    }
+    hidden += hiddenCards[col].length;
     out[col] = sortBoardColumn(kept, f.sort, f.dir);
   });
-  return { board: out, hidden: hidden };
+  return { board: out, hidden: hidden, hiddenCards: hiddenCards };
 }
 // Pure: the menu's choices — every owner, channel and repo on the board, each with its card count, busiest first, and
 // a chosen one the board no longer holds (count 0) so it can still be unchosen.
@@ -14771,6 +14813,7 @@ function boardFilterChanged() {
 // The bar's own state: 내 카드만 (shown on the All Users board for a signed-in viewer), 필터's count and the menus' rows,
 // 정렬's words. Every board render repaints it (the options follow the board).
 var _bfHidden = 0;
+var _bfHiddenCols = { waiting: 0, working: 0, done: 0 };
 function paintBoardTools(board) {
   var allUsers = !currentUserId;
   // One user's board: their filter of users means nothing there (and must not empty it).
@@ -14809,11 +14852,20 @@ function boardFilterNow() {
   return f;
 }
 // The board the columns draw this render (renderBoard): the filter's view of the data. The one card a deep link
-// revealed (_revealedKey) passes whatever the filter says, for this page load.
+// revealed (_revealedKey) passes whatever the filter says, for this page load. What it hid, per column the board
+// draws (_bfHiddenCols) — a closed card counts only when 보관함 · 휴면 would show it (it is hidden anyway otherwise).
 function boardFilterView(board) {
   var view = boardViewOf(board, boardFilterNow(), _bfQuery, Date.now(), _revealedKey);
-  _bfHidden = view.hidden;
+  _bfHiddenCols = boardHiddenCounts(view.hiddenCards, showArchives, showSleeping);
+  _bfHidden = _bfHiddenCols.waiting + _bfHiddenCols.working + _bfHiddenCols.done;
   return view.board;
+}
+// Pure: the hidden cards as the columns count them — NEEDS YOU, RUNNING, DONE (idle and the closed cards its toggles show).
+function boardHiddenCounts(cards, archives, sleeping) {
+  var closed = (cards.closed || []).filter(function(s) {
+    return s && (s.terminated === true ? !!archives : s.sessionState === 'SLEEPING' ? sleeping !== false : true);
+  });
+  return { waiting: (cards.waiting || []).length, working: (cards.working || []).length, done: (cards.idle || []).length + closed.length };
 }
 function wireBoardTools() {
   ['bf-menu', 'bs-menu'].forEach(function(id) {

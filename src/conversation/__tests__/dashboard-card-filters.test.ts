@@ -82,9 +82,10 @@ function clientVar(name: string): string {
   if (!m) throw new Error(`client var ${name} not found`);
   return cook(m[1]);
 }
-function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
+function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}, extra: string[] = []): T {
   const names = Object.keys(inject);
-  const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
+  const exported = [...fns, ...extra.map((x) => x.match(/^function (\w+)/)![1])];
+  const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\n${extra.join('\n')}\nreturn { ${exported.join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 
@@ -434,10 +435,82 @@ describe('F2 — the toolbar: 보관함 · 휴면, then 내 카드만 · 필터 
     expect(m.boardMineOn({ ...f, users: ['U1'] }, 'U1')).toBe(true);
     expect(m.boardMineOn({ ...f, users: ['U1', 'U2'] }, 'U1')).toBe(false);
     expect(m.boardMineOn({ ...f, users: ['U1'] }, '')).toBe(false);
-    const src = clientFn('toggleMineOnly');
-    expect(src).toContain('_bf.users = boardMineOn(_bf, _viewerUserId) ? [] : [_viewerUserId];');
-    // Shown on the All Users board for a signed-in viewer only.
-    expect(clientFn('paintBoardTools')).toContain('var showMine = allUsers && !!_viewerUserId;');
+  });
+
+  // The bar as paintBoardTools leaves it — run with a minimal document.
+  const bar = (o: { currentUserId: string; viewer: string; bf: Partial<Filter>; hidden?: number }) => {
+    const els: Record<string, any> = {};
+    const el = (id: string) =>
+      (els[id] ??= {
+        id,
+        hidden: id === 'mine-toggle' || id === 'bf-count',
+        title: '',
+        textContent: '',
+        attrs: {} as Record<string, string>,
+        getAttribute(k: string) {
+          return this.attrs[k] ?? null;
+        },
+        setAttribute(k: string, v: string) {
+          this.attrs[k] = String(v);
+        },
+      });
+    const changed: string[] = [];
+    const m0 = api();
+    const bf = { ...m0.boardFilterDefault(), ...o.bf };
+    const m = load<{
+      paintBoardTools(b: unknown): void;
+      toggleMineOnly(): void;
+      state(): Filter;
+    }>(
+      [...FNS, 'paintBoardTools', 'toggleMineOnly'],
+      [...VARS],
+      {
+        STRINGS: { today: '오늘', yesterday: '어제' },
+        document: { getElementById: el },
+        setTextIfChanged: (e: { textContent: string }, t: string) => {
+          e.textContent = t;
+        },
+        currentUserId: o.currentUserId,
+        _viewerUserId: o.viewer,
+        _bf: bf,
+        _bfHidden: o.hidden ?? 0,
+        boardFilterChanged: () => changed.push('changed'),
+      },
+      ['function state() { return _bf; }'],
+    );
+    return { m, els, changed };
+  };
+
+  it('the bar: 내 카드만 only on the All Users board for a signed-in viewer, pressed while it is the filter; the count', () => {
+    const all = bar({ currentUserId: '', viewer: 'U1', bf: { users: ['U1'], starred: true }, hidden: 4 });
+    all.m.paintBoardTools({ working: [card({ ownerId: 'U1' })], waiting: [], idle: [], closed: [] });
+    expect(all.els['mine-toggle'].hidden).toBe(false);
+    expect(all.els['mine-toggle'].attrs['aria-pressed']).toBe('true');
+    expect(all.els['bf-count'].textContent).toBe('2');
+    expect(all.els['bf-count'].hidden).toBe(false);
+    expect(all.els['bf-trigger'].attrs['aria-pressed']).toBe('true');
+    expect(all.els['bf-trigger'].title).toBe('카드 필터 · 적용 중: 2 · 숨긴 카드: 4');
+    expect(all.els['bs-label'].textContent).toBe('마지막 진행 ↓');
+    expect(all.els['bf-menu'].data.items.some((i: MenuItem) => i.value === 'u:U1' && i.checked)).toBe(true);
+    // One user's board: no 내 카드만, and its users choice is neither counted nor offered.
+    const one = bar({ currentUserId: 'U2', viewer: 'U1', bf: { users: ['U1'] } });
+    one.m.paintBoardTools({ working: [], waiting: [], idle: [], closed: [] });
+    expect(one.els['mine-toggle'].hidden).toBe(true);
+    expect(one.els['bf-count'].hidden).toBe(true);
+    expect(one.els['bf-menu'].data.items.some((i: MenuItem) => i.label === '사용자')).toBe(false);
+    // Signed out (a viewer token): no 내 카드만.
+    const anon = bar({ currentUserId: '', viewer: '', bf: {} });
+    anon.m.paintBoardTools(null);
+    expect(anon.els['mine-toggle'].hidden).toBe(true);
+  });
+
+  it('a press on 내 카드만 sets the viewer as the only user, a second press clears it', () => {
+    const b = bar({ currentUserId: '', viewer: 'U1', bf: { users: ['U2', 'U3'], starred: true } });
+    b.m.toggleMineOnly();
+    expect(b.m.state()).toMatchObject({ users: ['U1'], starred: true });
+    b.m.toggleMineOnly();
+    expect(b.m.state().users).toEqual([]);
+    expect(b.changed).toEqual(['changed', 'changed']);
   });
 });
 
@@ -465,6 +538,34 @@ describe('F3 — 사용자 · 채널 · 레포 toggles', () => {
     const v = m.boardViewOf(b, { ...f, users: ['U2'], channels: ['c:C2'] }, '', NOW);
     expect(keys(v)).toEqual(['b']);
     expect(v.hidden).toBe(2);
+  });
+
+  it('an epic’s children are judged one by one: the epic stays for a child that passes, carrying only those', () => {
+    const m = api();
+    const kidA = card({ key: 'ka', channelId: 'C1', channelName: 'dev' });
+    const kidB = card({ key: 'kb', channelId: 'C2', channelName: 'ops' });
+    const epic = card({
+      key: 'e',
+      kind: 'epic',
+      channelId: 'C2',
+      channelName: 'ops',
+      epic: { state: 'running', children: [kidA, kidB] },
+    });
+    const b2 = board({ working: [epic] });
+    const f = { ...m.boardFilterDefault(), channels: ['c:C1'] };
+    const v = m.boardViewOf(b2, f, '', NOW) as { board: Board; hidden: number; hiddenCards: Record<string, Card[]> };
+    expect(v.board.working.map((s) => s.key)).toEqual(['e']);
+    expect((v.board.working[0].epic as { children: Card[] }).children.map((c) => c.key)).toEqual(['ka']);
+    expect(v.hidden).toBe(1);
+    expect(v.hiddenCards.working.map((c) => c.key)).toEqual(['kb']);
+    // The data is not changed (the next render reads it whole).
+    expect((epic.epic as { children: Card[] }).children).toHaveLength(2);
+    // No child passes and the epic does not: all three are hidden.
+    const none = m.boardViewOf(b2, { ...f, channels: ['dm'] }, '', NOW);
+    expect(none.board.working).toEqual([]);
+    expect(none.hidden).toBe(3);
+    // No filter: the same objects, untouched.
+    expect(m.boardViewOf(b2, m.boardFilterDefault(), '', NOW).board.working[0]).toBe(epic);
   });
 
   it('the menu offers every owner · channel · repo on the board with its count (the viewer marked), busiest first', () => {
@@ -660,7 +761,64 @@ describe('Wiring — the board draws the filtered view; the tools follow every r
     expect(render).toContain('planDoneGroups(plan.done, Date.now(), _doneGroupOpen, { sort: _bf.sort, dir: _bf.dir })');
     expect(render).toContain('paintBoardTools(board);');
     expect(TEMPLATE).toContain('wireBoardTools();\n  paintBoardTools(null);');
-    // One user's board: the 사용자 filter is not applied there (it would empty it).
-    expect(clientFn('boardFilterNow')).toContain('if (!currentUserId || !_bf.users.length) return _bf;');
+  });
+
+  it('one user’s board does not apply the 사용자 filter; the hidden cards count per column, closed ones only when shown', () => {
+    const m0 = api();
+    const f = { ...m0.boardFilterDefault(), users: ['U1'], starred: true };
+    const now = (currentUserId: string) =>
+      load<{ boardFilterNow(): Filter }>(
+        ['boardFilterDefault', 'boardFilterFrom', 'boardFilterNow'],
+        ['BOARD_PERIODS'],
+        {
+          currentUserId,
+          _bf: f,
+        },
+      ).boardFilterNow();
+    expect(now('')).toBe(f);
+    expect(now('U2')).toEqual({ ...f, users: [] });
+    const counts = load<{ boardHiddenCounts(c: unknown, a: boolean, s: boolean): Record<string, number> }>(
+      ['boardHiddenCounts'],
+      [],
+    ).boardHiddenCounts;
+    const hidden = {
+      waiting: [card()],
+      working: [],
+      idle: [card(), card()],
+      closed: [card({ terminated: true }), card({ sessionState: 'SLEEPING' })],
+    };
+    expect(counts(hidden, false, true)).toEqual({ waiting: 1, working: 0, done: 3 });
+    expect(counts(hidden, true, false)).toEqual({ waiting: 1, working: 0, done: 3 });
+    expect(counts(hidden, true, true)).toEqual({ waiting: 1, working: 0, done: 4 });
+    // renderBoard: the hint only in a column the filters hid cards from.
+    expect(clientFn('renderBoard')).toContain("emptyText: filteredEmpty('waiting')");
+  });
+
+  it('a filter another account stored in this browser loses its users when the viewer is known', () => {
+    const storage = new Map<string, string>();
+    const mk = (bf: Partial<Filter>, stored: string) =>
+      load<{ boardFilterViewerKnown(v: string): boolean; state(): Filter }>(
+        ['boardFilterDefault', 'boardFilterFrom', 'saveBoardFilter', 'boardFilterViewerKnown'],
+        ['BOARD_FILTER_KEY', 'BOARD_PERIODS'],
+        {
+          localStorage: {
+            setItem: (k: string, v: string) => storage.set(k, v),
+            getItem: (k: string) => storage.get(k) ?? null,
+          },
+          _bf: { ...api().boardFilterDefault(), ...bf },
+          _bfViewer: stored,
+          _viewerUserId: '',
+        },
+        ['function state() { return _bf; }'],
+      );
+    const same = mk({ users: ['U1'] }, 'U1');
+    expect(same.boardFilterViewerKnown('U1')).toBe(false);
+    expect(same.state().users).toEqual(['U1']);
+    const other = mk({ users: ['U1'], starred: true }, 'U1');
+    expect(other.boardFilterViewerKnown('U9')).toBe(true);
+    expect(other.state()).toMatchObject({ users: [], starred: true });
+    expect(JSON.parse(storage.get('soma-board-filter')!)).toMatchObject({ users: [], starred: true, viewer: 'U9' });
+    // Nothing stored by anyone yet: the first viewer keeps the filter.
+    expect(mk({ users: ['U1'] }, '').boardFilterViewerKnown('U1')).toBe(false);
   });
 });

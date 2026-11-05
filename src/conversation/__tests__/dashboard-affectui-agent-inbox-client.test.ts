@@ -469,6 +469,7 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
       paintBoardTools: () => {},
       _bf: { sort: 'progress', dir: 'desc' },
       _bfHidden: 0,
+      _bfHiddenCols: { waiting: 0, working: 0, done: 0 },
       paintCronDrawer: () => {},
       updateTokenBreakdown: () => {},
       scheduleLayoutRefresh: () => {},

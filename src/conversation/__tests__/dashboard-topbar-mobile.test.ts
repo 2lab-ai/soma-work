@@ -216,6 +216,7 @@ describe('paintAppBar — the data the page hands the bar', () => {
         syncBoardScope: () => {},
         paintBoardTools: () => {},
         _lastBoardData: null,
+        boardFilterViewerKnown: () => false,
         autoOpenDecisions: () => {},
         somaThemeNow: () => ({ theme: 'dark', palette: 'color' }),
       },

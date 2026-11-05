@@ -281,6 +281,7 @@ function boardFlow(cardOf?: (s: { key: string }, col: string) => unknown, over: 
       paintBoardTools: () => {},
       _bf: { sort: 'progress', dir: 'desc' },
       _bfHidden: 0,
+      _bfHiddenCols: { waiting: 0, working: 0, done: 0 },
       paintCronDrawer: () => {},
       updateTokenBreakdown: () => {},
       scheduleLayoutRefresh: () => {},
