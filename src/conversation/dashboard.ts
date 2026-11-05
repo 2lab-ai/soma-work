@@ -20441,6 +20441,7 @@ function ntRepoChannelName(repo) {
 // What keeps a new repo channel from being asked for, in words; '' when it can be. With the context: a private
 // channel the bot cannot make (no groups:write) is held, not made public.
 function ntNewChannelProblem(state, ctx) {
+  if (ctx && !ctx.channelCreate) return '지금은 새 채널을 만들 수 없어요 — 다른 채널을 골라 주세요';
   if (!ntRepoOf(state.newRepo)) return '새 채널의 GitHub repo를 owner/repo 또는 github.com 주소로 써 주세요';
   if (state.newChannelPrivate && ctx && !ctx.channelCreatePrivate) {
     return '지금은 봇이 비공개 채널을 만들 수 없어요 — 비공개를 끄거나 봇에 groups:write 권한을 추가해 주세요';
@@ -20712,8 +20713,10 @@ function ntReconcile(state, ctx) {
     return m.nickname === state.model;
   });
   state.effort = fitEffortLevel(mpLevelsOf(chosen && chosen.effortLevels), state.effort);
+  // A new repo channel stays chosen even when it is no longer offered: the submit is held (ntNewChannelProblem) —
+  // the destination never moves to another channel behind the admin's back.
   var hasChannel =
-    (state.channelId === '__new__' && !!ctx.channelCreate) ||
+    state.channelId === '__new__' ||
     ctx.channels.some(function (c) {
       return c.id === state.channelId;
     });
@@ -20776,7 +20779,7 @@ function ntRender() {
   var channel = ntEl('nt-channel');
   if (isTask) {
     // A dashboard task has no channel: no channel list, no channel error.
-  } else if (_ntCtx.channels.length || _ntCtx.channelCreate) {
+  } else if (_ntCtx.channels.length || _ntCtx.channelCreate || _ntState.channelId === '__new__') {
     channel.innerHTML =
       (_ntState.channelId ? '' : '<option value="" selected>채널 고르기</option>') +
       _ntCtx.channels
@@ -20789,7 +20792,7 @@ function ntRender() {
         })
         .join('') +
       // 2026-11-05 — an admin may start the task in a new channel for a repo.
-      (_ntCtx.channelCreate
+      (_ntCtx.channelCreate || _ntState.channelId === '__new__'
         ? '<option value="__new__"' + (_ntState.channelId === '__new__' ? ' selected' : '') + '>＋ 새 repo 채널 만들기</option>'
         : '');
     channel.disabled = false;
@@ -21801,7 +21804,7 @@ function ntOnChannelChange() {
 function ntRenderNewChannel(isTask) {
   var row = ntEl('nt-newch');
   if (!row || !_ntState || !_ntCtx) return;
-  var on = !isTask && !!_ntCtx.channelCreate && _ntState.channelId === '__new__';
+  var on = !isTask && _ntState.channelId === '__new__';
   row.hidden = !on;
   if (!on) return;
   var repo = ntEl('nt-newch-repo');
@@ -22091,6 +22094,7 @@ function ntOnLaunched(data, submitted, launch) {
   launch.answeredAt = Date.now();
   launch.permalink = data.permalink ? String(data.permalink) : '';
   launch.phase = '에이전트를 시작하는 중…';
+  if (typeof ntFollowLaunchChannel === 'function') ntFollowLaunchChannel(data, launch);
   // A command that only answers (/help, /model opus …): its answer is in the new thread, and no task comes — no
   // 시작 중 card waits for one.
   if (data.status === 'answered') {
@@ -22118,15 +22122,6 @@ function ntOnLaunched(data, submitted, launch) {
         return c.id === data.channel;
       })
     : null;
-  // 2026-11-05 — a new repo channel (made or found): its name came with the answer, and the next new task offers it
-  // once the context is read again (the admin is a member now). The dialog's next task starts there.
-  if (data.channelName && data.channel) {
-    if (_ntState && _ntState.channelFromLaunch === launch.requestId) {
-      _ntState.channelId = String(data.channel);
-      delete _ntState.channelFromLaunch;
-    }
-    if (!channel && typeof ntLoadContext === 'function') ntLoadContext();
-  }
   // A toast on the page's <ui-toaster>: 카드 열기 opens this launch's card (not a later launch's), Slack에서 보기
   // its thread.
   dashToast(ntLaunchToast(data, channel ? channel.name : data.channelName ? String(data.channelName) : null, restored), function () {
@@ -22135,6 +22130,21 @@ function ntOnLaunched(data, submitted, launch) {
   // Its 시작 중 card was pressed while it was on its way: the same ask goes on now that it has a key.
   if (launch.wantOpen && !launch.failed) ntOpenLaunch(launch, true);
   ntPendingWatch();
+}
+
+// 2026-11-05 — a new repo channel (made or found) came back with the answer — a task's or an answered command's: the
+// next new task starts there unless the channel was changed meanwhile, and the context is read again so the
+// composer offers it (the admin is a member now).
+function ntFollowLaunchChannel(data, launch) {
+  if (!data || !data.channelName || !data.channel) return;
+  if (_ntState && _ntState.channelFromLaunch === launch.requestId) {
+    _ntState.channelId = String(data.channel);
+    delete _ntState.channelFromLaunch;
+  }
+  var known = ((_ntCtx && _ntCtx.channels) || []).some(function (c) {
+    return c.id === data.channel;
+  });
+  if (!known && typeof ntLoadContext === 'function') ntLoadContext();
 }
 
 // What the dialog holds after a launch: a started task starts the next one clean

@@ -292,6 +292,19 @@ describe('ensureRepoChannel', () => {
       expect(d.invite).not.toHaveBeenCalled();
       expect(d.create).not.toHaveBeenCalled();
     }
+    // Round 2: a public mapping listed first does not hide a private one.
+    const both = deps({
+      mappedChannels: vi.fn(() => [
+        { id: 'C_PUB', name: 'team', isPrivate: false },
+        { id: 'C_PRIV2', name: 'project', isPrivate: true },
+      ]),
+    });
+    await expect(ensureRepoChannel('U_ADMIN', { ...REQUEST, isPrivate: true }, both)).resolves.toMatchObject({
+      channelId: 'C_PRIV2',
+      created: false,
+    });
+    expect(both.invite).toHaveBeenCalledTimes(1);
+    expect(both.invite).toHaveBeenCalledWith('C_PRIV2', 'U_ADMIN');
     const priv = deps({ mappedChannels: vi.fn(() => [{ id: 'C_PRIV', name: 'workspace-new-repo', isPrivate: true }]) });
     await expect(ensureRepoChannel('U_ADMIN', { ...REQUEST, isPrivate: true }, priv)).resolves.toEqual({
       channelId: 'C_PRIV',
@@ -384,6 +397,38 @@ describe('ensureRepoChannel', () => {
     expect(n).toBe(1);
     expect(ra).toMatchObject({ channelId: 'C_1', created: true });
     expect(rb).toMatchObject({ channelId: 'C_1', created: false });
+  });
+
+  it('the name is marked as being made for exactly the making — released on success and on failure', async () => {
+    const released: string[] = [];
+    const marking = () =>
+      vi.fn((name: string) => {
+        return () => released.push(name);
+      });
+    const ok = deps({ beginMaking: marking() });
+    await ensureRepoChannel('U_ADMIN', REQUEST, ok);
+    expect(ok.beginMaking).toHaveBeenCalledWith('workspace-new-repo');
+    const failed = deps({
+      beginMaking: marking(),
+      create: vi.fn(async () => {
+        throw slackError('name_taken');
+      }),
+    });
+    await ensureRepoChannel('U_ADMIN', REQUEST, failed).catch(() => undefined);
+    expect(released).toEqual(['workspace-new-repo', 'workspace-new-repo']);
+    const reused = deps({ beginMaking: marking(), mappedChannels: vi.fn(() => [{ id: 'C_OLD', name: 'old' }]) });
+    await ensureRepoChannel('U_ADMIN', REQUEST, reused);
+    expect(reused.beginMaking).not.toHaveBeenCalled();
+  });
+
+  it('an archived half-made channel keeps its name: the answer asks for another name, not a plain retry', async () => {
+    const d = deps({
+      setPurpose: vi.fn(async () => {
+        throw slackError('fatal_error');
+      }),
+    });
+    const error = await ensureRepoChannel('U_ADMIN', REQUEST, d).catch((e) => e);
+    expect(error.message).toMatch(/다른 이름으로 다시 시도/);
   });
 
   it('slackErrorCode reads the Web API error code, nothing else', () => {

@@ -17,7 +17,13 @@
 import type { WebClient } from '@slack/web-api';
 import { getAuthMode } from '../auth/auth-runtime';
 import { fetchLlmuxStatus } from '../auth/llmux-client';
-import { findChannelsForRepo, getAllChannels, getChannel, upsertChannel } from '../channel-registry';
+import {
+  findChannelsForRepo,
+  getAllChannels,
+  getChannel,
+  markChannelBeingMade,
+  upsertChannel,
+} from '../channel-registry';
 import { config } from '../config';
 import { getGitHubAppAuth } from '../github-auth';
 import { getLastCommandChannelStore } from '../last-command-channel-store';
@@ -127,6 +133,7 @@ export function repoChannelDeps(client: WebClient): RepoChannelDeps {
     register: (info) => {
       upsertChannel(info);
     },
+    beginMaking: (name) => markChannelBeingMade(name),
   };
 }
 

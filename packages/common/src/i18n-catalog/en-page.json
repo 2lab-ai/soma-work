@@ -1282,5 +1282,7 @@
   ">＋ 새 repo 채널 만들기</option>": ">＋ New repo channel</option>",
   " · 새 채널을 만들었어요": " · new channel made",
   " · 이 repo의 채널이 이미 있어 그 채널에 올렸어요": " · this repo already had a channel, so the task went there",
-  "<option value=\"\" selected>채널 고르기</option>": "<option value=\"\" selected>Choose a channel</option>"
+  "<option value=\"\" selected>채널 고르기</option>": "<option value=\"\" selected>Choose a channel</option>",
+  "지금은 새 채널을 만들 수 없어요 — 다른 채널을 골라 주세요": "A new channel cannot be made right now — choose another channel",
+  "지금은 봇이 비공개 채널을 만들 수 없어요 — 비공개를 끄거나 봇에 groups:write 권한을 추가해 주세요": "The bot cannot make a private channel right now — turn Private off, or add the groups:write scope to the bot"
 }

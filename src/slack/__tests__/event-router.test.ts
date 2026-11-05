@@ -10,6 +10,7 @@ import type { SlackApiHelper } from '../slack-api-helper';
 vi.mock('../../channel-registry', () => ({
   registerChannel: vi.fn().mockResolvedValue(null),
   unregisterChannel: vi.fn(),
+  isChannelBeingMade: vi.fn(() => false),
 }));
 
 // Mock dependencies
@@ -535,14 +536,11 @@ describe('EventRouter', () => {
       );
     });
 
-    it('a channel the bot made itself (a dashboard repo channel): no welcome, no re-read into the registry', async () => {
-      const { registerChannel } = await import('../../channel-registry');
+    it('a channel the bot is making (a dashboard repo channel): no welcome, no re-read into the registry', async () => {
+      const { registerChannel, isChannelBeingMade } = await import('../../channel-registry');
       vi.mocked(registerChannel).mockClear();
-      mockSlackApi.getChannelInfo.mockResolvedValueOnce({
-        name: 'workspace-new',
-        creator: 'B123',
-        created: Math.floor(Date.now() / 1000) - 5,
-      });
+      vi.mocked(isChannelBeingMade).mockImplementation((name: string) => name === 'workspace-new');
+      mockSlackApi.getChannelInfo.mockResolvedValueOnce({ name: 'workspace-new', creator: 'B123' });
       router.setup();
       const handler = mockApp.event.mock.calls.find((call) => call[0] === 'member_joined_channel')![1];
       const mockSay = vi.fn();
@@ -551,15 +549,17 @@ describe('EventRouter', () => {
 
       expect(mockSay).not.toHaveBeenCalled();
       expect(registerChannel).not.toHaveBeenCalled();
+      vi.mocked(isChannelBeingMade).mockReset();
+      vi.mocked(isChannelBeingMade).mockReturnValue(false);
     });
 
-    it('a channel the bot made long ago and rejoins: registered again, still no welcome', async () => {
+    it('a channel the bot made and rejoins later (even minutes later): registered again, still no welcome', async () => {
       const { registerChannel } = await import('../../channel-registry');
       vi.mocked(registerChannel).mockClear();
       mockSlackApi.getChannelInfo.mockResolvedValueOnce({
         name: 'workspace-old',
         creator: 'B123',
-        created: Math.floor(Date.now() / 1000) - 86_400,
+        created: Math.floor(Date.now() / 1000) - 120,
       });
       router.setup();
       const handler = mockApp.event.mock.calls.find((call) => call[0] === 'member_joined_channel')![1];
