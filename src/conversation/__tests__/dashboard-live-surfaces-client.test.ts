@@ -1060,7 +1060,7 @@ describe('model switch on the open card (T4/T5)', () => {
       'renderModelNote',
       'modelSwitchNote',
     ],
-    ['_busy'],
+    ['_busy', '_effortPending', '_modelNoteSeq'],
     {
       REPRESENTATIVE_MODELS: MODELS,
       EFFORT_LEVELS: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],

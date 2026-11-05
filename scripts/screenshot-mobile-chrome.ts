@@ -6,10 +6,13 @@
  *   T2  the detail card on a phone: only the title bar stays while the reader scrolls the chat or the work log —
  *       the status bar, the tab bar, the agent tabs and the section tabs scroll out with the content; a tap on
  *       the title bar brings them back.
- *   T3  the session's model picker sits on the composer's own row, left of Send.
+ *   T3  the session's model picker sits on the composer's own row, left of Send — on a phone and on the desktop
+ *       (SSOT 2026-11-05).
+ *   E   an effort pick in the picker shows at once — no busy, no progress cursor, before the server answers
+ *       (SSOT 2026-11-05: "추론 강도 버튼 변경하면 왜 로딩을해").
  *   T4  the composer slides away while the reader scrolls back through the chat or the log, comes back at the very
  *       bottom, and a ^ button at the bottom right brings it back on demand.
- *   and the desktop page keeps its layout (the bar's toolbar, the pinned status bar, the composer).
+ *   and the desktop page keeps the rest of its layout (the bar's toolbar, the pinned status bar, the composer).
  *
  * The real web server serves the real page; the browser's HTTP layer is mocked (board, turns, answers, work log)
  * and the WebSocket is a stub, so every run is the same. Touch scrolls are Chromium's own gesture synthesis.
@@ -153,6 +156,14 @@ async function installMocks(page: Page) {
     r.fulfill({ json: { entries: WORKLOG, hasMore: false } }),
   );
   await page.route(/\/api\/conversations\/[^/]+\/turns\/[^/]+\/raw/, (r) => r.fulfill({ json: { raw: ANSWER } }));
+  // The effort write: the server answers after it saved the sessions and pushed the board (slow on a big store).
+  await page.route(/\/api\/dashboard\/session\/[^/?]+\/effort$/, async (r) => {
+    const effort = JSON.parse(r.request().postData() || '{}').effort;
+    await sleep(EFFORT_DELAY_MS);
+    return r.fulfill({
+      json: { ok: true, result: { status: 'switched', effort, previous: 'xhigh', effective: effort } },
+    });
+  });
   await page.route(/\/api\/dashboard\/session\/[^/?]+(\?.*)?$/, (r) => {
     if (r.request().method() !== 'GET') return r.fulfill({ json: { ok: true } });
     return r.fulfill({
@@ -172,6 +183,7 @@ function check(ok: boolean, what: string) {
   if (!ok) failures.push(what);
 }
 const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+const EFFORT_DELAY_MS = 1500;
 
 /** A real touch drag (Chromium's gesture synthesis): negative dy scrolls back toward older items. */
 async function swipe(page: Page, x: number, y: number, dy: number) {
@@ -605,9 +617,100 @@ async function desktop(browser: Browser) {
     g.statusShown && g.commandShown && !g.upShown,
     `${tag}: the status bar and the composer stay put while the chat scrolls`,
   );
+  // T3 · the desktop card too: the picker on Send's row, to its left; no model line above the composer.
+  const p = g.picker;
+  const s = g.send;
   check(
-    !!g.picker && !!g.steer && g.picker.bottom <= g.steer.top + 1,
-    `${tag}: the model picker keeps its line above the composer`,
+    !!p &&
+      !!s &&
+      g.pickerShown &&
+      Math.abs((p.top + p.bottom) / 2 - (s.top + s.bottom) / 2) <= 6 &&
+      p.right <= s.left &&
+      s.left - p.right <= 16,
+    `${tag}: the model picker sits on Send's row, right at its left (picker ${JSON.stringify(p)} · send ${JSON.stringify(s)})`,
+  );
+  check(!!p && !!g.steer && p.top >= g.steer.top, `${tag}: no model line above the composer`);
+  const scope = await page.evaluate(() => {
+    const el = document.querySelector('#panel-controls .pc-scope') as HTMLElement | null;
+    return el ? getComputedStyle(el).display : 'none';
+  });
+  check(scope === 'none', `${tag}: no "이 세션" label on the composer's row (${scope})`);
+
+  // E · an effort pick shows at once: the thumb moves and nothing is busy while the write is out.
+  await page.locator('#panel-controls ui-model-picker .mp-trigger').click();
+  await page.waitForSelector('#panel-controls ui-model-picker .mp-seg-btn[data-effort="high"]', { timeout: 5000 });
+  await sleep(400);
+  await page.screenshot({ path: path.join(OUT, 'desktop-effort-menu.png') });
+  const t0 = Date.now();
+  await page.locator('#panel-controls ui-model-picker .mp-seg-btn[data-effort="high"]').click();
+  await sleep(150);
+  const mid = await page.evaluate(() => {
+    const el = document.querySelector('#panel-controls ui-model-picker') as HTMLElement & {
+      shadowRoot: ShadowRoot;
+      open?: boolean;
+    };
+    const sr = el.shadowRoot;
+    const on = sr.querySelector('.mp-seg-btn[aria-checked="true"]') as HTMLElement | null;
+    const seg = sr.querySelector('.mp-seg-ctl') as HTMLElement | null;
+    const trig = sr.querySelector('.mp-trigger') as HTMLElement | null;
+    return {
+      checked: on?.dataset.effort,
+      segBusy: seg?.getAttribute('aria-busy'),
+      trigBusy: trig?.getAttribute('aria-busy'),
+      cursor: on ? getComputedStyle(on).cursor : '',
+      open: !!el.open,
+    };
+  });
+  const midMs = Date.now() - t0;
+  await page.screenshot({ path: path.join(OUT, 'desktop-effort-picked.png') });
+  check(
+    midMs < EFFORT_DELAY_MS && mid.checked === 'high' && !mid.segBusy && !mid.trigBusy && mid.cursor !== 'progress',
+    `${tag}: an effort pick shows at once, nothing busy, ${midMs}ms after the click with the write still out (${JSON.stringify(mid)})`,
+  );
+  // A level keeps the menu open (it is a setting of the same choice): the shorter words do not move the trigger.
+  check(mid.open, `${tag}: the menu stays open after a level pick (open ${mid.open})`);
+  await sleep(EFFORT_DELAY_MS + 300);
+  const after = await page.evaluate(() => {
+    const el = document.querySelector('#panel-controls ui-model-picker') as HTMLElement & {
+      shadowRoot: ShadowRoot;
+      open?: boolean;
+    };
+    return {
+      effort: (el.shadowRoot.querySelector('.mp-seg-btn[aria-checked="true"]') as HTMLElement | null)?.dataset.effort,
+      open: !!el.open,
+    };
+  });
+  check(
+    after.effort === 'high' && after.open,
+    `${tag}: the server's answer keeps the picked level, the menu still open (${JSON.stringify(after)})`,
+  );
+  // Closed, the picker takes its own width and ends at Send again.
+  await page.keyboard.press('Escape');
+  await sleep(500);
+  const closed = await panelGeometry(page);
+  check(
+    !!closed.picker &&
+      !!closed.send &&
+      closed.picker.right <= closed.send.left &&
+      closed.send.left - closed.picker.right <= 16,
+    `${tag}: closed, the picker ends right at Send again (picker ${JSON.stringify(closed.picker)} · send ${JSON.stringify(closed.send)})`,
+  );
+  // The switch's note floats above the field, then goes: it never sits on the text being typed.
+  const note = () =>
+    page.evaluate(() => {
+      const el = document.querySelector('#panel-controls .cb-model-note') as HTMLElement | null;
+      if (!el) return null;
+      const cs = getComputedStyle(el);
+      return { text: el.textContent, shown: cs.visibility !== 'hidden' && Number(cs.opacity) > 0.05 };
+    });
+  const n0 = await note();
+  await page.screenshot({ path: path.join(OUT, 'desktop-effort-closed.png') });
+  await sleep(5000);
+  const n1 = await note();
+  await page.screenshot({ path: path.join(OUT, 'desktop-effort-note-gone.png') });
+  check(
+    !!n0 && n0.shown && !!n1 && !n1.shown,
+    `${tag}: the effort note shows, then goes after a few seconds (${JSON.stringify(n0)} → ${JSON.stringify(n1)})`,
   );
   await ctx.close();
 }

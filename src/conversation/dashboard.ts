@@ -6094,7 +6094,8 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
    T2 · the detail card keeps only its title bar while the reader scrolls the chat or the work log: the status bar
    joins the scroll area (syncPhoneStatus), and reading (data-read, rdRead) grows the section box to the whole view
    and scrolls everything above it out under the title bar; a tap on the title bar scrolls it back in.
-   T3 · the session's model picker sits on the composer's own row, left of Send (syncPickerDock measures the row).
+   T3 · the session's model picker sits on the composer's own row, left of Send (syncPickerDock measures the row) —
+   on every screen since SSOT 2026-11-05 (the desktop card too).
    T4 · reading tucks the composer away (data-tuck): it slides down; a ^ at the bottom right (#pc-reveal) brings it
    back, and so does the very bottom of the chat or the log. ── */
 .inbox-tools > .topbar-scope { flex: 1 1 auto; flex-wrap: wrap; margin-right: auto; }
@@ -6142,11 +6143,16 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
   display: flex; flex-wrap: nowrap; align-items: center; justify-content: flex-end; padding: 0; pointer-events: none;
 }
 .panel-command[data-pick-dock] > .panel-controls > * { pointer-events: auto; }
-.panel-command[data-pick-dock] > .panel-controls > ui-model-picker { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+.panel-command[data-pick-dock] > .panel-controls > .pc-scope { display: none; }
+.panel-command[data-pick-dock] > .panel-controls ui-model-picker { flex: 0 1 auto; min-width: 0; max-width: 100%; }
 .panel-command[data-pick-dock] > .panel-controls > .cb-model-note {
   position: absolute; right: 0; bottom: calc(100% + 6px); max-width: min(280px, 80vw); padding: 4px 8px; border-radius: 8px;
   background: var(--surface-raised); box-shadow: var(--ib-shadow);
 }
+/* A switch's note floats above the field: it says its word and goes, so it never sits on the text being typed
+   (SSOT 2026-11-05). The waiting status (unkeyed) and a refusal stay. */
+.panel-command[data-pick-dock] > .panel-controls > .cb-model-note[data-mk]:not([data-tone="fail"]) { pointer-events: none; animation: pc-note-away var(--dur-fade) var(--ease-out) 4s forwards; }
+@keyframes pc-note-away { to { opacity: 0; visibility: hidden; } }
 
 /* ── RESPONSIVE — Bauhaus grid adapts ── */
 @media (max-width: 680px) {
@@ -7136,16 +7142,16 @@ function rdGesture(e) {
     _rd.last = vp ? vp.scrollTop : -1;
   }
 }
-// T3 — the session's model picker on the composer's row, left of Send (a phone). The row is <ui-composer>'s own
-// toolbar (its open shadow root), so the page measures it — the tools' end, Send's start, the row's top and height —
-// and lays the picker's box between them (data-pick-dock); elsewhere, or while a recording takes the row (no .cp-end),
-// the picker keeps its line above the composer.
+// T3 — the session's model picker on the composer's row, left of Send (지시) — on every screen (SSOT 2026-11-05: the
+// desktop card too, not only a phone). The row is <ui-composer>'s own toolbar (its open shadow root), so the page
+// measures it — the tools' end, Send's start, the row's top and height — and lays the picker's box between them
+// (data-pick-dock); while a recording takes the row (no .cp-end) the picker keeps its line above the composer.
 function syncPickerDock() {
   var cmd = document.getElementById('panel-command');
   var ctl = document.getElementById('panel-controls');
   var comp = document.getElementById('pc-composer');
   if (!cmd || !ctl) return;
-  var bar = isPhone() && comp && comp.shadowRoot ? comp.shadowRoot.querySelector('.cp-bar') : null;
+  var bar = comp && comp.shadowRoot ? comp.shadowRoot.querySelector('.cp-bar') : null;
   var end = bar ? bar.querySelector('.cp-end') : null;
   if (!end || !cmd.getBoundingClientRect().width) {
     cmd.removeAttribute('data-pick-dock');
@@ -13743,15 +13749,20 @@ function mpData(s) {
   var cur = '';
   for (var i = 0; i < models.length; i++) if (models[i].model === s.model) cur = models[i].nickname;
   var value = { model: cur || mpShort(s), effortLevels: mpEffortLevels(s) };
-  if (s.effort) value.effort = s.effort;
-  if (s.effortEffective) value.effectiveEffort = s.effortEffective;
+  // A level picked here shows at once, before the server answers (changeEffort): its cap comes with the answer.
+  var pick = _effortPending[s.key];
+  if (pick) value.effort = pick.want;
+  else {
+    if (s.effort) value.effort = s.effort;
+    if (s.effortEffective) value.effectiveEffort = s.effortEffective;
+  }
   var d = {
     models: rows,
     value: value,
     contextTokens: toNum(s.contextTokens),
     busy: {
       model: s.pendingModel ? 'compact 후 ' + s.pendingModel + '(으)로 전환 대기 중' : isBusy(s.key, 'model'),
-      effort: isBusy(s.key, 'effort'),
+      effort: false, // a level never waits (changeEffort)
     },
   };
   var note = _modelNotes[s.key];
@@ -13765,7 +13776,7 @@ function mpDataSig(s) {
   var note = _modelNotes[s.key];
   return [
     s.key, s.model, s.effort, s.effortEffective, s.pendingModel, toNum(s.contextTokens), String(s.effortLevels || ''),
-    isBusy(s.key, 'model'), isBusy(s.key, 'effort'), note && note.error ? note.text : '',
+    isBusy(s.key, 'model'), _effortPending[s.key] ? _effortPending[s.key].want : '', note && note.error ? note.text : '',
   ].join('|');
 }
 // Set every picker's data under root — only where it changed (a push that
@@ -13803,9 +13814,18 @@ function mpOnChange(e) {
 document.addEventListener('ui-change', mpOnChange);
 // The menu closed (a pick, Esc, a press outside, its trigger moved): the card
 // and the panel controls held their live updates while it was open (D12).
+// While it is open the element keeps the width it opened with (SSOT 2026-11-05): the composer's picker ends at Send
+// (a right-aligned dock), so a level that changes the trigger's words (매우 높음 → 높음) would move its left edge —
+// and the element closes a menu whose trigger moved. Closed, it takes its own width again.
 function mpOnOpenChange(e) {
   var el = e.target;
-  if (!el || el.tagName !== 'UI-MODEL-PICKER' || !e.detail || e.detail.open || !el.hasAttribute('data-mp-key')) return;
+  if (!el || el.tagName !== 'UI-MODEL-PICKER' || !e.detail || !el.hasAttribute('data-mp-key')) return;
+  if (e.detail.open) {
+    var w = el.getBoundingClientRect().width;
+    if (w > 0) el.style.width = Math.ceil(w) + 'px';
+    return;
+  }
+  el.style.width = '';
   var key = el.getAttribute('data-mp-key');
   refreshCard(key);
   repaintPanelControlsFor(key);
@@ -13813,13 +13833,17 @@ function mpOnOpenChange(e) {
 document.addEventListener('ui-open-change', mpOnOpenChange);
 // The note under the model: what a switch did. The owner's picker says a
 // waiting switch and a refused write under its own trigger (busy.model, error).
+// Each switch's note carries its own key (data-mk): a live repaint keeps the same node, a new switch's note is a new
+// node — so on the composer's row, where it floats above the field and fades (SSOT 2026-11-05), it shows again.
+var _modelNoteSeq = 0;
 function renderModelNote(s, picker) {
   if (s.pendingModel) {
     return picker ? '' : '<div class="ui-status-line cb-model-note" role="status">compact 후 ' + esc(s.pendingModel) + '(으)로 전환합니다…</div>';
   }
   var n = _modelNotes[s.key];
   if (!n || (picker && n.error)) return '';
-  return '<div class="ui-status-line cb-model-note"' + (n.error ? ' data-tone="fail" role="alert"' : ' role="status"') + '>' + esc(n.text) + '</div>';
+  if (!n.mk) n.mk = ++_modelNoteSeq;
+  return '<div class="ui-status-line cb-model-note" data-mk="note|' + n.mk + '"' + (n.error ? ' data-tone="fail" role="alert"' : ' role="status"') + '>' + esc(n.text) + '</div>';
 }
 async function postModelSwitch(key, nickname) {
   var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/model';
@@ -13909,20 +13933,39 @@ function effortSwitchNote(r) {
   var wire = (res.effective || res.effort) === 'ultra' ? ' · 백엔드에는 최대(max)로 전달' : '';
   return { text: '추론 강도 ' + effortLabel(res.effort) + ' · 다음 턴부터 적용' + capped + wire, error: false };
 }
+// A level is a setting of the next turn, never a wait (SSOT 2026-11-05: "추론 강도 버튼 변경하면 왜 로딩을해"): the
+// pick is the pickers' value at once (_effortPending — mpData reads it over the session's, so a live push that left
+// before the server saved it does not pull the thumb back), nothing is busy (no progress cursor, no locked levels).
+// One write per session at a time: picks made while it is out leave only the newest, sent next. Every answer the
+// server accepted is the session's level (mpApplyEffort); a refusal ends the chain and the session's level shows
+// again with the reason. The server pushes the change to every board itself — no board reload here.
+var _effortPending = Object.create(null); // session key → { want: the level last picked } while its write is out
 async function changeEffort(key, effort) {
   if (!effort) return;
-  if (isBusy(key, 'effort')) return;
-  setBusy(key, 'effort', true);
+  var p = _effortPending[key];
+  var cs = _sessionCache[key];
+  if (effort === (p ? p.want : cs && cs.effort)) return;
+  if (p) {
+    p.want = effort;
+    refreshCard(key);
+    repaintPanelControlsFor(key);
+    return;
+  }
+  p = _effortPending[key] = { want: effort };
+  if (_modelNotes[key] && _modelNotes[key].error) delete _modelNotes[key];
   refreshCard(key);
   repaintPanelControlsFor(key);
   var r;
-  try { r = await postEffortSwitch(key, effort); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
-  setBusy(key, 'effort', false);
+  for (;;) {
+    var sent = p.want;
+    try { r = await postEffortSwitch(key, sent); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+    mpApplyEffort(key, r);
+    if (!r.ok || p.want === sent) break;
+  }
+  delete _effortPending[key];
   _modelNotes[key] = effortSwitchNote(r);
-  mpApplyEffort(key, r);
   refreshCard(key);
   repaintPanelControlsFor(key);
-  loadSessions();
 }
 // What the server answered is the session's level now — the open menu's thumb
 // does not wait for the next poll (a refusal changes nothing).
@@ -13946,6 +13989,7 @@ function renderPanelControls(s) {
   var held = el.querySelector('ui-model-picker[open]');
   if (held && held.getAttribute('data-mp-key') !== s.key) {
     held.open = false;
+    held.style.width = ''; // closed without ui-open-change: the width it held open goes too (mpOnOpenChange)
     held = null;
   }
   if (!held) {
