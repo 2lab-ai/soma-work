@@ -150,6 +150,75 @@ describe('restart — a cut turn is resumed as itself, an active goal does not r
     expect(session.goal?.continuationCount).toBe(2);
   });
 
+  describe('a resume that never starts, with a false stall left by an earlier restart — one refund, one kick', () => {
+    function stalledCut(): ConversationSession {
+      const session = goalSession('working', 3);
+      const goal = session.goal as NonNullable<ConversationSession['goal']>;
+      goal.lastAssistantTurnSummary = '';
+      goal.lastEvalReason = 'no output';
+      goal.stall = { stallId: 's1', stalledAt: 1, reason: 'no output', actions: ['a', 'b', 'c'], confidence: 0.97 };
+      return session;
+    }
+
+    function wire(session: ConversationSession, handleMessage: ReturnType<typeof vi.fn>) {
+      const sessions = new Map<string, ConversationSession>([['C1-T1', session]]);
+      const app = {
+        client: { chat: { postMessage: vi.fn().mockResolvedValue({ ok: true, ts: '1.1' }) } },
+        assistant: vi.fn(),
+      } as any;
+      const claudeHandler = {
+        getAllSessions: vi.fn().mockReturnValue(sessions),
+        getSessionByKey: vi.fn((k: string) => sessions.get(k)),
+        getCrashRecoveredSessions: vi.fn().mockReturnValue([recovered(true)]),
+        clearCrashRecoveredSessions: vi.fn(),
+        saveSessions: vi.fn(),
+      } as any;
+      const handler = new SlackHandler(app, claudeHandler, {} as any);
+      (handler as any).handleMessage = handleMessage;
+      const kick = vi.fn();
+      handler.setGoalTurnSettledHandler(kick);
+      return { handler, kick };
+    }
+
+    it('fails before the startup goal pass: that pass resumes it as a plain cut', async () => {
+      const session = stalledCut();
+      const { handler, kick } = wire(session, vi.fn().mockRejectedValue(new Error('dispatch failed')));
+
+      await handler.notifyCrashRecovery();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      handler.resumeActiveGoals();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(session.goal?.stall).toBeUndefined();
+      expect(session.goal?.continuationCount).toBe(2);
+      expect(kick).toHaveBeenCalledTimes(1);
+      expect(session.activityState).toBe('idle');
+    });
+
+    it('fails after the startup goal pass: the hand-back refunds and kicks', async () => {
+      const session = stalledCut();
+      let fail: (error: Error) => void = () => {};
+      const pending = new Promise<void>((_resolve, reject) => {
+        fail = reject;
+      });
+      const { handler, kick } = wire(
+        session,
+        vi.fn(() => pending),
+      );
+
+      await handler.notifyCrashRecovery();
+      handler.resumeActiveGoals();
+      expect(kick).not.toHaveBeenCalled();
+      fail(new Error('dispatch failed'));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(session.goal?.stall).toBeUndefined();
+      expect(session.goal?.continuationCount).toBe(2);
+      expect(kick).toHaveBeenCalledTimes(1);
+      expect(session.activityState).toBe('idle');
+    });
+  });
+
   it('a cut goal session whose restart notice failed is still resumed — by the goal loop', async () => {
     const session = goalSession('working', 3);
     const { handleMessage, kick, kicked } = await boot(session, true, { noticeFails: true });
