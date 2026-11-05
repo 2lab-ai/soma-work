@@ -2,30 +2,34 @@
  * Dashboard "New task" — the launcher (SSOT 2026-10-23 T2/T6/T7/T9).
  *
  * Turns a validated submission into a Slack thread in the chosen channel and a
- * session that runs as the requesting user:
+ * session that runs as the requesting user — the same thread a task started in
+ * Slack gets:
  *
- *   1. post the root message (the instruction, verbatim) into the channel —
- *      everyone in the channel sees the task start there;
- *   2. upload the attachments into that thread (they become ordinary Slack
+ *   1. post the thread header (ThreadHeaderBuilder) as the channel root —
+ *      everyone in the channel sees the task start there, and the session's
+ *      panel IS that root, updated in place (the bot-thread migration's model);
+ *   2. post the instruction, verbatim, as the thread's first reply;
+ *   3. upload the attachments into that thread (they become ordinary Slack
  *      files, which the message pipeline downloads like any user upload);
- *   3. hand the pipeline the user's message on that thread — NOT synthetic, so
+ *   4. hand the pipeline the user's message on that thread — NOT synthetic, so
  *      autogoal, autoskills and the `$autoz` force-fire behave exactly as for
- *      a message typed in Slack — with the per-task model / effort / autogoal;
- *   4. answer once the session exists (the turn keeps running in the
+ *      a message typed in Slack — with the per-task model / effort / autogoal,
+ *      and `botThreadRoot`, so the new session is bot-initiated on the header;
+ *   5. answer once the session exists (the turn keeps running in the
  *      background); every failure is posted into the thread.
  *
- * The root message is deliberately NOT marked as a bot-initiated thread
- * (`setBotThread`): for those the root IS the progress surface and gets
- * rewritten, which would erase the instruction from the channel. The surface
- * opens inside the thread instead, like for any user-started thread.
+ * A command that only answers (`submission.answerOnly`) creates no session to
+ * keep a header current: its instruction stays the root, as before.
  *
  * Every Slack / pipeline effect is injected (`NewTaskLaunchDeps`); the
  * production wiring is in `src/index.ts`.
  */
 
 import { Logger } from '../logger';
+import { MessageFormatter } from '../slack/message-formatter';
+import { type SessionTheme, ThreadHeaderBuilder } from '../slack/thread-header-builder';
 import {
-  buildNewTaskRootMessage,
+  buildNewTaskInstructionMessage,
   composeTaskText,
   type NewTaskAttachment,
   NewTaskError,
@@ -82,13 +86,20 @@ export interface NewTaskEvent {
   planModeOverride?: true;
   /** #854 — the epic switch: the new session is an epic. */
   epicOverride?: true;
+  /** The thread root is the task's header: the new session is bot-initiated on it (absent for answer-only). */
+  botThreadRoot?: true;
   routeContext: { skipAutoBotThread: true };
 }
 
 export type NewTaskSay = (args: any) => Promise<{ ts?: string }>;
 
 export interface NewTaskLaunchDeps {
-  postMessage(channel: string, text: string, blocks: unknown[]): Promise<{ ts?: string }>;
+  /** A channel root, or a reply when `threadTs` is given. */
+  postMessage(channel: string, text: string, blocks: unknown[], threadTs?: string): Promise<{ ts?: string }>;
+  /** The owner's display name for the header (the session re-renders it with its own once it runs). */
+  getUserName?(userId: string): Promise<string | undefined>;
+  /** The owner's thread header theme; absent = the server's. */
+  getSessionTheme?(userId: string): SessionTheme | undefined;
   uploadFiles(channel: string, threadTs: string, files: NewTaskAttachment[]): Promise<SlackEventFile[]>;
   postThreadNotice(channel: string, threadTs: string, text: string): Promise<unknown>;
   getPermalink(channel: string, ts: string): Promise<string | undefined>;
@@ -126,6 +137,33 @@ function reason(error: unknown): string {
   return message.length > 300 ? `${message.slice(0, 300)}…` : message;
 }
 
+/**
+ * The task's thread header before its session exists: titled from the instruction (the dispatch
+ * gives the session its own title, and the first render rewrites the header with it).
+ */
+async function taskHeader(
+  userId: string,
+  prompt: string,
+  deps: NewTaskLaunchDeps,
+): Promise<{ text: string; blocks: unknown[] }> {
+  let ownerName: string | undefined;
+  try {
+    ownerName = (await deps.getUserName?.(userId)) || undefined;
+  } catch (error) {
+    logger.warn('New task: owner name unavailable for the header', { userId, error: reason(error) });
+  }
+  const generated = prompt ? MessageFormatter.generateSessionTitle(prompt) : '';
+  const title = !generated || generated === '[link]' || generated === '새 대화' ? undefined : generated;
+  const header = ThreadHeaderBuilder.build({
+    title,
+    workflow: 'default',
+    ownerId: userId,
+    ownerName,
+    theme: deps.getSessionTheme?.(userId),
+  });
+  return { text: header.text, blocks: header.blocks ?? [] };
+}
+
 export async function launchNewTask(
   userId: string,
   submission: NewTaskSubmission,
@@ -135,8 +173,10 @@ export async function launchNewTask(
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const acceptTimeoutMs = deps.acceptTimeoutMs ?? 10_000;
 
-  // 1. The visible start of the task in the channel.
-  const root = buildNewTaskRootMessage({
+  // 1. The visible start of the task in the channel: the thread header a Slack-started task gets
+  //    (its panel), with the instruction as the first reply — or, for an answer-only command, the
+  //    instruction itself (no session comes to keep a header current).
+  const instruction = buildNewTaskInstructionMessage({
     userId,
     prompt: submission.prompt,
     nickname: submission.nickname,
@@ -147,6 +187,8 @@ export async function launchNewTask(
     epic: submission.epic === true,
     attachmentNames: submission.attachments.map((a) => a.name),
   });
+  const onHeader = submission.answerOnly !== true;
+  const root = onHeader ? await taskHeader(userId, submission.prompt, deps) : instruction;
   let rootTs: string | undefined;
   try {
     rootTs = (await deps.postMessage(channel, root.text, root.blocks))?.ts;
@@ -154,6 +196,14 @@ export async function launchNewTask(
     logger.error('New task: root message failed', { channel, userId, error: reason(error) });
   }
   if (!rootTs) throw new NewTaskError(502, 'Slack 채널에 작업 스레드를 만들지 못했습니다');
+  if (onHeader) {
+    // The task runs without its echo (the session gets the instruction, the dashboard shows it).
+    try {
+      await deps.postMessage(channel, instruction.text, instruction.blocks, rootTs);
+    } catch (error) {
+      logger.warn('New task: instruction reply failed', { channel, rootTs, userId, error: reason(error) });
+    }
+  }
 
   // 2. Attachments into the thread. A partial task is worse than none: stop and say so.
   let files: SlackEventFile[] = [];
@@ -186,6 +236,7 @@ export async function launchNewTask(
     autoGoalOverride: submission.autogoal,
     ...(submission.plan === true ? { planModeOverride: true as const } : {}),
     ...(submission.epic === true ? { epicOverride: true as const } : {}),
+    ...(onHeader ? { botThreadRoot: true as const } : {}),
     routeContext: { skipAutoBotThread: true },
   };
   if (files.length > 0) event.files = files;

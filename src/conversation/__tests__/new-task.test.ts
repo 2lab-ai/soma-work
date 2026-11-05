@@ -11,7 +11,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildNewTaskContext,
-  buildNewTaskRootMessage,
+  buildNewTaskInstructionMessage,
   composeTaskText,
   computeModelBattery,
   createNewTaskGate,
@@ -375,7 +375,7 @@ describe('#853 — the plan switch on a task that opens a Slack thread', () => {
     });
     expect((parseNewTaskSubmission(body({ epic: false }), ctx) as any).value.epic).toBeUndefined();
     expect(parseNewTaskSubmission(body({ epic: 'yes' }), ctx)).toMatchObject({ ok: false });
-    const msg = buildNewTaskRootMessage({
+    const msg = buildNewTaskInstructionMessage({
       userId: 'U123',
       prompt: '로그인 전부',
       nickname: 'opus[1m]',
@@ -389,7 +389,7 @@ describe('#853 — the plan switch on a task that opens a Slack thread', () => {
   });
 
   it('the root message says the task plans first', () => {
-    const msg = buildNewTaskRootMessage({
+    const msg = buildNewTaskInstructionMessage({
       userId: 'U123',
       prompt: '개선해줘',
       nickname: 'opus[1m]',
@@ -403,7 +403,7 @@ describe('#853 — the plan switch on a task that opens a Slack thread', () => {
   });
 });
 
-describe('buildNewTaskRootMessage — T2 the task is visible in the Slack channel', () => {
+describe('buildNewTaskInstructionMessage — T2 the task is visible in the Slack channel', () => {
   const base = {
     userId: 'U123',
     prompt: 'soma-work 개선해줘\n<@U999> *bold*',
@@ -415,7 +415,7 @@ describe('buildNewTaskRootMessage — T2 the task is visible in the Slack channe
   };
 
   it('names the requester and that it came from the dashboard', () => {
-    const msg = buildNewTaskRootMessage(base);
+    const msg = buildNewTaskInstructionMessage(base);
     const json = JSON.stringify(msg.blocks);
     expect(json).toContain('<@U123>');
     expect(json).toContain('Dashboard');
@@ -423,19 +423,19 @@ describe('buildNewTaskRootMessage — T2 the task is visible in the Slack channe
   });
 
   it('echoes the instruction as plain text (no mention / mrkdwn injection)', () => {
-    const msg = buildNewTaskRootMessage(base);
+    const msg = buildNewTaskInstructionMessage(base);
     const section = msg.blocks.find((b: any) => b.type === 'section');
     expect(section.text).toEqual({ type: 'plain_text', text: 'soma-work 개선해줘\n<@U999> *bold*' });
     expect(msg.text).not.toContain('<@U999>');
   });
 
   it('shows the chosen settings and the attachment count', () => {
-    const json = JSON.stringify(buildNewTaskRootMessage(base).blocks);
+    const json = JSON.stringify(buildNewTaskInstructionMessage(base).blocks);
     for (const part of ['opus[1m]', 'xhigh', 'autogoal', 'autoz', '2']) expect(json).toContain(part);
   });
 
   it('splits a long instruction across sections that fit Slack’s 3000-char limit', () => {
-    const msg = buildNewTaskRootMessage({ ...base, prompt: 'a'.repeat(7000) });
+    const msg = buildNewTaskInstructionMessage({ ...base, prompt: 'a'.repeat(7000) });
     const sections = msg.blocks.filter((b: any) => b.type === 'section');
     expect(sections.length).toBeGreaterThan(1);
     for (const s of sections) expect(s.text.text.length).toBeLessThanOrEqual(3000);

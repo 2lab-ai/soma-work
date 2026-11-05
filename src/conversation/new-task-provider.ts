@@ -51,6 +51,8 @@ const MAX_MEMBERSHIP_PAGES = 20;
 
 export interface NewTaskProviderDeps {
   client: WebClient;
+  /** The owner's display name for the task's thread header. */
+  getUserName?(userId: string): Promise<string | undefined>;
   handleMessage(event: NewTaskEvent, say: NewTaskSay): Promise<unknown>;
   getSessionKey(channel: string, threadTs: string): string;
   hasSession(sessionKey: string): boolean;
@@ -234,10 +236,18 @@ export function createNewTaskProvider(deps: NewTaskProviderDeps): DashboardNewTa
 
     start(userId, submission) {
       return launchNewTask(userId, submission, {
-        postMessage: async (channel, text, blocks) => {
-          const res = await client.chat.postMessage({ channel, text, blocks: blocks as any, unfurl_links: false });
+        postMessage: async (channel, text, blocks, threadTs) => {
+          const res = await client.chat.postMessage({
+            channel,
+            text,
+            blocks: blocks as any,
+            unfurl_links: false,
+            ...(threadTs ? { thread_ts: threadTs } : {}),
+          });
           return { ts: res.ts };
         },
+        getUserName: deps.getUserName,
+        getSessionTheme: (owner) => userSettingsStore.getUserSessionTheme(owner),
         uploadFiles: (channel, threadTs, files) => uploadFiles(client, channel, threadTs, files),
         postThreadNotice: (channel, threadTs, text) => client.chat.postMessage({ channel, thread_ts: threadTs, text }),
         getPermalink: async (channel, ts) =>
