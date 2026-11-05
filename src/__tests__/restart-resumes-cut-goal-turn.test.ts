@@ -119,6 +119,34 @@ describe('restart — a cut turn is resumed as itself, an active goal does not r
     expect(kicked).toBe(1);
   });
 
+  it('a restart resume that could not start its turn hands the goal session back to the loop — once', async () => {
+    const session = goalSession('working');
+    const sessions = new Map<string, ConversationSession>([['C1-T1', session]]);
+    const app = {
+      client: { chat: { postMessage: vi.fn().mockResolvedValue({ ok: true, ts: '1.1' }) } },
+      assistant: vi.fn(),
+    } as any;
+    const claudeHandler = {
+      getAllSessions: vi.fn().mockReturnValue(sessions),
+      getSessionByKey: vi.fn((k: string) => sessions.get(k)),
+      getCrashRecoveredSessions: vi.fn().mockReturnValue([recovered(true)]),
+      clearCrashRecoveredSessions: vi.fn(),
+      saveSessions: vi.fn(),
+    } as any;
+    const handler = new SlackHandler(app, claudeHandler, {} as any);
+    (handler as any).handleMessage = vi.fn().mockRejectedValue(new Error('dispatch failed'));
+    const kick = vi.fn();
+    handler.setGoalTurnSettledHandler(kick);
+
+    await handler.notifyCrashRecovery();
+    handler.resumeActiveGoals();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(kick).toHaveBeenCalledTimes(1);
+    expect(kick).toHaveBeenCalledWith('C1-T1', { cause: 'kick' });
+    expect(session.activityState).toBe('idle');
+  });
+
   it('a cut goal session whose restart notice failed is still resumed — by the goal loop', async () => {
     const { handleMessage, kick, kicked } = await boot(goalSession('working', 3), true, { noticeFails: true });
 
@@ -145,6 +173,11 @@ describe('restart.prompt — background work the restart stopped is picked up ag
     expect(PROMPT).toContain('SendMessage');
     expect(PROMPT).toContain('agent ID');
     expect(PROMPT).toContain('run a stopped command again');
+  });
+
+  it('a stopped command that is an outside action meets the check above first', () => {
+    const line = PROMPT.split('\n').find((l) => l.includes('run a stopped command again'));
+    expect(line).toContain('after the check above');
   });
 
   it('forbids ending the turn to wait for work that no longer runs', () => {
