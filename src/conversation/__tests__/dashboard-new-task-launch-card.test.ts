@@ -398,7 +398,15 @@ describe('T1 — the 시작 중 card (ntPendingCardOf)', () => {
       statusText: '시작 실패',
       since: 5,
       bodyMode: 'slot',
+      // SSOT 2026-11-05: the viewer's own card in NEEDS YOU (launches are drawn on the viewer's board only) — the
+      // element's attention cue, as cardOf gives the viewer's waiting cards.
+      attention: true,
     });
+  });
+
+  it('a launch still starting (RUNNING) asks for no attention', () => {
+    const starting = { id: 'nt-launch:r6', at: 1, state: slackState('고쳐줘'), files: [] };
+    expect(fns.ntPendingCardOf(starting, 'a')).not.toHaveProperty('attention');
   });
 });
 
