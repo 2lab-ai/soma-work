@@ -7620,19 +7620,24 @@ export class SlackHandler {
   /**
    * A restart resume whose turn never started (`handleMessage` threw) leaves a
    * cut goal session with no driver: `resumeActiveGoals` leaves the loop out of
-   * it for that resume. Hand it to the loop: free its stale `working` state and
-   * kick once. Not while a request runs or the loop is already queued or
+   * it for that resume. Hand it to the loop: free its stale `working` state,
+   * give back the cut continuation (the loop's turn replaces it) and kick once. Not while a request runs or the loop is already queued or
    * injecting for it — that one drives the goal.
    */
   private handBackFailedRestartResume(sessionKey: string): void {
     const live = this.claudeHandler.getSessionByKey?.(sessionKey);
     if (live?.goal?.status !== 'active') return;
     if (this.requestCoordinator.isRequestActive(sessionKey) || this.goalLoopActing?.(sessionKey) === true) return;
-    if (live.activityState !== 'idle') {
-      live.activityState = 'idle';
-      this.claudeHandler.saveSessions();
-    }
-    this.logger.info('Restart resume never started its turn — the goal loop resumes the goal', { sessionKey });
+    if (live.activityState !== 'idle') live.activityState = 'idle';
+    // The loop's turn now replaces the cut one: give that continuation back
+    // (`resumeActiveGoals` does not for a session the restart resumed).
+    const capDecisionOpen = isGoalCapDecisionPending(live.goal);
+    if (live.goal.continuationCount > 0 && !capDecisionOpen) live.goal.continuationCount -= 1;
+    this.claudeHandler.saveSessions();
+    this.logger.info('Restart resume never started its turn — the goal loop resumes the goal', {
+      sessionKey,
+      continuationCount: live.goal.continuationCount,
+    });
     this.goalTurnSettledHandler?.(sessionKey, { cause: 'kick' });
   }
 
@@ -7663,8 +7668,8 @@ export class SlackHandler {
    * Except a session whose cut turn `notifyCrashRecovery` already resumed
    * with the restart prompt (`restartResumedSessionKeys`): that turn carries
    * it and may be running, so it is neither forced idle nor kicked — the loop
-   * judges when it settles. Its stall repair and refund still apply. Must be
-   * called AFTER `notifyCrashRecovery`.
+   * judges when it settles — and it keeps its continuation, since the resume
+   * replaces the cut turn. Must be called AFTER `notifyCrashRecovery`.
    */
   resumeActiveGoals(): number {
     const handler = this.goalTurnSettledHandler;
@@ -7717,8 +7722,8 @@ export class SlackHandler {
       }
       // Crash recovery resumed this cut turn with the restart prompt: that turn
       // carries the session, and it may already be running — never force it
-      // idle, never kick a second turn beside it. The refund below still
-      // applies; the loop judges when the resume turn settles.
+      // idle, never kick a second turn beside it; the loop judges when the
+      // resume turn settles.
       const resumedByRestart = this.restartResumedSessionKeys.has(sessionKey);
       const panel = session.actionPanel;
       if (
@@ -7750,7 +7755,11 @@ export class SlackHandler {
       // refund either way. An open cap decision is the owner's call, and a cut
       // user turn (count 0) spent nothing.
       const capDecisionOpen = isGoalCapDecisionPending(session.goal);
-      const cutTurn = this.restartCutSessionKeys.has(sessionKey) || falseStall;
+      // Only when the loop makes the replacement turn: a cut turn the restart
+      // resumes itself (`resumedByRestart`) is replaced by that resume, so it
+      // keeps its continuation — refunding too would buy an extra turn on the
+      // same budget (#961 review). A resume that never starts refunds on hand-back.
+      const cutTurn = (this.restartCutSessionKeys.has(sessionKey) && !resumedByRestart) || falseStall;
       if (cutTurn && session.goal.continuationCount > 0 && !capDecisionOpen) {
         session.goal.continuationCount -= 1;
         refunded++;

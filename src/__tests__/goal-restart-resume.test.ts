@@ -292,20 +292,32 @@ describe('resumeActiveGoals (T1)', () => {
     return { handler, claudeHandler, settled, resumed };
   }
 
-  it('gives back the continuation of a goal turn the restart cut short', async () => {
+  it('gives back the continuation of a goal turn the restart cut short when the loop makes its replacement', () => {
     const cut = activeGoalSession({ activityState: 'working' });
     const goal = cut.goal as NonNullable<ConversationSession['goal']>;
     goal.continuationCount = 10;
-    const { handler, settled, resumed, claudeHandler } = await bootWith(new Map([['C1-T1', cut]]), [
-      recovered('C1-T1', true),
-    ]);
+    const { handler, claudeHandler } = createHandler(new Map([['C1-T1', cut]]));
+    // Cut, but not resumed by crash recovery (e.g. its notice failed): the loop's turn replaces it.
+    (handler as any).restartCutSessionKeys = new Set(['C1-T1']);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
 
+    expect(handler.resumeActiveGoals()).toBe(1);
     expect(goal.continuationCount).toBe(9);
-    // The cut turn resumes as itself (restart prompt); the goal loop judges when it settles.
+    expect(settled).toHaveBeenCalledWith('C1-T1', { cause: 'kick' });
+    expect(claudeHandler.saveSessions).toHaveBeenCalled();
+  });
+
+  it('keeps the continuation of a cut goal turn the restart resumes itself — the resume is that turn', async () => {
+    const cut = activeGoalSession({ activityState: 'working' });
+    const goal = cut.goal as NonNullable<ConversationSession['goal']>;
+    goal.continuationCount = 10;
+    const { handler, settled, resumed } = await bootWith(new Map([['C1-T1', cut]]), [recovered('C1-T1', true)]);
+
+    expect(goal.continuationCount).toBe(10);
     expect((handler as any).handleMessage).toHaveBeenCalledTimes(1);
     expect(resumed).toBe(0);
     expect(settled).not.toHaveBeenCalled();
-    expect(claudeHandler.saveSessions).toHaveBeenCalled();
   });
 
   it('keeps the budget of a goal that was idle at shutdown — even with an empty summary', async () => {
@@ -336,11 +348,14 @@ describe('resumeActiveGoals (T1)', () => {
     expect(userTurn.goal?.continuationCount).toBe(0);
   });
 
-  it('gives back once per restart — a second resume pass refunds nothing', async () => {
+  it('gives back once per restart — a second resume pass refunds nothing', () => {
     const cut = activeGoalSession({ activityState: 'working' });
     const goal = cut.goal as NonNullable<ConversationSession['goal']>;
     goal.continuationCount = 6;
-    const { handler } = await bootWith(new Map([['C1-T1', cut]]), [recovered('C1-T1', true)]);
+    const { handler } = createHandler(new Map([['C1-T1', cut]]));
+    (handler as any).restartCutSessionKeys = new Set(['C1-T1']);
+    handler.setGoalTurnSettledHandler(vi.fn());
+    handler.resumeActiveGoals();
     handler.resumeActiveGoals();
 
     expect(goal.continuationCount).toBe(5);
