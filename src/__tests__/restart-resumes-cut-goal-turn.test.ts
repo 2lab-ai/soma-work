@@ -104,11 +104,12 @@ describe('restart — a cut turn is resumed as itself, an active goal does not r
     expect(session.activityState).toBe('working');
   });
 
-  it('still gives back the continuation of the cut goal turn', async () => {
+  it('keeps the cut continuation — the resume turn is that continuation, so nothing is given back', async () => {
     const session = goalSession('working', 10);
     await boot(session, true);
 
-    expect(session.goal?.continuationCount).toBe(9);
+    // Refunding as well would buy one extra turn on the same budget (astra review, P2).
+    expect(session.goal?.continuationCount).toBe(10);
   });
 
   it('a goal session idle at shutdown is not resumed by the restart prompt — the goal loop drives it', async () => {
@@ -120,7 +121,7 @@ describe('restart — a cut turn is resumed as itself, an active goal does not r
   });
 
   it('a restart resume that could not start its turn hands the goal session back to the loop — once', async () => {
-    const session = goalSession('working');
+    const session = goalSession('working', 3);
     const sessions = new Map<string, ConversationSession>([['C1-T1', session]]);
     const app = {
       client: { chat: { postMessage: vi.fn().mockResolvedValue({ ok: true, ts: '1.1' }) } },
@@ -145,14 +146,18 @@ describe('restart — a cut turn is resumed as itself, an active goal does not r
     expect(kick).toHaveBeenCalledTimes(1);
     expect(kick).toHaveBeenCalledWith('C1-T1', { cause: 'kick' });
     expect(session.activityState).toBe('idle');
+    // The loop now makes the replacement turn, so the cut one is given back — once.
+    expect(session.goal?.continuationCount).toBe(2);
   });
 
   it('a cut goal session whose restart notice failed is still resumed — by the goal loop', async () => {
-    const { handleMessage, kick, kicked } = await boot(goalSession('working', 3), true, { noticeFails: true });
+    const session = goalSession('working', 3);
+    const { handleMessage, kick, kicked } = await boot(session, true, { noticeFails: true });
 
     expect(handleMessage).not.toHaveBeenCalled();
     expect(kick).toHaveBeenCalledWith('C1-T1', { cause: 'kick' });
     expect(kicked).toBe(1);
+    expect(session.goal?.continuationCount).toBe(2);
   });
 });
 
