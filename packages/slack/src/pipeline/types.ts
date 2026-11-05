@@ -146,7 +146,7 @@ export interface MessageEvent {
    * launcher), not a user's message: a new session born on it is bot-initiated with that root as
    * its surface — the thread model a task started in Slack gets from the bot-thread migration, so
    * the panel is the root (updated in place), not a reply re-posted at the thread's tail. Set only
-   * by the host's launcher.
+   * by the host's launcher; dropped from Slack events (`HOST_ONLY_EVENT_FIELDS`).
    */
   botThreadRoot?: boolean;
   /**

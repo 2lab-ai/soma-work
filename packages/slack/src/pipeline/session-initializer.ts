@@ -542,7 +542,8 @@ export class SessionInitializer {
         // thread the user started — essential for session review. Undefined means
         // the viewer is not listening; the conversation viewer is served by the same
         // web server, so there is no live link to post instead.
-        // A header root already carries the link (its `dashboardLink` field), as a Slack-started task's does.
+        // A header root shows the link in its `dashboardLink` field once the surface first renders it
+        // with the session key — the same as a Slack-started task's header root.
         const dashboardUrl = onHeaderRoot
           ? undefined
           : ThreadHeaderBuilder.resolveDashboardSessionUrl(session.ownerId || user, sessionKey);
