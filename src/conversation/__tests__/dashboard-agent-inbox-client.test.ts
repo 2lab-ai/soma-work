@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { viewerScope } from '../__fixtures__/viewer-scope';
 import { pageTokenAliases, uiLibTokensCss } from '../ui-lib';
+import { VIEW_LAYOUT_CLIENT_JS } from '../view-layout-client';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -1304,6 +1305,7 @@ const CARD_OF_VARS = [
   'OWNER_BADGE_HUES',
 ];
 type CardData = Record<string, unknown> & {
+  attention?: true;
   badge?: { text: string; hue: number; title?: string; self?: true };
   since?: number;
   elapsedMs?: number;
@@ -2821,6 +2823,80 @@ describe('All Users: owner badge on every card (shipped assignOwnerHues + ownerB
     expect(x?.hue).toBe(y?.hue);
     // An owner not on the board (yet) falls back to the hash slot.
     expect(all.ownerBadgeHue('U0NOTONBRD1')).toBe(all.assignOwnerHues(['U0NOTONBRD1']).U0NOTONBRD1);
+  });
+});
+
+// SSOT 2026-11-05 (Z): "응답 필요 상태인 "내꺼" 작업 카드(collapsed 상태)는 추가 ui 표시해줘 10초에 한번씩 어텐션을
+// 요구하는 뭔가 행동 추가해줘. 이건 리서치해서 현재의 모노톤 톤앤 매너에 맞게 개선"
+// The host says which cards wait on the viewer (card.attention); the element (@2lab.ai/ui ≥ 0.32.0) draws the cue
+// on the collapsed card only — the mark, and a ping every 10 s on one shared beat — and drops it while the card is open.
+describe('NEEDS YOU cards that wait on the viewer: card.attention (shipped cardOf)', () => {
+  type Attn = { cardOf(s: Record<string, unknown>, col: string): CardData };
+  const ME = 'U01ZHG7K2QD';
+  const THEM = 'U07KQ2M4XR1';
+  const host = (currentUserId: string, viewer: string) =>
+    load<Attn>(CARD_OF_FNS, CARD_OF_VARS, {
+      currentUserId,
+      _viewerUserId: viewer,
+      _ownerIndex: null,
+      dhShow: () => true,
+      dhTruncate: () => null,
+      SELF_INSTANCE_NAME: '',
+    });
+  const attn = (m: Attn, s: Record<string, unknown>, col: string) =>
+    m.cardOf({ key: 'k', title: 't', ...s }, col).attention;
+
+  it('the viewer’s own card in NEEDS YOU — on the viewer’s own board and on the All Users board', () => {
+    expect(attn(host(ME, ME), { ownerId: ME, activityState: 'waiting' }, 'waiting')).toBe(true);
+    expect(attn(host('', ME), { ownerId: ME, ownerName: 'Zhuge', activityState: 'waiting' }, 'waiting')).toBe(true);
+  });
+
+  it('never someone else’s card, a card nobody owns, or any card for a viewer who is not signed in', () => {
+    expect(
+      attn(host('', ME), { ownerId: THEM, ownerName: 'Elon', activityState: 'waiting' }, 'waiting'),
+    ).toBeUndefined();
+    // An admin looking at another user's board: their card, not the viewer's.
+    expect(attn(host(THEM, ME), { ownerId: THEM, activityState: 'waiting' }, 'waiting')).toBeUndefined();
+    expect(attn(host('', ME), { activityState: 'waiting' }, 'waiting')).toBeUndefined();
+    expect(attn(host('', ''), { ownerId: ME, activityState: 'waiting' }, 'waiting')).toBeUndefined();
+  });
+
+  // Decided (review fable P2): a sibling instance's card that waits on the viewer is still the viewer's to answer
+  // (in its Slack thread, its own dashboard) — it carries the cue, as it carries badge.self.
+  it('a sibling instance’s card that waits on the viewer carries it too', () => {
+    const m = load<Attn>(CARD_OF_FNS, CARD_OF_VARS, {
+      currentUserId: '',
+      _viewerUserId: ME,
+      _ownerIndex: null,
+      dhShow: () => true,
+      dhTruncate: () => null,
+      SELF_INSTANCE_NAME: 'dev',
+    });
+    expect(attn(m, { ownerId: ME, environment: { instanceName: 'prod' }, activityState: 'waiting' }, 'waiting')).toBe(
+      true,
+    );
+  });
+
+  it('only in NEEDS YOU: the viewer’s running, finished and sleeping cards ask nothing', () => {
+    const m = host(ME, ME);
+    for (const col of ['working', 'idle', 'closed']) expect(attn(m, { ownerId: ME }, col), col).toBeUndefined();
+  });
+
+  // The board draws faceOf(cardOf(…)) (viewCardOf), and faceOf copies a whitelist: the cue must survive every layout
+  // (found on the real server — cardOf set it, the element never saw it).
+  it('survives the user’s face layout (faceOf keeps it, whatever rows and chips the layout picked)', () => {
+    const faceOf = new Function(`${VIEW_LAYOUT_CLIENT_JS}\nreturn faceOf;`)() as (
+      card: Record<string, unknown>,
+      model: string,
+      face: { rows: unknown[]; foot: unknown[] },
+      asks: boolean,
+    ) => Record<string, unknown>;
+    const card = host(ME, ME).cardOf({ key: 'k', title: 't', ownerId: ME, activityState: 'waiting' }, 'waiting');
+    expect(faceOf(card, '', { rows: [], foot: [] }, true).attention).toBe(true);
+    expect(
+      faceOf(card, '', { rows: [{ id: 'summary', on: true }], foot: [{ id: 'model', on: true }] }, true).attention,
+    ).toBe(true);
+    expect(faceOf({ ...card, attention: undefined }, '', { rows: [], foot: [] }, true)).not.toHaveProperty('attention');
   });
 });
 
