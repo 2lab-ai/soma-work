@@ -7621,12 +7621,17 @@ export class SlackHandler {
    * A restart resume whose turn never started (`handleMessage` threw) leaves a
    * cut goal session with no driver: `resumeActiveGoals` leaves the loop out of
    * it for that resume. Hand it to the loop: free its stale `working` state and
-   * kick once. Not while a request runs — that turn's settle drives the loop.
+   * kick once. Not while a request runs or the loop is already queued or
+   * injecting for it — that one drives the goal.
    */
   private handBackFailedRestartResume(sessionKey: string): void {
     const live = this.claudeHandler.getSessionByKey?.(sessionKey);
-    if (live?.goal?.status !== 'active' || this.requestCoordinator.isRequestActive(sessionKey)) return;
-    if (live.activityState !== 'idle') live.activityState = 'idle';
+    if (live?.goal?.status !== 'active') return;
+    if (this.requestCoordinator.isRequestActive(sessionKey) || this.goalLoopActing?.(sessionKey) === true) return;
+    if (live.activityState !== 'idle') {
+      live.activityState = 'idle';
+      this.claudeHandler.saveSessions();
+    }
     this.logger.info('Restart resume never started its turn — the goal loop resumes the goal', { sessionKey });
     this.goalTurnSettledHandler?.(sessionKey, { cause: 'kick' });
   }
