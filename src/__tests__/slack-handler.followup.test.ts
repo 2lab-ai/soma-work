@@ -827,6 +827,58 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(goalDriver).toHaveBeenCalledTimes(1);
     });
 
+    /**
+     * #948 — a turn that fails at once (dev 2026-11-05: the CLI SIGKILLed at
+     * spawn) leaves no text, so the resume skips the eval (#788) and the next
+     * continuation fails the same way: 9 s apart, up to the goal cap (10 — or
+     * 1000). One automatic resume per error streak; a second failure waits for
+     * a person.
+     */
+    it('does not hot-loop on a turn that fails at once — one resume, then it waits for a person', async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const injected: Promise<void>[] = [];
+      let fired = 0;
+      handler.setGoalTurnSettledHandler(() => {
+        fired += 1;
+        if (fired > 5) return; // the bug: bounded here so the RED stays finite
+        injected.push(handler.handleMessage(goalContinuation(), say()));
+      });
+      // Every turn fails at once and leaves no text.
+      lastTurnSucceeded = false;
+      startWithContinuation.mockImplementation(async () => {
+        handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, []);
+        return { hasPendingChoice: false };
+      });
+
+      await handler.handleMessage(message(), say());
+      for (let i = 0; i < 10 && injected.length > 0; i++) await Promise.all(injected.splice(0));
+
+      expect(fired).toBe(1);
+      // The person's turn, then the one automatic resume.
+      expect(startWithContinuation).toHaveBeenCalledTimes(2);
+      const notices = postSystemMessage.mock.calls.map((call: any[]) => String(call[1]));
+      expect(notices.some((text: string) => text.includes('자동 이어하기를 멈췄습니다'))).toBe(true);
+    });
+
+    it('a turn that succeeds after the error resume re-arms it — the next failure is resumed once again', async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      const failed = { canDrain: false, outcome: { result: 'error', reason: 'turn ended without success' } };
+      const safe = { canDrain: true, outcome: { result: 'safe' } };
+      const settleNoText = (report: any) => {
+        handlerAny.followupSlotHeldGoalSessions = new Set([SESSION_KEY]);
+        handlerAny.releaseDeferredGoalDriver(SESSION_KEY, report);
+      };
+
+      settleNoText(failed); // resumed once
+      settleNoText(failed); // the resume failed too: held
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+      settleNoText(safe); // a person's turn went through
+      settleNoText(failed); // a new streak: resumed once again
+      expect(goalDriver).toHaveBeenCalledTimes(3);
+    });
+
     it('fires once the slot is free whatever the outcome — a handled error is not a strand', async () => {
       registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
       const goalDriver = vi.fn();
