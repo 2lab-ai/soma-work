@@ -1684,7 +1684,7 @@ describe('the composer follows the session live (executed)', () => {
     );
     const last = () => writes[writes.length - 1];
     m.renderPanelComposer({ ownerId: 'U1', activityState: 'working' }, true);
-    expect(last()).toEqual({ running: true, canAct: true, disabled: false, items: [] });
+    expect(last()).toEqual({ running: true, canAct: true, disabled: false, items: [], queue: 'dock' });
     expect(resets).toBe(0);
     m.renderPanelComposer({ ownerId: 'U1', terminated: true });
     expect(last()).toMatchObject({ running: false, disabled: true, canAct: true });
@@ -1722,6 +1722,7 @@ describe('the model menu closes on Escape before the panel does (executed)', () 
     });
     const picker = {
       tagName: 'UI-MODEL-PICKER',
+      style: { width: '' },
       getAttribute: (n: string) => (n === 'data-mp-key' ? 'k' : null),
       hasAttribute: (n: string) => n === 'data-mp-key',
     };
@@ -1925,11 +1926,12 @@ describe('interaction state survives live renders on both surfaces', () => {
     expect(busy.isBusy('k', 'model')).toBe(false);
     // Each writer marks it, each renderer reads it.
     expect(clientFn('changeModel')).toContain("setBusy(key, 'model', true)");
-    expect(clientFn('changeEffort')).toContain("setBusy(key, 'effort', true)");
+    // A level is never a wait (SSOT 2026-11-05): its pick shows at once (_effortPending), no busy.
+    expect(clientFn('changeEffort')).toContain('_effortPending[key]');
     expect(clientFn('goalAction')).toContain("setBusy(key, 'goal', true)");
     expect(clientFn('doAction')).toContain("setBusy(key, 'action', true)");
     expect(clientFn('mpData')).toContain("isBusy(s.key, 'model')");
-    expect(clientFn('mpData')).toContain("isBusy(s.key, 'effort')");
+    expect(clientFn('mpData')).not.toContain("isBusy(s.key, 'effort')");
     expect(clientFn('goalAction')).toContain("isBusy(key, 'goal')");
     expect(clientFn('sessionActionsOf')).toContain("isBusy(s.key, 'action')");
   });

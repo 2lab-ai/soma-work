@@ -504,6 +504,8 @@ describe('the section’s data and the element’s requests (convPaint, convRetr
         },
         refreshCsrfToken: () => Promise.resolve(),
         dashToast: toast,
+        // No level being written for the session: the send goes at once (trinity R1 on #971).
+        effortSettled: () => Promise.resolve(),
         panelSessionKey: 'k',
         _sessionCache: { k: { activityState: 'working' } },
         _csrfToken: '',
