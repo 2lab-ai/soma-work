@@ -355,6 +355,16 @@ describe('top-bar defaults: one <ui-model-picker> sets the default model and eff
     expect(clientFn('pickDefault')).not.toContain('postEffortSwitch');
   });
 
+  // trinity R2 (fable P3): the session's writer answers with the level the session ended on — a level picked in the
+  // session while the default's write waited wins, and the line says so.
+  it('a level picked in the session meanwhile: the line names the level the session ended on', async () => {
+    const { pickDefault, status } = pickEnv({
+      changeEffort: vi.fn(async () => ({ ok: true, result: { status: 'switched', effort: 'low' } })),
+    });
+    await pickDefault('effort', 'high');
+    expect(status.textContent).toBe('기본 추론 강도 → HIGH (새 세션부터) · 열린 세션은 low');
+  });
+
   it('a refused session level says why after the saved default', async () => {
     const { pickDefault, status } = pickEnv({
       changeEffort: vi.fn(async () => ({ ok: false, error: '종료된 세션은 effort를 바꿀 수 없습니다' })),
