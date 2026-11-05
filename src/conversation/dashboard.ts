@@ -6094,7 +6094,8 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
    T2 · the detail card keeps only its title bar while the reader scrolls the chat or the work log: the status bar
    joins the scroll area (syncPhoneStatus), and reading (data-read, rdRead) grows the section box to the whole view
    and scrolls everything above it out under the title bar; a tap on the title bar scrolls it back in.
-   T3 · the session's model picker sits on the composer's own row, left of Send (syncPickerDock measures the row).
+   T3 · the session's model picker sits on the composer's own row, left of Send (syncPickerDock measures the row) —
+   on every screen since SSOT 2026-11-05 (the desktop card too).
    T4 · reading tucks the composer away (data-tuck): it slides down; a ^ at the bottom right (#pc-reveal) brings it
    back, and so does the very bottom of the chat or the log. ── */
 .inbox-tools > .topbar-scope { flex: 1 1 auto; flex-wrap: wrap; margin-right: auto; }
@@ -6124,6 +6125,9 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 .slide-panel[data-tuck] .panel-command {
   position: absolute; left: 0; right: 0; bottom: 0; transform: translateY(100%); visibility: hidden;
   transition: transform var(--dur-move) var(--ease-out), visibility 0s linear var(--dur-move);
+  /* The steering queue's round button floats above the composer's box and keeps its own visibility (SSOT
+     2026-11-05): clipped to the box, and no presses, so it never peeks out under ^ or takes a tap. */
+  clip-path: inset(0); pointer-events: none;
 }
 .pc-reveal {
   position: absolute; z-index: 7; right: calc(16px + env(safe-area-inset-right, 0px)); bottom: calc(16px + env(safe-area-inset-bottom, 0px));
@@ -6142,11 +6146,16 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
   display: flex; flex-wrap: nowrap; align-items: center; justify-content: flex-end; padding: 0; pointer-events: none;
 }
 .panel-command[data-pick-dock] > .panel-controls > * { pointer-events: auto; }
-.panel-command[data-pick-dock] > .panel-controls > ui-model-picker { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+.panel-command[data-pick-dock] > .panel-controls > .pc-scope { display: none; }
+.panel-command[data-pick-dock] > .panel-controls ui-model-picker { flex: 0 1 auto; min-width: 0; max-width: 100%; }
 .panel-command[data-pick-dock] > .panel-controls > .cb-model-note {
   position: absolute; right: 0; bottom: calc(100% + 6px); max-width: min(280px, 80vw); padding: 4px 8px; border-radius: 8px;
   background: var(--surface-raised); box-shadow: var(--ib-shadow);
 }
+/* A switch's note floats above the field: it says its word and goes, so it never sits on the text being typed
+   (SSOT 2026-11-05). The waiting status (unkeyed) and a refusal stay. */
+.panel-command[data-pick-dock] > .panel-controls > .cb-model-note[data-mk]:not([data-tone="fail"]) { pointer-events: none; animation: pc-note-away var(--dur-fade) var(--ease-out) 4s forwards; }
+@keyframes pc-note-away { to { opacity: 0; visibility: hidden; } }
 
 /* ── RESPONSIVE — Bauhaus grid adapts ── */
 @media (max-width: 680px) {
@@ -7047,6 +7056,9 @@ function rdTuck(on) {
   if (!p || p.hasAttribute('data-tuck') === !!on) return;
   if (on) p.setAttribute('data-tuck', '');
   else p.removeAttribute('data-tuck');
+  // The composer goes: its open follow-up queue (a popover or the phone sheet) goes with it.
+  var steer = on ? document.getElementById('cmd-steer') : null;
+  if (steer && typeof steer.closeQueue === 'function') steer.closeQueue();
 }
 // ^ (#pc-reveal): the composer back where the reader is. From a key (a click with no pointer: detail 0) focus follows
 // into it — the button itself steps aside, and focus must not fall to the page.
@@ -7136,16 +7148,16 @@ function rdGesture(e) {
     _rd.last = vp ? vp.scrollTop : -1;
   }
 }
-// T3 — the session's model picker on the composer's row, left of Send (a phone). The row is <ui-composer>'s own
-// toolbar (its open shadow root), so the page measures it — the tools' end, Send's start, the row's top and height —
-// and lays the picker's box between them (data-pick-dock); elsewhere, or while a recording takes the row (no .cp-end),
-// the picker keeps its line above the composer.
+// T3 — the session's model picker on the composer's row, left of Send (지시) — on every screen (SSOT 2026-11-05: the
+// desktop card too, not only a phone). The row is <ui-composer>'s own toolbar (its open shadow root), so the page
+// measures it — the tools' end, Send's start, the row's top and height — and lays the picker's box between them
+// (data-pick-dock); while a recording takes the row (no .cp-end) the picker keeps its line above the composer.
 function syncPickerDock() {
   var cmd = document.getElementById('panel-command');
   var ctl = document.getElementById('panel-controls');
   var comp = document.getElementById('pc-composer');
   if (!cmd || !ctl) return;
-  var bar = isPhone() && comp && comp.shadowRoot ? comp.shadowRoot.querySelector('.cp-bar') : null;
+  var bar = comp && comp.shadowRoot ? comp.shadowRoot.querySelector('.cp-bar') : null;
   var end = bar ? bar.querySelector('.cp-end') : null;
   if (!end || !cmd.getBoundingClientRect().width) {
     cmd.removeAttribute('data-pick-dock');
@@ -9010,23 +9022,28 @@ async function pickDefault(kind, value) {
   var msg = '기본 ' + (kind === 'model' ? '모델' : '추론 강도') + ' → ' + optionLabel(r.setting, r.setting.value) + ' (새 세션부터)';
   if (kind === 'model' && _myDefaults.effort) msg += ' · 추론 강도 ' + optionLabel(_myDefaults.effort, _myDefaults.effort.value);
   if (skipSession) msg += ' · 이 모델은 세션 전환 목록에 없어 열린 세션은 그대로';
-  if (session && isBusy(session.key, kind)) {
+  if (session && kind === 'effort') {
+    // An effort goes to the session as the nearest level its own model runs — through the session's one level writer
+    // (changeEffort), ordered with a level picked in the session meanwhile (trinity R1 on #971).
+    var level = fitEffortLevel(mpEffortLevels(session), value);
+    var er = await changeEffort(session.key, level);
+    // The writer answers with the level the session ended on: a level picked in the session meanwhile wins.
+    var ended = er.ok && er.result && er.result.effort;
+    if (!er.ok) msg += ' · 열린 세션은 바꾸지 못함: ' + er.error;
+    else if (ended && ended !== level) msg += ' · 열린 세션은 ' + effortLabel(ended);
+    else msg += ' · 열린 세션에도 적용' + (level !== value ? ' (' + effortLabel(level) + ')' : '');
+  } else if (session && isBusy(session.key, 'model')) {
     // The session is already switching (from its card or panel): one switch at a time.
     msg += ' · 열린 세션은 전환 중이라 그대로';
   } else if (session) {
-    // An effort goes to the session as the nearest level its own model runs.
-    var target = kind === 'model' ? value : fitEffortLevel(mpEffortLevels(session), value);
     var sr;
-    setBusy(session.key, kind, true);
+    setBusy(session.key, 'model', true);
     refreshCard(session.key);
     repaintPanelControlsFor(session.key);
-    try {
-      sr = kind === 'model' ? await postModelSwitch(session.key, target) : await postEffortSwitch(session.key, target);
-    } catch (e) { sr = { ok: false, error: String(e && e.message || e) }; }
-    setBusy(session.key, kind, false);
-    _modelNotes[session.key] = kind === 'model' ? modelSwitchNote(sr) : effortSwitchNote(sr);
-    if (kind === 'effort') mpApplyEffort(session.key, sr);
-    msg += sr.ok ? ' · 열린 세션에도 적용' + (target !== value ? ' (' + effortLabel(target) + ')' : '') : ' · 열린 세션은 바꾸지 못함: ' + sr.error;
+    try { sr = await postModelSwitch(session.key, value); } catch (e) { sr = { ok: false, error: String(e && e.message || e) }; }
+    setBusy(session.key, 'model', false);
+    _modelNotes[session.key] = modelSwitchNote(sr);
+    msg += sr.ok ? ' · 열린 세션에도 적용' : ' · 열린 세션은 바꾸지 못함: ' + sr.error;
     refreshCard(session.key);
     repaintPanelControlsFor(session.key);
     loadSessions();
@@ -10227,6 +10244,9 @@ function cardOf(s, col) {
     var ep = s.epic.progress || {};
     if (toNum(ep.total) > 0) card.steps = { done: toNum(ep.accepted), total: toNum(ep.total) };
   }
+  // NEEDS YOU and the signed-in viewer's own (SSOT 2026-11-05): the element (@2lab.ai/ui 0.32.0) marks the collapsed
+  // card — a rail, the tag in ink — and pings it once every 10 s, every such card on one beat; open, it is a card.
+  if (col === 'waiting' && viewerOwns(s)) card.attention = true;
   // The star is a toggle on the face (SSOT 2026-11-01 — viewCardOf, cardStarOf), no longer a ★ lead (2026-10-30 T1.3).
   // Owner badge (§3.1-3): in the All Users view every card names its owner.
   var owner = currentUserId ? '' : s.ownerName || s.ownerId || '';
@@ -12006,7 +12026,10 @@ function steeringData(s, mode) {
     if (f.files && f.files.length) it.files = f.files.map(String);
     items.push(it);
   }
-  return { running: mode !== 'closed' && s.activityState === 'working', canAct: mode !== 'readonly', disabled: mode === 'closed', items: items };
+  // Docked (SSOT 2026-11-05): a note the queue holds waits behind the element's round count button at the composer's
+  // top right — hover or press opens the queue, a bottom sheet on a phone — so it never covers the chat above the
+  // field; only a note on its way in shows there.
+  return { running: mode !== 'closed' && s.activityState === 'working', canAct: mode !== 'readonly', disabled: mode === 'closed', items: items, queue: 'dock' };
 }
 // The note the element names (its host id) as the payload has it: the generation
 // an action on it carries. A local row (a send that failed) is not in the queue.
@@ -13743,15 +13766,20 @@ function mpData(s) {
   var cur = '';
   for (var i = 0; i < models.length; i++) if (models[i].model === s.model) cur = models[i].nickname;
   var value = { model: cur || mpShort(s), effortLevels: mpEffortLevels(s) };
-  if (s.effort) value.effort = s.effort;
-  if (s.effortEffective) value.effectiveEffort = s.effortEffective;
+  // A level picked here shows at once, before the server answers (changeEffort): its cap comes with the answer.
+  var pick = _effortPending[s.key];
+  if (pick) value.effort = pick.want;
+  else {
+    if (s.effort) value.effort = s.effort;
+    if (s.effortEffective) value.effectiveEffort = s.effortEffective;
+  }
   var d = {
     models: rows,
     value: value,
     contextTokens: toNum(s.contextTokens),
     busy: {
       model: s.pendingModel ? 'compact 후 ' + s.pendingModel + '(으)로 전환 대기 중' : isBusy(s.key, 'model'),
-      effort: isBusy(s.key, 'effort'),
+      effort: false, // a level never waits (changeEffort)
     },
   };
   var note = _modelNotes[s.key];
@@ -13765,7 +13793,7 @@ function mpDataSig(s) {
   var note = _modelNotes[s.key];
   return [
     s.key, s.model, s.effort, s.effortEffective, s.pendingModel, toNum(s.contextTokens), String(s.effortLevels || ''),
-    isBusy(s.key, 'model'), isBusy(s.key, 'effort'), note && note.error ? note.text : '',
+    isBusy(s.key, 'model'), _effortPending[s.key] ? _effortPending[s.key].want : '', note && note.error ? note.text : '',
   ].join('|');
 }
 // Set every picker's data under root — only where it changed (a push that
@@ -13803,9 +13831,18 @@ function mpOnChange(e) {
 document.addEventListener('ui-change', mpOnChange);
 // The menu closed (a pick, Esc, a press outside, its trigger moved): the card
 // and the panel controls held their live updates while it was open (D12).
+// While it is open the element keeps the width it opened with (SSOT 2026-11-05): the composer's picker ends at Send
+// (a right-aligned dock), so a level that changes the trigger's words (매우 높음 → 높음) would move its left edge —
+// and the element closes a menu whose trigger moved. Closed, it takes its own width again.
 function mpOnOpenChange(e) {
   var el = e.target;
-  if (!el || el.tagName !== 'UI-MODEL-PICKER' || !e.detail || e.detail.open || !el.hasAttribute('data-mp-key')) return;
+  if (!el || el.tagName !== 'UI-MODEL-PICKER' || !e.detail || !el.hasAttribute('data-mp-key')) return;
+  if (e.detail.open) {
+    var w = el.getBoundingClientRect().width;
+    if (w > 0) el.style.width = Math.ceil(w) + 'px';
+    return;
+  }
+  el.style.width = '';
   var key = el.getAttribute('data-mp-key');
   refreshCard(key);
   repaintPanelControlsFor(key);
@@ -13813,13 +13850,17 @@ function mpOnOpenChange(e) {
 document.addEventListener('ui-open-change', mpOnOpenChange);
 // The note under the model: what a switch did. The owner's picker says a
 // waiting switch and a refused write under its own trigger (busy.model, error).
+// Each switch's note carries its own key (data-mk): a live repaint keeps the same node, a new switch's note is a new
+// node — so on the composer's row, where it floats above the field and fades (SSOT 2026-11-05), it shows again.
+var _modelNoteSeq = 0;
 function renderModelNote(s, picker) {
   if (s.pendingModel) {
     return picker ? '' : '<div class="ui-status-line cb-model-note" role="status">compact 후 ' + esc(s.pendingModel) + '(으)로 전환합니다…</div>';
   }
   var n = _modelNotes[s.key];
   if (!n || (picker && n.error)) return '';
-  return '<div class="ui-status-line cb-model-note"' + (n.error ? ' data-tone="fail" role="alert"' : ' role="status"') + '>' + esc(n.text) + '</div>';
+  if (!n.mk) n.mk = ++_modelNoteSeq;
+  return '<div class="ui-status-line cb-model-note" data-mk="note|' + n.mk + '"' + (n.error ? ' data-tone="fail" role="alert"' : ' role="status"') + '>' + esc(n.text) + '</div>';
 }
 async function postModelSwitch(key, nickname) {
   var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/model';
@@ -13909,20 +13950,60 @@ function effortSwitchNote(r) {
   var wire = (res.effective || res.effort) === 'ultra' ? ' · 백엔드에는 최대(max)로 전달' : '';
   return { text: '추론 강도 ' + effortLabel(res.effort) + ' · 다음 턴부터 적용' + capped + wire, error: false };
 }
-async function changeEffort(key, effort) {
-  if (!effort) return;
-  if (isBusy(key, 'effort')) return;
-  setBusy(key, 'effort', true);
-  refreshCard(key);
-  repaintPanelControlsFor(key);
+// A level is a setting of the next turn, never a wait (SSOT 2026-11-05: "추론 강도 버튼 변경하면 왜 로딩을해"): the
+// pick is the pickers' value at once (_effortPending — mpData reads it over the session's, so a live push that left
+// before the server saved it does not pull the thumb back), nothing is busy (no progress cursor, no locked levels).
+// One writer per session (the session's picker and the defaults' 열린 세션에도 alike), one write at a time: picks
+// made while it is out leave only the newest, sent next. Every answer the server accepted is the session's level
+// (mpApplyEffort); a refusal ends the chain and the session's level shows again with the reason. Every caller gets
+// the chain's last answer; a send waits for it (effortSettled), so a turn never starts on an older level than the
+// one shown. The server pushes the change to every board itself — no board reload here.
+var _effortPending = Object.create(null); // session key → { want: the level last picked, done } while its write is out
+function changeEffort(key, effort) {
+  var p = _effortPending[key];
+  var cs = _sessionCache[key];
+  if (!effort || effort === (p ? p.want : cs && cs.effort)) {
+    return p ? p.done : Promise.resolve({ ok: true, result: { status: 'unchanged', effort: effort, effective: (cs && cs.effortEffective) || effort } });
+  }
+  if (p) {
+    p.want = effort;
+    refreshCard(key);
+    repaintPanelControlsFor(key);
+    return p.done;
+  }
+  p = _effortPending[key] = { want: effort };
+  p.done = effortChain(key, p);
+  return p.done;
+}
+async function effortChain(key, p) {
   var r;
-  try { r = await postEffortSwitch(key, effort); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
-  setBusy(key, 'effort', false);
+  try {
+    if (_modelNotes[key] && _modelNotes[key].error) delete _modelNotes[key];
+    refreshCard(key);
+    repaintPanelControlsFor(key);
+    for (;;) {
+      var sent = p.want;
+      try { r = await postEffortSwitch(key, sent); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+      mpApplyEffort(key, r);
+      if (!r.ok || p.want === sent) break;
+    }
+  } finally {
+    // Whatever threw, the session's writer is free for the next pick (trinity R2 on #971).
+    if (_effortPending[key] === p) delete _effortPending[key];
+  }
   _modelNotes[key] = effortSwitchNote(r);
-  mpApplyEffort(key, r);
   refreshCard(key);
   repaintPanelControlsFor(key);
-  loadSessions();
+  return r;
+}
+// Until every level picked for the session is written (a pick made while it waits too). Answers the last write's
+// result — null when nothing was out — so a send can refuse to go on a level the server refused (trinity R2 on #971).
+async function effortSettled(key) {
+  var r = null;
+  while (_effortPending[key]) {
+    try { r = await _effortPending[key].done; } catch (_e) { return null; }
+  }
+  return r;
 }
 // What the server answered is the session's level now — the open menu's thumb
 // does not wait for the next poll (a refusal changes nothing).
@@ -13946,6 +14027,7 @@ function renderPanelControls(s) {
   var held = el.querySelector('ui-model-picker[open]');
   if (held && held.getAttribute('data-mp-key') !== s.key) {
     held.open = false;
+    held.style.width = ''; // closed without ui-open-change: the width it held open goes too (mpOnOpenChange)
     held = null;
   }
   if (!held) {
@@ -18738,6 +18820,10 @@ async function sendCommand(text, ref, files) {
   var answeredInThread = false;
   _pcInFlight++; // until the server answered: a reload now would drop a note the composer no longer holds
   try {
+    // A level picked just before shows at once; the turn this starts runs it (trinity R1 on #971). The server refused
+    // that level: the instruction does not go on the old one — it fails with the reason, Retry on its row (R2).
+    var level = await effortSettled(sendingSessionKey);
+    if (level && !level.ok) throw new Error('추론 강도를 바꾸지 못해 보내지 않았어요 — ' + level.error);
     const cmdUrl = '/api/dashboard/session/' + encodeURIComponent(sendingSessionKey) + '/command';
     const res = await acPost(cmdUrl, JSON.stringify(pcCommandBody(msg, attachments, optimisticId)));
     var data = {};
@@ -22346,6 +22432,8 @@ function ntPendingCardOf(launch, channelName) {
       statusText: '시작 실패',
       since: launch.failedAt,
       bodyMode: 'slot',
+      // The viewer's own card in NEEDS YOU (launches draw on the viewer's board only): the attention cue, as cardOf's.
+      attention: true,
     };
   }
   var st = launch.state || {};
