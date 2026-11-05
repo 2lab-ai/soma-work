@@ -59,7 +59,7 @@ import {
   shouldRunGoalIdleDriver,
 } from './goal-completion-evaluator';
 import { GOAL_CONTINUATION_TEXT_PREFIX, GOAL_SUMMARY_PERSIST_MAX } from './goal-continuation';
-import { gateGoalVerdictOnTasks, goalTaskListLines, taskGateGapMoved } from './goal-task-gate';
+import { gateGoalVerdictOnTasks, goalTaskListLines, taskGateGapClosed } from './goal-task-gate';
 
 export { GOAL_SUMMARY_PERSIST_MAX };
 
@@ -433,12 +433,12 @@ export class GoalLoopController {
     const hasGap = !!activeGoal.lastEvalReason?.trim();
     const noTurnText = workSummaryRaw === '';
     const alreadyJudged = activeGoal.lastEvalSummaryHash === summaryHash;
-    // A task-gate gap whose open tasks changed since is new evidence, even with
-    // no turn text: judge again (goal-task-gate).
+    // A task-gate gap whose named tasks are all closed since is new evidence,
+    // even with no turn text: judge again (goal-task-gate).
     if (
       hasGap &&
       (noTurnText || (cause === 'kick' && alreadyJudged)) &&
-      !taskGateGapMoved(activeGoal, session.taskLedger)
+      !taskGateGapClosed(activeGoal, session.taskLedger)
     ) {
       // #745 × #788: a turn that left no text may still have done work (files,
       // commands) before it was cut. Its progress is unknown, so the rollback

@@ -232,6 +232,25 @@ describe('a task-gate gap is judged again once its open tasks change (review P2)
     expect(h.goal.capDecisionId).toBeUndefined();
   });
 
+  it('a status flip or one task of several closed keeps the reuse — no evaluation over a silent turn (review r2 P2)', async () => {
+    const h = makeHarness({ verdict: DONE, ledger: ledgerOf(SIX_TASKS) });
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    // T4 pending → in_progress, T2 completed; T3..T6 still open. The turn left no text.
+    const partial = SIX_TASKS.map((t, i) =>
+      i === 1 ? { ...t, status: 'completed' as const } : i === 3 ? { ...t, status: 'in_progress' as const } : t,
+    );
+    h.session.taskLedger = applyTodoList(h.session.taskLedger, partial, 9_000);
+    h.session.goalLastTurnText = '';
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect(h.evalPrompts).toHaveLength(1);
+    expect(h.goal.status).toBe('active');
+    expect(h.goal.continuationCount).toBe(2);
+  });
+
   it('a turn cut short with the same open tasks still reuses the gap (no extra evaluation)', async () => {
     const h = makeHarness({ verdict: DONE, ledger: ledgerOf(SIX_TASKS) });
     h.controller.onTurnSettled(SESSION_KEY);
