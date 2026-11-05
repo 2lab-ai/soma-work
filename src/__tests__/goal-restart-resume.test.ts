@@ -2,9 +2,10 @@
  * T1 — resume unfinished goals after a service restart.
  *
  * Verifies SlackHandler.resumeActiveGoals re-enters the goal loop for every
- * session that still has an active goal after reload, forces a stale
- * activityState to idle, and that notifyCrashRecovery does NOT also fire the
- * generic auto-resume for those sessions (no double resume).
+ * session that still has an active goal after reload and forces a stale
+ * activityState to idle — except a session whose cut turn notifyCrashRecovery
+ * already resumed with the restart prompt, which that turn carries (no double
+ * resume; see restart-resumes-cut-goal-turn.test.ts).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -295,11 +296,15 @@ describe('resumeActiveGoals (T1)', () => {
     const cut = activeGoalSession({ activityState: 'working' });
     const goal = cut.goal as NonNullable<ConversationSession['goal']>;
     goal.continuationCount = 10;
-    const { settled, resumed, claudeHandler } = await bootWith(new Map([['C1-T1', cut]]), [recovered('C1-T1', true)]);
+    const { handler, settled, resumed, claudeHandler } = await bootWith(new Map([['C1-T1', cut]]), [
+      recovered('C1-T1', true),
+    ]);
 
-    expect(resumed).toBe(1);
     expect(goal.continuationCount).toBe(9);
-    expect(settled).toHaveBeenCalledWith('C1-T1', { cause: 'kick' });
+    // The cut turn resumes as itself (restart prompt); the goal loop judges when it settles.
+    expect((handler as any).handleMessage).toHaveBeenCalledTimes(1);
+    expect(resumed).toBe(0);
+    expect(settled).not.toHaveBeenCalled();
     expect(claudeHandler.saveSessions).toHaveBeenCalled();
   });
 
@@ -498,7 +503,7 @@ describe('resumeActiveGoals (T1)', () => {
     expect(settled).not.toHaveBeenCalled();
   });
 
-  it('notifyCrashRecovery skips generic auto-resume for active-goal sessions (no double resume)', async () => {
+  it('notifyCrashRecovery resumes a cut active-goal turn once, and the goal loop is not kicked beside it', async () => {
     const sessions = new Map<string, ConversationSession>([['C1-T1', activeGoalSession()]]);
     const { handler, claudeHandler } = createHandler(sessions);
     claudeHandler.getCrashRecoveredSessions.mockReturnValue([
@@ -513,10 +518,14 @@ describe('resumeActiveGoals (T1)', () => {
     ]);
     const handleMessageSpy = vi.fn().mockResolvedValue(undefined);
     (handler as any).handleMessage = handleMessageSpy;
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
 
     await handler.notifyCrashRecovery();
+    handler.resumeActiveGoals();
 
-    // generic auto-resume (handleMessage with the restart prompt) must NOT fire
-    expect(handleMessageSpy).not.toHaveBeenCalled();
+    // One resume turn (the restart prompt) — never a goal kick beside it.
+    expect(handleMessageSpy).toHaveBeenCalledTimes(1);
+    expect(settled).not.toHaveBeenCalled();
   });
 });
