@@ -59,6 +59,7 @@ import {
   shouldRunGoalIdleDriver,
 } from './goal-completion-evaluator';
 import { GOAL_CONTINUATION_TEXT_PREFIX, GOAL_SUMMARY_PERSIST_MAX } from './goal-continuation';
+import { gateGoalVerdictOnTasks, goalTaskListLines } from './goal-task-gate';
 
 export { GOAL_SUMMARY_PERSIST_MAX };
 
@@ -469,11 +470,17 @@ export class GoalLoopController {
     session.systemPrompt = undefined;
     this.persist();
 
+    // The host's own record of the model's task list is evidence the evaluator
+    // can trust (the task gate holds the goal open on it — see goal-task-gate).
+    const taskLines = goalTaskListLines(session.taskLedger);
     const evalUserSummary = [
       'Eval trigger: idle-settle (work turn ended)',
       '',
       '## Assistant turn output (latest work turn)',
       workSummaryRaw ? workSummaryRaw.slice(0, 16_000) : '(no assistant text was produced this turn)',
+      ...(taskLines.length
+        ? ['', "## Task list (host-tracked: the work model's latest TodoWrite list)", ...taskLines.map((l) => `- ${l}`)]
+        : []),
     ].join('\n');
 
     logger.info('Goal session settled idle — dispatching completion eval', { sessionKey });
@@ -557,11 +564,18 @@ export class GoalLoopController {
     sessionKey: string,
     session: ConversationSession,
     activeGoal: SessionGoal,
-    verdict: GoalEvalVerdict,
+    evalVerdict: GoalEvalVerdict,
     summaryHash: string,
     opts: { reused?: GoalVerdictReuse; stallAllowed?: boolean } = {},
   ): Promise<void> {
     const { requestCoordinator, logger } = this.deps;
+    // Task gate: the evaluator's "complete" holds only when no task on the
+    // model's latest list is open. Otherwise it is a gap naming those tasks.
+    const gate = gateGoalVerdictOnTasks(evalVerdict, session.taskLedger);
+    const verdict = gate.verdict;
+    if (gate.tasks) {
+      logger.info('Goal completion held — tasks on the latest list are still open', { sessionKey, ...gate.tasks });
+    }
     // #745: where the current failure started — a reused verdict judged no new turn.
     if (!opts.reused) trackGoalFirstFailure(session, activeGoal, verdict, this.now());
     // A kick may not stall (runOnce); the repeat still counted toward the first failure above.
@@ -702,7 +716,9 @@ export class GoalLoopController {
         ? `🔄 Goal continues — no new evaluation (${
             opts.reused === 'interrupted' ? 'the last turn was cut short' : 'nothing changed since the last evaluation'
           }).`
-        : `🔄 Goal not yet complete (eval-model verdict).\n*Reason:* ${verdict.reason}\n*Remaining:*\n${remaining}`,
+        : gate.tasks
+          ? `🔄 Goal not yet complete — the evaluator reported the objective met, but ${gate.tasks.open} of ${gate.tasks.total} tasks are still open.\n*Open tasks:*\n${remaining}\n*Eval reason:* ${gate.tasks.evalReason}`
+          : `🔄 Goal not yet complete (eval-model verdict).\n*Reason:* ${verdict.reason}\n*Remaining:*\n${remaining}`,
     );
 
     // Never supersede a turn that started during the eval. A live request
