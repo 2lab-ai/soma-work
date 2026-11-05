@@ -79,13 +79,21 @@ export function cctSlotsToUsage(slots: SlotState[], nowMs: number): UsageAccount
  */
 export function createTtlCache<K, V>(load: (key: K) => Promise<V>, ttlMs: number, now: () => number = Date.now) {
   const entries = new Map<K, { value: V; at: number }>();
+  // Bumped by invalidate: a load that started before it never fills the cache with what it read (it is stale).
+  const generations = new Map<K, number>();
   return {
     async get(key: K, options: { fresh?: boolean } = {}): Promise<V> {
       const hit = entries.get(key);
       if (!options.fresh && hit && now() - hit.at < ttlMs) return hit.value;
+      const generation = generations.get(key) ?? 0;
       const value = await load(key);
-      entries.set(key, { value, at: now() });
+      if ((generations.get(key) ?? 0) === generation) entries.set(key, { value, at: now() });
       return value;
+    },
+    /** Forget one key: its next `get` loads again, and a load already under way does not refill it. */
+    invalidate(key: K): void {
+      entries.delete(key);
+      generations.set(key, (generations.get(key) ?? 0) + 1);
     },
   };
 }
