@@ -17,7 +17,15 @@
 import type { WebClient } from '@slack/web-api';
 import { getAuthMode } from '../auth/auth-runtime';
 import { fetchLlmuxStatus } from '../auth/llmux-client';
-import { getAllChannels } from '../channel-registry';
+import {
+  findChannelsForRepo,
+  getAllChannels,
+  getChannel,
+  markChannelBeingMade,
+  upsertChannel,
+} from '../channel-registry';
+import { config } from '../config';
+import { getGitHubAppAuth } from '../github-auth';
 import { getLastCommandChannelStore } from '../last-command-channel-store';
 import { Logger } from '../logger';
 import { allowedEffortsFor } from '../session/effort-menu';
@@ -33,6 +41,7 @@ import {
   newTaskModelOptions,
   type UsageAccountView,
 } from './new-task';
+import { ensureRepoChannel, type RepoChannelDeps } from './new-task-channel';
 import {
   launchNewTask,
   type NewTaskEvent,
@@ -48,6 +57,85 @@ const logger = new Logger('DashboardNewTask');
 const MEMBERSHIP_TTL_MS = 5 * 60_000;
 const USAGE_TTL_MS = 60_000;
 const MAX_MEMBERSHIP_PAGES = 20;
+/** How long the bot's own scopes are trusted — a reinstall that adds `channels:manage` shows within this. */
+const SCOPES_TTL_MS = 10 * 60_000;
+const GITHUB_CHECK_TIMEOUT_MS = 5_000;
+
+/** The bot token's scopes (Slack sends them with every Web API answer). */
+async function botScopes(client: WebClient): Promise<Set<string>> {
+  const res = await client.auth.test();
+  return new Set(res.response_metadata?.scopes ?? []);
+}
+
+/**
+ * The repo as GitHub shows it to the bot — the GitHub App installation first (the identity its git and gh work
+ * with), a PAT only where no App is configured: 404 = missing (or not readable — either way the bot could not work
+ * on it); no credentials, a timeout or any other answer = unknown.
+ */
+export async function checkRepoOnGitHub(repo: string): Promise<'ok' | 'missing' | 'unknown'> {
+  let token = '';
+  const app = getGitHubAppAuth();
+  if (app) {
+    try {
+      token = (await app.getInstallationToken()) ?? '';
+    } catch (error) {
+      logger.warn('New repo channel: no GitHub App token — repo not checked', { repo, error: String(error) });
+      return 'unknown';
+    }
+  } else {
+    token = config.github.token || '';
+  }
+  if (!token) return 'unknown';
+  const [owner, name] = repo.split('/');
+  try {
+    const res = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'soma-work',
+      },
+      signal: AbortSignal.timeout(GITHUB_CHECK_TIMEOUT_MS),
+    });
+    if (res.ok) return 'ok';
+    if (res.status === 404) return 'missing';
+    return 'unknown';
+  } catch (error) {
+    logger.warn('New repo channel: GitHub did not answer — repo not checked', { repo, error: String(error) });
+    return 'unknown';
+  }
+}
+
+/** The Slack and registry side of a new repo channel. */
+export function repoChannelDeps(client: WebClient): RepoChannelDeps {
+  return {
+    checkRepo: checkRepoOnGitHub,
+    mappedChannels: (repo) =>
+      findChannelsForRepo(repo)
+        .map((id) => getChannel(id))
+        .filter((c): c is NonNullable<typeof c> => !!c && c.isArchived !== true)
+        .sort((a, b) => a.repos.length - b.repos.length)
+        .map((c) => ({ id: c.id, name: c.name, ...(c.isPrivate === undefined ? {} : { isPrivate: c.isPrivate }) })),
+    create: async (name, isPrivate) => {
+      const res = await client.conversations.create({ name, is_private: isPrivate });
+      const id = res.channel?.id;
+      if (!id) throw new Error('conversations.create answered without a channel id');
+      return { id, name: res.channel?.name || name };
+    },
+    setPurpose: async (channel, purpose) => {
+      await client.conversations.setPurpose({ channel, purpose });
+    },
+    invite: async (channel, user) => {
+      await client.conversations.invite({ channel, users: user });
+    },
+    archive: async (channel) => {
+      await client.conversations.archive({ channel });
+    },
+    register: (info) => {
+      upsertChannel(info);
+    },
+    beginMaking: (name) => markChannelBeingMade(name),
+  };
+}
 
 export interface NewTaskProviderDeps {
   client: WebClient;
@@ -199,8 +287,27 @@ export function createNewTaskProvider(deps: NewTaskProviderDeps): DashboardNewTa
   const { client } = deps;
   const membership = createTtlCache((userId: string) => memberChannelIds(client, userId), MEMBERSHIP_TTL_MS);
   const usage = createTtlCache((_: 'pool') => loadUsage(), USAGE_TTL_MS);
+  const scopes = createTtlCache((_: 'bot') => botScopes(client), SCOPES_TTL_MS);
 
   return {
+    async channelCreation() {
+      try {
+        const held = await scopes.get('bot');
+        // channels:manage makes, describes, invites to and archives a public channel; groups:write a private one.
+        return { public: held.has('channels:manage'), private: held.has('groups:write') };
+      } catch (error) {
+        logger.warn('New task: bot scopes unavailable — no new channel offered', { error: String(error) });
+        return { public: false, private: false };
+      }
+    },
+
+    async ensureChannel(userId, request) {
+      const result = await ensureRepoChannel(userId, request, repoChannelDeps(client));
+      // The admin was just invited: the composer offers the channel next time.
+      membership.invalidate(userId);
+      return result;
+    },
+
     async context(userId, options = {}) {
       let members: Set<string> | null = null;
       try {

@@ -213,6 +213,8 @@ export interface EventRouterProviders {
   createLegacyCommandRouter?: (deps: unknown) => LegacyCommandRouter;
   registerChannel?: (client: any, channel: string) => Promise<unknown>;
   unregisterChannel?: (channel: string) => void;
+  /** A channel name the bot is making right now (ChannelRegistry.isChannelBeingMade): its creation join is skipped. */
+  isChannelBeingMade?: (name: string) => boolean;
   getBaseDirectory?: () => string | undefined;
   downloadSkillUploadFile?: (file: FileDescriptor) => Promise<DownloadFileResult>;
   readCurrentSkillContent?: (userId: string, skillName: string) => string | null;
@@ -239,6 +241,7 @@ let eventRouterProviders: Required<EventRouterProviders> = {
   },
   registerChannel: async () => {},
   unregisterChannel: () => {},
+  isChannelBeingMade: () => false,
   getBaseDirectory: () => undefined,
   downloadSkillUploadFile: async () => ({ ok: false, error: 'Skill upload downloader is not configured.' }),
   readCurrentSkillContent: () => null,
@@ -1512,10 +1515,20 @@ export class EventRouter {
     this.app.event('member_joined_channel', async ({ event, say }) => {
       const botUserId = await this.deps.slackApi.getBotUserId();
       if (event.user === botUserId) {
-        this.logger.info('Bot added to channel', { channel: event.channel });
+        const channelInfo = await this.deps.slackApi.getChannelInfo(event.channel);
+        // A channel the bot made itself (a dashboard task's new repo channel) needs no "set a working directory"
+        // welcome. Slack sends this event on creation too: while the maker is still at it (its name is marked), the
+        // maker registers the channel with its repo once it has described it — a read here could land before that
+        // and erase the mapping. Any other join (a rejoin after a removal) registers as usual.
+        const madeByBot = !!botUserId && channelInfo?.creator === botUserId;
+        if (madeByBot && eventRouterProviders.isChannelBeingMade(String(channelInfo?.name ?? ''))) {
+          this.logger.info('Bot created channel — registered by its maker, no welcome', { channel: event.channel });
+          return;
+        }
+        this.logger.info('Bot added to channel', { channel: event.channel, madeByBot });
         // Register channel in registry for repo mapping
         await eventRouterProviders.registerChannel(this.deps.slackApi.getClient(), event.channel);
-        await this.handleChannelJoin(event.channel, say);
+        if (!madeByBot) await this.handleChannelJoin(event.channel, say, channelInfo);
       }
     });
 
@@ -1532,9 +1545,9 @@ export class EventRouter {
   /**
    * 채널 참여 시 환영 메시지
    */
-  private async handleChannelJoin(channelId: string, say: SayFn): Promise<void> {
+  private async handleChannelJoin(channelId: string, say: SayFn, knownInfo?: any): Promise<void> {
     try {
-      const channelInfo = await this.deps.slackApi.getChannelInfo(channelId);
+      const channelInfo = knownInfo ?? (await this.deps.slackApi.getChannelInfo(channelId));
       const channelName = channelInfo?.name || 'this channel';
 
       let welcomeMessage = `👋 Hi! I'm Claude Code, your AI coding assistant.\n\n`;
