@@ -23,6 +23,10 @@ export interface ChannelInfo {
   repos: string[]; // Parsed repo URLs/names (e.g., "owner/repo")
   confluenceUrl?: string; // First Confluence wiki URL found in purpose/topic
   joinedAt: number;
+  /** Private channel (Slack `is_private`); undefined when the source did not say. */
+  isPrivate?: boolean;
+  /** Archived (Slack `is_archived`): a channel the bot is still a member of, but no work can go there. */
+  isArchived?: boolean;
 }
 
 export type RepoChannelMatchReason = 'no_repo' | 'no_mapping' | 'matched' | 'mismatch';
@@ -75,6 +79,8 @@ export async function scanChannels(client: WebClient): Promise<number> {
           topic: (channel.topic as any)?.value || '',
           repos: [],
           joinedAt: Date.now(),
+          isPrivate: channel.is_private === true,
+          isArchived: channel.is_archived === true,
         };
 
         // Parse repos and confluence URL from purpose + topic
@@ -138,6 +144,8 @@ export async function registerChannel(client: WebClient, channelId: string): Pro
       topic: channel.topic?.value || '',
       repos: [],
       joinedAt: Date.now(),
+      isPrivate: channel.is_private === true,
+      isArchived: channel.is_archived === true,
     };
 
     const rawText = `${info.purpose}\n${info.topic}`;
@@ -169,6 +177,63 @@ export async function registerChannel(client: WebClient, channelId: string): Pro
 }
 
 /**
+ * Register a channel from values the caller already holds — a channel the bot
+ * has just made and described (the dashboard's new repo channel). No
+ * `conversations.info` round trip: one made a moment ago may not read back its
+ * purpose yet, and a stale read must not erase the repo mapping.
+ */
+export function upsertChannel(input: {
+  id: string;
+  name: string;
+  purpose?: string;
+  topic?: string;
+  isPrivate?: boolean;
+}): ChannelInfo {
+  const info: ChannelInfo = {
+    id: input.id,
+    name: input.name,
+    purpose: input.purpose ?? '',
+    topic: input.topic ?? '',
+    repos: [],
+    joinedAt: Date.now(),
+    isPrivate: input.isPrivate === true,
+    isArchived: false,
+  };
+  const rawText = `${info.purpose}\n${info.topic}`;
+  info.repos = parseRepos(rawText);
+  info.confluenceUrl = parseConfluenceUrl(rawText);
+  channels.set(info.id, info);
+  rebuildRepoIndex();
+  invalidateChannelCache(info.id);
+  logger.info('✅ Channel upserted', { channelId: info.id, name: info.name, repos: info.repos });
+  return info;
+}
+
+/**
+ * Channel names the bot is making right now (a dashboard task's new repo channel). Slack sends the bot's
+ * `member_joined_channel` on creation too; while the name is here, that join is the maker's to register (it writes
+ * the repo first), and the EventRouter leaves it alone. Any later join registers as usual.
+ */
+const channelsBeingMade = new Map<string, number>();
+
+/** Mark `name` as being made; the returned function unmarks it (call it once the maker is done, either way). */
+export function markChannelBeingMade(name: string): () => void {
+  channelsBeingMade.set(name, (channelsBeingMade.get(name) ?? 0) + 1);
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    const n = (channelsBeingMade.get(name) ?? 1) - 1;
+    if (n > 0) channelsBeingMade.set(name, n);
+    else channelsBeingMade.delete(name);
+  };
+}
+
+export function isChannelBeingMade(name: string): boolean {
+  return channelsBeingMade.has(name);
+}
+
+/**
  * Unregister a channel when bot leaves or is removed.
  */
 export function unregisterChannel(channelId: string): void {
@@ -182,7 +247,7 @@ export function unregisterChannel(channelId: string): void {
  * Find the correct channel for a given repo.
  * Returns the channel ID(s) mapped to this repo, or empty array.
  */
-function findChannelsForRepo(repoFullName: string): string[] {
+export function findChannelsForRepo(repoFullName: string): string[] {
   // Normalize: lowercase, strip .git suffix
   const normalized = repoFullName.toLowerCase().replace(/\.git$/, '');
   const result = repoToChannels.get(normalized) || [];
