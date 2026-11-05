@@ -6640,7 +6640,7 @@ export class SlackHandler {
         this.followupDeferredGoalSessions?.delete(sessionKey);
         this.logger.warn('Goal driver not fired — the automatic resume failed again; waiting for a person', {
           sessionKey,
-          reason: report.outcome?.result === 'error' ? report.outcome.reason : undefined,
+          reason: (report.outcome as { reason?: string } | undefined)?.reason,
         });
         this.noticeGoalErrorResumeStopped(sessionKey);
         return;

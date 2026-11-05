@@ -912,8 +912,14 @@ describe('SlackHandler — follow-up queue host', () => {
       settleNoText(failed);
       expect(goalDriver).toHaveBeenCalledTimes(1);
 
+      // The person's own turn fails at once too: their word re-armed the one resume.
+      lastTurnSucceeded = false;
+      startWithContinuation.mockImplementationOnce(async () => {
+        handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, []);
+        return { hasPendingChoice: false };
+      });
       await handler.handleMessage(message({ ts: '555.666', text: '다시 해봐' }), say());
-      expect(handlerAny.goalErrorResumeSpent?.has(SESSION_KEY) ?? false).toBe(false);
+      expect(goalDriver).toHaveBeenCalledTimes(2);
     });
 
     it('a watchdog stall counts as a failure — repeated stalls are resumed once', () => {
