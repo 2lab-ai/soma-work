@@ -251,6 +251,26 @@ describe('a task-gate gap is judged again once its open tasks change (review P2)
     expect(h.goal.continuationCount).toBe(2);
   });
 
+  it('over 30 open tasks: closing every listed one but not the tail keeps the reuse (review r2 P2)', async () => {
+    const many: TodoInput[] = Array.from({ length: 31 }, (_, i) => ({
+      content: `step ${i + 1} of the plan`,
+      status: 'pending',
+    }));
+    const h = makeHarness({ verdict: DONE, ledger: ledgerOf(many) });
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.goal.lastEvalRemaining).toHaveLength(31); // 30 lines + "… and 1 more"
+
+    const tailOpen = many.map((t, i) => (i < 30 ? { ...t, status: 'completed' as const } : t));
+    h.session.taskLedger = applyTodoList(h.session.taskLedger, tailOpen, 9_000);
+    h.session.goalLastTurnText = '';
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect(h.evalPrompts).toHaveLength(1);
+    expect(h.goal.status).toBe('active');
+  });
+
   it('a turn cut short with the same open tasks still reuses the gap (no extra evaluation)', async () => {
     const h = makeHarness({ verdict: DONE, ledger: ledgerOf(SIX_TASKS) });
     h.controller.onTurnSettled(SESSION_KEY);

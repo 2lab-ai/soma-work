@@ -31,6 +31,20 @@ describe('TodoDisplayManager — the ledger hears every TodoWrite', () => {
     expect(synced).toEqual([[]]);
   });
 
+  it('a list whose items all fail to parse is no clear — the ledger keeps its tasks (review r2 P2)', async () => {
+    const { display, synced, say } = makeManager();
+    await display.handleTodoUpdate(
+      { todos: [{ content: 'Unfinished task', status: 'invalid' }] as never },
+      'C1:T1',
+      'sid-1',
+      'C1',
+      'T1',
+      say,
+      0,
+    );
+    expect(synced).toEqual([]);
+  });
+
   it('a changed list reaches the ledger once, as before', async () => {
     const { display, synced, say } = makeManager();
     await display.handleTodoUpdate(
