@@ -45,6 +45,7 @@
  */
 
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { parseSafeguardFlag, type SafeguardFlagInfo, safeguardFlagOf } from '@soma/common/safeguard';
 import {
   buildHostFailureResult,
   decodeIncidentConclusion,
@@ -870,6 +871,15 @@ export interface IncidentStreamHooks {
   /** The stream threw. The caller logs it — the error text never enters the thread. */
   readonly onStreamError?: (error: unknown) => void;
   /**
+   * Anthropic's safeguards blocked the attempt (#904) — in the model's text, a
+   * failed result's `errors[]`, or a thrown error. Called once, before the
+   * conclusion. The attempt still ends with the host's conclusion; the caller
+   * halts the session so no further attempt runs until an admin unlocks it.
+   * The screener replaces the model's text, so the executor never sees the
+   * block: this is the only place it can be read.
+   */
+  readonly onSafeguardFlag?: (flag: SafeguardFlagInfo) => void;
+  /**
    * The decided conclusion, before the terminal pair is yielded. Logging seam.
    *
    * `modelText` is what the decision was made from, handed over so the caller
@@ -924,11 +934,23 @@ export async function* screenIncidentStream(
   let sdkResult: SDKMessage | null = null;
   /** This attempt's forwarded evidence calls — the only results the thread may see. */
   const evidenceCallIds = new Set<string>();
+  /** The safeguards block, if one of the attempt's sources carried it (#904). */
+  let safeguardFlag: SafeguardFlagInfo | null = null;
 
   try {
     try {
       for await (const message of source) {
         const screened = screenIncidentMessage(message, evidenceCallIds);
+        // A safeguards block halts the session the moment it is seen, and the
+        // attempt stops consuming its source there (review R6, astra P1) —
+        // the host's conclusion follows; nothing after the block runs.
+        const blockedHere = safeguardFlag ? null : safeguardFlagOfIncidentMessage(message, screened.text);
+        if (blockedHere) {
+          safeguardFlag = blockedHere;
+          reportSafeguardFlag(hooks, blockedHere);
+          if (message.type === 'result') sdkResult = message;
+          break;
+        }
         if (screened.text) {
           modelTextChars += screened.text.length;
           if (modelText.length + screened.text.length > MAX_MODEL_TEXT_CHARS) {
@@ -945,6 +967,10 @@ export async function* screenIncidentStream(
       }
     } catch (error) {
       threw = true;
+      if (!safeguardFlag) {
+        safeguardFlag = safeguardFlagOf(error);
+        if (safeguardFlag) reportSafeguardFlag(hooks, safeguardFlag);
+      }
       hooks.onStreamError?.(error);
     }
 
@@ -972,6 +998,39 @@ export async function* screenIncidentStream(
   } finally {
     hooks.onFinished?.();
   }
+}
+
+/** Tell the caller (it halts the session); its failure never stops the attempt from concluding. */
+function reportSafeguardFlag(hooks: IncidentStreamHooks, flag: SafeguardFlagInfo): void {
+  try {
+    hooks.onSafeguardFlag?.(flag);
+  } catch {
+    // The halt port logs its own failure; the attempt still concludes.
+  }
+}
+
+/**
+ * The safeguards block one SDK message of an attempt carries (#904): the turn
+ * text of an assistant message, a result's text, or a failed result's
+ * `errors[]`. Turn-text rules for text (it must BE the block), error rules for
+ * `errors[]`.
+ */
+function safeguardFlagOfIncidentMessage(message: SDKMessage, text: string | undefined): SafeguardFlagInfo | null {
+  if (text) {
+    const fromText = parseSafeguardFlag(text);
+    if (fromText) return fromText;
+  }
+  if (message.type !== 'result') return null;
+  const m = message as unknown as { result?: unknown; errors?: unknown };
+  if (typeof m.result === 'string') {
+    const fromResult = parseSafeguardFlag(m.result);
+    if (fromResult) return fromResult;
+  }
+  if (Array.isArray(m.errors)) {
+    const joined = m.errors.filter((e): e is string => typeof e === 'string').join('\n');
+    return joined ? parseSafeguardFlag(joined, { source: 'error' }) : null;
+  }
+  return null;
 }
 
 /**

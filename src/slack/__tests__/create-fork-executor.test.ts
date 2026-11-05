@@ -223,3 +223,21 @@ describe('createForkExecutor', () => {
     });
   });
 });
+
+// #904 review round 8 (astra-zhuge P1): the summary query blocked by Anthropic's
+// safeguards is not a failed summary — it reaches the caller, which halts.
+describe('createForkExecutor — safeguards block', () => {
+  it('rethrows a safeguards block instead of returning null', async () => {
+    const handler = {
+      dispatchOneShot: vi
+        .fn()
+        .mockRejectedValue(
+          new Error(
+            "API Error: Opus 5.5 (1M context)'s safeguards flagged this message (https://www.anthropic.com/legal/aup).\n\nDetails: `[reasoning_extraction]`\n\nRequest ID: req_sum",
+          ),
+        ),
+    };
+    const executor = createForkExecutor(handler as any);
+    await expect(executor('p', 'm', 'sess-1', '/tmp')).rejects.toThrow(/safeguards flagged/);
+  });
+});

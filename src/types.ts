@@ -736,6 +736,13 @@ export interface ConversationSession {
    */
   pendingRetryDetail?: { attempt?: number; maxAttempts?: number; reason?: string };
   /**
+   * Anthropic safeguards blocked a request in this session (persisted). While
+   * set, no turn runs here — not a goal continuation, an auto-resume, a retry
+   * or any message — until an admin lifts it with the button on the
+   * "세이프가드 에러" notice (`@soma/slack/safeguard`).
+   */
+  safeguardHalt?: import('@soma/common/safeguard').SafeguardHalt;
+  /**
    * Pending personal-skill SKILL.md file roundtrip — set when the user clicks
    * "✏️ 편집" on a skill whose body exceeds `MAX_INLINE_EDIT_CHARS`. The
    * action handler uploads SKILL.md to the thread as an attachment and

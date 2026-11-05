@@ -73,6 +73,8 @@ export interface ConversationSession {
   taskUsage?: TaskUsage;
   /** #810 — the model was told the display language in this SDK session (persisted in sessions.json). */
   displayLangTold?: boolean;
+  /** Anthropic safeguards lock — no turn runs until an admin lifts it (`../safeguard`). */
+  safeguardHalt?: import('@soma/common/safeguard').SafeguardHalt;
   [key: string]: any;
 }
 

@@ -32,6 +32,7 @@ import { McpToolPermissionActionHandler } from './mcp-tool-permission-action-han
 import { PermissionActionHandler } from './permission-action-handler';
 import { PluginUpdateActionHandler } from './plugin-update-action-handler';
 import { PRActionHandler } from './pr-action-handler';
+import { SafeguardActionHandler } from './safeguard-action-handler';
 import { SessionActionHandler } from './session-action-handler';
 import { SkillPermissionActionHandler } from './skill-permission-action-handler';
 import { TurnDismissActionHandler } from './turn-dismiss-action-handler';
@@ -193,6 +194,9 @@ setActionHandlersProviders({
       dismissHandler: new TurnDismissActionHandler({
         slackApi: ctx.slackApi as any,
         completionMessageTracker: ctx.completionMessageTracker,
+      }),
+      safeguardHandler: new SafeguardActionHandler({
+        getRegistry: () => ctx.claudeHandler.getSessionRegistry?.(),
       }),
       goalHandler: new GoalActionHandler({
         slackApi: ctx.slackApi as any,

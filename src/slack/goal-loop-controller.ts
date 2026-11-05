@@ -37,7 +37,9 @@
 
 import { createHash } from 'node:crypto';
 import { boundRateLimitDelayMs, parseRetryAfterMs, textIndicatesRetryableRateLimit } from '@soma/common/rate-limit';
+import { parseSafeguardFlag, safeguardFlagOf } from '@soma/common/safeguard';
 import { OutputFlag } from '@soma/slack/output-flags';
+import { safeguardEvalHaltNoticeText } from '@soma/slack/safeguard';
 import type { SyntheticMessageEvent } from '../cron-scheduler';
 import { buildGoalContinuationPrompt, type GoalVerdictReuse } from '../prompt/session-goal-block';
 import { retryReasonLine } from '../retry-reason';
@@ -51,6 +53,7 @@ import {
   evaluateGoalCompletion,
   GOAL_EVAL_DISPATCH_MAX_RETRIES,
   type GoalEvalDispatcher,
+  GoalEvalParseError,
   type GoalEvalPreviousVerdict,
   type GoalEvalVerdict,
   shouldRunGoalIdleDriver,
@@ -124,11 +127,19 @@ export interface GoalLoopRegistry {
    * Optional — hosts without a dashboard (and test doubles) omit it.
    */
   broadcastSessionUpdate?(): void;
+  /**
+   * Lock the thread's LIVE session — or, with none live, leave the thread a
+   * tombstone (`SessionRegistry.haltSafeguardByKey`). Optional for test
+   * doubles; without it the controller locks the live object it can find.
+   */
+  haltSafeguardByKey?(sessionKey: string, halt: NonNullable<ConversationSession['safeguardHalt']>): unknown;
 }
 
 /** Request-coordinator surface the controller needs. */
 export interface GoalLoopRequestCoordinator {
   isRequestActive(sessionKey: string): boolean;
+  /** Stop the session's running turn (the safeguards halt of a blocked eval). */
+  abortSession?(sessionKey: string, reason: 'safeguard'): boolean;
 }
 
 export interface GoalLoopControllerDeps {
@@ -366,6 +377,14 @@ export class GoalLoopController {
     }
     const activeGoal = session.goal!;
 
+    // Anthropic safeguards halted the session (ssot T2): no eval spend, no
+    // continuation. The goal stays active — once an admin lifts the lock, the
+    // admin's retry turn settles and drives the loop again.
+    if (session.safeguardHalt) {
+      logger.info('Goal loop run skipped — session halted by a safeguards flag', { sessionKey });
+      return;
+    }
+
     // Transient-failure backoff gate: while a scheduled eval retry is waiting
     // out a rate-limit window, ordinary settles (e.g. a duplicate trigger that
     // was already queued behind the failing run) must NOT re-dispatch — they
@@ -483,6 +502,16 @@ export class GoalLoopController {
     // the eval ran, the live goal no longer matches what we evaluated.
     // Discard the verdict entirely: no mutate / persist / notice / inject.
     const live = registry.getSessionByKey(sessionKey)?.goal;
+    // A safeguards halt that landed while the eval ran: the verdict is moot —
+    // nothing may be injected. Release our lease, apply nothing.
+    if (registry.getSessionByKey(sessionKey)?.safeguardHalt) {
+      if (live && live.goalId === snapshot.goalId && live.pendingEval?.requestedAt === startedAt) {
+        live.pendingEval = undefined;
+        this.persist();
+      }
+      logger.info('Goal eval verdict discarded — session halted by a safeguards flag during the eval', { sessionKey });
+      return;
+    }
     if (!this.epochStillValid(live, snapshot)) {
       logger.info('Goal eval verdict discarded — goal epoch moved during eval', { sessionKey });
       // Clear OUR stale lease so the loop isn't wedged: same goal object
@@ -870,6 +899,53 @@ export class GoalLoopController {
     const epochValid = live !== undefined && this.epochStillValid(live, snapshot);
     const message = err instanceof Error ? err.message : String(err);
     logger.error('Goal eval dispatch failed', { sessionKey, error: message });
+
+    // Anthropic safeguards blocked the eval query itself (ssot T2): that is
+    // no transient failure — the work stops here, whatever the epoch did
+    // meanwhile (a newer instruction would run on the same blocked session). Lock the session (no
+    // retries, no continuation) exactly as a blocked work turn does; only an
+    // admin may lift it.
+    const evalFlag =
+      safeguardFlagOf(err) ??
+      (err instanceof GoalEvalParseError ? parseSafeguardFlag(err.raw, { source: 'error' }) : null);
+    if (evalFlag) {
+      const halt = { atMs: this.now(), ...evalFlag };
+      // The lock goes on the thread's LIVE session: a close/restore while the
+      // eval ran put a new object under the key, and a lock on the captured
+      // one would be lost (review R6, astra P1). No live session → the
+      // thread's tombstone.
+      const liveSession = registry.getSessionByKey(sessionKey);
+      if (registry.haltSafeguardByKey) registry.haltSafeguardByKey(sessionKey, halt);
+      else if (liveSession && !liveSession.safeguardHalt) liveSession.safeguardHalt = halt;
+      if (!session.safeguardHalt) session.safeguardHalt = halt;
+      if (live && live.goalId === snapshot.goalId && live.pendingEval?.requestedAt === startedAt) {
+        live.pendingEval = undefined;
+      }
+      if (live) {
+        live.evalDispatchRetryCount = undefined;
+        live.evalRetryReason = undefined;
+        live.evalBackoffUntil = undefined;
+      }
+      this.persist();
+      logger.warn('Goal eval blocked by Anthropic safeguards — session halted, admin retry required', {
+        sessionKey,
+        ...evalFlag,
+      });
+      // A turn the user started while the eval ran already passed the gate:
+      // stop it now — the session is halted (it ends as the halt, quietly).
+      if (this.deps.requestCoordinator.isRequestActive(sessionKey)) {
+        try {
+          this.deps.requestCoordinator.abortSession?.(sessionKey, 'safeguard');
+        } catch (abortErr) {
+          logger.warn('Safeguard halt: stopping the running turn failed', {
+            sessionKey,
+            error: abortErr instanceof Error ? abortErr.message : String(abortErr),
+          });
+        }
+      }
+      void this.postLooseNotice(liveSession ?? session, safeguardEvalHaltNoticeText(halt)).catch(() => undefined);
+      return;
+    }
 
     // Epoch moved during the failed eval (user message / goal mutation): the
     // user's newer intent supersedes this eval entirely — no retry, no notice.

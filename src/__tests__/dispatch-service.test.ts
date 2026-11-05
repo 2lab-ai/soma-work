@@ -71,3 +71,51 @@ describe('decodeSlackEntities', () => {
     expect(decodeSlackEntities('&gt;&gt;&gt; blockquote')).toBe('>>> blockquote');
   });
 });
+
+// Review gate round 3 (astra-zhuge P1 #3, PR #906): the classifier query
+// blocked by the safeguards must not fall back to `default` and run the work.
+describe('DispatchService — classifier blocked by safeguards', () => {
+  function svcWith(dispatchOneShot: () => Promise<string>) {
+    const svc = getDispatchService() as any;
+    const saved = { handler: svc.claudeHandler, configured: svc.isConfigured, prompt: svc.dispatchPrompt };
+    svc.claudeHandler = { dispatchOneShot };
+    svc.isConfigured = true;
+    svc.dispatchPrompt = svc.dispatchPrompt || 'classify';
+    return {
+      svc,
+      restore: () =>
+        Object.assign(svc, {
+          claudeHandler: saved.handler,
+          isConfigured: saved.configured,
+          dispatchPrompt: saved.prompt,
+        }),
+    };
+  }
+
+  it('reports the flag when the classifier answer is the block', async () => {
+    const { svc, restore } = svcWith(
+      async () =>
+        "API Error: Opus 5.5 (1M context)'s safeguards flagged this message (https://www.anthropic.com/legal/aup).\n\nDetails: `[reasoning_extraction]`\n\nRequest ID: req_r3",
+    );
+    try {
+      const result = await svc.dispatch('do the thing');
+      expect(result.safeguardFlag?.requestId).toBe('req_r3');
+    } finally {
+      restore();
+    }
+  });
+
+  it('reports the flag when the classifier call throws the block', async () => {
+    const { svc, restore } = svcWith(async () => {
+      throw new Error(
+        "API Error: Opus 5.5 (1M context)'s safeguards flagged this message (https://www.anthropic.com/legal/aup).\n\nDetails: `[reasoning_extraction]`\n\nRequest ID: req_r3",
+      );
+    });
+    try {
+      const result = await svc.dispatch('do the thing');
+      expect(result.safeguardFlag?.detail).toBe('reasoning_extraction');
+    } finally {
+      restore();
+    }
+  });
+});

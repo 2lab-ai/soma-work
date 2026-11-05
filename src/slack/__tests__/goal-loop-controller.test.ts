@@ -783,3 +783,165 @@ describe('GoalLoopController — dashboard visibility of loop steps', () => {
     expect(s.goal.evalRetryReason).toBeUndefined();
   });
 });
+
+/**
+ * ssot-task: T2 — a session the safeguards stopped runs no goal eval and gets
+ * no continuation. Field log (dev, 2026-11-04T00:42Z): the loop ran an opus
+ * xhigh eval and injected another turn into the blocked session, which hit
+ * the same safeguard again.
+ */
+describe('GoalLoopController — safeguard halt (T2)', () => {
+  it('skips the eval and injects nothing while the session is halted', async () => {
+    let dispatched = 0;
+    const h = makeHarness({
+      dispatcher: async () => {
+        dispatched += 1;
+        return JSON.stringify({ completed: false, reason: 'not yet', remaining: ['do X'] });
+      },
+    });
+    (h.session as any).safeguardHalt = { atMs: 1, detail: 'reasoning_extraction' };
+
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect(dispatched).toBe(0);
+    expect(h.injected).toHaveLength(0);
+    expect(h.goal.status).toBe('active');
+  });
+
+  it('runs again once the halt is cleared (admin retry)', async () => {
+    let dispatched = 0;
+    const h = makeHarness({
+      dispatcher: async () => {
+        dispatched += 1;
+        return JSON.stringify({ completed: false, reason: 'not yet', remaining: ['do X'] });
+      },
+    });
+    (h.session as any).safeguardHalt = { atMs: 1 };
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    (h.session as any).safeguardHalt = undefined;
+
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect(dispatched).toBe(1);
+  });
+});
+
+/**
+ * Review gate (astra-zhuge P1 #4, PR #906): the goal completion eval is its
+ * own query. When the safeguards block IT, the work is stopped there — no
+ * transient-failure retries, no continuation — and the session is locked.
+ */
+describe('GoalLoopController — safeguards block on the completion eval (T2)', () => {
+  const BLOCK = `API Error: Opus 5.5 (1M context)'s safeguards flagged this message (https://www.anthropic.com/legal/aup).
+
+Details: \`[reasoning_extraction]\`
+
+Request ID: req_eval1`;
+
+  it('locks the session instead of scheduling eval retries', async () => {
+    const h = makeHarness({ dispatcher: async () => BLOCK });
+
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect((h.session as any).safeguardHalt).toEqual(
+      expect.objectContaining({ detail: 'reasoning_extraction', requestId: 'req_eval1' }),
+    );
+    expect(h.scheduledRetries).toHaveLength(0);
+    expect(h.injected).toHaveLength(0);
+    expect(h.notices.some((n) => n.includes('세이프가드 에러'))).toBe(true);
+    expect(h.goal.pendingEval).toBeUndefined();
+  });
+
+  it('also when the dispatcher throws the block', async () => {
+    const h = makeHarness({
+      dispatcher: async () => {
+        throw new Error(`Claude Code process exited with code 1\n${BLOCK}`);
+      },
+    });
+
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect((h.session as any).safeguardHalt?.requestId).toBe('req_eval1');
+    expect(h.scheduledRetries).toHaveLength(0);
+  });
+});
+
+describe('GoalLoopController — safeguards block on an eval whose epoch moved (review round 2, astra P1 #5)', () => {
+  it('still locks the session — the newer instruction would run on the same blocked session', async () => {
+    let h: ReturnType<typeof makeHarness>;
+    h = makeHarness({
+      dispatcher: async () => {
+        h.goal.epoch = (h.goal.epoch ?? 0) + 1; // a user message arrived during the eval
+        throw new Error(
+          "Claude Code process exited with code 1\nAPI Error: Opus 5.5 (1M context)'s safeguards flagged this message (https://www.anthropic.com/legal/aup).\n\nDetails: `[reasoning_extraction]`\n\nRequest ID: req_r2",
+        );
+      },
+    });
+
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect((h.session as any).safeguardHalt?.requestId).toBe('req_r2');
+    expect(h.scheduledRetries).toHaveLength(0);
+    expect(h.goal.pendingEval).toBeUndefined();
+  });
+});
+
+describe('GoalLoopController — blocked eval stops a running turn (review round 3, astra P1 #1)', () => {
+  it('aborts the turn the user started during the eval, with reason safeguard', async () => {
+    let h: ReturnType<typeof makeHarness>;
+    const abortSession = vi.fn().mockReturnValue(true);
+    h = makeHarness({
+      dispatcher: async () => {
+        h.setRequestActive(true); // the user started a turn while the eval ran
+        return "API Error: Opus 5.5 (1M context)'s safeguards flagged this message (https://www.anthropic.com/legal/aup).\n\nDetails: `[reasoning_extraction]`\n\nRequest ID: req_r3";
+      },
+    });
+    (h.controller as any).deps.requestCoordinator.abortSession = abortSession;
+
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect((h.session as any).safeguardHalt?.requestId).toBe('req_r3');
+    expect(abortSession).toHaveBeenCalledWith(SESSION_KEY, 'safeguard');
+  });
+});
+
+describe('GoalLoopController — blocked eval after a close/restore (review round 6, astra P1)', () => {
+  const BLOCK =
+    "API Error: Opus 5.5 (1M context)'s safeguards flagged this message (https://www.anthropic.com/legal/aup).\n\nDetails: `[reasoning_extraction]`\n\nRequest ID: req_r6";
+
+  it('locks the LIVE session under the key, not the object the eval captured', async () => {
+    let h: ReturnType<typeof makeHarness>;
+    let live: any;
+    h = makeHarness({
+      dispatcher: async () => {
+        // The owner closed the session and restored it: a new object under the key.
+        live = { ...h.session, goal: { ...h.session.goal }, safeguardHalt: undefined };
+        return BLOCK;
+      },
+    });
+    (h.controller as any).deps.registry.getSessionByKey = () => live ?? h.session;
+
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect(live.safeguardHalt?.requestId).toBe('req_r6');
+  });
+
+  it('hands the lock to the registry, which tombstones a thread with no live session', async () => {
+    const haltSafeguardByKey = vi.fn();
+    const h = makeHarness({ dispatcher: async () => BLOCK });
+    (h.controller as any).deps.registry.haltSafeguardByKey = haltSafeguardByKey;
+
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect(haltSafeguardByKey).toHaveBeenCalledWith(SESSION_KEY, expect.objectContaining({ requestId: 'req_r6' }));
+  });
+});

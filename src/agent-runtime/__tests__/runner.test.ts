@@ -104,3 +104,90 @@ describe('toSdkOptions — an effort the CLI does not take', () => {
     expect(toSdkOptions({ ...base, extensions: { claudeCode: { env, effort: 'high' } } } as never).effort).toBe('high');
   });
 });
+
+// Review gate round 2 (astra-zhuge P1 #4, PR #906): a safeguards block that
+// arrives only in the result's errors[] must not read as an empty answer.
+describe('runOneShotText — safeguards block in the result errors[]', () => {
+  beforeEach(() => {
+    queryMock.mockReset();
+  });
+
+  it('throws the block instead of returning empty text', async () => {
+    queryMock.mockReturnValue(
+      makeStream([
+        {
+          type: 'result',
+          subtype: 'error_during_execution',
+          is_error: true,
+          errors: [
+            "API Error: Opus 5.5 (1M context)'s safeguards flagged this message (https://www.anthropic.com/legal/aup).\n\nDetails: `[reasoning_extraction]`\n\nRequest ID: req_r2",
+          ],
+        },
+      ]),
+    );
+    await expect(runOneShotText('p', { model: 'm' } as any)).rejects.toThrow(/safeguards flagged this message/);
+  });
+
+  it('other result errors keep the old behavior (empty text, no throw)', async () => {
+    queryMock.mockReturnValue(
+      makeStream([{ type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['boom'] }]),
+    );
+    await expect(runOneShotText('p', { model: 'm' } as any)).resolves.toBe('');
+  });
+});
+
+// Review gate round 6 (astra-zhuge P1): text written before the block must not
+// hide it — the guardian would read the earlier text as its verdict.
+describe('runOneShotText — safeguards block after earlier text', () => {
+  const BLOCK =
+    "API Error: Opus 5.5 (1M context)'s safeguards flagged this message (https://www.anthropic.com/legal/aup).\n\nDetails: `[reasoning_extraction]`\n\nRequest ID: req_r6";
+  const earlier = {
+    type: 'assistant',
+    message: { content: [{ type: 'text', text: '{"verdict":"allow","reason":"ok"}' }] },
+  };
+
+  beforeEach(() => {
+    queryMock.mockReset();
+  });
+
+  it('a block in its own assistant message throws, and the query stops there', async () => {
+    let pulledAfterBlock = false;
+    queryMock.mockReturnValue(
+      (async function* () {
+        yield earlier;
+        yield { type: 'assistant', message: { content: [{ type: 'text', text: BLOCK }] } };
+        pulledAfterBlock = true;
+        yield { type: 'result', subtype: 'success', is_error: false };
+      })(),
+    );
+    await expect(runOneShotText('p', { model: 'm' } as any)).rejects.toThrow(/safeguards flagged this message/);
+    expect(pulledAfterBlock).toBe(false);
+  });
+
+  it("a block in the result's errors[] throws even after earlier text", async () => {
+    queryMock.mockReturnValue(
+      makeStream([earlier, { type: 'result', subtype: 'error_during_execution', is_error: true, errors: [BLOCK] }]),
+    );
+    await expect(runOneShotText('p', { model: 'm' } as any)).rejects.toThrow(/safeguards flagged this message/);
+  });
+
+  it('a thrown block throws even after earlier text', async () => {
+    queryMock.mockReturnValue(
+      (async function* () {
+        yield earlier;
+        throw new Error(BLOCK);
+      })(),
+    );
+    await expect(runOneShotText('p', { model: 'm' } as any)).rejects.toThrow(/safeguards flagged this message/);
+  });
+
+  it('an ordinary crash after usable text still returns the text', async () => {
+    queryMock.mockReturnValue(
+      (async function* () {
+        yield earlier;
+        throw new Error('Claude Code process exited with code 143');
+      })(),
+    );
+    await expect(runOneShotText('p', { model: 'm' } as any)).resolves.toContain('allow');
+  });
+});

@@ -1,5 +1,6 @@
 import type { App } from '@slack/bolt';
 import { Logger } from '@soma/common/logger';
+import { SAFEGUARD_ADMIN_RETRY_ACTION } from '../safeguard';
 import { TURN_DISMISS_ACTION_ID, TURN_FEEDBACK_ACTION_ID } from '../turn-feedback-block-builder';
 import { TurnFeedbackStore } from '../turn-feedback-store';
 import { EXPIRED_CLICK_TEXT, WORK_QUEUE_CANCEL_ACTION, WORK_QUEUE_WAIT_ACTION } from '../work-queue/blocks';
@@ -167,6 +168,8 @@ export interface ActionHandlerDelegates {
   };
   feedbackHandler: { handleFeedback(body: any, respond: RespondFn): Promise<void> };
   dismissHandler: { handleDismiss(body: any, respond: RespondFn): Promise<void> };
+  /** The admin unlock button on a "세이프가드 에러" notice. Optional for older delegate providers. */
+  safeguardHandler?: { handleAdminRetry(body: any, respond: RespondFn): Promise<void> };
   goalHandler: {
     handleDelete(body: any, respond: RespondFn): Promise<void>;
     handleUpdate(body: any, respond: RespondFn, client: any): Promise<void>;
@@ -541,6 +544,12 @@ export class ActionHandlers {
     app.action(TURN_DISMISS_ACTION_ID, async ({ ack, body, respond }) => {
       await ack();
       await this.delegates.dismissHandler.handleDismiss(body, respond as RespondFn);
+    });
+
+    // Safeguards halt — the admin unlock button (the only way to lift it).
+    app.action(SAFEGUARD_ADMIN_RETRY_ACTION, async ({ ack, body, respond }) => {
+      await ack();
+      await this.delegates.safeguardHandler?.handleAdminRetry(body, respond as RespondFn);
     });
 
     app.view('custom_input_submit', async ({ ack, body, view }) => {

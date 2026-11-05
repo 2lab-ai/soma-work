@@ -386,3 +386,22 @@ describe('SummaryService', () => {
     });
   });
 });
+
+// #904 review round 8 (astra-zhuge P1): a summary query the safeguards blocked
+// halts the session through the host (the fork rethrows it).
+describe('SummaryService — safeguards block on the summary query', () => {
+  it('reports the flag for the session and returns null', async () => {
+    const onSafeguardFlag = vi.fn();
+    const fork: ForkExecutor = vi.fn(async () => {
+      throw new Error(
+        "API Error: Opus 5.5 (1M context)'s safeguards flagged this message (https://www.anthropic.com/legal/aup).\n\nDetails: `[reasoning_extraction]`\n\nRequest ID: req_sum",
+      );
+    });
+    const service = new SummaryService(fork, undefined, { onSafeguardFlag });
+    const session = { isActive: true, sessionId: 's1', channelId: 'C1', threadTs: '1.1' } as SummarySessionInfo;
+
+    await expect(service.execute(session)).resolves.toBeNull();
+
+    expect(onSafeguardFlag).toHaveBeenCalledWith(session, expect.objectContaining({ detail: 'reasoning_extraction' }));
+  });
+});

@@ -1013,3 +1013,125 @@ describe('incident terminal messages', () => {
     expect(markerLines(result.result as string)).toHaveLength(1);
   });
 });
+
+// ------------------------------------------------- Anthropic safeguards (#904)
+
+/**
+ * ssot-task: T2 — an incident attempt blocked by Anthropic's safeguards halts
+ * the session like any other turn (review R5, astra P1). The screener replaces
+ * the model's text with the host's conclusion, so the executor never sees the
+ * block: the screener itself reports it.
+ */
+describe('incident stream: Anthropic safeguards block', () => {
+  const BLOCK =
+    "API Error: Opus 5.5 (1M context)'s safeguards flagged this message (https://www.anthropic.com/legal/aup). " +
+    "This sometimes happens with safe, normal conversations. Claude Code can't respond to this message with " +
+    'Opus 5.5 (1M context). Try rephrasing the request in a new session or change your model. ' +
+    'Learn more: https://support.claude.com/en/articles/8106465\n' +
+    'Details: `[reasoning_extraction]`\nRequest ID: req_011CggxYZxQ7TEBU95XW3X19\nMessage ID: msg_011CggxYckLHkHA9sUKftEWG';
+
+  function wiring(onSafeguardFlag: (flag: unknown) => void) {
+    const registry = registryWith();
+    return {
+      request: REQUEST,
+      verifiedEvidence: () => registry.verifiedAt(NOW),
+      sourceCaveat: () => registry.sourceCaveat(),
+      observe: () => ({ budgetExpired: false, aborted: false }),
+      identity: () => ({ sessionId: 'sdk-session', model: 'claude-fable-5-1' }),
+      uuid: () => 'uuid-fixed',
+      onSafeguardFlag,
+    } as Parameters<typeof screenIncidentStream>[1];
+  }
+
+  async function drain(source: AsyncIterable<SDKMessage>, hooks: Parameters<typeof screenIncidentStream>[1]) {
+    const out: SDKMessage[] = [];
+    for await (const message of screenIncidentStream(source, hooks)) out.push(message);
+    return out;
+  }
+
+  it('reports the block the model text carried, and still ends with the host conclusion', async () => {
+    const flags: unknown[] = [];
+    async function* source(): AsyncGenerator<SDKMessage> {
+      yield assistantMessage([{ type: 'text', text: BLOCK }]);
+      yield resultMessage({ result: BLOCK });
+    }
+    const emitted = await drain(
+      source(),
+      wiring((flag) => flags.push(flag)),
+    );
+    expect(flags).toHaveLength(1);
+    expect(flags[0]).toMatchObject({ model: 'Opus 5.5 (1M context)', detail: 'reasoning_extraction' });
+    expect(JSON.stringify(emitted)).not.toContain('safeguards flagged');
+    expect(markerLines((emitted[emitted.length - 1] as unknown as { result: string }).result)).toHaveLength(1);
+  });
+
+  it('reports a block the stream threw', async () => {
+    const flags: unknown[] = [];
+    async function* source(): AsyncGenerator<SDKMessage> {
+      yield assistantMessage([{ type: 'tool_use', id: 'tu_1', name: 'mcp__incident_evidence__collect', input: {} }]);
+      throw new Error(BLOCK);
+    }
+    await drain(
+      source(),
+      wiring((flag) => flags.push(flag)),
+    );
+    expect(flags).toHaveLength(1);
+  });
+
+  it('reports a block carried by a failed result’s errors', async () => {
+    const flags: unknown[] = [];
+    async function* source(): AsyncGenerator<SDKMessage> {
+      yield resultMessage({ subtype: 'error_during_execution', is_error: true, result: '', errors: [BLOCK] });
+    }
+    await drain(
+      source(),
+      wiring((flag) => flags.push(flag)),
+    );
+    expect(flags).toHaveLength(1);
+  });
+
+  it('does not report a conclusion that only quotes the error', async () => {
+    const flags: unknown[] = [];
+    async function* source(): AsyncGenerator<SDKMessage> {
+      yield assistantMessage([{ type: 'text', text: `The log shows this line:\n${BLOCK}` }]);
+      yield resultMessage();
+    }
+    await drain(
+      source(),
+      wiring((flag) => flags.push(flag)),
+    );
+    expect(flags).toHaveLength(0);
+  });
+});
+
+describe('incident stream: the block stops the attempt where it is seen (review round 6, astra P1)', () => {
+  const BLOCK =
+    "API Error: Opus 5.5 (1M context)'s safeguards flagged this message (https://www.anthropic.com/legal/aup).\n" +
+    'Details: `[reasoning_extraction]`\nRequest ID: req_r6';
+
+  it('reports the halt before pulling anything after the block, and stops consuming the source', async () => {
+    const order: string[] = [];
+    const registry = registryWith();
+    async function* source(): AsyncGenerator<SDKMessage> {
+      yield assistantMessage([{ type: 'text', text: BLOCK }]);
+      order.push('pulled-after-block');
+      yield assistantMessage([{ type: 'tool_use', id: 'tu_9', name: 'mcp__incident_evidence__collect', input: {} }]);
+      yield resultMessage();
+    }
+    const out: SDKMessage[] = [];
+    for await (const message of screenIncidentStream(source(), {
+      request: REQUEST,
+      verifiedEvidence: () => registry.verifiedAt(NOW),
+      sourceCaveat: () => registry.sourceCaveat(),
+      observe: () => ({ budgetExpired: false, aborted: false }),
+      identity: () => ({ sessionId: 'sdk-session', model: 'claude-fable-5-1' }),
+      uuid: () => 'uuid-fixed',
+      onSafeguardFlag: () => order.push('halted'),
+    } as Parameters<typeof screenIncidentStream>[1])) {
+      out.push(message);
+    }
+    expect(order).toEqual(['halted']);
+    expect(JSON.stringify(out)).not.toContain('tu_9');
+    expect(markerLines((out[out.length - 1] as unknown as { result: string }).result)).toHaveLength(1);
+  });
+});

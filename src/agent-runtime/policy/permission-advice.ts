@@ -15,6 +15,7 @@
  * person does; a `deny` only makes the answer path ask them twice.
  */
 
+import type { SafeguardFlagInfo } from '@soma/common/safeguard';
 import type { PermissionAdvice } from 'somalib/permission/shared-store';
 import type { SafetyClassifier } from './safety-classifier';
 
@@ -107,6 +108,11 @@ export interface ResolvePermissionAdviceArgs {
   timeoutMs?: number;
   /** The turn's abort: ends the wait and the guardian call at once. */
   signal?: AbortSignal;
+  /**
+   * Anthropic's safeguards blocked the guardian call (#904): the caller halts
+   * the session — only an admin may let it go on. The prompt gets no advice.
+   */
+  onSafeguardFlag?: (flag: SafeguardFlagInfo) => void;
 }
 
 /**
@@ -150,7 +156,17 @@ export async function resolvePermissionAdvice(args: ResolvePermissionAdviceArgs)
         user: args.user,
         model: args.model,
       })
-      .then((v) => v.advice ?? null)
+      .then((v) => {
+        if (v.safeguardFlag) {
+          try {
+            args.onSafeguardFlag?.(v.safeguardFlag);
+          } catch {
+            // The halt port logs its own failure; the prompt still gets no advice.
+          }
+          return null;
+        }
+        return v.advice ?? null;
+      })
       .catch(() => null);
     return await Promise.race([verdict, timeout]);
   } finally {

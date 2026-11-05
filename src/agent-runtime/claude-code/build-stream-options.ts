@@ -22,6 +22,7 @@
  */
 
 import type { HookInput, HookJSONOutput, Options } from '@anthropic-ai/claude-agent-sdk';
+import { type SafeguardFlagInfo, safeguardFlagOf } from '@soma/common/safeguard';
 import * as fs from 'fs';
 import * as path from 'path';
 import { isSdkEffortLevel } from 'soma-lib';
@@ -58,7 +59,7 @@ import { type ExecutionContext, executionContextFromSlack } from '../execution-c
 import { createNativeWriteCheck } from '../policy/native-write-boundary';
 import { permissionAdviceBoard } from '../policy/permission-advice';
 import { checkPlanPendingCall } from '../policy/plan-pending-guard';
-import type { SafetyClassifier } from '../policy/safety-classifier';
+import type { SafetyClassifier, SafetyVerdict } from '../policy/safety-classifier';
 import {
   evaluateToolPolicy,
   INCIDENT_TOOL_POLICY_MATCHERS,
@@ -155,6 +156,13 @@ export interface BuildStreamOptionsDeps {
    * the old "dangerous → ask the human" behaviour.
    */
   safetyClassifier?: SafetyClassifier;
+  /**
+   * Anthropic's safeguards blocked the guardian call about this session's tool
+   * call (#904): halt the session — lock it, stop the running turn, post the
+   * "세이프가드 에러" notice with the admin button. The hook denies the call and
+   * stops the turn itself as well; this is where the lock is made durable.
+   */
+  onSafeguardFlag?: (sessionKey: string, flag: SafeguardFlagInfo) => void;
   /**
    * Operator config for the incident evidence collector (`rules/config.md` owns
    * the getter's name; this dep only needs the value). Consulted **only** on the
@@ -422,11 +430,49 @@ export async function buildStreamOptions(
                   // The SDK cancelling this hook (the turn stopped) stops the guardian call too.
                   ...(hookOptions?.signal ? { signal: hookOptions.signal } : {}),
                 })
-                .catch((err) => ({
-                  verdict: 'ask' as const,
-                  reason: `classifier threw (fail-closed): ${err instanceof Error ? err.message : String(err)}`,
-                }))
-            : { verdict: 'ask' as const, reason: 'no classifier wired (fail-closed)' };
+                .catch((err): SafetyVerdict => {
+                  const blocked = safeguardFlagOf(err);
+                  return {
+                    verdict: 'ask' as const,
+                    reason: `classifier threw (fail-closed): ${err instanceof Error ? err.message : String(err)}`,
+                    ...(blocked ? { safeguardFlag: blocked } : {}),
+                  };
+                })
+            : ({ verdict: 'ask' as const, reason: 'no classifier wired (fail-closed)' } satisfies SafetyVerdict);
+          // Anthropic's safeguards blocked the guardian (#904): the session cannot go on, and an `ask` here
+          // would let the requester approve it. Deny the call, halt the session, stop the turn — only an
+          // admin may retry (review R5, astra P1).
+          if (verdict.safeguardFlag) {
+            const flag = verdict.safeguardFlag;
+            logger.warn('Guardian blocked by Anthropic safeguards — halting the session', {
+              tool: toolName,
+              user: policyUser,
+              sessionKey: hookSessionKey,
+              ...flag,
+            });
+            if (deps.onSafeguardFlag) {
+              try {
+                deps.onSafeguardFlag(hookSessionKey, flag);
+              } catch (err) {
+                logger.error('Safeguard halt from the guardian failed', {
+                  sessionKey: hookSessionKey,
+                  error: err instanceof Error ? err.message : String(err),
+                });
+              }
+            }
+            // Fail closed without the halt port too: the live session is locked in memory.
+            if (session && !session.safeguardHalt) session.safeguardHalt = { atMs: Date.now(), ...flag };
+            if (abortController && !abortController.signal.aborted) abortController.abort('safeguard');
+            return {
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: 'deny',
+                permissionDecisionReason:
+                  '🛡️ 세이프가드 에러 — Anthropic safeguards blocked the permission check for this call. ' +
+                  'The session is halted; only an admin may retry.',
+              },
+            };
+          }
           // The guardian's advice for the person, when the call reaches one (SSOT 2026-11-02 T2).
           const advice: PermissionAdvice | null = ('advice' in verdict && verdict.advice) || null;
           if (verdict.verdict === 'allow') {

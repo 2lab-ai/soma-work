@@ -8,8 +8,8 @@
 import { Logger } from '../logger.js';
 import {
   buildThreadPermalink,
-  getCategoryEmoji,
-  getCategoryLabel,
+  getTurnEventEmoji,
+  getTurnEventLabel,
   type NotificationChannel,
   type TurnCompletionEvent,
 } from '../turn-notifier.js';
@@ -46,8 +46,8 @@ export class TelegramChannel implements NotificationChannel {
     const chatId = settings?.notification?.telegramChatId;
     if (!chatId) return;
 
-    const emoji = getCategoryEmoji(event.category);
-    const label = getCategoryLabel(event.category);
+    const emoji = getTurnEventEmoji(event);
+    const label = getTurnEventLabel(event);
     const title = event.sessionTitle || 'Session';
     const permalink = buildThreadPermalink(event.channel, event.threadTs);
     const text = permalink

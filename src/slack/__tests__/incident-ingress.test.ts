@@ -693,3 +693,34 @@ describe('adapter provider wiring', () => {
     expect(mockMessageHandler).not.toHaveBeenCalled();
   });
 });
+
+// #904 review round 8 (grok-elon P1): a thread locked by Anthropic's safeguards
+// refuses the attempt BEFORE the handover — never burned, never left owning
+// the thread unfinished.
+describe('incident ingress — safeguards-halted thread', () => {
+  it('denies the attempt and dispatches nothing', async () => {
+    const { eventHandlers, mockDeps, mockMessageHandler } = await setupEnabledRouter();
+    (mockDeps.claudeHandler as any).getSessionRegistry = () => ({
+      getSafeguardHalt: (channel: string, threadTs?: string) =>
+        channel === 'C0EAGLE123' && threadTs === PARENT_TS ? { atMs: 1 } : undefined,
+    });
+
+    await eventHandlers.app_mention({ event: buildIncidentEvent(), body: { team_id: TRUSTED.teamId }, say });
+
+    expect(mockMessageHandler).not.toHaveBeenCalled();
+  });
+
+  it('the same attempt is admitted once the admin has unlocked (it was not remembered)', async () => {
+    const { eventHandlers, mockDeps, mockMessageHandler } = await setupEnabledRouter();
+    let halted = true;
+    (mockDeps.claudeHandler as any).getSessionRegistry = () => ({
+      getSafeguardHalt: () => (halted ? { atMs: 1 } : undefined),
+    });
+
+    await eventHandlers.app_mention({ event: buildIncidentEvent(), body: { team_id: TRUSTED.teamId }, say });
+    halted = false;
+    await eventHandlers.app_mention({ event: buildIncidentEvent(), body: { team_id: TRUSTED.teamId }, say });
+
+    expect(mockMessageHandler).toHaveBeenCalledTimes(1);
+  });
+});

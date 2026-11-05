@@ -18,6 +18,7 @@ import {
   textIndicatesRetryableRateLimit,
   textIndicatesUsageLimit,
 } from '@soma/common/rate-limit';
+import type { SafeguardFlagInfo } from '@soma/common/safeguard';
 import { consumePendingRewind, resetChainTracking, trackChainPoint } from '@soma/slack/context-anchor';
 import { adoptSdkSessionId } from '@soma/slack/session-usage-math';
 import * as fs from 'fs';
@@ -85,6 +86,7 @@ import {
 import { withBundledPlugins } from './plugin/bundled';
 import type { SdkPluginPath } from './plugin/types';
 import { getAvailablePersonas, PromptBuilder } from './prompt-builder';
+import { haltSessionOnSafeguardFlag, type SafeguardHaltPorts } from './safeguard-external-halt';
 import {
   type CrashRecoveredSession,
   type NoteLinksMode,
@@ -531,6 +533,8 @@ export class ClaudeHandler implements TurnSteeringPort {
         model: this.sessionRegistry.getSessionByKey(req.scope)?.model,
         classifier: this.getSafetyClassifier(),
         ...(req.signal ? { signal: req.signal } : {}),
+        onSafeguardFlag: (flag) =>
+          this.reportSafeguardFlag(req.scope, flag, { source: 'guardian', stopRunningTurn: true }),
       }),
     );
   }
@@ -546,6 +550,38 @@ export class ClaudeHandler implements TurnSteeringPort {
   /** Register who asks the admins for an environment skill step 6b denied. Called once during bootstrap. */
   setEnvSkillPermissionRequester(requester: (denial: EnvSkillDenial) => Promise<void>): void {
     this.envSkillPermissionRequester = requester;
+  }
+
+  /** Slack side of a safeguards halt seen outside the turn's stream (#904) — wired by `SlackHandler`. */
+  private safeguardHaltPorts?: SafeguardHaltPorts;
+
+  setSafeguardHaltPorts(ports: SafeguardHaltPorts): void {
+    this.safeguardHaltPorts = ports;
+  }
+
+  /**
+   * Anthropic's safeguards blocked a Claude call made for this session outside
+   * its turn's stream — the permission guardian, or an incident attempt (#904,
+   * review R5). Halt the session: only an admin may let it go on.
+   */
+  reportSafeguardFlag(
+    sessionKey: string,
+    flag: SafeguardFlagInfo,
+    opts: { source: 'guardian' | 'incident' | 'summary'; stopRunningTurn: boolean },
+  ): void {
+    haltSessionOnSafeguardFlag(
+      {
+        getSessionByKey: (key) => this.sessionRegistry.getSessionByKey(key),
+        haltSafeguardByKey: (key, halt) => this.sessionRegistry.haltSafeguardByKey(key, halt),
+        saveSessions: () => this.sessionRegistry.saveSessions(),
+        broadcastSessionUpdate: () => this.sessionRegistry.broadcastSessionUpdate(),
+        ports: this.safeguardHaltPorts,
+        logger: this.logger,
+      },
+      sessionKey,
+      flag,
+      opts,
+    );
   }
 
   /**
@@ -1274,6 +1310,8 @@ export class ClaudeHandler implements TurnSteeringPort {
           getEnvSkillRegistry: () => envSkillRegistry(this.mcpManager.getPluginManager()),
           onEnvSkillDenied: this.envSkillPermissionRequester,
           safetyClassifier: this.getSafetyClassifier(),
+          onSafeguardFlag: (key, flag) =>
+            this.reportSafeguardFlag(key, flag, { source: 'guardian', stopRunningTurn: true }),
           // Consulted only on the incident branch of the builder; passing them
           // unconditionally would be harmless, but keeping them absent makes the
           // ordinary path provably unchanged.
@@ -1773,6 +1811,13 @@ export class ClaudeHandler implements TurnSteeringPort {
           sessionId: session.sessionId ?? `incident-${request.attempt_id}`,
           model: session.model,
         }),
+        // Anthropic's safeguards blocked the attempt (#904): the host's conclusion still goes out (the
+        // attempt has ended), and the session is halted so no further attempt runs without an admin.
+        onSafeguardFlag: (flag) =>
+          this.reportSafeguardFlag(this.sessionRegistry.getSessionKey(session.channelId, session.threadTs), flag, {
+            source: 'incident',
+            stopRunningTurn: false,
+          }),
         onStreamError: (error) => {
           // The message can carry hosts, stderr and auth detail; it is logged
           // here, and the thread gets the host's terminal marker instead.

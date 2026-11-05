@@ -5,6 +5,7 @@ import type { CompletionMessageTracker } from './completion-message-tracker';
 import { ContextWindowManager, type SessionUsage } from './context-window-manager';
 import type { FollowupQueueView } from './followup-queue-blocks';
 import type { RequestCoordinator } from './request-coordinator';
+import { SAFEGUARD_ERROR_LABEL } from './safeguard';
 import type { SlackApiHelper, ThreadPostEvent } from './slack-api-helper';
 import {
   type BeginPostOutcome,
@@ -65,6 +66,8 @@ export interface ActionPanelState {
 
 export interface ConversationSession {
   sessionId?: string;
+  /** Anthropic safeguards lock (`./safeguard`) — the status stays "세이프가드 에러" while set. */
+  safeguardHalt?: import('@soma/common/safeguard').SafeguardHalt;
   channelId: string;
   threadTs?: string;
   threadRootTs?: string;
@@ -580,7 +583,11 @@ export class ThreadSurface {
     // question to answer.
     hasPendingChoice = hasPendingChoice && session.actionPanel?.waitingForChoice !== false;
     let agentPhase: string;
-    if (hasPendingChoice) {
+    if (session.safeguardHalt) {
+      // A safeguards-halted turn ends through the handled-failure finish path:
+      // its status stays the halt's, never "사용자 액션 대기" (nothing runs).
+      agentPhase = SAFEGUARD_ERROR_LABEL;
+    } else if (hasPendingChoice) {
       agentPhase = '입력 대기';
     } else if (endTurnInfo.reason === 'max_tokens') {
       agentPhase = '토큰 한도 도달';

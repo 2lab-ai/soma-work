@@ -54,7 +54,12 @@ export type RequestAbortReason =
   // auto-compact — the running turn crossed the auto-compact threshold: it is
   // stopped so a `/compact` turn can run before the context hits the hard
   // limit, and the work continues after it. Quiet; not a stop.
-  | 'auto-compact';
+  | 'auto-compact'
+  // safeguard — Anthropic's safeguards blocked the turn: the executor stops
+  // the query the moment it sees the block (background agents included) and
+  // halts the session (`../safeguard`). Quiet: the halt rail posts the one
+  // "세이프가드 에러" notice; the abort itself is never surfaced.
+  | 'safeguard';
 
 /**
  * The abort reasons that mean "this session is being STOPPED", as opposed to

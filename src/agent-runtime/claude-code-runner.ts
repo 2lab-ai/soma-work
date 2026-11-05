@@ -11,6 +11,7 @@
  */
 
 import { type Options, query } from '@anthropic-ai/claude-agent-sdk';
+import { parseSafeguardFlag, safeguardFlagOf } from '@soma/common/safeguard';
 import { isSdkEffortLevel } from 'soma-lib';
 import type { AgentRunOptions } from './agent-runner';
 import { createTrackedClaudeProcessSpawner } from './claude-child-process-registry';
@@ -66,23 +67,52 @@ export function toSdkOptions(opts: AgentRunOptions): Options {
 export async function runOneShotTextClaudeCode(prompt: string, opts: AgentRunOptions): Promise<string> {
   const options = toSdkOptions(opts);
   let assistantText = '';
+  let resultErrors: string[] = [];
+  /**
+   * An Anthropic safeguards block (#904), seen in one assistant message on its
+   * own — never hidden behind text an earlier message wrote (review R6, astra
+   * P1). The query stops at it, and it is thrown: every caller (dispatch
+   * classifier, permission guardian, goal eval) halts the session on it.
+   */
+  let blocked: string | undefined;
   try {
     for await (const message of query({ prompt, options })) {
       if (message.type === 'assistant' && message.message?.content) {
+        let messageText = '';
         for (const block of message.message.content) {
           if (block.type === 'text') {
-            assistantText += block.text;
+            messageText += block.text;
           }
         }
+        if (parseSafeguardFlag(messageText)) {
+          blocked = messageText;
+          break; // stop the query at the block
+        }
+        assistantText += messageText;
+      } else if (message.type === 'result') {
+        const errors = (message as { errors?: unknown }).errors;
+        if (Array.isArray(errors)) resultErrors = errors.filter((e): e is string => typeof e === 'string');
       }
     }
   } catch (error) {
+    // A thrown safeguards block outranks any text collected before it.
+    if (!blocked && safeguardFlagOf(error)) throw error;
     // Resilience (preserved from the former dispatchOneShot inline loop): if the
     // SDK child died (e.g. SIGTERM / exit 143) AFTER emitting usable assistant
     // text, the response is effectively complete — return it. Only rethrow when
     // nothing was collected. Callers still do their own parse/validation.
-    if (assistantText.trim()) return assistantText;
-    throw error;
+    if (!blocked) {
+      if (assistantText.trim()) return assistantText;
+      throw error;
+    }
+  }
+  if (blocked) throw new Error(blocked);
+  // An Anthropic safeguards block delivered in the result's errors[] is the
+  // answer whatever text came before it: surface it as the error it is, so
+  // the caller locks the session instead of reading the partial text.
+  if (resultErrors.length > 0) {
+    const joined = resultErrors.join('\n');
+    if (parseSafeguardFlag(joined, { source: 'error' })) throw new Error(joined);
   }
   return assistantText;
 }
