@@ -61,20 +61,36 @@ function openTaskLines(ledger: TaskLedger | undefined): string[] {
   );
 }
 
+/** The task id a gap line opens with (`T<n> [status] text`); the "… and N more" line has none. */
+const GAP_LINE_TASK_ID = /^(T\d+) \[/;
+
 /**
- * The recorded gap is the gate's, and the open tasks are no longer the ones it
- * named: the model completed or removed some. The loop must judge again rather
- * than reuse that gap (a turn cut short, or a kick, reuses the last gap) —
- * otherwise a goal whose tasks are now all done would stay open on a stale list.
+ * The recorded gap is the gate's, and every task it named is now completed or
+ * off the list — the one change that can let the goal complete. The loop must
+ * judge again rather than reuse that gap (a turn cut short, or a kick, reuses
+ * the last gap), or a goal whose tasks are all done would stay open on a stale
+ * list. Anything less (a status flip, one task of several closed) keeps the
+ * reuse: an evaluation over a turn that left no text is the one the reuse
+ * exists to avoid (2026-11-02 — the evaluator called the silence "the same
+ * failure" and stopped the goal).
  */
-export function taskGateGapMoved(
+export function taskGateGapClosed(
   goal: { lastEvalReason?: string; lastEvalRemaining?: string[] },
   ledger: TaskLedger | undefined,
 ): boolean {
   if (!goal.lastEvalReason?.startsWith(TASK_GATE_REASON_START)) return false;
-  const now = openTaskLines(ledger);
-  const before = goal.lastEvalRemaining ?? [];
-  return now.length !== before.length || now.some((line, i) => line !== before[i]);
+  const named = (goal.lastEvalRemaining ?? [])
+    .map((line) => GAP_LINE_TASK_ID.exec(line)?.[1])
+    .filter((id): id is string => !!id);
+  if (!named.length) return false;
+  const open = new Set(
+    ledger
+      ? ledgerTasks(ledger)
+          .current.filter((t) => t.status !== 'completed')
+          .map((t) => t.id)
+      : [],
+  );
+  return named.every((id) => !open.has(id));
 }
 
 /**
