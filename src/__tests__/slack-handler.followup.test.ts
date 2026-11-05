@@ -3004,6 +3004,98 @@ describe('SlackHandler — follow-up queue host', () => {
     });
 
     /**
+     * #956 (team-host dev, 2026-11-05 07:10–07:34Z): the dispatch slot is taken
+     * the moment a turn is dispatched, but the turn's input channel exists only
+     * once its SDK query starts — 66 s later that day (session setup, prompt
+     * build). A follow-up sent in that gap found the slot busy, was refused by
+     * the channel that did not exist yet, and waited 23 minutes for the turn to
+     * end while the panel said "the input channel refused the message".
+     */
+    describe('a follow-up the turn refused before it opened its input', () => {
+      /** A turn whose SDK query has not started: no input channel, slot held. */
+      function turnStillSettingUp(): { epoch: () => number | undefined; release: () => Promise<void> } {
+        const gate = deferred<any>();
+        let turnEpoch: number | undefined;
+        createAgentSession.mockImplementationOnce((_result: any, _say: any, opts: any) => {
+          turnEpoch = opts?.turnEpoch;
+          return {
+            startWithContinuation: vi.fn(() => gate.promise),
+            getLastTurnSucceeded: () => true,
+            getRetryAfterMs: () => undefined,
+          };
+        });
+        const first = handler.handleMessage(message({ ts: '222.333', text: '첫 지시' }), say());
+        return {
+          epoch: () => turnEpoch,
+          release: async () => {
+            gate.resolve({ hasPendingChoice: false });
+            await first;
+          },
+        };
+      }
+
+      function reachModel(turnEpoch: number | undefined): void {
+        handlerAny.streamExecutor?.deps?.onTurnReachedModel?.({ sessionKey: SESSION_KEY, turnEpoch });
+      }
+
+      it('is pushed into that turn the moment it reaches the model', async () => {
+        const steerTurn = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+        claudeHandler.steerTurn = steerTurn;
+        const turn = turnStillSettingUp();
+        await tick();
+        expect(turn.epoch()).toBeDefined();
+
+        await handler.handleMessage(message({ ts: '333.444', text: '팀 인원수랑 권한도 넣어줘' }), say());
+        expect(items()[0].state).toBe('queued');
+
+        reachModel(turn.epoch());
+        for (let i = 0; i < 4; i++) await tick();
+
+        expect(steerTurn).toHaveBeenCalledTimes(2);
+        expect(steerTurn.mock.calls[1][0]).toBe(SESSION_KEY);
+        expect(steerTurn.mock.calls[1][1]).toMatchObject({ text: '팀 인원수랑 권한도 넣어줘' });
+        expect(items()[0].state).toBe('steered');
+        expect(items()[0].stateReason).not.toBe('the input channel refused the message');
+        await turn.release();
+      });
+
+      it('is never pushed into a different run — only the one that refused it', async () => {
+        const steerTurn = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+        claudeHandler.steerTurn = steerTurn;
+        const turn = turnStillSettingUp();
+        await tick();
+        const epoch = turn.epoch();
+        expect(epoch).toBeDefined();
+
+        await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+        reachModel((epoch as number) + 1);
+        for (let i = 0; i < 4; i++) await tick();
+
+        expect(steerTurn).toHaveBeenCalledTimes(1);
+        expect(items()[0].state).toBe('queued');
+        await turn.release();
+      });
+
+      it('stays queued for the drain when the opened turn refuses it again', async () => {
+        const steerTurn = vi.fn().mockReturnValue(false);
+        claudeHandler.steerTurn = steerTurn;
+        const turn = turnStillSettingUp();
+        await tick();
+
+        await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+        reachModel(turn.epoch());
+        for (let i = 0; i < 4; i++) await tick();
+
+        expect(steerTurn).toHaveBeenCalledTimes(2);
+        expect(items()[0].state).toBe('queued');
+        // The turn's end runs it, exactly as before.
+        await turn.release();
+        for (let i = 0; i < 4; i++) await tick();
+        expect(items()[0].state).toBe('resolved');
+      });
+    });
+
+    /**
      * #233: the FIRST turn of a session started by a channel @mention opens its
      * slot under the ROOT key, and the bot then migrates into its work thread.
      * The reply the user types there is enqueued under the WORK key, so the row
