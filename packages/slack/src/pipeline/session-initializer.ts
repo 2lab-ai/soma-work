@@ -449,6 +449,15 @@ export class SessionInitializer {
       ? this.deps.claudeHandler.createSession(user, userName, channel, threadTs, event.modelOverride)
       : existingSession;
 
+    // A task whose root is the host's thread header (dashboard "New task"): the session is born
+    // bot-initiated on it — the thread a Slack-started task gets from createBotInitiatedThread —
+    // so the surface is that root, updated in place, not a reply re-posted at the thread's tail.
+    const onHeaderRoot = isNewSession && event.botThreadRoot === true && thread_ts !== undefined;
+    if (onHeaderRoot) {
+      session.threadModel = 'bot-initiated';
+      session.threadRootTs = threadTs;
+    }
+
     // Incident ownership is stamped BEFORE anything can query the model, so
     // the restriction is in place for the session's very first turn. Only the
     // ingress can supply `routeContext.incidentRequest` (it is internal and
@@ -533,7 +542,11 @@ export class SessionInitializer {
         // thread the user started — essential for session review. Undefined means
         // the viewer is not listening; the conversation viewer is served by the same
         // web server, so there is no live link to post instead.
-        const dashboardUrl = ThreadHeaderBuilder.resolveDashboardSessionUrl(session.ownerId || user, sessionKey);
+        // A header root shows the link in its `dashboardLink` field once the surface first renders it
+        // with the session key — the same as a Slack-started task's header root.
+        const dashboardUrl = onHeaderRoot
+          ? undefined
+          : ThreadHeaderBuilder.resolveDashboardSessionUrl(session.ownerId || user, sessionKey);
         if (dashboardUrl) {
           const linkResult = await this.deps.slackApi.postMessage(
             channel,
@@ -909,6 +922,11 @@ export class SessionInitializer {
         if (migrated) {
           return migrated;
         }
+      } else if (onHeaderRoot) {
+        // Already in its header thread: drop the init clutter (dispatch status) the migration
+        // leaves behind in the source thread, so the thread reads as a Slack-started task's.
+        await this.deleteInitClutter(session, channel);
+        session.sourceThreadCleanupTs = undefined;
       }
     }
 
@@ -1532,16 +1550,8 @@ export class SessionInitializer {
     }
 
     // 1. Clean up only the init clutter we posted (dispatch status, conversation-history link).
-    //    Deleting all bot-authored messages here would also wipe prior model replies
-    //    from an existing thread (#516). The session object is the ORIGINAL session,
-    //    captured above; its sourceThreadCleanupTs holds exactly the ts to remove.
-    for (const cleanupTs of session.sourceThreadCleanupTs || []) {
-      try {
-        await this.deps.slackApi.deleteMessage(channel, cleanupTs);
-      } catch (error) {
-        this.logger.debug('Failed to delete source-thread cleanup message', { channel, cleanupTs, error });
-      }
-    }
+    //    The session object is the ORIGINAL session, captured above.
+    await this.deleteInitClutter(session, channel);
 
     // 2. Unified redirect — same UX whether from channel or thread.
     // Previously, thread-originating mentions got a rich retention card (📋) while
@@ -1605,6 +1615,21 @@ export class SessionInitializer {
       workingDirectory,
       abortController,
     };
+  }
+
+  /**
+   * Delete only the init clutter this initializer posted (dispatch status, work-log link) —
+   * `sourceThreadCleanupTs` holds exactly those ts. Deleting all bot-authored messages would also
+   * wipe prior model replies from an existing thread (#516). A failed delete is left in place.
+   */
+  private async deleteInitClutter(session: ConversationSession, channel: string): Promise<void> {
+    for (const cleanupTs of session.sourceThreadCleanupTs || []) {
+      try {
+        await this.deps.slackApi.deleteMessage(channel, cleanupTs);
+      } catch (error) {
+        this.logger.debug('Failed to delete source-thread cleanup message', { channel, cleanupTs, error });
+      }
+    }
   }
 
   private async postMigratedContextSummary(
