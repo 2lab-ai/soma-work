@@ -59,7 +59,7 @@ import {
   shouldRunGoalIdleDriver,
 } from './goal-completion-evaluator';
 import { GOAL_CONTINUATION_TEXT_PREFIX, GOAL_SUMMARY_PERSIST_MAX } from './goal-continuation';
-import { gateGoalVerdictOnTasks, goalTaskListLines } from './goal-task-gate';
+import { gateGoalVerdictOnTasks, goalTaskListLines, taskGateGapMoved } from './goal-task-gate';
 
 export { GOAL_SUMMARY_PERSIST_MAX };
 
@@ -433,7 +433,13 @@ export class GoalLoopController {
     const hasGap = !!activeGoal.lastEvalReason?.trim();
     const noTurnText = workSummaryRaw === '';
     const alreadyJudged = activeGoal.lastEvalSummaryHash === summaryHash;
-    if (hasGap && (noTurnText || (cause === 'kick' && alreadyJudged))) {
+    // A task-gate gap whose open tasks changed since is new evidence, even with
+    // no turn text: judge again (goal-task-gate).
+    if (
+      hasGap &&
+      (noTurnText || (cause === 'kick' && alreadyJudged)) &&
+      !taskGateGapMoved(activeGoal, session.taskLedger)
+    ) {
       // #745 × #788: a turn that left no text may still have done work (files,
       // commands) before it was cut. Its progress is unknown, so the rollback
       // span from the first failure may not reach across it.
@@ -470,8 +476,9 @@ export class GoalLoopController {
     session.systemPrompt = undefined;
     this.persist();
 
-    // The host's own record of the model's task list is evidence the evaluator
-    // can trust (the task gate holds the goal open on it — see goal-task-gate).
+    // The model's latest task list, so a previous gap about open tasks (the
+    // task gate — see goal-task-gate) can be seen closed. The statuses are the
+    // model's own marks: the evaluator is told they are claims, not evidence.
     const taskLines = goalTaskListLines(session.taskLedger);
     const evalUserSummary = [
       'Eval trigger: idle-settle (work turn ended)',
@@ -479,7 +486,12 @@ export class GoalLoopController {
       '## Assistant turn output (latest work turn)',
       workSummaryRaw ? workSummaryRaw.slice(0, 16_000) : '(no assistant text was produced this turn)',
       ...(taskLines.length
-        ? ['', "## Task list (host-tracked: the work model's latest TodoWrite list)", ...taskLines.map((l) => `- ${l}`)]
+        ? [
+            '',
+            "## Task list (the work model's latest TodoWrite list)",
+            "The statuses are the work model's own marks — claims, not evidence. The host itself holds the goal open while any task is open; judge the objective from the evidence above.",
+            ...taskLines.map((l) => `- ${l}`),
+          ]
         : []),
     ].join('\n');
 

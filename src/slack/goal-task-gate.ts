@@ -23,6 +23,9 @@ const TASK_LINE_MAX = 200;
 /** Most tasks listed in the evaluator's evidence and in the gap (the count is always exact). */
 const TASK_LINES_MAX = 30;
 
+/** Opens every gap the gate records — how a persisted gap is known to be the gate's. */
+export const TASK_GATE_REASON_START = 'The evaluator judged the objective met, but the goal is not complete:';
+
 /** How far the latest list is from done, when the gate held the goal open. */
 export interface GoalTaskGateHold {
   open: number;
@@ -32,8 +35,9 @@ export interface GoalTaskGateHold {
 }
 
 function taskLine(t: TaskView): string {
-  const text = t.content.replace(/\s+/g, ' ').trim();
-  const shown = text.length > TASK_LINE_MAX ? `${text.slice(0, TASK_LINE_MAX - 1)}…` : text;
+  // By code point, so the cut never splits a surrogate pair (emoji).
+  const chars = Array.from(t.content.replace(/\s+/g, ' ').trim());
+  const shown = chars.length > TASK_LINE_MAX ? `${chars.slice(0, TASK_LINE_MAX - 1).join('')}…` : chars.join('');
   return `${t.id} [${t.status}] ${shown}`;
 }
 
@@ -46,6 +50,31 @@ function bounded(lines: string[]): string[] {
 export function goalTaskListLines(ledger: TaskLedger | undefined): string[] {
   if (!ledger) return [];
   return bounded(ledgerTasks(ledger).current.map(taskLine));
+}
+
+function openTaskLines(ledger: TaskLedger | undefined): string[] {
+  if (!ledger) return [];
+  return bounded(
+    ledgerTasks(ledger)
+      .current.filter((t) => t.status !== 'completed')
+      .map(taskLine),
+  );
+}
+
+/**
+ * The recorded gap is the gate's, and the open tasks are no longer the ones it
+ * named: the model completed or removed some. The loop must judge again rather
+ * than reuse that gap (a turn cut short, or a kick, reuses the last gap) —
+ * otherwise a goal whose tasks are now all done would stay open on a stale list.
+ */
+export function taskGateGapMoved(
+  goal: { lastEvalReason?: string; lastEvalRemaining?: string[] },
+  ledger: TaskLedger | undefined,
+): boolean {
+  if (!goal.lastEvalReason?.startsWith(TASK_GATE_REASON_START)) return false;
+  const now = openTaskLines(ledger);
+  const before = goal.lastEvalRemaining ?? [];
+  return now.length !== before.length || now.some((line, i) => line !== before[i]);
 }
 
 /**
@@ -61,13 +90,16 @@ export function gateGoalVerdictOnTasks(
   const current = ledgerTasks(ledger).current;
   const open = current.filter((t) => t.status !== 'completed');
   if (!open.length) return { verdict };
-  const remaining = bounded(open.map(taskLine));
+  const remaining = openTaskLines(ledger);
   const reason = [
-    `The evaluator judged the objective met, but the goal is not complete: ${open.length} of ${current.length} tasks on your task list (TodoWrite) are not completed.`,
+    `${TASK_GATE_REASON_START} ${open.length} of ${current.length} tasks on your task list (TodoWrite) are not completed.`,
     'The goal completes only when the evaluator says so AND every task on the list is completed.',
     'Open tasks:',
     ...remaining.map((r) => `- ${r}`),
     'For each open task: finish it and mark it completed, or — if it is no longer part of this goal — remove it from (or update it on) the task list with TodoWrite.',
+    // Kept in the recorded gap, so the next evaluation carries the acceptance forward
+    // and only the task list is left to close.
+    `Evaluator's reason for calling the objective met: ${verdict.reason}`,
   ].join('\n');
   return {
     // No stall fields: the evaluator compared nothing — the host's own list held the goal open.

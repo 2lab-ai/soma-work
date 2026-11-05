@@ -119,7 +119,13 @@ export class TodoDisplayManager {
     }
     const oldTodos = this.todoManager.getTodos(sessionId);
 
-    if (this.todoManager.hasSignificantChange(oldTodos, newTodos)) {
+    // An empty list over an empty memory (a restart or the idle cleanup emptied
+    // it) is a clear like any other: the session's persisted task ledger — which
+    // the update listener owns and the header reads — may still hold the tasks
+    // the model just took off its list, and they would hold the goal open (goal
+    // task gate). `[]` vs `[]` is no change to the memory, so say it is one.
+    const clearsList = newTodos.length === 0 && oldTodos.length === 0;
+    if (clearsList || this.todoManager.hasSignificantChange(oldTodos, newTodos)) {
       this.todoManager.updateTodos(sessionId, newTodos);
 
       if (session) {

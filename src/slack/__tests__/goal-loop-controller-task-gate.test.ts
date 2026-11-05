@@ -176,7 +176,7 @@ describe('goal completion requires every task of the latest list to be completed
     expect(h.notices.some((n) => n.includes('⏹️') || n.includes('⏸️'))).toBe(true);
   });
 
-  it('the evaluator sees the host-tracked task list as evidence', async () => {
+  it('the evaluator sees the task list, captioned as the model’s own claims (not evidence)', async () => {
     const h = makeHarness({ verdict: DONE, ledger: ledgerOf(SIX_TASKS) });
     h.controller.onTurnSettled(SESSION_KEY);
     await h.controller.settled(SESSION_KEY);
@@ -185,6 +185,63 @@ describe('goal completion requires every task of the latest list to be completed
     expect(h.evalPrompts[0]).toContain('Task list');
     expect(h.evalPrompts[0]).toContain('[in_progress] ui-working 자체 디자인 구현');
     expect(h.evalPrompts[0]).toContain('[completed] v0.29.0 npm 퍼블리시 확인');
+    // A [completed] mark is the model's word — it must never read as host evidence (review P1).
+    expect(h.evalPrompts[0]).toContain('claims, not evidence');
+    expect(h.evalPrompts[0]).not.toContain('host-tracked');
+  });
+
+  it('the next evaluation gets the previous acceptance with the task gap (review P2)', async () => {
+    const h = makeHarness({ verdict: DONE, ledger: ledgerOf(SIX_TASKS) });
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    // Second turn: the evaluator's <previous-evaluation> is the recorded gap.
+    h.session.goalLastTurnText = 'marked the tasks done';
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect(h.evalPrompts).toHaveLength(2);
+    expect(h.evalPrompts[1]).toContain('<previous-evaluation>');
+    expect(h.evalPrompts[1]).toContain(DONE.reason);
+  });
+});
+
+describe('a task-gate gap is judged again once its open tasks change (review P2)', () => {
+  it('continuation 10/10 completes the last task but leaves no text → re-judged and completed, no cap question', async () => {
+    const oneLeft: TodoInput[] = [
+      { content: SIX_TASKS[0].content, status: 'completed' },
+      { content: SIX_TASKS[1].content, status: 'in_progress' },
+    ];
+    const h = makeHarness({ verdict: DONE, ledger: ledgerOf(oneLeft), goal: { continuationCount: 9 } });
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.goal.status).toBe('active');
+    expect(h.goal.continuationCount).toBe(10);
+
+    // The continuation turn marks the task done, then is cut short (no text).
+    h.session.taskLedger = applyTodoList(
+      h.session.taskLedger,
+      oneLeft.map((t) => ({ ...t, status: 'completed' as const })),
+      9_000,
+    );
+    h.session.goalLastTurnText = '';
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect(h.evalPrompts).toHaveLength(2);
+    expect(h.goal.status).toBe('complete');
+    expect(h.goal.capDecisionId).toBeUndefined();
+  });
+
+  it('a turn cut short with the same open tasks still reuses the gap (no extra evaluation)', async () => {
+    const h = makeHarness({ verdict: DONE, ledger: ledgerOf(SIX_TASKS) });
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    h.session.goalLastTurnText = '';
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect(h.evalPrompts).toHaveLength(1);
+    expect(h.goal.continuationCount).toBe(2);
   });
 });
 
@@ -207,5 +264,14 @@ describe('gateGoalVerdictOnTasks', () => {
     expect(out.verdict.remaining).toHaveLength(5);
     expect(out.verdict.remaining[0]).toMatch(/^T2 \[in_progress\] ui-working/);
     expect(out.tasks).toEqual({ open: 5, total: 6, evalReason: DONE.reason });
+    expect(out.verdict.reason).toContain(`Evaluator's reason for calling the objective met: ${DONE.reason}`);
+  });
+
+  it('cuts a long task text by code point, never through an emoji', () => {
+    const long = `${'가'.repeat(198)}🚀🚀🚀`;
+    const out = gateGoalVerdictOnTasks(DONE, ledgerOf([{ content: long, status: 'pending' }]));
+    const line = out.verdict.remaining[0];
+    expect(line).toBe(`T1 [pending] ${'가'.repeat(198)}🚀…`);
+    expect(line).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
   });
 });
