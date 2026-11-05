@@ -1187,12 +1187,17 @@ describe('a new repo channel — served page', () => {
 
 // Round 2 — the next task follows a new repo channel from any answer, an answered command's included.
 describe('ntFollowLaunchChannel', () => {
+  let renders = 0;
   function run(state: any, ctx: any, data: any, launch: any) {
     const loads: number[] = [];
+    renders = 0;
     const fns = loadWith<{ ntFollowLaunchChannel(data: any, launch: any): void }>(['ntFollowLaunchChannel'], {
       _ntState: state,
       _ntCtx: ctx,
       ntLoadContext: () => loads.push(1),
+      ntRender: () => {
+        renders += 1;
+      },
     });
     fns.ntFollowLaunchChannel(data, launch);
     return loads.length;
@@ -1210,6 +1215,14 @@ describe('ntFollowLaunchChannel', () => {
     expect(state.channelId).toBe('C_NEW');
     expect(state.channelFromLaunch).toBeUndefined();
     expect(loads).toBe(1);
+  });
+
+  it('a returned channel the composer already offers is taken and repainted at once (no context read)', () => {
+    const state: any = { channelId: 'C_DEFAULT', channelFromLaunch: 'req-9' };
+    const loads = run(state, ctx, { channel: 'C_OLD', channelName: 'old' }, { requestId: 'req-9' });
+    expect(state.channelId).toBe('C_OLD');
+    expect(loads).toBe(0);
+    expect(renders).toBe(1);
   });
 
   it('leaves a channel the admin picked meanwhile; an ordinary launch changes nothing', () => {

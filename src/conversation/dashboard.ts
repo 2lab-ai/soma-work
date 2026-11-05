@@ -22137,14 +22137,19 @@ function ntOnLaunched(data, submitted, launch) {
 // composer offers it (the admin is a member now).
 function ntFollowLaunchChannel(data, launch) {
   if (!data || !data.channelName || !data.channel) return;
+  var moved = false;
   if (_ntState && _ntState.channelFromLaunch === launch.requestId) {
     _ntState.channelId = String(data.channel);
     delete _ntState.channelFromLaunch;
+    moved = true;
   }
   var known = ((_ntCtx && _ntCtx.channels) || []).some(function (c) {
     return c.id === data.channel;
   });
+  // A channel not offered yet comes with the context read again (it repaints); a known one is repainted now, so the
+  // select shows where the next task goes.
   if (!known && typeof ntLoadContext === 'function') ntLoadContext();
+  else if (moved && typeof ntRender === 'function') ntRender();
 }
 
 // What the dialog holds after a launch: a started task starts the next one clean
