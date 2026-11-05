@@ -276,11 +276,9 @@ async function run(browser: Browser, p: Profile) {
   const before = await geometry(page);
   await page.screenshot({ path: path.join(OUT, `${tag}-0-inline-before.png`) });
   // After: the dashboard's own data again (renderPanelComposer, forced) — its queue: 'dock', not the library default.
-  const handed = await page.evaluate(() => {
-    const w = window as any;
-    w.eval('renderPanelComposer(_sessionCache[panelSessionKey], true)');
-    return (document.getElementById('cmd-steer') as any).data?.queue;
-  });
+  // A string expression: the page's top-level lets (_sessionCache, panelSessionKey) are in its global scope.
+  await page.evaluate('renderPanelComposer(_sessionCache[panelSessionKey], true)');
+  const handed = await page.evaluate(() => (document.getElementById('cmd-steer') as any).data?.queue);
   await sleep(700);
   const g = await geometry(page);
   check(handed === 'dock', `${tag}: D1 the dashboard hands the element queue: 'dock' (${handed})`);
@@ -364,7 +362,7 @@ async function run(browser: Browser, p: Profile) {
     if (p.width < 640) {
       // D6: the reader scrolls back; the composer tucks away (rdTuck — what reading does).
       const dockAt = c.dock;
-      await page.evaluate(() => (window as any).eval('rdTuck(true)'));
+      await page.evaluate(() => (window as any).rdTuck(true));
       await sleep(700);
       const t = await page.evaluate((d) => {
         const sr = (document.getElementById('cmd-steer') as any).shadowRoot as ShadowRoot;
@@ -393,7 +391,7 @@ async function run(browser: Browser, p: Profile) {
       await sleep(500);
       const after = await geometry(page);
       check(!after.open, `${tag}: D6 a tap where it was opens no queue`);
-      await page.evaluate(() => (window as any).eval('rdTuck(false)'));
+      await page.evaluate(() => (window as any).rdTuck(false));
       await sleep(600);
       const back = await geometry(page);
       check(back.dockShown, `${tag}: D6 the composer back, the button is back`);
