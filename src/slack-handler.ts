@@ -414,6 +414,12 @@ export class SlackHandler {
   /** #891 — sessions whose goal driver waits for the run that holds its slot (a turn that left no text). */
   private followupSlotHeldGoalSessions?: Set<string>;
   /**
+   * #948 — sessions whose last no-text turn failed and was already resumed once
+   * automatically. A second failure in a row waits for a person instead of
+   * resuming again; any turn that does not fail clears the mark.
+   */
+  private goalErrorResumeSpent?: Set<string>;
+  /**
    * Files downloaded for a message that was STEERED into a running turn, keyed
    * by the uuid it was pushed under (06 §3.2/D2). They must survive until the
    * turn settles that uuid — the model reads them from disk at a later tool
@@ -3204,6 +3210,8 @@ export class SlackHandler {
     // a second time, racing the continuation this fire is about to inject.
     this.followupDeferredGoalSessions?.delete(sessionKey);
     this.followupSlotHeldGoalSessions?.delete(sessionKey);
+    // #948 — a turn that left text made progress: a later failure is a new streak.
+    this.goalErrorResumeSpent?.delete(sessionKey);
     this.goalTurnSettledHandler?.(sessionKey);
   }
 
@@ -6564,6 +6572,20 @@ export class SlackHandler {
     return queue.list(sessionKey).some((item) => SlackHandler.OUTSTANDING_FOLLOWUP_STATES.has(item.state));
   }
 
+  /** #948 — tell the thread why the goal stopped resuming, and how to go on. */
+  private noticeGoalErrorResumeStopped(sessionKey: string): void {
+    const session = this.claudeHandler?.getSessionByKey?.(sessionKey);
+    const threadTs = session?.threadRootTs || session?.threadTs;
+    if (!session?.channelId || !threadTs) return;
+    void this.slackApi
+      ?.postSystemMessage(
+        session.channelId,
+        '⚠️ goal 자동 이어하기를 멈췄습니다 — 자동으로 다시 시작한 턴도 바로 오류로 끝났습니다. 메시지를 보내면 이어갑니다.',
+        { threadTs },
+      )
+      .catch(() => undefined);
+  }
+
   /**
    * Release the deferred driver ONCE, and only when the boundary is actually
    * clear: the last run was safe, nothing is left queued, and the session is
@@ -6581,12 +6603,27 @@ export class SlackHandler {
       const cut =
         report.outcome?.result === 'interrupted' &&
         SlackHandler.GOAL_LAST_WORD_ABORT_REASONS.has(report.outcome.reason ?? '');
+      const failed = report.outcome?.result === 'error';
       if (this.shouldDeferGoalDriver(sessionKey)) {
         (this.followupDeferredGoalSessions ??= new Set<string>()).add(sessionKey);
       } else if (cut) {
         this.logger.info('Goal driver not fired — the turn that left no text was cut by a stop', { sessionKey });
         return;
+      } else if (failed && this.goalErrorResumeSpent?.has(sessionKey)) {
+        // #948 — the automatic resume failed the same way. A turn that fails at
+        // once leaves no text, the resume skips the eval (#788), and nothing
+        // but the goal cap stops the next failure (dev 2026-11-05: 10 SIGKILLs
+        // 9 s apart, three times). The error waits for a person.
+        this.followupDeferredGoalSessions?.delete(sessionKey);
+        this.logger.warn('Goal driver not fired — the automatic resume failed again; waiting for a person', {
+          sessionKey,
+          reason: report.outcome?.result === 'error' ? report.outcome.reason : undefined,
+        });
+        this.noticeGoalErrorResumeStopped(sessionKey);
+        return;
       } else {
+        if (failed) (this.goalErrorResumeSpent ??= new Set<string>()).add(sessionKey);
+        else this.goalErrorResumeSpent?.delete(sessionKey);
         this.followupDeferredGoalSessions?.delete(sessionKey);
         this.logger.info('Goal driver fired — the run that held its slot has settled', { sessionKey });
         this.goalTurnSettledHandler?.(sessionKey);
