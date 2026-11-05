@@ -51,7 +51,8 @@ function layoutsFor(doc, builtins, mode, plan) {
 // status, time), the head's switches, the rows in the layout's order (card.rows), the foot's chips in its order.
 // asks: the card asks the user something now (a permission, a goal decision, the question, a retry's error) —
 // a summary row set to "물을 때만" shows only then.
-var FACE_KEEP = ['id', 'title', 'status', 'statusText', 'bodyMode', 'since', 'elapsedMs', 'lead', 'badge', 'star', 'titles'];
+// attention (SSOT 2026-11-05): the viewer's own NEEDS YOU card — the cue is not a row; every layout keeps it.
+var FACE_KEEP = ['id', 'title', 'status', 'statusText', 'bodyMode', 'since', 'elapsedMs', 'lead', 'badge', 'star', 'titles', 'attention'];
 var FACE_ROW_KEYS = { summary: ['summary'], task: ['task'], links: ['links'], agents: ['agents'], usage: ['tokens', 'costUsd'], arts: ['artifacts', 'artifactsCount'] };
 var FACE_ROW_NAME = { summary: 'summary', task: 'task', links: 'links', agents: 'agents', usage: 'usage', arts: 'artifacts' };
 function faceOf(card, model, face, asks, effort, asked) {
