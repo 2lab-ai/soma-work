@@ -213,6 +213,8 @@ export interface EventRouterProviders {
   createLegacyCommandRouter?: (deps: unknown) => LegacyCommandRouter;
   registerChannel?: (client: any, channel: string) => Promise<unknown>;
   unregisterChannel?: (channel: string) => void;
+  /** A channel name the bot is making right now (ChannelRegistry.isChannelBeingMade): its creation join is skipped. */
+  isChannelBeingMade?: (name: string) => boolean;
   getBaseDirectory?: () => string | undefined;
   downloadSkillUploadFile?: (file: FileDescriptor) => Promise<DownloadFileResult>;
   readCurrentSkillContent?: (userId: string, skillName: string) => string | null;
@@ -239,6 +241,7 @@ let eventRouterProviders: Required<EventRouterProviders> = {
   },
   registerChannel: async () => {},
   unregisterChannel: () => {},
+  isChannelBeingMade: () => false,
   getBaseDirectory: () => undefined,
   downloadSkillUploadFile: async () => ({ ok: false, error: 'Skill upload downloader is not configured.' }),
   readCurrentSkillContent: () => null,
@@ -250,14 +253,6 @@ let eventRouterProviders: Required<EventRouterProviders> = {
   isIncidentRuntimeReady: () => false,
   isIncidentUserAccepted: () => false,
 };
-
-/** How long after its creation a channel's bot join is the creation itself (not a later rejoin). */
-export const CHANNEL_CREATION_JOIN_WINDOW_S = 600;
-
-/** A channel made within the creation window (`created`: Slack's epoch seconds; absent → not fresh). */
-export function isFreshChannel(created: unknown, nowMs: number = Date.now()): boolean {
-  return typeof created === 'number' && nowMs / 1000 - created < CHANNEL_CREATION_JOIN_WINDOW_S;
-}
 
 export function setEventRouterProviders(providers: EventRouterProviders): void {
   eventRouterProviders = {
@@ -1522,11 +1517,11 @@ export class EventRouter {
       if (event.user === botUserId) {
         const channelInfo = await this.deps.slackApi.getChannelInfo(event.channel);
         // A channel the bot made itself (a dashboard task's new repo channel) needs no "set a working directory"
-        // welcome. Slack sends this event on creation too: then the maker registers the channel with its repo once
-        // it has described it — a read here could land before that and erase the mapping. A later rejoin (the bot
-        // removed and invited back) registers as usual.
+        // welcome. Slack sends this event on creation too: while the maker is still at it (its name is marked), the
+        // maker registers the channel with its repo once it has described it — a read here could land before that
+        // and erase the mapping. Any other join (a rejoin after a removal) registers as usual.
         const madeByBot = !!botUserId && channelInfo?.creator === botUserId;
-        if (madeByBot && isFreshChannel(channelInfo?.created)) {
+        if (madeByBot && eventRouterProviders.isChannelBeingMade(String(channelInfo?.name ?? ''))) {
           this.logger.info('Bot created channel — registered by its maker, no welcome', { channel: event.channel });
           return;
         }

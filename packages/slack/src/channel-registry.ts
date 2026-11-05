@@ -210,6 +210,30 @@ export function upsertChannel(input: {
 }
 
 /**
+ * Channel names the bot is making right now (a dashboard task's new repo channel). Slack sends the bot's
+ * `member_joined_channel` on creation too; while the name is here, that join is the maker's to register (it writes
+ * the repo first), and the EventRouter leaves it alone. Any later join registers as usual.
+ */
+const channelsBeingMade = new Map<string, number>();
+
+/** Mark `name` as being made; the returned function unmarks it (call it once the maker is done, either way). */
+export function markChannelBeingMade(name: string): () => void {
+  channelsBeingMade.set(name, (channelsBeingMade.get(name) ?? 0) + 1);
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    const n = (channelsBeingMade.get(name) ?? 1) - 1;
+    if (n > 0) channelsBeingMade.set(name, n);
+    else channelsBeingMade.delete(name);
+  };
+}
+
+export function isChannelBeingMade(name: string): boolean {
+  return channelsBeingMade.has(name);
+}
+
+/**
  * Unregister a channel when bot leaves or is removed.
  */
 export function unregisterChannel(channelId: string): void {

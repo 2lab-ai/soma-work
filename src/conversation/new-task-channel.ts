@@ -45,6 +45,8 @@ export interface RepoChannelDeps {
   invite(channelId: string, userId: string): Promise<void>;
   archive(channelId: string): Promise<void>;
   register(info: { id: string; name: string; purpose: string; isPrivate: boolean }): void;
+  /** Mark a channel name as being made (its creation join is ours to register); returns the unmark. */
+  beginMaking?(name: string): () => void;
 }
 
 export interface RepoChannelResult {
@@ -113,8 +115,9 @@ async function abandon(
   const code = slackErrorCode(error);
   const archived = await discard(made.id, deps, `${step}: ${code || String(error)}`);
   const what = step === 'purpose' ? 'repo를 적지 못해' : '초대하지 못해';
+  // An archived channel keeps its name: a retry needs another one.
   const words = archived
-    ? `#${made.name}에 ${what} 채널을 보관했습니다 — 다시 시도해 주세요`
+    ? `#${made.name}에 ${what} 채널을 보관했습니다 — 보관된 채널이 이 이름을 계속 쓰니 다른 이름으로 다시 시도해 주세요`
     : `#${made.name}에 ${what} 작업을 시작하지 않았습니다 — 채널이 남아 있으니 직접 보관해 주세요`;
   const refusal = refusalFor(code, words);
   // A scope / restriction refusal keeps its own words; the channel's fate is told too.
@@ -166,14 +169,11 @@ async function ensureLocked(
 ): Promise<RepoChannelResult> {
   const { repo, name, isPrivate } = request;
 
-  // 2. A channel the repo already has. A private request never goes to a channel not known to be private.
-  for (const mapped of deps.mappedChannels(repo)) {
-    if (isPrivate && mapped.isPrivate !== true) {
-      throw new NewTaskError(
-        409,
-        `이 repo에는 이미 공개 채널 #${mapped.name}이 있습니다 — 비공개를 끄고 그 채널에 올리거나, 그 채널을 쓰지 않을 거면 repo 연결을 먼저 정리해 주세요`,
-      );
-    }
+  // 2. A channel the repo already has. A private request only ever goes to a channel known to be private; a
+  //    public one in the way is the admin's call (409), never a silent landing.
+  const mappedAll = deps.mappedChannels(repo);
+  const candidates = isPrivate ? mappedAll.filter((c) => c.isPrivate === true) : mappedAll;
+  for (const mapped of candidates) {
     try {
       await deps.invite(mapped.id, userId);
     } catch (error) {
@@ -190,8 +190,30 @@ async function ensureLocked(
     logger.info('New repo channel: the repo already has a channel', { repo, channel: mapped.id, userId });
     return { channelId: mapped.id, channelName: mapped.name, created: false };
   }
+  const inTheWay = isPrivate ? mappedAll.find((c) => c.isPrivate !== true) : undefined;
+  if (inTheWay) {
+    throw new NewTaskError(
+      409,
+      `이 repo에는 이미 공개 채널 #${inTheWay.name}이 있습니다 — 비공개를 끄고 그 채널에 올리거나, 그 채널을 쓰지 않을 거면 repo 연결을 먼저 정리해 주세요`,
+    );
+  }
 
-  // 3. A new channel, described and joined.
+  // 3. A new channel, described and joined. Its name is marked while we make it: Slack's creation join is ours.
+  const done = deps.beginMaking?.(name) ?? (() => undefined);
+  try {
+    return await makeChannel(userId, request, deps, found);
+  } finally {
+    done();
+  }
+}
+
+async function makeChannel(
+  userId: string,
+  request: NewRepoChannelRequest,
+  deps: RepoChannelDeps,
+  found: 'ok' | 'unknown',
+): Promise<RepoChannelResult> {
+  const { repo, name, isPrivate } = request;
   let made: { id: string; name: string };
   try {
     made = await deps.create(name, isPrivate);

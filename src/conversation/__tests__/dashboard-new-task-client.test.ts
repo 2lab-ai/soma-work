@@ -1150,9 +1150,13 @@ describe('a new repo channel — client', () => {
       /비공개 채널을 만들 수 없어요/,
     );
     expect(fns.ntNewChannelProblem(publicOnly, { ...ctx, channelCreate: true, channelCreatePrivate: true })).toBe('');
+    // Round 2 — no longer offered at all: the choice stays and the submit is held, never moved to another channel.
     const notOffered = newState();
     fns.ntReconcile(notOffered, ctx);
-    expect(notOffered.channelId).toBe('C_ALPHA');
+    expect(notOffered.channelId).toBe('__new__');
+    expect(fns.ntNewChannelProblem(notOffered, ctx)).toMatch(/새 채널을 만들 수 없어요/);
+    const body = fns.ntBuildPayload(notOffered, [], 'req-0123456789');
+    expect(body.channelId).toBeUndefined();
   });
 
   it('the toast says whether the channel was made or the repo already had one', () => {
@@ -1178,5 +1182,42 @@ describe('a new repo channel — served page', () => {
     expect(html).toMatch(/id="nt-newch-private-wrap" hidden/);
     // Phones: 16px fields (no iOS zoom), 44px targets.
     expect(html).toMatch(/\.nt-newch-field input \{ height: 44px; font-size: 16px; \}/);
+  });
+});
+
+// Round 2 — the next task follows a new repo channel from any answer, an answered command's included.
+describe('ntFollowLaunchChannel', () => {
+  function run(state: any, ctx: any, data: any, launch: any) {
+    const loads: number[] = [];
+    const fns = loadWith<{ ntFollowLaunchChannel(data: any, launch: any): void }>(['ntFollowLaunchChannel'], {
+      _ntState: state,
+      _ntCtx: ctx,
+      ntLoadContext: () => loads.push(1),
+    });
+    fns.ntFollowLaunchChannel(data, launch);
+    return loads.length;
+  }
+  const ctx = { channels: [{ id: 'C_OLD', name: 'old' }] };
+
+  it('takes the returned channel when the composer still waits for it, and reads the context again', () => {
+    const state: any = { channelId: 'C_OLD', channelFromLaunch: 'req-1' };
+    const loads = run(
+      state,
+      ctx,
+      { channel: 'C_NEW', channelName: 'workspace-new', status: 'answered' },
+      { requestId: 'req-1' },
+    );
+    expect(state.channelId).toBe('C_NEW');
+    expect(state.channelFromLaunch).toBeUndefined();
+    expect(loads).toBe(1);
+  });
+
+  it('leaves a channel the admin picked meanwhile; an ordinary launch changes nothing', () => {
+    const picked: any = { channelId: 'C_OTHER' };
+    run(picked, ctx, { channel: 'C_NEW', channelName: 'workspace-new' }, { requestId: 'req-1' });
+    expect(picked.channelId).toBe('C_OTHER');
+    const usual: any = { channelId: 'C_OLD' };
+    expect(run(usual, ctx, { channel: 'C_OLD' }, { requestId: 'req-2' })).toBe(0);
+    expect(usual.channelId).toBe('C_OLD');
   });
 });
