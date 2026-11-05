@@ -827,6 +827,117 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(goalDriver).toHaveBeenCalledTimes(1);
     });
 
+    /**
+     * #948 — a turn that fails at once (dev 2026-11-05: the CLI SIGKILLed at
+     * spawn) leaves no text, so the resume skips the eval (#788) and the next
+     * continuation fails the same way: 9 s apart, up to the goal cap (10 — or
+     * 1000). One automatic resume per error streak; a second failure waits for
+     * a person.
+     */
+    it('does not hot-loop on a turn that fails at once — one resume, then it waits for a person', async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const injected: Promise<void>[] = [];
+      let fired = 0;
+      handler.setGoalTurnSettledHandler(() => {
+        fired += 1;
+        if (fired > 5) return; // the bug: bounded here so the RED stays finite
+        injected.push(handler.handleMessage(goalContinuation(), say()));
+      });
+      // Every turn fails at once and leaves no text.
+      lastTurnSucceeded = false;
+      startWithContinuation.mockImplementation(async () => {
+        handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, []);
+        return { hasPendingChoice: false };
+      });
+
+      await handler.handleMessage(message(), say());
+      for (let i = 0; i < 10 && injected.length > 0; i++) await Promise.all(injected.splice(0));
+
+      expect(fired).toBe(1);
+      // The person's turn, then the one automatic resume.
+      expect(startWithContinuation).toHaveBeenCalledTimes(2);
+      const notices = postSystemMessage.mock.calls.map((call: any[]) => String(call[1]));
+      expect(notices.some((text: string) => text.includes('자동 이어하기를 멈췄습니다'))).toBe(true);
+    });
+
+    it('a turn that succeeds after the error resume re-arms it — the next failure is resumed once again', async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      const failed = { canDrain: false, outcome: { result: 'error', reason: 'turn ended without success' } };
+      const safe = { canDrain: true, outcome: { result: 'safe' } };
+      const settleNoText = (report: any) => {
+        handlerAny.followupSlotHeldGoalSessions = new Set([SESSION_KEY]);
+        handlerAny.releaseDeferredGoalDriver(SESSION_KEY, report);
+      };
+
+      settleNoText(failed); // resumed once
+      settleNoText(failed); // the resume failed too: held
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+      settleNoText(safe); // a person's turn went through
+      settleNoText(failed); // a new streak: resumed once again
+      expect(goalDriver).toHaveBeenCalledTimes(3);
+    });
+
+    it('a turn that left text clears the mark even when a queued follow-up holds its driver', () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      const failed = { canDrain: false, outcome: { result: 'error', reason: 'turn ended without success' } };
+      const settleNoText = (report: any) => {
+        handlerAny.followupSlotHeldGoalSessions = new Set([SESSION_KEY]);
+        handlerAny.releaseDeferredGoalDriver(SESSION_KEY, report);
+      };
+
+      settleNoText(failed); // the one automatic resume is spent
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+      // A Retry ran and made progress, but a queued follow-up outranks the driver (§3.6).
+      vi.spyOn(handlerAny, 'shouldDeferGoalDriver').mockReturnValueOnce(true);
+      handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['진행했습니다']);
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+      settleNoText(failed); // a new streak: resumed once
+      expect(goalDriver).toHaveBeenCalledTimes(2);
+    });
+
+    it("a person's message re-arms the resume after the goal stopped on a second failure", async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      const failed = { canDrain: false, outcome: { result: 'error', reason: 'turn ended without success' } };
+      const settleNoText = (report: any) => {
+        handlerAny.followupSlotHeldGoalSessions = new Set([SESSION_KEY]);
+        handlerAny.releaseDeferredGoalDriver(SESSION_KEY, report);
+      };
+      settleNoText(failed);
+      settleNoText(failed);
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+
+      // The person's own turn fails at once too: their word re-armed the one resume.
+      lastTurnSucceeded = false;
+      startWithContinuation.mockImplementationOnce(async () => {
+        handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, []);
+        return { hasPendingChoice: false };
+      });
+      await handler.handleMessage(message({ ts: '555.666', text: '다시 해봐' }), say());
+      expect(goalDriver).toHaveBeenCalledTimes(2);
+    });
+
+    it('a watchdog stall counts as a failure — repeated stalls are resumed once', () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      const stalled = { canDrain: false, outcome: { result: 'interrupted', reason: 'stall-timeout' } };
+      const settleNoText = (report: any) => {
+        handlerAny.followupSlotHeldGoalSessions = new Set([SESSION_KEY]);
+        handlerAny.releaseDeferredGoalDriver(SESSION_KEY, report);
+      };
+
+      settleNoText(stalled);
+      settleNoText(stalled);
+      settleNoText(stalled);
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+    });
+
     it('fires once the slot is free whatever the outcome — a handled error is not a strand', async () => {
       registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
       const goalDriver = vi.fn();
