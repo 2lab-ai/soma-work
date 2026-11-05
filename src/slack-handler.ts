@@ -544,6 +544,13 @@ export class SlackHandler {
    */
   private restartCutSessionKeys = new Set<string>();
   /**
+   * Cut sessions `notifyCrashRecovery` resumed with the restart prompt, read
+   * once by `resumeActiveGoals`: the resume turn carries the session, so the
+   * goal loop is not kicked for it (one turn, never two) — it runs when that
+   * turn settles.
+   */
+  private restartResumedSessionKeys = new Set<string>();
+  /**
    * Sessions whose queue holds a row a host-side cut left `uncertain` (a
    * restart, an auto-compact stop) and whose conversation is about to be
    * carried on → why and when. Spent by the session's NEXT dispatch, within
@@ -7446,6 +7453,8 @@ export class SlackHandler {
         '서비스가 재시작되어 이전 작업이 중단되었다. 아래 순서로 작업을 이어가라:\n' +
         // #927 — the restart may have cut the turn after an outside action took effect.
         '0. 외부 작업(push·PR/이슈 생성·코멘트·머지·배포·메시지)을 다시 하기 전에 이미 됐는지 확인하라 (git status, git log, 원격 브랜치, gh pr list --head <branch>, 최근 코멘트). 두 번째 PR·같은 코멘트·같은 메시지·재배포 금지.\n' +
+        // Background work the interruption stopped is picked up, never waited on.
+        '   중단 전에 띄운 백그라운드 작업(서브에이전트·백그라운드 명령·Monitor)은 함께 멈췄고 결과를 보내지 않는다. 멈춘 서브에이전트는 그 agent ID로 SendMessage를 보내 이어 가게 하고, 멈춘 명령은 다시 실행하라. 이미 멈춘 작업을 기다리며 턴을 끝내지 마라.\n' +
         '1. mcp__slack-mcp__get_thread_messages (offset: 0, limit: 50)으로 이 스레드의 전체 대화를 먼저 읽어라.\n' +
         '2. 유저가 마지막으로 요청한 작업이 무엇인지 파악하라.\n' +
         '3. 네가 마지막으로 어디까지 진행했는지 확인하라 (git status, 파일 상태 등).\n' +
@@ -7527,32 +7536,27 @@ export class SlackHandler {
         continue;
       }
 
-      // T1 no-double-resume: a session with an ACTIVE goal is resumed by the
-      // goal loop (`resumeActiveGoals`), which re-enters the ralph loop with
-      // the goal continuation prompt. Skipping the generic auto-resume here
-      // avoids firing two competing turns into the same thread.
-      const liveGoalForRecovery = this.claudeHandler.getSessionByKey?.(session.sessionKey)?.goal;
-      if (liveGoalForRecovery?.status === 'active') {
-        this.logger.info('Skipping generic auto-resume — active goal will be resumed by the goal loop', {
-          channelId: session.channelId,
-          threadTs: session.threadTs,
-        });
-        if (i < recovered.length - 1) {
-          await new Promise((resolve) => setTimeout(resolve, SlackHandler.CRASH_RECOVERY_DELAY_MS));
-        }
-        continue;
-      }
-
       // Auto-resume sessions that were actively working (model mid-execution)
       // IMPORTANT: Fire-and-forget — do NOT await handleMessage.
       // handleMessage triggers Claude SDK streaming which takes minutes.
       // Awaiting would block the loop and prevent other sessions from resuming.
+      //
+      // A cut turn is resumed as itself, active goal or not. The goal loop does
+      // not resume a turn — it judges one: on a `complete` verdict, the cap or a
+      // stall it injects nothing, so a cut turn left to it (and the background
+      // subagents it was waiting on) never ran again although the notice above
+      // said it would (dev 2026-11-05: two subagents killed at 07:32:53Z, the
+      // goal judged complete at 07:33:39Z, the thread silent until a person
+      // wrote at 07:54Z). `resumeActiveGoals` leaves the loop out of this
+      // session; the loop judges when this resume turn settles. One turn.
       if (isWorking) {
         this.logger.info('Auto-resuming working session', {
           channelId: session.channelId,
           threadTs: session.threadTs,
           ownerId: session.ownerId,
+          activeGoal: this.claudeHandler.getSessionByKey?.(session.sessionKey)?.goal?.status === 'active',
         });
+        this.restartResumedSessionKeys.add(session.sessionKey);
         // #351 no-double-resume: this resume supersedes a pending error
         // auto-retry, so drop its marker before resumePendingErrorRetries
         // can re-arm it as a second turn.
@@ -7635,6 +7639,12 @@ export class SlackHandler {
    * gate, so it is forced to `idle` first. Must be called AFTER the goal loop
    * controller is wired (`setGoalTurnSettledHandler`). Returns the count
    * resumed.
+   *
+   * Except a session whose cut turn `notifyCrashRecovery` already resumed
+   * with the restart prompt (`restartResumedSessionKeys`): that turn carries
+   * it and may be running, so it is neither forced idle nor kicked — the loop
+   * judges when it settles. Its stall repair and refund still apply. Must be
+   * called AFTER `notifyCrashRecovery`.
    */
   resumeActiveGoals(): number {
     const handler = this.goalTurnSettledHandler;
@@ -7648,6 +7658,7 @@ export class SlackHandler {
     let retriesClaimed = 0;
     let stallsEnded = 0;
     let refunded = 0;
+    let leftToRestartResume = 0;
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
       // Repair a stranded queue (defense for the eval-complete crash window):
       // if the current goal is genuinely closed (completed) or absent but goals
@@ -7684,8 +7695,17 @@ export class SlackHandler {
         stallsEnded++;
         this.logger.info('Ended a goal stall judged on no turn text — resuming the goal', { sessionKey });
       }
+      // Crash recovery resumed this cut turn with the restart prompt: that turn
+      // carries the session, and it may already be running — never force it
+      // idle, never kick a second turn beside it. The refund below still
+      // applies; the loop judges when the resume turn settles.
+      const resumedByRestart = this.restartResumedSessionKeys.has(sessionKey);
       const panel = session.actionPanel;
-      if (session.activityState === 'waiting' && (panel?.waitingForChoice === true || panel?.pendingQuestion)) {
+      if (
+        !resumedByRestart &&
+        session.activityState === 'waiting' &&
+        (panel?.waitingForChoice === true || panel?.pendingQuestion)
+      ) {
         // Waiting on its user's answer is not a stale turn: no turn has to run
         // for the question to stay open. The answer runs as the user's turn and
         // its idle settle drives the loop. Forcing idle here ran the loop over
@@ -7694,7 +7714,7 @@ export class SlackHandler {
         this.logger.info('Goal resume held after restart — the session is waiting on its question', { sessionKey });
         continue;
       }
-      if (session.activityState !== 'idle') {
+      if (!resumedByRestart && session.activityState !== 'idle') {
         // Recovery: treat a stale persisted working state (or a waiting one
         // with no question left) as idle.
         session.activityState = 'idle';
@@ -7719,6 +7739,13 @@ export class SlackHandler {
           continuationCount: session.goal.continuationCount,
           maxContinuations: session.goal.maxContinuations,
         });
+      }
+      if (resumedByRestart) {
+        leftToRestartResume++;
+        this.logger.info('Goal loop left to the restart resume of the cut turn — it judges when that turn settles', {
+          sessionKey,
+        });
+        continue;
       }
       this.logger.info('Resuming active goal after restart', {
         sessionKey,
@@ -7746,13 +7773,17 @@ export class SlackHandler {
         });
       }
     }
-    // Read once: a later pass (no restart in between) refunds nothing.
+    // Read once: a later pass (no restart in between) refunds nothing and kicks
+    // a session the restart resumed like any other.
     this.restartCutSessionKeys.clear();
+    this.restartResumedSessionKeys.clear();
     if (forcedIdle > 0 || repaired > 0 || retriesClaimed > 0 || stallsEnded > 0 || refunded > 0) {
       this.claudeHandler.saveSessions();
     }
-    if (resumed > 0 || repaired > 0) {
-      this.logger.info(`Resumed ${resumed} active goal(s) after restart (repaired ${repaired} stranded queue(s))`);
+    if (resumed > 0 || repaired > 0 || leftToRestartResume > 0) {
+      this.logger.info(
+        `Resumed ${resumed} active goal(s) after restart (repaired ${repaired} stranded queue(s), ${leftToRestartResume} carried by the resume of their cut turn)`,
+      );
     }
     return resumed;
   }

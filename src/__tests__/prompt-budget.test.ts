@@ -47,7 +47,7 @@ const WORKFLOW_BUDGET: Record<string, number> = {
 const ONE_OFF_BUDGET: Record<string, number> = {
   'dispatch.prompt': 5_800,
   'goal-eval.prompt': 2_500,
-  'restart.prompt': 1_300,
+  'restart.prompt': 1_850,
 };
 
 /** Descriptions the SDK lists on every turn: skills (zworkflow + harness plugins) and commands; subagents. */
