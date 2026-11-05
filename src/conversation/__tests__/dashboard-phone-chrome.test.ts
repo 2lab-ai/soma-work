@@ -590,14 +590,21 @@ describe('T3 — the model picker on the composer’s row, left of Send', () => 
     expect(t.cmd.hasAttribute('data-pick-dock')).toBe(true);
     expect(t.ctl.style.props).toEqual({ '--pd-l': '165px', '--pd-r': '73px', '--pd-t': '98px', '--pd-h': '48px' });
   });
-  it('a wide screen, or a recording in the row: the picker keeps its line above the composer', () => {
+  // SSOT 2026-11-05: "디테일 작업 카드 입력창에 모델 피커 지시 버튼 왼쪽으로" — every screen, not only a phone.
+  it('a wide screen (desktop): the picker sits left of Send too, measured the same way', () => {
     const wide = setup(false);
-    wide.cmd.setAttribute('data-pick-dock', '');
     wide.syncPickerDock();
-    expect(wide.cmd.hasAttribute('data-pick-dock')).toBe(false);
-    const rec = setup(true, false);
-    rec.syncPickerDock();
-    expect(rec.cmd.hasAttribute('data-pick-dock')).toBe(false);
+    expect(wide.cmd.hasAttribute('data-pick-dock')).toBe(true);
+    expect(wide.ctl.style.props).toEqual({ '--pd-l': '165px', '--pd-r': '73px', '--pd-t': '98px', '--pd-h': '48px' });
+    expect(clientFn('syncPickerDock')).not.toContain('isPhone()');
+  });
+  it('a recording in the row (no Send end): the picker keeps its line above the composer', () => {
+    for (const phone of [true, false]) {
+      const rec = setup(phone, false);
+      rec.cmd.setAttribute('data-pick-dock', '');
+      rec.syncPickerDock();
+      expect(rec.cmd.hasAttribute('data-pick-dock')).toBe(false);
+    }
   });
   it('docked, the box lets taps through where it is empty and ends at Send', () => {
     const r = cssRule('.panel-command[data-pick-dock] > .panel-controls');
@@ -605,6 +612,8 @@ describe('T3 — the model picker on the composer’s row, left of Send', () => 
     expect(r).toContain('justify-content: flex-end;');
     expect(r).toContain('pointer-events: none;');
     expect(cssRule('.panel-command[data-pick-dock] > .panel-controls > *')).toContain('pointer-events: auto;');
+    // "이 세션" is the line's label; on the composer's row the picker stands alone (its menu names the session).
+    expect(cssRule('.panel-command[data-pick-dock] > .panel-controls > .pc-scope')).toContain('display: none;');
   });
   it('it follows the composer: its tools, its size, a new card’s composer, the controls’ repaint', () => {
     expect(clientFn('pcComposerSetup')).toContain('requestAnimationFrame(syncPickerDock)');
