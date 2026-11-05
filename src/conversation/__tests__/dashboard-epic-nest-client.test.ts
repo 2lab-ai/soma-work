@@ -18,6 +18,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { viewerScope } from '../__fixtures__/viewer-scope';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -40,6 +41,8 @@ function clientVar(name: string): string {
   return cook(m[1]);
 }
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}, seam = ''): T {
+  // cardOf asks viewerOwns (the NEEDS YOU attention cue, SSOT 2026-11-05): the page's viewer predicates come along.
+  ({ fns, inject } = viewerScope(fns, inject));
   const names = Object.keys(inject);
   const seamName = /^function (\w+)/.exec(seam)?.[1];
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\n${seam}\nreturn { ${[...fns, ...(seamName ? [seamName] : [])].join(', ')} };`;
