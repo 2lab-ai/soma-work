@@ -754,6 +754,43 @@ describe('Deep links — a card the filters hide still opens from its link', () 
   });
 });
 
+describe('카드 열기 — a launched card the filters hide is revealed, then opened', () => {
+  it('ntOpenArrived reveals the launch’s card for this page load and reloads the board', () => {
+    const KEY = 'inst::C2:1793870941.429100';
+    let loads = 0;
+    const m0 = api();
+    const mk = (passes: boolean) =>
+      load<{ ntOpenArrived(l: unknown): boolean; state(): string | null }>(
+        ['resolveDeepLinkKey', 'ntOpenArrived'],
+        [],
+        {
+          _sessionCache: { [KEY]: card({ key: KEY, channelId: 'C2', channelName: 'ops' }) },
+          SELF_INSTANCE_NAME: 'inst',
+          _cardHost: Object.create(null),
+          showArchives: false,
+          showSleeping: true,
+          _revealedKey: null,
+          boardCardPasses: () => passes,
+          boardFilterNow: () => ({ ...m0.boardFilterDefault(), channels: ['c:C1'] }),
+          _bfQuery: '',
+          loadSessions: () => {
+            loads++;
+          },
+        },
+        ['function state() { return _revealedKey; }'],
+      );
+    const hidden = mk(false);
+    expect(hidden.ntOpenArrived({ sessionKey: 'C2:1793870941.429100', wantOpen: true })).toBe(false);
+    expect(hidden.state()).toBe(KEY);
+    expect(loads).toBe(1);
+    // A card no filter hides and no toggle hides is simply not on this render yet: nothing to reveal.
+    const shown = mk(true);
+    expect(shown.ntOpenArrived({ sessionKey: 'C2:1793870941.429100', wantOpen: true })).toBe(false);
+    expect(shown.state()).toBeNull();
+    expect(loads).toBe(1);
+  });
+});
+
 describe('Wiring — the board draws the filtered view; the tools follow every render', () => {
   it('renderBoard plans the columns from boardFilterView and repaints the tools; the menus are wired at load', () => {
     const render = clientFn('renderBoard');

@@ -23107,8 +23107,9 @@ function ntOpenArrived(launch) {
   if (key && !host) {
     // On the board's data but not drawn — hidden by the 휴면 / 보관 toggle: shown just for this page load, as a deep
     // link does (openDeepLinkedSession), and opened on that render (#747 review R2 N7).
+    // SSOT 2026-11-05 — or by the board's filters or search (boardFilterView lets the revealed key through).
     var s = _sessionCache[key];
-    var hidden = s && (s.terminated === true ? !showArchives : !showSleeping);
+    var hidden = s && ((s.terminated === true ? !showArchives : !showSleeping) || !boardCardPasses(s, boardFilterNow(), _bfQuery, Date.now()));
     if (hidden && _revealedKey !== key) {
       _revealedKey = key;
       loadSessions();
