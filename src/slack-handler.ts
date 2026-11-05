@@ -7454,7 +7454,7 @@ export class SlackHandler {
         // #927 — the restart may have cut the turn after an outside action took effect.
         '0. 외부 작업(push·PR/이슈 생성·코멘트·머지·배포·메시지)을 다시 하기 전에 이미 됐는지 확인하라 (git status, git log, 원격 브랜치, gh pr list --head <branch>, 최근 코멘트). 두 번째 PR·같은 코멘트·같은 메시지·재배포 금지.\n' +
         // Background work the interruption stopped is picked up, never waited on.
-        '   중단 전에 띄운 백그라운드 작업(서브에이전트·백그라운드 명령·Monitor)은 함께 멈췄고 결과를 보내지 않는다. 멈춘 서브에이전트는 그 agent ID로 SendMessage를 보내 이어 가게 하고, 멈춘 명령은 다시 실행하라. 이미 멈춘 작업을 기다리며 턴을 끝내지 마라.\n' +
+        '   중단 전에 띄운 백그라운드 작업(서브에이전트·백그라운드 명령·Monitor)은 함께 멈췄고 결과를 보내지 않는다. 멈춘 서브에이전트는 그 agent ID로 SendMessage를 보내 이어 가게 하고, 멈춘 명령은 위 확인을 거친 뒤 다시 실행하라. 이미 멈춘 작업을 기다리며 턴을 끝내지 마라.\n' +
         '1. mcp__slack-mcp__get_thread_messages (offset: 0, limit: 50)으로 이 스레드의 전체 대화를 먼저 읽어라.\n' +
         '2. 유저가 마지막으로 요청한 작업이 무엇인지 파악하라.\n' +
         '3. 네가 마지막으로 어디까지 진행했는지 확인하라 (git status, 파일 상태 등).\n' +
@@ -7580,6 +7580,7 @@ export class SlackHandler {
               threadTs: session.threadTs,
               error: (error as Error).message,
             });
+            this.handBackFailedRestartResume(session.sessionKey);
           });
         autoResumed++;
       }
@@ -7614,6 +7615,20 @@ export class SlackHandler {
       `Sent crash recovery notifications to ${notified}/${recovered.length} sessions, auto-resumed ${autoResumed}`,
     );
     return notified;
+  }
+
+  /**
+   * A restart resume whose turn never started (`handleMessage` threw) leaves a
+   * cut goal session with no driver: `resumeActiveGoals` leaves the loop out of
+   * it for that resume. Hand it to the loop: free its stale `working` state and
+   * kick once. Not while a request runs — that turn's settle drives the loop.
+   */
+  private handBackFailedRestartResume(sessionKey: string): void {
+    const live = this.claudeHandler.getSessionByKey?.(sessionKey);
+    if (live?.goal?.status !== 'active' || this.requestCoordinator.isRequestActive(sessionKey)) return;
+    if (live.activityState !== 'idle') live.activityState = 'idle';
+    this.logger.info('Restart resume never started its turn — the goal loop resumes the goal', { sessionKey });
+    this.goalTurnSettledHandler?.(sessionKey, { cause: 'kick' });
   }
 
   /**
