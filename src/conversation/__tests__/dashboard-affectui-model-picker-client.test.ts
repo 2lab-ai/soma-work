@@ -671,7 +671,7 @@ describe('D11 — one write per session and operation, by value', () => {
     };
     const repaints: string[] = [];
     const m = load<{ changeEffort(k: string, l: string): Promise<void> }>(
-      ['effortLabel', 'effortSwitchNote', 'mpApplyEffort', 'changeEffort'],
+      ['effortLabel', 'effortSwitchNote', 'mpApplyEffort', 'changeEffort', 'effortChain'],
       ['_effortPending', 'EFFORT_LABELS'],
       {
         postEffortSwitch: async () => ({ ok: true, result: { status: 'switched', effort: 'low', effective: 'low' } }),
@@ -700,7 +700,8 @@ describe('an effort pick shows at once — no loading', () => {
     const shown: string[] = [];
     const loads: number[] = [];
     const m = load<{
-      changeEffort(k: string, l: string): Promise<void>;
+      changeEffort(k: string, l: string): Promise<{ ok: boolean; result?: { effort: string } }>;
+      effortSettled(k: string): Promise<void>;
       mpData(s: unknown): Data;
       mpDataSig(s: unknown): string;
     }>(
@@ -719,6 +720,8 @@ describe('an effort pick shows at once — no loading', () => {
         'effortSwitchNote',
         'mpApplyEffort',
         'changeEffort',
+        'effortChain',
+        'effortSettled',
       ],
       ['_busy', '_effortPending', 'EFFORT_LABELS'],
       {
@@ -799,6 +802,45 @@ describe('an effort pick shows at once — no loading', () => {
     releases[0](ok('max', 'xhigh'));
     await run;
     expect(m.mpData(cache[KEY]).value).toMatchObject({ effort: 'max', effectiveEffort: 'xhigh' });
+  });
+
+  // trinity R1 (astra P1): the picker shows the newest pick at once, so a send right after it must not start its turn
+  // on an older level — the send waits until the level picked before it is the session's.
+  it('a send waits for the level picked before it: effortSettled resolves only once the newest pick is the session’s', async () => {
+    const cache = { [KEY]: sess({ effort: 'high' }) };
+    const { m, posts, releases } = effortEnv(cache);
+    const first = m.changeEffort(KEY, 'max');
+    const joined = m.changeEffort(KEY, 'low');
+    let settled = false;
+    const waiting = m.effortSettled(KEY).then(() => {
+      settled = true;
+    });
+    releases[0](ok('max'));
+    await flush();
+    expect(posts).toEqual(['max', 'low']);
+    expect(settled).toBe(false); // 'low' is still on its way
+    releases[1](ok('low'));
+    await waiting;
+    expect(settled).toBe(true);
+    expect(cache[KEY].effort).toBe('low');
+    // Every caller of the chain gets its outcome: the first pick and the one that joined it.
+    expect((await first).result?.effort).toBe('low');
+    expect((await joined).result?.effort).toBe('low');
+    // Nothing out: settled at once.
+    await m.effortSettled(KEY);
+    // The panel's send awaits it after the optimistic turn and before its POST.
+    const send = clientFn('sendCommand');
+    const at = send.indexOf('await effortSettled(sendingSessionKey);');
+    expect(at).toBeGreaterThan(send.indexOf('_pcInFlight++'));
+    expect(at).toBeLessThan(send.indexOf('await acPost(cmdUrl'));
+  });
+
+  it('a level the session already runs writes nothing and answers unchanged', async () => {
+    const cache = { [KEY]: sess({ effort: 'high' }) };
+    const { m, posts } = effortEnv(cache);
+    const r = await m.changeEffort(KEY, 'high');
+    expect(posts).toEqual([]);
+    expect(r).toMatchObject({ ok: true, result: { status: 'unchanged', effort: 'high' } });
   });
 
   it('no board reload after a level: the server pushes the change, the cache already holds its answer', async () => {
