@@ -154,7 +154,7 @@ import {
 } from './permission-prompts';
 import { getConversation, resummarizeTurn } from './recorder';
 import { soundClientJs } from './sound-client';
-import { bootClientJs, bootScreenCss, bootScreenHtml } from './boot-screen';
+import { bootScreenCss, withBootScreen } from './boot-screen';
 import { themeClientJs } from './theme-client';
 import { renderTaskPlanHtml, renderTaskPlanPage, TASK_PLAN_CSS, TASK_PLAN_PAGE_CSP } from './task-plan-html';
 import { ensureTitleSub, regenerateTitleSub, type TitleSubResult } from './title-sub';
@@ -5168,8 +5168,10 @@ export function renderDashboardPage(userId?: string): string {
   const initSdkEffortLevels = JSON.stringify(SDK_EFFORT_LEVELS);
   // T8: the bot's Slack name (escaped like the header config — it comes from Slack).
   const initBotName = JSON.stringify(_botDisplayName || null).replace(/</g, '\\u003c');
-  // Icon slots (<i data-ui-icon="…">) are filled from @2lab.ai/ui's icon set (fillUiIcons).
-  return fillUiIcons(`<!DOCTYPE html>
+  // Icon slots (<i data-ui-icon="…">) are filled from @2lab.ai/ui's icon set (fillUiIcons); the first screen's slot,
+  // the body's first child, takes the layer and its script (withBootScreen, #965) — a slot, not an interpolation, so the body
+  // markup stays a plain template slice for the client tests.
+  return withBootScreen(fillUiIcons(`<!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
@@ -6415,8 +6417,7 @@ ${pageTokenAliases()}
 </style>
 </head>
 <body data-view-mode="minimal" data-view-plan="1" data-detail="" data-tasks="list">
-${bootScreenHtml()}
-<script>${bootClientJs()}</script>
+<!-- boot-screen -->
 <div class="app">
   <!-- The top bar is @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14): brand (the page's h1), the 대화 · 설정 ·
        기억 links with their titles (folded into 메뉴 when the bar is short of room), the live-update status, the
@@ -22725,5 +22726,5 @@ document.addEventListener('visibilitychange', function() {
 })();
 </script>
 </body>
-</html>`);
+</html>`));
 }
