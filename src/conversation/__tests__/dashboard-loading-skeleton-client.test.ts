@@ -201,6 +201,7 @@ function boardFlow(cardOf?: (s: { key: string }, col: string) => unknown, over: 
       'dayKeyOf',
       'doneDayLabel',
       'planDoneGroups',
+      'cardProgressAt',
       'isCronCard',
       'cronGroupKey',
       'cronCardTime',

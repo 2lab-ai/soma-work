@@ -382,6 +382,7 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
       'dayKeyOf',
       'doneDayLabel',
       'planDoneGroups',
+      'cardProgressAt',
       'isCronCard',
       'cronGroupKey',
       'cronCardTime',

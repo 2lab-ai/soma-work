@@ -196,13 +196,22 @@ describe('F1 — where the work happens (server)', () => {
       issues: [],
     };
     expect(cardWhereOf({ linkHistory: history }, none).repo).toBe('a/new');
-    const one = () => ({ name: 'dev', repos: ['2lab-ai/soma-work'] });
+    const one = () => ({ name: 'dev', repos: ['2lab-ai/soma-work'], isPrivate: false });
     expect(cardWhereOf({ channelId: 'C1' }, one)).toEqual({ repo: '2lab-ai/soma-work', channelName: 'dev' });
     // A channel of several repos does not say which.
-    const two = () => ({ name: 'mono', repos: ['a/x', 'a/y'] });
+    const two = () => ({ name: 'mono', repos: ['a/x', 'a/y'], isPrivate: false });
     expect(cardWhereOf({ channelId: 'C1' }, two)).toEqual({ channelName: 'mono' });
     // The work's own PR wins over the channel's repo.
     expect(cardWhereOf({ channelId: 'C1', links: { pr } }, one).repo).toBe('a/pr-repo');
+    // A private channel (or one the registry cannot say is public): no name, no channel repo — the board goes to
+    // every signed-in viewer. The card's own PR still names its repo (that link is on the card).
+    const secret = () => ({ name: 'acquisition-secret', repos: ['a/unannounced'], isPrivate: true });
+    expect(cardWhereOf({ channelId: 'C5' }, secret)).toEqual({ channelPrivate: true });
+    expect(cardWhereOf({ channelId: 'C5', links: { pr } }, secret)).toEqual({
+      channelPrivate: true,
+      repo: 'a/pr-repo',
+    });
+    expect(cardWhereOf({ channelId: 'C5' }, () => ({ name: 'x', repos: ['a/x'] }))).toEqual({ channelPrivate: true });
     // A Jira link, a DM, an unknown channel, a lookup that throws: nothing invented.
     expect(
       cardWhereOf({ channelId: 'D1', links: { issue: { url: 'https://x.atlassian.net/browse/P-1' } } }, none),
@@ -375,6 +384,11 @@ describe('F1 — the face: 레포 · 채널 foot chips, on in every built-in lay
     expect(m.cardChannelOf(card({ channelId: 'C77', channelName: undefined }))).toMatchObject({
       key: 'c:C77',
       text: '#C77',
+    });
+    expect(m.cardChannelOf(card({ channelId: 'C5', channelName: undefined, channelPrivate: true }))).toEqual({
+      key: 'private',
+      text: '비공개 채널',
+      title: '채널: 비공개 채널',
     });
     // cardOf: the where it builds (the source, not executed — it reads the whole page).
     const cardOfSrc = clientFn('cardOf');
@@ -573,8 +587,21 @@ describe('F3 — 사용자 · 채널 · 레포 toggles', () => {
     const none = m.boardViewOf(b2, { ...f, channels: ['dm'] }, '', NOW);
     expect(none.board.working).toEqual([]);
     expect(none.hidden).toBe(3);
-    // No filter: the same objects, untouched.
+    // No filter, children already in the board's order: the same objects, untouched.
     expect(m.boardViewOf(b2, m.boardFilterDefault(), '', NOW).board.working[0]).toBe(epic);
+    // The children follow the board's order (a copy; the data keeps its plan order).
+    const older = card({ key: 'old', startedAt: NOW - 9 * H, progressAt: NOW - 8 * H });
+    const newer = card({ key: 'new', startedAt: NOW - 2 * H, progressAt: NOW - H });
+    const e2 = card({ key: 'e2', kind: 'epic', epic: { children: [older, newer] } });
+    const kidsOf = (dir: string) =>
+      (
+        m.boardViewOf(board({ working: [e2] }), { ...m.boardFilterDefault(), dir }, '', NOW).board.working[0].epic as {
+          children: Card[];
+        }
+      ).children.map((c) => c.key);
+    expect(kidsOf('desc')).toEqual(['new', 'old']);
+    expect(kidsOf('asc')).toEqual(['old', 'new']);
+    expect((e2.epic as { children: Card[] }).children.map((c) => c.key)).toEqual(['old', 'new']);
   });
 
   it('the menu offers an epic’s children’s owners · channels · repos too (the filter judges them)', () => {
@@ -687,9 +714,12 @@ describe('F4 — 정렬: 처음 시작 · 마지막 진행, 오름 · 내림차�
   it('DONE: the days and the cards in a day follow the direction; 처음 시작 orders a day by start', () => {
     const m = api();
     const day = Date.parse('2026-11-05T10:00:00');
-    const a = { s: card({ key: 'a', doneAt: day, startedAt: day - 9 * H }), col: 'idle' };
-    const b = { s: card({ key: 'b', doneAt: day + H, startedAt: day - H }), col: 'idle' };
-    const c = { s: card({ key: 'c', doneAt: day - 30 * H, startedAt: day - 40 * H }), col: 'closed' };
+    const a = { s: card({ key: 'a', doneAt: day, progressAt: day, startedAt: day - 9 * H }), col: 'idle' };
+    const b = { s: card({ key: 'b', doneAt: day + H, progressAt: day + H, startedAt: day - H }), col: 'idle' };
+    const c = {
+      s: card({ key: 'c', doneAt: day - 30 * H, progressAt: day - 30 * H, startedAt: day - 40 * H }),
+      col: 'closed',
+    };
     const flat = (gs: Array<{ key: string; items: Array<{ s: Card }> }>) =>
       gs.map((g) => g.items.map((i) => i.s.key).join(''));
     const now = day + 2 * H;
@@ -698,6 +728,12 @@ describe('F4 — 정렬: 처음 시작 · 마지막 진행, 오름 · 내림차�
     expect(flat(m.planDoneGroups([a, b, c], now, null, { sort: 'progress', dir: 'asc' }))).toEqual(['c', 'ab']);
     expect(flat(m.planDoneGroups([a, b, c], now, null, { sort: 'start', dir: 'desc' }))).toEqual(['ba', 'c']);
     expect(flat(m.planDoneGroups([a, b, c], now, null, { sort: 'start', dir: 'asc' }))).toEqual(['c', 'ab']);
+    // A card revived after it finished (its last input moved, its finish did not): 마지막 진행 reads the revival —
+    // the same clock RUNNING and NEEDS YOU use; its day is still its finish.
+    const revived = { s: card({ key: 'r', doneAt: day - 2 * H, progressAt: day + 1.5 * H }), col: 'idle' };
+    expect(flat(m.planDoneGroups([a, b, revived], now, null, { sort: 'progress', dir: 'desc' }))).toEqual(['rba']);
+    // No board order (an older caller): newest finish first, as before.
+    expect(flat(m.planDoneGroups([a, b, revived], now, null))).toEqual(['bar']);
   });
 
   it('the 정렬 menu: two radio groups, the current choice checked', () => {

@@ -1323,5 +1323,7 @@
   "카드 필터 · 적용 중: ": "Card filters · active: ",
   " · 숨긴 카드: ": " · hidden cards: ",
   "레포 example/app": "Repo example/app",
-  "채널 #pay": "Channel #pay"
+  "채널 #pay": "Channel #pay",
+  "비공개 채널": "Private channel",
+  "채널: 비공개 채널": "Channel: private channel"
 }
