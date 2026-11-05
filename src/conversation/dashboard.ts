@@ -154,6 +154,7 @@ import {
 } from './permission-prompts';
 import { getConversation, resummarizeTurn } from './recorder';
 import { soundClientJs } from './sound-client';
+import { bootClientJs, bootScreenCss, bootScreenHtml } from './boot-screen';
 import { themeClientJs } from './theme-client';
 import { renderTaskPlanHtml, renderTaskPlanPage, TASK_PLAN_CSS, TASK_PLAN_PAGE_CSP } from './task-plan-html';
 import { ensureTitleSub, regenerateTitleSub, type TitleSubResult } from './title-sub';
@@ -5639,6 +5640,10 @@ ui-approval-card[data-ai="approve"] { --ac-primary: color-mix(in srgb, var(--st-
    head is out), the dock's top under the sticky top bar (--ui-drawer-top), its layer under the bar (--ui-drawer-z)
    and the saved width (initPanelResize: the width attribute; --panel-w for the board beside it). */
 ui-drawer:not(:defined) { display: none; }
+/* The other overlays too (#965): an undefined element draws its light-DOM children in the flow — before the modules
+   ran, a fresh load painted the closed dialogs' forms and buttons (the lifecycle form, the rollback footer, the new-task
+   form) for seconds on a phone. A closed overlay takes no room once defined either, so: not drawn at all. */
+ui-dialog:not(:defined), ui-hovercard:not(:defined), ui-artifact-viewer:not(:defined) { display: none; }
 .slide-panel { --ui-drawer-top: var(--topbar-b, 0px); --ui-drawer-z: 100; }
 .slide-panel::part(panel) { background: var(--surface); color: var(--text); padding-right: env(safe-area-inset-right, 0px); }
 .slide-panel::part(body) { position: relative; display: flex; flex-direction: column; min-height: 0; padding: 0; overflow: hidden; font-size: 14px; line-height: 1.45; color: var(--text); overflow-wrap: normal; }
@@ -6398,6 +6403,8 @@ body.nt-open .new-task-fab { display: none !important; }
 .ppb-label { flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 600; color: var(--tint-wait-fg); }
 @media (hover: hover) and (pointer: fine) { .card-plan-link:hover, .pp-full:hover { text-decoration: underline; } }
 </style>
+<!-- The first screen (#965, boot-screen.ts): over the page until what the viewport shows is drawn. -->
+<style id="boot-screen">${bootScreenCss()}</style>
 <!-- Tokens — @2lab.ai/ui is the single source (P10): its tokens.css puts every --ui-* on :root and
      [data-theme="light|dark"] (the light and dark palettes, geometry, type and motion), and the
      dashboard's names are aliases of them, so the page and the library elements cannot drift. Never
@@ -6408,6 +6415,8 @@ ${pageTokenAliases()}
 </style>
 </head>
 <body data-view-mode="minimal" data-view-plan="1" data-detail="" data-tasks="list">
+${bootScreenHtml()}
+<script>${bootClientJs()}</script>
 <div class="app">
   <!-- The top bar is @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14): brand (the page's h1), the 대화 · 설정 ·
        기억 links with their titles (folded into 메뉴 when the bar is short of room), the live-update status, the
