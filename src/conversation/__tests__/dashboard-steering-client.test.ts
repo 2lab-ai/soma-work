@@ -141,11 +141,19 @@ describe('steeringData — the session payload as the element’s data', () => {
   it('running while a turn works (and not ended); canAct for the owner only; disabled once ended; no held files', () => {
     const s = { activityState: 'working' };
     // D4 E-30: the files of the next note are the slotted <ui-composer>'s — the page holds none (no attachments).
-    expect(data(s, 'open')).toEqual({ running: true, canAct: true, disabled: false, items: [] });
+    expect(data(s, 'open')).toEqual({ running: true, canAct: true, disabled: false, items: [], queue: 'dock' });
     expect(data({ activityState: 'idle' }, 'open')).toMatchObject({ running: false });
     // Someone else's session: the queue shows, nothing can be done (the element: read-only placeholder, no buttons).
     expect(data(s, 'readonly')).toMatchObject({ canAct: false, disabled: false });
     expect(data(s, 'closed')).toMatchObject({ running: false, canAct: true, disabled: true });
+  });
+
+  // SSOT 2026-11-05: notes the queue holds wait behind the element's round count button at the composer's top right
+  // (hover / press opens them; a bottom sheet on a phone) instead of covering the chat above the field.
+  it('the queue is docked in every mode — a note in the queue never covers the chat', () => {
+    const items = [{ id: 'a', text: 'x', state: 'queued', enqueuedAt: 1 }];
+    for (const mode of ['open', 'readonly', 'closed'])
+      expect(data({ activityState: 'working', followups: { items } }, mode).queue, mode).toBe('dock');
   });
 });
 
@@ -393,6 +401,16 @@ describe('the page loads <ui-agent-steering> from the dashboard origin', () => {
       expect(UI_LIB_FILE.test(name), name).toBe(true);
       expect(existsSync(join(dir as string, name)), name).toBe(true);
     }
+  });
+
+  it('the installed @2lab.ai/ui docks the queue (0.33.0+: data.queue, the round count button, the phone sheet)', () => {
+    const dir = uiLibDistDir();
+    expect(dir).toBeTruthy();
+    const pkg = JSON.parse(readFileSync(join(dir as string, '..', 'package.json'), 'utf-8')) as { version: string };
+    const [major, minor] = pkg.version.split('.').map(Number);
+    expect(major > 0 || minor >= 33, pkg.version).toBe(true);
+    const lib = readFileSync(join(dir as string, 'agent-steering.js'), 'utf-8');
+    for (const part of ['as-dock', 'as-pop', 'as-scrim']) expect(lib, part).toContain(part);
   });
 
   it('the old composer is gone: no textarea, Send button, key handler or autosize of the page’s own', () => {

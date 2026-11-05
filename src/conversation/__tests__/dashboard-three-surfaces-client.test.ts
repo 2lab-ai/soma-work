@@ -1684,7 +1684,7 @@ describe('the composer follows the session live (executed)', () => {
     );
     const last = () => writes[writes.length - 1];
     m.renderPanelComposer({ ownerId: 'U1', activityState: 'working' }, true);
-    expect(last()).toEqual({ running: true, canAct: true, disabled: false, items: [] });
+    expect(last()).toEqual({ running: true, canAct: true, disabled: false, items: [], queue: 'dock' });
     expect(resets).toBe(0);
     m.renderPanelComposer({ ownerId: 'U1', terminated: true });
     expect(last()).toMatchObject({ running: false, disabled: true, canAct: true });
