@@ -416,7 +416,9 @@ export class SlackHandler {
   /**
    * #948 — sessions whose last no-text turn failed and was already resumed once
    * automatically. A second failure in a row waits for a person instead of
-   * resuming again; any turn that does not fail clears the mark.
+   * resuming again. A turn that does not fail, a turn that left text, or a
+   * person's own message clears the mark. In memory only: a restart grants one
+   * fresh resume.
    */
   private goalErrorResumeSpent?: Set<string>;
   /**
@@ -2683,7 +2685,11 @@ export class SlackHandler {
         sessionResult.session.actionPanel.pendingQuestion = undefined;
       }
       // #911 — and the drain the question paused reopens with it.
-      if (userWord) this.reopenDrainAfterAnswer(sessionResult.sessionKey);
+      if (userWord) {
+        this.reopenDrainAfterAnswer(sessionResult.sessionKey);
+        // #948 — the person wrote: the goal's automatic resume is theirs to spend again.
+        this.goalErrorResumeSpent?.delete(sessionResult.sessionKey);
+      }
       // #917 — the user acts now: the follow-up the last summary left is the next summary's to judge, not asked again.
       if (userWord) consumeFollowUpVerdict(sessionResult.session, Date.now());
 
@@ -3188,6 +3194,8 @@ export class SlackHandler {
     // person wrote — an auto-compact stop always ends this way (dev, 15 of 15).
     // Held for this run's drain boundary instead, where `releaseDeferredGoalDriver`
     // fires it with the slot free (an auto-compact stop is drainable).
+    // #948 — a turn that left text made progress, whichever branch below holds or fires its driver.
+    if (assistantMessages.join('').trim()) this.goalErrorResumeSpent?.delete(sessionKey);
     if (!assistantMessages.join('').trim() && this.isFollowupSlotHeld(sessionKey)) {
       (this.followupSlotHeldGoalSessions ??= new Set<string>()).add(sessionKey);
       this.logger.info('Goal driver deferred — the turn left no text; its run releases the slot first', { sessionKey });
@@ -3210,8 +3218,6 @@ export class SlackHandler {
     // a second time, racing the continuation this fire is about to inject.
     this.followupDeferredGoalSessions?.delete(sessionKey);
     this.followupSlotHeldGoalSessions?.delete(sessionKey);
-    // #948 — a turn that left text made progress: a later failure is a new streak.
-    this.goalErrorResumeSpent?.delete(sessionKey);
     this.goalTurnSettledHandler?.(sessionKey);
   }
 
@@ -6572,6 +6578,16 @@ export class SlackHandler {
     return queue.list(sessionKey).some((item) => SlackHandler.OUTSTANDING_FOLLOWUP_STATES.has(item.state));
   }
 
+  /**
+   * #948 — an outcome the automatic resume counts against its one retry: the
+   * turn failed (`error`), or the idle watchdog cut it (`stall-timeout`, which
+   * the executor raises on its own when the SDK goes silent). A person's or the
+   * host's stop, a supersede and an auto-compact stop are not failures.
+   */
+  private static isGoalResumeFailure(outcome: RunReport['outcome'] | undefined): boolean {
+    return outcome?.result === 'error' || (outcome?.result === 'interrupted' && outcome.reason === 'stall-timeout');
+  }
+
   /** #948 — tell the thread why the goal stopped resuming, and how to go on. */
   private noticeGoalErrorResumeStopped(sessionKey: string): void {
     const session = this.claudeHandler?.getSessionByKey?.(sessionKey);
@@ -6580,10 +6596,15 @@ export class SlackHandler {
     void this.slackApi
       ?.postSystemMessage(
         session.channelId,
-        '⚠️ goal 자동 이어하기를 멈췄습니다 — 자동으로 다시 시작한 턴도 바로 오류로 끝났습니다. 메시지를 보내면 이어갑니다.',
+        '⚠️ goal 자동 이어하기를 멈췄습니다 — 자동으로 다시 시작한 턴도 오류로 끝났습니다. 메시지를 보내면 이어갑니다.',
         { threadTs },
       )
-      .catch(() => undefined);
+      .catch((error: unknown) =>
+        this.logger.warn('Goal resume-stopped notice could not be posted', {
+          sessionKey,
+          error: (error as Error)?.message ?? String(error),
+        }),
+      );
   }
 
   /**
@@ -6594,6 +6615,9 @@ export class SlackHandler {
    * forbids.
    */
   private releaseDeferredGoalDriver(sessionKey: string, report: RunReport): void {
+    // #948 — whichever branch below decides: a turn that did not fail ends the streak.
+    const failed = SlackHandler.isGoalResumeFailure(report.outcome);
+    if (!failed) this.goalErrorResumeSpent?.delete(sessionKey);
     // #891 — a driver held only for its run's slot. The run has settled, so
     // the slot is free whatever its outcome: fire — unless follow-ups are
     // outstanding (§3.6 holds it below, as for any turn) or a person or the
@@ -6603,7 +6627,6 @@ export class SlackHandler {
       const cut =
         report.outcome?.result === 'interrupted' &&
         SlackHandler.GOAL_LAST_WORD_ABORT_REASONS.has(report.outcome.reason ?? '');
-      const failed = report.outcome?.result === 'error';
       if (this.shouldDeferGoalDriver(sessionKey)) {
         (this.followupDeferredGoalSessions ??= new Set<string>()).add(sessionKey);
       } else if (cut) {
@@ -6623,7 +6646,6 @@ export class SlackHandler {
         return;
       } else {
         if (failed) (this.goalErrorResumeSpent ??= new Set<string>()).add(sessionKey);
-        else this.goalErrorResumeSpent?.delete(sessionKey);
         this.followupDeferredGoalSessions?.delete(sessionKey);
         this.logger.info('Goal driver fired — the run that held its slot has settled', { sessionKey });
         this.goalTurnSettledHandler?.(sessionKey);
