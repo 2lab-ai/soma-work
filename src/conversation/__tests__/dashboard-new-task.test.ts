@@ -285,4 +285,123 @@ describe('Dashboard — New task API', () => {
       expect(provider.start).not.toHaveBeenCalled();
     });
   });
+
+  // 2026-11-05 — a new Slack channel for a repo: admins only, and only while the bot holds the scope.
+  describe('a new repo channel', () => {
+    const MADE = { channelId: 'C_NEW', channelName: 'workspace-newrepo', created: true };
+    let channelCreation: ReturnType<typeof vi.fn>;
+    let ensureChannel: ReturnType<typeof vi.fn>;
+
+    beforeEach(async () => {
+      process.env.ADMIN_USERS = 'U_ADMIN';
+      (await import('../../admin-utils')).resetAdminUsersCache();
+      channelCreation = vi.fn(async () => ({ public: true, private: false }));
+      ensureChannel = vi.fn(async () => MADE);
+      dashboard.setDashboardNewTaskProvider({ ...provider, channelCreation, ensureChannel });
+      provider.start.mockImplementation(async (_u: string, s: { channelId: string }) => ({
+        ...LAUNCH,
+        channel: s.channelId,
+      }));
+    });
+
+    afterEach(async () => {
+      delete process.env.ADMIN_USERS;
+      (await import('../../admin-utils')).resetAdminUsersCache();
+    });
+
+    const newChannelBody = (newChannel: Record<string, unknown> = { repo: 'https://github.com/2lab-ai/NewRepo' }) => {
+      const b: Record<string, unknown> = body({ newChannel });
+      delete b.channelId;
+      return b;
+    };
+
+    it('the context offers it to a signed-in admin while the bot may make channels', async () => {
+      const admin = await signIn('U_ADMIN');
+      const res = await injectWebServer({
+        method: 'GET',
+        url: '/api/dashboard/new-task/context',
+        headers: { cookie: admin.cookie },
+      });
+      expect(res.statusCode).toBe(200);
+      const ctx = JSON.parse(res.body).context;
+      expect(ctx.channelCreate).toBe(true);
+      expect(ctx.channelCreatePrivate).toBeUndefined();
+    });
+
+    it('never to someone who is not an admin, nor when the bot lacks the scope', async () => {
+      const plain = await signIn('U_PLAIN');
+      const res = await injectWebServer({
+        method: 'GET',
+        url: '/api/dashboard/new-task/context',
+        headers: { cookie: plain.cookie },
+      });
+      expect(JSON.parse(res.body).context.channelCreate).toBeUndefined();
+      channelCreation.mockResolvedValue({ public: false, private: false });
+      const admin = await signIn('U_ADMIN');
+      const res2 = await injectWebServer({
+        method: 'GET',
+        url: '/api/dashboard/new-task/context',
+        headers: { cookie: admin.cookie },
+      });
+      expect(JSON.parse(res2.body).context.channelCreate).toBeUndefined();
+    });
+
+    it('an admin: the channel is made first and the task goes there', async () => {
+      const admin = await signIn('U_ADMIN');
+      const res = await post(admin, newChannelBody());
+      expect(res.statusCode).toBe(200);
+      expect(ensureChannel).toHaveBeenCalledWith('U_ADMIN', {
+        repo: '2lab-ai/newrepo',
+        name: 'workspace-newrepo',
+        isPrivate: false,
+      });
+      expect(provider.start.mock.calls[0][1]).toMatchObject({ channelId: 'C_NEW' });
+      expect(JSON.parse(res.body)).toMatchObject({
+        ok: true,
+        channel: 'C_NEW',
+        channelName: 'workspace-newrepo',
+        channelCreated: true,
+      });
+    });
+
+    it('not an admin → 400, no channel made, nothing posted', async () => {
+      const plain = await signIn('U_PLAIN');
+      const res = await post(plain, newChannelBody());
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toMatch(/new channel is not offered/);
+      expect(ensureChannel).not.toHaveBeenCalled();
+      expect(provider.start).not.toHaveBeenCalled();
+    });
+
+    it('a private channel only while the bot may make one', async () => {
+      const admin = await signIn('U_ADMIN');
+      const res = await post(admin, newChannelBody({ repo: '2lab-ai/newrepo', private: true }));
+      expect(res.statusCode).toBe(400);
+      expect(ensureChannel).not.toHaveBeenCalled();
+    });
+
+    it("Slack's refusal keeps its status (name taken → 409) and nothing is posted", async () => {
+      const { NewTaskError } = await import('../new-task');
+      ensureChannel.mockRejectedValue(new NewTaskError(409, '#workspace-newrepo 이름의 채널이 이미 있습니다'));
+      const admin = await signIn('U_ADMIN');
+      const res = await post(admin, newChannelBody());
+      expect(res.statusCode).toBe(409);
+      expect(provider.start).not.toHaveBeenCalled();
+    });
+
+    it('an epic the admin may not make is refused before any channel is made', async () => {
+      const admin = await signIn('U_ADMIN');
+      const res = await post(admin, { ...newChannelBody(), epic: true, autogoal: false, autoz: false });
+      expect(res.statusCode).toBe(403);
+      expect(ensureChannel).not.toHaveBeenCalled();
+      expect(provider.start).not.toHaveBeenCalled();
+    });
+
+    it('a channel id and a new channel together → 400', async () => {
+      const admin = await signIn('U_ADMIN');
+      const res = await post(admin, body({ newChannel: { repo: '2lab-ai/newrepo' } }));
+      expect(res.statusCode).toBe(400);
+      expect(ensureChannel).not.toHaveBeenCalled();
+    });
+  });
 });

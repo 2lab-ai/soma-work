@@ -150,6 +150,13 @@ export interface NewTaskContext {
   autogoalDefault: boolean;
   usage: { scope: 'shared-pool'; source: string | null; fetchedAt: number | null };
   limits: typeof NEW_TASK_LIMITS;
+  /**
+   * 2026-11-05 — the composer may make a new Slack channel for a repo (`newChannel`): set by the route, never by
+   * the provider — only for a signed-in admin, and only while the bot holds the scope to make channels.
+   */
+  channelCreate?: true;
+  /** With `channelCreate`: the new channel may be private too (the bot holds `groups:write`). */
+  channelCreatePrivate?: true;
 }
 
 export interface NewTaskContextInput {
@@ -285,6 +292,11 @@ export interface NewTaskSubmission {
   autoz: boolean;
   attachments: NewTaskAttachment[];
   /**
+   * 2026-11-05 — a new Slack channel for a repo instead of an offered one (admins only, `ctx.channelCreate`).
+   * `channelId` is '' until the route has made (or found) the channel and put its id there.
+   */
+  newChannel?: NewRepoChannelRequest;
+  /**
    * #853 — the plan switch: the session plans first and works only once its owner starts the
    * plan. Present only when on; autogoal and autoz are then off (a goal or a forced skill would
    * drive work the plan holds back).
@@ -387,7 +399,20 @@ export function parseNewTaskSubmission(body: unknown, ctx: NewTaskContext): NewT
       error: `${model.nickname} does not run effort ${b.effort}: one of ${model.effortLevels.join(', ')}`,
     };
   }
-  if (typeof b.channelId !== 'string' || !ctx.channels.some((c) => c.id === b.channelId)) {
+  let newChannel: NewRepoChannelRequest | undefined;
+  if (b.newChannel !== undefined) {
+    // 2026-11-05 — a new repo channel: only when the context offers it (an admin, a bot that may make channels).
+    if (b.channelId !== undefined && b.channelId !== null && b.channelId !== '') {
+      return { ok: false, error: 'channelId and newChannel cannot both be given' };
+    }
+    if (ctx.channelCreate !== true) return { ok: false, error: 'a new channel is not offered to you' };
+    const parsedChannel = parseNewRepoChannel(b.newChannel);
+    if (!parsedChannel.ok) return parsedChannel;
+    if (parsedChannel.value.isPrivate && ctx.channelCreatePrivate !== true) {
+      return { ok: false, error: 'a new private channel is not offered to you' };
+    }
+    newChannel = parsedChannel.value;
+  } else if (typeof b.channelId !== 'string' || !ctx.channels.some((c) => c.id === b.channelId)) {
     return { ok: false, error: 'channel is not one of the channels offered to you' };
   }
   if (b.epic !== undefined && typeof b.epic !== 'boolean') return { ok: false, error: 'epic must be a boolean' };
@@ -412,14 +437,96 @@ export function parseNewTaskSubmission(body: unknown, ctx: NewTaskContext): NewT
       nickname: model.nickname,
       model: model.model,
       effort: b.effort,
-      channelId: b.channelId,
+      channelId: newChannel ? '' : (b.channelId as string),
       autogoal: plan || epic ? false : b.autogoal,
       autoz: plan || epic ? false : b.autoz,
       attachments,
+      ...(newChannel ? { newChannel } : {}),
       ...(plan ? { plan: true as const } : {}),
       ...(epic ? { epic: true as const } : {}),
     },
   };
+}
+
+// ── A new repo channel (2026-11-05) ──────────────────────────────────
+
+/** What an admin asks for: the repo (`owner/name`, lowercase), the channel's name, public or private. */
+export interface NewRepoChannelRequest {
+  repo: string;
+  name: string;
+  isPrivate: boolean;
+}
+
+/** The workspace's channel convention: `#workspace-<repo name>` (#workspace-soma-work, #workspace-soma). */
+export const REPO_CHANNEL_PREFIX = 'workspace-';
+/** Slack's channel name limit. */
+export const CHANNEL_NAME_MAX = 80;
+
+const REPO_FULL_NAME = /^[A-Za-z0-9_-]+\/[A-Za-z0-9._-]+$/;
+const CHANNEL_NAME = /^[a-z0-9_-]+$/;
+
+/**
+ * `owner/name` from what an admin types — `owner/name`, a github.com URL (any page of the repo, `.git`), or
+ * `git@github.com:owner/name.git` — lowercased like the channel registry keys it. null = not a repo.
+ */
+export function normalizeRepo(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  let s = raw.trim();
+  if (!s || s.length > 300) return null;
+  const url = s.match(/^(?:https?:\/\/)?(?:www\.)?github\.com\/([^/\s]+)\/([^/\s?#]+)/i);
+  const ssh = s.match(/^git@github\.com:([^/\s]+)\/([^/\s]+)$/i);
+  if (url) s = `${url[1]}/${url[2]}`;
+  else if (ssh) s = `${ssh[1]}/${ssh[2]}`;
+  s = s.replace(/\.git$/i, '');
+  if (!REPO_FULL_NAME.test(s)) return null;
+  const name = s.split('/')[1];
+  if (name === '.' || name === '..') return null;
+  return s.toLowerCase();
+}
+
+/** A string in Slack's channel-name alphabet: lowercase letters, digits, `-` and `_`, at most 80. */
+export function toChannelName(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+/, '')
+    .slice(0, CHANNEL_NAME_MAX)
+    .replace(/-+$/, '');
+}
+
+/** The name a repo's channel gets unless the admin writes another: `workspace-<repo name>`. */
+export function defaultRepoChannelName(repo: string): string {
+  return toChannelName(`${REPO_CHANNEL_PREFIX}${repo.split('/').pop() ?? ''}`);
+}
+
+/** Slack would take it as is: its alphabet, 1–80 long, and not only punctuation (`invalid_name_punctuation`). */
+export function isValidChannelName(name: string): boolean {
+  return name.length > 0 && name.length <= CHANNEL_NAME_MAX && CHANNEL_NAME.test(name) && /[a-z0-9]/.test(name);
+}
+
+/** `newChannel: { repo, name?, private? }` of a submission. An absent or empty name is the default one. */
+export function parseNewRepoChannel(
+  raw: unknown,
+): { ok: true; value: NewRepoChannelRequest } | { ok: false; error: string } {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+    return { ok: false, error: 'newChannel must be an object' };
+  const r = raw as Record<string, unknown>;
+  const repo = normalizeRepo(r.repo);
+  if (!repo) return { ok: false, error: 'newChannel.repo must be a GitHub repo: owner/name or its github.com URL' };
+  if (r.name !== undefined && typeof r.name !== 'string')
+    return { ok: false, error: 'newChannel.name must be a string' };
+  const name = typeof r.name === 'string' && r.name.trim() ? r.name.trim() : defaultRepoChannelName(repo);
+  if (!isValidChannelName(name)) {
+    return {
+      ok: false,
+      error: 'newChannel.name: lowercase letters, digits, - and _ only, at most 80 characters',
+    };
+  }
+  if (r.private !== undefined && typeof r.private !== 'boolean') {
+    return { ok: false, error: 'newChannel.private must be a boolean' };
+  }
+  return { ok: true, value: { repo, name, isPrivate: r.private === true } };
 }
 
 // ── What reaches the session / the channel ───────────────────────────

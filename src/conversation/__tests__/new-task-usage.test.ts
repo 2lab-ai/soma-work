@@ -120,3 +120,22 @@ describe('createTtlCache', () => {
     expect(await cache.get('U1')).toBe('ok');
   });
 });
+
+// PR #959 review round 3 — an invalidation is not undone by a load that started before it.
+describe('createTtlCache — invalidate during a load', () => {
+  it('a load under way when the key is invalidated does not refill the cache', async () => {
+    let release: (v: string) => void = () => undefined;
+    let calls = 0;
+    const cache = createTtlCache(async () => {
+      calls += 1;
+      if (calls === 1) return new Promise<string>((r) => (release = r));
+      return 'after';
+    }, 60_000);
+    const first = cache.get('U');
+    cache.invalidate('U');
+    release('before');
+    expect(await first).toBe('before');
+    expect(await cache.get('U')).toBe('after');
+    expect(calls).toBe(2);
+  });
+});

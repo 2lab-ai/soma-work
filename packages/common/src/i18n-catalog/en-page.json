@@ -1271,5 +1271,18 @@
   "명령을 보냈어요": "Command sent",
   "답은 Slack 스레드에 있어요": "Its answer is in the Slack thread",
   " · 답은 Slack 스레드에 있어요": " · its answer is in the Slack thread",
-  " · 답이 곧 Slack 스레드에 올라와요": " · its answer will appear in the Slack thread shortly"
+  " · 답이 곧 Slack 스레드에 올라와요": " · its answer will appear in the Slack thread shortly",
+  "새 repo 채널": "New repo channel",
+  "owner/repo 또는 github.com 주소": "owner/repo or a github.com address",
+  "채널 이름": "Channel name",
+  "비공개": "Private",
+  "관리자 전용 · 채널 설명에 repo 주소를 적고 나를 초대해요 · 이미 이 repo의 채널이 있으면 그 채널에 올려요": "Admins only · the repo address goes in the channel description and you are invited · a repo that already has a channel gets that channel",
+  "새 채널의 GitHub repo를 owner/repo 또는 github.com 주소로 써 주세요": "Write the new channel’s GitHub repo as owner/repo or a github.com address",
+  "채널 이름은 소문자·숫자·-·_로 80자 이내로 써 주세요": "Channel names take lowercase letters, digits, - and _, up to 80 characters",
+  ">＋ 새 repo 채널 만들기</option>": ">＋ New repo channel</option>",
+  " · 새 채널을 만들었어요": " · new channel made",
+  " · 이 repo의 채널이 이미 있어 그 채널에 올렸어요": " · this repo already had a channel, so the task went there",
+  "<option value=\"\" selected>채널 고르기</option>": "<option value=\"\" selected>Choose a channel</option>",
+  "지금은 새 채널을 만들 수 없어요 — 다른 채널을 골라 주세요": "A new channel cannot be made right now — choose another channel",
+  "지금은 봇이 비공개 채널을 만들 수 없어요 — 비공개를 끄거나 봇에 groups:write 권한을 추가해 주세요": "The bot cannot make a private channel right now — turn Private off, or add the groups:write scope to the bot"
 }

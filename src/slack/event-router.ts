@@ -22,6 +22,10 @@ setEventRouterProviders({
       unregister(channel);
     }
   },
+  isChannelBeingMade: (name) => {
+    const beingMade = (channelRegistry as any).isChannelBeingMade;
+    return typeof beingMade === 'function' ? beingMade(name) === true : false;
+  },
   getBaseDirectory: () => config.baseDirectory,
   // Eagle incident receiver. Config says WHO may send a request; the existing
   // accepted-user store says WHETHER that identity may run turns here at all.

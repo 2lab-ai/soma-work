@@ -135,6 +135,7 @@ import {
   createNewTaskGate,
   NEW_TASK_BODY_LIMIT,
   NEW_TASK_LIMITS,
+  type NewRepoChannelRequest,
   type NewTaskAttachment,
   type NewTaskContext,
   NewTaskError,
@@ -142,6 +143,7 @@ import {
   parseAttachments,
   parseNewTaskSubmission,
 } from './new-task';
+import type { RepoChannelResult } from './new-task-channel';
 import type { NewTaskLaunchResult } from './new-task-launcher';
 import { verifyDashboardTokenRaw } from './oauth';
 import {
@@ -154,6 +156,7 @@ import {
 } from './permission-prompts';
 import { getConversation, resummarizeTurn } from './recorder';
 import { soundClientJs } from './sound-client';
+import { bootScreenCss, withBootScreen } from './boot-screen';
 import { themeClientJs } from './theme-client';
 import { renderTaskPlanHtml, renderTaskPlanPage, TASK_PLAN_CSS, TASK_PLAN_PAGE_CSP } from './task-plan-html';
 import { ensureTitleSub, regenerateTitleSub, type TitleSubResult } from './title-sub';
@@ -1823,6 +1826,10 @@ export function setDashboardSubmitRecommendedHandler(fn: SubmitRecommendedHandle
 export interface DashboardNewTaskProvider {
   context(userId: string, options?: { fresh?: boolean }): Promise<NewTaskContext>;
   start(userId: string, submission: NewTaskSubmission): Promise<NewTaskLaunchResult>;
+  /** 2026-11-05 — which new channels the bot may make (its scopes). Absent: none. */
+  channelCreation?(): Promise<{ public: boolean; private: boolean }>;
+  /** 2026-11-05 — make (or find) the repo's channel and invite `userId` to it. */
+  ensureChannel?(userId: string, request: NewRepoChannelRequest): Promise<RepoChannelResult>;
 }
 let _newTaskProvider: DashboardNewTaskProvider | null = null;
 const _newTaskGate = createNewTaskGate();
@@ -1854,6 +1861,27 @@ function epicTasksFor(userId: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * 2026-11-05 — the context a composer gets, with a new repo channel offered when the viewer is a signed-in admin
+ * (ADMIN_USERS) and the bot holds the scope to make one. The new-task POST authorizes against the same answer.
+ */
+async function withChannelCreation(
+  context: NewTaskContext,
+  request: unknown,
+  provider: DashboardNewTaskProvider,
+): Promise<NewTaskContext> {
+  const out: NewTaskContext = { ...context };
+  delete out.channelCreate;
+  delete out.channelCreatePrivate;
+  const auth = (request as { authContext?: { mode?: string; userId?: string; isAdmin?: boolean } }).authContext;
+  if (!isSlackAdmin(auth) || !provider.channelCreation || !provider.ensureChannel) return out;
+  const can = await provider.channelCreation();
+  if (!can.public) return out;
+  out.channelCreate = true;
+  if (can.private) out.channelCreatePrivate = true;
+  return out;
 }
 
 /** The signed-in Slack user a task runs as — never a body field, never the admin-mode target. */
@@ -4640,7 +4668,7 @@ export async function registerDashboardRoutes(
       return;
     }
     try {
-      const context = await _newTaskProvider.context(userId);
+      const context = await withChannelCreation(await _newTaskProvider.context(userId), request, _newTaskProvider);
       // #854 — one kind of work session: no dashboard-task destination (no task folders offered).
       // E4 ⑨b — whether this user may make an epic (their flag): the composer offers "에픽" then.
       const epicTasks = epicTasksFor(userId);
@@ -4698,19 +4726,31 @@ export async function registerDashboardRoutes(
         const result = await _newTaskGate.run(userId, typeof requestId === 'string' ? requestId : '', async () => {
           // Authorize against a FRESH context: membership is re-checked right
           // before anything is posted into the channel.
-          const context = await provider.context(userId, { fresh: true });
+          const context = await withChannelCreation(await provider.context(userId, { fresh: true }), request, provider);
           const parsed = parseNewTaskSubmission(request.body, context);
           if (!parsed.ok) throw new NewTaskError(400, parsed.error);
+          // #854 — an epic only behind the owner's flag (the composer offers it only then). Checked before a new
+          // channel is made: a refused launch changes nothing in Slack.
+          if (parsed.value.epic === true && !epicTasksFor(userId)) {
+            throw new NewTaskError(403, '에픽은 꺼져 있습니다 — `/z epictasks on`으로 켜세요');
+          }
+          // 2026-11-05 — a new repo channel first (an admin's; the context offered it): the task goes there.
+          let channel: RepoChannelResult | undefined;
+          if (parsed.value.newChannel) {
+            if (!provider.ensureChannel) throw new NewTaskError(501, 'New channels are not configured');
+            channel = await provider.ensureChannel(userId, parsed.value.newChannel);
+            parsed.value.channelId = channel.channelId;
+          }
           // A first message the router only answers (`/help`, `/model opus`, `/goal` with no objective) makes no
           // session: it is launched answer-only — the command answers in the new thread, no session is awaited, and
           // the launch says where the answer is (`status: 'answered'`, no board card). It is judged as typed and sent
           // as typed: autoz is for an instruction, and `$autoz` after a command would make it a skill turn instead.
           const answerOnly = classifyCommand(parsed.value.prompt.trim(), userId) === 'control';
-          // #854 — an epic only behind the owner's flag (the composer offers it only then).
-          if (parsed.value.epic === true && !epicTasksFor(userId)) {
-            throw new NewTaskError(403, '에픽은 꺼져 있습니다 — `/z epictasks on`으로 켜세요');
-          }
-          return provider.start(userId, answerOnly ? { ...parsed.value, autoz: false, answerOnly: true } : parsed.value);
+          const launched = await provider.start(
+            userId,
+            answerOnly ? { ...parsed.value, autoz: false, answerOnly: true } : parsed.value,
+          );
+          return channel ? { ...launched, channelName: channel.channelName, channelCreated: channel.created } : launched;
         });
         // Its session is on the board from its creation, before its SDK session (SSOT 2026-11-02). An answered
         // command has no session.
@@ -5167,8 +5207,10 @@ export function renderDashboardPage(userId?: string): string {
   const initSdkEffortLevels = JSON.stringify(SDK_EFFORT_LEVELS);
   // T8: the bot's Slack name (escaped like the header config — it comes from Slack).
   const initBotName = JSON.stringify(_botDisplayName || null).replace(/</g, '\\u003c');
-  // Icon slots (<i data-ui-icon="…">) are filled from @2lab.ai/ui's icon set (fillUiIcons).
-  return fillUiIcons(`<!DOCTYPE html>
+  // Icon slots (<i data-ui-icon="…">) are filled from @2lab.ai/ui's icon set (fillUiIcons); the first screen's slot,
+  // the body's first child, takes the layer and its script (withBootScreen, #965) — a slot, not an interpolation, so the body
+  // markup stays a plain template slice for the client tests.
+  return withBootScreen(fillUiIcons(`<!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
@@ -5639,6 +5681,10 @@ ui-approval-card[data-ai="approve"] { --ac-primary: color-mix(in srgb, var(--st-
    head is out), the dock's top under the sticky top bar (--ui-drawer-top), its layer under the bar (--ui-drawer-z)
    and the saved width (initPanelResize: the width attribute; --panel-w for the board beside it). */
 ui-drawer:not(:defined) { display: none; }
+/* The other overlays too (#965): an undefined element draws its light-DOM children in the flow — before the modules
+   ran, a fresh load painted the closed dialogs' forms and buttons (the lifecycle form, the rollback footer, the new-task
+   form) for seconds on a phone. A closed overlay takes no room once defined either, so: not drawn at all. */
+ui-dialog:not(:defined), ui-hovercard:not(:defined), ui-artifact-viewer:not(:defined) { display: none; }
 .slide-panel { --ui-drawer-top: var(--topbar-b, 0px); --ui-drawer-z: 100; }
 .slide-panel::part(panel) { background: var(--surface); color: var(--text); padding-right: env(safe-area-inset-right, 0px); }
 .slide-panel::part(body) { position: relative; display: flex; flex-direction: column; min-height: 0; padding: 0; overflow: hidden; font-size: 14px; line-height: 1.45; color: var(--text); overflow-wrap: normal; }
@@ -6205,6 +6251,13 @@ body.nt-open .new-task-fab { display: none !important; }
 .nt-toggles { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
 .nt-toggle-note { font-size: 11px; font-weight: 500; color: var(--text-tertiary); }
 
+/* 2026-11-05 — a new repo channel: two plain fields and the note, wrapping on a narrow sheet. */
+.nt-newch { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; padding: 10px 12px; border-radius: 10px; background: var(--bg); }
+.nt-newch-field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 200px; min-width: 0; font-size: 11px; font-weight: 600; color: var(--text-secondary); }
+.nt-newch-field input { height: 32px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface, transparent); color: var(--text); font: inherit; font-size: 13px; font-weight: 400; }
+.nt-newch-field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.nt-newch .nt-toggle-note { flex-basis: 100%; }
+
 /* The error and the upload status are kit status lines (.ui-status-line, D7 H-08 / A-08): the error in the fail tone. */
 /* #640 R1: chips and rows set display, which beats the hidden attribute's UA style. */
 .nt-dialog [hidden] { display: none !important; }
@@ -6227,6 +6280,8 @@ body.nt-open .new-task-fab { display: none !important; }
   .nt-config { flex-wrap: nowrap; overflow-x: auto; margin: 0 -14px; padding: 0 14px 2px; scrollbar-width: none; }
   .nt-config::-webkit-scrollbar { display: none; }
   .nt-config .ui-select-chip { --ui-select-max: 150px; }
+  /* 16px: iOS zooms into a smaller field. */
+  .nt-newch-field input { height: 44px; font-size: 16px; }
   .nt-body { padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
   .nt-submit-hint { display: none; }
 }
@@ -6398,6 +6453,8 @@ body.nt-open .new-task-fab { display: none !important; }
 .ppb-label { flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 600; color: var(--tint-wait-fg); }
 @media (hover: hover) and (pointer: fine) { .card-plan-link:hover, .pp-full:hover { text-decoration: underline; } }
 </style>
+<!-- The first screen (#965, boot-screen.ts): over the page until what the viewport shows is drawn. -->
+<style id="boot-screen">${bootScreenCss()}</style>
 <!-- Tokens — @2lab.ai/ui is the single source (P10): its tokens.css puts every --ui-* on :root and
      [data-theme="light|dark"] (the light and dark palettes, geometry, type and motion), and the
      dashboard's names are aliases of them, so the page and the library elements cannot drift. Never
@@ -6408,6 +6465,7 @@ ${pageTokenAliases()}
 </style>
 </head>
 <body data-view-mode="minimal" data-view-plan="1" data-detail="" data-tasks="list">
+<!-- boot-screen -->
 <div class="app">
   <!-- The top bar is @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14): brand (the page's h1), the 대화 · 설정 ·
        기억 links with their titles (folded into 메뉴 when the bar is short of room), the live-update status, the
@@ -6694,6 +6752,15 @@ ${pageTokenAliases()}
           <ui-model-picker id="nt-picker" class="nt-picker" lang="ko"><span class="mp-fallback">모델</span></ui-model-picker><button type="button" class="nt-battery-btn" id="nt-battery-btn" aria-expanded="false" aria-controls="nt-usage" onclick="ntToggleUsage()"><ui-meter id="nt-battery" shape="battery" low="0.2" high="0.5" label="모델 잔여량" lang="ko"></ui-meter></button>
           <label class="ui-select-chip nt-chip-folder" id="nt-folder-chip" hidden><span>폴더</span><select id="nt-folder" onchange="ntOnFolderChange()"></select></label>
           <label class="ui-select-chip nt-chip-channel"><span>채널</span><select id="nt-channel" onchange="ntOnChannelChange()"></select></label>
+        </div>
+        <!-- 2026-11-05 — "＋ 새 repo 채널" (admins, a bot that may make channels): the repo, the channel's name
+             (workspace-<repo> until edited) and, when the bot may, a private switch. The route makes the channel,
+             writes the repo into its description and invites the admin before the task is posted there. -->
+        <div class="nt-newch" id="nt-newch" role="group" aria-label="새 repo 채널" hidden>
+          <label class="nt-newch-field"><span>GitHub repo</span><input type="text" id="nt-newch-repo" placeholder="owner/repo 또는 github.com 주소" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="300" oninput="ntOnNewChannelInput('repo')"></label>
+          <label class="nt-newch-field"><span>채널 이름</span><input type="text" id="nt-newch-name" placeholder="workspace-repo" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="80" oninput="ntOnNewChannelInput('name')"></label>
+          <label class="ui-switch" id="nt-newch-private-wrap" hidden><input type="checkbox" role="switch" id="nt-newch-private" onchange="ntOnNewChannelInput('private')"><span>비공개</span></label>
+          <span class="nt-toggle-note" id="nt-newch-note">관리자 전용 · 채널 설명에 repo 주소를 적고 나를 초대해요 · 이미 이 repo의 채널이 있으면 그 채널에 올려요</span>
         </div>
         <p class="nt-usage" id="nt-usage" hidden></p>
         <div class="nt-toggles" role="group" aria-label="자동 진행">
@@ -20340,7 +20407,60 @@ function ntDefaultState(ctx, draft) {
     folder: '',
     // Plan mode (SSOT 2026-11-02): a dashboard task plans first and works once it is started — on by default.
     plan: true,
+    // 2026-11-05 — a new repo channel (channelId '__new__'): the repo as typed, the channel's name (follows the
+    // repo until the admin edits it), private or not.
+    newRepo: '',
+    newChannelName: '',
+    newChannelNameEdited: false,
+    newChannelPrivate: false,
   };
+}
+
+// 2026-11-05 — the channel select's "＋ 새 repo 채널" is the value '__new__' (no Slack channel id has it), written out
+// where it is read: the composer's functions stand alone (the client suites load them one by one).
+
+// owner/name from what is typed (owner/name, a github.com address, git@github.com:owner/name.git), lowercase; '' if
+// it is no repo — the server's normalizeRepo.
+function ntRepoOf(raw) {
+  var s = String(raw || '').trim();
+  if (!s || s.length > 300) return '';
+  var url = s.match(/^(?:https?:\\/\\/)?(?:www\\.)?github\\.com\\/([^\\/\\s]+)\\/([^\\/\\s?#]+)/i);
+  var ssh = s.match(/^git@github\\.com:([^\\/\\s]+)\\/([^\\/\\s]+)$/i);
+  if (url) s = url[1] + '/' + url[2];
+  else if (ssh) s = ssh[1] + '/' + ssh[2];
+  s = s.replace(/\\.git$/i, '');
+  if (!/^[A-Za-z0-9_-]+\\/[A-Za-z0-9._-]+$/.test(s)) return '';
+  var name = s.split('/')[1];
+  if (name === '.' || name === '..') return '';
+  return s.toLowerCase();
+}
+
+// The name a repo's channel gets unless edited: workspace-<repo name> in Slack's alphabet — the server's
+// defaultRepoChannelName.
+function ntRepoChannelName(repo) {
+  if (!repo) return '';
+  return ('workspace-' + repo.split('/').pop())
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+/, '')
+    .slice(0, 80)
+    .replace(/-+$/, '');
+}
+
+// What keeps a new repo channel from being asked for, in words; '' when it can be. With the context: a private
+// channel the bot cannot make (no groups:write) is held, not made public.
+function ntNewChannelProblem(state, ctx) {
+  if (ctx && !ctx.channelCreate) return '지금은 새 채널을 만들 수 없어요 — 다른 채널을 골라 주세요';
+  if (!ntRepoOf(state.newRepo)) return '새 채널의 GitHub repo를 owner/repo 또는 github.com 주소로 써 주세요';
+  if (state.newChannelPrivate && ctx && !ctx.channelCreatePrivate) {
+    return '지금은 봇이 비공개 채널을 만들 수 없어요 — 비공개를 끄거나 봇에 groups:write 권한을 추가해 주세요';
+  }
+  var name = String(state.newChannelName || '');
+  if (!name || name.length > 80 || !/^[a-z0-9_-]+$/.test(name) || !/[a-z0-9]/.test(name)) {
+    return '채널 이름은 소문자·숫자·-·_로 80자 이내로 써 주세요';
+  }
+  return '';
 }
 
 function ntBuildPayload(state, attachments, requestId) {
@@ -20360,12 +20480,16 @@ function ntBuildPayload(state, attachments, requestId) {
   // #853 — the 작업 계획 switch rides a Slack task too (always sent: off is a choice too). While it
   // plans, autogoal and autoz are off — a goal or a forced skill would drive work the plan holds back.
   var planOn = state.plan !== false;
+  // 2026-11-05 — a new repo channel in place of a channel id: the server makes (or finds) it first.
+  var newChannel = state.channelId === '__new__';
   return {
     requestId: requestId,
     prompt: state.prompt,
     model: state.model,
     effort: state.effort,
-    channelId: state.channelId,
+    ...(newChannel
+      ? { newChannel: { repo: ntRepoOf(state.newRepo), name: state.newChannelName, private: !!state.newChannelPrivate } }
+      : { channelId: state.channelId }),
     autogoal: planOn ? false : state.autogoal,
     autoz: planOn ? false : state.autoz,
     plan: planOn,
@@ -20442,6 +20566,9 @@ function ntCanSubmit(state, attachments) {
     return String(state.prompt || '').trim().length > 0 && (attachments || []).length === 0;
   }
   if (!state || !state.channelId) return false;
+  if (state.channelId === '__new__' && ntNewChannelProblem(state, typeof _ntCtx === 'undefined' ? null : _ntCtx)) {
+    return false;
+  }
   return String(state.prompt || '').trim().length > 0 || (attachments || []).length > 0;
 }
 
@@ -20596,10 +20723,16 @@ function ntReconcile(state, ctx) {
     return m.nickname === state.model;
   });
   state.effort = fitEffortLevel(mpLevelsOf(chosen && chosen.effortLevels), state.effort);
-  var hasChannel = ctx.channels.some(function (c) {
-    return c.id === state.channelId;
-  });
+  // A new repo channel stays chosen even when it is no longer offered: the submit is held (ntNewChannelProblem) —
+  // the destination never moves to another channel behind the admin's back.
+  var hasChannel =
+    state.channelId === '__new__' ||
+    ctx.channels.some(function (c) {
+      return c.id === state.channelId;
+    });
   if (!hasChannel) state.channelId = ctx.defaultChannelId || null;
+  // A private new channel the bot may no longer make stays private: the submit is held (ntNewChannelProblem) until
+  // the admin turns it off — never made public behind their back.
   // A dashboard task, or a folder, that is no longer offered (#640 R1).
   if (!ctx.taskFolders) state.destination = 'slack';
   var hasFolder = (ctx.taskFolders || []).some(function (f) {
@@ -20656,16 +20789,22 @@ function ntRender() {
   var channel = ntEl('nt-channel');
   if (isTask) {
     // A dashboard task has no channel: no channel list, no channel error.
-  } else if (_ntCtx.channels.length) {
-    channel.innerHTML = _ntCtx.channels
-      .map(function (c) {
-        var repos = (c.repos || []).map(function (r) {
-          return r.split('/').pop();
-        });
-        var label = '#' + c.name + (repos.length ? ' · ' + repos.join(', ') : '');
-        return '<option value="' + escAttr(c.id) + '"' + (c.id === _ntState.channelId ? ' selected' : '') + '>' + esc(label) + '</option>';
-      })
-      .join('');
+  } else if (_ntCtx.channels.length || _ntCtx.channelCreate || _ntState.channelId === '__new__') {
+    channel.innerHTML =
+      (_ntState.channelId ? '' : '<option value="" selected>채널 고르기</option>') +
+      _ntCtx.channels
+        .map(function (c) {
+          var repos = (c.repos || []).map(function (r) {
+            return r.split('/').pop();
+          });
+          var label = '#' + c.name + (repos.length ? ' · ' + repos.join(', ') : '');
+          return '<option value="' + escAttr(c.id) + '"' + (c.id === _ntState.channelId ? ' selected' : '') + '>' + esc(label) + '</option>';
+        })
+        .join('') +
+      // 2026-11-05 — an admin may start the task in a new channel for a repo.
+      (_ntCtx.channelCreate || _ntState.channelId === '__new__'
+        ? '<option value="__new__"' + (_ntState.channelId === '__new__' ? ' selected' : '') + '>＋ 새 repo 채널 만들기</option>'
+        : '');
     channel.disabled = false;
   } else {
     channel.innerHTML = '<option value="">' + (_ntCtx.membershipUnknown ? '채널 확인 실패' : '채널 없음') + '</option>';
@@ -20676,6 +20815,7 @@ function ntRender() {
         : '작업을 올릴 수 있는 채널이 없습니다 — repo가 연결된 Slack 채널에 참여해 주세요',
     );
   }
+  ntRenderNewChannel(isTask);
   // #853 — while the task plans first, autogoal and autoz do not apply: shown off and locked (the server agrees).
   var planning = _ntState.plan !== false;
   ['autogoal', 'autoz'].forEach(function (k) {
@@ -21665,6 +21805,45 @@ function ntOnPick(e) {
 
 function ntOnChannelChange() {
   _ntState.channelId = ntEl('nt-channel').value || null;
+  delete _ntState.channelFromLaunch;
+  ntRenderNewChannel(_ntState.destination === 'task');
+}
+
+// 2026-11-05 — the new repo channel's row: shown while "＋ 새 repo 채널" is chosen; its fields follow the state (a value
+// is written only when it differs, so typing is never reset).
+function ntRenderNewChannel(isTask) {
+  var row = ntEl('nt-newch');
+  if (!row || !_ntState || !_ntCtx) return;
+  var on = !isTask && _ntState.channelId === '__new__';
+  row.hidden = !on;
+  if (!on) return;
+  var repo = ntEl('nt-newch-repo');
+  var name = ntEl('nt-newch-name');
+  if (repo && repo.value !== (_ntState.newRepo || '')) repo.value = _ntState.newRepo || '';
+  if (name && name.value !== (_ntState.newChannelName || '')) name.value = _ntState.newChannelName || '';
+  var privWrap = ntEl('nt-newch-private-wrap');
+  // Shown while the bot may make a private channel — or while one is chosen, so it can be turned off.
+  if (privWrap) privWrap.hidden = !_ntCtx.channelCreatePrivate && !_ntState.newChannelPrivate;
+  var priv = ntEl('nt-newch-private');
+  if (priv) priv.checked = !!_ntState.newChannelPrivate;
+}
+
+// A field of the new repo channel changed: the name follows the repo (workspace-<repo>) until it is edited; emptied,
+// it follows again.
+function ntOnNewChannelInput(field) {
+  if (!_ntState) return;
+  if (field === 'repo') {
+    _ntState.newRepo = ntEl('nt-newch-repo').value;
+    if (!_ntState.newChannelNameEdited) _ntState.newChannelName = ntRepoChannelName(ntRepoOf(_ntState.newRepo));
+  } else if (field === 'name') {
+    var typed = ntEl('nt-newch-name').value;
+    _ntState.newChannelNameEdited = typed.length > 0;
+    _ntState.newChannelName = typed.length > 0 ? typed : ntRepoChannelName(ntRepoOf(_ntState.newRepo));
+  } else if (field === 'private') {
+    _ntState.newChannelPrivate = !!ntEl('nt-newch-private').checked;
+  }
+  ntSetError('');
+  ntRenderNewChannel(false);
 }
 
 // #600 ⑥ — the destination: a Slack channel or a dashboard task (only when offered).
@@ -21767,9 +21946,11 @@ async function submitNewTask(detail) {
     ntSetError(
       _ntState.destination === 'task'
         ? ntBlockedHint(_ntState, files) || '작업 지시를 써 주세요'
-        : _ntState.channelId
-          ? '작업 지시를 쓰거나 파일을 첨부해 주세요'
-          : '작업을 올릴 채널을 골라 주세요',
+        : _ntState.channelId === '__new__' && ntNewChannelProblem(_ntState, _ntCtx)
+          ? ntNewChannelProblem(_ntState, _ntCtx)
+          : _ntState.channelId
+            ? '작업 지시를 쓰거나 파일을 첨부해 주세요'
+            : '작업을 올릴 채널을 골라 주세요',
     );
     return;
   }
@@ -21843,7 +22024,14 @@ function ntBeginLaunch(submitted, files) {
   _ntPending.unshift(launch);
   _ntBusy = true;
   _ntRequestId = ntNewRequestId();
-  _ntState = ntStateAfterLaunch(submitted, submitted.destination === 'task' ? {} : { channel: submitted.channelId }, _ntCtx);
+  _ntState = ntStateAfterLaunch(
+    submitted,
+    submitted.destination === 'task' || submitted.channelId === '__new__' ? {} : { channel: submitted.channelId },
+    _ntCtx,
+  );
+  // A new repo channel has no id yet: the next task takes it once the launch answers (ntOnLaunched), unless the
+  // channel is changed in between (ntOnChannelChange).
+  if (submitted.channelId === '__new__') _ntState.channelFromLaunch = launch.requestId;
   var composer = ntEl('nt-composer');
   if (composer && typeof composer.clear === 'function') composer.clear();
   _ntValue = '';
@@ -21916,6 +22104,7 @@ function ntOnLaunched(data, submitted, launch) {
   launch.answeredAt = Date.now();
   launch.permalink = data.permalink ? String(data.permalink) : '';
   launch.phase = '에이전트를 시작하는 중…';
+  if (typeof ntFollowLaunchChannel === 'function') ntFollowLaunchChannel(data, launch);
   // A command that only answers (/help, /model opus …): its answer is in the new thread, and no task comes — no
   // 시작 중 card waits for one.
   if (data.status === 'answered') {
@@ -21945,12 +22134,32 @@ function ntOnLaunched(data, submitted, launch) {
     : null;
   // A toast on the page's <ui-toaster>: 카드 열기 opens this launch's card (not a later launch's), Slack에서 보기
   // its thread.
-  dashToast(ntLaunchToast(data, channel ? channel.name : null, restored), function () {
+  dashToast(ntLaunchToast(data, channel ? channel.name : data.channelName ? String(data.channelName) : null, restored), function () {
     ntOpenLaunch(launch);
   });
   // Its 시작 중 card was pressed while it was on its way: the same ask goes on now that it has a key.
   if (launch.wantOpen && !launch.failed) ntOpenLaunch(launch, true);
   ntPendingWatch();
+}
+
+// 2026-11-05 — a new repo channel (made or found) came back with the answer — a task's or an answered command's: the
+// next new task starts there unless the channel was changed meanwhile, and the context is read again so the
+// composer offers it (the admin is a member now).
+function ntFollowLaunchChannel(data, launch) {
+  if (!data || !data.channelName || !data.channel) return;
+  var moved = false;
+  if (_ntState && _ntState.channelFromLaunch === launch.requestId) {
+    _ntState.channelId = String(data.channel);
+    delete _ntState.channelFromLaunch;
+    moved = true;
+  }
+  var known = ((_ntCtx && _ntCtx.channels) || []).some(function (c) {
+    return c.id === data.channel;
+  });
+  // A channel not offered yet comes with the context read again (it repaints); a known one is repainted now, so the
+  // select shows where the next task goes.
+  if (!known && typeof ntLoadContext === 'function') ntLoadContext();
+  else if (moved && typeof ntRender === 'function') ntRender();
 }
 
 // What the dialog holds after a launch: a started task starts the next one clean
@@ -22003,7 +22212,10 @@ function ntLaunchToast(data, channelName, restored) {
   }
   var toast = {
     title: data.status === 'running' ? '작업을 시작했어요' : '작업을 접수했어요',
-    description: '#' + (channelName || data.channel),
+    description:
+      '#' +
+      (channelName || data.channel) +
+      (data.channelCreated === true ? ' · 새 채널을 만들었어요' : data.channelCreated === false ? ' · 이 repo의 채널이 이미 있어 그 채널에 올렸어요' : ''),
     tone: 'success',
     action: { id: 'open', label: '카드 열기' },
     duration: 12000,
@@ -22227,7 +22439,8 @@ function ntPendingPlace(host) {
     var col = p.failed ? 'waiting' : 'working';
     _cardHost[p.id] = host;
     _cardCol[p.id] = col;
-    _cardData[p.id] = ntPendingCardOf(p, ntChannelName(p.state && p.state.channelId));
+    // A new repo channel ('__new__') is named by the name asked for.
+    _cardData[p.id] = ntPendingCardOf(p, ntChannelName(p.state && p.state.channelId) || (p.state && p.state.newChannelName) || null);
     _cardDrawn[p.id] = true;
     out[col].push(p.id);
   });
@@ -22247,7 +22460,10 @@ function ntPendingStatus(launch, text) {
   launch.phase = text;
   var kb = document.getElementById('kanban');
   if (!kb || _cardHost[launch.id] !== kb || !_cardData[launch.id]) return;
-  _cardData[launch.id] = ntPendingCardOf(launch, ntChannelName(launch.state && launch.state.channelId));
+  _cardData[launch.id] = ntPendingCardOf(
+    launch,
+    ntChannelName(launch.state && launch.state.channelId) || (launch.state && launch.state.newChannelName) || null,
+  );
   inboxPaint(kb);
 }
 
@@ -22716,5 +22932,5 @@ document.addEventListener('visibilitychange', function() {
 })();
 </script>
 </body>
-</html>`);
+</html>`));
 }

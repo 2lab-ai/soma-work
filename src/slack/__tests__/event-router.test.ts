@@ -10,6 +10,7 @@ import type { SlackApiHelper } from '../slack-api-helper';
 vi.mock('../../channel-registry', () => ({
   registerChannel: vi.fn().mockResolvedValue(null),
   unregisterChannel: vi.fn(),
+  isChannelBeingMade: vi.fn(() => false),
 }));
 
 // Mock dependencies
@@ -533,6 +534,56 @@ describe('EventRouter', () => {
           text: expect.stringContaining('Claude Code'),
         }),
       );
+    });
+
+    it('a channel the bot is making (a dashboard repo channel): no welcome, no re-read into the registry', async () => {
+      const { registerChannel, isChannelBeingMade } = await import('../../channel-registry');
+      vi.mocked(registerChannel).mockClear();
+      vi.mocked(isChannelBeingMade).mockImplementation((name: string) => name === 'workspace-new');
+      mockSlackApi.getChannelInfo.mockResolvedValueOnce({ name: 'workspace-new', creator: 'B123' });
+      router.setup();
+      const handler = mockApp.event.mock.calls.find((call) => call[0] === 'member_joined_channel')![1];
+      const mockSay = vi.fn();
+
+      await handler({ event: { user: 'B123', channel: 'C_NEW' }, say: mockSay });
+
+      expect(mockSay).not.toHaveBeenCalled();
+      expect(registerChannel).not.toHaveBeenCalled();
+      vi.mocked(isChannelBeingMade).mockReset();
+      vi.mocked(isChannelBeingMade).mockReturnValue(false);
+    });
+
+    it('a channel the bot made and rejoins later (even minutes later): registered again, still no welcome', async () => {
+      const { registerChannel } = await import('../../channel-registry');
+      vi.mocked(registerChannel).mockClear();
+      mockSlackApi.getChannelInfo.mockResolvedValueOnce({
+        name: 'workspace-old',
+        creator: 'B123',
+        created: Math.floor(Date.now() / 1000) - 120,
+      });
+      router.setup();
+      const handler = mockApp.event.mock.calls.find((call) => call[0] === 'member_joined_channel')![1];
+      const mockSay = vi.fn();
+
+      await handler({ event: { user: 'B123', channel: 'C_OLD' }, say: mockSay });
+
+      expect(registerChannel).toHaveBeenCalledTimes(1);
+      expect(mockSay).not.toHaveBeenCalled();
+    });
+
+    it('a channel someone else made: registered and welcomed, its info read once', async () => {
+      const { registerChannel } = await import('../../channel-registry');
+      vi.mocked(registerChannel).mockClear();
+      mockSlackApi.getChannelInfo.mockResolvedValueOnce({ name: 'team', creator: 'U_HUMAN' });
+      router.setup();
+      const handler = mockApp.event.mock.calls.find((call) => call[0] === 'member_joined_channel')![1];
+      const mockSay = vi.fn();
+
+      await handler({ event: { user: 'B123', channel: 'C_TEAM' }, say: mockSay });
+
+      expect(registerChannel).toHaveBeenCalledTimes(1);
+      expect(mockSay).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining('#team') }));
+      expect(mockSlackApi.getChannelInfo).toHaveBeenCalledTimes(1);
     });
 
     it('should not send message when other user joins', async () => {
