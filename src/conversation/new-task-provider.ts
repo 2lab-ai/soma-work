@@ -62,17 +62,22 @@ async function botScopes(client: WebClient): Promise<Set<string>> {
 }
 
 /**
- * The repo as GitHub shows it to the bot (a PAT, else the GitHub App installation): 404 = missing (or not
- * readable — either way the bot could not work on it); no credentials, a timeout or any other answer = unknown.
+ * The repo as GitHub shows it to the bot — the GitHub App installation first (the identity its git and gh work
+ * with), a PAT only where no App is configured: 404 = missing (or not readable — either way the bot could not work
+ * on it); no credentials, a timeout or any other answer = unknown.
  */
 export async function checkRepoOnGitHub(repo: string): Promise<'ok' | 'missing' | 'unknown'> {
-  let token = config.github.token || '';
-  if (!token) {
+  let token = '';
+  const app = getGitHubAppAuth();
+  if (app) {
     try {
-      token = (await getGitHubAppAuth()?.getInstallationToken()) ?? '';
+      token = (await app.getInstallationToken()) ?? '';
     } catch (error) {
-      logger.warn('New repo channel: no GitHub token — repo not checked', { repo, error: String(error) });
+      logger.warn('New repo channel: no GitHub App token — repo not checked', { repo, error: String(error) });
+      return 'unknown';
     }
+  } else {
+    token = config.github.token || '';
   }
   if (!token) return 'unknown';
   const [owner, name] = repo.split('/');
@@ -101,9 +106,9 @@ export function repoChannelDeps(client: WebClient): RepoChannelDeps {
     mappedChannels: (repo) =>
       findChannelsForRepo(repo)
         .map((id) => getChannel(id))
-        .filter((c): c is NonNullable<typeof c> => !!c)
+        .filter((c): c is NonNullable<typeof c> => !!c && c.isArchived !== true)
         .sort((a, b) => a.repos.length - b.repos.length)
-        .map((c) => ({ id: c.id, name: c.name })),
+        .map((c) => ({ id: c.id, name: c.name, ...(c.isPrivate === undefined ? {} : { isPrivate: c.isPrivate }) })),
     create: async (name, isPrivate) => {
       const res = await client.conversations.create({ name, is_private: isPrivate });
       const id = res.channel?.id;

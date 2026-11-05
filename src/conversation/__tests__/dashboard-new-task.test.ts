@@ -389,6 +389,14 @@ describe('Dashboard — New task API', () => {
       expect(provider.start).not.toHaveBeenCalled();
     });
 
+    it('an epic the admin may not make is refused before any channel is made', async () => {
+      const admin = await signIn('U_ADMIN');
+      const res = await post(admin, { ...newChannelBody(), epic: true, autogoal: false, autoz: false });
+      expect(res.statusCode).toBe(403);
+      expect(ensureChannel).not.toHaveBeenCalled();
+      expect(provider.start).not.toHaveBeenCalled();
+    });
+
     it('a channel id and a new channel together → 400', async () => {
       const admin = await signIn('U_ADMIN');
       const res = await post(admin, body({ newChannel: { repo: '2lab-ai/newrepo' } }));

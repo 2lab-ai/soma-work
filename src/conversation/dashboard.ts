@@ -4728,6 +4728,11 @@ export async function registerDashboardRoutes(
           const context = await withChannelCreation(await provider.context(userId, { fresh: true }), request, provider);
           const parsed = parseNewTaskSubmission(request.body, context);
           if (!parsed.ok) throw new NewTaskError(400, parsed.error);
+          // #854 — an epic only behind the owner's flag (the composer offers it only then). Checked before a new
+          // channel is made: a refused launch changes nothing in Slack.
+          if (parsed.value.epic === true && !epicTasksFor(userId)) {
+            throw new NewTaskError(403, '에픽은 꺼져 있습니다 — `/z epictasks on`으로 켜세요');
+          }
           // 2026-11-05 — a new repo channel first (an admin's; the context offered it): the task goes there.
           let channel: RepoChannelResult | undefined;
           if (parsed.value.newChannel) {
@@ -4740,10 +4745,6 @@ export async function registerDashboardRoutes(
           // the launch says where the answer is (`status: 'answered'`, no board card). It is judged as typed and sent
           // as typed: autoz is for an instruction, and `$autoz` after a command would make it a skill turn instead.
           const answerOnly = classifyCommand(parsed.value.prompt.trim(), userId) === 'control';
-          // #854 — an epic only behind the owner's flag (the composer offers it only then).
-          if (parsed.value.epic === true && !epicTasksFor(userId)) {
-            throw new NewTaskError(403, '에픽은 꺼져 있습니다 — `/z epictasks on`으로 켜세요');
-          }
           const launched = await provider.start(
             userId,
             answerOnly ? { ...parsed.value, autoz: false, answerOnly: true } : parsed.value,
@@ -20437,9 +20438,13 @@ function ntRepoChannelName(repo) {
     .replace(/-+$/, '');
 }
 
-// What keeps a new repo channel from being asked for, in words; '' when it can be.
-function ntNewChannelProblem(state) {
+// What keeps a new repo channel from being asked for, in words; '' when it can be. With the context: a private
+// channel the bot cannot make (no groups:write) is held, not made public.
+function ntNewChannelProblem(state, ctx) {
   if (!ntRepoOf(state.newRepo)) return '새 채널의 GitHub repo를 owner/repo 또는 github.com 주소로 써 주세요';
+  if (state.newChannelPrivate && ctx && !ctx.channelCreatePrivate) {
+    return '지금은 봇이 비공개 채널을 만들 수 없어요 — 비공개를 끄거나 봇에 groups:write 권한을 추가해 주세요';
+  }
   var name = String(state.newChannelName || '');
   if (!name || name.length > 80 || !/^[a-z0-9_-]+$/.test(name) || !/[a-z0-9]/.test(name)) {
     return '채널 이름은 소문자·숫자·-·_로 80자 이내로 써 주세요';
@@ -20550,7 +20555,9 @@ function ntCanSubmit(state, attachments) {
     return String(state.prompt || '').trim().length > 0 && (attachments || []).length === 0;
   }
   if (!state || !state.channelId) return false;
-  if (state.channelId === '__new__' && ntNewChannelProblem(state)) return false;
+  if (state.channelId === '__new__' && ntNewChannelProblem(state, typeof _ntCtx === 'undefined' ? null : _ntCtx)) {
+    return false;
+  }
   return String(state.prompt || '').trim().length > 0 || (attachments || []).length > 0;
 }
 
@@ -20711,8 +20718,8 @@ function ntReconcile(state, ctx) {
       return c.id === state.channelId;
     });
   if (!hasChannel) state.channelId = ctx.defaultChannelId || null;
-  // A private new channel only while the bot may make one.
-  if (!ctx.channelCreatePrivate) state.newChannelPrivate = false;
+  // A private new channel the bot may no longer make stays private: the submit is held (ntNewChannelProblem) until
+  // the admin turns it off — never made public behind their back.
   // A dashboard task, or a folder, that is no longer offered (#640 R1).
   if (!ctx.taskFolders) state.destination = 'slack';
   var hasFolder = (ctx.taskFolders || []).some(function (f) {
@@ -21785,6 +21792,7 @@ function ntOnPick(e) {
 
 function ntOnChannelChange() {
   _ntState.channelId = ntEl('nt-channel').value || null;
+  delete _ntState.channelFromLaunch;
   ntRenderNewChannel(_ntState.destination === 'task');
 }
 
@@ -21801,7 +21809,8 @@ function ntRenderNewChannel(isTask) {
   if (repo && repo.value !== (_ntState.newRepo || '')) repo.value = _ntState.newRepo || '';
   if (name && name.value !== (_ntState.newChannelName || '')) name.value = _ntState.newChannelName || '';
   var privWrap = ntEl('nt-newch-private-wrap');
-  if (privWrap) privWrap.hidden = !_ntCtx.channelCreatePrivate;
+  // Shown while the bot may make a private channel — or while one is chosen, so it can be turned off.
+  if (privWrap) privWrap.hidden = !_ntCtx.channelCreatePrivate && !_ntState.newChannelPrivate;
   var priv = ntEl('nt-newch-private');
   if (priv) priv.checked = !!_ntState.newChannelPrivate;
 }
@@ -21924,8 +21933,8 @@ async function submitNewTask(detail) {
     ntSetError(
       _ntState.destination === 'task'
         ? ntBlockedHint(_ntState, files) || '작업 지시를 써 주세요'
-        : _ntState.channelId === '__new__' && ntNewChannelProblem(_ntState)
-          ? ntNewChannelProblem(_ntState)
+        : _ntState.channelId === '__new__' && ntNewChannelProblem(_ntState, _ntCtx)
+          ? ntNewChannelProblem(_ntState, _ntCtx)
           : _ntState.channelId
             ? '작업 지시를 쓰거나 파일을 첨부해 주세요'
             : '작업을 올릴 채널을 골라 주세요',
@@ -22007,6 +22016,9 @@ function ntBeginLaunch(submitted, files) {
     submitted.destination === 'task' || submitted.channelId === '__new__' ? {} : { channel: submitted.channelId },
     _ntCtx,
   );
+  // A new repo channel has no id yet: the next task takes it once the launch answers (ntOnLaunched), unless the
+  // channel is changed in between (ntOnChannelChange).
+  if (submitted.channelId === '__new__') _ntState.channelFromLaunch = launch.requestId;
   var composer = ntEl('nt-composer');
   if (composer && typeof composer.clear === 'function') composer.clear();
   _ntValue = '';
@@ -22108,9 +22120,12 @@ function ntOnLaunched(data, submitted, launch) {
     : null;
   // 2026-11-05 — a new repo channel (made or found): its name came with the answer, and the next new task offers it
   // once the context is read again (the admin is a member now). The dialog's next task starts there.
-  if (data.channelName && data.channel && !channel) {
-    if (_ntState && !_ntState.channelId) _ntState.channelId = String(data.channel);
-    if (typeof ntLoadContext === 'function') ntLoadContext();
+  if (data.channelName && data.channel) {
+    if (_ntState && _ntState.channelFromLaunch === launch.requestId) {
+      _ntState.channelId = String(data.channel);
+      delete _ntState.channelFromLaunch;
+    }
+    if (!channel && typeof ntLoadContext === 'function') ntLoadContext();
   }
   // A toast on the page's <ui-toaster>: 카드 열기 opens this launch's card (not a later launch's), Slack에서 보기
   // its thread.

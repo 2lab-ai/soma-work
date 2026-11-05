@@ -181,6 +181,12 @@ describe('ensureRepoChannel', () => {
       'invite:C_NEW:U_ADMIN',
       'register:C_NEW:https://github.com/2lab-ai/new-repo',
     ]);
+    expect(d.register).toHaveBeenCalledWith({
+      id: 'C_NEW',
+      name: 'workspace-new-repo',
+      purpose: 'https://github.com/2lab-ai/new-repo',
+      isPrivate: false,
+    });
     expect(d.archive).not.toHaveBeenCalled();
   });
 
@@ -271,6 +277,113 @@ describe('ensureRepoChannel', () => {
       }),
     });
     await expect(ensureRepoChannel('U_ADMIN', REQUEST, d)).rejects.toMatchObject({ statusCode: 502 });
+  });
+
+  // Review (astra-zhuge, PR #959) P1 — a private request never lands in a channel not known to be private.
+  it('a private request for a repo whose channel is public (or not known private) → 409, nothing touched', async () => {
+    for (const mapped of [
+      { id: 'C_PUB', name: 'workspace-new-repo', isPrivate: false },
+      { id: 'C_UNK', name: 'workspace-new-repo' },
+    ]) {
+      const d = deps({ mappedChannels: vi.fn(() => [mapped]) });
+      await expect(ensureRepoChannel('U_ADMIN', { ...REQUEST, isPrivate: true }, d)).rejects.toMatchObject({
+        statusCode: 409,
+      });
+      expect(d.invite).not.toHaveBeenCalled();
+      expect(d.create).not.toHaveBeenCalled();
+    }
+    const priv = deps({ mappedChannels: vi.fn(() => [{ id: 'C_PRIV', name: 'workspace-new-repo', isPrivate: true }]) });
+    await expect(ensureRepoChannel('U_ADMIN', { ...REQUEST, isPrivate: true }, priv)).resolves.toEqual({
+      channelId: 'C_PRIV',
+      channelName: 'workspace-new-repo',
+      created: false,
+    });
+  });
+
+  it('a mapped channel that turns out archived is passed over: the next one, else a new channel', async () => {
+    const archived = vi.fn(async (id: string) => {
+      if (id === 'C_ARCH') throw slackError('is_archived');
+    });
+    const next = deps({
+      mappedChannels: vi.fn(() => [
+        { id: 'C_ARCH', name: 'old' },
+        { id: 'C_LIVE', name: 'live' },
+      ]),
+      invite: archived,
+    });
+    await expect(ensureRepoChannel('U_ADMIN', REQUEST, next)).resolves.toMatchObject({
+      channelId: 'C_LIVE',
+      created: false,
+    });
+    const none = deps({ mappedChannels: vi.fn(() => [{ id: 'C_ARCH', name: 'old' }]), invite: archived });
+    await expect(ensureRepoChannel('U_ADMIN', REQUEST, none)).resolves.toMatchObject({
+      channelId: 'C_NEW',
+      created: true,
+    });
+  });
+
+  it('a missing scope or a restriction keeps its status at every step, not only create', async () => {
+    const purpose = deps({
+      setPurpose: vi.fn(async () => {
+        throw slackError('missing_scope');
+      }),
+    });
+    await expect(ensureRepoChannel('U_ADMIN', REQUEST, purpose)).rejects.toMatchObject({ statusCode: 503 });
+    expect(purpose.archive).toHaveBeenCalledWith('C_NEW');
+    const invite = deps({
+      invite: vi.fn(async () => {
+        throw slackError('restricted_action');
+      }),
+    });
+    await expect(ensureRepoChannel('U_ADMIN', REQUEST, invite)).rejects.toMatchObject({ statusCode: 403 });
+    const mapped = deps({
+      mappedChannels: vi.fn(() => [{ id: 'C_OLD', name: 'old' }]),
+      invite: vi.fn(async () => {
+        throw slackError('missing_scope');
+      }),
+    });
+    await expect(ensureRepoChannel('U_ADMIN', REQUEST, mapped)).rejects.toMatchObject({ statusCode: 503 });
+  });
+
+  it('when the archive fails too, the answer says the channel is still there — never that it was archived', async () => {
+    const d = deps({
+      setPurpose: vi.fn(async () => {
+        throw slackError('fatal_error');
+      }),
+      archive: vi.fn(async () => {
+        throw slackError('not_in_channel');
+      }),
+    });
+    const error = await ensureRepoChannel('U_ADMIN', REQUEST, d).catch((e) => e);
+    expect(error.statusCode).toBe(502);
+    expect(error.message).toMatch(/남아 있으니 직접 보관/);
+    expect(error.message).not.toMatch(/보관했습니다/);
+  });
+
+  it('two admins at once on one repo: one channel — the second finds the first', async () => {
+    const registered: Array<{ id: string; name: string; isPrivate?: boolean }> = [];
+    let n = 0;
+    const shared = (): RepoChannelDeps & Record<string, ReturnType<typeof vi.fn>> =>
+      deps({
+        mappedChannels: vi.fn(() => [...registered]),
+        create: vi.fn(async (name: string) => {
+          await new Promise((r) => setTimeout(r, 5));
+          n += 1;
+          return { id: `C_${n}`, name };
+        }),
+        register: vi.fn((info) => {
+          registered.push({ id: info.id, name: info.name, isPrivate: info.isPrivate });
+        }),
+      });
+    const a = shared();
+    const b = shared();
+    const [ra, rb] = await Promise.all([
+      ensureRepoChannel('U_A', REQUEST, a),
+      ensureRepoChannel('U_B', { ...REQUEST, name: 'other-name' }, b),
+    ]);
+    expect(n).toBe(1);
+    expect(ra).toMatchObject({ channelId: 'C_1', created: true });
+    expect(rb).toMatchObject({ channelId: 'C_1', created: false });
   });
 
   it('slackErrorCode reads the Web API error code, nothing else', () => {
