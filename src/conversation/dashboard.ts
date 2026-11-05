@@ -234,6 +234,8 @@ export interface KanbanSession {
    */
   channelName?: string;
   repo?: string;
+  /** The channel is private (card-where.ts): no name and no channel-mapped repo go to the board's viewers. */
+  channelPrivate?: true;
   /**
    * SSOT 2026-11-05 — the board's sort clocks (epoch ms): when the task started (its own start, else its Slack
    * thread's first message) and when its work last moved (the later of its last input and its last change of
@@ -9552,11 +9554,12 @@ function doneDayLabel(key, now) {
 // Pure: [{ key, label, open, items }] — opened = the reader's choices.
 // SSOT 2026-10-30 T2: a starred card leaves its day for the pinned group
 // ('starred', ★ 즐겨찾기), first and open until the reader folds it.
-// SSOT 2026-11-05 — order (the board's sort, optional): the days and the cards in a day follow its direction, the
-// cards by its clock — 마지막 진행 is when the work finished, 처음 시작 when it started. Without it: newest first.
+// SSOT 2026-11-05 — order (the board's sort, optional): the days (by finish) and the cards in a day follow its
+// direction, the cards by its clock (cardProgressAt · cardStartedAt). Without it: newest finish first.
 function planDoneGroups(done, now, opened, order) {
   var sign = order && order.dir === 'asc' ? 1 : -1;
-  var timeOf = order && order.sort === 'start' ? cardStartedAt : doneTimeOf;
+  // A revived card's last progress is its revival, not its old finish: the board's clock, the day still its finish.
+  var timeOf = !order ? doneTimeOf : order.sort === 'start' ? cardStartedAt : cardProgressAt;
   var byKey = Object.create(null);
   var keys = [];
   var pinned = [];
@@ -14566,6 +14569,8 @@ function cardChannelOf(s) {
   var id = s && typeof s.channelId === 'string' ? s.channelId : '';
   var name = s && typeof s.channelName === 'string' ? s.channelName.trim() : '';
   if (name) return { key: 'c:' + id, text: '#' + name, title: '채널: #' + name };
+  // A private channel's name is not sent to every viewer (card-where.ts): one group for all of them.
+  if (s && s.channelPrivate === true) return { key: 'private', text: '비공개 채널', title: '채널: 비공개 채널' };
   if (id.charAt(0) === 'D') return { key: 'dm', text: 'DM', title: '채널: Slack DM' };
   if (!id) return { key: 'web', text: '대시보드', title: '채널: 없음 — 대시보드에서만 진행' };
   return { key: 'c:' + id, text: '#' + id, title: '채널: ' + id };
@@ -14664,7 +14669,7 @@ function sortBoardColumn(list, sort, dir) {
 // Pure: the board the columns draw — every column filtered and sorted — and the cards the filter hid, per column
 // (hiddenCards[col]). keep: a card key that passes regardless (a deep link's card). An epic's children (its bundle,
 // drawn under it) are judged one by one: the epic stays while it or any child passes, carrying only the children that
-// pass (a copy — the data is never changed); a hidden child is counted in its epic's column.
+// pass, in the board's order (a copy — the data is never changed); a hidden child is counted in its epic's column.
 function boardViewOf(board, f, query, now, keep) {
   var out = {};
   var hidden = 0;
@@ -14683,7 +14688,11 @@ function boardViewOf(board, f, query, now, keep) {
         else hiddenCards[col].push(kids[j]);
       }
       if (!passes(s) && !keptKids.length) { hiddenCards[col].push(s); continue; }
-      if (keptKids.length === kids.length) { kept.push(s); continue; }
+      // The children under the epic follow the board's order too.
+      keptKids = sortBoardColumn(keptKids, f.sort, f.dir);
+      var same = keptKids.length === kids.length;
+      for (var x = 0; same && x < kids.length; x++) if (keptKids[x] !== kids[x]) same = false;
+      if (same) { kept.push(s); continue; }
       var copy = {};
       for (var p in s) copy[p] = s[p];
       var epic = {};
