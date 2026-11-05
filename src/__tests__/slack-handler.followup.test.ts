@@ -879,6 +879,59 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(goalDriver).toHaveBeenCalledTimes(3);
     });
 
+    it('a turn that left text clears the mark even when a queued follow-up holds its driver', () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      const failed = { canDrain: false, outcome: { result: 'error', reason: 'turn ended without success' } };
+      const settleNoText = (report: any) => {
+        handlerAny.followupSlotHeldGoalSessions = new Set([SESSION_KEY]);
+        handlerAny.releaseDeferredGoalDriver(SESSION_KEY, report);
+      };
+
+      settleNoText(failed); // the one automatic resume is spent
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+      // A Retry ran and made progress, but a queued follow-up outranks the driver (§3.6).
+      vi.spyOn(handlerAny, 'shouldDeferGoalDriver').mockReturnValueOnce(true);
+      handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['진행했습니다']);
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+      settleNoText(failed); // a new streak: resumed once
+      expect(goalDriver).toHaveBeenCalledTimes(2);
+    });
+
+    it("a person's message re-arms the resume after the goal stopped on a second failure", async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      const failed = { canDrain: false, outcome: { result: 'error', reason: 'turn ended without success' } };
+      const settleNoText = (report: any) => {
+        handlerAny.followupSlotHeldGoalSessions = new Set([SESSION_KEY]);
+        handlerAny.releaseDeferredGoalDriver(SESSION_KEY, report);
+      };
+      settleNoText(failed);
+      settleNoText(failed);
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+
+      await handler.handleMessage(message({ ts: '555.666', text: '다시 해봐' }), say());
+      expect(handlerAny.goalErrorResumeSpent?.has(SESSION_KEY) ?? false).toBe(false);
+    });
+
+    it('a watchdog stall counts as a failure — repeated stalls are resumed once', () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      const stalled = { canDrain: false, outcome: { result: 'interrupted', reason: 'stall-timeout' } };
+      const settleNoText = (report: any) => {
+        handlerAny.followupSlotHeldGoalSessions = new Set([SESSION_KEY]);
+        handlerAny.releaseDeferredGoalDriver(SESSION_KEY, report);
+      };
+
+      settleNoText(stalled);
+      settleNoText(stalled);
+      settleNoText(stalled);
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+    });
+
     it('fires once the slot is free whatever the outcome — a handled error is not a strand', async () => {
       registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
       const goalDriver = vi.fn();
