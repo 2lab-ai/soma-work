@@ -490,11 +490,28 @@ describe('T4 — the composer slides away while reading; ^ brings it back', () =
     expect(panel.hasAttribute('data-tuck')).toBe(false);
   });
 
+  // SSOT 2026-11-05: the steering element's queue button floats above the composer and sets its own visibility —
+  // tucked, it must neither peek out under ^ nor take a tap, and an open queue closes.
+  it('tucking closes the composer’s queue; showing it again does not open it', () => {
+    const panel = new FakeNode('slide-panel');
+    const steer = new FakeNode('cmd-steer') as FakeNode & { closeQueue?: () => void };
+    const closed: number[] = [];
+    steer.closeQueue = () => closed.push(1);
+    const m = load<{ rdTuck: (on: boolean) => void }>(['rdTuck'], { document: fakeDocument([panel, steer]) });
+    m.rdTuck(true);
+    expect(closed).toHaveLength(1);
+    m.rdTuck(false);
+    expect(closed).toHaveLength(1);
+  });
+
   it('tucked, the composer leaves the flow and slides down, hidden from the reader and the keyboard', () => {
     const r = cssRule('.slide-panel[data-tuck] .panel-command');
     expect(r).toContain('position: absolute;');
     expect(r).toContain('transform: translateY(100%);');
     expect(r).toContain('visibility: hidden;');
+    // The queue's round button floats above the composer's box and keeps its own visibility: clipped, no presses.
+    expect(r).toContain('clip-path: inset(0);');
+    expect(r).toContain('pointer-events: none;');
     expect(cssRule('.slide-panel::part(body)')).toContain('position: relative;');
   });
 

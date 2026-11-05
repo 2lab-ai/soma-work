@@ -6125,6 +6125,9 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 .slide-panel[data-tuck] .panel-command {
   position: absolute; left: 0; right: 0; bottom: 0; transform: translateY(100%); visibility: hidden;
   transition: transform var(--dur-move) var(--ease-out), visibility 0s linear var(--dur-move);
+  /* The steering queue's round button floats above the composer's box and keeps its own visibility (SSOT
+     2026-11-05): clipped to the box, and no presses, so it never peeks out under ^ or takes a tap. */
+  clip-path: inset(0); pointer-events: none;
 }
 .pc-reveal {
   position: absolute; z-index: 7; right: calc(16px + env(safe-area-inset-right, 0px)); bottom: calc(16px + env(safe-area-inset-bottom, 0px));
@@ -7053,6 +7056,9 @@ function rdTuck(on) {
   if (!p || p.hasAttribute('data-tuck') === !!on) return;
   if (on) p.setAttribute('data-tuck', '');
   else p.removeAttribute('data-tuck');
+  // The composer goes: its open follow-up queue (a popover or the phone sheet) goes with it.
+  var steer = on ? document.getElementById('cmd-steer') : null;
+  if (steer && typeof steer.closeQueue === 'function') steer.closeQueue();
 }
 // ^ (#pc-reveal): the composer back where the reader is. From a key (a click with no pointer: detail 0) focus follows
 // into it — the button itself steps aside, and focus must not fall to the page.
@@ -12020,7 +12026,10 @@ function steeringData(s, mode) {
     if (f.files && f.files.length) it.files = f.files.map(String);
     items.push(it);
   }
-  return { running: mode !== 'closed' && s.activityState === 'working', canAct: mode !== 'readonly', disabled: mode === 'closed', items: items };
+  // Docked (SSOT 2026-11-05): a note the queue holds waits behind the element's round count button at the composer's
+  // top right — hover or press opens the queue, a bottom sheet on a phone — so it never covers the chat above the
+  // field; only a note on its way in shows there.
+  return { running: mode !== 'closed' && s.activityState === 'working', canAct: mode !== 'readonly', disabled: mode === 'closed', items: items, queue: 'dock' };
 }
 // The note the element names (its host id) as the payload has it: the generation
 // an action on it carries. A local row (a send that failed) is not in the queue.
