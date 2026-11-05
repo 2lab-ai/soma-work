@@ -342,6 +342,8 @@ describe('T3 — minimal: a card shows what matters', () => {
         'acQuestionHtml',
         'renderEpicPlan',
         'cardLinksFace',
+        'cardRepoOf',
+        'cardChannelOf',
         'renderCardBody',
       ],
       [
@@ -526,7 +528,10 @@ describe('T5 — minimal keeps every session that needs the user in reach (revie
     const lane = env.planCronLane(board(), [], null);
     expect(keys(lane.board.waiting)).toEqual([]);
     expect(keys(lane.board.working)).toEqual([]);
-    expect(clientFn('renderBoard')).toContain('planCronLane(board, _cronJobs, _cronRevealKey, !isAdvanced());');
+    // SSOT 2026-11-05 — the lane plans from the board as the filters leave it.
+    expect(clientFn('renderBoard')).toContain(
+      'planCronLane(boardFilterView(board), _cronJobs, _cronRevealKey, !isAdvanced());',
+    );
   });
 
   it('the picker hides only on the viewer’s own board — elsewhere the owner acts after picking themselves (astra P1)', () => {
