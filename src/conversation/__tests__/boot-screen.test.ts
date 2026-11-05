@@ -2,7 +2,7 @@
  * The dashboard's first screen (#965). Before: on a fresh load or a refresh the closed dialogs' contents (the session
  * lifecycle form, the rollback footer, the new-task form) were drawn in the page for seconds — an undefined custom
  * element draws its light-DOM children in the flow, and the modules define them only after the ~1 MB document is
- * parsed (phone, measured: painted from 1.2 s to 5.1 s). The tests pin:
+ * parsed (phone, CPU 4x, measured: painted 0.31 → 3.03 s cold, 0.32 → 0.60 s on a warm refresh). The tests pin:
  *
  *   [T1] every overlay element the page's markup carries is hidden until defined (display: none);
  *   [T2] a first screen shaped like the page is the first child of <body>, and its script lifts it when nothing the
