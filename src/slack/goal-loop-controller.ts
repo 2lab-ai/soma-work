@@ -59,6 +59,7 @@ import {
   shouldRunGoalIdleDriver,
 } from './goal-completion-evaluator';
 import { GOAL_CONTINUATION_TEXT_PREFIX, GOAL_SUMMARY_PERSIST_MAX } from './goal-continuation';
+import { gateGoalVerdictOnTasks, goalTaskListLines, taskGateGapClosed } from './goal-task-gate';
 
 export { GOAL_SUMMARY_PERSIST_MAX };
 
@@ -432,7 +433,13 @@ export class GoalLoopController {
     const hasGap = !!activeGoal.lastEvalReason?.trim();
     const noTurnText = workSummaryRaw === '';
     const alreadyJudged = activeGoal.lastEvalSummaryHash === summaryHash;
-    if (hasGap && (noTurnText || (cause === 'kick' && alreadyJudged))) {
+    // A task-gate gap whose named tasks are all closed since is new evidence,
+    // even with no turn text: judge again (goal-task-gate).
+    if (
+      hasGap &&
+      (noTurnText || (cause === 'kick' && alreadyJudged)) &&
+      !taskGateGapClosed(activeGoal, session.taskLedger)
+    ) {
       // #745 × #788: a turn that left no text may still have done work (files,
       // commands) before it was cut. Its progress is unknown, so the rollback
       // span from the first failure may not reach across it.
@@ -469,11 +476,23 @@ export class GoalLoopController {
     session.systemPrompt = undefined;
     this.persist();
 
+    // The model's latest task list, so a previous gap about open tasks (the
+    // task gate — see goal-task-gate) can be seen closed. The statuses are the
+    // model's own marks: the evaluator is told they are claims, not evidence.
+    const taskLines = goalTaskListLines(session.taskLedger);
     const evalUserSummary = [
       'Eval trigger: idle-settle (work turn ended)',
       '',
       '## Assistant turn output (latest work turn)',
       workSummaryRaw ? workSummaryRaw.slice(0, 16_000) : '(no assistant text was produced this turn)',
+      ...(taskLines.length
+        ? [
+            '',
+            "## Task list (the work model's latest TodoWrite list)",
+            "The statuses are the work model's own marks — claims, not evidence. The host itself holds the goal open while any task is open; judge the objective from the evidence above.",
+            ...taskLines.map((l) => `- ${l}`),
+          ]
+        : []),
     ].join('\n');
 
     logger.info('Goal session settled idle — dispatching completion eval', { sessionKey });
@@ -557,11 +576,18 @@ export class GoalLoopController {
     sessionKey: string,
     session: ConversationSession,
     activeGoal: SessionGoal,
-    verdict: GoalEvalVerdict,
+    evalVerdict: GoalEvalVerdict,
     summaryHash: string,
     opts: { reused?: GoalVerdictReuse; stallAllowed?: boolean } = {},
   ): Promise<void> {
     const { requestCoordinator, logger } = this.deps;
+    // Task gate: the evaluator's "complete" holds only when no task on the
+    // model's latest list is open. Otherwise it is a gap naming those tasks.
+    const gate = gateGoalVerdictOnTasks(evalVerdict, session.taskLedger);
+    const verdict = gate.verdict;
+    if (gate.tasks) {
+      logger.info('Goal completion held — tasks on the latest list are still open', { sessionKey, ...gate.tasks });
+    }
     // #745: where the current failure started — a reused verdict judged no new turn.
     if (!opts.reused) trackGoalFirstFailure(session, activeGoal, verdict, this.now());
     // A kick may not stall (runOnce); the repeat still counted toward the first failure above.
@@ -702,7 +728,9 @@ export class GoalLoopController {
         ? `🔄 Goal continues — no new evaluation (${
             opts.reused === 'interrupted' ? 'the last turn was cut short' : 'nothing changed since the last evaluation'
           }).`
-        : `🔄 Goal not yet complete (eval-model verdict).\n*Reason:* ${verdict.reason}\n*Remaining:*\n${remaining}`,
+        : gate.tasks
+          ? `🔄 Goal not yet complete — the evaluator reported the objective met, but ${gate.tasks.open} of ${gate.tasks.total} tasks are still open.\n*Open tasks:*\n${remaining}\n*Eval reason:* ${gate.tasks.evalReason}`
+          : `🔄 Goal not yet complete (eval-model verdict).\n*Reason:* ${verdict.reason}\n*Remaining:*\n${remaining}`,
     );
 
     // Never supersede a turn that started during the eval. A live request
