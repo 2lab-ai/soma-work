@@ -14,7 +14,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { bootClientJs, bootScreenCss, bootScreenHtml } from '../boot-screen';
+import { BOOT_SCREEN_SLOT, bootClientJs, bootScreenCss, bootScreenHtml, withBootScreen } from '../boot-screen';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -121,10 +121,18 @@ describe('[T1] overlays the page carries are hidden until defined', () => {
 });
 
 describe('[T2] the first screen is wired first in <body>, its rules after the kit sheet', () => {
-  it('the body opens with the layer and its script, before the page', () => {
+  it('the body opens with the slot, and the rendered page fills it', () => {
     const body = TEMPLATE.slice(TEMPLATE.indexOf('<body '));
     const head = body.slice(body.indexOf('>') + 1, body.indexOf('<div class="app">')).trim();
-    expect(head).toBe(`\${bootScreenHtml()}\n<script>\${bootClientJs()}</script>`);
+    expect(head).toBe(BOOT_SCREEN_SLOT);
+    expect(TEMPLATE).toContain('return withBootScreen(fillUiIcons(`<!DOCTYPE html>');
+  });
+  it('the slot takes the layer, then its script — tagged, so the page script stays the only bare <script>', () => {
+    const page = withBootScreen(`<body>\n${BOOT_SCREEN_SLOT}\n<div class="app"></div>\n<script>app()</script></body>`);
+    expect(
+      page.startsWith(`<body>\n${bootScreenHtml()}\n<script data-boot>${bootClientJs()}</script>\n<div class="app">`),
+    ).toBe(true);
+    expect(page.match(/<script>([\s\S]*?)<\/script>/)?.[1]).toBe('app()');
   });
   it('its rules come after the kit sheet (.ui-skeleton) inside <head>', () => {
     const kit = TEMPLATE.indexOf(`\${uiLibKitCss()}`);

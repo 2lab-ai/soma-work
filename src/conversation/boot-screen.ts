@@ -161,3 +161,14 @@ const BOOT_CLIENT_JS = `
 export function bootClientJs(): string {
   return BOOT_CLIENT_JS;
 }
+
+/** The slot renderDashboardPage leaves first in <body>: a comment, so the body markup stays a plain template slice. */
+export const BOOT_SCREEN_SLOT = '<!-- boot-screen -->';
+
+/**
+ * Puts the layer and its script in the page's slot. The script carries data-boot, so it is never taken for the page's
+ * own (the only bare <script> in <body>).
+ */
+export function withBootScreen(html: string): string {
+  return html.replace(BOOT_SCREEN_SLOT, () => `${bootScreenHtml()}\n<script data-boot>${bootClientJs()}</script>`);
+}
