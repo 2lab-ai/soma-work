@@ -550,6 +550,8 @@ export class SlackHandler {
    * turn settles.
    */
   private restartResumedSessionKeys = new Set<string>();
+  /** `resumeActiveGoals` has run since boot — see {@link handBackFailedRestartResume}. */
+  private restartGoalPassRan = false;
   /**
    * Sessions whose queue holds a row a host-side cut left `uncertain` (a
    * restart, an auto-compact stop) and whose conversation is about to be
@@ -7621,10 +7623,20 @@ export class SlackHandler {
    * A restart resume whose turn never started (`handleMessage` threw) leaves a
    * cut goal session with no driver: `resumeActiveGoals` leaves the loop out of
    * it for that resume. Hand it to the loop: free its stale `working` state,
-   * give back the cut continuation (the loop's turn replaces it) and kick once. Not while a request runs or the loop is already queued or
+   * give back the cut continuation (the loop's turn replaces it) and kick once
+   * — or, before `resumeActiveGoals` ran, let that pass do it. Not while a request runs or the loop is already queued or
    * injecting for it — that one drives the goal.
    */
   private handBackFailedRestartResume(sessionKey: string): void {
+    // Before the startup goal pass: un-mark it, and that pass resumes it as a
+    // plain cut — stall repair, one refund, idle, one kick. One owner per
+    // refund, whatever the order (#961 review, astra).
+    if (!this.restartGoalPassRan && this.restartResumedSessionKeys.delete(sessionKey)) {
+      this.logger.info('Restart resume never started its turn — the startup goal pass resumes the goal', {
+        sessionKey,
+      });
+      return;
+    }
     const live = this.claudeHandler.getSessionByKey?.(sessionKey);
     if (live?.goal?.status !== 'active') return;
     if (this.requestCoordinator.isRequestActive(sessionKey) || this.goalLoopActing?.(sessionKey) === true) return;
@@ -7759,7 +7771,7 @@ export class SlackHandler {
       // resumes itself (`resumedByRestart`) is replaced by that resume, so it
       // keeps its continuation — refunding too would buy an extra turn on the
       // same budget (#961 review). A resume that never starts refunds on hand-back.
-      const cutTurn = (this.restartCutSessionKeys.has(sessionKey) && !resumedByRestart) || falseStall;
+      const cutTurn = !resumedByRestart && (this.restartCutSessionKeys.has(sessionKey) || falseStall);
       if (cutTurn && session.goal.continuationCount > 0 && !capDecisionOpen) {
         session.goal.continuationCount -= 1;
         refunded++;
@@ -7806,6 +7818,7 @@ export class SlackHandler {
     // a session the restart resumed like any other.
     this.restartCutSessionKeys.clear();
     this.restartResumedSessionKeys.clear();
+    this.restartGoalPassRan = true;
     if (forcedIdle > 0 || repaired > 0 || retriesClaimed > 0 || stallsEnded > 0 || refunded > 0) {
       this.claudeHandler.saveSessions();
     }
