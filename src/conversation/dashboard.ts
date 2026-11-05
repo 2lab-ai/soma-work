@@ -22349,6 +22349,8 @@ function ntPendingCardOf(launch, channelName) {
       statusText: '시작 실패',
       since: launch.failedAt,
       bodyMode: 'slot',
+      // The viewer's own card in NEEDS YOU (launches draw on the viewer's board only): the attention cue, as cardOf's.
+      attention: true,
     };
   }
   var st = launch.state || {};

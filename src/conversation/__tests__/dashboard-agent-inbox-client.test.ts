@@ -2861,6 +2861,22 @@ describe('NEEDS YOU cards that wait on the viewer: card.attention (shipped cardO
     expect(attn(host('', ''), { ownerId: ME, activityState: 'waiting' }, 'waiting')).toBeUndefined();
   });
 
+  // Decided (review fable P2): a sibling instance's card that waits on the viewer is still the viewer's to answer
+  // (in its Slack thread, its own dashboard) — it carries the cue, as it carries badge.self.
+  it('a sibling instance’s card that waits on the viewer carries it too', () => {
+    const m = load<Attn>(CARD_OF_FNS, CARD_OF_VARS, {
+      currentUserId: '',
+      _viewerUserId: ME,
+      _ownerIndex: null,
+      dhShow: () => true,
+      dhTruncate: () => null,
+      SELF_INSTANCE_NAME: 'dev',
+    });
+    expect(attn(m, { ownerId: ME, environment: { instanceName: 'prod' }, activityState: 'waiting' }, 'waiting')).toBe(
+      true,
+    );
+  });
+
   it('only in NEEDS YOU: the viewer’s running, finished and sleeping cards ask nothing', () => {
     const m = host(ME, ME);
     for (const col of ['working', 'idle', 'closed']) expect(attn(m, { ownerId: ME }, col), col).toBeUndefined();
