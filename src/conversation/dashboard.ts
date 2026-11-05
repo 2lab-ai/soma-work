@@ -10238,6 +10238,9 @@ function cardOf(s, col) {
     var ep = s.epic.progress || {};
     if (toNum(ep.total) > 0) card.steps = { done: toNum(ep.accepted), total: toNum(ep.total) };
   }
+  // NEEDS YOU and the signed-in viewer's own (SSOT 2026-11-05): the element (@2lab.ai/ui 0.32.0) marks the collapsed
+  // card — a rail, the tag in ink — and pings it once every 10 s, every such card on one beat; open, it is a card.
+  if (col === 'waiting' && viewerOwns(s)) card.attention = true;
   // The star is a toggle on the face (SSOT 2026-11-01 — viewCardOf, cardStarOf), no longer a ★ lead (2026-10-30 T1.3).
   // Owner badge (§3.1-3): in the All Users view every card names its owner.
   var owner = currentUserId ? '' : s.ownerName || s.ownerId || '';
@@ -22420,6 +22423,8 @@ function ntPendingCardOf(launch, channelName) {
       statusText: '시작 실패',
       since: launch.failedAt,
       bodyMode: 'slot',
+      // The viewer's own card in NEEDS YOU (launches draw on the viewer's board only): the attention cue, as cardOf's.
+      attention: true,
     };
   }
   var st = launch.state || {};
