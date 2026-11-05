@@ -1066,7 +1066,7 @@ describe('a new repo channel — client', () => {
     ntCanSubmit(state: any, attachments: any[]): boolean;
     ntRepoOf(raw: string): string;
     ntRepoChannelName(repo: string): string;
-    ntNewChannelProblem(state: any): string;
+    ntNewChannelProblem(state: any, ctx?: any): string;
     ntReconcile(state: any, ctx: any): void;
     ntLaunchToast(data: any, channelName: string | null): any;
     ntStateAfterLaunch(prev: any, data: any, ctx: any): any;
@@ -1141,10 +1141,15 @@ describe('a new repo channel — client', () => {
     fns.ntReconcile(offered, { ...ctx, channelCreate: true, channelCreatePrivate: true });
     expect(offered.channelId).toBe('__new__');
     expect(offered.newChannelPrivate).toBe(true);
+    // Review P1 — a private choice the bot can no longer make is kept and held, never made public.
     const publicOnly = newState({ newChannelPrivate: true });
     fns.ntReconcile(publicOnly, { ...ctx, channelCreate: true });
     expect(publicOnly.channelId).toBe('__new__');
-    expect(publicOnly.newChannelPrivate).toBe(false);
+    expect(publicOnly.newChannelPrivate).toBe(true);
+    expect(fns.ntNewChannelProblem(publicOnly, { ...ctx, channelCreate: true })).toMatch(
+      /비공개 채널을 만들 수 없어요/,
+    );
+    expect(fns.ntNewChannelProblem(publicOnly, { ...ctx, channelCreate: true, channelCreatePrivate: true })).toBe('');
     const notOffered = newState();
     fns.ntReconcile(notOffered, ctx);
     expect(notOffered.channelId).toBe('C_ALPHA');

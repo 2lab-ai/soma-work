@@ -33,5 +33,8 @@ describe('upsertChannel', () => {
       correct: true,
       reason: 'matched',
     });
+    expect(getChannel(id)).toMatchObject({ isPrivate: false, isArchived: false });
+    upsertChannel({ id, name: 'workspace-fresh', purpose: `https://github.com/${repo}`, isPrivate: true });
+    expect(getChannel(id)?.isPrivate).toBe(true);
   });
 });

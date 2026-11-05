@@ -251,6 +251,14 @@ let eventRouterProviders: Required<EventRouterProviders> = {
   isIncidentUserAccepted: () => false,
 };
 
+/** How long after its creation a channel's bot join is the creation itself (not a later rejoin). */
+export const CHANNEL_CREATION_JOIN_WINDOW_S = 600;
+
+/** A channel made within the creation window (`created`: Slack's epoch seconds; absent → not fresh). */
+export function isFreshChannel(created: unknown, nowMs: number = Date.now()): boolean {
+  return typeof created === 'number' && nowMs / 1000 - created < CHANNEL_CREATION_JOIN_WINDOW_S;
+}
+
 export function setEventRouterProviders(providers: EventRouterProviders): void {
   eventRouterProviders = {
     ...eventRouterProviders,
@@ -1513,17 +1521,19 @@ export class EventRouter {
       const botUserId = await this.deps.slackApi.getBotUserId();
       if (event.user === botUserId) {
         const channelInfo = await this.deps.slackApi.getChannelInfo(event.channel);
-        // A channel the bot made itself (a dashboard task's new repo channel): Slack sends this event on creation
-        // too. The maker registers the channel with its repo once it has described it — a read here could land
-        // before that and erase the mapping — and the channel needs no "set a working directory" welcome.
-        if (botUserId && channelInfo?.creator === botUserId) {
+        // A channel the bot made itself (a dashboard task's new repo channel) needs no "set a working directory"
+        // welcome. Slack sends this event on creation too: then the maker registers the channel with its repo once
+        // it has described it — a read here could land before that and erase the mapping. A later rejoin (the bot
+        // removed and invited back) registers as usual.
+        const madeByBot = !!botUserId && channelInfo?.creator === botUserId;
+        if (madeByBot && isFreshChannel(channelInfo?.created)) {
           this.logger.info('Bot created channel — registered by its maker, no welcome', { channel: event.channel });
           return;
         }
-        this.logger.info('Bot added to channel', { channel: event.channel });
+        this.logger.info('Bot added to channel', { channel: event.channel, madeByBot });
         // Register channel in registry for repo mapping
         await eventRouterProviders.registerChannel(this.deps.slackApi.getClient(), event.channel);
-        await this.handleChannelJoin(event.channel, say, channelInfo);
+        if (!madeByBot) await this.handleChannelJoin(event.channel, say, channelInfo);
       }
     });
 
