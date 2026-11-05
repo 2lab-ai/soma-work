@@ -130,7 +130,13 @@ import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR } from './env-paths';
 import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
 import { createGithubReceiptChecker } from './github-receipt';
 import { InstructionApprovals, setInstructionApprovals } from './instruction-approval';
-import { fetchGitHubPullsForHead, fetchGitHubReceiptObject } from './link-metadata-fetcher';
+import {
+  fetchGitHubCheckRuns,
+  fetchGitHubPullActivity,
+  fetchGitHubPullState,
+  fetchGitHubPullsForHead,
+  fetchGitHubReceiptObject,
+} from './link-metadata-fetcher';
 import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 import { startLinkLeakReport, startReportScheduler, stopLinkLeakReport, stopReportScheduler } from './metrics';
@@ -172,6 +178,12 @@ import {
   scanGitCheckouts,
   sessionDirs,
 } from './session-pr-reconciler';
+import {
+  createFilePrWatchStore,
+  createSessionPrWatch,
+  createSettledDelivery,
+  type SessionPrWatch,
+} from './session-pr-watch';
 import { applySummaryTitle } from './session-title-policy';
 import {
   displayLangMiddleware,
@@ -1884,6 +1896,27 @@ async function start() {
       logger.warn('Failed to start report scheduler (non-critical)', error);
     }
 
+    // A host turn in a session's thread (cron, #929 PR watch): a real say that posts to Slack — noopSay silently
+    // discarded the model's output.
+    const makeSay = (channel: string, threadTs?: string) => {
+      return async (args: any) => {
+        const text = typeof args === 'string' ? args : args?.text;
+        const result = await app.client.chat.postMessage({
+          channel,
+          text: text || ' ',
+          thread_ts: typeof args === 'string' ? threadTs : args?.thread_ts || threadTs,
+          blocks: typeof args === 'string' ? undefined : args?.blocks,
+          attachments: typeof args === 'string' ? undefined : args?.attachments,
+        });
+        return { ts: result.ts as string | undefined };
+      };
+    };
+
+    const messageInjector = async (event: SyntheticMessageEvent) => {
+      const say = makeSay(event.channel, event.thread_ts);
+      await slackHandler.handleMessage(event as any, say);
+    };
+
     // Start cron scheduler (non-blocking, non-critical)
     // Trace: docs/archive/features/cron-scheduler/spec.md §5.4 — Scheduler lifecycle
     let cronScheduler: CronScheduler | null = null;
@@ -1894,28 +1927,6 @@ async function start() {
         listJobs: () => cronStorage.getAll(),
         listHistory: () => cronStorage.getExecutionHistory(),
       });
-
-      // Build a real say function that posts to Slack via chat.postMessage.
-      // noopSay caused drain output to be silently discarded — the model ran
-      // but its responses never reached the channel.
-      const makeSay = (channel: string, threadTs?: string) => {
-        return async (args: any) => {
-          const text = typeof args === 'string' ? args : args?.text;
-          const result = await app.client.chat.postMessage({
-            channel,
-            text: text || ' ',
-            thread_ts: typeof args === 'string' ? threadTs : args?.thread_ts || threadTs,
-            blocks: typeof args === 'string' ? undefined : args?.blocks,
-            attachments: typeof args === 'string' ? undefined : args?.attachments,
-          });
-          return { ts: result.ts as string | undefined };
-        };
-      };
-
-      const messageInjector = async (event: SyntheticMessageEvent) => {
-        const say = makeSay(event.channel, event.thread_ts);
-        await slackHandler.handleMessage(event as any, say);
-      };
 
       const threadCreator = async (channel: string, text: string): Promise<string | undefined> => {
         const result = await app.client.chat.postMessage({ channel, text });
@@ -1948,6 +1959,83 @@ async function start() {
       timing('Cron scheduler initialized');
     } catch (error) {
       logger.warn('Failed to start cron scheduler (non-critical)', error);
+    }
+
+    // #928 (epic #935) — a session's PR keeps its card current after the turn: a merge or a close reaches the card and
+    // the thread once (#644). Polls GitHub with ETags (a 304 is free); `SOMA_PR_WATCH=off` stops it.
+    let sessionPrWatch: SessionPrWatch | null = null;
+    let prWatchDelivery: ReturnType<typeof createSettledDelivery> | undefined;
+    if (config.github.prWatch) {
+      const prWatchRegistry = claudeHandler.getSessionRegistry();
+      // A host turn is injected only into a settled session — a synthetic turn that meets a held dispatch slot is
+      // dropped, and onIdle fires before the slot is released (#929 review). Dashboard tasks have no thread: gone.
+      const delivery = createSettledDelivery({
+        state: (sessionKey) => {
+          const s = prWatchRegistry.getSessionByKey(sessionKey);
+          if (!s?.channelId || s.terminated) return 'gone';
+          if (s.activityState && s.activityState !== 'idle') return 'busy';
+          return slackHandler.isHostTurnFree(s.channelId, s.threadTs) ? 'ready' : 'busy';
+        },
+        inject: async (sessionKey, text) => {
+          const s = prWatchRegistry.getSessionByKey(sessionKey);
+          if (!s?.channelId) return;
+          await messageInjector({
+            user: s.ownerId,
+            channel: s.channelId,
+            thread_ts: s.threadTs,
+            ts: `${Date.now() / 1000}`,
+            text,
+            synthetic: true,
+            skipDispatch: true,
+            routeContext: { skipAutoBotThread: true },
+          });
+        },
+        logger,
+      });
+      prWatchDelivery = delivery;
+      sessionPrWatch = createSessionPrWatch({
+        sessions: function* () {
+          for (const [sessionKey, s] of prWatchRegistry.getAllSessions()) {
+            const at = s.lastActivity instanceof Date ? s.lastActivity.getTime() : Date.parse(String(s.lastActivity));
+            yield {
+              sessionKey,
+              terminated: s.terminated,
+              ...(Number.isFinite(at) ? { lastActivityMs: at } : {}),
+              pr: s.links?.pr ?? null,
+            };
+          }
+        },
+        fetchPull: fetchGitHubPullState,
+        updateStatus: (sessionKey, url, status) =>
+          prWatchRegistry.noteSessionLinksByKey(
+            sessionKey,
+            [{ url, type: 'pr', provider: 'github', status }],
+            'update',
+          ),
+        pushCard: (sessionKey) => scheduleLiveSessionUpdate(sessionKey),
+        notify: async (sessionKey, text) => {
+          const s = prWatchRegistry.getSessionByKey(sessionKey);
+          // A dashboard task has no Slack thread: its card is the notice.
+          if (!s?.channelId) return;
+          await app.client.chat.postMessage({ channel: s.channelId, thread_ts: s.threadTs, text });
+        },
+        // #929 — a finished CI reaches the session as a host turn: now when it is idle, else when it settles.
+        fetchChecks: fetchGitHubCheckRuns,
+        deliver: (sessionKey, text, done, current) => delivery.deliver(sessionKey, text, done, current),
+        // #930 — reviews and comments on the PR reach the session too; never the bot's own (unknown login = off).
+        fetchActivity: fetchGitHubPullActivity,
+        botLogins: config.github.prWatchBots,
+        ownLogin: async () => {
+          const slug = await getGitHubAppAuth()?.getAppSlug();
+          return slug ? `${slug}[bot]` : undefined;
+        },
+        store: createFilePrWatchStore(path.join(DATA_DIR, 'pr-watch.json'), (message, detail) =>
+          logger.warn(message, detail),
+        ),
+        logger,
+      });
+      sessionPrWatch.start();
+      timing('Session PR watch started');
     }
 
     // Goal auto-continuation loop — idle-settle driver.
@@ -2010,9 +2098,12 @@ async function start() {
           // Loop steps happen while the session is idle — push each one so the
           // dashboard card leaves DONE while an eval runs or a retry waits.
           broadcastSessionUpdate: () => registry.broadcastSessionUpdate(),
+          // A blocked eval locks the thread's live session, or its tombstone (#904).
+          haltSafeguardByKey: (key, halt) => registry.haltSafeguardByKey(key, halt),
         },
         requestCoordinator: {
           isRequestActive: (key) => requestCoordinator.isRequestActive(key),
+          abortSession: (key, reason) => requestCoordinator.abortSession(key, reason),
         },
         dispatcher: ({ systemPrompt, userPrompt, model, effort, abortController, cwd }) =>
           claudeHandler.dispatchOneShot(userPrompt, systemPrompt, model, abortController, undefined, cwd, effort),
@@ -2224,6 +2315,8 @@ async function start() {
         if (cronScheduler) {
           cronScheduler.stop();
         }
+        sessionPrWatch?.stop();
+        prWatchDelivery?.stop();
 
         // Stop CCT usage refresh scheduler before TM so no pump fires mid-teardown
         if (usageRefreshScheduler) {

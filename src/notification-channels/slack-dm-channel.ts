@@ -7,8 +7,8 @@
 import { Logger } from '../logger.js';
 import {
   buildThreadPermalink,
-  getCategoryEmoji,
-  getCategoryLabel,
+  getTurnEventEmoji,
+  getTurnEventLabel,
   type NotificationChannel,
   type TurnCompletionEvent,
 } from '../turn-notifier.js';
@@ -38,8 +38,8 @@ export class SlackDmChannel implements NotificationChannel {
   }
 
   async send(event: TurnCompletionEvent): Promise<void> {
-    const emoji = getCategoryEmoji(event.category);
-    const label = getCategoryLabel(event.category);
+    const emoji = getTurnEventEmoji(event);
+    const label = getTurnEventLabel(event);
     const title = event.sessionTitle || 'Session';
     const permalink = buildThreadPermalink(event.channel, event.threadTs);
 

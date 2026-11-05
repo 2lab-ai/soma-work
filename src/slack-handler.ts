@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { App } from '@slack/bolt';
+import type { SafeguardHalt } from '@soma/common/safeguard';
 import {
   type AuthDecision,
   type DispatcherNotice,
@@ -25,6 +26,7 @@ import { FollowupQueueStore } from '@soma/slack/followup-queue-store';
 import { OutputFlag } from '@soma/slack/output-flags';
 import { isLocalSlashCommand, shouldForwardAsLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
+import { buildSafeguardRefusalBlocks, decideSafeguardGate, safeguardRefusalNotice } from '@soma/slack/safeguard';
 import { sayPostSwitches } from '@soma/slack/stream-processor';
 import { getWorkQueues, WorkQueueService } from '@soma/slack/work-queue';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
@@ -38,6 +40,7 @@ import { isClientRef } from './conversation/client-ref';
 import { captureUserMedia, getConversation, recordUserTurn } from './conversation/recorder';
 import { readWorkLog } from './conversation/work-log';
 import { FileHandler, type ProcessedFile } from './file-handler';
+import { buildIncidentAttemptOutput } from './incident/attempt-output';
 import type { InstructionApprovals } from './instruction-approval';
 import { getLastCommandChannelStore } from './last-command-channel-store';
 import { Logger } from './logger';
@@ -821,6 +824,15 @@ export class SlackHandler {
       onWarningCleared: (session, warningMessageTs) => {
         void this.sessionUiManager.handleExpiryWarningCleared(session as ConversationSession, warningMessageTs);
       },
+      // #904 — the summary query itself blocked by Anthropic's safeguards halts the session.
+      onSafeguardFlag: (session, flag) => {
+        const s = session as ConversationSession;
+        if (!s.channelId) return;
+        this.claudeHandler.reportSafeguardFlag?.(this.claudeHandler.getSessionKey(s.channelId, s.threadTs), flag, {
+          source: 'summary',
+          stopRunningTurn: true,
+        });
+      },
     });
 
     this.streamExecutor = new StreamExecutor({
@@ -937,6 +949,18 @@ export class SlackHandler {
           '이 스킬이 거부되어 진행하지 못한 단계부터 이어서 진행하세요.',
         notifyWhenPending: false,
       });
+    });
+
+    // 4. Safeguards halt seen outside a turn's stream (#904): the permission
+    //    guardian's Claude call, or an incident attempt, blocked by Anthropic's
+    //    safeguards. The handler locks the session; this stops the running turn
+    //    and posts the "세이프가드 에러" notice with the admin button.
+    //    Optional-chained for the same `{}` claudeHandler mocks.
+    this.claudeHandler.setSafeguardHaltPorts?.({
+      isRequestActive: (sessionKey) => this.requestCoordinator.isRequestActive(sessionKey),
+      abortSession: (sessionKey, reason) => this.requestCoordinator.abortSession(sessionKey, reason),
+      postNotice: (channel, threadTs, text, blocks) =>
+        this.slackApi.postSystemMessage(channel, text, { threadTs, blocks: blocks as any[] }),
     });
 
     // #666 P4 Part 1/2 — Register the Bolt Assistant container. Enables the
@@ -1871,6 +1895,17 @@ export class SlackHandler {
       await this.holdForOwnerApproval(event, ownerHold);
       return { result: 'safe' };
     }
+
+    // Anthropic safeguards halted this thread (ssot T3): nothing runs here
+    // until an admin presses the unlock button on the "세이프가드 에러"
+    // notice. Before command routing, so `new` / `reset` / `help` cannot slip
+    // through either. A person's message is answered with why it did not run;
+    // a host turn (goal continuation, auto-resume, cron, epic wake, replay) is
+    // dropped silently. Both are `safe` — the dispatch owes nothing, and a
+    // `blocked` would freeze the follow-up lane behind a lock only an admin
+    // can lift (so an admin's queued message would wait on a manual Resume).
+    const safeguardGate = await this.applySafeguardGate(event, channel, originalThreadTs);
+    if (safeguardGate) return safeguardGate;
 
     // SSOT 2026-10-23 T5 — "the channel the user last gave a command in" is the
     // dashboard composer's default channel. Real user messages only: a goal
@@ -3337,6 +3372,98 @@ export class SlackHandler {
   }
 
   /** Hold the message for the owner (`ownerApprovalHold` decided it): ask, tell the thread. */
+  /** See the gate in {@link processMessage}. Undefined = the turn may run. */
+  private async applySafeguardGate(
+    event: MessageEvent,
+    channel: string,
+    threadTs: string,
+  ): Promise<DispatchOutcome | undefined> {
+    const registry =
+      typeof (this.claudeHandler as any).getSessionRegistry === 'function'
+        ? (this.claudeHandler as any).getSessionRegistry()
+        : undefined;
+    const halt: SafeguardHalt | undefined = registry?.getSafeguardHalt?.(channel, threadTs);
+    const hostTurn = event.synthetic === true || event.routeContext?.hostTurn === true;
+    const decision = decideSafeguardGate({ halt, hostTurn });
+    if (decision === 'pass' || !halt) return undefined;
+    await this.settleRefusedIncidentAttempt(event, channel, threadTs, registry);
+    // A button path (choice, form, session action) marks the session working
+    // BEFORE dispatching; nothing will run, so put it back — otherwise the card
+    // shows a halted session as running until the admin unlocks it.
+    const sessionKey = this.claudeHandler.getSessionKey(channel, threadTs);
+    if (
+      registry?.getActivityStateByKey?.(sessionKey) === 'working' &&
+      !this.requestCoordinator.isRequestActive(sessionKey)
+    ) {
+      this.claudeHandler.setActivityStateByKey(sessionKey, 'idle');
+    }
+    if (decision === 'drop') {
+      this.logger.info('Safeguard halt: host turn dropped', { channel, threadTs });
+      return { result: 'safe' };
+    }
+    this.logger.info('Safeguard halt: message refused', { channel, threadTs, user: event.user });
+    try {
+      const isAdmin = !!event.user && isAdminUser(event.user);
+      await this.slackApi.postSystemMessage(channel, safeguardRefusalNotice(halt, { isAdmin }), {
+        threadTs,
+        blocks: buildSafeguardRefusalBlocks(halt, sessionKey, { isAdmin }),
+      });
+    } catch (error) {
+      this.logger.warn('Safeguard halt: refusal notice failed', {
+        channel,
+        threadTs,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
+    return { result: 'safe' };
+  }
+
+  /**
+   * An incident attempt refused by the safeguards gate (review R7, astra P1):
+   * the ingress already handed the thread to it and cleared the finished
+   * marker (the ingress refuses a halted thread itself; this is the race where
+   * the lock landed after admission), and nothing will run to write it again —
+   * so without this the thread reads "attempt in progress" forever, and even
+   * after the admin unlocks, every retry is turned away. The attempt ends like
+   * any other: ONE host-authored result line (`interrupted`, the incident
+   * contract — never silence; review R8, grok-elon P1), then the finished
+   * marker.
+   */
+  private async settleRefusedIncidentAttempt(
+    event: MessageEvent,
+    channel: string,
+    threadTs: string,
+    registry: any,
+  ): Promise<void> {
+    const attemptId = (event.routeContext as { incidentRequest?: { attempt_id?: string } } | undefined)?.incidentRequest
+      ?.attempt_id;
+    if (!attemptId) return;
+    const session = this.claudeHandler.getSession?.(channel, threadTs);
+    if (!session?.incidentRequest || session.incidentRequest.attempt_id !== attemptId) return;
+    if (session.incidentAttemptFinishedId === attemptId) return;
+    try {
+      const output = buildIncidentAttemptOutput(session.incidentRequest, { kind: 'aborted' }, []);
+      await this.slackApi.postSystemMessage(channel, output.text, { threadTs });
+    } catch (error) {
+      this.logger.warn('Safeguard halt: posting the refused incident attempt result failed', {
+        channel,
+        threadTs,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
+    session.incidentAttemptFinishedId = attemptId;
+    try {
+      registry?.saveSessions?.();
+    } catch (error) {
+      this.logger.warn('Safeguard halt: saving the refused incident attempt failed', {
+        channel,
+        threadTs,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
+    this.logger.info('Safeguard halt: incident attempt refused and settled', { channel, threadTs, attemptId });
+  }
+
   private async holdForOwnerApproval(
     event: MessageEvent,
     { approvals, sessionKey, session }: NonNullable<ReturnType<SlackHandler['ownerApprovalHold']>>,
@@ -7258,6 +7385,8 @@ export class SlackHandler {
       // Fallback in case the file is missing (e.g. in test environments)
       return (
         '서비스가 재시작되어 이전 작업이 중단되었다. 아래 순서로 작업을 이어가라:\n' +
+        // #927 — the restart may have cut the turn after an outside action took effect.
+        '0. 외부 작업(push·PR/이슈 생성·코멘트·머지·배포·메시지)을 다시 하기 전에 이미 됐는지 확인하라 (git status, git log, 원격 브랜치, gh pr list --head <branch>, 최근 코멘트). 두 번째 PR·같은 코멘트·같은 메시지·재배포 금지.\n' +
         '1. mcp__slack-mcp__get_thread_messages (offset: 0, limit: 50)으로 이 스레드의 전체 대화를 먼저 읽어라.\n' +
         '2. 유저가 마지막으로 요청한 작업이 무엇인지 파악하라.\n' +
         '3. 네가 마지막으로 어디까지 진행했는지 확인하라 (git status, 파일 상태 등).\n' +
@@ -7292,6 +7421,14 @@ export class SlackHandler {
       // back to `activityState === 'working'`.
       const isWorking =
         typeof session.shouldAutoResume === 'boolean' ? session.shouldAutoResume : session.activityState === 'working';
+      // A safeguards-halted session is not resumed and not told to retry: it
+      // waits for an admin to lift the lock (its notice already says so).
+      if (this.claudeHandler.getSessionByKey?.(session.sessionKey)?.safeguardHalt) {
+        this.logger.info('Crash recovery skipped — session halted by a safeguards flag', {
+          sessionKey: session.sessionKey,
+        });
+        continue;
+      }
       if (isWorking) this.restartCutSessionKeys.add(session.sessionKey);
 
       // #351: an idle session whose error auto-retry is still pending is
@@ -7471,6 +7608,12 @@ export class SlackHandler {
         }
       }
       if (session.goal?.status !== 'active') continue;
+      // A safeguards-halted session runs nothing until an admin lifts the
+      // lock — the goal stays active and resumes on the admin's retry.
+      if (session.safeguardHalt) {
+        this.logger.info('Goal resume skipped — session halted by a safeguards flag', { sessionKey });
+        continue;
+      }
       // A stall judged on no turn text is not a real stall: a turn the restart
       // cut short was taken for "the same failure" (2026-11-02, before the loop
       // stopped judging empty turns). End it — its question is withdrawn and
@@ -7583,8 +7726,9 @@ export class SlackHandler {
       // Already armed in this process (e.g. a crash-recovery resume that failed
       // again and scheduled a fresh retry) — arming again would fire it twice.
       if (session.pendingRetryTimer) continue;
-      const dropReason =
-        session.state === 'SLEEPING'
+      const dropReason = session.safeguardHalt
+        ? 'session is halted by a safeguards flag'
+        : session.state === 'SLEEPING'
           ? 'session is asleep'
           : session.sessionId !== session.pendingRetrySessionId
             ? 'retry belongs to a previous run'
@@ -7793,6 +7937,21 @@ export class SlackHandler {
   /** Expose SlackApiHelper for workspace URL initialization */
   getSlackApi(): SlackApiHelper {
     return this.slackApi;
+  }
+
+  /**
+   * #929 — whether a host turn (a synthetic message) would start in this thread now rather than be dropped:
+   * no request running and no follow-up dispatch slot held, under the thread's key or the key a bot-thread
+   * migration moved its slot to — the same fence `handleMessage` applies to a synthetic event.
+   */
+  isHostTurnFree(channel: string, threadTs?: string): boolean {
+    const sessionKey = this.resolveFollowupSessionKey({ channel, thread_ts: threadTs, ts: threadTs } as MessageEvent);
+    if (!sessionKey) return false;
+    if (this.requestCoordinator.isRequestActive(sessionKey)) return false;
+    const dispatcher = this.followupDispatcher;
+    if (!dispatcher) return true;
+    const slotKey = this.followupMigration?.byCanonical.get(sessionKey);
+    return !dispatcher.isBusy(sessionKey) && !(slotKey !== undefined && dispatcher.isBusy(slotKey));
   }
 
   /** Expose request coordinator for dashboard stop handler */

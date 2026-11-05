@@ -4,7 +4,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { atomicWriteJson } from '@soma/common/atomic-write';
+import { atomicWriteJson, loadJsonWithBackup } from '@soma/common/atomic-write';
+import { restoreSafeguardHalt, type SafeguardHalt } from '@soma/common/safeguard';
 import {
   type ContextRewindRecord,
   decodeContextAnchor,
@@ -104,6 +105,47 @@ import type {
 import { coerceToAvailableModel, type EffortLevel, userSettingsStore } from './user-settings-store';
 
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
+/**
+ * Safeguard halts of threads whose session record is gone (closed, archived,
+ * deleted). Keyed by session key; a session created again under the key
+ * inherits the halt, so ending the session is not a way around the admin
+ * retry (trinity design consult). Lifted only by the admin unlock.
+ */
+const SAFEGUARD_TOMBSTONES_FILE = path.join(DATA_DIR, 'safeguard-halts.json');
+/**
+ * Where the locks go while {@link SAFEGUARD_TOMBSTONES_FILE} is unreadable
+ * (review R6, astra P1): that file is never overwritten then (its raw text is
+ * the fail-closed evidence), yet a lock set or lifted meanwhile must survive a
+ * restart. `{ halts: {key: halt}, lifted: [key] }`, read on every load and
+ * emptied (never unlinked) once the main file is written again.
+ */
+const SAFEGUARD_TOMBSTONES_SIDECAR = path.join(DATA_DIR, 'safeguard-halts.while-unreadable.json');
+
+/** The text of `file` when it exists and is not valid JSON; '' otherwise. */
+function unparseableFileText(file: string): string {
+  let text: string;
+  try {
+    text = fs.readFileSync(file, 'utf-8');
+  } catch {
+    return '';
+  }
+  try {
+    JSON.parse(text);
+    return '';
+  } catch {
+    return text;
+  }
+}
+
+/**
+ * Whether unreadable tombstone text names `key` — as a whole token, however
+ * deeply it was JSON-escaped (a corrupt sidecar carried inside another one),
+ * and never as the prefix of a longer key (`…:171.901` is not `…:171.9012`).
+ */
+function rawTextNamesKey(raw: string, key: string): boolean {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|[^A-Za-z0-9_.:-])${escaped}(?:$|[^A-Za-z0-9_.:-])`).test(raw);
+}
 
 // Dashboard improvements (v2.1): max duration of a single active-leg before we
 // assume the process missed an endTurn (crash / OS sleep) and cap the accumulator.
@@ -252,6 +294,8 @@ interface SerializedSession {
   pendingRetryDetail?: { attempt?: number; maxAttempts?: number; reason?: string };
   errorRetryCount?: number;
   lastErrorContext?: string;
+  // Anthropic safeguards lock — only an admin lifts it (`@soma/slack/safeguard`).
+  safeguardHalt?: SafeguardHalt;
   // Log verbosity bitmask
   logVerbosity?: number;
   /**
@@ -589,6 +633,24 @@ export class SessionRegistry {
   /** E4 ① — live child tasks by their epic's task id; rebuilt from the records on load. */
   private childrenByParent: Map<string, Set<ConversationSession>> = new Map();
   private logger = new Logger('SessionRegistry');
+  /** See {@link SAFEGUARD_TOMBSTONES_FILE}. */
+  private safeguardTombstones = new Map<string, SafeguardHalt>();
+  /** The tombstone file could not be read: never overwrite it with a partial set. */
+  private safeguardTombstonesUnreadable = false;
+  /**
+   * The unreadable tombstone file's raw text (live + `.bak`). While set, a key
+   * that appears in it reads as halted — fail closed for exactly the threads
+   * the file names, not open for all of them.
+   */
+  private safeguardTombstonesRaw = '';
+  /** Keys an admin lifted that the raw evidence names (persisted in the sidecar). */
+  private safeguardLiftedWhileUnreadable = new Set<string>();
+  /**
+   * Raw text of an unreadable SIDECAR (review R7, astra P1): carried into the
+   * next sidecar write as `rawEvidence`, so overwriting the corrupt sidecar
+   * never drops the locks it named. Part of {@link safeguardTombstonesRaw}.
+   */
+  private safeguardCarriedRaw = '';
   private expiryCallbacks?: SessionExpiryCallbacks;
   private beforeSessionDelete?: BeforeSessionDeleteCallback;
   private _crashRecoveredSessions: CrashRecoveredSession[] = [];
@@ -886,6 +948,89 @@ export class SessionRegistry {
    * keys (e.g. from Slack action payloads posted before the Step 4d key
    * format switch) via normalization.
    */
+  /** The safeguard lock on this thread — its live session's, or the tombstone of a removed one. */
+  getSafeguardHalt(channelId: string, threadTs?: string): SafeguardHalt | undefined {
+    return this.getSafeguardHaltByKey(this.getSessionKey(channelId, threadTs));
+  }
+
+  getSafeguardHaltByKey(sessionKey: string): SafeguardHalt | undefined {
+    const key = normalizeSessionKey(sessionKey);
+    const known = this.sessions.get(key)?.safeguardHalt ?? this.safeguardTombstones.get(key);
+    if (known) return known;
+    return this.rawEvidenceHalt(key);
+  }
+
+  /** Fail closed on a key the unreadable tombstone text names (not lifted since). */
+  private rawEvidenceHalt(key: string): SafeguardHalt | undefined {
+    if (
+      this.safeguardTombstonesRaw &&
+      !this.safeguardLiftedWhileUnreadable.has(key) &&
+      rawTextNamesKey(this.safeguardTombstonesRaw, key)
+    ) {
+      return { atMs: 0 };
+    }
+    return undefined;
+  }
+
+  /**
+   * Lift the safeguard lock (the admin unlock button — the only caller). The
+   * write must reach disk: a lock lifted in memory only would come back after
+   * a restart, and one reported lifted but not saved would mislead the admin.
+   * Returns false when the thread was not halted.
+   */
+  liftSafeguardHalt(sessionKey: string): boolean {
+    const key = normalizeSessionKey(sessionKey);
+    const session = this.sessions.get(key);
+    const had = this.getSafeguardHaltByKey(key) !== undefined;
+    if (!had) return false;
+    const before = { session: session?.safeguardHalt, tombstone: this.safeguardTombstones.get(key) };
+    if (session) session.safeguardHalt = undefined;
+    this.safeguardTombstones.delete(key);
+    if (this.safeguardTombstonesRaw) this.safeguardLiftedWhileUnreadable.add(key);
+    try {
+      this.saveSessionsOrThrow();
+    } catch (error) {
+      // Not on disk → not lifted: put the lock back so memory matches what the
+      // admin is told ("still locked").
+      if (session && before.session) session.safeguardHalt = before.session;
+      if (before.tombstone) this.safeguardTombstones.set(key, before.tombstone);
+      this.safeguardLiftedWhileUnreadable.delete(key);
+      // The tombstone files are written before sessions.json: one that already
+      // dropped the lock must get it back, or a restart would unlock a thread
+      // the admin was told is still locked.
+      try {
+        this.writeSafeguardTombstones();
+      } catch (restoreError) {
+        this.logger.error('Safeguard lift rollback: restoring the tombstone files failed', restoreError);
+      }
+      throw error;
+    }
+    return true;
+  }
+
+  /**
+   * Put a safeguards lock on the thread `sessionKey` names (#904) — on its
+   * LIVE session (a close/restore puts a new object under the key, so a lock
+   * written on an object captured earlier would be lost: review R6, astra P1),
+   * or, when no session is live there, as the thread's tombstone, which the
+   * next session under the key inherits. An existing lock is kept. The caller
+   * saves.
+   */
+  haltSafeguardByKey(sessionKey: string, halt: SafeguardHalt): 'session' | 'tombstone' | 'already' {
+    const key = normalizeSessionKey(sessionKey);
+    const session = this.sessions.get(key);
+    if (session) {
+      if (session.safeguardHalt) return 'already';
+      session.safeguardHalt = halt;
+      this.safeguardLiftedWhileUnreadable.delete(key);
+      return 'session';
+    }
+    if (this.safeguardTombstones.has(key)) return 'already';
+    this.safeguardTombstones.set(key, halt);
+    this.safeguardLiftedWhileUnreadable.delete(key);
+    return 'tombstone';
+  }
+
   getSessionByKey(sessionKey: string): ConversationSession | undefined {
     return this.sessions.get(normalizeSessionKey(sessionKey));
   }
@@ -926,6 +1071,14 @@ export class SessionRegistry {
 
   /** Insert under `key`; a different session already there loses its task-id entry. */
   private putSession(key: string, session: ConversationSession): void {
+    // A thread whose halted session was removed stays halted: the session
+    // that comes back under the key inherits the lock.
+    // The tombstone is NOT consumed here: it stays until the admin lifts the
+    // lock, so no save ordering can ever leave the lock in neither file.
+    // A key only the unreadable file's raw text names is locked too (review R7,
+    // astra P1): goal resume and the goal loop read the session's own field.
+    const tombstone = this.safeguardTombstones.get(key) ?? this.rawEvidenceHalt(key);
+    if (tombstone && !session.safeguardHalt) session.safeguardHalt = tombstone;
     const previous = this.sessions.get(key);
     if (previous && previous !== session) this.unindexTask(previous);
     this.sessions.set(key, session);
@@ -943,6 +1096,11 @@ export class SessionRegistry {
 
   private removeSession(key: string): void {
     const session = this.sessions.get(key);
+    if (session?.safeguardHalt) {
+      this.safeguardTombstones.set(key, session.safeguardHalt);
+      // A real (not raw-evidence) lock outranks an older lift of the same thread.
+      if (session.safeguardHalt.atMs !== 0) this.safeguardLiftedWhileUnreadable.delete(key);
+    }
     this.sessions.delete(key);
     if (session) this.unindexTask(session);
     // #846 — the model-command receipt goes with the session (a later session under the key writes its own).
@@ -3336,6 +3494,9 @@ export class SessionRegistry {
           // even before the SDK assigns a sessionId — otherwise a crash in
           // that window would bring the thread back unrestricted.
           session.incidentRequest ||
+          // A safeguards-halted session is saved from the moment it is halted —
+          // a restart must not bring the thread back unlocked.
+          session.safeguardHalt ||
           session.autoCompactTokens != null ||
           // The task's spend (and its subagents') must not vanish with a
           // `/new` that cleared the sessionId before the next SDK turn.
@@ -3410,6 +3571,7 @@ export class SessionRegistry {
             pendingRetryAt: session.pendingRetryAt,
             pendingRetrySessionId: session.pendingRetrySessionId,
             pendingRetryDetail: session.pendingRetryDetail,
+            safeguardHalt: session.safeguardHalt,
             errorRetryCount: session.errorRetryCount,
             lastErrorContext: session.lastErrorContext,
             logVerbosity: session.logVerbosity,
@@ -3524,6 +3686,9 @@ export class SessionRegistry {
       try {
         fs.writeFileSync(tempFile, JSON.stringify(sessionsArray, null, 2), { mode });
         fs.chmodSync(tempFile, mode); // writeFileSync's mode is masked by the umask
+        // Tombstones first: a crash between the two writes must never leave
+        // the lock of a just-removed halted session in neither file.
+        this.writeSafeguardTombstones();
         fs.renameSync(tempFile, SESSIONS_FILE);
       } catch (writeError) {
         try {
@@ -3586,6 +3751,15 @@ export class SessionRegistry {
         : dashboardTask && typeof serialized.taskId === 'string'
           ? `task:${serialized.taskId}`
           : serialized.key;
+    // A halted session ended at load (removeSession is not on this path) leaves
+    // its thread's tombstone, like any other removal — a restart must not unlock it.
+    const halt = restoreSafeguardHalt(serialized.safeguardHalt);
+    if (halt && typeof key === 'string' && key) {
+      const normalized = normalizeSessionKey(key);
+      this.safeguardTombstones.set(normalized, halt);
+      // A real lock outranks an older lift of the same thread (like removeSession).
+      if (halt.atMs !== 0) this.safeguardLiftedWhileUnreadable.delete(normalized);
+    }
     // #846 — an ended session's model-command receipt goes with it (removeSession is not on this path). The receipt
     // is named by the live key the loader derives, not the persisted `key` field (kept in the legacy form); a
     // dashboard task's (#855) by its own key.
@@ -3672,8 +3846,126 @@ export class SessionRegistry {
   /**
    * Load sessions from file after restart
    */
+  /** Persist {@link safeguardTombstones} (removes the file once none is left). */
+  private writeSafeguardTombstones(): void {
+    const lifted = [...this.safeguardLiftedWhileUnreadable];
+    const rawEvidence = this.safeguardCarriedRaw;
+    if (this.safeguardTombstonesUnreadable) {
+      // The main file stays as found; what changed since goes to the sidecar.
+      atomicWriteJson(
+        SAFEGUARD_TOMBSTONES_SIDECAR,
+        { halts: Object.fromEntries(this.safeguardTombstones), lifted, rawEvidence },
+        { backup: true },
+      );
+      return;
+    }
+    if (this.safeguardTombstones.size > 0 || fs.existsSync(SAFEGUARD_TOMBSTONES_FILE)) {
+      // Never unlinked: an empty set is written as `{}` so the `.bak` (the
+      // previous contents) can never be read back as the current set.
+      atomicWriteJson(SAFEGUARD_TOMBSTONES_FILE, Object.fromEntries(this.safeguardTombstones), { backup: true });
+    }
+    // The sidecar's locks are in the main file now: empty its `halts` so a lock
+    // lifted since never comes back from it — but keep the carried evidence of
+    // a corrupt sidecar and the keys lifted against it.
+    if (fs.existsSync(SAFEGUARD_TOMBSTONES_SIDECAR) || rawEvidence || lifted.length > 0) {
+      atomicWriteJson(SAFEGUARD_TOMBSTONES_SIDECAR, { halts: {}, lifted, rawEvidence }, { backup: true });
+    }
+  }
+
+  /**
+   * Read {@link SAFEGUARD_TOMBSTONES_FILE}. Loaded BEFORE the sessions, so a
+   * restored session under a tombstoned key inherits it (`putSession`). An
+   * unreadable file is logged loudly and kept — never read as "no locks".
+   */
+  private loadSafeguardTombstones(): void {
+    this.safeguardTombstones.clear();
+    this.safeguardTombstonesUnreadable = false;
+    this.safeguardTombstonesRaw = '';
+    this.safeguardCarriedRaw = '';
+    this.safeguardLiftedWhileUnreadable.clear();
+    // A torn LIVE file the loader replaces with its older `.bak` may name a
+    // lock the `.bak` does not: its raw text fails closed on the keys it names,
+    // and is carried in the sidecar so the next rewrite never drops it.
+    const tornMain = unparseableFileText(SAFEGUARD_TOMBSTONES_FILE);
+    try {
+      // The live file, else its `.bak` (rules/config.md §4) — a torn write
+      // never reads as "no locks".
+      const raw = loadJsonWithBackup(SAFEGUARD_TOMBSTONES_FILE, (value) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('not an object');
+        return value as Record<string, unknown>;
+      });
+      for (const [key, value] of Object.entries(raw ?? {})) {
+        const halt = restoreSafeguardHalt(value);
+        if (halt) this.safeguardTombstones.set(normalizeSessionKey(key), halt);
+      }
+    } catch (error) {
+      this.safeguardTombstonesUnreadable = true;
+      for (const file of [SAFEGUARD_TOMBSTONES_FILE, `${SAFEGUARD_TOMBSTONES_FILE}.bak`]) {
+        try {
+          this.safeguardTombstonesRaw += fs.readFileSync(file, 'utf-8');
+        } catch {
+          // gone or unreadable — nothing to fail closed on from this copy
+        }
+      }
+      this.logger.error('Safeguard halt tombstones unreadable — removed-session locks are not restored', error);
+    }
+    this.loadSafeguardTombstoneSidecar();
+    this.addCarriedRaw(tornMain);
+  }
+
+  /** Add unreadable tombstone text to the carried evidence (once — a restart never doubles it). */
+  private addCarriedRaw(text: string): void {
+    if (!text || this.safeguardCarriedRaw.includes(text)) return;
+    this.safeguardCarriedRaw += text;
+    this.safeguardTombstonesRaw += text;
+  }
+
+  /** Merge {@link SAFEGUARD_TOMBSTONES_SIDECAR}: its locks join the set, its lifted keys stay lifted. */
+  private loadSafeguardTombstoneSidecar(): void {
+    if (!fs.existsSync(SAFEGUARD_TOMBSTONES_SIDECAR) && !fs.existsSync(`${SAFEGUARD_TOMBSTONES_SIDECAR}.bak`)) return;
+    // Same for a torn live sidecar replaced by its `.bak`: carried forward, so a
+    // rewrite never drops it.
+    const tornSidecar = unparseableFileText(SAFEGUARD_TOMBSTONES_SIDECAR);
+    try {
+      const raw = loadJsonWithBackup(SAFEGUARD_TOMBSTONES_SIDECAR, (value) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('not an object');
+        return value as { halts?: unknown; lifted?: unknown; rawEvidence?: unknown };
+      });
+      if (typeof raw?.rawEvidence === 'string') this.addCarriedRaw(raw.rawEvidence);
+      const lifted = Array.isArray(raw?.lifted)
+        ? raw.lifted.filter((key): key is string => typeof key === 'string').map((key) => normalizeSessionKey(key))
+        : [];
+      // A lift recorded here answers the RAW evidence only: it suppresses the
+      // fail-closed text match, never a parsed tombstone (a later halt on the
+      // same thread is a new lock — review R8, astra/fable P1).
+      for (const key of lifted) this.safeguardLiftedWhileUnreadable.add(key);
+      const halts = raw?.halts && typeof raw.halts === 'object' ? (raw.halts as Record<string, unknown>) : {};
+      for (const [key, value] of Object.entries(halts)) {
+        const halt = restoreSafeguardHalt(value);
+        if (!halt) continue;
+        const normalized = normalizeSessionKey(key);
+        this.safeguardTombstones.set(normalized, halt);
+        this.safeguardLiftedWhileUnreadable.delete(normalized);
+      }
+    } catch (error) {
+      // Fail closed on whatever keys it names, like the main file — and carry
+      // its text into the next sidecar write, so overwriting it never drops
+      // them (review R7, astra P1). The main file's state is its own.
+      for (const file of [SAFEGUARD_TOMBSTONES_SIDECAR, `${SAFEGUARD_TOMBSTONES_SIDECAR}.bak`]) {
+        try {
+          this.addCarriedRaw(fs.readFileSync(file, 'utf-8'));
+        } catch {
+          // gone or unreadable
+        }
+      }
+      this.logger.error('Safeguard halt sidecar unreadable — failing closed on the keys it names', error);
+    }
+    this.addCarriedRaw(tornSidecar);
+  }
+
   loadSessions(): number {
     this.sweepOrphanSaveTempFiles();
+    this.loadSafeguardTombstones();
     try {
       if (!fs.existsSync(SESSIONS_FILE)) {
         this.logger.debug('No sessions file found');
@@ -3803,6 +4095,7 @@ export class SessionRegistry {
               : undefined,
           pendingRetryDetail:
             restoredRetryAt !== undefined ? restorePendingRetryDetail(serialized.pendingRetryDetail) : undefined,
+          safeguardHalt: restoreSafeguardHalt(serialized.safeguardHalt),
           errorRetryCount:
             typeof serialized.errorRetryCount === 'number' && Number.isFinite(serialized.errorRetryCount)
               ? serialized.errorRetryCount

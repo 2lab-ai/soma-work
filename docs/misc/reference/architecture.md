@@ -266,6 +266,7 @@ updates inside its terminal-cleanup boundary, including setup failures.
 | `artifacts/{conversationId}/` | 세션 산출물. `index.json`(+`.bak`) = 목록·백필 표식, `<artifactId>` = 업로드 파일 사본(예전 마크다운 답변 원문은 남아 있되 읽히지 않음) |
 | `user-media/{conversationId}/` | 지시 첨부(유저 미디어) 바이트. `<mediaId>` = 사본, `<mediaId>.remote` = 사본 없이 확정된 첨부 표식, `.pending-<mediaId>` = 턴 저장 대기(1시간 후 정리). 목록은 유저 턴의 `attachments` |
 | `cron-storage.json` | 예약 작업 |
+| `pr-watch.json` (+`.bak`) | 세션 PR 감시가 PR마다 마지막으로 알린 CI head와 결론(#929), 리뷰·코멘트 커서와 봇 리뷰 깨움 횟수(#930) (`src/session-pr-watch.ts` `createFilePrWatchStore`) — 재시작 뒤 같은 것을 다시 보내지 않게 |
 | `session-archive/` | 크래시/복구 세션 스냅샷 |
 | `session-lifecycle.json` (+`.bak`) | 세션 수명 정책 — Sleeping 전환·Archive 전환·대시보드 Archive 표시 기간 (`src/session-lifecycle-policy.ts`, 대시보드 admin `PUT /api/dashboard/lifecycle`) |
 | `last-command-channels.json` (+`.bak`) | 유저별 마지막 명령 채널 — 대시보드 새 작업의 기본 채널 (`src/last-command-channel-store.ts`, 비-synthetic 채널 메시지마다 기록) |
@@ -293,6 +294,8 @@ scripts/setup/        # DEPRECATED 셸 수집기 — 도달 불가, 번들 제�
 ## External Integrations
 
 Slack(Bolt 4.x, Socket Mode) · Anthropic Claude Agent SDK · GitHub(App OAuth + REST) · Jira · Telegram(알림 폴백) · Webhook · esm.sh 기반 내부 렌더러 스킬.
+
+- **세션 PR 감시 (#928, epic #935)**: `src/session-pr-watch.ts`가 60초마다 종료되지 않고 14일 안에 활동한 세션의 현재 PR(`links.pr`, 카드가 아직 머지·닫힘으로 보이지 않는 것)을 PR당 한 번, 오래 안 물어본 순으로 틱당 최대 20개 읽는다(`fetchGitHubPullState`, If-None-Match — 304는 rate limit에 안 잡힘). 상태가 바뀌면 `noteSessionLinksByKey(…, 'update')` → 카드 push, 머지·닫힘이면 스레드에 한 줄 알림(대시보드 작업은 카드만). 상태를 먼저 저장하고 알리므로 재시작해도 알림을 반복하지 않는다. 열린 PR이면 head 커밋의 check run도 읽는다(#929, `fetchGitHubCheckRuns`, `filter=latest`, ETag) — 전부 끝나고 하나라도 실패면 실패한 job 이름과 링크를 담은 호스트 턴(`[pr-watch] CI failed …`, 600자 이하)을 세션에 넣는다. 그 PR을 현재 링크로 가진 살아 있는 세션이 정확히 하나일 때만 깨운다(둘 이상이면 주인이 불분명). 전달은 `createSettledDelivery`가 맡는다 — 합성 턴은 디스패치 슬롯이 잡혀 있으면 버려지므로(onIdle은 슬롯이 풀리기 전에 불림), 5초마다 세션이 idle이고 `SlackHandler.isHostTurnFree`(요청·후속 슬롯 없음)일 때만 한 번에 하나씩 `messageInjector`로 넣고, 6시간 넘게 못 넣으면 버린다. 기다리는 동안 PR이 머지됐거나 head가 바뀌었거나 카드가 다른 PR로 옮겨 가면 그 메시지는 버리고 기록하지 않는다. 실패 뒤 새 head가 통과하면 한 번 더 알린다. head마다 한 번 — 기록(`pr-watch.json`)은 턴이 실제로 들어갈 때(또는 오래돼 버릴 때) 쓰므로, 기다리는 중 재시작하면 다시 보낸다. 기록 파일을 못 읽으면 CI는 보내지 않는다. check run이 한 페이지(100)를 넘으면 통과로 치지 않는다. PR이 바뀌었거나(200) 지난 활동 조회가 실패·페이지 끝에서 멈췄으면 커서 이후의 리뷰·리뷰 코멘트·PR 코멘트를 읽는다(#930, `fetchGitHubPullActivity` — 코멘트는 `since`+100개씩, 리뷰는 마지막 페이지부터 거꾸로; 코멘트 페이지가 가득 차면 `until`까지만 넘기고 다음 틱에 이어 읽음; 하나라도 실패하면 아무것도 안 읽은 것). 봇 자신(`<slug>[bot]`; 모르면 읽지 않음), OWNER·MEMBER·COLLABORATOR가 아닌 사람, 허용 목록(`SOMA_PR_WATCH_BOTS`, 기본 비어 있음)에 없는 봇의 활동은 빼고, 허용된 봇만의 활동은 PR당 3번까지만 깨운다(사람 활동과 함께 온 봇은 횟수를 쓰지 않는다). 호스트 턴(`[pr-watch] New activity …`, 1500자 이하)에는 누가·무엇을·링크만 담고 본문은 읽어 오지도 넣지도 않는다 — 제3자가 쓴 글이 소유자 이름의 턴으로 들어가지 않게, 모델은 GitHub에서 데이터로 읽는다. CI와 같이 주인이 하나인 세션만, 주입될 때 커서를 기록한다. 메시지가 기다리는 동안 PR이 다시 바뀌었거나 봇 로그인을 아직 몰라 못 읽었으면, 다음 304에도 다시 읽는다. 처음 보는 PR은 커서를 10분 전부터 시작한다. 데몬 기동 때 `start`, 종료 때 `stop`(`src/index.ts`); `SOMA_PR_WATCH=off`로 끈다. 턴 안의 기록(#832 쓰기 확인, #833 턴 끝 대조)이 놓치는 "턴 뒤의 머지"를 맡는다(#644).
 
 ## Design Principles
 

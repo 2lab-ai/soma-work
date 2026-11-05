@@ -7,6 +7,7 @@ import { config } from './config';
 import { getGitHubAppAuth } from './github-auth';
 import type { GitHubReceiptObject } from './github-receipt';
 import { Logger } from './logger';
+import { type ActivityAnswer, type ActivityItem, type ChecksAnswer, checksConclusionOf } from './session-pr-watch';
 import type { SessionLink } from './types';
 
 const logger = new Logger('LinkMetadataFetcher');
@@ -572,6 +573,231 @@ export async function fetchGitHubPRReviewStatus(
     return 'pending';
   } catch (error) {
     logger.warn('Failed to fetch GitHub PR review status', { url: link.url, error: (error as Error).message });
+    return undefined;
+  }
+}
+
+/**
+ * #928 — one PR's state for the session PR watch (`session-pr-watch.ts`). `etag` goes out as If-None-Match: a 304
+ * (GitHub does not count it against the rate limit) answers 'not-modified'. Undefined on any failure; never throws.
+ * An answer also fills the metadata cache, so the thread header and the card read the same state.
+ */
+export async function fetchGitHubPullState(
+  owner: string,
+  repo: string,
+  number: number,
+  etag?: string,
+): Promise<
+  | { number: number; status: 'open' | 'draft' | 'merged' | 'closed'; headSha?: string; etag?: string }
+  | 'not-modified'
+  | undefined
+> {
+  try {
+    const token = await getGitHubToken();
+    if (!token) return undefined;
+    const response = await fetch(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${number}`,
+      {
+        headers: {
+          Authorization: `token ${token}`,
+          Accept: 'application/vnd.github.v3+json',
+          'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
+          ...(etag ? { 'If-None-Match': etag } : {}),
+        },
+        signal: AbortSignal.timeout(8_000),
+      },
+    );
+    if (response.status === 304) return 'not-modified';
+    if (!response.ok) return undefined;
+    const p = (await response.json()) as {
+      html_url?: unknown;
+      title?: unknown;
+      state?: unknown;
+      draft?: unknown;
+      merged?: unknown;
+      merged_at?: unknown;
+      head?: { sha?: unknown };
+    };
+    const merged = p.merged === true || typeof p.merged_at === 'string';
+    const status = merged ? 'merged' : p.state === 'closed' ? 'closed' : p.draft === true ? 'draft' : 'open';
+    if (typeof p.html_url === 'string') {
+      const title = typeof p.title === 'string' ? p.title.slice(0, MAX_CACHED_TITLE_LENGTH) : undefined;
+      metadataCache.set(p.html_url, { title, status, fetchedAt: Date.now() });
+    }
+    const etagOut = response.headers.get('etag');
+    return {
+      number,
+      status,
+      ...(typeof p.head?.sha === 'string' ? { headSha: p.head.sha } : {}),
+      ...(etagOut ? { etag: etagOut } : {}),
+    };
+  } catch (error) {
+    logger.debug('Failed to read a PR for the PR watch', { owner, repo, number, error: (error as Error).message });
+    return undefined;
+  }
+}
+
+/**
+ * #929 — the latest check runs of one commit, folded by `checksConclusionOf` (pending while any runs). `etag` goes out
+ * as If-None-Match; a 304 answers 'not-modified'. Undefined on any failure; never throws.
+ */
+export async function fetchGitHubCheckRuns(
+  owner: string,
+  repo: string,
+  sha: string,
+  etag?: string,
+): Promise<ChecksAnswer | 'not-modified' | undefined> {
+  if (!/^[0-9a-f]{7,64}$/i.test(sha)) return undefined;
+  try {
+    const token = await getGitHubToken();
+    if (!token) return undefined;
+    const response = await fetch(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${sha}/check-runs?filter=latest&per_page=100`,
+      {
+        headers: {
+          Authorization: `token ${token}`,
+          Accept: 'application/vnd.github.v3+json',
+          'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
+          ...(etag ? { 'If-None-Match': etag } : {}),
+        },
+        signal: AbortSignal.timeout(8_000),
+      },
+    );
+    if (response.status === 304) return 'not-modified';
+    if (!response.ok) return undefined;
+    const body = (await response.json()) as { check_runs?: unknown; total_count?: unknown };
+    if (!Array.isArray(body.check_runs)) return undefined;
+    const runs = body.check_runs.filter((r): r is { name?: string; status?: string; conclusion?: string | null } =>
+      Boolean(r && typeof r === 'object'),
+    );
+    const etagOut = response.headers.get('etag');
+    // A run past the first page could be failing or still running: never call a partial list a pass.
+    const partial = typeof body.total_count === 'number' && body.total_count > body.check_runs.length;
+    const folded = partial ? { conclusion: 'pending' as const, failed: [] } : checksConclusionOf(runs);
+    return { ...folded, ...(etagOut ? { etag: etagOut } : {}) };
+  } catch (error) {
+    logger.debug('Failed to read check runs for the PR watch', { owner, repo, sha, error: (error as Error).message });
+    return undefined;
+  }
+}
+
+/**
+ * #930 — what was written on a PR after `since`: PR comments and review comments (GitHub's `since`, oldest first,
+ * 100 a page) and reviews (no `since` on GitHub: walked back from the last page until a page starts at or before
+ * `since`, at most 5 pages). A full comment page sets `until` to its last item — nothing after it is claimed, so the
+ * caller reads on from there. All or nothing: one failed read is undefined. Never throws.
+ */
+export async function fetchGitHubPullActivity(
+  owner: string,
+  repo: string,
+  number: number,
+  since: string,
+): Promise<ActivityAnswer | undefined> {
+  const PER_PAGE = 100;
+  const MAX_REVIEW_PAGES = 5;
+  try {
+    const token = await getGitHubToken();
+    if (!token) return undefined;
+    const base = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+    const get = async (url: string): Promise<{ items: unknown[]; last?: number } | undefined> => {
+      const response = await fetch(url, {
+        headers: {
+          Authorization: `token ${token}`,
+          Accept: 'application/vnd.github.v3+json',
+          'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
+        },
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (!response.ok) return undefined;
+      const body = (await response.json()) as unknown;
+      if (!Array.isArray(body)) return undefined;
+      const last = response.headers.get('link')?.match(/[?&]page=(\d+)[^>]*>;\s*rel="last"/);
+      return { items: body, ...(last ? { last: Number(last[1]) } : {}) };
+    };
+    const q = `since=${encodeURIComponent(since)}&per_page=${PER_PAGE}`;
+    const reviewsUrl = `${base}/pulls/${number}/reviews?per_page=${PER_PAGE}`;
+    const [comments, reviewComments, firstReviews] = await Promise.all([
+      get(`${base}/issues/${number}/comments?${q}`),
+      get(`${base}/pulls/${number}/comments?${q}`),
+      get(reviewsUrl),
+    ]);
+    if (!comments || !reviewComments || !firstReviews) return undefined;
+    type Raw = {
+      id?: unknown;
+      user?: { login?: unknown; type?: unknown } | null;
+      author_association?: unknown;
+      html_url?: unknown;
+      created_at?: unknown;
+      submitted_at?: unknown;
+      state?: unknown;
+      path?: unknown;
+    };
+    const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
+    const sinceMs = Date.parse(since);
+    // Reviews are oldest first: the newest are on the last page. Walk back until a page starts before `since`.
+    const reviews: unknown[] = [...firstReviews.items];
+    if (firstReviews.last && firstReviews.last > 1) {
+      const pages: unknown[][] = [];
+      for (let n = firstReviews.last; n > 1 && pages.length < MAX_REVIEW_PAGES; n--) {
+        const got = await get(`${reviewsUrl}&page=${n}`);
+        if (!got) return undefined;
+        pages.unshift(got.items);
+        // A pending review has no submitted_at: the page starts at its first submitted one.
+        const first = got.items
+          .map((i) => Date.parse(str((i as Raw | undefined)?.submitted_at) ?? ''))
+          .find((at) => Number.isFinite(at));
+        // A page of pending reviews only says nothing about time: walk on back.
+        if (first !== undefined && first <= sinceMs) break;
+      }
+      reviews.push(...pages.flat());
+    }
+    const out: ActivityItem[] = [];
+    const add = (raw: unknown, kind: ActivityItem['kind']) => {
+      const r = raw as Raw;
+      const author = str(r?.user?.login);
+      const at = str(kind === 'review' ? r?.submitted_at : r?.created_at);
+      const url = str(r?.html_url);
+      if (!author || !at || !url || r?.id === undefined) return;
+      out.push({
+        id: `${kind}:${String(r.id)}`,
+        kind,
+        author,
+        bot: r.user?.type === 'Bot' || author.endsWith('[bot]'),
+        ...(str(r.author_association) ? { association: str(r.author_association) } : {}),
+        ...(kind === 'review' ? { state: str(r.state) } : {}),
+        ...(kind === 'review-comment' && str(r.path) ? { path: str(r.path) } : {}),
+        url,
+        at,
+      });
+    };
+    // A full comment page may have more after its last item: claim nothing past it.
+    let until: number | undefined;
+    for (const [stream, kind] of [
+      [comments.items, 'comment'],
+      [reviewComments.items, 'review-comment'],
+    ] as const) {
+      for (const c of stream) add(c, kind);
+      if (stream.length >= PER_PAGE) {
+        const lastAt = Date.parse(str((stream[stream.length - 1] as Raw)?.created_at) ?? '');
+        if (Number.isFinite(lastAt)) until = until === undefined ? lastAt : Math.min(until, lastAt);
+      }
+    }
+    for (const r of reviews) {
+      const at = Date.parse(str((r as Raw)?.submitted_at) ?? '');
+      if (Number.isFinite(at) && at > sinceMs) add(r, 'review');
+    }
+    const untilIso =
+      until === undefined
+        ? undefined
+        : (out.find((i) => Date.parse(i.at) === until)?.at ?? new Date(until).toISOString());
+    return { items: out, ...(untilIso ? { until: untilIso } : {}) };
+  } catch (error) {
+    logger.debug('Failed to read PR activity for the PR watch', {
+      owner,
+      repo,
+      number,
+      error: (error as Error).message,
+    });
     return undefined;
   }
 }

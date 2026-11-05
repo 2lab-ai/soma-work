@@ -231,6 +231,9 @@ const panelGeometry = (page: Page) =>
       statusShown: visibleIn(document.getElementById('panel-status')),
       midbarShown: visibleIn(document.getElementById('panel-midbar')),
       sectionsList: rect(document.getElementById('panel-sections')),
+      // The section tabs (대화 · 작업 로그): <ui-tabs>' tab strip in its open shadow root.
+      strip: rect(document.getElementById('panel-sections')?.shadowRoot?.querySelector('.tb-scroll') ?? null),
+      stripShown: visibleIn(document.getElementById('panel-sections')?.shadowRoot?.querySelector('.tb-scroll') ?? null),
       viewport: rect(vp),
       // The part of the chat the reader can touch: inside the panel's scroll area, above the composer.
       touch: (() => {
@@ -366,6 +369,11 @@ async function phone(browser: Browser, width: number, height: number) {
     `${tag}: the card opens with its composer${height < 560 ? '' : ' and its status bar'}`,
   );
   check(!rest.upShown, `${tag}: no ^ while the composer is out`);
+  // T6 · the card's title bar is one line of the board's top bar's height (52px), not a taller block.
+  check(
+    !!rest.header && rest.header.h >= 51 && rest.header.h <= 53,
+    `${tag}: the title bar is 52px, the top bar's height (${rest.header?.h}px)`,
+  );
 
   // T3 · the model picker shares the composer's row, left of Send.
   const p = rest.picker;
@@ -389,9 +397,14 @@ async function phone(browser: Browser, width: number, height: number) {
     !!read.status && !!read.header && read.status.bottom <= read.header.bottom && !read.midbarShown,
     `${tag}: the status bar and the tab bar scrolled out under the title bar (${JSON.stringify(read.outer)})`,
   );
+  // T5 · the section tabs (대화 · 작업 로그) stay, right under the title bar; the chat starts under them.
   check(
-    !!read.viewport && !!read.header && read.viewport.top <= read.header.bottom + 6, // the chat's own 4px top padding
-    `${tag}: the chat starts right under the title bar (chat top ${read.viewport?.top} · title bar bottom ${read.header?.bottom})`,
+    read.stripShown && !!read.strip && !!read.header && Math.abs(read.strip.top - read.header.bottom) <= 2,
+    `${tag}: the 대화 · 작업 로그 tabs stay right under the title bar (tabs top ${read.strip?.top} · title bar bottom ${read.header?.bottom})`,
+  );
+  check(
+    !!read.viewport && !!read.strip && read.viewport.top <= read.strip.bottom + 6, // the chat's own 4px top padding
+    `${tag}: the chat starts right under the tabs (chat top ${read.viewport?.top} · tabs bottom ${read.strip?.bottom})`,
   );
   check(!read.commandShown, `${tag}: the composer slid away while reading (${JSON.stringify(read.command)})`);
   check(
@@ -483,7 +496,79 @@ async function phone(browser: Browser, width: number, height: number) {
       !logRead.statusShown && !logRead.commandShown,
       `${tag}: 작업 로그 — the head and the composer go while reading`,
     );
+    check(
+      logRead.stripShown &&
+        !!logRead.strip &&
+        !!logRead.header &&
+        Math.abs(logRead.strip.top - logRead.header.bottom) <= 2,
+      `${tag}: 작업 로그 — the tabs stay right under the title bar (tabs top ${logRead.strip?.top})`,
+    );
+    // T5 · a tap on 대화 while reading: the chat, the head still out, the tabs still there.
+    if (process.env.MOBILE_CHROME_DEBUG)
+      await page.evaluate(() => {
+        const w = window as any;
+        w.__calls = [];
+        for (const n of ['rdReset', 'rdRead', 'selectPanelSection', 'rdTuck']) {
+          const f = w[n];
+          w[n] = function (...a: unknown[]) {
+            w.__calls.push(
+              `${n}(${JSON.stringify(a)}) read=${document.getElementById('slide-panel')?.getAttribute('data-read')} <- ${(
+                new Error().stack ?? ''
+              )
+                .split('\n')
+                .slice(2, 5)
+                .map((l) => l.trim().split(' ')[1])
+                .join(' < ')}`,
+            );
+            return f.apply(this, a);
+          };
+        }
+      });
+    await page.locator('#panel-sections .tb-tab', { hasText: '대화' }).first().tap();
+    await sleep(900);
+    const swapped = await panelGeometry(page);
+    if (process.env.MOBILE_CHROME_DEBUG) log((await page.evaluate(() => (window as any).__calls)).join('\n'));
+    await page.screenshot({ path: path.join(OUT, `phone-${width}-tab-switch-reading.png`) });
+    check(
+      !swapped.statusShown &&
+        swapped.stripShown &&
+        !!swapped.strip &&
+        !!swapped.header &&
+        Math.abs(swapped.strip.top - swapped.header.bottom) <= 2 &&
+        !!swapped.viewport &&
+        swapped.viewport.top <= swapped.strip.bottom + 6,
+      `${tag}: a tab tap while reading keeps the head out and the tabs in place (${JSON.stringify(swapped.outer)})`,
+    );
   } else check(false, `${tag}: 작업 로그 has something to scroll (${JSON.stringify(logState)})`);
+
+  // A phone turned sideways while reading, then a tab tap (the composer back): the section box ends inside the view —
+  // its newest rows are never under the composer (no 160px floor on a short screen).
+  if (width === 390) {
+    const g0 = await panelGeometry(page);
+    if (g0.touch) await swipe(page, g0.touch.x, g0.touch.y, -300);
+    await page.setViewportSize({ width: 844, height: 390 });
+    await sleep(900);
+    await page.locator('#panel-sections .tb-tab', { hasText: '작업 로그' }).first().tap();
+    await sleep(900);
+    const fit = await page.evaluate(() => {
+      const box = document.getElementById('psec-log');
+      const sc = (document.getElementById('panel-scroll') as HTMLElement).getBoundingClientRect();
+      const b = box?.getBoundingClientRect();
+      return {
+        read: document.getElementById('slide-panel')?.getAttribute('data-read'),
+        boxBottom: b ? Math.round(b.bottom) : null,
+        clipBottom: Math.round(sc.bottom),
+        view: Math.round(sc.height),
+      };
+    });
+    await page.screenshot({ path: path.join(OUT, `phone-${width}-rotated-log.png`) });
+    check(
+      fit.boxBottom !== null && fit.boxBottom <= fit.clipBottom + 1,
+      `${tag} → 844×390 while reading, then 작업 로그: the box ends inside the view (${JSON.stringify(fit)})`,
+    );
+    await page.setViewportSize({ width, height });
+    await sleep(600);
+  }
 
   const ov = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   check(ov <= 0, `${tag}: no sideways overflow with the card open (${ov})`);
