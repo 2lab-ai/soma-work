@@ -3076,6 +3076,75 @@ describe('SlackHandler — follow-up queue host', () => {
         await turn.release();
       });
 
+      /**
+       * #956 review (astra P1): the retry is chosen by the run's generation, but
+       * its push comes after awaits (a file download here). If the run that
+       * refused the row is replaced meanwhile — it ends and the drain opens the
+       * next run — the push must not land in that successor.
+       */
+      it('is not pushed into the run that replaced the refusing one while the retry waited', async () => {
+        // Enqueue-time refusals for both rows, then every push is accepted.
+        const steerTurn = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(false).mockReturnValue(true);
+        claudeHandler.steerTurn = steerTurn;
+        handlerAny.fileHandler = {
+          formatFilePrompt: vi.fn(async (_files: unknown, text: string) => text),
+          cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+        };
+        const download = deferred<any>();
+        let withFileCalls = 0;
+        processFiles.mockImplementation(async (event: any) => {
+          // The retry's download (the row's second) hangs until the run is replaced.
+          if (event?.ts === '444.555' && ++withFileCalls === 2) return download.promise;
+          return { files: [], shouldContinue: true };
+        });
+        const file = {
+          id: 'F1',
+          name: 'log.txt',
+          mimetype: 'text/plain',
+          filetype: 'text',
+          url_private: 'https://x/1',
+          url_private_download: 'https://x/1d',
+          size: 12,
+        };
+
+        const runA = turnStillSettingUp();
+        await tick();
+        await handler.handleMessage(message({ ts: '333.444', text: '먼저 이것' }), say());
+        await handler.handleMessage(message({ ts: '444.555', text: '이 로그도', files: [file] }), say());
+        const row = (ts: string) => items().find((item: any) => item.message.ts === ts);
+        expect(row('333.444').state).toBe('queued');
+        expect(row('444.555').state).toBe('queued');
+
+        // Run A opens: the first row goes in, the second waits on its download.
+        reachModel(runA.epoch());
+        for (let i = 0; i < 4; i++) await tick();
+        expect(steerTurn).toHaveBeenCalledTimes(3);
+        expect(row('333.444').state).toBe('steered');
+
+        // Run A ends unsettled: its row is swept back and the drain runs it as run B.
+        const gateB = deferred<any>();
+        createAgentSession.mockImplementationOnce(() => ({
+          startWithContinuation: vi.fn(() => gateB.promise),
+          getLastTurnSucceeded: () => true,
+          getRetryAfterMs: () => undefined,
+        }));
+        const endA = runA.release();
+        for (let i = 0; i < 6; i++) await tick();
+        expect(row('333.444').state).toBe('dispatched');
+        expect(row('444.555').state).toBe('queued');
+
+        // The download finishes while run B holds the slot.
+        download.resolve({ files: [], shouldContinue: true });
+        for (let i = 0; i < 6; i++) await tick();
+
+        expect(steerTurn, 'nothing pushed into run B').toHaveBeenCalledTimes(3);
+        expect(row('444.555').state).toBe('queued');
+
+        gateB.resolve({ hasPendingChoice: false });
+        await endA;
+        for (let i = 0; i < 6; i++) await tick();
+      });
+
       it('stays queued for the drain when the opened turn refuses it again', async () => {
         const steerTurn = vi.fn().mockReturnValue(false);
         claudeHandler.steerTurn = steerTurn;

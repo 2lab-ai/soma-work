@@ -1566,9 +1566,10 @@ export class SlackHandler {
 
   /**
    * #956 — the run of `turnEpoch` reached the model, so its input channel is
-   * open: push in the rows it refused before it got there. Rows an older run
-   * refused are dropped (that run is over and its end drained them); rows a newer
-   * run refused stay for that run.
+   * open: push in the rows it refused before it got there — into that run only,
+   * re-checked at the push ({@link trySteerFollowup}'s `pinnedRun`). Rows an older
+   * run refused are dropped (that run is over and its end drained them); rows a
+   * newer run refused stay for that run.
    */
   private steerFollowupsRefusedBeforeOpen(slotKey: string, turnEpoch: number): void {
     const waiting = this.followupSteerOnOpen.get(slotKey);
@@ -1576,7 +1577,9 @@ export class SlackHandler {
     const later = waiting.filter((row) => row.turnEpoch > turnEpoch);
     if (later.length > 0) this.followupSteerOnOpen.set(slotKey, later);
     else this.followupSteerOnOpen.delete(slotKey);
-    const due = waiting.filter((row) => row.turnEpoch === turnEpoch);
+    const due = waiting
+      .filter((row) => row.turnEpoch === turnEpoch)
+      .map(({ rowKey, itemId }) => ({ rowKey, itemId, pinnedRun: { slotKey, turnEpoch } }));
     if (due.length > 0)
       void this.steerQueuedRowsIntoLiveTurn(due, 'Follow-up refused before the turn opened its input');
   }
@@ -1587,16 +1590,16 @@ export class SlackHandler {
    * cannot be steered stays queued for the drain at that turn's end.
    */
   private async steerQueuedRowsIntoLiveTurn(
-    rows: ReadonlyArray<{ rowKey: string; itemId: string }>,
+    rows: ReadonlyArray<{ rowKey: string; itemId: string; pinnedRun?: { slotKey: string; turnEpoch: number } }>,
     what: string,
   ): Promise<void> {
     const queue = this.followupQueue;
     if (!queue) return;
-    for (const { rowKey, itemId } of rows) {
+    for (const { rowKey, itemId, pinnedRun } of rows) {
       const item = queue.get(rowKey, itemId);
       if (item?.state !== 'queued') continue;
       try {
-        const steered = await this.trySteerFollowup(rowKey, item.message as MessageEvent, item);
+        const steered = await this.trySteerFollowup(rowKey, item.message as MessageEvent, item, pinnedRun);
         this.logger.info(`${what} handed to the running turn`, { sessionKey: rowKey, itemId, steered });
         await this.syncFollowupReactions(rowKey, itemId);
       } catch (error) {
@@ -5047,6 +5050,7 @@ export class SlackHandler {
     sessionKey: string,
     event: MessageEvent,
     item: FollowupItem,
+    pinnedRun?: { slotKey: string; turnEpoch: number },
   ): Promise<'steered' | 'queued' | 'uncertain'> {
     const dispatcher = this.followupDispatcher;
     if (!dispatcher) return 'queued';
@@ -5125,6 +5129,23 @@ export class SlackHandler {
         : migratedSlotKey !== undefined && dispatcher.isBusy(migratedSlotKey)
           ? migratedSlotKey
           : sessionKey;
+      // #956 review (astra P1) — a retry belongs to the run that refused the
+      // row. The awaits above can outlive that run (a Send now replaces it, or
+      // it ends and the drain opens the next), so the run is checked here, with
+      // nothing but synchronous code left before the push.
+      if (
+        pinnedRun &&
+        (slotKey !== pinnedRun.slotKey || dispatcher.snapshot(slotKey).turnEpoch !== pinnedRun.turnEpoch)
+      ) {
+        this.logger.debug('Follow-up not steered — the run that refused it is gone', {
+          sessionKey,
+          slotKey,
+          itemId: item.id,
+          pinnedTurnEpoch: pinnedRun.turnEpoch,
+        });
+        await this.cleanupSteerFiles(files);
+        return 'queued';
+      }
       const steered = dispatcher.steer(
         sessionKey,
         item.id,
