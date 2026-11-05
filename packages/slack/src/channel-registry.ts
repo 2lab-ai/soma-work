@@ -169,6 +169,31 @@ export async function registerChannel(client: WebClient, channelId: string): Pro
 }
 
 /**
+ * Register a channel from values the caller already holds — a channel the bot
+ * has just made and described (the dashboard's new repo channel). No
+ * `conversations.info` round trip: one made a moment ago may not read back its
+ * purpose yet, and a stale read must not erase the repo mapping.
+ */
+export function upsertChannel(input: { id: string; name: string; purpose?: string; topic?: string }): ChannelInfo {
+  const info: ChannelInfo = {
+    id: input.id,
+    name: input.name,
+    purpose: input.purpose ?? '',
+    topic: input.topic ?? '',
+    repos: [],
+    joinedAt: Date.now(),
+  };
+  const rawText = `${info.purpose}\n${info.topic}`;
+  info.repos = parseRepos(rawText);
+  info.confluenceUrl = parseConfluenceUrl(rawText);
+  channels.set(info.id, info);
+  rebuildRepoIndex();
+  invalidateChannelCache(info.id);
+  logger.info('✅ Channel upserted', { channelId: info.id, name: info.name, repos: info.repos });
+  return info;
+}
+
+/**
  * Unregister a channel when bot leaves or is removed.
  */
 export function unregisterChannel(channelId: string): void {
@@ -182,7 +207,7 @@ export function unregisterChannel(channelId: string): void {
  * Find the correct channel for a given repo.
  * Returns the channel ID(s) mapped to this repo, or empty array.
  */
-function findChannelsForRepo(repoFullName: string): string[] {
+export function findChannelsForRepo(repoFullName: string): string[] {
   // Normalize: lowercase, strip .git suffix
   const normalized = repoFullName.toLowerCase().replace(/\.git$/, '');
   const result = repoToChannels.get(normalized) || [];
