@@ -124,6 +124,7 @@ import { backfillArtifactsFromWorkLog } from './artifact-capture';
 import { type ArtifactSummary, getArtifactStore, type SessionArtifact } from './artifacts';
 import { buildCapacityView, type CapacityView } from './capacity-view';
 import { type CardLink, cardLinksOf } from './card-links';
+import { archivedCardClocks, cardWhereOf, liveCardClocks } from './card-where';
 import { isClientRef } from './client-ref';
 import { type ComposerMenuWhere, type ComposerTriggerRow, composerTriggers } from './composer-menus';
 import { buildCronJobsView, type CronRunSessionLookup } from './cron-view';
@@ -226,6 +227,22 @@ export interface KanbanSession {
   model: string;
   channelId: string;
   threadTs?: string;
+  /**
+   * SSOT 2026-11-05 — where the work happens, for the card face and the board's filters (card-where.ts): the
+   * Slack channel's name (no `#`; absent for a DM, a dashboard-only task, a channel the bot does not know) and
+   * the GitHub repo (`owner/repo`) of its PR or issue, else of its channel when the channel maps exactly one.
+   */
+  channelName?: string;
+  repo?: string;
+  /** The channel is private (card-where.ts): no name and no channel-mapped repo go to the board's viewers. */
+  channelPrivate?: true;
+  /**
+   * SSOT 2026-11-05 — the board's sort clocks (epoch ms): when the task started (its own start, else its Slack
+   * thread's first message) and when its work last moved (the later of its last input and its last change of
+   * state; an archive's finish).
+   */
+  startedAt?: number;
+  progressAt?: number;
   activityState: 'working' | 'waiting' | 'idle';
   sessionState: string; // MAIN | SLEEPING
   terminated?: boolean;
@@ -2489,6 +2506,8 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     model: s.model || 'unknown',
     channelId: s.channelId,
     threadTs: s.threadTs,
+    ...cardWhereOf(s),
+    ...liveCardClocks(s),
     // A turn blocked on a permission prompt waits for its user (projection
     // only — the session's own activityState is untouched).
     // A plan waiting for its owner (plan mode) waits too. Nothing waits without a question (#917).
@@ -2685,6 +2704,8 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
     model: archived.model || 'unknown',
     channelId: archived.channelId,
     threadTs: archived.threadTs,
+    ...cardWhereOf(archived),
+    ...archivedCardClocks(archived),
     activityState: 'idle', // Archived sessions are not active
     sessionState: archived.archiveReason === 'sleep_expired' ? 'SLEEPING' : 'TERMINATED',
     terminated: true,
@@ -5436,16 +5457,28 @@ ui-stat-strip:not(:defined) > * { display: none; }
 /* The inbox is the size container for the board columns (SSOT 2026-10-24): a docked
    drawer narrows it, so the column layout follows its width, not the viewport. */
 .inbox { margin-bottom: 28px; container: inbox / inline-size; }
-.inbox-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 16px; min-width: 0; }
+/* SSOT 2026-11-05: the head wraps at every width — the tools (보관함 · 휴면 · 내 카드만 · 필터 · 정렬 · 검색 · the view)
+   take the row under the trail when they do not fit beside it, and wrap there in turn (a docked drawer narrows it). */
+.inbox-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin: 4px 0 16px; min-width: 0; }
 /* The trail (soma-work › 에이전트 인박스) is @2lab.ai/ui <ui-breadcrumbs> (D8b A-16): it draws the crumbs, the
    separators and the current page; it takes the row's room and gives way to the tools. */
-ui-breadcrumbs.crumbs { flex: 1 1 auto; min-width: 0; }
+ui-breadcrumbs.crumbs { flex: 1 1 160px; min-width: 0; }
 .view-seg { flex-shrink: 0; }
 /* Board header tools: Show archives, then Board | List. Below 640px the tools
    take their own row under the breadcrumb. */
-.inbox-tools { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
+.inbox-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; row-gap: 8px; flex: 0 1 auto; min-width: 0; margin-left: auto; }
 /* 보관함 · 휴면 · 수명 주기 are kit chips (.ui-chip[aria-pressed], D7 D-03); a chip the board has no use for yet stays out. */
 .archives-btn[hidden] { display: none; }
+/* Board filters and sort (SSOT 2026-11-05): 필터 and 정렬 are the triggers of their <ui-menu>s; 필터 carries the count of
+   the filters in force (its .ui-count). The search is a kit-sized field that grows a little while focused. */
+.bf-menu, .bs-menu { flex: none; }
+.bf-trigger .ui-count[hidden] { display: none; }
+.bf-search { flex: 0 1 140px; min-width: 96px; height: 32px; box-sizing: border-box; padding: 0 10px; border-radius: 999px;
+  border: 1px solid var(--ib-card-border); background: var(--ib-card); color: var(--ib-text); font: inherit; font-size: 13px;
+  transition: flex-basis var(--dur-fade, 180ms) var(--ease-out, ease); }
+.bf-search:focus { flex-basis: 200px; outline: 2px solid var(--border-focus); outline-offset: 1px; }
+.bf-search::placeholder { color: var(--ib-muted); }
+@media (prefers-reduced-motion: reduce) { .bf-search { transition: none; } }
 /* Session lifecycle dialog (admin, J-01) — @2lab.ai/ui <ui-dialog size="sm">: the element draws the panel, the
    scrim, the enter / exit motion and the phone sheet; the page keeps only its form's rules. */
 .lifecycle-dialog .lc-note { margin: 0 0 12px; font-size: 12px; color: var(--ib-muted); }
@@ -6557,6 +6590,13 @@ ${pageTokenAliases()}
         <div class="inbox-tools" id="inbox-tools">
           <button type="button" class="ui-chip archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><i data-ui-icon="archive"></i><span id="archives-label">보관함</span></button>
           <button type="button" class="ui-chip archives-btn" id="sleeping-toggle" aria-pressed="true" hidden onclick="toggleSleeping()"><i data-ui-icon="moon"></i><span id="sleeping-label">휴면</span></button>
+          <!-- Board filters and sort (SSOT 2026-11-05): 내 카드만 (the All Users board, signed in), 필터 (사용자 · 채널 ·
+               레포 · 즐겨찾기 · 연결된 PR · 최근 활동 — @2lab.ai/ui <ui-menu> checkboxes / radios), 정렬 (처음 시작 ·
+               마지막 진행, 오름 · 내림차순) and a search over the cards' words. Kept in localStorage (the search is not). -->
+          <button type="button" class="ui-chip archives-btn" id="mine-toggle" aria-pressed="false" hidden title="내가 시작한 카드만 보기" onclick="toggleMineOnly()"><i data-ui-icon="user"></i><span>내 카드만</span></button>
+          <ui-menu id="bf-menu" class="bf-menu" lang="ko" placement="bottom end"><button type="button" slot="trigger" class="ui-chip archives-btn bf-trigger" id="bf-trigger" aria-pressed="false" title="카드 필터"><span>필터</span><span class="ui-count" id="bf-count" hidden>0</span></button></ui-menu>
+          <ui-menu id="bs-menu" class="bs-menu" lang="ko" placement="bottom end"><button type="button" slot="trigger" class="ui-chip archives-btn bs-trigger" id="bs-trigger" title="카드 정렬"><span id="bs-label">마지막 진행 ↓</span></button></ui-menu>
+          <input type="search" class="bf-search" id="bf-search" placeholder="카드 검색" aria-label="카드 검색 — 제목 · 요약 · 사용자 · 채널 · 레포" autocomplete="off" spellcheck="false" oninput="onBoardSearch(this.value)">
           <button type="button" class="ui-chip archives-btn" id="lifecycle-btn" style="display:none" title="세션 수명 주기 (관리자)" onclick="openLifecycleDialog()"><i data-ui-icon="clock"></i><span>수명 주기</span></button>
           <ui-segmented class="view-seg" id="view-seg"></ui-segmented>
         </div>
@@ -8734,6 +8774,9 @@ function _applyUserPill(data) {
   if (typeof paintUsageBreakdown === 'function') paintUsageBreakdown(); // the by-user view is an admin's
   _viewerUserId = (data && data.user && data.user.slackUserId) || '';
   syncBoardScope();
+  // 내 카드만 needs the viewer (SSOT 2026-11-05): the bar shows it now (and a filter another account stored drops its users).
+  if (boardFilterViewerKnown(_viewerUserId) && _lastBoardData) renderBoard(_lastBoardData);
+  else paintBoardTools(_lastBoardData);
   // Plan mode: the viewer is known now — their cards that wait on a decision open (autoOpenDecisions).
   autoOpenDecisions();
   const lifecycleBtn = document.getElementById('lifecycle-btn');
@@ -9517,29 +9560,34 @@ function doneDayLabel(key, now) {
 // Pure: [{ key, label, open, items }] — opened = the reader's choices.
 // SSOT 2026-10-30 T2: a starred card leaves its day for the pinned group
 // ('starred', ★ 즐겨찾기), first and open until the reader folds it.
-function planDoneGroups(done, now, opened) {
+// SSOT 2026-11-05 — order (the board's sort, optional): the days (by finish) and the cards in a day follow its
+// direction, the cards by its clock (cardProgressAt · cardStartedAt). Without it: newest finish first.
+function planDoneGroups(done, now, opened, order) {
+  var sign = order && order.dir === 'asc' ? 1 : -1;
+  // A revived card's last progress is its revival, not its old finish: the board's clock, the day still its finish.
+  var timeOf = !order ? doneTimeOf : order.sort === 'start' ? cardStartedAt : cardProgressAt;
   var byKey = Object.create(null);
   var keys = [];
   var pinned = [];
   for (var i = 0; i < done.length; i++) {
-    var t = doneTimeOf(done[i].s);
+    var t = timeOf(done[i].s);
     if (done[i].s && done[i].s.starred === true) { pinned.push({ item: done[i], t: t }); continue; }
-    var k = dayKeyOf(t);
+    var k = dayKeyOf(doneTimeOf(done[i].s));
     if (!byKey[k]) { byKey[k] = []; keys.push(k); }
     byKey[k].push({ item: done[i], t: t });
   }
-  keys.sort(function(a, b) { return a < b ? 1 : a > b ? -1 : 0; });
+  keys.sort(function(a, b) { return a < b ? -sign : a > b ? sign : 0; });
   var today = dayKeyOf(now);
   var y = new Date(now);
   y.setDate(y.getDate() - 1);
   var yesterday = dayKeyOf(y.getTime());
   var groups = keys.map(function(k) {
-    var list = byKey[k].slice().sort(function(a, b) { return b.t - a.t; });
+    var list = byKey[k].slice().sort(function(a, b) { return sign * (a.t - b.t); });
     var open = opened && Object.prototype.hasOwnProperty.call(opened, k) ? !!opened[k] : (k === today || k === yesterday);
     return { key: k, label: doneDayLabel(k, now), open: open, items: list.map(function(x) { return x.item; }) };
   });
   if (pinned.length) {
-    pinned.sort(function(a, b) { return b.t - a.t; });
+    pinned.sort(function(a, b) { return sign * (a.t - b.t); });
     var pinOpen = opened && Object.prototype.hasOwnProperty.call(opened, 'starred') ? !!opened.starred : true;
     groups.unshift({ key: 'starred', label: '\\u2605 즐겨찾기', open: pinOpen, items: pinned.map(function(x) { return x.item; }) });
   }
@@ -9588,7 +9636,9 @@ function renderBoard(board, partial) {
   _lastBoardData = board;
   // Cron runs leave the columns for the CRON lane, one group per job (SSOT
   // 2026-10-23 T4); the lane sections exist before their elements are filled.
-  var cronPlan = planCronLane(board, _cronJobs, _cronRevealKey, !isAdvanced());
+  // SSOT 2026-11-05 — the columns draw the board as the filters and the sort leave it (boardFilterView); the cache,
+  // the owner hues and the tools' options above and below read the whole board.
+  var cronPlan = planCronLane(boardFilterView(board), _cronJobs, _cronRevealKey, !isAdvanced());
   _cronPlan = cronPlan;
   syncCronLane(cronPlan);
   var rest = cronPlan.board;
@@ -9597,7 +9647,7 @@ function renderBoard(board, partial) {
     showSleeping: showSleeping,
     revealKey: _revealedKey,
   });
-  var groups = planDoneGroups(plan.done, Date.now(), _doneGroupOpen);
+  var groups = planDoneGroups(plan.done, Date.now(), _doneGroupOpen, { sort: _bf.sort, dir: _bf.dir });
   var kb = document.getElementById('kanban');
   var prevHost = _cardHost;
   _cardHost = Object.create(null);
@@ -9624,14 +9674,17 @@ function renderBoard(board, partial) {
   function keys(list, col, host) {
     return place((list || []).map(function(s) { return { s: s, col: col }; }), host, true);
   }
+  // A column the filters emptied says so — only one they hid cards from (the element's own hint says it is empty).
+  var filteredEmpty = function(col) { return _bfHiddenCols[col] > 0 ? '필터에 맞는 카드가 없습니다' : ''; };
   if (kb) {
     kb._ibPlan = {
       cols: [
-        { id: 'waiting', label: BOARD_LABELS.waiting, keys: pending.waiting.concat(keys(rest.waiting, 'waiting', kb)) },
-        { id: 'working', label: BOARD_LABELS.working, keys: pending.working.concat(keys(rest.working, 'working', kb)) },
+        { id: 'waiting', label: BOARD_LABELS.waiting, emptyText: filteredEmpty('waiting'), keys: pending.waiting.concat(keys(rest.waiting, 'waiting', kb)) },
+        { id: 'working', label: BOARD_LABELS.working, emptyText: filteredEmpty('working'), keys: pending.working.concat(keys(rest.working, 'working', kb)) },
         {
           id: 'done',
           label: BOARD_LABELS.done,
+          emptyText: filteredEmpty('done'),
           keys: [],
           // A closed day's cards are counted, not drawn: they get no face until the day opens (T12).
           groups: groups.map(function(g) {
@@ -9669,6 +9722,7 @@ function renderBoard(board, partial) {
   syncHasCards();
   renderArchivesToggle(plan.archivedCount);
   renderSleepingToggle(plan.sleepingCount + kidCounts.sleeping);
+  paintBoardTools(board);
   paintCronDrawer();
   // The #814 tokens tooltip describes this board (user switch, WS push).
   updateTokenBreakdown();
@@ -9716,6 +9770,7 @@ function inboxPaint(host) {
   var columns = p.cols.map(function(c) {
     var col = { id: c.id, label: c.label, cards: cards(c.keys) };
     if (c.bare) col.bare = true;
+    if (c.emptyText) col.emptyText = c.emptyText;
     if (c.groups) col.groups = c.groups.map(function(g) { return { id: g.id, label: g.label, open: g.open, cards: cards(g.keys) }; });
     return col;
   });
@@ -10228,6 +10283,11 @@ function cardOf(s, col) {
   // 작업 카드의 연결 (SSOT 2026-11-02): every linked issue, PR and wiki with its state — the face's links row.
   var links = cardLinksFace(s);
   if (links.length) card.links = links;
+  // SSOT 2026-11-05 — where the work happens: the repo and the channel, the face's 레포 · 채널 chips (the layout's foot).
+  var repoOf = cardRepoOf(s);
+  var channelOf = cardChannelOf(s);
+  card.where = { channel: { text: channelOf.text, title: channelOf.title } };
+  if (repoOf) card.where.repo = { text: repoOf.text, title: repoOf.title };
   // A cron run leads with the CRON badge instead of the spark (SSOT 2026-10-23 T3).
   if (s.cronJob && s.cronJob.name) card.lead = { text: 'CRON', glyph: 'clock', title: '크론 잡: ' + s.cronJob.name };
   // A child of an epic (E4 ⑨b) leads with its plan node, the ref its epic's plan tree shows —
@@ -14440,6 +14500,426 @@ function renderSleepingToggle(sleepingCount) {
   setTextIfChanged(label, STRINGS.sleeping + ' (' + sleepingCount + ')');
 }
 
+// ── Board filters and sort (SSOT 2026-11-05) ──
+// Beside 보관함 · 휴면: 내 카드만, 필터 (a <ui-menu> of checkboxes — 사용자 · 채널 · 레포 · 즐겨찾기 · 연결된 PR — and the
+// 최근 활동 radios), 정렬 (처음 시작 · 마지막 진행, 오래된 먼저 · 최근 먼저) and a search over the cards' words. Within a
+// group the choices are OR, across groups AND; an empty group passes every card. A starred card still leads its
+// column (SSOT 2026-10-30) whatever the order. The board draws only what passes; the counts and the options come from
+// the whole board, so a choice never hides its own way back. Kept per browser (localStorage) — the search is not.
+var BOARD_FILTER_KEY = 'soma-board-filter';
+var BOARD_PERIODS = { '1d': 86400000, '7d': 7 * 86400000, '30d': 30 * 86400000 };
+function boardFilterDefault() {
+  return { users: [], channels: [], repos: [], prs: [], starred: false, period: '', sort: 'progress', dir: 'desc' };
+}
+// Pure: a stored value as a filter — anything unknown falls back to the default.
+function boardFilterFrom(raw) {
+  var f = boardFilterDefault();
+  if (!raw || typeof raw !== 'object') return f;
+  var list = function(v, ok) {
+    if (!Array.isArray(v)) return [];
+    var out = [];
+    for (var i = 0; i < v.length && out.length < 200; i++) {
+      var s = typeof v[i] === 'string' ? v[i] : '';
+      if (s && (!ok || ok.indexOf(s) >= 0) && out.indexOf(s) < 0) out.push(s);
+    }
+    return out;
+  };
+  f.users = list(raw.users);
+  f.channels = list(raw.channels);
+  f.repos = list(raw.repos);
+  f.prs = list(raw.prs, ['open', 'merged', 'closed', 'none']);
+  f.starred = raw.starred === true;
+  f.period = Object.prototype.hasOwnProperty.call(BOARD_PERIODS, raw.period) ? raw.period : '';
+  f.sort = raw.sort === 'start' ? 'start' : 'progress';
+  f.dir = raw.dir === 'asc' ? 'asc' : 'desc';
+  return f;
+}
+function readBoardFilter() {
+  try { return boardFilterFrom(JSON.parse(localStorage.getItem(BOARD_FILTER_KEY) || 'null')); } catch (_e) { return boardFilterDefault(); }
+}
+var _bf = readBoardFilter();
+var _bfQuery = '';
+// Whose filter is stored (the signed-in viewer when it was saved): another account in this browser starts without
+// the stored 사용자 choice (내 카드만 would be someone else's cards).
+var _bfViewer = readBoardFilterViewer();
+function readBoardFilterViewer() {
+  try {
+    var raw = JSON.parse(localStorage.getItem(BOARD_FILTER_KEY) || 'null');
+    return raw && typeof raw.viewer === 'string' ? raw.viewer : '';
+  } catch (_e) { return ''; }
+}
+function saveBoardFilter() {
+  var out = boardFilterFrom(_bf);
+  out.viewer = _viewerUserId || _bfViewer || '';
+  try { localStorage.setItem(BOARD_FILTER_KEY, JSON.stringify(out)); } catch (_e) {}
+}
+// The viewer is known (/auth/me): a filter another account stored loses its users. True when the filter changed.
+function boardFilterViewerKnown(viewer) {
+  if (!viewer) return false;
+  var other = !!_bfViewer && _bfViewer !== viewer;
+  _bfViewer = viewer;
+  if (!other || !_bf.users.length) return false;
+  _bf = boardFilterFrom(_bf);
+  _bf.users = [];
+  saveBoardFilter();
+  return true;
+}
+
+// A card's repo and channel as the board shows and filters them: a stable key, the face's short words, the full name.
+// The repo is the server's (owner/repo); the channel its name, else DM, else 대시보드 for a task with no Slack thread,
+// else its id (a channel the bot does not know).
+function cardRepoOf(s) {
+  var r = s && typeof s.repo === 'string' ? s.repo.trim() : '';
+  if (!r) return null;
+  var slash = r.lastIndexOf('/');
+  return { key: r, text: slash >= 0 ? r.slice(slash + 1) : r, title: '레포: ' + r };
+}
+function cardChannelOf(s) {
+  var id = s && typeof s.channelId === 'string' ? s.channelId : '';
+  var name = s && typeof s.channelName === 'string' ? s.channelName.trim() : '';
+  if (name) return { key: 'c:' + id, text: '#' + name, title: '채널: #' + name };
+  // A private channel's name is not sent to every viewer (card-where.ts): one group for all of them.
+  if (s && s.channelPrivate === true) return { key: 'private', text: '비공개 채널', title: '채널: 비공개 채널' };
+  if (id.charAt(0) === 'D') return { key: 'dm', text: 'DM', title: '채널: Slack DM' };
+  if (!id) return { key: 'web', text: '대시보드', title: '채널: 없음 — 대시보드에서만 진행' };
+  return { key: 'c:' + id, text: '#' + id, title: '채널: ' + id };
+}
+// The states of the PRs the card links (open · merged · closed), or none — from the face's links (their tone says the
+// state in any language), else the active PR.
+function cardPrStates(s) {
+  var out = [];
+  var add = function(st) { if (out.indexOf(st) < 0) out.push(st); };
+  var links = Array.isArray(s && s.cardLinks) ? s.cardLinks : [];
+  for (var i = 0; i < links.length; i++) {
+    var l = links[i];
+    if (!l || l.kind !== 'pr') continue;
+    add(l.tone === 'done' ? 'merged' : l.tone === 'fail' ? 'closed' : 'open');
+  }
+  if (!out.length && s && s.prUrl) {
+    var raw = String(s.prStatus || '').toLowerCase();
+    add(raw === 'merged' ? 'merged' : raw === 'closed' ? 'closed' : 'open');
+  }
+  if (!out.length) out.push('none');
+  return out;
+}
+// The two clocks (epoch ms): when the task started (the server's, else its Slack thread's first message, else its
+// last activity) and when its work last moved (the server's, else the latest time the card knows).
+function cardStartedAt(s) {
+  var t = toNum(s && s.startedAt);
+  if (t > 0) return t;
+  var ts = s && typeof s.threadTs === 'string' ? Number(s.threadTs) : 0;
+  if (ts > 0 && isFinite(ts)) return Math.round(ts * 1000);
+  var last = Date.parse(s && s.lastActivity);
+  return isFinite(last) ? last : 0;
+}
+function cardProgressAt(s) {
+  var t = toNum(s && s.progressAt);
+  if (t > 0) return t;
+  var best = Date.parse(s && s.lastActivity);
+  if (!isFinite(best)) best = 0;
+  var more = [s && s.doneAt, s && s.waitingSince, s && s.activeLegStartedAtMs];
+  for (var i = 0; i < more.length; i++) if (toNum(more[i]) > best) best = toNum(more[i]);
+  return best;
+}
+// What the search reads of a card (lower case): its title and summary, its owner, its repo and channel, its links.
+function cardSearchText(s) {
+  // The channel as the face shows it (#dev · DM · 대시보드), so "#dev" finds it too.
+  var parts = [s.displayHeadline, s.summaryTitle, s.title, s.ownerName, s.ownerId, s.repo, cardChannelOf(s).text, s.issueTitle, s.prTitle];
+  // What the face's summary and TL;DR say: the question it asks, its plan's conclusion, the Executive Summary's lines.
+  var q = s.pendingQuestion;
+  if (q) parts.push(q.question, q.title);
+  if (s.taskPlan) parts.push(s.taskPlan.summary);
+  if (s.esTldr && Array.isArray(s.esTldr.lines)) parts = parts.concat(s.esTldr.lines);
+  var links = Array.isArray(s.cardLinks) ? s.cardLinks : [];
+  for (var i = 0; i < links.length; i++) if (links[i]) parts.push(links[i].text, links[i].title);
+  return parts.filter(function(p) { return typeof p === 'string' && p; }).join(' ').toLowerCase();
+}
+function boardFilterCount(f) {
+  return f.users.length + f.channels.length + f.repos.length + f.prs.length + (f.starred ? 1 : 0) + (f.period ? 1 : 0);
+}
+// Pure: whether a card passes the filter (and the search words, every one of them) at time now.
+function boardCardPasses(s, f, query, now) {
+  if (!s) return false;
+  if (f.users.length && f.users.indexOf(s.ownerId || '') < 0) return false;
+  if (f.channels.length && f.channels.indexOf(cardChannelOf(s).key) < 0) return false;
+  if (f.repos.length) {
+    var r = cardRepoOf(s);
+    if (f.repos.indexOf(r ? r.key : '') < 0) return false;
+  }
+  if (f.starred && s.starred !== true) return false;
+  if (f.prs.length) {
+    var states = cardPrStates(s);
+    var hit = false;
+    for (var i = 0; i < states.length; i++) if (f.prs.indexOf(states[i]) >= 0) hit = true;
+    if (!hit) return false;
+  }
+  if (f.period && BOARD_PERIODS[f.period] && cardProgressAt(s) < now - BOARD_PERIODS[f.period]) return false;
+  var words = String(query || '').toLowerCase().split(/\\s+/).filter(Boolean);
+  if (words.length) {
+    var text = cardSearchText(s);
+    for (var w = 0; w < words.length; w++) if (text.indexOf(words[w]) < 0) return false;
+  }
+  return true;
+}
+// Pure: the order of one column — starred first, then the chosen clock in the chosen direction (the server's order
+// breaks a tie, so equal clocks never shuffle between renders).
+function boardCardTime(s, sort) {
+  return sort === 'start' ? cardStartedAt(s) : cardProgressAt(s);
+}
+function sortBoardColumn(list, sort, dir) {
+  var sign = dir === 'asc' ? 1 : -1;
+  return list
+    .map(function(s, i) { return { s: s, i: i, t: boardCardTime(s, sort) }; })
+    .sort(function(a, b) {
+      return Number(b.s.starred === true) - Number(a.s.starred === true) || sign * (a.t - b.t) || a.i - b.i;
+    })
+    .map(function(x) { return x.s; });
+}
+// Pure: the board the columns draw — every column filtered and sorted — and the cards the filter hid, per column
+// (hiddenCards[col]). keep: a card key that passes regardless (a deep link's card). An epic's children (its bundle,
+// drawn under it) are judged one by one: the epic stays while it or any child passes, carrying only the children that
+// pass, in the board's order (a copy — the data is never changed); a hidden child is counted in its epic's column.
+function boardViewOf(board, f, query, now, keep) {
+  var out = {};
+  var hidden = 0;
+  var hiddenCards = { working: [], waiting: [], idle: [], closed: [] };
+  for (var k in board) out[k] = board[k];
+  var passes = function(s) { return (!!keep && !!s && s.key === keep) || boardCardPasses(s, f, query, now); };
+  ['working', 'waiting', 'idle', 'closed'].forEach(function(col) {
+    var list = Array.isArray(board[col]) ? board[col] : [];
+    var kept = [];
+    for (var i = 0; i < list.length; i++) {
+      var s = list[i];
+      var kids = s && s.epic && Array.isArray(s.epic.children) ? s.epic.children : [];
+      var keptKids = [];
+      for (var j = 0; j < kids.length; j++) {
+        if (passes(kids[j])) keptKids.push(kids[j]);
+        else hiddenCards[col].push(kids[j]);
+      }
+      if (!passes(s) && !keptKids.length) { hiddenCards[col].push(s); continue; }
+      // The children under the epic follow the board's order too.
+      keptKids = sortBoardColumn(keptKids, f.sort, f.dir);
+      var same = keptKids.length === kids.length;
+      for (var x = 0; same && x < kids.length; x++) if (keptKids[x] !== kids[x]) same = false;
+      if (same) { kept.push(s); continue; }
+      var copy = {};
+      for (var p in s) copy[p] = s[p];
+      var epic = {};
+      for (var q in s.epic) epic[q] = s.epic[q];
+      epic.children = keptKids;
+      copy.epic = epic;
+      kept.push(copy);
+    }
+    hidden += hiddenCards[col].length;
+    out[col] = sortBoardColumn(kept, f.sort, f.dir);
+  });
+  return { board: out, hidden: hidden, hiddenCards: hiddenCards };
+}
+// Pure: the menu's choices — every owner, channel and repo on the board (an epic's children included: the filter
+// judges them too), each with its card count, busiest first, and a chosen one the board no longer holds (count 0)
+// so it can still be unchosen.
+function boardFacetOptions(board, f) {
+  var acc = { users: Object.create(null), channels: Object.create(null), repos: Object.create(null) };
+  var bump = function(map, key, label) {
+    if (!key) return;
+    if (!map[key]) map[key] = { key: key, label: label || key, count: 0 };
+    map[key].count++;
+  };
+  ['working', 'waiting', 'idle', 'closed'].forEach(function(col) {
+    var list = Array.isArray(board && board[col]) ? board[col] : [];
+    var cards = [];
+    for (var i = 0; i < list.length; i++) {
+      if (!list[i]) continue;
+      cards.push(list[i]);
+      var kids = list[i].epic && Array.isArray(list[i].epic.children) ? list[i].epic.children : [];
+      for (var j = 0; j < kids.length; j++) if (kids[j]) cards.push(kids[j]);
+    }
+    for (var c = 0; c < cards.length; c++) {
+      var s = cards[c];
+      bump(acc.users, s.ownerId || '', s.ownerName || s.ownerId || '');
+      var ch = cardChannelOf(s);
+      bump(acc.channels, ch.key, ch.text);
+      var r = cardRepoOf(s);
+      if (r) bump(acc.repos, r.key, r.key);
+    }
+  });
+  var done = function(map, chosen) {
+    for (var c = 0; c < chosen.length; c++) if (!map[chosen[c]]) map[chosen[c]] = { key: chosen[c], label: chosen[c], count: 0 };
+    return Object.keys(map).map(function(k) { return map[k]; }).sort(function(a, b) {
+      return b.count - a.count || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0);
+    });
+  };
+  return { users: done(acc.users, f.users), channels: done(acc.channels, f.channels), repos: done(acc.repos, f.repos) };
+}
+// The 필터 menu's rows (MenuItem of @2lab.ai/ui): values u: · c: · r: · pr: · p: · star · reset. 사용자 only on the All
+// Users board (one user's board has one owner).
+var BOARD_PR_LABEL = { open: '열린 PR', merged: '머지된 PR', closed: '닫힌 PR', none: 'PR 없음' };
+var BOARD_PERIOD_LABEL = { '': '전체 기간', '1d': '24시간 안', '7d': '7일 안', '30d': '30일 안' };
+function boardFilterMenuItems(board, f, allUsers, viewer) {
+  var opts = boardFacetOptions(board, f);
+  var items = [{ value: 'reset', label: '필터 모두 해제', disabled: boardFilterCount(f) === 0 }];
+  items.push({ kind: 'heading', label: '보기' });
+  items.push({ kind: 'checkbox', value: 'star', label: '즐겨찾기만', icon: 'star', checked: f.starred });
+  var group = function(head, prefix, list, chosen) {
+    if (!list.length) return;
+    items.push({ kind: 'heading', label: head });
+    for (var i = 0; i < list.length; i++) {
+      var me = prefix === 'u:' && !!viewer && list[i].key === viewer ? ' (나)' : '';
+      items.push({ kind: 'checkbox', value: prefix + list[i].key, label: list[i].label + me + ' · ' + list[i].count, checked: chosen.indexOf(list[i].key) >= 0 });
+    }
+  };
+  if (allUsers) group('사용자', 'u:', opts.users, f.users);
+  group('채널', 'c:', opts.channels, f.channels);
+  group('레포', 'r:', opts.repos, f.repos);
+  items.push({ kind: 'heading', label: '연결된 PR' });
+  ['open', 'merged', 'closed', 'none'].forEach(function(st) {
+    items.push({ kind: 'checkbox', value: 'pr:' + st, label: BOARD_PR_LABEL[st], checked: f.prs.indexOf(st) >= 0 });
+  });
+  items.push({ kind: 'heading', label: '최근 활동' });
+  ['', '1d', '7d', '30d'].forEach(function(p) {
+    items.push({ kind: 'radio', value: 'p:' + p, label: BOARD_PERIOD_LABEL[p], checked: f.period === p, group: 'period' });
+  });
+  return items;
+}
+var BOARD_SORT_LABEL = { progress: '마지막 진행', start: '처음 시작' };
+function boardSortMenuItems(f) {
+  return [
+    { kind: 'heading', label: '정렬 기준' },
+    { kind: 'radio', value: 'k:progress', label: '작업이 마지막으로 진행된 시간', checked: f.sort === 'progress', group: 'key' },
+    { kind: 'radio', value: 'k:start', label: '작업을 처음 시작한 시간', checked: f.sort === 'start', group: 'key' },
+    { kind: 'heading', label: '순서' },
+    { kind: 'radio', value: 'd:desc', label: '최근 먼저 (내림차순)', checked: f.dir === 'desc', group: 'dir' },
+    { kind: 'radio', value: 'd:asc', label: '오래된 먼저 (오름차순)', checked: f.dir === 'asc', group: 'dir' },
+  ];
+}
+// Pure: the filter after one menu choice.
+function boardFilterAfter(f, value, checked) {
+  var next = boardFilterFrom(f);
+  var toggle = function(list, key) {
+    var i = list.indexOf(key);
+    if (checked && i < 0) list.push(key);
+    if (!checked && i >= 0) list.splice(i, 1);
+  };
+  var v = String(value || '');
+  if (v === 'reset') {
+    var keep = boardFilterDefault();
+    keep.sort = next.sort;
+    keep.dir = next.dir;
+    return keep;
+  }
+  if (v === 'star') next.starred = !!checked;
+  else if (v.indexOf('u:') === 0) toggle(next.users, v.slice(2));
+  else if (v.indexOf('c:') === 0) toggle(next.channels, v.slice(2));
+  else if (v.indexOf('r:') === 0) toggle(next.repos, v.slice(2));
+  else if (v.indexOf('pr:') === 0) toggle(next.prs, v.slice(3));
+  else if (v.indexOf('p:') === 0) next.period = Object.prototype.hasOwnProperty.call(BOARD_PERIODS, v.slice(2)) ? v.slice(2) : '';
+  else if (v.indexOf('k:') === 0) next.sort = v.slice(2) === 'start' ? 'start' : 'progress';
+  else if (v.indexOf('d:') === 0) next.dir = v.slice(2) === 'asc' ? 'asc' : 'desc';
+  return next;
+}
+// 내 카드만: the 사용자 filter holding the viewer alone. On the All Users board with a signed-in viewer only.
+function boardMineOn(f, viewer) {
+  return !!viewer && f.users.length === 1 && f.users[0] === viewer;
+}
+function toggleMineOnly() {
+  if (!_viewerUserId) return;
+  _bf = boardFilterFrom(_bf);
+  _bf.users = boardMineOn(_bf, _viewerUserId) ? [] : [_viewerUserId];
+  boardFilterChanged();
+}
+var _bfSearchTimer = 0;
+function onBoardSearch(value) {
+  if (_bfSearchTimer) clearTimeout(_bfSearchTimer);
+  _bfSearchTimer = setTimeout(function() {
+    _bfSearchTimer = 0;
+    var q = String(value || '').trim();
+    if (q === _bfQuery) return;
+    _bfQuery = q;
+    // The reader's own search ends a deep link's reveal, as a filter change does.
+    _revealedKey = null;
+    renderBoardForLayout();
+  }, 150);
+}
+function boardFilterChanged() {
+  _revealedKey = null;
+  saveBoardFilter();
+  // A render repaints the tools (renderBoard); before the first board there is only the bar to repaint.
+  if (_lastBoardData) renderBoard(_lastBoardData);
+  else paintBoardTools(null);
+}
+// The bar's own state: 내 카드만 (shown on the All Users board for a signed-in viewer), 필터's count and the menus' rows,
+// 정렬's words. Every board render repaints it (the options follow the board).
+var _bfHidden = 0;
+var _bfHiddenCols = { waiting: 0, working: 0, done: 0 };
+function paintBoardTools(board) {
+  var allUsers = !currentUserId;
+  // One user's board: their filter of users means nothing there (and must not empty it).
+  var mine = document.getElementById('mine-toggle');
+  if (mine) {
+    var showMine = allUsers && !!_viewerUserId;
+    if (mine.hidden === showMine) mine.hidden = !showMine;
+    var on = showMine && boardMineOn(_bf, _viewerUserId) ? 'true' : 'false';
+    if (mine.getAttribute('aria-pressed') !== on) mine.setAttribute('aria-pressed', on);
+  }
+  var count = boardFilterCount(_bf) - (allUsers ? 0 : _bf.users.length);
+  var badge = document.getElementById('bf-count');
+  if (badge) {
+    setTextIfChanged(badge, String(count));
+    if (badge.hidden === count > 0) badge.hidden = !(count > 0);
+  }
+  var trig = document.getElementById('bf-trigger');
+  if (trig) {
+    var pressed = count > 0 ? 'true' : 'false';
+    if (trig.getAttribute('aria-pressed') !== pressed) trig.setAttribute('aria-pressed', pressed);
+    var tip = count > 0 ? '카드 필터 · 적용 중: ' + count + ' · 숨긴 카드: ' + _bfHidden : '카드 필터';
+    if (trig.title !== tip) trig.title = tip;
+  }
+  var menu = document.getElementById('bf-menu');
+  if (menu) menu.data = { label: '카드 필터', items: boardFilterMenuItems(board || {}, _bf, allUsers, _viewerUserId) };
+  var sortMenu = document.getElementById('bs-menu');
+  if (sortMenu) sortMenu.data = { label: '카드 정렬', items: boardSortMenuItems(_bf) };
+  var sortLabel = document.getElementById('bs-label');
+  if (sortLabel) setTextIfChanged(sortLabel, BOARD_SORT_LABEL[_bf.sort] + (_bf.dir === 'asc' ? ' ↑' : ' ↓'));
+}
+// The filter in force: on one user's board the users filter is not applied (the board already is theirs).
+function boardFilterNow() {
+  if (!currentUserId || !_bf.users.length) return _bf;
+  var f = boardFilterFrom(_bf);
+  f.users = [];
+  return f;
+}
+// The board the columns draw this render (renderBoard): the filter's view of the data. The one card a deep link
+// revealed (_revealedKey) passes whatever the filter says, for this page load. What it hid, per column the board
+// draws (_bfHiddenCols) — a closed card counts only when 보관함 · 휴면 would show it (it is hidden anyway otherwise).
+function boardFilterView(board) {
+  var view = boardViewOf(board, boardFilterNow(), _bfQuery, Date.now(), _revealedKey);
+  _bfHiddenCols = boardHiddenCounts(view.hiddenCards, showArchives, showSleeping);
+  _bfHidden = _bfHiddenCols.waiting + _bfHiddenCols.working + _bfHiddenCols.done;
+  return view.board;
+}
+// Pure: the hidden cards as the columns count them — NEEDS YOU, RUNNING, DONE — only those the toggles would show.
+function boardHiddenCounts(cards, archives, sleeping) {
+  // A card 보관함 · 휴면 hide anyway is not the filter's — an epic's sleeping child sits in its epic's column.
+  var shown = function(list) {
+    return (list || []).filter(function(s) {
+      return s && (s.terminated === true ? !!archives : s.sessionState === 'SLEEPING' ? sleeping !== false : true);
+    }).length;
+  };
+  return { waiting: shown(cards.waiting), working: shown(cards.working), done: shown(cards.idle) + shown(cards.closed) };
+}
+function wireBoardTools() {
+  ['bf-menu', 'bs-menu'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (!el || el._bfWired) return;
+    el._bfWired = true;
+    el.addEventListener('ui-select', function(e) {
+      if (!e.detail) return;
+      _bf = boardFilterAfter(_bf, e.detail.value, e.detail.checked);
+      boardFilterChanged();
+    });
+  });
+}
+
 // ── Session lifecycle policy (sleep / archive / board windows). The board
 // response carries it; admins edit it in the Lifecycle dialog (PUT
 // /api/dashboard/lifecycle, which the server only accepts from an admin with
@@ -14982,8 +15462,10 @@ function openDeepLinkedSession() {
     // A card hidden by the Archives / Sleeping toggle (any age): show just this
     // card for this page load — the stored choice stays as it is — and retry on
     // that render.
+    // SSOT 2026-11-05 — one the board's filters or search hide is shown the same way (boardFilterView lets it through).
     var hiddenByToggle = linked && (linked.terminated === true ? !showArchives : !showSleeping);
-    if (hiddenByToggle && _revealedKey !== key) {
+    var hiddenByFilter = !!linked && !boardCardPasses(linked, boardFilterNow(), _bfQuery, Date.now());
+    if ((hiddenByToggle || hiddenByFilter) && _revealedKey !== key) {
       _revealedKey = key;
       loadSessions();
       return;
@@ -20332,6 +20814,9 @@ function fcHydrateIn(node) {
   setBoardView(defaultBoardView(window.innerWidth, savedBoardView()));
   // The secondary sections' disclosure state, before the first board render.
   applySectionState();
+  // SSOT 2026-11-05 — the board's filter and sort menus: their choices, and the bar as the stored filter left it.
+  wireBoardTools();
+  paintBoardTools(null);
 })();
 // <ui-segmented id="view-seg"> (D-02 Board | List): a reader's choice arrives as ui-change — the element has
 // already moved its chip; the page follows through.
@@ -22662,8 +23147,9 @@ function ntOpenArrived(launch) {
   if (key && !host) {
     // On the board's data but not drawn — hidden by the 휴면 / 보관 toggle: shown just for this page load, as a deep
     // link does (openDeepLinkedSession), and opened on that render (#747 review R2 N7).
+    // SSOT 2026-11-05 — or by the board's filters or search (boardFilterView lets the revealed key through).
     var s = _sessionCache[key];
-    var hidden = s && (s.terminated === true ? !showArchives : !showSleeping);
+    var hidden = s && ((s.terminated === true ? !showArchives : !showSleeping) || !boardCardPasses(s, boardFilterNow(), _bfQuery, Date.now()));
     if (hidden && _revealedKey !== key) {
       _revealedKey = key;
       loadSessions();

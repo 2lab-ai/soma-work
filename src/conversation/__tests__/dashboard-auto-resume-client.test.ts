@@ -69,6 +69,8 @@ const CARD_OF_FNS = [
   'cardCtxTitle',
   'cardPrMetric',
   'cardLinksFace',
+  'cardRepoOf',
+  'cardChannelOf',
   '_hashStr',
   'ownerBadgeHue',
   'isSiblingSession',
@@ -215,6 +217,8 @@ describe('a RUNNING card waiting out an automatic resume (cardOf + the open card
         'cardGoalLine',
         'renderEpicPlan',
         'cardLinksFace',
+        'cardRepoOf',
+        'cardChannelOf',
         'renderCardBody',
       ],
       [

@@ -1289,6 +1289,8 @@ const CARD_OF_FNS = [
   'cardCtxTitle',
   'cardPrMetric',
   'cardLinksFace',
+  'cardRepoOf',
+  'cardChannelOf',
   '_hashStr',
   'ownerBadgeHue',
   'isSiblingSession',
@@ -1568,7 +1570,15 @@ describe('top-bar user names keep their full text (shipped syncUserSelectLabel +
       ['_applyUserPill'],
       ['_appBarAccount'],
       // View mode (SSOT 2026-11-01): learning the viewer re-says whose board this is (none in this harness).
-      { document: d.document, paintAppBar: () => {}, syncBoardScope: () => {}, autoOpenDecisions: () => {} },
+      {
+        document: d.document,
+        paintAppBar: () => {},
+        syncBoardScope: () => {},
+        paintBoardTools: () => {},
+        _lastBoardData: null,
+        boardFilterViewerKnown: () => false,
+        autoOpenDecisions: () => {},
+      },
       ['function account() { return _appBarAccount; }'],
     );
     m._applyUserPill({ user: { name: LONG } });
@@ -2642,6 +2652,10 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
         showSleeping: true,
         _revealedKey: null,
         _cronRevealKey: null,
+        // SSOT 2026-11-05 — no board filter hides it here (dashboard-card-filters.test.ts covers that reveal).
+        boardCardPasses: () => true,
+        boardFilterNow: () => ({}),
+        _bfQuery: '',
         localStorage: {
           setItem: () => {
             calls.stored++;
@@ -3064,6 +3078,10 @@ describe('deep link to a hidden sleeping card reveals it (shipped openDeepLinked
         showSleeping: false,
         _revealedKey: null,
         _cronRevealKey: null,
+        // SSOT 2026-11-05 — no board filter hides it here (dashboard-card-filters.test.ts covers that reveal).
+        boardCardPasses: () => true,
+        boardFilterNow: () => ({}),
+        _bfQuery: '',
         loadSessions: () => {
           loads++;
         },
