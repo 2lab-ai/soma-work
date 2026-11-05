@@ -105,6 +105,8 @@ const CARD_OF_FNS = [
   'cardCtxTitle',
   'cardPrMetric',
   'cardLinksFace',
+  'cardRepoOf',
+  'cardChannelOf',
   '_hashStr',
   'ownerBadgeHue',
   'isSiblingSession',
@@ -462,6 +464,11 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
       ensureCardIo: (k: string) => calls.ensureIo.push(k),
       renderArchivesToggle: () => {},
       renderSleepingToggle: () => {},
+      // SSOT 2026-11-05 — the board's filters and sort (dashboard-card-filters.test.ts runs them): pass-through here.
+      boardFilterView: (b: unknown) => b,
+      paintBoardTools: () => {},
+      _bf: { sort: 'progress', dir: 'desc' },
+      _bfHidden: 0,
       paintCronDrawer: () => {},
       updateTokenBreakdown: () => {},
       scheduleLayoutRefresh: () => {},
@@ -1094,6 +1101,8 @@ describe('D10 — one primary button per open card', () => {
         'acQuestionHtml',
         'renderEpicPlan',
         'cardLinksFace',
+        'cardRepoOf',
+        'cardChannelOf',
         'renderCardBody',
       ],
       [
@@ -1308,6 +1317,8 @@ describe('D10 — the open card renders one approval card per prompt; only what 
         'acQuestionHtml',
         'renderEpicPlan',
         'cardLinksFace',
+        'cardRepoOf',
+        'cardChannelOf',
         'renderCardBody',
       ],
       [

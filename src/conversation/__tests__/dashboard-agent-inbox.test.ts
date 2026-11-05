@@ -198,7 +198,8 @@ describe('agent inbox board — layout (§3.1)', () => {
   it('the DONE count is every card under its day groups; the days come from planDoneGroups (T11/T12)', () => {
     const body = fnBody('renderBoard');
     expect(body).toContain('planDoneColumn(rest.idle || [], rest.closed || [], {');
-    expect(body).toContain('planDoneGroups(plan.done, Date.now(), _doneGroupOpen)');
+    // SSOT 2026-11-05 — with the board's sort (its direction and clock).
+    expect(body).toContain('planDoneGroups(plan.done, Date.now(), _doneGroupOpen, { sort: _bf.sort, dir: _bf.dir })');
     // DONE = one group per day; the element counts every group, open or closed (a closed day's cards are stubs).
     expect(body).toContain('groups: groups.map(function(g) {');
     // Each day's items through place() (E4 ⑨c: an epic's children follow its card), drawn when the day is open.

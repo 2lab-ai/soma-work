@@ -58,18 +58,26 @@ describe('L1 — built-in presets', () => {
     expect(shown(m1.card.rows)).toEqual(['summary', 'task', 'links', 'arts']);
     expect(m1.card.rows[0].opt).toBe('asks');
     expect(m1.card.rows.find((r) => r.id === 'arts')!.opt).toBe('3');
-    expect(shown(m1.card.foot)).toEqual(['cost', 'model']);
+    // SSOT 2026-11-05: every built-in face leads its foot with where the work happens — 레포 · 채널.
+    expect(shown(m1.card.foot)).toEqual(['repo', 'channel', 'cost', 'model']);
     expect(shown(m1.open.parts)).toEqual(['refs', 'model']);
     expect(m1.open.star).toBe(false);
     expect([m1.detail.tasks, m1.detail.tasksMax, m1.detail.open]).toEqual(['list', 34, false]);
-    expect(shown(BUILTIN_PRESETS['2'].minimal.card.foot)).toEqual(['steps', 'arts', 'cost', 'model']);
+    expect(shown(BUILTIN_PRESETS['2'].minimal.card.foot)).toEqual([
+      'repo',
+      'channel',
+      'steps',
+      'arts',
+      'cost',
+      'model',
+    ]);
     expect(BUILTIN_PRESETS['2'].minimal.detail).toMatchObject({ tasks: 'list', tasksMax: 50, controls: true });
-    expect(shown(BUILTIN_PRESETS['3'].minimal.card.foot)).toEqual(['cost', 'model']);
+    expect(shown(BUILTIN_PRESETS['3'].minimal.card.foot)).toEqual(['repo', 'channel', 'cost', 'model']);
     expect(BUILTIN_PRESETS['3'].minimal.detail.tasks).toBe('line');
     // advanced 2안 원본: the ✦, no model, the ☆ button, every section unfolded.
     const a2 = BUILTIN_PRESETS['2'].advanced;
     expect(a2.card.kind).toBe(false);
-    expect(shown(a2.card.foot)).toEqual(['steps', 'ctx', 'media']);
+    expect(shown(a2.card.foot)).toEqual(['repo', 'channel', 'steps', 'ctx', 'media']);
     expect(a2.open.star).toBe(true);
     expect(a2.detail.open).toBe(true);
     expect(a2.open.byCol?.work).toEqual(['tasks', 'agents', 'io', 'goal', 'refs', 'model']);
@@ -144,7 +152,10 @@ describe('L2 — a saved document is checked', () => {
     expect(card.rows[1].opt).toBe('2');
     // A missing summary takes its built-in rule; a bad option takes the built-in's.
     expect(card.rows.find((r) => r.id === 'summary')!.opt).toBe('all');
+    // 레포 · 채널 (SSOT 2026-11-05) were not in the saved list: they lead it, on, as the built-in has them.
     expect(card.foot.map((c) => [c.id, c.on])).toEqual([
+      ['repo', true],
+      ['channel', true],
       ['steps', true],
       ['arts', true],
       ['cost', true],
