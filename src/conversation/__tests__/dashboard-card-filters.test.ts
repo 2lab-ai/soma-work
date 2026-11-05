@@ -568,6 +568,24 @@ describe('F3 — 사용자 · 채널 · 레포 toggles', () => {
     expect(m.boardViewOf(b2, m.boardFilterDefault(), '', NOW).board.working[0]).toBe(epic);
   });
 
+  it('the menu offers an epic’s children’s owners · channels · repos too (the filter judges them)', () => {
+    const m = api();
+    const kid = card({ key: 'k', channelId: 'C9', channelName: 'child-only', repo: 'a/child-repo' });
+    const epic = card({ key: 'e', kind: 'epic', epic: { children: [kid] } });
+    const o = m.boardFacetOptions(board({ working: [epic] }), m.boardFilterDefault());
+    // Equal counts: by label (#child-only before #dev).
+    expect(o.channels.map((c) => [c.key, c.count])).toEqual([
+      ['c:C9', 1],
+      ['c:C1', 1],
+    ]);
+    expect(o.repos.map((r) => r.key)).toContain('a/child-repo');
+    expect(o.users).toEqual([{ key: 'U1', label: 'Alice', count: 2 }]);
+  });
+
+  it('a new search ends a deep link’s reveal', () => {
+    expect(clientFn('onBoardSearch')).toContain('_revealedKey = null;');
+  });
+
   it('the menu offers every owner · channel · repo on the board with its count (the viewer marked), busiest first', () => {
     const m = api();
     const f = { ...m.boardFilterDefault(), repos: ['gone/repo'] };

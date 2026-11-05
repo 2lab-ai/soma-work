@@ -14687,8 +14687,9 @@ function boardViewOf(board, f, query, now, keep) {
   });
   return { board: out, hidden: hidden, hiddenCards: hiddenCards };
 }
-// Pure: the menu's choices — every owner, channel and repo on the board, each with its card count, busiest first, and
-// a chosen one the board no longer holds (count 0) so it can still be unchosen.
+// Pure: the menu's choices — every owner, channel and repo on the board (an epic's children included: the filter
+// judges them too), each with its card count, busiest first, and a chosen one the board no longer holds (count 0)
+// so it can still be unchosen.
 function boardFacetOptions(board, f) {
   var acc = { users: Object.create(null), channels: Object.create(null), repos: Object.create(null) };
   var bump = function(map, key, label) {
@@ -14698,9 +14699,15 @@ function boardFacetOptions(board, f) {
   };
   ['working', 'waiting', 'idle', 'closed'].forEach(function(col) {
     var list = Array.isArray(board && board[col]) ? board[col] : [];
+    var cards = [];
     for (var i = 0; i < list.length; i++) {
-      var s = list[i];
-      if (!s) continue;
+      if (!list[i]) continue;
+      cards.push(list[i]);
+      var kids = list[i].epic && Array.isArray(list[i].epic.children) ? list[i].epic.children : [];
+      for (var j = 0; j < kids.length; j++) if (kids[j]) cards.push(kids[j]);
+    }
+    for (var c = 0; c < cards.length; c++) {
+      var s = cards[c];
       bump(acc.users, s.ownerId || '', s.ownerName || s.ownerId || '');
       var ch = cardChannelOf(s);
       bump(acc.channels, ch.key, ch.text);
@@ -14800,6 +14807,8 @@ function onBoardSearch(value) {
     var q = String(value || '').trim();
     if (q === _bfQuery) return;
     _bfQuery = q;
+    // The reader's own search ends a deep link's reveal, as a filter change does.
+    _revealedKey = null;
     renderBoardForLayout();
   }, 150);
 }
