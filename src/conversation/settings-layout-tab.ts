@@ -488,6 +488,8 @@ function laySampleCard(id) {
     metrics: [{ text: '1', glyph: 'attach', title: '지시 첨부 1개', label: '지시 첨부 1개' }, { text: '#700 열림', glyph: 'pr', title: 'PR #700 열림' }],
     badge: { text: 'Zhuge', hue: 2, title: 'Zhuge' },
     star: { on: false, title: '즐겨찾기 — 항상 맨 위' },
+    // Where the work happens (SSOT 2026-11-05): the repo and the Slack channel (a sample).
+    where: { repo: { text: 'app', title: '레포 example/app' }, channel: { text: '#pay', title: '채널 #pay' } },
     // 작업 카드의 연결: the linked issue, PR and wiki with their states (a sample; the board's are the session's).
     links: [
       { kind: 'issue', href: 'https://example.atlassian.net/browse/PAY-12', text: 'PAY-12', status: 'In Progress', tone: 'run', title: '이슈 PAY-12 — 결제 폼 검증 · In Progress' },

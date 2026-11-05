@@ -183,6 +183,8 @@ const CARD_OF_FNS = [
   'cardCtxTitle',
   'cardPrMetric',
   'cardLinksFace',
+  'cardRepoOf',
+  'cardChannelOf',
   '_hashStr',
   'ownerBadgeHue',
   'isSiblingSession',

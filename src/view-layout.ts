@@ -26,7 +26,18 @@ export const PRESET_IDS: readonly PresetId[] = ['1', '2', '3'];
 export const VIEW_MODES: readonly ViewMode[] = ['minimal', 'advanced'];
 
 export const CARD_ROWS = ['summary', 'task', 'links', 'agents', 'usage', 'arts'] as const;
-export const CARD_CHIPS = ['steps', 'ctx', 'media', 'pr', 'arts', 'cost', 'tokens', 'model'] as const;
+export const CARD_CHIPS = [
+  'repo',
+  'channel',
+  'steps',
+  'ctx',
+  'media',
+  'pr',
+  'arts',
+  'cost',
+  'tokens',
+  'model',
+] as const;
 export const OPEN_PARTS = ['tasks', 'agents', 'io', 'arts', 'goal', 'refs', 'model'] as const;
 /** The detail card's title bar: what follows the status and the time, in order (SSOT 2026-11-03). */
 export const DETAIL_HEAD = ['model', 'cost', 'tokens', 'speed', 'ctx', 'owner', 'workflow'] as const;
@@ -208,6 +219,8 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
           it('usage', false),
         ],
         foot: [
+          it('repo', true),
+          it('channel', true),
           it('pr', false),
           it('cost', true),
           it('model', true),
@@ -239,6 +252,8 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
         owner: true,
         rows: ALL_ROWS('all'),
         foot: [
+          it('repo', true),
+          it('channel', true),
           it('steps', true),
           it('ctx', true),
           it('media', true),
@@ -269,6 +284,8 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
           it('arts', false, '4'),
         ],
         foot: [
+          it('repo', true),
+          it('channel', true),
           it('steps', true),
           it('arts', true),
           it('cost', true),
@@ -301,6 +318,8 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
         owner: true,
         rows: ALL_ROWS('all'),
         foot: [
+          it('repo', true),
+          it('channel', true),
           it('steps', true),
           it('ctx', true),
           it('media', true),
@@ -331,6 +350,8 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
           it('arts', false, '3'),
         ],
         foot: [
+          it('repo', true),
+          it('channel', true),
           it('cost', true),
           it('model', true),
           it('steps', false),
@@ -369,6 +390,8 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
           it('arts', false, '4'),
         ],
         foot: [
+          it('repo', true),
+          it('channel', true),
           it('steps', true),
           it('ctx', true),
           it('arts', true),
@@ -448,6 +471,8 @@ export const LAYOUT_CATALOG = {
       { id: 'arts', label: '산출물 줄', hint: '만든 파일 칩', opts: ARTS_OPTS, slack: false },
     ],
     foot: [
+      { id: 'repo', label: '레포', hint: 'PR · 이슈의 레포, 없으면 채널의 레포', slack: false },
+      { id: 'channel', label: '채널', hint: 'Slack 채널 이름 · DM', slack: false },
       { id: 'steps', label: '진행 n/m', hint: '완료한 작업 / 전체' },
       { id: 'ctx', label: '컨텍스트 %', hint: '60% 넘으면 노랑, 80% 넘으면 빨강' },
       { id: 'media', label: '지시 첨부 수', hint: '지시에 붙인 파일', slack: false },

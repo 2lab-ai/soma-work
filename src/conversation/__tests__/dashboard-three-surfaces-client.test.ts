@@ -333,6 +333,8 @@ describe('expanded body — face + delta, sections keyed on state', () => {
         'cardGoalLine',
         'renderEpicPlan',
         'cardLinksFace',
+        'cardRepoOf',
+        'cardChannelOf',
         'renderCardBody',
       ],
       [
@@ -1997,6 +1999,8 @@ const CARD_OF_FNS = [
   'cardCtxTitle',
   'cardPrMetric',
   'cardLinksFace',
+  'cardRepoOf',
+  'cardChannelOf',
   '_hashStr',
   'ownerBadgeHue',
   'isSiblingSession',
