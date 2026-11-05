@@ -301,7 +301,8 @@ describe('E3 — editing saves at once', () => {
     api.layOnDragStart(ev(li(0, 0)));
     api.layOnDrop(ev(li(2, 80), 115)); // the lower half of row 2: after it
     const foot = api.get('_layDoc').presets['1'].minimal.card.foot.map((c: { id: string }) => c.id);
-    expect(foot.slice(0, 3)).toEqual(['cost', 'model', 'pr']);
+    // 1안 미니멀's foot leads with 레포 · 채널 (SSOT 2026-11-05): row 0 (레포) lands after row 2 (PR).
+    expect(foot.slice(0, 3)).toEqual(['channel', 'pr', 'repo']);
   });
 });
 
@@ -385,8 +386,10 @@ describe('E5 — the preview is the dashboard’s face', () => {
       ['결제 폼 설계', undefined],
     ]);
     // #805: the model as icons — the mark in its colour and the sample's effort; the name is the title.
-    expect(card.metrics.map((m: { text: string }) => m.text)).toEqual(['$6.20', '']);
-    expect(card.metrics[1]).toMatchObject({
+    // SSOT 2026-11-05: the sample's repo and channel lead the foot (레포 · 채널).
+    expect(card.metrics.map((m: { text: string }) => m.text)).toEqual(['app', '#pay', '$6.20', '']);
+    expect(card.metrics[0]).toMatchObject({ title: '레포 example/app' });
+    expect(card.metrics[3]).toMatchObject({
       glyph: 'claude',
       color: '#d97757',
       effort: 'high',

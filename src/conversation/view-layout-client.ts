@@ -115,7 +115,11 @@ function faceFootMetrics(card, model, foot, effort, asked) {
     var chip = foot[i];
     if (!chip || !chip.on) continue;
     var m = null;
-    if (chip.id === 'steps' && c.steps && Number(c.steps.total) > 0) {
+    // SSOT 2026-11-05 — where the work happens (cardOf's where): the repo's name, the channel (#name · DM · 대시보드).
+    if ((chip.id === 'repo' || chip.id === 'channel') && c.where && c.where[chip.id] && c.where[chip.id].text) {
+      var w = c.where[chip.id];
+      m = { text: String(w.text), title: String(w.title || w.text), label: String(w.title || w.text) };
+    } else if (chip.id === 'steps' && c.steps && Number(c.steps.total) > 0) {
       m = { text: Math.min(Number(c.steps.done) || 0, Number(c.steps.total)) + '/' + Number(c.steps.total), glyph: 'tasks', title: titles.steps || '완료한 작업 / 전체' };
     } else if (chip.id === 'ctx' && Number(c.contextPct) > 0) {
       var pct = Math.round(Math.min(Number(c.contextPct), 100));

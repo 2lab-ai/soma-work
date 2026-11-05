@@ -2078,5 +2078,9 @@
   "대화를 요약해 컨텍스트 비우기 (확인 없이 바로)": "Summarise the conversation to free the context (no confirmation)",
   "명령을 처리하지 못했습니다 — 잠시 후 다시 시도해 주세요": "The command could not be handled — try again in a moment",
   "🟣 PR #{0} 머지됨 — {1}": "🟣 PR #{0} merged — {1}",
-  "🔴 PR #{0} 머지 없이 닫힘 — {1}": "🔴 PR #{0} closed without merging — {1}"
+  "🔴 PR #{0} 머지 없이 닫힘 — {1}": "🔴 PR #{0} closed without merging — {1}",
+  "레포": "Repo",
+  "PR · 이슈의 레포, 없으면 채널의 레포": "The repo of its PR or issue, else its channel’s repo",
+  "채널": "Channel",
+  "Slack 채널 이름 · DM": "Slack channel name · DM"
 }
