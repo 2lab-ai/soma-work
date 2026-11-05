@@ -310,6 +310,11 @@ describe('top-bar defaults: one <ui-model-picker> sets the default model and eff
       modelSwitchNote: () => ({ text: 'ok', error: false }),
       effortSwitchNote: () => ({ text: 'ok', error: false }),
       mpApplyEffort: vi.fn(),
+      // The session's one level writer (trinity R1, astra P2): the defaults' level joins its queue.
+      changeEffort: vi.fn(async (_k: string, effort: string) => ({
+        ok: true,
+        result: { status: 'switched', effort },
+      })),
       refreshCard: vi.fn(),
       repaintPanelControlsFor: vi.fn(),
       loadSessions: vi.fn(),
@@ -338,13 +343,36 @@ describe('top-bar defaults: one <ui-model-picker> sets the default model and eff
     await pickDefault('effort', 'ultra');
     expect(patchSetting).toHaveBeenCalledWith('defaultEffort', 'ultra');
     expect(myDefaults.effort.value).toBe('ultra');
-    // The open session's model stops at max: it gets max, never a level it cannot run.
-    expect(env.postEffortSwitch).toHaveBeenCalledWith('self::C1:t1', 'max');
+    // The open session's model stops at max: it gets max, never a level it cannot run — through the session's one
+    // level writer, so a level picked in the session meanwhile is ordered with it (trinity R1, astra P2).
+    expect(env.changeEffort).toHaveBeenCalledWith('self::C1:t1', 'max');
+    expect(env.postEffortSwitch).not.toHaveBeenCalled();
     expect(status.textContent).toBe('기본 추론 강도 → ULTRA (새 세션부터) · 열린 세션에도 적용 (max)');
     // The switch off: the session is left alone.
     const off = pickEnv({ _tdAlsoSession: false });
     await off.pickDefault('effort', 'high');
-    expect(off.env.postEffortSwitch).not.toHaveBeenCalled();
+    expect(off.env.changeEffort).not.toHaveBeenCalled();
+    expect(clientFn('pickDefault')).not.toContain('postEffortSwitch');
+  });
+
+  // trinity R2 (fable P3): the session's writer answers with the level the session ended on — a level picked in the
+  // session while the default's write waited wins, and the line says so.
+  it('a level picked in the session meanwhile: the line names the level the session ended on', async () => {
+    const { pickDefault, status } = pickEnv({
+      changeEffort: vi.fn(async () => ({ ok: true, result: { status: 'switched', effort: 'low' } })),
+    });
+    await pickDefault('effort', 'high');
+    expect(status.textContent).toBe('기본 추론 강도 → HIGH (새 세션부터) · 열린 세션은 low');
+  });
+
+  it('a refused session level says why after the saved default', async () => {
+    const { pickDefault, status } = pickEnv({
+      changeEffort: vi.fn(async () => ({ ok: false, error: '종료된 세션은 effort를 바꿀 수 없습니다' })),
+    });
+    await pickDefault('effort', 'high');
+    expect(status.textContent).toBe(
+      '기본 추론 강도 → HIGH (새 세션부터) · 열린 세션은 바꾸지 못함: 종료된 세션은 effort를 바꿀 수 없습니다',
+    );
   });
 
   it('a model pick saves the default model, reads back the effort the server carried over, and switches the open session', async () => {
@@ -367,7 +395,7 @@ describe('top-bar defaults: one <ui-model-picker> sets the default model and eff
     await pickDefault('effort', 'ultra');
     expect(status.textContent).toContain('저장하지 못했습니다');
     expect(env.renderDefaultsPicker).toHaveBeenCalled(); // the picker shows the refusal (its data's error)
-    expect(env.postEffortSwitch).not.toHaveBeenCalled();
+    expect(env.changeEffort).not.toHaveBeenCalled();
   });
 });
 

@@ -131,7 +131,7 @@ function mapper(notes: Record<string, unknown> = {}) {
       'mpReadOnlyNote',
       'renderModelNote',
     ],
-    ['_busy'],
+    ['_busy', '_effortPending', '_modelNoteSeq'],
     { REPRESENTATIVE_MODELS: MODELS, EFFORT_LEVELS: ALL_LEVELS, SDK_EFFORT_LEVELS: LEVELS, _modelNotes: notes },
   );
 }
@@ -245,7 +245,7 @@ describe('mpData — the session as the element’s data', () => {
     ];
     const m = load<{ mpData(s: unknown): Data }>(
       ['toNum', 'isBusy', 'mpShort', 'mpLevelsOf', 'mpEffortLevels', 'mpRows', 'mpData'],
-      ['_busy'],
+      ['_busy', '_effortPending'],
       { REPRESENTATIVE_MODELS: models, EFFORT_LEVELS: ALL_LEVELS, SDK_EFFORT_LEVELS: LEVELS, _modelNotes: {} },
     );
     const rows = m.mpData(sess()).models;
@@ -280,7 +280,7 @@ describe('mpData — the session as the element’s data', () => {
     expect(m.mpData(sess()).value.effortLevels).not.toContain('ultra');
   });
 
-  it('busy: a switch waiting for its compaction says so; a write in flight locks its part', () => {
+  it('busy: a switch waiting for its compaction says so; a model write in flight locks the rows — a level never waits', () => {
     const m = mapper();
     expect(m.mpData(sess()).busy).toEqual({ model: false, effort: false });
     expect(m.mpData(sess({ pendingModel: 'grok[1m]' })).busy.model).toBe('compact 후 grok[1m](으)로 전환 대기 중');
@@ -288,7 +288,7 @@ describe('mpData — the session as the element’s data', () => {
     expect(m.mpData(sess()).busy).toEqual({ model: true, effort: false });
     m.setBusy(KEY, 'model', false);
     m.setBusy(KEY, 'effort', true);
-    expect(m.mpData(sess()).busy).toEqual({ model: false, effort: true });
+    expect(m.mpData(sess()).busy).toEqual({ model: false, effort: false });
   });
 
   it('error: the last refused write only — an info note is the host’s line', () => {
@@ -313,12 +313,26 @@ describe('mpData — the session as the element’s data', () => {
     notes[KEY] = { text: 'HTTP 409', error: true };
     expect(m.renderModelNote(sess(), true)).toBe('');
     expect(m.renderModelNote(sess(), false)).toBe(
-      '<div class="ui-status-line cb-model-note" data-tone="fail" role="alert">HTTP 409</div>',
+      '<div class="ui-status-line cb-model-note" data-mk="note|1" data-tone="fail" role="alert">HTTP 409</div>',
     );
     notes[KEY] = { text: '이미 opus[1m]입니다', error: false };
     expect(m.renderModelNote(sess(), true)).toBe(
-      '<div class="ui-status-line cb-model-note" role="status">이미 opus[1m]입니다</div>',
+      '<div class="ui-status-line cb-model-note" data-mk="note|2" role="status">이미 opus[1m]입니다</div>',
     );
+    // The same note on a live repaint is the same node (the html does not change); a new switch's note is a new one.
+    expect(m.renderModelNote(sess(), true)).toContain('data-mk="note|2"');
+    notes[KEY] = { text: '이미 opus[1m]입니다', error: false };
+    expect(m.renderModelNote(sess(), true)).toContain('data-mk="note|3"');
+  });
+
+  // SSOT 2026-11-05: on the composer's row a switch's note floats above the field — it says its word and goes, so
+  // it never sits on the text being typed. The waiting status (unkeyed) and a refusal stay.
+  it('docked, a switch’s note fades after a few seconds; the waiting status and a refusal stay', () => {
+    const rule = STYLE.match(
+      /^\.panel-command\[data-pick-dock\] > \.panel-controls > \.cb-model-note\[data-mk\]:not\(\[data-tone="fail"\]\) \{([^}]*)\}/m,
+    );
+    expect(rule?.[1]).toMatch(/animation: pc-note-away [^;]* 4s forwards;/);
+    expect(STYLE).toMatch(/@keyframes pc-note-away \{ to \{ opacity: 0; visibility: hidden; \} \}/);
   });
 });
 
@@ -357,7 +371,7 @@ describe('mpHydrate — every picker under a root takes its session’s data, on
         'mpDataSig',
         'mpHydrate',
       ],
-      ['_busy'],
+      ['_busy', '_effortPending'],
       {
         REPRESENTATIVE_MODELS: MODELS,
         EFFORT_LEVELS: ALL_LEVELS,
@@ -382,9 +396,9 @@ describe('mpHydrate — every picker under a root takes its session’s data, on
     m.mpHydrate(root);
     expect(a.sets).toHaveLength(2);
     expect(a.data.value.model).toBe('sonnet[1m]');
-    m.setBusy(KEY, 'effort', true);
+    m.setBusy(KEY, 'model', true);
     m.mpHydrate(root);
-    expect(a.data.busy.effort).toBe(true);
+    expect(a.data.busy.model).toBe(true);
     m.mpHydrate(null);
   });
 
@@ -397,12 +411,14 @@ describe('mpHydrate — every picker under a root takes its session’s data, on
     const node: Record<string, unknown> = { getAttribute: (n: string) => (n === 'data-mp-key' ? KEY : null) };
     Object.defineProperty(node, 'data', { set: (v) => sets.push(v) });
     const root = { querySelectorAll: () => [node] };
+    const pending: Record<string, { want: string }> = {};
     const m = load<{ mpHydrate(root: unknown): void; setBusy(k: string, op: string, on: boolean): void }>(
       ['toNum', 'isBusy', 'setBusy', 'mpDataSig', 'mpHydrate'],
       ['_busy'],
       {
         _sessionCache: cache,
         _modelNotes: notes,
+        _effortPending: pending,
         mpData: () => {
           built++;
           return { n: built };
@@ -420,7 +436,7 @@ describe('mpHydrate — every picker under a root takes its session’s data, on
       () => (cache[KEY] = { ...cache[KEY], contextTokens: 600_000 }),
       () => (cache[KEY] = { ...cache[KEY], effortLevels: ['low', 'high'] }),
       () => m.setBusy(KEY, 'model', true),
-      () => m.setBusy(KEY, 'effort', true),
+      () => (pending[KEY] = { want: 'low' }),
       () => (notes[KEY] = { text: '전환 실패', error: true }),
       () => (notes[KEY] = { text: '다른 실패', error: true }),
     ];
@@ -568,7 +584,7 @@ describe('ui-change → the existing writes; the server decides', () => {
 });
 
 describe('ui-open-change — a closed menu lets its surfaces catch up (D12)', () => {
-  it('closed: the card and the panel controls repaint; opened: nothing', () => {
+  it('closed: the card and the panel controls repaint; opened: nothing repaints', () => {
     const refreshCard = vi.fn();
     const repaintPanelControlsFor = vi.fn();
     const m = load<{ mpOnOpenChange(e: unknown): void }>(['mpOnOpenChange'], [], {
@@ -577,8 +593,10 @@ describe('ui-open-change — a closed menu lets its surfaces catch up (D12)', ()
     });
     const picker = {
       tagName: 'UI-MODEL-PICKER',
+      style: { width: '' },
       getAttribute: (n: string) => (n === 'data-mp-key' ? KEY : null),
       hasAttribute: (n: string) => n === 'data-mp-key',
+      getBoundingClientRect: () => ({ width: 203.4 }),
     };
     m.mpOnOpenChange({ target: picker, detail: { open: true } });
     expect(refreshCard).not.toHaveBeenCalled();
@@ -592,6 +610,27 @@ describe('ui-open-change — a closed menu lets its surfaces catch up (D12)', ()
       detail: { open: false },
     });
     expect(refreshCard).toHaveBeenCalledTimes(1);
+  });
+
+  // SSOT 2026-11-05: the composer's picker ends at Send (a right-aligned dock), so a level that changes the trigger's
+  // words (매우 높음 → 높음) would move its left edge — and the element closes a menu whose trigger moved. While open
+  // the element keeps the width it opened with; closed, it takes its own again.
+  it('open: the picker holds the width it opened with; closed: its own width again', () => {
+    const m = load<{ mpOnOpenChange(e: unknown): void }>(['mpOnOpenChange'], [], {
+      refreshCard: () => {},
+      repaintPanelControlsFor: () => {},
+    });
+    const picker = {
+      tagName: 'UI-MODEL-PICKER',
+      style: { width: '' },
+      getAttribute: (n: string) => (n === 'data-mp-key' ? KEY : null),
+      hasAttribute: (n: string) => n === 'data-mp-key',
+      getBoundingClientRect: () => ({ width: 203.4 }),
+    };
+    m.mpOnOpenChange({ target: picker, detail: { open: true } });
+    expect(picker.style.width).toBe('204px');
+    m.mpOnOpenChange({ target: picker, detail: { open: false } });
+    expect(picker.style.width).toBe('');
   });
 });
 
@@ -632,8 +671,8 @@ describe('D11 — one write per session and operation, by value', () => {
     };
     const repaints: string[] = [];
     const m = load<{ changeEffort(k: string, l: string): Promise<void> }>(
-      ['isBusy', 'setBusy', 'effortLabel', 'effortSwitchNote', 'mpApplyEffort', 'changeEffort'],
-      ['_busy', 'EFFORT_LABELS'],
+      ['effortLabel', 'effortSwitchNote', 'mpApplyEffort', 'changeEffort', 'effortChain'],
+      ['_effortPending', 'EFFORT_LABELS'],
       {
         postEffortSwitch: async () => ({ ok: true, result: { status: 'switched', effort: 'low', effective: 'low' } }),
         _modelNotes: {},
@@ -648,6 +687,212 @@ describe('D11 — one write per session and operation, by value', () => {
     expect(cache.k.effort).toBe('low');
     expect(cache.k.effortEffective).toBeUndefined();
     expect(repaints).toEqual(['card:max', 'panel:max', 'card:low', 'panel:low']);
+  });
+});
+
+// SSOT 2026-11-05: "추론 강도 버튼 변경하면 왜 로딩을해" — a level is a setting of the next turn, not a wait: the pick
+// shows at once (no busy, no progress cursor), the server's answer settles it.
+describe('an effort pick shows at once — no loading', () => {
+  function effortEnv(cache: Record<string, Record<string, unknown>>) {
+    const posts: string[] = [];
+    const releases: Array<(r: unknown) => void> = [];
+    const notes: Record<string, { text: string; error: boolean }> = {};
+    const shown: string[] = [];
+    const loads: number[] = [];
+    const m = load<{
+      changeEffort(k: string, l: string): Promise<{ ok: boolean; result?: { effort: string } }>;
+      effortSettled(k: string): Promise<void>;
+      mpData(s: unknown): Data;
+      mpDataSig(s: unknown): string;
+    }>(
+      [
+        'esc',
+        'escAttr',
+        'toNum',
+        'isBusy',
+        'mpShort',
+        'mpLevelsOf',
+        'mpEffortLevels',
+        'mpRows',
+        'mpData',
+        'mpDataSig',
+        'effortLabel',
+        'effortSwitchNote',
+        'mpApplyEffort',
+        'changeEffort',
+        'effortChain',
+        'effortSettled',
+      ],
+      ['_busy', '_effortPending', 'EFFORT_LABELS'],
+      {
+        REPRESENTATIVE_MODELS: MODELS,
+        EFFORT_LEVELS: ALL_LEVELS,
+        SDK_EFFORT_LEVELS: LEVELS,
+        _modelNotes: notes,
+        _sessionCache: cache,
+        postEffortSwitch: (_k: string, level: string) => {
+          posts.push(level);
+          return new Promise((r) => releases.push(r));
+        },
+        refreshCard: () => shown.push(String(m.mpData(cache[KEY]).value.effort)),
+        repaintPanelControlsFor: () => {},
+        loadSessions: () => loads.push(1),
+      },
+    );
+    return { m, posts, releases, notes, shown, loads };
+  }
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  const ok = (effort: string, effective = effort) => ({ ok: true, result: { status: 'switched', effort, effective } });
+
+  it('the picked level is the picker’s value before the server answers; nothing is busy', async () => {
+    const cache = { [KEY]: sess({ effort: 'high' }) };
+    const { m, posts, releases, shown } = effortEnv(cache);
+    const run = m.changeEffort(KEY, 'max');
+    expect(shown).toEqual(['max']);
+    expect(m.mpData(cache[KEY]).value.effort).toBe('max');
+    expect(m.mpData(cache[KEY]).busy.effort).toBe(false);
+    expect(posts).toEqual(['max']);
+    releases[0](ok('max'));
+    await run;
+    expect(cache[KEY].effort).toBe('max');
+    expect(m.mpData(cache[KEY]).value.effort).toBe('max');
+  });
+
+  it('a live push with the old level while the write is out does not pull the thumb back', () => {
+    const cache = { [KEY]: sess({ effort: 'high' }) };
+    const { m } = effortEnv(cache);
+    void m.changeEffort(KEY, 'low');
+    cache[KEY] = sess({ effort: 'high' }); // the board push that left before the server saved the pick
+    expect(m.mpData(cache[KEY]).value.effort).toBe('low');
+    expect(m.mpDataSig(cache[KEY])).toContain('low');
+  });
+
+  it('picks in a row: one write at a time, the newest pick goes next, the in-between one never', async () => {
+    const cache = { [KEY]: sess({ effort: 'high' }) };
+    const { m, posts, releases, notes } = effortEnv(cache);
+    const run = m.changeEffort(KEY, 'max');
+    void m.changeEffort(KEY, 'low');
+    void m.changeEffort(KEY, 'medium');
+    expect(posts).toEqual(['max']);
+    expect(m.mpData(cache[KEY]).value.effort).toBe('medium');
+    releases[0](ok('max'));
+    await flush();
+    expect(posts).toEqual(['max', 'medium']);
+    expect(m.mpData(cache[KEY]).value.effort).toBe('medium');
+    releases[1](ok('medium'));
+    await run;
+    expect(cache[KEY].effort).toBe('medium');
+    expect(notes[KEY].text).toContain('보통');
+  });
+
+  it('a refused pick puts the session’s level back and says why', async () => {
+    const cache = { [KEY]: sess({ effort: 'high' }) };
+    const { m, releases, notes } = effortEnv(cache);
+    const run = m.changeEffort(KEY, 'max');
+    releases[0]({ ok: false, error: '종료된 세션은 effort를 바꿀 수 없습니다' });
+    await run;
+    expect(m.mpData(cache[KEY]).value.effort).toBe('high');
+    expect(m.mpData(cache[KEY]).error).toBe('종료된 세션은 effort를 바꿀 수 없습니다');
+  });
+
+  it('the model caps it: the server’s level that runs shows once it answers', async () => {
+    const cache = { [KEY]: sess({ effort: 'high' }) };
+    const { m, releases } = effortEnv(cache);
+    const run = m.changeEffort(KEY, 'max');
+    releases[0](ok('max', 'xhigh'));
+    await run;
+    expect(m.mpData(cache[KEY]).value).toMatchObject({ effort: 'max', effectiveEffort: 'xhigh' });
+  });
+
+  // trinity R1 (astra P1): the picker shows the newest pick at once, so a send right after it must not start its turn
+  // on an older level — the send waits until the level picked before it is the session's.
+  it('a send waits for the level picked before it: effortSettled resolves only once the newest pick is the session’s', async () => {
+    const cache = { [KEY]: sess({ effort: 'high' }) };
+    const { m, posts, releases } = effortEnv(cache);
+    const first = m.changeEffort(KEY, 'max');
+    const joined = m.changeEffort(KEY, 'low');
+    let settled = false;
+    const waiting = m.effortSettled(KEY).then(() => {
+      settled = true;
+    });
+    releases[0](ok('max'));
+    await flush();
+    expect(posts).toEqual(['max', 'low']);
+    expect(settled).toBe(false); // 'low' is still on its way
+    releases[1](ok('low'));
+    await waiting;
+    expect(settled).toBe(true);
+    expect(cache[KEY].effort).toBe('low');
+    // Every caller of the chain gets its outcome: the first pick and the one that joined it.
+    expect((await first).result?.effort).toBe('low');
+    expect((await joined).result?.effort).toBe('low');
+    // Nothing out: settled at once.
+    await m.effortSettled(KEY);
+    // The panel's send awaits it after the optimistic turn and before its POST.
+    const send = clientFn('sendCommand');
+    const at = send.indexOf('await effortSettled(sendingSessionKey);');
+    expect(at).toBeGreaterThan(send.indexOf('_pcInFlight++'));
+    expect(at).toBeLessThan(send.indexOf('await acPost(cmdUrl'));
+  });
+
+  // trinity R2 (fable P3): a throw while an answer is applied must not leave the session's writer stuck.
+  it('a throw while the answer is applied still frees the session’s writer', async () => {
+    const cache: Record<string, Record<string, unknown>> = { [KEY]: sess({ effort: 'high' }) };
+    const { m, posts, releases } = effortEnv(cache);
+    const run = m.changeEffort(KEY, 'max');
+    // The session object the answer is written into refuses the write once (a live push swapped in a sealed one).
+    const sealed = sess({ effort: 'high' });
+    Object.defineProperty(sealed, 'effort', {
+      get: () => 'high',
+      set: () => {
+        throw new Error('apply');
+      },
+      configurable: true,
+    });
+    cache[KEY] = sealed;
+    releases[0](ok('max'));
+    await expect(run).rejects.toThrow('apply');
+    await m.effortSettled(KEY);
+    cache[KEY] = sess({ effort: 'high' });
+    void m.changeEffort(KEY, 'low');
+    expect(posts).toEqual(['max', 'low']); // a new write goes out — the writer is not stuck
+    expect(m.mpData(cache[KEY]).value.effort).toBe('low');
+  });
+
+  // trinity R2 (astra P2): a send waiting on a level that the server refused does not go on the old level — it
+  // fails with the reason (the note's row keeps Retry).
+  it('effortSettled answers the last write: a refused level is the send’s refusal', async () => {
+    const cache = { [KEY]: sess({ effort: 'high' }) };
+    const { m, releases } = effortEnv(cache);
+    void m.changeEffort(KEY, 'low');
+    const settled = m.effortSettled(KEY) as unknown as Promise<{ ok: boolean; error?: string } | null>;
+    releases[0]({ ok: false, error: 'HTTP 500' });
+    expect(await settled).toEqual({ ok: false, error: 'HTTP 500' });
+    expect(await (m.effortSettled(KEY) as unknown as Promise<unknown>)).toBeNull(); // nothing out
+    const send = clientFn('sendCommand');
+    expect(send).toContain('var level = await effortSettled(sendingSessionKey);');
+    expect(send).toContain(
+      "if (level && !level.ok) throw new Error('추론 강도를 바꾸지 못해 보내지 않았어요 — ' + level.error);",
+    );
+  });
+
+  it('a level the session already runs writes nothing and answers unchanged', async () => {
+    const cache = { [KEY]: sess({ effort: 'high' }) };
+    const { m, posts } = effortEnv(cache);
+    const r = await m.changeEffort(KEY, 'high');
+    expect(posts).toEqual([]);
+    expect(r).toMatchObject({ ok: true, result: { status: 'unchanged', effort: 'high' } });
+  });
+
+  it('no board reload after a level: the server pushes the change, the cache already holds its answer', async () => {
+    const cache = { [KEY]: sess({ effort: 'high' }) };
+    const { m, releases, loads } = effortEnv(cache);
+    const run = m.changeEffort(KEY, 'low');
+    releases[0](ok('low'));
+    await run;
+    expect(loads).toEqual([]);
+    expect(clientFn('changeEffort')).not.toContain('setBusy');
+    expect(clientFn('mpData')).not.toContain("isBusy(s.key, 'effort')");
   });
 });
 
@@ -702,8 +947,9 @@ describe('D12 — an open menu holds its surface still', () => {
   it('the panel moved to another session under an open menu: that menu closes and the controls follow the new session', () => {
     const writes: string[] = [];
     const hydrated: unknown[] = [];
-    const picker: Record<string, unknown> = {
+    const picker: Record<string, unknown> & { style: { width: string } } = {
       open: true,
+      style: { width: '204px' }, // the width it held open (mpOnOpenChange)
       getAttribute: (n: string) => (n === 'data-mp-key' ? 'old' : null),
     };
     const el = {
@@ -732,6 +978,7 @@ describe('D12 — an open menu holds its surface still', () => {
     // Another session: the old menu is closed (no ui-open-change) and the controls are written for the new one.
     m.renderPanelControls({ key: 'new', ownerId: 'U1', model: 'claude-opus-5-5[1m]' });
     expect(picker.open).toBe(false);
+    expect(picker.style.width).toBe('');
     expect(writes).toEqual(['<span class="pc-scope">이 세션</span>[M:new:true:panel]']);
     expect(hydrated).toEqual([el, el]);
   });
