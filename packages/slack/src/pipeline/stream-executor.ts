@@ -3507,14 +3507,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       //
       // Read live state BEFORE the `finally` block's `cleanup()` drains the
       // registries. `hasSdkError`/`hasPendingChoice` already have their own
-      // terminal handling, so the guard defers to them. Background bash is
-      // sessionKey-scoped (survives across resume turns); background Tasks are
-      // turnId-scoped (#794), so a Task that outlives a full resume turn drops
-      // out of the next turn's snapshot — bash (the dotnet-build case) is the
-      // primary, fully-covered path.
-      // Authoritative live-set from the SDK task lifecycle (session-scoped, so
-      // it survives across resume turns). Covers bg bash, bg subagent Task, AND
-      // Monitor uniformly — `count`/`labels`/`signature` in one snapshot.
+      // terminal handling, so the guard defers to them.
+      // Authoritative live-set from the SDK task lifecycle. Covers bg bash, bg
+      // subagent Task, AND Monitor uniformly — `count`/`labels`/`signature` in
+      // one snapshot.
+      // #966: none of it survives this turn. The CLI process ends with the turn
+      // and stops its background tasks as it exits, so the snapshot names what
+      // just stopped, and the tasks are settled right after the decision.
       const liveBackground = this.deps.toolEventProcessor.getLiveBackgroundWork(sessionKey);
       // The pure decision fn owns the policy, INCLUDING non-destructive cap
       // suppression: it compares the live `signature` against the one we gave up
@@ -3529,6 +3528,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         hasError: hasSdkError,
         hasOtherContinuation: false,
       });
+      // #966 — they stopped with this turn's CLI: the tracker must not keep claiming them live.
+      if (liveBackground.count > 0) {
+        const ended = this.deps.toolEventProcessor.endBackgroundWorkWithTurn(sessionKey);
+        this.logger.info('Background work ended with the turn — settled', {
+          sessionKey,
+          turnId,
+          tasks: ended.map((t) => `${t.taskId}${t.taskType ? `:${t.taskType}` : ''}`),
+        });
+      }
       if (bgDecision.action === 'continue') {
         this.bgWaitCounts.set(sessionKey, bgDecision.nextWaitCount);
         this.logger.info('Background-work resume: re-entering loop instead of completing', {
@@ -3560,7 +3568,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           signature: bgDecision.suppressSignature,
         });
         await say({
-          text: `⚠️ 백그라운드 작업이 ${getBackgroundWaitCap()}회 대기 후에도 살아있어 자동 대기를 중단합니다. 수동 확인이 필요할 수 있습니다.`,
+          text: `⚠️ 백그라운드 작업을 턴 안에서 끝내지 못한 채 턴이 ${getBackgroundWaitCap()}회 연속으로 끝나 자동 재개를 멈춥니다. 수동 확인이 필요할 수 있습니다.`,
           thread_ts: threadTs,
         });
       } else if (bgDecision.action === 'reset') {

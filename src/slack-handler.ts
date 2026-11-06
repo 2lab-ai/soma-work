@@ -57,6 +57,7 @@ import { loadAutoEsTurnEndContract } from './plugin/harness-skills';
 import { validateSessionGoalObjective } from './prompt/session-goal-block';
 import { routeReleaseNotes } from './release-notes-routes';
 import { retryReasonLine } from './retry-reason';
+import { formatStoppedAgents, type StoppedAgentRef } from './session/agent-registry';
 import {
   activeChainFilter,
   buildRollbackPointsView,
@@ -7648,7 +7649,16 @@ export class SlackHandler {
         // This resume continues the turn the restart cut — it may take that turn's follow-up over.
         this.noteFollowupResume(session.sessionKey, 'restart');
         this.autoResumeSession(session, notificationTs)
-          .then(() => {
+          .then((taken) => {
+            if (!taken) {
+              // #966 — returned without running: no turn carries the session, so hand it back.
+              this.logger.warn('Auto-resume returned without taking its turn — handing the session back', {
+                channelId: session.channelId,
+                threadTs: session.threadTs,
+              });
+              this.handBackFailedRestartResume(session.sessionKey);
+              return;
+            }
             this.logger.info('Auto-resume completed', {
               channelId: session.channelId,
               threadTs: session.threadTs,
@@ -8078,10 +8088,17 @@ export class SlackHandler {
    * through the existing handleMessage pipeline.
    */
   private async autoResumeSession(
-    session: { channelId: string; threadTs?: string; ownerId: string; title?: string; workflow?: string },
+    session: {
+      channelId: string;
+      threadTs?: string;
+      ownerId: string;
+      title?: string;
+      workflow?: string;
+      stoppedAgents?: StoppedAgentRef[];
+    },
     notificationTs?: string,
     errorContext?: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     // Use the notification message's ts so that handleMessage's reaction calls
     // (eyes emoji etc.) target a real Slack message instead of a fabricated timestamp.
 
@@ -8090,6 +8107,15 @@ export class SlackHandler {
     if (session.title) contextParts.push(`세션 제목: ${session.title}`);
     if (session.workflow && session.workflow !== 'default') contextParts.push(`워크플로우: ${session.workflow}`);
     if (errorContext) contextParts.push(`⚠️ 이전 시도 중 오류 발생: ${errorContext}`);
+    // #966 — the host's own record of the subagents the restart stopped, so picking them up does not
+    // rest on the CLI's "didn't finish" notice alone.
+    const stoppedAgentLines = formatStoppedAgents(session.stoppedAgents);
+    if (stoppedAgentLines.length > 0) {
+      contextParts.push(
+        '재시작으로 멈춘 서브에이전트 — 각각 agent ID로 SendMessage를 보내 이어 가게 하라:',
+        ...stoppedAgentLines,
+      );
+    }
 
     const resumePrompt =
       contextParts.length > 0
@@ -8106,6 +8132,13 @@ export class SlackHandler {
       skipDispatch: true,
       routeContext: { autoResume: true },
     };
+    // #966 — resolving is not running: `handleMessage` returns without a turn when the dispatch
+    // cannot open, the slot was taken in the same tick, or the fence holds it. The caller is told
+    // whether the turn was taken (#853: it reached the model, or was stored to run).
+    let taken = false;
+    const unwatch = this.onTurnAccepted(syntheticEvent.channel, syntheticEvent.ts, () => {
+      taken = true;
+    });
 
     // Real say — posts to Slack. noopSay silently discarded all bot output.
     const realSay = async (args: any) => {
@@ -8120,7 +8153,12 @@ export class SlackHandler {
       return { ts: result.ts as string | undefined };
     };
 
-    await this.handleMessage(syntheticEvent, realSay);
+    try {
+      await this.handleMessage(syntheticEvent, realSay);
+    } finally {
+      unwatch();
+    }
+    return taken;
   }
 
   /**
