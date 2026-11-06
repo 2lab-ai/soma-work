@@ -4,6 +4,7 @@ import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-m
 import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { ConfigCache } from '@soma/process-shared/mcp/config-cache.js';
 import { type ChildProcess, execFileSync, spawn } from 'child_process';
+import { redactLogSecrets } from './redact-logs.js';
 
 // ── Constants ─────────────────────────────────────────────
 
@@ -545,7 +546,7 @@ export function handleLogs(args: Record<string, unknown>) {
   });
 
   return {
-    content: [{ type: 'text' as const, text: output }],
+    content: [{ type: 'text' as const, text: redactLogSecrets(output) }],
   };
 }
 
@@ -888,7 +889,7 @@ class ServerToolsMCPServer extends BaseMcpServer {
       {
         name: 'logs',
         description:
-          'Fetch Docker container logs (or Swarm service logs when stack is set) from a server via SSH. Default mode: docker logs. With stack: docker service logs (caller must pass the full <stack>_<svc> name in service). NOTE: --until is not supported in stack mode.',
+          'Fetch Docker container logs (or Swarm service logs when stack is set) from a server via SSH. Default mode: docker logs. With stack: docker service logs (caller must pass the full <stack>_<svc> name in service). NOTE: --until is not supported in stack mode. Output is redacted for common secret shapes (tokens, API keys, passwords, URL credentials, private key blocks).',
         inputSchema: {
           type: 'object',
           properties: {

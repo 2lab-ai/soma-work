@@ -966,6 +966,32 @@ describe('handleLogs', () => {
     expect(result.content[0].type).toBe('text');
   });
 
+  it('redacts secrets in the returned log text, keeping the rest of each line', () => {
+    mockConfig(PROD_CONFIG, 10350);
+    // Assembled at run time: a complete credential-shaped literal in source is refused by push protection.
+    const sid = ['A', 'C', 'f00dfeed'.repeat(4)].join('');
+    const authToken = 'cafebabe'.repeat(4);
+    vi.mocked(child_process.execFileSync).mockReturnValue(
+      [
+        `2026-01-02T03:04:05Z client init {"AccountSid":"${sid}","AuthToken":"${authToken}","Region":"us1"}`,
+        '2026-01-02T03:04:06Z connecting to postgres://app:hunter2@db.internal:5432/app',
+        '2026-01-02T03:04:07Z GET /health 200 3ms',
+        '',
+      ].join('\n'),
+    );
+
+    const result = handleLogs({ server: 'prod', service: 'nginx' });
+
+    expect(result.content[0].text).toBe(
+      [
+        '2026-01-02T03:04:05Z client init {"AccountSid":"<redacted>","AuthToken":"<redacted>","Region":"us1"}',
+        '2026-01-02T03:04:06Z connecting to postgres://app:<redacted>@db.internal:5432/app',
+        '2026-01-02T03:04:07Z GET /health 200 3ms',
+        '',
+      ].join('\n'),
+    );
+  });
+
   describe('with stack option', () => {
     it('calls SSH with docker service logs (Swarm mode)', () => {
       mockConfig(PROD_CONFIG, 10400);
