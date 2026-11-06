@@ -3391,9 +3391,10 @@ function broadcastSessionAction(sessionKey: string, action: 'stop' | 'close' | '
 // Opt-in route compression for the dashboard's first load (#477): ~1.5 MB of
 // HTML + JSON that the public proxy does not compress — and the @2lab.ai/ui
 // modules the page loads (#969). br or gzip only (route options replace the
-// plugin's, so the list is explicit here; zstd would otherwise win on Node 26). Brotli quality 5 instead of the plugin's default 4:
-// ~8% smaller page for ~2x the CPU (≈16 ms for the 0.8 MB page, off the event
-// loop above the plugin's sync threshold).
+// plugin's, so the list is explicit here; zstd would otherwise win on Node 26).
+// Brotli quality 5 instead of the plugin's default 4: ~8% smaller page for ~2x
+// the CPU (≈16 ms for the 0.8 MB page, off the event loop above the plugin's
+// sync threshold).
 const FIRST_LOAD_COMPRESSION = {
   encodings: ['br', 'gzip'] as Array<'br' | 'gzip'>,
   threshold: 1024,
@@ -5085,8 +5086,8 @@ export async function registerDashboardRoutes(
   // The 작업 로그's tool call cards are <ui-tool-call-card> from the installed
   // @2lab.ai/ui package (a pinned dependency): its flat dist/*.js files, nothing
   // else. Public library code — no session data — so no auth. Compressed like the first load (#969): a cold load
-  // fetches ~55 of these files, ~1.4 MB as they are (~0.4 MB in brotli), which held a phone's first screen for seconds
-  // (≈25 ms of CPU per cold load; the browser keeps them an hour).
+  // makes ~60 requests for these files, ~1.4 MB as they are (~0.4 MB in brotli), which held a phone's first
+  // screen for seconds (≈25 ms of CPU per cold load; the browser keeps them an hour).
   server.get<{ Params: { file: string } }>(
     '/dashboard/ui/:file',
     { compress: FIRST_LOAD_COMPRESSION },
