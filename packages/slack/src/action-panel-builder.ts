@@ -153,6 +153,7 @@ export class ActionPanelBuilder {
           activeTool: params.activeTool,
           lastProgressAt: params.lastProgressAt,
           lastSignalAt: params.lastSignalAt,
+          sleeping: params.sleeping,
           now: params.now,
         }),
       ]),
@@ -279,9 +280,17 @@ export class ActionPanelBuilder {
     activeTool?: string;
     lastProgressAt?: number;
     lastSignalAt?: number;
+    sleeping?: boolean;
     now?: number;
   }): string | null {
-    const phase = params.status === 'Sleep' ? SLEEP_PHASE : ActionPanelBuilder.resolvePhase(params);
+    // A sleep the badge cannot show — an open question outranks it (it is what
+    // the user must act on) — still shows as the step.
+    const phase =
+      params.status === 'Sleep'
+        ? SLEEP_PHASE
+        : params.sleeping && params.waitingForChoice
+          ? '💤 Sleep'
+          : ActionPanelBuilder.resolvePhase(params);
     const isLive =
       params.waitingForChoice === true ||
       params.activityState === 'working' ||

@@ -70,6 +70,9 @@ function memorySummary(input: any): string {
   return words;
 }
 
+/** Slack's cap on a `section` block's text (docs/misc/reference/slack-block-kit.md). */
+const SECTION_TEXT_MAX = 3000;
+
 export class ToolFormatter {
   private static readonly TASK_PROMPT_PREVIEW_LENGTH = 180;
   private static readonly SUBAGENT_DISPLAY_MAP: Record<string, { label: string; model?: string }> = {
@@ -652,9 +655,14 @@ export class ToolFormatter {
    * red attachment, the rendered-empty guard copied the attachment's text into
    * the message body, so the same sentence showed twice (body + red box). With
    * blocks, the message `text` is only the notification fallback.
+   *
+   * A section's text is capped at 3000 chars (`invalid_blocks` past it), and a
+   * forced `$skill` awaits its banner post before it runs — so a banner naming
+   * very many skills is cut, never allowed to fail the invocation.
    */
   static skillBannerBlocks(text: string): Array<{ type: 'section'; text: { type: 'mrkdwn'; text: string } }> {
-    return [{ type: 'section', text: { type: 'mrkdwn', text } }];
+    const shown = text.length > SECTION_TEXT_MAX ? `${text.slice(0, SECTION_TEXT_MAX - 1)}…` : text;
+    return [{ type: 'section', text: { type: 'mrkdwn', text: shown } }];
   }
 
   /**

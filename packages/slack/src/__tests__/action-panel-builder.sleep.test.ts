@@ -49,6 +49,23 @@ describe('ActionPanelBuilder — Sleep state (#1031 ⑤)', () => {
     expect(all).not.toContain('Sleep');
   });
 
+  // trinity R1 (astra P2): the sweep sleeps a session whose question is still
+  // open. The question outranks the badge (it is what the user must act on),
+  // but the sleep must still show.
+  it('a sleeping session with an open question keeps 입력 대기 and still shows the sleep', () => {
+    const out = rail({
+      sleeping: true,
+      waitingForChoice: true,
+      activityState: 'waiting',
+      lastProgressAt: NOW - DAY,
+      choiceMessageLink: 'https://slack.example/q',
+    });
+    const [first, ...rest] = out.split('\n');
+
+    expect(first.startsWith('🟡 *입력 대기* · 💤 Sleep')).toBe(true);
+    expect(rest.join('\n')).toContain('❓ 질문에 답변해 주세요');
+  });
+
   it('an awake session is unchanged', () => {
     const out = rail({
       disabled: false,

@@ -32,6 +32,7 @@ One `section.text`, never a 2-column `fields` grid (the grid gave the state half
 - Line 1: `{badge} · {step} · {progress age} [· {liveness}]`. The step, real-progress age and liveness are three separate facts (U9/A19); nothing predicts an ETA.
 - Ages are Slack date tokens, `<!date^{unix seconds}^{ago}|{ISO time}>` (#1031). The rail is posted once and stays until the next render — days for a finished session — so an age written into the text went stale ("5분 전" five days later). Slack renders `{ago}` at view time in the viewer's locale; the fallback is the absolute time. A stamp from the future is clamped to now.
 - A sleeping session (`state === 'SLEEPING'`) reads `💤 *Sleep* · 메시지를 보내면 이어서 진행 · 마지막 활동 …` (#1031). The sleep transition, and a wake from the dashboard, repaint the header; a wake by message repaints it through its turn.
+  A live state outranks the sleep: an open question keeps its badge — it is what the user must act on — and the sleep shows as the step (`🟡 *입력 대기* · 💤 Sleep · …`). A dashboard restore that wakes a sleeping session does not repaint; its next turn does.
 - Line 2: `{turn summary} · {PR state} · 💬 최신 응답 · {verbosity}`. Each part appears only when it exists.
 - Line 3, only while a question waits: `❓ 질문에 답변해 주세요 — 질문 보기`.
 
