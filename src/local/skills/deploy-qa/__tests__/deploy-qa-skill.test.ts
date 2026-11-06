@@ -153,8 +153,8 @@ describe('deploy-qa preflight and reduced mode', () => {
  * writable) used to end touching nothing, so its keys carried no label and the
  * next deploy's range never included them: they were never QA'd. Such a run now
  * reads steps 1–5 and carries every key a full run's step 8 would leave open,
- * add-only. The lock holder's step 8 owns removal, and keeps the label while the
- * newest carry comment names a merge it did not test.
+ * add-only. The lock holder's step 8 owns removal, and keeps the label while any
+ * carry comment is outstanding: no later pass or fail result names all its merges.
  */
 describe('deploy-qa carries every open key when QA cannot run', () => {
   const md = read('deploy-qa');
@@ -207,7 +207,7 @@ describe('deploy-qa carries every open key when QA cannot run', () => {
   });
 
   it('a run without a lock comments whenever its mergeShas are new, and before it labels', () => {
-    // The holder's guard reads the newest carry comment's mergeShas, so a new merge always gets a comment.
+    // The holder's check reads every carry comment's mergeShas, so a new merge always gets a comment.
     expect(noLock).toContain('no new comment only when both its reason and its `mergeShas`');
     // Comment first: the holder either sees it and keeps the label, or removed the label before it is added.
     expect(noLock).toMatch(/post the comment before adding the label/i);
@@ -221,26 +221,38 @@ describe('deploy-qa carries every open key when QA cannot run', () => {
     expect(noLock).toContain("removal stays with the lock holder's step 8");
   });
 
-  it('the holder keeps a carry label while an outstanding carry comment names a merge it did not test', () => {
-    // Obligation boundary: every carry comment after the last result, not only the newest one.
-    expect(fullStep8).not.toContain('newest carry comment');
-    expect(fullStep8).toMatch(
-      /Pass and fail: [^\n]*every carry comment on the key posted after the latest pass or fail result comment/,
+  // The guard sentence: from "Pass and fail:" to the report-only rule.
+  const guard = fullStep8.slice(fullStep8.indexOf('Pass and fail:'), fullStep8.indexOf('Report-only:'));
+
+  it('a carry comment stays outstanding until a later result names every one of its merges', () => {
+    expect(guard).toContain('**outstanding**');
+    expect(guard).toMatch(
+      /no pass or fail result comment posted after it \(this run's own result included\) names every one of its mergeShas as tested/,
     );
-    expect(fullStep8).toContain("from before this run's `startTime` (all its carry comments, if it has none");
-    // Step 7 posted this run's own result moments ago; carry comments posted while it ran must still count.
-    expect(fullStep8).toContain("this run's own result comment is never the boundary");
-    expect(fullStep8).toContain('names a mergeSha this run did not test');
-    expect(fullStep8).toContain('keep the label');
-    expect(fullStep8).toContain('`<KEY>: carry label kept');
-    expect(fullStep8).toMatch(/Otherwise remove it/);
+    // Coverage, not time: no boundary that an earlier, narrower result could set.
+    expect(guard).not.toContain('startTime');
+    expect(guard).not.toContain('newest carry comment');
+    expect(guard).not.toContain('latest pass or fail result comment');
+    expect(guard).not.toContain('never the boundary');
+  });
+
+  it('this run counts as later than every carry comment it reads, so an earlier pass never pins the label', () => {
+    expect(guard).toContain('`mergeShas` its run passed to `qa-issue`');
+    expect(guard).toContain('for an already passed key, the pass comment that names its mergeShas');
+    expect(guard).toContain('counts as posted after every carry comment this run reads');
+  });
+
+  it('the holder keeps the label while any carry comment is outstanding, otherwise removes it', () => {
+    expect(guard).toContain('Keep `carryLabel` while any carry comment on the key is outstanding');
+    expect(guard).toContain('`<KEY>: carry label kept, merge <owner/repo:sha7>');
+    expect(guard).toMatch(/Otherwise remove it/);
   });
 
   it('after removing, the holder checks every carry comment newer than its first read', () => {
     // Two no-lock runs can post B then A between the read and the removal; the newest alone (A) hides B.
-    expect(fullStep8).toContain('every carry comment newer than that first read');
-    expect(fullStep8).toMatch(
-      /every carry comment newer than that first read[^\n]*add the label back[^\n]*same summary line/,
+    expect(guard).toContain('every carry comment newer than that first read');
+    expect(guard).toMatch(
+      /every carry comment newer than that first read[^\n]*if one is outstanding, add the label back[^\n]*same summary line/,
     );
   });
 
