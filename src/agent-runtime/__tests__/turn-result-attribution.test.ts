@@ -133,6 +133,7 @@ describe('isTurnProgressFrame (#257)', () => {
     ['stream_event (parent_tool_use_id null)', { ...STREAM_EVENT, parent_tool_use_id: null }],
     ['result', { type: 'result', subtype: 'success', is_error: false }],
     ['system/init', { type: 'system', subtype: 'init', session_id: 'sess-1' }],
+    ['system/init (parent_tool_use_id null)', { type: 'system', subtype: 'init', parent_tool_use_id: null }],
   ])('is true for %s', (_kind, frame) => {
     expect(isTurnProgressFrame(frame)).toBe(true);
   });
@@ -141,6 +142,11 @@ describe('isTurnProgressFrame (#257)', () => {
     ['a subagent assistant frame (parent_tool_use_id set)', { ...ASSISTANT, parent_tool_use_id: 'toolu_bg' }],
     ['a subagent user frame (parent_tool_use_id set)', { ...USER, parent_tool_use_id: 'toolu_bg' }],
     ['a subagent stream_event (parent_tool_use_id set)', { ...STREAM_EVENT, parent_tool_use_id: 'toolu_bg' }],
+    // #997 review (astra): a subagent's own init opens no turn of the host's prompt.
+    [
+      'a subagent system/init (parent_tool_use_id set)',
+      { type: 'system', subtype: 'init', parent_tool_use_id: 'toolu_bg' },
+    ],
     ['system/task_progress', { type: 'system', subtype: 'task_progress', task_id: 'task-bg' }],
     ['system/task_notification', { type: 'system', subtype: 'task_notification', status: 'stopped' }],
     ['system/background_tasks_changed', { type: 'system', subtype: 'background_tasks_changed' }],
