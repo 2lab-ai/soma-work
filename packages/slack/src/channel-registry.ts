@@ -40,6 +40,31 @@ export interface RepoChannelMatchResult {
 // Registry state
 const channels = new Map<string, ChannelInfo>();
 const repoToChannels = new Map<string, string[]>(); // repo → channel IDs
+/**
+ * #970 — how long an entry the bot wrote itself (upsertChannel: a channel it just made and described) outranks a
+ * read from Slack that has no repo in it. Slack can answer a read right after a write with the old purpose; that
+ * stale answer must not erase the mapping. A removal ends it (unregisterChannel), so a real rejoin reads afresh.
+ */
+const MAKER_ENTRY_MS = 2 * 60_000;
+const makerEntryUntil = new Map<string, number>();
+
+/**
+ * Store what a Slack read says about a channel — unless it is a read with no repo landing on an entry the bot
+ * wrote moments ago that has one (#970). Returns the entry the registry holds afterwards.
+ */
+function storeRead(info: ChannelInfo): ChannelInfo {
+  const held = channels.get(info.id);
+  const until = makerEntryUntil.get(info.id) ?? 0;
+  if (held && Date.now() < until && held.repos.length > 0 && info.repos.length === 0) {
+    logger.info('🛡️ Kept the maker’s entry over a read with no repo (likely stale)', {
+      channelId: info.id,
+      repos: held.repos,
+    });
+    return held;
+  }
+  channels.set(info.id, info);
+  return info;
+}
 
 // Repo detection pattern: GitHub repo URLs or "repo: owner/repo" notation
 const REPO_PATTERNS = [
@@ -99,7 +124,7 @@ export async function scanChannels(client: WebClient): Promise<number> {
           });
         }
 
-        channels.set(channel.id, info);
+        storeRead(info);
         totalChannels++;
       }
 
@@ -152,9 +177,10 @@ export async function registerChannel(client: WebClient, channelId: string): Pro
     info.repos = parseRepos(rawText);
     info.confluenceUrl = parseConfluenceUrl(rawText);
 
-    channels.set(channelId, info);
+    const stored = storeRead(info);
     rebuildRepoIndex();
     invalidateChannelCache(channelId);
+    if (stored !== info) return stored;
 
     logger.info('✅ Channel registered', {
       channelId,
@@ -203,10 +229,22 @@ export function upsertChannel(input: {
   info.repos = parseRepos(rawText);
   info.confluenceUrl = parseConfluenceUrl(rawText);
   channels.set(info.id, info);
+  makerEntryUntil.set(info.id, Date.now() + MAKER_ENTRY_MS);
   rebuildRepoIndex();
   invalidateChannelCache(info.id);
   logger.info('✅ Channel upserted', { channelId: info.id, name: info.name, repos: info.repos });
   return info;
+}
+
+/**
+ * #970 — a channel Slack says is archived (an invite answered `is_archived`, or a read): no work goes there any
+ * more. The entry stays (the bot is still a member) but is marked, so the new-task flow passes it over.
+ */
+export function markChannelArchived(channelId: string): void {
+  const info = channels.get(channelId);
+  if (!info || info.isArchived === true) return;
+  channels.set(channelId, { ...info, isArchived: true });
+  logger.info('🗄️ Channel marked archived', { channelId, name: info.name });
 }
 
 /**
@@ -238,6 +276,7 @@ export function isChannelBeingMade(name: string): boolean {
  */
 export function unregisterChannel(channelId: string): void {
   channels.delete(channelId);
+  makerEntryUntil.delete(channelId);
   rebuildRepoIndex();
   invalidateChannelCache(channelId);
   logger.info('Channel unregistered', { channelId });

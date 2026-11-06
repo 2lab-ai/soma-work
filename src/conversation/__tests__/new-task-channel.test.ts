@@ -431,6 +431,57 @@ describe('ensureRepoChannel', () => {
     expect(error.message).toMatch(/다른 이름으로 다시 시도/);
   });
 
+  // #970 — a public mapping archived outside the registry's view no longer blocks a private request.
+  it('a private request: a public mapping that is archived now is marked archived and passed over', async () => {
+    const d = deps({
+      mappedChannels: vi.fn(() => [{ id: 'C_PUB', name: 'team', isPrivate: false }]),
+      channelState: vi.fn(async () => ({ archived: true })),
+      markArchived: vi.fn(),
+    });
+    await expect(ensureRepoChannel('U_ADMIN', { ...REQUEST, isPrivate: true }, d)).resolves.toMatchObject({
+      channelId: 'C_NEW',
+      created: true,
+    });
+    expect(d.channelState).toHaveBeenCalledWith('C_PUB');
+    expect(d.markArchived).toHaveBeenCalledWith('C_PUB');
+    expect(d.invite).not.toHaveBeenCalledWith('C_PUB', 'U_ADMIN');
+    expect(d.create).toHaveBeenCalledWith('workspace-new-repo', true);
+  });
+
+  it('a private request: a live public mapping, or one that cannot be read, still blocks (409, nothing made)', async () => {
+    for (const channelState of [
+      vi.fn(async () => ({ archived: false })),
+      vi.fn(async () => null),
+      vi.fn(async () => {
+        throw slackError('fatal_error');
+      }),
+    ]) {
+      const d = deps({
+        mappedChannels: vi.fn(() => [{ id: 'C_PUB', name: 'team', isPrivate: false }]),
+        channelState,
+        markArchived: vi.fn(),
+      });
+      await expect(ensureRepoChannel('U_ADMIN', { ...REQUEST, isPrivate: true }, d)).rejects.toMatchObject({
+        statusCode: 409,
+      });
+      expect(d.create).not.toHaveBeenCalled();
+      expect(d.invite).not.toHaveBeenCalled();
+      expect(d.markArchived).not.toHaveBeenCalled();
+    }
+  });
+
+  it('a mapped channel found archived on invite is marked archived for the next request', async () => {
+    const d = deps({
+      mappedChannels: vi.fn(() => [{ id: 'C_ARCH', name: 'old' }]),
+      invite: vi.fn(async (id: string) => {
+        if (id === 'C_ARCH') throw slackError('is_archived');
+      }),
+      markArchived: vi.fn(),
+    });
+    await expect(ensureRepoChannel('U_ADMIN', REQUEST, d)).resolves.toMatchObject({ created: true });
+    expect(d.markArchived).toHaveBeenCalledWith('C_ARCH');
+  });
+
   it('slackErrorCode reads the Web API error code, nothing else', () => {
     expect(slackErrorCode(slackError('name_taken'))).toBe('name_taken');
     expect(slackErrorCode(new Error('boom'))).toBe('');

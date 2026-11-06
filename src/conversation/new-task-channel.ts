@@ -47,6 +47,10 @@ export interface RepoChannelDeps {
   register(info: { id: string; name: string; purpose: string; isPrivate: boolean }): void;
   /** Mark a channel name as being made (its creation join is ours to register); returns the unmark. */
   beginMaking?(name: string): () => void;
+  /** #970 — a read-only look at a channel now (`conversations.info`); null when it cannot be read. */
+  channelState?(channelId: string): Promise<{ archived: boolean } | null>;
+  /** #970 — record that Slack says the channel is archived, so later requests pass it over. */
+  markArchived?(channelId: string): void;
 }
 
 export interface RepoChannelResult {
@@ -180,6 +184,7 @@ async function ensureLocked(
       const code = slackErrorCode(error);
       if (code === 'is_archived') {
         logger.warn('New repo channel: a mapped channel is archived — trying the next', { channel: mapped.id, repo });
+        deps.markArchived?.(mapped.id);
         continue;
       }
       if (!INVITE_ALREADY.has(code)) {
@@ -190,8 +195,24 @@ async function ensureLocked(
     logger.info('New repo channel: the repo already has a channel', { repo, channel: mapped.id, userId });
     return { channelId: mapped.id, channelName: mapped.name, created: false };
   }
-  const inTheWay = isPrivate ? mappedAll.find((c) => c.isPrivate !== true) : undefined;
-  if (inTheWay) {
+  // #970 — a public mapping in the way is looked at first (read-only, nobody is invited): one archived since the
+  // registry learned it is marked and passed over. One that is live — or cannot be read — still blocks: a private
+  // request never lands next to an unknown public channel.
+  for (const inTheWay of isPrivate ? mappedAll.filter((c) => c.isPrivate !== true) : []) {
+    let state: { archived: boolean } | null = null;
+    try {
+      state = deps.channelState ? await deps.channelState(inTheWay.id) : null;
+    } catch (error) {
+      logger.warn('New repo channel: could not read a public mapping — it still blocks', {
+        channel: inTheWay.id,
+        error: slackErrorCode(error) || String(error),
+      });
+    }
+    if (state?.archived === true) {
+      logger.info('New repo channel: a public mapping is archived — passed over', { channel: inTheWay.id, repo });
+      deps.markArchived?.(inTheWay.id);
+      continue;
+    }
     throw new NewTaskError(
       409,
       `이 repo에는 이미 공개 채널 #${inTheWay.name}이 있습니다 — 비공개를 끄고 그 채널에 올리거나, 그 채널을 쓰지 않을 거면 repo 연결을 먼저 정리해 주세요`,
