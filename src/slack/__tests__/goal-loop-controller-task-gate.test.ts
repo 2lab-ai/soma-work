@@ -232,6 +232,15 @@ describe("a paused goal's open tasks do not hold another goal's completion", () 
     expect(notice).toContain('B 자신의 작업');
   });
 
+  it('a paused goal resumed behind the running goal still holds its tasks (review r2 P1)', async () => {
+    const h = makeHarness({ verdict: DONE, ledger: ledgerOf(SIX_TASKS) });
+    const openIds = h.session.taskLedger?.current.slice(1) ?? [];
+    (h.session as any).goalQueue = [makeGoal({ goalId: 'queued-A', status: 'queued', heldTaskIds: openIds } as any)];
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.goal.status).toBe('complete');
+  });
+
   it('gateGoalVerdictOnTasks and taskGateGapClosed take the excluded ids', () => {
     const ledger = ledgerOf(SIX_TASKS);
     const exclude = new Set(ledger.current.slice(1));
