@@ -9790,7 +9790,11 @@ function renderBoard(board, partial) {
       // their epic, ⑨c): cached here too, before the answer states are evicted and the env /
       // owner indexes read the cache (fable #706 R1 P1).
       var kids = arr[i0].epic && Array.isArray(arr[i0].epic.children) ? arr[i0].epic.children : [];
-      for (var k0 = 0; k0 < kids.length; k0++) if (kids[k0] && kids[k0].key) _sessionCache[kids[k0].key] = kids[k0];
+      for (var k0 = 0; k0 < kids.length; k0++) {
+        if (!kids[k0] || !kids[k0].key) continue;
+        _sessionCache[kids[k0].key] = kids[k0];
+        if (typeof followupReconcile === 'function') followupReconcile(kids[k0]); // #983 — a child's too
+      }
     }
   }
   // Answer states of requests the board no longer holds (a session gone, a prompt or question it no longer asks).
@@ -20282,7 +20286,10 @@ function applyEpicPush(s) {
   if (!s || !s.key) return;
   var children = epicChildrenOf(s);
   // Cached first: a panel open on a child reads it even before a board is drawn.
-  for (var i = 0; i < children.length; i++) _sessionCache[children[i].key] = children[i];
+  for (var i = 0; i < children.length; i++) {
+    _sessionCache[children[i].key] = children[i];
+    if (typeof followupReconcile === 'function') followupReconcile(children[i]); // #983
+  }
   if (!_lastBoardData) return;
   var placed = _epicKidsDrawn[s.key];
   var now = epicKidsSig(s, showSleeping === false, _revealedKey);
