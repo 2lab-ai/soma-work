@@ -293,9 +293,12 @@ export interface SessionGoal {
   /**
    * The open task ids the session's task list had when this goal was paused —
    * its own work. While it stays in `goalPaused` they hold no other goal's
-   * completion (`src/slack/goal-task-gate.ts`); a resume clears it.
+   * completion (`src/slack/goal-task-gate.ts`) while the task list they came
+   * from (`heldListAt`) is still the latest; taking the slot again clears it.
    */
   heldTaskIds?: string[];
+  /** `TaskLedger.updatedAt` of the list `heldTaskIds` were taken from. */
+  heldListAt?: number;
 
   // ── Host-side completion evaluation ────────────────────────────────────
   /**

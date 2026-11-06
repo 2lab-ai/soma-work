@@ -8,7 +8,7 @@ import { buildGoalStatusBlocks } from '../goal-blocks';
 import { retireGoalCapDecision } from '../goal-cap-decision';
 import { bumpGoalEpoch } from '../goal-continuation';
 import { resumeGoalLoop } from '../goal-loop-resume';
-import { openTaskIds } from '../goal-task-gate';
+import { heldTasksOf } from '../goal-task-gate';
 import {
   advanceGoalQueue,
   enqueueOrActivateGoal,
@@ -277,7 +277,7 @@ export class GoalHandler implements CommandHandler {
     }
     const snapshot = admitOpening ? snapshotGoalState(session) : undefined;
     // Its open tasks stay its own: they hold no other goal while it is paused.
-    const { paused, promoted } = pauseCurrentGoal(session, { heldTaskIds: openTaskIds(session.taskLedger) });
+    const { paused, promoted } = pauseCurrentGoal(session, heldTasksOf(session.taskLedger));
     if (!paused) return { handled: true };
     this.persistGoalChange(session);
     const pausedLine = `⏸️ Goal paused: ${this.formatObjectiveForSlack(paused.objective)}`;
