@@ -862,3 +862,201 @@ export async function fetchGitHubReceiptObject(
     return undefined;
   }
 }
+
+// ── #983 — the follow-up bar's modal: one GitHub issue or PR as the dashboard shows it ──
+
+/** A GitHub issue or PR page, by its parts: the only shape the dashboard's embed reads. */
+export interface GitHubIssueRef {
+  owner: string;
+  repo: string;
+  kind: 'issue' | 'pr';
+  number: number;
+}
+
+/** What the dashboard's follow-up modal shows of an issue or PR. Plain text (markdown); the client escapes it. */
+export interface GitHubEmbed {
+  kind: 'issue' | 'pr';
+  title?: string;
+  /** `open` · `closed` (issue) · `draft` · `merged` (PR). */
+  state?: string;
+  author?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  labels: string[];
+  body: string;
+  /** The newest few comments, oldest first. */
+  comments: Array<{ author?: string; createdAt?: string; body: string }>;
+  commentsTotal: number;
+  /** The comments did not load (a refused or failed request): the page says so, and the answer is not kept. */
+  commentsError?: true;
+}
+
+const EMBED_TTL = 60 * 1000;
+const EMBED_MAX_BODY = 20_000;
+const EMBED_MAX_COMMENT = 4_000;
+const EMBED_COMMENTS = 5;
+const EMBED_CACHE_MAX = 200;
+const embedCache = new Map<string, { at: number; embed: GitHubEmbed }>();
+const OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+const REPO_RE = /^[A-Za-z0-9._-]{1,100}$/;
+
+/**
+ * The parts of a GitHub issue or PR page — `https://github.com/<owner>/<repo>/(issues|pull)/<n>` (a tab, a query or
+ * an anchor after it allowed), nothing else: no other host, port or user, no `.` / `..` segments. The page URL is never
+ * fetched; the API is called by these parts.
+ */
+export function parseGitHubIssueUrl(url: string): GitHubIssueRef | undefined {
+  let u: URL;
+  try {
+    u = new URL(String(url));
+  } catch {
+    return undefined;
+  }
+  if (u.protocol !== 'https:' || u.hostname !== 'github.com' || u.port || u.username || u.password) return undefined;
+  const m = u.pathname.match(/^\/([^/]+)\/([^/]+)\/(issues|pull)\/(\d{1,9})(?:\/[^/]*)?\/?$/);
+  if (!m) return undefined;
+  const [, owner, repo, type, num] = m;
+  if (!OWNER_RE.test(owner) || !REPO_RE.test(repo) || repo === '.' || repo === '..') return undefined;
+  return { owner, repo, kind: type === 'pull' ? 'pr' : 'issue', number: Number(num) };
+}
+
+const clipText = (s: unknown, max: number): string => {
+  const t = typeof s === 'string' ? s : '';
+  return t.length > max ? `${t.slice(0, max)}…` : t;
+};
+const strOrUndef = (s: unknown): string | undefined => (typeof s === 'string' && s ? s : undefined);
+
+/**
+ * One GitHub issue or PR for the follow-up modal (#983): its title, state, author, labels and body, and its newest
+ * {@link EMBED_COMMENTS} comments. Reused for a minute; a failed or refused request is undefined (never cached).
+ */
+export async function fetchGitHubEmbed(
+  ref: GitHubIssueRef,
+  opts: { anonymous?: boolean } = {},
+): Promise<GitHubEmbed | 'not-found' | undefined> {
+  // An anonymous read (#983 review: a non-admin's) carries no token, so GitHub itself refuses a private repository
+  // (404); it has a cache of its own — an App read is never served to it.
+  const key = `${opts.anonymous ? 'anon:' : ''}${ref.owner}/${ref.repo}/${ref.kind}/${ref.number}`;
+  const hit = embedCache.get(key);
+  if (hit && Date.now() - hit.at < EMBED_TTL) return hit.embed;
+  try {
+    const token = opts.anonymous ? null : await getGitHubToken();
+    if (!opts.anonymous && !token) return undefined;
+    const headers: Record<string, string> = {
+      Accept: 'application/vnd.github.v3+json',
+      'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
+      ...(token ? { Authorization: `token ${token}` } : {}),
+    };
+    const base = `https://api.github.com/repos/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}`;
+    const res = await fetch(`${base}/${ref.kind === 'pr' ? 'pulls' : 'issues'}/${ref.number}`, { headers });
+    if (res.status === 404) return 'not-found';
+    if (!res.ok) return undefined;
+    const d = (await res.json()) as {
+      title?: unknown;
+      state?: unknown;
+      merged?: unknown;
+      draft?: unknown;
+      user?: { login?: unknown } | null;
+      created_at?: unknown;
+      updated_at?: unknown;
+      labels?: unknown;
+      body?: unknown;
+      comments?: unknown;
+    };
+    let state = strOrUndef(d.state);
+    if (ref.kind === 'pr')
+      state = d.merged === true ? 'merged' : d.draft === true && state !== 'closed' ? 'draft' : state;
+    const total = typeof d.comments === 'number' && d.comments > 0 ? Math.floor(d.comments) : 0;
+    const comments: GitHubEmbed['comments'] = [];
+    let commentsError = false;
+    if (total > 0) {
+      const page = (p: number): Promise<unknown> =>
+        fetch(`${base}/issues/${ref.number}/comments?per_page=100&page=${p}`, { headers })
+          .then(async (r) => {
+            if (!r.ok) throw new Error(`comments ${r.status}`);
+            return (await r.json()) as unknown;
+          })
+          .catch(() => {
+            commentsError = true;
+            return [];
+          });
+      const last = Math.ceil(total / 100);
+      let list = await page(last);
+      if (Array.isArray(list) && list.length < EMBED_COMMENTS && last > 1) {
+        const prev = await page(last - 1);
+        if (Array.isArray(prev)) list = [...prev, ...list];
+      }
+      for (const c of (Array.isArray(list) ? list : []).slice(-EMBED_COMMENTS)) {
+        if (!c || typeof c !== 'object') continue;
+        const cc = c as { user?: { login?: unknown } | null; created_at?: unknown; body?: unknown };
+        comments.push({
+          author: strOrUndef(cc.user?.login),
+          createdAt: strOrUndef(cc.created_at),
+          body: clipText(cc.body, EMBED_MAX_COMMENT),
+        });
+      }
+    }
+    const labels = (Array.isArray(d.labels) ? d.labels : [])
+      .map((l) => (typeof l === 'string' ? l : l && typeof l === 'object' ? (l as { name?: unknown }).name : ''))
+      .filter((n): n is string => typeof n === 'string' && n.trim() !== '')
+      .slice(0, 20);
+    const embed: GitHubEmbed = {
+      kind: ref.kind,
+      title: strOrUndef(d.title)?.slice(0, MAX_CACHED_TITLE_LENGTH),
+      state,
+      author: strOrUndef(d.user?.login),
+      createdAt: strOrUndef(d.created_at),
+      updatedAt: strOrUndef(d.updated_at),
+      labels,
+      body: clipText(d.body, EMBED_MAX_BODY),
+      comments,
+      commentsTotal: total,
+      ...(commentsError ? { commentsError: true as const } : {}),
+    };
+    if (commentsError) return embed;
+    if (embedCache.size >= EMBED_CACHE_MAX) embedCache.delete(embedCache.keys().next().value as string);
+    embedCache.set(key, { at: Date.now(), embed });
+    return embed;
+  } catch (error) {
+    logger.warn('Failed to fetch a GitHub issue for the dashboard', { ref: key, error: (error as Error).message });
+    return undefined;
+  }
+}
+
+const VISIBILITY_TTL = 60 * 1000;
+const visibilityCache = new Map<string, { at: number; value: 'public' | 'private' }>();
+
+/**
+ * Whether a GitHub repository is public or private — only to say why an anonymous read found nothing (#983 review:
+ * 'private-repo' only when confirmed). It never grants a read: the content a non-admin sees comes from an anonymous
+ * request. Kept for a minute; unknown (no token, a refused or failed request) is undefined and never kept.
+ */
+export async function fetchGitHubRepoVisibility(
+  owner: string,
+  repo: string,
+): Promise<'public' | 'private' | undefined> {
+  const key = `${owner}/${repo}`;
+  const hit = visibilityCache.get(key);
+  if (hit && Date.now() - hit.at < VISIBILITY_TTL) return hit.value;
+  try {
+    const token = await getGitHubToken();
+    if (!token) return undefined;
+    const res = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, {
+      headers: {
+        Authorization: `token ${token}`,
+        Accept: 'application/vnd.github.v3+json',
+        'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
+      },
+    });
+    if (!res.ok) return undefined;
+    const d = (await res.json()) as { private?: unknown };
+    if (typeof d.private !== 'boolean') return undefined;
+    const value = d.private ? 'private' : 'public';
+    if (visibilityCache.size >= EMBED_CACHE_MAX) visibilityCache.delete(visibilityCache.keys().next().value as string);
+    visibilityCache.set(key, { at: Date.now(), value });
+    return value;
+  } catch (error) {
+    logger.warn('Failed to read a GitHub repository visibility', { repo: key, error: (error as Error).message });
+    return undefined;
+  }
+}

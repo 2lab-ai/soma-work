@@ -10,7 +10,7 @@
  *   K4  status words and tones (PR 열림 · 초안 · 머지됨 · 닫힘; GitHub issue 열림 · 닫힘; Jira as named, toned by kind)
  */
 import { describe, expect, it } from 'vitest';
-import { cardLinksOf, linkState } from '../card-links';
+import { cardLinksOf, followupLinksOf, linkState, settledLinkUrlsOf } from '../card-links';
 
 const JIRA = 'https://acme.atlassian.net/browse/PROJ-12';
 const JIRA2 = 'https://acme.atlassian.net/browse/PROJ-9';
@@ -206,5 +206,125 @@ describe('K3 · K4 — status', () => {
     expect(linkState('issue', 'Backlog')).toEqual({ status: 'Backlog' });
     expect(linkState('issue', '')).toEqual({});
     expect(linkState('issue', undefined)).toEqual({});
+  });
+});
+
+/**
+ * K5 (SSOT 2026-11-06, #983) — the follow-up bar: which linked pages are still open. A PR open or in draft, a GitHub
+ * issue open, a Jira issue in any state that is not done or dropped. Never a wiki, never a page whose state is unknown.
+ */
+describe('K5 — open: what the follow-up bar shows', () => {
+  const openOf = (src: Parameters<typeof cardLinksOf>[0]) =>
+    cardLinksOf(src).map((l) => [l.text, l.open === true] as [string, boolean]);
+
+  it('a PR open or in draft, a GitHub issue open; merged, closed and unknown are not', () => {
+    expect(
+      openOf({
+        linkHistory: {
+          prs: [
+            { url: 'https://github.com/acme/app/pull/1', status: 'open' },
+            { url: 'https://github.com/acme/app/pull/2', status: 'draft' },
+            { url: 'https://github.com/acme/app/pull/3', status: 'merged' },
+            { url: 'https://github.com/acme/app/pull/4', status: 'closed' },
+            { url: 'https://github.com/acme/app/pull/5' },
+          ],
+          issues: [
+            { url: 'https://github.com/acme/app/issues/6', status: 'open' },
+            { url: 'https://github.com/acme/app/issues/7', status: 'closed' },
+            { url: 'https://github.com/acme/app/issues/8' },
+          ],
+          docs: [{ url: WIKI, status: 'open' }],
+        },
+      }),
+    ).toEqual([
+      ['#8', false],
+      ['#5', false],
+      ['Payment Form Design', false],
+      ['#7', false],
+      ['#6', true],
+      ['#4', false],
+      ['#3', false],
+      ['#2', true],
+      ['#1', true],
+    ]);
+  });
+
+  it('a merge from any source wins over a recorded open', () => {
+    const links = cardLinksOf({ links: { pr: { url: PR, status: 'open' } } }, () => ({ status: 'merged' }));
+    expect(links[0].open).toBeUndefined();
+  });
+
+  it('a Jira issue in progress, in review or to do is open; done or dropped is not', () => {
+    const jira = (key: string, status: string) => ({ url: `https://acme.atlassian.net/browse/${key}`, status });
+    expect(
+      openOf({
+        linkHistory: {
+          issues: [
+            jira('PJ-1', 'In Progress'),
+            jira('PJ-2', 'In Review'),
+            jira('PJ-3', 'To Do'),
+            jira('PJ-4', 'Done'),
+            jira('PJ-5', "Won't Do"),
+            jira('PJ-6', 'Cancelled'),
+            jira('PJ-7', '반려'),
+            jira('PJ-8', 'Duplicate'),
+          ],
+        },
+      }),
+    ).toEqual([
+      ['PJ-8', false],
+      ['PJ-7', false],
+      ['PJ-6', false],
+      ['PJ-5', false],
+      ['PJ-4', false],
+      ['PJ-3', true],
+      ['PJ-2', true],
+      ['PJ-1', true],
+    ]);
+  });
+});
+
+describe('K6 (review, PR #990) — the follow-up bar reads past the 20 chips', () => {
+  it('an older open issue behind 20 newer closed ones is a follow-up; every link is a member with max: Infinity', () => {
+    const OLD = 'https://github.com/acme/app/issues/1';
+    const issues = [
+      { url: OLD, status: 'open' },
+      ...Array.from({ length: 21 }, (_, i) => ({
+        url: `https://github.com/acme/app/issues/${100 + i}`,
+        status: 'closed',
+      })),
+    ];
+    expect(cardLinksOf({ linkHistory: { issues } }).map((l) => l.url)).not.toContain(OLD);
+    expect(cardLinksOf({ linkHistory: { issues } }, undefined, { max: Number.POSITIVE_INFINITY })).toHaveLength(22);
+    expect(followupLinksOf({ linkHistory: { issues } }).map((l) => [l.url, l.open])).toEqual([[OLD, true]]);
+  });
+});
+
+describe('K7 (review round 2) — every open link, every settled one', () => {
+  it('21 open issues are 21 follow-ups; the settled list holds every closed or merged issue and PR, never a wiki or an unknown', () => {
+    const issues = Array.from({ length: 21 }, (_, i) => ({
+      url: `https://github.com/acme/app/issues/${i + 1}`,
+      status: 'open',
+    }));
+    expect(followupLinksOf({ linkHistory: { issues } })).toHaveLength(21);
+    const settled = settledLinkUrlsOf({
+      linkHistory: {
+        issues: [
+          ...Array.from({ length: 22 }, (_, i) => ({
+            url: `https://github.com/acme/app/issues/${100 + i}`,
+            status: 'closed',
+          })),
+          { url: 'https://github.com/acme/app/issues/9', status: 'open' },
+          { url: 'https://github.com/acme/app/issues/8' },
+        ],
+        prs: [{ url: 'https://github.com/acme/app/pull/7', status: 'merged' }],
+        docs: [{ url: WIKI, status: 'closed' }],
+      },
+    });
+    expect(settled).toHaveLength(23);
+    expect(settled).toContain('https://github.com/acme/app/pull/7');
+    expect(settled).not.toContain('https://github.com/acme/app/issues/9');
+    expect(settled).not.toContain('https://github.com/acme/app/issues/8');
+    expect(settled).not.toContain(WIKI);
   });
 });
