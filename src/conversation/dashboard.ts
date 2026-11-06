@@ -18164,16 +18164,16 @@ function sysTurnInfo(t) {
     if (reason) gf.push(['직전 평가에서 남은 일', reason]);
     return { kind: 'goal', label: n ? '목표 #' + n[1] + '/' + n[2] : '목표', line: reusedLine || (reason ? '직전 평가: ' + sysOneLine(reason, 90) : '목표 자동 계속'), raw: raw, facts: gf };
   }
-  // The host prompt that keeps a turn going while background work still runs
-  // (packages/slack/src/pipeline/background-wait.ts buildBackgroundWaitPrompt).
+  // The host prompt that continues a turn whose background work stopped with it — the CLI ends with
+  // the turn (#966; packages/slack/src/pipeline/background-wait.ts buildBackgroundWaitPrompt).
   var bw = /^\\[background-work-resume (\\d+)\\/(\\d+)\\]/.exec(head);
   if (bw) {
     var bt = /You ended your turn while (\\d+) background tasks?(?: \\(([^)]*)\\))?/.exec(head);
     var what = bt ? bt[1] + '개' + (bt[2] ? ' (' + bt[2] + ')' : '') : '';
     var bf = [['회차', bw[1] + ' / ' + bw[2]]];
-    if (what) bf.push(['실행 중인 작업', what]);
-    bf.push(['이유', '턴이 끝났지만 런타임이 백그라운드 작업을 아직 실행 중으로 보고']);
-    return { kind: 'bgwork', label: '백그라운드 재개 #' + bw[1] + '/' + bw[2], line: '실행 중인 백그라운드 작업' + (what ? ' ' + what : '') + ' — 턴을 이어감', raw: raw, facts: bf };
+    if (what) bf.push(['멈춘 작업', what]);
+    bf.push(['이유', '턴이 끝나며 백그라운드 작업도 함께 멈춤 — 다음 턴에서 이어 가게 함']);
+    return { kind: 'bgwork', label: '백그라운드 재개 #' + bw[1] + '/' + bw[2], line: '턴과 함께 멈춘 백그라운드 작업' + (what ? ' ' + what : '') + ' — 턴을 이어감', raw: raw, facts: bf };
   }
   var c = /^\\[cron:([^\\]]+)\\]\\s*/.exec(head);
   if (c) {

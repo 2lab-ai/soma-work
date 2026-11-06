@@ -283,6 +283,15 @@ describe('restart — a cut turn is resumed as itself, an active goal does not r
       expect(session.activityState).toBe('idle');
     });
 
+    it('a session with no goal is freed — no turn runs, so it is not left `working` (#989 review)', async () => {
+      const session = goalSession('working');
+      (session as { goal?: unknown }).goal = undefined;
+      const { kick } = await boot(session, true, { turnTaken: false });
+
+      expect(session.activityState).toBe('idle');
+      expect(kick).not.toHaveBeenCalled();
+    });
+
     it('a resume whose turn was taken is not handed back', async () => {
       const session = goalSession('working', 3);
       const { kick } = await boot(session, true, { turnTaken: true });
