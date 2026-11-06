@@ -7,7 +7,7 @@ import { stripEchoedDisplayLangTag } from '@soma/common/i18n';
 import { Logger } from '@soma/common/logger';
 import { parseSafeguardFlag, type SafeguardFlagInfo } from '@soma/common/safeguard';
 import type { AgentStreamEvent, AgentStreamEventOf, AgentUsage } from './agent-stream-types';
-import { type AgentTreeEvent, isAgentSpawnTool, isBackgroundAckText } from './agent-tree';
+import { type AgentTreeEvent, isAgentSpawnTool, isBackgroundAckText, resumedAgentIdOf } from './agent-tree';
 import type { SlackMessagePayload } from './choice-message-builder';
 import {
   ChannelMessageDirectiveHandler,
@@ -1022,6 +1022,30 @@ export class AgentStreamProcessor {
    * frame of an agent not seen before) and, for an `Agent` / `Task` call, the
    * agent it starts. Once per call id.
    */
+  /**
+   * #966 — `SendMessage`'s own result names the agent it resumed
+   * (`resumedAgentId`, its SDK task id). Announce it as started again, marked
+   * `resumed`, so the registry revives it from any finished status and the next
+   * restart names it in its resume.
+   */
+  private noteAgentResumed(
+    event: { toolCallId: string; isError?: boolean; rawOutput?: unknown; content?: unknown },
+    context: StreamContext,
+  ): void {
+    if (event.isError === true || this.toolNamesById.get(event.toolCallId) !== 'SendMessage') return;
+    const taskId = resumedAgentIdOf(toolResultRaw(event.rawOutput ?? event.content)?.raw);
+    if (!taskId) return;
+    this.emitAgentEvent(context, {
+      kind: 'lifecycle',
+      phase: 'started',
+      taskId,
+      taskType: 'local_agent',
+      background: true,
+      resumed: true,
+      ts: Date.now(),
+    });
+  }
+
   private announceAgents(
     callId: string,
     name: string,
@@ -1338,6 +1362,10 @@ export class AgentStreamProcessor {
               const arrived = toolResultRaw(event.rawOutput ?? event.content)?.raw;
               if (arrived) this.noteSafeguardFlag(arrived.replace(AGENT_API_ERROR_PREFIX, ''));
             }
+            // #966 — a SendMessage that resumed a subagent: it runs again. Applied on ARRIVAL, in
+            // stream order, not when the results batch flushes — a lifecycle frame (a later stop)
+            // applies at once, and must not be overtaken by this earlier resume (#1010 review, astra P1).
+            this.noteAgentResumed(event, context);
             await flushThinking();
             await flushText();
             await flushToolCalls();

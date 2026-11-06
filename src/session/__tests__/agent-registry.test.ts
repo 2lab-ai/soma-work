@@ -7,7 +7,8 @@
  * Status rules (review M2): the SDK's settle is authoritative; a foreground
  * agent's tool result ends it; a background acknowledgement does not; losing
  * sight of a running agent (turn cut off, restart) is `unknown`, not
- * `stopped`; nothing moves a settled agent back to running.
+ * `stopped`; nothing moves a settled agent back to running, except a new start of a `stopped` one
+ * (a SendMessage resume, #966).
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -19,6 +20,7 @@ import {
   loseRunningAgents,
   sanitizeAgentRegistry,
   stampWorkLogAgent,
+  stoppedAgentsOf,
 } from '../agent-registry';
 import { applyTodoList, ledgerTasks } from '../task-ledger';
 
@@ -202,6 +204,90 @@ describe('agent registry — status rules', () => {
     const out = loseRunningAgents(h.agents, T0 + 500);
     expect(agentById(out, 'toolu_bg')).toMatchObject({ status: 'unknown', endedAt: T0 + 500 });
     expect(agentById(out, 'toolu_done')?.status).toBe('completed');
+  });
+});
+
+// #966 follow-up (dev 2026-11-06 03:05Z, 1793871420.206249): a restart stopped five background agents
+// (02:48Z, settled `stopped`), the model resumed them with SendMessage, and the next restart cut them
+// again — but the registry still read `stopped`, so the restart resume did not name them. A resumed
+// subagent registers again (SDK: "A resumed subagent is always registered in the background").
+describe('agent registry — an agent SendMessage resumed after it was stopped (#966)', () => {
+  function stoppedAgent() {
+    const h = holder();
+    applyAgentEvent(h, {
+      kind: 'spawn',
+      agentId: 'toolu_a',
+      background: true,
+      description: 'llmux prompts refactor',
+      ts: T0,
+    });
+    applyAgentEvent(h, {
+      kind: 'lifecycle',
+      agentId: 'toolu_a',
+      phase: 'started',
+      taskId: 'task_a',
+      taskType: 'local_agent',
+      background: true,
+      ts: T0 + 1,
+    });
+    applyAgentEvent(h, { kind: 'lifecycle', phase: 'settled', taskId: 'task_a', status: 'stopped', ts: T0 + 60_000 });
+    return h;
+  }
+
+  it('a new start of a stopped agent is a resume: it is running again', () => {
+    const h = stoppedAgent();
+    expect(agentById(h.agents, 'toolu_a')?.status).toBe('stopped');
+
+    applyAgentEvent(h, {
+      kind: 'lifecycle',
+      phase: 'started',
+      taskId: 'task_a',
+      taskType: 'local_agent',
+      background: true,
+      ts: T0 + 120_000,
+    });
+
+    expect(agentById(h.agents, 'toolu_a')).toMatchObject({ status: 'running' });
+    expect(agentById(h.agents, 'toolu_a')?.endedAt).toBeUndefined();
+    expect(agentById(h.agents, 'toolu_a')?.settled).toBeUndefined();
+  });
+
+  it('so the next restart names it as stopped by that restart', () => {
+    const h = stoppedAgent();
+    applyAgentEvent(h, {
+      kind: 'lifecycle',
+      phase: 'started',
+      taskId: 'task_a',
+      taskType: 'local_agent',
+      background: true,
+      ts: T0 + 120_000,
+    });
+
+    expect(stoppedAgentsOf(h.agents)).toEqual([{ n: 1, taskId: 'task_a', description: 'llmux prompts refactor' }]);
+  });
+
+  it('a completed or failed agent is not revived by a late start', () => {
+    for (const status of ['completed', 'failed'] as const) {
+      const h = holder();
+      applyAgentEvent(h, { kind: 'spawn', agentId: 'toolu_a', background: true, ts: T0 });
+      applyAgentEvent(h, {
+        kind: 'lifecycle',
+        agentId: 'toolu_a',
+        phase: 'started',
+        taskId: 'task_a',
+        taskType: 'local_agent',
+        ts: T0 + 1,
+      });
+      applyAgentEvent(h, { kind: 'lifecycle', phase: 'settled', taskId: 'task_a', status, ts: T0 + 2 });
+      applyAgentEvent(h, {
+        kind: 'lifecycle',
+        phase: 'started',
+        taskId: 'task_a',
+        taskType: 'local_agent',
+        ts: T0 + 3,
+      });
+      expect(agentById(h.agents, 'toolu_a')?.status).toBe(status);
+    }
   });
 });
 

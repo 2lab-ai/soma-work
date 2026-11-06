@@ -86,7 +86,8 @@ interface AgentRegistry { nextN; agents: AgentRecord[] /* 오래된 순 */ }
   tool_result = `ok`면 completed, 아니면 failed(settle이 이미 왔으면 무시). 배경 ack = running 유지 + `background: true`.
   턴 끝에 아직 running인 전경 에이전트 = `unknown`(관측 끊김 — "멈춤을 봤다"가 아님). 재기동 복원(`sessions.json` 로드)과
   `/new`·renew 리셋 = running → `unknown`(`loseRunningAgents`). `unknown`에 progress가 오면 running으로 돌아오고, 끝난 에이전트는
-  어떤 이벤트로도 running이 되지 않는다.
+  재개 외에는 running이 되지 않는다 — `SendMessage` 결과가 그 에이전트를 재개했다고 하면(`resumedAgentId`, 도착 즉시 스트림 순서대로
+  적용) 끝난 상태와 상관없이 running, SDK의 새 `task_started`는 `stopped`만 되살린다(#966).
 - 도구 수 = 그 에이전트의 `tool` 작업 로그 항목 수(`loggedTools`)와 SDK가 보고한 누적 `tool_uses`(`reportedTools`) 중 큰 값 — 합이 아니다.
   토큰·소요 = SDK 보고값.
 - 상한: 레코드 `AGENT_REGISTRY_MAX` = 100 — 오래된 끝난 에이전트부터 지우되, 실행 중인 에이전트와 그 조상은 지우지 않는다

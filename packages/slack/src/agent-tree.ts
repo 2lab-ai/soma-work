@@ -30,6 +30,23 @@ export function isBackgroundAckText(text: unknown): boolean {
   );
 }
 
+/**
+ * #966 — the agent a `SendMessage` call resumed, read off its result
+ * (`{"success":true,"message":"Resuming agent …","resumedAgentId":"<task id>"}`).
+ * `undefined` when the call resumed nothing (failed, or not a JSON result).
+ */
+export function resumedAgentIdOf(text: unknown): string | undefined {
+  if (typeof text !== 'string' || !text.includes('resumedAgentId')) return undefined;
+  try {
+    const parsed = JSON.parse(text.trim()) as { success?: unknown; resumedAgentId?: unknown };
+    return parsed.success === true && typeof parsed.resumedAgentId === 'string' && parsed.resumedAgentId
+      ? parsed.resumedAgentId
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Longest agent id kept anywhere (the work log clips `agentId` / `agentRef` to the same length). */
 export const AGENT_ID_MAX = 200;
 
@@ -102,6 +119,12 @@ export type AgentTreeEvent =
       summary?: string;
       lastTool?: string;
       usage?: AgentLifecycleUsage;
+      /**
+       * #966 — set on the start the host derives from a `SendMessage` result that
+       * resumed the agent: authoritative, so the registry revives it from any
+       * finished status. The SDK's own `task_started` never sets it.
+       */
+      resumed?: boolean;
       ts: number;
     }
   /** The turn is over: a foreground agent still running is no longer watched. */

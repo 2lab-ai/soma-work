@@ -837,6 +837,14 @@ export class ToolEventProcessor {
         description: event.description,
       });
     } else if (event.phase === 'settled') {
+      // #966 — stopped by the turn's own end (the CLI exits once the host closes its input): keep it
+      // for the turn-end decision, which names it as stopped with the turn and then settles it
+      // (`endBackgroundWorkWithTurn`). A held turn reads these reports before it ends.
+      if (
+        event.endedWithTurn === true &&
+        this.backgroundTaskTracker.liveTasks(sessionKey).some((t) => t.taskId === event.taskId)
+      )
+        return;
       this.backgroundTaskTracker.trackSettled(sessionKey, event.taskId);
     }
     // 'progress' → intentionally keeps the task live (no state change).
