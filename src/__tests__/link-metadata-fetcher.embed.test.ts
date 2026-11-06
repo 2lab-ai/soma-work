@@ -20,7 +20,12 @@ vi.mock('../logger', () => ({
   },
 }));
 
-import { fetchGitHubEmbed, fetchGitHubRepoVisibility, parseGitHubIssueUrl } from '../link-metadata-fetcher';
+import {
+  fetchGitHubEmbed,
+  fetchGitHubRepoVisibility,
+  type GitHubEmbed,
+  parseGitHubIssueUrl,
+} from '../link-metadata-fetcher';
 
 const ok = (body: unknown) => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => body });
 const comment = (i: number) => ({
@@ -118,7 +123,7 @@ describe('fetchGitHubEmbed (#983)', () => {
     for (const [n, o, want] of cases) {
       const f = pr(n, o);
       vi.stubGlobal('fetch', f);
-      const e = await fetchGitHubEmbed({ owner: 'o', repo: 'pr-states', kind: 'pr', number: n });
+      const e = (await fetchGitHubEmbed({ owner: 'o', repo: 'pr-states', kind: 'pr', number: n })) as GitHubEmbed;
       expect(e?.state).toBe(want);
       expect(e?.kind).toBe('pr');
       expect(e?.body).toBe('');
@@ -134,7 +139,7 @@ describe('fetchGitHubEmbed (#983)', () => {
         : ok({ title: 't', state: 'open', body: big, comments: 1 }),
     );
     vi.stubGlobal('fetch', f);
-    const e = await fetchGitHubEmbed({ owner: 'o', repo: 'clip', kind: 'issue', number: 1 });
+    const e = (await fetchGitHubEmbed({ owner: 'o', repo: 'clip', kind: 'issue', number: 1 })) as GitHubEmbed;
     expect(e!.body.length).toBeLessThanOrEqual(20_001);
     expect(e!.body.endsWith('…')).toBe(true);
     expect(e!.comments[0].body.length).toBeLessThanOrEqual(4_001);
@@ -185,5 +190,27 @@ describe('review (PR #990) — comments that fail, repository visibility', () =>
     expect(f.mock.calls.length).toBe(n + 1);
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('net')));
     await expect(fetchGitHubRepoVisibility('o', 'net')).resolves.toBeUndefined();
+  });
+});
+
+describe('review round 2 — anonymous reads (GitHub enforces visibility)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('E7 — anonymous: no Authorization header, its own cache; a 404 is not-found', async () => {
+    const f = vi.fn(async (url: string) =>
+      url.endsWith('/issues/404')
+        ? { ok: false, status: 404, headers: { get: () => null }, json: async () => ({}) }
+        : ok({ title: 'pub', state: 'open', body: 'b', comments: 0 }),
+    );
+    vi.stubGlobal('fetch', f);
+    const e = await fetchGitHubEmbed({ owner: 'o', repo: 'anon', kind: 'issue', number: 1 }, { anonymous: true });
+    expect(e).toMatchObject({ title: 'pub' });
+    expect((f.mock.calls[0] as any)[1].headers.Authorization).toBeUndefined();
+    // The token read of the same issue is not served from the anonymous cache (nor the other way round).
+    await fetchGitHubEmbed({ owner: 'o', repo: 'anon', kind: 'issue', number: 1 });
+    expect((f.mock.calls[1] as any)[1].headers.Authorization).toBe('token fake-token');
+    await expect(
+      fetchGitHubEmbed({ owner: 'o', repo: 'anon', kind: 'issue', number: 404 }, { anonymous: true }),
+    ).resolves.toBe('not-found');
   });
 });

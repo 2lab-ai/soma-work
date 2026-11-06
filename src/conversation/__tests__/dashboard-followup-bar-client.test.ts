@@ -72,6 +72,7 @@ const FNS = [
   'toNum',
   'followupGoneLoad',
   'followupGoneSave',
+  'followupReconcile',
   'cardFollowupsOf',
   'followupDoc',
   'fuViewerItems',
@@ -95,6 +96,7 @@ const VARS = [
 
 type F = { id: string; kind: string; text: string; title?: string; status?: string; href: string };
 type Api = {
+  followupReconcile(s: unknown): void;
   cardFollowupsOf(s: unknown, col: string): F[];
   followupDoc(f: F, res: unknown): string;
   openFollowupViewer(key: string, url: string, opener: unknown): void;
@@ -476,5 +478,29 @@ describe('review — the bar reads every open link; a close is seen in any colum
     const closed = LINKS.map((l) => (l.url === I918 ? { ...l, status: '닫힘', tone: 'done', open: undefined } : l));
     expect(h.m.cardFollowupsOf(sess({ cardLinks: closed }), 'working')).toEqual([]);
     expect(JSON.parse(storage.dump()['soma-dash-followup-gone'])).toEqual({});
+  });
+});
+
+describe('review round 2 — reconcile from the whole board, past the chips', () => {
+  it('followupSettled (every closed or merged link) clears a record the chips no longer show', () => {
+    const OLD = 'https://github.com/2lab-ai/soma-work/issues/700';
+    const storage = memStorage({
+      'soma-dash-followup-gone': JSON.stringify({ [`${KEY}\n${OLD}`]: 1, [`${KEY}\n${I918}`]: 2 }),
+    });
+    const h = harness({ storage });
+    h.m.followupReconcile(sess({ followupSettled: [OLD] }));
+    expect(Object.keys(JSON.parse(storage.dump()['soma-dash-followup-gone']))).toEqual([`${KEY}\n${I918}`]);
+  });
+
+  it('renderBoard reconciles every session it caches (filtered and collapsed cards too), guarded for harnesses', () => {
+    const src = clientFn('renderBoard');
+    expect(src).toContain("if (typeof followupReconcile === 'function') followupReconcile(arr[i0]);");
+    const ws = TEMPLATE.slice(
+      TEMPLATE.indexOf("msg.type === 'sessionUpdated'"),
+      TEMPLATE.indexOf("msg.type === 'sessionUpdated'") + 1200,
+    );
+    expect(cook(ws.replace(/`/g, ''))).toContain(
+      "if (typeof followupReconcile === 'function') followupReconcile(msg.session);",
+    );
   });
 });

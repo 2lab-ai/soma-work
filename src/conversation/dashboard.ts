@@ -131,7 +131,7 @@ import { fetchSiblingBoards, type InstanceEnvironment, mergeBoards, shouldAggreg
 import { backfillArtifactsFromWorkLog } from './artifact-capture';
 import { type ArtifactSummary, getArtifactStore, type SessionArtifact } from './artifacts';
 import { buildCapacityView, type CapacityView } from './capacity-view';
-import { type CardLink, cardLinksOf, followupLinksOf } from './card-links';
+import { type CardLink, cardLinksOf, followupLinksOf, settledLinkUrlsOf } from './card-links';
 import { archivedCardClocks, cardWhereOf, liveCardClocks } from './card-where';
 import { isClientRef } from './client-ref';
 import { type ComposerMenuWhere, type ComposerTriggerRow, composerTriggers } from './composer-menus';
@@ -281,6 +281,8 @@ export interface KanbanSession {
    * chips (card-links.ts followupLinksOf).
    */
   followupLinks?: CardLink[];
+  /** Every issue/PR link closed or merged (#983): the browser drops its "seen" record of each, so a reopen shows again. */
+  followupSettled?: string[];
   /** Merge stats */
   mergeStats?: {
     totalLinesAdded: number;
@@ -1656,7 +1658,10 @@ export function setDashboardRollbackHandler(h: DashboardRollbackHandler | null):
 }
 
 // ── #983 — the follow-up bar's modal: one issue or PR of a card ──
-type LinkEmbedFetcher = (ref: GitHubIssueRef) => Promise<GitHubEmbed | undefined>;
+type LinkEmbedFetcher = (
+  ref: GitHubIssueRef,
+  opts?: { anonymous?: boolean },
+) => Promise<GitHubEmbed | 'not-found' | undefined>;
 let _linkEmbedFetcher: LinkEmbedFetcher | null = null;
 /** Tests: replace the GitHub fetch behind GET …/link-embed (null = the real one). */
 export function setDashboardLinkEmbedFetcher(f: LinkEmbedFetcher | null): void {
@@ -2490,10 +2495,11 @@ function planAsks(s: { taskPlan?: TaskPlanGate; activityState?: string }): boole
  * link-metadata cache, the state recorded with the link. Stale or missing states are fetched in the background
  * (once per URL per cache TTL) for the board's next draw.
  */
-function liveCardLinks(s: any): Pick<KanbanSession, 'cardLinks' | 'followupLinks'> {
+function liveCardLinks(s: any): Pick<KanbanSession, 'cardLinks' | 'followupLinks' | 'followupSettled'> {
   const cardLinks = cardLinksOf(s ?? {}, peekLinkMetadata);
   if (!cardLinks.length) return {};
   const followupLinks = followupLinksOf(s ?? {}, peekLinkMetadata);
+  const followupSettled = settledLinkUrlsOf(s ?? {}, peekLinkMetadata);
   try {
     const all = [
       s.links?.issue,
@@ -2505,7 +2511,11 @@ function liveCardLinks(s: any): Pick<KanbanSession, 'cardLinks' | 'followupLinks
   } catch {
     // the card never fails for its links' freshness
   }
-  return followupLinks.length ? { cardLinks, followupLinks } : { cardLinks };
+  return {
+    cardLinks,
+    ...(followupLinks.length ? { followupLinks } : {}),
+    ...(followupSettled.length ? { followupSettled } : {}),
+  };
 }
 /** An archived card's links: the cache's state when it has one, else the recorded one; nothing is fetched. */
 function archivedCardLinks(archived: ArchivedSession): Pick<KanbanSession, 'cardLinks'> {
@@ -4473,27 +4483,32 @@ export async function registerDashboardRoutes(
         return;
       }
       // Owning the session is not access to the repository: anyone can link any URL to their own session, and the
-      // App token reads private repositories. A private repository's body and comments go to admins and the viewer
-      // token only; a visibility that cannot be read counts as private (#983 review P1).
-      if (!readsPrivateRepos(request)) {
-        let visibility: 'public' | 'private' | undefined;
-        try {
-          visibility = await (_repoVisibilityFetcher ?? fetchGitHubRepoVisibility)(ref.owner, ref.repo);
-        } catch {
-          visibility = undefined;
-        }
-        if (visibility !== 'public') {
-          reply.send({ ...words, full: false, reason: 'private-repo' });
-          return;
-        }
-      }
-      let embed: GitHubEmbed | undefined;
+      // App token reads private repositories. So a non-admin's read is anonymous — GitHub itself refuses a private
+      // repository — and only admins and the viewer token read with the App (#983 review P1, round 2).
+      const app = readsPrivateRepos(request);
+      const fetchEmbed = _linkEmbedFetcher ?? fetchGitHubEmbed;
+      let got: GitHubEmbed | 'not-found' | undefined;
       try {
-        embed = await (_linkEmbedFetcher ?? fetchGitHubEmbed)(ref);
+        got = app ? await fetchEmbed(ref) : await fetchEmbed(ref, { anonymous: true });
       } catch (error) {
         logger.warn('link-embed fetch failed', { error: (error as Error)?.message });
       }
-      reply.send(embed ? { ...words, full: true, embed } : { ...words, full: false, reason: 'unavailable' });
+      if (got && got !== 'not-found') {
+        reply.send({ ...words, full: true, embed: got });
+        return;
+      }
+      // Nothing to show. 'private-repo' only when the repository is confirmed private (the person read why);
+      // anything else is 'unavailable' (the line stays).
+      let reason: 'private-repo' | 'unavailable' = 'unavailable';
+      if (!app && got === 'not-found') {
+        try {
+          if ((await (_repoVisibilityFetcher ?? fetchGitHubRepoVisibility)(ref.owner, ref.repo)) === 'private')
+            reason = 'private-repo';
+        } catch {
+          reason = 'unavailable';
+        }
+      }
+      reply.send({ ...words, full: false, reason });
     },
   );
 
@@ -9727,6 +9742,8 @@ function renderBoard(board, partial) {
     var arr = board[col0] || [];
     for (var i0 = 0; i0 < arr.length; i0++) {
       _sessionCache[arr[i0].key] = arr[i0];
+      // #983 — a seen follow-up that closed loses its record, for every card the data holds (drawn or not).
+      if (typeof followupReconcile === 'function') followupReconcile(arr[i0]);
       // E4 ⑨a — an epic's children are in no column of the data (the board draws them under
       // their epic, ⑨c): cached here too, before the answer states are evicted and the env /
       // owner indexes read the cache (fable #706 R1 P1).
@@ -10517,18 +10534,32 @@ function followupGoneSave() {
   }
   try { localStorage.setItem(FOLLOWUP_GONE_KEY, JSON.stringify(gone)); } catch (_e) {}
 }
-function cardFollowupsOf(s, col) {
-  if (!s) return [];
+// A seen follow-up that has closed or merged since loses its record, so it shows again if it opens again: the
+// server's followupSettled (every settled link of the session, past the 20 chips), else the chips' states. Run for
+// every session the board takes in (renderBoard, a single-session push) — drawn or not — and from cardFollowupsOf.
+function followupReconcile(s) {
+  if (!s || !s.key) return;
   var gone = followupGoneLoad();
-  var chips = Array.isArray(s.cardLinks) ? s.cardLinks : [];
+  var urls = [];
+  if (Array.isArray(s.followupSettled)) urls = s.followupSettled;
+  else if (Array.isArray(s.cardLinks)) {
+    for (var j = 0; j < s.cardLinks.length; j++) {
+      var c = s.cardLinks[j];
+      if (c && c.open !== true && c.status) urls.push(c.url);
+    }
+  }
   var dirty = false;
-  // Closed or merged since it was seen — in any column, a running card's too: a reopen shows it again. An unknown
-  // state keeps the record.
-  for (var j = 0; j < chips.length; j++) {
-    var c = chips[j];
-    if (c && c.open !== true && c.status && gone[s.key + '\\n' + c.url]) { delete gone[s.key + '\\n' + c.url]; dirty = true; }
+  for (var i = 0; i < urls.length; i++) {
+    var gk = s.key + '\\n' + urls[i];
+    if (gone[gk]) { delete gone[gk]; dirty = true; }
   }
   if (dirty) followupGoneSave();
+}
+function cardFollowupsOf(s, col) {
+  if (!s) return [];
+  followupReconcile(s);
+  var gone = followupGoneLoad();
+  var chips = Array.isArray(s.cardLinks) ? s.cardLinks : [];
   if (col !== 'idle' && col !== 'waiting') return [];
   // Every open issue and PR of the session (the server's followupLinks reads past the 20 chips); else the chips.
   var links = Array.isArray(s.followupLinks) ? s.followupLinks : chips;
@@ -16680,6 +16711,7 @@ function connectWs() {
         // (an open card stays open). The column is the one the card is drawn in.
         var updatedKey = msg.session.key;
         _sessionCache[updatedKey] = msg.session;
+        if (typeof followupReconcile === 'function') followupReconcile(msg.session);
         acEvict(updatedKey, msg.session);
         patchLastBoard(msg.session);
         if (_cardHost[updatedKey]) refreshCard(updatedKey);

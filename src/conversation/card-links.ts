@@ -230,11 +230,19 @@ export function cardLinksOf(src: CardLinkSource, peek?: LinkPeek, opts: { max?: 
 
 /**
  * The follow-up bar's links (#983): every issue and PR still open, from all of the session's links — not only the
- * face's first {@link MAX_CARD_LINKS} chips, so twenty newer closed issues never hide an older open one. At most
- * {@link MAX_CARD_LINKS}, in the card's order.
+ * face's first {@link MAX_CARD_LINKS} chips, so twenty newer closed issues never hide an older open one, and every
+ * one of them, so dismissing some never leaves one out. In the card's order; the element draws five, then +N.
  */
 export function followupLinksOf(src: CardLinkSource, peek?: LinkPeek): CardLink[] {
+  return cardLinksOf(src, peek, { max: Number.POSITIVE_INFINITY }).filter((l) => l.open === true);
+}
+
+/**
+ * Every issue and PR link whose state is known and not open (closed, merged, done, dropped), from all of the
+ * session's links (#983): the browser drops its "seen" record of each, so one that opens again shows again.
+ */
+export function settledLinkUrlsOf(src: CardLinkSource, peek?: LinkPeek): string[] {
   return cardLinksOf(src, peek, { max: Number.POSITIVE_INFINITY })
-    .filter((l) => l.open === true)
-    .slice(0, MAX_CARD_LINKS);
+    .filter((l) => (l.kind === 'issue' || l.kind === 'pr') && l.open !== true && !!l.status)
+    .map((l) => l.url);
 }
