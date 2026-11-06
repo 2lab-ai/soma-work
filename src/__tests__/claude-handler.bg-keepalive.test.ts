@@ -853,6 +853,16 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
             ],
           },
         };
+        yield {
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [
+              { type: 'tool_result', tool_use_id: 'toolu_stop', content: '{"task_id":"shell-asked"}' },
+              { type: 'tool_result', tool_use_id: 'toolu_kill', content: 'Successfully killed shell: shell-killed' },
+            ],
+          },
+        };
         yield taskNotification('shell-asked', 'stopped');
         yield taskNotification('shell-killed', 'stopped');
         // And the CLI's exit still stops one it never asked about.
@@ -871,6 +881,81 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  // #1010 review (astra r4) — TaskStop takes a NAME too ("named background agents are also accepted by
+  // agent ID or name"); its result names the task it stopped. Tie the stop to that id, and while a stop
+  // is still unanswered, mark nothing (its settle can come before its result).
+  describe('a TaskStop by name', () => {
+    const stopByName = {
+      type: 'assistant',
+      message: {
+        model: 'claude-test',
+        content: [{ type: 'tool_use', id: 'toolu_stop_named', name: 'TaskStop', input: { task_id: 'reviewer' } }],
+      },
+    };
+    const stopResult = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_stop_named',
+            content:
+              '{"message":"Successfully stopped task: a123 (reviewer)","task_id":"a123","task_type":"local_agent"}',
+          },
+        ],
+      },
+    };
+
+    async function framesOf(afterClose: Array<Record<string, unknown>>) {
+      vi.useFakeTimers();
+      const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+      try {
+        const cli = newFakeCli();
+        const pulledPastMetadata = deferred();
+        installScriptedQuery(cli, async function* (inputs) {
+          await readOpening(inputs, cli);
+          yield* openingTurnHead([agentTask(AGENT_ID)]);
+          yield openingResult(cli.opening?.uuid);
+          const probe = watchInputEnd(inputs, cli);
+          yield level([]);
+          yield taskNotification(AGENT_ID, 'completed');
+          pulledPastMetadata.resolve();
+          await probe;
+          for (const frame of afterClose) yield frame;
+        });
+        const framesPromise = collect(startTurn(newHandler()));
+        await pulledPastMetadata.promise;
+        await vi.advanceTimersByTimeAsync(NON_TURN_RESULT_IDLE_MS);
+        return (await framesPromise) as Array<Record<string, unknown>>;
+      } finally {
+        warn.mockRestore();
+      }
+    }
+    const notice = (frames: Array<Record<string, unknown>>, id: string) =>
+      frames.find((f) => f.subtype === 'task_notification' && f.task_id === id);
+
+    it('the stop its result names is not marked (result before the settle)', async () => {
+      const frames = await framesOf([stopByName, stopResult, taskNotification('a123', 'stopped')]);
+      expect(notice(frames, 'a123')?.soma_ended_with_turn).toBeUndefined();
+    });
+
+    it('a settle that comes while the stop is unanswered is not marked (settle before the result)', async () => {
+      const frames = await framesOf([stopByName, taskNotification('a123', 'stopped'), stopResult]);
+      expect(notice(frames, 'a123')?.soma_ended_with_turn).toBeUndefined();
+    });
+
+    it('once answered, the exit stop of another task is still marked', async () => {
+      const frames = await framesOf([
+        stopByName,
+        stopResult,
+        taskNotification('a123', 'stopped'),
+        taskNotification('shell-exit', 'stopped'),
+      ]);
+      expect(notice(frames, 'shell-exit')).toMatchObject({ soma_ended_with_turn: true });
+    });
   });
 
   it('still skips an orphan drain result while an agent is live, and holds the turn only from its answer', async () => {
