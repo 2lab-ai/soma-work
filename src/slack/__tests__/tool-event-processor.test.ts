@@ -128,8 +128,53 @@ describe('ToolEventProcessor', () => {
     });
 
     it('returns an empty snapshot for an unknown session', () => {
-      expect(processor.getLiveBackgroundWork('nope')).toEqual({ count: 0, labels: [], signature: '' });
-      expect(processor.getLiveBackgroundWork()).toEqual({ count: 0, labels: [], signature: '' });
+      expect(processor.getLiveBackgroundWork('nope')).toMatchObject({ count: 0, labels: [], signature: '' });
+      expect(processor.getLiveBackgroundWork()).toMatchObject({ count: 0, labels: [], signature: '' });
+    });
+
+    it('lists each live task with its type and output file for the resume prompt (#966)', () => {
+      processor.handleAgentTaskLifecycle(
+        {
+          type: 'agent_task_lifecycle',
+          phase: 'started',
+          taskId: 'b1',
+          taskType: 'local_bash',
+          outputFile: '/tmp/b1.output',
+        },
+        'C123:thread_ts',
+      );
+      expect(processor.getLiveBackgroundWork('C123:thread_ts').tasks).toEqual([
+        { taskId: 'b1', taskType: 'local_bash', outputFile: '/tmp/b1.output' },
+      ]);
+    });
+
+    // #966 — the CLI ends with the turn and kills its background tasks: at turn end they are dead, and the
+    // next process's late `stopped` (or a replayed start) must not bring them back.
+    it('endBackgroundWorkWithTurn settles every live task and returns them; nothing revives them', () => {
+      const SK = 'C123:thread_ts';
+      processor.handleAgentTaskLifecycle(
+        { type: 'agent_task_lifecycle', phase: 'started', taskId: 'b1', taskType: 'local_bash' },
+        SK,
+      );
+      processor.handleAgentTaskLifecycle(
+        { type: 'agent_task_lifecycle', phase: 'started', taskId: 'a1', taskType: 'local_agent' },
+        SK,
+      );
+
+      const ended = processor.endBackgroundWorkWithTurn(SK);
+
+      expect(ended.map((t) => t.taskId).sort()).toEqual(['a1', 'b1']);
+      expect(processor.getLiveBackgroundWork(SK).count).toBe(0);
+      processor.handleAgentTaskLifecycle(
+        { type: 'agent_task_lifecycle', phase: 'started', taskId: 'b1', taskType: 'local_bash' },
+        SK,
+      );
+      processor.handleAgentTaskLifecycle(
+        { type: 'agent_task_lifecycle', phase: 'settled', taskId: 'b1', status: 'stopped' },
+        SK,
+      );
+      expect(processor.getLiveBackgroundWork(SK).count).toBe(0);
+      expect(processor.endBackgroundWorkWithTurn(SK)).toEqual([]);
     });
   });
 

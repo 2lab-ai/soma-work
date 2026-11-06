@@ -767,8 +767,13 @@ export class ToolEventProcessor {
    * background-work resume guard to decide whether to re-enter the agent loop
    * instead of completing the session with live work outstanding.
    */
-  getLiveBackgroundWork(sessionKey?: string): { count: number; labels: string[]; signature: string } {
-    if (!sessionKey) return { count: 0, labels: [], signature: '' };
+  getLiveBackgroundWork(sessionKey?: string): {
+    count: number;
+    labels: string[];
+    signature: string;
+    tasks: Array<{ taskId: string; taskType?: string; outputFile?: string }>;
+  } {
+    if (!sessionKey) return { count: 0, labels: [], signature: '', tasks: [] };
     // AUTHORITATIVE source: the SDK task lifecycle (started − settled), keyed by
     // task_id, session-scoped. Covers bg bash, bg subagent Tasks AND Monitor
     // watches uniformly, so the resume signal survives across resume turns (the
@@ -781,7 +786,28 @@ export class ToolEventProcessor {
       count: this.backgroundTaskTracker.liveCount(sessionKey),
       labels,
       signature: this.backgroundTaskTracker.liveSignature(sessionKey),
+      tasks: tasks.map((t) => ({
+        taskId: t.taskId,
+        ...(t.taskType ? { taskType: t.taskType } : {}),
+        ...(t.outputFile ? { outputFile: t.outputFile } : {}),
+      })),
     };
+  }
+
+  /**
+   * #966 — settle every background task still live at the end of a turn, and
+   * return them. The turn's CLI process ends with the turn and stops its
+   * background tasks as it exits, so they are dead now; left live, the tracker
+   * would keep claiming them until the next process happens to report them
+   * `stopped`. Settling tombstones each id, so that late `stopped` (or a
+   * replayed start) is a no-op. Call it after the turn-end decision has read
+   * {@link getLiveBackgroundWork}.
+   */
+  endBackgroundWorkWithTurn(sessionKey?: string): Array<{ taskId: string; taskType?: string }> {
+    if (!sessionKey) return [];
+    const ended = this.backgroundTaskTracker.liveTasks(sessionKey);
+    for (const task of ended) this.backgroundTaskTracker.trackSettled(sessionKey, task.taskId);
+    return ended.map((t) => ({ taskId: t.taskId, ...(t.taskType ? { taskType: t.taskType } : {}) }));
   }
 
   /**
