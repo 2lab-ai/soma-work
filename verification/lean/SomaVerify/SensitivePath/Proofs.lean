@@ -438,7 +438,16 @@ theorem pathJoin_renderAbs (hs segs : List Seg) (hhome : Canonical hs) (hne : se
   rw [pathJoin_abs _ _ (head_renderAbs hs hhome.1) hne hsegs, splitSlash_renderAbs hs (proper_slashFree hhome.2),
     resolveSegs_nil_cons, resolveSegs_of_proper hs hhome.2]
 
-/-! ## `normalizeTmpPath` -/
+/-! ## `normalizeTmpPath`, the phase-1 mapping
+
+The phase-1 model (`ModelOriginal.lean`) maps `/private/tmp` alone; `ProofsOriginal.lean` relates
+it to the current mapping. -/
+
+/-- `/private/tmp` rewritten to `/tmp`, on segments: `normalizeTmpPath` on a rendered path. -/
+def tmpMapSegs (r : List Seg) : List Seg :=
+  match r with
+  | s :: t :: rest => if s = privateSeg ∧ t = tmpSeg then tmpSeg :: rest else r
+  | _ => r
 
 theorem tmpMapSegs_of_ne (r : List Seg) (h : ∀ rest, r ≠ privateSeg :: tmpSeg :: rest) :
     tmpMapSegs r = r := by
@@ -539,15 +548,359 @@ theorem tmpMapSegs_proper (r : List Seg) (hr : ∀ w ∈ r, Proper w) : ∀ w �
     · exact hr w (by simp [hw])
   · rw [tmpMapSegs_of_ne r (fun t e => hpt ⟨t, e⟩)]; exact hr
 
-/-- Mapping `/private/tmp` twice is mapping it once. -/
-theorem tmpMapSegs_idem (r : List Seg) : tmpMapSegs (tmpMapSegs r) = tmpMapSegs r := by
-  by_cases hpt : ∃ t, r = privateSeg :: tmpSeg :: t
-  · obtain ⟨t, rfl⟩ := hpt
-    rw [tmpMapSegs_private_tmp, tmpMapSegs_of_ne]
-    intro t' h
-    simp only [List.cons.injEq] at h
-    exact absurd h.1 (by decide)
-  · rw [tmpMapSegs_of_ne r (fun t e => hpt ⟨t, e⟩), tmpMapSegs_of_ne r (fun t e => hpt ⟨t, e⟩)]
+/-- A string that is not absolute is not under `/private/tmp`. -/
+theorem normalizeTmpPath_rel (x : List Char) (hx : x.head? ≠ some '/') : normalizeTmpPath x = x := by
+  apply normalizeTmpPath_of_ne
+  intro t ht
+  cases x with
+  | nil => simp [splitSlash] at ht
+  | cons c cs =>
+    have hc : c ≠ '/' := fun e => hx (by simp [e])
+    simp only [splitSlash, hc, ite_false] at ht
+    cases hs : splitSlash cs with
+    | nil => exact splitSlash_ne_nil cs hs
+    | cons v vs => rw [hs] at ht; simp [consHead] at ht
+
+/-! ## The links: `linkMapSegs`, `dropLinkPrefix` and `normalizeLinks` -/
+
+/-- `linkMapSegs` rewrites `P ++ x :: rest`, for a name `x`, to `x :: rest`. -/
+theorem linkMapSegs_link (P names : List Seg) (x : Seg) (hx : x ∈ names) (rest : List Seg) :
+    linkMapSegs P names (P ++ x :: rest) = x :: rest := by
+  unfold linkMapSegs
+  rw [List.drop_left' rfl, List.take_left' rfl]
+  simp [hx]
+
+theorem linkMapSegs_of_ne (P names r : List Seg) (h : ∀ x ∈ names, ∀ rest, r ≠ P ++ x :: rest) :
+    linkMapSegs P names r = r := by
+  unfold linkMapSegs
+  split
+  · rename_i x rest hdrop
+    split
+    · rename_i hc
+      exfalso
+      apply h x hc.2 rest
+      calc r = r.take P.length ++ r.drop P.length := (List.take_append_drop _ _).symm
+        _ = P ++ x :: rest := by rw [hc.1, hdrop]
+    · rfl
+  · rfl
+
+/-- The two cases of `linkMapSegs`: a list that starts with `P` and a name, and any other. -/
+theorem linkMapSegs_cases (P names r : List Seg) :
+    (∃ x ∈ names, ∃ rest, r = P ++ x :: rest ∧ linkMapSegs P names r = x :: rest) ∨
+      ((∀ x ∈ names, ∀ rest, r ≠ P ++ x :: rest) ∧ linkMapSegs P names r = r) := by
+  by_cases h : ∃ x ∈ names, ∃ rest, r = P ++ x :: rest
+  · obtain ⟨x, hx, rest, rfl⟩ := h
+    exact Or.inl ⟨x, hx, rest, rfl, linkMapSegs_link P names x hx rest⟩
+  · have hne : ∀ x ∈ names, ∀ rest, r ≠ P ++ x :: rest := fun x hx rest e => h ⟨x, hx, rest, e⟩
+    exact Or.inr ⟨hne, linkMapSegs_of_ne P names r hne⟩
+
+/-- Every segment `linkMapSegs` leaves was a segment of the list. -/
+theorem mem_of_mem_linkMapSegs {P names r : List Seg} {w : Seg} (h : w ∈ linkMapSegs P names r) : w ∈ r := by
+  rcases linkMapSegs_cases P names r with ⟨x, -, rest, rfl, he⟩ | ⟨-, he⟩
+  · rw [he] at h; exact List.mem_append_right _ h
+  · rwa [he] at h
+
+theorem linkMapSegs_proper (P names r : List Seg) (hr : ∀ w ∈ r, Proper w) :
+    ∀ w ∈ linkMapSegs P names r, Proper w := fun w hw => hr w (mem_of_mem_linkMapSegs hw)
+
+theorem linkMapSegs_slashFree (P names r : List Seg) (hr : ∀ w ∈ r, '/' ∉ w) :
+    ∀ w ∈ linkMapSegs P names r, '/' ∉ w := fun w hw => hr w (mem_of_mem_linkMapSegs hw)
+
+theorem linkMapSegs_ne_nil (P names r : List Seg) (h : r ≠ []) : linkMapSegs P names r ≠ [] := by
+  rcases linkMapSegs_cases P names r with ⟨x, -, rest, -, he⟩ | ⟨-, he⟩ <;> rw [he]
+  · simp
+  · exact h
+
+/-- The last segment survives a link. -/
+theorem getLast?_linkMapSegs (P names r : List Seg) : (linkMapSegs P names r).getLast? = r.getLast? := by
+  rcases linkMapSegs_cases P names r with ⟨x, -, rest, rfl, he⟩ | ⟨-, he⟩ <;> rw [he]
+  simp [List.getLast?_append, List.getLast?_cons]
+
+/-- A list that does not start with `P`'s first segment is left alone. -/
+theorem linkMapSegs_of_head (P names r : List Seg) (p : Seg) (hP : P.head? = some p) (hr : r.head? ≠ some p) :
+    linkMapSegs P names r = r := by
+  apply linkMapSegs_of_ne
+  rintro x - rest rfl
+  apply hr
+  cases P with
+  | nil => simp at hP
+  | cons q qs => simpa using hP
+
+/-- `linkMapSegs` of `a ++ b` is that of `a`, then `b`, when every match of `a ++ b` lies within
+`a`. -/
+theorem linkMapSegs_append_left (P names a b : List Seg)
+    (h : ∀ x ∈ names, ∀ rest, a ++ b = P ++ x :: rest → P ++ [x] <+: a) :
+    linkMapSegs P names (a ++ b) = linkMapSegs P names a ++ b := by
+  rcases linkMapSegs_cases P names a with ⟨x, hx, s, rfl, he⟩ | ⟨hne, he⟩
+  · rw [he, List.append_assoc, List.cons_append, linkMapSegs_link P names x hx]
+  · rw [he]
+    apply linkMapSegs_of_ne
+    intro x hx rest heq
+    obtain ⟨s, hs⟩ := h x hx rest heq
+    exact hne x hx s (by rw [← hs]; simp)
+
+/-- Where `a ++ b` meets `P ++ [x] ++ rest`: `a` begins with `P ++ [x]`, or `P ++ [x]` is `a`
+followed by a non-empty start of `b`. -/
+theorem append_eq_link_cases (P a b rest : List Seg) (x : Seg) (heq : a ++ b = P ++ x :: rest) :
+    P ++ [x] <+: a ∨ ∃ z zs, P ++ [x] = a ++ z :: zs ∧ b = z :: (zs ++ rest) := by
+  rw [show P ++ x :: rest = (P ++ [x]) ++ rest by simp] at heq
+  rcases List.append_eq_append_iff.1 heq with ⟨a', h1, h2⟩ | ⟨c', h1, -⟩
+  · cases a' with
+    | nil => exact Or.inl ⟨[], by simpa using h1⟩
+    | cons z zs => exact Or.inr ⟨z, zs, h1, by rw [h2]; rfl⟩
+  · exact Or.inl ⟨c', h1.symm⟩
+
+/-- The same when `b` starts with neither a segment of `P` nor a name. -/
+theorem linkMapSegs_append_head (P names a b : List Seg)
+    (hb : ∀ y, b.head? = some y → y ∉ P ∧ y ∉ names) :
+    linkMapSegs P names (a ++ b) = linkMapSegs P names a ++ b := by
+  apply linkMapSegs_append_left
+  intro x hx rest heq
+  rcases append_eq_link_cases P a b rest x heq with h | ⟨z, zs, h1, h2⟩
+  · exact h
+  · exfalso
+    obtain ⟨hzP, hzn⟩ := hb z (by rw [h2]; rfl)
+    have hz : z ∈ P ++ [x] := by rw [h1]; simp
+    rcases List.mem_append.1 hz with hz | hz
+    · exact hzP hz
+    · rw [List.mem_singleton] at hz; exact hzn (hz ▸ hx)
+
+/-- The same when `a` is no non-empty start of `P ++ [x]` short of all of it. -/
+theorem linkMapSegs_append_closed (P names a b : List Seg)
+    (ha : ∀ x ∈ names, ∀ z zs, P ++ [x] ≠ a ++ z :: zs) :
+    linkMapSegs P names (a ++ b) = linkMapSegs P names a ++ b := by
+  apply linkMapSegs_append_left
+  intro x hx rest heq
+  rcases append_eq_link_cases P a b rest x heq with h | ⟨z, zs, h1, -⟩
+  · exact h
+  · exact absurd h1 (ha x hx z zs)
+
+/-- A trailing empty segment (a trailing `/`) does not affect a link. -/
+theorem linkMapSegs_append_nil (P names r : List Seg) (hn : [] ∉ names) :
+    linkMapSegs P names (r ++ [[]]) = linkMapSegs P names r ++ [[]] := by
+  apply linkMapSegs_append_left
+  intro x hx rest heq
+  rcases append_eq_link_cases P r [[]] rest x heq with h | ⟨z, zs, h1, h2⟩
+  · exact h
+  · exfalso
+    simp only [List.cons.injEq, List.nil_eq, List.append_eq_nil_iff] at h2
+    obtain ⟨rfl, rfl, -⟩ := h2
+    have hx' : [x] = [[]] := (List.append_inj' h1 rfl).2
+    simp only [List.cons.injEq, and_true] at hx'
+    exact hn (hx' ▸ hx)
+
+/-- A string `linkMatches` for a prefix and a name is the prefix, `/`, and more. -/
+theorem linkMatches_split (pre s name : List Char) (h : linkMatches pre s name = true) :
+    ∃ R, s = pre ++ '/' :: R := by
+  unfold linkMatches at h
+  simp only [Bool.or_eq_true, beq_iff_eq] at h
+  rcases h with heq | hpre
+  · exact ⟨name, heq⟩
+  · obtain ⟨R, hR⟩ := List.isPrefixOf_iff_prefix.1 hpre
+    exact ⟨name ++ '/' :: R, by rw [← hR]; simp⟩
+
+/-- A string that `linkMatches` for the prefix `renderAbs P` and the name `x` splits into `P`,
+`x`, and the rest. -/
+theorem splitSlash_of_linkMatches (P : List Seg) (hP : ∀ w ∈ P, '/' ∉ w) (x : Seg) (hx : '/' ∉ x)
+    (s : List Char) (h : linkMatches (renderAbs P) s x = true) : ∃ t, splitSlash s = [] :: P ++ x :: t := by
+  have hsf : ∀ w ∈ P ++ [x], '/' ∉ w := by
+    intro w hw
+    rcases List.mem_append.1 hw with hw | hw
+    · exact hP w hw
+    · rw [List.mem_singleton] at hw; rw [hw]; exact hx
+  have hrender : renderAbs P ++ '/' :: x = renderAbs (P ++ [x]) := by simp [renderAbs_append, renderAbs]
+  unfold linkMatches at h
+  rw [hrender] at h
+  simp only [Bool.or_eq_true, beq_iff_eq] at h
+  rcases h with heq | hpre
+  · exact ⟨[], by rw [heq, splitSlash_renderAbs _ hsf]; simp⟩
+  · obtain ⟨R, hR⟩ := List.isPrefixOf_iff_prefix.1 hpre
+    refine ⟨splitSlash R, ?_⟩
+    rw [← hR, List.append_assoc, List.singleton_append, splitSlash_append_slash, splitSlash_renderAbs _ hsf]
+    simp
+
+/-- `dropLinkPrefix` leaves alone a string that does not split into `P`, a name and more. -/
+theorem dropLinkPrefix_of_ne (P names : List Seg) (hP : ∀ w ∈ P, '/' ∉ w) (hn : ∀ x ∈ names, '/' ∉ x)
+    (s : List Char) (h : ∀ x ∈ names, ∀ t, splitSlash s ≠ [] :: P ++ x :: t) :
+    dropLinkPrefix (renderAbs P) names s = s := by
+  unfold dropLinkPrefix
+  split
+  · rename_i hany
+    obtain ⟨x, hx, hm⟩ := List.any_eq_true.1 hany
+    obtain ⟨t, ht⟩ := splitSlash_of_linkMatches P hP x (hn x hx) s hm
+    exact absurd ht (h x hx t)
+  · rfl
+
+/-- `dropLinkPrefix` writes `renderAbs (P ++ x :: t)`, for a name `x`, as `renderAbs (x :: t)`. -/
+theorem dropLinkPrefix_link (P names : List Seg) (x : Seg) (hx : x ∈ names) (t : List Seg) :
+    dropLinkPrefix (renderAbs P) names (renderAbs (P ++ x :: t)) = renderAbs (x :: t) := by
+  have hsplit : renderAbs (P ++ x :: t) = (renderAbs P ++ '/' :: x) ++ renderAbs t := by
+    simp [renderAbs_append, renderAbs]
+  have hmatch : linkMatches (renderAbs P) (renderAbs (P ++ x :: t)) x = true := by
+    unfold linkMatches
+    rw [hsplit]
+    cases t with
+    | nil => simp [renderAbs]
+    | cons u us =>
+      simp only [Bool.or_eq_true, beq_iff_eq]
+      exact Or.inr (List.isPrefixOf_iff_prefix.2 ⟨u ++ renderAbs us, by simp [renderAbs]⟩)
+  have hany : names.any (linkMatches (renderAbs P) (renderAbs (P ++ x :: t))) = true :=
+    List.any_eq_true.2 ⟨x, hx, hmatch⟩
+  unfold dropLinkPrefix
+  simp only [hany, ↓reduceIte]
+  rw [hsplit, List.append_assoc, List.drop_left' rfl]
+  simp [renderAbs]
+
+/-- On a rendered absolute path, `dropLinkPrefix` is `linkMapSegs`. -/
+theorem dropLinkPrefix_renderAbs (P names : List Seg) (hP : ∀ w ∈ P, '/' ∉ w) (hn : ∀ x ∈ names, '/' ∉ x)
+    (r : List Seg) (hr : ∀ w ∈ r, '/' ∉ w) :
+    dropLinkPrefix (renderAbs P) names (renderAbs r) = renderAbs (linkMapSegs P names r) := by
+  rcases linkMapSegs_cases P names r with ⟨x, hx, t, rfl, he⟩ | ⟨hne, he⟩
+  · rw [he, dropLinkPrefix_link P names x hx t]
+  · rw [he]
+    apply dropLinkPrefix_of_ne P names hP hn
+    intro x hx t ht
+    rw [splitSlash_renderAbs r hr] at ht
+    exact hne x hx t (List.cons.inj ht).2
+
+/-- `dropLinkPrefix` leaves a string that is not absolute alone. -/
+theorem dropLinkPrefix_rel (P names : List Seg) (s : List Char) (hs : s.head? ≠ some '/') :
+    dropLinkPrefix (renderAbs P) names s = s := by
+  unfold dropLinkPrefix
+  split
+  · rename_i hany
+    exfalso
+    obtain ⟨name, -, hm⟩ := List.any_eq_true.1 hany
+    obtain ⟨R, rfl⟩ := linkMatches_split _ s name hm
+    apply hs
+    cases P with
+    | nil => rfl
+    | cons p ps => rfl
+  · rfl
+
+/-- `dropLinkPrefix` keeps a path absolute. -/
+theorem dropLinkPrefix_head (pre : List Char) (names : List (List Char)) (s : List Char)
+    (hs : s.head? = some '/') : (dropLinkPrefix pre names s).head? = some '/' := by
+  unfold dropLinkPrefix
+  split
+  · rename_i hany
+    obtain ⟨name, -, hm⟩ := List.any_eq_true.1 hany
+    obtain ⟨R, rfl⟩ := linkMatches_split pre s name hm
+    rw [List.drop_left' rfl]
+    rfl
+  · exact hs
+
+/-! ## The macOS links -/
+
+theorem privatePrefix_eq : privatePrefix = renderAbs [privateSeg] := by decide
+theorem dataVolume_eq : dataVolume = renderAbs dataVolumeSegs := by decide
+theorem privateLinks_eq : privateLinks = linkedSegs := by decide
+theorem firmlinks_eq : firmlinks = firmlinkSegs := by decide
+
+/-- The segments a link may start with: the prefixes' segments and the names. -/
+def aliasHeads : List Seg := privateSeg :: linkedSegs ++ dataVolumeSegs ++ firmlinkSegs
+
+/-- What the link tables are made of: names other than the segments a prefix starts with, without
+`/`, and kept by folding. -/
+theorem linkedSegs_props : ∀ x ∈ linkedSegs, x ≠ privateSeg ∧ x ≠ "system".toList ∧ '/' ∉ x ∧ x ≠ [] := by
+  decide
+
+theorem firmlinkSegs_props : ∀ x ∈ firmlinkSegs, x ≠ "system".toList ∧ '/' ∉ x ∧ x ≠ [] := by
+  decide
+
+theorem privateMapSegs_link (x : Seg) (hx : x ∈ linkedSegs) (rest : List Seg) :
+    privateMapSegs (privateSeg :: x :: rest) = x :: rest :=
+  linkMapSegs_link [privateSeg] linkedSegs x hx rest
+
+theorem firmlinkMapSegs_link (x : Seg) (hx : x ∈ firmlinkSegs) (rest : List Seg) :
+    firmlinkMapSegs (dataVolumeSegs ++ x :: rest) = x :: rest :=
+  linkMapSegs_link dataVolumeSegs firmlinkSegs x hx rest
+
+/-- A list that starts with neither `system` nor `private` is left alone by every link. -/
+theorem aliasMapSegs_of_head (x : Seg) (rest : List Seg) (h1 : x ≠ "system".toList) (h2 : x ≠ privateSeg) :
+    aliasMapSegs (x :: rest) = x :: rest := by
+  unfold aliasMapSegs privateMapSegs firmlinkMapSegs
+  rw [linkMapSegs_of_head dataVolumeSegs firmlinkSegs (x :: rest) "system".toList rfl (by simpa using h1),
+    linkMapSegs_of_head [privateSeg] linkedSegs (x :: rest) privateSeg rfl (by simpa using h2)]
+
+theorem aliasMapSegs_proper (r : List Seg) (hr : ∀ w ∈ r, Proper w) : ∀ w ∈ aliasMapSegs r, Proper w :=
+  linkMapSegs_proper _ _ _ (linkMapSegs_proper _ _ _ hr)
+
+theorem aliasMapSegs_slashFree (r : List Seg) (hr : ∀ w ∈ r, '/' ∉ w) : ∀ w ∈ aliasMapSegs r, '/' ∉ w :=
+  linkMapSegs_slashFree _ _ _ (linkMapSegs_slashFree _ _ _ hr)
+
+theorem aliasMapSegs_ne_nil (r : List Seg) (h : r ≠ []) : aliasMapSegs r ≠ [] :=
+  linkMapSegs_ne_nil _ _ _ (linkMapSegs_ne_nil _ _ _ h)
+
+/-- Every segment `aliasMapSegs` leaves was a segment of the list. -/
+theorem mem_of_mem_aliasMapSegs {r : List Seg} {w : Seg} (h : w ∈ aliasMapSegs r) : w ∈ r :=
+  mem_of_mem_linkMapSegs (mem_of_mem_linkMapSegs h)
+
+/-- The last segment survives the links. -/
+theorem getLast?_aliasMapSegs (r : List Seg) : (aliasMapSegs r).getLast? = r.getLast? := by
+  unfold aliasMapSegs privateMapSegs firmlinkMapSegs
+  rw [getLast?_linkMapSegs, getLast?_linkMapSegs]
+
+theorem aliasMapSegs_nil : aliasMapSegs [] = [] := by decide
+
+/-- A trailing empty segment (a trailing `/`) does not affect the links. -/
+theorem aliasMapSegs_append_nil (r : List Seg) : aliasMapSegs (r ++ [[]]) = aliasMapSegs r ++ [[]] := by
+  unfold aliasMapSegs privateMapSegs firmlinkMapSegs
+  rw [linkMapSegs_append_nil _ _ _ (by decide), linkMapSegs_append_nil _ _ _ (by decide)]
+
+/-- `aliasMapSegs` of `a ++ b` is that of `a`, then `b`, when `b` starts with no segment a link
+reads. -/
+theorem aliasMapSegs_append_head (a b : List Seg) (hb : ∀ y, b.head? = some y → y ∉ aliasHeads) :
+    aliasMapSegs (a ++ b) = aliasMapSegs a ++ b := by
+  have hmem : ∀ y, b.head? = some y → ∀ z ∈ aliasHeads, y ≠ z := fun y hy z hz e => hb y hy (e ▸ hz)
+  unfold aliasMapSegs privateMapSegs firmlinkMapSegs
+  rw [linkMapSegs_append_head dataVolumeSegs firmlinkSegs a b (fun y hy =>
+      ⟨fun h => hmem y hy y (by simp [aliasHeads, h]) rfl, fun h => hmem y hy y (by simp [aliasHeads, h]) rfl⟩),
+    linkMapSegs_append_head [privateSeg] linkedSegs _ b (fun y hy =>
+      ⟨fun h => hmem y hy y (by simp at h; simp [aliasHeads, h]) rfl, fun h => hmem y hy y (by simp [aliasHeads, h]) rfl⟩)]
+
+theorem firmlinkMapSegs_idem (r : List Seg) : firmlinkMapSegs (firmlinkMapSegs r) = firmlinkMapSegs r := by
+  unfold firmlinkMapSegs
+  rcases linkMapSegs_cases dataVolumeSegs firmlinkSegs r with ⟨x, hx, rest, -, he⟩ | ⟨-, he⟩ <;> rw [he]
+  · exact linkMapSegs_of_head _ _ _ "system".toList rfl (by simpa using (firmlinkSegs_props x hx).1)
+  · exact he
+
+theorem privateMapSegs_idem (r : List Seg) : privateMapSegs (privateMapSegs r) = privateMapSegs r := by
+  unfold privateMapSegs
+  rcases linkMapSegs_cases [privateSeg] linkedSegs r with ⟨x, hx, rest, -, he⟩ | ⟨-, he⟩ <;> rw [he]
+  · exact linkMapSegs_of_head _ _ _ privateSeg rfl (by simpa using (linkedSegs_props x hx).1)
+  · exact he
+
+/-- The `/private` links leave the firmlinks nothing to rewrite. -/
+theorem firmlinkMapSegs_privateMapSegs (y : List Seg) (hy : firmlinkMapSegs y = y) :
+    firmlinkMapSegs (privateMapSegs y) = privateMapSegs y := by
+  unfold privateMapSegs
+  rcases linkMapSegs_cases [privateSeg] linkedSegs y with ⟨x, hx, rest, -, he⟩ | ⟨-, he⟩ <;> rw [he]
+  · exact linkMapSegs_of_head _ _ _ "system".toList rfl (by simpa using (linkedSegs_props x hx).2.1)
+  · exact hy
+
+/-- Writing a path through its links twice is writing it once. -/
+theorem aliasMapSegs_idem (r : List Seg) : aliasMapSegs (aliasMapSegs r) = aliasMapSegs r := by
+  unfold aliasMapSegs
+  rw [firmlinkMapSegs_privateMapSegs _ (firmlinkMapSegs_idem r), privateMapSegs_idem]
+
+theorem normalizeLinks_renderAbs (r : List Seg) (hr : ∀ w ∈ r, '/' ∉ w) :
+    normalizeLinks (renderAbs r) = renderAbs (aliasMapSegs r) := by
+  have hl : ∀ x ∈ linkedSegs, '/' ∉ x := fun x hx => (linkedSegs_props x hx).2.2.1
+  have hf : ∀ x ∈ firmlinkSegs, '/' ∉ x := fun x hx => (firmlinkSegs_props x hx).2.1
+  unfold normalizeLinks
+  rw [dataVolume_eq, firmlinks_eq, dropLinkPrefix_renderAbs _ _ (by decide) hf r hr, privatePrefix_eq,
+    privateLinks_eq, dropLinkPrefix_renderAbs _ _ (by decide) hl _ (linkMapSegs_slashFree _ _ _ hr)]
+  rfl
+
+/-- A string that is not absolute is left alone by the links. -/
+theorem normalizeLinks_rel (x : List Char) (hx : x.head? ≠ some '/') : normalizeLinks x = x := by
+  unfold normalizeLinks
+  rw [dataVolume_eq, dropLinkPrefix_rel _ _ x hx, privatePrefix_eq, dropLinkPrefix_rel _ _ x hx]
+
+/-- The links keep a path absolute. -/
+theorem normalizeLinks_head (x : List Char) (hx : x.head? = some '/') : (normalizeLinks x).head? = some '/' :=
+  dropLinkPrefix_head _ _ _ (dropLinkPrefix_head _ _ _ hx)
 
 /-! ## Trailing slashes -/
 
@@ -663,9 +1016,23 @@ theorem expandHome_alias (home a : List Char) (ha : a ∈ homeAliases) :
   simp only [List.mem_cons, List.mem_nil_iff, or_false] at ha
   rcases ha with rfl | rfl | rfl <;> simp [expandHome, List.isPrefixOf]
 
-/-- What `resolvePath` does after `path.posix.normalize`: `/private/tmp` mapping and trailing
-slashes leave the resolved segments, with `/private/tmp` written `/tmp`. -/
+/-- What `resolvePath` does after `path.posix.normalize`: the `/private` mapping and trailing
+slashes leave the resolved segments, written through the links. -/
 theorem finish_posixNormalize (z : List Char) :
+    stripTrailingSlashes (normalizeLinks (posixNormalize z)) =
+      renderAbs (aliasMapSegs (resolveSegs (splitSlash z))) := by
+  obtain ⟨e, he, hz⟩ := posixNormalize_eq z
+  have hsf := slashFree_of_mem_splitSlash z
+  have hproper := proper_of_mem_resolveSegs _ hsf
+  rw [hz, normalizeLinks_renderAbs _ (slashFree_of_resolve_append _ hsf e he)]
+  rcases he with rfl | rfl
+  · rw [List.append_nil, stripTrailingSlashes_renderAbs _ (aliasMapSegs_proper _ hproper)]
+  · rw [aliasMapSegs_append_nil, renderAbs_append,
+      show renderAbs ([[]] : List Seg) = ['/'] by rfl, stripTrailingSlashes_append_slash,
+      stripTrailingSlashes_renderAbs _ (aliasMapSegs_proper _ hproper)]
+
+/-- The same for phase 1, which maps `/private/tmp` alone. -/
+theorem finish_posixNormalize_tmp (z : List Char) :
     stripTrailingSlashes (normalizeTmpPath (posixNormalize z)) =
       renderAbs (tmpMapSegs (resolveSegs (splitSlash z))) := by
   obtain ⟨e, he, hz⟩ := posixNormalize_eq z
@@ -678,9 +1045,9 @@ theorem finish_posixNormalize (z : List Char) :
       show renderAbs ([[]] : List Seg) = ['/'] by rfl, stripTrailingSlashes_append_slash,
       stripTrailingSlashes_renderAbs _ (tmpMapSegs_proper _ hproper)]
 
-/-- `resolvePath` of an absolute path: its resolved segments, `/private/tmp` written `/tmp`. -/
+/-- `resolvePath` of an absolute path: its resolved segments, written through the links. -/
 theorem resolvePath_abs (x : List Char) (hx : x.head? = some '/') :
-    resolvePath x = renderAbs (tmpMapSegs (resolveSegs (splitSlash x))) := by
+    resolvePath x = renderAbs (aliasMapSegs (resolveSegs (splitSlash x))) := by
   have hpre : ['/'].isPrefixOf x = true := by
     cases x with
     | nil => simp at hx
@@ -688,19 +1055,6 @@ theorem resolvePath_abs (x : List Char) (hx : x.head? = some '/') :
   unfold resolvePath
   simp only [hpre, ite_true]
   exact finish_posixNormalize x
-
-/-- A string that is not absolute is not under `/private/tmp`. -/
-theorem normalizeTmpPath_rel (x : List Char) (hx : x.head? ≠ some '/') : normalizeTmpPath x = x := by
-  apply normalizeTmpPath_of_ne
-  intro t ht
-  cases x with
-  | nil => simp [splitSlash] at ht
-  | cons c cs =>
-    have hc : c ≠ '/' := fun e => hx (by simp [e])
-    simp only [splitSlash, hc, ite_false] at ht
-    cases hs : splitSlash cs with
-    | nil => exact splitSlash_ne_nil cs hs
-    | cons v vs => rw [hs] at ht; simp [consHead] at ht
 
 /-- `resolvePath` of a string that is not absolute only drops trailing slashes. -/
 theorem resolvePath_rel (x : List Char) (hx : x.head? ≠ some '/') :
@@ -713,11 +1067,11 @@ theorem resolvePath_rel (x : List Char) (hx : x.head? ≠ some '/') :
       simp [List.isPrefixOf, hc]
   unfold resolvePath
   simp only [hpre, Bool.false_eq_true, ite_false]
-  rw [normalizeTmpPath_rel x hx]
+  rw [normalizeLinks_rel x hx]
 
-/-- An absolute path normalizes to its resolved segments, `/private/tmp` written `/tmp`. -/
+/-- An absolute path normalizes to its resolved segments, written through the links. -/
 theorem normalizePath_abs (home x : List Char) (hx : x.head? = some '/') :
-    normalizePath home x = renderAbs (tmpMapSegs (resolveSegs (splitSlash x))) := by
+    normalizePath home x = renderAbs (aliasMapSegs (resolveSegs (splitSlash x))) := by
   unfold normalizePath
   rw [expandHome_of_not_matchesAlias home x (not_matchesAlias_of_head x hx)]
   exact resolvePath_abs x hx
@@ -816,9 +1170,9 @@ theorem head_strip (s : List Char) (hx : s.head? ≠ some '/') :
   | cons c cs => rw [hst] at h; simpa using h
 
 /-- Every path normalizes to one of two forms: a rendered absolute path (proper segments, no
-`/private/tmp` prefix left), or a relative path that only lost its trailing slashes. -/
+link left to write through), or a relative path that only lost its trailing slashes. -/
 theorem normalizePath_cases (home p : List Char) (hh : home.head? = some '/') :
-    (∃ R : List Seg, normalizePath home p = renderAbs (tmpMapSegs (resolveSegs R)) ∧ ∀ w ∈ R, '/' ∉ w) ∨
+    (∃ R : List Seg, normalizePath home p = renderAbs (aliasMapSegs (resolveSegs R)) ∧ ∀ w ∈ R, '/' ∉ w) ∨
     (¬ MatchesAlias p ∧ p.head? ≠ some '/' ∧ normalizePath home p = stripTrailingSlashes p) := by
   rcases expandHome_cases home p hh with habs | ⟨hm, hx, _⟩
   · left
@@ -829,22 +1183,22 @@ theorem normalizePath_cases (home p : List Char) (hh : home.head? = some '/') :
     exact ⟨hm, hx, normalizePath_rel home p hm hx⟩
 
 /-- `normalizePath` on a rendered absolute path whose segments are proper and already mapped. -/
-theorem normalizePath_renderAbs_tmpMap (home : List Char) (R : List Seg) (hR : ∀ w ∈ R, '/' ∉ w) :
-    normalizePath home (renderAbs (tmpMapSegs (resolveSegs R))) = renderAbs (tmpMapSegs (resolveSegs R)) := by
-  have hproper := tmpMapSegs_proper _ (proper_of_mem_resolveSegs R hR)
-  generalize hr : tmpMapSegs (resolveSegs R) = r at hproper ⊢
+theorem normalizePath_renderAbs_aliasMap (home : List Char) (R : List Seg) (hR : ∀ w ∈ R, '/' ∉ w) :
+    normalizePath home (renderAbs (aliasMapSegs (resolveSegs R))) = renderAbs (aliasMapSegs (resolveSegs R)) := by
+  have hproper := aliasMapSegs_proper _ (proper_of_mem_resolveSegs R hR)
+  generalize hr : aliasMapSegs (resolveSegs R) = r at hproper ⊢
   cases r with
   | nil => exact normalizePath_nil home
   | cons s ss =>
     rw [normalizePath_abs home _ (by simp [renderAbs]), splitSlash_renderAbs _ (proper_slashFree hproper),
-      resolveSegs_nil_cons, resolveSegs_of_proper _ hproper, ← hr, tmpMapSegs_idem]
+      resolveSegs_nil_cons, resolveSegs_of_proper _ hproper, ← hr, aliasMapSegs_idem]
 
 /-- (a) `normalizePath` is idempotent: its result is a normal form. -/
 theorem normalizePath_idempotent (home : List Char) (hh : home.head? = some '/') :
     NormalizeIdempotent home := by
   intro p
   rcases normalizePath_cases home p hh with ⟨R, hp, hR⟩ | ⟨hm, hx, hp⟩
-  · rw [hp]; exact normalizePath_renderAbs_tmpMap home R hR
+  · rw [hp]; exact normalizePath_renderAbs_aliasMap home R hR
   · rw [hp, normalizePath_rel home _ (not_matchesAlias_strip p hm) (head_strip p hx),
       stripTrailingSlashes_idem]
 
@@ -867,7 +1221,7 @@ absolute normal form are all proper. -/
 theorem normalizePath_segments_proper (home : List Char) (hh : home.head? = some '/') (p : List Char)
     (hp : (normalizePath home p).head? = some '/') : ∀ w ∈ segmentsOf (normalizePath home p), Proper w := by
   rcases normalizePath_cases home p hh with ⟨R, hN, hR⟩ | ⟨_, hx, hN⟩
-  · have hproper := tmpMapSegs_proper _ (proper_of_mem_resolveSegs R hR)
+  · have hproper := aliasMapSegs_proper _ (proper_of_mem_resolveSegs R hR)
     rw [hN, segmentsOf_renderAbs _ (proper_slashFree hproper)]
     exact hproper
   · rw [hN] at hp
@@ -1024,9 +1378,9 @@ theorem names_resolveSegs (p : List Char) (hp : p.head? = some '/') :
 theorem names_unique {p : List Char} {l₁ l₂ : List Seg} (h₁ : Names p l₁) (h₂ : Names p l₂) : l₁ = l₂ := by
   rw [← (walk_iff_resolveSegs _ _).1 h₁.2, ← (walk_iff_resolveSegs _ _).1 h₂.2]
 
-/-- An absolute path normalizes to the location it names, `/private/tmp` written `/tmp`. -/
+/-- An absolute path normalizes to the location it names, written through the links. -/
 theorem normalizePath_of_names (home p : List Char) (loc : List Seg) (h : Names p loc) :
-    normalizePath home p = renderAbs (tmpMapSegs loc) := by
+    normalizePath home p = renderAbs (aliasMapSegs loc) := by
   rw [normalizePath_abs home p h.1, (walk_iff_resolveSegs _ _).1 h.2]
 
 /-- Walks compose: walking `a` and then `b` is walking `a ++ b`. -/
@@ -1058,23 +1412,9 @@ theorem mem_sensitiveDirSegs_iff (hs d : List Seg) :
   · rintro ((h | h | h | h | h | h) | h)
     all_goals simp [h]
 
-/-- Every `homeDirSuffixes` entry is non-empty and does not start with `tmp`. -/
-theorem homeDirSuffixes_wf : ∀ e ∈ homeDirSuffixes, e ≠ [] ∧ e.head? ≠ some tmpSeg := by
+/-- Every `homeDirSuffixes` entry is non-empty and starts with no segment a link reads. -/
+theorem homeDirSuffixes_wf : ∀ e ∈ homeDirSuffixes, e ≠ [] ∧ ∀ y ∈ aliasHeads, e.head? ≠ some y := by
   decide
-
-/-- `tmpMapSegs` looks only at the first two segments. -/
-theorem tmpMapSegs_append_left (a b : List Seg) (ha : a ≠ []) (hb : ¬ (a.length = 1 ∧ a.head? = some privateSeg ∧ b.head? = some tmpSeg)) :
-    tmpMapSegs (a ++ b) = tmpMapSegs a ++ b := by
-  match a, ha, hb with
-  | [a1], _, hb =>
-    cases b with
-    | nil => simp
-    | cons b1 bs =>
-      have hne : ¬ (a1 = privateSeg ∧ b1 = tmpSeg) := fun h => hb ⟨rfl, by simp [h.1], by simp [h.2]⟩
-      simp only [List.cons_append, List.nil_append, tmpMapSegs, ite_eq_right hne]
-  | a1 :: a2 :: ar, _, _ =>
-    simp only [List.cons_append, tmpMapSegs]
-    split <;> simp
 
 /-! ## (f) Service configs -/
 
