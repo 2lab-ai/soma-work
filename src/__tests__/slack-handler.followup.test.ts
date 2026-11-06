@@ -6363,7 +6363,11 @@ describe('SlackHandler — follow-up queue host', () => {
       await handler.handleMessage(message({ ts: '333.555', text: 'goal pause' }), say());
       await settle();
       expect(startWithContinuation, 'the opening was skipped (paused)').toHaveBeenCalledTimes(1);
-      expect(registrySession.goal).toMatchObject({ status: 'paused', openingPending: true });
+      // Paused = set aside (SSOT 2026-11-06): no current goal, the paused goal keeps openingPending.
+      expect(registrySession.goal).toBeUndefined();
+      expect(registrySession.goalPaused).toEqual([
+        expect.objectContaining({ status: 'paused', openingPending: true }),
+      ]);
 
       await handler.handleMessage(message({ ts: '555.666', text: 'goal resume' }), say());
       await vi.waitFor(() => expect(startWithContinuation).toHaveBeenCalledTimes(2));
