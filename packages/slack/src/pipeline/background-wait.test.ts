@@ -133,7 +133,10 @@ describe('buildBackgroundWaitPrompt', () => {
   it('says the SDK cancel text on a call before it came from the host, not the user (#997)', () => {
     const p = buildBackgroundWaitPrompt(liveWork({ count: 1, signature: 'a' }), 2, 6);
     expect(p).toContain("The user doesn't want to take this action right now");
-    expect(p).toMatch(/the host closed that call, not the user/);
+    // Scoped: a genuine user stop leaves the same text on an earlier call.
+    expect(p).toMatch(/If the last tool call of your previous turn reads/);
+    expect(p).toMatch(/no message of the user's says they stopped it/);
+    expect(p).toMatch(/the host closed that call when the turn ended, not the user/);
     expect(p).toMatch(/Check whether it took effect, then continue/);
   });
 });

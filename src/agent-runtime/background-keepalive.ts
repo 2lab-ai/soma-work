@@ -60,7 +60,7 @@ export function liveAgentIds(frame: Record<string, unknown>): string[] | undefin
 
 /**
  * The ids of the live background tasks a `system`/`background_tasks_changed`
- * frame announces that are NOT agents — shells, workflows, monitors, MCP tasks;
+ * frame announces that are NOT agents — shells, workflows, MCP tasks;
  * `undefined` for any other frame (or a malformed one, as above).
  *
  * None of them holds a turn open for its lifetime (see {@link liveAgentIds}).
@@ -68,7 +68,8 @@ export function liveAgentIds(frame: Record<string, unknown>): string[] | undefin
  * input is open, and a host that reads the answering result late (#997: the
  * Slack consumer was 92 s behind) finds that turn already running. So the
  * handler holds such an answer for the follow-up grace only, long enough to read
- * what the CLI already emitted. Ambient tasks are not activity and never count.
+ * what the CLI already emitted. Ambient tasks — every live-update watcher such
+ * as a Monitor (sdk.d.ts:3703) — are not activity and never count.
  */
 export function liveNonAgentTaskIds(frame: Record<string, unknown>): string[] | undefined {
   return liveTaskIds(frame, false);

@@ -1482,7 +1482,7 @@ export class ClaudeHandler implements TurnSteeringPort {
           this.logger.info(message, { graceMs: BG_FOLLOWUP_GRACE_MS, sessionKey: steerKey }),
         );
       const awaitShellFollowUpTurn = () =>
-        awaitFollowUpTurn('No follow-up turn of a background shell or workflow within the grace; ending the held turn');
+        awaitFollowUpTurn('No follow-up turn of a background task within the grace; ending the held turn');
 
       // Background-agent keepalive (#257). Closing the input ends the CLI, and
       // a `run_in_background` agent dies with it before it reports back — so
@@ -1508,12 +1508,14 @@ export class ClaudeHandler implements TurnSteeringPort {
       let lastResultSeq = 0;
       const agentSettledDuringTurn = () => agentSettledSeq > turnStartSeq;
       const turnRunning = () => turnStartSeq > lastResultSeq;
-      // Shells, workflows, monitors (#997): never held for their lifetime, only
-      // for the follow-up grace (BG_FOLLOWUP_GRACE_MS) — a notification turn of
-      // one that finished may already be running when the answer is read.
+      // Shells, workflows, MCP tasks (#997): never held for their lifetime, only
+      // for the follow-up grace (BG_FOLLOWUP_GRACE_MS) after each result — a
+      // notification turn of one that finished may already be running when the
+      // result is read. Live-update watchers (Monitor) are ambient and never
+      // count, so the grace cannot chain on a watcher's events.
       let liveNonAgents = new Set<string>();
       let nonAgentSettledSeq = 0;
-      const nonAgentSettledDuringTurn = () => nonAgentSettledSeq > turnStartSeq;
+      const nonAgentFollowUpOwed = () => liveNonAgents.size > 0 || nonAgentSettledSeq > turnStartSeq;
       let held: HeldTurn | undefined;
       let deferredAt = 0;
       let keepaliveCapTimer: NodeJS.Timeout | undefined;
@@ -1593,7 +1595,7 @@ export class ClaudeHandler implements TurnSteeringPort {
           if (settlement) steerSettled = true;
         }
         channel.close();
-        this.logger.info('Background agents settled; ending the deferred turn', {
+        this.logger.info('Background work settled; ending the deferred turn', {
           deferredMs: Date.now() - deferredAt,
           sessionKey: steerKey,
         });
@@ -1729,10 +1731,11 @@ export class ClaudeHandler implements TurnSteeringPort {
               awaitFollowUpTurn();
               continue;
             }
-            // A shell settled inside this turn: its notification turn may already
-            // be on its way (#997). One still live does not count here — a chatty
-            // monitor would otherwise chain its turns onto this one indefinitely.
-            if (nonAgentSettledDuringTurn()) {
+            // A task settled inside this turn, or one is still live: its
+            // notification turn may already be on its way — a second CI watcher
+            // that finished while this turn ran (#997). Each one-shot task ends
+            // once, so the chain is bounded; the keepalive cap backstops it.
+            if (nonAgentFollowUpOwed()) {
               awaitShellFollowUpTurn();
               continue;
             }
@@ -1774,12 +1777,12 @@ export class ClaudeHandler implements TurnSteeringPort {
             // the turn now — and only while the input is open (a closed input
             // already ends the CLI, agents included).
             //
-            // A live (or just-settled) shell, workflow or monitor holds the
+            // A live (or just-settled) shell, workflow or MCP task holds the
             // answer only for the follow-up grace (#997): its notification turn
             // may already be running when a lagging host reads this answer, and
             // closing now would cut that turn mid-call.
             const agentsOwed = liveAgents.size > 0 || agentSettledDuringTurn();
-            const shellsOwed = !agentsOwed && (liveNonAgents.size > 0 || nonAgentSettledDuringTurn());
+            const shellsOwed = !agentsOwed && nonAgentFollowUpOwed();
             if (keepaliveMaxMs > 0 && (agentsOwed || shellsOwed) && isHealthyTurnResult(raw) && !channel.isClosed) {
               held = { answer: message, latest: message, pushedCount: channel.pushedUuids().length };
               deferredAt = Date.now();
@@ -1790,7 +1793,7 @@ export class ClaudeHandler implements TurnSteeringPort {
                   sessionKey: steerKey,
                 });
               } else {
-                this.logger.info('Deferring the turn end for a follow-up turn of a background shell or workflow', {
+                this.logger.info('Deferring the turn end for a follow-up turn of a background task', {
                   live: liveNonAgents.size,
                   graceMs: BG_FOLLOWUP_GRACE_MS,
                   sessionKey: steerKey,
