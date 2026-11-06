@@ -310,6 +310,43 @@ describe('#968 — a repeated hold stops as a stall; the gate gap is a typed fie
     expect(h.goal.stall?.actions[1]).toContain('TodoWrite');
   });
 
+  it('a repeated hold on a kick does not stall, keeps the mark, and the next real turn stalls (review P3)', async () => {
+    const h = makeHarness({ verdict: DONE, ledger: ledgerOf(SIX_TASKS) });
+    await settleTurn(h, 'all done');
+    h.session.goalLastTurnText = 'restarted, still done';
+    h.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    await h.controller.settled(SESSION_KEY);
+    expect(h.goal.stall).toBeUndefined();
+    expect(h.goal.lastEvalGateOpen).toEqual(['T2', 'T3', 'T4', 'T5', 'T6']);
+    expect(h.injected).toHaveLength(2);
+
+    await settleTurn(h, 'done again');
+    expect(h.goal.stall).toBeDefined();
+  });
+
+  it('a turn cut short between two holds keeps the mark: the next judged hold stalls (review P3)', async () => {
+    const h = makeHarness({ verdict: DONE, ledger: ledgerOf(SIX_TASKS) });
+    await settleTurn(h, 'all done');
+    await settleTurn(h, ''); // no text: the gap is reused, nothing judged
+    expect(h.evalPrompts).toHaveLength(1);
+    expect(h.goal.lastEvalGateOpen).toEqual(['T2', 'T3', 'T4', 'T5', 'T6']);
+
+    await settleTurn(h, 'done, honestly');
+    expect(h.goal.stall).toBeDefined();
+  });
+
+  it('a repeated hold at the continuation cap stalls (and retires the cap question), not cap-paused (review P3)', async () => {
+    const h = makeHarness({ verdict: DONE, ledger: ledgerOf(SIX_TASKS), goal: { continuationCount: 9 } });
+    await settleTurn(h, 'all done');
+    expect(h.goal.continuationCount).toBe(10);
+
+    await settleTurn(h, 'still done');
+    expect(h.goal.stall).toBeDefined();
+    expect(h.goal.capDecisionId).toBeUndefined();
+    expect(h.notices.some((n) => n.startsWith('🛑'))).toBe(true);
+    expect(h.notices.some((n) => n.includes('⏹️') || n.includes('⏸️'))).toBe(false);
+  });
+
   it('a second hold with a different open set is progress, not a stall (T1)', async () => {
     const h = makeHarness({ verdict: DONE, ledger: ledgerOf(SIX_TASKS) });
     await settleTurn(h, 'all done');
