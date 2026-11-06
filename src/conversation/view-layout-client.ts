@@ -81,6 +81,8 @@ function faceOf(card, model, face, asks, effort, asked) {
     out.tldr = card.tldr;
     rows.splice(rows.indexOf('summary') + 1, 0, 'tldr');
   }
+  // The follow-up bar (#983) is not a layout row either: the element draws it under the title bar.
+  if (card && card.followups && card.followups.length) out.followups = card.followups;
   out.rows = rows;
   // What the card is: an epic, a plan node or a cron run lead with their own; a plain task with the task mark.
   if (f.kind && !out.lead) out.lead = { glyph: 'task', title: '일반 작업' };

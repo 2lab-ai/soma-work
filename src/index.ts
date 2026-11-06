@@ -1061,6 +1061,7 @@ async function start() {
     // queue change pushes that session to the open panels.
     setDashboardFollowupHandler({
       view: (sessionKey) => slackHandler.getFollowupView(sessionKey),
+      busy: (sessionKey) => slackHandler.isFollowupTurnBusy(sessionKey),
       act: (request) => slackHandler.handleDashboardFollowupAction(request),
     });
     slackHandler.setFollowupChangeListener((sessionKey) => scheduleLiveSessionUpdate(sessionKey));

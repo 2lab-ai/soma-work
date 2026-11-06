@@ -387,7 +387,7 @@ describe('D12 — 지금 압축: owner-gated (canCompact), confirmed by the elem
     const later = vi.fn();
     const s = sess(over);
     const c = load<Flow>(
-      ['toNum', 'cwCanCompact', 'cwObserve', 'cwCompact'],
+      ['toNum', 'cwCanCompact', 'cwObserve', 'turnHolds', 'cwCompact'],
       ['_cw', '_cwSeq', '_cwCeil', 'CW_DONE_MS', 'CW_SAVED_MS', 'CW_FAIL_MS', 'CW_CEIL_MS'],
       {
         panelSessionKey: s.key,
@@ -437,7 +437,7 @@ describe('D12 — 지금 압축: owner-gated (canCompact), confirmed by the elem
     const cleared: number[] = [];
     const s = sess();
     const c = load<Flow>(
-      ['toNum', 'cwCanCompact', 'cwObserve', 'cwLater', 'cwCompact'],
+      ['toNum', 'cwCanCompact', 'cwObserve', 'cwLater', 'turnHolds', 'cwCompact'],
       ['_cw', '_cwSeq', '_cwCeil', 'CW_DONE_MS', 'CW_SAVED_MS', 'CW_FAIL_MS', 'CW_CEIL_MS'],
       {
         panelSessionKey: s.key,

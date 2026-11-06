@@ -458,6 +458,7 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
       cardAsks: () => false,
       cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
       cardTldrOf: () => null, // the face's Executive Summary TL;DR (SSOT 2026-11-02 T7) — none in this harness
+      cardFollowupsOf: () => [], // the face's follow-up bar (#983) — none in this harness
       acPrefetch: () => {},
       releaseCardIoTimer: (cid: unknown) => calls.released.push(cid),
       syncCardBodies: () => {},
@@ -791,6 +792,7 @@ function bodyHarness() {
     cardAsks: () => false,
     cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
     cardTldrOf: () => null, // the face's Executive Summary TL;DR (SSOT 2026-11-02 T7) — none in this harness
+    cardFollowupsOf: () => [], // the face's follow-up bar (#983) — none in this harness
     isPickingModel: () => false,
     morphInnerHtml: (el: FakeEl, html: string) => {
       el.innerHTML = html;
@@ -941,6 +943,7 @@ describe('the element’s events (wireInbox): open / close, a DONE day, a file c
       cardAsks: () => false,
       cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
       cardTldrOf: () => null, // the face's Executive Summary TL;DR (SSOT 2026-11-02 T7) — none in this harness
+      cardFollowupsOf: () => [], // the face's follow-up bar (#983) — none in this harness
       cardBodyShown: () => false,
       acPrefetch: () => {},
       openArtifactViewer: (...a: unknown[]) => calls.modal.push(a),

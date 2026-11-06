@@ -3459,6 +3459,25 @@ export class SlackHandler {
   }
 
   /**
+   * Does a turn hold this session right now — dispatched and not yet settled?
+   * A message sent now waits in the queue (or is pushed into that turn); it does
+   * not start a turn of its own. Resolved like the ingress fence: after a
+   * bot-thread migration the running turn's slot is the SOURCE key's.
+   *
+   * The dashboard reads it so a turn that is still starting reads as running
+   * (SSOT 2026-11-06): the slot is taken at dispatch, but the session's
+   * `activityState` turns `working` only once the SDK query answers — 85 s later
+   * on dev that day, and a message sent in between was drawn as a new turn while
+   * the queue held it.
+   */
+  isFollowupTurnBusy(sessionKey: string): boolean {
+    const dispatcher = this.followupDispatcher;
+    if (!dispatcher) return false;
+    const slotKey = this.followupMigration?.byCanonical.get(sessionKey);
+    return dispatcher.isBusy(sessionKey) || (slotKey !== undefined && dispatcher.isBusy(slotKey));
+  }
+
+  /**
    * The queue as the thread SURFACE sees it — the view its write fence checks
    * (`thread-surface.ts` `isStaleWrite`). Identical to {@link getFollowupView}
    * except for `turnEpoch` in two cases, which is why the two never share a
@@ -3684,6 +3703,32 @@ export class SlackHandler {
 
   setFollowupChangeListener(fn: ((sessionKey: string) => void) | undefined): void {
     this.followupChangeListener = fn;
+  }
+
+  /**
+   * A turn took or released the session's slot ({@link isFollowupTurnBusy}):
+   * the panels hear it. A run that involves no queued row commits nothing to the
+   * queue when it ends, so {@link announceFollowupChanges} would stay silent and
+   * the panel would keep reading the session as running. The slot key and, while
+   * a migration is bound, the session it runs for. Best effort, never throws.
+   */
+  private announceFollowupTurnHeld(slotKey: string): void {
+    const listener = this.followupChangeListener;
+    if (!listener) return;
+    const canonicalKey = this.followupMigration?.bySlot.get(slotKey);
+    const keys = canonicalKey !== undefined && canonicalKey !== slotKey ? [slotKey, canonicalKey] : [slotKey];
+    queueMicrotask(() => {
+      for (const sessionKey of keys) {
+        try {
+          listener(sessionKey);
+        } catch (error) {
+          this.logger.debug('Follow-up change listener failed', {
+            sessionKey,
+            error: (error as Error)?.message ?? String(error),
+          });
+        }
+      }
+    });
   }
 
   /**
@@ -4662,6 +4707,8 @@ export class SlackHandler {
 
   /** Dispatcher notices that carry facts the committed snapshot cannot show. */
   private observeDispatcherNotice(notice: DispatcherNotice): void {
+    if (notice.type === 'run-started' || notice.type === 'run-settled')
+      this.announceFollowupTurnHeld(notice.sessionKey);
     const timing = this.followupTimingMaps();
     if (notice.type === 'run-started') {
       // Which kind of run is opening decides which latency the next `dispatch`

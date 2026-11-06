@@ -1,5 +1,6 @@
 import type { FollowupItem } from '@soma/slack/followup-queue';
 import { describe, expect, it } from 'vitest';
+import { buildSteerUserMessage } from '../../agent-runtime/turn-input-channel';
 import {
   FOLLOWUP_RESTART_REDELIVERY_MAX_AGE_MS,
   FOLLOWUP_SHUTDOWN_STOP_REASON,
@@ -94,6 +95,20 @@ describe('transcriptShowsRead', () => {
     );
     expect(transcriptShowsRead(TRANSCRIPT, { text: '처리중인거 보여줘야함', since: ENQUEUED })).toBe(false);
     expect(transcriptShowsRead(TRANSCRIPT, { text: '  ', since: 0 })).toBe(false);
+  });
+
+  // PR #1005 review (fable) — a steered message reaches the transcript framed (STEER_MESSAGE_HEADER, SSOT 2026-11-06):
+  // the words are the user's, the frame is the host's. Matched by its words, it is still the message itself.
+  it('matches the words of a steered message through the frame the host put around them', () => {
+    const framed = buildSteerUserMessage({ uuid: 'u-framed', text: '크론 stage0 트리거해줘야함' }).message.content;
+    const line = JSON.stringify({
+      attachment: { type: 'queued_command', prompt: framed, source_uuid: 'u-framed' },
+      type: 'attachment',
+      uuid: 'a-framed',
+      timestamp: '2026-11-03T08:25:37.687Z',
+    });
+    expect(transcriptShowsRead(`${line}\n`, { text: '크론 stage0 트리거해줘야함', since: ENQUEUED })).toBe(true);
+    expect(transcriptShowsRead(`${line}\n`, { text: 'stage0', since: ENQUEUED })).toBe(false);
   });
 });
 

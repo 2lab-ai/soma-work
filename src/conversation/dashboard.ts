@@ -54,7 +54,15 @@ import type { LlmuxTierId } from '../auth/llmux-tiers';
 import { config } from '../config';
 import { displayTitle } from '../format/display-title';
 import type { DashboardInstructionApproval, InstructionApprovals } from '../instruction-approval';
-import { peekLinkMetadata, warmLinkMetadata } from '../link-metadata-fetcher';
+import {
+  fetchGitHubEmbed,
+  fetchGitHubRepoVisibility,
+  type GitHubEmbed,
+  type GitHubIssueRef,
+  parseGitHubIssueUrl,
+  peekLinkMetadata,
+  warmLinkMetadata,
+} from '../link-metadata-fetcher';
 import { Logger } from '../logger';
 import { MetricsEventStore } from '../metrics/event-store';
 import { findModelPricing } from '../metrics/model-registry';
@@ -123,7 +131,7 @@ import { fetchSiblingBoards, type InstanceEnvironment, mergeBoards, shouldAggreg
 import { backfillArtifactsFromWorkLog } from './artifact-capture';
 import { type ArtifactSummary, getArtifactStore, type SessionArtifact } from './artifacts';
 import { buildCapacityView, type CapacityView } from './capacity-view';
-import { type CardLink, cardLinksOf } from './card-links';
+import { type CardLink, cardLinksOf, followupLinksOf, settledLinkUrlsOf } from './card-links';
 import { archivedCardClocks, cardWhereOf, liveCardClocks } from './card-where';
 import { isClientRef } from './client-ref';
 import { type ComposerMenuWhere, type ComposerTriggerRow, composerTriggers } from './composer-menus';
@@ -268,6 +276,13 @@ export interface KanbanSession {
    * with a short reference and its state — the card's `links` row (card-links.ts).
    */
   cardLinks?: CardLink[];
+  /**
+   * The follow-up bar (#983): every issue and PR still open, from all of the session's links — past the face's 20
+   * chips (card-links.ts followupLinksOf).
+   */
+  followupLinks?: CardLink[];
+  /** Every issue/PR link closed or merged (#983): the browser drops its "seen" record of each, so a reopen shows again. */
+  followupSettled?: string[];
   /** Merge stats */
   mergeStats?: {
     totalLinesAdded: number;
@@ -557,6 +572,13 @@ export interface KanbanSession {
    * nothing to show.
    */
   followups?: DashboardFollowups;
+  /**
+   * A turn holds the session (dispatched, not yet settled) while `activityState`
+   * does not say `working` yet — the turn is still starting, or still settling.
+   * A message sent now waits in the queue, so the composer treats the session as
+   * running (SSOT 2026-11-06). Absent otherwise.
+   */
+  turnBusy?: true;
 }
 
 /** One task as the dashboard shows it (a `TaskRecord` of `session/task-ledger.ts`). */
@@ -1508,6 +1530,8 @@ export type DashboardFollowupOutcome = { ok: true; message?: string } | { ok: fa
  */
 export interface DashboardFollowupHandler {
   view(sessionKey: string): FollowupQueueView | undefined;
+  /** A turn holds the session — dispatched, not yet settled (`isFollowupTurnBusy`): a message sent now is queued. */
+  busy?(sessionKey: string): boolean;
   act(request: DashboardFollowupRequest): Promise<DashboardFollowupOutcome>;
 }
 let _followupHandler: DashboardFollowupHandler | null = null;
@@ -1640,6 +1664,39 @@ let _rollbackHandler: DashboardRollbackHandler | null = null;
 
 export function setDashboardRollbackHandler(h: DashboardRollbackHandler | null): void {
   _rollbackHandler = h;
+}
+
+// ── #983 — the follow-up bar's modal: one issue or PR of a card ──
+type LinkEmbedFetcher = (
+  ref: GitHubIssueRef,
+  opts?: { anonymous?: boolean },
+) => Promise<GitHubEmbed | 'not-found' | undefined>;
+let _linkEmbedFetcher: LinkEmbedFetcher | null = null;
+/** Tests: replace the GitHub fetch behind GET …/link-embed (null = the real one). */
+export function setDashboardLinkEmbedFetcher(f: LinkEmbedFetcher | null): void {
+  _linkEmbedFetcher = f;
+}
+type RepoVisibilityFetcher = (owner: string, repo: string) => Promise<'public' | 'private' | undefined>;
+let _repoVisibilityFetcher: RepoVisibilityFetcher | null = null;
+/** Tests: replace the repository-visibility check behind GET …/link-embed (null = the real one). */
+export function setDashboardRepoVisibilityFetcher(f: RepoVisibilityFetcher | null): void {
+  _repoVisibilityFetcher = f;
+}
+/** An admin (signed in, in ADMIN_USERS) or the viewer token: may read a private repository's issue through the App. */
+function readsPrivateRepos(request: any): boolean {
+  const a = request.authContext;
+  return a?.mode === 'bearer_header' || a?.mode === 'bearer_cookie' || a?.isAdmin === true;
+}
+/**
+ * Who reads a follow-up's body and comments: the card's owner, an admin, or the viewer token. Anyone else signed in
+ * sees what the card already shows (its reference, title and state) — an issue's comments can say more than the
+ * session does, and the App token reads repositories the viewer may not.
+ */
+function canReadLinkBody(request: any, ownerId: string | undefined): boolean {
+  const a = request.authContext;
+  if (a?.mode === 'bearer_header' || a?.mode === 'bearer_cookie') return true;
+  if (a?.isAdmin === true) return true;
+  return !!(a?.userId && ownerId && a.userId === ownerId);
 }
 
 /** The thread's rollback refusals, for the dashboard (same words as the thread command). */
@@ -2447,9 +2504,11 @@ function planAsks(s: { taskPlan?: TaskPlanGate; activityState?: string }): boole
  * link-metadata cache, the state recorded with the link. Stale or missing states are fetched in the background
  * (once per URL per cache TTL) for the board's next draw.
  */
-function liveCardLinks(s: any): Pick<KanbanSession, 'cardLinks'> {
+function liveCardLinks(s: any): Pick<KanbanSession, 'cardLinks' | 'followupLinks' | 'followupSettled'> {
   const cardLinks = cardLinksOf(s ?? {}, peekLinkMetadata);
   if (!cardLinks.length) return {};
+  const followupLinks = followupLinksOf(s ?? {}, peekLinkMetadata);
+  const followupSettled = settledLinkUrlsOf(s ?? {}, peekLinkMetadata);
   try {
     const all = [
       s.links?.issue,
@@ -2461,7 +2520,11 @@ function liveCardLinks(s: any): Pick<KanbanSession, 'cardLinks'> {
   } catch {
     // the card never fails for its links' freshness
   }
-  return { cardLinks };
+  return {
+    cardLinks,
+    ...(followupLinks.length ? { followupLinks } : {}),
+    ...(followupSettled.length ? { followupSettled } : {}),
+  };
 }
 /** An archived card's links: the cache's state when it has one, else the recorded one; nothing is fetched. */
 function archivedCardLinks(archived: ArchivedSession): Pick<KanbanSession, 'cardLinks'> {
@@ -2609,6 +2672,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     userMedia: cardUserMedia(s.conversationId),
     ...esTldrOf(s),
     followups: followupsOf(key, s.ownerId),
+    ...(s.activityState !== 'working' && _followupHandler?.busy?.(key) === true ? { turnBusy: true as const } : {}),
     // #854 — an epic and its children are Slack sessions too.
     ...(s.kind === 'epic' ? { kind: 'epic' as const, epic: epicBundle(s) } : {}),
     // Plan mode — the gate (its plan is fetched).
@@ -4388,6 +4452,74 @@ export async function registerDashboardRoutes(
         logger.error('Error deciding a task plan from the dashboard', error);
         reply.status(500).send({ error: 'Internal Server Error' });
       }
+    },
+  );
+
+  // ── #983 — the follow-up bar's modal: one of the card's issue or PR links, for the artifact viewer ──
+  // Only a URL that is one of the card's own links; the page is never fetched — a GitHub issue or PR is read from the
+  // API by its parts (parseGitHubIssueUrl). The body and comments go to the owner, an admin or the viewer token;
+  // anyone else gets the card's own words (full: false).
+  server.get<{ Params: { key: string }; Querystring: { url?: string } }>(
+    '/api/dashboard/session/:key/link-embed',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const local = resolveSelfActionKey(request.params?.key ?? '', reply);
+      if (local === null) return;
+      const url = typeof request.query?.url === 'string' ? request.query.url.trim() : '';
+      const s = url ? _getSessionsFn?.()?.get(local) : undefined;
+      // Every link of the card counts, not only the face's first 20 chips (followupLinksOf reads them all).
+      const link = s
+        ? cardLinksOf(s, peekLinkMetadata, { max: Number.POSITIVE_INFINITY }).find(
+            (l) => l.url === url && (l.kind === 'issue' || l.kind === 'pr'),
+          )
+        : undefined;
+      if (!s || !link) {
+        reply.status(404).send({ error: 'Not a follow-up of this card' });
+        return;
+      }
+      const words = {
+        url: link.url,
+        kind: link.kind,
+        text: link.text,
+        ...(link.title ? { title: link.title } : {}),
+        ...(link.status ? { status: link.status } : {}),
+      };
+      if (!canReadLinkBody(request, s.ownerId)) {
+        reply.send({ ...words, full: false, reason: 'owner-only' });
+        return;
+      }
+      const ref = parseGitHubIssueUrl(link.url);
+      if (!ref) {
+        reply.send({ ...words, full: false, reason: 'unsupported' });
+        return;
+      }
+      // Owning the session is not access to the repository: anyone can link any URL to their own session, and the
+      // App token reads private repositories. So a non-admin's read is anonymous — GitHub itself refuses a private
+      // repository — and only admins and the viewer token read with the App (#983 review P1, round 2).
+      const app = readsPrivateRepos(request);
+      const fetchEmbed = _linkEmbedFetcher ?? fetchGitHubEmbed;
+      let got: GitHubEmbed | 'not-found' | undefined;
+      try {
+        got = app ? await fetchEmbed(ref) : await fetchEmbed(ref, { anonymous: true });
+      } catch (error) {
+        logger.warn('link-embed fetch failed', { error: (error as Error)?.message });
+      }
+      if (got && got !== 'not-found') {
+        reply.send({ ...words, full: true, embed: got });
+        return;
+      }
+      // Nothing to show. 'private-repo' only when the repository is confirmed private (the person read why);
+      // anything else is 'unavailable' (the line stays).
+      let reason: 'private-repo' | 'unavailable' = 'unavailable';
+      if (!app && got === 'not-found') {
+        try {
+          if ((await (_repoVisibilityFetcher ?? fetchGitHubRepoVisibility)(ref.owner, ref.repo)) === 'private')
+            reason = 'private-repo';
+        } catch {
+          reason = 'unavailable';
+        }
+      }
+      reply.send({ ...words, full: false, reason });
     },
   );
 
@@ -6837,6 +6969,8 @@ ${pageTokenAliases()}
      tiles="none"> (I-06 / I-07: opened over the page's own cards with open(items, index, opener)). -->
 <ui-hovercard id="art-peek" for="ui-file-card[data-art-id], .ib-chip[data-art], .mg-tile[data-mk]" width="360"></ui-hovercard>
 <ui-artifact-viewer id="art-viewer" tiles="none" lang="ko"></ui-artifact-viewer>
+<!-- #983: the follow-up viewer — a card's open issues and PRs as markdown pages (ui-followup). -->
+<ui-artifact-viewer id="fu-viewer" tiles="none" lang="ko"></ui-artifact-viewer>
 
 <script>
 const INIT_USER = ${initUser};
@@ -9662,11 +9796,17 @@ function renderBoard(board, partial) {
     var arr = board[col0] || [];
     for (var i0 = 0; i0 < arr.length; i0++) {
       _sessionCache[arr[i0].key] = arr[i0];
+      // #983 — a seen follow-up that closed loses its record, for every card the data holds (drawn or not).
+      if (typeof followupReconcile === 'function') followupReconcile(arr[i0]);
       // E4 ⑨a — an epic's children are in no column of the data (the board draws them under
       // their epic, ⑨c): cached here too, before the answer states are evicted and the env /
       // owner indexes read the cache (fable #706 R1 P1).
       var kids = arr[i0].epic && Array.isArray(arr[i0].epic.children) ? arr[i0].epic.children : [];
-      for (var k0 = 0; k0 < kids.length; k0++) if (kids[k0] && kids[k0].key) _sessionCache[kids[k0].key] = kids[k0];
+      for (var k0 = 0; k0 < kids.length; k0++) {
+        if (!kids[k0] || !kids[k0].key) continue;
+        _sessionCache[kids[k0].key] = kids[k0];
+        if (typeof followupReconcile === 'function') followupReconcile(kids[k0]); // #983 — a child's too
+      }
     }
   }
   // Answer states of requests the board no longer holds (a session gone, a prompt or question it no longer asks).
@@ -9937,6 +10077,12 @@ function wireInbox(host) {
     if (e.target !== host || !e.detail || e.detail.what !== 'tldr') return;
     tldrDismiss(String(e.detail.cardId));
   });
+  // A follow-up line (#983): its page in the follow-up viewer, over the card's follow-ups; the card does not toggle.
+  host.addEventListener('ui-followup', function(e) {
+    if (e.target !== host || !e.detail) return;
+    var cardId = String(e.detail.cardId);
+    openFollowupViewer(cardId, String(e.detail.id), inboxFollowupOf(host, cardId, String(e.detail.id)) || host);
+  });
   host.addEventListener('ui-artifact', function(e) {
     if (e.target !== host || !e.detail) return;
     var s = _sessionCache[String(e.detail.cardId)];
@@ -9957,6 +10103,18 @@ function inboxChipOf(host, cardId, artifactId) {
   return null;
 }
 
+// The follow-up line the reader pressed, found in the element's shadow root: the line of that follow-up inside
+// that card (compared as attributes — no key format to rebuild).
+function inboxFollowupOf(host, cardId, id) {
+  var root = host && host.shadowRoot;
+  if (!root) return null;
+  var lines = root.querySelectorAll('[data-followup]');
+  for (var i = 0; i < lines.length; i++) {
+    var li = lines[i].closest && lines[i].closest('li[data-card]');
+    if (li && li.getAttribute('data-card') === cardId && lines[i].getAttribute('data-followup') === id) return lines[i];
+  }
+  return null;
+}
 // Open, or still closing: the collapse runs over the body, so it stays until then.
 function cardBodyShown(key) {
   return _expanded.has(key) || !!_cardClosing[key];
@@ -10403,6 +10561,193 @@ function tldrDismiss(key) {
   refreshCard(key);
 }
 
+// ── #983 (SSOT 2026-11-06): the follow-up bar — the issues and PRs a stopped card left open ──
+// The card's own links still open (cardLinks[].open, card-links.ts) as the element's card.followups (@2lab.ai/ui
+// 0.34.0): one gradient line each under the title bar, on a card that stopped — done (idle) or waiting on the user,
+// never while it runs, never asleep or archived. A press (ui-followup) opens the follow-up viewer (#fu-viewer, the
+// artifact viewer) over all of the card's follow-ups; one whose page loaded is gone from the bar in this browser when
+// the viewer closes — until it closes or merges (its record goes, so a reopen shows it again).
+var FOLLOWUP_GONE_KEY = 'soma-dash-followup-gone';
+var FOLLOWUP_GONE_MAX = 500;
+var _followupGone = null; // card key + newline + URL → when it was seen, loaded once from localStorage
+var _fuViewer = { key: null, opened: null, list: [], docs: {}, seen: {}, gen: 0, closing: false };
+var _fuGen = 0; // one number per opening: an answer from an earlier opening never lands in a later one
+var FU_STATE_WORD = { open: '열림', closed: '닫힘', merged: '머지됨', draft: '초안' };
+var FU_REASON = { 'owner-only': '본문과 댓글은 이 작업의 주인과 관리자만 볼 수 있습니다.', 'private-repo': '비공개 저장소의 본문과 댓글은 관리자만 볼 수 있습니다.', unsupported: '이 페이지는 대시보드에서 내용을 보여 줄 수 없습니다.', unavailable: '지금은 내용을 가져올 수 없습니다. GitHub에서 열어 보세요.' };
+function followupGoneLoad() {
+  if (_followupGone) return _followupGone;
+  _followupGone = Object.create(null);
+  try {
+    var raw = JSON.parse(localStorage.getItem(FOLLOWUP_GONE_KEY) || '{}');
+    if (raw && typeof raw === 'object') for (var k in raw) if (typeof raw[k] === 'number') _followupGone[k] = raw[k];
+  } catch (_e) {}
+  return _followupGone;
+}
+function followupGoneSave() {
+  var gone = followupGoneLoad();
+  var keys = Object.keys(gone);
+  if (keys.length > FOLLOWUP_GONE_MAX) {
+    keys.sort(function(a, b) { return gone[a] - gone[b]; });
+    for (var i = 0; i < keys.length - FOLLOWUP_GONE_MAX; i++) delete gone[keys[i]];
+  }
+  try { localStorage.setItem(FOLLOWUP_GONE_KEY, JSON.stringify(gone)); } catch (_e) {}
+}
+// A seen follow-up that has closed or merged since loses its record, so it shows again if it opens again: the
+// server's followupSettled (every settled link of the session, past the 20 chips), else the chips' states. Run for
+// every session the board takes in (renderBoard, a single-session push) — drawn or not — and from cardFollowupsOf.
+function followupReconcile(s) {
+  if (!s || !s.key) return;
+  var gone = followupGoneLoad();
+  var urls = [];
+  if (Array.isArray(s.followupSettled)) urls = s.followupSettled;
+  else if (Array.isArray(s.cardLinks)) {
+    for (var j = 0; j < s.cardLinks.length; j++) {
+      var c = s.cardLinks[j];
+      if (c && c.open !== true && c.status) urls.push(c.url);
+    }
+  }
+  var dirty = false;
+  for (var i = 0; i < urls.length; i++) {
+    var gk = s.key + '\\n' + urls[i];
+    if (gone[gk]) { delete gone[gk]; dirty = true; }
+  }
+  if (dirty) followupGoneSave();
+}
+function cardFollowupsOf(s, col) {
+  if (!s) return [];
+  followupReconcile(s);
+  var gone = followupGoneLoad();
+  var chips = Array.isArray(s.cardLinks) ? s.cardLinks : [];
+  if (col !== 'idle' && col !== 'waiting') return [];
+  // Every open issue and PR of the session (the server's followupLinks reads past the 20 chips); else the chips.
+  var links = Array.isArray(s.followupLinks) ? s.followupLinks : chips;
+  var out = [];
+  for (var i = 0; i < links.length; i++) {
+    var l = links[i];
+    if (!l || (l.kind !== 'issue' && l.kind !== 'pr') || !l.text || !/^https?:\\/\\/[^\\s]+$/i.test(String(l.url || ''))) continue;
+    if (l.open !== true || gone[s.key + '\\n' + l.url]) continue;
+    var f = { id: String(l.url), kind: l.kind, text: String(l.text), href: String(l.url) };
+    if (l.title && l.title !== l.text) f.title = String(l.title);
+    if (l.status) f.status = String(l.status);
+    out.push(f);
+  }
+  return out;
+}
+// One follow-up as the viewer's markdown page: "# #918 title", the state · kind · author · date, the labels, then the
+// body and the newest comments — or, without them, why (res: the server's answer, null while it loads, 'error').
+// Every string is the viewer's to escape (its markdown never draws raw HTML or images).
+function followupDoc(f, res) {
+  var e = res && res !== 'error' && res.full && res.embed ? res.embed : null;
+  var title = (e && e.title) || f.title || '';
+  var lines = ['# ' + f.text + (title ? ' ' + title : '')];
+  var meta = [];
+  var st = e && e.state ? FU_STATE_WORD[e.state] || String(e.state) : f.status || '';
+  if (st) meta.push('**' + st + '**');
+  meta.push(f.kind === 'pr' ? 'PR' : '이슈');
+  if (e && e.author) meta.push('작성자: ' + e.author);
+  if (e && e.createdAt) meta.push(String(e.createdAt).slice(0, 10));
+  lines.push(meta.join(' · '));
+  if (e && e.labels && e.labels.length) lines.push('', '라벨: ' + e.labels.join(', '));
+  lines.push('');
+  if (res == null) lines.push('불러오는 중…');
+  else if (res === 'error') lines.push('내용을 불러오지 못했습니다. GitHub에서 열어 보세요.');
+  else if (!e) lines.push(FU_REASON[res.reason] || FU_REASON.unavailable);
+  else {
+    lines.push(e.body && String(e.body).trim() ? String(e.body) : '_본문 없음_');
+    if (e.commentsError) lines.push('', '_댓글을 불러오지 못했습니다. GitHub에서 확인하세요._');
+    var cs = Array.isArray(e.comments) ? e.comments : [];
+    if (cs.length) {
+      lines.push('', '## 댓글 (' + cs.length + ' / ' + Math.max(toNum(e.commentsTotal), cs.length) + ')');
+      for (var i = 0; i < cs.length; i++) {
+        var c = cs[i] || {};
+        lines.push('', '### ' + (c.author || '?') + (c.createdAt ? ' · ' + String(c.createdAt).slice(0, 10) : ''), '', String(c.body || ''));
+      }
+    }
+  }
+  return lines.join('\\n');
+}
+function fuViewerItems() {
+  return _fuViewer.list.map(function(f) {
+    var gh = /^https:\\/\\/github\\.com\\//i.test(f.href);
+    var item = { id: f.id, name: f.text + (f.title ? ' · ' + f.title : ''), kind: 'markdown', text: followupDoc(f, _fuViewer.docs[f.id]) };
+    item.actions = [{ id: 'page', label: gh ? 'GitHub에서 열기' : '새 탭에서 열기', href: f.href }]; // 'open' is the viewer's built-in (skipped)
+    return item;
+  });
+}
+// Open the follow-up viewer at one of a card's follow-ups, over all of them; the opener (the line) takes focus back.
+function openFollowupViewer(key, url, opener) {
+  var v = document.getElementById('fu-viewer');
+  var s = _sessionCache[key];
+  if (!v || !s || typeof v.open !== 'function') return;
+  var list = cardFollowupsOf(s, _cardCol[key] || 'idle');
+  if (!list.some(function(f) { return f.id === url; })) return;
+  _fuViewer = { key: key, opened: url, list: list, docs: {}, seen: {}, gen: ++_fuGen, closing: false };
+  var at = Math.max(0, list.findIndex(function(f) { return f.id === url; }));
+  v.open(fuViewerItems(), at, opener && typeof opener.focus === 'function' ? opener : null);
+  fuLoad(key, url);
+}
+// Whether a page the server sent is something the person read: the body with its comments, or the card's own words
+// and why the body is not shown. A fetch that failed (unavailable) or comments that did not load are not.
+function fuSeenBy(res) {
+  if (!res || typeof res !== 'object') return false;
+  if (res.full === true) return !!(res.embed && !res.embed.commentsError);
+  return res.reason === 'owner-only' || res.reason === 'private-repo' || res.reason === 'unsupported';
+}
+// The open follow-up viewer draws the pages as they are now.
+function fuRender() {
+  var v = document.getElementById('fu-viewer');
+  if (v && _fuViewer.key) v.data = { items: fuViewerItems() };
+}
+// A follow-up's page from the server (once per opening). An answer counts only for the opening that asked, and not
+// once the viewer is closing.
+function fuLoad(key, url) {
+  if (_fuViewer.key !== key || Object.prototype.hasOwnProperty.call(_fuViewer.docs, url)) return;
+  var gen = _fuViewer.gen;
+  var live = function() { return _fuViewer.key === key && _fuViewer.gen === gen && !_fuViewer.closing; };
+  var s = _sessionCache[key];
+  if (s && isSiblingSession(s)) {
+    // Another instance's card: its links are not this server's to read — the card's words and why, at once.
+    _fuViewer.docs[url] = { full: false, reason: 'unsupported' };
+    _fuViewer.seen[url] = true;
+    fuRender();
+    return;
+  }
+  _fuViewer.docs[url] = null;
+  fetch('/api/dashboard/session/' + encodeURIComponent(key) + '/link-embed?url=' + encodeURIComponent(url), { credentials: 'same-origin' })
+    .then(function(r) { return r && r.ok ? r.json() : Promise.reject(new Error('link-embed ' + (r && r.status))); })
+    .then(function(res) {
+      if (!live()) return;
+      _fuViewer.docs[url] = res && typeof res === 'object' ? res : 'error';
+      if (fuSeenBy(res)) _fuViewer.seen[url] = true;
+      fuRender();
+    })
+    .catch(function() {
+      if (!live()) return;
+      _fuViewer.docs[url] = 'error';
+      fuRender();
+    });
+}
+// The viewer shows another follow-up (a step): its page is brought in.
+function onFuViewerView(detail) {
+  if (detail && _fuViewer.key) fuLoad(_fuViewer.key, String(detail.id));
+}
+// The person closes the viewer (Esc, the scrim, ✕): what was read is fixed now — an answer during the exit does not count.
+function onFuViewerClose() {
+  if (_fuViewer.key) _fuViewer.closing = true;
+}
+// The viewer closed: the follow-up the person pressed is gone from the bar if its page came back (T3: a press
+// dismisses it, as the TL;DR's ×), and the card redraws.
+function onFuViewerClosed() {
+  var key = _fuViewer.key;
+  var url = _fuViewer.opened;
+  var seen = !!(key && url && _fuViewer.seen[url]);
+  _fuViewer = { key: null, opened: null, list: [], docs: {}, seen: {}, gen: 0, closing: false };
+  if (!seen) return;
+  followupGoneLoad()[key + '\\n' + url] = Date.now();
+  followupGoneSave();
+  refreshCard(key);
+}
+
 // The face's star (SSOT 2026-11-01): the open card's ☆ 즐겨찾기 (sessionActionsOf) as the face's toggle — its state,
 // its tooltip, and for anyone but the owner (or while a write runs) inert with the reason.
 function cardStarOf(s, col) {
@@ -10435,6 +10780,9 @@ function viewCardOf(s, col) {
   // The Executive Summary's TL;DR (SSOT 2026-11-02 T7) — the face keeps it whatever rows the layout picked.
   var tl = cardTldrOf(s, col);
   if (tl) c.tldr = tl;
+  // The follow-up bar (#983): the issues and PRs still open, under the title bar, whatever rows the layout picked.
+  var fu = cardFollowupsOf(s, col);
+  if (fu.length) c.followups = fu;
   // #805 review: the gauge draws the level the model runs (effortEffective when it caps the set one); an archive's
   // effort is the owner's default today, not the run's — no gauge (effortFromDefault).
   var eff = s.effortFromDefault ? '' : s.effortEffective || s.effort;
@@ -12133,7 +12481,13 @@ function steeringData(s, mode) {
   // Docked (SSOT 2026-11-05): a note the queue holds waits behind the element's round count button at the composer's
   // top right — hover or press opens the queue, a bottom sheet on a phone — so it never covers the chat above the
   // field; only a note on its way in shows there.
-  return { running: mode !== 'closed' && s.activityState === 'working', canAct: mode !== 'readonly', disabled: mode === 'closed', items: items, queue: 'dock' };
+  // Running from dispatch on (SSOT 2026-11-06): a turn that is still starting holds the session too (turnBusy) — a
+  // note sent then waits in the queue, so it is never drawn as a turn of its own.
+  return { running: mode !== 'closed' && turnHolds(s), canAct: mode !== 'readonly', disabled: mode === 'closed', items: items, queue: 'dock' };
+}
+// A turn holds the session: it works, or it was dispatched and has not settled yet (the server's turnBusy).
+function turnHolds(s) {
+  return !!s && (s.activityState === 'working' || s.turnBusy === true);
 }
 // The note the element names (its host id) as the payload has it: the generation
 // an action on it carries. A local row (a send that failed) is not in the queue.
@@ -12684,7 +13038,7 @@ async function cwCompact() {
   _cw.req = 'sending';
   _cw.reqAt = now;
   _cw.obsInReq = false;
-  _cw.queued = s.activityState === 'working' || s.activityState === 'waiting'; // a turn holds the slot: the command waits behind it
+  _cw.queued = turnHolds(s) || s.activityState === 'waiting'; // a turn holds the slot: the command waits behind it
   _cw.failAt = 0;
   _cw.timedOutAt = 0;
   // One ceiling per request: a new request lets the previous one's go.
@@ -16420,6 +16774,7 @@ function connectWs() {
         // (an open card stays open). The column is the one the card is drawn in.
         var updatedKey = msg.session.key;
         _sessionCache[updatedKey] = msg.session;
+        if (typeof followupReconcile === 'function') followupReconcile(msg.session);
         acEvict(updatedKey, msg.session);
         patchLastBoard(msg.session);
         if (_cardHost[updatedKey]) refreshCard(updatedKey);
@@ -19949,7 +20304,10 @@ function applyEpicPush(s) {
   if (!s || !s.key) return;
   var children = epicChildrenOf(s);
   // Cached first: a panel open on a child reads it even before a board is drawn.
-  for (var i = 0; i < children.length; i++) _sessionCache[children[i].key] = children[i];
+  for (var i = 0; i < children.length; i++) {
+    _sessionCache[children[i].key] = children[i];
+    if (typeof followupReconcile === 'function') followupReconcile(children[i]); // #983
+  }
   if (!_lastBoardData) return;
   var placed = _epicKidsDrawn[s.key];
   var now = epicKidsSig(s, showSleeping === false, _revealedKey);
@@ -20835,6 +21193,14 @@ function fcHydrateIn(node) {
       if (!artViewerIsOpen()) _artViewer = { cid: null, scope: 'conversation', list: [] };
     });
   }
+})();
+
+(function initFollowupViewer() {
+  var v = document.getElementById('fu-viewer');
+  if (!v) return;
+  v.addEventListener('ui-view', function(e) { onFuViewerView(e.detail); });
+  v.addEventListener('ui-close', function() { onFuViewerClose(); });
+  v.addEventListener('ui-closed', function() { onFuViewerClosed(); });
 })();
 
 // ── The board element: its events (wireInbox), skeleton cards until the first

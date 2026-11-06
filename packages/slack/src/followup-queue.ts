@@ -325,6 +325,72 @@ function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+type FollowupFile = NonNullable<MessageEvent['files']>[number];
+
+/** The types a pasted or uploaded file most often has, by name extension. */
+const MIMETYPE_BY_EXTENSION: Readonly<Record<string, string>> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  heic: 'image/heic',
+  svg: 'image/svg+xml',
+  pdf: 'application/pdf',
+  txt: 'text/plain',
+  md: 'text/markdown',
+  csv: 'text/csv',
+  json: 'application/json',
+  log: 'text/plain',
+  mp4: 'video/mp4',
+  mov: 'video/quicktime',
+  m4a: 'audio/mp4',
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+};
+
+const filled = (value: unknown): value is string => typeof value === 'string' && value.trim() !== '';
+
+/**
+ * A message's files as the store can keep them (SSOT 2026-11-06): Slack's
+ * `files.info` answers right after an upload with an empty `mimetype`, and the
+ * store rejected the whole snapshot for it — the message, text and all, was
+ * never stored and the agent never saw it. A file's descriptive fields must
+ * never cost the message, so blank ones are filled from what the file does
+ * carry: the name from the id, the type from the name's extension, one URL from
+ * the other, a missing size as 0. A file with neither an id nor any URL cannot
+ * be fetched by anyone; it is left out and the message is kept.
+ */
+function storableFiles(files: readonly FollowupFile[]): FollowupFile[] {
+  const kept: FollowupFile[] = [];
+  for (const file of files) {
+    const download = filled(file.url_private_download) ? file.url_private_download : file.url_private;
+    if (!filled(file.id) || !filled(download)) continue;
+    const name = filled(file.name) ? file.name : file.id;
+    const dot = name.lastIndexOf('.');
+    const extension = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
+    kept.push({
+      ...file,
+      name,
+      mimetype: filled(file.mimetype)
+        ? file.mimetype
+        : (MIMETYPE_BY_EXTENSION[extension] ?? 'application/octet-stream'),
+      filetype: filled(file.filetype) ? file.filetype : extension || 'binary',
+      url_private: filled(file.url_private) ? file.url_private : download,
+      url_private_download: download,
+      size: typeof file.size === 'number' && Number.isFinite(file.size) ? file.size : 0,
+    });
+  }
+  return kept;
+}
+
+/** `message` with its files made storable ({@link storableFiles}); a message without files is untouched. */
+function storableMessage(message: MessageEvent): MessageEvent {
+  const copy = cloneJson(message);
+  if (copy.files !== undefined) copy.files = storableFiles(copy.files);
+  return copy;
+}
+
 /**
  * Items currently occupying a capacity slot. Single definition on purpose:
  * `enqueue` and `retry` are the only two doors into `queued`, so they must
@@ -483,7 +549,7 @@ export class FollowupQueue {
       epoch: 0,
       state: 'queued',
       eventKey,
-      message: cloneJson(message),
+      message: storableMessage(message),
       context: cloneJson(context),
       enqueuedAt: now,
       updatedAt: now,
@@ -826,7 +892,7 @@ export class FollowupQueue {
   ): FollowupOpResult {
     return this.mutate(sessionKey, itemId, expectedEpoch, (item) => {
       if (item.state !== 'queued') return 'invalid-state';
-      item.message = { ...item.message, files: [...(item.message.files ?? []), ...cloneJson(files)] };
+      item.message = { ...item.message, files: [...(item.message.files ?? []), ...storableFiles(cloneJson(files))] };
       this.enter(item, 'queued', '첨부 추가됨');
       return undefined;
     });
