@@ -72,7 +72,7 @@ export interface LiveBackgroundWork {
   /** Stable signature of the live set (sorted task_ids) for cap suppression. */
   signature: string;
   /** The tasks themselves, for the resume prompt to name (#966). */
-  tasks?: Array<{ taskId: string; taskType?: string; outputFile?: string }>;
+  tasks?: Array<{ taskId: string; taskType?: string; outputFile?: string; description?: string }>;
 }
 
 /** At most this many stopped tasks are named in the resume prompt. */
@@ -142,8 +142,15 @@ export function buildBackgroundWaitPrompt(live: LiveBackgroundWork, attempt: num
   const pronoun = live.count === 1 ? 'it' : 'they';
   const tasks = (live.tasks ?? []).slice(0, PROMPT_TASKS_MAX).map((t) => {
     const type = t.taskType ? ` (${t.taskType})` : '';
+    // Model-written: one line, no quotes or backticks, clipped.
+    const flat = t.description
+      ?.replace(/[\r\n\t]+/g, ' ')
+      .replace(/[`"]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const what = flat ? ` ${flat.length > 80 ? `${flat.slice(0, 79)}…` : flat}` : '';
     const out = t.outputFile ? ` — output file: ${t.outputFile}` : '';
-    return `- ${t.taskId}${type}${out}`;
+    return `- ${t.taskId}${type}${what}${out}`;
   });
   const more =
     (live.tasks?.length ?? 0) > PROMPT_TASKS_MAX

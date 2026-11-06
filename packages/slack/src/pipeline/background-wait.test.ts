@@ -149,6 +149,19 @@ describe('buildBackgroundWaitPrompt — the tasks stopped with the turn (#966)',
     expect(p).not.toMatch(/still running|keeps this session alive|still reports/i);
   });
 
+  it('names a task by its description too, on one line', () => {
+    const p = buildBackgroundWaitPrompt(
+      liveWork({
+        count: 1,
+        signature: 'b2',
+        tasks: [{ taskId: 'b2', taskType: 'local_bash', description: 'Wait for\nCI "checks"' }],
+      }),
+      1,
+      6,
+    );
+    expect(p).toContain('- b2 (local_bash) Wait for CI checks');
+  });
+
   it('names each stopped task with its type and output file', () => {
     const p = buildBackgroundWaitPrompt(stopped, 1, 6);
     expect(p).toContain('- b1 (local_bash) — output file: /tmp/b1.output');

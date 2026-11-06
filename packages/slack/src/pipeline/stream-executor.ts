@@ -119,7 +119,7 @@ import type { UserChoice, UserChoices } from '../user-choice-extractor';
 import { UserChoiceHandler } from '../user-choice-handler';
 import type { TurnAttachment } from '../user-media';
 import type { WorkLogInput } from '../work-log';
-import { decideBackgroundWaitContinuation, getBackgroundWaitCap } from './background-wait';
+import { decideBackgroundWaitContinuation, getBackgroundWaitCap, type LiveBackgroundWork } from './background-wait';
 import { appendDisplayLangTag } from './display-lang-tag';
 import { shouldForwardAsLocalSlashCommand } from './local-slash-command';
 import { SESSION_TITLE_PENDING_NOTICE, shouldInjectSessionTitleNotice } from './session-title-notice';
@@ -1013,6 +1013,25 @@ export class StreamExecutor {
    * is cleared and the guard re-arms. Keyed by sessionKey.
    */
   private bgWaitSuppressed = new Map<string, string>();
+
+  /**
+   * #966 — at a turn's end its CLI process has exited and stopped the background tasks it ran.
+   * Read the live set once and settle exactly those ids (a newer turn's own tasks are left alone —
+   * the tracker is per session). Returns the snapshot for the background-work decision.
+   */
+  private endTurnBackgroundWork(sessionKey: string, turnId: string | undefined): LiveBackgroundWork {
+    const live = this.deps.toolEventProcessor.getLiveBackgroundWork(sessionKey);
+    if (live.count > 0) {
+      const ids = (live.tasks ?? []).map((t) => t.taskId);
+      const ended = this.deps.toolEventProcessor.endBackgroundWorkWithTurn(sessionKey, ids);
+      this.logger.info('Background work ended with the turn — settled', {
+        sessionKey,
+        turnId,
+        tasks: ended.map((t) => `${t.taskId}${t.taskType ? `:${t.taskType}` : ''}`),
+      });
+    }
+    return live;
+  }
 
   constructor(private deps: StreamExecutorDeps) {}
 
@@ -3439,6 +3458,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // hang can never block the terminal card.
       // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §C-5.
 
+      // #966 / #989 review — this turn's CLI has ended, and its background tasks with it. Snapshot
+      // them (the background-work decision below reads this) and settle exactly those ids, before
+      // any continuation branch returns: renew, onboarding and tool continuations end the CLI too.
+      const endedBackground = this.endTurnBackgroundWork(sessionKey, turnId);
+
       // B-6: renew continuation already settled before the notify rail (see
       // the `renewContinuation` / `renewFailed` computation above
       // `determineTurnCategory`). If renew succeeded, return the
@@ -3512,9 +3536,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // subagent Task, AND Monitor uniformly — `count`/`labels`/`signature` in
       // one snapshot.
       // #966: none of it survives this turn. The CLI process ends with the turn
-      // and stops its background tasks as it exits, so the snapshot names what
-      // just stopped, and the tasks are settled right after the decision.
-      const liveBackground = this.deps.toolEventProcessor.getLiveBackgroundWork(sessionKey);
+      // and stops its background tasks as it exits, so the snapshot (taken
+      // before the continuation branches above, which return early) names what
+      // just stopped; those tasks are already settled.
+      const liveBackground = endedBackground;
       // The pure decision fn owns the policy, INCLUDING non-destructive cap
       // suppression: it compares the live `signature` against the one we gave up
       // on (`suppressedSignature`) and returns `none` while the stuck set is
@@ -3528,15 +3553,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         hasError: hasSdkError,
         hasOtherContinuation: false,
       });
-      // #966 — they stopped with this turn's CLI: the tracker must not keep claiming them live.
-      if (liveBackground.count > 0) {
-        const ended = this.deps.toolEventProcessor.endBackgroundWorkWithTurn(sessionKey);
-        this.logger.info('Background work ended with the turn — settled', {
-          sessionKey,
-          turnId,
-          tasks: ended.map((t) => `${t.taskId}${t.taskType ? `:${t.taskType}` : ''}`),
-        });
-      }
+
       if (bgDecision.action === 'continue') {
         this.bgWaitCounts.set(sessionKey, bgDecision.nextWaitCount);
         this.logger.info('Background-work resume: re-entering loop instead of completing', {
@@ -3584,6 +3601,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         turnCollector,
       };
     } catch (error: any) {
+      // A failed or aborted turn ended its CLI too (#989 review): settle the background work it saw.
+      try {
+        this.endTurnBackgroundWork(sessionKey, turnId);
+      } catch {
+        // Never let tracker bookkeeping hide the turn's own error.
+      }
       const requestAborted = abortController.signal.aborted;
       // Auto fallback compact: preserve the real-user text whose turn just
       // failed so the prompt-too-long branch in handleError can stash it and

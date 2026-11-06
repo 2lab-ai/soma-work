@@ -9,7 +9,11 @@ import type { AssistantStatusManager } from './assistant-status-manager';
 import type { McpHealthMonitor } from './mcp-health-monitor';
 import type { McpStatusDisplay } from './mcp-status-tracker';
 import { getToolResultRenderMode, OutputFlag, resolveVerbosityMask, shouldOutput } from './output-flags';
-import { AgentTaskLifecycleTracker, parseBackgroundLaunchId } from './pipeline/background-task-tracker';
+import {
+  AgentTaskLifecycleTracker,
+  parseBackgroundLaunchId,
+  parseBackgroundOutputFile,
+} from './pipeline/background-task-tracker';
 import type { ReactionManager } from './reaction-manager';
 import { extractTaskIdFromResult } from './stream-processor';
 import { ToolFormatter, type ToolResult } from './tool-formatter';
@@ -519,6 +523,7 @@ export class ToolEventProcessor {
             this.backgroundTaskTracker.trackStart(context.sessionKey, taskId, {
               toolUseId: toolResult.toolUseId,
               taskType: 'bash',
+              outputFile: parseBackgroundOutputFile(toolResult.result),
             });
           }
         }
@@ -771,7 +776,7 @@ export class ToolEventProcessor {
     count: number;
     labels: string[];
     signature: string;
-    tasks: Array<{ taskId: string; taskType?: string; outputFile?: string }>;
+    tasks: Array<{ taskId: string; taskType?: string; outputFile?: string; description?: string }>;
   } {
     if (!sessionKey) return { count: 0, labels: [], signature: '', tasks: [] };
     // AUTHORITATIVE source: the SDK task lifecycle (started − settled), keyed by
@@ -790,6 +795,7 @@ export class ToolEventProcessor {
         taskId: t.taskId,
         ...(t.taskType ? { taskType: t.taskType } : {}),
         ...(t.outputFile ? { outputFile: t.outputFile } : {}),
+        ...(t.description ? { description: t.description } : {}),
       })),
     };
   }
@@ -803,9 +809,12 @@ export class ToolEventProcessor {
    * replayed start) is a no-op. Call it after the turn-end decision has read
    * {@link getLiveBackgroundWork}.
    */
-  endBackgroundWorkWithTurn(sessionKey?: string): Array<{ taskId: string; taskType?: string }> {
+  endBackgroundWorkWithTurn(sessionKey?: string, taskIds?: string[]): Array<{ taskId: string; taskType?: string }> {
     if (!sessionKey) return [];
-    const ended = this.backgroundTaskTracker.liveTasks(sessionKey);
+    // Only the ids the ended turn saw, when given: the tracker is per session, and a newer turn
+    // (a supersede) may already have started tasks of its own (#989 review).
+    const only = taskIds ? new Set(taskIds) : undefined;
+    const ended = this.backgroundTaskTracker.liveTasks(sessionKey).filter((t) => !only || only.has(t.taskId));
     for (const task of ended) this.backgroundTaskTracker.trackSettled(sessionKey, task.taskId);
     return ended.map((t) => ({ taskId: t.taskId, ...(t.taskType ? { taskType: t.taskType } : {}) }));
   }
@@ -825,6 +834,7 @@ export class ToolEventProcessor {
         toolUseId: event.toolUseId,
         taskType: event.taskType,
         outputFile: event.outputFile,
+        description: event.description,
       });
     } else if (event.phase === 'settled') {
       this.backgroundTaskTracker.trackSettled(sessionKey, event.taskId);
