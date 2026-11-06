@@ -53,10 +53,12 @@ const makerEntryUntil = new Map<string, number>();
  * that has one (#970) keeps that entry's description — purpose, topic, repos, wiki — and takes everything else
  * from the read (name, private, archived: those are as fresh as the read is). Returns the entry stored.
  */
-function storeRead(info: ChannelInfo): ChannelInfo {
+function storeRead(info: ChannelInfo, client?: WebClient): ChannelInfo {
   const held = channels.get(info.id);
   const until = makerEntryUntil.get(info.id) ?? 0;
   if (held && Date.now() < until && held.repos.length > 0 && info.repos.length === 0) {
+    // The read may also have been right (the repo link was really removed): read once more when the window ends.
+    if (client) scheduleRecheck(client, info.id, until);
     const merged: ChannelInfo = {
       ...info,
       purpose: held.purpose,
@@ -73,6 +75,35 @@ function storeRead(info: ChannelInfo): ChannelInfo {
   }
   channels.set(info.id, info);
   return info;
+}
+
+/** One pending re-read per channel whose repo-less read was kept out (#970). */
+const recheckTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/**
+ * After the maker's window ends, read the channel again and take what Slack says then — so a repo link removed on
+ * purpose inside the window is not kept forever. Skipped when the channel was removed or written again since.
+ */
+function scheduleRecheck(client: WebClient, channelId: string, until: number): void {
+  if (recheckTimers.has(channelId)) return;
+  const timer = setTimeout(
+    () => {
+      recheckTimers.delete(channelId);
+      if (!channels.has(channelId) || (makerEntryUntil.get(channelId) ?? 0) !== until) return;
+      makerEntryUntil.delete(channelId);
+      logger.info('🔁 Re-reading a channel after the maker’s window', { channelId });
+      void registerChannel(client, channelId);
+    },
+    Math.max(0, until - Date.now()) + 1_000,
+  );
+  (timer as { unref?: () => void }).unref?.();
+  recheckTimers.set(channelId, timer);
+}
+
+function clearRecheck(channelId: string): void {
+  const timer = recheckTimers.get(channelId);
+  if (timer) clearTimeout(timer);
+  recheckTimers.delete(channelId);
 }
 
 // Repo detection pattern: GitHub repo URLs or "repo: owner/repo" notation
@@ -133,7 +164,7 @@ export async function scanChannels(client: WebClient): Promise<number> {
           });
         }
 
-        storeRead(info);
+        storeRead(info, client);
         totalChannels++;
       }
 
@@ -186,7 +217,7 @@ export async function registerChannel(client: WebClient, channelId: string): Pro
     info.repos = parseRepos(rawText);
     info.confluenceUrl = parseConfluenceUrl(rawText);
 
-    const stored = storeRead(info);
+    const stored = storeRead(info, client);
     rebuildRepoIndex();
     invalidateChannelCache(channelId);
     if (stored !== info) return stored;
@@ -239,6 +270,7 @@ export function upsertChannel(input: {
   info.confluenceUrl = parseConfluenceUrl(rawText);
   channels.set(info.id, info);
   makerEntryUntil.set(info.id, Date.now() + MAKER_ENTRY_MS);
+  clearRecheck(info.id);
   rebuildRepoIndex();
   invalidateChannelCache(info.id);
   logger.info('✅ Channel upserted', { channelId: info.id, name: info.name, repos: info.repos });
@@ -286,6 +318,7 @@ export function isChannelBeingMade(name: string): boolean {
 export function unregisterChannel(channelId: string): void {
   channels.delete(channelId);
   makerEntryUntil.delete(channelId);
+  clearRecheck(channelId);
   rebuildRepoIndex();
   invalidateChannelCache(channelId);
   logger.info('Channel unregistered', { channelId });

@@ -143,7 +143,9 @@ export function repoChannelDeps(client: WebClient): RepoChannelDeps {
     // #970 — a read-only look (no invite) at a public mapping that stands in a private request's way.
     channelState: async (channel) => {
       const res = await client.conversations.info({ channel });
-      return res.channel ? { archived: res.channel.is_archived === true } : null;
+      return res.channel
+        ? { archived: res.channel.is_archived === true, isPrivate: res.channel.is_private === true }
+        : null;
     },
     markArchived: (channel) => markChannelArchived(channel),
   };

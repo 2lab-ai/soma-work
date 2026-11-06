@@ -298,6 +298,7 @@ describe('ensureRepoChannel', () => {
         { id: 'C_PUB', name: 'team', isPrivate: false },
         { id: 'C_PRIV2', name: 'project', isPrivate: true },
       ]),
+      channelState: vi.fn(async (id: string) => ({ archived: false, isPrivate: id !== 'C_PUB' })),
     });
     await expect(ensureRepoChannel('U_ADMIN', { ...REQUEST, isPrivate: true }, both)).resolves.toMatchObject({
       channelId: 'C_PRIV2',
@@ -305,7 +306,10 @@ describe('ensureRepoChannel', () => {
     });
     expect(both.invite).toHaveBeenCalledTimes(1);
     expect(both.invite).toHaveBeenCalledWith('C_PRIV2', 'U_ADMIN');
-    const priv = deps({ mappedChannels: vi.fn(() => [{ id: 'C_PRIV', name: 'workspace-new-repo', isPrivate: true }]) });
+    const priv = deps({
+      mappedChannels: vi.fn(() => [{ id: 'C_PRIV', name: 'workspace-new-repo', isPrivate: true }]),
+      channelState: vi.fn(async () => ({ archived: false, isPrivate: true })),
+    });
     await expect(ensureRepoChannel('U_ADMIN', { ...REQUEST, isPrivate: true }, priv)).resolves.toEqual({
       channelId: 'C_PRIV',
       channelName: 'workspace-new-repo',
@@ -519,6 +523,31 @@ describe('ensureRepoChannel', () => {
     });
     expect(d.channelState).toHaveBeenCalledWith('C_PUB');
     expect(d.create).not.toHaveBeenCalled();
+  });
+
+  // #970 review round 2 — a private request trusts no cached privacy: a channel last seen private (even archived)
+  // that is public now is never invited into or returned.
+  it('a private request: a channel cached private+archived, restored as public, blocks (409, nobody invited)', async () => {
+    const d = deps({
+      mappedChannels: vi.fn(() => [{ id: 'C_WAS_PRIV', name: 'project', isPrivate: true, isArchived: true }]),
+      channelState: vi.fn(async () => ({ archived: false, isPrivate: false })),
+    });
+    await expect(ensureRepoChannel('U_ADMIN', { ...REQUEST, isPrivate: true }, d)).rejects.toMatchObject({
+      statusCode: 409,
+    });
+    expect(d.invite).not.toHaveBeenCalled();
+    expect(d.create).not.toHaveBeenCalled();
+  });
+
+  it('a private request: a channel cached private whose state cannot be read is not used (fail closed)', async () => {
+    const d = deps({
+      mappedChannels: vi.fn(() => [{ id: 'C_PRIV', name: 'project', isPrivate: true }]),
+      channelState: vi.fn(async () => null),
+    });
+    const error = await ensureRepoChannel('U_ADMIN', { ...REQUEST, isPrivate: true }, d).catch((e) => e);
+    expect(error.statusCode).toBe(409);
+    expect(error.message).toMatch(/확인하지 못했습니다/);
+    expect(d.invite).not.toHaveBeenCalled();
   });
 
   it('slackErrorCode reads the Web API error code, nothing else', () => {
