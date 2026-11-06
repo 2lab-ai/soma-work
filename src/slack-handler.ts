@@ -138,7 +138,7 @@ import {
   setGoalStallRetiredListener,
   shouldAskGoalStallQuestion,
 } from './slack/goal-stall';
-import { openTaskIds } from './slack/goal-task-gate';
+import { heldTasksOf } from './slack/goal-task-gate';
 import {
   checkAndConsumeBudget,
   formatBudgetExhaustedMessage,
@@ -8899,7 +8899,7 @@ export class SlackHandler {
     }
     const snapshot = snapshotGoalState(live);
     // Its open tasks stay its own: they hold no other goal while it is paused.
-    const { paused, promoted } = pauseCurrentGoal(live, { heldTaskIds: openTaskIds(live.taskLedger) });
+    const { paused, promoted } = pauseCurrentGoal(live, heldTasksOf(live.taskLedger));
     if (!paused) {
       // Unreachable after assertGoalPausable — but never leave the anchor without its outcome.
       await this.postGoalNoticeBestEffort(

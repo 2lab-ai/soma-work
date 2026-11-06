@@ -109,8 +109,14 @@ export interface SessionGoalState {
    * or resumed into the queue) they hold no other goal's completion
    * (`src/slack/goal-task-gate.ts`); when it takes the current slot again
    * ({@link rebaseGoalAsActive}) it is cleared, so they count for it again.
+   * They apply only while the task list they came from is still the latest
+   * ({@link heldListAt}): once the running goal writes its own list, every task
+   * on it is that goal's — the ledger matches a new task onto an old id by its
+   * text, so an id alone does not say whose task it is.
    */
   heldTaskIds?: string[];
+  /** The task list (`TaskLedger.updatedAt`) {@link heldTaskIds} were taken from. */
+  heldListAt?: number;
   /**
    * The goal's opening turn was admitted but has not reached the model yet
    * (set by the host when it admits the opening, cleared right before the
@@ -479,6 +485,7 @@ function rebaseGoalAsActive(goal: SessionGoalState, priorEpoch: number | undefin
   goal.lastAssistantTurnSummary = undefined;
   // In the slot, its own open tasks hold it again.
   goal.heldTaskIds = undefined;
+  goal.heldListAt = undefined;
   dropScheduledEval(goal);
 }
 
@@ -576,8 +583,11 @@ export function deleteCurrentGoal(session: GoalQueueSession): { deleted: boolean
  */
 export function pauseCurrentGoal(
   session: GoalQueueSession,
-  /** The open task ids on the session's task list now — the paused goal's own work ({@link SessionGoalState.heldTaskIds}). */
-  opts: { heldTaskIds?: readonly string[] } = {},
+  /**
+   * The open task ids on the session's task list now and that list's
+   * `updatedAt` — the paused goal's own work ({@link SessionGoalState.heldTaskIds}).
+   */
+  opts: { heldTaskIds?: readonly string[]; heldListAt?: number } = {},
 ): {
   paused?: SessionGoalState;
   promoted?: SessionGoalState;
@@ -591,13 +601,15 @@ export function pauseCurrentGoal(
   current.updatedAt = Date.now();
   // A task another waiting goal already holds stays that goal's: holding it
   // twice would let it escape its owner's gate once the owner runs again.
+  // Only a hold on this same list counts — one on an older list no longer applies.
   const heldElsewhere = new Set(
     [...(session.goalPaused ?? []), ...(session.goalQueue ?? [])]
-      .filter((g) => g !== current)
+      .filter((g) => g !== current && g.heldListAt === opts.heldListAt)
       .flatMap((g) => g.heldTaskIds ?? []),
   );
   const own = (opts.heldTaskIds ?? []).filter((id) => !heldElsewhere.has(id));
   current.heldTaskIds = own.length ? own : undefined;
+  current.heldListAt = own.length ? opts.heldListAt : undefined;
   session.goalPaused = (session.goalPaused ?? []).filter((g) => g.goalId !== current.goalId);
   session.goalPaused.push(current);
   const next = session.goalQueue && session.goalQueue.length > 0 ? session.goalQueue.shift() : undefined;

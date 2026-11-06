@@ -333,6 +333,7 @@ describe('GoalHandler — goal pause / goal resume', () => {
     const deps = makeDeps(session);
     await new GoalHandler(deps).execute(makeCtx({ text: 'goal pause' }));
     expect(session.goalPaused?.[0].heldTaskIds).toEqual(['T2', 'T3']);
+    expect(session.goalPaused?.[0].heldListAt).toBe(session.taskLedger.updatedAt);
 
     // Resumed behind the running goal it still waits: its tasks stay its own until it takes the slot.
     await new GoalHandler(deps).execute(makeCtx({ text: 'goal resume 1' }));
@@ -350,10 +351,11 @@ describe('GoalHandler — goal pause / goal resume', () => {
 
   it('a task already held by a waiting goal is not held again by the next goal paused (review r2 P2)', () => {
     const session = sessionWithQueue(); // A runs, B and C wait
+    session.taskLedger = { nextSeq: 5, tasks: [], current: ['T2', 'T3', 'T4'], updatedAt: 1_000 };
     const a = session.goal!;
-    pauseCurrentGoal(session, { heldTaskIds: ['T2', 'T3'] }); // A holds T2, T3; B runs
+    pauseCurrentGoal(session, { heldTaskIds: ['T2', 'T3'], heldListAt: 1_000 }); // A holds T2, T3; B runs
     const b = session.goal!;
-    pauseCurrentGoal(session, { heldTaskIds: ['T2', 'T3', 'T4'] }); // B never touched the list, added T4
+    pauseCurrentGoal(session, { heldTaskIds: ['T2', 'T3', 'T4'], heldListAt: 1_000 }); // same list: B holds only T4
     expect(a.heldTaskIds).toEqual(['T2', 'T3']);
     expect(b.heldTaskIds).toEqual(['T4']);
     // A resumed while C runs waits next; when it takes the slot its own tasks hold it again.
@@ -362,6 +364,15 @@ describe('GoalHandler — goal pause / goal resume', () => {
     advanceGoalQueue(session);
     expect(session.goal).toBe(a);
     expect([...heldByWaitingGoals(session)]).toEqual(['T4']);
+  });
+
+  it('held tasks stop applying once the running goal writes its own task list (review r3 P1)', async () => {
+    const session = sessionWithQueue();
+    session.taskLedger = applyTodoList(undefined, [{ content: 'open one', status: 'pending' }], 1_000);
+    await new GoalHandler(makeDeps(session)).execute(makeCtx({ text: 'goal pause' }));
+    expect([...heldByWaitingGoals(session)]).toEqual(['T1']);
+    session.taskLedger = applyTodoList(session.taskLedger, [{ content: 'open one!', status: 'pending' }], 2_000);
+    expect(heldByWaitingGoals(session).size).toBe(0);
   });
 
   it('T2: `goal pause` with nothing queued ends the goal work and starts no turn', async () => {

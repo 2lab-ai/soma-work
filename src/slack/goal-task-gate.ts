@@ -70,12 +70,18 @@ function goalTasks(ledger: TaskLedger, exclude?: ReadonlySet<string>): TaskView[
   return exclude?.size ? current.filter((t) => !exclude.has(t.id)) : current;
 }
 
-/** The ids of the open tasks on the latest list — what a goal paused now leaves behind as its own. */
-export function openTaskIds(ledger: TaskLedger | undefined): string[] {
-  if (!ledger) return [];
-  return ledgerTasks(ledger)
-    .current.filter((t) => t.status !== 'completed')
-    .map((t) => t.id);
+/**
+ * What a goal paused now leaves behind as its own: the open tasks of the
+ * latest list, and which list that is (`updatedAt`) — see `heldListAt`.
+ */
+export function heldTasksOf(ledger: TaskLedger | undefined): { heldTaskIds: string[]; heldListAt?: number } {
+  if (!ledger) return { heldTaskIds: [] };
+  return {
+    heldTaskIds: ledgerTasks(ledger)
+      .current.filter((t) => t.status !== 'completed')
+      .map((t) => t.id),
+    heldListAt: ledger.updatedAt,
+  };
 }
 
 /**
@@ -83,13 +89,21 @@ export function openTaskIds(ledger: TaskLedger | undefined): string[] {
  * for every goal that still waits — paused, or resumed into the queue behind
  * the running goal. A waiting goal's unfinished work must not hold the goal
  * that runs in its place: B would otherwise be told to finish or drop A's tasks.
+ *
+ * Only while the list they came from is still the latest (review r3 P1): once
+ * the running goal writes its own list, every task on it is its own. The ledger
+ * matches a new task onto an old id by its text, so an old id on a new list may
+ * be the running goal's new task.
  */
 export function heldByWaitingGoals(session: {
-  goalPaused?: Array<{ heldTaskIds?: string[] }>;
-  goalQueue?: Array<{ heldTaskIds?: string[] }>;
+  goalPaused?: Array<{ heldTaskIds?: string[]; heldListAt?: number }>;
+  goalQueue?: Array<{ heldTaskIds?: string[]; heldListAt?: number }>;
+  taskLedger?: TaskLedger;
 }): Set<string> {
   const held = new Set<string>();
+  const listAt = session.taskLedger?.updatedAt;
   for (const g of [...(session.goalPaused ?? []), ...(session.goalQueue ?? [])]) {
+    if (g.heldListAt !== listAt) continue;
     for (const id of g.heldTaskIds ?? []) held.add(id);
   }
   return held;
