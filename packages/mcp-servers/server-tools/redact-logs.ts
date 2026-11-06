@@ -47,9 +47,13 @@ const KEY_SEP_RE = /(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+)(?:\\?["']|\])?[ \t]*(?:
 /** Key names (case-insensitive substring) whose value is a secret. */
 const SECRET_KEY_RE = /token|secret|passw(?:or)?d|api[_-]?key|private[_-]?key|connection[_-]?string|authorization/i;
 
-/** `Authorization: <scheme> <credential>`: the scheme word stays. */
+/**
+ * `<scheme> <credential>`: the scheme word stays. After an Authorization key any word is a scheme; after another
+ * secret key only the common ones are (`token: Bearer <credential>`), so a two-word password is not split.
+ */
 const AUTH_KEY_RE = /authorization/i;
 const AUTH_SCHEME_RE = /^[A-Za-z][A-Za-z0-9-]*$/;
+const KNOWN_SCHEME_RE = /^(?:bearer|basic|token|bot|digest|apikey)$/i;
 
 /** An account SID is redacted only as the whole value of a key containing `sid`; the same hex elsewhere stays. */
 const SID_KEY_RE = /sid/i;
@@ -68,6 +72,17 @@ const UNQUOTED_END = new Set([' ', '\t', '\r', '\n', '\f', '\v', ',', ';', '&', 
 // Private-key block markers. The type word is optional (RSA, EC, OPENSSH, ENCRYPTED, ...).
 const KEY_BLOCK_BEGIN_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/g;
 const KEY_BLOCK_END_RE = /-----END [A-Z0-9 ]*PRIVATE KEY-----/g;
+/** A BEGIN marker exactly at a value's start: the key-block scanner owns that value. */
+const KEY_BLOCK_BEGIN_AT_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/y;
+
+/** A YAML block-scalar indicator ending its line (`|`, `>`, `|-`, `>+`, `|2`, an optional comment): text follows. */
+const BLOCK_SCALAR_RE = /[|>](?:[1-9][+-]?|[+-][1-9]?)?[ \t]*(?:#.*)?$/y;
+
+/** `user: svc` — a line opening with its own key: the waiting key above it had no value. */
+const SIBLING_KEY_RE = /["']?[A-Za-z0-9_.-]+["']?[ \t]*:(?:[ \t]|$)/y;
+
+/** What may follow a quoted scalar alone on its line: `"abc"`, `"abc",`, `"abc"}`. */
+const CLOSING_TAIL_RE = /^[ \t,\]}]*$/;
 
 /**
  * The prefix Docker itself writes before a log line: the `--timestamps` stamp and, in `docker service logs`, the
@@ -91,11 +106,16 @@ interface KeyInfo {
   level: 0 | 1;
 }
 
-/** What a line leaves open for the next one. Only one thing can be open at a time. */
+/**
+ * What a line leaves open for the next one. Only one thing can be open at a time. `column` is where a waiting key
+ * starts on its line (after Docker's prefix); a `block` is the YAML value under such a key: every line indented
+ * deeper than `column` — and, for a `sequence`, every `- ` item at `column` itself.
+ */
 type LineState =
   | { kind: 'none' }
   | { kind: 'keyBlock' }
-  | { kind: 'key'; info: KeyInfo; needsSeparator: boolean }
+  | { kind: 'key'; info: KeyInfo; needsSeparator: boolean; column: number }
+  | { kind: 'block'; column: number; sequence: boolean }
   | { kind: 'value'; quote: '"' | "'"; level: 0 | 1 }
   | { kind: 'collection'; depth: number; level: 0 | 1 };
 
@@ -214,9 +234,9 @@ function scanCollection(line: string, from: number, depth: number, level: 0 | 1)
   return { end: line.length, closed: false, depth };
 }
 
-/** `Basic <credential>` after an Authorization key: the span of the credential, or the whole value. */
-function authCredentialSpan(line: string, span: ValueSpan): ValueSpan {
-  if (span.quoted || !AUTH_SCHEME_RE.test(line.slice(span.from, span.to))) return span;
+/** `Basic <credential>`: the span of the credential when the value opens with a `scheme` word, else the value. */
+function credentialSpan(line: string, span: ValueSpan, scheme: RegExp): ValueSpan {
+  if (span.quoted || !scheme.test(line.slice(span.from, span.to))) return span;
   let j = span.to;
   while (line[j] === ' ' || line[j] === '\t') j++;
   if (j === span.to) return span;
@@ -244,10 +264,12 @@ function takeValue(line: string, at: number, info: KeyInfo): Taken {
     return { end: scan.end, redact: { from: at, to: scan.end }, next };
   }
   let span = valueSpan(line, at);
-  if (info.secret && AUTH_KEY_RE.test(info.key)) span = authCredentialSpan(line, span);
+  if (info.secret) span = credentialSpan(line, span, AUTH_KEY_RE.test(info.key) ? AUTH_SCHEME_RE : KNOWN_SCHEME_RE);
   const value = line.slice(span.from, span.to);
   const keep: Taken = { end: span.to, redact: null, next: NONE };
   if (value.startsWith(REDACTED)) return keep;
+  KEY_BLOCK_BEGIN_AT_RE.lastIndex = span.from;
+  if (KEY_BLOCK_BEGIN_AT_RE.test(line)) return keep;
   if (!info.secret) return ACCOUNT_SID_RE.test(value) ? { ...keep, redact: span } : keep;
   if (value.length === 0 && !span.open) return keep;
   if (!span.quoted && LITERAL_RE.test(value)) return keep;
@@ -266,8 +288,19 @@ interface Redacted {
   next: LineState;
 }
 
-/** Replace the values of secret keys (and SIDs under `sid` keys) in one line. */
-function redactKeyValues(line: string): Redacted {
+/** Where the key at `index` starts, its opening quote included. */
+function keyColumn(line: string, index: number): number {
+  let col = index;
+  if (line[col - 1] === '"' || line[col - 1] === "'") col--;
+  if (line[col - 1] === '\\') col--;
+  return col;
+}
+
+/**
+ * Replace the values of secret keys (and SIDs under `sid` keys) in one line. `base` is where `line` starts after
+ * Docker's prefix, so a waiting key's column is measured on the whole line.
+ */
+function redactKeyValues(line: string, base: number): Redacted {
   let out = '';
   let pos = 0;
   KEY_SEP_RE.lastIndex = 0;
@@ -275,7 +308,12 @@ function redactKeyValues(line: string): Redacted {
     const info = keyInfo(m[1], m[0].includes('\\"') ? 1 : 0);
     if (info === null) continue;
     const at = m.index + m[0].length;
-    if (at === line.length) return { text: out + line.slice(pos), next: { kind: 'key', info, needsSeparator: false } };
+    const column = base + keyColumn(line, m.index);
+    const rest = out + line.slice(pos);
+    if (at === line.length) return { text: rest, next: { kind: 'key', info, needsSeparator: false, column } };
+    BLOCK_SCALAR_RE.lastIndex = at;
+    if (info.secret && BLOCK_SCALAR_RE.test(line))
+      return { text: rest, next: { kind: 'block', column, sequence: false } };
     const taken = takeValue(line, at, info);
     if (taken.redact !== null) {
       out += marked(line, pos, taken.redact);
@@ -287,15 +325,21 @@ function redactKeyValues(line: string): Redacted {
   const text = out + line.slice(pos);
   const trailing = TRAILING_QUOTED_KEY_RE.exec(line);
   const info = trailing === null ? null : keyInfo(trailing[2], 0);
-  return { text, next: info === null ? NONE : { kind: 'key', info, needsSeparator: true } };
+  if (trailing === null || info === null) return { text, next: NONE };
+  const column = base + trailing.index + trailing[0].indexOf(trailing[1]);
+  return { text, next: { kind: 'key', info, needsSeparator: true, column } };
 }
 
-/** Shapes, then URL userinfo, then key/value pairs (see {@link SHAPES} for why the order matters). */
-function redactInline(line: string): Redacted {
+/** Credential shapes and URL passwords, wherever they are (see {@link SHAPES} for the order). */
+function redactShapes(line: string): string {
   let out = line;
   for (const [re, replacement] of SHAPES) out = out.replace(re, replacement);
-  out = out.replace(URL_USERINFO_RE, `$1:${REDACTED}@`);
-  return redactKeyValues(out);
+  return out.replace(URL_USERINFO_RE, `$1:${REDACTED}@`);
+}
+
+/** Shapes, then key/value pairs. */
+function redactInline(line: string, base: number): Redacted {
+  return redactKeyValues(redactShapes(line), base);
 }
 
 /** Key blocks that open on this line: everything between the markers goes, and an unclosed one stays open. */
@@ -317,59 +361,141 @@ function redactKeyBlocks(line: string): { text: string; open: boolean } {
   return { text: out + line.slice(pos), open: false };
 }
 
-/** A line (or the rest of one) with nothing open from the line before. */
-function redactFresh(text: string): Redacted {
+/** A line (or the rest of one, starting at `base`) with nothing open from the line before. */
+function redactFresh(text: string, base: number): Redacted {
   const blocks = redactKeyBlocks(text);
-  const inline = redactInline(blocks.text);
+  const inline = redactInline(blocks.text, base);
   return { text: inline.text, next: blocks.open ? KEY_BLOCK : inline.next };
 }
 
-/** How the line's content continues what the previous line left open. `rest` is null when it is all consumed. */
+/**
+ * How a line continues what the previous line left open: `lead` is its output so far, and `rest` (starting at
+ * `base` in the line) still needs a fresh pass — null when the open state consumed the whole line.
+ */
 interface Continued {
   lead: string;
-  rest: number | null;
+  rest: string | null;
+  base: number;
   next: LineState;
 }
 
+function consumed(lead: string, next: LineState): Continued {
+  return { lead, rest: null, base: 0, next };
+}
+
+function restOf(body: string, lead: string, from: number): Continued {
+  return { lead, rest: body.slice(from), base: from, next: NONE };
+}
+
+function indentOf(body: string): number {
+  let i = 0;
+  while (body[i] === ' ' || body[i] === '\t') i++;
+  return i;
+}
+
+/** A YAML sequence item (`- x`, or a bare `-`) at `i`. */
+function isItem(body: string, i: number): boolean {
+  return body[i] === '-' && (i + 1 === body.length || body[i + 1] === ' ' || body[i + 1] === '\t');
+}
+
+/**
+ * One line of a YAML value under a secret key: indentation and `- ` markers stay, the content goes. A quoted
+ * scalar alone on the line keeps its quotes and closing punctuation, and when it is the whole value (the first
+ * line, no marker) the value ends with it — that is also the JSON `"key":\n  "value"` form. A key block opening
+ * here hands over to key-block state, which follows it past any dedent.
+ */
+function blockLine(body: string, indent: number, state: LineState, first: boolean): Continued {
+  let i = indent;
+  while (isItem(body, i)) {
+    i++;
+    while (body[i] === ' ' || body[i] === '\t') i++;
+  }
+  if (i === body.length || body.startsWith(REDACTED, i)) return consumed(body, state);
+  const kept = body.slice(0, i);
+  KEY_BLOCK_BEGIN_RE.lastIndex = i;
+  const begin = KEY_BLOCK_BEGIN_RE.exec(body);
+  if (begin !== null) {
+    KEY_BLOCK_END_RE.lastIndex = begin.index + begin[0].length;
+    if (KEY_BLOCK_END_RE.exec(body) === null) return consumed(kept + REDACTED, KEY_BLOCK);
+  }
+  const quote = body[i];
+  if (quote === '"' || quote === "'") {
+    const close = quoteClose(body, i + 1, quote, 0);
+    if (close > i && CLOSING_TAIL_RE.test(body.slice(close + 1))) {
+      const value = body.slice(i + 1, close);
+      const inner = value.length === 0 || value.startsWith(REDACTED) ? value : REDACTED;
+      return consumed(kept + quote + inner + body.slice(close), first && i === indent ? NONE : state);
+    }
+  }
+  return consumed(kept + REDACTED, state);
+}
+
+/**
+ * The value of a waiting key on a later line, at `i`. Key blocks and credential shapes are found first: a BEGIN
+ * marker is the value and opens key-block state, and a shape is redacted whole before the value is measured.
+ */
+function waitingValue(body: string, i: number, info: KeyInfo): Continued {
+  const blocks = redactKeyBlocks(body);
+  if (blocks.open) return consumed(redactInline(blocks.text, 0).text, KEY_BLOCK);
+  const text = redactShapes(blocks.text);
+  const taken = takeValue(text, i, info);
+  if (taken.redact === null) return restOf(text, '', 0);
+  const lead = marked(text, 0, taken.redact);
+  if (taken.next.kind !== 'none') return consumed(lead, taken.next);
+  return restOf(text, lead, taken.redact.to);
+}
+
 function continueState(body: string, state: LineState): Continued {
-  const whole = (next: LineState): Continued => ({ lead: body.length > 0 ? REDACTED : '', rest: null, next });
+  const whole = (next: LineState): Continued => consumed(body.length > 0 ? REDACTED : '', next);
   switch (state.kind) {
     case 'none':
-      return { lead: '', rest: 0, next: NONE };
+      return restOf(body, '', 0);
     case 'keyBlock': {
       // Only Docker's prefix is kept before END: anything else on the line is the block's last line.
       KEY_BLOCK_END_RE.lastIndex = 0;
       const end = KEY_BLOCK_END_RE.exec(body);
       if (end === null) return whole(state);
-      return { lead: (end.index > 0 ? REDACTED : '') + end[0], rest: end.index + end[0].length, next: NONE };
+      return restOf(body, (end.index > 0 ? REDACTED : '') + end[0], end.index + end[0].length);
     }
     case 'value': {
       const close = quoteClose(body, 0, state.quote, state.level);
       if (close < 0) return whole(state);
-      return { lead: close > 0 ? REDACTED : '', rest: close, next: NONE };
+      return restOf(body, close > 0 ? REDACTED : '', close);
     }
     case 'collection': {
       const scan = scanCollection(body, 0, state.depth, state.level);
       if (!scan.closed) return whole({ ...state, depth: scan.depth });
-      return { lead: scan.end > 0 ? REDACTED : '', rest: scan.end, next: NONE };
+      return restOf(body, scan.end > 0 ? REDACTED : '', scan.end);
+    }
+    case 'block': {
+      // Blank lines stay inside the value; a line at the key's column or shallower ends it.
+      const indent = indentOf(body);
+      if (indent === body.length) return consumed(body, state);
+      if (indent > state.column || (state.sequence && indent === state.column && isItem(body, indent))) {
+        return blockLine(body, indent, state, false);
+      }
+      return restOf(body, '', 0);
     }
     case 'key': {
-      // Blank lines do not count; the first line with content either carries the value or ends the wait.
-      let i = 0;
-      while (body[i] === ' ' || body[i] === '\t') i++;
-      if (i === body.length) return { lead: body, rest: null, next: state };
-      if (state.needsSeparator) {
+      // Blank lines do not count. A deeper-indented line (or a `- ` item at the key's column) opens a YAML value;
+      // otherwise the first line with content carries the value or, when it opens with its own key, ends the wait.
+      let i = indentOf(body);
+      if (i === body.length) return consumed(body, state);
+      if (!state.needsSeparator) {
+        if (i > state.column) return blockLine(body, i, { kind: 'block', column: state.column, sequence: false }, true);
+        if (i === state.column && isItem(body, i)) {
+          return blockLine(body, i, { kind: 'block', column: state.column, sequence: true }, false);
+        }
+        SIBLING_KEY_RE.lastIndex = i;
+        if (SIBLING_KEY_RE.test(body)) return restOf(body, '', 0);
+      } else {
         SEPARATOR_RE.lastIndex = i;
         const sep = SEPARATOR_RE.exec(body);
-        if (sep === null) return { lead: '', rest: 0, next: NONE };
+        if (sep === null) return restOf(body, '', 0);
         i += sep[0].length;
-        if (i === body.length) return { lead: body, rest: null, next: { ...state, needsSeparator: false } };
+        if (i === body.length) return consumed(body, { ...state, needsSeparator: false });
       }
-      const taken = takeValue(body, i, state.info);
-      if (taken.redact === null) return { lead: '', rest: 0, next: NONE };
-      const lead = marked(body, 0, taken.redact);
-      if (taken.next.kind !== 'none') return { lead, rest: null, next: taken.next };
-      return { lead, rest: taken.redact.to, next: NONE };
+      return waitingValue(body, i, state.info);
     }
   }
 }
@@ -379,7 +505,7 @@ function redactLine(line: string, state: LineState): Redacted {
   const body = line.slice(prefix.length);
   const cont = continueState(body, state);
   if (cont.rest === null) return { text: prefix + cont.lead, next: cont.next };
-  const fresh = redactFresh(body.slice(cont.rest));
+  const fresh = redactFresh(cont.rest, cont.base);
   return { text: prefix + cont.lead + fresh.text, next: fresh.next };
 }
 
@@ -388,8 +514,9 @@ function redactLine(line: string, state: LineState): Redacted {
  * keys (whole arrays and objects included) and private-key blocks. Key names, markers, Docker's line prefixes,
  * line breaks and every other byte stay, so the output reads like the original log. A value, collection or key
  * block that continues onto later lines is redacted there too, to the end of the output if it never closes; a
- * secret key whose value is not on its line waits for the next line with content. One pass, linear in the
- * output's length. Idempotent.
+ * secret key whose value is not on its line takes the next line with content, or — indented deeper, or a `- `
+ * list at its own indent, or after a block-scalar indicator — every line of that YAML value. One pass, linear in
+ * the output's length. Idempotent.
  */
 export function redactLogSecrets(text: string): string {
   let state: LineState = NONE;

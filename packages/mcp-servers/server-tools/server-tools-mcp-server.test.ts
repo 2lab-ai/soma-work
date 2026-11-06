@@ -1144,6 +1144,54 @@ describe('handleLogs', () => {
       );
     });
 
+    // Assembled at run time, like the fixtures above.
+    const keyBegin = ['-----BEGIN', 'PRIVATE KEY-----'].join(' ');
+    const keyEnd = ['-----END', 'PRIVATE KEY-----'].join(' ');
+    const keyBody = 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=';
+    const waitingKeyLog = [
+      'token:',
+      'Bearer opaque-credential',
+      'privateKey:',
+      keyBegin,
+      keyBody,
+      keyEnd,
+      'secrets:',
+      '  - opaque-credential',
+      'region: us1',
+      '',
+    ].join('\n');
+    const waitingKeyRedacted = [
+      'token:',
+      'Bearer <redacted>',
+      'privateKey:',
+      keyBegin,
+      '<redacted>',
+      keyEnd,
+      'secrets:',
+      '  - <redacted>',
+      'region: us1',
+    ];
+
+    it('redacts shapes, key blocks and YAML lists after a waiting key in stdout', () => {
+      mockConfig(PROD_CONFIG, 11750);
+      mockLogsRun(waitingKeyLog);
+
+      expect(handleLogs({ server: 'prod', service: 'nginx' }).content[0].text).toBe(
+        `${waitingKeyRedacted.join('\n')}\n`,
+      );
+    });
+
+    it('redacts the same forms in the stderr a failure message carries', () => {
+      mockConfig(PROD_CONFIG, 11760);
+      vi.mocked(child_process.spawnSync).mockReturnValue(spawnResult({ stderr: waitingKeyLog, status: 1 }));
+
+      const err = thrownBy(() => handleLogs({ server: 'prod', service: 'nginx' }));
+
+      expect(err.message).toBe(`docker logs failed on prod: exit status 1\n${waitingKeyRedacted.join('\n')}`);
+      expect(err.message).not.toContain('opaque-credential');
+      expect(err.message).not.toContain(keyBody);
+    });
+
     it('caps the stderr carried by a failure message at 2,000 characters', () => {
       mockConfig(PROD_CONFIG, 11800);
       vi.mocked(child_process.spawnSync).mockReturnValue(spawnResult({ stderr: `${'e'.repeat(10_000)}\n`, status: 2 }));

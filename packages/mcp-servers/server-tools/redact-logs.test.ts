@@ -290,6 +290,107 @@ describe('redactLogSecrets: secret collections', () => {
   });
 });
 
+describe('redactLogSecrets: shapes and key blocks after a waiting key', () => {
+  const ts = '2026-01-02T03:04:05.000000000Z ';
+  const bareBegin = join(' ', '-----BEGIN', 'PRIVATE KEY-----');
+  const bareEnd = join(' ', '-----END', 'PRIVATE KEY-----');
+
+  it('redacts a Bearer credential on the line after the key whole, keeping the scheme', () => {
+    expect(redactLogSecrets('token:\nBearer opaque-credential\nafter')).toBe(`token:\nBearer ${REDACTED}\nafter`);
+    expect(redactLogSecrets(`${ts}token:\n${ts}Bearer opaque-credential`)).toBe(`${ts}token:\n${ts}Bearer ${REDACTED}`);
+  });
+
+  it('redacts a credential shape on the line after the key', () => {
+    expect(redactLogSecrets(`apiKey:\n${EMAIL_API_KEY} trailing`)).toBe(`apiKey:\n${REDACTED} trailing`);
+  });
+
+  it('enters key-block state when the value is a key block', () => {
+    const input = ['privateKey:', bareBegin, PEM_BODY[0], PEM_BODY[1], bareEnd, 'after'].join('\n');
+    expect(redactLogSecrets(input)).toBe(['privateKey:', bareBegin, REDACTED, REDACTED, bareEnd, 'after'].join('\n'));
+    const stamped = ['privateKey:', bareBegin, PEM_BODY[0], bareEnd].map((l) => ts + l).join('\n');
+    expect(redactLogSecrets(stamped)).toBe(['privateKey:', bareBegin, REDACTED, bareEnd].map((l) => ts + l).join('\n'));
+  });
+
+  it('keeps the scheme of a credential under any secret key on one line', () => {
+    expect(redactLogSecrets('auth_token: Token abc123 next=1')).toBe(`auth_token: Token ${REDACTED} next=1`);
+    expect(redactLogSecrets(`token: Bearer ${BEARER_VALUE}`)).toBe(`token: Bearer ${REDACTED}`);
+  });
+
+  it('keeps the key-block marker when the key and BEGIN share a line', () => {
+    const input = [`privateKey: ${bareBegin}`, PEM_BODY[0], bareEnd].join('\n');
+    expect(redactLogSecrets(input)).toBe([`privateKey: ${bareBegin}`, REDACTED, bareEnd].join('\n'));
+  });
+});
+
+describe('redactLogSecrets: YAML values under a secret key', () => {
+  const ts = '2026-01-02T03:04:05.000000000Z ';
+
+  it('redacts every item of an indented list, keeping the markers, up to a sibling key', () => {
+    expect(redactLogSecrets('secrets:\n  - opaque-credential\n  - another-credential\nregion: us1')).toBe(
+      `secrets:\n  - ${REDACTED}\n  - ${REDACTED}\nregion: us1`,
+    );
+  });
+
+  it("redacts a list written at the key's own indent", () => {
+    expect(redactLogSecrets('secrets:\n- opaque-credential\n- another-credential\nregion: us1')).toBe(
+      `secrets:\n- ${REDACTED}\n- ${REDACTED}\nregion: us1`,
+    );
+  });
+
+  it.each(['|', '>', '|-', '>+', '|2', '>-  # folded'])('redacts block-scalar text after "%s"', (indicator) => {
+    const input = `password: ${indicator}\n  opaque-credential\n  second line\n\n  after blank\nuser: svc`;
+    expect(redactLogSecrets(input)).toBe(
+      `password: ${indicator}\n  ${REDACTED}\n  ${REDACTED}\n\n  ${REDACTED}\nuser: svc`,
+    );
+  });
+
+  it('redacts a nested mapping, nested lists and quoted items', () => {
+    const input = [
+      'secrets:',
+      '  user: svc',
+      '  value: opaque-credential',
+      '  - - nested-item',
+      '  - "quoted-item"',
+      '    continued: x',
+      'region: us1',
+    ].join('\n');
+    expect(redactLogSecrets(input)).toBe(
+      [
+        'secrets:',
+        `  ${REDACTED}`,
+        `  ${REDACTED}`,
+        `  - - ${REDACTED}`,
+        `  - "${REDACTED}"`,
+        `    ${REDACTED}`,
+        'region: us1',
+      ].join('\n'),
+    );
+  });
+
+  it('measures indentation from the key, after the docker prefix', () => {
+    const input = ['app:', '  password: |', '    opaque-credential', '  user: svc', 'next: 1'];
+    const expected = ['app:', '  password: |', `    ${REDACTED}`, '  user: svc', 'next: 1'];
+    expect(redactLogSecrets(input.join('\n'))).toBe(expected.join('\n'));
+    expect(redactLogSecrets(input.map((l) => ts + l).join('\n'))).toBe(expected.map((l) => ts + l).join('\n'));
+    const item = ['users:', '  - name: svc', '    password:', '      opaque-credential', '    role: admin'];
+    expect(redactLogSecrets(item.join('\n'))).toBe(
+      ['users:', '  - name: svc', '    password:', `      ${REDACTED}`, '    role: admin'].join('\n'),
+    );
+  });
+
+  it('treats a sibling key after an empty secret key as a sibling', () => {
+    expect(redactLogSecrets('password:\nusername: svc\nport: 22')).toBe('password:\nusername: svc\nport: 22');
+  });
+
+  it('redacts a key block nested under a YAML secret key even where it dedents', () => {
+    const begin = join(' ', '-----BEGIN', 'PRIVATE KEY-----');
+    const end = join(' ', '-----END', 'PRIVATE KEY-----');
+    const out = redactLogSecrets(['privateKey:', `  ${begin}`, PEM_BODY[0], end, 'after'].join('\n'));
+    expect(out).not.toContain(PEM_BODY[0]);
+    expect(out.split('\n').at(-1)).toBe('after');
+  });
+});
+
 // ── Negatives ───────────────────────────────────────────────
 
 describe('redactLogSecrets: leaves ordinary log lines intact', () => {
@@ -345,6 +446,17 @@ const CORPUS = [
   '  }}',
   PEM_BEGIN,
   `${PEM_BODY[0]} ${PEM_END}`,
+  'token:',
+  `Bearer ${BEARER_VALUE}`,
+  'privateKey:',
+  PEM_BEGIN,
+  PEM_BODY[1],
+  PEM_END,
+  'secrets:',
+  '  - opaque-credential',
+  'password: |',
+  '  opaque-credential',
+  'region: us1',
 ].join('\n');
 
 describe('redactLogSecrets: properties', () => {
@@ -400,6 +512,12 @@ describe('redactLogSecrets: properties', () => {
       'secret=[\n'.repeat(size / 9),
       `{"secret":[\n${'"x",\n'.repeat(size / 5)}`,
       `password: "${'a\\\n'.repeat(size / 3)}`,
+      Array.from({ length: 1400 }, (_, i) => `${' '.repeat(i)}secret:`).join('\n'),
+      `secrets:\n${' '.repeat(size / 2)}${'- '.repeat(size / 4)}x`,
+      `password: |\n${' '.repeat(size)}`,
+      `secrets:\n${'  - a\n'.repeat(size / 6)}`,
+      'password:\n'.repeat(size / 10),
+      'token:\n\n'.repeat(size / 8),
     ];
     for (const input of inputs) {
       const start = performance.now();
