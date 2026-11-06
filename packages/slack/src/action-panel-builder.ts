@@ -75,6 +75,11 @@ export interface ActionPanelBuildParams {
    */
   lastSignalAt?: number;
   /**
+   * #1031 ⑤ — the session is SLEEPING (idle past the lifecycle limit). The
+   * badge says so, with what wakes it, instead of a stale "사용 가능".
+   */
+  sleeping?: boolean;
+  /**
    * Injected clock for the age calculations. Defaults to `Date.now()`; tests
    * pass a fixed value so the rendered strings are exact instead of flaky. The
    * builder stays pure.
@@ -94,6 +99,9 @@ export interface ActionPanelPayload {
  */
 const LIVENESS_DIVERGENCE_MS = 60_000;
 
+/** #1031 ⑤ — the step a sleeping session is on: what wakes it (the sleep notice's words). */
+const SLEEP_PHASE = '메시지를 보내면 이어서 진행';
+
 export class ActionPanelBuilder {
   static build(params: ActionPanelBuildParams): ActionPanelPayload {
     const disabled = params.disabled ?? true;
@@ -108,6 +116,7 @@ export class ActionPanelBuilder {
       waitingForChoice: params.waitingForChoice,
       activityState: params.activityState,
       hasActiveRequest: params.hasActiveRequest,
+      sleeping: params.sleeping,
       disabled,
     });
 
@@ -144,6 +153,7 @@ export class ActionPanelBuilder {
           activeTool: params.activeTool,
           lastProgressAt: params.lastProgressAt,
           lastSignalAt: params.lastSignalAt,
+          sleeping: params.sleeping,
           now: params.now,
         }),
       ]),
@@ -212,6 +222,7 @@ export class ActionPanelBuilder {
     waitingForChoice?: boolean;
     activityState?: ActivityState;
     hasActiveRequest?: boolean;
+    sleeping?: boolean;
     disabled: boolean;
     closed?: boolean;
   }): string {
@@ -229,6 +240,10 @@ export class ActionPanelBuilder {
 
     if (params.hasActiveRequest) {
       return '요청 처리 중';
+    }
+
+    if (params.sleeping) {
+      return 'Sleep';
     }
 
     if (params.activityState === 'waiting') {
@@ -265,9 +280,17 @@ export class ActionPanelBuilder {
     activeTool?: string;
     lastProgressAt?: number;
     lastSignalAt?: number;
+    sleeping?: boolean;
     now?: number;
   }): string | null {
-    const phase = ActionPanelBuilder.resolvePhase(params);
+    // A sleep the badge cannot show — an open question outranks it (it is what
+    // the user must act on) — still shows as the step.
+    const phase =
+      params.status === 'Sleep'
+        ? SLEEP_PHASE
+        : params.sleeping && params.waitingForChoice
+          ? '💤 Sleep'
+          : ActionPanelBuilder.resolvePhase(params);
     const isLive =
       params.waitingForChoice === true ||
       params.activityState === 'working' ||
@@ -285,7 +308,7 @@ export class ActionPanelBuilder {
     parts.push(
       params.lastProgressAt === undefined
         ? '실제 활동 기록 없음'
-        : `마지막 활동 ${ActionPanelBuilder.formatAge(now - params.lastProgressAt)} 전`,
+        : `마지막 활동 ${ActionPanelBuilder.ageToken(params.lastProgressAt, now)}`,
     );
 
     // Liveness earns its own words whenever it adds information:
@@ -297,7 +320,7 @@ export class ActionPanelBuilder {
       params.lastSignalAt !== undefined &&
       (params.lastProgressAt === undefined || params.lastSignalAt - params.lastProgressAt >= LIVENESS_DIVERGENCE_MS);
     if (livenessAdds) {
-      parts.push(`응답 신호 ${ActionPanelBuilder.formatAge(now - (params.lastSignalAt as number))} 전`);
+      parts.push(`응답 신호 ${ActionPanelBuilder.ageToken(params.lastSignalAt as number, now)}`);
     }
 
     return parts.join(' · ');
@@ -315,17 +338,18 @@ export class ActionPanelBuilder {
   }
 
   /**
-   * Coarse, non-negative age. A stamp from the future (clock skew between the
-   * reporting worker and the renderer) reads as `0초`, never as a negative age.
+   * #1031 ④ — an age as a Slack date token. The header is posted once and
+   * stays until the next render — days, for a finished session — so an age
+   * baked into the text goes stale ("5분 전" five days later). Slack renders
+   * `{ago}` at view time, in the viewer's locale; the fallback (notifications,
+   * clients without token support) is the absolute time, which cannot go
+   * stale. A stamp from the future (clock skew between the reporting worker
+   * and the renderer) is clamped to `now`, never shown as a future time.
    */
-  private static formatAge(ms: number): string {
-    const seconds = Math.max(0, Math.floor(ms / 1000));
-    if (seconds < 60) return `${seconds}초`;
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes}분`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}시간`;
-    return `${Math.floor(hours / 24)}일`;
+  private static ageToken(atMs: number, now: number): string {
+    const seconds = Math.floor(Math.min(atMs, now) / 1000);
+    const absolute = new Date(seconds * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+    return `<!date^${seconds}^{ago}|${absolute}>`;
   }
 
   /** The log verbosity is a setting, not a state: a plain code chip, no emoji (T2). */
@@ -350,6 +374,8 @@ export class ActionPanelBuilder {
       case '사용 가능':
       case '대기 중':
         return `⚪ *${status}*`;
+      case 'Sleep':
+        return `💤 *${status}*`;
       default:
         return '⚪ *대기*';
     }

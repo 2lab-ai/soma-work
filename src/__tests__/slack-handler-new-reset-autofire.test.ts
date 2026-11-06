@@ -6,7 +6,7 @@ vi.mock('../slack/autoskill-fire', () => ({
   buildAutoskillFire: vi.fn(() => ({
     keys: ['user:U123:qa'],
     invokedBlock: '<invoked_skills>\n<user:U123:qa>\nQA\n</user:U123:qa>\n</invoked_skills>',
-    banner: { text: '⚡ AUTOSKILL-FIRE-BANNER', color: '#00FF00' },
+    banner: { text: '⚡ AUTOSKILL-FIRE-BANNER' },
   })),
 }));
 
@@ -61,7 +61,7 @@ describe('SlackHandler — new-reset autogoal/autoskill firing', () => {
         deferredSkillFire: {
           keys: ['local:z'],
           invokedBlock: '<invoked_skills>\n<local:z>\nBODY\n</local:z>\n</invoked_skills>',
-          banner: { text: '⚡ DEFERRED-FIRE-BANNER', color: '#FF0000' },
+          banner: { text: '⚡ DEFERRED-FIRE-BANNER' },
         },
       }),
     };
@@ -89,16 +89,12 @@ describe('SlackHandler — new-reset autogoal/autoskill firing', () => {
     const autogoalCall = postSystemMessage.mock.calls.find((c: any[]) => String(c[1]).includes('Autogoal'));
     expect(autogoalCall, 'autogoal banner should be posted on `new` reset').toBeDefined();
 
-    // 2) Autoskill banner posted as a green attachment.
-    const autoskillCall = postMessage.mock.calls.find(
-      (c: any[]) => c[2]?.attachments?.[0]?.text === '⚡ AUTOSKILL-FIRE-BANNER',
-    );
+    // 2) Autoskill banner posted (one Block Kit section, #1031 ②).
+    const autoskillCall = postMessage.mock.calls.find((c: any[]) => c[1] === '⚡ AUTOSKILL-FIRE-BANNER');
     expect(autoskillCall, 'autoskill banner should be posted on `new` reset').toBeDefined();
 
-    // 3) Deferred forced-`$skill` banner posted as a red attachment.
-    const deferredCall = postMessage.mock.calls.find(
-      (c: any[]) => c[2]?.attachments?.[0]?.text === '⚡ DEFERRED-FIRE-BANNER',
-    );
+    // 3) Deferred forced-`$skill` banner posted (one Block Kit section, #1031 ②).
+    const deferredCall = postMessage.mock.calls.find((c: any[]) => c[1] === '⚡ DEFERRED-FIRE-BANNER');
     expect(deferredCall, 'deferred forced $skill banner should be posted on `new` reset').toBeDefined();
 
     // 4) Order contract (#1166): autogoal → autoskill → forced `$skill`.
@@ -109,8 +105,8 @@ describe('SlackHandler — new-reset autogoal/autoskill firing', () => {
       return idx >= 0 ? (m.invocationCallOrder[idx] as number) : Number.POSITIVE_INFINITY;
     };
     const autogoalAt = orderOf(postSystemMessage.mock, (c) => String(c[1]).includes('Autogoal'));
-    const autoskillAt = orderOf(postMessage.mock, (c) => c[2]?.attachments?.[0]?.text === '⚡ AUTOSKILL-FIRE-BANNER');
-    const deferredAt = orderOf(postMessage.mock, (c) => c[2]?.attachments?.[0]?.text === '⚡ DEFERRED-FIRE-BANNER');
+    const autoskillAt = orderOf(postMessage.mock, (c) => c[1] === '⚡ AUTOSKILL-FIRE-BANNER');
+    const deferredAt = orderOf(postMessage.mock, (c) => c[1] === '⚡ DEFERRED-FIRE-BANNER');
     expect(autogoalAt).toBeLessThan(autoskillAt);
     expect(autoskillAt).toBeLessThan(deferredAt);
   });

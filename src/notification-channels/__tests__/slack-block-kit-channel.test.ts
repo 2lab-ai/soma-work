@@ -611,4 +611,31 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
       expect(bodyBlock.text.text).toMatch(/truncated|…|\.{3}/);
     });
   });
+
+  // #1031 ④ — the completion line links to its thread (`🧵 스레드 열기`). Slack
+  // unfurled that permalink into a copy of the thread header, frozen at the
+  // moment of posting ("마지막 활동 4초 전" days later). Previews are off.
+  describe('link previews (#1031 ④)', () => {
+    it('posts the attachment card with link and media previews off', async () => {
+      const api = createMockSlackApi();
+      const channel = new SlackBlockKitChannel(api);
+      await channel.send(makeRichEvent({ category: 'Exception', message: 'boom' }));
+
+      const options = api.postMessage.mock.calls[0][2];
+      expect(options.attachments).toBeDefined();
+      expect(options.unfurlLinks).toBe(false);
+      expect(options.unfurlMedia).toBe(false);
+    });
+
+    it('posts the feedback card (top-level blocks) with link and media previews off', async () => {
+      const api = createMockSlackApi();
+      const channel = new SlackBlockKitChannel(api);
+      await channel.send(makeRichEvent({ category: 'WorkflowComplete', turnId: 'turn-1' }));
+
+      const options = api.postMessage.mock.calls[0][2];
+      expect(options.blocks).toBeDefined();
+      expect(options.unfurlLinks).toBe(false);
+      expect(options.unfurlMedia).toBe(false);
+    });
+  });
 });

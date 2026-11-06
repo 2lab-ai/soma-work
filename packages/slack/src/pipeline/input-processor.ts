@@ -12,7 +12,7 @@ export interface FileHandlerReader {
 export interface DeferredSkillFireResult {
   keys: string[];
   invokedBlock: string;
-  banner: { text: string; color: string };
+  banner: { text: string };
 }
 
 export interface CommandRouteResult {
