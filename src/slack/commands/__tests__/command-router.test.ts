@@ -936,7 +936,7 @@ describe('CommandRouter — `goal` + `$skill` composition (preprocessor)', () =>
     // `goal pause` (with no `$z` in the cleaned goalText) sets the goal aside as paused;
     // nothing is queued, so no goal is left running and no turn starts.
     expect(session.goal).toBeUndefined();
-    expect(session.goalPaused?.[0]?.status).toBe('paused');
+    expect((session as { goalPaused?: Array<{ status: string }> }).goalPaused?.[0]?.status).toBe('paused');
     expect(skillExec).not.toHaveBeenCalled();
     expect(result.handled).toBe(true);
     expect(result.continueWithPrompt).toBeUndefined();
