@@ -83,6 +83,10 @@ function faceOf(card, model, face, asks, effort, asked) {
   }
   // The follow-up bar (#983) is not a layout row either: the element draws it under the title bar.
   if (card && card.followups && card.followups.length) out.followups = card.followups;
+  // #1021 — an epic and its children are one family whatever rows the layout picked (@2lab.ai/ui 0.37.0): the
+  // epic's one-line child list, and a child's tie to its epic.
+  if (card && card.children && card.children.length) out.children = card.children;
+  if (card && card.parent) out.parent = card.parent;
   out.rows = rows;
   // What the card is: an epic, a plan node or a cron run lead with their own; a plain task with the task mark.
   if (f.kind && !out.lead) out.lead = { glyph: 'task', title: '일반 작업' };

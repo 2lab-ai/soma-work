@@ -24,10 +24,12 @@ import { describe, expect, it } from 'vitest';
 const SKILL_MD = resolve(__dirname, '..', 'SKILL.md');
 const SRC = resolve(__dirname, '..', '..', '..', '..');
 const EPIC_SERVER = resolve(SRC, 'task-turn', 'epic-server.ts');
+// #1020 — the children cap lives with the plan (the registry checks it on adoption too).
+const EPIC_PLAN = resolve(SRC, 'task-turn', 'epic-plan.ts');
 // #855 — the tree's limits live in the Slack epic's gate (the task-turn controller is gone).
 const TREE_GATE = resolve(SRC, 'task-turn', 'epic-tree-gate.ts');
 const NEW_TASK = resolve(SRC, 'conversation', 'new-task.ts');
-const TOOLS = ['plan_write', 'spawn_child', 'child_status', 'instruct_child'];
+const TOOLS = ['plan_write', 'spawn_child', 'child_status', 'instruct_child', 'find_tasks', 'adopt_child'];
 
 const skill = () => readFileSync(SKILL_MD, 'utf8');
 const flat = (s: string) => s.replace(/\s+/g, ' ');
@@ -99,7 +101,7 @@ describe('using-epic-tasks — the dashboard epic task loop (E4 ⑩a, D13)', () 
     expect(server).toContain("EPIC_SERVER = 'epic'");
 
     const text = flat(body);
-    const childMax = Number(/EPIC_CHILD_MAX = (\d+);/.exec(server)?.[1]);
+    const childMax = Number(/EPIC_CHILD_MAX = (\d+);/.exec(readFileSync(EPIC_PLAN, 'utf8'))?.[1]);
     const running = Number(/EPIC_MAX_RUNNING_CHILDREN = (\d+);/.exec(readFileSync(TREE_GATE, 'utf8'))?.[1]);
     const chars = Number(/maxPromptChars: ([\d_]+),/.exec(readFileSync(NEW_TASK, 'utf8'))?.[1].replace(/_/g, ''));
     expect(childMax).toBeGreaterThan(0);
@@ -146,5 +148,16 @@ describe('using-epic-tasks — the dashboard epic task loop (E4 ⑩a, D13)', () 
     expect(stop).toContain('`too-many-children`');
     expect(stop).toContain('비용 상한에 걸리면 자식 시작과 에픽의 깨우기가 함께 멈춘다');
     expect(stop).toContain('오너에게 넘긴다');
+  });
+
+  it('E7 (#1020) — the owner’s existing tasks are adopted: find_tasks, a node per task, adopt_child; adopt vs spawn', () => {
+    const text = flat(section(skill(), /^## Case B 에픽 태스크/m));
+    const adopt = text.slice(text.indexOf('**기존 작업 입양**'));
+    expect(adopt).toContain('`find_tasks(');
+    expect(adopt).toContain('`plan_write`로 노드를 쓰고(제목 = 그 작업의 제목)');
+    expect(adopt).toContain('`adopt_child(taskId, planNodeId)`');
+    expect(adopt).toContain('하던 대로 계속 돌고 지시를 받지 않는다');
+    expect(adopt).toContain('`instruct_child`');
+    expect(adopt).toContain('새로 할 일은 `spawn_child`, 이미 있는 작업은 `adopt_child`');
   });
 });

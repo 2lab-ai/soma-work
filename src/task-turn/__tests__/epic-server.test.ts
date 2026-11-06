@@ -63,6 +63,8 @@ function fakeHost(over: Partial<EpicHost> = {}) {
       throw new Error('not in this test');
     }),
     ensureDirectory: vi.fn(),
+    findTasks: vi.fn(() => []),
+    adoptChild: vi.fn(() => ({ ok: true as const })),
     ...over,
   };
   return { host, epic, children };
@@ -231,7 +233,7 @@ describe('the epic server (E4 ④a, D3 · D8)', () => {
     });
   });
 
-  it('S6 — the server is `epic` and carries its four tools', () => {
+  it('S6 — the server is `epic` and carries its six tools (#1020: find_tasks, adopt_child after the four)', () => {
     const server: any = buildEpicServer(ctx());
     expect(server.name).toBe('epic');
     expect(server.config.tools.map((t: any) => t.name)).toEqual([
@@ -239,6 +241,8 @@ describe('the epic server (E4 ④a, D3 · D8)', () => {
       'child_status',
       'spawn_child',
       'instruct_child',
+      'find_tasks',
+      'adopt_child',
     ]);
   });
 

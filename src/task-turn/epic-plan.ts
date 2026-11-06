@@ -30,6 +30,30 @@ export const EPIC_NODE_BODY_MAX = 2000;
 export const EPIC_RETIRED_MAX = 1000;
 /** An epic keeps at most this many events (D6). */
 export const EPIC_EVENTS_MAX = 100;
+/**
+ * D9 a — an epic has at most this many children, made (`spawn_child`) or adopted (`adopt_child`,
+ * #1020); closed and archived ones count. Here, not in the server, so the registry checks it too.
+ */
+export const EPIC_CHILD_MAX = 7;
+
+/** #1020 — why an epic could not adopt a task (`SessionRegistry.adoptEpicChild`): nothing changed. */
+export type EpicAdoptRefusal =
+  | 'not-an-epic'
+  | 'self'
+  | 'no-such-node'
+  | 'no-such-task'
+  | 'no-task-id'
+  | 'is-epic'
+  | 'task-closed'
+  | 'task-trashed'
+  | 'already-a-child'
+  | 'other-owner'
+  | 'node-taken'
+  | 'too-many-children'
+  | 'not-saved';
+
+/** #1020 — an adoption: done, or refused with its code and a sentence the epic's model reads. */
+export type EpicAdoptResult = { ok: true } | { ok: false; code: EpicAdoptRefusal; error: string };
 
 export type EpicNodeStatus =
   | 'none'

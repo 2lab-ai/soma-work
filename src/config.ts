@@ -334,6 +334,11 @@ export interface LinkLeakReportConfig {
   botLogin?: string;
 }
 
+/** The IANA timezone report days are read in (`REPORT_TIMEZONE`, default Asia/Seoul). */
+export function getReportTimezone(): string {
+  return process.env.REPORT_TIMEZONE || 'Asia/Seoul';
+}
+
 export function getLinkLeakReportConfig(): LinkLeakReportConfig {
   const channel = process.env.SOMA_LINK_LEAK_REPORT_CHANNEL?.trim();
   if (channel && !SLACK_CHANNEL_ID_PATTERN.test(channel)) {
@@ -345,7 +350,7 @@ export function getLinkLeakReportConfig(): LinkLeakReportConfig {
   return {
     ...(channel && SLACK_CHANNEL_ID_PATTERN.test(channel) ? { channelId: channel } : {}),
     hour,
-    timezone: process.env.REPORT_TIMEZONE || 'Asia/Seoul',
+    timezone: getReportTimezone(),
     ...(botLogin ? { botLogin } : {}),
   };
 }
