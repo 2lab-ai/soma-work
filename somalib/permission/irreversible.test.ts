@@ -98,6 +98,8 @@ describe('irreversibleAction — destructive', () => {
     // review 4 P2: SQL piped into a client
     ['cat <<EOF | psql\nDROP TABLE x;\nEOF', 'db-delete'],
     ['echo "DROP TABLE users" | psql app', 'db-delete'],
+    // review 5: a `2>&1` redirection is not a break
+    ['echo "DROP TABLE x" 2>&1 | psql app', 'db-delete'],
     ['psql "$URL" -c "DROP TABLE sessions"', 'db-delete'],
     // review 3 P3: an escaped first letter (alias bypass) still names the command
     ['\\rm -rf node_modules', 'rm-recursive'],
@@ -195,6 +197,8 @@ describe('irreversibleAction — never slows or breaks a prompt (review 3 P1)', 
     ['an unterminated 50 KB sh -c string', `bash -c "${'x '.repeat(25_000)}`],
     // review 4 P3: unclosed heredoc operators, one per line
     ['5000 unclosed heredocs', 'cat <<EOF\n'.repeat(5_000)],
+    // review 5: one pipeline of 9300 client stages
+    ['9300 piped psql stages', 'psql | '.repeat(9_300)],
     ['5000 unclosed heredocs, distinct tags', Array.from({ length: 5_000 }, (_, i) => `cat <<T${i}\n`).join('')],
   ])('%s: under 100 ms', (_name, command) => {
     expect(fast(command).ms).toBeLessThan(100);
