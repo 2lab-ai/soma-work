@@ -36,6 +36,13 @@ export interface TurnRunnerSurface {
    * acp-prep) don't need to implement it.
    */
   onAssistantTurnComplete?(session: any, sessionKey: string, assistantMessages: string[]): Promise<void>;
+  /**
+   * Optional: a turn (one leg of a dispatch) begins. Lets the slack-handler
+   * tell a turn's end apart from the end of a turn that ran INSIDE it — a
+   * post-compact replay runs in the `/compact` turn's teardown and ends first
+   * (#893). Synchronous and best-effort, like every surface call here.
+   */
+  onTurnBegin?(session: any, sessionKey: string): void;
 }
 
 export interface TurnRunnerDeps {
@@ -57,6 +64,11 @@ export class TurnRunner {
 
   /** 턴 시작 — '생각 중' 상태로 전환 */
   async begin(_turnId: string): Promise<void> {
+    try {
+      this.surface?.onTurnBegin?.(this.session, this.sessionKey);
+    } catch {
+      // fire-and-forget
+    }
     await this.safeSetStatus({ agentPhase: '생각 중', waitingForChoice: false });
   }
 

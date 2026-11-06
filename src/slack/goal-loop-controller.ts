@@ -746,11 +746,22 @@ export class GoalLoopController {
     // means a user (or already-running) turn owns the slot — defer; the
     // next turn-settled trigger re-runs the loop.
     if (requestCoordinator.isRequestActive(sessionKey)) {
-      logger.info('Goal continuation deferred — session became busy during eval', { sessionKey });
+      // #893 — no continuation goes out, so none is spent: the turn that
+      // started owns the next one (its end drives the loop and spends it then).
+      // Never below zero; an open cap question was returned on above.
+      if (activeGoal.continuationCount > 0) {
+        activeGoal.continuationCount -= 1;
+        this.persist();
+      }
+      logger.info('Goal continuation deferred — session became busy during eval', {
+        sessionKey,
+        continuationCount: activeGoal.continuationCount,
+      });
       return;
     }
 
-    this.injectContinuationTurn(sessionKey, session, activeGoal, { reused: opts.reused });
+    // #893 — this continuation spent one: a drop at the busy slot gives it back.
+    this.injectContinuationTurn(sessionKey, session, activeGoal, { reused: opts.reused, spent: true });
   }
 
   /**
@@ -1101,7 +1112,7 @@ export class GoalLoopController {
     sessionKey: string,
     session: ConversationSession,
     activeGoal: SessionGoal,
-    opts: { reused?: GoalVerdictReuse } = {},
+    opts: { reused?: GoalVerdictReuse; spent?: boolean } = {},
   ): void {
     const now = this.now();
     const syntheticEvent: SyntheticMessageEvent = {
@@ -1116,7 +1127,11 @@ export class GoalLoopController {
       // supersede) if a live request is found at concurrency-control time —
       // closing the residual async-gap window where a user turn started
       // after our pre-injection idle recheck (M2).
-      routeContext: { skipAutoBotThread: true, goalContinuation: true },
+      routeContext: {
+        skipAutoBotThread: true,
+        goalContinuation: true,
+        ...(opts.spent ? { goalContinuationSpent: { goalId: activeGoal.goalId, epoch: activeGoal.epoch ?? 0 } } : {}),
+      },
     };
     this.continuedThisRun.add(sessionKey);
     this.deps.logger.info('Injecting goal continuation', {
