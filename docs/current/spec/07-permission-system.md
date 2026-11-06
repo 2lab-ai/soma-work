@@ -208,6 +208,36 @@ ${JSON.stringify(input, null, 2)}
 ];
 ```
 
+### 4.1a Irreversible calls — Approve asks once more
+
+`somalib/permission/irreversible.ts` → `irreversibleAction(toolName, input)` names a call that cannot be undone:
+a deploy or publish (`gh pr merge`, `git push` to `deploy/*` or a release tag, `npm|pnpm|yarn|cargo publish`,
+`vercel --prod`, `gh release create`, `gh workflow run`, `docker push`, `kubectl apply`, `terraform apply`, a
+`deploy*` script) or a destructive command (`rm -r`, force push, `git push --delete`, `git reset --hard`,
+`git clean -f`, `git branch -D`, `DROP TABLE` / `TRUNCATE` through a database client, `redis-cli flushall`,
+`dd of=`, `mkfs`, `find -delete`). It returns a static label (`PR 머지`, `force push`) or `null`. Matching is
+lexical, per shell segment: `\` continuations are joined, a heredoc body is blanked (read as commands only when a
+shell or `ssh` reads it), quoted text is blanked except what runs inside double quotes (`$(…)`, backticks) — so a
+commit message never reads as a command — a shell's `-c '…'` string is read as its own command, and
+`&&` `||` `;` `|` `&` newlines, parentheses, `$(` and backticks split segments; prefixes (`sudo -u x`, `env X=1`,
+`timeout 60`, `npx`) are skipped. A `--dry-run` (and `git push -n`) is not irreversible.
+
+- Slack (`buildRequestBlocks`): a context line `⚠️ 되돌릴 수 없는 작업: <label>` under the header, and a
+  `confirm` dialog (`style: danger`) on `approve_tool` and `approve_disable_rule_session`. Deny and Explain stay
+  one press. A red-advice card gets the line but no dialog: its Approve already asks a second time.
+- Dashboard (`permission-prompts.ts` → `irreversible` on the board's prompt → `acPermissionData` →
+  `data.irreversible`): `<ui-approval-card>` (@2lab.ai/ui ≥ 0.35) replaces Approve with a slide and ⌘↵ no longer
+  approves.
+
+It runs while a prompt is raised (permission MCP server) and in the dashboard's 1 s poller, so it reads at most the
+first 64 KiB in one linear pass (heredocs and `sh -c` strings: at most 16 per level, 16 heredoc operators tried,
+depth ≤ 3) and never throws: any
+failure means no label, i.e. the plain Approve button.
+
+**Presentation only.** The classifier is read only where a prompt is already being shown. It is not part of
+`evaluateToolPolicy`, raises no prompt and denies nothing: bypass mode, a grant, or a user who told the agent to
+deploy run exactly as before.
+
 ### 4.2 Approved/Denied Message
 
 승인/거부 후 메시지 업데이트:
