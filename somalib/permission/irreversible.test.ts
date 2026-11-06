@@ -96,6 +96,9 @@ describe('irreversibleAction — destructive', () => {
     ["ssh deploy@host <<'EOF'\nrm -rf /srv/app/releases\nEOF", 'rm-recursive'],
     ['psql "$URL" <<\'SQL\'\nDROP TABLE sessions;\nSQL', 'db-delete'],
     ['psql "$URL" -c "DROP TABLE sessions"', 'db-delete'],
+    // review 3 P3: an escaped first letter (alias bypass) still names the command
+    ['\\rm -rf node_modules', 'rm-recursive'],
+    ['\\git push --force origin main', 'git-force-push'],
   ])('%s → %s', (command, expected) => {
     expect(id(command)).toBe(expected);
   });
@@ -144,6 +147,8 @@ describe('irreversibleAction — ordinary calls stay plain', () => {
     'grep -E "(rm -rf|del)" log.txt',
     'echo "a; git push --force"',
     'git commit -m "docs: run psql then DROP TABLE in staging only"',
+    // review 3 P3: the SQL must be what the client runs
+    "grep -ri 'drop table' migrations && psql -c 'select 1'",
     "cat <<'EOF' > notes.md\nrm -rf build\ngit push --force\nEOF",
     // review 2 P3: test files are not deploy scripts
     'python3 tests/test_deploy.py',
@@ -169,6 +174,29 @@ describe('irreversibleAction — ordinary calls stay plain', () => {
     expect(irreversibleAction('constructor', {})).toBeNull();
     expect(irreversibleAction('toString', {})).toBeNull();
     expect(irreversibleAction('__proto__', {})).toBeNull();
+  });
+});
+
+describe('irreversibleAction — never slows or breaks a prompt (review 3 P1)', () => {
+  const fast = (command: string) => {
+    const t0 = performance.now();
+    const hit = bash(command);
+    return { hit, ms: performance.now() - t0 };
+  };
+  it.each([
+    ['one 50 KB line', `echo ${'QUJD'.repeat(12_500)} | base64 -d > blob.bin`],
+    ['50 KB line ending in a heredoc token', `echo ${'QUJD'.repeat(12_500)} <<EOF`],
+    ['50 KB line with a heredoc token mid-line', `echo ${'QUJD'.repeat(6_250)} <<EOF ${'QUJD'.repeat(6_250)}`],
+    ['400 heredoc tokens on one line', `${'cat <<EOF '.repeat(400)}`],
+    ['6000 heredoc tokens then a newline', `${'cat <<E '.repeat(6_000)}\nls`],
+    ['an unterminated 50 KB sh -c string', `bash -c "${'x '.repeat(25_000)}`],
+  ])('%s: under 100 ms', (_name, command) => {
+    expect(fast(command).ms).toBeLessThan(100);
+  });
+
+  it('a huge command is still read (its head) and never throws', () => {
+    expect(bash(`git push --force origin main; echo ${'x'.repeat(200_000)}`)?.id).toBe('git-force-push');
+    expect(() => bash('\\'.repeat(10_000))).not.toThrow();
   });
 });
 
