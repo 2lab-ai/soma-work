@@ -891,7 +891,7 @@ export class FollowupQueue {
    * uuid is dropped, so the ordinary drain owns it again and no stale receipt
    * can re-settle it.
    */
-  unsteer(sessionKey: string, uuid: string, reason: string): FollowupOpResult {
+  unsteer(sessionKey: string, uuid: string, reason?: string): FollowupOpResult {
     return this.mutateBySteerUuid(sessionKey, uuid, (item) => {
       if (item.state !== 'steered') return 'invalid-state';
       this.enter(item, 'queued', reason);
