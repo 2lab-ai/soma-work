@@ -7,9 +7,12 @@ import { describe, expect, it } from 'vitest';
  * session itself, which may be sandboxed (writes only under the user's tmp
  * directory, network = dev-domain allowlist).
  *
- *  - In such a session the `gh` CLI's network calls fail TLS verification,
- *    while curl to the GitHub REST API with `gh auth token` works. So every
- *    GitHub read goes through the one "GitHub call" curl form.
+ *  - In such a session the `gh` CLI's network calls fail TLS verification, and
+ *    the tool policy denies `gh auth token` to everyone (devops-secret-guard).
+ *    So every GitHub read goes through the devops-tools `gh_read` tool, which
+ *    runs gh through a broker outside the sandbox and never hands out a token.
+ *  - gh_read reports a failed gh as a normal result with a non-zero
+ *    `exitCode`, so the skills define what counts as an answer.
  *  - The preflight answers `partial: <checks>` when only the adapter and/or
  *    lockDir checks fail, and the run then QA's in a defined reduced mode
  *    instead of not running at all.
@@ -19,12 +22,12 @@ import { describe, expect, it } from 'vitest';
 const SKILLS_DIR = resolve(__dirname, '..', '..');
 const read = (skill: string) => readFileSync(resolve(SKILLS_DIR, skill, 'SKILL.md'), 'utf8');
 
-const GITHUB_CALL =
-  'curl -fsSL --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $(gh auth token)" -H "Accept: application/vnd.github+json" "https://api.github.com/<path>"';
+const GITHUB_READ =
+  '{"account": "<account>", "args": ["api", "-X", "GET", "<path>", "-f", "<key>=<value>", "--jq", "<filter>"]}';
 
-describe('post-deploy QA skills read GitHub without gh network calls', () => {
+describe('post-deploy QA skills read GitHub through devops-tools gh_read', () => {
   for (const skill of ['deploy-qa', 'qa-issue', 'qa-report']) {
-    it(`${skill} uses no gh network command`, () => {
+    it(`${skill} uses no gh network command and no token`, () => {
       const md = read(skill);
       for (const cmd of [
         'gh api repos/',
@@ -33,31 +36,64 @@ describe('post-deploy QA skills read GitHub without gh network calls', () => {
         'gh repo view',
         'gh run watch',
         'gh search',
+        'api.github.com',
+        'curl -',
+        '$(gh auth token)',
       ]) {
         expect(md, `${skill}: ${cmd}`).not.toContain(cmd);
+      }
+      // `gh auth token` is denied by the tool policy: it may appear only in a "never" sentence.
+      for (const line of md.split('\n').filter((l) => l.includes('gh auth token'))) {
+        expect(line, `${skill}: ${line}`).toContain('never use `gh auth token`');
       }
     });
   }
 
   for (const skill of ['deploy-qa', 'qa-issue']) {
-    it(`${skill} defines the GitHub call form and how to page`, () => {
+    it(`${skill} defines the GitHub read, what counts as an answer, and how to page`, () => {
       const md = read(skill);
-      expect(md).toContain(GITHUB_CALL);
-      expect(md).toContain('shell state does not carry over');
-      expect(md).toContain('per_page=100&page=N');
-      // An HTTP error or paging that did not reach the end is incomplete, never empty.
-      expect(md).toContain('never read it as empty or complete');
-      // Every curl is bounded.
-      for (const l of md.split('\n').filter((x) => x.includes('curl -'))) {
-        expect(l).toContain('--connect-timeout 10 --max-time 30');
-      }
+      const section = md.slice(md.indexOf('## GitHub reads'), md.indexOf('\n## ', md.indexOf('## GitHub reads') + 1));
+      expect(section).toContain('`mcp__devops-tools__gh_read`');
+      expect(section).toContain(GITHUB_READ);
+      expect(section).toContain('`-X GET` keeps the call a read and turns the `-f` pairs into the query string');
+      // A branch name holds a `/`, which the gh_read classifier refuses inside a `?query`.
+      expect(section).toContain('never after a `?` in the path, so a value may hold a `/`');
+      expect(section).toContain('Never percent-encode anything');
+      expect(section).toContain('one array element per word, with no shell quotes');
+      // gh_read returns a failed gh as a result, not a tool error.
+      expect(section).toContain(
+        'An answer is a result whose `exitCode` is 0 and whose `truncated` and `timedOut` are false',
+      );
+      // The account: the profile's when named, else the single member-class account; else missing: github.
+      expect(section).toContain("the profile's `github.account` when it names one");
+      expect(section).toContain('`mcp__devops-tools__list` once and use the single account of class `member`');
+      expect(section).toContain('`missing: github`');
+      // Hosts without the broker: gh in Bash only outside a sandbox.
+      expect(section).toContain('run `gh` in Bash with the same args when the session is not sandboxed');
+      expect(section).toContain('`"-f", "per_page=100", "-f", "page=<N>"`');
+      // A failed read or paging that did not reach the end is incomplete, never empty.
+      expect(section).toContain('never read it as empty or complete');
+      // compare only with full SHAs (the classifier allows exactly compare/<sha>...<sha>).
+      expect(section).toContain('`compare` takes full 40-character SHAs only');
+      // No query string is written into a path anywhere in the skill.
+      expect(md).not.toMatch(/`repos\/[^`\s]*\?[^`\s]*`/);
     });
   }
 
   it('deploy-qa keeps only merged PRs from the closed listing', () => {
-    expect(read('deploy-qa')).toMatch(
-      /pulls\?state=closed&base=<integrationBranch>`, keeping only PRs with `merged_at` set/,
+    expect(read('deploy-qa')).toContain(
+      '`repos/<owner/repo>/pulls` with `"-f", "state=closed", "-f", "base=<integrationBranch>"`, keeping only PRs with `merged_at` set',
     );
+  });
+
+  it('deploy-qa preflight reads the repo through gh_read and names a failure `github`', () => {
+    const md = read('deploy-qa');
+    expect(md).toContain(
+      'a GitHub read of `repos/<owner/repo>` (filter `.full_name`) that answers with that repo, for every repo',
+    );
+    expect(md).toContain('the GitHub checks are named `github`');
+    // github.account is optional: its absence is never a missing: answer by itself.
+    expect(md).toContain('Optional: `github.account`');
   });
 });
 
@@ -97,7 +133,9 @@ describe('deploy-qa preflight and reduced mode', () => {
     const step1 = md.slice(md.indexOf('1. **Confirm the deploy**'), md.indexOf('2. **Commits.**'));
     expect(step1).toContain('the deploy workflow does not confirm a repo with QA itself');
     expect(md).not.toContain('event=push');
-    expect(step1).toContain('actions/workflows/<CD workflow>/runs?head_sha=<after>&branch=<target>` (paged)');
+    expect(step1).toContain(
+      'actions/workflows/<CD workflow>/runs` with `"-f", "head_sha=<after>", "-f", "branch=<target>"` (paged)',
+    );
     // A run not registered yet is pending, never "no CD".
     expect(step1).toContain(
       'An empty listing within the budget means the run is not registered yet: pending, never "no CD"',
