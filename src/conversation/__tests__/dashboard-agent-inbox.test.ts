@@ -227,7 +227,9 @@ describe('agent inbox board — drag and drop removed (§3.1-5)', () => {
     // Task view T1.5 / D4 E-30: a file dropped on the session composer is the slotted <ui-composer>'s own drop —
     // the page listens for no 'drop' at all, so never on a board card or column.
     expect(TEMPLATE).not.toContain("'drop'");
-    expect(TEMPLATE).toContain('<ui-composer id="pc-composer" slot="composer" lang="ko"></ui-composer>');
+    expect(TEMPLATE).toContain(
+      '<ui-composer id="pc-composer" slot="composer" lang="ko"><div class="panel-controls" id="panel-controls" slot="end" aria-label="이 세션의 모델과 추론 강도"></div></ui-composer>',
+    );
     expect(TEMPLATE).not.toContain('confirm(');
   });
 });

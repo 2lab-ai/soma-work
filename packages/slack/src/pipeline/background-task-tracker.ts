@@ -97,6 +97,17 @@ function findStructuredString(content: unknown, field: string): string | undefin
  * regex. The id this yields equals the SDK `task_id`, so it shares the tracker
  * key space. Returns `undefined` when no id is present.
  */
+/**
+ * #989 — the output file a `Bash({run_in_background:true})` spawn ack names
+ * ("…Output is being written to: <path>"). The SDK `task_started` carries no
+ * output path, so this is where a live bash task gets one.
+ */
+export function parseBackgroundOutputFile(content: unknown): string | undefined {
+  const text = contentToText(content);
+  const m = text.match(/Output is being written to:\s*(\S+)/i);
+  return m ? m[1].replace(/[.,;]+$/, '') : undefined;
+}
+
 export function parseBackgroundLaunchId(content: unknown): string | undefined {
   const structured = findStructuredString(content, 'backgroundTaskId') ?? findStructuredString(content, 'shellId');
   if (structured) return structured;
@@ -116,6 +127,8 @@ export interface LiveTask {
   taskType?: string;
   /** SDK-managed output file path, carried for host-side reconciliation. */
   outputFile?: string;
+  /** The SDK `task_started` description (e.g. the Bash call's description). */
+  description?: string;
 }
 
 /** Optional metadata supplied alongside a start/ack. */
@@ -123,6 +136,7 @@ export interface TaskStartMeta {
   toolUseId?: string;
   taskType?: string;
   outputFile?: string;
+  description?: string;
 }
 
 export class AgentTaskLifecycleTracker {
@@ -147,12 +161,14 @@ export class AgentTaskLifecycleTracker {
       existing.toolUseId ??= meta.toolUseId;
       existing.taskType ??= meta.taskType;
       existing.outputFile ??= meta.outputFile;
+      existing.description ??= meta.description;
     } else {
       map.set(taskId, {
         taskId,
         toolUseId: meta.toolUseId,
         taskType: meta.taskType,
         outputFile: meta.outputFile,
+        ...(meta.description ? { description: meta.description } : {}),
       });
     }
     this.live.set(sessionKey, map);

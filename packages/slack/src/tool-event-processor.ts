@@ -9,7 +9,11 @@ import type { AssistantStatusManager } from './assistant-status-manager';
 import type { McpHealthMonitor } from './mcp-health-monitor';
 import type { McpStatusDisplay } from './mcp-status-tracker';
 import { getToolResultRenderMode, OutputFlag, resolveVerbosityMask, shouldOutput } from './output-flags';
-import { AgentTaskLifecycleTracker, parseBackgroundLaunchId } from './pipeline/background-task-tracker';
+import {
+  AgentTaskLifecycleTracker,
+  parseBackgroundLaunchId,
+  parseBackgroundOutputFile,
+} from './pipeline/background-task-tracker';
 import type { ReactionManager } from './reaction-manager';
 import { extractTaskIdFromResult } from './stream-processor';
 import { ToolFormatter, type ToolResult } from './tool-formatter';
@@ -519,6 +523,7 @@ export class ToolEventProcessor {
             this.backgroundTaskTracker.trackStart(context.sessionKey, taskId, {
               toolUseId: toolResult.toolUseId,
               taskType: 'bash',
+              outputFile: parseBackgroundOutputFile(toolResult.result),
             });
           }
         }
@@ -767,8 +772,13 @@ export class ToolEventProcessor {
    * background-work resume guard to decide whether to re-enter the agent loop
    * instead of completing the session with live work outstanding.
    */
-  getLiveBackgroundWork(sessionKey?: string): { count: number; labels: string[]; signature: string } {
-    if (!sessionKey) return { count: 0, labels: [], signature: '' };
+  getLiveBackgroundWork(sessionKey?: string): {
+    count: number;
+    labels: string[];
+    signature: string;
+    tasks: Array<{ taskId: string; taskType?: string; outputFile?: string; description?: string }>;
+  } {
+    if (!sessionKey) return { count: 0, labels: [], signature: '', tasks: [] };
     // AUTHORITATIVE source: the SDK task lifecycle (started − settled), keyed by
     // task_id, session-scoped. Covers bg bash, bg subagent Tasks AND Monitor
     // watches uniformly, so the resume signal survives across resume turns (the
@@ -781,7 +791,32 @@ export class ToolEventProcessor {
       count: this.backgroundTaskTracker.liveCount(sessionKey),
       labels,
       signature: this.backgroundTaskTracker.liveSignature(sessionKey),
+      tasks: tasks.map((t) => ({
+        taskId: t.taskId,
+        ...(t.taskType ? { taskType: t.taskType } : {}),
+        ...(t.outputFile ? { outputFile: t.outputFile } : {}),
+        ...(t.description ? { description: t.description } : {}),
+      })),
     };
+  }
+
+  /**
+   * #966 — settle every background task still live at the end of a turn, and
+   * return them. The turn's CLI process ends with the turn and stops its
+   * background tasks as it exits, so they are dead now; left live, the tracker
+   * would keep claiming them until the next process happens to report them
+   * `stopped`. Settling tombstones each id, so that late `stopped` (or a
+   * replayed start) is a no-op. Call it after the turn-end decision has read
+   * {@link getLiveBackgroundWork}.
+   */
+  endBackgroundWorkWithTurn(sessionKey?: string, taskIds?: string[]): Array<{ taskId: string; taskType?: string }> {
+    if (!sessionKey) return [];
+    // Only the ids the ended turn saw, when given (#989 review). The tracker is per session; the
+    // caller relies on a session's runs being serialized, so this narrows, it does not isolate.
+    const only = taskIds ? new Set(taskIds) : undefined;
+    const ended = this.backgroundTaskTracker.liveTasks(sessionKey).filter((t) => !only || only.has(t.taskId));
+    for (const task of ended) this.backgroundTaskTracker.trackSettled(sessionKey, task.taskId);
+    return ended.map((t) => ({ taskId: t.taskId, ...(t.taskType ? { taskType: t.taskType } : {}) }));
   }
 
   /**
@@ -799,6 +834,7 @@ export class ToolEventProcessor {
         toolUseId: event.toolUseId,
         taskType: event.taskType,
         outputFile: event.outputFile,
+        description: event.description,
       });
     } else if (event.phase === 'settled') {
       this.backgroundTaskTracker.trackSettled(sessionKey, event.taskId);

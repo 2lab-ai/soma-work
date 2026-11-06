@@ -288,6 +288,67 @@ describe('Restart symmetry: loadSessions honors shutdownNotificationSent marker'
     expect(recovered[0].shouldAutoResume).toBe(true);
   });
 
+  // #966 T2 — the agents a restart stopped are read off the registry BEFORE the load marks them unknown.
+  it('records the background agents the restart stopped on the recovery record', async () => {
+    const startedAt = Date.now() - 60_000;
+    const sessionsData = [
+      {
+        key: 'C123-1700000000.000200',
+        ownerId: 'U456',
+        userId: 'U456',
+        channelId: 'C123',
+        threadTs: '1700000000.000200',
+        sessionId: 'sess-agents',
+        isActive: true,
+        lastActivity: new Date().toISOString(),
+        activityState: 'working',
+        shutdownNotificationSent: true,
+        wasWorkingAtShutdown: true,
+        shutdownNotifiedAt: Date.now(),
+        state: 'MAIN',
+        agents: {
+          nextN: 5,
+          agents: [
+            { id: 'toolu_done', n: 1, status: 'completed', startedAt, toolCalls: 3, background: true, taskId: 'adone' },
+            {
+              id: 'toolu_run',
+              n: 3,
+              status: 'running',
+              startedAt,
+              toolCalls: 7,
+              background: true,
+              type: 'general-purpose',
+              description: 'Build ui-working element',
+              taskId: 'afa413d9893ddb0c3',
+            },
+            {
+              id: 'toolu_nested',
+              n: 4,
+              parentId: 'toolu_run',
+              status: 'running',
+              startedAt,
+              toolCalls: 1,
+              background: true,
+              taskId: 'anested',
+            },
+          ],
+        },
+      },
+    ];
+    fs.writeFileSync(path.join(TEST_DIR, 'sessions.json'), JSON.stringify(sessionsData));
+
+    const registry = new SessionRegistry();
+    registry.loadSessions();
+
+    const [recovered] = registry.getCrashRecoveredSessions();
+    expect(recovered.stoppedAgents).toEqual([
+      { n: 3, type: 'general-purpose', description: 'Build ui-working element', taskId: 'afa413d9893ddb0c3' },
+    ]);
+    // The registry itself still shows them as lost from sight.
+    const live = registry.getSessionByKey(recovered.sessionKey);
+    expect(live?.agents?.agents.find((a) => a.taskId === 'afa413d9893ddb0c3')?.status).toBe('unknown');
+  });
+
   it('recovers an idle session that received a shutdown notification (no auto-resume)', async () => {
     // Symmetry: every session that got a shutdown notification should get a
     // restart notification, even if it was idle. Auto-resume stays off for

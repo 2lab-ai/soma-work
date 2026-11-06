@@ -724,26 +724,26 @@ describe('C5 — background-work-resume reads as its own badge', () => {
   const two = buildBackgroundWaitPrompt({ count: 2, labels: ['local_bash', 'local_agent'] } as never, 3, 6);
   const bare = buildBackgroundWaitPrompt({ count: 1, labels: [] } as never, 6, 6);
 
-  it('백그라운드 재개 #n/m — the round, how many tasks were still running and which', () => {
+  it('백그라운드 재개 #n/m — the round, how many tasks stopped with the turn and which (#966)', () => {
     const { sysTurnInfo } = api();
     for (const extra of [SYSTEM, {}]) {
       const info = sysTurnInfo(user(one, extra)) as NonNullable<Info>;
       expect(info.kind).toBe('bgwork');
       expect(info.label).toBe('백그라운드 재개 #1/6');
-      expect(info.line).toBe('실행 중인 백그라운드 작업 1개 (local_bash) — 턴을 이어감');
+      expect(info.line).toBe('턴과 함께 멈춘 백그라운드 작업 1개 (local_bash) — 턴을 이어감');
       expect(info.facts).toEqual([
         ['회차', '1 / 6'],
-        ['실행 중인 작업', '1개 (local_bash)'],
-        ['이유', '턴이 끝났지만 런타임이 백그라운드 작업을 아직 실행 중으로 보고'],
+        ['멈춘 작업', '1개 (local_bash)'],
+        ['이유', '턴이 끝나며 백그라운드 작업도 함께 멈춤 — 다음 턴에서 이어 가게 함'],
       ]);
       expect(info.raw).toBe(one);
     }
     const info2 = sysTurnInfo(user(two, SYSTEM)) as NonNullable<Info>;
     expect(info2.label).toBe('백그라운드 재개 #3/6');
-    expect(info2.facts[1]).toEqual(['실행 중인 작업', '2개 (local_bash, local_agent)']);
+    expect(info2.facts[1]).toEqual(['멈춘 작업', '2개 (local_bash, local_agent)']);
     const info3 = sysTurnInfo(user(bare, SYSTEM)) as NonNullable<Info>;
-    expect(info3.line).toBe('실행 중인 백그라운드 작업 1개 — 턴을 이어감');
-    expect(info3.facts[1]).toEqual(['실행 중인 작업', '1개']);
+    expect(info3.line).toBe('턴과 함께 멈춘 백그라운드 작업 1개 — 턴을 이어감');
+    expect(info3.facts[1]).toEqual(['멈춘 작업', '1개']);
   });
 
   it('a person who typed the marker is a person', () => {

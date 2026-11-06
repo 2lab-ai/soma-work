@@ -6,7 +6,8 @@
  *   T2  the detail card keeps only its title bar while the reader scrolls: the status bar joins the scroll area
  *       (syncPhoneStatus); reading (rdRead → data-read) gives the section box the whole view (sizePanelSections) and
  *       scrolls everything above it out; a tap on the title bar or the start of the history brings it back (rdStep);
- *   T3  the model picker sits on the composer's own row, left of Send (syncPickerDock);
+ *   T3  the model picker sits on the composer's own row, left of Send: slotted into <ui-composer slot="end"> (#918,
+ *       @2lab.ai/ui ≥ 0.36.0) — the page never reads the composer's shadow DOM; a narrow row draws it compact;
  *   T4  the reader's scroll away from the newest tucks the composer (data-tuck), the very bottom and ^ (#pc-reveal)
  *       bring it back — never while the reader types in it (rdStep).
  *
@@ -102,7 +103,7 @@ describe('the phone breakpoint is the page’s own (narrow, or a phone sideways)
   });
   it('a breakpoint change re-homes the parts and starts the card over (syncPhoneChrome on change)', () => {
     expect(clientFn('syncPhoneChrome')).toMatch(
-      /syncPhoneScope\(\);\s*syncPhoneStatus\(\);\s*rdReset\(\);\s*syncPickerDock\(\);/,
+      /syncPhoneScope\(\);\s*syncPhoneStatus\(\);\s*rdReset\(\);\s*syncPickerFit\(\);/,
     );
     expect(TEMPLATE).toContain("_phoneMq.addEventListener('change', syncPhoneChrome)");
   });
@@ -552,7 +553,7 @@ describe('T4 — the composer slides away while reading; ^ brings it back', () =
     let now = 1000;
     const vp = { scrollTop: 0, _rdBound: false, addEventListener: () => {} };
     const _rd = { touch: false, until: 0, last: -1, vp: null as unknown, leave: 0 };
-    const m = load<{ rdGesture: (e: { type: string }) => void }>(['rdGesture'], {
+    const m = load<{ rdGesture: (e: { type: string }) => void }>(['rdGesture', 'rdTouchEnd'], {
       isPhone: () => true,
       psecViewport: () => vp,
       rdOnScroll: () => {},
@@ -567,74 +568,392 @@ describe('T4 — the composer slides away while reading; ^ brings it back', () =
     now = 1500;
     m.rdGesture({ type: 'wheel' });
     expect(_rd.until).toBe(1900);
+    // A finger that began elsewhere (the title bar, the composer) and lifts over the sections opens no window.
+    now = 3000;
+    m.rdGesture({ type: 'touchend' });
+    expect(_rd.until).toBe(1900);
     expect(clientFn('rdOnScroll')).toContain('var user = _rd.touch || Date.now() < _rd.until;');
     expect(clientFn('rdOnScroll')).not.toMatch(/_rd\.(until|gesture) = /);
   });
 });
 
-describe('T3 — the model picker on the composer’s row, left of Send', () => {
-  type Rect = { left: number; right: number; top: number; bottom: number; width: number; height: number };
-  const rect = (left: number, top: number, w: number, h: number): Rect => ({
-    left,
-    right: left + w,
-    top,
-    bottom: top + h,
-    width: w,
-    height: h,
+describe('T3 — the model picker on the composer’s row, left of Send, through the composer’s slot (#918)', () => {
+  it('#panel-controls is the composer’s slot="end" child: the composer lays it out before Send', () => {
+    expect(TEMPLATE).toContain(
+      '<ui-composer id="pc-composer" slot="composer" lang="ko"><div class="panel-controls" id="panel-controls" slot="end" aria-label="이 세션의 모델과 추론 강도"></div></ui-composer>',
+    );
   });
-  const setup = (phone: boolean, withEnd = true) => {
-    const cmd = Object.assign(new FakeNode('panel-command'), { getBoundingClientRect: () => rect(0, 600, 390, 160) });
+  it('the page reads nothing in the composer’s shadow DOM: no measuring, no docked box', () => {
+    expect(TEMPLATE).not.toContain('syncPickerDock');
+    expect(TEMPLATE).not.toContain('data-pick-dock');
+    expect(TEMPLATE).not.toMatch(/--pd-[lrth]/);
+    expect(TEMPLATE).not.toMatch(/shadowRoot\.querySelector\('\.cp-(bar|end|tools)'\)/);
+  });
+  it('a new card’s composer takes the controls with it (the picker element and its state move, not a copy)', () => {
     const ctl = new FakeNode('panel-controls');
-    const send = { getBoundingClientRect: () => rect(323, 700, 44, 44) };
-    const hidden = { getBoundingClientRect: () => rect(0, 0, 0, 0) };
-    const end = { children: [hidden, send] };
-    const tools = { getBoundingClientRect: () => rect(23, 700, 136, 44) };
-    const bar = {
-      getBoundingClientRect: () => rect(17, 698, 356, 48),
-      querySelector: (s: string) => (s === '.cp-end' ? (withEnd ? end : null) : s === '.cp-tools' ? tools : null),
-    };
-    const comp = Object.assign(new FakeNode('pc-composer'), {
-      shadowRoot: { querySelector: (s: string) => (s === '.cp-bar' ? bar : null) },
+    const oldComp = new FakeNode('pc-composer');
+    oldComp.appendChild(ctl);
+    const oldSteer = Object.assign(new FakeNode('cmd-steer'), {
+      replaceWith(n: FakeNode) {
+        replaced.push(n);
+      },
     });
-    const document = fakeDocument([cmd, ctl, comp]);
-    const m = load<{ syncPickerDock: () => void }>(['syncPickerDock'], { document, isPhone: () => phone });
-    return { cmd, ctl, ...m };
+    oldSteer.appendChild(oldComp);
+    const replaced: FakeNode[] = [];
+    const made: Array<FakeNode & { slot?: string }> = [];
+    const document = {
+      getElementById: (id: string) => (id === 'cmd-steer' ? oldSteer : id === 'panel-controls' ? ctl : null),
+      createElement: (tag: string) => {
+        const n = new FakeNode(tag) as FakeNode & { slot?: string };
+        made.push(n);
+        return n;
+      },
+    };
+    const m = load<{ pcFreshSteer: () => void }>(['pcFreshSteer'], {
+      document,
+      ntDictateStopIn: () => {},
+      pcComposerSetup: () => {},
+      _pcFailed: {},
+      _pcNoteFiles: {},
+    });
+    m.pcFreshSteer();
+    const comp = made.find((n) => n.id === 'pc-composer')!;
+    expect(comp.slot).toBe('composer');
+    expect(ctl.parentNode).toBe(comp); // the same node, now the new composer's slot="end" child
+    expect(oldComp.children).toEqual([]);
+    expect(replaced).toEqual([made.find((n) => n.id === 'cmd-steer')]);
+  });
+  it('the controls sit on the row: one line, the note floats above the picker; no "이 세션" label', () => {
+    const r = cssRule('#panel-controls');
+    expect(r).toContain('position: relative;');
+    expect(r).toContain('flex-wrap: nowrap;');
+    expect(r).toContain('min-width: 0;');
+    expect(r).toContain('padding: 0;');
+    const note = cssRule('#panel-controls > .cb-model-note');
+    expect(note).toContain('position: absolute;');
+    expect(note).toContain('bottom: calc(100% + 6px);');
+    expect(cssRule('#panel-controls ui-model-picker')).toContain('min-width: 0;');
+    // Narrower than even the compact trigger (320px, four tools): its content clips inside the button, never over Send.
+    expect(cssRule('#panel-controls ui-model-picker::part(trigger)')).toContain('overflow: hidden;');
+    expect(clientFn('renderPanelControls')).not.toContain('pc-scope');
+  });
+  it('the controls’ repaint fits the picker to the row (syncPickerFit), and so does a resize of the composer', () => {
+    expect(clientFn('renderPanelControls')).toMatch(/mpHydrate\(el\);\n\s*syncPickerFit\(\);/);
+    expect(TEMPLATE).toMatch(/new ResizeObserver\(function\(\) \{ syncPickerFit\(\); \}\)/);
+  });
+});
+
+describe('T3 — a narrow row draws the picker compact: the maker’s mark and the level (#918)', () => {
+  const setup = (width: number, touch: boolean, had = false, open = false) => {
+    const attrs: Record<string, boolean> = had ? { compact: true } : {};
+    if (open) attrs.open = true;
+    const picker = {
+      toggleAttribute: (k: string, on: boolean) => {
+        if (on) attrs[k] = true;
+        else delete attrs[k];
+      },
+      hasAttribute: (k: string) => !!attrs[k],
+    };
+    const comp = { getBoundingClientRect: () => ({ width }) };
+    const m = load<{ syncPickerFit: () => void }>(['syncPickerFit'], {
+      document: {
+        getElementById: (id: string) => (id === 'pc-composer' ? comp : null),
+        querySelector: (sel: string) => (sel === '#panel-controls ui-model-picker' ? picker : null),
+      },
+      window: { matchMedia: (q: string) => ({ matches: q === '(pointer: coarse)' && touch }) },
+      PICKER_COMPACT_BELOW: 400,
+      PICKER_COMPACT_BELOW_TOUCH: 480,
+      _pcCompact: had,
+    });
+    return { m, attrs };
+  };
+  it('the room the name needs follows the composer’s buttons: 44px touch targets take more of the row', () => {
+    expect(TEMPLATE).toContain('var PICKER_COMPACT_BELOW = 400;');
+    expect(TEMPLATE).toContain('var PICKER_COMPACT_BELOW_TOUCH = 480;');
+    const run = (w: number, touch: boolean, had = false) => {
+      const t = setup(w, touch, had);
+      t.m.syncPickerFit();
+      return !!t.attrs.compact;
+    };
+    expect(run(358, true)).toBe(true); // a 390px phone's row
+    expect(run(408, true)).toBe(true); // a 440px phone's row: the name would not fit beside four 44px buttons
+    expect(run(600, true, true)).toBe(false); // a tablet's
+    expect(run(407, false)).toBe(false); // the desktop card's (440px wide): 32px buttons leave the name its room
+    expect(run(380, false)).toBe(true); // a desktop card dragged narrow
+    expect(run(0, true, true)).toBe(true); // a closed panel keeps what it had
+    // An open menu holds its trigger: the toggle waits for the close (whose repaint renders _pcCompact).
+    const held = setup(358, true, false, true);
+    held.m.syncPickerFit();
+    expect(held.attrs.compact).toBeUndefined();
+    expect(clientFn('mpOnOpenChange')).toContain('repaintPanelControlsFor(key);');
+  });
+  it('the panel’s picker is drawn compact while the row is narrow, so a repaint keeps it; the board card’s never', () => {
+    const fn = clientFn('renderModelPicker');
+    expect(fn).toContain("(where === 'panel' && _pcCompact ? ' compact' : '')");
+    expect(clientFn('syncPickerFit')).toContain('_pcCompact = narrow;');
+  });
+});
+
+describe('#918 — a named keyboard path brings the head back', () => {
+  it('a title-bar button, named, shown only while reading', () => {
+    expect(TEMPLATE).toContain(
+      '<button type="button" id="panel-head-back" class="ui-icon-btn panel-title-act panel-head-back" aria-label="카드 위쪽 보이기" title="카드 위쪽 보이기" onclick="rdHeadBack(event)"><i data-ui-icon="chevron-down"></i></button>',
+    );
+    expect(cssRule('.panel-title-row > .panel-head-back')).toContain('display: none;');
+    expect(cssRule('.slide-panel[data-read="1"] .panel-title-row > .panel-head-back')).toContain(
+      'display: inline-flex;',
+    );
+    const en = JSON.parse(
+      readFileSync(
+        join(__dirname, '..', '..', '..', 'packages', 'common', 'src', 'i18n-catalog', 'en-page.json'),
+        'utf-8',
+      ),
+    );
+    expect(JSON.stringify(en)).toContain('카드 위쪽 보이기');
+  });
+  it('it scrolls the head back in; focus that was on it moves to the card’s title, never to the page', () => {
+    const calls: string[] = [];
+    const btn = { id: 'panel-head-back' };
+    const title = { focus: (o: { preventScroll: boolean }) => calls.push(`focus title ${o.preventScroll}`) };
+    let active: unknown = btn;
+    const m = load<{ rdHeadBack: (e: { detail: number }) => void }>(['rdHeadBack'], {
+      rdRead: (on: boolean) => calls.push(`read ${on}`),
+      document: {
+        getElementById: (id: string) => (id === 'panel-head-back' ? btn : id === 'panel-title' ? title : null),
+        get activeElement() {
+          return active;
+        },
+      },
+    });
+    m.rdHeadBack({ detail: 0 });
+    expect(calls).toEqual(['read false', 'focus title true']);
+    calls.length = 0;
+    active = null; // a tap that left focus elsewhere: it stays there
+    m.rdHeadBack({ detail: 1 });
+    expect(calls).toEqual(['read false']);
+  });
+});
+
+describe('#918 — the reading follow-ups from the trinity review of #915', () => {
+  const leaveSetup = () => {
+    const panel = new FakeNode('slide-panel');
+    const calls: string[] = [];
+    const listeners: Record<string, () => void> = {};
+    const scroll = Object.assign(new FakeNode('panel-scroll'), {
+      scrollTop: 400,
+      scrollTo(o: { top: number; behavior: string }) {
+        calls.push(`scroll ${o.top} ${o.behavior}`);
+      },
+      addEventListener: (t: string, f: () => void) => {
+        listeners[t] = f;
+      },
+      removeEventListener: (t: string, f: () => void) => {
+        if (listeners[t] === f) delete listeners[t];
+      },
+    });
+    const _rd = { leave: 0, land: 0, last: 5, off: null as null | (() => void) };
+    const timers: Array<() => void> = [];
+    const inject = {
+      document: fakeDocument([panel, scroll as unknown as FakeNode]),
+      rdHow: () => 'smooth',
+      rdBoxTop: () => 240,
+      sizePanelSections: () => calls.push(`size ${panel.getAttribute('data-read')}`),
+      _rd,
+      _panelScrollGen: 0,
+      setTimeout: (f: () => void) => {
+        timers.push(f);
+        return timers.length;
+      },
+      clearTimeout: () => {},
+    };
+    const m = load<{ rdRead: (on: boolean) => void; rdReset: () => void }>(['rdRead', 'rdReset'], inject);
+    panel.setAttribute('data-read', '1');
+    return { m, panel, scroll, listeners, calls, _rd, timers };
   };
 
-  it('a phone: the picker’s box spans from the tools’ end to Send’s start, on the row', () => {
-    const t = setup(true);
-    t.syncPickerDock();
-    expect(t.cmd.hasAttribute('data-pick-dock')).toBe(true);
-    expect(t.ctl.style.props).toEqual({ '--pd-l': '165px', '--pd-r': '73px', '--pd-t': '98px', '--pd-h': '48px' });
+  it('rdReset takes the leaving scroll’s listeners off with its timer (_rd.off)', () => {
+    const t = leaveSetup();
+    t.m.rdRead(false);
+    expect(Object.keys(t.listeners).sort()).toEqual(['scroll', 'scrollend']);
+    t.m.rdReset();
+    expect(t.listeners).toEqual({});
+    expect(t._rd.off).toBeNull();
   });
-  // SSOT 2026-11-05: "디테일 작업 카드 입력창에 모델 피커 지시 버튼 왼쪽으로" — every screen, not only a phone.
-  it('a wide screen (desktop): the picker sits left of Send too, measured the same way', () => {
-    const wide = setup(false);
-    wide.syncPickerDock();
-    expect(wide.cmd.hasAttribute('data-pick-dock')).toBe(true);
-    expect(wide.ctl.style.props).toEqual({ '--pd-l': '165px', '--pd-r': '73px', '--pd-t': '98px', '--pd-h': '48px' });
-    expect(clientFn('syncPickerDock')).not.toContain('isPhone()');
+
+  it('iOS Safari has no scrollend: the scroll that reaches the top ends the leaving there, not after the 900ms floor', () => {
+    const t = leaveSetup();
+    t.m.rdRead(false);
+    expect(t.panel.getAttribute('data-read')).toBe('leaving');
+    t.scroll.scrollTop = 120;
+    t.listeners.scroll(); // still on its way up
+    expect(t.panel.getAttribute('data-read')).toBe('leaving');
+    t.scroll.scrollTop = 0;
+    t.listeners.scroll(); // landed at the top
+    expect(t.panel.hasAttribute('data-read')).toBe(false);
+    expect(t.calls[t.calls.length - 1]).toBe('size null');
+    expect(t.listeners).toEqual({});
   });
-  it('a recording in the row (no Send end): the picker keeps its line above the composer', () => {
-    for (const phone of [true, false]) {
-      const rec = setup(phone, false);
-      rec.cmd.setAttribute('data-pick-dock', '');
-      rec.syncPickerDock();
-      expect(rec.cmd.hasAttribute('data-pick-dock')).toBe(false);
-    }
+
+  it('a goal, agent or tasks landing (and its hold) that runs while reading starts the card over first', () => {
+    const land = clientFn('landPanel');
+    const goal = land.slice(land.indexOf("if (_panelLand === 'goal'"), land.indexOf("if (_panelLand !== 'worklog')"));
+    expect(goal).toMatch(/if \(panelReading\(\)\) rdReset\(\);\n\s*var under = /);
+    expect(clientFn('holdPanelLanding')).toMatch(/if \(panelReading\(\)\) rdReset\(\);\n\s*var under = /);
+    const calls: string[] = [];
+    const scrollEl = {
+      scrollTop: 300,
+      scrollHeight: 2000,
+      clientHeight: 600,
+      getBoundingClientRect: () => ({ top: 0 }),
+      scrollTo: (o: { top: number }) => calls.push(`scroll ${o.top}`),
+    };
+    const sec = { style: { display: '' }, getBoundingClientRect: () => ({ top: 500 }) };
+    const m = load<{ holdPanelLanding: () => void }>(['holdPanelLanding'], {
+      Date: { now: () => 0 },
+      _panelHoldUntil: 1,
+      _panelHold: true,
+      _panelLand: 'goal',
+      _panelScrollGen: 0,
+      panelTabsHeight: () => 0,
+      panelReading: () => true,
+      rdReset: () => calls.push('reset'),
+      document: {
+        getElementById: (id: string) => (id === 'panel-scroll' ? scrollEl : id === 'panel-goal' ? sec : null),
+      },
+    });
+    m.holdPanelLanding();
+    expect(calls).toEqual(['reset', 'scroll 800']);
   });
-  it('docked, the box lets taps through where it is empty and ends at Send', () => {
-    const r = cssRule('.panel-command[data-pick-dock] > .panel-controls');
-    expect(r).toContain('position: absolute;');
-    expect(r).toContain('justify-content: flex-end;');
-    expect(r).toContain('pointer-events: none;');
-    expect(cssRule('.panel-command[data-pick-dock] > .panel-controls > *')).toContain('pointer-events: auto;');
-    // "이 세션" is the line's label; on the composer's row the picker stands alone (its menu names the session).
-    expect(cssRule('.panel-command[data-pick-dock] > .panel-controls > .pc-scope')).toContain('display: none;');
+
+  it('a finger lifted off a node that left the DOM still ends the touch (document-level end listeners)', () => {
+    expect(TEMPLATE).toContain(
+      "['touchend', 'touchcancel', 'pointerup', 'pointercancel'].forEach(function(t) {\n    document.addEventListener(t, rdTouchEnd, { passive: true, capture: true });",
+    );
+    let now = 1000;
+    const _rd = { touch: true, until: 0 };
+    const m = load<{ rdTouchEnd: () => void }>(['rdTouchEnd'], { _rd, Date: { now: () => now } });
+    m.rdTouchEnd();
+    expect(_rd).toEqual({ touch: false, until: 2200 });
+    now = 5000;
+    m.rdTouchEnd(); // no touch on the sections: a lift elsewhere never opens the reader's window
+    expect(_rd).toEqual({ touch: false, until: 2200 });
   });
-  it('it follows the composer: its tools, its size, a new card’s composer, the controls’ repaint', () => {
-    expect(clientFn('pcComposerSetup')).toContain('requestAnimationFrame(syncPickerDock)');
-    expect(clientFn('renderPanelControls')).toMatch(/mpHydrate\(el\);\n\s*syncPickerDock\(\);/);
-    expect(TEMPLATE).toContain("['#panel-command', '#panel-command .pc-steer-wrap'].forEach(function(sel) {");
+
+  it('a touch ends on the node it began on, even after that node left the DOM (touchend never bubbles from a detached node)', () => {
+    const listeners: Record<string, Array<{ f: () => void; once: boolean }>> = {};
+    const node = {
+      addEventListener: (t: string, f: () => void, o: { once?: boolean }) => {
+        (listeners[t] ||= []).push({ f, once: !!o?.once });
+      },
+    };
+    let now = 1000;
+    const _rd = { touch: false, until: 0, last: -1, vp: null as unknown, leave: 0 };
+    const m = load<{ rdGesture: (e: unknown) => void }>(['rdGesture', 'rdTouchEnd'], {
+      isPhone: () => true,
+      psecViewport: () => null,
+      rdOnScroll: () => {},
+      _rd,
+      Date: { now: () => now },
+    });
+    // The touch starts on a node inside the chat's shadow root (composedPath()[0], not the retargeted host).
+    m.rdGesture({ type: 'touchstart', target: { host: true }, composedPath: () => [node, { host: true }] });
+    expect(_rd.touch).toBe(true);
+    expect(Object.keys(listeners).sort()).toEqual(['touchcancel', 'touchend']);
+    expect(listeners.touchend.every((l) => l.once)).toBe(true);
+    // The node re-renders away; its touchend fires on the detached node only.
+    now = 1500;
+    for (const l of listeners.touchend) l.f();
+    expect(_rd).toMatchObject({ touch: false, until: 2700 });
+  });
+
+  it('a new view (rdReset) forgets a touch and its fling window', () => {
+    const _rd = { touch: true, until: 99999, last: 5, leave: 0, land: 0, off: null };
+    const m = load<{ rdReset: () => void }>(['rdReset'], {
+      _rd,
+      document: fakeDocument([]),
+      clearTimeout: () => {},
+      sizePanelSections: () => {},
+    });
+    m.rdReset();
+    expect(_rd).toMatchObject({ touch: false, until: 0, last: -1 });
+  });
+
+  it('^ moves focus into the composer whenever focus was on it (an assistive activation can report detail 1); a finger’s tap does not bring up the keyboard', () => {
+    const calls: string[] = [];
+    const btn = { id: 'pc-reveal' };
+    const comp = { focus: () => calls.push('focus') };
+    let active: unknown = btn;
+    const m = load<{ pcReveal: (e: { detail: number; pointerType?: string }) => void }>(['pcReveal'], {
+      rdTuck: (on: boolean) => calls.push(`tuck ${on}`),
+      document: {
+        getElementById: (id: string) => (id === 'pc-composer' ? comp : id === 'pc-reveal' ? btn : null),
+        get activeElement() {
+          return active;
+        },
+      },
+    });
+    m.pcReveal({ detail: 1 }); // VoiceOver / TalkBack: focus was on ^
+    expect(calls).toEqual(['tuck false', 'focus']);
+    calls.length = 0;
+    m.pcReveal({ detail: 1, pointerType: 'touch' }); // a finger (Chrome on Android focuses the button it taps)
+    expect(calls).toEqual(['tuck false']);
+    calls.length = 0;
+    active = null;
+    m.pcReveal({ detail: 1, pointerType: 'mouse' }); // a click that left focus elsewhere
+    expect(calls).toEqual(['tuck false']);
+    m.pcReveal({ detail: 0 }); // Enter / Space
+    expect(calls).toEqual(['tuck false', 'tuck false', 'focus']);
+  });
+
+  it('a scroll reads the composer’s and the box’s heights only when it may tuck the composer (the reader’s own, composer in, not typing)', () => {
+    let reads = 0;
+    const h = <T extends object>(o: T, v: number): T =>
+      Object.defineProperties(o, {
+        clientHeight: {
+          get() {
+            reads++;
+            return v;
+          },
+        },
+        offsetHeight: {
+          get() {
+            reads++;
+            return v;
+          },
+        },
+      });
+    const panel = new FakeNode('slide-panel');
+    const cmd = h(Object.assign(new FakeNode('panel-command'), { contains: () => false }), 120);
+    const sc = h(new FakeNode('panel-scroll'), 700);
+    const vp = { scrollTop: 500, scrollHeight: 2000, clientHeight: 400, getRootNode: () => ({}) };
+    const _rd = { touch: false, until: 0, last: 600, vp };
+    const steps: Array<[boolean, number]> = [];
+    const run = (user: boolean, tucked: boolean) => {
+      reads = 0;
+      _rd.touch = user;
+      _rd.last = 600;
+      if (tucked) panel.setAttribute('data-tuck', '');
+      else panel.removeAttribute('data-tuck');
+      const m = load<{ rdOnScroll: (e: { currentTarget: unknown }) => void }>(['rdOnScroll'], {
+        _rd,
+        isPhone: () => true,
+        panelOpen: true,
+        psecBox: () => h({}, 400),
+        document: { ...fakeDocument([panel, cmd, sc]), activeElement: null, body: {} },
+        Date: { now: () => 0 },
+        rdStep: (_t: number, _m: number, _p: number, u: boolean, _o: boolean, _ty: boolean, grow: number) => {
+          steps.push([u, grow]);
+          return { read: null, tuck: null };
+        },
+        rdTuck: () => {},
+        rdRead: () => {},
+      });
+      m.rdOnScroll({ currentTarget: vp });
+      return reads;
+    };
+    expect(run(false, false)).toBe(0); // the page's own scroll
+    expect(run(true, true)).toBe(0); // the composer is already away
+    expect(run(true, false)).toBe(3); // the reader's own: sc, cmd and the box, once
+    expect(steps[2]).toEqual([true, 420]);
   });
 });

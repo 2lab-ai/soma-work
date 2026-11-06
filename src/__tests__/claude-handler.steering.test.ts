@@ -413,6 +413,32 @@ describe('ClaudeHandler streaming-input turn (user-steering WU1)', () => {
     await it.return?.(undefined);
   });
 
+  /**
+   * #962 — the timing the host's refused-steer retry (#956) depends on, through
+   * the real handler and the neutral stream the executor consumes: a push is
+   * refused while the turn's query has not started (the host's dispatch slot is
+   * already held then), and it is accepted by the time the stream yields its
+   * first event — the event `StreamExecutor` reports as `onTurnReachedModel`.
+   */
+  it('refuses a push until the turn’s query starts, and takes one at the first event of the stream', async () => {
+    const handler = newHandler();
+    const events = handler
+      .streamAgentEvents('hello there', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
+      [Symbol.asyncIterator]();
+
+    // Nothing has run: no query, so no input channel to push into.
+    expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-early', text: 'too early' })).toBe(false);
+
+    const first = await events.next();
+    expect(first.done).toBe(false);
+    expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-open', text: 'now' })).toBe(true);
+
+    fake.releaseSteerGate();
+    for (;;) if ((await events.next()).done) break;
+    expect(fake.received.map((m) => (m as { uuid?: unknown }).uuid)).toContain('u-open');
+    expect(fake.received.map((m) => (m as { uuid?: unknown }).uuid)).not.toContain('u-early');
+  });
+
   it('steerTurn is false for an unknown session key', () => {
     const handler = newHandler();
     expect(handler.steerTurn('nobody', { uuid: 'u-1', text: 'x' })).toBe(false);

@@ -56,7 +56,11 @@ function recovered(working: boolean) {
   };
 }
 
-async function boot(session: ConversationSession, working: boolean, opts: { noticeFails?: boolean } = {}) {
+async function boot(
+  session: ConversationSession,
+  working: boolean,
+  opts: { noticeFails?: boolean; turnTaken?: boolean; stoppedAgents?: unknown[]; settleBeforePass?: boolean } = {},
+) {
   const sessions = new Map<string, ConversationSession>([['C1-T1', session]]);
   const postMessage = opts.noticeFails
     ? vi.fn().mockRejectedValue(new Error('channel_not_found'))
@@ -65,17 +69,28 @@ async function boot(session: ConversationSession, working: boolean, opts: { noti
   const claudeHandler = {
     getAllSessions: vi.fn().mockReturnValue(sessions),
     getSessionByKey: vi.fn((k: string) => sessions.get(k)),
-    getCrashRecoveredSessions: vi.fn().mockReturnValue([recovered(working)]),
+    getCrashRecoveredSessions: vi
+      .fn()
+      .mockReturnValue([
+        { ...recovered(working), ...(opts.stoppedAgents ? { stoppedAgents: opts.stoppedAgents } : {}) },
+      ]),
     clearCrashRecoveredSessions: vi.fn(),
     saveSessions: vi.fn(),
   } as any;
   const handler = new SlackHandler(app, claudeHandler, {} as any);
-  const handleMessage = vi.fn().mockResolvedValue(undefined);
+  // A resume whose turn reaches the model is "taken" (#853 `onTurnAccepted`); one the pipeline drops is not.
+  const taken = opts.turnTaken !== false;
+  const handleMessage = vi.fn(async (event: { channel: string; ts: string; text?: string; routeContext?: unknown }) => {
+    if (taken) (handler as any).noteTurnAccepted(event.channel, event.ts);
+  });
   (handler as any).handleMessage = handleMessage;
   const kick = vi.fn();
   handler.setGoalTurnSettledHandler(kick);
   await handler.notifyCrashRecovery();
+  // Let the resume's own promise settle first, when the test wants that order.
+  if (opts.settleBeforePass) await new Promise((resolve) => setTimeout(resolve, 0));
   const kicked = handler.resumeActiveGoals();
+  await new Promise((resolve) => setTimeout(resolve, 0));
   return { handleMessage, kick, kicked, postMessage };
 }
 
@@ -216,6 +231,105 @@ describe('restart — a cut turn is resumed as itself, an active goal does not r
       expect(session.goal?.continuationCount).toBe(2);
       expect(kick).toHaveBeenCalledTimes(1);
       expect(session.activityState).toBe('idle');
+    });
+  });
+
+  // #966 T1 — `handleMessage` can return without running the turn: the follow-up dispatch could not be
+  // opened, the slot was taken in the same tick, the fence held it. Resolving is not running.
+  describe('a restart resume that returns without taking its turn (#966)', () => {
+    it('before the startup goal pass: that pass resumes the goal — one refund, one kick', async () => {
+      const session = goalSession('working', 3);
+      const { kick, kicked } = await boot(session, true, { turnTaken: false, settleBeforePass: true });
+
+      expect(kicked).toBe(1);
+      expect(kick).toHaveBeenCalledTimes(1);
+      expect(session.goal?.continuationCount).toBe(2);
+      expect(session.activityState).toBe('idle');
+    });
+
+    it('after the startup goal pass: the hand-back resumes the goal — one refund, one kick', async () => {
+      const session = goalSession('working', 3);
+      const sessions = new Map<string, ConversationSession>([['C1-T1', session]]);
+      const app = {
+        client: { chat: { postMessage: vi.fn().mockResolvedValue({ ok: true, ts: '1.1' }) } },
+        assistant: vi.fn(),
+      } as any;
+      const claudeHandler = {
+        getAllSessions: vi.fn().mockReturnValue(sessions),
+        getSessionByKey: vi.fn((k: string) => sessions.get(k)),
+        getCrashRecoveredSessions: vi.fn().mockReturnValue([recovered(true)]),
+        clearCrashRecoveredSessions: vi.fn(),
+        saveSessions: vi.fn(),
+      } as any;
+      const handler = new SlackHandler(app, claudeHandler, {} as any);
+      let finish: () => void = () => {};
+      (handler as any).handleMessage = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const kick = vi.fn();
+      handler.setGoalTurnSettledHandler(kick);
+
+      await handler.notifyCrashRecovery();
+      handler.resumeActiveGoals();
+      expect(kick).not.toHaveBeenCalled();
+      finish(); // returned — never taken
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(kick).toHaveBeenCalledTimes(1);
+      expect(session.goal?.continuationCount).toBe(2);
+      expect(session.activityState).toBe('idle');
+    });
+
+    it('a session with no goal is freed — no turn runs, so it is not left `working` (#989 review)', async () => {
+      const session = goalSession('working');
+      (session as { goal?: unknown }).goal = undefined;
+      const { kick } = await boot(session, true, { turnTaken: false });
+
+      expect(session.activityState).toBe('idle');
+      expect(kick).not.toHaveBeenCalled();
+    });
+
+    it('a resume whose turn was taken is not handed back', async () => {
+      const session = goalSession('working', 3);
+      const { kick } = await boot(session, true, { turnTaken: true });
+
+      expect(kick).not.toHaveBeenCalled();
+      expect(session.goal?.continuationCount).toBe(3);
+    });
+  });
+
+  // #966 T2 — the host knows which background agents the restart stopped (the session's agent registry);
+  // the resume names them, so picking them up does not rest on the CLI's "didn't finish" notice alone.
+  describe('the resume names the background agents the restart stopped (#966)', () => {
+    const agents = [
+      { n: 3, type: 'general-purpose', description: 'Build ui-working element', taskId: 'afa413d9893ddb0c3' },
+      { n: 4, type: 'general-purpose', description: 'Build\nui-copy-field `element`', taskId: 'a75ecd9cbf40e3aae' },
+    ];
+
+    it('lists each stopped agent with its agent ID and says SendMessage resumes it', async () => {
+      const { handleMessage } = await boot(goalSession('working'), true, { stoppedAgents: agents });
+      const text = handleMessage.mock.calls[0][0].text as string;
+
+      expect(text).toContain('SendMessage');
+      expect(text).toContain('A3 general-purpose "Build ui-working element" — agent ID afa413d9893ddb0c3');
+      expect(text).toContain('agent ID a75ecd9cbf40e3aae');
+    });
+
+    it('keeps each entry on one line (no newline or backtick from a model-written description)', async () => {
+      const { handleMessage } = await boot(goalSession('working'), true, { stoppedAgents: agents });
+      const line = (handleMessage.mock.calls[0][0].text as string)
+        .split('\n')
+        .find((l) => l.includes('a75ecd9cbf40e3aae'));
+
+      expect(line).toContain('"Build ui-copy-field element"');
+    });
+
+    it('says nothing about agents when none was stopped', async () => {
+      const { handleMessage } = await boot(goalSession('working'), true);
+      expect(handleMessage.mock.calls[0][0].text).not.toMatch(/— agent ID /);
     });
   });
 

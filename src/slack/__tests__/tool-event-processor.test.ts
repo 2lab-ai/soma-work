@@ -128,8 +128,99 @@ describe('ToolEventProcessor', () => {
     });
 
     it('returns an empty snapshot for an unknown session', () => {
-      expect(processor.getLiveBackgroundWork('nope')).toEqual({ count: 0, labels: [], signature: '' });
-      expect(processor.getLiveBackgroundWork()).toEqual({ count: 0, labels: [], signature: '' });
+      expect(processor.getLiveBackgroundWork('nope')).toMatchObject({ count: 0, labels: [], signature: '' });
+      expect(processor.getLiveBackgroundWork()).toMatchObject({ count: 0, labels: [], signature: '' });
+    });
+
+    it('lists each live task with its type and output file for the resume prompt (#966)', () => {
+      processor.handleAgentTaskLifecycle(
+        {
+          type: 'agent_task_lifecycle',
+          phase: 'started',
+          taskId: 'b1',
+          taskType: 'local_bash',
+          outputFile: '/tmp/b1.output',
+        },
+        'C123:thread_ts',
+      );
+      expect(processor.getLiveBackgroundWork('C123:thread_ts').tasks).toEqual([
+        { taskId: 'b1', taskType: 'local_bash', outputFile: '/tmp/b1.output' },
+      ]);
+    });
+
+    // #989 review (astra) — the real wiring: the SDK `task_started` carries no output path, the Bash
+    // spawn ack does ("Output is being written to: …"); `task_started` carries the description.
+    it('carries the output file from a Bash spawn ack and the description from task_started', async () => {
+      const SK = 'C123:thread_ts';
+      const ctx: ToolEventContext = { ...mockContext, turnId: 'turn-1' };
+      await processor.handleToolUse(
+        [{ id: 'bg', name: 'Bash', input: { command: 'sleep 999', run_in_background: true } }],
+        ctx,
+      );
+      await processor.handleToolResult([{ toolUseId: 'bg', toolName: 'Bash', result: ackResult('bg-shell-1') }], ctx);
+      processor.handleAgentTaskLifecycle(
+        {
+          type: 'agent_task_lifecycle',
+          phase: 'started',
+          taskId: 'bg-shell-1',
+          taskType: 'local_bash',
+          description: 'Wait for CI checks',
+        },
+        SK,
+      );
+
+      expect(processor.getLiveBackgroundWork(SK).tasks).toEqual([
+        {
+          taskId: 'bg-shell-1',
+          taskType: 'bash',
+          outputFile: '/tmp/bg-shell-1.log',
+          description: 'Wait for CI checks',
+        },
+      ]);
+    });
+
+    it('endBackgroundWorkWithTurn settles only the ids the ended turn saw — a newer turn keeps its own', () => {
+      const SK = 'C123:thread_ts';
+      processor.handleAgentTaskLifecycle(
+        { type: 'agent_task_lifecycle', phase: 'started', taskId: 'old', taskType: 'local_bash' },
+        SK,
+      );
+      processor.handleAgentTaskLifecycle(
+        { type: 'agent_task_lifecycle', phase: 'started', taskId: 'new', taskType: 'local_bash' },
+        SK,
+      );
+
+      expect(processor.endBackgroundWorkWithTurn(SK, ['old']).map((t) => t.taskId)).toEqual(['old']);
+      expect(processor.getLiveBackgroundWork(SK).signature).toBe('new');
+    });
+
+    // #966 — the CLI ends with the turn and kills its background tasks: at turn end they are dead, and the
+    // next process's late `stopped` (or a replayed start) must not bring them back.
+    it('endBackgroundWorkWithTurn settles every live task and returns them; nothing revives them', () => {
+      const SK = 'C123:thread_ts';
+      processor.handleAgentTaskLifecycle(
+        { type: 'agent_task_lifecycle', phase: 'started', taskId: 'b1', taskType: 'local_bash' },
+        SK,
+      );
+      processor.handleAgentTaskLifecycle(
+        { type: 'agent_task_lifecycle', phase: 'started', taskId: 'a1', taskType: 'local_agent' },
+        SK,
+      );
+
+      const ended = processor.endBackgroundWorkWithTurn(SK);
+
+      expect(ended.map((t) => t.taskId).sort()).toEqual(['a1', 'b1']);
+      expect(processor.getLiveBackgroundWork(SK).count).toBe(0);
+      processor.handleAgentTaskLifecycle(
+        { type: 'agent_task_lifecycle', phase: 'started', taskId: 'b1', taskType: 'local_bash' },
+        SK,
+      );
+      processor.handleAgentTaskLifecycle(
+        { type: 'agent_task_lifecycle', phase: 'settled', taskId: 'b1', status: 'stopped' },
+        SK,
+      );
+      expect(processor.getLiveBackgroundWork(SK).count).toBe(0);
+      expect(processor.endBackgroundWorkWithTurn(SK)).toEqual([]);
     });
   });
 

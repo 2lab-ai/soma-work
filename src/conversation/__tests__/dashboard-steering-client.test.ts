@@ -370,7 +370,7 @@ describe('the page loads <ui-agent-steering> from the dashboard origin', () => {
     const page = TEMPLATE.slice(TEMPLATE.indexOf('<div class="panel-command" id="panel-command">'));
     const steer = page.slice(page.indexOf('<ui-agent-steering id='), page.indexOf('</ui-agent-steering>'));
     expect(steer).toBe(
-      '<ui-agent-steering id="cmd-steer" lang="ko"><ui-composer id="pc-composer" slot="composer" lang="ko"></ui-composer>',
+      '<ui-agent-steering id="cmd-steer" lang="ko"><ui-composer id="pc-composer" slot="composer" lang="ko"><div class="panel-controls" id="panel-controls" slot="end" aria-label="이 세션의 모델과 추론 강도"></div></ui-composer>',
     );
     // The page's own tools, chips, recorder and error line are gone with their code.
     for (const id of ['pc-attach', 'pc-image', 'pc-mic', 'pc-attachments', 'pc-recorder', 'pc-error', 'pc-file-input'])

@@ -355,6 +355,17 @@ export class FollowupDispatcher {
   }
 
   /**
+   * The turn generation of the run holding the session's slot, or `undefined`
+   * when no run holds it. The same number the run's turn carries
+   * (`followupTurnEpoch`, `onTurnReachedModel`) once its generation is open;
+   * during a `Send now` reservation it is still the superseded generation, as
+   * {@link snapshot}'s is — `steer` refuses that window as `busy` either way.
+   */
+  liveTurnEpoch(sessionKey: string): number | undefined {
+    return this.slots.get(sessionKey)?.turnEpoch;
+  }
+
+  /**
    * The adapter's continuation seam asks this at a settled-turn boundary:
    * is there user work that must go before autogoal (§3.6)? Deliberately does
    * NOT look at the busy slot — at the seam the finishing turn still owns it.

@@ -308,7 +308,9 @@ describe('U5 — the detail card: the plan inline, the bottom bar (T5)', () => {
     expect(needs).toContain('id="panel-plan"');
     const command = PAGE.slice(PAGE.indexOf('id="panel-command"'), PAGE.indexOf('id="cmd-steer"'));
     expect(command).toContain('id="panel-plan-bar"');
-    expect(command.indexOf('id="panel-plan-bar"')).toBeLessThan(command.indexOf('id="panel-controls"'));
+    // The model · effort controls are the composer's own row (#918: its slot "end"), under the plan bar.
+    expect(PAGE.indexOf('id="panel-plan-bar"')).toBeLessThan(PAGE.indexOf('id="panel-controls"'));
+    expect(PAGE.indexOf('id="pc-composer"')).toBeLessThan(PAGE.indexOf('id="panel-controls"'));
   });
   it('renderPanelPlan fetches the plan once per revision and shows it at once; the bar has the three buttons', async () => {
     const el = (id: string) => ({

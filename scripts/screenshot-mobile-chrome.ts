@@ -7,7 +7,10 @@
  *       the status bar, the tab bar, the agent tabs and the section tabs scroll out with the content; a tap on
  *       the title bar brings them back.
  *   T3  the session's model picker sits on the composer's own row, left of Send — on a phone and on the desktop
- *       (SSOT 2026-11-05).
+ *       (SSOT 2026-11-05) — slotted into the composer (#918: no docked box, no shadow measuring); a phone's narrow
+ *       row draws it compact (the maker's mark and the level), the desktop's draws its name.
+ *   #918 a named control in the title bar (˅, only while reading) brings the head back from the keyboard, and focus
+ *       lands on the card's title.
  *   E   an effort pick in the picker shows at once — no busy, no progress cursor, before the server answers
  *       (SSOT 2026-11-05: "추론 강도 버튼 변경하면 왜 로딩을해").
  *   T4  the composer slides away while the reader scrolls back through the chat or the log, comes back at the very
@@ -276,6 +279,12 @@ const panelGeometry = (page: Page) =>
       send: rect(send),
       picker: rect(picker),
       pickerShown: visibleIn(picker),
+      pickerCompact: !!picker?.hasAttribute('compact'),
+      pickerName: picker?.shadowRoot?.querySelector('.mp-name')?.textContent ?? '',
+      pickerSlotted:
+        picker?.closest('#panel-controls')?.getAttribute('slot') === 'end' && !!picker?.closest('#pc-composer'),
+      pickDock: document.getElementById('panel-command')?.hasAttribute('data-pick-dock') ?? false,
+      headBackShown: visibleIn(document.getElementById('panel-head-back')),
       up: rect(up),
       upShown: visibleIn(up),
       overflow: document.documentElement.scrollWidth - window.innerWidth,
@@ -408,6 +417,16 @@ async function phone(browser: Browser, width: number, height: number) {
     `${tag}: the model picker sits on Send's row, to its left (picker ${JSON.stringify(p)} · send ${JSON.stringify(s)})`,
   );
   check(!!p && !!rest.steer && p.top >= rest.steer.top, `${tag}: no model line above the composer`);
+  // #918 · through the composer's slot, never a docked box; a phone's row draws it compact (mark · level).
+  check(
+    rest.pickerSlotted && !rest.pickDock,
+    `${tag}: the picker is the composer's slot="end" content (no docked box)`,
+  );
+  check(
+    rest.pickerCompact && rest.pickerName === '',
+    `${tag}: a phone's row draws the picker compact — the maker's mark and the level (name "${rest.pickerName}")`,
+  );
+  check(!rest.headBackShown, `${tag}: no ˅ in the title bar while the head is in`);
 
   // T2 · T4 · the reader scrolls back through the chat: only the title bar stays, the composer goes.
   const at = rest.touch!;
@@ -428,6 +447,7 @@ async function phone(browser: Browser, width: number, height: number) {
     `${tag}: the chat starts right under the tabs (chat top ${read.viewport?.top} · tabs bottom ${read.strip?.bottom})`,
   );
   check(!read.commandShown, `${tag}: the composer slid away while reading (${JSON.stringify(read.command)})`);
+  check(read.headBackShown, `${tag}: while reading, the title bar shows ˅ (카드 위쪽 보이기)`);
   check(
     read.upShown && !!read.up && read.up.right >= width - 32 && read.up.bottom >= read.vh - 96,
     `${tag}: a ^ button at the bottom right (${JSON.stringify(read.up)})`,
@@ -488,6 +508,61 @@ async function phone(browser: Browser, width: number, height: number) {
   await sleep(500);
   const back = await panelGeometry(page);
   check(back.statusShown, `${tag}: a tap on the title bar brings the head back`);
+
+  // #918 · a finger whose node leaves the DOM mid-touch (a live re-render) still ends the reader's touch: native
+  // touches through CDP, the touched node removed before the finger lifts.
+  {
+    // A short screen (a phone sideways) at rest has the head over the chat: reading first gives the chat its room.
+    if (!(await panelGeometry(page)).touch) {
+      await page.evaluate(() => (window as unknown as { rdRead(on: boolean): void }).rdRead(true));
+      await sleep(900);
+    }
+    const g = await panelGeometry(page);
+    if (g.touch) {
+      const cdp = await page.context().newCDPSession(page);
+      const pt = { x: g.touch.x, y: g.touch.y, id: 1 };
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [pt] });
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ ...pt, y: pt.y - 4 }] });
+      const mid = await page.evaluate(({ x, y }) => {
+        let el: Element | null = document.elementFromPoint(x, y);
+        while (el?.shadowRoot) {
+          const inner = el.shadowRoot.elementFromPoint(x, y);
+          if (!inner || inner === el) break;
+          el = inner;
+        }
+        const touching = (window as unknown as { _rd: { touch: boolean } })._rd.touch;
+        el?.remove();
+        return { touching, removed: !!el && !el.isConnected };
+      }, pt);
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await cdp.detach();
+      await sleep(100);
+      const after = await page.evaluate(() => (window as unknown as { _rd: { touch: boolean } })._rd.touch);
+      check(
+        mid.touching && mid.removed && after === false,
+        `${tag}: a touch whose node left the DOM still ends (touching ${mid.touching} · removed ${mid.removed} · after ${after})`,
+      );
+    } else check(false, `${tag}: the chat has room for a touch (${JSON.stringify(g.outer)})`);
+  }
+
+  // #918 · the keyboard's way: reading again, then Enter on the title bar's ˅ — the head back, focus on the title.
+  const kb0 = await panelGeometry(page);
+  // A short screen (a phone sideways) at rest has the head over the chat: reading starts the way a scroll starts it.
+  if (kb0.touch) await swipe(page, kb0.touch.x, kb0.touch.y, -500);
+  else await page.evaluate(() => (window as unknown as { rdRead(on: boolean): void }).rdRead(true));
+  await sleep(900);
+  {
+    const kbRead = await panelGeometry(page);
+    check(kbRead.headBackShown, `${tag}: reading again shows ˅`);
+    await page.focus('#panel-head-back');
+    await page.keyboard.press('Enter');
+    await sleep(1200);
+    const kb = await panelGeometry(page);
+    const focused = await page.evaluate(() => document.activeElement?.id ?? '');
+    check(kb.statusShown && !kb.headBackShown, `${tag}: Enter on ˅ brings the head back and ˅ steps aside`);
+    check(focused === 'panel-title', `${tag}: focus lands on the card's title, not the page (${focused || 'body'})`);
+    await page.screenshot({ path: path.join(OUT, `phone-${width}-head-back-key.png`) });
+  }
 
   // T2 · T4 · the work log reads the same way.
   await page.evaluate(() => (window as any).selectPanelSection?.('log'));
@@ -639,6 +714,8 @@ async function desktop(browser: Browser) {
     `${tag}: the model picker sits on Send's row, right at its left (picker ${JSON.stringify(p)} · send ${JSON.stringify(s)})`,
   );
   check(!!p && !!g.steer && p.top >= g.steer.top, `${tag}: no model line above the composer`);
+  check(g.pickerSlotted && !g.pickDock, `${tag}: the picker is the composer's slot="end" content (no docked box)`);
+  check(!g.pickerCompact && g.pickerName.length > 0, `${tag}: a wide row draws the picker's name ("${g.pickerName}")`);
   const scope = await page.evaluate(() => {
     const el = document.querySelector('#panel-controls .pc-scope') as HTMLElement | null;
     return el ? getComputedStyle(el).display : 'none';
@@ -764,6 +841,7 @@ async function main() {
     if (!process.env.MOBILE_CHROME_DEBUG) {
       await phone(browser, 390, 844);
       await phone(browser, 412, 915);
+      await phone(browser, 320, 640); // the drawer's floor (min-width 320): the picker never runs over Send
     }
     // A phone sideways: short, so the same chrome rules (the drawer docks beside the board from 840px).
     await phone(browser, 844, 390);

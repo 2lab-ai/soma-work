@@ -44,7 +44,12 @@ import { repriceBaseline } from './metrics/host-pricing';
 import { hostPricing } from './metrics/host-pricing-catalog';
 import { resolveContextWindow } from './metrics/model-registry';
 import { normalizeTmpPath } from './path-utils';
-import { loseRunningAgents, sanitizeAgentRegistry } from './session/agent-registry';
+import {
+  loseRunningAgents,
+  type StoppedAgentRef,
+  sanitizeAgentRegistry,
+  stoppedAgentsOf,
+} from './session/agent-registry';
 import { resolveEffectiveAutoCompact } from './session/autocompact-policy';
 import { sanitizeCronJob } from './session/cron-job';
 import { closeTaskList, sanitizeTaskLedger } from './session/task-ledger';
@@ -576,6 +581,12 @@ export interface CrashRecoveredSession {
    * actually mid-work.
    */
   shouldAutoResume: boolean;
+  /**
+   * #966 — the subagents this restart stopped (the session's registry, read
+   * before the load marked them `unknown`), named in the restart resume so the
+   * model can `SendMessage` each one. Absent when none.
+   */
+  stoppedAgents?: StoppedAgentRef[];
 }
 
 /**
@@ -4060,6 +4071,9 @@ export class SessionRegistry {
         // to DEFAULT_MODEL. Preserves undefined when the session was saved
         // without a model (unchanged behavior from verbatim passthrough).
         const model = serialized.model === undefined ? undefined : coerceToAvailableModel(serialized.model);
+        // #966 — read the agents this restart stopped before the load marks them `unknown` below.
+        const restoredAgents = sanitizeAgentRegistry(serialized.agents);
+        const stoppedAgents = stoppedAgentsOf(restoredAgents);
         const session: ConversationSession = {
           ownerId: resolvedOwnerId, // Fallback for legacy sessions
           ownerName: serialized.ownerName,
@@ -4197,7 +4211,7 @@ export class SessionRegistry {
           goalHistory: migrateLegacyGoalArray(serialized.goalHistory),
           taskLedger: sanitizeTaskLedger(serialized.taskLedger),
           // Spec 12: nothing that ran before this process is watched any more.
-          agents: loseRunningAgents(sanitizeAgentRegistry(serialized.agents), Date.now()),
+          agents: loseRunningAgents(restoredAgents, Date.now()),
           // A session put to sleep on load that was not idle has no known finish:
           // its saved stamp is when it started working or waiting, and the
           // dashboard reads an idle stamp as the finish (spec 13 §3.7).
@@ -4352,6 +4366,7 @@ export class SessionRegistry {
             title: serialized.title,
             workflow: serialized.workflow,
             shouldAutoResume: !sleptOnLoad && serialized.wasWorkingAtShutdown === true,
+            ...(stoppedAgents.length > 0 ? { stoppedAgents } : {}),
           });
         } else if (!sleptOnLoad && serialized.activityState && serialized.activityState !== 'idle') {
           this._crashRecoveredSessions.push({
@@ -4364,6 +4379,7 @@ export class SessionRegistry {
             title: serialized.title,
             workflow: serialized.workflow,
             shouldAutoResume: serialized.activityState === 'working',
+            ...(stoppedAgents.length > 0 ? { stoppedAgents } : {}),
           });
         }
       }

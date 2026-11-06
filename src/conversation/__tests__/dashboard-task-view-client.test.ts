@@ -734,13 +734,13 @@ describe('T1.5 · the steering composer: multiline, images, files, voice', () =>
   // agent-steering.test.ts 'the composer is the field: the built-in one, attachments and tools step aside').
   it('is <ui-agent-steering> with a <ui-composer slot="composer"> as its field', () => {
     expect(cmd).toContain(
-      '<ui-agent-steering id="cmd-steer" lang="ko"><ui-composer id="pc-composer" slot="composer" lang="ko"></ui-composer></ui-agent-steering>',
+      '<ui-agent-steering id="cmd-steer" lang="ko"><ui-composer id="pc-composer" slot="composer" lang="ko"><div class="panel-controls" id="panel-controls" slot="end" aria-label="이 세션의 모델과 추론 강도"></div></ui-composer></ui-agent-steering>',
     );
     expect(cmd).not.toMatch(/<textarea|id="cmd-input"|id="cmd-send"|slot="tools"|slot="attachments"|type="file"/);
     for (const id of ['pc-attach', 'pc-image', 'pc-mic', 'pc-attachments', 'pc-recorder', 'pc-error'])
       expect(cmd, id).not.toContain(`id="${id}"`);
-    // Model · effort sit above the composer.
-    expect(cmd.indexOf('id="panel-controls"')).toBeLessThan(cmd.indexOf('id="cmd-steer"'));
+    // Model · effort sit on the composer's own row (its slot="end", #918).
+    expect(cmd.indexOf('id="panel-controls"')).toBeGreaterThan(cmd.indexOf('id="pc-composer"'));
   });
 
   const pc = load<{
@@ -1217,6 +1217,9 @@ describe('browser receipt · a section landing is held while the panel settles, 
       document: {
         getElementById: (id: string) => (id === 'panel-scroll' ? scroll : id === 'panel-goal' ? goal : null),
       },
+      // Phone chrome (#918): not reading here — a hold while reading starts the card over (dashboard-phone-chrome).
+      panelReading: () => false,
+      rdReset: () => {},
     });
     m.__set('_panelLand', 'goal');
     m.__set('_panelScrollGen', 0);
@@ -1428,16 +1431,16 @@ describe('R8 review (fable P3) · input symmetry and a short body read at its to
   });
 });
 
-describe('T1.5 · the session model sits above the steering input — on a phone too', () => {
-  it('markup: model · effort come before the composer', () => {
-    expect(PAGE.indexOf('id="panel-controls"')).toBeGreaterThan(-1);
-    expect(PAGE.indexOf('id="panel-controls"')).toBeLessThan(PAGE.indexOf('id="cmd-steer"'));
+describe('T1.5 · the session model sits on the composer’s own row, left of Send — on a phone too (#918)', () => {
+  it('markup: model · effort are the composer’s slot="end" child', () => {
+    expect(PAGE.indexOf('id="panel-controls"')).toBeGreaterThan(PAGE.indexOf('id="pc-composer"'));
+    expect(PAGE).toContain('<div class="panel-controls" id="panel-controls" slot="end"');
   });
 
   // Dashboard batch 2: the tools moved into <ui-agent-steering>'s field (slot="tools") and Send is the element's,
   // so the narrow layout no longer re-orders a row of its own — model · effort on the first line, the composer under it.
-  it('narrow: model · effort on the first line, the composer (tools in its field) on the line under it', () => {
-    expect(CSS).toContain('.panel-command .panel-controls { min-width: 0; max-width: 100%; }');
+  it('narrow: the composer takes its own line; model · effort ride its row (no line of their own)', () => {
+    expect(CSS).not.toContain('.panel-command .panel-controls {');
     expect(CSS).toContain('.panel-command .pc-steer-wrap { flex-basis: 100%; }');
     expect(CSS).not.toContain('.panel-command .panel-controls { padding: 0; flex: 0 1 auto; max-width: 42%; }');
     expect(CSS).not.toMatch(/\.btn-send|\.panel-command textarea|\.panel-command-row|\.cmd-hint/);

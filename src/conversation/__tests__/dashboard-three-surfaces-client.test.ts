@@ -898,13 +898,13 @@ describe('one live path for the whole panel', () => {
     expect(open).not.toContain("getElementById('panel-tokens')");
   });
 
-  it('the composer is never inside a morph root; the pickers have their own container beside it', () => {
+  it('the composer is never inside a morph root; the pickers have their own container (the composer’s slot)', () => {
     // Batch 2: the composer is <ui-agent-steering id="cmd-steer"> — it patches its own field in place
     // (library: agent-steering.test.ts "a host update never re-creates the field (IME composition and
-    // caret survive)"); the page only sets its data, never morphs around it.
+    // caret survive)"); the page only sets its data, never morphs around it. #918: the pickers' container is
+    // the composer's slot="end" child — the morph root holds the pickers only, never the field.
     const cmd = PAGE.slice(PAGE.indexOf('<div class="panel-command" id="panel-command">'));
-    expect(cmd.indexOf('id="panel-controls"')).toBeGreaterThan(0);
-    expect(cmd.indexOf('id="panel-controls"')).toBeLessThan(
+    expect(cmd.indexOf('id="panel-controls"')).toBeGreaterThan(
       cmd.indexOf('<ui-agent-steering id="cmd-steer" lang="ko">'),
     );
     const controls = cmd.slice(
@@ -1001,8 +1001,9 @@ describe('landing follows the opening intent (executed)', () => {
     const m = load<{ landPanel(): void; state(): { landed: boolean } }>(
       ['psecLandingTop', 'panelTabsHeight', 'landPanel'],
       ['_panelOnQuestion'],
-      // Phone chrome (SSOT 2026-11-04): a question landing brings the head back first — a seam here.
-      { document: { getElementById: (id: string) => els[id] ?? null }, rdReset: () => {} },
+      // Phone chrome (SSOT 2026-11-04; #918): a question landing, or any landing while reading, brings the head back
+      // first — a seam here (not reading).
+      { document: { getElementById: (id: string) => els[id] ?? null }, rdReset: () => {}, panelReading: () => false },
       [
         `var _panelLand = ${JSON.stringify(intent)}; var _panelLanded = false; var _panelLandAt = null; var _panelScrollGen = 0; var _panelDetail = ${!!opts.detail};`,
         'function state() { return { landed: _panelLanded }; }',
