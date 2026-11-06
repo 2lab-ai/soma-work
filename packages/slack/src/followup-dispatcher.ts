@@ -273,7 +273,7 @@ export interface FollowupQueuePort {
   /** `steered → resolved` on the SDK's consumption receipt. Addressed by uuid — the SDK knows no item id. */
   markConsumed(sessionKey: string, uuid: string): FollowupOpResult;
   /** `steered → queued` at the same seq. The returned item carries the NEW epoch a reserve must use. */
-  unsteer(sessionKey: string, uuid: string, reason: string): FollowupOpResult;
+  unsteer(sessionKey: string, uuid: string, reason?: string): FollowupOpResult;
   /** End-of-turn sweep: every `steered` item of the session back to `queued`, returned. */
   unsteerAll(sessionKey: string, reason: string): FollowupItem[];
 }
@@ -644,18 +644,23 @@ export class FollowupDispatcher {
     }
 
     let refusal: string | undefined;
+    /** What the row shows: nothing for a plain refusal (it simply waits in line), the fault for a throw. */
+    let shown: string | undefined;
     try {
       if (!push(uuid)) refusal = 'the input channel refused the message';
     } catch (error) {
       // A throwing channel is a refusal, not a delivery: fail closed, exactly
       // like the authorization hooks.
       refusal = `push threw: ${errorText(error)}`;
+      shown = refusal;
     }
     if (refusal) {
-      // The row records WHY it came back — the channel's own words. A fixed
-      // string here ('no live turn to steer') told the panel a story the code
-      // had just disproved: the turn was live, the push was not taken.
-      const rolled = this.attempt(() => this.deps.queue.unsteer(sessionKey, uuid, refusal));
+      // A channel that did not take the message (the turn has not opened its input
+      // yet, #956 — it is offered again when it does) is an ordinary wait: the row
+      // reads as waiting in the queue, never "refused" (SSOT 2026-11-06). The
+      // channel's own words go to the notice and the log; a throw is a fault and
+      // stays on the row.
+      const rolled = this.attempt(() => this.deps.queue.unsteer(sessionKey, uuid, shown));
       if (rolled.ok) {
         this.safeNotify({ type: 'item-unsteered', sessionKey, itemId, reason: refusal });
       }
