@@ -230,7 +230,8 @@ commit message never reads as a command — a shell's `-c '…'` string is read 
   approves.
 
 It runs while a prompt is raised (permission MCP server) and in the dashboard's 1 s poller, so it reads at most the
-first 64 KiB in one linear pass (heredocs and `sh -c` strings: at most 16 per level, depth ≤ 3) and never throws: any
+first 64 KiB in one linear pass (heredocs and `sh -c` strings: at most 16 per level, 16 heredoc operators tried,
+depth ≤ 3) and never throws: any
 failure means no label, i.e. the plain Approve button.
 
 **Presentation only.** The classifier is read only where a prompt is already being shown. It is not part of

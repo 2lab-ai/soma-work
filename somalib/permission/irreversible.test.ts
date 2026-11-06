@@ -95,6 +95,9 @@ describe('irreversibleAction — destructive', () => {
     ['rm -rf "$BUILD_DIR"', 'rm-recursive'],
     ["ssh deploy@host <<'EOF'\nrm -rf /srv/app/releases\nEOF", 'rm-recursive'],
     ['psql "$URL" <<\'SQL\'\nDROP TABLE sessions;\nSQL', 'db-delete'],
+    // review 4 P2: SQL piped into a client
+    ['cat <<EOF | psql\nDROP TABLE x;\nEOF', 'db-delete'],
+    ['echo "DROP TABLE users" | psql app', 'db-delete'],
     ['psql "$URL" -c "DROP TABLE sessions"', 'db-delete'],
     // review 3 P3: an escaped first letter (alias bypass) still names the command
     ['\\rm -rf node_modules', 'rm-recursive'],
@@ -190,6 +193,9 @@ describe('irreversibleAction — never slows or breaks a prompt (review 3 P1)', 
     ['400 heredoc tokens on one line', `${'cat <<EOF '.repeat(400)}`],
     ['6000 heredoc tokens then a newline', `${'cat <<E '.repeat(6_000)}\nls`],
     ['an unterminated 50 KB sh -c string', `bash -c "${'x '.repeat(25_000)}`],
+    // review 4 P3: unclosed heredoc operators, one per line
+    ['5000 unclosed heredocs', 'cat <<EOF\n'.repeat(5_000)],
+    ['5000 unclosed heredocs, distinct tags', Array.from({ length: 5_000 }, (_, i) => `cat <<T${i}\n`).join('')],
   ])('%s: under 100 ms', (_name, command) => {
     expect(fast(command).ms).toBeLessThan(100);
   });
