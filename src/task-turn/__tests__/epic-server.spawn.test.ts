@@ -90,6 +90,8 @@ function world() {
       fs.mkdirSync(dir, { recursive: true });
       return dir;
     }),
+    findTasks: vi.fn(() => []),
+    adoptChild: vi.fn(() => ({ ok: true as const })),
   };
   setEpicHost(host);
   const [, , spawn, instruct] = epicTools(ctx);
