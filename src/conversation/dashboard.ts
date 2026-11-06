@@ -5562,11 +5562,24 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .card-more-link { display: block; margin: 4px 0 0 auto; }
 /* The note under the model is the kit's status line (.ui-status-line, data-tone="fail" for a refused switch; D7 A-08). */
 .cb-model-note { margin-top: 4px; }
-/* Model · effort beside the composer (spec 13). */
-.panel-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 0 0 8px; font-size: 13px; }
+/* Model · effort on the composer's own row, left of Send (spec 13; #918): #panel-controls is <ui-composer>'s
+   slot="end" child — one line that shrinks before Send moves (the picker draws compact on a narrow row,
+   syncPickerFit). A model note floats above the picker. */
+.panel-controls { display: flex; align-items: center; gap: 6px 8px; font-size: 13px; }
 .panel-controls:empty { display: none; }
-.panel-controls .pc-scope { font-size: 12px; font-weight: 600; color: var(--text-tertiary); }
-.panel-controls .cb-model-note { flex-basis: 100%; margin-top: 0; }
+#panel-controls { position: relative; flex-wrap: nowrap; justify-content: flex-end; min-width: 0; padding: 0; }
+#panel-controls ui-model-picker { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+/* A row narrower than even the compact trigger (320px with four tools) clips the trigger's own content (level, then
+   the mark) inside its button — it never runs over Send. The button's outline and the menu (fixed) are not clipped. */
+#panel-controls ui-model-picker::part(trigger) { overflow: hidden; }
+#panel-controls > .cb-model-note {
+  position: absolute; z-index: 2; right: 0; bottom: calc(100% + 6px); max-width: min(280px, 80vw); margin-top: 0; padding: 4px 8px;
+  border-radius: 8px; background: var(--surface-raised); box-shadow: var(--ib-shadow);
+}
+/* A switch's note floats above the field: it says its word and goes, so it never sits on the text being typed
+   (SSOT 2026-11-05). The waiting status (unkeyed) and a refusal stay. */
+#panel-controls > .cb-model-note[data-mk]:not([data-tone="fail"]) { pointer-events: none; animation: pc-note-away var(--dur-fade) var(--ease-out) 4s forwards; }
+@keyframes pc-note-away { to { opacity: 0; visibility: hidden; } }
 /* The model · effort trigger and its menu: @2lab.ai/ui <ui-model-picker> (re-model-picker), drawn with
    the dashboard tokens through its .ui-tok wrapper, which takes no box of its own. Until the library has
    loaded the slot reads the model's name. */
@@ -5913,6 +5926,9 @@ ui-breadcrumbs.pa-path { flex: 1 1 auto; min-width: 0; }
 .panel-title-row > .panel-title-act > svg { width: 14px; height: 14px; }
 .panel-title-row > .panel-title-act:hover, .panel-title-row > .panel-title-act:focus-visible { color: var(--text); }
 .panel-title-row > .panel-title-act[hidden] { display: none; }
+/* #918: the head's way back (rdHeadBack) is there only while reading (data-read="1"). */
+.panel-title-row > .panel-head-back { display: none; }
+.slide-panel[data-read="1"] .panel-title-row > .panel-head-back { display: inline-flex; }
 .panel-title-row > .panel-title-act[aria-busy="true"] { opacity: .5; cursor: progress; }
 /* ── VIEW MODE (SSOT 2026-11-01) — 미니멀, the default: the board, and in a detail card the task list and the
    chat. The page's extras (stats, capacity, the CRON lane, the defaults, the board's user picker on the viewer's
@@ -6134,8 +6150,9 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
    T2 · the detail card keeps only its title bar while the reader scrolls the chat or the work log: the status bar
    joins the scroll area (syncPhoneStatus), and reading (data-read, rdRead) grows the section box to the whole view
    and scrolls everything above it out under the title bar; a tap on the title bar scrolls it back in.
-   T3 · the session's model picker sits on the composer's own row, left of Send (syncPickerDock measures the row) —
-   on every screen since SSOT 2026-11-05 (the desktop card too).
+   T3 · the session's model picker sits on the composer's own row, left of Send — on every screen since SSOT
+   2026-11-05 (the desktop card too): the composer's slot "end" lays it out (#918), and a narrow row draws it compact
+   (syncPickerFit). A tap on the title bar or the title bar's ˅ (#panel-head-back, while reading) brings the head back.
    T4 · reading tucks the composer away (data-tuck): it slides down; a ^ at the bottom right (#pc-reveal) brings it
    back, and so does the very bottom of the chat or the log. ── */
 .inbox-tools > .topbar-scope { flex: 1 1 auto; flex-wrap: wrap; margin-right: auto; }
@@ -6179,23 +6196,6 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
   opacity: 1; visibility: visible; transform: none;
   transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-move) var(--ease-out), visibility 0s;
 }
-/* T3: the picker's box spans the row between the composer's tools and Send (--pd-*: syncPickerDock); it lets taps
-   through where it is empty and ends at Send. A model note floats above it. */
-.panel-command[data-pick-dock] > .panel-controls {
-  position: absolute; z-index: 2; left: var(--pd-l, 0px); right: var(--pd-r, 0px); top: var(--pd-t, 0px); height: var(--pd-h, 44px);
-  display: flex; flex-wrap: nowrap; align-items: center; justify-content: flex-end; padding: 0; pointer-events: none;
-}
-.panel-command[data-pick-dock] > .panel-controls > * { pointer-events: auto; }
-.panel-command[data-pick-dock] > .panel-controls > .pc-scope { display: none; }
-.panel-command[data-pick-dock] > .panel-controls ui-model-picker { flex: 0 1 auto; min-width: 0; max-width: 100%; }
-.panel-command[data-pick-dock] > .panel-controls > .cb-model-note {
-  position: absolute; right: 0; bottom: calc(100% + 6px); max-width: min(280px, 80vw); padding: 4px 8px; border-radius: 8px;
-  background: var(--surface-raised); box-shadow: var(--ib-shadow);
-}
-/* A switch's note floats above the field: it says its word and goes, so it never sits on the text being typed
-   (SSOT 2026-11-05). The waiting status (unkeyed) and a refusal stay. */
-.panel-command[data-pick-dock] > .panel-controls > .cb-model-note[data-mk]:not([data-tone="fail"]) { pointer-events: none; animation: pc-note-away var(--dur-fade) var(--ease-out) 4s forwards; }
-@keyframes pc-note-away { to { opacity: 0; visibility: hidden; } }
 
 /* ── RESPONSIVE — Bauhaus grid adapts ── */
 @media (max-width: 680px) {
@@ -6216,17 +6216,10 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 @media (pointer: coarse) {
 }
 /* ── 44px TARGETS — every remaining control on narrow (<640px) or touch screens (heights only). ── */
-/* The composer's model · effort trigger shares the input's line on a narrow or a
-   short screen (a phone sideways), so the reading area keeps its room; its menu opens above. */
+/* On a narrow or a short screen (a phone sideways) the plan bar and the composer each take a line; the model ·
+   effort trigger is on the composer's own row (its slot "end", #918), so the reading area keeps its room. */
 @media (max-width: 639px), (max-height: 560px) {
-  .panel-command { display: flex; flex-wrap: wrap; align-items: center; column-gap: 8px; }
-  .panel-command .panel-controls { padding: 0; flex: 0 1 auto; }
-  .panel-command .panel-controls .pc-scope { display: none; }
-  .panel-command .panel-controls .cb-model-note { flex-basis: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  /* Task view T1.5: the session's model (model · effort) on its own line above
-     the composer — the tools sit inside <ui-agent-steering>'s field (batch 2). */
-  .panel-command { row-gap: 6px; }
-  .panel-command .panel-controls { min-width: 0; max-width: 100%; }
+  .panel-command { display: flex; flex-wrap: wrap; align-items: center; column-gap: 8px; row-gap: 6px; }
   .panel-command .pc-steer-wrap { flex-basis: 100%; }
 }
 @media (max-width: 639px), (pointer: coarse) {
@@ -6675,6 +6668,9 @@ ${pageTokenAliases()}
           <h3 id="panel-title" tabindex="-1">작업 카드</h3>
           <a id="panel-permalink" class="ui-icon-btn panel-title-act" href="/dashboard" hidden aria-label="퍼머링크 복사" title="퍼머링크 복사" onclick="return copyPanelPermalink(event)"><i data-ui-icon="external"></i></a>
           <button type="button" id="panel-copy-context" class="ui-icon-btn panel-title-act" hidden aria-label="전체 문맥 복사" title="전체 문맥 복사" onclick="copyPanelContext(this)"><i data-ui-icon="copy"></i></button>
+          <!-- #918: while reading on a phone the head (the status bar, the tabs) is scrolled out under the title bar; a tap
+               on the title bar brings it back, and this named control does for a keyboard. Shown only while reading. -->
+          <button type="button" id="panel-head-back" class="ui-icon-btn panel-title-act panel-head-back" aria-label="카드 위쪽 보이기" title="카드 위쪽 보이기" onclick="rdHeadBack(event)"><i data-ui-icon="chevron-down"></i></button>
         </div>
         <div id="panel-title-sub" style="font-size:11px;color:var(--text-secondary);margin-top:2px;display:flex;align-items:center;gap:6px">
           <span id="panel-title-sub-text"></span>
@@ -6768,15 +6764,16 @@ ${pageTokenAliases()}
     <div class="panel-command" id="panel-command">
       <!-- Plan mode: 시작 · 취소 · 직접 입력 at the bottom while a plan waits (the composer right under it is the direct input). -->
       <div class="panel-plan-bar" id="panel-plan-bar" role="group" aria-label="작업 계획 결정" hidden></div>
-      <!-- Model · effort beside the composer (spec 13): their own container — the input is never morphed. -->
-      <div class="panel-controls" id="panel-controls" aria-label="이 세션의 모델과 추론 강도"></div>
       <!-- The composer and the session's follow-up queue — @2lab.ai/ui <ui-agent-steering> (dashboard batch 2) with
            a <ui-composer slot="composer"> as its field (E-30, 0.10.0): multiline; files, images (paste, drop, picker)
            and voice, their chips, the limits and the error line are the composer's; Enter queues, ⌘/Ctrl+Enter
            steers. The token wrapper (.ui-tok) hands them the dashboard tokens; renderPanelComposer gives the
-           steering its data, pcComposerData the composer its limits. -->
+           steering its data, pcComposerData the composer its limits.
+           Model · effort (spec 13) sit on the composer's own row, left of Send: #panel-controls is its slot="end"
+           child (#918, @2lab.ai/ui ≥ 0.36.0) — their own container, so the input is never morphed; pcFreshSteer
+           carries it into a new card's composer. -->
       <div class="ui-tok pc-steer-wrap">
-        <ui-agent-steering id="cmd-steer" lang="ko"><ui-composer id="pc-composer" slot="composer" lang="ko"></ui-composer></ui-agent-steering>
+        <ui-agent-steering id="cmd-steer" lang="ko"><ui-composer id="pc-composer" slot="composer" lang="ko"><div class="panel-controls" id="panel-controls" slot="end" aria-label="이 세션의 모델과 추론 강도"></div></ui-composer></ui-agent-steering>
       </div>
     </div>
     <!-- Phone chrome T4 (SSOT 2026-11-04): while the reader scrolls back through the chat or the log the composer is
@@ -7036,7 +7033,7 @@ function syncPhoneStatus() {
 // T2 · T4 — reading on a phone. data-read="1": the section box takes the whole view (sizePanelSections) and the panel's
 // scroll puts it right under the title bar — the status bar, the tab bar and the section tabs scroll out; "leaving"
 // while they scroll back in. data-tuck: the composer is away (#pc-reveal shows).
-var _rd = { touch: false, until: 0, last: -1, vp: null, leave: 0, land: 0 };
+var _rd = { touch: false, until: 0, last: -1, vp: null, leave: 0, land: 0, off: null };
 function panelReading() {
   var p = document.getElementById('slide-panel');
   return !!p && p.hasAttribute('data-read');
@@ -7065,6 +7062,7 @@ function rdRead(on) {
       return;
     }
     clearTimeout(_rd.leave);
+    if (_rd.off) _rd.off();
     p.setAttribute('data-read', '1');
     sizePanelSections();
     // The reader's new place: a layout anchor taken before it must not pull the panel back (#488).
@@ -7086,16 +7084,28 @@ function rdRead(on) {
   // The box keeps the whole view while the head scrolls back in, then takes the rest of the panel again.
   p.setAttribute('data-read', 'leaving');
   _panelScrollGen++;
+  var smooth = how === 'smooth' && sc.scrollTop > 0;
   var done = function() {
     clearTimeout(_rd.leave);
-    sc.removeEventListener('scrollend', done);
+    if (_rd.off) _rd.off();
     if (p.getAttribute('data-read') !== 'leaving') return;
     p.removeAttribute('data-read');
     sizePanelSections();
   };
-  // When the scroll lands (scrollend; a timer where there is none, or when it never fires).
-  if (how === 'smooth' && sc.scrollTop > 0) sc.addEventListener('scrollend', done);
-  _rd.leave = setTimeout(done, how === 'smooth' && sc.scrollTop > 0 ? 900 : 0);
+  // iOS Safari has no scrollend: the scroll that reaches the top is the landing there.
+  var atTop = function() { if (sc.scrollTop <= 0) done(); };
+  // When the scroll lands (scrollend, or the top reached; the timer when neither comes). _rd.off takes the listeners
+  // off — the landing, rdReset and reading again each call it.
+  if (smooth) {
+    sc.addEventListener('scrollend', done);
+    sc.addEventListener('scroll', atTop, { passive: true });
+    _rd.off = function() {
+      sc.removeEventListener('scrollend', done);
+      sc.removeEventListener('scroll', atTop);
+      _rd.off = null;
+    };
+  }
+  _rd.leave = setTimeout(done, smooth ? 900 : 0);
   sc.scrollTo({ top: 0, behavior: how });
 }
 function rdTuck(on) {
@@ -7107,21 +7117,38 @@ function rdTuck(on) {
   var steer = on ? document.getElementById('cmd-steer') : null;
   if (steer && typeof steer.closeQueue === 'function') steer.closeQueue();
 }
-// ^ (#pc-reveal): the composer back where the reader is. From a key (a click with no pointer: detail 0) focus follows
-// into it — the button itself steps aside, and focus must not fall to the page.
+// ^ (#pc-reveal): the composer back where the reader is. ^ steps aside as it comes, so focus that was on it follows
+// into the composer — from a key (a click with no pointer: detail 0) or an assistive technology's activation (it can
+// report detail 1) — and never falls to the page. A finger's tap leaves focus be: Chrome on Android focuses the button
+// it taps, and the field would bring up the keyboard.
 function pcReveal(e) {
+  var b = document.getElementById('pc-reveal');
+  var had = !!b && document.activeElement === b;
   rdTuck(false);
-  if (e && e.detail === 0) {
-    var c = document.getElementById('pc-composer');
-    if (c && typeof c.focus === 'function') c.focus();
-  }
+  if (e && e.pointerType === 'touch') return;
+  if (!had && !(e && e.detail === 0)) return;
+  var c = document.getElementById('pc-composer');
+  if (c && typeof c.focus === 'function') c.focus();
+}
+// #918 — the title bar's ˅ (#panel-head-back, shown only while reading): the head back in, as a tap on the title bar
+// does. It steps aside as the head returns, so focus that was on it goes to the card's title, never to the page.
+function rdHeadBack(e) {
+  var b = document.getElementById('panel-head-back');
+  var had = !!b && document.activeElement === b;
+  rdRead(false);
+  if (!had) return;
+  var t = document.getElementById('panel-title');
+  if (t && typeof t.focus === 'function') t.focus({ preventScroll: true });
 }
 // A new view (another card, section, tab or agent; the phone turned): the card as it opens — head and composer in.
 function rdReset() {
   var p = document.getElementById('slide-panel');
   clearTimeout(_rd.leave);
   clearTimeout(_rd.land);
+  if (_rd.off) _rd.off();
   _rd.last = -1;
+  _rd.touch = false; // a new view: no touch or fling of the old one counts as the reader's
+  _rd.until = 0;
   if (!p) return;
   var was = p.hasAttribute('data-read');
   p.removeAttribute('data-read');
@@ -7161,14 +7188,19 @@ function rdOnScroll(e) {
   var user = _rd.touch || Date.now() < _rd.until;
   var host = vp.getRootNode && vp.getRootNode().host;
   var cmd = document.getElementById('panel-command');
-  var sc = document.getElementById('panel-scroll');
-  var box = psecBox();
   var p = document.getElementById('slide-panel');
   var act = document.activeElement;
-  // The box's height once reading with the composer away: the whole view, plus the composer's row.
-  var grow = sc && box && cmd && p && !p.hasAttribute('data-tuck') ? Math.max(0, sc.clientHeight + cmd.offsetHeight - box.clientHeight) : 0;
+  var typing = !!(cmd && act && act !== document.body && cmd.contains(act));
+  // The box's height once reading with the composer away: the whole view, plus the composer's row. Read only when this
+  // scroll may tuck the composer (the reader's own, the composer in, not typing) — no other scroll reads layout (#918).
+  var grow = 0;
+  if (user && !typing && p && !p.hasAttribute('data-tuck')) {
+    var sc = document.getElementById('panel-scroll');
+    var box = psecBox();
+    if (sc && box && cmd) grow = Math.max(0, sc.clientHeight + cmd.offsetHeight - box.clientHeight);
+  }
   var r = rdStep(vp.scrollTop, vp.scrollHeight - vp.clientHeight, _rd.last, user,
-    !!(host && host.data && host.data.hasMore), !!(cmd && act && act !== document.body && cmd.contains(act)), grow);
+    !!(host && host.data && host.data.hasMore), typing, grow);
   _rd.last = vp.scrollTop;
   if (r.tuck !== null) rdTuck(r.tuck);
   if (r.read !== null) rdRead(r.read);
@@ -7179,11 +7211,19 @@ function rdGesture(e) {
   if (!isPhone()) return;
   var t = e && e.type;
   if (t === 'touchend' || t === 'touchcancel') {
-    _rd.touch = false;
-    _rd.until = Date.now() + 1200;
+    rdTouchEnd(); // only a touch that began on the sections opens the fling window
     return;
   }
   if (t === 'touchstart' || t === 'touchmove') _rd.touch = true;
+  // A touch's end is dispatched on the node it began on — also once that node left the DOM (a live re-render), when it
+  // reaches neither the sections nor the document. That node hears it (#918).
+  if (t === 'touchstart') {
+    var from = e.composedPath ? e.composedPath()[0] : e.target;
+    if (from && typeof from.addEventListener === 'function') {
+      from.addEventListener('touchend', rdTouchEnd, { once: true, passive: true });
+      from.addEventListener('touchcancel', rdTouchEnd, { once: true, passive: true });
+    }
+  }
   else _rd.until = Date.now() + 400;
   var vp = psecViewport();
   if (vp && !vp._rdBound) {
@@ -7195,45 +7235,39 @@ function rdGesture(e) {
     _rd.last = vp ? vp.scrollTop : -1;
   }
 }
+// A finger lifted anywhere (document, capture) ends the reader's touch — also one whose node left the DOM under it,
+// so its touchend never reached the sections (#918). Only a touch that began on them: a lift elsewhere opens no window.
+function rdTouchEnd() {
+  if (!_rd.touch) return;
+  _rd.touch = false;
+  _rd.until = Date.now() + 1200;
+}
 // T3 — the session's model picker on the composer's row, left of Send (지시) — on every screen (SSOT 2026-11-05: the
-// desktop card too, not only a phone). The row is <ui-composer>'s own toolbar (its open shadow root), so the page
-// measures it — the tools' end, Send's start, the row's top and height — and lays the picker's box between them
-// (data-pick-dock); while a recording takes the row (no .cp-end) the picker keeps its line above the composer.
-function syncPickerDock() {
-  var cmd = document.getElementById('panel-command');
-  var ctl = document.getElementById('panel-controls');
+// desktop card too). #panel-controls is <ui-composer>'s slot="end" child (#918, @2lab.ai/ui ≥ 0.36.0): the composer lays
+// it out, before Send and — while a voice note records — before 취소 · 완료, so the page measures nothing in its shadow
+// DOM. A row too narrow for the trigger's name (a phone) draws the picker compact: the maker's mark and the level, the
+// name in its tooltip and label. The room the name needs follows the composer's buttons — 44px on a touch screen
+// (pointer: coarse), 32px under a mouse, where the desktop card's 407px row keeps the name. The width read is the
+// composer's own box (light DOM); a closed panel (0) keeps what it had.
+var PICKER_COMPACT_BELOW = 400;
+var PICKER_COMPACT_BELOW_TOUCH = 480;
+var _pcCompact = false;
+function syncPickerFit() {
   var comp = document.getElementById('pc-composer');
-  if (!cmd || !ctl) return;
-  var bar = comp && comp.shadowRoot ? comp.shadowRoot.querySelector('.cp-bar') : null;
-  var end = bar ? bar.querySelector('.cp-end') : null;
-  if (!end || !cmd.getBoundingClientRect().width) {
-    cmd.removeAttribute('data-pick-dock');
-    return;
-  }
-  // Docked first: the picker leaves the flow, so the row is measured where it then is.
-  cmd.setAttribute('data-pick-dock', '');
-  var c = cmd.getBoundingClientRect();
-  var b = bar.getBoundingClientRect();
-  var tools = bar.querySelector('.cp-tools');
-  var from = tools ? tools.getBoundingClientRect().right : b.left;
-  var to = b.right;
-  for (var i = 0; i < end.children.length; i++) {
-    var r = end.children[i].getBoundingClientRect();
-    if (r.width > 0) to = Math.min(to, r.left);
-  }
-  var pd = [Math.round(from - c.left + 6), Math.round(c.right - to + 6), Math.round(b.top - c.top), Math.round(b.height)];
-  if (ctl._pd === pd.join(' ')) return; // a live repaint with the row where it was writes nothing
-  ctl._pd = pd.join(' ');
-  ctl.style.setProperty('--pd-l', pd[0] + 'px');
-  ctl.style.setProperty('--pd-r', pd[1] + 'px');
-  ctl.style.setProperty('--pd-t', pd[2] + 'px');
-  ctl.style.setProperty('--pd-h', pd[3] + 'px');
+  var w = comp ? comp.getBoundingClientRect().width : 0;
+  if (!w) return;
+  var touch = typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+  var narrow = w < (touch ? PICKER_COMPACT_BELOW_TOUCH : PICKER_COMPACT_BELOW);
+  _pcCompact = narrow;
+  // An open menu holds its trigger (a width lock while open): the close repaints the controls with _pcCompact.
+  var pk = document.querySelector('#panel-controls ui-model-picker');
+  if (pk && !pk.hasAttribute('open') && pk.hasAttribute('compact') !== narrow) pk.toggleAttribute('compact', narrow);
 }
 function syncPhoneChrome() {
   syncPhoneScope();
   syncPhoneStatus();
   rdReset();
-  syncPickerDock();
+  syncPickerFit();
   sizePanelSections();
 }
 (function initPhoneChrome() {
@@ -7248,6 +7282,9 @@ function syncPhoneChrome() {
   if (secs) ['touchstart', 'touchmove', 'touchend', 'touchcancel', 'wheel', 'keydown'].forEach(function(t) {
     secs.addEventListener(t, rdGesture, { passive: true });
   });
+  ['touchend', 'touchcancel', 'pointerup', 'pointercancel'].forEach(function(t) {
+    document.addEventListener(t, rdTouchEnd, { passive: true, capture: true });
+  });
   // The reader's own input anywhere in the card's scroll area ends the pending settle correction (_rd.land): it would
   // pull back a place the reader scrolled to by hand. A glide the reader's scroll cut short is re-issued by rdRead.
   var pscroll = document.getElementById('panel-scroll');
@@ -7261,13 +7298,11 @@ function syncPhoneChrome() {
     if (!isPhone() || !panelReading() || (t && t.closest && t.closest('button, a, input, select, ui-deck-nav, ui-status-bar'))) return;
     rdRead(false);
   });
+  // The composer's row follows the card's width (a drag of its edge, the phone turned): the picker fits it.
   if (typeof ResizeObserver === 'function') {
-    var dock = new ResizeObserver(function() { syncPickerDock(); });
-    // The steering inside is replaced per card (pcFreshSteer): its wrapper is the one that stays.
-    ['#panel-command', '#panel-command .pc-steer-wrap'].forEach(function(sel) {
-      var el = document.querySelector(sel);
-      if (el) dock.observe(el);
-    });
+    var fit = new ResizeObserver(function() { syncPickerFit(); });
+    var cmdEl = document.getElementById('panel-command');
+    if (cmdEl) fit.observe(cmdEl);
   }
 })();
 // ── Panel width — the docked drawer's inner edge (SSOT 2026-10-24, D4 E-01) ──
@@ -13755,7 +13790,7 @@ function renderModelPicker(s, canSwitch, modelShort, surface, readOnlyWhy) {
   var where = surface === 'panel' ? 'panel' : 'card';
   var ro = canSwitch ? '' : ' data-mp-ro="' + escAttr(readOnlyWhy || '바꿀 수 없습니다') + '"';
   return '<span class="ui-tok mp-slot" data-mk="' + escAttr('mp|' + where + '|' + s.key) + '">'
-    + '<ui-model-picker lang="ko"' + (where === 'panel' && canSwitch ? ' side="top"' : '') + ' data-mp-key="' + escAttr(s.key) + '" data-mp-surface="' + where + '"' + ro + '>'
+    + '<ui-model-picker lang="ko"' + (where === 'panel' && canSwitch ? ' side="top"' : '') + (where === 'panel' && _pcCompact ? ' compact' : '') + ' data-mp-key="' + escAttr(s.key) + '" data-mp-surface="' + where + '"' + ro + '>'
     + '<span class="mp-fallback">' + (modelShort || '모델') + '</span></ui-model-picker></span>';
 }
 // The disabled picker's reason, and — when the model runs a lower level than the one set — both levels: its trigger
@@ -14082,8 +14117,8 @@ function mpApplyEffort(key, r) {
   if (res.effective && res.effective !== res.effort) cs.effortEffective = res.effective;
   else delete cs.effortEffective;
 }
-// Model · effort beside the composer (spec 13): this session's — one trigger
-// for the owner (the menu opens above it), the plain text for others.
+// Model · effort on the composer's row (spec 13; #918: its slot "end"): this session's — one trigger for the owner
+// (the menu opens above it), the same trigger read-only for others.
 function renderPanelControls(s) {
   var el = document.getElementById('panel-controls');
   if (!el || !s) return;
@@ -14101,8 +14136,7 @@ function renderPanelControls(s) {
     var canSwitch = viewerCanManage(s) && !s.terminated && s.sessionState !== 'SLEEPING' && !isSiblingSession(s);
     var modelShort = esc(s.model || '').replace(/^claude-/, '').replace(/-\\d{8}$/, '');
     // #813 — a read-only viewer reads the same element, disabled (its trigger names the level too).
-    var html = '<span class="pc-scope">이 세션</span>'
-      + renderModelPicker(s, canSwitch, modelShort, 'panel', canSwitch ? '' : mpReadOnlyWhy(s, viewerCanManage(s), s.terminated ? 'closed' : ''))
+    var html = renderModelPicker(s, canSwitch, modelShort, 'panel', canSwitch ? '' : mpReadOnlyWhy(s, viewerCanManage(s), s.terminated ? 'closed' : ''))
       + renderModelNote(s, canSwitch);
     if (el._html !== html) {
       morphInnerHtml(el, html);
@@ -14110,7 +14144,7 @@ function renderPanelControls(s) {
     }
   }
   mpHydrate(el);
-  syncPickerDock();
+  syncPickerFit();
 }
 // After a switch on either surface: the panel's copy follows at once.
 function repaintPanelControlsFor(key) {
@@ -17597,6 +17631,9 @@ function landPanel() {
     if (sec && sec.style.display !== 'none') {
       // The reader scrolled since the last try: they stay where they are.
       if (_panelLandAt !== null && Math.abs(scrollEl.scrollTop - _panelLandAt) > 1) { _panelLanded = true; return; }
+      // Phone chrome (#918): a landing while reading starts the card over first — head and composer in, the box as it
+      // opens — as the question landing does; the target is measured after.
+      if (panelReading()) rdReset();
       var under = _panelLand === 'goal' ? 0 : panelTabsHeight();
       var target = scrollEl.scrollTop + sec.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - under;
       // The landing is the reader's new place: an anchor the layout coordinator
@@ -17664,6 +17701,8 @@ function holdPanelLanding() {
   var scrollEl = document.getElementById('panel-scroll');
   var sec = document.getElementById(_panelLand === 'goal' ? 'panel-goal' : _panelLand === 'tasks' ? 'panel-tasks' : 'panel-agents');
   if (!scrollEl || !sec || sec.style.display === 'none') return;
+  // Phone chrome (#918): held while reading, the card starts over first (as landPanel does).
+  if (panelReading()) rdReset();
   var under = _panelLand === 'goal' ? 0 : panelTabsHeight();
   var drift = sec.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - under;
   var top = Math.max(0, Math.min(scrollEl.scrollTop + drift, scrollEl.scrollHeight - scrollEl.clientHeight));
@@ -18171,16 +18210,16 @@ function sysTurnInfo(t) {
     if (reason) gf.push(['직전 평가에서 남은 일', reason]);
     return { kind: 'goal', label: n ? '목표 #' + n[1] + '/' + n[2] : '목표', line: reusedLine || (reason ? '직전 평가: ' + sysOneLine(reason, 90) : '목표 자동 계속'), raw: raw, facts: gf };
   }
-  // The host prompt that keeps a turn going while background work still runs
-  // (packages/slack/src/pipeline/background-wait.ts buildBackgroundWaitPrompt).
+  // The host prompt that continues a turn whose background work stopped with it — the CLI ends with
+  // the turn (#966; packages/slack/src/pipeline/background-wait.ts buildBackgroundWaitPrompt).
   var bw = /^\\[background-work-resume (\\d+)\\/(\\d+)\\]/.exec(head);
   if (bw) {
     var bt = /You ended your turn while (\\d+) background tasks?(?: \\(([^)]*)\\))?/.exec(head);
     var what = bt ? bt[1] + '개' + (bt[2] ? ' (' + bt[2] + ')' : '') : '';
     var bf = [['회차', bw[1] + ' / ' + bw[2]]];
-    if (what) bf.push(['실행 중인 작업', what]);
-    bf.push(['이유', '턴이 끝났지만 런타임이 백그라운드 작업을 아직 실행 중으로 보고']);
-    return { kind: 'bgwork', label: '백그라운드 재개 #' + bw[1] + '/' + bw[2], line: '실행 중인 백그라운드 작업' + (what ? ' ' + what : '') + ' — 턴을 이어감', raw: raw, facts: bf };
+    if (what) bf.push(['멈춘 작업', what]);
+    bf.push(['이유', '턴이 끝나며 백그라운드 작업도 함께 멈춤 — 다음 턴에서 이어 가게 함']);
+    return { kind: 'bgwork', label: '백그라운드 재개 #' + bw[1] + '/' + bw[2], line: '턴과 함께 멈춘 백그라운드 작업' + (what ? ' ' + what : '') + ' — 턴을 이어감', raw: raw, facts: bf };
   }
   var c = /^\\[cron:([^\\]]+)\\]\\s*/.exec(head);
   if (c) {
@@ -23394,8 +23433,6 @@ function pcComposerSetup(c, takesFiles) {
   delete d.voice;
   delete d.accept;
   c.data = Object.assign(d, pcComposerData(takesFiles));
-  // Its tools may have changed (받아쓰기): the picker beside Send follows once the composer drew them.
-  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(syncPickerDock);
 }
 // A fresh element for another session: what the old one showed — the text being
 // typed, its files, notes in flight, a failed send's Retry — was the other
@@ -23412,6 +23449,9 @@ function pcFreshSteer() {
   c.slot = 'composer';
   c.setAttribute('lang', 'ko');
   pcComposerSetup(c);
+  // The model · effort controls are the composer's slot="end" child (#918): they move with the row, not copied.
+  var ctl = document.getElementById('panel-controls');
+  if (ctl) c.appendChild(ctl);
   el.appendChild(c);
   old.replaceWith(el);
   _pcFailed = Object.create(null);
