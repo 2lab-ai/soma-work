@@ -11,6 +11,7 @@ vi.mock('child_process', async () => {
     ...actual,
     execFileSync: vi.fn(),
     spawn: vi.fn(),
+    spawnSync: vi.fn(),
   };
 });
 
@@ -853,6 +854,38 @@ describe('handleListStack', () => {
 // handleLogs
 // ══════════════════════════════════════════════════════════════
 
+// handleLogs runs ssh with spawnSync so both streams come back. `stdout` alone is the old execFileSync shape.
+function spawnResult(fields: Partial<child_process.SpawnSyncReturns<string>>): child_process.SpawnSyncReturns<string> {
+  return {
+    pid: 4242,
+    output: [null, fields.stdout ?? '', fields.stderr ?? ''],
+    stdout: '',
+    stderr: '',
+    status: 0,
+    signal: null,
+    ...fields,
+  };
+}
+
+function mockLogsRun(stdout: string, stderr = '') {
+  vi.mocked(child_process.spawnSync).mockReturnValue(spawnResult({ stdout, stderr }));
+}
+
+/** A spawnSync error as Node builds it: an errno code and no output on the error itself. */
+function spawnError(code: string): Error {
+  return Object.assign(new Error(`spawnSync ssh ${code}`), { code, errno: -1, syscall: 'spawnSync ssh' });
+}
+
+/** The thrown error, which must not carry the child's raw output for base-mcp-server or the logger to publish. */
+function thrownBy(fn: () => unknown): Error {
+  try {
+    fn();
+  } catch (err) {
+    return err as Error;
+  }
+  throw new Error('expected a throw');
+}
+
 describe('handleLogs', () => {
   const originalEnv = process.env;
 
@@ -868,7 +901,7 @@ describe('handleLogs', () => {
 
   it('calls SSH with all options', () => {
     mockConfig(PROD_CONFIG, 8000);
-    vi.mocked(child_process.execFileSync).mockReturnValue('log output');
+    mockLogsRun('log output');
 
     handleLogs({
       server: 'prod',
@@ -879,7 +912,7 @@ describe('handleLogs', () => {
       timestamps: true,
     });
 
-    expect(child_process.execFileSync).toHaveBeenCalledWith(
+    expect(child_process.spawnSync).toHaveBeenCalledWith(
       'ssh',
       [
         'prod.example.com',
@@ -894,17 +927,17 @@ describe('handleLogs', () => {
         '--timestamps',
         'nginx',
       ],
-      expect.objectContaining({ timeout: 30000, maxBuffer: 1024 * 1024 }),
+      expect.objectContaining({ timeout: 30000, maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] }),
     );
   });
 
   it('defaults tail to 100 when omitted', () => {
     mockConfig(PROD_CONFIG, 9000);
-    vi.mocked(child_process.execFileSync).mockReturnValue('output');
+    mockLogsRun('output');
 
     handleLogs({ server: 'prod', service: 'nginx' });
 
-    expect(child_process.execFileSync).toHaveBeenCalledWith(
+    expect(child_process.spawnSync).toHaveBeenCalledWith(
       'ssh',
       expect.arrayContaining(['--tail', '100']),
       expect.any(Object),
@@ -913,11 +946,11 @@ describe('handleLogs', () => {
 
   it('passes tail=0 as "0", not "100"', () => {
     mockConfig(PROD_CONFIG, 9100);
-    vi.mocked(child_process.execFileSync).mockReturnValue('output');
+    mockLogsRun('output');
 
     handleLogs({ server: 'prod', service: 'nginx', tail: 0 });
 
-    expect(child_process.execFileSync).toHaveBeenCalledWith(
+    expect(child_process.spawnSync).toHaveBeenCalledWith(
       'ssh',
       expect.arrayContaining(['--tail', '0']),
       expect.any(Object),
@@ -958,7 +991,7 @@ describe('handleLogs', () => {
 
   it('returns log output as text content', () => {
     mockConfig(PROD_CONFIG, 10300);
-    vi.mocked(child_process.execFileSync).mockReturnValue('line1\nline2\nline3\n');
+    mockLogsRun('line1\nline2\nline3\n');
 
     const result = handleLogs({ server: 'prod', service: 'nginx', tail: 3 });
 
@@ -966,10 +999,215 @@ describe('handleLogs', () => {
     expect(result.content[0].type).toBe('text');
   });
 
+  it('redacts secrets in the returned log text, keeping the rest of each line', () => {
+    mockConfig(PROD_CONFIG, 10350);
+    // Assembled at run time: a complete credential-shaped literal in source is refused by push protection.
+    const sid = ['A', 'C', 'f00dfeed'.repeat(4)].join('');
+    const authToken = 'cafebabe'.repeat(4);
+    mockLogsRun(
+      [
+        `2026-01-02T03:04:05Z client init {"AccountSid":"${sid}","AuthToken":"${authToken}","Region":"us1"}`,
+        '2026-01-02T03:04:06Z connecting to postgres://app:hunter2@db.internal:5432/app',
+        '2026-01-02T03:04:07Z GET /health 200 3ms',
+        '',
+      ].join('\n'),
+    );
+
+    const result = handleLogs({ server: 'prod', service: 'nginx' });
+
+    expect(result.content[0].text).toBe(
+      [
+        '2026-01-02T03:04:05Z client init {"AccountSid":"<redacted>","AuthToken":"<redacted>","Region":"us1"}',
+        '2026-01-02T03:04:06Z connecting to postgres://app:<redacted>@db.internal:5432/app',
+        '2026-01-02T03:04:07Z GET /health 200 3ms',
+        '',
+      ].join('\n'),
+    );
+  });
+
+  describe('stderr and failures', () => {
+    // Assembled at run time: a complete credential-shaped literal in source is refused by push protection.
+    const sid = ['A', 'C', 'f00dfeed'.repeat(4)].join('');
+    const authToken = 'cafebabe'.repeat(4);
+
+    it('returns stderr after a separator line, redacted like stdout', () => {
+      mockConfig(PROD_CONFIG, 11000);
+      mockLogsRun('GET /health 200\n', `client init {"AccountSid":"${sid}","AuthToken":"${authToken}"}\nwarn: slow\n`);
+
+      const result = handleLogs({ server: 'prod', service: 'nginx' });
+
+      expect(result.content[0].text).toBe(
+        'GET /health 200\n----- stderr -----\nclient init {"AccountSid":"<redacted>","AuthToken":"<redacted>"}\nwarn: slow\n',
+      );
+    });
+
+    it('starts the separator on its own line when stdout has no trailing newline', () => {
+      mockConfig(PROD_CONFIG, 11100);
+      mockLogsRun('last line', 'password=hunter2\n');
+
+      expect(handleLogs({ server: 'prod', service: 'nginx' }).content[0].text).toBe(
+        'last line\n----- stderr -----\npassword=<redacted>\n',
+      );
+    });
+
+    it('returns stderr alone under the separator when stdout is empty', () => {
+      mockConfig(PROD_CONFIG, 11150);
+      mockLogsRun('', 'only stderr\n');
+
+      expect(handleLogs({ server: 'prod', service: 'nginx' }).content[0].text).toBe(
+        '----- stderr -----\nonly stderr\n',
+      );
+    });
+
+    it('adds no separator when stderr is empty', () => {
+      mockConfig(PROD_CONFIG, 11200);
+      mockLogsRun('line1\nline2\n', '');
+
+      expect(handleLogs({ server: 'prod', service: 'nginx' }).content[0].text).toBe('line1\nline2\n');
+    });
+
+    it('on a non-zero exit throws a redacted message with the status and no raw output', () => {
+      mockConfig(PROD_CONFIG, 11300);
+      vi.mocked(child_process.spawnSync).mockReturnValue(
+        spawnResult({
+          stdout: `stdout {"AuthToken":"${authToken}"}\n`,
+          stderr: `Error: auth failed {"AccountSid":"${sid}","AuthToken":"${authToken}"}\n`,
+          status: 1,
+        }),
+      );
+
+      const err = thrownBy(() => handleLogs({ server: 'prod', service: 'nginx' }));
+
+      expect(err.message).toBe(
+        'docker logs failed on prod: exit status 1\nError: auth failed {"AccountSid":"<redacted>","AuthToken":"<redacted>"}',
+      );
+      expect(err.message).not.toContain(authToken);
+      expect(err.message).not.toContain(sid);
+      expect(err).not.toHaveProperty('stdout');
+      expect(err).not.toHaveProperty('stderr');
+      expect(err).not.toHaveProperty('output');
+      // stderr-logger spreads the error's own properties: there must be none.
+      expect({ ...err }).toEqual({});
+    });
+
+    it('on a timeout names it and drops the cut-off last stderr line', () => {
+      mockConfig(PROD_CONFIG, 11400);
+      vi.mocked(child_process.spawnSync).mockReturnValue(
+        spawnResult({
+          stdout: 'partial stdout',
+          stderr: 'connecting\nAuthorization: Bearer abc.def-ghi\ncut off mid ghp_AAAA',
+          status: null,
+          signal: 'SIGTERM',
+          error: spawnError('ETIMEDOUT'),
+        }),
+      );
+
+      const err = thrownBy(() => handleLogs({ server: 'prod', stack: 'mystack', service: 'mystack_web' }));
+
+      expect(err.message).toBe(
+        'docker service logs failed on prod: timed out after 30s\nconnecting\nAuthorization: Bearer <redacted>',
+      );
+      expect({ ...err }).toEqual({});
+    });
+
+    it('on a buffer overflow names the per-stream cap', () => {
+      mockConfig(PROD_CONFIG, 11500);
+      vi.mocked(child_process.spawnSync).mockReturnValue(
+        spawnResult({ stdout: 'x'.repeat(4096), status: null, signal: 'SIGTERM', error: spawnError('ENOBUFS') }),
+      );
+
+      const err = thrownBy(() => handleLogs({ server: 'prod', service: 'nginx' }));
+
+      expect(err.message).toBe('docker logs failed on prod: output exceeded 1 MB on one stream');
+      expect({ ...err }).toEqual({});
+    });
+
+    it('on a spawn error names its code only', () => {
+      mockConfig(PROD_CONFIG, 11600);
+      vi.mocked(child_process.spawnSync).mockReturnValue(
+        spawnResult({ status: null, signal: null, error: spawnError('ENOENT') }),
+      );
+
+      expect(thrownBy(() => handleLogs({ server: 'prod', service: 'nginx' })).message).toBe(
+        'docker logs failed on prod: ssh could not run (ENOENT)',
+      );
+    });
+
+    it('on a kill by signal names the signal', () => {
+      mockConfig(PROD_CONFIG, 11700);
+      vi.mocked(child_process.spawnSync).mockReturnValue(
+        spawnResult({ stderr: 'bye\n', status: null, signal: 'SIGKILL' }),
+      );
+
+      expect(thrownBy(() => handleLogs({ server: 'prod', service: 'nginx' })).message).toBe(
+        'docker logs failed on prod: killed by SIGKILL\nbye',
+      );
+    });
+
+    // Assembled at run time, like the fixtures above.
+    const keyBegin = ['-----BEGIN', 'PRIVATE KEY-----'].join(' ');
+    const keyEnd = ['-----END', 'PRIVATE KEY-----'].join(' ');
+    const keyBody = 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=';
+    const waitingKeyLog = [
+      'token:',
+      'Bearer opaque-credential',
+      'privateKey:',
+      keyBegin,
+      keyBody,
+      keyEnd,
+      'secrets:',
+      '  - opaque-credential',
+      'region: us1',
+      '',
+    ].join('\n');
+    const waitingKeyRedacted = [
+      'token:',
+      'Bearer <redacted>',
+      'privateKey:',
+      keyBegin,
+      '<redacted>',
+      keyEnd,
+      'secrets:',
+      '  - <redacted>',
+      'region: us1',
+    ];
+
+    it('redacts shapes, key blocks and YAML lists after a waiting key in stdout', () => {
+      mockConfig(PROD_CONFIG, 11750);
+      mockLogsRun(waitingKeyLog);
+
+      expect(handleLogs({ server: 'prod', service: 'nginx' }).content[0].text).toBe(
+        `${waitingKeyRedacted.join('\n')}\n`,
+      );
+    });
+
+    it('redacts the same forms in the stderr a failure message carries', () => {
+      mockConfig(PROD_CONFIG, 11760);
+      vi.mocked(child_process.spawnSync).mockReturnValue(spawnResult({ stderr: waitingKeyLog, status: 1 }));
+
+      const err = thrownBy(() => handleLogs({ server: 'prod', service: 'nginx' }));
+
+      expect(err.message).toBe(`docker logs failed on prod: exit status 1\n${waitingKeyRedacted.join('\n')}`);
+      expect(err.message).not.toContain('opaque-credential');
+      expect(err.message).not.toContain(keyBody);
+    });
+
+    it('caps the stderr carried by a failure message at 2,000 characters', () => {
+      mockConfig(PROD_CONFIG, 11800);
+      vi.mocked(child_process.spawnSync).mockReturnValue(spawnResult({ stderr: `${'e'.repeat(10_000)}\n`, status: 2 }));
+
+      const err = thrownBy(() => handleLogs({ server: 'prod', service: 'nginx' }));
+      const [head, detail] = err.message.split('\n');
+
+      expect(head).toBe('docker logs failed on prod: exit status 2');
+      expect(detail).toBe(`${'e'.repeat(2000)} [truncated]`);
+    });
+  });
+
   describe('with stack option', () => {
     it('calls SSH with docker service logs (Swarm mode)', () => {
       mockConfig(PROD_CONFIG, 10400);
-      vi.mocked(child_process.execFileSync).mockReturnValue('swarm log output');
+      mockLogsRun('swarm log output');
 
       handleLogs({
         server: 'prod',
@@ -980,7 +1218,7 @@ describe('handleLogs', () => {
         timestamps: true,
       });
 
-      expect(child_process.execFileSync).toHaveBeenCalledWith(
+      expect(child_process.spawnSync).toHaveBeenCalledWith(
         'ssh',
         [
           'prod.example.com',
@@ -994,17 +1232,17 @@ describe('handleLogs', () => {
           '--timestamps',
           'mystack_web',
         ],
-        expect.objectContaining({ timeout: 30000, maxBuffer: 1024 * 1024 }),
+        expect.objectContaining({ timeout: 30000, maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] }),
       );
     });
 
     it('defaults tail to 100 in stack mode when omitted', () => {
       mockConfig(PROD_CONFIG, 10500);
-      vi.mocked(child_process.execFileSync).mockReturnValue('output');
+      mockLogsRun('output');
 
       handleLogs({ server: 'prod', stack: 'mystack', service: 'mystack_web' });
 
-      expect(child_process.execFileSync).toHaveBeenCalledWith(
+      expect(child_process.spawnSync).toHaveBeenCalledWith(
         'ssh',
         expect.arrayContaining(['service', 'logs', '--tail', '100']),
         expect.any(Object),

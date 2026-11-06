@@ -3,7 +3,8 @@
 import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { ConfigCache } from '@soma/process-shared/mcp/config-cache.js';
-import { type ChildProcess, execFileSync, spawn } from 'child_process';
+import { type ChildProcess, execFileSync, type SpawnSyncReturns, spawn, spawnSync } from 'child_process';
+import { redactLogSecrets } from './redact-logs.js';
 
 // ── Constants ─────────────────────────────────────────────
 
@@ -492,6 +493,40 @@ export function handleListStack(args: Record<string, unknown>) {
   };
 }
 
+// ── Logs ──────────────────────────────────────────────────
+
+const LOGS_TIMEOUT_MS = 30000;
+/** spawnSync applies this to stdout and stderr separately, so a reply can carry up to 1 MB of each. */
+const LOGS_MAX_BUFFER = 1024 * 1024;
+/** Redacted stderr a failure message carries at most. */
+const LOGS_ERROR_DETAIL_CHARS = 2000;
+const LOGS_STDERR_SEPARATOR = '----- stderr -----';
+
+/** Why a `logs` run failed, from fields that hold no output. */
+function logsFailureReason(result: SpawnSyncReturns<string>): string {
+  const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
+  if (code === 'ETIMEDOUT') return `timed out after ${LOGS_TIMEOUT_MS / 1000}s`;
+  if (code === 'ENOBUFS') return `output exceeded ${LOGS_MAX_BUFFER / (1024 * 1024)} MB on one stream`;
+  if (result.error) return `ssh could not run (${code ?? 'unknown error'})`;
+  if (result.signal) return `killed by ${result.signal}`;
+  return `exit status ${result.status}`;
+}
+
+/**
+ * The error for a failed `logs` run: a fresh Error built from redacted, capped stderr. Node's own error and the
+ * child's streams are never thrown — base-mcp-server returns the message to the model and the stderr logger
+ * spreads the error's own properties, so raw `stdout`/`stderr` on it would reach both.
+ */
+function logsFailure(result: SpawnSyncReturns<string>, command: string, server: string): Error {
+  let stderr = result.stderr ?? '';
+  // A killed child can stop mid-line, and a secret cut short no longer matches its shape: keep whole lines only.
+  if (result.error || result.signal) stderr = stderr.slice(0, stderr.lastIndexOf('\n') + 1);
+  let detail = redactLogSecrets(stderr).trimEnd();
+  if (detail.length > LOGS_ERROR_DETAIL_CHARS) detail = `${detail.slice(0, LOGS_ERROR_DETAIL_CHARS)} [truncated]`;
+  const head = `${command} failed on ${server}: ${logsFailureReason(result)}`;
+  return new Error(detail.length > 0 ? `${head}\n${detail}` : head);
+}
+
 export function handleLogs(args: Record<string, unknown>) {
   const server = args.server as string;
   const service = args.service as string;
@@ -538,14 +573,27 @@ export function handleLogs(args: Record<string, unknown>) {
 
   sshArgs.push(service);
 
-  const output = execFileSync('ssh', sshArgs, {
-    timeout: 30000,
-    maxBuffer: 1024 * 1024,
+  // Both streams are piped: the container's stderr comes back to the caller (redacted) instead of passing
+  // through to this process's own stderr.
+  const result = spawnSync('ssh', sshArgs, {
+    timeout: LOGS_TIMEOUT_MS,
+    maxBuffer: LOGS_MAX_BUFFER,
     encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
+  if (result.error || result.status !== 0) {
+    throw logsFailure(result, stack !== undefined ? 'docker service logs' : 'docker logs', server);
+  }
+
+  const stdout = redactLogSecrets(result.stdout ?? '');
+  const stderr = result.stderr ?? '';
+  const text =
+    stderr.length === 0
+      ? stdout
+      : `${stdout}${stdout === '' || stdout.endsWith('\n') ? '' : '\n'}${LOGS_STDERR_SEPARATOR}\n${redactLogSecrets(stderr)}`;
 
   return {
-    content: [{ type: 'text' as const, text: output }],
+    content: [{ type: 'text' as const, text }],
   };
 }
 
@@ -888,7 +936,7 @@ class ServerToolsMCPServer extends BaseMcpServer {
       {
         name: 'logs',
         description:
-          'Fetch Docker container logs (or Swarm service logs when stack is set) from a server via SSH. Default mode: docker logs. With stack: docker service logs (caller must pass the full <stack>_<svc> name in service). NOTE: --until is not supported in stack mode.',
+          'Fetch Docker container logs (or Swarm service logs when stack is set) from a server via SSH. Default mode: docker logs. With stack: docker service logs (caller must pass the full <stack>_<svc> name in service). NOTE: --until is not supported in stack mode. Container stderr follows stdout under a "----- stderr -----" line. Output is redacted for common secret shapes (tokens, API keys, passwords, URL credentials, private key blocks).',
         inputSchema: {
           type: 'object',
           properties: {
