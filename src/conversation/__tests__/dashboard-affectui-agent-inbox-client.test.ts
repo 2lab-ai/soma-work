@@ -390,6 +390,7 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
       'cardBodyShown',
       'epicChildCol',
       'epicChildrenOf',
+      'epicChildOf',
       'epicKidsShown',
       'epicKidsSig',
       'epicKidsCounts',

@@ -15,6 +15,15 @@
  *   F6 a press on a child (ui-child) or a family button opens that session's detail card, only for a known one;
  *      the panel repaints the line and a new opening starts folded.
  *   F7 the page runs @2lab.ai/ui 0.37.0.
+ *   F8 (#1030 review) the placement map holds only what the board placed now: each render starts it empty, and a push
+ *      forgets a child that left the epic's bundle.
+ *   F9 (#1030 review) a bundled child the board does not show (a filter, 휴면) reads its own column, not 'idle' — its
+ *      detail card offers Stop to a running child.
+ *   F10 (#1030 review) each listed child is its own row to the morph (data-mk, escaped): a focused row stays on its
+ *      child when the list changes.
+ *   F11 (#1030 review) one family everywhere: the epic's face, its list and its detail card read the whole bundle,
+ *      not the copy the board's filters kept.
+ *   F12 (#1030 review) the family line is no sticky header.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -108,7 +117,7 @@ const epic = (key: string, children: unknown[], over: Record<string, unknown> = 
   ...over,
 });
 
-function cardHarness(parentOf: Record<string, string> = {}) {
+function cardHarness(parentOf: Record<string, string> = {}, cache: Record<string, unknown> = Object.create(null)) {
   const map = Object.assign(Object.create(null), parentOf);
   const { cardOf } = load<{ cardOf(s: unknown, col: string): Record<string, any> }>(
     // dhShow/dhTruncate come injected (the layout's title rules); not cut out.
@@ -122,6 +131,7 @@ function cardHarness(parentOf: Record<string, string> = {}) {
       _ownerIndex: null,
       SELF_INSTANCE_NAME: 'inst',
       _epicParentOf: map,
+      _sessionCache: cache,
     },
   );
   return cardOf;
@@ -178,7 +188,7 @@ describe('F3 — the placement map', () => {
   it('applyEpicPush records each pushed child under its epic, even before a board is drawn', () => {
     const map: Record<string, string> = Object.create(null);
     const cache: Record<string, unknown> = Object.create(null);
-    const m = load<{ applyEpicPush(s: unknown): void }>(['epicChildrenOf', 'applyEpicPush'], [], {
+    const m = load<{ applyEpicPush(s: unknown): void }>(['epicChildrenOf', 'epicChildOf', 'applyEpicPush'], [], {
       _epicParentOf: map,
       _sessionCache: cache,
       _lastBoardData: null,
@@ -213,7 +223,15 @@ describe('F5 — the detail card’s family line', () => {
   function familyHarness(cache: Record<string, unknown>, parentOf: Record<string, string> = {}) {
     const cardOf = cardHarness(parentOf);
     return load<{ panelFamilyHtml(s: unknown, open: boolean): string }>(
-      ['epicChildCol', 'epicChildrenOf', 'epicChildFace', 'epicChildOf', 'epicOfChild', 'panelFamilyHtml'],
+      [
+        'epicChildCol',
+        'epicChildrenOf',
+        'epicFamilyOf',
+        'epicChildFace',
+        'epicChildOf',
+        'epicOfChild',
+        'panelFamilyHtml',
+      ],
       ['PANEL_FAMILY_DOT', 'PANEL_FAMILY_STATUS'],
       {
         cardOf,
@@ -301,5 +319,130 @@ describe('F7 — the page runs @2lab.ai/ui 0.37.0', () => {
   it('package.json pins it', () => {
     const pkg = JSON.parse(readFileSync(join(__dirname, '..', '..', '..', 'package.json'), 'utf-8'));
     expect(pkg.dependencies['@2lab.ai/ui']).toBe('0.37.0');
+  });
+});
+
+describe('F8 — the placement map holds only what the board placed now', () => {
+  it('each render starts the map empty, as it does the drawn children', () => {
+    const render = clientFn('renderBoard');
+    expect(render).toMatch(/_epicKidsDrawn = Object\.create\(null\);\s*_epicParentOf = Object\.create\(null\);/);
+  });
+
+  it('a push forgets a child that left the epic’s bundle, and keeps every other epic’s', () => {
+    const map: Record<string, string> = Object.assign(Object.create(null), {
+      'task:a': 'task:e',
+      'task:gone': 'task:e',
+      'task:y': 'task:other',
+    });
+    const m = load<{ applyEpicPush(s: unknown): void }>(['epicChildrenOf', 'epicChildOf', 'applyEpicPush'], [], {
+      _epicParentOf: map,
+      _sessionCache: Object.create(null),
+      _lastBoardData: null,
+      followupReconcile: () => {},
+    });
+    m.applyEpicPush(epic('task:e', [child('task:a'), child('task:b')]));
+    expect({ ...map }).toEqual({ 'task:a': 'task:e', 'task:b': 'task:e', 'task:y': 'task:other' });
+    m.applyEpicPush(epic('task:e', []));
+    expect({ ...map }).toEqual({ 'task:y': 'task:other' });
+  });
+});
+
+describe('F9 — a bundled child the board does not show reads its own column', () => {
+  function colHarness(cardCol: Record<string, string>, board: unknown, cache: Record<string, unknown>) {
+    return load<{ sessionColOf(key: string): string }>(['epicChildCol', 'epicChildOf', 'sessionColOf'], [], {
+      _cardCol: cardCol,
+      _lastBoardData: board,
+      _sessionCache: cache,
+    }).sessionColOf;
+  }
+  const a = child('task:a', { activityState: 'working', underEpic: true });
+  const s = child('task:s', { sessionState: 'SLEEPING', underEpic: true });
+  const E = epic('task:e', [a, s]);
+  const board = { working: [E], waiting: [], idle: [], closed: [] };
+
+  it('from its epic’s bundle on the board: a running child is working, a sleeping one closed', () => {
+    const col = colHarness({}, board, { 'task:e': E, 'task:a': a, 'task:s': s });
+    expect(col('task:a')).toBe('working');
+    expect(col('task:s')).toBe('closed');
+    expect(col('task:e')).toBe('working');
+    expect(col('task:nobody')).toBe('idle');
+  });
+
+  it('a drawn card’s own column still wins; before any board a cached child reads its own activity', () => {
+    expect(colHarness({ 'task:a': 'waiting' }, board, { 'task:a': a })('task:a')).toBe('waiting');
+    const w = child('task:w', { activityState: 'waiting', underEpic: true });
+    expect(colHarness({}, null, { 'task:w': w })('task:w')).toBe('waiting');
+    // A card that is no bundled child and sits nowhere is idle, as before.
+    expect(colHarness({}, null, { 'task:p': { ...BASE, key: 'task:p', activityState: 'working' } })('task:p')).toBe(
+      'idle',
+    );
+  });
+});
+
+describe('F10 — each listed child is its own row to the morph', () => {
+  it('every list row carries its child’s key as data-mk, escaped', () => {
+    const cardOf = cardHarness();
+    const E = epic('task:e', [child('task:a'), child('task:"q<')]);
+    const m = load<{ panelFamilyHtml(s: unknown, open: boolean): string }>(
+      [
+        'epicChildCol',
+        'epicChildrenOf',
+        'epicFamilyOf',
+        'epicChildFace',
+        'epicChildOf',
+        'epicOfChild',
+        'panelFamilyHtml',
+      ],
+      ['PANEL_FAMILY_DOT', 'PANEL_FAMILY_STATUS'],
+      {
+        cardOf,
+        esc: (t: unknown) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+        escAttr: (t: unknown) => String(t).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'),
+        _sessionCache: { 'task:e': E },
+      },
+    );
+    const html = m.panelFamilyHtml(E, true);
+    expect(html).toContain('<li data-mk="pf:task:a">');
+    expect(html).toContain('<li data-mk="pf:task:&quot;q&lt;">');
+    expect(html).not.toContain('data-mk="pf:task:"q');
+  });
+});
+
+describe('F11 — one family everywhere: the whole bundle, not the filtered copy', () => {
+  const a = child('task:a', { activityState: 'working' });
+  const b = child('task:b', { activityState: 'waiting' });
+  const whole = epic('task:e', [a, b]);
+  // What the board's filters hand the columns (boardViewOf): a copy holding only the children it draws.
+  const kept = { ...whole, epic: { ...whole.epic, children: [a] } };
+
+  it('the epic’s face lists every child although the filters kept one under its card', () => {
+    const cardOf = cardHarness({}, { 'task:e': whole });
+    expect((cardOf(kept, 'working').children as Array<{ id: string }>).map((k) => k.id)).toEqual(['task:a', 'task:b']);
+    // No cached epic (a card the page never cached): its own bundle.
+    expect((cardHarness()(kept, 'working').children as Array<{ id: string }>).map((k) => k.id)).toEqual(['task:a']);
+  });
+
+  it('the detail card’s line counts the same family', () => {
+    const cardOf = cardHarness({}, { 'task:e': whole });
+    const m = load<{ panelFamilyHtml(s: unknown, open: boolean): string }>(
+      [
+        'epicChildCol',
+        'epicChildrenOf',
+        'epicFamilyOf',
+        'epicChildFace',
+        'epicChildOf',
+        'epicOfChild',
+        'panelFamilyHtml',
+      ],
+      ['PANEL_FAMILY_DOT', 'PANEL_FAMILY_STATUS'],
+      { cardOf, esc: String, escAttr: String, _sessionCache: { 'task:e': whole } },
+    );
+    expect(m.panelFamilyHtml(kept, false)).toContain('자식 작업 2');
+  });
+});
+
+describe('F12 — the family line is no sticky header', () => {
+  it('every family line is static (the task line it borrows from sticks to the top)', () => {
+    expect(TEMPLATE).toContain('.pf-line { position: static; }');
   });
 });
