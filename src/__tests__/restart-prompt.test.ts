@@ -52,6 +52,6 @@ describe('restart.prompt — outside actions are checked before they are repeate
   // names "the user". It does not say who cancelled.
   it('says the SDK cancel text on a cut call comes from the interruption, not the user (#997)', () => {
     expect(PROMPT).toContain("The user doesn't want to take this action right now");
-    expect(PROMPT).toMatch(/come from the interruption, not from the user/);
+    expect(PROMPT).toMatch(/on the call the restart cut, come from the interruption, not from the user/);
   });
 });

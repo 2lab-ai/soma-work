@@ -70,7 +70,7 @@ const CAP_MS = 5 * 60_000;
 
 const CAP_LOG = 'Background agents outlived the keepalive cap; stopping them';
 const DEFER_LOG = 'Deferring the turn end while background agents run';
-const SHELL_DEFER_LOG = 'Deferring the turn end for a follow-up turn of a background shell or workflow';
+const SHELL_DEFER_LOG = 'Deferring the turn end for a follow-up turn of a background task';
 
 const AGENT_ID = 'a2822c53d8b286bbf';
 const SECOND_AGENT_ID = 'b7d1e0c4a9f35e210';
@@ -1638,31 +1638,62 @@ describe('ClaudeHandler: a late result does not cut a notification turn of a bac
     expect(cli.inputEnded).toBe(true);
   });
 
-  it('follows one notification turn of a live monitor, not every one after it', async () => {
+  it("reads into a second shell's notification turn that started after the first one's result", async () => {
     const cli = newFakeCli();
-    const monitor = { task_id: 'mon-1', task_type: 'monitor', description: 'log tail' };
+    const second = { task_id: 'b-second', task_type: 'local_bash', description: 'second CI watcher' };
     installScriptedQuery(cli, async function* (inputs) {
       await readOpening(inputs, cli);
       yield INIT;
-      yield level([monitor]);
+      yield level([bashTask, second]);
       yield WAITING;
       yield openingResult(cli.opening?.uuid);
-      // The monitor stays live and keeps emitting events, each one a turn.
+      // All buffered by the time the lagging host reads the answer: the first
+      // watcher's turn, then the second watcher finishing after that turn's result.
+      yield level([second]);
+      yield taskNotification(BASH_ID, 'completed');
       yield INIT;
-      yield assistantText('EVENT 1');
-      yield successResult({ result: 'EVENT 1', num_turns: 1, uuid: 'event-1-uuid' });
+      yield NOTIFIED;
+      yield notifiedResult();
+      yield level([]);
+      yield taskNotification('b-second', 'completed');
       yield INIT;
-      yield assistantText('EVENT 2');
-      yield successResult({ result: 'EVENT 2', num_turns: 1, uuid: 'event-2-uuid' });
+      yield TOOL_USE_MERGE;
+      yield MERGE_RESULT;
+      yield MERGED;
+      yield mergedResult();
       cli.inputEnded = (await inputs.next()).done === true;
     });
 
     const frames = await readLikeTheProcessor(startTurn(newHandler()));
 
+    expect(frames).toContainEqual(TOOL_USE_MERGE);
     const results = resultsOf(frames);
     expect(results).toHaveLength(1);
-    expect(results[0]).toMatchObject({ result: 'EVENT 1' });
-    expect(frames).not.toContainEqual(assistantText('EVENT 2'));
+    expect(results[0]).toMatchObject({ result: 'MERGED' });
+  });
+
+  it('does not wait for a live-update watcher (ambient): its events never hold the turn', async () => {
+    const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const watcher = { task_id: 'mon-1', task_type: 'monitor', description: 'log tail', ambient: true };
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield INIT;
+        yield level([watcher]);
+        yield WAITING;
+        yield openingResult(cli.opening?.uuid);
+        cli.inputEnded = (await inputs.next()).done === true;
+      });
+
+      const frames = await collect(startTurn(newHandler()));
+
+      expect(cli.inputEnded).toBe(true);
+      expect(resultsOf(frames)[0]).toMatchObject({ result: 'WAITING' });
+      expect(callsOf(info, SHELL_DEFER_LOG)).toHaveLength(0);
+    } finally {
+      info.mockRestore();
+    }
   });
 
   it('does not hold for a shell when SOMA_BG_KEEPALIVE_MAX_MS is 0', async () => {
