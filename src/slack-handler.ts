@@ -601,6 +601,13 @@ export class SlackHandler {
   /** `<slotKey>#<turnEpoch>` of every run whose waiting rows are being pushed right now. */
   private readonly followupSteerOnOpenDraining = new Set<string>();
   /**
+   * How long the line of waiting rows waits on ONE row's push — its file
+   * download — before the rows behind it go on (#987 review, fable P2). The slow
+   * row still goes in when its download finishes (pinned to the same run), just
+   * behind them. A field so tests can shorten it.
+   */
+  private followupSteerOnOpenRowWaitMs = 30_000;
+  /**
    * Sessions holding rows the boot put back in line that no resume will carry
    * on (the session was not working, has no active goal, no pending retry):
    * drained once the boot's resumes are under way — {@link drainRestartRequeuedFollowups}.
@@ -1612,6 +1619,10 @@ export class SlackHandler {
    * newer run refused stay for that run.
    */
   private steerFollowupsWaitingForOpen(slotKey: string, turnEpoch: number): void {
+    // #987 review (fable P3) — only the run that holds the slot: a late first
+    // event of a run a `Send now` already replaced must not take the rows that
+    // wait for the session's next run, nor drop the ones the live run refused.
+    if (this.followupDispatcher?.liveTurnEpoch(slotKey) !== turnEpoch) return;
     const waiting = this.followupSteerOnOpen.get(slotKey);
     if (!waiting) return;
     const kept = waiting
@@ -1625,9 +1636,10 @@ export class SlackHandler {
   /**
    * Push the rows waiting for the run of `turnEpoch`, oldest first, ONE AT A
    * TIME (#962): a row whose files are still downloading holds the rows behind
-   * it, and a message sent meanwhile joins the end of the list instead of
-   * overtaking them ({@link trySteerFollowup}). Each row is tried once per
-   * pass; one the run refuses again stays for that run's next execution or its end.
+   * it — for at most {@link followupSteerOnOpenRowWaitMs} — and a message sent
+   * meanwhile joins the end of the list instead of overtaking them
+   * ({@link trySteerFollowup}). Each row is tried once per pass; one the run
+   * refuses again stays for that run's next execution or its end.
    */
   private async drainFollowupsWaitingForOpen(slotKey: string, turnEpoch: number): Promise<void> {
     const runKey = `${slotKey}#${turnEpoch}`;
@@ -1645,7 +1657,22 @@ export class SlackHandler {
         const [row] = waiting.splice(next, 1);
         if (waiting.length === 0) this.followupSteerOnOpen.delete(slotKey);
         tried.add(idOf(row));
-        await this.steerWaitingFollowup(row, { slotKey, turnEpoch });
+        let timer: NodeJS.Timeout | undefined;
+        await Promise.race([
+          this.steerWaitingFollowup(row, { slotKey, turnEpoch }),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(() => {
+              this.logger.warn(`${row.what} is still being prepared — the rows behind it go on`, {
+                sessionKey: row.rowKey,
+                itemId: row.itemId,
+                waitedMs: this.followupSteerOnOpenRowWaitMs,
+              });
+              resolve();
+            }, this.followupSteerOnOpenRowWaitMs);
+            timer.unref?.();
+          }),
+        ]);
+        clearTimeout(timer);
       }
     } finally {
       this.followupSteerOnOpenDraining.delete(runKey);

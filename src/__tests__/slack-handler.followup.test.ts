@@ -3211,6 +3211,67 @@ describe('SlackHandler — follow-up queue host', () => {
         await turn.release();
       });
 
+      /** #987 review (fable P2): a download that hangs must not hold the whole line for the run. */
+      it('a row whose download hangs holds the rows behind it only for a bounded wait', async () => {
+        handlerAny.followupSteerOnOpenRowWaitMs = 30;
+        const steerTurn = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+        claudeHandler.steerTurn = steerTurn;
+        handlerAny.fileHandler = {
+          formatFilePrompt: vi.fn(async (_files: unknown, text: string) => text),
+          cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+        };
+        let withFileCalls = 0;
+        processFiles.mockImplementation(async (event: any) => {
+          if (event?.ts === '333.444' && ++withFileCalls === 2) return new Promise(() => {}); // never ends
+          return { files: [], shouldContinue: true };
+        });
+        const file = {
+          id: 'F1',
+          name: 'log.txt',
+          mimetype: 'text/plain',
+          filetype: 'text',
+          url_private: 'https://x/1',
+          url_private_download: 'https://x/1d',
+          size: 12,
+        };
+        const turn = turnStillSettingUp();
+        await tick();
+        await handler.handleMessage(message({ ts: '333.444', text: '이 로그 봐줘', files: [file] }), say());
+        await handler.handleMessage(message({ ts: '444.555', text: '그리고 이것도' }), say()); // behind the first
+
+        reachModel(turn.epoch());
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        for (let i = 0; i < 4; i++) await tick();
+
+        const pushed = steerTurn.mock.calls
+          .filter((_call: any, index: number) => steerTurn.mock.results[index].value === true)
+          .map((call: any[]) => call[1].text);
+        expect(pushed).toEqual(['그리고 이것도']);
+        await turn.release();
+      });
+
+      it('a late first event of a run that no longer holds the slot takes nothing', async () => {
+        const steerTurn = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+        claudeHandler.steerTurn = steerTurn;
+        const turn = turnStillSettingUp();
+        await tick();
+        const epoch = turn.epoch() as number;
+        await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+        // Make it a row that waits for the session's next run, whichever it is —
+        // what the boot writes for a restart-cut row.
+        handlerAny.followupSteerOnOpen.get(SESSION_KEY)[0].turnEpoch = undefined;
+
+        reachModel(epoch - 1); // a replaced run's frame, arriving late
+        for (let i = 0; i < 4; i++) await tick();
+        expect(steerTurn).toHaveBeenCalledTimes(1);
+
+        reachModel(epoch); // the live run: the row is still waiting for it
+        for (let i = 0; i < 4; i++) await tick();
+        expect(steerTurn).toHaveBeenCalledTimes(2);
+        expect(items()[0].state).toBe('steered');
+        await turn.release();
+      });
+
       it('stays queued for the drain when the opened turn refuses it again', async () => {
         const steerTurn = vi.fn().mockReturnValue(false);
         claudeHandler.steerTurn = steerTurn;
