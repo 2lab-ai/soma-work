@@ -12,6 +12,12 @@
  * dashboard-task-permissions-client.test.ts.
  */
 export const VIEWER_FNS = ['viewerOwns', 'viewerCanManage', 'viewerCanInstruct'] as const;
+/**
+ * #1021 — what `cardOf` itself reads for an epic's family (@2lab.ai/ui 0.37.0): an epic's children on its face
+ * (`epicChildrenOf` → `epicChildFace`, which draws each child as its own card would: `epicChildCol`) and a child's
+ * tie to its epic (`_epicParentOf`, the board's placement map — empty unless a test names one).
+ */
+export const CARD_FAMILY_FNS = ['epicChildCol', 'epicChildrenOf', 'epicChildFace'] as const;
 
 export function viewerScope(
   fns: readonly string[],
@@ -25,8 +31,11 @@ export function viewerScope(
   if (!fns.includes('_isAdminModeOn')) defaults._isAdminModeOn = () => false;
   // The page's repaint after the viewer or 관리자 모드 changes: a seam here (the board and panel are not loaded).
   if (!fns.includes('repaintViewerControls')) defaults.repaintViewerControls = () => {};
+  // The board's child → epic map: shared by cardOf, withEpicChildren and applyEpicPush.
+  defaults._epicParentOf = Object.create(null);
+  const family = fns.includes('cardOf') ? CARD_FAMILY_FNS.filter((f) => !fns.includes(f)) : [];
   return {
-    fns: [...VIEWER_FNS.filter((f) => !fns.includes(f)), ...fns],
+    fns: [...VIEWER_FNS.filter((f) => !fns.includes(f)), ...family, ...fns],
     inject: { ...defaults, ...inject },
   };
 }
