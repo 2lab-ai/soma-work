@@ -21,6 +21,7 @@ import {
   findChannelsForRepo,
   getAllChannels,
   getChannel,
+  markChannelArchived,
   markChannelBeingMade,
   upsertChannel,
 } from '../channel-registry';
@@ -112,9 +113,14 @@ export function repoChannelDeps(client: WebClient): RepoChannelDeps {
     mappedChannels: (repo) =>
       findChannelsForRepo(repo)
         .map((id) => getChannel(id))
-        .filter((c): c is NonNullable<typeof c> => !!c && c.isArchived !== true)
+        .filter((c): c is NonNullable<typeof c> => !!c)
         .sort((a, b) => a.repos.length - b.repos.length)
-        .map((c) => ({ id: c.id, name: c.name, ...(c.isPrivate === undefined ? {} : { isPrivate: c.isPrivate }) })),
+        .map((c) => ({
+          id: c.id,
+          name: c.name,
+          ...(c.isPrivate === undefined ? {} : { isPrivate: c.isPrivate }),
+          ...(c.isArchived === true ? { isArchived: true } : {}),
+        })),
     create: async (name, isPrivate) => {
       const res = await client.conversations.create({ name, is_private: isPrivate });
       const id = res.channel?.id;
@@ -134,6 +140,14 @@ export function repoChannelDeps(client: WebClient): RepoChannelDeps {
       upsertChannel(info);
     },
     beginMaking: (name) => markChannelBeingMade(name),
+    // #970 — a read-only look (no invite) at a public mapping that stands in a private request's way.
+    channelState: async (channel) => {
+      const res = await client.conversations.info({ channel });
+      return res.channel
+        ? { archived: res.channel.is_archived === true, isPrivate: res.channel.is_private === true }
+        : null;
+    },
+    markArchived: (channel) => markChannelArchived(channel),
   };
 }
 
