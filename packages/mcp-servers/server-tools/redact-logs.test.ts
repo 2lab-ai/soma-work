@@ -26,6 +26,7 @@ const PEM_BODY = ['QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9w', 'c
 const SECRETS = [ACCOUNT_SID, AUTH_TOKEN, EMAIL_API_KEY, JWT, GH_TOKEN, GH_PAT, CF_TOKEN, SLACK_TOKEN, BEARER_VALUE];
 
 function expectNoSecrets(out: string) {
+  expect(out).not.toContain('opaque-credential');
   for (const secret of SECRETS) expect(out).not.toContain(secret);
   for (const line of PEM_BODY) expect(out).not.toContain(line);
 }
@@ -156,7 +157,27 @@ describe('redactLogSecrets: PEM private key blocks', () => {
   it('redacts a block whose lines carry --timestamps prefixes', () => {
     const ts = '2026-01-02T03:04:05.000000000Z ';
     const input = [`${ts}${PEM_BEGIN}`, `${ts}${PEM_BODY[0]}`, `${ts}${PEM_END}`, `${ts}ok`].join('\n');
-    expect(redactLogSecrets(input)).toBe([`${ts}${PEM_BEGIN}`, REDACTED, `${ts}${PEM_END}`, `${ts}ok`].join('\n'));
+    expect(redactLogSecrets(input)).toBe(
+      [`${ts}${PEM_BEGIN}`, `${ts}${REDACTED}`, `${ts}${PEM_END}`, `${ts}ok`].join('\n'),
+    );
+  });
+
+  it('redacts block text before the END marker, keeping only a docker log prefix', () => {
+    const ts = '2026-01-02T03:04:05.000000000Z ';
+    expect(redactLogSecrets([PEM_BEGIN, `${PEM_BODY[0]} ${PEM_END}`, 'after'].join('\n'))).toBe(
+      [PEM_BEGIN, `${REDACTED}${PEM_END}`, 'after'].join('\n'),
+    );
+    expect(redactLogSecrets([`${ts}${PEM_BEGIN}`, `${ts}${PEM_BODY[1]} ${PEM_END}`].join('\n'))).toBe(
+      [`${ts}${PEM_BEGIN}`, `${ts}${REDACTED}${PEM_END}`].join('\n'),
+    );
+    const bareEnd = join(' ', '-----END', 'PRIVATE KEY-----');
+    expect(redactLogSecrets([join(' ', '-----BEGIN', 'PRIVATE KEY-----'), `QUJDREVGR0hJ ${bareEnd}`].join('\n'))).toBe(
+      [join(' ', '-----BEGIN', 'PRIVATE KEY-----'), `${REDACTED}${bareEnd}`].join('\n'),
+    );
+    const svc = 'mystack_web.1.abcdef123456@node-1    | ';
+    expect(redactLogSecrets([`${svc}${PEM_BEGIN}`, `${svc}${PEM_BODY[0]}`, `${svc}${PEM_END}`].join('\n'))).toBe(
+      [`${svc}${PEM_BEGIN}`, `${svc}${REDACTED}`, `${svc}${PEM_END}`].join('\n'),
+    );
   });
 
   it('redacts a block cut off by the tail to the end of the output', () => {
@@ -172,6 +193,100 @@ describe('redactLogSecrets: PEM private key blocks', () => {
   it('redacts a one-line block whose END is missing to the end of the line', () => {
     const line = `{"msg":"key ${PEM_BEGIN}\\n${PEM_BODY[0]}`;
     expect(redactLogSecrets(`${line}\nafter`)).toBe(`{"msg":"key ${PEM_BEGIN}${REDACTED}\n${REDACTED}`);
+  });
+});
+
+describe('redactLogSecrets: secret context across lines', () => {
+  const ts = '2026-01-02T03:04:05.000000000Z ';
+
+  it('redacts a value on the line after its key and separator', () => {
+    expect(redactLogSecrets(`{"AuthToken":\n  "${AUTH_TOKEN}"}`)).toBe(`{"AuthToken":\n  "${REDACTED}"}`);
+    expect(redactLogSecrets(`password:\n  hunter2\nnext`)).toBe(`password:\n  ${REDACTED}\nnext`);
+  });
+
+  it('skips blank lines and docker timestamp prefixes while a key waits for its value', () => {
+    expect(redactLogSecrets(`${ts}{"AuthToken":\n${ts}\n${ts}  "${AUTH_TOKEN}"}`)).toBe(
+      `${ts}{"AuthToken":\n${ts}\n${ts}  "${REDACTED}"}`,
+    );
+  });
+
+  it('redacts a value whose separator is on the line after a quoted key', () => {
+    expect(redactLogSecrets(`{"AuthToken"\n  : "${AUTH_TOKEN}"}`)).toBe(`{"AuthToken"\n  : "${REDACTED}"}`);
+    expect(redactLogSecrets(`{"AccountSid"\n  :"${ACCOUNT_SID}"}`)).toBe(`{"AccountSid"\n  :"${REDACTED}"}`);
+  });
+
+  it('redacts every line of a quoted value that spans lines', () => {
+    expect(redactLogSecrets('password: "line one\nline two\nline three" user=svc\nafter')).toBe(
+      `password: "${REDACTED}\n${REDACTED}\n${REDACTED}" user=svc\nafter`,
+    );
+    expect(redactLogSecrets(`${ts}{"secret":"abc\n${ts}def"}`)).toBe(`${ts}{"secret":"${REDACTED}\n${ts}${REDACTED}"}`);
+  });
+
+  it('lets a waiting key expire after the next non-empty line', () => {
+    expect(redactLogSecrets('token:\n  "v1"\n"v2"')).toBe(`token:\n  "${REDACTED}"\n"v2"`);
+    expect(redactLogSecrets('{"AuthToken"\nplain line\n: "x"')).toBe('{"AuthToken"\nplain line\n: "x"');
+  });
+
+  it('does not wait on a quoted secret word that is a value, not a key', () => {
+    expect(redactLogSecrets('{"msg":"token"\n: "x"}')).toBe('{"msg":"token"\n: "x"}');
+  });
+});
+
+describe('redactLogSecrets: secret collections', () => {
+  it('redacts a whole array or object under a secret key', () => {
+    expect(redactLogSecrets('{"apiKeys":["opaque-credential"]}')).toBe(`{"apiKeys":${REDACTED}}`);
+    expect(redactLogSecrets('{"secret":{"value":"opaque-credential"},"region":"us1"}')).toBe(
+      `{"secret":${REDACTED},"region":"us1"}`,
+    );
+    expect(redactLogSecrets("{'passwords': ['p1', 'p2'], 'user': 'svc'}")).toBe(
+      `{'passwords': ${REDACTED}, 'user': 'svc'}`,
+    );
+  });
+
+  it('respects brackets and escapes inside strings', () => {
+    expect(redactLogSecrets('{"tokens":["a]b","c}d\\\\"],"next":"ok"}')).toBe(`{"tokens":${REDACTED},"next":"ok"}`);
+    expect(redactLogSecrets('{"msg":"cfg {\\"apiKeys\\":[\\"k1\\",\\"k]2\\"],\\"region\\":\\"us1\\"}"}')).toBe(
+      `{"msg":"cfg {\\"apiKeys\\":${REDACTED},\\"region\\":\\"us1\\"}"}`,
+    );
+  });
+
+  it('redacts a collection that spans lines, keeping docker prefixes', () => {
+    const ts = '2026-01-02T03:04:05.000000000Z ';
+    const input = [
+      '{',
+      '  "secrets": {',
+      '    "user": "svc",',
+      '    "value": "opaque-credential"',
+      '  },',
+      '  "region": "us1"',
+      '}',
+    ];
+    expect(redactLogSecrets(input.join('\n'))).toBe(
+      ['{', `  "secrets": ${REDACTED}`, REDACTED, REDACTED, `${REDACTED},`, '  "region": "us1"', '}'].join('\n'),
+    );
+    expect(redactLogSecrets(input.map((l) => ts + l).join('\n'))).toBe(
+      ['{', `  "secrets": ${REDACTED}`, REDACTED, REDACTED, `${REDACTED},`, '  "region": "us1"', '}']
+        .map((l) => ts + l)
+        .join('\n'),
+    );
+  });
+
+  it('redacts an unclosed collection to the end of the output rather than leak what follows', () => {
+    const body = Array.from({ length: 2000 }, (_, i) => `"opaque-${i}",`);
+    const out = redactLogSecrets(['{"apiKeys":[', ...body, 'tail line'].join('\n')).split('\n');
+    expect(out[0]).toBe(`{"apiKeys":${REDACTED}`);
+    expect(out.slice(1).every((l) => l === REDACTED)).toBe(true);
+    expect(out.length).toBe(body.length + 2);
+  });
+
+  it('ends a string inside a collection at the end of its line, so a stray quote cannot hide the close', () => {
+    expect(redactLogSecrets("secrets: [it's\n  x]\nafter")).toBe(`secrets: ${REDACTED}\n${REDACTED}\nafter`);
+  });
+
+  it('leaves collections under ordinary keys to their own key matching', () => {
+    expect(redactLogSecrets('{"items":["a","b"],"meta":{"page":2,"password":"x"}}')).toBe(
+      `{"items":["a","b"],"meta":{"page":2,"password":"${REDACTED}"}}`,
+    );
   });
 });
 
@@ -220,6 +335,16 @@ const CORPUS = [
   PEM_END,
   `{"msg":"key ${PEM_BEGIN}\\n${PEM_BODY.join('\\n')}\\n${PEM_END}"}`,
   '2026-01-02T03:04:05.123Z INFO server listening on port 8080',
+  `{"AuthToken":`,
+  `  "${AUTH_TOKEN}"}`,
+  'password: "line one',
+  'line two" user=svc',
+  '{"apiKeys":["opaque-credential"],',
+  '  "secrets": {',
+  '    "value": "opaque-credential"',
+  '  }}',
+  PEM_BEGIN,
+  `${PEM_BODY[0]} ${PEM_END}`,
 ].join('\n');
 
 describe('redactLogSecrets: properties', () => {
@@ -250,6 +375,31 @@ describe('redactLogSecrets: properties', () => {
       'Bearer '.repeat(size / 7),
       join(' ', '-----BEGIN', 'A'.repeat(size)),
       '\\'.repeat(size),
+      'sid='.repeat(size / 4),
+      'sid="'.repeat(size / 5),
+      'secret=['.repeat(size / 8),
+      'secret={"a":"'.repeat(size / 13),
+      '"token"'.repeat(size / 7),
+      `${join(' ', '-----BEGIN RSA', 'PRIVATE KEY-----')}x${join(' ', '-----END RSA', 'PRIVATE KEY-----')}`.repeat(
+        size / 64,
+      ),
+    ];
+    for (const input of inputs) {
+      const start = performance.now();
+      redactLogSecrets(input);
+      expect(performance.now() - start).toBeLessThan(2000);
+    }
+  });
+
+  it('stays linear on adversarial 1 MB multi-line output', () => {
+    const size = 1024 * 1024;
+    const inputs = [
+      '"token":\n'.repeat(size / 9),
+      '"token"\n'.repeat(size / 8),
+      'token: "\n'.repeat(size / 9),
+      'secret=[\n'.repeat(size / 9),
+      `{"secret":[\n${'"x",\n'.repeat(size / 5)}`,
+      `password: "${'a\\\n'.repeat(size / 3)}`,
     ];
     for (const input of inputs) {
       const start = performance.now();
