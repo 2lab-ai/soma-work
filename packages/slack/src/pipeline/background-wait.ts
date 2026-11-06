@@ -26,6 +26,9 @@
  * If a turn would otherwise complete (no other continuation, no pending choice,
  * no error) while background work is live, we synthesize a host continuation
  * that re-enters the agent loop so the model can finish its dependent work.
+ * That work did not survive the turn (#966): the CLI ends with the turn and
+ * stops its background tasks, so the prompt says so, and the caller settles the
+ * dead tasks in the tracker (`endBackgroundWorkWithTurn`).
  *
  * RUNAWAY GUARD (non-destructive)
  * -------------------------------
@@ -68,7 +71,12 @@ export interface LiveBackgroundWork {
   labels: string[];
   /** Stable signature of the live set (sorted task_ids) for cap suppression. */
   signature: string;
+  /** The tasks themselves, for the resume prompt to name (#966). */
+  tasks?: Array<{ taskId: string; taskType?: string; outputFile?: string; description?: string }>;
 }
+
+/** At most this many stopped tasks are named in the resume prompt. */
+const PROMPT_TASKS_MAX = 8;
 
 /** Minimal host continuation shape (matches `somalib` `Continuation`). */
 export interface HostContinuation {
@@ -117,21 +125,45 @@ export type BackgroundWaitDecision =
   | { action: 'none' };
 
 /**
- * Render the host prompt that re-enters the agent loop. The runtime owns the
- * liveness signal (authoritative SDK task lifecycle), so the prompt no longer
- * tells the model to poll deprecated `TaskOutput`/`BashOutput` — it just says
- * the work is still active and to continue (reading an output file if needed).
+ * Render the host prompt that re-enters the agent loop.
+ *
+ * #966 — the tasks are NOT running any more. This host ends the CLI process
+ * with the turn (it closes the input at the turn's end; only live background
+ * agents hold a turn open, #257), and the CLI stops its background tasks as it
+ * exits (dev 2026-11-05: `bkzs8pdz1 killed` 06:42:17Z, `baxddqx0i stopped`
+ * 08:50Z). The prompt used to say the runtime keeps them alive "until it
+ * settles", so the model ended its turn again waiting for a report that never
+ * came. It now says what happened and how to pick each one up in this turn.
  */
 export function buildBackgroundWaitPrompt(live: LiveBackgroundWork, attempt: number, cap: number): string {
   const noun = live.count === 1 ? 'background task' : 'background tasks';
   const labelSuffix = live.labels.length > 0 ? ` (${live.labels.join(', ')})` : '';
-  const verb = live.count === 1 ? 'is' : 'are';
+  const verb = live.count === 1 ? 'was' : 'were';
+  const pronoun = live.count === 1 ? 'it' : 'they';
+  const tasks = (live.tasks ?? []).slice(0, PROMPT_TASKS_MAX).map((t) => {
+    const type = t.taskType ? ` (${t.taskType})` : '';
+    // Model-written: one line, no quotes or backticks, clipped.
+    const flat = t.description
+      ?.replace(/[\r\n\t]+/g, ' ')
+      .replace(/[`"]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const what = flat ? ` ${flat.length > 80 ? `${flat.slice(0, 79)}…` : flat}` : '';
+    const out = t.outputFile ? ` — output file: ${t.outputFile}` : '';
+    return `- ${t.taskId}${type}${what}${out}`;
+  });
+  const more =
+    (live.tasks?.length ?? 0) > PROMPT_TASKS_MAX
+      ? [`- … and ${(live.tasks?.length ?? 0) - PROMPT_TASKS_MAX} more`]
+      : [];
   return [
     `[background-work-resume ${attempt}/${cap}]`,
-    `You ended your turn while ${live.count} ${noun}${labelSuffix} ${verb} still running — the runtime still reports ${live.count === 1 ? 'it' : 'them'} active — so the session was about to be marked complete with the work unfinished.`,
-    `Do NOT stop. The runtime tracks this background work via the SDK task lifecycle and keeps this session alive until it settles; you do NOT need to poll any tool. Continue the remaining steps of your task in THIS turn. If you need a background command's output, Read its output file. The session resumes automatically while work is still pending.`,
+    `You ended your turn while ${live.count} ${noun}${labelSuffix} ${verb} running. In this host a turn's CLI process ends with the turn, so ${pronoun} ${verb} stopped with it and will not report back — no completion notification will come.`,
+    ...tasks,
+    ...more,
+    `Do NOT stop. Pick up what you still need in THIS turn: rerun a stopped command in the foreground, or start it in the background and wait for it before you end the turn (a bounded loop that checks whether it finished). SendMessage to a stopped subagent's agent ID resumes it from its transcript. An output file may hold what a task printed before it stopped.`,
     `Only finish once your task is genuinely done, or emit CONTINUE_SESSION to hand off to the next phase.`,
-    `If a background process is intentionally long-lived and you truly have no dependent work left, it is fine to finish now.`,
+    `If a stopped process was only meant to run while you worked (a dev server, a watcher) and nothing depends on it, it is fine to finish now.`,
   ].join('\n');
 }
 
