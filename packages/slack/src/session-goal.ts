@@ -112,6 +112,10 @@ export interface SessionGoalState {
    */
   openingPending?: boolean;
   evalAttemptCount?: number;
+  /** A scheduled completion-eval retry (see `SessionGoal` in `src/types.ts`) — dropped when the goal leaves the slot. */
+  evalDispatchRetryCount?: number;
+  evalBackoffUntil?: number;
+  evalRetryReason?: string;
   epoch?: number;
   pendingEval?: { requestedAt: number; turnId: string };
   lastEvalReason?: string;
@@ -137,6 +141,12 @@ export interface GoalQueueSession {
   goal?: SessionGoalState;
   goalQueue?: SessionGoalState[];
   goalHistory?: SessionGoalState[];
+  /**
+   * Goals the owner paused, oldest first. A paused goal has left the current
+   * slot: it never drives the loop, never blocks the queue, and starts again
+   * only when the owner resumes it ({@link resumePausedGoal}).
+   */
+  goalPaused?: SessionGoalState[];
   systemPrompt?: string;
   goalLastTurnText?: string;
 }
@@ -257,8 +267,8 @@ export function findPendingGoalPosition(session: GoalQueueSession, objective: st
 }
 
 /**
- * Resolve a goal by `goalId` across the active goal, the pending queue, and
- * the completed history. Used by per-goal accounting so a turn's spend is
+ * Resolve a goal by `goalId` across the active goal, the pending queue, the
+ * paused goals, and the completed history. Used by per-goal accounting so a turn's spend is
  * credited to the goal that owned the leg even after it has been advanced into
  * `goalHistory`. Returns `undefined` when `goalId` is absent/unknown.
  */
@@ -267,6 +277,9 @@ export function findGoalById(session: GoalQueueSession, goalId: string | undefin
   if (session.goal?.goalId === goalId) return session.goal;
   const inQueue = session.goalQueue?.find((g) => g.goalId === goalId);
   if (inQueue) return inQueue;
+  // A goal paused mid-turn still owns that turn's spend.
+  const paused = session.goalPaused?.find((g) => g.goalId === goalId);
+  if (paused) return paused;
   return session.goalHistory?.find((g) => g.goalId === goalId);
 }
 
@@ -422,28 +435,51 @@ export function advanceGoalQueue(
     return undefined;
   }
 
-  const now = Date.now();
-  next.status = 'active';
-  next.continuationCount = 0;
-  next.epoch = (finished?.epoch ?? 0) + 1;
-  next.updatedAt = now;
-  next.pendingEval = undefined;
-  next.lastEvalReason = undefined;
-  next.lastEvalRemaining = undefined;
-  next.lastEvalGateOpen = undefined;
-  next.stall = undefined;
-  next.firstFailure = undefined;
-  next.lastEvalSummaryHash = undefined;
-  next.lastAssistantTurnSummary = undefined;
+  rebaseGoalAsActive(next, finished?.epoch);
   applyGoalToSession(session, next);
   return next;
 }
 
 /**
- * Delete a goal by `goalId` from the active slot, the pending queue, or the
- * completed history (S1 — the goal-list Delete button).
+ * Turn a goal that is taking the current slot into a fresh active run:
+ * counter at 0, the epoch strictly past both its own and the goal it replaces
+ * (so a stale eval for either can never apply), and every per-eval scratch
+ * field cleared. Spend (time, tokens, cost) is kept — it belongs to the goal.
+ */
+function rebaseGoalAsActive(goal: SessionGoalState, priorEpoch: number | undefined): void {
+  goal.status = 'active';
+  goal.continuationCount = 0;
+  goal.epoch = Math.max(goal.epoch ?? 0, priorEpoch ?? 0) + 1;
+  goal.updatedAt = Date.now();
+  goal.pendingEval = undefined;
+  goal.lastEvalReason = undefined;
+  goal.lastEvalRemaining = undefined;
+  goal.lastEvalGateOpen = undefined;
+  goal.stall = undefined;
+  goal.firstFailure = undefined;
+  goal.lastEvalSummaryHash = undefined;
+  goal.lastAssistantTurnSummary = undefined;
+  dropScheduledEval(goal);
+}
+
+/**
+ * A goal leaving (or re-entering) the current slot carries no eval lease and no
+ * scheduled eval retry: the retry is armed for one epoch and the epoch moves
+ * with the slot change, so a kept window would only hold the loop's gate shut
+ * and keep the dashboard advertising a re-check that never runs.
+ */
+function dropScheduledEval(goal: SessionGoalState): void {
+  goal.pendingEval = undefined;
+  goal.evalDispatchRetryCount = undefined;
+  goal.evalBackoffUntil = undefined;
+  goal.evalRetryReason = undefined;
+}
+
+/**
+ * Delete a goal by `goalId` from the active slot, the pending queue, the
+ * paused goals, or the completed history (S1 — the goal-list Delete button).
  *
- *   - Queued / history goal → removed in place; nothing is promoted.
+ *   - Queued / paused / history goal → removed in place; nothing is promoted.
  *   - Active goal → dropped (NOT archived to history — a deletion is not a
  *     completion) and the next queued goal (if any) is promoted to active,
  *     rebased to a fresh run exactly like {@link advanceGoalQueue} does. This
@@ -459,6 +495,10 @@ export function deleteGoalById(
 ): { deleted: boolean; wasActive: boolean; promoted?: SessionGoalState } {
   if (session.goalQueue?.some((g) => g.goalId === goalId)) {
     session.goalQueue = session.goalQueue.filter((g) => g.goalId !== goalId);
+    return { deleted: true, wasActive: false };
+  }
+  if (session.goalPaused?.some((g) => g.goalId === goalId)) {
+    session.goalPaused = session.goalPaused.filter((g) => g.goalId !== goalId);
     return { deleted: true, wasActive: false };
   }
   if (session.goalHistory?.some((g) => g.goalId === goalId)) {
@@ -487,19 +527,7 @@ export function deleteCurrentGoal(session: GoalQueueSession): { deleted: boolean
   endGoalCapDecision(finished);
   const next = session.goalQueue && session.goalQueue.length > 0 ? session.goalQueue.shift() : undefined;
   if (next) {
-    const now = Date.now();
-    next.status = 'active';
-    next.continuationCount = 0;
-    next.epoch = (finished.epoch ?? 0) + 1;
-    next.updatedAt = now;
-    next.pendingEval = undefined;
-    next.lastEvalReason = undefined;
-    next.lastEvalRemaining = undefined;
-    next.lastEvalGateOpen = undefined;
-    next.stall = undefined;
-    next.firstFailure = undefined;
-    next.lastEvalSummaryHash = undefined;
-    next.lastAssistantTurnSummary = undefined;
+    rebaseGoalAsActive(next, finished.epoch);
     endGoalCapDecision(next);
     applyGoalToSession(session, next);
     return { deleted: true, promoted: next };
@@ -508,6 +536,104 @@ export function deleteCurrentGoal(session: GoalQueueSession): { deleted: boolean
   session.goalLastTurnText = undefined;
   session.systemPrompt = undefined;
   return { deleted: true };
+}
+
+/**
+ * Pause the CURRENT goal: it leaves the current slot for the paused goals
+ * (`goalPaused`), and the session moves on — the next queued goal is promoted
+ * to a fresh active run, or, with nothing queued, the session is left with no
+ * current goal (the loop stops; the work is over until something new starts).
+ *
+ * The paused goal keeps its spend; its open cap decision / stall ends, its
+ * eval lease is dropped and its epoch bumped so an in-flight eval for it
+ * resolves into a discard. A goal paused before its first turn ran keeps
+ * `openingPending`, so resuming it starts it from that first turn.
+ *
+ * Accepts an `active` or a `paused` current goal (a goal stopped by the cap
+ * decision's Cancel, or one persisted before the paused shelf existed, still
+ * sits in the slot as `paused`). Returns `{}` when there is no such goal.
+ * Persistence is the caller's job.
+ */
+export function pauseCurrentGoal(session: GoalQueueSession): {
+  paused?: SessionGoalState;
+  promoted?: SessionGoalState;
+} {
+  const current = session.goal;
+  if (!current || (current.status !== 'active' && current.status !== 'paused')) return {};
+  endGoalCapDecision(current);
+  current.status = 'paused';
+  dropScheduledEval(current);
+  current.epoch = (current.epoch ?? 0) + 1;
+  current.updatedAt = Date.now();
+  session.goalPaused = (session.goalPaused ?? []).filter((g) => g.goalId !== current.goalId);
+  session.goalPaused.push(current);
+  const next = session.goalQueue && session.goalQueue.length > 0 ? session.goalQueue.shift() : undefined;
+  if (next) {
+    rebaseGoalAsActive(next, current.epoch);
+    endGoalCapDecision(next);
+    applyGoalToSession(session, next);
+    return { paused: current, promoted: next };
+  }
+  session.goal = undefined;
+  session.goalLastTurnText = undefined;
+  session.systemPrompt = undefined;
+  return { paused: current };
+}
+
+/** Where {@link resumePausedGoal} put the goal. */
+export type GoalResumePlacement =
+  /** No goal was running: it is the current goal now, and the caller starts its turn. */
+  | 'current'
+  /** A goal is running: it waits at the head of the queue and starts right after that goal. */
+  | 'next';
+
+/**
+ * Resume a paused goal. `goalId` picks it; without one, the most recently
+ * paused goal is resumed. A `paused` CURRENT goal (see {@link pauseCurrentGoal})
+ * can be resumed too.
+ *
+ *   - A goal is running (an `active` current goal) → the resumed goal goes to
+ *     the HEAD of the queue (`queued`), so it starts right after the running
+ *     goal — the running goal is never interrupted.
+ *   - No goal is running (none, a completed one, or a paused one in the slot)
+ *     → the resumed goal becomes the current goal, rebased to a fresh active
+ *     run. A paused goal that was sitting in the slot moves to the paused goals
+ *     first, so nothing is lost. The caller starts the goal's turn.
+ *
+ * Returns `undefined` when there is no such paused goal. Persistence is the
+ * caller's job.
+ */
+export function resumePausedGoal(
+  session: GoalQueueSession,
+  goalId?: string,
+): { goal: SessionGoalState; placement: GoalResumePlacement } | undefined {
+  const shelf = session.goalPaused ?? [];
+  const current = session.goal;
+  const currentPaused = current?.status === 'paused' ? current : undefined;
+  let goal: SessionGoalState | undefined;
+  if (goalId === undefined) goal = shelf[shelf.length - 1] ?? currentPaused;
+  else goal = shelf.find((g) => g.goalId === goalId) ?? (currentPaused?.goalId === goalId ? currentPaused : undefined);
+  if (!goal) return undefined;
+  const target = goal;
+  session.goalPaused = shelf.filter((g) => g.goalId !== target.goalId);
+
+  if (current?.status === 'active') {
+    target.status = 'queued';
+    dropScheduledEval(target);
+    target.updatedAt = Date.now();
+    session.goalQueue = session.goalQueue ?? [];
+    session.goalQueue.unshift(target);
+    return { goal: target, placement: 'next' };
+  }
+
+  if (currentPaused && currentPaused !== target) {
+    // The goal paused in the slot is not the one resumed: it joins the paused goals.
+    session.goalPaused.push(currentPaused);
+  }
+  endGoalCapDecision(target);
+  rebaseGoalAsActive(target, current?.epoch);
+  applyGoalToSession(session, target);
+  return { goal: target, placement: 'current' };
 }
 
 /** One goal object as it was: the object itself plus a deep copy of its fields. */
@@ -520,6 +646,7 @@ interface GoalSnapshotEntry {
 export interface GoalStateSnapshot {
   goal?: GoalSnapshotEntry;
   goalQueue?: GoalSnapshotEntry[];
+  goalPaused?: GoalSnapshotEntry[];
   goalHistory?: GoalSnapshotEntry[];
   goalLastTurnText?: string;
   systemPrompt?: string;
@@ -556,6 +683,7 @@ export function snapshotGoalState(session: GoalQueueSession): GoalStateSnapshot 
   return {
     goal: session.goal ? captureGoal(session.goal) : undefined,
     goalQueue: session.goalQueue?.map(captureGoal),
+    goalPaused: session.goalPaused?.map(captureGoal),
     goalHistory: session.goalHistory?.map(captureGoal),
     goalLastTurnText: session.goalLastTurnText,
     systemPrompt: session.systemPrompt,
@@ -566,6 +694,7 @@ export function snapshotGoalState(session: GoalQueueSession): GoalStateSnapshot 
 export function restoreGoalState(session: GoalQueueSession, snapshot: GoalStateSnapshot): void {
   session.goal = snapshot.goal ? restoreGoal(snapshot.goal) : undefined;
   session.goalQueue = snapshot.goalQueue?.map(restoreGoal);
+  session.goalPaused = snapshot.goalPaused?.map(restoreGoal);
   session.goalHistory = snapshot.goalHistory?.map(restoreGoal);
   session.goalLastTurnText = snapshot.goalLastTurnText;
   // The cached prompt was built against the restored goal; keeping it is safe

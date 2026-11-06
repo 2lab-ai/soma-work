@@ -372,6 +372,7 @@ interface SerializedSession {
   goal?: SessionGoal;
   // Multi-goal queue + completed history (persisted — T1/T2).
   goalQueue?: SessionGoal[];
+  goalPaused?: SessionGoal[];
   goalHistory?: SessionGoal[];
   // SSOT 2026-10-22 T7/T8 — task ledger (ids, times, tool calls); sanitized on load.
   taskLedger?: unknown;
@@ -3500,6 +3501,7 @@ export class SessionRegistry {
           session.handoffContext ||
           session.goal ||
           session.goalQueue?.length ||
+          session.goalPaused?.length ||
           session.goalHistory?.length ||
           // An incident session is persisted from the moment it is marked,
           // even before the SDK assigns a sessionId — otherwise a crash in
@@ -3625,6 +3627,7 @@ export class SessionRegistry {
             // Multi-goal queue + completed history (persisted so the queue
             // survives a restart — T1/T2).
             goalQueue: session.goalQueue,
+            goalPaused: session.goalPaused,
             goalHistory: session.goalHistory,
             taskLedger: session.taskLedger,
             agents: session.agents,
@@ -3819,6 +3822,7 @@ export class SessionRegistry {
         instructions: serialized.instructions,
         goal: migrateLegacyGoal(serialized.goal),
         goalQueue: migrateLegacyGoalArray(serialized.goalQueue),
+        goalPaused: migrateLegacyGoalArray(serialized.goalPaused),
         goalHistory: migrateLegacyGoalArray(serialized.goalHistory),
         taskLedger: sanitizeTaskLedger(serialized.taskLedger),
         // Spec 12: nothing that ran before this process is watched any more.
@@ -4208,6 +4212,7 @@ export class SessionRegistry {
           goal: migrateLegacyGoal(serialized.goal),
           // Multi-goal queue + completed history (restored — T1/T2).
           goalQueue: migrateLegacyGoalArray(serialized.goalQueue),
+          goalPaused: migrateLegacyGoalArray(serialized.goalPaused),
           goalHistory: migrateLegacyGoalArray(serialized.goalHistory),
           taskLedger: sanitizeTaskLedger(serialized.taskLedger),
           // Spec 12: nothing that ran before this process is watched any more.

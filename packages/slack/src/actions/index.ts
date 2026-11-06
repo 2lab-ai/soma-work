@@ -172,6 +172,8 @@ export interface ActionHandlerDelegates {
   safeguardHandler?: { handleAdminRetry(body: any, respond: RespondFn): Promise<void> };
   goalHandler: {
     handleDelete(body: any, respond: RespondFn): Promise<void>;
+    handlePause(body: any, respond: RespondFn): Promise<void>;
+    handleResume(body: any, respond: RespondFn): Promise<void>;
     handleUpdate(body: any, respond: RespondFn, client: any): Promise<void>;
     handleUpdateSubmit(ack: ViewAck, body: any, client: any): Promise<void>;
     handleContinueDm(body: any, respond: RespondFn): Promise<void>;
@@ -561,6 +563,16 @@ export class ActionHandlers {
     app.action(/^goal_delete:/, async ({ ack, body, respond }) => {
       await ack();
       await this.delegates.goalHandler.handleDelete(body, respond as RespondFn);
+    });
+
+    app.action(/^goal_pause:/, async ({ ack, body, respond }) => {
+      await ack();
+      await this.delegates.goalHandler.handlePause(body, respond as RespondFn);
+    });
+
+    app.action(/^goal_resume:/, async ({ ack, body, respond }) => {
+      await ack();
+      await this.delegates.goalHandler.handleResume(body, respond as RespondFn);
     });
 
     app.action(/^goal_update:/, async ({ ack, body, respond, client }) => {
