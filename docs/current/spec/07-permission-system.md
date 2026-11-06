@@ -229,6 +229,10 @@ commit message never reads as a command — a shell's `-c '…'` string is read 
   `data.irreversible`): `<ui-approval-card>` (@2lab.ai/ui ≥ 0.35) replaces Approve with a slide and ⌘↵ no longer
   approves.
 
+It runs while a prompt is raised (permission MCP server) and in the dashboard's 1 s poller, so it reads at most the
+first 64 KiB in one linear pass (heredocs and `sh -c` strings: at most 16 per level, depth ≤ 3) and never throws: any
+failure means no label, i.e. the plain Approve button.
+
 **Presentation only.** The classifier is read only where a prompt is already being shown. It is not part of
 `evaluateToolPolicy`, raises no prompt and denies nothing: bypass mode, a grant, or a user who told the agent to
 deploy run exactly as before.

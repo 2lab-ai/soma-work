@@ -281,22 +281,36 @@ export function irreversibleAction(toolName: string, input: unknown): Irreversib
   if (toolName !== 'Bash') return TOOL_ACTIONS.get(toolName) ?? null;
   const command = input && typeof input === 'object' ? (input as { command?: unknown }).command : undefined;
   if (typeof command !== 'string' || !command.trim()) return null;
-  return commandAction(command, 0);
+  // This runs while a prompt is being raised and in the dashboard's poller: it must be fast on any input and never
+  // throw — a failure only costs the label (the plain Approve button), never the prompt (review 3 P1).
+  try {
+    return commandAction(command.length > MAX_COMMAND ? command.slice(0, MAX_COMMAND) : command, 0);
+  } catch {
+    return null;
+  }
 }
 
-/** A shell's `-c` string (`bash -lc 'git push --force'`), read as a command of its own. */
-const SHELL_C = /(?:^|[^\w-])(?:ba|z|da|k)?sh\s+(?:-[A-Za-z]+\s+)*-[A-Za-z]*c[A-Za-z]*\s+(['"])([\s\S]*?)\1/g;
+/** How much of a command is read: its head. Every step below is linear in this. */
+const MAX_COMMAND = 64 * 1024;
+/** At most this many heredocs and `sh -c` strings are followed per level. */
+const MAX_NESTED = 16;
+/** A shell's `-c` flag (`bash -lc`); the quoted string after it is read as a command of its own. */
+const SHELL_C = /(?:^|[^\w-])(?:ba|z|da|k)?sh[ \t]+(?:-[A-Za-z]+[ \t]+){0,4}-[A-Za-z]*c[A-Za-z]*[ \t]+(['"])/g;
 /** Where one shell command ends and the next begins: lists, pipes, subshells, `$(…)` and backticks. */
-const SEGMENT_BREAK = /&&|\|\||\$\(|[;|\n&()`]/;
-/** A heredoc: `<<'EOF'` … `EOF` (groups: the line up to `<<`, the quote, the tag, the body). */
-const HEREDOC = /([^\n]*?)<<-?[ \t]*(['"]?)([A-Za-z_][\w-]*)\2[^\n]*\n([\s\S]*?)\n[ \t]*\3(?=[\s)]|$)/g;
+const SEGMENT_BREAK = /&&|\|\||\$\(|[;|\n&()`]/g;
+/** A heredoc operator (`<<'EOF'`, `<<-EOF`); its body runs from the next line to a line holding only the tag. */
+const HEREDOC_OP = /<<-?[ \t]*(['"]?)([A-Za-z_][\w-]{0,63})\1/g;
 /** A heredoc fed to a shell runs its body (`bash <<'EOF'`, `ssh host <<'EOF'`). */
 const SHELL_WORD = /(^|[\s;&|(])(?:(?:ba|z|da|k)?sh|ssh)(\s|$)/;
 
+/** A character that keeps its meaning when escaped only as text: an escaped separator or quote is never one. */
+const SPECIAL = /[\s;|&()`'"$\\<>]/;
+
 /**
  * The command with what is only text blanked out, so prose never reads as a command (review 2): single-quoted
- * strings, double-quoted text (an escaped backtick, a parenthesis, a `;`), and backslash-escaped characters. What
- * runs inside double quotes — `$(…)` and unescaped backticks — stays.
+ * strings, double-quoted text (an escaped backtick, a parenthesis, a `;`), and escaped separators or quotes. What
+ * runs inside double quotes — `$(…)` and unescaped backticks — stays. `\rm` stays `rm` (review 3). Same length as
+ * the input, so an index into the result is an index into the command.
  */
 function maskText(s: string): string {
   let out = '';
@@ -312,7 +326,8 @@ function maskText(s: string): string {
     }
     const live = mode === 'none' || subst > 0 || tick;
     if (c === '\\' && i + 1 < s.length) {
-      out += '  '; // an escaped character is a literal, never a separator
+      const next = s[i + 1];
+      out += live && !SPECIAL.test(next) ? ` ${next}` : '  ';
       i++;
       continue;
     }
@@ -342,30 +357,97 @@ function maskText(s: string): string {
   return out;
 }
 
+interface Heredoc {
+  /** The line it starts on, up to `<<`. */
+  lead: string;
+  body: string;
+}
+
+/**
+ * The command with each heredoc body blanked (the `<<` line and the closing tag stay), and the bodies themselves.
+ * One forward pass: a body ends at the first line that holds only its tag; an operator with no next line, or no
+ * closing tag, is left as it is.
+ */
+function splitHeredocs(text: string): { text: string; docs: Heredoc[] } {
+  const docs: Heredoc[] = [];
+  let out = '';
+  let pos = 0;
+  HEREDOC_OP.lastIndex = 0;
+  for (let m = HEREDOC_OP.exec(text); m && docs.length < MAX_NESTED; m = HEREDOC_OP.exec(text)) {
+    if (m.index < pos) continue;
+    const lineEnd = text.indexOf('\n', m.index);
+    if (lineEnd === -1) break; // no body can follow
+    const tag = m[2];
+    let close = -1;
+    for (let at = lineEnd + 1; at <= text.length; ) {
+      const next = text.indexOf('\n', at);
+      const line = text.slice(at, next === -1 ? text.length : next).trim();
+      if (line === tag || (line.startsWith(tag) && /^[)\s;]*$/.test(line.slice(tag.length)))) {
+        close = at;
+        break;
+      }
+      if (next === -1) break;
+      at = next + 1;
+    }
+    if (close === -1) {
+      HEREDOC_OP.lastIndex = lineEnd + 1;
+      continue;
+    }
+    docs.push({ lead: text.slice(text.lastIndexOf('\n', m.index) + 1, m.index), body: text.slice(lineEnd + 1, close) });
+    out += text.slice(pos, lineEnd + 1);
+    pos = close;
+    HEREDOC_OP.lastIndex = close;
+  }
+  return { text: out + text.slice(pos), docs };
+}
+
+/** The quoted strings after `sh -c` (up to MAX_NESTED); an unclosed one runs to the end. */
+function shellStrings(text: string): string[] {
+  const found: string[] = [];
+  SHELL_C.lastIndex = 0;
+  for (let m = SHELL_C.exec(text); m && found.length < MAX_NESTED; m = SHELL_C.exec(text)) {
+    const from = m.index + m[0].length;
+    const to = text.indexOf(m[1], from);
+    found.push(text.slice(from, to === -1 ? text.length : to));
+    if (to === -1) break;
+    SHELL_C.lastIndex = to + 1;
+  }
+  return found;
+}
+
+const isSqlRun = (code: string, raw: string) => SQL_CLIENT.test(code) && SQL_DESTRUCTIVE.test(raw);
+
 function commandAction(raw: string, depth: number): IrreversibleAction | null {
   const joined = raw.replace(/\\\r?\n/g, ' '); // a `\` line continuation is one line
-  // A heredoc body is input, not commands — unless a shell reads it (`bash <<'EOF'`). Either way it is blanked
-  // before the command is split, so the prose of a `git commit -m "$(cat <<'EOF' …)"` message never reads as one.
-  const fed: string[] = [];
-  const command = joined.replace(HEREDOC, (whole: string, lead: string, _q: string, tag: string, body: string) => {
-    if (SHELL_WORD.test(lead)) fed.push(body);
-    return `${whole.slice(0, whole.indexOf('\n') + 1)}${tag}`; // the `<<` line, then the closing tag
-  });
+  // A heredoc body is input, not commands — unless a shell reads it (`bash <<'EOF'`) or a database client runs it.
+  // Either way it is blanked before the command is split, so the prose of a `git commit -m "$(cat <<'EOF' …)"`
+  // message never reads as one.
+  const { text: command, docs } = splitHeredocs(joined);
+  for (const doc of docs) {
+    if (isSqlRun(maskText(doc.lead), doc.body)) return act('db-delete', 'DB 데이터 삭제');
+    if (depth < 3 && SHELL_WORD.test(doc.lead)) {
+      const hit = commandAction(doc.body, depth + 1);
+      if (hit) return hit;
+    }
+  }
   if (depth < 3) {
-    for (const body of fed) {
-      const hit = commandAction(body, depth + 1);
-      if (hit) return hit;
-    }
-    for (const m of command.matchAll(SHELL_C)) {
-      const hit = commandAction(m[2], depth + 1);
+    for (const str of shellStrings(command)) {
+      const hit = commandAction(str, depth + 1);
       if (hit) return hit;
     }
   }
+  // Segments of the masked code, each with its raw text (same indices): the command word comes from the code, the
+  // SQL a client runs from the raw text of the same segment (review 3 — never from another segment's grep pattern).
   const code = maskText(command);
-  for (const segment of code.split(SEGMENT_BREAK)) {
-    const hit = segmentAction(segment);
+  let from = 0;
+  SEGMENT_BREAK.lastIndex = 0;
+  for (;;) {
+    const m = SEGMENT_BREAK.exec(code);
+    const to = m ? m.index : code.length;
+    const hit = segmentAction(code.slice(from, to));
     if (hit) return hit;
+    if (isSqlRun(code.slice(from, to), command.slice(from, to))) return act('db-delete', 'DB 데이터 삭제');
+    if (!m) return null;
+    from = to + m[0].length;
   }
-  // The SQL may sit in quotes or a heredoc; the client must be a command, not a word in a message.
-  return SQL_DESTRUCTIVE.test(joined) && SQL_CLIENT.test(code) ? act('db-delete', 'DB 데이터 삭제') : null;
 }
