@@ -237,6 +237,10 @@ describe('deploy-qa $autoz waiver (waive=autoz)', () => {
   it('never depends on the environment wrapper forwarding waive= (the #608 bypass, reused)', () => {
     const line = args.split('\n').find((l) => l.startsWith('- `waive=autoz`')) ?? '';
     expect(line).toContain('passes it through unchanged');
+    // Same argument list as deploy.prompt item 6 (prompt-builder.test.ts pins it there): the scope never widens.
+    expect(line).toContain(
+      'invoke this skill directly with the same `repo`, `target`, `before`, `after` and `keys=` (if the run had one), `env=',
+    );
     expect(line).toMatch(/does not accept `waive=`[^\n]*`--preflight`[^\n]*`applies` or `partial: …`/);
     expect(line).toMatch(
       /does not accept `waive=`[^\n]*invoke this skill directly[^\n]*`env=[^`]*`[^\n]*`waive=autoz`/,

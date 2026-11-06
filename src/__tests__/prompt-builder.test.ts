@@ -371,6 +371,11 @@ describe('PromptBuilder', () => {
       expect(item6).toMatch(
         /does not accept `waive=`[^\n]*first invoke `<plugin>:post-deploy --preflight repo=<owner\/repo> target=<branch>`[^\n]*continue only if it answers `applies` or `partial: …`[^\n]*`zworkflow:deploy-qa`[^\n]*`waive=autoz`/,
       );
+      // The direct call keeps the run's scope: the same argument list as the deploy-qa skill's own bypass text
+      // (deploy-qa-skill.test.ts pins the identical list there).
+      expect(item6).toContain(
+        '`zworkflow:deploy-qa` directly with the same `repo`, `target`, `before`, `after` and `keys=` (if the run had one), `env=',
+      );
       // A run that parked anyway is answered with the waiver at once, never waited on.
       expect(item6).toMatch(
         /still ends `deployed, QA incomplete: waiting for precondition confirmation`[^\n]*never wait/,
