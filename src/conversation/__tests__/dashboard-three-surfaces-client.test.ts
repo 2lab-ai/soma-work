@@ -1675,7 +1675,15 @@ describe('the composer follows the session live (executed)', () => {
     let resets = 0;
     const m = load<{ renderPanelComposer(s: unknown, force?: boolean): void }>(
       // #640 R2: the pass also applies the composer's file rule (no composer in this harness).
-      ['renderPanelComposer', 'pcModeOf', 'pcToolsOpen', 'steeringData', 'pcComposerSetup', 'pcComposerData'],
+      [
+        'renderPanelComposer',
+        'pcModeOf',
+        'pcToolsOpen',
+        'steeringData',
+        'turnHolds',
+        'pcComposerSetup',
+        'pcComposerData',
+      ],
       ['STEER_STATE', 'PC_LIMITS', 'PC_NO_FILES'],
       {
         document: { getElementById: (id: string) => els[id] ?? null },

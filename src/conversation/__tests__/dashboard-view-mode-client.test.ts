@@ -281,7 +281,13 @@ describe('T3 — minimal: a card shows what matters', () => {
     }>(
       ['viewModeFrom', 'viewPlanFrom', 'viewSpec', 'toNum', 'pendingAutoResume', 'cardAsks', 'viewCardOf'],
       ['_viewMode', '_viewPlan', '_viewLayout'],
-      { cardOf, REPRESENTATIVE_MODELS: [], cardStarOf: () => ({ on: false }), cardTldrOf: () => null },
+      {
+        cardOf,
+        REPRESENTATIVE_MODELS: [],
+        cardStarOf: () => ({ on: false }),
+        cardTldrOf: () => null,
+        cardFollowupsOf: () => [],
+      },
     );
     expect(env.viewCardOf({}, 'working').costUsd).toBeUndefined();
     env.__set('_viewMode', 'advanced');

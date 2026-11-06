@@ -60,10 +60,12 @@ export function slackEventFileFrom(id: string, info: any): SlackEventFile {
     typeof info?.permalink === 'string' && /^https:\/\//i.test(info.permalink) ? info.permalink : undefined;
   return {
     id,
-    name: info?.name ?? id,
+    // `||`, not `??`: right after an upload `files.info` can answer with empty strings
+    // (SSOT 2026-11-06). The follow-up queue fills the rest (`storableFiles`).
+    name: info?.name || id,
     mimetype: info?.mimetype ?? 'application/octet-stream',
     filetype: info?.filetype ?? '',
-    url_private: info?.url_private ?? info?.url_private_download,
+    url_private: info?.url_private || info?.url_private_download,
     url_private_download: info?.url_private_download,
     size: typeof info?.size === 'number' ? info.size : 0,
     ...(permalink ? { permalink } : {}),

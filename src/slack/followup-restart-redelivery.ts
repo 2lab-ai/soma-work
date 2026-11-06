@@ -18,6 +18,7 @@
 import type { FollowupItem } from '@soma/slack/followup-queue';
 import { FOLLOWUP_RESTART_STEERED_NOTE, isFollowupDelivered } from '@soma/slack/followup-queue';
 import { FOLLOWUP_RESTART_FREEZE_REASON } from '@soma/slack/followup-queue-blocks';
+import { unframeSteerText } from '../agent-runtime/turn-input-channel';
 
 /**
  * A row older than this is not sent on a restart: a day-old message landing in
@@ -103,7 +104,9 @@ export function transcriptShowsRead(
     }
     const at = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : Number.NaN;
     if (!Number.isFinite(at) || at < probe.since - CLOCK_SKEW_MS) continue;
-    if (userWordsOf(entry)?.trim() === words) return true;
+    // A steered message carries the host's frame around the user's words (`buildSteerUserMessage`).
+    const handed = userWordsOf(entry);
+    if (handed !== undefined && unframeSteerText(handed) === words) return true;
   }
   return false;
 }
