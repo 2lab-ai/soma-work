@@ -1672,6 +1672,65 @@ describe('ClaudeHandler: a late result does not cut a notification turn of a bac
     expect(results[0]).toMatchObject({ result: 'MERGED' });
   });
 
+  // #997 review (astra): a subagent's own system/init used to disarm the grace,
+  // and nothing re-armed it — the held answer then waited out the 30-min cap.
+  it("ends the held turn at the grace even when a subagent's system/init arrives meanwhile", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const cli = newFakeCli();
+    const pulledPastSubagentInit = deferred();
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield INIT;
+      yield level([bashTask, { task_id: 'amb-1', task_type: 'local_agent', description: 'ambient', ambient: true }]);
+      yield WAITING;
+      yield openingResult(cli.opening?.uuid);
+      yield { ...INIT, parent_tool_use_id: 'toolu_ambient' };
+      const probe = watchInputEnd(inputs, cli);
+      pulledPastSubagentInit.resolve();
+      await probe;
+    });
+
+    const framesPromise = collect(startTurn(newHandler()));
+    await pulledPastSubagentInit.promise;
+
+    await vi.advanceTimersByTimeAsync(BG_FOLLOWUP_GRACE_MS);
+    const frames = await framesPromise;
+
+    expect(cli.inputEnded).toBe(true);
+    expect(resultsOf(frames)[0]).toMatchObject({ result: 'WAITING', user_message_uuid: cli.opening?.uuid });
+  });
+
+  // #997 review (astra): a long-lived shell (dev server) stays live, so "a task
+  // is live" alone would re-wait after every result and chain any stream of
+  // notification turns (here an ambient watcher's events) onto the held turn.
+  it('does not chain notification turns onto a held turn just because a dev server stays live', async () => {
+    const cli = newFakeCli();
+    const devServer = { task_id: 'dev-1', task_type: 'local_bash', description: 'dev server' };
+    const watcher = { task_id: 'mon-1', task_type: 'monitor', description: 'log tail', ambient: true };
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield INIT;
+      yield level([devServer, watcher]);
+      yield WAITING;
+      yield openingResult(cli.opening?.uuid);
+      yield INIT;
+      yield assistantText('EVENT 1');
+      yield successResult({ result: 'EVENT 1', num_turns: 1, uuid: 'event-1-uuid' });
+      yield INIT;
+      yield assistantText('EVENT 2');
+      yield successResult({ result: 'EVENT 2', num_turns: 1, uuid: 'event-2-uuid' });
+      cli.inputEnded = (await inputs.next()).done === true;
+    });
+
+    const frames = await readLikeTheProcessor(startTurn(newHandler()));
+
+    const results = resultsOf(frames);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ result: 'EVENT 1' });
+    expect(frames).not.toContainEqual(assistantText('EVENT 2'));
+  });
+
   it('does not wait for a live-update watcher (ambient): its events never hold the turn', async () => {
     const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
     try {
