@@ -7439,6 +7439,8 @@ function acPermissionData(s, p) {
     return o;
   });
   if (rules.length) d.rules = rules;
+  // A deploy, a publish, a destructive command: the card approves it with a slide (@2lab.ai/ui 0.35).
+  if (p.irreversible) d.irreversible = String(p.irreversible);
   var created = toNum(p.createdAt);
   if (created > 0) d.createdAt = created;
   var until = toNum(p.expiresAt);

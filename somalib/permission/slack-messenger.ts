@@ -1,5 +1,6 @@
 import type { WebClient } from '@slack/web-api';
 import { StderrLogger } from '../stderr-logger';
+import { type IrreversibleAction, irreversibleAction } from './irreversible';
 import type { PermissionAdvice } from './shared-store';
 
 const logger = new StderrLogger('SlackPermissionMessenger');
@@ -76,6 +77,22 @@ export function permissionAdviceBlocks(advice: PermissionAdvice | null | undefin
 }
 
 /**
+ * The confirm dialog Slack shows before an Approve on an irreversible call
+ * runs (the dashboard's card asks for a slide instead). The prompt was already
+ * raised; this adds no gate, only a second look at what cannot be undone. The
+ * label is static catalog text, safe in mrkdwn.
+ */
+export function irreversibleConfirm(action: IrreversibleAction): Record<string, unknown> {
+  return {
+    title: { type: 'plain_text', text: '되돌릴 수 없는 작업' },
+    text: { type: 'mrkdwn', text: `*${action.label}* — 승인하면 바로 실행되고 되돌릴 수 없습니다. 승인할까요?` },
+    confirm: { type: 'plain_text', text: '승인' },
+    deny: { type: 'plain_text', text: '취소' },
+    style: 'danger',
+  };
+}
+
+/**
  * Handles Slack message creation and updates for permission requests
  */
 export class SlackPermissionMessenger {
@@ -88,6 +105,11 @@ export class SlackPermissionMessenger {
    * this session" button is appended. Clicking it approves the current tool
    * call AND silences those rule ids for the rest of the Slack-thread session,
    * so subsequent matching commands auto-allow under bypass mode.
+   *
+   * When the call is irreversible ({@link irreversibleAction} — a deploy, a
+   * publish, a destructive command), a line under the header says what cannot
+   * be undone and both approve buttons open a confirm dialog first — except on
+   * a red card, whose Approve already asks a second time.
    */
   buildRequestBlocks(
     toolName: string,
@@ -101,6 +123,9 @@ export class SlackPermissionMessenger {
     // T4: the AI said not to run it — Deny is the green (recommended) button,
     // Approve the red one, and no shortcut silences the rule for the session.
     const red = advice?.recommendation === 'deny';
+    const irreversible = irreversibleAction(toolName, input);
+    // A red card's Approve already asks a second time (buildSecondConfirmBlocks): no dialog on top of it.
+    const confirm = irreversible && !red ? { confirm: irreversibleConfirm(irreversible) } : {};
 
     const actionElements: any[] = [
       {
@@ -112,6 +137,7 @@ export class SlackPermissionMessenger {
         style: red ? 'danger' : 'primary',
         action_id: 'approve_tool',
         value: approvalId,
+        ...confirm,
       },
       {
         type: 'button',
@@ -142,6 +168,19 @@ export class SlackPermissionMessenger {
           text: `🔐 Permission Request — ${toolName}`,
         },
       },
+      ...(irreversible
+        ? [
+            {
+              type: 'context',
+              elements: [
+                {
+                  type: 'mrkdwn',
+                  text: `⚠️ *되돌릴 수 없는 작업: ${irreversible.label}* — 승인 전에 한 번 더 확인합니다.`,
+                },
+              ],
+            },
+          ]
+        : []),
       ...permissionAdviceBlocks(advice),
       {
         type: 'section',
@@ -171,6 +210,7 @@ export class SlackPermissionMessenger {
           },
           action_id: 'approve_disable_rule_session',
           value: approvalId,
+          ...confirm,
         });
       }
     }
