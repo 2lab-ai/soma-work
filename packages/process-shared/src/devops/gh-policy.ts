@@ -782,10 +782,14 @@ export type GhApiPath =
   | { ok: true; path: string; segments: string[]; query: string | null }
   | { ok: false; reason: string };
 
+// GitHub's compare endpoint spells a commit range as <base>...<head>; deploy checks read it by SHA.
+const COMPARE_SHA_RANGE_RE = /^[0-9a-f]{7,40}\.\.\.[0-9a-f]{7,40}$/;
+
 /**
  * Normalizes a `gh api` endpoint: one leading slash, segments of `[A-Za-z0-9._-]` only. Full URLs,
- * percent-encoding, `..`, empty segments (`//`, trailing `/`), placeholders and a `/` inside the
- * query are rejected rather than repaired.
+ * percent-encoding, `..` (except the last segment of `repos/<owner>/<repo>/compare/<sha>...<sha>`),
+ * empty segments (`//`, trailing `/`), placeholders and a `/` inside the query are rejected rather
+ * than repaired.
  */
 export function normalizeGhApiPath(endpoint: string): GhApiPath {
   if (endpoint.length === 0 || endpoint.length > 2048) return { ok: false, reason: 'empty or oversized endpoint' };
@@ -798,9 +802,16 @@ export function normalizeGhApiPath(endpoint: string): GhApiPath {
   const query = q < 0 ? null : endpoint.slice(q + 1);
   const trimmed = rawPath.startsWith('/') ? rawPath.slice(1) : rawPath;
   const segments = trimmed.split('/');
-  for (const segment of segments) {
+  const compareRange =
+    segments.length === 5 &&
+    segments[0] === 'repos' &&
+    segments[3] === 'compare' &&
+    COMPARE_SHA_RANGE_RE.test(segments[4]);
+  for (const [i, segment] of segments.entries()) {
     if (segment.length === 0) return { ok: false, reason: 'empty path segment (//, leading // or trailing /)' };
-    if (segment.includes('..') || segment === '.') return { ok: false, reason: 'dot segments are not allowed' };
+    if ((segment.includes('..') && !(compareRange && i === 4)) || segment === '.') {
+      return { ok: false, reason: 'dot segments are not allowed' };
+    }
     if (!/^[A-Za-z0-9._-]+$/.test(segment)) {
       return { ok: false, reason: `path segment ${JSON.stringify(segment)} has characters outside [A-Za-z0-9._-]` };
     }

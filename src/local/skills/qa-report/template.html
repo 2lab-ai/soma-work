@@ -174,7 +174,7 @@ pre { white-space:pre-wrap; word-break:break-word; background:var(--code); borde
   function decided(p) {
     var d = p.decision;
     if (!d || d === 'pending') return p.status === 'met' || p.status === 'provisionable' ? 'not needed' : 'waiting for the requester';
-    return esc(d) + ' by ' + esc(p.confirmedBy || '?') + (p.confirmedAt ? ' · ' + esc(p.confirmedAt) : '');
+    return esc(d) + ' by ' + esc(p.confirmedBy || '?') + (p.confirmRef ? ' · ref ' + esc(p.confirmRef) : '') + (p.confirmedAt ? ' · ' + esc(p.confirmedAt) : '');
   }
   if (PRE.length) {
     var open = PRE.filter(function (p) { return p.status !== 'met' && p.status !== 'provisionable'; });

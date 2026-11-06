@@ -70,6 +70,13 @@ Scope: Slack Block Kit UI + Messaging/Interactivity + AI app workflows + Agentfo
   - `value` 최대 2000
   - `url` 최대 3000
   - `disabled` 필드 없음
+  - `confirm` (선택, confirmation dialog object — 누르면 실행 전에 확인 대화상자):
+    - `title`: `plain_text`, 최대 100
+    - `text`: `plain_text` 또는 `mrkdwn`, 최대 300
+    - `confirm` / `deny`: `plain_text`, 각 최대 30
+    - `style`: `primary` | `danger` (선택)
+    - 이 repo 사용처: 권한 카드의 되돌릴 수 없는 호출 — `irreversibleConfirm()` (`somalib/permission/slack-messenger.ts`, red 권고 카드에는 붙이지 않음)
+    - 공식: https://docs.slack.dev/reference/block-kit/composition-objects/confirmation-dialog-object
 - `feedback_buttons`:
   - `positive_button`, `negative_button` 필수
   - 각 버튼 `text` 최대 75, `value` 최대 2000

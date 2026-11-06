@@ -149,6 +149,121 @@ describe('deploy-qa preflight and reduced mode', () => {
 });
 
 /**
+ * A run that cannot QA (the lock stayed busy past its wait, or `lockDir` is not
+ * writable) used to end touching nothing, so its keys carried no label and the
+ * next deploy's range never included them: they were never QA'd. Such a run now
+ * reads steps 1–5 and carries every key a full run's step 8 would leave open,
+ * add-only. The lock holder's step 8 owns removal, and keeps the label while any
+ * carry comment is outstanding: no later pass or fail result names all its merges.
+ */
+describe('deploy-qa carries every open key when QA cannot run', () => {
+  const md = read('deploy-qa');
+  const lock = md.slice(md.indexOf('## Lock'), md.indexOf('## Outcomes'));
+  const busy = lock.slice(lock.indexOf('- **Busy**'), lock.indexOf('- **Stale**'));
+  const reduced = md.slice(md.indexOf('## Reduced mode'), md.indexOf('## Excluded PRs'));
+  const lockDirBranch = reduced.slice(
+    reduced.indexOf('- **`lockDir` not writable**'),
+    reduced.indexOf('- **An adapter executable missing'),
+  );
+  const steps = md.slice(md.indexOf('## Steps'), md.indexOf('## Final report'));
+  const step8 = steps.slice(steps.indexOf('8. **Carry-over.**'), steps.indexOf('9. **Report.**'));
+  const fullStep8 = step8.slice(0, step8.indexOf('- **Without a lock**'));
+  const noLock = step8.slice(step8.indexOf('- **Without a lock**'));
+
+  it('busy: still waits, then reads steps 1–5 without QA', () => {
+    expect(busy).toContain('re-checking every 5 min for up to 60 min');
+    expect(busy).toContain('steps 1–5 read-only');
+    expect(busy).toContain('no `qa-issue` call');
+    expect(busy).toContain('no tracker transition');
+    expect(busy).toMatch(/steps 5\.5–7 do not run/);
+  });
+
+  it('busy: carries through step 8 without a lock, reason lock busy', () => {
+    expect(busy).toContain('step 8 as a run without a lock, reason `lock busy`');
+  });
+
+  it('busy: reports target keys as not-run and still ends lock busy with the re-run args', () => {
+    expect(busy).toMatch(/not-run[^\n]*reason `lock busy`/);
+    expect(busy).toContain('`deployed, QA incomplete: lock busy`');
+    expect(busy).toContain('re-run args');
+  });
+
+  it('lockDir not writable: carries too, still with no QA, no transition, no heartbeat', () => {
+    expect(lockDirBranch).not.toContain('no carry-over write');
+    expect(lockDirBranch).toContain('no `qa-issue` call, no tracker transition, no heartbeat');
+    expect(lockDirBranch).toContain('step 8 as a run without a lock, reason `QA lock unavailable`');
+    expect(lockDirBranch).toContain('tracker writes need no lock directory');
+  });
+
+  it('a run without a lock carries every key step 8 would leave open', () => {
+    expect(step8).toContain('- **Without a lock** (Reduced mode for `lockDir`, or a lock that stayed busy)');
+    expect(noLock).toContain('each admitted target key');
+    expect(noLock).toContain('each key admission deferred');
+    expect(noLock).toContain('blocked `PR list incomplete`');
+    expect(noLock).toContain('`carryLabel`');
+    expect(noLock).toContain('the carry comment above');
+    // Hard rules: touch only a range whose deploy step 1 confirmed.
+    expect(noLock).toContain('only after step 1 confirmed the deploy');
+  });
+
+  it('a run without a lock comments whenever its mergeShas are new, and before it labels', () => {
+    // The holder's check reads every carry comment's mergeShas, so a new merge always gets a comment.
+    expect(noLock).toContain('no new comment only when both its reason and its `mergeShas`');
+    // Comment first: the holder either sees it and keeps the label, or removed the label before it is added.
+    expect(noLock).toMatch(/post the comment before adding the label/i);
+  });
+
+  it('a run without a lock never removes a carry label', () => {
+    const removes = noLock.match(/\S+ remove\b/gi) ?? [];
+    expect(removes.length).toBeGreaterThan(0);
+    for (const r of removes) expect(r).toMatch(/^never remove$/i);
+    expect(noLock).toContain('Never remove `carryLabel`');
+    expect(noLock).toContain("removal stays with the lock holder's step 8");
+  });
+
+  // The guard sentence: from "Pass and fail:" to the report-only rule.
+  const guard = fullStep8.slice(fullStep8.indexOf('Pass and fail:'), fullStep8.indexOf('Report-only:'));
+
+  it('a carry comment stays outstanding until a later result names every one of its merges', () => {
+    expect(guard).toContain('**outstanding**');
+    expect(guard).toMatch(
+      /no pass or fail result comment posted after it \(this run's own result included\) names every one of its mergeShas as tested/,
+    );
+    // Coverage, not time: no boundary that an earlier, narrower result could set.
+    expect(guard).not.toContain('startTime');
+    expect(guard).not.toContain('newest carry comment');
+    expect(guard).not.toContain('latest pass or fail result comment');
+    expect(guard).not.toContain('never the boundary');
+  });
+
+  it('this run counts as later than every carry comment it reads, so an earlier pass never pins the label', () => {
+    expect(guard).toContain('`mergeShas` its run passed to `qa-issue`');
+    expect(guard).toContain('for an already passed key, the pass comment that names its mergeShas');
+    expect(guard).toContain('counts as posted after every carry comment this run reads');
+  });
+
+  it('the holder keeps the label while any carry comment is outstanding, otherwise removes it', () => {
+    expect(guard).toContain('Keep `carryLabel` while any carry comment on the key is outstanding');
+    expect(guard).toContain('`<KEY>: carry label kept, merge <owner/repo:sha7>');
+    expect(guard).toMatch(/Otherwise remove it/);
+  });
+
+  it('after removing, the holder checks every carry comment newer than its first read', () => {
+    // Two no-lock runs can post B then A between the read and the removal; the newest alone (A) hides B.
+    expect(guard).toContain('every carry comment newer than that first read');
+    expect(guard).toMatch(
+      /every carry comment newer than that first read[^\n]*if one is outstanding, add the label back[^\n]*same summary line/,
+    );
+  });
+
+  it('a run without a lock has nothing to resume and its repeated carry adds nothing', () => {
+    const cont = md.slice(md.indexOf('## Continuation'), md.indexOf('## Hard rules'));
+    expect(cont).toContain('or a lock that stayed busy');
+    expect(cont).toContain('a repeated carry adds nothing');
+  });
+});
+
+/**
  * Precondition gate across the whole run (2026-10-30 stage0 qa=max: 49 of 69
  * non-pass cases were preconditions found only while running). deploy-qa plans
  * every key first, asks the requester one question, and runs nothing before the
@@ -206,5 +321,85 @@ describe('deploy-qa precondition gate (step 5.5)', () => {
 
   it('preflight checks the bundled gate script', () => {
     expect(md).toContain('`…/qa-issue/scripts/gate.mjs`');
+  });
+});
+
+/**
+ * `$autoz` deploys are sent by an automation, so nobody answers the step 5.5
+ * question: 28 gates sat pending for days with zero QA cases run (2026-11-03).
+ * The owner's call: a `$autoz` deploy request counts as "proceed without" —
+ * every open precondition is waived inside the same run, no question is posted,
+ * and the run never ends waiting. QA itself is not skipped or reduced.
+ */
+describe('deploy-qa $autoz waiver (waive=autoz)', () => {
+  const md = read('deploy-qa');
+  const args = md.slice(md.indexOf('## Args'), md.indexOf('## Profile'));
+  const steps = md.slice(md.indexOf('## Steps'), md.indexOf('## Final report'));
+  const gate = steps.slice(steps.indexOf('5.5. **Precondition gate.**'), steps.indexOf('6. **Move to QA.**'));
+  const step7 = steps.slice(steps.indexOf('7. **QA, one issue at a time**'), steps.indexOf('8. **Carry-over.**'));
+  const final = md.slice(md.indexOf('## Final report'), md.indexOf('## Continuation'));
+
+  it('advertises waive=autoz in its description, argument hint and Args', () => {
+    const description = md.match(/^description: "(.*)"$/m)?.[1] ?? '';
+    expect(description).toContain('waive=autoz');
+    expect(md).toMatch(/^argument-hint: "[^"]*\[waive=autoz\][^"]*"$/m);
+    expect(args).toContain('`waive=autoz`');
+    // The request is the requester's answer; QA is never skipped or reduced by it.
+    expect(args).toMatch(/`waive=autoz`[^\n]*carries `\$autoz`[^\n]*requester's answer/);
+    expect(args).toMatch(/`waive=autoz`[^\n]*never skips or reduces QA/);
+  });
+
+  it('never depends on the environment wrapper forwarding waive= (the #608 bypass, reused)', () => {
+    const line = args.split('\n').find((l) => l.startsWith('- `waive=autoz`')) ?? '';
+    expect(line).toContain('passes it through unchanged');
+    // Same argument list as deploy.prompt item 6 (prompt-builder.test.ts pins it there): the scope never widens.
+    expect(line).toContain(
+      'invoke this skill directly with the same `repo`, `target`, `before`, `after` and `keys=` (if the run had one), `env=',
+    );
+    expect(line).toMatch(/does not accept `waive=`[^\n]*`--preflight`[^\n]*`applies` or `partial: …`/);
+    expect(line).toMatch(
+      /does not accept `waive=`[^\n]*invoke this skill directly[^\n]*`env=[^`]*`[^\n]*`waive=autoz`/,
+    );
+  });
+
+  it('waives every open precondition inside the same run, keeps the lock and goes on to step 6', () => {
+    expect(gate).toContain('`waive=autoz`');
+    // The ask bullet names its exception first, so a top-down reader never asks before reading it.
+    expect(gate).toContain(
+      '- `ask: true` → (without `waive=autoz`; with it, the next bullet applies) post the gap table',
+    );
+    expect(gate.indexOf('- **`waive=autoz`**')).toBeGreaterThan(gate.indexOf('- `ask: true` →'));
+    expect(gate).toContain(
+      '`node "…/gate.mjs" answer --gate <G> --key all --decision waived --by <the requester> --ref <the deploy request\'s message ts>`',
+    );
+    expect(gate).toContain('keep the lock');
+    // decide needs {env, inputs, statuses}: the key's plan in G, probed in this run, supplies all three.
+    // The same program is run against a real gate in qa-issue-gate.test.ts.
+    expect(gate).toContain(
+      "`jq --arg k <KEY> '.keys[$k] | {env, inputs, statuses: ([.preconditions[] | {(.id): .status}] | add // {})}' <G> > R/current-<KEY>.json`",
+    );
+    expect(gate).toContain('`node "…/gate.mjs" decide --gate <G> --key <KEY> --current R/current-<KEY>.json`');
+    expect(gate).toMatch(/`run` → step 6 with `decisions=<G>`/);
+    expect(gate).toContain('Never post the question with `waive=autoz`');
+    // The marker is prose only — a literal `$autoz` inside a shell argument expands to nothing.
+    for (const l of gate.split('\n').filter((x) => x.includes('gate.mjs'))) {
+      for (const cmd of l.match(/`node [^`]*`/g) ?? []) expect(cmd).not.toContain('$autoz');
+    }
+    expect(gate).toContain('`waived by $autoz`');
+  });
+
+  it('leaves the ask path without the waiver exactly as it was', () => {
+    expect(gate).toContain(
+      "Then release the lock only if it is mine, then ask the requester with the session's question tool (`local:UIAskUserQuestion`, one choice group: per key provide it / proceed without it / skip the key). End `deployed, QA incomplete: waiting for precondition confirmation`, with the reference line plus `decisions=<G>`.",
+    );
+    expect(args).toContain('A reply from anyone other than the requester is not an answer.');
+  });
+
+  it('a gate raised again in step 7 is waived too, at most once, and the run never ends waiting', () => {
+    expect(step7).toMatch(/With `waive=autoz`[^\n]*once more[^\n]*`not-run`, reason `inputs changed during QA`/);
+    expect(final).toMatch(
+      /`waive=autoz`[^\n]*never ends `deployed, QA incomplete: waiting for precondition confirmation`/,
+    );
+    expect(final).toContain('`waived by $autoz`');
   });
 });

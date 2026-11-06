@@ -319,7 +319,7 @@ describe('qa-report build.mjs — preconditions first', { timeout: 30_000 }, () 
       env: { profile: 'acme-env:post-deploy', versionStart: '1.0.0', versionEnd: '1.0.0' },
       verdict: 'partial',
       reason: 'precondition-waived:P1 by U_REQ',
-      preconditions: [{ ...pre('PROJ-2', 'waived'), key: undefined }],
+      preconditions: [{ ...pre('PROJ-2', 'waived'), key: undefined, confirmRef: '1730000000.000100' }],
       cases: [
         {
           id: 'QA-1',
@@ -346,6 +346,8 @@ describe('qa-report build.mjs — preconditions first', { timeout: 30_000 }, () 
     });
     const r = runReport(readFileSync(out, 'utf8'));
     expect(r.left).toContain('waived by U_REQ');
+    // Where the decision was given (the answer's message ts — for a `$autoz` deploy, the request's).
+    expect(r.left).toContain('waived by U_REQ · ref 1730000000.000100 · 2026-10-30T01:00:00Z');
     expect(r.left).toContain('PROJ-2');
     expect(row(r.left, 'PROJ-2')?.status).toBe('partial');
     expect(r.right).toContain('precondition P1');

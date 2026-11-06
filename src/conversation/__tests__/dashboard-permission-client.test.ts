@@ -410,6 +410,24 @@ describe('dashboard permission prompt → real server (shipped client code)', ()
     expect(d.description).toContain('되돌릴 수 없습니다');
   });
 
+  it('irreversible — the board index carries the label and the card approves by sliding (data.irreversible)', async () => {
+    const id = await seed({ input: { command: 'gh pr merge 1287 --merge  # main → deploy/prod' }, rule_ids: [] });
+    const { refreshPendingPermissions, pendingPermissionsFor } = await import('../permission-prompts');
+    await refreshPendingPermissions();
+    const p = pendingPermissionsFor(channel, 't1').find((x) => x.approvalId === id);
+    expect(p?.irreversible).toBe('PR 머지');
+    const d = client('U1').acPermissionData(card(id), p) as CardData & { irreversible?: string };
+    expect(d.irreversible).toBe('PR 머지');
+    // An ordinary prompt from the same index carries no label, so its card keeps the plain Approve button.
+    const plainId = await seed();
+    await refreshPendingPermissions();
+    const plainP = pendingPermissionsFor(channel, 't1').find((x) => x.approvalId === plainId);
+    expect(plainP).toBeDefined();
+    expect(plainP && 'irreversible' in plainP).toBe(false);
+    const plain = client('U1').acPermissionData(card(plainId), plainP) as CardData & { irreversible?: string };
+    expect(plain.irreversible).toBeUndefined();
+  });
+
   it('T3 — green: a low-risk badge and the AI recommendation', async () => {
     const id = await seed({ advice: GREEN });
     const p = { ...card(id).pendingPermissions[0], aiRecommendation: 'approve' };

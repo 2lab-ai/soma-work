@@ -703,3 +703,126 @@ describe('gate.mjs answer + decide — run only on a recorded answer that still 
     expect(r.status).toBe(1);
   });
 });
+
+/**
+ * deploy-qa step 5.5 with `waive=autoz` (a `$autoz` deploy request, sent by an automation that
+ * never answers): the run records "proceed without" for every key itself and decides in the same
+ * run — no question, no second run. gate.mjs is unchanged; these tests pin that its existing
+ * `answer --key all` and `decide` carry that flow, with the current file built from each key's
+ * own sealed plan exactly as deploy-qa step 5.5 documents.
+ */
+describe('gate.mjs — the $autoz waiver inside one deploy-qa run', { timeout: 30_000 }, () => {
+  // deploy-qa SKILL.md step 5.5 (`waive=autoz`) builds R/current-<KEY>.json from the run gate with this program
+  // (`jq --arg k <KEY> '<program>' <G>`); deploy-qa-skill.test.ts pins the same text in the skill.
+  const JQ_CURRENT = '.keys[$k] | {env, inputs, statuses: ([.preconditions[] | {(.id): .status}] | add // {})}';
+  const hasJq = spawnSync('jq', ['--version']).status === 0;
+
+  /** The current file of a key whose plan was probed in this same run: its own env, inputs and statuses. */
+  function currentFromPlan(file: string) {
+    const g = JSON.parse(readFileSync(file, 'utf8'));
+    const statuses = Object.fromEntries(
+      (g.preconditions as { id: string; status: string }[]).map((p) => [p.id, p.status]),
+    );
+    return { env: g.env, inputs: g.inputs, statuses };
+  }
+
+  function twoKeyRun(name: string) {
+    const gaps = sealed(`${name}-a.json`, planned('PROJ-50'));
+    const clear = planned('PROJ-51');
+    clear.preconditions = clear.preconditions.map((x) => ({ ...x, status: 'met' }));
+    const clearFile = sealed(`${name}-b.json`, clear);
+    const out = join(dir, `${name}.json`);
+    const m = gate(['merge', '--out', out, gaps, clearFile]);
+    expect(m.status, m.stderr).toBe(0);
+    expect(m.out).toMatchObject({ ask: true, open: 2 });
+    return { out, gaps, clearFile };
+  }
+
+  it('answer --key all waives every open gap, also when another key has none, and decide runs both keys', () => {
+    const { out, gaps, clearFile } = twoKeyRun('autoz');
+    const a = gate([
+      'answer',
+      '--gate',
+      out,
+      '--key',
+      'all',
+      '--decision',
+      'waived',
+      '--by',
+      'U_REQ',
+      '--ref',
+      '1730000000.000100',
+    ]);
+    expect(a.status, a.stderr).toBe(0);
+    expect(a.out).toMatchObject({ recorded: 2, open: 0, status: 'answered' });
+    const saved = JSON.parse(readFileSync(out, 'utf8'));
+    for (const p of saved.keys['PROJ-50'].preconditions) {
+      expect(p).toMatchObject({ decision: 'waived', confirmedBy: 'U_REQ', confirmRef: '1730000000.000100' });
+    }
+    // A met precondition is not a gap: it carries no decision.
+    expect(saved.keys['PROJ-51'].preconditions.map((p: { decision: string | null }) => p.decision)).toEqual([
+      null,
+      null,
+    ]);
+
+    const d1 = gate([
+      'decide',
+      '--gate',
+      out,
+      '--key',
+      'PROJ-50',
+      '--current',
+      write('autoz-c1.json', currentFromPlan(gaps)),
+    ]);
+    expect(d1.status, d1.stderr).toBe(0);
+    expect(d1.out).toMatchObject({ action: 'run', runCases: ['QA-3'] });
+    expect(d1.out.blockedCases).toEqual([
+      { id: 'QA-1', precondition: 'P1', reason: 'precondition-waived:P1 by U_REQ' },
+      { id: 'QA-2', precondition: 'P2', reason: 'precondition-waived:P2 by U_REQ' },
+    ]);
+    const d2 = gate([
+      'decide',
+      '--gate',
+      out,
+      '--key',
+      'PROJ-51',
+      '--current',
+      write('autoz-c2.json', currentFromPlan(clearFile)),
+    ]);
+    expect(d2.status, d2.stderr).toBe(0);
+    expect(d2.out).toMatchObject({ action: 'run', runCases: ['QA-1', 'QA-2', 'QA-3'], blockedCases: [] });
+  });
+
+  it.skipIf(!hasJq)('the jq program deploy-qa documents builds exactly that current file from the run gate', () => {
+    const jq = (key: string, file: string) =>
+      spawnSync('jq', ['--arg', 'k', key, JQ_CURRENT, file], { encoding: 'utf8' });
+    const { out, gaps, clearFile } = twoKeyRun('autoz-jq');
+    for (const [key, file] of [
+      ['PROJ-50', gaps],
+      ['PROJ-51', clearFile],
+    ]) {
+      const r = jq(key, out);
+      expect(r.status, r.stderr).toBe(0);
+      expect(JSON.parse(r.stdout)).toEqual(currentFromPlan(file));
+    }
+    // A key that needs nothing still gets a statuses object, which decide requires.
+    const empty = planned('PROJ-52', { preconditions: [] });
+    empty.plan.cases = empty.plan.cases.map((c) => ({ ...c, preconditions: [] }));
+    const emptyRun = join(dir, 'autoz-jq-empty-run.json');
+    expect(gate(['merge', '--out', emptyRun, sealed('autoz-jq-empty.json', empty)]).status).toBe(0);
+    const e = jq('PROJ-52', emptyRun);
+    expect(e.status, e.stderr).toBe(0);
+    expect(JSON.parse(e.stdout).statuses).toEqual({});
+    const d = gate([
+      'decide',
+      '--gate',
+      emptyRun,
+      '--key',
+      'PROJ-52',
+      '--current',
+      write('autoz-jq-c.json', JSON.parse(e.stdout)),
+    ]);
+    expect(d.status, d.stderr).toBe(0);
+    expect(d.out).toMatchObject({ action: 'run', runCases: ['QA-1', 'QA-2', 'QA-3'], blockedCases: [] });
+  });
+});

@@ -15,6 +15,7 @@
  */
 
 import { overridableRulesByIds } from 'somalib/permission/dangerous-rules';
+import { irreversibleAction } from 'somalib/permission/irreversible';
 import {
   PERMISSION_PROMPT_KIND,
   type PendingApproval,
@@ -42,6 +43,12 @@ export interface DashboardPermissionRequest {
    * command, so they are in the requester-only detail.
    */
   aiRecommendation?: PermissionRecommendation;
+  /**
+   * What cannot be undone if this call runs ("prod 배포", "force push") — the
+   * card approves it with a slide. Static catalog text, never a piece of the
+   * input, so every viewer may see it. Absent for an ordinary call.
+   */
+  irreversible?: string;
   createdAt: number;
   expiresAt: number;
 }
@@ -73,6 +80,7 @@ function toRequest(approvalId: string, approval: PendingApproval): DashboardPerm
     description: r.description,
   }));
   const ai = adviceOf(approval)?.recommendation;
+  const irreversible = irreversibleAction(String(approval.tool_name ?? ''), approval.input);
   return {
     approvalId,
     toolName: String(approval.tool_name ?? ''),
@@ -80,6 +88,7 @@ function toRequest(approvalId: string, approval: PendingApproval): DashboardPerm
     rules,
     canDisableRule: rules.length > 0 && ai !== 'deny',
     ...(ai ? { aiRecommendation: ai } : {}),
+    ...(irreversible ? { irreversible: irreversible.label } : {}),
     createdAt: Number(approval.created_at) || 0,
     expiresAt: Number(approval.expires_at) || 0,
   };
