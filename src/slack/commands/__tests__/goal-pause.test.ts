@@ -13,8 +13,8 @@ import {
   enqueueOrActivateGoal,
   findGoalById,
   pauseCurrentGoal,
-  resumePausedGoal,
   restoreGoalState,
+  resumePausedGoal,
   snapshotGoalState,
 } from '../../session-goal';
 import { GoalHandler } from '../goal-handler';

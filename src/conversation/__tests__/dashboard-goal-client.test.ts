@@ -634,7 +634,7 @@ describe("the element's events on document (executed)", () => {
     expect(l.goalAction).toHaveBeenCalledTimes(1); // armed, not sent
     expect(l.repaintPanelGoalFor).toHaveBeenCalledWith('k');
     l.press('delete', 'p2');
-    expect(l.goalAction.mock.calls.at(-1)).toEqual(['k', { action: 'delete', goalId: 'p2', expect: 'paused' }, 'p2']);
+    expect(l.goalAction.mock.calls[1]).toEqual(['k', { action: 'delete', goalId: 'p2', expect: 'paused' }, 'p2']);
     l.press('resume', 'p3', true);
     expect(l.goalAction).toHaveBeenCalledTimes(2);
   });
