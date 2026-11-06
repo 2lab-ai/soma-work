@@ -21,6 +21,7 @@ import {
   findChannelsForRepo,
   getAllChannels,
   getChannel,
+  markChannelArchived,
   markChannelBeingMade,
   upsertChannel,
 } from '../channel-registry';
@@ -134,6 +135,12 @@ export function repoChannelDeps(client: WebClient): RepoChannelDeps {
       upsertChannel(info);
     },
     beginMaking: (name) => markChannelBeingMade(name),
+    // #970 — a read-only look (no invite) at a public mapping that stands in a private request's way.
+    channelState: async (channel) => {
+      const res = await client.conversations.info({ channel });
+      return res.channel ? { archived: res.channel.is_archived === true } : null;
+    },
+    markArchived: (channel) => markChannelArchived(channel),
   };
 }
 
