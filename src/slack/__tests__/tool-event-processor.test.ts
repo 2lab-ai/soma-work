@@ -179,6 +179,24 @@ describe('ToolEventProcessor', () => {
       ]);
     });
 
+    // #966 live probe — a held turn reads the CLI's own end-of-turn stops before the turn-end decision:
+    // they must still count as work that stopped with the turn (the decision settles them).
+    it('a stop marked endedWithTurn stays for the turn-end decision, then is settled by it', () => {
+      const SK = 'C123:thread_ts';
+      processor.handleAgentTaskLifecycle(
+        { type: 'agent_task_lifecycle', phase: 'started', taskId: 'sleep-1', taskType: 'local_bash' },
+        SK,
+      );
+      processor.handleAgentTaskLifecycle(
+        { type: 'agent_task_lifecycle', phase: 'settled', taskId: 'sleep-1', status: 'stopped', endedWithTurn: true },
+        SK,
+      );
+
+      expect(processor.getLiveBackgroundWork(SK).signature).toBe('sleep-1');
+      expect(processor.endBackgroundWorkWithTurn(SK, ['sleep-1']).map((t) => t.taskId)).toEqual(['sleep-1']);
+      expect(processor.getLiveBackgroundWork(SK).count).toBe(0);
+    });
+
     it('endBackgroundWorkWithTurn settles only the ids the ended turn saw — a newer turn keeps its own', () => {
       const SK = 'C123:thread_ts';
       processor.handleAgentTaskLifecycle(

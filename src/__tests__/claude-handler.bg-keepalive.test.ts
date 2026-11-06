@@ -786,6 +786,41 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
     }
   });
 
+  // #966 live probe (dev 2026-11-06 04:13Z): a held turn closes the input and reads on until the CLI
+  // exits — and the CLI stops its background shells as it does, reporting them `stopped`. Those reports
+  // are the turn's end, not a stop the model asked for: mark them so the host can say so.
+  it('marks a stop that arrives after the host closed the input as ended with the turn', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const pulledPastMetadata = deferred();
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([agentTask(AGENT_ID)]);
+        yield openingResult(cli.opening?.uuid);
+        const probe = watchInputEnd(inputs, cli);
+        yield level([]);
+        yield taskNotification(AGENT_ID, 'completed');
+        pulledPastMetadata.resolve();
+        await probe;
+        // The CLI exits: it stops the shell it still ran.
+        yield taskNotification('shell-1', 'stopped');
+      });
+
+      const framesPromise = collect(startTurn(newHandler()));
+      await pulledPastMetadata.promise;
+      await vi.advanceTimersByTimeAsync(NON_TURN_RESULT_IDLE_MS);
+      const frames = (await framesPromise) as Array<Record<string, unknown>>;
+
+      const notice = (id: string) => frames.find((f) => f.subtype === 'task_notification' && f.task_id === id);
+      expect(notice('shell-1')).toMatchObject({ status: 'stopped', ended_with_turn: true });
+      expect(notice(AGENT_ID)?.ended_with_turn).toBeUndefined();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('still skips an orphan drain result while an agent is live, and holds the turn only from its answer', async () => {
     const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
     try {
