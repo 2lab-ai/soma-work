@@ -111,6 +111,28 @@ export function buildEpicChildInstructionMessage(
   };
 }
 
+/**
+ * Wait for a best-effort post at most `ms` (#955 review, astra P2): Slack's client has no request
+ * timeout and retries rate limits, so an unbounded wait on an optional reply would hold back the
+ * work it precedes. Never throws; the post may still land after the wait ends.
+ */
+function settleWithin(post: Promise<unknown>, ms: number): Promise<{ failed?: unknown; timedOut?: true }> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve({ timedOut: true }), ms);
+    timer.unref?.();
+    post.then(
+      () => {
+        clearTimeout(timer);
+        resolve({});
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        resolve({ failed: error });
+      },
+    );
+  });
+}
+
 /** What a send into a thread became: taken (ran or queued), refused (settled without), or no answer in time. */
 type HandOver = 'taken' | 'refused' | 'timeout';
 
@@ -173,10 +195,13 @@ export interface SlackEpicHostDeps {
   logger: Logger;
   /** How long a send waits for its receipt (default two minutes). */
   acceptTimeoutMs?: number;
+  /** How long a child's instruction reply is waited for before the child starts anyway (default 10 s). */
+  replyTimeoutMs?: number;
 }
 
 export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
   const timeoutMs = deps.acceptTimeoutMs ?? 120_000;
+  const replyTimeoutMs = deps.replyTimeoutMs ?? 10_000;
   /**
    * Idle children an instruction is being handed to, per epic (review #872 R2 astra): from the
    * hand-over until it is taken (the echo posting, the slot not held yet). They count as running —
@@ -232,14 +257,23 @@ export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
     // The instruction, with its epic, as the thread's first reply — the child runs without it (its
     // session gets the instruction; the epic's tree shows it).
     const instruction = buildEpicChildInstructionMessage(epic, spec);
-    try {
-      await deps.postMessage(channel, instruction.text, instruction.blocks, rootTs);
-    } catch (error) {
-      deps.logger.warn('Epic child: its instruction reply could not be posted', {
-        epicTaskId: epicTaskId,
-        childId,
-        error: (error as Error)?.message ?? String(error),
-      });
+    const reply = await settleWithin(
+      Promise.resolve().then(() => deps.postMessage(channel, instruction.text, instruction.blocks, rootTs)),
+      replyTimeoutMs,
+    );
+    if (reply.timedOut || reply.failed !== undefined) {
+      deps.logger.warn(
+        reply.timedOut
+          ? 'Epic child: its instruction reply is still posting — the child starts without it'
+          : 'Epic child: its instruction reply could not be posted',
+        {
+          epicTaskId: epicTaskId,
+          childId,
+          ...(reply.failed !== undefined
+            ? { error: (reply.failed as Error)?.message ?? String(reply.failed) }
+            : { waitedMs: replyTimeoutMs }),
+        },
+      );
     }
     const event: Record<string, unknown> = {
       type: 'message',

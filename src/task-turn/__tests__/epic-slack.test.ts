@@ -142,6 +142,20 @@ describe('the epic host on the Slack path (#854)', () => {
     expect(w.deps.handleMessage.mock.calls[0][0]).toMatchObject({ text: '로그인 고쳐', botThreadRoot: true });
   });
 
+  it('H15 — #955 review (astra P2): a stalled instruction reply is waited for at most replyTimeoutMs, then the child starts', async () => {
+    const w = hostWorld({
+      replyTimeoutMs: 10,
+      postMessage: vi.fn((...a: any[]) => (a[3] ? new Promise(() => {}) : Promise.resolve({ ts: '9.9' }))),
+    });
+    const r = await w.host.spawnChild(w.epic, { planNodeId: 'login', instruction: '로그인 고쳐', title: '로그인' });
+    expect(r).toEqual({ ok: true, childId: 'child-1', started: true });
+    expect(w.deps.handleMessage).toHaveBeenCalledTimes(1);
+    expect(w.deps.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('instruction reply'),
+      expect.objectContaining({ childId: 'child-1' }),
+    );
+  }, 2000);
+
   it('H6 — parallel spawns (review #872): one child per node while it is made; the ones being made take places', async () => {
     let post!: (v: { ts: string }) => void;
     const w = hostWorld({ postMessage: vi.fn((...a: any[]) => (a[3] ? reply() : new Promise((r) => (post = r)))) });
