@@ -7716,19 +7716,35 @@ export class SlackHandler {
    * injecting for it — that one drives the goal.
    */
   private handBackFailedRestartResume(sessionKey: string): void {
-    // Before the startup goal pass: un-mark it, and that pass resumes it as a
-    // plain cut — stall repair, one refund, idle, one kick. One owner per
-    // refund, whatever the order (#961 review, astra).
-    if (!this.restartGoalPassRan && this.restartResumedSessionKeys.delete(sessionKey)) {
+    const live = this.claudeHandler.getSessionByKey?.(sessionKey);
+    if (!live) return;
+    // Before the startup goal pass: un-mark a goal session, and that pass
+    // resumes it as a plain cut — stall repair, one refund, idle, one kick.
+    // One owner per refund, whatever the order (#961 review, astra).
+    if (
+      live.goal?.status === 'active' &&
+      !this.restartGoalPassRan &&
+      this.restartResumedSessionKeys.delete(sessionKey)
+    ) {
       this.logger.info('Restart resume never started its turn — the startup goal pass resumes the goal', {
         sessionKey,
       });
       return;
     }
-    const live = this.claudeHandler.getSessionByKey?.(sessionKey);
-    if (live?.goal?.status !== 'active') return;
     if (this.requestCoordinator.isRequestActive(sessionKey) || this.goalLoopActing?.(sessionKey) === true) return;
-    if (live.activityState !== 'idle') live.activityState = 'idle';
+    // No turn runs for it: a stale `working` must not stay (#989 review — a session without a goal
+    // has no loop to free it, and is left for its user's next message).
+    const wasBusy = live.activityState !== 'idle';
+    if (wasBusy) live.activityState = 'idle';
+    if (live.goal?.status !== 'active') {
+      if (wasBusy) {
+        this.claudeHandler.saveSessions();
+        this.logger.info('Restart resume never started its turn — freed the session (no goal to resume)', {
+          sessionKey,
+        });
+      }
+      return;
+    }
     // The loop's turn now replaces the cut one: give that continuation back
     // (`resumeActiveGoals` does not for a session the restart resumed).
     const capDecisionOpen = isGoalCapDecisionPending(live.goal);
