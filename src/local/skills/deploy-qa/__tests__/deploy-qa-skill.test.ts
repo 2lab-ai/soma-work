@@ -221,16 +221,27 @@ describe('deploy-qa carries every open key when QA cannot run', () => {
     expect(noLock).toContain("removal stays with the lock holder's step 8");
   });
 
-  it('the holder keeps a carry label whose newest carry comment names a merge it did not test', () => {
-    expect(fullStep8).toMatch(/Pass and fail: [^\n]*newest carry comment/);
-    // Two runs without a lock can post out of listing order, so every carry comment since the start counts.
-    expect(fullStep8).toContain("every other carry comment posted since this run's `startTime`");
+  it('the holder keeps a carry label while an outstanding carry comment names a merge it did not test', () => {
+    // Obligation boundary: every carry comment after the last result, not only the newest one.
+    expect(fullStep8).not.toContain('newest carry comment');
+    expect(fullStep8).toMatch(
+      /Pass and fail: [^\n]*every carry comment on the key posted after the latest pass or fail result comment/,
+    );
+    expect(fullStep8).toContain("from before this run's `startTime` (all its carry comments, if it has none");
+    // Step 7 posted this run's own result moments ago; carry comments posted while it ran must still count.
+    expect(fullStep8).toContain("this run's own result comment is never the boundary");
     expect(fullStep8).toContain('names a mergeSha this run did not test');
     expect(fullStep8).toContain('keep the label');
     expect(fullStep8).toContain('`<KEY>: carry label kept');
     expect(fullStep8).toMatch(/Otherwise remove it/);
-    // A carry comment posted between that read and the removal is caught by the re-read.
-    expect(fullStep8).toContain('newer carry comment');
+  });
+
+  it('after removing, the holder checks every carry comment newer than its first read', () => {
+    // Two no-lock runs can post B then A between the read and the removal; the newest alone (A) hides B.
+    expect(fullStep8).toContain('every carry comment newer than that first read');
+    expect(fullStep8).toMatch(
+      /every carry comment newer than that first read[^\n]*add the label back[^\n]*same summary line/,
+    );
   });
 
   it('a run without a lock has nothing to resume and its repeated carry adds nothing', () => {
