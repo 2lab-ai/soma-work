@@ -8,11 +8,11 @@ The four core objectives are:
 1. Accurately parse the deployment target (repo/source/target) from user input
 2. Safely execute the clone -> PR creation -> merge flow for each repo
 3. Detect conflicts/risks and handle them safely with branching logic
-4. Post release notes after deployment completes: a short header in the environment's release-notes channel, the full notes in its thread
+4. Post release notes after deployment completes (step 6)
 
 ## Trigger Input Parsing Rules
 
-The following formats are supported as primary inputs.
+Supported inputs:
 
 - `projalpha develop -> dev2`
 - `deploy projalpha develop -> dev2`
@@ -61,17 +61,19 @@ If `Modify target` or `Cancel` is selected, never proceed with the deployment.
 
 For multiple repos, execute **sequentially** (no concurrent execution).
 
-**GitHub access.** Inside a sandboxed session the `gh` CLI's network calls fail TLS verification (`tls: failed to verify certificate: x509: OSStatus -26276`), while `gh auth token` (it only reads the stored token) and curl to `api.github.com` work — so every GitHub read and write in this workflow (PR create and merge, CI checks, CD runs, the merge commit) goes through the REST API with this call:
+**GitHub access.** In a sandboxed session `gh`'s network calls fail TLS (`x509: OSStatus -26276`), and the tool policy denies `gh auth token` to everyone. Never use `gh auth token` or put a token in a command. Every GitHub read and write here (PR create and merge, CI checks, CD runs, the merge commit) goes through MCP tools:
 
-```bash
-curl -fsSL --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $(gh auth token)" -H "Accept: application/vnd.github+json" "https://api.github.com/<path>"
-```
+- **A GitHub read** is `mcp__devops-tools__gh_read`, e.g. `{"account": "<account>", "args": ["api", "-X", "GET", "repos/<owner/repo>/pulls/<pr-number>", "--jq", ".head.sha"]}`. `args` omits the leading `gh`, one array element per word: `-X`, `GET`, the path, each `-f`, each `key=value`, `--jq`, the filter; no shell quotes. Pass every query parameter as a `-f` pair, never after a `?` in the path (with `-X GET` they become the query; a value may hold a `/`). Never percent-encode anything. Keep `--jq` filters under 1000 characters and output small (cut at 1 MB).
+- **An answer** is a result whose `exitCode` is 0 and whose `truncated` and `timedOut` are false; read its `stdout`. Anything else, or a tool error, is not an answer. Page a listing with `"-f", "per_page=100", "-f", "page=<N>"` until a page holds fewer than 100 items, or with `--paginate` when the filtered output stays small; paging that stopped early is not an answer.
+- **The account**: call `mcp__devops-tools__list` once and use the single account of class `member` (never `org-admin` for reads). No `member` account, more than one, or a read refused for the repo's owner: GitHub access is missing — say so in the thread and stop that repo.
+- **A GitHub write** is a `github` MCP tool: `mcp__github__create_pull_request` (step 3) and `mcp__github__merge_pull_request` (step 4).
+- Without the devops-tools server, run `gh` in Bash with the same args when the session is not sandboxed; in a sandbox, GitHub access is missing.
 
-Write the whole form in every shell call (shell state does not carry over), keep both timeouts on every call, and read fields with `jq`. A listing is paged with `per_page=100&page=N` until a page holds fewer than 100 items; an HTTP error or paging that did not reach the end is not an answer. A write adds `-X POST`, `-X PUT`, or `-X PATCH` and a JSON body with `-d '<json>'`, and uses `--fail-with-body` instead of `-f` so a refusal shows its reason. `git` over https (clone, fetch, push) is not affected — keep using it.
+`git` over https (clone, fetch, push) is not affected — keep using it.
 
 ### 1) Pre-Validation
 
-- Verify access to each repo
+- Verify access to each repo (a GitHub read of `repos/<owner/repo>`)
 - Verify that source/target branches exist
 - Check target branch protection/merge policies
 - Run the post-deploy QA preflight below
@@ -107,7 +109,7 @@ Proceed with the following flow for each repo:
 
 1. Merge `source` into the working branch
 2. If no conflicts, push
-3. Create a PR with `base=target`, `head=deploy branch` (`POST repos/<owner/repo>/pulls` with `title`, `head`, `base`, `body`)
+3. Create a PR with `base=target`, `head=deploy branch` (`mcp__github__create_pull_request` with `owner`, `repo`, `title`, `head`, `base`, `body`)
 4. Include purpose/scope/verification items in the PR body
 
 Leave a session link immediately after PR creation.
@@ -140,36 +142,18 @@ If CI is still running, you **must wait for it in-turn** and then merge. The mer
 
 **REQUIRED** — block synchronously, in the foreground, within this same turn:
 
-1. Read the PR's head SHA (`head.sha` of `repos/<owner/repo>/pulls/<pr-number>`). Then poll its checks in the foreground (NOT `run_in_background`), bounded so it cannot hang forever: up to 40 polling rounds (each request bounded by `--max-time 30`, then a 30 s sleep):
+1. Read the PR's head SHA (`head.sha` of `repos/<owner/repo>/pulls/<pr-number>`), then poll its checks in the foreground (NOT `run_in_background`): up to 40 polling rounds. A round is three GitHub reads with `--paginate` (one summary per page), then a foreground Bash `sleep 30`:
 
-   ```bash
-   pending() {  # pending <path with ?query> <list field> → not-completed runs over every page, or "unknown"
-     local p=1 seen=0 left=0 body n k
-     while :; do
-       body=$(curl -fsSL --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $(gh auth token)" -H "Accept: application/vnd.github+json" "https://api.github.com/$1&per_page=100&page=$p") || { echo unknown; return; }
-       n=$(jq -e ".$2 | arrays | length" <<<"$body") || { echo unknown; return; }
-       k=$(jq "[.$2[] | select(.status != \"completed\")] | length" <<<"$body") || { echo unknown; return; }
-       seen=$((seen + n)); left=$((left + k))
-       [ "$n" -lt 100 ] && break
-       p=$((p + 1))
-     done
-     [ "$seen" = "$(jq -r .total_count <<<"$body")" ] && echo "$left" || echo unknown
-   }
-   for i in $(seq 1 40); do
-     runs=$(pending "repos/<owner/repo>/actions/runs?head_sha=<head_sha>" workflow_runs)
-     checks=$(pending "repos/<owner/repo>/commits/<head_sha>/check-runs?filter=latest" check_runs)
-     echo "round $i: workflow runs pending=$runs, check runs pending=$checks"
-     [ "$runs" = 0 ] && [ "$checks" = 0 ] && break
-     sleep 30
-   done
-   ```
+   - workflow runs: `repos/<owner/repo>/actions/runs` with `"-f", "head_sha=<head_sha>", "-f", "per_page=100"` and the filter `{total: .total_count, n: (.workflow_runs|length), pending: [.workflow_runs[]|select(.status != "completed")|.name]}`
+   - check runs: `repos/<owner/repo>/commits/<head_sha>/check-runs` with `"-f", "filter=latest", "-f", "per_page=100"` and the filter `{total: .total_count, n: (.check_runs|length), pending: [.check_runs[]|select(.status != "completed")|.name]}`
+   - commit statuses: `repos/<owner/repo>/commits/<head_sha>/status` with `"-f", "per_page=100"` and the filter `{total: .total_count, n: (.statuses|length), pending: [.statuses[]|select(.state == "pending")|.context]}`
 
-   The loop blocks until nothing is pending. This keeps your turn alive — you are still working, not waiting to be woken up. Each list is read page by page to the end, and the items read must add up to its `total_count`; an HTTP error, a timeout, or pages that do not add up print `unknown`. `unknown` is never green: it counts as still pending, so keep waiting. Right after a push, CI may not have registered yet: if both lists are empty, poll a few more rounds before concluding the repo has no CI.
+   A list's pending count is its `pending` lengths summed over its pages, valid only when the read is an answer and the `n` of its pages add up to its `total`; otherwise that list is `unknown`. Each round, write `round <i>: runs=<n|unknown> checks=<n|unknown> statuses=<n|unknown>`; stop when all three are 0. This keeps your turn alive. `unknown` is never green: it counts as still pending, so keep waiting. Right after a push CI may not be registered yet: if all three lists are empty, poll a few more rounds before concluding there is no CI.
 
-2. If the loop ends with anything still pending, run the same loop again. Keep looping **in-turn** until checks resolve. Never convert this into a wakeup or a backgrounded watcher.
+2. Anything still pending after 40 rounds → run the loop again, **in-turn**, until checks resolve — never as a wakeup or a backgrounded watcher.
 
-3. When checks resolve, read the conclusions from every page of the same two lists (`conclusion` of each workflow run and check run), plus commit statuses (`repos/<owner/repo>/commits/<head_sha>/status`, paged the same way: `failure` or `error` is a failure; `pending` with `total_count` above 0 is still running — keep waiting). A list you could not read to the end is not green:
-   - **All green** (`success`, `skipped`, or `neutral`) → re-confirm the PR is mergeable (`mergeable` is `true` in `repos/<owner/repo>/pulls/<pr-number>`; `null` means GitHub is still computing it — read again), then merge it (`PUT repos/<owner/repo>/pulls/<pr-number>/merge`) **immediately, in this same turn**.
+3. When checks resolve, read every page of the same three lists: each workflow run's and check run's `conclusion`, each status's `state` (`failure` or `error` is a failure; `pending` is still running — keep waiting). A list not read to the end is not green:
+   - **All green** (`success`, `skipped`, or `neutral`) → re-confirm the PR is mergeable (`mergeable` is `true` in `repos/<owner/repo>/pulls/<pr-number>`; `null` means GitHub is still computing it — read again), then merge it (`mcp__github__merge_pull_request` with `owner`, `repo`, `pull_number`, and `merge_method` `"merge"`) **immediately, in this same turn**.
    - **Any failure** → do NOT merge. Report the failing check (name + log summary) in the thread and request a user decision via `local:UIAskUserQuestion`. Halt the merge until a response is received.
 
 Only after the merge actually succeeds may you produce the deployment result / release-notes / completion output.
@@ -243,7 +227,7 @@ If the target branch name matches a server registered in server-tools, perform a
 3. Verify that key services are in Running state and ports are open
 4. If healthy, proceed to the next step; if issues are found, report a warning in the thread and wait for user decision
 
-> **Caveat**: `list_service` internally runs `docker ps`, which only returns currently running containers. Services that crashed or failed to start after deployment will **not** appear in the results. If the number of returned services is fewer than previously observed, treat it as a warning and investigate before proceeding.
+> **Caveat**: `list_service` runs `docker ps`, which lists only running containers: a service that crashed or failed to start does **not** appear. Fewer services than previously observed is a warning — investigate before proceeding.
 
 If no matching server exists in server-tools, skip this step.
 
@@ -269,9 +253,9 @@ If no matching server exists in server-tools, skip this step.
 }
 ```
 
-`repo` is the normalized `owner/repo`, and `target` is the PR's base branch exactly as merged into (`base.ref` of the GitHub call `repos/<owner/repo>/pulls/<pr-number>`) — never the user's shorthand (`staging`) and never a `refs/heads/` form. The operator's channel mapping matches that branch name exactly.
+`repo` is the normalized `owner/repo`, and `target` is the PR's base branch exactly as merged into (`base.ref` of the GitHub read `repos/<owner/repo>/pulls/<pr-number>`) — never the user's shorthand (`staging`) and never a `refs/heads/` form. The operator's channel mapping matches that branch name exactly.
 
-5. The harness posts the header (repo, target, version, TL;DR) as a channel-root message and the full `text` as replies in its thread. Where is the operator's choice, not yours: the host's `SOMA_RELEASE_NOTES_CHANNELS` maps `repo@target` to a channel, and its `*` entry decides for a deploy no mapping matches (this channel, a fixed channel, or this thread only). With nothing configured, the notes go to this channel. When the notes land elsewhere, the harness replies in this thread with a link — do not post your own "release notes posted" line, and do not pick a channel.
+5. The harness posts the header (repo, target, version, TL;DR) as a channel-root message and the full `text` in its thread. The channel is the operator's choice, not yours: the host's `SOMA_RELEASE_NOTES_CHANNELS` maps `repo@target` to a channel, its `*` entry covers deploys no mapping matches (this channel, a fixed one, or this thread only), and with nothing configured it is this channel. When the notes land elsewhere, the harness links them in this thread — do not post your own "release notes posted" line, and do not pick a channel.
 
 **Prohibited**: Do not generate or post release notes by any other means — no `channel_message` directive, no Slack tool. Each repo gets exactly one `release_notes` directive per deploy. Never emit twice — not in a summary, a retry, or a later turn.
 
@@ -294,7 +278,7 @@ Phase 1 ends only when every merged repo has a result — confirmed, unconfirmed
 
 **Confirming a deployment yourself** (only for a merged repo without QA). The deployment of the merge commit is **confirmed** when one of these holds:
 
-- If CD runs for the target branch, the deploy workflow's run for the merge commit concluded `success`. Wait for it **in-turn**, the same way you wait for CI, within a 30-minute budget. List the runs for the merge commit on the target: `repos/<owner/repo>/actions/runs?head_sha=<after_sha>&branch=<target>`, paged to the end, with no event filter (a CD run can be started by a push, by `workflow_run` after another run, or by `workflow_dispatch`). The CD run is the one whose workflow deploys — its `name` or `path` (e.g. `.github/workflows/deploy.yml`) says so, or its jobs deploy to the target environment; a CI-only workflow is not it. A listing with no deploy run in it is "not registered yet": list again every 30 s for up to 5 minutes after the merge, and for as long as another run for this commit is still in progress (a run started by `workflow_run` appears only after the run it follows), within the budget. Only after that does it mean there is no CD signal (use the healthcheck below). Once a deploy run is seen, poll `repos/<owner/repo>/actions/runs/<run-id>` in the foreground every 30 s until its `status` is `completed`, and read its `conclusion`. A failed or timed-out call is not a result; poll again within the budget. If several runs could be the deploy run, or you cannot tell which one deploys, treat the deployment as unconfirmed and say so in the thread, naming the runs.
+- If CD runs for the target branch, the deploy workflow's run for the merge commit concluded `success`. Wait for it **in-turn**, the same way you wait for CI, within a 30-minute budget. List the runs for the merge commit on the target with a GitHub read of `repos/<owner/repo>/actions/runs` and `"-f", "head_sha=<after_sha>", "-f", "branch=<target>"`, paged to the end, with no event filter (a CD run can be started by a push, by `workflow_run` after another run, or by `workflow_dispatch`). The CD run is the one whose workflow deploys — its `name` or `path` (e.g. `.github/workflows/deploy.yml`) says so, or its jobs deploy to the target environment; a CI-only workflow is not it. A listing with no deploy run in it is "not registered yet": list again every 30 s for up to 5 minutes after the merge, and for as long as another run for this commit is still in progress (a run started by `workflow_run` appears only after the run it follows), within the budget. Only after that does it mean there is no CD signal (use the healthcheck below). Once a deploy run is seen, poll `repos/<owner/repo>/actions/runs/<run-id>` in the foreground every 30 s (filter `{status, conclusion}`, then Bash `sleep 30`) until its `status` is `completed`, and read its `conclusion`. A read that is not an answer is not a result; poll again within the budget. If several runs could be the deploy run, or you cannot tell which one deploys, treat the deployment as unconfirmed and say so in the thread, naming the runs.
 - If there is no CD signal, step 5's healthcheck passed.
 
 With neither a CD run nor a healthcheck to confirm it, the deployment is unconfirmed. A CD run still in progress when the bounded wait ends (the 30-minute budget ran out) also counts as unconfirmed, not as success. A CD run for the merge commit that failed is a failed deploy, not an unconfirmed one.
