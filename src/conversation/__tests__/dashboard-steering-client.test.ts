@@ -66,7 +66,7 @@ const item = (over: Record<string, unknown> = {}) => ({
 describe('steeringData — the session payload as the element’s data', () => {
   // The viewer U1 (SSOT 2026-11-02 — Edit is the writer's own: the item's authorId is the viewer).
   const data = load<{ steeringData(s: unknown, mode: string): Record<string, any> }>(
-    ['decodeSlackEntities', 'steeringData'],
+    ['decodeSlackEntities', 'steeringData', 'turnHolds'],
     ['STEER_STATE'],
     { _viewerUserId: 'U1' },
   ).steeringData;
@@ -146,6 +146,15 @@ describe('steeringData — the session payload as the element’s data', () => {
     // Someone else's session: the queue shows, nothing can be done (the element: read-only placeholder, no buttons).
     expect(data(s, 'readonly')).toMatchObject({ canAct: false, disabled: false });
     expect(data(s, 'closed')).toMatchObject({ running: false, canAct: true, disabled: true });
+  });
+
+  // SSOT 2026-11-06 (dev, this thread): a turn was dispatched 85 s before the model answered; the session read idle
+  // meanwhile, so "1234" was drawn as a turn already sent AND listed in the queue at once. A turn holds the session
+  // from dispatch on: the server says turnBusy until activityState turns working.
+  it('running while a turn is still starting (turnBusy) — a note sent then waits in the queue', () => {
+    expect(data({ activityState: 'idle', turnBusy: true }, 'open')).toMatchObject({ running: true });
+    expect(data({ activityState: 'idle', turnBusy: true }, 'closed')).toMatchObject({ running: false });
+    expect(data({ activityState: 'idle' }, 'open')).toMatchObject({ running: false });
   });
 
   // SSOT 2026-11-05: notes the queue holds wait behind the element's round count button at the composer's top right
