@@ -16,8 +16,9 @@
  *   - a running agent nobody can see any more — its turn ended without its
  *     result, the process restarted — is `unknown`, not `stopped`: we lost
  *     sight of it, we did not see it stop;
- *   - a progress frame of an `unknown` agent proves it alive again; a new
- *     start of a `stopped` agent is a `SendMessage` resume (#966); nothing else
+ *   - a progress frame of an `unknown` agent proves it alive again; a
+ *     `SendMessage` resume (its result names the agent) revives a finished
+ *     agent, and a bare new start revives a `stopped` one (#966); nothing else
  *     moves a finished agent back to running.
  *
  * Records are created only by a spawn (the `Agent` / `Task` call, or the first
@@ -355,10 +356,15 @@ function applyOne(h: AgentHolder, event: AgentTreeEvent): boolean {
         agent.status = 'running';
         agent.endedAt = undefined;
         changed = true;
-      } else if (event.phase === 'started' && agent.status === 'stopped') {
-        // #966 — a stopped agent that starts again was resumed (SendMessage registers a resumed
-        // subagent anew): it runs again, so the next restart can name it. A completed or failed
-        // agent is not revived by a start.
+      } else if (
+        event.phase === 'started' &&
+        agent.status !== 'running' &&
+        (event.resumed === true || agent.status === 'stopped')
+      ) {
+        // #966 — the agent was resumed: it runs again, so the next restart can name it. A
+        // `SendMessage` result that resumed it (`resumed`) revives it from any finished status; a
+        // bare start revives only a `stopped` agent (the SDK registers a resumed subagent anew) —
+        // a completed or failed one is not revived by a start alone.
         agent.status = 'running';
         agent.endedAt = undefined;
         delete agent.settled;

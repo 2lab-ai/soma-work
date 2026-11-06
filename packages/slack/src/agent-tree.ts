@@ -119,6 +119,12 @@ export type AgentTreeEvent =
       summary?: string;
       lastTool?: string;
       usage?: AgentLifecycleUsage;
+      /**
+       * #966 — set on the start the host derives from a `SendMessage` result that
+       * resumed the agent: authoritative, so the registry revives it from any
+       * finished status. The SDK's own `task_started` never sets it.
+       */
+      resumed?: boolean;
       ts: number;
     }
   /** The turn is over: a foreground agent still running is no longer watched. */
