@@ -81,8 +81,8 @@ function commandWords(segment: string): string[] {
   const words = segment
     .trim()
     .split(/\s+/)
-    .filter(Boolean)
-    .map((w) => w.replace(/^['"]|['"]$/g, ''));
+    .map((w) => w.replace(/^['"]+|['"]+$/g, ''))
+    .filter(Boolean);
   let i = 0;
   while (i < words.length) {
     const w = words[i];
@@ -114,9 +114,11 @@ function operandsAfter(args: string[], takes: ReadonlySet<string>): string[] {
   }
   return out;
 }
-/** A script whose name says it deploys (`deploy.sh`, `scripts/deploy-prod.mjs`). */
+/** A script whose name says it deploys (`deploy.sh`, `scripts/deploy-prod.mjs`) — a test file never does. */
 const isDeployScript = (name: string) =>
-  /deploy/i.test(name) && /\.(sh|bash|zsh|py|js|ts|mjs|cjs|rb)$|^deploy/i.test(name);
+  /deploy/i.test(name) &&
+  /\.(sh|bash|zsh|py|js|ts|mjs|cjs|rb)$|^deploy/i.test(name) &&
+  !/(^|[._-])test|\.(test|spec)\./i.test(name);
 /** A short-flag cluster (`-fd`, `-rf`) or long flag that contains the letter / name. */
 const hasShort = (args: string[], letter: string) => args.some((a) => /^-[A-Za-z]+$/.test(a) && a.includes(letter));
 const hasLong = (args: string[], ...names: string[]) =>
@@ -266,11 +268,13 @@ const SQL_CLIENT =
 /**
  * The irreversible action this tool call performs, or null.
  *
- * Bash: a `\` line continuation is joined, a shell's `-c '…'` string is read as
- * a command of its own, then the command is split on `&&`, `||`, `;`, `|`, `&`,
- * newlines, parentheses, `$(` and backticks, and each segment is read from its
- * command word (prefixes such as `sudo -u x`, `env X=1`, `timeout 60` skipped);
- * the first match wins. A `--dry-run` changes nothing. Other tools:
+ * Bash: a `\` line continuation is joined; a heredoc body is blanked (read as
+ * commands only when a shell or ssh reads it); a shell's `-c '…'` string is read
+ * as a command of its own; quoted text is blanked except what runs inside double
+ * quotes (`$(…)`, backticks); then the command is split on `&&`, `||`, `;`, `|`,
+ * `&`, newlines, parentheses, `$(` and backticks, and each segment is read from
+ * its command word (prefixes such as `sudo -u x`, `env X=1`, `timeout 60`
+ * skipped); the first match wins. A `--dry-run` changes nothing. Other tools:
  * {@link TOOL_ACTIONS}.
  */
 export function irreversibleAction(toolName: string, input: unknown): IrreversibleAction | null {
@@ -284,18 +288,84 @@ export function irreversibleAction(toolName: string, input: unknown): Irreversib
 const SHELL_C = /(?:^|[^\w-])(?:ba|z|da|k)?sh\s+(?:-[A-Za-z]+\s+)*-[A-Za-z]*c[A-Za-z]*\s+(['"])([\s\S]*?)\1/g;
 /** Where one shell command ends and the next begins: lists, pipes, subshells, `$(…)` and backticks. */
 const SEGMENT_BREAK = /&&|\|\||\$\(|[;|\n&()`]/;
+/** A heredoc: `<<'EOF'` … `EOF` (groups: the line up to `<<`, the quote, the tag, the body). */
+const HEREDOC = /([^\n]*?)<<-?[ \t]*(['"]?)([A-Za-z_][\w-]*)\2[^\n]*\n([\s\S]*?)\n[ \t]*\3(?=[\s)]|$)/g;
+/** A heredoc fed to a shell runs its body (`bash <<'EOF'`, `ssh host <<'EOF'`). */
+const SHELL_WORD = /(^|[\s;&|(])(?:(?:ba|z|da|k)?sh|ssh)(\s|$)/;
+
+/**
+ * The command with what is only text blanked out, so prose never reads as a command (review 2): single-quoted
+ * strings, double-quoted text (an escaped backtick, a parenthesis, a `;`), and backslash-escaped characters. What
+ * runs inside double quotes — `$(…)` and unescaped backticks — stays.
+ */
+function maskText(s: string): string {
+  let out = '';
+  let mode: 'none' | 'single' | 'double' = 'none';
+  let subst = 0; // $( depth inside double quotes
+  let tick = false; // inside an unescaped backtick inside double quotes
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (mode === 'single') {
+      if (c === "'") mode = 'none';
+      out += c === "'" ? c : ' ';
+      continue;
+    }
+    const live = mode === 'none' || subst > 0 || tick;
+    if (c === '\\' && i + 1 < s.length) {
+      out += '  '; // an escaped character is a literal, never a separator
+      i++;
+      continue;
+    }
+    if (!live) {
+      // plain text inside double quotes
+      if (c === '"') mode = 'none';
+      else if (c === '$' && s[i + 1] === '(') {
+        subst = 1;
+        out += '$(';
+        i++;
+        continue;
+      } else if (c === '`') tick = true;
+      out += c === '"' || c === '`' ? c : ' ';
+      continue;
+    }
+    if (mode === 'double') {
+      if (tick && c === '`') tick = false;
+      else if (subst > 0 && c === '(') subst++;
+      else if (subst > 0 && c === ')') subst--;
+      out += c;
+      continue;
+    }
+    if (c === "'") mode = 'single';
+    else if (c === '"') mode = 'double';
+    out += c;
+  }
+  return out;
+}
 
 function commandAction(raw: string, depth: number): IrreversibleAction | null {
-  const command = raw.replace(/\\\r?\n/g, ' '); // a `\` line continuation is one line
+  const joined = raw.replace(/\\\r?\n/g, ' '); // a `\` line continuation is one line
+  // A heredoc body is input, not commands — unless a shell reads it (`bash <<'EOF'`). Either way it is blanked
+  // before the command is split, so the prose of a `git commit -m "$(cat <<'EOF' …)"` message never reads as one.
+  const fed: string[] = [];
+  const command = joined.replace(HEREDOC, (whole: string, lead: string, _q: string, tag: string, body: string) => {
+    if (SHELL_WORD.test(lead)) fed.push(body);
+    return `${whole.slice(0, whole.indexOf('\n') + 1)}${tag}`; // the `<<` line, then the closing tag
+  });
   if (depth < 3) {
+    for (const body of fed) {
+      const hit = commandAction(body, depth + 1);
+      if (hit) return hit;
+    }
     for (const m of command.matchAll(SHELL_C)) {
       const hit = commandAction(m[2], depth + 1);
       if (hit) return hit;
     }
   }
-  for (const segment of command.split(SEGMENT_BREAK)) {
+  const code = maskText(command);
+  for (const segment of code.split(SEGMENT_BREAK)) {
     const hit = segmentAction(segment);
     if (hit) return hit;
   }
-  return SQL_DESTRUCTIVE.test(command) && SQL_CLIENT.test(command) ? act('db-delete', 'DB 데이터 삭제') : null;
+  // The SQL may sit in quotes or a heredoc; the client must be a command, not a word in a message.
+  return SQL_DESTRUCTIVE.test(joined) && SQL_CLIENT.test(code) ? act('db-delete', 'DB 데이터 삭제') : null;
 }

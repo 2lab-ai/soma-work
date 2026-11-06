@@ -87,6 +87,15 @@ describe('irreversibleAction — destructive', () => {
     ['node scripts/deploy-prod.mjs', 'deploy-script'],
     ['find . -name "*.tmp" -delete', 'find-delete'],
     ['find dist -type f -exec rm {} +', 'find-delete'],
+    // what runs inside double quotes still runs
+    ['echo "done: $(git push --force origin x)"', 'git-force-push'],
+    ['echo "tag `git push origin v1.0.0`"', 'git-push-tag'],
+    // a heredoc fed to a shell is commands
+    ["bash <<'EOF'\ncd repo\ngit push --force origin main\nEOF", 'git-force-push'],
+    ['rm -rf "$BUILD_DIR"', 'rm-recursive'],
+    ["ssh deploy@host <<'EOF'\nrm -rf /srv/app/releases\nEOF", 'rm-recursive'],
+    ['psql "$URL" <<\'SQL\'\nDROP TABLE sessions;\nSQL', 'db-delete'],
+    ['psql "$URL" -c "DROP TABLE sessions"', 'db-delete'],
   ])('%s → %s', (command, expected) => {
     expect(id(command)).toBe(expected);
   });
@@ -124,6 +133,21 @@ describe('irreversibleAction — ordinary calls stay plain', () => {
     'git push --dry-run origin main:deploy/prod',
     'ssh host uptime',
     'find . -name "*.log"',
+    // review 2 P2: quoted prose is text, not commands
+    'git commit -m "docs: document \\`rm -rf\\` guard"',
+    'git commit -m "feat: add \\`npm publish\\` step"',
+    'git commit -m "$(cat <<\'EOF\'\nfix: never \\`git push --force\\`\n\n- `git push --force` is refused\n- run `npm publish` by hand\nEOF\n)"',
+    'gh pr comment 12 --body "use \\`gh pr merge\\` after CI"',
+    'git commit -m "fix: avoid (rm -rf tmp)"',
+    "git commit -m 'fix: avoid (rm -rf tmp); then git push --force'",
+    'sed -i "s/(rm -rf)/x/" notes.md',
+    'grep -E "(rm -rf|del)" log.txt',
+    'echo "a; git push --force"',
+    'git commit -m "docs: run psql then DROP TABLE in staging only"',
+    "cat <<'EOF' > notes.md\nrm -rf build\ngit push --force\nEOF",
+    // review 2 P3: test files are not deploy scripts
+    'python3 tests/test_deploy.py',
+    'node --test src/deploy.test.js',
   ])('%s → null', (command) => {
     expect(bash(command)).toBeNull();
   });

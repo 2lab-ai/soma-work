@@ -216,7 +216,9 @@ a deploy or publish (`gh pr merge`, `git push` to `deploy/*` or a release tag, `
 `deploy*` script) or a destructive command (`rm -r`, force push, `git push --delete`, `git reset --hard`,
 `git clean -f`, `git branch -D`, `DROP TABLE` / `TRUNCATE` through a database client, `redis-cli flushall`,
 `dd of=`, `mkfs`, `find -delete`). It returns a static label (`PR 머지`, `force push`) or `null`. Matching is
-lexical, per shell segment: `\` continuations are joined, a shell's `-c '…'` string is read as its own command, and
+lexical, per shell segment: `\` continuations are joined, a heredoc body is blanked (read as commands only when a
+shell or `ssh` reads it), quoted text is blanked except what runs inside double quotes (`$(…)`, backticks) — so a
+commit message never reads as a command — a shell's `-c '…'` string is read as its own command, and
 `&&` `||` `;` `|` `&` newlines, parentheses, `$(` and backticks split segments; prefixes (`sudo -u x`, `env X=1`,
 `timeout 60`, `npx`) are skipped. A `--dry-run` (and `git push -n`) is not irreversible.
 
