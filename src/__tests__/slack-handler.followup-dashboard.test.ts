@@ -338,4 +338,27 @@ describe('SlackHandler — the dashboard’s follow-up queue controls', () => {
     expect(seen).toHaveLength(2);
     handler.setFollowupChangeListener(undefined);
   });
+
+  // SSOT 2026-11-06 (dev, this thread): the slot is taken at dispatch, but activityState turns working only once the
+  // SDK query answers — 85 s later that day. The dashboard reads the slot (isFollowupTurnBusy) so a message sent in
+  // between waits in the queue on the panel too, and it hears when the slot is taken and released — a run that
+  // involves no queued row commits nothing to the queue when it ends.
+  it('a turn holds the session from dispatch until it settles, and the dashboard hears both moments', async () => {
+    const seen: Array<{ key: string; busy: boolean }> = [];
+    handler.setFollowupChangeListener((key) => seen.push({ key, busy: handler.isFollowupTurnBusy(key) }));
+    let finish: (value: { hasPendingChoice: boolean }) => void = () => {};
+    startWithContinuation.mockImplementationOnce(
+      () => new Promise<{ hasPendingChoice: boolean }>((resolve) => (finish = resolve)),
+    );
+    expect(handler.isFollowupTurnBusy(SESSION_KEY)).toBe(false);
+    const turn = handler.handleMessage(message({ ts: '305.1', text: '시작' }), vi.fn() as any);
+    await vi.waitFor(() => expect(startWithContinuation).toHaveBeenCalled());
+    expect(handler.isFollowupTurnBusy(SESSION_KEY)).toBe(true);
+    await vi.waitFor(() => expect(seen).toContainEqual({ key: SESSION_KEY, busy: true }));
+    finish({ hasPendingChoice: false });
+    await turn;
+    await vi.waitFor(() => expect(handler.isFollowupTurnBusy(SESSION_KEY)).toBe(false));
+    await vi.waitFor(() => expect(seen[seen.length - 1]).toEqual({ key: SESSION_KEY, busy: false }));
+    handler.setFollowupChangeListener(undefined);
+  });
 });

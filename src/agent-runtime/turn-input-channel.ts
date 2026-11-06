@@ -102,15 +102,37 @@ export function buildInitialUserMessage(prompt: string, uuid?: string): SteerUse
 }
 
 /**
+ * The line every steered message opens with (SSOT 2026-11-06). The CLI hands
+ * the messages queued between two tool calls to the model run together: "1234"
+ * and "123435676" arrived as "1234123435676", and the agent read it as noise and
+ * ignored both. With the header and the blank lines around it, each message
+ * stands apart however they are joined, and reads as the user's instruction.
+ */
+export const STEER_MESSAGE_HEADER = '[User message sent while you were working — a separate instruction from the user]';
+
+/** The user's words of a steered text — what {@link buildSteerUserMessage} framed, unframed; other text trimmed. */
+export function unframeSteerText(text: string): string {
+  const trimmed = text.trim();
+  return trimmed.startsWith(`${STEER_MESSAGE_HEADER}\n`)
+    ? trimmed.slice(STEER_MESSAGE_HEADER.length + 1).trim()
+    : trimmed;
+}
+
+/**
  * Build a steered user message.
  *
  * `shouldQuery` is deliberately left UNSET: absent means "this message drives a
  * turn" (sdk.d.ts:5176 — `false` would only append it to the transcript and
  * defer it to the next querying message, which is not what a user pressing
  * enter mid-turn means).
+ *
+ * The text is framed ({@link STEER_MESSAGE_HEADER}) for the model only: the
+ * host records the user's own words (`followupSteerInstructions`).
  */
 export function buildSteerUserMessage(input: SteerInput): SteerUserMessage {
-  const content: Array<Record<string, unknown>> = [{ type: 'text', text: input.text }];
+  const content: Array<Record<string, unknown>> = [
+    { type: 'text', text: `\n\n${STEER_MESSAGE_HEADER}\n${input.text}\n\n` },
+  ];
   for (const image of input.images ?? []) {
     content.push({
       type: 'image',

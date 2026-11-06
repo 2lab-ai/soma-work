@@ -355,6 +355,42 @@ describe('Dashboard — the follow-up queue (batch 2)', () => {
     });
   });
 
+  // SSOT 2026-11-06 (dev, this thread): the slot is taken at dispatch, activityState turns working only once the SDK
+  // query answers (85 s later that day) — the panel read the session idle and drew a queued note as a sent turn.
+  it('a turn that holds the session before it works is turnBusy on the card; working or not held, it is absent', async () => {
+    let busy = true;
+    let activity = 'idle';
+    dashboard.setDashboardSessionAccessor(
+      () =>
+        new Map<string, any>([
+          [
+            KEY,
+            {
+              sessionId: 'sid1',
+              ownerId: 'U1',
+              ownerName: 'Alice',
+              channelId: 'C1',
+              threadTs: 't1',
+              activityState: activity,
+              state: 'MAIN',
+              lastActivity: new Date('2026-11-06T00:00:00Z'),
+            },
+          ],
+        ]),
+    );
+    dashboard.setDashboardFollowupHandler({
+      view: (key) => (key === KEY ? view : undefined),
+      busy: (key) => key === KEY && busy,
+      act: act as any,
+    });
+    expect((await card()).turnBusy).toBe(true);
+    busy = false;
+    expect((await card()).turnBusy).toBeUndefined();
+    busy = true;
+    activity = 'working';
+    expect((await card()).turnBusy).toBeUndefined();
+  });
+
   it('after an act the panel gets the queue as it is now over the dashboard WebSocket', async () => {
     const messages: any[] = [];
     const ws = await injectWebServerWS(
@@ -391,7 +427,7 @@ describe('src/index.ts wires the queue to the dashboard', () => {
   it('the route’s handler is the SlackHandler’s control view and action, and every committed change pushes its session', () => {
     expect(INDEX).toMatch(/import \{[^}]*\bsetDashboardFollowupHandler\b[^}]*\} from '\.\/conversation'/);
     expect(INDEX).toMatch(
-      /setDashboardFollowupHandler\(\{\s*view: \(sessionKey\) => slackHandler\.getFollowupView\(sessionKey\),\s*act: \(request\) => slackHandler\.handleDashboardFollowupAction\(request\),\s*\}\);/,
+      /setDashboardFollowupHandler\(\{\s*view: \(sessionKey\) => slackHandler\.getFollowupView\(sessionKey\),\s*busy: \(sessionKey\) => slackHandler\.isFollowupTurnBusy\(sessionKey\),\s*act: \(request\) => slackHandler\.handleDashboardFollowupAction\(request\),\s*\}\);/,
     );
     expect(INDEX).toContain(
       'slackHandler.setFollowupChangeListener((sessionKey) => scheduleLiveSessionUpdate(sessionKey));',
