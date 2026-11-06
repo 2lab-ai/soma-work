@@ -62,6 +62,7 @@ import {
   config,
   getIncidentTrustedSource,
   getLinkLeakReportConfig,
+  getReportTimezone,
   runPreflightChecks,
   validateConfig,
 } from './config';
@@ -1352,6 +1353,11 @@ async function start() {
       createSlackEpicHost({
         getSessionByTaskId: (taskId) => epicRegistry.getSessionByTaskId(taskId),
         getChildTasks: (parentTaskId) => epicRegistry.getChildTasks(parentTaskId),
+        // #1020 — the epic finds its owner's tasks and adopts one as a child (it keeps running; nothing is sent).
+        getAllSessions: () => epicRegistry.getAllSessions(),
+        adoptEpicChild: (epicTaskId, childTaskId, planNodeId) =>
+          epicRegistry.adoptEpicChild(epicTaskId, childTaskId, planNodeId),
+        timezone: getReportTimezone(),
         setEpicPlan: (taskId, input, by) => epicRegistry.setEpicPlan(taskId, input, by),
         reserveEpicChild: (epicTaskId, planNodeId) => epicRegistry.reserveEpicChild(epicTaskId, planNodeId),
         unreserveEpicChild: (epicTaskId, childId) => epicRegistry.unreserveEpicChild(epicTaskId, childId),

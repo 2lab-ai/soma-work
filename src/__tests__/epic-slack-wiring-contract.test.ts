@@ -43,6 +43,15 @@ describe('index.ts — epics as Slack sessions (#854)', () => {
     );
   });
 
+  it('W1b (#1020) — the host finds the owner’s tasks in the registry and adopts through it, in the report timezone', () => {
+    const host = section('setEpicHost(\n      createSlackEpicHost({', '\n    );');
+    expect(host).toMatch(/getAllSessions: \(\) => epicRegistry\.getAllSessions\(\)/);
+    expect(host).toMatch(
+      /adoptEpicChild: \(epicTaskId, childTaskId, planNodeId\) =>\s*epicRegistry\.adoptEpicChild\(epicTaskId, childTaskId, planNodeId\)/,
+    );
+    expect(host).toMatch(/timezone: getReportTimezone\(\)/);
+  });
+
   it('W2 — a settled chain: a child records its end on its epic; an epic may wake', () => {
     const settled = section('slackHandler.setChainSettledListener((key, outcome) => {', '\n    });');
     expect(settled).toMatch(/const end = chainEndOf\(outcome\);/);
