@@ -1232,6 +1232,12 @@ export class SessionRegistry {
     if (!epic.plan?.nodes.some((n) => n.id === planNodeId)) {
       throw new Error(`reserveEpicChild: the plan has no node ${planNodeId}`);
     }
+    // #1020 review (grok P1) — the limit is the registry's too, as for adoptEpicChild: a made and an adopted child
+    // count against the same EPIC_CHILD_MAX ids, whoever asks. (One child per node stays the tools' rule: the server's
+    // check, the host's in-flight set and this reservation run in one tick, with no await between them.)
+    if ((epic.childTaskIds ?? []).length >= EPIC_CHILD_MAX) {
+      throw new Error(`reserveEpicChild: an epic has at most ${EPIC_CHILD_MAX} children`);
+    }
     const childId = randomUUID();
     const before = { childTaskIds: epic.childTaskIds, plan: epic.plan };
     epic.childTaskIds = [...(epic.childTaskIds ?? []), childId];
