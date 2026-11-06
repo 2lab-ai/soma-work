@@ -482,6 +482,70 @@ function heldTurnResult(held: HeldTurn): SDKMessage {
   return { ...latest, result: answer.result, stop_reason: answer.stop_reason } as unknown as SDKMessage;
 }
 
+/** The tools a model stops a background task with; the id is `task_id` (or the older `shell_id`). */
+const STOP_TOOLS = new Set(['TaskStop', 'KillShell', 'KillBash']);
+
+/**
+ * #1010 review — the stop tool calls an assistant frame makes: the call's id and what it asks to stop.
+ * `TaskStop` takes an agent's name too, so the target is not always the task id.
+ */
+function requestedStops(raw: Record<string, unknown>): Array<{ callId: string; target: string }> {
+  if (raw.type !== 'assistant') return [];
+  const content = (raw.message as { content?: unknown } | undefined)?.content;
+  if (!Array.isArray(content)) return [];
+  const stops: Array<{ callId: string; target: string }> = [];
+  for (const block of content) {
+    if (!block || typeof block !== 'object') continue;
+    const b = block as { type?: unknown; id?: unknown; name?: unknown; input?: Record<string, unknown> };
+    if (b.type !== 'tool_use' || typeof b.name !== 'string' || !STOP_TOOLS.has(b.name)) continue;
+    const target = b.input?.task_id ?? b.input?.shell_id;
+    if (typeof target === 'string' && target) stops.push({ callId: typeof b.id === 'string' ? b.id : '', target });
+  }
+  return stops;
+}
+
+const STOPPED_TASK_ID = /"task_id"\s*:\s*"([^"]+)"/;
+
+/**
+ * #1010 review (astra r4) — the answers a user frame carries to stop calls still waiting: the call's id,
+ * and the task id its result names (`TaskStop` answers `{"task_id":"a123",…}`), when there is one.
+ */
+function answeredStops(
+  raw: Record<string, unknown>,
+  waiting: ReadonlyMap<string, string>,
+): Array<{ callId: string; taskId?: string }> {
+  if (raw.type !== 'user' || waiting.size === 0) return [];
+  const content = (raw.message as { content?: unknown } | undefined)?.content;
+  if (!Array.isArray(content)) return [];
+  const answers: Array<{ callId: string; taskId?: string }> = [];
+  for (const block of content) {
+    if (!block || typeof block !== 'object') continue;
+    const b = block as { type?: unknown; tool_use_id?: unknown; content?: unknown };
+    if (b.type !== 'tool_result' || typeof b.tool_use_id !== 'string' || !waiting.has(b.tool_use_id)) continue;
+    const text =
+      typeof b.content === 'string'
+        ? b.content
+        : Array.isArray(b.content)
+          ? b.content
+              .map((part) => (part && typeof part === 'object' ? String((part as { text?: unknown }).text ?? '') : ''))
+              .join('')
+          : '';
+    const fromResult = (raw.tool_use_result as { task_id?: unknown } | undefined)?.task_id;
+    const taskId = STOPPED_TASK_ID.exec(text)?.[1] ?? (typeof fromResult === 'string' ? fromResult : undefined);
+    answers.push({ callId: b.tool_use_id, ...(taskId ? { taskId } : {}) });
+  }
+  return answers;
+}
+
+/** #966 — a CLI frame that settles a background task (`task_notification`, or a terminal `task_updated`). */
+function isTaskSettleFrame(raw: Record<string, unknown>): boolean {
+  if (raw.type !== 'system') return false;
+  if (raw.subtype === 'task_notification') return true;
+  if (raw.subtype !== 'task_updated') return false;
+  const status = (raw.patch as Record<string, unknown> | undefined)?.status;
+  return status === 'completed' || status === 'failed' || status === 'killed';
+}
+
 export class ClaudeHandler implements TurnSteeringPort {
   private logger = new Logger('ClaudeHandler');
   private mcpManager: McpManager;
@@ -1444,7 +1508,14 @@ export class ClaudeHandler implements TurnSteeringPort {
         if (keepaliveBackstopTimer) clearTimeout(keepaliveBackstopTimer);
         keepaliveBackstopTimer = undefined;
       };
+      // #1010 review (astra) — tasks stopped on purpose: by the host here (the keepalive cap) or by the
+      // model (`TaskStop` / `KillShell` / `KillBash`). Their `stopped` is never "stopped with the turn",
+      // even when it arrives after the input closed (the input can close while a turn still runs).
+      const stoppedOnPurpose = new Set<string>();
+      /** The model's stop calls whose result has not come yet: call id → the id or name it named. */
+      const stopsAwaitingResult = new Map<string, string>();
       const stopBackgroundAgent = (taskId: string) => {
+        stoppedOnPurpose.add(taskId);
         const failed = (error: unknown) =>
           this.logger.debug('Keepalive cap: stopping a background agent failed', {
             taskId,
@@ -1580,6 +1651,28 @@ export class ClaudeHandler implements TurnSteeringPort {
 
           // Context rollback (#743): remember the latest safe cut point.
           if (session) trackChainPoint(session, raw);
+
+          // #966 — the host closed the input, so the CLI is exiting and stops the background tasks it
+          // still runs. Those reports are the turn's end: mark them so the turn-end decision still
+          // counts that work as stopped with the turn (a held turn reads them before it ends). A task
+          // stopped on purpose (the model's stop tool, the keepalive cap) is never marked: the task id a
+          // stop's result names counts, and while a stop is unanswered nothing is marked (its settle can
+          // come first, and a stop by name says which task it hit only in its result).
+          for (const stop of requestedStops(raw)) {
+            stoppedOnPurpose.add(stop.target);
+            if (stop.callId) stopsAwaitingResult.set(stop.callId, stop.target);
+          }
+          for (const answer of answeredStops(raw, stopsAwaitingResult)) {
+            if (answer.taskId) stoppedOnPurpose.add(answer.taskId);
+            stopsAwaitingResult.delete(answer.callId);
+          }
+          if (
+            channel.isClosed &&
+            isTaskSettleFrame(raw) &&
+            stopsAwaitingResult.size === 0 &&
+            !stoppedOnPurpose.has(String(raw.task_id ?? ''))
+          )
+            raw.soma_ended_with_turn = true;
 
           if (message.type === 'result') lastResultSeq = frameSeq;
 

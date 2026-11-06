@@ -66,6 +66,56 @@ describe('agent tree end to end (review round 2)', () => {
     expect(agentById(reg, 'agent')).toMatchObject({ taskId: 'task', status: 'stopped' });
   });
 
+  // #1010 review (astra P1): a SendMessage result waits in the render buffer while a lifecycle frame
+  // applies at once. The resume must apply on ARRIVAL, so a later stop still wins.
+  const RESUME_RESULT = (taskId: string): Ev => ({
+    type: 'tool_result',
+    toolCallId: 'sm',
+    content: [{ type: 'text', text: `{"success":true,"message":"Resuming agent x","resumedAgentId":"${taskId}"}` }],
+  });
+  const SEND: Ev = {
+    type: 'tool_call',
+    name: 'SendMessage',
+    toolCallId: 'sm',
+    input: { to: 'task', message: 'go on' },
+  };
+  const STOPPED_BEFORE: Ev[] = [
+    SPAWN,
+    { type: 'agent_task_lifecycle', phase: 'started', taskId: 'task', toolUseId: 'agent', taskType: 'local_agent' },
+    { type: 'tool_result', toolCallId: 'agent', content: [], agentOutcome: { status: 'async_launched' } },
+    { type: 'agent_task_lifecycle', phase: 'settled', taskId: 'task', status: 'stopped' },
+  ];
+
+  it('a SendMessage resume then a stop in the same batch leaves the agent stopped', async () => {
+    const agents = await run([
+      ...STOPPED_BEFORE,
+      SEND,
+      RESUME_RESULT('task'),
+      { type: 'agent_task_lifecycle', phase: 'settled', taskId: 'task', status: 'stopped' },
+      RESULT,
+    ]);
+    expect(agentById(agents, 'agent')?.status).toBe('stopped');
+  });
+
+  it('a SendMessage resume of a stopped agent leaves it running', async () => {
+    const agents = await run([...STOPPED_BEFORE, SEND, RESUME_RESULT('task'), RESULT]);
+    expect(agentById(agents, 'agent')?.status).toBe('running');
+  });
+
+  // #1010 review (fable P2): SendMessage resumes completed agents too (trinity rounds, llm-dispatch).
+  it('a SendMessage resume of a completed agent leaves it running', async () => {
+    const agents = await run([
+      SPAWN,
+      { type: 'agent_task_lifecycle', phase: 'started', taskId: 'task', toolUseId: 'agent', taskType: 'local_agent' },
+      { type: 'tool_result', toolCallId: 'agent', content: [], agentOutcome: { status: 'async_launched' } },
+      { type: 'agent_task_lifecycle', phase: 'settled', taskId: 'task', status: 'completed' },
+      SEND,
+      RESUME_RESULT('task'),
+      RESULT,
+    ]);
+    expect(agentById(agents, 'agent')?.status).toBe('running');
+  });
+
   it('one tool call counted by both the log and the SDK is one call', async () => {
     const reg = await run([
       SPAWN,

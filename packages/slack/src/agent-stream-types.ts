@@ -148,6 +148,11 @@ export type AgentStreamEvent =
       status?: 'completed' | 'failed' | 'stopped';
       outputFile?: string;
       summary?: string;
+      /**
+       * #966 — a `stopped` settle that came after the host closed the CLI's input:
+       * the turn's end stopped the task (the CLI stops its background tasks as it exits).
+       */
+      endedWithTurn?: true;
       // Spec 12: what the agent tree shows for a subagent task.
       subagentType?: string;
       description?: string;
