@@ -1915,6 +1915,8 @@ export class SessionRegistry {
       mergeStats: archived.mergeStats,
       goal,
       goalHistory: migrateLegacyGoalArray(archived.goalHistory),
+      // Paused goals wait for their owner across sleep and archive (SSOT 2026-11-06).
+      goalPaused: migrateLegacyGoalArray(archived.goalPaused),
       taskLedger: sanitizeTaskLedger(archived.taskLedger),
       agents: loseRunningAgents(sanitizeAgentRegistry(archived.agents), Date.now()),
       taskUsage: restoreTaskUsage({ taskUsage: archived.taskUsage, sessionId: archived.sessionId }),
