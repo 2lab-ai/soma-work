@@ -70,6 +70,7 @@ const CAP_MS = 5 * 60_000;
 
 const CAP_LOG = 'Background agents outlived the keepalive cap; stopping them';
 const DEFER_LOG = 'Deferring the turn end while background agents run';
+const SHELL_DEFER_LOG = 'Deferring the turn end for a follow-up turn of a background task';
 
 const AGENT_ID = 'a2822c53d8b286bbf';
 const SECOND_AGENT_ID = 'b7d1e0c4a9f35e210';
@@ -525,13 +526,11 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
     });
   }
 
-  it('does not hold the turn for shells, workflows or ambient agents', async () => {
+  it('does not hold the turn for ambient agents', async () => {
     const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
     try {
       const cli = newFakeCli();
       installAnswerThenWait(cli, [
-        { task_id: 'bash-1', task_type: 'local_bash', description: 'dev server' },
-        { task_id: 'flow-1', task_type: 'local_workflow', description: 'workflow' },
         { task_id: 'watch-1', task_type: 'local_agent', description: 'watcher', ambient: true },
       ]);
 
@@ -542,6 +541,53 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
       expect(results).toHaveLength(1);
       expect(results[0]).toMatchObject({ result: 'WAITING', user_message_uuid: cli.opening?.uuid });
       expect(callsOf(info, DEFER_LOG)).toHaveLength(0);
+      expect(callsOf(info, SHELL_DEFER_LOG)).toHaveLength(0);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  // #997: a live shell or workflow never holds a turn for its lifetime — only for
+  // the follow-up grace, long enough to read a notification turn the CLI already
+  // started. Then the input closes as before, though the shell is still live.
+  it('holds the answer of a turn with live shells or workflows only for the follow-up grace (#997)', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const pulledPastOpening = deferred();
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([
+          { task_id: 'bash-1', task_type: 'local_bash', description: 'dev server' },
+          { task_id: 'flow-1', task_type: 'local_workflow', description: 'workflow' },
+        ]);
+        yield openingResult(cli.opening?.uuid);
+        const probe = watchInputEnd(inputs, cli);
+        pulledPastOpening.resolve();
+        await probe;
+      });
+
+      const framesPromise = collect(startTurn(newHandler()));
+      await pulledPastOpening.promise;
+
+      await vi.advanceTimersByTimeAsync(BG_FOLLOWUP_GRACE_MS - 1);
+      expect(cli.inputEnded).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1);
+      const frames = await framesPromise;
+
+      expect(cli.inputEnded).toBe(true);
+      const results = resultsOf(frames);
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({ result: 'WAITING', user_message_uuid: cli.opening?.uuid });
+      // Not the agent hold: no keepalive cap fires for a shell.
+      expect(callsOf(info, DEFER_LOG)).toHaveLength(0);
+      expect(callsOf(info, SHELL_DEFER_LOG)).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(CAP_MS + NON_TURN_RESULT_IDLE_MS * 2);
+      expect(cli.stopTask).not.toHaveBeenCalled();
+      expect(cli.close).not.toHaveBeenCalled();
     } finally {
       info.mockRestore();
     }
@@ -1446,5 +1492,332 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
       warn.mockRestore();
       error.mockRestore();
     }
+  });
+});
+
+/**
+ * #997 — a late result must not cut a turn the CLI already started.
+ *
+ * Dev, 6 November 2026: a turn ended with a `run_in_background` Bash (a CI
+ * watcher) still live. The Slack consumer was 46–92 s behind the CLI (Slack
+ * rate limiter), so the CLI's input stayed open; the watcher finished, and the
+ * CLI ran the notification turn on its own. The host then read the PREVIOUS
+ * turn's result, closed the input and returned the iterator — mid-way through
+ * that notification turn, as its `gh pr merge` was being called. The CLI filled
+ * the call with the SDK's fixed text "The user doesn't want to take this action
+ * right now", and the model told the user they had stopped the merge.
+ *
+ * The CLI's frames after that result were already buffered when the host read
+ * it. The handler now holds the answer of a turn whose shell is live, or settled
+ * during it, for the follow-up grace: buffered frames are read at once, and a
+ * running notification turn ends the turn on its own result.
+ */
+describe('ClaudeHandler: a late result does not cut a notification turn of a background shell (#997)', () => {
+  beforeEach(() => {
+    queryMock.mockReset();
+    releaseMock.mockClear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  const BASH_ID = 'b0ot1bdpv';
+  const bashTask = { task_id: BASH_ID, task_type: 'local_bash', description: 'CI watcher' };
+
+  const TOOL_USE_BG_BASH = {
+    type: 'assistant',
+    message: {
+      model: 'claude-test',
+      content: [{ type: 'tool_use', id: 'toolu_watch', name: 'Bash', input: { run_in_background: true } }],
+    },
+  };
+  const BG_BASH_RESULT = {
+    type: 'user',
+    parent_tool_use_id: null,
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_watch', content: 'running' }] },
+  };
+  const TOOL_USE_MERGE = {
+    type: 'assistant',
+    message: {
+      model: 'claude-test',
+      content: [{ type: 'tool_use', id: 'toolu_merge', name: 'Bash', input: { command: 'gh pr merge 982' } }],
+    },
+  };
+  const MERGE_RESULT = {
+    type: 'user',
+    parent_tool_use_id: null,
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_merge', content: 'merged' }] },
+  };
+  const MERGED = assistantText('MERGED');
+  const mergedResult = () => successResult({ result: 'MERGED', num_turns: 2, uuid: 'merged-result-uuid' });
+
+  /** What the processor does: read up to the first result, then return the iterator. */
+  async function readLikeTheProcessor(it: AsyncIterator<unknown>): Promise<unknown[]> {
+    const out: unknown[] = [];
+    for (;;) {
+      const next = await it.next();
+      if (next.done) return out;
+      out.push(next.value);
+      if (typeOf(next.value) === 'result') {
+        await it.return?.();
+        return out;
+      }
+    }
+  }
+
+  it('reads past a stale answer into the notification turn the CLI already ran, and ends on its result', async () => {
+    const cli = newFakeCli();
+    let inputOpenAfterOpening: boolean | undefined;
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield INIT;
+      yield TOOL_USE_BG_BASH;
+      yield level([bashTask]);
+      yield taskStarted(BASH_ID);
+      yield BG_BASH_RESULT;
+      yield WAITING;
+      yield openingResult(cli.opening?.uuid);
+      const probe = watchInputEnd(inputs, cli);
+      inputOpenAfterOpening = await isPending(probe);
+      // Already emitted by the time the host reads the answer above: the watcher
+      // finished and the CLI started the notification turn on its own.
+      yield level([]);
+      yield taskNotification(BASH_ID, 'completed');
+      yield INIT;
+      yield TOOL_USE_MERGE;
+      yield MERGE_RESULT;
+      yield MERGED;
+      yield mergedResult();
+      await probe;
+    });
+
+    const frames = await readLikeTheProcessor(startTurn(newHandler()));
+
+    expect(inputOpenAfterOpening).toBe(true);
+    // The consumer saw the whole notification turn — the merge call included —
+    // before the turn ended, so returning the iterator cuts nothing.
+    expect(frames).toContainEqual(TOOL_USE_MERGE);
+    expect(frames).toContainEqual(MERGE_RESULT);
+    const results = resultsOf(frames);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ result: 'MERGED' });
+    expect(frames.indexOf(MERGED)).toBeLessThan(frames.indexOf(results[0]));
+    expect(cli.inputEnded).toBe(true);
+  });
+
+  it('holds the answer of a turn whose shell settled inside it, and ends on the follow-up turn', async () => {
+    const cli = newFakeCli();
+    let inputOpenAfterOpening: boolean | undefined;
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield INIT;
+      yield TOOL_USE_BG_BASH;
+      yield level([bashTask]);
+      yield BG_BASH_RESULT;
+      // The shell finishes while the turn generates its last text.
+      yield level([]);
+      yield WAITING;
+      yield openingResult(cli.opening?.uuid);
+      const probe = watchInputEnd(inputs, cli);
+      inputOpenAfterOpening = await isPending(probe);
+      yield taskNotification(BASH_ID, 'completed');
+      yield INIT;
+      yield NOTIFIED;
+      yield notifiedResult();
+      await probe;
+    });
+
+    const frames = await readLikeTheProcessor(startTurn(newHandler()));
+
+    expect(inputOpenAfterOpening).toBe(true);
+    const results = resultsOf(frames);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ result: 'NOTIFIED' });
+    expect(cli.inputEnded).toBe(true);
+  });
+
+  it("reads into a second shell's notification turn that started after the first one's result", async () => {
+    const cli = newFakeCli();
+    const second = { task_id: 'b-second', task_type: 'local_bash', description: 'second CI watcher' };
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield INIT;
+      yield level([bashTask, second]);
+      yield WAITING;
+      yield openingResult(cli.opening?.uuid);
+      // All buffered by the time the lagging host reads the answer: the first
+      // watcher's turn, then the second watcher finishing after that turn's result.
+      yield level([second]);
+      yield taskNotification(BASH_ID, 'completed');
+      yield INIT;
+      yield NOTIFIED;
+      yield notifiedResult();
+      yield level([]);
+      yield taskNotification('b-second', 'completed');
+      yield INIT;
+      yield TOOL_USE_MERGE;
+      yield MERGE_RESULT;
+      yield MERGED;
+      yield mergedResult();
+      cli.inputEnded = (await inputs.next()).done === true;
+    });
+
+    const frames = await readLikeTheProcessor(startTurn(newHandler()));
+
+    expect(frames).toContainEqual(TOOL_USE_MERGE);
+    const results = resultsOf(frames);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ result: 'MERGED' });
+  });
+
+  // #997 review (astra): a subagent's own system/init used to disarm the grace,
+  // and nothing re-armed it — the held answer then waited out the 30-min cap.
+  it("ends the held turn at the grace even when a subagent's system/init arrives meanwhile", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const cli = newFakeCli();
+    const pulledPastSubagentInit = deferred();
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield INIT;
+      yield level([bashTask, { task_id: 'amb-1', task_type: 'local_agent', description: 'ambient', ambient: true }]);
+      yield WAITING;
+      yield openingResult(cli.opening?.uuid);
+      yield { ...INIT, parent_tool_use_id: 'toolu_ambient' };
+      const probe = watchInputEnd(inputs, cli);
+      pulledPastSubagentInit.resolve();
+      await probe;
+    });
+
+    const framesPromise = collect(startTurn(newHandler()));
+    await pulledPastSubagentInit.promise;
+
+    await vi.advanceTimersByTimeAsync(BG_FOLLOWUP_GRACE_MS);
+    const frames = await framesPromise;
+
+    expect(cli.inputEnded).toBe(true);
+    expect(resultsOf(frames)[0]).toMatchObject({ result: 'WAITING', user_message_uuid: cli.opening?.uuid });
+  });
+
+  // #997 review (astra): a long-lived shell (dev server) stays live, so "a task
+  // is live" alone would re-wait after every result and chain any stream of
+  // notification turns (here an ambient watcher's events) onto the held turn.
+  it('does not chain notification turns onto a held turn just because a dev server stays live', async () => {
+    const cli = newFakeCli();
+    const devServer = { task_id: 'dev-1', task_type: 'local_bash', description: 'dev server' };
+    const watcher = { task_id: 'mon-1', task_type: 'monitor', description: 'log tail', ambient: true };
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield INIT;
+      yield level([devServer, watcher]);
+      yield WAITING;
+      yield openingResult(cli.opening?.uuid);
+      yield INIT;
+      yield assistantText('EVENT 1');
+      yield successResult({ result: 'EVENT 1', num_turns: 1, uuid: 'event-1-uuid' });
+      yield INIT;
+      yield assistantText('EVENT 2');
+      yield successResult({ result: 'EVENT 2', num_turns: 1, uuid: 'event-2-uuid' });
+      cli.inputEnded = (await inputs.next()).done === true;
+    });
+
+    const frames = await readLikeTheProcessor(startTurn(newHandler()));
+
+    const results = resultsOf(frames);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ result: 'EVENT 1' });
+    expect(frames).not.toContainEqual(assistantText('EVENT 2'));
+  });
+
+  // #997 review round 2 (astra): a steer answered while the shell is still live
+  // is an answer too — the shell's notification turn may be buffered behind it.
+  it("reads past a steer's answer into the shell's notification turn buffered behind it", async () => {
+    const cli = newFakeCli();
+    const pulledPastOpening = deferred();
+    const steerGate = deferred();
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield INIT;
+      yield TOOL_USE_BG_BASH;
+      yield level([bashTask]);
+      yield BG_BASH_RESULT;
+      yield WAITING;
+      yield openingResult(cli.opening?.uuid);
+      pulledPastOpening.resolve();
+      await steerGate.promise;
+      cli.received.push((await inputs.next()).value);
+      yield INIT;
+      yield assistantText('ACK');
+      yield successResult({ result: 'ACK', num_turns: 1, uuid: 'steer-result-uuid', user_message_uuid: 'u-steer' });
+      // Buffered behind the steer's answer: the watcher finished and the CLI ran its turn.
+      yield level([]);
+      yield taskNotification(BASH_ID, 'completed');
+      yield INIT;
+      yield TOOL_USE_MERGE;
+      yield MERGE_RESULT;
+      yield MERGED;
+      yield mergedResult();
+      cli.inputEnded = (await inputs.next()).done === true;
+    });
+    const handler = newHandler();
+
+    const framesPromise = readLikeTheProcessor(startTurn(handler));
+    await pulledPastOpening.promise;
+    expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'and also' })).toBe(true);
+    steerGate.resolve();
+    const frames = await framesPromise;
+
+    expect(frames).toContainEqual(TOOL_USE_MERGE);
+    const results = resultsOf(frames);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ result: 'MERGED' });
+  });
+
+  it('does not wait for a live-update watcher (ambient): its events never hold the turn', async () => {
+    const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const watcher = { task_id: 'mon-1', task_type: 'monitor', description: 'log tail', ambient: true };
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield INIT;
+        yield level([watcher]);
+        yield WAITING;
+        yield openingResult(cli.opening?.uuid);
+        cli.inputEnded = (await inputs.next()).done === true;
+      });
+
+      const frames = await collect(startTurn(newHandler()));
+
+      expect(cli.inputEnded).toBe(true);
+      expect(resultsOf(frames)[0]).toMatchObject({ result: 'WAITING' });
+      expect(callsOf(info, SHELL_DEFER_LOG)).toHaveLength(0);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it('does not hold for a shell when SOMA_BG_KEEPALIVE_MAX_MS is 0', async () => {
+    vi.stubEnv(KEEPALIVE_ENV, '0');
+    const cli = newFakeCli();
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield INIT;
+      yield TOOL_USE_BG_BASH;
+      yield level([bashTask]);
+      yield BG_BASH_RESULT;
+      yield WAITING;
+      yield openingResult(cli.opening?.uuid);
+      cli.inputEnded = (await inputs.next()).done === true;
+    });
+
+    const frames = await collect(startTurn(newHandler()));
+
+    expect(cli.inputEnded).toBe(true);
+    const results = resultsOf(frames);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ result: 'WAITING', user_message_uuid: cli.opening?.uuid });
   });
 });

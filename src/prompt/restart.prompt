@@ -5,7 +5,7 @@ The restart may have cut your turn after an outside action took effect but befor
 - the PRs open for that branch (`gh pr list --head <branch>`), and the latest comments on the PR or issue you were working on.
 Continue from what already exists. Never open a second PR, post the same comment twice or deploy twice.
 
-Background work you started before the interruption — subagents, background commands, Monitor watches — stopped with it and will not report back. A task notification that it "didn't finish before the previous session ended" (stopped or killed) comes from the interruption, not from the user. Pick each one up before you go on: SendMessage to a stopped subagent's agent ID resumes it from its transcript; run a stopped command again (after the check above). Never end your turn waiting for work that is no longer running.
+Background work you started before the interruption — subagents, background commands, Monitor watches — stopped with it and will not report back. A task notification that it "didn't finish before the previous session ended" (stopped or killed), and "The user doesn't want to take this action right now…" on the call the restart cut, come from the interruption, not from the user. Pick each one up before you go on: SendMessage to a stopped subagent's agent ID resumes it from its transcript; run a stopped command again (after the check above). Never end your turn waiting for work that is no longer running.
 
 Resume work in the following order:
 0. If you clearly remember what you were doing, check the last 3 or so messages, do the check above, and continue the task.

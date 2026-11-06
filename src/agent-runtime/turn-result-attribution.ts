@@ -69,8 +69,8 @@ const TURN_MESSAGE_TYPES: ReadonlySet<unknown> = new Set(['assistant', 'user', '
  * the silence bound armed after a skipped result (`NON_TURN_RESULT_IDLE_MS`).
  *
  * Model output (`assistant`, `stream_event`) and tool round-trips (`user`) on
- * the main thread and a `result` are produced by a turn; `system`/`init` opens
- * one — in streaming input mode the CLI emits it at the start of every turn,
+ * the main thread and a `result` are produced by a turn; a main-thread
+ * `system`/`init` opens one — in streaming input mode the CLI emits it at the start of every turn,
  * the one right after an orphan drain included (measured). Everything else is
  * side-band: a message stamped with a `parent_tool_use_id` is a subagent's (a
  * background subagent's own `user`/`assistant` frames flow through the same
@@ -84,7 +84,9 @@ const TURN_MESSAGE_TYPES: ReadonlySet<unknown> = new Set(['assistant', 'user', '
  */
 export function isTurnProgressFrame(raw: Record<string, unknown>): boolean {
   if (raw.type === 'result') return true;
-  if (raw.type === 'system') return raw.subtype === 'init';
-  if (!TURN_MESSAGE_TYPES.has(raw.type)) return false;
-  return raw.parent_tool_use_id === undefined || raw.parent_tool_use_id === null;
+  const mainThread = raw.parent_tool_use_id === undefined || raw.parent_tool_use_id === null;
+  // A subagent's own `system`/`init` opens no turn of the host's prompt (#997
+  // review): counting it disarmed a held turn's grace, and nothing re-armed it.
+  if (raw.type === 'system') return raw.subtype === 'init' && mainThread;
+  return TURN_MESSAGE_TYPES.has(raw.type) && mainThread;
 }
