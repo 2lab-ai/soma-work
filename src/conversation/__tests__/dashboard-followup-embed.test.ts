@@ -90,6 +90,7 @@ describe('Dashboard — follow-up embed route (#983)', () => {
   let web: any;
   let dashboard: any;
   let fetcher: ReturnType<typeof vi.fn>;
+  let visibility: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
     vi.resetModules();
@@ -99,9 +100,12 @@ describe('Dashboard — follow-up embed route (#983)', () => {
     dashboard.setDashboardSessionAccessor(() => new Map([['C1:t1', liveSession()]]));
     fetcher = vi.fn(async () => EMBED);
     dashboard.setDashboardLinkEmbedFetcher(fetcher);
+    visibility = vi.fn(async () => 'public');
+    dashboard.setDashboardRepoVisibilityFetcher(visibility);
   });
   afterEach(async () => {
     dashboard.setDashboardLinkEmbedFetcher(null);
+    dashboard.setDashboardRepoVisibilityFetcher(null);
     await web.stopWebServer();
   });
 
@@ -166,5 +170,41 @@ describe('Dashboard — follow-up embed route (#983)', () => {
     const thrown = await get(ISSUE, BEARER);
     expect(thrown.statusCode).toBe(200);
     expect(JSON.parse(thrown.body)).toMatchObject({ full: false, reason: 'unavailable' });
+  });
+
+  it('R5 (review P1) — a private or unknown repository: the body for admins and the viewer token only', async () => {
+    visibility.mockResolvedValue('private');
+    const owner = JSON.parse((await get(ISSUE, { cookie: userCookie('U_OWNER') })).body);
+    expect(owner).toMatchObject({ full: false, reason: 'private-repo', title: 'Phone chrome follow-ups' });
+    expect(owner.embed).toBeUndefined();
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(visibility).toHaveBeenCalledWith('2lab-ai', 'soma-work');
+    expect(JSON.parse((await get(ISSUE, { cookie: userCookie('U_ADMIN') })).body)).toMatchObject({ full: true });
+    expect(JSON.parse((await get(ISSUE, BEARER)).body)).toMatchObject({ full: true });
+    visibility.mockResolvedValue(undefined);
+    expect(JSON.parse((await get(ISSUE, { cookie: userCookie('U_OWNER') })).body)).toMatchObject({
+      reason: 'private-repo',
+    });
+    visibility.mockRejectedValue(new Error('down'));
+    expect(JSON.parse((await get(ISSUE, { cookie: userCookie('U_OWNER') })).body)).toMatchObject({
+      reason: 'private-repo',
+    });
+  });
+
+  it('R6 (review P2) — a link past the 20 chips is still one of the card’s', async () => {
+    const OLD = 'https://github.com/2lab-ai/soma-work/issues/700';
+    const issues = [
+      { url: OLD, type: 'issue', provider: 'github', status: 'open' },
+      ...Array.from({ length: 21 }, (_, i) => ({
+        url: `https://github.com/2lab-ai/soma-work/issues/${800 + i}`,
+        type: 'issue',
+        provider: 'github',
+        status: 'closed',
+      })),
+    ];
+    dashboard.setDashboardSessionAccessor(() => new Map([['C1:t1', liveSession({ linkHistory: { issues } })]]));
+    const res = await get(OLD, BEARER);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ text: '#700', full: true });
   });
 });

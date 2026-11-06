@@ -887,6 +887,8 @@ export interface GitHubEmbed {
   /** The newest few comments, oldest first. */
   comments: Array<{ author?: string; createdAt?: string; body: string }>;
   commentsTotal: number;
+  /** The comments did not load (a refused or failed request): the page says so, and the answer is not kept. */
+  commentsError?: true;
 }
 
 const EMBED_TTL = 60 * 1000;
@@ -960,11 +962,18 @@ export async function fetchGitHubEmbed(ref: GitHubIssueRef): Promise<GitHubEmbed
       state = d.merged === true ? 'merged' : d.draft === true && state !== 'closed' ? 'draft' : state;
     const total = typeof d.comments === 'number' && d.comments > 0 ? Math.floor(d.comments) : 0;
     const comments: GitHubEmbed['comments'] = [];
+    let commentsError = false;
     if (total > 0) {
-      const page = (p: number) =>
-        fetch(`${base}/issues/${ref.number}/comments?per_page=100&page=${p}`, { headers }).then(async (r) =>
-          r.ok ? ((await r.json()) as unknown) : [],
-        );
+      const page = (p: number): Promise<unknown> =>
+        fetch(`${base}/issues/${ref.number}/comments?per_page=100&page=${p}`, { headers })
+          .then(async (r) => {
+            if (!r.ok) throw new Error(`comments ${r.status}`);
+            return (await r.json()) as unknown;
+          })
+          .catch(() => {
+            commentsError = true;
+            return [];
+          });
       const last = Math.ceil(total / 100);
       let list = await page(last);
       if (Array.isArray(list) && list.length < EMBED_COMMENTS && last > 1) {
@@ -996,12 +1005,52 @@ export async function fetchGitHubEmbed(ref: GitHubIssueRef): Promise<GitHubEmbed
       body: clipText(d.body, EMBED_MAX_BODY),
       comments,
       commentsTotal: total,
+      ...(commentsError ? { commentsError: true as const } : {}),
     };
+    if (commentsError) return embed;
     if (embedCache.size >= EMBED_CACHE_MAX) embedCache.delete(embedCache.keys().next().value as string);
     embedCache.set(key, { at: Date.now(), embed });
     return embed;
   } catch (error) {
     logger.warn('Failed to fetch a GitHub issue for the dashboard', { ref: key, error: (error as Error).message });
+    return undefined;
+  }
+}
+
+const VISIBILITY_TTL = 10 * 60 * 1000;
+const visibilityCache = new Map<string, { at: number; value: 'public' | 'private' }>();
+
+/**
+ * Whether a GitHub repository is public or private (#983 review: an issue's body and comments from a private
+ * repository go to admins only). Kept for ten minutes; unknown (no token, a refused or failed request) is
+ * undefined and never kept — the caller treats it as private.
+ */
+export async function fetchGitHubRepoVisibility(
+  owner: string,
+  repo: string,
+): Promise<'public' | 'private' | undefined> {
+  const key = `${owner}/${repo}`;
+  const hit = visibilityCache.get(key);
+  if (hit && Date.now() - hit.at < VISIBILITY_TTL) return hit.value;
+  try {
+    const token = await getGitHubToken();
+    if (!token) return undefined;
+    const res = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, {
+      headers: {
+        Authorization: `token ${token}`,
+        Accept: 'application/vnd.github.v3+json',
+        'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
+      },
+    });
+    if (!res.ok) return undefined;
+    const d = (await res.json()) as { private?: unknown };
+    if (typeof d.private !== 'boolean') return undefined;
+    const value = d.private ? 'private' : 'public';
+    if (visibilityCache.size >= EMBED_CACHE_MAX) visibilityCache.delete(visibilityCache.keys().next().value as string);
+    visibilityCache.set(key, { at: Date.now(), value });
+    return value;
+  } catch (error) {
+    logger.warn('Failed to read a GitHub repository visibility', { repo: key, error: (error as Error).message });
     return undefined;
   }
 }

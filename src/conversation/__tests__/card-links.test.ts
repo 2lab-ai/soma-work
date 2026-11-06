@@ -10,7 +10,7 @@
  *   K4  status words and tones (PR 열림 · 초안 · 머지됨 · 닫힘; GitHub issue 열림 · 닫힘; Jira as named, toned by kind)
  */
 import { describe, expect, it } from 'vitest';
-import { cardLinksOf, linkState } from '../card-links';
+import { cardLinksOf, followupLinksOf, linkState } from '../card-links';
 
 const JIRA = 'https://acme.atlassian.net/browse/PROJ-12';
 const JIRA2 = 'https://acme.atlassian.net/browse/PROJ-9';
@@ -281,5 +281,21 @@ describe('K5 — open: what the follow-up bar shows', () => {
       ['PJ-2', true],
       ['PJ-1', true],
     ]);
+  });
+});
+
+describe('K6 (review, PR #990) — the follow-up bar reads past the 20 chips', () => {
+  it('an older open issue behind 20 newer closed ones is a follow-up; every link is a member with max: Infinity', () => {
+    const OLD = 'https://github.com/acme/app/issues/1';
+    const issues = [
+      { url: OLD, status: 'open' },
+      ...Array.from({ length: 21 }, (_, i) => ({
+        url: `https://github.com/acme/app/issues/${100 + i}`,
+        status: 'closed',
+      })),
+    ];
+    expect(cardLinksOf({ linkHistory: { issues } }).map((l) => l.url)).not.toContain(OLD);
+    expect(cardLinksOf({ linkHistory: { issues } }, undefined, { max: Number.POSITIVE_INFINITY })).toHaveLength(22);
+    expect(followupLinksOf({ linkHistory: { issues } }).map((l) => [l.url, l.open])).toEqual([[OLD, true]]);
   });
 });

@@ -161,8 +161,12 @@ const KINDS: Array<{ kind: CardLinkKind; active: 'issue' | 'pr' | 'doc'; history
   { kind: 'wiki', active: 'doc', history: 'docs' },
 ];
 
-/** Every page the session is linked to, as the card's links. */
-export function cardLinksOf(src: CardLinkSource, peek?: LinkPeek): CardLink[] {
+/**
+ * Every page the session is linked to, as the card's links — at most `opts.max` (default {@link MAX_CARD_LINKS},
+ * the face's chips; `Infinity` for every link, as the follow-up embed's membership check).
+ */
+export function cardLinksOf(src: CardLinkSource, peek?: LinkPeek, opts: { max?: number } = {}): CardLink[] {
+  const max = typeof opts.max === 'number' && opts.max > 0 ? opts.max : MAX_CARD_LINKS;
   const lists = KINDS.map(({ kind, active, history }) => {
     const list = Array.isArray(src.linkHistory?.[history]) ? src.linkHistory![history]!.slice().reverse() : [];
     const activeLink = src.links?.[active];
@@ -181,7 +185,7 @@ export function cardLinksOf(src: CardLinkSource, peek?: LinkPeek): CardLink[] {
   const seen = new Set<string>();
   const push = (kind: CardLinkKind, link: LinkLike, isActive: boolean) => {
     const url = link.url as string;
-    if (seen.has(url) || out.length >= MAX_CARD_LINKS) return;
+    if (seen.has(url) || out.length >= max) return;
     seen.add(url);
     const cached = peek ? peek(url) : undefined;
     const title = nonBlank(cached?.title) ? cached!.title : nonBlank(link.title) ? link.title : undefined;
@@ -208,7 +212,7 @@ export function cardLinksOf(src: CardLinkSource, peek?: LinkPeek): CardLink[] {
   // The rest share what room is left fairly (each kind its turn, one at a time), still drawn kind by kind.
   const rest = lists.map((l) => l.ordered.slice(1));
   const quota = rest.map(() => 0);
-  let room = MAX_CARD_LINKS - out.length;
+  let room = Number.isFinite(max) ? max - out.length : Number.POSITIVE_INFINITY;
   let open = rest.map((_, i) => i).filter((i) => rest[i].length > 0);
   while (room > 0 && open.length > 0) {
     for (const i of open) {
@@ -222,4 +226,15 @@ export function cardLinksOf(src: CardLinkSource, peek?: LinkPeek): CardLink[] {
     for (const link of rest[i].slice(0, quota[i])) push(kind, link, false);
   });
   return out;
+}
+
+/**
+ * The follow-up bar's links (#983): every issue and PR still open, from all of the session's links — not only the
+ * face's first {@link MAX_CARD_LINKS} chips, so twenty newer closed issues never hide an older open one. At most
+ * {@link MAX_CARD_LINKS}, in the card's order.
+ */
+export function followupLinksOf(src: CardLinkSource, peek?: LinkPeek): CardLink[] {
+  return cardLinksOf(src, peek, { max: Number.POSITIVE_INFINITY })
+    .filter((l) => l.open === true)
+    .slice(0, MAX_CARD_LINKS);
 }
