@@ -13,6 +13,7 @@
  */
 import type { RunReport } from '@soma/slack/followup-dispatcher';
 import type { WorkLogEntry, WorkLogPage } from '../conversation/work-log';
+import { type SessionTheme, ThreadHeaderBuilder } from '../slack/thread-header-builder';
 import type { ConversationSession, EpicPlan, TurnOutcomeRecord } from '../types';
 import { epicWakeText, isEpicDone, type PlanWriteInput, SLACK_WAKE_PREFIX, wakeableEpicEvents } from './epic-plan';
 import type { EpicChildSpec, EpicHost } from './epic-server';
@@ -74,8 +75,28 @@ export async function readLatestFinal(
   return undefined;
 }
 
-/** The root message of a child's thread: which epic, which node, and the instruction it starts with. */
-export function buildEpicChildRootMessage(
+/**
+ * The root of a child's thread (#955): the thread header a dashboard or Slack-started task opens on —
+ * titled with the node until the child's session names itself, owned by the epic's owner. The child's
+ * session is born bot-initiated on it (`botThreadRoot`), so its panel is this root, updated in place.
+ */
+export function buildEpicChildHeader(
+  epic: Pick<ConversationSession, 'ownerId' | 'ownerName'>,
+  spec: Pick<EpicChildSpec, 'title'>,
+  theme?: SessionTheme,
+): { text: string; blocks: unknown[] } {
+  const header = ThreadHeaderBuilder.build({
+    title: spec.title,
+    workflow: 'default',
+    ownerId: epic.ownerId,
+    ownerName: epic.ownerName,
+    theme,
+  });
+  return { text: header.text, blocks: header.blocks ?? [] };
+}
+
+/** The first reply in a child's thread: which epic, which node, and the instruction it starts with. */
+export function buildEpicChildInstructionMessage(
   epic: Pick<ConversationSession, 'title' | 'ownerId'>,
   spec: Pick<EpicChildSpec, 'title' | 'instruction' | 'planNodeId'>,
 ): { text: string; blocks: unknown[] } {
@@ -127,8 +148,15 @@ export interface SlackEpicHostDeps {
   unreserveEpicChild(epicTaskId: string, childId: string): void;
   /** The registry key of a Slack thread. */
   keyOf(session: ConversationSession): string | undefined;
-  /** Post the root message of a child's thread (the bot's). */
-  postMessage(channel: string, text: string, blocks: unknown[]): Promise<{ ts?: string } | undefined>;
+  /** Post a child thread's root (the bot's header), or a reply in it when `threadTs` is given. */
+  postMessage(
+    channel: string,
+    text: string,
+    blocks: unknown[],
+    threadTs?: string,
+  ): Promise<{ ts?: string } | undefined>;
+  /** The owner's thread header theme; absent = the server's. */
+  getSessionTheme?(userId: string): SessionTheme | undefined;
   /** Hand a message to the Slack path (`handleMessage`); resolves when its run settled. */
   handleMessage(event: Record<string, unknown>): Promise<unknown>;
   onTurnAccepted(channel: string, ts: string, accepted: () => void): () => void;
@@ -183,7 +211,7 @@ export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
     channel: string,
     childId: string,
   ): ReturnType<EpicHost['spawnChild']> => {
-    const root = buildEpicChildRootMessage(epic, spec);
+    const root = buildEpicChildHeader(epic, spec, epic.ownerId ? deps.getSessionTheme?.(epic.ownerId) : undefined);
     let rootTs: string | undefined;
     try {
       rootTs = (await deps.postMessage(channel, root.text, root.blocks))?.ts;
@@ -201,12 +229,26 @@ export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
         error: "the child's thread could not be made — nothing changed; try again",
       };
     }
+    // The instruction, with its epic, as the thread's first reply — the child runs without it (its
+    // session gets the instruction; the epic's tree shows it).
+    const instruction = buildEpicChildInstructionMessage(epic, spec);
+    try {
+      await deps.postMessage(channel, instruction.text, instruction.blocks, rootTs);
+    } catch (error) {
+      deps.logger.warn('Epic child: its instruction reply could not be posted', {
+        epicTaskId: epicTaskId,
+        childId,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
     const event: Record<string, unknown> = {
       type: 'message',
       user: epic.ownerId,
       channel,
       thread_ts: rootTs,
       ts: rootTs,
+      // The root is the bot's header: the child's session is born bot-initiated on it (#955).
+      botThreadRoot: true,
       text: spec.instruction,
       ...(epic.model ? { modelOverride: epic.model } : {}),
       // A child works its instruction; it is not a goal of its own unless its epic says so.
