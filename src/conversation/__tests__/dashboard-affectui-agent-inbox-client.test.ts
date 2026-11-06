@@ -406,6 +406,7 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
     [
       'BOARD_LABELS',
       '_epicKidsDrawn',
+      '_epicParentOf',
       '_cardHost',
       '_cardCol',
       '_cardData',
