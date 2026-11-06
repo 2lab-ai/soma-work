@@ -1,5 +1,7 @@
-import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -453,6 +455,8 @@ describe('deploy-qa $autoz waiver (waive=autoz)', () => {
  * the part a reader gets wrong: GitHub's `compare/<base>...<head>` answers `ahead` when `<base>` is
  * an ancestor of `<head>`, which is `git merge-base --is-ancestor <base> <head>`.
  */
+const GIT = 'GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= SSH_ASKPASS= git -c core.askPass= -c credential.interactive=never';
+
 describe('deploy-qa computes a refused compare with git', () => {
   const md = read('deploy-qa');
   const github = md.slice(md.indexOf('## GitHub reads'), md.indexOf('## Args'));
@@ -469,11 +473,9 @@ describe('deploy-qa computes a refused compare with git', () => {
   });
 
   it('fetches only the SHAs the check names, over https, blob-less, never shallow, never with a token', () => {
-    expect(github).toContain('`GIT_TERMINAL_PROMPT=0 git init -q <dir>`');
-    expect(github).toContain(
-      '`GIT_TERMINAL_PROMPT=0 git -C <dir> remote add origin https://github.com/<owner/repo>.git`',
-    );
-    expect(github).toContain('`GIT_TERMINAL_PROMPT=0 git -C <dir> fetch --filter=blob:none origin <full SHAs>`');
+    expect(github).toContain(`\`${GIT} init -q <dir>\``);
+    expect(github).toContain(`\`${GIT} -C <dir> remote add origin https://github.com/<owner/repo>.git\``);
+    expect(github).toContain(`\`${GIT} -C <dir> fetch --filter=blob:none origin <full SHAs>\``);
     expect(github).toContain('never `--depth`');
     expect(github).toContain('never put a token in the URL');
     expect(github).toContain(
@@ -481,9 +483,12 @@ describe('deploy-qa computes a refused compare with git', () => {
     );
   });
 
-  it('runs every git command with terminal prompts off, so a missing credential fails instead of waiting', () => {
+  it('never waits on a login: no terminal prompt, no askpass, helpers told not to ask, each call bounded', () => {
     expect(github).toContain(
-      'Every git command here starts with `GIT_TERMINAL_PROMPT=0`: a missing credential then fails at once (not an answer) instead of waiting on a prompt.',
+      `Every git command here starts with \`${GIT}\`: git then never asks for a login on the terminal or through an askpass program and tells credential helpers not to ask, while the session's non-interactive credential helper still supplies it.`,
+    );
+    expect(github).toContain(
+      "Run each git command in its own Bash call with an explicit timeout (the tool's `timeout`, e.g. 120000 ms), since a helper that ignores `credential.interactive` can still wait; a call that timed out or was killed is not an answer, the same as exit 128.",
     );
   });
 
@@ -491,14 +496,15 @@ describe('deploy-qa computes a refused compare with git', () => {
     expect(github).toMatch(
       /`compare\/<base>\.\.\.<head>` status `ahead` means `<base>` is an ancestor of `<head>`, `identical` that they are the same commit/,
     );
-    expect(github).toContain('`GIT_TERMINAL_PROMPT=0 git -C <dir> merge-base --is-ancestor <base> <head>` exits 0');
+    expect(github).toContain(`\`${GIT} -C <dir> merge-base --is-ancestor <base> <head>\` exits 0`);
   });
 
-  it('exit 1 is an answer; a git failure is not, the same as a failed read', () => {
-    expect(github).toContain('exit 1 is an answer too');
+  it('exit 1 is an answer only from merge-base; a failed fetch, a kill or a timeout is not', () => {
+    expect(github).toContain('exit 1 is an answer too (`behind` or `diverged`), but only from merge-base.');
     expect(github).toMatch(
-      /A git failure[^\n]*unknown SHA \(exit 128\)[^\n]*is not an answer, the same as a failed read/,
+      /A git failure — a fetch that exits non-zero \(1 included\), an unknown SHA \(exit 128\), a call that timed out or was killed, any other exit — is not an answer, the same as a failed read/,
     );
+    expect(github).toContain('a check whose fetch failed has no answer, whatever a later merge-base or rev-list says.');
   });
 
   it('the git directory is scratch, so --confirm and --plan-only may create it', () => {
@@ -511,29 +517,25 @@ describe('deploy-qa computes a refused compare with git', () => {
 
   it('step 1: after is contained in runningSha, and before is strictly behind after', () => {
     expect(step1).toContain(
-      'answers `ahead` or `identical` — via git, `GIT_TERMINAL_PROMPT=0 git -C <dir> merge-base --is-ancestor <after> <runningSha>` exits 0',
+      `answers \`ahead\` or \`identical\` — via git, \`${GIT} -C <dir> merge-base --is-ancestor <after> <runningSha>\` exits 0`,
     );
     // `ahead` alone excludes the same commit: git's is-ancestor counts a commit as its own ancestor.
     expect(step1).toContain(
-      '(compare status `ahead`; via git, `GIT_TERMINAL_PROMPT=0 git -C <dir> merge-base --is-ancestor <before> <after>` exits 0 and `before` ≠ `after`)',
+      `(compare status \`ahead\`; via git, \`${GIT} -C <dir> merge-base --is-ancestor <before> <after>\` exits 0 and \`before\` ≠ \`after\`)`,
     );
   });
 
   it('step 2: the whole range from one source, the one-parent commits, complete when rev-list exits 0', () => {
-    expect(step2).toContain(
-      '`GIT_TERMINAL_PROMPT=0 git -C <dir> rev-list --reverse --min-parents=1 --max-parents=1 <before>..<after>`',
-    );
+    expect(step2).toContain(`\`${GIT} -C <dir> rev-list --reverse --min-parents=1 --max-parents=1 <before>..<after>\``);
     expect(step2).toContain('never mix pages with git output');
     expect(step2).toContain('complete when it exits 0');
     // `--no-merges` alone keeps a parentless commit, which the one-parent rule drops.
-    expect(step2).not.toMatch(/`git[^`]*--no-merges[^`]*`/);
+    expect(step2).not.toMatch(/`[^`]*git[^`]*--no-merges[^`]*`/);
   });
 
   it("step 5: each related-repo mergeSha is contained in that repo's runningSha", () => {
     expect(step5).toContain('`repos/<owner/repo>/compare/<mergeSha>...<runningSha>`');
-    expect(step5).toContain(
-      'via git, `GIT_TERMINAL_PROMPT=0 git -C <dir> merge-base --is-ancestor <mergeSha> <runningSha>` exits 0',
-    );
+    expect(step5).toContain(`via git, \`${GIT} -C <dir> merge-base --is-ancestor <mergeSha> <runningSha>\` exits 0`);
   });
 });
 
@@ -541,7 +543,7 @@ describe('each compare and its git command name the two SHAs in the same order',
   for (const skill of ['deploy-qa', 'qa-issue']) {
     it(skill, () => {
       const md = read(skill);
-      const lines = md.split('\n').filter((l) => /compare\/<[^<>]+>\.\.\.<[^<>]+>/.test(l) && /git -C <dir>/.test(l));
+      const lines = md.split('\n').filter((l) => /compare\/<[^<>]+>\.\.\.<[^<>]+>/.test(l) && /-C <dir>/.test(l));
       expect(lines.length, skill).toBeGreaterThanOrEqual(skill === 'deploy-qa' ? 4 : 2);
       for (const l of lines) {
         for (const [, base, head] of l.matchAll(/compare\/<([^<>]+)>\.\.\.<([^<>]+)>/g)) {
@@ -551,10 +553,10 @@ describe('each compare and its git command name the two SHAs in the same order',
           expect(l, `${skill}: ${l}`).not.toContain(`--is-ancestor <${head}> <${base}>`);
         }
       }
-      // Every git command carries GIT_TERMINAL_PROMPT=0: a credential prompt would hang the step-1 poll.
+      // Every git command carries the whole no-login prefix: a prompt would hang the step-1 poll.
       const gitSpans = md.split('`').filter((x, i) => i % 2 === 1 && /^(?:[A-Z_]+=\S*\s+)*git\s/.test(x));
-      expect(gitSpans.length, skill).toBeGreaterThanOrEqual(skill === 'deploy-qa' ? 8 : 5);
-      for (const x of gitSpans) expect(x, `${skill}: ${x}`).toMatch(/^GIT_TERMINAL_PROMPT=0 git /);
+      expect(gitSpans.length, skill).toBeGreaterThanOrEqual(skill === 'deploy-qa' ? 9 : 6);
+      for (const x of gitSpans) expect(x.startsWith(GIT), `${skill}: ${x}`).toBe(true);
       // The running commit is always the descendant; the deployed merge never precedes the range's start.
       expect(md).not.toContain('--is-ancestor <runningSha>');
       expect(md).not.toContain('--is-ancestor <after> <before>');
@@ -567,21 +569,28 @@ describe('each compare and its git command name the two SHAs in the same order',
  * main A─B─C─M─M2─D; side S1 branches at B and merges at M; U is an unrelated root merged at M2.
  * compare/B...D = ahead, D...D = identical, D...B = behind, S1...C = diverged; compare/B...D lists
  * C, S1, M, U, M2, D, and the one-parent ones are C, S1, D (U has none: `--no-merges` would keep it).
+ *
+ * The doc's commands run in a hostile inherited environment: GIT_ASKPASS, SSH_ASKPASS and the
+ * global `core.askPass` all name a program that records that it ran and then sleeps. Only the
+ * doc's own assignments and `-c` options stand between git and that program.
  */
 describe('the documented git commands give the compare answers', () => {
   // No user or hook git state leaks in (a GIT_DIR from a hook, a global signing or URL-rewrite rule,
-  // an askpass program). The doc's commands get only this plus their own assignments, so the
-  // GIT_TERMINAL_PROMPT=0 they run with is the doc's; the test's own setup calls set it themselves.
-  const isolated = {
-    ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_') && k !== 'SSH_ASKPASS')),
-    GIT_CONFIG_GLOBAL: '/dev/null',
-    GIT_CONFIG_NOSYSTEM: '1',
-  };
-  const env = { ...isolated, GIT_TERMINAL_PROMPT: '0' };
+  // a proxy for the local login server).
+  const clean = Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([k]) => !k.startsWith('GIT_') && k !== 'SSH_ASKPASS' && !/^(?:https?|all|no)_proxy$/i.test(k),
+    ),
+  );
+  const env = { ...clean, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' };
   const sha: Record<string, string> = {};
+  const UNKNOWN = '0123456789abcdef0123456789abcdef01234567';
   let root = '';
   let origin = '';
   let dir = '';
+  let askpass = '';
+  /** The environment a session might hand the doc's commands: an askpass that would hang. */
+  let inherited: Record<string, string | undefined> = {};
 
   const git = (cwd: string, args: string[], at?: number) =>
     execFileSync('git', ['-c', 'user.name=qa', '-c', 'user.email=qa@example.com', ...args], {
@@ -599,19 +608,36 @@ describe('the documented git commands give the compare answers', () => {
     git(origin, ['merge', '-q', '--no-ff', ...extra, '-m', name, branch], at);
     sha[name] = git(origin, ['rev-parse', 'HEAD']);
   };
+  /** An executable shell script in the test directory. */
+  const script = (name: string, body: string) => {
+    const path = join(root, name);
+    writeFileSync(path, `#!/bin/sh\n${body}\n`);
+    chmodSync(path, 0o755);
+    return path;
+  };
+  /** A global git config holding `lines`, for the inherited environment. */
+  const globalConfig = (name: string, lines: string[]) => {
+    const path = join(root, name);
+    writeFileSync(path, `${lines.join('\n')}\n`);
+    return path;
+  };
 
-  const ASSIGNMENTS = /^(?:[A-Z_]+=\S*\s+)+/;
+  interface Command {
+    args: string[];
+    env: Record<string, string>;
+  }
+  const gitPart = (span: string) => span.replace(/^(?:[A-Z_]+=\S*\s+)+/, '').replace(/^git (?:-c \S+ )+/, 'git ');
   /**
-   * The doc's inline-code command whose git part starts with `prefix`, placeholders filled: git's
-   * argv and the environment assignments written before it.
+   * The doc's inline-code command whose git part (after its assignments and `-c` options) starts
+   * with `prefix`, placeholders filled: git's argv and the environment assignments before it.
    */
-  const command = (text: string, prefix: string, fill: Record<string, string>) => {
-    const span = text.split('`').find((s) => s.replace(ASSIGNMENTS, '').startsWith(prefix));
+  const command = (text: string, prefix: string, fill: Record<string, string>, url = `file://${origin}`): Command => {
+    const span = text.split('`').find((s) => gitPart(s).startsWith(prefix));
     expect(span, prefix).toBeDefined();
     const filled = (span ?? '')
-      .replace(/https:\/\/github\.com\/<[^<>]+>\.git/, `file://${origin}`)
+      .replace(/https:\/\/github\.com\/<[^<>]+>\.git/, url)
       .replace(/<([^<>]+)>/g, (_, name: string) => {
-        const value = name === 'dir' ? dir : fill[name];
+        const value = fill[name] ?? (name === 'dir' ? dir : undefined);
         if (value === undefined) throw new Error(`unfilled <${name}> in ${span}`);
         return value;
       });
@@ -621,17 +647,72 @@ describe('the documented git commands give the compare answers', () => {
       const [name, ...value] = (words.shift() ?? '').split('=');
       assigned[name] = value.join('=');
     }
-    expect(assigned.GIT_TERMINAL_PROMPT, span).toBe('0');
-    expect(words[0]).toBe('git');
+    expect(assigned, span).toEqual({ GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '', SSH_ASKPASS: '' });
+    expect(words.slice(0, 5), span).toEqual(['git', '-c', 'core.askPass=', '-c', 'credential.interactive=never']);
     return { args: words.slice(1), env: assigned };
   };
-  const run = (cmd: { args: string[]; env: Record<string, string> }, input?: string) =>
-    spawnSync('git', cmd.args, { encoding: 'utf8', env: { ...isolated, ...cmd.env }, input, timeout: 30_000 });
+  const run = (cmd: Command) =>
+    spawnSync('git', cmd.args, { encoding: 'utf8', env: { ...inherited, ...cmd.env }, timeout: 30_000 });
+
+  interface Bounded {
+    status: number | null;
+    killed: boolean;
+    ms: number;
+    stderr: string;
+  }
+  /**
+   * The doc's per-call bound: run the command in its own process group and kill the whole group
+   * (git and any helper it started) when `boundMs` passes, as the Bash tool's timeout does.
+   */
+  const runBounded = (cmd: Command, boundMs: number, extra: Record<string, string> = {}) =>
+    new Promise<Bounded>((done) => {
+      const started = Date.now();
+      const child = spawn('git', cmd.args, {
+        env: { ...inherited, ...extra, ...cmd.env },
+        detached: true,
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let stderr = '';
+      let killed = false;
+      child.stderr?.on('data', (chunk) => {
+        stderr += chunk;
+      });
+      const killGroup = () => {
+        try {
+          process.kill(-(child.pid ?? 0), 'SIGKILL');
+        } catch {
+          // the group is already gone
+        }
+      };
+      const timer = setTimeout(() => {
+        killed = true;
+        killGroup();
+      }, boundMs);
+      child.on('close', (status) => {
+        clearTimeout(timer);
+        killGroup();
+        done({ status, killed, ms: Date.now() - started, stderr });
+      });
+    });
+  /** The doc's reading of one git call: 0 = yes; 1 = no, from merge-base only; else no answer. */
+  const answer = (r: { status: number | null; killed?: boolean }, fromMergeBase: boolean) => {
+    if (r.killed || r.status === null) return 'no answer';
+    if (r.status === 0) return 'yes';
+    return r.status === 1 && fromMergeBase ? 'no' : 'no answer';
+  };
 
   beforeAll(() => {
     root = mkdtempSync(join(tmpdir(), 'deploy-qa-compare-'));
     origin = join(root, 'origin');
     dir = join(root, 'compare-example-org-app');
+    askpass = script('askpass.sh', 'touch "$0.ran"\nsleep 30\necho stolen');
+    inherited = {
+      ...clean,
+      GIT_ASKPASS: askpass,
+      SSH_ASKPASS: askpass,
+      GIT_CONFIG_GLOBAL: globalConfig('askpass.gitconfig', ['[core]', `\taskPass = ${askpass}`]),
+      GIT_CONFIG_NOSYSTEM: '1',
+    };
     execFileSync('git', ['init', '-q', '-b', 'main', origin], { env });
     commit('A', 1_700_000_001);
     commit('B', 1_700_000_002);
@@ -680,15 +761,16 @@ describe('the documented git commands give the compare answers', () => {
     expect(git(dir, ['cat-file', '-t', sha.S1])).toBe('commit');
   });
 
-  it("with the doc's environment, a missing credential fails at once instead of prompting", () => {
+  it("a refused fetch of an unavailable SHA is no answer, never merge-base's 'not contained'", () => {
     const md = read('deploy-qa');
     const github = md.slice(0, md.indexOf('## Args'));
-    // `credential fill` is what fetch runs when the server asks for a login; no helper is configured here.
-    const fetch = command(github, 'git -C <dir> fetch', { 'full SHAs': sha.D });
-    const result = run({ args: ['credential', 'fill'], env: fetch.env }, 'protocol=https\nhost=github.com\n\n');
-    expect(result.error).toBeUndefined(); // no timeout: it never waited
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain('terminal prompts disabled');
+    const fetch = run(command(github, 'git -C <dir> fetch', { 'full SHAs': `${UNKNOWN} ${sha.D}` }));
+    expect(fetch.status, fetch.stderr).not.toBe(0);
+    expect(answer(fetch, false)).toBe('no answer');
+    // Even a fetch that exits 1 is no answer: exit 1 means "not contained" only from merge-base.
+    expect(answer({ status: 1 }, false)).toBe('no answer');
+    expect(answer({ status: 1 }, true)).toBe('no');
+    expect(existsSync(`${askpass}.ran`)).toBe(false);
   });
 
   it('deploy-qa step 1: is-ancestor <after> <runningSha> is 0 for ahead and identical, 1 otherwise', () => {
@@ -700,8 +782,7 @@ describe('the documented git commands give the compare answers', () => {
     expect(status(sha.D, sha.D)).toBe(0); // identical
     expect(status(sha.D, sha.B)).toBe(1); // behind
     expect(status(sha.S1, sha.C)).toBe(1); // diverged
-    const unknown = status('0123456789abcdef0123456789abcdef01234567', sha.D);
-    expect(unknown === 0 || unknown === 1).toBe(false); // not an answer
+    expect(answer({ status: status(UNKNOWN, sha.D) }, true)).toBe('no answer');
   });
 
   it('deploy-qa step 1: is-ancestor <before> <after> holds for a range whose start precedes its end', () => {
@@ -736,5 +817,96 @@ describe('the documented git commands give the compare answers', () => {
       expect(status(sha.D, sha.D)).toBe(0);
       expect(status(sha.D, sha.C)).toBe(1); // not deployed yet
     }
+  });
+
+  /**
+   * A login server that always answers 401, so the documented fetch has to ask for credentials:
+   * the path a private repo takes when the session's helper holds no valid login.
+   */
+  describe('the documented fetch against a server that asks for a login', () => {
+    let server: Server;
+    let url = '';
+    const seen: string[] = [];
+    const BOUND = 15_000;
+
+    beforeAll(async () => {
+      server = createServer((req, res) => {
+        seen.push(req.headers.authorization ?? '');
+        res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="qa"' });
+        res.end();
+      });
+      await new Promise<void>((listening) => server.listen(0, '127.0.0.1', listening));
+      url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/example-org/app.git`;
+    });
+
+    afterAll(async () => {
+      await new Promise((closed) => server.close(closed));
+    });
+
+    /** The doc's init + remote add + fetch in a new directory, the fetch run under the bound. */
+    const fetchWithLogin = async (name: string, helper: string, boundMs = BOUND, strip = false) => {
+      const github = read('deploy-qa').slice(0, read('deploy-qa').indexOf('## Args'));
+      const own = join(root, name);
+      for (const prefix of ['git init', 'git -C <dir> remote add']) {
+        const result = run(command(github, prefix, { dir: own }, url));
+        expect(result.status, `${prefix}: ${result.stderr}`).toBe(0);
+      }
+      const config = globalConfig(`${name}.gitconfig`, [
+        '[core]',
+        `\taskPass = ${askpass}`,
+        '[credential]',
+        `\thelper = ${helper}`,
+      ]);
+      const fetch = command(github, 'git -C <dir> fetch', { dir: own, 'full SHAs': sha.D }, url);
+      // `strip`: the same fetch without the doc's assignments and `-c` options, as a control.
+      const cmd = strip ? { args: fetch.args.slice(4), env: {} } : fetch;
+      return runBounded(cmd, boundMs, { GIT_CONFIG_GLOBAL: config });
+    };
+
+    it("control: without the doc's prefix the same environment runs the askpass and waits", async () => {
+      const empty = script('control-helper.sh', 'cat >/dev/null');
+      const askpassRan = existsSync(`${askpass}.ran`);
+      const result = await fetchWithLogin('control', empty, 2_000, true);
+      expect(result.killed).toBe(true);
+      expect(existsSync(`${askpass}.ran`)).toBe(true);
+      // Leave the marker as it was, so the other tests' "the askpass never ran" still reads it.
+      if (!askpassRan) rmSync(`${askpass}.ran`);
+    });
+
+    it('an inherited askpass never runs: with no stored login the fetch fails at once, no answer', async () => {
+      const empty = script('empty-helper.sh', 'touch "$0.ran"\ncat >/dev/null');
+      const result = await fetchWithLogin('no-login', empty);
+      expect(result.killed).toBe(false);
+      expect(result.ms).toBeLessThan(BOUND / 3);
+      expect(result.status, result.stderr).not.toBe(0);
+      expect(answer(result, false)).toBe('no answer');
+      expect(existsSync(`${empty}.ran`)).toBe(true); // the helper was still asked
+      expect(existsSync(`${askpass}.ran`)).toBe(false); // the askpass never was
+    });
+
+    it("the session's non-interactive helper still supplies the login", async () => {
+      const helper = script(
+        'login-helper.sh',
+        'cat >/dev/null\nif [ "$1" = get ]; then printf "username=qa\\npassword=helper-login\\n"; fi',
+      );
+      const before = seen.length;
+      const result = await fetchWithLogin('helper-login', helper);
+      expect(result.killed).toBe(false);
+      expect(result.ms).toBeLessThan(BOUND / 3);
+      expect(seen.slice(before)).toContain(`Basic ${Buffer.from('qa:helper-login').toString('base64')}`);
+      expect(answer(result, false)).toBe('no answer'); // this server refuses every login
+      expect(existsSync(`${askpass}.ran`)).toBe(false);
+    });
+
+    it('a helper that waits anyway is cut off by the per-call bound, and that is no answer', async () => {
+      // No git option stops a helper that ignores credential.interactive without turning off the
+      // helpers private repos need; the doc's per-call timeout does. 2 s stands in for its 120000 ms.
+      const waits = script('waiting-helper.sh', 'sleep 30');
+      const result = await fetchWithLogin('waiting-helper', waits, 2_000);
+      expect(result.killed).toBe(true);
+      expect(result.ms).toBeLessThan(BOUND / 3);
+      expect(answer(result, false)).toBe('no answer');
+      expect(existsSync(`${askpass}.ran`)).toBe(false);
+    });
   });
 });
