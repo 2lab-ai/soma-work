@@ -79,23 +79,64 @@ function storeRead(info: ChannelInfo, client?: WebClient): ChannelInfo {
 
 /** One pending re-read per channel whose repo-less read was kept out (#970). */
 const recheckTimers = new Map<string, ReturnType<typeof setTimeout>>();
+/** Bumped whenever the bot itself writes or drops a channel's entry: a re-read started before it is void. */
+const entryGenerations = new Map<string, number>();
+const RECHECK_RETRIES = 3;
+const RECHECK_RETRY_MS = 60_000;
+
+function bumpGeneration(channelId: string): void {
+  entryGenerations.set(channelId, (entryGenerations.get(channelId) ?? 0) + 1);
+}
+
+/** A ChannelInfo from a Slack conversation object. */
+function channelInfoFrom(channelId: string, channel: any): ChannelInfo {
+  const info: ChannelInfo = {
+    id: channelId,
+    name: channel.name || '',
+    purpose: channel.purpose?.value || '',
+    topic: channel.topic?.value || '',
+    repos: [],
+    joinedAt: Date.now(),
+    isPrivate: channel.is_private === true,
+    isArchived: channel.is_archived === true,
+  };
+  const rawText = `${info.purpose}\n${info.topic}`;
+  info.repos = parseRepos(rawText);
+  info.confluenceUrl = parseConfluenceUrl(rawText);
+  return info;
+}
 
 /**
  * After the maker's window ends, read the channel again and take what Slack says then — so a repo link removed on
- * purpose inside the window is not kept forever. Skipped when the channel was removed or written again since.
+ * purpose inside the window is not kept forever. The bot's own write or removal since (its generation moved) voids
+ * it — checked again once the read answers, so an answer arriving late never resurrects or overwrites. A read that
+ * fails is retried (RECHECK_RETRIES, a minute apart); the kept entry stays until one answers.
  */
-function scheduleRecheck(client: WebClient, channelId: string, until: number): void {
+function scheduleRecheck(client: WebClient, channelId: string, until: number, attempt = 0): void {
   if (recheckTimers.has(channelId)) return;
-  const timer = setTimeout(
-    () => {
-      recheckTimers.delete(channelId);
-      if (!channels.has(channelId) || (makerEntryUntil.get(channelId) ?? 0) !== until) return;
-      makerEntryUntil.delete(channelId);
-      logger.info('🔁 Re-reading a channel after the maker’s window', { channelId });
-      void registerChannel(client, channelId);
-    },
-    Math.max(0, until - Date.now()) + 1_000,
-  );
+  const generation = entryGenerations.get(channelId) ?? 0;
+  const current = () => channels.has(channelId) && (entryGenerations.get(channelId) ?? 0) === generation;
+  const delay = attempt === 0 ? Math.max(0, until - Date.now()) + 1_000 : RECHECK_RETRY_MS * attempt;
+  const timer = setTimeout(async () => {
+    recheckTimers.delete(channelId);
+    if (!current()) return;
+    let channel: any;
+    try {
+      channel = (await client.conversations.info({ channel: channelId })).channel;
+    } catch (error) {
+      logger.warn('Re-read after the maker’s window failed', { channelId, attempt, error: (error as Error).message });
+    }
+    if (!current()) return;
+    if (!channel) {
+      if (attempt < RECHECK_RETRIES) scheduleRecheck(client, channelId, until, attempt + 1);
+      return;
+    }
+    makerEntryUntil.delete(channelId);
+    channels.set(channelId, channelInfoFrom(channelId, channel));
+    rebuildRepoIndex();
+    invalidateChannelCache(channelId);
+    logger.info('🔁 Re-read a channel after the maker’s window', { channelId, repos: channels.get(channelId)?.repos });
+  }, delay);
   (timer as { unref?: () => void }).unref?.();
   recheckTimers.set(channelId, timer);
 }
@@ -202,21 +243,7 @@ export async function registerChannel(client: WebClient, channelId: string): Pro
       return null;
     }
 
-    const info: ChannelInfo = {
-      id: channelId,
-      name: channel.name || '',
-      purpose: channel.purpose?.value || '',
-      topic: channel.topic?.value || '',
-      repos: [],
-      joinedAt: Date.now(),
-      isPrivate: channel.is_private === true,
-      isArchived: channel.is_archived === true,
-    };
-
-    const rawText = `${info.purpose}\n${info.topic}`;
-    info.repos = parseRepos(rawText);
-    info.confluenceUrl = parseConfluenceUrl(rawText);
-
+    const info = channelInfoFrom(channelId, channel);
     const stored = storeRead(info, client);
     rebuildRepoIndex();
     invalidateChannelCache(channelId);
@@ -270,6 +297,7 @@ export function upsertChannel(input: {
   info.confluenceUrl = parseConfluenceUrl(rawText);
   channels.set(info.id, info);
   makerEntryUntil.set(info.id, Date.now() + MAKER_ENTRY_MS);
+  bumpGeneration(info.id);
   clearRecheck(info.id);
   rebuildRepoIndex();
   invalidateChannelCache(info.id);
@@ -318,6 +346,7 @@ export function isChannelBeingMade(name: string): boolean {
 export function unregisterChannel(channelId: string): void {
   channels.delete(channelId);
   makerEntryUntil.delete(channelId);
+  bumpGeneration(channelId);
   clearRecheck(channelId);
   rebuildRepoIndex();
   invalidateChannelCache(channelId);
