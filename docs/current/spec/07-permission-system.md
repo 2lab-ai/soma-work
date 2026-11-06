@@ -215,12 +215,14 @@ a deploy or publish (`gh pr merge`, `git push` to `deploy/*` or a release tag, `
 `vercel --prod`, `gh release create`, `gh workflow run`, `docker push`, `kubectl apply`, `terraform apply`, a
 `deploy*` script) or a destructive command (`rm -r`, force push, `git push --delete`, `git reset --hard`,
 `git clean -f`, `git branch -D`, `DROP TABLE` / `TRUNCATE` through a database client, `redis-cli flushall`,
-`dd of=`, `mkfs`). It returns a static label (`PR 머지`, `force push`) or `null`. Matching is lexical, per shell
-segment.
+`dd of=`, `mkfs`, `find -delete`). It returns a static label (`PR 머지`, `force push`) or `null`. Matching is
+lexical, per shell segment: `\` continuations are joined, a shell's `-c '…'` string is read as its own command, and
+`&&` `||` `;` `|` `&` newlines, parentheses, `$(` and backticks split segments; prefixes (`sudo -u x`, `env X=1`,
+`timeout 60`, `npx`) are skipped. A `--dry-run` (and `git push -n`) is not irreversible.
 
 - Slack (`buildRequestBlocks`): a context line `⚠️ 되돌릴 수 없는 작업: <label>` under the header, and a
   `confirm` dialog (`style: danger`) on `approve_tool` and `approve_disable_rule_session`. Deny and Explain stay
-  one press.
+  one press. A red-advice card gets the line but no dialog: its Approve already asks a second time.
 - Dashboard (`permission-prompts.ts` → `irreversible` on the board's prompt → `acPermissionData` →
   `data.irreversible`): `<ui-approval-card>` (@2lab.ai/ui ≥ 0.35) replaces Approve with a slide and ⌘↵ no longer
   approves.

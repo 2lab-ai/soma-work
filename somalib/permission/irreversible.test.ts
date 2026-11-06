@@ -67,6 +67,30 @@ describe('irreversibleAction — destructive', () => {
     expect(id(command)).toBe(expected);
   });
 
+  it.each([
+    // review P2: wrapped, grouped and continued commands
+    ["bash -c 'git push --force origin main'", 'git-force-push'],
+    ['sh -c "rm -rf /tmp/x"', 'rm-recursive'],
+    ['bash -lc "cd ui && npm publish"', 'package-publish'],
+    ['(cd packages/ui && npm publish)', 'package-publish'],
+    ['(cd repo && git push --force)', 'git-force-push'],
+    ['echo $(git push --force origin x)', 'git-force-push'],
+    ['git push origin \\\n  main:deploy/prod', 'git-push-deploy'],
+    // review P3: option values of prefixes and globals
+    ['sudo -u deploy rm -rf /srv/x', 'rm-recursive'],
+    ['sudo -u www-data rm -rf /srv/x', 'rm-recursive'],
+    ['timeout 600 npm publish', 'package-publish'],
+    ['gh -R 2lab-ai/soma-work pr merge 12 --squash', 'pr-merge'],
+    ['pnpm --filter @2lab.ai/ui publish', 'package-publish'],
+    ['git branch -d -f old', 'git-branch-force-delete'],
+    ['bash scripts/deploy.sh prod', 'deploy-script'],
+    ['node scripts/deploy-prod.mjs', 'deploy-script'],
+    ['find . -name "*.tmp" -delete', 'find-delete'],
+    ['find dist -type f -exec rm {} +', 'find-delete'],
+  ])('%s → %s', (command, expected) => {
+    expect(id(command)).toBe(expected);
+  });
+
   it('a later segment counts: cd && git push --force', () => {
     expect(id('cd repo && git status; git push --force origin feat')).toBe('git-force-push');
   });
@@ -92,6 +116,14 @@ describe('irreversibleAction — ordinary calls stay plain', () => {
     'vercel pull --yes --environment=production',
     'kubectl get pods',
     'terraform plan',
+    // review P3: a dry run changes nothing
+    'npm publish --dry-run',
+    'kubectl apply --dry-run=client -f k8s/',
+    'helm upgrade --dry-run soma ./chart',
+    'git push -n --force origin main',
+    'git push --dry-run origin main:deploy/prod',
+    'ssh host uptime',
+    'find . -name "*.log"',
   ])('%s → null', (command) => {
     expect(bash(command)).toBeNull();
   });
@@ -109,6 +141,10 @@ describe('irreversibleAction — ordinary calls stay plain', () => {
     });
     expect(irreversibleAction('Edit', { file_path: '/x', old_string: 'a', new_string: 'b' })).toBeNull();
     expect(irreversibleAction('Write', { file_path: '/x', content: 'rm -rf /' })).toBeNull();
+    // review P3: no prototype lookups
+    expect(irreversibleAction('constructor', {})).toBeNull();
+    expect(irreversibleAction('toString', {})).toBeNull();
+    expect(irreversibleAction('__proto__', {})).toBeNull();
   });
 });
 

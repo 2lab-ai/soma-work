@@ -108,7 +108,8 @@ export class SlackPermissionMessenger {
    *
    * When the call is irreversible ({@link irreversibleAction} — a deploy, a
    * publish, a destructive command), a line under the header says what cannot
-   * be undone and both approve buttons open a confirm dialog first.
+   * be undone and both approve buttons open a confirm dialog first — except on
+   * a red card, whose Approve already asks a second time.
    */
   buildRequestBlocks(
     toolName: string,
@@ -123,7 +124,8 @@ export class SlackPermissionMessenger {
     // Approve the red one, and no shortcut silences the rule for the session.
     const red = advice?.recommendation === 'deny';
     const irreversible = irreversibleAction(toolName, input);
-    const confirm = irreversible ? { confirm: irreversibleConfirm(irreversible) } : {};
+    // A red card's Approve already asks a second time (buildSecondConfirmBlocks): no dialog on top of it.
+    const confirm = irreversible && !red ? { confirm: irreversibleConfirm(irreversible) } : {};
 
     const actionElements: any[] = [
       {

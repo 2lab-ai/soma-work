@@ -418,10 +418,13 @@ describe('dashboard permission prompt → real server (shipped client code)', ()
     expect(p?.irreversible).toBe('PR 머지');
     const d = client('U1').acPermissionData(card(id), p) as CardData & { irreversible?: string };
     expect(d.irreversible).toBe('PR 머지');
-    // An ordinary prompt's card keeps the plain Approve button.
-    const plain = client('U1').acPermissionData(card(id), card(id).pendingPermissions[0]) as CardData & {
-      irreversible?: string;
-    };
+    // An ordinary prompt from the same index carries no label, so its card keeps the plain Approve button.
+    const plainId = await seed();
+    await refreshPendingPermissions();
+    const plainP = pendingPermissionsFor(channel, 't1').find((x) => x.approvalId === plainId);
+    expect(plainP).toBeDefined();
+    expect(plainP && 'irreversible' in plainP).toBe(false);
+    const plain = client('U1').acPermissionData(card(plainId), plainP) as CardData & { irreversible?: string };
     expect(plain.irreversible).toBeUndefined();
   });
 
