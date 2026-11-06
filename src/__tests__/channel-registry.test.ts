@@ -151,6 +151,44 @@ describe('the maker’s entry against a stale read (#970)', () => {
     expect(getChannel(b.id)?.repos).toEqual([b.repo]);
   });
 
+  // Review round 3 — the re-read is checked again when its answer arrives, and a failed one is retried.
+  it('a re-read answered after the channel was removed, or written again, changes nothing', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-06T02:00:00Z'));
+    for (const meanwhile of ['remove', 'upsert'] as const) {
+      const { id, repo } = fresh();
+      upsertChannel({ id, name: 'workspace-fresh', purpose: `https://github.com/${repo}` });
+      const c = client(id, '');
+      await registerChannel(c, id); // kept out → re-read scheduled
+      let answer: (v: unknown) => void = () => undefined;
+      const stale = { ok: true, channel: { id, name: 'stale', purpose: { value: 'https://github.com/acme/old' } } };
+      c.conversations.info.mockImplementationOnce(() => new Promise((r) => (answer = r)));
+      await vi.advanceTimersByTimeAsync(2 * 60_000 + 2_000); // the re-read is in flight
+      if (meanwhile === 'remove') unregisterChannel(id);
+      else upsertChannel({ id, name: 'workspace-fresh', purpose: `https://github.com/${repo}` });
+      answer(stale);
+      await vi.advanceTimersByTimeAsync(0);
+      if (meanwhile === 'remove') expect(getChannel(id)).toBeUndefined();
+      else expect(getChannel(id)?.repos).toEqual([repo]);
+      expect(findChannelsForRepo('acme/old')).not.toContain(id);
+    }
+  });
+
+  it('a re-read that fails is retried until one answers; the kept entry stays meanwhile', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-06T03:00:00Z'));
+    const { id, repo } = fresh();
+    upsertChannel({ id, name: 'workspace-fresh', purpose: `https://github.com/${repo}` });
+    const c = client(id, '');
+    await registerChannel(c, id);
+    c.conversations.info.mockRejectedValueOnce(new Error('ratelimited'));
+    await vi.advanceTimersByTimeAsync(2 * 60_000 + 2_000);
+    expect(getChannel(id)?.repos).toEqual([repo]);
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(c.conversations.info).toHaveBeenCalledTimes(3);
+    expect(getChannel(id)?.repos).toEqual([]);
+  });
+
   it('a read that names a repo is always taken', async () => {
     const { id, repo } = fresh();
     upsertChannel({ id, name: 'workspace-fresh', purpose: `https://github.com/${repo}` });
