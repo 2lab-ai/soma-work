@@ -206,6 +206,41 @@ describe('goal completion requires every task of the latest list to be completed
   });
 });
 
+// trinity review P1 (astra-zhuge, 2026-11-06): a paused goal's unfinished tasks are its own work.
+// While it is set aside they must not hold the goal that runs in its place.
+describe("a paused goal's open tasks do not hold another goal's completion", () => {
+  it('the tasks a goal left open when it was paused are not the running goal’s tasks → the running goal completes', async () => {
+    const h = makeHarness({ verdict: DONE, ledger: ledgerOf(SIX_TASKS) });
+    const openIds = h.session.taskLedger?.current.slice(1) ?? [];
+    (h.session as any).goalPaused = [makeGoal({ goalId: 'paused-A', status: 'paused', heldTaskIds: openIds } as any)];
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.goal.status).toBe('complete');
+  });
+
+  it('a task the running goal added after the pause still holds it', async () => {
+    const withNew: TodoInput[] = [...SIX_TASKS, { content: 'B 자신의 작업', status: 'pending' }];
+    const ledger = ledgerOf(SIX_TASKS);
+    const heldIds = ledger.current.slice(1);
+    const h = makeHarness({ verdict: DONE, ledger: applyTodoList(ledger, withNew, 9_000) });
+    (h.session as any).goalPaused = [makeGoal({ goalId: 'paused-A', status: 'paused', heldTaskIds: heldIds } as any)];
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.goal.status).toBe('active');
+    const notice = h.notices.find((n) => n.startsWith('🔄'));
+    expect(notice).toContain('1 of');
+    expect(notice).toContain('B 자신의 작업');
+  });
+
+  it('gateGoalVerdictOnTasks and taskGateGapClosed take the excluded ids', () => {
+    const ledger = ledgerOf(SIX_TASKS);
+    const exclude = new Set(ledger.current.slice(1));
+    expect(gateGoalVerdictOnTasks(DONE, ledger, undefined, exclude).verdict.completed).toBe(true);
+    expect(taskGateGapClosed({ lastEvalGateOpen: ['T2'] }, ledger, exclude)).toBe(true);
+    expect(taskGateGapClosed({ lastEvalGateOpen: ['T2'] }, ledger)).toBe(false);
+  });
+});
+
 describe('a task-gate gap is judged again once its open tasks change (review P2)', () => {
   it('continuation 10/10 completes the last task but leaves no text → re-judged and completed, no cap question', async () => {
     const oneLeft: TodoInput[] = [

@@ -65,6 +65,7 @@ import {
 import {
   enqueueOrActivateGoal,
   findGoalById,
+  findPausedGoal,
   findPendingGoalPosition,
   formatGoalObjectiveForSlack,
   formatResumedGoalLine,
@@ -6614,6 +6615,25 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // user's request again on a later turn calls SET_GOAL again, and the goal would queue behind
         // itself. No state changes; the notice says where it already is.
         const samePosition = findPendingGoalPosition(session as unknown as GoalQueueSession, objective);
+        // A goal the owner set aside is not gone: only the owner's resume brings it back.
+        const pausedSame =
+          samePosition === undefined ? findPausedGoal(session as unknown as GoalQueueSession, objective) : undefined;
+        if (pausedSame) {
+          this.logger.info('Skipped SET_GOAL — the same goal is paused', {
+            sessionKey: context.sessionKey,
+            objectivePreview: objective.slice(0, 120),
+          });
+          await this.reportModelCommandOutcome(
+            {
+              kind: 'notice',
+              text: `🎯 Goal already set (paused — \`goal resume\` runs it) — not added again: ${formatGoalObjectiveForSlack(objective)}`,
+            },
+            session,
+            context,
+            { flag: OutputFlag.STATUS_MESSAGE },
+          );
+          continue;
+        }
         if (samePosition !== undefined) {
           this.logger.info('Skipped SET_GOAL — the same goal is already set', {
             sessionKey: context.sessionKey,

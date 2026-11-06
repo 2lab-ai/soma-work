@@ -104,6 +104,13 @@ export interface SessionGoalState {
   /** #745: where the goal first failed for its current reason. */
   firstFailure?: SessionGoalFirstFailure;
   /**
+   * The ids of the tasks the session's task list (TodoWrite ledger) had open
+   * when this goal was paused — its own unfinished work. While it stays paused
+   * they hold no other goal's completion (`src/slack/goal-task-gate.ts`);
+   * resuming the goal clears it, so they count for this goal again.
+   */
+  heldTaskIds?: string[];
+  /**
    * The goal's opening turn was admitted but has not reached the model yet
    * (set by the host when it admits the opening, cleared right before the
    * opening's model call). While set, cancelling the opening cancels the
@@ -260,6 +267,16 @@ const sameObjective = (a: string, b: string): boolean =>
  * request again on a later turn calls SET_GOAL again, and the same goal would
  * queue behind itself (#865, live on dev 2026-11-03).
  */
+/**
+ * The paused goal (set aside in `goalPaused`) with this objective, if any.
+ * The SET_GOAL host-apply asks it after {@link findPendingGoalPosition}: a goal
+ * the owner paused is not gone, and a model that reads the request again must
+ * not start a second copy of it behind the owner's back.
+ */
+export function findPausedGoal(session: GoalQueueSession, objective: string): SessionGoalState | undefined {
+  return session.goalPaused?.find((g) => sameObjective(g.objective, objective));
+}
+
 export function findPendingGoalPosition(session: GoalQueueSession, objective: string): number | undefined {
   if (isGoalInFlight(session.goal) && sameObjective(session.goal?.objective ?? '', objective)) return 0;
   const at = session.goalQueue?.findIndex((g) => sameObjective(g.objective, objective)) ?? -1;
@@ -554,7 +571,11 @@ export function deleteCurrentGoal(session: GoalQueueSession): { deleted: boolean
  * sits in the slot as `paused`). Returns `{}` when there is no such goal.
  * Persistence is the caller's job.
  */
-export function pauseCurrentGoal(session: GoalQueueSession): {
+export function pauseCurrentGoal(
+  session: GoalQueueSession,
+  /** The open task ids on the session's task list now — the paused goal's own work ({@link SessionGoalState.heldTaskIds}). */
+  opts: { heldTaskIds?: readonly string[] } = {},
+): {
   paused?: SessionGoalState;
   promoted?: SessionGoalState;
 } {
@@ -565,6 +586,7 @@ export function pauseCurrentGoal(session: GoalQueueSession): {
   dropScheduledEval(current);
   current.epoch = (current.epoch ?? 0) + 1;
   current.updatedAt = Date.now();
+  current.heldTaskIds = opts.heldTaskIds?.length ? [...opts.heldTaskIds] : undefined;
   session.goalPaused = (session.goalPaused ?? []).filter((g) => g.goalId !== current.goalId);
   session.goalPaused.push(current);
   const next = session.goalQueue && session.goalQueue.length > 0 ? session.goalQueue.shift() : undefined;
@@ -578,6 +600,22 @@ export function pauseCurrentGoal(session: GoalQueueSession): {
   session.goalLastTurnText = undefined;
   session.systemPrompt = undefined;
   return { paused: current };
+}
+
+/**
+ * Undo a pause whose follow-through (the promoted goal's first turn) was
+ * refused: the goal state goes back to the snapshot, except the decision round
+ * the pause ended. Ending it already withdrew its question and rewrote its DM
+ * (the host's retirer), which no restore can put back — so the restored goal
+ * comes back without that round, never with one no surface shows. Persistence
+ * is the caller's job.
+ */
+export function undoPause(session: GoalQueueSession, snapshot: GoalStateSnapshot, paused: SessionGoalState): void {
+  restoreGoalState(session, snapshot);
+  paused.stall = undefined;
+  paused.capDmPendingAt = undefined;
+  paused.capDecisionId = undefined;
+  paused.capDmRef = undefined;
 }
 
 /** Where {@link resumePausedGoal} put the goal. */
@@ -611,11 +649,23 @@ export function resumePausedGoal(
   const current = session.goal;
   const currentPaused = current?.status === 'paused' ? current : undefined;
   let goal: SessionGoalState | undefined;
-  if (goalId === undefined) goal = shelf[shelf.length - 1] ?? currentPaused;
-  else goal = shelf.find((g) => g.goalId === goalId) ?? (currentPaused?.goalId === goalId ? currentPaused : undefined);
+  if (goalId === undefined) {
+    // The most recently paused of the two places: a goal stopped in place (the
+    // cap question's Cancel) after the last one was set aside is the newer one.
+    const last = shelf[shelf.length - 1];
+    goal =
+      last && currentPaused
+        ? currentPaused.updatedAt > last.updatedAt
+          ? currentPaused
+          : last
+        : (last ?? currentPaused);
+  } else
+    goal = shelf.find((g) => g.goalId === goalId) ?? (currentPaused?.goalId === goalId ? currentPaused : undefined);
   if (!goal) return undefined;
   const target = goal;
   session.goalPaused = shelf.filter((g) => g.goalId !== target.goalId);
+  // Its open tasks count for it again.
+  target.heldTaskIds = undefined;
 
   if (current?.status === 'active') {
     target.status = 'queued';
