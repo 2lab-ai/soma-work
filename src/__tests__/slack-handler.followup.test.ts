@@ -3272,6 +3272,56 @@ describe('SlackHandler — follow-up queue host', () => {
         await turn.release();
       });
 
+      /**
+       * #987 review (astra P2): one run, two executions (a continuation). The
+       * first execution's input is already closed when its drain tries a row, so
+       * the row is refused again; the second execution reaches the model while
+       * that drain is still busy with a download. The drain makes one more pass.
+       */
+      it('a row refused again gets the next execution of the same run, even while the drain is still busy', async () => {
+        let inputOpen = false;
+        const steerTurn = vi.fn(() => inputOpen);
+        claudeHandler.steerTurn = steerTurn;
+        handlerAny.fileHandler = {
+          formatFilePrompt: vi.fn(async (_files: unknown, text: string) => text),
+          cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+        };
+        const download = deferred<any>();
+        let withFileCalls = 0;
+        processFiles.mockImplementation(async (event: any) => {
+          if (event?.ts === '444.555' && ++withFileCalls === 2) return download.promise;
+          return { files: [], shouldContinue: true };
+        });
+        const file = {
+          id: 'F1',
+          name: 'log.txt',
+          mimetype: 'text/plain',
+          filetype: 'text',
+          url_private: 'https://x/1',
+          url_private_download: 'https://x/1d',
+          size: 12,
+        };
+        const turn = turnStillSettingUp();
+        await tick();
+        await handler.handleMessage(message({ ts: '333.444', text: '첫 번째' }), say()); // refused: no input
+        await handler.handleMessage(message({ ts: '444.555', text: '로그', files: [file] }), say()); // behind it
+
+        reachModel(turn.epoch()); // execution 1: its input already closed — the first row is refused again
+        for (let i = 0; i < 4; i++) await tick();
+        inputOpen = true;
+        reachModel(turn.epoch()); // execution 2 of the same run, while the drain waits on the download
+        for (let i = 0; i < 4; i++) await tick();
+        download.resolve({ files: [], shouldContinue: true });
+        for (let i = 0; i < 8; i++) await tick();
+
+        const pushed = steerTurn.mock.calls
+          .filter((_call: any, index: number) => steerTurn.mock.results[index].value === true)
+          .map((call: any[]) => call[1].text);
+        expect(pushed).toEqual(['로그', '첫 번째']);
+        expect(items().map((item: any) => item.state)).toEqual(['steered', 'steered']);
+        await turn.release();
+      });
+
       it('stays queued for the drain when the opened turn refuses it again', async () => {
         const steerTurn = vi.fn().mockReturnValue(false);
         claudeHandler.steerTurn = steerTurn;
