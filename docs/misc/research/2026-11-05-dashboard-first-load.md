@@ -46,6 +46,18 @@ Modules run only after the ~1 MB document is parsed (parsing ends at about 0.95 
 ## Follow-ups (#969, 2026-11-06)
 
 - The page under the layer is inert while it is up: every in-flow child of `.app` (header, main, the FAB, the status line), not the drawers and dialogs, so a drawer opened by a deep link during boot stays usable. Real browser, CPU 4×: before, Tab during boot reached the hidden filter button, sort button and search box; after, Tab stays on the body, and the first Tab after the lift reaches the app bar.
+- An overlay that opens while the layer is up lifts it in that frame. From 840px a deep link docks its drawer beside the board (`show()`, not a modal), under the layer: on main the layer stayed over the open drawer and Tab landed on the drawer's permalink nobody could see (real browser, breadcrumbs.js held 6 s); now the layer is gone when the drawer opens.
+- The layer draws the board the way the page will: the saved view, else list below 640px (the page's `defaultBoardView`), and the kit's narrow-board columns (`@container ≤ 839px: minmax(min(300px, 84cqi), 1fr)`). Before, a phone with no saved view saw side-scrolling columns on the layer and a stacked list after it.
+- The board's tools since #976 (filter · sort · search) are drawn in the head; on a phone they wrap in two rows with the scope chips; below the bar's toolbarAt (1280px) the bar's own row is drawn. Where the board starts, layer vs page (real browser, admin / non-admin):
+
+  | Width | Main | This change |
+  |---|---|---|
+  | 390 (phone, touch) | 32 / 40 px off | 4 / 4 px |
+  | 700 (tablet, touch) | 58 / 34 px | 12 / 12 px |
+  | 1024 | 42 / 18 px | 12 / 12 px |
+  | 1280 | 0 / 0 | 0 / 0 |
+
+  The rest is the role: the bar's row is ~18px empty for a user and ~42px with the admin chips, and the layer cannot know who is signing in, so it takes the middle. Column left edges and widths match at every width. The advanced view (stats above the board) still moves the board after the lift; the page itself applies that mode after loading.
 - The layer's geometry is checked against its sources: a test reads the kit's app bar and board styles from the installed `@2lab.ai/ui` and the page sheet, and fails when the layer's numbers (bar height, gap and padding, main column, board gap, column and card padding, skeleton sizes, phone column width) stop matching. A mutation (bar 56 → 60 px, column 1280 → 1200 px) fails it.
 - Cold-load module cost: the kit modules (`/dashboard/ui/*.js`) were served uncompressed — 60 requests, 1,478 KB on the wire for 1,495 KB of code — while the page and the board JSON were compressed (#477). They now use the same route compression: 437 KB on the wire. Brotli costs about 25 ms of CPU per cold load; the browser keeps the files an hour.
 

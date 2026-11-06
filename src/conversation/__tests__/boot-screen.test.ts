@@ -40,8 +40,11 @@ const box = (left: number, top: number, width: number, height: number): Box => (
 interface Child {
   tagName: string;
   inert: boolean;
+  open: boolean;
   nextElementSibling: Child | null;
 }
+
+const OPEN_OVERLAY = '.app > ui-drawer[open], .app > ui-dialog[open]';
 
 function page(
   opts: {
@@ -49,6 +52,8 @@ function page(
     noBoot?: boolean;
     noDefinedSelector?: boolean;
     app?: Array<[string, boolean?]> | null;
+    width?: number;
+    saved?: string | null | 'throws';
   } = {},
 ) {
   // The .app container as the parser builds it: its children arrive one by one (append).
@@ -59,15 +64,19 @@ function page(
     },
   };
   const append = (tagName: string, inert = false) => {
-    const child: Child = { tagName: tagName.toUpperCase(), inert, nextElementSibling: null };
+    const child: Child = { tagName: tagName.toUpperCase(), inert, open: false, nextElementSibling: null };
     if (children.length) children[children.length - 1].nextElementSibling = child;
     children.push(child);
     return child;
   };
   for (const [tag, inert] of opts.app ?? []) append(tag, inert);
   const classes = new Set<string>();
+  const attrs: Record<string, string> = {};
   let attached = true;
   const boot = {
+    setAttribute: (name: string, value: string) => {
+      attrs[name] = value;
+    },
     classList: { add: (c: string) => classes.add(c), contains: (c: string) => classes.has(c) },
     get parentNode() {
       return attached ? { removeChild: () => (attached = false) } : null;
@@ -82,6 +91,7 @@ function page(
     readyState: 'loading',
     getElementById: (id: string) => (id === 'boot' && !opts.noBoot ? boot : null),
     querySelector: (sel: string) => {
+      if (sel === OPEN_OVERLAY) return children.find((c) => /^UI-(DRAWER|DIALOG)$/.test(c.tagName) && c.open) ?? null;
       expect(sel).toBe('.app');
       return opts.app === null ? null : app;
     },
@@ -94,14 +104,22 @@ function page(
       if (type === 'DOMContentLoaded') ready.push(fn);
     },
   };
-  const window = { innerWidth: 390, innerHeight: 844 };
+  const window = { innerWidth: opts.width ?? 390, innerHeight: 844 };
+  const localStorage = {
+    getItem: (key: string) => {
+      expect(key).toBe('soma-board-view');
+      if (opts.saved === 'throws') throw new Error('SecurityError');
+      return opts.saved ?? null;
+    },
+  };
   const requestAnimationFrame = (fn: () => void) => frames.push(fn);
   const setTimeout = (fn: () => void, ms: number) => timers.push({ at: now + ms, fn });
-  new Function('document', 'window', 'requestAnimationFrame', 'setTimeout', bootClientJs())(
+  new Function('document', 'window', 'requestAnimationFrame', 'setTimeout', 'localStorage', bootClientJs())(
     document,
     window,
     requestAnimationFrame,
     setTimeout,
+    localStorage,
   );
   return {
     get out() {
@@ -135,6 +153,15 @@ function page(
       undefinedEls = els;
     },
     append,
+    /** An overlay child (by tag) opens, as <ui-drawer> / <ui-dialog> reflect it. */
+    openOverlay(tag: string) {
+      const c = children.find((x) => x.tagName === tag.toUpperCase());
+      if (!c) throw new Error(`no ${tag}`);
+      c.open = true;
+    },
+    get view() {
+      return attrs['data-view'];
+    },
     /** Each .app child as tag:inert. */
     get inert() {
       return children.map((c) => `${c.tagName.toLowerCase()}:${c.inert}`);
@@ -310,6 +337,22 @@ describe('[T5 #969] the page under the layer takes no keyboard focus while it is
     expect(p.out).toBe(true);
     expect(p.inert.every((c) => c.endsWith(':false'))).toBe(true);
   });
+  it('an overlay that opens during boot (a deep link docks its drawer under the layer) lifts it that frame', () => {
+    const p = page({ app: APP, undefinedEls: [box(0, 0, 390, 52)] });
+    p.frame();
+    expect(p.out).toBe(false);
+    p.openOverlay('ui-drawer');
+    p.frame();
+    expect(p.out).toBe(true);
+    expect(p.inert.every((c) => c.endsWith(':false'))).toBe(true);
+  });
+  it('a dialog that opens during boot (Ctrl+N) lifts it too', () => {
+    const p = page({ app: APP, undefinedEls: [box(0, 0, 390, 52)] });
+    p.frame();
+    p.openOverlay('ui-dialog');
+    p.frame();
+    expect(p.out).toBe(true);
+  });
   it('a child the page made inert itself stays inert after the lift', () => {
     const p = page({ app: [['header'], ['div', true]] });
     p.frame();
@@ -326,16 +369,40 @@ describe('[T5 #969] the page under the layer takes no keyboard focus while it is
   });
 });
 
-/** The value of `prop` in the first rule whose selector is exactly `selector` (after `from`, when given). */
+/** The block that opens at `marker` (an at-rule head ending in `{`), up to its matching `}`. */
+/** Every block that opens at `marker` (an at-rule head ending in `{`), each up to its matching `}`. */
+function blocks(css: string, marker: string): string[] {
+  const out: string[] = [];
+  for (let start = css.indexOf(marker); start >= 0; start = css.indexOf(marker, start + 1)) {
+    let depth = 0;
+    for (let i = start + marker.length - 1; i < css.length; i++) {
+      if (css[i] === '{') depth++;
+      else if (css[i] === '}' && --depth === 0) {
+        out.push(css.slice(start + marker.length, i));
+        break;
+      }
+    }
+  }
+  if (!out.length) throw new Error(`marker not found: ${marker}`);
+  return out;
+}
+
+/**
+ * The value of `prop` in the first rule whose selector is exactly `selector` — at the top level, or (with `from`) in
+ * the first block opened by `from` that has that rule. Throws when there is no such rule or property.
+ */
 function decl(css: string, selector: string, prop: string, from = ''): string {
-  const start = from ? css.indexOf(from) : 0;
-  if (start < 0) throw new Error(`marker not found: ${from}`);
   const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const m = css.slice(start).match(new RegExp(`(?:^|[}\\n])\\s*${esc}\\s*\\{([^}]*)\\}`));
-  if (!m) throw new Error(`rule not found: ${selector}`);
-  const v = m[1].match(new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+?)\\s*(?:;|$)`));
-  if (!v) throw new Error(`${prop} not in ${selector}`);
-  return v[1];
+  const rule = new RegExp(`(?:^|[{}\\n])\\s*${esc}\\s*\\{([^}]*)\\}`);
+  const scopes = from ? blocks(css, from) : [css];
+  for (const scope of scopes) {
+    const m = scope.match(rule);
+    if (!m) continue;
+    const v = m[1].match(new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+?)\\s*(?:;|$)`));
+    if (!v) throw new Error(`${prop} not in ${selector}`);
+    return v[1];
+  }
+  throw new Error(`rule not found: ${selector}${from ? ` in ${from}` : ''}`);
 }
 
 describe('[T7 #969] the layer stands where the page and the kit draw: their numbers, not a copy', () => {
@@ -361,6 +428,7 @@ describe('[T7 #969] the layer stands where the page and the kit draw: their numb
     expect(decl(boot, '.boot-main', 'padding')).toBe(decl(sheet, '.main', 'padding'));
     expect(decl(boot, '.boot-main', 'padding', PHONE)).toBe(decl(sheet, '.main', 'padding', PHONE));
     expect(decl(boot, '.boot-head', 'margin')).toBe(decl(sheet, '.inbox-head', 'margin'));
+    expect(decl(boot, '.boot-head', 'margin-bottom', PHONE)).toBe(decl(sheet, '.inbox-head', 'margin-bottom', PHONE));
   });
   it('the board: the kit columns, column head and skeleton card', () => {
     expect(decl(boot, '.boot-board', 'gap')).toBe(decl(inbox, '.ib-board', 'gap'));
@@ -380,11 +448,49 @@ describe('[T7 #969] the layer stands where the page and the kit draw: their numb
       expect(decl(boot, b, 'width')).toBe(decl(inbox, k, 'width'));
     }
   });
-  it('a phone board: the kit column width, the second column peeking', () => {
-    const kitCols = inbox.match(
-      /grid-template-columns: repeat\(var\(--ib-cols, 3\), minmax\(min\((\d+px), \d+cqi\), 1fr\)\)/,
+  it('the list view and the narrow board: the kit rules, at the kit breakpoint', () => {
+    expect(decl(boot, '.boot[data-view="list"] .boot-board', 'grid-template-columns')).toBe(
+      decl(inbox, '.ib[data-view="list"] .ib-board', 'grid-template-columns'),
     );
-    expect(kitCols).not.toBeNull();
-    expect(decl(boot, '.boot-board', 'grid-template-columns', PHONE)).toBe(`repeat(3, ${kitCols?.[1]})`);
+    const narrow = inbox.match(/@container ib (\(max-width: \d+px\)) \{\s*\.ib:not\(\[data-view="list"\]\) \.ib-board/);
+    expect(narrow).not.toBeNull();
+    const at = `@container boot ${narrow?.[1]} {`;
+    expect(decl(boot, '.boot:not([data-view="list"]) .boot-board', 'grid-template-columns', at)).toBe(
+      decl(
+        inbox,
+        '.ib:not([data-view="list"]) .ib-board',
+        'grid-template-columns',
+        `@container ib ${narrow?.[1]} {`,
+      ).replace('var(--ib-cols, 3)', '3'),
+    );
+    // The kit measures the board's own box (.ib, a container); the layer measures the main column's content box —
+    // the same width, as the board fills the main column.
+    expect(decl(inbox, '.ib', 'container')).toBe('ib / inline-size');
+    expect(decl(boot, '.boot-main', 'container')).toBe('boot / inline-size');
+  });
+});
+
+/** The page's own client function, cut out of renderDashboardPage's template (a plain slice: no backticks, no ${}). */
+function pageFn(name: string): (...args: unknown[]) => unknown {
+  const start = TEMPLATE.indexOf(`\nfunction ${name}(`);
+  if (start < 0) throw new Error(`client function ${name} not found`);
+  const src = TEMPLATE.slice(start + 1, TEMPLATE.indexOf('\n}\n', start) + 2);
+  if (src.includes('`') || src.includes('${')) throw new Error('not a plain template slice');
+  return new Function(`${src}; return ${name};`)() as (...args: unknown[]) => unknown;
+}
+
+describe('[T7 #969] the layer draws the board in the view the page will choose', () => {
+  const defaultBoardView = pageFn('defaultBoardView');
+  const widths = [320, 390, 639, 640, 1024, 1280];
+  const saves: Array<string | null> = [null, 'board', 'list', 'columns'];
+  it.each(
+    widths.flatMap((w) => saves.map((v) => [w, v] as const)),
+  )("width %i, saved %s: the page's defaultBoardView", (width, saved) => {
+    const p = page({ width, saved });
+    expect(p.view).toBe(defaultBoardView(width, saved));
+  });
+  it('storage that throws: the width decides, as the page (savedBoardView → null)', () => {
+    expect(page({ width: 390, saved: 'throws' }).view).toBe(defaultBoardView(390, null));
+    expect(page({ width: 1280, saved: 'throws' }).view).toBe(defaultBoardView(1280, null));
   });
 });
