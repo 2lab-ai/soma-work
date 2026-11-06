@@ -26,6 +26,11 @@ export interface CardLink {
   /** The state in words: `열림`, `머지됨`, `In Progress`. */
   status?: string;
   tone?: CardLinkTone;
+  /**
+   * Still open (SSOT 2026-11-06, #983 — the follow-up bar): a PR open or in draft, a GitHub issue open, a Jira issue
+   * in a state that is neither done nor dropped. Never a wiki, never a page whose state is unknown.
+   */
+  open?: true;
 }
 
 interface LinkLike {
@@ -71,6 +76,18 @@ const GITHUB_ISSUE_WORDS: Record<string, { status: string; tone?: CardLinkTone }
 // A tracker's own status name (Jira's, mostly), toned by what kind of state it names.
 const DONE_RE = /^(done|closed|resolved|complete(d)?|fixed|released|완료|종료|해결(됨)?|닫힘)$/i;
 const RUN_RE = /(progress|develop|doing|working|진행|개발)/i;
+// A tracker state that ends the issue without doing it: not done, not open either.
+const DROPPED_RE = /(cancel|reject|won'?t|duplicate|obsolete|invalid|abandon|취소|반려|폐기|중복)/i;
+
+/** Whether a link in this state is still open (the follow-up bar's test). */
+export function linkIsOpen(kind: CardLinkKind, raw: string | undefined): boolean {
+  const word = typeof raw === 'string' ? raw.trim() : '';
+  if (!word || kind === 'wiki') return false;
+  const key = word.toLowerCase();
+  if (kind === 'pr') return key === 'open' || key === 'draft';
+  if (GITHUB_ISSUE_WORDS[key]) return key === 'open';
+  return !DONE_RE.test(word) && !DROPPED_RE.test(word);
+}
 const WAIT_RE = /(review|qa|test|verif|검토|리뷰|확인|대기|blocked|hold)/i;
 
 /** A link's state in words and its tone. Unknown words are shown as they are. */
@@ -181,6 +198,7 @@ export function cardLinksOf(src: CardLinkSource, peek?: LinkPeek): CardLink[] {
       text: shortText(kind, link, kind === 'wiki' ? title : undefined),
       ...(title ? { title: title.trim().slice(0, 200) } : {}),
       ...linkState(kind, raw),
+      ...(linkIsOpen(kind, raw) ? { open: true as const } : {}),
     });
   };
   // The current one of each kind, then the rest of each kind.

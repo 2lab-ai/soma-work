@@ -208,3 +208,78 @@ describe('K3 · K4 — status', () => {
     expect(linkState('issue', undefined)).toEqual({});
   });
 });
+
+/**
+ * K5 (SSOT 2026-11-06, #983) — the follow-up bar: which linked pages are still open. A PR open or in draft, a GitHub
+ * issue open, a Jira issue in any state that is not done or dropped. Never a wiki, never a page whose state is unknown.
+ */
+describe('K5 — open: what the follow-up bar shows', () => {
+  const openOf = (src: Parameters<typeof cardLinksOf>[0]) =>
+    cardLinksOf(src).map((l) => [l.text, l.open === true] as [string, boolean]);
+
+  it('a PR open or in draft, a GitHub issue open; merged, closed and unknown are not', () => {
+    expect(
+      openOf({
+        linkHistory: {
+          prs: [
+            { url: 'https://github.com/acme/app/pull/1', status: 'open' },
+            { url: 'https://github.com/acme/app/pull/2', status: 'draft' },
+            { url: 'https://github.com/acme/app/pull/3', status: 'merged' },
+            { url: 'https://github.com/acme/app/pull/4', status: 'closed' },
+            { url: 'https://github.com/acme/app/pull/5' },
+          ],
+          issues: [
+            { url: 'https://github.com/acme/app/issues/6', status: 'open' },
+            { url: 'https://github.com/acme/app/issues/7', status: 'closed' },
+            { url: 'https://github.com/acme/app/issues/8' },
+          ],
+          docs: [{ url: WIKI, status: 'open' }],
+        },
+      }),
+    ).toEqual([
+      ['#8', false],
+      ['#5', false],
+      ['Payment Form Design', false],
+      ['#7', false],
+      ['#6', true],
+      ['#4', false],
+      ['#3', false],
+      ['#2', true],
+      ['#1', true],
+    ]);
+  });
+
+  it('a merge from any source wins over a recorded open', () => {
+    const links = cardLinksOf({ links: { pr: { url: PR, status: 'open' } } }, () => ({ status: 'merged' }));
+    expect(links[0].open).toBeUndefined();
+  });
+
+  it('a Jira issue in progress, in review or to do is open; done or dropped is not', () => {
+    const jira = (key: string, status: string) => ({ url: `https://acme.atlassian.net/browse/${key}`, status });
+    expect(
+      openOf({
+        linkHistory: {
+          issues: [
+            jira('PJ-1', 'In Progress'),
+            jira('PJ-2', 'In Review'),
+            jira('PJ-3', 'To Do'),
+            jira('PJ-4', 'Done'),
+            jira('PJ-5', "Won't Do"),
+            jira('PJ-6', 'Cancelled'),
+            jira('PJ-7', '반려'),
+            jira('PJ-8', 'Duplicate'),
+          ],
+        },
+      }),
+    ).toEqual([
+      ['PJ-8', false],
+      ['PJ-7', false],
+      ['PJ-6', false],
+      ['PJ-5', false],
+      ['PJ-4', false],
+      ['PJ-3', true],
+      ['PJ-2', true],
+      ['PJ-1', true],
+    ]);
+  });
+});
