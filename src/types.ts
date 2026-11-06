@@ -290,6 +290,15 @@ export interface SessionGoal {
    * that never had its first turn.
    */
   openingPending?: boolean;
+  /**
+   * The open task ids the session's task list had when this goal was paused —
+   * its own work. While it stays in `goalPaused` they hold no other goal's
+   * completion (`src/slack/goal-task-gate.ts`) while the task list they came
+   * from (`heldListAt`) is still the latest; taking the slot again clears it.
+   */
+  heldTaskIds?: string[];
+  /** `TaskLedger.updatedAt` of the list `heldTaskIds` were taken from. */
+  heldListAt?: number;
 
   // ── Host-side completion evaluation ────────────────────────────────────
   /**
@@ -823,6 +832,16 @@ export interface ConversationSession {
    * entry has `status: 'queued'`. Persisted so the queue survives a restart.
    */
   goalQueue?: SessionGoal[];
+
+  /**
+   * Goals the owner paused (`goal pause`, the ⏸️ buttons), oldest first, each
+   * with `status: 'paused'`. A paused goal has left `goal`: it never drives the
+   * loop or reaches the prompt and never holds the queue back. `goal resume`
+   * puts it back — as the current goal when none is running, otherwise at the
+   * head of `goalQueue` (`resumePausedGoal` in `@soma/slack/session-goal`).
+   * Persisted.
+   */
+  goalPaused?: SessionGoal[];
 
   /**
    * Completed (and cleared-on-advance) goals, newest last, capped at

@@ -8,13 +8,17 @@ import { buildGoalStatusBlocks } from '../goal-blocks';
 import { retireGoalCapDecision } from '../goal-cap-decision';
 import { bumpGoalEpoch } from '../goal-continuation';
 import { resumeGoalLoop } from '../goal-loop-resume';
+import { heldTasksOf } from '../goal-task-gate';
 import {
   advanceGoalQueue,
   enqueueOrActivateGoal,
   formatGoalObjectiveForSlack,
   formatResumedGoalLine,
+  pauseCurrentGoal,
   restoreGoalState,
+  resumePausedGoal,
   snapshotGoalState,
+  undoPause,
 } from '../session-goal';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult, GoalOpeningAdmission } from './types';
 
@@ -82,10 +86,9 @@ export class GoalHandler implements CommandHandler {
       case 'set':
         return this.setGoal(ctx, session, action.objective);
       case 'pause':
-        await this.pauseGoal(channel, threadTs, session);
-        return { handled: true };
+        return this.pauseGoal(channel, threadTs, session, ctx.admitOpening);
       case 'resume':
-        return this.resumeGoal(channel, threadTs, session, ctx.admitOpening);
+        return this.resumeGoal(channel, threadTs, session, action.index, ctx.admitOpening);
       case 'complete':
         return this.completeGoal(channel, threadTs, session, user, ctx.admitOpening);
       case 'clear':
@@ -248,101 +251,197 @@ export class GoalHandler implements CommandHandler {
     return { handled: true, continueWithPrompt: objective, verbatimPrompt: true };
   }
 
-  private async pauseGoal(channel: string, threadTs: string, session: ConversationSession): Promise<void> {
-    if (!session.goal) {
-      await this.postNoGoal(channel, threadTs);
-      return;
-    }
-    if (session.goal.status === 'complete') {
-      await this.deps.slackApi.postSystemMessage(channel, '✅ Current goal is already complete.', { threadTs });
-      return;
-    }
-    session.goal.status = 'paused';
-    // A lifecycle change ends any pending cap decision (S3) — its DM too.
-    retireGoalCapDecision(session.goal);
-    session.goal.updatedAt = Date.now();
-    this.persistGoalChange(session);
-    await this.deps.slackApi.postSystemMessage(channel, '⏸️ Goal paused. It will not be injected into future prompts.', {
-      threadTs,
-    });
-  }
-
-  private async resumeGoal(
+  /**
+   * `goal pause` — the current goal steps aside (`goalPaused`) and the session
+   * moves on: the next queued goal starts, or, with nothing queued, the goal
+   * work ends. A turn already running is not cut; it finishes first.
+   */
+  private async pauseGoal(
     channel: string,
     threadTs: string,
     session: ConversationSession,
     admitOpening?: CommandContext['admitOpening'],
   ): Promise<CommandResult> {
-    if (!session.goal) {
-      await this.postNoGoal(channel, threadTs);
+    const current = session.goal;
+    if (!current || current.status === 'complete') {
+      if (!current && !session.goalPaused?.length) {
+        await this.postNoGoal(channel, threadTs);
+      } else {
+        await this.deps.slackApi.postSystemMessage(
+          channel,
+          current ? '✅ Current goal is already complete.' : '💡 No goal is running — nothing to pause.',
+          { threadTs },
+        );
+      }
       return { handled: true };
     }
-    if (session.goal.status === 'complete') {
-      await this.deps.slackApi.postSystemMessage(channel, '✅ Current goal is complete. Set a new goal to continue.', {
-        threadTs,
-      });
-      return { handled: true };
-    }
-    const goal = session.goal;
-    // A goal paused before its first turn ever reached the model (its opening
-    // was skipped or cancelled): resuming it must START it, or it would sit
-    // active with no first turn, judged on whatever unrelated turn ends next.
-    const needsOpening = goal.status === 'paused' && goal.openingPending === true;
-    const snapshot = needsOpening && admitOpening ? snapshotGoalState(session) : undefined;
-    // `goal resume` on a goal the loop stopped on a repeated failure: the owner
-    // chose to go on — the stall ends (its question is retracted), the budget
-    // comes back (a stall at the last continuation would otherwise ask the cap
-    // question right away), and the loop runs again below.
-    const wasStalled = !!goal.stall;
-    if (wasStalled) {
-      retireGoalCapDecision(goal);
-      goal.continuationCount = 0;
-    }
-    goal.status = 'active';
-    goal.updatedAt = Date.now();
+    const snapshot = admitOpening ? snapshotGoalState(session) : undefined;
+    // Its open tasks stay its own: they hold no other goal while it is paused.
+    const { paused, promoted } = pauseCurrentGoal(session, heldTasksOf(session.taskLedger));
+    if (!paused) return { handled: true };
     this.persistGoalChange(session);
+    const pausedLine = `⏸️ Goal paused: ${this.formatObjectiveForSlack(paused.objective)}`;
 
-    if (needsOpening && admitOpening && snapshot) {
-      const admission = admitOpening({ goalId: goal.goalId, objective: goal.objective, cause: 'resumed' });
+    if (promoted && admitOpening && snapshot) {
+      // Same contract as `goal done`: the promoted goal's first turn is
+      // admitted with the mutation, or the pause is undone.
+      const admission = admitOpening({ goalId: promoted.goalId, objective: promoted.objective, cause: 'promoted' });
       if (typeof admission === 'object') {
-        restoreGoalState(session, snapshot);
+        undoPause(session, snapshot, paused);
         this.deps.claudeHandler.saveSessions();
+        this.deps.claudeHandler.broadcastSessionUpdate?.();
         await this.notifyBestEffort(
           channel,
           threadTs,
-          `⚠️ Goal was NOT resumed — its first turn could not be scheduled (${admission.failed}). Try \`goal resume\` again.`,
+          `⚠️ Goal was NOT paused — the next goal's first turn could not be scheduled (${admission.failed}). Try \`goal pause\` again.`,
         );
         return { handled: true };
       }
       await this.notifyBestEffort(
         channel,
         threadTs,
-        `▶️ Goal resumed from its first turn: ${this.formatObjectiveForSlack(goal.objective)}\n_${GoalHandler.openingHint(admission)}_`,
+        `${pausedLine}\n▶️ Starting next queued goal: ${this.formatObjectiveForSlack(promoted.objective)}\n_${GoalHandler.openingHint(admission)}_`,
       );
       return { handled: true };
     }
-    if (needsOpening) {
-      // Inside a dispatch slot (no host intake): the objective is this turn.
-      goal.openingPending = undefined;
-      this.deps.claudeHandler.saveSessions();
+    if (promoted) {
       await this.deps.slackApi.postSystemMessage(
         channel,
-        `▶️ Goal resumed from its first turn: ${this.formatObjectiveForSlack(goal.objective)}`,
+        `${pausedLine}\n▶️ Starting next queued goal: ${this.formatObjectiveForSlack(promoted.objective)}`,
         { threadTs },
       );
-      return { handled: true, continueWithPrompt: goal.objective, verbatimPrompt: true };
+      return { handled: true, continueWithPrompt: promoted.objective, verbatimPrompt: true };
     }
+    await this.deps.slackApi.postSystemMessage(
+      channel,
+      `${pausedLine}\n_No goal is queued, so the goal work stops here. \`goal resume\` starts it again._`,
+      { threadTs },
+    );
+    return { handled: true };
+  }
 
-    if (wasStalled) {
-      await this.deps.slackApi.postSystemMessage(channel, '▶️ Goal resumed — the auto-continuation loop runs again.', {
-        threadTs,
-      });
-      resumeGoalLoop(this.deps.claudeHandler.getSessionKey(channel, threadTs));
+  /**
+   * `goal resume [n]` — a paused goal comes back: the most recently paused one,
+   * or the n-th in the `goal` list. With no goal running it becomes the current
+   * goal and starts at once; with a goal running it goes right after that goal
+   * (head of the queue) without interrupting it.
+   *
+   * With nothing paused, `goal resume` keeps its older meaning for a goal the
+   * loop stopped on a repeated failure (a stall): the loop runs it again.
+   */
+  private async resumeGoal(
+    channel: string,
+    threadTs: string,
+    session: ConversationSession,
+    index: number | undefined,
+    admitOpening?: CommandContext['admitOpening'],
+  ): Promise<CommandResult> {
+    const shelf = session.goalPaused ?? [];
+    const current = session.goal;
+    const slotPaused = current?.status === 'paused' ? current : undefined;
+
+    if (index === undefined && current?.status === 'active' && current.stall) {
+      return this.resumeStalledGoal(channel, threadTs, session, current);
+    }
+    if (shelf.length === 0 && !slotPaused) {
+      if (!current) await this.postNoGoal(channel, threadTs);
+      else
+        await this.deps.slackApi.postSystemMessage(
+          channel,
+          current.status === 'complete'
+            ? '✅ Current goal is complete and no goal is paused. Set a new goal to continue.'
+            : '▶️ The current goal is already running — no goal is paused.',
+          { threadTs },
+        );
       return { handled: true };
     }
-    await this.deps.slackApi.postSystemMessage(channel, '▶️ Goal resumed. It will be injected into future prompts.', {
+    let targetId: string | undefined;
+    if (index !== undefined) {
+      const picked = shelf[index - 1];
+      if (!picked) {
+        await this.deps.slackApi.postSystemMessage(
+          channel,
+          `⚠️ There is no paused goal #${index} — ${shelf.length} goal${shelf.length === 1 ? ' is' : 's are'} paused. See \`goal\`.`,
+          { threadTs },
+        );
+        return { handled: true };
+      }
+      targetId = picked.goalId;
+    }
+
+    const snapshot = admitOpening ? snapshotGoalState(session) : undefined;
+    const resumed = resumePausedGoal(session, targetId);
+    if (!resumed) {
+      await this.deps.slackApi.postSystemMessage(channel, '⚠️ That goal is no longer paused. See `goal`.', {
+        threadTs,
+      });
+      return { handled: true };
+    }
+    const { goal, placement } = resumed;
+
+    if (placement === 'next') {
+      // Behind the running goal: no first turn now, and no epoch bump on the
+      // running goal (its in-flight eval stays valid, M1).
+      this.deps.claudeHandler.saveSessions();
+      this.deps.claudeHandler.broadcastSessionUpdate?.();
+      const notice = `▶️ Goal resumed: ${this.formatObjectiveForSlack(goal.objective)}\n_It starts right after the current goal (next in the queue)._`;
+      if (admitOpening) await this.notifyBestEffort(channel, threadTs, notice);
+      else await this.deps.slackApi.postSystemMessage(channel, notice, { threadTs });
+      return { handled: true };
+    }
+
+    // Inside a dispatch slot (no host intake) the objective is this turn, so the
+    // goal's first turn is not pending any more.
+    if (!admitOpening) goal.openingPending = undefined;
+    this.persistGoalChange(session);
+    if (admitOpening && snapshot) {
+      const admission = admitOpening({ goalId: goal.goalId, objective: goal.objective, cause: 'resumed' });
+      if (typeof admission === 'object') {
+        restoreGoalState(session, snapshot);
+        this.deps.claudeHandler.saveSessions();
+        this.deps.claudeHandler.broadcastSessionUpdate?.();
+        await this.notifyBestEffort(
+          channel,
+          threadTs,
+          `⚠️ Goal was NOT resumed — its turn could not be scheduled (${admission.failed}). Try \`goal resume\` again.`,
+        );
+        return { handled: true };
+      }
+      await this.notifyBestEffort(
+        channel,
+        threadTs,
+        `▶️ Goal resumed as the current goal: ${this.formatObjectiveForSlack(goal.objective)}\n_${GoalHandler.openingHint(admission)}_`,
+      );
+      return { handled: true };
+    }
+    await this.deps.slackApi.postSystemMessage(
+      channel,
+      `▶️ Goal resumed as the current goal: ${this.formatObjectiveForSlack(goal.objective)}`,
+      { threadTs },
+    );
+    return { handled: true, continueWithPrompt: goal.objective, verbatimPrompt: true };
+  }
+
+  /**
+   * `goal resume` on a goal the loop stopped on a repeated failure: the owner
+   * chose to go on — the stall ends (its question is retracted), the budget
+   * comes back (a stall at the last continuation would otherwise ask the cap
+   * question right away), and the loop runs again.
+   */
+  private async resumeStalledGoal(
+    channel: string,
+    threadTs: string,
+    session: ConversationSession,
+    goal: SessionGoal,
+  ): Promise<CommandResult> {
+    retireGoalCapDecision(goal);
+    goal.continuationCount = 0;
+    goal.updatedAt = Date.now();
+    this.persistGoalChange(session);
+    await this.deps.slackApi.postSystemMessage(channel, '▶️ Goal resumed — the auto-continuation loop runs again.', {
       threadTs,
     });
+    resumeGoalLoop(this.deps.claudeHandler.getSessionKey(channel, threadTs));
     return { handled: true };
   }
 
@@ -419,30 +518,36 @@ export class GoalHandler implements CommandHandler {
   }
 
   private async clearGoal(channel: string, threadTs: string, session: ConversationSession): Promise<void> {
-    if (!session.goal && !(session.goalQueue?.length || session.goalHistory?.length)) {
+    if (!session.goal && !(session.goalQueue?.length || session.goalPaused?.length || session.goalHistory?.length)) {
       await this.postNoGoal(channel, threadTs);
       return;
     }
     // `clear` is the full escape hatch: drop the current goal, the entire
-    // pending queue, and the completed history. (To advance to the next goal
-    // without nuking the queue, use `goal done` instead.)
+    // pending queue, the paused goals, and the completed history. (To advance
+    // to the next goal without nuking the queue, use `goal done` instead.)
     const clearedQueue = session.goalQueue?.length ?? 0;
+    const clearedPaused = session.goalPaused?.length ?? 0;
     // The dropped goal's open questions end with it (cap decision, stall).
     retireGoalCapDecision(session.goal);
     session.goal = undefined;
     session.goalQueue = [];
+    session.goalPaused = [];
     session.goalHistory = [];
     session.goalLastTurnText = undefined;
     this.persistGoalChange(session);
-    const suffix =
-      clearedQueue > 0 ? ` (also cleared ${clearedQueue} queued goal${clearedQueue === 1 ? '' : 's'})` : '';
+    const also = [
+      clearedQueue > 0 ? `${clearedQueue} queued goal${clearedQueue === 1 ? '' : 's'}` : '',
+      clearedPaused > 0 ? `${clearedPaused} paused goal${clearedPaused === 1 ? '' : 's'}` : '',
+    ].filter(Boolean);
+    const suffix = also.length > 0 ? ` (also cleared ${also.join(' and ')})` : '';
     await this.deps.slackApi.postSystemMessage(channel, `🧹 Goal cleared${suffix}.`, { threadTs });
   }
 
   private async showStatus(channel: string, threadTs: string, session: ConversationSession): Promise<void> {
     const queue = session.goalQueue ?? [];
+    const paused = session.goalPaused ?? [];
     const history = session.goalHistory ?? [];
-    if (!session.goal && queue.length === 0 && history.length === 0) {
+    if (!session.goal && queue.length === 0 && paused.length === 0 && history.length === 0) {
       await this.postNoGoal(channel, threadTs);
       return;
     }
@@ -461,6 +566,7 @@ export class GoalHandler implements CommandHandler {
       threadTs,
       goal: session.goal,
       queue,
+      paused,
       history,
       listLimit: GoalHandler.STATUS_LIST_LIMIT,
       formatObjective: (o) => this.formatObjectiveForSlack(o),
@@ -475,6 +581,7 @@ export class GoalHandler implements CommandHandler {
         `🎯 Current goal (${session.goal.status}): ${this.formatObjectiveForSlack(session.goal.objective)}`,
       );
     if (queue.length) fallback.push(`📋 ${queue.length} queued`);
+    if (paused.length) fallback.push(`⏸️ ${paused.length} paused`);
     if (history.length) fallback.push(`✅ ${history.length} completed`);
 
     await this.deps.slackApi.postSystemMessage(channel, fallback.join(' · ') || '🎯 Goal status', {
@@ -570,7 +677,9 @@ export class GoalHandler implements CommandHandler {
         '• `goal` - show the goal list (current + queued + completed) with time/token spend',
         '• `goal <objective>` or `goal set <objective>` - start a goal, or queue it behind the running one',
         '• `goal done` - complete the current goal and start the next queued one',
-        '• `goal pause|resume|clear` - manage goal state (`clear` drops current + queue + history)',
+        '• `goal pause` - set the current goal aside and start the next queued one (or stop the goal work)',
+        '• `goal resume [n]` - resume the last (or n-th) paused goal: now if no goal runs, otherwise right after the current one',
+        '• `goal clear` - drop the current goal, the queue, the paused goals and the history',
       ].join('\n'),
       { threadTs },
     );

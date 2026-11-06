@@ -6363,7 +6363,9 @@ describe('SlackHandler — follow-up queue host', () => {
       await handler.handleMessage(message({ ts: '333.555', text: 'goal pause' }), say());
       await settle();
       expect(startWithContinuation, 'the opening was skipped (paused)').toHaveBeenCalledTimes(1);
-      expect(registrySession.goal).toMatchObject({ status: 'paused', openingPending: true });
+      // Paused = set aside (SSOT 2026-11-06): no current goal, the paused goal keeps openingPending.
+      expect(registrySession.goal).toBeUndefined();
+      expect(registrySession.goalPaused).toEqual([expect.objectContaining({ status: 'paused', openingPending: true })]);
 
       await handler.handleMessage(message({ ts: '555.666', text: 'goal resume' }), say());
       await vi.waitFor(() => expect(startWithContinuation).toHaveBeenCalledTimes(2));
@@ -6616,6 +6618,7 @@ describe('SlackHandler — follow-up queue host', () => {
       HostGoalActionError = (await import('../slack/goal-host-actions')).HostGoalActionError;
       registrySession.goal = undefined;
       registrySession.goalQueue = undefined;
+      registrySession.goalPaused = undefined;
       registrySession.goalHistory = undefined;
       registrySession.terminated = undefined;
     });
@@ -6860,6 +6863,144 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(registrySession.goalQueue.map((g: any) => g.goalId)).toEqual(['g2']);
       saveError = undefined;
       await settle();
+    });
+
+    // SSOT 2026-11-06 — pause / resume from the dashboard and the Slack goal-list buttons.
+    it('pause current while a turn runs: the goal is set aside, the next goal starts after the turn — the turn is not cut', async () => {
+      registrySession.goal = goalOf();
+      registrySession.goalQueue = [
+        goalOf({ goalId: 'g2', objective: '다음 목표', status: 'queued', createdBy: 'U_OTHER' }),
+      ];
+      const { settle } = await startBusyTurn();
+
+      const result = await handler.handleHostGoalAction(SESSION_KEY, { action: 'pause', goalId: 'g1' });
+
+      expect(result).toMatchObject({ outcome: 'paused', goalId: 'g1', promoted: { goalId: 'g2' } });
+      expect(registrySession.goal).toMatchObject({ goalId: 'g2', status: 'active' });
+      expect(registrySession.goalPaused).toEqual([expect.objectContaining({ goalId: 'g1', status: 'paused' })]);
+      expect(registrySession.goalHistory ?? []).toHaveLength(0);
+      expect(items()).toHaveLength(1);
+      expect(items()[0].message).toMatchObject({
+        text: '다음 목표',
+        user: 'U_OTHER',
+        routeContext: { goalOpeningId: 'g2' },
+      });
+      expect(abortSession, 'the running turn is not cut').not.toHaveBeenCalled();
+      expect(postSystemMessage).toHaveBeenCalledWith(
+        CHANNEL,
+        expect.stringContaining('Goal paused'),
+        expect.anything(),
+      );
+
+      await settle();
+      expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    });
+
+    it('pause current with nothing queued: no goal is left running and nothing starts', async () => {
+      registrySession.goal = goalOf();
+
+      const result = await handler.handleHostGoalAction(SESSION_KEY, { action: 'pause', goalId: 'g1' });
+      await tick();
+
+      expect(result).toEqual({ outcome: 'paused', goalId: 'g1' });
+      expect(registrySession.goal).toBeUndefined();
+      expect(registrySession.goalPaused[0]).toMatchObject({ goalId: 'g1', status: 'paused' });
+      expect(startWithContinuation).not.toHaveBeenCalled();
+    });
+
+    it('undoes the pause when the next goal cannot be admitted (503); refuses a stale pause (409)', async () => {
+      registrySession.goal = goalOf();
+      registrySession.goalQueue = [goalOf({ goalId: 'g2', objective: '다음 목표', status: 'queued' })];
+      const { settle } = await startBusyTurn();
+      saveError = new Error('disk full');
+
+      await expect(handler.handleHostGoalAction(SESSION_KEY, { action: 'pause', goalId: 'g1' })).rejects.toMatchObject({
+        statusCode: 503,
+      });
+      expect(registrySession.goal).toMatchObject({ goalId: 'g1', status: 'active' });
+      expect(registrySession.goalPaused).toBeUndefined();
+      expect(registrySession.goalQueue.map((g: any) => g.goalId)).toEqual(['g2']);
+      saveError = undefined;
+
+      await expect(handler.handleHostGoalAction(SESSION_KEY, { action: 'pause', goalId: 'g2' })).rejects.toMatchObject({
+        statusCode: 409,
+      });
+      await settle();
+    });
+
+    it('resume with no goal running: the paused goal becomes current and its turn takes the slot', async () => {
+      registrySession.goalPaused = [goalOf({ status: 'paused', continuationCount: 6 })];
+
+      const result = await handler.handleHostGoalAction(SESSION_KEY, { action: 'resume', goalId: 'g1' });
+      await tick();
+
+      expect(result).toEqual({ outcome: 'resumed', goalId: 'g1', placement: 'current', opening: 'started' });
+      expect(registrySession.goal).toMatchObject({ goalId: 'g1', status: 'active', continuationCount: 0 });
+      expect(registrySession.goalPaused).toEqual([]);
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    });
+
+    it('resume re-checks the author after the anchor (review P1): acceptance revoked meanwhile → 403, still paused', async () => {
+      registrySession.goalPaused = [goalOf({ status: 'paused' })];
+      const accepted = vi.spyOn(userSettingsStore, 'isUserAccepted').mockReturnValue(true);
+      postSystemMessage.mockImplementationOnce(async () => {
+        accepted.mockReturnValue(false);
+        return { ts: 'anchor' };
+      });
+
+      await expect(handler.handleHostGoalAction(SESSION_KEY, { action: 'resume', goalId: 'g1' })).rejects.toMatchObject(
+        {
+          statusCode: 403,
+        },
+      );
+      await tick();
+      expect(registrySession.goal).toBeUndefined();
+      expect(registrySession.goalPaused.map((g: any) => g.goalId)).toEqual(['g1']);
+      expect(startWithContinuation).not.toHaveBeenCalled();
+    });
+
+    it('resume with a goal running: next in the queue, no turn, the running goal and its epoch untouched', async () => {
+      registrySession.goal = goalOf({ goalId: 'g2', objective: '지금 목표' });
+      registrySession.goalQueue = [goalOf({ goalId: 'g3', objective: '대기', status: 'queued' })];
+      registrySession.goalPaused = [goalOf({ status: 'paused' })];
+
+      const result = await handler.handleHostGoalAction(SESSION_KEY, { action: 'resume', goalId: 'g1' });
+      await tick();
+
+      expect(result).toEqual({ outcome: 'resumed', goalId: 'g1', placement: 'next' });
+      expect(registrySession.goal).toMatchObject({ goalId: 'g2', epoch: 7 });
+      expect(registrySession.goalQueue.map((g: any) => g.goalId)).toEqual(['g1', 'g3']);
+      expect(registrySession.goalQueue[0].status).toBe('queued');
+      expect(items()).toHaveLength(0);
+      expect(startWithContinuation).not.toHaveBeenCalled();
+      expect(postSystemMessage).toHaveBeenLastCalledWith(
+        CHANNEL,
+        expect.stringContaining('right after the current goal'),
+        expect.anything(),
+      );
+    });
+
+    it('a refused first turn keeps the goal paused (503); a goal no longer paused is refused (409); delete removes a paused goal', async () => {
+      registrySession.goalPaused = [goalOf({ status: 'paused' }), goalOf({ goalId: 'g4', status: 'paused' })];
+      saveError = new Error('disk full');
+      await expect(handler.handleHostGoalAction(SESSION_KEY, { action: 'resume', goalId: 'g1' })).rejects.toMatchObject(
+        { statusCode: 503 },
+      );
+      expect(registrySession.goal).toBeUndefined();
+      expect(registrySession.goalPaused.map((g: any) => g.goalId)).toEqual(['g1', 'g4']);
+      saveError = undefined;
+
+      await expect(
+        handler.handleHostGoalAction(SESSION_KEY, { action: 'resume', goalId: 'nope' }),
+      ).rejects.toMatchObject({ statusCode: 409 });
+
+      const removed = await handler.handleHostGoalAction(SESSION_KEY, {
+        action: 'delete',
+        goalId: 'g4',
+        expect: 'paused',
+      });
+      expect(removed).toEqual({ outcome: 'deleted', goalId: 'g4' });
+      expect(registrySession.goalPaused.map((g: any) => g.goalId)).toEqual(['g1']);
     });
 
     it('refuses a stale delete (409): a queued goal that was promoted, a current goal that changed', async () => {

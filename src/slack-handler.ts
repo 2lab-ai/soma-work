@@ -138,6 +138,7 @@ import {
   setGoalStallRetiredListener,
   shouldAskGoalStallQuestion,
 } from './slack/goal-stall';
+import { heldTasksOf } from './slack/goal-task-gate';
 import {
   checkAndConsumeBudget,
   formatBudgetExhaustedMessage,
@@ -152,8 +153,11 @@ import {
   enqueueOrActivateGoal,
   formatGoalObjectiveForSlack,
   formatResumedGoalLine,
+  pauseCurrentGoal,
   restoreGoalState,
+  resumePausedGoal,
   snapshotGoalState,
+  undoPause,
 } from './slack/session-goal';
 import { announceSessionNotice, recordSessionNotice } from './slack/session-notice';
 import { type SessionFollowUp, SummaryService, setFollowUpListener } from './slack/summary-service';
@@ -8764,18 +8768,21 @@ export class SlackHandler {
       return { outcome: 'started', goalId: result.goal.goalId, opening: admission };
     }
 
+    if (request.action === 'pause') return this.pauseGoalFromHost(sessionKey, session, request.goalId, actor);
+    if (request.action === 'resume') return this.resumeGoalFromHost(sessionKey, session, request.goalId, actor);
+
     // ── delete ──
     const { goalId, expect } = request;
     this.assertGoalWhereExpected(session, goalId, expect);
 
-    if (expect === 'queued') {
-      const removed = session.goalQueue?.find((g) => g.goalId === goalId);
+    if (expect === 'queued' || expect === 'paused') {
+      const removed = (expect === 'queued' ? session.goalQueue : session.goalPaused)?.find((g) => g.goalId === goalId);
       deleteGoalById(session, goalId);
       this.claudeHandler.saveSessions();
       await this.postGoalNoticeBestEffort(
         channel,
         threadTs,
-        `🗑️ Queued goal removed via dashboard: ${formatGoalObjectiveForSlack(removed?.objective ?? '')}`,
+        `🗑️ ${expect === 'queued' ? 'Queued' : 'Paused'} goal removed: ${formatGoalObjectiveForSlack(removed?.objective ?? '')}`,
       );
       return { outcome: 'deleted', goalId };
     }
@@ -8847,6 +8854,195 @@ export class SlackHandler {
       );
     }
     return { outcome: 'deleted', goalId, promoted: { goalId: promoted.goalId, objective: promoted.objective } };
+  }
+
+  /**
+   * Pause the current goal from the dashboard or a Slack goal-list button —
+   * the same order as deleting it ({@link handleHostGoalAction}): the anchor
+   * notice first, then re-check → mutate → persist → admit the next goal's
+   * opening in one synchronous step; a refused admission undoes the pause.
+   */
+  private async pauseGoalFromHost(
+    sessionKey: string,
+    session: ConversationSession,
+    goalId: string,
+    actor: string,
+  ): Promise<HostGoalActionResult> {
+    const channel = session.channelId as string;
+    const threadTs = session.threadTs as string;
+    this.assertGoalPausable(session, goalId);
+    const current = session.goal as NonNullable<ConversationSession['goal']>;
+    const next = session.goalQueue?.[0];
+    if (next) this.assertGoalOpeningAuthor(sessionKey, next.createdBy || actor, channel, threadTs);
+    const anchorTs = await this.postGoalAnchor(
+      channel,
+      threadTs,
+      `⏸️ Goal paused: ${formatGoalObjectiveForSlack(current.objective)}` +
+        (next
+          ? `\n▶️ Next goal: ${formatGoalObjectiveForSlack(next.objective)}\n_Its first turn starts now, or right after the current turn._`
+          : '\n_No goal is queued, so the goal work stops here. Resume it to start it again._'),
+    );
+
+    // ── synchronous from here ──
+    let live: ConversationSession;
+    try {
+      live = this.liveGoalSession(sessionKey);
+      if (live !== session) throw new HostGoalActionError(409, 'The session was replaced — refresh and try again');
+      this.assertGoalPausable(live, goalId);
+    } catch (error) {
+      await this.postGoalNoticeBestEffort(
+        channel,
+        threadTs,
+        '⚠️ 위 일시정지는 적용되지 않았습니다 — goal이 이미 바뀌었습니다.',
+      );
+      throw error;
+    }
+    const snapshot = snapshotGoalState(live);
+    // Its open tasks stay its own: they hold no other goal while it is paused.
+    const { paused, promoted } = pauseCurrentGoal(live, heldTasksOf(live.taskLedger));
+    if (!paused) {
+      // Unreachable after assertGoalPausable — but never leave the anchor without its outcome.
+      await this.postGoalNoticeBestEffort(
+        channel,
+        threadTs,
+        '⚠️ 위 일시정지는 적용되지 않았습니다 — goal이 이미 바뀌었습니다.',
+      );
+      throw new HostGoalActionError(409, 'The current goal has changed — refresh and try again');
+    }
+    if (!promoted) {
+      this.persistHostGoalMutation(live);
+      this.claudeHandler.broadcastSessionUpdate?.();
+      return { outcome: 'paused', goalId };
+    }
+    // The queue may have changed during the anchor await: check the goal that
+    // ACTUALLY got promoted, not the one checked before posting.
+    try {
+      this.assertGoalOpeningAuthor(sessionKey, promoted.createdBy || actor, channel, threadTs);
+    } catch (error) {
+      undoPause(live, snapshot, paused);
+      await this.postGoalNoticeBestEffort(
+        channel,
+        threadTs,
+        '⚠️ 위 일시정지는 취소되었습니다 — 다음 goal을 시작할 수 없습니다.',
+      );
+      throw error;
+    }
+    this.persistHostGoalMutation(live);
+    const admission = this.admitGoalOpeningTurn(
+      sessionKey,
+      { channel, threadTs, ts: anchorTs, user: promoted.createdBy || actor, say: this.threadSay(channel, threadTs) },
+      { goalId: promoted.goalId, objective: promoted.objective },
+    );
+    if (typeof admission === 'object') {
+      undoPause(live, snapshot, paused);
+      this.claudeHandler.saveSessions();
+      await this.postGoalNoticeBestEffort(
+        channel,
+        threadTs,
+        `⚠️ 위 일시정지는 취소되었습니다 — 다음 goal의 첫 턴을 예약하지 못했습니다 (${admission.failed}).`,
+      );
+      throw new HostGoalActionError(
+        503,
+        `Goal was not paused — the next goal could not be started (${admission.failed})`,
+      );
+    }
+    this.claudeHandler.broadcastSessionUpdate?.();
+    return { outcome: 'paused', goalId, promoted: { goalId: promoted.goalId, objective: promoted.objective } };
+  }
+
+  /**
+   * Resume a paused goal from the dashboard or a Slack goal-list button. Where
+   * it lands (current now, or next behind the running goal) is only known
+   * after the anchor await, so the anchor promises neither and the author is
+   * checked up front either way (a goal resumed behind another one starts as
+   * its author later on).
+   */
+  private async resumeGoalFromHost(
+    sessionKey: string,
+    session: ConversationSession,
+    goalId: string,
+    actor: string,
+  ): Promise<HostGoalActionResult> {
+    const channel = session.channelId as string;
+    const threadTs = session.threadTs as string;
+    const target = this.assertGoalResumable(session, goalId);
+    const author = target.createdBy || actor;
+    this.assertGoalOpeningAuthor(sessionKey, author, channel, threadTs);
+    const anchorTs = await this.postGoalAnchor(
+      channel,
+      threadTs,
+      `▶️ Goal resumed: ${formatGoalObjectiveForSlack(target.objective)}`,
+    );
+
+    // ── synchronous from here ──
+    let live: ConversationSession;
+    try {
+      live = this.liveGoalSession(sessionKey);
+      if (live !== session) throw new HostGoalActionError(409, 'The session was replaced — refresh and try again');
+      // Re-checked after the await, as `add` does: the author's acceptance can
+      // change while the anchor posts, and an idle opening takes the slot
+      // without the drain's own check.
+      const liveTarget = this.assertGoalResumable(live, goalId);
+      this.assertGoalOpeningAuthor(sessionKey, liveTarget.createdBy || actor, channel, threadTs);
+    } catch (error) {
+      await this.postGoalNoticeBestEffort(
+        channel,
+        threadTs,
+        error instanceof HostGoalActionError && error.statusCode === 403
+          ? '⚠️ 위 재개는 적용되지 않았습니다 — 작성자의 실행 권한이 바뀌었습니다.'
+          : '⚠️ 위 재개는 적용되지 않았습니다 — goal이 이미 바뀌었습니다.',
+      );
+      throw error;
+    }
+    const snapshot = snapshotGoalState(live);
+    const resumed = resumePausedGoal(live, goalId);
+    if (!resumed) throw new HostGoalActionError(409, 'That goal is no longer paused — refresh and try again');
+    if (resumed.placement === 'next') {
+      // Behind the running goal: no opening turn, no epoch bump on the running
+      // goal (its in-flight eval stays valid, M1).
+      this.claudeHandler.saveSessions();
+      this.claudeHandler.broadcastSessionUpdate?.();
+      await this.postGoalNoticeBestEffort(
+        channel,
+        threadTs,
+        '_It starts right after the current goal (next in the queue)._',
+      );
+      return { outcome: 'resumed', goalId, placement: 'next' };
+    }
+    this.persistHostGoalMutation(live);
+    const admission = this.admitGoalOpeningTurn(
+      sessionKey,
+      { channel, threadTs, ts: anchorTs, user: author, say: this.threadSay(channel, threadTs) },
+      { goalId, objective: resumed.goal.objective },
+    );
+    if (typeof admission === 'object') {
+      restoreGoalState(live, snapshot);
+      this.claudeHandler.saveSessions();
+      await this.postGoalNoticeBestEffort(
+        channel,
+        threadTs,
+        `⚠️ 위 재개는 취소되었습니다 — 첫 턴을 예약하지 못했습니다 (${admission.failed}).`,
+      );
+      throw new HostGoalActionError(503, `Goal was not resumed — ${admission.failed}`);
+    }
+    this.claudeHandler.broadcastSessionUpdate?.();
+    return { outcome: 'resumed', goalId, placement: 'current', opening: admission };
+  }
+
+  /** Refuse a pause whose goal is not the running (or paused-in-place) current goal. */
+  private assertGoalPausable(session: ConversationSession, goalId: string): void {
+    const goal = session.goal;
+    if (!goal || goal.goalId !== goalId || (goal.status !== 'active' && goal.status !== 'paused')) {
+      throw new HostGoalActionError(409, 'The current goal has changed — refresh and try again');
+    }
+  }
+
+  /** The paused goal a resume names, or a stale-view refusal. */
+  private assertGoalResumable(session: ConversationSession, goalId: string): NonNullable<ConversationSession['goal']> {
+    const shelved = session.goalPaused?.find((g) => g.goalId === goalId);
+    if (shelved) return shelved;
+    if (session.goal?.goalId === goalId && session.goal.status === 'paused') return session.goal;
+    throw new HostGoalActionError(409, 'That goal is no longer paused — refresh and try again');
   }
 
   /**
@@ -8957,17 +9153,21 @@ export class SlackHandler {
   }
 
   /** Refuse a delete whose goal is not where the caller saw it (stale view). */
-  private assertGoalWhereExpected(session: ConversationSession, goalId: string, expect: 'current' | 'queued'): void {
+  private assertGoalWhereExpected(
+    session: ConversationSession,
+    goalId: string,
+    expect: 'current' | 'queued' | 'paused',
+  ): void {
     const found =
       expect === 'current'
         ? session.goal?.goalId === goalId
-        : (session.goalQueue ?? []).some((goal) => goal.goalId === goalId);
+        : ((expect === 'queued' ? session.goalQueue : session.goalPaused) ?? []).some((goal) => goal.goalId === goalId);
     if (!found) {
       throw new HostGoalActionError(
         409,
         expect === 'current'
           ? 'The current goal has changed — refresh and try again'
-          : 'That goal is no longer queued — refresh and try again',
+          : `That goal is no longer ${expect} — refresh and try again`,
       );
     }
   }

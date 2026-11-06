@@ -60,17 +60,66 @@ function bounded(lines: string[]): string[] {
   return [...lines.slice(0, TASK_LINES_MAX), `… and ${lines.length - TASK_LINES_MAX} more`];
 }
 
-/** The latest list, one `T<n> [status] text` line per task (bounded) — the evaluator's evidence. */
-export function goalTaskListLines(ledger: TaskLedger | undefined): string[] {
-  if (!ledger) return [];
-  return bounded(ledgerTasks(ledger).current.map(taskLine));
+/**
+ * The latest list without the tasks of a paused goal (`exclude`, see
+ * {@link heldByWaitingGoals}): those are the paused goal's own work, so they
+ * hold no other goal.
+ */
+function goalTasks(ledger: TaskLedger, exclude?: ReadonlySet<string>): TaskView[] {
+  const current = ledgerTasks(ledger).current;
+  return exclude?.size ? current.filter((t) => !exclude.has(t.id)) : current;
 }
 
-function openTaskLines(ledger: TaskLedger | undefined): string[] {
+/**
+ * What a goal paused now leaves behind as its own: the open tasks of the
+ * latest list, and which list that is (`updatedAt`) — see `heldListAt`.
+ */
+export function heldTasksOf(ledger: TaskLedger | undefined): { heldTaskIds: string[]; heldListAt?: number } {
+  if (!ledger) return { heldTaskIds: [] };
+  return {
+    heldTaskIds: ledgerTasks(ledger)
+      .current.filter((t) => t.status !== 'completed')
+      .map((t) => t.id),
+    heldListAt: ledger.updatedAt,
+  };
+}
+
+/**
+ * SSOT 2026-11-06 (review P1): the tasks a goal left open when it was paused,
+ * for every goal that still waits — paused, or resumed into the queue behind
+ * the running goal. A waiting goal's unfinished work must not hold the goal
+ * that runs in its place: B would otherwise be told to finish or drop A's tasks.
+ *
+ * Only while the list they came from is still the latest (review r3 P1): once
+ * the running goal writes its own list, every task on it is its own. The ledger
+ * matches a new task onto an old id by its text, so an old id on a new list may
+ * be the running goal's new task.
+ */
+export function heldByWaitingGoals(session: {
+  goalPaused?: Array<{ heldTaskIds?: string[]; heldListAt?: number }>;
+  goalQueue?: Array<{ heldTaskIds?: string[]; heldListAt?: number }>;
+  taskLedger?: TaskLedger;
+}): Set<string> {
+  const held = new Set<string>();
+  const listAt = session.taskLedger?.updatedAt;
+  for (const g of [...(session.goalPaused ?? []), ...(session.goalQueue ?? [])]) {
+    if (g.heldListAt !== listAt) continue;
+    for (const id of g.heldTaskIds ?? []) held.add(id);
+  }
+  return held;
+}
+
+/** The latest list, one `T<n> [status] text` line per task (bounded) — the evaluator's evidence. */
+export function goalTaskListLines(ledger: TaskLedger | undefined, exclude?: ReadonlySet<string>): string[] {
+  if (!ledger) return [];
+  return bounded(goalTasks(ledger, exclude).map(taskLine));
+}
+
+function openTaskLines(ledger: TaskLedger | undefined, exclude?: ReadonlySet<string>): string[] {
   if (!ledger) return [];
   return bounded(
-    ledgerTasks(ledger)
-      .current.filter((t) => t.status !== 'completed')
+    goalTasks(ledger, exclude)
+      .filter((t) => t.status !== 'completed')
       .map(taskLine),
   );
 }
@@ -85,9 +134,13 @@ function openTaskLines(ledger: TaskLedger | undefined): string[] {
  * avoid (2026-11-02 — the evaluator called the silence "the same failure" and
  * stopped the goal).
  */
-export function taskGateGapClosed(goal: { lastEvalGateOpen?: string[] }, ledger: TaskLedger | undefined): boolean {
+export function taskGateGapClosed(
+  goal: { lastEvalGateOpen?: string[] },
+  ledger: TaskLedger | undefined,
+  exclude?: ReadonlySet<string>,
+): boolean {
   if (!goal.lastEvalGateOpen?.length) return false;
-  return !ledger || ledgerTasks(ledger).current.every((t) => t.status === 'completed');
+  return !ledger || goalTasks(ledger, exclude).every((t) => t.status === 'completed');
 }
 
 function sameIds(a: readonly string[], b: readonly string[]): boolean {
@@ -108,12 +161,14 @@ export function gateGoalVerdictOnTasks(
   verdict: GoalEvalVerdict,
   ledger: TaskLedger | undefined,
   previousOpen?: readonly string[],
+  /** Tasks a paused goal left open ({@link heldByWaitingGoals}) — not this goal's. */
+  exclude?: ReadonlySet<string>,
 ): { verdict: GoalEvalVerdict; tasks?: GoalTaskGateHold } {
   if (!verdict.completed || !ledger) return { verdict };
-  const current = ledgerTasks(ledger).current;
+  const current = goalTasks(ledger, exclude);
   const open = current.filter((t) => t.status !== 'completed');
   if (!open.length) return { verdict };
-  const remaining = openTaskLines(ledger);
+  const remaining = openTaskLines(ledger, exclude);
   const reason = [
     `${TASK_GATE_REASON_START} ${open.length} of ${current.length} tasks on your task list (TodoWrite) are not completed.`,
     'The goal completes only when the evaluator says so AND every task on the list is completed.',
