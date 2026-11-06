@@ -27,7 +27,7 @@ Files: [`template.html`](./template.html) holds the layout. The left pane has ti
   "outcomes": { "PROJ-123": { "outcome": "pass|fail|blocked|partial|deferred|not-run|report-only", "reason": "…" } },
   "preconditions": [{ "key": "PROJ-123", "id": "P1", "kind": "write-permission", "need": "…", "cases": ["QA-3"],
                      "status": "met|provisionable|missing", "decision": "provided|waived|skipped|pending",
-                     "confirmedBy": "…", "confirmedAt": "…" }],
+                     "confirmedBy": "…", "confirmRef": "…", "confirmedAt": "…" }],
   "bodyMentions": [{ "key": "PROJ-125", "pr": { "repo": "acme/app", "number": 43 } }],
   "excludedPrs": [{ "repo": "acme/app", "number": 44, "reason": "deploy head" }] }
 ```
@@ -39,7 +39,7 @@ Files: [`template.html`](./template.html) holds the layout. The left pane has ti
   - `deploy_fail` → fail;
   - `blocked` with a reason starting `superseded:` → superseded;
   - anything else as given; a `nonQa` entry shows its `status`.
-- `preconditions` is the run gate's list (deploy-qa writes it, each entry with its `key`); each qa-issue JSON may carry its own `preconditions[]`, which wins for the same key and id. The report renders them first, as a table — what was needed, which cases it blocked, its status, and the requester's decision with who and when — so the reason QA could not test something is the first thing a reader sees. A precondition is open while its status is not `met` or `provisionable`. A precondition for a key with no row is refused. A case carrying `precondition` shows that it was not run for real; a case with `evidence.mocked` shows that it does not prove server behaviour.
+- `preconditions` is the run gate's list (deploy-qa writes it, each entry with its `key`); each qa-issue JSON may carry its own `preconditions[]`, which wins for the same key and id. The report renders them first, as a table — what was needed, which cases it blocked, its status, and the requester's decision with who, where (`confirmRef`, the answer's message ts) and when — so the reason QA could not test something is the first thing a reader sees. A precondition is open while its status is not `met` or `provisionable`. A precondition for a key with no row is refused. A case carrying `precondition` shows that it was not run for real; a case with `evidence.mocked` shows that it does not prove server behaviour.
 - Every key the caller handled appears exactly once, in `issues` or in `nonQa`. The build refuses duplicate keys and outcomes for keys with no row.
 - `links` is provenance the caller already holds; `qa-issue` does not return it. Render only what is given. A PR or commit without `url` links to `https://github.com/<owner/repo>/pull|commit/…`. Only `http(s)` links become anchors. An absent link shows "no … link". Never look one up or guess one here.
 - Never invent fields. The call line shows each case's endpoint (method + URL), and each row shows its case tally plus `reason`. An empty `auth.accountRef`, `steps`, `expected`, or `actual` renders as `[—]` and counts in the "missing case fields" KPI.
