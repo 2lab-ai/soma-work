@@ -593,6 +593,33 @@ describe('gh-policy: gh api', () => {
       expect(normalizeGhApiPath(bad).ok, bad).toBe(false);
     }
   });
+
+  // compare/<sha>...<sha> is the only path segment that may hold dots.
+  const C = 'repos/example-org/app/compare';
+  const A = '0123456789abcdef0123456789abcdef01234567';
+  const B = 'fedcba9876543210fedcba9876543210fedcba98';
+  const compareRows: Array<[string, string[], Expect]> = [
+    ['compare full SHAs', ['api', `${C}/${A}...${B}`], 'read'],
+    ['compare leading /', ['api', `/${C}/${A}...${B}`], 'read'],
+    ['compare --jq', ['api', `${C}/${A}...${B}`, '--jq', '.status'], 'read'],
+    ['compare paged', ['api', `${C}/${A}...${B}?per_page=100&page=2`], 'read'],
+    ['compare short SHAs', ['api', `${C}/0123abc...fedc987`], 'read'],
+    ['compare branch names', ['api', `${C}/main...dev`], 'deny:api-path-invalid'],
+    ['compare two dots', ['api', `${C}/${A}..${B}`], 'deny:api-path-invalid'],
+    ['compare four dots', ['api', `${C}/${A}....${B}`], 'deny:api-path-invalid'],
+    ['compare uppercase hex', ['api', `${C}/${A.toUpperCase()}...${B}`], 'deny:api-path-invalid'],
+    ['compare 6-hex', ['api', `${C}/012345...fedcba`], 'deny:api-path-invalid'],
+    ['compare extra segment', ['api', `${C}/${A}...${B}/x`], 'deny:api-path-invalid'],
+    ['compare ..', ['api', `${C}/..`], 'deny:api-path-invalid'],
+    ['range outside compare', ['api', `repos/example-org/app/commits/${A}...${B}`], 'deny:api-path-invalid'],
+    ['.. elsewhere', ['api', 'repos/example-org/app/../x'], 'deny:api-path-invalid'],
+    ['compare -X POST', ['api', '-X', 'POST', `${C}/${A}...${B}`], 'deny:api-rest-write-not-allowlisted'],
+    ['compare other owner', ['api', `repos/other-org/app/compare/${A}...${B}`], 'deny:owner-not-allowed'],
+  ];
+
+  it.each(compareRows)('%s', (_label, argv, expected) => {
+    check(argv, expected);
+  });
 });
 
 // ── Review round 1 (REVISE) ───────────────────────────────
