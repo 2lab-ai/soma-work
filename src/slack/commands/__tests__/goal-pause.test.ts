@@ -9,7 +9,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { applyTodoList } from '../../../session/task-ledger';
 import type { ConversationSession } from '../../../types';
+import { heldByWaitingGoals } from '../../goal-task-gate';
 import {
+  advanceGoalQueue,
   createActiveSessionGoal,
   enqueueOrActivateGoal,
   findGoalById,
@@ -332,9 +334,34 @@ describe('GoalHandler — goal pause / goal resume', () => {
     await new GoalHandler(deps).execute(makeCtx({ text: 'goal pause' }));
     expect(session.goalPaused?.[0].heldTaskIds).toEqual(['T2', 'T3']);
 
+    // Resumed behind the running goal it still waits: its tasks stay its own until it takes the slot.
     await new GoalHandler(deps).execute(makeCtx({ text: 'goal resume 1' }));
     expect(session.goalQueue?.[0].objective).toBe('goal A');
-    expect(session.goalQueue?.[0].heldTaskIds).toBeUndefined();
+    expect(session.goalQueue?.[0].heldTaskIds).toEqual(['T2', 'T3']);
+    expect([...heldByWaitingGoals(session)]).toEqual(['T2', 'T3']);
+
+    // It takes the slot (the running goal completes): the tasks count for it again.
+    session.goal!.status = 'complete';
+    advanceGoalQueue(session);
+    expect(session.goal?.objective).toBe('goal A');
+    expect(session.goal?.heldTaskIds).toBeUndefined();
+    expect(heldByWaitingGoals(session).size).toBe(0);
+  });
+
+  it('a task already held by a waiting goal is not held again by the next goal paused (review r2 P2)', () => {
+    const session = sessionWithQueue(); // A runs, B and C wait
+    const a = session.goal!;
+    pauseCurrentGoal(session, { heldTaskIds: ['T2', 'T3'] }); // A holds T2, T3; B runs
+    const b = session.goal!;
+    pauseCurrentGoal(session, { heldTaskIds: ['T2', 'T3', 'T4'] }); // B never touched the list, added T4
+    expect(a.heldTaskIds).toEqual(['T2', 'T3']);
+    expect(b.heldTaskIds).toEqual(['T4']);
+    // A resumed while C runs waits next; when it takes the slot its own tasks hold it again.
+    resumePausedGoal(session, a.goalId);
+    session.goal!.status = 'complete';
+    advanceGoalQueue(session);
+    expect(session.goal).toBe(a);
+    expect([...heldByWaitingGoals(session)]).toEqual(['T4']);
   });
 
   it('T2: `goal pause` with nothing queued ends the goal work and starts no turn', async () => {

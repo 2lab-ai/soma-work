@@ -62,7 +62,7 @@ function bounded(lines: string[]): string[] {
 
 /**
  * The latest list without the tasks of a paused goal (`exclude`, see
- * {@link heldByPausedGoals}): those are the paused goal's own work, so they
+ * {@link heldByWaitingGoals}): those are the paused goal's own work, so they
  * hold no other goal.
  */
 function goalTasks(ledger: TaskLedger, exclude?: ReadonlySet<string>): TaskView[] {
@@ -79,13 +79,19 @@ export function openTaskIds(ledger: TaskLedger | undefined): string[] {
 }
 
 /**
- * SSOT 2026-11-06 (review P1): the tasks the paused goals left open when they
- * were paused. A paused goal's unfinished work must not hold the goal that runs
- * in its place — B would otherwise be told to finish or drop A's tasks.
+ * SSOT 2026-11-06 (review P1): the tasks a goal left open when it was paused,
+ * for every goal that still waits — paused, or resumed into the queue behind
+ * the running goal. A waiting goal's unfinished work must not hold the goal
+ * that runs in its place: B would otherwise be told to finish or drop A's tasks.
  */
-export function heldByPausedGoals(session: { goalPaused?: Array<{ heldTaskIds?: string[] }> }): Set<string> {
+export function heldByWaitingGoals(session: {
+  goalPaused?: Array<{ heldTaskIds?: string[] }>;
+  goalQueue?: Array<{ heldTaskIds?: string[] }>;
+}): Set<string> {
   const held = new Set<string>();
-  for (const g of session.goalPaused ?? []) for (const id of g.heldTaskIds ?? []) held.add(id);
+  for (const g of [...(session.goalPaused ?? []), ...(session.goalQueue ?? [])]) {
+    for (const id of g.heldTaskIds ?? []) held.add(id);
+  }
   return held;
 }
 
@@ -141,7 +147,7 @@ export function gateGoalVerdictOnTasks(
   verdict: GoalEvalVerdict,
   ledger: TaskLedger | undefined,
   previousOpen?: readonly string[],
-  /** Tasks a paused goal left open ({@link heldByPausedGoals}) — not this goal's. */
+  /** Tasks a paused goal left open ({@link heldByWaitingGoals}) — not this goal's. */
   exclude?: ReadonlySet<string>,
 ): { verdict: GoalEvalVerdict; tasks?: GoalTaskGateHold } {
   if (!verdict.completed || !ledger) return { verdict };

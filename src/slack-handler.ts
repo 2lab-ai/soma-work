@@ -8900,7 +8900,15 @@ export class SlackHandler {
     const snapshot = snapshotGoalState(live);
     // Its open tasks stay its own: they hold no other goal while it is paused.
     const { paused, promoted } = pauseCurrentGoal(live, { heldTaskIds: openTaskIds(live.taskLedger) });
-    if (!paused) throw new HostGoalActionError(409, 'The current goal has changed — refresh and try again');
+    if (!paused) {
+      // Unreachable after assertGoalPausable — but never leave the anchor without its outcome.
+      await this.postGoalNoticeBestEffort(
+        channel,
+        threadTs,
+        '⚠️ 위 일시정지는 적용되지 않았습니다 — goal이 이미 바뀌었습니다.',
+      );
+      throw new HostGoalActionError(409, 'The current goal has changed — refresh and try again');
+    }
     if (!promoted) {
       this.persistHostGoalMutation(live);
       this.claudeHandler.broadcastSessionUpdate?.();

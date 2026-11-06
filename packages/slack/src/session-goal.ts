@@ -105,9 +105,10 @@ export interface SessionGoalState {
   firstFailure?: SessionGoalFirstFailure;
   /**
    * The ids of the tasks the session's task list (TodoWrite ledger) had open
-   * when this goal was paused — its own unfinished work. While it stays paused
-   * they hold no other goal's completion (`src/slack/goal-task-gate.ts`);
-   * resuming the goal clears it, so they count for this goal again.
+   * when this goal was paused — its own unfinished work. While it waits (paused,
+   * or resumed into the queue) they hold no other goal's completion
+   * (`src/slack/goal-task-gate.ts`); when it takes the current slot again
+   * ({@link rebaseGoalAsActive}) it is cleared, so they count for it again.
    */
   heldTaskIds?: string[];
   /**
@@ -476,6 +477,8 @@ function rebaseGoalAsActive(goal: SessionGoalState, priorEpoch: number | undefin
   goal.firstFailure = undefined;
   goal.lastEvalSummaryHash = undefined;
   goal.lastAssistantTurnSummary = undefined;
+  // In the slot, its own open tasks hold it again.
+  goal.heldTaskIds = undefined;
   dropScheduledEval(goal);
 }
 
@@ -586,7 +589,15 @@ export function pauseCurrentGoal(
   dropScheduledEval(current);
   current.epoch = (current.epoch ?? 0) + 1;
   current.updatedAt = Date.now();
-  current.heldTaskIds = opts.heldTaskIds?.length ? [...opts.heldTaskIds] : undefined;
+  // A task another waiting goal already holds stays that goal's: holding it
+  // twice would let it escape its owner's gate once the owner runs again.
+  const heldElsewhere = new Set(
+    [...(session.goalPaused ?? []), ...(session.goalQueue ?? [])]
+      .filter((g) => g !== current)
+      .flatMap((g) => g.heldTaskIds ?? []),
+  );
+  const own = (opts.heldTaskIds ?? []).filter((id) => !heldElsewhere.has(id));
+  current.heldTaskIds = own.length ? own : undefined;
   session.goalPaused = (session.goalPaused ?? []).filter((g) => g.goalId !== current.goalId);
   session.goalPaused.push(current);
   const next = session.goalQueue && session.goalQueue.length > 0 ? session.goalQueue.shift() : undefined;
@@ -664,8 +675,6 @@ export function resumePausedGoal(
   if (!goal) return undefined;
   const target = goal;
   session.goalPaused = shelf.filter((g) => g.goalId !== target.goalId);
-  // Its open tasks count for it again.
-  target.heldTaskIds = undefined;
 
   if (current?.status === 'active') {
     target.status = 'queued';

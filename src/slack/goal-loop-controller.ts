@@ -59,7 +59,7 @@ import {
   shouldRunGoalIdleDriver,
 } from './goal-completion-evaluator';
 import { GOAL_CONTINUATION_TEXT_PREFIX, GOAL_SUMMARY_PERSIST_MAX } from './goal-continuation';
-import { gateGoalVerdictOnTasks, goalTaskListLines, heldByPausedGoals, taskGateGapClosed } from './goal-task-gate';
+import { gateGoalVerdictOnTasks, goalTaskListLines, heldByWaitingGoals, taskGateGapClosed } from './goal-task-gate';
 
 export { GOAL_SUMMARY_PERSIST_MAX };
 
@@ -438,7 +438,7 @@ export class GoalLoopController {
     if (
       hasGap &&
       (noTurnText || (cause === 'kick' && alreadyJudged)) &&
-      !taskGateGapClosed(activeGoal, session.taskLedger, heldByPausedGoals(session))
+      !taskGateGapClosed(activeGoal, session.taskLedger, heldByWaitingGoals(session))
     ) {
       // #745 × #788: a turn that left no text may still have done work (files,
       // commands) before it was cut. Its progress is unknown, so the rollback
@@ -479,7 +479,7 @@ export class GoalLoopController {
     // The model's latest task list, so a previous gap about open tasks (the
     // task gate — see goal-task-gate) can be seen closed. The statuses are the
     // model's own marks: the evaluator is told they are claims, not evidence.
-    const taskLines = goalTaskListLines(session.taskLedger, heldByPausedGoals(session));
+    const taskLines = goalTaskListLines(session.taskLedger, heldByWaitingGoals(session));
     const evalUserSummary = [
       'Eval trigger: idle-settle (work turn ended)',
       '',
@@ -588,7 +588,7 @@ export class GoalLoopController {
       evalVerdict,
       session.taskLedger,
       activeGoal.lastEvalGateOpen,
-      heldByPausedGoals(session),
+      heldByWaitingGoals(session),
     );
     const verdict = gate.verdict;
     if (gate.tasks) {
