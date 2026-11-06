@@ -825,6 +825,16 @@ export interface ConversationSession {
   goalQueue?: SessionGoal[];
 
   /**
+   * Goals the owner paused (`goal pause`, the ⏸️ buttons), oldest first, each
+   * with `status: 'paused'`. A paused goal has left `goal`: it never drives the
+   * loop or reaches the prompt and never holds the queue back. `goal resume`
+   * puts it back — as the current goal when none is running, otherwise at the
+   * head of `goalQueue` (`resumePausedGoal` in `@soma/slack/session-goal`).
+   * Persisted.
+   */
+  goalPaused?: SessionGoal[];
+
+  /**
    * Completed (and cleared-on-advance) goals, newest last, capped at
    * `MAX_GOAL_HISTORY` (20, enforced in `@soma/slack/session-goal`). Surfaced
    * by the `goal` status command so each

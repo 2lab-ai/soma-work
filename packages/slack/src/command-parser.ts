@@ -53,7 +53,9 @@ export type GoalAction =
   | { action: 'status' }
   | { action: 'set'; objective: string }
   | { action: 'pause' }
-  | { action: 'resume' }
+  // `goal resume` — the most recently paused goal; `goal resume <n>` — the
+  // n-th paused goal as `goal` lists it (1-based).
+  | { action: 'resume'; index?: number }
   | { action: 'complete' }
   | { action: 'clear' }
   // `goal auto` / `set goal auto` — toggle (or explicitly set) the per-user
@@ -788,7 +790,11 @@ export class CommandParser {
     }
 
     if (/^pause$/i.test(rest)) return { action: 'pause' };
-    if (/^resume$/i.test(rest)) return { action: 'resume' };
+    const resumeMatch = rest.match(/^resume(?:\s+(\d+))?$/i);
+    if (resumeMatch) {
+      if (!resumeMatch[1]) return { action: 'resume' };
+      return { action: 'resume', index: Number(resumeMatch[1]) };
+    }
     if (/^(?:done|complete|completed)$/i.test(rest)) return { action: 'complete' };
     if (/^(?:clear|remove|delete)$/i.test(rest)) return { action: 'clear' };
 
