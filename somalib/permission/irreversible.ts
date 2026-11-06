@@ -25,15 +25,56 @@ export interface IrreversibleAction {
 
 const act = (id: string, label: string): IrreversibleAction => ({ id, label });
 
-/** Non-Bash tools that are irreversible by name. */
-const TOOL_ACTIONS: Readonly<Record<string, IrreversibleAction>> = {
-  mcp__github__merge_pull_request: act('pr-merge', 'PR 머지'),
-};
+/** Non-Bash tools that are irreversible by name (a Map: no prototype keys). */
+const TOOL_ACTIONS: ReadonlyMap<string, IrreversibleAction> = new Map([
+  ['mcp__github__merge_pull_request', act('pr-merge', 'PR 머지')],
+]);
 
 /** Words that run the next word as the command (`sudo rm …`, `env X=1 npm …`, `npx vercel …`). */
-const PREFIX = new Set(['sudo', 'command', 'exec', 'nohup', 'time', 'env', 'xargs', 'npx', 'bunx']);
+const PREFIX = new Set(['sudo', 'command', 'exec', 'nohup', 'time', 'env', 'xargs', 'npx', 'bunx', 'nice', 'timeout']);
+/** Prefix options that take the next word as their value (`sudo -u deploy rm …`). */
+const PREFIX_VALUE_OPTS: Readonly<Record<string, ReadonlySet<string>>> = {
+  sudo: new Set(['-u', '-g', '-U', '-C', '-h', '-p', '-r', '-t', '-D', '-R']),
+  env: new Set(['-u', '-C', '-S', '--unset', '--chdir']),
+  xargs: new Set(['-I', '-n', '-P', '-L', '-d', '-s', '-E', '-a']),
+  nice: new Set(['-n']),
+  timeout: new Set(['-s', '-k', '--signal', '--kill-after']),
+};
 /** git options that take the next word as their value. */
 const GIT_VALUE_OPTS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace']);
+/** gh options before the command group that take a value (`gh -R owner/repo pr merge`). */
+const GH_VALUE_OPTS = new Set(['-R', '--repo', '--hostname']);
+/** npm / pnpm / yarn / bun options that take a value (`pnpm --filter pkg publish`). */
+const PM_VALUE_OPTS = new Set([
+  '--filter',
+  '-F',
+  '--prefix',
+  '-C',
+  '--dir',
+  '--cwd',
+  '-w',
+  '--workspace',
+  '--registry',
+  '--tag',
+  '--access',
+  '--otp',
+  '--userconfig',
+]);
+/** Interpreters whose first operand is the script they run (`bash scripts/deploy.sh`). */
+const INTERPRETERS = new Set([
+  'bash',
+  'sh',
+  'zsh',
+  'dash',
+  'ksh',
+  'node',
+  'python',
+  'python3',
+  'deno',
+  'tsx',
+  'ruby',
+  'perl',
+]);
 
 /** One shell segment as words, from the command word on (prefixes and `X=1` assignments dropped). */
 function commandWords(segment: string): string[] {
@@ -44,10 +85,14 @@ function commandWords(segment: string): string[] {
     .map((w) => w.replace(/^['"]|['"]$/g, ''));
   let i = 0;
   while (i < words.length) {
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i += 1;
-    else if (PREFIX.has(words[i])) {
+    const w = words[i];
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) i += 1;
+    else if (PREFIX.has(w)) {
+      const takes = PREFIX_VALUE_OPTS[w];
       i += 1;
-      while (i < words.length && words[i].startsWith('-')) i += 1; // sudo -E, env -i, xargs -0
+      // sudo -E, env -i, xargs -0 — and sudo -u <user>, whose value is not the command
+      while (i < words.length && words[i].startsWith('-')) i += takes?.has(words[i]) ? 2 : 1;
+      if (w === 'timeout' && i < words.length) i += 1; // the duration
     } else break;
   }
   return words.slice(i);
@@ -59,8 +104,19 @@ const base = (w: string | undefined) =>
     .split('/')
     .pop()
     ?.replace(/@[^@]*$/, '') ?? '';
-const flags = (args: string[]) => args.filter((a) => a.startsWith('-'));
 const operands = (args: string[]) => args.filter((a) => !a.startsWith('-'));
+/** Operands, skipping the value of each option in `takes` (`--filter pkg`). */
+function operandsAfter(args: string[], takes: ReadonlySet<string>): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (!args[i].startsWith('-')) out.push(args[i]);
+    else if (takes.has(args[i])) i += 1;
+  }
+  return out;
+}
+/** A script whose name says it deploys (`deploy.sh`, `scripts/deploy-prod.mjs`). */
+const isDeployScript = (name: string) =>
+  /deploy/i.test(name) && /\.(sh|bash|zsh|py|js|ts|mjs|cjs|rb)$|^deploy/i.test(name);
 /** A short-flag cluster (`-fd`, `-rf`) or long flag that contains the letter / name. */
 const hasShort = (args: string[], letter: string) => args.some((a) => /^-[A-Za-z]+$/.test(a) && a.includes(letter));
 const hasLong = (args: string[], ...names: string[]) =>
@@ -73,6 +129,7 @@ function gitAction(words: string[]): IrreversibleAction | null {
   const args = words.slice(i + 1);
   switch (sub) {
     case 'push': {
+      if (hasShort(args, 'n')) return null; // -n: dry run
       const refs = operands(args).slice(1); // the first operand is the remote
       if (
         hasLong(args, '--force', '--force-with-lease', '--force-if-includes') ||
@@ -95,7 +152,8 @@ function gitAction(words: string[]): IrreversibleAction | null {
         ? act('git-clean', '추적 안 된 파일 삭제 (git clean)')
         : null;
     case 'branch':
-      return hasShort(args, 'D') || (hasLong(args, '--delete') && hasLong(args, '--force'))
+      return hasShort(args, 'D') ||
+        ((hasShort(args, 'd') || hasLong(args, '--delete')) && (hasShort(args, 'f') || hasLong(args, '--force')))
         ? act('git-branch-force-delete', '브랜치 강제 삭제')
         : null;
     default:
@@ -104,7 +162,9 @@ function gitAction(words: string[]): IrreversibleAction | null {
 }
 
 function ghAction(words: string[]): IrreversibleAction | null {
-  const [, group, verb] = words;
+  let i = 1;
+  while (i < words.length && words[i].startsWith('-')) i += GH_VALUE_OPTS.has(words[i]) ? 2 : 1;
+  const [group, verb] = [words[i], words[i + 1]];
   if (group === 'pr' && verb === 'merge') return act('pr-merge', 'PR 머지');
   if (group === 'release' && verb === 'create') return act('release-publish', '릴리스 게시');
   if (group === 'release' && verb === 'delete') return act('release-delete', '릴리스 삭제');
@@ -115,7 +175,7 @@ function ghAction(words: string[]): IrreversibleAction | null {
 
 /** npm / yarn / pnpm / bun: publish, unpublish, and `run deploy*` / `run release*` scripts. */
 function packageManagerAction(words: string[]): IrreversibleAction | null {
-  const ops = operands(words.slice(1));
+  const ops = operandsAfter(words.slice(1), PM_VALUE_OPTS);
   if (ops[0] === 'npm') ops.shift(); // yarn npm publish (Yarn 2+)
   if (ops[0] === 'publish') return act('package-publish', '패키지 게시');
   if (ops[0] === 'unpublish') return act('package-unpublish', '패키지 게시 취소');
@@ -128,7 +188,12 @@ function segmentAction(segment: string): IrreversibleAction | null {
   const words = commandWords(segment);
   const cmd = base(words[0]);
   const args = words.slice(1);
+  if (hasLong(args, '--dry-run')) return null; // a dry run changes nothing
   const sub = operands(args)[0];
+  if (INTERPRETERS.has(cmd)) {
+    // `bash -c '…'` is read by irreversibleAction itself; here only `bash scripts/deploy.sh`.
+    return sub && !hasShort(args, 'c') && isDeployScript(base(sub)) ? act('deploy-script', '배포 스크립트 실행') : null;
+  }
   switch (cmd) {
     case 'git':
       return gitAction(words);
@@ -174,6 +239,11 @@ function segmentAction(segment: string): IrreversibleAction | null {
       return operands(args).some((t) => /^(deploy|release)([:_-]|$)/.test(t))
         ? act('deploy-script', '배포 스크립트 실행')
         : null;
+    case 'find':
+      return args.includes('-delete') ||
+        args.some((a, i) => (a === '-exec' || a === '-execdir') && base(args[i + 1]) === 'rm')
+        ? act('find-delete', '파일 일괄 삭제 (find)')
+        : null;
     case 'rm':
       return hasShort(args, 'r') || hasShort(args, 'R') || hasLong(args, '--recursive')
         ? act('rm-recursive', '재귀 삭제 (rm -r)')
@@ -184,9 +254,7 @@ function segmentAction(segment: string): IrreversibleAction | null {
       return args.some((a) => /^flush(all|db)$/i.test(a)) ? act('redis-flush', 'Redis 데이터 삭제') : null;
     default:
       if (/^mkfs(\.|$)/.test(cmd)) return act('disk-overwrite', '디스크 덮어쓰기');
-      return /deploy/i.test(cmd) && /\.(sh|bash|zsh|py|js|ts|mjs)$|^deploy/i.test(cmd)
-        ? act('deploy-script', '배포 스크립트 실행')
-        : null;
+      return isDeployScript(cmd) ? act('deploy-script', '배포 스크립트 실행') : null;
   }
 }
 
@@ -198,15 +266,34 @@ const SQL_CLIENT =
 /**
  * The irreversible action this tool call performs, or null.
  *
- * Bash: the command is split on `&&`, `||`, `;`, `|` and newlines and each
- * segment is read from its command word; the first match wins. Other tools:
+ * Bash: a `\` line continuation is joined, a shell's `-c '…'` string is read as
+ * a command of its own, then the command is split on `&&`, `||`, `;`, `|`, `&`,
+ * newlines, parentheses, `$(` and backticks, and each segment is read from its
+ * command word (prefixes such as `sudo -u x`, `env X=1`, `timeout 60` skipped);
+ * the first match wins. A `--dry-run` changes nothing. Other tools:
  * {@link TOOL_ACTIONS}.
  */
 export function irreversibleAction(toolName: string, input: unknown): IrreversibleAction | null {
-  if (toolName !== 'Bash') return TOOL_ACTIONS[toolName] ?? null;
+  if (toolName !== 'Bash') return TOOL_ACTIONS.get(toolName) ?? null;
   const command = input && typeof input === 'object' ? (input as { command?: unknown }).command : undefined;
   if (typeof command !== 'string' || !command.trim()) return null;
-  for (const segment of command.split(/&&|\|\||[;|\n]/)) {
+  return commandAction(command, 0);
+}
+
+/** A shell's `-c` string (`bash -lc 'git push --force'`), read as a command of its own. */
+const SHELL_C = /(?:^|[^\w-])(?:ba|z|da|k)?sh\s+(?:-[A-Za-z]+\s+)*-[A-Za-z]*c[A-Za-z]*\s+(['"])([\s\S]*?)\1/g;
+/** Where one shell command ends and the next begins: lists, pipes, subshells, `$(…)` and backticks. */
+const SEGMENT_BREAK = /&&|\|\||\$\(|[;|\n&()`]/;
+
+function commandAction(raw: string, depth: number): IrreversibleAction | null {
+  const command = raw.replace(/\\\r?\n/g, ' '); // a `\` line continuation is one line
+  if (depth < 3) {
+    for (const m of command.matchAll(SHELL_C)) {
+      const hit = commandAction(m[2], depth + 1);
+      if (hit) return hit;
+    }
+  }
+  for (const segment of command.split(SEGMENT_BREAK)) {
     const hit = segmentAction(segment);
     if (hit) return hit;
   }

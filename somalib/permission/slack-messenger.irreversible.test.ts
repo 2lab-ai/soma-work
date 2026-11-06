@@ -44,14 +44,15 @@ describe('buildRequestBlocks — irreversible call', () => {
     expect(button(blocks, 'approve_disable_rule_session').confirm).toEqual(button(blocks, 'approve_tool').confirm);
   });
 
-  it('with red AI advice the dialog stays on the (red) Approve', () => {
+  it('with red AI advice: no dialog — the red Approve already asks a second time — but the stake line stays', () => {
     const blocks = build({ command: 'git push --force origin main' }, [], {
       recommendation: 'deny',
       summary: 's',
       risk: 'r',
     });
     expect(button(blocks, 'approve_tool').style).toBe('danger');
-    expect(button(blocks, 'approve_tool').confirm.text.text).toContain('*force push*');
+    expect(button(blocks, 'approve_tool').confirm).toBeUndefined();
+    expect(JSON.stringify(blocks)).toContain('되돌릴 수 없는 작업: force push');
   });
 
   it('Slack limits: title ≤ 100, text ≤ 300, button labels ≤ 30 characters', () => {
