@@ -387,6 +387,9 @@ export class GoalHandler implements CommandHandler {
       return { handled: true };
     }
 
+    // Inside a dispatch slot (no host intake) the objective is this turn, so the
+    // goal's first turn is not pending any more.
+    if (!admitOpening) goal.openingPending = undefined;
     this.persistGoalChange(session);
     if (admitOpening && snapshot) {
       const admission = admitOpening({ goalId: goal.goalId, objective: goal.objective, cause: 'resumed' });
@@ -408,9 +411,6 @@ export class GoalHandler implements CommandHandler {
       );
       return { handled: true };
     }
-    // Inside a dispatch slot (no host intake): the objective is this turn.
-    goal.openingPending = undefined;
-    this.deps.claudeHandler.saveSessions();
     await this.deps.slackApi.postSystemMessage(
       channel,
       `▶️ Goal resumed as the current goal: ${this.formatObjectiveForSlack(goal.objective)}`,

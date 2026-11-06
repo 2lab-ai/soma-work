@@ -237,13 +237,18 @@ describe('GoalHandler', () => {
     const deps = makeDeps(session);
     const handler = new GoalHandler(deps);
 
+    // Pause sets the goal aside (nothing queued → no goal runs); resume brings it
+    // back as the current goal and starts its turn (inside a dispatch slot: this one).
     await handler.execute(makeCtx({ text: 'goal pause' }));
-    expect(session.goal?.status).toBe('paused');
+    expect(session.goal).toBeUndefined();
+    expect(session.goalPaused?.[0]?.status).toBe('paused');
     expect(session.systemPrompt).toBeUndefined();
 
     session.systemPrompt = 'cached prompt';
-    await handler.execute(makeCtx({ text: 'goal resume' }));
+    const resumed = await handler.execute(makeCtx({ text: 'goal resume' }));
     expect(session.goal?.status).toBe('active');
+    expect(session.goalPaused).toEqual([]);
+    expect(resumed).toMatchObject({ continueWithPrompt: 'finish migration', verbatimPrompt: true });
     expect(session.systemPrompt).toBeUndefined();
 
     session.systemPrompt = 'cached prompt';
@@ -313,7 +318,7 @@ describe('GoalHandler', () => {
     const broadcastSessionUpdate = vi.fn();
     (deps.claudeHandler as any).broadcastSessionUpdate = broadcastSessionUpdate;
 
-    await new GoalHandler(deps).execute(makeCtx({ text: 'goal resume' }));
+    await new GoalHandler(deps).execute(makeCtx({ text: 'goal max 20' }));
 
     expect(session.goal?.epoch).toBe(4);
     expect(session.goal?.evalBackoffUntil).toBeUndefined();

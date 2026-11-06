@@ -172,6 +172,88 @@ describe('GoalActionHandler — delete through the host goal action', () => {
   });
 });
 
+describe('GoalActionHandler — ⏸️ pause / ▶️ resume through the host goal action (SSOT 2026-11-06)', () => {
+  it('pause hands the goal to the host and says which goal runs next; the handler mutates nothing itself', async () => {
+    const session = makeSession({
+      goal: makeGoal({ goalId: 'g-active' }),
+      goalQueue: [makeGoal({ goalId: 'g-next', objective: 'next', status: 'queued' })],
+    });
+    const hostAction = vi.fn().mockResolvedValue({
+      outcome: 'paused',
+      goalId: 'g-active',
+      promoted: { goalId: 'g-next', objective: 'next' },
+    });
+    getHostGoalActionHandlerMock.mockReturnValue(hostAction);
+    const { handler, saveSessions } = makeHandler(session);
+    const respond = vi.fn().mockResolvedValue(undefined);
+
+    await handler.handlePause(body('g-active'), respond);
+
+    expect(hostAction).toHaveBeenCalledWith(SESSION_KEY, { action: 'pause', goalId: 'g-active' }, 'U-owner');
+    expect(saveSessions).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(
+      expect.objectContaining({ replace_original: true, text: expect.stringContaining('next') }),
+    );
+  });
+
+  it('resume says where the goal landed: next behind the running goal, or the current goal now', async () => {
+    const session = makeSession({
+      goal: makeGoal({ goalId: 'g-active' }),
+      goalPaused: [makeGoal({ goalId: 'g-paused', objective: 'held', status: 'paused' })],
+    });
+    const hostAction = vi
+      .fn()
+      .mockResolvedValueOnce({ outcome: 'resumed', goalId: 'g-paused', placement: 'next' })
+      .mockResolvedValueOnce({ outcome: 'resumed', goalId: 'g-paused', placement: 'current', opening: 'started' });
+    getHostGoalActionHandlerMock.mockReturnValue(hostAction);
+    const { handler } = makeHandler(session);
+    const respond = vi.fn().mockResolvedValue(undefined);
+
+    await handler.handleResume(body('g-paused'), respond);
+    await handler.handleResume(body('g-paused'), respond);
+
+    expect(hostAction).toHaveBeenCalledWith(SESSION_KEY, { action: 'resume', goalId: 'g-paused' }, 'U-owner');
+    expect(respond.mock.calls[0][0].text).toContain('다음에 시작');
+    expect(respond.mock.calls[1][0].text).toContain('지금 goal로 시작');
+  });
+
+  it('a non-owner click, a host refusal, and no host wired are ephemeral warnings', async () => {
+    const session = makeSession({ goal: makeGoal({ goalId: 'g-active' }) });
+    const { handler } = makeHandler(session);
+    const respond = vi.fn().mockResolvedValue(undefined);
+
+    await handler.handlePause(body('g-active', 'U-stranger'), respond);
+    getHostGoalActionHandlerMock.mockReturnValue(
+      vi.fn().mockRejectedValue(new HostGoalActionError(409, 'The current goal has changed — refresh and try again')),
+    );
+    await handler.handlePause(body('g-active'), respond);
+    getHostGoalActionHandlerMock.mockReturnValue(undefined);
+    await handler.handleResume(body('g-active'), respond);
+
+    expect(respond.mock.calls.map((c) => c[0].response_type)).toEqual(['ephemeral', 'ephemeral', 'ephemeral']);
+    expect(respond.mock.calls[1][0].text).toContain('changed');
+    expect(session.goal?.status).toBe('active');
+  });
+
+  it('delete of a paused goal goes to the host with expect=paused', async () => {
+    const session = makeSession({
+      goal: makeGoal({ goalId: 'g-active' }),
+      goalPaused: [makeGoal({ goalId: 'g-paused', status: 'paused' })],
+    });
+    const hostAction = vi.fn().mockResolvedValue({ outcome: 'deleted', goalId: 'g-paused' });
+    getHostGoalActionHandlerMock.mockReturnValue(hostAction);
+    const { handler } = makeHandler(session);
+
+    await handler.handleDelete(body('g-paused'), vi.fn().mockResolvedValue(undefined));
+
+    expect(hostAction).toHaveBeenCalledWith(
+      SESSION_KEY,
+      { action: 'delete', goalId: 'g-paused', expect: 'paused' },
+      'U-owner',
+    );
+  });
+});
+
 describe('GoalActionHandler — cap-decision DM guards (S3, codex #2)', () => {
   it('Continue resets the counter + resumes ONLY when a decision is pending', async () => {
     const session = makeSession({ goal: makeGoal({ capDmPendingAt: 123, continuationCount: 10 }) });
