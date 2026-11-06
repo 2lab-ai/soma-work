@@ -601,6 +601,12 @@ export class SlackHandler {
   /** `<slotKey>#<turnEpoch>` of every run whose waiting rows are being pushed right now. */
   private readonly followupSteerOnOpenDraining = new Set<string>();
   /**
+   * Runs whose next execution reached the model while their drain was still
+   * going (#987 review, astra P2): that drain makes one more pass, so a row the
+   * previous execution refused gets the new execution's input.
+   */
+  private readonly followupSteerOnOpenRerun = new Set<string>();
+  /**
    * How long the line of waiting rows waits on ONE row's push — its file
    * download — before the rows behind it go on (#987 review, fable P2). The slow
    * row still goes in when its download finishes (pinned to the same run), just
@@ -1643,7 +1649,10 @@ export class SlackHandler {
    */
   private async drainFollowupsWaitingForOpen(slotKey: string, turnEpoch: number): Promise<void> {
     const runKey = `${slotKey}#${turnEpoch}`;
-    if (this.followupSteerOnOpenDraining.has(runKey)) return;
+    if (this.followupSteerOnOpenDraining.has(runKey)) {
+      this.followupSteerOnOpenRerun.add(runKey);
+      return;
+    }
     this.followupSteerOnOpenDraining.add(runKey);
     // By row identity, not by object: a row the run refuses again is recorded
     // again as a new entry, and trying it again in this pass would spin.
@@ -1653,7 +1662,11 @@ export class SlackHandler {
       for (;;) {
         const waiting = this.followupSteerOnOpen.get(slotKey) ?? [];
         const next = waiting.findIndex((row) => row.turnEpoch === turnEpoch && !tried.has(idOf(row)));
-        if (next < 0) return;
+        if (next < 0) {
+          if (!this.followupSteerOnOpenRerun.delete(runKey)) return;
+          tried.clear(); // a new execution opened its input: everything gets one more try
+          continue;
+        }
         const [row] = waiting.splice(next, 1);
         if (waiting.length === 0) this.followupSteerOnOpen.delete(slotKey);
         tried.add(idOf(row));
@@ -1676,6 +1689,7 @@ export class SlackHandler {
       }
     } finally {
       this.followupSteerOnOpenDraining.delete(runKey);
+      this.followupSteerOnOpenRerun.delete(runKey);
     }
   }
 
