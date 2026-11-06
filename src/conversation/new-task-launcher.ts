@@ -110,6 +110,8 @@ export interface NewTaskLaunchDeps {
   sleep?(ms: number): Promise<void>;
   /** How long to wait for the session to exist before answering `starting`. */
   acceptTimeoutMs?: number;
+  /** How long the instruction reply is waited for before the task runs anyway (default 10 s). */
+  replyTimeoutMs?: number;
 }
 
 export interface NewTaskLaunchResult {
@@ -135,6 +137,28 @@ const COMMAND_FAILED = '⚠️ 명령을 처리하지 못했습니다. 대시보
 function reason(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.length > 300 ? `${message.slice(0, 300)}…` : message;
+}
+
+/**
+ * Wait for a best-effort post at most `ms` (#955 review, astra P2): Slack's client has no request
+ * timeout and retries rate limits, so an unbounded wait on an optional reply would hold back the
+ * work it precedes. Never throws; the post may still land after the wait ends.
+ */
+function settleWithin(post: Promise<unknown>, ms: number): Promise<{ failed?: unknown; timedOut?: true }> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve({ timedOut: true }), ms);
+    timer.unref?.();
+    post.then(
+      () => {
+        clearTimeout(timer);
+        resolve({});
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        resolve({ failed: error });
+      },
+    );
+  });
 }
 
 /**
@@ -197,11 +221,22 @@ export async function launchNewTask(
   }
   if (!rootTs) throw new NewTaskError(502, 'Slack 채널에 작업 스레드를 만들지 못했습니다');
   if (onHeader) {
-    // The task runs without its echo (the session gets the instruction, the dashboard shows it).
-    try {
-      await deps.postMessage(channel, instruction.text, instruction.blocks, rootTs);
-    } catch (error) {
-      logger.warn('New task: instruction reply failed', { channel, rootTs, userId, error: reason(error) });
+    // The task runs without its echo (the session gets the instruction, the dashboard shows it) —
+    // and does not wait on it for long.
+    const replyTimeoutMs = deps.replyTimeoutMs ?? 10_000;
+    const echo = await settleWithin(
+      Promise.resolve().then(() => deps.postMessage(channel, instruction.text, instruction.blocks, rootTs)),
+      replyTimeoutMs,
+    );
+    if (echo.failed !== undefined) {
+      logger.warn('New task: instruction reply failed', { channel, rootTs, userId, error: reason(echo.failed) });
+    } else if (echo.timedOut) {
+      logger.warn('New task: instruction reply still posting — the task runs without waiting', {
+        channel,
+        rootTs,
+        userId,
+        waitedMs: replyTimeoutMs,
+      });
     }
   }
 

@@ -126,6 +126,18 @@ describe('launchNewTask', () => {
     expect((d.handleMessage as any).mock.calls[0][0].text).toBe('soma-work 개선해줘\n\n$autoz');
   });
 
+  it('a stalled instruction reply is waited for at most replyTimeoutMs, then the task runs (#955 review, astra P2)', async () => {
+    const d = deps({
+      replyTimeoutMs: 10,
+      postMessage: vi.fn((_c: string, _t: string, _b: unknown[], threadTs?: string) =>
+        threadTs ? new Promise<{ ts?: string }>(() => {}) : Promise.resolve({ ts: ROOT_TS }),
+      ),
+    });
+    const result = await launchNewTask('U123', submission(), d);
+    expect(result.status).toBe('running');
+    expect(d.handleMessage).toHaveBeenCalledTimes(1);
+  }, 2000);
+
   it('the owner name failing to load still posts the header (the session re-renders it)', async () => {
     const d = deps({
       getUserName: vi.fn(async () => {

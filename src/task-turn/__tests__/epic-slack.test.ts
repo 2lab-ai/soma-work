@@ -18,6 +18,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { chainEndOf, createSlackEpicHost, createSlackEpicWaker, readLatestFinal } from '../epic-slack';
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
+/** The instruction reply under a child's header root (#955): posted at once in the tests that hold the root post. */
+const reply = () => Promise.resolve({ ts: '9.95' });
 
 function hostWorld(over: Record<string, any> = {}) {
   const epic: any = {
@@ -96,9 +98,67 @@ describe('the epic host on the Slack path (#854)', () => {
     expect(w.deps.gate.record).toHaveBeenCalledWith(w.epic);
   });
 
+  it('H11 — #955: the child’s thread opens on the thread header panel, as a dashboard or Slack-started task', async () => {
+    const w = hostWorld();
+    w.epic.ownerName = 'Zhuge';
+    await w.host.spawnChild(w.epic, { planNodeId: 'login', instruction: '로그인 고쳐', title: '로그인' });
+    const [channel, text, blocks, threadTs] = w.deps.postMessage.mock.calls[0];
+    expect([channel, threadTs]).toEqual(['C1', undefined]);
+    // The header (ThreadHeaderBuilder, default theme): the node's title, the owner — not the instruction.
+    expect(blocks[0]).toMatchObject({ type: 'header', text: { text: '로그인' } });
+    expect(JSON.stringify(blocks)).toContain('<@U1>');
+    expect(JSON.stringify(blocks)).not.toContain('로그인 고쳐');
+    expect(text).toBe('로그인\nZhuge');
+  });
+
+  it('H12 — #955: the instruction, with its epic, is the thread’s first reply, before the run', async () => {
+    const w = hostWorld();
+    await w.host.spawnChild(w.epic, { planNodeId: 'login', instruction: '로그인 고쳐', title: '로그인' });
+    expect(w.deps.postMessage).toHaveBeenCalledTimes(2);
+    const [channel, , blocks, threadTs] = w.deps.postMessage.mock.calls[1];
+    expect([channel, threadTs]).toEqual(['C1', '9.9']);
+    expect(JSON.stringify(blocks)).toContain('로그인 고쳐');
+    expect(JSON.stringify(blocks)).toContain('로그인 에픽');
+    expect(w.deps.postMessage.mock.invocationCallOrder[1]).toBeLessThan(
+      w.deps.handleMessage.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('H13 — #955: the first instruction says its root is the bot’s header, so the child is born bot-initiated', async () => {
+    const w = hostWorld();
+    await w.host.spawnChild(w.epic, { planNodeId: 'login', instruction: '로그인 고쳐', title: '로그인' });
+    expect(w.deps.handleMessage.mock.calls[0][0]).toMatchObject({ thread_ts: '9.9', ts: '9.9', botThreadRoot: true });
+  });
+
+  it('H14 — #955: the instruction reply failing does not stop the child', async () => {
+    const w = hostWorld({
+      postMessage: vi.fn(async (...a: any[]) => {
+        if (a[3]) throw new Error('rate_limited');
+        return { ts: '9.9' };
+      }),
+    });
+    const r = await w.host.spawnChild(w.epic, { planNodeId: 'login', instruction: '로그인 고쳐', title: '로그인' });
+    expect(r).toEqual({ ok: true, childId: 'child-1', started: true });
+    expect(w.deps.handleMessage.mock.calls[0][0]).toMatchObject({ text: '로그인 고쳐', botThreadRoot: true });
+  });
+
+  it('H15 — #955 review (astra P2): a stalled instruction reply is waited for at most replyTimeoutMs, then the child starts', async () => {
+    const w = hostWorld({
+      replyTimeoutMs: 10,
+      postMessage: vi.fn((...a: any[]) => (a[3] ? new Promise(() => {}) : Promise.resolve({ ts: '9.9' }))),
+    });
+    const r = await w.host.spawnChild(w.epic, { planNodeId: 'login', instruction: '로그인 고쳐', title: '로그인' });
+    expect(r).toEqual({ ok: true, childId: 'child-1', started: true });
+    expect(w.deps.handleMessage).toHaveBeenCalledTimes(1);
+    expect(w.deps.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('instruction reply'),
+      expect.objectContaining({ childId: 'child-1' }),
+    );
+  }, 2000);
+
   it('H6 — parallel spawns (review #872): one child per node while it is made; the ones being made take places', async () => {
     let post!: (v: { ts: string }) => void;
-    const w = hostWorld({ postMessage: vi.fn(() => new Promise((r) => (post = r))) });
+    const w = hostWorld({ postMessage: vi.fn((...a: any[]) => (a[3] ? reply() : new Promise((r) => (post = r)))) });
     const first = w.host.spawnChild(w.epic, { planNodeId: 'login', instruction: 'go', title: 't' });
     // The same node again while its thread is being made: refused, nothing reserved twice.
     expect(await w.host.spawnChild(w.epic, { planNodeId: 'login', instruction: 'go', title: 't' })).toMatchObject({
@@ -117,7 +177,7 @@ describe('the epic host on the Slack path (#854)', () => {
 
   it('H7 — parallel spawns into one folder (review #872 astra 6): the second is refused while the first is made', async () => {
     const posts: Array<(v: { ts: string }) => void> = [];
-    const w = hostWorld({ postMessage: vi.fn(() => new Promise((r) => posts.push(r))) });
+    const w = hostWorld({ postMessage: vi.fn((...a: any[]) => (a[3] ? reply() : new Promise((r) => posts.push(r)))) });
     const first = w.host.spawnChild(w.epic, {
       planNodeId: 'login',
       instruction: 'go',
@@ -169,7 +229,7 @@ describe('the epic host on the Slack path (#854)', () => {
 
   it('H9 — an idle child in the folder a child being made takes is not started (review #872 R2 astra)', async () => {
     const posts: Array<(v: { ts: string }) => void> = [];
-    const w = hostWorld({ postMessage: vi.fn(() => new Promise((r) => posts.push(r))) });
+    const w = hostWorld({ postMessage: vi.fn((...a: any[]) => (a[3] ? reply() : new Promise((r) => posts.push(r)))) });
     const making = w.host.spawnChild(w.epic, {
       planNodeId: 'login',
       instruction: 'go',
