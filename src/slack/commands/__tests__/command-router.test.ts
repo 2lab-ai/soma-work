@@ -1401,7 +1401,7 @@ describe('CommandRouter — forced $skill banner reads the routed session verbos
     const result = await router.route({ text: '$local:z', user: 'U1', channel: 'C1', threadTs: 'T1', say } as any);
 
     expect(getSession).toHaveBeenCalledWith('C1', 'T1');
-    expect(say.mock.calls.some((c: any[]) => Array.isArray(c[0]?.attachments))).toBe(false);
+    expect(say.mock.calls.some((c: any[]) => JSON.stringify(c[0] ?? {}).includes('강제 발동'))).toBe(false);
     expect(recorded).toEqual([
       ['conv-1', { kind: 'notice', text: expect.stringContaining('강제 발동'), ts: expect.any(Number) }],
     ]);

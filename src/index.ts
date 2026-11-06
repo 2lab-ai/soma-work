@@ -909,9 +909,19 @@ async function start() {
     // keeps a session alive (and wakes a sleeping one); revive wakes a
     // sleeping session or restores an archived one — only when its transcript
     // and cwd prove the conversation can continue (resolveArchivedResume).
+    // #1031 ⑤ — a wake from the dashboard repaints the header that said 💤 Sleep
+    // (a wake by message needs nothing: its turn repaints the header).
+    const repaintIfRevived = <T extends { ok: boolean; revived?: boolean; sessionKey?: string }>(outcome: T): T => {
+      if (outcome.ok && outcome.revived && outcome.sessionKey) {
+        const session = claudeHandler.getSessionRegistry().getSessionByKey(outcome.sessionKey);
+        if (session) slackHandler.requestThreadSurfaceRender(session);
+      }
+      return outcome;
+    };
     setDashboardLifecycleHandler({
-      star: (sessionKey, starred) => claudeHandler.getSessionRegistry().setStarred(sessionKey, starred),
-      revive: (sessionKey) => claudeHandler.getSessionRegistry().reviveSession(sessionKey),
+      star: (sessionKey, starred) =>
+        repaintIfRevived(claudeHandler.getSessionRegistry().setStarred(sessionKey, starred)),
+      revive: (sessionKey) => repaintIfRevived(claudeHandler.getSessionRegistry().reviveSession(sessionKey)),
       restore: (archived) => {
         const proof = resolveArchivedResume(archived, {
           incidentChannelIds: getIncidentTrustedSource()?.channelIds,

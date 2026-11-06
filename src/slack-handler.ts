@@ -162,6 +162,7 @@ import {
 import { announceSessionNotice, recordSessionNotice } from './slack/session-notice';
 import { type SessionFollowUp, SummaryService, setFollowUpListener } from './slack/summary-service';
 import { SummaryTimer } from './slack/summary-timer';
+import { ToolFormatter } from './slack/tool-formatter';
 import { normalizeZInvocation, stripZPrefix } from './slack/z/normalize';
 import { DmZRespond } from './slack/z/respond';
 import { isDmAllowedForNonAdmin } from './slack/z/whitelist';
@@ -699,6 +700,12 @@ export class SlackHandler {
     this.mcpHealthMonitor = new McpHealthMonitor(this.slackApi, this.mcpManager);
     this.sessionUiManager = new SessionUiManager(claudeHandler, this.slackApi);
     this.sessionUiManager.setReactionManager(this.reactionManager);
+    // #1031 ⑤ — the sleep transition repaints the header (💤 Sleep). Reads the
+    // live session and `threadPanel` (built below) at call time.
+    this.sessionUiManager.setThreadHeaderRenderer((sessionKey) => {
+      const session = this.claudeHandler.getSessionByKey(sessionKey);
+      if (session) this.requestThreadSurfaceRender(session);
+    });
     const completionMessageTracker = new CompletionMessageTracker();
     // sessionRegistry is optional in ThreadPanelDeps (legacy tests construct
     // ThreadPanel without it). Guard access here so test mocks that don't
@@ -2823,9 +2830,9 @@ export class SlackHandler {
               OutputFlag.SKILL_INVOCATION,
               fire.banner.text,
               () =>
-                this.slackApi.postMessage(activeChannel, '', {
+                this.slackApi.postMessage(activeChannel, fire.banner.text, {
                   threadTs: activeThreadTs,
-                  attachments: [{ color: fire.banner.color, text: fire.banner.text }],
+                  blocks: ToolFormatter.skillBannerBlocks(fire.banner.text),
                 }),
               { sessionKey: sessionResult.sessionKey },
             );
@@ -2858,9 +2865,9 @@ export class SlackHandler {
           OutputFlag.SKILL_INVOCATION,
           deferredSkillFire.banner.text,
           () =>
-            this.slackApi.postMessage(activeChannel, '', {
+            this.slackApi.postMessage(activeChannel, deferredSkillFire.banner.text, {
               threadTs: activeThreadTs,
-              attachments: [{ color: deferredSkillFire.banner.color, text: deferredSkillFire.banner.text }],
+              blocks: ToolFormatter.skillBannerBlocks(deferredSkillFire.banner.text),
             }),
           { sessionKey: sessionResult.sessionKey },
         );
