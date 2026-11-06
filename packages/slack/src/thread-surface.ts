@@ -84,6 +84,8 @@ export interface ConversationSession {
   usage?: SessionUsage;
   isActive?: boolean;
   terminated?: boolean;
+  /** Lifecycle state (`MAIN` / `SLEEPING` / …). The header shows a sleep (#1031 ⑤). */
+  state?: string;
   activityState?: ActivityState;
   actionPanel?: ActionPanelState;
   logVerbosity?: number;
@@ -1546,6 +1548,7 @@ export class ThreadSurface {
       activeTool: panelState.activeTool,
       lastProgressAt: panelState.lastProgressAt,
       lastSignalAt: panelState.lastSignalAt,
+      sleeping: session.state === 'SLEEPING',
       logVerbosity: session.logVerbosity,
       prStatus: livePr,
     });

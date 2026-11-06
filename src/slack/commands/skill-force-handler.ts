@@ -390,7 +390,7 @@ export class SkillForceHandler implements CommandHandler {
       deferred: ctx.deferSkillFire === true,
     });
 
-    // Emit RPG-style forced skill invocation banner (red attachment bar)
+    // Emit RPG-style forced skill invocation banner (one Block Kit section, #1031 ②)
     const casterName = user ? `<@${user}>` : '누군가';
     const rpg = ToolFormatter.formatSkillForceInvocationRPG(resolvedKeys, casterName);
 
@@ -406,7 +406,7 @@ export class SkillForceHandler implements CommandHandler {
         deferredSkillFire: {
           keys: resolvedKeys,
           invokedBlock,
-          banner: { text: rpg.text, color: rpg.color },
+          banner: { text: rpg.text },
         },
       };
     }
@@ -416,7 +416,7 @@ export class SkillForceHandler implements CommandHandler {
       this.bannerSession(ctx.channel, threadTs, user),
       OutputFlag.SKILL_INVOCATION,
       rpg.text,
-      () => say({ text: '', thread_ts: threadTs, attachments: [{ color: rpg.color, text: rpg.text }] }),
+      () => say({ text: rpg.text, thread_ts: threadTs, blocks: ToolFormatter.skillBannerBlocks(rpg.text) }),
     );
 
     return {

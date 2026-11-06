@@ -22,6 +22,12 @@ const NOW = 1_700_000_000_000;
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
 
+/** #1031 ④ — an age is a Slack date token (rendered at view time), fallback = absolute time. */
+function age(atMs: number): string {
+  const sec = Math.floor(atMs / 1000);
+  return `<!date^${sec}^{ago}|${new Date(sec * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z')}>`;
+}
+
 function build(params: Parameters<typeof ActionPanelBuilder.build>[0]) {
   return ActionPanelBuilder.build({ sessionKey: 'C1:1700.000000', now: NOW, ...params });
 }
@@ -53,7 +59,7 @@ describe('ActionPanelBuilder — U9 phase + real progress + liveness', () => {
     });
 
     expect(out).toContain('코드 수정 중');
-    expect(out).toContain('마지막 활동 42초 전');
+    expect(out).toContain(`마지막 활동 ${age(NOW - 42 * SECOND)}`);
   });
 
   it('says the progress is unknown rather than inventing a timestamp', () => {
@@ -75,7 +81,7 @@ describe('ActionPanelBuilder — U9 phase + real progress + liveness', () => {
     });
 
     expect(out).toContain('실제 활동 기록 없음');
-    expect(out).not.toContain('마지막 활동 3초 전');
+    expect(out).not.toContain(`마지막 활동 ${age(NOW - 3 * SECOND)}`);
   });
 
   it('reports liveness separately when the agent is breathing but not progressing', () => {
@@ -86,9 +92,9 @@ describe('ActionPanelBuilder — U9 phase + real progress + liveness', () => {
       lastSignalAt: NOW - 5 * SECOND,
     });
 
-    expect(out).toContain('마지막 활동 12분 전');
+    expect(out).toContain(`마지막 활동 ${age(NOW - 12 * MINUTE)}`);
     // The liveness signal is its own statement, not folded into the progress age.
-    expect(out).toContain('응답 신호 5초 전');
+    expect(out).toContain(`응답 신호 ${age(NOW - 5 * SECOND)}`);
   });
 
   it('omits the liveness line when the signal adds nothing over fresh progress', () => {
@@ -99,7 +105,7 @@ describe('ActionPanelBuilder — U9 phase + real progress + liveness', () => {
       lastSignalAt: NOW - 3 * SECOND,
     });
 
-    expect(out).toContain('마지막 활동 4초 전');
+    expect(out).toContain(`마지막 활동 ${age(NOW - 4 * SECOND)}`);
     expect(out).not.toContain('응답 신호');
   });
 
@@ -113,7 +119,7 @@ describe('ActionPanelBuilder — U9 phase + real progress + liveness', () => {
     });
 
     expect(out).toContain('실제 활동 기록 없음');
-    expect(out).toContain('응답 신호 7초 전');
+    expect(out).toContain(`응답 신호 ${age(NOW - 7 * SECOND)}`);
   });
 
   it('says nothing about liveness when there is no signal either', () => {
@@ -134,7 +140,7 @@ describe('ActionPanelBuilder — U9 phase + real progress + liveness', () => {
     expect(out).toContain('입력 대기');
     // The approval wait is what the user must act on — the tool must not
     // outrank it in the header.
-    expect(out.indexOf('입력 대기')).toBeLessThan(out.indexOf('마지막 활동 8초 전'));
+    expect(out.indexOf('입력 대기')).toBeLessThan(out.indexOf(`마지막 활동 ${age(NOW - 8 * SECOND)}`));
     expect(out).not.toContain('코드 수정 중');
   });
 
@@ -147,7 +153,7 @@ describe('ActionPanelBuilder — U9 phase + real progress + liveness', () => {
     });
 
     expect(out).toContain('Bash');
-    expect(out).toContain('마지막 활동 1초 전');
+    expect(out).toContain(`마지막 활동 ${age(NOW - SECOND)}`);
   });
 
   it('never predicts — no ETA, no remaining-time, no progress percentage', () => {
@@ -162,22 +168,25 @@ describe('ActionPanelBuilder — U9 phase + real progress + liveness', () => {
   });
 
   it('uses the injected clock, not the wall clock', () => {
+    // The age itself is rendered by Slack at view time; the clock only clamps
+    // a stamp from the future. NOW + 10 min is past by the wall clock, future
+    // by the injected one — so it is clamped only if the injected clock is used.
     const blocks = ActionPanelBuilder.build({
       sessionKey: 'C1:1700.000000',
-      now: NOW + 10 * MINUTE,
+      now: NOW,
       agentPhase: '분석 중',
       activityState: 'working',
-      lastProgressAt: NOW,
+      lastProgressAt: NOW + 10 * MINUTE,
     }).blocks;
 
-    expect(texts(blocks).join('\n')).toContain('마지막 활동 10분 전');
+    expect(texts(blocks).join('\n')).toContain(`마지막 활동 ${age(NOW)}`);
   });
 
   it('treats a future-dated progress stamp as "now" instead of a negative age', () => {
     const out = joined({ agentPhase: '분석 중', activityState: 'working', lastProgressAt: NOW + 5 * SECOND });
 
-    expect(out).toContain('마지막 활동 0초 전');
-    expect(out).not.toContain('-');
+    expect(out).toContain(`마지막 활동 ${age(NOW)}`);
+    expect(out).not.toContain(age(NOW + 5 * SECOND));
   });
 
   it('keeps the closed panel free of a live progress line', () => {

@@ -20,6 +20,12 @@ import { getVerbosityFlags } from '../output-flags';
 const NOW = Date.UTC(2026, 9, 27, 3, 0, 0);
 const MIN = 60_000;
 
+/** #1031 ④ — an age is a Slack date token (rendered at view time), fallback = absolute time. */
+function age(atMs: number): string {
+  const sec = Math.floor(atMs / 1000);
+  return `<!date^${sec}^{ago}|${new Date(sec * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z')}>`;
+}
+
 function build(params: Partial<Parameters<typeof ActionPanelBuilder.build>[0]> = {}) {
   return ActionPanelBuilder.build({ sessionKey: 'C1:1700.000000', now: NOW, ...params });
 }
@@ -53,7 +59,7 @@ describe('ActionPanelBuilder — T2 status rail', () => {
     expect(rail.text.type).toBe('mrkdwn');
     expect(railText(blocks)).toBe(
       [
-        '⚪ *사용 가능* · 사용자 액션 대기 · 마지막 활동 5분 전',
+        `⚪ *사용 가능* · 사용자 액션 대기 · 마지막 활동 ${age(NOW - 5 * MIN)}`,
         '⏱ 0:09 · 🔀 Merged · <https://slack.example/p1|💬 최신 응답> · `minimal`',
       ].join('\n'),
     );
@@ -132,7 +138,7 @@ describe('ActionPanelBuilder — T2 status rail', () => {
 
     expect(sections(blocks)).toHaveLength(1);
     expect(railText(blocks).split('\n')).toEqual([
-      '🟡 *입력 대기* · 마지막 활동 1분 전',
+      `🟡 *입력 대기* · 마지막 활동 ${age(NOW - MIN)}`,
       '⏱ 1:30 · 🛠 4',
       '❓ 질문에 답변해 주세요 — <https://slack.example/q|질문 보기>',
     ]);

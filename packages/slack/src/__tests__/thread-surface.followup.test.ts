@@ -652,7 +652,7 @@ describe('ThreadSurface — U9 real progress vs liveness', () => {
       .map((t) => t.text)
       .join('\n');
     expect(rendered).toContain('코드 수정 중');
-    expect(rendered).toMatch(/마지막 활동 \d+초 전/);
+    expect(rendered).toMatch(/마지막 활동 <!date\^\d+\^\{ago\}\|[^>]+>/);
   });
 
   it('renders the unknown-progress marker when nothing real has been reported', async () => {

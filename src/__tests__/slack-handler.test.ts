@@ -379,7 +379,7 @@ describe('SlackHandler', () => {
       deferredSkillFire: {
         keys: ['local:z'],
         invokedBlock: '<invoked_skills>\n<local:z>\nBODY\n</local:z>\n</invoked_skills>',
-        banner: { text: '⚡ DEFERRED-FIRE-BANNER', color: '#FF0000' },
+        banner: { text: '⚡ DEFERRED-FIRE-BANNER' },
       },
     });
     handlerAny.inputProcessor = {
@@ -406,12 +406,15 @@ describe('SlackHandler', () => {
 
     // routeCommand was told to defer the forced `$skill` (fresh context start).
     expect(routeCommand.mock.calls[0][2]).toEqual({ deferSkillFire: true });
-    // The deferred forced-skill banner was posted as a red attachment.
-    const bannerCall = postMessage.mock.calls.find(
-      (c: any[]) => c[2]?.attachments?.[0]?.text === '⚡ DEFERRED-FIRE-BANNER',
-    );
+    // The deferred forced-skill banner is ONE Block Kit section (#1031 ②): an
+    // attachment-only post had its text copied into the body by the
+    // rendered-empty guard, so the sentence showed twice.
+    const bannerCall = postMessage.mock.calls.find((c: any[]) => c[1] === '⚡ DEFERRED-FIRE-BANNER');
     expect(bannerCall).toBeDefined();
-    expect(bannerCall?.[2].attachments[0].color).toBe('#FF0000');
+    expect(bannerCall?.[2].attachments).toBeUndefined();
+    expect(bannerCall?.[2].blocks).toEqual([
+      { type: 'section', text: { type: 'mrkdwn', text: '⚡ DEFERRED-FIRE-BANNER' } },
+    ]);
   });
 
   it('streams into bot-initiated thread when initializer returns migrated session', async () => {

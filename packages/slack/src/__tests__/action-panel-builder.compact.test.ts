@@ -10,7 +10,7 @@ import { getVerbosityFlags } from '../output-flags';
  * used to cost a section plus a context block, with a full-width gap between
  * them. They are merged into one section of two short lines:
  *
- *   🟢 *작업 중* · 결과 반영 중 · 마지막 활동 0초 전
+ *   🟢 *작업 중* · 결과 반영 중 · 마지막 활동 <!date^…^{ago}|…>
  *   ⏱ 4:02 · 🛠 17 · `minimal`
  *
  * Merged, not deleted: U9/A19 keeps every fact addressable (the progress age is
@@ -19,6 +19,12 @@ import { getVerbosityFlags } from '../output-flags';
  */
 
 const NOW = 1_700_000_000_000;
+
+/** #1031 ④ — an age is a Slack date token (rendered at view time), fallback = absolute time. */
+function age(atMs: number): string {
+  const sec = Math.floor(atMs / 1000);
+  return `<!date^${sec}^{ago}|${new Date(sec * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z')}>`;
+}
 
 function build(params: Partial<Parameters<typeof ActionPanelBuilder.build>[0]> = {}) {
   return ActionPanelBuilder.build({ sessionKey: 'C1:1700.000000', now: NOW, ...params });
@@ -53,7 +59,7 @@ describe('ActionPanelBuilder — compact status area', () => {
     expect(lines).toHaveLength(2);
     expect(lines[0]).toContain('작업 중');
     expect(lines[0]).toContain('결과 반영 중');
-    expect(lines[0]).toContain('마지막 활동 0초 전');
+    expect(lines[0]).toContain(`마지막 활동 ${age(NOW)}`);
     expect(lines[1]).toBe('⏱ 4:02 · 🛠 17 · `minimal`');
   });
 

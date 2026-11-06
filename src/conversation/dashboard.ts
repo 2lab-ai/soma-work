@@ -6138,7 +6138,7 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 .ptl-line .ptl-caret { flex: none; transition: transform 120ms ease; }
 .ptl-line[aria-expanded="true"] .ptl-caret { transform: rotate(180deg); }
 .ptl-line:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
-.panel-family { margin: 4px 0 8px; }
+.panel-family { padding: 4px 16px 8px; }
 .pf-line .pf-peek { display: flex; align-items: center; gap: 6px; }
 .pf-line .pf-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pf-line { position: static; }

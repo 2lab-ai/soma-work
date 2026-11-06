@@ -165,10 +165,18 @@ export class SlackBlockKitChannel implements NotificationChannel {
 
     const { blocks, fallbackText, withFeedback, usedConfigDerivedBlocks } = this.buildCompletionBlocks(event);
 
+    // #1031 ④ — previews off: the card links to its own thread (`🧵 스레드 열기`),
+    // and Slack would unfurl that permalink into a copy of the thread header,
+    // frozen at posting time ("마지막 활동 4초 전" days later).
+    const noPreviews = { unfurlLinks: false, unfurlMedia: false };
     const buildPostOptions = (blks: any[]) =>
       withFeedback
-        ? { threadTs: event.threadTs, blocks: [...blks, buildFeedbackContextActions(event.turnId!, event.userId)] }
-        : { threadTs: event.threadTs, attachments: [{ color, blocks: blks }] };
+        ? {
+            threadTs: event.threadTs,
+            blocks: [...blks, buildFeedbackContextActions(event.turnId!, event.userId)],
+            ...noPreviews,
+          }
+        : { threadTs: event.threadTs, attachments: [{ color, blocks: blks }], ...noPreviews };
 
     try {
       const result = await this.slackApi.postMessage(event.channel, fallbackText, buildPostOptions(blocks));

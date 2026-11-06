@@ -720,3 +720,26 @@ describe('ToolFormatter', () => {
     });
   });
 });
+
+// #1031 ② (trinity R1 astra P2) — the banner is one section, and a section's
+// text is capped at 3000 chars by Slack (`invalid_blocks` past it). A forced
+// `$skill` awaits its banner post before it runs, so an over-long banner must
+// not be able to fail the invocation.
+describe('ToolFormatter.skillBannerBlocks', () => {
+  it('posts the banner as one mrkdwn section', () => {
+    expect(ToolFormatter.skillBannerBlocks('⚡ banner')).toEqual([
+      { type: 'section', text: { type: 'mrkdwn', text: '⚡ banner' } },
+    ]);
+  });
+
+  it('keeps a section within the 3000-char Slack limit', () => {
+    const keys = Array.from({ length: 60 }, (_, i) => `plugin-${i}:${'x'.repeat(56)}`);
+    const { text } = ToolFormatter.formatSkillForceInvocationRPG(keys, '<@U1>');
+    expect(text.length).toBeGreaterThan(3000);
+
+    const [section] = ToolFormatter.skillBannerBlocks(text);
+    expect(section.text.text.length).toBeLessThanOrEqual(3000);
+    expect(section.text.text.endsWith('…')).toBe(true);
+    expect(section.text.text.startsWith(text.slice(0, 100))).toBe(true);
+  });
+});

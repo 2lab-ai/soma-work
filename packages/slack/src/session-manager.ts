@@ -130,6 +130,8 @@ export class SessionUiManager {
   private logger = new Logger('SessionUiManager');
 
   private reactionManager?: ReactionManager;
+  /** #1031 ⑤ — repaints a session's thread header (the host's surface), by session key. */
+  private renderThreadHeader?: (sessionKey: string) => void;
 
   constructor(
     private claudeHandler: ClaudeSessionUiReader,
@@ -149,6 +151,14 @@ export class SessionUiManager {
    */
   setReactionManager(reactionManager: ReactionManager): void {
     this.reactionManager = reactionManager;
+  }
+
+  /**
+   * #1031 ⑤ — how to repaint a session's thread header. The sleep transition
+   * asks for one so the header states the sleep (optional dependency).
+   */
+  setThreadHeaderRenderer(render: (sessionKey: string) => void): void {
+    this.renderThreadHeader = render;
   }
 
   /**
@@ -857,9 +867,12 @@ export class SessionUiManager {
     await this.reactionManager?.setSessionExpired(sessionKey, session.channelId, session.threadTs);
 
     try {
-      await this.deliverSessionLifecycleNotice(session, sleepText, {
+      const delivered = await this.deliverSessionLifecycleNotice(session, sleepText, {
         existingMessageTs: session.warningMessageTs,
       });
+      // #1031 ⑤ — the header says 💤 Sleep too. Only beneath a live thread root:
+      // the notice gate above just proved it (undefined = root gone or unknown).
+      if (delivered) this.renderThreadHeader?.(sessionKey);
 
       this.logger.info('Session transitioned to sleep', {
         userId: session.userId,

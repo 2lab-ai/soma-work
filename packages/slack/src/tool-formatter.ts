@@ -70,6 +70,9 @@ function memorySummary(input: any): string {
   return words;
 }
 
+/** Slack's cap on a `section` block's text (docs/misc/reference/slack-block-kit.md). */
+const SECTION_TEXT_MAX = 3000;
+
 export class ToolFormatter {
   private static readonly TASK_PROMPT_PREVIEW_LENGTH = 180;
   private static readonly SUBAGENT_DISPLAY_MAP: Record<string, { label: string; model?: string }> = {
@@ -632,11 +635,11 @@ export class ToolFormatter {
   }
 
   /**
-   * Format forced skill invocation ($plugin:skill) as RPG-style with red bar.
-   * Returns { text, color } for Slack attachment rendering.
+   * Format forced skill invocation ($plugin:skill) as RPG-style.
    * Higher base damage range to reflect forced invocation power.
+   * Post it with {@link skillBannerBlocks} — never as an attachment (#1031 ②).
    */
-  static formatSkillForceInvocationRPG(skillNames: string[], casterName: string): { text: string; color: string } {
+  static formatSkillForceInvocationRPG(skillNames: string[], casterName: string): { text: string } {
     const isCritical = Math.random() < 0.3;
     const damage = isCritical ? Math.floor(Math.random() * 200) + 150 : Math.floor(Math.random() * 120) + 50;
     const dmgText = isCritical ? `*${damage}*` : `${damage}`;
@@ -644,8 +647,22 @@ export class ToolFormatter {
     const skills = skillNames.map((s) => `\`${s}\``).join(', ');
     return {
       text: `⚡ '${casterName}'가(이) ${skills}을 *강제 발동*했습니다. 데미지 ${dmgText}${suffix}`,
-      color: '#FF0000',
     };
+  }
+
+  /**
+   * #1031 ② — the skill banner as ONE Block Kit section. Posted as a blank-text
+   * red attachment, the rendered-empty guard copied the attachment's text into
+   * the message body, so the same sentence showed twice (body + red box). With
+   * blocks, the message `text` is only the notification fallback.
+   *
+   * A section's text is capped at 3000 chars (`invalid_blocks` past it), and a
+   * forced `$skill` awaits its banner post before it runs — so a banner naming
+   * very many skills is cut, never allowed to fail the invocation.
+   */
+  static skillBannerBlocks(text: string): Array<{ type: 'section'; text: { type: 'mrkdwn'; text: string } }> {
+    const shown = text.length > SECTION_TEXT_MAX ? `${text.slice(0, SECTION_TEXT_MAX - 1)}…` : text;
+    return [{ type: 'section', text: { type: 'mrkdwn', text: shown } }];
   }
 
   /**

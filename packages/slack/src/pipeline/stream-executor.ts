@@ -1570,7 +1570,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
     // Per-request tool statistics
     const toolStats: RequestToolStats = {};
-    const toolStartTimes = new Map<string, number>();
+    // Name and start of each main-agent tool call. A tool result carries no
+    // name of its own (the tracker fills it only later, in handleToolResult),
+    // so the stats take the name the call carried (#1031 ③ — `unknown×N`).
+    const toolStarts = new Map<string, { name: string; at: number }>();
 
     // Track latest response message ts for shortcut link
     let latestResponseTs: string | undefined;
@@ -2174,9 +2177,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             abortController.abort('ghost-session' satisfies RequestAbortReason);
             return;
           }
-          // Track tool start times for per-request stats
+          // Track tool names and start times for per-request stats
           for (const tu of toolUses) {
-            toolStartTimes.set(tu.id, Date.now());
+            toolStarts.set(tu.id, { name: tu.name, at: Date.now() });
           }
           await this.deps.toolEventProcessor.handleToolUse(toolUses, {
             channel: ctx.channel,
@@ -2209,10 +2212,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           const toolResults = allToolResults.filter((tr) => !tr.parentToolUseId);
           // Accumulate per-request tool stats
           for (const tr of toolResults) {
-            const name = tr.toolName || 'unknown';
-            const startTime = toolStartTimes.get(tr.toolUseId);
-            const duration = startTime ? Date.now() - startTime : 0;
-            toolStartTimes.delete(tr.toolUseId);
+            const start = toolStarts.get(tr.toolUseId);
+            const name = tr.toolName || start?.name || 'unknown';
+            const duration = start ? Date.now() - start.at : 0;
+            toolStarts.delete(tr.toolUseId);
             if (!toolStats[name]) {
               toolStats[name] = { count: 0, totalDurationMs: 0 };
             }

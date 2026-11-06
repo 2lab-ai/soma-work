@@ -804,4 +804,39 @@ describe('SessionUiManager', () => {
       expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
     });
   });
+
+  // #1031 ⑤ — the sleep transition posted a 💤 reaction and a notice but never
+  // repainted the thread header, which kept reading "⚪ 사용 가능".
+  describe('sleep repaints the thread header (#1031 ⑤)', () => {
+    it('asks for a header render once the sleep notice is delivered', async () => {
+      const render = vi.fn();
+      manager.setThreadHeaderRenderer(render);
+      const session = createMockSession({ state: 'SLEEPING', warningMessageTs: undefined });
+
+      await manager.handleSessionSleep(session);
+
+      expect(render).toHaveBeenCalledTimes(1);
+      expect(render).toHaveBeenCalledWith(mockClaudeHandler.getSessionKey(session.channelId, session.threadTs));
+    });
+
+    it('leaves the header alone when the thread root is gone', async () => {
+      mockSlackApi.getThreadRootState.mockResolvedValue('missing');
+      const render = vi.fn();
+      manager.setThreadHeaderRenderer(render);
+
+      await manager.handleSessionSleep(createMockSession({ state: 'SLEEPING', warningMessageTs: undefined }));
+
+      expect(render).not.toHaveBeenCalled();
+    });
+
+    it('a render failure does not fail the sleep', async () => {
+      manager.setThreadHeaderRenderer(() => {
+        throw new Error('render boom');
+      });
+
+      await expect(
+        manager.handleSessionSleep(createMockSession({ state: 'SLEEPING', warningMessageTs: undefined })),
+      ).resolves.toBeUndefined();
+    });
+  });
 });

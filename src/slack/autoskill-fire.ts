@@ -25,8 +25,8 @@ export interface AutoskillFire {
   keys: string[];
   /** `<invoked_skills>…</invoked_skills>` block to append to the dispatch prompt. */
   invokedBlock: string;
-  /** RPG banner attachment (text + color) to post before dispatch. */
-  banner: { text: string; color: string };
+  /** RPG banner to post before dispatch (`ToolFormatter.skillBannerBlocks`). */
+  banner: { text: string };
 }
 
 /**

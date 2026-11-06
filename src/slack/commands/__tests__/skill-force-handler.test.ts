@@ -264,22 +264,22 @@ describe('SkillForceHandler', () => {
       expect(prompt.indexOf('<stv:debug>')).toBeLessThan(prompt.indexOf('<local:z>'));
     });
 
-    it('emits RPG skill-force-invocation banner (red attachment) on success', async () => {
+    it('emits RPG skill-force-invocation banner (one Block Kit section) on success', async () => {
       vi.mocked(fs.existsSync).mockReturnValue(true);
       vi.mocked(fs.readFileSync).mockReturnValue('# Z Skill');
 
       await handler.execute(makeCtx('$local:z'));
 
-      // Find the RPG banner call: red attachment bar with "강제 발동" text.
-      const rpgCall = mockSay.mock.calls.find((call) => {
-        const arg = call[0];
-        return Array.isArray(arg?.attachments) && arg.attachments.some((a: any) => a.color === '#FF0000');
-      });
+      // Find the RPG banner call by its "강제 발동" text.
+      const rpgCall = mockSay.mock.calls.find((call) => String(call[0]?.text ?? '').includes('강제 발동'));
       expect(rpgCall).toBeDefined();
       expect(rpgCall![0].thread_ts).toBe('171.100');
-      expect(rpgCall![0].attachments[0].text).toContain('강제 발동');
-      expect(rpgCall![0].attachments[0].text).toContain('`local:z`');
-      expect(rpgCall![0].attachments[0].text).toContain('<@U1>');
+      // #1031 ② — one section, no attachment: an attachment-only post had its
+      // text copied into the body by the rendered-empty guard (shown twice).
+      expect(rpgCall![0].attachments).toBeUndefined();
+      expect(rpgCall![0].blocks).toEqual([{ type: 'section', text: { type: 'mrkdwn', text: rpgCall![0].text } }]);
+      expect(rpgCall![0].text).toContain('`local:z`');
+      expect(rpgCall![0].text).toContain('<@U1>');
     });
 
     it('emits RPG banner listing ALL resolved skills (multi-skill invocation)', async () => {
@@ -293,12 +293,9 @@ describe('SkillForceHandler', () => {
 
       await handler.execute(makeCtx('$local:z 하고 $stv:debug'));
 
-      const rpgCall = mockSay.mock.calls.find((call) => {
-        const arg = call[0];
-        return Array.isArray(arg?.attachments) && arg.attachments.some((a: any) => a.color === '#FF0000');
-      });
+      const rpgCall = mockSay.mock.calls.find((call) => String(call[0]?.text ?? '').includes('강제 발동'));
       expect(rpgCall).toBeDefined();
-      const bannerText = rpgCall![0].attachments[0].text as string;
+      const bannerText = rpgCall![0].blocks[0].text.text as string;
       expect(bannerText).toContain('`local:z`');
       expect(bannerText).toContain('`stv:debug`');
     });
@@ -308,11 +305,8 @@ describe('SkillForceHandler', () => {
 
       await handler.execute(makeCtx('$local:nonexistent'));
 
-      // Only the error message should be posted; no red-bar attachment.
-      const rpgCall = mockSay.mock.calls.find((call) => {
-        const arg = call[0];
-        return Array.isArray(arg?.attachments) && arg.attachments.some((a: any) => a.color === '#FF0000');
-      });
+      // Only the error message should be posted; no banner.
+      const rpgCall = mockSay.mock.calls.find((call) => String(call[0]?.text ?? '').includes('강제 발동'));
       expect(rpgCall).toBeUndefined();
     });
 
@@ -328,12 +322,9 @@ describe('SkillForceHandler', () => {
         say: mockSay,
       });
 
-      const rpgCall = mockSay.mock.calls.find((call) => {
-        const arg = call[0];
-        return Array.isArray(arg?.attachments) && arg.attachments.some((a: any) => a.color === '#FF0000');
-      });
+      const rpgCall = mockSay.mock.calls.find((call) => String(call[0]?.text ?? '').includes('강제 발동'));
       expect(rpgCall).toBeDefined();
-      expect(rpgCall![0].attachments[0].text).toContain('누군가');
+      expect(rpgCall![0].text).toContain('누군가');
     });
 
     it('embeds stv plugin skill', async () => {

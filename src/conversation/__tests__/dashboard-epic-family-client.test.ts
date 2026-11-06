@@ -24,6 +24,8 @@
  *   F11 (#1030 review) one family everywhere: the epic's face, its list and its detail card read the whole bundle,
  *      not the copy the board's filters kept.
  *   F12 (#1030 review) the family line is no sticky header.
+ *   F13 (dev check) the family region sits inside the panel's inset like the sections around it (16px a side),
+ *      not against the panel's edge.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -444,5 +446,12 @@ describe('F11 — one family everywhere: the whole bundle, not the filtered copy
 describe('F12 — the family line is no sticky header', () => {
   it('every family line is static (the task line it borrows from sticks to the top)', () => {
     expect(TEMPLATE).toContain('.pf-line { position: static; }');
+  });
+});
+
+describe('F13 — the family region sits inside the panel’s inset', () => {
+  it('16px a side, as the task line and the goal around it', () => {
+    expect(TEMPLATE).toContain('.panel-family { padding: 4px 16px 8px; }');
+    expect(TEMPLATE).not.toContain('.panel-family { margin: 4px 0 8px; }');
   });
 });

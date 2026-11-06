@@ -49,8 +49,9 @@ describe('buildAutoskillFire', () => {
         '<local:using-govuk>\nBase directory for this skill: /skills/using-govuk\n\nGOVUK BODY\n</local:using-govuk>\n' +
         '</invoked_skills>',
     );
-    // Banner is a red RPG attachment that names the caster + skills.
-    expect(fire?.banner.color).toBe('#FF0000');
+    // Banner text names the caster + skills; it carries no colour any more —
+    // it is posted as one Block Kit section, not a red attachment (#1031 ②).
+    expect(Object.keys(fire?.banner ?? {})).toEqual(['text']);
     expect(fire?.banner.text).toContain('<@U_FIRE>');
     expect(fire?.banner.text).toContain('강제 발동');
   });
