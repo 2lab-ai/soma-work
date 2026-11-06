@@ -1338,5 +1338,15 @@
   "GitHub에서 열기": "Open on GitHub",
   "새 탭에서 열기": "Open in a new tab",
   "비공개 저장소의 본문과 댓글은 관리자만 볼 수 있습니다.": "Only admins can see the body and comments of a private repository's issue.",
-  "_댓글을 불러오지 못했습니다. GitHub에서 확인하세요._": "_The comments did not load. Check them on GitHub._"
+  "_댓글을 불러오지 못했습니다. GitHub에서 확인하세요._": "_The comments did not load. Check them on GitHub._",
+  "일시정지된 목표": "Paused goals",
+  " · 일시정지 ": " · paused ",
+  ">재개</button>": ">Resume</button>",
+  "한 번 더 눌러 삭제": "Press again to delete",
+  "<div class=\"ui-section-head\"><h4>일시정지된 목표</h4><span class=\"ui-count\">": "<div class=\"ui-section-head\"><h4>Paused goals</h4><span class=\"ui-count\">",
+  "재개하면 지금 목표 다음에 시작합니다.": "A resumed goal starts right after the current goal.",
+  "재개하면 바로 지금 목표로 시작합니다.": "A resumed goal starts now as the current goal.",
+  "일시정지된 goal ": "Paused goals: ",
+  "<span class=\"cgl-n\">일시정지 ": "<span class=\"cgl-n\">paused ",
+  "삭제": "Delete"
 }
