@@ -1118,6 +1118,7 @@
   "카드 · 펼친 카드 · 디테일 카드 · 슬랙 스레드 카드에 무엇을 어떤 순서로 보여 줄지 고릅니다. 스위치로 켜고 끄고, 손잡이를 끌거나 ↑ ↓로 순서를 바꿉니다. 바꾸면 바로 저장되고 대시보드와 슬랙에 바로 반영됩니다.": "Choose what the card, expanded card, detail card, and Slack thread card show, and in what order. Use the switch to turn items on or off, and drag the handle or use ↑ ↓ to reorder them. Changes save right away and apply immediately to the dashboard and Slack.",
   "카드 맨 위 줄": "Top row of the card",
   "카드 열기": "Open card",
+  "카드 위쪽 보이기": "Show the top of the card",
   "카드 폼 검증 추가": "Add card form validation",
   "카드 폼 검증 추가 · 실행 3 · 완료 2 · 남은 1 ▸": "Add card form validation · Runs 3 · Done 2 · Remaining 1 ▸",
   "카드를 눌렀을 때 펼쳐지는 본문입니다 — 디테일 카드도 옆에 같이 열립니다": "The body that expands when you click a card — the detail card also opens beside it",
