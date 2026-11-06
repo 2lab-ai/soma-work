@@ -382,6 +382,52 @@ describe('stream-processor — subagent routing (spec 12 §2.2)', () => {
     expect(results).toEqual(['tu_sub:Grep:toolu_agent_1', 'tu_main:-:main']);
   });
 
+  // #966 follow-up (dev 2026-11-06): an agent SendMessage resumed after a restart is running again; the
+  // registry learns it from SendMessage's own result, which names the agent it resumed.
+  it('a SendMessage that resumed an agent announces it started again (resumedAgentId)', async () => {
+    const r = await run([
+      {
+        type: 'tool_call',
+        toolCallId: 'toolu_sm',
+        name: 'SendMessage',
+        input: { to: 'a35e25a435ccc7bd6', message: 'resume' },
+      },
+      {
+        type: 'tool_result',
+        toolCallId: 'toolu_sm',
+        content: [
+          {
+            type: 'text',
+            text: '{"success":true,"message":"Resuming agent a35e25a","resumedAgentId":"a35e25a435ccc7bd6","pin":{"id":"a35e25a435ccc7bd6"}}',
+          },
+        ],
+      },
+      { type: 'result', stopReason: 'end_turn', finalText: 'done' },
+    ]);
+    expect(r.agentEvents).toContainEqual(
+      expect.objectContaining({
+        kind: 'lifecycle',
+        phase: 'started',
+        taskId: 'a35e25a435ccc7bd6',
+        taskType: 'local_agent',
+        resumed: true,
+      }),
+    );
+  });
+
+  it('a SendMessage that resumed nothing announces nothing', async () => {
+    const r = await run([
+      { type: 'tool_call', toolCallId: 'toolu_sm', name: 'SendMessage', input: { to: 'nobody', message: 'hi' } },
+      {
+        type: 'tool_result',
+        toolCallId: 'toolu_sm',
+        content: [{ type: 'text', text: '{"success":false,"message":"No agent"}' }],
+      },
+      { type: 'result', stopReason: 'end_turn', finalText: 'done' },
+    ]);
+    expect(r.agentEvents.some((e) => e.kind === 'lifecycle')).toBe(false);
+  });
+
   it('a session without subagents emits nothing new beyond the turn end', async () => {
     const r = await run([
       { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: { file_path: '/a' } },

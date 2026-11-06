@@ -196,6 +196,14 @@ function agentOutcomeOf(message: unknown): {
 }
 
 /** Spec 12 — the lifecycle fields the agent tree shows (present only when the SDK sent them). */
+/**
+ * #966 — a stop the host marked as coming after it closed the CLI's input
+ * (`soma_ended_with_turn`, `claude-handler.ts`): the turn's end stopped the task.
+ */
+function endedWithTurn(m: Record<string, unknown>, status: string): { endedWithTurn?: true } {
+  return status === 'stopped' && m.soma_ended_with_turn === true ? { endedWithTurn: true } : {};
+}
+
 function lifecycleDetails(m: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (typeof m.subagent_type === 'string' && m.subagent_type) out.subagentType = m.subagent_type;
@@ -633,6 +641,7 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
           outputFile: typeof m.output_file === 'string' ? m.output_file : undefined,
           summary: typeof m.summary === 'string' ? m.summary : undefined,
           ...lifecycleDetails(m),
+          ...endedWithTurn(m, status),
         },
       ];
     }
@@ -652,6 +661,7 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
             phase: 'settled',
             taskId,
             status: pStatus === 'killed' ? 'stopped' : pStatus,
+            ...endedWithTurn(m, pStatus === 'killed' ? 'stopped' : pStatus),
           },
         ];
       }

@@ -494,6 +494,46 @@ describe('createSdkMessageMapper — golden (epic #1023 P3)', () => {
       ).toEqual([]);
     });
 
+    // #966 — the host marks a stop that came after it closed the CLI's input (the turn's end stopped it).
+    it('a stop the host marked soma_ended_with_turn carries endedWithTurn; other settles do not', () => {
+      expect(
+        mapper().map(
+          sdk({
+            type: 'system',
+            subtype: 'task_notification',
+            task_id: 'b1',
+            status: 'stopped',
+            soma_ended_with_turn: true,
+          }),
+        )[0],
+      ).toMatchObject({ phase: 'settled', status: 'stopped', endedWithTurn: true });
+      expect(
+        mapper().map(
+          sdk({
+            type: 'system',
+            subtype: 'task_updated',
+            task_id: 'b1',
+            patch: { status: 'killed' },
+            soma_ended_with_turn: true,
+          }),
+        )[0],
+      ).toMatchObject({ phase: 'settled', status: 'stopped', endedWithTurn: true });
+      expect(
+        mapper().map(
+          sdk({
+            type: 'system',
+            subtype: 'task_notification',
+            task_id: 'b1',
+            status: 'completed',
+            soma_ended_with_turn: true,
+          }),
+        )[0],
+      ).not.toHaveProperty('endedWithTurn');
+      expect(
+        mapper().map(sdk({ type: 'system', subtype: 'task_notification', task_id: 'b1', status: 'stopped' }))[0],
+      ).not.toHaveProperty('endedWithTurn');
+    });
+
     it('task_updated terminal patch.status → settled (killed → stopped); non-terminal → no event', () => {
       expect(
         mapper().map(sdk({ type: 'system', subtype: 'task_updated', task_id: 'b1', patch: { status: 'killed' } })),
