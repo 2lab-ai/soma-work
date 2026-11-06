@@ -3412,6 +3412,7 @@ describe('Auto fallback compact — boundary restore (execute e2e)', () => {
         handleToolUse: vi.fn().mockResolvedValue(undefined),
         handleToolResult: vi.fn().mockResolvedValue(undefined),
         getLiveBackgroundWork: vi.fn().mockReturnValue({ count: 0, labels: [], signature: '' }),
+        endBackgroundWorkWithTurn: vi.fn().mockReturnValue([]),
         cleanup: vi.fn(),
       },
       statusReporter: {
@@ -5015,6 +5016,7 @@ describe('stream-executor — epoch guard wiring (issue #688)', () => {
         setReactionManager: vi.fn(),
         setToolResultSink: vi.fn(),
         getLiveBackgroundWork: vi.fn().mockReturnValue({ count: 0, labels: [], signature: '' }),
+        endBackgroundWorkWithTurn: vi.fn().mockReturnValue([]),
         cleanup: vi.fn(),
       },
       statusReporter: {
@@ -5162,6 +5164,42 @@ describe('stream-executor — epoch guard wiring (issue #688)', () => {
     expect(result.continuation).toBeDefined();
     expect(result.continuation.origin).toBe('host');
     expect(result.continuation.prompt).toMatch(/background/i);
+  });
+
+  // #989 review (astra) — a turn that fails also ends its CLI: its background work is settled too,
+  // and only the ids that turn saw.
+  it('settles the background work of a turn that ended in an error', async () => {
+    async function* failingStream() {
+      yield { type: 'system', subtype: 'init', session_id: 's1' };
+      throw new Error('boom');
+    }
+    const deps = createDeps(() => failingStream());
+    deps.toolEventProcessor.getLiveBackgroundWork = vi
+      .fn()
+      .mockReturnValue({ count: 1, labels: [], signature: 'b1', tasks: [{ taskId: 'b1' }] });
+    deps.toolEventProcessor.endBackgroundWorkWithTurn = vi.fn().mockReturnValue([{ taskId: 'b1' }]);
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await executor.execute(createParams(say)).catch(() => undefined);
+
+    expect(deps.toolEventProcessor.endBackgroundWorkWithTurn).toHaveBeenCalledWith(expect.any(String), ['b1']);
+  });
+
+  // #966 — they died with the turn's CLI: the tracker must not keep claiming them live.
+  it('settles the background work that ended with the turn', async () => {
+    const deps = createDeps(() => toolFlowStream('Read'));
+    deps.toolEventProcessor.getLiveBackgroundWork = vi
+      .fn()
+      .mockReturnValue({ count: 1, labels: [], signature: 'b1', tasks: [{ taskId: 'b1' }] });
+    deps.toolEventProcessor.endBackgroundWorkWithTurn = vi.fn().mockReturnValue([{ taskId: 'b1' }]);
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await executor.execute(createParams(say));
+
+    expect(deps.toolEventProcessor.endBackgroundWorkWithTurn).toHaveBeenCalledTimes(1);
+    expect(deps.toolEventProcessor.endBackgroundWorkWithTurn).toHaveBeenCalledWith(expect.any(String), ['b1']);
   });
 
   it('completes normally (no continuation) when no background work is live', async () => {
@@ -6905,6 +6943,7 @@ describe('prompt-too-long delivered as content triggers auto fallback compact (f
         handleToolUse: vi.fn().mockResolvedValue(undefined),
         handleToolResult: vi.fn().mockResolvedValue(undefined),
         getLiveBackgroundWork: vi.fn().mockReturnValue({ count: 0, labels: [], signature: '' }),
+        endBackgroundWorkWithTurn: vi.fn().mockReturnValue([]),
         cleanup: vi.fn(),
       },
       statusReporter: {
@@ -7133,6 +7172,7 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
         handleToolUse: vi.fn().mockResolvedValue(undefined),
         handleToolResult: vi.fn().mockResolvedValue(undefined),
         getLiveBackgroundWork: vi.fn().mockReturnValue({ count: 0, labels: [], signature: '' }),
+        endBackgroundWorkWithTurn: vi.fn().mockReturnValue([]),
         cleanup: vi.fn(),
       },
       statusReporter: {
@@ -7562,6 +7602,7 @@ describe('session-title-pending notice (execute e2e)', () => {
         handleToolUse: vi.fn().mockResolvedValue(undefined),
         handleToolResult: vi.fn().mockResolvedValue(undefined),
         getLiveBackgroundWork: vi.fn().mockReturnValue({ count: 0, labels: [], signature: '' }),
+        endBackgroundWorkWithTurn: vi.fn().mockReturnValue([]),
         cleanup: vi.fn(),
       },
       statusReporter: { getStatusEmoji: vi.fn().mockReturnValue('thinking_face') },
@@ -7783,6 +7824,7 @@ describe('#846 — the turn-end summary in an es turn (execute e2e)', () => {
           for (const r of results) if (r.toolUseId === 'tool_es') r.toolName ??= 'mcp__model-command__run';
         }),
         getLiveBackgroundWork: vi.fn().mockReturnValue({ count: 0, labels: [], signature: '' }),
+        endBackgroundWorkWithTurn: vi.fn().mockReturnValue([]),
         cleanup: vi.fn(),
       },
       statusReporter: { getStatusEmoji: vi.fn().mockReturnValue('thinking_face') },
