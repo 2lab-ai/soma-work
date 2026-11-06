@@ -482,6 +482,15 @@ function heldTurnResult(held: HeldTurn): SDKMessage {
   return { ...latest, result: answer.result, stop_reason: answer.stop_reason } as unknown as SDKMessage;
 }
 
+/** #966 — a CLI frame that settles a background task (`task_notification`, or a terminal `task_updated`). */
+function isTaskSettleFrame(raw: Record<string, unknown>): boolean {
+  if (raw.type !== 'system') return false;
+  if (raw.subtype === 'task_notification') return true;
+  if (raw.subtype !== 'task_updated') return false;
+  const status = (raw.patch as Record<string, unknown> | undefined)?.status;
+  return status === 'completed' || status === 'failed' || status === 'killed';
+}
+
 export class ClaudeHandler implements TurnSteeringPort {
   private logger = new Logger('ClaudeHandler');
   private mcpManager: McpManager;
@@ -1580,6 +1589,12 @@ export class ClaudeHandler implements TurnSteeringPort {
 
           // Context rollback (#743): remember the latest safe cut point.
           if (session) trackChainPoint(session, raw);
+
+          // #966 — the host closed the input, so the CLI is exiting and stops the background tasks it
+          // still runs. Those reports are the turn's end, not a stop the model asked for: mark them so
+          // the turn-end decision still counts that work as stopped with the turn (a held turn reads
+          // them before it ends).
+          if (channel.isClosed && isTaskSettleFrame(raw)) raw.ended_with_turn = true;
 
           if (message.type === 'result') lastResultSeq = frameSeq;
 
