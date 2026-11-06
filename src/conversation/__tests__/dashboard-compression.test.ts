@@ -137,6 +137,23 @@ describe('dashboard first-load compression (#477)', () => {
     expect(json.board).toBeDefined();
   });
 
+  it('GET /dashboard/ui/*.js (the kit modules, ~1.4 MB on a cold load — #969): brotli, same module, still cached', async () => {
+    const plain = await injectWebServer({ method: 'GET', url: '/dashboard/ui/agent-inbox.js' });
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/dashboard/ui/agent-inbox.js',
+      headers: { 'accept-encoding': 'gzip, deflate, br, zstd' },
+    });
+    expect(plain.statusCode).toBe(200);
+    expect(plain.headers['content-encoding']).toBeUndefined();
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-encoding']).toBe('br');
+    expect(res.headers['cache-control']).toBe('public, max-age=3600');
+    expect(String(res.headers['content-type'])).toContain('text/javascript');
+    expect(brotliDecompressSync(res.rawPayload).equals(plain.rawPayload)).toBe(true);
+    expect(res.rawPayload.length).toBeLessThan(plain.rawPayload.length / 3);
+  });
+
   it('opt-in only: other routes are untouched (byte-range routes keep their semantics)', async () => {
     const res = await injectWebServer({
       method: 'GET',
