@@ -1,0 +1,121 @@
+/**
+ * Which tool calls cannot be undone — the label an already-raised permission
+ * prompt shows (dashboard: approve by sliding; Slack: Approve asks once more).
+ * The classifier decides nothing about whether a prompt exists.
+ */
+
+import { describe, expect, it } from 'vitest';
+import { irreversibleAction } from './irreversible';
+
+const bash = (command: string) => irreversibleAction('Bash', { command });
+const id = (command: string) => bash(command)?.id ?? null;
+
+describe('irreversibleAction — deploy and publish', () => {
+  it.each([
+    ['gh pr merge 1287 --merge --repo 2lab-ai/soma-work', 'pr-merge'],
+    ['git push origin main:deploy/prod', 'git-push-deploy'],
+    ['git push origin HEAD:refs/heads/deploy/dev', 'git-push-deploy'],
+    ['git push origin v0.34.0', 'git-push-tag'],
+    ['git push --tags', 'git-push-tag'],
+    ['npm publish --access public', 'package-publish'],
+    ['pnpm publish', 'package-publish'],
+    ['yarn npm publish', 'package-publish'],
+    ['cargo publish', 'package-publish'],
+    ['twine upload dist/*', 'package-publish'],
+    ['npm unpublish @2lab.ai/ui@0.34.0', 'package-unpublish'],
+    ['npm run deploy:prod', 'deploy-script'],
+    ['make release', 'deploy-script'],
+    ['./scripts/deploy-prod.sh', 'deploy-script'],
+    ['gh release create v1.2.0 --notes x', 'release-publish'],
+    ['gh workflow run deploy --ref main -f confirm=deploy', 'workflow-run'],
+    ['docker push ghcr.io/2lab-ai/soma:latest', 'image-push'],
+    ['npx vercel@latest deploy --prebuilt --prod', 'prod-deploy'],
+    ['vercel deploy --prebuilt --prod', 'prod-deploy'],
+    ['vercel promote https://x.vercel.app', 'prod-deploy'],
+    ['kubectl apply -f k8s/', 'k8s-change'],
+    ['helm upgrade soma ./chart', 'helm-change'],
+    ['terraform apply -auto-approve', 'infra-apply'],
+  ])('%s → %s', (command, expected) => {
+    expect(id(command)).toBe(expected);
+  });
+});
+
+describe('irreversibleAction — destructive', () => {
+  it.each([
+    ['git push --force origin main', 'git-force-push'],
+    ['git push -f', 'git-force-push'],
+    ['git push --force-with-lease origin feat/x', 'git-force-push'],
+    ['git push origin +main', 'git-force-push'],
+    ['git push origin --delete feat/old', 'git-push-delete'],
+    ['git push origin :feat/old', 'git-push-delete'],
+    ['git reset --hard origin/main', 'git-reset-hard'],
+    ['git -C repo clean -fdx', 'git-clean'],
+    ['git branch -D feat/x', 'git-branch-force-delete'],
+    ['rm -rf ./build', 'rm-recursive'],
+    ['sudo rm -R /var/tmp/x', 'rm-recursive'],
+    ['find . -name "*.log" | xargs rm -rf', 'rm-recursive'],
+    ['dd if=/dev/zero of=/dev/disk4 bs=1m', 'disk-overwrite'],
+    ['mkfs.ext4 /dev/sdb1', 'disk-overwrite'],
+    ['psql -c "DROP TABLE users"', 'db-delete'],
+    ['mysql -e "truncate table sessions"', 'db-delete'],
+    ['redis-cli FLUSHALL', 'redis-flush'],
+    ['gh repo delete 2lab-ai/tmp --yes', 'repo-delete'],
+    ['kubectl delete ns soma', 'k8s-delete'],
+    ['terraform destroy', 'infra-destroy'],
+    ['docker system prune -af', 'docker-data-delete'],
+  ])('%s → %s', (command, expected) => {
+    expect(id(command)).toBe(expected);
+  });
+
+  it('a later segment counts: cd && git push --force', () => {
+    expect(id('cd repo && git status; git push --force origin feat')).toBe('git-force-push');
+  });
+});
+
+describe('irreversibleAction — ordinary calls stay plain', () => {
+  it.each([
+    'git push origin feat/irreversible-approval',
+    'git push -u origin main',
+    'git status',
+    'git reset --soft HEAD~1',
+    'git clean -n',
+    'git branch -d merged-branch',
+    'gh pr create --base main --title x',
+    'gh pr view 12',
+    'npm ci',
+    'npm run build',
+    'npm test',
+    'rm -f stale.lock',
+    'ls -la',
+    'echo "npm publish later"',
+    'git commit -m "drop table support from the docs"',
+    'vercel pull --yes --environment=production',
+    'kubectl get pods',
+    'terraform plan',
+  ])('%s → null', (command) => {
+    expect(bash(command)).toBeNull();
+  });
+
+  it('no command, an empty command, or a non-object input → null', () => {
+    expect(irreversibleAction('Bash', undefined)).toBeNull();
+    expect(irreversibleAction('Bash', { command: '   ' })).toBeNull();
+    expect(irreversibleAction('Bash', 'rm -rf /')).toBeNull();
+  });
+
+  it('other tools: only the ones named irreversible', () => {
+    expect(irreversibleAction('mcp__github__merge_pull_request', { pull_number: 1 })).toEqual({
+      id: 'pr-merge',
+      label: 'PR 머지',
+    });
+    expect(irreversibleAction('Edit', { file_path: '/x', old_string: 'a', new_string: 'b' })).toBeNull();
+    expect(irreversibleAction('Write', { file_path: '/x', content: 'rm -rf /' })).toBeNull();
+  });
+});
+
+describe('irreversibleAction — the label', () => {
+  it('is static catalog text, never a piece of the command', () => {
+    const hit = bash('git push --force origin <@U123>|*bold*');
+    expect(hit).toEqual({ id: 'git-force-push', label: 'force push' });
+    expect(bash('psql -c "DROP TABLE <script>"')?.label).toBe('DB 데이터 삭제');
+  });
+});
