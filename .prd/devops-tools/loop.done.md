@@ -66,4 +66,4 @@
 | 버튼 토큰 유무 (sudo 없이) | 없음 — 브로커 pid의 TCP 연결 0(Socket Mode는 토큰이 있으면 기동 때 연결을 유지). 다른 유저 소켓도 보이는 `netstat -anv`로 측정 유효성 확인 |
 | 11-04 재설치 출처 | #898(승인 대기 10분)의 운영 반영: 카드 만료 − 요청 = 600초, 소켓 파일 시각 11-04, 설치본에 버튼 코드 |
 | WU8 D6 (`work-m64` · `work-m16`) | 세션 밖 의존 = 고객 문서 동기화 cron 하나 → helper를 봇의 앱 토큰 gh 폴더로 옮김(백업) → 사람 로그인 숨김 상태에서 성공 → `gh auth logout`(`work-m64` 2 · `work-m16` 1) → 브로커 `gh_read` 두 계정 · 문서 동기화 · 자동 배포 fetch · 앱 토큰 gh 모두 정상. 로그아웃은 토큰을 무효화하지 않아 브로커 사본 유지 |
-| WU8 D5 (1/4) | `fable-m5max` dev에 server-tools `permission`(read 4 · write 4) 적용, 봇 로더로 gated 확인. 나머지 3개 봇은 dry-run만 — 비어드민 사용자가 지금 쓰는 중 |
+| WU8 D5 (4/4) | server-tools `permission`(read 4 · write 4)을 네 봇에 적용. `fable-m5max` dev 먼저, 나머지 3개는 운영자 결정(기존 사용자 4주 grant 먼저) 뒤: `work-m64` 비어드민 10명 grant(2026-12-04까지) → 맵 적용 → 봇 모듈로 판정 재현(어드민 허용 · grant 허용 · grant 없음 거부) → 인프라 채널 공지. `work-m16` 두 봇은 28일 동안 에이전트 턴 0이라 grant 없음 |
