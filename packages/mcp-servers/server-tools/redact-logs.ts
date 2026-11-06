@@ -8,7 +8,12 @@
 // start is pinned by a literal or a lookbehind, and nothing quantified is followed by an overlapping quantifier.
 // Values are measured by hand-written scanners, and key matching resumes past every scanned value, so no
 // character is scanned twice. Secret context (a key waiting for its value, an open quoted value, an open array or
-// object, a key block) is carried from line to line as one {@link LineState}.
+// object, a key block, a YAML value) is carried from line to line as one {@link LineState}.
+//
+// Governing rule: when the structure is uncertain, prefer over-redaction — hiding extra log text is cheap, leaking
+// a secret is not. So a value under a secret key is kept only when it is exactly a redacted form (the marker, or a
+// key block's markers around it); anything else there is redacted whole. Brackets and quotes outrank indentation:
+// indentation decides only YAML-style content.
 
 export const REDACTED = '<redacted>';
 
@@ -77,8 +82,10 @@ const COLON_VALUE_TAIL = new Set([' ', '\t', '\f', '\v', ',', '}', ']', ')', "'"
 // Private-key block markers. The type word is optional (RSA, EC, OPENSSH, ENCRYPTED, ...).
 const KEY_BLOCK_BEGIN_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/g;
 const KEY_BLOCK_END_RE = /-----END [A-Z0-9 ]*PRIVATE KEY-----/g;
-/** A BEGIN marker exactly at a value's start: the key-block scanner owns that value. */
-const KEY_BLOCK_BEGIN_AT_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/y;
+/** A value the key-block scanner already redacted: its markers around the marker, nothing else. */
+const REDACTED_KEY_BLOCK_RE = new RegExp(
+  `^-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:${REDACTED})?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----)?$`,
+);
 
 /** A YAML block-scalar indicator ending its line (`|`, `>`, `|-`, `>+`, `|2`, an optional comment): text follows. */
 const BLOCK_SCALAR_RE = /[|>](?:[1-9][+-]?|[+-][1-9]?)?[ \t]*(?:#.*)?$/y;
@@ -118,15 +125,16 @@ interface KeyInfo {
 /**
  * What a line leaves open for the next one. Only one thing can be open at a time. `column` is where a waiting key
  * starts on its line (after Docker's prefix); a `block` is the YAML value under such a key: every line indented
- * deeper than `column` — and, for a `sequence`, every `- ` item at `column` itself.
+ * deeper than `column` — and, for a `sequence`, every `- ` item at `column` itself. `resume` is the state an open
+ * key block, value or collection returns to when it closes (a YAML value it interrupted).
  */
 type LineState =
   | { kind: 'none' }
   | { kind: 'keyBlock'; resume: LineState }
   | { kind: 'key'; info: KeyInfo; needsSeparator: boolean; column: number }
   | { kind: 'block'; column: number; sequence: boolean }
-  | { kind: 'value'; quote: '"' | "'"; level: 0 | 1 }
-  | { kind: 'collection'; depth: number; level: 0 | 1 };
+  | { kind: 'value'; quote: '"' | "'"; level: 0 | 1; resume: LineState }
+  | { kind: 'collection'; depth: number; level: 0 | 1; resume: LineState };
 
 const NONE: LineState = { kind: 'none' };
 const KEY_BLOCK: LineState = { kind: 'keyBlock', resume: NONE };
@@ -307,8 +315,13 @@ function takeValue(line: string, at: number, info: KeyInfo): Taken {
     // Under a `sid` key only the SID itself is redacted; the collection's own keys are matched as usual.
     if (!info.secret) return { end: at, redact: null, next: NONE };
     const scan = scanCollection(line, at, 0, info.level);
-    const next: LineState = scan.closed ? NONE : { kind: 'collection', depth: scan.depth, level: info.level };
-    return { end: scan.end, redact: { from: at, to: scan.end }, next };
+    if (!scan.closed) {
+      const next: LineState = { kind: 'collection', depth: scan.depth, level: info.level, resume: NONE };
+      return { end: scan.end, redact: { from: at, to: scan.end }, next };
+    }
+    // After `:` the value is the rest of the line, as for a scalar: text after the brackets goes with them.
+    const to = info.colon ? Math.max(scan.end, colonValueEnd(line, scan.end)) : scan.end;
+    return { end: to, redact: { from: at, to }, next: NONE };
   }
   let span = valueSpan(line, at, info.colon);
   if (info.secret) {
@@ -316,15 +329,23 @@ function takeValue(line: string, at: number, info: KeyInfo): Taken {
   }
   const value = line.slice(span.from, span.to);
   const keep: Taken = { end: span.to, redact: null, next: NONE };
-  if (value.startsWith(REDACTED)) return keep;
-  KEY_BLOCK_BEGIN_AT_RE.lastIndex = span.from;
-  if (KEY_BLOCK_BEGIN_AT_RE.test(line)) return keep;
+  if (isRedactedForm(value)) return keep;
   if (!info.secret) return ACCOUNT_SID_RE.test(value) ? { ...keep, redact: span } : keep;
   if (value.length === 0 && !span.open) return keep;
   if (!span.quoted && LITERAL_RE.test(value)) return keep;
   if (DIGITS_RE.test(value) && COUNT_KEY_RE.test(info.key)) return keep;
-  const next: LineState = span.open ? { kind: 'value', quote: span.quote, level: span.level } : NONE;
+  const next: LineState = span.open ? { kind: 'value', quote: span.quote, level: span.level, resume: NONE } : NONE;
   return { end: span.to, redact: span, next };
+}
+
+/** Exactly a redacted form: the marker, or a key block's markers around it. A marker followed by more is not. */
+function isRedactedForm(value: string): boolean {
+  return value === REDACTED || REDACTED_KEY_BLOCK_RE.test(value);
+}
+
+/** A YAML comment (`#` after whitespace) at `i`: no value, and no content of one. */
+function isComment(line: string, i: number): boolean {
+  return line[i] === '#' && (i === 0 || line[i - 1] === ' ' || line[i - 1] === '\t');
 }
 
 /** Replace `[from, to)` with the marker; an empty span gets none. */
@@ -358,11 +379,14 @@ function redactKeyValues(line: string, base: number): Redacted {
     if (info === null) continue;
     const at = m.index + m[0].length;
     const column = base + keyColumn(line, m.index);
-    const rest = out + line.slice(pos);
-    if (at === line.length) return { text: rest, next: { kind: 'key', info, needsSeparator: false, column } };
+    const waiting: LineState = { kind: 'key', info, needsSeparator: false, column };
+    if (at === line.length) return { text: out + line.slice(pos), next: waiting };
+    // A comment is no value, and it goes too: `token: #A1B2` may be a value written after a space.
+    if (isComment(line, at)) return { text: out + line.slice(pos, at) + REDACTED, next: waiting };
     BLOCK_SCALAR_RE.lastIndex = at;
-    if (info.secret && BLOCK_SCALAR_RE.test(line))
-      return { text: rest, next: { kind: 'block', column, sequence: false } };
+    if (info.secret && BLOCK_SCALAR_RE.test(line)) {
+      return { text: out + line.slice(pos), next: { kind: 'block', column, sequence: false } };
+    }
     const taken = takeValue(line, at, info);
     if (taken.redact !== null) {
       out += marked(line, pos, taken.redact);
@@ -450,17 +474,18 @@ function isItem(body: string, i: number): boolean {
 
 /**
  * One line of a YAML value under a secret key: indentation and `- ` markers stay, the content goes. A quoted
- * scalar alone on the line keeps its quotes and closing punctuation, and when it is the whole value (the first
- * line, no marker) the value ends with it — that is also the JSON `"key":\n  "value"` form. A key block opening
- * here hands over to key-block state, which follows it past any dedent and then resumes this value.
+ * scalar alone on the line keeps its quotes and closing punctuation. A key block, flow collection or quoted value
+ * left open here is followed by its own state past any dedent, which then resumes this value.
  */
-function blockLine(body: string, indent: number, state: LineState, first: boolean): Continued {
+function blockLine(body: string, indent: number, state: LineState): Continued {
   let i = indent;
   while (isItem(body, i)) {
     i++;
     while (body[i] === ' ' || body[i] === '\t') i++;
   }
-  if (i === body.length || body.startsWith(REDACTED, i)) return consumed(body, state);
+  if (i === body.length || (body.length - i === REDACTED.length && body.startsWith(REDACTED, i))) {
+    return consumed(body, state);
+  }
   const kept = body.slice(0, i);
   KEY_BLOCK_BEGIN_RE.lastIndex = i;
   const begin = KEY_BLOCK_BEGIN_RE.exec(body);
@@ -468,13 +493,19 @@ function blockLine(body: string, indent: number, state: LineState, first: boolea
     KEY_BLOCK_END_RE.lastIndex = begin.index + begin[0].length;
     if (KEY_BLOCK_END_RE.exec(body) === null) return consumed(kept + REDACTED, { kind: 'keyBlock', resume: state });
   }
-  const quote = body[i];
-  if (quote === '"' || quote === "'") {
-    const close = quoteClose(body, i + 1, quote, 0);
-    if (close > i && CLOSING_TAIL_RE.test(body.slice(close + 1))) {
+  const c = body[i];
+  if (c === '[' || c === '{') {
+    const scan = scanCollection(body, i, 0, 0);
+    if (!scan.closed) {
+      return consumed(kept + REDACTED, { kind: 'collection', depth: scan.depth, level: 0, resume: state });
+    }
+  } else if (c === '"' || c === "'") {
+    const close = quoteClose(body, i + 1, c, 0);
+    if (close < 0) return consumed(kept + REDACTED, { kind: 'value', quote: c, level: 0, resume: state });
+    if (CLOSING_TAIL_RE.test(body.slice(close + 1))) {
       const value = body.slice(i + 1, close);
-      const inner = value.length === 0 || value.startsWith(REDACTED) ? value : REDACTED;
-      return consumed(kept + quote + inner + body.slice(close), first && i === indent ? NONE : state);
+      const inner = value.length === 0 || value === REDACTED ? value : REDACTED;
+      return consumed(kept + c + inner + body.slice(close), state);
     }
   }
   return consumed(kept + REDACTED, state);
@@ -513,35 +544,39 @@ function continueState(body: string, state: LineState): Continued {
     case 'value': {
       const close = quoteClose(body, 0, state.quote, state.level);
       if (close < 0) return whole(state);
-      return restOf(body, close > 0 ? REDACTED : '', close);
+      return { ...restOf(body, close > 0 ? REDACTED : '', close), next: state.resume };
     }
     case 'collection': {
       const scan = scanCollection(body, 0, state.depth, state.level);
       if (!scan.closed) return whole({ ...state, depth: scan.depth });
-      return restOf(body, scan.end > 0 ? REDACTED : '', scan.end);
+      return { ...restOf(body, scan.end > 0 ? REDACTED : '', scan.end), next: state.resume };
     }
     case 'block': {
-      // Blank lines stay inside the value; a line at the key's column or shallower ends it.
+      // Blank and comment lines stay inside the value; a line at the key's column or shallower ends it.
       const indent = indentOf(body);
       if (indent === body.length) return consumed(body, state);
+      if (isComment(body, indent)) return consumed(body.slice(0, indent) + REDACTED, state);
       if (indent > state.column || (state.sequence && indent === state.column && isItem(body, indent))) {
-        return blockLine(body, indent, state, false);
+        return blockLine(body, indent, state);
       }
       return restOf(body, '', 0);
     }
     case 'key': {
-      // Blank lines do not count. A deeper-indented line (or a `- ` item at the key's column) opens a YAML value;
-      // otherwise the first line with content carries the value or, when it opens with its own key, ends the wait.
+      // Blank and comment lines do not count. A value opening with a bracket or quote is followed by its structure,
+      // whatever its indentation. Otherwise a deeper-indented line (or a `- ` item at the key's column) opens a YAML
+      // value, and the first other line with content carries the value or, opening with its own key, ends the wait.
       let i = indentOf(body);
       if (i === body.length) return consumed(body, state);
-      if (!state.needsSeparator) {
-        if (i > state.column) return blockLine(body, i, { kind: 'block', column: state.column, sequence: false }, true);
+      if (isComment(body, i)) return consumed(body.slice(0, i) + REDACTED, state);
+      const structured = body[i] === '[' || body[i] === '{' || body[i] === '"' || body[i] === "'";
+      if (!state.needsSeparator && !structured) {
+        if (i > state.column) return blockLine(body, i, { kind: 'block', column: state.column, sequence: false });
         if (i === state.column && isItem(body, i)) {
-          return blockLine(body, i, { kind: 'block', column: state.column, sequence: true }, false);
+          return blockLine(body, i, { kind: 'block', column: state.column, sequence: true });
         }
         SIBLING_KEY_RE.lastIndex = i;
         if (SIBLING_KEY_RE.test(body)) return restOf(body, '', 0);
-      } else {
+      } else if (state.needsSeparator) {
         SEPARATOR_RE.lastIndex = i;
         const sep = SEPARATOR_RE.exec(body);
         if (sep === null) return restOf(body, '', 0);
