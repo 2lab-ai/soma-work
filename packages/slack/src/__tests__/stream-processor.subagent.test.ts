@@ -410,6 +410,7 @@ describe('stream-processor — subagent routing (spec 12 §2.2)', () => {
         phase: 'started',
         taskId: 'a35e25a435ccc7bd6',
         taskType: 'local_agent',
+        resumed: true,
       }),
     );
   });
