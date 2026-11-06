@@ -161,3 +161,58 @@ describe('qa-issue procedure and results carry the gate', () => {
     expect(r).toContain('waiting for precondition confirmation');
   });
 });
+
+/**
+ * A broker installed before compare was allowed refuses every compare `policy-denied` (2026-11-06),
+ * and the broker is updated apart from this plugin. The deploy check and the done check then take
+ * the containment answer from git. deploy-qa-skill.test.ts runs the documented command against a
+ * real history and pins the argument order on every compare line of both skills.
+ */
+describe('qa-issue computes a refused compare with git', () => {
+  const github = section('GitHub reads');
+  const procedure = section('Procedure');
+  const deployCheck = procedure.slice(procedure.indexOf('2. Deploy check'), procedure.indexOf('3. Build cases'));
+
+  it('keeps gh_read first and computes the answer with git when the compare read is refused or fails', () => {
+    expect(github).toContain('Read `compare` with `gh_read` first.');
+    expect(github).toMatch(/not an answer[^\n]*`policy-denied`[^\n]*compute the same answer with git/);
+    expect(github).toContain('`compare` takes full 40-character SHAs only');
+  });
+
+  it('fetches only the SHAs the check names, blob-less, never shallow, never with a token', () => {
+    expect(github).toContain('`git -C <dir> remote add origin https://github.com/<repo>.git`');
+    expect(github).toContain('`git -C <dir> fetch --filter=blob:none origin <full SHAs>`');
+    expect(github).toContain('never `--depth`');
+    expect(github).toContain('never put a token in the URL');
+    expect(github).toContain(
+      'Run `git init` and `remote add` once per `<dir>`; a `<dir>` that already has the remote needs only the fetch.',
+    );
+  });
+
+  it('states the direction, exit 1 as an answer, and a git failure as no answer', () => {
+    expect(github).toMatch(
+      /`compare\/<base>\.\.\.<head>` status `ahead` means `<base>` is an ancestor of `<head>`, `identical` that they are the same commit/,
+    );
+    expect(github).toContain('`git -C <dir> merge-base --is-ancestor <base> <head>` exits 0');
+    expect(github).toContain('exit 1 is an answer too');
+    expect(github).toMatch(
+      /A git failure[^\n]*unknown SHA \(exit 128\)[^\n]*is not an answer, the same as a failed read/,
+    );
+  });
+
+  it('names the answer source where qa-report reads it', () => {
+    expect(github).toContain(
+      'Name the source in `deployConfirm.provenance` and the tracker comment: `compare via git: broker refused compare`',
+    );
+  });
+
+  it('step 2 and the contained done condition take the git answer, mergeSha first', () => {
+    expect(deployCheck).toContain(
+      '∈ `ahead|identical` — via git, `git -C <dir> merge-base --is-ancestor <mergeSha> <runningSha>` exits 0',
+    );
+    expect(deployCheck).toContain('no answer from compare or git');
+    expect(section('Tracker reconcile')).toContain(
+      "step 2's per-repo compare (or its git answer) holds for every `mergeSha`, re-read now",
+    );
+  });
+});
