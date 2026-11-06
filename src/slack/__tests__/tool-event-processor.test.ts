@@ -148,6 +148,52 @@ describe('ToolEventProcessor', () => {
       ]);
     });
 
+    // #989 review (astra) — the real wiring: the SDK `task_started` carries no output path, the Bash
+    // spawn ack does ("Output is being written to: …"); `task_started` carries the description.
+    it('carries the output file from a Bash spawn ack and the description from task_started', async () => {
+      const SK = 'C123:thread_ts';
+      const ctx: ToolEventContext = { ...mockContext, turnId: 'turn-1' };
+      await processor.handleToolUse(
+        [{ id: 'bg', name: 'Bash', input: { command: 'sleep 999', run_in_background: true } }],
+        ctx,
+      );
+      await processor.handleToolResult([{ toolUseId: 'bg', toolName: 'Bash', result: ackResult('bg-shell-1') }], ctx);
+      processor.handleAgentTaskLifecycle(
+        {
+          type: 'agent_task_lifecycle',
+          phase: 'started',
+          taskId: 'bg-shell-1',
+          taskType: 'local_bash',
+          description: 'Wait for CI checks',
+        },
+        SK,
+      );
+
+      expect(processor.getLiveBackgroundWork(SK).tasks).toEqual([
+        {
+          taskId: 'bg-shell-1',
+          taskType: 'bash',
+          outputFile: '/tmp/bg-shell-1.log',
+          description: 'Wait for CI checks',
+        },
+      ]);
+    });
+
+    it('endBackgroundWorkWithTurn settles only the ids the ended turn saw — a newer turn keeps its own', () => {
+      const SK = 'C123:thread_ts';
+      processor.handleAgentTaskLifecycle(
+        { type: 'agent_task_lifecycle', phase: 'started', taskId: 'old', taskType: 'local_bash' },
+        SK,
+      );
+      processor.handleAgentTaskLifecycle(
+        { type: 'agent_task_lifecycle', phase: 'started', taskId: 'new', taskType: 'local_bash' },
+        SK,
+      );
+
+      expect(processor.endBackgroundWorkWithTurn(SK, ['old']).map((t) => t.taskId)).toEqual(['old']);
+      expect(processor.getLiveBackgroundWork(SK).signature).toBe('new');
+    });
+
     // #966 — the CLI ends with the turn and kills its background tasks: at turn end they are dead, and the
     // next process's late `stopped` (or a replayed start) must not bring them back.
     it('endBackgroundWorkWithTurn settles every live task and returns them; nothing revives them', () => {
