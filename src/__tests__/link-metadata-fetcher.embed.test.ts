@@ -20,7 +20,7 @@ vi.mock('../logger', () => ({
   },
 }));
 
-import { fetchGitHubEmbed, parseGitHubIssueUrl } from '../link-metadata-fetcher';
+import { fetchGitHubEmbed, fetchGitHubRepoVisibility, parseGitHubIssueUrl } from '../link-metadata-fetcher';
 
 const ok = (body: unknown) => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => body });
 const comment = (i: number) => ({
@@ -147,5 +147,43 @@ describe('fetchGitHubEmbed (#983)', () => {
     await expect(fetchGitHubEmbed({ owner: 'o', repo: 'down', kind: 'issue', number: 2 })).resolves.toBeUndefined();
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('net')));
     await expect(fetchGitHubEmbed({ owner: 'o', repo: 'down', kind: 'issue', number: 2 })).resolves.toBeUndefined();
+  });
+});
+
+describe('review (PR #990) — comments that fail, repository visibility', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('E5 — a comments request that fails marks the embed commentsError and is not kept', async () => {
+    const f = vi.fn(async (url: string) =>
+      url.includes('/comments')
+        ? { ok: false, status: 429, headers: { get: () => null }, json: async () => ({}) }
+        : ok({ title: 't', state: 'open', body: 'b', comments: 7 }),
+    );
+    vi.stubGlobal('fetch', f);
+    const e = await fetchGitHubEmbed({ owner: 'o', repo: 'cfail', kind: 'issue', number: 3 });
+    expect(e).toMatchObject({ body: 'b', comments: [], commentsTotal: 7, commentsError: true });
+    const n = f.mock.calls.length;
+    await fetchGitHubEmbed({ owner: 'o', repo: 'cfail', kind: 'issue', number: 3 });
+    expect(f.mock.calls.length).toBeGreaterThan(n);
+  });
+
+  it('E6 — repository visibility: public, private, unknown on failure (not kept); kept when known', async () => {
+    const f = vi.fn(async (url: string) =>
+      url.endsWith('/repos/o/pub')
+        ? ok({ private: false })
+        : url.endsWith('/repos/o/priv')
+          ? ok({ private: true })
+          : { ok: false, status: 404, headers: { get: () => null }, json: async () => ({}) },
+    );
+    vi.stubGlobal('fetch', f);
+    await expect(fetchGitHubRepoVisibility('o', 'pub')).resolves.toBe('public');
+    await expect(fetchGitHubRepoVisibility('o', 'priv')).resolves.toBe('private');
+    await expect(fetchGitHubRepoVisibility('o', 'gone')).resolves.toBeUndefined();
+    const n = f.mock.calls.length;
+    await fetchGitHubRepoVisibility('o', 'pub');
+    await fetchGitHubRepoVisibility('o', 'gone');
+    expect(f.mock.calls.length).toBe(n + 1);
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('net')));
+    await expect(fetchGitHubRepoVisibility('o', 'net')).resolves.toBeUndefined();
   });
 });

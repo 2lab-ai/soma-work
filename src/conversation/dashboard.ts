@@ -56,6 +56,7 @@ import { displayTitle } from '../format/display-title';
 import type { DashboardInstructionApproval, InstructionApprovals } from '../instruction-approval';
 import {
   fetchGitHubEmbed,
+  fetchGitHubRepoVisibility,
   type GitHubEmbed,
   type GitHubIssueRef,
   parseGitHubIssueUrl,
@@ -130,7 +131,7 @@ import { fetchSiblingBoards, type InstanceEnvironment, mergeBoards, shouldAggreg
 import { backfillArtifactsFromWorkLog } from './artifact-capture';
 import { type ArtifactSummary, getArtifactStore, type SessionArtifact } from './artifacts';
 import { buildCapacityView, type CapacityView } from './capacity-view';
-import { type CardLink, cardLinksOf } from './card-links';
+import { type CardLink, cardLinksOf, followupLinksOf } from './card-links';
 import { archivedCardClocks, cardWhereOf, liveCardClocks } from './card-where';
 import { isClientRef } from './client-ref';
 import { type ComposerMenuWhere, type ComposerTriggerRow, composerTriggers } from './composer-menus';
@@ -275,6 +276,11 @@ export interface KanbanSession {
    * with a short reference and its state — the card's `links` row (card-links.ts).
    */
   cardLinks?: CardLink[];
+  /**
+   * The follow-up bar (#983): every issue and PR still open, from all of the session's links — past the face's 20
+   * chips (card-links.ts followupLinksOf).
+   */
+  followupLinks?: CardLink[];
   /** Merge stats */
   mergeStats?: {
     totalLinesAdded: number;
@@ -1656,6 +1662,17 @@ let _linkEmbedFetcher: LinkEmbedFetcher | null = null;
 export function setDashboardLinkEmbedFetcher(f: LinkEmbedFetcher | null): void {
   _linkEmbedFetcher = f;
 }
+type RepoVisibilityFetcher = (owner: string, repo: string) => Promise<'public' | 'private' | undefined>;
+let _repoVisibilityFetcher: RepoVisibilityFetcher | null = null;
+/** Tests: replace the repository-visibility check behind GET …/link-embed (null = the real one). */
+export function setDashboardRepoVisibilityFetcher(f: RepoVisibilityFetcher | null): void {
+  _repoVisibilityFetcher = f;
+}
+/** An admin (signed in, in ADMIN_USERS) or the viewer token: may read a private repository's issue through the App. */
+function readsPrivateRepos(request: any): boolean {
+  const a = request.authContext;
+  return a?.mode === 'bearer_header' || a?.mode === 'bearer_cookie' || a?.isAdmin === true;
+}
 /**
  * Who reads a follow-up's body and comments: the card's owner, an admin, or the viewer token. Anyone else signed in
  * sees what the card already shows (its reference, title and state) — an issue's comments can say more than the
@@ -2473,9 +2490,10 @@ function planAsks(s: { taskPlan?: TaskPlanGate; activityState?: string }): boole
  * link-metadata cache, the state recorded with the link. Stale or missing states are fetched in the background
  * (once per URL per cache TTL) for the board's next draw.
  */
-function liveCardLinks(s: any): Pick<KanbanSession, 'cardLinks'> {
+function liveCardLinks(s: any): Pick<KanbanSession, 'cardLinks' | 'followupLinks'> {
   const cardLinks = cardLinksOf(s ?? {}, peekLinkMetadata);
   if (!cardLinks.length) return {};
+  const followupLinks = followupLinksOf(s ?? {}, peekLinkMetadata);
   try {
     const all = [
       s.links?.issue,
@@ -2487,7 +2505,7 @@ function liveCardLinks(s: any): Pick<KanbanSession, 'cardLinks'> {
   } catch {
     // the card never fails for its links' freshness
   }
-  return { cardLinks };
+  return followupLinks.length ? { cardLinks, followupLinks } : { cardLinks };
 }
 /** An archived card's links: the cache's state when it has one, else the recorded one; nothing is fetched. */
 function archivedCardLinks(archived: ArchivedSession): Pick<KanbanSession, 'cardLinks'> {
@@ -4428,8 +4446,11 @@ export async function registerDashboardRoutes(
       if (local === null) return;
       const url = typeof request.query?.url === 'string' ? request.query.url.trim() : '';
       const s = url ? _getSessionsFn?.()?.get(local) : undefined;
+      // Every link of the card counts, not only the face's first 20 chips (followupLinksOf reads them all).
       const link = s
-        ? cardLinksOf(s, peekLinkMetadata).find((l) => l.url === url && (l.kind === 'issue' || l.kind === 'pr'))
+        ? cardLinksOf(s, peekLinkMetadata, { max: Number.POSITIVE_INFINITY }).find(
+            (l) => l.url === url && (l.kind === 'issue' || l.kind === 'pr'),
+          )
         : undefined;
       if (!s || !link) {
         reply.status(404).send({ error: 'Not a follow-up of this card' });
@@ -4450,6 +4471,21 @@ export async function registerDashboardRoutes(
       if (!ref) {
         reply.send({ ...words, full: false, reason: 'unsupported' });
         return;
+      }
+      // Owning the session is not access to the repository: anyone can link any URL to their own session, and the
+      // App token reads private repositories. A private repository's body and comments go to admins and the viewer
+      // token only; a visibility that cannot be read counts as private (#983 review P1).
+      if (!readsPrivateRepos(request)) {
+        let visibility: 'public' | 'private' | undefined;
+        try {
+          visibility = await (_repoVisibilityFetcher ?? fetchGitHubRepoVisibility)(ref.owner, ref.repo);
+        } catch {
+          visibility = undefined;
+        }
+        if (visibility !== 'public') {
+          reply.send({ ...words, full: false, reason: 'private-repo' });
+          return;
+        }
       }
       let embed: GitHubEmbed | undefined;
       try {
@@ -10459,9 +10495,10 @@ function tldrDismiss(key) {
 var FOLLOWUP_GONE_KEY = 'soma-dash-followup-gone';
 var FOLLOWUP_GONE_MAX = 500;
 var _followupGone = null; // card key + newline + URL → when it was seen, loaded once from localStorage
-var _fuViewer = { key: null, opened: null, list: [], docs: {}, seen: {} };
+var _fuViewer = { key: null, opened: null, list: [], docs: {}, seen: {}, gen: 0, closing: false };
+var _fuGen = 0; // one number per opening: an answer from an earlier opening never lands in a later one
 var FU_STATE_WORD = { open: '열림', closed: '닫힘', merged: '머지됨', draft: '초안' };
-var FU_REASON = { 'owner-only': '본문과 댓글은 이 작업의 주인과 관리자만 볼 수 있습니다.', unsupported: '이 페이지는 대시보드에서 내용을 보여 줄 수 없습니다.', unavailable: '지금은 내용을 가져올 수 없습니다. GitHub에서 열어 보세요.' };
+var FU_REASON = { 'owner-only': '본문과 댓글은 이 작업의 주인과 관리자만 볼 수 있습니다.', 'private-repo': '비공개 저장소의 본문과 댓글은 관리자만 볼 수 있습니다.', unsupported: '이 페이지는 대시보드에서 내용을 보여 줄 수 없습니다.', unavailable: '지금은 내용을 가져올 수 없습니다. GitHub에서 열어 보세요.' };
 function followupGoneLoad() {
   if (_followupGone) return _followupGone;
   _followupGone = Object.create(null);
@@ -10481,26 +10518,30 @@ function followupGoneSave() {
   try { localStorage.setItem(FOLLOWUP_GONE_KEY, JSON.stringify(gone)); } catch (_e) {}
 }
 function cardFollowupsOf(s, col) {
-  if (!s || (col !== 'idle' && col !== 'waiting') || !Array.isArray(s.cardLinks)) return [];
+  if (!s) return [];
   var gone = followupGoneLoad();
-  var out = [];
+  var chips = Array.isArray(s.cardLinks) ? s.cardLinks : [];
   var dirty = false;
-  for (var i = 0; i < s.cardLinks.length; i++) {
-    var l = s.cardLinks[i];
+  // Closed or merged since it was seen — in any column, a running card's too: a reopen shows it again. An unknown
+  // state keeps the record.
+  for (var j = 0; j < chips.length; j++) {
+    var c = chips[j];
+    if (c && c.open !== true && c.status && gone[s.key + '\\n' + c.url]) { delete gone[s.key + '\\n' + c.url]; dirty = true; }
+  }
+  if (dirty) followupGoneSave();
+  if (col !== 'idle' && col !== 'waiting') return [];
+  // Every open issue and PR of the session (the server's followupLinks reads past the 20 chips); else the chips.
+  var links = Array.isArray(s.followupLinks) ? s.followupLinks : chips;
+  var out = [];
+  for (var i = 0; i < links.length; i++) {
+    var l = links[i];
     if (!l || (l.kind !== 'issue' && l.kind !== 'pr') || !l.text || !/^https?:\\/\\/[^\\s]+$/i.test(String(l.url || ''))) continue;
-    var gk = s.key + '\\n' + l.url;
-    if (l.open !== true) {
-      // Closed or merged since it was seen: a reopen shows it again. An unknown state keeps the record.
-      if (gone[gk] && l.status) { delete gone[gk]; dirty = true; }
-      continue;
-    }
-    if (gone[gk]) continue;
+    if (l.open !== true || gone[s.key + '\\n' + l.url]) continue;
     var f = { id: String(l.url), kind: l.kind, text: String(l.text), href: String(l.url) };
     if (l.title && l.title !== l.text) f.title = String(l.title);
     if (l.status) f.status = String(l.status);
     out.push(f);
   }
-  if (dirty) followupGoneSave();
   return out;
 }
 // One follow-up as the viewer's markdown page: "# #918 title", the state · kind · author · date, the labels, then the
@@ -10524,6 +10565,7 @@ function followupDoc(f, res) {
   else if (!e) lines.push(FU_REASON[res.reason] || FU_REASON.unavailable);
   else {
     lines.push(e.body && String(e.body).trim() ? String(e.body) : '_본문 없음_');
+    if (e.commentsError) lines.push('', '_댓글을 불러오지 못했습니다. GitHub에서 확인하세요._');
     var cs = Array.isArray(e.comments) ? e.comments : [];
     if (cs.length) {
       lines.push('', '## 댓글 (' + cs.length + ' / ' + Math.max(toNum(e.commentsTotal), cs.length) + ')');
@@ -10550,37 +10592,59 @@ function openFollowupViewer(key, url, opener) {
   if (!v || !s || typeof v.open !== 'function') return;
   var list = cardFollowupsOf(s, _cardCol[key] || 'idle');
   if (!list.some(function(f) { return f.id === url; })) return;
-  _fuViewer = { key: key, opened: url, list: list, docs: {}, seen: {} };
+  _fuViewer = { key: key, opened: url, list: list, docs: {}, seen: {}, gen: ++_fuGen, closing: false };
   var at = Math.max(0, list.findIndex(function(f) { return f.id === url; }));
   v.open(fuViewerItems(), at, opener && typeof opener.focus === 'function' ? opener : null);
   fuLoad(key, url);
 }
-// A follow-up's page from the server (once per opening); seen when it came back — the body, or the card's words and why.
+// Whether a page the server sent is something the person read: the body with its comments, or the card's own words
+// and why the body is not shown. A fetch that failed (unavailable) or comments that did not load are not.
+function fuSeenBy(res) {
+  if (!res || typeof res !== 'object') return false;
+  if (res.full === true) return !!(res.embed && !res.embed.commentsError);
+  return res.reason === 'owner-only' || res.reason === 'private-repo' || res.reason === 'unsupported';
+}
+// The open follow-up viewer draws the pages as they are now.
+function fuRender() {
+  var v = document.getElementById('fu-viewer');
+  if (v && _fuViewer.key) v.data = { items: fuViewerItems() };
+}
+// A follow-up's page from the server (once per opening). An answer counts only for the opening that asked, and not
+// once the viewer is closing.
 function fuLoad(key, url) {
   if (_fuViewer.key !== key || Object.prototype.hasOwnProperty.call(_fuViewer.docs, url)) return;
+  var gen = _fuViewer.gen;
+  var live = function() { return _fuViewer.key === key && _fuViewer.gen === gen && !_fuViewer.closing; };
   var s = _sessionCache[key];
   if (s && isSiblingSession(s)) {
+    // Another instance's card: its links are not this server's to read — the card's words and why, at once.
     _fuViewer.docs[url] = { full: false, reason: 'unsupported' };
     _fuViewer.seen[url] = true;
+    fuRender();
     return;
   }
   _fuViewer.docs[url] = null;
   fetch('/api/dashboard/session/' + encodeURIComponent(key) + '/link-embed?url=' + encodeURIComponent(url), { credentials: 'same-origin' })
     .then(function(r) { return r && r.ok ? r.json() : Promise.reject(new Error('link-embed ' + (r && r.status))); })
     .then(function(res) {
-      if (_fuViewer.key !== key) return;
+      if (!live()) return;
       _fuViewer.docs[url] = res && typeof res === 'object' ? res : 'error';
-      if (res && typeof res === 'object') _fuViewer.seen[url] = true;
+      if (fuSeenBy(res)) _fuViewer.seen[url] = true;
+      fuRender();
     })
-    .catch(function() { if (_fuViewer.key === key) _fuViewer.docs[url] = 'error'; })
-    .then(function() {
-      var v = document.getElementById('fu-viewer');
-      if (v && _fuViewer.key === key) v.data = { items: fuViewerItems() };
+    .catch(function() {
+      if (!live()) return;
+      _fuViewer.docs[url] = 'error';
+      fuRender();
     });
 }
 // The viewer shows another follow-up (a step): its page is brought in.
 function onFuViewerView(detail) {
   if (detail && _fuViewer.key) fuLoad(_fuViewer.key, String(detail.id));
+}
+// The person closes the viewer (Esc, the scrim, ✕): what was read is fixed now — an answer during the exit does not count.
+function onFuViewerClose() {
+  if (_fuViewer.key) _fuViewer.closing = true;
 }
 // The viewer closed: the follow-up the person pressed is gone from the bar if its page came back (T3: a press
 // dismisses it, as the TL;DR's ×), and the card redraws.
@@ -10588,7 +10652,7 @@ function onFuViewerClosed() {
   var key = _fuViewer.key;
   var url = _fuViewer.opened;
   var seen = !!(key && url && _fuViewer.seen[url]);
-  _fuViewer = { key: null, opened: null, list: [], docs: {}, seen: {} };
+  _fuViewer = { key: null, opened: null, list: [], docs: {}, seen: {}, gen: 0, closing: false };
   if (!seen) return;
   followupGoneLoad()[key + '\\n' + url] = Date.now();
   followupGoneSave();
@@ -21032,6 +21096,7 @@ function fcHydrateIn(node) {
   var v = document.getElementById('fu-viewer');
   if (!v) return;
   v.addEventListener('ui-view', function(e) { onFuViewerView(e.detail); });
+  v.addEventListener('ui-close', function() { onFuViewerClose(); });
   v.addEventListener('ui-closed', function() { onFuViewerClosed(); });
 })();
 

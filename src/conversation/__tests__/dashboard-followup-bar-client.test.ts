@@ -77,10 +77,21 @@ const FNS = [
   'fuViewerItems',
   'openFollowupViewer',
   'fuLoad',
+  'fuRender',
+  'fuSeenBy',
   'onFuViewerView',
+  'onFuViewerClose',
   'onFuViewerClosed',
 ];
-const VARS = ['FOLLOWUP_GONE_KEY', 'FOLLOWUP_GONE_MAX', '_followupGone', '_fuViewer', 'FU_STATE_WORD', 'FU_REASON'];
+const VARS = [
+  'FOLLOWUP_GONE_KEY',
+  'FOLLOWUP_GONE_MAX',
+  '_followupGone',
+  '_fuViewer',
+  '_fuGen',
+  'FU_STATE_WORD',
+  'FU_REASON',
+];
 
 type F = { id: string; kind: string; text: string; title?: string; status?: string; href: string };
 type Api = {
@@ -88,6 +99,7 @@ type Api = {
   followupDoc(f: F, res: unknown): string;
   openFollowupViewer(key: string, url: string, opener: unknown): void;
   onFuViewerView(detail: { id: string }): void;
+  onFuViewerClose(): void;
   onFuViewerClosed(): void;
   state(): { key: string | null; opened: string | null; docs: Record<string, unknown> };
 };
@@ -98,6 +110,7 @@ function harness(
     fetch?: (url: string) => Promise<unknown>;
     session?: unknown;
     col?: string;
+    sibling?: boolean;
   } = {},
 ) {
   const storage = opts.storage ?? memStorage();
@@ -132,7 +145,7 @@ function harness(
     _sessionCache: { [KEY]: opts.session ?? sess() },
     _cardCol: { [KEY]: opts.col ?? 'idle' },
     refreshCard: (k: string) => refreshed.push(k),
-    isSiblingSession: () => false,
+    isSiblingSession: () => opts.sibling === true,
     fetch: fetchFn,
     document: { getElementById: (id: string) => (id === 'fu-viewer' ? viewer : null) },
   });
@@ -321,5 +334,147 @@ describe('the board wiring — a pressed line is the viewer’s opener', () => {
     expect(wire).toContain(
       'openFollowupViewer(cardId, String(e.detail.id), inboxFollowupOf(host, cardId, String(e.detail.id)) || host)',
     );
+  });
+});
+
+// Review (astra-zhuge, PR #990): a failed or partial page never dismisses; a request from an earlier opening never
+// lands; a sibling's page is drawn; follow-ups past the 20-chip window; a close seen while the card runs.
+const answer = (body: unknown) => async () => ({ ok: true, status: 200, json: async () => body });
+const settle = async () => {
+  for (let i = 0; i < 4; i++) await flush();
+};
+
+describe('review — what counts as seen', () => {
+  it('a 200 with reason "unavailable" leaves the line (nothing came back to read)', async () => {
+    const h = harness({
+      fetch: answer({ url: I918, kind: 'issue', text: '#918', full: false, reason: 'unavailable' }),
+    });
+    h.m.openFollowupViewer(KEY, I918, null);
+    await settle();
+    h.m.onFuViewerClosed();
+    expect(h.storage.dump()['soma-dash-followup-gone']).toBeUndefined();
+    expect(h.refreshed).toEqual([]);
+  });
+
+  it('the card’s words and why (owner-only, private-repo, unsupported) count as seen', async () => {
+    for (const reason of ['owner-only', 'private-repo', 'unsupported']) {
+      const h = harness({ fetch: answer({ url: I918, kind: 'issue', text: '#918', full: false, reason }) });
+      h.m.openFollowupViewer(KEY, I918, null);
+      await settle();
+      h.m.onFuViewerClosed();
+      expect(Object.keys(JSON.parse(h.storage.dump()['soma-dash-followup-gone']))).toEqual([`${KEY}\n${I918}`]);
+    }
+  });
+
+  it('comments that did not load: said on the page, and the line stays', async () => {
+    const h = harness({
+      fetch: answer({
+        url: I918,
+        kind: 'issue',
+        text: '#918',
+        full: true,
+        embed: {
+          kind: 'issue',
+          state: 'open',
+          labels: [],
+          body: 'B',
+          comments: [],
+          commentsTotal: 7,
+          commentsError: true,
+        },
+      }),
+    });
+    h.m.openFollowupViewer(KEY, I918, null);
+    await settle();
+    const items = (h.viewer.data as { items: Array<{ text: string }> }).items;
+    expect(items[0].text).toContain('댓글을 불러오지 못했습니다. GitHub에서 확인하세요.');
+    h.m.onFuViewerClosed();
+    expect(h.storage.dump()['soma-dash-followup-gone']).toBeUndefined();
+  });
+
+  it('the private-repo page says why', () => {
+    const { m } = harness();
+    const f = { id: I918, kind: 'issue', text: '#918', title: 'T', status: '열림', href: I918 };
+    expect(m.followupDoc(f, { full: false, reason: 'private-repo' })).toContain(
+      '비공개 저장소의 본문과 댓글은 관리자만 볼 수 있습니다.',
+    );
+  });
+});
+
+describe('review — one opening, one set of answers', () => {
+  it('an answer from an earlier opening of the same card never lands in a later one', async () => {
+    const resolvers: Array<(v: unknown) => void> = [];
+    const h = harness({ fetch: () => new Promise((r) => resolvers.push(r)) });
+    h.m.openFollowupViewer(KEY, I918, null);
+    h.m.onFuViewerClosed();
+    h.m.openFollowupViewer(KEY, I918, null);
+    // The first opening's answer comes back now: unavailable.
+    resolvers[0]({ ok: true, status: 200, json: async () => ({ full: false, reason: 'unavailable' }) });
+    await settle();
+    expect(h.m.state().docs[I918]).toBeNull();
+    resolvers[1]({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        full: true,
+        embed: { kind: 'issue', state: 'open', labels: [], body: 'fresh', comments: [], commentsTotal: 0 },
+      }),
+    });
+    await settle();
+    expect((h.viewer.data as { items: Array<{ text: string }> }).items[0].text).toContain('fresh');
+  });
+
+  it('an answer that comes back while the viewer closes does not count', async () => {
+    let resolve: (v: unknown) => void = () => {};
+    const h = harness({ fetch: () => new Promise((r) => (resolve = r)) });
+    h.m.openFollowupViewer(KEY, I918, null);
+    h.m.onFuViewerClose();
+    resolve({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        full: true,
+        embed: { kind: 'issue', labels: [], body: 'x', comments: [], commentsTotal: 0 },
+      }),
+    });
+    await settle();
+    h.m.onFuViewerClosed();
+    expect(h.storage.dump()['soma-dash-followup-gone']).toBeUndefined();
+  });
+
+  it('a sibling instance’s card: its page says why at once (no fetch) and counts as seen', () => {
+    const h = harness({ sibling: true });
+    h.m.openFollowupViewer(KEY, I918, null);
+    expect(h.fetchFn).not.toHaveBeenCalled();
+    const items = (h.viewer.data as { items: Array<{ text: string }> }).items;
+    expect(items[0].text).toContain('이 페이지는 대시보드에서 내용을 보여 줄 수 없습니다.');
+    h.m.onFuViewerClosed();
+    expect(Object.keys(JSON.parse(h.storage.dump()['soma-dash-followup-gone']))).toEqual([`${KEY}\n${I918}`]);
+  });
+});
+
+describe('review — the bar reads every open link; a close is seen in any column', () => {
+  it('followupLinks (every open issue and PR, past the 20 chips) wins over the chips', () => {
+    const { m } = harness();
+    const OLD = 'https://github.com/2lab-ai/soma-work/issues/700';
+    const chips = Array.from({ length: 20 }, (_, i) => ({
+      kind: 'issue',
+      url: `https://github.com/2lab-ai/soma-work/issues/${800 + i}`,
+      text: `#${800 + i}`,
+      status: '닫힘',
+    }));
+    const s = sess({
+      cardLinks: chips,
+      followupLinks: [{ kind: 'issue', url: OLD, text: '#700', status: '열림', open: true }],
+    });
+    expect(m.cardFollowupsOf(s, 'idle').map((f) => f.id)).toEqual([OLD]);
+  });
+
+  it('a seen follow-up that closes while its card runs loses its record then', () => {
+    const storage = memStorage({ 'soma-dash-followup-gone': JSON.stringify({ [`${KEY}\n${I918}`]: 1 }) });
+    const h = harness({ storage });
+    const closed = LINKS.map((l) => (l.url === I918 ? { ...l, status: '닫힘', tone: 'done', open: undefined } : l));
+    expect(h.m.cardFollowupsOf(sess({ cardLinks: closed }), 'working')).toEqual([]);
+    expect(JSON.parse(storage.dump()['soma-dash-followup-gone'])).toEqual({});
   });
 });

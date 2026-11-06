@@ -1335,5 +1335,7 @@
   "_본문 없음_": "_No description_",
   "## 댓글 (": "## Comments (",
   "GitHub에서 열기": "Open on GitHub",
-  "새 탭에서 열기": "Open in a new tab"
+  "새 탭에서 열기": "Open in a new tab",
+  "비공개 저장소의 본문과 댓글은 관리자만 볼 수 있습니다.": "Only admins can see the body and comments of a private repository's issue.",
+  "_댓글을 불러오지 못했습니다. GitHub에서 확인하세요._": "_The comments did not load. Check them on GitHub._"
 }
