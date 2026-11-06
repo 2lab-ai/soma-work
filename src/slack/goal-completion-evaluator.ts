@@ -318,6 +318,7 @@ export function applyGoalEvalSuccess(goal: import('../types').SessionGoal, now: 
   goal.completedVia = 'eval-model';
   goal.pendingEval = undefined;
   goal.lastEvalReason = undefined;
+  goal.lastEvalGateOpen = undefined;
   // A completed goal ends any pending cap decision (S3) — its DM too.
   retireGoalCapDecision(goal);
   goal.evalAttemptCount = (goal.evalAttemptCount ?? 0) + 1;

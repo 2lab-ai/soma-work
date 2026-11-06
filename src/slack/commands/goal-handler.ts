@@ -371,6 +371,7 @@ export class GoalHandler implements CommandHandler {
     session.goal.completionReason = 'user';
     session.goal.pendingEval = undefined;
     session.goal.lastEvalReason = undefined;
+    session.goal.lastEvalGateOpen = undefined;
     // A completed goal ends any pending cap decision (S3) — its DM too.
     retireGoalCapDecision(session.goal);
     session.goal.updatedAt = now;

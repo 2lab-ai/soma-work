@@ -298,6 +298,7 @@ describe('ensureRepoChannel', () => {
         { id: 'C_PUB', name: 'team', isPrivate: false },
         { id: 'C_PRIV2', name: 'project', isPrivate: true },
       ]),
+      channelState: vi.fn(async (id: string) => ({ archived: false, isPrivate: id !== 'C_PUB' })),
     });
     await expect(ensureRepoChannel('U_ADMIN', { ...REQUEST, isPrivate: true }, both)).resolves.toMatchObject({
       channelId: 'C_PRIV2',
@@ -305,7 +306,10 @@ describe('ensureRepoChannel', () => {
     });
     expect(both.invite).toHaveBeenCalledTimes(1);
     expect(both.invite).toHaveBeenCalledWith('C_PRIV2', 'U_ADMIN');
-    const priv = deps({ mappedChannels: vi.fn(() => [{ id: 'C_PRIV', name: 'workspace-new-repo', isPrivate: true }]) });
+    const priv = deps({
+      mappedChannels: vi.fn(() => [{ id: 'C_PRIV', name: 'workspace-new-repo', isPrivate: true }]),
+      channelState: vi.fn(async () => ({ archived: false, isPrivate: true })),
+    });
     await expect(ensureRepoChannel('U_ADMIN', { ...REQUEST, isPrivate: true }, priv)).resolves.toEqual({
       channelId: 'C_PRIV',
       channelName: 'workspace-new-repo',
@@ -429,6 +433,121 @@ describe('ensureRepoChannel', () => {
     });
     const error = await ensureRepoChannel('U_ADMIN', REQUEST, d).catch((e) => e);
     expect(error.message).toMatch(/다른 이름으로 다시 시도/);
+  });
+
+  // #970 — a public mapping archived outside the registry's view no longer blocks a private request.
+  it('a private request: a public mapping that is archived now is marked archived and passed over', async () => {
+    const d = deps({
+      mappedChannels: vi.fn(() => [{ id: 'C_PUB', name: 'team', isPrivate: false }]),
+      channelState: vi.fn(async () => ({ archived: true })),
+      markArchived: vi.fn(),
+    });
+    await expect(ensureRepoChannel('U_ADMIN', { ...REQUEST, isPrivate: true }, d)).resolves.toMatchObject({
+      channelId: 'C_NEW',
+      created: true,
+    });
+    expect(d.channelState).toHaveBeenCalledWith('C_PUB');
+    expect(d.markArchived).toHaveBeenCalledWith('C_PUB');
+    expect(d.invite).not.toHaveBeenCalledWith('C_PUB', 'U_ADMIN');
+    expect(d.create).toHaveBeenCalledWith('workspace-new-repo', true);
+  });
+
+  it('a private request: a live public mapping, or one that cannot be read, still blocks (409, nothing made)', async () => {
+    for (const channelState of [
+      vi.fn(async () => ({ archived: false })),
+      vi.fn(async () => null),
+      vi.fn(async () => {
+        throw slackError('fatal_error');
+      }),
+    ]) {
+      const d = deps({
+        mappedChannels: vi.fn(() => [{ id: 'C_PUB', name: 'team', isPrivate: false }]),
+        channelState,
+        markArchived: vi.fn(),
+      });
+      await expect(ensureRepoChannel('U_ADMIN', { ...REQUEST, isPrivate: true }, d)).rejects.toMatchObject({
+        statusCode: 409,
+      });
+      expect(d.create).not.toHaveBeenCalled();
+      expect(d.invite).not.toHaveBeenCalled();
+      expect(d.markArchived).not.toHaveBeenCalled();
+    }
+  });
+
+  it('a mapped channel found archived on invite is marked archived for the next request', async () => {
+    const d = deps({
+      mappedChannels: vi.fn(() => [{ id: 'C_ARCH', name: 'old' }]),
+      invite: vi.fn(async (id: string) => {
+        if (id === 'C_ARCH') throw slackError('is_archived');
+      }),
+      markArchived: vi.fn(),
+    });
+    await expect(ensureRepoChannel('U_ADMIN', REQUEST, d)).resolves.toMatchObject({ created: true });
+    expect(d.markArchived).toHaveBeenCalledWith('C_ARCH');
+  });
+
+  // Review P2 — "last seen archived" is a hint, not a verdict: a restored channel is found again.
+  it('a mapped channel last seen archived but restored since is used again (tried last, not dropped)', async () => {
+    const d = deps({
+      mappedChannels: vi.fn(() => [{ id: 'C_RESTORED', name: 'workspace-new-repo', isArchived: true }]),
+      markArchived: vi.fn(),
+    });
+    await expect(ensureRepoChannel('U_ADMIN', REQUEST, d)).resolves.toEqual({
+      channelId: 'C_RESTORED',
+      channelName: 'workspace-new-repo',
+      created: false,
+    });
+    expect(d.create).not.toHaveBeenCalled();
+    expect(d.markArchived).not.toHaveBeenCalled();
+  });
+
+  it('a channel last seen archived is tried after the live ones', async () => {
+    const d = deps({
+      mappedChannels: vi.fn(() => [
+        { id: 'C_OLD', name: 'old', isArchived: true },
+        { id: 'C_LIVE', name: 'live' },
+      ]),
+    });
+    await expect(ensureRepoChannel('U_ADMIN', REQUEST, d)).resolves.toMatchObject({ channelId: 'C_LIVE' });
+    expect(d.invite).toHaveBeenCalledTimes(1);
+    expect(d.invite).toHaveBeenCalledWith('C_LIVE', 'U_ADMIN');
+  });
+
+  it('a private request: a public mapping last seen archived but live again still blocks (read, not trusted)', async () => {
+    const d = deps({
+      mappedChannels: vi.fn(() => [{ id: 'C_PUB', name: 'team', isPrivate: false, isArchived: true }]),
+      channelState: vi.fn(async () => ({ archived: false })),
+    });
+    await expect(ensureRepoChannel('U_ADMIN', { ...REQUEST, isPrivate: true }, d)).rejects.toMatchObject({
+      statusCode: 409,
+    });
+    expect(d.channelState).toHaveBeenCalledWith('C_PUB');
+    expect(d.create).not.toHaveBeenCalled();
+  });
+
+  // #970 review round 2 — a private request trusts no cached privacy: a channel last seen private (even archived)
+  // that is public now is never invited into or returned.
+  it('a private request: a channel cached private+archived, restored as public, blocks (409, nobody invited)', async () => {
+    const d = deps({
+      mappedChannels: vi.fn(() => [{ id: 'C_WAS_PRIV', name: 'project', isPrivate: true, isArchived: true }]),
+      channelState: vi.fn(async () => ({ archived: false, isPrivate: false })),
+    });
+    await expect(ensureRepoChannel('U_ADMIN', { ...REQUEST, isPrivate: true }, d)).rejects.toMatchObject({
+      statusCode: 409,
+    });
+    expect(d.invite).not.toHaveBeenCalled();
+    expect(d.create).not.toHaveBeenCalled();
+  });
+
+  it('a private request: a channel cached private whose state cannot be read is not used (fail closed)', async () => {
+    const d = deps({
+      mappedChannels: vi.fn(() => [{ id: 'C_PRIV', name: 'project', isPrivate: true }]),
+      channelState: vi.fn(async () => null),
+    });
+    const error = await ensureRepoChannel('U_ADMIN', { ...REQUEST, isPrivate: true }, d).catch((e) => e);
+    expect(error.statusCode).toBe(409);
+    expect(error.message).toMatch(/확인하지 못했습니다/);
+    expect(d.invite).not.toHaveBeenCalled();
   });
 
   it('slackErrorCode reads the Web API error code, nothing else', () => {

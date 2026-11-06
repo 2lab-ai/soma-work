@@ -33,6 +33,8 @@ export interface MappedChannel {
   id: string;
   name: string;
   isPrivate?: boolean;
+  /** Last seen archived. A hint only: such a channel is still tried (last) — it may have been restored. */
+  isArchived?: boolean;
 }
 
 export interface RepoChannelDeps {
@@ -47,6 +49,10 @@ export interface RepoChannelDeps {
   register(info: { id: string; name: string; purpose: string; isPrivate: boolean }): void;
   /** Mark a channel name as being made (its creation join is ours to register); returns the unmark. */
   beginMaking?(name: string): () => void;
+  /** #970 — a read-only look at a channel now (`conversations.info`); null when it cannot be read. */
+  channelState?(channelId: string): Promise<{ archived: boolean; isPrivate?: boolean } | null>;
+  /** #970 — record that Slack says the channel is archived, so later requests pass it over. */
+  markArchived?(channelId: string): void;
 }
 
 export interface RepoChannelResult {
@@ -169,33 +175,19 @@ async function ensureLocked(
 ): Promise<RepoChannelResult> {
   const { repo, name, isPrivate } = request;
 
-  // 2. A channel the repo already has. A private request only ever goes to a channel known to be private; a
-  //    public one in the way is the admin's call (409), never a silent landing.
+  // 2. A channel the repo already has.
   const mappedAll = deps.mappedChannels(repo);
-  const candidates = isPrivate ? mappedAll.filter((c) => c.isPrivate === true) : mappedAll;
-  for (const mapped of candidates) {
-    try {
-      await deps.invite(mapped.id, userId);
-    } catch (error) {
-      const code = slackErrorCode(error);
-      if (code === 'is_archived') {
-        logger.warn('New repo channel: a mapped channel is archived — trying the next', { channel: mapped.id, repo });
-        continue;
-      }
-      if (!INVITE_ALREADY.has(code)) {
-        logger.error('New repo channel: invite to the mapped channel failed', { channel: mapped.id, userId, code });
-        throw refusalFor(code, `#${mapped.name}에 초대하지 못했습니다 — 채널에 직접 참여한 뒤 다시 시도해 주세요`);
-      }
+  if (isPrivate) {
+    const reused = await reusePrivate(userId, repo, mappedAll, deps);
+    if (reused) return reused;
+  } else {
+    // #970 — a channel last seen archived is tried last, not dropped: an invite tells whether it is still archived
+    // (is_archived → passed over) or was restored (used).
+    for (const mapped of hintOrder(mappedAll, false)) {
+      if (!(await inviteInto(mapped, userId, repo, deps))) continue;
+      logger.info('New repo channel: the repo already has a channel', { repo, channel: mapped.id, userId });
+      return { channelId: mapped.id, channelName: mapped.name, created: false };
     }
-    logger.info('New repo channel: the repo already has a channel', { repo, channel: mapped.id, userId });
-    return { channelId: mapped.id, channelName: mapped.name, created: false };
-  }
-  const inTheWay = isPrivate ? mappedAll.find((c) => c.isPrivate !== true) : undefined;
-  if (inTheWay) {
-    throw new NewTaskError(
-      409,
-      `이 repo에는 이미 공개 채널 #${inTheWay.name}이 있습니다 — 비공개를 끄고 그 채널에 올리거나, 그 채널을 쓰지 않을 거면 repo 연결을 먼저 정리해 주세요`,
-    );
   }
 
   // 3. A new channel, described and joined. Its name is marked while we make it: Slack's creation join is ours.
@@ -205,6 +197,95 @@ async function ensureLocked(
   } finally {
     done();
   }
+}
+
+/**
+ * Mapped channels in the order to try them: live before "last seen archived" (#970 — a hint, the channel may have
+ * been restored), and for a private request the ones last seen private first. Ties keep the registry's order.
+ */
+function hintOrder(mapped: MappedChannel[], preferPrivate: boolean): MappedChannel[] {
+  const rank = (c: MappedChannel) => (c.isArchived === true ? 2 : 0) + (preferPrivate && c.isPrivate !== true ? 1 : 0);
+  return mapped
+    .map((c, i) => ({ c, i }))
+    .sort((a, b) => rank(a.c) - rank(b.c) || a.i - b.i)
+    .map(({ c }) => c);
+}
+
+/** Invite the admin into a mapped channel: true = it can take the task; false = Slack says it is archived. */
+async function inviteInto(
+  mapped: MappedChannel,
+  userId: string,
+  repo: string,
+  deps: RepoChannelDeps,
+): Promise<boolean> {
+  try {
+    await deps.invite(mapped.id, userId);
+    return true;
+  } catch (error) {
+    const code = slackErrorCode(error);
+    if (code === 'is_archived') {
+      logger.warn('New repo channel: a mapped channel is archived — trying the next', { channel: mapped.id, repo });
+      deps.markArchived?.(mapped.id);
+      return false;
+    }
+    if (INVITE_ALREADY.has(code)) return true;
+    logger.error('New repo channel: invite to the mapped channel failed', { channel: mapped.id, userId, code });
+    throw refusalFor(code, `#${mapped.name}에 초대하지 못했습니다 — 채널에 직접 참여한 뒤 다시 시도해 주세요`);
+  }
+}
+
+/** A read-only look at a mapped channel now; null when it cannot be read (or no reader is wired). */
+async function readState(
+  mapped: MappedChannel,
+  deps: RepoChannelDeps,
+): Promise<{ archived: boolean; isPrivate?: boolean } | null> {
+  try {
+    return deps.channelState ? await deps.channelState(mapped.id) : null;
+  } catch (error) {
+    logger.warn('New repo channel: could not read a mapped channel', {
+      channel: mapped.id,
+      error: slackErrorCode(error) || String(error),
+    });
+    return null;
+  }
+}
+
+/**
+ * A private request and the channels the repo already has (#970). The registry's privacy and archived flags are
+ * hints: every mapping is read now (nobody is invited before that). Archived → marked and passed over. Live and
+ * private → the admin is invited and the task goes there. Live and public, or unreadable → it blocks: 409 unless a
+ * live private channel was found — a private request never lands in, or next to, a channel it cannot vouch for.
+ * Null = nothing mapped is in the way; make a new channel.
+ */
+async function reusePrivate(
+  userId: string,
+  repo: string,
+  mappedAll: MappedChannel[],
+  deps: RepoChannelDeps,
+): Promise<RepoChannelResult | null> {
+  let blocker: { channel: MappedChannel; unreadable: boolean } | undefined;
+  for (const mapped of hintOrder(mappedAll, true)) {
+    const state = await readState(mapped, deps);
+    if (state?.archived === true) {
+      logger.info('New repo channel: a mapped channel is archived — passed over', { channel: mapped.id, repo });
+      deps.markArchived?.(mapped.id);
+      continue;
+    }
+    if (!state || state.isPrivate !== true) {
+      blocker ??= { channel: mapped, unreadable: !state };
+      continue;
+    }
+    if (!(await inviteInto(mapped, userId, repo, deps))) continue;
+    logger.info('New repo channel: the repo already has a private channel', { repo, channel: mapped.id, userId });
+    return { channelId: mapped.id, channelName: mapped.name, created: false };
+  }
+  if (!blocker) return null;
+  throw new NewTaskError(
+    409,
+    blocker.unreadable
+      ? `이 repo에 연결된 채널 #${blocker.channel.name}의 공개 여부를 확인하지 못했습니다 — 잠시 후 다시 시도하거나 비공개를 꺼 주세요`
+      : `이 repo에는 이미 공개 채널 #${blocker.channel.name}이 있습니다 — 비공개를 끄고 그 채널에 올리거나, 그 채널을 쓰지 않을 거면 repo 연결을 먼저 정리해 주세요`,
+  );
 }
 
 async function makeChannel(

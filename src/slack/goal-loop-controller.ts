@@ -583,11 +583,15 @@ export class GoalLoopController {
     const { requestCoordinator, logger } = this.deps;
     // Task gate: the evaluator's "complete" holds only when no task on the
     // model's latest list is open. Otherwise it is a gap naming those tasks.
-    const gate = gateGoalVerdictOnTasks(evalVerdict, session.taskLedger);
+    // The same open tasks held twice in a row stop the loop as a stall (#968).
+    const gate = gateGoalVerdictOnTasks(evalVerdict, session.taskLedger, activeGoal.lastEvalGateOpen);
     const verdict = gate.verdict;
     if (gate.tasks) {
       logger.info('Goal completion held — tasks on the latest list are still open', { sessionKey, ...gate.tasks });
     }
+    // A judged verdict replaces the recorded gap, so it replaces the gate's mark too.
+    // A reused one is the recorded gap itself: its mark stays.
+    if (!opts.reused) activeGoal.lastEvalGateOpen = gate.tasks?.openIds;
     // #745: where the current failure started — a reused verdict judged no new turn.
     if (!opts.reused) trackGoalFirstFailure(session, activeGoal, verdict, this.now());
     // A kick may not stall (runOnce); the repeat still counted toward the first failure above.

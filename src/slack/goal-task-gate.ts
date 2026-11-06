@@ -23,13 +23,27 @@ const TASK_LINE_MAX = 200;
 /** Most tasks listed in the evaluator's evidence and in the gap (the count is always exact). */
 const TASK_LINES_MAX = 30;
 
-/** Opens every gap the gate records — how a persisted gap is known to be the gate's. */
-export const TASK_GATE_REASON_START = 'The evaluator judged the objective met, but the goal is not complete:';
+/** Opens every gap the gate records (text only — the goal's `lastEvalGateOpen` marks a gate gap). */
+const TASK_GATE_REASON_START = 'The evaluator judged the objective met, but the goal is not complete:';
+
+/**
+ * #968 — what the owner is offered when the gate held the goal on the same open
+ * tasks twice in a row (a stall): the two task-list ways out, then a report.
+ */
+export const TASK_GATE_STALL_ACTIONS: readonly string[] = [
+  '남은 작업을 끝내고 작업 목록에서 완료로 표시해',
+  'goal에서 빠진 작업은 작업 목록(TodoWrite)에서 지워',
+  '여기까지 한 것과 남은 작업을 정리해서 보고해',
+];
 
 /** How far the latest list is from done, when the gate held the goal open. */
 export interface GoalTaskGateHold {
   open: number;
   total: number;
+  /** The open tasks' ids, in list order — kept on the goal as `lastEvalGateOpen`. */
+  openIds: string[];
+  /** The previous verdict was a hold on exactly these tasks: the loop stops as a stall. */
+  repeated: boolean;
   /** The evaluator's own reason for calling the objective met. */
   evalReason: string;
 }
@@ -71,19 +85,29 @@ function openTaskLines(ledger: TaskLedger | undefined): string[] {
  * avoid (2026-11-02 — the evaluator called the silence "the same failure" and
  * stopped the goal).
  */
-export function taskGateGapClosed(goal: { lastEvalReason?: string }, ledger: TaskLedger | undefined): boolean {
-  if (!goal.lastEvalReason?.startsWith(TASK_GATE_REASON_START)) return false;
+export function taskGateGapClosed(goal: { lastEvalGateOpen?: string[] }, ledger: TaskLedger | undefined): boolean {
+  if (!goal.lastEvalGateOpen?.length) return false;
   return !ledger || ledgerTasks(ledger).current.every((t) => t.status === 'completed');
+}
+
+function sameIds(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((id) => b.includes(id));
 }
 
 /**
  * Gate an evaluator verdict on the latest task list. A `completed` verdict
  * with an open task becomes a gap that names the open tasks and tells the
  * model to finish them or take them off the list; anything else passes as is.
+ *
+ * `previousOpen` is the goal's `lastEvalGateOpen`: the tasks the previous
+ * verdict was held on. The same tasks held again is the same failure — the
+ * turn between closed none of them — so the gap carries the stall fields and
+ * the loop stops to ask the owner instead of spending its budget (#968).
  */
 export function gateGoalVerdictOnTasks(
   verdict: GoalEvalVerdict,
   ledger: TaskLedger | undefined,
+  previousOpen?: readonly string[],
 ): { verdict: GoalEvalVerdict; tasks?: GoalTaskGateHold } {
   if (!verdict.completed || !ledger) return { verdict };
   const current = ledgerTasks(ledger).current;
@@ -100,9 +124,25 @@ export function gateGoalVerdictOnTasks(
     // and only the task list is left to close.
     `Evaluator's reason for calling the objective met: ${verdict.reason}`,
   ].join('\n');
+  const openIds = open.map((t) => t.id);
+  const repeated = !!previousOpen?.length && sameIds(openIds, previousOpen);
   return {
-    // No stall fields: the evaluator compared nothing — the host's own list held the goal open.
-    verdict: { completed: false, reason, remaining },
-    tasks: { open: open.length, total: current.length, evalReason: verdict.reason },
+    // The evaluator compared nothing — the host's own list held the goal open, so
+    // the host says whether it is the same hold again.
+    verdict: repeated
+      ? {
+          completed: false,
+          reason,
+          remaining,
+          sameAsPrevious: true,
+          sameConfidence: 1,
+          // The evaluator's own word on the turn's work: a turn that did real work
+          // (but left the list alone) must not be offered for rollback (#745).
+          // Unknown is not "no work": without an explicit `false`, no rollback offer.
+          progressed: verdict.progressed ?? true,
+          userActions: [...TASK_GATE_STALL_ACTIONS],
+        }
+      : { completed: false, reason, remaining },
+    tasks: { open: open.length, total: current.length, openIds, repeated, evalReason: verdict.reason },
   };
 }

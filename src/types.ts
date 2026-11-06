@@ -313,6 +313,13 @@ export interface SessionGoal {
    */
   lastEvalRemaining?: string[];
   /**
+   * #968 — set when the latest gap is the task gate's (`src/slack/goal-task-gate.ts`): the
+   * ids of the tasks that held the goal open. The loop re-judges a reused gate gap once
+   * no task is open, and the same ids held twice in a row stop the loop as a stall.
+   * Cleared by any other verdict and wherever `lastEvalReason` is cleared.
+   */
+  lastEvalGateOpen?: string[];
+  /**
    * Open while the loop is stopped because the evaluator judged the goal
    * failed again for the same reason (≥ `GOAL_STALL_MIN_CONFIDENCE`). The
    * driver runs no eval and injects no continuation until a real user message

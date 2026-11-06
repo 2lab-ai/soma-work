@@ -21,6 +21,10 @@
  *  - DOMContentLoaded (every module has run; a module that failed to load leaves its element undefined for good);
  *  - 12 seconds (a module request that never answers holds DOMContentLoaded back).
  * It fades out (180ms, the kit's fade) and leaves the DOM. Without script a CSS animation hides it at 15s.
+ * While it is up the page under it is inert (#969) — every in-flow child of .app, not the drawers and dialogs — so a
+ * keyboard cannot reach controls nobody can see; every lift gives the focus back, and an overlay that opens (a deep
+ * link's drawer) lifts it at once. It draws the board in the view the page will choose (the saved one, else list below
+ * 640px) and the kit's narrow-board columns; boot-screen.test.ts [T7] reads its numbers against the kit and the page.
  *
  * The script is a template literal with no backticks, no `${…}` and no backslashes: it reaches the browser byte for
  * byte and the tests run it as shipped (theme-client.ts's pattern). The layer carries no words, so no catalog entry: it is
@@ -58,9 +62,13 @@ export function bootScreenHtml(): string {
     '<span class="boot-grow"></span>' +
     '<span class="ui-skeleton boot-chip"></span><span class="ui-skeleton is-circle boot-avatar" style="--i:1"></span>' +
     '</div>' +
+    '<div class="boot-barrow"></div>' +
     '<div class="boot-main">' +
     '<div class="boot-head"><span class="ui-skeleton boot-crumb"></span><span class="boot-tools">' +
-    '<span class="ui-skeleton boot-scope" style="--i:1"></span><span class="ui-skeleton boot-seg" style="--i:2"></span>' +
+    '<span class="ui-skeleton boot-scope" style="--i:1"></span>' +
+    '<span class="ui-skeleton boot-filter" style="--i:1"></span><span class="ui-skeleton boot-sort" style="--i:1"></span>' +
+    '<span class="boot-break"></span>' +
+    '<span class="ui-skeleton boot-search" style="--i:2"></span><span class="ui-skeleton boot-seg" style="--i:2"></span>' +
     '</span></div>' +
     `<div class="boot-board">${COLUMN_CARDS.map((n, c) => column(n, c)).join('')}</div>` +
     '</div></div>'
@@ -93,13 +101,35 @@ export function bootScreenCss(): string {
 .boot-grow { flex: 1 1 0; }
 .boot .boot-chip { width: 92px; height: 28px; border-radius: 999px; }
 .boot .boot-avatar { width: 30px; height: 30px; }
-.boot-main { max-width: 1280px; margin: 0 auto; padding: 20px; }
+.boot-main { max-width: 1280px; margin: 0 auto; padding: 20px; container: boot / inline-size; }
 .boot-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 34px; margin: 4px 0 16px; }
 .boot-tools { display: flex; align-items: center; gap: 8px; }
 .boot .boot-crumb { width: 176px; height: 14px; }
-.boot .boot-scope { display: none; }
+/* The board's tools as the page draws them (#976): filter · sort · search · Board | List, right of the breadcrumb. On a
+   phone the scope chips join them and they wrap in two rows (chips · filter · sort / search · Board | List); the view
+   switch is 50px tall on touch and on a phone, 34px otherwise. */
+.boot .boot-scope, .boot-break { display: none; }
+.boot .boot-filter { width: 41px; height: 24px; border-radius: 999px; }
+.boot .boot-sort { width: 88px; height: 24px; border-radius: 999px; }
+.boot .boot-search { width: 140px; height: 32px; border-radius: 10px; }
 .boot .boot-seg { width: 135px; height: 34px; border-radius: 10px; }
+/* Narrower than the bar's toolbarAt (1280px) the page's scope group takes the bar's own row under it: ~18px empty
+   (padding and hairline) up to ~42px with the admin chips — the layer takes the middle, as it cannot know the role. */
+.boot-barrow { display: none; height: 30px; border-bottom: 1px solid var(--border); }
+@media (min-width: 640px) and (max-width: 1279px) and (min-height: 561px) {
+  .boot-barrow { display: block; }
+}
+@media (pointer: coarse) {
+  .boot .boot-seg { height: 50px; border-radius: 12px; }
+  .boot-head { min-height: 50px; }
+}
 .boot-board { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
+/* The board's own views (the page's defaultBoardView, set by the script below before the first paint): list stacks the
+   columns full width; a narrow board scrolls its columns sideways — the kit's rules, on the main column as container. */
+.boot[data-view="list"] .boot-board { grid-template-columns: minmax(0, 1fr); }
+@container boot (max-width: 839px) {
+  .boot:not([data-view="list"]) .boot-board { grid-template-columns: repeat(3, minmax(min(300px, 84cqi), 1fr)); }
+}
 .boot-col { display: flex; flex-direction: column; gap: 8px; padding: 2px 4px 4px; border-radius: 14px; background: var(--ib-col); }
 .boot-col-head { display: flex; align-items: center; min-height: 40px; padding: 10px 8px 8px 15px; margin-bottom: -8px; }
 .boot .boot-col-name { width: 72px; height: 10px; }
@@ -111,12 +141,14 @@ export function bootScreenCss(): string {
   .boot-bar { height: 52px; padding: 0 12px; gap: 8px; }
   .boot-word { display: none; }
   .boot-main { padding: 14px 12px; }
-  .boot-head { flex-direction: column; align-items: stretch; gap: 8px; }
+  .boot-head { flex-direction: column; align-items: stretch; gap: 8px; margin-bottom: 12px; }
   .boot .boot-crumb { margin: 15px 0; }
-  .boot-tools { justify-content: space-between; min-height: 50px; }
-  .boot .boot-scope { display: block; width: 150px; height: 32px; border-radius: 999px; }
-  .boot .boot-seg { height: 44px; border-radius: 12px; }
-  .boot-board { grid-template-columns: repeat(3, 300px); }
+  .boot-tools { flex-wrap: wrap; justify-content: flex-end; row-gap: 0; }
+  .boot .boot-scope { display: block; width: 150px; height: 28px; border-radius: 999px; margin-right: auto; }
+  .boot-break { display: block; flex-basis: 100%; height: 0; }
+  .boot .boot-search, .boot .boot-seg { margin-top: 8px; }
+  .boot .boot-search { margin-right: auto; }
+  .boot .boot-seg { height: 50px; border-radius: 12px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .boot-mark rect { animation: none; }
@@ -130,6 +162,23 @@ const BOOT_CLIENT_JS = `
   var boot = document.getElementById('boot');
   if (!boot) return;
   var gone = false;
+  // The board's view, as the page will choose it (defaultBoardView): the saved choice, else list below 640px (#969).
+  var saved = null;
+  try { saved = localStorage.getItem('soma-board-view'); } catch (_e) {}
+  boot.setAttribute('data-view', saved === 'board' || saved === 'list' ? saved : window.innerWidth < 640 ? 'list' : 'board');
+  // The page under the layer takes no keyboard focus while it is up (#969): every in-flow child of .app goes inert as
+  // the parser adds it, and gets its focus back at the lift. The overlays (drawers, dialogs) stay live, and the layer
+  // lifts the moment one opens (a deep link's drawer: docked from 840px it sits under the layer). A child the page made
+  // inert itself is left alone.
+  var held = [];
+  function hold() {
+    var app = document.querySelector('.app');
+    for (var el = app && app.firstElementChild; el; el = el.nextElementSibling) {
+      if (el.inert || held.indexOf(el) >= 0 || el.tagName === 'UI-DRAWER' || el.tagName === 'UI-DIALOG') continue;
+      el.inert = true;
+      held.push(el);
+    }
+  }
   // A custom element that is still undefined and has a box in the viewport: the page is not drawn yet.
   function undrawn() {
     var els;
@@ -143,11 +192,14 @@ const BOOT_CLIENT_JS = `
   function lift() {
     if (gone) return;
     gone = true;
+    for (var i = 0; i < held.length; i++) held[i].inert = false;
     boot.classList.add('is-out');
     setTimeout(function () { if (boot.parentNode) boot.parentNode.removeChild(boot); }, 400);
   }
   function check() {
     if (gone) return;
+    hold();
+    if (document.querySelector('.app > ui-drawer[open], .app > ui-dialog[open]')) return lift();
     if (document.readyState !== 'loading' && !undrawn()) return requestAnimationFrame(lift);
     requestAnimationFrame(check);
   }

@@ -14,7 +14,7 @@ import { applyTodoList, type TaskLedger, type TodoInput } from '../../session/ta
 import type { ConversationSession, SessionGoal } from '../../types';
 import type { GoalEvalVerdict } from '../goal-completion-evaluator';
 import { GoalLoopController, type GoalLoopControllerDeps } from '../goal-loop-controller';
-import { gateGoalVerdictOnTasks } from '../goal-task-gate';
+import { gateGoalVerdictOnTasks, taskGateGapClosed } from '../goal-task-gate';
 
 const SESSION_KEY = 'C1:T1';
 
@@ -66,9 +66,10 @@ function makeHarness(opts: { verdict: GoalEvalVerdict; ledger?: TaskLedger; goal
   const injected: SyntheticMessageEvent[] = [];
   const notices: string[] = [];
   const evalPrompts: string[] = [];
+  const h = { evalVerdict: opts.verdict };
   const dispatcher: GoalLoopControllerDeps['dispatcher'] = async (params) => {
     evalPrompts.push(params.userPrompt);
-    return JSON.stringify(opts.verdict);
+    return JSON.stringify(h.evalVerdict);
   };
   const controller = new GoalLoopController({
     registry: {
@@ -89,7 +90,7 @@ function makeHarness(opts: { verdict: GoalEvalVerdict; ledger?: TaskLedger; goal
     fallbackModel: 'claude-sonnet-4',
     scheduleEvalRetry: () => undefined,
   });
-  return { controller, session, goal, injected, notices, evalPrompts };
+  return Object.assign(h, { controller, session, goal, injected, notices, evalPrompts });
 }
 
 const DONE: GoalEvalVerdict = { completed: true, reason: 'PR #26 merged and deployed', remaining: [] };
@@ -284,6 +285,119 @@ describe('a task-gate gap is judged again once its open tasks change (review P2)
   });
 });
 
+describe('#968 — a repeated hold stops as a stall; the gate gap is a typed field', () => {
+  /** One more work turn: new text, so it is judged (not reused). */
+  async function settleTurn(h: ReturnType<typeof makeHarness>, text: string) {
+    h.session.goalLastTurnText = text;
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+  }
+
+  it('the same open tasks held twice in a row → stall: the loop stops and the owner is asked (T1)', async () => {
+    const h = makeHarness({ verdict: DONE, ledger: ledgerOf(SIX_TASKS) });
+    await settleTurn(h, 'all done, PR merged');
+    expect(h.goal.stall).toBeUndefined();
+    expect(h.injected).toHaveLength(1);
+
+    // The model did the work again but never touched its task list.
+    await settleTurn(h, 'everything is done, really');
+    expect(h.goal.stall).toBeDefined();
+    expect(h.goal.status).toBe('active');
+    expect(h.injected).toHaveLength(1); // no second continuation
+    expect(h.notices.some((n) => n.startsWith('🛑'))).toBe(true);
+    // The owner is offered the task-list way out first.
+    expect(h.goal.stall?.actions[0]).toContain('완료');
+    expect(h.goal.stall?.actions[1]).toContain('TodoWrite');
+  });
+
+  it('a repeated hold on a kick does not stall, keeps the mark, and the next real turn stalls (review P3)', async () => {
+    const h = makeHarness({ verdict: DONE, ledger: ledgerOf(SIX_TASKS) });
+    await settleTurn(h, 'all done');
+    h.session.goalLastTurnText = 'restarted, still done';
+    h.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    await h.controller.settled(SESSION_KEY);
+    expect(h.goal.stall).toBeUndefined();
+    expect(h.goal.lastEvalGateOpen).toEqual(['T2', 'T3', 'T4', 'T5', 'T6']);
+    expect(h.injected).toHaveLength(2);
+
+    await settleTurn(h, 'done again');
+    expect(h.goal.stall).toBeDefined();
+  });
+
+  it('a turn cut short between two holds keeps the mark: the next judged hold stalls (review P3)', async () => {
+    const h = makeHarness({ verdict: DONE, ledger: ledgerOf(SIX_TASKS) });
+    await settleTurn(h, 'all done');
+    await settleTurn(h, ''); // no text: the gap is reused, nothing judged
+    expect(h.evalPrompts).toHaveLength(1);
+    expect(h.goal.lastEvalGateOpen).toEqual(['T2', 'T3', 'T4', 'T5', 'T6']);
+
+    await settleTurn(h, 'done, honestly');
+    expect(h.goal.stall).toBeDefined();
+  });
+
+  it('a repeated hold at the continuation cap stalls (and retires the cap question), not cap-paused (review P3)', async () => {
+    const h = makeHarness({ verdict: DONE, ledger: ledgerOf(SIX_TASKS), goal: { continuationCount: 9 } });
+    await settleTurn(h, 'all done');
+    expect(h.goal.continuationCount).toBe(10);
+
+    await settleTurn(h, 'still done');
+    expect(h.goal.stall).toBeDefined();
+    expect(h.goal.capDecisionId).toBeUndefined();
+    expect(h.notices.some((n) => n.startsWith('🛑'))).toBe(true);
+    expect(h.notices.some((n) => n.includes('⏹️') || n.includes('⏸️'))).toBe(false);
+  });
+
+  it('a second hold with a different open set is progress, not a stall (T1)', async () => {
+    const h = makeHarness({ verdict: DONE, ledger: ledgerOf(SIX_TASKS) });
+    await settleTurn(h, 'all done');
+    // T2 closed between the holds; T3..T6 still open.
+    h.session.taskLedger = applyTodoList(
+      h.session.taskLedger,
+      SIX_TASKS.map((t, i) => (i === 1 ? { ...t, status: 'completed' as const } : t)),
+      9_000,
+    );
+    await settleTurn(h, 'closed one more');
+    expect(h.goal.stall).toBeUndefined();
+    expect(h.injected).toHaveLength(2);
+  });
+
+  it('a hold records the open task ids on the goal; a completion clears them (T2)', async () => {
+    const h = makeHarness({ verdict: DONE, ledger: ledgerOf(SIX_TASKS) });
+    await settleTurn(h, 'all done');
+    expect(h.goal.lastEvalGateOpen).toEqual(['T2', 'T3', 'T4', 'T5', 'T6']);
+
+    h.session.taskLedger = applyTodoList(
+      h.session.taskLedger,
+      SIX_TASKS.map((t) => ({ ...t, status: 'completed' as const })),
+      9_000,
+    );
+    await settleTurn(h, 'closed them all');
+    expect(h.goal.status).toBe('complete');
+    expect(h.goal.lastEvalGateOpen).toBeUndefined();
+  });
+
+  it('an evaluator gap that is not the gate clears the recorded gate ids (T2)', async () => {
+    const h = makeHarness({ verdict: DONE, ledger: ledgerOf(SIX_TASKS) });
+    await settleTurn(h, 'all done');
+    expect(h.goal.lastEvalGateOpen).toBeDefined();
+    h.evalVerdict = { completed: false, reason: 'tests are missing', remaining: ['add tests'] };
+    await settleTurn(h, 'refactored');
+    expect(h.goal.lastEvalGateOpen).toBeUndefined();
+  });
+
+  it('the re-judge reads the typed field, not the reason text (T2)', () => {
+    const allDone = ledgerOf(SIX_TASKS.map((t) => ({ ...t, status: 'completed' as const })));
+    // A gate gap whose reason was rewritten (bounded, translated) still re-judges…
+    const rewritten = { lastEvalGateOpen: ['T2'], lastEvalReason: '(rewritten)' };
+    expect(taskGateGapClosed(rewritten, allDone)).toBe(true);
+    // …and a reason that merely reads like the gate's is not one.
+    const lookalike: Pick<SessionGoal, 'lastEvalGateOpen' | 'lastEvalReason'> = {
+      lastEvalReason: 'The evaluator judged the objective met, but the goal is not complete: 1 of 6',
+    };
+    expect(taskGateGapClosed(lookalike, allDone)).toBe(false);
+  });
+});
+
 describe('gateGoalVerdictOnTasks', () => {
   it('passes a not-complete verdict through untouched', () => {
     const v: GoalEvalVerdict = { completed: false, reason: 'tests missing', remaining: ['add tests'] };
@@ -302,8 +416,36 @@ describe('gateGoalVerdictOnTasks', () => {
     expect(out.verdict.sameAsPrevious).toBeUndefined();
     expect(out.verdict.remaining).toHaveLength(5);
     expect(out.verdict.remaining[0]).toMatch(/^T2 \[in_progress\] ui-working/);
-    expect(out.tasks).toEqual({ open: 5, total: 6, evalReason: DONE.reason });
+    expect(out.tasks).toEqual({
+      open: 5,
+      total: 6,
+      openIds: ['T2', 'T3', 'T4', 'T5', 'T6'],
+      repeated: false,
+      evalReason: DONE.reason,
+    });
     expect(out.verdict.reason).toContain(`Evaluator's reason for calling the objective met: ${DONE.reason}`);
+  });
+
+  it('the same open ids as the previous hold carry the stall fields; another set does not (#968)', () => {
+    const ledger = ledgerOf(SIX_TASKS);
+    const again = gateGoalVerdictOnTasks(DONE, ledger, ['T6', 'T5', 'T4', 'T3', 'T2']);
+    expect(again.tasks?.repeated).toBe(true);
+    expect(again.verdict).toMatchObject({
+      completed: false,
+      sameAsPrevious: true,
+      sameConfidence: 1,
+    });
+    expect(again.verdict.userActions).toHaveLength(3);
+    // Progress is the evaluator's call, passed through: a rollback is offered only without it (#745).
+    const worked = gateGoalVerdictOnTasks({ ...DONE, progressed: true }, ledger, ['T2', 'T3', 'T4', 'T5', 'T6']);
+    expect(worked.verdict.progressed).toBe(true);
+    const idle = gateGoalVerdictOnTasks({ ...DONE, progressed: false }, ledger, ['T2', 'T3', 'T4', 'T5', 'T6']);
+    expect(idle.verdict.progressed).toBe(false);
+    // The evaluator said nothing about progress: no rollback offer without evidence (review P2).
+    expect(again.verdict.progressed).toBe(true);
+    const other = gateGoalVerdictOnTasks(DONE, ledger, ['T2', 'T3']);
+    expect(other.tasks?.repeated).toBe(false);
+    expect(other.verdict.sameAsPrevious).toBeUndefined();
   });
 
   it('cuts a long task text by code point, never through an emoji', () => {
