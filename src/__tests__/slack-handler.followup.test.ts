@@ -6365,9 +6365,7 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(startWithContinuation, 'the opening was skipped (paused)').toHaveBeenCalledTimes(1);
       // Paused = set aside (SSOT 2026-11-06): no current goal, the paused goal keeps openingPending.
       expect(registrySession.goal).toBeUndefined();
-      expect(registrySession.goalPaused).toEqual([
-        expect.objectContaining({ status: 'paused', openingPending: true }),
-      ]);
+      expect(registrySession.goalPaused).toEqual([expect.objectContaining({ status: 'paused', openingPending: true })]);
 
       await handler.handleMessage(message({ ts: '555.666', text: 'goal resume' }), say());
       await vi.waitFor(() => expect(startWithContinuation).toHaveBeenCalledTimes(2));
@@ -6940,6 +6938,25 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(registrySession.goal).toMatchObject({ goalId: 'g1', status: 'active', continuationCount: 0 });
       expect(registrySession.goalPaused).toEqual([]);
       expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    });
+
+    it('resume re-checks the author after the anchor (review P1): acceptance revoked meanwhile → 403, still paused', async () => {
+      registrySession.goalPaused = [goalOf({ status: 'paused' })];
+      const accepted = vi.spyOn(userSettingsStore, 'isUserAccepted').mockReturnValue(true);
+      postSystemMessage.mockImplementationOnce(async () => {
+        accepted.mockReturnValue(false);
+        return { ts: 'anchor' };
+      });
+
+      await expect(handler.handleHostGoalAction(SESSION_KEY, { action: 'resume', goalId: 'g1' })).rejects.toMatchObject(
+        {
+          statusCode: 403,
+        },
+      );
+      await tick();
+      expect(registrySession.goal).toBeUndefined();
+      expect(registrySession.goalPaused.map((g: any) => g.goalId)).toEqual(['g1']);
+      expect(startWithContinuation).not.toHaveBeenCalled();
     });
 
     it('resume with a goal running: next in the queue, no turn, the running goal and its epoch untouched', async () => {

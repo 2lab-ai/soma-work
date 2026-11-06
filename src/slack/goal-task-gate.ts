@@ -60,17 +60,46 @@ function bounded(lines: string[]): string[] {
   return [...lines.slice(0, TASK_LINES_MAX), `… and ${lines.length - TASK_LINES_MAX} more`];
 }
 
-/** The latest list, one `T<n> [status] text` line per task (bounded) — the evaluator's evidence. */
-export function goalTaskListLines(ledger: TaskLedger | undefined): string[] {
-  if (!ledger) return [];
-  return bounded(ledgerTasks(ledger).current.map(taskLine));
+/**
+ * The latest list without the tasks of a paused goal (`exclude`, see
+ * {@link heldByPausedGoals}): those are the paused goal's own work, so they
+ * hold no other goal.
+ */
+function goalTasks(ledger: TaskLedger, exclude?: ReadonlySet<string>): TaskView[] {
+  const current = ledgerTasks(ledger).current;
+  return exclude?.size ? current.filter((t) => !exclude.has(t.id)) : current;
 }
 
-function openTaskLines(ledger: TaskLedger | undefined): string[] {
+/** The ids of the open tasks on the latest list — what a goal paused now leaves behind as its own. */
+export function openTaskIds(ledger: TaskLedger | undefined): string[] {
+  if (!ledger) return [];
+  return ledgerTasks(ledger)
+    .current.filter((t) => t.status !== 'completed')
+    .map((t) => t.id);
+}
+
+/**
+ * SSOT 2026-11-06 (review P1): the tasks the paused goals left open when they
+ * were paused. A paused goal's unfinished work must not hold the goal that runs
+ * in its place — B would otherwise be told to finish or drop A's tasks.
+ */
+export function heldByPausedGoals(session: { goalPaused?: Array<{ heldTaskIds?: string[] }> }): Set<string> {
+  const held = new Set<string>();
+  for (const g of session.goalPaused ?? []) for (const id of g.heldTaskIds ?? []) held.add(id);
+  return held;
+}
+
+/** The latest list, one `T<n> [status] text` line per task (bounded) — the evaluator's evidence. */
+export function goalTaskListLines(ledger: TaskLedger | undefined, exclude?: ReadonlySet<string>): string[] {
+  if (!ledger) return [];
+  return bounded(goalTasks(ledger, exclude).map(taskLine));
+}
+
+function openTaskLines(ledger: TaskLedger | undefined, exclude?: ReadonlySet<string>): string[] {
   if (!ledger) return [];
   return bounded(
-    ledgerTasks(ledger)
-      .current.filter((t) => t.status !== 'completed')
+    goalTasks(ledger, exclude)
+      .filter((t) => t.status !== 'completed')
       .map(taskLine),
   );
 }
@@ -85,9 +114,13 @@ function openTaskLines(ledger: TaskLedger | undefined): string[] {
  * avoid (2026-11-02 — the evaluator called the silence "the same failure" and
  * stopped the goal).
  */
-export function taskGateGapClosed(goal: { lastEvalGateOpen?: string[] }, ledger: TaskLedger | undefined): boolean {
+export function taskGateGapClosed(
+  goal: { lastEvalGateOpen?: string[] },
+  ledger: TaskLedger | undefined,
+  exclude?: ReadonlySet<string>,
+): boolean {
   if (!goal.lastEvalGateOpen?.length) return false;
-  return !ledger || ledgerTasks(ledger).current.every((t) => t.status === 'completed');
+  return !ledger || goalTasks(ledger, exclude).every((t) => t.status === 'completed');
 }
 
 function sameIds(a: readonly string[], b: readonly string[]): boolean {
@@ -108,12 +141,14 @@ export function gateGoalVerdictOnTasks(
   verdict: GoalEvalVerdict,
   ledger: TaskLedger | undefined,
   previousOpen?: readonly string[],
+  /** Tasks a paused goal left open ({@link heldByPausedGoals}) — not this goal's. */
+  exclude?: ReadonlySet<string>,
 ): { verdict: GoalEvalVerdict; tasks?: GoalTaskGateHold } {
   if (!verdict.completed || !ledger) return { verdict };
-  const current = ledgerTasks(ledger).current;
+  const current = goalTasks(ledger, exclude);
   const open = current.filter((t) => t.status !== 'completed');
   if (!open.length) return { verdict };
-  const remaining = openTaskLines(ledger);
+  const remaining = openTaskLines(ledger, exclude);
   const reason = [
     `${TASK_GATE_REASON_START} ${open.length} of ${current.length} tasks on your task list (TodoWrite) are not completed.`,
     'The goal completes only when the evaluator says so AND every task on the list is completed.',

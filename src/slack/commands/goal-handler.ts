@@ -8,6 +8,7 @@ import { buildGoalStatusBlocks } from '../goal-blocks';
 import { retireGoalCapDecision } from '../goal-cap-decision';
 import { bumpGoalEpoch } from '../goal-continuation';
 import { resumeGoalLoop } from '../goal-loop-resume';
+import { openTaskIds } from '../goal-task-gate';
 import {
   advanceGoalQueue,
   enqueueOrActivateGoal,
@@ -17,6 +18,7 @@ import {
   restoreGoalState,
   resumePausedGoal,
   snapshotGoalState,
+  undoPause,
 } from '../session-goal';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult, GoalOpeningAdmission } from './types';
 
@@ -274,7 +276,8 @@ export class GoalHandler implements CommandHandler {
       return { handled: true };
     }
     const snapshot = admitOpening ? snapshotGoalState(session) : undefined;
-    const { paused, promoted } = pauseCurrentGoal(session);
+    // Its open tasks stay its own: they hold no other goal while it is paused.
+    const { paused, promoted } = pauseCurrentGoal(session, { heldTaskIds: openTaskIds(session.taskLedger) });
     if (!paused) return { handled: true };
     this.persistGoalChange(session);
     const pausedLine = `⏸️ Goal paused: ${this.formatObjectiveForSlack(paused.objective)}`;
@@ -284,7 +287,7 @@ export class GoalHandler implements CommandHandler {
       // admitted with the mutation, or the pause is undone.
       const admission = admitOpening({ goalId: promoted.goalId, objective: promoted.objective, cause: 'promoted' });
       if (typeof admission === 'object') {
-        restoreGoalState(session, snapshot);
+        undoPause(session, snapshot, paused);
         this.deps.claudeHandler.saveSessions();
         this.deps.claudeHandler.broadcastSessionUpdate?.();
         await this.notifyBestEffort(

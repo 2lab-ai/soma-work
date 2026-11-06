@@ -290,6 +290,12 @@ export interface SessionGoal {
    * that never had its first turn.
    */
   openingPending?: boolean;
+  /**
+   * The open task ids the session's task list had when this goal was paused —
+   * its own work. While it stays in `goalPaused` they hold no other goal's
+   * completion (`src/slack/goal-task-gate.ts`); a resume clears it.
+   */
+  heldTaskIds?: string[];
 
   // ── Host-side completion evaluation ────────────────────────────────────
   /**

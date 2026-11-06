@@ -7,6 +7,7 @@
  *           goal at once; with a goal running it goes right after that goal.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { applyTodoList } from '../../../session/task-ledger';
 import type { ConversationSession } from '../../../types';
 import {
   createActiveSessionGoal,
@@ -231,6 +232,20 @@ describe('resumePausedGoal', () => {
     expect(resumePausedGoal(session, slot.goalId)?.goal).toBe(slot);
   });
 
+  it('without an id, a goal stopped in place more recently than the last one set aside wins (review P2)', () => {
+    const session = makeSession({ goal: createActiveSessionGoal('slot', 'U123') });
+    const slot = session.goal!;
+    const shelf = createActiveSessionGoal('shelf', 'U123');
+    shelf.status = 'paused';
+    shelf.updatedAt = 100;
+    session.goalPaused = [shelf];
+    slot.status = 'paused'; // the cap question's Cancel, after the shelf goal was paused
+    slot.updatedAt = 200;
+
+    expect(resumePausedGoal(session)?.goal).toBe(slot);
+    expect(session.goalPaused).toEqual([shelf]);
+  });
+
   it('returns undefined for an unknown id and changes nothing', () => {
     const session = sessionWithQueue();
     pauseCurrentGoal(session);
@@ -281,6 +296,45 @@ describe('GoalHandler — goal pause / goal resume', () => {
     expect(session.goalPaused ?? []).toHaveLength(0);
     expect(session.goalQueue?.map((g) => g.objective)).toEqual(['goal B', 'goal C']);
     expect(lastNotice(deps)).toContain('NOT paused');
+  });
+
+  it('a refused first turn never brings back a decision round whose question was already withdrawn (review P1)', async () => {
+    const session = sessionWithQueue();
+    const a = session.goal!;
+    a.stall = { stallId: 's1', stalledAt: 1, reason: 'same failure', actions: ['x', 'y', 'z'], confidence: 0.9 };
+    a.capDmPendingAt = 5;
+    a.capDecisionId = 'd1';
+    const deps = makeDeps(session);
+
+    await new GoalHandler(deps).execute(makeCtx({ text: 'goal pause', admitOpening: () => ({ failed: 'busy' }) }));
+
+    expect(session.goal).toBe(a);
+    expect(a.status).toBe('active');
+    // The pause is undone, but its question and DM were withdrawn on the way: no round is left
+    // that no surface shows.
+    expect(a.stall).toBeUndefined();
+    expect(a.capDmPendingAt).toBeUndefined();
+    expect(a.capDecisionId).toBeUndefined();
+  });
+
+  it('the paused goal keeps its open tasks as its own; resuming it gives them back to it (review P1)', async () => {
+    const session = sessionWithQueue();
+    session.taskLedger = applyTodoList(
+      undefined,
+      [
+        { content: 'done one', status: 'completed' },
+        { content: 'open one', status: 'in_progress' },
+        { content: 'open two', status: 'pending' },
+      ],
+      1_000,
+    );
+    const deps = makeDeps(session);
+    await new GoalHandler(deps).execute(makeCtx({ text: 'goal pause' }));
+    expect(session.goalPaused?.[0].heldTaskIds).toEqual(['T2', 'T3']);
+
+    await new GoalHandler(deps).execute(makeCtx({ text: 'goal resume 1' }));
+    expect(session.goalQueue?.[0].objective).toBe('goal A');
+    expect(session.goalQueue?.[0].heldTaskIds).toBeUndefined();
   });
 
   it('T2: `goal pause` with nothing queued ends the goal work and starts no turn', async () => {

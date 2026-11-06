@@ -138,6 +138,7 @@ import {
   setGoalStallRetiredListener,
   shouldAskGoalStallQuestion,
 } from './slack/goal-stall';
+import { openTaskIds } from './slack/goal-task-gate';
 import {
   checkAndConsumeBudget,
   formatBudgetExhaustedMessage,
@@ -156,6 +157,7 @@ import {
   restoreGoalState,
   resumePausedGoal,
   snapshotGoalState,
+  undoPause,
 } from './slack/session-goal';
 import { announceSessionNotice, recordSessionNotice } from './slack/session-notice';
 import { type SessionFollowUp, SummaryService, setFollowUpListener } from './slack/summary-service';
@@ -8896,7 +8898,9 @@ export class SlackHandler {
       throw error;
     }
     const snapshot = snapshotGoalState(live);
-    const { promoted } = pauseCurrentGoal(live);
+    // Its open tasks stay its own: they hold no other goal while it is paused.
+    const { paused, promoted } = pauseCurrentGoal(live, { heldTaskIds: openTaskIds(live.taskLedger) });
+    if (!paused) throw new HostGoalActionError(409, 'The current goal has changed — refresh and try again');
     if (!promoted) {
       this.persistHostGoalMutation(live);
       this.claudeHandler.broadcastSessionUpdate?.();
@@ -8907,7 +8911,7 @@ export class SlackHandler {
     try {
       this.assertGoalOpeningAuthor(sessionKey, promoted.createdBy || actor, channel, threadTs);
     } catch (error) {
-      restoreGoalState(live, snapshot);
+      undoPause(live, snapshot, paused);
       await this.postGoalNoticeBestEffort(
         channel,
         threadTs,
@@ -8922,7 +8926,7 @@ export class SlackHandler {
       { goalId: promoted.goalId, objective: promoted.objective },
     );
     if (typeof admission === 'object') {
-      restoreGoalState(live, snapshot);
+      undoPause(live, snapshot, paused);
       this.claudeHandler.saveSessions();
       await this.postGoalNoticeBestEffort(
         channel,
@@ -8967,12 +8971,18 @@ export class SlackHandler {
     try {
       live = this.liveGoalSession(sessionKey);
       if (live !== session) throw new HostGoalActionError(409, 'The session was replaced — refresh and try again');
-      this.assertGoalResumable(live, goalId);
+      // Re-checked after the await, as `add` does: the author's acceptance can
+      // change while the anchor posts, and an idle opening takes the slot
+      // without the drain's own check.
+      const liveTarget = this.assertGoalResumable(live, goalId);
+      this.assertGoalOpeningAuthor(sessionKey, liveTarget.createdBy || actor, channel, threadTs);
     } catch (error) {
       await this.postGoalNoticeBestEffort(
         channel,
         threadTs,
-        '⚠️ 위 재개는 적용되지 않았습니다 — goal이 이미 바뀌었습니다.',
+        error instanceof HostGoalActionError && error.statusCode === 403
+          ? '⚠️ 위 재개는 적용되지 않았습니다 — 작성자의 실행 권한이 바뀌었습니다.'
+          : '⚠️ 위 재개는 적용되지 않았습니다 — goal이 이미 바뀌었습니다.',
       );
       throw error;
     }
