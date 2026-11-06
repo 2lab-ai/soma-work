@@ -33,6 +33,8 @@ export interface MappedChannel {
   id: string;
   name: string;
   isPrivate?: boolean;
+  /** Last seen archived. A hint only: such a channel is still tried (last) — it may have been restored. */
+  isArchived?: boolean;
 }
 
 export interface RepoChannelDeps {
@@ -176,7 +178,12 @@ async function ensureLocked(
   // 2. A channel the repo already has. A private request only ever goes to a channel known to be private; a
   //    public one in the way is the admin's call (409), never a silent landing.
   const mappedAll = deps.mappedChannels(repo);
-  const candidates = isPrivate ? mappedAll.filter((c) => c.isPrivate === true) : mappedAll;
+  // #970 — a channel last seen archived is tried last, not dropped: an invite tells whether it is still archived
+  // (is_archived → passed over) or was restored (used).
+  const candidates = (isPrivate ? mappedAll.filter((c) => c.isPrivate === true) : mappedAll)
+    .map((c, i) => ({ c, i }))
+    .sort((a, b) => Number(a.c.isArchived === true) - Number(b.c.isArchived === true) || a.i - b.i)
+    .map(({ c }) => c);
   for (const mapped of candidates) {
     try {
       await deps.invite(mapped.id, userId);
