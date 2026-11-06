@@ -226,6 +226,20 @@ describe('FollowupDispatcher turn generation', () => {
     expect(h.dispatcher.snapshot(SESSION).turnEpoch).toBe(8);
   });
 
+  it('liveTurnEpoch is the live run’s generation, and undefined once no run holds the slot (#962)', async () => {
+    const h = harness();
+    expect(h.dispatcher.liveTurnEpoch(SESSION)).toBeUndefined();
+
+    const start = h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    if (start.status !== 'dispatched') throw new Error('expected dispatch');
+    expect(h.dispatcher.liveTurnEpoch(SESSION)).toBe(start.run.turnEpoch);
+    expect(h.dispatcher.liveTurnEpoch(SESSION)).toBe((h.dispatch.mock.calls[0][0] as DispatchRequest).turnEpoch);
+
+    h.pending[0].settle({ result: 'safe' });
+    await start.run.settled;
+    expect(h.dispatcher.liveTurnEpoch(SESSION)).toBeUndefined();
+  });
+
   it('rejects a click rendered under an older turn before touching the item', async () => {
     const queue = new FollowupQueue();
     let turnEpoch = 3;
