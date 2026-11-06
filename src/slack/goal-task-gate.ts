@@ -138,7 +138,8 @@ export function gateGoalVerdictOnTasks(
           sameConfidence: 1,
           // The evaluator's own word on the turn's work: a turn that did real work
           // (but left the list alone) must not be offered for rollback (#745).
-          progressed: verdict.progressed,
+          // Unknown is not "no work": without an explicit `false`, no rollback offer.
+          progressed: verdict.progressed ?? true,
           userActions: [...TASK_GATE_STALL_ACTIONS],
         }
       : { completed: false, reason, remaining },
