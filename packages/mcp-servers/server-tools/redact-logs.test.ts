@@ -438,6 +438,36 @@ describe('redactLogSecrets: YAML values under a secret key', () => {
   });
 });
 
+describe('redactLogSecrets: Authorization header parameters', () => {
+  it.each([
+    ['Authorization: Digest username="u", response="opaque-response"', `Authorization: Digest ${REDACTED}`],
+    [
+      'Proxy-Authorization: Digest username="u", realm="r", response="opaque-response"',
+      `Proxy-Authorization: Digest ${REDACTED}`,
+    ],
+    ['WWW-Authenticate: Digest realm="r", nonce="opaque-nonce", qop="auth"', `WWW-Authenticate: Digest ${REDACTED}`],
+    ['Proxy-Authenticate: Basic realm="opaque-realm"', `Proxy-Authenticate: Basic ${REDACTED}`],
+    [`authorization: Bearer ${BEARER_VALUE}, extra="opaque-extra"`, `authorization: Bearer ${REDACTED}`],
+    ['X-Forwarded-Authorization: Token opaque-credential "x"', `X-Forwarded-Authorization: Token ${REDACTED}`],
+  ])('%s', (input, expected) => {
+    expect(redactLogSecrets(input)).toBe(expected);
+  });
+
+  it('redacts header parameters on the line after a waiting Authorization key', () => {
+    expect(redactLogSecrets('Authorization:\nDigest username="u", response="opaque-response"\nnext')).toBe(
+      `Authorization:\nDigest ${REDACTED}\nnext`,
+    );
+  });
+
+  it('leaves non-header keys and literals to the ordinary rules', () => {
+    expect(redactLogSecrets('{"authenticated":true,"user":"svc"}')).toBe('{"authenticated":true,"user":"svc"}');
+    expect(redactLogSecrets('{"authorization": null, "user": "svc"}')).toBe('{"authorization": null, "user": "svc"}');
+    expect(redactLogSecrets('"authorization":"Digest username=\\"u\\", response=\\"x\\""')).toBe(
+      `"authorization":"${REDACTED}"`,
+    );
+  });
+});
+
 describe('redactLogSecrets: YAML comments', () => {
   it('treats a comment after a secret key as no value, for lists and mappings', () => {
     expect(redactLogSecrets('secrets: # credentials\n  - opaque-credential\n  - another-credential\nregion: us1')).toBe(
@@ -600,6 +630,8 @@ const CORPUS = [
   '"opaque-credential"',
   ']}',
   'region: us1',
+  'Proxy-Authorization: Digest username="u", response="opaque-credential"',
+  'WWW-Authenticate: Digest realm="r", nonce="opaque-credential"',
 ].join('\n');
 
 describe('redactLogSecrets: properties', () => {
@@ -631,6 +663,8 @@ describe('redactLogSecrets: properties', () => {
       join(' ', '-----BEGIN', 'A'.repeat(size)),
       '\\'.repeat(size),
       'sid='.repeat(size / 4),
+      'Authorization: '.repeat(size / 15),
+      'x-authorization:a '.repeat(size / 18),
       'sid="'.repeat(size / 5),
       'secret=['.repeat(size / 8),
       'secret={"a":"'.repeat(size / 13),

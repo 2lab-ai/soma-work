@@ -57,6 +57,12 @@ const SECRET_KEY_RE = /token|secret|passw(?:or)?d|api[_-]?key|private[_-]?key|co
  * secret key only the common ones are (`token: Bearer <credential>`), so a two-word password is not split.
  */
 const AUTH_KEY_RE = /authorization/i;
+/**
+ * HTTP auth header names (`Authorization`, `Proxy-Authorization`, `WWW-Authenticate`, `Proxy-Authenticate`, ...).
+ * After `:` their parameters are quoted (`Digest username="u", response="..."`), so the value is the whole rest
+ * of the line, quotes included; only the scheme word stays.
+ */
+const AUTH_HEADER_KEY_RE = /(?:^|-)(?:authorization|authenticate)$/i;
 const AUTH_SCHEME_RE = /^[A-Za-z][A-Za-z0-9-]*$/;
 const KNOWN_SCHEME_RE = /^(?:bearer|basic|token|bot|digest|apikey)$/i;
 
@@ -150,7 +156,7 @@ interface ValueSpan {
 }
 
 function keyInfo(key: string, level: 0 | 1, colon: boolean): KeyInfo | null {
-  if (SECRET_KEY_RE.test(key)) return { key, secret: true, level, colon };
+  if (SECRET_KEY_RE.test(key) || AUTH_HEADER_KEY_RE.test(key)) return { key, secret: true, level, colon };
   return SID_KEY_RE.test(key) ? { key, secret: false, level, colon } : null;
 }
 
@@ -324,7 +330,9 @@ function takeValue(line: string, at: number, info: KeyInfo): Taken {
     return { end: to, redact: { from: at, to }, next: NONE };
   }
   let span = valueSpan(line, at, info.colon);
-  if (info.secret) {
+  if (info.colon && !span.quoted && AUTH_HEADER_KEY_RE.test(info.key)) {
+    if (!LITERAL_RE.test(line.slice(span.from, span.to))) span = headerCredentialSpan(line, at);
+  } else if (info.secret) {
     span = credentialSpan(line, span, AUTH_KEY_RE.test(info.key) ? AUTH_SCHEME_RE : KNOWN_SCHEME_RE, info.colon);
   }
   const value = line.slice(span.from, span.to);
@@ -336,6 +344,18 @@ function takeValue(line: string, at: number, info: KeyInfo): Taken {
   if (DIGITS_RE.test(value) && COUNT_KEY_RE.test(info.key)) return keep;
   const next: LineState = span.open ? { kind: 'value', quote: span.quote, level: span.level, resume: NONE } : NONE;
   return { end: span.to, redact: span, next };
+}
+
+/** An auth header's value from `at`: the rest of the line after its scheme word (or all of it, with none). */
+function headerCredentialSpan(line: string, at: number): ValueSpan {
+  const wordEnd = unquotedEnd(line, at);
+  let from = at;
+  if (wordEnd > at && AUTH_SCHEME_RE.test(line.slice(at, wordEnd))) {
+    let j = wordEnd;
+    while (line[j] === ' ' || line[j] === '\t') j++;
+    if (j > wordEnd && j < line.length) from = j;
+  }
+  return { from, to: line.length, quoted: false, open: false, quote: '"', level: 0 };
 }
 
 /** Exactly a redacted form: the marker, or a key block's markers around it. A marker followed by more is not. */
