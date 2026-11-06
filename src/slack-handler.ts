@@ -8885,6 +8885,7 @@ export class SlackHandler {
     let live: ConversationSession;
     try {
       live = this.liveGoalSession(sessionKey);
+      if (live !== session) throw new HostGoalActionError(409, 'The session was replaced — refresh and try again');
       this.assertGoalPausable(live, goalId);
     } catch (error) {
       await this.postGoalNoticeBestEffort(
