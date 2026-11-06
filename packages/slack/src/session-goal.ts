@@ -99,6 +99,8 @@ export interface SessionGoalState {
   stall?: SessionGoalStall;
   /** The `remaining` list of the verdict behind `lastEvalReason` (goal stall comparison). */
   lastEvalRemaining?: string[];
+  /** #968 — the task ids the task gate held the goal open on (see `src/slack/goal-task-gate.ts`). */
+  lastEvalGateOpen?: string[];
   /** #745: where the goal first failed for its current reason. */
   firstFailure?: SessionGoalFirstFailure;
   /**
@@ -428,6 +430,7 @@ export function advanceGoalQueue(
   next.pendingEval = undefined;
   next.lastEvalReason = undefined;
   next.lastEvalRemaining = undefined;
+  next.lastEvalGateOpen = undefined;
   next.stall = undefined;
   next.firstFailure = undefined;
   next.lastEvalSummaryHash = undefined;
@@ -492,6 +495,7 @@ export function deleteCurrentGoal(session: GoalQueueSession): { deleted: boolean
     next.pendingEval = undefined;
     next.lastEvalReason = undefined;
     next.lastEvalRemaining = undefined;
+    next.lastEvalGateOpen = undefined;
     next.stall = undefined;
     next.firstFailure = undefined;
     next.lastEvalSummaryHash = undefined;
