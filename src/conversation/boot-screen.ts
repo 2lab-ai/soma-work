@@ -21,6 +21,8 @@
  *  - DOMContentLoaded (every module has run; a module that failed to load leaves its element undefined for good);
  *  - 12 seconds (a module request that never answers holds DOMContentLoaded back).
  * It fades out (180ms, the kit's fade) and leaves the DOM. Without script a CSS animation hides it at 15s.
+ * While it is up the page under it is inert (#969) — every in-flow child of .app, not the drawers and dialogs — so a
+ * keyboard cannot reach controls nobody can see; every lift gives the focus back.
  *
  * The script is a template literal with no backticks, no `${…}` and no backslashes: it reaches the browser byte for
  * byte and the tests run it as shipped (theme-client.ts's pattern). The layer carries no words, so no catalog entry: it is
@@ -130,6 +132,18 @@ const BOOT_CLIENT_JS = `
   var boot = document.getElementById('boot');
   if (!boot) return;
   var gone = false;
+  // The page under the layer takes no keyboard focus while it is up (#969): every in-flow child of .app goes inert as
+  // the parser adds it, and gets its focus back at the lift. The overlays (drawers, dialogs) stay live — a deep link
+  // opens its drawer during boot — and a child the page made inert itself is left alone.
+  var held = [];
+  function hold() {
+    var app = document.querySelector('.app');
+    for (var el = app && app.firstElementChild; el; el = el.nextElementSibling) {
+      if (el.inert || held.indexOf(el) >= 0 || el.tagName === 'UI-DRAWER' || el.tagName === 'UI-DIALOG') continue;
+      el.inert = true;
+      held.push(el);
+    }
+  }
   // A custom element that is still undefined and has a box in the viewport: the page is not drawn yet.
   function undrawn() {
     var els;
@@ -143,11 +157,13 @@ const BOOT_CLIENT_JS = `
   function lift() {
     if (gone) return;
     gone = true;
+    for (var i = 0; i < held.length; i++) held[i].inert = false;
     boot.classList.add('is-out');
     setTimeout(function () { if (boot.parentNode) boot.parentNode.removeChild(boot); }, 400);
   }
   function check() {
     if (gone) return;
+    hold();
     if (document.readyState !== 'loading' && !undrawn()) return requestAnimationFrame(lift);
     requestAnimationFrame(check);
   }
