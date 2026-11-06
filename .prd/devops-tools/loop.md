@@ -1,6 +1,6 @@
 # loop — devops-tools 구현 드라이브
 
-Status: in-progress (라운드 1 = 코드, 닫힘 · main 머지 `2da8f4e4` 2026-10-27 · 라운드 2 = 라이브: WU0 닫힘, WU7 실승인 1회 통과 2026-11-06 — 남은 것 = 버튼 토큰·`admin:org` 운영자 단계, WU8 = D6 끝·D5 1/4 · D1–D6 = ① 확정 2026-10-26) · AS-IS = [`../14-devops-tools-as-is.md`](../14-devops-tools-as-is.md) · TO-BE = [`../15-devops-tools-to-be.md`](../15-devops-tools-to-be.md) ·
+Status: in-progress (라운드 1 = 코드, 닫힘 · main 머지 `2da8f4e4` 2026-10-27 · 라운드 2 = 라이브: WU0 닫힘, WU7 실승인 1회 통과 2026-11-06 — 남은 것 = 버튼 토큰·`admin:org` 운영자 단계, WU8 = D6·D5 끝 · D1–D6 = ① 확정 2026-10-26) · AS-IS = [`../14-devops-tools-as-is.md`](../14-devops-tools-as-is.md) · TO-BE = [`../15-devops-tools-to-be.md`](../15-devops-tools-to-be.md) ·
 아키텍처 = [`../16-devops-tools-architecture.md`](../16-devops-tools-architecture.md) · 상세 = [`research/2026-10-26-detail.md`](research/2026-10-26-detail.md) · ssot = [`ssot.md`](ssot.md) ·
 완료 원장 = [`loop.done.md`](loop.done.md)
 
@@ -19,7 +19,7 @@ PR의 CI + **Sanitize Gate**(리시트는 PR 자신의 체크) · 외부 리뷰 
 설정을 넣은 봇(`team-host` dev) 말고는 하드 거부(사람 gh 계정 키 꺼내기·키체인 덤프·브로커 경로 접근) 하나만 바뀐다. 순서:
 1. 운영자 단계 1회(sudo 비밀번호 1번): 앱 수준 토큰(`connections:write`) 생성 → Slack 확인 → `ingest slack broker-app-socket` → 데몬 재시작 → 브로커 pid의 연결 1개 이상 확인. 같은 자리에서 org-admin 토큰을 `admin:org` 포함으로 다시 받아(버리는 gh 설정 폴더, 키체인 미사용) `ingest gh org-admin`.
 2. 버튼 실클릭 1회(카드 → 승인 버튼 → lease → GET → revoke), `gh_org_member` 1회(현재 역할과 같은 `set-role`처럼 바뀌는 것이 없는 호출).
-3. D5 나머지 3개 봇(`team-host` dev, `prod-host` dev·main) — 지금 쓰는 비어드민 사용자 grant를 어떻게 할지 운영자가 정한 뒤 적용 + 공지. (stage0 포지키 = 끝, stage2 = 계획만 — 아래 "stage2 계획")
+3. WU8 닫기 공지 확인 — 4주 grant 만료(2026-12-04) 전에 계속 쓰는 사용자의 연장 요청이 카드로 들어오는지. (stage0 포지키 = 끝, stage2 = 계획만 — 아래 "stage2 계획")
 
 ## 라운드 2 — 라이브 (2026-10-27 열림)
 
@@ -40,7 +40,7 @@ WU7 측정(2026-10-27, `team-host` dev):
 | WU | 하는 일 | 파일 소유 | RED로 먼저 고정할 것 |
 |---|---|---|---|
 | WU7 설치 (`team-host` dev, 라이브) | 설치·비밀 입력·봇 연결 끝(위 측정). 남은 것 = 어드민 ✅ 라이브 실행, stage0·stage2 포지키, org-admin `admin:org` | 운영 원장 (코드는 WU7a로 닫힘) | (라이브) 측정됨: A16(어드민 세션 `cf_lease_request` → 카드, ✅ 전 실행 0) · A10 카드 내용(환경·권한·존·수명·사유·요청자) · A7 일부(`auth` 거부) · A2 일부(grant 없는 비어드민 세션에 서버 미등록 — 안내 문구는 미확인) · 카드 게시 지연 < 30초(약 2.4초). 미측정: A2 안내 문구, A3(read grant 유저), A4, A5, A6, A7 나머지, A8, A9, A10 ✅ 이후, A11, A12, A13, A15, A17, A18, 봇 토큰 ✅ 무효, 카드 `edited`/`text` 필드 유무, 계정 단위 lease가 존 권한에 미치는 범위 |
-| WU8 이관·닫기 (라이브) | 세션 env `GITHUB_TOKEN` 재확인 + 세션 밖 작업(크론·배포 스크립트·LaunchAgent)의 gh 사용 조사 → `team-host`·`prod-host` 봇 유저 gh 사람 계정 로그아웃(D6), server-tools `permission` 추가(D5) + 새 턴·진행 중 스레드 실측 + 공지 | 배포 설정(코드 변경 없음) | (라이브) A14, A19. 2026-11-06: D6 끝(아래), D5 = `owner-mac` dev만 — 나머지 3개는 비어드민 사용자가 지금 쓰는 중이라 grant 처리 결정 뒤 |
+| WU8 이관·닫기 (라이브) | 세션 env `GITHUB_TOKEN` 재확인 + 세션 밖 작업(크론·배포 스크립트·LaunchAgent)의 gh 사용 조사 → `team-host`·`prod-host` 봇 유저 gh 사람 계정 로그아웃(D6), server-tools `permission` 추가(D5) + 새 턴·진행 중 스레드 실측 + 공지 | 배포 설정(코드 변경 없음) | (라이브) A14, A19. 2026-11-06: D6 · D5 끝(아래) |
 
 WU8 측정(2026-11-06):
 - D6 사전 조사: 세션 밖에서 사람 로그인을 쓰는 작업 = `team-host`의 고객 문서 동기화 cron 하나(자기 gitconfig의 gh credential helper). 사람 로그인을 숨긴 상태(`GH_CONFIG_DIR` = 빈 폴더)로 각 작업을 돌려 확인: 문서 동기화 = 실패, 다른 자동 배포 fetch = 성공(전역 설정의 앱 토큰), 러너 워크플로 = 잡 토큰. 봇 프로세스(플러그인 fetch)는 `GITHUB_TOKEN` = 앱 토큰, 세션은 #834의 앱 토큰 gh 폴더.
@@ -48,6 +48,7 @@ WU8 측정(2026-11-06):
 - `gh auth logout`: `team-host` 2계정, `prod-host` 1계정 → 둘 다 "not logged into any GitHub hosts". 로그아웃은 로컬 설정만 지우고 토큰을 무효화하지 않으므로 브로커 사본은 그대로 — 직후 `gh_read` 두 계정 정상(WRITE · ADMIN), 문서 동기화 exit 0, 자동 배포 fetch 정상, 앱 토큰 gh 정상.
 - D5: research §D5 맵(read = list·list_service·list_stack·logs, write = 쿼리 4종)을 `owner-mac` dev에 적용(백업, 봇의 로더로 `server-tools` gated 확인, 새 턴부터 반영). `team-host` dev·`prod-host` dev·main은 같은 패치 dry-run만 — `team-host`에서 고객 개발자 세션이 지금 쓰고 있어(로그 1일치에 쿼리 도구 호출 다수) grant 없이 켜면 진행 중인 작업이 끊긴다.
 - 덤: `team-host`에서 devops-tools에 `permission`이 생긴 뒤로 "게이트 서버가 하나도 없을 때만" 주는 server-tools 일괄 허용이 꺼졌다 — 막히지는 않고(호출마다 검사는 게이트 서버만), bypass가 아닌 사용자에게 확인 창이 뜬다. D5를 켜면 정리된다.
+- D5 나머지 3개(같은 날, 운영자 결정 "기존 사용자 4주 grant 먼저 → 켜기 → 공지"): 지금 쓰는 사람 = 최근 28일 에이전트 기록에서 server-tools `tool_use`가 있는 세션 주인. `team-host` dev = 비어드민 10명, `prod-host` dev·main = 0명(28일 동안 에이전트 턴 0), `owner-mac` dev = 어드민만. → `team-host`의 10명에게 server-tools read·write grant를 봇의 grant 저장소 API로 4주(2026-12-04) 부여 → 세 봇에 같은 `permission` 맵 적용(백업) → 봇 모듈로 판정 재현: 어드민 = 허용, grant 사용자 = 허용, grant 없는 비어드민 = 거부 + 권한 요청 안내 → `team-host` 인프라 채널에 공지 1건(멘션 없음, 우회 방법 없음). A19 = 판정 재현으로 측정(새 턴 실측은 다음 비어드민 턴).
 
 ## 열린 질문
 
