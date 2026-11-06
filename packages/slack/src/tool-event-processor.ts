@@ -811,8 +811,8 @@ export class ToolEventProcessor {
    */
   endBackgroundWorkWithTurn(sessionKey?: string, taskIds?: string[]): Array<{ taskId: string; taskType?: string }> {
     if (!sessionKey) return [];
-    // Only the ids the ended turn saw, when given: the tracker is per session, and a newer turn
-    // (a supersede) may already have started tasks of its own (#989 review).
+    // Only the ids the ended turn saw, when given (#989 review). The tracker is per session; the
+    // caller relies on a session's runs being serialized, so this narrows, it does not isolate.
     const only = taskIds ? new Set(taskIds) : undefined;
     const ended = this.backgroundTaskTracker.liveTasks(sessionKey).filter((t) => !only || only.has(t.taskId));
     for (const task of ended) this.backgroundTaskTracker.trackSettled(sessionKey, task.taskId);
