@@ -482,6 +482,45 @@ describe('ensureRepoChannel', () => {
     expect(d.markArchived).toHaveBeenCalledWith('C_ARCH');
   });
 
+  // Review P2 — "last seen archived" is a hint, not a verdict: a restored channel is found again.
+  it('a mapped channel last seen archived but restored since is used again (tried last, not dropped)', async () => {
+    const d = deps({
+      mappedChannels: vi.fn(() => [{ id: 'C_RESTORED', name: 'workspace-new-repo', isArchived: true }]),
+      markArchived: vi.fn(),
+    });
+    await expect(ensureRepoChannel('U_ADMIN', REQUEST, d)).resolves.toEqual({
+      channelId: 'C_RESTORED',
+      channelName: 'workspace-new-repo',
+      created: false,
+    });
+    expect(d.create).not.toHaveBeenCalled();
+    expect(d.markArchived).not.toHaveBeenCalled();
+  });
+
+  it('a channel last seen archived is tried after the live ones', async () => {
+    const d = deps({
+      mappedChannels: vi.fn(() => [
+        { id: 'C_OLD', name: 'old', isArchived: true },
+        { id: 'C_LIVE', name: 'live' },
+      ]),
+    });
+    await expect(ensureRepoChannel('U_ADMIN', REQUEST, d)).resolves.toMatchObject({ channelId: 'C_LIVE' });
+    expect(d.invite).toHaveBeenCalledTimes(1);
+    expect(d.invite).toHaveBeenCalledWith('C_LIVE', 'U_ADMIN');
+  });
+
+  it('a private request: a public mapping last seen archived but live again still blocks (read, not trusted)', async () => {
+    const d = deps({
+      mappedChannels: vi.fn(() => [{ id: 'C_PUB', name: 'team', isPrivate: false, isArchived: true }]),
+      channelState: vi.fn(async () => ({ archived: false })),
+    });
+    await expect(ensureRepoChannel('U_ADMIN', { ...REQUEST, isPrivate: true }, d)).rejects.toMatchObject({
+      statusCode: 409,
+    });
+    expect(d.channelState).toHaveBeenCalledWith('C_PUB');
+    expect(d.create).not.toHaveBeenCalled();
+  });
+
   it('slackErrorCode reads the Web API error code, nothing else', () => {
     expect(slackErrorCode(slackError('name_taken'))).toBe('name_taken');
     expect(slackErrorCode(new Error('boom'))).toBe('');

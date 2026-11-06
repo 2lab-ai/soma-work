@@ -49,18 +49,27 @@ const MAKER_ENTRY_MS = 2 * 60_000;
 const makerEntryUntil = new Map<string, number>();
 
 /**
- * Store what a Slack read says about a channel — unless it is a read with no repo landing on an entry the bot
- * wrote moments ago that has one (#970). Returns the entry the registry holds afterwards.
+ * Store what a Slack read says about a channel. A read with no repo landing on an entry the bot wrote moments ago
+ * that has one (#970) keeps that entry's description — purpose, topic, repos, wiki — and takes everything else
+ * from the read (name, private, archived: those are as fresh as the read is). Returns the entry stored.
  */
 function storeRead(info: ChannelInfo): ChannelInfo {
   const held = channels.get(info.id);
   const until = makerEntryUntil.get(info.id) ?? 0;
   if (held && Date.now() < until && held.repos.length > 0 && info.repos.length === 0) {
-    logger.info('🛡️ Kept the maker’s entry over a read with no repo (likely stale)', {
+    const merged: ChannelInfo = {
+      ...info,
+      purpose: held.purpose,
+      topic: held.topic,
+      repos: held.repos,
+      confluenceUrl: held.confluenceUrl,
+    };
+    logger.info('🛡️ Kept the maker’s description over a read with no repo (likely stale)', {
       channelId: info.id,
       repos: held.repos,
     });
-    return held;
+    channels.set(info.id, merged);
+    return merged;
   }
   channels.set(info.id, info);
   return info;

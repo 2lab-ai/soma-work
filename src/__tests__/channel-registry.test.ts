@@ -52,8 +52,15 @@ describe('upsertChannel', () => {
 // rejoin (after a removal) and a later description change still register what they read.
 describe('the maker’s entry against a stale read (#970)', () => {
   /** A Slack client whose conversations.info / list answer with this channel, purpose as given. */
-  function client(id: string, purpose: string) {
-    const channel = { id, name: 'workspace-fresh', purpose: { value: purpose }, topic: { value: '' }, is_member: true };
+  function client(id: string, purpose: string, flags: { is_private?: boolean; is_archived?: boolean } = {}) {
+    const channel = {
+      id,
+      name: 'workspace-fresh',
+      purpose: { value: purpose },
+      topic: { value: '' },
+      is_member: true,
+      ...flags,
+    };
     return {
       conversations: {
         info: vi.fn(async () => ({ ok: true, channel })),
@@ -76,6 +83,13 @@ describe('the maker’s entry against a stale read (#970)', () => {
     await registerChannel(client(id, ''), id);
     expect(getChannel(id)?.repos).toEqual([repo]);
     expect(findChannelsForRepo(repo)).toEqual([id]);
+  });
+
+  it('the kept entry still takes the read’s fresh privacy and archive state (review P1)', async () => {
+    const { id, repo } = fresh();
+    upsertChannel({ id, name: 'workspace-fresh', purpose: `https://github.com/${repo}`, isPrivate: true });
+    await registerChannel(client(id, '', { is_private: false, is_archived: true }), id);
+    expect(getChannel(id)).toMatchObject({ repos: [repo], isPrivate: false, isArchived: true });
   });
 
   it('a startup scan read with no repo, right after the maker’s upsert, keeps the mapping too', async () => {

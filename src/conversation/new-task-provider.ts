@@ -113,9 +113,14 @@ export function repoChannelDeps(client: WebClient): RepoChannelDeps {
     mappedChannels: (repo) =>
       findChannelsForRepo(repo)
         .map((id) => getChannel(id))
-        .filter((c): c is NonNullable<typeof c> => !!c && c.isArchived !== true)
+        .filter((c): c is NonNullable<typeof c> => !!c)
         .sort((a, b) => a.repos.length - b.repos.length)
-        .map((c) => ({ id: c.id, name: c.name, ...(c.isPrivate === undefined ? {} : { isPrivate: c.isPrivate }) })),
+        .map((c) => ({
+          id: c.id,
+          name: c.name,
+          ...(c.isPrivate === undefined ? {} : { isPrivate: c.isPrivate }),
+          ...(c.isArchived === true ? { isArchived: true } : {}),
+        })),
     create: async (name, isPrivate) => {
       const res = await client.conversations.create({ name, is_private: isPrivate });
       const id = res.channel?.id;
