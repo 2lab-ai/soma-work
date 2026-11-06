@@ -208,3 +208,74 @@ describe('deploy-qa precondition gate (step 5.5)', () => {
     expect(md).toContain('`…/qa-issue/scripts/gate.mjs`');
   });
 });
+
+/**
+ * `$autoz` deploys are sent by an automation, so nobody answers the step 5.5
+ * question: 28 gates sat pending for days with zero QA cases run (2026-11-03).
+ * The owner's call: a `$autoz` deploy request counts as "proceed without" —
+ * every open precondition is waived inside the same run, no question is posted,
+ * and the run never ends waiting. QA itself is not skipped or reduced.
+ */
+describe('deploy-qa $autoz waiver (waive=autoz)', () => {
+  const md = read('deploy-qa');
+  const args = md.slice(md.indexOf('## Args'), md.indexOf('## Profile'));
+  const steps = md.slice(md.indexOf('## Steps'), md.indexOf('## Final report'));
+  const gate = steps.slice(steps.indexOf('5.5. **Precondition gate.**'), steps.indexOf('6. **Move to QA.**'));
+  const step7 = steps.slice(steps.indexOf('7. **QA, one issue at a time**'), steps.indexOf('8. **Carry-over.**'));
+  const final = md.slice(md.indexOf('## Final report'), md.indexOf('## Continuation'));
+
+  it('advertises waive=autoz in its description, argument hint and Args', () => {
+    const description = md.match(/^description: "(.*)"$/m)?.[1] ?? '';
+    expect(description).toContain('waive=autoz');
+    expect(md).toMatch(/^argument-hint: "[^"]*\[waive=autoz\][^"]*"$/m);
+    expect(args).toContain('`waive=autoz`');
+    // The request is the requester's answer; QA is never skipped or reduced by it.
+    expect(args).toMatch(/`waive=autoz`[^\n]*carries `\$autoz`[^\n]*requester's answer/);
+    expect(args).toMatch(/`waive=autoz`[^\n]*never skips or reduces QA/);
+  });
+
+  it('never depends on the environment wrapper forwarding waive= (the #608 bypass, reused)', () => {
+    const line = args.split('\n').find((l) => l.startsWith('- `waive=autoz`')) ?? '';
+    expect(line).toContain('passes it through unchanged');
+    expect(line).toMatch(/does not accept `waive=`[^\n]*`--preflight`[^\n]*`applies` or `partial: …`/);
+    expect(line).toMatch(
+      /does not accept `waive=`[^\n]*invoke this skill directly[^\n]*`env=[^`]*`[^\n]*`waive=autoz`/,
+    );
+  });
+
+  it('waives every open precondition inside the same run, keeps the lock and goes on to step 6', () => {
+    expect(gate).toContain('`waive=autoz`');
+    expect(gate).toContain(
+      '`node "…/gate.mjs" answer --gate <G> --key all --decision waived --by <the requester> --ref <the deploy request\'s message ts>`',
+    );
+    expect(gate).toContain('keep the lock');
+    // decide needs {env, inputs, statuses}: the key's plan in G, probed in this run, supplies all three.
+    // The same program is run against a real gate in qa-issue-gate.test.ts.
+    expect(gate).toContain(
+      "`jq --arg k <KEY> '.keys[$k] | {env, inputs, statuses: ([.preconditions[] | {(.id): .status}] | add // {})}' <G> > R/current-<KEY>.json`",
+    );
+    expect(gate).toContain('`node "…/gate.mjs" decide --gate <G> --key <KEY> --current R/current-<KEY>.json`');
+    expect(gate).toMatch(/`run` → step 6 with `decisions=<G>`/);
+    expect(gate).toContain('Never post the question with `waive=autoz`');
+    // The marker is prose only — a literal `$autoz` inside a shell argument expands to nothing.
+    for (const l of gate.split('\n').filter((x) => x.includes('gate.mjs'))) {
+      for (const cmd of l.match(/`node [^`]*`/g) ?? []) expect(cmd).not.toContain('$autoz');
+    }
+    expect(gate).toContain('`waived by $autoz`');
+  });
+
+  it('leaves the ask path without the waiver exactly as it was', () => {
+    expect(gate).toContain(
+      "Then release the lock only if it is mine, then ask the requester with the session's question tool (`local:UIAskUserQuestion`, one choice group: per key provide it / proceed without it / skip the key). End `deployed, QA incomplete: waiting for precondition confirmation`, with the reference line plus `decisions=<G>`.",
+    );
+    expect(args).toContain('A reply from anyone other than the requester is not an answer.');
+  });
+
+  it('a gate raised again in step 7 is waived too, at most once, and the run never ends waiting', () => {
+    expect(step7).toMatch(/With `waive=autoz`[^\n]*once more[^\n]*`not-run`, reason `inputs changed during QA`/);
+    expect(final).toMatch(
+      /`waive=autoz`[^\n]*never ends `deployed, QA incomplete: waiting for precondition confirmation`/,
+    );
+    expect(final).toContain('`waived by $autoz`');
+  });
+});
