@@ -226,6 +226,20 @@ describe('FollowupDispatcher turn generation', () => {
     expect(h.dispatcher.snapshot(SESSION).turnEpoch).toBe(8);
   });
 
+  it('liveTurnEpoch is the live run’s generation, and undefined once no run holds the slot (#962)', async () => {
+    const h = harness();
+    expect(h.dispatcher.liveTurnEpoch(SESSION)).toBeUndefined();
+
+    const start = h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    if (start.status !== 'dispatched') throw new Error('expected dispatch');
+    expect(h.dispatcher.liveTurnEpoch(SESSION)).toBe(start.run.turnEpoch);
+    expect(h.dispatcher.liveTurnEpoch(SESSION)).toBe((h.dispatch.mock.calls[0][0] as DispatchRequest).turnEpoch);
+
+    h.pending[0].settle({ result: 'safe' });
+    await start.run.settled;
+    expect(h.dispatcher.liveTurnEpoch(SESSION)).toBeUndefined();
+  });
+
   it('rejects a click rendered under an older turn before touching the item', async () => {
     const queue = new FollowupQueue();
     let turnEpoch = 3;
@@ -1226,9 +1240,10 @@ describe('FollowupDispatcher auto-steering (06 §3.2)', () => {
     expect(stored?.state).toBe('queued');
     expect(stored?.seq).toBe(item.seq); // same FIFO position
     expect(stored?.steerUuid).toBeUndefined();
-    // The row says what actually happened — the turn WAS live, the channel just
-    // did not take the message.
-    expect(stored?.stateReason).toBe('the input channel refused the message');
+    // SSOT 2026-11-06: a refused push is an ordinary wait (the turn has not opened its
+    // input yet, #956) — the row reads as waiting in the queue, never "refused".
+    // The channel's own words stay in the notice (and the log), for whoever debugs it.
+    expect(stored?.stateReason).toBeUndefined();
     expect(h.notices).toContainEqual({
       type: 'item-unsteered',
       sessionKey: SESSION,

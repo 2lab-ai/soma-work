@@ -403,6 +403,61 @@ export function stampWorkLogAgent<E extends { kind: string; tool?: string; agent
   return stampWorkLogTask(agent.ledger, entry);
 }
 
+/** A subagent a restart stopped, named in the restart resume so the model can pick it up (#966). */
+export interface StoppedAgentRef {
+  /** Spawn order (`A3`). */
+  n: number;
+  /** The SDK task id — the agent ID `SendMessage` resumes. */
+  taskId: string;
+  type?: string;
+  description?: string;
+}
+
+/** At most this many stopped agents are carried to the resume (the newest). */
+export const STOPPED_AGENTS_MAX = 8;
+
+/**
+ * #966 — the agents a restart stopped: in a registry read back from disk, the
+ * top-level agents still marked `running` (a nested one is its parent's to
+ * resume) that have an SDK task id, the id `SendMessage` takes. Read BEFORE
+ * {@link loseRunningAgents} marks them `unknown`.
+ */
+export function stoppedAgentsOf(reg: AgentRegistry | undefined): StoppedAgentRef[] {
+  if (!reg) return [];
+  return reg.agents
+    .filter((a) => a.status === 'running' && !a.parentId && typeof a.taskId === 'string' && a.taskId.length > 0)
+    .slice(-STOPPED_AGENTS_MAX)
+    .map((a) => ({
+      n: a.n,
+      taskId: a.taskId as string,
+      ...(a.type ? { type: a.type } : {}),
+      ...(a.description ? { description: a.description } : {}),
+    }));
+}
+
+/** One line of model-written text: no line breaks, quotes or backticks, clipped. */
+function oneLine(text: string, max: number): string {
+  const flat = text
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/[`"]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+/**
+ * The resume's lines for {@link stoppedAgentsOf}:
+ * `- A3 general-purpose "Build ui-working element" — agent ID afa413d9893ddb0c3`.
+ * The type and description are model-written, so each is kept to one clipped line.
+ */
+export function formatStoppedAgents(agents: StoppedAgentRef[] | undefined): string[] {
+  return (agents ?? []).slice(0, STOPPED_AGENTS_MAX).map((a) => {
+    const type = a.type ? ` ${oneLine(a.type, 40)}` : '';
+    const description = a.description ? ` "${oneLine(a.description, 80)}"` : '';
+    return `- A${a.n}${type}${description} — agent ID ${oneLine(a.taskId, 80)}`;
+  });
+}
+
 /** After a restart: every agent still marked running is out of sight. Returns a copy. */
 export function loseRunningAgents(reg: AgentRegistry | undefined, now: number): AgentRegistry | undefined {
   if (!reg) return undefined;

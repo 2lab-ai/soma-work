@@ -172,6 +172,8 @@ async function openPage(browser: Browser, options: BrowserContextOptions, posted
   });
   await page.goto(`${BASE_URL}/dashboard/U001`);
   await page.waitForSelector('#new-task-btn', { state: 'attached' });
+  // The first screen (#965) covers the page until it is drawn and fades out over 180 ms: never capture it (#969).
+  await page.waitForSelector('#boot', { state: 'detached' });
   return page;
 }
 
