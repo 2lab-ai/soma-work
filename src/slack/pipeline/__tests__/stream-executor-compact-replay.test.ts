@@ -884,6 +884,23 @@ describe('a /compact turn with a replay waiting is not the end of the work (#891
     expect(states[states.length - 1]).toBe('idle');
   });
 
+  it('writes no idle for a session that ended during the /compact turn — the key may already be a new session (#893)', async () => {
+    const rec = createDispatchRecorder();
+    const session = thresholdSession();
+    const deps = createDeps(() => {
+      // The session is terminated while its /compact turn runs.
+      session.terminated = true;
+      return toAgentEvents(compactBoundarySdk());
+    }, rec.fn);
+    const states = trackActivity(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await new StreamExecutor(deps).execute(executeParams(session, say, '/compact'));
+
+    expect(rec.delivered).toEqual([]);
+    expect(states).not.toContain('idle');
+  });
+
   it('an ordinary turn still goes idle and starts the countdown', async () => {
     const deps = createDeps(() => toAgentEvents(successSdk()), createDispatchRecorder().fn);
     const states = trackActivity(deps);
