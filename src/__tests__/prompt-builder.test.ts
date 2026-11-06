@@ -259,7 +259,9 @@ describe('PromptBuilder', () => {
         /Any other answer, or an error from the skill, is handled like `missing: <fields>`[^\n]*⚠️/,
       );
       // Nothing earlier in the conversation waives QA, and a preflight answer never parks the deploy on the requester.
-      expect(section).toContain('is consent to skip or reduce QA');
+      expect(section).toContain(
+        'Nothing the requester said before the preflight (for example "don\'t ask", "just merge", "묻지 말고") is consent to skip or reduce QA.',
+      );
       expect(section).toContain('Never wait for the requester because of a preflight answer');
       expect(section).toContain('Never tell the requester to re-run QA elsewhere');
       expect(section).not.toMatch(/then wait for the requester/);
@@ -348,6 +350,44 @@ describe('PromptBuilder', () => {
         prompt.indexOf('### 7) Post-Deploy QA'),
       );
       expect(preflight).toContain('Never wait for the requester because of a preflight answer');
+    });
+
+    // `$autoz` deploys are sent by an automation: nobody answers the precondition question, so
+    // 28 gates sat pending and zero QA cases ran (2026-11-03). Owner's call: `$autoz` = "proceed without".
+    it('deploy workflow step 7 treats a $autoz deploy request as the answer "proceed without" (waived)', () => {
+      const prompt = builder.loadWorkflowPrompt('deploy') ?? '';
+      const step7 = prompt.slice(prompt.indexOf('### 7) Post-Deploy QA'));
+      const item6 = step7.split('\n').find((l) => l.startsWith('6. ')) ?? '';
+      expect(item6).toContain(
+        "When the deploy request that started this session carries `$autoz`, that request is the requester's answer to the precondition question: waive every open precondition for every key.",
+      );
+      expect(item6).toContain(
+        'This is not consent to skip or reduce QA — every case that can run still runs, waived cases stay blocked and never count as pass, and the report still leads with the gap table, marked `waived by $autoz`.',
+      );
+      // The workflow says how it tells the QA skill, and that skill acts in the same run.
+      expect(item6).toContain('`waive=autoz`');
+      expect(step7).toMatch(/^1\. [^\n]*carries `\$autoz`[^\n]*`waive=autoz`/m);
+      // The waiver never depends on the environment wrapper forwarding waive= (the #608 path, reused).
+      expect(item6).toMatch(
+        /does not accept `waive=`[^\n]*first invoke `<plugin>:post-deploy --preflight repo=<owner\/repo> target=<branch>`[^\n]*continue only if it answers `applies` or `partial: …`[^\n]*`zworkflow:deploy-qa`[^\n]*`waive=autoz`/,
+      );
+      // The direct call keeps the run's scope: the same argument list as the deploy-qa skill's own bypass text
+      // (deploy-qa-skill.test.ts pins the identical list there).
+      expect(item6).toContain(
+        '`zworkflow:deploy-qa` directly with the same `repo`, `target`, `before`, `after` and `keys=` (if the run had one), `env=',
+      );
+      // A run that parked anyway is answered with the waiver at once, never waited on.
+      expect(item6).toMatch(
+        /still ends `deployed, QA incomplete: waiting for precondition confirmation`[^\n]*never wait/,
+      );
+      expect(item6).toContain(
+        'Without `$autoz`, nothing changes: item 5 asks the requester and waits for their answer.',
+      );
+      // The non-autoz ask path (item 5) and the preflight rule are unchanged.
+      const item5 = step7.split('\n').find((l) => l.startsWith('5. ')) ?? '';
+      expect(item5).toContain('A reply from anyone other than the requester is not an answer.');
+      expect(item5).toContain('This is the only time the deploy waits on the requester for QA');
+      expect(item5).not.toContain('autoz');
     });
 
     it('should fallback to default for unknown workflow', () => {
