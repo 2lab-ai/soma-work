@@ -4,6 +4,6 @@
     "outDir": "dist",
     "rootDir": "."
   },
-  "include": ["server-tools-mcp-server.ts"],
+  "include": ["server-tools-mcp-server.ts", "redact-logs.ts"],
   "exclude": ["**/*.test.ts", "dist"]
 }
