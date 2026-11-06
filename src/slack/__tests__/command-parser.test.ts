@@ -439,6 +439,8 @@ describe('CommandParser', () => {
       expect(CommandParser.parseGoalCommand('goal ship it')).toEqual({ action: 'set', objective: 'ship it' });
       expect(CommandParser.parseGoalCommand('goal pause')).toEqual({ action: 'pause' });
       expect(CommandParser.parseGoalCommand('goal resume')).toEqual({ action: 'resume' });
+      // `goal resume <n>` picks the n-th paused goal (SSOT 2026-11-06).
+      expect(CommandParser.parseGoalCommand('goal resume 2')).toEqual({ action: 'resume', index: 2 });
       expect(CommandParser.parseGoalCommand('goal done')).toEqual({ action: 'complete' });
       expect(CommandParser.parseGoalCommand('goal clear')).toEqual({ action: 'clear' });
       expect(CommandParser.parseGoalCommand('goal set')).toEqual({

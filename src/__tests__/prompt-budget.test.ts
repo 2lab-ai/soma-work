@@ -28,7 +28,8 @@ const WORKFLOWS_DIR = path.join(PROMPT_DIR, 'workflows');
 
 /** System prompt per workflow: 'default' plus every src/prompt/workflows/*.prompt. */
 const WORKFLOW_BUDGET: Record<string, number> = {
-  default: 9_100,
+  // 2026-11-06: + 'Before Refusing or Narrowing an Instruction' (verify the premise of a refusal; incident in the section).
+  default: 11_400,
   deploy: 30_900,
   'jira-brainstorming': 8_000,
   'jira-create-pr': 9_900,

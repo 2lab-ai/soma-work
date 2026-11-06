@@ -6407,6 +6407,26 @@ describe('SET_GOAL host-apply (#1082)', () => {
       expect(texts.some((t: string) => t.includes('paused — `goal resume` runs it'))).toBe(true);
     });
 
+    // trinity review P1 (astra-zhuge, 2026-11-06): a goal the owner paused is set aside, not gone —
+    // the model calling SET_GOAL for it again must not start a second copy behind the owner's back.
+    it('a goal set aside as paused is the same goal too — no second copy, the notice says how to run it', async () => {
+      const deps = createExecutorDeps();
+      const executor = new StreamExecutor(deps);
+      const session = createSession();
+      await apply(executor, session, turn());
+      const paused = session.goal;
+      paused.status = 'paused';
+      session.goalPaused = [paused];
+      session.goal = undefined;
+      const context = turn();
+      await apply(executor, session, context, ' ship the  goal feature');
+      expect(session.goal).toBeUndefined();
+      expect(session.goalQueue ?? []).toHaveLength(0);
+      expect(session.goalPaused).toEqual([paused]);
+      const texts = (context.say as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]?.text ?? '');
+      expect(texts.some((t: string) => t.includes('paused — `goal resume` runs it'))).toBe(true);
+    });
+
     it('a goal already queued: not queued again, the notice gives its position', async () => {
       const deps = createExecutorDeps();
       const executor = new StreamExecutor(deps);

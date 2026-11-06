@@ -55,13 +55,35 @@ const AGENT_TASK_TYPE = 'local_agent';
  * and kill the agents this exists to keep).
  */
 export function liveAgentIds(frame: Record<string, unknown>): string[] | undefined {
+  return liveTaskIds(frame, true);
+}
+
+/**
+ * The ids of the live background tasks a `system`/`background_tasks_changed`
+ * frame announces that are NOT agents — shells, workflows, MCP tasks;
+ * `undefined` for any other frame (or a malformed one, as above).
+ *
+ * None of them holds a turn open for its lifetime (see {@link liveAgentIds}).
+ * But each one that finishes makes the CLI run a notification turn while its
+ * input is open, and a host that reads the answering result late (#997: the
+ * Slack consumer was 92 s behind) finds that turn already running. So the
+ * handler holds such an answer for the follow-up grace only, long enough to read
+ * what the CLI already emitted. Ambient tasks — every live-update watcher such
+ * as a Monitor (sdk.d.ts:3703) — are not activity and never count.
+ */
+export function liveNonAgentTaskIds(frame: Record<string, unknown>): string[] | undefined {
+  return liveTaskIds(frame, false);
+}
+
+/** The live, non-ambient task ids of a level frame: its agents, or everything else. */
+function liveTaskIds(frame: Record<string, unknown>, agents: boolean): string[] | undefined {
   if (frame.type !== 'system' || frame.subtype !== 'background_tasks_changed') return undefined;
   if (!Array.isArray(frame.tasks)) return undefined;
   const ids: string[] = [];
   for (const task of frame.tasks) {
     if (!task || typeof task !== 'object') continue;
     const { task_id: taskId, task_type: taskType, ambient } = task as Record<string, unknown>;
-    if (taskType !== AGENT_TASK_TYPE || ambient === true) continue;
+    if ((taskType === AGENT_TASK_TYPE) !== agents || ambient === true) continue;
     if (typeof taskId === 'string' && taskId.length > 0) ids.push(taskId);
   }
   return ids;

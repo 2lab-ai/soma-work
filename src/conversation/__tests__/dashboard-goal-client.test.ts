@@ -123,16 +123,23 @@ describe('goal card data — what the page hands <ui-goal-card> (T2)', () => {
     ]);
   });
 
-  it('only what the goal route answers: actions are delete only; the add box is canEdit; the route cap is maxLength', () => {
+  it('only what the goal route answers: delete, pause and resume; the add box is canEdit; the route cap is maxLength', () => {
     const d = m.goalCardData(card(), true);
-    expect(d.actions).toEqual(['delete']);
+    expect(d.actions).toEqual(['delete', 'pause', 'resume']);
     expect(d.canEdit).toBe(true);
     expect(d.maxLength).toBe(4000);
     expect(m.goalCardData(card(), false).canEdit).toBe(false);
-    // The route refuses anything else: the page never lets the element offer it.
+    // The route refuses complete: the page never lets the element offer it.
     expect(TEMPLATE).not.toContain("'ui-complete'");
-    expect(TEMPLATE).not.toContain("'ui-pause'");
-    expect(TEMPLATE).not.toContain("'ui-resume'");
+  });
+
+  it('a pause or resume in flight spins the card’s one toggle (its busy key is pause)', () => {
+    const k = card().key;
+    m.__busy[k] = { op: 'resume', id: '' };
+    expect(m.goalCardData(card(), true).busy).toBe('pause');
+    m.__busy[k] = { op: 'pause', id: '' };
+    expect(m.goalCardData(card(), true).busy).toBe('pause');
+    delete m.__busy[k];
   });
 
   it.each(['paused', 'complete'])('a %s goal carries no budget line and no 남은 것', (status) => {
@@ -154,7 +161,7 @@ describe('goal card data — what the page hands <ui-goal-card> (T2)', () => {
   it('no goal at all: current null, empty queue and history (the element says 아직 목표가 없습니다 and shows the add box)', () => {
     expect(m.goalCardData(card({ goal: undefined }), true)).toEqual({
       canEdit: true,
-      actions: ['delete'],
+      actions: ['delete', 'pause', 'resume'],
       maxLength: 4000,
       current: null,
       queue: [],
@@ -261,8 +268,8 @@ describe('the panel goal — one <ui-goal-card> per session, data only when it c
       },
     };
     const m = load<{ renderPanelGoal(): void; __set(n: string, v: unknown): void }>(
-      [...DATA_FNS, 'renderPanelGoal'],
-      DATA_VARS,
+      [...DATA_FNS, 'renderPanelGoalPaused', 'renderPanelGoal'],
+      [...DATA_VARS, '_gpArmed'],
       {
         document,
         panelSessionKey: Object.keys(sessions)[0],
@@ -286,7 +293,7 @@ describe('the panel goal — one <ui-goal-card> per session, data only when it c
     expect(r.host._key).toBe('self::C1:t1');
     expect(r.writes).toHaveLength(1);
     expect(r.writes[0].canEdit).toBe(true);
-    expect(r.writes[0].actions).toEqual(['delete']);
+    expect(r.writes[0].actions).toEqual(['delete', 'pause', 'resume']);
     expect(r.host.style.display).toBe('');
     expect(r.classes.has('is-empty')).toBe(false);
   });
@@ -358,6 +365,56 @@ describe('the panel goal — one <ui-goal-card> per session, data only when it c
     gone.m.renderPanelGoal();
     expect(gone.host.style.display).toBe('none');
     expect(gone.host._key).toBeNull();
+  });
+});
+
+describe('the paused goals under the card (SSOT 2026-11-06, executed)', () => {
+  function rig(goal: any, opts: { canEdit?: boolean; busy?: { op: string; id: string } } = {}) {
+    const el: any = { style: { display: 'none' }, innerHTML: '', _gpSig: '' };
+    const m = load<{ renderPanelGoalPaused(s: unknown, canEdit: boolean): void }>(
+      ['esc', 'escAttr', 'renderPanelGoalPaused'],
+      ['_gpArmed', '_goalBusy'],
+      { document: { getElementById: (id: string) => (id === 'panel-goal-paused' ? el : null) } },
+    );
+    const s = { key: 'k', goal };
+    if (opts.busy) (m as any).__busy.k = opts.busy;
+    m.renderPanelGoalPaused(s, opts.canEdit ?? true);
+    return { el, m, s };
+  }
+  const paused = [
+    { goalId: 'p1', objective: '첫째 <b>' },
+    { goalId: 'p2', objective: '둘째' },
+  ];
+
+  it('one row each, numbered as `goal resume <n>` counts, with 재개 · 삭제; the hint says where a resume lands', () => {
+    const running = rig({ current: { goalId: 'g1', objective: 'x', status: 'active' }, queue: [], paused });
+    expect(running.el.style.display).toBe('');
+    expect(running.el.innerHTML).toContain('일시정지된 목표');
+    expect(running.el.innerHTML).toContain('1. 첫째 &lt;b&gt;');
+    expect(running.el.innerHTML).toContain('2. 둘째');
+    expect(running.el.innerHTML).toContain('data-gp-act="resume" data-gp-id="p1"');
+    expect(running.el.innerHTML).toContain('data-gp-act="delete" data-gp-id="p2"');
+    expect(running.el.innerHTML).toContain('재개하면 지금 목표 다음에 시작합니다.');
+    const idle = rig({ queue: [], paused });
+    expect(idle.el.innerHTML).toContain('재개하면 바로 지금 목표로 시작합니다.');
+  });
+
+  it('a read-only viewer sees the list without buttons; no paused goals hides and empties it', () => {
+    const ro = rig({ queue: [], paused }, { canEdit: false });
+    expect(ro.el.innerHTML).toContain('둘째');
+    expect(ro.el.innerHTML).not.toContain('data-gp-act');
+    const none = rig({ queue: [], paused: [] });
+    expect(none.el.style.display).toBe('none');
+    expect(none.el.innerHTML).toBe('');
+  });
+
+  it('a goal write in flight disables every button and spins the one it is about; an equal repaint writes nothing', () => {
+    const r = rig({ queue: [], paused }, { busy: { op: 'resume', id: 'p2' } });
+    expect(r.el.innerHTML).toContain('data-gp-act="resume" data-gp-id="p2" aria-disabled="true" aria-busy="true"');
+    expect(r.el.innerHTML).toContain('data-gp-act="resume" data-gp-id="p1" aria-disabled="true">');
+    r.el.innerHTML = 'untouched';
+    r.m.renderPanelGoalPaused(r.s, true);
+    expect(r.el.innerHTML).toBe('untouched');
   });
 });
 
@@ -497,11 +554,26 @@ describe("the element's events on document (executed)", () => {
     const on: Record<string, (e: any) => void> = {};
     const goalAction = vi.fn();
     const addGoal = vi.fn();
-    new Function('document', '_sessionCache', 'goalAction', 'addGoal', GOAL_LISTENERS)(
+    const repaintPanelGoalFor = vi.fn();
+    new Function(
+      'document',
+      '_sessionCache',
+      'goalAction',
+      'addGoal',
+      'panelSessionKey',
+      'repaintPanelGoalFor',
+      '_gpArmed',
+      'setTimeout',
+      GOAL_LISTENERS,
+    )(
       { addEventListener: (t: string, fn: (e: any) => void) => (on[t] = fn) },
       { k: { key: 'k' } },
       goalAction,
       addGoal,
+      'k',
+      repaintPanelGoalFor,
+      null,
+      () => 0,
     );
     const target = (key: string | null, tag = 'UI-GOAL-CARD') => ({
       tagName: tag,
@@ -519,18 +591,52 @@ describe("the element's events on document (executed)", () => {
       on[type](e);
       return e;
     };
-    return { on, goalAction, addGoal, target, fire };
+    /** A click on one of the paused list's buttons (data-gp-act / data-gp-id), as the page's delegate sees it. */
+    const press = (act: string, id: string, disabled = false) => {
+      const button = {
+        getAttribute: (n: string) =>
+          n === 'data-gp-act' ? act : n === 'data-gp-id' ? id : n === 'aria-disabled' && disabled ? 'true' : null,
+      };
+      on.click({ target: { closest: (sel: string) => (sel.includes('#panel-goal-paused') ? button : null) } });
+    };
+    return { on, goalAction, addGoal, repaintPanelGoalFor, target, fire, press };
   }
 
   it('ui-delete names where the goal was seen: the current goal, or a queued one whose remove spins (busyId)', () => {
     const l = listeners();
-    expect(Object.keys(l.on).sort()).toEqual(['ui-add', 'ui-delete']);
+    expect(Object.keys(l.on).sort()).toEqual(['click', 'ui-add', 'ui-delete', 'ui-pause', 'ui-resume']);
     l.fire('ui-delete', l.target('k'), { id: 'g1', queued: false });
     l.fire('ui-delete', l.target('k'), { id: 'g2', queued: true });
     expect(l.goalAction.mock.calls).toEqual([
       ['k', { action: 'delete', goalId: 'g1', expect: 'current' }, ''],
       ['k', { action: 'delete', goalId: 'g2', expect: 'queued' }, 'g2'],
     ]);
+  });
+
+  it('ui-pause / ui-resume send the current goal’s id; a card of a session the page no longer knows sends nothing', () => {
+    const l = listeners();
+    l.fire('ui-pause', l.target('k'), { id: 'g1' });
+    l.fire('ui-resume', l.target('k'), { id: 'g1' });
+    const stale = l.fire('ui-pause', l.target('gone'), { id: 'g1' });
+    expect(stale.prevented).toBe(true);
+    l.fire('ui-resume', l.target('k', 'UI-APPROVAL-CARD'), { id: 'g1' });
+    expect(l.goalAction.mock.calls).toEqual([
+      ['k', { action: 'pause', goalId: 'g1' }],
+      ['k', { action: 'resume', goalId: 'g1' }],
+    ]);
+  });
+
+  it('the paused list: 재개 sends at once; 삭제 only on its second press (expect paused); a disabled button sends nothing', () => {
+    const l = listeners();
+    l.press('resume', 'p1');
+    expect(l.goalAction.mock.calls).toEqual([['k', { action: 'resume', goalId: 'p1' }, 'p1']]);
+    l.press('delete', 'p2');
+    expect(l.goalAction).toHaveBeenCalledTimes(1); // armed, not sent
+    expect(l.repaintPanelGoalFor).toHaveBeenCalledWith('k');
+    l.press('delete', 'p2');
+    expect(l.goalAction.mock.calls[1]).toEqual(['k', { action: 'delete', goalId: 'p2', expect: 'paused' }, 'p2']);
+    l.press('resume', 'p3', true);
+    expect(l.goalAction).toHaveBeenCalledTimes(2);
   });
 
   it('ui-add is prevented (the element keeps the draft until the page clears it) and hands the words with the card', () => {

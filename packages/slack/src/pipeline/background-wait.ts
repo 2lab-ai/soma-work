@@ -164,6 +164,7 @@ export function buildBackgroundWaitPrompt(live: LiveBackgroundWork, attempt: num
     `Do NOT stop. Pick up what you still need in THIS turn: rerun a stopped command in the foreground, or start it in the background and wait for it before you end the turn (a bounded loop that checks whether it finished). SendMessage to a stopped subagent's agent ID resumes it from its transcript. An output file may hold what a task printed before it stopped.`,
     `Only finish once your task is genuinely done, or emit CONTINUE_SESSION to hand off to the next phase.`,
     `If a stopped process was only meant to run while you worked (a dev server, a watcher) and nothing depends on it, it is fine to finish now.`,
+    `If the last tool call of your previous turn reads "The user doesn't want to take this action right now…" and no message of the user's says they stopped it, the host closed that call when the turn ended, not the user. Check whether it took effect, then continue.`,
   ].join('\n');
 }
 
