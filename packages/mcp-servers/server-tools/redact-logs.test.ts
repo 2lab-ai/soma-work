@@ -312,13 +312,51 @@ describe('redactLogSecrets: shapes and key blocks after a waiting key', () => {
   });
 
   it('keeps the scheme of a credential under any secret key on one line', () => {
-    expect(redactLogSecrets('auth_token: Token abc123 next=1')).toBe(`auth_token: Token ${REDACTED} next=1`);
+    expect(redactLogSecrets('auth_token: Token abc123 next=1')).toBe(`auth_token: Token ${REDACTED}`);
+    expect(redactLogSecrets('auth_token=Token abc123 next=1')).toBe(`auth_token=Token ${REDACTED} next=1`);
     expect(redactLogSecrets(`token: Bearer ${BEARER_VALUE}`)).toBe(`token: Bearer ${REDACTED}`);
   });
 
   it('keeps the key-block marker when the key and BEGIN share a line', () => {
     const input = [`privateKey: ${bareBegin}`, PEM_BODY[0], bareEnd].join('\n');
     expect(redactLogSecrets(input)).toBe([`privateKey: ${bareBegin}`, REDACTED, bareEnd].join('\n'));
+  });
+});
+
+describe('redactLogSecrets: multi-word values after a colon', () => {
+  it.each([
+    ['password: correct horse battery', `password: ${REDACTED}`],
+    ['Password: correct horse, battery staple', `Password: ${REDACTED}`],
+    ['password: hunter two, retries: 3', `password: ${REDACTED}, retries: 3`],
+    ['{"password":hunter two,"user":"svc"}', `{"password":${REDACTED},"user":"svc"}`],
+    ['{ password: correct horse }', `{ password: ${REDACTED} }`],
+    [
+      '{"msg":"login failed, password: correct horse","level":"warn"}',
+      `{"msg":"login failed, password: ${REDACTED}","level":"warn"}`,
+    ],
+    [
+      '{"msg":"cfg {\\"token\\": two words,\\"user\\":\\"svc\\"}"}',
+      `{"msg":"cfg {\\"token\\": ${REDACTED},\\"user\\":\\"svc\\"}"}`,
+    ],
+    ['Authorization: Basic abc def', `Authorization: Basic ${REDACTED}`],
+  ])('%s', (input, expected) => {
+    expect(redactLogSecrets(input)).toBe(expected);
+  });
+
+  it('keeps the single-token end after =, => and [k] =', () => {
+    expect(redactLogSecrets('password=correct horse user=svc')).toBe(`password=${REDACTED} horse user=svc`);
+    expect(redactLogSecrets('"password" => correct horse')).toBe(`"password" => ${REDACTED} horse`);
+    expect(redactLogSecrets('[password] => correct horse')).toBe(`[password] => ${REDACTED} horse`);
+  });
+
+  it("runs a waiting colon key's value on the next line to its end", () => {
+    expect(redactLogSecrets('password:\ncorrect horse battery\nnext')).toBe(`password:\n${REDACTED}\nnext`);
+  });
+
+  it('still keeps literals and counts that end at the next field', () => {
+    for (const line of ["{ token: undefined, user: 'svc' }", "{'token': None, 'user': 'svc'}", '{"secretRef": null}']) {
+      expect(redactLogSecrets(line)).toBe(line);
+    }
   });
 });
 
@@ -380,6 +418,15 @@ describe('redactLogSecrets: YAML values under a secret key', () => {
 
   it('treats a sibling key after an empty secret key as a sibling', () => {
     expect(redactLogSecrets('password:\nusername: svc\nport: 22')).toBe('password:\nusername: svc\nport: 22');
+  });
+
+  it('resumes the YAML value after a key block that dedents inside it', () => {
+    const begin = join(' ', '-----BEGIN', 'PRIVATE KEY-----');
+    const end = join(' ', '-----END', 'PRIVATE KEY-----');
+    const input = ['secrets:', `  - ${begin}`, PEM_BODY[0], end, '  - another-credential', 'region: us1'];
+    expect(redactLogSecrets(input.join('\n'))).toBe(
+      ['secrets:', `  - ${REDACTED}`, REDACTED, end, `  - ${REDACTED}`, 'region: us1'].join('\n'),
+    );
   });
 
   it('redacts a key block nested under a YAML secret key even where it dedents', () => {
@@ -457,6 +504,7 @@ const CORPUS = [
   'password: |',
   '  opaque-credential',
   'region: us1',
+  'password: see opaque-credential',
 ].join('\n');
 
 describe('redactLogSecrets: properties', () => {
@@ -518,6 +566,9 @@ describe('redactLogSecrets: properties', () => {
       `secrets:\n${'  - a\n'.repeat(size / 6)}`,
       'password:\n'.repeat(size / 10),
       'token:\n\n'.repeat(size / 8),
+      `password: ${', aaaa'.repeat(size / 6)}`,
+      `token: ${',\\"a'.repeat(size / 4)}`,
+      'token: a, b: c '.repeat(size / 16),
     ];
     for (const input of inputs) {
       const start = performance.now();
