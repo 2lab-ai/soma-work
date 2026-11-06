@@ -594,7 +594,7 @@ describe('gh-policy: gh api', () => {
     }
   });
 
-  // compare/<sha>...<sha> is the only path segment that may hold dots.
+  // compare/<sha>...<sha> is the only path segment that may contain `..`.
   const C = 'repos/example-org/app/compare';
   const A = '0123456789abcdef0123456789abcdef01234567';
   const B = 'fedcba9876543210fedcba9876543210fedcba98';
@@ -615,6 +615,12 @@ describe('gh-policy: gh api', () => {
     ['.. elsewhere', ['api', 'repos/example-org/app/../x'], 'deny:api-path-invalid'],
     ['compare -X POST', ['api', '-X', 'POST', `${C}/${A}...${B}`], 'deny:api-rest-write-not-allowlisted'],
     ['compare other owner', ['api', `repos/other-org/app/compare/${A}...${B}`], 'deny:owner-not-allowed'],
+    // A valid range does not loosen the guards around it.
+    ['compare 41-hex', ['api', `${C}/${A}f...${B}`], 'deny:api-path-invalid'],
+    ['compare encoded query', ['api', `${C}/${A}...${B}?page=%32`], 'deny:api-path-invalid'],
+    ['compare path in query', ['api', `${C}/${A}...${B}?next=/orgs/other-org`], 'deny:api-path-invalid'],
+    ['compare leading //', ['api', `//${C}/${A}...${B}`], 'deny:api-path-invalid'],
+    ['compare -f without -X', ['api', `${C}/${A}...${B}`, '-f', 'a=b'], 'deny:api-rest-write-not-allowlisted'],
   ];
 
   it.each(compareRows)('%s', (_label, argv, expected) => {
