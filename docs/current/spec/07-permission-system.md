@@ -222,7 +222,7 @@ segment.
   `confirm` dialog (`style: danger`) on `approve_tool` and `approve_disable_rule_session`. Deny and Explain stay
   one press.
 - Dashboard (`permission-prompts.ts` → `irreversible` on the board's prompt → `acPermissionData` →
-  `data.irreversible`): `<ui-approval-card>` (@2lab.ai/ui ≥ 0.34) replaces Approve with a slide and ⌘↵ no longer
+  `data.irreversible`): `<ui-approval-card>` (@2lab.ai/ui ≥ 0.35) replaces Approve with a slide and ⌘↵ no longer
   approves.
 
 **Presentation only.** The classifier is read only where a prompt is already being shown. It is not part of
