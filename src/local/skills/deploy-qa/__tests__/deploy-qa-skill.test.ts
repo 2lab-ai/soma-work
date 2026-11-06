@@ -245,6 +245,11 @@ describe('deploy-qa $autoz waiver (waive=autoz)', () => {
 
   it('waives every open precondition inside the same run, keeps the lock and goes on to step 6', () => {
     expect(gate).toContain('`waive=autoz`');
+    // The ask bullet names its exception first, so a top-down reader never asks before reading it.
+    expect(gate).toContain(
+      '- `ask: true` → (without `waive=autoz`; with it, the next bullet applies) post the gap table',
+    );
+    expect(gate.indexOf('- **`waive=autoz`**')).toBeGreaterThan(gate.indexOf('- `ask: true` →'));
     expect(gate).toContain(
       '`node "…/gate.mjs" answer --gate <G> --key all --decision waived --by <the requester> --ref <the deploy request\'s message ts>`',
     );
