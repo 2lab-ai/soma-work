@@ -294,6 +294,8 @@ export function irreversibleAction(toolName: string, input: unknown): Irreversib
 const MAX_COMMAND = 64 * 1024;
 /** At most this many heredocs and `sh -c` strings are followed per level. */
 const MAX_NESTED = 16;
+/** At most this many heredoc operators are looked at per level — closed or not (review 4: unclosed ones cost a walk). */
+const MAX_HEREDOC_TRIES = 16;
 /** A shell's `-c` flag (`bash -lc`); the quoted string after it is read as a command of its own. */
 const SHELL_C = /(?:^|[^\w-])(?:ba|z|da|k)?sh[ \t]+(?:-[A-Za-z]+[ \t]+){0,4}-[A-Za-z]*c[A-Za-z]*[ \t]+(['"])/g;
 /** Where one shell command ends and the next begins: lists, pipes, subshells, `$(…)` and backticks. */
@@ -360,6 +362,8 @@ function maskText(s: string): string {
 interface Heredoc {
   /** The line it starts on, up to `<<`. */
   lead: string;
+  /** The whole line it starts on (`cat <<EOF | psql`). */
+  line: string;
   body: string;
 }
 
@@ -373,27 +377,32 @@ function splitHeredocs(text: string): { text: string; docs: Heredoc[] } {
   let out = '';
   let pos = 0;
   HEREDOC_OP.lastIndex = 0;
-  for (let m = HEREDOC_OP.exec(text); m && docs.length < MAX_NESTED; m = HEREDOC_OP.exec(text)) {
+  let tries = 0;
+  for (
+    let m = HEREDOC_OP.exec(text);
+    m && docs.length < MAX_NESTED && tries < MAX_HEREDOC_TRIES;
+    m = HEREDOC_OP.exec(text)
+  ) {
+    tries++;
     if (m.index < pos) continue;
     const lineEnd = text.indexOf('\n', m.index);
     if (lineEnd === -1) break; // no body can follow
     const tag = m[2];
-    let close = -1;
-    for (let at = lineEnd + 1; at <= text.length; ) {
-      const next = text.indexOf('\n', at);
-      const line = text.slice(at, next === -1 ? text.length : next).trim();
-      if (line === tag || (line.startsWith(tag) && /^[)\s;]*$/.test(line.slice(tag.length)))) {
-        close = at;
-        break;
-      }
-      if (next === -1) break;
-      at = next + 1;
-    }
+    // The closing line: only the tag (a `)` or `;` may follow). One native scan; the tag is `[A-Za-z_][\w-]*`.
+    const closing = new RegExp(`\\n[ \\t]*${tag}[ \\t);]*(?=\\n|$)`, 'g');
+    closing.lastIndex = lineEnd;
+    const found = closing.exec(text);
+    const close = found ? found.index + 1 : -1;
     if (close === -1) {
       HEREDOC_OP.lastIndex = lineEnd + 1;
       continue;
     }
-    docs.push({ lead: text.slice(text.lastIndexOf('\n', m.index) + 1, m.index), body: text.slice(lineEnd + 1, close) });
+    const lineStart = text.lastIndexOf('\n', m.index) + 1;
+    docs.push({
+      lead: text.slice(lineStart, m.index),
+      line: text.slice(lineStart, lineEnd),
+      body: text.slice(lineEnd + 1, close),
+    });
     out += text.slice(pos, lineEnd + 1);
     pos = close;
     HEREDOC_OP.lastIndex = close;
@@ -424,7 +433,8 @@ function commandAction(raw: string, depth: number): IrreversibleAction | null {
   // message never reads as one.
   const { text: command, docs } = splitHeredocs(joined);
   for (const doc of docs) {
-    if (isSqlRun(maskText(doc.lead), doc.body)) return act('db-delete', 'DB 데이터 삭제');
+    // The body feeds the client on its line: `psql <<SQL`, `cat <<EOF | psql` (review 4).
+    if (isSqlRun(maskText(doc.line), doc.body)) return act('db-delete', 'DB 데이터 삭제');
     if (depth < 3 && SHELL_WORD.test(doc.lead)) {
       const hit = commandAction(doc.body, depth + 1);
       if (hit) return hit;
@@ -438,16 +448,20 @@ function commandAction(raw: string, depth: number): IrreversibleAction | null {
   }
   // Segments of the masked code, each with its raw text (same indices): the command word comes from the code, the
   // SQL a client runs from the raw text of the same segment (review 3 — never from another segment's grep pattern).
+  // A client also runs what is piped into it (`echo "DROP TABLE x" | psql`, review 4): its SQL is read from the
+  // whole pipeline it ends, back to the last break that is not a single `|`.
   const code = maskText(command);
   let from = 0;
+  let pipeline = 0;
   SEGMENT_BREAK.lastIndex = 0;
   for (;;) {
     const m = SEGMENT_BREAK.exec(code);
     const to = m ? m.index : code.length;
     const hit = segmentAction(code.slice(from, to));
     if (hit) return hit;
-    if (isSqlRun(code.slice(from, to), command.slice(from, to))) return act('db-delete', 'DB 데이터 삭제');
+    if (isSqlRun(code.slice(from, to), command.slice(pipeline, to))) return act('db-delete', 'DB 데이터 삭제');
     if (!m) return null;
     from = to + m[0].length;
+    if (m[0] !== '|') pipeline = from;
   }
 }
