@@ -73,13 +73,13 @@ export type GoalOpeningAdmission = 'queued' | 'started' | { failed: string };
 /**
  * A forced `$skill` invocation that was deferred (see {@link CommandContext.deferSkillFire}).
  * The block is byte-identical to what `SkillForceHandler` would otherwise have
- * appended to `continueWithPrompt`; the banner is the RPG attachment it would
+ * appended to `continueWithPrompt`; the banner is the RPG banner text it would
  * have posted. The caller posts the banner and appends the block last.
  */
 export interface DeferredSkillFire {
   keys: string[];
   invokedBlock: string;
-  banner: { text: string; color: string };
+  banner: { text: string };
 }
 
 export interface CommandDependencies {

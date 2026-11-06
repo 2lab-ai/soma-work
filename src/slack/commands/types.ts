@@ -89,13 +89,13 @@ export interface CommandDependencies {
 
 /**
  * A forced `$skill` invocation that was deferred (see {@link CommandContext.deferSkillFire}).
- * Banner is the RPG attachment; `invokedBlock` is the `<invoked_skills>` block
+ * Banner is the RPG banner text (posted as one Block Kit section); `invokedBlock` is the `<invoked_skills>` block
  * byte-identical to what `SkillForceHandler` would have appended.
  */
 export interface DeferredSkillFire {
   keys: string[];
   invokedBlock: string;
-  banner: { text: string; color: string };
+  banner: { text: string };
 }
 
 /**
