@@ -10,7 +10,7 @@
  *   K4  status words and tones (PR 열림 · 초안 · 머지됨 · 닫힘; GitHub issue 열림 · 닫힘; Jira as named, toned by kind)
  */
 import { describe, expect, it } from 'vitest';
-import { cardLinksOf, followupLinksOf, linkState } from '../card-links';
+import { cardLinksOf, followupLinksOf, linkState, settledLinkUrlsOf } from '../card-links';
 
 const JIRA = 'https://acme.atlassian.net/browse/PROJ-12';
 const JIRA2 = 'https://acme.atlassian.net/browse/PROJ-9';
@@ -297,5 +297,34 @@ describe('K6 (review, PR #990) — the follow-up bar reads past the 20 chips', (
     expect(cardLinksOf({ linkHistory: { issues } }).map((l) => l.url)).not.toContain(OLD);
     expect(cardLinksOf({ linkHistory: { issues } }, undefined, { max: Number.POSITIVE_INFINITY })).toHaveLength(22);
     expect(followupLinksOf({ linkHistory: { issues } }).map((l) => [l.url, l.open])).toEqual([[OLD, true]]);
+  });
+});
+
+describe('K7 (review round 2) — every open link, every settled one', () => {
+  it('21 open issues are 21 follow-ups; the settled list holds every closed or merged issue and PR, never a wiki or an unknown', () => {
+    const issues = Array.from({ length: 21 }, (_, i) => ({
+      url: `https://github.com/acme/app/issues/${i + 1}`,
+      status: 'open',
+    }));
+    expect(followupLinksOf({ linkHistory: { issues } })).toHaveLength(21);
+    const settled = settledLinkUrlsOf({
+      linkHistory: {
+        issues: [
+          ...Array.from({ length: 22 }, (_, i) => ({
+            url: `https://github.com/acme/app/issues/${100 + i}`,
+            status: 'closed',
+          })),
+          { url: 'https://github.com/acme/app/issues/9', status: 'open' },
+          { url: 'https://github.com/acme/app/issues/8' },
+        ],
+        prs: [{ url: 'https://github.com/acme/app/pull/7', status: 'merged' }],
+        docs: [{ url: WIKI, status: 'closed' }],
+      },
+    });
+    expect(settled).toHaveLength(23);
+    expect(settled).toContain('https://github.com/acme/app/pull/7');
+    expect(settled).not.toContain('https://github.com/acme/app/issues/9');
+    expect(settled).not.toContain('https://github.com/acme/app/issues/8');
+    expect(settled).not.toContain(WIKI);
   });
 });

@@ -930,20 +930,26 @@ const strOrUndef = (s: unknown): string | undefined => (typeof s === 'string' &&
  * One GitHub issue or PR for the follow-up modal (#983): its title, state, author, labels and body, and its newest
  * {@link EMBED_COMMENTS} comments. Reused for a minute; a failed or refused request is undefined (never cached).
  */
-export async function fetchGitHubEmbed(ref: GitHubIssueRef): Promise<GitHubEmbed | undefined> {
-  const key = `${ref.owner}/${ref.repo}/${ref.kind}/${ref.number}`;
+export async function fetchGitHubEmbed(
+  ref: GitHubIssueRef,
+  opts: { anonymous?: boolean } = {},
+): Promise<GitHubEmbed | 'not-found' | undefined> {
+  // An anonymous read (#983 review: a non-admin's) carries no token, so GitHub itself refuses a private repository
+  // (404); it has a cache of its own — an App read is never served to it.
+  const key = `${opts.anonymous ? 'anon:' : ''}${ref.owner}/${ref.repo}/${ref.kind}/${ref.number}`;
   const hit = embedCache.get(key);
   if (hit && Date.now() - hit.at < EMBED_TTL) return hit.embed;
   try {
-    const token = await getGitHubToken();
-    if (!token) return undefined;
-    const headers = {
-      Authorization: `token ${token}`,
+    const token = opts.anonymous ? null : await getGitHubToken();
+    if (!opts.anonymous && !token) return undefined;
+    const headers: Record<string, string> = {
       Accept: 'application/vnd.github.v3+json',
       'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
+      ...(token ? { Authorization: `token ${token}` } : {}),
     };
     const base = `https://api.github.com/repos/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}`;
     const res = await fetch(`${base}/${ref.kind === 'pr' ? 'pulls' : 'issues'}/${ref.number}`, { headers });
+    if (res.status === 404) return 'not-found';
     if (!res.ok) return undefined;
     const d = (await res.json()) as {
       title?: unknown;
@@ -1017,13 +1023,13 @@ export async function fetchGitHubEmbed(ref: GitHubIssueRef): Promise<GitHubEmbed
   }
 }
 
-const VISIBILITY_TTL = 10 * 60 * 1000;
+const VISIBILITY_TTL = 60 * 1000;
 const visibilityCache = new Map<string, { at: number; value: 'public' | 'private' }>();
 
 /**
- * Whether a GitHub repository is public or private (#983 review: an issue's body and comments from a private
- * repository go to admins only). Kept for ten minutes; unknown (no token, a refused or failed request) is
- * undefined and never kept — the caller treats it as private.
+ * Whether a GitHub repository is public or private — only to say why an anonymous read found nothing (#983 review:
+ * 'private-repo' only when confirmed). It never grants a read: the content a non-admin sees comes from an anonymous
+ * request. Kept for a minute; unknown (no token, a refused or failed request) is undefined and never kept.
  */
 export async function fetchGitHubRepoVisibility(
   owner: string,

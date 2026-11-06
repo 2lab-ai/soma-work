@@ -172,24 +172,36 @@ describe('Dashboard — follow-up embed route (#983)', () => {
     expect(JSON.parse(thrown.body)).toMatchObject({ full: false, reason: 'unavailable' });
   });
 
-  it('R5 (review P1) — a private or unknown repository: the body for admins and the viewer token only', async () => {
+  it('R5 (review P1, round 2) — a non-admin reads anonymously; GitHub decides; admins and the viewer token read with the App', async () => {
+    const ref = { owner: '2lab-ai', repo: 'soma-work', kind: 'issue', number: 918 };
+    // The owner: an anonymous read; a public issue is the body.
+    expect(JSON.parse((await get(ISSUE, { cookie: userCookie('U_OWNER') })).body)).toMatchObject({ full: true });
+    expect(fetcher).toHaveBeenLastCalledWith(ref, { anonymous: true });
+    // A private (or gone) issue: anonymous 404 → confirmed private → private-repo; unknown → unavailable.
+    fetcher.mockResolvedValue('not-found');
     visibility.mockResolvedValue('private');
-    const owner = JSON.parse((await get(ISSUE, { cookie: userCookie('U_OWNER') })).body);
-    expect(owner).toMatchObject({ full: false, reason: 'private-repo', title: 'Phone chrome follow-ups' });
-    expect(owner.embed).toBeUndefined();
-    expect(fetcher).not.toHaveBeenCalled();
-    expect(visibility).toHaveBeenCalledWith('2lab-ai', 'soma-work');
-    expect(JSON.parse((await get(ISSUE, { cookie: userCookie('U_ADMIN') })).body)).toMatchObject({ full: true });
-    expect(JSON.parse((await get(ISSUE, BEARER)).body)).toMatchObject({ full: true });
+    const priv = JSON.parse((await get(ISSUE, { cookie: userCookie('U_OWNER') })).body);
+    expect(priv).toMatchObject({ full: false, reason: 'private-repo', title: 'Phone chrome follow-ups' });
+    expect(priv.embed).toBeUndefined();
     visibility.mockResolvedValue(undefined);
     expect(JSON.parse((await get(ISSUE, { cookie: userCookie('U_OWNER') })).body)).toMatchObject({
-      reason: 'private-repo',
+      reason: 'unavailable',
+    });
+    visibility.mockResolvedValue('public');
+    expect(JSON.parse((await get(ISSUE, { cookie: userCookie('U_OWNER') })).body)).toMatchObject({
+      reason: 'unavailable',
     });
     visibility.mockRejectedValue(new Error('down'));
     expect(JSON.parse((await get(ISSUE, { cookie: userCookie('U_OWNER') })).body)).toMatchObject({
-      reason: 'private-repo',
+      reason: 'unavailable',
     });
-  });
+    // Admins and the viewer token: the App's read (one argument), whatever the visibility.
+    fetcher.mockResolvedValue(EMBED);
+    fetcher.mockClear();
+    expect(JSON.parse((await get(ISSUE, { cookie: userCookie('U_ADMIN') })).body)).toMatchObject({ full: true });
+    expect(JSON.parse((await get(ISSUE, BEARER)).body)).toMatchObject({ full: true });
+    expect(fetcher.mock.calls).toEqual([[ref], [ref]]);
+  }, 30_000);
 
   it('R6 (review P2) — a link past the 20 chips is still one of the card’s', async () => {
     const OLD = 'https://github.com/2lab-ai/soma-work/issues/700';
@@ -206,5 +218,5 @@ describe('Dashboard — follow-up embed route (#983)', () => {
     const res = await get(OLD, BEARER);
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toMatchObject({ text: '#700', full: true });
-  });
+  }, 30_000);
 });
