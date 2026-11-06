@@ -1016,8 +1016,10 @@ export class StreamExecutor {
 
   /**
    * #966 — at a turn's end its CLI process has exited and stopped the background tasks it ran.
-   * Read the live set once and settle exactly those ids (a newer turn's own tasks are left alone —
-   * the tracker is per session). Returns the snapshot for the background-work decision.
+   * Read the live set once and settle exactly those ids. The set is per session, not per turn: this
+   * is safe because a session's next run starts only after this one settles (the follow-up
+   * dispatcher serializes runs), so no newer turn's task is live yet. Returns the snapshot for the
+   * background-work decision.
    */
   private endTurnBackgroundWork(sessionKey: string, turnId: string | undefined): LiveBackgroundWork {
     const live = this.deps.toolEventProcessor.getLiveBackgroundWork(sessionKey);
