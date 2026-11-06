@@ -153,24 +153,49 @@ describe('PromptBuilder', () => {
       expect(section).not.toContain('"type": "channel_message"');
       // repo/target are defined here on their own, so the mapping key matches the merged branch.
       expect(section).toMatch(/normalized `owner\/repo`[^\n]*base branch exactly as merged into/);
-      expect(section).toContain('`base.ref` of the GitHub call `repos/<owner/repo>/pulls/<pr-number>`');
+      expect(section).toContain('`base.ref` of the GitHub read `repos/<owner/repo>/pulls/<pr-number>`');
       expect(section).toMatch(/never emit twice/i);
     });
 
-    it('deploy workflow reads and writes GitHub through REST, since gh network calls fail in a sandbox', () => {
+    it('deploy workflow reads GitHub through devops-tools gh_read and writes through the github MCP', () => {
       const prompt = builder.loadWorkflowPrompt('deploy')!;
       const execution = prompt.slice(prompt.indexOf('## Execution Process'), prompt.indexOf('### 1) Pre-Validation'));
 
-      // The sandbox fact and the one call form sit at the top of Execution Process.
+      // The sandbox facts sit at the top of Execution Process: gh network calls fail TLS, and the
+      // tool policy denies `gh auth token` to everyone (devops-secret-guard), so no call holds a token.
       expect(execution).toContain('x509: OSStatus -26276');
-      expect(execution).toContain('`gh auth token`');
-      expect(execution).toContain(
-        'curl -fsSL --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $(gh auth token)" -H "Accept: application/vnd.github+json" "https://api.github.com/<path>"',
-      );
+      expect(execution).toContain('the tool policy denies `gh auth token` to everyone');
+      for (const line of prompt.split('\n').filter((l) => l.includes('gh auth token'))) {
+        expect(line).toContain('Never use `gh auth token`');
+      }
+      expect(prompt).not.toContain('$(gh auth token)');
+      expect(prompt).not.toContain('api.github.com');
+      expect(prompt).not.toContain('curl -');
       expect(execution).toMatch(/PR create and merge, CI checks, CD runs, the merge commit/);
+      // One GitHub read: gh_read with -X GET, query pairs only as -f (a branch holds a `/`), and a jq filter.
+      expect(execution).toContain('`mcp__devops-tools__gh_read`');
+      expect(execution).toContain(
+        '{"account": "<account>", "args": ["api", "-X", "GET", "repos/<owner/repo>/pulls/<pr-number>", "--jq", ".head.sha"]}',
+      );
+      expect(execution).toContain('one array element per word: `-X`, `GET`, the path, each `-f`');
+      expect(execution).toContain('Pass every query parameter as a `-f` pair');
+      expect(execution).toContain('Never percent-encode anything');
+      // gh_read returns a failed gh as a result, not a tool error.
+      expect(execution).toContain(
+        'An answer** is a result whose `exitCode` is 0 and whose `truncated` and `timedOut` are false',
+      );
+      expect(execution).toContain('`"-f", "per_page=100", "-f", "page=<N>"`');
+      // The account is the single member-class account from list; none or several stops the repo.
+      expect(execution).toContain('call `mcp__devops-tools__list` once and use the single account of class `member`');
+      expect(execution).toMatch(/No `member` account, more than one[^\n]*stop that repo/);
+      // Writes go through the github MCP server; gh in Bash only outside a sandbox.
+      expect(execution).toContain(
+        '`mcp__github__create_pull_request` (step 3) and `mcp__github__merge_pull_request` (step 4)',
+      );
+      expect(execution).toContain('run `gh` in Bash with the same args when the session is not sandboxed');
       // git over https still works; it is not rewritten.
       expect(execution).toMatch(/`git` over https[^\n]*keep using it/);
-      // No gh CLI network command is left anywhere in the workflow.
+      // No gh CLI network command, REST write verb, or path query string is left anywhere in the workflow.
       for (const cmd of [
         'gh pr checks',
         'gh pr view',
@@ -179,31 +204,46 @@ describe('PromptBuilder', () => {
         'gh run watch',
         'gh run list',
         'gh api',
+        '-X POST',
+        '-X PUT',
+        '-X PATCH',
+        'POST repos/',
+        'PUT repos/',
       ]) {
         expect(prompt, cmd).not.toContain(cmd);
       }
-      // CI wait polls check runs and workflow runs for the PR head, in the foreground and bounded.
+      expect(prompt).not.toMatch(/`repos\/[^`\s]*\?[^`\s]*`/);
+      // PR create and merge name their github MCP tools and fields.
+      expect(prompt).toContain(
+        '`mcp__github__create_pull_request` with `owner`, `repo`, `title`, `head`, `base`, `body`',
+      );
+      expect(prompt).toContain(
+        '`mcp__github__merge_pull_request` with `owner`, `repo`, `pull_number`, and `merge_method` `"merge"`',
+      );
+      // CI wait: a model-driven loop of gh_read rounds (MCP cannot be called from Bash), foreground and bounded.
       const ci = prompt.slice(prompt.indexOf('#### How to wait for CI'), prompt.indexOf('## Conflict Handling Policy'));
-      expect(ci).toContain('repos/<owner/repo>/commits/<head_sha>/check-runs');
-      expect(ci).toContain('repos/<owner/repo>/actions/runs?head_sha=<head_sha>');
-      expect(ci).toMatch(/for i in \$\(seq 1 40\)/);
-      // The bound is stated as rounds, not as a wall clock.
-      expect(ci).toContain('up to 40 polling rounds (each request bounded by `--max-time 30`, then a 30 s sleep)');
+      expect(ci).not.toContain('```bash');
+      expect(ci).toContain('up to 40 polling rounds');
+      expect(ci).toContain('then a foreground Bash `sleep 30`');
       expect(ci).not.toContain('40 rounds of 30 s');
-      // Both lists are paged to the end and must add up to total_count; anything else is unknown, never green.
-      expect(ci).toContain('&per_page=100&page=$p');
-      expect(ci).toContain('[ "$seen" = "$(jq -r .total_count <<<"$body")" ] && echo "$left" || echo unknown');
+      expect(ci).toContain(
+        '`repos/<owner/repo>/actions/runs` with `"-f", "head_sha=<head_sha>", "-f", "per_page=100"`',
+      );
+      expect(ci).toContain(
+        '`repos/<owner/repo>/commits/<head_sha>/check-runs` with `"-f", "filter=latest", "-f", "per_page=100"`',
+      );
+      expect(ci).toContain('`repos/<owner/repo>/commits/<head_sha>/status` with `"-f", "per_page=100"`');
+      // Every jq filter stays under the gh_read 1000-character cap.
+      for (const filter of ci.match(/the filter `[^`]*`/g) ?? []) expect(filter.length).toBeLessThan(1000);
+      // Every list is paged to the end and must add up to its total; anything else is unknown, never green.
+      expect(ci).toContain('the `n` of its pages add up to its `total`; otherwise that list is `unknown`');
       expect(ci).toContain('`unknown` is never green');
-      // Every curl in the workflow is bounded.
-      const curls = prompt.split('\n').filter((l) => l.includes('curl -'));
-      expect(curls.length).toBeGreaterThan(0);
-      for (const l of curls) expect(l).toContain('--connect-timeout 10 --max-time 30');
       expect(ci).toContain('NOT `run_in_background`');
       // CD wait (repos without QA) finds the run for the merge commit, any trigger, and polls it.
       const step7 = prompt.slice(prompt.indexOf('### 7) Post-Deploy QA'));
       expect(prompt).not.toContain('event=push');
       expect(step7).toContain(
-        'repos/<owner/repo>/actions/runs?head_sha=<after_sha>&branch=<target>`, paged to the end, with no event filter',
+        '`repos/<owner/repo>/actions/runs` and `"-f", "head_sha=<after_sha>", "-f", "branch=<target>"`, paged to the end, with no event filter',
       );
       // A listing without a deploy run is "not registered yet" before it means "no CD signal".
       expect(step7).toContain('is "not registered yet"');
@@ -213,6 +253,7 @@ describe('PromptBuilder', () => {
       expect(step7).toContain('treat the deployment as unconfirmed and say so in the thread');
       expect(step7).toContain('within a 30-minute budget');
       expect(step7).toContain('repos/<owner/repo>/actions/runs/<run-id>');
+      expect(step7).toContain('A read that is not an answer is not a result');
       expect(step7).toContain('`merge_commit_sha`');
     });
 
