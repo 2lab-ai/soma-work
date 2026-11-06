@@ -118,6 +118,39 @@ describe('the maker’s entry against a stale read (#970)', () => {
     expect(getChannel(id)?.repos).toEqual([]);
   });
 
+  it('a repo link removed on purpose inside the window is taken once the window ends (review P2)', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-06T00:00:00Z'));
+    const { id, repo } = fresh();
+    upsertChannel({ id, name: 'workspace-fresh', purpose: `https://github.com/${repo}` });
+    const unlinked = client(id, '');
+    await scanChannels(unlinked);
+    expect(getChannel(id)?.repos).toEqual([repo]);
+    await vi.advanceTimersByTimeAsync(2 * 60_000 + 2_000);
+    expect(unlinked.conversations.info).toHaveBeenCalledTimes(1);
+    expect(getChannel(id)?.repos).toEqual([]);
+    expect(findChannelsForRepo(repo)).toEqual([]);
+  });
+
+  it('no re-read for a channel removed, or written again by the maker, before the window ends', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-06T01:00:00Z'));
+    const a = fresh();
+    upsertChannel({ id: a.id, name: 'workspace-fresh', purpose: `https://github.com/${a.repo}` });
+    const ca = client(a.id, '');
+    await registerChannel(ca, a.id);
+    unregisterChannel(a.id);
+    const b = fresh();
+    upsertChannel({ id: b.id, name: 'workspace-fresh', purpose: `https://github.com/${b.repo}` });
+    const cb = client(b.id, '');
+    await registerChannel(cb, b.id);
+    upsertChannel({ id: b.id, name: 'workspace-fresh', purpose: `https://github.com/${b.repo}` });
+    await vi.advanceTimersByTimeAsync(2 * 60_000 + 2_000);
+    expect(ca.conversations.info).toHaveBeenCalledTimes(1);
+    expect(cb.conversations.info).toHaveBeenCalledTimes(1);
+    expect(getChannel(b.id)?.repos).toEqual([b.repo]);
+  });
+
   it('a read that names a repo is always taken', async () => {
     const { id, repo } = fresh();
     upsertChannel({ id, name: 'workspace-fresh', purpose: `https://github.com/${repo}` });
