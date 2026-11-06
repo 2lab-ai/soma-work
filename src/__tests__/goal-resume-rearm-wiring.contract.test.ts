@@ -16,7 +16,8 @@ describe('goal resume hook wiring (#950)', () => {
   it('re-arms the error resume in the one hook every owner go-ahead runs through', () => {
     const start = source.indexOf('setGoalLoopResumeHandler((sessionKey: string) => {');
     expect(start, 'the resume hook is registered in index.ts').toBeGreaterThan(-1);
-    const body = source.slice(start, source.indexOf('});', start));
+    // The hook body ends where the next wiring statement starts.
+    const body = source.slice(start, source.indexOf('slackHandler.setGoalLoopActingProbe', start));
     expect(body).toContain('slackHandler.rearmGoalErrorResume(sessionKey)');
     expect(body.indexOf('rearmGoalErrorResume')).toBeLessThan(body.indexOf('goalLoopController.onTurnSettled'));
   });

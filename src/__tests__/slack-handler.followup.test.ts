@@ -1207,6 +1207,40 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(goalDriver.mock.calls[0]).toEqual([SESSION_KEY]);
     });
 
+    it('T1×T2: replay ends → its continuation is dropped at the busy slot → the /compact end is skipped → one kick at the release, one continuation spent', async () => {
+      const fired: any[] = [];
+      handler.setGoalTurnSettledHandler((key: string, opts?: any) => fired.push(opts ?? null));
+      // The /compact run holds the slot.
+      const { settle } = await startBusyTurn();
+      registrySession.goal = {
+        goalId: 'g1',
+        status: 'active',
+        objective: '릴리즈',
+        epoch: 0,
+        continuationCount: 2,
+        maxContinuations: 10,
+      };
+      const compactTurn = turnRunnerOfDispatch();
+      await compactTurn.begin('compact');
+      // The replay ends first, with text: the driver fires and the eval decides "continue" (count 2 → 3)…
+      const replay = turnRunnerOfDispatch();
+      await replay.begin('replay');
+      await replay.finish(turnResult(['재실행된 지시를 끝냈습니다']));
+      expect(fired).toEqual([null]);
+      registrySession.goal.continuationCount = 3;
+      // …but its continuation lands while the /compact run still holds the slot: dropped, given back.
+      await handler.handleMessage(goalContinuation({ goalContinuationSpent: { goalId: 'g1', epoch: 0 } }), say());
+      expect(registrySession.goal.continuationCount).toBe(2);
+      // The /compact turn's own end is skipped — it is no turn of its own.
+      await compactTurn.finish(turnResult([]));
+      expect(registrySession.goalLastTurnText).toBe('재실행된 지시를 끝냈습니다');
+      await settle();
+
+      // One more fire at the release, as a kick: the loop reuses the verdict it
+      // gave the replay and sends the continuation that was dropped — once.
+      expect(fired).toEqual([null, { cause: 'kick' }]);
+    });
+
     it('T2: gives back only a continuation that spent one — not a goal opening, not while the cap question is open', async () => {
       const goalDriver = vi.fn();
       handler.setGoalTurnSettledHandler(goalDriver);
@@ -1237,6 +1271,11 @@ describe('SlackHandler — follow-up queue host', () => {
       registrySession.goal.continuationCount = 1;
       await handler.handleMessage(goalContinuation({ goalContinuationSpent: { goalId: 'g4', epoch: 0 } }), say());
       expect(registrySession.goal.continuationCount).toBe(1);
+
+      // Same goal and intent, but nothing left to give back: never below zero.
+      registrySession.goal = { goalId: 'g5', status: 'active', objective: '바닥', epoch: 0, continuationCount: 0 };
+      await handler.handleMessage(goalContinuation({ goalContinuationSpent: { goalId: 'g5', epoch: 0 } }), say());
+      expect(registrySession.goal.continuationCount).toBe(0);
 
       await settle();
     });
