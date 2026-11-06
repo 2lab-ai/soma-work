@@ -149,6 +149,63 @@ describe('deploy-qa preflight and reduced mode', () => {
 });
 
 /**
+ * A run that cannot get the QA lock within its wait used to end `lock busy`
+ * touching nothing, so its keys carried no label and the next deploy's range
+ * never included them: they were never QA'd. The busy run now reads steps 1–5
+ * and carries every admitted target key to the next run, and never removes a
+ * carry label (the lock holder's step 8 owns removal).
+ */
+describe('deploy-qa busy lock carries its keys', () => {
+  const md = read('deploy-qa');
+  const lock = md.slice(md.indexOf('## Lock'), md.indexOf('## Outcomes'));
+  const busy = lock.slice(lock.indexOf('- **Busy**'), lock.indexOf('- **Stale**'));
+
+  it('still waits before giving up', () => {
+    expect(busy).toContain('re-checking every 5 min for up to 60 min');
+  });
+
+  it('reads steps 1–5 without QA, like the no-lock run', () => {
+    expect(busy).toContain('steps 1–5 read-only');
+    expect(busy).toContain('no `qa-issue` call');
+    expect(busy).toContain('no tracker transition');
+    expect(busy).toMatch(/steps 5\.5–7 do not run/);
+  });
+
+  it('carries every admitted target key with a step-8 carry comment', () => {
+    expect(busy).toContain('`carryLabel`');
+    expect(busy).toContain('`<before7>..<after7>`');
+    expect(busy).toContain('`mergeShas`');
+    expect(busy).toContain('reason `lock busy`');
+    expect(busy).toMatch(/reason unchanged since its last carry comment → no new comment/i);
+    // The holder's progress is not visible here, so every admitted target key is carried.
+    expect(busy).toContain('carry every admitted target key');
+    // The no-lock branch writes no carry-over; the busy branch must not inherit that by analogy.
+    expect(busy).toContain('except for the carry-over below');
+  });
+
+  it('never removes a carry label; removal stays with the holder', () => {
+    // Every mention of removing in the busy branch is a prohibition.
+    const removes = busy.match(/\S+ remove\b/gi) ?? [];
+    expect(removes.length).toBeGreaterThan(0);
+    for (const r of removes) expect(r).toMatch(/^never remove$/i);
+    expect(busy).toContain('Never remove `carryLabel` here');
+    expect(busy).toContain("removal stays with the lock holder's step 8");
+  });
+
+  it('a busy run has nothing to resume and its repeated carry adds nothing', () => {
+    const cont = md.slice(md.indexOf('## Continuation'), md.indexOf('## Hard rules'));
+    expect(cont).toContain('or a lock that stayed busy');
+    expect(cont).toContain('a repeated busy-lock carry adds nothing');
+  });
+
+  it('reports those keys as not-run and still ends lock busy with the re-run args', () => {
+    expect(busy).toMatch(/not-run[^\n]*reason `lock busy`/);
+    expect(busy).toContain('`deployed, QA incomplete: lock busy`');
+    expect(busy).toContain('re-run args');
+  });
+});
+
+/**
  * Precondition gate across the whole run (2026-10-30 stage0 qa=max: 49 of 69
  * non-pass cases were preconditions found only while running). deploy-qa plans
  * every key first, asks the requester one question, and runs nothing before the
