@@ -26,6 +26,11 @@ export interface CardLink {
   /** The state in words: `열림`, `머지됨`, `In Progress`. */
   status?: string;
   tone?: CardLinkTone;
+  /**
+   * Still open (SSOT 2026-11-06, #983 — the follow-up bar): a PR open or in draft, a GitHub issue open, a Jira issue
+   * in a state that is neither done nor dropped. Never a wiki, never a page whose state is unknown.
+   */
+  open?: true;
 }
 
 interface LinkLike {
@@ -71,6 +76,18 @@ const GITHUB_ISSUE_WORDS: Record<string, { status: string; tone?: CardLinkTone }
 // A tracker's own status name (Jira's, mostly), toned by what kind of state it names.
 const DONE_RE = /^(done|closed|resolved|complete(d)?|fixed|released|완료|종료|해결(됨)?|닫힘)$/i;
 const RUN_RE = /(progress|develop|doing|working|진행|개발)/i;
+// A tracker state that ends the issue without doing it: not done, not open either.
+const DROPPED_RE = /(cancel|reject|won'?t|duplicate|obsolete|invalid|abandon|취소|반려|폐기|중복)/i;
+
+/** Whether a link in this state is still open (the follow-up bar's test). */
+export function linkIsOpen(kind: CardLinkKind, raw: string | undefined): boolean {
+  const word = typeof raw === 'string' ? raw.trim() : '';
+  if (!word || kind === 'wiki') return false;
+  const key = word.toLowerCase();
+  if (kind === 'pr') return key === 'open' || key === 'draft';
+  if (GITHUB_ISSUE_WORDS[key]) return key === 'open';
+  return !DONE_RE.test(word) && !DROPPED_RE.test(word);
+}
 const WAIT_RE = /(review|qa|test|verif|검토|리뷰|확인|대기|blocked|hold)/i;
 
 /** A link's state in words and its tone. Unknown words are shown as they are. */
@@ -144,8 +161,12 @@ const KINDS: Array<{ kind: CardLinkKind; active: 'issue' | 'pr' | 'doc'; history
   { kind: 'wiki', active: 'doc', history: 'docs' },
 ];
 
-/** Every page the session is linked to, as the card's links. */
-export function cardLinksOf(src: CardLinkSource, peek?: LinkPeek): CardLink[] {
+/**
+ * Every page the session is linked to, as the card's links — at most `opts.max` (default {@link MAX_CARD_LINKS},
+ * the face's chips; `Infinity` for every link, as the follow-up embed's membership check).
+ */
+export function cardLinksOf(src: CardLinkSource, peek?: LinkPeek, opts: { max?: number } = {}): CardLink[] {
+  const max = typeof opts.max === 'number' && opts.max > 0 ? opts.max : MAX_CARD_LINKS;
   const lists = KINDS.map(({ kind, active, history }) => {
     const list = Array.isArray(src.linkHistory?.[history]) ? src.linkHistory![history]!.slice().reverse() : [];
     const activeLink = src.links?.[active];
@@ -164,7 +185,7 @@ export function cardLinksOf(src: CardLinkSource, peek?: LinkPeek): CardLink[] {
   const seen = new Set<string>();
   const push = (kind: CardLinkKind, link: LinkLike, isActive: boolean) => {
     const url = link.url as string;
-    if (seen.has(url) || out.length >= MAX_CARD_LINKS) return;
+    if (seen.has(url) || out.length >= max) return;
     seen.add(url);
     const cached = peek ? peek(url) : undefined;
     const title = nonBlank(cached?.title) ? cached!.title : nonBlank(link.title) ? link.title : undefined;
@@ -181,6 +202,7 @@ export function cardLinksOf(src: CardLinkSource, peek?: LinkPeek): CardLink[] {
       text: shortText(kind, link, kind === 'wiki' ? title : undefined),
       ...(title ? { title: title.trim().slice(0, 200) } : {}),
       ...linkState(kind, raw),
+      ...(linkIsOpen(kind, raw) ? { open: true as const } : {}),
     });
   };
   // The current one of each kind, then the rest of each kind.
@@ -190,7 +212,7 @@ export function cardLinksOf(src: CardLinkSource, peek?: LinkPeek): CardLink[] {
   // The rest share what room is left fairly (each kind its turn, one at a time), still drawn kind by kind.
   const rest = lists.map((l) => l.ordered.slice(1));
   const quota = rest.map(() => 0);
-  let room = MAX_CARD_LINKS - out.length;
+  let room = Number.isFinite(max) ? max - out.length : Number.POSITIVE_INFINITY;
   let open = rest.map((_, i) => i).filter((i) => rest[i].length > 0);
   while (room > 0 && open.length > 0) {
     for (const i of open) {
@@ -204,4 +226,23 @@ export function cardLinksOf(src: CardLinkSource, peek?: LinkPeek): CardLink[] {
     for (const link of rest[i].slice(0, quota[i])) push(kind, link, false);
   });
   return out;
+}
+
+/**
+ * The follow-up bar's links (#983): every issue and PR still open, from all of the session's links — not only the
+ * face's first {@link MAX_CARD_LINKS} chips, so twenty newer closed issues never hide an older open one, and every
+ * one of them, so dismissing some never leaves one out. In the card's order; the element draws five, then +N.
+ */
+export function followupLinksOf(src: CardLinkSource, peek?: LinkPeek): CardLink[] {
+  return cardLinksOf(src, peek, { max: Number.POSITIVE_INFINITY }).filter((l) => l.open === true);
+}
+
+/**
+ * Every issue and PR link whose state is known and not open (closed, merged, done, dropped), from all of the
+ * session's links (#983): the browser drops its "seen" record of each, so one that opens again shows again.
+ */
+export function settledLinkUrlsOf(src: CardLinkSource, peek?: LinkPeek): string[] {
+  return cardLinksOf(src, peek, { max: Number.POSITIVE_INFINITY })
+    .filter((l) => (l.kind === 'issue' || l.kind === 'pr') && l.open !== true && !!l.status)
+    .map((l) => l.url);
 }
