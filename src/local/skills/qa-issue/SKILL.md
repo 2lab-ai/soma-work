@@ -20,27 +20,32 @@ $local:qa-issue <KEY> qa=<default|medium|high|max> env=<profile> [transition=don
 - The caller owns `lockDir`. Never take or release the lock here.
 - `--plan` runs steps 1–3 and the gate's planning half only, then returns (see Precondition gate). `decisions=<gate file>` resumes from a gate the requester answered.
 
-## GitHub calls
+## GitHub reads
 
-Read GitHub through its REST API with curl; this works inside a sandboxed session, where the `gh` CLI's own network calls can fail (TLS verification), so do not use them. `gh auth token` only reads the stored token and works there. A **GitHub call** is:
+Read GitHub only through the devops-tools tool `mcp__devops-tools__gh_read`. It runs `gh` through a broker outside the sandbox, so the session never holds a token. The tool policy denies `gh auth token` to everyone: never use `gh auth token`, never put a token in a command, and never run `gh` network commands in Bash inside a sandbox (they fail TLS verification there). A **GitHub read** is one call with this input:
 
-```bash
-curl -fsSL --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $(gh auth token)" -H "Accept: application/vnd.github+json" "https://api.github.com/<path>"
+```json
+{"account": "<account>", "args": ["api", "-X", "GET", "<path>", "-f", "<key>=<value>", "--jq", "<filter>"]}
 ```
 
-Write the whole form in every shell call, both timeouts included (shell state does not carry over), and read fields with `jq`. A non-zero exit is a failed call. Paging: add `per_page=100&page=N` and request N = 1, 2, … until a page holds fewer than 100 items (or follow the `rel="next"` URL of the `Link` response header, dumped with `-D <file>`, until there is none). A call that failed or timed out, or paging that stopped early, leaves the list incomplete — never read it as empty or complete.
+`args` is the `gh` argument list without the leading `gh`, one array element per word, with no shell quotes. `-X GET` keeps the call a read and turns the `-f` pairs into the query string. The pairs are optional; pass every query parameter as one, never after a `?` in the path, so a value may hold a `/`. Never percent-encode anything. Keep the `--jq` filter under 1000 characters and select only the fields you need; the output is cut at 1 MB. An answer is a result whose `exitCode` is 0 and whose `truncated` and `timedOut` are false; read the fields from its `stdout`. A tool error, a policy refusal, a non-zero `exitCode`, or a truncated output is a failed read.
+
+Account: the profile's `github.account` when it names one; otherwise call `mcp__devops-tools__list` once and use the single account of class `member` (an `org-admin` account is for org and access changes, never for these reads). No such account, more than one, or reads refused for the repo's owner → GitHub cannot be used: `missing: github`. On a host without the devops-tools server, run `gh` in Bash with the same args when the session is not sandboxed; inside a sandbox, it is `missing: github`.
+
+Paging: add `"-f", "per_page=100", "-f", "page=<N>"` and request N = 1, 2, … until a page holds fewer than 100 items, or use `--paginate` when the filtered output stays small. A failed read, or paging that stopped early, leaves the list incomplete — never read it as empty or complete. `compare` takes full 40-character SHAs only (`repos/<repo>/compare/<sha>...<sha>`); expand a short SHA first with a GitHub read of `repos/<repo>/commits/<short sha>` and the filter `.sha`.
 
 ## Profile fields
 
 - Every run: `keyPattern`; `deploy` (per repo: how to read the running version and the running commit); `tracker` (site, state IDs for qa / done / in-progress, comment conventions); `qaEnv` (health URL(s), API bases, front-end URLs, test-account references, browser primitives `open` / `eval` / `screenshot`, screenshots directory); `lockDir` when no `runDir=` is passed. Optional: `severity`.
+- Optional: `github.account` (the devops-tools account for GitHub reads; absent = the account GitHub reads picks).
 - Optional, read by the Precondition gate: `qaEnv.accounts` (role → account reference; any listed account may be used by any case), `qaEnv.writes` (`allowed` with the test accounts, or `forbidden`), `qaEnv.seed` (bounded setup actions QA may run, each with its cleanup), `qaEnv.logs` (how to read server errors for a time window). An absent optional field is never an error: the preconditions that need it are `missing`. The profile revision is the SHA-256 of the profile skill's SKILL.md.
 - With `transition=done`, also: `doneConditions`, `repos`, the tracker's transition to done.
-- Any of these absent, a browser primitive that fails to run, no tracker access, a missing account reference, or no masker → verdict `blocked`, reason `missing: <fields>`, no transition. Comment only if the tracker is usable.
+- Any of these absent, a browser primitive that fails to run, no tracker access, no GitHub read account (`github`), a missing account reference, or no masker → verdict `blocked`, reason `missing: <fields>`, no transition. Comment only if the tracker is usable.
 
 ## Procedure
 
 1. `<KEY>` must fully match `keyPattern`; otherwise verdict `blocked`, reason `key-mismatch`. Read the issue: state, assignee, description, linked PRs.
-2. Deploy check: read the running version → `env.versionStart`. With `mergeShas`, for each `<repo>:<mergeSha>` read that repo's running commit per its `deploy` entry and require a GitHub call to `repos/<repo>/compare/<mergeSha>...<runningSha>` piped to `jq -r .status` ∈ `ahead|identical`. Health unreachable, version or commit unreadable, or any other status → verdict `blocked`, reason `not-deployed`.
+2. Deploy check: read the running version → `env.versionStart`. With `mergeShas`, for each `<repo>:<mergeSha>` read that repo's running commit per its `deploy` entry and require a GitHub read of `repos/<repo>/compare/<mergeSha>...<runningSha>` (full SHAs, filter `.status`) ∈ `ahead|identical`. Health unreachable, version or commit unreadable, or any other status → verdict `blocked`, reason `not-deployed`.
 3. Build cases for the QA level: `catalog=` first; otherwise derive them from the issue text and the PR diffs. At `high` and `max`, fill the Coverage matrix (below) before anything else happens. Zero cases → verdict `blocked`, reason `no cases`.
 4. At `high` and `max`: Precondition gate (below); `default` and `medium` skip it. With `--plan`, stop after it and return. A gap the requester has not answered ends the call here: no case runs.
 5. Run the cases one at a time and collect evidence (see Evidence). With `decisions=`, run only the cases the gate's `decide` returned in `runCases`; record each of its `blockedCases` as `status: "blocked"` with `precondition: "<id>"` and its reason as `actual`.
@@ -121,7 +126,7 @@ Enforce exactly the conditions the profile lists. A condition you cannot evaluat
 
 - **state** — current state ID equals the profile's qa state.
 - **depth** — `qaLevel` is `max`.
-- **no open PR** — for each repo in `repos`, list every open PR with GitHub calls to `repos/<repo>/pulls?state=open&per_page=100&page=N`, N = 1, 2, … until a page holds fewer than 100 PRs (fields `number`, `title`, `head.ref`, `base.ref`). A list you cannot prove complete → unmet. A PR counts when its title or head branch contains this exact key (`keyPattern` match, never substring), minus excluded PRs (the same rule as admission): base equals an `excludeBases` entry (exact match), or head matches an `excludeHeads` entry — an entry ending in `/` is a prefix, any other entry is an exact match. Absent → exclude nothing. Never use the search API (`search/…`).
+- **no open PR** — for each repo in `repos`, list every open PR with GitHub reads of `repos/<repo>/pulls` with `"-f", "state=open", "-f", "per_page=100", "-f", "page=<N>"`, N = 1, 2, … until a page holds fewer than 100 PRs (fields `number`, `title`, `head.ref`, `base.ref`). A list you cannot prove complete → unmet. A PR counts when its title or head branch contains this exact key (`keyPattern` match, never substring), minus excluded PRs (the same rule as admission): base equals an `excludeBases` entry (exact match), or head matches an `excludeHeads` entry — an entry ending in `/` is a prefix, any other entry is an exact match. Absent → exclude nothing. Never use the search API (`search/…`).
 - **contained** — step 2's per-repo compare holds for every `mergeSha`, re-read now. Running commit unreadable or no `mergeShas` → unmet.
 
 ## Browser adapter
