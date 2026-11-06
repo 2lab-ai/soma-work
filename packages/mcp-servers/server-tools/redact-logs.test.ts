@@ -301,7 +301,7 @@ describe('redactLogSecrets: shapes and key blocks after a waiting key', () => {
   });
 
   it('redacts a credential shape on the line after the key', () => {
-    expect(redactLogSecrets(`apiKey:\n${EMAIL_API_KEY} trailing`)).toBe(`apiKey:\n${REDACTED} trailing`);
+    expect(redactLogSecrets(`apiKey:\n${EMAIL_API_KEY} trailing`)).toBe(`apiKey:\n${REDACTED}`);
   });
 
   it('enters key-block state when the value is a key block', () => {
@@ -438,6 +438,91 @@ describe('redactLogSecrets: YAML values under a secret key', () => {
   });
 });
 
+describe('redactLogSecrets: YAML comments', () => {
+  it('treats a comment after a secret key as no value, for lists and mappings', () => {
+    expect(redactLogSecrets('secrets: # credentials\n  - opaque-credential\n  - another-credential\nregion: us1')).toBe(
+      `secrets: ${REDACTED}\n  - ${REDACTED}\n  - ${REDACTED}\nregion: us1`,
+    );
+    expect(redactLogSecrets('secrets:   # credentials\n  user: svc\n  value: opaque-credential\nregion: us1')).toBe(
+      `secrets:   ${REDACTED}\n  ${REDACTED}\n  ${REDACTED}\nregion: us1`,
+    );
+    expect(redactLogSecrets('password: # set below\nopaque credential\nnext: 1')).toBe(
+      `password: ${REDACTED}\n${REDACTED}\nnext: 1`,
+    );
+  });
+
+  it('lets comment lines inside a waiting key or YAML value neither end it nor show', () => {
+    const input = 'secrets:\n# first\n  - opaque-credential\n# between\n  - another-credential\nregion: us1';
+    expect(redactLogSecrets(input)).toBe(
+      `secrets:\n${REDACTED}\n  - ${REDACTED}\n${REDACTED}\n  - ${REDACTED}\nregion: us1`,
+    );
+  });
+
+  it('keeps a # that is part of the value as the value', () => {
+    expect(redactLogSecrets('password:#opaque-credential')).toBe(`password:${REDACTED}`);
+  });
+});
+
+describe('redactLogSecrets: structure before indentation', () => {
+  it('follows a collection that opens on the line after the key past any dedent', () => {
+    expect(redactLogSecrets('{"secrets":\n  [\n"opaque-credential"\n]}\nafter')).toBe(
+      `{"secrets":\n  ${REDACTED}\n${REDACTED}\n${REDACTED}}\nafter`,
+    );
+    expect(redactLogSecrets('{"secrets":\n  {\n"value": "opaque-credential"\n  },\n"region": "us1"}')).toBe(
+      `{"secrets":\n  ${REDACTED}\n${REDACTED}\n${REDACTED},\n"region": "us1"}`,
+    );
+  });
+
+  it('follows a quoted value that opens on the line after the key past any dedent', () => {
+    expect(redactLogSecrets('password:\n  "opaque\ncredential"\nnext')).toBe(
+      `password:\n  "${REDACTED}\n${REDACTED}"\nnext`,
+    );
+  });
+
+  it('handles ordinary pretty-printed JSON with the value on its own line', () => {
+    const input = [
+      '{',
+      '  "secrets":',
+      '    [',
+      '      "opaque-credential",',
+      '      "another-credential"',
+      '    ],',
+      '  "region": "us1"',
+      '}',
+    ];
+    expect(redactLogSecrets(input.join('\n'))).toBe(
+      ['{', '  "secrets":', `    ${REDACTED}`, REDACTED, REDACTED, `${REDACTED},`, '  "region": "us1"', '}'].join('\n'),
+    );
+  });
+
+  it('follows a flow collection opened by a YAML list item past a dedent', () => {
+    expect(redactLogSecrets('secrets:\n  - [opaque-credential,\nanother-credential]\n  - x\nregion: us1')).toBe(
+      `secrets:\n  - ${REDACTED}\n${REDACTED}\n  - ${REDACTED}\nregion: us1`,
+    );
+  });
+});
+
+describe('redactLogSecrets: a partial marker is not trusted', () => {
+  it.each([
+    [`{"secret":"${GH_TOKEN} opaque-credential"}`, `{"secret":"${REDACTED}"}`],
+    [`password: ${GH_TOKEN} opaque-credential`, `password: ${REDACTED}`],
+    [`{"token":"Bearer ${BEARER_VALUE} opaque-credential"}`, `{"token":"${REDACTED}"}`],
+    [`Authorization: Bearer ${BEARER_VALUE} opaque-credential`, `Authorization: Bearer ${REDACTED}`],
+    [`api_key='${SLACK_TOKEN} opaque-credential'`, `api_key='${REDACTED}'`],
+    [`{"secret":"${REDACTED} opaque-credential"}`, `{"secret":"${REDACTED}"}`],
+    ['secret: {"a": 1} opaque-credential', `secret: ${REDACTED}`],
+  ])('%s', (input, expected) => {
+    expect(redactLogSecrets(input)).toBe(expected);
+  });
+
+  it('redacts a YAML line that only starts with the marker', () => {
+    expect(
+      redactLogSecrets(`secrets:\n  - ${GH_TOKEN} opaque-credential\n  - ${REDACTED} another-credential\nregion: us1`),
+    ).toBe(`secrets:\n  - ${REDACTED}\n  - ${REDACTED}\nregion: us1`);
+    expect(redactLogSecrets(`secrets:\n  - "${REDACTED} opaque-credential"`)).toBe(`secrets:\n  - "${REDACTED}"`);
+  });
+});
+
 // ── Negatives ───────────────────────────────────────────────
 
 describe('redactLogSecrets: leaves ordinary log lines intact', () => {
@@ -505,6 +590,16 @@ const CORPUS = [
   '  opaque-credential',
   'region: us1',
   'password: see opaque-credential',
+  `{"secret":"${GH_TOKEN} opaque-credential"}`,
+  `password: ${GH_TOKEN} opaque-credential`,
+  'secrets: # credentials',
+  '  - opaque-credential',
+  `  - ${REDACTED} opaque-credential`,
+  '{"secrets":',
+  '  [',
+  '"opaque-credential"',
+  ']}',
+  'region: us1',
 ].join('\n');
 
 describe('redactLogSecrets: properties', () => {
@@ -569,6 +664,11 @@ describe('redactLogSecrets: properties', () => {
       `password: ${', aaaa'.repeat(size / 6)}`,
       `token: ${',\\"a'.repeat(size / 4)}`,
       'token: a, b: c '.repeat(size / 16),
+      `secrets:\n${'  - [\n'.repeat(size / 6)}`,
+      'token: # c\n'.repeat(size / 11),
+      `{"secrets":\n${'  {\n'.repeat(size / 4)}`,
+      'secret: {},'.repeat(size / 11),
+      'secret: {}'.repeat(size / 10),
     ];
     for (const input of inputs) {
       const start = performance.now();
