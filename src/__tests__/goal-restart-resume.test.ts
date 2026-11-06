@@ -284,11 +284,15 @@ describe('resumeActiveGoals (T1)', () => {
   async function bootWith(sessions: Map<string, ConversationSession>, cut: ReturnType<typeof recovered>[]) {
     const { handler, claudeHandler } = createHandler(sessions);
     claudeHandler.getCrashRecoveredSessions.mockReturnValue(cut);
-    (handler as any).handleMessage = vi.fn().mockResolvedValue(undefined);
+    // The resume's turn is taken (#853): a turn the pipeline drops is handed back (#966).
+    (handler as any).handleMessage = vi.fn(async (event: { channel: string; ts: string }) => {
+      (handler as any).noteTurnAccepted(event.channel, event.ts);
+    });
     const settled = vi.fn();
     handler.setGoalTurnSettledHandler(settled);
     await handler.notifyCrashRecovery();
     const resumed = handler.resumeActiveGoals();
+    await new Promise((resolve) => setTimeout(resolve, 0));
     return { handler, claudeHandler, settled, resumed };
   }
 
@@ -531,13 +535,16 @@ describe('resumeActiveGoals (T1)', () => {
         sessionKey: 'C1-T1',
       },
     ]);
-    const handleMessageSpy = vi.fn().mockResolvedValue(undefined);
+    const handleMessageSpy = vi.fn(async (event: { channel: string; ts: string }) => {
+      (handler as any).noteTurnAccepted(event.channel, event.ts);
+    });
     (handler as any).handleMessage = handleMessageSpy;
     const settled = vi.fn();
     handler.setGoalTurnSettledHandler(settled);
 
     await handler.notifyCrashRecovery();
     handler.resumeActiveGoals();
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     // One resume turn (the restart prompt) — never a goal kick beside it.
     expect(handleMessageSpy).toHaveBeenCalledTimes(1);

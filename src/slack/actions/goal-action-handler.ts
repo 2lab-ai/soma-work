@@ -219,6 +219,7 @@ export class GoalActionHandler {
       goal.lastAssistantTurnSummary = undefined;
       goal.lastEvalReason = undefined;
       goal.lastEvalRemaining = undefined;
+      goal.lastEvalGateOpen = undefined;
       goal.lastEvalSummaryHash = undefined;
       // A stall was about the old objective: it ends (its question is retracted).
       retireGoalStall(goal);
