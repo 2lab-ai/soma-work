@@ -3047,6 +3047,9 @@ describe('SlackHandler — follow-up queue host', () => {
 
         await handler.handleMessage(message({ ts: '333.444', text: '팀 인원수랑 권한도 넣어줘' }), say());
         expect(items()[0].state).toBe('queued');
+        // SSOT 2026-11-06: while it waits for the turn to open its input it reads as waiting in
+        // the queue — no "refused" on the dashboard row or the Slack queue card.
+        expect(items()[0].stateReason).toBeUndefined();
 
         reachModel(turn.epoch());
         for (let i = 0; i < 4; i++) await tick();

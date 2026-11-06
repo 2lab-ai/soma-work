@@ -1105,7 +1105,12 @@ export class SlackHandler {
       authorizeDispatch: ({ sessionKey, item }) =>
         this.authorizeFollowupDispatch(sessionKey, item.message, item.context),
       notify: (notice) => {
-        this.logger.debug('Follow-up dispatcher notice', { type: notice.type, sessionKey: notice.sessionKey });
+        this.logger.debug('Follow-up dispatcher notice', {
+          type: notice.type,
+          sessionKey: notice.sessionKey,
+          // The row may not say why it came back (a refused push reads as waiting): the log does.
+          ...('reason' in notice && notice.reason ? { reason: notice.reason } : {}),
+        });
         this.observeDispatcherNotice(notice);
       },
     });

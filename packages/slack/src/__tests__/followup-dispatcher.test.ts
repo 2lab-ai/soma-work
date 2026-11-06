@@ -1226,9 +1226,10 @@ describe('FollowupDispatcher auto-steering (06 §3.2)', () => {
     expect(stored?.state).toBe('queued');
     expect(stored?.seq).toBe(item.seq); // same FIFO position
     expect(stored?.steerUuid).toBeUndefined();
-    // The row says what actually happened — the turn WAS live, the channel just
-    // did not take the message.
-    expect(stored?.stateReason).toBe('the input channel refused the message');
+    // SSOT 2026-11-06: a refused push is an ordinary wait (the turn has not opened its
+    // input yet, #956) — the row reads as waiting in the queue, never "refused".
+    // The channel's own words stay in the notice (and the log), for whoever debugs it.
+    expect(stored?.stateReason).toBeUndefined();
     expect(h.notices).toContainEqual({
       type: 'item-unsteered',
       sessionKey: SESSION,
