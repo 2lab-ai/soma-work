@@ -1355,10 +1355,16 @@ async function start() {
         reserveEpicChild: (epicTaskId, planNodeId) => epicRegistry.reserveEpicChild(epicTaskId, planNodeId),
         unreserveEpicChild: (epicTaskId, childId) => epicRegistry.unreserveEpicChild(epicTaskId, childId),
         keyOf: slackKeyOf,
-        postMessage: async (channel, text, blocks) => {
-          const posted = await app.client.chat.postMessage({ channel, text, blocks: blocks as any });
+        postMessage: async (channel, text, blocks, threadTs) => {
+          const posted = await app.client.chat.postMessage({
+            channel,
+            text,
+            blocks: blocks as any,
+            ...(threadTs ? { thread_ts: threadTs } : {}),
+          });
           return { ts: posted.ts as string | undefined };
         },
+        getSessionTheme: (userId) => userSettingsStore.getUserSessionTheme(userId),
         handleMessage: (event) =>
           slackHandler.handleMessage(event as any, async (args: any) => {
             const result = await app.client.chat.postMessage({
