@@ -32,7 +32,7 @@ describe('SkillForceHandler — banner follows the session verbosity', () => {
   }
 
   const bannerPosts = () =>
-    mockSay.mock.calls.filter(([arg]) => Array.isArray(arg?.attachments) && arg.attachments[0]?.color === '#FF0000');
+    mockSay.mock.calls.filter(([arg]) => String(arg?.blocks?.[0]?.text?.text ?? '').includes('강제 발동'));
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -81,9 +81,10 @@ describe('SkillForceHandler — banner follows the session verbosity', () => {
     const posts = bannerPosts();
     expect(posts).toHaveLength(1);
     expect(posts[0][0].thread_ts).toBe('171.100');
-    expect(posts[0][0].attachments[0].text).toContain('강제 발동');
+    expect(posts[0][0].blocks[0].text.text).toContain('강제 발동');
+    expect(posts[0][0].attachments).toBeUndefined();
     expect(recorded).toEqual([
-      ['conv-1', { kind: 'notice', text: posts[0][0].attachments[0].text, ts: expect.any(Number) }],
+      ['conv-1', { kind: 'notice', text: posts[0][0].blocks[0].text.text, ts: expect.any(Number) }],
     ]);
     expect(result.continueWithPrompt).toContain('<invoked_skills>');
   });

@@ -14,12 +14,12 @@ import { userSettingsStore } from '../user-settings-store';
 const AUTOSKILL_FIRE = {
   keys: ['user:U123:qa'],
   invokedBlock: '<invoked_skills>\n<user:U123:qa>\nQA\n</user:U123:qa>\n</invoked_skills>',
-  banner: { text: '⚡ AUTOSKILL-FIRE-BANNER', color: '#FF0000' },
+  banner: { text: '⚡ AUTOSKILL-FIRE-BANNER' },
 };
 const DEFERRED_FIRE = {
   keys: ['local:z'],
   invokedBlock: '<invoked_skills>\n<local:z>\nBODY\n</local:z>\n</invoked_skills>',
-  banner: { text: '⚡ DEFERRED-FIRE-BANNER', color: '#FF0000' },
+  banner: { text: '⚡ DEFERRED-FIRE-BANNER' },
 };
 const COMPACT = getVerbosityFlags('compact');
 
@@ -104,7 +104,7 @@ describe('SlackHandler — forced-skill banners follow the session verbosity', (
     await handler.handleMessage({ user: 'U123', channel: 'C123', ts: '111.222', text: '$z foo' } as any, say);
 
     expect(execute).toHaveBeenCalledTimes(1);
-    const posted = (text: string) => postMessage.mock.calls.filter((c: any[]) => c[2]?.attachments?.[0]?.text === text);
+    const posted = (text: string) => postMessage.mock.calls.filter((c: any[]) => c[1] === text);
     const notices = recorded.filter(([, entry]) => entry.kind === 'notice');
     return { posted, notices, dispatched: execute.mock.calls[0][0].text as string };
   }
@@ -130,7 +130,10 @@ describe('SlackHandler — forced-skill banners follow the session verbosity', (
       const calls = posted(AUTOSKILL_FIRE.banner.text);
       expect(calls).toHaveLength(1);
       expect(calls[0][0]).toBe('C123');
-      expect(calls[0][2]).toMatchObject({ threadTs: '111.222', attachments: [{ color: '#FF0000' }] });
+      expect(calls[0][2]).toEqual({
+        threadTs: '111.222',
+        blocks: [{ type: 'section', text: { type: 'mrkdwn', text: AUTOSKILL_FIRE.banner.text } }],
+      });
       expect(notices).toEqual([
         ['conv-1', { kind: 'notice', text: AUTOSKILL_FIRE.banner.text, ts: expect.any(Number) }],
       ]);
