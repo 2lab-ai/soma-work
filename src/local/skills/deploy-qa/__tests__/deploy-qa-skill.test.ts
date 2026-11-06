@@ -149,6 +149,121 @@ describe('deploy-qa preflight and reduced mode', () => {
 });
 
 /**
+ * A run that cannot QA (the lock stayed busy past its wait, or `lockDir` is not
+ * writable) used to end touching nothing, so its keys carried no label and the
+ * next deploy's range never included them: they were never QA'd. Such a run now
+ * reads steps 1–5 and carries every key a full run's step 8 would leave open,
+ * add-only. The lock holder's step 8 owns removal, and keeps the label while any
+ * carry comment is outstanding: no later pass or fail result names all its merges.
+ */
+describe('deploy-qa carries every open key when QA cannot run', () => {
+  const md = read('deploy-qa');
+  const lock = md.slice(md.indexOf('## Lock'), md.indexOf('## Outcomes'));
+  const busy = lock.slice(lock.indexOf('- **Busy**'), lock.indexOf('- **Stale**'));
+  const reduced = md.slice(md.indexOf('## Reduced mode'), md.indexOf('## Excluded PRs'));
+  const lockDirBranch = reduced.slice(
+    reduced.indexOf('- **`lockDir` not writable**'),
+    reduced.indexOf('- **An adapter executable missing'),
+  );
+  const steps = md.slice(md.indexOf('## Steps'), md.indexOf('## Final report'));
+  const step8 = steps.slice(steps.indexOf('8. **Carry-over.**'), steps.indexOf('9. **Report.**'));
+  const fullStep8 = step8.slice(0, step8.indexOf('- **Without a lock**'));
+  const noLock = step8.slice(step8.indexOf('- **Without a lock**'));
+
+  it('busy: still waits, then reads steps 1–5 without QA', () => {
+    expect(busy).toContain('re-checking every 5 min for up to 60 min');
+    expect(busy).toContain('steps 1–5 read-only');
+    expect(busy).toContain('no `qa-issue` call');
+    expect(busy).toContain('no tracker transition');
+    expect(busy).toMatch(/steps 5\.5–7 do not run/);
+  });
+
+  it('busy: carries through step 8 without a lock, reason lock busy', () => {
+    expect(busy).toContain('step 8 as a run without a lock, reason `lock busy`');
+  });
+
+  it('busy: reports target keys as not-run and still ends lock busy with the re-run args', () => {
+    expect(busy).toMatch(/not-run[^\n]*reason `lock busy`/);
+    expect(busy).toContain('`deployed, QA incomplete: lock busy`');
+    expect(busy).toContain('re-run args');
+  });
+
+  it('lockDir not writable: carries too, still with no QA, no transition, no heartbeat', () => {
+    expect(lockDirBranch).not.toContain('no carry-over write');
+    expect(lockDirBranch).toContain('no `qa-issue` call, no tracker transition, no heartbeat');
+    expect(lockDirBranch).toContain('step 8 as a run without a lock, reason `QA lock unavailable`');
+    expect(lockDirBranch).toContain('tracker writes need no lock directory');
+  });
+
+  it('a run without a lock carries every key step 8 would leave open', () => {
+    expect(step8).toContain('- **Without a lock** (Reduced mode for `lockDir`, or a lock that stayed busy)');
+    expect(noLock).toContain('each admitted target key');
+    expect(noLock).toContain('each key admission deferred');
+    expect(noLock).toContain('blocked `PR list incomplete`');
+    expect(noLock).toContain('`carryLabel`');
+    expect(noLock).toContain('the carry comment above');
+    // Hard rules: touch only a range whose deploy step 1 confirmed.
+    expect(noLock).toContain('only after step 1 confirmed the deploy');
+  });
+
+  it('a run without a lock comments whenever its mergeShas are new, and before it labels', () => {
+    // The holder's check reads every carry comment's mergeShas, so a new merge always gets a comment.
+    expect(noLock).toContain('no new comment only when both its reason and its `mergeShas`');
+    // Comment first: the holder either sees it and keeps the label, or removed the label before it is added.
+    expect(noLock).toMatch(/post the comment before adding the label/i);
+  });
+
+  it('a run without a lock never removes a carry label', () => {
+    const removes = noLock.match(/\S+ remove\b/gi) ?? [];
+    expect(removes.length).toBeGreaterThan(0);
+    for (const r of removes) expect(r).toMatch(/^never remove$/i);
+    expect(noLock).toContain('Never remove `carryLabel`');
+    expect(noLock).toContain("removal stays with the lock holder's step 8");
+  });
+
+  // The guard sentence: from "Pass and fail:" to the report-only rule.
+  const guard = fullStep8.slice(fullStep8.indexOf('Pass and fail:'), fullStep8.indexOf('Report-only:'));
+
+  it('a carry comment stays outstanding until a later result names every one of its merges', () => {
+    expect(guard).toContain('**outstanding**');
+    expect(guard).toMatch(
+      /no pass or fail result comment posted after it \(this run's own result included\) names every one of its mergeShas as tested/,
+    );
+    // Coverage, not time: no boundary that an earlier, narrower result could set.
+    expect(guard).not.toContain('startTime');
+    expect(guard).not.toContain('newest carry comment');
+    expect(guard).not.toContain('latest pass or fail result comment');
+    expect(guard).not.toContain('never the boundary');
+  });
+
+  it('this run counts as later than every carry comment it reads, so an earlier pass never pins the label', () => {
+    expect(guard).toContain('`mergeShas` its run passed to `qa-issue`');
+    expect(guard).toContain('for an already passed key, the pass comment that names its mergeShas');
+    expect(guard).toContain('counts as posted after every carry comment this run reads');
+  });
+
+  it('the holder keeps the label while any carry comment is outstanding, otherwise removes it', () => {
+    expect(guard).toContain('Keep `carryLabel` while any carry comment on the key is outstanding');
+    expect(guard).toContain('`<KEY>: carry label kept, merge <owner/repo:sha7>');
+    expect(guard).toMatch(/Otherwise remove it/);
+  });
+
+  it('after removing, the holder checks every carry comment newer than its first read', () => {
+    // Two no-lock runs can post B then A between the read and the removal; the newest alone (A) hides B.
+    expect(guard).toContain('every carry comment newer than that first read');
+    expect(guard).toMatch(
+      /every carry comment newer than that first read[^\n]*if one is outstanding, add the label back[^\n]*same summary line/,
+    );
+  });
+
+  it('a run without a lock has nothing to resume and its repeated carry adds nothing', () => {
+    const cont = md.slice(md.indexOf('## Continuation'), md.indexOf('## Hard rules'));
+    expect(cont).toContain('or a lock that stayed busy');
+    expect(cont).toContain('a repeated carry adds nothing');
+  });
+});
+
+/**
  * Precondition gate across the whole run (2026-10-30 stage0 qa=max: 49 of 69
  * non-pass cases were preconditions found only while running). deploy-qa plans
  * every key first, asks the requester one question, and runs nothing before the
