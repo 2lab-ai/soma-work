@@ -49,6 +49,7 @@ vi.mock('../agent-runtime/claude-code/build-stream-options', () => ({
 }));
 
 import { STEER_SETTLEMENT_SUBTYPE } from '../agent-runtime/steer-settlement';
+import { STEER_MESSAGE_HEADER } from '../agent-runtime/turn-input-channel';
 import { ClaudeHandler, STEER_SETTLEMENT_BOUND_MS } from '../claude-handler';
 import { Logger } from '../logger';
 import type { McpManager } from '../mcp-manager';
@@ -289,7 +290,7 @@ describe('ClaudeHandler streaming-input turn (user-steering WU1)', () => {
     });
     const content = (fake.received[1] as any).message.content;
     expect(content).toEqual([
-      { type: 'text', text: 'actually, do X' },
+      { type: 'text', text: `\n\n${STEER_MESSAGE_HEADER}\nactually, do X\n\n` },
       { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
     ]);
     // `shouldQuery` unset means "run a turn for this message".
