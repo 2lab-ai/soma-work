@@ -7,7 +7,7 @@ import { stripEchoedDisplayLangTag } from '@soma/common/i18n';
 import { Logger } from '@soma/common/logger';
 import { parseSafeguardFlag, type SafeguardFlagInfo } from '@soma/common/safeguard';
 import type { AgentStreamEvent, AgentStreamEventOf, AgentUsage } from './agent-stream-types';
-import { type AgentTreeEvent, isAgentSpawnTool, isBackgroundAckText } from './agent-tree';
+import { type AgentTreeEvent, isAgentSpawnTool, isBackgroundAckText, resumedAgentIdOf } from './agent-tree';
 import type { SlackMessagePayload } from './choice-message-builder';
 import {
   ChannelMessageDirectiveHandler,
@@ -2273,6 +2273,19 @@ export class AgentStreamProcessor {
           ack,
           ...(outcome?.toolUses !== undefined ? { toolUses: outcome.toolUses } : {}),
           ...(outcome?.durationMs !== undefined ? { durationMs: outcome.durationMs } : {}),
+          ts: Date.now(),
+        });
+      }
+      // #966 — a SendMessage that resumed a subagent: it runs again. The registry revives it from
+      // `stopped` (a restart stopped it), so the next restart names it in its resume.
+      const resumedTaskId = tool === 'SendMessage' && ok ? resumedAgentIdOf(rawFields?.raw) : undefined;
+      if (resumedTaskId) {
+        this.emitAgentEvent(context, {
+          kind: 'lifecycle',
+          phase: 'started',
+          taskId: resumedTaskId,
+          taskType: 'local_agent',
+          background: true,
           ts: Date.now(),
         });
       }
