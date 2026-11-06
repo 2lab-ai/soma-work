@@ -262,6 +262,8 @@ function segmentAction(segment: string): IrreversibleAction | null {
 
 /** SQL that drops or empties data, sent through a database client (`psql -c`, `mysql -e`, a heredoc). */
 const SQL_DESTRUCTIVE = /\b(drop\s+(table|database|schema)|truncate\s+(table\s+)?[A-Za-z_"`])/i;
+/** The same, to find where it starts from an index on (`lastIndex`). */
+const SQL_DESTRUCTIVE_AT = new RegExp(SQL_DESTRUCTIVE.source, 'gi');
 const SQL_CLIENT =
   /(^|[\s;&|(/])(psql|mysql|mariadb|sqlite3|duckdb|clickhouse-client|clickhouse|sqlcmd|cockroach)(\s|$)/;
 
@@ -453,15 +455,28 @@ function commandAction(raw: string, depth: number): IrreversibleAction | null {
   const code = maskText(command);
   let from = 0;
   let pipeline = 0;
+  let sqlAt = -2; // where the pipeline's first destructive SQL starts: -2 not looked yet, -1 none (review 5: once)
   SEGMENT_BREAK.lastIndex = 0;
   for (;;) {
-    const m = SEGMENT_BREAK.exec(code);
+    let m = SEGMENT_BREAK.exec(code);
+    // A redirection (`2>&1`, `&>log`) is not a break.
+    while (m && m[0] === '&' && (code[m.index - 1] === '>' || code[m.index + 1] === '>')) m = SEGMENT_BREAK.exec(code);
     const to = m ? m.index : code.length;
-    const hit = segmentAction(code.slice(from, to));
+    const segment = code.slice(from, to);
+    const hit = segmentAction(segment);
     if (hit) return hit;
-    if (isSqlRun(code.slice(from, to), command.slice(pipeline, to))) return act('db-delete', 'DB 데이터 삭제');
+    if (SQL_CLIENT.test(segment)) {
+      if (sqlAt === -2) {
+        SQL_DESTRUCTIVE_AT.lastIndex = pipeline;
+        sqlAt = SQL_DESTRUCTIVE_AT.exec(command)?.index ?? -1;
+      }
+      if (sqlAt !== -1 && sqlAt < to) return act('db-delete', 'DB 데이터 삭제');
+    }
     if (!m) return null;
     from = to + m[0].length;
-    if (m[0] !== '|') pipeline = from;
+    if (m[0] !== '|') {
+      pipeline = from;
+      sqlAt = -2;
+    }
   }
 }
