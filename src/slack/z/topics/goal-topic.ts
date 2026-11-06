@@ -17,9 +17,10 @@ export async function renderGoalCard(args: { issuedAt: number }): Promise<Render
     currentDescription: [
       '• `goal` — 현재 세션 목표 조회',
       '• `goal set <objective>` 또는 `goal <objective>` — 활성 목표 설정/교체',
-      '• `goal pause` / `goal resume` — 프롬프트 주입 일시정지/재개',
+      '• `goal pause` — 지금 목표를 일시정지하고 다음 목표로 넘어감 (없으면 goal 작업 종료)',
+      '• `goal resume [n]` — 일시정지한 목표 재개: 진행 중인 목표가 없으면 바로, 있으면 그 다음에 시작',
       '• `goal done` — 목표 완료 표시',
-      '• `goal clear` — 목표 제거',
+      '• `goal clear` — 지금 목표 · 대기 · 일시정지 · 완료 목록을 모두 제거',
     ].join('\n'),
     options: [],
     additionalCommands: [
