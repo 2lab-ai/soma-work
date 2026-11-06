@@ -814,8 +814,8 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
       const frames = (await framesPromise) as Array<Record<string, unknown>>;
 
       const notice = (id: string) => frames.find((f) => f.subtype === 'task_notification' && f.task_id === id);
-      expect(notice('shell-1')).toMatchObject({ status: 'stopped', ended_with_turn: true });
-      expect(notice(AGENT_ID)?.ended_with_turn).toBeUndefined();
+      expect(notice('shell-1')).toMatchObject({ status: 'stopped', soma_ended_with_turn: true });
+      expect(notice(AGENT_ID)?.soma_ended_with_turn).toBeUndefined();
     } finally {
       warn.mockRestore();
     }

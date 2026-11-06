@@ -1594,7 +1594,7 @@ export class ClaudeHandler implements TurnSteeringPort {
           // still runs. Those reports are the turn's end, not a stop the model asked for: mark them so
           // the turn-end decision still counts that work as stopped with the turn (a held turn reads
           // them before it ends).
-          if (channel.isClosed && isTaskSettleFrame(raw)) raw.ended_with_turn = true;
+          if (channel.isClosed && isTaskSettleFrame(raw)) raw.soma_ended_with_turn = true;
 
           if (message.type === 'result') lastResultSeq = frameSeq;
 

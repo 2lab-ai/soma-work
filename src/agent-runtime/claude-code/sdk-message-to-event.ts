@@ -198,10 +198,10 @@ function agentOutcomeOf(message: unknown): {
 /** Spec 12 — the lifecycle fields the agent tree shows (present only when the SDK sent them). */
 /**
  * #966 — a stop the host marked as coming after it closed the CLI's input
- * (`ended_with_turn`, `claude-handler.ts`): the turn's end stopped the task.
+ * (`soma_ended_with_turn`, `claude-handler.ts`): the turn's end stopped the task.
  */
 function endedWithTurn(m: Record<string, unknown>, status: string): { endedWithTurn?: true } {
-  return status === 'stopped' && m.ended_with_turn === true ? { endedWithTurn: true } : {};
+  return status === 'stopped' && m.soma_ended_with_turn === true ? { endedWithTurn: true } : {};
 }
 
 function lifecycleDetails(m: Record<string, unknown>): Record<string, unknown> {

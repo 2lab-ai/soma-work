@@ -495,7 +495,7 @@ describe('createSdkMessageMapper — golden (epic #1023 P3)', () => {
     });
 
     // #966 — the host marks a stop that came after it closed the CLI's input (the turn's end stopped it).
-    it('a stop the host marked ended_with_turn carries endedWithTurn; other settles do not', () => {
+    it('a stop the host marked soma_ended_with_turn carries endedWithTurn; other settles do not', () => {
       expect(
         mapper().map(
           sdk({
@@ -503,7 +503,7 @@ describe('createSdkMessageMapper — golden (epic #1023 P3)', () => {
             subtype: 'task_notification',
             task_id: 'b1',
             status: 'stopped',
-            ended_with_turn: true,
+            soma_ended_with_turn: true,
           }),
         )[0],
       ).toMatchObject({ phase: 'settled', status: 'stopped', endedWithTurn: true });
@@ -514,7 +514,7 @@ describe('createSdkMessageMapper — golden (epic #1023 P3)', () => {
             subtype: 'task_updated',
             task_id: 'b1',
             patch: { status: 'killed' },
-            ended_with_turn: true,
+            soma_ended_with_turn: true,
           }),
         )[0],
       ).toMatchObject({ phase: 'settled', status: 'stopped', endedWithTurn: true });
@@ -525,7 +525,7 @@ describe('createSdkMessageMapper — golden (epic #1023 P3)', () => {
             subtype: 'task_notification',
             task_id: 'b1',
             status: 'completed',
-            ended_with_turn: true,
+            soma_ended_with_turn: true,
           }),
         )[0],
       ).not.toHaveProperty('endedWithTurn');
