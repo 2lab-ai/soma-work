@@ -161,3 +161,72 @@ describe('qa-issue procedure and results carry the gate', () => {
     expect(r).toContain('waiting for precondition confirmation');
   });
 });
+
+/**
+ * A broker installed before compare was allowed refuses every compare `policy-denied` (2026-11-06),
+ * and the broker is updated apart from this plugin. The deploy check and the done check then take
+ * the containment answer from git. deploy-qa-skill.test.ts runs the documented command against a
+ * real history and pins the argument order on every compare line of both skills.
+ */
+const GIT = 'GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= SSH_ASKPASS= git -c core.askPass= -c credential.interactive=never';
+
+describe('qa-issue computes a refused compare with git', () => {
+  const github = section('GitHub reads');
+  const procedure = section('Procedure');
+  const deployCheck = procedure.slice(procedure.indexOf('2. Deploy check'), procedure.indexOf('3. Build cases'));
+
+  it('keeps gh_read first and computes the answer with git when the compare read is refused or fails', () => {
+    expect(github).toContain('Read `compare` with `gh_read` first.');
+    expect(github).toMatch(/not an answer[^\n]*`policy-denied`[^\n]*compute the same answer with git/);
+    expect(github).toContain('`compare` takes full 40-character SHAs only');
+  });
+
+  it('fetches only the SHAs the check names, blob-less, never shallow, never with a token', () => {
+    expect(github).toContain(`\`${GIT} -C <dir> remote add origin https://github.com/<repo>.git\``);
+    expect(github).toContain(`\`${GIT} -C <dir> fetch --filter=blob:none origin <full SHAs>\``);
+    expect(github).toContain('never `--depth`');
+    expect(github).toContain('never put a token in the URL');
+    expect(github).toContain(
+      'Run the init and remote-add commands once per `<dir>`; a `<dir>` that already has the remote needs only the fetch.',
+    );
+    // A login prompt would hang the deploy check; deploy-qa-skill.test.ts runs the commands with an
+    // inherited askpass and a waiting helper to prove they fail at once or hit the bound.
+    expect(github).toContain(
+      `Every git command here starts with \`${GIT}\`: git then never asks for a login on the terminal or through an askpass program and tells credential helpers not to ask, while the session's non-interactive credential helper still supplies it.`,
+    );
+    expect(github).toContain(
+      "Run each git command in its own Bash call with an explicit timeout (the tool's `timeout`, e.g. 120000 ms), since a helper that ignores `credential.interactive` can still wait; a call that timed out or was killed is not an answer, the same as exit 128.",
+    );
+    for (const x of md.split('`').filter((y, i) => i % 2 === 1 && /^(?:[A-Z_]+=\S*\s+)*git\s/.test(y))) {
+      expect(x.startsWith(GIT), x).toBe(true);
+    }
+  });
+
+  it('states the direction, exit 1 as an answer, and a git failure as no answer', () => {
+    expect(github).toMatch(
+      /`compare\/<base>\.\.\.<head>` status `ahead` means `<base>` is an ancestor of `<head>`, `identical` that they are the same commit/,
+    );
+    expect(github).toContain(`\`${GIT} -C <dir> merge-base --is-ancestor <base> <head>\` exits 0`);
+    expect(github).toContain('exit 1 is an answer too (`behind` or `diverged`), but only from merge-base.');
+    expect(github).toMatch(
+      /A git failure — a fetch that exits non-zero \(1 included\), an unknown SHA \(exit 128\), a call that timed out or was killed, any other exit — is not an answer, the same as a failed read/,
+    );
+    expect(github).toContain('a check whose fetch failed has no answer, whatever a later merge-base says.');
+  });
+
+  it('names the answer source where qa-report reads it', () => {
+    expect(github).toContain(
+      'Name the source in `deployConfirm.provenance` and the tracker comment: `compare via git: broker refused compare`',
+    );
+  });
+
+  it('step 2 and the contained done condition take the git answer, mergeSha first', () => {
+    expect(deployCheck).toContain(
+      `∈ \`ahead|identical\` — via git, \`${GIT} -C <dir> merge-base --is-ancestor <mergeSha> <runningSha>\` exits 0`,
+    );
+    expect(deployCheck).toContain('no answer from compare or git');
+    expect(section('Tracker reconcile')).toContain(
+      "step 2's per-repo compare (or its git answer) holds for every `mergeSha`, re-read now",
+    );
+  });
+});
