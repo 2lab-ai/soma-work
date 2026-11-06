@@ -719,6 +719,8 @@ export interface KanbanGoal {
     stalled?: { at: number; reason: string; actions: string[] };
   };
   queue: Array<{ goalId: string; objective: string }>;
+  /** Goals the owner paused, oldest first (SSOT 2026-11-06) — they hold nothing back; each can be resumed. */
+  paused: Array<{ goalId: string; objective: string }>;
   completedCount: number;
   /** SSOT 2026-10-22 T6 — completed goals with their details, newest first. */
   history: KanbanGoalHistoryItem[];
@@ -2176,8 +2178,9 @@ export function goalDecisionToKanban(s: any): KanbanGoalDecision | undefined {
 function goalToKanban(s: any): KanbanGoal | undefined {
   const goal = s.goal;
   const queue: any[] = Array.isArray(s.goalQueue) ? s.goalQueue : [];
+  const paused: any[] = Array.isArray(s.goalPaused) ? s.goalPaused : [];
   const history: any[] = Array.isArray(s.goalHistory) ? s.goalHistory : [];
-  if (!goal && queue.length === 0 && history.length === 0) return undefined;
+  if (!goal && queue.length === 0 && paused.length === 0 && history.length === 0) return undefined;
   return {
     current:
       goal && typeof goal.goalId === 'string' && KANBAN_GOAL_STATUSES.has(goal.status)
@@ -2204,6 +2207,9 @@ function goalToKanban(s: any): KanbanGoal | undefined {
           }
         : undefined,
     queue: queue
+      .filter((g) => g && typeof g.goalId === 'string')
+      .map((g) => ({ goalId: g.goalId, objective: String(g.objective ?? '') })),
+    paused: paused
       .filter((g) => g && typeof g.goalId === 'string')
       .map((g) => ({ goalId: g.goalId, objective: String(g.objective ?? '') })),
     completedCount: history.length,
@@ -4251,13 +4257,19 @@ export async function registerDashboardRoutes(
           reply.status(400).send({ error: 'goalId is required and must be a string' });
           return;
         }
-        if (body.expect !== 'current' && body.expect !== 'queued') {
-          reply.status(400).send({ error: "expect must be 'current' or 'queued'" });
+        if (body.expect !== 'current' && body.expect !== 'queued' && body.expect !== 'paused') {
+          reply.status(400).send({ error: "expect must be 'current', 'queued' or 'paused'" });
           return;
         }
         action = { action: 'delete', goalId: body.goalId, expect: body.expect };
+      } else if (body.action === 'pause' || body.action === 'resume') {
+        if (typeof body.goalId !== 'string' || !body.goalId || body.goalId.length > 200) {
+          reply.status(400).send({ error: 'goalId is required and must be a string' });
+          return;
+        }
+        action = { action: body.action, goalId: body.goalId };
       } else {
-        reply.status(400).send({ error: "action must be 'add' or 'delete'" });
+        reply.status(400).send({ error: "action must be 'add', 'delete', 'pause' or 'resume'" });
         return;
       }
       const resolved = resolveSelfActionKeyAndOwner(request, reply);
@@ -5911,7 +5923,7 @@ ui-breadcrumbs.pa-path { flex: 1 1 auto; min-width: 0; }
 }
 /* The common surface (T1.1): 세션 정보 · goal · 입력 필요 · 산출물 as one grouped block. */
 .panel-surface { border-bottom: 1px solid var(--border); background: var(--surface); }
-.panel-surface > .panel-info, .panel-surface > .panel-goal, .panel-surface > .panel-permission, .panel-surface > .panel-artifacts { border-bottom: 0; }
+.panel-surface > .panel-info, .panel-surface > .panel-goal, .panel-surface > .panel-goal-paused, .panel-surface > .panel-permission, .panel-surface > .panel-artifacts { border-bottom: 0; }
 .panel-surface > :not([hidden]):not([style*="display:none"]):not([style*="display: none"]) + :not([hidden]) { border-top: 1px solid var(--border); }
 /* Agent tabs (T1.2, D4 E-19): @2lab.ai/ui <ui-tabs shared-panel> — the tabs, the ink underline, the
    sideways scroll, Main pinned at the start edge with its fade (TabItem.pinned), the type as the muted
@@ -6084,6 +6096,7 @@ body:not([data-detail~="controls"]) #panel-controls { display: none !important; 
    always sees whose chat and log these are. The section strip under it: all three (sections), 대화 · 작업 로그
    (logtab — renderPanelSections gives it those tabs), or none — one section, the chat. ── */
 .slide-panel:not([data-midtab="goal"]) #panel-goal,
+.slide-panel:not([data-midtab="goal"]) #panel-goal-paused,
 .slide-panel:not([data-midtab="artifacts"]) #panel-artifacts,
 .slide-panel:not([data-midtab="info"]) #panel-info,
 .slide-panel:not([data-midtab="tasks"]) #panel-tasks,
@@ -6181,6 +6194,13 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
    its first 3 lines on every opening (SSOT 2026-10-29) — the element's fold, 펼치기 / 접기 its own. ── */
 .panel-goal { padding: 8px 16px; border-bottom: 1px solid var(--border); outline: none; }
 .panel-goal > ui-goal-card { display: block; }
+/* Paused goals (SSOT 2026-11-06): one row each — the objective (2 lines at most), then 재개 · 삭제 on the kit's buttons. */
+.panel-goal-paused { padding: 8px 16px 12px; }
+.panel-goal-paused .gp-hint { margin: 2px 0 6px; font-size: 12px; line-height: 18px; color: var(--text-secondary); }
+.panel-goal-paused .gp-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.panel-goal-paused .gp-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.panel-goal-paused .gp-text { flex: 1; min-width: 0; font-size: 13px; line-height: 20px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.panel-goal-paused .gp-acts { display: inline-flex; gap: 6px; flex: none; }
 .panel-goal:focus-visible { box-shadow: inset 0 0 0 2px var(--border-focus); }
 /* Scroll container: the common surface (large UIAskQ choices included), the
    agent tabs, Tasks and the section tabs scroll together; each section scrolls
@@ -6842,6 +6862,8 @@ ${pageTokenAliases()}
         <div class="panel-midbar" id="panel-midbar" role="group" aria-label="작업 정보 탭" hidden></div>
         <!-- Goal (spec 13): the editor's home — current, queue, add / delete, completed goals. The 목표 tab. -->
         <div class="panel-goal" id="panel-goal" role="region" tabindex="-1" aria-label="목표" style="display:none"></div>
+        <!-- Paused goals (SSOT 2026-11-06): the goals the owner set aside, each with 재개 / 삭제. The 목표 tab too. -->
+        <div class="panel-goal-paused" id="panel-goal-paused" role="region" aria-label="일시정지된 목표" style="display:none"></div>
         <!-- 산출물 (SSOT 2026-10-23 T6): what the task produced, and the files the user attached. The 산출물 tab. -->
         <div class="panel-artifacts" id="panel-artifacts" style="display:none"></div>
         <!-- 세션 정보 (spec 13): the summary line + the links, every number of the session, the context — live. The 세부 tab
@@ -12673,10 +12695,11 @@ function panelMidTabsOf(s, tabs, c) {
       var past = (g.history || []).length;
       var cur = g.current ? 1 : 0;
       var q = (g.queue || []).length;
-      var all = past + cur + q;
+      var held = (g.paused || []).length;
+      var all = past + cur + q + held;
       if (all) {
         t.count = (cur ? past + 1 : past) + '/' + all;
-        t.title = '목표 — 지난 ' + past + ' · 지금 ' + cur + ' · 대기 ' + q;
+        t.title = '목표 — 지난 ' + past + ' · 지금 ' + cur + ' · 대기 ' + q + (held ? ' · 일시정지 ' + held : '');
       } else {
         t.empty = !ctx.goalEditable;
         t.title = t.empty ? '목표 없음' : '목표 없음 — 눌러서 추가';
@@ -13102,6 +13125,7 @@ function renderPanelGoal() {
   var live = !!s && col !== 'closed' && !s.terminated;
   var canEdit = !!s && viewerCanManage(s) && live && !isSiblingSession(s);
   var g = s ? s.goal : null;
+  renderPanelGoalPaused(s, canEdit);
   // Read-only viewers and closed sessions only see a goal list that exists.
   if (!s || !(g || canEdit)) {
     el.style.display = 'none';
@@ -13110,7 +13134,7 @@ function renderPanelGoal() {
   }
   el.style.display = '';
   // Task view T1.6: a session with no goal keeps the empty editor for 자세히.
-  el.classList.toggle('is-empty', !(g && (g.current || (g.queue && g.queue.length) || (g.history && g.history.length))));
+  el.classList.toggle('is-empty', !(g && (g.current || (g.queue && g.queue.length) || (g.paused && g.paused.length) || (g.history && g.history.length))));
   var card = el.firstElementChild;
   // A new card for every panel opening (SSOT 2026-10-29: each opening starts with the past goals folded — the
   // element keeps its fold across data); reopening the same session carries the unsent add-box draft over
@@ -13132,6 +13156,44 @@ function renderPanelGoal() {
     card._gcSig = sig;
     card.data = d;
   }
+}
+// Paused goals (SSOT 2026-11-06): the goals the owner set aside — they no longer hold the queue back. The card has
+// no paused list, so the page draws one under it on the kit's buttons: 재개 (now when no goal runs, otherwise right
+// after the current goal — the server decides, the hint says which) and 삭제 (a second press within 4s confirms).
+// Drawn only when its data, the write in flight or the armed delete changed. Read-only viewers see the list alone.
+var _gpArmed = null; // { key, id, at } — a 삭제 pressed once
+function renderPanelGoalPaused(s, canEdit) {
+  var el = document.getElementById('panel-goal-paused');
+  if (!el) return;
+  var list = (s && s.goal && s.goal.paused) || [];
+  if (!list.length) {
+    el.style.display = 'none';
+    if (el._gpSig) { el.innerHTML = ''; el._gpSig = ''; }
+    return;
+  }
+  var busy = _goalBusy[s.key] || null;
+  var armed = _gpArmed && _gpArmed.key === s.key && Date.now() - _gpArmed.at < 4000 ? _gpArmed.id : '';
+  var running = !!(s.goal.current && s.goal.current.status === 'active');
+  var sig = JSON.stringify([list, !!canEdit, busy, armed, running]);
+  el.style.display = '';
+  if (el._gpSig === sig) return;
+  el._gpSig = sig;
+  var off = busy ? ' aria-disabled="true"' : '';
+  var rows = list.map(function(p, i) {
+    var id = String(p.goalId);
+    var acts = '';
+    if (canEdit) {
+      var spin = busy && busy.id === id;
+      acts = '<span class="gp-acts">'
+        + '<button type="button" class="ui-btn is-sm is-primary" data-gp-act="resume" data-gp-id="' + escAttr(id) + '"' + off + (spin && busy.op === 'resume' ? ' aria-busy="true"' : '') + '>재개</button>'
+        + '<button type="button" class="ui-btn is-sm" data-gp-act="delete" data-gp-id="' + escAttr(id) + '"' + off + (spin && busy.op === 'delete' ? ' aria-busy="true"' : '') + (armed === id ? ' data-armed' : '') + '>' + (armed === id ? '한 번 더 눌러 삭제' : '삭제') + '</button>'
+        + '</span>';
+    }
+    return '<li class="gp-row"><span class="gp-text" title="' + escAttr(p.objective) + '">' + (i + 1) + '. ' + esc(p.objective) + '</span>' + acts + '</li>';
+  }).join('');
+  el.innerHTML = '<div class="ui-section-head"><h4>일시정지된 목표</h4><span class="ui-count">' + list.length + '</span></div>'
+    + (canEdit ? '<p class="gp-hint">' + (running ? '재개하면 지금 목표 다음에 시작합니다.' : '재개하면 바로 지금 목표로 시작합니다.') + '</p>' : '')
+    + '<ol class="gp-list">' + rows + '</ol>';
 }
 // The goal landing (관리 → / goal 추가 →): the element's add box when it has one, else its group — read through
 // the open shadow root by element / role, as uiTabsFocus does (the card has no focus API of its own).
@@ -13594,10 +13656,11 @@ function cardGoalLine(s, col, canEdit) {
   var editable = canEdit && col !== 'closed' && !s.terminated;
   var go = ' onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\',\\'goal\\',\\'\\',event.detail===0)"';
   var queued = g && g.queue ? g.queue.length : 0;
+  var held = g && g.paused ? g.paused.length : 0;
   if (!cur) {
     var done = g ? toNum(g.completedCount) : 0;
-    if (!editable && !queued && !done) return '';
-    var what = queued ? '대기 중인 goal ' + queued + '개' : (done ? '완료된 goal ' + done + '개' : '현재 goal 없음');
+    if (!editable && !queued && !held && !done) return '';
+    var what = queued ? '대기 중인 goal ' + queued + '개' : held ? '일시정지된 goal ' + held + '개' : (done ? '완료된 goal ' + done + '개' : '현재 goal 없음');
     return '<div class="card-goal-line"><span class="cgl-icon" aria-hidden="true">' + GOAL_SVG + '</span>'
       + '<span class="cgl-text is-muted">' + what + '</span>'
       + '<button type="button" class="cgl-go"' + go + '>' + (editable ? 'goal 추가 &rarr;' : '보기 &rarr;') + '</button></div>';
@@ -13607,6 +13670,7 @@ function cardGoalLine(s, col, canEdit) {
     bits += '<span class="cgl-n" title="자동 이어하기 횟수 / 상한">' + toNum(cur.continuationCount) + '/' + toNum(cur.maxContinuations) + '</span>';
   }
   if (queued) bits += '<span class="cgl-n">대기 ' + queued + '</span>';
+  if (held) bits += '<span class="cgl-n">일시정지 ' + held + '</span>';
   return '<div class="card-goal-line"><span class="cgl-icon" aria-hidden="true">' + GOAL_SVG + '</span>'
     + '<span class="cgl-text" title="' + escAttr(cur.objective) + '">' + esc(cur.objective) + '</span>' + bits
     + '<button type="button" class="cgl-go"' + go + '>' + (editable ? '관리 &rarr;' : '보기 &rarr;') + '</button></div>';
@@ -14515,17 +14579,18 @@ function repaintPanelControlsFor(key) {
 // (goalCardData), the one goal write in flight per session (_goalBusy → busy / busyId) and the routes. Every
 // write names WHERE the goal was seen (current / queued), so a goal that moved in the meantime is refused
 // (409) instead of deleting the wrong one — never goal clear, which also drops the queue. actions is
-// ['delete']: POST /session/:key/goal takes add and delete only (the host layer has no complete / pause,
-// D3 G4-1), so the card never offers them.
+// ['delete', 'pause', 'resume']: POST /session/:key/goal takes add, delete, pause and resume (SSOT 2026-11-06 —
+// a paused goal leaves the current slot for the paused list under the card, and the next queued goal starts);
+// the host layer has no complete (D3 G4-1), so the card never offers it.
 var GOAL_STATUS_LABELS = { active: '진행 중', paused: '일시정지', complete: '완료' };
 var GOAL_STATUS_TONE = { active: 'run', paused: 'wait', complete: 'done' };
 // The goal mark (P7): the 2lab icon set's target glyph, not the bullseye emoji.
 var GOAL_SVG = '<i data-ui-icon="target"></i>';
 var GOAL_VIA_LABELS = { user: '직접 완료', 'eval-model': '평가 모델 완료' };
 var GOAL_OBJECTIVE_MAX = 4000; // the route's cap on an objective
-var GOAL_ACTIONS = ['delete']; // what the goal route answers besides add
+var GOAL_ACTIONS = ['delete', 'pause', 'resume']; // what the goal route answers besides add
 var _goalErrors = Object.create(null); // session key → last refused goal action (shown until the next success)
-var _goalBusy = Object.create(null); // session key → { op: 'add' | 'delete', id } while that write is out
+var _goalBusy = Object.create(null); // session key → { op: 'add' | 'delete' | 'pause' | 'resume', id } while that write is out
 // One past goal for the element: time spent · tokens · cost · continuation turns · how it closed on its meta
 // line, the evaluator's reason as its note (when it ended is the element's, from endedAt).
 function goalPastItem(h) {
@@ -14565,7 +14630,8 @@ function goalCardData(s, canEdit) {
   d.history = ((g && g.history) || []).map(goalPastItem);
   var busy = _goalBusy[s.key];
   if (busy) {
-    d.busy = busy.op;
+    // The card spins one toggle for pause and resume (its busy key is 'pause').
+    d.busy = busy.op === 'resume' ? 'pause' : busy.op;
     if (busy.id) d.busyId = busy.id;
   }
   if (_goalErrors[s.key]) d.error = _goalErrors[s.key];
@@ -14639,6 +14705,38 @@ document.addEventListener('ui-add', function(e) {
   var key = el.getAttribute('data-goal-key');
   if (!key || !_sessionCache[key]) return;
   addGoal(key, e.detail.objective, el);
+});
+// ⏸️ on the current goal: it moves to the paused goals and the next queued goal starts (or the goal work ends);
+// ▶️ on a current goal stopped in place (the cap question's 취소) resumes it.
+document.addEventListener('ui-pause', function(e) { goalToggle(e, 'pause'); });
+document.addEventListener('ui-resume', function(e) { goalToggle(e, 'resume'); });
+function goalToggle(e, act) {
+  var el = e.target;
+  if (!el || el.tagName !== 'UI-GOAL-CARD' || !e.detail) return;
+  var key = el.getAttribute('data-goal-key');
+  if (!key || !_sessionCache[key]) { e.preventDefault(); return; }
+  goalAction(key, { action: act, goalId: String(e.detail.id || '') });
+}
+// The paused list's buttons (renderPanelGoalPaused): 재개 at once; 삭제 on its second press within 4s.
+document.addEventListener('click', function(e) {
+  var b = e.target && e.target.closest ? e.target.closest('#panel-goal-paused [data-gp-act]') : null;
+  if (!b || b.getAttribute('aria-disabled') === 'true') return;
+  var key = panelSessionKey;
+  if (!key || !_sessionCache[key]) return;
+  var id = b.getAttribute('data-gp-id') || '';
+  if (b.getAttribute('data-gp-act') === 'resume') {
+    _gpArmed = null;
+    goalAction(key, { action: 'resume', goalId: id }, id);
+    return;
+  }
+  if (_gpArmed && _gpArmed.key === key && _gpArmed.id === id && Date.now() - _gpArmed.at < 4000) {
+    _gpArmed = null;
+    goalAction(key, { action: 'delete', goalId: id, expect: 'paused' }, id);
+    return;
+  }
+  _gpArmed = { key: key, id: id, at: Date.now() };
+  repaintPanelGoalFor(key);
+  setTimeout(function() { if (_gpArmed && _gpArmed.id === id) { _gpArmed = null; repaintPanelGoalFor(key); } }, 4100);
 });
 
 // Card click / Enter / Space = expand / collapse in place (§3.1-4), Esc inside

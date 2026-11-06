@@ -1321,6 +1321,35 @@ describe('SessionRegistry per-goal time attribution (T3)', () => {
     expect((session.goal as { activeMsUsed?: number }).activeMsUsed ?? 0).toBe(0);
   });
 
+  it('persists the paused goals across a restart — even with no goal running and no SDK session yet (SSOT 2026-11-06)', () => {
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U123', 'Tester', 'C_GP', '171.GP1');
+    expect(session.sessionId).toBeUndefined();
+    session.goalPaused = [
+      {
+        goalId: 'p1',
+        objective: 'held',
+        status: 'paused',
+        createdAt: 1,
+        updatedAt: 1,
+        createdBy: 'U123',
+        continuationCount: 3,
+        maxContinuations: 10,
+        evalAttemptCount: 0,
+      },
+    ];
+
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C_GP', '171.GP1');
+    expect(restored?.goal).toBeUndefined();
+    expect(restored?.goalPaused).toEqual([
+      expect.objectContaining({ goalId: 'p1', status: 'paused', continuationCount: 3 }),
+    ]);
+  });
+
   it('persists an autoCompactTokens override across a restart', () => {
     const writer = new SessionRegistry();
     const session = writer.createSession('U123', 'Tester', 'C_AC', '171.AC1');

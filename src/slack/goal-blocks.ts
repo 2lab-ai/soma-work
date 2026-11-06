@@ -19,6 +19,10 @@ import type { SessionGoal } from '../types';
 export const GOAL_DELETE_ACTION_PREFIX = 'goal_delete:';
 /** `goal_update:<goalId>` — open the edit modal for one goal. */
 export const GOAL_UPDATE_ACTION_PREFIX = 'goal_update:';
+/** `goal_pause:<goalId>` — set the current goal aside; the next queued goal starts. */
+export const GOAL_PAUSE_ACTION_PREFIX = 'goal_pause:';
+/** `goal_resume:<goalId>` — resume a paused goal (now, or right after the running goal). */
+export const GOAL_RESUME_ACTION_PREFIX = 'goal_resume:';
 /** Owner-DM "keep going" button (S3). */
 export const GOAL_CONTINUE_DM_ACTION_ID = 'goal_continue_dm';
 /** Owner-DM "stop" button (S3). */
@@ -79,6 +83,8 @@ function objectiveLine(objective: string, max = 280): string {
  * See docs/misc/reference/slack-block-kit.md.
  */
 const SECTION_TEXT_LIMIT = 3000;
+/** Paused goals listed with buttons; the rest are reached with `goal resume <n>`. */
+const PAUSED_ROWS_MAX = 5;
 const SECTION_TEXT_BUDGET = 2800;
 
 function clampSectionText(text: string): string {
@@ -89,11 +95,33 @@ function section(text: string): any {
   return { type: 'section', text: { type: 'mrkdwn', text: clampSectionText(text) } };
 }
 
-function actionButtons(value: GoalActionValue): any {
+/**
+ * One goal's button row. `lifecycle` adds the button that moves the goal in or
+ * out of the paused goals: ⏸️ on the running current goal, ▶️ on a paused one.
+ */
+function actionButtons(value: GoalActionValue, lifecycle?: 'pause' | 'resume'): any {
   const encoded = encodeGoalActionValue(value);
+  const lifecycleButton =
+    lifecycle === 'pause'
+      ? {
+          type: 'button',
+          text: { type: 'plain_text', text: '⏸️ 일시정지', emoji: true },
+          action_id: `${GOAL_PAUSE_ACTION_PREFIX}${value.goalId}`,
+          value: encoded,
+        }
+      : lifecycle === 'resume'
+        ? {
+            type: 'button',
+            text: { type: 'plain_text', text: '▶️ 재개', emoji: true },
+            style: 'primary',
+            action_id: `${GOAL_RESUME_ACTION_PREFIX}${value.goalId}`,
+            value: encoded,
+          }
+        : undefined;
   return {
     type: 'actions',
     elements: [
+      ...(lifecycleButton ? [lifecycleButton] : []),
       {
         type: 'button',
         text: { type: 'plain_text', text: '✏️ 업데이트', emoji: true },
@@ -117,6 +145,8 @@ export interface GoalStatusBlocksInput {
   threadTs?: string;
   goal?: SessionGoal;
   queue?: SessionGoal[];
+  /** Paused goals, oldest first — each gets a Resume button. */
+  paused?: SessionGoal[];
   history?: SessionGoal[];
   /** Render a backstop section so the rows never truncate past this count. */
   listLimit?: number;
@@ -127,12 +157,14 @@ export interface GoalStatusBlocksInput {
 
 /**
  * Build the interactive goal-list blocks (S1). The current goal and every
- * queued goal each get a Delete + Update button row; completed history is
- * text-only (a finished goal cannot be deleted/updated).
+ * queued goal each get a Delete + Update button row (the running current goal
+ * also a Pause button); every paused goal gets Resume + Update + Delete;
+ * completed history is text-only (a finished goal cannot be deleted/updated).
  */
 export function buildGoalStatusBlocks(input: GoalStatusBlocksInput): any[] {
   const { sessionKey, channel, threadTs, goal, formatObjective, formatMetrics } = input;
   const queue = input.queue ?? [];
+  const paused = input.paused ?? [];
   const history = input.history ?? [];
   const limit = input.listLimit ?? 10;
   const blocks: any[] = [];
@@ -154,7 +186,7 @@ export function buildGoalStatusBlocks(input: GoalStatusBlocksInput): any[] {
     blocks.push(section(lines.join('\n')));
     // Buttons make sense only while the goal is still live (active/paused).
     if (goal.status === 'active' || goal.status === 'paused') {
-      blocks.push(actionButtons(valueFor(goal)));
+      blocks.push(actionButtons(valueFor(goal), goal.status === 'active' ? 'pause' : 'resume'));
     }
   }
 
@@ -167,6 +199,28 @@ export function buildGoalStatusBlocks(input: GoalStatusBlocksInput): any[] {
     }
     if (queue.length > limit) {
       blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `…and ${queue.length - limit} more` }] });
+    }
+  }
+
+  if (paused.length > 0) {
+    blocks.push({ type: 'divider' });
+    blocks.push(
+      section(
+        `⏸️ *Paused goals (${paused.length})* — resume one to run it now, or right after the current goal (\`goal resume <n>\`):`,
+      ),
+    );
+    // Fewer button rows than the queue: Slack refuses a message over 50 blocks,
+    // and a full queue already takes 23 of them.
+    const pausedLimit = Math.min(limit, PAUSED_ROWS_MAX);
+    paused.slice(0, pausedLimit).forEach((p, i) => {
+      blocks.push(section(`${i + 1}. ${formatObjective(p.objective)}`));
+      blocks.push(actionButtons(valueFor(p), 'resume'));
+    });
+    if (paused.length > pausedLimit) {
+      blocks.push({
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: `…and ${paused.length - pausedLimit} more — \`goal resume <n>\`` }],
+      });
     }
   }
 

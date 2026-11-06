@@ -9,7 +9,12 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_BG_KEEPALIVE_MAX_MS, liveAgentIds, parseBgKeepaliveMaxMs } from '../background-keepalive';
+import {
+  DEFAULT_BG_KEEPALIVE_MAX_MS,
+  liveAgentIds,
+  liveNonAgentTaskIds,
+  parseBgKeepaliveMaxMs,
+} from '../background-keepalive';
 
 function level(tasks: unknown): Record<string, unknown> {
   return { type: 'system', subtype: 'background_tasks_changed', tasks, session_id: 'sess-1', uuid: 'u' };
@@ -69,6 +74,32 @@ describe('liveAgentIds (#257)', () => {
     ['result', { type: 'result', subtype: 'success', tasks: [task('a1', 'local_agent')] }],
   ])('answers undefined for %s', (_label, frame) => {
     expect(liveAgentIds(frame as Record<string, unknown>)).toBeUndefined();
+  });
+});
+
+describe('liveNonAgentTaskIds (#997)', () => {
+  it('returns the live shells, workflows, MCP tasks and monitors, never an agent', () => {
+    const ids = liveNonAgentTaskIds(
+      level([
+        task('b1', 'local_bash'),
+        task('w1', 'local_workflow'),
+        task('m1', 'mcp_task'),
+        task('mon1', 'monitor'),
+        task('a1', 'local_agent'),
+      ]),
+    );
+    expect(ids).toEqual(['b1', 'w1', 'm1', 'mon1']);
+  });
+
+  it('ignores an ambient task and malformed entries', () => {
+    expect(
+      liveNonAgentTaskIds(level([task('b1', 'local_bash', { ambient: true }), null, task('', 'local_bash')])),
+    ).toEqual([]);
+  });
+
+  it('answers undefined for a level frame without a tasks array, and for any other frame', () => {
+    expect(liveNonAgentTaskIds(level(undefined))).toBeUndefined();
+    expect(liveNonAgentTaskIds({ type: 'system', subtype: 'init' })).toBeUndefined();
   });
 });
 

@@ -206,6 +206,75 @@ describe('goal completion requires every task of the latest list to be completed
   });
 });
 
+// trinity review P1 (astra-zhuge, 2026-11-06): a paused goal's unfinished tasks are its own work.
+// While it is set aside they must not hold the goal that runs in its place.
+describe("a paused goal's open tasks do not hold another goal's completion", () => {
+  /** A goal paused on `ledger`'s list, holding `ids` (what pauseCurrentGoal records). */
+  const pausedOn = (ledger: TaskLedger, ids: string[], status: 'paused' | 'queued' = 'paused') =>
+    makeGoal({ goalId: `${status}-A`, status, heldTaskIds: ids, heldListAt: ledger.updatedAt } as any);
+
+  it('the tasks a goal left open when it was paused are not the running goal’s tasks → the running goal completes', async () => {
+    const h = makeHarness({ verdict: DONE, ledger: ledgerOf(SIX_TASKS) });
+    const ledger = h.session.taskLedger as TaskLedger;
+    (h.session as any).goalPaused = [pausedOn(ledger, ledger.current.slice(1))];
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.goal.status).toBe('complete');
+  });
+
+  it('once the running goal writes its own list, every task on it is its own — even one carried over (review r3 P1)', async () => {
+    const withNew: TodoInput[] = [...SIX_TASKS, { content: 'B 자신의 작업', status: 'pending' }];
+    const ledger = ledgerOf(SIX_TASKS);
+    const h = makeHarness({ verdict: DONE, ledger: applyTodoList(ledger, withNew, 9_000) });
+    (h.session as any).goalPaused = [pausedOn(ledger, ledger.current.slice(1))];
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.goal.status).toBe('active');
+    const notice = h.notices.find((n) => n.startsWith('🔄'));
+    expect(notice).toContain('6 of 7');
+    expect(notice).toContain('B 자신의 작업');
+  });
+
+  it('a new task the ledger matched onto a held id still holds the running goal (review r3 P1)', async () => {
+    const before = ledgerOf([{ content: 'Write unit tests for checkout screen', status: 'pending' }]);
+    const after = applyTodoList(before, [{ content: 'Write unit tests for billing screen', status: 'pending' }], 9_000);
+    expect(after.current).toEqual(before.current); // the similarity match kept A's id for B's task
+    const h = makeHarness({ verdict: DONE, ledger: after });
+    (h.session as any).goalPaused = [pausedOn(before, before.current)];
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.goal.status).toBe('active');
+    expect(h.notices.find((n) => n.startsWith('🔄'))).toContain('billing screen');
+  });
+
+  it('the same text written again by the running goal is its own task (review r3 P1)', async () => {
+    const list: TodoInput[] = [{ content: 'Write unit tests for checkout screen', status: 'pending' }];
+    const before = ledgerOf(list);
+    const h = makeHarness({ verdict: DONE, ledger: applyTodoList(before, list, 9_000) });
+    (h.session as any).goalPaused = [pausedOn(before, before.current)];
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.goal.status).toBe('active');
+  });
+
+  it('a paused goal resumed behind the running goal still holds its tasks (review r2 P1)', async () => {
+    const h = makeHarness({ verdict: DONE, ledger: ledgerOf(SIX_TASKS) });
+    const ledger = h.session.taskLedger as TaskLedger;
+    (h.session as any).goalQueue = [pausedOn(ledger, ledger.current.slice(1), 'queued')];
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.goal.status).toBe('complete');
+  });
+
+  it('gateGoalVerdictOnTasks and taskGateGapClosed take the excluded ids', () => {
+    const ledger = ledgerOf(SIX_TASKS);
+    const exclude = new Set(ledger.current.slice(1));
+    expect(gateGoalVerdictOnTasks(DONE, ledger, undefined, exclude).verdict.completed).toBe(true);
+    expect(taskGateGapClosed({ lastEvalGateOpen: ['T2'] }, ledger, exclude)).toBe(true);
+    expect(taskGateGapClosed({ lastEvalGateOpen: ['T2'] }, ledger)).toBe(false);
+  });
+});
+
 describe('a task-gate gap is judged again once its open tasks change (review P2)', () => {
   it('continuation 10/10 completes the last task but leaves no text → re-judged and completed, no cap question', async () => {
     const oneLeft: TodoInput[] = [

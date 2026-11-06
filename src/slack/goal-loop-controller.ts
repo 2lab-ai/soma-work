@@ -59,7 +59,7 @@ import {
   shouldRunGoalIdleDriver,
 } from './goal-completion-evaluator';
 import { GOAL_CONTINUATION_TEXT_PREFIX, GOAL_SUMMARY_PERSIST_MAX } from './goal-continuation';
-import { gateGoalVerdictOnTasks, goalTaskListLines, taskGateGapClosed } from './goal-task-gate';
+import { gateGoalVerdictOnTasks, goalTaskListLines, heldByWaitingGoals, taskGateGapClosed } from './goal-task-gate';
 
 export { GOAL_SUMMARY_PERSIST_MAX };
 
@@ -438,7 +438,7 @@ export class GoalLoopController {
     if (
       hasGap &&
       (noTurnText || (cause === 'kick' && alreadyJudged)) &&
-      !taskGateGapClosed(activeGoal, session.taskLedger)
+      !taskGateGapClosed(activeGoal, session.taskLedger, heldByWaitingGoals(session))
     ) {
       // #745 × #788: a turn that left no text may still have done work (files,
       // commands) before it was cut. Its progress is unknown, so the rollback
@@ -479,7 +479,7 @@ export class GoalLoopController {
     // The model's latest task list, so a previous gap about open tasks (the
     // task gate — see goal-task-gate) can be seen closed. The statuses are the
     // model's own marks: the evaluator is told they are claims, not evidence.
-    const taskLines = goalTaskListLines(session.taskLedger);
+    const taskLines = goalTaskListLines(session.taskLedger, heldByWaitingGoals(session));
     const evalUserSummary = [
       'Eval trigger: idle-settle (work turn ended)',
       '',
@@ -584,7 +584,12 @@ export class GoalLoopController {
     // Task gate: the evaluator's "complete" holds only when no task on the
     // model's latest list is open. Otherwise it is a gap naming those tasks.
     // The same open tasks held twice in a row stop the loop as a stall (#968).
-    const gate = gateGoalVerdictOnTasks(evalVerdict, session.taskLedger, activeGoal.lastEvalGateOpen);
+    const gate = gateGoalVerdictOnTasks(
+      evalVerdict,
+      session.taskLedger,
+      activeGoal.lastEvalGateOpen,
+      heldByWaitingGoals(session),
+    );
     const verdict = gate.verdict;
     if (gate.tasks) {
       logger.info('Goal completion held — tasks on the latest list are still open', { sessionKey, ...gate.tasks });

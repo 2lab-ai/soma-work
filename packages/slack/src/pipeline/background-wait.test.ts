@@ -126,6 +126,19 @@ describe('buildBackgroundWaitPrompt', () => {
     expect(p).toContain('1 background task');
     expect(p).not.toContain('1 background tasks');
   });
+
+  // #997: this prompt resumed a turn whose `gh pr merge` the host had cut. The
+  // SDK filled the call with its fixed cancel text and the model told the user
+  // they had stopped the merge. The prompt says who cut it.
+  it('says the SDK cancel text on a call before it came from the host, not the user (#997)', () => {
+    const p = buildBackgroundWaitPrompt(liveWork({ count: 1, signature: 'a' }), 2, 6);
+    expect(p).toContain("The user doesn't want to take this action right now");
+    // Scoped: a genuine user stop leaves the same text on an earlier call.
+    expect(p).toMatch(/If the last tool call of your previous turn reads/);
+    expect(p).toMatch(/no message of the user's says they stopped it/);
+    expect(p).toMatch(/the host closed that call when the turn ended, not the user/);
+    expect(p).toMatch(/Check whether it took effect, then continue/);
+  });
 });
 
 // #966 — a turn's CLI process ends with the turn, and its background tasks die with it (dev 2026-11-05:

@@ -157,6 +157,7 @@ describe('Dashboard — work item goal list (SSOT T2/T3)', () => {
           { goalId: 'g2', objective: '두번째' },
           { goalId: 'g3', objective: '세번째' },
         ],
+        paused: [],
         completedCount: 1,
         // SSOT 2026-10-22 T6 — the completed goals themselves, newest first.
         history: [{ goalId: 'g0', objective: '대시보드 개선', createdAt: 1, continuationCount: 2 }],
@@ -169,6 +170,24 @@ describe('Dashboard — work item goal list (SSOT T2/T3)', () => {
 
       const done = (await board(new Map([['C1:t1', liveSession({ goal: goal({ status: 'complete' }) })]]))).working[0];
       expect(done.goal.current.status).toBe('complete');
+    });
+
+    it('carries the paused goals (SSOT 2026-11-06) — a session with only paused goals still has a goal block', async () => {
+      const card = (
+        await board(
+          new Map([
+            [
+              'C1:t1',
+              liveSession({
+                goal: undefined,
+                goalPaused: [goal({ goalId: 'p1', objective: '쉬는 목표', status: 'paused' })],
+              }),
+            ],
+          ]),
+        )
+      ).working[0];
+      expect(card.goal.current).toBeUndefined();
+      expect(card.goal.paused).toEqual([{ goalId: 'p1', objective: '쉬는 목표' }]);
     });
 
     it('omits the goal block for a session that never had a goal', async () => {
@@ -215,8 +234,25 @@ describe('Dashboard — work item goal list (SSOT T2/T3)', () => {
       ]);
     });
 
+    it('pauses the current goal and resumes a paused one through the host handler', async () => {
+      const handler = vi.fn().mockResolvedValue({ outcome: 'paused', goalId: 'g1' });
+      dashboard.setDashboardGoalHandler(handler);
+
+      expect((await post({ action: 'pause', goalId: 'g1' })).statusCode).toBe(200);
+      expect((await post({ action: 'resume', goalId: 'p1' })).statusCode).toBe(200);
+      expect((await post({ action: 'delete', goalId: 'p1', expect: 'paused' })).statusCode).toBe(200);
+
+      expect(handler.mock.calls.map((call: any[]) => call[1])).toEqual([
+        { action: 'pause', goalId: 'g1' },
+        { action: 'resume', goalId: 'p1' },
+        { action: 'delete', goalId: 'p1', expect: 'paused' },
+      ]);
+    });
+
     it.each([
       [{}, /action/],
+      [{ action: 'pause' }, /goalId/],
+      [{ action: 'resume', goalId: 'x'.repeat(201) }, /goalId/],
       [{ action: 'clear' }, /action/],
       [{ action: 'add' }, /objective/],
       [{ action: 'add', objective: '   ' }, /objective/],

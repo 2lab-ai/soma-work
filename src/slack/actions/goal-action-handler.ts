@@ -11,7 +11,7 @@ import {
   type GoalActionValue,
 } from '../goal-blocks';
 import { answerGoalCapDecision, type GoalCapDecision, goalCapDecisionResolvedText } from '../goal-cap-decision';
-import { HostGoalActionError } from '../goal-host-actions';
+import { HostGoalActionError, type HostGoalActionResult } from '../goal-host-actions';
 import { getHostGoalActionHandler, resumeGoalLoop } from '../goal-loop-resume';
 import { retireGoalStall } from '../goal-stall';
 import { deleteGoalById, findGoalById, formatGoalObjectiveForSlack } from '../session-goal';
@@ -34,6 +34,10 @@ interface GoalActionContext {
  * Services the interactive `goal` buttons:
  *   - `goal_delete:<goalId>` — delete one goal; deleting the ACTIVE goal
  *     auto-advances to the next queued goal and kicks the loop (S1).
+ *   - `goal_pause:<goalId>` — set the current goal aside; the next queued goal
+ *     starts (or the goal work ends). `goal_resume:<goalId>` — resume a paused
+ *     goal: now when no goal runs, otherwise right after the running goal. Both
+ *     go through the host, like Delete, so a goal they start gets its opening.
  *   - `goal_update:<goalId>` — open an edit-box modal pre-filled with the
  *     current objective (S1); the modal submit applies the new objective.
  *   - `goal_continue_dm` / `goal_cancel_dm` — the owner-DM cap decision (S3):
@@ -79,7 +83,9 @@ export class GoalActionHandler {
           ? 'current'
           : session.goalQueue?.some((g) => g.goalId === value.goalId)
             ? 'queued'
-            : undefined;
+            : session.goalPaused?.some((g) => g.goalId === value.goalId)
+              ? 'paused'
+              : undefined;
       if (hostAction && expect) {
         try {
           const outcome = await hostAction(
@@ -129,6 +135,63 @@ export class GoalActionHandler {
         response_type: 'ephemeral',
         replace_original: false,
         text: '❌ goal 삭제 중 오류가 발생했습니다.',
+      }).catch(() => undefined);
+    }
+  }
+
+  async handlePause(body: any, respond: RespondFn): Promise<void> {
+    await this.runHostLifecycle(body, respond, 'pause', (outcome) =>
+      outcome.outcome === 'paused' && outcome.promoted
+        ? `⏸️ goal을 일시정지하고 다음 goal로 진행합니다:\n▶️ ${formatGoalObjectiveForSlack(outcome.promoted.objective)}`
+        : '⏸️ goal을 일시정지했습니다. 대기중인 goal이 없어 goal 작업을 멈춥니다 — `goal resume`으로 다시 시작합니다.',
+    );
+  }
+
+  async handleResume(body: any, respond: RespondFn): Promise<void> {
+    await this.runHostLifecycle(body, respond, 'resume', (outcome, goal) =>
+      outcome.outcome === 'resumed' && outcome.placement === 'next'
+        ? `▶️ goal을 재개했습니다 — 지금 goal 다음에 시작합니다: ${formatGoalObjectiveForSlack(goal?.objective ?? '')}`
+        : `▶️ goal을 재개했습니다 — 지금 goal로 시작합니다: ${formatGoalObjectiveForSlack(goal?.objective ?? '')}`,
+    );
+  }
+
+  /** Pause / resume through the host goal action (the dashboard's path). */
+  private async runHostLifecycle(
+    body: any,
+    respond: RespondFn,
+    action: 'pause' | 'resume',
+    describe: (outcome: HostGoalActionResult, goal: SessionGoal | undefined) => string,
+  ): Promise<void> {
+    try {
+      const r = this.resolve(body);
+      if ('error' in r) {
+        await respond({ response_type: 'ephemeral', replace_original: false, text: r.error });
+        return;
+      }
+      const { value, session, userId } = r;
+      const hostAction = getHostGoalActionHandler();
+      if (!hostAction) {
+        await respond({
+          response_type: 'ephemeral',
+          replace_original: false,
+          text: '⚠️ 지금은 처리할 수 없습니다. 잠시 후 다시 시도하거나 `goal pause` / `goal resume`을 쓰세요.',
+        });
+        return;
+      }
+      const goal = findGoalById(session, value.goalId) as SessionGoal | undefined;
+      try {
+        const outcome = await hostAction(value.sessionKey, { action, goalId: value.goalId }, userId);
+        await respond({ replace_original: true, text: describe(outcome, goal) });
+      } catch (error) {
+        if (!(error instanceof HostGoalActionError)) throw error;
+        await respond({ response_type: 'ephemeral', replace_original: false, text: `⚠️ ${error.message}` });
+      }
+    } catch (error) {
+      this.logger.error(`Error processing goal ${action}`, error);
+      await respond({
+        response_type: 'ephemeral',
+        replace_original: false,
+        text: action === 'pause' ? '❌ goal 일시정지 중 오류가 발생했습니다.' : '❌ goal 재개 중 오류가 발생했습니다.',
       }).catch(() => undefined);
     }
   }

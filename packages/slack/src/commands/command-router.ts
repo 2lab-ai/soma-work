@@ -47,8 +47,8 @@ export interface GoalOpening {
   objective: string;
   /**
    * `set` — the goal this command itself set; `promoted` — the next queued
-   * goal that `goal done` started; `resumed` — a paused goal whose first turn
-   * never ran, re-opened by `goal resume`. Anything the message carried
+   * goal that `goal done` or `goal pause` started; `resumed` — a paused goal
+   * `goal resume` made the current goal. Anything the message carried
    * besides its text (attachments) belongs to the goal it SET, never to a
    * promoted or resumed one.
    */

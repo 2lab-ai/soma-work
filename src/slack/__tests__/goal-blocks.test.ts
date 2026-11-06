@@ -20,6 +20,8 @@ import {
   GOAL_CANCEL_DM_ACTION_ID,
   GOAL_CONTINUE_DM_ACTION_ID,
   GOAL_DELETE_ACTION_PREFIX,
+  GOAL_PAUSE_ACTION_PREFIX,
+  GOAL_RESUME_ACTION_PREFIX,
   GOAL_UPDATE_ACTION_PREFIX,
   GOAL_UPDATE_MODAL_BLOCK_ID,
   GOAL_UPDATE_MODAL_CALLBACK_ID,
@@ -86,6 +88,66 @@ describe('buildGoalStatusBlocks (S1)', () => {
       formatMetrics: metrics,
     });
     expect(blocks.filter((b) => b.type === 'actions')).toHaveLength(0);
+  });
+});
+
+describe('buildGoalStatusBlocks — pause / resume (SSOT 2026-11-06)', () => {
+  const ids = (blocks: any[]) =>
+    blocks.filter((b) => b.type === 'actions').flatMap((r) => r.elements.map((e: any) => e.action_id));
+
+  it('the running goal offers ⏸️; each paused goal is listed, numbered, with ▶️ + Update + Delete', () => {
+    const blocks = buildGoalStatusBlocks({
+      sessionKey: 'C1:T1',
+      goal: makeGoal(),
+      queue: [makeGoal({ goalId: 'goal-2', status: 'queued' })],
+      paused: [
+        makeGoal({ goalId: 'p1', objective: 'held one', status: 'paused' }),
+        makeGoal({ goalId: 'p2', objective: 'held two', status: 'paused' }),
+      ],
+      history: [],
+      formatObjective: fmt,
+      formatMetrics: metrics,
+    });
+    const all = ids(blocks);
+    expect(all).toContain(`${GOAL_PAUSE_ACTION_PREFIX}goal-1`);
+    expect(all).not.toContain(`${GOAL_PAUSE_ACTION_PREFIX}goal-2`); // a queued goal is not running
+    for (const id of ['p1', 'p2']) {
+      expect(all).toContain(`${GOAL_RESUME_ACTION_PREFIX}${id}`);
+      expect(all).toContain(`${GOAL_UPDATE_ACTION_PREFIX}${id}`);
+      expect(all).toContain(`${GOAL_DELETE_ACTION_PREFIX}${id}`);
+    }
+    const text = JSON.stringify(blocks);
+    expect(text).toContain('Paused goals (2)');
+    expect(text).toContain('1. `held one`');
+    expect(text).toContain('2. `held two`');
+  });
+
+  it('a goal stopped in place as paused offers ▶️ instead of ⏸️', () => {
+    const blocks = buildGoalStatusBlocks({
+      sessionKey: 'C1:T1',
+      goal: makeGoal({ status: 'paused' }),
+      formatObjective: fmt,
+      formatMetrics: metrics,
+    });
+    expect(ids(blocks)).toContain(`${GOAL_RESUME_ACTION_PREFIX}goal-1`);
+    expect(ids(blocks)).not.toContain(`${GOAL_PAUSE_ACTION_PREFIX}goal-1`);
+  });
+
+  it('stays within Slack’s 50-block cap with a full queue and many paused goals', () => {
+    const many = (n: number, status: SessionGoal['status']) =>
+      Array.from({ length: n }, (_, i) => makeGoal({ goalId: `${status}-${i}`, status }));
+    const blocks = buildGoalStatusBlocks({
+      sessionKey: 'C1:T1',
+      goal: makeGoal(),
+      queue: many(15, 'queued'),
+      paused: many(15, 'paused'),
+      history: many(15, 'complete'),
+      listLimit: 10,
+      formatObjective: fmt,
+      formatMetrics: metrics,
+    });
+    expect(blocks.length).toBeLessThanOrEqual(50);
+    expect(JSON.stringify(blocks)).toContain('goal resume <n>');
   });
 });
 
