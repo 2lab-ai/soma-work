@@ -469,13 +469,21 @@ describe('deploy-qa computes a refused compare with git', () => {
   });
 
   it('fetches only the SHAs the check names, over https, blob-less, never shallow, never with a token', () => {
-    expect(github).toContain('`git init -q <dir>`');
-    expect(github).toContain('`git -C <dir> remote add origin https://github.com/<owner/repo>.git`');
-    expect(github).toContain('`git -C <dir> fetch --filter=blob:none origin <full SHAs>`');
+    expect(github).toContain('`GIT_TERMINAL_PROMPT=0 git init -q <dir>`');
+    expect(github).toContain(
+      '`GIT_TERMINAL_PROMPT=0 git -C <dir> remote add origin https://github.com/<owner/repo>.git`',
+    );
+    expect(github).toContain('`GIT_TERMINAL_PROMPT=0 git -C <dir> fetch --filter=blob:none origin <full SHAs>`');
     expect(github).toContain('never `--depth`');
     expect(github).toContain('never put a token in the URL');
     expect(github).toContain(
-      'Run `git init` and `remote add` once per `<dir>`; a `<dir>` that already has the remote needs only the fetch.',
+      'Run the init and remote-add commands once per `<dir>`; a `<dir>` that already has the remote needs only the fetch.',
+    );
+  });
+
+  it('runs every git command with terminal prompts off, so a missing credential fails instead of waiting', () => {
+    expect(github).toContain(
+      'Every git command here starts with `GIT_TERMINAL_PROMPT=0`: a missing credential then fails at once (not an answer) instead of waiting on a prompt.',
     );
   });
 
@@ -483,7 +491,7 @@ describe('deploy-qa computes a refused compare with git', () => {
     expect(github).toMatch(
       /`compare\/<base>\.\.\.<head>` status `ahead` means `<base>` is an ancestor of `<head>`, `identical` that they are the same commit/,
     );
-    expect(github).toContain('`git -C <dir> merge-base --is-ancestor <base> <head>` exits 0');
+    expect(github).toContain('`GIT_TERMINAL_PROMPT=0 git -C <dir> merge-base --is-ancestor <base> <head>` exits 0');
   });
 
   it('exit 1 is an answer; a git failure is not, the same as a failed read', () => {
@@ -503,16 +511,18 @@ describe('deploy-qa computes a refused compare with git', () => {
 
   it('step 1: after is contained in runningSha, and before is strictly behind after', () => {
     expect(step1).toContain(
-      'answers `ahead` or `identical` — via git, `git -C <dir> merge-base --is-ancestor <after> <runningSha>` exits 0',
+      'answers `ahead` or `identical` — via git, `GIT_TERMINAL_PROMPT=0 git -C <dir> merge-base --is-ancestor <after> <runningSha>` exits 0',
     );
     // `ahead` alone excludes the same commit: git's is-ancestor counts a commit as its own ancestor.
     expect(step1).toContain(
-      '(compare status `ahead`; via git, `git -C <dir> merge-base --is-ancestor <before> <after>` exits 0 and `before` ≠ `after`)',
+      '(compare status `ahead`; via git, `GIT_TERMINAL_PROMPT=0 git -C <dir> merge-base --is-ancestor <before> <after>` exits 0 and `before` ≠ `after`)',
     );
   });
 
   it('step 2: the whole range from one source, the one-parent commits, complete when rev-list exits 0', () => {
-    expect(step2).toContain('`git -C <dir> rev-list --reverse --min-parents=1 --max-parents=1 <before>..<after>`');
+    expect(step2).toContain(
+      '`GIT_TERMINAL_PROMPT=0 git -C <dir> rev-list --reverse --min-parents=1 --max-parents=1 <before>..<after>`',
+    );
     expect(step2).toContain('never mix pages with git output');
     expect(step2).toContain('complete when it exits 0');
     // `--no-merges` alone keeps a parentless commit, which the one-parent rule drops.
@@ -521,7 +531,9 @@ describe('deploy-qa computes a refused compare with git', () => {
 
   it("step 5: each related-repo mergeSha is contained in that repo's runningSha", () => {
     expect(step5).toContain('`repos/<owner/repo>/compare/<mergeSha>...<runningSha>`');
-    expect(step5).toContain('via git, `git -C <dir> merge-base --is-ancestor <mergeSha> <runningSha>` exits 0');
+    expect(step5).toContain(
+      'via git, `GIT_TERMINAL_PROMPT=0 git -C <dir> merge-base --is-ancestor <mergeSha> <runningSha>` exits 0',
+    );
   });
 });
 
@@ -539,6 +551,10 @@ describe('each compare and its git command name the two SHAs in the same order',
           expect(l, `${skill}: ${l}`).not.toContain(`--is-ancestor <${head}> <${base}>`);
         }
       }
+      // Every git command carries GIT_TERMINAL_PROMPT=0: a credential prompt would hang the step-1 poll.
+      const gitSpans = md.split('`').filter((x, i) => i % 2 === 1 && /^(?:[A-Z_]+=\S*\s+)*git\s/.test(x));
+      expect(gitSpans.length, skill).toBeGreaterThanOrEqual(skill === 'deploy-qa' ? 8 : 5);
+      for (const x of gitSpans) expect(x, `${skill}: ${x}`).toMatch(/^GIT_TERMINAL_PROMPT=0 git /);
       // The running commit is always the descendant; the deployed merge never precedes the range's start.
       expect(md).not.toContain('--is-ancestor <runningSha>');
       expect(md).not.toContain('--is-ancestor <after> <before>');
@@ -553,13 +569,15 @@ describe('each compare and its git command name the two SHAs in the same order',
  * C, S1, M, U, M2, D, and the one-parent ones are C, S1, D (U has none: `--no-merges` would keep it).
  */
 describe('the documented git commands give the compare answers', () => {
-  // No user or hook git state leaks in (a GIT_DIR from a hook, a global signing or URL-rewrite rule).
-  const env = {
-    ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_'))),
+  // No user or hook git state leaks in (a GIT_DIR from a hook, a global signing or URL-rewrite rule,
+  // an askpass program). The doc's commands get only this plus their own assignments, so the
+  // GIT_TERMINAL_PROMPT=0 they run with is the doc's; the test's own setup calls set it themselves.
+  const isolated = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_') && k !== 'SSH_ASKPASS')),
     GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_CONFIG_NOSYSTEM: '1',
-    GIT_TERMINAL_PROMPT: '0',
   };
+  const env = { ...isolated, GIT_TERMINAL_PROMPT: '0' };
   const sha: Record<string, string> = {};
   let root = '';
   let origin = '';
@@ -582,9 +600,13 @@ describe('the documented git commands give the compare answers', () => {
     sha[name] = git(origin, ['rev-parse', 'HEAD']);
   };
 
-  /** The doc's inline-code command that starts with `prefix`, placeholders filled, as git's argv. */
+  const ASSIGNMENTS = /^(?:[A-Z_]+=\S*\s+)+/;
+  /**
+   * The doc's inline-code command whose git part starts with `prefix`, placeholders filled: git's
+   * argv and the environment assignments written before it.
+   */
   const command = (text: string, prefix: string, fill: Record<string, string>) => {
-    const span = text.split('`').find((s) => s.startsWith(prefix));
+    const span = text.split('`').find((s) => s.replace(ASSIGNMENTS, '').startsWith(prefix));
     expect(span, prefix).toBeDefined();
     const filled = (span ?? '')
       .replace(/https:\/\/github\.com\/<[^<>]+>\.git/, `file://${origin}`)
@@ -593,11 +615,18 @@ describe('the documented git commands give the compare answers', () => {
         if (value === undefined) throw new Error(`unfilled <${name}> in ${span}`);
         return value;
       });
-    const argv = filled.split(' ');
-    expect(argv[0]).toBe('git');
-    return argv.slice(1);
+    const words = filled.split(' ');
+    const assigned: Record<string, string> = {};
+    while (words.length > 0 && /^[A-Z_]+=/.test(words[0])) {
+      const [name, ...value] = (words.shift() ?? '').split('=');
+      assigned[name] = value.join('=');
+    }
+    expect(assigned.GIT_TERMINAL_PROMPT, span).toBe('0');
+    expect(words[0]).toBe('git');
+    return { args: words.slice(1), env: assigned };
   };
-  const run = (args: string[]) => spawnSync('git', args, { encoding: 'utf8', env });
+  const run = (cmd: { args: string[]; env: Record<string, string> }, input?: string) =>
+    spawnSync('git', cmd.args, { encoding: 'utf8', env: { ...isolated, ...cmd.env }, input, timeout: 30_000 });
 
   beforeAll(() => {
     root = mkdtempSync(join(tmpdir(), 'deploy-qa-compare-'));
@@ -649,6 +678,17 @@ describe('the documented git commands give the compare answers', () => {
     const again = run(command(github, 'git -C <dir> fetch', { 'full SHAs': `${sha.S1} ${sha.D}` }));
     expect(again.status, again.stderr).toBe(0);
     expect(git(dir, ['cat-file', '-t', sha.S1])).toBe('commit');
+  });
+
+  it("with the doc's environment, a missing credential fails at once instead of prompting", () => {
+    const md = read('deploy-qa');
+    const github = md.slice(0, md.indexOf('## Args'));
+    // `credential fill` is what fetch runs when the server asks for a login; no helper is configured here.
+    const fetch = command(github, 'git -C <dir> fetch', { 'full SHAs': sha.D });
+    const result = run({ args: ['credential', 'fill'], env: fetch.env }, 'protocol=https\nhost=github.com\n\n');
+    expect(result.error).toBeUndefined(); // no timeout: it never waited
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('terminal prompts disabled');
   });
 
   it('deploy-qa step 1: is-ancestor <after> <runningSha> is 0 for ahead and identical, 1 otherwise', () => {

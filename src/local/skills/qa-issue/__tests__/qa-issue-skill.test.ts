@@ -180,20 +180,27 @@ describe('qa-issue computes a refused compare with git', () => {
   });
 
   it('fetches only the SHAs the check names, blob-less, never shallow, never with a token', () => {
-    expect(github).toContain('`git -C <dir> remote add origin https://github.com/<repo>.git`');
-    expect(github).toContain('`git -C <dir> fetch --filter=blob:none origin <full SHAs>`');
+    expect(github).toContain('`GIT_TERMINAL_PROMPT=0 git -C <dir> remote add origin https://github.com/<repo>.git`');
+    expect(github).toContain('`GIT_TERMINAL_PROMPT=0 git -C <dir> fetch --filter=blob:none origin <full SHAs>`');
     expect(github).toContain('never `--depth`');
     expect(github).toContain('never put a token in the URL');
     expect(github).toContain(
-      'Run `git init` and `remote add` once per `<dir>`; a `<dir>` that already has the remote needs only the fetch.',
+      'Run the init and remote-add commands once per `<dir>`; a `<dir>` that already has the remote needs only the fetch.',
     );
+    // A credential prompt would hang the deploy check; deploy-qa-skill.test.ts runs the command to prove it fails.
+    expect(github).toContain(
+      'Every git command here starts with `GIT_TERMINAL_PROMPT=0`: a missing credential then fails at once (not an answer) instead of waiting on a prompt.',
+    );
+    for (const x of md.split('`').filter((y, i) => i % 2 === 1 && /^(?:[A-Z_]+=\S*\s+)*git\s/.test(y))) {
+      expect(x).toMatch(/^GIT_TERMINAL_PROMPT=0 git /);
+    }
   });
 
   it('states the direction, exit 1 as an answer, and a git failure as no answer', () => {
     expect(github).toMatch(
       /`compare\/<base>\.\.\.<head>` status `ahead` means `<base>` is an ancestor of `<head>`, `identical` that they are the same commit/,
     );
-    expect(github).toContain('`git -C <dir> merge-base --is-ancestor <base> <head>` exits 0');
+    expect(github).toContain('`GIT_TERMINAL_PROMPT=0 git -C <dir> merge-base --is-ancestor <base> <head>` exits 0');
     expect(github).toContain('exit 1 is an answer too');
     expect(github).toMatch(
       /A git failure[^\n]*unknown SHA \(exit 128\)[^\n]*is not an answer, the same as a failed read/,
@@ -208,7 +215,7 @@ describe('qa-issue computes a refused compare with git', () => {
 
   it('step 2 and the contained done condition take the git answer, mergeSha first', () => {
     expect(deployCheck).toContain(
-      '∈ `ahead|identical` — via git, `git -C <dir> merge-base --is-ancestor <mergeSha> <runningSha>` exits 0',
+      '∈ `ahead|identical` — via git, `GIT_TERMINAL_PROMPT=0 git -C <dir> merge-base --is-ancestor <mergeSha> <runningSha>` exits 0',
     );
     expect(deployCheck).toContain('no answer from compare or git');
     expect(section('Tracker reconcile')).toContain(
