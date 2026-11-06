@@ -482,6 +482,25 @@ function heldTurnResult(held: HeldTurn): SDKMessage {
   return { ...latest, result: answer.result, stop_reason: answer.stop_reason } as unknown as SDKMessage;
 }
 
+/** The tools a model stops a background task with; the id is `task_id` (or the older `shell_id`). */
+const STOP_TOOLS = new Set(['TaskStop', 'KillShell', 'KillBash']);
+
+/** #1010 review — the task ids an assistant frame asks to stop. */
+function requestedStopIds(raw: Record<string, unknown>): string[] {
+  if (raw.type !== 'assistant') return [];
+  const content = (raw.message as { content?: unknown } | undefined)?.content;
+  if (!Array.isArray(content)) return [];
+  const ids: string[] = [];
+  for (const block of content) {
+    if (!block || typeof block !== 'object') continue;
+    const b = block as { type?: unknown; name?: unknown; input?: Record<string, unknown> };
+    if (b.type !== 'tool_use' || typeof b.name !== 'string' || !STOP_TOOLS.has(b.name)) continue;
+    const id = b.input?.task_id ?? b.input?.shell_id;
+    if (typeof id === 'string' && id) ids.push(id);
+  }
+  return ids;
+}
+
 /** #966 — a CLI frame that settles a background task (`task_notification`, or a terminal `task_updated`). */
 function isTaskSettleFrame(raw: Record<string, unknown>): boolean {
   if (raw.type !== 'system') return false;
@@ -1453,7 +1472,12 @@ export class ClaudeHandler implements TurnSteeringPort {
         if (keepaliveBackstopTimer) clearTimeout(keepaliveBackstopTimer);
         keepaliveBackstopTimer = undefined;
       };
+      // #1010 review (astra) — tasks stopped on purpose: by the host here (the keepalive cap) or by the
+      // model (`TaskStop` / `KillShell` / `KillBash`). Their `stopped` is never "stopped with the turn",
+      // even when it arrives after the input closed (the input can close while a turn still runs).
+      const stoppedOnPurpose = new Set<string>();
       const stopBackgroundAgent = (taskId: string) => {
+        stoppedOnPurpose.add(taskId);
         const failed = (error: unknown) =>
           this.logger.debug('Keepalive cap: stopping a background agent failed', {
             taskId,
@@ -1591,10 +1615,12 @@ export class ClaudeHandler implements TurnSteeringPort {
           if (session) trackChainPoint(session, raw);
 
           // #966 — the host closed the input, so the CLI is exiting and stops the background tasks it
-          // still runs. Those reports are the turn's end, not a stop the model asked for: mark them so
-          // the turn-end decision still counts that work as stopped with the turn (a held turn reads
-          // them before it ends).
-          if (channel.isClosed && isTaskSettleFrame(raw)) raw.soma_ended_with_turn = true;
+          // still runs. Those reports are the turn's end: mark them so the turn-end decision still
+          // counts that work as stopped with the turn (a held turn reads them before it ends). A task
+          // stopped on purpose (the model's stop tool, the keepalive cap) is never marked.
+          for (const id of requestedStopIds(raw)) stoppedOnPurpose.add(id);
+          if (channel.isClosed && isTaskSettleFrame(raw) && !stoppedOnPurpose.has(String(raw.task_id ?? '')))
+            raw.soma_ended_with_turn = true;
 
           if (message.type === 'result') lastResultSeq = frameSeq;
 

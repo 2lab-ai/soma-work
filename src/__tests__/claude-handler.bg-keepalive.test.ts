@@ -436,6 +436,10 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
       const results = resultsOf(frames);
       expect(results).toHaveLength(1);
       expect(results[0]).toMatchObject({ result: 'STOPPED' });
+      // #1010 review (astra P2) — the host stopped these on purpose: not "stopped with the turn".
+      const capStops = (frames as Array<Record<string, unknown>>).filter((f) => f.subtype === 'task_notification');
+      expect(capStops.length).toBeGreaterThan(0);
+      for (const f of capStops) expect(f.soma_ended_with_turn).toBeUndefined();
 
       // The turn ended: the backstop never fires into it.
       await vi.advanceTimersByTimeAsync(NON_TURN_RESULT_IDLE_MS * 2);
@@ -816,6 +820,54 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
       const notice = (id: string) => frames.find((f) => f.subtype === 'task_notification' && f.task_id === id);
       expect(notice('shell-1')).toMatchObject({ status: 'stopped', soma_ended_with_turn: true });
       expect(notice(AGENT_ID)?.soma_ended_with_turn).toBeUndefined();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // #1010 review (astra P1) — the input can be closed while the CLI still runs a turn; a stop the MODEL
+  // asked for (TaskStop / KillShell) in that turn is no stop "with the turn" and must not be marked.
+  it('does not mark a stop the model asked for, even when it arrives after the input closed', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const pulledPastMetadata = deferred();
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([agentTask(AGENT_ID)]);
+        yield openingResult(cli.opening?.uuid);
+        const probe = watchInputEnd(inputs, cli);
+        yield level([]);
+        yield taskNotification(AGENT_ID, 'completed');
+        pulledPastMetadata.resolve();
+        await probe;
+        // A turn still runs after the input closed: the model stops its own shells.
+        yield {
+          type: 'assistant',
+          message: {
+            model: 'claude-test',
+            content: [
+              { type: 'tool_use', id: 'toolu_stop', name: 'TaskStop', input: { task_id: 'shell-asked' } },
+              { type: 'tool_use', id: 'toolu_kill', name: 'KillShell', input: { shell_id: 'shell-killed' } },
+            ],
+          },
+        };
+        yield taskNotification('shell-asked', 'stopped');
+        yield taskNotification('shell-killed', 'stopped');
+        // And the CLI's exit still stops one it never asked about.
+        yield taskNotification('shell-exit', 'stopped');
+      });
+
+      const framesPromise = collect(startTurn(newHandler()));
+      await pulledPastMetadata.promise;
+      await vi.advanceTimersByTimeAsync(NON_TURN_RESULT_IDLE_MS);
+      const frames = (await framesPromise) as Array<Record<string, unknown>>;
+
+      const notice = (id: string) => frames.find((f) => f.subtype === 'task_notification' && f.task_id === id);
+      expect(notice('shell-asked')?.soma_ended_with_turn).toBeUndefined();
+      expect(notice('shell-killed')?.soma_ended_with_turn).toBeUndefined();
+      expect(notice('shell-exit')).toMatchObject({ soma_ended_with_turn: true });
     } finally {
       warn.mockRestore();
     }
