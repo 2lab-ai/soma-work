@@ -6138,6 +6138,23 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 .ptl-line .ptl-caret { flex: none; transition: transform 120ms ease; }
 .ptl-line[aria-expanded="true"] .ptl-caret { transform: rotate(180deg); }
 .ptl-line:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.panel-family { margin: 4px 0 8px; }
+.pf-line .pf-peek { display: flex; align-items: center; gap: 6px; }
+.pf-line .pf-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-line { position: static; }
+.pf-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--text-secondary); }
+.pf-dot.is-run { background: var(--st-run, var(--accent)); }
+.pf-dot.is-wait { background: var(--st-wait, var(--text-secondary)); }
+.pf-dot.is-done { background: var(--st-done, var(--text-secondary)); }
+.pf-dot.is-fail { background: var(--st-fail, var(--text-secondary)); }
+.pf-dot.is-idle { background: transparent; border: 1px solid var(--text-secondary); }
+.pf-list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.pf-kid { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 32px; padding: 4px 8px; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.pf-kid .pf-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-kid .pf-status { flex: none; color: var(--text-secondary); font-size: 12px; }
+@media (hover: hover) { .pf-kid:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); } }
+.pf-kid:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+@media (pointer: coarse) { .pf-kid { min-height: 44px; } }
 .panel-tasks > ui-task-plan.panel-task-list { display: block; min-width: 0; }
 
 /* ── DETAIL DECK (SSOT 2026-10-29 T2) — every open card's detail card; the ones
@@ -6855,6 +6872,8 @@ ${pageTokenAliases()}
         <div class="panel-question" id="panel-question" style="display:none"></div>
         <!-- 작업 계획 (plan mode, SSOT 2026-11-02): the task's plan, drawn by the server — high level to detail — at once when the card opens. -->
         <div class="panel-plan" id="panel-plan" role="region" aria-label="작업 계획" hidden></div>
+        <!-- #1021 — an epic's children (one line; a press shows them all, a child opens on its own press), or a child's epic. -->
+        <div class="panel-family" id="panel-family" role="region" aria-label="에픽과 자식 작업" hidden></div>
         <p class="ui-sr-only" id="panel-needs-status" role="status" aria-live="polite"></p>
         <!-- The tab bar (SSOT 2026-11-03): 목표 2/5 · 작업 1/7 · 에이전트 5 … — the layout's tabs (detail.tabs), every one
              closed at first; a press opens that tab's content under the bar (and a second press closes it). Each tab
@@ -8745,6 +8764,62 @@ function togglePanelTaskLine() {
   _panelTaskLineOpen = !_panelTaskLineOpen;
   repaintPanelTasks();
 }
+// #1021 — the detail card's family line: an epic shows "자식 작업 N" and its children's names on one line, a press
+// opens the list of every child (each opens its own detail card); a child shows its epic, which opens on a press.
+// A new opening starts folded (resetPanelSections).
+var _panelFamilyOpen = false;
+var PANEL_FAMILY_DOT = { running: 'run', waiting: 'wait', done: 'done', failed: 'fail', idle: 'idle' };
+var PANEL_FAMILY_STATUS = { running: '실행 중', waiting: '입력 대기', done: '완료', failed: '실패', idle: '대기' };
+function panelFamilyHtml(s, open) {
+  if (!s) return '';
+  if (s.kind === 'epic') {
+    var kids = epicFamilyOf(s).map(epicChildFace);
+    if (!kids.length) return '';
+    var dot = function(k) { return '<span class="pf-dot is-' + (PANEL_FAMILY_DOT[k.status] || 'idle') + '" aria-hidden="true"></span>'; };
+    var peek = kids.map(function(k) { return dot(k) + '<span class="pf-name">' + esc(k.title) + '</span>'; }).join('');
+    var line = '<button type="button" class="panel-tasks-header ptl-line pf-line" aria-expanded="' + open + '"' + (open ? ' aria-controls="panel-family-list"' : '') + ' onclick="togglePanelFamily()">'
+      + '<span class="ps-sec-title">자식 작업 ' + kids.length + '</span>'
+      + '<span class="ptl-now pf-peek">' + peek + '</span>'
+      + '<i data-ui-icon="chevron-down" class="ptl-caret"></i></button>';
+    if (!open) return line;
+    var items = kids.map(function(k) {
+      // Each row is its child's to the morph (data-mk): a focused row stays on its child when the list changes.
+      return '<li data-mk="' + escAttr('pf:' + k.id) + '"><button type="button" class="pf-kid" data-family-key="' + escAttr(k.id) + '" onclick="openFamilyCard(this)">'
+        + dot(k) + '<span class="pf-name">' + esc(k.title) + '</span>'
+        + '<span class="pf-status">' + esc(k.statusText || PANEL_FAMILY_STATUS[k.status] || k.status) + '</span></button></li>';
+    }).join('');
+    return line + '<ul class="pf-list" id="panel-family-list" role="list">' + items + '</ul>';
+  }
+  var epic = epicOfChild(s);
+  if (!epic) return '';
+  var title = String(epic.displayHeadline || epic.summaryTitle || epic.title || epic.key);
+  return '<button type="button" class="panel-tasks-header ptl-line pf-line pf-up" data-family-key="' + escAttr(epic.key) + '" onclick="openFamilyCard(this)">'
+    + '<span class="ps-sec-title">에픽</span><span class="ptl-now pf-peek"><span class="pf-name">' + esc(title) + '</span></span></button>';
+}
+function renderPanelFamily() {
+  var el = document.getElementById('panel-family');
+  if (!el) return;
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var html = panelFamilyHtml(s, !!_panelFamilyOpen);
+  el.hidden = !html;
+  if (el._html !== html) {
+    morphInnerHtml(el, html);
+    el._html = html;
+  }
+}
+function togglePanelFamily() {
+  _panelFamilyOpen = !_panelFamilyOpen;
+  renderPanelFamily();
+}
+function openFamilyCard(btn) {
+  var key = btn && btn.getAttribute ? btn.getAttribute('data-family-key') : '';
+  if (key) openFamilyCardKey(key);
+}
+// A family member's detail card: open when its session is known to the page (the board's, or its epic's bundle).
+function openFamilyCardKey(key) {
+  if (!key || !_sessionCache[key]) return;
+  openPanel(key);
+}
 function panelTaskListData(tasks) {
   return {
     title: '',
@@ -9861,6 +9936,7 @@ function renderBoard(board, partial) {
   _cardData = Object.create(null);
   _cardDrawn = Object.create(null);
   _epicKidsDrawn = Object.create(null);
+  _epicParentOf = Object.create(null);
   // SSOT 2026-11-02 T1: launches from the new task dialog lead RUNNING as 시작 중 cards until their own card is
   // in this board (ntPendingPlace settles them against it first); one that did not start leads NEEDS YOU.
   var pending = ntPendingPlace(kb);
@@ -10104,6 +10180,12 @@ function wireInbox(host) {
     if (e.target !== host || !e.detail) return;
     var cardId = String(e.detail.cardId);
     openFollowupViewer(cardId, String(e.detail.id), inboxFollowupOf(host, cardId, String(e.detail.id)) || host);
+  });
+  // #1021 — a child in an epic card's list (@2lab.ai/ui 0.37.0): its detail card opens beside the board; the epic's
+  // card does not toggle.
+  host.addEventListener('ui-child', function(e) {
+    if (e.target !== host || !e.detail) return;
+    openFamilyCardKey(String(e.detail.childId));
   });
   host.addEventListener('ui-artifact', function(e) {
     if (e.target !== host || !e.detail) return;
@@ -10520,6 +10602,9 @@ function cardOf(s, col) {
     var under = s.underEpic === true;
     card.lead = { text: (under ? '\u21b3 #' : '#') + String(s.planNodeId), glyph: 'tasks', title: (under ? '위 에픽의 노드 ' : '에픽의 노드 ') + String(s.planNodeId) };
   }
+  // #1021 — a child drawn right under its epic is tied to it on the board (@2lab.ai/ui 0.37.0 card.parent: indented,
+  // a connector from the epic, the family marked together under the pointer or a focus).
+  if (s.underEpic === true && _epicParentOf[s.key]) card.parent = String(_epicParentOf[s.key]);
   // An epic (E4 ⑨a) leads with EPIC and says its state; its progress is accepted nodes of all.
   if (s.kind === 'epic' && s.epic) {
     var epicLabel = EPIC_STATE_LABEL[epicStateOf(s.epic.state)];
@@ -10527,6 +10612,10 @@ function cardOf(s, col) {
     if (s.epic.state === 'running' || s.epic.state === 'needs-input') card.statusText = epicLabel;
     var ep = s.epic.progress || {};
     if (toNum(ep.total) > 0) card.steps = { done: toNum(ep.accepted), total: toNum(ep.total) };
+    // #1021 — its children on its face (@2lab.ai/ui 0.37.0 card.children): one line that opens in place to every
+    // child; a press on one opens that child (ui-child).
+    var kids = epicFamilyOf(s);
+    if (kids.length) card.children = kids.map(epicChildFace);
   }
   // NEEDS YOU and the signed-in viewer's own (SSOT 2026-11-05): the element (@2lab.ai/ui 0.32.0) marks the collapsed
   // card — a rail, the tag in ink — and pings it once every 10 s, every such card on one beat; open, it is a card.
@@ -11404,6 +11493,16 @@ function sessionColOf(key) {
     var arr = (_lastBoardData && _lastBoardData[cols[c]]) || [];
     for (var i = 0; i < arr.length; i++) if (arr[i] && (arr[i] === s || arr[i].key === key)) return cols[c];
   }
+  // #1021 — a child in its epic's bundle the board does not show (a filter, 휴면, an epic off the board): its own
+  // activity, as the board would draw it (epicChildCol) — a running child's detail card offers Stop, not Close.
+  for (var c2 = 0; c2 < cols.length; c2++) {
+    var arr2 = (_lastBoardData && _lastBoardData[cols[c2]]) || [];
+    for (var j = 0; j < arr2.length; j++) {
+      var kid = epicChildOf(arr2[j], key);
+      if (kid) return epicChildCol(kid);
+    }
+  }
+  if (s && s.underEpic === true) return epicChildCol(s);
   return 'idle';
 }
 // The focused node's header — the same slots for every node, the root
@@ -11724,6 +11823,7 @@ function resetPanelSections() {
   _panelTasksExpanded = _panelTasksOpen;
   _panelTasksEarlier = _panelDetail;
   _panelTaskLineOpen = false;
+  _panelFamilyOpen = false;
 }
 
 // Agent tabs (T1.2, D4 E-19): @2lab.ai/ui <ui-tabs shared-panel> — Main first,
@@ -12403,6 +12503,7 @@ function repaintPanelSession() {
   renderPanelControls(s);
   renderPanelComposer(s);
   renderPanelPlan(s);
+  renderPanelFamily();
   repaintPanelScope();
   convPaint(); // re-ai-answer D12 — the 응답 작성 중 row (and a /compact's progress) follow the session state
   restorePanelLiveAnchor(anchor);
@@ -19995,6 +20096,7 @@ var _cronJobsRev = 0;        // bumped by every jobs fetch (laneSig)
 var _cronPlan = null;        // last planCronLane() result
 var _cronGroupEls = Object.create(null); // group key → the job's persistent card box (its slot)
 var _epicKidsDrawn = Object.create(null); // epic card key → its children's keys, as the last render placed them (E4 ⑨c)
+var _epicParentOf = Object.create(null); // #1021 — a child's key → its epic card's key, as the board placed or a push brought it
 var EPIC_STATE_LABEL = { 'needs-input': '입력 필요', running: '자식 실행 중', done: '완료', idle: '대기' };
 var EPIC_NODE_STEP = { none: 'pending', running: 'running', 'needs-input': 'paused', finished: 'paused', failed: 'failed', cancelled: 'dropped', interrupted: 'paused', closed: 'skipped' };
 var EPIC_NODE_NOTE = { 'needs-input': '입력 필요', finished: '판정 대기', interrupted: '끊김', closed: '닫힘' };
@@ -20306,7 +20408,10 @@ function withEpicChildren(items, hideSleeping, revealKey) {
     var it = items[i];
     out.push(it);
     var kids = epicKidsShown(it && it.s, hideSleeping, revealKey);
-    for (var j = 0; j < kids.length; j++) out.push({ s: kids[j], col: epicChildCol(kids[j]) });
+    for (var j = 0; j < kids.length; j++) {
+      _epicParentOf[kids[j].key] = it.s.key;
+      out.push({ s: kids[j], col: epicChildCol(kids[j]) });
+    }
   }
   return out;
 }
@@ -20387,6 +20492,32 @@ function epicPlanData(s) {
   });
   return { steps: steps };
 }
+// #1021 — an epic's whole family, whatever the board's filters kept under its card (boardViewOf hands the columns a
+// copy holding only the children it draws): the cached epic's bundle. The face, its list and the detail card read it.
+function epicFamilyOf(s) {
+  var whole = s && s.key ? _sessionCache[s.key] : null;
+  return epicChildrenOf(whole && whole.kind === 'epic' ? whole : s);
+}
+// #1021 — one child on its epic's face (@2lab.ai/ui 0.37.0 InboxChild): its key, its headline, and its status as its
+// own card reads it (the same column the board gives it: epicChildCol).
+function epicChildFace(c) {
+  var own = cardOf(c, epicChildCol(c));
+  var kid = { id: String(c.key), title: String(c.displayHeadline || c.summaryTitle || c.title || c.key), status: own.status };
+  if (own.statusText) kid.statusText = String(own.statusText);
+  return kid;
+}
+// #1021 — the epic card a child belongs to: the one the board placed it under, else the cached epic whose bundle
+// holds it (a child opened from a deep link before any board was drawn). None for a card that is no child.
+function epicOfChild(s) {
+  if (!s || !s.parentTaskId) return null;
+  var key = _epicParentOf[s.key];
+  if (key && _sessionCache[key]) return _sessionCache[key];
+  for (var k in _sessionCache) {
+    var e = _sessionCache[k];
+    if (e && e.kind === 'epic' && epicChildOf(e, s.key)) return e;
+  }
+  return null;
+}
 // A child's card inside an epic's pushed card, by key.
 function epicChildOf(s, key) {
   var children = (s && s.epic && Array.isArray(s.epic.children)) ? s.epic.children : [];
@@ -20401,9 +20532,12 @@ function epicChildOf(s, key) {
 function applyEpicPush(s) {
   if (!s || !s.key) return;
   var children = epicChildrenOf(s);
+  // #1021 — a child that left this epic's bundle is no longer tied to it (the map holds this push's children only).
+  for (var pk in _epicParentOf) if (_epicParentOf[pk] === s.key && !epicChildOf(s, pk)) delete _epicParentOf[pk];
   // Cached first: a panel open on a child reads it even before a board is drawn.
   for (var i = 0; i < children.length; i++) {
     _sessionCache[children[i].key] = children[i];
+    _epicParentOf[children[i].key] = s.key;
     if (typeof followupReconcile === 'function') followupReconcile(children[i]); // #983
   }
   if (!_lastBoardData) return;
