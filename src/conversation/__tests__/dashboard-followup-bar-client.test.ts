@@ -504,3 +504,22 @@ describe('review round 2 — reconcile from the whole board, past the chips', ()
     );
   });
 });
+
+describe('review round 3 — an epic’s children are reconciled where they are cached', () => {
+  it('renderBoard’s child loop and applyEpicPush both reconcile each child', () => {
+    const board = clientFn('renderBoard');
+    expect(board).toContain("if (typeof followupReconcile === 'function') followupReconcile(kids[k0]);");
+    const push = clientFn('applyEpicPush');
+    expect(push).toContain("if (typeof followupReconcile === 'function') followupReconcile(children[i]);");
+  });
+
+  it('a hidden child’s close → reopen: its record goes on the close, so the reopen shows it', () => {
+    const CHILD = 'inst::C1:child';
+    const storage = memStorage({ 'soma-dash-followup-gone': JSON.stringify({ [`${CHILD}\n${I918}`]: 1 }) });
+    const h = harness({ storage });
+    h.m.followupReconcile({ key: CHILD, followupSettled: [I918] });
+    expect(JSON.parse(storage.dump()['soma-dash-followup-gone'])).toEqual({});
+    const reopened = { key: CHILD, cardLinks: LINKS, followupLinks: LINKS.filter((l) => l.open) };
+    expect(h.m.cardFollowupsOf(reopened, 'idle').map((f) => f.id)).toContain(I918);
+  });
+});
