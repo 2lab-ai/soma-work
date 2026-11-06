@@ -10,13 +10,25 @@
  * "Taken" (a message ran, or is stored in the durable follow-up queue) is the receipt every
  * send waits for (`SlackHandler.onTurnAccepted`): `handleMessage` itself resolves only after
  * the whole run.
+ *
+ * #1020 — the epic also finds its owner's existing sessions (`findTasks`) and adopts one as a
+ * child (`adoptChild`, through `SessionRegistry.adoptEpicChild`): nothing is posted or sent then.
  */
 import type { RunReport } from '@soma/slack/followup-dispatcher';
 import type { WorkLogEntry, WorkLogPage } from '../conversation/work-log';
+import { displayTitle } from '../format/display-title';
 import { type SessionTheme, ThreadHeaderBuilder } from '../slack/thread-header-builder';
 import type { ConversationSession, EpicPlan, TurnOutcomeRecord } from '../types';
-import { epicWakeText, isEpicDone, type PlanWriteInput, SLACK_WAKE_PREFIX, wakeableEpicEvents } from './epic-plan';
-import type { EpicChildSpec, EpicHost } from './epic-server';
+import {
+  EPIC_NODE_TITLE_MAX,
+  type EpicAdoptResult,
+  epicWakeText,
+  isEpicDone,
+  type PlanWriteInput,
+  SLACK_WAKE_PREFIX,
+  wakeableEpicEvents,
+} from './epic-plan';
+import type { EpicChildSpec, EpicHost, EpicTaskItem, EpicTaskQuery } from './epic-server';
 import type { EpicTreeGate } from './epic-tree-gate';
 
 type Logger = { info(msg: string, meta?: object): void; warn(msg: string, meta?: object): void };
@@ -162,9 +174,88 @@ function handOver(
   });
 }
 
+/** #1020 — `find_tasks` lists this many tasks unless asked for another number, and never more than the max. */
+export const FIND_TASKS_DEFAULT = 20;
+export const FIND_TASKS_MAX = 50;
+
+/**
+ * #1020 — the epic owner's live sessions as `find_tasks` shows them (`EpicHost.findTasks`): never the
+ * epic itself, another owner's, a terminated or a trashed one; `query` words all in the display title
+ * (any case); `day` (`today` or YYYY-MM-DD) the calendar day the session started or was last active in
+ * `timezone`; newest activity first, `limit` of them (20 by default, 1–50).
+ */
+export function findEpicTasks(
+  epic: ConversationSession,
+  sessions: Iterable<ConversationSession>,
+  query: EpicTaskQuery,
+  ctx: { timezone: string; now: number; getSessionByTaskId(taskId: string): ConversationSession | undefined },
+): EpicTaskItem[] {
+  const calendar = new Intl.DateTimeFormat('en-CA', {
+    timeZone: ctx.timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const dayOf = (ms: number | undefined) =>
+    typeof ms === 'number' && Number.isFinite(ms) ? calendar.format(ms) : undefined;
+  const day = query.day === 'today' ? dayOf(ctx.now) : query.day;
+  const words = (query.query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+  const wanted = Number.isFinite(query.limit) ? Math.floor(query.limit as number) : FIND_TASKS_DEFAULT;
+  const limit = Math.min(FIND_TASKS_MAX, Math.max(1, wanted));
+  /** Why a session cannot be adopted (the registry refuses it), or undefined. */
+  const whyNot = (s: ConversationSession): string | undefined => {
+    if (!s.taskId) return 'no task id';
+    if (s.kind === 'epic') return 'is an epic';
+    if (s.parentTaskId) {
+      if (s.parentTaskId === epic.taskId) return 'already a child of this epic';
+      const parent = ctx.getSessionByTaskId(s.parentTaskId);
+      return parent ? `already a child of epic "${displayTitle(parent)}"` : 'already a child of another epic';
+    }
+    if (s.closing) return 'closing';
+    return undefined;
+  };
+  const found: Array<{ at: number; item: EpicTaskItem }> = [];
+  for (const s of sessions) {
+    if (s === epic || (!!s.taskId && s.taskId === epic.taskId)) continue;
+    if (s.ownerId !== epic.ownerId || s.terminated || s.trashed) continue;
+    // The plan node it is adopted under carries this title: it fits a node's.
+    const title = displayTitle(s).slice(0, EPIC_NODE_TITLE_MAX);
+    const lower = title.toLowerCase();
+    if (!words.every((w) => lower.includes(w))) continue;
+    const last = new Date(s.lastActivity).getTime();
+    if (day !== undefined && dayOf(s.startedAt) !== day && dayOf(last) !== day) continue;
+    const reason = whyNot(s);
+    found.push({
+      at: Number.isFinite(last) ? last : 0,
+      item: {
+        ...(s.taskId ? { taskId: s.taskId } : {}),
+        title,
+        state: s.activityState ?? 'idle',
+        channel: s.channelId,
+        ...(dayOf(s.startedAt) ? { startedAt: new Date(s.startedAt as number).toISOString() } : {}),
+        lastActivity: Number.isFinite(last) ? new Date(last).toISOString() : 'unknown',
+        adoptable: reason === undefined,
+        ...(reason ? { reason } : {}),
+      },
+    });
+  }
+  return found
+    .sort((a, b) => b.at - a.at)
+    .slice(0, limit)
+    .map((f) => f.item);
+}
+
 export interface SlackEpicHostDeps {
   getSessionByTaskId(taskId: string): ConversationSession | undefined;
   getChildTasks(parentTaskId: string): ConversationSession[];
+  /** #1020 — every session the registry holds, by key (`find_tasks` reads the epic owner's). */
+  getAllSessions(): ReadonlyMap<string, ConversationSession>;
+  /** #1020 — adopt the owner's session as the epic's child (`SessionRegistry.adoptEpicChild`). */
+  adoptEpicChild(epicTaskId: string, childTaskId: string, planNodeId: string): EpicAdoptResult;
+  /** #1020 — the calendar `find_tasks`' `day` is read in (REPORT_TIMEZONE, `getReportTimezone`). */
+  timezone: string;
+  /** The clock `today` is read from (default `Date.now`). */
+  now?: () => number;
   setEpicPlan(taskId: string, input: PlanWriteInput, by: 'epic' | 'owner'): EpicPlan;
   reserveEpicChild(epicTaskId: string, planNodeId: string): string;
   unreserveEpicChild(epicTaskId: string, childId: string): void;
@@ -343,6 +434,37 @@ export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
       return deps.gate.refusal(epic, pending > 0 ? { ...start, pending } : start);
     },
     ensureDirectory: (dir) => deps.ensureDirectory(dir),
+
+    findTasks: (epic, query) =>
+      findEpicTasks(epic, deps.getAllSessions().values(), query, {
+        timezone: deps.timezone,
+        now: (deps.now ?? Date.now)(),
+        getSessionByTaskId: (id) => deps.getSessionByTaskId(id),
+      }),
+
+    adoptChild(epic, taskId, planNodeId) {
+      if (!epic.taskId) return { ok: false, code: 'not-an-epic', error: 'this session is no longer a live epic' };
+      // A node whose child is being made right now has it already (one per node).
+      if (making.get(epic.taskId)?.has(planNodeId)) {
+        return {
+          ok: false,
+          code: 'spawn-in-flight',
+          error: 'a child for this node is being made right now — adopt the task under another node',
+        };
+      }
+      let adopted: EpicAdoptResult;
+      try {
+        adopted = deps.adoptEpicChild(epic.taskId, taskId, planNodeId);
+      } catch (error) {
+        deps.logger.warn('Epic child: a task could not be adopted', {
+          epicTaskId: epic.taskId,
+          taskId,
+          error: (error as Error)?.message ?? String(error),
+        });
+        return { ok: false, code: 'not-saved', error: 'the task could not be adopted — nothing changed; try again' };
+      }
+      return adopted;
+    },
 
     async spawnChild(epic, spec) {
       const channel = epic.channelId;

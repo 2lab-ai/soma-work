@@ -66,7 +66,10 @@ import {
 import {
   applyPlanWrite,
   consumeEpicEvents,
+  EPIC_CHILD_MAX,
   EPIC_NODE_ID,
+  type EpicAdoptRefusal,
+  type EpicAdoptResult,
   exemptEpicTreeTaskIds,
   isEpicDone,
   type PlanWriteInput,
@@ -1229,6 +1232,12 @@ export class SessionRegistry {
     if (!epic.plan?.nodes.some((n) => n.id === planNodeId)) {
       throw new Error(`reserveEpicChild: the plan has no node ${planNodeId}`);
     }
+    // #1020 review (grok P1) — the limit is the registry's too, as for adoptEpicChild: a made and an adopted child
+    // count against the same EPIC_CHILD_MAX ids, whoever asks. (One child per node stays the tools' rule: the server's
+    // check, the host's in-flight set and this reservation run in one tick, with no await between them.)
+    if ((epic.childTaskIds ?? []).length >= EPIC_CHILD_MAX) {
+      throw new Error(`reserveEpicChild: an epic has at most ${EPIC_CHILD_MAX} children`);
+    }
     const childId = randomUUID();
     const before = { childTaskIds: epic.childTaskIds, plan: epic.plan };
     epic.childTaskIds = [...(epic.childTaskIds ?? []), childId];
@@ -1321,6 +1330,100 @@ export class SessionRegistry {
       parentTaskId: relation.parentTaskId,
       planNodeId: relation.planNodeId,
     });
+  }
+
+  /**
+   * #1020 — one of its owner's existing sessions becomes an epic's child. It keeps its own task
+   * id, thread and folder, and gets its epic and plan node (through `putSession`: the epic's
+   * lookup and the board find it; a valid node keeps the relation through load, archive and
+   * revive). Its id goes on the epic's `childTaskIds` and on the node's `spawned` (the cap counts
+   * it, the node can no longer be removed) — one strict save; a failed save puts everything back
+   * (`not-saved`). Nothing is sent to it: it keeps running as it was, and its chain ends report
+   * to the epic from now on. Refused, nothing changed: the epic is not live, the task is the epic
+   * itself, no such plan node, no such task (or one without a task id), an epic, a closed, closing
+   * or trashed task, a task that is already a child, another owner's, a node that has a live child
+   * (one per node, as `spawn_child`), or the epic's {@link EPIC_CHILD_MAX} children used up (closed
+   * ones count). Not `bindEpicChild`: no reserved id, and the task id never changes.
+   */
+  adoptEpicChild(epicTaskId: string, childTaskId: string, planNodeId: string): EpicAdoptResult {
+    const no = (code: EpicAdoptRefusal, error: string): EpicAdoptResult => ({ ok: false, code, error });
+    const epic = this.sessionsByTaskId.get(epicTaskId);
+    if (!epic || epic.kind !== 'epic' || epic.terminated || epic.closing) {
+      return no('not-an-epic', 'this session is no longer a live epic');
+    }
+    if (childTaskId === epicTaskId) return no('self', 'an epic cannot adopt itself');
+    const plan = epic.plan;
+    if (!plan || !PLAN_NODE_ID.test(planNodeId) || !plan.nodes.some((n) => n.id === planNodeId)) {
+      return no('no-such-node', `the plan has no node ${planNodeId} — write it with plan_write first`);
+    }
+    const child = childTaskId ? this.sessionsByTaskId.get(childTaskId) : undefined;
+    const key = child ? [...this.sessions].find(([, s]) => s === child)?.[0] : undefined;
+    if (!child || !key) return no('no-such-task', `there is no live task ${childTaskId} — look with find_tasks`);
+    // Every session the registry holds has a task id (create, load and revive mint one); a record without one stays out.
+    if (!child.taskId) return no('no-task-id', `${childTaskId} has no task id — it cannot be a child`);
+    if (child.kind === 'epic') return no('is-epic', `${childTaskId} is an epic — an epic is never a child`);
+    if (child.terminated || child.closing) return no('task-closed', `${childTaskId} is closed or being closed`);
+    if (child.trashed) return no('task-trashed', `${childTaskId} is in the trash`);
+    if (child.parentTaskId) {
+      return no(
+        'already-a-child',
+        child.parentTaskId === epicTaskId
+          ? `${childTaskId} is already a child of this epic`
+          : `${childTaskId} is already a child of another epic`,
+      );
+    }
+    if (child.ownerId !== epic.ownerId) return no('other-owner', `${childTaskId} is not this epic owner's task`);
+    const holder = this.getChildTasks(epicTaskId).find(
+      (c) => c.planNodeId === planNodeId && c.ownerId === epic.ownerId && !c.terminated,
+    );
+    if (holder) {
+      return no(
+        'node-taken',
+        `node ${planNodeId} already has a live child (${holder.taskId}) — one child per node; write a node for this task`,
+      );
+    }
+    if ((epic.childTaskIds ?? []).length >= EPIC_CHILD_MAX) {
+      return no('too-many-children', `an epic has at most ${EPIC_CHILD_MAX} children (closed ones count)`);
+    }
+    const before = { childTaskIds: epic.childTaskIds, plan };
+    child.parentTaskId = epicTaskId;
+    child.planNodeId = planNodeId;
+    this.putSession(key, child);
+    epic.childTaskIds = [...(epic.childTaskIds ?? []), childTaskId];
+    epic.plan = {
+      ...plan,
+      nodes: plan.nodes.map((n) => (n.id === planNodeId ? { ...n, spawned: [...(n.spawned ?? []), childTaskId] } : n)),
+    };
+    try {
+      this.saveOrUndo(() => {
+        this.unindexTask(child);
+        child.parentTaskId = undefined;
+        child.planNodeId = undefined;
+        this.putSession(key, child);
+        epic.childTaskIds = before.childTaskIds;
+        epic.plan = before.plan;
+      });
+    } catch (error) {
+      this.logger.warn('An epic could not adopt a task — nothing changed', {
+        epicTaskId,
+        childTaskId,
+        error: (error as Error)?.message ?? String(error),
+      });
+      return no('not-saved', 'the adoption could not be saved — nothing changed; try again');
+    }
+    this.logger.info('Session adopted as an epic child', {
+      sessionKey: key,
+      taskId: childTaskId,
+      epicTaskId,
+      planNodeId,
+    });
+    // The board bundles the card under its epic now.
+    try {
+      this.onActivityStateChangeCallback?.();
+    } catch (err) {
+      this.logger.warn('adoptEpicChild: broadcast callback raised', { error: (err as Error)?.message ?? String(err) });
+    }
+    return { ok: true };
   }
 
   /**
