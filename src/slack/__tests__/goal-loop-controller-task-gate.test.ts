@@ -439,6 +439,10 @@ describe('gateGoalVerdictOnTasks', () => {
     // Progress is the evaluator's call, passed through: a rollback is offered only without it (#745).
     const worked = gateGoalVerdictOnTasks({ ...DONE, progressed: true }, ledger, ['T2', 'T3', 'T4', 'T5', 'T6']);
     expect(worked.verdict.progressed).toBe(true);
+    const idle = gateGoalVerdictOnTasks({ ...DONE, progressed: false }, ledger, ['T2', 'T3', 'T4', 'T5', 'T6']);
+    expect(idle.verdict.progressed).toBe(false);
+    // The evaluator said nothing about progress: no rollback offer without evidence (review P2).
+    expect(again.verdict.progressed).toBe(true);
     const other = gateGoalVerdictOnTasks(DONE, ledger, ['T2', 'T3']);
     expect(other.tasks?.repeated).toBe(false);
     expect(other.verdict.sameAsPrevious).toBeUndefined();
