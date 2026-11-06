@@ -66,8 +66,13 @@ const DIGITS_RE = /^[0-9]+$/;
 /** Unquoted values that carry no secret: `"passwordRequired": true`. */
 const LITERAL_RE = /^(?:true|false|null|undefined|none)$/i;
 
-/** Characters that end an unquoted value. */
+/** Characters that end an unquoted value after `=`, `=>` or `[key] =`. */
 const UNQUOTED_END = new Set([' ', '\t', '\r', '\n', '\f', '\v', ',', ';', '&', '"', "'", '}', ']', ')']);
+
+const KEY_CHAR_RE = /[A-Za-z0-9_.-]/;
+
+/** Trimmed off the end of an unquoted value after `:` (closing punctuation of the structure around it). */
+const COLON_VALUE_TAIL = new Set([' ', '\t', '\f', '\v', ',', '}', ']', ')', "'", '\\']);
 
 // Private-key block markers. The type word is optional (RSA, EC, OPENSSH, ENCRYPTED, ...).
 const KEY_BLOCK_BEGIN_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/g;
@@ -99,11 +104,15 @@ const TRAILING_QUOTED_KEY_RE = /(?:^|[{,])[ \t]*(["'])([A-Za-z0-9_.-]+)\1[ \t]*$
 /** The separator a waiting quoted key gets on its next line. */
 const SEPARATOR_RE = /(?:=>|[:=])[ \t]*/y;
 
-/** A secret-named key (or a `sid` key) and the escaping level of its quotes: 1 inside a JSON string. */
+/**
+ * A secret-named key (or a `sid` key), the escaping level of its quotes (1 inside a JSON string) and whether its
+ * separator is `:` — YAML and prose style, where an unquoted value is the rest of the line, not one token.
+ */
 interface KeyInfo {
   key: string;
   secret: boolean;
   level: 0 | 1;
+  colon: boolean;
 }
 
 /**
@@ -113,14 +122,14 @@ interface KeyInfo {
  */
 type LineState =
   | { kind: 'none' }
-  | { kind: 'keyBlock' }
+  | { kind: 'keyBlock'; resume: LineState }
   | { kind: 'key'; info: KeyInfo; needsSeparator: boolean; column: number }
   | { kind: 'block'; column: number; sequence: boolean }
   | { kind: 'value'; quote: '"' | "'"; level: 0 | 1 }
   | { kind: 'collection'; depth: number; level: 0 | 1 };
 
 const NONE: LineState = { kind: 'none' };
-const KEY_BLOCK: LineState = { kind: 'keyBlock' };
+const KEY_BLOCK: LineState = { kind: 'keyBlock', resume: NONE };
 
 interface ValueSpan {
   from: number;
@@ -132,15 +141,47 @@ interface ValueSpan {
   level: 0 | 1;
 }
 
-function keyInfo(key: string, level: 0 | 1): KeyInfo | null {
-  if (SECRET_KEY_RE.test(key)) return { key, secret: true, level };
-  return SID_KEY_RE.test(key) ? { key, secret: false, level } : null;
+function keyInfo(key: string, level: 0 | 1, colon: boolean): KeyInfo | null {
+  if (SECRET_KEY_RE.test(key)) return { key, secret: true, level, colon };
+  return SID_KEY_RE.test(key) ? { key, secret: false, level, colon } : null;
 }
 
 /** End of the unquoted value starting at `i`. */
 function unquotedEnd(line: string, i: number): number {
   let j = i;
   while (j < line.length && !UNQUOTED_END.has(line[j])) j++;
+  return j;
+}
+
+/**
+ * Whether a `key:` field opens at `k` (after a comma): spaces, then a bare, quoted or `\"`-quoted key and a colon.
+ * The text it reads has no comma, so the checks from successive commas never overlap.
+ */
+function fieldAt(line: string, k: number): boolean {
+  let j = k;
+  while (line[j] === ' ' || line[j] === '\t') j++;
+  const escaped = line[j] === '\\';
+  if (escaped) j++;
+  const quote = line[j] === '"' || line[j] === "'" ? line[j] : '';
+  if (escaped && quote === '') return false;
+  if (quote !== '') j++;
+  const keyStart = j;
+  while (j < line.length && KEY_CHAR_RE.test(line[j])) j++;
+  if (j === keyStart) return false;
+  if (escaped && line[j++] !== '\\') return false;
+  if (quote !== '' && line[j++] !== quote) return false;
+  while (line[j] === ' ' || line[j] === '\t') j++;
+  return line[j] === ':';
+}
+
+/**
+ * End of the unquoted value after `:` starting at `i`: the rest of the line, up to an unescaped double quote (the
+ * end of a JSON string around it) or a comma that opens another `key:` field, less trailing closing punctuation.
+ */
+function colonValueEnd(line: string, i: number): number {
+  let j = i;
+  while (j < line.length && line[j] !== '"' && !(line[j] === ',' && fieldAt(line, j + 1))) j++;
+  while (j > i && COLON_VALUE_TAIL.has(line[j - 1])) j--;
   return j;
 }
 
@@ -171,8 +212,8 @@ function quoteClose(line: string, from: number, quote: string, level: 0 | 1): nu
   return -1;
 }
 
-/** The scalar value starting at `i`, quotes excluded. */
-function valueSpan(line: string, i: number): ValueSpan {
+/** The scalar value starting at `i`, quotes excluded; unquoted, it ends per the key's separator. */
+function valueSpan(line: string, i: number, colon: boolean): ValueSpan {
   const c = line[i];
   if (c === '"' || c === "'") {
     const close = quoteClose(line, i + 1, c, 0);
@@ -182,7 +223,8 @@ function valueSpan(line: string, i: number): ValueSpan {
     const close = quoteClose(line, i + 2, '"', 1);
     return { from: i + 2, to: close < 0 ? line.length : close, quoted: true, open: close < 0, quote: '"', level: 1 };
   }
-  return { from: i, to: unquotedEnd(line, i), quoted: false, open: false, quote: '"', level: 0 };
+  const to = colon ? colonValueEnd(line, i) : unquotedEnd(line, i);
+  return { from: i, to, quoted: false, open: false, quote: '"', level: 0 };
 }
 
 interface CollectionScan {
@@ -234,13 +276,18 @@ function scanCollection(line: string, from: number, depth: number, level: 0 | 1)
   return { end: line.length, closed: false, depth };
 }
 
-/** `Basic <credential>`: the span of the credential when the value opens with a `scheme` word, else the value. */
-function credentialSpan(line: string, span: ValueSpan, scheme: RegExp): ValueSpan {
-  if (span.quoted || !scheme.test(line.slice(span.from, span.to))) return span;
-  let j = span.to;
+/**
+ * `Basic <credential>`: the span of the credential when the value opens with a `scheme` word, else the value.
+ * After `:` the credential is the rest of the value; after `=` it is the next token.
+ */
+function credentialSpan(line: string, span: ValueSpan, scheme: RegExp, colon: boolean): ValueSpan {
+  if (span.quoted) return span;
+  const wordEnd = Math.min(unquotedEnd(line, span.from), span.to);
+  if (!scheme.test(line.slice(span.from, wordEnd))) return span;
+  let j = wordEnd;
   while (line[j] === ' ' || line[j] === '\t') j++;
-  if (j === span.to) return span;
-  const to = unquotedEnd(line, j);
+  if (j === wordEnd) return span;
+  const to = colon ? span.to : unquotedEnd(line, j);
   return to > j ? { ...span, from: j, to } : span;
 }
 
@@ -263,8 +310,10 @@ function takeValue(line: string, at: number, info: KeyInfo): Taken {
     const next: LineState = scan.closed ? NONE : { kind: 'collection', depth: scan.depth, level: info.level };
     return { end: scan.end, redact: { from: at, to: scan.end }, next };
   }
-  let span = valueSpan(line, at);
-  if (info.secret) span = credentialSpan(line, span, AUTH_KEY_RE.test(info.key) ? AUTH_SCHEME_RE : KNOWN_SCHEME_RE);
+  let span = valueSpan(line, at, info.colon);
+  if (info.secret) {
+    span = credentialSpan(line, span, AUTH_KEY_RE.test(info.key) ? AUTH_SCHEME_RE : KNOWN_SCHEME_RE, info.colon);
+  }
   const value = line.slice(span.from, span.to);
   const keep: Taken = { end: span.to, redact: null, next: NONE };
   if (value.startsWith(REDACTED)) return keep;
@@ -305,7 +354,7 @@ function redactKeyValues(line: string, base: number): Redacted {
   let pos = 0;
   KEY_SEP_RE.lastIndex = 0;
   for (let m = KEY_SEP_RE.exec(line); m !== null; m = KEY_SEP_RE.exec(line)) {
-    const info = keyInfo(m[1], m[0].includes('\\"') ? 1 : 0);
+    const info = keyInfo(m[1], m[0].includes('\\"') ? 1 : 0, m[0].includes(':'));
     if (info === null) continue;
     const at = m.index + m[0].length;
     const column = base + keyColumn(line, m.index);
@@ -324,7 +373,7 @@ function redactKeyValues(line: string, base: number): Redacted {
   }
   const text = out + line.slice(pos);
   const trailing = TRAILING_QUOTED_KEY_RE.exec(line);
-  const info = trailing === null ? null : keyInfo(trailing[2], 0);
+  const info = trailing === null ? null : keyInfo(trailing[2], 0, true);
   if (trailing === null || info === null) return { text, next: NONE };
   const column = base + trailing.index + trailing[0].indexOf(trailing[1]);
   return { text, next: { kind: 'key', info, needsSeparator: true, column } };
@@ -370,7 +419,8 @@ function redactFresh(text: string, base: number): Redacted {
 
 /**
  * How a line continues what the previous line left open: `lead` is its output so far, and `rest` (starting at
- * `base` in the line) still needs a fresh pass — null when the open state consumed the whole line.
+ * `base` in the line) still needs a fresh pass — null when the open state consumed the whole line. `next` is the
+ * state after the line unless the fresh pass opens one of its own.
  */
 interface Continued {
   lead: string;
@@ -402,7 +452,7 @@ function isItem(body: string, i: number): boolean {
  * One line of a YAML value under a secret key: indentation and `- ` markers stay, the content goes. A quoted
  * scalar alone on the line keeps its quotes and closing punctuation, and when it is the whole value (the first
  * line, no marker) the value ends with it — that is also the JSON `"key":\n  "value"` form. A key block opening
- * here hands over to key-block state, which follows it past any dedent.
+ * here hands over to key-block state, which follows it past any dedent and then resumes this value.
  */
 function blockLine(body: string, indent: number, state: LineState, first: boolean): Continued {
   let i = indent;
@@ -416,7 +466,7 @@ function blockLine(body: string, indent: number, state: LineState, first: boolea
   const begin = KEY_BLOCK_BEGIN_RE.exec(body);
   if (begin !== null) {
     KEY_BLOCK_END_RE.lastIndex = begin.index + begin[0].length;
-    if (KEY_BLOCK_END_RE.exec(body) === null) return consumed(kept + REDACTED, KEY_BLOCK);
+    if (KEY_BLOCK_END_RE.exec(body) === null) return consumed(kept + REDACTED, { kind: 'keyBlock', resume: state });
   }
   const quote = body[i];
   if (quote === '"' || quote === "'") {
@@ -455,7 +505,10 @@ function continueState(body: string, state: LineState): Continued {
       KEY_BLOCK_END_RE.lastIndex = 0;
       const end = KEY_BLOCK_END_RE.exec(body);
       if (end === null) return whole(state);
-      return restOf(body, (end.index > 0 ? REDACTED : '') + end[0], end.index + end[0].length);
+      return {
+        ...restOf(body, (end.index > 0 ? REDACTED : '') + end[0], end.index + end[0].length),
+        next: state.resume,
+      };
     }
     case 'value': {
       const close = quoteClose(body, 0, state.quote, state.level);
@@ -493,7 +546,9 @@ function continueState(body: string, state: LineState): Continued {
         const sep = SEPARATOR_RE.exec(body);
         if (sep === null) return restOf(body, '', 0);
         i += sep[0].length;
-        if (i === body.length) return consumed(body, { ...state, needsSeparator: false });
+        const info = { ...state.info, colon: sep[0].includes(':') };
+        if (i === body.length) return consumed(body, { ...state, info, needsSeparator: false });
+        return waitingValue(body, i, info);
       }
       return waitingValue(body, i, state.info);
     }
@@ -506,7 +561,7 @@ function redactLine(line: string, state: LineState): Redacted {
   const cont = continueState(body, state);
   if (cont.rest === null) return { text: prefix + cont.lead, next: cont.next };
   const fresh = redactFresh(cont.rest, cont.base);
-  return { text: prefix + cont.lead + fresh.text, next: fresh.next };
+  return { text: prefix + cont.lead + fresh.text, next: fresh.next.kind === 'none' ? cont.next : fresh.next };
 }
 
 /**
