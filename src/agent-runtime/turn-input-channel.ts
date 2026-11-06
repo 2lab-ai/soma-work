@@ -110,6 +110,14 @@ export function buildInitialUserMessage(prompt: string, uuid?: string): SteerUse
  */
 export const STEER_MESSAGE_HEADER = '[User message sent while you were working — a separate instruction from the user]';
 
+/** The user's words of a steered text — what {@link buildSteerUserMessage} framed, unframed; other text trimmed. */
+export function unframeSteerText(text: string): string {
+  const trimmed = text.trim();
+  return trimmed.startsWith(`${STEER_MESSAGE_HEADER}\n`)
+    ? trimmed.slice(STEER_MESSAGE_HEADER.length + 1).trim()
+    : trimmed;
+}
+
 /**
  * Build a steered user message.
  *
