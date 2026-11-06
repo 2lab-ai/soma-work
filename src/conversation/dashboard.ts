@@ -54,7 +54,14 @@ import type { LlmuxTierId } from '../auth/llmux-tiers';
 import { config } from '../config';
 import { displayTitle } from '../format/display-title';
 import type { DashboardInstructionApproval, InstructionApprovals } from '../instruction-approval';
-import { peekLinkMetadata, warmLinkMetadata } from '../link-metadata-fetcher';
+import {
+  fetchGitHubEmbed,
+  type GitHubEmbed,
+  type GitHubIssueRef,
+  parseGitHubIssueUrl,
+  peekLinkMetadata,
+  warmLinkMetadata,
+} from '../link-metadata-fetcher';
 import { Logger } from '../logger';
 import { MetricsEventStore } from '../metrics/event-store';
 import { findModelPricing } from '../metrics/model-registry';
@@ -1640,6 +1647,25 @@ let _rollbackHandler: DashboardRollbackHandler | null = null;
 
 export function setDashboardRollbackHandler(h: DashboardRollbackHandler | null): void {
   _rollbackHandler = h;
+}
+
+// ── #983 — the follow-up bar's modal: one issue or PR of a card ──
+type LinkEmbedFetcher = (ref: GitHubIssueRef) => Promise<GitHubEmbed | undefined>;
+let _linkEmbedFetcher: LinkEmbedFetcher | null = null;
+/** Tests: replace the GitHub fetch behind GET …/link-embed (null = the real one). */
+export function setDashboardLinkEmbedFetcher(f: LinkEmbedFetcher | null): void {
+  _linkEmbedFetcher = f;
+}
+/**
+ * Who reads a follow-up's body and comments: the card's owner, an admin, or the viewer token. Anyone else signed in
+ * sees what the card already shows (its reference, title and state) — an issue's comments can say more than the
+ * session does, and the App token reads repositories the viewer may not.
+ */
+function canReadLinkBody(request: any, ownerId: string | undefined): boolean {
+  const a = request.authContext;
+  if (a?.mode === 'bearer_header' || a?.mode === 'bearer_cookie') return true;
+  if (a?.isAdmin === true) return true;
+  return !!(a?.userId && ownerId && a.userId === ownerId);
 }
 
 /** The thread's rollback refusals, for the dashboard (same words as the thread command). */
@@ -4390,6 +4416,51 @@ export async function registerDashboardRoutes(
     },
   );
 
+  // ── #983 — the follow-up bar's modal: one of the card's issue or PR links, for the artifact viewer ──
+  // Only a URL that is one of the card's own links; the page is never fetched — a GitHub issue or PR is read from the
+  // API by its parts (parseGitHubIssueUrl). The body and comments go to the owner, an admin or the viewer token;
+  // anyone else gets the card's own words (full: false).
+  server.get<{ Params: { key: string }; Querystring: { url?: string } }>(
+    '/api/dashboard/session/:key/link-embed',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const local = resolveSelfActionKey(request.params?.key ?? '', reply);
+      if (local === null) return;
+      const url = typeof request.query?.url === 'string' ? request.query.url.trim() : '';
+      const s = url ? _getSessionsFn?.()?.get(local) : undefined;
+      const link = s
+        ? cardLinksOf(s, peekLinkMetadata).find((l) => l.url === url && (l.kind === 'issue' || l.kind === 'pr'))
+        : undefined;
+      if (!s || !link) {
+        reply.status(404).send({ error: 'Not a follow-up of this card' });
+        return;
+      }
+      const words = {
+        url: link.url,
+        kind: link.kind,
+        text: link.text,
+        ...(link.title ? { title: link.title } : {}),
+        ...(link.status ? { status: link.status } : {}),
+      };
+      if (!canReadLinkBody(request, s.ownerId)) {
+        reply.send({ ...words, full: false, reason: 'owner-only' });
+        return;
+      }
+      const ref = parseGitHubIssueUrl(link.url);
+      if (!ref) {
+        reply.send({ ...words, full: false, reason: 'unsupported' });
+        return;
+      }
+      let embed: GitHubEmbed | undefined;
+      try {
+        embed = await (_linkEmbedFetcher ?? fetchGitHubEmbed)(ref);
+      } catch (error) {
+        logger.warn('link-embed fetch failed', { error: (error as Error)?.message });
+      }
+      reply.send(embed ? { ...words, full: true, embed } : { ...words, full: false, reason: 'unavailable' });
+    },
+  );
+
   // ── Context rollback (#744): roll the model's context back to an input or a work-log point ──
 
   server.get<{ Params: { key: string } }>(
@@ -6833,6 +6904,8 @@ ${pageTokenAliases()}
      tiles="none"> (I-06 / I-07: opened over the page's own cards with open(items, index, opener)). -->
 <ui-hovercard id="art-peek" for="ui-file-card[data-art-id], .ib-chip[data-art], .mg-tile[data-mk]" width="360"></ui-hovercard>
 <ui-artifact-viewer id="art-viewer" tiles="none" lang="ko"></ui-artifact-viewer>
+<!-- #983: the follow-up viewer — a card's open issues and PRs as markdown pages (ui-followup). -->
+<ui-artifact-viewer id="fu-viewer" tiles="none" lang="ko"></ui-artifact-viewer>
 
 <script>
 const INIT_USER = ${initUser};
@@ -9893,6 +9966,12 @@ function wireInbox(host) {
     if (e.target !== host || !e.detail || e.detail.what !== 'tldr') return;
     tldrDismiss(String(e.detail.cardId));
   });
+  // A follow-up line (#983): its page in the follow-up viewer, over the card's follow-ups; the card does not toggle.
+  host.addEventListener('ui-followup', function(e) {
+    if (e.target !== host || !e.detail) return;
+    var cardId = String(e.detail.cardId);
+    openFollowupViewer(cardId, String(e.detail.id), inboxFollowupOf(host, cardId, String(e.detail.id)) || host);
+  });
   host.addEventListener('ui-artifact', function(e) {
     if (e.target !== host || !e.detail) return;
     var s = _sessionCache[String(e.detail.cardId)];
@@ -9913,6 +9992,18 @@ function inboxChipOf(host, cardId, artifactId) {
   return null;
 }
 
+// The follow-up line the reader pressed, found in the element's shadow root: the line of that follow-up inside
+// that card (compared as attributes — no key format to rebuild).
+function inboxFollowupOf(host, cardId, id) {
+  var root = host && host.shadowRoot;
+  if (!root) return null;
+  var lines = root.querySelectorAll('[data-followup]');
+  for (var i = 0; i < lines.length; i++) {
+    var li = lines[i].closest && lines[i].closest('li[data-card]');
+    if (li && li.getAttribute('data-card') === cardId && lines[i].getAttribute('data-followup') === id) return lines[i];
+  }
+  return null;
+}
 // Open, or still closing: the collapse runs over the body, so it stays until then.
 function cardBodyShown(key) {
   return _expanded.has(key) || !!_cardClosing[key];
@@ -10359,6 +10450,151 @@ function tldrDismiss(key) {
   refreshCard(key);
 }
 
+// ── #983 (SSOT 2026-11-06): the follow-up bar — the issues and PRs a stopped card left open ──
+// The card's own links still open (cardLinks[].open, card-links.ts) as the element's card.followups (@2lab.ai/ui
+// 0.34.0): one gradient line each under the title bar, on a card that stopped — done (idle) or waiting on the user,
+// never while it runs, never asleep or archived. A press (ui-followup) opens the follow-up viewer (#fu-viewer, the
+// artifact viewer) over all of the card's follow-ups; one whose page loaded is gone from the bar in this browser when
+// the viewer closes — until it closes or merges (its record goes, so a reopen shows it again).
+var FOLLOWUP_GONE_KEY = 'soma-dash-followup-gone';
+var FOLLOWUP_GONE_MAX = 500;
+var _followupGone = null; // card key + newline + URL → when it was seen, loaded once from localStorage
+var _fuViewer = { key: null, opened: null, list: [], docs: {}, seen: {} };
+var FU_STATE_WORD = { open: '열림', closed: '닫힘', merged: '머지됨', draft: '초안' };
+var FU_REASON = { 'owner-only': '본문과 댓글은 이 작업의 주인과 관리자만 볼 수 있습니다.', unsupported: '이 페이지는 대시보드에서 내용을 보여 줄 수 없습니다.', unavailable: '지금은 내용을 가져올 수 없습니다. GitHub에서 열어 보세요.' };
+function followupGoneLoad() {
+  if (_followupGone) return _followupGone;
+  _followupGone = Object.create(null);
+  try {
+    var raw = JSON.parse(localStorage.getItem(FOLLOWUP_GONE_KEY) || '{}');
+    if (raw && typeof raw === 'object') for (var k in raw) if (typeof raw[k] === 'number') _followupGone[k] = raw[k];
+  } catch (_e) {}
+  return _followupGone;
+}
+function followupGoneSave() {
+  var gone = followupGoneLoad();
+  var keys = Object.keys(gone);
+  if (keys.length > FOLLOWUP_GONE_MAX) {
+    keys.sort(function(a, b) { return gone[a] - gone[b]; });
+    for (var i = 0; i < keys.length - FOLLOWUP_GONE_MAX; i++) delete gone[keys[i]];
+  }
+  try { localStorage.setItem(FOLLOWUP_GONE_KEY, JSON.stringify(gone)); } catch (_e) {}
+}
+function cardFollowupsOf(s, col) {
+  if (!s || (col !== 'idle' && col !== 'waiting') || !Array.isArray(s.cardLinks)) return [];
+  var gone = followupGoneLoad();
+  var out = [];
+  var dirty = false;
+  for (var i = 0; i < s.cardLinks.length; i++) {
+    var l = s.cardLinks[i];
+    if (!l || (l.kind !== 'issue' && l.kind !== 'pr') || !l.text || !/^https?:\\/\\/[^\\s]+$/i.test(String(l.url || ''))) continue;
+    var gk = s.key + '\\n' + l.url;
+    if (l.open !== true) {
+      // Closed or merged since it was seen: a reopen shows it again. An unknown state keeps the record.
+      if (gone[gk] && l.status) { delete gone[gk]; dirty = true; }
+      continue;
+    }
+    if (gone[gk]) continue;
+    var f = { id: String(l.url), kind: l.kind, text: String(l.text), href: String(l.url) };
+    if (l.title && l.title !== l.text) f.title = String(l.title);
+    if (l.status) f.status = String(l.status);
+    out.push(f);
+  }
+  if (dirty) followupGoneSave();
+  return out;
+}
+// One follow-up as the viewer's markdown page: "# #918 title", the state · kind · author · date, the labels, then the
+// body and the newest comments — or, without them, why (res: the server's answer, null while it loads, 'error').
+// Every string is the viewer's to escape (its markdown never draws raw HTML or images).
+function followupDoc(f, res) {
+  var e = res && res !== 'error' && res.full && res.embed ? res.embed : null;
+  var title = (e && e.title) || f.title || '';
+  var lines = ['# ' + f.text + (title ? ' ' + title : '')];
+  var meta = [];
+  var st = e && e.state ? FU_STATE_WORD[e.state] || String(e.state) : f.status || '';
+  if (st) meta.push('**' + st + '**');
+  meta.push(f.kind === 'pr' ? 'PR' : '이슈');
+  if (e && e.author) meta.push('작성자: ' + e.author);
+  if (e && e.createdAt) meta.push(String(e.createdAt).slice(0, 10));
+  lines.push(meta.join(' · '));
+  if (e && e.labels && e.labels.length) lines.push('', '라벨: ' + e.labels.join(', '));
+  lines.push('');
+  if (res == null) lines.push('불러오는 중…');
+  else if (res === 'error') lines.push('내용을 불러오지 못했습니다. GitHub에서 열어 보세요.');
+  else if (!e) lines.push(FU_REASON[res.reason] || FU_REASON.unavailable);
+  else {
+    lines.push(e.body && String(e.body).trim() ? String(e.body) : '_본문 없음_');
+    var cs = Array.isArray(e.comments) ? e.comments : [];
+    if (cs.length) {
+      lines.push('', '## 댓글 (' + cs.length + ' / ' + Math.max(toNum(e.commentsTotal), cs.length) + ')');
+      for (var i = 0; i < cs.length; i++) {
+        var c = cs[i] || {};
+        lines.push('', '### ' + (c.author || '?') + (c.createdAt ? ' · ' + String(c.createdAt).slice(0, 10) : ''), '', String(c.body || ''));
+      }
+    }
+  }
+  return lines.join('\\n');
+}
+function fuViewerItems() {
+  return _fuViewer.list.map(function(f) {
+    var gh = /^https:\\/\\/github\\.com\\//i.test(f.href);
+    var item = { id: f.id, name: f.text + (f.title ? ' · ' + f.title : ''), kind: 'markdown', text: followupDoc(f, _fuViewer.docs[f.id]) };
+    item.actions = [{ id: 'page', label: gh ? 'GitHub에서 열기' : '새 탭에서 열기', href: f.href }]; // 'open' is the viewer's built-in (skipped)
+    return item;
+  });
+}
+// Open the follow-up viewer at one of a card's follow-ups, over all of them; the opener (the line) takes focus back.
+function openFollowupViewer(key, url, opener) {
+  var v = document.getElementById('fu-viewer');
+  var s = _sessionCache[key];
+  if (!v || !s || typeof v.open !== 'function') return;
+  var list = cardFollowupsOf(s, _cardCol[key] || 'idle');
+  if (!list.some(function(f) { return f.id === url; })) return;
+  _fuViewer = { key: key, opened: url, list: list, docs: {}, seen: {} };
+  var at = Math.max(0, list.findIndex(function(f) { return f.id === url; }));
+  v.open(fuViewerItems(), at, opener && typeof opener.focus === 'function' ? opener : null);
+  fuLoad(key, url);
+}
+// A follow-up's page from the server (once per opening); seen when it came back — the body, or the card's words and why.
+function fuLoad(key, url) {
+  if (_fuViewer.key !== key || Object.prototype.hasOwnProperty.call(_fuViewer.docs, url)) return;
+  var s = _sessionCache[key];
+  if (s && isSiblingSession(s)) {
+    _fuViewer.docs[url] = { full: false, reason: 'unsupported' };
+    _fuViewer.seen[url] = true;
+    return;
+  }
+  _fuViewer.docs[url] = null;
+  fetch('/api/dashboard/session/' + encodeURIComponent(key) + '/link-embed?url=' + encodeURIComponent(url), { credentials: 'same-origin' })
+    .then(function(r) { return r && r.ok ? r.json() : Promise.reject(new Error('link-embed ' + (r && r.status))); })
+    .then(function(res) {
+      if (_fuViewer.key !== key) return;
+      _fuViewer.docs[url] = res && typeof res === 'object' ? res : 'error';
+      if (res && typeof res === 'object') _fuViewer.seen[url] = true;
+    })
+    .catch(function() { if (_fuViewer.key === key) _fuViewer.docs[url] = 'error'; })
+    .then(function() {
+      var v = document.getElementById('fu-viewer');
+      if (v && _fuViewer.key === key) v.data = { items: fuViewerItems() };
+    });
+}
+// The viewer shows another follow-up (a step): its page is brought in.
+function onFuViewerView(detail) {
+  if (detail && _fuViewer.key) fuLoad(_fuViewer.key, String(detail.id));
+}
+// The viewer closed: the follow-up the person pressed is gone from the bar if its page came back (T3: a press
+// dismisses it, as the TL;DR's ×), and the card redraws.
+function onFuViewerClosed() {
+  var key = _fuViewer.key;
+  var url = _fuViewer.opened;
+  var seen = !!(key && url && _fuViewer.seen[url]);
+  _fuViewer = { key: null, opened: null, list: [], docs: {}, seen: {} };
+  if (!seen) return;
+  followupGoneLoad()[key + '\\n' + url] = Date.now();
+  followupGoneSave();
+  refreshCard(key);
+}
+
 // The face's star (SSOT 2026-11-01): the open card's ☆ 즐겨찾기 (sessionActionsOf) as the face's toggle — its state,
 // its tooltip, and for anyone but the owner (or while a write runs) inert with the reason.
 function cardStarOf(s, col) {
@@ -10391,6 +10627,9 @@ function viewCardOf(s, col) {
   // The Executive Summary's TL;DR (SSOT 2026-11-02 T7) — the face keeps it whatever rows the layout picked.
   var tl = cardTldrOf(s, col);
   if (tl) c.tldr = tl;
+  // The follow-up bar (#983): the issues and PRs still open, under the title bar, whatever rows the layout picked.
+  var fu = cardFollowupsOf(s, col);
+  if (fu.length) c.followups = fu;
   // #805 review: the gauge draws the level the model runs (effortEffective when it caps the set one); an archive's
   // effort is the owner's default today, not the run's — no gauge (effortFromDefault).
   var eff = s.effortFromDefault ? '' : s.effortEffective || s.effort;
@@ -20787,6 +21026,13 @@ function fcHydrateIn(node) {
       if (!artViewerIsOpen()) _artViewer = { cid: null, scope: 'conversation', list: [] };
     });
   }
+})();
+
+(function initFollowupViewer() {
+  var v = document.getElementById('fu-viewer');
+  if (!v) return;
+  v.addEventListener('ui-view', function(e) { onFuViewerView(e.detail); });
+  v.addEventListener('ui-closed', function() { onFuViewerClosed(); });
 })();
 
 // ── The board element: its events (wireInbox), skeleton cards until the first
