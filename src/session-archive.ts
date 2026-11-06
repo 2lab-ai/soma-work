@@ -132,6 +132,8 @@ export interface ArchivedSession {
   // SSOT 2026-10-22 — so a closed card keeps its goals (T6) and tasks (T7/T8).
   goal?: SessionGoal;
   goalHistory?: SessionGoal[];
+  /** Goals the owner paused (SSOT 2026-11-06) — they wait for a resume, so a revive brings them back. */
+  goalPaused?: SessionGoal[];
   taskLedger?: TaskLedger;
 
   // SSOT 2026-10-23 — a closed cron run stays filed under its job.
@@ -236,6 +238,7 @@ function sessionToArchive(
     summaryTitle: session.summaryTitle,
     goal: session.goal ? JSON.parse(JSON.stringify(session.goal)) : undefined,
     goalHistory: session.goalHistory ? JSON.parse(JSON.stringify(session.goalHistory)) : undefined,
+    goalPaused: session.goalPaused?.length ? JSON.parse(JSON.stringify(session.goalPaused)) : undefined,
     taskLedger: session.taskLedger ? JSON.parse(JSON.stringify(session.taskLedger)) : undefined,
     cronJob: session.cronJob ? { ...session.cronJob } : undefined,
     agents: session.agents ? JSON.parse(JSON.stringify(session.agents)) : undefined,
