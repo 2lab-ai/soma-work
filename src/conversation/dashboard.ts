@@ -5562,6 +5562,9 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .panel-controls:empty { display: none; }
 #panel-controls { position: relative; flex-wrap: nowrap; justify-content: flex-end; min-width: 0; padding: 0; }
 #panel-controls ui-model-picker { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+/* A row narrower than even the compact trigger (320px with four tools) clips the trigger's own content (level, then
+   the mark) inside its button — it never runs over Send. The button's outline and the menu (fixed) are not clipped. */
+#panel-controls ui-model-picker::part(trigger) { overflow: hidden; }
 #panel-controls > .cb-model-note {
   position: absolute; z-index: 2; right: 0; bottom: calc(100% + 6px); max-width: min(280px, 80vw); margin-top: 0; padding: 4px 8px;
   border-radius: 8px; background: var(--surface-raised); box-shadow: var(--ib-shadow);
@@ -6760,7 +6763,7 @@ ${pageTokenAliases()}
            steers. The token wrapper (.ui-tok) hands them the dashboard tokens; renderPanelComposer gives the
            steering its data, pcComposerData the composer its limits.
            Model · effort (spec 13) sit on the composer's own row, left of Send: #panel-controls is its slot="end"
-           child (#918, @2lab.ai/ui ≥ 0.34.0) — their own container, so the input is never morphed; pcFreshSteer
+           child (#918, @2lab.ai/ui ≥ 0.36.0) — their own container, so the input is never morphed; pcFreshSteer
            carries it into a new card's composer. -->
       <div class="ui-tok pc-steer-wrap">
         <ui-agent-steering id="cmd-steer" lang="ko"><ui-composer id="pc-composer" slot="composer" lang="ko"><div class="panel-controls" id="panel-controls" slot="end" aria-label="이 세션의 모델과 추론 강도"></div></ui-composer></ui-agent-steering>
@@ -7137,6 +7140,8 @@ function rdReset() {
   clearTimeout(_rd.land);
   if (_rd.off) _rd.off();
   _rd.last = -1;
+  _rd.touch = false; // a new view: no touch or fling of the old one counts as the reader's
+  _rd.until = 0;
   if (!p) return;
   var was = p.hasAttribute('data-read');
   p.removeAttribute('data-read');
@@ -7199,11 +7204,19 @@ function rdGesture(e) {
   if (!isPhone()) return;
   var t = e && e.type;
   if (t === 'touchend' || t === 'touchcancel') {
-    _rd.touch = false;
-    _rd.until = Date.now() + 1200;
+    rdTouchEnd(); // only a touch that began on the sections opens the fling window
     return;
   }
   if (t === 'touchstart' || t === 'touchmove') _rd.touch = true;
+  // A touch's end is dispatched on the node it began on — also once that node left the DOM (a live re-render), when it
+  // reaches neither the sections nor the document. That node hears it (#918).
+  if (t === 'touchstart') {
+    var from = e.composedPath ? e.composedPath()[0] : e.target;
+    if (from && typeof from.addEventListener === 'function') {
+      from.addEventListener('touchend', rdTouchEnd, { once: true, passive: true });
+      from.addEventListener('touchcancel', rdTouchEnd, { once: true, passive: true });
+    }
+  }
   else _rd.until = Date.now() + 400;
   var vp = psecViewport();
   if (vp && !vp._rdBound) {
@@ -7223,7 +7236,7 @@ function rdTouchEnd() {
   _rd.until = Date.now() + 1200;
 }
 // T3 — the session's model picker on the composer's row, left of Send (지시) — on every screen (SSOT 2026-11-05: the
-// desktop card too). #panel-controls is <ui-composer>'s slot="end" child (#918, @2lab.ai/ui ≥ 0.34.0): the composer lays
+// desktop card too). #panel-controls is <ui-composer>'s slot="end" child (#918, @2lab.ai/ui ≥ 0.36.0): the composer lays
 // it out, before Send and — while a voice note records — before 취소 · 완료, so the page measures nothing in its shadow
 // DOM. A row too narrow for the trigger's name (a phone) draws the picker compact: the maker's mark and the level, the
 // name in its tooltip and label. The room the name needs follows the composer's buttons — 44px on a touch screen
@@ -7239,8 +7252,9 @@ function syncPickerFit() {
   var touch = typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
   var narrow = w < (touch ? PICKER_COMPACT_BELOW_TOUCH : PICKER_COMPACT_BELOW);
   _pcCompact = narrow;
+  // An open menu holds its trigger (a width lock while open): the close repaints the controls with _pcCompact.
   var pk = document.querySelector('#panel-controls ui-model-picker');
-  if (pk && pk.hasAttribute('compact') !== narrow) pk.toggleAttribute('compact', narrow);
+  if (pk && !pk.hasAttribute('open') && pk.hasAttribute('compact') !== narrow) pk.toggleAttribute('compact', narrow);
 }
 function syncPhoneChrome() {
   syncPhoneScope();

@@ -7,7 +7,7 @@
  *       (syncPhoneStatus); reading (rdRead → data-read) gives the section box the whole view (sizePanelSections) and
  *       scrolls everything above it out; a tap on the title bar or the start of the history brings it back (rdStep);
  *   T3  the model picker sits on the composer's own row, left of Send: slotted into <ui-composer slot="end"> (#918,
- *       @2lab.ai/ui ≥ 0.34.0) — the page never reads the composer's shadow DOM; a narrow row draws it compact;
+ *       @2lab.ai/ui ≥ 0.36.0) — the page never reads the composer's shadow DOM; a narrow row draws it compact;
  *   T4  the reader's scroll away from the newest tucks the composer (data-tuck), the very bottom and ^ (#pc-reveal)
  *       bring it back — never while the reader types in it (rdStep).
  *
@@ -553,7 +553,7 @@ describe('T4 — the composer slides away while reading; ^ brings it back', () =
     let now = 1000;
     const vp = { scrollTop: 0, _rdBound: false, addEventListener: () => {} };
     const _rd = { touch: false, until: 0, last: -1, vp: null as unknown, leave: 0 };
-    const m = load<{ rdGesture: (e: { type: string }) => void }>(['rdGesture'], {
+    const m = load<{ rdGesture: (e: { type: string }) => void }>(['rdGesture', 'rdTouchEnd'], {
       isPhone: () => true,
       psecViewport: () => vp,
       rdOnScroll: () => {},
@@ -567,6 +567,10 @@ describe('T4 — the composer slides away while reading; ^ brings it back', () =
     expect(_rd.until).toBe(2200);
     now = 1500;
     m.rdGesture({ type: 'wheel' });
+    expect(_rd.until).toBe(1900);
+    // A finger that began elsewhere (the title bar, the composer) and lifts over the sections opens no window.
+    now = 3000;
+    m.rdGesture({ type: 'touchend' });
     expect(_rd.until).toBe(1900);
     expect(clientFn('rdOnScroll')).toContain('var user = _rd.touch || Date.now() < _rd.until;');
     expect(clientFn('rdOnScroll')).not.toMatch(/_rd\.(until|gesture) = /);
@@ -629,6 +633,8 @@ describe('T3 — the model picker on the composer’s row, left of Send, through
     expect(note).toContain('position: absolute;');
     expect(note).toContain('bottom: calc(100% + 6px);');
     expect(cssRule('#panel-controls ui-model-picker')).toContain('min-width: 0;');
+    // Narrower than even the compact trigger (320px, four tools): its content clips inside the button, never over Send.
+    expect(cssRule('#panel-controls ui-model-picker::part(trigger)')).toContain('overflow: hidden;');
     expect(clientFn('renderPanelControls')).not.toContain('pc-scope');
   });
   it('the controls’ repaint fits the picker to the row (syncPickerFit), and so does a resize of the composer', () => {
@@ -638,8 +644,9 @@ describe('T3 — the model picker on the composer’s row, left of Send, through
 });
 
 describe('T3 — a narrow row draws the picker compact: the maker’s mark and the level (#918)', () => {
-  const setup = (width: number, touch: boolean, had = false) => {
+  const setup = (width: number, touch: boolean, had = false, open = false) => {
     const attrs: Record<string, boolean> = had ? { compact: true } : {};
+    if (open) attrs.open = true;
     const picker = {
       toggleAttribute: (k: string, on: boolean) => {
         if (on) attrs[k] = true;
@@ -674,6 +681,11 @@ describe('T3 — a narrow row draws the picker compact: the maker’s mark and t
     expect(run(407, false)).toBe(false); // the desktop card's (440px wide): 32px buttons leave the name its room
     expect(run(380, false)).toBe(true); // a desktop card dragged narrow
     expect(run(0, true, true)).toBe(true); // a closed panel keeps what it had
+    // An open menu holds its trigger: the toggle waits for the close (whose repaint renders _pcCompact).
+    const held = setup(358, true, false, true);
+    held.m.syncPickerFit();
+    expect(held.attrs.compact).toBeUndefined();
+    expect(clientFn('mpOnOpenChange')).toContain('repaintPanelControlsFor(key);');
   });
   it('the panel’s picker is drawn compact while the row is narrow, so a repaint keeps it; the board card’s never', () => {
     const fn = clientFn('renderModelPicker');
@@ -825,6 +837,45 @@ describe('#918 — the reading follow-ups from the trinity review of #915', () =
     now = 5000;
     m.rdTouchEnd(); // no touch on the sections: a lift elsewhere never opens the reader's window
     expect(_rd).toEqual({ touch: false, until: 2200 });
+  });
+
+  it('a touch ends on the node it began on, even after that node left the DOM (touchend never bubbles from a detached node)', () => {
+    const listeners: Record<string, Array<{ f: () => void; once: boolean }>> = {};
+    const node = {
+      addEventListener: (t: string, f: () => void, o: { once?: boolean }) => {
+        (listeners[t] ||= []).push({ f, once: !!o?.once });
+      },
+    };
+    let now = 1000;
+    const _rd = { touch: false, until: 0, last: -1, vp: null as unknown, leave: 0 };
+    const m = load<{ rdGesture: (e: unknown) => void }>(['rdGesture', 'rdTouchEnd'], {
+      isPhone: () => true,
+      psecViewport: () => null,
+      rdOnScroll: () => {},
+      _rd,
+      Date: { now: () => now },
+    });
+    // The touch starts on a node inside the chat's shadow root (composedPath()[0], not the retargeted host).
+    m.rdGesture({ type: 'touchstart', target: { host: true }, composedPath: () => [node, { host: true }] });
+    expect(_rd.touch).toBe(true);
+    expect(Object.keys(listeners).sort()).toEqual(['touchcancel', 'touchend']);
+    expect(listeners.touchend.every((l) => l.once)).toBe(true);
+    // The node re-renders away; its touchend fires on the detached node only.
+    now = 1500;
+    for (const l of listeners.touchend) l.f();
+    expect(_rd).toMatchObject({ touch: false, until: 2700 });
+  });
+
+  it('a new view (rdReset) forgets a touch and its fling window', () => {
+    const _rd = { touch: true, until: 99999, last: 5, leave: 0, land: 0, off: null };
+    const m = load<{ rdReset: () => void }>(['rdReset'], {
+      _rd,
+      document: fakeDocument([]),
+      clearTimeout: () => {},
+      sizePanelSections: () => {},
+    });
+    m.rdReset();
+    expect(_rd).toMatchObject({ touch: false, until: 0, last: -1 });
   });
 
   it('^ moves focus into the composer whenever focus was on it (an assistive activation can report detail 1); a finger’s tap does not bring up the keyboard', () => {

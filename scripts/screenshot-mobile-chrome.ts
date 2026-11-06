@@ -509,6 +509,42 @@ async function phone(browser: Browser, width: number, height: number) {
   const back = await panelGeometry(page);
   check(back.statusShown, `${tag}: a tap on the title bar brings the head back`);
 
+  // #918 · a finger whose node leaves the DOM mid-touch (a live re-render) still ends the reader's touch: native
+  // touches through CDP, the touched node removed before the finger lifts.
+  {
+    // A short screen (a phone sideways) at rest has the head over the chat: reading first gives the chat its room.
+    if (!(await panelGeometry(page)).touch) {
+      await page.evaluate(() => (window as unknown as { rdRead(on: boolean): void }).rdRead(true));
+      await sleep(900);
+    }
+    const g = await panelGeometry(page);
+    if (g.touch) {
+      const cdp = await page.context().newCDPSession(page);
+      const pt = { x: g.touch.x, y: g.touch.y, id: 1 };
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [pt] });
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ ...pt, y: pt.y - 4 }] });
+      const mid = await page.evaluate(({ x, y }) => {
+        let el: Element | null = document.elementFromPoint(x, y);
+        while (el?.shadowRoot) {
+          const inner = el.shadowRoot.elementFromPoint(x, y);
+          if (!inner || inner === el) break;
+          el = inner;
+        }
+        const touching = (window as unknown as { _rd: { touch: boolean } })._rd.touch;
+        el?.remove();
+        return { touching, removed: !!el && !el.isConnected };
+      }, pt);
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await cdp.detach();
+      await sleep(100);
+      const after = await page.evaluate(() => (window as unknown as { _rd: { touch: boolean } })._rd.touch);
+      check(
+        mid.touching && mid.removed && after === false,
+        `${tag}: a touch whose node left the DOM still ends (touching ${mid.touching} · removed ${mid.removed} · after ${after})`,
+      );
+    } else check(false, `${tag}: the chat has room for a touch (${JSON.stringify(g.outer)})`);
+  }
+
   // #918 · the keyboard's way: reading again, then Enter on the title bar's ˅ — the head back, focus on the title.
   const kb0 = await panelGeometry(page);
   // A short screen (a phone sideways) at rest has the head over the chat: reading starts the way a scroll starts it.
@@ -805,6 +841,7 @@ async function main() {
     if (!process.env.MOBILE_CHROME_DEBUG) {
       await phone(browser, 390, 844);
       await phone(browser, 412, 915);
+      await phone(browser, 320, 640); // the drawer's floor (min-width 320): the picker never runs over Send
     }
     // A phone sideways: short, so the same chrome rules (the drawer docks beside the board from 840px).
     await phone(browser, 844, 390);
