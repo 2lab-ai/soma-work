@@ -1731,6 +1731,50 @@ describe('ClaudeHandler: a late result does not cut a notification turn of a bac
     expect(frames).not.toContainEqual(assistantText('EVENT 2'));
   });
 
+  // #997 review round 2 (astra): a steer answered while the shell is still live
+  // is an answer too — the shell's notification turn may be buffered behind it.
+  it("reads past a steer's answer into the shell's notification turn buffered behind it", async () => {
+    const cli = newFakeCli();
+    const pulledPastOpening = deferred();
+    const steerGate = deferred();
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield INIT;
+      yield TOOL_USE_BG_BASH;
+      yield level([bashTask]);
+      yield BG_BASH_RESULT;
+      yield WAITING;
+      yield openingResult(cli.opening?.uuid);
+      pulledPastOpening.resolve();
+      await steerGate.promise;
+      cli.received.push((await inputs.next()).value);
+      yield INIT;
+      yield assistantText('ACK');
+      yield successResult({ result: 'ACK', num_turns: 1, uuid: 'steer-result-uuid', user_message_uuid: 'u-steer' });
+      // Buffered behind the steer's answer: the watcher finished and the CLI ran its turn.
+      yield level([]);
+      yield taskNotification(BASH_ID, 'completed');
+      yield INIT;
+      yield TOOL_USE_MERGE;
+      yield MERGE_RESULT;
+      yield MERGED;
+      yield mergedResult();
+      cli.inputEnded = (await inputs.next()).done === true;
+    });
+    const handler = newHandler();
+
+    const framesPromise = readLikeTheProcessor(startTurn(handler));
+    await pulledPastOpening.promise;
+    expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'and also' })).toBe(true);
+    steerGate.resolve();
+    const frames = await framesPromise;
+
+    expect(frames).toContainEqual(TOOL_USE_MERGE);
+    const results = resultsOf(frames);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ result: 'MERGED' });
+  });
+
   it('does not wait for a live-update watcher (ambient): its events never hold the turn', async () => {
     const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
     try {

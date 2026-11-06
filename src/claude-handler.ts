@@ -1746,7 +1746,12 @@ export class ClaudeHandler implements TurnSteeringPort {
             // A task settled inside this turn, or settled since the previous
             // result while others stay live: another notification turn may
             // already be on its way (#997). Each settle renews the wait once.
-            if (heldFollowUpOwed()) {
+            // A result answering a host send (a steer) is an answer like the
+            // first one: any live task owes the wait. Notification turns echo no
+            // pushed uuid, so they cannot renew it this way.
+            const echoed = raw.user_message_uuid;
+            const answersASend = typeof echoed === 'string' && channel.pushedUuids().includes(echoed);
+            if (answersASend ? answerFollowUpOwed() : heldFollowUpOwed()) {
               awaitShellFollowUpTurn();
               continue;
             }
