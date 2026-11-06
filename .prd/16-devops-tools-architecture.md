@@ -101,6 +101,7 @@ grant가 전부 `read`인 이유: grant는 카드 남발을 막는 1차 문턱�
    `workflow run·enable·disable`, `release edit`, `label create·edit`, `variable set·delete`(값은 `--body <문자열>`만), `cache delete`.
    (`release create`는 태그 뒤 위치 인자를 업로드 파일로 받으므로, `run download`·`release download·upload·delete`·`label delete`와 함께 v1에서 뺀다.)
 6. **`gh api`**: 경로를 먼저 정규화한다 — 전체 URL·`..`·`%2F`·`//`·`{owner}` 자리표시자·쿼리 안의 경로 = 거부, 선행 `/` 통일.
+   `..` 예외는 하나뿐이다: `repos/<정책 소유자>/<레포>/compare/<sha>...<sha>`(소문자 16진 7–40자, 점 정확히 3개, 뒤 세그먼트 없음)의 마지막 세그먼트 — 배포 범위 확인용 읽기.
    메서드는 gh 규칙으로 계산(`-X` 우선, 없으면 `-f/-F/--field/--raw-field`가 있으면 POST, 아니면 GET — gh `pkg/cmd/api/api.go:329`).
    - **경로 허용표**: 메서드와 무관하게 `repos/<정책 소유자>/<레포>/…`, `orgs/<정책 소유자>/…`, `rate_limit`만 통과한다. `repositories/<id>`·`user…`·`users/…`·
      `search/…`·`enterprises/…`·`gists` 등은 거부. 그 안에서도 자격 경로(`secrets`·`keys`·`hooks`·`secret-scanning`·`private-registries` 등 세그먼트)는 거부.
