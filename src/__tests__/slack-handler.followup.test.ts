@@ -1060,6 +1060,293 @@ describe('SlackHandler — follow-up queue host', () => {
   });
 
   /**
+   * #893 / #950 — what is left of the goal driver after #891/#948.
+   *
+   * T1: a post-compact replay runs INSIDE the `/compact` turn's teardown, so it
+   * settles first; the `/compact` turn's own end comes after it with no text
+   * (dev 2026-11-04 13:21Z). That second end overwrote the replay's evidence with
+   * '' and fired the driver again: two continuations per turn.
+   * T2: a goal continuation the busy slot drops never ran — it must not spend
+   * the budget, and the run that holds the slot fires the driver at its end.
+   * T3: the owner's go-ahead (the cap's Continue, `goal resume`) re-arms the
+   * one automatic error resume, as a person's message does.
+   * T4: a deleted session leaves nothing behind in the driver's bookkeeping.
+   */
+  describe('goal driver follow-ups (#893, #950)', () => {
+    const goalContinuation = (routeContext: Record<string, unknown> = {}) =>
+      message({
+        ts: '',
+        text: '[goal-continuation] Continue working toward the active session goal.',
+        synthetic: true,
+        skipDispatch: true,
+        routeContext: { skipAutoBotThread: true, goalContinuation: true, ...routeContext },
+      });
+
+    /** A turn's result as the adapter hands it to `TurnRunner.finish`. */
+    const turnResult = (messages: string[]) => ({
+      messages,
+      askUserQuestions: [],
+      toolCalls: [],
+      modelCommandResults: [],
+      endTurn: { reason: 'end_turn', timestamp: Date.now() },
+      continuation: null,
+      hasPendingChoice: false,
+    });
+
+    /** The REAL turn surface of one dispatch (the factory the harness stubs out). */
+    const turnRunnerOfDispatch = () =>
+      (SlackHandler.prototype as any).createAgentSession.call(
+        handler,
+        {
+          session: registrySession,
+          sessionKey: SESSION_KEY,
+          userName: 'Owner',
+          workingDirectory: '/tmp/work',
+          abortController: new AbortController(),
+        },
+        say(),
+        { channel: CHANNEL, threadTs: THREAD_TS, user: 'U_OWNER', teamId: 'T1', mentionTs: '' },
+      ).runner;
+
+    it('T1: a /compact turn that ends after the replay it ran is no second turn end — evidence kept, driver fired once', async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+
+      const compactTurn = turnRunnerOfDispatch();
+      await compactTurn.begin('compact');
+      // Its teardown replays the continuation the compaction parked; that turn ends first, with text.
+      const replay = turnRunnerOfDispatch();
+      await replay.begin('replay');
+      await replay.finish(turnResult(['배포 확인까지 끝냈습니다']));
+      // Then the /compact turn itself ends — a compaction writes no text.
+      await compactTurn.finish(turnResult([]));
+
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+      expect(registrySession.goalLastTurnText).toBe('배포 확인까지 끝냈습니다');
+      expect(registrySession.goal.lastAssistantTurnSummary).toBe('배포 확인까지 끝냈습니다');
+    });
+
+    it('T1: an earlier turn that ends while a newer one runs is still a turn end — and so is the newer one', async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+
+      const older = turnRunnerOfDispatch();
+      await older.begin('older');
+      const newer = turnRunnerOfDispatch();
+      await newer.begin('newer');
+      await older.finish(turnResult([]));
+      await newer.finish(turnResult(['새 턴의 결과']));
+
+      expect(goalDriver).toHaveBeenCalledTimes(2);
+      expect(registrySession.goalLastTurnText).toBe('새 턴의 결과');
+    });
+
+    it('T1: a later leg of the same run is still a turn end — only the end that came after an inner turn is skipped', async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+
+      const run = turnRunnerOfDispatch();
+      await run.begin('leg-1');
+      await run.finish(turnResult(['1단계']));
+      await run.begin('compact-leg');
+      const replay = turnRunnerOfDispatch();
+      await replay.begin('replay');
+      await replay.finish(turnResult(['재실행된 지시']));
+      await run.finish(turnResult([]));
+      // A new leg begins after the inner turn ended: its end is real evidence again.
+      await run.begin('leg-3');
+      await run.finish(turnResult(['3단계']));
+
+      expect(goalDriver).toHaveBeenCalledTimes(3);
+      expect(registrySession.goalLastTurnText).toBe('3단계');
+    });
+
+    it('T2: a goal continuation the busy slot drops gives its turn back, and the run holding the slot fires the driver at its end', async () => {
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      // The run's own turn already ended and fired the driver; the eval's
+      // continuation lands while the run's teardown still holds the slot.
+      const { settle } = await startBusyTurn();
+      registrySession.goal = {
+        goalId: 'g1',
+        status: 'active',
+        objective: '릴리즈',
+        epoch: 0,
+        continuationCount: 3,
+        maxContinuations: 10,
+      };
+
+      await handler.handleMessage(goalContinuation({ goalContinuationSpent: { goalId: 'g1', epoch: 0 } }), say());
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(registrySession.goal.continuationCount).toBe(2);
+      expect(goalDriver).not.toHaveBeenCalled();
+      await settle();
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+      // No turn ended since its text was judged: a kick, so the loop reuses
+      // that verdict instead of judging the same text again as a new turn
+      // (which could call it the same failure and stop the goal).
+      expect(goalDriver).toHaveBeenCalledWith(SESSION_KEY, { cause: 'kick' });
+    });
+
+    it("T2: the holding run's own turn end takes the re-armed driver — it fires once, not twice", async () => {
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      const { settle } = await startBusyTurn();
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0, continuationCount: 3 };
+
+      await handler.handleMessage(goalContinuation({ goalContinuationSpent: { goalId: 'g1', epoch: 0 } }), say());
+      handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['이 턴의 결과']);
+      await settle();
+
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+      // That turn's own end fired it — a new turn, judged as one.
+      expect(goalDriver.mock.calls[0]).toEqual([SESSION_KEY]);
+    });
+
+    it('T1×T2: replay ends → its continuation is dropped at the busy slot → the /compact end is skipped → one kick at the release, one continuation spent', async () => {
+      const fired: any[] = [];
+      handler.setGoalTurnSettledHandler((key: string, opts?: any) => fired.push(opts ?? null));
+      // The /compact run holds the slot.
+      const { settle } = await startBusyTurn();
+      registrySession.goal = {
+        goalId: 'g1',
+        status: 'active',
+        objective: '릴리즈',
+        epoch: 0,
+        continuationCount: 2,
+        maxContinuations: 10,
+      };
+      const compactTurn = turnRunnerOfDispatch();
+      await compactTurn.begin('compact');
+      // The replay ends first, with text: the driver fires and the eval decides "continue" (count 2 → 3)…
+      const replay = turnRunnerOfDispatch();
+      await replay.begin('replay');
+      await replay.finish(turnResult(['재실행된 지시를 끝냈습니다']));
+      expect(fired).toEqual([null]);
+      registrySession.goal.continuationCount = 3;
+      // …but its continuation lands while the /compact run still holds the slot: dropped, given back.
+      await handler.handleMessage(goalContinuation({ goalContinuationSpent: { goalId: 'g1', epoch: 0 } }), say());
+      expect(registrySession.goal.continuationCount).toBe(2);
+      // The /compact turn's own end is skipped — it is no turn of its own.
+      await compactTurn.finish(turnResult([]));
+      expect(registrySession.goalLastTurnText).toBe('재실행된 지시를 끝냈습니다');
+      await settle();
+
+      // One more fire at the release, as a kick: the loop reuses the verdict it
+      // gave the replay and sends the continuation that was dropped — once.
+      expect(fired).toEqual([null, { cause: 'kick' }]);
+    });
+
+    it('T2: gives back only a continuation that spent one — not a goal opening, not while the cap question is open', async () => {
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      const { settle } = await startBusyTurn();
+
+      // The next queued goal's opening spent nothing.
+      registrySession.goal = { goalId: 'g2', status: 'active', objective: '다음 goal', epoch: 0, continuationCount: 2 };
+      await handler.handleMessage(goalContinuation(), say());
+      expect(registrySession.goal.continuationCount).toBe(2);
+
+      // The cap question is the owner's call: its count stays where it is.
+      registrySession.goal = {
+        goalId: 'g3',
+        status: 'active',
+        objective: '상한',
+        epoch: 0,
+        continuationCount: 10,
+        maxContinuations: 10,
+        capDecisionId: 'cap-1',
+        capDmPendingAt: Date.now(),
+      };
+      await handler.handleMessage(goalContinuation({ goalContinuationSpent: { goalId: 'g3', epoch: 0 } }), say());
+      expect(registrySession.goal.continuationCount).toBe(10);
+
+      // A goal edited since (epoch moved) or another goal: that count is no longer the one it spent.
+      registrySession.goal = { goalId: 'g4', status: 'active', objective: '수정됨', epoch: 1, continuationCount: 0 };
+      await handler.handleMessage(goalContinuation({ goalContinuationSpent: { goalId: 'g4', epoch: 0 } }), say());
+      registrySession.goal.continuationCount = 1;
+      await handler.handleMessage(goalContinuation({ goalContinuationSpent: { goalId: 'g4', epoch: 0 } }), say());
+      expect(registrySession.goal.continuationCount).toBe(1);
+
+      // Same goal and intent, but nothing left to give back: never below zero.
+      registrySession.goal = { goalId: 'g5', status: 'active', objective: '바닥', epoch: 0, continuationCount: 0 };
+      await handler.handleMessage(goalContinuation({ goalContinuationSpent: { goalId: 'g5', epoch: 0 } }), say());
+      expect(registrySession.goal.continuationCount).toBe(0);
+
+      await settle();
+    });
+
+    it("T3: the owner's go-ahead re-arms the one automatic error resume", () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      const failed = { canDrain: false, outcome: { result: 'error', reason: 'turn ended without success' } };
+      const settleNoText = (report: any) => {
+        handlerAny.followupSlotHeldGoalSessions = new Set([SESSION_KEY]);
+        handlerAny.releaseDeferredGoalDriver(SESSION_KEY, report);
+      };
+      settleNoText(failed); // resumed once
+      settleNoText(failed); // the resume failed too: held for a person
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+
+      // [계속] on the cap question / `goal resume` — what the resume hook runs.
+      handler.rearmGoalErrorResume(SESSION_KEY);
+      settleNoText(failed);
+      expect(goalDriver).toHaveBeenCalledTimes(2);
+    });
+
+    it('T4: a late turn end of a deleted session puts nothing back', async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      const { settle } = await startBusyTurn();
+      const turn = turnRunnerOfDispatch();
+      await turn.begin('cut');
+      // Deleted while the turn ran: the registry clears the marks, then flags it.
+      registrySession.terminated = true;
+      await turn.finish(turnResult([]));
+
+      expect(goalDriver).not.toHaveBeenCalled();
+      expect(handlerAny.followupSlotHeldGoalSessions?.has(SESSION_KEY) ?? false).toBe(false);
+      expect(handlerAny.goalTurnOrder.has(SESSION_KEY)).toBe(true); // created at begin, before the delete
+      await settle();
+    });
+
+    it('T4: a deleted session leaves nothing in the goal driver bookkeeping', () => {
+      let beforeDelete: ((key: string, session: any, reason: string) => void) | undefined;
+      const registry = {
+        setBeforeSessionDelete: (cb: typeof beforeDelete) => {
+          beforeDelete = cb;
+        },
+      };
+      const store = { load: () => undefined, save: () => {}, recoveryWarning: undefined };
+      const own = new SlackHandler(
+        { client: {}, assistant: vi.fn() } as any,
+        { ...claudeHandler, getSessionRegistry: () => registry } as any,
+        {} as any,
+        { followupQueueStore: store },
+      ) as any;
+      own.followupDeferredGoalSessions = new Set([SESSION_KEY]);
+      own.followupSlotHeldGoalSessions = new Set([SESSION_KEY]);
+      own.goalErrorResumeSpent = new Set([SESSION_KEY]);
+      own.goalDriverKickOnRelease = new Set([SESSION_KEY]);
+      own.goalTurnOrder?.set(SESSION_KEY, { begun: 3, endedBegin: 3 });
+
+      beforeDelete?.(SESSION_KEY, registrySession, 'terminated');
+
+      expect(own.followupDeferredGoalSessions.has(SESSION_KEY)).toBe(false);
+      expect(own.followupSlotHeldGoalSessions.has(SESSION_KEY)).toBe(false);
+      expect(own.goalErrorResumeSpent.has(SESSION_KEY)).toBe(false);
+      expect(own.goalDriverKickOnRelease.has(SESSION_KEY)).toBe(false);
+      expect(own.goalTurnOrder?.has(SESSION_KEY) ?? false).toBe(false);
+    });
+  });
+
+  /**
    * A cross-user `$skill` parked behind its owner's permission is neither
    * answered nor dropped — it stays `blocked` so a drained copy is `uncertain`
    * (Retry re-sends it once the grant lands), never `resolved`.
@@ -6728,9 +7015,13 @@ describe('SlackHandler — follow-up queue host', () => {
       const settled = vi.fn();
       handler.setGoalTurnSettledHandler(settled);
       registrySession.goal = goalOf({ continuationCount: 10, capDmPendingAt: 5 });
+      // #950 — its 10th turn failed and spent the one automatic resume.
+      handlerAny.goalErrorResumeSpent = new Set([SESSION_KEY]);
 
       const result = await handler.handleHostGoalAction(SESSION_KEY, { action: 'add', objective: '다음 목표' });
 
+      // The owner's go-ahead re-arms it, as the resume hook does.
+      expect(handlerAny.goalErrorResumeSpent.has(SESSION_KEY)).toBe(false);
       expect(result).toMatchObject({ outcome: 'queued', position: 1 });
       expect(registrySession.goal).toMatchObject({ goalId: 'g1', status: 'active', continuationCount: 0 });
       expect(registrySession.goal.capDmPendingAt).toBeUndefined();

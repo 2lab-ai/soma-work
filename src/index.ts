@@ -2147,6 +2147,8 @@ async function start() {
       setGoalLoopResumeHandler((sessionKey: string) => {
         // #917 — the owner let the goal act again: a follow-up question it left must not hold the session waiting.
         slackHandler.retractFollowUpQuestion(sessionKey);
+        // #950 — and, like a person's message, re-arms the one automatic resume after a failed turn.
+        slackHandler.rearmGoalErrorResume(sessionKey);
         goalLoopController.onTurnSettled(sessionKey, { cause: 'kick' });
       });
       slackHandler.setGoalLoopActingProbe((sessionKey) => goalLoopController.isActing(sessionKey));

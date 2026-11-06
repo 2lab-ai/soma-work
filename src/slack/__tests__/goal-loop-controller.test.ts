@@ -174,6 +174,43 @@ describe('GoalLoopController', () => {
     expect(h.notices.some((n) => n.includes('🔄 Goal not yet complete'))).toBe(true);
   });
 
+  /**
+   * #893 — the continuation names the goal and intent it spent one of, so a
+   * drop at the busy slot gives back exactly that one; a queued goal's opening
+   * spent nothing.
+   */
+  it('a continue verdict marks its continuation as spent for this goal and intent; a queued opening does not', async () => {
+    const h = makeHarness({ verdict: { completed: false, reason: 'missing tests', remaining: ['add tests'] } });
+    h.goal.epoch = 3;
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.injected[0].routeContext?.goalContinuationSpent).toEqual({ goalId: h.goal.goalId, epoch: 3 });
+
+    const next = makeHarness({ verdict: { completed: true, reason: 'all done', remaining: [] } });
+    next.session.goalQueue = [makeGoal({ goalId: 'goal-2', objective: 'second', status: 'queued', epoch: 0 })];
+    next.controller.onTurnSettled(SESSION_KEY);
+    await next.controller.settled(SESSION_KEY);
+    expect(next.injected).toHaveLength(1);
+    expect(next.injected[0].routeContext?.goalContinuationSpent).toBeUndefined();
+  });
+
+  it('a continuation held back because a turn started during the eval does not spend the budget (#893)', async () => {
+    const h = makeHarness({
+      dispatcher: async () => {
+        // A turn starts while the eval runs: the loop must not supersede it.
+        h.setRequestActive(true);
+        return JSON.stringify({ completed: false, reason: 'missing tests', remaining: ['add tests'] });
+      },
+      goal: { continuationCount: 4 },
+    });
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect(h.injected).toHaveLength(0);
+    // That turn's own end drives the loop again — and spends one then.
+    expect(h.goal.continuationCount).toBe(4);
+  });
+
   it('completed=false at cap → pauses, posts ⏹️, injects nothing', async () => {
     const h = makeHarness({
       verdict: { completed: false, reason: 'still going', remaining: [] },

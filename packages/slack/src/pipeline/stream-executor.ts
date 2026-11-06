@@ -4000,11 +4000,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         }
       }
       // #891 — the replay this turn stayed working for never took over (the
-      // handoff failed, nothing is wired, the session ended), or it was handed
-      // off but started no turn (the pipeline halted it) and nothing else runs:
-      // go idle now, so the session never shows "working" with nothing running.
+      // handoff failed, nothing is wired), or it was handed off but started no
+      // turn (the pipeline halted it) and nothing else runs: go idle now, so the
+      // session never shows "working" with nothing running. Not for a session
+      // that ended meanwhile (#893): the write goes by key, and the key may
+      // already belong to a new session the old idle must not touch.
       if (
         workingForCompactReplay &&
+        !session.terminated &&
         (!replayTookOver ||
           (!this.deps.requestCoordinator.isRequestActive(sessionKey) &&
             this.deps.claudeHandler.getSessionRegistry?.().getActivityStateByKey?.(sessionKey) === 'working'))

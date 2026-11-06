@@ -188,6 +188,13 @@ export interface MessageEvent {
      */
     goalContinuation?: boolean;
     /**
+     * #893 — with `goalContinuation`: this continuation spent one of this
+     * goal's continuations at this intent epoch (the loop's `continue` verdict,
+     * never a queued goal's opening). If the busy slot drops it, the host gives
+     * that one back while the same goal and epoch are still live.
+     */
+    goalContinuationSpent?: { goalId: string; epoch: number };
+    /**
      * True only for the crash-recovery auto-resume turn (`autoResumeSession`)
      * — the turn that carries on a session a restart cut. With
      * `goalContinuation` it is how the follow-up host tells a real resume

@@ -436,10 +436,25 @@ export class SlackHandler {
    * #948 — sessions whose last no-text turn failed and was already resumed once
    * automatically. A second failure in a row waits for a person instead of
    * resuming again. A turn that does not fail, a turn that left text, or a
-   * person's own message clears the mark. In memory only: a restart grants one
-   * fresh resume.
+   * person's own message clears the mark — and so does the owner's go-ahead
+   * (`rearmGoalErrorResume`, #950). In memory only: a restart grants one fresh
+   * resume.
    */
   private goalErrorResumeSpent?: Set<string>;
+  /**
+   * #893 — per session: how many turns (dispatch legs) have begun, and the
+   * latest begin among the turns that have ended. A turn whose end comes after
+   * a LATER-begun turn already ended is not the goal's evidence: a post-compact
+   * replay runs inside the `/compact` turn's teardown and ends first.
+   */
+  private readonly goalTurnOrder = new Map<string, { begun: number; endedBegin: number }>();
+  /**
+   * #893 — sessions whose held driver was re-armed only by a continuation the
+   * busy slot dropped: no turn ended since its text was judged, so the release
+   * fires it as a kick (the loop reuses that verdict) — never as a new turn,
+   * which would re-judge the same text and could call it the same failure.
+   */
+  private goalDriverKickOnRelease?: Set<string>;
   /**
    * Files downloaded for a message that was STEERED into a running turn, keyed
    * by the uuid it was pushed under (06 §3.2/D2). They must survive until the
@@ -1303,7 +1318,29 @@ export class SlackHandler {
       // more. By row key: while a bot-thread migration is bound, the rows wait
       // under the ROOT slot key, not under the session's own key.
       this.forgetFollowupsWaitingForOpen(sessionKey);
+      // #950 — the goal driver's bookkeeping for this key goes with it: a new
+      // session on the same key must not inherit a held driver or a spent resume.
+      this.forgetGoalDriverState(sessionKey);
     });
+  }
+
+  /** #950 — drop every goal-driver mark kept for `sessionKey`. Never throws. */
+  private forgetGoalDriverState(sessionKey: string): void {
+    this.followupDeferredGoalSessions?.delete(sessionKey);
+    this.followupSlotHeldGoalSessions?.delete(sessionKey);
+    this.goalErrorResumeSpent?.delete(sessionKey);
+    this.goalDriverKickOnRelease?.delete(sessionKey);
+    this.goalTurnOrder.delete(sessionKey);
+  }
+
+  /** #893 — the session's turn begin/end order, created on first use. */
+  private goalTurnOrderOf(sessionKey: string): { begun: number; endedBegin: number } {
+    let order = this.goalTurnOrder.get(sessionKey);
+    if (!order) {
+      order = { begun: 0, endedBegin: 0 };
+      this.goalTurnOrder.set(sessionKey, order);
+    }
+    return order;
   }
 
   private cancelFollowupsOfDeletedSession(sessionKey: string, session: ConversationSession, reason: string): void {
@@ -1873,6 +1910,7 @@ export class SlackHandler {
         // dispatch, and it is not user input, so it is dropped — not queued
         // (`pipeline/types.ts:64-79`, goalContinuation/compactRedispatch).
         this.logger.info('Synthetic turn blocked — session already dispatching', { sessionKey });
+        this.holdDroppedGoalContinuation(sessionKey, event);
         return;
       }
       // `!{prompt}` = explicit steer. It must still cut the running turn, but
@@ -1943,6 +1981,7 @@ export class SlackHandler {
           return;
         }
         this.logger.info('Synthetic turn dropped — slot taken in the same tick', { sessionKey });
+        this.holdDroppedGoalContinuation(sessionKey, event);
         return;
       }
       // Durable open failed (the turn generation could not be committed). Fail
@@ -3217,6 +3256,8 @@ export class SlackHandler {
     // would compare the NEW generation against itself and be allowed to
     // repaint the new turn's surface.
     const expectedTurnEpoch = context.turnEpoch;
+    // #893 — this dispatch's current leg, in the session's begin order.
+    let turnBegin = this.goalTurnOrder.get(sessionResult.sessionKey)?.begun ?? 0;
 
     // TurnRunnerSurface adapter: ThreadPanel → TurnRunnerSurface
     const turnRunnerSurface: TurnRunnerSurface = {
@@ -3228,7 +3269,30 @@ export class SlackHandler {
           expectedTurnEpoch,
         });
       },
+      // #893 — numbered at every leg's begin, so only an end that comes after
+      // a later-begun turn's end is skipped; the run's next leg counts again.
+      onTurnBegin: (session, sessionKey) => {
+        if (session?.terminated) return;
+        const order = this.goalTurnOrderOf(sessionKey);
+        order.begun += 1;
+        turnBegin = order.begun;
+      },
       onAssistantTurnComplete: async (session, sessionKey, assistantMessages) => {
+        // #950 — a late end of a deleted session must not put back the marks its
+        // deletion cleared (the registry runs that cleanup, THEN flags it).
+        if (session?.terminated) return;
+        const order = this.goalTurnOrderOf(sessionKey);
+        const outlived = order.endedBegin > turnBegin;
+        order.endedBegin = Math.max(order.endedBegin, turnBegin);
+        if (outlived) {
+          // The /compact turn ends after the replay it ran (dev 2026-11-04
+          // 13:21Z): its empty end overwrote the replay's evidence with '' and
+          // fired the driver a second time — two continuations for one turn.
+          this.logger.info('Goal turn end skipped — a turn that began after it has already ended', {
+            sessionKey,
+          });
+          return;
+        }
         this.handleAssistantTurnCompleteForGoal(session, sessionKey, assistantMessages);
       },
     };
@@ -3310,6 +3374,8 @@ export class SlackHandler {
     sessionKey: string,
     assistantMessages: string[],
   ): void {
+    // #893 — a turn ended: the driver's next fire is for this turn, not a kick.
+    this.goalDriverKickOnRelease?.delete(sessionKey);
     const goal = session.goal;
     if (!goal || goal.status !== 'active') return;
 
@@ -6843,6 +6909,56 @@ export class SlackHandler {
     return outcome?.result === 'error' || (outcome?.result === 'interrupted' && outcome.reason === 'stall-timeout');
   }
 
+  /**
+   * #950 — the owner let the goal act again (the cap question's Continue from
+   * the DM or the dashboard, `goal resume`, a goal edit, Delete-advance — all
+   * through the goal resume hook in `index.ts`). Like a person's message, that
+   * re-arms the one automatic resume after a failed turn: without it, a
+   * transient error right after Continue stopped the goal again with no retry.
+   */
+  rearmGoalErrorResume(sessionKey: string): void {
+    this.goalErrorResumeSpent?.delete(sessionKey);
+  }
+
+  /**
+   * #893 — a goal continuation the busy slot dropped never ran. The run that
+   * holds the slot fires the driver at its end (its own turn end with text
+   * takes this over at once; one that left none fires it at the release, under
+   * the same rules as #891), and the continuation the loop spent on it comes
+   * back. Without this, a turn whose eval finished before its teardown lost its
+   * continuation with nothing to drive the goal again (fable R1 on #892).
+   */
+  private holdDroppedGoalContinuation(
+    sessionKey: string,
+    event: {
+      routeContext?: { goalContinuation?: boolean; goalContinuationSpent?: { goalId: string; epoch: number } };
+    },
+  ): void {
+    if (event.routeContext?.goalContinuation !== true) return;
+    const session = this.claudeHandler?.getSessionByKey?.(sessionKey);
+    if (!session?.goal || session.goal.status !== 'active') return;
+    (this.followupSlotHeldGoalSessions ??= new Set<string>()).add(sessionKey);
+    (this.goalDriverKickOnRelease ??= new Set<string>()).add(sessionKey);
+    // Only a continuation that spent one (a `continue` verdict — not a queued
+    // goal's opening) on the goal and intent still live (an edit or a resume
+    // reset the count since), never past zero, and never while the cap
+    // question is open: that count is the owner's call.
+    const spent = event.routeContext.goalContinuationSpent;
+    const sameIntent =
+      spent !== undefined && spent.goalId === session.goal.goalId && spent.epoch === (session.goal.epoch ?? 0);
+    const capDecisionOpen = isGoalCapDecisionPending(session.goal);
+    const refund = sameIntent && session.goal.continuationCount > 0 && !capDecisionOpen;
+    if (refund) {
+      session.goal.continuationCount -= 1;
+      this.claudeHandler.saveSessions();
+    }
+    this.logger.info('Goal continuation dropped at the busy slot — its run fires the driver at its end', {
+      sessionKey,
+      refunded: refund,
+      continuationCount: session.goal.continuationCount,
+    });
+  }
+
   /** #948 — tell the thread why the goal stopped resuming, and how to go on. */
   private noticeGoalErrorResumeStopped(sessionKey: string): void {
     const session = this.claudeHandler?.getSessionByKey?.(sessionKey);
@@ -6879,6 +6995,8 @@ export class SlackHandler {
     // host cut the turn (a stop, a supersede, a shutdown): that is the last
     // word, as for an auto-compact stop's resume. An auto-compact stop fires.
     if (this.followupSlotHeldGoalSessions?.delete(sessionKey)) {
+      // #893 — held only for a dropped continuation: no turn ended since.
+      const kick = this.goalDriverKickOnRelease?.delete(sessionKey) === true;
       const cut =
         report.outcome?.result === 'interrupted' &&
         SlackHandler.GOAL_LAST_WORD_ABORT_REASONS.has(report.outcome.reason ?? '');
@@ -6902,8 +7020,8 @@ export class SlackHandler {
       } else {
         if (failed) (this.goalErrorResumeSpent ??= new Set<string>()).add(sessionKey);
         this.followupDeferredGoalSessions?.delete(sessionKey);
-        this.logger.info('Goal driver fired — the run that held its slot has settled', { sessionKey });
-        this.goalTurnSettledHandler?.(sessionKey);
+        this.logger.info('Goal driver fired — the run that held its slot has settled', { sessionKey, kick });
+        this.goalTurnSettledHandler?.(sessionKey, kick ? { cause: 'kick' } : undefined);
         return;
       }
     }
@@ -8745,6 +8863,8 @@ export class SlackHandler {
           // The current goal was stopped at its budget; the add gave it the
           // budget back. No turn ends from a dashboard add, so drive the loop.
           this.retractFollowUpQuestion(sessionKey);
+          // #950 — the owner's go-ahead, as through the resume hook.
+          this.rearmGoalErrorResume(sessionKey);
           this.goalTurnSettledHandler?.(sessionKey, { cause: 'kick' });
         }
         return { outcome: 'queued', goalId: result.goal.goalId, position };

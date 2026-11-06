@@ -54,6 +54,12 @@ export interface SyntheticMessageEvent {
     skipAutoBotThread?: boolean;
     /** Goal auto-continuation marker — never supersede a live turn (M2). */
     goalContinuation?: boolean;
+    /**
+     * #893 — this continuation spent one of this goal's continuations (a
+     * `continue` verdict) at this intent epoch. A continuation the busy slot
+     * drops gives it back while that goal and epoch are still live.
+     */
+    goalContinuationSpent?: { goalId: string; epoch: number };
   };
 }
 
