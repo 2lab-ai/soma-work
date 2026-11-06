@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { BOOT_SCREEN_SLOT, bootClientJs, bootScreenCss, bootScreenHtml, withBootScreen } from '../boot-screen';
+import { uiLibDistDir } from '../ui-lib';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -36,10 +37,46 @@ const box = (left: number, top: number, width: number, height: number): Box => (
   bottom: top + height,
 });
 
-function page(opts: { undefinedEls?: Box[]; noBoot?: boolean; noDefinedSelector?: boolean } = {}) {
+interface Child {
+  tagName: string;
+  inert: boolean;
+  open: boolean;
+  nextElementSibling: Child | null;
+}
+
+const OPEN_OVERLAY = '.app > ui-drawer[open], .app > ui-dialog[open]';
+
+function page(
+  opts: {
+    undefinedEls?: Box[];
+    noBoot?: boolean;
+    noDefinedSelector?: boolean;
+    app?: Array<[string, boolean?]> | null;
+    width?: number;
+    saved?: string | null | 'throws';
+  } = {},
+) {
+  // The .app container as the parser builds it: its children arrive one by one (append).
+  const children: Child[] = [];
+  const app = {
+    get firstElementChild() {
+      return children[0] ?? null;
+    },
+  };
+  const append = (tagName: string, inert = false) => {
+    const child: Child = { tagName: tagName.toUpperCase(), inert, open: false, nextElementSibling: null };
+    if (children.length) children[children.length - 1].nextElementSibling = child;
+    children.push(child);
+    return child;
+  };
+  for (const [tag, inert] of opts.app ?? []) append(tag, inert);
   const classes = new Set<string>();
+  const attrs: Record<string, string> = {};
   let attached = true;
   const boot = {
+    setAttribute: (name: string, value: string) => {
+      attrs[name] = value;
+    },
     classList: { add: (c: string) => classes.add(c), contains: (c: string) => classes.has(c) },
     get parentNode() {
       return attached ? { removeChild: () => (attached = false) } : null;
@@ -53,6 +90,11 @@ function page(opts: { undefinedEls?: Box[]; noBoot?: boolean; noDefinedSelector?
   const document = {
     readyState: 'loading',
     getElementById: (id: string) => (id === 'boot' && !opts.noBoot ? boot : null),
+    querySelector: (sel: string) => {
+      if (sel === OPEN_OVERLAY) return children.find((c) => /^UI-(DRAWER|DIALOG)$/.test(c.tagName) && c.open) ?? null;
+      expect(sel).toBe('.app');
+      return opts.app === null ? null : app;
+    },
     querySelectorAll: (sel: string) => {
       expect(sel).toBe(':not(:defined)');
       if (opts.noDefinedSelector) throw new SyntaxError("':defined' is not a valid selector");
@@ -62,14 +104,22 @@ function page(opts: { undefinedEls?: Box[]; noBoot?: boolean; noDefinedSelector?
       if (type === 'DOMContentLoaded') ready.push(fn);
     },
   };
-  const window = { innerWidth: 390, innerHeight: 844 };
+  const window = { innerWidth: opts.width ?? 390, innerHeight: 844 };
+  const localStorage = {
+    getItem: (key: string) => {
+      expect(key).toBe('soma-board-view');
+      if (opts.saved === 'throws') throw new Error('SecurityError');
+      return opts.saved ?? null;
+    },
+  };
   const requestAnimationFrame = (fn: () => void) => frames.push(fn);
   const setTimeout = (fn: () => void, ms: number) => timers.push({ at: now + ms, fn });
-  new Function('document', 'window', 'requestAnimationFrame', 'setTimeout', bootClientJs())(
+  new Function('document', 'window', 'requestAnimationFrame', 'setTimeout', 'localStorage', bootClientJs())(
     document,
     window,
     requestAnimationFrame,
     setTimeout,
+    localStorage,
   );
   return {
     get out() {
@@ -101,6 +151,20 @@ function page(opts: { undefinedEls?: Box[]; noBoot?: boolean; noDefinedSelector?
     },
     setUndefined(els: Box[]) {
       undefinedEls = els;
+    },
+    append,
+    /** An overlay child (by tag) opens, as <ui-drawer> / <ui-dialog> reflect it. */
+    openOverlay(tag: string) {
+      const c = children.find((x) => x.tagName === tag.toUpperCase());
+      if (!c) throw new Error(`no ${tag}`);
+      c.open = true;
+    },
+    get view() {
+      return attrs['data-view'];
+    },
+    /** Each .app child as tag:inert. */
+    get inert() {
+      return children.map((c) => `${c.tagName.toLowerCase()}:${c.inert}`);
     },
   };
 }
@@ -153,12 +217,9 @@ describe('[T2] the layer is the page in outline', () => {
     const cols = html.split('class="boot-col"').slice(1);
     expect(cols.map((c) => c.split('class="boot-card"').length - 1)).toEqual([2, 3, 2]);
   });
-  it('the brand mark sits where the bar draws it, resting at the bar pattern', () => {
+  it('the brand mark rests at the bar pattern (where it stands: [T7])', () => {
     expect(html.match(/<rect /g)).toHaveLength(4);
-    const css = bootScreenCss();
-    expect(css).toContain('.boot-bar { display: flex; align-items: center; gap: 10px; height: 56px; padding: 0 20px;');
-    expect(css).toContain('.boot-bar { height: 52px; padding: 0 12px; gap: 8px; }');
-    expect(css).toContain('.boot-mark rect:nth-child(3) { opacity: 0.25;');
+    expect(bootScreenCss()).toContain('.boot-mark rect:nth-child(3) { opacity: 0.25;');
   });
   it('a fast load sees still blocks: the pulse waits 500 ms, the mark 1 s; reduced motion stills the mark', () => {
     const css = bootScreenCss();
@@ -234,5 +295,202 @@ describe('[T2] the layer lifts when the viewport shows nothing undefined', () =>
   });
   it('a page without the layer runs the script without error', () => {
     expect(() => page({ noBoot: true })).not.toThrow();
+  });
+});
+
+describe('[T5 #969] the page under the layer takes no keyboard focus while it is up', () => {
+  const APP: Array<[string, boolean?]> = [['header'], ['div'], ['ui-drawer'], ['p'], ['button'], ['ui-dialog']];
+  it('every in-flow child of .app goes inert on the first frame; the overlays (drawers, dialogs) never do', () => {
+    const p = page({ app: APP });
+    expect(p.inert.every((c) => c.endsWith(':false'))).toBe(true);
+    p.frame();
+    expect(p.inert).toEqual(['header:true', 'div:true', 'ui-drawer:false', 'p:true', 'button:true', 'ui-dialog:false']);
+  });
+  it('a child the parser adds later goes inert on the next frame', () => {
+    const p = page({ app: [['header']] });
+    p.frame();
+    p.append('div');
+    p.frame();
+    expect(p.inert).toEqual(['header:true', 'div:true']);
+  });
+  it.each([
+    [
+      'the viewport is drawn',
+      (p: ReturnType<typeof page>) => {
+        p.parsed();
+        p.frame(2);
+      },
+    ],
+    [
+      'DOMContentLoaded',
+      (p: ReturnType<typeof page>) => {
+        p.domContentLoaded();
+        p.frame();
+      },
+    ],
+    ['12 s', (p: ReturnType<typeof page>) => p.advance(12000)],
+  ])('lifting on %s gives every child its focus back', (_name, liftNow) => {
+    const p = page({ app: APP, undefinedEls: [] });
+    p.frame();
+    expect(p.inert[0]).toBe('header:true');
+    liftNow(p);
+    expect(p.out).toBe(true);
+    expect(p.inert.every((c) => c.endsWith(':false'))).toBe(true);
+  });
+  it('an overlay that opens during boot (a deep link docks its drawer under the layer) lifts it that frame', () => {
+    const p = page({ app: APP, undefinedEls: [box(0, 0, 390, 52)] });
+    p.frame();
+    expect(p.out).toBe(false);
+    p.openOverlay('ui-drawer');
+    p.frame();
+    expect(p.out).toBe(true);
+    expect(p.inert.every((c) => c.endsWith(':false'))).toBe(true);
+  });
+  it('a dialog that opens during boot (Ctrl+N) lifts it too', () => {
+    const p = page({ app: APP, undefinedEls: [box(0, 0, 390, 52)] });
+    p.frame();
+    p.openOverlay('ui-dialog');
+    p.frame();
+    expect(p.out).toBe(true);
+  });
+  it('a child the page made inert itself stays inert after the lift', () => {
+    const p = page({ app: [['header'], ['div', true]] });
+    p.frame();
+    p.domContentLoaded();
+    p.frame();
+    expect(p.inert).toEqual(['header:false', 'div:true']);
+  });
+  it('no .app yet (or at all): nothing to hold, no error', () => {
+    const p = page({ app: null });
+    expect(() => p.frame(3)).not.toThrow();
+    p.domContentLoaded();
+    expect(() => p.frame()).not.toThrow();
+    expect(p.out).toBe(true);
+  });
+});
+
+/** The block that opens at `marker` (an at-rule head ending in `{`), up to its matching `}`. */
+/** Every block that opens at `marker` (an at-rule head ending in `{`), each up to its matching `}`. */
+function blocks(css: string, marker: string): string[] {
+  const out: string[] = [];
+  for (let start = css.indexOf(marker); start >= 0; start = css.indexOf(marker, start + 1)) {
+    let depth = 0;
+    for (let i = start + marker.length - 1; i < css.length; i++) {
+      if (css[i] === '{') depth++;
+      else if (css[i] === '}' && --depth === 0) {
+        out.push(css.slice(start + marker.length, i));
+        break;
+      }
+    }
+  }
+  if (!out.length) throw new Error(`marker not found: ${marker}`);
+  return out;
+}
+
+/**
+ * The value of `prop` in the first rule whose selector is exactly `selector` — at the top level, or (with `from`) in
+ * the first block opened by `from` that has that rule. Throws when there is no such rule or property.
+ */
+function decl(css: string, selector: string, prop: string, from = ''): string {
+  const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const rule = new RegExp(`(?:^|[{}\\n])\\s*${esc}\\s*\\{([^}]*)\\}`);
+  const scopes = from ? blocks(css, from) : [css];
+  for (const scope of scopes) {
+    const m = scope.match(rule);
+    if (!m) continue;
+    const v = m[1].match(new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+?)\\s*(?:;|$)`));
+    if (!v) throw new Error(`${prop} not in ${selector}`);
+    return v[1];
+  }
+  throw new Error(`rule not found: ${selector}${from ? ` in ${from}` : ''}`);
+}
+
+describe('[T7 #969] the layer stands where the page and the kit draw: their numbers, not a copy', () => {
+  const dist = uiLibDistDir() as string;
+  const bar = readFileSync(join(dist, 'app-bar.js'), 'utf8');
+  const inbox = readFileSync(join(dist, 'agent-inbox.js'), 'utf8');
+  const open = TEMPLATE.indexOf('<style>\n');
+  const sheet = TEMPLATE.slice(open, TEMPLATE.indexOf('</style>', open));
+  const boot = bootScreenCss();
+  const PHONE = '@media (max-width: 639px) {';
+
+  it('the bar: the kit app bar height, gap and padding; on a phone too', () => {
+    expect(decl(boot, '.boot-bar', 'height')).toBe(decl(bar, ':host', 'height'));
+    expect(decl(boot, '.boot-bar', 'gap')).toBe(decl(bar, '.ab-bar', 'gap'));
+    expect(decl(boot, '.boot-bar', 'padding')).toBe(decl(bar, '.ab-bar', 'padding'));
+    expect(decl(boot, '.boot-bar', 'height', PHONE)).toBe(decl(bar, ':host', 'height', PHONE));
+    expect(decl(boot, '.boot-bar', 'gap', PHONE)).toBe(decl(bar, '.ab-bar', 'gap', PHONE));
+    expect(decl(boot, '.boot-bar', 'padding', PHONE)).toBe(decl(bar, '.ab-bar', 'padding', PHONE));
+    expect(decl(boot, '.boot-brand', 'gap')).toBe(decl(bar, '.ab-brand', 'gap'));
+  });
+  it('the main column and the board head: the page sheet', () => {
+    expect(decl(boot, '.boot-main', 'max-width')).toBe(decl(sheet, '.main', 'max-width'));
+    expect(decl(boot, '.boot-main', 'padding')).toBe(decl(sheet, '.main', 'padding'));
+    expect(decl(boot, '.boot-main', 'padding', PHONE)).toBe(decl(sheet, '.main', 'padding', PHONE));
+    expect(decl(boot, '.boot-head', 'margin')).toBe(decl(sheet, '.inbox-head', 'margin'));
+    expect(decl(boot, '.boot-head', 'margin-bottom', PHONE)).toBe(decl(sheet, '.inbox-head', 'margin-bottom', PHONE));
+  });
+  it('the board: the kit columns, column head and skeleton card', () => {
+    expect(decl(boot, '.boot-board', 'gap')).toBe(decl(inbox, '.ib-board', 'gap'));
+    expect(decl(boot, '.boot-col', 'padding')).toBe(decl(inbox, '.ib-col', 'padding'));
+    expect(decl(boot, '.boot-col', 'border-radius')).toBe(decl(inbox, '.ib-col', 'border-radius'));
+    expect(decl(boot, '.boot-col-head', 'padding')).toBe(decl(inbox, '.ib-col-head', 'padding'));
+    expect(decl(boot, '.boot-col-head', 'min-height')).toBe(decl(inbox, '.ib-col-head', 'min-height'));
+    for (const p of ['padding', 'gap', 'border-radius']) {
+      expect(decl(boot, '.boot-card', p)).toBe(decl(inbox, '.ib-skel-card', p));
+    }
+    for (const [b, k] of [
+      ['.boot .boot-title', '.ib-sk-title'],
+      ['.boot .boot-meta', '.ib-sk-meta'],
+      ['.boot .boot-pill', '.ib-sk-pill'],
+    ]) {
+      expect(decl(boot, b, 'height')).toBe(decl(inbox, k, 'height'));
+      expect(decl(boot, b, 'width')).toBe(decl(inbox, k, 'width'));
+    }
+  });
+  it('the list view and the narrow board: the kit rules, at the kit breakpoint', () => {
+    expect(decl(boot, '.boot[data-view="list"] .boot-board', 'grid-template-columns')).toBe(
+      decl(inbox, '.ib[data-view="list"] .ib-board', 'grid-template-columns'),
+    );
+    const narrow = inbox.match(/@container ib (\(max-width: \d+px\)) \{\s*\.ib:not\(\[data-view="list"\]\) \.ib-board/);
+    expect(narrow).not.toBeNull();
+    const at = `@container boot ${narrow?.[1]} {`;
+    expect(decl(boot, '.boot:not([data-view="list"]) .boot-board', 'grid-template-columns', at)).toBe(
+      decl(
+        inbox,
+        '.ib:not([data-view="list"]) .ib-board',
+        'grid-template-columns',
+        `@container ib ${narrow?.[1]} {`,
+      ).replace('var(--ib-cols, 3)', '3'),
+    );
+    // The kit measures the board's own box (.ib, a container); the layer measures the main column's content box —
+    // the same width, as the board fills the main column.
+    expect(decl(inbox, '.ib', 'container')).toBe('ib / inline-size');
+    expect(decl(boot, '.boot-main', 'container')).toBe('boot / inline-size');
+  });
+});
+
+/** The page's own client function, cut out of renderDashboardPage's template (a plain slice: no backticks, no ${}). */
+function pageFn(name: string): (...args: unknown[]) => unknown {
+  const start = TEMPLATE.indexOf(`\nfunction ${name}(`);
+  if (start < 0) throw new Error(`client function ${name} not found`);
+  const src = TEMPLATE.slice(start + 1, TEMPLATE.indexOf('\n}\n', start) + 2);
+  if (src.includes('`') || src.includes('${')) throw new Error('not a plain template slice');
+  return new Function(`${src}; return ${name};`)() as (...args: unknown[]) => unknown;
+}
+
+describe('[T7 #969] the layer draws the board in the view the page will choose', () => {
+  const defaultBoardView = pageFn('defaultBoardView');
+  const widths = [320, 390, 639, 640, 1024, 1280];
+  const saves: Array<string | null> = [null, 'board', 'list', 'columns'];
+  it.each(
+    widths.flatMap((w) => saves.map((v) => [w, v] as const)),
+  )("width %i, saved %s: the page's defaultBoardView", (width, saved) => {
+    const p = page({ width, saved });
+    expect(p.view).toBe(defaultBoardView(width, saved));
+  });
+  it('storage that throws: the width decides, as the page (savedBoardView → null)', () => {
+    expect(page({ width: 390, saved: 'throws' }).view).toBe(defaultBoardView(390, null));
+    expect(page({ width: 1280, saved: 'throws' }).view).toBe(defaultBoardView(1280, null));
   });
 });

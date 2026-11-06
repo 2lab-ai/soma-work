@@ -304,6 +304,8 @@ async function openPage(browser: Browser, width: number, theme: 'light' | 'dark'
   await page.route('**/api/dashboard/capacity', (r) => r.fulfill({ json: { capacity } }));
   await page.route(/\/api\/dashboard\/session\/[^/?]+(\?.*)?$/, (r) => r.fulfill({ json: { turns: [] } }));
   await page.goto(`${BASE_URL}/dashboard/U001`);
+  // The first screen (#965) covers the page until it is drawn and fades out over 180 ms: never capture it (#969).
+  await page.waitForSelector('#boot', { state: 'detached' });
   // Below 840×1000 both sections start folded (#409): wait for them to render,
   // then unfold capacity so the receipt shows the full view.
   await page.waitForSelector('#cron-lane:not([hidden]) .cron-group', { state: 'attached' });

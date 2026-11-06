@@ -3086,8 +3086,9 @@ describe('SlackHandler — follow-up queue host', () => {
        * next run — the push must not land in that successor.
        */
       it('is not pushed into the run that replaced the refusing one while the retry waited', async () => {
-        // Enqueue-time refusals for both rows, then every push is accepted.
-        const steerTurn = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(false).mockReturnValue(true);
+        // The first row is refused at its enqueue; the second then waits behind it
+        // without touching the channel (#962). Every push after that is accepted.
+        const steerTurn = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
         claudeHandler.steerTurn = steerTurn;
         handlerAny.fileHandler = {
           formatFilePrompt: vi.fn(async (_files: unknown, text: string) => text),
@@ -3121,7 +3122,7 @@ describe('SlackHandler — follow-up queue host', () => {
         // Run A opens: the first row goes in, the second waits on its download.
         reachModel(runA.epoch());
         for (let i = 0; i < 4; i++) await tick();
-        expect(steerTurn).toHaveBeenCalledTimes(3);
+        expect(steerTurn).toHaveBeenCalledTimes(2);
         expect(row('333.444').state).toBe('steered');
 
         // Run A ends unsettled: its row is swept back and the drain runs it as run B.
@@ -3140,12 +3141,188 @@ describe('SlackHandler — follow-up queue host', () => {
         download.resolve({ files: [], shouldContinue: true });
         for (let i = 0; i < 6; i++) await tick();
 
-        expect(steerTurn, 'nothing pushed into run B').toHaveBeenCalledTimes(3);
+        expect(steerTurn, 'nothing pushed into run B').toHaveBeenCalledTimes(2);
         expect(row('444.555').state).toBe('queued');
 
         gateB.resolve({ hasPendingChoice: false });
         await endA;
         for (let i = 0; i < 6; i++) await tick();
+      });
+
+      /**
+       * #962 (fable P3): the input channel opens at the SDK query's start, and
+       * the run reaches the model at its first frame a moment later. A message
+       * sent in between was pushed at once — ahead of the one refused before it.
+       */
+      it('a message sent after the input opened, before the model, does not overtake one refused earlier', async () => {
+        const steerTurn = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+        claudeHandler.steerTurn = steerTurn;
+        const turn = turnStillSettingUp();
+        await tick();
+
+        await handler.handleMessage(message({ ts: '333.444', text: '첫 번째' }), say()); // refused: no input yet
+        // The input is open now (the channel accepts), but the first frame has not come.
+        await handler.handleMessage(message({ ts: '444.555', text: '두 번째' }), say());
+
+        reachModel(turn.epoch());
+        for (let i = 0; i < 6; i++) await tick();
+
+        const pushed = steerTurn.mock.calls
+          .filter((_call: any, index: number) => steerTurn.mock.results[index].value === true)
+          .map((call: any[]) => call[1].text);
+        expect(pushed).toEqual(['첫 번째', '두 번째']);
+        expect(items().map((item: any) => item.state)).toEqual(['steered', 'steered']);
+        await turn.release();
+      });
+
+      it('a message sent while an earlier row downloads its files waits behind it', async () => {
+        const steerTurn = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+        claudeHandler.steerTurn = steerTurn;
+        handlerAny.fileHandler = {
+          formatFilePrompt: vi.fn(async (_files: unknown, text: string) => text),
+          cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+        };
+        const download = deferred<any>();
+        let withFileCalls = 0;
+        processFiles.mockImplementation(async (event: any) => {
+          if (event?.ts === '333.444' && ++withFileCalls === 2) return download.promise;
+          return { files: [], shouldContinue: true };
+        });
+        const file = {
+          id: 'F1',
+          name: 'log.txt',
+          mimetype: 'text/plain',
+          filetype: 'text',
+          url_private: 'https://x/1',
+          url_private_download: 'https://x/1d',
+          size: 12,
+        };
+        const turn = turnStillSettingUp();
+        await tick();
+        await handler.handleMessage(message({ ts: '333.444', text: '이 로그 봐줘', files: [file] }), say());
+
+        reachModel(turn.epoch()); // the first row's push now waits on its download
+        for (let i = 0; i < 4; i++) await tick();
+        await handler.handleMessage(message({ ts: '444.555', text: '그리고 이것도' }), say());
+        download.resolve({ files: [], shouldContinue: true });
+        for (let i = 0; i < 6; i++) await tick();
+
+        const pushed = steerTurn.mock.calls
+          .filter((_call: any, index: number) => steerTurn.mock.results[index].value === true)
+          .map((call: any[]) => call[1].text);
+        expect(pushed).toEqual(['이 로그 봐줘', '그리고 이것도']);
+        await turn.release();
+      });
+
+      /** #987 review (fable P2): a download that hangs must not hold the whole line for the run. */
+      it('a row whose download hangs holds the rows behind it only for a bounded wait', async () => {
+        handlerAny.followupSteerOnOpenRowWaitMs = 30;
+        const steerTurn = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+        claudeHandler.steerTurn = steerTurn;
+        handlerAny.fileHandler = {
+          formatFilePrompt: vi.fn(async (_files: unknown, text: string) => text),
+          cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+        };
+        let withFileCalls = 0;
+        processFiles.mockImplementation(async (event: any) => {
+          if (event?.ts === '333.444' && ++withFileCalls === 2) return new Promise(() => {}); // never ends
+          return { files: [], shouldContinue: true };
+        });
+        const file = {
+          id: 'F1',
+          name: 'log.txt',
+          mimetype: 'text/plain',
+          filetype: 'text',
+          url_private: 'https://x/1',
+          url_private_download: 'https://x/1d',
+          size: 12,
+        };
+        const turn = turnStillSettingUp();
+        await tick();
+        await handler.handleMessage(message({ ts: '333.444', text: '이 로그 봐줘', files: [file] }), say());
+        await handler.handleMessage(message({ ts: '444.555', text: '그리고 이것도' }), say()); // behind the first
+
+        reachModel(turn.epoch());
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        for (let i = 0; i < 4; i++) await tick();
+
+        const pushed = steerTurn.mock.calls
+          .filter((_call: any, index: number) => steerTurn.mock.results[index].value === true)
+          .map((call: any[]) => call[1].text);
+        expect(pushed).toEqual(['그리고 이것도']);
+        await turn.release();
+      });
+
+      it('a late first event of a run that no longer holds the slot takes nothing', async () => {
+        const steerTurn = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+        claudeHandler.steerTurn = steerTurn;
+        const turn = turnStillSettingUp();
+        await tick();
+        const epoch = turn.epoch() as number;
+        await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+        // Make it a row that waits for the session's next run, whichever it is —
+        // what the boot writes for a restart-cut row.
+        handlerAny.followupSteerOnOpen.get(SESSION_KEY)[0].turnEpoch = undefined;
+
+        reachModel(epoch - 1); // a replaced run's frame, arriving late
+        for (let i = 0; i < 4; i++) await tick();
+        expect(steerTurn).toHaveBeenCalledTimes(1);
+
+        reachModel(epoch); // the live run: the row is still waiting for it
+        for (let i = 0; i < 4; i++) await tick();
+        expect(steerTurn).toHaveBeenCalledTimes(2);
+        expect(items()[0].state).toBe('steered');
+        await turn.release();
+      });
+
+      /**
+       * #987 review (astra P2): one run, two executions (a continuation). The
+       * first execution's input is already closed when its drain tries a row, so
+       * the row is refused again; the second execution reaches the model while
+       * that drain is still busy with a download. The drain makes one more pass.
+       */
+      it('a row refused again gets the next execution of the same run, even while the drain is still busy', async () => {
+        let inputOpen = false;
+        const steerTurn = vi.fn(() => inputOpen);
+        claudeHandler.steerTurn = steerTurn;
+        handlerAny.fileHandler = {
+          formatFilePrompt: vi.fn(async (_files: unknown, text: string) => text),
+          cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+        };
+        const download = deferred<any>();
+        let withFileCalls = 0;
+        processFiles.mockImplementation(async (event: any) => {
+          if (event?.ts === '444.555' && ++withFileCalls === 2) return download.promise;
+          return { files: [], shouldContinue: true };
+        });
+        const file = {
+          id: 'F1',
+          name: 'log.txt',
+          mimetype: 'text/plain',
+          filetype: 'text',
+          url_private: 'https://x/1',
+          url_private_download: 'https://x/1d',
+          size: 12,
+        };
+        const turn = turnStillSettingUp();
+        await tick();
+        await handler.handleMessage(message({ ts: '333.444', text: '첫 번째' }), say()); // refused: no input
+        await handler.handleMessage(message({ ts: '444.555', text: '로그', files: [file] }), say()); // behind it
+
+        reachModel(turn.epoch()); // execution 1: its input already closed — the first row is refused again
+        for (let i = 0; i < 4; i++) await tick();
+        inputOpen = true;
+        reachModel(turn.epoch()); // execution 2 of the same run, while the drain waits on the download
+        for (let i = 0; i < 4; i++) await tick();
+        download.resolve({ files: [], shouldContinue: true });
+        for (let i = 0; i < 8; i++) await tick();
+
+        const pushed = steerTurn.mock.calls
+          .filter((_call: any, index: number) => steerTurn.mock.results[index].value === true)
+          .map((call: any[]) => call[1].text);
+        expect(pushed).toEqual(['로그', '첫 번째']);
+        expect(items().map((item: any) => item.state)).toEqual(['steered', 'steered']);
+        await turn.release();
       });
 
       it('stays queued for the drain when the opened turn refuses it again', async () => {
@@ -4836,6 +5013,35 @@ describe('SlackHandler — follow-up queue host', () => {
      * because afterwards every row reads `cancelled` and nothing says which ones
      * this act moved.
      */
+    /**
+     * #962 (fable P3, astra R2): while a bot-thread migration is bound, a waiting
+     * row is listed under the ROOT slot key, but the session that is deleted is
+     * the work thread's. Clearing by the session's own key left the row behind.
+     */
+    it('a session deletion drops its rows waiting for a run, under whichever slot they wait', async () => {
+      let beforeDelete: ((key: string, session: any, reason: string) => void) | undefined;
+      claudeHandler.getSessionRegistry = () => ({
+        setBeforeSessionDelete: (cb: any) => {
+          beforeDelete = cb;
+        },
+      });
+      const { spawnedAny } = spawnHandler({ client: {}, assistant: vi.fn() } as any);
+      const ROOT_SLOT = 'C123:000.111';
+      const OTHER = { rowKey: 'C123:777.888', itemId: 'C123:777.888#1', turnEpoch: 4, what: 'other session' };
+      spawnedAny.followupSteerOnOpen.set(ROOT_SLOT, [
+        { rowKey: SESSION_KEY, itemId: `${SESSION_KEY}#1`, turnEpoch: 3, what: 'migrated row' },
+        OTHER,
+      ]);
+      spawnedAny.followupSteerOnOpen.set(SESSION_KEY, [
+        { rowKey: SESSION_KEY, itemId: `${SESSION_KEY}#2`, turnEpoch: 3, what: 'own row' },
+      ]);
+
+      beforeDelete?.(SESSION_KEY, registrySession, 'expired');
+
+      expect(spawnedAny.followupSteerOnOpen.has(SESSION_KEY)).toBe(false);
+      expect(spawnedAny.followupSteerOnOpen.get(ROOT_SLOT)).toEqual([OTHER]);
+    });
+
     it('repaints the messages of the items a session deletion cancels', async () => {
       let beforeDelete: ((key: string, session: any, reason: string) => void) | undefined;
       claudeHandler.getSessionRegistry = () => ({
@@ -7687,6 +7893,67 @@ describe('SlackHandler — follow-up queue host', () => {
         expect(steerTurn.mock.calls[0][1].text).toBe(STEER_TEXT);
         expect(rowOf(booted).state).toBe('steered');
         resume.release();
+        for (let i = 0; i < 6; i++) await tick();
+      });
+
+      /**
+       * #962 (fable P3): the restart-cut row and a message refused while the
+       * resumed turn was starting were pushed by two loops at once, so a row
+       * downloading its files was overtaken. One line, oldest first.
+       */
+      it('goes into the resumed turn ahead of a message refused while that turn started, even while its files download', async () => {
+        const { snapshot } = await steeredThenShutdown();
+        const file = {
+          id: 'F1',
+          name: 'log.txt',
+          mimetype: 'text/plain',
+          filetype: 'text',
+          url_private: 'https://x/1',
+          url_private_download: 'https://x/1d',
+          size: 12,
+        };
+        (snapshot.sessions[0].items[0].message as any).files = [file];
+        // The resumed turn's channel refuses every push until its input opens.
+        let inputOpen = false;
+        const steerTurn = vi.fn(() => inputOpen);
+        claudeHandler.steerTurn = steerTurn;
+        const download = deferred<any>();
+        processFiles.mockImplementation(async (event: any) =>
+          event?.ts === FOLLOWUP_TS ? download.promise : { files: [], shouldContinue: true },
+        );
+
+        const { booted } = bootFrom(snapshot, workingAtShutdown());
+        (booted as any).fileHandler = {
+          formatFilePrompt: vi.fn(async (_files: unknown, text: string) => text),
+          cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+        };
+        expect(rowOf(booted).state).toBe('queued');
+        const gate = deferred<any>();
+        let turnEpoch: number | undefined;
+        createAgentSession.mockImplementationOnce((_result: any, _say: any, opts: any) => {
+          turnEpoch = opts?.turnEpoch;
+          return {
+            startWithContinuation: vi.fn(() => gate.promise),
+            getLastTurnSucceeded: () => true,
+            getRetryAfterMs: () => undefined,
+          };
+        });
+        await booted.notifyCrashRecovery();
+        for (let i = 0; i < 4; i++) await tick();
+        expect(turnEpoch).toBeDefined();
+
+        await booted.handleMessage(message({ ts: '555.666', text: '재시작 뒤에 보낸 것' }), say());
+        inputOpen = true;
+        reachModel(booted, turnEpoch);
+        for (let i = 0; i < 4; i++) await tick();
+        download.resolve({ files: [], shouldContinue: true });
+        for (let i = 0; i < 6; i++) await tick();
+
+        const pushed = steerTurn.mock.calls
+          .filter((_call: any, index: number) => steerTurn.mock.results[index].value === true)
+          .map((call: any[]) => call[1].text);
+        expect(pushed).toEqual([STEER_TEXT, '재시작 뒤에 보낸 것']);
+        gate.resolve({ hasPendingChoice: false });
         for (let i = 0; i < 6; i++) await tick();
       });
 

@@ -119,13 +119,64 @@ describe('buildBackgroundWaitPrompt', () => {
     expect(p).toContain('3/6');
     // The runtime owns the signal now — the prompt must NOT instruct deprecated polling.
     expect(p).not.toMatch(/TaskOutput|BashOutput/);
-    expect(p).toMatch(/runtime/i);
   });
 
   it('uses singular wording for a single live task', () => {
     const p = buildBackgroundWaitPrompt(liveWork({ count: 1, signature: 'a' }), 1, 6);
     expect(p).toContain('1 background task');
     expect(p).not.toContain('1 background tasks');
+  });
+});
+
+// #966 — a turn's CLI process ends with the turn, and its background tasks die with it (dev 2026-11-05:
+// `bkzs8pdz1 killed` 06:42:17Z, `baxddqx0i stopped` 08:50Z). The resume used to say the runtime keeps them
+// alive "until it settles", so the model ended its turn again waiting for a report that never came.
+describe('buildBackgroundWaitPrompt — the tasks stopped with the turn (#966)', () => {
+  const stopped = liveWork({
+    count: 2,
+    labels: ['local_agent'],
+    signature: 'a1,b1',
+    tasks: [
+      { taskId: 'b1', taskType: 'local_bash', outputFile: '/tmp/b1.output' },
+      { taskId: 'a1', taskType: 'local_agent' },
+    ],
+  });
+
+  it('says they stopped with the turn and will not report back — never that they still run', () => {
+    const p = buildBackgroundWaitPrompt(stopped, 1, 6);
+    expect(p).toContain('stopped with it');
+    expect(p).toContain('will not report back');
+    expect(p).not.toMatch(/still running|keeps this session alive|still reports/i);
+  });
+
+  it('names a task by its description too, on one line', () => {
+    const p = buildBackgroundWaitPrompt(
+      liveWork({
+        count: 1,
+        signature: 'b2',
+        tasks: [{ taskId: 'b2', taskType: 'local_bash', description: 'Wait for\nCI "checks"' }],
+      }),
+      1,
+      6,
+    );
+    expect(p).toContain('- b2 (local_bash) Wait for CI checks');
+  });
+
+  it('names each stopped task with its type and output file', () => {
+    const p = buildBackgroundWaitPrompt(stopped, 1, 6);
+    expect(p).toContain('- b1 (local_bash) — output file: /tmp/b1.output');
+    expect(p).toContain('- a1 (local_agent)');
+  });
+
+  it('says how to pick them up in this turn: rerun or wait before ending; SendMessage resumes a subagent', () => {
+    const p = buildBackgroundWaitPrompt(stopped, 1, 6);
+    expect(p).toContain('rerun a stopped command in the foreground');
+    expect(p).toContain('wait for it before you end the turn');
+    expect(p).toContain("SendMessage to a stopped subagent's agent ID");
+  });
+
+  it('keeps the header the dashboard reads', () => {
+    expect(buildBackgroundWaitPrompt(stopped, 2, 6)).toMatch(/^\[background-work-resume 2\/6\]/);
   });
 });
 

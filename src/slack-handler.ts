@@ -57,6 +57,7 @@ import { loadAutoEsTurnEndContract } from './plugin/harness-skills';
 import { validateSessionGoalObjective } from './prompt/session-goal-block';
 import { routeReleaseNotes } from './release-notes-routes';
 import { retryReasonLine } from './retry-reason';
+import { formatStoppedAgents, type StoppedAgentRef } from './session/agent-registry';
 import {
   activeChainFilter,
   buildRollbackPointsView,
@@ -338,6 +339,20 @@ function isVerbatimPrompt(event: MessageEvent): boolean {
   return event.routeContext?.verbatimPrompt === true;
 }
 
+/**
+ * A queued follow-up waiting for a run to open its input (#956, #962): pushed
+ * into that run when it reaches the model. `turnEpoch` is the generation of the
+ * run it waits for; absent for a row the boot put back in line, which waits for
+ * the session's next run, whichever it is.
+ */
+interface FollowupSteerOnOpenRow {
+  rowKey: string;
+  itemId: string;
+  turnEpoch?: number;
+  /** Log label: why the row is waiting. */
+  what: string;
+}
+
 export class SlackHandler {
   private app: App;
   private claudeHandler: ClaudeHandler;
@@ -566,24 +581,39 @@ export class SlackHandler {
    */
   private readonly followupResumeRun = new Map<string, { turnEpoch: number; items: FollowupCutRef[] }>();
   /**
-   * Rows a restart cut while they were steered into a turn, put back in line by
-   * the boot because the model had not read them (SSOT 2026-11-03): pushed into
-   * the session's next turn the moment it reaches the model, as they were before
-   * the restart — else they wait for that turn to end. Spent by that turn.
+   * Rows waiting for a run to open its input, by slot key, oldest first — one
+   * list, so they reach the run in the order they were sent (#962):
+   *
+   *  - rows the running turn's input refused, pinned to the generation of the
+   *    run that refused them (#956). The slot is taken at dispatch, but the input
+   *    channel exists only once the SDK query starts — 66 s later on work-m64 dev,
+   *    2026-11-05 — and every steer in between is refused;
+   *  - rows a restart cut while they were steered into a turn, put back in line
+   *    by the boot because the model had not read them (SSOT 2026-11-03): for the
+   *    session's next run, whichever it is;
+   *  - a message sent after the run opened its input while older rows still
+   *    wait for it, so it does not overtake them.
+   *
+   * Pushed when the run reaches the model ({@link onFollowupTurnReachedModel}),
+   * one at a time ({@link drainFollowupsWaitingForOpen}), never into another
+   * run; a row that still cannot be steered waits for that run's end.
    */
-  private readonly followupRestartSteerBack = new Map<string, string[]>();
+  private readonly followupSteerOnOpen = new Map<string, FollowupSteerOnOpenRow[]>();
+  /** `<slotKey>#<turnEpoch>` of every run whose waiting rows are being pushed right now. */
+  private readonly followupSteerOnOpenDraining = new Set<string>();
   /**
-   * Rows the running turn's input refused, by slot key, each pinned to the turn
-   * generation of the run that refused it (#956). The slot is taken at dispatch,
-   * but the input channel exists only once the SDK query starts — 66 s later on
-   * work-m64 dev, 2026-11-05 — and every steer in between is refused. Pushed into
-   * that run the moment it reaches the model ({@link onFollowupTurnReachedModel}),
-   * never into another run; a row refused at its run's end waits for the drain.
+   * Runs whose next execution reached the model while their drain was still
+   * going (#987 review, astra P2): that drain makes one more pass, so a row the
+   * previous execution refused gets the new execution's input.
    */
-  private readonly followupSteerOnOpen = new Map<
-    string,
-    Array<{ rowKey: string; itemId: string; turnEpoch: number }>
-  >();
+  private readonly followupSteerOnOpenRerun = new Set<string>();
+  /**
+   * How long the line of waiting rows waits on ONE row's push — its file
+   * download — before the rows behind it go on (#987 review, fable P2). The slow
+   * row still goes in when its download finishes (pinned to the same run), just
+   * behind them. A field so tests can shorten it.
+   */
+  private followupSteerOnOpenRowWaitMs = 30_000;
   /**
    * Sessions holding rows the boot put back in line that no resume will carry
    * on (the session was not working, has no active goal, no pending retry):
@@ -1265,8 +1295,10 @@ export class SlackHandler {
       // queued requests. Never throws, and idempotent — a refused deletion
       // cannot reach here (the throws above come first).
       this.workQueue?.onSessionDeleted(sessionKey);
-      // #956 — its rows were just cancelled; no run of it will open again.
-      this.followupSteerOnOpen.delete(sessionKey);
+      // #956/#962 — its rows were just cancelled; none of them waits for a run any
+      // more. By row key: while a bot-thread migration is bound, the rows wait
+      // under the ROOT slot key, not under the session's own key.
+      this.forgetFollowupsWaitingForOpen(sessionKey);
     });
   }
 
@@ -1463,7 +1495,9 @@ export class SlackHandler {
       // does: that turn re-reads the thread, and a separate turn after it would do the same work
       // twice (#879 R1, fable P3). Otherwise only the steered ones — the rest drain at boot.
       const steerBack = resumes ? requeuedIds : steeredIds;
-      if (steerBack.length > 0) this.followupRestartSteerBack.set(sessionKey, steerBack);
+      for (const itemId of steerBack) {
+        this.waitForTurnOpen(sessionKey, { rowKey: sessionKey, itemId, what: 'Restart-cut follow-up' });
+      }
       if (!resumes) this.followupRestartKick.add(sessionKey);
     }
   }
@@ -1564,65 +1598,132 @@ export class SlackHandler {
     return started;
   }
 
-  /**
-   * The session's first turn after the boot reached the model: push into it the
-   * rows the restart cut while they were steered and the boot put back in line,
-   * as the user had pushed them before the restart. A row that cannot be steered
-   * (a command, an author who may not interrupt, a turn that just ended) stays
-   * queued for the drain at that turn's end.
-   */
-  private async steerBackRestartCutFollowups(slotKey: string, itemIds: readonly string[]): Promise<void> {
-    await this.steerQueuedRowsIntoLiveTurn(
-      itemIds.map((itemId) => ({ rowKey: slotKey, itemId })),
-      'Restart-cut follow-up',
+  /** Put `row` at the end of the rows waiting under `slotKey`. */
+  private waitForTurnOpen(slotKey: string, row: FollowupSteerOnOpenRow): void {
+    const waiting = this.followupSteerOnOpen.get(slotKey) ?? [];
+    waiting.push(row);
+    this.followupSteerOnOpen.set(slotKey, waiting);
+  }
+
+  /** #962 — do rows sent earlier still wait for the run of `turnEpoch` under `slotKey`? */
+  private hasFollowupsWaitingForOpen(slotKey: string, turnEpoch: number): boolean {
+    if (this.followupSteerOnOpenDraining.has(`${slotKey}#${turnEpoch}`)) return true;
+    return (this.followupSteerOnOpen.get(slotKey) ?? []).some(
+      (row) => row.turnEpoch === undefined || row.turnEpoch === turnEpoch,
     );
+  }
+
+  /** Drop every waiting row of the queue bucket `rowKey`, under whichever slot it waits. */
+  private forgetFollowupsWaitingForOpen(rowKey: string): void {
+    for (const [slotKey, waiting] of this.followupSteerOnOpen) {
+      const kept = waiting.filter((row) => row.rowKey !== rowKey);
+      if (kept.length === 0) this.followupSteerOnOpen.delete(slotKey);
+      else if (kept.length !== waiting.length) this.followupSteerOnOpen.set(slotKey, kept);
+    }
   }
 
   /**
    * #956 — the run of `turnEpoch` reached the model, so its input channel is
-   * open: push in the rows it refused before it got there — into that run only,
-   * re-checked at the push ({@link trySteerFollowup}'s `pinnedRun`). Rows an older
-   * run refused are dropped (that run is over and its end drained them); rows a
+   * open: push in what waits for it — into that run only, re-checked at the push
+   * ({@link trySteerFollowup}'s `pinnedRun`). A row the boot put back in line
+   * waits for this run too: it is the session's next run. Rows an older run
+   * refused are dropped (that run is over and its end drained them); rows a
    * newer run refused stay for that run.
    */
-  private steerFollowupsRefusedBeforeOpen(slotKey: string, turnEpoch: number): void {
+  private steerFollowupsWaitingForOpen(slotKey: string, turnEpoch: number): void {
+    // #987 review (fable P3) — only the run that holds the slot: a late first
+    // event of a run a `Send now` already replaced must not take the rows that
+    // wait for the session's next run, nor drop the ones the live run refused.
+    if (this.followupDispatcher?.liveTurnEpoch(slotKey) !== turnEpoch) return;
     const waiting = this.followupSteerOnOpen.get(slotKey);
     if (!waiting) return;
-    const later = waiting.filter((row) => row.turnEpoch > turnEpoch);
-    if (later.length > 0) this.followupSteerOnOpen.set(slotKey, later);
+    const kept = waiting
+      .filter((row) => row.turnEpoch === undefined || row.turnEpoch >= turnEpoch)
+      .map((row) => (row.turnEpoch === undefined ? { ...row, turnEpoch } : row));
+    if (kept.length > 0) this.followupSteerOnOpen.set(slotKey, kept);
     else this.followupSteerOnOpen.delete(slotKey);
-    const due = waiting
-      .filter((row) => row.turnEpoch === turnEpoch)
-      .map(({ rowKey, itemId }) => ({ rowKey, itemId, pinnedRun: { slotKey, turnEpoch } }));
-    if (due.length > 0)
-      void this.steerQueuedRowsIntoLiveTurn(due, 'Follow-up refused before the turn opened its input');
+    if (kept.some((row) => row.turnEpoch === turnEpoch)) void this.drainFollowupsWaitingForOpen(slotKey, turnEpoch);
   }
 
   /**
-   * Push each still-`queued` row into the turn that is running now — the same
-   * steer a message gets when it arrives mid-turn. Best effort: a row that
-   * cannot be steered stays queued for the drain at that turn's end.
+   * Push the rows waiting for the run of `turnEpoch`, oldest first, ONE AT A
+   * TIME (#962): a row whose files are still downloading holds the rows behind
+   * it — for at most {@link followupSteerOnOpenRowWaitMs} — and a message sent
+   * meanwhile joins the end of the list instead of overtaking them
+   * ({@link trySteerFollowup}). Each row is tried once per pass; one the run
+   * refuses again stays for that run's next execution or its end.
    */
-  private async steerQueuedRowsIntoLiveTurn(
-    rows: ReadonlyArray<{ rowKey: string; itemId: string; pinnedRun?: { slotKey: string; turnEpoch: number } }>,
-    what: string,
-  ): Promise<void> {
-    const queue = this.followupQueue;
-    if (!queue) return;
-    for (const { rowKey, itemId, pinnedRun } of rows) {
-      const item = queue.get(rowKey, itemId);
-      if (item?.state !== 'queued') continue;
-      try {
-        const steered = await this.trySteerFollowup(rowKey, item.message as MessageEvent, item, pinnedRun);
-        this.logger.info(`${what} handed to the running turn`, { sessionKey: rowKey, itemId, steered });
-        await this.syncFollowupReactions(rowKey, itemId);
-      } catch (error) {
-        this.logger.warn(`${what} could not be steered — left for the drain`, {
-          sessionKey: rowKey,
-          itemId,
-          error: (error as Error)?.message ?? String(error),
-        });
+  private async drainFollowupsWaitingForOpen(slotKey: string, turnEpoch: number): Promise<void> {
+    const runKey = `${slotKey}#${turnEpoch}`;
+    if (this.followupSteerOnOpenDraining.has(runKey)) {
+      this.followupSteerOnOpenRerun.add(runKey);
+      return;
+    }
+    this.followupSteerOnOpenDraining.add(runKey);
+    // By row identity, not by object: a row the run refuses again is recorded
+    // again as a new entry, and trying it again in this pass would spin.
+    const tried = new Set<string>();
+    const idOf = (row: FollowupSteerOnOpenRow) => `${row.rowKey}\u0000${row.itemId}`;
+    try {
+      for (;;) {
+        const waiting = this.followupSteerOnOpen.get(slotKey) ?? [];
+        const next = waiting.findIndex((row) => row.turnEpoch === turnEpoch && !tried.has(idOf(row)));
+        if (next < 0) {
+          if (!this.followupSteerOnOpenRerun.delete(runKey)) return;
+          tried.clear(); // a new execution opened its input: everything gets one more try
+          continue;
+        }
+        const [row] = waiting.splice(next, 1);
+        if (waiting.length === 0) this.followupSteerOnOpen.delete(slotKey);
+        tried.add(idOf(row));
+        let timer: NodeJS.Timeout | undefined;
+        await Promise.race([
+          this.steerWaitingFollowup(row, { slotKey, turnEpoch }),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(() => {
+              this.logger.warn(`${row.what} is still being prepared — the rows behind it go on`, {
+                sessionKey: row.rowKey,
+                itemId: row.itemId,
+                waitedMs: this.followupSteerOnOpenRowWaitMs,
+              });
+              resolve();
+            }, this.followupSteerOnOpenRowWaitMs);
+            timer.unref?.();
+          }),
+        ]);
+        clearTimeout(timer);
       }
+    } finally {
+      this.followupSteerOnOpenDraining.delete(runKey);
+      this.followupSteerOnOpenRerun.delete(runKey);
+    }
+  }
+
+  /**
+   * Push one still-`queued` row into the run `pinnedRun` names — the same steer
+   * a message gets when it arrives mid-turn. Best effort: a row that cannot be
+   * steered stays queued for the drain at that run's end.
+   */
+  private async steerWaitingFollowup(
+    row: FollowupSteerOnOpenRow,
+    pinnedRun: { slotKey: string; turnEpoch: number },
+  ): Promise<void> {
+    const item = this.followupQueue?.get(row.rowKey, row.itemId);
+    if (item?.state !== 'queued') return;
+    try {
+      const steered = await this.trySteerFollowup(row.rowKey, item.message as MessageEvent, item, pinnedRun);
+      this.logger.info(`${row.what} handed to the running turn`, {
+        sessionKey: row.rowKey,
+        itemId: row.itemId,
+        steered,
+      });
+      await this.syncFollowupReactions(row.rowKey, row.itemId);
+    } catch (error) {
+      this.logger.warn(`${row.what} could not be steered — left for the drain`, {
+        sessionKey: row.rowKey,
+        itemId: row.itemId,
+        error: (error as Error)?.message ?? String(error),
+      });
     }
   }
 
@@ -5147,16 +5248,29 @@ export class SlackHandler {
       // row. The awaits above can outlive that run (a Send now replaces it, or
       // it ends and the drain opens the next), so the run is checked here, with
       // nothing but synchronous code left before the push.
-      if (
-        pinnedRun &&
-        (slotKey !== pinnedRun.slotKey || dispatcher.snapshot(slotKey).turnEpoch !== pinnedRun.turnEpoch)
-      ) {
+      if (pinnedRun && (slotKey !== pinnedRun.slotKey || dispatcher.liveTurnEpoch(slotKey) !== pinnedRun.turnEpoch)) {
         this.logger.debug('Follow-up not steered — the run that refused it is gone', {
           sessionKey,
           slotKey,
           itemId: item.id,
           pinnedTurnEpoch: pinnedRun.turnEpoch,
         });
+        await this.cleanupSteerFiles(files);
+        return 'queued';
+      }
+      // #962 — rows sent before this one still wait for this run to open (or are
+      // being pushed into it right now): join the end of their line, so the run
+      // gets the messages in the order they were sent. Checked here, with nothing
+      // but synchronous code left before the push.
+      const liveTurnEpoch = dispatcher.liveTurnEpoch(slotKey);
+      if (!pinnedRun && liveTurnEpoch !== undefined && this.hasFollowupsWaitingForOpen(slotKey, liveTurnEpoch)) {
+        this.waitForTurnOpen(slotKey, {
+          rowKey: sessionKey,
+          itemId: item.id,
+          turnEpoch: liveTurnEpoch,
+          what: 'Follow-up sent behind rows waiting for the turn',
+        });
+        this.logger.debug('Follow-up waits behind rows sent before it', { sessionKey, slotKey, itemId: item.id });
         await this.cleanupSteerFiles(files);
         return 'queued';
       }
@@ -5184,10 +5298,13 @@ export class SlackHandler {
         // the row to that run again once it reaches the model. Recorded before
         // any await, while the refusing run still holds the slot, so the
         // generation read here is that run's.
-        if (steered.reason === 'push-refused' && !uncertain) {
-          const waiting = this.followupSteerOnOpen.get(slotKey) ?? [];
-          waiting.push({ rowKey: sessionKey, itemId: item.id, turnEpoch: dispatcher.snapshot(slotKey).turnEpoch });
-          this.followupSteerOnOpen.set(slotKey, waiting);
+        if (steered.reason === 'push-refused' && !uncertain && liveTurnEpoch !== undefined) {
+          this.waitForTurnOpen(slotKey, {
+            rowKey: sessionKey,
+            itemId: item.id,
+            turnEpoch: liveTurnEpoch,
+            what: 'Follow-up refused before the turn opened its input',
+          });
         }
         await this.cleanupSteerFiles(files);
         return uncertain ? 'uncertain' : 'queued';
@@ -6244,12 +6361,7 @@ export class SlackHandler {
     if (marked.status === 'failed') {
       this.logger.warn('Follow-up delivery evidence not recorded', { sessionKey: slotKey, detail: marked.detail });
     }
-    const steerBack = this.followupRestartSteerBack.get(slotKey);
-    if (steerBack) {
-      this.followupRestartSteerBack.delete(slotKey);
-      void this.steerBackRestartCutFollowups(slotKey, steerBack);
-    }
-    this.steerFollowupsRefusedBeforeOpen(slotKey, turnEpoch);
+    this.steerFollowupsWaitingForOpen(slotKey, turnEpoch);
     const resume = this.followupResumeRun.get(slotKey);
     if (resume?.turnEpoch !== turnEpoch) return;
     this.followupResumeRun.delete(slotKey);
@@ -7653,7 +7765,16 @@ export class SlackHandler {
         // This resume continues the turn the restart cut — it may take that turn's follow-up over.
         this.noteFollowupResume(session.sessionKey, 'restart');
         this.autoResumeSession(session, notificationTs)
-          .then(() => {
+          .then((taken) => {
+            if (!taken) {
+              // #966 — returned without running: no turn carries the session, so hand it back.
+              this.logger.warn('Auto-resume returned without taking its turn — handing the session back', {
+                channelId: session.channelId,
+                threadTs: session.threadTs,
+              });
+              this.handBackFailedRestartResume(session.sessionKey);
+              return;
+            }
             this.logger.info('Auto-resume completed', {
               channelId: session.channelId,
               threadTs: session.threadTs,
@@ -7711,19 +7832,35 @@ export class SlackHandler {
    * injecting for it — that one drives the goal.
    */
   private handBackFailedRestartResume(sessionKey: string): void {
-    // Before the startup goal pass: un-mark it, and that pass resumes it as a
-    // plain cut — stall repair, one refund, idle, one kick. One owner per
-    // refund, whatever the order (#961 review, astra).
-    if (!this.restartGoalPassRan && this.restartResumedSessionKeys.delete(sessionKey)) {
+    const live = this.claudeHandler.getSessionByKey?.(sessionKey);
+    if (!live) return;
+    // Before the startup goal pass: un-mark a goal session, and that pass
+    // resumes it as a plain cut — stall repair, one refund, idle, one kick.
+    // One owner per refund, whatever the order (#961 review, astra).
+    if (
+      live.goal?.status === 'active' &&
+      !this.restartGoalPassRan &&
+      this.restartResumedSessionKeys.delete(sessionKey)
+    ) {
       this.logger.info('Restart resume never started its turn — the startup goal pass resumes the goal', {
         sessionKey,
       });
       return;
     }
-    const live = this.claudeHandler.getSessionByKey?.(sessionKey);
-    if (live?.goal?.status !== 'active') return;
     if (this.requestCoordinator.isRequestActive(sessionKey) || this.goalLoopActing?.(sessionKey) === true) return;
-    if (live.activityState !== 'idle') live.activityState = 'idle';
+    // No turn runs for it: a stale `working` must not stay (#989 review — a session without a goal
+    // has no loop to free it, and is left for its user's next message).
+    const wasBusy = live.activityState !== 'idle';
+    if (wasBusy) live.activityState = 'idle';
+    if (live.goal?.status !== 'active') {
+      if (wasBusy) {
+        this.claudeHandler.saveSessions();
+        this.logger.info('Restart resume never started its turn — freed the session (no goal to resume)', {
+          sessionKey,
+        });
+      }
+      return;
+    }
     // The loop's turn now replaces the cut one: give that continuation back
     // (`resumeActiveGoals` does not for a session the restart resumed).
     const capDecisionOpen = isGoalCapDecisionPending(live.goal);
@@ -8083,10 +8220,17 @@ export class SlackHandler {
    * through the existing handleMessage pipeline.
    */
   private async autoResumeSession(
-    session: { channelId: string; threadTs?: string; ownerId: string; title?: string; workflow?: string },
+    session: {
+      channelId: string;
+      threadTs?: string;
+      ownerId: string;
+      title?: string;
+      workflow?: string;
+      stoppedAgents?: StoppedAgentRef[];
+    },
     notificationTs?: string,
     errorContext?: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     // Use the notification message's ts so that handleMessage's reaction calls
     // (eyes emoji etc.) target a real Slack message instead of a fabricated timestamp.
 
@@ -8095,6 +8239,15 @@ export class SlackHandler {
     if (session.title) contextParts.push(`세션 제목: ${session.title}`);
     if (session.workflow && session.workflow !== 'default') contextParts.push(`워크플로우: ${session.workflow}`);
     if (errorContext) contextParts.push(`⚠️ 이전 시도 중 오류 발생: ${errorContext}`);
+    // #966 — the host's own record of the subagents the restart stopped, so picking them up does not
+    // rest on the CLI's "didn't finish" notice alone.
+    const stoppedAgentLines = formatStoppedAgents(session.stoppedAgents);
+    if (stoppedAgentLines.length > 0) {
+      contextParts.push(
+        '재시작으로 멈춘 서브에이전트 — 각각 agent ID로 SendMessage를 보내 이어 가게 하라:',
+        ...stoppedAgentLines,
+      );
+    }
 
     const resumePrompt =
       contextParts.length > 0
@@ -8111,6 +8264,13 @@ export class SlackHandler {
       skipDispatch: true,
       routeContext: { autoResume: true },
     };
+    // #966 — resolving is not running: `handleMessage` returns without a turn when the dispatch
+    // cannot open, the slot was taken in the same tick, or the fence holds it. The caller is told
+    // whether the turn was taken (#853: it reached the model, or was stored to run).
+    let taken = false;
+    const unwatch = this.onTurnAccepted(syntheticEvent.channel, syntheticEvent.ts, () => {
+      taken = true;
+    });
 
     // Real say — posts to Slack. noopSay silently discarded all bot output.
     const realSay = async (args: any) => {
@@ -8125,7 +8285,12 @@ export class SlackHandler {
       return { ts: result.ts as string | undefined };
     };
 
-    await this.handleMessage(syntheticEvent, realSay);
+    try {
+      await this.handleMessage(syntheticEvent, realSay);
+    } finally {
+      unwatch();
+    }
+    return taken;
   }
 
   /**
