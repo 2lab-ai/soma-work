@@ -557,6 +557,13 @@ export interface KanbanSession {
    * nothing to show.
    */
   followups?: DashboardFollowups;
+  /**
+   * A turn holds the session (dispatched, not yet settled) while `activityState`
+   * does not say `working` yet — the turn is still starting, or still settling.
+   * A message sent now waits in the queue, so the composer treats the session as
+   * running (SSOT 2026-11-06). Absent otherwise.
+   */
+  turnBusy?: true;
 }
 
 /** One task as the dashboard shows it (a `TaskRecord` of `session/task-ledger.ts`). */
@@ -1508,6 +1515,8 @@ export type DashboardFollowupOutcome = { ok: true; message?: string } | { ok: fa
  */
 export interface DashboardFollowupHandler {
   view(sessionKey: string): FollowupQueueView | undefined;
+  /** A turn holds the session — dispatched, not yet settled (`isFollowupTurnBusy`): a message sent now is queued. */
+  busy?(sessionKey: string): boolean;
   act(request: DashboardFollowupRequest): Promise<DashboardFollowupOutcome>;
 }
 let _followupHandler: DashboardFollowupHandler | null = null;
@@ -2609,6 +2618,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     userMedia: cardUserMedia(s.conversationId),
     ...esTldrOf(s),
     followups: followupsOf(key, s.ownerId),
+    ...(s.activityState !== 'working' && _followupHandler?.busy?.(key) === true ? { turnBusy: true as const } : {}),
     // #854 — an epic and its children are Slack sessions too.
     ...(s.kind === 'epic' ? { kind: 'epic' as const, epic: epicBundle(s) } : {}),
     // Plan mode — the gate (its plan is fetched).
@@ -12096,7 +12106,13 @@ function steeringData(s, mode) {
   // Docked (SSOT 2026-11-05): a note the queue holds waits behind the element's round count button at the composer's
   // top right — hover or press opens the queue, a bottom sheet on a phone — so it never covers the chat above the
   // field; only a note on its way in shows there.
-  return { running: mode !== 'closed' && s.activityState === 'working', canAct: mode !== 'readonly', disabled: mode === 'closed', items: items, queue: 'dock' };
+  // Running from dispatch on (SSOT 2026-11-06): a turn that is still starting holds the session too (turnBusy) — a
+  // note sent then waits in the queue, so it is never drawn as a turn of its own.
+  return { running: mode !== 'closed' && turnHolds(s), canAct: mode !== 'readonly', disabled: mode === 'closed', items: items, queue: 'dock' };
+}
+// A turn holds the session: it works, or it was dispatched and has not settled yet (the server's turnBusy).
+function turnHolds(s) {
+  return !!s && (s.activityState === 'working' || s.turnBusy === true);
 }
 // The note the element names (its host id) as the payload has it: the generation
 // an action on it carries. A local row (a send that failed) is not in the queue.
@@ -12647,7 +12663,7 @@ async function cwCompact() {
   _cw.req = 'sending';
   _cw.reqAt = now;
   _cw.obsInReq = false;
-  _cw.queued = s.activityState === 'working' || s.activityState === 'waiting'; // a turn holds the slot: the command waits behind it
+  _cw.queued = turnHolds(s) || s.activityState === 'waiting'; // a turn holds the slot: the command waits behind it
   _cw.failAt = 0;
   _cw.timedOutAt = 0;
   // One ceiling per request: a new request lets the previous one's go.
