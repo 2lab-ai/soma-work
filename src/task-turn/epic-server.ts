@@ -13,10 +13,12 @@
  * - The host (registry reads, the plan writer, the work-log reader, the Slack thread maker, the
  *   tree's limits) is set by `index.ts` through `setEpicHost` — no import of the registry here.
  *
- * Tools: the plan and the reads (`plan_write`, `child_status`), and making and instructing
- * children (`spawn_child`, `instruct_child`). A child is its epic owner's, works in a fresh
- * folder or one the epic names inside its own (D4), and every start the epic makes on its own
- * is bounded by the tree's limits (`epic-tree-gate.ts`).
+ * Tools: the plan and the reads (`plan_write`, `child_status`), making and instructing
+ * children (`spawn_child`, `instruct_child`), and — #1020 — finding the owner's existing tasks
+ * and adopting one as a child (`find_tasks`, `adopt_child`). A child is its epic owner's, works
+ * in a fresh folder or one the epic names inside its own (D4) — an adopted one where it already
+ * worked — and every start the epic makes on its own is bounded by the tree's limits
+ * (`epic-tree-gate.ts`). Adopting starts nothing.
  */
 import { createSdkMcpServer, type McpSdkServerConfigWithInstance, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
@@ -24,7 +26,7 @@ import type { ExecutionContext } from '../agent-runtime/execution-context';
 import { NEW_TASK_LIMITS } from '../conversation/new-task';
 import type { ConversationSession, EpicPlan } from '../types';
 import { ChildFolderError, foldersOverlap, removeMadeFolders, resolveChildFolder } from './epic-child-folder';
-import { EpicPlanError, epicNodeStatus, isEpicDone, type PlanWriteInput } from './epic-plan';
+import { EPIC_CHILD_MAX, EpicPlanError, epicNodeStatus, isEpicDone, type PlanWriteInput } from './epic-plan';
 
 /** A child's card title: the first non-empty line, cut at this many characters. */
 const CHILD_TITLE_MAX = 80;
@@ -38,8 +40,8 @@ function childTitleOf(text: string): string {
   return (line ?? '').slice(0, CHILD_TITLE_MAX);
 }
 
-/** D9 a — an epic makes at most this many children (closed and archived ones count). */
-export const EPIC_CHILD_MAX = 7;
+/** D9 a — an epic has at most this many children (closed and archived ones count): `epic-plan.ts`. */
+export { EPIC_CHILD_MAX };
 
 /** The server key and name: its tools are `mcp__epic__<tool>`. */
 export const EPIC_SERVER = 'epic';
@@ -51,6 +53,26 @@ export interface EpicChildSpec {
   title: string;
   /** A folder inside the epic's own (already made); none — the child's thread gets a fresh one. */
   workingDirectory?: string;
+}
+
+/** #1020 — what `find_tasks` asks: words in the title, a calendar day (`today` or YYYY-MM-DD), how many. */
+export interface EpicTaskQuery {
+  query?: string;
+  day?: string;
+  limit?: number;
+}
+
+/** #1020 — one of the owner's tasks as `find_tasks` shows it: whether it can be adopted, or why not. */
+export interface EpicTaskItem {
+  /** Absent only on a record without one (never adoptable). */
+  taskId?: string;
+  title: string;
+  state: 'working' | 'waiting' | 'idle';
+  channel: string;
+  startedAt?: string;
+  lastActivity: string;
+  adoptable: boolean;
+  reason?: string;
 }
 
 /** What the epic's tools need from the host process. */
@@ -86,6 +108,21 @@ export interface EpicHost {
   ): Promise<{ taken: boolean; queued: boolean; reason?: string }>;
   /** Make a named child folder (and its parents) if it is not there yet; the first folder it made, if any. */
   ensureDirectory(dir: string): string | undefined;
+  /**
+   * #1020 — the epic owner's live tasks (not terminated, not trashed), never the epic itself, newest
+   * activity first, each adoptable or with the reason it is not. `day` is `today` or YYYY-MM-DD
+   * (already checked); limit 20 by default, at most 50.
+   */
+  findTasks(epic: ConversationSession, query: EpicTaskQuery): EpicTaskItem[];
+  /**
+   * #1020 — the owner's existing task becomes the child of a plan node (`SessionRegistry.adoptEpicChild`):
+   * it keeps its task id, thread and folder, and nothing is sent to it. A refusal changed nothing.
+   */
+  adoptChild(
+    epic: ConversationSession,
+    taskId: string,
+    planNodeId: string,
+  ): { ok: true } | { ok: false; code: string; error: string };
 }
 
 let host: EpicHost | undefined;
@@ -131,6 +168,13 @@ function childView(id: string, live: ConversationSession | undefined) {
 /** The epic's live children: its own owner's (a child is its epic's owner's, D4), not closed. */
 function liveChildrenOf(h: EpicHost, epic: ConversationSession): ConversationSession[] {
   return h.getChildTasks(epic.taskId as string).filter((c) => c.ownerId === epic.ownerId && !c.terminated);
+}
+
+/** #1020 — a real calendar date written YYYY-MM-DD. */
+function isCalendarDay(day: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return false;
+  const date = new Date(`${day}T00:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === day;
 }
 
 /** Where a session works: its own session folder, else its working directory. */
@@ -357,7 +401,73 @@ export function epicTools(ctx: EpicExecutionContext) {
     },
   );
 
-  return [planWrite, childStatus, spawnChild, instructChild] as const;
+  const findTasks = tool(
+    'find_tasks',
+    [
+      "Find this epic's owner's own tasks (their live sessions, never this epic) to adopt as children.",
+      'query (optional): words that must all be in the task title (any case). day (optional): `today` or',
+      'YYYY-MM-DD — a task started or last active that calendar day (the server’s report timezone). limit:',
+      '20 by default, at most 50. Newest activity first. Each task: taskId, title, state (working, waiting,',
+      'idle), channel, startedAt, lastActivity, and adoptable — or the reason it is not. room: how many more',
+      `children this epic can have (at most ${EPIC_CHILD_MAX}, closed ones count). To adopt: plan_write a node`,
+      "for each task first (its title = the task's title), then adopt_child each.",
+    ].join(' '),
+    { query: z.string().optional(), day: z.string().optional(), limit: z.number().optional() },
+    async (args) => {
+      const found = liveEpic(taskId);
+      if ('content' in found) return found;
+      const { host: h, epic } = found;
+      const day = args.day?.trim() || undefined;
+      if (day !== undefined && day !== 'today' && !isCalendarDay(day)) {
+        return refuse('bad-day', 'day is `today` or a date YYYY-MM-DD');
+      }
+      const query: EpicTaskQuery = {
+        ...(args.query !== undefined ? { query: args.query } : {}),
+        ...(day !== undefined ? { day } : {}),
+        ...(args.limit !== undefined ? { limit: args.limit } : {}),
+      };
+      const tasks = h.findTasks(epic, query);
+      const room = Math.max(0, EPIC_CHILD_MAX - (epic.childTaskIds ?? []).length);
+      return reply({ ok: true, room, tasks });
+    },
+  );
+
+  const adoptChild = tool(
+    'adopt_child',
+    [
+      "Make one of the owner's existing tasks (a taskId from find_tasks) the child of a plan node, instead of",
+      "spawning a new one. Flow: plan_write a node for each task first (its title = the task's title), then",
+      `adopt_child each. One live child per node; at most ${EPIC_CHILD_MAX} children per epic, made or adopted`,
+      '(closed ones count). The task keeps its own thread, task id and folder and keeps running as it was — it',
+      'is not instructed; give it work with instruct_child. From then on its chain ends wake this epic, and its',
+      'spend counts toward the tree’s cost limit. Calling again for the same task and node returns it (adopted: false).',
+    ].join(' '),
+    { taskId: z.string(), planNodeId: z.string() },
+    async (args) => {
+      const found = liveEpic(taskId);
+      if ('content' in found) return found;
+      const { host: h, epic } = found;
+      if (!epic.plan?.nodes.some((n) => n.id === args.planNodeId)) {
+        return refuse('no-such-node', `the plan has no node ${args.planNodeId} — write it with plan_write first`);
+      }
+      const answer = (adopted: boolean) =>
+        reply({
+          ok: true,
+          adopted,
+          childId: args.taskId,
+          planNodeId: args.planNodeId,
+          state: h.getTask(args.taskId)?.activityState ?? 'idle',
+        });
+      // Idempotent per (epic, task, node): a re-call after an aborted turn finds the child it adopted.
+      const existing = liveChildrenOf(h, epic).find((c) => c.taskId === args.taskId);
+      if (existing && existing.planNodeId === args.planNodeId) return answer(false);
+      const adopted = h.adoptChild(epic, args.taskId, args.planNodeId);
+      if (!adopted.ok) return refuse(adopted.code, adopted.error);
+      return answer(true);
+    },
+  );
+
+  return [planWrite, childStatus, spawnChild, instructChild, findTasks, adoptChild] as const;
 }
 
 /** The `epic` server for one epic turn (its tools: `epicTools`). */

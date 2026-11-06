@@ -277,4 +277,18 @@ describe('SessionRegistry — epics as Slack sessions (#854)', () => {
       childTaskIds: ['c1'],
     });
   });
+  it('SE12 — #1020 review (grok P1): the registry itself refuses a reservation past the limit, made and adopted alike', () => {
+    const reg = new SessionRegistry();
+    const { epic } = epicIn(reg);
+    const epicTaskId = epic.taskId as string;
+    // The limit counts every id (closed ones, adopted ones): the eighth is refused, nothing counted.
+    reg.setEpicPlan(
+      epicTaskId,
+      { nodes: [...PLAN.nodes, { id: 'docs', title: '문서', kind: 'issue' as const }] },
+      'epic',
+    );
+    epic.childTaskIds = Array.from({ length: 7 }, (_, i) => `gone${i}`);
+    expect(() => reg.reserveEpicChild(epicTaskId, 'docs')).toThrow(/at most 7/);
+    expect(epic.childTaskIds).toHaveLength(7);
+  });
 });

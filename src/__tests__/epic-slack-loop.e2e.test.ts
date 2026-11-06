@@ -14,6 +14,9 @@
  *      runs right after the turn in flight, and the child reports one end for the whole chain.
  *   L3 a restart while ends wait: the tree, the plan and the pending events come back from disk,
  *      and the boot scan wakes the epic once.
+ *   L4 (#1020) the owner's existing tasks are adopted: find_tasks finds them, a node per task, then
+ *      adopt_child each — nothing runs in their threads; an adopted task's next chain end wakes the
+ *      epic, which accepts its node; instruct_child reaches the other.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -133,6 +136,9 @@ function slackWorld(reg: SessionRegistry) {
     createSlackEpicHost({
       getSessionByTaskId: (id) => reg.getSessionByTaskId(id),
       getChildTasks: (id) => reg.getChildTasks(id),
+      getAllSessions: () => reg.getAllSessions(),
+      adoptEpicChild: (epicId, childId, node) => reg.adoptEpicChild(epicId, childId, node),
+      timezone: 'Asia/Seoul',
       setEpicPlan: (id, input, by) => reg.setEpicPlan(id, input, by),
       reserveEpicChild: (id, node) => reg.reserveEpicChild(id, node),
       unreserveEpicChild: (id, child) => reg.unreserveEpicChild(id, child),
@@ -279,5 +285,63 @@ describe('the epic loop on the Slack path (#854)', () => {
     await settle();
     expect(w2.turns.filter((t) => t.key === epicKey && t.text.startsWith('Epic wake'))).toHaveLength(1);
     expect(isEpicDone((after.getSessionByKey(epicKey) as ConversationSession).plan)).toBe(true);
+  });
+
+  it('L4 — the owner’s existing tasks are adopted: found, a node each, adopted; their ends wake the epic', async () => {
+    const reg = new SessionRegistry();
+    const w = slackWorld(reg);
+    // The owner's tasks of today, in a channel of their own, and someone else's.
+    const pay = reg.createSession(OWNER, 'Owner', 'C9', '1700000500.000100');
+    pay.title = '결제 버그 고치기';
+    const docs = reg.createSession(OWNER, 'Owner', 'C9', '1700000501.000100');
+    docs.title = '결제 문서 정리';
+    reg.createSession('U2', 'Other', 'C9', '1700000502.000100').title = '결제 남의 일';
+    reg.createSession(OWNER, 'Owner', CHANNEL, EPIC_TS);
+    const epicKey = reg.getSessionKey(CHANNEL, EPIC_TS);
+    reg.makeEpic(epicKey);
+    const epic = w.epicSession();
+    const [planWrite, childStatus, , instruct, findTasks, adoptChild] = w.tools();
+
+    const found = parse(await findTasks.handler({ query: '결제', day: 'today' } as any, {}));
+    expect(found.ok).toBe(true);
+    expect(found.room).toBe(7);
+    expect(found.tasks.map((t: any) => t.taskId).sort()).toEqual([pay.taskId, docs.taskId].sort());
+    expect(found.tasks.every((t: any) => t.adoptable)).toBe(true);
+
+    const nodes = found.tasks.map((t: any, i: number) => ({ id: `task-${i + 1}`, title: t.title, kind: 'issue' }));
+    expect(parse(await planWrite.handler({ nodes } as any, {})).ok).toBe(true);
+    for (const [i, t] of found.tasks.entries()) {
+      const adopted = parse(await adoptChild.handler({ taskId: t.taskId, planNodeId: `task-${i + 1}` } as any, {}));
+      expect(adopted).toMatchObject({ ok: true, adopted: true, childId: t.taskId });
+    }
+    // Adopting starts nothing: no turn in their threads, their ids kept.
+    const payKey = w.keyOf(pay);
+    const docsKey = w.keyOf(docs);
+    expect(w.turns.filter((t) => t.key === payKey || t.key === docsKey)).toEqual([]);
+    expect(
+      reg
+        .getChildTasks(epic.taskId as string)
+        .map((c) => c.taskId)
+        .sort(),
+    ).toEqual([pay.taskId, docs.taskId].sort());
+    expect(parse(await childStatus.handler({} as any, {})).children).toHaveLength(2);
+    // Found again: they are this epic's now.
+    const again = parse(await findTasks.handler({ query: '결제' } as any, {}));
+    expect(again.room).toBe(5);
+    expect(again.tasks.filter((t: any) => t.adoptable)).toEqual([]);
+    expect(new Set(again.tasks.map((t: any) => t.reason))).toEqual(new Set(['already a child of this epic']));
+
+    // The owner keeps working in the pay thread: its chain end wakes the epic, which accepts its node.
+    await w.runChain(payKey, '계속해');
+    await settle();
+    const payNode = epic.plan?.nodes.find((n) => n.title === '결제 버그 고치기');
+    expect(payNode?.accepted).toBeDefined();
+    expect(w.turns.some((t) => t.key === epicKey && t.text.startsWith('Epic wake'))).toBe(true);
+
+    // The epic gives the other its first word from the epic.
+    const sent = parse(await instruct.handler({ childId: docs.taskId, instruction: '문서도 고쳐' } as any, {}));
+    expect(sent).toMatchObject({ ok: true, childId: docs.taskId, started: true });
+    await settle();
+    expect(w.turns.filter((t) => t.key === docsKey).map((t) => t.text)).toEqual(['문서도 고쳐']);
   });
 });
