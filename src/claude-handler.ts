@@ -1605,8 +1605,6 @@ export class ClaudeHandler implements TurnSteeringPort {
       let keepaliveFiredAt = 0;
       /** The cap note still owed its own turn (#1041 review): the held turn does not end before it. */
       let pendingCapNoteUuid: string | undefined;
-      /** A held result captured while the note was still queued: its `queued_turn_count` counts the note. */
-      let capNoteInLatest = false;
       const disarmKeepaliveTimers = () => {
         if (keepaliveCapTimer) clearTimeout(keepaliveCapTimer);
         keepaliveCapTimer = undefined;
@@ -1725,16 +1723,16 @@ export class ClaudeHandler implements TurnSteeringPort {
         if (!steerSettled) {
           const forceDiscard = channel.pushedUuids().slice(turn.pushedCount);
           const settleWith = errorResult ?? turn.latest;
-          // A cap note still queued when `latest` was captured is in its
-          // `queued_turn_count` but not in the steer ledger (#1041 review).
-          const untrackedQueued = pendingCapNoteUuid && capNoteInLatest && !errorResult ? 1 : 0;
+          // A cap note that never got its turn may still be in the backlog, but
+          // that is only known if the interrupt receipt names it (#1041 review).
+          const untracked = pendingCapNoteUuid ? [pendingCapNoteUuid] : [];
           settlement = await this.settleSteeredSends(
             activeQuery,
             settleWith,
             channel,
             capabilities,
             forceDiscard,
-            untrackedQueued,
+            untracked,
           );
           if (settlement) steerSettled = true;
         }
@@ -1883,10 +1881,7 @@ export class ClaudeHandler implements TurnSteeringPort {
             // (#1041 review). The input is closed, so the CLI ends after it; the
             // stream end (and the backstop) still bound the wait.
             if (pendingCapNoteUuid) {
-              if (raw.user_message_uuid !== pendingCapNoteUuid) {
-                capNoteInLatest = true;
-                continue;
-              }
+              if (raw.user_message_uuid !== pendingCapNoteUuid) continue;
               pendingCapNoteUuid = undefined;
             }
             if (liveAgents.size > 0) continue;
@@ -2252,7 +2247,7 @@ export class ClaudeHandler implements TurnSteeringPort {
     channel: TurnInputChannel,
     capabilities: string[],
     forceDiscard: readonly string[] = [],
-    untrackedQueued = 0,
+    untrackedUuids: readonly string[] = [],
   ): Promise<SDKMessage | undefined> {
     // Sealed BEFORE the snapshot: the settlement awaits a control round-trip,
     // and a push accepted during that await would be missing from this snapshot
@@ -2264,10 +2259,7 @@ export class ClaudeHandler implements TurnSteeringPort {
     if (pushedUuids.length === 0) return undefined;
 
     const raw = result as unknown as Record<string, unknown>;
-    // Host-owned sends outside the ledger (the keepalive cap note, #1041) are
-    // not steers: take them out of the backlog before it is read as unconsumed.
-    const queuedTurnCount =
-      typeof raw.queued_turn_count === 'number' ? Math.max(0, raw.queued_turn_count - untrackedQueued) : undefined;
+    const queuedTurnCount = typeof raw.queued_turn_count === 'number' ? raw.queued_turn_count : undefined;
 
     let discarded: string[];
     if (!isHealthyTurnResult(raw)) {
@@ -2286,7 +2278,7 @@ export class ClaudeHandler implements TurnSteeringPort {
       discarded = [...pushedUuids];
     } else if (queuedTurnCount !== undefined && queuedTurnCount > 0) {
       discarded = await this.boundSettlement(
-        () => this.resolveUnconsumedSends(activeQuery, pushedUuids, queuedTurnCount, capabilities),
+        () => this.resolveUnconsumedSends(activeQuery, pushedUuids, queuedTurnCount, capabilities, untrackedUuids),
         pushedUuids,
       );
     } else {
@@ -2381,6 +2373,7 @@ export class ClaudeHandler implements TurnSteeringPort {
     pushedUuids: string[],
     queuedTurnCount: number,
     capabilities: string[],
+    untrackedUuids: readonly string[] = [],
   ): Promise<string[]> {
     const canCancelQueued = capabilities.includes(INTERRUPT_CANCEL_QUEUED_CAPABILITY);
     let receipt: { still_queued?: unknown; cancelled?: unknown } | undefined;
@@ -2425,7 +2418,11 @@ export class ClaudeHandler implements TurnSteeringPort {
       }
     }
 
-    if (discarded.length < queuedTurnCount) {
+    // A host-owned send outside the ledger (the keepalive cap note, #1041)
+    // accounts for a backlog slot only when the receipt names it as queued —
+    // a missing echo is no proof, and guessing would read a steer as consumed.
+    const hostAccounted = untrackedUuids.filter((uuid) => survivors.has(uuid)).length;
+    if (discarded.length + hostAccounted < queuedTurnCount) {
       this.logger.warn('Steer settlement: receipt accounts for fewer survivors than queued_turn_count', {
         queuedTurnCount,
         accounted: discarded.length,
