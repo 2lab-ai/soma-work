@@ -211,6 +211,17 @@ export function newTaskModelOptions(
   return { options, defaultModel };
 }
 
+/**
+ * The workspace's general channel: `#workspace`, the repo channels' prefix with no repo after it. It maps to no repo
+ * — a task there works on several repos, or on none — and the composer offers it beside the repo channels.
+ */
+export const GENERAL_CHANNEL_NAME = 'workspace';
+
+/** #workspace itself, by name and unmapped (once its description names a repo, it is a repo channel like any other). */
+export function isGeneralChannel(channel: { name: string; repos: readonly string[] }): boolean {
+  return channel.name === GENERAL_CHANNEL_NAME && channel.repos.length === 0;
+}
+
 /** `effort` carried over to a model's levels (unchanged when it runs it or has no menu) — the runtime clamp's rule. */
 function fitToLevels(levels: readonly string[] | undefined, effort: string): string {
   return levels && levels.length > 0 && !levels.includes(effort) ? clampEffortToSupported(levels, effort) : effort;
@@ -225,11 +236,12 @@ export function buildNewTaskContext(input: NewTaskContextInput): NewTaskContext 
   );
   const models = options.map((m) => ({ ...m, battery: computeModelBattery(m.model, input.usageAccounts) }));
 
-  // Channels: repo-mapped channels the user is a member of — never inferred from history.
+  // Channels: repo-mapped channels the user is a member of, and #workspace (no repo: any repo, or none) — never
+  // inferred from history.
   const members = input.memberChannelIds;
   const offered = members
     ? input.registryChannels
-        .filter((c) => c.repos.length > 0 && members.has(c.id) && !c.id.startsWith('D'))
+        .filter((c) => (c.repos.length > 0 || isGeneralChannel(c)) && members.has(c.id) && !c.id.startsWith('D'))
         .map((c) => ({ id: c.id, name: c.name, repos: [...c.repos] }))
     : [];
   const offeredIds = new Set(offered.map((c) => c.id));
@@ -457,8 +469,8 @@ export interface NewRepoChannelRequest {
   isPrivate: boolean;
 }
 
-/** The workspace's channel convention: `#workspace-<repo name>` (#workspace-soma-work, #workspace-soma). */
-export const REPO_CHANNEL_PREFIX = 'workspace-';
+/** The workspace's channel convention: `#workspace-<repo name>` (#workspace-soma-work, #workspace-soma) — #workspace itself is the general channel. */
+export const REPO_CHANNEL_PREFIX = `${GENERAL_CHANNEL_NAME}-`;
 /** Slack's channel name limit. */
 export const CHANNEL_NAME_MAX = 80;
 

@@ -1234,3 +1234,59 @@ describe('ntFollowLaunchChannel', () => {
     expect(usual.channelId).toBe('C_OLD');
   });
 });
+
+// #workspace — the general channel, offered without a repo: the select says it takes any repo (or none).
+describe('the channel select — #workspace', () => {
+  const body = clientFn('ntRender');
+  const block = body.slice(
+    body.indexOf("var channel = ntEl('nt-channel');"),
+    body.indexOf('ntRenderNewChannel(isTask);'),
+  );
+  const run = new Function(
+    'ntEl',
+    'isTask',
+    '_ntCtx',
+    '_ntState',
+    'esc',
+    'escAttr',
+    'ntSetError',
+    `${block}\nreturn true;`,
+  );
+  const id = (s: string) => s;
+
+  it('a repo channel shows its repo; #workspace shows 모든 repo · 일반 작업', () => {
+    const select = { innerHTML: '', disabled: true };
+    const channels = [
+      { id: 'C_WS', name: 'workspace', repos: [] },
+      { id: 'C_UI', name: 'workspace-ui', repos: ['2lab-ai/ui'] },
+    ];
+    run(() => select, false, { channels }, { channelId: 'C_WS' }, id, id, vi.fn());
+    expect(select.disabled).toBe(false);
+    expect(select.innerHTML).toContain('<option value="C_WS" selected>#workspace · 모든 repo · 일반 작업</option>');
+    expect(select.innerHTML).toContain('<option value="C_UI">#workspace-ui · ui</option>');
+  });
+
+  it('only #workspace is labelled the general channel — another channel without a repo is just its name', () => {
+    const select = { innerHTML: '', disabled: true };
+    run(
+      () => select,
+      false,
+      { channels: [{ id: 'C_X', name: 'random', repos: [] }] },
+      { channelId: 'C_X' },
+      id,
+      id,
+      vi.fn(),
+    );
+    expect(select.innerHTML).toContain('<option value="C_X" selected>#random</option>');
+  });
+
+  it('no channel at all: the hint names #workspace beside the repo channels', () => {
+    const select = { innerHTML: '', disabled: false };
+    const setError = vi.fn();
+    run(() => select, false, { channels: [], membershipUnknown: false }, { channelId: null }, id, id, setError);
+    expect(select.disabled).toBe(true);
+    expect(setError).toHaveBeenCalledWith(
+      '작업을 올릴 수 있는 채널이 없습니다 — repo가 연결된 Slack 채널이나 #workspace에 참여해 주세요',
+    );
+  });
+});
