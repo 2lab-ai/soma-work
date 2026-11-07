@@ -25,7 +25,7 @@ import * as fs from 'fs';
 import type { HostWriteReceipt } from 'somalib/model-commands/host-receipt';
 import type { ModelCommandContext } from 'somalib/model-commands/types';
 import { type AgentRunOptions, type AgentStreamEvent, runAgentStream, runOneShotText } from './agent-runtime';
-import { liveAgentIds, liveNonAgentTaskIds } from './agent-runtime/background-keepalive';
+import { liveAgentIds, liveNonAgentTaskIds, MAX_TIMER_DELAY_MS } from './agent-runtime/background-keepalive';
 import { buildStreamOptions, type EnvSkillDenial } from './agent-runtime/claude-code/build-stream-options';
 import { ExecutionContextMissingError } from './agent-runtime/execution-context';
 import { permissionAdviceBoard, resolvePermissionAdvice } from './agent-runtime/policy/permission-advice';
@@ -432,20 +432,21 @@ export const BG_FOLLOWUP_GRACE_MS = 5_000;
  */
 export const BG_KEEPALIVE_HARD_CEILING_FACTOR = 8;
 
-/** Largest delay `setTimeout` honours (a longer one fires after 1 ms). */
-const MAX_TIMER_DELAY_MS = 2_147_483_647;
-
 /**
  * Does this raw frame show the held turn's work still moving (#1039)? A main-
  * thread turn frame, a subagent's own message (stamped with the tool_use that
- * spawned it), or a background task's own report (`system`/`task_*`, the live
- * set changing). CLI chatter — `system`/`status`, rate limits — is not activity.
+ * spawned it), a held agent's own task report (`system`/`task_*` naming one of
+ * `heldAgents`), or the live set changing. Not activity: a tool heartbeat
+ * (`tool_progress` — a tool still running, not anything moving; #1041 review),
+ * another task's report, CLI chatter (`system`/`status`, rate limits).
  */
-function isKeepaliveActivityFrame(raw: Record<string, unknown>): boolean {
+function isKeepaliveActivityFrame(raw: Record<string, unknown>, heldAgents: ReadonlySet<string>): boolean {
+  if (raw.type === 'tool_progress') return false;
   if (isTurnProgressFrame(raw)) return true;
   if (raw.parent_tool_use_id !== undefined && raw.parent_tool_use_id !== null) return true;
   if (raw.type !== 'system' || typeof raw.subtype !== 'string') return false;
-  return raw.subtype.startsWith('task_') || raw.subtype === 'background_tasks_changed';
+  if (raw.subtype === 'background_tasks_changed') return true;
+  return raw.subtype.startsWith('task_') && heldAgents.has(String(raw.task_id ?? ''));
 }
 
 /**
@@ -465,7 +466,7 @@ export function buildKeepaliveCapNote(agentIds: readonly string[], reason: 'idle
     `[host: keepalive cap] The host stopped background agent(s) ${agentIds.join(', ')}: ${why}.`,
     'The user did not stop them — a task notification saying "was stopped by user" is this host stop.',
     'This process ends after this turn, so do not resume them here. Report what each finished and what is left;',
-    'each can be resumed later with SendMessage to its agent ID.',
+    'each can be resumed later from its transcript with SendMessage to its agent ID.',
   ].join(' ');
 }
 
@@ -1617,7 +1618,9 @@ export class ClaudeHandler implements TurnSteeringPort {
         keepaliveCapTimer = undefined;
         if (keepaliveCeilingTimer) clearTimeout(keepaliveCeilingTimer);
         keepaliveCeilingTimer = undefined;
-        const live = [...liveAgents];
+        // An agent the model already stopped (`TaskStop`, level frame lagging)
+        // is not the host's to stop or to explain.
+        const live = [...liveAgents].filter((taskId) => !stoppedOnPurpose.has(taskId));
         this.logger.warn('Background agents outlived the keepalive cap; stopping them', {
           live: live.length,
           maxMs: keepaliveMaxMs,
@@ -1625,8 +1628,22 @@ export class ClaudeHandler implements TurnSteeringPort {
           sessionKey: steerKey,
         });
         for (const taskId of live) stopBackgroundAgent(taskId);
-        if (live.length > 0) channel.push(buildInitialUserMessage(buildKeepaliveCapNote(live, reason, keepaliveMaxMs)));
+        if (
+          live.length > 0 &&
+          !channel.push(buildInitialUserMessage(buildKeepaliveCapNote(live, reason, keepaliveMaxMs)))
+        ) {
+          this.logger.warn('Keepalive cap: the input was already closed; the host note did not reach the model', {
+            live: live.length,
+            sessionKey: steerKey,
+          });
+        }
         channel.close();
+        armKeepaliveBackstop();
+      };
+      // A CLI that does not end the turn after the cap is closed outright. Re-armed
+      // while the report turn makes progress (see the frame loop).
+      const armKeepaliveBackstop = () => {
+        if (keepaliveBackstopTimer) clearTimeout(keepaliveBackstopTimer);
         keepaliveBackstopTimer = setTimeout(() => {
           keepaliveBackstopTimer = undefined;
           this.logger.warn('The deferred turn did not end after the keepalive cap; closing the query', {
@@ -1686,7 +1703,10 @@ export class ClaudeHandler implements TurnSteeringPort {
           frameSeq += 1;
           // #1039 — the keepalive cap measures silence: any sign of the held
           // turn's work moving pushes it back.
-          if (held && isKeepaliveActivityFrame(raw)) rearmKeepaliveIdle();
+          if (held && isKeepaliveActivityFrame(raw, liveAgents)) rearmKeepaliveIdle();
+          // After the cap fired, the report turn the note asked for is running:
+          // the backstop is for a CLI that never ends, not a slow one (#1041 review).
+          if (keepaliveBackstopTimer && isTurnProgressFrame(raw)) armKeepaliveBackstop();
           // A side-band frame (background task progress, a subagent's own
           // messages, rate limits, ...) leaves the bound running: the CLI is
           // alive, but nothing says the prompt is being answered.
