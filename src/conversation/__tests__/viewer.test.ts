@@ -126,7 +126,8 @@ describe('viewer pages — the shell (M-07)', () => {
     const api = load<{ paintAppBar: () => void }>(VIEWER_SHELL_JS, ['paintAppBar'], {
       document: { getElementById: (id: string) => (id === 'app-bar' ? bar : null) },
       // The theme and its palette are the head script's (themeClientJs, soma-work 830).
-      somaThemeNow: () => ({ theme: 'light', palette: 'mono' }),
+      somaThemeNow: () => ({ theme: 'light', palette: 'mono', design: null }),
+      SOMA_DESIGNS: [{ id: 'modern-mono', label: 'Modern Mono', scheme: 'dark' }],
       APP_BAR_NAV: [
         { id: 'dashboard', label: '대시보드', href: '/dashboard', icon: 'board' },
         { id: 'conversations', label: '대화', href: '/conversations', icon: 'chat', current: true },
@@ -144,6 +145,7 @@ describe('viewer pages — the shell (M-07)', () => {
     ]);
     expect(data.theme).toBe('light');
     expect(data.palette).toBe('mono');
+    expect([data.design, data.designs]).toEqual([null, [{ id: 'modern-mono', label: 'Modern Mono', scheme: 'dark' }]]);
     expect(data.account).toEqual({ name: 'Zhuge Hyuk', href: '/login', role: '관리자' });
     // The toggle is the head script's (it binds the bar): the shell keeps no theme code of its own.
     expect(VIEWER_SHELL_JS).not.toMatch(/'ui-theme-change'|soma-theme|function (setTheme|currentTheme)\(/);

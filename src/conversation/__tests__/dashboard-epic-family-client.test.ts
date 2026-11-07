@@ -14,7 +14,7 @@
  *      button carrying its key; a child shows its epic; anything else shows nothing; every string escaped.
  *   F6 a press on a child (ui-child) or a family button opens that session's detail card, only for a known one;
  *      the panel repaints the line and a new opening starts folded.
- *   F7 the page runs @2lab.ai/ui 0.37.0.
+ *   F7 the page runs @2lab.ai/ui 0.37.0 or later (an exact pin).
  *   F8 (#1030 review) the placement map holds only what the board placed now: each render starts it empty, and a push
  *      forgets a child that left the epic's bundle.
  *   F9 (#1030 review) a bundled child the board does not show (a filter, 휴면) reads its own column, not 'idle' — its
@@ -317,10 +317,13 @@ describe('F6 — opening a family member', () => {
   });
 });
 
-describe('F7 — the page runs @2lab.ai/ui 0.37.0', () => {
-  it('package.json pins it', () => {
+describe('F7 — the page runs @2lab.ai/ui 0.37.0 or later', () => {
+  it('package.json pins an exact version at or after 0.37.0 (the epic family landed there)', () => {
     const pkg = JSON.parse(readFileSync(join(__dirname, '..', '..', '..', 'package.json'), 'utf-8'));
-    expect(pkg.dependencies['@2lab.ai/ui']).toBe('0.37.0');
+    const pin = String(pkg.dependencies['@2lab.ai/ui']);
+    expect(pin).toMatch(/^\d+\.\d+\.\d+$/);
+    const [major, minor] = pin.split('.').map(Number);
+    expect(major > 0 || minor >= 37).toBe(true);
   });
 });
 

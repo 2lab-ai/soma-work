@@ -144,9 +144,10 @@ export function getFollowupQueueCapacity(): number {
 /**
  * Typed accessor for `SOMA_BG_KEEPALIVE_MAX_MS` — the ONLY read of that
  * variable in the process (`rules/config.md` §절대규칙 1, `:12` `SOMA_` prefix).
- * The longest a turn may stay open for the background agents it launched
- * (#257); `0` disables the keepalive. `ClaudeHandler` imports this and never
- * touches `process.env`.
+ * How long a turn held open for the background agents it launched (#257) may
+ * go without any sign of work before the agents are stopped — silence, not age
+ * (#1039); 8x this is the hard ceiling. `0` disables the keepalive.
+ * `ClaudeHandler` imports this and never touches `process.env`.
  *
  * A function rather than a field on {@link config}, read once per turn, so an
  * operator change applies to the next turn and a test can move the knob

@@ -619,9 +619,12 @@ function paintAppBar() {
     brand: { label: 'soma-work', mark: true, href: '/dashboard' },
     nav: APP_BAR_NAV,
     navLabel: '주 메뉴',
-    // The theme and its palette (soma-work 830): the head script's (themeClientJs), which also answers the toggle.
+    // The theme, its palette and the design (soma-work 830; designs: the theme menu, @2lab.ai/ui ≥ 0.39.0): the head
+    // script's (themeClientJs), which also answers the bar's ui-theme-change.
     theme: somaThemeNow().theme,
     palette: somaThemeNow().palette,
+    design: somaThemeNow().design,
+    designs: SOMA_DESIGNS,
     // The speaker before the theme toggle (interface sound, #614): the head script's choice (_somaOn).
     sound: typeof _somaOn !== 'undefined' && !!_somaOn,
   };

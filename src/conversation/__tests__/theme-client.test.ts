@@ -2,8 +2,16 @@
  * The theme on every page (soma-work 830): light · dark · light·mono · dark·mono. The head script runs here as
  * shipped, against a fake page — <html>'s attributes, this browser's storage, the OS scheme and the app bar.
  */
+
+import { DESIGNS } from '@2lab.ai/ui/server';
 import { describe, expect, it } from 'vitest';
-import { PALETTE_STORAGE_KEY, THEME_STORAGE_KEY, themeClientJs } from '../theme-client';
+import {
+  DESIGN_STORAGE_KEY,
+  PALETTE_STORAGE_KEY,
+  THEME_DESIGNS,
+  THEME_STORAGE_KEY,
+  themeClientJs,
+} from '../theme-client';
 
 type Listener = (e: unknown) => void;
 interface FakeBar {
@@ -26,8 +34,8 @@ interface Page {
   /** DOMContentLoaded. */
   ready(): void;
   api: {
-    somaThemeSet(theme: unknown, palette?: unknown): void;
-    somaThemeNow(): { theme: string; palette: string };
+    somaThemeSet(theme: unknown, palette?: unknown, design?: unknown): void;
+    somaThemeNow(): { theme: string; palette: string; design: string | null };
   };
 }
 
@@ -101,6 +109,74 @@ function page(opts: {
     },
   };
 }
+
+describe("theme client — designs (Modern Mono): one more choice in the bar's theme menu", () => {
+  const MM = { 'data-theme': 'dark', 'data-design': 'modern-mono' };
+
+  it('offers every design the library ships (@2lab.ai/ui/server DESIGNS), as the bar reads them', () => {
+    expect(DESIGN_STORAGE_KEY).toBe('soma-design');
+    expect(THEME_DESIGNS).toEqual(DESIGNS.map((d) => ({ id: d.id, label: d.name, scheme: d.scheme })));
+    expect(THEME_DESIGNS.map((d) => d.id)).toContain('modern-mono');
+    const js = themeClientJs();
+    expect(() => new Function(js)).not.toThrow();
+    expect(js).not.toContain('`');
+    expect(js).not.toContain('${');
+    expect(js).toContain("localStorage.getItem('soma-design')");
+  });
+
+  it('before paint: a stored design wins over the stored theme and palette and the OS — its own scheme', () => {
+    expect(page({ os: 'light', saved: { 'soma-design': 'modern-mono' } }).attrs).toEqual(MM);
+    expect(
+      page({ os: 'light', saved: { 'soma-design': 'modern-mono', 'soma-theme': 'light', 'soma-palette': 'mono' } })
+        .attrs,
+    ).toEqual(MM);
+    // A design it does not know is ignored.
+    expect(page({ os: 'light', saved: { 'soma-design': 'neon' } }).attrs).toEqual({ 'data-theme': 'light' });
+  });
+
+  it('the bar always gets the designs and the current one (the theme menu lists them, the current one checked)', () => {
+    const p = page({ os: 'dark', saved: { 'soma-design': 'modern-mono' } });
+    expect(p.bar!.data).toMatchObject({
+      theme: 'dark',
+      palette: 'color',
+      design: 'modern-mono',
+      designs: THEME_DESIGNS,
+    });
+    expect(p.api.somaThemeNow()).toEqual({ theme: 'dark', palette: 'color', design: 'modern-mono' });
+    const plain = page({ os: 'light' });
+    expect(plain.bar!.data).toMatchObject({ theme: 'light', palette: 'color', design: null, designs: THEME_DESIGNS });
+  });
+
+  it('choosing Modern Mono in the menu applies and stores it; choosing a theme clears it and keeps that theme', () => {
+    const p = page({ os: 'light' });
+    p.toggle({ theme: 'dark', palette: 'color', design: 'modern-mono' });
+    expect(p.attrs).toEqual(MM);
+    expect(Object.fromEntries(p.store)).toEqual({ 'soma-design': 'modern-mono' });
+    expect(p.bar!.data).toMatchObject({ theme: 'dark', design: 'modern-mono' });
+    p.toggle({ theme: 'light', palette: 'mono', design: null });
+    expect(p.attrs).toEqual({ 'data-theme': 'light', 'data-palette': 'mono' });
+    expect(Object.fromEntries(p.store)).toEqual({ 'soma-palette': 'mono' });
+    expect(p.bar!.data).toMatchObject({ theme: 'light', palette: 'mono', design: null });
+  });
+
+  it('a toggle with no design in it (a bar without designs) is a plain theme: the design goes', () => {
+    const p = page({ os: 'dark', saved: { 'soma-design': 'modern-mono' } });
+    p.toggle({ theme: 'light', palette: 'color' });
+    expect(p.attrs).toEqual({ 'data-theme': 'light' });
+    expect(p.store.has('soma-design')).toBe(false);
+  });
+
+  it('an unknown design from the bar is refused; the OS switching does not move a design off its scheme', () => {
+    const p = page({ os: 'light' });
+    p.toggle({ theme: 'dark', palette: 'color', design: 'neon' });
+    expect(p.attrs).toEqual({ 'data-theme': 'light' });
+    expect(p.store.size).toBe(0);
+    const d = page({ os: 'dark', saved: { 'soma-design': 'modern-mono' } });
+    d.os('light');
+    expect(d.attrs).toEqual(MM);
+    expect(d.bar!.data).toMatchObject({ theme: 'dark', design: 'modern-mono' });
+  });
+});
 
 describe('theme client — the head script (soma-work 830)', () => {
   it('ships byte for byte: parses, holds no template syntax, keeps the storage keys', () => {
