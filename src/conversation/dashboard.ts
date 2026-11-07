@@ -22014,8 +22014,9 @@ function ntRender() {
           var repos = (c.repos || []).map(function (r) {
             return r.split('/').pop();
           });
-          // A channel offered without a repo is #workspace, the general channel: any repo, or none.
-          var label = '#' + c.name + (repos.length ? ' · ' + repos.join(', ') : ' · 모든 repo · 일반 작업');
+          // #workspace, the general channel, is offered without a repo: any repo, or none.
+          var general = !repos.length && c.name === 'workspace';
+          var label = '#' + c.name + (repos.length ? ' · ' + repos.join(', ') : general ? ' · 모든 repo · 일반 작업' : '');
           return '<option value="' + escAttr(c.id) + '"' + (c.id === _ntState.channelId ? ' selected' : '') + '>' + esc(label) + '</option>';
         })
         .join('') +

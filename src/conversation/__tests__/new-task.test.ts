@@ -15,6 +15,7 @@ import {
   composeTaskText,
   computeModelBattery,
   createNewTaskGate,
+  isGeneralChannel,
   isSlackFileUrl,
   NEW_TASK_LIMITS,
   type NewTaskContextInput,
@@ -249,6 +250,20 @@ describe('buildNewTaskContext — T3/T4/T5/T6 composer defaults', () => {
       ctx,
     );
     expect(parsed.ok).toBe(true);
+  });
+
+  it('#workspace once its description names a repo is a repo channel like any other', () => {
+    const mapped = { id: 'C_WORKSPACE', name: 'workspace', repos: ['2lab-ai/ui'] };
+    const ctx = buildNewTaskContext(
+      input({
+        registryChannels: [...input().registryChannels, mapped],
+        memberChannelIds: new Set(['C_ALPHA', 'C_WORKSPACE']),
+      }),
+    );
+    expect(ctx.channels.find((c) => c.id === 'C_WORKSPACE')).toEqual(mapped);
+    expect(isGeneralChannel(mapped)).toBe(false);
+    expect(isGeneralChannel({ name: 'workspace', repos: [] })).toBe(true);
+    expect(isGeneralChannel({ name: 'workspace-notes', repos: [] })).toBe(false);
   });
 
   it('#workspace is offered only to its members (membership still decides)', () => {
