@@ -93,10 +93,12 @@ describe('settings page shell', () => {
     const bar: { data?: Record<string, unknown> } = {};
     const document = { getElementById: (id: string) => (id === 'app-bar' ? bar : null) };
     // The theme and its palette are the head script's (themeClientJs, soma-work 830), which also answers the toggle.
-    const now = { theme: 'dark', palette: 'mono' };
+    const now = { theme: 'dark', palette: 'color', design: 'modern-mono' };
+    const designs = [{ id: 'modern-mono', label: 'Modern Mono', scheme: 'dark' }];
     const api = load<{ paintAppBar: () => void }>(['paintAppBar'], {
       document,
       somaThemeNow: () => now,
+      SOMA_DESIGNS: designs,
       APP_BAR_NAV: [{ id: 'settings', label: '설정', href: '/dashboard/settings', current: true }],
       _appBarAccount: { name: '민아', href: '/login', role: '관리자' },
     });
@@ -106,7 +108,10 @@ describe('settings page shell', () => {
       nav: [{ id: 'settings', label: '설정', href: '/dashboard/settings', current: true }],
       navLabel: '주 메뉴',
       theme: 'dark',
-      palette: 'mono',
+      palette: 'color',
+      // The design and the list the theme menu offers (Modern Mono, @2lab.ai/ui ≥ 0.39.0).
+      design: 'modern-mono',
+      designs,
       // The speaker (interface sound, #614) is the bar's own: without the head's sound script, off.
       sound: false,
       account: { name: '민아', href: '/login', role: '관리자' },
@@ -118,6 +123,7 @@ describe('settings page shell', () => {
     const withSound = load<{ paintAppBar: () => void }>(['paintAppBar'], {
       document,
       somaThemeNow: () => now,
+      SOMA_DESIGNS: designs,
       APP_BAR_NAV: [],
       _appBarAccount: null,
       _somaOn: true,
