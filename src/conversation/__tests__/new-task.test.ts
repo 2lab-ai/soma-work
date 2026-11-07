@@ -216,6 +216,48 @@ describe('buildNewTaskContext — T3/T4/T5/T6 composer defaults', () => {
     expect(ctx.defaultChannelId).toBe('C_ALPHA');
   });
 
+  it('#workspace — the general channel, no repo — is offered too: a task there may work on any repo', () => {
+    const registryChannels = [
+      ...input().registryChannels,
+      { id: 'C_WORKSPACE', name: 'workspace', repos: [] },
+      { id: 'C_WS_NOREPO', name: 'workspace-notes', repos: [] },
+    ];
+    const ctx = buildNewTaskContext(
+      input({
+        registryChannels,
+        memberChannelIds: new Set(['C_ALPHA', 'C_SOMA', 'C_RANDOM', 'C_WORKSPACE', 'C_WS_NOREPO']),
+        lastCommandChannelId: 'C_WORKSPACE',
+      }),
+    );
+    // Only the bare #workspace: another channel without a repo (#random, #workspace-notes) is still not a work channel.
+    expect(ctx.channels.map((c) => c.id)).toEqual(['C_WORKSPACE', 'C_ALPHA', 'C_SOMA']);
+    expect(ctx.channels[0]).toEqual({ id: 'C_WORKSPACE', name: 'workspace', repos: [] });
+    // The last command was given there: it is the default, like any offered channel.
+    expect(ctx.defaultChannelId).toBe('C_WORKSPACE');
+    // A submission to it passes the server's check (the offered list is the only allow-list).
+    const parsed = parseNewTaskSubmission(
+      {
+        requestId: 'req-0123456789',
+        prompt: 'soma와 soma-work 둘 다 고쳐줘',
+        model: 'opus[1m]',
+        effort: 'xhigh',
+        channelId: 'C_WORKSPACE',
+        autogoal: false,
+        autoz: false,
+        attachments: [],
+      },
+      ctx,
+    );
+    expect(parsed.ok).toBe(true);
+  });
+
+  it('#workspace is offered only to its members (membership still decides)', () => {
+    const ctx = buildNewTaskContext(
+      input({ registryChannels: [...input().registryChannels, { id: 'C_WORKSPACE', name: 'workspace', repos: [] }] }),
+    );
+    expect(ctx.channels.map((c) => c.id)).not.toContain('C_WORKSPACE');
+  });
+
   it('membership unknown → no channel is offered (fail closed, never from session history)', () => {
     const ctx = buildNewTaskContext(input({ memberChannelIds: null, lastCommandChannelId: 'C_ALPHA' }));
     expect(ctx.channels).toEqual([]);
