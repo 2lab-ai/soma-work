@@ -79,6 +79,8 @@ type BarData = {
   account?: { name: string; href?: string };
   theme?: string;
   palette?: string;
+  design?: string | null;
+  designs?: Array<{ id: string; label: string; scheme: string }>;
 };
 
 describe('the top bar is <ui-app-bar> (A-03..A-14)', () => {
@@ -168,7 +170,13 @@ describe('paintAppBar — the data the page hands the bar', () => {
     const { paintAppBar } = load<{ paintAppBar(): void }>(
       ['paintAppBar'],
       ['APP_BAR_NAV', 'APP_BAR_TOOLBAR_AT', '_appBarStatus', '_appBarAccount'],
-      { document: h.document, STRINGS, somaThemeNow: () => ({ theme: 'light', palette: 'mono' }) },
+      {
+        document: h.document,
+        STRINGS,
+        somaThemeNow: () => ({ theme: 'light', palette: 'mono', design: null }),
+        // The head script's design list (themeClientJs: the library's DESIGNS).
+        SOMA_DESIGNS: [{ id: 'modern-mono', label: 'Modern Mono', scheme: 'dark' }],
+      },
     );
     paintAppBar();
     const d = h.bar.data as BarData;
@@ -198,6 +206,9 @@ describe('paintAppBar — the data the page hands the bar', () => {
     // The theme and its palette are the head script's (themeClientJs, #830): light·mono here.
     expect(d.theme).toBe('light');
     expect(d.palette).toBe('mono');
+    // …and the design with the list the theme menu offers (Modern Mono, @2lab.ai/ui ≥ 0.39.0).
+    expect(d.design).toBeNull();
+    expect(d.designs).toEqual([{ id: 'modern-mono', label: 'Modern Mono', scheme: 'dark' }]);
     expect('account' in d).toBe(false);
   });
 
@@ -218,7 +229,8 @@ describe('paintAppBar — the data the page hands the bar', () => {
         _lastBoardData: null,
         boardFilterViewerKnown: () => false,
         autoOpenDecisions: () => {},
-        somaThemeNow: () => ({ theme: 'dark', palette: 'color' }),
+        somaThemeNow: () => ({ theme: 'dark', palette: 'color', design: null }),
+        SOMA_DESIGNS: [],
       },
       ['function account() { return _appBarAccount; }'],
     );
@@ -286,8 +298,9 @@ describe('theme — the head script owns it (themeClientJs, #830); the page only
       expect(TEMPLATE, String(gone)).not.toMatch(gone);
   });
 
-  it('paintAppBar hands the bar the theme and palette the head script shows (the four-theme toggle)', () => {
+  it('paintAppBar hands the bar the theme, palette and design the head script shows, and the designs (the theme menu)', () => {
     expect(clientFn('paintAppBar')).toMatch(/theme: somaThemeNow\(\)\.theme,\n\s*palette: somaThemeNow\(\)\.palette,/);
+    expect(clientFn('paintAppBar')).toMatch(/design: somaThemeNow\(\)\.design,\n\s*designs: SOMA_DESIGNS,/);
   });
 });
 
