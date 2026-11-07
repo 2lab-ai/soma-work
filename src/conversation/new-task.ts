@@ -256,8 +256,9 @@ export function buildNewTaskContext(input: NewTaskContextInput): NewTaskContext 
     byRecency[0] ??
     [...offered].sort((a, b) => a.name.localeCompare(b.name))[0]?.id ??
     null;
-  // Order: the default first, then recently used, then by name.
-  const rank = (id: string) => (id === defaultChannelId ? -2 : lastActive.has(id) ? -1 : 0);
+  // Order: #workspace (the general channel) always at the top, then the default, then recently used, then by name.
+  const general = new Set(offered.filter(isGeneralChannel).map((c) => c.id));
+  const rank = (id: string) => (general.has(id) ? -3 : id === defaultChannelId ? -2 : lastActive.has(id) ? -1 : 0);
   const channels = offered.sort(
     (a, b) =>
       rank(a.id) - rank(b.id) ||

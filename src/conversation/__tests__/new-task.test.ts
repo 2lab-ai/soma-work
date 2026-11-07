@@ -266,6 +266,19 @@ describe('buildNewTaskContext — T3/T4/T5/T6 composer defaults', () => {
     expect(isGeneralChannel({ name: 'workspace-notes', repos: [] })).toBe(false);
   });
 
+  it('#workspace sits at the top of the list — above the default and the recently used channels', () => {
+    const ctx = buildNewTaskContext(
+      input({
+        registryChannels: [...input().registryChannels, { id: 'C_WORKSPACE', name: 'workspace', repos: [] }],
+        memberChannelIds: new Set(['C_ALPHA', 'C_SOMA', 'C_WORKSPACE']),
+        lastCommandChannelId: 'C_SOMA',
+      }),
+    );
+    // Recent: C_ALPHA (5_000) and C_SOMA (1_000); the last command was in C_SOMA, so it stays the default.
+    expect(ctx.channels.map((c) => c.id)).toEqual(['C_WORKSPACE', 'C_SOMA', 'C_ALPHA']);
+    expect(ctx.defaultChannelId).toBe('C_SOMA');
+  });
+
   it('#workspace is offered only to its members (membership still decides)', () => {
     const ctx = buildNewTaskContext(
       input({ registryChannels: [...input().registryChannels, { id: 'C_WORKSPACE', name: 'workspace', repos: [] }] }),
