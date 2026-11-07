@@ -57,7 +57,14 @@ vi.mock('../agent-runtime/claude-code/build-stream-options', () => ({
 }));
 
 import { STEER_SETTLEMENT_SUBTYPE } from '../agent-runtime/steer-settlement';
-import { BG_FOLLOWUP_GRACE_MS, ClaudeHandler, NON_TURN_RESULT_IDLE_MS } from '../claude-handler';
+import {
+  BG_FOLLOWUP_GRACE_MS,
+  BG_KEEPALIVE_HARD_CEILING_FACTOR,
+  ClaudeHandler,
+  KEEPALIVE_BACKSTOP_IDLE_MS,
+  KEEPALIVE_REPORT_TURN_MAX_MS,
+  NON_TURN_RESULT_IDLE_MS,
+} from '../claude-handler';
 import { Logger } from '../logger';
 import type { McpManager } from '../mcp-manager';
 
@@ -225,11 +232,15 @@ function newFakeCli(): FakeCli {
 function installScriptedQuery(
   cli: FakeCli,
   script: (inputs: AsyncIterator<unknown>) => AsyncGenerator<unknown, void, unknown>,
+  interruptReceipt: () => { still_queued: unknown[]; cancelled: unknown[] } = () => ({
+    still_queued: [],
+    cancelled: [],
+  }),
 ): void {
   queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
     const inputs = (prompt as AsyncIterable<unknown>)[Symbol.asyncIterator]();
     return Object.assign(script(inputs), {
-      interrupt: vi.fn(async () => ({ still_queued: [], cancelled: [] })),
+      interrupt: vi.fn(async () => interruptReceipt()),
       cancelAsyncMessage: vi.fn(async () => true),
       stopTask: cli.stopTask,
       close: cli.close,
@@ -251,6 +262,25 @@ function watchInputEnd(inputs: AsyncIterator<unknown>, cli: FakeCli): Promise<un
   });
   return probe;
 }
+
+/** Read every input until it ends, recording each message; resolves when the input ends. */
+async function drainInputs(inputs: AsyncIterator<unknown>, cli: FakeCli): Promise<void> {
+  for (;;) {
+    const next = await inputs.next();
+    if (next.done) {
+      cli.inputEnded = true;
+      return;
+    }
+    cli.received.push(next.value);
+  }
+}
+
+/** The text of a user message the host sent into the CLI. */
+const textOf = (message: unknown): string => {
+  const content = (message as { message?: { content?: unknown } }).message?.content;
+  if (typeof content === 'string') return content;
+  return Array.isArray(content) ? content.map((c) => (c as { text?: string }).text ?? '').join('') : '';
+};
 
 /** `true` when `p` is still pending after one macrotask (real timers only). */
 async function isPending(p: Promise<unknown>): Promise<boolean> {
@@ -404,10 +434,10 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
         await readOpening(inputs, cli);
         yield* openingTurnHead([agentTask(AGENT_ID), agentTask(SECOND_AGENT_ID)]);
         yield openingResult(cli.opening?.uuid);
-        const probe = watchInputEnd(inputs, cli);
+        const drained = drainInputs(inputs, cli);
         pulledPastOpening.resolve();
         // Silent until the input ends.
-        await probe;
+        await drained;
         yield taskNotification(AGENT_ID, 'stopped');
         yield taskNotification(SECOND_AGENT_ID, 'stopped');
         yield level([]);
@@ -430,6 +460,14 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
       expect(cli.stopTask).toHaveBeenCalledWith(AGENT_ID);
       expect(cli.stopTask).toHaveBeenCalledWith(SECOND_AGENT_ID);
       expect(cli.inputEnded).toBe(true);
+      // #1039: before the input closed, the host told the model that it — not the
+      // user — stopped them (the CLI words every stopTask "was stopped by user").
+      const note = cli.received.slice(1).map(textOf).join('\n');
+      expect(note).toContain('[host: keepalive cap]');
+      expect(note).toContain(AGENT_ID);
+      expect(note).toContain(SECOND_AGENT_ID);
+      expect(note).toMatch(/The user did not stop/);
+      expect(note).toMatch(/"was stopped by user"/);
       expect(warn).toHaveBeenCalledWith(
         CAP_LOG,
         expect.objectContaining({ live: 2, maxMs: CAP_MS, sessionKey: SESSION_KEY }),
@@ -775,7 +813,8 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
       expect(cli.stopTask).toHaveBeenCalledWith(AGENT_ID);
       expect(cli.close).not.toHaveBeenCalled();
 
-      await vi.advanceTimersByTimeAsync(NON_TURN_RESULT_IDLE_MS - 1);
+      // #1041 review: a report's long model call is not cut at 60 s.
+      await vi.advanceTimersByTimeAsync(KEEPALIVE_BACKSTOP_IDLE_MS - 1);
       expect(cli.close).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(1);
@@ -1819,5 +1858,623 @@ describe('ClaudeHandler: a late result does not cut a notification turn of a bac
     const results = resultsOf(frames);
     expect(results).toHaveLength(1);
     expect(results[0]).toMatchObject({ result: 'WAITING', user_message_uuid: cli.opening?.uuid });
+  });
+});
+
+/**
+ * #1039 — the keepalive cap measures silence, not age.
+ *
+ * Dev, 7 November 2026: a background opus coder was still running Bash when the
+ * cap fired exactly 30 minutes after the hold began, and `stopTask` killed it.
+ * The CLI reported it as "was stopped by user"; the model told the user they had
+ * stopped it. The cap now re-arms on every activity frame while the turn is held
+ * and fires only after SOMA_BG_KEEPALIVE_MAX_MS of silence, under a hard ceiling
+ * of BG_KEEPALIVE_HARD_CEILING_FACTOR times that.
+ */
+describe('ClaudeHandler keepalive cap measures silence, not age (#1039)', () => {
+  beforeEach(() => {
+    queryMock.mockReset();
+    releaseMock.mockClear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  /** A held turn whose agent emits one frame per `pulse()`, until `finish()`. */
+  function installWorkingAgent(cli: FakeCli, frame: Record<string, unknown> = SUBAGENT_ASSISTANT) {
+    const pulledPastOpening = deferred();
+    let pulse = deferred();
+    let pulled = deferred();
+    let finished = false;
+    const finish = deferred();
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield* openingTurnHead([agentTask(AGENT_ID)]);
+      yield openingResult(cli.opening?.uuid);
+      const drained = drainInputs(inputs, cli);
+      pulledPastOpening.resolve();
+      for (;;) {
+        const which = await Promise.race([
+          pulse.promise.then(() => 'pulse' as const),
+          finish.promise.then(() => 'finish' as const),
+          drained.then(() => 'ended' as const),
+        ]);
+        if (which === 'pulse') {
+          pulse = deferred();
+          yield frame;
+          const p = pulled;
+          pulled = deferred();
+          p.resolve();
+          continue;
+        }
+        finished = which === 'finish';
+        break;
+      }
+      if (finished) {
+        yield level([]);
+        yield taskNotification(AGENT_ID, 'completed');
+      } else {
+        yield taskNotification(AGENT_ID, 'stopped');
+        yield level([]);
+      }
+      yield INIT;
+      yield NOTIFIED;
+      yield notifiedResult();
+      await drained;
+    });
+    return {
+      pulledPastOpening: pulledPastOpening.promise,
+      /** Emit one subagent frame and wait until the handler pulled it. */
+      async beat() {
+        const p = pulled.promise;
+        pulse.resolve();
+        await p;
+      },
+      finish: () => finish.resolve(),
+    };
+  }
+
+  it('does not stop an agent that keeps working past the cap, and ends on its report', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const agent = installWorkingAgent(cli);
+      const framesPromise = collect(startTurn(newHandler()));
+      await agent.pulledPastOpening;
+
+      // Activity every CAP_MS - 1 for three caps' worth of time.
+      for (let i = 0; i < 3; i++) {
+        await vi.advanceTimersByTimeAsync(CAP_MS - 1);
+        await agent.beat();
+      }
+      expect(cli.stopTask).not.toHaveBeenCalled();
+      expect(cli.inputEnded).toBe(false);
+      expect(callsOf(warn, CAP_LOG)).toHaveLength(0);
+
+      agent.finish();
+      const frames = await framesPromise;
+      expect(cli.stopTask).not.toHaveBeenCalled();
+      expect(resultsOf(frames)[0]).toMatchObject({ result: 'NOTIFIED' });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('stops an agent once it has been silent for the cap, counted from its last frame', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const agent = installWorkingAgent(cli);
+      const framesPromise = collect(startTurn(newHandler()));
+      await agent.pulledPastOpening;
+
+      await vi.advanceTimersByTimeAsync(CAP_MS - 1);
+      await agent.beat();
+      // Silent from here: the cap counts from the last frame.
+      await vi.advanceTimersByTimeAsync(CAP_MS - 1);
+      expect(cli.stopTask).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      const frames = await framesPromise;
+
+      expect(cli.stopTask).toHaveBeenCalledWith(AGENT_ID);
+      expect(cli.inputEnded).toBe(true);
+      expect(callsOf(warn, CAP_LOG)).toHaveLength(1);
+      const note = cli.received.slice(1).map(textOf).join('\n');
+      expect(note).toContain('[host: keepalive cap]');
+      expect(note).toMatch(/no output for 5 minutes/);
+      expect(resultsOf(frames)).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not count CLI chatter (status, rate limits) as the agent working', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const agent = installWorkingAgent(cli, { type: 'rate_limit_event', rate_limit_info: {} });
+      const framesPromise = collect(startTurn(newHandler()));
+      await agent.pulledPastOpening;
+
+      await vi.advanceTimersByTimeAsync(CAP_MS - 1);
+      await agent.beat();
+      await vi.advanceTimersByTimeAsync(1);
+      await framesPromise;
+
+      expect(cli.stopTask).toHaveBeenCalledWith(AGENT_ID);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // #1041 review (grok P2, fable P2): a heartbeat says a tool is still running,
+  // not that anything moved; another task's report is not this agent working.
+  it.each([
+    [
+      "a subagent tool's heartbeat",
+      { type: 'tool_progress', parent_tool_use_id: 'toolu_agent', tool_name: 'Bash', heartbeat: true },
+    ],
+    [
+      'a main-thread tool heartbeat',
+      { type: 'tool_progress', parent_tool_use_id: null, tool_name: 'Bash', heartbeat: true },
+    ],
+    ["another task's progress", { type: 'system', subtype: 'task_progress', task_id: 'bash-1' }],
+  ])('does not count %s as the held agent working', async (_kind, frame) => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const agent = installWorkingAgent(cli, frame);
+      const framesPromise = collect(startTurn(newHandler()));
+      await agent.pulledPastOpening;
+
+      await vi.advanceTimersByTimeAsync(CAP_MS - 1);
+      await agent.beat();
+      await vi.advanceTimersByTimeAsync(1);
+      await framesPromise;
+
+      expect(cli.stopTask).toHaveBeenCalledWith(AGENT_ID);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each([
+    ["the held agent's own task progress", { type: 'system', subtype: 'task_progress', task_id: AGENT_ID }],
+    [
+      "a subagent tool's real progress tick (not a heartbeat)",
+      { type: 'tool_progress', parent_tool_use_id: 'toolu_agent', tool_name: 'Bash', heartbeat: false },
+    ],
+  ])('counts %s as work', async (_kind, frame) => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const cli = newFakeCli();
+    const agent = installWorkingAgent(cli, frame);
+    const framesPromise = collect(startTurn(newHandler()));
+    await agent.pulledPastOpening;
+
+    await vi.advanceTimersByTimeAsync(CAP_MS - 1);
+    await agent.beat();
+    await vi.advanceTimersByTimeAsync(CAP_MS - 1);
+    expect(cli.stopTask).not.toHaveBeenCalled();
+
+    agent.finish();
+    await framesPromise;
+    expect(cli.stopTask).not.toHaveBeenCalled();
+  });
+
+  // #1041 review round 2 (grok P2): the backstop's re-arms are bounded — a
+  // report turn that never ends cannot hold the query open forever.
+  it('closes the query at the report-turn ceiling even while that turn keeps sending frames', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const inputEnded = deferred();
+      let gate = deferred();
+      let pulled = deferred();
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([agentTask(AGENT_ID)]);
+        yield openingResult(cli.opening?.uuid);
+        await drainInputs(inputs, cli);
+        inputEnded.resolve();
+        yield taskNotification(AGENT_ID, 'stopped');
+        yield level([]);
+        yield INIT;
+        for (;;) {
+          const closed = await Promise.race([gate.promise.then(() => false), cli.closed.then(() => true)]);
+          if (closed) return;
+          gate = deferred();
+          yield assistantText('still going');
+          const p = pulled;
+          pulled = deferred();
+          p.resolve();
+        }
+      });
+
+      const framesPromise = collect(startTurn(newHandler()));
+      await vi.advanceTimersByTimeAsync(CAP_MS);
+      await inputEnded.promise;
+      const step = NON_TURN_RESULT_IDLE_MS - 1;
+      let elapsed = 0;
+      while (cli.close.mock.calls.length === 0 && elapsed < KEEPALIVE_REPORT_TURN_MAX_MS + 3 * step) {
+        await vi.advanceTimersByTimeAsync(step);
+        elapsed += step;
+        if (cli.close.mock.calls.length > 0) break;
+        const p = pulled.promise;
+        gate.resolve();
+        await p;
+      }
+      // Frames kept coming the whole time; the bound still closed it, near the ceiling.
+      expect(cli.close).toHaveBeenCalled();
+      expect(elapsed).toBeGreaterThan(KEEPALIVE_REPORT_TURN_MAX_MS - 2 * step);
+      expect(elapsed).toBeLessThanOrEqual(KEEPALIVE_REPORT_TURN_MAX_MS + step);
+      await framesPromise;
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // #1041 review (fable P2): the note asks the model to report; a report turn
+  // that runs tools past the 60 s backstop must not be closed mid-way.
+  it('does not close the query on the backstop while the report turn after the cap is running', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const inputEnded = deferred();
+      const step1 = deferred();
+      const step2 = deferred();
+      const pulled1 = deferred();
+      const pulled2 = deferred();
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([agentTask(AGENT_ID)]);
+        yield openingResult(cli.opening?.uuid);
+        await drainInputs(inputs, cli);
+        inputEnded.resolve();
+        yield taskNotification(AGENT_ID, 'stopped');
+        yield level([]);
+        yield INIT;
+        await step1.promise;
+        yield assistantText('checking what the coder left');
+        pulled1.resolve();
+        await step2.promise;
+        yield assistantText('REPORT');
+        pulled2.resolve();
+        yield notifiedResult({ result: 'REPORT', uuid: 'report-result-uuid' });
+      });
+
+      const framesPromise = collect(startTurn(newHandler()));
+      await vi.advanceTimersByTimeAsync(CAP_MS);
+      await inputEnded.promise;
+
+      await vi.advanceTimersByTimeAsync(NON_TURN_RESULT_IDLE_MS - 1);
+      step1.resolve();
+      await pulled1.promise;
+      await vi.advanceTimersByTimeAsync(NON_TURN_RESULT_IDLE_MS - 1);
+      expect(cli.close).not.toHaveBeenCalled();
+      step2.resolve();
+      await pulled2.promise;
+      const frames = await framesPromise;
+
+      expect(cli.close).not.toHaveBeenCalled();
+      expect(resultsOf(frames)[0]).toMatchObject({ result: 'REPORT' });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // #1041 review round 2 (fable P2): a report turn inside one long main-thread
+  // tool sends only heartbeats; the backstop must not close it mid-tool.
+  it('does not close the query on the backstop while the report turn runs a long tool', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const inputEnded = deferred();
+      const beats = Array.from({ length: 3 }, () => ({ gate: deferred(), pulled: deferred() }));
+      const done = deferred();
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([agentTask(AGENT_ID)]);
+        yield openingResult(cli.opening?.uuid);
+        await drainInputs(inputs, cli);
+        inputEnded.resolve();
+        yield taskNotification(AGENT_ID, 'stopped');
+        yield level([]);
+        yield INIT;
+        for (const beat of beats) {
+          await beat.gate.promise;
+          yield { type: 'tool_progress', parent_tool_use_id: null, tool_name: 'Bash', heartbeat: true };
+          beat.pulled.resolve();
+        }
+        await done.promise;
+        yield assistantText('REPORT');
+        yield notifiedResult({ result: 'REPORT', uuid: 'report-result-uuid' });
+      });
+
+      const framesPromise = collect(startTurn(newHandler()));
+      await vi.advanceTimersByTimeAsync(CAP_MS);
+      await inputEnded.promise;
+      for (const beat of beats) {
+        await vi.advanceTimersByTimeAsync(NON_TURN_RESULT_IDLE_MS - 1);
+        beat.gate.resolve();
+        await beat.pulled.promise;
+      }
+      expect(cli.close).not.toHaveBeenCalled();
+      done.resolve();
+      const frames = await framesPromise;
+
+      expect(cli.close).not.toHaveBeenCalled();
+      expect(resultsOf(frames)[0]).toMatchObject({ result: 'REPORT' });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // #1041 review round 3 (astra): the cap note must not be left queued when
+  // the held turn ends — settlement would read it as an unconsumed steer and
+  // discard (re-run) a steer the model already answered.
+  it("waits for the cap note's own turn, so a steer answered during the hold settles as consumed", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const pulledPastOpening = deferred();
+      const steerGate = deferred();
+      const pulledPastSteer = deferred();
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([agentTask(AGENT_ID)]);
+        yield openingResult(cli.opening?.uuid);
+        pulledPastOpening.resolve();
+        await steerGate.promise;
+        cli.received.push((await inputs.next()).value);
+        yield INIT;
+        yield assistantText('ACK');
+        yield successResult({
+          result: 'ACK',
+          num_turns: 1,
+          uuid: 'steer-result-uuid',
+          user_message_uuid: 'u-steer',
+          queued_turn_count: 0,
+        });
+        pulledPastSteer.resolve();
+        // Silent until the cap fires and the input ends.
+        await drainInputs(inputs, cli);
+        const note = cli.received.find((m) => textOf(m).includes('[host: keepalive cap]')) as
+          | { uuid?: string }
+          | undefined;
+        yield taskNotification(AGENT_ID, 'stopped');
+        yield level([]);
+        // The stop's notification turn runs first; the note is still queued.
+        yield INIT;
+        yield assistantText('STOP SEEN');
+        yield successResult({ result: 'STOP SEEN', num_turns: 1, uuid: 'stop-result-uuid', queued_turn_count: 1 });
+        yield INIT;
+        yield assistantText('NOTE ANSWERED');
+        yield successResult({
+          result: 'NOTE ANSWERED',
+          num_turns: 1,
+          uuid: 'note-result-uuid',
+          user_message_uuid: note?.uuid,
+          queued_turn_count: 0,
+        });
+      });
+      const handler = newHandler();
+
+      const framesPromise = collect(startTurn(handler));
+      await pulledPastOpening.promise;
+      expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'and also' })).toBe(true);
+      steerGate.resolve();
+      await pulledPastSteer.promise;
+      await vi.advanceTimersByTimeAsync(CAP_MS);
+      const frames = await framesPromise;
+
+      const note = cli.received.find((m) => textOf(m).includes('[host: keepalive cap]')) as { uuid?: string };
+      expect(typeof note?.uuid).toBe('string');
+      const settlement = frames.find((f) => (f as { subtype?: unknown }).subtype === STEER_SETTLEMENT_SUBTYPE);
+      expect(settlement).toMatchObject({ consumed: ['u-steer'], discarded: [] });
+      expect(resultsOf(frames)[0]).toMatchObject({ result: 'NOTE ANSWERED' });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not count a still-queued cap note against the steers when the stream ends first', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const pulledPastOpening = deferred();
+      const steerGate = deferred();
+      const pulledPastSteer = deferred();
+      installScriptedQuery(
+        cli,
+        async function* (inputs) {
+          await readOpening(inputs, cli);
+          yield* openingTurnHead([agentTask(AGENT_ID)]);
+          yield openingResult(cli.opening?.uuid);
+          pulledPastOpening.resolve();
+          await steerGate.promise;
+          cli.received.push((await inputs.next()).value);
+          yield INIT;
+          yield assistantText('ACK');
+          yield successResult({
+            result: 'ACK',
+            num_turns: 1,
+            uuid: 'steer-result-uuid',
+            user_message_uuid: 'u-steer',
+            queued_turn_count: 0,
+          });
+          pulledPastSteer.resolve();
+          await drainInputs(inputs, cli);
+          yield taskNotification(AGENT_ID, 'stopped');
+          yield level([]);
+          yield INIT;
+          yield assistantText('STOP SEEN');
+          // The note is still queued (counted), and then the CLI is gone.
+          yield successResult({ result: 'STOP SEEN', num_turns: 1, uuid: 'stop-result-uuid', queued_turn_count: 1 });
+        },
+        () => {
+          // The CLI's receipt names what is still queued: the note.
+          const note = cli.received.find((m) => textOf(m).includes('[host: keepalive cap]')) as { uuid?: string };
+          return { still_queued: [note?.uuid], cancelled: [] };
+        },
+      );
+      const handler = newHandler();
+
+      const framesPromise = collect(startTurn(handler));
+      await pulledPastOpening.promise;
+      expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'and also' })).toBe(true);
+      steerGate.resolve();
+      await pulledPastSteer.promise;
+      await vi.advanceTimersByTimeAsync(CAP_MS);
+      const frames = await framesPromise;
+
+      const settlement = frames.find((f) => (f as { subtype?: unknown }).subtype === STEER_SETTLEMENT_SUBTYPE);
+      expect(settlement).toMatchObject({ consumed: ['u-steer'], discarded: [] });
+      expect(resultsOf(frames)[0]).toMatchObject({ result: 'STOP SEEN' });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // #1041 review round 3 (astra P2): a TaskStop the model only attempted (its
+  // result an error) must not hide a still-live agent from the cap.
+  it('still stops and names an agent whose TaskStop by the model failed', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield INIT;
+        yield TOOL_USE_AGENT;
+        yield level([agentTask(AGENT_ID)]);
+        yield TOOL_RESULT;
+        yield {
+          type: 'assistant',
+          message: {
+            model: 'claude-test',
+            content: [{ type: 'tool_use', id: 'toolu_stop', name: 'TaskStop', input: { task_id: AGENT_ID } }],
+          },
+        };
+        yield {
+          type: 'user',
+          parent_tool_use_id: null,
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 'toolu_stop', is_error: true, content: 'denied' }],
+          },
+        };
+        yield WAITING;
+        yield openingResult(cli.opening?.uuid);
+        await drainInputs(inputs, cli);
+        yield taskNotification(AGENT_ID, 'stopped');
+        yield level([]);
+        yield INIT;
+        yield NOTIFIED;
+        yield notifiedResult();
+      });
+
+      const framesPromise = collect(startTurn(newHandler()));
+      await vi.advanceTimersByTimeAsync(CAP_MS);
+      await framesPromise;
+
+      expect(cli.stopTask).toHaveBeenCalledWith(AGENT_ID);
+      const note = cli.received.slice(1).map(textOf).join('\n');
+      expect(note).toContain(AGENT_ID);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // #1041 review round 4 (astra P1, fable P2): a missing echo does not prove the
+  // note is in a result's backlog. A result buffered from before the note,
+  // counting a real pending steer, must not have that steer read as consumed.
+  it('never reads a pending steer as consumed because the cap note had not echoed', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const pulledPastOpening = deferred();
+      const steerGate = deferred();
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([agentTask(AGENT_ID)]);
+        yield openingResult(cli.opening?.uuid);
+        pulledPastOpening.resolve();
+        await steerGate.promise;
+        // The steer is read but its turn never runs; the cap fires meanwhile.
+        await drainInputs(inputs, cli);
+        // Buffered from before the note: counts the real steer as still queued.
+        yield successResult({ result: 'BEFORE NOTE', num_turns: 0, uuid: 'pre-note-uuid', queued_turn_count: 1 });
+      });
+      const handler = newHandler();
+
+      const framesPromise = collect(startTurn(handler));
+      await pulledPastOpening.promise;
+      expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-real', text: 'do this too' })).toBe(true);
+      steerGate.resolve();
+      await vi.advanceTimersByTimeAsync(CAP_MS);
+      const frames = await framesPromise;
+
+      const settlement = frames.find((f) => (f as { subtype?: unknown }).subtype === STEER_SETTLEMENT_SUBTYPE);
+      // Re-run, never lost.
+      expect(settlement).toMatchObject({ consumed: [], discarded: ['u-real'] });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('stops an agent that never goes silent at the hard ceiling', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const agent = installWorkingAgent(cli);
+      const framesPromise = collect(startTurn(newHandler()));
+      await agent.pulledPastOpening;
+
+      const ceiling = CAP_MS * BG_KEEPALIVE_HARD_CEILING_FACTOR;
+      const step = CAP_MS / 2;
+      let elapsed = 0;
+      while (elapsed + step < ceiling) {
+        await vi.advanceTimersByTimeAsync(step);
+        elapsed += step;
+        await agent.beat();
+      }
+      expect(cli.stopTask).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(ceiling - elapsed);
+      const frames = await framesPromise;
+
+      expect(cli.stopTask).toHaveBeenCalledWith(AGENT_ID);
+      const note = cli.received.slice(1).map(textOf).join('\n');
+      expect(note).toContain('[host: keepalive cap]');
+      expect(note).toMatch(/ran past the 40-minute ceiling/);
+      expect(resultsOf(frames)).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
