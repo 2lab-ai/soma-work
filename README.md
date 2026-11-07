@@ -5,6 +5,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/2lab-ai/soma-work/tree/v0.3"><img src="https://img.shields.io/badge/version-v0.3-orange" alt="v0.3" /></a>
   <a href="https://github.com/2lab-ai/soma-work/actions/workflows/ci.yml"><img src="https://github.com/2lab-ai/soma-work/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="https://github.com/2lab-ai/soma-work/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License" /></a>
   <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
