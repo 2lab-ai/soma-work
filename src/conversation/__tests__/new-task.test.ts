@@ -261,6 +261,8 @@ describe('buildNewTaskContext — T3/T4/T5/T6 composer defaults', () => {
       }),
     );
     expect(ctx.channels.find((c) => c.id === 'C_WORKSPACE')).toEqual(mapped);
+    // …and is ordered like one: not pinned to the top (C_ALPHA is the default, from its recent session).
+    expect(ctx.channels.map((c) => c.id)).toEqual(['C_ALPHA', 'C_WORKSPACE']);
     expect(isGeneralChannel(mapped)).toBe(false);
     expect(isGeneralChannel({ name: 'workspace', repos: [] })).toBe(true);
     expect(isGeneralChannel({ name: 'workspace-notes', repos: [] })).toBe(false);
