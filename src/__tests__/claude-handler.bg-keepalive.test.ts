@@ -232,11 +232,15 @@ function newFakeCli(): FakeCli {
 function installScriptedQuery(
   cli: FakeCli,
   script: (inputs: AsyncIterator<unknown>) => AsyncGenerator<unknown, void, unknown>,
+  interruptReceipt: () => { still_queued: unknown[]; cancelled: unknown[] } = () => ({
+    still_queued: [],
+    cancelled: [],
+  }),
 ): void {
   queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
     const inputs = (prompt as AsyncIterable<unknown>)[Symbol.asyncIterator]();
     return Object.assign(script(inputs), {
-      interrupt: vi.fn(async () => ({ still_queued: [], cancelled: [] })),
+      interrupt: vi.fn(async () => interruptReceipt()),
       cancelAsyncMessage: vi.fn(async () => true),
       stopTask: cli.stopTask,
       close: cli.close,
@@ -2301,31 +2305,39 @@ describe('ClaudeHandler keepalive cap measures silence, not age (#1039)', () => 
       const pulledPastOpening = deferred();
       const steerGate = deferred();
       const pulledPastSteer = deferred();
-      installScriptedQuery(cli, async function* (inputs) {
-        await readOpening(inputs, cli);
-        yield* openingTurnHead([agentTask(AGENT_ID)]);
-        yield openingResult(cli.opening?.uuid);
-        pulledPastOpening.resolve();
-        await steerGate.promise;
-        cli.received.push((await inputs.next()).value);
-        yield INIT;
-        yield assistantText('ACK');
-        yield successResult({
-          result: 'ACK',
-          num_turns: 1,
-          uuid: 'steer-result-uuid',
-          user_message_uuid: 'u-steer',
-          queued_turn_count: 0,
-        });
-        pulledPastSteer.resolve();
-        await drainInputs(inputs, cli);
-        yield taskNotification(AGENT_ID, 'stopped');
-        yield level([]);
-        yield INIT;
-        yield assistantText('STOP SEEN');
-        // The note is still queued (counted), and then the CLI is gone.
-        yield successResult({ result: 'STOP SEEN', num_turns: 1, uuid: 'stop-result-uuid', queued_turn_count: 1 });
-      });
+      installScriptedQuery(
+        cli,
+        async function* (inputs) {
+          await readOpening(inputs, cli);
+          yield* openingTurnHead([agentTask(AGENT_ID)]);
+          yield openingResult(cli.opening?.uuid);
+          pulledPastOpening.resolve();
+          await steerGate.promise;
+          cli.received.push((await inputs.next()).value);
+          yield INIT;
+          yield assistantText('ACK');
+          yield successResult({
+            result: 'ACK',
+            num_turns: 1,
+            uuid: 'steer-result-uuid',
+            user_message_uuid: 'u-steer',
+            queued_turn_count: 0,
+          });
+          pulledPastSteer.resolve();
+          await drainInputs(inputs, cli);
+          yield taskNotification(AGENT_ID, 'stopped');
+          yield level([]);
+          yield INIT;
+          yield assistantText('STOP SEEN');
+          // The note is still queued (counted), and then the CLI is gone.
+          yield successResult({ result: 'STOP SEEN', num_turns: 1, uuid: 'stop-result-uuid', queued_turn_count: 1 });
+        },
+        () => {
+          // The CLI's receipt names what is still queued: the note.
+          const note = cli.received.find((m) => textOf(m).includes('[host: keepalive cap]')) as { uuid?: string };
+          return { still_queued: [note?.uuid], cancelled: [] };
+        },
+      );
       const handler = newHandler();
 
       const framesPromise = collect(startTurn(handler));
@@ -2390,6 +2402,45 @@ describe('ClaudeHandler keepalive cap measures silence, not age (#1039)', () => 
       expect(cli.stopTask).toHaveBeenCalledWith(AGENT_ID);
       const note = cli.received.slice(1).map(textOf).join('\n');
       expect(note).toContain(AGENT_ID);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // #1041 review round 4 (astra P1, fable P2): a missing echo does not prove the
+  // note is in a result's backlog. A result buffered from before the note,
+  // counting a real pending steer, must not have that steer read as consumed.
+  it('never reads a pending steer as consumed because the cap note had not echoed', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const pulledPastOpening = deferred();
+      const steerGate = deferred();
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([agentTask(AGENT_ID)]);
+        yield openingResult(cli.opening?.uuid);
+        pulledPastOpening.resolve();
+        await steerGate.promise;
+        // The steer is read but its turn never runs; the cap fires meanwhile.
+        await drainInputs(inputs, cli);
+        // Buffered from before the note: counts the real steer as still queued.
+        yield successResult({ result: 'BEFORE NOTE', num_turns: 0, uuid: 'pre-note-uuid', queued_turn_count: 1 });
+      });
+      const handler = newHandler();
+
+      const framesPromise = collect(startTurn(handler));
+      await pulledPastOpening.promise;
+      expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-real', text: 'do this too' })).toBe(true);
+      steerGate.resolve();
+      await vi.advanceTimersByTimeAsync(CAP_MS);
+      const frames = await framesPromise;
+
+      const settlement = frames.find((f) => (f as { subtype?: unknown }).subtype === STEER_SETTLEMENT_SUBTYPE);
+      // Re-run, never lost.
+      expect(settlement).toMatchObject({ consumed: [], discarded: ['u-real'] });
     } finally {
       warn.mockRestore();
     }
