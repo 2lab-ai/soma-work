@@ -423,6 +423,53 @@ export const NON_TURN_RESULT_IDLE_MS = 60_000;
 export const BG_FOLLOWUP_GRACE_MS = 5_000;
 
 /**
+ * The keepalive cap's hard ceiling, as a multiple of `SOMA_BG_KEEPALIVE_MAX_MS`
+ * (#1039). The cap itself measures silence: it re-arms on every activity frame
+ * while a turn is held, so a background agent that keeps working is never
+ * stopped for its age — on dev the old wall-clock cap killed a coder mid-Bash at
+ * exactly 30 minutes, 60+ times since 2026-10-23. The ceiling still bounds an
+ * agent that never goes quiet: 8 × 30 min = 4 h by default.
+ */
+export const BG_KEEPALIVE_HARD_CEILING_FACTOR = 8;
+
+/** Largest delay `setTimeout` honours (a longer one fires after 1 ms). */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+/**
+ * Does this raw frame show the held turn's work still moving (#1039)? A main-
+ * thread turn frame, a subagent's own message (stamped with the tool_use that
+ * spawned it), or a background task's own report (`system`/`task_*`, the live
+ * set changing). CLI chatter — `system`/`status`, rate limits — is not activity.
+ */
+function isKeepaliveActivityFrame(raw: Record<string, unknown>): boolean {
+  if (isTurnProgressFrame(raw)) return true;
+  if (raw.parent_tool_use_id !== undefined && raw.parent_tool_use_id !== null) return true;
+  if (raw.type !== 'system' || typeof raw.subtype !== 'string') return false;
+  return raw.subtype.startsWith('task_') || raw.subtype === 'background_tasks_changed';
+}
+
+/**
+ * The host's note to the model when the keepalive cap stops background agents
+ * (#1039). The CLI words every `stopTask` as "was stopped by user", whoever
+ * asked; without this the model tells the user they stopped work they never
+ * touched. Pushed before the input closes, so the model reads it in the same
+ * process that reports the stop.
+ */
+export function buildKeepaliveCapNote(agentIds: readonly string[], reason: 'idle' | 'ceiling', maxMs: number): string {
+  const minutes = (ms: number) => Math.round(ms / 60_000);
+  const why =
+    reason === 'idle'
+      ? `they produced no output for ${minutes(maxMs)} minutes`
+      : `they ran past the ${minutes(Math.min(maxMs * BG_KEEPALIVE_HARD_CEILING_FACTOR, MAX_TIMER_DELAY_MS))}-minute ceiling`;
+  return [
+    `[host: keepalive cap] The host stopped background agent(s) ${agentIds.join(', ')}: ${why}.`,
+    'The user did not stop them — a task notification saying "was stopped by user" is this host stop.',
+    'This process ends after this turn, so do not resume them here. Report what each finished and what is left;',
+    'each can be resumed later with SendMessage to its agent ID.',
+  ].join(' ');
+}
+
+/**
  * `system`/`init` capability announcing that `interrupt` honours
  * `cancel_queued:true` (sdk.d.ts:5000).
  *
@@ -1528,10 +1575,13 @@ export class ClaudeHandler implements TurnSteeringPort {
       let held: HeldTurn | undefined;
       let deferredAt = 0;
       let keepaliveCapTimer: NodeJS.Timeout | undefined;
+      let keepaliveCeilingTimer: NodeJS.Timeout | undefined;
       let keepaliveBackstopTimer: NodeJS.Timeout | undefined;
       const disarmKeepaliveTimers = () => {
         if (keepaliveCapTimer) clearTimeout(keepaliveCapTimer);
         keepaliveCapTimer = undefined;
+        if (keepaliveCeilingTimer) clearTimeout(keepaliveCeilingTimer);
+        keepaliveCeilingTimer = undefined;
         if (keepaliveBackstopTimer) clearTimeout(keepaliveBackstopTimer);
         keepaliveBackstopTimer = undefined;
       };
@@ -1554,36 +1604,56 @@ export class ClaudeHandler implements TurnSteeringPort {
           failed(error);
         }
       };
-      // Armed once, when the turn starts waiting. On fire the agents are
-      // stopped (each emits a `stopped` notification) and the input closes, so
-      // the CLI can end the turn with what it has. A CLI that still does not
-      // end it is closed outright after the backstop.
-      const armKeepaliveCap = () => {
-        keepaliveCapTimer = setTimeout(() => {
-          keepaliveCapTimer = undefined;
-          const live = [...liveAgents];
-          this.logger.warn('Background agents outlived the keepalive cap; stopping them', {
-            live: live.length,
-            maxMs: keepaliveMaxMs,
+      // Armed when the turn starts waiting (#1039): the idle cap re-arms on
+      // every activity frame (`rearmKeepaliveIdle`), so it fires only after
+      // `keepaliveMaxMs` of silence; the ceiling is armed once and bounds an
+      // agent that never goes quiet. On fire the agents are stopped (each
+      // emits a `stopped` notification), the host tells the model it did so —
+      // the CLI words it "was stopped by user" — and the input closes, so the
+      // CLI can end the turn with what it has. A CLI that still does not end it
+      // is closed outright after the backstop.
+      const fireKeepaliveCap = (reason: 'idle' | 'ceiling') => {
+        if (keepaliveCapTimer) clearTimeout(keepaliveCapTimer);
+        keepaliveCapTimer = undefined;
+        if (keepaliveCeilingTimer) clearTimeout(keepaliveCeilingTimer);
+        keepaliveCeilingTimer = undefined;
+        const live = [...liveAgents];
+        this.logger.warn('Background agents outlived the keepalive cap; stopping them', {
+          live: live.length,
+          maxMs: keepaliveMaxMs,
+          reason,
+          sessionKey: steerKey,
+        });
+        for (const taskId of live) stopBackgroundAgent(taskId);
+        if (live.length > 0) channel.push(buildInitialUserMessage(buildKeepaliveCapNote(live, reason, keepaliveMaxMs)));
+        channel.close();
+        keepaliveBackstopTimer = setTimeout(() => {
+          keepaliveBackstopTimer = undefined;
+          this.logger.warn('The deferred turn did not end after the keepalive cap; closing the query', {
+            idleMs: NON_TURN_RESULT_IDLE_MS,
             sessionKey: steerKey,
           });
-          for (const taskId of live) stopBackgroundAgent(taskId);
-          channel.close();
-          keepaliveBackstopTimer = setTimeout(() => {
-            keepaliveBackstopTimer = undefined;
-            this.logger.warn('The deferred turn did not end after the keepalive cap; closing the query', {
-              idleMs: NON_TURN_RESULT_IDLE_MS,
-              sessionKey: steerKey,
+          try {
+            activeQuery.close();
+          } catch (error) {
+            this.logger.debug('Keepalive backstop: closing the query failed', {
+              error: error instanceof Error ? error.message : String(error),
             });
-            try {
-              activeQuery.close();
-            } catch (error) {
-              this.logger.debug('Keepalive backstop: closing the query failed', {
-                error: error instanceof Error ? error.message : String(error),
-              });
-            }
-          }, NON_TURN_RESULT_IDLE_MS);
-        }, keepaliveMaxMs);
+          }
+        }, NON_TURN_RESULT_IDLE_MS);
+      };
+      const armKeepaliveCap = () => {
+        keepaliveCapTimer = setTimeout(() => fireKeepaliveCap('idle'), keepaliveMaxMs);
+        keepaliveCeilingTimer = setTimeout(
+          () => fireKeepaliveCap('ceiling'),
+          Math.min(keepaliveMaxMs * BG_KEEPALIVE_HARD_CEILING_FACTOR, MAX_TIMER_DELAY_MS),
+        );
+      };
+      // Only while the idle cap is armed: never after it fired, never before the hold.
+      const rearmKeepaliveIdle = () => {
+        if (!keepaliveCapTimer) return;
+        clearTimeout(keepaliveCapTimer);
+        keepaliveCapTimer = setTimeout(() => fireKeepaliveCap('idle'), keepaliveMaxMs);
       };
       // End a held turn the way the terminal path ends any turn — settle, then
       // close. An `errorResult` ends it as that error; otherwise it ends on
@@ -1614,6 +1684,9 @@ export class ClaudeHandler implements TurnSteeringPort {
         for await (const message of activeQuery) {
           const raw = message as unknown as Record<string, unknown>;
           frameSeq += 1;
+          // #1039 — the keepalive cap measures silence: any sign of the held
+          // turn's work moving pushes it back.
+          if (held && isKeepaliveActivityFrame(raw)) rearmKeepaliveIdle();
           // A side-band frame (background task progress, a subagent's own
           // messages, rate limits, ...) leaves the bound running: the CLI is
           // alive, but nothing says the prompt is being answered.

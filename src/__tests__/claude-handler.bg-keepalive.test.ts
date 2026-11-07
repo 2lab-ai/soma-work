@@ -57,7 +57,12 @@ vi.mock('../agent-runtime/claude-code/build-stream-options', () => ({
 }));
 
 import { STEER_SETTLEMENT_SUBTYPE } from '../agent-runtime/steer-settlement';
-import { BG_FOLLOWUP_GRACE_MS, ClaudeHandler, NON_TURN_RESULT_IDLE_MS } from '../claude-handler';
+import {
+  BG_FOLLOWUP_GRACE_MS,
+  BG_KEEPALIVE_HARD_CEILING_FACTOR,
+  ClaudeHandler,
+  NON_TURN_RESULT_IDLE_MS,
+} from '../claude-handler';
 import { Logger } from '../logger';
 import type { McpManager } from '../mcp-manager';
 
@@ -252,6 +257,25 @@ function watchInputEnd(inputs: AsyncIterator<unknown>, cli: FakeCli): Promise<un
   return probe;
 }
 
+/** Read every input until it ends, recording each message; resolves when the input ends. */
+async function drainInputs(inputs: AsyncIterator<unknown>, cli: FakeCli): Promise<void> {
+  for (;;) {
+    const next = await inputs.next();
+    if (next.done) {
+      cli.inputEnded = true;
+      return;
+    }
+    cli.received.push(next.value);
+  }
+}
+
+/** The text of a user message the host sent into the CLI. */
+const textOf = (message: unknown): string => {
+  const content = (message as { message?: { content?: unknown } }).message?.content;
+  if (typeof content === 'string') return content;
+  return Array.isArray(content) ? content.map((c) => (c as { text?: string }).text ?? '').join('') : '';
+};
+
 /** `true` when `p` is still pending after one macrotask (real timers only). */
 async function isPending(p: Promise<unknown>): Promise<boolean> {
   let settled = false;
@@ -404,10 +428,10 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
         await readOpening(inputs, cli);
         yield* openingTurnHead([agentTask(AGENT_ID), agentTask(SECOND_AGENT_ID)]);
         yield openingResult(cli.opening?.uuid);
-        const probe = watchInputEnd(inputs, cli);
+        const drained = drainInputs(inputs, cli);
         pulledPastOpening.resolve();
         // Silent until the input ends.
-        await probe;
+        await drained;
         yield taskNotification(AGENT_ID, 'stopped');
         yield taskNotification(SECOND_AGENT_ID, 'stopped');
         yield level([]);
@@ -430,6 +454,14 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
       expect(cli.stopTask).toHaveBeenCalledWith(AGENT_ID);
       expect(cli.stopTask).toHaveBeenCalledWith(SECOND_AGENT_ID);
       expect(cli.inputEnded).toBe(true);
+      // #1039: before the input closed, the host told the model that it — not the
+      // user — stopped them (the CLI words every stopTask "was stopped by user").
+      const note = cli.received.slice(1).map(textOf).join('\n');
+      expect(note).toContain('[host: keepalive cap]');
+      expect(note).toContain(AGENT_ID);
+      expect(note).toContain(SECOND_AGENT_ID);
+      expect(note).toMatch(/The user did not stop/);
+      expect(note).toMatch(/"was stopped by user"/);
       expect(warn).toHaveBeenCalledWith(
         CAP_LOG,
         expect.objectContaining({ live: 2, maxMs: CAP_MS, sessionKey: SESSION_KEY }),
@@ -1819,5 +1851,192 @@ describe('ClaudeHandler: a late result does not cut a notification turn of a bac
     const results = resultsOf(frames);
     expect(results).toHaveLength(1);
     expect(results[0]).toMatchObject({ result: 'WAITING', user_message_uuid: cli.opening?.uuid });
+  });
+});
+
+/**
+ * #1039 — the keepalive cap measures silence, not age.
+ *
+ * Dev, 7 November 2026: a background opus coder was still running Bash when the
+ * cap fired exactly 30 minutes after the hold began, and `stopTask` killed it.
+ * The CLI reported it as "was stopped by user"; the model told the user they had
+ * stopped it. The cap now re-arms on every activity frame while the turn is held
+ * and fires only after SOMA_BG_KEEPALIVE_MAX_MS of silence, under a hard ceiling
+ * of BG_KEEPALIVE_HARD_CEILING_FACTOR times that.
+ */
+describe('ClaudeHandler keepalive cap measures silence, not age (#1039)', () => {
+  beforeEach(() => {
+    queryMock.mockReset();
+    releaseMock.mockClear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  /** A held turn whose agent emits one frame per `pulse()`, until `finish()`. */
+  function installWorkingAgent(cli: FakeCli, frame: Record<string, unknown> = SUBAGENT_ASSISTANT) {
+    const pulledPastOpening = deferred();
+    let pulse = deferred();
+    let pulled = deferred();
+    let finished = false;
+    const finish = deferred();
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield* openingTurnHead([agentTask(AGENT_ID)]);
+      yield openingResult(cli.opening?.uuid);
+      const drained = drainInputs(inputs, cli);
+      pulledPastOpening.resolve();
+      for (;;) {
+        const which = await Promise.race([
+          pulse.promise.then(() => 'pulse' as const),
+          finish.promise.then(() => 'finish' as const),
+          drained.then(() => 'ended' as const),
+        ]);
+        if (which === 'pulse') {
+          pulse = deferred();
+          yield frame;
+          const p = pulled;
+          pulled = deferred();
+          p.resolve();
+          continue;
+        }
+        finished = which === 'finish';
+        break;
+      }
+      if (finished) {
+        yield level([]);
+        yield taskNotification(AGENT_ID, 'completed');
+      } else {
+        yield taskNotification(AGENT_ID, 'stopped');
+        yield level([]);
+      }
+      yield INIT;
+      yield NOTIFIED;
+      yield notifiedResult();
+      await drained;
+    });
+    return {
+      pulledPastOpening: pulledPastOpening.promise,
+      /** Emit one subagent frame and wait until the handler pulled it. */
+      async beat() {
+        const p = pulled.promise;
+        pulse.resolve();
+        await p;
+      },
+      finish: () => finish.resolve(),
+    };
+  }
+
+  it('does not stop an agent that keeps working past the cap, and ends on its report', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const agent = installWorkingAgent(cli);
+      const framesPromise = collect(startTurn(newHandler()));
+      await agent.pulledPastOpening;
+
+      // Activity every CAP_MS - 1 for three caps' worth of time.
+      for (let i = 0; i < 3; i++) {
+        await vi.advanceTimersByTimeAsync(CAP_MS - 1);
+        await agent.beat();
+      }
+      expect(cli.stopTask).not.toHaveBeenCalled();
+      expect(cli.inputEnded).toBe(false);
+      expect(callsOf(warn, CAP_LOG)).toHaveLength(0);
+
+      agent.finish();
+      const frames = await framesPromise;
+      expect(cli.stopTask).not.toHaveBeenCalled();
+      expect(resultsOf(frames)[0]).toMatchObject({ result: 'NOTIFIED' });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('stops an agent once it has been silent for the cap, counted from its last frame', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const agent = installWorkingAgent(cli);
+      const framesPromise = collect(startTurn(newHandler()));
+      await agent.pulledPastOpening;
+
+      await vi.advanceTimersByTimeAsync(CAP_MS - 1);
+      await agent.beat();
+      // Silent from here: the cap counts from the last frame.
+      await vi.advanceTimersByTimeAsync(CAP_MS - 1);
+      expect(cli.stopTask).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      const frames = await framesPromise;
+
+      expect(cli.stopTask).toHaveBeenCalledWith(AGENT_ID);
+      expect(cli.inputEnded).toBe(true);
+      expect(callsOf(warn, CAP_LOG)).toHaveLength(1);
+      const note = cli.received.slice(1).map(textOf).join('\n');
+      expect(note).toContain('[host: keepalive cap]');
+      expect(note).toMatch(/no output for 5 minutes/);
+      expect(resultsOf(frames)).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not count CLI chatter (status, rate limits) as the agent working', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const agent = installWorkingAgent(cli, { type: 'rate_limit_event', rate_limit_info: {} });
+      const framesPromise = collect(startTurn(newHandler()));
+      await agent.pulledPastOpening;
+
+      await vi.advanceTimersByTimeAsync(CAP_MS - 1);
+      await agent.beat();
+      await vi.advanceTimersByTimeAsync(1);
+      await framesPromise;
+
+      expect(cli.stopTask).toHaveBeenCalledWith(AGENT_ID);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('stops an agent that never goes silent at the hard ceiling', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const agent = installWorkingAgent(cli);
+      const framesPromise = collect(startTurn(newHandler()));
+      await agent.pulledPastOpening;
+
+      const ceiling = CAP_MS * BG_KEEPALIVE_HARD_CEILING_FACTOR;
+      const step = CAP_MS / 2;
+      let elapsed = 0;
+      while (elapsed + step < ceiling) {
+        await vi.advanceTimersByTimeAsync(step);
+        elapsed += step;
+        await agent.beat();
+      }
+      expect(cli.stopTask).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(ceiling - elapsed);
+      const frames = await framesPromise;
+
+      expect(cli.stopTask).toHaveBeenCalledWith(AGENT_ID);
+      const note = cli.received.slice(1).map(textOf).join('\n');
+      expect(note).toContain('[host: keepalive cap]');
+      expect(note).toMatch(/ran past the 40-minute ceiling/);
+      expect(resultsOf(frames)).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

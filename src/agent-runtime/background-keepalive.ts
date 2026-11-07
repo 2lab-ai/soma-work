@@ -23,10 +23,13 @@
  */
 
 /**
- * Default keepalive cap: 30 minutes. Well under the Slack consumer's own
- * per-frame stall timeout (2 h, `SOMA_STREAM_STALL_TIMEOUT_MS`), so the
- * handler's cap — which stops the agents and still ends the turn with an
- * answer — always fires first.
+ * Default keepalive cap: 30 minutes of SILENCE (#1039) — the handler re-arms it
+ * on every activity frame while a turn is held, so an agent that keeps working
+ * is never stopped for its age; `BG_KEEPALIVE_HARD_CEILING_FACTOR` (claude-
+ * handler) bounds one that never goes quiet. Silence-based, it is still well
+ * under the Slack consumer's own per-frame stall timeout (2 h,
+ * `SOMA_STREAM_STALL_TIMEOUT_MS`), so the handler's cap — which stops the
+ * agents and still ends the turn with an answer — always fires first.
  */
 export const DEFAULT_BG_KEEPALIVE_MAX_MS = 1_800_000;
 
