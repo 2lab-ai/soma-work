@@ -1238,8 +1238,20 @@ describe('ntFollowLaunchChannel', () => {
 // #workspace — the general channel, offered without a repo: the select says it takes any repo (or none).
 describe('the channel select — #workspace', () => {
   const body = clientFn('ntRender');
-  const block = body.slice(body.indexOf("var channel = ntEl('nt-channel');"), body.indexOf('ntRenderNewChannel(isTask);'));
-  const run = new Function('ntEl', 'isTask', '_ntCtx', '_ntState', 'esc', 'escAttr', 'ntSetError', `${block}\nreturn true;`);
+  const block = body.slice(
+    body.indexOf("var channel = ntEl('nt-channel');"),
+    body.indexOf('ntRenderNewChannel(isTask);'),
+  );
+  const run = new Function(
+    'ntEl',
+    'isTask',
+    '_ntCtx',
+    '_ntState',
+    'esc',
+    'escAttr',
+    'ntSetError',
+    `${block}\nreturn true;`,
+  );
   const id = (s: string) => s;
 
   it('a repo channel shows its repo; #workspace shows 모든 repo · 일반 작업', () => {
@@ -1252,6 +1264,20 @@ describe('the channel select — #workspace', () => {
     expect(select.disabled).toBe(false);
     expect(select.innerHTML).toContain('<option value="C_WS" selected>#workspace · 모든 repo · 일반 작업</option>');
     expect(select.innerHTML).toContain('<option value="C_UI">#workspace-ui · ui</option>');
+  });
+
+  it('only #workspace is labelled the general channel — another channel without a repo is just its name', () => {
+    const select = { innerHTML: '', disabled: true };
+    run(
+      () => select,
+      false,
+      { channels: [{ id: 'C_X', name: 'random', repos: [] }] },
+      { channelId: 'C_X' },
+      id,
+      id,
+      vi.fn(),
+    );
+    expect(select.innerHTML).toContain('<option value="C_X" selected>#random</option>');
   });
 
   it('no channel at all: the hint names #workspace beside the repo channels', () => {

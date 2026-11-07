@@ -469,8 +469,8 @@ export interface NewRepoChannelRequest {
   isPrivate: boolean;
 }
 
-/** The workspace's channel convention: `#workspace-<repo name>` (#workspace-soma-work, #workspace-soma). */
-export const REPO_CHANNEL_PREFIX = 'workspace-';
+/** The workspace's channel convention: `#workspace-<repo name>` (#workspace-soma-work, #workspace-soma) — #workspace itself is the general channel. */
+export const REPO_CHANNEL_PREFIX = `${GENERAL_CHANNEL_NAME}-`;
 /** Slack's channel name limit. */
 export const CHANNEL_NAME_MAX = 80;
 
