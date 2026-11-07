@@ -22014,7 +22014,9 @@ function ntRender() {
           var repos = (c.repos || []).map(function (r) {
             return r.split('/').pop();
           });
-          var label = '#' + c.name + (repos.length ? ' · ' + repos.join(', ') : '');
+          // #workspace, the general channel, is offered without a repo: any repo, or none.
+          var general = !repos.length && c.name === 'workspace';
+          var label = '#' + c.name + (repos.length ? ' · ' + repos.join(', ') : general ? ' · 모든 repo · 일반 작업' : '');
           return '<option value="' + escAttr(c.id) + '"' + (c.id === _ntState.channelId ? ' selected' : '') + '>' + esc(label) + '</option>';
         })
         .join('') +
@@ -22029,7 +22031,7 @@ function ntRender() {
     ntSetError(
       _ntCtx.membershipUnknown
         ? 'Slack 채널 멤버십을 확인하지 못해 채널을 보여 드릴 수 없습니다 — 잠시 후 다시 열어 주세요'
-        : '작업을 올릴 수 있는 채널이 없습니다 — repo가 연결된 Slack 채널에 참여해 주세요',
+        : '작업을 올릴 수 있는 채널이 없습니다 — repo가 연결된 Slack 채널이나 #workspace에 참여해 주세요',
     );
   }
   ntRenderNewChannel(isTask);
