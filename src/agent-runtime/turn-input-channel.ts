@@ -194,6 +194,19 @@ export class TurnInputChannel implements AsyncIterable<SteerUserMessage> {
   }
 
   /**
+   * Enqueue a host-authored message that is NOT a steer (#1041): it is never
+   * listed in {@link pushedUuids}, so steer settlement neither consumes nor
+   * discards it. The caller owns its uuid and must not end the turn while it
+   * is still queued. Same refusal rules as {@link push}.
+   */
+  pushUntracked(message: SteerUserMessage): boolean {
+    if (this.closed || this.sealed) return false;
+    this.queue.push(message);
+    this.release();
+    return true;
+  }
+
+  /**
    * The uuids accepted by {@link push}, in order. A copy: the caller settles
    * against this list (and may reorder/filter it) without editing the ledger.
    */
