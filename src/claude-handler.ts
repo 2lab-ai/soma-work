@@ -433,20 +433,35 @@ export const BG_FOLLOWUP_GRACE_MS = 5_000;
 export const BG_KEEPALIVE_HARD_CEILING_FACTOR = 8;
 
 /**
+ * After the keepalive cap fires, how long the report turn the host's note asks
+ * for may run in total (#1041 review). The backstop re-arms on that turn's
+ * progress — a report that runs one long tool must not be cut — but never past
+ * this wall clock, so a turn that never ends cannot hold the query forever. 15
+ * minutes covers a 10-minute Bash (the tool's own limit) plus the report.
+ */
+export const KEEPALIVE_REPORT_TURN_MAX_MS = 15 * 60_000;
+
+/**
  * Does this raw frame show the held turn's work still moving (#1039)? A main-
  * thread turn frame, a subagent's own message (stamped with the tool_use that
  * spawned it), a held agent's own task report (`system`/`task_*` naming one of
- * `heldAgents`), or the live set changing. Not activity: a tool heartbeat
- * (`tool_progress` — a tool still running, not anything moving; #1041 review),
+ * `heldAgents`), the live set changing, or a tool's real progress tick. Not
+ * activity: a tool heartbeat (`tool_progress` with `heartbeat: true` — a tool
+ * still running, not anything moving; #1041 review),
  * another task's report, CLI chatter (`system`/`status`, rate limits).
  */
 function isKeepaliveActivityFrame(raw: Record<string, unknown>, heldAgents: ReadonlySet<string>): boolean {
-  if (raw.type === 'tool_progress') return false;
+  if (raw.type === 'tool_progress') return raw.heartbeat !== true;
   if (isTurnProgressFrame(raw)) return true;
   if (raw.parent_tool_use_id !== undefined && raw.parent_tool_use_id !== null) return true;
   if (raw.type !== 'system' || typeof raw.subtype !== 'string') return false;
   if (raw.subtype === 'background_tasks_changed') return true;
   return raw.subtype.startsWith('task_') && heldAgents.has(String(raw.task_id ?? ''));
+}
+
+/** A main-thread tool's progress frame, heartbeat or not: the turn is inside a tool call. */
+function isMainThreadToolProgress(raw: Record<string, unknown>): boolean {
+  return raw.type === 'tool_progress' && (raw.parent_tool_use_id === undefined || raw.parent_tool_use_id === null);
 }
 
 /**
@@ -1578,6 +1593,7 @@ export class ClaudeHandler implements TurnSteeringPort {
       let keepaliveCapTimer: NodeJS.Timeout | undefined;
       let keepaliveCeilingTimer: NodeJS.Timeout | undefined;
       let keepaliveBackstopTimer: NodeJS.Timeout | undefined;
+      let keepaliveFiredAt = 0;
       const disarmKeepaliveTimers = () => {
         if (keepaliveCapTimer) clearTimeout(keepaliveCapTimer);
         keepaliveCapTimer = undefined;
@@ -1638,26 +1654,31 @@ export class ClaudeHandler implements TurnSteeringPort {
           });
         }
         channel.close();
+        keepaliveFiredAt = Date.now();
         armKeepaliveBackstop();
       };
       // A CLI that does not end the turn after the cap is closed outright. Re-armed
       // while the report turn makes progress (see the frame loop).
       const armKeepaliveBackstop = () => {
         if (keepaliveBackstopTimer) clearTimeout(keepaliveBackstopTimer);
-        keepaliveBackstopTimer = setTimeout(() => {
-          keepaliveBackstopTimer = undefined;
-          this.logger.warn('The deferred turn did not end after the keepalive cap; closing the query', {
-            idleMs: NON_TURN_RESULT_IDLE_MS,
-            sessionKey: steerKey,
-          });
-          try {
-            activeQuery.close();
-          } catch (error) {
-            this.logger.debug('Keepalive backstop: closing the query failed', {
-              error: error instanceof Error ? error.message : String(error),
+        const left = keepaliveFiredAt + KEEPALIVE_REPORT_TURN_MAX_MS - Date.now();
+        keepaliveBackstopTimer = setTimeout(
+          () => {
+            keepaliveBackstopTimer = undefined;
+            this.logger.warn('The deferred turn did not end after the keepalive cap; closing the query', {
+              idleMs: NON_TURN_RESULT_IDLE_MS,
+              sessionKey: steerKey,
             });
-          }
-        }, NON_TURN_RESULT_IDLE_MS);
+            try {
+              activeQuery.close();
+            } catch (error) {
+              this.logger.debug('Keepalive backstop: closing the query failed', {
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          },
+          Math.max(0, Math.min(NON_TURN_RESULT_IDLE_MS, left)),
+        );
       };
       const armKeepaliveCap = () => {
         keepaliveCapTimer = setTimeout(() => fireKeepaliveCap('idle'), keepaliveMaxMs);
@@ -1706,7 +1727,9 @@ export class ClaudeHandler implements TurnSteeringPort {
           if (held && isKeepaliveActivityFrame(raw, liveAgents)) rearmKeepaliveIdle();
           // After the cap fired, the report turn the note asked for is running:
           // the backstop is for a CLI that never ends, not a slow one (#1041 review).
-          if (keepaliveBackstopTimer && isTurnProgressFrame(raw)) armKeepaliveBackstop();
+          if (keepaliveBackstopTimer && (isTurnProgressFrame(raw) || isMainThreadToolProgress(raw))) {
+            armKeepaliveBackstop();
+          }
           // A side-band frame (background task progress, a subagent's own
           // messages, rate limits, ...) leaves the bound running: the CLI is
           // alive, but nothing says the prompt is being answered.

@@ -61,6 +61,7 @@ import {
   BG_FOLLOWUP_GRACE_MS,
   BG_KEEPALIVE_HARD_CEILING_FACTOR,
   ClaudeHandler,
+  KEEPALIVE_REPORT_TURN_MAX_MS,
   NON_TURN_RESULT_IDLE_MS,
 } from '../claude-handler';
 import { Logger } from '../logger';
@@ -2041,11 +2042,17 @@ describe('ClaudeHandler keepalive cap measures silence, not age (#1039)', () => 
     }
   });
 
-  it("counts the held agent's own task progress as work", async () => {
+  it.each([
+    ["the held agent's own task progress", { type: 'system', subtype: 'task_progress', task_id: AGENT_ID }],
+    [
+      "a subagent tool's real progress tick (not a heartbeat)",
+      { type: 'tool_progress', parent_tool_use_id: 'toolu_agent', tool_name: 'Bash', heartbeat: false },
+    ],
+  ])('counts %s as work', async (_kind, frame) => {
     vi.useFakeTimers();
     vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
     const cli = newFakeCli();
-    const agent = installWorkingAgent(cli, { type: 'system', subtype: 'task_progress', task_id: AGENT_ID });
+    const agent = installWorkingAgent(cli, frame);
     const framesPromise = collect(startTurn(newHandler()));
     await agent.pulledPastOpening;
 
@@ -2057,6 +2064,60 @@ describe('ClaudeHandler keepalive cap measures silence, not age (#1039)', () => 
     agent.finish();
     await framesPromise;
     expect(cli.stopTask).not.toHaveBeenCalled();
+  });
+
+  // #1041 review round 2 (grok P2): the backstop's re-arms are bounded — a
+  // report turn that never ends cannot hold the query open forever.
+  it('closes the query at the report-turn ceiling even while that turn keeps sending frames', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const inputEnded = deferred();
+      let gate = deferred();
+      let pulled = deferred();
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([agentTask(AGENT_ID)]);
+        yield openingResult(cli.opening?.uuid);
+        await drainInputs(inputs, cli);
+        inputEnded.resolve();
+        yield taskNotification(AGENT_ID, 'stopped');
+        yield level([]);
+        yield INIT;
+        for (;;) {
+          const closed = await Promise.race([gate.promise.then(() => false), cli.closed.then(() => true)]);
+          if (closed) return;
+          gate = deferred();
+          yield assistantText('still going');
+          const p = pulled;
+          pulled = deferred();
+          p.resolve();
+        }
+      });
+
+      const framesPromise = collect(startTurn(newHandler()));
+      await vi.advanceTimersByTimeAsync(CAP_MS);
+      await inputEnded.promise;
+      const step = NON_TURN_RESULT_IDLE_MS - 1;
+      let elapsed = 0;
+      while (cli.close.mock.calls.length === 0 && elapsed < KEEPALIVE_REPORT_TURN_MAX_MS + 3 * step) {
+        await vi.advanceTimersByTimeAsync(step);
+        elapsed += step;
+        if (cli.close.mock.calls.length > 0) break;
+        const p = pulled.promise;
+        gate.resolve();
+        await p;
+      }
+      // Frames kept coming the whole time; the bound still closed it, near the ceiling.
+      expect(cli.close).toHaveBeenCalled();
+      expect(elapsed).toBeGreaterThan(KEEPALIVE_REPORT_TURN_MAX_MS - 2 * step);
+      expect(elapsed).toBeLessThanOrEqual(KEEPALIVE_REPORT_TURN_MAX_MS + step);
+      await framesPromise;
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   // #1041 review (fable P2): the note asks the model to report; a report turn
@@ -2101,6 +2162,55 @@ describe('ClaudeHandler keepalive cap measures silence, not age (#1039)', () => 
       expect(cli.close).not.toHaveBeenCalled();
       step2.resolve();
       await pulled2.promise;
+      const frames = await framesPromise;
+
+      expect(cli.close).not.toHaveBeenCalled();
+      expect(resultsOf(frames)[0]).toMatchObject({ result: 'REPORT' });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // #1041 review round 2 (fable P2): a report turn inside one long main-thread
+  // tool sends only heartbeats; the backstop must not close it mid-tool.
+  it('does not close the query on the backstop while the report turn runs a long tool', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const inputEnded = deferred();
+      const beats = Array.from({ length: 3 }, () => ({ gate: deferred(), pulled: deferred() }));
+      const done = deferred();
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([agentTask(AGENT_ID)]);
+        yield openingResult(cli.opening?.uuid);
+        await drainInputs(inputs, cli);
+        inputEnded.resolve();
+        yield taskNotification(AGENT_ID, 'stopped');
+        yield level([]);
+        yield INIT;
+        for (const beat of beats) {
+          await beat.gate.promise;
+          yield { type: 'tool_progress', parent_tool_use_id: null, tool_name: 'Bash', heartbeat: true };
+          beat.pulled.resolve();
+        }
+        await done.promise;
+        yield assistantText('REPORT');
+        yield notifiedResult({ result: 'REPORT', uuid: 'report-result-uuid' });
+      });
+
+      const framesPromise = collect(startTurn(newHandler()));
+      await vi.advanceTimersByTimeAsync(CAP_MS);
+      await inputEnded.promise;
+      for (const beat of beats) {
+        await vi.advanceTimersByTimeAsync(NON_TURN_RESULT_IDLE_MS - 1);
+        beat.gate.resolve();
+        await beat.pulled.promise;
+      }
+      expect(cli.close).not.toHaveBeenCalled();
+      done.resolve();
       const frames = await framesPromise;
 
       expect(cli.close).not.toHaveBeenCalled();
