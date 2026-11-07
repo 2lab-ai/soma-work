@@ -131,7 +131,7 @@ var _csrfToken = '';
 function paintAppBar() {
   var bar = document.getElementById('app-bar');
   if (!bar) return;
-  var data = { brand: { label: 'soma-work', mark: true, href: '/dashboard' }, nav: APP_BAR_NAV, navLabel: '주 메뉴', theme: somaThemeNow().theme, palette: somaThemeNow().palette };
+  var data = { brand: { label: 'soma-work', mark: true, href: '/dashboard' }, nav: APP_BAR_NAV, navLabel: '주 메뉴', theme: somaThemeNow().theme, palette: somaThemeNow().palette, design: somaThemeNow().design, designs: SOMA_DESIGNS };
   if (_appBarAccount) data.account = _appBarAccount;
   bar.data = data;
 }
