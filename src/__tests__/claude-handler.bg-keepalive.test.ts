@@ -2008,6 +2008,108 @@ describe('ClaudeHandler keepalive cap measures silence, not age (#1039)', () => 
     }
   });
 
+  // #1041 review (grok P2, fable P2): a heartbeat says a tool is still running,
+  // not that anything moved; another task's report is not this agent working.
+  it.each([
+    [
+      "a subagent tool's heartbeat",
+      { type: 'tool_progress', parent_tool_use_id: 'toolu_agent', tool_name: 'Bash', heartbeat: true },
+    ],
+    [
+      'a main-thread tool heartbeat',
+      { type: 'tool_progress', parent_tool_use_id: null, tool_name: 'Bash', heartbeat: true },
+    ],
+    ["another task's progress", { type: 'system', subtype: 'task_progress', task_id: 'bash-1' }],
+  ])('does not count %s as the held agent working', async (_kind, frame) => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const agent = installWorkingAgent(cli, frame);
+      const framesPromise = collect(startTurn(newHandler()));
+      await agent.pulledPastOpening;
+
+      await vi.advanceTimersByTimeAsync(CAP_MS - 1);
+      await agent.beat();
+      await vi.advanceTimersByTimeAsync(1);
+      await framesPromise;
+
+      expect(cli.stopTask).toHaveBeenCalledWith(AGENT_ID);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("counts the held agent's own task progress as work", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const cli = newFakeCli();
+    const agent = installWorkingAgent(cli, { type: 'system', subtype: 'task_progress', task_id: AGENT_ID });
+    const framesPromise = collect(startTurn(newHandler()));
+    await agent.pulledPastOpening;
+
+    await vi.advanceTimersByTimeAsync(CAP_MS - 1);
+    await agent.beat();
+    await vi.advanceTimersByTimeAsync(CAP_MS - 1);
+    expect(cli.stopTask).not.toHaveBeenCalled();
+
+    agent.finish();
+    await framesPromise;
+    expect(cli.stopTask).not.toHaveBeenCalled();
+  });
+
+  // #1041 review (fable P2): the note asks the model to report; a report turn
+  // that runs tools past the 60 s backstop must not be closed mid-way.
+  it('does not close the query on the backstop while the report turn after the cap is running', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const inputEnded = deferred();
+      const step1 = deferred();
+      const step2 = deferred();
+      const pulled1 = deferred();
+      const pulled2 = deferred();
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([agentTask(AGENT_ID)]);
+        yield openingResult(cli.opening?.uuid);
+        await drainInputs(inputs, cli);
+        inputEnded.resolve();
+        yield taskNotification(AGENT_ID, 'stopped');
+        yield level([]);
+        yield INIT;
+        await step1.promise;
+        yield assistantText('checking what the coder left');
+        pulled1.resolve();
+        await step2.promise;
+        yield assistantText('REPORT');
+        pulled2.resolve();
+        yield notifiedResult({ result: 'REPORT', uuid: 'report-result-uuid' });
+      });
+
+      const framesPromise = collect(startTurn(newHandler()));
+      await vi.advanceTimersByTimeAsync(CAP_MS);
+      await inputEnded.promise;
+
+      await vi.advanceTimersByTimeAsync(NON_TURN_RESULT_IDLE_MS - 1);
+      step1.resolve();
+      await pulled1.promise;
+      await vi.advanceTimersByTimeAsync(NON_TURN_RESULT_IDLE_MS - 1);
+      expect(cli.close).not.toHaveBeenCalled();
+      step2.resolve();
+      await pulled2.promise;
+      const frames = await framesPromise;
+
+      expect(cli.close).not.toHaveBeenCalled();
+      expect(resultsOf(frames)[0]).toMatchObject({ result: 'REPORT' });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('stops an agent that never goes silent at the hard ceiling', async () => {
     vi.useFakeTimers();
     vi.stubEnv(KEEPALIVE_ENV, String(CAP_MS));

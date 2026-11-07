@@ -38,7 +38,7 @@ export const DEFAULT_BG_KEEPALIVE_MAX_MS = 1_800_000;
  * 1 ms (Node `TimeoutOverflowWarning`), which would turn a "very long" cap into
  * an instant one.
  */
-const MAX_TIMER_DELAY_MS = 2_147_483_647;
+export const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 /** The only task type that holds a turn open. */
 const AGENT_TASK_TYPE = 'local_agent';
