@@ -442,6 +442,15 @@ export const BG_KEEPALIVE_HARD_CEILING_FACTOR = 8;
 export const KEEPALIVE_REPORT_TURN_MAX_MS = 15 * 60_000;
 
 /**
+ * After the keepalive cap fires, how long the report turn may go without a
+ * frame before the backstop closes the query (#1041 review). A report's single
+ * model call can think for minutes without one when partial messages are off,
+ * so this is longer than the 60 s silence bound; KEEPALIVE_REPORT_TURN_MAX_MS
+ * still caps the total.
+ */
+export const KEEPALIVE_BACKSTOP_IDLE_MS = 5 * 60_000;
+
+/**
  * Does this raw frame show the held turn's work still moving (#1039)? A main-
  * thread turn frame, a subagent's own message (stamped with the tool_use that
  * spawned it), a held agent's own task report (`system`/`task_*` naming one of
@@ -1594,6 +1603,10 @@ export class ClaudeHandler implements TurnSteeringPort {
       let keepaliveCeilingTimer: NodeJS.Timeout | undefined;
       let keepaliveBackstopTimer: NodeJS.Timeout | undefined;
       let keepaliveFiredAt = 0;
+      /** The cap note still owed its own turn (#1041 review): the held turn does not end before it. */
+      let pendingCapNoteUuid: string | undefined;
+      /** A held result captured while the note was still queued: its `queued_turn_count` counts the note. */
+      let capNoteInLatest = false;
       const disarmKeepaliveTimers = () => {
         if (keepaliveCapTimer) clearTimeout(keepaliveCapTimer);
         keepaliveCapTimer = undefined;
@@ -1634,9 +1647,7 @@ export class ClaudeHandler implements TurnSteeringPort {
         keepaliveCapTimer = undefined;
         if (keepaliveCeilingTimer) clearTimeout(keepaliveCeilingTimer);
         keepaliveCeilingTimer = undefined;
-        // An agent the model already stopped (`TaskStop`, level frame lagging)
-        // is not the host's to stop or to explain.
-        const live = [...liveAgents].filter((taskId) => !stoppedOnPurpose.has(taskId));
+        const live = [...liveAgents];
         this.logger.warn('Background agents outlived the keepalive cap; stopping them', {
           live: live.length,
           maxMs: keepaliveMaxMs,
@@ -1644,14 +1655,20 @@ export class ClaudeHandler implements TurnSteeringPort {
           sessionKey: steerKey,
         });
         for (const taskId of live) stopBackgroundAgent(taskId);
-        if (
-          live.length > 0 &&
-          !channel.push(buildInitialUserMessage(buildKeepaliveCapNote(live, reason, keepaliveMaxMs)))
-        ) {
-          this.logger.warn('Keepalive cap: the input was already closed; the host note did not reach the model', {
-            live: live.length,
-            sessionKey: steerKey,
-          });
+        if (live.length > 0) {
+          // Its own uuid, outside the steer ledger: the held turn waits for the
+          // note's turn (the result echoing it), so the note is never left
+          // queued for settlement to read as an unconsumed steer (#1041 review).
+          const noteUuid = randomUUID();
+          const note = buildInitialUserMessage(buildKeepaliveCapNote(live, reason, keepaliveMaxMs), noteUuid);
+          if (channel.pushUntracked(note)) {
+            pendingCapNoteUuid = noteUuid;
+          } else {
+            this.logger.warn('Keepalive cap: the input was already closed; the host note did not reach the model', {
+              live: live.length,
+              sessionKey: steerKey,
+            });
+          }
         }
         channel.close();
         keepaliveFiredAt = Date.now();
@@ -1666,7 +1683,7 @@ export class ClaudeHandler implements TurnSteeringPort {
           () => {
             keepaliveBackstopTimer = undefined;
             this.logger.warn('The deferred turn did not end after the keepalive cap; closing the query', {
-              idleMs: NON_TURN_RESULT_IDLE_MS,
+              idleMs: KEEPALIVE_BACKSTOP_IDLE_MS,
               sessionKey: steerKey,
             });
             try {
@@ -1677,7 +1694,7 @@ export class ClaudeHandler implements TurnSteeringPort {
               });
             }
           },
-          Math.max(0, Math.min(NON_TURN_RESULT_IDLE_MS, left)),
+          Math.max(0, Math.min(KEEPALIVE_BACKSTOP_IDLE_MS, left)),
         );
       };
       const armKeepaliveCap = () => {
@@ -1708,7 +1725,17 @@ export class ClaudeHandler implements TurnSteeringPort {
         if (!steerSettled) {
           const forceDiscard = channel.pushedUuids().slice(turn.pushedCount);
           const settleWith = errorResult ?? turn.latest;
-          settlement = await this.settleSteeredSends(activeQuery, settleWith, channel, capabilities, forceDiscard);
+          // A cap note still queued when `latest` was captured is in its
+          // `queued_turn_count` but not in the steer ledger (#1041 review).
+          const untrackedQueued = pendingCapNoteUuid && capNoteInLatest && !errorResult ? 1 : 0;
+          settlement = await this.settleSteeredSends(
+            activeQuery,
+            settleWith,
+            channel,
+            capabilities,
+            forceDiscard,
+            untrackedQueued,
+          );
           if (settlement) steerSettled = true;
         }
         channel.close();
@@ -1851,6 +1878,17 @@ export class ClaudeHandler implements TurnSteeringPort {
               latest: message,
               pushedCount: channel.pushedUuids().length,
             };
+            // The host's cap note is still queued: its turn has not run. Ending
+            // now would leave it for settlement to count as an unconsumed steer
+            // (#1041 review). The input is closed, so the CLI ends after it; the
+            // stream end (and the backstop) still bound the wait.
+            if (pendingCapNoteUuid) {
+              if (raw.user_message_uuid !== pendingCapNoteUuid) {
+                capNoteInLatest = true;
+                continue;
+              }
+              pendingCapNoteUuid = undefined;
+            }
             if (liveAgents.size > 0) continue;
             // The agent settled inside the turn this result closes: its report
             // was either folded into that turn or is about to run as a turn of
@@ -2214,6 +2252,7 @@ export class ClaudeHandler implements TurnSteeringPort {
     channel: TurnInputChannel,
     capabilities: string[],
     forceDiscard: readonly string[] = [],
+    untrackedQueued = 0,
   ): Promise<SDKMessage | undefined> {
     // Sealed BEFORE the snapshot: the settlement awaits a control round-trip,
     // and a push accepted during that await would be missing from this snapshot
@@ -2225,7 +2264,10 @@ export class ClaudeHandler implements TurnSteeringPort {
     if (pushedUuids.length === 0) return undefined;
 
     const raw = result as unknown as Record<string, unknown>;
-    const queuedTurnCount = typeof raw.queued_turn_count === 'number' ? raw.queued_turn_count : undefined;
+    // Host-owned sends outside the ledger (the keepalive cap note, #1041) are
+    // not steers: take them out of the backlog before it is read as unconsumed.
+    const queuedTurnCount =
+      typeof raw.queued_turn_count === 'number' ? Math.max(0, raw.queued_turn_count - untrackedQueued) : undefined;
 
     let discarded: string[];
     if (!isHealthyTurnResult(raw)) {
