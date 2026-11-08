@@ -1349,5 +1349,19 @@
   "재개하면 바로 지금 목표로 시작합니다.": "A resumed goal starts now as the current goal.",
   "일시정지된 goal ": "Paused goals: ",
   "<span class=\"cgl-n\">일시정지 ": "<span class=\"cgl-n\">paused ",
-  "삭제": "Delete"
+  "삭제": "Delete",
+  "30일 안의 시각을 고르세요.": "Pick a time within 30 days.",
+  "llmux 세이브 모드 — 정한 시각 전에 주간 한도가 리셋되는 계정만 씁니다": "llmux save mode — use only the accounts whose weekly limit resets before the time you set",
+  "llmux 세이브 모드": "llmux save mode",
+  "끄기": "Turn off",
+  "세이브 ~ ": "Saving until ",
+  "세이브 끔": "Save off",
+  "세이브 모드": "Save mode",
+  "쉬게 한 계정: ": "Accounts held: ",
+  "시각 바꾸기": "Change time",
+  "아낄 시각을 입력하세요.": "Enter the time to save until.",
+  "이 시각까지 아끼기": "Save until this time",
+  "지금보다 뒤의 시각을 고르세요.": "Pick a time later than now.",
+  "켜 두면 이 시각 전에 주간 한도가 리셋되는 계정만 씁니다. 그 뒤에 리셋되는 계정은 일시정지처럼 쉬게 해서, 그 시각 이후에 쓸 토큰을 아껴 둡니다. 쓸 수 있는 계정을 다 쓰면 그 시각까지 요청이 거절됩니다. 시각이 지나면 저절로 꺼집니다.": "While on, only accounts whose weekly limit resets before this time are used. Accounts that reset after it are held like a pause, so their tokens are kept for after that time. When every usable account is spent, requests are refused until that time. It turns off by itself when the time passes.",
+  "켜기": "Turn on"
 }

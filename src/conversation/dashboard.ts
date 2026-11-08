@@ -1107,6 +1107,8 @@ export interface CapacitySource {
   enabled(): { ok: true } | { ok: false; reason: string };
   fetchStatus(): Promise<LlmuxStatus>;
   tiers(): Record<string, LlmuxTierId>;
+  /** llmux save mode on until `until` (epoch seconds) or off (`null`) — `POST /llmux/save-mode`. */
+  setSaveMode(until: number | null): Promise<unknown>;
 }
 let _capacitySource: CapacitySource | null = null;
 let _capacityCache: { at: number; view: CapacityView } | null = null;
@@ -1125,7 +1127,7 @@ export function setCapacitySource(source: CapacitySource | null): void {
 async function defaultCapacitySource(): Promise<CapacitySource> {
   // Loaded on first use, so the dashboard module stays free of auth-runtime
   // and config side effects at import.
-  const [{ getAuthRuntimeSnapshot }, { fetchLlmuxStatus }, { getLlmuxAccountTiers }] = await Promise.all([
+  const [{ getAuthRuntimeSnapshot }, { fetchLlmuxStatus, setLlmuxSaveMode }, { getLlmuxAccountTiers }] = await Promise.all([
     import('../auth/auth-runtime'),
     import('../auth/llmux-client'),
     import('../config'),
@@ -1137,6 +1139,7 @@ async function defaultCapacitySource(): Promise<CapacitySource> {
     },
     fetchStatus: () => fetchLlmuxStatus({ timeoutMs: 3_000 }),
     tiers: () => getLlmuxAccountTiers(),
+    setSaveMode: (until) => setLlmuxSaveMode(until),
   };
 }
 
@@ -3592,6 +3595,51 @@ export async function registerDashboardRoutes(
     reply.send({ capacity: await readCapacity() });
   });
 
+  // llmux save mode (top bar, admin): until the cutoff llmux uses only the
+  // accounts whose weekly quota resets by then and holds the rest like a
+  // pause. A global change, gated like the lifecycle policy (an admin with
+  // admin mode on, or the viewer token). The answer is the fresh capacity
+  // view, which carries the mode llmux now reports.
+  server.put<{ Body: { until?: unknown } }>(
+    '/api/dashboard/llmux-save-mode',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      if (!_hasWriteAccess(request, undefined)) {
+        reply.status(403).send({ error: 'Forbidden — save mode requires an admin with Admin mode on' });
+        return;
+      }
+      const until = request.body?.until;
+      if (until !== null && !(typeof until === 'number' && Number.isSafeInteger(until) && until > 0)) {
+        reply.status(400).send({ error: 'until must be epoch seconds or null' });
+        return;
+      }
+      const source = _capacitySource ?? (await defaultCapacitySource());
+      const gate = source.enabled();
+      if (!gate.ok) {
+        reply.status(409).send({ error: gate.reason });
+        return;
+      }
+      try {
+        await source.setSaveMode(until);
+      } catch (err) {
+        const status = (err as { status?: unknown } | null)?.status;
+        if (status === 400) {
+          // llmux's own refusal (past cutoff, more than 30 days out): its words, no host.
+          const message = String((err as Error).message || '').replace(/^llmux POST \/llmux\/save-mode → 400: /, '');
+          reply.status(400).send({ error: message || 'llmux refused the cutoff' });
+          return;
+        }
+        logger.warn('Save mode: llmux write failed', { error: (err as Error)?.message });
+        reply.status(502).send({ error: capacityFailureReason(err) });
+        return;
+      }
+      const auth = (request as any).authContext;
+      logger.warn('llmux save mode changed', { actor: auth?.userId || auth?.mode || 'unknown', until });
+      _capacityCache = null;
+      reply.send({ capacity: await readCapacity() });
+    },
+  );
+
   server.get('/api/dashboard/lifecycle', { preHandler: [authMiddleware] }, async (_request, reply) => {
     reply.send({ lifecycle: lifecycleView() });
   });
@@ -5567,6 +5615,9 @@ ui-app-bar[narrow] .nt-btn-label { display: none; }
 .lang-toggle .lang-cur { display: none; }
 html[lang="ko"] .lang-toggle .lang-cur[data-lang="ko"], html[lang="en"] .lang-toggle .lang-cur[data-lang="en"] { display: inline; }
 .topbar .admin-toggle[aria-pressed="true"] { background: var(--tint-fail-bg); border-color: var(--tint-fail-line); color: var(--tint-fail-fg); }
+/* llmux save mode (admin): a kit chip; on = accounts are held, so it takes the wait tint while it lasts. */
+.topbar .save-mode-btn { flex: none; }
+.topbar .save-mode-btn[aria-pressed="true"] { background: var(--tint-wait-bg); border-color: var(--tint-wait-line, var(--border)); color: var(--tint-wait-fg, inherit); }
 /* Admin approvals (#620): the admins' Slack DM requests, counted in the top bar (a kit chip with a kit count badge,
    the wait tone while any wait), answered in a sheet. */
 .admin-inbox-head { font-weight: 600; outline: none; }
@@ -6714,6 +6765,19 @@ ${pageTokenAliases()}
       title="관리자 쓰기 모드 — 켜면 다른 사람의 세션도 바꿀 수 있습니다 (#716)"
       onclick="toggleAdminMode()"
     ><span id="admin-mode-label"><span class="admin-mode-prefix">관리자 </span><span class="admin-mode-state">끔</span></span></button>
+    <!-- llmux save mode (admin): until a chosen time llmux uses only the accounts whose weekly quota resets by
+         then and holds the rest like a pause. The chip shows the state; a press opens the dialog to set the time
+         (on) or turn it off. Hidden for non-admins and on an llmux without save mode. -->
+    <button
+      id="save-mode-btn"
+      type="button"
+      class="ui-chip save-mode-btn"
+      style="display:none"
+      aria-pressed="false"
+      aria-haspopup="dialog"
+      title="llmux 세이브 모드 — 정한 시각 전에 주간 한도가 리셋되는 계정만 씁니다"
+      onclick="openSaveModeDialog()"
+    ><i data-ui-icon="clock"></i><span id="save-mode-label">세이브 끔</span></button>
     </div>
     <button type="button" class="ui-btn is-primary new-task-btn" id="new-task-btn" slot="actions" aria-keyshortcuts="Control+N" title="새 작업 (Ctrl+N)" onclick="openNewTask()"><i data-ui-icon="plus"></i><span class="nt-btn-label">새 작업</span><kbd class="ui-kbd nt-kbd" aria-hidden="true">Ctrl+N</kbd></button>
     <!-- View mode (SSOT 2026-11-01): 미니멀 by default; this toggle turns 어드밴스드 on — everything the page has.
@@ -6781,6 +6845,19 @@ ${pageTokenAliases()}
         <div slot="footer" class="lc-actions">
           <button type="button" class="ui-btn" onclick="closeLifecycleDialog()">취소</button>
           <button type="submit" form="lifecycle-form" class="ui-btn is-primary lc-save" id="lifecycle-save">저장</button>
+        </div>
+      </ui-dialog>
+      <!-- llmux save mode (admin): the time to save until, 켜기 / 끄기. -->
+      <ui-dialog id="save-mode-dialog" class="lifecycle-dialog save-mode-dialog" heading="llmux 세이브 모드" size="sm" lang="ko">
+        <form id="save-mode-form" onsubmit="submitSaveMode(event, true)">
+          <p class="lc-note">켜 두면 이 시각 전에 주간 한도가 리셋되는 계정만 씁니다. 그 뒤에 리셋되는 계정은 일시정지처럼 쉬게 해서, 그 시각 이후에 쓸 토큰을 아껴 둡니다. 쓸 수 있는 계정을 다 쓰면 그 시각까지 요청이 거절됩니다. 시각이 지나면 저절로 꺼집니다.</p>
+          <label>이 시각까지 아끼기 <input id="sm-until" type="datetime-local" required></label>
+          <p class="ui-status-line lc-status" id="save-mode-status" role="status" aria-live="polite"></p>
+        </form>
+        <div slot="footer" class="lc-actions">
+          <button type="button" class="ui-btn" onclick="closeSaveModeDialog()">취소</button>
+          <button type="button" class="ui-btn" id="save-mode-off" hidden onclick="submitSaveMode(null, false)">끄기</button>
+          <button type="submit" form="save-mode-form" class="ui-btn is-primary" id="save-mode-on">켜기</button>
         </div>
       </ui-dialog>
       <!-- Context rollback (되돌리기 모드): the confirmation for the entry whose button was pressed —
@@ -9076,6 +9153,8 @@ function _applyUserPill(data) {
       try { localStorage.removeItem('soma_admin_mode'); } catch(_e) {}
     }
   }
+  // llmux save mode: the chip is an admin's.
+  paintSaveModeChip();
   // The board may have drawn before the viewer was known: its controls follow the viewer now.
   repaintViewerControls();
 }
@@ -20726,7 +20805,7 @@ function capUnitState(u) {
 // 차단. A usable, spent or unmeasured account has none: its state word says it.
 function capReason(u) {
   var b = u.blocks || {};
-  if (u.excluded === 'held') return u.held === 'paused' ? 'paused' : u.held === 'auth' ? 'auth' : 'held';
+  if (u.excluded === 'held') return u.held === 'paused' ? 'paused' : u.held === 'auth' ? 'auth' : u.held === 'saved' ? '세이브 모드' : 'held';
   if (u.excluded === 'noMeasure') return 'noMeasure';
   if (u.excluded === 'unknownTier') return 'unknownTier';
   if (b.weekly) return 'weekly';
@@ -20813,7 +20892,121 @@ async function loadCapacity() {
     var data = await res.json();
     _capacityView = data.capacity || null;
     paintCapacity();
+    paintSaveModeChip();
   } catch (e) { console.error('Failed to load capacity', e); }
+}
+
+// ── llmux save mode (top bar, admin) ──
+// Until a chosen time llmux uses only the accounts whose weekly quota resets by then; the rest are
+// held like a pause, so their quota is still there after it. The capacity view carries the mode llmux
+// reports (saveMode); PUT /api/dashboard/llmux-save-mode turns it on (epoch seconds) or off (null).
+// Pure: the default cutoff — the next Monday 15:00 in this browser's time zone (today's, on a Monday
+// before 15:00).
+function saveModeDefaultUntil(nowMs) {
+  var d = new Date(nowMs);
+  var t = new Date(d.getFullYear(), d.getMonth(), d.getDate() + ((8 - d.getDay()) % 7), 15, 0, 0, 0);
+  if (t.getTime() <= nowMs) t = new Date(t.getFullYear(), t.getMonth(), t.getDate() + 7, 15, 0, 0, 0);
+  return Math.floor(t.getTime() / 1000);
+}
+// Pure: epoch seconds → the datetime-local input's value (local time, to the minute).
+function saveModeInputValue(sec) {
+  var d = new Date(sec * 1000);
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + 'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+}
+// Pure: the input's value → { ok, until } in epoch seconds, or { ok: false, error }. llmux takes a
+// cutoff in the future and at most 30 days out; it checks again.
+function saveModeFromInput(value, nowMs) {
+  var m = /^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2})/.exec(String(value || ''));
+  var t = m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], 0, 0).getTime() : NaN;
+  if (!isFinite(t)) return { ok: false, error: '아낄 시각을 입력하세요.' };
+  if (t <= nowMs) return { ok: false, error: '지금보다 뒤의 시각을 고르세요.' };
+  if (t - nowMs > 30 * 86400000) return { ok: false, error: '30일 안의 시각을 고르세요.' };
+  return { ok: true, until: Math.floor(t / 1000) };
+}
+// Pure: the chip from the capacity view's saveMode — null (hidden) when llmux reports no save mode.
+// A cutoff that has passed reads off: llmux stops holding accounts at that moment.
+function saveModeChip(sm, nowMs, lang) {
+  if (!sm || typeof sm !== 'object') return null;
+  var on = !!sm.active && typeof sm.until === 'number' && sm.until * 1000 > nowMs;
+  if (!on) return { on: false, label: '세이브 끔', title: 'llmux 세이브 모드 — 정한 시각 전에 주간 한도가 리셋되는 계정만 씁니다' };
+  var when = new Date(sm.until * 1000).toLocaleString(lang === 'en' ? 'en-US' : 'ko-KR', { month: 'numeric', day: 'numeric', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  return { on: true, label: '세이브 ~ ' + when, title: '쉬게 한 계정: ' + (Number(sm.held) || 0) };
+}
+function paintSaveModeChip() {
+  var btn = document.getElementById('save-mode-btn');
+  if (!btn) return;
+  var v = _viewerIsAdmin ? _capacityView : null;
+  var chip = v && v.available ? saveModeChip(v.saveMode, Date.now(), pageDisplayLang()) : null;
+  btn.style.display = chip ? 'inline-flex' : 'none';
+  if (!chip) return;
+  btn.setAttribute('aria-pressed', chip.on ? 'true' : 'false');
+  setTextIfChanged(document.getElementById('save-mode-label'), chip.label);
+  btn.title = chip.title;
+}
+function setSaveModeStatus(text, isError) {
+  var el = document.getElementById('save-mode-status');
+  if (!el) return;
+  el.textContent = text;
+  if (isError) el.setAttribute('data-tone', 'fail'); else el.removeAttribute('data-tone');
+}
+function openSaveModeDialog() {
+  var dlg = document.getElementById('save-mode-dialog');
+  if (!dlg) return;
+  var sm = _capacityView && _capacityView.saveMode;
+  var chip = saveModeChip(sm, Date.now(), pageDisplayLang());
+  var on = !!(chip && chip.on);
+  var input = document.getElementById('sm-until');
+  if (input) input.value = saveModeInputValue(on ? sm.until : saveModeDefaultUntil(Date.now()));
+  var off = document.getElementById('save-mode-off');
+  if (off) off.hidden = !on;
+  setTextIfChanged(document.getElementById('save-mode-on'), on ? '시각 바꾸기' : '켜기');
+  setSaveModeStatus(on ? chip.title : '', false);
+  // <ui-dialog> (J-01): show() opens it modal at once; the time field takes focus.
+  if (typeof dlg.show !== 'function') return;
+  dlg.show();
+  if (input) input.focus();
+}
+function closeSaveModeDialog() {
+  var dlg = document.getElementById('save-mode-dialog');
+  if (dlg && typeof dlg.hide === 'function') dlg.hide();
+}
+// on = true: 켜기 / 시각 바꾸기 with the input's time; on = false: 끄기.
+async function submitSaveMode(ev, on) {
+  if (ev) ev.preventDefault();
+  var until = null;
+  if (on) {
+    var input = document.getElementById('sm-until');
+    var parsed = saveModeFromInput(input ? input.value : '', Date.now());
+    if (!parsed.ok) { setSaveModeStatus(parsed.error, true); return; }
+    until = parsed.until;
+  }
+  setSaveModeStatus('저장 중…', false);
+  try {
+    var send = function() {
+      var headers = { 'Content-Type': 'application/json' };
+      if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+      return fetch('/api/dashboard/llmux-save-mode', { method: 'PUT', headers: headers, body: JSON.stringify({ until: until }) });
+    };
+    var res = await send();
+    if (res.status === 403 && !_isAdminModeOn()) {
+      setSaveModeStatus('Admin 모드를 ON으로 바꾼 뒤 저장하세요.', true);
+      return;
+    }
+    if (res.status === 403) { await refreshCsrfToken(); res = await send(); }
+    var data = await res.json().catch(function() { return {}; });
+    if (!res.ok) {
+      setSaveModeStatus((data && data.error) || ('저장 실패 (' + res.status + ')'), true);
+      return;
+    }
+    if (data && data.capacity) {
+      _capacityView = data.capacity;
+      paintCapacity();
+    }
+    paintSaveModeChip();
+    closeSaveModeDialog();
+  } catch (e) {
+    setSaveModeStatus('네트워크 오류', true);
+  }
 }
 
 // ── Session artifacts (SSOT 2026-10-23) ──
