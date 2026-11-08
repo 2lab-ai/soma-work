@@ -130,7 +130,7 @@ import { BUILTIN_PRESETS } from '../view-layout';
 import { fetchSiblingBoards, type InstanceEnvironment, mergeBoards, shouldAggregate } from './aggregator';
 import { backfillArtifactsFromWorkLog } from './artifact-capture';
 import { type ArtifactSummary, getArtifactStore, type SessionArtifact } from './artifacts';
-import { buildCapacityView, type CapacityView } from './capacity-view';
+import { buildCapacityView, type CapacityView, readSaveMode } from './capacity-view';
 import { type CardLink, cardLinksOf, followupLinksOf, settledLinkUrlsOf } from './card-links';
 import { archivedCardClocks, cardWhereOf, liveCardClocks } from './card-where';
 import { isClientRef } from './client-ref';
@@ -3619,8 +3619,9 @@ export async function registerDashboardRoutes(
         reply.status(409).send({ error: gate.reason });
         return;
       }
+      let ack: unknown;
       try {
-        await source.setSaveMode(until);
+        ack = await source.setSaveMode(until);
       } catch (err) {
         const status = (err as { status?: unknown } | null)?.status;
         if (status === 400) {
@@ -3639,7 +3640,10 @@ export async function registerDashboardRoutes(
       // let it land, then drop the cache and read again.
       if (_capacityInFlight) await _capacityInFlight.catch(() => undefined);
       _capacityCache = null;
-      reply.send({ capacity: await readCapacity() });
+      // The mode llmux acknowledged rides along: if the fresh read fails, the
+      // page still knows the change took (and keeps its 끄기).
+      const saveMode = readSaveMode((ack as { save_mode?: unknown } | null)?.save_mode);
+      reply.send({ capacity: await readCapacity(), ...(saveMode ? { saveMode } : {}) });
     },
   );
 
@@ -20789,6 +20793,8 @@ function cronCountdownHtml(atMs) {
 // and their card, the 7-day timeline, ticks every countdown, and speaks a pool's change.
 var CAP_TIERS = { 'claude-max-5x': { short: 'x5', label: 'Max x5' }, 'claude-max-20x': { short: 'x20', label: 'Max x20' }, 'chatgpt-pro-200': { short: '$200', label: 'Pro ($200)' }, 'chatgpt-pro-500': { short: '$500', label: 'Pro ($500)' } };
 var _capacityView = null;
+var _capacityLoadSeq = 0; // a save-mode change bumps it: a capacity read started before it is dropped
+var _saveModeBusy = false; // one save-mode change at a time
 
 function capClockLabel(atSec, nowMs) {
   var d = new Date(atSec * 1000);
@@ -20891,10 +20897,13 @@ function paintCapacity() {
 }
 async function loadCapacity() {
   if (document.hidden) return;
+  var seq = ++_capacityLoadSeq;
   try {
     var res = await fetch('/api/dashboard/capacity');
     if (!res.ok) return;
     var data = await res.json();
+    // A save-mode change answered while this read was out: its view is newer.
+    if (seq !== _capacityLoadSeq) return;
     _capacityView = data.capacity || null;
     paintCapacity();
     paintSaveModeChip();
@@ -20978,6 +20987,7 @@ function closeSaveModeDialog() {
 // on = true: 켜기 / 시각 바꾸기 with the input's time; on = false: 끄기.
 async function submitSaveMode(ev, on) {
   if (ev) ev.preventDefault();
+  if (_saveModeBusy) return;
   var until = null;
   if (on) {
     var input = document.getElementById('sm-until');
@@ -20986,6 +20996,7 @@ async function submitSaveMode(ev, on) {
     until = parsed.until;
   }
   setSaveModeStatus('저장 중…', false);
+  _saveModeBusy = true;
   try {
     var send = function() {
       var headers = { 'Content-Type': 'application/json' };
@@ -21003,14 +21014,20 @@ async function submitSaveMode(ev, on) {
       setSaveModeStatus((data && data.error) || ('저장 실패 (' + res.status + ')'), true);
       return;
     }
-    if (data && data.capacity) {
+    _capacityLoadSeq++; // drop a capacity read that started before this change
+    if (data && data.capacity && data.capacity.available) {
       _capacityView = data.capacity;
       paintCapacity();
+    } else if (_capacityView && data && data.saveMode) {
+      // The change took but the fresh read failed: keep the view, take the acknowledged mode.
+      _capacityView.saveMode = data.saveMode;
     }
     paintSaveModeChip();
     closeSaveModeDialog();
   } catch (e) {
     setSaveModeStatus('네트워크 오류', true);
+  } finally {
+    _saveModeBusy = false;
   }
 }
 

@@ -122,7 +122,8 @@ describe('save mode — the chip and the PUT', () => {
       els[id] = el();
     const fetchMock = vi.fn(opts.fetchImpl ?? (async () => ({ ok: true, status: 200, json: async () => ({}) })));
     const inject = {
-      document: { getElementById: (id: string) => els[id] ?? null },
+      document: { getElementById: (id: string) => els[id] ?? null, hidden: false },
+      console: { error: () => {} },
       fetch: fetchMock,
       pad2,
       setTextIfChanged: (e: { textContent: string } | null, t: string) => {
@@ -145,9 +146,11 @@ describe('save mode — the chip and the PUT', () => {
         'openSaveModeDialog',
         'closeSaveModeDialog',
         'submitSaveMode',
+        'loadCapacity',
       ],
       inject,
       `var _viewerIsAdmin = ${opts.admin ? 'true' : 'false'}; var _capacityView = ${JSON.stringify(opts.view)};
+       var _capacityLoadSeq = 0; var _saveModeBusy = false;
        function state() { return _capacityView; }`,
     );
     return { api, els, fetchMock, inject };
@@ -255,5 +258,70 @@ describe('save mode — the chip and the PUT', () => {
     await p.api.submitSaveMode({ preventDefault: () => {} }, true);
     expect(p.els['save-mode-status'].textContent).toContain('until must be in the future');
     expect(p.els['save-mode-dialog'].hide).not.toHaveBeenCalled();
+  });
+
+  it('an older capacity read that lands after the PUT does not undo it', async () => {
+    const stale = { available: true, groups: [], saveMode: { until: null, active: false, held: 0 } };
+    const fresh = { available: true, groups: [], saveMode: { until: FUTURE, active: true, held: 1 } };
+    let releaseGet!: () => void;
+    const getGate = new Promise<void>((r) => {
+      releaseGet = r;
+    });
+    const p = page({
+      admin: true,
+      view: stale,
+      fetchImpl: async (url: unknown) => {
+        if (url === '/api/dashboard/capacity') {
+          await getGate;
+          return { ok: true, status: 200, json: async () => ({ capacity: stale }) };
+        }
+        return { ok: true, status: 200, json: async () => ({ capacity: fresh, saveMode: fresh.saveMode }) };
+      },
+    });
+    const polling = p.api.loadCapacity();
+    p.els['sm-until'].value = p.api.saveModeInputValue(FUTURE - (FUTURE % 60));
+    await p.api.submitSaveMode({ preventDefault: () => {} }, true);
+    releaseGet();
+    await polling;
+    expect(p.els['save-mode-btn'].getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('a second press while a change is being saved sends nothing', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const p = page({
+      admin: true,
+      view: { available: true, groups: [], saveMode: { until: FUTURE, active: true, held: 1 } },
+      fetchImpl: async () => {
+        await gate;
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+    });
+    const first = p.api.submitSaveMode(null, false);
+    const second = p.api.submitSaveMode(null, false);
+    release();
+    await Promise.all([first, second]);
+    expect(p.fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a change llmux took keeps the chip even when the fresh read failed', async () => {
+    const p = page({
+      admin: true,
+      view: { available: true, groups: [], saveMode: { until: null, active: false, held: 0 } },
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          capacity: { available: false, reason: 'llmux unreachable', groups: [] },
+          saveMode: { until: FUTURE, active: true, held: 1 },
+        }),
+      }),
+    });
+    p.els['sm-until'].value = p.api.saveModeInputValue(FUTURE - (FUTURE % 60));
+    await p.api.submitSaveMode({ preventDefault: () => {} }, true);
+    expect(p.els['save-mode-btn'].style.display).toBe('inline-flex');
+    expect(p.els['save-mode-btn'].getAttribute('aria-pressed')).toBe('true');
   });
 });

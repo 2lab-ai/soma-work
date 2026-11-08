@@ -543,7 +543,7 @@ export function buildCapacityView(
 }
 
 /** llmux's `save_mode` block, kept only when it has the documented shape. */
-function readSaveMode(raw: unknown): LlmuxSaveMode | undefined {
+export function readSaveMode(raw: unknown): LlmuxSaveMode | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const r = raw as { until?: unknown; active?: unknown; held?: unknown };
   const until = typeof r.until === 'number' && Number.isFinite(r.until) && r.until > 0 ? r.until : null;
