@@ -27,7 +27,7 @@
  *     merged). Each event carries its own weighted before/after deltas.
  */
 
-import type { LlmuxAccount, LlmuxScopedWindow, LlmuxStatus, LlmuxWindow } from '../auth/llmux-client';
+import type { LlmuxAccount, LlmuxSaveMode, LlmuxScopedWindow, LlmuxStatus, LlmuxWindow } from '../auth/llmux-client';
 import { LLMUX_TIERS, type LlmuxTierId, llmuxAccountLocalName, resolveAccountTier } from '../auth/llmux-tiers';
 import { accountGroup, groupAccounts, providerName, remaining, resetAt } from '../slack/auth/capacity';
 
@@ -39,7 +39,8 @@ export const TRANSIENT_COOLDOWN_SECS = 120;
 export const CAPACITY_HORIZON_SECS = 7 * 86400;
 
 export type CapacityCause = '5h' | '7d' | 'release';
-export type CapacityHeld = 'paused' | 'auth' | 'other';
+/** `saved` = held by llmux save mode (its `blocked` reads "saved …") until the cutoff. */
+export type CapacityHeld = 'paused' | 'saved' | 'auth' | 'other';
 export type CapacityExclusion = 'held' | 'noMeasure' | 'unknownTier';
 
 export interface CapacityBlocks {
@@ -127,6 +128,8 @@ export interface CapacityView {
   /** When llmux was read (epoch ms). */
   fetchedAtMs: number;
   groups: CapacityGroupView[];
+  /** llmux save mode as llmux reports it; absent when llmux has no save mode (older daemon). */
+  saveMode?: LlmuxSaveMode;
 }
 
 const EPS = 1e-9;
@@ -250,6 +253,7 @@ function initAccount(
   };
   if (account.status === 'auth_failed') hold('auth');
   if (account.status === 'paused' || reason.startsWith('paused')) hold('paused');
+  if (reason.startsWith('saved')) hold('saved');
   const scope = reason.split(/\s+/)[0] ?? '';
   if (reason.startsWith('7d')) {
     if (seven?.at === undefined) hold('other');
@@ -257,7 +261,12 @@ function initAccount(
   } else if (reason.startsWith('5h')) {
     if (five?.at === undefined) hold('other');
     else blocks.fiveHour = !five.passed;
-  } else if (reason.startsWith('cooldown') || reason.startsWith('paused') || reason === '') {
+  } else if (
+    reason.startsWith('cooldown') ||
+    reason.startsWith('paused') ||
+    reason.startsWith('saved') ||
+    reason === ''
+  ) {
     // handled below / above
   } else {
     const w = scopedWindow(account, scope);
@@ -527,5 +536,17 @@ export function buildCapacityView(
     if (!PLAN_GROUPS.has(group)) continue;
     groups.push(buildGroup(group, accounts, tiers, anonymous, nowMs));
   }
-  return { available: true, fetchedAtMs: nowMs, groups };
+  const view: CapacityView = { available: true, fetchedAtMs: nowMs, groups };
+  const saveMode = readSaveMode(status.save_mode);
+  if (saveMode) view.saveMode = saveMode;
+  return view;
+}
+
+/** llmux's `save_mode` block, kept only when it has the documented shape. */
+export function readSaveMode(raw: unknown): LlmuxSaveMode | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as { until?: unknown; active?: unknown; held?: unknown };
+  const until = typeof r.until === 'number' && Number.isFinite(r.until) && r.until > 0 ? r.until : null;
+  const held = typeof r.held === 'number' && Number.isFinite(r.held) && r.held >= 0 ? Math.floor(r.held) : 0;
+  return { until, active: r.active === true && until !== null, held };
 }

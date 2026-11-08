@@ -229,6 +229,7 @@ describe('paintAppBar — the data the page hands the bar', () => {
         _lastBoardData: null,
         boardFilterViewerKnown: () => false,
         autoOpenDecisions: () => {},
+        paintSaveModeChip: () => {},
         somaThemeNow: () => ({ theme: 'dark', palette: 'color', design: null }),
         SOMA_DESIGNS: [],
       },

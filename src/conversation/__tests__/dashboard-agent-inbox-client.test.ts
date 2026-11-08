@@ -1578,6 +1578,7 @@ describe('top-bar user names keep their full text (shipped syncUserSelectLabel +
         _lastBoardData: null,
         boardFilterViewerKnown: () => false,
         autoOpenDecisions: () => {},
+        paintSaveModeChip: () => {},
       },
       ['function account() { return _appBarAccount; }'],
     );

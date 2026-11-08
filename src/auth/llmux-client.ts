@@ -12,6 +12,7 @@ const logger = new Logger('LlmuxClient');
  *   - `POST /llmux/switch`  `{account}`           → manual account switch
  *   - `POST /llmux/add-account` `{api_key,name?}` → add an api-key account
  *   - `POST /llmux/remove-account` `{name,confirm:true}` → remove an account
+ *   - `POST /llmux/save-mode` `{until}`            → save mode on (epoch s) / off (null)
  *
  * Auth: these are CONTROL-plane endpoints, which multi-tenant llmux gates on an
  * admin credential for every peer — the loopback exemption applies to the data
@@ -94,6 +95,20 @@ export interface LlmuxAccount {
   totals?: { requests: number; input_tokens: number; output_tokens: number };
 }
 
+/**
+ * llmux save mode (`/llmux/status` `save_mode`, llmux ≥ save-mode): until
+ * `until`, accounts whose weekly window resets after it are held like a pause
+ * (their `blocked` reads "saved …"). Absent from older llmux.
+ */
+export interface LlmuxSaveMode {
+  /** Cutoff, epoch seconds; null when off. Kept after it passes. */
+  until: number | null;
+  /** The cutoff is still ahead. */
+  active: boolean;
+  /** Accounts held right now. */
+  held: number;
+}
+
 export interface LlmuxStatus {
   version?: string;
   pid?: number;
@@ -103,6 +118,8 @@ export interface LlmuxStatus {
   /** Representative current account name (claude slot if present). */
   current: string | null;
   current_by_group?: Record<string, string>;
+  /** Additive — absent from llmux without save mode. */
+  save_mode?: LlmuxSaveMode;
   accounts: LlmuxAccount[];
 }
 
@@ -241,6 +258,14 @@ export async function addLlmuxAccount(args: {
   return request('POST', '/llmux/add-account', {
     body: { api_key: args.apiKey, ...(args.name ? { name: args.name } : {}) },
   });
+}
+
+/**
+ * `POST /llmux/save-mode` — save mode on until `until` (epoch seconds; llmux
+ * refuses a past cutoff or one more than 30 days out with 400) or off (`null`).
+ */
+export async function setLlmuxSaveMode(until: number | null): Promise<{ ok: boolean; save_mode: LlmuxSaveMode }> {
+  return request('POST', '/llmux/save-mode', { body: { until } });
 }
 
 /** `POST /llmux/remove-account` — remove an account. `confirm:true` is mandatory (llmux refuses silent deletes). */
