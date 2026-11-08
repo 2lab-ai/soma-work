@@ -20931,8 +20931,11 @@ function saveModeInputValue(sec) {
 // cutoff in the future and at most 30 days out; it checks again.
 function saveModeFromInput(value, nowMs) {
   var m = /^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2})/.exec(String(value || ''));
-  var t = m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], 0, 0).getTime() : NaN;
+  var d = m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], 0, 0) : null;
+  var t = d ? d.getTime() : NaN;
   if (!isFinite(t)) return { ok: false, error: '아낄 시각을 입력하세요.' };
+  // A wall time a daylight-saving jump skips does not exist; Date would move it an hour on.
+  if (d.getHours() !== +m[4] || d.getMinutes() !== +m[5]) return { ok: false, error: '서머타임으로 건너뛰는 시각입니다. 다른 시각을 고르세요.' };
   if (t <= nowMs) return { ok: false, error: '지금보다 뒤의 시각을 고르세요.' };
   if (t - nowMs > 30 * 86400000) return { ok: false, error: '30일 안의 시각을 고르세요.' };
   return { ok: true, until: Math.floor(t / 1000) };

@@ -1363,5 +1363,6 @@
   "이 시각까지 아끼기": "Save until this time",
   "지금보다 뒤의 시각을 고르세요.": "Pick a time later than now.",
   "켜 두면 이 시각 전에 주간 한도가 리셋되는 계정만 씁니다. 그 뒤에 리셋되는 계정은 일시정지처럼 쉬게 해서, 그 시각 이후에 쓸 토큰을 아껴 둡니다. 쓸 수 있는 계정을 다 쓰면 그 시각까지 요청이 거절됩니다. 시각이 지나면 저절로 꺼집니다.": "While on, only accounts whose weekly limit resets before this time are used. Accounts that reset after it are held like a pause, so their tokens are kept for after that time. When every usable account is spent, requests are refused until that time. It turns off by itself when the time passes.",
-  "켜기": "Turn on"
+  "켜기": "Turn on",
+  "서머타임으로 건너뛰는 시각입니다. 다른 시각을 고르세요.": "That time is skipped by a daylight-saving change. Pick another time."
 }
