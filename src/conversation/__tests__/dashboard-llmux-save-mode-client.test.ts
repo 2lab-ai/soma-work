@@ -73,6 +73,21 @@ describe('save mode — pure helpers', () => {
       expect(h.saveModeFromInput(v, now).error).toBeTruthy();
   });
 
+  it('a wall time a DST jump skips is refused, not shifted an hour', () => {
+    const tz = process.env.TZ;
+    process.env.TZ = 'America/New_York';
+    try {
+      const now = new Date(2027, 2, 12, 12, 0).getTime(); // Friday before the jump
+      const r = h.saveModeFromInput('2027-03-14T02:30', now); // 02:00–03:00 does not exist
+      expect(r.ok).toBe(false);
+      expect(r.error).toBeTruthy();
+      expect(h.saveModeFromInput('2027-03-14T03:30', now).ok).toBe(true);
+    } finally {
+      if (tz === undefined) delete process.env.TZ;
+      else process.env.TZ = tz;
+    }
+  });
+
   it('the chip: hidden without save mode, off, or on with the cutoff', () => {
     const now = local(2026, 11, 6, 21, 40);
     const until = local(2026, 11, 9, 15) / 1000;
