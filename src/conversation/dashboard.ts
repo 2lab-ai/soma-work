@@ -3635,6 +3635,9 @@ export async function registerDashboardRoutes(
       }
       const auth = (request as any).authContext;
       logger.warn('llmux save mode changed', { actor: auth?.userId || auth?.mode || 'unknown', until });
+      // A read that started before the change would answer with the old mode:
+      // let it land, then drop the cache and read again.
+      if (_capacityInFlight) await _capacityInFlight.catch(() => undefined);
       _capacityCache = null;
       reply.send({ capacity: await readCapacity() });
     },
@@ -24332,7 +24335,7 @@ loadCronJobs();
 loadCapacity();
 setInterval(loadCronJobs, 60000);
 setInterval(loadCapacity, 60000);
-setInterval(paintCapacity, 30000);
+setInterval(function() { paintCapacity(); paintSaveModeChip(); }, 30000);
 document.addEventListener('visibilitychange', function() {
   if (!document.hidden) { loadCapacity(); loadCronJobs(); }
 });

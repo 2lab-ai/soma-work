@@ -186,6 +186,55 @@ describe('Dashboard — llmux save mode', () => {
     expect(setSaveMode).not.toHaveBeenCalled();
   });
 
+  async function signIn(userId: string) {
+    const { issueSlackToken } = await import('../oauth');
+    const token = issueSlackToken({ slackUserId: userId, email: `${userId}@slack.local`, name: userId });
+    const sso = await injectWebServer({ method: 'GET', url: `/auth/sso?token=${encodeURIComponent(token)}` });
+    const setCookie = sso.headers['set-cookie'];
+    const cookie = (Array.isArray(setCookie) ? setCookie[0] : String(setCookie)).split(';')[0];
+    const me = await injectWebServer({ method: 'GET', url: '/auth/me', headers: { cookie } });
+    return { cookie, csrfToken: JSON.parse(me.body).csrfToken as string };
+  }
+
+  it('an ADMIN_USERS admin needs Admin mode on: 403 without it, 200 with it', async () => {
+    process.env.ADMIN_USERS = 'U_ADMIN';
+    (await import('../../admin-utils')).resetAdminUsersCache();
+    try {
+      const { cookie, csrfToken } = await signIn('U_ADMIN');
+      const without = await put({ until: UNTIL }, { cookie, 'x-csrf-token': csrfToken });
+      expect(without.statusCode).toBe(403);
+      expect(setSaveMode).not.toHaveBeenCalled();
+      const withMode = await put({ until: UNTIL }, { cookie, 'x-csrf-token': csrfToken, 'x-admin-mode': 'on' });
+      expect(withMode.statusCode).toBe(200);
+      expect(setSaveMode).toHaveBeenCalledWith(UNTIL);
+    } finally {
+      delete process.env.ADMIN_USERS;
+      (await import('../../admin-utils')).resetAdminUsersCache();
+    }
+  });
+
+  it('a capacity read in flight when the PUT lands does not answer for it', async () => {
+    // A poll starts, then the PUT changes the mode while that read is still out:
+    // the PUT must answer with a read made after the change.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    fetchStatus.mockImplementationOnce(async () => {
+      const before = statusWith({ ...llmuxMode });
+      await gate;
+      return before;
+    });
+    const poll = injectWebServer({ method: 'GET', url: '/api/dashboard/capacity', headers: AUTH_HEADER });
+    await new Promise((r) => setTimeout(r, 20));
+    const putting = put({ until: UNTIL });
+    await new Promise((r) => setTimeout(r, 20));
+    release();
+    const [, res] = await Promise.all([poll, putting]);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).capacity.saveMode).toEqual({ until: UNTIL, active: true, held: 1 });
+  });
+
   it('a signed-in user who is not an admin gets 403, admin mode header or not', async () => {
     const { issueSlackToken } = await import('../oauth');
     const token = issueSlackToken({ slackUserId: 'U_PLAIN', email: 'plain@slack.local', name: 'Plain' });
