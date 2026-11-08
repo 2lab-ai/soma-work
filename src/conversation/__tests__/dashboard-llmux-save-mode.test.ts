@@ -166,6 +166,15 @@ describe('Dashboard — llmux save mode', () => {
     expect(JSON.parse(res.body).error).toContain('until must be in the future');
   });
 
+  it('a change llmux took is acknowledged even when the fresh read fails', async () => {
+    fetchStatus.mockRejectedValue(new Error('llmux unreachable at http://10.0.0.5:3456'));
+    const res = await put({ until: UNTIL });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.capacity.available).toBe(false);
+    expect(body.saveMode).toEqual({ until: UNTIL, active: true, held: 1 });
+  });
+
   it('llmux unreachable is a 502 with a fixed reason (no host or URL)', async () => {
     setSaveMode.mockRejectedValueOnce(new Error('llmux unreachable at http://10.0.0.5:3456 (ECONNREFUSED)'));
     const res = await put({ until: UNTIL });
