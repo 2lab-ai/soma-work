@@ -5618,6 +5618,8 @@ html[lang="ko"] .lang-toggle .lang-cur[data-lang="ko"], html[lang="en"] .lang-to
 /* llmux save mode (admin): a kit chip; on = accounts are held, so it takes the wait tint while it lasts. */
 .topbar .save-mode-btn { flex: none; }
 .topbar .save-mode-btn[aria-pressed="true"] { background: var(--tint-wait-bg); border-color: var(--tint-wait-line, var(--border)); color: var(--tint-wait-fg, inherit); }
+/* The kit's .ui-btn sets display, which beats the hidden attribute: 끄기 shows only while save mode is on. */
+.save-mode-dialog .lc-actions [hidden] { display: none; }
 /* Admin approvals (#620): the admins' Slack DM requests, counted in the top bar (a kit chip with a kit count badge,
    the wait tone while any wait), answered in a sheet. */
 .admin-inbox-head { font-weight: 600; outline: none; }
