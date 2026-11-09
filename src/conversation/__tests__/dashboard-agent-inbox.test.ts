@@ -55,9 +55,10 @@ describe('agent inbox board — layout (§3.1)', () => {
   it('renders three columns in order NEEDS YOU → RUNNING → DONE (the element draws them from renderBoard’s plan)', () => {
     // D2 group 6: the heads are the page's STRINGS, in Korean like <ui-agent-inbox lang="ko">.
     expect(TEMPLATE).toContain(
-      'var BOARD_LABELS = { waiting: STRINGS.boardNeeds, working: STRINGS.boardRunning, done: STRINGS.boardDone };',
+      'var BOARD_LABELS = { waiting: STRINGS.boardNeedsHead, working: STRINGS.boardRunning, done: STRINGS.boardDone };',
     );
-    expect(TEMPLATE).toContain("boardNeeds: '응답 필요',");
+    // #1072 — NEEDS YOU says its order (longest wait first) in its head.
+    expect(TEMPLATE).toContain("boardNeedsHead: '응답 필요 · 오래 기다린 순',");
     expect(TEMPLATE).toContain("boardRunning: '실행 중',");
     expect(TEMPLATE).toContain("boardDone: '완료',");
     const body = fnBody('renderBoard');

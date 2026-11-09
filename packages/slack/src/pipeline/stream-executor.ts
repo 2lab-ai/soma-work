@@ -7116,9 +7116,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // P3 (parity fix) — pendingQuestion was historically in-memory only. With
     // P3's pendingChoice living on the session + broadcast to the dashboard,
     // we must also persist pendingQuestion so a dashboard restart restores
-    // the question context. setActivityState persists on idle only; force a
-    // broadcast+save here regardless of PHASE so dashboard subscribers see
-    // the new pendingQuestion immediately.
+    // the question context. setActivityState saves on idle and waiting (#1072)
+    // but broadcasts only on a state change; force a broadcast+save here
+    // regardless of PHASE so dashboard subscribers see the new pendingQuestion
+    // immediately (a second question while already waiting changes no state).
     try {
       this.deps.claudeHandler.getSessionRegistry?.().persistAndBroadcast?.(context.sessionKey);
     } catch (err) {
