@@ -127,7 +127,7 @@ export function bootScreenCss(): string {
 /* The board's own views (the page's defaultBoardView, set by the script below before the first paint): list stacks the
    columns full width; a narrow board scrolls its columns sideways — the kit's rules, on the main column as container. */
 .boot[data-view="list"] .boot-board { grid-template-columns: minmax(0, 1fr); }
-@container boot (max-width: 839px) {
+@container boot (max-width: 719px) {
   .boot:not([data-view="list"]) .boot-board { grid-template-columns: repeat(3, minmax(min(300px, 84cqi), 1fr)); }
 }
 .boot-col { display: flex; flex-direction: column; gap: 8px; padding: 2px 4px 4px; border-radius: 14px; background: var(--ib-col); }
@@ -165,7 +165,9 @@ const BOOT_CLIENT_JS = `
   // The board's view, as the page will choose it (defaultBoardView): the saved choice, else list below 640px (#969).
   var saved = null;
   try { saved = localStorage.getItem('soma-board-view'); } catch (_e) {}
-  boot.setAttribute('data-view', saved === 'board' || saved === 'list' ? saved : window.innerWidth < 640 ? 'list' : 'board');
+  // Narrow by the media query, not innerWidth: a phone's first frames can widen its layout viewport (viewWidth).
+  var narrow = window.matchMedia ? window.matchMedia('(max-width: 639px)').matches : window.innerWidth < 640;
+  boot.setAttribute('data-view', saved === 'board' || saved === 'list' ? saved : narrow ? 'list' : 'board');
   // The page under the layer takes no keyboard focus while it is up (#969): every in-flow child of .app goes inert as
   // the parser adds it, and gets its focus back at the lift. The overlays (drawers, dialogs) stay live, and the layer
   // lifts the moment one opens (a deep link's drawer: docked from 840px it sits under the layer). A child the page made

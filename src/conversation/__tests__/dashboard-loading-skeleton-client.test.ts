@@ -152,6 +152,7 @@ function serve(kanban: FakeEl, wired: unknown[] = []): void {
     wireInbox: (host: unknown) => wired.push(host),
     setBoardView: () => {},
     defaultBoardView: () => 'board',
+    viewWidth: () => 1280,
     savedBoardView: () => null,
     applySectionState: () => {},
     // SSOT 2026-11-05 — the board's filter and sort menus (dashboard-card-filters.test.ts).
