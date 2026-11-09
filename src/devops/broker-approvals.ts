@@ -9,6 +9,11 @@
  * would let the model approve its own request. The broker accepts a decision only from the admin's own
  * reaction or button on its Slack card.
  *
+ * A broker older than the `approvals` op refuses the listing. Then the cards come from the records the
+ * devops-tools MCP server keeps while it waits on one (`PENDING_DIR_ENV`), and the choice opens the
+ * approvals app's DM (`devops-tools.approvalsAppUrl`), so a broker upgrade (root) is not needed first.
+ * Those records are written by the model's OS user: the card says so and points at the Slack card.
+ *
  * On a host without a broker the socket is missing and the kind lists nothing.
  */
 
@@ -18,7 +23,9 @@ import * as path from 'node:path';
 import {
   type AdminRequest,
   DEFAULT_BROKER_SOCKET_PATH,
+  DEVOPS_TOOLS,
   encodeMessage,
+  type PendingCardRecord,
   PROTOCOL_VERSION,
   parseBrokerMessage,
   parseJsonLine,
@@ -38,8 +45,23 @@ const BACKOFF_MS = 10 * 60 * 1000;
 const SLACK_LINK_RE = /^https:\/\/[a-z0-9-]+\.slack\.com\/archives\/[A-Z0-9]+\/p[0-9]+(?:\?[^\s"'<>]*)?$/;
 const APPROVAL_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 const SLACK_USER_RE = /^[UW][A-Z0-9]{2,20}$/;
+/** The approvals app's DM in Slack (`devops-tools.approvalsAppUrl`). */
+const APP_LINK_RE = /^https:\/\/[a-z0-9-]+\.slack\.com\/app_redirect\?app=A[A-Z0-9]{2,20}(?:&team=T[A-Z0-9]{2,20})?$/;
+const RECORD_FILE_RE = /^[A-Za-z0-9_-]{8,64}\.json$/;
+const DIGEST_PREFIX_RE = /^[0-9a-f]{12}$/;
+const MAX_RECORDS = 50;
+const MAX_RECORD_BYTES = 4096;
+/** A record this long past its card's deadline is removed: the MCP server that wrote it died before it could. */
+const PRUNE_AFTER_MS = 60 * 60 * 1000;
 
 export const OPEN_SLACK_CHOICE = 'open_slack';
+/** `links[].admin` of a link any admin may open (the approvals app's DM). */
+export const ANY_ADMIN = '*';
+
+/** The MCP server's card records, under the bot's data directory (mcp-config-builder sets the env). */
+export function devopsPendingDir(dataDir: string): string {
+  return path.join(dataDir, 'devops-pending');
+}
 
 /** The broker's `approvals` result, as `approval.ts` `PendingApprovalView` writes it. */
 interface BrokerApprovalView {
@@ -157,37 +179,119 @@ function toApproval(view: BrokerApprovalView): AdminApproval {
   };
 }
 
-/** `devops-tools.socketPath` from config.json when it is absolute (the MCP server honours the same key). */
-export function devopsBrokerSocketPath(configFile: string): string | undefined {
+function isCardRecord(value: unknown): value is PendingCardRecord {
+  if (!isRecord(value)) return false;
+  return (
+    value.v === PROTOCOL_VERSION &&
+    typeof value.approvalId === 'string' &&
+    APPROVAL_ID_RE.test(value.approvalId) &&
+    typeof value.tool === 'string' &&
+    (DEVOPS_TOOLS as readonly string[]).includes(value.tool) &&
+    typeof value.digestPrefix === 'string' &&
+    DIGEST_PREFIX_RE.test(value.digestPrefix) &&
+    typeof value.requester === 'string' &&
+    typeof value.createdAt === 'string' &&
+    typeof value.expiresAt === 'string' &&
+    !Number.isNaN(Date.parse(value.expiresAt))
+  );
+}
+
+/** The MCP server's records of the cards it waits on. A malformed one is skipped; a long-dead one removed. */
+function readCardRecords(dir: string, now: number): PendingCardRecord[] {
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const out: PendingCardRecord[] = [];
+  for (const name of names.filter((n) => RECORD_FILE_RE.test(n)).slice(0, MAX_RECORDS)) {
+    const file = path.join(dir, name);
+    try {
+      const stat = fs.lstatSync(file);
+      if (!stat.isFile() || stat.size > MAX_RECORD_BYTES) continue;
+      const record: unknown = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (!isCardRecord(record) || `${record.approvalId}.json` !== name) continue;
+      if (Date.parse(record.expiresAt) + PRUNE_AFTER_MS < now) {
+        fs.rmSync(file, { force: true });
+        continue;
+      }
+      out.push(record);
+    } catch {
+      // Being written or removed right now: the next read sees it settled.
+    }
+  }
+  return out;
+}
+
+function recordToApproval(record: PendingCardRecord, appUrl: string | undefined): AdminApproval {
+  return {
+    id: `devops_broker:${record.approvalId}`,
+    kind: 'devops_broker',
+    card: 'question',
+    title: `devops 승인 대기 — ${record.tool} (카드 ${record.digestPrefix})`,
+    description:
+      '요청 내용과 승인·거부는 Slack 승인 앱 DM에 있는 같은 번호의 카드에서 확인하고 결정합니다. 이 항목은 봇이 남긴 대기 표시일 뿐이라 내용이 맞는지 보장하지 않습니다. 대시보드는 모델과 같은 계정으로 돌기 때문에 여기서는 결정하지 않습니다.',
+    tool: `devops:${record.tool}`,
+    choices: [{ id: OPEN_SLACK_CHOICE, label: '↗ Slack 승인 앱 열기 (거기서 승인·거부)' }],
+    recommendedId: OPEN_SLACK_CHOICE,
+    links: appUrl ? [{ admin: ANY_ADMIN, url: appUrl }] : [],
+    requesterId: SLACK_USER_RE.test(record.requester) ? record.requester : '',
+    createdAt: Date.parse(record.createdAt) || 0,
+    expiresAt: Date.parse(record.expiresAt) || undefined,
+  };
+}
+
+function devopsSection(configFile: string): Record<string, unknown> | undefined {
   try {
     const parsed: unknown = JSON.parse(fs.readFileSync(configFile, 'utf8'));
     const section = isRecord(parsed) ? parsed['devops-tools'] : undefined;
-    const socketPath = isRecord(section) ? section.socketPath : undefined;
-    return typeof socketPath === 'string' && path.isAbsolute(socketPath) ? socketPath : undefined;
+    return isRecord(section) ? section : undefined;
   } catch {
     return undefined;
   }
 }
 
+/** `devops-tools.socketPath` from config.json when it is absolute (the MCP server honours the same key). */
+export function devopsBrokerSocketPath(configFile: string): string | undefined {
+  const socketPath = devopsSection(configFile)?.socketPath;
+  return typeof socketPath === 'string' && path.isAbsolute(socketPath) ? socketPath : undefined;
+}
+
+/** `devops-tools.approvalsAppUrl` from config.json: the approvals app's DM, `https://<team>.slack.com/app_redirect?app=A…`. */
+export function devopsApprovalsAppUrl(configFile: string): string | undefined {
+  const url = devopsSection(configFile)?.approvalsAppUrl;
+  return typeof url === 'string' && APP_LINK_RE.test(url) ? url : undefined;
+}
+
 export function devopsBrokerAdminApprovalAdapter(
-  opts: { socketPath?: string; now?: () => number } = {},
+  opts: { socketPath?: string; pendingDir?: string; approvalsAppUrl?: string; now?: () => number } = {},
 ): AdminApprovalAdapter {
   const socketPath = opts.socketPath ?? DEFAULT_BROKER_SOCKET_PATH;
+  const appUrl = opts.approvalsAppUrl && APP_LINK_RE.test(opts.approvalsAppUrl) ? opts.approvalsAppUrl : undefined;
   const clock = opts.now ?? Date.now;
   let warned = false;
-  let views: BrokerApprovalView[] = [];
+  /** The broker's own listing, or null while it cannot list (an older build, an error, no broker). */
+  let views: BrokerApprovalView[] | null = null;
+  let records: PendingCardRecord[] = [];
+  let nextReadAt = 0;
   let nextAskAt = 0;
   let asking: Promise<void> | null = null;
 
-  async function refresh(): Promise<void> {
+  async function askBroker(): Promise<void> {
     const result = await callBrokerAdmin(socketPath);
     if (!result.ok) {
-      views = [];
+      views = null;
       // No broker on this host is the normal case (ask again later); a refusal backs off and is logged once.
       nextAskAt = clock() + (result.unreachable ? REFRESH_MS : BACKOFF_MS);
       if (!result.unreachable && !warned) {
         warned = true;
-        logger.warn('devops broker cards could not be listed; asking again in 10 minutes', { message: result.message });
+        logger.warn(
+          'devops broker cards could not be listed; using the MCP server records, asking again in 10 minutes',
+          {
+            message: result.message,
+          },
+        );
       }
       return;
     }
@@ -197,14 +301,23 @@ export function devopsBrokerAdminApprovalAdapter(
     views = listed.filter(isView);
   }
 
+  async function refresh(now: number): Promise<void> {
+    if (clock() >= nextAskAt) await askBroker();
+    records = views === null && opts.pendingDir ? readCardRecords(opts.pendingDir, now) : [];
+    nextReadAt = clock() + REFRESH_MS;
+  }
+
   return {
     kind: 'devops_broker',
     async pending(now) {
-      if (clock() >= nextAskAt) {
-        asking ??= refresh().finally(() => {
+      if (clock() >= nextReadAt) {
+        asking ??= refresh(now).finally(() => {
           asking = null;
         });
         await asking;
+      }
+      if (views === null) {
+        return records.filter((r) => Date.parse(r.expiresAt) > now).map((r) => recordToApproval(r, appUrl));
       }
       return views.filter((view) => (Date.parse(view.expiresAt) || 0) > now).map(toApproval);
     },

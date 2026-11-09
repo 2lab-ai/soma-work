@@ -208,6 +208,19 @@ these cards in its admin approvals and opens the Slack card. The decision is sti
 Nothing outside Slack can decide a card. The dashboard runs as the bot user, the same OS user as the model, so
 a decision relayed from it would let the model approve its own request.
 
+A broker installed before this op refuses it (`unknown key "op"`). The dashboard does not need the broker
+upgraded first: the devops-tools MCP server records each card it waits on in the bot's data directory
+(`<DATA_DIR>/devops-pending/<approvalId>.json`: tool, card number, claimed requester, expiry) and removes the
+record when the call ends. While the broker refuses the listing, the dashboard lists those records instead. The
+bot user writes them, so the card says it is only a pointer and shows the card number to match in Slack. Its
+button opens the approvals app's DM, from `config.json`:
+
+```json
+{ "devops-tools": { "approvalsAppUrl": "https://<workspace>.slack.com/app_redirect?app=<approvals app id>" } }
+```
+
+Without that key the card says where to look and opens nothing.
+
 ## Secrets
 
 Secrets enter through stdin only, never through arguments or the environment. Run the installer again once

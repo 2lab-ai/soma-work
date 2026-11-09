@@ -27,6 +27,10 @@ import { evaluateToolPolicy } from '../agent-runtime/policy/tool-policy';
 import { ClaudeHandler } from '../claude-handler';
 import { CONFIG_FILE, DATA_DIR } from '../env-paths';
 import { McpConfigBuilder, type SlackContext } from '../mcp-config-builder';
+
+/** Where the MCP server records the cards it waits on, for the dashboard (#1051). */
+const PENDING_DIR = path.join(DATA_DIR, 'devops-pending');
+
 import type { McpManager } from '../mcp-manager';
 import { getPermissionGatedServers, loadMcpToolPermissions } from '../mcp-tool-permission-config';
 
@@ -94,13 +98,13 @@ describe('McpConfigBuilder devops-tools registration', () => {
     expect(config.allowedTools?.some((t) => t.startsWith('mcp__devops-tools'))).toBe(false);
   });
 
-  it('registers devops-tools with only SLACK_CONTEXT in its env when the section is present', async () => {
+  it('registers devops-tools with only SLACK_CONTEXT and its card-record dir in its env when the section is present', async () => {
     writeConfig({ 'devops-tools': { permission: ALL_READ } });
     const config = await build();
     const server = config.mcpServers?.['devops-tools'];
     expect(server).toBeDefined();
     expect(path.basename(server.args[server.args.length - 1])).toMatch(/^devops-tools-mcp-server\.(ts|js)$/);
-    expect(server.env).toEqual({ SLACK_CONTEXT: JSON.stringify(SLACK) });
+    expect(server.env).toEqual({ SLACK_CONTEXT: JSON.stringify(SLACK), SOMA_DEVOPS_PENDING_DIR: PENDING_DIR });
     expect(server.env).not.toHaveProperty('SLACK_BOT_TOKEN');
     // Outlasts the MCP server's 655 s wait ceiling (10 min card + 25 s broker answer + 30 s posting), as the
     // SDK per-server stdio `timeout`; the MCP test pins MAX_WAIT_MS = 655_000 < 660_000.
@@ -113,6 +117,7 @@ describe('McpConfigBuilder devops-tools registration', () => {
     const server = (await build()).mcpServers?.['devops-tools'];
     expect(server.env).toEqual({
       SLACK_CONTEXT: JSON.stringify(SLACK),
+      SOMA_DEVOPS_PENDING_DIR: PENDING_DIR,
       SOMA_DEVOPS_BROKER_SOCKET: '/tmp/U000ALICE/broker.sock',
     });
   });
@@ -121,7 +126,7 @@ describe('McpConfigBuilder devops-tools registration', () => {
     for (const socketPath of ['run/broker.sock', 42, '']) {
       writeConfig({ 'devops-tools': { permission: ALL_READ, socketPath } });
       const server = (await build()).mcpServers?.['devops-tools'];
-      expect(Object.keys(server.env)).toEqual(['SLACK_CONTEXT']);
+      expect(Object.keys(server.env)).toEqual(['SLACK_CONTEXT', 'SOMA_DEVOPS_PENDING_DIR']);
     }
   });
 
@@ -131,6 +136,7 @@ describe('McpConfigBuilder devops-tools registration', () => {
       'utf8',
     );
     expect(protocol).toContain("export const BROKER_SOCKET_ENV = 'SOMA_DEVOPS_BROKER_SOCKET';");
+    expect(protocol).toContain("export const PENDING_DIR_ENV = 'SOMA_DEVOPS_PENDING_DIR';");
   });
 
   it('does not register devops-tools without a permission map (it would run ungated)', async () => {
