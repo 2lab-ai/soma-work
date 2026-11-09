@@ -82,6 +82,8 @@ describe('skills routes (#1079)', () => {
     const webServer = await import('../web-server');
     stopWebServer = webServer.stopWebServer;
     inject = webServer.injectWebServer;
+    // PluginManager's admission (plugin/admitted-plugin-names): only admitted PLUGINS_DIR plugins are served.
+    (await import('../../plugin/admitted-plugin-names')).setAdmittedPluginNames(['envx', 'stv']);
     routes = await import('../skills-routes');
     grants = await import('../../user-skill-grants-store');
     routes.setSkillsEnvRegistrySource(() => ({ pluginNames: new Set(['envx']), pluginsDir }));
