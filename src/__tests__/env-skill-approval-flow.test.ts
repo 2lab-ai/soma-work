@@ -13,6 +13,7 @@ import { resetAdminUsersCache } from '../admin-utils';
 import { evaluateToolPolicy, type ToolPolicyContext } from '../agent-runtime/policy/tool-policy';
 import { DATA_DIR, PLUGINS_DIR } from '../env-paths';
 import { checkEnvPluginMcpAccess, checkEnvSkillAccess, envSkillRegistry } from '../env-skill-registry';
+import { setAdmittedPluginNames } from '../plugin/admitted-plugin-names';
 import { EnvSkillPermissionActionHandler } from '../slack/actions/env-skill-permission-action-handler';
 import { SkillForceHandler } from '../slack/commands/skill-force-handler';
 
@@ -119,6 +120,8 @@ describe('environment-skill admin approval — full flow', () => {
     updated.length = 0;
     redispatched.length = 0;
     vi.clearAllMocks();
+    // The environment plugin is installed and admitted, as PluginManager leaves it on a real host.
+    setAdmittedPluginNames(['acme-env']);
   });
 
   it('1회 허용: request → admin DM → click → turn re-sent and runs → same thread only', async () => {

@@ -147,7 +147,22 @@ export interface CacheMeta {
   ref: string;
   /** Marketplace manifest version (e.g. "1.2.3") */
   version?: string;
+  /**
+   * The configured ref (`name@marketplace`) this content was installed for. The
+   * plugin directory is keyed by name only, so a cache hit for another ref with
+   * the same name is a miss. Absent in caches written before it existed.
+   */
+  pluginRef?: string;
+  /** How the install-time security gate admitted this content. Absent = unknown (never trusted). */
+  admission?: CacheAdmission;
 }
+
+/**
+ * - `passed`: the scan ran and did not block.
+ * - `recorded`: the scan would have blocked; kept in record mode (environment plugin only).
+ * - `forced`: an admin's Force Update skipped the scan.
+ */
+export type CacheAdmission = 'passed' | 'recorded' | 'forced';
 
 // ---------------------------------------------------------------------------
 // Plugin update detail (per-plugin result from forceRefresh)
