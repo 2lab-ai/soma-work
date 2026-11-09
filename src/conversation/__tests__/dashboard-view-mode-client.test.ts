@@ -336,6 +336,7 @@ describe('T3 — minimal: a card shows what matters', () => {
         'renderCardResume',
         'taskPlanCardHtml',
         'quickChoicesOf',
+        'decisionLines',
         'isBusy',
         'sessionActionsOf',
         'sessionActionHtml',

@@ -6,11 +6,11 @@
   - Skill spec: `src/local/skills/UIAskUserQuestion/SKILL.md`
   - Prompt injection: `src/prompt/common.prompt`
   - Extraction/normalization: `packages/slack/src/user-choice-extractor.ts`, `src/slack/user-choice-handler.ts`
-  - Slack UI: `src/slack/choice-message-builder.ts`
+  - Slack UI: `packages/slack/src/choice-message-builder.ts` (re-exported by `src/slack/choice-message-builder.ts`), decision lines `packages/slack/src/decision-lines.ts`
   - Stream integration: `src/slack/stream-processor.ts`, `src/slack/pipeline/stream-executor.ts`
   - Action handling/state: `src/slack/actions/index.ts`, `src/slack/actions/choice-action-handler.ts`, `src/slack/actions/form-action-handler.ts`, `src/slack/actions/pending-form-store.ts`
   - Types: `src/types.ts`
-- Last Updated: 2026-11-04
+- Last Updated: 2026-11-09
 
 ## 1. Overview
 
@@ -98,6 +98,7 @@ UIAskUserQuestion은 **모델이 유저에게 “결정이 필요한 질문”�
 ```
 
 추가 필드:
+- 결정 줄 `blockedWork` · `stakes` · `reversible` · `reversibleWhy` (선택) — §7.10. 복수 질문(`user_choice_group`)의 각 질문에도 같다.
 - `recommendedChoiceId` (선택) — 추천 옵션의 `id`. Slack single-choice UI는 추천 옵션을 밴너 + primary 단독 버튼 + divider로 강조합니다. Multi-form은 순서를 맨 앞으로 올리고 `style='primary'` + `⭐` 접두를 붙입니다(50-block 예산 유지 위해 분할하지 않음).
 - 값이 옵션 `id`와 일치하지 않으면 조용히 드롭됩니다(에러 아님).
 - Legacy `(Recommended · N/M)` 라벨 접미사는 `recommendedChoiceId`가 없을 때 fallback으로 검출되며, 렌더링 시 자동으로 제거됩니다. **가능하면 `recommendedChoiceId`를 우선 사용하세요.**
@@ -196,6 +197,9 @@ UI 제약:
 Slack은 메시지당 blocks 50개 제한이 있어, `src/slack/stream-processor.ts`는 멀티 질문을 분할합니다:
 - `MAX_QUESTIONS_PER_FORM = 6`
 - 7개 이상 질문이면 6개씩 쪼개 여러 폼 메시지로 전송
+- 블록 수(결정 줄 포함, #1073): 머리 3(추천 일괄 · 제목 · 진행률) + 열린 질문당 최대 7(구분선 · 질문 · 💡 맥락 · 결정 줄 ·
+  선택지 2줄 · 버튼) → 6개 모두 열림 45. 답한 질문은 4(구분선 · 질문 · 답 · 결정 줄), 제출 영역 3은 모두 답했을 때만 →
+  다 답한 폼 30.
 
 ### 6.4 UI 전송 실패 시 fallback
 Slack API 에러(블록 제한 등) 발생 시:
@@ -307,6 +311,45 @@ Slack의 partial-fill 동작과 의도적으로 다릅니다. 1000+ sub-question
   마지막 직접 입력. 판정마다 한 번(`followUp.askedAt`). 트리거는 체인 종료(goal 없는 세션), 요약 판정(`setFollowUpListener`),
   goal 루프 실행 종료(`onRunSettled`, 이어서 일하지 않은 실행만). 후속 작업이 풀리거나 이유가 바뀌면 그 질문을 거둔다.
 
+## 7.10 결정 줄 — 막힌 작업 · 걸린 것 · 되돌릴 수 있나 (#1073, 2026-11-09)
+
+요청(에픽 #1076 P2): 질문 카드 하나만 보고 답할 수 있게, "이 답이 무엇을 막고 있나", "잘못 고르면 되돌릴 수 있나"를
+말하는 자리를 둔다. 필드가 없는 질문은 지금과 똑같이 보인다.
+
+- **필드** (모두 선택, 단일 질문과 복수 질문의 각 질문): `blockedWork`(이 답이 막고 있는 작업), `stakes`(걸린 것),
+  `reversible`(boolean — `false`는 되돌릴 수 없음), `reversibleWhy`(그 이유). 대부분의 질문에는 필요 없다 — 막히거나
+  되돌릴 수 없을 때만 쓴다(`src/local/skills/UIAskUserQuestion/SKILL.md` "Decision lines").
+- **정규화** (`normalizeDecisionFields`, `somalib/model-commands/validator.ts`): 한 줄로(공백·줄바꿈 → 공백 하나),
+  최대 160자(넘으면 159자 + `…`, 코드 포인트 단위). `reversible`은 boolean 또는 문자열 true/false/yes/no. 그 밖의 값이면
+  버리고 이유도 함께 버린다. 같은 함수가 대시보드 투영(`sessionToKanban`)에도 쓰인다. `@soma/slack`은 somalib을
+  import하지 않으므로 `packages/slack/src/decision-lines.ts`에 같은 규칙의 사본이 있고(코드 블록 fallback 추출기와
+  렌더러 방어), `src/__tests__/decision-fields-parity.test.ts`가 둘을 한 표로 묶는다.
+- **품질 경고**: `reversible: false`인데 `reversibleWhy`가 없으면 `checkAskUserQuestionQuality` 경고(거절하지 않음).
+- **줄과 순서** — Slack과 대시보드가 같은 말, 같은 순서:
+  1. `🚧 막힌 작업 — <blockedWork>`
+  2. `⚖️ 걸린 것 — <stakes>`
+  3. `⚠️ 되돌릴 수 없음 — <reversibleWhy>` (Slack `*굵게*`, 대시보드 복수 질문 `**굵게**`) 또는 `↩️ 되돌릴 수 있음 — <reversibleWhy>`
+- **Slack** (`buildDecisionLinesBlock`): context 블록 하나, mrkdwn 요소 하나, 줄마다 한 필드. 값은 `escapeSlackMrkdwn`.
+  값 안의 백틱 세 개 이상은 폭 없는 공백으로 끊는다 — 줄들이 한 요소를 쓰므로 한 값의 ```가 코드 블록을 열어 다음 줄과 경고를 삼키지 못하게. 세 테마 모두 💡 맥락 바로 아래(맥락이 없으면 질문 아래). 복수 질문 폼은 열린 질문의 맥락 아래, 답한 질문은 답(`➜`)
+  아래 — 제출 전에 다시 볼 수 있게. 필드가 없으면 블록을 넣지 않는다(바이트 동일 — `choice-decision-lines.test.ts` 스냅샷).
+  최악의 텍스트는 3 × (라벨 + 160자 × `&amp;`) ≈ 2.5k자로 3000자 한도 안.
+- **표시 언어**: 라벨과 값 사이 ` — `는 표시 번역기의 구분자라, 영어 사용자는 값이 한국어여도 라벨을 영어로 본다
+  (`en-text.json`에 라벨만 등록).
+- **대시보드**: 투영이 단일 질문의 `context`(전에는 버렸다)와 결정 필드를 싣는다. 클라이언트 `decisionLines(q, md)`가
+  단일 질문 카드(`<ui-approval-card>` `description` = 맥락 + 줄, 일반 텍스트)와 복수 질문 폼(`<ui-choice-form>` 질문
+  `context` = 줄 + 빈 줄 + 맥락, 마크다운)에 같은 줄을 그린다. 폼에서 줄이 맥락 앞인 이유: 폼은 마크다운을 그리므로 모델이
+  닫지 않은 코드 펜스나 목록이 뒤따르는 줄(과 되돌릴 수 없음 경고)을 자기 블록으로 삼킬 수 있다 — 줄을 먼저 두면 모델의
+  글이 줄 앞에 오지 않는다(각 줄은 이모지로 시작해 늘 평범한 문단이다). 결정 줄이 있는 질문은 카드 얼굴의 원클릭 답(`quickChoicesOf`)을 끄고
+  카드를 열어 답하게 한다. 결정 줄은 질문의 뜻이라 카드 식별자(`acQuestionId`, `mcFormId`)에 들어간다 — 줄이 바뀐
+  질문은 다른 카드이고, 줄이 없으면 식별자는 예전과 같다. 식별자는 표시 언어가 바꾸는 라벨이 아니라 필드 값으로 만든다.
+- **표면 차이(알려진)**: 값의 인라인 마크다운(`*x*`, `` `x` ``, http 링크)은 Slack mrkdwn과 복수 질문 폼에서는 해석되고,
+  단일 질문 카드(일반 텍스트)에서는 글자 그대로다. 줄마다 따로 해석되므로 값이 다른 줄이나 호스트의 경고 라벨을 바꾸지는
+  못한다. HTML은 어디서나 escape된다.
+- **답 형식은 그대로**: 결정 줄은 사람에게만 보인다. 모델이 받는 답(선택지 id, 복수 질문은 줄마다 `질문: id. 라벨`)은
+  같다(`choice-action-handler.test.ts` "#1073 — decision lines never reach the answer").
+- **알려진 범위 밖**: 도구 없는 코드 블록 경로의 질문은 지금도 대시보드에 질문 카드가 없다(`pendingQuestion`을
+  기록하지 않는다) — Slack 카드에만 결정 줄이 보인다. 관리자 승인 화면의 질문(#1070)도 같은 줄을 보인다: `session-question-admin-approval.ts`가 `normalizeDecisionFields`로 `decision`을 싣고, 클라이언트 `adminApprovalData`가 `decisionLines`로 그린다(맥락 → 결정 줄 → 요청 위치).
+
 ## 8. Session/Status Integration
 
 ### 8.1 모델 응답이 “선택 대기”로 끝난 경우
@@ -350,6 +393,10 @@ NEEDS YOU로 만드는데, 그때 세션 자체는 `idle`이다. 질문 뒤에 �
 - 되돌리기: 전송이 실패하면 질문과 `waiting`을 되돌리고 저장한다(재시작해도 남는다). 단, 답이 이미 쓰였으면 되돌리지 않는다 — 세션이 선점한 `working`에서 벗어났거나(턴이 돌고 끝남) 더 새 질문이 기록됐으면 새 상태를 그대로 둔다.
 
 ## 9. Tests
+- 결정 줄(#1073): `somalib/model-commands/ask-decision-lines.test.ts`(스키마·정규화·품질 경고),
+  `src/slack/__tests__/choice-decision-lines.test.ts`(Slack 3테마·폼·바이트 동일 스냅샷·50블록·번역),
+  `src/conversation/__tests__/dashboard-decision-lines.test.ts`(투영·클라이언트·Slack과 같은 줄),
+  `src/__tests__/decision-fields-parity.test.ts`(두 정규화 사본)
 - JSON 추출/정규화/Slack 블록 생성 테스트: `src/slack/user-choice-handler.test.ts`
 - 스트림에서 choice 감지/폼 생성 테스트: `src/slack/stream-processor.test.ts`
 

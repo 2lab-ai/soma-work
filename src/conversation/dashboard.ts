@@ -41,6 +41,8 @@ import { plainTldrLine } from '@soma/slack/summary-service';
 import type { FastifyInstance } from 'fastify';
 import { SDK_EFFORT_LEVELS } from 'soma-lib';
 import type { CronExecutionRecord, CronJob, CronJobPatch } from 'somalib/cron/cron-storage';
+import type { DecisionFields } from 'somalib/model-commands/session-types';
+import { normalizeDecisionFields } from 'somalib/model-commands/validator';
 import {
   type AdminApprovalSnapshot,
   adminApprovalSnapshot,
@@ -549,20 +551,24 @@ export interface KanbanSession {
    */
   taskPlan?: KanbanTaskPlan;
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
-  pendingQuestion?: {
+  pendingQuestion?: DecisionFields & {
     type: 'user_choice' | 'user_choices';
     question: string;
     choices?: Array<{ id: string; label: string; description?: string }>;
     /** ID of the recommended choice (single-choice) */
     recommendedChoiceId?: string;
+    /** The single question's context (#1073 — it was dropped before). */
+    context?: string;
     /** Multi-choice fields */
-    questions?: Array<{
-      id: string;
-      question: string;
-      choices: Array<{ id: string; label: string; description?: string }>;
-      context?: string;
-      recommendedChoiceId?: string;
-    }>;
+    questions?: Array<
+      DecisionFields & {
+        id: string;
+        question: string;
+        choices: Array<{ id: string; label: string; description?: string }>;
+        context?: string;
+        recommendedChoiceId?: string;
+      }
+    >;
     questionCount?: number;
     title?: string;
     description?: string;
@@ -2729,6 +2735,11 @@ function sessionToKanban(key: string, s: any): KanbanSession {
             ...(s.actionPanel.pendingQuestion.recommendedChoiceId
               ? { recommendedChoiceId: s.actionPanel.pendingQuestion.recommendedChoiceId }
               : {}),
+            // #1073 — the question's context (dropped before) and its decision lines, as the Slack card shows them.
+            ...(typeof s.actionPanel.pendingQuestion.context === 'string' && s.actionPanel.pendingQuestion.context.trim()
+              ? { context: s.actionPanel.pendingQuestion.context }
+              : {}),
+            ...normalizeDecisionFields(s.actionPanel.pendingQuestion),
           }
         : s.actionPanel.pendingQuestion.type === 'user_choices'
           ? {
@@ -2747,6 +2758,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
                 })),
                 context: q.context,
                 ...(q.recommendedChoiceId ? { recommendedChoiceId: q.recommendedChoiceId } : {}),
+                ...normalizeDecisionFields(q),
               })),
             }
           : undefined // Unknown question type — skip
@@ -7873,7 +7885,11 @@ function acPermissionData(s, p) {
 // rewritten in place is another card, never the old one's answer or focus
 // (review R2 P1).
 function acQuestionId(q) {
-  return 'q|' + JSON.stringify([q.question, (q.choices || []).map(function(c) { return [c.id, c.label, c.description || '']; })]);
+  var parts = [q.question, (q.choices || []).map(function(c) { return [c.id, c.label, c.description || '']; })];
+  // #1073 — its decision lines are part of its meaning (other stakes or another verdict is another card).
+  // Keyed on the raw fields, not the rendered labels (the display language rewrites those).
+  if (decisionLines(q).length) parts.push([q.blockedWork || '', q.stakes || '', q.reversible === undefined ? '' : q.reversible, q.reversibleWhy || '']);
+  return 'q|' + JSON.stringify(parts);
 }
 // pendingQuestion (single choice) → the card's data. The choices read as
 // before ("1. label", the recommended marker stripped). #917 — the last option
@@ -7892,6 +7908,11 @@ function acQuestionData(s, q) {
     }),
     allowOther: true,
   };
+  // #1073 — the context under the question, then its decision lines (the card keeps line breaks).
+  var desc = [];
+  if (typeof q.context === 'string' && q.context.trim()) desc.push(q.context.trim());
+  desc = desc.concat(decisionLines(q));
+  if (desc.length) d.description = desc.join('\\n');
   var rec = resolveRecommendedId(q.recommendedChoiceId, q.choices);
   if (rec) d.recommendedId = String(rec);
   var lock = acQuestionLock(s);
@@ -8610,7 +8631,8 @@ function adminApprovalData(id) {
     d.kind = 'question';
     d.question = String(a.title || '');
     var place = a.place && a.place.channel ? '요청 위치: #' + a.place.channel + (a.place.threadTs ? ' 스레드 ' + a.place.threadTs : '') : '';
-    var desc = [a.description || '', place].filter(Boolean).join('\\n');
+    // #1073 — an agent question's decision lines, drawn as the session view draws them.
+    var desc = [a.description || ''].concat(decisionLines(a.decision), [place]).filter(Boolean).join('\\n');
     if (desc) d.description = desc;
     d.choices = (a.choices || []).map(function(c) { return { id: String(c.id), label: String(c.label) }; });
     d.allowOther = false;
@@ -9663,6 +9685,25 @@ function resolveRecommendedId(explicitId, options) {
   if (explicitId && (options || []).some(function(o) { return o.id === explicitId; })) return explicitId;
   var legacy = (options || []).find(function(o) { return /\\(Recommended(?:\\s*·\\s*\\d+\\/\\d+)?\\)\\s*$/i.test(o.label || ''); });
   return legacy ? legacy.id : null;
+}
+// #1073 — a question's decision lines, as the Slack card shows them (@soma/slack decision-lines): what the answer is
+// holding up, what is at stake, whether the choice can be undone and why — in this order, only the ones it has.
+// md: markdown for the multi-question form (the irreversible label bold); else plain text for the single question
+// card. The server already normalized the values (one line each); the page shows them as text (escaped by the element).
+function decisionLines(q, md) {
+  var out = [];
+  if (!q || typeof q !== 'object') return out;
+  var text = function(v) { return typeof v === 'string' ? v.replace(/\\s+/g, ' ').trim() : ''; };
+  var blocked = text(q.blockedWork);
+  if (blocked) out.push('🚧 막힌 작업 — ' + blocked);
+  var stakes = text(q.stakes);
+  if (stakes) out.push('⚖️ 걸린 것 — ' + stakes);
+  if (typeof q.reversible === 'boolean') {
+    var label = q.reversible ? '↩️ 되돌릴 수 있음' : (md === true ? '⚠️ **되돌릴 수 없음**' : '⚠️ 되돌릴 수 없음');
+    var why = text(q.reversibleWhy);
+    out.push(why ? label + ' — ' + why : label);
+  }
+  return out;
 }
 // A finite number or 0 — numeric fields pass through this before they reach markup.
 function toNum(v) {
@@ -14439,6 +14480,8 @@ function focusPanelComposer(hint) {
 // on the task card by one press: its choices as buttons. Anything else keeps the approval card (pick, then 제출).
 function quickChoicesOf(q) {
   if (!q || q.type !== 'user_choice' || !Array.isArray(q.choices)) return null;
+  // #1073 — a question with decision lines is answered on the card, where the lines show — never by one press.
+  if (decisionLines(q).length) return null;
   var n = q.choices.length;
   if (n < 2 || n > 4) return null;
   for (var i = 0; i < n; i++) {
@@ -16637,7 +16680,12 @@ var MC_CUSTOM_ID = '\\uC9C1\\uC811\\uC785\\uB825';
 // The form's identity: a different question (or another session) starts clean.
 function mcFormId(s, q) {
   return 'mc|' + s.key + '|'
-    + JSON.stringify([q.title || q.question || '', (q.questions || []).map(function(x) { return [x.id, x.question]; })]);
+    + JSON.stringify([q.title || q.question || '', (q.questions || []).map(function(x) {
+      // #1073 — a question whose decision lines change makes another form (its answers start clean); raw fields.
+      return decisionLines(x).length
+        ? [x.id, x.question, [x.blockedWork || '', x.stakes || '', x.reversible === undefined ? '' : x.reversible, x.reversibleWhy || '']]
+        : [x.id, x.question];
+    })]);
 }
 // The session's form state, reset when its question is another one.
 function mcStateOf(s, q) {
@@ -16672,7 +16720,15 @@ function mcFormData(s, q) {
         allowCustom: true,
         customPlaceholder: STRINGS.mcCustomPlaceholder,
       };
-      if (item.context) out.context = String(item.context);
+      // #1073 — the decision lines, a blank line, then the model's context (markdown). The lines come first here
+      // because the element renders markdown: nothing the model wrote — an open code fence, a list — comes before
+      // them, so it cannot take them (or the irreversible warning) into its block. Each line starts with its emoji,
+      // so the lines are always one plain paragraph.
+      var ctx = [];
+      var lines = decisionLines(item, true);
+      if (lines.length) ctx.push(lines.join('\\n'));
+      if (item.context) ctx.push(String(item.context));
+      if (ctx.length) out.context = ctx.join('\\n\\n');
       return out;
     }),
     answers: st.answers,

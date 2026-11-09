@@ -187,6 +187,7 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
         'mcSend',
         'mcStateOf',
         'mcFormId',
+        'decisionLines',
         'mcFormEl',
         'mcSettle',
         'mcOnChange',

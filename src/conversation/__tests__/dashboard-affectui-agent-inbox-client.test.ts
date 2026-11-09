@@ -1097,6 +1097,7 @@ describe('D10 — one primary button per open card', () => {
         'renderCardResume',
         'taskPlanCardHtml',
         'quickChoicesOf',
+        'decisionLines',
         'stripRecommendedMarker',
         'isBusy',
         'sessionActionsOf',
@@ -1242,7 +1243,7 @@ describe('D10 — one primary button per open card', () => {
     let sibling = false;
     const load1 = (viewer: string) =>
       load<{ renderMultiChoiceCard(s: unknown, f: string): string }>(
-        ['esc', 'escJs', 'renderMultiChoiceCard', 'mcFormId'],
+        ['esc', 'escJs', 'renderMultiChoiceCard', 'mcFormId', 'decisionLines'],
         [],
         { _mcState: {}, console, currentUserId: viewer, isSiblingSession: () => sibling },
       ).renderMultiChoiceCard;
@@ -1313,6 +1314,7 @@ describe('D10 — the open card renders one approval card per prompt; only what 
         'renderCardResume',
         'taskPlanCardHtml',
         'quickChoicesOf',
+        'decisionLines',
         'isBusy',
         'sessionActionsOf',
         'sessionActionHtml',

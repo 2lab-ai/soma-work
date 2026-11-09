@@ -1,10 +1,12 @@
+import { type DecisionFields, normalizeDecisionFields } from './decision-lines.js';
+
 export interface UserChoiceOption {
   id: string;
   label: string;
   description?: string;
 }
 
-export interface UserChoice {
+export interface UserChoice extends DecisionFields {
   type: 'user_choice';
   question: string;
   choices: UserChoiceOption[];
@@ -14,7 +16,7 @@ export interface UserChoice {
   audience?: 'admins';
 }
 
-export interface UserChoiceQuestion {
+export interface UserChoiceQuestion extends DecisionFields {
   id: string;
   question: string;
   choices: UserChoiceOption[];
@@ -100,6 +102,7 @@ export class UserChoiceExtractor {
           choices: q.choices || [],
           context: q.context,
           ...(typeof q.recommendedChoiceId === 'string' ? { recommendedChoiceId: q.recommendedChoiceId } : {}),
+          ...normalizeDecisionFields(q),
         }));
         return {
           choice: null,
@@ -125,6 +128,7 @@ export class UserChoiceExtractor {
               ...(typeof parsed.recommendedChoiceId === 'string'
                 ? { recommendedChoiceId: parsed.recommendedChoiceId }
                 : {}),
+              ...normalizeDecisionFields(parsed),
             },
             choices: null,
           };
@@ -141,6 +145,7 @@ export class UserChoiceExtractor {
             choices: c.options || c.choices || [],
             context: c.context,
             ...(typeof c.recommendedChoiceId === 'string' ? { recommendedChoiceId: c.recommendedChoiceId } : {}),
+            ...normalizeDecisionFields(c),
           }));
 
           if (questions.length === 1) {
@@ -151,6 +156,7 @@ export class UserChoiceExtractor {
                 choices: questions[0].choices,
                 context: questions[0].context,
                 ...(questions[0].recommendedChoiceId ? { recommendedChoiceId: questions[0].recommendedChoiceId } : {}),
+                ...normalizeDecisionFields(questions[0]),
               },
               choices: null,
             };

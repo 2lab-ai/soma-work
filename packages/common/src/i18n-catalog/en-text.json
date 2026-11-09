@@ -2134,5 +2134,11 @@
   "이 환경 스킬을 볼 권한이 없습니다": "You are not allowed to see this environment skill",
   "환경 스킬 권한은 로그인한 관리자만 바꿉니다 — 이 대시보드는 인증이 설정되지 않았습니다": "Only a signed-in admin can change environment skill access — this dashboard has no sign-in set up",
   "환경 스킬은 로그인한 관리자만 고칩니다 — 이 대시보드는 인증이 설정되지 않았습니다": "Only a signed-in admin edits environment skills — this dashboard has no sign-in configured",
-  "환경 스킬이 최대 크기({0}KB)를 넘습니다": "The environment skill exceeds the maximum size ({0}KB)"
+  "환경 스킬이 최대 크기({0}KB)를 넘습니다": "The environment skill exceeds the maximum size ({0}KB)",
+  "🚧 막힌 작업": "🚧 Blocked work",
+  "⚖️ 걸린 것": "⚖️ At stake",
+  "⚠️ *되돌릴 수 없음*": "⚠️ *Cannot be undone*",
+  "↩️ 되돌릴 수 있음": "↩️ Can be undone",
+  "🚧 막힌 작업 — {0}": "🚧 Blocked work — {0}",
+  "⚖️ 걸린 것 — {0}": "⚖️ At stake — {0}"
 }

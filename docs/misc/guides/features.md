@@ -89,6 +89,7 @@ The new-task composer has a **작업 계획** (plan) switch, on by default, for 
 - Until the plan is started the task has only the plan tool, never the epic's child tools. Full-page view: `/dashboard/plan/<session key>`.
 - In a Slack thread, the thread gets a note with the card's link when a plan is ready. **시작** sends the plan into the thread as your next instruction, as its own turn: if a turn is still running, the plan waits in the queue behind it. A message you write in the thread while the plan waits is direct input; `/compact` and the bot's own continuation turns are not, and leave the plan waiting.
 - A simple question (2–4 short choices — yes / no, start / cancel) shows its choices as buttons on the task card: one press answers it.
+- A question can say what its answer is holding up (🚧), what is at stake (⚖️) and whether the choice can be undone (⚠️ 되돌릴 수 없음, with its reason, or ↩️ 되돌릴 수 있음) — the same lines, in the same order, on the Slack card and the dashboard (#1073). Most questions carry none and look as before. A question with these lines is answered from the opened card, never by one press on the card face. Spec: [`docs/current/spec/12-ui-ask-user-question.md` §7.10](../../current/spec/12-ui-ask-user-question.md).
 - **시작** also sets a goal for the plan: finish every phase. The goal loop then keeps the task going turn after turn until the plan is done, and picks it up again after a restart. Your own instruction or answer resets its continuation budget.
 
 ### 🗂️ One kind of work session
