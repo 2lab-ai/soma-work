@@ -257,7 +257,8 @@ describe('detail — 내용 보기 asks the server for the whole job', () => {
   it('loads the job by id and paints it; focus goes to 편집', async () => {
     const e = env({ status: 200, body: { job: DETAIL } });
     await e.f.cronDetailLoad();
-    expect(e.fetch).toHaveBeenCalledWith('/api/dashboard/cron/job-1');
+    // A GET: the page's fetch wrapper adds X-Admin-Mode to writes only, so the read says it itself (fable P1).
+    expect(e.fetch).toHaveBeenCalledWith('/api/dashboard/cron/job-1', { headers: { 'X-Admin-Mode': 'off' } });
     expect(e.f.__state()).toMatchObject({ key: 'id:job-1', jobId: 'job-1', job: DETAIL, loading: false, draft: null });
     expect(e.paintCronDrawer).toHaveBeenCalled();
     expect(e.status.textContent).toBe('');
@@ -279,6 +280,16 @@ describe('detail — 내용 보기 asks the server for the whole job', () => {
     const offline = env('offline');
     await offline.f.cronDetailLoad();
     expect(offline.status.textContent).not.toBe('');
+  });
+
+  it('an admin in 관리자 모드 reads someone else’s job with X-Admin-Mode: on — the server gate needs it on a GET too', async () => {
+    const e = env(
+      { status: 200, body: { job: DETAIL } },
+      { currentUserId: 'U_OWNER', _viewerUserId: 'U_ADMIN', _viewerIsAdmin: true, _isAdminModeOn: () => true },
+    );
+    await e.f.cronDetailLoad();
+    expect(e.fetch).toHaveBeenCalledWith('/api/dashboard/cron/job-1', { headers: { 'X-Admin-Mode': 'on' } });
+    expect(e.f.__state().job).toEqual(DETAIL);
   });
 
   it('asks nothing for a viewer who may not see it', async () => {
@@ -522,7 +533,9 @@ describe('save — only what changed, with the CSRF token; a refusal keeps the f
     const meta = fakeEl('cron-drawer-meta', { '[data-cron-act="edit"]': editBtn });
     const fetch = vi.fn(async (_url: string, _init: any) => {
       const a = answers.shift()!;
-      return { ok: a.status < 300, status: a.status, json: async () => a.body };
+      const res: any = { ok: a.status < 300, status: a.status, json: async () => a.body };
+      res.clone = () => ({ json: async () => a.body });
+      return res;
     });
     const refreshCsrfToken = vi.fn(async () => {});
     const paintCronDrawer = vi.fn();
@@ -611,12 +624,11 @@ describe('save — only what changed, with the CSRF token; a refusal keeps the f
     expect(s.f.__state().draft).toBeNull();
   });
 
-  it('a 403 that is a refusal, not the token, says the owner-only words', async () => {
-    const s = saver([
-      { status: 403, body: { error: 'Forbidden' } },
-      { status: 403, body: { error: 'Forbidden' } },
-    ]);
+  it('a 403 that is a refusal, not the token, says the owner-only words — and is not sent again', async () => {
+    const s = saver([{ status: 403, body: { error: 'Forbidden' } }]);
     await s.f.cronDetailSave();
+    expect(s.refreshCsrfToken).not.toHaveBeenCalled();
+    expect(s.fetch).toHaveBeenCalledTimes(1);
     expect(s.status.textContent).toBe('소유자나 관리자 모드를 켠 관리자만 할 수 있어요');
     expect(s.f.__state().draft).toBe(s.draft);
   });

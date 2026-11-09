@@ -21068,7 +21068,8 @@ async function cronDetailLoad() {
   var res = null;
   var data = null;
   try {
-    res = await fetch('/api/dashboard/cron/' + encodeURIComponent(st.jobId));
+    // The page's fetch wrapper adds X-Admin-Mode to writes only; this read is gated like a write (an admin's needs it).
+    res = await fetch('/api/dashboard/cron/' + encodeURIComponent(st.jobId), { headers: { 'X-Admin-Mode': _isAdminModeOn() ? 'on' : 'off' } });
     data = await res.json().catch(function() { return null; });
   } catch (_e) {}
   if (_cronDetail !== st) return; // the drawer moved on meanwhile
@@ -21142,8 +21143,13 @@ async function cronDetailPatch(url, body) {
   }
   var res = await send();
   if (res.status === 403) {
-    await refreshCsrfToken();
-    res = await send();
+    // Once more only when the token went stale (JWT rotation) — a refusal stays a refusal.
+    var first = null;
+    try { first = await res.clone().json(); } catch (_e) {}
+    if (first && first.code === 'csrf_failed') {
+      await refreshCsrfToken();
+      res = await send();
+    }
   }
   return res;
 }
