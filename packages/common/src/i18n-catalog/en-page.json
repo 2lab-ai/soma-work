@@ -913,6 +913,7 @@
   "음성 인식기가 마이크를 열지 않았습니다": "The speech recognizer did not open the microphone",
   "응답": "Response",
   "응답 필요": "Needs response",
+  "응답 필요 · 오래 기다린 순": "Needs response · oldest first",
   "응답을 보내지 못했어요 (HTTP ": "Couldn't send the response (HTTP ",
   "응답을 보냈어요": "Response sent",
   "의 ": " — entry ",

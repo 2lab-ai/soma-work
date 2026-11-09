@@ -79,8 +79,8 @@ describe('local:html skill — RED contract', () => {
     const step8 = md.slice(md.indexOf('### 8.'), md.indexOf('### 9.'));
     expect(step8).toContain('mcp__slack-mcp__send_file(');
     expect(step8).not.toContain('mcp__slack-mcp__send_media(');
-    expect(step8).toMatch(/Do \*\*not\*\* upload the PNG/);
-    expect(md).toContain('### 5. Render a QA snapshot (PNG, never uploaded)');
+    expect(step8).toContain('No PNG is made and none is uploaded');
+    expect(md).toContain('### 5. Check the page in a headless browser (no image)');
     expect(md).not.toMatch(/Dual upload/i);
   });
 
