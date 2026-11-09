@@ -11,9 +11,12 @@
 
 import * as os from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
+import { NATIVE_BYPASS_TOOLS } from '../../hooks/bypass-permission-guard';
 import type { HandoffContext } from '../../types';
+import { NATIVE_WRITE_TOOLS } from '../policy/native-write-boundary';
 import {
   ENV_GATED_TOOLS,
+  ENV_PLUGIN_MCP_DENY_MESSAGE,
   ENV_SKILL_DENY_MESSAGE,
   evaluateToolPolicy,
   TOOL_POLICY_MATCHERS,
@@ -33,6 +36,7 @@ function makeCtx(overrides: Partial<ToolPolicyContext> = {}): ToolPolicyContext 
     handoffContext: undefined,
     checkMcpToolPermission: () => null,
     checkEnvSkillPermission: () => null,
+    checkEnvPluginMcpPermission: () => null,
     ...overrides,
   };
 }
@@ -289,5 +293,146 @@ describe('evaluateToolPolicy — guards (epic #1023 P5)', () => {
     it('routes the Skill tool through the policy hook', () => {
       expect(TOOL_POLICY_MATCHERS).toContain('Skill');
     });
+  });
+
+  // Environment plugin MCP tools (step 6d): the SDK starts every plugin's MCP servers for every
+  // session, so an environment plugin's tools (`mcp__plugin_<plugin>_<server>__<tool>`) run for a
+  // non-admin only on an admin's grant of one of that plugin's skills.
+  describe('environment plugin MCP gate (step 6d)', () => {
+    const TOOL = 'mcp__plugin_envx_browser__probe';
+    const denyEnvx = (tool: string) => (tool.startsWith('mcp__plugin_envx_') ? 'envx' : null);
+
+    it.each([
+      'auto',
+      'bypass',
+      'legacy',
+    ] as const)('denies an ungranted environment plugin MCP tool for a non-admin (%s)', (mode) => {
+      const r = evaluateToolPolicy(
+        TOOL,
+        { url: 'https://example.test' },
+        makeCtx({ mode, checkEnvPluginMcpPermission: denyEnvx }),
+      );
+      expect(r.decision).toBe('deny');
+      expect(r.reason).toBe(`env-plugin-mcp: envx (${TOOL})`);
+      expect(r.denyMessage).toBe(ENV_PLUGIN_MCP_DENY_MESSAGE);
+    });
+
+    it('tells the model no approval request was sent and what opens the tool', () => {
+      expect(ENV_PLUGIN_MCP_DENY_MESSAGE).toMatch(/environment plugin/);
+      expect(ENV_PLUGIN_MCP_DENY_MESSAGE).toMatch(/admin approves one of that plugin's skills/);
+      expect(ENV_PLUGIN_MCP_DENY_MESSAGE).toMatch(/no approval request is sent/i);
+      expect(ENV_PLUGIN_MCP_DENY_MESSAGE).not.toBe(ENV_SKILL_DENY_MESSAGE);
+    });
+
+    it('has no opinion once the check finds a grant (null)', () => {
+      expect(evaluateToolPolicy(TOOL, {}, makeCtx({ mode: 'bypass' })).decision).toBe('pass');
+    });
+
+    it('lets admins call it without consulting the check', () => {
+      const spy = vi.fn(denyEnvx);
+      const r = evaluateToolPolicy(
+        TOOL,
+        {},
+        makeCtx({ isAdmin: true, mode: 'bypass', checkEnvPluginMcpPermission: spy }),
+      );
+      expect(r.decision).toBe('pass');
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('is consulted for `mcp__plugin_` tools only, with the tool name', () => {
+      const spy = vi.fn(() => 'envx');
+      for (const tool of [
+        'mcp__x__y',
+        'mcp__github__create_pull_request',
+        'mcp__plugins_envx__probe',
+        'mcp__pluginenvx_browser__probe',
+        'MCP__plugin_envx_browser__probe',
+        'xmcp__plugin_envx_browser__probe',
+        ' mcp__plugin_envx_browser__probe',
+        'Skill',
+        'Read',
+        'Bash',
+      ]) {
+        const r = evaluateToolPolicy(tool, {}, makeCtx({ checkEnvPluginMcpPermission: spy }));
+        expect(r.reason.startsWith('env-plugin-mcp:')).toBe(false);
+      }
+      expect(spy).not.toHaveBeenCalled();
+      evaluateToolPolicy(TOOL, undefined, makeCtx({ checkEnvPluginMcpPermission: spy }));
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy).toHaveBeenLastCalledWith(TOOL);
+    });
+
+    it('an empty deny reason still denies (null is the only "allowed")', () => {
+      expect(evaluateToolPolicy(TOOL, {}, makeCtx({ checkEnvPluginMcpPermission: () => '' })).decision).toBe('deny');
+    });
+
+    it('a deny tier hit keeps its own reason (the MCP grant guard runs first)', () => {
+      const r = evaluateToolPolicy(
+        TOOL,
+        {},
+        makeCtx({ checkMcpToolPermission: () => 'gated server', checkEnvPluginMcpPermission: denyEnvx }),
+      );
+      expect(r.reason).toBe('mcp-permission: gated server');
+    });
+
+    it('leaves incident sessions to the incident tier', () => {
+      const r = evaluateToolPolicy(
+        TOOL,
+        {},
+        makeCtx({ checkEnvPluginMcpPermission: denyEnvx, incidentReadOnly: { allowedMcpTools: [TOOL] } }),
+      );
+      expect(r.decision).toBe('allow');
+      expect(r.reason.startsWith('incident-read-only:')).toBe(true);
+    });
+
+    it('leaves the environment skill step to skill and file calls', () => {
+      const r = evaluateToolPolicy(
+        TOOL,
+        {},
+        makeCtx({ checkEnvSkillPermission: () => 'envx:qa', checkEnvPluginMcpPermission: () => null }),
+      );
+      expect(r.decision).toBe('pass');
+    });
+  });
+});
+
+/**
+ * How the SDK matches a `PreToolUse` matcher to a tool name. Claude Code compares a matcher made
+ * only of `[A-Za-z0-9_|]` as a `|`-list of exact tool names (CHANGELOG v2.1.195; the bot's 2.1.284
+ * logs "Hook matcher `mcp__` matches no tool (it is compared as an exact string)"); any other
+ * matcher is a regular expression tested against the name.
+ */
+function sdkMatcherHits(matcher: string, toolName: string): boolean {
+  if (/^[a-zA-Z0-9_|]+$/.test(matcher)) {
+    return matcher
+      .split('|')
+      .map((name) => name.trim())
+      .filter(Boolean)
+      .includes(toolName);
+  }
+  return new RegExp(matcher).test(toolName);
+}
+
+describe('TOOL_POLICY_MATCHERS under the SDK matcher rule', () => {
+  const hooked = (tool: string) => TOOL_POLICY_MATCHERS.some((matcher) => sdkMatcherHits(matcher, tool));
+
+  it('routes every governed tool to the policy hook, MCP tools included', () => {
+    for (const tool of ['Bash', 'Skill', ...NATIVE_BYPASS_TOOLS, ...NATIVE_WRITE_TOOLS]) {
+      expect({ tool, hooked: hooked(tool) }).toEqual({ tool, hooked: true });
+    }
+    for (const tool of [
+      'mcp__github__create_pull_request',
+      'mcp__x__y',
+      'mcp__plugin_envx_browser__probe',
+      'mcp__plugin_acme-env_browser__probe',
+    ]) {
+      expect({ tool, hooked: hooked(tool) }).toEqual({ tool, hooked: true });
+    }
+  });
+
+  it('leaves ungoverned tools and look-alike names out', () => {
+    for (const tool of ['ExitPlanMode', 'AskUserQuestion', 'xmcp__y', 'MCP__x__y', 'mcp_x']) {
+      expect({ tool, hooked: hooked(tool) }).toEqual({ tool, hooked: false });
+    }
   });
 });

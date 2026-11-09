@@ -8,6 +8,8 @@
  *
  *   - the decision is step 6b of `evaluateToolPolicy` (the model's `Skill` tool), fed by
  *     {@link checkEnvSkillPermission}, and the same check in `SkillForceHandler` (`$plugin:skill`);
+ *     an environment plugin's MCP tools are step 6d ({@link checkEnvPluginMcpAccess}): they run on
+ *     the grant of any of that plugin's skills;
  *   - grants live in the single skill-grant store under `ENV_SKILL_GRANT_OWNER`
  *     (`user-skill-grants-store.ts`);
  *   - the ask is `requestEnvSkillPermission` (`slack/env-skill-permission-request.ts`) and the
@@ -21,7 +23,13 @@ import { CONFIG_FILE, PLUGINS_DIR } from './env-paths';
 import { Logger } from './logger';
 import { isSafePathSegment } from './path-utils';
 import { parsePluginRef } from './plugin/config-parser';
-import { ENV_SKILL_GRANT_OWNER, type GrantScope, isEnvSkillUseAllowed, loadGrants } from './user-skill-grants-store';
+import {
+  ENV_SKILL_GRANT_OWNER,
+  type GrantScope,
+  isEnvPluginUseAllowed,
+  isEnvSkillUseAllowed,
+  loadGrants,
+} from './user-skill-grants-store';
 
 const logger = new Logger('EnvSkillRegistry');
 
@@ -143,6 +151,43 @@ export function checkEnvSkillPermission(
   const key = resolveEnvSkillKey(skillId, registry);
   if (key === null) return null;
   return isEnvSkillUseAllowed(key, requesterId, scope) ? null : key;
+}
+
+/** The prefix the SDK gives every MCP tool of a plugin's server — policy step 6d tests the same one. */
+const PLUGIN_MCP_TOOL_PREFIX = 'mcp__plugin_';
+
+/**
+ * The environment plugins an MCP tool may belong to, in name order. The SDK starts a plugin's MCP
+ * servers for every session and names their tools `mcp__plugin_<plugin>_<server>__<tool>`, the
+ * plugin name as is (hyphens kept). A plugin name may itself contain `_`, so
+ * `mcp__plugin_abc_def_srv__t` is plugin `abc` (server `def_srv`) or plugin `abc_def` (server `srv`):
+ * every environment plugin whose `mcp__plugin_<plugin>_` starts the name is returned, and the caller
+ * requires a grant for each. A non-environment plugin named `<environment plugin>_…` therefore has
+ * its tools gated too (fail closed); a look-alike such as `<environment plugin>-…` does not.
+ */
+export function envPluginsOfMcpTool(toolName: string, registry: EnvSkillRegistry): string[] {
+  if (registry.pluginNames.size === 0 || !toolName.startsWith(PLUGIN_MCP_TOOL_PREFIX)) return [];
+  return [...registry.pluginNames]
+    .filter((plugin) => plugin.length > 0 && toolName.startsWith(`${PLUGIN_MCP_TOOL_PREFIX}${plugin}_`))
+    .sort();
+}
+
+/**
+ * `ctx.checkEnvPluginMcpPermission` (policy step 6d) for a non-admin `requesterId` in `scope`'s
+ * thread: the environment plugin an MCP tool belongs to when the requester holds no grant for it —
+ * none of all environment skills, of any of its skills, or of any of its skills in this thread —
+ * else null. An ambiguous name ({@link envPluginsOfMcpTool}) needs a grant for every plugin it may be.
+ */
+export function checkEnvPluginMcpAccess(
+  toolName: string,
+  requesterId: string,
+  scope: GrantScope,
+  registry: EnvSkillRegistry,
+): string | null {
+  for (const plugin of envPluginsOfMcpTool(toolName, registry)) {
+    if (!isEnvPluginUseAllowed(plugin, requesterId, scope)) return plugin;
+  }
+  return null;
 }
 
 /** `PLUGINS_DIR` as written and as the OS resolves it (symbolic links followed). */

@@ -19,7 +19,8 @@
  * live at `DATA_DIR/env-skill-grants.json`, keyed by `plugin:skill`, and add one
  * tier the user-skill flow does not have — a thread grant (the admin's "1회"):
  * the requester may run the skill in that one thread until it expires, because
- * one deploy calls the same environment skill several times.
+ * one deploy calls the same environment skill several times. Any grant of one of
+ * a plugin's skills also opens that plugin's MCP tools (`isEnvPluginUseAllowed`).
  */
 import { atomicWriteJson } from '@soma/common/atomic-json';
 import * as fs from 'fs';
@@ -134,6 +135,14 @@ export function consumeOneTimeGrant(ownerId: string, skillName: string, requeste
 /** key = owner\0skill\0requester\0channel\0thread → expiresAt (epoch ms). */
 const threadGrants = new Map<string, number>();
 
+/**
+ * Index of `threadGrants` by plugin: key = owner\0plugin\0requester\0channel\0thread → the
+ * `threadGrants` keys of that plugin's skills (`plugin:skill`) there. Answers "any live grant of this
+ * plugin in this thread" without a scan; entries are dropped lazily, on lookup, once their grant is
+ * gone from `threadGrants` or expired.
+ */
+const threadGrantsByPlugin = new Map<string, Set<string>>();
+
 /** Where a thread grant applies: one Slack thread. */
 export interface GrantScope {
   channel: string;
@@ -142,6 +151,16 @@ export interface GrantScope {
 
 function threadKey(ownerId: string, skillName: string, requesterId: string, scope: GrantScope): string {
   return [ownerId, skillName, requesterId, scope.channel, scope.threadTs ?? ''].join('\u0000');
+}
+
+function pluginThreadKey(ownerId: string, pluginName: string, requesterId: string, scope: GrantScope): string {
+  return [ownerId, pluginName, requesterId, scope.channel, scope.threadTs ?? ''].join('\u0000');
+}
+
+/** The plugin of a `plugin:skill` key, or null for a name without one. */
+function pluginOfSkillKey(skillName: string): string | null {
+  const colon = skillName.indexOf(':');
+  return colon > 0 ? skillName.slice(0, colon) : null;
 }
 
 /**
@@ -156,7 +175,39 @@ export function addThreadGrant(
   scope: GrantScope,
   expiresAt?: number,
 ): void {
-  threadGrants.set(threadKey(ownerId, skillName, requesterId, scope), expiresAt ?? Date.now() + THREAD_GRANT_TTL_MS);
+  const key = threadKey(ownerId, skillName, requesterId, scope);
+  threadGrants.set(key, expiresAt ?? Date.now() + THREAD_GRANT_TTL_MS);
+  const plugin = pluginOfSkillKey(skillName);
+  if (plugin !== null) {
+    const indexKey = pluginThreadKey(ownerId, plugin, requesterId, scope);
+    const keys = threadGrantsByPlugin.get(indexKey) ?? new Set<string>();
+    keys.add(key);
+    threadGrantsByPlugin.set(indexKey, keys);
+  }
+}
+
+/**
+ * Non-mutating apart from dropping expired entries: is there a live thread grant of any skill of
+ * `pluginName` (`pluginName:*`) for (owner, requester) in `scope`'s thread?
+ */
+export function hasThreadGrantForPlugin(
+  ownerId: string,
+  pluginName: string,
+  requesterId: string,
+  scope: GrantScope,
+): boolean {
+  const indexKey = pluginThreadKey(ownerId, pluginName, requesterId, scope);
+  const keys = threadGrantsByPlugin.get(indexKey);
+  if (keys === undefined) return false;
+  const now = Date.now();
+  for (const key of keys) {
+    const exp = threadGrants.get(key);
+    if (exp !== undefined && exp > now) return true;
+    if (exp !== undefined) threadGrants.delete(key);
+    keys.delete(key);
+  }
+  threadGrantsByPlugin.delete(indexKey);
+  return false;
 }
 
 /** Non-mutating apart from dropping an expired entry: is there a live thread grant? */
@@ -217,4 +268,22 @@ export function isEnvSkillUseAllowed(skillKey: string, requesterId: string, scop
   if (grants.allowAll.includes(requesterId)) return true;
   if (grants.perSkill[skillKey]?.includes(requesterId)) return true;
   return scope !== undefined && hasThreadGrant(ENV_SKILL_GRANT_OWNER, skillKey, requesterId, scope);
+}
+
+/**
+ * NON-MUTATING environment-plugin check: may the requester use the environment plugin `pluginName`
+ * as a whole — its MCP tools (policy step 6d)? True iff an admin granted the requester all
+ * environment skills, any skill of this plugin (a `pluginName:` key), or any skill of this plugin in
+ * `scope`'s thread: the plugin's tools run on the approval of any of its skills. Admins are not
+ * checked here — the policy exempts them.
+ */
+export function isEnvPluginUseAllowed(pluginName: string, requesterId: string, scope?: GrantScope): boolean {
+  if (!pluginName) return false;
+  const grants = loadGrants(ENV_SKILL_GRANT_OWNER);
+  if (grants.allowAll.includes(requesterId)) return true;
+  const prefix = `${pluginName}:`;
+  for (const [skillKey, requesters] of Object.entries(grants.perSkill)) {
+    if (skillKey.startsWith(prefix) && Array.isArray(requesters) && requesters.includes(requesterId)) return true;
+  }
+  return scope !== undefined && hasThreadGrantForPlugin(ENV_SKILL_GRANT_OWNER, pluginName, requesterId, scope);
 }

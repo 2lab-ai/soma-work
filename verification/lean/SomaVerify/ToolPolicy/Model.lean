@@ -6,10 +6,11 @@
 -- models: src/agent-runtime/policy/tool-policy.ts:148-161 (checkSensitiveForTool: the call it makes and its result)
 -- models: src/agent-runtime/policy/tool-policy.ts:163-164 (DEVOPS_SECRET_DENY_MESSAGE)
 -- models: src/agent-runtime/policy/tool-policy.ts:166-172 (ENV_SKILL_DENY_MESSAGE)
+-- models: src/agent-runtime/policy/tool-policy.ts:200-212 (PLUGIN_MCP_TOOL_PREFIX, ENV_PLUGIN_MCP_DENY_MESSAGE)
 -- models: src/agent-runtime/policy/tool-policy.ts:179-194 (checkDevopsSecretForTool: the call it makes and its result)
 -- models: src/agent-runtime/policy/tool-policy.ts:207-214 (evaluateIncidentReadOnly)
 -- models: src/agent-runtime/policy/tool-policy.ts:220-334 (evaluateToolPolicy)
--- models: src/agent-runtime/policy/tool-policy.ts:343 (TOOL_POLICY_MATCHERS)
+-- models: src/agent-runtime/policy/tool-policy.ts:439-445 (TOOL_POLICY_MATCHERS)
 -- models: src/agent-runtime/policy/tool-policy.ts:360 (INCIDENT_TOOL_POLICY_MATCHERS)
 -- models: src/agent-runtime/policy/native-write-boundary.ts:53-60 (NATIVE_WRITE_TOOLS)
 -- models: src/agent-runtime/policy/permission-mode.ts:28 (PermissionMode)
@@ -167,6 +168,10 @@ structure Primitives where
   Added with the environment-skill step (phase 4); only `evaluateToolPolicyEnv` reads it, and it
   defaults to `none`, a check that comes back clear. -/
   envSkillDenied : Option String := none
+  /-- `ctx.checkEnvPluginMcpPermission(toolName)` — line 374: a reason, or `none` for `null`. Added
+  with the environment plugin MCP step (step 6d); only `evaluateToolPolicyMcp` reads it, and it
+  defaults to `none`, a check that comes back clear. -/
+  envMcpDenied : Option String := none
   deriving DecidableEq, Repr
 
 /-- A property value, as far as `typeof v === 'string'` and `typeof v === 'string' && v` (lines
@@ -257,10 +262,12 @@ can write a local path the call chooses. -/
 def nativeWriteTools : List String :=
   ["Write", "Edit", "NotebookEdit", "Artifact", "EnterWorktree", "Agent"]
 
-/-- `TOOL_POLICY_MATCHERS` — lines 343-349: `['Bash', NATIVE_BYPASS_TOOLS.join('|'), 'mcp__', 'Skill',
-NATIVE_WRITE_TOOLS.filter((tool) => !NATIVE_BYPASS_TOOLS.includes(tool)).join('|')]`. -/
+/-- `TOOL_POLICY_MATCHERS` — lines 429-445: `['Bash', NATIVE_BYPASS_TOOLS.join('|'), '^mcp__', 'Skill',
+NATIVE_WRITE_TOOLS.filter((tool) => !NATIVE_BYPASS_TOOLS.includes(tool)).join('|')]`. The MCP entry is
+a regular expression because the SDK compares a matcher made only of `[A-Za-z0-9_|]` as exact tool
+names; how the SDK matches is outside the model. -/
 def toolPolicyMatchers : List String :=
-  ["Bash", "|".intercalate nativeBypassTools, "mcp__", "Skill",
+  ["Bash", "|".intercalate nativeBypassTools, "^mcp__", "Skill",
     "|".intercalate (nativeWriteTools.filter fun t => !nativeBypassTools.contains t)]
 
 /-- `INCIDENT_TOOL_POLICY_MATCHERS` — line 360: `[undefined]`, one entry without a matcher, which
@@ -666,5 +673,75 @@ def evaluateToolPolicyPlan (nativeWrite : Option (Option String)) (plan : Option
   match incident with
   | some inc => evaluateIncidentReadOnly i.toolName inc
   | none => modeTierEnv i
+
+/-! ## Environment plugin MCP tools: step 6d (lines 368-382)
+
+Phase 7 adds a deny step the earlier code did not have, right after step 6b and so below the
+incident tier and above the mode tier: a non-admin's call of a tool whose name starts with
+`PLUGIN_MCP_TOOL_PREFIX` (`mcp__plugin_`, the prefix the SDK gives every MCP tool of a plugin's
+server) that `ctx.checkEnvPluginMcpPermission` answers with a reason is denied, with reason
+`env-plugin-mcp: <reason> (<toolName>)` and `ENV_PLUGIN_MCP_DENY_MESSAGE`. It reads one more
+primitive value, `Primitives.envMcpDenied`.
+
+`evaluateToolPolicyPlan` above is the function without the step and keeps its name, so every
+theorem about it stands as proved. `evaluateToolPolicyMcp` is the TS function now: the same chain
+with `modeTierMcp` in place of `modeTierEnv`. `ProofsEnvMcp.lean` proves the two agree whenever the
+step is silent (every incident call, every admin call, every call whose check comes back clear,
+every tool outside the prefix), and what the step does when it fires. The conformance vectors are
+its output. -/
+
+/-- `PLUGIN_MCP_TOOL_PREFIX` — lines 200-204. -/
+def pluginMcpToolPrefix : String := "mcp__plugin_"
+
+/-- `ENV_PLUGIN_MCP_DENY_MESSAGE` — lines 206-212. -/
+def envPluginMcpDenyMessage : String :=
+  "Blocked: this MCP tool belongs to an environment plugin, whose tools run only after an admin approves one of that plugin's skills for you in this thread. No approval request is sent for the tool itself. If a skill of that plugin covers this step, call that skill (its denial asks the admins); otherwise report that the step waits for admin approval. Do not retry the tool and do not work around it."
+
+/-- 6d. Environment plugin MCP tool (non-admins, `PLUGIN_MCP_TOOL_PREFIX` tools) — lines 373-382.
+Any non-null value is a deny reason (`pluginDenied !== null`), the empty string included. -/
+def envPluginMcpGuard (i : Input) : Option Result :=
+  if i.isAdmin = false ∧ jsStartsWith i.toolName pluginMcpToolPrefix = true then
+    match i.prims.envMcpDenied with
+    | some denied =>
+      some { decision := .deny, reason := "env-plugin-mcp: " ++ denied ++ " (" ++ i.toolName ++ ")",
+             denyMessage := some envPluginMcpDenyMessage }
+    | none => none
+  else none
+
+/-- Step 6b, then step 6d, then the mode tier (lines 357-414): reached only when no deny step
+returned and no incident context is set. -/
+def modeTierMcp (i : Input) : Result :=
+  match envSkillGuard i with
+  | some r => r
+  | none =>
+  match envPluginMcpGuard i with
+  | some r => r
+  | none => modeTier i
+
+/-- `evaluateToolPolicy` — lines 267-415, all of it: the steps of `evaluateToolPolicyPlan`, with
+step 6d after step 6b. -/
+def evaluateToolPolicyMcp (nativeWrite : Option (Option String)) (plan : Option (Option String))
+    (incident : Option IncidentReadOnly) (i : Input) : Result :=
+  match abortGuard i with
+  | some r => r
+  | none =>
+  match devopsGuard i with
+  | some r => r
+  | none =>
+  match adminExemptGuardsWith nativeWrite incident i with
+  | some r => r
+  | none =>
+  match crossUserGuard i with
+  | some r => r
+  | none =>
+  match prIssueGuard i with
+  | some r => r
+  | none =>
+  match planGuard plan with
+  | some r => r
+  | none =>
+  match incident with
+  | some inc => evaluateIncidentReadOnly i.toolName inc
+  | none => modeTierMcp i
 
 end SomaVerify.ToolPolicy

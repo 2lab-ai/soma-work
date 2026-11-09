@@ -19,7 +19,10 @@
  * `ctx.checkNativeWrite` set, answering every call with the row's value; the replay fails when
  * the policy asks it about a tool outside `NATIVE_WRITE_TOOLS` (`ProofsNativeWrite.lean` proves
  * what the boundary does). The `plan-pending` rows are the only ones with `ctx.checkPlanPending`
- * set (`ProofsPlan.lean` proves what step 6c does).
+ * set (`ProofsPlan.lean` proves what step 6c does). The `env-plugin-mcp` rows are the only ones
+ * whose `ctx.checkEnvPluginMcpPermission` answers with a value; the replay fails when the policy asks
+ * it about a tool outside the `mcp__plugin_` prefix or for an admin (`ProofsEnvMcp.lean` proves what
+ * step 6d does).
  *
  * The sensitive-path and devops-secret checks are held to their arguments as well: each call
  * carries the check and arguments the model says the policy passes (`sensitiveCall`,
@@ -95,6 +98,8 @@ interface Primitives {
   devopsSecret: string | null;
   /** `ctx.checkEnvSkillPermission`'s value (phase 4): a reason, or null. */
   envSkillDenied: string | null;
+  /** `ctx.checkEnvPluginMcpPermission`'s value (step 6d): a reason, or null. */
+  envMcpDenied: string | null;
 }
 
 /** A sensitive-path check call: the check and its arguments. */
@@ -122,7 +127,15 @@ interface MockedCall {
 }
 
 interface MockedRow {
-  kind: 'table' | 'tool-names' | 'boundary' | 'arguments' | 'incident' | 'native-write' | 'plan-pending';
+  kind:
+    | 'table'
+    | 'tool-names'
+    | 'boundary'
+    | 'arguments'
+    | 'incident'
+    | 'native-write'
+    | 'plan-pending'
+    | 'env-plugin-mcp';
   mode: PermissionMode;
   isAdmin: boolean;
   aborted: boolean;
@@ -155,7 +168,16 @@ const vectors = JSON.parse(
   fs.readFileSync(path.join(repoRoot, 'verification/vectors/tool-policy.json'), 'utf8'),
 ) as VectorFile;
 
-const MOCKED_KINDS = ['table', 'tool-names', 'boundary', 'arguments', 'incident', 'native-write', 'plan-pending'];
+const MOCKED_KINDS = [
+  'table',
+  'tool-names',
+  'boundary',
+  'arguments',
+  'incident',
+  'native-write',
+  'plan-pending',
+  'env-plugin-mcp',
+];
 const rows = vectors.cases.filter((c) => MOCKED_KINDS.includes(c.kind)) as MockedRow[];
 
 /**
@@ -220,6 +242,8 @@ function mockPrimitives(prims: Primitives): void {
 
 /** The tools the policy asked `ctx.checkNativeWrite` about during the current call. */
 let nativeWriteAsks: string[] = [];
+/** The tools the policy asked `ctx.checkEnvPluginMcpPermission` about during the current call. */
+let envMcpAsks: string[] = [];
 
 function contextOf(row: MockedRow): ToolPolicyContext {
   return {
@@ -231,6 +255,10 @@ function contextOf(row: MockedRow): ToolPolicyContext {
     handoffContext: row.handoff ? HANDOFF : undefined,
     checkMcpToolPermission: () => row.prims.mcpDenied,
     checkEnvSkillPermission: () => row.prims.envSkillDenied,
+    checkEnvPluginMcpPermission: (toolName: string) => {
+      envMcpAsks.push(toolName);
+      return row.prims.envMcpDenied;
+    },
     ...(row.incidentReadOnly ? { incidentReadOnly: row.incidentReadOnly } : {}),
     ...('checkNativeWrite' in row
       ? {
@@ -256,6 +284,7 @@ function replay(selected: MockedRow[]): { mismatches: string[]; calls: number } 
       mockSensitiveChecks(call.sensitiveCall, row.prims.sensitive);
       mockDevopsChecks(call.devopsCall, row.prims.devopsSecret);
       nativeWriteAsks = [];
+      envMcpAsks = [];
       let actual: unknown;
       try {
         // A JSON round trip drops `undefined` properties, which the vector file cannot hold.
@@ -266,6 +295,12 @@ function replay(selected: MockedRow[]): { mismatches: string[]; calls: number } 
       const strayAsks = nativeWriteAsks.filter((tool) => !NATIVE_WRITE_TOOLS.includes(tool));
       if (strayAsks.length > 0) {
         mismatches.push(`tool=${JSON.stringify(call.tool)}: checkNativeWrite asked about ${JSON.stringify(strayAsks)}`);
+      }
+      const strayMcpAsks = envMcpAsks.filter((tool) => row.isAdmin || !tool.startsWith('mcp__plugin_'));
+      if (strayMcpAsks.length > 0) {
+        mismatches.push(
+          `tool=${JSON.stringify(call.tool)} isAdmin=${row.isAdmin}: checkEnvPluginMcpPermission asked about ${JSON.stringify(strayMcpAsks)}`,
+        );
       }
       if (!isDeepStrictEqual(actual, call.expect)) {
         const { calls: _calls, ...context } = row;
@@ -311,7 +346,7 @@ describe('tool-policy Lean conformance vectors (mocked primitives)', () => {
     expect(table[0].calls).toHaveLength(9);
   });
 
-  it('set incidentReadOnly on every incident row and otherwise only on native-write and plan-pending rows', () => {
+  it('set incidentReadOnly on every incident row and otherwise only on native-write, plan-pending and env-plugin-mcp rows', () => {
     expect(rows.filter((row) => row.kind === 'incident' && row.incidentReadOnly === undefined)).toEqual([]);
     expect(
       rows.filter(
@@ -319,7 +354,8 @@ describe('tool-policy Lean conformance vectors (mocked primitives)', () => {
           row.incidentReadOnly !== undefined &&
           row.kind !== 'incident' &&
           row.kind !== 'native-write' &&
-          row.kind !== 'plan-pending',
+          row.kind !== 'plan-pending' &&
+          row.kind !== 'env-plugin-mcp',
       ),
     ).toEqual([]);
     const incident = rowsOf('incident');
@@ -358,6 +394,35 @@ describe('tool-policy Lean conformance vectors (mocked primitives)', () => {
     expect(reasons.some((reason) => reason === 'plan-pending: plan-reason')).toBe(true);
     expect(reasons.some((reason) => reason === 'plan-pending: ')).toBe(true);
     expect(reasons.some((reason) => !reason.startsWith('plan-pending: '))).toBe(true);
+  });
+
+  it('set envMcpDenied only on env-plugin-mcp rows, in every mode, for admins and non-admins (step 6d)', () => {
+    expect(rows.filter((row) => row.prims.envMcpDenied !== null && row.kind !== 'env-plugin-mcp')).toEqual([]);
+    const envMcp = rowsOf('env-plugin-mcp');
+    expect(new Set(envMcp.map((row) => `${row.mode}/${row.isAdmin}/${row.incidentReadOnly !== undefined}`)).size).toBe(
+      12,
+    );
+    expect(new Set(envMcp.map((row) => row.prims.envMcpDenied))).toEqual(new Set([null, 'acme-env', '']));
+  });
+
+  it('fire the environment plugin MCP step (6d) on non-admin `mcp__plugin_` calls only, outside incidents', () => {
+    const denials = rows.flatMap((row) =>
+      row.calls
+        .filter((call) => String(call.expect.reason).startsWith('env-plugin-mcp:'))
+        .map((call) => ({ row, call })),
+    );
+    expect(denials.length).toBeGreaterThan(0);
+    expect(denials.some(({ call }) => call.expect.reason === `env-plugin-mcp: acme-env (${call.tool})`)).toBe(true);
+    expect(denials.some(({ call }) => call.expect.reason === `env-plugin-mcp:  (${call.tool})`)).toBe(true);
+    for (const { row, call } of denials) {
+      expect(call.tool.startsWith('mcp__plugin_')).toBe(true);
+      expect(row.isAdmin).toBe(false);
+      expect(row.incidentReadOnly).toBeUndefined();
+      expect(row.prims.envMcpDenied).not.toBeNull();
+    }
+    // Some env-plugin-mcp calls reach the step, others are decided first or pass it.
+    const envMcpReasons = rowsOf('env-plugin-mcp').flatMap((row) => row.calls.map((c) => String(c.expect.reason)));
+    expect(envMcpReasons.some((reason) => !reason.startsWith('env-plugin-mcp:'))).toBe(true);
   });
 
   it('fire the environment-skill step (phase 4) on non-admin ENV_GATED_TOOLS calls only', () => {
