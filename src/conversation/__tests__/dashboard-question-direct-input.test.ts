@@ -68,7 +68,7 @@ const BASE_INJECT = (state: Record<string, unknown> = {}) => ({
 describe('client — the single-choice question takes direct input (#917)', () => {
   it('the approval card offers a free-text answer', () => {
     const c = load<{ acQuestionData(s: unknown, q: unknown): Record<string, unknown> }>(
-      [...BASE_FNS, 'acQuestionData'],
+      [...BASE_FNS, 'acQuestionData', 'decisionLines'],
       ['AC_SIBLING'],
       BASE_INJECT(),
     );

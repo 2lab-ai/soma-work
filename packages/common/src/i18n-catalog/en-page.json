@@ -1494,5 +1494,10 @@
   "되돌리기를 취소했어요 (Redo)": "Rollback cancelled (Redo)",
   "추론 강도를 바꾸지 못해 보내지 않았어요 — ": "Not sent: couldn't change the reasoning effort — ",
   "<p class=\"lock\">여기서 고치면 이 서버의 파일이 바로 바뀌고, 다음 실행부터 쓰입니다. 환경 플러그인 저장소에 새 커밋이 생기거나 관리자가 강제로 업데이트하면 저장소의 내용으로 덮어씁니다. 계속 쓰려면 저장소에도 반영하세요.</p>": "<p class=\"lock\">Saving here changes this server's file at once, and the next run uses it. A new commit in the environment plugin's repository, or an admin's forced update, replaces it with the repository's copy. To keep the change, make it in the repository too.</p>",
-  "<p class=\"lock\">관리자 모드를 켜면 여기서 고칠 수 있습니다.</p>": "<p class=\"lock\">Turn on admin mode to edit it here.</p>"
+  "<p class=\"lock\">관리자 모드를 켜면 여기서 고칠 수 있습니다.</p>": "<p class=\"lock\">Turn on admin mode to edit it here.</p>",
+  "🚧 막힌 작업 — ": "🚧 Blocked work — ",
+  "⚖️ 걸린 것 — ": "⚖️ At stake — ",
+  "↩️ 되돌릴 수 있음": "↩️ Can be undone",
+  "⚠️ **되돌릴 수 없음**": "⚠️ **Cannot be undone**",
+  "⚠️ 되돌릴 수 없음": "⚠️ Cannot be undone"
 }

@@ -15,6 +15,7 @@
     "./channel-description-cache": "./dist/channel-description-cache.js",
     "./channel-registry": "./dist/channel-registry.js",
     "./choice-message-builder": "./dist/choice-message-builder.js",
+    "./decision-lines": "./dist/decision-lines.js",
     "./command-parser": "./dist/command-parser.js",
     "./commands/command-router": "./dist/commands/command-router.js",
     "./completion-message-tracker": "./dist/completion-message-tracker.js",
@@ -134,6 +135,9 @@
       ],
       "choice-message-builder": [
         "dist/choice-message-builder.d.ts"
+      ],
+      "decision-lines": [
+        "dist/decision-lines.d.ts"
       ],
       "command-parser": [
         "dist/command-parser.d.ts"

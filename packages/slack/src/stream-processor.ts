@@ -1996,8 +1996,10 @@ export class AgentStreamProcessor {
     }
   }
 
-  // Max questions per form to stay under Slack's 50-block limit
-  // Calculation: 2 (header) + 6 (per question) × N + 3 (submit) ≤ 50 → N ≤ 7
+  // Max questions per form to stay under Slack's 50-block limit.
+  // Calculation (choice-message-builder): 3 head (recommended-all · title · progress) + 7 per open question
+  // (divider · question · context · decision lines #1073 · 2 option rows · buttons) × N ≤ 50 → N ≤ 6.
+  // An answered question is 4 blocks; the 3 submit blocks show only when every question is answered.
   private static readonly MAX_QUESTIONS_PER_FORM = 6;
 
   /**
