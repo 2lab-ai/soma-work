@@ -79,6 +79,35 @@ describe('dashboard display language (#773)', () => {
     expect(HANGUL_TEXT.exec(visible)?.[0]).toBeUndefined();
   });
 
+  it('the board’s link chips say their states in the page’s language (the board’s JSON is never translated)', async () => {
+    const { cardLinksOf } = await import('../card-links');
+    const gh = 'https://github.com/acme/app';
+    const cardLinks = cardLinksOf({
+      linkHistory: {
+        prs: [
+          { url: `${gh}/pull/1065`, status: 'open' },
+          { url: `${gh}/pull/1060`, status: 'draft' },
+          { url: `${gh}/pull/1049`, status: 'merged' },
+        ],
+        issues: [{ url: `${gh}/issues/1042`, status: 'closed' }],
+      },
+    });
+    // The served page's own chip code, run on what the board sends.
+    const statesOn = async (cookie?: string) => {
+      const html = (await get('/dashboard', cookie)).body;
+      const fn = (name: string) => {
+        const at = html.indexOf(`\nfunction ${name}(`);
+        return html.slice(at + 1, html.indexOf('\n}\n', at) + 2);
+      };
+      const v = (name: string) => new RegExp(`^var ${name} = .*?;`, 'm').exec(html)?.[0] ?? '';
+      const code = ['PR_STATE_LABEL', 'CARD_LINK_KIND', 'CARD_LINK_TONES'].map(v).join('\n');
+      const face = new Function('dhShow', `${code}\n${fn('cardLinksFace')}\nreturn cardLinksFace;`)(() => true);
+      return (face({ cardLinks }) as Array<{ text: string; status?: string }>).map((l) => `${l.text} ${l.status}`);
+    };
+    expect(await statesOn('soma_lang=en')).toEqual(['#1042 Closed', '#1049 Merged', '#1060 Draft', '#1065 Open']);
+    expect(await statesOn()).toEqual(['#1042 닫힘', '#1049 머지됨', '#1060 초안', '#1065 열림']);
+  });
+
   it('the settings page follows the same language', async () => {
     const res = await get('/dashboard/settings', 'soma_lang=en');
     expect(res.body).toContain('<html lang="en">');

@@ -10546,6 +10546,9 @@ function ctxPercent(pct) {
 // so the metric is not a link; the open card's short ref and the titled link in
 // 세션 정보 are. The state is a word on screen ("#12 머지됨") and a tone (colour,
 // never alone); an unknown state shows the bare number. The title adds the PR's title.
+// The link chips' states too (cardLinksFace, cardFollowupsOf — #773): the server sends a PR's or GitHub issue's state
+// as a key (card-links.ts CardLink.state) and the board's JSON is never translated; these words are page text, which
+// the page catalog puts in the viewer's language.
 var PR_STATE_LABEL = { open: '열림', draft: '초안', merged: '머지됨', closed: '닫힘' };
 var PR_STATE_TONE = { open: 'run', merged: 'done', closed: 'fail' };
 // The card's linked pages (KanbanSession.cardLinks, card-links.ts) as @2lab.ai/ui 0.19.0 card.links chips: the
@@ -10564,7 +10567,10 @@ function cardLinksFace(s) {
     // FACE_LINK_MAX chips are exactly this list's first FACE_LINK_MAX.
     if (!l || !CARD_LINK_KIND[l.kind] || !l.text || !/^https?:\\/\\/[^\\s]+$/i.test(String(l.url || ''))) continue;
     var link = { kind: l.kind, href: String(l.url), text: String(l.text) };
-    if (l.status) link.status = String(l.status);
+    // The state in the viewer's words (PR_STATE_LABEL) by its key; else the server's word (a tracker's own state name,
+    // or a board from a host that sends no key). As cardFollowupsOf.
+    var word = l.state && Object.prototype.hasOwnProperty.call(PR_STATE_LABEL, l.state) ? PR_STATE_LABEL[l.state] : l.status;
+    if (word) link.status = String(word);
     if (l.tone && CARD_LINK_TONES[l.tone]) link.tone = l.tone;
     link.title = CARD_LINK_KIND[l.kind] + ' ' + link.text + (l.title && l.title !== link.text ? ' — ' + l.title : '') + (link.status ? ' · ' + link.status : '');
     out.push(link);
@@ -10859,7 +10865,9 @@ function cardFollowupsOf(s, col) {
     if (l.open !== true || gone[s.key + '\\n' + l.url]) continue;
     var f = { id: String(l.url), kind: l.kind, text: String(l.text), href: String(l.url) };
     if (l.title && l.title !== l.text) f.title = String(l.title);
-    if (l.status) f.status = String(l.status);
+    // The state in the viewer's words by its key, else the server's word (as cardLinksFace).
+    var word = l.state && Object.prototype.hasOwnProperty.call(PR_STATE_LABEL, l.state) ? PR_STATE_LABEL[l.state] : l.status;
+    if (word) f.status = String(word);
     out.push(f);
   }
   return out;
