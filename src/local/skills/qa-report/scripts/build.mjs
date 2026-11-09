@@ -15,7 +15,7 @@
  * - Preconditions (the input's top-level `preconditions[]`, each with its `key`, plus every qa-issue JSON's own
  *   `preconditions[]`, which wins for the same key and id) are merged into `data.preconditions` and rendered
  *   first. A precondition is open while its status is not `met` / `provisionable`.
- * - Prints one JSON line: { html, png, keys, pass, fail, other, missingFields, masked, shots, shotProblems,
+ * - Prints one JSON line: { html, keys, pass, fail, other, missingFields, masked, shots, shotProblems,
  *   preconditions, preconditionsOpen }.
  *
  * Exit codes: 0 written · 1 usage or input error.
@@ -159,5 +159,5 @@ const missingFields = issues
   .flatMap((d) => d.cases || [])
   .reduce((n, c) => n + [typeof c.auth === 'string' ? c.auth : c.auth?.accountRef, c.steps, c.expected, c.actual].filter(empty).length, 0);
 process.stdout.write(
-  `${JSON.stringify({ html: out, png: out.replace(/\.html$/, '.png'), keys: statuses.length, pass, fail: failCount, other: statuses.length - pass - failCount, missingFields, masked, shots, shotProblems, preconditions: input.preconditions.length, preconditionsOpen: preOpen })}\n`,
+  `${JSON.stringify({ html: out, keys: statuses.length, pass, fail: failCount, other: statuses.length - pass - failCount, missingFields, masked, shots, shotProblems, preconditions: input.preconditions.length, preconditionsOpen: preOpen })}\n`,
 );

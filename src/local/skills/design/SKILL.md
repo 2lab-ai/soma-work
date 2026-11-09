@@ -18,7 +18,7 @@ This skill is a distilled, HTML-focused adaptation of
 [`alchaincyf/huashu-design`](https://github.com/alchaincyf/huashu-design) (MIT).
 The upstream skill also ships video / TTS / pptx production pipelines; those are
 intentionally **not** vendored here — soma-work's visual surface is static
-HTML + PNG (see the `html` skill). See [`LICENSES/huashu-design-MIT.txt`](./LICENSES/huashu-design-MIT.txt)
+HTML (see the `html` skill; its PNG is a QA snapshot, never a deliverable). See [`LICENSES/huashu-design-MIT.txt`](./LICENSES/huashu-design-MIT.txt)
 for attribution.
 
 ## Two modes

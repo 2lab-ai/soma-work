@@ -10702,7 +10702,7 @@ function cardOf(s, col) {
   // The server's summary is newest first and holds no final answer (SSOT 2026-11-02 T3/T6).
   if (!sibling && s.conversationId && arts && toNum(arts.count) > 0 && arts.recent && arts.recent.length) {
     card.artifactsCount = toNum(arts.count);
-    card.artifacts = arts.recent.slice(0, 4).map(function(a) { return { id: String(a.id), name: String(a.name || ''), kind: a.kind || 'file' }; });
+    card.artifacts = arts.recent.slice(0, 4).map(function(a) { return { id: String(a.id), name: String(a.name || ''), kind: a.kind === 'link' ? 'file' : a.kind || 'file' }; });
   }
   if (dhShow('tasks') && s.tasks && s.tasks.length) {
     card.steps = { done: s.tasks.filter(function(t) { return t.status === 'completed'; }).length, total: s.tasks.length };
@@ -21099,14 +21099,15 @@ async function submitSaveMode(ev, on) {
 }
 
 // ── Session artifacts (SSOT 2026-10-23) ──
-// What the model produced: the files it sent to Slack (html / png / wav …) and
-// its markdown final answers. The card face shows glyph chips (no image is
+// What the model produced: the files it sent to Slack (html / png / wav / mp4 …) and
+// the links it posted there (SSOT 2026-11-09 T3: send_link — a page or app the session
+// serves, a published video; kind link, pressing it opens the URL in a new tab). The card face shows glyph chips (no image is
 // fetched for the board), the open card a thumbnail strip, the panel a pinned
 // strip plus the files each answer turn produced. Hover (or keyboard focus) →
 // a peek in <ui-hovercard #art-peek>; click → <ui-artifact-viewer #art-viewer>.
 // Every render function here is pure; the DOM work sits in the functions after
 // artPeekItem and in initArtifactInteractions.
-var ART_KIND_LABEL = { image: '이미지', audio: '오디오', video: '비디오', html: 'HTML', markdown: '마크다운', pdf: 'PDF', text: '텍스트', file: '파일' };
+var ART_KIND_LABEL = { image: '이미지', audio: '오디오', video: '비디오', html: 'HTML', markdown: '마크다운', pdf: 'PDF', text: '텍스트', file: '파일', link: '링크' };
 var _artCache = Object.create(null); // conversationId → { state: 'loading'|'ok'|'error', list, promise }
 var _artDocCache = Object.create(null); // 'cid|id' → text of a markdown / text artifact; 'cid|id|head' → its first 64 KB (the peek)
 var _artDocPending = Object.create(null); // the same keys → the one fetch under way (two askers, one request)
@@ -21268,7 +21269,27 @@ function umOnTurn(cid, turn) {
 // data-art-id, with data-art-v (what it shows) so a re-render that changes the file re-hands it; initFileCards
 // gives it artFileItem. Its ui-open opens the viewer; the hovercard's for= reaches it for the peek; playable: a
 // play / pause toggle on audio (and video tiles), one clip at a time.
+// A link artifact's URL, if it is plain http(s) (the server already refused anything else) — else ''.
+function artSafeUrl(u) {
+  var text = String(u || '');
+  return /^https?:\\/\\/[^\\s]+$/i.test(text) ? text : '';
+}
+// Open a link artifact's URL in a new tab, with no way back to this page.
+function artOpenUrl(u) {
+  window.open(u, '_blank', 'noopener,noreferrer');
+}
 function artFileItem(cid, a) {
+  if (a.kind === 'link') {
+    // A link (send_link): a file card worded 링크 whose meta is the host; ui-open opens the URL (openArtifactViewer).
+    var link = { id: String(a.id), name: String(a.name || ''), kind: 'file', kindLabel: ART_KIND_LABEL.link };
+    if (toNum(a.createdAt) > 0) link.time = toNum(a.createdAt);
+    var href = artSafeUrl(a.url);
+    if (href) {
+      link.url = href;
+      link.meta = href.replace(/^https?:\\/\\//i, '').split(/[\\/?#]/)[0];
+    }
+    return link;
+  }
   var item = { id: String(a.id), name: String(a.name || ''), kind: a.kind || 'file' };
   if (toNum(a.size) > 0) item.size = toNum(a.size);
   if (toNum(a.createdAt) > 0) item.time = toNum(a.createdAt);
@@ -21348,6 +21369,11 @@ function renderTurnArtifacts(list, cid, startTs, endTs) {
   return '<div class="turn-arts-row">' + hits.map(function(a) { return artChip(cid, a); }).join('') + '</div>';
 }
 
+// The viewer's pages: the files, newest first — never a link (SSOT 2026-11-09 T3: it opens its URL instead).
+function artViewerPages(list) {
+  return artSortForDisplay(list).filter(function(a) { return a.kind !== 'link'; });
+}
+
 // A markdown / text answer with a copy here: the viewer draws the document, the peek its head.
 function artIsDoc(a) {
   return !!(a && a.stored && (a.kind === 'markdown' || a.kind === 'text'));
@@ -21359,6 +21385,8 @@ function artIsDoc(a) {
 // the viewer fetched it, else the first 64 KB artDocHead brought in) under the kind's tint ([data-kind]).
 function artPeekItem(cid, a) {
   var item = artViewItem(cid, a);
+  // A link's peek shows its URL: the library's peek draws a file's head text, never its meta line.
+  if (a.kind === 'link' && item.url) item.head = item.url;
   if (item.text == null && artIsDoc(a)) {
     var head = _artDocCache[cid + '|' + a.id + '|head'];
     if (head != null) item.head = head;
@@ -21416,7 +21444,7 @@ function artSettle(cid) {
   // The open viewer pages through the conversation's files: the new list is handed over (the element keeps showing
   // the same file wherever it moved). An instruction's attachments (umSiblings) are not this list.
   if (_artViewer.cid === cid && _artViewer.scope === 'conversation' && artViewerIsOpen()) {
-    _artViewer.list = artSortForDisplay((_artCache[cid] && _artCache[cid].list) || []);
+    _artViewer.list = artViewerPages((_artCache[cid] && _artCache[cid].list) || []);
     artViewerEl().data = { items: artViewerItems(cid, _artViewer.list) };
   }
 }
@@ -21576,13 +21604,24 @@ function artViewerIsOpen() {
 // opens in the browser's viewer (items[].frame). The element escapes every string.
 function artViewItem(cid, a) {
   var item = artFileItem(cid, a);
+  var slack = /^https:\\/\\//i.test(String(a.permalink || '')) ? { id: 'slack', label: 'Slack에서 열기', href: String(a.permalink) } : null;
+  if (a.kind === 'link') {
+    // A link is its URL: the card's host stays the meta line (no "no copy here" — there was never a file).
+    if (slack) item.actions = [slack];
+    return item;
+  }
   if (a.stored && a.kind === 'html' && a.source !== 'user_upload') item.scripts = true;
   if (a.stored && a.kind === 'pdf') item.frame = true;
   var notes = [];
   if (a.title && a.title !== a.name) notes.push(String(a.title));
   if (!a.stored) notes.push(a.source === 'user_upload' ? umMissingReason(a) : '이 파일은 대시보드에 사본이 없습니다 (100 MB 초과이거나 업로드 전에 지워졌습니다).');
   if (notes.length) item.meta = notes.join(' · ');
-  if (/^https:\\/\\//i.test(String(a.permalink || ''))) item.actions = [{ id: 'slack', label: 'Slack에서 열기', href: String(a.permalink) }];
+  // A file the session also serves (send_file url, SSOT 2026-11-09 T3): the live page opens from the same card.
+  var live = artSafeUrl(a.url);
+  var actions = [];
+  if (live) actions.push({ id: 'live', label: '라이브로 열기', href: live });
+  if (slack) actions.push(slack);
+  if (actions.length) item.actions = actions;
   var text = _artDocCache[cid + '|' + a.id];
   if ((a.kind === 'markdown' || a.kind === 'text') && a.stored && text != null) item.text = text;
   return item;
@@ -21596,10 +21635,17 @@ function artViewerItems(cid, list) {
 // own instruction (from the pinned 지시 첨부 row: every attachment of the session). A tile's clip stops first; the
 // opener (a card, a chip, a tile) takes focus back when the viewer closes.
 function openArtifactViewer(cid, id, opener) {
+  // A link has no copy to show: it opens its URL in a new tab (SSOT 2026-11-09 T3), never the viewer.
+  var asked = cid && id ? artFind(cid, id) : null;
+  if (asked && asked.kind === 'link') {
+    var href = artSafeUrl(asked.url);
+    if (href) artOpenUrl(href);
+    return;
+  }
   var v = artViewerEl();
   if (!v || !cid || !id || typeof v.open !== 'function') return;
   var c = _artCache[cid];
-  var list = artSortForDisplay((c && c.list) || []);
+  var list = artViewerPages((c && c.list) || []);
   var scope = 'conversation';
   if (umGet(cid, id)) {
     scope = 'attachments';
@@ -21607,7 +21653,7 @@ function openArtifactViewer(cid, id, opener) {
   } else if (!list.some(function(a) { return a.id === id; })) {
     var one = artFind(cid, id);
     if (!one) return;
-    list = artSortForDisplay(list.concat([one]));
+    list = artViewerPages(list.concat([one]));
   }
   pauseArtCards();
   _artViewer = { cid: cid, scope: scope, list: list };
