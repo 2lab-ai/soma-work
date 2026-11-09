@@ -442,6 +442,7 @@ function coordinator(o: {
   reduce?: boolean;
   flying?: boolean;
   autoView?: string;
+  keyed?: boolean;
 }) {
   const kb = { getAttribute: (k: string) => (k === 'view' ? 'board' : null), animate: vi.fn() };
   const calls = { setBoardView: [] as unknown[][], measure: 0, restore: [] as unknown[], timers: 0 };
@@ -472,6 +473,7 @@ function coordinator(o: {
       _layoutScroll: { x: 0, y: 0 },
       _lastScroll: o.scrolled ?? { x: 0, y: 0 },
       canAnimate: () => true,
+      _atKeyed: !!o.keyed,
       reduceMotion: () => !!o.reduce,
       _layoutSnap: o.snap ?? [],
       MOTION: { move: 320, fade: 160, easeOut: 'ease-out' },
@@ -524,6 +526,19 @@ describe('layout transition — one coordinator', () => {
     r.m.runLayoutCheck();
     expect(still.flipFrom).not.toHaveBeenCalled();
     expect(r.kb.animate).toHaveBeenCalledWith([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: 'linear' });
+  });
+
+  it('a change made from the keyboard (Enter opens the drawer, Esc closes it) lands at once — no glide, no fade', () => {
+    const keyed = host();
+    const k = coordinator({ snap: [[keyed, { spots: { 'c:a': { x: 1, y: 2 } } }]], keyed: true });
+    k.m.runLayoutCheck();
+    expect(keyed.flipFrom).not.toHaveBeenCalled();
+    expect(k.kb.animate).not.toHaveBeenCalled();
+    // The new layout is still taken (the next pointer-made change glides from it).
+    expect(k.m.state().key).toBe('snap|closed|board');
+    const kr = coordinator({ snap: [[host(), { spots: {} }]], keyed: true, reduce: true });
+    kr.m.runLayoutCheck();
+    expect(kr.kb.animate).not.toHaveBeenCalled();
   });
 
   it('an unchanged mode measures a settled board again and leaves a glide in flight alone', () => {

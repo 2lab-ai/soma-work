@@ -153,7 +153,7 @@ describe('B1 — the page: the owner pill at the top right of the detail card', 
 
   it('centred on the deck and ✕, gives way before the title, and [hidden] beats the kit’s inline-block', () => {
     expect(CSS).toContain(
-      '.panel-header > .panel-owner { flex: 0 1 auto; min-width: 0; max-inline-size: min(40%, 168px); align-self: center; }',
+      '.panel-header > .panel-owner { flex: 0 1 auto; min-width: 0; max-inline-size: min(28%, 120px); align-self: center; }',
     );
     expect(CSS).toContain('.panel-header > .panel-owner[hidden] { display: none; }');
   });

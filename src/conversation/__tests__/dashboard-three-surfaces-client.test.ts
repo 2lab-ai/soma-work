@@ -1475,7 +1475,7 @@ describe('the detail deck — open cards and their detail cards move together (S
     const listeners: string[] = [];
     els['panel-deck'] = { addEventListener: (n: string) => listeners.push(n) };
     els['panel-deck-peek'] = {};
-    const rig = (deck: string[], front: string) =>
+    const rig = (deck: string[], front: string, keyed = false) =>
       load<{ renderDeckNav(dir: number): void; deckNow(): string[] }>(
         ['renderDeckNav', 'onDeckPage', 'deckSlide'],
         ['DECK_SLIDE_MS'],
@@ -1483,6 +1483,7 @@ describe('the detail deck — open cards and their detail cards move together (S
           document: { getElementById: (id: string) => els[id] ?? null },
           getComputedStyle: () => ({ opacity: '0.6' }),
           reduceMotion: () => false,
+          _atKeyed: keyed,
           _sessionCache: {
             A: { displayHeadline: 'Alpha' },
             B: { summaryTitle: 'Beta' },
@@ -1522,7 +1523,7 @@ describe('the detail deck — open cards and their detail cards move together (S
     expect(slides.map((x) => x.part)).toEqual(['header', 'header', 'body', 'body']);
     const [move, fade] = slides;
     expect(move.frames).toEqual([{ transform: 'translateX(18px)' }, { transform: 'translateX(0)' }]);
-    expect(move.opts).toMatchObject({ duration: 320, composite: 'add', easing: 'cubic-bezier(0.23, 1, 0.32, 1)' });
+    expect(move.opts).toMatchObject({ duration: 200, composite: 'add', easing: 'cubic-bezier(0.23, 1, 0.32, 1)' });
     expect(fade.frames).toEqual([{ opacity: 0.35 }, { opacity: 1 }]);
     // A second switch the other way while the first still runs: it slides from the left, and the
     // fade carries on from the opacity drawn now rather than restarting at 0.35.
@@ -1534,6 +1535,10 @@ describe('the detail deck — open cards and their detail cards move together (S
     one.renderDeckNav(0);
     expect(attrs['data-deck']).toBe('0');
     expect(els['panel-deck'].hidden).toBe(true);
+    expect(slides).toHaveLength(8);
+    // ←/→ on the nav (a key was the last input): the front card changes at once — no slide.
+    const keyed = rig(['A', 'B'], 'B', true);
+    keyed.renderDeckNav(1);
     expect(slides).toHaveLength(8);
     // No keyframe slide left in the CSS.
     expect(TEMPLATE).not.toContain('@keyframes deck-in');
