@@ -213,6 +213,64 @@ describe('SlackHandler — the dashboard’s follow-up queue controls', () => {
     });
   });
 
+  // The panel's <ui-agent-steering> offers Send now and Cancel on a delivered note (@2lab.ai/ui 0.40.0) — a note the
+  // running turn holds in the SDK's input queue but the model has not read yet. Both reach the button's own doors:
+  // Cancel asks the SDK to withdraw it first; Send now unsteers it and runs it now.
+  describe('a delivered (steered) note', () => {
+    const steered = (ts: string, uuid: string) => {
+      const item = park({ ts });
+      const moved = queue().steer(SESSION_KEY, item.id, item.epoch, uuid);
+      if (!moved.ok) throw new Error(`not steered: ${moved.reason}`);
+      return queue().get(SESSION_KEY, item.id);
+    };
+    const sdk = (verdict: 'withdrawn' | 'already-dequeued' | 'unreachable') => {
+      const cancel = vi.fn().mockResolvedValue(verdict);
+      handlerAny.claudeHandler.cancelSteeredMessage = cancel;
+      return cancel;
+    };
+
+    it('Cancel withdraws it from the SDK before the model reads it, and says so', async () => {
+      const item = steered('303.1', 'uuid-303-1');
+      const cancel = sdk('withdrawn');
+      const res = await act({ itemId: item.id, op: 'cancel', epoch: item.epoch });
+      expect(cancel).toHaveBeenCalledWith(SESSION_KEY, 'uuid-303-1');
+      expect(res).toEqual({ ok: true, message: '취소했습니다 — 모델에 전달되기 전에 회수했습니다.' });
+      expect(queue().get(SESSION_KEY, item.id)?.state).toBe('cancelled');
+    });
+
+    it('a Cancel that came too late is not a success: the model has it, and the answer says it was not done', async () => {
+      const item = steered('303.2', 'uuid-303-2');
+      sdk('already-dequeued');
+      const res = await act({ itemId: item.id, op: 'cancel', epoch: item.epoch });
+      expect(res).toEqual({
+        ok: true,
+        message: '취소하지 못했습니다 — 이미 모델에 전달되어 실행 중입니다.',
+        unfulfilled: true,
+      });
+      expect(queue().get(SESSION_KEY, item.id)?.state).toBe('resolved');
+    });
+
+    it('a Cancel the SDK could not answer puts the note back in line, and says it was not done', async () => {
+      const item = steered('303.3', 'uuid-303-3');
+      sdk('unreachable');
+      const res = await act({ itemId: item.id, op: 'cancel', epoch: item.epoch });
+      expect(res).toEqual({
+        ok: true,
+        message: '취소하지 못했습니다 — 전달 여부를 확인할 수 없어 큐로 되돌렸습니다. 다시 Cancel 할 수 있습니다.',
+        unfulfilled: true,
+      });
+      expect(queue().get(SESSION_KEY, item.id)?.state).toBe('queued');
+    });
+
+    it('Send now takes it out of the running turn’s input queue and runs it now', async () => {
+      const item = steered('303.4', 'uuid-303-4');
+      const res = await act({ itemId: item.id, op: 'promote', epoch: item.epoch });
+      expect(res).toEqual({ ok: true });
+      await vi.waitFor(() => expect(startWithContinuation).toHaveBeenCalled());
+      expect(queue().get(SESSION_KEY, item.id)?.state).not.toBe('steered');
+    });
+  });
+
   describe('Edit', () => {
     it('rewrites the owner’s own queued note (편집됨) and bumps its generation', async () => {
       const item = park({ ts: '302.1', text: 'Postgres 17' });
@@ -311,7 +369,7 @@ describe('SlackHandler — the dashboard’s follow-up queue controls', () => {
   it('a proven click cannot be forged from a Slack body: its symbol does not survive JSON', async () => {
     const item = park({ ts: '303.1' });
     const said: Array<[string, string | undefined]> = [];
-    const respond = async (m: Record<string, unknown>, verdict?: 'refused') => {
+    const respond = async (m: Record<string, unknown>, verdict?: 'refused' | 'unfulfilled') => {
       said.push([String(m.text), verdict]);
     };
     const forged = JSON.parse(JSON.stringify(provenFollowupClick('U_OWNER')));
