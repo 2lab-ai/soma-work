@@ -1957,6 +1957,12 @@ async function start() {
       setDashboardCronSource({
         listJobs: () => cronStorage.getAll(),
         listHistory: () => cronStorage.getExecutionHistory(),
+        // The cron drawer's 내용 보기 / 편집 (#1080) address a job by its id; the storage changes it by (owner, name).
+        getJob: (id) => cronStorage.getAll().find((j) => j.id === id),
+        updateJob: (id, patch) => {
+          const job = cronStorage.getAll().find((j) => j.id === id);
+          return job ? cronStorage.updateJob(job.owner, job.name, patch) : null;
+        },
       });
 
       const threadCreator = async (channel: string, text: string): Promise<string | undefined> => {

@@ -31,6 +31,7 @@ import { statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { constants as zlibConstants } from 'node:zlib';
+import { t, tr } from '@soma/common/i18n';
 import type { FollowupItem, FollowupItemState } from '@soma/slack/followup-queue';
 import type { FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { CommandParser } from '@soma/slack/command-parser';
@@ -39,7 +40,7 @@ import { livePendingModelSwitch } from '@soma/slack/model-switch';
 import { plainTldrLine } from '@soma/slack/summary-service';
 import type { FastifyInstance } from 'fastify';
 import { SDK_EFFORT_LEVELS } from 'soma-lib';
-import type { CronExecutionRecord, CronJob } from 'somalib/cron/cron-storage';
+import type { CronExecutionRecord, CronJob, CronJobPatch } from 'somalib/cron/cron-storage';
 import {
   type AdminApprovalSnapshot,
   adminApprovalSnapshot,
@@ -135,6 +136,7 @@ import { type CardLink, cardLinksOf, followupLinksOf, settledLinkUrlsOf } from '
 import { archivedCardClocks, cardWhereOf, liveCardClocks } from './card-where';
 import { isClientRef } from './client-ref';
 import { type ComposerMenuWhere, type ComposerTriggerRow, composerTriggers } from './composer-menus';
+import { buildCronEditPatch, cronJobDetail } from './cron-edit';
 import { buildCronJobsView, type CronRunSessionLookup } from './cron-view';
 import { DICTATION_BROWSER_JS } from './dictation-browser-client';
 import { DICTATION_PREF_JS } from './dictation-pref';
@@ -1096,6 +1098,10 @@ export function dashboardBuildId(): string {
 export interface DashboardCronSource {
   listJobs(): CronJob[];
   listHistory(): CronExecutionRecord[];
+  /** One job by its id (#1080 — the cron drawer's 내용 보기 and 편집). */
+  getJob(id: string): CronJob | undefined;
+  /** Apply a patch to the job with this id; null when it is gone. Throws DUPLICATE_NAME like CronStorage.updateJob. */
+  updateJob(id: string, patch: CronJobPatch): CronJob | null;
 }
 let _cronSource: DashboardCronSource | null = null;
 export function setDashboardCronSource(source: DashboardCronSource | null): void {
@@ -3590,6 +3596,77 @@ export async function registerDashboardRoutes(
         logger.error('Cron lane read failed', err);
         reply.send({ jobs: [], error: 'cron storage unreadable' });
       }
+    },
+  );
+
+  // A cron job's whole content — its prompt too — for the drawer's 내용 보기 (#1080),
+  // and its change from the drawer's 편집. The lane above never carries a prompt, so
+  // both are for whoever may change the job: its owner, an admin with Admin mode on,
+  // or the viewer token (the #716 write gate). The values are checked by the Slack
+  // modal's and cron_update's rules (cron-edit.ts). The scheduler reads the storage
+  // on every tick, so a change takes effect from the next minute without a restart.
+  const cronJobFor = (request: any, reply: any): CronJob | null => {
+    if (!_cronSource) {
+      reply.status(503).send({ error: t('이 인스턴스에서는 크론 잡을 읽을 수 없어요') });
+      return null;
+    }
+    const job = _cronSource.getJob(String(request.params.id));
+    if (!job) {
+      reply.status(404).send({ error: t('크론 잡을 찾을 수 없어요 (지워졌을 수 있어요)') });
+      return null;
+    }
+    if (!_hasWriteAccess(request, job.owner)) {
+      reply
+        .status(403)
+        .send({ error: "Forbidden — a cron job's content and its edits are its owner's, or an admin's in admin mode" });
+      return null;
+    }
+    return job;
+  };
+
+  server.get<{ Params: { id: string } }>(
+    '/api/dashboard/cron/:id',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const job = cronJobFor(request, reply);
+      if (job) reply.send({ job: cronJobDetail(job, Date.now()) });
+    },
+  );
+
+  server.patch<{ Params: { id: string }; Body: unknown }>(
+    '/api/dashboard/cron/:id',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const job = cronJobFor(request, reply);
+      if (!job || !_cronSource) return;
+      const built = buildCronEditPatch(request.body, job);
+      if (!built.ok) {
+        reply.status(400).send({ error: built.error, ...(built.field ? { field: built.field } : {}) });
+        return;
+      }
+      let updated: CronJob | null;
+      try {
+        updated = _cronSource.updateJob(job.id, built.patch);
+      } catch (err) {
+        if ((err as Error)?.message?.startsWith('DUPLICATE_NAME')) {
+          reply.status(409).send({ error: tr`같은 이름의 잡이 이미 있어요: ${built.patch.name}`, field: 'name' });
+          return;
+        }
+        logger.error('Cron job edit failed', err);
+        reply.status(500).send({ error: t('크론 잡을 저장하지 못했어요') });
+        return;
+      }
+      if (!updated) {
+        reply.status(404).send({ error: t('크론 잡을 찾을 수 없어요 (지워졌을 수 있어요)') });
+        return;
+      }
+      const auth = (request as any).authContext;
+      const actor = auth?.userId || auth?.mode || 'unknown';
+      const edit = { jobId: job.id, name: updated.name, owner: job.owner, actor, fields: Object.keys(built.patch) };
+      // Someone else's job (an admin, the viewer token) is worth a warning in the log.
+      if (actor === job.owner) logger.info('Cron job edited from the dashboard', edit);
+      else logger.warn('Cron job edited from the dashboard by someone other than its owner', edit);
+      reply.send({ job: cronJobDetail(updated, Date.now()) });
     },
   );
 
@@ -6146,13 +6223,12 @@ ui-breadcrumbs.pa-path { flex: 1 1 auto; min-width: 0; }
 .slide-panel[data-read="1"] .panel-title-row > .panel-head-back { display: inline-flex; }
 .panel-title-row > .panel-title-act[aria-busy="true"] { opacity: .5; cursor: progress; }
 /* ── VIEW MODE (SSOT 2026-11-01) — 미니멀, the default: the board, and in a detail card the task list and the
-   chat. The page's extras (stats, capacity, the CRON lane, the defaults, the board's user picker on the viewer's
-   own board) step aside — admin write mode stays: answering an admin approval needs it; the detail card's top keeps its header (title · status · Slack · Stop) and what needs the user
+   chat. The page's extras (stats, capacity, the defaults, the board's user picker on the viewer's own board) step
+   aside — the CRON lane stays (#1080: the cron jobs are seen in both modes) — admin write mode stays: answering an admin approval needs it; the detail card's top keeps its header (title · status · Slack · Stop) and what needs the user
    (approvals, the question), and gives the rest to the task list and the chat. Hidden here, never removed:
    어드밴스드 (body[data-view-mode="advanced"]) shows all of it again. ── */
 body[data-view-mode="minimal"] #stats,
 body[data-view-mode="minimal"] #capacity,
-body[data-view-mode="minimal"] #cron-lane,
 body[data-view-mode="minimal"] #topbar-defaults,
 body[data-view-mode="minimal"][data-board-mine] #user-select,
 body[data-view-mode="minimal"] #lifecycle-btn { display: none !important; }
@@ -6493,6 +6569,14 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
    are kit rows (.ui-row in the run's tone, D7 C-08) and no run yet the kit's empty state (.ui-empty, D7 C-09). */
 .cron-drawer-meta { padding: 0 0 4px; }
 .cron-drawer-body { padding: 6px 0 0; }
+/* A job's whole content and its form (#1080): the kit's fact list, inputs and buttons; the prompt as written (it wraps,
+   and scrolls past a screenful), the form's hints, the actions in one row. */
+.cron-prompt { margin: 0; max-height: 320px; overflow: auto; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cron-detail-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.cron-detail-note, .cron-edit-hint { margin: 8px 0 0; font-size: 12px; color: var(--text-tertiary); }
+.cron-edit-hint { display: block; margin-top: 3px; }
+.cron-edit-model-id { margin-top: 6px; }
+.cron-detail-status { margin-top: 4px; }
 
 
 /* ═══ New task (SSOT 2026-10-23) — entry button, floating button, composer ═══
@@ -6907,6 +6991,7 @@ ${pageTokenAliases()}
   <ui-drawer class="cron-drawer" id="cron-drawer" mode="sheet" width="560" max-width="560" lang="ko">
     <span slot="header" class="cron-drawer-headline"><span class="ui-chip" id="cron-drawer-badge" aria-hidden="true"></span><span id="cron-drawer-title"></span></span>
     <div class="cron-drawer-meta" id="cron-drawer-meta"></div>
+    <p class="ui-status-line cron-detail-status" id="cron-detail-status" role="status" aria-live="polite"></p>
     <div class="cron-drawer-body" id="cron-drawer-body"></div>
   </ui-drawer>
 
@@ -10050,7 +10135,7 @@ function renderBoard(board, partial) {
   // 2026-10-23 T4); the lane sections exist before their elements are filled.
   // SSOT 2026-11-05 — the columns draw the board as the filters and the sort leave it (boardFilterView); the cache,
   // the owner hues and the tools' options above and below read the whole board.
-  var cronPlan = planCronLane(boardFilterView(board), _cronJobs, _cronRevealKey, !isAdvanced());
+  var cronPlan = planCronLane(boardFilterView(board), _cronJobs, _cronRevealKey);
   _cronPlan = cronPlan;
   syncCronLane(cronPlan);
   var rest = cronPlan.board;
@@ -20272,9 +20357,9 @@ function cronCardTime(s) {
 // this instance has a group even with no card on the board; a card whose job is
 // not here (a sibling instance) groups by its stamp, without schedule data. A
 // job waiting on the user leads the lane, then running ones, then the newest.
-// liveOnBoard (미니멀, SSOT 2026-11-01): the lane is hidden, so a cron run that waits on the user or runs now stays
-// on the board, where its question, approval and Stop are — never out of reach.
-function planCronLane(board, jobs, revealKey, liveOnBoard) {
+// The same in 미니멀 and 어드밴스드 (#1080): the lane shows in both, so a cron run that waits on the user is its
+// job's card there, where its question, approval and Stop are.
+function planCronLane(board, jobs, revealKey) {
   var out = { working: [], waiting: [], idle: [], closed: [] };
   var groups = Object.create(null);
   var order = [];
@@ -20290,7 +20375,6 @@ function planCronLane(board, jobs, revealKey, liveOnBoard) {
     (board[col] || []).forEach(function(s) {
       // A starred cron run stays on the board, on top (SSOT 2026-10-30 T2).
       if (!isCronCard(s) || s.starred === true) { out[col].push(s); return; }
-      if (liveOnBoard && (col === 'waiting' || col === 'working')) { out[col].push(s); return; }
       var g = group(cronGroupKey(s), s.cronJob.id, s.cronJob.name);
       g.cards.push(s);
       g.colOf[s.key] = col;
@@ -20737,6 +20821,8 @@ function renderCronRunRow(run, g, nowMs) {
 function renderCronDrawerMeta(g, nowMs) {
   var j = g.job;
   if (!j) return '<p class="ui-notice">이 인스턴스에 없는 잡입니다 — 삭제됐거나 다른 인스턴스의 잡이라 스케줄·실행 기록이 없습니다. 보드에 있는 실행만 보입니다.</p>';
+  // #1080 — once 내용 보기 loaded it, the whole job stands in for the short facts.
+  if (_cronDetail && _cronDetail.key === g.key && _cronDetail.job) return renderCronDetail(g, _cronDetail.job, nowMs);
   // The kit's fact list (.ui-dl). Values are markup (escaped here): 다음 실행 counts down live like the tile (#444 review R1).
   var rows = [
     ['스케줄', esc(cronScheduleLabel(j.expression, j.nextRunAt) + ' · ' + j.expression + ' (UTC)')],
@@ -20744,19 +20830,32 @@ function renderCronDrawerMeta(g, nowMs) {
     ['실행 방식', esc((j.mode === 'fastlane' ? '항상 새 스레드' : '세션이 쉬면 주입, 없으면 새 스레드') + ' · 출력 ' + j.target + ' · 모델 ' + j.model)],
     ['실행 기록', esc('잡마다 최근 ' + (j.historyCap || 20) + '회까지 보관')],
   ];
-  return '<dl class="ui-dl">' + rows.map(function(r) { return '<div><dt>' + esc(r[0]) + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>';
+  return '<dl class="ui-dl">' + rows.map(function(r) { return '<div><dt>' + esc(r[0]) + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>' + cronDetailGate(g);
+}
+// The group the drawer shows, from the last plan.
+function cronDrawerGroup() {
+  var groups = _cronPlan ? _cronPlan.groups : [];
+  for (var i = 0; i < groups.length; i++) if (groups[i].key === _cronDrawerKey) return groups[i];
+  return null;
 }
 function paintCronDrawer() {
   if (!_cronDrawerKey) return;
-  var g = null;
-  var groups = _cronPlan ? _cronPlan.groups : [];
-  for (var i = 0; i < groups.length; i++) if (groups[i].key === _cronDrawerKey) g = groups[i];
+  var g = cronDrawerGroup();
   if (!g) { closeCronDrawer(); return; }
   var now = Date.now();
   var runs = cronGroupRuns(g);
+  // #1080 — the whole job is its owner's, or an admin's in 관리자 모드: another job, or the right gone, drops it.
+  if (_cronDetail && (_cronDetail.key !== g.key || !cronDetailAllowed(g))) _cronDetail = null;
   document.getElementById('cron-drawer-title').textContent = g.name;
   document.getElementById('cron-drawer-badge').innerHTML = CLOCK_SVG + 'CRON';
-  document.getElementById('cron-drawer-meta').innerHTML = renderCronDrawerMeta(g, now);
+  // An open form keeps what is typed in it: it is drawn once, when 편집 opens it (cronDetailEdit), and a board
+  // render leaves it alone. The facts are written only when they changed, so focus on their buttons stays.
+  var meta = document.getElementById('cron-drawer-meta');
+  if (!(_cronDetail && _cronDetail.draft)) {
+    var html = renderCronDrawerMeta(g, now);
+    if (meta._cronHtml !== html) { meta.innerHTML = html; meta._cronHtml = html; }
+  }
+  cronDetailStatus();
   document.getElementById('cron-drawer-body').innerHTML = runs.length
     ? '<ol>' + runs.map(function(r) { return renderCronRunRow(r, g, now); }).join('') + '</ol>'
     : '<p class="ui-empty">아직 실행 기록이 없습니다</p>';
@@ -20784,6 +20883,7 @@ function cronDrawerShut(d) {
 // after() runs once focus is back (opening the run's panel records the lane control as its return target).
 function closeCronDrawer(after) {
   _cronDrawerKey = null;
+  _cronDetail = null; // #1080 — the whole job, and an open form, go with the drawer
   var d = document.getElementById('cron-drawer');
   if (!d) { if (after) after(); return; }
   if (typeof d.hide === 'function') d.hide();
@@ -20812,6 +20912,10 @@ function closeCronDrawer(after) {
   // ui-end is said once, by the element that counted down to zero; one drawn with an until already past reads 곧
   // and never ticks (it is not on the timer), so a repaint after the fetch asks nothing more.
   if (d) d.addEventListener('ui-end', function(e) { if (e.target && e.target.localName === 'ui-elapsed') loadCronJobs(); });
+  // #1080 — 내용 보기 · 편집 · 취소 · 접기, the form's typing and its 저장 (they bubble from the drawer's light DOM).
+  if (d) d.addEventListener('click', onCronDetailClick);
+  if (d) d.addEventListener('input', onCronDetailInput);
+  if (d) d.addEventListener('submit', function(e) { e.preventDefault(); cronDetailSave(); });
 })();
 document.addEventListener('click', function(e) {
   var t = e.target && e.target.closest ? e.target : null;
@@ -20836,6 +20940,274 @@ async function loadCronJobs() {
     _cronJobsRev++;
     if (_lastBoardData) renderBoard(_lastBoardData);
   } catch (e) { console.error('Failed to load cron jobs', e); }
+}
+
+// ── A job's whole content and its editor (#1080) ──
+// The lane never carries a job's prompt (cron-view.ts). 내용 보기 asks the server for the whole job
+// (GET /api/dashboard/cron/:id) and 편집 changes it (PATCH) — for its owner, or an admin with 관리자 모드 on
+// (viewerCanManage, UX only: the server checks again, and checks every value by the Slack modal's and
+// cron_update's rules). Its words — a refusal included — go to the drawer's status line (#cron-detail-status),
+// which no render repaints.
+var _cronDetail = null; // { key, jobId, job, loading, draft, saving, say, tone } for the drawer's job; null = the short facts
+var CRON_MODE_LABEL = { default: '세션이 쉬면 주입, 없으면 새 스레드', fastlane: '항상 새 스레드' };
+var CRON_TARGET_LABEL = { channel: '채널 — 세션에서 실행', thread: '스레드 답글 — 프롬프트 글만 올림', dm: 'DM — 프롬프트 글만 보냄' };
+var CRON_MODEL_LABEL = { default: '만든 사람의 지금 기본 모델', opus: 'Opus (최신)', fable: 'Fable (최신)', fast: '빠른 모델', custom: '직접 입력' };
+// The whole job may be shown to this viewer: the owner, or an admin with 관리자 모드 on.
+function cronDetailAllowed(g) {
+  return !!(g && g.job && g.jobId && viewerCanManage({ ownerId: g.job.owner }));
+}
+// Under the short facts: 내용 보기 for whoever may see the whole job, one plain line for everyone else.
+function cronDetailGate(g) {
+  if (!cronDetailAllowed(g)) return '<p class="cron-detail-note">프롬프트를 포함한 전체 내용과 편집은 소유자나 관리자 모드를 켠 관리자만 할 수 있어요</p>';
+  var busy = !!(_cronDetail && _cronDetail.key === g.key && _cronDetail.loading);
+  return '<div class="cron-detail-actions"><button type="button" class="ui-btn is-sm" data-cron-act="detail"' + (busy ? ' aria-busy="true"' : '') + '>내용 보기</button></div>';
+}
+function cronDetailWhen(ms, nowMs) {
+  return '<time datetime="' + escAttr(new Date(ms).toISOString()) + '">' + esc(cronRunWhen(ms, nowMs)) + '</time>';
+}
+// The whole job in the kit's fact list: every field the scheduler reads, the prompt as written.
+function renderCronDetail(g, j, nowMs) {
+  // The lane's next fire is the fresher one: its jobs reload every minute, and when a countdown ends.
+  var next = g.job && g.job.nextRunAt ? g.job.nextRunAt : j.nextRunAt;
+  var m = j.model || { type: 'default' };
+  var rows = [
+    ['스케줄', esc(cronScheduleLabel(j.expression, next) + ' · ' + j.expression + ' (UTC)')],
+    ['다음 실행', next ? esc(capClockLabel(next / 1000, nowMs)) + ' (' + cronCountdownHtml(next) + ')' : '8일 안에 없음'],
+    ['프롬프트', '<pre class="cron-prompt">' + esc(j.prompt) + '</pre>'],
+    ['채널', esc(j.channel)],
+    ['스레드', j.threadTs ? esc(j.threadTs) : '없음'],
+    ['실행 방식', esc(CRON_MODE_LABEL[j.mode] || j.mode)],
+    ['출력', esc(CRON_TARGET_LABEL[j.target] || j.target)],
+    ['모델', esc(m.type === 'custom' ? m.model || m.type : CRON_MODEL_LABEL[m.type] || m.type)],
+    ['수동 실행 허용', j.runAllowlist && j.runAllowlist.length ? esc(j.runAllowlist.join(', ')) : '소유자만'],
+    ['소유자', esc(j.owner)],
+    ['만든 때', j.createdAt ? cronDetailWhen(j.createdAt, nowMs) : '모름'],
+    ['스케줄 바꾼 때', j.scheduleChangedAt ? cronDetailWhen(j.scheduleChangedAt, nowMs) : '바꾼 적 없음'],
+    ['마지막 실행', j.lastRunAt ? cronDetailWhen(j.lastRunAt, nowMs) : '아직 없음'],
+  ];
+  return '<dl class="ui-dl">' + rows.map(function(r) { return '<div><dt>' + esc(r[0]) + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>'
+    + '<div class="cron-detail-actions"><button type="button" class="ui-btn is-sm" data-cron-act="edit">편집</button><button type="button" class="ui-btn is-sm" data-cron-act="hide">접기</button></div>';
+}
+// The form's values, from the job.
+function cronDraftOf(j) {
+  var m = j.model || { type: 'default' };
+  return { name: j.name, expression: j.expression, prompt: j.prompt, channel: j.channel, mode: j.mode || 'default', target: j.target || 'channel', modelType: m.type || 'default', modelId: m.type === 'custom' ? m.model || '' : '' };
+}
+function cronEditOptions(labels, current, off) {
+  var out = '';
+  for (var k in labels) out += '<option value="' + escAttr(k) + '"' + (k === current ? ' selected' : '') + (off && off[k] ? ' disabled' : '') + '>' + esc(labels[k]) + '</option>';
+  return out;
+}
+// 편집: the job's fields as a form, drawn once from the draft. A thread reply needs the thread the job is
+// anchored to — the dashboard cannot pick a Slack thread — so without one it is not offered.
+function renderCronEditForm(j, f) {
+  var targets = { channel: CRON_TARGET_LABEL.channel, thread: j.threadTs ? CRON_TARGET_LABEL.thread : '스레드 답글 — 연결된 스레드가 없어요', dm: CRON_TARGET_LABEL.dm };
+  function input(field, id, value, hint) {
+    return '<input class="ui-input is-block" id="' + id + '" data-cron-field="' + field + '" value="' + escAttr(value) + '" autocomplete="off" spellcheck="false" aria-describedby="' + id + '-hint"><small class="cron-edit-hint" id="' + id + '-hint">' + esc(hint) + '</small>';
+  }
+  return '<form class="cron-edit" id="cron-edit-form" novalidate><dl class="ui-dl is-stacked">'
+    + '<dt><label for="cron-edit-name">이름</label></dt><dd>' + input('name', 'cron-edit-name', f.name, '영문, 숫자, 하이픈(-), 밑줄(_)로 1–64자') + '</dd>'
+    + '<dt><label for="cron-edit-expression">스케줄</label></dt><dd>' + input('expression', 'cron-edit-expression', f.expression, 'cron 식 5칸: 분 시 일 월 요일. 시각은 UTC예요 (한국 시간에서 9시간을 빼요) — 예: 0 0 * * 1-5 는 평일 한국 시간 오전 9시') + '</dd>'
+    // The parser drops one line break right after <textarea>: one is written, so a prompt's own first one stays.
+    + '<dt><label for="cron-edit-prompt">프롬프트</label></dt><dd><textarea class="ui-input" id="cron-edit-prompt" data-cron-field="prompt" rows="8" maxlength="4000" aria-describedby="cron-edit-prompt-hint">\\n' + esc(f.prompt) + '</textarea><small class="cron-edit-hint" id="cron-edit-prompt-hint">1–4,000자</small></dd>'
+    + '<dt><label for="cron-edit-channel">채널 ID</label></dt><dd>' + input('channel', 'cron-edit-channel', f.channel, 'Slack 채널 ID(C…)나 DM ID(D…). 채널을 바꾸면 스레드 연결이 풀려요') + '</dd>'
+    + '<dt><label for="cron-edit-mode">실행 방식</label></dt><dd><select class="ui-input is-block" id="cron-edit-mode" data-cron-field="mode">' + cronEditOptions(CRON_MODE_LABEL, f.mode) + '</select></dd>'
+    + '<dt><label for="cron-edit-target">출력</label></dt><dd><select class="ui-input is-block" id="cron-edit-target" data-cron-field="target">' + cronEditOptions(targets, f.target, j.threadTs ? null : { thread: true }) + '</select></dd>'
+    + '<dt><label for="cron-edit-model">모델</label></dt><dd><select class="ui-input is-block" id="cron-edit-model" data-cron-field="modelType">' + cronEditOptions(CRON_MODEL_LABEL, f.modelType) + '</select>'
+    + '<div class="cron-edit-model-id" id="cron-edit-model-id-row"' + (f.modelType === 'custom' ? '' : ' hidden') + '><label class="ui-sr-only" for="cron-edit-model-id">모델 ID</label><input class="ui-input is-block" id="cron-edit-model-id" data-cron-field="modelId" value="' + escAttr(f.modelId) + '" placeholder="claude-sonnet-4-20250514" autocomplete="off" spellcheck="false"></div></dd>'
+    + '</dl><div class="cron-detail-actions"><button type="submit" class="ui-btn is-sm is-primary" id="cron-edit-save">저장</button><button type="button" class="ui-btn is-sm" data-cron-act="cancel">취소</button></div></form>';
+}
+// What the form changed, as the PATCH body: only the fields that differ from the job.
+function cronEditPatch(j, f) {
+  var p = {};
+  var name = String(f.name || '').trim();
+  if (name !== j.name) p.name = name;
+  var expression = String(f.expression || '').trim().split(/ +/).join(' ');
+  if (expression !== j.expression) p.expression = expression;
+  if (f.prompt !== j.prompt) p.prompt = f.prompt;
+  var channel = String(f.channel || '').trim();
+  if (channel !== j.channel) p.channel = channel;
+  if (f.mode !== (j.mode || 'default')) p.mode = f.mode;
+  if (f.target !== (j.target || 'channel')) p.target = f.target;
+  var m = j.model || { type: 'default' };
+  var modelId = f.modelType === 'custom' ? String(f.modelId || '').trim() : '';
+  if (f.modelType !== (m.type || 'default') || (f.modelType === 'custom' && modelId !== (m.model || ''))) {
+    p.model = f.modelType === 'custom' ? { type: 'custom', model: modelId } : { type: f.modelType };
+  }
+  return p;
+}
+// The drawer's status line says what the state says — written only when it changed (no repeat for a screen reader).
+function cronDetailStatus() {
+  var el = document.getElementById('cron-detail-status');
+  if (!el) return;
+  var say = _cronDetail && _cronDetail.say ? _cronDetail.say : '';
+  if (el.textContent !== say) el.textContent = say;
+  var tone = say && _cronDetail.tone ? _cronDetail.tone : '';
+  if (tone) el.setAttribute('data-tone', tone); else el.removeAttribute('data-tone');
+}
+function cronDetailFocus(sel) {
+  var meta = document.getElementById('cron-drawer-meta');
+  var el = meta && meta.querySelector ? meta.querySelector(sel) : null;
+  if (el && typeof el.focus === 'function') el.focus();
+}
+// A refused request in words: a refusal of the right is the page's owner-only line (the server's 403 is
+// English for API clients); otherwise the server's reason, else what failed and its status.
+function cronDetailError(res, data, failed) {
+  if (res && res.status === 403 && !(data && data.code === 'csrf_failed')) return OWNER_ONLY_MSG;
+  if (data && data.error) return String(data.error);
+  return res ? failed + ' (HTTP ' + res.status + ')' : failed;
+}
+// 내용 보기: the whole job, from the server.
+async function cronDetailLoad() {
+  var g = cronDrawerGroup();
+  if (!cronDetailAllowed(g) || (_cronDetail && _cronDetail.key === g.key && _cronDetail.loading)) return;
+  var st = { key: g.key, jobId: g.jobId, job: null, loading: true, draft: null, saving: false, say: '내용을 불러오는 중…', tone: '' };
+  _cronDetail = st;
+  cronDetailStatus();
+  paintCronDrawer();
+  var res = null;
+  var data = null;
+  try {
+    // The page's fetch wrapper adds X-Admin-Mode to writes only; this read is gated like a write (an admin's needs it).
+    res = await fetch('/api/dashboard/cron/' + encodeURIComponent(st.jobId), { headers: { 'X-Admin-Mode': _isAdminModeOn() ? 'on' : 'off' } });
+    data = await res.json().catch(function() { return null; });
+  } catch (_e) {}
+  if (_cronDetail !== st) return; // the drawer moved on meanwhile
+  st.loading = false;
+  if (res && res.ok && data && data.job) {
+    st.job = data.job;
+    st.say = '';
+    cronDetailStatus();
+    paintCronDrawer();
+    cronDetailFocus('[data-cron-act="edit"]');
+    return;
+  }
+  st.say = cronDetailError(res, data, '내용을 불러오지 못했어요');
+  st.tone = 'fail';
+  cronDetailStatus();
+  paintCronDrawer();
+}
+// 편집: the form, drawn once — a board render never repaints it (paintCronDrawer), the typing lives in the draft.
+function cronDetailEdit() {
+  var st = _cronDetail;
+  if (!st || !st.job || st.draft) return;
+  st.draft = cronDraftOf(st.job);
+  st.say = '';
+  cronDetailStatus();
+  var meta = document.getElementById('cron-drawer-meta');
+  if (meta) { meta.innerHTML = renderCronEditForm(st.job, st.draft); meta._cronHtml = ''; }
+  cronDetailFocus('#cron-edit-name');
+}
+// 취소: the typing goes, the whole job shows again.
+function cronDetailCancel() {
+  var st = _cronDetail;
+  if (!st || !st.draft || st.saving) return;
+  st.draft = null;
+  st.say = '';
+  paintCronDrawer();
+  cronDetailFocus('[data-cron-act="edit"]');
+}
+// 접기: back to the short facts.
+function cronDetailHide() {
+  _cronDetail = null;
+  paintCronDrawer();
+  cronDetailFocus('[data-cron-act="detail"]');
+}
+function onCronDetailClick(e) {
+  var b = e.target && e.target.closest ? e.target.closest('[data-cron-act]') : null;
+  if (!b) return;
+  var act = b.getAttribute('data-cron-act');
+  if (act === 'detail') cronDetailLoad();
+  else if (act === 'edit') cronDetailEdit();
+  else if (act === 'cancel') cronDetailCancel();
+  else if (act === 'hide') cronDetailHide();
+}
+// Typing goes to the draft; 직접 입력 shows the model id.
+function onCronDetailInput(e) {
+  var t = e.target;
+  var field = t && t.getAttribute ? t.getAttribute('data-cron-field') : null;
+  if (!field || !_cronDetail || !_cronDetail.draft) return;
+  _cronDetail.draft[field] = String(t.value);
+  t.removeAttribute('aria-invalid');
+  if (field === 'modelType') {
+    var row = document.getElementById('cron-edit-model-id-row');
+    if (row) row.hidden = t.value !== 'custom';
+  }
+}
+// PATCH with the CSRF retry (a 403 after the JWT rotated refreshes the token once).
+async function cronDetailPatch(url, body) {
+  function send() {
+    var headers = { 'Content-Type': 'application/json' };
+    if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+    return fetch(url, { method: 'PATCH', headers: headers, body: body });
+  }
+  var res = await send();
+  if (res.status === 403) {
+    // Once more only when the token went stale (JWT rotation) — a refusal stays a refusal.
+    var first = null;
+    try { first = await res.clone().json(); } catch (_e) {}
+    if (first && first.code === 'csrf_failed') {
+      await refreshCsrfToken();
+      res = await send();
+    }
+  }
+  return res;
+}
+function cronEditBusy(on) {
+  var b = document.getElementById('cron-edit-save');
+  if (!b) return;
+  if (on) b.setAttribute('aria-busy', 'true'); else b.removeAttribute('aria-busy');
+}
+// The field the server refused, marked and focused (its words are in the status line).
+function cronEditInvalid(field) {
+  var ids = ['name', 'expression', 'prompt', 'channel', 'mode', 'target', 'model', 'model-id'];
+  for (var i = 0; i < ids.length; i++) {
+    var el = document.getElementById('cron-edit-' + ids[i]);
+    if (el) el.removeAttribute('aria-invalid');
+  }
+  if (!field) return;
+  var custom = field === 'model' && _cronDetail && _cronDetail.draft && _cronDetail.draft.modelType === 'custom';
+  var bad = document.getElementById(custom ? 'cron-edit-model-id' : 'cron-edit-' + field);
+  if (!bad) return;
+  bad.setAttribute('aria-invalid', 'true');
+  if (typeof bad.focus === 'function') bad.focus();
+}
+// 저장: only what changed. Saved → the whole job again, and the lane's tile and next fire follow (loadCronJobs);
+// refused → the form stays as typed, and the status line says the server's reason.
+async function cronDetailSave() {
+  var st = _cronDetail;
+  if (!st || !st.job || !st.draft || st.saving) return;
+  var patch = cronEditPatch(st.job, st.draft);
+  if (!Object.keys(patch).length) { cronDetailCancel(); return; }
+  st.saving = true;
+  cronEditBusy(true);
+  st.say = '저장하는 중…';
+  st.tone = '';
+  cronDetailStatus();
+  var res = null;
+  var data = null;
+  try {
+    res = await cronDetailPatch('/api/dashboard/cron/' + encodeURIComponent(st.jobId), JSON.stringify(patch));
+    data = await res.json().catch(function() { return null; });
+  } catch (_e) {}
+  st.saving = false;
+  if (_cronDetail !== st) return; // the drawer closed meanwhile
+  if (res && res.ok && data && data.job) {
+    st.job = data.job;
+    st.draft = null;
+    st.say = '저장했어요';
+    st.tone = 'done';
+    cronDetailStatus();
+    paintCronDrawer();
+    cronDetailFocus('[data-cron-act="edit"]');
+    loadCronJobs();
+    return;
+  }
+  cronEditBusy(false);
+  st.say = cronDetailError(res, data, '저장하지 못했어요');
+  st.tone = 'fail';
+  cronDetailStatus();
+  cronEditInvalid(data && data.field);
 }
 
 // ── The drawer's live countdown (the Agent Queue grammar, #444 D3) ──

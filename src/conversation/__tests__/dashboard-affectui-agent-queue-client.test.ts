@@ -854,11 +854,15 @@ describe('wiring — the lane’s job boxes, the paint, the fold, the drawer', (
     drawer.hide = vi.fn();
     const els: Record<string, any> = { 'cron-drawer': drawer };
     const document = { activeElement: host, getElementById: (id: string) => els[id] };
-    const f = load<Fns>(['openCronDrawer', 'cronDrawerShut', 'closeCronDrawer'], ['_cronDrawerReturnFocus'], {
-      document,
-      paintCronDrawer: () => {},
-      _cronDrawerKey: null,
-    });
+    const f = load<Fns>(
+      ['openCronDrawer', 'cronDrawerShut', 'closeCronDrawer'],
+      ['_cronDrawerReturnFocus', '_cronDetail'],
+      {
+        document,
+        paintCronDrawer: () => {},
+        _cronDrawerKey: null,
+      },
+    );
     f.openCronDrawer('id:job-qa');
     expect(drawer.show).toHaveBeenCalledTimes(1);
     f.closeCronDrawer();
@@ -882,12 +886,16 @@ describe('wiring — the lane’s job boxes, the paint, the fold, the drawer', (
     drawer.shadowRoot = { querySelector: (s: string) => (s === 'dialog' ? dialog : null) };
     const frames: Array<() => void> = [];
     const document = { activeElement: host, getElementById: (id: string) => (id === 'cron-drawer' ? drawer : null) };
-    const f = load<Fns>(['openCronDrawer', 'cronDrawerShut', 'closeCronDrawer'], ['_cronDrawerReturnFocus'], {
-      document,
-      paintCronDrawer: () => {},
-      _cronDrawerKey: null,
-      requestAnimationFrame: (cb: () => void) => frames.push(cb),
-    });
+    const f = load<Fns>(
+      ['openCronDrawer', 'cronDrawerShut', 'closeCronDrawer'],
+      ['_cronDrawerReturnFocus', '_cronDetail'],
+      {
+        document,
+        paintCronDrawer: () => {},
+        _cronDrawerKey: null,
+        requestAnimationFrame: (cb: () => void) => frames.push(cb),
+      },
+    );
     f.openCronDrawer('id:job-qa');
     const after = vi.fn(() => expect(focus).toHaveBeenCalledTimes(1));
     (f.closeCronDrawer as (after?: () => void) => void)(after);
