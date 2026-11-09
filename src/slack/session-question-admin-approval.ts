@@ -13,6 +13,7 @@
  * Only a single-choice question is listed (a multi-question form stays in its thread).
  */
 
+import { normalizeDecisionFields } from 'somalib/model-commands/validator';
 import type { AdminApproval, AdminApprovalAdapter, AdminApprovalResolution } from '../admin-approvals';
 import { isAdminUser } from '../admin-utils';
 import { Logger } from '../logger';
@@ -58,6 +59,8 @@ function stampOf(session: ConversationSession): string {
 
 function toApproval(sessionKey: string, session: ConversationSession, q: UserChoice): AdminApproval {
   const threadTs = session.threadRootTs || session.threadTs;
+  // #1073 — the same decision lines the session view and the Slack card show.
+  const decision = normalizeDecisionFields(q);
   return {
     id: `session_question:${sessionKey}${STAMP_SEP}${stampOf(session)}`,
     kind: 'session_question',
@@ -70,6 +73,7 @@ function toApproval(sessionKey: string, session: ConversationSession, q: UserCho
       ...(c.description ? { description: c.description } : {}),
     })),
     ...(q.recommendedChoiceId ? { recommendedId: q.recommendedChoiceId } : {}),
+    ...(Object.keys(decision).length ? { decision } : {}),
     requesterId: session.ownerId ?? '',
     ...(session.channelId ? { place: { channel: session.channelId, ...(threadTs ? { threadTs } : {}) } } : {}),
     createdAt: session.actionPanel?.pendingChoice?.createdAt ?? 0,

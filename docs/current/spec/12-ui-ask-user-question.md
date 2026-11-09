@@ -342,7 +342,7 @@ Slack의 partial-fill 동작과 의도적으로 다릅니다. 1000+ sub-question
 - **답 형식은 그대로**: 결정 줄은 사람에게만 보인다. 모델이 받는 답(선택지 id, 복수 질문은 줄마다 `질문: id. 라벨`)은
   같다(`choice-action-handler.test.ts` "#1073 — decision lines never reach the answer").
 - **알려진 범위 밖**: 도구 없는 코드 블록 경로의 질문은 지금도 대시보드에 질문 카드가 없다(`pendingQuestion`을
-  기록하지 않는다) — Slack 카드에만 결정 줄이 보인다. 관리자 승인 화면의 질문(#1070)은 같은 헬퍼를 쓴다.
+  기록하지 않는다) — Slack 카드에만 결정 줄이 보인다. 관리자 승인 화면의 질문(#1070)도 같은 줄을 보인다: `session-question-admin-approval.ts`가 `normalizeDecisionFields`로 `decision`을 싣고, 클라이언트 `adminApprovalData`가 `decisionLines`로 그린다(맥락 → 결정 줄 → 요청 위치).
 
 ## 8. Session/Status Integration
 

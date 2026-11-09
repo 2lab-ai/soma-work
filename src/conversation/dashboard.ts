@@ -8627,7 +8627,8 @@ function adminApprovalData(id) {
     d.kind = 'question';
     d.question = String(a.title || '');
     var place = a.place && a.place.channel ? '요청 위치: #' + a.place.channel + (a.place.threadTs ? ' 스레드 ' + a.place.threadTs : '') : '';
-    var desc = [a.description || '', place].filter(Boolean).join('\\n');
+    // #1073 — an agent question's decision lines, drawn as the session view draws them.
+    var desc = [a.description || ''].concat(decisionLines(a.decision), [place]).filter(Boolean).join('\\n');
     if (desc) d.description = desc;
     d.choices = (a.choices || []).map(function(c) { return { id: String(c.id), label: String(c.label) }; });
     d.allowOther = false;
