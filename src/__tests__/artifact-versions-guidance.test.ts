@@ -28,6 +28,7 @@ describe('#1074 — model guidance for artifact versions', () => {
   it('the zworkflow plugin version moved past the one without this guidance', () => {
     const { version } = JSON.parse(read('src/local/.claude-plugin/plugin.json')) as { version: string };
     const [major, minor] = version.split('.').map(Number);
-    expect(major > 2 || (major === 2 && minor >= 16)).toBe(true);
+    // 2.16.0 is main's no-PNG release (#1084), without this guidance: the guidance ships as 2.17.0 or later.
+    expect(major > 2 || (major === 2 && minor >= 17)).toBe(true);
   });
 });
