@@ -11,7 +11,13 @@ import { createHash } from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { commentWithVersion, planUploadVersion, readArtifactRows } from './helpers/artifact-version.js';
+import {
+  commentWithVersion,
+  planUploadVersion,
+  readArtifactRows,
+  UploadVersions,
+  versionFields,
+} from './helpers/artifact-version.js';
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 
@@ -137,6 +143,65 @@ describe('#1074 — the version an upload is, said before it is sent', () => {
   });
 });
 
+describe('#1074 r1 — uploads this process made count before the daemon has recorded them', () => {
+  it('two uploads of one key at once: serialized, the second plans against the first (2 then 3)', async () => {
+    const versions = new UploadVersions();
+    const order: string[] = [];
+    const one = await file('html-weekly-20261109-150000.html', 'p1');
+    const two = await file('html-weekly-20261109-150001.html', 'p2');
+    const upload = (p: string, tag: string) =>
+      versions.serialize('name:html-weekly.html', async () => {
+        const v = await planUploadVersion({ indexPath: index, filePath: p, displayName: path.basename(p), lang: 'ko', sent: versions.sent() });
+        order.push(`${tag}:plan`);
+        await new Promise((r) => setTimeout(r, 20));
+        if (v && v.changed !== false) versions.remember(`F-${tag}`, v);
+        order.push(`${tag}:done`);
+        return v;
+      });
+    const [a, b] = await Promise.all([upload(one, 'a'), upload(two, 'b')]);
+    expect(order).toEqual(['a:plan', 'a:done', 'b:plan', 'b:done']);
+    expect([a?.version, a?.note, b?.version, b?.note]).toEqual([2, '판 2 · 이전 판 이후 바뀜', 3, '판 3 · 이전 판 이후 바뀜']);
+  });
+
+  it('a sent upload the daemon has since recorded is not counted twice (the index wins)', async () => {
+    const d = path.join(dir, 'recorded');
+    await fs.mkdir(d);
+    await fs.writeFile(
+      path.join(d, 'index.json'),
+      JSON.stringify({
+        artifacts: [{ id: 'X', name: 'r.html', slackFileId: 'FX', key: 'name:r.html', version: 1, sha256: sha('old') }],
+      }),
+    );
+    const p = await file('r.html', 'new');
+    // This process remembers FX as version 2 (say it raced); the index lists FX as version 1 — the index wins.
+    const sent = [{ id: 'FX', slackFileId: 'FX', key: 'name:r.html', version: 2, sha256: sha('old') }];
+    const v = await planUploadVersion({ indexPath: path.join(d, 'index.json'), filePath: p, displayName: 'r.html', lang: 'ko', sent });
+    expect(v?.version).toBe(2);
+    const unseen = [{ id: 'FY', slackFileId: 'FY', key: 'name:r.html', version: 2, sha256: sha('mid') }];
+    const w = await planUploadVersion({ indexPath: path.join(d, 'index.json'), filePath: p, displayName: 'r.html', lang: 'ko', sent: unseen });
+    expect(w?.version).toBe(3);
+  });
+
+  it('names over 200 characters are cut as the daemon cuts them', async () => {
+    const long = `${'x'.repeat(220)}.md`;
+    const p = await file('long.md', 'L');
+    const v = await planUploadVersion({ indexPath: index, filePath: p, displayName: long, lang: 'ko' });
+    expect(v?.artifact_key).toBe(`name:${long.slice(0, 200)}`);
+  });
+
+  it("the reply names the derived key version_key; artifact_key is only ever the model's own", () => {
+    const fields = versionFields({
+      artifact_key: 'name:r.html',
+      version: 2,
+      changed: true,
+      previous_version: 1,
+      sha256: 'a'.repeat(64),
+      note: 'x',
+    });
+    expect(fields).toEqual({ version_key: 'name:r.html', version: 2, changed: true, previous_version: 1, sha256: 'a'.repeat(64) });
+  });
+});
+
 describe('#1074 — the tools take artifact_key and reply with the version', () => {
   it('send_file and send_media declare artifact_key; both replies carry the version fields', async () => {
     const src = await fs.readFile(path.resolve(__dirname, 'slack-mcp-server.ts'), 'utf-8');
@@ -145,7 +210,8 @@ describe('#1074 — the tools take artifact_key and reply with the version', () 
     expect(sendFile).toContain('artifact_key');
     expect(sendMedia).toContain('artifact_key');
     expect(src.match(/\.\.\.versionFields\(version\)/g)?.length).toBe(2);
-    expect(src.match(/commentWithVersion\(/g)?.length).toBe(2);
+    expect(src.match(/await this\.uploadVersioned\(/g)?.length).toBe(2);
+    expect(src).toContain('this.uploadVersions.serialize(uploadKey(displayName, artifactKey)');
     expect(src).toContain('SOMA_ARTIFACT_INDEX');
   });
 });

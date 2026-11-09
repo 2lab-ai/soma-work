@@ -5,6 +5,11 @@
  * after an upload's result arrives. Before the upload, this reads that index (path from SOMA_ARTIFACT_INDEX)
  * and applies the same rule (somalib/artifacts/artifact-version.ts), so the comment posted with the file and
  * the tool's result say the version the daemon will record.
+ *
+ * The daemon records an upload only when its result reaches the work log, so the index lags this process's own
+ * uploads. `UploadVersions` closes that gap for one slack-mcp process: uploads of one key run one at a time, and
+ * the ones it already sent count until the index has them (matched by Slack file id). Two processes uploading one
+ * key at the same moment (not one session's turn) can still announce the same version; the daemon's record wins.
  */
 
 import {
@@ -34,6 +39,9 @@ const NOTE: Record<
     plain: (v) => `Version ${v}`,
   },
 };
+
+/** The daemon cuts a display name to this length before keying it (artifacts.ts `recordSlackUpload`). */
+const MAX_NAME = 200;
 
 export interface UploadVersion {
   artifact_key: string;
@@ -65,6 +73,55 @@ export function readArtifactRows(indexPath: string): ArtifactVersionRow[] {
   return assignArtifactVersions(rows).filter((r) => r.source !== 'final_answer');
 }
 
+/** A row this process sent, by Slack file id: counted until the daemon's index lists that file. */
+export interface SentRow extends ArtifactVersionRow {
+  slackFileId: string;
+}
+
+/** Index rows plus this process's sent uploads the index does not list yet. */
+function withSent(rows: ArtifactVersionRow[], sent: readonly SentRow[] | undefined): ArtifactVersionRow[] {
+  if (!sent?.length) return rows;
+  const known = new Set<string>();
+  for (const r of rows as Array<ArtifactVersionRow & { slackFileId?: string; resentFileIds?: string[] }>) {
+    if (r.slackFileId) known.add(r.slackFileId);
+    for (const id of r.resentFileIds ?? []) known.add(id);
+  }
+  return [...rows, ...sent.filter((s) => !known.has(s.slackFileId))];
+}
+
+/** Per slack-mcp process: one upload of a key at a time, and the versions it sent (see the header). */
+export class UploadVersions {
+  private readonly chains = new Map<string, Promise<unknown>>();
+  private readonly rows: SentRow[] = [];
+
+  /** Run `fn` after every earlier `serialize` of the same key has settled. */
+  serialize<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.chains.get(key) ?? Promise.resolve();
+    const run = prev.then(fn, fn);
+    const tail = run.catch(() => undefined);
+    this.chains.set(key, tail);
+    void tail.then(() => {
+      if (this.chains.get(key) === tail) this.chains.delete(key);
+    });
+    return run;
+  }
+
+  /** A version this process uploaded (Slack file id), until the index lists it. */
+  remember(slackFileId: string, v: UploadVersion): void {
+    this.rows.push({ id: slackFileId, slackFileId, key: v.artifact_key, version: v.version, sha256: v.sha256 });
+    if (this.rows.length > 100) this.rows.shift();
+  }
+
+  sent(): readonly SentRow[] {
+    return this.rows;
+  }
+}
+
+/** The key an upload is grouped by — what `serialize` takes. */
+export function uploadKey(displayName: string, artifactKey: unknown): string {
+  return artifactKeyFor({ key: artifactKey, name: displayName.slice(0, MAX_NAME) });
+}
+
 export function sha256File(file: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const hash = createHash('sha256');
@@ -82,11 +139,13 @@ export async function planUploadVersion(input: {
   displayName: string;
   artifactKey?: unknown;
   lang: VersionLang;
+  /** This process's uploads the index may not list yet (`UploadVersions.sent()`). */
+  sent?: readonly SentRow[];
 }): Promise<UploadVersion | null> {
   if (!input.indexPath) return null;
   const sha256 = await sha256File(input.filePath);
-  const key = artifactKeyFor({ key: input.artifactKey, name: input.displayName });
-  const plan = planArtifactVersion(readArtifactRows(input.indexPath), key, sha256);
+  const key = uploadKey(input.displayName, input.artifactKey);
+  const plan = planArtifactVersion(withSent(readArtifactRows(input.indexPath), input.sent), key, sha256);
   const t = NOTE[input.lang] ?? NOTE.ko;
   const note = !plan.previous
     ? ''
@@ -114,8 +173,9 @@ export function commentWithVersion(note: string, comment: string | undefined): s
 /** The fields a send_file / send_media reply carries about the version. */
 export function versionFields(v: UploadVersion | null): Record<string, unknown> {
   if (!v) return {};
+  // The derived key (`name:…`, `key:…`) is `version_key`: `artifact_key` is only ever the model's own.
   return {
-    artifact_key: v.artifact_key,
+    version_key: v.artifact_key,
     version: v.version,
     changed: v.changed,
     previous_version: v.previous_version,
