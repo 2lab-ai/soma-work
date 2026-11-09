@@ -269,6 +269,27 @@ describe('S6 — 50-block cap', () => {
   });
 });
 
+describe('S6a — the no-tool path does not cap the options; the builder does', () => {
+  it('a fenced group of 6 questions with 5 options, context and every field stays ≤ 50 blocks', () => {
+    const q = (n: number) => ({
+      question: `질문 ${n}`,
+      context: `맥락 ${n}`,
+      blockedWork: `작업 ${n}`,
+      stakes: `걸린 것 ${n}`,
+      reversible: false,
+      reversibleWhy: `이유 ${n}`,
+      options: [1, 2, 3, 4, 5].map((i) => ({ id: String(i), label: `L${i}`, description: `d${i}` })),
+    });
+    const reply = `\`\`\`json\n${JSON.stringify({ type: 'user_choice_group', question: 't', context: 'd', choices: [1, 2, 3, 4, 5, 6].map(q) })}\n\`\`\``;
+    const { choices } = UserChoiceHandler.extractUserChoice(reply);
+    expect(choices?.questions).toHaveLength(6);
+    expect(choices?.questions[0].choices).toHaveLength(5);
+    const blocks = blocksOf(ChoiceMessageBuilder.buildMultiChoiceFormBlocks(choices as UserChoices, 'f', 'k'));
+    expect(blocks.length).toBeLessThanOrEqual(50);
+    expect(decisionBlocks(blocks)).toHaveLength(6);
+  });
+});
+
 describe('S6b — 3000-char text limit', () => {
   it('three lines of the longest values, all escaping characters, stay under 3000 chars', () => {
     const worst = '&'.repeat(400);

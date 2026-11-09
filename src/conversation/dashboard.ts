@@ -7885,7 +7885,11 @@ function acPermissionData(s, p) {
 // rewritten in place is another card, never the old one's answer or focus
 // (review R2 P1).
 function acQuestionId(q) {
-  return 'q|' + JSON.stringify([q.question, (q.choices || []).map(function(c) { return [c.id, c.label, c.description || '']; })]);
+  var parts = [q.question, (q.choices || []).map(function(c) { return [c.id, c.label, c.description || '']; })];
+  // #1073 — its decision lines are part of its meaning (other stakes or another verdict is another card).
+  var lines = decisionLines(q);
+  if (lines.length) parts.push(lines);
+  return 'q|' + JSON.stringify(parts);
 }
 // pendingQuestion (single choice) → the card's data. The choices read as
 // before ("1. label", the recommended marker stripped). #917 — the last option
@@ -16676,7 +16680,11 @@ var MC_CUSTOM_ID = '\\uC9C1\\uC811\\uC785\\uB825';
 // The form's identity: a different question (or another session) starts clean.
 function mcFormId(s, q) {
   return 'mc|' + s.key + '|'
-    + JSON.stringify([q.title || q.question || '', (q.questions || []).map(function(x) { return [x.id, x.question]; })]);
+    + JSON.stringify([q.title || q.question || '', (q.questions || []).map(function(x) {
+      // #1073 — a question whose decision lines change makes another form (its answers start clean).
+      var lines = decisionLines(x);
+      return lines.length ? [x.id, x.question, lines] : [x.id, x.question];
+    })]);
 }
 // The session's form state, reset when its question is another one.
 function mcStateOf(s, q) {
@@ -16713,8 +16721,13 @@ function mcFormData(s, q) {
       };
       // #1073 — the context (markdown), a blank line, then the decision lines.
       var ctx = [];
-      if (item.context) ctx.push(String(item.context));
       var lines = decisionLines(item, true);
+      if (item.context) {
+        var own = String(item.context);
+        // A code fence the model left open would swallow the lines (and the warning): close it first.
+        if (lines.length && (own.match(/^\\s*\\u0060{3}/gm) || []).length % 2 === 1) own += '\\n\\u0060\\u0060\\u0060';
+        ctx.push(own);
+      }
       if (lines.length) ctx.push(lines.join('\\n'));
       if (ctx.length) out.context = ctx.join('\\n\\n');
       return out;
