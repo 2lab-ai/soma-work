@@ -244,3 +244,44 @@ describe('DispatchService — deploy directive fast path', () => {
     }
   });
 });
+
+// The workflow classifier names Haiku 5.5 by its own id and asks for effort `medium`. Before, it sent
+// `claude-haiku-4-5-20251001` with no effort: Claude Code put a 31,999-token thinking budget on the wire
+// (max_tokens 32,000), told the model it was Haiku 4.5, and only llmux's float of the old id made 5.5 answer.
+describe('DispatchService — classifier model and effort', () => {
+  async function freshService(envModel: string | undefined) {
+    const saved = process.env.DEFAULT_DISPATCH_MODEL;
+    if (envModel === undefined) delete process.env.DEFAULT_DISPATCH_MODEL;
+    else process.env.DEFAULT_DISPATCH_MODEL = envModel;
+    vi.resetModules();
+    try {
+      const mod = await import('../dispatch-service');
+      const svc = mod.getDispatchService() as any;
+      const dispatchOneShot = vi.fn(async () => '{"workflow":"default","title":"classified"}');
+      svc.claudeHandler = { dispatchOneShot };
+      svc.isConfigured = true;
+      svc.dispatchPrompt = svc.dispatchPrompt || 'classify';
+      return { svc, dispatchOneShot };
+    } finally {
+      if (saved === undefined) delete process.env.DEFAULT_DISPATCH_MODEL;
+      else process.env.DEFAULT_DISPATCH_MODEL = saved;
+    }
+  }
+
+  it('classifies on claude-haiku-5-5 at effort medium', async () => {
+    const { svc, dispatchOneShot } = await freshService(undefined);
+    await svc.dispatch('https://github.com/org/repo/pull/745');
+    expect(dispatchOneShot).toHaveBeenCalledTimes(1);
+    const args = dispatchOneShot.mock.calls[0] as unknown[];
+    expect(args[2]).toBe('claude-haiku-5-5');
+    expect(args[6]).toBe('medium');
+  });
+
+  it('DEFAULT_DISPATCH_MODEL still picks the model; the effort stays medium', async () => {
+    const { svc, dispatchOneShot } = await freshService('claude-sonnet-4-6');
+    await svc.dispatch('please look at the login page');
+    const args = dispatchOneShot.mock.calls[0] as unknown[];
+    expect(args[2]).toBe('claude-sonnet-4-6');
+    expect(args[6]).toBe('medium');
+  });
+});
