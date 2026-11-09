@@ -123,7 +123,8 @@ describe('qa-report build.mjs — adversarial input', () => {
     expect(run.status, run.stderr).toBe(0);
     const summary = JSON.parse(run.stdout);
     expect(summary).toMatchObject({ keys: 2, pass: 0, fail: 0, other: 2, shots: 2, shotProblems: 5 });
-    expect(summary.png).toBe(out.replace(/\.html$/, '.png'));
+    // One report, one artifact (SSOT 2026-11-09): no PNG path to render to.
+    expect(summary).not.toHaveProperty('png');
 
     const data = JSON.parse(runReport(readFileSync(out, 'utf8')).data);
     const shots = data.issues[0].cases.map((c: { evidence: { shot?: string; shotProblem?: string } }) => c.evidence);

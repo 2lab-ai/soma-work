@@ -1,14 +1,14 @@
 ---
 name: qa-report
-description: "Use when per-issue QA results (JSON from the `qa-issue` skill) must become the evidence report a reviewer can verify without asking: one self-contained interactive HTML (issue list ↔ per-case request/response and screenshots, all embedded) plus a PNG preview. Called by `deploy-qa` at its report step, or standalone. Args — <report-input.json> (required; qa-issue JSON array + per-key links + keys handled without QA); shots=<screenshots dir> (the profile's screenshots directory; required to embed screenshots); optional title=<text>."
+description: "Use when per-issue QA results (JSON from the `qa-issue` skill) must become the evidence report a reviewer can verify without asking: one self-contained interactive HTML (issue list ↔ per-case request/response and screenshots, all embedded) and nothing else — no PNG preview (one report, one artifact). Called by `deploy-qa` at its report step, or standalone. Args — <report-input.json> (required; qa-issue JSON array + per-key links + keys handled without QA); shots=<screenshots dir> (the profile's screenshots directory; required to embed screenshots); optional title=<text>."
 argument-hint: <report-input.json> shots=<dir> [title=<text>]
 ---
 
 # qa-report — evidence-first QA report
 
-Turn QA results into one HTML file that lets a reviewer re-run every case from the right pane alone, plus a PNG preview. Evidence is embedded (base64 screenshots, raw responses), so the file still works when every server link is dead. The HTML is the artifact; the PNG previews the first non-pass key.
+Turn QA results into one HTML file that lets a reviewer re-run every case from the right pane alone. Evidence is embedded (base64 screenshots, raw responses), so the file still works when every server link is dead. The HTML is the only artifact: no PNG preview is rendered or uploaded, because a second file for the same report doubles its entry in the thread and in the dashboard's 산출물 (SSOT 2026-11-09).
 
-Files: [`template.html`](./template.html) holds the layout. The left pane has title, request, KPIs, one row per key, body mentions and excluded PRs; the right pane (sticky) shows the selected key's case blocks. [`scripts/build.mjs`](./scripts/build.mjs) fills the template, and [`scripts/mask.mjs`](./scripts/mask.mjs) is the shared secret masker. The PNG uses the `local:html` skill's renderer. Do not run its design pipeline (ui-ux, design, Lottie) — this is an evidence document and the template is its contract.
+Files: [`template.html`](./template.html) holds the layout. The left pane has title, request, KPIs, one row per key, body mentions and excluded PRs; the right pane (sticky) shows the selected key's case blocks. [`scripts/build.mjs`](./scripts/build.mjs) fills the template, and [`scripts/mask.mjs`](./scripts/mask.mjs) is the shared secret masker. Do not run the `local:html` design pipeline (ui-ux, design, Lottie) on it — this is an evidence document and the template is its contract.
 
 ## Input
 
@@ -55,18 +55,11 @@ node "$CLAUDE_PLUGIN_ROOT/skills/qa-report/scripts/build.mjs" --input <report-in
   --out "$(pwd)/qa-report-<slug>-<YYYYMMDD-HHMMSS>.html" --shots <screenshots dir> [--title "<text>"]
 ```
 
-It prints one JSON line: `html`, `png` (the path to render to), `keys`, `pass`, `fail`, `other`, `missingFields`, `masked`, `shots`, `shotProblems`, `preconditions`, `preconditionsOpen`. A non-zero exit means bad input (the message says which). Fix the input; never hand-write the HTML instead.
+It prints one JSON line: `html`, `keys`, `pass`, `fail`, `other`, `missingFields`, `masked`, `shots`, `shotProblems`, `preconditions`, `preconditionsOpen`. A non-zero exit means bad input (the message says which). Fix the input; never hand-write the HTML instead.
 
-**2. Render the PNG** with the `html` and `png` paths from step 1. In the same call, run the `local:html` Step 6 validation block with `PNG=<png from step 1>`. Allow one retry on a transient render error. A PNG that cannot be rendered never fails the report: if the retry also fails (the headless browser cannot start, the render exits non-zero, or the validation fails), keep the HTML, which stands alone, and return `png=none png-error=<one-line reason>` in step 3:
-
-```bash
-node "$CLAUDE_PLUGIN_ROOT/skills/html/renderer/render.mjs" --input <html from step 1> --output <png from step 1> --width 1440 --height 1200 --full-page
-```
-
-**3. Return one line**, with every count copied from step 1's output (never counted by eye):
-`qa-report: html=<abs> png=<abs> keys=<n> pass=<n> fail=<n> other=<n> missing-fields=<n> masked=<n> shot-problems=<n> preconditions-open=<n>`
-(`png=none png-error=<one-line reason>` when step 2 could not render it; the caller then uploads the HTML alone and says the PNG was not rendered.)
-When a skill called qa-report, stop here. Serving and posting (the calling thread, then the summary channel when the profile's `report` names one) belong to the caller and its profile's `report`, so qa-report never posts in that case and nothing is posted twice. A served link is not required: uploading the HTML and PNG to the thread with the session's Slack file tool (e.g. slack-mcp `send_file` / `send_media`) is an equal alternative. Standalone only: upload the PNG and then the HTML to the current thread as in `local:html` Step 8 (without a PNG, the HTML alone plus `PNG not rendered: <reason>`). Without Slack tools, print the paths.
+**2. Return one line**, with every count copied from step 1's output (never counted by eye):
+`qa-report: html=<abs> keys=<n> pass=<n> fail=<n> other=<n> missing-fields=<n> masked=<n> shot-problems=<n> preconditions-open=<n>`
+When a skill called qa-report, stop here. Serving and posting (the calling thread, then the summary channel when the profile's `report` names one) belong to the caller and its profile's `report`, so qa-report never posts in that case and nothing is posted twice. A served link is not required: uploading the HTML to the thread with the session's Slack file tool (slack-mcp `send_file`) is an equal alternative. Standalone only: upload the HTML to the current thread as in `local:html` Step 8 — the HTML alone, never a PNG of it. Without Slack tools, print the path.
 
 ## Shared masker
 

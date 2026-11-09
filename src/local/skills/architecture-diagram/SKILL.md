@@ -1,6 +1,6 @@
 ---
 name: architecture-diagram
-description: Draw a system architecture diagram as Excalidraw JSON + rendered PNG, then upload both to Slack. Triggers on "아키텍처 그려줘", "아키텍쳐 다이어그램", "구조도 그려줘", "architecture diagram", "system diagram", "draw architecture".
+description: Draw a system architecture diagram as Excalidraw JSON + rendered PNG, then upload the PNG to Slack (one diagram, one artifact). Triggers on "아키텍처 그려줘", "아키텍쳐 다이어그램", "구조도 그려줘", "architecture diagram", "system diagram", "draw architecture".
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
 version: 2.1.0
 license: MIT
@@ -8,12 +8,12 @@ license: MIT
 
 # Architecture Diagram Skill
 
-Produce a dark-themed system architecture diagram as a pair of artifacts:
+Produce a dark-themed system architecture diagram as two files:
 
 1. `arch-<slug>-<ts>.excalidraw` — editable JSON source (open at excalidraw.com)
-2. `arch-<slug>-<ts>.png` — rendered image for Slack preview
+2. `arch-<slug>-<ts>.png` — the rendered diagram
 
-Both are uploaded to the current Slack thread via `mcp__slack-mcp__send_media` (PNG) and `mcp__slack-mcp__send_file` (JSON).
+Only the PNG is uploaded to the current Slack thread (`mcp__slack-mcp__send_media`): one diagram is one artifact in the thread and the dashboard's 산출물. The `.excalidraw` source stays in the working directory — name its path in the reply, and upload it with `mcp__slack-mcp__send_file` only when the user asks for the editable source.
 
 ## Prerequisites
 
@@ -168,23 +168,20 @@ After the **initial render** (Step 5), the skill may perform up to **3 retries**
 
 These two allotments are independent — a mechanical failure followed later by a critic failure is legal, as long as each stays within its own cap. After the budget is exhausted, stop. `endTurn` with the captured stderr (for mechanical errors) or the final critique notes (for visual failures). Do not loop.
 
-### 8. Dual upload to Slack
+### 8. Upload the PNG to Slack
 
 ```
 mcp__slack-mcp__send_media(
   file_path="<absolute path to PNG>",
   title="<meaningful architecture title>",
   alt_text="<1-2 sentence description of what the diagram shows>",
-  initial_comment="<optional 1-line context>"
-)
-mcp__slack-mcp__send_file(
-  file_path="<absolute path to .excalidraw>",
-  title="<same slug>.excalidraw (editable source)",
-  initial_comment="Open at excalidraw.com to edit."
+  initial_comment="<optional 1-line context> — editable source: <absolute path to .excalidraw>"
 )
 ```
 
-If the session is NOT in a Slack-mention context (slack-mcp unavailable), the artifacts remain at `$(pwd)` and the skill reports the paths instead of uploading.
+Do not also upload the `.excalidraw` JSON: a second file for the same diagram doubles its entry in the thread and in the dashboard's 산출물. Send it with `mcp__slack-mcp__send_file` only when the user asks for the editable source.
+
+If slack-mcp is unavailable (not a Slack session), the files remain at `$(pwd)` and the skill reports the paths instead of uploading.
 
 ### 9. End the turn
 

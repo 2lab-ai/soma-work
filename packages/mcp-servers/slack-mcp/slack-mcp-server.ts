@@ -11,6 +11,10 @@
  *   - download_thread_file: Download a file attachment from the thread
  *   - send_file: Upload a file to the current Slack thread
  *   - send_media: Upload media (image/audio/video) to the current Slack thread
+ *   - send_link: Post a URL the session serves or published to the current Slack thread
+ *
+ * What send_file / send_media / send_link send is recorded by the daemon as the
+ * session's artifacts (the dashboard's 산출물) — src/conversation/artifact-capture.ts.
  *
  * Environment variables (set by McpConfigBuilder):
  *   - SLACK_BOT_TOKEN: Bot token for Slack API calls
@@ -33,6 +37,7 @@ import {
   isNonVisualMedia,
   validateFilePath,
 } from './helpers/file-validator.js';
+import { type LinkClient, postLink, validateLinkUrl } from './helpers/link.js';
 import { formatSingleMessage } from './helpers/message-formatter.js';
 import { fetchMessagesAfter, fetchMessagesBefore, fetchThreadSlice, getTotalCount } from './helpers/thread-fetcher.js';
 import type { GetThreadMessagesResult, SlackMcpContext } from './types.js';
@@ -173,6 +178,11 @@ class SlackMcpServer extends BaseMcpServer {
             filename: { type: 'string', description: 'Display name in Slack (defaults to basename of file_path)' },
             title: { type: 'string', description: 'File title shown in Slack' },
             initial_comment: { type: 'string', description: 'Message posted alongside the file' },
+            url: {
+              type: 'string',
+              description:
+                "The http(s) address this session also serves the file at (e.g. the html skill's published page). The dashboard artifact then opens it live; no separate send_link.",
+            },
             thread: { type: 'string', description: 'Which thread to upload to: "work" (default) or "source"' },
           },
           required: ['file_path'],
@@ -202,6 +212,33 @@ class SlackMcpServer extends BaseMcpServer {
           required: ['file_path'],
         },
       },
+      {
+        name: 'send_link',
+        description: [
+          'Post a link to the Slack thread and add it to the session artifacts on the dashboard (산출물):',
+          'clicking it there opens the URL in a new tab.',
+          'Use it for a URL this session made: a page or app it serves (a local or LAN web server, a dev server),',
+          'or something it published elsewhere (a YouTube video, a GitHub release asset).',
+          'A file you have on disk goes with send_file / send_media instead — those keep a copy the dashboard can',
+          'preview and play. A page you upload AND serve: use send_file with url (one artifact that also opens live),',
+          'not send_file plus send_link.',
+          'http(s) only; no credentials in the URL. Use the LAN address, not localhost, when others must open it.',
+        ].join('\n'),
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            url: { type: 'string', description: 'The http(s) URL to share' },
+            title: { type: 'string', description: 'What it is — the link text in Slack and the artifact name' },
+            comment: {
+              type: 'string',
+              description:
+                'A line posted above the link, as plain text (mrkdwn control characters are escaped; max 3000)',
+            },
+            thread: { type: 'string', description: 'Which thread to post to: "work" (default) or "source"' },
+          },
+          required: ['url'],
+        },
+      },
     ];
   }
 
@@ -217,6 +254,8 @@ class SlackMcpServer extends BaseMcpServer {
         return await this.handleSendFile(args as any);
       case 'send_media':
         return await this.handleSendMedia(args as any);
+      case 'send_link':
+        return await this.handleSendLink(args as any);
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
@@ -725,11 +764,14 @@ class SlackMcpServer extends BaseMcpServer {
     filename?: string;
     title?: string;
     initial_comment?: string;
+    url?: string;
     thread?: string;
   }): Promise<ToolResult> {
     const { resolvedPath, size } = await validateFilePath(args.file_path);
     const displayName = args.filename || path.basename(resolvedPath);
     const resolved = this.resolveThread(args.thread);
+    // Checked before the upload, so a bad URL uploads nothing.
+    const url = args.url !== undefined && args.url !== '' ? validateLinkUrl(args.url) : undefined;
 
     this.logger.info('Uploading file', { name: displayName, size, path: resolvedPath, thread: args.thread || 'work' });
 
@@ -766,6 +808,7 @@ class SlackMcpServer extends BaseMcpServer {
             file_id: uploadedFile.id,
             filename: displayName,
             size,
+            ...(url ? { url } : {}),
             permalink: uploadedFile.permalink || '',
             channel: resolved.channel,
             thread_ts: resolved.threadTs,
@@ -846,6 +889,20 @@ class SlackMcpServer extends BaseMcpServer {
         },
       ],
     };
+  }
+
+  // ── send_link ──────────────────────────────────────────
+
+  private async handleSendLink(args: {
+    url: string;
+    title?: string;
+    comment?: string;
+    thread?: string;
+  }): Promise<ToolResult> {
+    const resolved = this.resolveThread(args.thread);
+    const reply = await postLink(this.slack as unknown as LinkClient, resolved, args);
+    this.logger.info('Link sent', { url: reply.url, ts: reply.ts, thread: args.thread || 'work' });
+    return { content: [{ type: 'text' as const, text: JSON.stringify(reply) }] };
   }
 }
 
