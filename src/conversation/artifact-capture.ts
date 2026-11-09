@@ -54,6 +54,8 @@ interface PendingUpload {
   tool: string;
   toolUseId?: string;
   filePath?: string;
+  /** send_file `url`: where the session also serves the file. */
+  url?: string;
   displayName: string;
   title?: string;
   snapshot: Promise<ArtifactSnapshot | null>;
@@ -81,6 +83,7 @@ function pendingFromCall(entry: CaptureEntry, input: Record<string, unknown> | n
     tool: entry.tool as string,
     ...(entry.toolUseId ? { toolUseId: entry.toolUseId } : {}),
     filePath,
+    url: str(input?.url),
     displayName: str(input?.filename) ?? (filePath ? path.basename(filePath) : ''),
     title: str(input?.title),
   };
@@ -107,7 +110,13 @@ function linkReply(entry: CaptureEntry) {
   const reply = parseJsonObject(entry.raw);
   const url = str(reply?.url);
   if (entry.ok === false || reply?.sent !== true || !url) return null;
-  return { url, title: str(reply?.title), messageTs: str(reply?.ts), permalink: str(reply?.permalink) };
+  return {
+    url,
+    title: str(reply?.title),
+    messageTs: str(reply?.ts),
+    channel: str(reply?.channel),
+    permalink: str(reply?.permalink),
+  };
 }
 
 function recordLinkFromEntry(conversationId: string, entry: CaptureEntry, store: ArtifactStore): void {
@@ -123,6 +132,7 @@ function uploadReply(entry: CaptureEntry) {
     filename: str(reply?.filename),
     fileId: str(reply?.file_id),
     permalink: str(reply?.permalink),
+    url: str(reply?.url),
     size: typeof reply?.size === 'number' ? reply.size : undefined,
   };
 }
@@ -175,6 +185,7 @@ export function captureArtifactFromWorkLog(
           title: pending?.title,
           slackFileId: reply.fileId,
           permalink: reply.permalink,
+          url: reply.url ?? pending?.url,
           size: reply.size,
           tool: entry.tool?.replace(/^mcp__slack-mcp__/, ''),
           turnId: entry.turnId,
@@ -247,6 +258,7 @@ export function backfillArtifactsFromWorkLog(
             title: call?.title,
             slackFileId: reply.fileId,
             permalink: reply.permalink,
+            url: reply.url ?? call?.url,
             size: reply.size,
             tool: e.tool.replace(/^mcp__slack-mcp__/, ''),
             turnId: e.turnId,

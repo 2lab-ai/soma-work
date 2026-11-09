@@ -18,6 +18,9 @@ describe('one visual, one artifact', () => {
     const step8 = section(md, '### 8. Upload the HTML to Slack', '### 9. End the turn');
     expect(step8).toContain('mcp__slack-mcp__send_file(');
     expect(step8).toContain('Do **not** upload the PNG.');
+    // The served page opens from the same artifact (SSOT 2026-11-09 T3): send_file carries the URL.
+    expect(step8).toMatch(/url="<url from Step 7>"/);
+    expect(step8).not.toMatch(/send_link\(/);
   });
 
   it('architecture-diagram: uploads the PNG alone; the .excalidraw source only when asked', () => {
@@ -43,8 +46,10 @@ describe('one visual, one artifact', () => {
     expect(md).toContain('Upload the MP4 alone with `mcp__slack-mcp__send_media`');
   });
 
-  it('dimensional-drawing: uploads the HTML only (already so)', () => {
-    expect(skill('dimensional-drawing')).toMatch(/never upload the PNG snapshot/);
+  it('dimensional-drawing: uploads the HTML only (already so), with the served URL on send_file', () => {
+    const md = skill('dimensional-drawing');
+    expect(md).toMatch(/never upload the PNG snapshot/);
+    expect(md).toContain('`mcp__slack-mcp__send_file` with its `url` set to the served URL');
   });
 
   it('qa-report: one HTML, no PNG preview rendered or uploaded', () => {

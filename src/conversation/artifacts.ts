@@ -58,10 +58,15 @@ export interface SessionArtifact {
   /** A local copy exists and `/content` can serve it. */
   stored: boolean;
   slackFileId?: string;
-  /** kind `link`: the URL it opens (plain http(s), no credentials — normalizeArtifactUrl). */
+  /**
+   * The URL it opens (plain http(s), no credentials — normalizeArtifactUrl): a `link`'s target, or where the
+   * session also serves an uploaded file (send_file `url`) — the dashboard offers it as 라이브로 열기.
+   */
   url?: string;
-  /** kind `link`: ts of the Slack message that posted it (the dedupe key). */
+  /** kind `link`: ts of the Slack message that posted it — with `channel`, the dedupe key. */
   messageTs?: string;
+  /** kind `link`: the Slack channel of that message (a ts is unique only within its channel). */
+  channel?: string;
   permalink?: string;
   /** MCP tool that sent it (send_file / send_media / send_link). */
   tool?: string;
@@ -403,6 +408,8 @@ export class ArtifactStore {
     title?: string;
     slackFileId?: string;
     permalink?: string;
+    /** send_file `url` — where the session also serves this file. */
+    url?: string;
     size?: number;
     tool?: string;
     turnId?: string;
@@ -427,6 +434,7 @@ export class ArtifactStore {
       const { kind, mime } = classifyArtifact(name);
       const size = snap?.size ?? reported ?? 0;
       const turnStartedAt = turnStartFromTurnId(input.turnId);
+      const url = normalizeArtifactUrl(input.url);
       const artifact: SessionArtifact = {
         id: snap?.id ?? ulid(),
         conversationId,
@@ -439,6 +447,7 @@ export class ArtifactStore {
         source: 'slack_upload',
         stored: !!snap,
         ...(input.slackFileId ? { slackFileId: input.slackFileId } : {}),
+        ...(url ? { url } : {}),
         ...(input.permalink ? { permalink: input.permalink } : {}),
         ...(input.tool ? { tool: input.tool } : {}),
         ...(input.turnId ? { turnId: input.turnId } : {}),
@@ -461,6 +470,7 @@ export class ArtifactStore {
     url: string;
     title?: string;
     messageTs?: string;
+    channel?: string;
     permalink?: string;
     tool?: string;
     turnId?: string;
@@ -470,12 +480,13 @@ export class ArtifactStore {
     const url = normalizeArtifactUrl(input.url);
     if (!this.dir(conversationId) || !url) return null;
     // No await between this check and append: two results for one message cannot both pass it.
-    if (
-      input.messageTs &&
-      this.files(conversationId).some((a) => a.kind === 'link' && a.messageTs === input.messageTs)
-    ) {
-      return null;
-    }
+    // Without a message ts (a backfilled reply that lost it), the same URL in the same turn is one link.
+    const same = (a: SessionArtifact) =>
+      a.kind === 'link' &&
+      (input.messageTs
+        ? a.messageTs === input.messageTs && (a.channel ?? '') === (input.channel ?? '')
+        : !a.messageTs && a.url === url && a.turnId === input.turnId);
+    if (this.files(conversationId).some(same)) return null;
     const turnStartedAt = turnStartFromTurnId(input.turnId);
     const title = input.title?.trim().slice(0, 200);
     const artifact: SessionArtifact = {
@@ -490,6 +501,7 @@ export class ArtifactStore {
       stored: false,
       url,
       ...(input.messageTs ? { messageTs: input.messageTs } : {}),
+      ...(input.channel ? { channel: input.channel } : {}),
       ...(input.permalink ? { permalink: input.permalink } : {}),
       ...(input.tool ? { tool: input.tool } : {}),
       ...(input.turnId ? { turnId: input.turnId } : {}),

@@ -68,7 +68,19 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 
-const BASE_FNS = ['esc', 'escAttr', 'escJs', 'toNum', 'umGet', 'umUrl', 'artUrl', 'artFileItem', 'artCard', 'artChip'];
+const BASE_FNS = [
+  'esc',
+  'escAttr',
+  'escJs',
+  'toNum',
+  'umGet',
+  'umUrl',
+  'artUrl',
+  'artSafeUrl',
+  'artFileItem',
+  'artCard',
+  'artChip',
+];
 const BASE_VARS = ['ART_KIND_LABEL', '_userMedia', 'CARD_ART_TILES'];
 
 type Art = Record<string, unknown>;
@@ -1017,7 +1029,6 @@ describe('SSOT 2026-11-09 T3 — link artifacts open their URL', () => {
     const m = load<{ openArtifactViewer(cid: string, id: string, opener: unknown): void }>(
       [
         ...BASE_FNS,
-        'artSafeUrl',
         'umSiblings',
         'umMissingReason',
         'artSortForDisplay',
@@ -1030,7 +1041,8 @@ describe('SSOT 2026-11-09 T3 — link artifacts open their URL', () => {
       {
         artViewerEl: () => viewer,
         _artCache: { c: { state: 'ok', list: [link] } },
-        artFind: (_cid: string, fid: string) => (fid === 'L1' ? link : null),
+        artFind: (_cid: string, fid: string) =>
+          fid === 'L1' ? link : fid === 'L9' ? { ...link, id: 'L9', url: 'javascript:alert(1)' } : null,
         ensureArtifacts: () => {},
         pauseArtCards: () => {},
         artOpenUrl: (u: string) => tabs.push(u),
@@ -1039,9 +1051,8 @@ describe('SSOT 2026-11-09 T3 — link artifacts open their URL', () => {
     m.openArtifactViewer('c', 'L1', { focus() {} });
     expect(tabs).toEqual(['http://192.168.0.10:5173/board']);
     expect(opened).toEqual([]);
-    // A bad URL opens nothing at all.
-    link.url = 'javascript:alert(1)';
-    m.openArtifactViewer('c', 'L1', { focus() {} });
+    // A bad URL opens nothing at all (its own item — the shared fixture is never changed).
+    m.openArtifactViewer('c', 'L9', { focus() {} });
     expect(tabs).toHaveLength(1);
     expect(opened).toEqual([]);
   });
@@ -1060,7 +1071,6 @@ describe('SSOT 2026-11-09 T3 — link artifacts open their URL', () => {
     const m = load<{ openArtifactViewer(cid: string, id: string, opener: unknown): void }>(
       [
         ...BASE_FNS,
-        'artSafeUrl',
         'umSiblings',
         'umMissingReason',
         'artSortForDisplay',
@@ -1083,8 +1093,60 @@ describe('SSOT 2026-11-09 T3 — link artifacts open their URL', () => {
     const [items, at] = opened[0] as [Array<{ id: string }>, number];
     expect(items.map((i) => i.id)).toEqual(['V1', 'A1']);
     expect(at).toBe(0);
-    // A list the viewer is handed later (artSettle) drops links the same way.
-    expect(clientFn('artSettle')).toContain('artViewerPages(');
+    // A list the viewer is handed later (artSettle — a send_link lands while a file is open) drops links the same way.
+    const fake: { data?: { items: unknown[] } } = {};
+    const live = { cid: 'c1', scope: 'conversation', list: [] as unknown[] };
+    const { artSettle } = load<{ artSettle(cid: string): void }>(
+      ['toNum', 'artSettle', 'artSortForDisplay', 'artViewerPages'],
+      [],
+      {
+        _expanded: new Set<string>(),
+        _sessionCache: {},
+        refreshCard: () => {},
+        panelOpen: false,
+        panelConvId: null,
+        renderPanelArtifactsSection: () => {},
+        _artCache: { c1: { state: 'ok', list: [video, { ...link, createdAt: 1792733099000 }, html] } },
+        _artViewer: live,
+        artViewerIsOpen: () => true,
+        artViewerEl: () => fake,
+        artViewerItems: (_cid: string, list: Art[]) => list.map((a) => a.id),
+      },
+    );
+    artSettle('c1');
+    expect(fake.data).toEqual({ items: ['V1', 'A1'] });
+    expect((live.list as Art[]).map((a) => a.id)).toEqual(['V1', 'A1']);
+  });
+
+  it('review gate: the hover peek of a link shows its host — never “no copy here”; only the Slack action', () => {
+    const m = load<{ artPeekItem(cid: string, a: Art): Record<string, unknown> }>(
+      [...BASE_FNS, 'umMissingReason', 'artIsDoc', 'artViewItem', 'artPeekItem'],
+      [...BASE_VARS, '_artDocCache'],
+    );
+    const peek = m.artPeekItem('c', {
+      ...link,
+      url: 'http://192.168.0.10:5173/board',
+      permalink: 'https://s.slack.com/p1',
+    });
+    expect(peek.meta).toBe('192.168.0.10:5173');
+    expect(peek.kindLabel).toBe('링크');
+    expect(peek.actions).toEqual([{ id: 'slack', label: 'Slack에서 열기', href: 'https://s.slack.com/p1' }]);
+  });
+
+  it('review gate: a file the session also serves (send_file url) keeps one card and offers 라이브로 열기 in the viewer', () => {
+    const m = load<{ artViewItem(cid: string, a: Art): Record<string, unknown> }>(
+      [...BASE_FNS, 'umMissingReason', 'artViewItem'],
+      [...BASE_VARS, '_artDocCache'],
+    );
+    const served = { ...html, url: 'http://192.168.0.10:8763/html-report.html', permalink: 'https://s.slack.com/p2' };
+    const item = m.artViewItem('c', served);
+    expect(item.kind).toBe('html');
+    expect(item.actions).toEqual([
+      { id: 'live', label: '라이브로 열기', href: 'http://192.168.0.10:8763/html-report.html' },
+      { id: 'slack', label: 'Slack에서 열기', href: 'https://s.slack.com/p2' },
+    ]);
+    // A url that is not plain http(s) adds nothing.
+    expect(m.artViewItem('c', { ...html, url: 'javascript:alert(1)' }).actions).toBeUndefined();
   });
 
   it('the kind word and the card face know links; the new tab drops the opener', () => {
@@ -1097,14 +1159,8 @@ describe('SSOT 2026-11-09 T3 — link artifacts open their URL', () => {
       ),
     );
     expect(en['링크']).toBe('Link');
-    expect(
-      cook(
-        TEMPLATE.slice(
-          TEMPLATE.indexOf('\nfunction artOpenUrl('),
-          TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction artOpenUrl(')) + 2,
-        ),
-      ),
-    ).toContain("'noopener,noreferrer'");
+    expect(en['라이브로 열기']).toBe('Open live');
+    expect(clientFn('artOpenUrl')).toContain("'noopener,noreferrer'");
     // <ui-agent-inbox> face chips draw a file glyph for a link (its kinds are files').
     expect(TEMPLATE).toContain("kind: a.kind === 'link' ? 'file' : a.kind || 'file'");
   });
