@@ -1,8 +1,13 @@
 import { setActionHandlersProviders } from '@soma/slack/actions';
 import { registerAdminApprovalAdapter } from '../../admin-approvals';
 import { isAdminUser } from '../../admin-utils';
-import { devopsBrokerAdminApprovalAdapter, devopsBrokerSocketPath } from '../../devops/broker-approvals';
-import { CONFIG_FILE } from '../../env-paths';
+import {
+  devopsApprovalsAppUrl,
+  devopsBrokerAdminApprovalAdapter,
+  devopsBrokerSocketPath,
+  devopsPendingDir,
+} from '../../devops/broker-approvals';
+import { CONFIG_FILE, DATA_DIR } from '../../env-paths';
 import { getInstructionApprovals } from '../../instruction-approval';
 import { Logger } from '../../logger';
 import { getTokenManager } from '../../token-manager';
@@ -103,8 +108,15 @@ setActionHandlersProviders({
     // New users and bot-message deletes: one decision for the DM buttons and the dashboard (#622, #623).
     registerAdminApprovalAdapter(newUserAdminApprovalAdapter(ctx.slackApi as any));
     registerAdminApprovalAdapter(botDeleteAdminApprovalAdapter(ctx.slackApi as any));
-    // devops broker cards (#1051): listed from the broker socket; each opens the admin's own Slack card.
-    registerAdminApprovalAdapter(devopsBrokerAdminApprovalAdapter({ socketPath: devopsBrokerSocketPath(CONFIG_FILE) }));
+    // devops broker cards (#1051): listed from the broker socket (or, for an older broker, the MCP server's
+    // records); each opens the admin's own Slack card or the approvals app's DM.
+    registerAdminApprovalAdapter(
+      devopsBrokerAdminApprovalAdapter({
+        socketPath: devopsBrokerSocketPath(CONFIG_FILE),
+        pendingDir: devopsPendingDir(DATA_DIR),
+        approvalsAppUrl: devopsApprovalsAppUrl(CONFIG_FILE),
+      }),
+    );
     // Approvals a previous process died while carrying out: finish them (redo the delete) first.
     void reconcileBotDeletes(ctx.slackApi as any).catch((error: unknown) =>
       new Logger('AdminApprovals').warn('Reconciling orphaned bot-message deletes failed', error),

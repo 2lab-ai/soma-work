@@ -19,6 +19,7 @@ import { isAdminUser } from './admin-utils';
 import type { ExecutionContext } from './agent-runtime/execution-context';
 import { NO_CONTEXT_PERMISSION_MODE, type PermissionMode } from './agent-runtime/policy/permission-mode';
 import { substituteEnvVars } from './config-env-substitution';
+import { devopsPendingDir } from './devops/broker-approvals';
 import { CONFIG_FILE, DATA_DIR } from './env-paths';
 import { NATIVE_BYPASS_TOOLS } from './hooks/bypass-permission-guard';
 import {
@@ -718,12 +719,17 @@ export class McpConfigBuilder {
   }
 
   /**
-   * Build devops-tools MCP server configuration. The env carries the requester context and,
-   * optionally, the broker socket path — never a token: the broker alone holds the keys.
+   * Build devops-tools MCP server configuration. The env carries the requester context, where to record
+   * the cards it waits on for the dashboard (#1051) and, optionally, the broker socket path — never a
+   * token: the broker alone holds the keys.
    */
   private buildDevopsToolsServer(slackContext: SlackContext): McpStdioServerConfig {
     const command = this.getInternalServerCommand('devops-tools');
-    const env: Record<string, string> = { SLACK_CONTEXT: JSON.stringify(slackContext) };
+    const env: Record<string, string> = {
+      SLACK_CONTEXT: JSON.stringify(slackContext),
+      // = PENDING_DIR_ENV in packages/process-shared/src/devops/protocol.ts
+      SOMA_DEVOPS_PENDING_DIR: devopsPendingDir(DATA_DIR),
+    };
     const socketPath = this.getRawConfig()?.['devops-tools']?.socketPath;
     if (typeof socketPath === 'string' && path.isAbsolute(socketPath)) {
       // = BROKER_SOCKET_ENV in packages/process-shared/src/devops/protocol.ts
