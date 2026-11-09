@@ -136,6 +136,32 @@ describe('GoalLoopController', () => {
     expect(h.notices.some((n) => n.includes('✅ Goal completed'))).toBe(true);
   });
 
+  // llmux tenant keys: the eval is made for the session's user — the current
+  // initiator first, then the owner — so it is metered under their own key.
+  it('passes the session initiator (else the owner) to the eval dispatcher as the tenant user', async () => {
+    const seen: Array<string | undefined> = [];
+    const dispatcher: GoalLoopControllerDeps['dispatcher'] = async (params) => {
+      seen.push(params.tenantUserId);
+      return JSON.stringify({ completed: true, reason: 'all done', remaining: [] });
+    };
+
+    const withInitiator = makeHarness({ dispatcher });
+    Object.assign(withInitiator.session, { ownerId: 'U_OWNER', currentInitiatorId: 'U_DAN' });
+    withInitiator.controller.onTurnSettled(SESSION_KEY);
+    await withInitiator.controller.settled(SESSION_KEY);
+
+    const ownerOnly = makeHarness({ dispatcher });
+    Object.assign(ownerOnly.session, { ownerId: 'U_OWNER' });
+    ownerOnly.controller.onTurnSettled(SESSION_KEY);
+    await ownerOnly.controller.settled(SESSION_KEY);
+
+    const noUser = makeHarness({ dispatcher });
+    noUser.controller.onTurnSettled(SESSION_KEY);
+    await noUser.controller.settled(SESSION_KEY);
+
+    expect(seen).toEqual(['U_DAN', 'U_OWNER', undefined]);
+  });
+
   it('completed=true WITH a queued goal → advances queue, archives, injects next goal (T2)', async () => {
     const h = makeHarness({ verdict: { completed: true, reason: 'all done', remaining: [] } });
     // queue a second goal behind the active one

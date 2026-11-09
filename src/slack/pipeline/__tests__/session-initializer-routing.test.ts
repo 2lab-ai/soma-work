@@ -60,6 +60,7 @@ vi.mock('../../../dispatch-service', () => ({
 }));
 
 import * as channelRegistry from '../../../channel-registry';
+import { getDispatchService } from '../../../dispatch-service';
 import { SessionInitializer } from '../session-initializer';
 
 // The dist session initializer loads ../thread-header-builder through Node's own
@@ -209,6 +210,28 @@ describe('SessionInitializer - channel routing advisory', () => {
     const actionsBlock = blocks.find((block: any) => block.type === 'actions');
     expect(actionsBlock).toBeDefined();
     expect(mockSlackApi.postEphemeral).not.toHaveBeenCalled();
+  });
+
+  // llmux tenant keys: the workflow classification is made for the message's
+  // sender, so the dispatch carries their id (production: a haiku
+  // classification of a user's PR link reached llmux as the shared `local` tenant).
+  it('dispatches the workflow classification for the message sender', async () => {
+    const event = {
+      user: 'U123',
+      channel: 'C123',
+      thread_ts: undefined,
+      ts: 'thread123',
+      text: 'Review PR https://github.com/acme/repo/pull/1',
+    };
+
+    await sessionInitializer.initialize(event as any, '/test/dir');
+
+    const dispatch = vi.mocked(getDispatchService)().dispatch as unknown as ReturnType<typeof vi.fn>;
+    expect(dispatch).toHaveBeenCalledWith(
+      'Review PR https://github.com/acme/repo/pull/1',
+      expect.any(AbortSignal),
+      'U123',
+    );
   });
 
   it('advisory userMessage preserves inline-directive raw text (codex review of #1268)', async () => {

@@ -923,6 +923,9 @@ export class GoalLoopController {
             abortController,
             cwd: session.workingDirectory,
             previous,
+            // The eval is made for the session's user (who drove the work, else
+            // its owner): in llmux mode it is metered under their own key.
+            tenantUserId: session.currentInitiatorId || session.ownerId || session.userId || undefined,
           },
           this.deps.dispatcher,
         ),

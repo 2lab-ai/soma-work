@@ -11,6 +11,10 @@ There is no change to Slack commands, CCT behavior, model selection or tool poli
 
 1. **Entry/auth**: a conversation acquires its existing slot lease; llmux mode
    acquires `ensureTenantKey(userId)` or uses the existing shared-key fallback.
+   Helper one-shots made for a user — workflow classification, goal eval, the
+   guardian, the executive summary, titles/summaries, memory edits — acquire the
+   same user's key through `userTenantKey(userId)`; only a call with no user
+   (or no issued key) stays on the shared key.
 2. **Input**: inherited environment + operator `claude.env` + live auth mode +
    optional `{baseUrl, secret}` tenant lease. The lease is an atomic endpoint/key pair.
 3. **Flow**: `buildQueryEnv` copies the environment, applies the operator overlay,
@@ -35,6 +39,7 @@ There is no change to Slack commands, CCT behavior, model selection or tool poli
 ## File map / status
 
 - `src/auth/query-env-builder.ts`: removes competing values from the per-call map.
+- `src/auth/user-tenant-key.ts`: the acting user's tenant key (or null = shared key) for every SDK call made on a user's behalf.
 - `src/auth/__tests__/query-env-builder.llmux.test.ts`: unit coverage for overlay, header filtering and deleted-key semantics.
 - `src/auth/__tests__/query-env-builder.sdk.test.ts`: actual SDK 0.3.284 wire coverage for bearer/custom authentication headers; OAuth-only compatibility coverage.
 - README pair / docs index / architecture: summarize this contract and link here.

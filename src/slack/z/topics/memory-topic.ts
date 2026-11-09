@@ -571,7 +571,7 @@ export async function applyMemory(args: {
     // Stage 2: LLM call → persist → rerender.
     let improved: string;
     try {
-      improved = await improveEntry(originalText, target);
+      improved = await improveEntry(originalText, target, { tenantUserId: userId });
     } catch (err) {
       return {
         ok: false,
@@ -621,7 +621,7 @@ export async function applyMemory(args: {
     }
     let improved: string[];
     try {
-      improved = await improveAll(originalEntries, target);
+      improved = await improveAll(originalEntries, target, { tenantUserId: userId });
     } catch (err) {
       return {
         ok: false,
