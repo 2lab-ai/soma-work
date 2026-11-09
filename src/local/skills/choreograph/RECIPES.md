@@ -244,15 +244,17 @@ const [scope, animate] = useAnimate();
 const running = useRef<ReturnType<typeof animate>[]>([]);
 const ready = useRef(false); // a flag that never renders, so no useState
 
-function play(steps: ReturnType<typeof animate>[]) {
+// Local (soma-work): play() takes a factory, so the old handles stop before the new animate() calls start
+// (an array argument would start them first).
+function play(makeSteps: () => ReturnType<typeof animate>[]) {
   running.current.forEach((a) => a.stop()); // never stack sequences
-  running.current = steps;
-  return Promise.all(steps);
+  running.current = makeSteps();
+  return Promise.all(running.current);
 }
 
 const onEnter = async () => {
   ready.current = false;
-  await play([
+  await play(() => [
     animate("[data-animate='icon']", { y: -4 }, { duration: 0.3 }),
     ...[...scope.current.querySelectorAll("[data-animate='line']")].map((el, i) =>
       animate(
@@ -266,16 +268,16 @@ const onEnter = async () => {
 };
 
 // Local note (soma-work): the action itself runs first, on every click and on keyboard activation;
-// only the decorative replay below waits for the buildup. play() also stops the old handles after the
-// new animate() calls have started (arguments run first): stop them before building the next steps.
+// only the decorative replay below waits for the buildup.
 const onClick = () => {
+  onAction();
   if (!ready.current) return;
   // A repeat action skips the buildup: the same proportions, earlier in the timeline
-  play([animate("[data-animate='bg']", { scale: [1, 0.96, 1.02, 1] }, { duration: 0.4 })]);
+  play(() => [animate("[data-animate='bg']", { scale: [1, 0.96, 1.02, 1] }, { duration: 0.4 })]);
 };
 
 const onLeave = async () => {
-  await play([/* reset every element */]);
+  await play(() => [/* reset every element */]);
   startIdle(); // only once the reset has finished
 };
 
