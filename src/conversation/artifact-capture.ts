@@ -138,7 +138,6 @@ function uploadReply(entry: CaptureEntry) {
     url: str(reply?.url),
     size: typeof reply?.size === 'number' ? reply.size : undefined,
     sha256: str(reply?.sha256),
-    key: str(reply?.artifact_key),
   };
 }
 
@@ -195,7 +194,9 @@ export function captureArtifactFromWorkLog(
           tool: entry.tool?.replace(/^mcp__slack-mcp__/, ''),
           turnId: entry.turnId,
           now: entry.ts,
-          key: pending?.key ?? reply.key,
+          // The model's own artifact_key, from the call. The reply's `artifact_key` is slack-mcp's derived key
+          // (`name:…`, `key:…`) — the store derives that itself; passing it back would wrap it again (#1074 r1).
+          key: pending?.key,
           sha256: reply.sha256,
         });
       })().catch((err) => logger.warn(`Upload artifact not recorded for ${conversationId}`, err));
@@ -270,7 +271,7 @@ export function backfillArtifactsFromWorkLog(
             tool: e.tool.replace(/^mcp__slack-mcp__/, ''),
             turnId: e.turnId,
             now: e.ts,
-            key: call?.key ?? reply.key,
+            key: call?.key,
             sha256: reply.sha256,
           });
         }

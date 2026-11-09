@@ -35,6 +35,8 @@ import {
   commentWithVersion,
   planUploadVersion,
   type UploadVersion,
+  UploadVersions,
+  uploadKey,
   type VersionLang,
   versionFields,
 } from './helpers/artifact-version.js';
@@ -69,6 +71,8 @@ const ARTIFACT_KEY_PARAM =
 // ── Server ───────────────────────────────────────────────
 
 class SlackMcpServer extends BaseMcpServer {
+  /** #1074 — one upload of a key at a time, and the versions this process sent before the daemon records them. */
+  private readonly uploadVersions = new UploadVersions();
   private slack: WebClient;
   private token: string;
   private context: SlackMcpContext;
@@ -792,11 +796,35 @@ class SlackMcpServer extends BaseMcpServer {
         displayName,
         artifactKey,
         lang,
+        sent: this.uploadVersions.sent(),
       });
     } catch (err) {
       this.logger.warn('Could not work out the upload version', { name: displayName, error: (err as Error).message });
       return null;
     }
+  }
+
+  /**
+   * Plan the version, upload with the version line in the comment, and remember what was sent — one upload of a
+   * key at a time, so two uploads of one report in one turn announce 2 and 3 as the daemon records them.
+   */
+  private async uploadVersioned(
+    file: string,
+    displayName: string,
+    artifactKey: unknown,
+    initialComment: string | undefined,
+    uploadArgs: Record<string, unknown>,
+  ): Promise<{ version: UploadVersion | null; uploadedFile: any; result: unknown }> {
+    return this.uploadVersions.serialize(uploadKey(displayName, artifactKey), async () => {
+      const version = await this.uploadVersion(file, displayName, artifactKey);
+      const comment = commentWithVersion(version?.note ?? '', initialComment);
+      if (comment) uploadArgs.initial_comment = comment;
+      const result = await this.slack.filesUploadV2(uploadArgs as any);
+      const uploadedFile = (result as any).files?.[0]?.files?.[0] || (result as any).files?.[0] || null;
+      // Not a new version when unchanged: the daemon keeps the version it has.
+      if (version && version.changed !== false && uploadedFile?.id) this.uploadVersions.remember(uploadedFile.id, version);
+      return { version, uploadedFile, result };
+    });
   }
 
   // ── send_file ──────────────────────────────────────────
@@ -815,9 +843,6 @@ class SlackMcpServer extends BaseMcpServer {
     const resolved = this.resolveThread(args.thread);
     // Checked before the upload, so a bad URL uploads nothing.
     const url = args.url !== undefined && args.url !== '' ? validateLinkUrl(args.url) : undefined;
-    const version = await this.uploadVersion(resolvedPath, displayName, args.artifact_key);
-    const comment = commentWithVersion(version?.note ?? '', args.initial_comment);
-
     this.logger.info('Uploading file', { name: displayName, size, path: resolvedPath, thread: args.thread || 'work' });
 
     const uploadArgs: any = {
@@ -827,10 +852,13 @@ class SlackMcpServer extends BaseMcpServer {
       thread_ts: resolved.threadTs,
     };
     if (args.title) uploadArgs.title = args.title;
-    if (comment) uploadArgs.initial_comment = comment;
-
-    const result = await this.slack.filesUploadV2(uploadArgs);
-    const uploadedFile = (result as any).files?.[0]?.files?.[0] || (result as any).files?.[0] || null;
+    const { version, uploadedFile, result } = await this.uploadVersioned(
+      resolvedPath,
+      displayName,
+      args.artifact_key,
+      args.initial_comment,
+      uploadArgs,
+    );
 
     if (!uploadedFile?.id) {
       this.logger.error('Slack filesUploadV2 returned unexpected response shape', {
@@ -885,8 +913,6 @@ class SlackMcpServer extends BaseMcpServer {
     }
 
     const media_type = getMediaType(ext);
-    const version = await this.uploadVersion(resolvedPath, displayName, args.artifact_key);
-    const comment = commentWithVersion(version?.note ?? '', args.initial_comment);
     this.logger.info('Uploading media', {
       name: displayName,
       size,
@@ -903,10 +929,13 @@ class SlackMcpServer extends BaseMcpServer {
     };
     if (args.title) uploadArgs.title = args.title;
     if (args.alt_text) uploadArgs.alt_text = args.alt_text;
-    if (comment) uploadArgs.initial_comment = comment;
-
-    const result = await this.slack.filesUploadV2(uploadArgs);
-    const uploadedFile = (result as any).files?.[0]?.files?.[0] || (result as any).files?.[0] || null;
+    const { version, uploadedFile, result } = await this.uploadVersioned(
+      resolvedPath,
+      displayName,
+      args.artifact_key,
+      args.initial_comment,
+      uploadArgs,
+    );
 
     if (!uploadedFile?.id) {
       this.logger.error('Slack filesUploadV2 returned unexpected response shape', {

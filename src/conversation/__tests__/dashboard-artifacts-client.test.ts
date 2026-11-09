@@ -969,8 +969,7 @@ describe('review gate — the open viewer follows the list', () => {
     const fake: { data?: { items: unknown[] } } = {};
     const live = { cid: 'c1', scope, list: [] as unknown[] };
     const { artSettle } = load<{ artSettle(cid: string): void }>(
-      ['toNum', 'artSettle', 'artSortForDisplay', 'artViewerPages'],
-      ['toNum', 'artSettle', 'artSortForDisplay', 'artLatestOnly'],
+      ['toNum', 'artSettle', 'artSortForDisplay', 'artViewerPages', 'artLatestOnly'],
       [],
       {
         _expanded: new Set<string>(),
@@ -1048,6 +1047,7 @@ describe('SSOT 2026-11-09 T3 — link artifacts open their URL', () => {
         'umMissingReason',
         'artSortForDisplay',
         'artViewerPages',
+        'artLatestOnly',
         'artViewItem',
         'artViewerItems',
         'openArtifactViewer',
@@ -1090,6 +1090,7 @@ describe('SSOT 2026-11-09 T3 — link artifacts open their URL', () => {
         'umMissingReason',
         'artSortForDisplay',
         'artViewerPages',
+        'artLatestOnly',
         'artViewItem',
         'artViewerItems',
         'openArtifactViewer',
@@ -1112,7 +1113,7 @@ describe('SSOT 2026-11-09 T3 — link artifacts open their URL', () => {
     const fake: { data?: { items: unknown[] } } = {};
     const live = { cid: 'c1', scope: 'conversation', list: [] as unknown[] };
     const { artSettle } = load<{ artSettle(cid: string): void }>(
-      ['toNum', 'artSettle', 'artSortForDisplay', 'artViewerPages'],
+      ['toNum', 'artSettle', 'artSortForDisplay', 'artViewerPages', 'artLatestOnly'],
       [],
       {
         _expanded: new Set<string>(),
