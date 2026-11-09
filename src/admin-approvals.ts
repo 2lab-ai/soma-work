@@ -15,9 +15,15 @@ import { Logger } from './logger';
 
 const logger = new Logger('AdminApprovals');
 
-export type AdminApprovalKind = 'env_skill' | 'mcp_grant' | 'new_user' | 'bot_delete';
+export type AdminApprovalKind = 'env_skill' | 'mcp_grant' | 'new_user' | 'bot_delete' | 'devops_broker';
 
-export const ADMIN_APPROVAL_KINDS: readonly AdminApprovalKind[] = ['env_skill', 'mcp_grant', 'new_user', 'bot_delete'];
+export const ADMIN_APPROVAL_KINDS: readonly AdminApprovalKind[] = [
+  'env_skill',
+  'mcp_grant',
+  'new_user',
+  'bot_delete',
+  'devops_broker',
+];
 
 export interface AdminApprovalChoice {
   id: string;
@@ -47,6 +53,11 @@ export interface AdminApproval {
   place?: { channel: string; threadTs?: string };
   createdAt: number;
   expiresAt?: number;
+  /**
+   * `devops_broker` (#1051): each admin's own Slack card. The card's one choice opens the viewer's link in the
+   * browser instead of answering — a devops broker card is decided only in Slack.
+   */
+  links?: { admin: string; url: string }[];
 }
 
 /** A request that ended recently — the card shows who answered and how. */
