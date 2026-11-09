@@ -111,3 +111,25 @@ describe('buildSafetyClassifier — abort', () => {
     void pending;
   });
 });
+
+// llmux tenant keys: the guardian call is made for the session's user, so the
+// dispatch carries their id (production meters it under their llmux key).
+describe('buildSafetyClassifier — llmux tenant user', () => {
+  it("forwards the request's user to dispatch as the tenant user (with and without an abort signal)", async () => {
+    const dispatch = vi.fn().mockResolvedValue('{"verdict":"ask","reason":"x"}');
+    const c = buildSafetyClassifier({ env: {}, dispatch });
+
+    await c.classify({ ...REQ, user: 'U_DAN' });
+    await c.classify({ ...REQ, user: 'U_DAN', signal: new AbortController().signal });
+
+    expect(dispatch.mock.calls[0][2].tenantUserId).toBe('U_DAN');
+    expect(dispatch.mock.calls[1][2].tenantUserId).toBe('U_DAN');
+    expect(dispatch.mock.calls[1][2].abortController).toBeInstanceOf(AbortController);
+  });
+
+  it('no user on the request → no tenant user (the shared key)', async () => {
+    const dispatch = vi.fn().mockResolvedValue('{"verdict":"ask","reason":"x"}');
+    await buildSafetyClassifier({ env: {}, dispatch }).classify({ ...REQ, user: '' });
+    expect('tenantUserId' in dispatch.mock.calls[0][2]).toBe(false);
+  });
+});

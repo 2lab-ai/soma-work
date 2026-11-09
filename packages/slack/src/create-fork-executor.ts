@@ -20,6 +20,10 @@ export interface ForkDispatchHandler {
     abortController?: AbortController,
     resumeSessionId?: string,
     cwd?: string,
+    /** The fork never sets a reasoning effort (the SDK default applies). */
+    effort?: undefined,
+    /** `tenantUserId` = the user the summary is made for: in llmux mode their own key meters it. */
+    opts?: { tenantUserId?: string },
   ): Promise<string>;
 }
 
@@ -46,6 +50,7 @@ export function createForkExecutor(claudeHandler: ForkDispatchHandler): ForkExec
     sessionId?: string,
     cwd?: string,
     abortSignal?: AbortSignal,
+    tenantUserId?: string,
   ): Promise<string | null> => {
     /** Build an AbortController that mirrors the caller's signal. */
     const makeAbortController = (): AbortController | undefined => {
@@ -61,7 +66,16 @@ export function createForkExecutor(claudeHandler: ForkDispatchHandler): ForkExec
 
     /** Single dispatch attempt. When resumeId is provided, forkSession is enabled. */
     const attempt = async (resumeId?: string): Promise<string> => {
-      return claudeHandler.dispatchOneShot(prompt, FORK_SYSTEM_PROMPT, model, makeAbortController(), resumeId, cwd);
+      return claudeHandler.dispatchOneShot(
+        prompt,
+        FORK_SYSTEM_PROMPT,
+        model,
+        makeAbortController(),
+        resumeId,
+        cwd,
+        undefined,
+        { tenantUserId },
+      );
     };
 
     try {
