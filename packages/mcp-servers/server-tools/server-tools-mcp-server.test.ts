@@ -549,6 +549,29 @@ describe('validateTimestamp', () => {
     expect(() => validateTimestamp('30s', 'since')).not.toThrow();
   });
 
+  it('accepts RFC 3339 zones and fractional seconds', () => {
+    expect(() => validateTimestamp('2026-01-01T00:00:00Z', 'since')).not.toThrow();
+    expect(() => validateTimestamp('2026-01-01T00:00:00+09:00', 'since')).not.toThrow();
+    expect(() => validateTimestamp('2026-01-01T00:00:00-05:30', 'since')).not.toThrow();
+    expect(() => validateTimestamp('2026-01-01T00:00:00.123Z', 'since')).not.toThrow();
+    expect(() => validateTimestamp('2026-01-01T00:00:00.123456789+09:00', 'until')).not.toThrow();
+    expect(() => validateTimestamp('2026-01-01T00:00:00.5', 'until')).not.toThrow();
+    expect(() => validateTimestamp('2026-01-01T00:00Z', 'until')).not.toThrow();
+  });
+
+  it('rejects anything else', () => {
+    expect(() => validateTimestamp('2026-01-01T00:00:00Z;x', 'since')).toThrow(/invalid.*since/i);
+    expect(() => validateTimestamp('--foo', 'since')).toThrow(/invalid.*since/i);
+    expect(() => validateTimestamp('2026-01-01 00:00:00', 'since')).toThrow(/invalid.*since/i);
+    expect(() => validateTimestamp('1w', 'since')).toThrow(/invalid.*since/i);
+    expect(() => validateTimestamp('2026-01-01T00:00:00Z\n', 'since')).toThrow(/invalid.*since/i);
+    expect(() => validateTimestamp('2026-01-01T00:00:00z', 'since')).toThrow(/invalid.*since/i);
+    expect(() => validateTimestamp('2026-01-01T00:00:00+0900', 'since')).toThrow(/invalid.*since/i);
+    expect(() => validateTimestamp('2026-01-01T00:00:00.1234567890Z', 'since')).toThrow(/invalid.*since/i);
+    expect(() => validateTimestamp('2026-01-01T00:00.5Z', 'since')).toThrow(/invalid.*since/i);
+    expect(() => validateTimestamp('2026-01-01Z', 'until')).toThrow(/invalid.*until/i);
+  });
+
   it('rejects values with shell metacharacters', () => {
     expect(() => validateTimestamp('1h; rm -rf /', 'since')).toThrow(/invalid.*since/i);
     expect(() => validateTimestamp('$(date)', 'since')).toThrow(/invalid.*since/i);
@@ -944,6 +967,74 @@ describe('handleLogs', () => {
     );
   });
 
+  // docker applies --tail before --since/--until, so a default tail would empty every window older than its lines.
+  it('sends no --tail when since is set and tail is not', () => {
+    mockConfig(PROD_CONFIG, 9010);
+    mockLogsRun('output');
+
+    handleLogs({ server: 'prod', service: 'web-1', since: '2026-01-01T00:00:00Z', until: '2026-01-01T00:10:00.5Z' });
+
+    expect(child_process.spawnSync).toHaveBeenCalledWith(
+      'ssh',
+      [
+        'prod.example.com',
+        'docker',
+        'logs',
+        '--since',
+        '2026-01-01T00:00:00Z',
+        '--until',
+        '2026-01-01T00:10:00.5Z',
+        'web-1',
+      ],
+      expect.any(Object),
+    );
+  });
+
+  it('keeps an explicit tail alongside since', () => {
+    mockConfig(PROD_CONFIG, 9020);
+    mockLogsRun('output');
+
+    handleLogs({ server: 'prod', service: 'web-1', tail: 500, since: '2026-01-01T00:00:00+09:00' });
+
+    expect(child_process.spawnSync).toHaveBeenCalledWith(
+      'ssh',
+      ['prod.example.com', 'docker', 'logs', '--tail', '500', '--since', '2026-01-01T00:00:00+09:00', 'web-1'],
+      expect.any(Object),
+    );
+  });
+
+  it('still validates an explicit tail when since is set', () => {
+    mockConfig(PROD_CONFIG, 9030);
+    expect(() => handleLogs({ server: 'prod', service: 'web-1', tail: -1, since: '10m' })).toThrow(/invalid tail/i);
+  });
+
+  // Go's duration parser, which docker uses for --since/--until, has no day unit.
+  it('sends day durations to docker as hours', () => {
+    mockConfig(PROD_CONFIG, 9040);
+    mockLogsRun('output');
+
+    handleLogs({ server: 'prod', service: 'web-1', since: '2d', until: '1d' });
+
+    expect(child_process.spawnSync).toHaveBeenCalledWith(
+      'ssh',
+      ['prod.example.com', 'docker', 'logs', '--since', '48h', '--until', '24h', 'web-1'],
+      expect.any(Object),
+    );
+  });
+
+  it('passes other durations and timestamps through unchanged', () => {
+    mockConfig(PROD_CONFIG, 9050);
+    mockLogsRun('output');
+
+    handleLogs({ server: 'prod', service: 'web-1', since: '36h', until: '2026-01-01T00:00:00Z' });
+
+    expect(child_process.spawnSync).toHaveBeenCalledWith(
+      'ssh',
+      ['prod.example.com', 'docker', 'logs', '--since', '36h', '--until', '2026-01-01T00:00:00Z', 'web-1'],
+      expect.any(Object),
+    );
+  });
+
   it('passes tail=0 as "0", not "100"', () => {
     mockConfig(PROD_CONFIG, 9100);
     mockLogsRun('output');
@@ -1110,7 +1201,7 @@ describe('handleLogs', () => {
       expect({ ...err }).toEqual({});
     });
 
-    it('on a buffer overflow names the per-stream cap', () => {
+    it('on a buffer overflow names the per-stream cap and asks for a narrower window', () => {
       mockConfig(PROD_CONFIG, 11500);
       vi.mocked(child_process.spawnSync).mockReturnValue(
         spawnResult({ stdout: 'x'.repeat(4096), status: null, signal: 'SIGTERM', error: spawnError('ENOBUFS') }),
@@ -1118,7 +1209,9 @@ describe('handleLogs', () => {
 
       const err = thrownBy(() => handleLogs({ server: 'prod', service: 'nginx' }));
 
-      expect(err.message).toBe('docker logs failed on prod: output exceeded 1 MB on one stream');
+      expect(err.message).toBe(
+        'docker logs failed on prod: output exceeded 1 MB on one stream; narrow the window with since/until or lower tail',
+      );
       expect({ ...err }).toEqual({});
     });
 
@@ -1245,6 +1338,32 @@ describe('handleLogs', () => {
       expect(child_process.spawnSync).toHaveBeenCalledWith(
         'ssh',
         expect.arrayContaining(['service', 'logs', '--tail', '100']),
+        expect.any(Object),
+      );
+    });
+
+    it('sends no --tail in stack mode when since is set and tail is not', () => {
+      mockConfig(PROD_CONFIG, 10550);
+      mockLogsRun('output');
+
+      handleLogs({ server: 'prod', stack: 'mystack', service: 'mystack_web', since: '2026-01-01T00:00:00Z' });
+
+      expect(child_process.spawnSync).toHaveBeenCalledWith(
+        'ssh',
+        ['prod.example.com', 'docker', 'service', 'logs', '--since', '2026-01-01T00:00:00Z', 'mystack_web'],
+        expect.any(Object),
+      );
+    });
+
+    it('sends a day duration as hours in stack mode', () => {
+      mockConfig(PROD_CONFIG, 10560);
+      mockLogsRun('output');
+
+      handleLogs({ server: 'prod', stack: 'mystack', service: 'mystack_web', since: '7d' });
+
+      expect(child_process.spawnSync).toHaveBeenCalledWith(
+        'ssh',
+        ['prod.example.com', 'docker', 'service', 'logs', '--since', '168h', 'mystack_web'],
         expect.any(Object),
       );
     });

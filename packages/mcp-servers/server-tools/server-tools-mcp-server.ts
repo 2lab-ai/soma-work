@@ -374,7 +374,8 @@ export function validateMongoQuery(obj: unknown, path = ''): void {
 // ── Input Sanitization ────────────────────────────────────
 
 const DOCKER_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
-const TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?$|^\d+[smhd]$/;
+// A date, a time (fractional seconds only after seconds) with an optional Z or ±HH:MM zone, or a duration.
+const TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})?)?$|^\d+[smhd]$/;
 
 export function validateDockerName(value: string, field: string): void {
   if (!DOCKER_NAME_RE.test(value)) {
@@ -384,8 +385,15 @@ export function validateDockerName(value: string, field: string): void {
 
 export function validateTimestamp(value: string, field: string): void {
   if (!TIMESTAMP_RE.test(value)) {
-    throw new Error(`Invalid ${field}: must be ISO 8601 datetime or duration (e.g., 10m, 1h, 2024-01-01T00:00:00)`);
+    throw new Error(`Invalid ${field}: must be RFC 3339 datetime or duration (e.g., 10m, 1h, 2026-01-01T00:00:00Z)`);
   }
+}
+
+/** A validated since/until as docker reads it: Go's duration parser has no day unit, so `Nd` goes out as hours. */
+function toDockerTime(value: string): string {
+  const days = /^(\d+)d$/.exec(value);
+  // BigInt keeps any digit count exact and digits-only, like the value that passed validation.
+  return days ? `${BigInt(days[1]) * 24n}h` : value;
 }
 
 // ── Tool Handlers ──────────────────────────────────────────
@@ -506,7 +514,9 @@ const LOGS_STDERR_SEPARATOR = '----- stderr -----';
 function logsFailureReason(result: SpawnSyncReturns<string>): string {
   const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
   if (code === 'ETIMEDOUT') return `timed out after ${LOGS_TIMEOUT_MS / 1000}s`;
-  if (code === 'ENOBUFS') return `output exceeded ${LOGS_MAX_BUFFER / (1024 * 1024)} MB on one stream`;
+  if (code === 'ENOBUFS') {
+    return `output exceeded ${LOGS_MAX_BUFFER / (1024 * 1024)} MB on one stream; narrow the window with since/until or lower tail`;
+  }
   if (result.error) return `ssh could not run (${code ?? 'unknown error'})`;
   if (result.signal) return `killed by ${result.signal}`;
   return `exit status ${result.status}`;
@@ -531,12 +541,14 @@ export function handleLogs(args: Record<string, unknown>) {
   const server = args.server as string;
   const service = args.service as string;
   const stack = args.stack as string | undefined;
-  const tail = (args.tail as number) ?? 100;
-  if (!Number.isInteger(tail) || tail < 0 || tail > 10000) {
-    throw new Error('Invalid tail: must be an integer between 0 and 10000');
-  }
   const since = args.since as string | undefined;
   const until = args.until as string | undefined;
+  // docker takes the last --tail lines of the whole log before applying --since/--until, so a default tail would
+  // empty any window older than those lines: with since and no tail, the whole window comes back.
+  const tail = (args.tail as number | undefined) ?? (since ? undefined : 100);
+  if (tail !== undefined && (!Number.isInteger(tail) || tail < 0 || tail > 10000)) {
+    throw new Error('Invalid tail: must be an integer between 0 and 10000');
+  }
   const timestamps = args.timestamps as boolean | undefined;
 
   const config = loadConfig();
@@ -562,13 +574,14 @@ export function handleLogs(args: Record<string, unknown>) {
   const sshArgs: string[] = [sshHost];
 
   if (stack !== undefined) {
-    sshArgs.push('docker', 'service', 'logs', '--tail', String(tail));
+    sshArgs.push('docker', 'service', 'logs');
   } else {
-    sshArgs.push('docker', 'logs', '--tail', String(tail));
+    sshArgs.push('docker', 'logs');
   }
 
-  if (since) sshArgs.push('--since', since);
-  if (until) sshArgs.push('--until', until);
+  if (tail !== undefined) sshArgs.push('--tail', String(tail));
+  if (since) sshArgs.push('--since', toDockerTime(since));
+  if (until) sshArgs.push('--until', toDockerTime(until));
   if (timestamps) sshArgs.push('--timestamps');
 
   sshArgs.push(service);
@@ -950,9 +963,21 @@ class ServerToolsMCPServer extends BaseMcpServer {
               description:
                 'Optional Docker Swarm stack name. When set, fetches logs via "docker service logs" (Swarm mode). --until is not supported in this mode.',
             },
-            tail: { type: 'number', description: 'Number of lines to tail (default: 100).' },
-            since: { type: 'string', description: 'Show logs since timestamp (e.g., "2024-01-01T00:00:00").' },
-            until: { type: 'string', description: 'Show logs until timestamp. Not supported when stack is set.' },
+            tail: {
+              type: 'number',
+              description:
+                'Lines counted back from the end of the whole log, applied before since/until: a window older than those lines comes back empty. To read a past window, give since (and until) and leave tail out; then every line in the window is returned. Default: 100 when since is not set; none when it is.',
+            },
+            since: {
+              type: 'string',
+              description:
+                'Show logs since this time: RFC 3339 such as "2026-01-01T00:00:00Z" or "2026-01-01T09:00:00+09:00" (a time with no zone is read in the server\'s local time), or a duration back from now such as "10m" (units s, m, h, d).',
+            },
+            until: {
+              type: 'string',
+              description:
+                'Show logs until this time, in the same forms as since (e.g., "2026-01-01T00:10:00Z" or "5m"). Not supported when stack is set.',
+            },
             timestamps: { type: 'boolean', description: 'Show timestamps in log output.' },
           },
           required: ['server', 'service'],
