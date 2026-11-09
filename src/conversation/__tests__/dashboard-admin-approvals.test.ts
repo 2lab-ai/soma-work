@@ -603,6 +603,23 @@ describe('dashboard admin approvals (#620)', () => {
       expect(opened).toEqual([]);
     });
 
+    it('#1051 — an older broker’s card opens the approvals app DM (a link for any admin), own card first', async () => {
+      const opened: any[] = [];
+      const { c } = client({ window: { open: (...args: any[]) => opened.push(args) } });
+      const APP = 'https://example.slack.com/app_redirect?app=A0000APP';
+      c.applyAdminApprovals({ pending: [{ ...DEVOPS_REQUEST, links: [{ admin: '*', url: APP }] }], resolved: [] });
+      await c.answerAdminApproval('devops_broker:appr_0001abcd', 'open_slack');
+      expect(opened).toEqual([[APP, '_blank', 'noopener']]);
+      expect(
+        c.devopsSlackLink({
+          links: [
+            { admin: '*', url: APP },
+            { admin: 'UADMIN', url: 'https://example.slack.com/archives/D1/p1' },
+          ],
+        }),
+      ).toBe('https://example.slack.com/archives/D1/p1');
+    });
+
     it('answered elsewhere as a denial of a grant choice: the card shows denied, not the attempted choice', () => {
       const { c } = client();
       c.applyAdminApprovals({ pending: [ENV_REQUEST], resolved: [] });

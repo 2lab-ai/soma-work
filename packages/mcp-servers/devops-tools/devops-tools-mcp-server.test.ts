@@ -20,6 +20,7 @@ import {
   MAX_WAIT_MS,
   PENDING_GRACE_MS,
   readRequesterClaim,
+  removeInFlightRecords,
   runDevopsTool,
   sessionKeyFor,
 } from './devops-tools-mcp-server.js';
@@ -534,6 +535,126 @@ describe('exchange', () => {
 });
 
 // ── Version mismatch and malformed broker output ──────────
+
+describe('waiting-card records for the dashboard (#1051)', () => {
+  const soon = () => new Date(Date.now() + 60_000).toISOString();
+  const pendingDirOf = () => path.join(path.dirname(tmpSocketPath()), 'pending');
+  /** The one record in `dir` while the call waits: name, parsed body, file mode. */
+  function theRecord(dir: string) {
+    const names = fs.readdirSync(dir);
+    expect(names).toHaveLength(1);
+    const file = path.join(dir, names[0]);
+    return { name: names[0], body: JSON.parse(fs.readFileSync(file, 'utf8')), mode: fs.statSync(file).mode & 0o777 };
+  }
+
+  it('records the card while the call waits and removes it when the call ends', async () => {
+    const dir = pendingDirOf();
+    const broker = await fakeBroker((request, socket) => {
+      send(socket, pending(request.id, soon()));
+      setTimeout(() => send(socket, result(request.id, { ok: true })), 50);
+    });
+    let during: ReturnType<typeof theRecord> | null = null;
+    const out = await runDevopsTool('gh_write', GH_WRITE_ARGS, {
+      env: { ...ENV, SOMA_DEVOPS_PENDING_DIR: dir },
+      socketPath: broker.socketPath,
+      onPending: () => {
+        during = theRecord(dir);
+      },
+    });
+    expect(out.isError).toBeFalsy();
+    const requestId = JSON.parse(broker.requests[0]).id;
+    expect(during).toMatchObject({
+      name: `appr-0001.${requestId}.json`,
+      mode: 0o600,
+      body: {
+        v: PROTOCOL_VERSION,
+        approvalId: 'appr-0001',
+        requestId,
+        pid: process.pid,
+        tool: 'gh_write',
+        digestPrefix: '0123456789ab',
+        requester: 'U000ALICE',
+      },
+    });
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  it('removes the record when the call gives up without the broker’s answer', async () => {
+    const dir = pendingDirOf();
+    const broker = await fakeBroker((request, socket) =>
+      send(socket, pending(request.id, new Date(Date.now() + 100).toISOString())),
+    );
+    let seen = 0;
+    const out = await runDevopsTool('gh_write', GH_WRITE_ARGS, {
+      env: { ...ENV, SOMA_DEVOPS_PENDING_DIR: dir },
+      socketPath: broker.socketPath,
+      graceMs: 100,
+      maxWaitMs: 10_000,
+      onPending: () => {
+        seen = fs.readdirSync(dir).length;
+      },
+    });
+    expect(out.isError).toBe(true);
+    expect(seen).toBe(1);
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  it('removes the record when the call is cancelled while it waits', async () => {
+    const dir = pendingDirOf();
+    const controller = new AbortController();
+    const broker = await fakeBroker((request, socket) => send(socket, pending(request.id, soon())));
+    let seen = 0;
+    const out = await runDevopsTool('gh_write', GH_WRITE_ARGS, {
+      env: { ...ENV, SOMA_DEVOPS_PENDING_DIR: dir },
+      socketPath: broker.socketPath,
+      signal: controller.signal,
+      onPending: () => {
+        seen = fs.readdirSync(dir).length;
+        setTimeout(() => controller.abort(), 20);
+      },
+    });
+    expect(out.isError).toBe(true);
+    expect(seen).toBe(1);
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  it('removes the records of waiting calls when the server process exits (SIGTERM shutdown calls process.exit)', async () => {
+    const dir = pendingDirOf();
+    const broker = await fakeBroker((request, socket) => {
+      send(socket, pending(request.id, soon()));
+      setTimeout(() => send(socket, result(request.id, { ok: true })), 50);
+    });
+    let left: string[] = ['not checked'];
+    await runDevopsTool('gh_write', GH_WRITE_ARGS, {
+      env: { ...ENV, SOMA_DEVOPS_PENDING_DIR: dir },
+      socketPath: broker.socketPath,
+      onPending: () => {
+        expect(process.listeners('exit')).toContain(removeInFlightRecords);
+        removeInFlightRecords();
+        left = fs.readdirSync(dir);
+      },
+    });
+    expect(left).toEqual([]);
+  });
+
+  it('records nothing without the env or with a relative dir, and a failed record never fails the call', async () => {
+    const base = path.dirname(tmpSocketPath());
+    const blocker = path.join(base, 'a-file');
+    fs.writeFileSync(blocker, '');
+    for (const dir of [undefined, 'relative/pending', path.join(blocker, 'pending')]) {
+      const broker = await fakeBroker((request, socket) => {
+        send(socket, pending(request.id, soon()));
+        setTimeout(() => send(socket, result(request.id, { ok: true })), 20);
+      });
+      const env = dir === undefined ? ENV : { ...ENV, SOMA_DEVOPS_PENDING_DIR: dir };
+      const out = await runDevopsTool('gh_write', GH_WRITE_ARGS, { env, socketPath: broker.socketPath });
+      expect(out.isError).toBeFalsy();
+    }
+    expect(fs.readdirSync(base)).toEqual(['a-file']);
+    expect(fs.existsSync(path.resolve('relative'))).toBe(false);
+  });
+});
 
 describe('version mismatch', () => {
   it('explains a broker that speaks another protocol version', async () => {
