@@ -66,3 +66,54 @@ describe('ActionPanelBuilder — ages are Slack date tokens (#1031 ④)', () => 
     expect(out).not.toContain('<!date^');
   });
 });
+
+/**
+ * #1072 — a head that waits on its user says since when, as a date token too:
+ * "3분 전부터 기다림" (Slack renders the token as "3분 전" in Korean, "3 minutes
+ * ago" in English), so the wait reads right days later.
+ */
+describe('ActionPanelBuilder — the wait on the user (#1072)', () => {
+  it('a question waiting: "<token>부터 기다림" before the last activity', () => {
+    const out = rail({
+      waitingForChoice: true,
+      activityState: 'waiting',
+      waitingSince: NOW - 3 * MINUTE,
+      lastProgressAt: NOW - 3 * MINUTE,
+    });
+
+    expect(out).toContain(
+      `🟡 *입력 대기* · ${token(NOW - 3 * MINUTE)}부터 기다림 · 마지막 활동 ${token(NOW - 3 * MINUTE)}`,
+    );
+    expect(out).not.toMatch(/\d+(초|분|시간|일) 전/);
+  });
+
+  it('waiting without the question on the panel (대기 중) says it too', () => {
+    const out = rail({ activityState: 'waiting', waitingSince: NOW - 40 * MINUTE });
+
+    expect(out).toContain(`${token(NOW - 40 * MINUTE)}부터 기다림`);
+  });
+
+  it('no wait stamp, no wait line — nothing is invented', () => {
+    const out = rail({ waitingForChoice: true, activityState: 'waiting', lastProgressAt: NOW - MINUTE });
+
+    expect(out).not.toContain('부터 기다림');
+  });
+
+  it('a head that does not wait never shows one, even with a stale stamp', () => {
+    expect(rail({ activityState: 'working', waitingSince: NOW - MINUTE, lastProgressAt: NOW })).not.toContain(
+      '부터 기다림',
+    );
+    expect(rail({ activityState: 'waiting', hasActiveRequest: true, waitingSince: NOW - MINUTE })).not.toContain(
+      '부터 기다림',
+    );
+    expect(rail({ activityState: 'idle', waitingSince: NOW - MINUTE, lastProgressAt: NOW })).not.toContain(
+      '부터 기다림',
+    );
+  });
+
+  it('clamps a wait stamp from the future to now', () => {
+    const out = rail({ waitingForChoice: true, activityState: 'waiting', waitingSince: NOW + 30 * SECOND });
+
+    expect(out).toContain(`${token(NOW)}부터 기다림`);
+  });
+});

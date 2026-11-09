@@ -962,9 +962,10 @@ export class SessionRegistry {
    *
    * Use this after mutating session state that the dashboard consumes
    * (pendingQuestion, pendingChoice, waitingForChoice, etc.) OUTSIDE of an
-   * activity-state transition. `setActivityState` only persists on transition
-   * to 'idle' and broadcasts only on state change, so holding state in 'waiting'
-   * while mutating pending fields would otherwise leave disk and dashboard stale.
+   * activity-state transition. `setActivityState` persists only on transition
+   * to 'idle' or 'waiting' (#1072) and broadcasts only on state change, so holding
+   * state in 'waiting' while mutating pending fields would otherwise leave disk and
+   * dashboard stale.
    *
    * Cost: one disk write + one websocket push per call. Keep call sites bounded
    * to real state transitions (set/clear of pendingChoice/pendingQuestion) —
@@ -2121,7 +2122,10 @@ export class SessionRegistry {
 
   /**
    * Set activity state for a session (working/waiting/idle)
-   * Only persists on transition to idle (to avoid excessive disk writes during active work)
+   * Persists on the switch to idle and to waiting, never to working (no disk write per turn
+   * start). #1072 — the switch to waiting is when the session started waiting on its user;
+   * saved, a restart counts the wait from it instead of an older save's stamp. A repeat of
+   * the same state is a no-op, so a second question never resets that stamp.
    */
   setActivityState(channelId: string, threadTs: string | undefined, state: ActivityState): void {
     const session = this.getSession(channelId, threadTs);
@@ -2144,7 +2148,8 @@ export class SessionRegistry {
       /* fire-and-forget */
     }
 
-    // Only persist on idle transition to minimize disk I/O
+    // Persist on idle and waiting only (#1072) — working starts every turn.
+    if (state === 'waiting') this.saveSessions();
     if (state === 'idle') {
       this.saveSessions();
       // Drain onIdle callbacks (e.g., pending cron jobs)
@@ -2178,6 +2183,8 @@ export class SessionRegistry {
       this.logger.debug('Activity state change callback failed', { sessionKey, state, error: err });
     }
 
+    // #1072 — the switch to waiting is saved too (see setActivityState).
+    if (state === 'waiting') this.saveSessions();
     if (state === 'idle') {
       this.saveSessions();
       // Drain onIdle callbacks (e.g., pending cron jobs)

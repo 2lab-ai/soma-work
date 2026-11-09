@@ -512,7 +512,7 @@ describe('renderBoard → the board element: NEEDS YOU · RUNNING · DONE by fin
     h.m.renderBoard(board(), false);
     const plan = h.kanban._ibPlan as Plan;
     expect(plan.cols.map((c) => [c.id, c.label, c.keys])).toEqual([
-      ['waiting', '응답 필요', ['w1']],
+      ['waiting', '응답 필요 · 오래 기다린 순', ['w1']],
       ['working', '실행 중', ['r1', 'r2']],
       ['done', '완료', []],
     ]);

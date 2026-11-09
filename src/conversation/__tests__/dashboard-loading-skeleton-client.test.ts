@@ -319,7 +319,7 @@ describe('[T2] board — skeleton until the first board paints', () => {
     expect(kanban.data?.load).toBe('loading');
     expect(kanban.data?.announce).toBe(false);
     expect(kanban.data?.columns.map((c) => [c.id, c.label, c.cards])).toEqual([
-      ['waiting', '응답 필요', []],
+      ['waiting', '응답 필요 · 오래 기다린 순', []],
       ['working', '실행 중', []],
       ['done', '완료', []],
     ]);

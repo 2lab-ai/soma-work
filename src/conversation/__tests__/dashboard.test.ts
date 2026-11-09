@@ -150,6 +150,108 @@ describe('Dashboard API', () => {
     expect(body.board.idle[0].title).toBe('Idle session');
   });
 
+  it('#1072 — 응답 필요: starred first, then the longest wait; the other columns keep the newest activity first', async () => {
+    const T = Date.parse('2026-11-09T09:00:00Z');
+    const M = 60_000;
+    const live = (over: Record<string, unknown>) => ({
+      sessionId: `sid-${String(over.threadTs)}`,
+      ownerId: 'U1',
+      ownerName: 'Alice',
+      workflow: 'default',
+      model: 'claude-opus-4-6',
+      channelId: 'C1',
+      state: 'MAIN',
+      ...over,
+    });
+    const sessions = new Map<string, any>();
+    // Recent activity, short wait.
+    sessions.set(
+      'C1:w1',
+      live({
+        title: 'w1',
+        threadTs: 'w1',
+        activityState: 'waiting',
+        activityStateChangedAt: T - 5 * M,
+        lastActivity: new Date(T - 1 * M),
+      }),
+    );
+    // Oldest wait, oldest activity — the newest-activity order puts it last.
+    sessions.set(
+      'C1:w2',
+      live({
+        title: 'w2',
+        threadTs: 'w2',
+        activityState: 'waiting',
+        activityStateChangedAt: T - 90 * M,
+        lastActivity: new Date(T - 80 * M),
+      }),
+    );
+    sessions.set(
+      'C1:w3',
+      live({
+        title: 'w3',
+        threadTs: 'w3',
+        activityState: 'waiting',
+        activityStateChangedAt: T - 30 * M,
+        lastActivity: new Date(T - 20 * M),
+      }),
+    );
+    // Starred: leads whatever its wait.
+    sessions.set(
+      'C1:ws',
+      live({
+        title: 'ws',
+        threadTs: 'ws',
+        starred: true,
+        activityState: 'waiting',
+        activityStateChangedAt: T - 2 * M,
+        lastActivity: new Date(T - 2 * M),
+      }),
+    );
+    sessions.set(
+      'C1:r1',
+      live({
+        title: 'r1',
+        threadTs: 'r1',
+        activityState: 'working',
+        activityStateChangedAt: T - 60 * M,
+        lastActivity: new Date(T - 60 * M),
+      }),
+    );
+    sessions.set(
+      'C1:r2',
+      live({
+        title: 'r2',
+        threadTs: 'r2',
+        activityState: 'working',
+        activityStateChangedAt: T - 10 * M,
+        lastActivity: new Date(T - 3 * M),
+      }),
+    );
+    setDashboardSessionAccessor(() => sessions);
+
+    const res = await injectWebServer({ method: 'GET', url: '/api/dashboard/sessions', headers: AUTH_HEADER });
+    const body = JSON.parse(res.body);
+    expect(body.board.waiting.map((c: any) => c.title)).toEqual(['ws', 'w2', 'w3', 'w1']);
+    expect(body.board.working.map((c: any) => c.title)).toEqual(['r2', 'r1']);
+  });
+
+  it('#1072 — waitingSortAt: its own wait, else its epic children’s oldest, else its last activity, else last', async () => {
+    const { waitingSortAt } = await import('../dashboard');
+    const T = Date.parse('2026-11-09T09:00:00Z');
+    const base = { lastActivity: new Date(T - 1000).toISOString() } as any;
+    expect(waitingSortAt({ ...base, waitingSince: T - 9000 })).toBe(T - 9000);
+    expect(
+      waitingSortAt({
+        ...base,
+        waitingSince: T - 5000,
+        epic: { children: [{ waitingSince: T - 7000 }, { waitingSince: undefined }, { waitingSince: T - 2000 }] },
+      }),
+    ).toBe(T - 7000);
+    expect(waitingSortAt({ ...base, epic: { children: [{}] } })).toBe(T - 1000);
+    expect(waitingSortAt({ lastActivity: 'not a date' } as any)).toBe(Number.POSITIVE_INFINITY);
+  });
+
   it('should filter sessions by userId', async () => {
     const sessions = new Map<string, any>();
     sessions.set('C1:t1', {

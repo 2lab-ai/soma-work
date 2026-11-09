@@ -87,6 +87,8 @@ export interface ConversationSession {
   /** Lifecycle state (`MAIN` / `SLEEPING` / …). The header shows a sleep (#1031 ⑤). */
   state?: string;
   activityState?: ActivityState;
+  /** When `activityState` last changed (epoch ms) — while `waiting`, when the wait began (#1072). */
+  activityStateChangedAt?: number;
   actionPanel?: ActionPanelState;
   logVerbosity?: number;
   taskListStartedAt?: number;
@@ -1548,6 +1550,8 @@ export class ThreadSurface {
       activeTool: panelState.activeTool,
       lastProgressAt: panelState.lastProgressAt,
       lastSignalAt: panelState.lastSignalAt,
+      // #1072 — since when it waits on its user: only a waiting session's state stamp is a wait.
+      waitingSince: session.activityState === 'waiting' ? session.activityStateChangedAt : undefined,
       sleeping: session.state === 'SLEEPING',
       logVerbosity: session.logVerbosity,
       prStatus: livePr,
