@@ -275,7 +275,7 @@ describe('pcInit — the element’s events reach the page’s handlers on #pane
 describe('steerAct — Send now / Cancel / Edit → the queue route; a refusal rolls back with a toast', () => {
   function rig(
     res: { status: number; body?: unknown } | Error,
-    opts: { followups?: unknown; switched?: boolean } = {},
+    opts: { followups?: unknown; switched?: boolean; requeueDuringRequest?: boolean } = {},
   ) {
     const calls: Array<{ url: string; init: { method: string; headers: Record<string, string>; body: string } }> = [];
     const rolled: unknown[][] = [];
@@ -288,12 +288,13 @@ describe('steerAct — Send now / Cancel / Edit → the queue route; a refusal r
       turnEpoch: 7,
       items: [item(), item({ id: `${KEY}#2`, state: 'failed', epoch: 9 })],
     };
+    const cache: Record<string, { key: string; followups: unknown }> = { [KEY]: { key: KEY, followups } };
     const m = load<{ steerAct(op: string, id: string, text?: string): Promise<void> }>(
       ['steerItemOf', 'acPost', 'steerAct'],
       ['STEER_STATE', 'STEER_FAIL'],
       {
         panelSessionKey: KEY,
-        _sessionCache: { [KEY]: { key: KEY, followups } },
+        _sessionCache: cache,
         document: { getElementById: (id: string) => (id === 'cmd-steer' ? (state.switched ? fresh : el) : null) },
         _csrfToken: 'csrf-1',
         refreshCsrfToken: async () => {},
@@ -301,6 +302,17 @@ describe('steerAct — Send now / Cancel / Edit → the queue route; a refusal r
         fetch: async (url: string, init: { method: string; headers: Record<string, string>; body: string }) => {
           calls.push({ url, init });
           if (opts.switched) state.switched = true;
+          if (opts.requeueDuringRequest) {
+            // A live update landed while the press was out: the session payload is replaced, its note moved.
+            const list = (followups as { turnEpoch: number; items: Array<Record<string, unknown>> }).items;
+            cache[KEY] = {
+              key: KEY,
+              followups: {
+                turnEpoch: 8,
+                items: list.map((i) => ({ ...i, state: 'queued', epoch: Number(i.epoch) + 1 })),
+              },
+            };
+          }
           if (res instanceof Error) throw res;
           return { ok: res.status < 400, status: res.status, json: async () => res.body ?? {} };
         },
@@ -332,6 +344,44 @@ describe('steerAct — Send now / Cancel / Edit → the queue route; a refusal r
     await c.m.steerAct('cancel', `${KEY}#2`);
     expect(JSON.parse(c.calls[0].init.body)).toEqual({ epoch: 9, turnEpoch: 7 });
     expect(c.toasts).toEqual([{ title: '취소했습니다.', tone: 'success' }]);
+  });
+
+  it('a delivered (steered) note: Cancel carries its generation; too late is a warning, a refusal rolls it back to delivered', async () => {
+    const followups = {
+      turnEpoch: 7,
+      items: [item({ id: `${KEY}#3`, state: 'steered', epoch: 11 })],
+    };
+    const done = rig(
+      { status: 200, body: { ok: true, message: '취소했습니다 — 모델에 전달되기 전에 회수했습니다.' } },
+      { followups },
+    );
+    await done.m.steerAct('cancel', `${KEY}#3`);
+    expect(JSON.parse(done.calls[0].init.body)).toEqual({ epoch: 11, turnEpoch: 7 });
+    expect(done.toasts).toEqual([{ title: '취소했습니다 — 모델에 전달되기 전에 회수했습니다.', tone: 'success' }]);
+    const late = rig(
+      {
+        status: 200,
+        body: { ok: true, message: '취소하지 못했습니다 — 이미 모델에 전달되어 실행 중입니다.', unfulfilled: true },
+      },
+      { followups },
+    );
+    await late.m.steerAct('cancel', `${KEY}#3`);
+    // The note the element hid on the press comes back, saying why — never left hidden as if it were cancelled.
+    expect(late.rolled).toEqual([[`${KEY}#3`, 'steered', '취소하지 못했습니다 — 이미 모델에 전달되어 실행 중입니다.']]);
+    expect(late.toasts).toEqual([
+      { title: '취소하지 못했습니다 — 이미 모델에 전달되어 실행 중입니다.', tone: 'warning' },
+    ]);
+    const refused = rig({ status: 409, body: { error: '취소가 거부되었습니다' } }, { followups });
+    await refused.m.steerAct('promote', `${KEY}#3`);
+    expect(refused.rolled).toEqual([[`${KEY}#3`, 'steered', '취소가 거부되었습니다']]);
+  });
+
+  it('a refusal rolls the note back to the state the queue has when the answer comes, not the one it had at the press', async () => {
+    // The turn ended while the Cancel was out: the pushed list put the delivered note back in line (queued) first.
+    const followups = { turnEpoch: 7, items: [item({ id: `${KEY}#3`, state: 'steered', epoch: 11 })] };
+    const r = rig({ status: 409, body: { error: '취소가 거부되었습니다' } }, { followups, requeueDuringRequest: true });
+    await r.m.steerAct('cancel', `${KEY}#3`);
+    expect(r.rolled).toEqual([[`${KEY}#3`, 'queued', '취소가 거부되었습니다']]);
   });
 
   it('a refusal (409 with the queue’s words) rolls the note back to its own state with them, and says so in a toast', async () => {
