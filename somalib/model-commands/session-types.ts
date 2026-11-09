@@ -351,6 +351,12 @@ export interface UserChoice {
   context?: string; // Optional context about why this choice matters
   /** ID of the recommended choice option; must match one of choices[].id */
   recommendedChoiceId?: string;
+  /**
+   * #1070 — `'admins'`: the decision belongs to an admin. The question also appears as a card on the
+   * dashboard's 관리자 승인 (admin approvals) screen, for admins only, and an admin's answer there is
+   * not held for the session owner.
+   */
+  audience?: 'admins';
 }
 
 /**

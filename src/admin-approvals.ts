@@ -1,7 +1,7 @@
 /**
  * Admin approvals — the requests that reach the admins by Slack DM (an
  * environment skill run, an MCP tool grant, a new user, a bot-message
- * delete), shown to admins signed in to the dashboard as approval cards and
+ * delete; a devops broker card; a question the model asked for an admin), shown to admins signed in to the dashboard as approval cards and
  * answerable there. An answer on either surface resolves both: the dashboard
  * answer runs the same decision the Slack button runs, which rewrites every
  * admin's DM; a Slack answer drops the card from the dashboard.
@@ -15,7 +15,14 @@ import { Logger } from './logger';
 
 const logger = new Logger('AdminApprovals');
 
-export type AdminApprovalKind = 'env_skill' | 'mcp_grant' | 'new_user' | 'bot_delete' | 'devops_broker';
+export type AdminApprovalKind =
+  | 'env_skill'
+  | 'mcp_grant'
+  | 'new_user'
+  | 'bot_delete'
+  | 'devops_broker'
+  /** #1070 — a question the model asked for an admin (`ASK_USER_QUESTION` with `audience: 'admins'`). */
+  | 'session_question';
 
 export const ADMIN_APPROVAL_KINDS: readonly AdminApprovalKind[] = [
   'env_skill',
@@ -23,6 +30,7 @@ export const ADMIN_APPROVAL_KINDS: readonly AdminApprovalKind[] = [
   'new_user',
   'bot_delete',
   'devops_broker',
+  'session_question',
 ];
 
 export interface AdminApprovalChoice {

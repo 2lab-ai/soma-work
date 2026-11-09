@@ -18,6 +18,7 @@ import { defaultTabCache } from '../commands/usage-carousel-cache';
 import { envSkillAdminApprovalAdapter } from '../env-skill-admin-approval';
 import { mcpGrantAdminApprovalAdapter } from '../mcp-grant-decision';
 import { newUserAdminApprovalAdapter } from '../new-user-decision';
+import { sessionQuestionAdminApprovalAdapter } from '../session-question-admin-approval';
 import { buildDefaultTopicRegistry } from '../z/topics';
 import { ActionPanelActionHandler } from './action-panel-action-handler';
 import { AutoskillActionHandler } from './autoskill-action-handler';
@@ -115,6 +116,14 @@ setActionHandlersProviders({
         socketPath: devopsBrokerSocketPath(CONFIG_FILE),
         pendingDir: devopsPendingDir(DATA_DIR),
         approvalsAppUrl: devopsApprovalsAppUrl(CONFIG_FILE),
+      }),
+    );
+    // Questions the model asked for an admin (#1070): answered through the same choice path as the session view.
+    registerAdminApprovalAdapter(
+      sessionQuestionAdminApprovalAdapter({
+        sessions: () => ctx.claudeHandler.getAllSessions().entries(),
+        answer: (sessionKey, choiceId, label, question, actor, opts) =>
+          choiceHandler.handleChoiceFromDashboard(sessionKey, choiceId, label, question, actor, opts),
       }),
     );
     // Approvals a previous process died while carrying out: finish them (redo the delete) first.

@@ -639,6 +639,35 @@ function parsePayload(args: unknown): UserChoice | UserChoices | null {
   return result.request.params.question;
 }
 
+describe('validator — ASK_USER_QUESTION audience (#1070)', () => {
+  const ask = (audience: unknown) =>
+    parsePayload({
+      commandId: 'ASK_USER_QUESTION',
+      params: {
+        payload: {
+          type: 'user_choice',
+          question: 'Approve the card?',
+          audience,
+          choices: [
+            { id: 'a', label: 'A' },
+            { id: 'b', label: 'B' },
+            { id: 'c', label: 'C' },
+          ],
+        },
+      },
+    }) as UserChoice | null;
+
+  it("keeps audience 'admins' on a single choice", () => {
+    expect(ask('admins')?.audience).toBe('admins');
+  });
+
+  it('drops any other audience: the question stays the owner’s', () => {
+    for (const audience of ['owner', 'everyone', true, undefined]) {
+      expect(ask(audience)).not.toHaveProperty('audience');
+    }
+  });
+});
+
 describe('validator — ASK_USER_QUESTION recommendedChoiceId', () => {
   describe('user_choice (single)', () => {
     it('preserves explicit recommendedChoiceId when it names the first option (#917: 1 = recommended)', () => {
