@@ -181,30 +181,32 @@ export function captureArtifactFromWorkLog(
       // #1074 r2 — results record one after another, in the order they arrived: a slow snapshot of the first upload
       // must not let the second become the earlier version of the same artifact.
       const prev = recordChains.get(conversationId) ?? Promise.resolve();
-      const run = prev.then(async () => {
-        const snap = pending ? await pending.snapshot : null;
-        if (!reply.ok) {
-          await store.discardSnapshot(conversationId, snap);
-          return;
-        }
-        await store.recordSlackUpload({
-          conversationId,
-          snapshot: snap,
-          filename: reply.filename ?? pending?.displayName,
-          title: pending?.title,
-          slackFileId: reply.fileId,
-          permalink: reply.permalink,
-          url: reply.url ?? pending?.url,
-          size: reply.size,
-          tool: entry.tool?.replace(/^mcp__slack-mcp__/, ''),
-          turnId: entry.turnId,
-          now: entry.ts,
-          // The model's own artifact_key, from the call. The reply's `artifact_key` is slack-mcp's derived key
-          // (`name:…`, `key:…`) — the store derives that itself; passing it back would wrap it again (#1074 r1).
-          key: pending?.key,
-          sha256: reply.sha256,
-        });
-      }).catch((err) => logger.warn(`Upload artifact not recorded for ${conversationId}`, err));
+      const run = prev
+        .then(async () => {
+          const snap = pending ? await pending.snapshot : null;
+          if (!reply.ok) {
+            await store.discardSnapshot(conversationId, snap);
+            return;
+          }
+          await store.recordSlackUpload({
+            conversationId,
+            snapshot: snap,
+            filename: reply.filename ?? pending?.displayName,
+            title: pending?.title,
+            slackFileId: reply.fileId,
+            permalink: reply.permalink,
+            url: reply.url ?? pending?.url,
+            size: reply.size,
+            tool: entry.tool?.replace(/^mcp__slack-mcp__/, ''),
+            turnId: entry.turnId,
+            now: entry.ts,
+            // The model's own artifact_key, from the call. The reply's `artifact_key` is slack-mcp's derived key
+            // (`name:…`, `key:…`) — the store derives that itself; passing it back would wrap it again (#1074 r1).
+            key: pending?.key,
+            sha256: reply.sha256,
+          });
+        })
+        .catch((err) => logger.warn(`Upload artifact not recorded for ${conversationId}`, err));
       recordChains.set(conversationId, run);
       void run.then(() => {
         if (recordChains.get(conversationId) === run) recordChains.delete(conversationId);
