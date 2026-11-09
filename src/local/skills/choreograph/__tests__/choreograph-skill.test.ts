@@ -7,15 +7,15 @@ const SKILL_ROOT = resolve(__dirname, '..');
 const SKILL_MD = resolve(SKILL_ROOT, 'SKILL.md');
 const LICENSES_DIR = resolve(SKILL_ROOT, 'LICENSES');
 const SUPPORT_FILES = ['RECIPES.md'];
-/** Upstream skill names that are not installed under that name in soma-work. */
-const UPSTREAM_ONLY = [
-  'animate',
-  'emil-design-eng',
-  'review-animations',
-  'animate-expo',
-  'prototype',
-  'pick-ui-library',
-];
+/** Upstream skill names not installed under that name in soma-work → the local skills they map to ([] = not vendored). */
+const UPSTREAM_MAP: Record<string, string[]> = {
+  animate: ['motion-design'],
+  'emil-design-eng': ['motion-design'],
+  'review-animations': ['review-motion'],
+  'animate-expo': [],
+  prototype: [],
+  'pick-ui-library': [],
+};
 
 /** Splits SKILL.md into its YAML frontmatter (parsed — malformed YAML throws) and the body below it. */
 function split(md: string): { fm: Record<string, unknown>; body: string } {
@@ -55,13 +55,17 @@ describe('local:choreograph skill — vendored contract', () => {
 
   it('maps every upstream-only skill name the body mentions to a local skill that exists, or says it is not vendored', () => {
     const rest = body.replace(attribution, '');
-    for (const n of UPSTREAM_ONLY) {
+    let cited = 0;
+    for (const [n, targets] of Object.entries(UPSTREAM_MAP)) {
       if (!rest.includes(`\`${n}\``)) continue;
-      expect(attribution, n).toMatch(new RegExp(`\`${n}\`[^;.]*?(→|not vendored)`));
+      cited++;
+      if (targets.length === 0) expect(attribution, n).toMatch(new RegExp(`\`${n}\`[^;]*?not vendored`));
+      for (const t of targets) {
+        expect(attribution, `${n} → ${t}`).toMatch(new RegExp(`\`${n}\`[^;.]*?→[^;.]*?\`${t}\``));
+        expect(existsSync(resolve(SKILL_ROOT, '..', t, 'SKILL.md')), t).toBe(true);
+      }
     }
-    const targets = [...attribution.matchAll(/→ `([a-z0-9-]+)`/g)].map((x) => x[1]);
-    expect(targets.length).toBeGreaterThan(0);
-    for (const t of targets) expect(existsSync(resolve(SKILL_ROOT, '..', t, 'SKILL.md')), t).toBe(true);
+    expect(cited).toBeGreaterThan(0);
     expect(fm.description as string).not.toMatch(
       /\b(review-animations|emil-design-eng|animate-expo|pick-ui-library)\b/,
     );
