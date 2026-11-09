@@ -18,7 +18,7 @@ This skill is a distilled, HTML-focused adaptation of
 [`alchaincyf/huashu-design`](https://github.com/alchaincyf/huashu-design) (MIT).
 The upstream skill also ships video / TTS / pptx production pipelines; those are
 intentionally **not** vendored here — soma-work's visual surface is static
-HTML (see the `html` skill; its PNG is a QA snapshot, never a deliverable). See [`LICENSES/huashu-design-MIT.txt`](./LICENSES/huashu-design-MIT.txt)
+HTML (see the `html` skill; the page is checked in a headless browser, no image is made). See [`LICENSES/huashu-design-MIT.txt`](./LICENSES/huashu-design-MIT.txt)
 for attribution.
 
 ## Two modes
@@ -138,7 +138,7 @@ The library groups 20 named directions into five families:
 `HTML` in the library's 最佳路径 column): 01 Pentagram, 03 iA, 04 Fathom,
 10 Müller-Brockmann, 11 Build, 17 Takram, 18 Kenya Hara. These rely on precise
 typography and grid, which code renders deterministically. The AI-image-generation
-directions (06/07/12/13/14/15/16/20) are out of scope for static HTML+PNG.
+directions (06/07/12/13/14/15/16/20) are out of scope for static HTML.
 
 ## Deterministic style selector (programmatic mode)
 
