@@ -803,6 +803,22 @@ describe('SessionUiManager', () => {
 
       expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
     });
+
+    // An Eagle incident thread is read only by the eagle-eye poller: no notice,
+    // but the restart side still needs the stamp to know the attempt was cut.
+    it('posts no notice in an incident thread but still stamps it for recovery', async () => {
+      const session = createMockSession({
+        activityState: 'working',
+        incidentRequest: { attempt_id: 'AT-1' } as any,
+      } as any);
+      mockClaudeHandler.getAllSessions.mockReturnValue(new Map([['session1', session]]));
+
+      await manager.notifyShutdown();
+
+      expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
+      expect(session.shutdownNotificationSent).toBe(true);
+      expect(session.wasWorkingAtShutdown).toBe(true);
+    });
   });
 
   // #1031 ⑤ — the sleep transition posted a 💤 reaction and a notice but never

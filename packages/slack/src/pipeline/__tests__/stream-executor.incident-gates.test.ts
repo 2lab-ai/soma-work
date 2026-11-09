@@ -263,6 +263,31 @@ describe('StreamExecutor — gates written for people do not stop an incident tu
     expect(deps.turnNotifier.notify).toHaveBeenCalledWith(expect.objectContaining({ category: 'Exception' }));
   });
 
+  // A graceful restart aborts a running attempt: it still writes its finished
+  // marker, but its conclusion is never posted. The restart side can only tell
+  // the two apart if the host records the POST itself.
+  it('records the attempt whose conclusion it actually posted', async () => {
+    const deps = createDeps();
+    const params = createParams(createSession(REQUEST));
+
+    await new StreamExecutor(deps).execute(params);
+    await settle();
+
+    expect(params.session.incidentAttemptPublishedId).toBe(REQUEST.attempt_id);
+  });
+
+  it('records nothing when the conclusion post fails', async () => {
+    const deps = createDeps();
+    const params = createParams(createSession(REQUEST));
+    params.say = vi.fn().mockRejectedValue(new Error('channel_not_found'));
+
+    // The executor surfaces the failed post; what matters here is the marker.
+    await new StreamExecutor(deps).execute(params).catch(() => undefined);
+    await settle();
+
+    expect(params.session.incidentAttemptPublishedId).toBeUndefined();
+  });
+
   it('never prepends the session-title notice to an incident prompt', async () => {
     const deps = createDeps();
     // The title the ingress gives an incident session (`skipDispatch`) is a

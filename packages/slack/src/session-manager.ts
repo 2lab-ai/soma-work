@@ -1220,6 +1220,12 @@ export class SessionUiManager {
         session.shutdownNotifiedAt = stampedAt;
         session.wasWorkingAtShutdown = wasWorkingSnapshot;
 
+        // An Eagle incident thread is read only by the eagle-eye poller: the
+        // stamp above is all the restart side needs (it settles a cut attempt
+        // with a result line, never this notice).
+        // Structural read: this package's session type predates the incident fields.
+        if ((session as { incidentRequest?: unknown }).incidentRequest) continue;
+
         const promise = (async () => {
           try {
             await this.slackApi.postMessage(session.channelId, shutdownText, {
