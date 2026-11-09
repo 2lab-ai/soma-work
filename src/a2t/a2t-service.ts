@@ -8,7 +8,7 @@
  * Model loads once on init; stays in memory until shutdown.
  */
 
-import { type ChildProcess, spawn } from 'child_process';
+import { type ChildProcess, execFileSync, spawn } from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
 import * as readline from 'readline';
@@ -18,6 +18,26 @@ import type { A2tConfig, A2tStatus, TranscriptionResult } from './types';
 export type { A2tConfig, A2tStatus, TranscriptionResult } from './types';
 
 const logger = new Logger('A2tService');
+
+/**
+ * Memory the OS can hand a new worker now, in MB. On macOS `os.freemem()` is the free list only: a 128 GB Mac at rest
+ * reports ~2 GB free with ~40 GB inactive (reclaimable on demand), so a 4 GB floor refused to start Whisper at boot.
+ * There it counts free + inactive + speculative pages from `vm_stat` — what the Python worker's own check
+ * (psutil `available`) counts. Elsewhere it is `os.freemem()` (MemAvailable on Linux). Never below `os.freemem()`.
+ */
+export function availableMemoryMb(opts: { platform?: NodeJS.Platform; vmStat?: () => string } = {}): number {
+  const free = os.freemem() / (1024 * 1024);
+  if ((opts.platform ?? process.platform) !== 'darwin') return free;
+  try {
+    const out = (opts.vmStat ?? (() => execFileSync('vm_stat', { encoding: 'utf8', timeout: 2000 })))();
+    const page = Number(/page size of (\d+) bytes/.exec(out)?.[1] ?? 0);
+    const pages = (label: string) => Number(new RegExp(`Pages ${label}:\\s+(\\d+)`).exec(out)?.[1] ?? 0);
+    const mb = ((pages('free') + pages('inactive') + pages('speculative')) * page) / (1024 * 1024);
+    return Math.max(free, mb);
+  } catch {
+    return free;
+  }
+}
 
 // ── Singleton ──────────────────────────────────────────────
 
@@ -222,11 +242,11 @@ export class A2tService {
       return;
     }
 
-    // Memory pre-check: require enough FREE memory before loading the model.
+    // Memory pre-check: require enough available memory before loading the model.
     // Whisper large-v3-turbo needs ~2GB; set threshold high (default 16GB)
     // so A2T only starts on machines with plenty of headroom.
-    // e.g. Mac Mini 16GB → freemem ~8GB < 16GB → A2T won't start (prevents OOM).
-    const availableMb = os.freemem() / (1024 * 1024);
+    // e.g. Mac Mini 16GB → ~8GB available < 16GB → A2T won't start (prevents OOM).
+    const availableMb = availableMemoryMb();
     if (availableMb < this.config.minMemoryMb) {
       const msg = `Insufficient free memory for A2T: ${Math.round(availableMb)}MB available, ${this.config.minMemoryMb}MB required`;
       this.status = { state: 'error', error: msg };
