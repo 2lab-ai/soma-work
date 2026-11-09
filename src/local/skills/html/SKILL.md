@@ -548,9 +548,11 @@ daemon can't be verified, publish starts a fresh daemon on the next free
 port instead of printing a dead link. (Old publishers meeting a new daemon
 read its health reply as foreign and self-heal onto another port — accepted
 port drift, never a silent 404.) Re-publishing the same filename refreshes
-that artifact in place and keeps the bytes it replaces as `<stem>.v<N><ext>`
-beside it (the JSON says `version` and `archived`; the same bytes keep nothing
-and say `unchanged`) — a name keeps its newest 10 earlier versions.
+that artifact in place and keeps the bytes it replaces in the name's own
+namespace, `.versions/<name>/v<N><ext>` (served at
+`/.versions/<name>/v<N><ext>`; the JSON says `version` and `archived`; the
+same bytes keep nothing and say `unchanged`) — a name keeps its newest 10
+earlier versions.
 
 **The archive is LAN-readable, indefinitely.** With the default `0.0.0.0`
 bind, everything published is listable and readable by anyone on the local
