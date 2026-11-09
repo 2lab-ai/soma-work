@@ -84,10 +84,16 @@ SOMA_INCIDENT_EVIDENCE_BASE_URL=https://<eagle-eye-host>
     시도는 읽기 전용 도구 하나뿐이라 커밋할 수 없다. 2026-11-06·11-09의 실제 인시던트 4건이 모두 ingress를
     통과한 뒤 여기서 모델 호출 전에 막혔다(`Blocked model invocation: user email not configured`).
   - **session-title-pending 공지** — 시도 런타임에 없는 UPDATE_SESSION을 요구하고, 고정 host prompt 앞에 붙었다.
-- **재시작에 끊긴 시도**는 재개하지 않고 정산한다 (`settleRestartCutIncidentAttempt`, `src/slack-handler.ts`):
-  일반 crash recovery 공지와 restart 프롬프트 턴 없이, host가 쓴 `interrupted` 결과 한 줄(인시던트 게시와 같은
-  Slack 처리 끔 인자)을 올리고 완료 마커를 쓰고 세션을 `idle`로 둔다. 그래야 Eagle의 재시도가
-  `attempt_in_progress`/`session_busy`로 거부되지 않는다. 회귀 테스트:
+- **재시작에 끊긴 시도**는 재개하지 않고 정산한다 (`settleRestartCutIncidentAttempt`, `src/slack-handler.ts`).
+  일반 crash recovery 공지와 restart 프롬프트 턴은 없다. 종료 쪽도 인시던트 스레드에는 "🔄 서버 재시작 중"을 올리지
+  않고 복구용 표시만 남긴다. 정산 순서:
+  1. **디스크에 있던 attempt만** 정산한다 (crash record의 `incidentAttemptId`). Slack은 복구 전에 이벤트를
+     전달하므로, 그 사이 ingress가 Eagle의 재시도를 받았다면 그 시도는 살아 있는 작업이라 건드리지 않는다.
+  2. 완료 마커와 `idle`을 **await 전에 동기로** 쓴다. ingress는 이 둘이 서는 즉시 재시도를 받을 수 있다.
+  3. 그 attempt의 결론이 실제로 게시되지 않았으면(`incidentAttemptPublishedId`) host가 쓴 `interrupted` 결과
+     한 줄을 올린다(인시던트 게시와 같은 Slack 처리 끔 인자). graceful 종료는 실행 중 시도를 중단시키고, 그
+     시도는 나가면서 완료 마커는 쓰지만 결론은 게시하지 못한다 — 그래서 완료 마커가 아니라 게시 표시를 본다.
+  safeguard로 잠긴 스레드도 같은 정산을 받는다(잠금 해제 뒤 재시도가 거부되지 않도록). 회귀 테스트:
   `src/__tests__/restart-cut-incident-attempt.test.ts`.
 
 ## 5. 산출물의 출처 — collector snapshot

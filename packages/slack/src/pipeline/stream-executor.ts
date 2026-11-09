@@ -1498,6 +1498,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // (`streamContext.incidentAttempt`), not read by the content guards after
     // the stream. One value, decided here, feeds all three.
     const incidentAttempt = session.incidentRequest !== undefined;
+    // Captured now: the conclusion published below belongs to THIS attempt.
+    const incidentAttemptId = session.incidentRequest?.attempt_id;
 
     const turnContext: TurnContext = {
       channelId: channel,
@@ -2055,6 +2057,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // soma-work's words, never the person's: it cannot set a goal.
         isUserInputTurn: params.isUserInput === true && params.hostTurn !== true,
         incidentAttempt,
+        ...(incidentAttemptId
+          ? {
+              onIncidentPublished: () => {
+                session.incidentAttemptPublishedId = incidentAttemptId;
+              },
+            }
+          : {}),
         ...(session.conversationId ? { workLog: emitWorkLog } : {}),
         // The ASK_USER_QUESTION form is posted here, not by the processor
         // (handleModelCommandToolResults); tell it so its no-final fallback

@@ -260,6 +260,8 @@ interface SerializedSession {
    * that admits a retry, so it must survive a restart with the request.
    */
   incidentAttemptFinishedId?: string;
+  /** Attempt whose conclusion the host posted — a restart owes Eagle a result otherwise. */
+  incidentAttemptPublishedId?: string;
   key: string;
   ownerId: string;
   ownerName?: string;
@@ -591,6 +593,19 @@ export interface CrashRecoveredSession {
    * model can `SendMessage` each one. Absent when none.
    */
   stoppedAgents?: StoppedAgentRef[];
+  /**
+   * The incident attempt that owned the session ON DISK, read before Slack
+   * delivers anything. Recovery settles only that attempt: a retry the ingress
+   * admitted after start-up (a different `attempt_id`) is live work, not the
+   * one the restart cut.
+   */
+  incidentAttemptId?: string;
+}
+
+/** The owning incident attempt id as persisted, when it is a string. */
+function incidentAttemptOnDisk(serialized: { incidentRequest?: unknown }): { incidentAttemptId?: string } {
+  const request = serialized.incidentRequest as { attempt_id?: unknown } | null | undefined;
+  return typeof request?.attempt_id === 'string' ? { incidentAttemptId: request.attempt_id } : {};
 }
 
 /**
@@ -2035,6 +2050,7 @@ export class SessionRegistry {
       // Incident ownership comes back with it: the thread stays restricted.
       incidentRequest: archived.incidentRequest,
       incidentAttemptFinishedId: archived.incidentAttemptFinishedId,
+      incidentAttemptPublishedId: archived.incidentAttemptPublishedId,
       // Handoff enforcement state as it was: the PR-issue precondition keeps
       // applying, and a consumed budget stays consumed. An archive from
       // before the budget was kept gets none (fail closed).
@@ -3778,6 +3794,7 @@ export class SessionRegistry {
             starClearedAt: session.starClearedAt,
             lastTurnOutcome: session.lastTurnOutcome,
             incidentAttemptFinishedId: session.incidentAttemptFinishedId,
+            incidentAttemptPublishedId: session.incidentAttemptPublishedId,
             // Session-scoped `/autocompact` token override (persisted verbatim).
             autoCompactTokens: session.autoCompactTokens,
           });
@@ -3954,6 +3971,8 @@ export class SessionRegistry {
             : undefined,
         incidentAttemptFinishedId:
           typeof serialized.incidentAttemptFinishedId === 'string' ? serialized.incidentAttemptFinishedId : undefined,
+        incidentAttemptPublishedId:
+          typeof serialized.incidentAttemptPublishedId === 'string' ? serialized.incidentAttemptPublishedId : undefined,
       };
       return getArchiveStore().archive(session, key, reason, dashboardTask ? { slackless: true } : undefined) !== false;
     } catch (err) {
@@ -4290,6 +4309,10 @@ export class SessionRegistry {
           // which denies the retry rather than admitting one on bad state.
           incidentAttemptFinishedId:
             typeof serialized.incidentAttemptFinishedId === 'string' ? serialized.incidentAttemptFinishedId : undefined,
+          incidentAttemptPublishedId:
+            typeof serialized.incidentAttemptPublishedId === 'string'
+              ? serialized.incidentAttemptPublishedId
+              : undefined,
           cronJob: sanitizeCronJob(serialized.cronJob),
           titleProvisional: serialized.titleProvisional === true ? true : undefined,
           // A session saved before the mark existed (#810) was told on its first prompt if it has an SDK session.
@@ -4477,6 +4500,7 @@ export class SessionRegistry {
             workflow: serialized.workflow,
             shouldAutoResume: !sleptOnLoad && serialized.wasWorkingAtShutdown === true,
             ...(stoppedAgents.length > 0 ? { stoppedAgents } : {}),
+            ...incidentAttemptOnDisk(serialized),
           });
         } else if (!sleptOnLoad && serialized.activityState && serialized.activityState !== 'idle') {
           this._crashRecoveredSessions.push({
@@ -4490,6 +4514,7 @@ export class SessionRegistry {
             workflow: serialized.workflow,
             shouldAutoResume: serialized.activityState === 'working',
             ...(stoppedAgents.length > 0 ? { stoppedAgents } : {}),
+            ...incidentAttemptOnDisk(serialized),
           });
         }
       }

@@ -23,6 +23,37 @@ describe('SessionRegistry persistence', () => {
     }
   });
 
+  // An incident attempt's published marker survives a restart, and a session
+  // that was working names the attempt it was running in its crash record, so
+  // recovery settles that attempt and not a retry admitted after start-up.
+  it('restores the incident published marker and names the cut attempt in the crash record', () => {
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U_EAGLE', 'Eagle', 'C123', '172.001');
+    session.sessionId = 'session-incident';
+    session.incidentRequest = {
+      version: 1,
+      incident_id: 'EXT|ext:nupro365|NUPRO365 OUTAGE',
+      lifecycle_id: '172.001',
+      attempt_id: 'AT-1',
+      channel_id: 'C123',
+      parent_ts: '172.001',
+      env: 'stage2',
+      summary: 'NUPRO365 OUTAGE',
+    } as any;
+    session.incidentAttemptFinishedId = 'AT-0';
+    session.incidentAttemptPublishedId = 'AT-0';
+    session.activityState = 'working';
+
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C123', '172.001');
+    expect(restored?.incidentAttemptPublishedId).toBe('AT-0');
+    const record = reader.getCrashRecoveredSessions().find((r) => r.threadTs === '172.001');
+    expect(record?.incidentAttemptId).toBe('AT-1');
+  });
+
   it('restores action panel state but clears stale messageTs/renderKey on reload', () => {
     const writer = new SessionRegistry();
     const session = writer.createSession('U123', 'Tester', 'C123', '171.001');

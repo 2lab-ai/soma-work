@@ -3718,6 +3718,7 @@ export class SlackHandler {
     try {
       const output = buildIncidentAttemptOutput(session.incidentRequest, { kind: 'aborted' }, []);
       await this.slackApi.postSystemMessage(channel, output.text, { threadTs });
+      session.incidentAttemptPublishedId = attemptId;
     } catch (error) {
       this.logger.warn('Safeguard halt: posting the refused incident attempt result failed', {
         channel,
@@ -3742,27 +3743,47 @@ export class SlackHandler {
    * A restart cut an incident attempt mid-run (dev 2026-11-06: about 20
    * restarts in one day). The ordinary crash recovery does not fit an incident
    * thread: its notice is noise in a thread only the Eagle-eye poller reads,
-   * and its resume prompt is not an incident request. Worse, the cut attempt
-   * never wrote its finished marker and the restored session is still
-   * `working`, so the ingress refused every retry from Eagle
-   * (`attempt_in_progress`, then `session_busy`).
+   * and its resume prompt is not an incident request. Worse, a hard crash left
+   * no finished marker and the restored session `working`, so the ingress
+   * refused every retry from Eagle (`attempt_in_progress`, then
+   * `session_busy`); a graceful one wrote the marker on the way out but never
+   * posted the conclusion, so Eagle heard nothing.
    *
-   * So the attempt ends like any unfinished one: ONE host-authored result line
-   * (`interrupted`, the incident contract — never silence), published with
-   * Slack's own processing off like every incident conclusion, then the
-   * finished marker and an idle session. Eagle reads `interrupted` and may ask
-   * once more; the ingress admits that retry.
+   * So the attempt ends like any unfinished one, in this order:
+   * 1. Only the attempt that owned the session ON DISK (`attemptOnDisk`).
+   *    Slack delivers events before recovery runs, so the ingress may already
+   *    have handed the thread to Eagle's retry — that one is live work.
+   * 2. Finished marker and `idle` first, synchronously: the ingress may admit
+   *    the retry the moment they are set, and nothing set after an await may
+   *    land on that retry.
+   * 3. Then, unless this attempt's conclusion was already posted
+   *    (`incidentAttemptPublishedId`), ONE host-authored `interrupted` result,
+   *    published with Slack's own processing off like every incident
+   *    conclusion. Eagle reads it and may ask once more.
    */
   private async settleRestartCutIncidentAttempt(
     session: ConversationSession,
     channel: string,
     threadTs: string | undefined,
+    attemptOnDisk: string | undefined,
   ): Promise<void> {
     const request = session.incidentRequest;
     if (!request) return;
     const attemptId = request.attempt_id;
-    const cut = session.incidentAttemptFinishedId !== attemptId;
-    if (cut) {
+    if (attemptOnDisk !== undefined && attemptOnDisk !== attemptId) {
+      this.logger.info('Crash recovery: a newer incident attempt owns the thread — left untouched', {
+        channel,
+        threadTs,
+        attemptOnDisk,
+        attemptId,
+      });
+      return;
+    }
+    const owed = session.incidentAttemptPublishedId !== attemptId;
+    session.incidentAttemptFinishedId = attemptId;
+    session.activityState = 'idle';
+    this.saveSettledIncidentSessions(channel, threadTs);
+    if (owed) {
       try {
         const output = buildIncidentAttemptOutput(request, { kind: 'aborted' }, []);
         await this.app.client.chat.postMessage({
@@ -3774,6 +3795,12 @@ export class SlackHandler {
           parse: 'none',
           mrkdwn: false,
         });
+        // Only while this attempt still owns the session: a retry admitted
+        // during the post records its own conclusion.
+        if (session.incidentRequest?.attempt_id === attemptId) {
+          session.incidentAttemptPublishedId = attemptId;
+          this.saveSettledIncidentSessions(channel, threadTs);
+        }
       } catch (error) {
         this.logger.warn('Crash recovery: posting the cut incident attempt result failed', {
           channel,
@@ -3782,9 +3809,16 @@ export class SlackHandler {
           error: (error as Error)?.message ?? String(error),
         });
       }
-      session.incidentAttemptFinishedId = attemptId;
     }
-    session.activityState = 'idle';
+    this.logger.info('Crash recovery: incident attempt cut by the restart settled, not resumed', {
+      channel,
+      threadTs,
+      attemptId,
+      posted: owed,
+    });
+  }
+
+  private saveSettledIncidentSessions(channel: string, threadTs: string | undefined): void {
     try {
       this.claudeHandler.saveSessions?.();
     } catch (error) {
@@ -3794,12 +3828,6 @@ export class SlackHandler {
         error: (error as Error)?.message ?? String(error),
       });
     }
-    this.logger.info('Crash recovery: incident attempt cut by the restart settled, not resumed', {
-      channel,
-      threadTs,
-      attemptId,
-      posted: cut,
-    });
   }
 
   private async holdForOwnerApproval(
@@ -7928,16 +7956,26 @@ export class SlackHandler {
         typeof session.shouldAutoResume === 'boolean' ? session.shouldAutoResume : session.activityState === 'working';
       // A safeguards-halted session is not resumed and not told to retry: it
       // waits for an admin to lift the lock (its notice already says so).
+      // An Eagle incident thread is bot-to-bot: no notice, no ordinary resume.
+      // Before the safeguards check: a halted thread still owes Eagle a result
+      // for the attempt the restart cut, and the ingress still needs its marker
+      // to admit a retry once an admin unlocks it.
+      const live = this.claudeHandler.getSessionByKey?.(session.sessionKey);
+      if (live?.incidentRequest) {
+        if (isWorking) {
+          await this.settleRestartCutIncidentAttempt(
+            live,
+            session.channelId,
+            session.threadTs,
+            session.incidentAttemptId,
+          );
+        }
+        continue;
+      }
       if (this.claudeHandler.getSessionByKey?.(session.sessionKey)?.safeguardHalt) {
         this.logger.info('Crash recovery skipped — session halted by a safeguards flag', {
           sessionKey: session.sessionKey,
         });
-        continue;
-      }
-      // An Eagle incident thread is bot-to-bot: no notice, no ordinary resume.
-      const live = this.claudeHandler.getSessionByKey?.(session.sessionKey);
-      if (live?.incidentRequest) {
-        if (isWorking) await this.settleRestartCutIncidentAttempt(live, session.channelId, session.threadTs);
         continue;
       }
       if (isWorking) this.restartCutSessionKeys.add(session.sessionKey);

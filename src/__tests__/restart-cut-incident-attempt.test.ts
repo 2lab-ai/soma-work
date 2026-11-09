@@ -46,10 +46,18 @@ function ordinarySession(): ConversationSession {
   return { channelId: 'C0EAGLE', threadTs: '1794191513.354979', ownerId: 'U1', activityState: 'working' } as any;
 }
 
-async function boot(session: ConversationSession, working: boolean) {
+async function boot(
+  session: ConversationSession,
+  working: boolean,
+  opts: { diskAttemptId?: string | null; safeguardHalt?: boolean; onPost?: () => void } = {},
+) {
   const key = 'C0EAGLE-1794191513.354979';
   const sessions = new Map<string, ConversationSession>([[key, session]]);
-  const postMessage = vi.fn().mockResolvedValue({ ok: true, ts: '1794191600.000100' });
+  const postMessage = vi.fn(async (_args: Record<string, unknown>) => {
+    opts.onPost?.();
+    return { ok: true, ts: '1794191600.000100' };
+  });
+  if (opts.safeguardHalt) (session as any).safeguardHalt = { at: 1 };
   const app = { client: { chat: { postMessage } }, assistant: vi.fn() } as any;
   const claudeHandler = {
     getAllSessions: vi.fn().mockReturnValue(sessions),
@@ -62,6 +70,8 @@ async function boot(session: ConversationSession, working: boolean) {
         activityState: working ? 'working' : 'idle',
         shouldAutoResume: working,
         sessionKey: key,
+        // What the load read from disk before Slack delivered anything.
+        ...(opts.diskAttemptId === null ? {} : { incidentAttemptId: opts.diskAttemptId ?? REQUEST.attempt_id }),
       },
     ]),
     clearCrashRecoveredSessions: vi.fn(),
@@ -106,12 +116,64 @@ describe('restart — a cut incident attempt is settled, never resumed', () => {
     expect(claudeHandler.saveSessions).toHaveBeenCalled();
   });
 
-  it('posts nothing for an attempt that had already finished, and still frees the session', async () => {
-    const session = incidentSession({ incidentAttemptFinishedId: REQUEST.attempt_id } as any);
+  it('posts nothing for an attempt whose conclusion was already posted, and still frees the session', async () => {
+    const session = incidentSession({
+      incidentAttemptFinishedId: REQUEST.attempt_id,
+      incidentAttemptPublishedId: REQUEST.attempt_id,
+    } as any);
     const { postMessage, handleMessage } = await boot(session, true);
 
     expect(postMessage).not.toHaveBeenCalled();
     expect(handleMessage).not.toHaveBeenCalled();
+    expect(session.activityState).toBe('idle');
+  });
+
+  // Graceful restart: shutdown aborted the run, the run wrote its finished
+  // marker on the way out, and its conclusion was never posted (review of
+  // c6713cf7, finding 1). The result is still owed.
+  it('still posts the result when the cut run wrote its finished marker but never posted', async () => {
+    const session = incidentSession({ incidentAttemptFinishedId: REQUEST.attempt_id } as any);
+    const { postMessage } = await boot(session, true);
+
+    expect(postMessage).toHaveBeenCalledTimes(1);
+    expect(postMessage.mock.calls[0][0].text).toContain('"status":"interrupted"');
+    expect(session.incidentAttemptPublishedId).toBe(REQUEST.attempt_id);
+  });
+
+  // Slack delivers events before recovery runs, so the ingress may already have
+  // handed the thread to Eagle's retry (review finding 2). That attempt is live
+  // work: no result for it, no marker, no state change.
+  it('leaves a retry that took the thread over before recovery untouched', async () => {
+    const session = incidentSession({
+      activityState: 'working',
+      incidentRequest: { ...REQUEST, attempt_id: 'AT-2' },
+    } as any);
+    const { postMessage, handleMessage } = await boot(session, true);
+
+    expect(postMessage).not.toHaveBeenCalled();
+    expect(handleMessage).not.toHaveBeenCalled();
+    expect(session.incidentAttemptFinishedId).toBeUndefined();
+    expect(session.activityState).toBe('working');
+  });
+
+  // The ingress can admit the retry the moment the marker and idle are set; if
+  // they were set after the post's await, they would land on the retry.
+  it('frees the thread before it awaits the post', async () => {
+    const session = incidentSession();
+    const seen: Array<{ marker?: string; state?: string }> = [];
+    await boot(session, true, {
+      onPost: () => seen.push({ marker: session.incidentAttemptFinishedId, state: session.activityState }),
+    });
+
+    expect(seen).toEqual([{ marker: REQUEST.attempt_id, state: 'idle' }]);
+  });
+
+  it('settles a cut attempt even in a thread the safeguards halted', async () => {
+    const session = incidentSession();
+    const { postMessage } = await boot(session, true, { safeguardHalt: true });
+
+    expect(postMessage).toHaveBeenCalledTimes(1);
+    expect(session.incidentAttemptFinishedId).toBe(REQUEST.attempt_id);
     expect(session.activityState).toBe('idle');
   });
 

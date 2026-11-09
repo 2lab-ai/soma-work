@@ -80,6 +80,7 @@ describe('session archive — revive support (T4.2)', () => {
       sessionWorkingDir: CWD,
       incidentRequest,
       incidentAttemptFinishedId: 'A-0',
+      incidentAttemptPublishedId: 'A-0',
     } as unknown as ConversationSession;
     store.archive(session, 'work:C1:800.001', 'sleep_expired');
     const [file] = fs.readdirSync(archiveDir);
@@ -87,6 +88,7 @@ describe('session archive — revive support (T4.2)', () => {
     expect(saved.sessionWorkingDir).toBe(CWD);
     expect(saved.incidentRequest).toEqual(incidentRequest);
     expect(saved.incidentAttemptFinishedId).toBe('A-0');
+    expect(saved.incidentAttemptPublishedId).toBe('A-0');
   });
 
   it('load() opens the exact archive the card names, not the latest one for the thread', () => {

@@ -705,6 +705,14 @@ export interface ConversationSession {
    * between "still running" and "finished, retryable".
    */
   incidentAttemptFinishedId?: string;
+  /**
+   * `attempt_id` of the incident attempt whose conclusion the HOST actually
+   * posted to the thread. Distinct from the finished marker: a graceful
+   * shutdown aborts a running attempt, which still writes its finished marker
+   * on the way out, but its conclusion is never posted — the restart side
+   * reads this to know a result is still owed to Eagle.
+   */
+  incidentAttemptPublishedId?: string;
   // Source working directories created during PR review/fix (tracked for cleanup on session end)
   sourceWorkingDirs?: string[];
   // Compaction-Aware Context Preservation (#196):
