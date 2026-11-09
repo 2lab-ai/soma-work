@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // #1070 — a question the model asked for an admin (`audience: 'admins'`) is also a card on the dashboard's
 // 관리자 승인 screen, answered through the same choice path as the session view, as the admin.
@@ -7,6 +7,8 @@ vi.mock('../../admin-utils', () => ({
   isAdminUser: vi.fn((userId: string) => userId === 'U_ADMIN'),
 }));
 
+import { setInstructionApprovals } from '../../instruction-approval';
+import { ChoiceActionHandler } from '../actions/choice-action-handler';
 import { sessionQuestionAdminApprovalAdapter } from '../session-question-admin-approval';
 
 const QUESTION = {
@@ -84,6 +86,7 @@ describe('sessionQuestionAdminApprovalAdapter', () => {
     });
     expect(answer).toHaveBeenCalledWith('C123:root-ts', 'approve', '승인한다', '시험 카드를 승인할까요?', 'U_ADMIN', {
       adminAnswer: true,
+      onClaimed: expect.any(Function),
     });
     expect(await adapter.resolved(0)).toEqual([
       {
@@ -132,5 +135,67 @@ describe('sessionQuestionAdminApprovalAdapter', () => {
     }
     const { adapter } = adapterWith([['C123:root-ts', session()]], refusing('slack down'));
     await expect(adapter.answer('C123:root-ts~choice-ts', 'approve', 'U_ADMIN')).rejects.toThrow('slack down');
+  });
+});
+
+describe('sessionQuestionAdminApprovalAdapter wired to the real ChoiceActionHandler (#1070 review)', () => {
+  afterEach(() => setInstructionApprovals(undefined));
+
+  function wired(turn: () => Promise<void>) {
+    const s = session();
+    // The owner has not approved anyone: an answer from someone else would be held.
+    setInstructionApprovals({ allows: vi.fn().mockReturnValue(false) } as any);
+    const messageHandler = vi.fn((_event: any, _say: any) => turn());
+    const threadPanel = {
+      resolveChoice: vi.fn().mockResolvedValue(true),
+      clearChoice: vi.fn().mockResolvedValue(undefined),
+      attachChoice: vi.fn().mockResolvedValue(undefined),
+    };
+    const handler = new ChoiceActionHandler(
+      {
+        slackApi: { updateMessage: vi.fn().mockResolvedValue(undefined), postEphemeral: vi.fn() },
+        claudeHandler: { getSessionByKey: vi.fn().mockReturnValue(s), setActivityStateByKey: vi.fn() },
+        messageHandler,
+        threadPanel,
+      } as any,
+      { get: () => undefined, set() {}, delete() {}, getFormsBySession: () => new Map() } as any,
+    );
+    const adapter = sessionQuestionAdminApprovalAdapter({
+      sessions: () => [['C123:root-ts', s]],
+      answer: (...args) => handler.handleChoiceFromDashboard(...args),
+    });
+    return { adapter, messageHandler, threadPanel };
+  }
+
+  it('answers as soon as the question is taken, while the turn runs — as the owner, naming the admin', async () => {
+    const { adapter, messageHandler, threadPanel } = wired(() => new Promise<void>(() => {}));
+    await expect(adapter.answer('C123:root-ts~choice-ts', 'approve', 'U_ADMIN')).resolves.toEqual({
+      ok: true,
+      outcome: 'approved',
+    });
+    await vi.waitFor(() => expect(messageHandler).toHaveBeenCalled());
+    // The owner's session carries on with the owner's own identity and permissions, not the admin's.
+    expect(messageHandler.mock.calls[0][0]).toMatchObject({ user: 'U_OWNER', text: 'approve' });
+    expect(messageHandler.mock.calls[0][0]).not.toHaveProperty('routeContext');
+    expect(threadPanel.resolveChoice.mock.calls[0][3]).toContain('<@U_ADMIN>');
+  });
+
+  it('a second answer to the same question is refused as already answered (the real handler’s refusal)', async () => {
+    const { adapter, messageHandler } = wired(() => new Promise<void>(() => {}));
+    const [first, second] = await Promise.all([
+      adapter.answer('C123:root-ts~choice-ts', 'approve', 'U_ADMIN'),
+      adapter.answer('C123:root-ts~choice-ts', 'stop', 'U_ADMIN'),
+    ]);
+    expect(first).toEqual({ ok: true, outcome: 'approved' });
+    expect(second).toMatchObject({ ok: false, reason: 'already_answered' });
+    await vi.waitFor(() => expect(messageHandler).toHaveBeenCalledTimes(1));
+  });
+
+  it('a turn that fails after the answer was taken does not turn the answer into an error', async () => {
+    const { adapter } = wired(() => Promise.reject(new Error('turn crashed')));
+    await expect(adapter.answer('C123:root-ts~choice-ts', 'approve', 'U_ADMIN')).resolves.toEqual({
+      ok: true,
+      outcome: 'approved',
+    });
   });
 });

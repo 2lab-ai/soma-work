@@ -203,12 +203,6 @@ export interface MessageEvent {
      */
     goalContinuationSpent?: { goalId: string; epoch: number };
     /**
-     * #1070 — an admin's answer, from the dashboard's 관리자 승인 card, to a question the model asked with
-     * `audience: 'admins'`. Set only by `ChoiceActionHandler.handleChoiceFromDashboard` after it checked the
-     * answerer is an admin and the question is for admins; the owner gate (`ownerApprovalHold`) lets it run.
-     */
-    adminAnswer?: boolean;
-    /**
      * True only for the crash-recovery auto-resume turn (`autoResumeSession`)
      * — the turn that carries on a session a restart cut. With
      * `goalContinuation` it is how the follow-up host tells a real resume

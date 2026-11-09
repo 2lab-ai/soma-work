@@ -3631,8 +3631,6 @@ export class SlackHandler {
     if (event.channel.startsWith('D')) return undefined;
     // Host replays of a turn already admitted (post-compact, goal continuation) are not new words.
     if (event.routeContext?.compactRedispatch || event.routeContext?.goalContinuation) return undefined;
-    // #1070 — an admin's answer to a question asked for admins: the decision is the admin's, not the owner's.
-    if (event.routeContext?.adminAnswer && isAdminUser(event.user)) return undefined;
     // Nothing to run: no words, no files.
     if (!(event.text ?? '').trim() && !event.files?.length) return undefined;
     const session = this.claudeHandler?.getSession?.(event.channel, event.thread_ts);

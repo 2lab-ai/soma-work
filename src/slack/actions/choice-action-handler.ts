@@ -1071,8 +1071,11 @@ export class ChoiceActionHandler {
     label: string,
     question: string,
     userId: string,
-    /** #1070 — from the 관리자 승인 card: an admin answering a question asked for admins. */
-    opts: { adminAnswer?: boolean } = {},
+    /**
+     * #1070 — from the 관리자 승인 card: an admin answering a question asked for admins. `onClaimed` runs once
+     * the question is taken for this answer, before the turn it starts (which can run for minutes).
+     */
+    opts: { adminAnswer?: boolean; onClaimed?: () => void } = {},
   ): Promise<void> {
     const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
     if (!session) {
@@ -1123,6 +1126,7 @@ export class ChoiceActionHandler {
     this.logger.info('Dashboard choice selected', { sessionKey, choiceId, label, userId });
     // Before the first await: a second submission finds the question taken.
     const claim = this.claimDashboardAnswer(session, sessionKey);
+    opts.onClaimed?.();
     try {
       await this.sendDashboardChoice(session, sessionKey, claim, choiceId, label, question, userId, adminAnswer);
     } finally {
@@ -1141,7 +1145,10 @@ export class ChoiceActionHandler {
     userId: string,
     adminAnswer = false,
   ): Promise<void> {
-    const routeContext = adminAnswer ? { routeContext: { adminAnswer: true } } : {};
+    // #1070 — an admin's answer runs as the session's owner (their session, their permissions); the thread names
+    // the admin who answered. It is the owner's turn, so the owner gate has nothing to hold.
+    const turnUser = adminAnswer && session.ownerId ? session.ownerId : userId;
+    const via = adminAnswer ? `대시보드 · <@${userId}>` : '대시보드';
     const channel = session.channelId;
     const threadTs = this.resolveSessionThreadTs(session, session.threadTs);
     const choiceMessageTs = session.actionPanel?.choiceMessageTs;
@@ -1158,7 +1165,7 @@ export class ChoiceActionHandler {
     const pcSingle = session.actionPanel?.pendingChoice;
     const canUseDashboardP3 = !!this.ctx.threadPanel && !!pcSingle && pcSingle.kind === 'single';
     if (canUseDashboardP3 && channel) {
-      const completedText = `✅ *${question}*\n${picked} _(대시보드)_`;
+      const completedText = `✅ *${question}*\n${picked} _(${via})_`;
       const completedBlocks = [
         {
           type: 'section',
@@ -1180,12 +1187,11 @@ export class ChoiceActionHandler {
           const say = this.createSayFn(channel);
           await this.ctx.messageHandler(
             {
-              user: userId,
+              user: turnUser,
               channel,
               thread_ts: threadTs,
               ts: String(Date.now() / 1000),
               text: turnText,
-              ...routeContext,
             },
             say,
           );
@@ -1206,7 +1212,7 @@ export class ChoiceActionHandler {
           type: 'section',
           text: {
             type: 'mrkdwn',
-            text: `✅ *${question}*\n${picked} _(대시보드)_`,
+            text: `✅ *${question}*\n${picked} _(${via})_`,
           },
         },
       ];
@@ -1216,7 +1222,7 @@ export class ChoiceActionHandler {
           await this.ctx.slackApi.updateMessage(
             channel,
             targetTs,
-            `✅ *${question}*\n${picked} (대시보드)`,
+            `✅ *${question}*\n${picked} (${via})`,
             completedBlocks,
             [],
           );
@@ -1281,7 +1287,7 @@ export class ChoiceActionHandler {
       // Send choiceId (or the direct input) as user message to Claude
       const say = this.createSayFn(channel);
       await this.ctx.messageHandler(
-        { user: userId, channel, thread_ts: threadTs, ts: String(Date.now() / 1000), text: turnText, ...routeContext },
+        { user: turnUser, channel, thread_ts: threadTs, ts: String(Date.now() / 1000), text: turnText },
         say,
       );
     } catch (error) {

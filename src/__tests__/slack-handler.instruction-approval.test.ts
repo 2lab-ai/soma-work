@@ -248,31 +248,6 @@ describe('SlackHandler — someone else’s instruction waits for the owner (#76
     expect(handlerAny.inputProcessor.routeCommand).toHaveBeenCalledTimes(1);
   });
 
-  it('#1070 — an admin’s answer to a question asked for admins runs; the same mark from a non-admin is held', async () => {
-    const adminUtils = await import('../admin-utils');
-    const before = process.env.ADMIN_USERS;
-    process.env.ADMIN_USERS = 'U_ADMIN';
-    adminUtils.resetAdminUsersCache();
-    try {
-      await handler.handleMessage(
-        message({ user: 'U_ADMIN', ts: '303.1', text: 'approve', routeContext: { adminAnswer: true } }),
-        say,
-      );
-      expect(startWithContinuation).toHaveBeenCalledTimes(1);
-      expect(approvals.pendingFor(SESSION_KEY)).toEqual([]);
-      await handler.handleMessage(
-        message({ user: 'U_OTHER', ts: '303.2', text: 'approve', routeContext: { adminAnswer: true } }),
-        say,
-      );
-      expect(startWithContinuation).toHaveBeenCalledTimes(1);
-      expect(approvals.pendingFor(SESSION_KEY)[0]).toMatchObject({ requesterId: 'U_OTHER' });
-    } finally {
-      if (before === undefined) delete process.env.ADMIN_USERS;
-      else process.env.ADMIN_USERS = before;
-      adminUtils.resetAdminUsersCache();
-    }
-  });
-
   it('a host turn (synthetic) and a top-level message are not held', async () => {
     await handler.handleMessage(message({ user: 'U_OTHER', ts: '301.0', synthetic: true }), say);
     expect(approvals.pendingFor(SESSION_KEY)).toEqual([]);
