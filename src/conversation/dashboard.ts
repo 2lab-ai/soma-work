@@ -6574,6 +6574,9 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 @media (max-width: 639px) {
   .phone-dock { display: block; }
   .new-task-fab.ui-fab { display: none !important; }
+  /* 600–639px: the toaster is already in its wide placement (bottom right; it goes top-centre under 600px and sets its
+     own narrow offset there), so its bottom offset clears the dock and the home indicator. */
+  ui-toaster { --ts-offset: calc(var(--ui-dock-h, 60px) + 12px + env(safe-area-inset-bottom, 0px)); }
   .inbox-head { margin-bottom: 10px; }
   .inbox-head > .crumbs { display: none; }
   .inbox-tools { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; flex: 1 1 100%; width: 100%; margin-left: 0; }
@@ -10358,8 +10361,9 @@ function renderBoard(board, partial) {
       announce: { needs: (board.waiting || []).length + kidCounts.needs, running: (board.working || []).length + kidCounts.running },
     };
     inboxPaint(kb);
-    // The phone dock's 보드 badge: the same count the board announces.
-    if (typeof syncDockNeeds === 'function') syncDockNeeds(kb.data.announce.needs);
+    // The phone dock's 보드 badge: the same count the board announces — only for a certified board (a partial one,
+    // painted under a failed first load, would publish an incomplete count as the truth).
+    if (typeof syncDockNeeds === 'function') syncDockNeeds(partial ? 0 : kb.data.announce.needs);
   }
   // The CRON lane (Option A): each job's lead run in its own one-column element.
   paintCronLaneCards(cronLaneSlots(cronPlan));
