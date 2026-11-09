@@ -7,8 +7,8 @@
  * Every step of a turn already reaches the daemon as a work-log entry
  * (src/index.ts wires the stream executor's `appendWorkLog` provider):
  *
- *   tool        mcp__slack-mcp__send_file|send_media  raw = the tool input JSON ({ file_path, filename, title, … })
- *   tool_result same tool                              raw = the tool's JSON reply ({ uploaded, file_id, filename, size, permalink, … })
+ *   tool        mcp__slack-mcp__send_file|send_media  raw = the tool input JSON ({ file_path, filename, title, artifact_key, … })
+ *   tool_result same tool                              raw = the tool's JSON reply ({ uploaded, file_id, filename, size, permalink, sha256, … })
  *   tool_result mcp__slack-mcp__send_link              raw = { sent, url, title, ts, permalink } — the reply alone
  *                                                       carries the link, so its call needs no pairing
  *
@@ -58,12 +58,16 @@ interface PendingUpload {
   url?: string;
   displayName: string;
   title?: string;
+  /** #1074 — the model's `artifact_key`. */
+  key?: string;
   snapshot: Promise<ArtifactSnapshot | null>;
 }
 
 /** Calls without a result yet, per conversation. Bounded: a turn that dies mid-upload must not leak. */
 const MAX_PENDING = 32;
 const pendingByConversation = new Map<string, PendingUpload[]>();
+/** The last upload result being recorded, per conversation: the next one records after it (#1074 r2). */
+const recordChains = new Map<string, Promise<void>>();
 
 function parseJsonObject(raw: string | undefined): Record<string, unknown> | null {
   if (!raw) return null;
@@ -86,6 +90,7 @@ function pendingFromCall(entry: CaptureEntry, input: Record<string, unknown> | n
     url: str(input?.url),
     displayName: str(input?.filename) ?? (filePath ? path.basename(filePath) : ''),
     title: str(input?.title),
+    key: str(input?.artifact_key),
   };
 }
 
@@ -134,6 +139,7 @@ function uploadReply(entry: CaptureEntry) {
     permalink: str(reply?.permalink),
     url: str(reply?.url),
     size: typeof reply?.size === 'number' ? reply.size : undefined,
+    sha256: str(reply?.sha256),
   };
 }
 
@@ -172,26 +178,40 @@ export function captureArtifactFromWorkLog(
       const queue = pendingByConversation.get(conversationId) ?? [];
       const pending = takeMatching(queue, entry.tool, entry.toolUseId, reply.filename);
       if (queue.length === 0) pendingByConversation.delete(conversationId);
-      return (async () => {
-        const snap = pending ? await pending.snapshot : null;
-        if (!reply.ok) {
-          await store.discardSnapshot(conversationId, snap);
-          return;
-        }
-        await store.recordSlackUpload({
-          conversationId,
-          snapshot: snap,
-          filename: reply.filename ?? pending?.displayName,
-          title: pending?.title,
-          slackFileId: reply.fileId,
-          permalink: reply.permalink,
-          url: reply.url ?? pending?.url,
-          size: reply.size,
-          tool: entry.tool?.replace(/^mcp__slack-mcp__/, ''),
-          turnId: entry.turnId,
-          now: entry.ts,
-        });
-      })().catch((err) => logger.warn(`Upload artifact not recorded for ${conversationId}`, err));
+      // #1074 r2 — results record one after another, in the order they arrived: a slow snapshot of the first upload
+      // must not let the second become the earlier version of the same artifact.
+      const prev = recordChains.get(conversationId) ?? Promise.resolve();
+      const run = prev
+        .then(async () => {
+          const snap = pending ? await pending.snapshot : null;
+          if (!reply.ok) {
+            await store.discardSnapshot(conversationId, snap);
+            return;
+          }
+          await store.recordSlackUpload({
+            conversationId,
+            snapshot: snap,
+            filename: reply.filename ?? pending?.displayName,
+            title: pending?.title,
+            slackFileId: reply.fileId,
+            permalink: reply.permalink,
+            url: reply.url ?? pending?.url,
+            size: reply.size,
+            tool: entry.tool?.replace(/^mcp__slack-mcp__/, ''),
+            turnId: entry.turnId,
+            now: entry.ts,
+            // The model's own artifact_key, from the call. The reply's `artifact_key` is slack-mcp's derived key
+            // (`name:…`, `key:…`) — the store derives that itself; passing it back would wrap it again (#1074 r1).
+            key: pending?.key,
+            sha256: reply.sha256,
+          });
+        })
+        .catch((err) => logger.warn(`Upload artifact not recorded for ${conversationId}`, err));
+      recordChains.set(conversationId, run);
+      void run.then(() => {
+        if (recordChains.get(conversationId) === run) recordChains.delete(conversationId);
+      });
+      return run;
     }
   } catch (err) {
     logger.warn('Artifact capture failed', err);
@@ -263,6 +283,8 @@ export function backfillArtifactsFromWorkLog(
             tool: e.tool.replace(/^mcp__slack-mcp__/, ''),
             turnId: e.turnId,
             now: e.ts,
+            key: call?.key,
+            sha256: reply.sha256,
           });
         }
       }
@@ -284,5 +306,6 @@ export function backfillArtifactsFromWorkLog(
 /** Tests only: forget pending uploads. */
 export function resetArtifactCaptureForTests(): void {
   pendingByConversation.clear();
+  recordChains.clear();
   backfillInflight.clear();
 }
