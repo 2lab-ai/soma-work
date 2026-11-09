@@ -8369,7 +8369,7 @@ var _adminState = Object.create(null); // id → this page's answer (sending · 
 var _adminInboxOpen = false;
 var _adminPushSeq = 0; // WebSocket snapshots seen — a GET that started before a push is older than it
 var _adminInboxReturn = null;
-var ADMIN_KIND_LABEL = { env_skill: '환경 스킬', mcp_grant: 'MCP 권한', new_user: '새 사용자', bot_delete: '메시지 삭제' };
+var ADMIN_KIND_LABEL = { env_skill: '환경 스킬', mcp_grant: 'MCP 권한', new_user: '새 사용자', bot_delete: '메시지 삭제', devops_broker: 'devops 승인' };
 
 function adminInboxLoad() {
   if (!_viewerIsAdmin || !_viewerUserId) return;
@@ -8558,6 +8558,9 @@ function closeAdminInbox() {
 async function answerAdminApproval(id, choiceId) {
   var a = _adminLast[id];
   if (!a) return null;
+  // devops broker card (#1051): its one choice opens the viewer's own Slack card, where it is decided.
+  // Nothing is sent from here — the dashboard runs as the model's OS user, so it can never decide one.
+  if (a.kind === 'devops_broker') return openDevopsSlackCard(id, a);
   var cur = _adminState[id];
   if (cur && (cur.status === 'sending' || cur.status === 'resolved')) return cur;
   _adminState[id] = a.card === 'question' ? { status: 'sending', choiceId: choiceId } : { status: 'sending', decision: choiceId };
@@ -8592,6 +8595,30 @@ async function answerAdminApproval(id, choiceId) {
   paintAdminInbox();
   adminInboxLoad();
   return st;
+}
+// The viewer's own card only: another admin's DM would not open for them.
+function devopsSlackLink(a) {
+  var links = (a && a.links) || [];
+  for (var i = 0; i < links.length; i++) if (links[i] && links[i].admin === _viewerUserId) return String(links[i].url || '');
+  return '';
+}
+function devopsIsSlackLink(url) {
+  try {
+    var u = new URL(url);
+    return u.protocol === 'https:' && /[.]slack[.]com$/.test(u.hostname);
+  } catch (_e) { return false; }
+}
+function openDevopsSlackCard(id, a) {
+  var url = devopsSlackLink(a);
+  if (!devopsIsSlackLink(url)) {
+    var miss = { status: 'error', message: 'Slack 카드 링크가 없어요 — Slack의 soma devops approvals 앱 DM에서 이 카드를 여세요', retry: false };
+    _adminState[id] = miss;
+    paintAdminInbox();
+    return miss;
+  }
+  window.open(url, '_blank', 'noopener');
+  dashToast({ title: 'Slack 카드를 열었어요', description: adminApprovalTitle(a) + ' — 거기서 승인·거부하면 이 카드도 사라져요', tone: 'neutral' });
+  return _adminState[id] || null;
 }
 (function initAdminInbox() {
   var d = document.getElementById('admin-inbox-drawer');
