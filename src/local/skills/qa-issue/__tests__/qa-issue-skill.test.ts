@@ -215,3 +215,37 @@ describe('qa-issue computes a refused compare from the commits list', () => {
     expect(md).not.toContain('git answer');
   });
 });
+
+/**
+ * A job log read with `api … actions/jobs/<id>/logs` never answers: gh refuses to print a body with terminal escape
+ * sequences, the override flag is outside the gh_read policy, and `--jq` cannot parse the text. `run view --job --log`
+ * is allowed and prints the same log, a few hundred KB, so the skill names it and the step-name column.
+ */
+describe('qa-issue reads a job log with run view, never through api', () => {
+  const github = section('GitHub reads');
+  const jobLogs = github.slice(github.indexOf('**Job logs.**'), github.indexOf('**Compare via commits list.**'));
+
+  it('sits after Paging, before the compare fallback', () => {
+    expect(github).toContain('**Job logs.**');
+    expect(github.indexOf('Paging:')).toBeLessThan(github.indexOf('**Job logs.**'));
+    expect(github.indexOf('**Job logs.**')).toBeLessThan(github.indexOf('**Compare via commits list.**'));
+  });
+
+  it('prescribes run view by job id, with the failed-steps variant and where the job id comes from', () => {
+    expect(jobLogs).toContain('`["run", "view", "-R", "<owner/repo>", "--job", "<job id>", "--log"]`');
+    expect(jobLogs).toContain('`--log-failed`');
+    expect(jobLogs).toContain('`repos/<owner/repo>/actions/runs/<run-id>/jobs`');
+  });
+
+  it('forbids the api form and says why', () => {
+    expect(jobLogs).toContain('never `api …/actions/jobs/<job id>/logs`');
+    expect(jobLogs).toMatch(/gh refuses to print it[^\n]*the policy refuses the flag/);
+    expect(md).not.toMatch(/`repos\/[^`]*\/actions\/jobs\//);
+  });
+
+  it('picks lines by the step-name column and keeps a truncated output a failed read', () => {
+    expect(jobLogs).toContain('hundreds of KB');
+    expect(jobLogs).toContain('step-name column');
+    expect(jobLogs).toContain('A truncated output is a failed read.');
+  });
+});
