@@ -30,6 +30,8 @@ describe('createForkExecutor', () => {
       undefined, // abortController
       undefined, // sessionId
       undefined, // cwd
+      undefined, // effort
+      { tenantUserId: undefined }, // no user → the shared llmux key
     );
   });
 
@@ -60,6 +62,8 @@ describe('createForkExecutor', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
+      { tenantUserId: undefined },
     );
   });
 
@@ -77,6 +81,28 @@ describe('createForkExecutor', () => {
       undefined, // abortController
       'session-abc', // sessionId for fork
       '/tmp/work', // cwd
+      undefined, // effort
+      { tenantUserId: undefined },
+    );
+  });
+
+  // llmux tenant keys: the summary is made for the session's user, so the
+  // dispatch carries their id and dispatchOneShot meters it under their key.
+  it('forwards the tenant user to dispatchOneShot', async () => {
+    mockHandler.dispatchOneShot.mockResolvedValue('Summary');
+    const executor = createForkExecutor(mockHandler as any);
+
+    await executor('prompt', 'claude-opus-4-6', 'session-abc', '/tmp/work', undefined, 'U_DAN');
+
+    expect(mockHandler.dispatchOneShot).toHaveBeenCalledWith(
+      'prompt',
+      expect.any(String),
+      'claude-opus-4-6',
+      undefined,
+      'session-abc',
+      '/tmp/work',
+      undefined,
+      { tenantUserId: 'U_DAN' },
     );
   });
 

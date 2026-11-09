@@ -1,5 +1,7 @@
 import { buildOneShotOptions, runOneShotText } from '../agent-runtime';
+import type { TenantKeyLease } from '../auth/llmux-tenant-keys';
 import { buildQueryEnv } from '../auth/query-env-builder';
+import { userTenantKey } from '../auth/user-tenant-key';
 import { config } from '../config';
 import { ensureActiveSlotAuth, NoHealthySlotError, type SlotAuthLease } from '../credentials-manager';
 import { Logger } from '../logger';
@@ -23,11 +25,23 @@ function getSummaryModel(): string {
 }
 
 /**
+ * Per-call options of the summarizers. `tenantUserId` = the user the summary is
+ * made for (the conversation's / session's user): in llmux mode the call carries
+ * their own key, so it is metered under their tenant; absent → the shared key.
+ */
+export interface SummarizerCallOptions {
+  tenantUserId?: string;
+}
+
+/**
  * Summarize assistant response into a title and body.
  * Uses Agent SDK (OAuth) — same auth path as all other Claude calls.
  * Returns null on failure (graceful degradation).
  */
-export async function summarizeResponse(content: string): Promise<SummaryResult | null> {
+export async function summarizeResponse(
+  content: string,
+  opts: SummarizerCallOptions = {},
+): Promise<SummaryResult | null> {
   let lease: SlotAuthLease | null = null;
   try {
     try {
@@ -52,7 +66,7 @@ ${truncatedContent}`;
 
     // Use options.env (not process.env) so concurrent leases don't
     // clobber the shared CLAUDE_CODE_OAUTH_TOKEN.
-    const { env } = buildQueryEnv(lease);
+    const { env } = buildQueryEnv(lease, { llmuxTenant: await userTenantKey(opts.tenantUserId) });
     const options = buildOneShotOptions({
       model: getSummaryModel(),
       systemPrompt: 'You are a concise summarizer. Output only what is requested.',
@@ -164,8 +178,9 @@ async function runTitleQuery(
   system: string,
   prompt: string,
   lease: SlotAuthLease,
+  llmuxTenant: TenantKeyLease | null,
 ): Promise<string | null> {
-  const { env } = buildQueryEnv(lease);
+  const { env } = buildQueryEnv(lease, { llmuxTenant });
   const options = buildOneShotOptions({
     model,
     systemPrompt: system,
@@ -197,6 +212,7 @@ async function runTitleQuery(
 export async function generateSessionSummaryTitle(
   userMessages: string[],
   sessionLinks?: SessionSummaryTitleLinks,
+  opts: SummarizerCallOptions = {},
 ): Promise<SessionSummaryTitleResult | null> {
   if (!userMessages || userMessages.length === 0) return null;
   let lease: SlotAuthLease | null = null;
@@ -212,9 +228,11 @@ export async function generateSessionSummaryTitle(
     }
 
     const { system, prompt } = buildPromptParts(userMessages, sessionLinks);
+    // Resolved once: the Sonnet fallback below runs for the same user.
+    const llmuxTenant = await userTenantKey(opts.tenantUserId);
 
     // Haiku first — cheap default.
-    let title = await runTitleQuery(HAIKU_MODEL, system, prompt, lease);
+    let title = await runTitleQuery(HAIKU_MODEL, system, prompt, lease, llmuxTenant);
     if (title && titlePassesQuality(title)) {
       return { title, model: 'haiku' };
     }
@@ -222,7 +240,7 @@ export async function generateSessionSummaryTitle(
       preview: title?.slice(0, 40),
     });
 
-    title = await runTitleQuery(SONNET_MODEL, system, prompt, lease);
+    title = await runTitleQuery(SONNET_MODEL, system, prompt, lease, llmuxTenant);
     if (title && titlePassesQuality(title)) {
       return { title, model: 'sonnet' };
     }

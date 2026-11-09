@@ -79,6 +79,12 @@ export interface GoalEvalCallInput {
   cwd?: string;
   /** The previous `completed=false` verdict, so the evaluator can spot a repeat. */
   previous?: GoalEvalPreviousVerdict;
+  /**
+   * The Slack user the eval is made for (the session's initiator / owner). In
+   * llmux mode the eval carries their own key, so it is metered under their
+   * tenant; absent → the shared key.
+   */
+  tenantUserId?: string;
 }
 
 /**
@@ -93,6 +99,8 @@ export type GoalEvalDispatcher = (params: {
   effort?: EffortLevel;
   abortController?: AbortController;
   cwd?: string;
+  /** See {@link GoalEvalCallInput.tenantUserId}. */
+  tenantUserId?: string;
 }) => Promise<string>;
 
 /** Load the eval system prompt from disk (kept in `src/prompt/`). */
@@ -283,6 +291,7 @@ export async function evaluateGoalCompletion(
     effort: input.effort,
     abortController: input.abortController,
     cwd: input.cwd,
+    ...(input.tenantUserId ? { tenantUserId: input.tenantUserId } : {}),
   });
 
   const verdict = parseGoalEvalVerdict(raw);

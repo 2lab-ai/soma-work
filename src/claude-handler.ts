@@ -41,8 +41,8 @@ import {
   type TurnSteeringPort,
 } from './agent-runtime/turn-input-channel';
 import { classifyTurnResult, isTurnProgressFrame } from './agent-runtime/turn-result-attribution';
-import { ensureTenantKey } from './auth/llmux-tenant-keys';
 import { buildQueryEnv } from './auth/query-env-builder';
+import { userTenantKey } from './auth/user-tenant-key';
 import { getBgKeepaliveMaxMs, getIncidentEvidenceConfig } from './config';
 import { sendCredentialAlert } from './credential-alert';
 import {
@@ -105,7 +105,7 @@ import type {
   SessionResourceUpdateResult,
   WorkflowType,
 } from './types';
-import { DEFAULT_SHOW_THINKING, type EffortLevel, userSettingsStore } from './user-settings-store';
+import { DEFAULT_SHOW_THINKING, type EffortLevel } from './user-settings-store';
 
 /** Heartbeat interval for long-running Claude CLI calls. */
 const CLAUDE_LEASE_HEARTBEAT_MS = 5 * 60 * 1000;
@@ -153,18 +153,19 @@ function classifyIncidentModelText(text: string): IncidentModelTextClass {
   return 'unmatched';
 }
 
-/**
- * Naming/contact hints for a user's llmux client key, so the key is legible in
- * llmux's own admin surfaces. Both fields are optional — an unknown user still
- * gets a key (named by Slack id alone).
- */
-function tenantKeyProfile(userId: string): { name?: string; email?: string } {
-  const settings = userSettingsStore.getUserSettings(userId);
-  return { name: settings?.slackName, email: settings?.email };
-}
-
 // Re-export for backward compatibility
 export { getAvailablePersonas, SessionExpiryCallbacks };
+
+/** Per-call options of {@link ClaudeHandler.dispatchOneShot} that only some callers can supply. */
+export interface DispatchOneShotOptions {
+  /**
+   * The Slack user this one-shot is made for (the message's sender, the
+   * session's initiator/owner, the guardian's session user). In llmux mode the
+   * call carries that user's own key, so llmux meters it under their tenant.
+   * Absent → the shared key (legacy tenant), as before.
+   */
+  tenantUserId?: string;
+}
 
 /**
  * Build the `thinking` option value for a query.
@@ -1001,8 +1002,11 @@ export class ClaudeHandler implements TurnSteeringPort {
   private getSafetyClassifier(): SafetyClassifier {
     if (!this.safetyClassifierCache) {
       this.safetyClassifierCache = buildSafetyClassifier({
-        dispatch: (userMessage, systemPrompt, opts) =>
-          this.dispatchOneShot(userMessage, systemPrompt, opts.model, opts.abortController),
+        // The guardian call is made for the session's user: it carries their llmux key.
+        dispatch: (userMessage, systemPrompt, { model, abortController, tenantUserId }) =>
+          this.dispatchOneShot(userMessage, systemPrompt, model, abortController, undefined, undefined, undefined, {
+            tenantUserId,
+          }),
       });
     }
     return this.safetyClassifierCache;
@@ -1021,7 +1025,12 @@ export class ClaudeHandler implements TurnSteeringPort {
     resumeSessionId?: string,
     cwd?: string,
     effort?: EffortLevel,
+    opts?: DispatchOneShotOptions,
   ): Promise<string> {
+    // The user this dispatch is made for gets it metered under their own llmux
+    // key — resolved once here, so every retry below reuses it. No user (or no
+    // key: non-llmux mode, issuance unavailable) → null → the shared key.
+    const llmuxTenant = await userTenantKey(opts?.tenantUserId);
     // A one-shot dispatch (notably the goal-completion eval) can hit the
     // usage cap exactly like a streaming turn. Claude Code surfaces that cap
     // as a *successful* assistant message ("You've hit your limit · resets
@@ -1073,10 +1082,11 @@ export class ClaudeHandler implements TurnSteeringPort {
         // Build a per-call env map (containing the lease's fresh token) and
         // thread it through to `query()` via `options.env`. This never mutates
         // `process.env`, so concurrent dispatches on different slots are
-        // isolated by construction. No llmux tenant key: a one-shot dispatch
-        // (classification / goal eval) carries no user identity, so these
-        // system dispatches stay on the shared key = legacy tenant.
-        const { env } = buildQueryEnv(lease);
+        // isolated by construction. A dispatch made for a user (workflow
+        // classification, goal eval, guardian, executive summary) carries that
+        // user's llmux key (`opts.tenantUserId`, resolved above); one with no
+        // user stays on the shared key = legacy tenant.
+        const { env } = buildQueryEnv(lease, { llmuxTenant });
         let result: string;
         try {
           result = await this.dispatchOneShotInner(
@@ -1445,7 +1455,7 @@ export class ClaudeHandler implements TurnSteeringPort {
       // The lease carries the daemon it belongs to, so an llmux switch during
       // issuance cannot pair this key with a different daemon's URL.
       const tenantUserId = session?.currentInitiatorId || session?.userId || slackContext?.user;
-      const llmuxTenant = tenantUserId ? await ensureTenantKey(tenantUserId, tenantKeyProfile(tenantUserId)) : null;
+      const llmuxTenant = await userTenantKey(tenantUserId);
       const { env: queryEnv } = buildQueryEnv(lease, { llmuxTenant });
       const { options, getStderrBuffer } = await buildStreamOptions(
         { queryEnv, session, abortController, workingDirectory, slackContext },

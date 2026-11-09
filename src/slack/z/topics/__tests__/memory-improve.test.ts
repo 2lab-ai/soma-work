@@ -39,6 +39,15 @@ vi.mock('../../../../token-manager', () => ({
   getTokenManager: vi.fn(() => ({})),
 }));
 
+// llmux tenant keys — null by default (the shared key, as in ccp mode), so the
+// lease-token assertions below are unaffected.
+const { tenantMock } = vi.hoisted(() => ({
+  tenantMock: vi.fn(
+    async (_user: string, _profile?: unknown): Promise<{ secret: string; baseUrl: string } | null> => null,
+  ),
+}));
+vi.mock('../../../../auth/llmux-tenant-keys', () => ({ ensureTenantKey: tenantMock }));
+
 let mockAssistantText: string;
 let capturedOptions: any = null;
 let capturedPrompt: string | null = null;
@@ -261,5 +270,24 @@ describe('improveAll', () => {
     expect(capturedPrompt).not.toBeNull();
     expect(capturedPrompt!).toContain('3개 항목');
     expect(capturedPrompt!).toContain('x\n---\ny\n---\nz');
+  });
+});
+
+// llmux tenant keys: a memory edit is made for the user who clicked improve, so
+// the call asks for that user's llmux key; with no user it stays on the shared key.
+describe('llmux tenant user', () => {
+  beforeEach(() => tenantMock.mockClear());
+
+  it('improveEntry / improveAll ask for the tenant user’s key', async () => {
+    mockAssistantText = '["a"]';
+    await improveEntry('orig', 'memory', { tenantUserId: 'U_DAN' });
+    await improveAll(['x'], 'user', { tenantUserId: 'U_DAN' });
+    expect(tenantMock.mock.calls.map((c) => c[0])).toEqual(['U_DAN', 'U_DAN']);
+  });
+
+  it('no user → no tenant lookup (the shared key)', async () => {
+    mockAssistantText = 'improved';
+    await improveEntry('orig', 'memory');
+    expect(tenantMock).not.toHaveBeenCalled();
   });
 });

@@ -208,7 +208,11 @@ async function maybeWriteSessionTitle(
   if (titles.length === 1) {
     derived = clampTitle(titles[0]);
   } else if (issueTitle && prTitle && !docTitle) {
-    derived = await summarizeIssueAndPrTitles(issueTitle, prTitle);
+    derived = await summarizeIssueAndPrTitles(
+      issueTitle,
+      prTitle,
+      session.currentInitiatorId || session.ownerId || session.userId || undefined,
+    );
   } else {
     derived = clampTitle(titles.join(' · '));
   }
@@ -239,11 +243,19 @@ async function maybeWriteSessionTitle(
  * back to `${issue} · ${pr}` (clamped) when the LLM call returns null or throws.
  *
  * Exported so unit tests can target the issue+PR branch directly.
+ * `tenantUserId` = the session's user: in llmux mode the call is metered under
+ * their own key (absent → the shared key).
  */
-export async function summarizeIssueAndPrTitles(issueTitle: string, prTitle: string): Promise<string> {
+export async function summarizeIssueAndPrTitles(
+  issueTitle: string,
+  prTitle: string,
+  tenantUserId?: string,
+): Promise<string> {
   const fallback = clampTitle(`${issueTitle} · ${prTitle}`);
   try {
-    const result = await generateSessionSummaryTitle([`Issue: ${issueTitle}`, `PR: ${prTitle}`]);
+    const result = await generateSessionSummaryTitle([`Issue: ${issueTitle}`, `PR: ${prTitle}`], undefined, {
+      tenantUserId,
+    });
     if (result?.title) {
       const cleaned = clampTitle(result.title);
       if (cleaned.length > 0) return cleaned;

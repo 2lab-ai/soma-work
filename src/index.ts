@@ -1720,6 +1720,7 @@ async function start() {
           lastAssistantTurnId: session.lastAssistantTurnId,
           summaryTitleLastUpdatedAtMs: session.summaryTitleLastUpdatedAtMs,
           links,
+          tenantUserId: session.currentInitiatorId || session.ownerId || session.userId || undefined,
         };
       },
       setLastAssistantTurnId: (conversationId, turnId) => {
@@ -2129,8 +2130,11 @@ async function start() {
           isRequestActive: (key) => requestCoordinator.isRequestActive(key),
           abortSession: (key, reason) => requestCoordinator.abortSession(key, reason),
         },
-        dispatcher: ({ systemPrompt, userPrompt, model, effort, abortController, cwd }) =>
-          claudeHandler.dispatchOneShot(userPrompt, systemPrompt, model, abortController, undefined, cwd, effort),
+        // The eval carries the session user's llmux key (`tenantUserId`), like the turns it judges.
+        dispatcher: ({ systemPrompt, userPrompt, model, effort, abortController, cwd, tenantUserId }) =>
+          claudeHandler.dispatchOneShot(userPrompt, systemPrompt, model, abortController, undefined, cwd, effort, {
+            tenantUserId,
+          }),
         injectContinuation: (event) => goalMessageInjector(event),
         postNotice: postGoalNotice,
         postOwnerDm: postGoalOwnerDm,
