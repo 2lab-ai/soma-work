@@ -1455,10 +1455,16 @@ describe('the detail deck — open cards and their detail cards move together (S
     // The deck switch is WAAPI (P6), not a keyframe class: each of the header and the body gets an
     // additive translate (so a second switch retargets from where it is drawn) and an opacity fade.
     const slides: Array<{ part: string; frames: Array<Record<string, unknown>>; opts: Record<string, unknown> }> = [];
+    let cancelled = 0;
     const part = (name: string) => ({
       animate: (frames: Array<Record<string, unknown>>, opts: Record<string, unknown>) => {
         slides.push({ part: name, frames, opts });
-        return { playState: 'running', cancel: () => {} };
+        return {
+          playState: 'running',
+          cancel: () => {
+            cancelled++;
+          },
+        };
       },
     });
     const parts = [part('header'), part('body')];
@@ -1477,7 +1483,7 @@ describe('the detail deck — open cards and their detail cards move together (S
     els['panel-deck-peek'] = {};
     const rig = (deck: string[], front: string, keyed = false) =>
       load<{ renderDeckNav(dir: number): void; deckNow(): string[] }>(
-        ['renderDeckNav', 'onDeckPage', 'deckSlide'],
+        ['renderDeckNav', 'onDeckPage', 'deckSlide', 'deckStop'],
         ['DECK_SLIDE_MS'],
         {
           document: { getElementById: (id: string) => els[id] ?? null },
@@ -1536,10 +1542,16 @@ describe('the detail deck — open cards and their detail cards move together (S
     expect(attrs['data-deck']).toBe('0');
     expect(els['panel-deck'].hidden).toBe(true);
     expect(slides).toHaveLength(8);
-    // ←/→ on the nav (a key was the last input): the front card changes at once — no slide.
+    // ←/→ on the nav (a key just acted): the front card changes at once — no new slide, and the slides a click
+    // started on the reused header and body are stopped, so they never move the new front card.
+    const before = cancelled;
     const keyed = rig(['A', 'B'], 'B', true);
     keyed.renderDeckNav(1);
     expect(slides).toHaveLength(8);
+    expect(cancelled).toBeGreaterThan(before);
+    const after = cancelled;
+    keyed.renderDeckNav(-1); // nothing left running: nothing more to stop
+    expect(cancelled).toBe(after);
     // No keyframe slide left in the CSS.
     expect(TEMPLATE).not.toContain('@keyframes deck-in');
   });

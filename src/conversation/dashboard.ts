@@ -11739,7 +11739,9 @@ function isActingKey(e) {
   var k = e && e.key;
   if (k === 'Escape') return true;
   if (k !== 'Enter' && k !== ' ' && k !== 'ArrowLeft' && k !== 'ArrowRight' && k !== 'ArrowUp' && k !== 'ArrowDown') return false;
-  var t = e.target;
+  // The field itself, inside a shadow root too (a <ui-composer>'s textarea): at the document the target is the host.
+  var path = typeof e.composedPath === 'function' ? e.composedPath() : null;
+  var t = (path && path[0]) || e.target;
   var tag = t && t.tagName ? String(t.tagName).toLowerCase() : '';
   return !(tag === 'input' || tag === 'textarea' || tag === 'select' || (t && t.isContentEditable));
 }
@@ -11898,7 +11900,7 @@ document.addEventListener('ui-toggle', function(e) {
 });
 document.addEventListener('keydown', function() { _atKeyed = true; }, true);
 document.addEventListener('pointerdown', function() { _atKeyed = false; }, true);
-document.addEventListener('keydown', function(e) { if (isActingKey(e)) _keyAt = Date.now(); }, true);
+document.addEventListener('keydown', function(e) { if (!e.repeat && isActingKey(e)) _keyAt = Date.now(); }, true);
 
 // ── Panel scope: which node's tasks and work log the panel shows (§4.3) ──
 function panelAgentOf(s) {
@@ -15482,7 +15484,8 @@ function runLayoutCheck() {
   // A change the reader made from the keyboard (Enter opens the drawer, Esc
   // closes it) lands at once: an action repeated by key must not wait on its
   // own animation (remove-animations gate: keyboard-initiated actions).
-  var animate = canAnimate() && !keyedNow();
+  var keyed = keyedNow();
+  var animate = canAnimate() && !keyed;
   var reduce = reduceMotion();
   // Every card and head glides from where the reader saw it (the element does
   // nothing on its first paint, in a hidden tab or under reduced motion).
@@ -15498,6 +15501,9 @@ function runLayoutCheck() {
   // none under reduced motion. The page animates nothing of it.
   _layoutModeKey = layoutModeKey(mode);
   restorePanelAnchor(anchor);
+  // A keyed change moved nothing: the new layout is already the settled one. Measure it now, so a pointer change right
+  // after (Enter opens, a click closes) glides from where the cards are, not from where they were before.
+  if (keyed) { _layoutShiftUntil = 0; measureLayout(); return; }
   _layoutShiftUntil = Date.now() + MOTION.move;
   setTimeout(function() {
     if (Date.now() < _layoutShiftUntil) return;
@@ -19031,7 +19037,9 @@ function renderDeckNav(dir) {
       if (peek) peek.data = data;
     }
   }
-  if (dir && !reduceMotion() && !keyedNow()) deckSlide(panel, dir);
+  // A keyed switch lands at once — and stops a slide a click started, so it never moves the new front card.
+  if (dir && keyedNow()) deckStop(panel);
+  else if (dir && !reduceMotion()) deckSlide(panel, dir);
 }
 // ‹ / › (or ←/→ on the nav): the card at that place in the deck the nav was drawn for comes to the front.
 function onDeckPage(e) {
@@ -19050,9 +19058,21 @@ function deckSlide(panel, dir) {
     if (typeof el.animate !== 'function') continue;
     var from = el._deckFade && el._deckFade.playState === 'running' ? Number(getComputedStyle(el).opacity) : 0.35;
     if (el._deckFade) el._deckFade.cancel();
-    el.animate([{ transform: 'translateX(' + (dir > 0 ? 18 : -18) + 'px)' }, { transform: 'translateX(0)' }],
-      { duration: DECK_SLIDE_MS, easing: 'cubic-bezier(0.23, 1, 0.32, 1)', composite: 'add' });
+    var moves = (el._deckMoves || []).filter(function(a) { return a.playState === 'running'; });
+    moves.push(el.animate([{ transform: 'translateX(' + (dir > 0 ? 18 : -18) + 'px)' }, { transform: 'translateX(0)' }],
+      { duration: DECK_SLIDE_MS, easing: 'cubic-bezier(0.23, 1, 0.32, 1)', composite: 'add' }));
+    el._deckMoves = moves;
     el._deckFade = el.animate([{ opacity: Math.min(from, 1) }, { opacity: 1 }], { duration: DECK_SLIDE_MS, easing: 'cubic-bezier(0.23, 1, 0.32, 1)' });
+  }
+}
+function deckStop(panel) {
+  var parts = panel.querySelectorAll ? panel.querySelectorAll('.panel-header, .panel-body') : [];
+  for (var i = 0; i < parts.length; i++) {
+    var el = parts[i];
+    var running = (el._deckMoves || []).concat(el._deckFade ? [el._deckFade] : []);
+    for (var j = 0; j < running.length; j++) running[j].cancel();
+    el._deckMoves = [];
+    el._deckFade = null;
   }
 }
 // The landing target of this opening, for the keyboard: the answer form, the
