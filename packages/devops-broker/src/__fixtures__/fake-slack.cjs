@@ -69,6 +69,11 @@ function startFakeSlack(opts) {
         message.updates.push({ text: String(params.text || ''), blocks: params.blocks });
         return { ok: true, channel: message.channel, ts: message.ts };
       }
+      case 'chat.getPermalink': {
+        const message = messages.get(key(String(params.channel), String(params.message_ts)));
+        if (message === undefined) return { ok: false, error: 'message_not_found' };
+        return { ok: true, channel: message.channel, permalink: `https://example.slack.test/archives/${message.channel}/p${message.ts.replace('.', '')}` };
+      }
       case 'reactions.get': {
         const message = messages.get(key(String(params.channel), String(params.timestamp)));
         if (message === undefined) return { ok: false, error: 'message_not_found' };

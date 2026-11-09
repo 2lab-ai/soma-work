@@ -1242,3 +1242,46 @@ describe('button clicks (decide)', () => {
     expect((await run.result).outcome).toBe('approved');
   });
 });
+
+describe('pending cards for the dashboard (#1051)', () => {
+  it('lists each waiting card with a link to every admin’s own Slack card, and nothing once it is decided', async () => {
+    const approvals = await makeApprovals({ admins: [ADMIN, ADMIN_B] });
+    const run = start(approvals, req());
+    const [pending] = await waitFor(() => run.pending.length > 0 && run.pending, 'pending');
+    const [view] = approvals.pending();
+    expect(view).toEqual({
+      approvalId: pending.approvalId,
+      tool: req().tool,
+      title: req().title,
+      requester: req().claimedRequester.slackUserId,
+      digestPrefix: pending.digestPrefix,
+      createdAt: new Date(START).toISOString(),
+      expiresAt: pending.expiresAt,
+      cards: [
+        {
+          admin: ADMIN,
+          permalink: `https://example.slack.test/archives/${dm(ADMIN)}/p${card(ADMIN).ts.replace('.', '')}`,
+        },
+        {
+          admin: ADMIN_B,
+          permalink: `https://example.slack.test/archives/${dm(ADMIN_B)}/p${card(ADMIN_B).ts.replace('.', '')}`,
+        },
+      ],
+    });
+    // The listing holds no argument values, warnings or session: only what the dashboard needs to point at the card.
+    expect(JSON.stringify(view)).not.toContain(req().claimedRequester.sessionKey);
+    fake.react(dm(ADMIN), card(ADMIN).ts, 'white_check_mark', ADMIN);
+    await run.result;
+    expect(approvals.pending()).toEqual([]);
+  });
+
+  it('a card Slack gives no link for is still listed and still decided as usual', async () => {
+    fake.enqueue('chat.getPermalink', { body: { ok: false, error: 'internal_error' } });
+    const approvals = await makeApprovals();
+    const run = start(approvals, req());
+    await waitFor(() => run.pending.length > 0 && run.pending, 'pending');
+    expect(approvals.pending()[0].cards).toEqual([{ admin: ADMIN }]);
+    fake.react(dm(ADMIN), card(ADMIN).ts, 'white_check_mark', ADMIN);
+    await expect(run.result).resolves.toMatchObject({ outcome: 'approved' });
+  });
+});
