@@ -87,6 +87,64 @@ describe('user-skill-grants-store', () => {
     expect(grants.perSkill.deploy).toEqual([requester]);
   });
 
+  // #1079 — the settings page's 스킬 tab takes a grant back: the owner (or an admin, for environment skills).
+  describe('revoke', () => {
+    it('revokeSkill takes back one per-skill grant and leaves the others', () => {
+      store.grantSkill(owner, 'deploy', requester);
+      store.grantSkill(owner, 'deploy', 'U0OTHER');
+      store.grantSkill(owner, 'qa', requester);
+      expect(store.revokeSkill(owner, 'deploy', requester)).toBe(true);
+      expect(store.isSkillUseAllowed(owner, 'deploy', requester)).toBe(false);
+      expect(store.isSkillUseAllowed(owner, 'deploy', 'U0OTHER')).toBe(true);
+      expect(store.isSkillUseAllowed(owner, 'qa', requester)).toBe(true);
+    });
+
+    it('revokeSkill prunes an emptied skill entry, and persists', async () => {
+      store.grantSkill(owner, 'deploy', requester);
+      store.revokeSkill(owner, 'deploy', requester);
+      vi.resetModules();
+      const reloaded = await import('../user-skill-grants-store');
+      expect(reloaded.loadGrants(owner)).toEqual({ allowAll: [], perSkill: {} });
+    });
+
+    it('revokeSkill is idempotent: nothing to take back is not an error and writes nothing', () => {
+      expect(store.revokeSkill(owner, 'deploy', requester)).toBe(false);
+      expect(fs.existsSync(path.join(tempDir, owner, 'skill-grants.json'))).toBe(false);
+      store.grantSkill(owner, 'deploy', requester);
+      store.revokeSkill(owner, 'deploy', requester);
+      expect(store.revokeSkill(owner, 'deploy', requester)).toBe(false);
+    });
+
+    it('revokeAllSkills takes back the all-skills grant only — a per-skill grant stays', () => {
+      store.grantAllSkills(owner, requester);
+      store.grantSkill(owner, 'deploy', requester);
+      expect(store.revokeAllSkills(owner, requester)).toBe(true);
+      expect(store.loadGrants(owner).allowAll).toEqual([]);
+      expect(store.isSkillUseAllowed(owner, 'deploy', requester)).toBe(true);
+      expect(store.isSkillUseAllowed(owner, 'qa', requester)).toBe(false);
+      expect(store.revokeAllSkills(owner, requester)).toBe(false);
+    });
+
+    it('environment grants revoke under the reserved owner', () => {
+      const env = store.ENV_SKILL_GRANT_OWNER;
+      store.grantSkill(env, 'envx:qa', requester);
+      store.grantAllSkills(env, 'U0OTHER');
+      store.revokeSkill(env, 'envx:qa', requester);
+      store.revokeAllSkills(env, 'U0OTHER');
+      expect(store.isEnvSkillUseAllowed('envx:qa', requester)).toBe(false);
+      expect(store.isEnvSkillUseAllowed('envx:qa', 'U0OTHER')).toBe(false);
+      expect(JSON.parse(fs.readFileSync(path.join(tempDir, 'env-skill-grants.json'), 'utf-8'))).toEqual({
+        allowAll: [],
+        perSkill: {},
+      });
+    });
+
+    it('an unsafe owner id is refused without touching the disk', () => {
+      expect(store.revokeSkill('../evil', 'deploy', requester)).toBe(false);
+      expect(store.revokeAllSkills('../evil', requester)).toBe(false);
+    });
+  });
+
   describe('one-time grants', () => {
     it('isSkillUseAllowed sees a one-time grant WITHOUT consuming it (non-mutating)', () => {
       store.addOneTimeGrant(owner, 'deploy', requester);
