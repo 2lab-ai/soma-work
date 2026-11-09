@@ -89,7 +89,23 @@ describe('#1072 — the switch to waiting is saved', () => {
     expect(live.activityStateChangedAt).toBe(T0 + 9 * MINUTE);
   });
 
-  it('working alone is still not written (only waiting and idle are)', () => {
+  it('the answer ends the wait on disk too: a restart after the answer restores no wait (both setters)', () => {
+    for (const set of [
+      (r: SessionRegistry, state: 'working' | 'waiting' | 'idle') => r.setActivityState('C1', '171.001', state),
+      (r: SessionRegistry, state: 'working' | 'waiting' | 'idle') =>
+        r.setActivityStateByKey(r.getSessionKey('C1', '171.001'), state),
+    ]) {
+      vi.setSystemTime(T0);
+      const writer = askedQuestion(set);
+      vi.setSystemTime(T0 + 9 * MINUTE);
+      set(writer, 'working');
+      const restored = restart();
+      expect(restored?.activityState).not.toBe('waiting');
+      expect(restored?.activityStateChangedAt).toBe(T0 + 9 * MINUTE);
+    }
+  });
+
+  it('working alone is still not written (only waiting, leaving it, and idle are)', () => {
     const writer = new SessionRegistry();
     const session = writer.createSession('U1', 'Tester', 'C1', '171.001');
     session.sessionId = 'sess-1';
