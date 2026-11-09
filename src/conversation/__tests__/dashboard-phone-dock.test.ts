@@ -66,6 +66,10 @@ describe('the dock element', () => {
     const phone = mediaBlockWith('(max-width: 639px)', '.phone-dock { display: block; }');
     expect(phone).toContain('.phone-dock { display: block; }');
     expect(phone).toContain('.new-task-fab.ui-fab { display: none !important; }');
+    // 600–639px: the toaster's wide placement is bottom right — its offset clears the dock (under 600px it is top-centre).
+    expect(phone).toContain(
+      'ui-toaster { --ts-offset: calc(var(--ui-dock-h, 60px) + 12px + env(safe-area-inset-bottom, 0px)); }',
+    );
     // No page-wide padding (a short board would scroll by the dock's height, and it would stack on the board's own
     // clearance): the board with cards clears exactly the dock — 60px + the home indicator.
     expect(phone).not.toMatch(/body \{ padding-bottom/);
@@ -136,7 +140,10 @@ describe('syncDockNeeds — the board’s announce count becomes the dock’s ba
   it('renderBoard hands it the same count it announces, after the element is painted', () => {
     const render = clientFn('renderBoard');
     const paint = render.indexOf('inboxPaint(kb);');
-    const sync = render.indexOf("if (typeof syncDockNeeds === 'function') syncDockNeeds(kb.data.announce.needs);");
+    // A partial board (painted under a failed first load) publishes no count.
+    const sync = render.indexOf(
+      "if (typeof syncDockNeeds === 'function') syncDockNeeds(partial ? 0 : kb.data.announce.needs);",
+    );
     expect(sync).toBeGreaterThan(paint);
   });
 
