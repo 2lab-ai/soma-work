@@ -56,9 +56,15 @@ describe('local:find-animation-opportunities skill — vendored contract', () =>
     expect(body).not.toMatch(/respond only with/i);
   });
 
-  it('maps every upstream-only skill name the body mentions to a local one (or says it is not vendored)', () => {
+  it('maps every upstream-only skill name the body mentions to a local skill that exists, or says it is not vendored', () => {
     const rest = body.replace(attribution, '');
-    for (const n of UPSTREAM_ONLY) if (rest.includes(`\`${n}\``)) expect(attribution, n).toContain(`\`${n}\``);
+    for (const n of UPSTREAM_ONLY) {
+      if (!rest.includes(`\`${n}\``)) continue;
+      expect(attribution, n).toMatch(new RegExp(`\`${n}\`[^;.]*?(→|not vendored)`));
+    }
+    const targets = [...attribution.matchAll(/→ `([a-z0-9-]+)`/g)].map((x) => x[1]);
+    expect(targets.length).toBeGreaterThan(0);
+    for (const t of targets) expect(existsSync(resolve(SKILL_ROOT, '..', t, 'SKILL.md')), t).toBe(true);
     expect(fm.description as string).not.toMatch(
       /\b(review-animations|emil-design-eng|animate-expo|pick-ui-library)\b/,
     );

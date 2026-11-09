@@ -203,7 +203,7 @@ A horizontal swipe on a carousel is ambiguous to the browser — it doesn't know
 
 ```css
 .carousel {
-  touch-action: pan-y; /* the carousel handles horizontal; the browser keeps vertical */
+  touch-action: pan-y pinch-zoom; /* the carousel handles horizontal; the browser keeps vertical (local: and pinch-zoom — never disable zoom) */
 }
 .drag-surface {
   touch-action: none;  /* a custom gesture (a drag-to-dismiss sheet, a slider) owns every axis */
@@ -272,7 +272,7 @@ button, a, [role="button"] {
 }
 ```
 
-`interactive-widget=resizes-content` makes the software keyboard shrink the layout viewport on Android Chrome, so `100dvh` and bottom-pinned inputs react to it the way they do on iOS. Drop `overscroll-behavior: none` from `html` if the app is a scrolling document where pull-to-refresh is welcome.
+`interactive-widget=resizes-content` makes the software keyboard shrink the layout viewport on Android Chrome, so `100dvh` and bottom-pinned inputs react to it the way they do on iOS. *(Local note (soma-work): iOS Safari does not resize the layout viewport or `dvh` for the keyboard; it shrinks the visual viewport. A composer pinned to the bottom follows `window.visualViewport` (its `resize` event and `height`) to stay above the keyboard.)* Drop `overscroll-behavior: none` from `html` if the app is a scrolling document where pull-to-refresh is welcome.
 
 ## Never Ship
 

@@ -114,6 +114,7 @@ A sequence has more states than a single animation. Test each of these:
 - **Re-trigger mid-sequence.** Hover out halfway through a hover sequence. Click Next twice fast. Switch menus while the first is still opening. Each run must stop the in-flight animations before starting new ones. Never stack them.
 - **Wait for completion before chaining.** An idle loop that resumes after a hover-out starts only after *all* reset animations finish (`await Promise.all(...)`), or it fights the reset.
 - **Gate actions on completion with a ref, not state.** "Click only works after the hover buildup finished" is a flag that never renders, so a `useRef` boolean avoids re-rendering on every phase.
+  > **Local note (soma-work):** gate only the decorative replay, never the action. A keyboard user never hovers and a tap can land before the buildup ends, so the click's real work runs on every activation, and only the extra animation waits for the flag.
 - **Rapid view switching** with `AnimatePresence` can leave two children mounted. Check it explicitly, and make sure each child has a stable, unique `key`.
 
 ## Attention Loops
