@@ -3003,6 +3003,24 @@ function bundlingEpicOf(child: ConversationSession): [string, ConversationSessio
   return [key, epic];
 }
 
+/**
+ * #1072 — the clock the 응답 필요 (waiting) column is ordered by, oldest first: the card's own
+ * `waitingSince` or, for an epic, the oldest of its children's (an epic waits while a child does),
+ * else its last activity; a card with neither goes last. The page orders the column by the same
+ * rule (`boardWaitingAt` / `sortWaitingColumn` in the client), so the server's order and the
+ * board's agree. #1075 (answer drafts) keeps a drafted card in this column on this clock.
+ */
+export function waitingSortAt(card: Pick<KanbanSession, 'waitingSince' | 'lastActivity' | 'epic'>): number {
+  let oldest: number | undefined;
+  for (const stamp of [card.waitingSince, ...(card.epic?.children ?? []).map((child) => child?.waitingSince)]) {
+    const t = finiteNumber(stamp);
+    if (t !== undefined && t > 0 && (oldest === undefined || t < oldest)) oldest = t;
+  }
+  if (oldest !== undefined) return oldest;
+  const last = Date.parse(String(card.lastActivity));
+  return Number.isFinite(last) ? last : Number.POSITIVE_INFINITY;
+}
+
 function buildKanbanBoard(userId?: string): KanbanBoard {
   const sessions = getAllSessions();
   const board: KanbanBoard = { working: [], waiting: [], idle: [], closed: [] };
@@ -3092,8 +3110,17 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
   const byActivity = (a: KanbanSession, b: KanbanSession) =>
     Number(b.starred === true) - Number(a.starred === true) ||
     new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime();
+  // #1072 — 응답 필요: starred first, then the longest wait (the person is the queue: the oldest
+  // block first); equal waits keep the newest activity first.
+  const byWait = (a: KanbanSession, b: KanbanSession) => {
+    const ta = waitingSortAt(a);
+    const tb = waitingSortAt(b);
+    return (
+      Number(b.starred === true) - Number(a.starred === true) || (ta < tb ? -1 : ta > tb ? 1 : 0) || byActivity(a, b)
+    );
+  };
   board.working.sort(byActivity);
-  board.waiting.sort(byActivity);
+  board.waiting.sort(byWait);
   board.idle.sort(byActivity);
   board.closed.sort(byActivity);
 
@@ -7230,7 +7257,8 @@ var STRINGS = {
   effortTitle: '추론 강도',
   // The board (D2 group 6) in the language of <ui-agent-inbox lang="ko">, whose own words (입력 대기 · 비어 있음 ·
   // 완료 · …) match: the column heads, the finish-day heads, the status words the page sets, the two toggles.
-  boardNeeds: '응답 필요',
+  // #1072 — the column's one-line hint: its order is not the board's sort (longest wait first).
+  boardNeedsHead: '응답 필요 · 오래 기다린 순',
   boardRunning: '실행 중',
   boardDone: '완료',
   today: '오늘',
@@ -9944,7 +9972,7 @@ function _envCount() {
 // takes a light-DOM div holding renderCardBody's markup — approval cards, the
 // question, the agent tree, the goal line, model · effort, Stop / Close, 작업 로그
 // and every gate (D10). A collapsed card builds no body (#548).
-var BOARD_LABELS = { waiting: STRINGS.boardNeeds, working: STRINGS.boardRunning, done: STRINGS.boardDone };
+var BOARD_LABELS = { waiting: STRINGS.boardNeedsHead, working: STRINGS.boardRunning, done: STRINGS.boardDone };
 var _expanded = new Set();           // keys whose card is open
 var _cardClosing = Object.create(null); // key → timer: a closed card keeps its body until its collapse has run
 var _boardRenders = 0;
@@ -15495,6 +15523,32 @@ function sortBoardColumn(list, sort, dir) {
     })
     .map(function(x) { return x.s; });
 }
+// #1072 — Pure: the 응답 필요 column's clock, as the server's waitingSortAt: when the card started waiting (its own
+// stamp, or the oldest of its epic children's), else its last activity; a card with neither goes last.
+function boardWaitingAt(s) {
+  var oldest = 0;
+  var stamps = [s && s.waitingSince];
+  var kids = s && s.epic && Array.isArray(s.epic.children) ? s.epic.children : [];
+  for (var i = 0; i < kids.length; i++) stamps.push(kids[i] && kids[i].waitingSince);
+  for (var j = 0; j < stamps.length; j++) {
+    var t = toNum(stamps[j]);
+    if (t > 0 && (!oldest || t < oldest)) oldest = t;
+  }
+  if (oldest) return oldest;
+  var last = Date.parse(s && s.lastActivity);
+  return isFinite(last) ? last : Number.POSITIVE_INFINITY;
+}
+// #1072 — Pure: the 응답 필요 column, whatever the board's sort: starred first, then the longest wait (the server's
+// order breaks a tie). from[i], when given, is the card list[i] stands for (an epic before the filter took children
+// it hides), so a filter never moves a card.
+function sortWaitingColumn(list, from) {
+  return list
+    .map(function(s, i) { return { s: s, i: i, t: boardWaitingAt(from && from[i] ? from[i] : s) }; })
+    .sort(function(a, b) {
+      return Number(b.s.starred === true) - Number(a.s.starred === true) || (a.t < b.t ? -1 : a.t > b.t ? 1 : 0) || a.i - b.i;
+    })
+    .map(function(x) { return x.s; });
+}
 // Pure: the board the columns draw — every column filtered and sorted — and the cards the filter hid, per column
 // (hiddenCards[col]). keep: a card key that passes regardless (a deep link's card). An epic's children (its bundle,
 // drawn under it) are judged one by one: the epic stays while it or any child passes, carrying only the children that
@@ -15508,6 +15562,7 @@ function boardViewOf(board, f, query, now, keep) {
   ['working', 'waiting', 'idle', 'closed'].forEach(function(col) {
     var list = Array.isArray(board[col]) ? board[col] : [];
     var kept = [];
+    var keptFrom = []; // the card each kept one stands for (its epic before the filter)
     for (var i = 0; i < list.length; i++) {
       var s = list[i];
       var kids = s && s.epic && Array.isArray(s.epic.children) ? s.epic.children : [];
@@ -15521,6 +15576,7 @@ function boardViewOf(board, f, query, now, keep) {
       keptKids = sortBoardColumn(keptKids, f.sort, f.dir);
       var same = keptKids.length === kids.length;
       for (var x = 0; same && x < kids.length; x++) if (keptKids[x] !== kids[x]) same = false;
+      keptFrom.push(s);
       if (same) { kept.push(s); continue; }
       var copy = {};
       for (var p in s) copy[p] = s[p];
@@ -15531,7 +15587,8 @@ function boardViewOf(board, f, query, now, keep) {
       kept.push(copy);
     }
     hidden += hiddenCards[col].length;
-    out[col] = sortBoardColumn(kept, f.sort, f.dir);
+    // #1072 — 응답 필요 is always longest wait first; the other columns follow the board's sort.
+    out[col] = col === 'waiting' ? sortWaitingColumn(kept, keptFrom) : sortBoardColumn(kept, f.sort, f.dir);
   });
   return { board: out, hidden: hidden, hiddenCards: hiddenCards };
 }
