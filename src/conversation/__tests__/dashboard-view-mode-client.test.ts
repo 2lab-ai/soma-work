@@ -463,9 +463,11 @@ describe('T4 — minimal: the detail card is the task list and the chat', () => 
   const minimalRule = (sel: string) =>
     new RegExp(`body\\[data-view-mode="minimal"\\] ${sel.replace(/[.*+?^${}()|[\]\\#]/g, '\\$&')}[,\\s{]`);
 
-  it('the page’s extras step aside: stats, capacity, the CRON lane, the defaults, the user picker, admin write mode', () => {
-    for (const sel of ['#stats', '#capacity', '#cron-lane', '#topbar-defaults'])
-      expect(CSS, sel).toMatch(minimalRule(sel));
+  it('the page’s extras step aside: stats, capacity, the defaults, the user picker, admin write mode', () => {
+    for (const sel of ['#stats', '#capacity', '#topbar-defaults']) expect(CSS, sel).toMatch(minimalRule(sel));
+    // #1080 — the CRON lane stays: minimal shows the cron jobs too.
+    expect(CSS).not.toMatch(minimalRule('#cron-lane'));
+    expect(CSS).not.toMatch(/body\[data-view-mode="minimal"\][^{,]*#cron-(lane|aq)\b/);
   });
 
   it('the detail card’s top keeps the header and what needs the user; info · goal · artifacts · agents are closed tabs, the model stays (1안, #805)', () => {
@@ -518,26 +520,26 @@ describe('T5 — minimal keeps every session that needs the user in reach (revie
     idle: [cron('ci', 'idle')],
     closed: [],
   });
-  const env = load<{ planCronLane(b: unknown, jobs: unknown[], reveal: string | null, live?: boolean): any }>(
+  const env = load<{ planCronLane(b: unknown, jobs: unknown[], reveal: string | null): any }>(
     ['isCronCard', 'cronGroupKey', 'cronCardTime', 'planCronLane'],
     [],
   );
   const keys = (arr: Array<{ key: string }>) => arr.map((x) => x.key);
 
-  it('minimal hides the CRON lane, so a cron run that waits or runs stays on the board (fable P1)', () => {
-    const live = env.planCronLane(board(), [], null, true);
-    expect(keys(live.board.waiting)).toEqual(['cw']);
-    expect(keys(live.board.working)).toEqual(['cr']);
-    expect(keys(live.board.idle)).toEqual([]);
-    expect(live.groups[0].cards.map((c: { key: string }) => c.key)).toEqual(['ci']);
-    // 어드밴스드: every cron run is the lane's, as before.
+  it('#1080 — minimal shows the CRON lane: a cron run that waits or runs leads its job’s box there, as in advanced', () => {
     const lane = env.planCronLane(board(), [], null);
     expect(keys(lane.board.waiting)).toEqual([]);
     expect(keys(lane.board.working)).toEqual([]);
-    // SSOT 2026-11-05 — the lane plans from the board as the filters leave it.
-    expect(clientFn('renderBoard')).toContain(
-      'planCronLane(boardFilterView(board), _cronJobs, _cronRevealKey, !isAdvanced());',
-    );
+    expect(keys(lane.board.idle)).toEqual([]);
+    // The run that waits on the user is its job's card in the lane, where its question and approval are.
+    expect(lane.groups[0].lead.key).toBe('cw');
+    expect(lane.waitingCount).toBe(1);
+    expect(keys(lane.groups[0].cards).sort()).toEqual(['ci', 'cr', 'cw']);
+    // One plan for both modes: the mode is no input of it. SSOT 2026-11-05 — the lane plans from the board as the
+    // filters leave it.
+    expect(clientFn('renderBoard')).toContain('planCronLane(boardFilterView(board), _cronJobs, _cronRevealKey);');
+    expect(clientFn('renderBoard')).not.toContain('!isAdvanced()');
+    expect(clientFn('planCronLane')).not.toContain('liveOnBoard');
   });
 
   it('the picker hides only on the viewer’s own board — elsewhere the owner acts after picking themselves (astra P1)', () => {
