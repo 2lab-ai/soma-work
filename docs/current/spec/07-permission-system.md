@@ -465,6 +465,7 @@ this.app.action('deny_tool', async ({ ack, body, respond }) => {
 |---|---|
 | 환경 스킬 판정 (`plugin:skill` / 맨이름) | `src/env-skill-registry.ts` (`resolveEnvSkillKey`, `checkEnvSkillPermission`) |
 | 결정 — 모델의 `Skill` 호출·플러그인 파일 읽기 | `evaluateToolPolicy` 6b단계 (`agent-runtime/policy/tool-policy.ts`, `ENV_GATED_TOOLS`), Lean 모델 phase 4 (`verification/lean/SomaVerify/ToolPolicy/ProofsEnvSkill.lean`) |
+| 결정 — 환경 플러그인의 MCP 도구 | `evaluateToolPolicy` 6d단계 (`PLUGIN_MCP_TOOL_PREFIX`, `ctx.checkEnvPluginMcpPermission` → `checkEnvPluginMcpAccess`), Lean `evaluateToolPolicyMcp` (`ProofsEnvMcp.lean`) |
 | 결정 — `$plugin:skill` | `SkillForceHandler.resolveSkill` (중첩 참조 포함, 같은 판정 함수) |
 | 집행 — 어드민 요청 | `build-stream-options.ts` 훅의 `onEnvSkillDenied` → `slack/env-skill-permission-request.ts` (어드민 DM, 실패 시 스레드) |
 | 허용 저장 | `user-skill-grants-store.ts`, 예약 소유자 `env-skills` → `DATA_DIR/env-skill-grants.json` + 스레드 허용(메모리, 12h) |
@@ -478,6 +479,15 @@ this.app.action('deny_tool', async ({ ack, body, respond }) => {
   간다. 인시던트 세션은 그 위의 인시던트 단계에서 모든 호출이 결정되므로 6b에 닿지 않는다. 6b는 모드 단계보다 앞이라
   Bash·네이티브 도구의 allow도 덮는다. 쓰기 도구는 허용과 무관하게 플러그인 파일을 고칠 수 없다. 플러그인 매니저가
   없으면 판정 목록은 `config.json`의 `plugin.envPlugins`에서 읽는다.
+- 6d: SDK는 모든 세션에 모든 플러그인의 MCP 서버를 띄우고 그 도구를 `mcp__plugin_<plugin>_<server>__<tool>`로
+  부른다(플러그인 이름 그대로). 어드민이 아니고, 이름이 `mcp__plugin_`로 시작하고, `checkEnvPluginMcpAccess`가 이유(플러그인
+  이름)를 돌려주면 `env-plugin-mcp: <plugin> (<toolName>)`로 거부하고 모델에게 `ENV_PLUGIN_MCP_DENY_MESSAGE`가 간다.
+  그 플러그인의 스킬 하나라도 허용(전체 허용, 항상 허용, 이 스레드의 1회 허용 — `isEnvPluginUseAllowed`)이 있으면 연다.
+  도구 자체로는 어드민에게 묻지 않는다(사유 접두어가 `env-skill: `가 아니다) — 스킬 호출이 묻는다. 이름의 `_`는 플러그인
+  이름에도 들어갈 수 있어, 맞을 수 있는 환경 플러그인 모두의 허용을 요구한다(fail-closed). 레지스트리가 없으면 목록은
+  `config.json`에서 읽는다.
+- 훅 매처: SDK(Claude Code v2.1.195부터)는 `[A-Za-z0-9_|]`만으로 된 매처를 정확한 도구 이름 목록으로 비교하므로
+  `TOOL_POLICY_MATCHERS`의 MCP 항목은 정규식 `^mcp__`다(맨 `mcp__`는 어떤 도구에도 맞지 않는다).
 - 방어 심층: 비어드민의 샌드박스 Bash에는 `envSkillSandboxDenyRead`가 환경 플러그인 디렉터리를 OS 수준 읽기 금지로
   건다(`build-stream-options.ts`). 6b의 Bash 검사는 문자열 수준이라 이것이 실제 경계다.
 - 버튼은 `requestId`만 싣는다. 요청은 서버에서 읽고, 읽기와 `markRequestHandled` 사이에 `await`가 없어 두 번째 클릭

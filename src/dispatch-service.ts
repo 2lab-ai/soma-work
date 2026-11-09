@@ -36,6 +36,34 @@ export function parseDispatchWorkSize(raw: unknown): DispatchWorkSize | undefine
   return size === 'small' || size === 'large' ? size : undefined;
 }
 
+/** A deploy directive read off the first line of a message: `repo1,repo2 source -> target`. */
+export interface DeployDirective {
+  repos: string[];
+  source: string;
+  target: string;
+}
+
+const LEADING_USER_MENTIONS_RE = /^(?:\s*<@[A-Za-z0-9]+(?:\|[^>]*)?>)*\s*/;
+const DEPLOY_DIRECTIVE_RE =
+  /^(?:deploy\s+)?([A-Za-z0-9_.-]+(?:\s*,\s*[A-Za-z0-9_.-]+)*)(?:\s*:)?\s+([A-Za-z0-9_./-]+)\s*->\s*([A-Za-z0-9_./-]+)(?:\s+.*)?$/i;
+
+/**
+ * The deploy directive the dispatch prompt's deploy row describes, read strictly so it can skip the
+ * classifier: the first non-empty line after any leading user mentions (the bot mention may or may not
+ * be stripped already) must be `[deploy] repos[:] source -> target`, optionally followed by words after
+ * whitespace. The Slack-escaped arrow (`-&gt;`) the message event carries is decoded first.
+ */
+export function parseDeployDirective(text: string): DeployDirective | undefined {
+  const body = decodeSlackEntities(text ?? '').replace(LEADING_USER_MENTIONS_RE, '');
+  const line = body.split('\n').find((l) => l.trim() !== '');
+  const match = line?.trim().match(DEPLOY_DIRECTIVE_RE);
+  if (!match) return undefined;
+  const repos = match[1].split(',').map((r) => r.trim());
+  // `deploy develop -> stage` is the keyword with no repo, not a repo named `deploy`.
+  if (repos.length === 1 && repos[0].toLowerCase() === 'deploy') return undefined;
+  return { repos, source: match[2], target: match[3] };
+}
+
 /**
  * Result of dispatch classification
  */
@@ -132,6 +160,25 @@ class DispatchService {
   async dispatch(userMessage: string, abortSignal?: AbortSignal): Promise<DispatchResult> {
     // Score complexity for every dispatch (cheap — pure function, <1ms)
     const complexity = scoreComplexity(userMessage);
+
+    // A deploy directive needs no classifier: a classifier timeout on a loaded host drifts the session
+    // to `default`, which loses the deploy workflow. Runs before the unconfigured checks for the same reason.
+    const directive = parseDeployDirective(userMessage);
+    if (directive) {
+      const links = this.extractLinksFromText(userMessage);
+      const result: DispatchResult = {
+        workflow: 'deploy',
+        title: this.sanitizeTitle(`${directive.repos.join(',')} ${directive.source} -> ${directive.target} Deploy`),
+        size: 'small',
+        links: Object.keys(links).length > 0 ? links : undefined,
+        complexity,
+      };
+      this.logger.info(
+        `📍 DISPATCH → [deploy] "${result.title}" (directive fast path) size=small complexity=${complexity.score}/${complexity.tier}`,
+        { workflow: result.workflow, title: result.title, directive },
+      );
+      return result;
+    }
 
     // Check if service is properly configured (prompt + ClaudeHandler)
     if (!this.isConfigured || !this.dispatchPrompt) {

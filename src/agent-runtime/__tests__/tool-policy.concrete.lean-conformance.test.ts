@@ -4,7 +4,7 @@
  *
  * Each `concrete` vector is a real call (a sensitive Read, `ssh`, a cross-user path, a
  * dangerous `rm -rf`, a safe `ls`, a denied MCP tool, a PR creation in a handoff session,
- * `gh auth token`, a Read of the devops broker's files, ...).
+ * `gh auth token`, a Read of the devops broker's files, an environment plugin's MCP tool, ...).
  * It lists the primitive calls the policy makes for it with the values the model was given; this
  * suite first checks those values against the real primitives, then requires the real
  * `evaluateToolPolicy` to return the model's result. The sensitive-path entry, arguments
@@ -68,6 +68,8 @@ interface ConcreteCase {
     mcpDenied: string | null;
     /** `ctx.checkEnvSkillPermission`'s value (phase 4): a reason, or null. */
     envSkillDenied: string | null;
+    /** `ctx.checkEnvPluginMcpPermission`'s value (step 6d): a reason, or null. */
+    envMcpDenied: string | null;
     disabledRules: string[];
     /** Present only for an incident session. */
     incidentReadOnly?: IncidentReadOnlyContext;
@@ -148,6 +150,7 @@ function contextOf(c: ConcreteCase): ToolPolicyContext {
     handoffContext: c.ctx.handoffContext ?? undefined,
     checkMcpToolPermission: () => c.ctx.mcpDenied,
     checkEnvSkillPermission: () => c.ctx.envSkillDenied,
+    checkEnvPluginMcpPermission: () => c.ctx.envMcpDenied,
     ...(c.ctx.incidentReadOnly ? { incidentReadOnly: c.ctx.incidentReadOnly } : {}),
   };
 }
@@ -167,6 +170,13 @@ describe('tool-policy Lean conformance vectors (real primitives)', () => {
     expect(devopsDenied.length).toBeGreaterThanOrEqual(8);
     expect(new Set(devopsDenied.map((c) => c.ctx.mode))).toEqual(new Set(['auto', 'bypass', 'legacy']));
     expect(devopsDenied.some((c) => c.ctx.isAdmin)).toBe(true);
+    // The environment plugin MCP step (6d) is exercised: a denial, and a pass for an admin.
+    const envMcpDenied = concrete.filter((c) => String(c.expect.reason).startsWith('env-plugin-mcp: '));
+    expect(envMcpDenied.length).toBeGreaterThanOrEqual(2);
+    expect(envMcpDenied.every((c) => !c.ctx.isAdmin && c.tool.startsWith('mcp__plugin_'))).toBe(true);
+    expect(concrete.some((c) => c.ctx.isAdmin && c.ctx.envMcpDenied !== null && c.expect.decision === 'pass')).toBe(
+      true,
+    );
     expect(new Set(concrete.map((c) => c.name)).size).toBe(concrete.length);
     // No home directory is committed: only the placeholder is, substituted above. (A home of
     // `/`, as in some containers, would match every path, so it is not checked.)
