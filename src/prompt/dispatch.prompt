@@ -89,8 +89,8 @@ Examples:
 - Input: "z https://github.com/org/repo/pull/456"
   Output: {"workflow": "zwork", "title": "PR #456 Work", "size": "small", "links": {"pr": "https://github.com/org/repo/pull/456"}}
 
-- Input: "projalpha develop -> dev2"
-  Output: {"workflow": "deploy", "title": "projalpha develop -> dev2 Deploy", "size": "small"}
+- Input: "projalpha develop -> stage"
+  Output: {"workflow": "deploy", "title": "projalpha develop -> stage Deploy", "size": "small"}
 
 - Input: "deploy projalpha,projbeta main -> prod"
   Output: {"workflow": "deploy", "title": "projalpha,projbeta main -> prod Deploy", "size": "small"}
