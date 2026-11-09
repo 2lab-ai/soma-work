@@ -1,0 +1,155 @@
+// A real screen recording shot like a product film. The page sits on a plane in 3D (tilted back, a slow camera move)
+// with a shallow depth of field: the focus is one element (an ellipse, or a union of ellipses, on the page), sharp and at
+// full brightness; around it a near ring at a little blur, and the rest of the page far out of focus and down to a
+// smooth dark tone. Every blur radius is a FIXED level (LADDER below): the page is drawn as three copies (sharp / near /
+// far) and the focus is a mask on the copies, so focus moves by moving a mask, never by animating a radius. A rack (the
+// whole page soft for a beat) fades the sharp and near copies out and back in. The plane is laid out at R x the frame
+// and scaled down by the camera, so Chromium rasterises the page at full detail before the zoom (no soft upscaled text).
+import React from 'react';
+import { AbsoluteFill, Easing, OffthreadVideo, Sequence, staticFile } from 'remotion';
+
+export const W = 1920;
+export const H = 1080;
+const R = 3; // layout oversampling: the plane is W*R x H*R css px
+const LADDER = [0.75, 1, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128] as const;
+// Chromium draws a blur under ~0.5 px as sharp, and an animated radius steps and costs the GPU every frame, so a
+// defocus is always one FIXED level from this ladder: the nearest level to the asked radius (0 below 0.5 px).
+const defocusLevel = (px: number, ladder: readonly number[]) =>
+  px < 0.5 ? 0 : ladder.reduce((best, l) => (Math.abs(l - px) < Math.abs(best - px) ? l : best), ladder[0]);
+
+/** Camera key: the page point (css px of the recording's viewport) the camera holds at frame centre (+ox/oy), the
+ *  zoom, the plane's tilt (rx: top away, ry: right away) and the camera's roll (rz, the whole picture). */
+export type Cam = { f: number; x: number; y: number; s: number; rx?: number; ry?: number; rz?: number; ox?: number; oy?: number };
+/** An ellipse on the page (css px): centre and half-sizes. */
+export type Spot = { x: number; y: number; w: number; h: number };
+/** Focus key: the sharp spots (one or a union) and `soft` (0 in focus .. 1 the whole page soft: a rack). `rect`: the
+ *  first spot is a feathered rectangle instead (a line of text sharp to its ends; held from this key to the next). */
+export type Focus = { f: number; spots: Spot[]; soft?: number; rect?: boolean };
+/** A run of the recording: from shot frame `at`, clip `src` from its frame `clipFrom`. */
+export type Seg = { at: number; dur: number; src: string; clipFrom: number };
+export type PlateSpec = {
+  segs: Seg[];
+  vw: number; // the recording's viewport width (css px): 1920 or 1280
+  cam: Cam[];
+  focus: Focus[];
+  blur?: number; // the far defocus on screen (px at 1080p, 36)
+  nearBlur?: number; // the near ring on screen (12)
+  far?: number; // brightness of the far field (0.5)
+  persp?: number; // CSS perspective (px): 1300 macro, 2000 wide
+  fade?: { from: number; to: number }; // the exit: soft and down to black over these shot frames
+  lift?: number; // brightness of the sharp copy (1.15): secondary-grey UI text up toward the primary text's level
+};
+
+const inOut = Easing.bezier(0.65, 0, 0.35, 1);
+const clamp = (v: number) => Math.max(0, Math.min(1, v));
+const lin = (u: number) => u;
+
+const at = <T extends { f: number }>(keys: readonly T[], f: number, get: (k: T) => number, e: (u: number) => number = inOut) => {
+  if (f <= keys[0].f) return get(keys[0]);
+  for (let i = 0; i + 1 < keys.length; i++) {
+    const a = keys[i];
+    const b = keys[i + 1];
+    if (f <= b.f) return get(a) + (get(b) - get(a)) * e(clamp((f - a.f) / Math.max(1, b.f - a.f)));
+  }
+  return get(keys[keys.length - 1]);
+};
+// the camera never eases to a stop before a cut: its last segment runs linear
+const atCam = (keys: readonly Cam[], f: number, get: (k: Cam) => number) => (keys.length > 1 && f > keys[keys.length - 2].f ? at(keys, f, get, lin) : at(keys, f, get));
+
+export const camAt = (keys: readonly Cam[], f: number) => ({
+  x: atCam(keys, f, (k) => k.x),
+  y: atCam(keys, f, (k) => k.y),
+  s: Math.exp(atCam(keys, f, (k) => Math.log(k.s))),
+  rx: atCam(keys, f, (k) => k.rx ?? 0),
+  ry: atCam(keys, f, (k) => k.ry ?? 0),
+  rz: atCam(keys, f, (k) => k.rz ?? 0),
+  ox: atCam(keys, f, (k) => k.ox ?? 0),
+  oy: atCam(keys, f, (k) => k.oy ?? 0),
+});
+/** The focus at f: spots interpolated pairwise between keys (keys share their spot count). */
+export const focusAt = (keys: readonly Focus[], f: number) => {
+  const n = Math.max(...keys.map((k) => k.spots.length));
+  const spots: Spot[] = [];
+  for (let i = 0; i < n; i++) {
+    const g = (k: Focus) => k.spots[Math.min(i, k.spots.length - 1)];
+    spots.push({ x: at(keys, f, (k) => g(k).x), y: at(keys, f, (k) => g(k).y), w: at(keys, f, (k) => g(k).w), h: at(keys, f, (k) => g(k).h) });
+  }
+  let rect = false;
+  for (const k of keys) if (f >= k.f) rect = !!k.rect;
+  return { spots, soft: at(keys, f, (k) => k.soft ?? 0), rect };
+};
+
+/** A feathered rectangle mask (plane px): the intersection of a horizontal and a vertical band. */
+const rectMask = (s: Spot, k: number, grow: number, feather: number) => {
+  const x0 = (s.x - s.w * grow) * k;
+  const x1 = (s.x + s.w * grow) * k;
+  const y0 = (s.y - s.h * grow) * k;
+  const y1 = (s.y + s.h * grow) * k;
+  const p = (v: number) => `${v.toFixed(1)}px`;
+  return {
+    WebkitMaskImage: `linear-gradient(to right, transparent ${p(x0 - feather)}, #000 ${p(x0)}, #000 ${p(x1)}, transparent ${p(x1 + feather)}), linear-gradient(to bottom, transparent ${p(y0 - feather)}, #000 ${p(y0)}, #000 ${p(y1)}, transparent ${p(y1 + feather)})`,
+    WebkitMaskComposite: 'source-in',
+    maskComposite: 'intersect',
+  } as React.CSSProperties;
+};
+
+const ellipses = (spots: Spot[], k: number, grow: number, pad: number, hold: number) =>
+  spots
+    .map((s) => `radial-gradient(ellipse ${(s.w * k * grow + pad).toFixed(1)}px ${(s.h * k * grow + pad).toFixed(1)}px at ${(s.x * k).toFixed(1)}px ${(s.y * k).toFixed(1)}px, #000 0%, #000 ${hold}%, transparent 100%)`)
+    .join(', ');
+
+/** One plate at its own frame f (the shot's frame). */
+export const Plate: React.FC<{ p: PlateSpec; f: number }> = ({ p, f }) => {
+  const k = (W * R) / p.vw; // page css px -> plane px (oversampled)
+  const c = camAt(p.cam, f);
+  const fo = focusAt(p.focus, f);
+  // radii are fixed for the shot: the far / near levels at the shot's mean zoom (a blur scales with the plane, 1/R here)
+  const sMean = Math.exp(p.cam.reduce((m, q) => m + Math.log(q.s), 0) / p.cam.length);
+  const far = defocusLevel(((p.blur ?? 54) * R) / sMean, LADDER);
+  const near = defocusLevel(((p.nearBlur ?? 12) * R) / sMean, LADDER);
+  const tx = c.x * k;
+  const ty = c.y * k;
+  const exit = p.fade ? clamp((f - p.fade.from) / Math.max(1, p.fade.to - p.fade.from)) : 0;
+  const soft = Math.max(clamp(fo.soft), exit);
+  const sharpMask = ellipses(fo.spots, k, 1, 4 * R, 58);
+  const nearMask = ellipses(fo.spots, k, 1.9, 40 * R, 30);
+  // a rectangle focus: feathered ~40 px on screen (sharp) and a wider soft ring (near)
+  const fth = (40 * R) / c.s;
+  const sharpStyle: React.CSSProperties = fo.rect ? rectMask(fo.spots[0], k, 1, fth) : { WebkitMaskImage: sharpMask, maskImage: sharpMask };
+  const nearStyle: React.CSSProperties = fo.rect ? rectMask(fo.spots[0], k, 1.25, fth * 2) : { WebkitMaskImage: nearMask, maskImage: nearMask };
+  const vid = (key: string) => (
+    <>
+      {p.segs.map((s, i) => (
+        <Sequence key={`${key}${i}`} from={s.at} durationInFrames={s.dur} layout="none">
+          <OffthreadVideo src={staticFile(s.src)} startFrom={s.clipFrom} muted style={{ position: 'absolute', left: 0, top: 0, width: W * R, height: H * R }} />
+        </Sequence>
+      ))}
+    </>
+  );
+  const layer = (key: string, style: React.CSSProperties) => (
+    <div key={key} style={{ position: 'absolute', left: 0, top: 0, width: W * R, height: H * R, ...style }}>
+      {vid(key)}
+    </div>
+  );
+  return (
+    <AbsoluteFill style={{ background: '#000', overflow: 'hidden' }}>
+      <AbsoluteFill style={{ transform: `rotate(${c.rz.toFixed(3)}deg) scale(1.03)`, perspective: p.persp ?? 1300, perspectiveOrigin: '50% 50%', opacity: 1 - exit }}>
+        <div
+          style={{
+            position: 'absolute',
+            left: 0,
+            top: 0,
+            width: W * R,
+            height: H * R,
+            transformOrigin: `${tx.toFixed(2)}px ${ty.toFixed(2)}px`,
+            transform: `translate3d(${(W / 2 + c.ox - tx).toFixed(2)}px, ${(H / 2 + c.oy - ty).toFixed(2)}px, 0) rotateX(${c.rx.toFixed(3)}deg) rotateY(${c.ry.toFixed(3)}deg) scale(${(c.s / R).toFixed(5)})`,
+          }}
+        >
+          {layer('far', { filter: `blur(${far}px) brightness(${p.far ?? 0.6})` })}
+          {soft < 0.999 ? layer('near', { filter: `blur(${near}px) brightness(${Math.max(p.far ?? 0.6, (((p.far ?? 0.6) + 1) / 2) * 0.9).toFixed(3)})`, ...nearStyle, opacity: 1 - soft }) : null}
+          {soft < 0.999 ? layer('sharp', { filter: `brightness(${p.lift ?? 1.15})`, ...sharpStyle, opacity: 1 - soft }) : null}
+        </div>
+      </AbsoluteFill>
+    </AbsoluteFill>
+  );
+};
