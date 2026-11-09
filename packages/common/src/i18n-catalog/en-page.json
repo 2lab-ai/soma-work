@@ -1428,7 +1428,6 @@
   "<p class=\"lock\">맞는 스킬이 없습니다.</p>": "<p class=\"lock\">No skills match.</p>",
   "<p class=\"lock\">모든 환경 스킬을 실행할 수 있는 사람도 실행합니다: ": "<p class=\"lock\">People who may run all environment skills can run it too: ",
   "<p class=\"lock\">아직 내 스킬이 없습니다.</p>": "<p class=\"lock\">You have no skills yet.</p>",
-  "<p class=\"lock\">여기서는 고치지 않습니다. 환경 플러그인은 재시작할 때 저장소에서 다시 받아 오므로, 서버에서 고친 내용은 사라집니다. 저장소에서 고치세요.</p>": "<p class=\"lock\">Not edited here. Environment plugins are fetched again from their repository on restart, so a change made on the server is lost. Change it in the repository.</p>",
   "<p class=\"lock\">이 스킬에는 SKILL.md 말고 다른 파일도 있습니다. 여기서는 SKILL.md만 고칩니다.</p>": "<p class=\"lock\">This skill has other files besides SKILL.md. Only SKILL.md is edited here.</p>",
   "<p class=\"lock\">이 스킬은 더 이상 없습니다.</p>": "<p class=\"lock\">This skill no longer exists.</p>",
   "<p class=\"lock\">이 호스트에는 환경 스킬이 없습니다.</p>": "<p class=\"lock\">This host has no environment skills.</p>",
@@ -1492,5 +1491,7 @@
   " · 다음 지시부터 적용 · ↪︎ Redo 로 취소": " · applies from the next instruction · ↪︎ Redo to cancel",
   "되돌리기를 취소하지 못했어요": "Couldn't cancel the rollback",
   "되돌리기를 취소했어요 (Redo)": "Rollback cancelled (Redo)",
-  "추론 강도를 바꾸지 못해 보내지 않았어요 — ": "Not sent: couldn't change the reasoning effort — "
+  "추론 강도를 바꾸지 못해 보내지 않았어요 — ": "Not sent: couldn't change the reasoning effort — ",
+  "<p class=\"lock\">여기서 고치면 이 서버의 파일이 바로 바뀌고, 다음 실행부터 쓰입니다. 환경 플러그인 저장소에 새 커밋이 생기거나 관리자가 강제로 업데이트하면 저장소의 내용으로 덮어씁니다. 계속 쓰려면 저장소에도 반영하세요.</p>": "<p class=\"lock\">Saving here changes this server's file at once, and the next run uses it. A new commit in the environment plugin's repository, or an admin's forced update, replaces it with the repository's copy. To keep the change, make it in the repository too.</p>",
+  "<p class=\"lock\">관리자 모드를 켜면 여기서 고칠 수 있습니다.</p>": "<p class=\"lock\">Turn on admin mode to edit it here.</p>"
 }

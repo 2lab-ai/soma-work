@@ -236,13 +236,15 @@ function skFindEnv(key) {
   for (var i = 0; i < list.length; i++) if (list[i].key === key) return list[i];
   return null;
 }
-function skContent(editable) {
+// save: the editor's 저장 — 'skSaveMine' or 'skSaveEnv'; none = read-only. The editor names the open skill
+// (data-name = its id) so a redraw keeps a draft only for the skill it was typed for.
+function skContent(save) {
   if (_skDetailError) return '<div class="notice is-error" role="alert">' + esc(_skDetailError) + '</div>';
   if (!_skDetail) return '<div class="notice">불러오는 중…</div>';
   // The HTML parser drops one newline right after <pre> and <textarea>: give it one, so a leading blank line survives.
-  if (!editable) return '<pre class="sk-code">\n' + esc(_skDetail.content) + '</pre>';
-  return '<textarea id="sk-edit" class="ui-input sk-code" rows="18" spellcheck="false" aria-label="SKILL.md 내용" data-name="' + escAttr(_skDetail.name) + '">\n' + esc(_skDetail.content) + '</textarea>'
-    + '<div class="sk-actions"><button type="button" class="btn primary" onclick="skSaveMine()">저장</button></div>';
+  if (!save) return '<pre class="sk-code">\n' + esc(_skDetail.content) + '</pre>';
+  return '<textarea id="sk-edit" class="ui-input sk-code" rows="18" spellcheck="false" aria-label="SKILL.md 내용" data-name="' + escAttr(_skOpen ? _skOpen.id : '') + '">\n' + esc(_skDetail.content) + '</textarea>'
+    + '<div class="sk-actions"><button type="button" class="btn primary" onclick="' + (save === 'skSaveEnv' ? 'skSaveEnv' : 'skSaveMine') + '()">저장</button></div>';
 }
 function skBack(label) {
   return '<p><button type="button" class="btn link" onclick="skBackToList()">' + esc(label) + '</button></p>';
@@ -258,7 +260,7 @@ function skMineDetail() {
     + (names.length ? '<p class="lock">내 모든 스킬을 실행할 수 있는 사람도 실행합니다: ' + esc(names.join(', ')) + '</p>' : '') + '</div>'
     + '<div class="sk-box"><h3>SKILL.md</h3>'
     + ((_skDetail ? _skDetail.isSingleFile === false : !s.isSingleFile) ? '<p class="lock">이 스킬에는 SKILL.md 말고 다른 파일도 있습니다. 여기서는 SKILL.md만 고칩니다.</p>' : '')
-    + skContent(true) + '</div>';
+    + skContent('skSaveMine') + '</div>';
 }
 function skEnvDetail() {
   var s = skFindEnv(_skOpen.id);
@@ -275,21 +277,25 @@ function skEnvDetail() {
   if (s.access === 'none') {
     return html + '<div class="sk-banner" role="note"><span>이 스킬의 내용은 관리자가 허용한 사람만 볼 수 있습니다. 이 명령을 Slack에서 실행하면 관리자에게 승인 요청이 갑니다.</span><code>$' + esc(s.key) + '</code></div>';
   }
+  // 1.b — an admin edits it in admin mode. The edit is this host's file: it lasts until the plugin's repo gets a new
+  // commit (or an admin forces an update), when the repo's copy replaces it — said before the editor, not after.
+  var edit = skCanEditEnv();
   return html + '<div class="sk-box"><h3>SKILL.md</h3>'
-    + (skIsAdmin() ? '<p class="lock">여기서는 고치지 않습니다. 환경 플러그인은 재시작할 때 저장소에서 다시 받아 오므로, 서버에서 고친 내용은 사라집니다. 저장소에서 고치세요.</p>' : '')
-    + skContent(false) + '</div>';
+    + (edit ? '<p class="lock">여기서 고치면 이 서버의 파일이 바로 바뀌고, 다음 실행부터 쓰입니다. 환경 플러그인 저장소에 새 커밋이 생기거나 관리자가 강제로 업데이트하면 저장소의 내용으로 덮어씁니다. 계속 쓰려면 저장소에도 반영하세요.</p>'
+      : skIsAdmin() ? '<p class="lock">관리자 모드를 켜면 여기서 고칠 수 있습니다.</p>' : '')
+    + skContent(edit ? 'skSaveEnv' : '') + '</div>';
 }
 function skSystemDetail() {
   var html = skBack('← 시스템 스킬') + '<h2>' + esc(_skOpen.source + ':' + _skOpen.id) + '</h2>';
   if (_skDetail && _skDetail.description) html += '<div class="meta">' + esc(_skDetail.description) + '</div>';
-  return html + '<div class="sk-box"><h3>SKILL.md</h3>' + skContent(false) + '</div>';
+  return html + '<div class="sk-box"><h3>SKILL.md</h3>' + skContent('') + '</div>';
 }
 function renderSkills() {
   var el = document.getElementById('sk-detail');
   if (!el || !_sk) return;
   // A redraw (a grant change, the admin-mode switch) keeps what is typed in the open skill's editor.
   var ta = document.getElementById('sk-edit');
-  var draft = ta && _skOpen && _skOpen.section === 'mine' && ta.getAttribute('data-name') === _skOpen.id ? ta.value : null;
+  var draft = ta && _skOpen && ta.getAttribute('data-name') === _skOpen.id ? ta.value : null;
   var html;
   if (_skOpen && _skOpen.section === 'mine') html = skMineDetail();
   else if (_skOpen && _skOpen.section === 'env') html = skEnvDetail();
@@ -353,6 +359,26 @@ async function skSaveMine() {
   // The draft stays in the editor: nothing is lost, and nothing overwrites the other change blind.
   if (r.status === 409) skStatus('그사이 다른 곳에서 이 스킬이 바뀌어 저장하지 않았습니다. 작성하던 내용을 복사해 두고 스킬을 다시 여세요.', true);
   else skStatus('저장하지 못했습니다: ' + r.error, true);
+  return false;
+}
+// 1.b — an admin saves an environment skill (PUT /api/skills/env/:key, admin mode; the server checks again).
+async function skSaveEnv() {
+  var ta = document.getElementById('sk-edit');
+  if (!ta || !_skOpen || !_skDetail) return false;
+  var content = ta.value;
+  if (!content.trim()) { skStatus('비어 있는 스킬은 저장할 수 없습니다', true); return false; }
+  var r;
+  try { r = await apiWrite('PUT', '/api/skills/env/' + encodeURIComponent(_skOpen.id), { content: content, hash: _skDetail.hash }); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
+  if (r.ok) {
+    _skDetail = r.data.skill;
+    var s = skFindEnv(_skOpen.id);
+    if (s) s.description = _skDetail.description;
+    renderSkills();
+    skStatus('저장했습니다', false);
+    return true;
+  }
+  if (r.status === 409) skStatus('그사이 다른 곳에서 이 스킬이 바뀌어 저장하지 않았습니다. 작성하던 내용을 복사해 두고 스킬을 다시 여세요.', true);
+  else skStatus((r.status === 403 ? '권한이 없습니다: ' : '저장하지 못했습니다: ') + r.error, true);
   return false;
 }
 async function skSetGrant(scope, skill, userId, allow) {
