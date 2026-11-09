@@ -6,7 +6,7 @@
 >
 > **이 문서가 다루지 않는 것**: 새 프로파일 패키지 온보딩(`somawork setup`). 그쪽은 노드도
 > runner도 `/opt`도 `.env`도 쓰지 않고, 한 명령이 llmux·Slack·프로파일·서비스를 전부 세운다.
-> 개요와 **현재 상태**(포뮬러 미배포, clean-machine·실 Slack 리시트 없음)는 `README.md`의
+> 개요와 **현재 상태**(포뮬러 미배포, clean-machine·실 Slack 리시트 없음)는 `docs/misc/guides/setup.md`의
 > "Getting soma-work running"을 보라. 둘은 **다른 배포 모델**이고 경로도 서비스 레이블도
 > 겹치지 않는다.
 
@@ -376,7 +376,7 @@ echo ">>> .env 생성됨. 토큰 값을 직접 입력하세요."
 
 선택 항목(`ANTHROPIC_API_KEY`, `GITHUB_APP_ID` / `GITHUB_PRIVATE_KEY` / `GITHUB_INSTALLATION_ID`,
 `GITHUB_TOKEN`, `JIRA_*`, `DEFAULT_UPDATE_CHANNEL`, `DEBUG`, `DISPATCH_MODEL`, Bedrock/Vertex
-플래그)의 목록과 의미는 `README.md`의 소스 개발 경로 §3에 있다 — 여기에 복붙해 두면 두 곳이
+플래그)의 목록과 의미는 `docs/misc/guides/setup.md`의 소스 개발 경로 §3에 있다 — 여기에 복붙해 두면 두 곳이
 어긋난다.
 
 `SLACK_SIGNING_SECRET`은 넣지 않는다 (§7 참조).
