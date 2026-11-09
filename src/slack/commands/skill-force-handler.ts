@@ -6,6 +6,7 @@ import { DATA_DIR, PLUGINS_DIR } from '../../env-paths';
 import { checkEnvSkillPermission, type EnvSkillRegistry, envSkillRegistry } from '../../env-skill-registry';
 import { Logger } from '../../logger';
 import { isSafePathSegment } from '../../path-utils';
+import { isAdmittedPluginName } from '../../plugin/admitted-plugin-names';
 import { createPermissionRequest } from '../../skill-permission-request-store';
 import type { ConversationSession } from '../../types';
 import { extractCopiedFrom } from '../../user-skill-frontmatter';
@@ -104,6 +105,17 @@ const BARE_FALLBACK_NAMESPACES: ReadonlyArray<FallbackNamespace> = ['user', 'loc
 const PRIORITY_PLUGIN_SLOTS: ReadonlyArray<string> = BARE_FALLBACK_NAMESPACES.filter(
   (ns): ns is 'stv' | 'superpowers' => ns === 'stv' || ns === 'superpowers',
 );
+
+/**
+ * Whether `plugin` names a PLUGINS_DIR plugin PluginManager did not admit on its latest pass
+ * (`plugin/admitted-plugin-names`). A directory on disk is not proof of admission — refused,
+ * blocked or unconfigured plugins can stay behind when their deletion fails — so none of its
+ * skills resolve: not as a bare `$skill`, not as `$plugin:skill`, not nested. `user` and `local`
+ * never live under PLUGINS_DIR.
+ */
+function isUnadmittedPluginNamespace(plugin: string): boolean {
+  return plugin !== 'user' && plugin !== 'local' && !isAdmittedPluginName(plugin);
+}
 
 /**
  * Bare `$word` tokens that look like skills but are documented top-level
@@ -617,6 +629,7 @@ export class SkillForceHandler implements CommandHandler {
       if (ns === 'user' && (!userId || !isSafePathSegment(userId))) {
         continue;
       }
+      if (isUnadmittedPluginNamespace(ns)) continue;
       const ref: SkillRef = { plugin: ns, skill: name, key: `${ns}:${name}` };
       if (fs.existsSync(this.resolveSkillPath(ref, userId))) {
         return { kind: 'found', ref };
@@ -680,6 +693,7 @@ export class SkillForceHandler implements CommandHandler {
       const plugin = entry.name;
       if (skip.has(plugin)) continue;
       if (!isSafePathSegment(plugin)) continue;
+      if (isUnadmittedPluginNamespace(plugin)) continue;
       const skillPath = this.resolveSkillPath({ plugin, skill: name, key: '' });
       if (fs.existsSync(skillPath)) {
         matches.push(plugin);
@@ -832,6 +846,15 @@ export class SkillForceHandler implements CommandHandler {
       if (hasOneTimeGrant(effectiveOwner, ref.skill, state.requesterId)) {
         state.oneTime.push({ ownerUserId: effectiveOwner, skillName: ref.skill });
       }
+    }
+
+    // UNADMITTED PLUGIN (every depth): a PLUGINS_DIR name PluginManager did not admit never
+    // resolves, even with its directory on disk. Checked before the environment gate, so no admin is
+    // asked to grant it.
+    if (!effectiveOwner && isUnadmittedPluginNamespace(ref.plugin)) {
+      state.errors.push(canonicalKey);
+      this.logger.warn('Skill of a plugin that is not admitted not resolved', { skill: canonicalKey });
+      return;
     }
 
     // ENVIRONMENT-SKILL GATE (every depth): a skill of a deploy-time environment plugin runs for a

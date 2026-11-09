@@ -1,6 +1,11 @@
 import * as fs from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { setAdmittedPluginNames } from '../../../plugin/admitted-plugin-names';
 import { SkillForceHandler } from '../skill-force-handler';
+
+// The PLUGINS_DIR plugins these tests mount are ones PluginManager admitted on a real host. A
+// directory that is not admitted is not served (see src/plugin/__tests__/admitted-plugin-names.test.ts).
+beforeEach(() => setAdmittedPluginNames(['acme-env', 'stv']));
 
 vi.mock('node:fs');
 

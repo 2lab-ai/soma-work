@@ -30,9 +30,10 @@ vi.mock('../defaults', () => ({
   isDefaultMarketplace: vi.fn(() => false),
 }));
 
-import { fetchPlugin } from '../marketplace-fetcher';
+import { fetchPlugin, resolveRemoteSha } from '../marketplace-fetcher';
 
 const mockFetchPlugin = vi.mocked(fetchPlugin);
+const mockResolveRemoteSha = vi.mocked(resolveRemoteSha);
 
 import { loadConfig, saveConfig } from '../../config-loader';
 
@@ -81,6 +82,7 @@ describe('PluginManager', () => {
       { name: 'soma-work', repo: '2lab-ai/soma-work', ref: 'main' },
       'omc',
       expect.any(String),
+      { securityMode: 'block' },
     );
 
     const paths = mgr.getPluginPaths();
@@ -457,6 +459,7 @@ describe('PluginManager', () => {
         { name: 'test-mkt', repo: 'org/test-mkt', ref: 'main' },
         'tool-d',
         expect.any(String),
+        { securityMode: 'block' },
       );
       const resolved = mgr.getResolvedPlugins();
       expect(resolved).toHaveLength(1);
@@ -489,6 +492,7 @@ describe('PluginManager', () => {
         { name: 'official', repo: 'user/custom-repo', ref: 'v2' },
         'tool-x',
         expect.any(String),
+        { securityMode: 'block' },
       );
     });
 
@@ -515,6 +519,125 @@ describe('PluginManager', () => {
       const resolved = mgr.getResolvedPlugins();
       expect(resolved[0].source).toBe('marketplace');
     });
+  });
+});
+
+/**
+ * The security gate records (does not block) only for environment plugins.
+ *
+ * `plugin.envPlugins` is written by the fleet deploy, and those plugins are admin-gated at
+ * runtime, so their install-time scan runs in `record` mode. PluginManager is the only place
+ * that decides the mode, per configured ref, matching name AND marketplace — a plugin that is
+ * not listed must get `block`, even when it shares a name or a prefix with one that is, and
+ * whatever options a caller (the admin Force Update button) passes. (Two refs with one name
+ * configured together are refused outright — see marketplace-fetcher-security-mode.test.ts.)
+ */
+describe('PluginManager — security mode for environment plugins', () => {
+  let tmpDir: string;
+  const ACME = { name: 'acme-skills', repo: 'acme/acme-skills', ref: 'main' };
+  const OTHER = { name: 'other-skills', repo: 'acme/other-skills', ref: 'main' };
+  const config: PluginConfig = {
+    marketplace: [ACME, OTHER],
+    plugins: [
+      'acme-env@acme-skills', // the environment plugin
+      'acme-env-extra@acme-skills', // name extends the env plugin's
+      'acme@acme-skills', // name is a prefix of the env plugin's
+      'acme-tools@other-skills', // another marketplace
+    ],
+    envPlugins: ['acme-env@acme-skills'],
+  };
+  const EXPECTED_MODES = {
+    'acme-env@acme-skills': 'record',
+    'acme-env-extra@acme-skills': 'block',
+    'acme@acme-skills': 'block',
+    'acme-tools@other-skills': 'block',
+  };
+
+  /** `ref → securityMode` of every fetchPlugin call so far. */
+  function modesByRef(): Record<string, string | undefined> {
+    return Object.fromEntries(
+      mockFetchPlugin.mock.calls.map(([marketplace, pluginName, , options]) => [
+        `${pluginName}@${marketplace.name}`,
+        options?.securityMode,
+      ]),
+    );
+  }
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'plugin-mgr-security-mode-'));
+    vi.clearAllMocks();
+    const defaults = await import('../defaults');
+    vi.mocked(defaults).DEFAULT_MARKETPLACES = [];
+    vi.mocked(defaults).DEFAULT_PLUGINS = [];
+    vi.mocked(defaults.isDefaultPlugin).mockReturnValue(false);
+    mockFetchPlugin.mockImplementation(async (_marketplace, pluginName) => ({
+      pluginPath: path.join(tmpDir, pluginName),
+      sha: 'b'.repeat(40),
+      cached: false,
+    }));
+    mockResolveRemoteSha.mockReturnValue('b'.repeat(40));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('initialize passes record only for the envPlugins ref', async () => {
+    await new PluginManager(config, tmpDir).initialize();
+
+    expect(mockFetchPlugin).toHaveBeenCalledTimes(4);
+    expect(modesByRef()).toEqual(EXPECTED_MODES);
+  });
+
+  it('refresh keeps the same distinction', async () => {
+    const mgr = new PluginManager(config, tmpDir);
+    await mgr.initialize();
+    mockFetchPlugin.mockClear();
+
+    await mgr.refresh();
+
+    expect(mockFetchPlugin).toHaveBeenCalledTimes(4);
+    expect(modesByRef()).toEqual(EXPECTED_MODES);
+  });
+
+  it('the env plugin name from another marketplace is not an env plugin', async () => {
+    // envPlugins names acme-env@acme-skills; only acme-env@other-skills is configured.
+    await new PluginManager({ ...config, plugins: ['acme-env@other-skills'] }, tmpDir).initialize();
+
+    expect(modesByRef()).toEqual({ 'acme-env@other-skills': 'block' });
+  });
+
+  it('a host with no envPlugins blocks every plugin', async () => {
+    await new PluginManager({ ...config, envPlugins: undefined }, tmpDir).initialize();
+
+    expect(Object.values(modesByRef())).toEqual(['block', 'block', 'block', 'block']);
+  });
+
+  it('forceRefresh (admin `plugins update`) keeps the same distinction', async () => {
+    const result = await new PluginManager(config, tmpDir).forceRefresh();
+
+    expect(result.errors).toEqual([]);
+    expect(mockFetchPlugin).toHaveBeenCalledTimes(4);
+    expect(modesByRef()).toEqual(EXPECTED_MODES);
+  });
+
+  it("forceRefresh overrides a caller-supplied mode and keeps the caller's other options", async () => {
+    await new PluginManager(config, tmpDir).forceRefresh({
+      // A caller cannot put a non-env plugin into record mode …
+      'acme-tools@other-skills': { securityMode: 'record' },
+      // … nor take an env plugin out of it; the Force Update button's skip still reaches the fetcher.
+      'acme-env@acme-skills': { securityMode: 'block', skipSecurityGate: true },
+    });
+
+    const optionsByRef = Object.fromEntries(
+      mockFetchPlugin.mock.calls.map(([marketplace, pluginName, , options]) => [
+        `${pluginName}@${marketplace.name}`,
+        options,
+      ]),
+    );
+    expect(optionsByRef['acme-tools@other-skills']).toEqual({ securityMode: 'block' });
+    expect(optionsByRef['acme-env@acme-skills']).toEqual({ securityMode: 'record', skipSecurityGate: true });
+    expect(modesByRef()).toEqual(EXPECTED_MODES);
   });
 });
 

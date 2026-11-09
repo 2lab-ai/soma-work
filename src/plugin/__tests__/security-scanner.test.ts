@@ -578,6 +578,35 @@ describe('SecurityScanner', () => {
       expect(report).toContain('index.ts:5');
     });
 
+    it('should word a blocking result recorded for an environment plugin as kept, not blocked', () => {
+      const result: ScanResult = {
+        riskLevel: 'CRITICAL',
+        blocked: true,
+        requiresApproval: false,
+        findings: [
+          {
+            rule: 'EXEC_CHILD_PROCESS',
+            description: 'Import of child_process module — shell command execution',
+            severity: 'CRITICAL',
+            file: 'mcp/server.js',
+            line: 1,
+          },
+        ],
+        pluginName: 'acme-env',
+        scannedAt: new Date().toISOString(),
+      };
+
+      const report = formatScanReport(result, 'recorded');
+      expect(report).toContain('Recorded, not blocked');
+      expect(report).toContain('kept installed');
+      expect(report).not.toContain('BLOCKED');
+      expect(report).not.toContain('🚫');
+      expect(report).toContain('EXEC_CHILD_PROCESS');
+      // The disposition changes nothing for a result that did not block.
+      const clean: ScanResult = { ...result, riskLevel: 'LOW', blocked: false, findings: [] };
+      expect(formatScanReport(clean, 'recorded')).toBe(formatScanReport(clean));
+    });
+
     it('should format approval-required scan result', () => {
       const result: ScanResult = {
         riskLevel: 'HIGH',

@@ -137,12 +137,14 @@ export function restorePlugin(pluginsDir: string, pluginName: string, timestamp?
     // Restore plugin directory
     fs.cpSync(target.pluginDirBackup, pluginDir, { recursive: true });
 
-    // Restore meta file
+    // Restore meta file. A backup without one must not inherit the current meta: it
+    // carries the security admission of the content that was just replaced.
+    const metaDst = metaFilePath(pluginsDir, pluginName);
     if (target.metaFileBackup && fs.existsSync(target.metaFileBackup)) {
-      const metaDst = metaFilePath(pluginsDir, pluginName);
-      const cacheDir = path.dirname(metaDst);
-      fs.mkdirSync(cacheDir, { recursive: true });
+      fs.mkdirSync(path.dirname(metaDst), { recursive: true });
       fs.copyFileSync(target.metaFileBackup, metaDst);
+    } else {
+      fs.rmSync(metaDst, { force: true });
     }
 
     logger.info('Plugin restored from backup', {

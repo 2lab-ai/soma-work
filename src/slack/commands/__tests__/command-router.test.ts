@@ -3,6 +3,7 @@ import { LOG_DETAIL, LOG_MINIMAL } from '@soma/slack/output-flags';
 import { setStreamExecutorProviders } from '@soma/slack/pipeline/stream-executor';
 import type { WorkLogInput } from '@soma/slack/work-log';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { setAdmittedPluginNames } from '../../../plugin/admitted-plugin-names';
 
 vi.mock('../../../user-settings-store', () => ({
   userSettingsStore: {},
@@ -127,6 +128,8 @@ function stubSkillFs(options: { localSkills?: string[]; pluginSkills?: Record<st
   for (const [plugin, skills] of Object.entries(options.pluginSkills ?? {})) {
     pluginSkills.set(plugin, new Set(skills));
   }
+  // Mounted plugins are ones PluginManager admitted on a real host (src/plugin/admitted-plugin-names).
+  setAdmittedPluginNames(pluginSkills.keys());
   vi.mocked(fs.existsSync).mockImplementation((p) => {
     const s = String(p);
     // Local skill layout: .../local/skills/{skill}/SKILL.md

@@ -16,6 +16,10 @@
  *   4. superpowers → PLUGINS_DIR/superpowers/skills/{name}/SKILL.md
  *   5. other plugins under PLUGINS_DIR (first match wins, alphabetical)
  *
+ * 3–5 and {@link skillMdFile} serve a PLUGINS_DIR plugin only when PluginManager admitted it on its
+ * latest pass (`plugin/admitted-plugin-names`): a directory on disk is not proof of admission
+ * (refused, blocked or unconfigured plugins can stay behind when their deletion fails).
+ *
  * Used by:
  *   - prompt-builder.applyAutoskills (resolveAutoskillContent)
  *   - the `autoskill` add-picker UI (listAvailableSkills)
@@ -26,6 +30,7 @@ import * as path from 'node:path';
 import { DATA_DIR, PLUGINS_DIR } from './env-paths';
 import { Logger } from './logger';
 import { isSafePathSegment } from './path-utils';
+import { isAdmittedPluginName } from './plugin/admitted-plugin-names';
 
 const logger = new Logger('SkillLocator');
 
@@ -85,6 +90,7 @@ export function resolveAutoskillContent(name: string, userId?: string): Resolved
   candidates.push({ key: `local:${name}`, file: skillMdPath(LOCAL_SKILLS_DIR, name) });
   candidates.push({ key: `local:${name}`, file: skillMdPath(LOCAL_HARNESS_SKILLS_DIR, name) });
   for (const plugin of PRIORITY_PLUGINS) {
+    if (!isAdmittedPluginName(plugin)) continue;
     candidates.push({ key: `${plugin}:${name}`, file: skillMdPath(path.join(PLUGINS_DIR, plugin, 'skills'), name) });
   }
 
@@ -141,6 +147,7 @@ export function listAvailableSkills(userId?: string): AvailableSkill[] {
   for (const name of listSkillDirsWithMd(LOCAL_HARNESS_SKILLS_DIR)) add(name, 'local');
   // 3-4. priority plugins
   for (const plugin of PRIORITY_PLUGINS) {
+    if (!isAdmittedPluginName(plugin)) continue;
     for (const name of listSkillDirsWithMd(path.join(PLUGINS_DIR, plugin, 'skills'))) add(name, plugin);
   }
   // 5. remaining plugins (alphabetical)
@@ -166,6 +173,7 @@ export function skillMdFile(skill: AvailableSkill, userId?: string): string | nu
     const portable = skillMdPath(LOCAL_SKILLS_DIR, name);
     return fs.existsSync(portable) ? portable : skillMdPath(LOCAL_HARNESS_SKILLS_DIR, name);
   }
+  if (!isAdmittedPluginName(source)) return null;
   return skillMdPath(path.join(PLUGINS_DIR, source, 'skills'), name);
 }
 
@@ -190,7 +198,7 @@ function listSkillDirsWithMd(dir: string): string[] {
   return out;
 }
 
-/** Plugin directory names under PLUGINS_DIR (alphabetical). Empty on error. */
+/** Admitted plugin directory names under PLUGINS_DIR (alphabetical). Empty on error. */
 function scanPluginNames(): string[] {
   let entries: fs.Dirent[];
   try {
@@ -199,7 +207,7 @@ function scanPluginNames(): string[] {
     return [];
   }
   return entries
-    .filter((e) => e.isDirectory() && isSafePathSegment(e.name))
+    .filter((e) => e.isDirectory() && isSafePathSegment(e.name) && isAdmittedPluginName(e.name))
     .map((e) => e.name)
     .sort((a, b) => a.localeCompare(b));
 }
