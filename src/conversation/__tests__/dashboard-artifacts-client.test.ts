@@ -77,6 +77,8 @@ const BASE_FNS = [
   'umUrl',
   'artUrl',
   'artSafeUrl',
+  'artVersionLabel',
+  'artVerBadge',
   'artFileItem',
   'artCard',
   'artChip',
@@ -274,7 +276,7 @@ describe('T5 — collapsed card face: artifacts visible on the board itself', ()
 describe('T5 — expanded card: the 산출물 strip', () => {
   const body = (cache: Record<string, unknown> = {}) =>
     load<{ renderCardArtifacts(s: unknown): string }>(
-      [...BASE_FNS, 'artSortForDisplay', 'artTile', 'artListFor', 'renderCardArtifacts'],
+      [...BASE_FNS, 'artSortForDisplay', 'artLatestOnly', 'artTile', 'artListFor', 'renderCardArtifacts'],
       BASE_VARS,
       { _artCache: cache },
     );
@@ -348,7 +350,7 @@ describe('D2 — the tiles and chips are @2lab.ai/ui <ui-file-card>, answered by
   it('fcHydrate hands a keyed card its file once per change; an unknown file is left alone', () => {
     const files: Record<string, Art> = { A2: png };
     const m = load<{ fcHydrate(el: unknown): void }>(
-      ['fcHydrate', 'artFileItem', 'artUrl', 'umGet', 'umUrl', 'toNum'],
+      ['fcHydrate', 'artVersionLabel', 'artFileItem', 'artUrl', 'umGet', 'umUrl', 'toNum'],
       ['_userMedia'],
       { artFind: (_cid: string, id: string) => files[id] ?? null },
     );
@@ -403,7 +405,15 @@ describe('T6 — right panel: pinned strip and per-answer attachments', () => {
       renderPanelArtifacts(list: unknown[], cid: string): string;
       renderTurnArtifacts(list: unknown[], cid: string, startTs: number, endTs: number): string;
     }>(
-      [...BASE_FNS, 'artSortForDisplay', 'artTile', 'artInTurn', 'renderPanelArtifacts', 'renderTurnArtifacts'],
+      [
+        ...BASE_FNS,
+        'artSortForDisplay',
+        'artLatestOnly',
+        'artTile',
+        'artInTurn',
+        'renderPanelArtifacts',
+        'renderTurnArtifacts',
+      ],
       BASE_VARS,
     );
 
@@ -845,11 +855,13 @@ describe('T3 — the viewer: @2lab.ai/ui <ui-artifact-viewer tiles="none"> over 
           'umMissingReason',
           'artSortForDisplay',
           'artViewerPages',
+          'artLatestOnly',
           'artViewItem',
           'artViewerItems',
+          'artVersionsOf',
           'openArtifactViewer',
         ],
-        [...BASE_VARS, '_artDocCache', '_artViewer'],
+        [...BASE_VARS, '_artDocCache', '_artViewer', '_artVerRows'],
         {
           artViewerEl: () => viewer,
           _artCache: cache,
@@ -957,7 +969,7 @@ describe('review gate — the open viewer follows the list', () => {
     const fake: { data?: { items: unknown[] } } = {};
     const live = { cid: 'c1', scope, list: [] as unknown[] };
     const { artSettle } = load<{ artSettle(cid: string): void }>(
-      ['toNum', 'artSettle', 'artSortForDisplay', 'artViewerPages'],
+      ['toNum', 'artSettle', 'artSortForDisplay', 'artViewerPages', 'artLatestOnly'],
       [],
       {
         _expanded: new Set<string>(),
@@ -1035,6 +1047,7 @@ describe('SSOT 2026-11-09 T3 — link artifacts open their URL', () => {
         'umMissingReason',
         'artSortForDisplay',
         'artViewerPages',
+        'artLatestOnly',
         'artViewItem',
         'artViewerItems',
         'openArtifactViewer',
@@ -1077,6 +1090,7 @@ describe('SSOT 2026-11-09 T3 — link artifacts open their URL', () => {
         'umMissingReason',
         'artSortForDisplay',
         'artViewerPages',
+        'artLatestOnly',
         'artViewItem',
         'artViewerItems',
         'openArtifactViewer',
@@ -1099,7 +1113,7 @@ describe('SSOT 2026-11-09 T3 — link artifacts open their URL', () => {
     const fake: { data?: { items: unknown[] } } = {};
     const live = { cid: 'c1', scope: 'conversation', list: [] as unknown[] };
     const { artSettle } = load<{ artSettle(cid: string): void }>(
-      ['toNum', 'artSettle', 'artSortForDisplay', 'artViewerPages'],
+      ['toNum', 'artSettle', 'artSortForDisplay', 'artViewerPages', 'artLatestOnly'],
       [],
       {
         _expanded: new Set<string>(),
