@@ -7887,8 +7887,8 @@ function acPermissionData(s, p) {
 function acQuestionId(q) {
   var parts = [q.question, (q.choices || []).map(function(c) { return [c.id, c.label, c.description || '']; })];
   // #1073 — its decision lines are part of its meaning (other stakes or another verdict is another card).
-  var lines = decisionLines(q);
-  if (lines.length) parts.push(lines);
+  // Keyed on the raw fields, not the rendered labels (the display language rewrites those).
+  if (decisionLines(q).length) parts.push([q.blockedWork || '', q.stakes || '', q.reversible === undefined ? '' : q.reversible, q.reversibleWhy || '']);
   return 'q|' + JSON.stringify(parts);
 }
 // pendingQuestion (single choice) → the card's data. The choices read as
@@ -16681,9 +16681,10 @@ var MC_CUSTOM_ID = '\\uC9C1\\uC811\\uC785\\uB825';
 function mcFormId(s, q) {
   return 'mc|' + s.key + '|'
     + JSON.stringify([q.title || q.question || '', (q.questions || []).map(function(x) {
-      // #1073 — a question whose decision lines change makes another form (its answers start clean).
-      var lines = decisionLines(x);
-      return lines.length ? [x.id, x.question, lines] : [x.id, x.question];
+      // #1073 — a question whose decision lines change makes another form (its answers start clean); raw fields.
+      return decisionLines(x).length
+        ? [x.id, x.question, [x.blockedWork || '', x.stakes || '', x.reversible === undefined ? '' : x.reversible, x.reversibleWhy || '']]
+        : [x.id, x.question];
     })]);
 }
 // The session's form state, reset when its question is another one.
@@ -16692,6 +16693,22 @@ function mcStateOf(s, q) {
   var st = _mcState[s.key];
   if (!st || st.id !== id) st = _mcState[s.key] = { id: id, answers: {} };
   return st;
+}
+// #1073 — the code fence left open at the end of markdown text, as @2lab.ai/ui's answerMarkdown reads it (or ''):
+// a line that starts, up to 3 spaces in, with 3+ backticks or tildes opens one; then any line that starts (after its
+// own spaces) with that same run closes it. The form appends that run before the decision lines, so a fence the
+// model left open in its context can never take the lines — and the irreversible warning — into a code block.
+function openMdFence(text) {
+  var open = '';
+  String(text || '').split('\\n').forEach(function(line) {
+    if (open) {
+      if (line.trim().indexOf(open) === 0) open = '';
+      return;
+    }
+    var m = /^\\s{0,3}(\\u0060{3,}|~{3,})/.exec(line);
+    if (m) open = m[1];
+  });
+  return open;
 }
 // pendingQuestion (user_choices) → the element's data. A choice reads as its
 // label (the recommended marker stripped) — the element numbers the choices
@@ -16724,8 +16741,9 @@ function mcFormData(s, q) {
       var lines = decisionLines(item, true);
       if (item.context) {
         var own = String(item.context);
-        // A code fence the model left open would swallow the lines (and the warning): close it first.
-        if (lines.length && (own.match(/^\\s*\\u0060{3}/gm) || []).length % 2 === 1) own += '\\n\\u0060\\u0060\\u0060';
+        // A code fence the model left open would swallow the lines (and the warning): close it with its own run.
+        var fence = lines.length ? openMdFence(own) : '';
+        if (fence) own += '\\n' + fence;
         ctx.push(own);
       }
       if (lines.length) ctx.push(lines.join('\\n'));
