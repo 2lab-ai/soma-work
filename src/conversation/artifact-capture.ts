@@ -66,6 +66,8 @@ interface PendingUpload {
 /** Calls without a result yet, per conversation. Bounded: a turn that dies mid-upload must not leak. */
 const MAX_PENDING = 32;
 const pendingByConversation = new Map<string, PendingUpload[]>();
+/** The last upload result being recorded, per conversation: the next one records after it (#1074 r2). */
+const recordChains = new Map<string, Promise<void>>();
 
 function parseJsonObject(raw: string | undefined): Record<string, unknown> | null {
   if (!raw) return null;
@@ -176,7 +178,10 @@ export function captureArtifactFromWorkLog(
       const queue = pendingByConversation.get(conversationId) ?? [];
       const pending = takeMatching(queue, entry.tool, entry.toolUseId, reply.filename);
       if (queue.length === 0) pendingByConversation.delete(conversationId);
-      return (async () => {
+      // #1074 r2 — results record one after another, in the order they arrived: a slow snapshot of the first upload
+      // must not let the second become the earlier version of the same artifact.
+      const prev = recordChains.get(conversationId) ?? Promise.resolve();
+      const run = prev.then(async () => {
         const snap = pending ? await pending.snapshot : null;
         if (!reply.ok) {
           await store.discardSnapshot(conversationId, snap);
@@ -199,7 +204,12 @@ export function captureArtifactFromWorkLog(
           key: pending?.key,
           sha256: reply.sha256,
         });
-      })().catch((err) => logger.warn(`Upload artifact not recorded for ${conversationId}`, err));
+      }).catch((err) => logger.warn(`Upload artifact not recorded for ${conversationId}`, err));
+      recordChains.set(conversationId, run);
+      void run.then(() => {
+        if (recordChains.get(conversationId) === run) recordChains.delete(conversationId);
+      });
+      return run;
     }
   } catch (err) {
     logger.warn('Artifact capture failed', err);
@@ -294,5 +304,6 @@ export function backfillArtifactsFromWorkLog(
 /** Tests only: forget pending uploads. */
 export function resetArtifactCaptureForTests(): void {
   pendingByConversation.clear();
+  recordChains.clear();
   backfillInflight.clear();
 }

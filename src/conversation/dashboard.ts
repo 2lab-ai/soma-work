@@ -21835,7 +21835,7 @@ function artVersionLabel(a) {
 }
 function artVerBadge(a) {
   var v = toNum(a && a.version);
-  return v > 1 ? '<span class="art-ver" title="' + escAttr(artVersionLabel(a)) + '">판 ' + v + '</span>' : '';
+  return v > 1 ? '<span class="art-ver" title="' + escAttr(artVersionLabel(a)) + '">' + '판 ' + v + '</span>' : '';
 }
 
 // Newest first, by when each file was made (SSOT 2026-11-02 T3) — every list: the card's chips

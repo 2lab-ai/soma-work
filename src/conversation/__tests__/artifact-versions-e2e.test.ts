@@ -10,11 +10,10 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-// The daemon's capture and store, read from the source tree for this test only: the point is the hand-off between
-// this process's reply and the daemon's record (the root tsconfig does not compile package tests).
-import { captureArtifactFromWorkLog, resetArtifactCaptureForTests } from '../../../src/conversation/artifact-capture';
-import { ArtifactStore } from '../../../src/conversation/artifacts';
-import { planUploadVersion, versionFields } from './helpers/artifact-version.js';
+// slack-mcp's half (what the upload says) is the shared module the MCP server re-exports.
+import { planUploadVersion, versionFields } from 'somalib/artifacts/upload-version';
+import { captureArtifactFromWorkLog, resetArtifactCaptureForTests } from '../artifact-capture';
+import { ArtifactStore } from '../artifacts';
 
 let root: string;
 let store: ArtifactStore;
@@ -100,5 +99,52 @@ describe('#1074 r1 — the version slack-mcp announces is the version the store 
       ['key:pr-9-body', 1],
     ]);
     expect(createHash('sha256').update('body two').digest('hex')).toBe(b?.sha256);
+  });
+});
+
+describe('#1074 review gate r2 — the store records uploads in the order their results arrived', () => {
+  it('a slow snapshot of the first upload does not let the second become the earlier version', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    class SlowFirst extends ArtifactStore {
+      async snapshot(cid: string, file: string | undefined) {
+        const snap = await super.snapshot(cid, file);
+        if (file?.includes('first')) await gate;
+        return snap;
+      }
+    }
+    store = new SlowFirst(path.join(root, 'store-slow'));
+    const a = path.join(root, 'first-r.html');
+    const b = path.join(root, 'second-r.html');
+    fs.writeFileSync(a, 'A');
+    fs.writeFileSync(b, 'B');
+    const call = (id: string, file: string) => ({
+      kind: 'tool',
+      tool: 'mcp__slack-mcp__send_file',
+      toolUseId: id,
+      text: 'send_file',
+      raw: JSON.stringify({ file_path: file, filename: 'r.html' }),
+    });
+    const result = (id: string, fileId: string) => ({
+      kind: 'tool_result',
+      tool: 'mcp__slack-mcp__send_file',
+      toolUseId: id,
+      ok: true,
+      text: 'ok',
+      raw: JSON.stringify({ uploaded: true, file_id: fileId, filename: 'r.html', size: 1 }),
+    });
+    void captureArtifactFromWorkLog('c', call('tu_a', a), store);
+    const ra = captureArtifactFromWorkLog('c', result('tu_a', 'FA'), store);
+    void captureArtifactFromWorkLog('c', call('tu_b', b), store);
+    const rb = captureArtifactFromWorkLog('c', result('tu_b', 'FB'), store);
+    await new Promise((r) => setTimeout(r, 50));
+    release();
+    await Promise.all([ra, rb]);
+    expect(store.list('c').map((r) => [r.slackFileId, r.version])).toEqual([
+      ['FB', 2],
+      ['FA', 1],
+    ]);
   });
 });
