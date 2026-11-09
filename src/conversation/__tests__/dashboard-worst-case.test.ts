@@ -127,15 +127,14 @@ describe('DONE day groups: one label shape; a card with no time is not filed und
       done: Array<{ s: unknown; col: string }>,
       now: number,
       opened: Record<string, boolean>,
+      order?: { sort: string; dir: string },
     ): Array<{ key: string; label: string; items: Array<{ s: { key: string } }> }>;
-  }>(['toNum', 'doneTimeOf', 'dayKeyOf', 'doneDayLabel', 'planDoneGroups'], { STRINGS });
+  }>(['toNum', 'doneTimeOf', 'dayKeyOf', 'doneDayLabel', 'cardProgressAt', 'planDoneGroups'], { STRINGS });
   const NOW = new Date(2026, 10, 10, 12, 0).getTime();
-  const wd = (y: number, mo: number, d: number) =>
-    new Date(y, mo - 1, d).toLocaleDateString('ko-KR', { weekday: 'short' });
 
   it('this year: "M월 D일 (요일)"; an earlier year adds "YYYY년 " in front of the same shape', () => {
-    expect(m.doneDayLabel('2026-10-29', NOW)).toBe(`10월 29일 (${wd(2026, 10, 29)})`);
-    expect(m.doneDayLabel('2025-12-15', NOW)).toBe(`2025년 12월 15일 (${wd(2025, 12, 15)})`);
+    expect(m.doneDayLabel('2026-10-29', NOW)).toBe('10월 29일 (목)');
+    expect(m.doneDayLabel('2025-12-15', NOW)).toBe('2025년 12월 15일 (월)');
     expect(m.doneDayLabel('2026-11-10', NOW)).toBe('오늘');
     expect(m.doneDayLabel('2026-11-09', NOW)).toBe('어제');
     expect(m.doneDayLabel('undated', NOW)).toBe('날짜 없음');
@@ -161,5 +160,17 @@ describe('DONE day groups: one label shape; a card with no time is not filed und
     ]);
     expect(g[2].label).toBe('날짜 없음');
     expect(g.some((x) => x.key.startsWith('1970'))).toBe(false);
+    // Oldest first (the board's sort, ascending): the days turn around, 날짜 없음 stays last.
+    const asc = m.planDoneGroups(
+      [
+        item('none', {}),
+        item('old', { doneAt: new Date(2026, 9, 1, 9).getTime() }),
+        item('now', { doneAt: NOW - 1000 }),
+      ],
+      NOW,
+      {},
+      { sort: 'progress', dir: 'asc' },
+    );
+    expect(asc.map((x) => x.key)).toEqual(['2026-10-01', '2026-11-10', 'undated']);
   });
 });

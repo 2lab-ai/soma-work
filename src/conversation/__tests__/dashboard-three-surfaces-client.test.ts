@@ -1483,7 +1483,7 @@ describe('the detail deck — open cards and their detail cards move together (S
           document: { getElementById: (id: string) => els[id] ?? null },
           getComputedStyle: () => ({ opacity: '0.6' }),
           reduceMotion: () => false,
-          _atKeyed: keyed,
+          keyedNow: () => keyed,
           _sessionCache: {
             A: { displayHeadline: 'Alpha' },
             B: { summaryTitle: 'Beta' },

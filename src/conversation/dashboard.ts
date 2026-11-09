@@ -5710,7 +5710,7 @@ html:lang(ko) body { word-break: keep-all; overflow-wrap: anywhere; }
    §8 a long press on a control does not select its label or open the callout — content text stays selectable. */
 html { -webkit-tap-highlight-color: transparent; }
 :is(button, a, summary, label, select, [role="button"], [role="tab"], [role="switch"], ui-dock, ui-segmented) { touch-action: manipulation; }
-:is(button, [role="tab"], .ui-chip, .ui-btn, .ui-icon-btn, .ui-fab) { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+:is(button, [role="tab"], .ui-chip, .ui-btn, .ui-icon-btn, .ui-fab):not(a[href]) { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 /* §4 iOS zooms into a field under 16px and stays zoomed: every page field is 16px on a touch screen (a tablet too —
    the phone-width rules alone left an iPad zooming into the board search). */
 @media (pointer: coarse) {
@@ -6556,8 +6556,10 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 .inbox-tools .admin-toggle { flex: none; }
 .inbox-tools .admin-toggle[aria-pressed="true"] { background: var(--tint-fail-bg); border-color: var(--tint-fail-line); color: var(--tint-fail-fg); }
 .panel-surface > .panel-status { flex: none; padding: 10px 16px 12px; }
-/* T6 (SSOT 2026-11-04): on a phone the card's title bar is one line of the board's top bar's height (52px) — title,
-   its actions and ✕, nothing under it (the status bar lives in the scroll area). */
+/* T6 (SSOT 2026-11-04): on a phone the card's title bar is one line of the board's top bar's height (52px) while the
+   reader reads — title, its actions and ✕, nothing under it (the status bar lives in the scroll area). When the card
+   opens, and whenever its head comes back, the title shows whole (up to 3 lines, break-ui 2026-11-10): the card face
+   cuts it to one line and a touch screen has no tooltip. */
 @media (max-width: 639px), (max-height: 560px) {
   /* ui-drawer.slide-panel: above the sheet's notch rule (max(12px, safe-area) on top) — the notch keeps its inset,
      the bar its 52px under it. */
@@ -11726,6 +11728,21 @@ var AT_ROOT_STATUS = { running: 'running', waiting: 'needs_you', resuming: 'wait
 // Whether the last input was a key: ui-select carries only the id, and a
 // keyboard opening moves focus into the panel (a click leaves it alone).
 var _atKeyed = false;
+// The motion gate (remove-animations: keyboard-initiated actions land at once) needs "a key just did this", not the
+// sticky last input: typing in the composer, then a resize, a rotation or a pushed fold must still glide.
+var _keyAt = 0;
+var KEYED_MS = 600;
+function keyedNow() { return _atKeyed && Date.now() - _keyAt < KEYED_MS; }
+// The keys that open, close or move between cards — not typing: Esc anywhere; Enter, Space and the arrows outside a
+// text field (there they type or move the caret).
+function isActingKey(e) {
+  var k = e && e.key;
+  if (k === 'Escape') return true;
+  if (k !== 'Enter' && k !== ' ' && k !== 'ArrowLeft' && k !== 'ArrowRight' && k !== 'ArrowUp' && k !== 'ArrowDown') return false;
+  var t = e.target;
+  var tag = t && t.tagName ? String(t.tagName).toLowerCase() : '';
+  return !(tag === 'input' || tag === 'textarea' || tag === 'select' || (t && t.isContentEditable));
+}
 
 function atIdOf(node) {
   return node.root ? AT_ROOT : String(node.id);
@@ -11881,6 +11898,7 @@ document.addEventListener('ui-toggle', function(e) {
 });
 document.addEventListener('keydown', function() { _atKeyed = true; }, true);
 document.addEventListener('pointerdown', function() { _atKeyed = false; }, true);
+document.addEventListener('keydown', function(e) { if (isActingKey(e)) _keyAt = Date.now(); }, true);
 
 // ── Panel scope: which node's tasks and work log the panel shows (§4.3) ──
 function panelAgentOf(s) {
@@ -15464,7 +15482,7 @@ function runLayoutCheck() {
   // A change the reader made from the keyboard (Enter opens the drawer, Esc
   // closes it) lands at once: an action repeated by key must not wait on its
   // own animation (remove-animations gate: keyboard-initiated actions).
-  var animate = canAnimate() && !_atKeyed;
+  var animate = canAnimate() && !keyedNow();
   var reduce = reduceMotion();
   // Every card and head glides from where the reader saw it (the element does
   // nothing on its first paint, in a hidden tab or under reduced motion).
@@ -19013,7 +19031,7 @@ function renderDeckNav(dir) {
       if (peek) peek.data = data;
     }
   }
-  if (dir && !reduceMotion() && !_atKeyed) deckSlide(panel, dir);
+  if (dir && !reduceMotion() && !keyedNow()) deckSlide(panel, dir);
 }
 // ‹ / › (or ←/→ on the nav): the card at that place in the deck the nav was drawn for comes to the front.
 function onDeckPage(e) {
