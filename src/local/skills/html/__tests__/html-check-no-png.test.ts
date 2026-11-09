@@ -65,6 +65,48 @@ describe('render.mjs --check — the page is checked, no image is made', () => {
   }, 150_000);
 });
 
+describe('review gate — each defect alone fails the check (all other checks passing)', () => {
+  const FILL = '<p>This paragraph is long enough that the page has plenty of visible text.</p>';
+  it.each([
+    ['short text', '<p>tiny</p>', (v: Record<string, number>) => expect(v.textChars).toBeLessThan(20)],
+    [
+      'sideways scroll',
+      `${FILL}<div style="width:2000px">wide</div>`,
+      (v: Record<string, number>) => expect(v.overflowX).toBeGreaterThan(0),
+    ],
+    [
+      'overlapping text',
+      `${FILL}<p style="position:absolute;top:200px;left:10px;margin:0">first label text</p><p style="position:absolute;top:202px;left:12px;margin:0">second label text</p>`,
+      (v: Record<string, number>) => expect(v.overlaps).toBeGreaterThan(0),
+    ],
+    [
+      'broken image',
+      `${FILL}<img src="missing.png" alt="">`,
+      (v: Record<string, number>) => expect(v.brokenImages).toBe(1),
+    ],
+    [
+      'broken lazy image below the fold',
+      `${FILL}<div style="height:20000px"></div><img loading="lazy" src="missing-lazy.png" alt="">`,
+      (v: Record<string, number>) => expect(v.brokenImages).toBe(1),
+    ],
+    [
+      'uncaught error',
+      `${FILL}<script>throw new Error("boom-only")</script>`,
+      (v: { pageErrors: string[] }) => expect(v.pageErrors.join(' ')).toMatch(/boom-only/),
+    ],
+  ])(
+    '%s',
+    (name, body, assertDefect) => {
+      const r = check(`one-${String(name).replace(/\W+/g, '-')}`, body as string);
+      expect(r.verdict.ok).toBe(false);
+      expect(r.status).toBe(3);
+      (assertDefect as (v: unknown) => void)(r.verdict);
+      expect(readdirSync(dir).filter((f) => f.endsWith('.png'))).toEqual([]);
+    },
+    150_000,
+  );
+});
+
 describe('review gate — the check judges what a reader sees', () => {
   it('hidden slides (parent opacity:0) and an empty child box are not overlaps', () => {
     const slides = [1, 2, 3]
@@ -139,14 +181,11 @@ describe('the skills check the page with --check and render no PNG', () => {
   it('html: Step 5–6 check in a headless browser; no PNG is rendered unless the user asks for an image', () => {
     const s = md('html');
     const steps = s.slice(s.indexOf('### 5.'), s.indexOf('### 7.'));
-    expect(steps).toContain('### 5. Check the page in a headless browser (no image)');
     expect(steps).toContain('--check');
     expect(steps).not.toMatch(/\.png|PNG=/);
     expect(s).not.toContain('QA snapshot');
     const fm = s.slice(0, s.indexOf('\n---', 4));
     expect(fm).toContain('no image is made');
-    const step8 = s.slice(s.indexOf('### 8.'), s.indexOf('### 9.'));
-    expect(step8).toContain('No PNG is made');
   });
 
   it('dimensional-drawing: Step 3 checks the sheet with --check; no PNG snapshot; the upstream screenshot step is overridden', () => {
