@@ -1,6 +1,6 @@
 # loop — devops-tools 구현 드라이브
 
-Status: in-progress (라운드 1 = 코드, 닫힘 · main 머지 `2da8f4e4` 2026-10-27 · 라운드 2 = 라이브: WU0 닫힘, WU7 실승인 1회 통과 2026-11-06 — 남은 것 = 버튼 토큰·`admin:org` 운영자 단계, WU8 = D6·D5 끝 · D1–D6 = ① 확정 2026-10-26) · AS-IS = [`../14-devops-tools-as-is.md`](../14-devops-tools-as-is.md) · TO-BE = [`../15-devops-tools-to-be.md`](../15-devops-tools-to-be.md) ·
+Status: in-progress (라운드 1 = 코드, 닫힘 · main 머지 `2da8f4e4` 2026-10-27 · 라운드 2 = 라이브: WU0 닫힘, WU7 실승인 1회 통과 2026-11-06 — 버튼 토큰·`admin:org` 입력 끝(2026-11-06), 남은 것 = 버튼 승인 1회와 `gh_org_member` 1회(카드는 2026-11-09부터 대시보드 관리자 승인에 뜬다), WU8 = D6·D5 끝 · D1–D6 = ① 확정 2026-10-26) · AS-IS = [`../14-devops-tools-as-is.md`](../14-devops-tools-as-is.md) · TO-BE = [`../15-devops-tools-to-be.md`](../15-devops-tools-to-be.md) ·
 아키텍처 = [`../16-devops-tools-architecture.md`](../16-devops-tools-architecture.md) · 상세 = [`research/2026-10-26-detail.md`](research/2026-10-26-detail.md) · ssot = [`ssot.md`](ssot.md) ·
 완료 원장 = [`loop.done.md`](loop.done.md)
 
@@ -17,8 +17,8 @@ PR의 CI + **Sanitize Gate**(리시트는 PR 자신의 체크) · 외부 리뷰 
 
 코드는 main에 있다(PR #465, 라운드 1 기록 = `loop.done.md`). 봇 설정에 `devops-tools` 절이 없으면 도구는 등록되지 않으므로,
 설정을 넣은 봇(`team-host` dev) 말고는 하드 거부(사람 gh 계정 키 꺼내기·키체인 덤프·브로커 경로 접근) 하나만 바뀐다. 순서:
-1. 운영자 단계 1회(sudo 비밀번호 1번): 앱 수준 토큰(`connections:write`) 생성 → Slack 확인 → `ingest slack broker-app-socket` → 데몬 재시작 → 브로커 pid의 연결 1개 이상 확인. 같은 자리에서 org-admin 토큰을 `admin:org` 포함으로 다시 받아(버리는 gh 설정 폴더, 키체인 미사용) `ingest gh org-admin`.
-2. 버튼 실클릭 1회(카드 → 승인 버튼 → lease → GET → revoke), `gh_org_member` 1회(현재 역할과 같은 `set-role`처럼 바뀌는 것이 없는 호출).
+1. (끝, 2026-11-06) 앱 수준 토큰 입력 → 브로커 연결 1 · `approval buttons on`. org-admin 토큰 `admin:org` 재발급 → `ingest gh org-admin` → `check-policy` ok.
+2. 버튼 승인 1회(카드 → 승인 버튼 → lease → GET → revoke), `gh_org_member` 1회(현재 역할과 같은 `set-role`처럼 바뀌는 것이 없는 호출). 2026-11-09부터 카드는 대시보드 관리자 승인에 뜨고, 카드 버튼이 승인 앱 DM을 연다(결정은 Slack에서). 시험 카드 2장 게시됨 — 어드민 승인 대기.
 3. WU8 닫기 공지 확인 — 4주 grant 만료(2026-12-04) 전에 계속 쓰는 사용자의 연장 요청이 카드로 들어오는지. (stage0 포지키 = 끝, stage2 = 계획만 — 아래 "stage2 계획")
 
 ## 라운드 2 — 라이브 (2026-10-27 열림)
@@ -37,7 +37,7 @@ WU7 측정(2026-10-27, `team-host` dev):
 - 2026-11-06 실승인 1회 통과: 봇 유저가 봇과 같은 MCP 서버를 직접 띄워 `cf_lease_request`(dev2, 존 1개, read, 10분) → 카드 게시 → 어드민 ✅ 리액션(353초 뒤) → lease 발급 → `cf_api GET /zones/<id>/dns_records` = 200 · success → `cf_lease_revoke` = `revoked`(브로커는 포지키 GET 404를 본 뒤에만 이 상태를 쓴다) → `list`에 활성 lease 0. 같은 기간 봇 로그: 카드 36장 `not-approved (expired)`(11-05 봇 세션의 반복 시험 포함) — 이것이 첫 승인.
 - 2026-11-06 버튼 토큰 = 없음(sudo 없이 측정): Socket Mode는 토큰이 있으면 기동 때 연결해 계속 유지하는데(`cli.ts` serve), 브로커 pid의 TCP 연결 = 0. 같은 `netstat -anv`가 다른 유저(root 등)의 소켓·pid도 보여 주므로 측정이 유효하다. → 카드에 버튼 없음, 승인은 리액션만.
 - 2026-11-06 승인 앱 교체 + 버튼 켜기: 기존 전용 앱은 만든 계정이 다른 사람 계정으로 바뀌어 협업자가 그 사람 하나뿐 → 운영자가 관리할 수 없음. 운영 계정으로 같은 권한의 새 앱(봇 scope `chat:write` · `im:write` · `reactions:read`, Socket Mode · interactivity on)을 매니페스트로 만들고 설치. 봇 토큰과 앱 수준 토큰(`connections:write`)은 발급 화면 Copy → 대상 호스트 클립보드 → Slack 확인(`auth.test` / `apps.connections.open` ok) 뒤에만 stdin `ingest` → 클립보드 즉시 비움 → 브로커 재시작. 결과: 새 브로커 pid의 ESTABLISHED 1 · `check-policy` `slack/broker-app-socket ok (approval buttons on)`. 재시작 직후 시험 카드는 새 앱 DM에 게시됨(브로커는 게시가 1장 이상 성공해야 대기 상태로 간다) → 10분 동안 응답 없어 `not-approved (expired)`. 같은 시험을 10분마다 다시 게시(같은 날 17:40 KST까지 4장, 모두 무응답 만료) — 버튼 클릭 → 승인 경로는 아직 미검증, 원인은 "토큰 없음"에서 "클릭 없음"으로 바뀜.
-- 2026-11-06 org-admin `admin:org` 재발급 준비: 대상 호스트에서 gh 기기 로그인을 임시 `GH_CONFIG_DIR`·비대화형(`--insecure-storage`, `-p` 생략 — 키체인·git credential helper를 건드리지 않음)으로 돌려 기기 코드만 받고, 운영자 브라우저에서 승인 → 계정 이름 · scopes에 `admin:org` 확인 뒤에만 stdin `ingest gh org-admin` → 임시 폴더 비움 → `gh_org_member` 무변경 호출(이미 멤버인 계정의 role 재설정) 카드. 드라이런(기기 코드 발급·폴더 제거) 통과, 실행은 운영자 sudo 대기.
+- 2026-11-06 org-admin `admin:org` 재발급 준비(같은 날 끝 — 아래 결과 줄): 대상 호스트에서 gh 기기 로그인을 임시 `GH_CONFIG_DIR`·비대화형(`--insecure-storage`, `-p` 생략 — 키체인·git credential helper를 건드리지 않음)으로 돌려 기기 코드만 받고, 운영자 브라우저에서 승인 → 계정 이름 · scopes에 `admin:org` 확인 뒤에만 stdin `ingest gh org-admin` → 임시 폴더 비움 → `gh_org_member` 무변경 호출(이미 멤버인 계정의 role 재설정) 카드. 드라이런(기기 코드 발급·폴더 제거) 통과, 실행은 운영자 sudo 대기.
 
 | WU | 하는 일 | 파일 소유 | RED로 먼저 고정할 것 |
 |---|---|---|---|
@@ -51,11 +51,13 @@ WU8 측정(2026-11-06):
 - D5: research §D5 맵(read = list·list_service·list_stack·logs, write = 쿼리 4종)을 `owner-mac` dev에 적용(백업, 봇의 로더로 `server-tools` gated 확인, 새 턴부터 반영). `team-host` dev·`prod-host` dev·main은 같은 패치 dry-run만 — `team-host`에서 고객 개발자 세션이 지금 쓰고 있어(로그 1일치에 쿼리 도구 호출 다수) grant 없이 켜면 진행 중인 작업이 끊긴다.
 - 덤: `team-host`에서 devops-tools에 `permission`이 생긴 뒤로 "게이트 서버가 하나도 없을 때만" 주는 server-tools 일괄 허용이 꺼졌다 — 막히지는 않고(호출마다 검사는 게이트 서버만), bypass가 아닌 사용자에게 확인 창이 뜬다. D5를 켜면 정리된다.
 - D5 나머지 3개(같은 날, 운영자 결정 "기존 사용자 4주 grant 먼저 → 켜기 → 공지"): 지금 쓰는 사람 = 최근 28일 에이전트 기록에서 server-tools `tool_use`가 있는 세션 주인. `team-host` dev = 비어드민 10명, `prod-host` dev·main = 0명(28일 동안 에이전트 턴 0), `owner-mac` dev = 어드민만. → `team-host`의 10명에게 server-tools read·write grant를 봇의 grant 저장소 API로 4주(2026-12-04) 부여 → 세 봇에 같은 `permission` 맵 적용(백업) → 봇 모듈로 판정 재현: 어드민 = 허용, grant 사용자 = 허용, grant 없는 비어드민 = 거부 + 권한 요청 안내 → `team-host` 인프라 채널에 공지 1건(멘션 없음, 우회 방법 없음). A19 = 판정 재현으로 측정(새 턴 실측은 다음 비어드민 턴).
+- 2026-11-06 결과: org-admin 토큰 재발급 = 계정 이름 확인 · org role admin · scopes ∋ `admin:org` → `ingest gh org-admin` → `check-policy` ok, 임시 폴더 비움. 같은 날 버튼 카드와 `gh_org_member` 카드는 모두 10분 무응답으로 만료(실행 0). 원인 = 어드민이 Slack 승인 앱 DM을 보지 않음.
+- 2026-11-09 승인 요청을 대시보드로(운영자 지시 "물어보지 않거나 대시보드에서 승인요청으로", 에픽 #1051): 대시보드에서 직접 승인(패스키)은 기각. 대시보드는 모델과 같은 OS 유저로 돌아서 페이지를 모델이 바꿀 수 있고, 인증기는 서명하는 챌린지 내용을 보여 주지 않는다 → Slack 없는 결정은 브로커가 서빙하는 페이지로만(#1056). 대신 목록만: 브로커 읽기 전용 `approvals` op(#1052)와 대시보드 어댑터(#1055). 브로커 코드는 root 소유라 새 op를 쓰려면 재설치(sudo)가 필요하다. 그래서 devops-tools MCP 서버가 대기 중인 카드를 봇 데이터 폴더에 기록하고, 브로커가 목록을 거부하는 동안 대시보드가 그 기록을 보여 준다(#1060). 카드 버튼은 승인 앱 DM(`devops-tools.approvalsAppUrl`)을 연다. `team-host` dev 배포 뒤 봇 로그 = `using the MCP server records`. 시험 카드 2장(Cloudflare read lease, `gh_org_member` 무변경 — 사전에 현재 역할 `member active` 확인)이 대시보드 관리자 승인에 뜨는 것을 배포된 어댑터로 확인. 무응답 만료 시 어드민이 그 봇에서 활동 중일 때만 다시 게시(최대 12회).
 
 ## 열린 질문
 
 - 승인 카드 가시성(2026-11-06: 같은 자리의 카드가 리액션으로 승인됨 — 카드는 보인다. 남은 것은 요청 스레드 링크 #899): 카드는 전용 앱의 어드민 DM에만 게시된다. 이번 시험에서 요청한 봇 세션은 카드 위치를 몰라 "어드민이 카드를 받지 못했다"고 잘못 추정했다 → 요청 스레드에 카드 링크를 남기는 방안 검토(코드 변경, 별도 WU).
-- org-admin 토큰: 현재 scope = `gist` · `read:org` · `repo` · `workflow` → 조직 멤버 추가·삭제(`gh_org_member`)는 `admin:org`로 재발급해야 동작한다. 레포 협업자 부여는 `repo` + 레포 admin 권한으로 동작.
+- org-admin 토큰: 2026-11-06 `admin:org` 포함으로 재발급(scopes = `admin:org` · `gist` · `repo` · `workflow`) → 조직 멤버 추가·삭제(`gh_org_member`) 가능. 실호출은 승인 1회 대기. 레포 협업자 부여는 `repo` + 레포 admin 권한으로 동작.
 - dev2 포지키는 WU0 시험에 쓴 키를 그대로 브로커 포지키로 썼다(계획의 "시험 후 삭제" 대신). WU0 form 검사 출력: 계정 소유 · status active · `expires_on` 없음 · 자체 권한 그룹 = Account API Tokens Write 하나.
 
 ## stage2 계획 (SSOT_7 — 이번에는 실행하지 않는다)
