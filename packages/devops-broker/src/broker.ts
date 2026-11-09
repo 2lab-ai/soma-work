@@ -1270,7 +1270,10 @@ export function createBroker(deps: BrokerDeps): Broker {
     }
   }
 
-  /** The admin op (#1051): the waiting cards, read-only. A card is still decided only in Slack. */
+  /**
+   * The admin op (#1051): the waiting cards, read-only. A card is still decided only in Slack. A dashboard asks
+   * every few seconds, so a successful listing leaves no ledger row; a refused or failed one does.
+   */
   async function handleAdmin(conn: Connection, value: unknown): Promise<void> {
     const parsed = parseAdminRequest(value);
     conn.requestId = parsed.ok ? parsed.value.id : parsed.id;
@@ -1290,7 +1293,7 @@ export function createBroker(deps: BrokerDeps): Broker {
         terminal = fail('internal', 'the broker hit an internal error on this request');
       }
     }
-    await audit(row);
+    if (row.outcome !== 'ok') await audit(row);
     conn.finish(terminal);
     conn.dispose();
   }
