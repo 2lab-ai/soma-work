@@ -83,7 +83,7 @@ describe('dashboard motion trim', () => {
   });
 
   it('runLayoutCheck and the deck switch skip their motion when a key just did it', () => {
-    expect(TEMPLATE).toContain('var keyed = keyedNow();\n  var animate = canAnimate() && !keyed;');
+    expect(TEMPLATE).toContain('var keyed = keyedNow() && !flying;\n  var animate = canAnimate() && !keyed;');
     expect(TEMPLATE).toContain('if (keyed) { _layoutShiftUntil = 0; measureLayout(); return; }');
     expect(TEMPLATE).toContain(
       'if (dir && keyedNow()) deckStop(panel);\n  else if (dir && !reduceMotion()) deckSlide(panel, dir);',

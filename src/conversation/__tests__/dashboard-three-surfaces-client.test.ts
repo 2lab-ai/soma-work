@@ -1456,15 +1456,20 @@ describe('the detail deck — open cards and their detail cards move together (S
     // additive translate (so a second switch retargets from where it is drawn) and an opacity fade.
     const slides: Array<{ part: string; frames: Array<Record<string, unknown>>; opts: Record<string, unknown> }> = [];
     let cancelled = 0;
+    const handles: Array<{ playState: string; done: boolean; cancel(): void }> = [];
     const part = (name: string) => ({
       animate: (frames: Array<Record<string, unknown>>, opts: Record<string, unknown>) => {
         slides.push({ part: name, frames, opts });
-        return {
+        const h = {
           playState: 'running',
+          done: false,
           cancel: () => {
             cancelled++;
+            h.done = true;
           },
         };
+        handles.push(h);
+        return h;
       },
     });
     const parts = [part('header'), part('body')];
@@ -1549,6 +1554,12 @@ describe('the detail deck — open cards and their detail cards move together (S
     keyed.renderDeckNav(1);
     expect(slides).toHaveLength(8);
     expect(cancelled).toBeGreaterThan(before);
+    // Every slide and fade a click started is stopped — each one, not just some.
+    expect(handles.length).toBeGreaterThan(0);
+    expect(handles.every((h) => h.done)).toBe(true);
+    // …and the deck itself still moves on: the nav shows the two cards, the new one in front.
+    expect(els['panel-deck'].hidden).toBe(false);
+    expect(els['panel-deck'].data).toMatchObject({ count: 2, index: 1 });
     const after = cancelled;
     keyed.renderDeckNav(-1); // nothing left running: nothing more to stop
     expect(cancelled).toBe(after);
