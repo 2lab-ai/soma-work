@@ -16694,22 +16694,6 @@ function mcStateOf(s, q) {
   if (!st || st.id !== id) st = _mcState[s.key] = { id: id, answers: {} };
   return st;
 }
-// #1073 — the code fence left open at the end of markdown text, as @2lab.ai/ui's answerMarkdown reads it (or ''):
-// a line that starts, up to 3 spaces in, with 3+ backticks or tildes opens one; then any line that starts (after its
-// own spaces) with that same run closes it. The form appends that run before the decision lines, so a fence the
-// model left open in its context can never take the lines — and the irreversible warning — into a code block.
-function openMdFence(text) {
-  var open = '';
-  String(text || '').split('\\n').forEach(function(line) {
-    if (open) {
-      if (line.trim().indexOf(open) === 0) open = '';
-      return;
-    }
-    var m = /^\\s{0,3}(\\u0060{3,}|~{3,})/.exec(line);
-    if (m) open = m[1];
-  });
-  return open;
-}
 // pendingQuestion (user_choices) → the element's data. A choice reads as its
 // label (the recommended marker stripped) — the element numbers the choices
 // itself, in the order it shows them (the recommended one first), so the id's
@@ -16736,17 +16720,14 @@ function mcFormData(s, q) {
         allowCustom: true,
         customPlaceholder: STRINGS.mcCustomPlaceholder,
       };
-      // #1073 — the context (markdown), a blank line, then the decision lines.
+      // #1073 — the decision lines, a blank line, then the model's context (markdown). The lines come first here
+      // because the element renders markdown: nothing the model wrote — an open code fence, a list — comes before
+      // them, so it cannot take them (or the irreversible warning) into its block. Each line starts with its emoji,
+      // so the lines are always one plain paragraph.
       var ctx = [];
       var lines = decisionLines(item, true);
-      if (item.context) {
-        var own = String(item.context);
-        // A code fence the model left open would swallow the lines (and the warning): close it with its own run.
-        var fence = lines.length ? openMdFence(own) : '';
-        if (fence) own += '\\n' + fence;
-        ctx.push(own);
-      }
       if (lines.length) ctx.push(lines.join('\\n'));
+      if (item.context) ctx.push(String(item.context));
       if (ctx.length) out.context = ctx.join('\\n\\n');
       return out;
     }),
