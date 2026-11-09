@@ -294,6 +294,12 @@ const ASK_USER_QUESTION_SCHEMA = {
             type: { type: 'string', enum: ['user_choice'] },
             question: { type: 'string' },
             context: { type: 'string' },
+            audience: {
+              type: 'string',
+              enum: ['admins'],
+              description:
+                "'admins' when the decision belongs to an admin (an approval, a privileged step): the question also appears on the dashboard's 관리자 승인 screen for admins, not only in Slack",
+            },
             recommendedChoiceId: {
               type: 'string',
               description: 'ID of the recommended choice — must be the FIRST choice (defaults to it when omitted)',

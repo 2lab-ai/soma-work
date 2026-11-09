@@ -11,14 +11,20 @@ import { type ComplexityResult, scoreComplexity } from './complexity-scorer';
 import { decodeSlackEntities, PLACEHOLDER_SESSION_TITLE, sanitizeSessionTitle } from './format/display-title';
 import { Logger } from './logger';
 import type { SessionLinks, WorkflowType } from './types';
+import type { EffortLevel } from './user-settings-store';
 
 // Pure title/text helpers live with the title rules in @soma/common; re-exported
 // here for existing importers.
 export { decodeSlackEntities, sanitizeSessionTitle } from './format/display-title';
 
-// Default dispatch model - fast and cheap for classification
-// Can be overridden via DEFAULT_DISPATCH_MODEL env var
-const FALLBACK_DISPATCH_MODEL = 'claude-haiku-4-5-20251001';
+// Default dispatch model - fast and cheap for classification. Named by its own id: the old
+// `claude-haiku-4-5-20251001` only reached Haiku 5.5 through llmux's float of that id, and Claude Code
+// still told the model it was Haiku 4.5. Can be overridden via DEFAULT_DISPATCH_MODEL env var.
+const FALLBACK_DISPATCH_MODEL = 'claude-haiku-5-5';
+
+// Reasoning effort for the classifier. With no effort, Claude Code sends Haiku a fixed 31,999-token
+// thinking budget (max_tokens 32,000); with it the request carries adaptive thinking at this effort.
+const DISPATCH_EFFORT: EffortLevel = 'medium';
 
 // Dispatch prompt file path
 const DISPATCH_PROMPT_PATH = path.join(__dirname, 'prompt', 'dispatch.prompt');
@@ -232,6 +238,9 @@ class DispatchService {
         this.dispatchPrompt,
         this.model,
         abortController,
+        undefined,
+        undefined,
+        DISPATCH_EFFORT,
       );
 
       const elapsed = Date.now() - startTime;

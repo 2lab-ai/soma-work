@@ -1,4 +1,5 @@
 import { escapeSlackMrkdwn } from '@soma/slack/mrkdwn-escape';
+import { isAdminUser } from '../../admin-utils';
 import type { ClaudeHandler } from '../../claude-handler';
 import { getInstructionApprovals } from '../../instruction-approval';
 import { Logger } from '../../logger';
@@ -64,6 +65,18 @@ export function isAnswerableFromDashboard(
 ): boolean {
   if (session.activityState === 'waiting') return true;
   return (session.activityState ?? 'idle') === 'idle' && session.actionPanel?.pendingQuestion?.type === kind;
+}
+
+/**
+ * #1070 — an admin answering a question the model asked for admins (`audience: 'admins'`): the answer is the
+ * admin's to give, so it is not held for the session owner.
+ */
+export function isAdminAudienceAnswer(
+  session: { actionPanel?: { pendingQuestion?: { type?: string; audience?: string } } },
+  userId: string | undefined,
+): boolean {
+  const q = session.actionPanel?.pendingQuestion;
+  return !!userId && q?.type === 'user_choice' && q.audience === 'admins' && isAdminUser(userId);
 }
 
 interface ChoiceActionContext {
@@ -1058,14 +1071,23 @@ export class ChoiceActionHandler {
     label: string,
     question: string,
     userId: string,
+    /**
+     * #1070 — from the 관리자 승인 card: an admin answering a question asked for admins. `onClaimed` runs once
+     * the question is taken for this answer, before the turn it starts (which can run for minutes).
+     */
+    opts: { adminAnswer?: boolean; onClaimed?: () => void } = {},
   ): Promise<void> {
     const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
     if (!session) {
       throw new Error('Session not found');
     }
+    // Re-checked here, not trusted from the caller: an admin, and the question is the admins' to answer.
+    const adminAnswer = opts.adminAnswer === true && isAdminAudienceAnswer(session, userId);
+    if (opts.adminAnswer && !adminAnswer) throw new Error('Not an admin question');
 
     // Guard: only process while the session's question can take an answer
     if (
+      !adminAnswer &&
       isAnswerableFromDashboard(session, 'user_choice') &&
       session.channelId &&
       this.needsOwnerApproval(session, sessionKey, userId)
@@ -1104,8 +1126,9 @@ export class ChoiceActionHandler {
     this.logger.info('Dashboard choice selected', { sessionKey, choiceId, label, userId });
     // Before the first await: a second submission finds the question taken.
     const claim = this.claimDashboardAnswer(session, sessionKey);
+    opts.onClaimed?.();
     try {
-      await this.sendDashboardChoice(session, sessionKey, claim, choiceId, label, question, userId);
+      await this.sendDashboardChoice(session, sessionKey, claim, choiceId, label, question, userId, adminAnswer);
     } finally {
       this.endAnswerHold(sessionKey, claim.hold);
     }
@@ -1120,13 +1143,21 @@ export class ChoiceActionHandler {
     label: string,
     question: string,
     userId: string,
+    adminAnswer = false,
   ): Promise<void> {
+    // #1070 — an admin's answer runs as the session's owner (their session, their permissions); the thread names
+    // the admin who answered. It is the owner's turn, so the owner gate has nothing to hold.
+    const turnUser = adminAnswer && session.ownerId ? session.ownerId : userId;
+    const via = adminAnswer ? `대시보드 · <@${userId}>` : '대시보드';
     const channel = session.channelId;
     const threadTs = this.resolveSessionThreadTs(session, session.threadTs);
     const choiceMessageTs = session.actionPanel?.choiceMessageTs;
     // #917 — direct input: the user's own words are the turn (not an id), and the thread shows them as such.
     const own = choiceId === CUSTOM_INPUT_CHOICE_ID;
-    const turnText = own ? label : choiceId;
+    const answer = own ? label : choiceId;
+    // #1070 — the model sees who answered: the owner's turn carries the admin who decided (a Slack-button answer
+    // to the same question, from the thread, carries no such line).
+    const turnText = adminAnswer ? `${answer}\n\n(관리자 <@${userId}>가 대시보드 관리자 승인에서 답함)` : answer;
     const picked = own
       ? `직접 입력: _${escapeSlackMrkdwn(label.substring(0, 200))}${label.length > 200 ? '...' : ''}_`
       : `선택: *${choiceId}. ${label}*`;
@@ -1137,7 +1168,7 @@ export class ChoiceActionHandler {
     const pcSingle = session.actionPanel?.pendingChoice;
     const canUseDashboardP3 = !!this.ctx.threadPanel && !!pcSingle && pcSingle.kind === 'single';
     if (canUseDashboardP3 && channel) {
-      const completedText = `✅ *${question}*\n${picked} _(대시보드)_`;
+      const completedText = `✅ *${question}*\n${picked} _(${via})_`;
       const completedBlocks = [
         {
           type: 'section',
@@ -1158,7 +1189,13 @@ export class ChoiceActionHandler {
           await this.afterP3Resolve(session, sessionKey, channel);
           const say = this.createSayFn(channel);
           await this.ctx.messageHandler(
-            { user: userId, channel, thread_ts: threadTs, ts: String(Date.now() / 1000), text: turnText },
+            {
+              user: turnUser,
+              channel,
+              thread_ts: threadTs,
+              ts: String(Date.now() / 1000),
+              text: turnText,
+            },
             say,
           );
         } catch (error) {
@@ -1178,7 +1215,7 @@ export class ChoiceActionHandler {
           type: 'section',
           text: {
             type: 'mrkdwn',
-            text: `✅ *${question}*\n${picked} _(대시보드)_`,
+            text: `✅ *${question}*\n${picked} _(${via})_`,
           },
         },
       ];
@@ -1188,7 +1225,7 @@ export class ChoiceActionHandler {
           await this.ctx.slackApi.updateMessage(
             channel,
             targetTs,
-            `✅ *${question}*\n${picked} (대시보드)`,
+            `✅ *${question}*\n${picked} (${via})`,
             completedBlocks,
             [],
           );
@@ -1253,7 +1290,7 @@ export class ChoiceActionHandler {
       // Send choiceId (or the direct input) as user message to Claude
       const say = this.createSayFn(channel);
       await this.ctx.messageHandler(
-        { user: userId, channel, thread_ts: threadTs, ts: String(Date.now() / 1000), text: turnText },
+        { user: turnUser, channel, thread_ts: threadTs, ts: String(Date.now() / 1000), text: turnText },
         say,
       );
     } catch (error) {

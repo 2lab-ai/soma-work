@@ -1,4 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../../../admin-utils', () => ({
+  isAdminUser: vi.fn((userId: string) => userId === 'U_ADMIN'),
+}));
+
 import { setInstructionApprovals } from '../../../instruction-approval';
 import { ChoiceActionHandler, FORM_OWNER_ONLY_ERROR } from '../choice-action-handler';
 
@@ -163,6 +168,65 @@ describe('ChoiceActionHandler — someone else’s answer waits for the owner (#
       'C123',
       'U_OWNER',
       expect.stringContaining('소유자가 승인하면'),
+    );
+  });
+});
+
+describe('ChoiceActionHandler — an admin answering a question asked for admins (#1070)', () => {
+  afterEach(() => setInstructionApprovals(undefined));
+
+  function adminQuestion(setupResult: ReturnType<typeof setup>) {
+    (setupResult.session.actionPanel.pendingQuestion as any).audience = 'admins';
+    return setupResult;
+  }
+
+  it('is not held for the owner: the question is answered, and the turn runs as the owner, naming the admin', async () => {
+    const { handler, messageHandler, threadPanel, allows } = adminQuestion(setup(false));
+    const onClaimed = vi.fn();
+    await handler.handleChoiceFromDashboard(SESSION_KEY, '1', 'A', 'Q?', 'U_ADMIN', { adminAnswer: true, onClaimed });
+    expect(allows).not.toHaveBeenCalled();
+    expect(onClaimed).toHaveBeenCalledTimes(1);
+    expect(threadPanel.resolveChoice.mock.calls[0][3]).toContain('대시보드 · <@U_ADMIN>');
+    expect(messageHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ user: 'U_OWNER', text: '1\n\n(관리자 <@U_ADMIN>가 대시보드 관리자 승인에서 답함)' }),
+      expect.any(Function),
+    );
+  });
+
+  it('the legacy (non-P3) path also runs the turn as the owner and names the admin', async () => {
+    const result = adminQuestion(setup(false));
+    (result.session.actionPanel as any).pendingChoice = undefined;
+    await result.handler.handleChoiceFromDashboard(SESSION_KEY, '1', 'A', 'Q?', 'U_ADMIN', { adminAnswer: true });
+    expect(result.threadPanel.resolveChoice).not.toHaveBeenCalled();
+    expect(result.slackApi.updateMessage.mock.calls[0][2]).toContain('대시보드 · <@U_ADMIN>');
+    expect(result.messageHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ user: 'U_OWNER', text: expect.stringMatching(/^1\n\n\(관리자 <@U_ADMIN>/) }),
+      expect.any(Function),
+    );
+  });
+
+  it('refuses the flag from a non-admin or for the owner’s own question, before anything is consumed', async () => {
+    const asNonAdmin = adminQuestion(setup(false));
+    await expect(
+      asNonAdmin.handler.handleChoiceFromDashboard(SESSION_KEY, '1', 'A', 'Q?', 'U_OTHER', { adminAnswer: true }),
+    ).rejects.toThrow('Not an admin question');
+    const ownersQuestion = setup(false);
+    await expect(
+      ownersQuestion.handler.handleChoiceFromDashboard(SESSION_KEY, '1', 'A', 'Q?', 'U_ADMIN', { adminAnswer: true }),
+    ).rejects.toThrow('Not an admin question');
+    for (const { threadPanel, messageHandler } of [asNonAdmin, ownersQuestion]) {
+      expect(threadPanel.resolveChoice).not.toHaveBeenCalled();
+      expect(messageHandler).not.toHaveBeenCalled();
+    }
+  });
+
+  it('without the flag an admin who is not the owner is still held, as before', async () => {
+    const { handler, threadPanel, messageHandler } = adminQuestion(setup(false));
+    await handler.handleChoiceFromDashboard(SESSION_KEY, '1', 'A', 'Q?', 'U_ADMIN');
+    expect(threadPanel.resolveChoice).not.toHaveBeenCalled();
+    expect(messageHandler).toHaveBeenCalledWith(
+      expect.not.objectContaining({ routeContext: expect.anything() }),
+      expect.any(Function),
     );
   });
 });
