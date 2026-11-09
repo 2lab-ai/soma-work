@@ -8205,7 +8205,7 @@ function dashToaster() {
   wrap.style.display = 'contents';
   t = document.createElement('ui-toaster');
   t.id = 'dash-toaster';
-  t.setAttribute('lang', pageDisplayLang());
+  t.setAttribute('lang', document.documentElement && document.documentElement.lang === 'en' ? 'en' : 'ko');
   wrap.appendChild(t);
   document.body.appendChild(wrap);
   return t;
@@ -10193,7 +10193,7 @@ function paintCronLaneCards(slots) {
       el = document.createElement('ui-agent-inbox');
       el.className = 'cron-inbox';
       el.setAttribute('view', 'list');
-      el.setAttribute('lang', pageDisplayLang());
+      el.setAttribute('lang', document.documentElement && document.documentElement.lang === 'en' ? 'en' : 'ko');
       wireInbox(el);
       box._inbox = el;
     }
@@ -12526,7 +12526,7 @@ function paintTreeTab() {
     // The element is the item (data-item): made once per opening, given data from then on.
     tree = document.createElement('ui-agent-tree');
     tree.className = 'pa-tree';
-    tree.setAttribute('lang', pageDisplayLang());
+    tree.setAttribute('lang', document.documentElement && document.documentElement.lang === 'en' ? 'en' : 'ko');
     tree.setAttribute('data-item', 'tree');
     tree.innerHTML = '<span class="at-fallback">에이전트 트리</span>';
     if (typeof host.upsertItem === 'function') host.upsertItem('tree', tree, { animate: false });
@@ -13364,7 +13364,7 @@ function renderPanelGoal() {
     var draft = card && card.tagName === 'UI-GOAL-CARD' && el._key === panelSessionKey && typeof card.draft === 'string' ? card.draft : '';
     el.innerHTML = '';
     card = document.createElement('ui-goal-card');
-    card.setAttribute('lang', pageDisplayLang());
+    card.setAttribute('lang', document.documentElement && document.documentElement.lang === 'en' ? 'en' : 'ko');
     card.setAttribute('data-goal-key', panelSessionKey);
     el.appendChild(card);
     if (draft) card.draft = draft;
@@ -16598,7 +16598,7 @@ function renderMultiChoicePanel(s) {
     container.innerHTML = '';
     el = document.createElement('ui-choice-form');
     el.className = 'mc-form';
-    el.setAttribute('lang', pageDisplayLang());
+    el.setAttribute('lang', document.documentElement && document.documentElement.lang === 'en' ? 'en' : 'ko');
     container.appendChild(el);
   }
   el.setAttribute('data-mc-key', s.key);
@@ -17897,7 +17897,7 @@ function wlCardSlots(el, d) {
   for (var k in want) {
     var c = document.createElement('ui-tool-call-card');
     c.className = 'wl-card';
-    c.setAttribute('lang', pageDisplayLang());
+    c.setAttribute('lang', document.documentElement && document.documentElement.lang === 'en' ? 'en' : 'ko');
     c.setAttribute('slot', 'tool-' + k);
     c.setAttribute('data-key', k);
     // The card is a row on the log's arrow path: the element sets its head-tabindex
@@ -24295,11 +24295,11 @@ function pcFreshSteer() {
   if (!old) return;
   var el = document.createElement('ui-agent-steering');
   el.id = 'cmd-steer';
-  el.setAttribute('lang', pageDisplayLang());
+  el.setAttribute('lang', document.documentElement && document.documentElement.lang === 'en' ? 'en' : 'ko');
   var c = document.createElement('ui-composer');
   c.id = 'pc-composer';
   c.slot = 'composer';
-  c.setAttribute('lang', pageDisplayLang());
+  c.setAttribute('lang', document.documentElement && document.documentElement.lang === 'en' ? 'en' : 'ko');
   pcComposerSetup(c);
   // The model · effort controls are the composer's slot="end" child (#918): they move with the row, not copied.
   var ctl = document.getElementById('panel-controls');
