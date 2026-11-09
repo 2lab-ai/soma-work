@@ -11,7 +11,7 @@
 
 | Question | Answer |
 |---|---|
-| Can I onboard the **main** profile? | Yes — `somawork setup`. See the packaged-onboarding section of [README.md](../../../README.md), including its status box (the formula is not published yet). |
+| Can I onboard the **main** profile? | Yes — `somawork setup`. See the packaged-onboarding section of [Running soma-work](setup.md#a-packaged-onboarding--the-supported-flow-once-it-ships), including its status box (the formula is not published yet). |
 | Does `somawork setup` create additional sub-agent Slack apps? | **No.** It creates and installs exactly **one** Slack app: the profile's primary app. There is no `somawork agent add` and no additional-app provisioning command. |
 | Is there a script that provisions a sub-agent? | **No.** See §2. |
 | Can I run sub-agents at all? | Only on an **existing source-development deployment**, by hand, accepting that the credential handling is unsolved (§4). |
@@ -77,7 +77,7 @@ environment variable, with credentials stripped out first (`src/mcp-config-build
 > **Integration is partial.** Sub-agent apps connect and receive events, but @mention/DM
 > handling and the Claude SDK query behind `agent_chat` are still placeholders — see the
 > TODOs in `src/agent-instance.ts` and `packages/mcp-servers/agent/agent-mcp-server.ts`.
-> README.md's Multi-Agent Architecture section states the same limitation.
+> The Multi-Agent Architecture section of [features.md](features.md#-multi-agent-architecture) states the same limitation.
 
 ### Config schema (conceptual)
 
