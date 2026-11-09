@@ -10,7 +10,8 @@
  * dark and 390 light:
  *   M1  a user with no saved choice opens in minimal mode; the top bar's
  *       어드밴스드 toggle reads off (aria-pressed=false)
- *   M2  minimal: no stats strip, no capacity, no CRON lane; the board stays
+ *   M2  minimal: no stats strip, no capacity; the board stays, and the CRON lane
+ *       too (#1080) — a cron run waiting on the user is its job's card there
  *   M3  minimal: a card face keeps title · status · time · the task in
  *       progress · a pending question; no tokens · cost · context · agents ·
  *       artifacts · PR · media
@@ -212,7 +213,7 @@ function makeBoard(view: ReturnType<typeof ledgerTasks>) {
       ],
     },
   };
-  // A cron run waiting on an approval: the CRON lane is hidden in minimal, so it must stay on the board.
+  // A cron run waiting on an approval: the CRON lane shows in minimal too (#1080), with this run as its job's card.
   const cronWaiting = {
     ...session(KEY_CRON, '야간 점검', 'C203', null),
     activityState: 'waiting',
@@ -555,9 +556,15 @@ async function scenario(
     `${tag} M1 the top bar's 어드밴스드 toggle is there, off`,
     p0.toggle,
   );
-  check(!p0.stats && !p0.cron, `${tag} M2 minimal hides the stats strip and the CRON lane`, p0);
-  const cronOnBoard = await page.evaluate((k) => !!(window as any).__card(k), KEY_CRON);
-  check(cronOnBoard, `${tag} M2 a cron run waiting on the user stays on the board (the lane is hidden)`);
+  check(!p0.stats && p0.cron, `${tag} M2 minimal hides the stats strip and keeps the CRON lane (#1080)`, p0);
+  const cronInLane = await page.evaluate(
+    (k) =>
+      Array.from(document.querySelectorAll('ui-agent-inbox.cron-inbox')).some(
+        (e) => !!e.shadowRoot?.querySelector(`li.ib-card[data-card="${k}"]`),
+      ),
+    KEY_CRON,
+  );
+  check(cronInLane, `${tag} M2 a cron run waiting on the user is its job's card in the CRON lane`);
 
   // M3 — the face: what matters only.
   const fA = await faceOf(page, KEY_A);
