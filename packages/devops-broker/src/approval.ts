@@ -659,21 +659,16 @@ export function createApprovals(opts: {
 
   /**
    * Links for the dashboard (#1051), fetched after every card is posted and recorded, so a slow or failing Slack
-   * call never delays a card, the next admin's card, or the approval. Best effort, never throws.
+   * call never delays a card, the next admin's card, or the approval. Best effort; never throws, never writes state.
    */
   async function attachPermalinks(entry: Entry): Promise<void> {
     if (slack.getPermalink === undefined) return;
     for (const post of entry.posts) {
       if (post.permalink !== undefined || entry.status !== 'pending') continue;
       try {
-        const link = await slack.getPermalink(post.channel, post.ts);
-        post.permalink = link;
-        await mutate((draft) => {
-          const saved = recordOf(draft, entry.approvalId)?.posts.find(
-            (p) => p.channel === post.channel && p.ts === post.ts,
-          );
-          if (saved !== undefined) saved.permalink = link;
-        });
+        // In memory only: a link serves the dashboard listing of a live card, and a state write here would
+        // interleave with the approval's own disk-first writes.
+        post.permalink = await slack.getPermalink(post.channel, post.ts);
       } catch {
         // No link: the dashboard says where the card is instead.
       }
