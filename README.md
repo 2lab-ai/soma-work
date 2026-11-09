@@ -10,43 +10,43 @@
 </p>
 
 <p align="center">
-  <a href="#ask-in-slack">ask in Slack</a> · <a href="#pick-it-up-on-the-dashboard">pick it up</a> · <a href="#keep-going-from-the-card">keep going</a> · <a href="#watch-it-work">watch</a> · <a href="#step-in">step in</a> · <a href="#run-it">run it</a> · <a href="#docs">docs</a> · <a href="./README.ko.md">한국어</a>
+  <a href="#ask-in-slack">ask in Slack</a> · <a href="#pick-it-up-on-the-dashboard">pick it up</a> · <a href="#keep-going-from-the-card">keep going</a> · <a href="#watch-it-work">watch</a> · <a href="#or-start-on-the-dashboard">start on the dashboard</a> · <a href="#step-in">step in</a> · <a href="#run-it">run it</a> · <a href="#docs">docs</a> · <a href="./README.ko.md">한국어</a>
 </p>
 
 ![The soma-work dashboard: three columns (needs response, running, done) of task cards, each with its status, PRs, cost and Slack channel](assets/readme/en/board.png)
 
-<sub>The real dashboard in English, filtered to this repository (private cards hidden). Task titles are the words people asked in, so some are Korean.</sub>
+<sub>The real dashboard, filtered to this repository (private cards hidden). It starts in Korean: press EN at the top right, or send the bot `lang en`. Titles and TL;DRs stay in the language they were asked in.</sub>
 
 ## Ask in Slack
 
-Mention the bot in a channel. It answers in the thread, and that thread is now a task.
+Mention the bot in a channel. It starts a thread for the task and answers there.
 
-![In Slack: the bot is mentioned with a one-line request; it answers in the thread](assets/readme/en/slack.gif)
+![In Slack: a one-line request to the bot; it starts a thread for the task and answers there](assets/readme/en/slack.gif)
 
 ## Pick it up on the dashboard
 
-The same request is a card on the board. Open it: your Slack message is at the top, the agent's reply under it.
+The same request is a card on the board. Open it: in **Conversations**, your Slack message comes first, the agent's reply under it.
 
 ![On the dashboard: the card the Slack request made; opened, it shows the Slack message and the reply](assets/readme/en/pickup.gif)
 
 ## Keep going from the card
 
-Write to the agent from the card's message box. It is the next message of the same thread, so the work goes on where it was, and Slack shows it too.
+Write your next instruction in the card's message box. It goes into the same Slack thread (marked "via Dashboard"), so the agent carries on where it was.
 
 ![A follow-up typed into the opened card and sent; the agent picks it up](assets/readme/en/continue.gif)
 
 ## Watch it work
 
-- **Conversation:** the Slack thread: your instructions and the agent's replies.
+- **Conversations:** your instructions and the agent's answers.
 - **Tasks:** the agent's plan. Each step is done, running or waiting.
-- **Work log:** every tool call as it runs, grouped by task.
+- **Work log:** every tool call as it runs, grouped by task (your own tasks; admins see all).
 
 ![The opened card: the conversation, then the task list, then the live work log](assets/readme/en/work.gif)
 
 ## Or start on the dashboard
 
-- **New task** (`Ctrl+N`): type, send. It starts a Slack thread in the channel you pick.
-- **Dictation:** press it in New task and speak. The words are written in as you say them.
+- **New task:** type, **Start task**. It starts a Slack thread in the channel you pick.
+- **Dictation:** press it in New task or a card's message box and speak; the words appear as you talk.
 
 ![Typing an instruction into New task and sending it; the card lands on the board in the same words](assets/readme/en/ask.gif)
 
@@ -54,8 +54,8 @@ Write to the agent from the card's message box. It is the next message of the sa
 
 ## Step in
 
-- **Asks first:** a permission prompt or a question moves the card to **Needs response**. Answer on the card or in Slack.
-- **Steer:** write to the running agent from the card.
+- **When it asks:** a permission prompt or a question moves the card to **Needs response**. Answer on the card or in Slack.
+- **Steer:** while it runs, ↵ queues your note as the next step; ⌘↵ (Ctrl+↵) steers it now.
 - **Stop or roll back:** stop it, or roll its context back to an earlier point.
 
 ## What comes back
