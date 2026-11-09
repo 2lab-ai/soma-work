@@ -362,6 +362,19 @@ whose pool counts fewer than 80% of its accounts, carries a warning:
 `Codex 주 2.37/2.4 99% ⚠ 5일 전 · 3/5 반영`. Why two bars, 5h on top: see
 [`docs/misc/research/2026-10-25-capacity-dual-window.md`](./docs/misc/research/2026-10-25-capacity-dual-window.md).
 
+**llmux save mode (admins, top bar).** The **세이브** chip in the top bar sets
+llmux save mode: until a time you choose, llmux uses only the accounts whose
+weekly quota resets before then and holds the rest like a pause, so next week's
+quota is still there when work starts (for example, on Friday set Monday 15:00).
+The chip reads `세이브 끔` or `세이브 ~ <time>`; a press opens a dialog with the
+time (the next Monday 15:00 by default) and 켜기 / 끄기. It turns off by itself
+at that time. When every account that may serve is spent, requests are refused
+until then. Only admins see the chip; changing it needs Admin mode on (or the
+viewer token), like the lifecycle policy. Held accounts read 세이브 모드 in the
+capacity cards. API: `PUT /api/dashboard/llmux-save-mode` `{ until: <epoch seconds> | null }`
+→ llmux `POST /llmux/save-mode`; needs an llmux with save mode (the chip stays
+hidden on an older one).
+
 Unfolded, each provider (Claude, Codex; API-key pools have no plan unit and are
 not shown) is one simple card:
 

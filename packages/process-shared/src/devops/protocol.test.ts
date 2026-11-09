@@ -7,10 +7,12 @@ import {
   type DevopsRequest,
   type ExchangeState,
   encodeMessage,
+  isAdminRequestLine,
   isTerminal,
   MAX_LEASE_TTL_SECONDS,
   MAX_LINE_LENGTH,
   PROTOCOL_VERSION,
+  parseAdminRequest,
   parseBrokerMessage,
   parseJsonLine,
   parseLeaseTtlSeconds,
@@ -431,5 +433,34 @@ describe('protocol: newline-delimited JSON framing', () => {
   it('encodeMessage refuses a message that would not fit in one line', () => {
     const big: BrokerMessage = { v: PROTOCOL_VERSION, id: 'req-1', type: 'result', data: 'x'.repeat(MAX_LINE_LENGTH) };
     expect(() => encodeMessage(big)).toThrow(RangeError);
+  });
+});
+
+describe('protocol: admin ops (#1051)', () => {
+  it('tells an admin op line from a tool request by its op key', () => {
+    expect(isAdminRequestLine({ v: PROTOCOL_VERSION, id: 'r1', op: 'approvals', args: {} })).toBe(true);
+    expect(isAdminRequestLine({ v: PROTOCOL_VERSION, id: 'r1', tool: 'list', args: {} })).toBe(false);
+    expect(isAdminRequestLine('op')).toBe(false);
+  });
+
+  it('accepts the approvals listing and nothing else', () => {
+    expect(parseAdminRequest({ v: PROTOCOL_VERSION, id: 'r1', op: 'approvals', args: {} })).toMatchObject({
+      ok: true,
+      value: { op: 'approvals' },
+    });
+    expect(parseAdminRequest({ v: PROTOCOL_VERSION, id: 'r2', op: 'approval_decide', args: {} })).toMatchObject({
+      ok: false,
+      code: 'bad-request',
+    });
+    expect(parseAdminRequest({ v: PROTOCOL_VERSION, id: 'r3', op: 'approvals', args: { all: true } })).toMatchObject({
+      ok: false,
+    });
+    expect(parseAdminRequest({ v: PROTOCOL_VERSION, id: 'r4', op: 'approvals', args: {}, extra: 1 })).toMatchObject({
+      ok: false,
+    });
+    expect(parseAdminRequest({ v: 99, id: 'r5', op: 'approvals', args: {} })).toMatchObject({
+      ok: false,
+      code: 'version-mismatch',
+    });
   });
 });

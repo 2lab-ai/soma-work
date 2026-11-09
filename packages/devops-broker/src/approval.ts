@@ -53,6 +53,12 @@ export interface Approvals {
    * like a reaction (expiry, one use and disk-first all apply). Never throws.
    */
   decide(click: ButtonClick): Promise<'accepted' | 'ignored'>;
+  /**
+   * The cards waiting for an answer, for a surface that points the admin at them (the dashboard, #1051): what
+   * the request is and a link to each admin's own Slack card. No argument values: deciding still happens on
+   * the card, in Slack.
+   */
+  pending(): PendingApprovalView[];
   /** Cancels what is still open (approved-but-unused included) and waits for the card updates. */
   close(): Promise<void>;
 }
@@ -64,6 +70,21 @@ export interface ButtonClick {
   user: string;
   channel: string;
   messageTs: string;
+}
+
+/** One waiting card as the dashboard lists it (#1051). */
+export interface PendingApprovalView {
+  approvalId: string;
+  tool: DevopsTool;
+  /** The broker's sentence for the request (the card's first line). */
+  title: string;
+  /** Claimed requester's Slack user id — shown, never trusted. */
+  requester: string;
+  digestPrefix: string;
+  createdAt: string;
+  expiresAt: string;
+  /** Every admin's own card; `permalink` when Slack gave one. */
+  cards: { admin: string; permalink?: string }[];
 }
 
 /** How long a click on a card that is still being posted to the other admins waits for it to open. */
@@ -131,6 +152,8 @@ export interface ApprovalCardPost {
   admin: string;
   channel: string;
   ts: string;
+  /** Link to this card (chat.getPermalink, best effort) — the dashboard opens it (#1051). */
+  permalink?: string;
 }
 
 export interface ApprovalRecord {
@@ -211,6 +234,8 @@ interface Entry {
   countedAt: number;
   expiresAtMs: number;
   card: SlackCard;
+  createdAtMs: number;
+  view: Pick<PendingApprovalView, 'tool' | 'title' | 'requester'>;
   /** posting → pending → settled; only posting/pending entries count against the cap or take duplicates. */
   status: 'posting' | 'pending' | 'settled';
   posts: ApprovalCardPost[];
@@ -624,11 +649,30 @@ export function createApprovals(opts: {
     }
     entry.status = 'pending';
     for (const waiter of entry.waiters) announce(entry, waiter);
+    void attachPermalinks(entry);
     if (entry.waiters.size === 0) {
       await finish(entry, { kind: 'cancelled', reason: 'requester-gone' });
       return;
     }
     startLoop();
+  }
+
+  /**
+   * Links for the dashboard (#1051), fetched after every card is posted and recorded, so a slow or failing Slack
+   * call never delays a card, the next admin's card, or the approval. Best effort; never throws, never writes state.
+   */
+  async function attachPermalinks(entry: Entry): Promise<void> {
+    if (slack.getPermalink === undefined) return;
+    for (const post of entry.posts) {
+      if (post.permalink !== undefined || entry.status !== 'pending') continue;
+      try {
+        // In memory only: a link serves the dashboard listing of a live card, and a state write here would
+        // interleave with the approval's own disk-first writes.
+        post.permalink = await slack.getPermalink(post.channel, post.ts);
+      } catch {
+        // No link: the dashboard says where the card is instead.
+      }
+    }
   }
 
   function watched(): Entry[] {
@@ -873,6 +917,8 @@ export function createApprovals(opts: {
         countedAt: createdAtMs,
         expiresAtMs,
         card,
+        createdAtMs,
+        view: { tool: req.tool, title: req.title, requester: req.claimedRequester.slackUserId },
         status: 'posting',
         posts: [],
         waiters: new Set(),
@@ -924,6 +970,23 @@ export function createApprovals(opts: {
       } catch {
         // Best effort: the result is already in the ledger through the caller.
       }
+    },
+
+    pending() {
+      return [...active.values()]
+        .filter((entry) => entry.status === 'pending')
+        .sort((a, b) => a.createdAtMs - b.createdAtMs)
+        .map((entry) => ({
+          approvalId: entry.approvalId,
+          ...entry.view,
+          digestPrefix: entry.digest.slice(0, 12),
+          createdAt: iso(entry.createdAtMs),
+          expiresAt: iso(entry.expiresAtMs),
+          cards: entry.posts.map((post) => ({
+            admin: post.admin,
+            ...(post.permalink ? { permalink: post.permalink } : {}),
+          })),
+        }));
     },
 
     async decide(click) {

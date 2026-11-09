@@ -8,6 +8,13 @@
     ".": "./dist/index.js",
     "./*": "./dist/*"
   },
+  "typesVersions": {
+    "*": {
+      "devops/*": [
+        "dist/devops/*"
+      ]
+    }
+  },
   "files": [
     "dist"
   ],

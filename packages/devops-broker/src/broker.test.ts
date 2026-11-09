@@ -1459,3 +1459,31 @@ describe('cf_api and cf_lease_revoke', () => {
     expect(approvals.requests).toHaveLength(0);
   });
 });
+
+describe('admin op: approvals (#1051)', () => {
+  const VIEW = {
+    approvalId: 'appr-0001',
+    tool: 'cf_lease_request',
+    title: 'Cloudflare 단기 키를 발급합니다',
+    requester: 'U000ALICE',
+    digestPrefix: '0123456789ab',
+    createdAt: '2026-11-09T03:00:00.000Z',
+    expiresAt: '2026-11-09T03:10:00.000Z',
+    cards: [{ admin: 'U000ADMIN', permalink: 'https://example.slack.test/archives/D000ADMIN/p1700000000000001' }],
+  };
+
+  it('lists the waiting cards over the socket, leaving no ledger row (a dashboard polls)', async () => {
+    const approvals = { ...fakeApprovals('denied').approvals, pending: () => [VIEW] } as unknown as Approvals;
+    await start({ approvals });
+    const reply = terminal(await send({ v: 1, id: 'adm-1', op: 'approvals', args: {} }));
+    expect(reply).toEqual({ v: 1, id: 'adm-1', type: 'result', data: { approvals: [VIEW] } });
+    expect(ledgerRows().filter((row) => row.event === 'admin-request')).toEqual([]);
+  });
+
+  it('refuses any other op as bad-request', async () => {
+    await start();
+    const reply = terminal(await send({ v: 1, id: 'adm-2', op: 'approval_decide', args: {} }));
+    expect(reply).toMatchObject({ type: 'error', code: 'bad-request' });
+    expect(ledgerRows().find((row) => row.event === 'admin-request')).toMatchObject({ outcome: 'bad-request' });
+  });
+});
