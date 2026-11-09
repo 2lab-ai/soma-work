@@ -43,6 +43,16 @@ Call `mcp__model-command__run`:
 
 If multiple decisions are bundled, use `type: "user_choice_group"` + `choices: [{question, recommendedChoiceId, options:[...]}]` array.
 
+### A decision that belongs to an admin
+
+When the decision belongs to an admin, add `"audience": "admins"` to a `user_choice`. Examples: approving a request, a step that needs an admin's permission, a privileged action on a host.
+
+- The question still goes to the thread.
+- It also becomes a card on the dashboard's **관리자 승인** screen, which only admins see.
+- An admin's answer there continues the session as an answer in the thread would. It is not held for the session owner.
+- Do not also ask the same thing in a plain thread message.
+- Only a single `user_choice` takes `audience`.
+
 ## When `mcp__model-command__run` is missing
 
 A turn may run without `mcp__model-command__run` (the model-command server failed to attach, or it is not offered in this context).

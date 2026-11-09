@@ -1,4 +1,5 @@
 import { escapeSlackMrkdwn } from '@soma/slack/mrkdwn-escape';
+import { isAdminUser } from '../../admin-utils';
 import type { ClaudeHandler } from '../../claude-handler';
 import { getInstructionApprovals } from '../../instruction-approval';
 import { Logger } from '../../logger';
@@ -64,6 +65,18 @@ export function isAnswerableFromDashboard(
 ): boolean {
   if (session.activityState === 'waiting') return true;
   return (session.activityState ?? 'idle') === 'idle' && session.actionPanel?.pendingQuestion?.type === kind;
+}
+
+/**
+ * #1070 — an admin answering a question the model asked for admins (`audience: 'admins'`): the answer is the
+ * admin's to give, so it is not held for the session owner.
+ */
+export function isAdminAudienceAnswer(
+  session: { actionPanel?: { pendingQuestion?: { type?: string; audience?: string } } },
+  userId: string | undefined,
+): boolean {
+  const q = session.actionPanel?.pendingQuestion;
+  return !!userId && q?.type === 'user_choice' && q.audience === 'admins' && isAdminUser(userId);
 }
 
 interface ChoiceActionContext {
@@ -1058,14 +1071,20 @@ export class ChoiceActionHandler {
     label: string,
     question: string,
     userId: string,
+    /** #1070 — from the 관리자 승인 card: an admin answering a question asked for admins. */
+    opts: { adminAnswer?: boolean } = {},
   ): Promise<void> {
     const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
     if (!session) {
       throw new Error('Session not found');
     }
+    // Re-checked here, not trusted from the caller: an admin, and the question is the admins' to answer.
+    const adminAnswer = opts.adminAnswer === true && isAdminAudienceAnswer(session, userId);
+    if (opts.adminAnswer && !adminAnswer) throw new Error('Not an admin question');
 
     // Guard: only process while the session's question can take an answer
     if (
+      !adminAnswer &&
       isAnswerableFromDashboard(session, 'user_choice') &&
       session.channelId &&
       this.needsOwnerApproval(session, sessionKey, userId)
@@ -1105,7 +1124,7 @@ export class ChoiceActionHandler {
     // Before the first await: a second submission finds the question taken.
     const claim = this.claimDashboardAnswer(session, sessionKey);
     try {
-      await this.sendDashboardChoice(session, sessionKey, claim, choiceId, label, question, userId);
+      await this.sendDashboardChoice(session, sessionKey, claim, choiceId, label, question, userId, adminAnswer);
     } finally {
       this.endAnswerHold(sessionKey, claim.hold);
     }
@@ -1120,7 +1139,9 @@ export class ChoiceActionHandler {
     label: string,
     question: string,
     userId: string,
+    adminAnswer = false,
   ): Promise<void> {
+    const routeContext = adminAnswer ? { routeContext: { adminAnswer: true } } : {};
     const channel = session.channelId;
     const threadTs = this.resolveSessionThreadTs(session, session.threadTs);
     const choiceMessageTs = session.actionPanel?.choiceMessageTs;
@@ -1158,7 +1179,14 @@ export class ChoiceActionHandler {
           await this.afterP3Resolve(session, sessionKey, channel);
           const say = this.createSayFn(channel);
           await this.ctx.messageHandler(
-            { user: userId, channel, thread_ts: threadTs, ts: String(Date.now() / 1000), text: turnText },
+            {
+              user: userId,
+              channel,
+              thread_ts: threadTs,
+              ts: String(Date.now() / 1000),
+              text: turnText,
+              ...routeContext,
+            },
             say,
           );
         } catch (error) {
@@ -1253,7 +1281,7 @@ export class ChoiceActionHandler {
       // Send choiceId (or the direct input) as user message to Claude
       const say = this.createSayFn(channel);
       await this.ctx.messageHandler(
-        { user: userId, channel, thread_ts: threadTs, ts: String(Date.now() / 1000), text: turnText },
+        { user: userId, channel, thread_ts: threadTs, ts: String(Date.now() / 1000), text: turnText, ...routeContext },
         say,
       );
     } catch (error) {

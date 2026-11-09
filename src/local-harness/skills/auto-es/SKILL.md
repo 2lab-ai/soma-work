@@ -67,7 +67,9 @@ When **any** own artifact is unfinished, three things are mandatory — in Path 
    only — never use it for a risk, a flaky test or a note.
 2. **`⚠️ User follow-up required` as the very last section** — §Harness additions.
 3. **The user is asked — never left waiting without a question (#917).** A card is in **NEEDS YOU** (입력 대기)
-   only while a question is open; the ⚠️ line alone does not put it there. Path A: after §Card sync, end the turn
+   only while a question is open; the ⚠️ line alone does not put it there. When the one who must act is an admin
+   (an approval, a privileged step), ask with `audience: 'admins'`, so the question is also a card on the
+   dashboard's 관리자 승인 screen, not only a Slack message (#1070). Path A: after §Card sync, end the turn
    with `ASK_USER_QUESTION` about the unfinished artifact — choice 1 = the recommended next action, choices 2–3 =
    alternatives (who acts, a workaround, stopping here). Do not add a "직접 입력" choice: the host adds direct input
    as the last option itself. Path B (no tools), or a Path A turn that asked nothing: the host asks the follow-up
