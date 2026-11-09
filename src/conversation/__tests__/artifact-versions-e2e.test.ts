@@ -9,9 +9,9 @@
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 // slack-mcp's half (what the upload says) is the shared module the MCP server re-exports.
 import { planUploadVersion, versionFields } from 'somalib/artifacts/upload-version';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { captureArtifactFromWorkLog, resetArtifactCaptureForTests } from '../artifact-capture';
 import { ArtifactStore } from '../artifacts';
 

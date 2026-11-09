@@ -14,7 +14,12 @@
 
 import { createHash } from 'node:crypto';
 import { createReadStream, readFileSync } from 'node:fs';
-import { type ArtifactVersionRow, artifactKeyFor, assignArtifactVersions, planArtifactVersion } from './artifact-version';
+import {
+  type ArtifactVersionRow,
+  artifactKeyFor,
+  assignArtifactVersions,
+  planArtifactVersion,
+} from './artifact-version';
 
 export type VersionLang = 'ko' | 'en';
 
