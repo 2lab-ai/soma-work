@@ -5625,6 +5625,7 @@ window.uiPeek = { html: peekHtml, kind: fileItemKind };
 <script type="module" src="/dashboard/ui/elapsed.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/meter.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/media-grid.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/dock.js?v=${UI_LIB_VERSION}"></script>
 <!-- The theme (soma-work 830): light · dark · light·mono · dark·mono on <html> before CSS paints, and the bar's toggle. -->
 <script data-fouc>${themeClientJs()}</script>
 <!-- Interface sound (@2lab.ai/ui/sound, sound-cuelume): off until the speaker beside the theme switch turns it on. -->
@@ -5812,6 +5813,9 @@ ui-breadcrumbs.crumbs { flex: 1 1 160px; min-width: 0; }
 /* Board header tools: Show archives, then Board | List. Below 640px the tools
    take their own row under the breadcrumb. */
 .inbox-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; row-gap: 8px; flex: 0 1 auto; min-width: 0; margin-left: auto; }
+/* The board's chips (보관함 · 휴면 · 내 카드만 · 필터 · 정렬 · 수명 주기): one flex line with the tools from 640px (the box
+   is display: contents), the phone's own scroll row below it (PHONE DOCK). */
+.inbox-chips { display: contents; }
 /* 보관함 · 휴면 · 수명 주기 are kit chips (.ui-chip[aria-pressed], D7 D-03); a chip the board has no use for yet stays out. */
 .archives-btn[hidden] { display: none; }
 /* Board filters and sort (SSOT 2026-11-05): 필터 and 정렬 are the triggers of their <ui-menu>s; 필터 carries the count of
@@ -6484,8 +6488,8 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 }
 
 /* ── BOARD RESPONSIVE (.prd/10 §5, SSOT 2026-10-24) ──
-   The columns follow the inbox's own width (container query): ≥840 three columns
-   that always fit · <840 the three columns scroll sideways inside the board (the
+   The columns follow the inbox's own width (container query): ≥720 three columns
+   that always fit (a tablet held upright, 2026-11-09) · <720 the three columns scroll sideways inside the board (the
    page itself never scrolls horizontally). <640 viewport: List by default, 44px
    taps. A docked drawer narrows the inbox, so this is not a viewport query. */
 @media (max-width: 639px) {
@@ -6557,6 +6561,28 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 .slide-panel[data-tuck] .pc-reveal {
   opacity: 1; visibility: visible; transform: none;
   transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-move) var(--ease-out), visibility 0s;
+}
+
+/* ── PHONE DOCK (2026-11-09) — under 640px the sections and 새 작업 sit in the thumb zone: @2lab.ai/ui <ui-dock
+   layout="bar" fixed> (보드 · 대화 · 새 작업 · 기억 · 설정, the board's needs-you count on 보드). It takes the jobs of
+   the bar's 메뉴 (the bar drops its links there: paintAppBar) and of the floating 새 작업 button (hidden there). The
+   page keeps its last row above the dock, the toasts rise over it. The board's head is two lines: the search with
+   Board | List, then the chips as one row that scrolls sideways (ui-scroll-row) — the trail goes (the dock says
+   where you are). A phone held sideways (PHONE_MQ's short screen) keeps the bar's 메뉴 and its height for the board. ── */
+.phone-dock { display: none; }
+@media (max-width: 639px) {
+  .phone-dock { display: block; }
+  body { padding-bottom: calc(var(--ui-dock-h, 60px) + env(safe-area-inset-bottom, 0px)); }
+  .new-task-fab.ui-fab { display: none !important; }
+  ui-toaster { --ts-offset: calc(var(--ui-dock-h, 60px) + 12px); }
+  .inbox-head { margin-bottom: 10px; }
+  .inbox-head > .crumbs { display: none; }
+  .inbox-tools { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; flex: 1 1 100%; width: 100%; margin-left: 0; }
+  .inbox-tools > .bf-search { grid-column: 1; grid-row: 1; width: 100%; max-width: none; height: 40px; font-size: 16px; }
+  .inbox-tools > .bf-search:focus { flex-basis: auto; }
+  .inbox-tools > .view-seg { grid-column: 2; grid-row: 1; }
+  .inbox-tools > .inbox-chips { --ui-bleed: 12px; grid-column: 1 / -1; grid-row: 2; display: flex; gap: 6px; padding-block: 2px; }
+  .inbox-chips > .topbar-scope { display: flex; flex: none; flex-wrap: nowrap; align-items: center; gap: 6px; margin: 0; }
 }
 
 /* ── RESPONSIVE — Bauhaus grid adapts ── */
@@ -6971,6 +6997,7 @@ ${pageTokenAliases()}
       <div class="inbox-head">
         <ui-breadcrumbs class="crumbs" id="inbox-trail" lang="ko"></ui-breadcrumbs>
         <div class="inbox-tools" id="inbox-tools">
+          <div class="inbox-chips ui-scroll-row is-bleed" id="inbox-chips">
           <button type="button" class="ui-chip archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><i data-ui-icon="archive"></i><span id="archives-label">보관함</span></button>
           <button type="button" class="ui-chip archives-btn" id="sleeping-toggle" aria-pressed="true" hidden onclick="toggleSleeping()"><i data-ui-icon="moon"></i><span id="sleeping-label">휴면</span></button>
           <!-- Board filters and sort (SSOT 2026-11-05): 내 카드만 (the All Users board, signed in), 필터 (사용자 · 채널 ·
@@ -6979,8 +7006,9 @@ ${pageTokenAliases()}
           <button type="button" class="ui-chip archives-btn" id="mine-toggle" aria-pressed="false" hidden title="내가 시작한 카드만 보기" onclick="toggleMineOnly()"><i data-ui-icon="user"></i><span>내 카드만</span></button>
           <ui-menu id="bf-menu" class="bf-menu" lang="ko" placement="bottom end"><button type="button" slot="trigger" class="ui-chip archives-btn bf-trigger" id="bf-trigger" aria-pressed="false" title="카드 필터"><span>필터</span><span class="ui-count" id="bf-count" hidden>0</span></button></ui-menu>
           <ui-menu id="bs-menu" class="bs-menu" lang="ko" placement="bottom end"><button type="button" slot="trigger" class="ui-chip archives-btn bs-trigger" id="bs-trigger" title="카드 정렬"><span id="bs-label">마지막 진행 ↓</span></button></ui-menu>
-          <input type="search" class="bf-search" id="bf-search" placeholder="카드 검색" aria-label="카드 검색 — 제목 · 요약 · 사용자 · 채널 · 레포" autocomplete="off" spellcheck="false" oninput="onBoardSearch(this.value)">
           <button type="button" class="ui-chip archives-btn" id="lifecycle-btn" style="display:none" title="세션 수명 주기 (관리자)" onclick="openLifecycleDialog()"><i data-ui-icon="clock"></i><span>수명 주기</span></button>
+          </div>
+          <input type="search" class="bf-search" id="bf-search" placeholder="카드 검색" aria-label="카드 검색 — 제목 · 요약 · 사용자 · 채널 · 레포" autocomplete="off" spellcheck="false" oninput="onBoardSearch(this.value)">
           <ui-segmented class="view-seg" id="view-seg"></ui-segmented>
         </div>
       </div>
@@ -7185,6 +7213,9 @@ ${pageTokenAliases()}
   <!-- New task (SSOT 2026-10-23): floating button (phones, and PC once the top-bar
        button scrolls away), the composer dialog, and the launch toast. -->
   <button type="button" class="ui-fab is-extended new-task-fab" id="new-task-fab" aria-label="새 작업 시작" onclick="openNewTask()"><i data-ui-icon="plus"></i><span>새 작업</span></button>
+  <!-- Phone dock (2026-11-09): @2lab.ai/ui <ui-dock> — under 640px the sections and 새 작업 in the thumb zone
+       (paintPhoneDock; PHONE DOCK rules). Hidden from 640px. -->
+  <ui-dock id="phone-dock" class="phone-dock" layout="bar" fixed lang="ko"></ui-dock>
   <!-- The composer dialog is @2lab.ai/ui <ui-dialog> (D4 H-01): its heading and ✕, scrim, focus trap, Esc / scrim
        close (ui-close; ui-closed after the exit → ntOnClosed), focus return to the opener, and on phones the sheet
        edge to edge (size-phone="full", 0.12.0 — D4 G6-1) above the soft keyboard. The page's form stays whole
@@ -7388,7 +7419,8 @@ function paintAppBar() {
   if (!bar) return;
   var data = {
     brand: { label: 'soma-work', mark: true, heading: true },
-    nav: APP_BAR_NAV,
+    // Under 640px the phone dock carries the links (PHONE DOCK): the bar draws none, so no 메뉴 either.
+    nav: typeof dockOn === 'function' && dockOn() ? [] : APP_BAR_NAV,
     navLabel: '주 메뉴',
     toolbarAt: APP_BAR_TOOLBAR_AT,
     status: _appBarStatus,
@@ -7408,6 +7440,49 @@ function paintAppBar() {
 // ── Theme — the head script owns it (themeClientJs, soma-work 830): <html>'s data-theme / data-palette, this browser's
 // choice, the OS follow and the bar's ui-theme-change. The bar's first data comes from paintAppBar. ──
 paintAppBar();
+// ── Phone dock (2026-11-09) — @2lab.ai/ui <ui-dock id="phone-dock"> under 640px (DOCK_MQ: narrow only — a phone held
+// sideways keeps the bar's 메뉴 and its height for the board). 보드 first (this page, current, the needs-you count from
+// renderBoard), then the bar's links, 새 작업 raised between them. Its links are real links; 보드 scrolls back up. ──
+var DOCK_MQ = '(max-width: 639px)';
+var _dockMq = typeof window !== 'undefined' && typeof window.matchMedia === 'function' ? window.matchMedia(DOCK_MQ) : null;
+var _dockNeeds = 0;
+function dockOn() {
+  return !!(_dockMq && _dockMq.matches);
+}
+function paintPhoneDock() {
+  var dock = document.getElementById('phone-dock');
+  if (!dock) return;
+  var home = currentUserId ? '/dashboard/' + encodeURIComponent(currentUserId) : '/dashboard';
+  var items = [{ id: 'board', label: '보드', href: home, icon: 'board', current: true, badge: _dockNeeds, title: '에이전트 인박스' }];
+  for (var i = 0; i < APP_BAR_NAV.length; i++) {
+    var l = APP_BAR_NAV[i];
+    items.push({ id: l.id, label: l.label, href: l.href, icon: l.icon, title: l.title });
+  }
+  dock.data = { label: '주 메뉴', items: items, action: { id: 'new-task', label: '새 작업', icon: 'plus' } };
+}
+// The board's needs-you count (renderBoard's announce): the dock's 보드 badge.
+function syncDockNeeds(n) {
+  var next = n > 0 ? n : 0;
+  if (next === _dockNeeds) return;
+  _dockNeeds = next;
+  paintPhoneDock();
+}
+(function initPhoneDock() {
+  if (typeof document === 'undefined') return;
+  var dock = document.getElementById('phone-dock');
+  if (!dock) return;
+  paintPhoneDock();
+  dock.addEventListener('ui-action', function () { openNewTask(); });
+  dock.addEventListener('ui-navigate', function (e) {
+    if (!e.detail || e.detail.id !== 'board') return;
+    e.preventDefault();
+    window.scrollTo({ top: 0, behavior: rdHow() });
+  });
+  if (_dockMq) {
+    if (typeof _dockMq.addEventListener === 'function') _dockMq.addEventListener('change', paintAppBar);
+    else if (typeof _dockMq.addListener === 'function') _dockMq.addListener(paintAppBar);
+  }
+})();
 // ── Phone chrome (SSOT 2026-11-04) — on a phone the content takes the screen (see the PHONE CHROME rules). A phone is
 // narrow, or a short screen (a phone sideways) — the page's own breakpoints. ──
 var PHONE_MQ = '(max-width: 639px), (max-height: 560px)';
@@ -7420,7 +7495,8 @@ function isPhone() {
 function syncPhoneScope() {
   var scope = document.getElementById('topbar-scope');
   var bar = document.getElementById('app-bar');
-  var tools = document.getElementById('inbox-tools');
+  // In the board's chips row (the phone's scroll row) when the page has one, else at the head of the tools.
+  var tools = document.getElementById('inbox-chips') || document.getElementById('inbox-tools');
   if (!scope || !bar || !tools) return;
   if (isPhone()) {
     if (scope.parentNode !== tools) tools.insertBefore(scope, tools.firstChild);
@@ -9841,6 +9917,8 @@ function selectUser(userId) {
   syncBoardScope();
   history.replaceState(null, '', userId ? '/dashboard/' + userId : '/dashboard');
   paintTrail();
+  // The dock's 보드 is this board's address too.
+  if (typeof paintPhoneDock === 'function') paintPhoneDock();
   loadSessions();
   loadStats();
   loadCronJobs();
@@ -10278,6 +10356,8 @@ function renderBoard(board, partial) {
       announce: { needs: (board.waiting || []).length + kidCounts.needs, running: (board.working || []).length + kidCounts.running },
     };
     inboxPaint(kb);
+    // The phone dock's 보드 badge: the same count the board announces.
+    if (typeof syncDockNeeds === 'function') syncDockNeeds(kb.data.announce.needs);
   }
   // The CRON lane (Option A): each job's lead run in its own one-column element.
   paintCronLaneCards(cronLaneSlots(cronPlan));
@@ -15185,6 +15265,13 @@ function boardHosts() {
 // so the "before" is a cache of each element's measure(), refreshed when the
 // board settles (render, scroll end, transition end, a finished shift) and
 // corrected for the page's scroll since.
+// The width the default view goes by: the page's phone breakpoint as the media query reads it. innerWidth is not it on a
+// phone — while the first frames are wider than the screen (a part drawn before it measured), the layout viewport widens
+// and innerWidth reads that (598 / 674 on a 390px phone, 2026-11-09), so the default was the board at random.
+function viewWidth() {
+  var w = window.innerWidth;
+  return window.matchMedia && window.matchMedia('(max-width: 639px)').matches ? Math.min(w, 639) : w;
+}
 function defaultBoardView(innerWidth, saved) {
   if (saved === 'board' || saved === 'list') return saved;
   return innerWidth < 640 ? 'list' : 'board';
@@ -15194,7 +15281,7 @@ function savedBoardView() {
 }
 function layoutModeOf(innerW, inboxW, panelOpen, view) {
   return {
-    cols: inboxW >= 840 ? 'full' : 'snap',
+    cols: inboxW >= 720 ? 'full' : 'snap',
     panel: !panelOpen ? 'closed' : (innerW >= 840 ? 'docked' : 'sheet'),
     view: view,
   };
@@ -15304,7 +15391,7 @@ function runLayoutCheck() {
   _layoutCheckFrame = frame;
   // The default view follows the screen until the reader picks one (no event:
   // setBoardView neither saves it nor adopts it — this runs the only glide).
-  var autoView = defaultBoardView(window.innerWidth, savedBoardView());
+  var autoView = defaultBoardView(viewWidth(), savedBoardView());
   if (kb.getAttribute('view') !== autoView) setBoardView(autoView);
   // The secondary sections' defaults follow the window in this same frame, so a
   // fold or a window change that also folds them is one shift.
@@ -22284,7 +22371,7 @@ function fcHydrateIn(node) {
   }
   // View: the saved choice, else List on narrow screens (§3.1-2); runLayoutCheck
   // re-evaluates the default when a fold or rotation crosses 640px.
-  setBoardView(defaultBoardView(window.innerWidth, savedBoardView()));
+  setBoardView(defaultBoardView(viewWidth(), savedBoardView()));
   // The secondary sections' disclosure state, before the first board render.
   applySectionState();
   // SSOT 2026-11-05 — the board's filter and sort menus: their choices, and the bar as the stored filter left it.
