@@ -1,6 +1,6 @@
 ---
 name: find-animation-opportunities
-description: Search a codebase or UI for places that don't animate but should, and reject everything that shouldn't. Read-only; it proposes motion with exact values, it does not implement it. Use when the user asks "what could be animated here?" or wants to "make this feel more alive". For fixing existing animations, use improve-animations or review-motion instead. Triggers on "where should this animate", "animation opportunities", "add motion where it helps", "애니메이션 기회", "어디에 모션", "모션 넣을 곳", "애니메이션 추가할 곳".
+description: Read-only hunt for the few places motion would really help, with a recipe each. Triggers on "where should this animate", "애니메이션 기회".
 allowed-tools: Read, Grep, Glob
 version: 1.0.0
 license: MIT

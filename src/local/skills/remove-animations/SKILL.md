@@ -1,6 +1,6 @@
 ---
 name: remove-animations
-description: Find the animations an interface doesn't need and remove them — motion on keyboard actions, high-frequency surfaces, functional data, and decoration with no purpose — then clean up what they leave behind. Edits code, but only to subtract; it never adds or retunes motion. Use when the user says the app "feels slow", "has too much animation", "feels over-animated", wants to "tone down the motion", or asks what animations to remove. For finding places that should animate, use find-animation-opportunities; for fixing animations that should stay, use improve-animations or review-motion. Triggers on "remove animations", "too much animation", "less motion", "cut the animations", "애니메이션 제거", "애니메이션 줄여", "모션 줄이기", "애니메이션 너무 많아".
+description: Delete or cut animations that cost more than they give (frequent, keyboard-driven, slow). Triggers on "remove animations", "애니메이션 줄여".
 allowed-tools: Read, Grep, Glob, Edit, Write
 version: 1.0.0
 license: MIT

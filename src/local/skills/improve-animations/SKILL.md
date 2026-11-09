@@ -1,6 +1,6 @@
 ---
 name: improve-animations
-description: Survey a codebase's animation and motion code as a senior motion advisor, then produce a prioritized audit and self-contained implementation plans for other agents (or cheaper models) to execute. Read-only on source code — it plans improvements, it does not apply them. Use when the user asks to "improve the animations", "audit the motion", "make this app feel better", or wants a roadmap of animation fixes rather than a review of a single diff. Triggers on "audit animations", "improve animations", "motion audit", "animation plan", "애니메이션 개선", "모션 감사", "애니메이션 감사", "애니메이션 점검".
+description: Audit a codebase's motion and write prioritized fix plans for other agents; edits no source. Triggers on "audit animations", "motion audit", "모션 감사".
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash, Agent
 version: 1.0.0
 license: MIT

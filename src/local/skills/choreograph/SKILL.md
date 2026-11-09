@@ -1,6 +1,6 @@
 ---
 name: choreograph
-description: Coordinate several elements that animate together — decide what moves, in what order, how much they overlap, and what stays still — so a group reads as one intentional motion instead of a pile of separate animations. Use when building or fixing a staggered list, a hero entrance, a view swap inside a container, a multi-step flow, an element leaving while its siblings close the gap, a morph between rich states, or any interaction with several moving parts (icon + background + lines, panel + content, items flying into a target). Triggers on — stagger, staggerChildren, delayChildren, animation-delay, sequence, sequencing, orchestration, choreography, cascade, wave, timeline, "one after another", "at the same time", crossfade, popLayout, mode="wait", AnimatePresence mode, hero entrance, list entrance, multi-step, step transition, morph, useAnimate, Promise.all animations, "feels mechanical", "feels robotic", "too much going on", "feels slow to open". Triggers on "choreograph", "stagger", "코레오그래피", "순차 애니메이션".
+description: Order, overlap and stagger several animations so they read as one moment. Triggers on "choreograph", "stagger", "순차 애니메이션".
 allowed-tools: Read, Grep, Glob, Edit, Write
 version: 1.0.0
 license: MIT
