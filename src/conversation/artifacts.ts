@@ -526,19 +526,36 @@ export class ArtifactStore {
     try {
       const reported = typeof input.size === 'number' && input.size >= 0 ? input.size : undefined;
       let snap = input.snapshot ?? (input.filePath ? await this.snapshot(conversationId, input.filePath) : null);
+      // The copy must be the bytes Slack received: slack-mcp reports their hash; a different one means the file
+      // changed between the call and the upload — keep no copy, and let the reported hash decide (#1074 r1).
+      const reportedSha = isSha256Hex(input.sha256) ? input.sha256 : undefined;
+      if (snap && reportedSha && snap.sha256 && snap.sha256 !== reportedSha) {
+        await this.discardSnapshot(conversationId, snap);
+        snap = null;
+      }
       if (snap && !(await this.adopt(conversationId, snap, reported))) snap = null;
       const name = (input.filename || (input.filePath ? path.basename(input.filePath) : '') || 'file').slice(0, 200);
       const { kind, mime } = classifyArtifact(name);
       const size = snap?.size ?? reported ?? 0;
-      const sha256 = snap ? snap.sha256 : isSha256Hex(input.sha256) ? input.sha256 : undefined;
+      const sha256 = snap?.sha256 ?? reportedSha;
       // From here to the index write nothing awaits: two uploads of one key never plan the same version.
       const key = artifactKeyFor({ key: input.key, name });
       const plan = planArtifactVersion(this.files(conversationId), key, sha256);
       if (plan.unchanged && plan.previous) {
         const same = plan.previous as SessionArtifact;
         if (fileId) same.resentFileIds = [...(same.resentFileIds ?? []), fileId].slice(-MAX_RESENT_IDS);
-        this.persistLogged(conversationId);
-        if (snap) await this.unlinkUnreferenced(conversationId, [snap.id]);
+        // That version had no copy (too large then, pruned, or its snapshot failed): these are its bytes.
+        const restore = !!snap && !same.stored;
+        if (restore && snap) {
+          same.stored = true;
+          if (snap.id !== same.id) same.blob = snap.id;
+        }
+        const saved = this.persistLogged(conversationId);
+        if (restore && !saved) {
+          same.stored = false;
+          delete same.blob;
+        }
+        if (snap && !(restore && saved)) await this.unlinkUnreferenced(conversationId, [snap.id]);
         return null;
       }
       // The same bytes are kept once: a stored artifact with this hash lends its copy.
@@ -654,12 +671,19 @@ export class ArtifactStore {
     const ofKey = idx.artifacts
       .filter((a) => a.source !== 'final_answer' && a.key === artifact.key)
       .sort((x, y) => (y.version ?? 0) - (x.version ?? 0));
+    const dropped: SessionArtifact[] = [];
     for (const old of ofKey.slice(MAX_KEPT_VERSIONS)) {
       if (!old.stored) continue;
       old.stored = false;
+      dropped.push(old);
       freed.push(old.blob ?? old.id);
     }
-    this.persistLogged(conversationId);
+    // Bytes go only once the index that no longer lists them as stored is on disk (#1074 r1): if the write
+    // fails, the pruned versions stay stored here too, and the next record prunes them again.
+    if (!this.persistLogged(conversationId)) {
+      for (const old of dropped) old.stored = true;
+      freed.length = 0;
+    }
     for (const l of this.listeners) {
       try {
         l(artifact);
@@ -670,12 +694,14 @@ export class ArtifactStore {
     return freed;
   }
 
-  private persistLogged(conversationId: string): void {
+  /** false when the write failed (logged): the in-memory list still serves this process; the next record retries. */
+  private persistLogged(conversationId: string): boolean {
     try {
       this.persist(conversationId);
+      return true;
     } catch (err) {
-      // The in-memory list still serves this process; the next record retries the write.
       logger.error(`Failed to persist artifact index for ${conversationId}`, err);
+      return false;
     }
   }
 
