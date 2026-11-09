@@ -45,7 +45,7 @@ No dedicated numeric-chart or component-architecture skill fits. Use the vendore
    - `roughness: 0`, `roundness: { "type": 3 }`
 2. Render: `cd "$CLAUDE_PLUGIN_ROOT/skills/architecture-diagram/references" && uv run python render_excalidraw.py "$(pwd)/diag-<slug>-<ts>.excalidraw"`
 3. Validate (same PNG composite checks as architecture-diagram step 6).
-4. Dual upload via `mcp__slack-mcp__send_media` (PNG) + `mcp__slack-mcp__send_file` (.excalidraw).
+4. Upload the PNG alone via `mcp__slack-mcp__send_media` — one illustration, one artifact. Keep the `.excalidraw` in the working directory and name its path in the reply; send it with `mcp__slack-mcp__send_file` only when the user asks for the editable source.
 
 ### MIXED
 Execute ARCHITECTURE first (full workflow, upload). Then execute NUMERIC. Each delivers its own artifact. Do not try to merge them into one image.

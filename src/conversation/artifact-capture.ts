@@ -1,12 +1,16 @@
 /**
  * Turns the work-log stream into session artifacts — the files the model sent to
- * Slack. A final answer is the chat's, never an artifact (SSOT 2026-11-02 T6).
+ * Slack and the links it posted there (send_link: a page or app the session
+ * serves, a published video). A final answer is the chat's, never an artifact
+ * (SSOT 2026-11-02 T6).
  *
  * Every step of a turn already reaches the daemon as a work-log entry
  * (src/index.ts wires the stream executor's `appendWorkLog` provider):
  *
  *   tool        mcp__slack-mcp__send_file|send_media  raw = the tool input JSON ({ file_path, filename, title, … })
  *   tool_result same tool                              raw = the tool's JSON reply ({ uploaded, file_id, filename, size, permalink, … })
+ *   tool_result mcp__slack-mcp__send_link              raw = { sent, url, title, ts, permalink } — the reply alone
+ *                                                       carries the link, so its call needs no pairing
  *
  * The slack-mcp server runs as a grandchild stdio process, so this is the one
  * place the daemon sees both halves of an upload. A call and its result carry
@@ -29,6 +33,8 @@ const logger = new Logger('ArtifactCapture');
 
 /** `mcp__slack-mcp__send_file` / `mcp__slack-mcp__send_media`. */
 export const UPLOAD_TOOL = /^mcp__slack-mcp__send_(?:file|media)$/;
+/** `mcp__slack-mcp__send_link`. */
+const LINK_TOOL = 'mcp__slack-mcp__send_link';
 
 /** The work-log entry fields this module reads (a subset of WorkLogInput / WorkLogEntry). */
 export interface CaptureEntry {
@@ -96,6 +102,20 @@ function takeMatching<T extends { tool: string; toolUseId?: string; displayName:
   return queue.splice(idx, 1)[0];
 }
 
+/** A send_link result → the link to record, or null when it did not post. */
+function linkReply(entry: CaptureEntry) {
+  const reply = parseJsonObject(entry.raw);
+  const url = str(reply?.url);
+  if (entry.ok === false || reply?.sent !== true || !url) return null;
+  return { url, title: str(reply?.title), messageTs: str(reply?.ts), permalink: str(reply?.permalink) };
+}
+
+function recordLinkFromEntry(conversationId: string, entry: CaptureEntry, store: ArtifactStore): void {
+  const link = linkReply(entry);
+  if (!link) return;
+  store.recordLink({ conversationId, ...link, tool: 'send_link', turnId: entry.turnId, now: entry.ts });
+}
+
 function uploadReply(entry: CaptureEntry) {
   const reply = parseJsonObject(entry.raw);
   return {
@@ -118,6 +138,11 @@ export function captureArtifactFromWorkLog(
 ): Promise<void> {
   try {
     if (!conversationId || !entry) return Promise.resolve();
+
+    if (entry.kind === 'tool_result' && entry.tool === LINK_TOOL) {
+      recordLinkFromEntry(conversationId, entry, store);
+      return Promise.resolve();
+    }
 
     if (entry.kind === 'tool' && entry.tool && UPLOAD_TOOL.test(entry.tool)) {
       const call = pendingFromCall(entry, parseJsonObject(entry.raw));
@@ -202,6 +227,10 @@ export function backfillArtifactsFromWorkLog(
       for (const e of page.entries) {
         sawAny = true;
         afterSeq = Math.max(afterSeq, e.seq);
+        if (e.kind === 'tool_result' && e.tool === LINK_TOOL) {
+          recordLinkFromEntry(conversationId, { ...e, raw: e.rawBytes ? await rawOf(e.seq) : undefined }, store);
+          continue;
+        }
         if (e.tool && UPLOAD_TOOL.test(e.tool) && (e.kind === 'tool' || e.kind === 'tool_result')) {
           const raw = e.rawBytes ? await rawOf(e.seq) : undefined;
           if (e.kind === 'tool') {

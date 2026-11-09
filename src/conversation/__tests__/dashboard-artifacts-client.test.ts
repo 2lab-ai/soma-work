@@ -830,6 +830,7 @@ describe('T3 — the viewer: @2lab.ai/ui <ui-artifact-viewer tiles="none"> over 
           'umSiblings',
           'umMissingReason',
           'artSortForDisplay',
+          'artViewerPages',
           'artViewItem',
           'artViewerItems',
           'openArtifactViewer',
@@ -941,19 +942,23 @@ describe('review gate — the open viewer follows the list', () => {
   function settle(scope: string, cache: Record<string, unknown>) {
     const fake: { data?: { items: unknown[] } } = {};
     const live = { cid: 'c1', scope, list: [] as unknown[] };
-    const { artSettle } = load<{ artSettle(cid: string): void }>(['toNum', 'artSettle', 'artSortForDisplay'], [], {
-      _expanded: new Set<string>(),
-      _sessionCache: {},
-      refreshCard: () => {},
-      panelOpen: false,
-      panelConvId: null,
-      renderPanelArtifactsSection: () => {},
-      _artCache: cache,
-      _artViewer: live,
-      artViewerIsOpen: () => true,
-      artViewerEl: () => fake,
-      artViewerItems: (_cid: string, list: Art[]) => list.map((a) => a.id),
-    });
+    const { artSettle } = load<{ artSettle(cid: string): void }>(
+      ['toNum', 'artSettle', 'artSortForDisplay', 'artViewerPages'],
+      [],
+      {
+        _expanded: new Set<string>(),
+        _sessionCache: {},
+        refreshCard: () => {},
+        panelOpen: false,
+        panelConvId: null,
+        renderPanelArtifactsSection: () => {},
+        _artCache: cache,
+        _artViewer: live,
+        artViewerIsOpen: () => true,
+        artViewerEl: () => fake,
+        artViewerItems: (_cid: string, list: Art[]) => list.map((a) => a.id),
+      },
+    );
     artSettle('c1');
     return { fake, live };
   }
@@ -967,5 +972,140 @@ describe('review gate — the open viewer follows the list', () => {
   it("an instruction's attachments are not the conversation's list: left alone", () => {
     const { fake } = settle('attachments', { c1: { state: 'ok', list: [png] } });
     expect(fake.data).toBeUndefined();
+  });
+});
+
+// SSOT 2026-11-09 T3 — a link the session served or published (slack-mcp send_link) is an artifact: its card says
+// 링크 and the host, and pressing it opens the URL in a new tab — never the viewer (there is no copy to show).
+describe('SSOT 2026-11-09 T3 — link artifacts open their URL', () => {
+  const link: Art = {
+    id: 'L1',
+    kind: 'link',
+    name: '데모 앱 (로컬 서빙)',
+    url: 'http://192.168.0.10:5173/board',
+    mime: 'text/uri-list',
+    size: 0,
+    createdAt: 1792733009000,
+    source: 'slack_link',
+    stored: false,
+  };
+
+  it('the card it is handed: a file card worded 링크, the URL and its host — never “Slack에만 있음”', () => {
+    const m = load<{ artFileItem(cid: string, a: Art): Record<string, unknown> }>(
+      [...BASE_FNS, 'artSafeUrl'],
+      BASE_VARS,
+    );
+    expect(m.artFileItem('c', link)).toEqual({
+      id: 'L1',
+      name: '데모 앱 (로컬 서빙)',
+      kind: 'file',
+      kindLabel: '링크',
+      time: 1792733009000,
+      url: 'http://192.168.0.10:5173/board',
+      meta: '192.168.0.10:5173',
+    });
+    // A URL that is not plain http(s) is never handed to the card.
+    const bad = m.artFileItem('c', { ...link, url: 'javascript:alert(1)' });
+    expect(bad).not.toHaveProperty('url');
+    expect(bad).toMatchObject({ kindLabel: '링크' });
+  });
+
+  it('pressing it opens the URL in a new tab; the viewer stays shut', () => {
+    const opened: unknown[] = [];
+    const tabs: string[] = [];
+    const viewer = { index: -1, open: (...a: unknown[]) => opened.push(a) };
+    const m = load<{ openArtifactViewer(cid: string, id: string, opener: unknown): void }>(
+      [
+        ...BASE_FNS,
+        'artSafeUrl',
+        'umSiblings',
+        'umMissingReason',
+        'artSortForDisplay',
+        'artViewerPages',
+        'artViewItem',
+        'artViewerItems',
+        'openArtifactViewer',
+      ],
+      [...BASE_VARS, '_artDocCache', '_artViewer'],
+      {
+        artViewerEl: () => viewer,
+        _artCache: { c: { state: 'ok', list: [link] } },
+        artFind: (_cid: string, fid: string) => (fid === 'L1' ? link : null),
+        ensureArtifacts: () => {},
+        pauseArtCards: () => {},
+        artOpenUrl: (u: string) => tabs.push(u),
+      },
+    );
+    m.openArtifactViewer('c', 'L1', { focus() {} });
+    expect(tabs).toEqual(['http://192.168.0.10:5173/board']);
+    expect(opened).toEqual([]);
+    // A bad URL opens nothing at all.
+    link.url = 'javascript:alert(1)';
+    m.openArtifactViewer('c', 'L1', { focus() {} });
+    expect(tabs).toHaveLength(1);
+    expect(opened).toEqual([]);
+  });
+
+  it('the viewer pages through files only — a link is never one of its pages (it has nothing to show or download)', () => {
+    const opened: unknown[] = [];
+    const viewer = { index: -1, open: (...a: unknown[]) => opened.push(a) };
+    const video: Art = {
+      ...html,
+      id: 'V1',
+      kind: 'video',
+      name: 'launch.mp4',
+      mime: 'video/mp4',
+      createdAt: 1792733008000,
+    };
+    const m = load<{ openArtifactViewer(cid: string, id: string, opener: unknown): void }>(
+      [
+        ...BASE_FNS,
+        'artSafeUrl',
+        'umSiblings',
+        'umMissingReason',
+        'artSortForDisplay',
+        'artViewerPages',
+        'artViewItem',
+        'artViewerItems',
+        'openArtifactViewer',
+      ],
+      [...BASE_VARS, '_artDocCache', '_artViewer'],
+      {
+        artViewerEl: () => viewer,
+        _artCache: { c: { state: 'ok', list: [{ ...link, url: 'https://youtu.be/x' }, video, html] } },
+        artFind: (_cid: string, fid: string) => ({ V1: video, A1: html })[fid] ?? null,
+        ensureArtifacts: () => {},
+        pauseArtCards: () => {},
+        artOpenUrl: () => {},
+      },
+    );
+    m.openArtifactViewer('c', 'V1', { focus() {} });
+    const [items, at] = opened[0] as [Array<{ id: string }>, number];
+    expect(items.map((i) => i.id)).toEqual(['V1', 'A1']);
+    expect(at).toBe(0);
+    // A list the viewer is handed later (artSettle) drops links the same way.
+    expect(clientFn('artSettle')).toContain('artViewerPages(');
+  });
+
+  it('the kind word and the card face know links; the new tab drops the opener', () => {
+    expect(TEMPLATE).toMatch(/var ART_KIND_LABEL = \{[^}]*link: '링크'/);
+    // An English page says Link (the display-language catalog, #773).
+    const en = JSON.parse(
+      readFileSync(
+        join(__dirname, '..', '..', '..', 'packages', 'common', 'src', 'i18n-catalog', 'en-page.json'),
+        'utf-8',
+      ),
+    );
+    expect(en['링크']).toBe('Link');
+    expect(
+      cook(
+        TEMPLATE.slice(
+          TEMPLATE.indexOf('\nfunction artOpenUrl('),
+          TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction artOpenUrl(')) + 2,
+        ),
+      ),
+    ).toContain("'noopener,noreferrer'");
+    // <ui-agent-inbox> face chips draw a file glyph for a link (its kinds are files').
+    expect(TEMPLATE).toContain("kind: a.kind === 'link' ? 'file' : a.kind || 'file'");
   });
 });

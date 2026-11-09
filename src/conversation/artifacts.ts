@@ -1,7 +1,9 @@
 /**
- * Session artifacts — the files the model sends to Slack (html, png, wav, …),
- * kept per conversation so the dashboard can preview them on hover and open
- * them full size. A markdown final answer is the chat's (지시와 답변), never an
+ * Session artifacts — the files the model sends to Slack (html, png, wav, mp4, …)
+ * and the links it posts there (a page or app the session serves, a published
+ * video — slack-mcp `send_link`, kind `link`), kept per conversation so the
+ * dashboard can preview them on hover and open them full size (a link opens its
+ * URL in a new tab). A markdown final answer is the chat's (지시와 답변), never an
  * artifact (SSOT 2026-11-02 T6): answers recorded before that stay on disk but
  * are hidden from every read.
  *
@@ -17,7 +19,7 @@
  * bytes are gone, keep their metadata and Slack permalink (`stored: false`): the
  * dashboard still lists every file sent to Slack, it just cannot preview those.
  *
- * Scope: files the MODEL sent (slack-mcp send_file / send_media). The daemon's
+ * Scope: what the MODEL sent (slack-mcp send_file / send_media / send_link). The daemon's
  * own uploads (usage cards, the system-prompt file, skill files) are not session
  * output and are not recorded.
  */
@@ -31,9 +33,15 @@ import { Logger } from '../logger';
 
 const logger = new Logger('SessionArtifacts');
 
-export type ArtifactKind = 'image' | 'audio' | 'video' | 'html' | 'markdown' | 'pdf' | 'text' | 'file';
-/** `final_answer` — a markdown answer recorded before SSOT 2026-11-02 T6: kept on disk, hidden from every read. */
-export type ArtifactSource = 'slack_upload' | 'final_answer';
+/** What a file is — the kinds `classifyArtifact` gives a filename. */
+export type FileArtifactKind = 'image' | 'audio' | 'video' | 'html' | 'markdown' | 'pdf' | 'text' | 'file';
+/** `link` — a URL the model posted with send_link (recordLink); never a file's kind. */
+export type ArtifactKind = FileArtifactKind | 'link';
+/**
+ * `slack_upload` — a file sent with send_file / send_media. `slack_link` — a URL posted with send_link (no bytes).
+ * `final_answer` — a markdown answer recorded before SSOT 2026-11-02 T6: kept on disk, hidden from every read.
+ */
+export type ArtifactSource = 'slack_upload' | 'slack_link' | 'final_answer';
 
 export interface SessionArtifact {
   id: string;
@@ -50,8 +58,12 @@ export interface SessionArtifact {
   /** A local copy exists and `/content` can serve it. */
   stored: boolean;
   slackFileId?: string;
+  /** kind `link`: the URL it opens (plain http(s), no credentials — normalizeArtifactUrl). */
+  url?: string;
+  /** kind `link`: ts of the Slack message that posted it (the dedupe key). */
+  messageTs?: string;
   permalink?: string;
-  /** MCP tool that uploaded it (send_file / send_media). */
+  /** MCP tool that sent it (send_file / send_media / send_link). */
   tool?: string;
   /** Work-log turn id (`<sessionKey>:<startMs>:<uuid>`) of the turn that produced it. */
   turnId?: string;
@@ -81,6 +93,8 @@ interface ArtifactIndex {
 }
 
 export const MAX_STORED_BYTES = 100 * 1024 * 1024;
+/** Longest URL a link artifact keeps. */
+const MAX_URL_LENGTH = 2000;
 /** The only roots an upload is read from — the same allowlist slack-mcp enforces. */
 const UPLOAD_ROOTS = ['/tmp/', '/private/tmp/'];
 const SUMMARY_RECENT = 4;
@@ -89,7 +103,7 @@ const PENDING_PREFIX = '.pending-';
 /** A pending snapshot older than this lost its result (abort, crash, restart) and is swept. */
 const PENDING_TTL_MS = 60 * 60 * 1000;
 
-const EXT_TABLE: Record<string, [ArtifactKind, string]> = {
+const EXT_TABLE: Record<string, [FileArtifactKind, string]> = {
   png: ['image', 'image/png'],
   jpg: ['image', 'image/jpeg'],
   jpeg: ['image', 'image/jpeg'],
@@ -159,10 +173,35 @@ const EXT_TABLE: Record<string, [ArtifactKind, string]> = {
 };
 
 /** Kind + MIME from the filename's extension; unknown → a downloadable `file`. */
-export function classifyArtifact(name: string): { kind: ArtifactKind; mime: string } {
+export function classifyArtifact(name: string): { kind: FileArtifactKind; mime: string } {
   const ext = path.extname(name).slice(1).toLowerCase();
   const hit = EXT_TABLE[ext];
   return hit ? { kind: hit[0], mime: hit[1] } : { kind: 'file', mime: 'application/octet-stream' };
+}
+
+/**
+ * A URL a link artifact may hold: http(s) only (never javascript:, file:, data:), no user:password part (the
+ * artifact list is readable by every signed-in dashboard user), at most MAX_URL_LENGTH. null otherwise.
+ */
+export function normalizeArtifactUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const text = raw.trim();
+  if (!text || text.length > MAX_URL_LENGTH) return null;
+  let u: URL;
+  try {
+    u = new URL(text);
+  } catch {
+    return null;
+  }
+  if ((u.protocol !== 'http:' && u.protocol !== 'https:') || u.username || u.password) return null;
+  return u.href.length > MAX_URL_LENGTH ? null : u.href;
+}
+
+/** `youtu.be/rxkAcSqCG2Y` — an untitled link's display name. */
+function linkDisplayName(href: string): string {
+  const u = new URL(href);
+  const tail = `${u.pathname === '/' ? '' : u.pathname}${u.search}`;
+  return `${u.host}${tail}`.slice(0, 200);
 }
 
 /** Newest first, by when each file was made (a stable sort keeps a tie in the order it is given). */
@@ -410,6 +449,54 @@ export class ArtifactStore {
     } finally {
       if (key) this.reserved.delete(key);
     }
+  }
+
+  /**
+   * Record a link the model posted to the thread (slack-mcp send_link): a page or app the session serves, a
+   * published video, a release asset. No bytes — the dashboard opens the URL. Not a plain http(s) URL → null
+   * (nothing recorded). Same Slack message twice → no-op (null).
+   */
+  recordLink(input: {
+    conversationId: string;
+    url: string;
+    title?: string;
+    messageTs?: string;
+    permalink?: string;
+    tool?: string;
+    turnId?: string;
+    now?: number;
+  }): SessionArtifact | null {
+    const { conversationId } = input;
+    const url = normalizeArtifactUrl(input.url);
+    if (!this.dir(conversationId) || !url) return null;
+    // No await between this check and append: two results for one message cannot both pass it.
+    if (
+      input.messageTs &&
+      this.files(conversationId).some((a) => a.kind === 'link' && a.messageTs === input.messageTs)
+    ) {
+      return null;
+    }
+    const turnStartedAt = turnStartFromTurnId(input.turnId);
+    const title = input.title?.trim().slice(0, 200);
+    const artifact: SessionArtifact = {
+      id: ulid(),
+      conversationId,
+      kind: 'link',
+      name: title || linkDisplayName(url),
+      mime: 'text/uri-list',
+      size: 0,
+      createdAt: input.now ?? Date.now(),
+      source: 'slack_link',
+      stored: false,
+      url,
+      ...(input.messageTs ? { messageTs: input.messageTs } : {}),
+      ...(input.permalink ? { permalink: input.permalink } : {}),
+      ...(input.tool ? { tool: input.tool } : {}),
+      ...(input.turnId ? { turnId: input.turnId } : {}),
+      ...(turnStartedAt ? { turnStartedAt } : {}),
+    };
+    this.append(conversationId, artifact);
+    return artifact;
   }
 
   private append(conversationId: string, artifact: SessionArtifact): void {
