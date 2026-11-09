@@ -21,8 +21,10 @@ import {
   type GhArgs,
   type GhOrgMemberArgs,
   type GhRepoAccessArgs,
+  isAdminRequestLine,
   type JsonValue,
   PROTOCOL_VERSION,
+  parseAdminRequest,
   parseJsonLine,
   parseLeaseTtlSeconds,
   parseRequest,
@@ -61,7 +63,7 @@ export interface BrokerDeps {
   readSecret(kind: SecretKind, name: string): string;
   ghRunner: GhRunner;
   cfLeases: Pick<CloudflareLeases, 'mint' | 'call' | 'revoke' | 'list' | 'permissionGroupNames'>;
-  approvals: Pick<Approvals, 'request' | 'postResult' | 'release'>;
+  approvals: Pick<Approvals, 'request' | 'postResult' | 'release' | 'pending'>;
   githubAdmin: GithubAdmin;
   ledger: Pick<Ledger, 'append'>;
   now?: () => number;
@@ -1268,9 +1270,41 @@ export function createBroker(deps: BrokerDeps): Broker {
     }
   }
 
+  /**
+   * The admin op (#1051): the waiting cards, read-only. A card is still decided only in Slack. A dashboard asks
+   * every few seconds, so a successful listing leaves no ledger row; a refused or failed one does.
+   */
+  async function handleAdmin(conn: Connection, value: unknown): Promise<void> {
+    const parsed = parseAdminRequest(value);
+    conn.requestId = parsed.ok ? parsed.value.id : parsed.id;
+    let terminal: Terminal;
+    const row: Row = { event: 'admin-request', requestId: conn.requestId };
+    if (!parsed.ok) {
+      row.outcome = parsed.code;
+      terminal = fail(parsed.code, parsed.message);
+    } else {
+      row.op = parsed.value.op;
+      try {
+        terminal = ok({ approvals: deps.approvals.pending() as unknown as JsonValue });
+        row.outcome = 'ok';
+      } catch (err) {
+        log(`approvals listing failed: ${describeError(err)}`);
+        row.outcome = 'internal';
+        terminal = fail('internal', 'the broker hit an internal error on this request');
+      }
+    }
+    if (row.outcome !== 'ok') await audit(row);
+    conn.finish(terminal);
+    conn.dispose();
+  }
+
   async function handleLine(conn: Connection, line: string): Promise<void> {
     conn.phase = 'routing';
     const json = parseJsonLine(line);
+    if (json.ok && isAdminRequestLine(json.value)) {
+      await handleAdmin(conn, json.value);
+      return;
+    }
     const parsed = json.ok ? parseRequest(json.value) : null;
     if (parsed === null || !parsed.ok) {
       const code = parsed === null ? 'bad-request' : parsed.code;
