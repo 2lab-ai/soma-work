@@ -147,6 +147,8 @@ export interface ArchivedSession {
   /** Incident ownership: a revived incident session must stay restricted. */
   incidentRequest?: SessionIncidentRequest;
   incidentAttemptFinishedId?: string;
+  incidentAttemptPublishedId?: string;
+  incidentResultOwedId?: string;
   /**
    * Handoff enforcement state: the context drives the PR-issue precondition
    * (tool-policy) and the budget caps automatic handoffs. A revive restores
@@ -245,6 +247,8 @@ function sessionToArchive(
     sessionWorkingDir: session.sessionWorkingDir,
     incidentRequest: session.incidentRequest ? JSON.parse(JSON.stringify(session.incidentRequest)) : undefined,
     incidentAttemptFinishedId: session.incidentAttemptFinishedId,
+    incidentAttemptPublishedId: session.incidentAttemptPublishedId,
+    incidentResultOwedId: session.incidentResultOwedId,
     handoffContext: session.handoffContext ? JSON.parse(JSON.stringify(session.handoffContext)) : undefined,
     autoHandoffBudget: session.autoHandoffBudget,
   };

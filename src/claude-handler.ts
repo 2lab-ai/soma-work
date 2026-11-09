@@ -89,6 +89,7 @@ import { getAvailablePersonas, PromptBuilder } from './prompt-builder';
 import { haltSessionOnSafeguardFlag, type SafeguardHaltPorts } from './safeguard-external-halt';
 import {
   type CrashRecoveredSession,
+  type IncidentResultOwed,
   type NoteLinksMode,
   SessionExpiryCallbacks,
   SessionRegistry,
@@ -980,6 +981,11 @@ export class ClaudeHandler implements TurnSteeringPort {
 
   clearCrashRecoveredSessions(): void {
     this.sessionRegistry.clearCrashRecoveredSessions();
+  }
+
+  /** Incident attempts the last load found owing Eagle a result (emptied on read). */
+  takeIncidentResultsOwed(): IncidentResultOwed[] {
+    return this.sessionRegistry.takeIncidentResultsOwed();
   }
 
   // ===== Dispatch One-Shot Query =====

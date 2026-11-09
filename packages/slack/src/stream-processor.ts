@@ -102,6 +102,14 @@ export interface StreamContext {
    */
   incidentAttempt: boolean;
   /**
+   * Called once the incident conclusion has actually been posted (after
+   * `say` resolves). The executor records the attempt as published on the
+   * session: a graceful shutdown aborts a running attempt, which still writes
+   * its finished marker, so only this tells the restart side whether Eagle
+   * already has a result for it.
+   */
+  onIncidentPublished?: () => void;
+  /**
    * Spec 10 §3.3 work-log sink. Every narration segment, tool call, tool
    * result and final answer is handed here at EVERY verbosity — Slack
    * verbosity decides what reaches the thread, never what reaches the work
@@ -2821,6 +2829,7 @@ export class AgentStreamProcessor {
       parse: 'none',
       mrkdwn: false,
     });
+    context.onIncidentPublished?.();
   }
 
   /**

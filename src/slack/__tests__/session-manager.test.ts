@@ -803,6 +803,61 @@ describe('SessionUiManager', () => {
 
       expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
     });
+
+    // An Eagle incident thread is read only by the eagle-eye poller: no notice.
+    // A working attempt whose conclusion is not posted owes Eagle a result, and
+    // the restart side posts it (review of PR #1054, astra P1: this must not
+    // depend on the SDK session id, which a retry's handover clears).
+    it('posts no notice in an incident thread and records the result a working attempt owes', async () => {
+      const session = createMockSession({
+        activityState: 'working',
+        incidentRequest: { attempt_id: 'AT-1' } as any,
+      } as any);
+      mockClaudeHandler.getAllSessions.mockReturnValue(new Map([['session1', session]]));
+
+      await manager.notifyShutdown();
+
+      expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
+      expect((session as any).incidentResultOwedId).toBe('AT-1');
+    });
+
+    it('records the owed result for an attempt that has no SDK session yet', async () => {
+      const session = createMockSession({
+        sessionId: undefined,
+        activityState: 'working',
+        incidentRequest: { attempt_id: 'AT-1' } as any,
+      } as any);
+      mockClaudeHandler.getAllSessions.mockReturnValue(new Map([['session1', session]]));
+
+      await manager.notifyShutdown();
+
+      expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
+      expect((session as any).incidentResultOwedId).toBe('AT-1');
+    });
+
+    it('owes nothing for an attempt whose conclusion was posted, or one already idle', async () => {
+      const posted = createMockSession({
+        activityState: 'working',
+        incidentRequest: { attempt_id: 'AT-1' } as any,
+        incidentAttemptPublishedId: 'AT-1',
+      } as any);
+      const idle = createMockSession({
+        activityState: 'idle',
+        incidentRequest: { attempt_id: 'AT-2' } as any,
+      } as any);
+      mockClaudeHandler.getAllSessions.mockReturnValue(
+        new Map([
+          ['session1', posted],
+          ['session2', idle],
+        ]),
+      );
+
+      await manager.notifyShutdown();
+
+      expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
+      expect((posted as any).incidentResultOwedId).toBeUndefined();
+      expect((idle as any).incidentResultOwedId).toBeUndefined();
+    });
   });
 
   // #1031 ⑤ — the sleep transition posted a 💤 reaction and a notice but never
