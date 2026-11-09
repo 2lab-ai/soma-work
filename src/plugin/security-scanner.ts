@@ -694,14 +694,21 @@ function computeRiskLevel(findings: SecurityFinding[]): RiskSeverity {
 
 /**
  * Format scan results as a human-readable summary.
+ *
+ * `disposition` is what the install gate did with a blocking result: `enforced`
+ * (removed — the default) or `recorded` (an environment plugin kept installed in
+ * record mode). It changes only the wording of a blocking result.
  */
-export function formatScanReport(result: ScanResult): string {
+export function formatScanReport(result: ScanResult, disposition: 'enforced' | 'recorded' = 'enforced'): string {
   const lines: string[] = [];
-  const icon = result.blocked ? '🚫' : result.requiresApproval ? '⚠️' : '✅';
+  const recorded = result.blocked && disposition === 'recorded';
+  const icon = recorded ? '⚠️' : result.blocked ? '🚫' : result.requiresApproval ? '⚠️' : '✅';
 
   lines.push(`${icon} Security Scan: ${result.pluginName} — Risk: ${result.riskLevel}`);
 
-  if (result.blocked) {
+  if (recorded) {
+    lines.push('   📝 Recorded, not blocked — environment plugin kept installed (admin-gated at runtime)');
+  } else if (result.blocked) {
     lines.push('   ❌ Installation BLOCKED — critical security issues found');
   } else if (result.requiresApproval) {
     lines.push('   ⏳ Admin approval required before installation');

@@ -14,9 +14,19 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { loadConfig, saveConfig } from '../config-loader';
 import { Logger } from '../logger';
+import { setAdmittedPluginNames } from './admitted-plugin-names';
 import { parsePluginRef, validateMarketplaceEntry } from './config-parser';
 import { DEFAULT_MARKETPLACES, DEFAULT_PLUGINS, isDefaultMarketplace, isDefaultPlugin } from './defaults';
-import { type FetchOptions, fetchPlugin, isFetchFailure, resolveRemoteSha } from './marketplace-fetcher';
+import {
+  type FetchOptions,
+  fetchPlugin,
+  gateCachedPlugin,
+  isCacheAdmissible,
+  isFetchFailure,
+  resolveRemoteSha,
+  type SecurityMode,
+  securityBlockedFailure,
+} from './marketplace-fetcher';
 import { backupPlugin, listBackups, pruneBackups, restorePlugin } from './plugin-backup';
 import { hasCachedPlugin, readCacheMeta } from './plugin-cache';
 import type {
@@ -91,6 +101,7 @@ export class PluginManager {
 
     // Resolve marketplace plugins (user + default combined)
     const refs = this.parsePluginRefs(effectiveConfig);
+    const refused = this.refuseNameCollisions(refs);
     for (const ref of refs) {
       // First-party bundled plugins resolve to the local bundle — never fetched.
       const bundled = this.resolveBundled(ref);
@@ -98,6 +109,7 @@ export class PluginManager {
         results.push(bundled);
         continue;
       }
+      if (refused.has(ref.pluginName)) continue;
 
       const marketplace = marketplaceMap.get(ref.marketplaceName);
       if (!marketplace) {
@@ -110,7 +122,7 @@ export class PluginManager {
       }
 
       try {
-        const result = await fetchPlugin(marketplace, ref.pluginName, this.pluginsDir);
+        const result = await fetchPlugin(marketplace, ref.pluginName, this.pluginsDir, this.fetchOptionsFor(ref));
         if (isFetchFailure(result)) {
           logger.error('Failed to fetch plugin', {
             pluginName: ref.pluginName,
@@ -145,8 +157,7 @@ export class PluginManager {
       logger.info('Local override registered', { path: absPath });
     }
 
-    this.resolved = Object.freeze(results);
-    this.initialized = true;
+    this.setResolved(results);
 
     logger.info('Plugin initialization complete', {
       total: results.length,
@@ -179,8 +190,7 @@ export class PluginManager {
     try {
       await this.initialize();
     } catch (error) {
-      this.resolved = previous;
-      this.initialized = true;
+      this.setResolved(previous);
       throw error;
     }
   }
@@ -198,9 +208,28 @@ export class PluginManager {
     const effectiveConfig = this.mergeDefaults();
     const marketplaceMap = this.buildMarketplaceMap(effectiveConfig);
     const refs = this.parsePluginRefs(effectiveConfig);
+    const refused = this.refuseNameCollisions(refs);
+    for (const msg of new Set(refused.values())) errors.push(msg);
 
     // Phase 1: Per-plugin smart update check
     for (const ref of refs) {
+      // Refused (name collision): no fetch. No failureCode — Force Update cannot fix a config error.
+      const refusal = refused.get(ref.pluginName);
+      if (refusal) {
+        details.push({
+          name: `${ref.pluginName}@${ref.marketplaceName}`,
+          status: 'error',
+          oldSha: null,
+          oldDate: null,
+          oldVersion: null,
+          newSha: null,
+          newDate: null,
+          newVersion: null,
+          error: refusal,
+        });
+        continue;
+      }
+
       // Bundled first-party plugins have no remote to check — always current.
       const bundled = this.resolveBundled(ref);
       if (bundled) {
@@ -237,6 +266,7 @@ export class PluginManager {
 
       const pluginDisplayName = `${ref.pluginName}@${ref.marketplaceName}`;
       const gitRef = marketplace.ref || 'main';
+      const mode = this.securityModeFor(ref);
 
       // Read existing cache meta BEFORE any changes
       const oldMeta = readCacheMeta(this.pluginsDir, ref.pluginName);
@@ -246,8 +276,28 @@ export class PluginManager {
       const remoteSha = resolveRemoteSha(marketplace.repo, gitRef);
 
       if (!remoteSha) {
-        // Can't reach remote — keep existing if available
-        if (hadCache && oldMeta) {
+        // Can't reach remote — keep existing if available, once it passes the gate for this ref
+        const blocked =
+          hadCache && oldMeta ? gateCachedPlugin(this.pluginsDir, ref.pluginName, pluginDisplayName, mode) : null;
+        if (blocked) {
+          const result = securityBlockedFailure('Cached plugin', blocked);
+          const msg = `[${result.code}] ${result.message}`;
+          errors.push(msg);
+          details.push({
+            name: pluginDisplayName,
+            status: 'error',
+            oldSha: oldMeta?.sha?.slice(0, 8) ?? null,
+            oldDate: oldMeta?.fetchedAt ?? null,
+            oldVersion: oldMeta?.version ?? null,
+            newSha: null,
+            newDate: null,
+            newVersion: null,
+            error: msg,
+            failureCode: result.code,
+            securityFindings: result.securityFindings,
+            riskLevel: result.riskLevel,
+          });
+        } else if (hadCache && oldMeta) {
           details.push({
             name: pluginDisplayName,
             status: 'unchanged',
@@ -278,9 +328,15 @@ export class PluginManager {
       }
 
       // Compare SHA — if identical, skip download entirely
-      // But if caller provided explicit options (e.g. force update), always re-fetch
+      // But if caller provided explicit options (e.g. force update), always re-fetch,
+      // and so does a cache not admitted for this ref and mode (e.g. recorded for a former env plugin)
       const hasExplicitOptions = pluginOptions?.[pluginDisplayName] != null;
-      if (!hasExplicitOptions && oldMeta?.sha === remoteSha && hadCache) {
+      if (
+        !hasExplicitOptions &&
+        oldMeta?.sha === remoteSha &&
+        hadCache &&
+        isCacheAdmissible(oldMeta, pluginDisplayName, mode)
+      ) {
         logger.info('Plugin already up-to-date, skipping', {
           pluginName: ref.pluginName,
           sha: remoteSha.slice(0, 8),
@@ -317,7 +373,7 @@ export class PluginManager {
       }
 
       try {
-        const opts = pluginOptions?.[pluginDisplayName];
+        const opts = this.fetchOptionsFor(ref, pluginOptions?.[pluginDisplayName]);
         const result = await fetchPlugin(marketplace, ref.pluginName, this.pluginsDir, opts);
         if (isFetchFailure(result)) {
           // fetchPlugin failed — restore from persistent backup
@@ -408,6 +464,7 @@ export class PluginManager {
 
     const effectiveConfig = this.mergeDefaults();
     const refs = this.parsePluginRefs(effectiveConfig);
+    const colliding = this.nameCollisions(refs);
 
     for (const ref of refs) {
       const bundled = this.resolveBundled(ref);
@@ -415,9 +472,16 @@ export class PluginManager {
         results.push(bundled);
         continue;
       }
+      // Refused by initialize/forceRefresh (name collision): never resolved from disk either.
+      if (colliding.has(ref.pluginName)) continue;
 
       const refStr = `${ref.pluginName}@${ref.marketplaceName}`;
       if (hasCachedPlugin(this.pluginsDir, ref.pluginName)) {
+        // Served without a fresh install (kept, restored, rolled back): only through the gate.
+        if (gateCachedPlugin(this.pluginsDir, ref.pluginName, refStr, this.securityModeFor(ref))) {
+          logger.warn('Plugin on disk not served: blocked by security scan and removed', { pluginRef: refStr });
+          continue;
+        }
         results.push({
           name: refStr,
           localPath: path.join(this.pluginsDir, ref.pluginName),
@@ -438,8 +502,7 @@ export class PluginManager {
       });
     }
 
-    this.resolved = Object.freeze(results);
-    this.initialized = true;
+    this.setResolved(results);
 
     logger.info('Plugin resolved list rebuilt from local cache', { total: results.length });
   }
@@ -469,6 +532,18 @@ export class PluginManager {
     // leaving the user with a misleading "success" message.
     const effectiveConfig = this.mergeDefaults();
     const configRefs = this.parsePluginRefs(effectiveConfig);
+    const collision = this.nameCollisions(configRefs).get(pluginName);
+    if (collision) {
+      // Restoring would put bytes back under a name two refs share — refused like the refs themselves.
+      return {
+        success: false,
+        pluginRef,
+        previousSha: null,
+        restoredSha: null,
+        restoredDate: null,
+        error: this.collisionMessage(pluginName, collision),
+      };
+    }
     const isConfigured = configRefs.some((r) => r.pluginName === pluginName);
     if (!isConfigured) {
       return {
@@ -531,8 +606,21 @@ export class PluginManager {
       };
     }
 
-    // Step 3: Rebuild resolved list without fetching
+    // Step 3: Rebuild resolved list without fetching (gates the restored content for this ref).
+    // Success = the restored directory resolved, not that it exists: a blocked restore whose
+    // removal failed stays on disk but is not resolved (so not admitted, so not served).
     this.rebuildResolved();
+    const restoredPath = path.join(this.pluginsDir, pluginName);
+    if (!this.resolved.some((r) => r.localPath === restoredPath)) {
+      return {
+        success: false,
+        pluginRef,
+        previousSha,
+        restoredSha: null,
+        restoredDate: null,
+        error: `Restored backup of ${pluginRef} was blocked by the security scan and is not served`,
+      };
+    }
 
     // Step 4: Prune old backups (keep 3)
     pruneBackups(this.pluginsDir, pluginName, 3);
@@ -735,6 +823,115 @@ export class PluginManager {
       localPath: bundledPath,
       source: 'default',
     };
+  }
+
+  /**
+   * Configured refs that share a plugin name with another ref, by name. The plugin
+   * directory, its cache meta and its backups are keyed by name only, so two refs of
+   * one name rewrite each other's bytes under each other's identity — an ordinary ref
+   * could serve an environment plugin's record-only content, or the reverse. Bundled
+   * plugins never use that directory and are left out.
+   */
+  private nameCollisions(refs: readonly PluginRef[]): Map<string, PluginRef[]> {
+    const byName = new Map<string, PluginRef[]>();
+    for (const ref of refs) {
+      if (this.bundledPlugins[ref.pluginName]) continue;
+      const same = byName.get(ref.pluginName) ?? [];
+      if (!same.some((r) => r.marketplaceName === ref.marketplaceName)) same.push(ref);
+      byName.set(ref.pluginName, same);
+    }
+    return new Map([...byName].filter(([, same]) => same.length > 1));
+  }
+
+  private collisionMessage(pluginName: string, refs: readonly PluginRef[]): string {
+    const names = refs.map((r) => `${r.pluginName}@${r.marketplaceName}`);
+    const env = refs.filter((r) => this.isEnvPluginRef(r)).map((r) => `${r.pluginName}@${r.marketplaceName}`);
+    return (
+      `Plugin name collision: ${names.join(', ')} share the plugin directory "${pluginName}", so none of them is loaded` +
+      `${env.length > 0 ? ` (${env.join(', ')} is an environment plugin)` : ''}. Rename one.`
+    );
+  }
+
+  /**
+   * Fail closed on a name collision (a config error): every ref of that name is
+   * refused — not fetched, not resolved, so never admitted ({@link setResolved}) —
+   * with one error per name. What an earlier run left under the name (directory and
+   * cache meta) is removed, best effort: a failed removal is logged, and the
+   * leftover is still not served, since PLUGINS_DIR readers serve admitted names
+   * only. Backups stay; rollback refuses the name. Returns refused name → message.
+   */
+  private refuseNameCollisions(refs: readonly PluginRef[]): Map<string, string> {
+    const collisions = this.nameCollisions(refs);
+    const refused = new Map<string, string>();
+    for (const [pluginName, colliding] of collisions) {
+      refused.set(pluginName, this.collisionMessage(pluginName, colliding));
+    }
+
+    for (const [pluginName, colliding] of collisions) {
+      logger.error(refused.get(pluginName) as string, {
+        pluginName,
+        refs: colliding.map((r) => `${r.pluginName}@${r.marketplaceName}`),
+      });
+      for (const target of [
+        path.join(this.pluginsDir, pluginName),
+        path.join(this.pluginsDir, '.cache', `${pluginName}.meta.json`),
+      ]) {
+        try {
+          fs.rmSync(target, { recursive: true, force: true });
+        } catch (err) {
+          logger.error('Could not remove a refused plugin name from disk; it is not served (not admitted)', {
+            pluginName,
+            path: target,
+            error: (err as Error).message,
+          });
+        }
+      }
+    }
+    return refused;
+  }
+
+  /**
+   * End of every pass (initialize / refresh, forceRefresh, rollback, rebuildResolved):
+   * the resolved list, and the PLUGINS_DIR names in it published as the admitted set
+   * (`admitted-plugin-names`) — the only PLUGINS_DIR names that direct readers
+   * (skill-locator, SkillForceHandler) serve. Bundled plugins and local overrides
+   * resolve outside PLUGINS_DIR and are not in it.
+   */
+  private setResolved(results: readonly ResolvedPlugin[]): void {
+    this.resolved = Object.freeze([...results]);
+    this.initialized = true;
+    setAdmittedPluginNames(
+      this.resolved
+        .filter((r) => path.dirname(path.resolve(r.localPath)) === this.pluginsDir)
+        .map((r) => path.basename(r.localPath)),
+    );
+  }
+
+  /**
+   * Options for fetching one configured ref: the caller's (e.g. the admin Force
+   * Update button's `skipSecurityGate`) plus the security mode, which is decided
+   * here and nowhere else — `record` for a ref listed in `plugin.envPlugins`,
+   * `block` for every other ref, overriding any mode the caller passed.
+   */
+  private fetchOptionsFor(ref: PluginRef, callerOptions?: FetchOptions): FetchOptions {
+    return { ...callerOptions, securityMode: this.securityModeFor(ref) };
+  }
+
+  /** `record` for a ref listed in `plugin.envPlugins`, `block` for every other ref. */
+  private securityModeFor(ref: PluginRef): SecurityMode {
+    return this.isEnvPluginRef(ref) ? 'record' : 'block';
+  }
+
+  /**
+   * Whether `ref` is an environment plugin: some `plugin.envPlugins` entry parses
+   * (`parsePluginRef`) to the same plugin name AND marketplace. Name alone is not
+   * enough — `acme-env@other` is not the deploy's `acme-env@acme-skills`.
+   */
+  private isEnvPluginRef(ref: PluginRef): boolean {
+    return (this.pluginConfig.envPlugins || []).some((raw) => {
+      const env = parsePluginRef(raw);
+      return env !== null && env.pluginName === ref.pluginName && env.marketplaceName === ref.marketplaceName;
+    });
   }
 
   /**

@@ -94,6 +94,12 @@ export function envPluginNamesFromConfig(configFile: string): ReadonlySet<string
   return names;
 }
 
+/**
+ * Reads PLUGINS_DIR without the admitted-names allow-list (`plugin/admitted-plugin-names`) the
+ * readers that serve skills apply: this module only gates. Requiring admission here would turn a
+ * bare name of an environment plugin's leftover skill into "not an environment skill" — an open
+ * gate — while serving it is already refused where skills are read.
+ */
 function skillFileExists(registry: EnvSkillRegistry, plugin: string, skill: string): boolean {
   try {
     return fs.existsSync(path.join(registry.pluginsDir, plugin, 'skills', skill, 'SKILL.md'));
