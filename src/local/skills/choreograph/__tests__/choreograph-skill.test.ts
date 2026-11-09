@@ -76,9 +76,15 @@ describe('local:choreograph skill — vendored contract', () => {
 
   it('the hover-buildup gate guards only the decorative replay, never the action (local note)', () => {
     expect(body).toMatch(/\*\*Local note \(soma-work\):\*\* gate only the decorative replay, never the action\./);
-    expect(readFileSync(resolve(SKILL_ROOT, 'RECIPES.md'), 'utf8')).toMatch(
-      /Local note \(soma-work\): the action itself runs first/,
+    const recipes = readFileSync(resolve(SKILL_ROOT, 'RECIPES.md'), 'utf8');
+    expect(recipes).toMatch(/Local note \(soma-work\): the action itself runs first/);
+    // The recipe's code does it, not only its comment: the action runs before the gate.
+    expect(recipes).toMatch(/const onClick = \(\) => \{\n {2}onAction\(\);\n {2}if \(!ready\.current\) return;/);
+    // play() stops the old handles before the next steps are built (a factory, never an array of started animations).
+    expect(recipes).toMatch(
+      /function play\(makeSteps: \(\) => ReturnType<typeof animate>\[\]\) \{\n {2}running\.current\.forEach\(\(a\) => a\.stop\(\)\);[^\n]*\n {2}running\.current = makeSteps\(\);/,
     );
+    expect(recipes).not.toMatch(/\bplay\(\[/);
   });
 
   it('links its attribution; LICENSES/ carries the upstream MIT license and a NOTICE pinned to a commit', () => {
