@@ -177,3 +177,86 @@ describe('T2 — video and audio are artifacts the dashboard can play', () => {
     expect(classifyArtifact(name).kind).toBe(kind);
   });
 });
+
+describe('review gate — a page the session uploads AND serves is one artifact with its live URL', () => {
+  it('send_file with url: the html artifact keeps the served URL (http(s) only)', async () => {
+    const p = path.join(root, 'report.html');
+    fs.writeFileSync(p, '<h1>r</h1>');
+    await captureArtifactFromWorkLog(
+      'conv-5',
+      {
+        kind: 'tool',
+        tool: 'mcp__slack-mcp__send_file',
+        toolUseId: 'tu_s',
+        turnId: TURN,
+        text: 'send_file',
+        raw: JSON.stringify({ file_path: p, url: 'http://192.168.0.10:8763/report.html' }),
+      },
+      store,
+    );
+    await captureArtifactFromWorkLog(
+      'conv-5',
+      {
+        kind: 'tool_result',
+        tool: 'mcp__slack-mcp__send_file',
+        toolUseId: 'tu_s',
+        turnId: TURN,
+        ok: true,
+        text: 'ok',
+        raw: JSON.stringify({
+          uploaded: true,
+          file_id: 'F9',
+          filename: 'report.html',
+          size: 10,
+          url: 'http://192.168.0.10:8763/report.html',
+        }),
+      },
+      store,
+    );
+    const all = store.list('conv-5');
+    expect(all).toHaveLength(1);
+    expect(all[0]).toMatchObject({ kind: 'html', stored: true, url: 'http://192.168.0.10:8763/report.html' });
+    const bad = await store.recordSlackUpload({
+      conversationId: 'conv-5',
+      filename: 'x.html',
+      slackFileId: 'F10',
+      url: 'javascript:alert(1)',
+    });
+    expect(bad).not.toHaveProperty('url');
+  });
+
+  it('a link without a message ts is recorded once per turn and URL', () => {
+    store.recordLink({ conversationId: 'c6', url: 'https://a.example/x', turnId: TURN });
+    expect(store.recordLink({ conversationId: 'c6', url: 'https://a.example/x', turnId: TURN })).toBeNull();
+    expect(store.list('c6')).toHaveLength(1);
+  });
+});
+
+describe('review gate — Slack message ts is unique per channel only', () => {
+  it('the same ts in two channels (work and source thread) is two links; the same channel and ts is one', () => {
+    store.recordLink({ conversationId: 'c7', url: 'https://a.example/1', messageTs: '5.5', channel: 'C_WORK' });
+    expect(
+      store.recordLink({ conversationId: 'c7', url: 'https://a.example/2', messageTs: '5.5', channel: 'C_SRC' }),
+    ).not.toBeNull();
+    expect(
+      store.recordLink({ conversationId: 'c7', url: 'https://a.example/1', messageTs: '5.5', channel: 'C_WORK' }),
+    ).toBeNull();
+    expect(
+      store
+        .list('c7')
+        .map((a) => a.channel)
+        .sort(),
+    ).toEqual(['C_SRC', 'C_WORK']);
+    expect(store.list('c7')).toHaveLength(2);
+  });
+
+  it('capture keeps the channel the tool reported', async () => {
+    await captureArtifactFromWorkLog('c8', call({ url: 'https://a.example/' }, 'tu_c'), store);
+    await captureArtifactFromWorkLog(
+      'c8',
+      reply({ sent: true, url: 'https://a.example/', ts: '6.6', channel: 'C_SRC' }, 'tu_c'),
+      store,
+    );
+    expect(store.list('c8')[0]).toMatchObject({ kind: 'link', messageTs: '6.6', channel: 'C_SRC' });
+  });
+});

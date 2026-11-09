@@ -21567,13 +21567,24 @@ function artViewerIsOpen() {
 // opens in the browser's viewer (items[].frame). The element escapes every string.
 function artViewItem(cid, a) {
   var item = artFileItem(cid, a);
+  var slack = /^https:\\/\\//i.test(String(a.permalink || '')) ? { id: 'slack', label: 'Slack에서 열기', href: String(a.permalink) } : null;
+  if (a.kind === 'link') {
+    // A link is its URL: the card's host stays the meta line (no "no copy here" — there was never a file).
+    if (slack) item.actions = [slack];
+    return item;
+  }
   if (a.stored && a.kind === 'html' && a.source !== 'user_upload') item.scripts = true;
   if (a.stored && a.kind === 'pdf') item.frame = true;
   var notes = [];
   if (a.title && a.title !== a.name) notes.push(String(a.title));
   if (!a.stored) notes.push(a.source === 'user_upload' ? umMissingReason(a) : '이 파일은 대시보드에 사본이 없습니다 (100 MB 초과이거나 업로드 전에 지워졌습니다).');
   if (notes.length) item.meta = notes.join(' · ');
-  if (/^https:\\/\\//i.test(String(a.permalink || ''))) item.actions = [{ id: 'slack', label: 'Slack에서 열기', href: String(a.permalink) }];
+  // A file the session also serves (send_file url, SSOT 2026-11-09 T3): the live page opens from the same card.
+  var live = artSafeUrl(a.url);
+  var actions = [];
+  if (live) actions.push({ id: 'live', label: '라이브로 열기', href: live });
+  if (slack) actions.push(slack);
+  if (actions.length) item.actions = actions;
   var text = _artDocCache[cid + '|' + a.id];
   if ((a.kind === 'markdown' || a.kind === 'text') && a.stored && text != null) item.text = text;
   return item;

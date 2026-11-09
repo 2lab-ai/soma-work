@@ -126,7 +126,7 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
    node "$CLAUDE_PLUGIN_ROOT/skills/html/server/serve.mjs" --file "$(pwd)/dwg-<slug>-<ts>.html"
    ```
 
-5. **Upload** the HTML only, with `mcp__slack-mcp__send_file` (put the served `url` in `initial_comment`) — never upload the PNG snapshot: one drawing is one artifact in the thread and on the dashboard (SSOT 2026-11-02). Outside Slack, print the HTML's absolute path and the URL instead.
+5. **Upload** the HTML only, with `mcp__slack-mcp__send_file` with its `url` set to the served URL (the dashboard artifact then opens the live page too; also put the URL in `initial_comment`) — never upload the PNG snapshot: one drawing is one artifact in the thread and on the dashboard (SSOT 2026-11-02). Outside Slack, print the HTML's absolute path and the URL instead.
 
 The drawing of a third-party site is an analysis artifact: keep rule 4 (unbranded) — name it `UI-<KIND>-<NNN>` and put the source URL only in the `SOURCE` cell.
 

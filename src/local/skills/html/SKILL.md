@@ -584,10 +584,16 @@ fall back to file-only delivery — do not block the artifact on the link.
 ```
 mcp__slack-mcp__send_file(
   file_path="<absolute path to HTML>",
+  url="<url from Step 7>",
   title="<meaningful artifact title>",
   initial_comment="<template + design driver used (+ 'Impeccable — document-based application' on that driver) + any fallback note> — live (with motion): <url from Step 7>"
 )
 ```
+
+`url` ties the served page to the same artifact: the dashboard's 산출물 card
+opens the uploaded copy, and its viewer offers 라이브로 열기 for the live page
+(with motion). Do not also `send_link` the page — one page, one artifact.
+Leave `url` out when Step 7 could not start the server.
 
 Do **not** upload the PNG. The Step 5 snapshot was your QA check, not a
 deliverable: one page is one artifact in the thread and in the dashboard's
