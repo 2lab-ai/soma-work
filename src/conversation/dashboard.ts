@@ -5687,6 +5687,9 @@ ${TASK_PLAN_CSS}
 html,body {
   min-height: 100%;
   background: var(--bg);
+  /* mobile-native §6: the board is a live app with its own scroll areas and sheets — no pull-to-refresh, no page
+     bounce behind a drawer (the WebSocket keeps the board fresh; the build-skew banner asks for a reload). */
+  overscroll-behavior-y: none;
   color: var(--text);
   font-family: var(--font);
   font-size: 14px;
@@ -5701,6 +5704,19 @@ html:lang(ko) body { word-break: keep-all; overflow-wrap: anywhere; }
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--border); border: 2px solid var(--bg); border-radius: 999px; }
 
+/* ── PHONE FEEL (mobile-native, 2026-11-10) — the fixes that separate a website from an installed app.
+   §2 no grey tap flash (every control keeps its own :active press — the kit's scale, the page's fills);
+   §5 a tap fires at once (no double-tap-zoom wait) on every control;
+   §8 a long press on a control does not select its label or open the callout — content text stays selectable. */
+html { -webkit-tap-highlight-color: transparent; }
+:is(button, a, summary, label, select, [role="button"], [role="tab"], [role="switch"], ui-dock, ui-segmented) { touch-action: manipulation; }
+:is(button, [role="tab"], .ui-chip, .ui-btn, .ui-icon-btn, .ui-fab):not(a[href]) { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+/* §4 iOS zooms into a field under 16px and stays zoomed: every page field is 16px on a touch screen (a tablet too —
+   the phone-width rules alone left an iPad zooming into the board search). */
+@media (pointer: coarse) {
+  :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"]), textarea, select) { font-size: 16px !important; }
+}
+
 /* ── FOCUS — visible outline for keyboard nav ── */
 :focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
@@ -5708,7 +5724,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* viewport-fit=cover (SSOT 2026-10-24): the page reaches under the notch and the
    Dynamic Island, so it keeps clear of the side insets itself (landscape phones,
    the iPhone Duo cover). */
-.app { display: flex; flex-direction: column; min-height: 100vh; padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); }
+.app { display: flex; flex-direction: column; min-height: 100vh; min-height: 100dvh; padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); }
 
 /* ── TOPBAR — @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14) ──
    The bar is the library's: 56px (52 on phones), translucent over the page, one hairline;
@@ -6254,15 +6270,20 @@ ui-breadcrumbs.pa-path { flex: 1 1 auto; min-width: 0; }
   /* The panel is the card it opened from, larger: its title is never smaller than the card's (15px). */
   font-size: 15px;
   font-weight: 650;
+  /* The full title, up to 3 lines: the card face cuts it to one, and a touch screen has no tooltip, so the open card
+     is where it is read (break-ui, 2026-11-10: "https://exa…" at 390px). An unbroken URL breaks anywhere. */
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow-wrap: anywhere;
 }
 .panel-header { flex-wrap: wrap; row-gap: 8px; }
 /* The owner pill (SSOT 2026-11-04): top right, before the deck and ✕, centred on them (the header's top line). It gives
-   way before the title does (shrinks to its ellipsis from 40% of the row); the kit's display: inline-block must not
+   way before the title does (shrinks to its ellipsis from 28% of the row, 120px at most); the kit's display: inline-block must not
    beat [hidden]. */
-.panel-header > .panel-owner { flex: 0 1 auto; min-width: 0; max-inline-size: min(40%, 168px); align-self: center; }
+.panel-header > .panel-owner { flex: 0 1 auto; min-width: 0; max-inline-size: min(28%, 120px); align-self: center; }
 .panel-header > .panel-owner[hidden] { display: none; }
 /* The title's actions (SSOT 2026-11-04): 퍼머링크 · 전체 문맥 복사 right after the title text, small. The title keeps
    its own width (no flex: 1) and ellipsizes first, so the two stay beside its last letter; the -2px margins keep the
@@ -6424,7 +6445,7 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 /* Scroll container: the common surface (large UIAskQ choices included), the
    agent tabs, Tasks and the section tabs scroll together; each section scrolls
    in its own box inside it, and .panel-command stays pinned below. */
-.panel-scroll { flex: 1 1 auto; overflow-y: auto; scroll-behavior: smooth; min-height: 0; }
+.panel-scroll { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
 /* P8: the text triangles are the icon set's chevron (16 grid, 1.5 stroke, round caps), drawn as a mask so
    it takes currentColor; .chev points down, .is-up / .is-right turn it, and a toggle's aria-expanded
    turns it open. */
@@ -6448,7 +6469,7 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 .cp-time { flex: none; white-space: nowrap; }
 .cp-over { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cp-bar { flex: 0 1000 120px; min-width: 0; max-width: 120px; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
-.cp-bar > i { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 1s linear; }
+.cp-bar > i { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
 .cp-bar.is-over > i { width: 100% !important; background: linear-gradient(90deg, transparent, var(--accent), transparent) no-repeat; background-size: 40% 100%; animation: cp-over 1.4s linear infinite; }
 @keyframes cp-over { from { background-position: -40% 0; } to { background-position: 140% 0; } }
 .cp-pct { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; }
@@ -6535,8 +6556,10 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 .inbox-tools .admin-toggle { flex: none; }
 .inbox-tools .admin-toggle[aria-pressed="true"] { background: var(--tint-fail-bg); border-color: var(--tint-fail-line); color: var(--tint-fail-fg); }
 .panel-surface > .panel-status { flex: none; padding: 10px 16px 12px; }
-/* T6 (SSOT 2026-11-04): on a phone the card's title bar is one line of the board's top bar's height (52px) — title,
-   its actions and ✕, nothing under it (the status bar lives in the scroll area). */
+/* T6 (SSOT 2026-11-04): on a phone the card's title bar is one line of the board's top bar's height (52px) while the
+   reader reads — title, its actions and ✕, nothing under it (the status bar lives in the scroll area). When the card
+   opens, and whenever its head comes back, the title shows whole (up to 3 lines, break-ui 2026-11-10): the card face
+   cuts it to one line and a touch screen has no tooltip. */
 @media (max-width: 639px), (max-height: 560px) {
   /* ui-drawer.slide-panel: above the sheet's notch rule (max(12px, safe-area) on top) — the notch keeps its inset,
      the bar its 52px under it. */
@@ -6547,6 +6570,9 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 }
 /* Reading: the box is exactly the view under the section tabs (sizePanelSections) — no 160px floor on a short screen. */
 .slide-panel[data-read] .psec { min-height: 0; }
+/* Reading (T6): the title bar is one line again — the whole title (3 lines) is there when the card opens and when the
+   head comes back; the panel-scroll ResizeObserver resizes the box when the bar shrinks. */
+.slide-panel[data-read] .panel-header h3 { -webkit-line-clamp: 1; line-clamp: 1; }
 /* Reading: nothing sticks above the box — the agent strip scrolls out with the rest. */
 .slide-panel[data-read] .panel-tabs::part(list) { position: static; }
 .panel-command { position: relative; transition: transform var(--dur-move) var(--ease-out); }
@@ -6576,6 +6602,10 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
    Board | List, then the chips as one row that scrolls sideways (ui-scroll-row) — the trail goes (the dock says
    where you are). A phone held sideways (PHONE_MQ's short screen) keeps the bar's 메뉴 and its height for the board. ── */
 .phone-dock { display: none; }
+/* The page's Korean line breaking (html:lang(ko) body: overflow-wrap: anywhere) is inherited into the dock's shadow
+   DOM, where the badge has ~22px: "22" broke into "2" over "2" and "99+" stacked. The dock's labels and counts never
+   break (break-ui, 2026-11-10). */
+.phone-dock { overflow-wrap: normal; }
 @media (max-width: 639px) {
   .phone-dock { display: block; }
   .new-task-fab.ui-fab { display: none !important; }
@@ -7101,7 +7131,7 @@ ${pageTokenAliases()}
              press copies it, a modified press opens it) · 전체 문맥 복사 (every instruction and answer, as markdown).
              renderPanelTitleActions fills them from the open card; hidden until then. -->
         <div class="panel-title-row">
-          <h3 id="panel-title" tabindex="-1">작업 카드</h3>
+          <h3 id="panel-title" tabindex="-1" dir="auto">작업 카드</h3>
           <a id="panel-permalink" class="ui-icon-btn panel-title-act" href="/dashboard" hidden aria-label="퍼머링크 복사" title="퍼머링크 복사" onclick="return copyPanelPermalink(event)"><i data-ui-icon="external"></i></a>
           <button type="button" id="panel-copy-context" class="ui-icon-btn panel-title-act" hidden aria-label="전체 문맥 복사" title="전체 문맥 복사" onclick="copyPanelContext(this)"><i data-ui-icon="copy"></i></button>
           <!-- #918: while reading on a phone the head (the status bar, the tabs) is scrolled out under the title bar; a tap
@@ -7513,7 +7543,12 @@ function syncPhoneScope() {
   var tools = document.getElementById('inbox-chips') || document.getElementById('inbox-tools');
   if (!scope || !bar || !tools) return;
   if (isPhone()) {
-    if (scope.parentNode !== tools) tools.insertBefore(scope, tools.firstChild);
+    if (scope.parentNode !== tools) {
+      tools.insertBefore(scope, tools.firstChild);
+      // The row snaps to chips: after the insert it re-snapped to the chip it showed, now one place right, and opened
+      // scrolled to its end with 모든 사용자 cut off (break-ui, 2026-11-10). It starts at its first chip.
+      tools.scrollLeft = 0;
+    }
   } else if (scope.parentNode !== bar) bar.appendChild(scope);
 }
 // T2: the status bar's home — the detail card's title bar, or on a phone the top of its scroll area: everything but
@@ -10206,15 +10241,17 @@ function dayKeyOf(ms) {
   return d.getFullYear() + '-' + (m < 10 ? '0' + m : m) + '-' + (day < 10 ? '0' + day : day);
 }
 function doneDayLabel(key, now) {
+  if (key === 'undated') return '날짜 없음';
   if (key === dayKeyOf(now)) return STRINGS.today;
   var y = new Date(now);
   y.setDate(y.getDate() - 1);
   if (key === dayKeyOf(y.getTime())) return STRINGS.yesterday;
   var parts = key.split('-');
   var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
-  var opts = { month: 'long', day: 'numeric', weekday: 'short' };
-  if (d.getFullYear() !== new Date(now).getFullYear()) opts.year = 'numeric';
-  return d.toLocaleDateString('ko-KR', opts);
+  // One shape with or without the year: Chrome's ko-KR drops the weekday's parentheses once the year is shown
+  // ("10월 29일 (목)" beside "2025년 12월 15일 월").
+  var label = d.getMonth() + 1 + '월 ' + d.getDate() + '일 (' + d.toLocaleDateString('ko-KR', { weekday: 'short' }) + ')';
+  return d.getFullYear() !== new Date(now).getFullYear() ? d.getFullYear() + '년 ' + label : label;
 }
 // Pure: [{ key, label, open, items }] — opened = the reader's choices.
 // SSOT 2026-10-30 T2: a starred card leaves its day for the pinned group
@@ -10231,11 +10268,17 @@ function planDoneGroups(done, now, opened, order) {
   for (var i = 0; i < done.length; i++) {
     var t = timeOf(done[i].s);
     if (done[i].s && done[i].s.starred === true) { pinned.push({ item: done[i], t: t }); continue; }
-    var k = dayKeyOf(doneTimeOf(done[i].s));
+    // A card with no usable time (0, missing, not a date) is filed under 날짜 없음, last — never under 1970; a time
+    // ahead of this clock (another instance's skew) is today, never a day above 오늘.
+    var dt = doneTimeOf(done[i].s);
+    var k = dt > 0 ? dayKeyOf(Math.min(dt, now)) : 'undated';
     if (!byKey[k]) { byKey[k] = []; keys.push(k); }
     byKey[k].push({ item: done[i], t: t });
   }
-  keys.sort(function(a, b) { return a < b ? -sign : a > b ? sign : 0; });
+  keys.sort(function(a, b) {
+    if (a === 'undated' || b === 'undated') return a === b ? 0 : a === 'undated' ? 1 : -1;
+    return a < b ? -sign : a > b ? sign : 0;
+  });
   var today = dayKeyOf(now);
   var y = new Date(now);
   y.setDate(y.getDate() - 1);
@@ -11685,6 +11728,30 @@ var AT_ROOT_STATUS = { running: 'running', waiting: 'needs_you', resuming: 'wait
 // Whether the last input was a key: ui-select carries only the id, and a
 // keyboard opening moves focus into the panel (a click leaves it alone).
 var _atKeyed = false;
+// The motion gate (remove-animations: keyboard-initiated actions land at once) needs "a key just did this", not the
+// sticky last input: typing in the composer, then a resize, a rotation or a pushed fold must still glide.
+var _keyAt = 0;
+var KEYED_MS = 600;
+function keyedNow() { return _atKeyed && Date.now() - _keyAt < KEYED_MS; }
+// A held ←/→ on the deck nav switches card on every repeat: each of those switches is keyed too. Any other held key
+// counts once (its repeats would hold the window open for changes it did not make).
+function keyOnDeckNav(e) {
+  var path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+  for (var i = 0; i < path.length; i++) if (path[i] && path[i].tagName && String(path[i].tagName).toLowerCase() === 'ui-deck-nav') return true;
+  return false;
+}
+// The keys that open, close or move between cards — not typing: Esc anywhere; Enter, Space and the arrows outside a
+// text field (there they type or move the caret).
+function isActingKey(e) {
+  var k = e && e.key;
+  if (k === 'Escape') return true;
+  if (k !== 'Enter' && k !== ' ' && k !== 'ArrowLeft' && k !== 'ArrowRight' && k !== 'ArrowUp' && k !== 'ArrowDown') return false;
+  // The field itself, inside a shadow root too (a <ui-composer>'s textarea): at the document the target is the host.
+  var path = typeof e.composedPath === 'function' ? e.composedPath() : null;
+  var t = (path && path[0]) || e.target;
+  var tag = t && t.tagName ? String(t.tagName).toLowerCase() : '';
+  return !(tag === 'input' || tag === 'textarea' || tag === 'select' || (t && t.isContentEditable));
+}
 
 function atIdOf(node) {
   return node.root ? AT_ROOT : String(node.id);
@@ -11840,6 +11907,7 @@ document.addEventListener('ui-toggle', function(e) {
 });
 document.addEventListener('keydown', function() { _atKeyed = true; }, true);
 document.addEventListener('pointerdown', function() { _atKeyed = false; }, true);
+document.addEventListener('keydown', function(e) { if (isActingKey(e) && (!e.repeat || keyOnDeckNav(e))) _keyAt = Date.now(); }, true);
 
 // ── Panel scope: which node's tasks and work log the panel shows (§4.3) ──
 function panelAgentOf(s) {
@@ -12926,7 +12994,7 @@ function restorePanelLiveAnchor(a) {
   var scrollEl = document.getElementById('panel-scroll');
   if (!a || !scrollEl || !document.body.contains(a.el)) return;
   var d = a.el.getBoundingClientRect().top - a.top;
-  // Instant: under scroll-behavior: smooth a correction would glide.
+  // Instant: a correction the reader did not ask for never glides.
   if (Math.abs(d) >= 1) scrollEl.scrollTo({ top: scrollEl.scrollTop + d, behavior: 'instant' });
 }
 // Write one panel part: nothing when unchanged, a morph otherwise (focus and
@@ -15420,7 +15488,13 @@ function runLayoutCheck() {
   var anchor = _panelAnchor;
   var gen = _panelScrollGen;
   var sx = _lastScroll.x - _layoutScroll.x, sy = _lastScroll.y - _layoutScroll.y;
-  var animate = canAnimate();
+  // A change the reader made from the keyboard (Enter opens the drawer, Esc
+  // closes it) lands at once: an action repeated by key must not wait on its
+  // own animation (remove-animations gate: keyboard-initiated actions).
+  // A key acting while a glide is still in flight retargets that glide (flipFrom moves cards in flight from where they
+  // are drawn) rather than leave it running toward a layout that is gone.
+  var keyed = keyedNow() && !flying;
+  var animate = canAnimate() && !keyed;
   var reduce = reduceMotion();
   // Every card and head glides from where the reader saw it (the element does
   // nothing on its first paint, in a hidden tab or under reduced motion).
@@ -15436,6 +15510,9 @@ function runLayoutCheck() {
   // none under reduced motion. The page animates nothing of it.
   _layoutModeKey = layoutModeKey(mode);
   restorePanelAnchor(anchor);
+  // A keyed change moved nothing: the new layout is already the settled one. Measure it now, so a pointer change right
+  // after (Enter opens, a click closes) glides from where the cards are, not from where they were before.
+  if (keyed) { _layoutShiftUntil = 0; measureLayout(); return; }
   _layoutShiftUntil = Date.now() + MOTION.move;
   setTimeout(function() {
     if (Date.now() < _layoutShiftUntil) return;
@@ -15572,7 +15649,11 @@ function cardRepoOf(s) {
   var r = s && typeof s.repo === 'string' ? s.repo.trim() : '';
   if (!r) return null;
   var slash = r.lastIndexOf('/');
-  return { key: r, text: slash >= 0 ? r.slice(slash + 1) : r, title: '레포: ' + r };
+  var name = slash >= 0 ? r.slice(slash + 1) : r;
+  // The chip does not shrink: a 100-character repo name ran out of the card (break-ui, 2026-11-10). Cut the middle —
+  // repos of one owner differ at the end; the whole name is in the title.
+  if (name.length > 28) name = name.slice(0, 13) + '\\u2026' + name.slice(-14);
+  return { key: r, text: name, title: '레포: ' + r };
 }
 function cardChannelOf(s) {
   var id = s && typeof s.channelId === 'string' ? s.channelId : '';
@@ -18965,7 +19046,9 @@ function renderDeckNav(dir) {
       if (peek) peek.data = data;
     }
   }
-  if (dir && !reduceMotion()) deckSlide(panel, dir);
+  // A keyed switch lands at once — and stops a slide a click started, so it never moves the new front card.
+  if (dir && keyedNow()) deckStop(panel);
+  else if (dir && !reduceMotion()) deckSlide(panel, dir);
 }
 // ‹ / › (or ←/→ on the nav): the card at that place in the deck the nav was drawn for comes to the front.
 function onDeckPage(e) {
@@ -18974,9 +19057,9 @@ function onDeckPage(e) {
   if (k && k !== panelSessionKey && _sessionCache[k]) openPanel(k);
 }
 // The deck switch (P6): the header and body glide 18px in from the side the new front card came from,
-// on --dur-move ease-out. The offset is composited ('add') onto any slide still running, so a quick
+// 200ms ease-out (a switch people repeat; ←/→ on the nav switches at once). The offset is composited ('add') onto any slide still running, so a quick
 // second switch carries on from where they are drawn; the fade restarts from the drawn opacity.
-var DECK_SLIDE_MS = 320;
+var DECK_SLIDE_MS = 200;
 function deckSlide(panel, dir) {
   var parts = panel.querySelectorAll ? panel.querySelectorAll('.panel-header, .panel-body') : [];
   for (var i = 0; i < parts.length; i++) {
@@ -18984,9 +19067,21 @@ function deckSlide(panel, dir) {
     if (typeof el.animate !== 'function') continue;
     var from = el._deckFade && el._deckFade.playState === 'running' ? Number(getComputedStyle(el).opacity) : 0.35;
     if (el._deckFade) el._deckFade.cancel();
-    el.animate([{ transform: 'translateX(' + (dir > 0 ? 18 : -18) + 'px)' }, { transform: 'translateX(0)' }],
-      { duration: DECK_SLIDE_MS, easing: 'cubic-bezier(0.23, 1, 0.32, 1)', composite: 'add' });
+    var moves = (el._deckMoves || []).filter(function(a) { return a.playState === 'running'; });
+    moves.push(el.animate([{ transform: 'translateX(' + (dir > 0 ? 18 : -18) + 'px)' }, { transform: 'translateX(0)' }],
+      { duration: DECK_SLIDE_MS, easing: 'cubic-bezier(0.23, 1, 0.32, 1)', composite: 'add' }));
+    el._deckMoves = moves;
     el._deckFade = el.animate([{ opacity: Math.min(from, 1) }, { opacity: 1 }], { duration: DECK_SLIDE_MS, easing: 'cubic-bezier(0.23, 1, 0.32, 1)' });
+  }
+}
+function deckStop(panel) {
+  var parts = panel.querySelectorAll ? panel.querySelectorAll('.panel-header, .panel-body') : [];
+  for (var i = 0; i < parts.length; i++) {
+    var el = parts[i];
+    var running = (el._deckMoves || []).concat(el._deckFade ? [el._deckFade] : []);
+    for (var j = 0; j < running.length; j++) running[j].cancel();
+    el._deckMoves = [];
+    el._deckFade = null;
   }
 }
 // The landing target of this opening, for the keyboard: the answer form, the
