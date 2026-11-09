@@ -320,6 +320,20 @@ describe('Dashboard — the follow-up queue (batch 2)', () => {
       const done = await post(`${KEY}#1`, 'cancel', { epoch: 2, turnEpoch: 7 });
       expect(done.statusCode).toBe(200);
       expect(JSON.parse(done.body)).toEqual({ ok: true, message: '취소했습니다 — 항목은 기록으로 남습니다.' });
+
+      // Answered but not carried out (a delivered note's Cancel that came too late): the page hears that too.
+      act.mockResolvedValueOnce({
+        ok: true,
+        message: '취소하지 못했습니다 — 이미 모델에 전달되어 실행 중입니다.',
+        unfulfilled: true,
+      });
+      const late = await post(`${KEY}#1`, 'cancel', { epoch: 2, turnEpoch: 7 });
+      expect(late.statusCode).toBe(200);
+      expect(JSON.parse(late.body)).toEqual({
+        ok: true,
+        message: '취소하지 못했습니다 — 이미 모델에 전달되어 실행 중입니다.',
+        unfulfilled: true,
+      });
     });
 
     it('Edit sends the new text, trimmed; it needs one', async () => {
