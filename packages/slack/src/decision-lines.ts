@@ -79,15 +79,24 @@ function reversibleOf(value: unknown): boolean | undefined {
   return undefined;
 }
 
-/** The lines as Slack mrkdwn, in order: model text escaped (no mention or link injection), the irreversible label bold. */
+/**
+ * A value as Slack mrkdwn: escaped (no mention or link injection), and a run of backticks broken with zero-width
+ * spaces — the lines share one mrkdwn element, and a ``` in one value would open a code block that takes the next
+ * lines (and the irreversible label) with it. The reader sees the same characters.
+ */
+function slackValue(value: string): string {
+  return escapeSlackMrkdwn(value).replace(/`{3,}/g, (run) => run.split('').join('\u200B'));
+}
+
+/** The lines as Slack mrkdwn, in order: model text made inert, the irreversible label bold. */
 export function decisionLinesMrkdwn(question: unknown): string[] {
   const f = normalizeDecisionFields(question);
   const lines: string[] = [];
-  if (f.blockedWork) lines.push(`🚧 막힌 작업 — ${escapeSlackMrkdwn(f.blockedWork)}`);
-  if (f.stakes) lines.push(`⚖️ 걸린 것 — ${escapeSlackMrkdwn(f.stakes)}`);
+  if (f.blockedWork) lines.push(`🚧 막힌 작업 — ${slackValue(f.blockedWork)}`);
+  if (f.stakes) lines.push(`⚖️ 걸린 것 — ${slackValue(f.stakes)}`);
   if (f.reversible !== undefined) {
     const label = f.reversible ? '↩️ 되돌릴 수 있음' : '⚠️ *되돌릴 수 없음*';
-    lines.push(f.reversibleWhy ? `${label} — ${escapeSlackMrkdwn(f.reversibleWhy)}` : label);
+    lines.push(f.reversibleWhy ? `${label} — ${slackValue(f.reversibleWhy)}` : label);
   }
   return lines;
 }
