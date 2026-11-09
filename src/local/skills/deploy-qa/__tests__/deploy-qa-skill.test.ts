@@ -203,7 +203,7 @@ describe('deploy-qa carries every open key when QA cannot run', () => {
   const reduced = md.slice(md.indexOf('## Reduced mode'), md.indexOf('## Excluded PRs'));
   const lockDirBranch = reduced.slice(
     reduced.indexOf('- **`lockDir` not writable**'),
-    reduced.indexOf('- **An adapter executable missing'),
+    reduced.indexOf('- **An adapter missing'),
   );
   const steps = md.slice(md.indexOf('## Steps'), md.indexOf('## Final report'));
   const step8 = steps.slice(steps.indexOf('8. **Carry-over.**'), steps.indexOf('9. **Report.**'));
@@ -734,5 +734,18 @@ describe('the documented range rule against a real history', () => {
     expect(range(synthetic(1), 1, 'b', 'a0')).toBeNull();
     // The same list in 2-commit pages closes at n = 6.
     expect(range(synthetic(2), 2, 'b', 'a0')).toEqual([...chain].sort());
+  });
+});
+
+describe('deploy-qa checks an MCP-tool adapter by the profile liveness call', () => {
+  const md = read('deploy-qa');
+  it('preflight names both adapter kinds and opens no page', () => {
+    expect(md).toContain(
+      "each adapter: `command -v` for an executable, or for an MCP tool the profile's liveness call (tool listed and answering; do not open a page)",
+    );
+  });
+  it('reduced mode covers an MCP tool that is absent or not answering', () => {
+    expect(md).toContain('**An adapter missing (executable absent, or MCP tool absent or not answering)');
+    expect(md).not.toContain('An adapter executable missing');
   });
 });
