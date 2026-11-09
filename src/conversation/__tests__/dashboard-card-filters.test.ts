@@ -784,6 +784,15 @@ describe('#1072 — 응답 필요: the card that has waited longest leads (starr
     expect(ks(m.sortWaitingColumn([tie, w2]))).toEqual(['tie', 'w2']);
   });
 
+  it('equal waits: the newest activity first, as the server — a sibling instance’s card appended after ours too', () => {
+    const m = api();
+    const ours = card({ key: 'ours', waitingSince: 5000, lastActivity: '2026-11-09T08:00:00Z' });
+    const sib = card({ key: 'sib', waitingSince: 5000, lastActivity: '2026-11-09T12:00:00Z' });
+    const junk = card({ key: 'junk', waitingSince: 5000, lastActivity: 'not a date' });
+    expect(ks(m.sortWaitingColumn([ours, sib]))).toEqual(['sib', 'ours']);
+    expect(ks(m.sortWaitingColumn([junk, ours, sib]))).toEqual(['sib', 'ours', 'junk']);
+  });
+
   it('the other columns and the stored sort are untouched', () => {
     const m = api();
     const f = { ...m.boardFilterDefault(), sort: 'start', dir: 'asc' };

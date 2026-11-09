@@ -3111,12 +3111,19 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
     Number(b.starred === true) - Number(a.starred === true) ||
     new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime();
   // #1072 — 응답 필요: starred first, then the longest wait (the person is the queue: the oldest
-  // block first); equal waits keep the newest activity first.
+  // block first); equal waits: the newest activity first, an unreadable one last (never NaN). The
+  // page breaks the tie the same way (sortWaitingColumn), so a sibling's appended card agrees too.
+  const activityAt = (c: KanbanSession) => {
+    const t = Date.parse(String(c.lastActivity));
+    return Number.isFinite(t) ? t : 0;
+  };
   const byWait = (a: KanbanSession, b: KanbanSession) => {
     const ta = waitingSortAt(a);
     const tb = waitingSortAt(b);
     return (
-      Number(b.starred === true) - Number(a.starred === true) || (ta < tb ? -1 : ta > tb ? 1 : 0) || byActivity(a, b)
+      Number(b.starred === true) - Number(a.starred === true) ||
+      (ta < tb ? -1 : ta > tb ? 1 : 0) ||
+      activityAt(b) - activityAt(a)
     );
   };
   board.working.sort(byActivity);
@@ -15538,14 +15545,18 @@ function boardWaitingAt(s) {
   var last = Date.parse(s && s.lastActivity);
   return isFinite(last) ? last : Number.POSITIVE_INFINITY;
 }
-// #1072 — Pure: the 응답 필요 column, whatever the board's sort: starred first, then the longest wait (the server's
-// order breaks a tie). from[i], when given, is the card list[i] stands for (an epic before the filter took children
-// it hides), so a filter never moves a card.
+// #1072 — Pure: the 응답 필요 column, whatever the board's sort: starred first, then the longest wait, then — as the
+// server — the newest activity (an unreadable one last), then the order it came in. from[i], when given, is the card
+// list[i] stands for (an epic before the filter took children it hides), so a filter never moves a card.
 function sortWaitingColumn(list, from) {
   return list
-    .map(function(s, i) { return { s: s, i: i, t: boardWaitingAt(from && from[i] ? from[i] : s) }; })
+    .map(function(s, i) {
+      var last = Date.parse(s && s.lastActivity);
+      return { s: s, i: i, t: boardWaitingAt(from && from[i] ? from[i] : s), last: isFinite(last) ? last : 0 };
+    })
     .sort(function(a, b) {
-      return Number(b.s.starred === true) - Number(a.s.starred === true) || (a.t < b.t ? -1 : a.t > b.t ? 1 : 0) || a.i - b.i;
+      return Number(b.s.starred === true) - Number(a.s.starred === true) || (a.t < b.t ? -1 : a.t > b.t ? 1 : 0) ||
+        b.last - a.last || a.i - b.i;
     })
     .map(function(x) { return x.s; });
 }
