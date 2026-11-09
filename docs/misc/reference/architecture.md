@@ -204,7 +204,8 @@ updates inside its terminal-cleanup boundary, including setup failures.
 - 스킬(설정 페이지 "스킬" 탭, #1079): `src/conversation/skills-routes.ts` `/api/skills*` → 내 스킬 `user-skill-store`(`listUserSkills`·`getUserSkill`·`updateUserSkill`, 본인만, 저장은 `computeContentHash` 조건부 409) ·
   실행 권한 `user-skill-grants-store`(`grantSkill`·`grantAllSkills`·`revokeSkill`·`revokeAllSkills`, 내 스킬은 owner = 로그인 본인, 환경 스킬은 `ENV_SKILL_GRANT_OWNER` + `requireWriteAccess(req, reply, undefined)` 관리자 게이트, 인증 미설정은 403) ·
   환경 스킬 목록 `setSkillsEnvRegistrySource`(`src/index.ts`: `envSkillRegistry(mcpManager.getPluginManager())`, 미연결이면 `config.json`) · 시스템 스킬 `listInstalledSkills({ excludePlugins: 환경 플러그인 })`(`src/skill-locator.ts`).
-  환경 스킬 설명·내용은 관리자 또는 `isEnvSkillUseAllowed(key, userId)`(스레드 범위 없이)만, 허용 목록은 관리자만. 파일은 디렉터리 목록의 항목에서만 읽는다
+  환경 스킬 설명·내용은 관리자 또는 `isEnvSkillUseAllowed(key, userId)`(스레드 범위 없이)만, 허용 목록은 관리자만. 파일은 디렉터리 목록의 항목에서만 읽고 쓴다.
+  환경 스킬 내용 편집 `PUT /api/skills/env/:key`(1.b): 권한과 같은 관리자 게이트 + CSRF, `computeContentHash` 조건부 409, 256KB 제한, 임시 파일 후 rename. 고친 파일은 플러그인 캐시가 유지되는 동안 남는다(`marketplace-fetcher` 원격 SHA가 같으면 다시 받지 않음, 배포는 `plugins/`를 보호) — 저장소에 새 커밋이 생기거나 강제 업데이트하면 저장소의 내용으로 바뀐다
 - **입력창 메뉴 (대시보드 `/`·`%`·`$`, 2026-11-04)**: `GET /api/dashboard/composer-menus` (`dashboard.ts`, `authMiddleware`; 유저 = `signedInUserId`, 어드민 = `isSlackAdmin`) →
   `composerTriggers` (`src/conversation/composer-menus.ts`, 테스트는 `setDashboardComposerMenus`로 교체). 명령 = `COMPOSER_COMMANDS`(새 작업은 `session` 행을 뺀 전부 — 답만 하는 첫 메시지는 `answerOnly`로 실행해 `status: 'answered'`, 카드 없음 — 어드민 행은 어드민만, 문구는 `t()`·en-text.json; 답만 하는 행은 "· 답은 Slack 스레드에") ·
   스킬 = `listAvailableSkills(userId)` + SKILL.md frontmatter `description`(`skillMdFile`), 토큰 `$<source>:<name>`, 환경 스킬은 승인 없는 비어드민에게 "관리자 승인 필요", 유저당 60초 캐시.

@@ -215,6 +215,73 @@ describe('skills routes (#1079)', () => {
     });
   });
 
+  describe('PUT /api/skills/env/:key — an admin edits an environment skill (1.b)', () => {
+    const file = () => path.join(root, 'plugins', 'envx', 'skills', 'post-deploy', 'SKILL.md');
+    async function put(headers: Record<string, string>, key: string, payload: Record<string, unknown>) {
+      const res = await inject({ method: 'PUT', url: `/api/skills/env/${key}`, headers, payload });
+      return { status: res.statusCode as number, raw: res.body as string, body: JSON.parse(res.body) };
+    }
+    async function hashFor(headers: Record<string, string>) {
+      return (await get('/api/skills/env/envx:post-deploy', headers)).body.hash as string;
+    }
+
+    it('an admin in admin mode saves SKILL.md verbatim on disk and gets the fresh skill back', async () => {
+      const admin = { ...(await signIn('U_ADMIN')), 'x-admin-mode': 'on' };
+      const hash = await hashFor(admin);
+      expect(typeof hash).toBe('string');
+      const next = '---\nname: post-deploy\ndescription: 새 설명\n---\n\nedited body\n';
+      const r = await put(admin, 'envx:post-deploy', { content: next, hash });
+      expect(r.status).toBe(200);
+      expect(fs.readFileSync(file(), 'utf-8')).toBe(next);
+      expect(r.body.skill).toMatchObject({ key: 'envx:post-deploy', description: '새 설명', content: next });
+      expect(r.body.skill.hash).not.toBe(hash);
+      // the viewer token is an admin principal too
+      const again = await put(BEARER, 'envx:post-deploy', { content: `${next}more\n`, hash: r.body.skill.hash });
+      expect(again.status).toBe(200);
+    });
+
+    it('refuses a non-admin (header or not), an admin without admin mode, a granted user, and no CSRF — the file stays', async () => {
+      const before = fs.readFileSync(file(), 'utf-8');
+      grants.grantSkill(grants.ENV_SKILL_GRANT_OWNER, 'envx:post-deploy', 'U_OWNER');
+      const owner = { ...(await signIn('U_OWNER')), 'x-admin-mode': 'on' };
+      const hash = await hashFor(owner);
+      expect((await put(owner, 'envx:post-deploy', { content: 'x', hash })).status).toBe(403);
+      const adminOff = await signIn('U_ADMIN');
+      expect((await put(adminOff, 'envx:post-deploy', { content: 'x', hash })).status).toBe(403);
+      const { 'x-csrf-token': _drop, ...noCsrf } = { ...(await signIn('U_ADMIN')), 'x-admin-mode': 'on' };
+      expect((await put(noCsrf, 'envx:post-deploy', { content: 'x', hash })).status).toBe(403);
+      expect(fs.readFileSync(file(), 'utf-8')).toBe(before);
+    });
+
+    it('409 when the file changed since it was read; 400 for empty, too large or missing fields; 404 for no such skill', async () => {
+      const admin = { ...(await signIn('U_ADMIN')), 'x-admin-mode': 'on' };
+      const hash = await hashFor(admin);
+      fs.appendFileSync(file(), 'changed by a fetch\n');
+      const stale = await put(admin, 'envx:post-deploy', { content: 'mine', hash });
+      expect(stale.status).toBe(409);
+      expect(fs.readFileSync(file(), 'utf-8')).toContain('changed by a fetch');
+      const fresh = await hashFor(admin);
+      expect((await put(admin, 'envx:post-deploy', { content: '  \n', hash: fresh })).status).toBe(400);
+      expect((await put(admin, 'envx:post-deploy', { content: 'x'.repeat(300 * 1024), hash: fresh })).status).toBe(400);
+      expect((await put(admin, 'envx:post-deploy', { content: 'x' })).status).toBe(400);
+      expect((await put(admin, 'envx:nope', { content: 'x', hash: fresh })).status).toBe(404);
+      expect((await put(admin, 'stv:debug', { content: 'x', hash: fresh })).status).toBe(404);
+      expect((await put(admin, 'envx:..', { content: 'x', hash: fresh })).status).toBe(404);
+    });
+
+    it('a dashboard with no credentials configured cannot edit', async () => {
+      const saved = mockConfig.conversation.viewerToken;
+      mockConfig.conversation.viewerToken = '';
+      try {
+        const anon = { 'content-type': 'application/json', 'x-admin-mode': 'on' };
+        expect((await put(anon, 'envx:post-deploy', { content: 'x', hash: 'h' })).status).toBe(403);
+        expect(fs.readFileSync(file(), 'utf-8')).toContain('ENV-BODY-MARKER');
+      } finally {
+        mockConfig.conversation.viewerToken = saved;
+      }
+    });
+  });
+
   describe('system skill content', () => {
     it('reads an installed skill; an environment plugin, a backup or an unsafe name is 404', async () => {
       const u = await signIn('U_OWNER');
