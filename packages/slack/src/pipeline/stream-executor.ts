@@ -1498,6 +1498,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // (`streamContext.incidentAttempt`), not read by the content guards after
     // the stream. One value, decided here, feeds all three.
     const incidentAttempt = session.incidentRequest !== undefined;
+    // Captured now: the conclusion published below belongs to THIS attempt.
+    const incidentAttemptId = session.incidentRequest?.attempt_id;
 
     const turnContext: TurnContext = {
       channelId: channel,
@@ -1754,7 +1756,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // Only the model can read the attachment, so ask it to resolve the
       // user's intent and write the title (fill-only). Real user turns only;
       // stops once the title is real or the budget is spent.
+      // Never on an incident attempt: nobody names that session, the notice asks
+      // for UPDATE_SESSION (a tool the isolated incident runtime does not have),
+      // and the attempt's prompt is fixed host text.
       if (
+        !session.incidentRequest &&
         shouldInjectSessionTitleNotice({
           title: session.title,
           isUserInput: params.isUserInput,
@@ -1939,8 +1945,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // already ran at L871, so P5 would wait 3s on a snapshot that the
       // short-circuit return guarantees will never arrive.
       // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §B-5.
+      //
+      // Never on an incident attempt: its sender is the Eagle-eye monitoring bot,
+      // which has no email (Slack stores none for a bot user), and the email only
+      // feeds commit attribution — an incident attempt has one read-only evidence
+      // tool and cannot commit. Every real Eagle incident on 2026-11-06 and
+      // 2026-11-09 was admitted by the ingress and then died here.
       const resolvedEmail = userSettingsStore.getUserEmail(user);
-      if (!resolvedEmail) {
+      if (!resolvedEmail && !session.incidentRequest) {
         const emailFailMessage =
           '이메일이 설정되지 않았습니다. `set email <your-email>` 명령으로 이메일을 설정해주세요. 예: `set email you@company.com`';
         const emailFailBlocks = [
@@ -2045,6 +2057,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // soma-work's words, never the person's: it cannot set a goal.
         isUserInputTurn: params.isUserInput === true && params.hostTurn !== true,
         incidentAttempt,
+        ...(incidentAttemptId
+          ? {
+              onIncidentPublished: () => {
+                session.incidentAttemptPublishedId = incidentAttemptId;
+              },
+            }
+          : {}),
         ...(session.conversationId ? { workLog: emitWorkLog } : {}),
         // The ASK_USER_QUESTION form is posted here, not by the processor
         // (handleModelCommandToolResults); tell it so its no-final fallback

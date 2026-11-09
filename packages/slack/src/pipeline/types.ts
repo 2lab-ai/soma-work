@@ -39,6 +39,14 @@ export interface ConversationSession {
    * it, a retry on the same incident parent is denied.
    */
   incidentAttemptFinishedId?: string;
+  /**
+   * `attempt_id` of the incident attempt whose conclusion the HOST actually
+   * posted to the thread. Distinct from the finished marker: a graceful
+   * shutdown aborts a running attempt, which still writes its finished marker
+   * on the way out, but its conclusion is never posted — the restart side
+   * reads this to know a result is still owed to Eagle.
+   */
+  incidentAttemptPublishedId?: string;
   actionPanel?: {
     waitingForChoice?: boolean;
     [key: string]: any;
