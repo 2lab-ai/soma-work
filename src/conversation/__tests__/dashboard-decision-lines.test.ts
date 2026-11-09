@@ -216,7 +216,7 @@ type Client = {
 };
 const client = () =>
   load<Client>(
-    [...BASE_FNS, 'acQuestionData', 'mcFormId', 'mcStateOf', 'mcFormData', 'quickChoicesOf'],
+    [...BASE_FNS, 'acQuestionData', 'mcFormId', 'mcStateOf', 'mcFormData', 'openMdFence', 'quickChoicesOf'],
     ['AC_SIBLING', 'MC_CUSTOM_ID', '_mcState'],
     INJECT,
   );
@@ -286,6 +286,9 @@ describe('D4/D6 — the single question card', () => {
     expect(c.acQuestionData(SESSION(Q), Q).id).toBe(
       `q|${JSON.stringify([Q.question, Q.choices.map((x) => [x.id, x.label, ''])])}`,
     );
+    // Review R2 P3 (fable): keyed on the raw fields, not the rendered labels (which the display language rewrites).
+    expect(lined).toContain('PR #42 배포');
+    expect(lined).not.toContain('막힌 작업');
   });
 });
 
@@ -358,6 +361,31 @@ describe('D5/D6 — the multi-question form', () => {
     expect(html).toContain('🚧 막힌 작업 — &lt;em&gt;production&lt;/em&gt;<br>⚖️ 걸린 것 — 돈<br>');
     expect(html).toContain('⚠️ <strong>되돌릴 수 없음</strong> — 태그 공개');
     expect(html).not.toContain('<em>production</em>');
+  });
+
+  // Review R2 P1 (astra) / P3 (fable): every fence the renderer opens — ~~~, a longer run of backticks, an info
+  // string — is closed with its own run; a fence the renderer already closed (it closes on any line that starts with
+  // the run) gets nothing appended.
+  it.each([
+    ['~~~ left open', 'ctx\n~~~\ncode', 'ctx\n~~~\ncode\n~~~'],
+    ['four backticks, a three-backtick line inside', 'ctx\n````\n```\ncode', 'ctx\n````\n```\ncode\n````'],
+    ['an info string', 'ctx\n```js\nconst a = 1;', 'ctx\n```js\nconst a = 1;\n```'],
+    ['closed by a line that starts with the run', 'ctx\n```\ncode\n``` done', 'ctx\n```\ncode\n``` done'],
+    ['indented four spaces is not a fence', 'ctx\n    ```\ncode', 'ctx\n    ```\ncode'],
+    ['~~~ inside ``` is code', 'ctx\n```\n~~~\ncode', 'ctx\n```\n~~~\ncode\n```'],
+  ])('D5 rendered fence: %s', async (_name, context, expected) => {
+    const g = globalThis as Record<string, unknown>;
+    if (!g.HTMLElement) g.HTMLElement = class {};
+    if (!g.customElements) g.customElements = { define() {}, get() {} };
+    // @ts-expect-error — the package maps only `server` in typesVersions; this repo's moduleResolution is `node`.
+    const { answerMarkdown } = (await import('@2lab.ai/ui/ai-answer')) as unknown as {
+      answerMarkdown(md: string): string;
+    };
+    const tick = (x: string) => x.replace(/```/g, '\u0060\u0060\u0060');
+    const q = { ...G, questions: [{ ...G.questions[0], context: tick(context) }] };
+    const out = client().mcFormData(SESSION(q), q).questions[0].context as string;
+    expect(out).toBe(`${tick(expected)}\n\n🚧 막힌 작업 — 릴리스\n⚠️ **되돌릴 수 없음** — 태그 공개`);
+    expect(answerMarkdown(out)).toContain('⚠️ <strong>되돌릴 수 없음</strong> — 태그 공개');
   });
 
   it('D6 a question without fields keeps its context as is, or none', () => {
