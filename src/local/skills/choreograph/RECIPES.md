@@ -243,6 +243,7 @@ Use this only when several elements coordinate across several events and you nee
 const [scope, animate] = useAnimate();
 const running = useRef<ReturnType<typeof animate>[]>([]);
 const ready = useRef(false); // a flag that never renders, so no useState
+const onAction = () => { /* the click's real work (local: declared so the sample compiles) */ };
 
 // Local (soma-work): play() takes a factory, so the old handles stop before the new animate() calls start
 // (an array argument would start them first).

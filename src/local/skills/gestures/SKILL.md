@@ -100,7 +100,7 @@ Run through this for every gesture you ship:
 
 - **Test on a real phone** — hit the dev server by local IP. Trackpad simulation lies about touch, and a 60Hz desktop monitor hides opacity-transition roughness that a 120Hz phone shows.
 - **Hit targets ≥ 44×44px.** Enlarge small visual targets with an invisible `::before` hitbox instead of growing the layout.
-- **`touch-action`** on the drag axis (`touch-action: pan-x` for a vertical drag, etc.) so the browser doesn't fight the gesture with native scrolling.
+- **`touch-action`** on the drag axis (`touch-action: pan-x pinch-zoom` for a vertical drag, etc.) so the browser doesn't fight the gesture with native scrolling.
 - **Gate hover effects** behind `@media (hover: hover) and (pointer: fine)` — touch fires phantom hovers on tap.
 
 ## Reduced motion

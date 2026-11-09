@@ -45,7 +45,7 @@ Start here. Match what the user is seeing, then read the matching section for th
 | Pull-to-refresh hijacks scroll | `overscroll-behavior: none` on `html, body` |
 | Content stops at the notch | `viewport-fit=cover` + `env(safe-area-inset-*)` |
 | Long-press selects button text | Add `user-select: none` |
-| Carousel scrolls vertically | `touch-action: pan-y` on the gesture surface |
+| Carousel scrolls vertically | `touch-action: pan-y pinch-zoom` on the gesture surface |
 | Status bar color doesn't match | `theme-color` per color scheme |
 | Right in Chrome, wrong on phone | Test on real hardware |
 
@@ -209,7 +209,7 @@ A horizontal swipe on a carousel is ambiguous to the browser — it doesn't know
   touch-action: none;  /* a custom gesture (a drag-to-dismiss sheet, a slider) owns every axis */
 }
 .vertical-sheet-handle {
-  touch-action: pan-x; /* the sheet handles vertical drags; horizontal stays with the browser */
+  touch-action: pan-x pinch-zoom; /* the sheet handles vertical drags; horizontal stays with the browser */
 }
 ```
 
@@ -287,7 +287,7 @@ Self-check before you finish.
 | Press feedback on `click` only | `:active` / `pointerdown` |
 | `touchmove` + `preventDefault()` to stop overscroll | `overscroll-behavior` |
 | `user-select: none` on `body` | Only on controls |
-| `touch-action: none` on something the user needs to scroll past | `pan-x` / `pan-y` |
+| `touch-action: none` on something the user needs to scroll past | `pan-x pinch-zoom` / `pan-y pinch-zoom` |
 | `env(safe-area-inset-*)` without `viewport-fit=cover` | Add the meta tag or the value is `0` |
 | One `theme-color` for both schemes | One per `prefers-color-scheme` |
 | User-agent sniffing to detect touch | `(hover)` / `(pointer)` media queries |
