@@ -469,7 +469,9 @@ export async function runDevopsTool(name: string, rawArgs: unknown, options: Run
       ...callOptions,
       socketPath: socketPath || env[BROKER_SOCKET_ENV] || DEFAULT_BROKER_SOCKET_PATH,
       onPending: (pending) => {
-        if (pendingDir) recorded.file = recordPendingCard(pendingDir, name, requester.claim.slackUserId, pending);
+        if (pendingDir) {
+          recorded.file = recordPendingCard(pendingDir, name, requester.claim.slackUserId, parsed.value.id, pending);
+        }
         onPending?.(pending);
       },
     });
@@ -481,6 +483,15 @@ export async function runDevopsTool(name: string, rawArgs: unknown, options: Run
 
 // ── Waiting-card records (dashboard, #1051) ───────────────
 
+/** Records of the calls waiting right now: removed on any process exit too (SIGTERM shutdown calls process.exit). */
+const inFlightRecords = new Set<string>();
+let exitHookInstalled = false;
+
+/** Removes every record this process still holds. Runs on process exit; a SIGKILL leaves the pid check to the reader. */
+export function removeInFlightRecords(): void {
+  for (const file of [...inFlightRecords]) removePendingCard(file);
+}
+
 /**
  * Records the card this call waits on, so the dashboard can point an admin at it when the broker cannot list
  * its cards. Best effort: a failure is logged and never fails the call. Returns the file, or null.
@@ -489,6 +500,7 @@ export function recordPendingCard(
   dir: string,
   tool: DevopsTool,
   requester: string,
+  requestId: string,
   pending: PendingMessage,
   now: number = Date.now(),
 ): string | null {
@@ -496,28 +508,37 @@ export function recordPendingCard(
   const record: PendingCardRecord = {
     v: PROTOCOL_VERSION,
     approvalId: pending.approvalId,
+    requestId,
+    pid: process.pid,
     tool,
     digestPrefix: pending.digestPrefix,
     requester,
     createdAt: new Date(now).toISOString(),
     expiresAt: pending.expiresAt,
   };
-  // approvalId is [A-Za-z0-9_-]{8,64} (parseBrokerMessage), so it is a safe file name.
-  const file = path.join(dir, `${pending.approvalId}.json`);
+  // approvalId is [A-Za-z0-9_-]{8,64} (parseBrokerMessage) and requestId [A-Za-z0-9_-]{1,64} (parseRequest),
+  // so the name is a safe file name; a joined identical request (same card) gets its own file.
+  const file = path.join(dir, `${pending.approvalId}.${requestId}.json`);
   const tmp = `${file}.${process.pid}.tmp`;
   try {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     fs.writeFileSync(tmp, `${JSON.stringify(record)}\n`, { mode: 0o600 });
     fs.renameSync(tmp, file);
+    inFlightRecords.add(file);
+    if (!exitHookInstalled) {
+      exitHookInstalled = true;
+      process.on('exit', removeInFlightRecords);
+    }
     return file;
   } catch (error) {
-    removePendingCard(tmp);
+    if (fs.existsSync(tmp)) removePendingCard(tmp);
     process.stderr.write(`devops-tools: card ${pending.approvalId} not recorded for the dashboard: ${String(error)}\n`);
     return null;
   }
 }
 
 function removePendingCard(file: string): void {
+  inFlightRecords.delete(file);
   try {
     fs.rmSync(file, { force: true });
   } catch (error) {

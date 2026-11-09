@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as os from 'node:os';
@@ -180,19 +181,24 @@ describe('devopsBrokerAdminApprovalAdapter: a broker older than the listing (#10
   const RECORD = {
     v: 1,
     approvalId: 'appr_0002efgh',
+    requestId: 'req-1',
+    pid: process.pid,
     tool: 'cf_lease_request',
     digestPrefix: 'abcdef012345',
     requester: 'U000ALICE',
     createdAt: '2026-11-09T03:00:00.000Z',
     expiresAt: '2026-11-09T03:10:00.000Z',
   };
+  const NOW = Date.parse('2026-11-09T03:01:00Z');
   let pendingDir: string;
 
+  const nameOf = (r: { approvalId: string; requestId: string }) => `${r.approvalId}.${r.requestId}.json`;
   function writeRecord(name: string, body: unknown): string {
     const file = path.join(pendingDir, name);
     fs.writeFileSync(file, typeof body === 'string' ? body : JSON.stringify(body));
     return file;
   }
+  const put = (r: typeof RECORD) => writeRecord(nameOf(r), r);
 
   async function refusingBroker(): Promise<void> {
     server = net.createServer((socket) => {
@@ -207,6 +213,13 @@ describe('devopsBrokerAdminApprovalAdapter: a broker older than the listing (#10
     await new Promise<void>((resolve) => server?.listen(socketPath, resolve));
   }
 
+  /** The pid of a process that has exited. */
+  async function deadPid(): Promise<number> {
+    const child = spawn(process.execPath, ['-e', '']);
+    await new Promise<void>((resolve) => child.once('exit', () => resolve()));
+    return child.pid as number;
+  }
+
   beforeEach(() => {
     pendingDir = devopsPendingDir(dir);
     fs.mkdirSync(pendingDir);
@@ -214,9 +227,9 @@ describe('devopsBrokerAdminApprovalAdapter: a broker older than the listing (#10
 
   it('lists the MCP server’s records, each opening the approvals app DM for any admin', async () => {
     await refusingBroker();
-    writeRecord(`${RECORD.approvalId}.json`, RECORD);
+    put(RECORD);
     const adapter = devopsBrokerAdminApprovalAdapter({ socketPath, pendingDir, approvalsAppUrl: APP });
-    const [card, ...rest] = await adapter.pending(Date.parse('2026-11-09T03:01:00Z'));
+    const [card, ...rest] = await adapter.pending(NOW);
     expect(rest).toEqual([]);
     expect(card).toMatchObject({
       id: 'devops_broker:appr_0002efgh',
@@ -234,38 +247,63 @@ describe('devopsBrokerAdminApprovalAdapter: a broker older than the listing (#10
     expect(await adapter.answer('appr_0002efgh', 'open_slack', 'U000ADMIN')).toEqual({ ok: false, reason: 'invalid' });
   });
 
-  it('skips malformed, misnamed and expired records, and removes a long-dead one', async () => {
+  it('shows one card for identical requests joined to the same card', async () => {
     await refusingBroker();
-    writeRecord('appr_0003ijkl.json', { ...RECORD, approvalId: 'appr_0003ijkl', tool: 'rm_rf' });
-    writeRecord('appr_0004mnop.json', { ...RECORD, approvalId: 'appr_0005qrst' });
-    writeRecord('appr_0006uvwx.json', '{not json');
-    writeRecord('notes.txt', RECORD);
-    writeRecord('appr_0007yzab.json', {
-      ...RECORD,
-      approvalId: 'appr_0007yzab',
-      expiresAt: '2026-11-09T03:00:30.000Z',
-    });
-    const dead = writeRecord('appr_0008cdef.json', {
-      ...RECORD,
-      approvalId: 'appr_0008cdef',
-      expiresAt: '2026-11-09T01:00:00.000Z',
-    });
+    put(RECORD);
+    put({ ...RECORD, requestId: 'req-2', createdAt: '2026-11-09T03:00:30.000Z' });
     const adapter = devopsBrokerAdminApprovalAdapter({ socketPath, pendingDir, approvalsAppUrl: APP });
-    await expect(adapter.pending(Date.parse('2026-11-09T03:01:00Z'))).resolves.toEqual([]);
+    const cards = await adapter.pending(NOW);
+    expect(cards.map((c) => c.id)).toEqual(['devops_broker:appr_0002efgh']);
+    expect(cards[0].createdAt).toBe(Date.parse(RECORD.createdAt));
+  });
+
+  it('skips malformed, misnamed and expired records, and removes long-dead ones', async () => {
+    await refusingBroker();
+    put({ ...RECORD, approvalId: 'appr_0003ijkl', tool: 'rm_rf' });
+    writeRecord('appr_0004mnop.req-1.json', { ...RECORD, approvalId: 'appr_0005qrst' });
+    writeRecord('appr_0006uvwx.req-1.json', '{not json');
+    writeRecord('notes.txt', RECORD);
+    writeRecord('appr_0002efgh.json', RECORD);
+    put({ ...RECORD, approvalId: 'appr_0007yzab', expiresAt: '2026-11-09T03:00:30.000Z' });
+    const dead = put({ ...RECORD, approvalId: 'appr_0008cdef', expiresAt: '2026-11-09T01:00:00.000Z' });
+    const adapter = devopsBrokerAdminApprovalAdapter({ socketPath, pendingDir, approvalsAppUrl: APP });
+    await expect(adapter.pending(NOW)).resolves.toEqual([]);
     expect(fs.existsSync(dead)).toBe(false);
   });
 
-  it('ignores the records while the broker lists its own cards', async () => {
-    await fakeBroker(() => ({ approvals: [VIEW] }));
-    writeRecord(`${RECORD.approvalId}.json`, RECORD);
+  it('removes a record whose MCP server is gone (killed before it could)', async () => {
+    await refusingBroker();
+    const gone = put({ ...RECORD, pid: await deadPid() });
     const adapter = devopsBrokerAdminApprovalAdapter({ socketPath, pendingDir, approvalsAppUrl: APP });
-    const cards = await adapter.pending(Date.parse('2026-11-09T03:01:00Z'));
+    await expect(adapter.pending(NOW)).resolves.toEqual([]);
+    expect(fs.existsSync(gone)).toBe(false);
+  });
+
+  it('never follows a link and never reads an oversized record', async () => {
+    await refusingBroker();
+    const elsewhere = path.join(dir, 'elsewhere.json');
+    fs.writeFileSync(elsewhere, JSON.stringify(RECORD));
+    fs.symlinkSync(elsewhere, path.join(pendingDir, nameOf(RECORD)));
+    const big = { ...RECORD, approvalId: 'appr_0009ghij' };
+    writeRecord(nameOf(big), JSON.stringify(big).replace(/}$/, `,"pad":"${'x'.repeat(5000)}"}`));
+    const adapter = devopsBrokerAdminApprovalAdapter({ socketPath, pendingDir, approvalsAppUrl: APP });
+    await expect(adapter.pending(NOW)).resolves.toEqual([]);
+    expect(fs.existsSync(elsewhere)).toBe(true);
+  });
+
+  it('ignores the records while the broker lists its own cards, but still prunes the dead ones', async () => {
+    await fakeBroker(() => ({ approvals: [VIEW] }));
+    put(RECORD);
+    const gone = put({ ...RECORD, approvalId: 'appr_0010klmn', pid: await deadPid() });
+    const adapter = devopsBrokerAdminApprovalAdapter({ socketPath, pendingDir, approvalsAppUrl: APP });
+    const cards = await adapter.pending(NOW);
     expect(cards.map((c) => c.id)).toEqual(['devops_broker:appr_0001abcd']);
+    expect(fs.existsSync(gone)).toBe(false);
   });
 
   it('re-reads the records every refresh while the refusing broker is left alone', async () => {
     await refusingBroker();
-    let clock = Date.parse('2026-11-09T03:01:00Z');
+    let clock = NOW;
     const adapter = devopsBrokerAdminApprovalAdapter({
       socketPath,
       pendingDir,
@@ -273,7 +311,7 @@ describe('devopsBrokerAdminApprovalAdapter: a broker older than the listing (#10
       now: () => clock,
     });
     await expect(adapter.pending(clock)).resolves.toEqual([]);
-    writeRecord(`${RECORD.approvalId}.json`, RECORD);
+    put(RECORD);
     clock += 5_000;
     const cards = await adapter.pending(clock);
     expect(cards.map((c) => c.id)).toEqual(['devops_broker:appr_0002efgh']);
@@ -282,10 +320,10 @@ describe('devopsBrokerAdminApprovalAdapter: a broker older than the listing (#10
 
   it('a card without a configured app link has no link (the client says where to look)', async () => {
     await refusingBroker();
-    writeRecord(`${RECORD.approvalId}.json`, RECORD);
+    put(RECORD);
     for (const approvalsAppUrl of [undefined, 'https://evil.example/app_redirect?app=A0000APP']) {
       const adapter = devopsBrokerAdminApprovalAdapter({ socketPath, pendingDir, approvalsAppUrl });
-      const [card] = await adapter.pending(Date.parse('2026-11-09T03:01:00Z'));
+      const [card] = await adapter.pending(NOW);
       expect(card.links).toEqual([]);
     }
   });
