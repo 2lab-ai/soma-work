@@ -25,7 +25,7 @@ describe('the dashboard page CSS — mobile-native', () => {
 
   it('§8 a long press on a control selects nothing; content stays selectable (no body-wide rule)', () => {
     expect(TEMPLATE).toContain(
-      ':is(button, [role="tab"], .ui-chip, .ui-btn, .ui-icon-btn, .ui-fab) { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }',
+      ':is(button, [role="tab"], .ui-chip, .ui-btn, .ui-icon-btn, .ui-fab):not(a[href]) { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }',
     );
     expect(TEMPLATE).not.toMatch(/body[^{]*\{[^}]*user-select: none/);
   });

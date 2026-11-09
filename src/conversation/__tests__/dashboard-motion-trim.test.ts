@@ -14,7 +14,48 @@ import { describe, expect, it } from 'vitest';
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
 
+function clientFn(name: string): string {
+  const start = TEMPLATE.indexOf(`\nfunction ${name}(`);
+  if (start < 0) throw new Error(`client function ${name} not found`);
+  const line = TEMPLATE.indexOf('\n', start + 1);
+  const end = TEMPLATE.slice(start + 1, line)
+    .trimEnd()
+    .endsWith('}')
+    ? line
+    : TEMPLATE.indexOf('\n}\n', start) + 2;
+  return TEMPLATE.slice(start + 1, end);
+}
+
 describe('dashboard motion trim', () => {
+  it('"a key just did it" is the last input being a key within 600ms — typing, then a resize or a push, still glides', () => {
+    const keyedNow = (atKeyed: boolean, keyAt: number) =>
+      new Function('_atKeyed', '_keyAt', 'KEYED_MS', `${clientFn('keyedNow')}\nreturn keyedNow();`)(
+        atKeyed,
+        keyAt,
+        600,
+      ) as boolean;
+    expect(keyedNow(true, Date.now())).toBe(true);
+    expect(keyedNow(true, Date.now() - 5_000)).toBe(false);
+    expect(keyedNow(false, Date.now())).toBe(false);
+    expect(TEMPLATE).toContain(
+      "document.addEventListener('keydown', function(e) { if (isActingKey(e)) _keyAt = Date.now(); }, true);",
+    );
+    expect(TEMPLATE).toMatch(/^var KEYED_MS = 600;$/m);
+  });
+
+  it('only a key that acts counts: Esc anywhere; Enter, Space and the arrows outside a text field; never typing', () => {
+    const acting = new Function(`${clientFn('isActingKey')}\nreturn isActingKey;`)() as (e: unknown) => boolean;
+    const on = (tagName: string, isContentEditable = false) => ({ tagName, isContentEditable });
+    expect(acting({ key: 'Enter', target: on('DIV') })).toBe(true);
+    expect(acting({ key: 'ArrowRight', target: on('UI-DECK-NAV') })).toBe(true);
+    expect(acting({ key: 'Escape', target: on('TEXTAREA') })).toBe(true);
+    expect(acting({ key: 'Enter', target: on('TEXTAREA') })).toBe(false);
+    expect(acting({ key: 'ArrowLeft', target: on('INPUT') })).toBe(false);
+    expect(acting({ key: ' ', target: on('DIV', true) })).toBe(false);
+    expect(acting({ key: 'a', target: on('DIV') })).toBe(false);
+    expect(acting({ key: 'n', ctrlKey: true, target: on('BODY') })).toBe(false);
+  });
+
   it('the detail panel has no smooth scrolling; its corrections stay instant', () => {
     expect(TEMPLATE).toContain('.panel-scroll { flex: 1 1 auto; overflow-y: auto; min-height: 0; }');
     expect(TEMPLATE).not.toMatch(/\.panel-scroll \{[^}]*scroll-behavior/);
@@ -29,9 +70,9 @@ describe('dashboard motion trim', () => {
     expect(TEMPLATE).not.toMatch(/transition: width 1s linear/);
   });
 
-  it('runLayoutCheck and the deck switch skip their motion when a key was the last input', () => {
-    expect(TEMPLATE).toContain('var animate = canAnimate() && !_atKeyed;');
-    expect(TEMPLATE).toContain('if (dir && !reduceMotion() && !_atKeyed) deckSlide(panel, dir);');
+  it('runLayoutCheck and the deck switch skip their motion when a key just did it', () => {
+    expect(TEMPLATE).toContain('var animate = canAnimate() && !keyedNow();');
+    expect(TEMPLATE).toContain('if (dir && !reduceMotion() && !keyedNow()) deckSlide(panel, dir);');
     expect(TEMPLATE).toMatch(/^var DECK_SLIDE_MS = 200;$/m);
   });
 });

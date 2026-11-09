@@ -473,7 +473,7 @@ function coordinator(o: {
       _layoutScroll: { x: 0, y: 0 },
       _lastScroll: o.scrolled ?? { x: 0, y: 0 },
       canAnimate: () => true,
-      _atKeyed: !!o.keyed,
+      keyedNow: () => !!o.keyed,
       reduceMotion: () => !!o.reduce,
       _layoutSnap: o.snap ?? [],
       MOTION: { move: 320, fade: 160, easeOut: 'ease-out' },
