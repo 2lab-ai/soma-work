@@ -159,14 +159,17 @@ Slow where the user is deciding, fast where the system responds.
   element.style.setProperty('--swipe-amount', `${d}px`); // bad: recalc on all children
   element.style.transform = `translateY(${d}px)`;        // good: only this element
   ```
-- **Library shorthand props are scheduled on the main thread.** (Example: Framer
-  Motion's `x`/`y`/`scale` resolve to `transform`, but they're driven via rAF on
-  the main thread, so they drop frames while the page is busy. The transform
-  itself is fine — the *scheduling* is the problem.) For predetermined motion,
-  prefer a CSS transition / full transform string the compositor can own:
+- **Library shorthand props may be scheduled on the main thread.** (Example: Motion
+  — formerly Framer Motion — before 14.2 resolves `x`/`y`/`scale` to `transform`
+  but drives them via rAF on the main thread, so they drop frames while the page
+  is busy. The transform itself is fine — the *scheduling* is the problem. From
+  `motion` 14.2 these shorthands (and `rotate`) are hardware-accelerated on HTML
+  elements, so check the version before flagging.) For predetermined motion on an
+  older version, or a library that still schedules shorthands on rAF, prefer a CSS
+  transition / full transform string the compositor can own:
   ```jsx
-  <motion.div animate={{ x: 100 }} />                          // rAF-scheduled; stutters under load
-  <motion.div animate={{ transform: "translateX(100px)" }} />  // compositor can own it
+  <motion.div animate={{ x: 100 }} />                          // motion < 14.2: rAF-scheduled; stutters under load
+  <motion.div animate={{ transform: "translateX(100px)" }} />  // compositor can own it on any version
   ```
 - **CSS animations beat main-thread JS under load** — they run off the main
   thread; rAF-based animations stutter while the browser loads/scripts/paints.

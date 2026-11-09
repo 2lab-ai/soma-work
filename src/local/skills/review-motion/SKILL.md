@@ -57,9 +57,10 @@ Every animation in the diff is measured against these. A violation is a finding.
    springs, not keyframes that restart from zero.
 7. **Compositor-friendly properties.** Routine motion uses `transform` and
    `opacity`. Animating `width`/`height`/`margin`/`padding`/`top`/`left` is a
-   performance finding. Library shorthand props (e.g. Framer Motion `x`/`y`/
-   `scale`) resolve to transforms but are rAF-scheduled on the main thread — flag
-   them on motion that runs while the page is busy. `clip-path`/`filter` are
+   performance finding. Library shorthand props (e.g. Motion `x`/`y`/`scale` before
+   `motion` 14.2) resolve to transforms but are rAF-scheduled on the main thread —
+   flag them on motion that runs while the page is busy (from 14.2 they are
+   hardware-accelerated on HTML elements: check the version first). `clip-path`/`filter` are
    allowed but not free; flag continuous use without a measurement note.
 8. **Accessibility.** `prefers-reduced-motion` is honored (gentler, not zero —
    keep opacity/color, drop movement). Hover animations are gated behind
@@ -85,8 +86,8 @@ Flag these on sight, hard:
 - `transform-origin: center` on a trigger-anchored popover/dropdown/tooltip
 - Keyframes on toasts, toggles, or anything added/triggered rapidly
 - Animating layout properties (`width`/`height`/`margin`/`padding`/`top`/`left`)
-- Library shorthand transform props (rAF-scheduled) on motion that runs while the
-  page is busy
+- Library shorthand transform props (rAF-scheduled — e.g. Motion before 14.2) on
+  motion that runs while the page is busy
 - Updating a CSS variable on a parent to drive a child transform (recalc storm)
 - Missing `prefers-reduced-motion` handling on movement
 - Ungated `:hover` motion
@@ -103,8 +104,9 @@ When proposing fixes, prefer earlier moves over later ones:
 4. **Fix origin/physicality** — correct `transform-origin`; replace `scale(0)`
    with `scale(0.95)` + opacity.
 5. **Make it interruptible** — keyframes → transitions, or a spring for gestures.
-6. **Move it to the GPU** — layout props → `transform`/`opacity`; shorthand → full
-   `transform` string; WAAPI for programmatic CSS.
+6. **Move it to the GPU** — layout props → `transform`/`opacity`; rAF-scheduled
+   shorthand → upgrade (Motion 14.2+) or a full `transform` string; WAAPI for
+   programmatic CSS.
 7. **Asymmetric timing** — slow the deliberate phase, snap the response.
 8. **Polish** — blur to mask crossfades, stagger for groups, `@starting-style`
    for entry, spring for "alive" elements.
