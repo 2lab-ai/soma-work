@@ -262,6 +262,8 @@ interface SerializedSession {
   incidentAttemptFinishedId?: string;
   /** Attempt whose conclusion the host posted — a restart owes Eagle a result otherwise. */
   incidentAttemptPublishedId?: string;
+  /** Attempt that still owes Eagle a result — kept until the host's `interrupted` post succeeds. */
+  incidentResultOwedId?: string;
   key: string;
   ownerId: string;
   ownerName?: string;
@@ -593,19 +595,40 @@ export interface CrashRecoveredSession {
    * model can `SendMessage` each one. Absent when none.
    */
   stoppedAgents?: StoppedAgentRef[];
-  /**
-   * The incident attempt that owned the session ON DISK, read before Slack
-   * delivers anything. Recovery settles only that attempt: a retry the ingress
-   * admitted after start-up (a different `attempt_id`) is live work, not the
-   * one the restart cut.
-   */
-  incidentAttemptId?: string;
 }
 
-/** The owning incident attempt id as persisted, when it is a string. */
-function incidentAttemptOnDisk(serialized: { incidentRequest?: unknown }): { incidentAttemptId?: string } {
-  const request = serialized.incidentRequest as { attempt_id?: unknown } | null | undefined;
-  return typeof request?.attempt_id === 'string' ? { incidentAttemptId: request.attempt_id } : {};
+/** An incident attempt the restart left owing Eagle a result (posted by SlackHandler.notifyCrashRecovery). */
+export interface IncidentResultOwed {
+  sessionKey: string;
+  channelId: string;
+  threadTs?: string;
+  attemptId: string;
+}
+
+/**
+ * A restored incident session, settled from its own markers. No process
+ * survives a restart, so an attempt without its finished marker was cut by it.
+ * The ordinary crash record is not the test: `working` is not always saved, a
+ * long stop puts the session to sleep, and the shutdown stamp needs an SDK
+ * session id (review of PR #1054).
+ *
+ * A cut attempt — or one still owing a result from an earlier start-up — gets
+ * the finished marker and `idle`, so the ingress admits Eagle's retry. It owes
+ * a result unless its conclusion was posted; an asleep session owes none, as
+ * Eagle stopped waiting long ago. Returns the debt, or undefined.
+ */
+function settleIncidentAttemptOnLoad(session: ConversationSession): { attemptId: string; owed: boolean } | undefined {
+  const attemptId = session.incidentRequest?.attempt_id;
+  if (typeof attemptId !== 'string') return undefined;
+  const published = session.incidentAttemptPublishedId === attemptId;
+  const cut = session.incidentAttemptFinishedId !== attemptId;
+  const stillOwed = session.incidentResultOwedId === attemptId && !published;
+  if (!cut && !stillOwed) return undefined;
+  session.incidentAttemptFinishedId = attemptId;
+  session.activityState = 'idle';
+  const owed = !published && session.state !== 'SLEEPING';
+  session.incidentResultOwedId = owed ? attemptId : undefined;
+  return { attemptId, owed };
 }
 
 /**
@@ -684,6 +707,7 @@ export class SessionRegistry {
   private expiryCallbacks?: SessionExpiryCallbacks;
   private beforeSessionDelete?: BeforeSessionDeleteCallback;
   private _crashRecoveredSessions: CrashRecoveredSession[] = [];
+  private _incidentResultsOwed: IncidentResultOwed[] = [];
 
   /**
    * onIdle callback registry — fired when session transitions to idle.
@@ -3570,6 +3594,13 @@ export class SessionRegistry {
     this._crashRecoveredSessions = [];
   }
 
+  /** Incident attempts the last load found owing Eagle a result. Taken once: the list is emptied. */
+  takeIncidentResultsOwed(): IncidentResultOwed[] {
+    const owed = this._incidentResultsOwed;
+    this._incidentResultsOwed = [];
+    return owed;
+  }
+
   /**
    * Save all sessions to file for persistence across restarts. A failure is
    * logged, not thrown — a caller that must know uses saveSessionsOrThrow.
@@ -3795,6 +3826,7 @@ export class SessionRegistry {
             lastTurnOutcome: session.lastTurnOutcome,
             incidentAttemptFinishedId: session.incidentAttemptFinishedId,
             incidentAttemptPublishedId: session.incidentAttemptPublishedId,
+            incidentResultOwedId: session.incidentResultOwedId,
             // Session-scoped `/autocompact` token override (persisted verbatim).
             autoCompactTokens: session.autoCompactTokens,
           });
@@ -4121,12 +4153,15 @@ export class SessionRegistry {
       const applyLifecycle = !isSessionLifecyclePolicyDegraded();
       let sleptOnLoadCount = 0;
       let mintedTaskIdCount = 0;
+      /** Incident attempts the restart cut, settled from their own markers. */
+      let settledIncidentCount = 0;
       /** #855 — dashboard tasks (Slack-less records) archived by this load. */
       let archivedDashboardTasks = 0;
       this.unarchivedDashboardTasks = [];
       /** E4 ⑦ (D10 a) — epic trees kept from the load-time archive (decided over the whole file). */
       const epicTreeExempt = exemptEpicTreeTaskIds(Array.isArray(sessionsArray) ? sessionsArray : []);
       this._crashRecoveredSessions = [];
+      this._incidentResultsOwed = [];
 
       for (const serialized of sessionsArray) {
         const lastActivity = new Date(serialized.lastActivity);
@@ -4313,6 +4348,8 @@ export class SessionRegistry {
             typeof serialized.incidentAttemptPublishedId === 'string'
               ? serialized.incidentAttemptPublishedId
               : undefined,
+          incidentResultOwedId:
+            typeof serialized.incidentResultOwedId === 'string' ? serialized.incidentResultOwedId : undefined,
           cronJob: sanitizeCronJob(serialized.cronJob),
           titleProvisional: serialized.titleProvisional === true ? true : undefined,
           // A session saved before the mark existed (#810) was told on its first prompt if it has an SDK session.
@@ -4471,6 +4508,21 @@ export class SessionRegistry {
         this.putSession(derivedKey, session);
         loaded++;
 
+        // Synchronously, before Slack delivers anything: no retry can be
+        // admitted between the settlement and the ingress reading it.
+        const settled = settleIncidentAttemptOnLoad(session);
+        if (settled) {
+          settledIncidentCount++;
+          if (settled.owed) {
+            this._incidentResultsOwed.push({
+              sessionKey: derivedKey,
+              channelId: session.channelId,
+              threadTs: session.threadTs,
+              attemptId: settled.attemptId,
+            });
+          }
+        }
+
         // Decide whether to enqueue this session for restart/crash recovery.
         //
         // Priority 1 — graceful-shutdown marker (`shutdownNotificationSent`).
@@ -4500,7 +4552,6 @@ export class SessionRegistry {
             workflow: serialized.workflow,
             shouldAutoResume: !sleptOnLoad && serialized.wasWorkingAtShutdown === true,
             ...(stoppedAgents.length > 0 ? { stoppedAgents } : {}),
-            ...incidentAttemptOnDisk(serialized),
           });
         } else if (!sleptOnLoad && serialized.activityState && serialized.activityState !== 'idle') {
           this._crashRecoveredSessions.push({
@@ -4514,7 +4565,6 @@ export class SessionRegistry {
             workflow: serialized.workflow,
             shouldAutoResume: serialized.activityState === 'working',
             ...(stoppedAgents.length > 0 ? { stoppedAgents } : {}),
-            ...incidentAttemptOnDisk(serialized),
           });
         }
       }
@@ -4541,7 +4591,12 @@ export class SessionRegistry {
           { keys: this.unarchivedDashboardTasks.map((r) => r.key) },
         );
       }
-      if (sleptOnLoadCount > 0 || mintedTaskIdCount > 0 || archivedDashboardTasks > 0) {
+      if (settledIncidentCount > 0) {
+        this.logger.info(
+          `Settled ${settledIncidentCount} incident attempt(s) cut by the restart, ${this._incidentResultsOwed.length} result(s) owed`,
+        );
+      }
+      if (sleptOnLoadCount > 0 || mintedTaskIdCount > 0 || archivedDashboardTasks > 0 || settledIncidentCount > 0) {
         this.saveSessions();
       }
 

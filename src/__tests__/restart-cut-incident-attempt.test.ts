@@ -7,8 +7,10 @@
  * request, and the cut attempt never wrote its finished marker, so the ingress refused every retry from Eagle as
  * `attempt_in_progress` — and the restored session stayed `working`, which the ingress refuses as `session_busy`.
  *
- * So a cut incident attempt ends the way any unfinished attempt ends: ONE host-authored result line (`interrupted`),
- * the finished marker, and an idle session. No notice, no resume turn. Eagle reads `interrupted` and asks once more.
+ * So a cut incident attempt ends the way any unfinished attempt ends. The load marks it finished and idle before
+ * Slack delivers anything (session-registry.test.ts), and names the attempts that still owe Eagle a result. This
+ * file covers the second half: recovery posts ONE host-authored result line (`interrupted`) for each, no notice and
+ * no resume turn, and keeps the debt when the post fails. Eagle reads `interrupted` and asks once more.
  */
 import { describe, expect, it, vi } from 'vitest';
 
@@ -19,6 +21,8 @@ vi.mock(import('../env-paths'), async (importOriginal) => {
 
 import { SlackHandler } from '../slack-handler';
 import type { ConversationSession } from '../types';
+
+const KEY = 'C0EAGLE-1794191513.354979';
 
 const REQUEST = {
   version: 1,
@@ -31,13 +35,16 @@ const REQUEST = {
   summary: 'NUPRO365 OUTAGE',
 };
 
-function incidentSession(extra: Partial<ConversationSession> = {}): ConversationSession {
+/** The session as the load left it: marked finished and idle, the result owed. */
+function settledIncidentSession(extra: Partial<ConversationSession> = {}): ConversationSession {
   return {
     channelId: 'C0EAGLE',
     threadTs: '1794191513.354979',
     ownerId: 'U_EAGLE',
-    activityState: 'working',
+    activityState: 'idle',
     incidentRequest: { ...REQUEST },
+    incidentAttemptFinishedId: REQUEST.attempt_id,
+    incidentResultOwedId: REQUEST.attempt_id,
     ...extra,
   } as unknown as ConversationSession;
 }
@@ -48,32 +55,52 @@ function ordinarySession(): ConversationSession {
 
 async function boot(
   session: ConversationSession,
-  working: boolean,
-  opts: { diskAttemptId?: string | null; safeguardHalt?: boolean; onPost?: () => void } = {},
+  opts: {
+    owedAttemptId?: string | null;
+    crashRecord?: boolean;
+    working?: boolean;
+    safeguardHalt?: boolean;
+    postFails?: boolean;
+  } = {},
 ) {
-  const key = 'C0EAGLE-1794191513.354979';
-  const sessions = new Map<string, ConversationSession>([[key, session]]);
+  const sessions = new Map<string, ConversationSession>([[KEY, session]]);
   const postMessage = vi.fn(async (_args: Record<string, unknown>) => {
-    opts.onPost?.();
+    if (opts.postFails) throw new Error('slack_down');
     return { ok: true, ts: '1794191600.000100' };
   });
   if (opts.safeguardHalt) (session as any).safeguardHalt = { at: 1 };
   const app = { client: { chat: { postMessage } }, assistant: vi.fn() } as any;
+  const working = opts.working ?? true;
   const claudeHandler = {
     getAllSessions: vi.fn().mockReturnValue(sessions),
     getSessionByKey: vi.fn((k: string) => sessions.get(k)),
-    getCrashRecoveredSessions: vi.fn().mockReturnValue([
-      {
-        channelId: 'C0EAGLE',
-        threadTs: '1794191513.354979',
-        ownerId: session.ownerId,
-        activityState: working ? 'working' : 'idle',
-        shouldAutoResume: working,
-        sessionKey: key,
-        // What the load read from disk before Slack delivered anything.
-        ...(opts.diskAttemptId === null ? {} : { incidentAttemptId: opts.diskAttemptId ?? REQUEST.attempt_id }),
-      },
-    ]),
+    // What the load found still owing Eagle a result.
+    takeIncidentResultsOwed: vi.fn().mockReturnValue(
+      opts.owedAttemptId === null
+        ? []
+        : [
+            {
+              sessionKey: KEY,
+              channelId: 'C0EAGLE',
+              threadTs: '1794191513.354979',
+              attemptId: opts.owedAttemptId ?? REQUEST.attempt_id,
+            },
+          ],
+    ),
+    getCrashRecoveredSessions: vi.fn().mockReturnValue(
+      opts.crashRecord === false
+        ? []
+        : [
+            {
+              channelId: 'C0EAGLE',
+              threadTs: '1794191513.354979',
+              ownerId: session.ownerId,
+              activityState: working ? 'working' : 'idle',
+              shouldAutoResume: working,
+              sessionKey: KEY,
+            },
+          ],
+    ),
     clearCrashRecoveredSessions: vi.fn(),
     saveSessions: vi.fn(),
   } as any;
@@ -87,7 +114,7 @@ async function boot(
 
 describe('restart — a cut incident attempt is settled, never resumed', () => {
   it('posts one host-authored interrupted result and no recovery notice', async () => {
-    const { postMessage } = await boot(incidentSession(), true);
+    const { postMessage } = await boot(settledIncidentSession());
 
     expect(postMessage).toHaveBeenCalledTimes(1);
     const post = postMessage.mock.calls[0][0];
@@ -102,53 +129,44 @@ describe('restart — a cut incident attempt is settled, never resumed', () => {
   });
 
   it('does not run the ordinary restart prompt as a turn', async () => {
-    const { handleMessage } = await boot(incidentSession(), true);
+    const { handleMessage } = await boot(settledIncidentSession());
 
     expect(handleMessage).not.toHaveBeenCalled();
   });
 
-  it('leaves the thread ready for the retry: finished marker written, session idle, saved', async () => {
-    const session = incidentSession();
-    const { claudeHandler } = await boot(session, true);
+  it('records the post: published marker set, owed marker cleared, saved', async () => {
+    const session = settledIncidentSession();
+    const { claudeHandler } = await boot(session);
 
-    expect(session.incidentAttemptFinishedId).toBe(REQUEST.attempt_id);
-    expect(session.activityState).toBe('idle');
+    expect(session.incidentAttemptPublishedId).toBe(REQUEST.attempt_id);
+    expect(session.incidentResultOwedId).toBeUndefined();
     expect(claudeHandler.saveSessions).toHaveBeenCalled();
   });
 
-  it('posts nothing for an attempt whose conclusion was already posted, and still frees the session', async () => {
-    const session = incidentSession({
-      incidentAttemptFinishedId: REQUEST.attempt_id,
-      incidentAttemptPublishedId: REQUEST.attempt_id,
-    } as any);
-    const { postMessage, handleMessage } = await boot(session, true);
+  // Review of PR #1054 (astra, P1): a failed post must not lose the debt. The
+  // owed marker stays, so the next start-up posts it again.
+  it('keeps the result owed when the post fails', async () => {
+    const session = settledIncidentSession();
+    const { postMessage } = await boot(session, { postFails: true });
 
-    expect(postMessage).not.toHaveBeenCalled();
-    expect(handleMessage).not.toHaveBeenCalled();
+    expect(postMessage).toHaveBeenCalledTimes(1);
+    expect(session.incidentResultOwedId).toBe(REQUEST.attempt_id);
+    expect(session.incidentAttemptPublishedId).toBeUndefined();
+    // The thread stays free for a retry all the same.
+    expect(session.incidentAttemptFinishedId).toBe(REQUEST.attempt_id);
     expect(session.activityState).toBe('idle');
   });
 
-  // Graceful restart: shutdown aborted the run, the run wrote its finished
-  // marker on the way out, and its conclusion was never posted (review of
-  // c6713cf7, finding 1). The result is still owed.
-  it('still posts the result when the cut run wrote its finished marker but never posted', async () => {
-    const session = incidentSession({ incidentAttemptFinishedId: REQUEST.attempt_id } as any);
-    const { postMessage } = await boot(session, true);
-
-    expect(postMessage).toHaveBeenCalledTimes(1);
-    expect(postMessage.mock.calls[0][0].text).toContain('"status":"interrupted"');
-    expect(session.incidentAttemptPublishedId).toBe(REQUEST.attempt_id);
-  });
-
   // Slack delivers events before recovery runs, so the ingress may already have
-  // handed the thread to Eagle's retry (review finding 2). That attempt is live
-  // work: no result for it, no marker, no state change.
-  it('leaves a retry that took the thread over before recovery untouched', async () => {
-    const session = incidentSession({
+  // handed the thread to Eagle's retry. That attempt is live work: no result
+  // for the old one, no change to the new one.
+  it('posts nothing when a newer attempt owns the thread', async () => {
+    const session = settledIncidentSession({
       activityState: 'working',
       incidentRequest: { ...REQUEST, attempt_id: 'AT-2' },
+      incidentAttemptFinishedId: undefined,
     } as any);
-    const { postMessage, handleMessage } = await boot(session, true);
+    const { postMessage, handleMessage } = await boot(session);
 
     expect(postMessage).not.toHaveBeenCalled();
     expect(handleMessage).not.toHaveBeenCalled();
@@ -156,38 +174,43 @@ describe('restart — a cut incident attempt is settled, never resumed', () => {
     expect(session.activityState).toBe('working');
   });
 
-  // The ingress can admit the retry the moment the marker and idle are set; if
-  // they were set after the post's await, they would land on the retry.
-  it('frees the thread before it awaits the post', async () => {
-    const session = incidentSession();
-    const seen: Array<{ marker?: string; state?: string }> = [];
-    await boot(session, true, {
-      onPost: () => seen.push({ marker: session.incidentAttemptFinishedId, state: session.activityState }),
-    });
-
-    expect(seen).toEqual([{ marker: REQUEST.attempt_id, state: 'idle' }]);
-  });
-
-  it('settles a cut attempt even in a thread the safeguards halted', async () => {
-    const session = incidentSession();
-    const { postMessage } = await boot(session, true, { safeguardHalt: true });
-
-    expect(postMessage).toHaveBeenCalledTimes(1);
-    expect(session.incidentAttemptFinishedId).toBe(REQUEST.attempt_id);
-    expect(session.activityState).toBe('idle');
-  });
-
-  it('posts nothing in an incident thread that was not working', async () => {
-    const session = incidentSession({ activityState: 'idle' } as any);
-    const { postMessage, handleMessage } = await boot(session, false);
+  it('posts nothing for an attempt whose conclusion was already posted', async () => {
+    const session = settledIncidentSession({ incidentAttemptPublishedId: REQUEST.attempt_id } as any);
+    const { postMessage, handleMessage } = await boot(session);
 
     expect(postMessage).not.toHaveBeenCalled();
     expect(handleMessage).not.toHaveBeenCalled();
-    expect(session.incidentAttemptFinishedId).toBeUndefined();
+  });
+
+  it('posts the owed result in a thread the safeguards halted', async () => {
+    const session = settledIncidentSession();
+    const { postMessage } = await boot(session, { safeguardHalt: true });
+
+    expect(postMessage).toHaveBeenCalledTimes(1);
+    expect(session.incidentAttemptPublishedId).toBe(REQUEST.attempt_id);
+  });
+
+  // Review of PR #1054 (astra, P1): an attempt that was idle on disk, asleep,
+  // or never stamped at shutdown has no crash record. It is owed all the same.
+  it('posts the owed result when the session has no crash record', async () => {
+    const session = settledIncidentSession();
+    const { postMessage, handleMessage } = await boot(session, { crashRecord: false });
+
+    expect(postMessage).toHaveBeenCalledTimes(1);
+    expect(postMessage.mock.calls[0][0].text).toContain('"status":"interrupted"');
+    expect(handleMessage).not.toHaveBeenCalled();
+  });
+
+  it('posts nothing in an incident thread that owes no result', async () => {
+    const session = settledIncidentSession({ incidentResultOwedId: undefined } as any);
+    const { postMessage, handleMessage } = await boot(session, { owedAttemptId: null, working: false });
+
+    expect(postMessage).not.toHaveBeenCalled();
+    expect(handleMessage).not.toHaveBeenCalled();
   });
 
   it('control: an ordinary working session still gets the notice and the resume turn', async () => {
-    const { postMessage, handleMessage } = await boot(ordinarySession(), true);
+    const { postMessage, handleMessage } = await boot(ordinarySession(), { owedAttemptId: null });
 
     expect(postMessage.mock.calls[0][0].text).toContain('자동으로 재개합니다');
     expect(handleMessage).toHaveBeenCalledTimes(1);

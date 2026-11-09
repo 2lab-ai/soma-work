@@ -23,14 +23,14 @@ describe('SessionRegistry persistence', () => {
     }
   });
 
-  // An incident attempt's published marker survives a restart, and a session
-  // that was working names the attempt it was running in its crash record, so
-  // recovery settles that attempt and not a retry admitted after start-up.
-  it('restores the incident published marker and names the cut attempt in the crash record', () => {
-    const writer = new SessionRegistry();
-    const session = writer.createSession('U_EAGLE', 'Eagle', 'C123', '172.001');
-    session.sessionId = 'session-incident';
-    session.incidentRequest = {
+  // No process survives a restart, so an incident attempt that has not
+  // finished was cut by it. The load settles it from the session's own markers
+  // — before Slack delivers anything — instead of from the ordinary crash
+  // record, which an incident attempt can miss (review of PR #1054, astra P1):
+  // `working` is not always saved, a long stop puts the session to sleep, and
+  // the shutdown stamp needs an SDK session id.
+  describe('a restart settles a cut incident attempt at load', () => {
+    const REQUEST = {
       version: 1,
       incident_id: 'EXT|ext:nupro365|NUPRO365 OUTAGE',
       lifecycle_id: '172.001',
@@ -39,19 +39,87 @@ describe('SessionRegistry persistence', () => {
       parent_ts: '172.001',
       env: 'stage2',
       summary: 'NUPRO365 OUTAGE',
-    } as any;
-    session.incidentAttemptFinishedId = 'AT-0';
-    session.incidentAttemptPublishedId = 'AT-0';
-    session.activityState = 'working';
+    };
 
-    writer.saveSessions();
+    function saveIncident(fields: Record<string, unknown>): void {
+      const writer = new SessionRegistry();
+      const session = writer.createSession('U_EAGLE', 'Eagle', 'C123', '172.001');
+      Object.assign(session, { incidentRequest: { ...REQUEST }, activityState: 'idle' }, fields);
+      writer.saveSessions();
+    }
 
-    const reader = new SessionRegistry();
-    reader.loadSessions();
-    const restored = reader.getSession('C123', '172.001');
-    expect(restored?.incidentAttemptPublishedId).toBe('AT-0');
-    const record = reader.getCrashRecoveredSessions().find((r) => r.threadTs === '172.001');
-    expect(record?.incidentAttemptId).toBe('AT-1');
+    function load() {
+      const reader = new SessionRegistry();
+      reader.loadSessions();
+      return {
+        restored: reader.getSession('C123', '172.001'),
+        owed: reader.takeIncidentResultsOwed(),
+        again: reader.takeIncidentResultsOwed(),
+        reader,
+      };
+    }
+
+    it('settles an attempt saved idle with no shutdown stamp and owes its result', () => {
+      saveIncident({ activityState: 'idle' });
+
+      const { restored, owed, again, reader } = load();
+      expect(reader.getCrashRecoveredSessions().find((r) => r.threadTs === '172.001')).toBeUndefined();
+      expect(restored?.incidentAttemptFinishedId).toBe('AT-1');
+      expect(restored?.activityState).toBe('idle');
+      expect(restored?.incidentResultOwedId).toBe('AT-1');
+      expect(owed).toEqual([expect.objectContaining({ channelId: 'C123', threadTs: '172.001', attemptId: 'AT-1' })]);
+      expect(owed[0].sessionKey).toBeTruthy();
+      // Taken once: a second read finds nothing.
+      expect(again).toEqual([]);
+    });
+
+    it('settles an attempt saved working, so the ingress admits the retry', () => {
+      saveIncident({ activityState: 'working', sessionId: 'session-incident' });
+
+      const { restored, owed } = load();
+      expect(restored?.incidentAttemptFinishedId).toBe('AT-1');
+      expect(restored?.activityState).toBe('idle');
+      expect(owed.map((o) => o.attemptId)).toEqual(['AT-1']);
+    });
+
+    it('marks an asleep cut attempt finished but owes no post', () => {
+      saveIncident({ state: 'SLEEPING', sleepStartedAt: new Date() });
+
+      const { restored, owed } = load();
+      expect(restored?.incidentAttemptFinishedId).toBe('AT-1');
+      expect(restored?.activityState).toBe('idle');
+      expect(restored?.incidentResultOwedId).toBeUndefined();
+      expect(owed).toEqual([]);
+    });
+
+    it('owes the result again when an earlier post failed', () => {
+      saveIncident({ incidentAttemptFinishedId: 'AT-1', incidentResultOwedId: 'AT-1' });
+
+      const { restored, owed } = load();
+      expect(restored?.incidentResultOwedId).toBe('AT-1');
+      expect(owed.map((o) => o.attemptId)).toEqual(['AT-1']);
+    });
+
+    it('marks a cut attempt whose conclusion was posted finished, and owes nothing', () => {
+      saveIncident({ activityState: 'working', incidentAttemptPublishedId: 'AT-1' });
+
+      const { restored, owed } = load();
+      expect(restored?.incidentAttemptFinishedId).toBe('AT-1');
+      expect(restored?.activityState).toBe('idle');
+      expect(restored?.incidentAttemptPublishedId).toBe('AT-1');
+      expect(owed).toEqual([]);
+    });
+
+    // A session saved by a build before these markers: finished, nothing owed.
+    it('leaves a finished attempt that owes nothing alone', () => {
+      saveIncident({ incidentAttemptFinishedId: 'AT-1' });
+
+      const { restored, owed } = load();
+      expect(restored?.incidentAttemptFinishedId).toBe('AT-1');
+      expect(restored?.incidentResultOwedId).toBeUndefined();
+      expect(restored?.incidentAttemptPublishedId).toBeUndefined();
+      expect(owed).toEqual([]);
+    });
   });
 
   it('restores action panel state but clears stale messageTs/renderKey on reload', () => {
