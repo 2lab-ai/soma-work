@@ -207,6 +207,8 @@ describe('cron fire → session → dashboard, end to end', () => {
     dashboard.setDashboardCronSource({
       listJobs: () => storage.getAll(),
       listHistory: () => storage.getExecutionHistory(),
+      getJob: (id) => storage.getAll().find((j) => j.id === id),
+      updateJob: () => null,
     });
     const ws = await import('../../../conversation/web-server');
     await ws.startWebServer({ listen: false });
