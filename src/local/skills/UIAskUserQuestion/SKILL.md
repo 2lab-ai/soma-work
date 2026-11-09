@@ -49,7 +49,9 @@ When the decision belongs to an admin, add `"audience": "admins"` to a `user_cho
 
 - The question still goes to the thread.
 - It also becomes a card on the dashboard's **관리자 승인** screen, which only admins see.
-- An admin's answer there continues the session as an answer in the thread would. It is not held for the session owner, and the turn still runs as the owner; the thread names the admin who answered.
+- An admin's answer there continues the session as an answer in the thread would. It is not held for the session owner, and the turn still runs as the owner.
+- That turn's text ends with `(관리자 <@…>가 대시보드 관리자 승인에서 답함)`, naming the admin who decided.
+- An answer without that line came from the thread, usually from the owner. When only an admin may decide, treat such an answer as not yet decided by an admin.
 - Do not also ask the same thing in a plain thread message.
 - Only a single `user_choice` takes `audience`.
 
