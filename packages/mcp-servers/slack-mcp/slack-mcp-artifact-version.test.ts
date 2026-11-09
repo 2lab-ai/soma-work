@@ -151,7 +151,13 @@ describe('#1074 r1 — uploads this process made count before the daemon has rec
     const two = await file('html-weekly-20261109-150001.html', 'p2');
     const upload = (p: string, tag: string) =>
       versions.serialize('name:html-weekly.html', async () => {
-        const v = await planUploadVersion({ indexPath: index, filePath: p, displayName: path.basename(p), lang: 'ko', sent: versions.sent() });
+        const v = await planUploadVersion({
+          indexPath: index,
+          filePath: p,
+          displayName: path.basename(p),
+          lang: 'ko',
+          sent: versions.sent(),
+        });
         order.push(`${tag}:plan`);
         await new Promise((r) => setTimeout(r, 20));
         if (v && v.changed !== false) versions.remember(`F-${tag}`, v);
@@ -160,7 +166,12 @@ describe('#1074 r1 — uploads this process made count before the daemon has rec
       });
     const [a, b] = await Promise.all([upload(one, 'a'), upload(two, 'b')]);
     expect(order).toEqual(['a:plan', 'a:done', 'b:plan', 'b:done']);
-    expect([a?.version, a?.note, b?.version, b?.note]).toEqual([2, '판 2 · 이전 판 이후 바뀜', 3, '판 3 · 이전 판 이후 바뀜']);
+    expect([a?.version, a?.note, b?.version, b?.note]).toEqual([
+      2,
+      '판 2 · 이전 판 이후 바뀜',
+      3,
+      '판 3 · 이전 판 이후 바뀜',
+    ]);
   });
 
   it('a sent upload the daemon has since recorded is not counted twice (the index wins)', async () => {
@@ -175,10 +186,22 @@ describe('#1074 r1 — uploads this process made count before the daemon has rec
     const p = await file('r.html', 'new');
     // This process remembers FX as version 2 (say it raced); the index lists FX as version 1 — the index wins.
     const sent = [{ id: 'FX', slackFileId: 'FX', key: 'name:r.html', version: 2, sha256: sha('old') }];
-    const v = await planUploadVersion({ indexPath: path.join(d, 'index.json'), filePath: p, displayName: 'r.html', lang: 'ko', sent });
+    const v = await planUploadVersion({
+      indexPath: path.join(d, 'index.json'),
+      filePath: p,
+      displayName: 'r.html',
+      lang: 'ko',
+      sent,
+    });
     expect(v?.version).toBe(2);
     const unseen = [{ id: 'FY', slackFileId: 'FY', key: 'name:r.html', version: 2, sha256: sha('mid') }];
-    const w = await planUploadVersion({ indexPath: path.join(d, 'index.json'), filePath: p, displayName: 'r.html', lang: 'ko', sent: unseen });
+    const w = await planUploadVersion({
+      indexPath: path.join(d, 'index.json'),
+      filePath: p,
+      displayName: 'r.html',
+      lang: 'ko',
+      sent: unseen,
+    });
     expect(w?.version).toBe(3);
   });
 
@@ -198,7 +221,13 @@ describe('#1074 r1 — uploads this process made count before the daemon has rec
       sha256: 'a'.repeat(64),
       note: 'x',
     });
-    expect(fields).toEqual({ version_key: 'name:r.html', version: 2, changed: true, previous_version: 1, sha256: 'a'.repeat(64) });
+    expect(fields).toEqual({
+      version_key: 'name:r.html',
+      version: 2,
+      changed: true,
+      previous_version: 1,
+      sha256: 'a'.repeat(64),
+    });
   });
 });
 

@@ -284,3 +284,35 @@ describe('#1074 review gate r1 — the store keeps only bytes it can trust, and 
     expect(fs.readFileSync(store.blobPath('c', only.id)!, 'utf-8')).toBe('same');
   });
 });
+
+describe('#1074 review gate r1 — claims checked', () => {
+  it('two identical re-sends recorded at once both stay known (no Slack file id is lost)', async () => {
+    await upload('c', 'r.html', 'same', { now: 1 });
+    await Promise.all([
+      store.recordSlackUpload({
+        conversationId: 'c',
+        filePath: srcFile('a-r.html', 'same'),
+        filename: 'r.html',
+        slackFileId: 'FA',
+      }),
+      store.recordSlackUpload({
+        conversationId: 'c',
+        filePath: srcFile('b-r.html', 'same'),
+        filename: 'r.html',
+        slackFileId: 'FB',
+      }),
+    ]);
+    const onDisk = JSON.parse(fs.readFileSync(path.join(root, 'store', 'c', 'index.json'), 'utf-8'));
+    expect(onDisk.artifacts).toHaveLength(1);
+    expect([...onDisk.artifacts[0].resentFileIds].sort()).toEqual(['FA', 'FB']);
+  });
+
+  it('a version inside the cap that shares an older version’s bytes keeps them when that version is pruned', async () => {
+    const v1 = await upload('c', 'r.html', 'A', { now: 1 });
+    await upload('c', 'r.html', 'B', { now: 2 });
+    const v3 = await upload('c', 'r.html', 'A', { now: 3 });
+    for (let i = 4; i <= 12; i++) await upload('c', 'r.html', `x${i}`, { now: i });
+    expect(store.blobPath('c', v1!.id)).toBeNull();
+    expect(fs.readFileSync(store.blobPath('c', v3!.id)!, 'utf-8')).toBe('A');
+  });
+});

@@ -262,7 +262,10 @@ describe('local:html serve.mjs — behavioral contract (real daemon, real GET)',
         // Same published name: each publisher copies its own file to race.html (basename differs, so stage it).
         const staged = join(mkdtempSync(join(tmpdir(), 'soma-serve-race-')), 'race.html');
         writeFileSync(staged, body);
-        const child = spawn(process.execPath, [SERVER, '--file', staged, '--port', String(PORT)], { env, stdio: 'ignore' });
+        const child = spawn(process.execPath, [SERVER, '--file', staged, '--port', String(PORT)], {
+          env,
+          stdio: 'ignore',
+        });
         child.on('exit', (code) => (code === 0 ? ok() : fail(new Error(`publish exited ${code}`))));
       });
     await Promise.all([run('AAA'), run('BBB')]);
