@@ -79,6 +79,16 @@ SOMA_INCIDENT_EVIDENCE_BASE_URL=https://<eagle-eye-host>
 - 백그라운드 에이전트 keepalive는 시도에서 **꺼져 있다**(`0`) — 시도는 답하는 result에서 끝난다 (`src/claude-handler.ts:1320`).
 - 인시던트 소유 스레드의 일반 메시지(파일 업로드 포함)는 후속 큐 펜스 **앞에서** 버려진다 — 큐에 쌓이거나
   스레드에 큐 표시가 붙거나 시도에 주입되지 않는다 (`src/slack-handler.ts:993`).
+- 사람용 게이트 두 개는 시도에 걸리지 않는다 (`packages/slack/src/pipeline/stream-executor.ts`):
+  - **이메일 fast-fail** — 발신자는 이메일이 없는 Eagle 봇이고, 이메일은 커밋 귀속(Co-Authored-By)에만 쓰인다.
+    시도는 읽기 전용 도구 하나뿐이라 커밋할 수 없다. 2026-11-06·11-09의 실제 인시던트 4건이 모두 ingress를
+    통과한 뒤 여기서 모델 호출 전에 막혔다(`Blocked model invocation: user email not configured`).
+  - **session-title-pending 공지** — 시도 런타임에 없는 UPDATE_SESSION을 요구하고, 고정 host prompt 앞에 붙었다.
+- **재시작에 끊긴 시도**는 재개하지 않고 정산한다 (`settleRestartCutIncidentAttempt`, `src/slack-handler.ts`):
+  일반 crash recovery 공지와 restart 프롬프트 턴 없이, host가 쓴 `interrupted` 결과 한 줄(인시던트 게시와 같은
+  Slack 처리 끔 인자)을 올리고 완료 마커를 쓰고 세션을 `idle`로 둔다. 그래야 Eagle의 재시도가
+  `attempt_in_progress`/`session_busy`로 거부되지 않는다. 회귀 테스트:
+  `src/__tests__/restart-cut-incident-attempt.test.ts`.
 
 ## 5. 산출물의 출처 — collector snapshot
 
@@ -186,11 +196,17 @@ npx vitest run src/incident/__tests__ \
   src/agent-runtime/__tests__/tool-policy-incident.test.ts \
   packages/slack/src/__tests__/incident-contract.test.ts \
   packages/slack/src/__tests__/incident-result.test.ts \
-  packages/slack/src/pipeline/__tests__/stream-executor.incident-output.test.ts
+  packages/slack/src/pipeline/__tests__/stream-executor.incident-output.test.ts \
+  packages/slack/src/pipeline/__tests__/stream-executor.incident-gates.test.ts \
+  src/__tests__/restart-cut-incident-attempt.test.ts
 ```
 
 이 문서 작성 시점에 위 명령의 결과는 **기록되지 않았다** — 통과 주장 없음.
-라이브 경로(실제 eagle-eye → Slack → 시도 → 결과 줄) 실측도 **아직 없다.**
+
+라이브 경로 실측 (dev 배포본, 2026-11-09): Eagle 봇 이메일을 자리표시 값으로 채우는 우회를 적용한 상태에서
+eagle-eye `--smoke-incident --dispatch-investigator` 1회가 `v1_result_stored=true`, `reached_terminal=true`로
+끝났다(요청 03:03:17Z → 결과 03:04:20Z). 우회 없이(이 문서의 이메일 게이트 수정만으로) 같은 결과가 나오는지는
+이 수정이 배포된 뒤 다시 잰다.
 
 ## 9. Pending
 
