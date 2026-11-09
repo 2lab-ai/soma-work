@@ -1,4 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../../../admin-utils', () => ({
+  isAdminUser: vi.fn((userId: string) => userId === 'U_ADMIN'),
+}));
+
 import { setInstructionApprovals } from '../../../instruction-approval';
 import { ChoiceActionHandler, FORM_OWNER_ONLY_ERROR } from '../choice-action-handler';
 
@@ -163,6 +168,51 @@ describe('ChoiceActionHandler — someone else’s answer waits for the owner (#
       'C123',
       'U_OWNER',
       expect.stringContaining('소유자가 승인하면'),
+    );
+  });
+});
+
+describe('ChoiceActionHandler — an admin answering a question asked for admins (#1070)', () => {
+  afterEach(() => setInstructionApprovals(undefined));
+
+  function adminQuestion(setupResult: ReturnType<typeof setup>) {
+    (setupResult.session.actionPanel.pendingQuestion as any).audience = 'admins';
+    return setupResult;
+  }
+
+  it('is not held for the owner: the question is answered and the turn is marked as an admin answer', async () => {
+    const { handler, messageHandler, threadPanel, allows } = adminQuestion(setup(false));
+    await handler.handleChoiceFromDashboard(SESSION_KEY, '1', 'A', 'Q?', 'U_ADMIN', { adminAnswer: true });
+    expect(allows).not.toHaveBeenCalled();
+    expect(threadPanel.resolveChoice).toHaveBeenCalled();
+    expect(messageHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ user: 'U_ADMIN', text: '1', routeContext: { adminAnswer: true } }),
+      expect.any(Function),
+    );
+  });
+
+  it('refuses the flag from a non-admin or for the owner’s own question, before anything is consumed', async () => {
+    const asNonAdmin = adminQuestion(setup(false));
+    await expect(
+      asNonAdmin.handler.handleChoiceFromDashboard(SESSION_KEY, '1', 'A', 'Q?', 'U_OTHER', { adminAnswer: true }),
+    ).rejects.toThrow('Not an admin question');
+    const ownersQuestion = setup(false);
+    await expect(
+      ownersQuestion.handler.handleChoiceFromDashboard(SESSION_KEY, '1', 'A', 'Q?', 'U_ADMIN', { adminAnswer: true }),
+    ).rejects.toThrow('Not an admin question');
+    for (const { threadPanel, messageHandler } of [asNonAdmin, ownersQuestion]) {
+      expect(threadPanel.resolveChoice).not.toHaveBeenCalled();
+      expect(messageHandler).not.toHaveBeenCalled();
+    }
+  });
+
+  it('without the flag an admin who is not the owner is still held, as before', async () => {
+    const { handler, threadPanel, messageHandler } = adminQuestion(setup(false));
+    await handler.handleChoiceFromDashboard(SESSION_KEY, '1', 'A', 'Q?', 'U_ADMIN');
+    expect(threadPanel.resolveChoice).not.toHaveBeenCalled();
+    expect(messageHandler).toHaveBeenCalledWith(
+      expect.not.objectContaining({ routeContext: expect.anything() }),
+      expect.any(Function),
     );
   });
 });

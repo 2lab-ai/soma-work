@@ -620,6 +620,43 @@ describe('dashboard admin approvals (#620)', () => {
       ).toBe('https://example.slack.com/archives/D1/p1');
     });
 
+    it('#1070 — a question the model asked for admins is labelled as such and answered like any question card', async () => {
+      const calls: any[] = [];
+      const { c } = client({
+        fetch: async (url: string, init: any) => {
+          calls.push([url, JSON.parse(init.body)]);
+          return { ok: true, status: 200, json: async () => ({ ok: true, outcome: 'approved' }) };
+        },
+      });
+      const QUESTION = {
+        id: 'session_question:C1:t1~ts1',
+        kind: 'session_question',
+        card: 'question',
+        title: '시험 카드를 승인할까요?',
+        choices: [
+          { id: 'approve', label: '승인한다' },
+          { id: 'stop', label: '그만둔다' },
+          { id: 'later', label: '나중에' },
+        ],
+        recommendedId: 'approve',
+        requesterId: 'U1',
+        place: { channel: 'C1', threadTs: 't1' },
+        createdAt: 1_700_000_000_000,
+      };
+      c.applyAdminApprovals({ pending: [QUESTION], resolved: [] });
+      expect(c.adminApprovalData('session_question:C1:t1~ts1')).toMatchObject({
+        kind: 'question',
+        label: expect.stringContaining('에이전트 질문'),
+      });
+      expect(await c.answerAdminApproval('session_question:C1:t1~ts1', 'approve')).toMatchObject({
+        status: 'resolved',
+        choiceId: 'approve',
+      });
+      expect(calls).toEqual([
+        ['/api/dashboard/admin-approvals/answer', { id: 'session_question:C1:t1~ts1', choiceId: 'approve' }],
+      ]);
+    });
+
     it('answered elsewhere as a denial of a grant choice: the card shows denied, not the attempted choice', () => {
       const { c } = client();
       c.applyAdminApprovals({ pending: [ENV_REQUEST], resolved: [] });

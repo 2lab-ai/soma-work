@@ -15,6 +15,8 @@ export interface MessageEvent {
   thread_ts?: string;
   ts: string;
   text?: string;
+  /** #1070 — `adminAnswer`: an admin's answer to a question asked for admins (the owner gate lets it through). */
+  routeContext?: { adminAnswer?: boolean };
 }
 
 export type MessageHandler = (event: MessageEvent, say: SayFn) => Promise<void>;
