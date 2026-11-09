@@ -229,7 +229,11 @@ class SlackMcpServer extends BaseMcpServer {
           properties: {
             url: { type: 'string', description: 'The http(s) URL to share' },
             title: { type: 'string', description: 'What it is — the link text in Slack and the artifact name' },
-            comment: { type: 'string', description: 'A line posted above the link' },
+            comment: {
+              type: 'string',
+              description:
+                'A line posted above the link, as plain text (mrkdwn control characters are escaped; max 3000)',
+            },
             thread: { type: 'string', description: 'Which thread to post to: "work" (default) or "source"' },
           },
           required: ['url'],
