@@ -110,6 +110,52 @@ describe('SessionRegistry persistence', () => {
       expect(owed).toEqual([]);
     });
 
+    // Review of PR #1054 (astra, round 2 P1): the finished marker is saved
+    // before the turn goes idle, so a stop in between leaves `working` on disk
+    // beside the marker. Nothing survives a restart, so the session loads idle
+    // — the ingress would refuse every retry as `session_busy` otherwise — and
+    // a conclusion that was posted is not owed again.
+    it('loads a finished attempt saved as working idle, and owes nothing for a posted conclusion', () => {
+      saveIncident({ activityState: 'working', incidentAttemptFinishedId: 'AT-1', incidentAttemptPublishedId: 'AT-1' });
+
+      const { restored, owed } = load();
+      expect(restored?.activityState).toBe('idle');
+      expect(restored?.incidentAttemptFinishedId).toBe('AT-1');
+      expect(restored?.incidentResultOwedId).toBeUndefined();
+      expect(owed).toEqual([]);
+      // Written back, so the next load reads idle too.
+      expect(new SessionRegistry().loadSessions()).toBeGreaterThan(0);
+      const raw = JSON.parse(fs.readFileSync(`${TEST_DATA_DIR}/sessions.json`, 'utf-8')) as Array<{
+        threadTs: string;
+        activityState?: string;
+      }>;
+      expect(raw.find((r) => r.threadTs === '172.001')?.activityState).toBe('idle');
+    });
+
+    it('revives an archived incident session with its debt', () => {
+      const registry = new SessionRegistry();
+      const outcome = registry.restoreArchivedSession(
+        {
+          ownerId: 'U_EAGLE',
+          ownerName: 'Eagle',
+          channelId: 'C123',
+          threadTs: '172.001',
+          sessionId: 'session-incident',
+          archivedAt: Date.now(),
+          lastActivity: new Date().toISOString(),
+          incidentRequest: { ...REQUEST },
+          incidentAttemptFinishedId: 'AT-1',
+          incidentResultOwedId: 'AT-1',
+        } as any,
+        '/tmp/U_EAGLE/session_1',
+      );
+
+      expect(outcome).toMatchObject({ ok: true });
+      const back = registry.getSession('C123', '172.001');
+      expect(back?.incidentAttemptFinishedId).toBe('AT-1');
+      expect(back?.incidentResultOwedId).toBe('AT-1');
+    });
+
     // A session saved by a build before these markers: finished, nothing owed.
     it('leaves a finished attempt that owes nothing alone', () => {
       saveIncident({ incidentAttemptFinishedId: 'AT-1' });

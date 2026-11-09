@@ -620,12 +620,16 @@ export interface IncidentResultOwed {
 function settleIncidentAttemptOnLoad(session: ConversationSession): { attemptId: string; owed: boolean } | undefined {
   const attemptId = session.incidentRequest?.attempt_id;
   if (typeof attemptId !== 'string') return undefined;
+  // Idle in every case: the finished marker is saved before the turn goes
+  // idle, so a stop in between leaves `working` beside it, and the ingress
+  // would refuse every retry as `session_busy` (review of PR #1054, round 2).
+  const wasBusy = session.activityState !== 'idle';
+  session.activityState = 'idle';
   const published = session.incidentAttemptPublishedId === attemptId;
   const cut = session.incidentAttemptFinishedId !== attemptId;
   const stillOwed = session.incidentResultOwedId === attemptId && !published;
-  if (!cut && !stillOwed) return undefined;
+  if (!cut && !stillOwed) return wasBusy ? { attemptId, owed: false } : undefined;
   session.incidentAttemptFinishedId = attemptId;
-  session.activityState = 'idle';
   const owed = !published && session.state !== 'SLEEPING';
   session.incidentResultOwedId = owed ? attemptId : undefined;
   return { attemptId, owed };
@@ -2075,6 +2079,7 @@ export class SessionRegistry {
       incidentRequest: archived.incidentRequest,
       incidentAttemptFinishedId: archived.incidentAttemptFinishedId,
       incidentAttemptPublishedId: archived.incidentAttemptPublishedId,
+      incidentResultOwedId: archived.incidentResultOwedId,
       // Handoff enforcement state as it was: the PR-issue precondition keeps
       // applying, and a consumed budget stays consumed. An archive from
       // before the budget was kept gets none (fail closed).
@@ -4005,6 +4010,8 @@ export class SessionRegistry {
           typeof serialized.incidentAttemptFinishedId === 'string' ? serialized.incidentAttemptFinishedId : undefined,
         incidentAttemptPublishedId:
           typeof serialized.incidentAttemptPublishedId === 'string' ? serialized.incidentAttemptPublishedId : undefined,
+        incidentResultOwedId:
+          typeof serialized.incidentResultOwedId === 'string' ? serialized.incidentResultOwedId : undefined,
       };
       return getArchiveStore().archive(session, key, reason, dashboardTask ? { slackless: true } : undefined) !== false;
     } catch (err) {
