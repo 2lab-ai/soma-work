@@ -343,21 +343,51 @@ function sleepSync(ms) {
 }
 
 function lockHolderGone(lock) {
-  // The lock holds its publisher's pid: gone when that process no longer exists
-  // (or, unreadable, when the lock is older than LOCK_STALE_MS).
+  // The lock holds its publisher's pid: abandoned when that process no longer
+  // exists, or when the lock is older than LOCK_STALE_MS whatever it holds (a
+  // publish never holds it that long; a recycled pid must not keep it forever).
   try {
+    if (Date.now() - lstatSync(lock).mtimeMs > LOCK_STALE_MS) return true;
     const pid = Number(readFileSync(lock, 'utf8').trim());
-    if (Number.isSafeInteger(pid) && pid > 0) {
-      try {
-        process.kill(pid, 0);
-        return false;
-      } catch (err) {
-        return err.code === 'ESRCH';
-      }
+    if (!Number.isSafeInteger(pid) || pid <= 0) return false; // being written — the age check covers a dead writer
+    try {
+      process.kill(pid, 0);
+      return false;
+    } catch (err) {
+      return err.code === 'ESRCH';
     }
-    return Date.now() - lstatSync(lock).mtimeMs > LOCK_STALE_MS;
   } catch {
     return false; // released meanwhile — the next create decides
+  }
+}
+
+/** How long reclaiming an abandoned lock may take before its own reap lock counts as abandoned. */
+const REAP_STALE_MS = 5_000;
+
+function reclaimAbandonedLock(lock) {
+  // Removing an abandoned lock is check-then-unlink, so it runs under a second
+  // lock (#1074 review r3): two waiters that both judged the lock abandoned
+  // must not both remove it — the second would delete the first one's fresh
+  // lock. Under the reap lock the main lock can only change by a reaper (a
+  // creator needs it absent, a holder removes only its own), so the re-check
+  // here is final. The reap section is a few syscalls; a reap lock older than
+  // REAP_STALE_MS belongs to a reaper that died inside it.
+  const reap = `${lock}.reap`;
+  try {
+    writeFileSync(reap, String(process.pid), { flag: 'wx' });
+  } catch (err) {
+    if (err.code !== 'EEXIST') throw err;
+    try {
+      if (Date.now() - lstatSync(reap).mtimeMs > REAP_STALE_MS) rmSync(reap, { force: true });
+    } catch {
+      /* released meanwhile */
+    }
+    return;
+  }
+  try {
+    if (lockHolderGone(lock)) rmSync(lock, { force: true });
+  } finally {
+    rmSync(reap, { force: true });
   }
 }
 
@@ -375,12 +405,9 @@ function acquirePublishLock(dir, name) {
       break;
     } catch (err) {
       if (err.code !== 'EEXIST') throw err;
-      if (lockHolderGone(lock)) {
-        rmSync(lock, { force: true });
-        continue;
-      }
+      if (lockHolderGone(lock)) reclaimAbandonedLock(lock);
       if (Date.now() > deadline) throw new Error(`timed out waiting for the publish lock of ${name}`);
-      sleepSync(50);
+      sleepSync(20);
     }
   }
   let held = true;

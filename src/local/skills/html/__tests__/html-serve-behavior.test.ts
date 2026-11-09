@@ -7,6 +7,7 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import http from 'node:http';
@@ -320,5 +321,41 @@ describe('local:html serve.mjs — behavioral contract (real daemon, real GET)',
     writeFileSync(join(durableRoot, '.lock-orphan.html'), '999999');
     expect(publishBytes('orphan.html', 'O')).toMatchObject({ version: 1 });
     expect(existsSync(join(durableRoot, '.lock-orphan.html'))).toBe(false);
+  }, 60_000);
+
+  it('#1074 r3 — several publishers meeting an abandoned lock: one at a time, every revision kept', async () => {
+    publishBytes('crowd.html', 'ORIGINAL');
+    writeFileSync(join(durableRoot, '.lock-crowd.html'), '999999'); // its publisher is gone
+    const bodies = ['P1', 'P2', 'P3', 'P4'];
+    await Promise.all(
+      bodies.map(
+        (body) =>
+          new Promise<void>((ok, fail) => {
+            const staged = join(mkdtempSync(join(tmpdir(), 'soma-serve-crowd-')), 'crowd.html');
+            writeFileSync(staged, body);
+            const child = spawn(process.execPath, [SERVER, '--file', staged, '--port', String(PORT)], {
+              env,
+              stdio: 'ignore',
+            });
+            child.on('exit', (code) => (code === 0 ? ok() : fail(new Error(`publish exited ${code}`))));
+          }),
+      ),
+    );
+    const seen = [
+      readFileSync(join(durableRoot, 'crowd.html'), 'utf8'),
+      ...archivesOf('crowd.html').map((f) => readFileSync(join(versionsDir('crowd.html'), f), 'utf8')),
+    ].sort();
+    expect(seen).toEqual(['ORIGINAL', 'P1', 'P2', 'P3', 'P4']);
+    expect(existsSync(join(durableRoot, '.lock-crowd.html'))).toBe(false);
+    expect(existsSync(join(durableRoot, '.lock-crowd.html.reap'))).toBe(false);
+  }, 180_000);
+
+  it('#1074 r3 — a lock older than ten minutes is abandoned even if its pid now belongs to a live process', () => {
+    const lock = join(durableRoot, '.lock-recycled.html');
+    writeFileSync(lock, String(process.pid)); // a live pid (this test runner)
+    const old = new Date(Date.now() - 11 * 60_000);
+    utimesSync(lock, old, old);
+    expect(publishBytes('recycled.html', 'R')).toMatchObject({ version: 1 });
+    expect(existsSync(lock)).toBe(false);
   }, 60_000);
 });
