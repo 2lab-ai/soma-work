@@ -37,7 +37,7 @@ describe('local:improve-animations skill — vendored contract', () => {
     expect(description).toMatch(/Triggers on /);
     expect(description).toMatch(/[가-힣]/);
     expect(description.length).toBeLessThanOrEqual(1024);
-    expect(fm['allowed-tools']).toBe('Read, Grep, Glob, Write, Bash');
+    expect(fm['allowed-tools']).toBe('Read, Grep, Glob, Edit, Write, Bash, Agent');
     expect(fm.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(fm.license).toBe('MIT');
   });
@@ -58,16 +58,24 @@ describe('local:improve-animations skill — vendored contract', () => {
     expect(body).not.toMatch(/respond only with/i);
   });
 
-  it('maps every upstream-only skill name the body mentions to a local one (or says it is not vendored)', () => {
+  it('maps every upstream-only skill name the body mentions to a local skill that exists, or says it is not vendored', () => {
     const rest = body.replace(attribution, '');
-    for (const n of UPSTREAM_ONLY) if (rest.includes(`\`${n}\``)) expect(attribution, n).toContain(`\`${n}\``);
+    for (const n of UPSTREAM_ONLY) {
+      if (!rest.includes(`\`${n}\``)) continue;
+      expect(attribution, n).toMatch(new RegExp(`\`${n}\`[^;.]*?(→|not vendored)`));
+    }
+    const targets = [...attribution.matchAll(/→ `([a-z0-9-]+)`/g)].map((x) => x[1]);
+    expect(targets.length).toBeGreaterThan(0);
+    for (const t of targets) expect(existsSync(resolve(SKILL_ROOT, '..', t, 'SKILL.md')), t).toBe(true);
     expect(fm.description as string).not.toMatch(
       /\b(review-animations|emil-design-eng|animate-expo|pick-ui-library)\b/,
     );
   });
 
   it("writes plans to the repository's own plan directory (soma-work: docs/current/plans/animations/)", () => {
-    expect(body).toMatch(/\*\*Plan location \(local\)\.\*\* Where the repository names its own place for plans/);
+    expect(body).toMatch(
+      /\*\*Plan location \(local\)\.\*\* \*The plan directory\* below is the repository's own place for plans/,
+    );
     expect(body).toMatch(/`docs\/current\/plans\/animations\/`/);
   });
 
@@ -80,6 +88,21 @@ describe('local:improve-animations skill — vendored contract', () => {
       expect(existsSync(resolve(SKILL_ROOT, f)), f).toBe(true);
       expect(body).toContain(`(${f})`);
     }
+  });
+
+  it('every rule names the plan directory, not a bare plans/ (hard rule 1, phase 4, README, reconcile, template)', () => {
+    expect(body).toMatch(
+      /^1\. \*\*Never modify source code\.\*\* The only files you create or edit live under the plan directory/m,
+    );
+    expect(body).toMatch(/written into the plan directory as `NNN-short-slug\.md`/);
+    expect(body).toMatch(/creating or updating `README\.md` in the plan directory/);
+    expect(body).toMatch(/^\| `reconcile` \| Re-check the plan directory/m);
+    expect(body).not.toMatch(/`plans\/README\.md`|written into `plans\/`|Re-check `plans\/`/);
+    expect(readFileSync(resolve(SKILL_ROOT, 'PLAN-TEMPLATE.md'), 'utf8')).not.toContain('`plans/README.md`');
+  });
+
+  it('the audit defers to the local motion-design standards on exit ease-in and large overlays', () => {
+    expect(readFileSync(resolve(SKILL_ROOT, 'AUDIT.md'), 'utf8')).toMatch(/the local `motion-design` standards win/);
   });
 
   it('links its attribution; LICENSES/ carries the upstream MIT license and a NOTICE pinned to a commit', () => {

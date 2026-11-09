@@ -25,7 +25,7 @@ Decision order for easing:
 - Constant motion (marquee, progress) → **`linear`**
 - Default → **`ease-out`**
 
-**`ease-in` on UI is always a finding** — it starts slow, delaying the exact moment the user is watching. Built-in CSS easings are too weak for deliberate motion; plans should introduce strong custom curves (as tokens, matching repo conventions):
+**`ease-in` on UI is always a finding** — it starts slow, delaying the exact moment the user is watching. *(Local note (soma-work): the local `motion-design` standards win. An accelerating `ease-in` on an exit, and 300–500ms on a large overlay (a modal, a drawer), are allowed there; flag them only outside those cases.)* Built-in CSS easings are too weak for deliberate motion; plans should introduce strong custom curves (as tokens, matching repo conventions):
 
 ```css
 --ease-out: cubic-bezier(0.23, 1, 0.32, 1);        /* strong ease-out for UI */
@@ -43,7 +43,7 @@ Duration budgets — **UI animations stay under 300ms**:
 | Modals, drawers | 200–500ms |
 | Marketing / explanatory | Can be longer |
 
-Hunt for: `ease-in` anywhere, bare `ease`/`linear` on entrances, durations > 300ms on UI elements, tooltip delay + animation on every tooltip in a toolbar (after the first, they should be instant).
+Hunt for: `ease-in` anywhere, bare `ease`/`linear` on entrances, durations > 300ms on UI elements (except large overlays, per the local note above), tooltip delay + animation on every tooltip in a toolbar (after the first, they should be instant).
 
 ## 3. Physicality & origin
 

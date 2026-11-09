@@ -15,6 +15,7 @@ How to build gestures that feel physical. A gesture is direct manipulation: whil
 ## First decision: build it, or use a solution that exists?
 
 Doing a drawer gesture *right* means momentum-based dragging, overlay opacity matched to drag progress, velocity-aware dismissal, focus trapping, and Escape-to-close. That is weeks of edge cases, not an afternoon. **For a bottom sheet / drawer, default to [Vaul](https://vaul.emilkowal.ski/)** — it exists precisely because this is hard to hand-roll. Build the gesture yourself only when no library covers the interaction (custom swipe cards, bespoke drag interactions). Use the `pick-ui-library` skill when unsure.
+> **Local note (soma-work):** here the default is the `@2lab.ai/ui` drawer (`<ui-drawer mode="sheet">`), not Vaul, and `pick-ui-library` is not vendored. Vaul stays the reference for the curve below.
 
 ## The two phases of every gesture
 

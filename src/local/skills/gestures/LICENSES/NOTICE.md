@@ -18,4 +18,6 @@ Upstream commit referenced: `715c1807e08c497cfd1dc4feb450a2a3300ef2a9`
 - An attribution paragraph under the title, with a note mapping upstream skill
   names in the body to the local ones. The note also says the default sheet here is
   the `@2lab.ai/ui` drawer (zero runtime dependencies), not Vaul.
+- A local note under "First decision": in soma-work the default sheet is the
+  `@2lab.ai/ui` drawer, not Vaul; `pick-ui-library` is not vendored.
 - Body content is otherwise kept verbatim from upstream.

@@ -265,6 +265,9 @@ const onEnter = async () => {
   ready.current = true;
 };
 
+// Local note (soma-work): the action itself runs first, on every click and on keyboard activation;
+// only the decorative replay below waits for the buildup. play() also stops the old handles after the
+// new animate() calls have started (arguments run first): stop them before building the next steps.
 const onClick = () => {
   if (!ready.current) return;
   // A repeat action skips the buildup: the same proportions, earlier in the timeline

@@ -21,9 +21,15 @@ Upstream commit referenced: `715c1807e08c497cfd1dc4feb450a2a3300ef2a9`
   (soma-work runs skills inside a task, where a reply that waits for a question
   stalls the pipeline). The section's scope paragraph is kept, right under the
   attribution paragraph.
-- A "Plan location (local)" paragraph: a repository's own plan directory
-  (soma-work: `docs/current/plans/animations/`) replaces upstream's `plans/`
-  throughout, including PLAN-TEMPLATE.md and `reconcile`.
+- A "Plan location (local)" paragraph defines *the plan directory* (the
+  repository's own; soma-work: `docs/current/plans/animations/`; else upstream's
+  `plans/` or `animation-plans/`). Hard rule 1, phase 4, the README step, the
+  `reconcile` row and PLAN-TEMPLATE.md say "the plan directory" instead of
+  `plans/`.
+- `allowed-tools` adds Edit (plans are edited and reconciled) and Agent
+  (`execute` dispatches a subagent).
+- AUDIT.md: a local note — the local `motion-design` standards win on exit
+  `ease-in` and on 300–500ms large overlays.
 - The `execute` row names `review-motion` as the review bar (upstream:
   `review-animations`, not vendored here).
-- Body content is otherwise kept verbatim from upstream. Supporting files are copied verbatim.
+- Body content is otherwise kept verbatim from upstream. Supporting files are copied verbatim apart from the local notes listed above.

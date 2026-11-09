@@ -21,4 +21,8 @@ Upstream commit referenced: `715c1807e08c497cfd1dc4feb450a2a3300ef2a9`
   (soma-work runs skills inside a task, where a reply that waits for a question
   stalls the pipeline). The section's scope paragraph is kept, right under the
   attribution paragraph.
+- Local corrections: the carousel's `touch-action` keeps `pinch-zoom` (the
+  skill's own never-disable-zoom rule); iOS Safari's keyboard shrinks the
+  visual viewport, not `dvh` — a bottom-pinned composer follows
+  `window.visualViewport`.
 - Body content is otherwise kept verbatim from upstream.

@@ -53,9 +53,15 @@ describe('local:choreograph skill — vendored contract', () => {
     expect(body).not.toMatch(/respond only with/i);
   });
 
-  it('maps every upstream-only skill name the body mentions to a local one (or says it is not vendored)', () => {
+  it('maps every upstream-only skill name the body mentions to a local skill that exists, or says it is not vendored', () => {
     const rest = body.replace(attribution, '');
-    for (const n of UPSTREAM_ONLY) if (rest.includes(`\`${n}\``)) expect(attribution, n).toContain(`\`${n}\``);
+    for (const n of UPSTREAM_ONLY) {
+      if (!rest.includes(`\`${n}\``)) continue;
+      expect(attribution, n).toMatch(new RegExp(`\`${n}\`[^;.]*?(→|not vendored)`));
+    }
+    const targets = [...attribution.matchAll(/→ `([a-z0-9-]+)`/g)].map((x) => x[1]);
+    expect(targets.length).toBeGreaterThan(0);
+    for (const t of targets) expect(existsSync(resolve(SKILL_ROOT, '..', t, 'SKILL.md')), t).toBe(true);
     expect(fm.description as string).not.toMatch(
       /\b(review-animations|emil-design-eng|animate-expo|pick-ui-library)\b/,
     );
@@ -66,6 +72,13 @@ describe('local:choreograph skill — vendored contract', () => {
       expect(existsSync(resolve(SKILL_ROOT, f)), f).toBe(true);
       expect(body).toContain(`(${f})`);
     }
+  });
+
+  it('the hover-buildup gate guards only the decorative replay, never the action (local note)', () => {
+    expect(body).toMatch(/\*\*Local note \(soma-work\):\*\* gate only the decorative replay, never the action\./);
+    expect(readFileSync(resolve(SKILL_ROOT, 'RECIPES.md'), 'utf8')).toMatch(
+      /Local note \(soma-work\): the action itself runs first/,
+    );
   });
 
   it('links its attribution; LICENSES/ carries the upstream MIT license and a NOTICE pinned to a commit', () => {

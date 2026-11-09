@@ -21,4 +21,7 @@ Upstream commit referenced: `715c1807e08c497cfd1dc4feb450a2a3300ef2a9`
   (soma-work runs skills inside a task, where a reply that waits for a question
   stalls the pipeline). The section's scope paragraph is kept, right under the
   attribution paragraph.
+- A local note under the property-swap table: an `opacity` fade replacing a
+  `display`/`visibility` swap still needs `pointer-events: none` and, after the
+  exit, `visibility: hidden` or `inert`.
 - Body content is otherwise kept verbatim from upstream.

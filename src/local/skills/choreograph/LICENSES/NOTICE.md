@@ -21,4 +21,7 @@ Upstream commit referenced: `715c1807e08c497cfd1dc4feb450a2a3300ef2a9`
   (soma-work runs skills inside a task, where a reply that waits for a question
   stalls the pipeline). The section's scope paragraph is kept, right under the
   attribution paragraph.
-- Body content is otherwise kept verbatim from upstream. Supporting files are copied verbatim.
+- Local notes in the body and RECIPES.md: the hover-buildup gate guards only
+  the decorative replay, never the action (keyboard users never hover); the
+  `play()` helper's arguments start before it stops the old handles.
+- Body content is otherwise kept verbatim from upstream. Supporting files are copied verbatim apart from the local notes listed above.

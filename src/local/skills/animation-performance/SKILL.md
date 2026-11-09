@@ -87,6 +87,8 @@ Every property enters this pipeline at one of three points, and the cost differs
 | `display` / `visibility` swaps | `opacity` |
 | `box-shadow` | `filter: drop-shadow(…)` |
 
+> **Local note (soma-work):** `opacity` alone leaves a closed element focusable and clickable. Pair the fade with `pointer-events: none` and, once the exit ends, `visibility: hidden` (or `inert`), so it is hidden for the keyboard and for screen readers too.
+
 The last one is the one people miss. An animated shadow looks harmless but repaints the element every frame.
 
 Two things follow:
