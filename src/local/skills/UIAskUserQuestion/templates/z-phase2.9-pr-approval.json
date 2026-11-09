@@ -4,6 +4,9 @@
   "type": "user_choice",
   "question": "[small] PR #{pr_number} 머지 승인?",
   "context": "CI: {ci_status} (run {ci_run_id}). 리뷰 스레드: {unresolved_threads} unresolved. 변경: {files_changed} 파일 {loc_add}/{loc_del} LoC. 머지 상태: {merge_state} · {mergeable}. trinity 리뷰: {review_summary} (tier: {review_tier}). ztrace 결과: {ztrace_verdict}. Approve 시 squash merge → branch delete → phase3 local:es executive summary 생성하여 stakeholder에게 전달.",
+  "blockedWork": "PR #{pr_number} 머지와 phase3 local:es 요약",
+  "reversible": true,
+  "reversibleWhy": "머지 커밋은 git revert로 되돌릴 수 있다 — 배포는 별도 단계",
   "choices": [
     {
       "id": "a",

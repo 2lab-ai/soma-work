@@ -4,6 +4,9 @@
   "type": "user_choice",
   "question": "[small] PR #{pr_number} 승인할까? (zcheck READY)",
   "context": "CI: {ci_status} (run {ci_run_id}, {ci_duration}). 리뷰 스레드: {unresolved_threads} unresolved. 머지 상태: {merge_state} · {mergeable}. 변경 범위: {files_changed} 파일, {loc_add}/{loc_del} LoC. Approve 선택 시 머지 → local:es → 다음 phase는 z phase4/5 절차가 수행한다 (autoz에서는 trinity 리뷰 게이트 통과 후).",
+  "blockedWork": "PR #{pr_number} 머지 (z phase4/5)",
+  "reversible": true,
+  "reversibleWhy": "머지 커밋은 git revert로 되돌릴 수 있다 — 배포는 별도 단계",
   "choices": [
     {
       "id": "a",

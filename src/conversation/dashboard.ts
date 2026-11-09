@@ -41,6 +41,8 @@ import { plainTldrLine } from '@soma/slack/summary-service';
 import type { FastifyInstance } from 'fastify';
 import { SDK_EFFORT_LEVELS } from 'soma-lib';
 import type { CronExecutionRecord, CronJob, CronJobPatch } from 'somalib/cron/cron-storage';
+import type { DecisionFields } from 'somalib/model-commands/session-types';
+import { normalizeDecisionFields } from 'somalib/model-commands/validator';
 import {
   type AdminApprovalSnapshot,
   adminApprovalSnapshot,
@@ -549,20 +551,24 @@ export interface KanbanSession {
    */
   taskPlan?: KanbanTaskPlan;
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
-  pendingQuestion?: {
+  pendingQuestion?: DecisionFields & {
     type: 'user_choice' | 'user_choices';
     question: string;
     choices?: Array<{ id: string; label: string; description?: string }>;
     /** ID of the recommended choice (single-choice) */
     recommendedChoiceId?: string;
+    /** The single question's context (#1073 — it was dropped before). */
+    context?: string;
     /** Multi-choice fields */
-    questions?: Array<{
-      id: string;
-      question: string;
-      choices: Array<{ id: string; label: string; description?: string }>;
-      context?: string;
-      recommendedChoiceId?: string;
-    }>;
+    questions?: Array<
+      DecisionFields & {
+        id: string;
+        question: string;
+        choices: Array<{ id: string; label: string; description?: string }>;
+        context?: string;
+        recommendedChoiceId?: string;
+      }
+    >;
     questionCount?: number;
     title?: string;
     description?: string;
@@ -2729,6 +2735,11 @@ function sessionToKanban(key: string, s: any): KanbanSession {
             ...(s.actionPanel.pendingQuestion.recommendedChoiceId
               ? { recommendedChoiceId: s.actionPanel.pendingQuestion.recommendedChoiceId }
               : {}),
+            // #1073 — the question's context (dropped before) and its decision lines, as the Slack card shows them.
+            ...(typeof s.actionPanel.pendingQuestion.context === 'string' && s.actionPanel.pendingQuestion.context.trim()
+              ? { context: s.actionPanel.pendingQuestion.context }
+              : {}),
+            ...normalizeDecisionFields(s.actionPanel.pendingQuestion),
           }
         : s.actionPanel.pendingQuestion.type === 'user_choices'
           ? {
@@ -2747,6 +2758,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
                 })),
                 context: q.context,
                 ...(q.recommendedChoiceId ? { recommendedChoiceId: q.recommendedChoiceId } : {}),
+                ...normalizeDecisionFields(q),
               })),
             }
           : undefined // Unknown question type — skip
@@ -7892,6 +7904,11 @@ function acQuestionData(s, q) {
     }),
     allowOther: true,
   };
+  // #1073 — the context under the question, then its decision lines (the card keeps line breaks).
+  var desc = [];
+  if (typeof q.context === 'string' && q.context.trim()) desc.push(q.context.trim());
+  desc = desc.concat(decisionLines(q));
+  if (desc.length) d.description = desc.join('\\n');
   var rec = resolveRecommendedId(q.recommendedChoiceId, q.choices);
   if (rec) d.recommendedId = String(rec);
   var lock = acQuestionLock(s);
@@ -9663,6 +9680,25 @@ function resolveRecommendedId(explicitId, options) {
   if (explicitId && (options || []).some(function(o) { return o.id === explicitId; })) return explicitId;
   var legacy = (options || []).find(function(o) { return /\\(Recommended(?:\\s*·\\s*\\d+\\/\\d+)?\\)\\s*$/i.test(o.label || ''); });
   return legacy ? legacy.id : null;
+}
+// #1073 — a question's decision lines, as the Slack card shows them (@soma/slack decision-lines): what the answer is
+// holding up, what is at stake, whether the choice can be undone and why — in this order, only the ones it has.
+// md: markdown for the multi-question form (the irreversible label bold); else plain text for the single question
+// card. The server already normalized the values (one line each); the page shows them as text (escaped by the element).
+function decisionLines(q, md) {
+  var out = [];
+  if (!q || typeof q !== 'object') return out;
+  var text = function(v) { return typeof v === 'string' ? v.replace(/\\s+/g, ' ').trim() : ''; };
+  var blocked = text(q.blockedWork);
+  if (blocked) out.push('🚧 막힌 작업 — ' + blocked);
+  var stakes = text(q.stakes);
+  if (stakes) out.push('⚖️ 걸린 것 — ' + stakes);
+  if (typeof q.reversible === 'boolean') {
+    var label = q.reversible ? '↩️ 되돌릴 수 있음' : (md === true ? '⚠️ **되돌릴 수 없음**' : '⚠️ 되돌릴 수 없음');
+    var why = text(q.reversibleWhy);
+    out.push(why ? label + ' — ' + why : label);
+  }
+  return out;
 }
 // A finite number or 0 — numeric fields pass through this before they reach markup.
 function toNum(v) {
@@ -14439,6 +14475,8 @@ function focusPanelComposer(hint) {
 // on the task card by one press: its choices as buttons. Anything else keeps the approval card (pick, then 제출).
 function quickChoicesOf(q) {
   if (!q || q.type !== 'user_choice' || !Array.isArray(q.choices)) return null;
+  // #1073 — a question with decision lines is answered on the card, where the lines show — never by one press.
+  if (decisionLines(q).length) return null;
   var n = q.choices.length;
   if (n < 2 || n > 4) return null;
   for (var i = 0; i < n; i++) {
@@ -16672,7 +16710,12 @@ function mcFormData(s, q) {
         allowCustom: true,
         customPlaceholder: STRINGS.mcCustomPlaceholder,
       };
-      if (item.context) out.context = String(item.context);
+      // #1073 — the context (markdown), a blank line, then the decision lines.
+      var ctx = [];
+      if (item.context) ctx.push(String(item.context));
+      var lines = decisionLines(item, true);
+      if (lines.length) ctx.push(lines.join('\\n'));
+      if (ctx.length) out.context = ctx.join('\\n\\n');
       return out;
     }),
     answers: st.answers,

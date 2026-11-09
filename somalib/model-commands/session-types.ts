@@ -329,9 +329,25 @@ export interface UserChoiceOption {
 }
 
 /**
+ * #1073 — decision lines: what the person needs to answer from the card alone. All optional; most questions carry
+ * none. Normalized by `normalizeDecisionFields` (validator): one line each, at most `DECISION_LINE_MAX_CHARS`.
+ * Shown under the question's context on Slack and the dashboard, in this order. Never part of the answer.
+ */
+export interface DecisionFields {
+  /** The work this answer is holding up. */
+  blockedWork?: string;
+  /** What is at stake in the choice. */
+  stakes?: string;
+  /** Whether the choice can be undone (`false` is shown prominently). */
+  reversible?: boolean;
+  /** Why it can or cannot be undone. Kept only with `reversible`. */
+  reversibleWhy?: string;
+}
+
+/**
  * Single question in a choice form
  */
-export interface UserChoiceQuestion {
+export interface UserChoiceQuestion extends DecisionFields {
   id: string; // Unique question ID (e.g., "q1", "auth", "db")
   question: string; // The question being asked
   choices: UserChoiceOption[]; // 2-5 options
@@ -344,7 +360,7 @@ export interface UserChoiceQuestion {
  * Structured output for single user choice
  * Claude outputs this JSON when user input is needed
  */
-export interface UserChoice {
+export interface UserChoice extends DecisionFields {
   type: 'user_choice';
   question: string; // The question being asked
   choices: UserChoiceOption[]; // 2-5 options

@@ -211,6 +211,7 @@ describe('a RUNNING card waiting out an automatic resume (cardOf + the open card
         'renderCardResume',
         'taskPlanCardHtml',
         'quickChoicesOf',
+        'decisionLines',
         'isBusy',
         'sessionActionsOf',
         'sessionActionHtml',

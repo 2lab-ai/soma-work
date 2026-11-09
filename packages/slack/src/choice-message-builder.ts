@@ -1,3 +1,4 @@
+import { buildDecisionLinesBlock } from './decision-lines';
 import { escapeSlackMrkdwn } from './mrkdwn-escape';
 import type { UserChoice, UserChoiceOption, UserChoices } from './user-choice-extractor';
 
@@ -251,6 +252,10 @@ export class ChoiceMessageBuilder {
       });
     }
 
+    // #1073 — decision lines (none → no block, the card unchanged)
+    const defaultLines = buildDecisionLinesBlock(choice);
+    if (defaultLines) attachmentBlocks.push(defaultLines);
+
     attachmentBlocks.push({ type: 'divider' });
 
     // Build fields for horizontal layout (2 columns) with number emojis.
@@ -324,6 +329,10 @@ export class ChoiceMessageBuilder {
       });
     }
 
+    // #1073 — decision lines (none → no block, the card unchanged)
+    const compactLines = buildDecisionLinesBlock(choice);
+    if (compactLines) blocks.push(compactLines);
+
     blocks.push(...ChoiceMessageBuilder.buildSingleChoiceActionBlocks(choice, sessionKey, turnId));
 
     return ChoiceMessageBuilder.wrapAttachment(blocks);
@@ -361,13 +370,17 @@ export class ChoiceMessageBuilder {
       });
     }
 
+    // #1073 — decision lines (none → no block, the card unchanged)
+    const minimalLines = buildDecisionLinesBlock(choice);
+    if (minimalLines) blocks.push(minimalLines);
+
     blocks.push(...ChoiceMessageBuilder.buildSingleChoiceActionBlocks(choice, sessionKey, turnId));
 
     return ChoiceMessageBuilder.wrapAttachment(blocks);
   }
 
   // ===========================================================================
-  // Multi-choice form (unchanged)
+  // Multi-choice form
   // ===========================================================================
 
   /**
@@ -496,6 +509,10 @@ export class ChoiceMessageBuilder {
             },
           ],
         });
+
+        // #1073 — the decision lines stay under the answer until the form is sent (review before 제출)
+        const answeredLines = buildDecisionLinesBlock(q);
+        if (answeredLines) attachmentBlocks.push(answeredLines);
       } else {
         // Unselected question: show full options
         attachmentBlocks.push({
@@ -517,6 +534,10 @@ export class ChoiceMessageBuilder {
             ],
           });
         }
+
+        // #1073 — decision lines (none → no block). One block per question keeps a 6-question chunk at ≤ 45 blocks.
+        const openLines = buildDecisionLinesBlock(q);
+        if (openLines) attachmentBlocks.push(openLines);
 
         // Options with number emojis. Reorder so the recommended option comes first,
         // but keep OPTION_EMOJIS aligned with the original index (so context prose like
