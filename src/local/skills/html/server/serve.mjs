@@ -50,8 +50,10 @@
  * artifact in place and keeps the bytes it replaces in that name's own
  * namespace, `.versions/<name>/v<N><ext>` (#1074: `report.html` → served at
  * `/.versions/report.html/v1.html`; the same bytes again keep nothing). The
- * read, archive, replace and prune of one name run under its lock file
- * (`.lock-<name>`), so two publishers of one name lose no revision. A name
+ * read, archive, replace, prune and link verification of one name run under
+ * its lock file (`.lock-<name>`, holding the publisher's pid), so two
+ * publishers of one name lose no revision and each verifies its own bytes. A
+ * previous version that cannot be kept refuses the publish (exit 2). A name
  * keeps its newest MAX_ARCHIVED_VERSIONS earlier versions — the only files
  * this server ever removes, and only inside that namespace. Reclaiming disk
  * otherwise is a human decision.
@@ -115,9 +117,10 @@ const HEALTH_PATH = '/__soma-serve-health';
 /** Earlier versions of one name kept in its namespace (#1074). */
 const MAX_ARCHIVED_VERSIONS = 10;
 const VERSIONS_DIR = '.versions';
-/** A publish lock older than this is a publisher that died holding it. */
-const LOCK_STALE_MS = 30_000;
-const LOCK_WAIT_MS = 20_000;
+/** A publish lock whose holder's pid cannot be read and is older than this is abandoned. */
+const LOCK_STALE_MS = 10 * 60_000;
+/** How long a publisher waits for another publisher of the same name (it holds the lock through verification). */
+const LOCK_WAIT_MS = 60_000;
 const HEALTH_BODY = 'soma-html-serve';
 
 const MIME = {
@@ -339,32 +342,59 @@ function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-function withPublishLock(dir, name, fn) {
-  // One publisher of a name at a time (#1074 review r1): `wx` creates the lock
-  // or fails if another publisher holds it; a lock left by a dead publisher
-  // goes stale after LOCK_STALE_MS. Lock files are dotfiles — never listed.
+function lockHolderGone(lock) {
+  // The lock holds its publisher's pid: gone when that process no longer exists
+  // (or, unreadable, when the lock is older than LOCK_STALE_MS).
+  try {
+    const pid = Number(readFileSync(lock, 'utf8').trim());
+    if (Number.isSafeInteger(pid) && pid > 0) {
+      try {
+        process.kill(pid, 0);
+        return false;
+      } catch (err) {
+        return err.code === 'ESRCH';
+      }
+    }
+    return Date.now() - lstatSync(lock).mtimeMs > LOCK_STALE_MS;
+  } catch {
+    return false; // released meanwhile — the next create decides
+  }
+}
+
+function acquirePublishLock(dir, name) {
+  // One publisher of a name at a time, from reading the current file until its
+  // link is verified (#1074 review r1/r2): `wx` creates the lock or fails if
+  // another publisher holds it. A lock whose publisher died is removed and the
+  // create retried (only one waiter wins it). Lock files are dotfiles — never
+  // listed or served as artifacts. Returns release(); exit releases it too.
   const lock = join(dir, `.lock-${name}`);
   const deadline = Date.now() + LOCK_WAIT_MS;
   for (;;) {
     try {
-      closeSync(openSync(lock, 'wx'));
+      writeFileSync(lock, String(process.pid), { flag: 'wx' });
       break;
     } catch (err) {
       if (err.code !== 'EEXIST') throw err;
-      try {
-        if (Date.now() - lstatSync(lock).mtimeMs > LOCK_STALE_MS) rmSync(lock, { force: true });
-      } catch {
-        /* released meanwhile */
+      if (lockHolderGone(lock)) {
+        rmSync(lock, { force: true });
+        continue;
       }
       if (Date.now() > deadline) throw new Error(`timed out waiting for the publish lock of ${name}`);
       sleepSync(50);
     }
   }
-  try {
-    return fn();
-  } finally {
-    rmSync(lock, { force: true });
-  }
+  let held = true;
+  const release = () => {
+    if (!held) return;
+    held = false;
+    try {
+      if (readFileSync(lock, 'utf8').trim() === String(process.pid)) rmSync(lock, { force: true });
+    } catch {
+      /* already gone */
+    }
+  };
+  process.once('exit', release);
+  return release;
 }
 
 /** `.versions/<name>` as a real directory of this user — created when missing; null when it cannot be trusted. */
@@ -372,7 +402,11 @@ function versionsDirOf(dir, name) {
   const base = join(dir, VERSIONS_DIR);
   const mine = join(base, name);
   for (const d of [base, mine]) {
-    if (!existsSync(d)) mkdirSync(d);
+    try {
+      mkdirSync(d);
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err; // made meanwhile, or something sits there: the trust gate decides
+    }
     // Same trust gate as the legacy sweep: never write through a symlink.
     if (!ownedRealDir(d)) return null;
   }
@@ -396,7 +430,7 @@ function archivePrevious(dir, name, bytes) {
   // `.versions/<name>/v<N><ext>`, so the earlier version still opens. Only a
   // regular file is kept (read with O_NOFOLLOW; a symlink sitting there is
   // replaced by the publish, never followed), the same bytes keep nothing.
-  // Runs under the name's publish lock (see withPublishLock).
+  // Runs under the name's publish lock (see acquirePublishLock).
   let st;
   try {
     st = lstatSync(join(dir, name));
@@ -615,12 +649,16 @@ async function publish(file, explicitPort) {
   for (const e of migration.errors) console.error(`legacy migration failed for ${e}`);
   const name = basename(abs);
   const artifactBytes = readFileSync(abs);
-  // Read, archive and replace as one step per name (two publishers of a name lose no revision).
-  const kept = withPublishLock(SERVE_ROOT, name, () => {
-    const k = archivePrevious(SERVE_ROOT, name, artifactBytes);
-    writeFileReplacing(SERVE_ROOT, name, artifactBytes);
-    return k;
-  });
+  // Read, archive, replace and verify as one step per name: two publishers of a name lose no revision, and
+  // each verifies its own bytes (the lock is released after the link is checked, or on exit).
+  const release = acquirePublishLock(SERVE_ROOT, name);
+  const kept = archivePrevious(SERVE_ROOT, name, artifactBytes);
+  if (kept.archiveError) {
+    // Never replace what could not be kept (#1074 review r2): the published version stays as it is.
+    console.error(`publish refused: the previous version of ${name} could not be kept (${kept.archiveError})`);
+    process.exit(2);
+  }
+  writeFileReplacing(SERVE_ROOT, name, artifactBytes);
 
   let chosen = null;
   const ports = explicitPort ? [explicitPort] : [];
@@ -657,6 +695,7 @@ async function publish(file, explicitPort) {
     );
     process.exit(2);
   }
+  release();
 
   const encoded = encodeURIComponent(name);
   console.log(
@@ -668,7 +707,6 @@ async function publish(file, explicitPort) {
         file: join(SERVE_ROOT, name),
         version: kept.version,
         ...(kept.archived ? { archived: kept.archived } : {}),
-        ...(kept.archiveError ? { archiveError: kept.archiveError } : {}),
         ...(kept.unchanged ? { unchanged: true } : {}),
         ...(chosen.note ? { note: chosen.note } : {}),
         ...(migration.migrated ? { migrated: migration.migrated } : {}),

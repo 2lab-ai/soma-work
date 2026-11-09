@@ -285,4 +285,40 @@ describe('local:html serve.mjs — behavioral contract (real daemon, real GET)',
     expect(index.body).toContain('revise.html');
     expect(index.body).not.toContain('.versions');
   });
+
+  it('#1074 r2 — a previous version that cannot be kept refuses the publish and leaves the live file alone', () => {
+    publishBytes('guarded.html', 'KEEP-ME');
+    const elsewhere = mkdtempSync(join(tmpdir(), 'soma-serve-elsewhere-'));
+    const root2 = mkdtempSync(join(tmpdir(), 'soma-serve-root2-'));
+    try {
+      // A second root whose .versions is a symlink to somewhere else (the trust gate refuses it).
+      writeFileSync(join(root2, 'guarded.html'), 'KEEP-ME');
+      symlinkSync(elsewhere, join(root2, '.versions'));
+      const artifact = join(artifactDir, 'guarded.html');
+      writeFileSync(artifact, 'NEW');
+      let code = 0;
+      try {
+        execFileSync(process.execPath, [SERVER, '--file', artifact, '--port', String(PORT)], {
+          env: { ...env, SOMA_HTML_SERVE_ROOT: root2 },
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch (err) {
+        code = (err as { status?: number }).status ?? -1;
+      }
+      expect(code).toBe(2);
+      expect(readFileSync(join(root2, 'guarded.html'), 'utf8')).toBe('KEEP-ME');
+      expect(readdirSync(elsewhere)).toEqual([]);
+      expect(existsSync(join(root2, '.lock-guarded.html'))).toBe(false);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+      rmSync(root2, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('#1074 r2 — a lock left by a publisher that died is taken over', () => {
+    writeFileSync(join(durableRoot, '.lock-orphan.html'), '999999');
+    expect(publishBytes('orphan.html', 'O')).toMatchObject({ version: 1 });
+    expect(existsSync(join(durableRoot, '.lock-orphan.html'))).toBe(false);
+  }, 60_000);
 });
