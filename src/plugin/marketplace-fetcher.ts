@@ -11,6 +11,7 @@ import { Logger } from '../logger';
 import { hasCachedPlugin, readCacheMeta, writeCacheMeta } from './plugin-cache';
 import { formatScanReport, type ScanResult, scanPluginDirectory } from './security-scanner';
 import {
+  type CacheAdmission,
   type CacheMeta,
   EXTERNAL_PLUGIN_PATH,
   type FetchFailure,
@@ -24,13 +25,27 @@ import {
 
 const logger = new Logger('MarketplaceFetcher');
 
+/** Outcome of the security gate: blocked (directory removed), or admitted and how. */
+type GateOutcome = { blocked: ScanResult } | { blocked: null; admission: CacheAdmission };
+
 /**
  * Run security scan on an installed plugin and enforce the gate policy.
- * Returns the ScanResult if the plugin is blocked, null if it passed.
- * When blocked, removes the installed plugin directory.
+ * Returns the blocking ScanResult (and removes the installed plugin directory),
+ * or how the plugin was admitted.
+ *
+ * In `record` mode a blocking scan is logged (report + one error line) and the
+ * plugin stays installed — see {@link SecurityMode}.
  */
-function enforceSecurityGate(installedPath: string, pluginName: string): ScanResult | null {
+function enforceSecurityGate(installedPath: string, pluginName: string, mode: SecurityMode = 'block'): GateOutcome {
   const scanResult = scanPluginDirectory(installedPath, pluginName);
+  if (scanResult.blocked && mode === 'record') {
+    logger.error(
+      `Environment plugin ${pluginName} kept installed despite ${scanResult.riskLevel} security scan (record mode, not blocked)`,
+      { pluginName, riskLevel: scanResult.riskLevel, findings: scanResult.findings.length },
+    );
+    logger.warn(formatScanReport(scanResult, 'recorded'));
+    return { blocked: null, admission: 'recorded' };
+  }
   if (scanResult.blocked) {
     logger.error('Plugin BLOCKED by security scan', {
       pluginName,
@@ -40,15 +55,52 @@ function enforceSecurityGate(installedPath: string, pluginName: string): ScanRes
     logger.warn(formatScanReport(scanResult));
     try {
       fs.rmSync(installedPath, { recursive: true, force: true });
-    } catch {
-      /* ignore */
+    } catch (error) {
+      // Still blocked: the fetch fails, so the name is not resolved and PLUGINS_DIR readers do not
+      // serve it (they serve admitted names only — `admitted-plugin-names`).
+      logger.error('Could not remove a plugin blocked by the security scan; it is not served', {
+        pluginName,
+        path: installedPath,
+        error: (error as Error).message,
+      });
     }
-    return scanResult;
+    return { blocked: scanResult };
   }
   if (scanResult.findings.length > 0) {
     logger.warn(formatScanReport(scanResult));
   }
-  return null;
+  return { blocked: null, admission: 'passed' };
+}
+
+/**
+ * Whether a cached plugin may be served for `pluginRef` under `mode` without
+ * scanning it again: it was installed for this exact ref, and admitted by a
+ * passing scan, by an admin's Force Update, or — only while the ref is still an
+ * environment plugin (`record`) — by record mode. A cache without that
+ * metadata (written before it existed) is never trusted.
+ */
+export function isCacheAdmissible(meta: CacheMeta | null, pluginRef: string, mode: SecurityMode = 'block'): boolean {
+  if (!meta || meta.pluginRef !== pluginRef) return false;
+  if (meta.admission === 'passed' || meta.admission === 'forced') return true;
+  return meta.admission === 'recorded' && mode === 'record';
+}
+
+/**
+ * Gate a plugin that is already on disk before serving it without a fresh
+ * install (a stale cache, a restored backup, a rebuilt plugin list). A cache
+ * admissible for this ref and mode is served as is; anything else is scanned
+ * again under `mode`. Returns the blocking ScanResult (directory removed) or
+ * null when the plugin may be served.
+ */
+export function gateCachedPlugin(
+  pluginsDir: string,
+  pluginName: string,
+  pluginRef: string,
+  mode: SecurityMode = 'block',
+): ScanResult | null {
+  if (isCacheAdmissible(readCacheMeta(pluginsDir, pluginName), pluginRef, mode)) return null;
+  logger.info('Cached plugin not admitted for this ref and mode — scanning it again', { pluginName, pluginRef, mode });
+  return enforceSecurityGate(path.join(pluginsDir, pluginName), pluginName, mode).blocked;
 }
 
 export interface FetchResult {
@@ -60,9 +112,20 @@ export interface FetchResult {
   cached: boolean;
 }
 
+/**
+ * What the security gate does with a blocking (CRITICAL) scan.
+ * - `block` (default): remove the installed plugin and fail with SECURITY_BLOCKED.
+ * - `record`: keep it and log the report. Only for environment plugins
+ *   (`plugin.envPlugins`), which the fleet deploy installs and the runtime
+ *   admin-gates (policy steps 6b/6d); PluginManager decides it per ref.
+ */
+export type SecurityMode = 'block' | 'record';
+
 export interface FetchOptions {
   /** Skip security gate check (for force update) */
   skipSecurityGate?: boolean;
+  /** Gate policy for a blocking scan; the scan still runs. Default `block`. */
+  securityMode?: SecurityMode;
 }
 
 function failure(
@@ -80,6 +143,37 @@ export function isFetchFailure(result: FetchResult | FetchFailure): result is Fe
 /** Build a cached FetchResult for a given plugin. */
 function cachedResult(pluginsDir: string, pluginName: string, sha: string): FetchResult {
   return { pluginPath: path.join(pluginsDir, pluginName), sha, cached: true };
+}
+
+/** SECURITY_BLOCKED failure for a blocking scan; `subject` starts the message ("Plugin", "External plugin", …). */
+export function securityBlockedFailure(subject: string, scan: ScanResult): FetchFailure {
+  return failure('SECURITY_BLOCKED', `${subject} blocked by security scan: ${scan.riskLevel} risk`, {
+    riskLevel: scan.riskLevel,
+    securityFindings: scan.findings.map((f) => ({
+      rule: f.rule,
+      description: f.description,
+      severity: f.severity,
+      file: f.file,
+    })),
+  });
+}
+
+/** Serve a stale cache only through the gate ({@link gateCachedPlugin}). */
+function gatedCachedResult(
+  pluginsDir: string,
+  pluginName: string,
+  sha: string,
+  pluginRef: string,
+  mode: SecurityMode,
+): FetchResult | FetchFailure {
+  const blocked = gateCachedPlugin(pluginsDir, pluginName, pluginRef, mode);
+  return blocked ? securityBlockedFailure('Cached plugin', blocked) : cachedResult(pluginsDir, pluginName, sha);
+}
+
+/** Gate a fresh install: an admin's Force Update skips the scan (`forced`), otherwise it runs under the fetch's mode. */
+function admitInstalled(installedPath: string, pluginName: string, options?: FetchOptions): GateOutcome {
+  if (options?.skipSecurityGate) return { blocked: null, admission: 'forced' };
+  return enforceSecurityGate(installedPath, pluginName, options?.securityMode);
 }
 
 /**
@@ -388,21 +482,34 @@ export async function fetchPlugin(
 ): Promise<FetchResult | FetchFailure> {
   const ref = marketplace.ref || 'main';
   const cached = readCacheMeta(pluginsDir, pluginName);
+  // The plugin directory is keyed by name only; the cache belongs to one ref and one admission.
+  const pluginRef = `${pluginName}@${marketplace.name}`;
+  const mode = options?.securityMode ?? 'block';
 
   // Check if cache is current (skip cache if force options provided — e.g. security gate bypass)
   const remoteSha = resolveRemoteSha(marketplace.repo, ref);
   if (!options?.skipSecurityGate && remoteSha && cached?.sha === remoteSha && hasCachedPlugin(pluginsDir, pluginName)) {
-    logger.info('Plugin cache is current', { pluginName, sha: remoteSha.slice(0, 8) });
-    return cachedResult(pluginsDir, pluginName, remoteSha);
+    if (isCacheAdmissible(cached, pluginRef, mode)) {
+      logger.info('Plugin cache is current', { pluginName, sha: remoteSha.slice(0, 8) });
+      return cachedResult(pluginsDir, pluginName, remoteSha);
+    }
+    // Another ref's content, record-mode content outside record mode, or a cache from before admissions.
+    logger.info('Plugin cache is current but not admitted for this ref and mode — re-downloading', {
+      pluginName,
+      pluginRef,
+      mode,
+      cachedRef: cached.pluginRef,
+      cachedAdmission: cached.admission,
+    });
   }
 
-  // Network failure but we have cache — use stale cache
+  // Network failure but we have cache — use stale cache, through the gate
   if (!remoteSha && hasCachedPlugin(pluginsDir, pluginName)) {
     logger.warn('Cannot reach remote, using stale cache', {
       pluginName,
       cachedSha: cached?.sha?.slice(0, 8),
     });
-    return cachedResult(pluginsDir, pluginName, cached?.sha || 'unknown');
+    return gatedCachedResult(pluginsDir, pluginName, cached?.sha || 'unknown', pluginRef, mode);
   }
 
   // Need to download
@@ -417,12 +524,25 @@ export async function fetchPlugin(
   if (!extractedRoot) {
     if (hasCachedPlugin(pluginsDir, pluginName)) {
       logger.warn('Download failed, falling back to stale cache', { pluginName });
-      return cachedResult(pluginsDir, pluginName, cached?.sha || 'unknown');
+      return gatedCachedResult(pluginsDir, pluginName, cached?.sha || 'unknown', pluginRef, mode);
     }
     return failure('DOWNLOAD_FAILED', 'Failed to download marketplace tarball and no cache available');
   }
 
   try {
+    // The stale-cache fallbacks gate on their own. Past this point a non-security failure
+    // (manifest, missing plugin, install) would leave the cache on disk as it is, where
+    // PLUGINS_DIR readers (skill-locator) still reach it — so content recorded for an
+    // environment plugin, now fetched for another ref or outside record mode, is gated first.
+    const current = readCacheMeta(pluginsDir, pluginName);
+    if (
+      current?.admission === 'recorded' &&
+      hasCachedPlugin(pluginsDir, pluginName) &&
+      !isCacheAdmissible(current, pluginRef, mode)
+    ) {
+      gateCachedPlugin(pluginsDir, pluginName, pluginRef, mode);
+    }
+
     // Read marketplace.json from tarball
     const manifest = readManifest(extractedRoot);
     if (!manifest) {
@@ -454,13 +574,14 @@ export async function fetchPlugin(
         pluginEntry.externalSubdir,
         pluginEntry.externalRef,
         pluginEntry.externalSha,
+        pluginRef,
         options,
       );
       if (isFetchFailure(externalResult)) {
         // Fall back to stale cache if external fetch fails
         if (hasCachedPlugin(pluginsDir, pluginName)) {
           logger.warn('External fetch failed, using stale cache', { pluginName });
-          return cachedResult(pluginsDir, pluginName, cached?.sha || 'unknown');
+          return gatedCachedResult(pluginsDir, pluginName, cached?.sha || 'unknown', pluginRef, mode);
         }
         return externalResult;
       }
@@ -472,20 +593,8 @@ export async function fetchPlugin(
     if (!installedPath) return failure('INSTALL_FAILED', 'Failed to install plugin files');
 
     // Security gate — block CRITICAL risk plugins
-    if (!options?.skipSecurityGate) {
-      const securityBlock = enforceSecurityGate(installedPath, pluginName);
-      if (securityBlock) {
-        return failure('SECURITY_BLOCKED', `Plugin blocked by security scan: ${securityBlock.riskLevel} risk`, {
-          riskLevel: securityBlock.riskLevel,
-          securityFindings: securityBlock.findings.map((f) => ({
-            rule: f.rule,
-            description: f.description,
-            severity: f.severity,
-            file: f.file,
-          })),
-        });
-      }
-    }
+    const gate = admitInstalled(installedPath, pluginName, options);
+    if (gate.blocked) return securityBlockedFailure('Plugin', gate.blocked);
 
     // Write cache metadata
     const sha = remoteSha || 'unknown';
@@ -495,6 +604,8 @@ export async function fetchPlugin(
       marketplace: marketplace.name,
       ref,
       version: manifest.version,
+      pluginRef,
+      admission: gate.admission,
     };
     writeCacheMeta(pluginsDir, pluginName, meta);
 
@@ -540,11 +651,13 @@ async function fetchExternalPlugin(
   externalUrl: string,
   pluginName: string,
   pluginsDir: string,
-  subdir?: string,
-  ref?: string,
-  pinnedSha?: string,
+  subdir: string | undefined,
+  ref: string | undefined,
+  pinnedSha: string | undefined,
+  pluginRef: string,
   options?: FetchOptions,
 ): Promise<FetchResult | FetchFailure> {
+  const mode = options?.securityMode ?? 'block';
   const repo = gitUrlToRepo(externalUrl);
   if (!repo) {
     logger.error('Cannot parse external URL as GitHub repo', { externalUrl, pluginName });
@@ -557,14 +670,19 @@ async function fetchExternalPlugin(
 
   // SHA check for caching — when pinned, compare directly against pinned SHA
   const remoteSha = pinnedSha || resolveRemoteSha(repo, gitRef);
-  if (remoteSha && cached?.sha === remoteSha && hasCachedPlugin(pluginsDir, pluginName)) {
+  if (
+    remoteSha &&
+    cached?.sha === remoteSha &&
+    hasCachedPlugin(pluginsDir, pluginName) &&
+    isCacheAdmissible(cached, pluginRef, mode)
+  ) {
     logger.info('External plugin cache is current', { pluginName, sha: remoteSha.slice(0, 8) });
     return cachedResult(pluginsDir, pluginName, remoteSha);
   }
 
   if (!remoteSha && hasCachedPlugin(pluginsDir, pluginName)) {
     logger.warn('Cannot reach external repo, using stale cache', { pluginName, repo });
-    return cachedResult(pluginsDir, pluginName, cached?.sha || 'unknown');
+    return gatedCachedResult(pluginsDir, pluginName, cached?.sha || 'unknown', pluginRef, mode);
   }
 
   logger.info('Downloading external plugin', { pluginName, repo, ref: gitRef, subdir });
@@ -574,7 +692,7 @@ async function fetchExternalPlugin(
     logger.error('Failed to download external plugin', { pluginName, repo, ref: gitRef });
     if (hasCachedPlugin(pluginsDir, pluginName)) {
       logger.warn('External download failed, falling back to stale cache', { pluginName });
-      return cachedResult(pluginsDir, pluginName, cached?.sha || 'unknown');
+      return gatedCachedResult(pluginsDir, pluginName, cached?.sha || 'unknown', pluginRef, mode);
     }
     return failure('EXTERNAL_FETCH_FAILED', `Failed to download external plugin from ${repo} (ref: ${gitRef})`);
   }
@@ -586,25 +704,9 @@ async function fetchExternalPlugin(
     const installedPath = installPlugin(extractedRoot, subdir || '.', pluginsDir, pluginName);
     if (!installedPath) return failure('INSTALL_FAILED', 'Failed to install external plugin files');
 
-    // Security gate — block CRITICAL risk external plugins
-    if (!options?.skipSecurityGate) {
-      const securityBlock = enforceSecurityGate(installedPath, pluginName);
-      if (securityBlock) {
-        return failure(
-          'SECURITY_BLOCKED',
-          `External plugin blocked by security scan: ${securityBlock.riskLevel} risk`,
-          {
-            riskLevel: securityBlock.riskLevel,
-            securityFindings: securityBlock.findings.map((f) => ({
-              rule: f.rule,
-              description: f.description,
-              severity: f.severity,
-              file: f.file,
-            })),
-          },
-        );
-      }
-    }
+    // Security gate — block CRITICAL risk external plugins (mode as handed down by fetchPlugin)
+    const gate = admitInstalled(installedPath, pluginName, options);
+    if (gate.blocked) return securityBlockedFailure('External plugin', gate.blocked);
 
     const sha = remoteSha || 'unknown';
     writeCacheMeta(pluginsDir, pluginName, {
@@ -612,6 +714,8 @@ async function fetchExternalPlugin(
       fetchedAt: new Date().toISOString(),
       marketplace: `external:${repo}`,
       ref: gitRef,
+      pluginRef,
+      admission: gate.admission,
     });
 
     logger.info('External plugin installed', { pluginName, sha: sha.slice(0, 8), path: installedPath });

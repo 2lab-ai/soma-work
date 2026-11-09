@@ -15,7 +15,12 @@ vi.mock('node:fs', () => ({
 }));
 
 import * as fs from 'node:fs';
+import { setAdmittedPluginNames } from '../plugin/admitted-plugin-names';
 import { autoskillExists, listAvailableSkills, resolveAutoskillContent } from '../skill-locator';
+
+// The PLUGINS_DIR plugins these tests mount are ones PluginManager admitted on a real host. A
+// directory that is not admitted is not served (see src/plugin/__tests__/admitted-plugin-names.test.ts).
+beforeEach(() => setAdmittedPluginNames(['stv', 'superpowers', 'custom']));
 
 function dirent(name: string, isDir = true): any {
   return { name, isDirectory: () => isDir, isFile: () => !isDir };

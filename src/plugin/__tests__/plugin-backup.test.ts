@@ -128,6 +128,28 @@ describe('PluginBackup', () => {
       const restoredMeta: CacheMeta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
       expect(restoredMeta.sha).toBe('abc123def456');
     });
+
+    it('drops the current meta when the backup has none (it describes the replaced content)', () => {
+      const metaPath = path.join(pluginsDir, '.cache', `${pluginName}.meta.json`);
+      fs.unlinkSync(metaPath);
+      const backup = backupPlugin(pluginsDir, pluginName); // no meta in this backup
+      if (!backup) throw new Error('backup failed');
+      expect(backup.metaFileBackup).toBeNull();
+      // A later install writes a meta that vouches for *its* content.
+      const current: CacheMeta = {
+        sha: 'new-sha',
+        fetchedAt: 'now',
+        marketplace: 'test-market',
+        ref: 'main',
+        pluginRef: `${pluginName}@test-market`,
+        admission: 'passed',
+      };
+      fs.writeFileSync(metaPath, JSON.stringify(current));
+
+      restorePlugin(pluginsDir, pluginName, backup.timestamp);
+
+      expect(fs.existsSync(metaPath)).toBe(false);
+    });
   });
 
   // -------------------------------------------------------------------------
