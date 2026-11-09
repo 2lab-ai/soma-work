@@ -4,7 +4,8 @@
  *   GET  /api/skills                       the three lists: 내 스킬 · 환경 스킬 · 시스템 스킬, and the user picker
  *   GET  /api/skills/mine/:name            one of my skills: SKILL.md and its hash
  *   PUT  /api/skills/mine/:name            { content, hash } — save SKILL.md verbatim (409 when it changed meanwhile)
- *   GET  /api/skills/env/:key              an environment skill's SKILL.md (admin, or a user granted it)
+ *   GET  /api/skills/env/:key              an environment skill's SKILL.md and its hash (admin, or a user granted it)
+ *   PUT  /api/skills/env/:key              { content, hash } — an admin saves it (409 when it changed meanwhile)
  *   GET  /api/skills/system/:source/:name  an installed skill's SKILL.md
  *   POST /api/skills/grants                { scope: 'mine'|'env', skill: name|null, userId, allow } — who may run
  *
@@ -17,8 +18,11 @@
  *     names and their own access; the description and the content only an admin or a user granted that skill
  *     (who may run it, so the model reads it anyway); who has access only an admin. Changing access
  *     takes the dashboard's admin gate (admin mode, or the viewer token) and an identified caller: a
- *     dashboard without credentials reads them as a non-admin and cannot change them. The content is not
- *     editable — environment plugins are fetched again from their repo on restart, so an edit would vanish.
+ *     dashboard without credentials reads them as a non-admin and cannot change them. An admin edits the
+ *     content under the same gate. The edit is the file on this host: PluginManager keeps a plugin's cached
+ *     copy while its repo's commit is unchanged (marketplace-fetcher: cache current → no download) and deploys
+ *     keep `plugins/` (deploy/protected-paths.txt), so it lasts until the plugin's repo gets a new commit (or an
+ *     admin forces an update) — then the repo's copy replaces it. The page says so next to the editor.
  *   - 시스템 스킬 are every installed skill but the environment plugins', read-only for everyone.
  *
  * A file is only ever read from an entry of a directory listing — never from a path built out of the URL.
@@ -52,6 +56,9 @@ import {
 import { shortDescription, skillDescriptionOf } from './composer-menus';
 
 const logger = new Logger('SkillsRoutes');
+
+/** An environment skill saved from the page: larger than any SKILL.md, small enough to never be a dump. */
+export const ENV_SKILL_MAX_BYTES = 256 * 1024;
 
 type Middleware = (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
 /** Sends the 403 and returns false when the caller may not write. */
@@ -185,6 +192,18 @@ function envView(registry: EnvSkillRegistry, viewer: Viewer) {
   return grants ? { allowAll: idsOf(grants.allowAll), skills } : { skills };
 }
 
+function envDetail(skill: InstalledSkill) {
+  const content = fs.readFileSync(skill.file, 'utf-8');
+  return {
+    key: `${skill.source}:${skill.name}`,
+    plugin: skill.source,
+    name: skill.name,
+    description: readDescription(skill.file),
+    content,
+    hash: computeContentHash(content),
+  };
+}
+
 function mineDetail(userId: string, name: string) {
   const skill = getUserSkill(userId, name);
   if (!skill) return null;
@@ -311,17 +330,69 @@ export function registerSkillsRoutes(
         reply.status(403).send({ error: '이 환경 스킬을 볼 권한이 없습니다' });
         return;
       }
-      reply.header('Cache-Control', 'no-store').send({
-        key,
-        plugin: skill.source,
-        name: skill.name,
-        description: readDescription(skill.file),
-        content: fs.readFileSync(skill.file, 'utf-8'),
-      });
+      reply.header('Cache-Control', 'no-store').send(envDetail(skill));
     } catch (error) {
       failed(reply, 'reading an environment skill', error);
     }
   });
+
+  // 1.b — an admin edits an environment skill's SKILL.md. The same gate as its grants: an identified admin in admin
+  // mode (or the viewer token), plus CSRF. The file is the one the directory listing names — never a URL path.
+  server.put<{ Params: { key: string }; Body: { content?: unknown; hash?: unknown } }>(
+    '/api/skills/env/:key',
+    write,
+    async (request, reply) => {
+      const viewer = viewerOf(request);
+      if (viewer.anonymous) {
+        reply.status(403).send({
+          error: '환경 스킬은 로그인한 관리자만 고칩니다 — 이 대시보드는 인증이 설정되지 않았습니다',
+        });
+        return;
+      }
+      if (!requireAdminWrite(request, reply)) return;
+      const { content, hash } = request.body || {};
+      if (typeof content !== 'string' || typeof hash !== 'string') {
+        reply.status(400).send({ error: 'content and hash are required' });
+        return;
+      }
+      try {
+        const key = request.params.key;
+        const skill = envSkills(envRegistry()).find((s) => `${s.source}:${s.name}` === key);
+        if (!skill) {
+          reply.status(404).send({ error: '그런 환경 스킬이 없습니다' });
+          return;
+        }
+        const current = fs.readFileSync(skill.file, 'utf-8');
+        // A plugin update or another admin may have changed it since the page read it: never overwrite that blind.
+        if (computeContentHash(current) !== hash) {
+          reply.status(409).send({ error: '그사이 다른 곳에서 이 스킬이 바뀌어 저장하지 않았습니다' });
+          return;
+        }
+        if (!content.trim()) {
+          reply.status(400).send({ error: '스킬 내용이 비어 있습니다' });
+          return;
+        }
+        if (Buffer.byteLength(content, 'utf-8') > ENV_SKILL_MAX_BYTES) {
+          reply.status(400).send({ error: `환경 스킬이 최대 크기(${ENV_SKILL_MAX_BYTES / 1024}KB)를 넘습니다` });
+          return;
+        }
+        // Whole or nothing: a session reading the skill mid-save sees the old file or the new one.
+        const tmp = `${skill.file}.${process.pid}.${Date.now()}.tmp`;
+        fs.writeFileSync(tmp, content, 'utf-8');
+        fs.renameSync(tmp, skill.file);
+        logger.warn('Environment skill edited from the settings page', {
+          key,
+          actor: viewer.actor,
+          bytes: Buffer.byteLength(content, 'utf-8'),
+          from: hash,
+          to: computeContentHash(content),
+        });
+        reply.send({ ok: true, skill: envDetail(skill) });
+      } catch (error) {
+        failed(reply, 'saving an environment skill', error);
+      }
+    },
+  );
 
   server.get<{ Params: { source: string; name: string } }>(
     '/api/skills/system/:source/:name',
