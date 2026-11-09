@@ -1,6 +1,6 @@
 ---
 name: html
-description: Convert any content (markdown, plain text, JSON, CSV, SQL, raw notes) into a styled single-file HTML with a Lottie motion layer, check it with a local PNG QA snapshot, publish the HTML on the local web server (clickable access link), then upload the HTML only to the current Slack thread — the PNG is never uploaded unless the user asks for an image. The visual design is driven by the `ui-ux` skill as the main design engine — applied by default on EVERY invocation, whether or not the user mentions design (design-system + named references; default reference `openai`); a `design=` input selects the design driver deterministically — `default`, any registered reference (for example `claude`, `toss-blue`, `toss-black`), or `impeccable`; `omd-<id>` selects any oh-my-design archive reference, and batch mode renders one page once per reference — with the `design` skill applied on top as the anti-AI-slop layer and the `motion-design`/`apple-design` standards governing all CSS motion and display typography. Pick a template name from the catalog or let the skill auto-classify. Triggers on "html로 만들어줘", "HTML로 변환", "이걸 페이지로", "render as html", "html + png", "convert to html", "to html and png", "make a card", "make a deck", "make a poster", "make a report from this data".
+description: Convert any content (markdown, plain text, JSON, CSV, SQL, raw notes) into a styled single-file HTML with a Lottie motion layer, check it in a headless browser (no image is made), publish the HTML on the local web server (clickable access link), then upload the HTML only to the current Slack thread — a PNG is rendered and sent only when the user asks for an image. The visual design is driven by the `ui-ux` skill as the main design engine — applied by default on EVERY invocation, whether or not the user mentions design (design-system + named references; default reference `openai`); a `design=` input selects the design driver deterministically — `default`, any registered reference (for example `claude`, `toss-blue`, `toss-black`), or `impeccable`; `omd-<id>` selects any oh-my-design archive reference, and batch mode renders one page once per reference — with the `design` skill applied on top as the anti-AI-slop layer and the `motion-design`/`apple-design` standards governing all CSS motion and display typography. Pick a template name from the catalog or let the skill auto-classify. Triggers on "html로 만들어줘", "HTML로 변환", "이걸 페이지로", "render as html", "html + png", "convert to html", "to html and png", "make a card", "make a deck", "make a poster", "make a report from this data".
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
 version: 0.7.0
 license: ISC
@@ -13,10 +13,10 @@ local web server, then drop the HTML **and the live access link** into the
 current Slack thread. The HTML is the artifact — the only file uploaded; the
 served URL is where the page actually *lives* — Lottie motion (Step 3.7) only
 exists in a real browser tab, so the link is a first-class deliverable, not a
-nicety. A high-DPI PNG is rendered as a local QA snapshot (Steps 5–6) and is
-never uploaded: one page is one artifact in the thread and on the dashboard
-(SSOT 2026-11-02). Upload a PNG only when the user explicitly asks for an
-image.
+nicety. The page is checked in a headless browser before it ships (Steps
+5–6) and no image of it is made: one page is one artifact in the thread and
+on the dashboard (SSOT 2026-11-02, 2026-11-09). Render and send a PNG only
+when the user explicitly asks for an image.
 
 This skill is a thin, vendored adaptation of
 [`nexu-io/html-anything`](https://github.com/nexu-io/html-anything) (Apache-2.0).
@@ -451,71 +451,54 @@ Contrast, real data and reduced motion are never overridden:
 
 You may use a Tailwind CDN (`https://cdn.tailwindcss.com`) and Google Fonts
 (`https://fonts.googleapis.com/css2?family=Noto+Sans+SC…`). Both are
-allowed at render time — Playwright waits for `networkidle` before the
-screenshot.
+allowed at check time — Playwright waits for `networkidle` before it
+measures the page.
 
-### 5. Render a QA snapshot (PNG, never uploaded)
+### 5. Check the page in a headless browser (no image)
 
-The snapshot is how you look at the page before shipping it (Step 6). It is
-not a deliverable: Step 8 uploads the HTML only.
+No image of the page is made — not even a local one (SSOT 2026-11-09: one
+page is one artifact, and a PNG beside it doubled every entry). The renderer
+opens the page in headless Chromium and measures it instead:
 
 ```bash
 node "$CLAUDE_PLUGIN_ROOT/skills/html/renderer/render.mjs" \
   --input "$(pwd)/html-<slug>-<ts>.html" \
-  --output "$(pwd)/html-<slug>-<ts>.png" \
+  --check \
   --template "<name>"
 ```
 
 The renderer pulls geometry from `templates/index.json` based on
-`--template <name>`. Pass `--width` / `--height` / `--full-page` /
-`--no-full-page` / `--selector` to override.
+`--template <name>`. Pass `--width` / `--height` to override. A fixed-canvas
+template (a swipe deck, a social card) may scroll sideways on purpose: its
+`overflowX` is reported, not failed — still set `body { margin: 0 }` so a
+card fits its viewport exactly. If the page
+starts from opacity 0 (an entrance animation), pass `--wait-ms 1500` so the
+measurement lands on a populated frame.
 
-The renderer also prints two lines for Step 6: `fonts loaded: <families>`
-(web fonts that finished loading) and `fonts used: <families>` (the fonts
-Chromium actually drew a sample of headings, paragraphs, list items and table
-cells with). Either reads `unknown` when the probe failed.
+It prints three lines for Step 6: `fonts loaded: <families>` (web fonts that
+finished loading), `fonts used: <families>` (the fonts Chromium actually drew
+a sample of headings, paragraphs, list items and table cells with — `unknown`
+when the probe failed), and `check: <json>` — `{ ok, textChars, overflowX,
+overlaps, overlapSamples, brokenImages, pageErrors, width, height }`. Exit 3
+means the check failed.
 
-The PNG freezes Lottie mid-loop — that's expected; the live link (Step 7)
-carries the motion. If the captured frame looks empty because an animation
-starts from opacity 0, pass `--wait-ms 1500` so the screenshot lands on a
-populated frame.
+### 6. Validate the page
 
-### 6. Validate the page through the snapshot
-
-```bash
-PNG="$(pwd)/html-<slug>-<ts>.png"
-[ -f "$PNG" ] || { echo "ERROR: PNG not generated"; exit 1; }
-size=$(stat -f%z "$PNG" 2>/dev/null || stat -c%s "$PNG")
-[ "$size" -gt 4096 ] || { echo "ERROR: PNG suspiciously small: $size bytes"; exit 1; }
-python3 - "$PNG" <<'PY'
-import struct, sys
-p = sys.argv[1]
-with open(p, "rb") as f:
-    if f.read(8) != b"\x89PNG\r\n\x1a\n":
-        raise SystemExit("not a PNG")
-    f.read(4)
-    if f.read(4) != b"IHDR":
-        raise SystemExit("invalid PNG header")
-    w, h = struct.unpack(">II", f.read(8))
-    if w < 400 or h < 300:
-        raise SystemExit(f"dim-fail:{w}x{h}")
-PY
-```
-
-Then check what the bytes cannot tell you:
-
-1. **Font check.** Compare the renderer's `fonts used:` line with the display
-   and body families the driver declared (for example `Pretendard` for
-   `toss-*`, `Inter` for `openai`). A declared family absent from `fonts used`
-   means the text was drawn with something else: name what was used in the
-   Step 8 upload comment (`font fallback: <declared> → <used>`) and never
-   present the page as rendered in the declared font. A locally installed face
-   counts as used. If either line reads `unknown`, say the font check was
+1. **Check verdict.** `ok: false` (exit 3) names what is wrong: under 20
+   characters of text (an empty or unrendered page), `overflowX` > 0 (a
+   horizontal scroll — something is wider than the viewport), `overlaps` > 0
+   (text boxes drawn on top of each other; `overlapSamples` quotes them), a
+   broken image, or an uncaught script error (`pageErrors`). Fix what it
+   names, check once more, then move on — this is a delivery check, not a
+   design critique loop.
+2. **Font check.** Compare the `fonts used:` line with the display and body
+   families the driver declared (for example `Pretendard` for `toss-*`,
+   `Inter` for `openai`). A declared family absent from `fonts used` means
+   the text was drawn with something else: name what was used in the Step 8
+   upload comment (`font fallback: <declared> → <used>`) and never present
+   the page as rendered in the declared font. A locally installed face counts
+   as used. If either line reads `unknown`, say the font check was
    unavailable — do not claim success or fallback.
-2. **Look at the PNG.** Open it with the Read tool once and check for clipped
-   or overlapping text, missing sections, unreadable contrast, and an empty
-   motion frame. Fix what one look shows, re-render once, then move on — this
-   is a delivery check, not a design critique loop.
 
 ### 7. Publish to the local web server (access link + durable archive)
 
@@ -595,11 +578,11 @@ opens the uploaded copy, and its viewer offers 라이브로 열기 for the live 
 (with motion). Do not also `send_link` the page — one page, one artifact.
 Leave `url` out when Step 7 could not start the server.
 
-Do **not** upload the PNG. The Step 5 snapshot was your QA check, not a
-deliverable: one page is one artifact in the thread and in the dashboard's
-artifact list (SSOT 2026-11-02). The one exception is a user who explicitly
-asked for an image (`png로도`, "as an image") — then also send it with
-`mcp__slack-mcp__send_media`.
+No PNG is made and none is uploaded: one page is one artifact in the thread
+and in the dashboard's artifact list (SSOT 2026-11-02, 2026-11-09). The one
+exception is a user who explicitly asked for an image (`png로도`, "as an
+image") — then render one (`render.mjs --input <html> --output <png>
+--template <name>`) and also send it with `mcp__slack-mcp__send_media`.
 
 If the slack-mcp tools are not available in this session (e.g., the skill
 was invoked outside a Slack-mention context), skip the upload, print the
@@ -669,8 +652,9 @@ and adapter a single run uses.
   runtime dep; failing import → tell the user to rebuild the image.
 - Do **not** upload the HTML as inline mrkdwn — Slack mangles `<style>` and
   long lines. Always `send_file`.
-- Do **not** upload the QA snapshot PNG next to the HTML — the page is the
-  artifact, and a second file doubles every entry in the dashboard's list.
+- Do **not** render or upload a PNG of the page unless the user asked for an
+  image — the page is the artifact, and a second file doubles every entry in
+  the dashboard's list.
 - Do **not** loop on render failure. One retry on transient
   `networkidle`/`navigation` errors; if the second attempt fails, report
   the error and stop.
@@ -732,8 +716,9 @@ V1 ships 8 templates. To add more from the html-anything catalog (75 total):
   per-template viewport overrides.
 - [`templates/skills/<name>/SKILL.md`](./templates/skills/) — vendored
   template specs from html-anything (Apache-2.0).
-- [`renderer/render.mjs`](./renderer/render.mjs) — Playwright HTML → PNG
-  CLI (the Step 5 QA snapshot).
+- [`renderer/render.mjs`](./renderer/render.mjs) — Playwright page check
+  (`--check`, Step 5) and HTML → PNG (`--output`, only when an image is asked
+  for).
 - [`LICENSES/NOTICE.md`](./LICENSES/NOTICE.md) — third-party attribution.
 - [`__tests__/html-skill.test.ts`](./__tests__/html-skill.test.ts) — RED
   contract that pins the v1 surface (frontmatter, classifier templates,

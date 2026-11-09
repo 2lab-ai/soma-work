@@ -1,12 +1,18 @@
 #!/usr/bin/env node
 /**
- * HTML → PNG renderer for the local:html skill.
+ * HTML page check (and, only on request, HTML → PNG) for the local:html skill.
  *
  * Contract (CLI):
- *   node render.mjs --input <html-path> --output <png-path>
+ *   node render.mjs --input <html-path> --check            ← the skills' QA step: no image is written
+ *   node render.mjs --input <html-path> --output <png-path> ← only when the user asks for an image
  *                   [--width 1200] [--height 1600] [--full-page]
  *                   [--selector body] [--device-scale-factor 1]
  *                   [--wait-ms 500] [--template <name>]
+ *
+ * --check prints `check: <json>` — { ok, textChars, overflowX, overlaps, overlapSamples, brokenImages,
+ * pageErrors, width, height } — and exits 3 when the page fails: under 20 characters of text a reader can see,
+ * a horizontal scroll (reported only for a fixed-canvas template), visible text drawn over other visible text,
+ * a broken image, or an uncaught script error.
  *
  * Precedence for geometry: CLI args > --template entry in templates/index.json
  *   > built-in default (1200 × 1600, fullPage=true, deviceScaleFactor=1).
@@ -19,9 +25,10 @@
  * sample text with) so callers can detect a silent fallback.
  *
  * Exit codes:
- *   0  PNG written
+ *   0  PNG written / check passed
  *   1  CLI / input error
  *   2  Playwright launch / render failure
+ *   3  check failed
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -46,6 +53,7 @@ function parseArgs(argv) {
     else if (arg === '--device-scale-factor') out.deviceScaleFactor = Number(argv[++i]);
     else if (arg === '--wait-ms') out.waitMs = Number(argv[++i]);
     else if (arg === '--template') out.template = argv[++i];
+    else if (arg === '--check') out.check = true;
     else if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
@@ -59,7 +67,7 @@ function parseArgs(argv) {
 
 function printHelp() {
   console.log(
-    'Usage: node render.mjs --input <html> --output <png> [--width N] [--height N]' +
+    'Usage: node render.mjs --input <html> (--check | --output <png>) [--width N] [--height N]' +
       ' [--full-page] [--no-full-page] [--selector S] [--device-scale-factor N]' +
       ' [--wait-ms N] [--template NAME]',
   );
@@ -92,13 +100,13 @@ function resolveGeometry(args) {
 
 async function main() {
   const args = parseArgs(process.argv);
-  if (!args.input || !args.output) {
-    console.error('--input and --output are required');
+  if (!args.input || (!args.output && !args.check)) {
+    console.error('--input and one of --check / --output are required');
     printHelp();
     process.exit(1);
   }
   const inputPath = isAbsolute(args.input) ? args.input : resolve(process.cwd(), args.input);
-  const outputPath = isAbsolute(args.output) ? args.output : resolve(process.cwd(), args.output);
+  const outputPath = args.output ? (isAbsolute(args.output) ? args.output : resolve(process.cwd(), args.output)) : null;
   if (!existsSync(inputPath)) {
     console.error(`input not found: ${inputPath}`);
     process.exit(1);
@@ -122,6 +130,8 @@ async function main() {
       deviceScaleFactor: geom.deviceScaleFactor,
     });
     const page = await context.newPage();
+    const pageErrors = [];
+    page.on('pageerror', (err) => pageErrors.push(String(err?.message ?? err).slice(0, 200)));
     const url = pathToFileURL(inputPath).toString();
     await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
     if (geom.waitMs > 0 || args.waitMs > 0) {
@@ -161,6 +171,14 @@ async function main() {
     }
     console.log(`fonts used: ${usedFonts === null ? 'unknown' : usedFonts.join(', ') || 'none'}`);
 
+    if (args.check) {
+      // A fixed-canvas template (fullPage false: a swipe deck, a social card) may scroll sideways on purpose.
+      const verdict = await checkPage(page, pageErrors, { failOnOverflowX: geom.fullPage !== false });
+      console.log(`check: ${JSON.stringify(verdict)}`);
+      if (!verdict.ok) process.exitCode = 3;
+      return;
+    }
+
     if (geom.fullPage) {
       await page.screenshot({ path: outputPath, fullPage: true, type: 'png' });
     } else {
@@ -185,6 +203,100 @@ async function main() {
   } finally {
     await browser.close();
   }
+}
+
+/**
+ * What a look at a screenshot used to catch, measured in the page instead (no image is made): text a reader
+ * can see, no horizontal scroll (a fixed-canvas template — a swipe deck, a social card — only reports it), no
+ * two pieces of visible text drawn on top of each other, no broken image, no uncaught script error.
+ */
+async function checkPage(page, pageErrors, { failOnOverflowX }) {
+  // Lazy images below the fold never load without a scroll: load every image now, so a broken one is seen.
+  await page
+    .evaluate(async () => {
+      const imgs = [...document.images];
+      for (const img of imgs) if (img.loading === 'lazy') img.loading = 'eager';
+      const settled = (img) =>
+        img.complete
+          ? null
+          : new Promise((ok) => {
+              img.addEventListener('load', ok, { once: true });
+              img.addEventListener('error', ok, { once: true });
+            });
+      await Promise.race([Promise.all(imgs.map(settled)), new Promise((ok) => setTimeout(ok, 5000))]);
+    })
+    .catch(() => {});
+  const m = await page.evaluate(() => {
+    const MAX_BOXES = 2000;
+    const doc = document.documentElement;
+    const overflowX = Math.max(0, Math.ceil(doc.scrollWidth - window.innerWidth));
+    const brokenImages = [...document.images].filter((img) => img.complete && img.naturalWidth === 0).length;
+    // Seen by a reader: the element and every ancestor are shown, visible and not fully transparent.
+    const seen = (el) => {
+      if (typeof el.checkVisibility === 'function') {
+        return el.checkVisibility({ opacityProperty: true, visibilityProperty: true, contentVisibilityAuto: true });
+      }
+      for (let e = el; e && e.nodeType === 1; e = e.parentElement) {
+        const cs = getComputedStyle(e);
+        if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) return false;
+      }
+      return true;
+    };
+    // A text box: an element's OWN text nodes, one rect per line — never its child elements' boxes.
+    const boxes = [];
+    let textChars = 0;
+    let truncated = false;
+    const range = document.createRange();
+    for (const el of document.body ? document.body.querySelectorAll('*') : []) {
+      const texts = [...el.childNodes].filter((n) => n.nodeType === 3 && n.textContent.trim());
+      if (!texts.length || !seen(el)) continue;
+      const rects = [];
+      for (const t of texts) {
+        range.selectNodeContents(t);
+        for (const r of range.getClientRects()) if (r.width >= 1 && r.height >= 1) rects.push(r);
+      }
+      if (!rects.length) continue;
+      textChars += texts.reduce((n, t) => n + t.textContent.replace(/\s+/g, ' ').trim().length, 0);
+      if (boxes.length >= MAX_BOXES) {
+        truncated = true;
+        continue;
+      }
+      boxes.push({ el, rects });
+    }
+    const hit = (p, q) => {
+      const w = Math.min(p.right, q.right) - Math.max(p.left, q.left);
+      const h = Math.min(p.bottom, q.bottom) - Math.max(p.top, q.top);
+      return w > 0 && h > 0 && w * h >= 0.3 * Math.min(p.width * p.height, q.width * q.height);
+    };
+    let overlaps = 0;
+    const samples = [];
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i];
+        const b = boxes[j];
+        if (!a.rects.some((p) => b.rects.some((q) => hit(p, q)))) continue;
+        overlaps++;
+        if (samples.length < 5) samples.push([a.el.textContent.trim().slice(0, 40), b.el.textContent.trim().slice(0, 40)]);
+      }
+    }
+    return {
+      textChars,
+      overflowX,
+      overlaps,
+      overlapSamples: samples,
+      brokenImages,
+      width: doc.scrollWidth,
+      height: doc.scrollHeight,
+      ...(truncated ? { truncated: true } : {}),
+    };
+  });
+  const ok =
+    m.textChars >= 20 &&
+    (!failOnOverflowX || m.overflowX === 0) &&
+    m.overlaps === 0 &&
+    m.brokenImages === 0 &&
+    pageErrors.length === 0;
+  return { ok, ...m, pageErrors };
 }
 
 main().catch((err) => {

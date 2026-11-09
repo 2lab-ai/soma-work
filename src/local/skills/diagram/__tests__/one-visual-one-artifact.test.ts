@@ -13,11 +13,11 @@ const skill = (name: string) => readFileSync(resolve(__dirname, '..', '..', name
 const section = (md: string, from: string, to: string) => md.slice(md.indexOf(from), md.indexOf(to, md.indexOf(from)));
 
 describe('one visual, one artifact', () => {
-  it('html: uploads the HTML only — the PNG is a QA snapshot (already so since 2026-11-02)', () => {
+  it('html: uploads the HTML only and makes no PNG (upload since 2026-11-02, the snapshot since 2026-11-09)', () => {
     const md = skill('html');
     const step8 = section(md, '### 8. Upload the HTML to Slack', '### 9. End the turn');
     expect(step8).toContain('mcp__slack-mcp__send_file(');
-    expect(step8).toContain('Do **not** upload the PNG.');
+    expect(step8).toContain('No PNG is made and none is uploaded');
     // The served page opens from the same artifact (SSOT 2026-11-09 T3): send_file carries the URL.
     expect(step8).toMatch(/url="<url from Step 7>"/);
     expect(step8).not.toMatch(/send_link\(/);
@@ -48,7 +48,7 @@ describe('one visual, one artifact', () => {
 
   it('dimensional-drawing: uploads the HTML only (already so), with the served URL on send_file', () => {
     const md = skill('dimensional-drawing');
-    expect(md).toMatch(/never upload the PNG snapshot/);
+    expect(md).toContain('never a PNG of it (none is made)');
     expect(md).toContain('`mcp__slack-mcp__send_file` with its `url` set to the served URL');
   });
 
