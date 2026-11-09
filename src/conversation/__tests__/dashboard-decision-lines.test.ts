@@ -216,7 +216,7 @@ type Client = {
 };
 const client = () =>
   load<Client>(
-    [...BASE_FNS, 'acQuestionData', 'mcFormId', 'mcStateOf', 'mcFormData', 'openMdFence', 'quickChoicesOf'],
+    [...BASE_FNS, 'acQuestionData', 'mcFormId', 'mcStateOf', 'mcFormData', 'quickChoicesOf'],
     ['AC_SIBLING', 'MC_CUSTOM_ID', '_mcState'],
     INJECT,
   );
@@ -311,26 +311,10 @@ describe('D5/D6 — the multi-question form', () => {
     ],
   };
 
-  it('D5 context (markdown): the context, a blank line, then the lines; lines alone without one', () => {
+  it('D5 context (markdown): the lines, a blank line, then the context; lines alone without one', () => {
     const d = client().mcFormData(SESSION(G), G);
-    expect(d.questions[0].context).toBe('맥락\n\n🚧 막힌 작업 — 릴리스\n⚠️ **되돌릴 수 없음** — 태그 공개');
+    expect(d.questions[0].context).toBe('🚧 막힌 작업 — 릴리스\n⚠️ **되돌릴 수 없음** — 태그 공개\n\n맥락');
     expect(d.questions[1].context).toBe('⚖️ 걸린 것 — 변경 기록');
-  });
-
-  // Review R1 P1 (astra): an unclosed code fence in the model's context must not swallow the lines (and the warning).
-  it('D5 an unclosed code fence in the context is closed before the lines', () => {
-    const fence = '\u0060\u0060\u0060';
-    const q = { ...G, questions: [{ ...G.questions[0], context: `맥락\n${fence}\ncode never closed` }] };
-    expect(client().mcFormData(SESSION(q), q).questions[0].context).toBe(
-      `맥락\n${fence}\ncode never closed\n${fence}\n\n🚧 막힌 작업 — 릴리스\n⚠️ **되돌릴 수 없음** — 태그 공개`,
-    );
-    const closed = { ...G, questions: [{ ...G.questions[0], context: `a\n${fence}\nx\n${fence}` }] };
-    expect(client().mcFormData(SESSION(closed), closed).questions[0].context).toBe(
-      `a\n${fence}\nx\n${fence}\n\n🚧 막힌 작업 — 릴리스\n⚠️ **되돌릴 수 없음** — 태그 공개`,
-    );
-    // Without lines the context is left exactly as the model wrote it.
-    const plain = { ...G, questions: [{ id: 'q1', question: 'A?', choices: CHOICES, context: `x\n${fence}` }] };
-    expect(client().mcFormData(SESSION(plain), plain).questions[0].context).toBe(`x\n${fence}`);
   });
 
   it('form identity: a question whose lines change starts the form clean; none → the id as before', () => {
@@ -363,17 +347,17 @@ describe('D5/D6 — the multi-question form', () => {
     expect(html).not.toContain('<em>production</em>');
   });
 
-  // Review R2 P1 (astra) / P3 (fable): every fence the renderer opens — ~~~, a longer run of backticks, an info
-  // string — is closed with its own run; a fence the renderer already closed (it closes on any line that starts with
-  // the run) gets nothing appended.
+  // Review R1–R3 P1 (astra): the form renders markdown, so whatever the model wrote in its context — an open code
+  // fence of any kind, a list whose continuation holds a fence — must never take the lines or the warning into its
+  // block. The lines come first: nothing the model wrote precedes them, and the context follows untouched.
   it.each([
-    ['~~~ left open', 'ctx\n~~~\ncode', 'ctx\n~~~\ncode\n~~~'],
-    ['four backticks, a three-backtick line inside', 'ctx\n````\n```\ncode', 'ctx\n````\n```\ncode\n````'],
-    ['an info string', 'ctx\n```js\nconst a = 1;', 'ctx\n```js\nconst a = 1;\n```'],
-    ['closed by a line that starts with the run', 'ctx\n```\ncode\n``` done', 'ctx\n```\ncode\n``` done'],
-    ['indented four spaces is not a fence', 'ctx\n    ```\ncode', 'ctx\n    ```\ncode'],
-    ['~~~ inside ``` is code', 'ctx\n```\n~~~\ncode', 'ctx\n```\n~~~\ncode\n```'],
-  ])('D5 rendered fence: %s', async (_name, context, expected) => {
+    ['``` left open', 'ctx\n```\ncode'],
+    ['~~~ left open', 'ctx\n~~~\ncode'],
+    ['four backticks with ``` inside', 'ctx\n````\n```\ncode'],
+    ['a list continuation holding a fence', '- item\n   ```\n   code'],
+    ['a table', '| a | b |\n|---|---|\n| 1 | 2 |'],
+    ['a blockquote', '> quoted'],
+  ])('D5 rendered: %s cannot take the lines', async (_name, context) => {
     const g = globalThis as Record<string, unknown>;
     if (!g.HTMLElement) g.HTMLElement = class {};
     if (!g.customElements) g.customElements = { define() {}, get() {} };
@@ -381,11 +365,13 @@ describe('D5/D6 — the multi-question form', () => {
     const { answerMarkdown } = (await import('@2lab.ai/ui/ai-answer')) as unknown as {
       answerMarkdown(md: string): string;
     };
-    const tick = (x: string) => x.replace(/```/g, '\u0060\u0060\u0060');
-    const q = { ...G, questions: [{ ...G.questions[0], context: tick(context) }] };
+    const own = context.replace(/```/g, '\u0060\u0060\u0060');
+    const q = { ...G, questions: [{ ...G.questions[0], context: own }] };
     const out = client().mcFormData(SESSION(q), q).questions[0].context as string;
-    expect(out).toBe(`${tick(expected)}\n\n🚧 막힌 작업 — 릴리스\n⚠️ **되돌릴 수 없음** — 태그 공개`);
-    expect(answerMarkdown(out)).toContain('⚠️ <strong>되돌릴 수 없음</strong> — 태그 공개');
+    expect(out).toBe(`🚧 막힌 작업 — 릴리스\n⚠️ **되돌릴 수 없음** — 태그 공개\n\n${own}`);
+    expect(
+      answerMarkdown(out).startsWith('<p>🚧 막힌 작업 — 릴리스<br>⚠️ <strong>되돌릴 수 없음</strong> — 태그 공개</p>'),
+    ).toBe(true);
   });
 
   it('D6 a question without fields keeps its context as is, or none', () => {

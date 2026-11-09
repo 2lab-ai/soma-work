@@ -1404,7 +1404,6 @@ describe('pending-question choices reach the form as data and come back exactly 
       'mcFormId',
       'mcStateOf',
       'mcFormData',
-      'openMdFence',
       'decisionLines',
       'mcSelectionsOf',
       'mcAnswersIn',
@@ -1465,15 +1464,7 @@ describe('pending-question choices reach the form as data and come back exactly 
 
   it('D6b (D3-GAPS G3-1): a reader who cannot answer here gets the form locked with the reason (canAnswer); the owner gets none', () => {
     const locked = load<{ mcFormData(s: McSession, q: McSession['pendingQuestion']): McData & { canAnswer?: string } }>(
-      [
-        'mcFormId',
-        'mcStateOf',
-        'mcFormData',
-        'openMdFence',
-        'decisionLines',
-        'stripRecommendedMarker',
-        'resolveRecommendedId',
-      ],
+      ['mcFormId', 'mcStateOf', 'mcFormData', 'decisionLines', 'stripRecommendedMarker', 'resolveRecommendedId'],
       ['_mcState', 'MC_CUSTOM_ID'],
       { STRINGS: { mcCustomPlaceholder: '직접 입력…' }, acQuestionLock: () => '세션 소유자만 답할 수 있어요' },
     );
@@ -3315,7 +3306,6 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         'renderMultiChoicePanel',
         'renderMultiChoiceCard',
         'mcFormData',
-        'openMdFence',
         'decisionLines',
         'acQuestionLock',
         'mcStateOf',
