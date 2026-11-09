@@ -79,6 +79,31 @@ SOMA_INCIDENT_EVIDENCE_BASE_URL=https://<eagle-eye-host>
 - 백그라운드 에이전트 keepalive는 시도에서 **꺼져 있다**(`0`) — 시도는 답하는 result에서 끝난다 (`src/claude-handler.ts:1320`).
 - 인시던트 소유 스레드의 일반 메시지(파일 업로드 포함)는 후속 큐 펜스 **앞에서** 버려진다 — 큐에 쌓이거나
   스레드에 큐 표시가 붙거나 시도에 주입되지 않는다 (`src/slack-handler.ts:993`).
+- 사람용 게이트 두 개는 시도에 걸리지 않는다 (`packages/slack/src/pipeline/stream-executor.ts`):
+  - **이메일 fast-fail** — 발신자는 이메일이 없는 Eagle 봇이고, 이메일은 커밋 귀속(Co-Authored-By)에만 쓰인다.
+    시도는 읽기 전용 도구 하나뿐이라 커밋할 수 없다. 2026-11-06·11-09의 실제 인시던트 4건이 모두 ingress를
+    통과한 뒤 여기서 모델 호출 전에 막혔다(`Blocked model invocation: user email not configured`).
+  - **session-title-pending 공지** — 시도 런타임에 없는 UPDATE_SESSION을 요구하고, 고정 host prompt 앞에 붙었다.
+- **재시작에 끊긴 시도**는 재개하지 않고 정산한다. 일반 crash recovery 공지와 restart 프롬프트 턴은 없고, 종료
+  쪽도 인시던트 스레드에는 "🔄 서버 재시작 중"을 올리지 않는다. 판단 근거는 일반 crash record가 아니라 시도 자신의
+  표시다 — `working`은 항상 저장되지는 않고, 오래 멈추면 세션이 잠들고, 종료 스탬프는 SDK 세션 id가 있어야 붙는다.
+  1. **종료** (`notifyShutdown`, `packages/slack/src/session-manager.ts`): 결론을 아직 게시하지 않은 실행 중
+     시도는 `incidentResultOwedId`에 attempt id를 남긴다. SDK 세션 id가 없어도 남긴다.
+  2. **로드** (`settleIncidentAttemptOnLoad`, `src/session-registry.ts`): 재시작을 넘어 사는 프로세스는 없으므로,
+     완료 마커가 없는 시도는 끊긴 것이다. 이런 시도와 아직 결과를 빚진 시도에 완료 마커와 `idle`을 쓴다. Slack이
+     이벤트를 전달하기 전, 동기로 쓴다. 그래서 ingress가 Eagle의 재시도를 바로 받는다. 결론이 게시되지 않았으면
+     (`incidentAttemptPublishedId`) 결과를 빚진 것으로 남긴다. 잠든 세션은 빚지지 않는다 — Eagle은 이미 오래전에
+     기다리기를 그만뒀다.
+     인시던트 세션은 정산 대상이 아니어도 항상 `idle`로 로드한다. 완료 마커는 턴이 idle이 되기 전에 저장되므로,
+     그 사이에 멈추면 마커 옆에 `working`이 남고 ingress가 재시도를 `session_busy`로 거절하기 때문이다. 빚
+     (`incidentResultOwedId`)은 아카이브와 되살리기에도 함께 간다.
+  3. **복구** (`publishOwedIncidentResults`, `src/slack-handler.ts`, `notifyCrashRecovery`의 첫 단계): 빚진
+     시도마다 host가 쓴 `interrupted` 결과 한 줄을 올린다(인시던트 게시와 같은 Slack 처리 끔 인자). 재시도가 이미
+     스레드를 넘겨받았으면 올리지 않는다. 게시가 실패하면 `incidentResultOwedId`가 남아 다음 기동에 다시 올린다.
+  safeguard로 잠긴 스레드도 같은 정산을 받는다(잠금 해제 뒤 재시도가 거부되지 않도록). 회귀 테스트:
+  `src/__tests__/restart-cut-incident-attempt.test.ts`, `src/__tests__/session-registry.test.ts`
+  ("a restart settles a cut incident attempt at load"), `src/slack/__tests__/session-manager.test.ts`
+  (`notifyShutdown`).
 
 ## 5. 산출물의 출처 — collector snapshot
 
@@ -186,11 +211,19 @@ npx vitest run src/incident/__tests__ \
   src/agent-runtime/__tests__/tool-policy-incident.test.ts \
   packages/slack/src/__tests__/incident-contract.test.ts \
   packages/slack/src/__tests__/incident-result.test.ts \
-  packages/slack/src/pipeline/__tests__/stream-executor.incident-output.test.ts
+  packages/slack/src/pipeline/__tests__/stream-executor.incident-output.test.ts \
+  packages/slack/src/pipeline/__tests__/stream-executor.incident-gates.test.ts \
+  src/__tests__/restart-cut-incident-attempt.test.ts \
+  src/__tests__/session-registry.test.ts \
+  src/slack/__tests__/session-manager.test.ts
 ```
 
 이 문서 작성 시점에 위 명령의 결과는 **기록되지 않았다** — 통과 주장 없음.
-라이브 경로(실제 eagle-eye → Slack → 시도 → 결과 줄) 실측도 **아직 없다.**
+
+라이브 경로 실측 (dev 배포본, 2026-11-09): Eagle 봇 이메일을 자리표시 값으로 채우는 우회를 적용한 상태에서
+eagle-eye `--smoke-incident --dispatch-investigator` 1회가 `v1_result_stored=true`, `reached_terminal=true`로
+끝났다(요청 03:03:17Z → 결과 03:04:20Z). 우회 없이(이 문서의 이메일 게이트 수정만으로) 같은 결과가 나오는지는
+이 수정이 배포된 뒤 다시 잰다.
 
 ## 9. Pending
 

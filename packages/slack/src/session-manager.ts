@@ -1201,6 +1201,28 @@ export class SessionUiManager {
     const notifyPromises: Promise<void>[] = [];
 
     for (const [key, session] of sessions.entries()) {
+      // An Eagle incident thread is read only by the eagle-eye poller: no
+      // notice, and none of the stamps below — the restart side settles an
+      // incident attempt from its own markers. A working attempt whose
+      // conclusion is not posted owes Eagle a result; record it whether or not
+      // the run has an SDK session id yet (a retry's handover clears it).
+      // Structural access: this package's session type predates the incident fields.
+      const incident = session as {
+        incidentRequest?: { attempt_id?: unknown };
+        incidentAttemptPublishedId?: string;
+        incidentResultOwedId?: string;
+      };
+      if (incident.incidentRequest) {
+        const attemptId = incident.incidentRequest.attempt_id;
+        if (
+          typeof attemptId === 'string' &&
+          session.activityState !== 'idle' &&
+          incident.incidentAttemptPublishedId !== attemptId
+        ) {
+          incident.incidentResultOwedId = attemptId;
+        }
+        continue;
+      }
       if (session.sessionId) {
         // Snapshot wasWorking BEFORE any await. The event loop will run
         // many other turns between here and when postMessage resolves;
