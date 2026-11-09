@@ -85,7 +85,7 @@ Pitfalls: a CSS `fill` rule on a class overrides a `fill="url(#hatch)"` attribut
 
 ## Delivery in soma-work
 
-soma-work runs in Slack, not claude.ai, so there is no Artifact to publish. Replace the publish step with this.
+soma-work runs in Slack, not claude.ai, so there is no Artifact to publish. Replace the publish step with this. Step 3 below also replaces the "Render once with Playwright … look at the screenshot" check in Before publishing: no screenshot is made — `render.mjs --check` measures the same overlaps and border crossings.
 
 `$CLAUDE_PLUGIN_ROOT` is the zworkflow plugin root. Bot-session shells do not set it, and every Bash tool call starts a fresh shell, so an `export` in one call is gone in the next. Start **every** command below with this line, in the same call. `<base directory>` is the path in this skill's `Base directory for this skill: …` header (`<plugin root>/skills/dimensional-drawing`):
 
