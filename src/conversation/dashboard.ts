@@ -8596,10 +8596,12 @@ async function answerAdminApproval(id, choiceId) {
   adminInboxLoad();
   return st;
 }
-// The viewer's own card only: another admin's DM would not open for them.
+// The viewer's own card (another admin's DM would not open for them), else a link for any admin ('*': the
+// approvals app's DM, listed for a broker that cannot list its cards itself).
 function devopsSlackLink(a) {
   var links = (a && a.links) || [];
   for (var i = 0; i < links.length; i++) if (links[i] && links[i].admin === _viewerUserId) return String(links[i].url || '');
+  for (var j = 0; j < links.length; j++) if (links[j] && links[j].admin === '*') return String(links[j].url || '');
   return '';
 }
 function devopsIsSlackLink(url) {

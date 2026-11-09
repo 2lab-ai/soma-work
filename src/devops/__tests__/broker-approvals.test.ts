@@ -3,7 +3,12 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { devopsBrokerAdminApprovalAdapter, devopsBrokerSocketPath } from '../broker-approvals';
+import {
+  devopsApprovalsAppUrl,
+  devopsBrokerAdminApprovalAdapter,
+  devopsBrokerSocketPath,
+  devopsPendingDir,
+} from '../broker-approvals';
 
 // devops broker cards in the dashboard's admin approvals (#1051): the adapter reads the broker's waiting cards
 // over its socket and points the admin at their own Slack card. It never decides: this process runs as the same
@@ -167,5 +172,137 @@ describe('devopsBrokerAdminApprovalAdapter: polling and links (#1051 review)', (
     fs.writeFileSync(file, JSON.stringify({ 'devops-tools': { socketPath: 'relative.sock' } }));
     expect(devopsBrokerSocketPath(file)).toBeUndefined();
     expect(devopsBrokerSocketPath(path.join(dir, 'missing.json'))).toBeUndefined();
+  });
+});
+
+describe('devopsBrokerAdminApprovalAdapter: a broker older than the listing (#1051, no root upgrade first)', () => {
+  const APP = 'https://example.slack.com/app_redirect?app=A0000APP';
+  const RECORD = {
+    v: 1,
+    approvalId: 'appr_0002efgh',
+    tool: 'cf_lease_request',
+    digestPrefix: 'abcdef012345',
+    requester: 'U000ALICE',
+    createdAt: '2026-11-09T03:00:00.000Z',
+    expiresAt: '2026-11-09T03:10:00.000Z',
+  };
+  let pendingDir: string;
+
+  function writeRecord(name: string, body: unknown): string {
+    const file = path.join(pendingDir, name);
+    fs.writeFileSync(file, typeof body === 'string' ? body : JSON.stringify(body));
+    return file;
+  }
+
+  async function refusingBroker(): Promise<void> {
+    server = net.createServer((socket) => {
+      socket.setEncoding('utf8');
+      socket.on('data', () => {
+        received.push({});
+        socket.end(
+          `${JSON.stringify({ v: 1, id: null, type: 'error', code: 'bad-request', message: 'unknown key "op"' })}\n`,
+        );
+      });
+    });
+    await new Promise<void>((resolve) => server?.listen(socketPath, resolve));
+  }
+
+  beforeEach(() => {
+    pendingDir = devopsPendingDir(dir);
+    fs.mkdirSync(pendingDir);
+  });
+
+  it('lists the MCP server’s records, each opening the approvals app DM for any admin', async () => {
+    await refusingBroker();
+    writeRecord(`${RECORD.approvalId}.json`, RECORD);
+    const adapter = devopsBrokerAdminApprovalAdapter({ socketPath, pendingDir, approvalsAppUrl: APP });
+    const [card, ...rest] = await adapter.pending(Date.parse('2026-11-09T03:01:00Z'));
+    expect(rest).toEqual([]);
+    expect(card).toMatchObject({
+      id: 'devops_broker:appr_0002efgh',
+      kind: 'devops_broker',
+      card: 'question',
+      tool: 'devops:cf_lease_request',
+      requesterId: 'U000ALICE',
+      expiresAt: Date.parse(RECORD.expiresAt),
+      choices: [{ id: 'open_slack', label: expect.stringContaining('Slack') }],
+      links: [{ admin: '*', url: APP }],
+    });
+    expect(card.title).toContain('abcdef012345');
+    // Written by the model's OS user: the card says it is only a pointer.
+    expect(card.description).toContain('보장하지 않습니다');
+    expect(await adapter.answer('appr_0002efgh', 'open_slack', 'U000ADMIN')).toEqual({ ok: false, reason: 'invalid' });
+  });
+
+  it('skips malformed, misnamed and expired records, and removes a long-dead one', async () => {
+    await refusingBroker();
+    writeRecord('appr_0003ijkl.json', { ...RECORD, approvalId: 'appr_0003ijkl', tool: 'rm_rf' });
+    writeRecord('appr_0004mnop.json', { ...RECORD, approvalId: 'appr_0005qrst' });
+    writeRecord('appr_0006uvwx.json', '{not json');
+    writeRecord('notes.txt', RECORD);
+    writeRecord('appr_0007yzab.json', {
+      ...RECORD,
+      approvalId: 'appr_0007yzab',
+      expiresAt: '2026-11-09T03:00:30.000Z',
+    });
+    const dead = writeRecord('appr_0008cdef.json', {
+      ...RECORD,
+      approvalId: 'appr_0008cdef',
+      expiresAt: '2026-11-09T01:00:00.000Z',
+    });
+    const adapter = devopsBrokerAdminApprovalAdapter({ socketPath, pendingDir, approvalsAppUrl: APP });
+    await expect(adapter.pending(Date.parse('2026-11-09T03:01:00Z'))).resolves.toEqual([]);
+    expect(fs.existsSync(dead)).toBe(false);
+  });
+
+  it('ignores the records while the broker lists its own cards', async () => {
+    await fakeBroker(() => ({ approvals: [VIEW] }));
+    writeRecord(`${RECORD.approvalId}.json`, RECORD);
+    const adapter = devopsBrokerAdminApprovalAdapter({ socketPath, pendingDir, approvalsAppUrl: APP });
+    const cards = await adapter.pending(Date.parse('2026-11-09T03:01:00Z'));
+    expect(cards.map((c) => c.id)).toEqual(['devops_broker:appr_0001abcd']);
+  });
+
+  it('re-reads the records every refresh while the refusing broker is left alone', async () => {
+    await refusingBroker();
+    let clock = Date.parse('2026-11-09T03:01:00Z');
+    const adapter = devopsBrokerAdminApprovalAdapter({
+      socketPath,
+      pendingDir,
+      approvalsAppUrl: APP,
+      now: () => clock,
+    });
+    await expect(adapter.pending(clock)).resolves.toEqual([]);
+    writeRecord(`${RECORD.approvalId}.json`, RECORD);
+    clock += 5_000;
+    const cards = await adapter.pending(clock);
+    expect(cards.map((c) => c.id)).toEqual(['devops_broker:appr_0002efgh']);
+    expect(received).toHaveLength(1);
+  });
+
+  it('a card without a configured app link has no link (the client says where to look)', async () => {
+    await refusingBroker();
+    writeRecord(`${RECORD.approvalId}.json`, RECORD);
+    for (const approvalsAppUrl of [undefined, 'https://evil.example/app_redirect?app=A0000APP']) {
+      const adapter = devopsBrokerAdminApprovalAdapter({ socketPath, pendingDir, approvalsAppUrl });
+      const [card] = await adapter.pending(Date.parse('2026-11-09T03:01:00Z'));
+      expect(card.links).toEqual([]);
+    }
+  });
+
+  it('reads devops-tools.approvalsAppUrl only as a Slack app_redirect link', () => {
+    const file = path.join(dir, 'config.json');
+    const cases: [unknown, string | undefined][] = [
+      [APP, APP],
+      [`${APP}&team=T0000TEAM`, `${APP}&team=T0000TEAM`],
+      ['https://example.slack.com/archives/D1/p1', undefined],
+      ['http://example.slack.com/app_redirect?app=A0000APP', undefined],
+      ['https://example.slack.com.evil.example/app_redirect?app=A0000APP', undefined],
+      [42, undefined],
+    ];
+    for (const [approvalsAppUrl, expected] of cases) {
+      fs.writeFileSync(file, JSON.stringify({ 'devops-tools': { approvalsAppUrl } }));
+      expect(devopsApprovalsAppUrl(file)).toBe(expected);
+    }
   });
 });

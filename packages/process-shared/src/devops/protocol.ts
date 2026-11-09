@@ -20,6 +20,13 @@ export const DEFAULT_BROKER_SOCKET_PATH = '/usr/local/var/soma-devops/run/broker
 /** Overrides the socket path for the MCP server (tests, non-default installs). */
 export const BROKER_SOCKET_ENV = 'SOMA_DEVOPS_BROKER_SOCKET';
 
+/**
+ * Where the MCP server records each approval card it waits on, one `<approvalId>.json`
+ * (`PendingCardRecord`), removed when the call ends. The dashboard lists these when the broker cannot
+ * list its cards itself (a broker older than the `approvals` op, #1051). Display only.
+ */
+export const PENDING_DIR_ENV = 'SOMA_DEVOPS_PENDING_DIR';
+
 export const DEVOPS_TOOLS = [
   'list',
   'gh_read',
@@ -142,6 +149,23 @@ export interface PendingMessage {
   /** First 12 hex characters of the sha256 the card shows. */
   digestPrefix: string;
   /** ISO 8601 UTC. */
+  expiresAt: string;
+}
+
+/**
+ * One approval card the MCP server is waiting on (`PENDING_DIR_ENV`). The model's OS user writes it, so it
+ * is a pointer to the Slack card and nothing more: it never approves anything and its fields are unverified.
+ */
+export interface PendingCardRecord {
+  v: number;
+  approvalId: string;
+  tool: DevopsTool;
+  digestPrefix: string;
+  /** The Slack user id the request line claimed. */
+  requester: string;
+  /** ISO 8601 UTC. */
+  createdAt: string;
+  /** ISO 8601 UTC, the card's deadline from `pending`. */
   expiresAt: string;
 }
 
