@@ -12,7 +12,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { resetAdminUsersCache } from '../admin-utils';
 import { evaluateToolPolicy, type ToolPolicyContext } from '../agent-runtime/policy/tool-policy';
 import { DATA_DIR, PLUGINS_DIR } from '../env-paths';
-import { checkEnvSkillAccess, envSkillRegistry } from '../env-skill-registry';
+import { checkEnvPluginMcpAccess, checkEnvSkillAccess, envSkillRegistry } from '../env-skill-registry';
 import { EnvSkillPermissionActionHandler } from '../slack/actions/env-skill-permission-action-handler';
 import { SkillForceHandler } from '../slack/commands/skill-force-handler';
 
@@ -21,6 +21,8 @@ const REQUESTER = 'UREQFLOW01';
 const THREAD = { channel: 'CFLOW00001', threadTs: '1793000000.000100' };
 const OTHER_THREAD = { channel: 'CFLOW00001', threadTs: '1793000000.000999' };
 const SKILL_BODY = '# acme post-deploy\nRun the environment QA profile.';
+/** An MCP tool of the environment plugin's server, as the SDK names it. */
+const BROWSER_TOOL = 'mcp__plugin_acme-env_browser__probe';
 
 interface Posted {
   channel: string;
@@ -81,7 +83,7 @@ describe('environment-skill admin approval — full flow', () => {
       vi.fn(async () => ({})),
     );
 
-  /** Step 6b as the stream hook evaluates it for the requester in `where`. */
+  /** Steps 6b and 6d as the stream hook evaluates them for the requester in `where`. */
   function policy(tool: string, input: Record<string, unknown>, where = THREAD) {
     const registry = envSkillRegistry(mcpManager.getPluginManager());
     const ctx: ToolPolicyContext = {
@@ -92,6 +94,7 @@ describe('environment-skill admin approval — full flow', () => {
       isDangerousRuleDisabled: () => false,
       checkMcpToolPermission: () => null,
       checkEnvSkillPermission: (t, i) => checkEnvSkillAccess(t, i, REQUESTER, where, registry),
+      checkEnvPluginMcpPermission: (t) => checkEnvPluginMcpAccess(t, REQUESTER, where, registry),
     };
     return evaluateToolPolicy(tool, input, ctx);
   }
@@ -128,6 +131,8 @@ describe('environment-skill admin approval — full flow', () => {
     // The model path is denied too, in every spelling.
     expect(policy('Skill', { skill: 'acme-env:post-deploy' }).decision).toBe('deny');
     expect(policy('Read', { file_path: skillFile }).decision).toBe('deny');
+    // So are the plugin's MCP tools (step 6d), and no admin is asked about them.
+    expect(policy(BROWSER_TOOL, {}).reason).toBe(`env-plugin-mcp: acme-env (${BROWSER_TOOL})`);
 
     // The admin got a DM; the requester got a notice in the thread.
     expect(slackApi.openDmChannel).toHaveBeenCalledWith(ADMIN);
@@ -157,10 +162,13 @@ describe('environment-skill admin approval — full flow', () => {
     expect(policy('Read', { file_path: skillFile }).decision).toBe('allow');
     // Writing the skill stays closed.
     expect(policy('Write', { file_path: skillFile, content: 'x' }).decision).toBe('deny');
+    // The approval of one of its skills opens the plugin's MCP tools in that thread.
+    expect(policy(BROWSER_TOOL, {}).decision).toBe('pass');
 
     // Another thread is a new ask.
     expect((await ask(text, REQUESTER, OTHER_THREAD)).awaitingPermission).toBe(true);
     expect(policy('Skill', { skill: 'acme-env:post-deploy' }, OTHER_THREAD).decision).toBe('deny');
+    expect(policy(BROWSER_TOOL, {}, OTHER_THREAD).decision).toBe('deny');
   });
 
   it('per skill: an approval opens only that skill; the next skill asks the admin again', async () => {

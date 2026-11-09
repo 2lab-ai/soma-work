@@ -23,6 +23,7 @@ function ctx(over: Partial<ToolPolicyContext> = {}): ToolPolicyContext {
     handoffContext: undefined,
     checkMcpToolPermission: () => null,
     checkEnvSkillPermission: () => null,
+    checkEnvPluginMcpPermission: () => null,
     ...over,
   };
 }

@@ -115,4 +115,88 @@ describe('user-skill-grants-store', () => {
       expect(store.isSkillUseAllowed(owner, 'deploy', requester)).toBe(false);
     });
   });
+
+  // An environment plugin as a whole (its MCP tools, policy step 6d) opens on any grant of one of
+  // its skills: all environment skills, a standing grant of one of its skills, or one of its skills
+  // in this thread.
+  describe('isEnvPluginUseAllowed', () => {
+    const thread = { channel: 'C1', threadTs: '171.1' };
+
+    it('denies a requester with no environment grant', () => {
+      expect(store.isEnvPluginUseAllowed('envx', requester, thread)).toBe(false);
+      expect(store.isEnvPluginUseAllowed('envx', requester)).toBe(false);
+    });
+
+    it('the all-environment-skills grant opens every environment plugin', () => {
+      store.grantAllSkills(store.ENV_SKILL_GRANT_OWNER, requester);
+      expect(store.isEnvPluginUseAllowed('envx', requester)).toBe(true);
+      expect(store.isEnvPluginUseAllowed('acme-env', requester, thread)).toBe(true);
+      expect(store.isEnvPluginUseAllowed('envx', 'U0OTHER')).toBe(false);
+    });
+
+    it('a standing grant of one of its skills opens the plugin, matched on the whole plugin name', () => {
+      store.grantSkill(store.ENV_SKILL_GRANT_OWNER, 'envx:browser-qa', requester);
+      expect(store.isEnvPluginUseAllowed('envx', requester)).toBe(true);
+      expect(store.isEnvPluginUseAllowed('envx', 'U0OTHER')).toBe(false);
+      // `env` / `envx-two` are other plugins: the key prefix is `<plugin>:`, never a substring.
+      expect(store.isEnvPluginUseAllowed('env', requester)).toBe(false);
+      expect(store.isEnvPluginUseAllowed('envx-two', requester)).toBe(false);
+      store.grantSkill(store.ENV_SKILL_GRANT_OWNER, 'abc-def:qa', requester);
+      expect(store.isEnvPluginUseAllowed('abc', requester)).toBe(false);
+      expect(store.isEnvPluginUseAllowed('abc-def', requester)).toBe(true);
+    });
+
+    it('a thread grant of one of its skills opens the plugin in that thread only', () => {
+      store.addThreadGrant(store.ENV_SKILL_GRANT_OWNER, 'envx:browser-qa', requester, thread);
+      expect(store.isEnvPluginUseAllowed('envx', requester, thread)).toBe(true);
+      expect(store.isEnvPluginUseAllowed('envx', requester, { channel: 'C1', threadTs: '999.9' })).toBe(false);
+      expect(store.isEnvPluginUseAllowed('envx', requester, { channel: 'C2', threadTs: '171.1' })).toBe(false);
+      expect(store.isEnvPluginUseAllowed('envx', requester)).toBe(false);
+      expect(store.isEnvPluginUseAllowed('envx', 'U0OTHER', thread)).toBe(false);
+      expect(store.isEnvPluginUseAllowed('env', requester, thread)).toBe(false);
+      // The skill-level check is unchanged: the grant covers that skill, not its siblings.
+      expect(store.isEnvSkillUseAllowed('envx:browser-qa', requester, thread)).toBe(true);
+      expect(store.isEnvSkillUseAllowed('envx:deploy', requester, thread)).toBe(false);
+    });
+
+    it('a thread grant counts for its own plugin only, even with a look-alike name', () => {
+      store.addThreadGrant(store.ENV_SKILL_GRANT_OWNER, 'abc-def:qa', requester, thread);
+      store.addThreadGrant(store.ENV_SKILL_GRANT_OWNER, 'abc_def:qa', requester, thread);
+      expect(store.isEnvPluginUseAllowed('abc', requester, thread)).toBe(false);
+      expect(store.isEnvPluginUseAllowed('abc-def', requester, thread)).toBe(true);
+      expect(store.isEnvPluginUseAllowed('abc_def', requester, thread)).toBe(true);
+    });
+
+    it('an expired thread grant does not count, and a live sibling still does', () => {
+      store.addThreadGrant(store.ENV_SKILL_GRANT_OWNER, 'envx:old', requester, thread, Date.now() - 1);
+      expect(store.isEnvPluginUseAllowed('envx', requester, thread)).toBe(false);
+      expect(store.hasThreadGrant(store.ENV_SKILL_GRANT_OWNER, 'envx:old', requester, thread)).toBe(false);
+      store.addThreadGrant(store.ENV_SKILL_GRANT_OWNER, 'envx:old', requester, thread, Date.now() - 1);
+      store.addThreadGrant(store.ENV_SKILL_GRANT_OWNER, 'envx:live', requester, thread);
+      expect(store.isEnvPluginUseAllowed('envx', requester, thread)).toBe(true);
+      expect(store.isEnvPluginUseAllowed('envx', requester, thread)).toBe(true);
+    });
+
+    it('a grant re-armed after it expired counts again', () => {
+      store.addThreadGrant(store.ENV_SKILL_GRANT_OWNER, 'envx:qa', requester, thread, Date.now() - 1);
+      expect(store.isEnvPluginUseAllowed('envx', requester, thread)).toBe(false);
+      store.addThreadGrant(store.ENV_SKILL_GRANT_OWNER, 'envx:qa', requester, thread);
+      expect(store.isEnvPluginUseAllowed('envx', requester, thread)).toBe(true);
+    });
+
+    it('an empty plugin name never matches', () => {
+      store.grantSkill(store.ENV_SKILL_GRANT_OWNER, ':odd', requester);
+      store.addThreadGrant(store.ENV_SKILL_GRANT_OWNER, ':odd', requester, thread);
+      expect(store.isEnvPluginUseAllowed('', requester, thread)).toBe(false);
+    });
+
+    it('a malformed per-skill entry in the grant file is skipped, not thrown on', () => {
+      fs.writeFileSync(
+        path.join(tempDir, 'env-skill-grants.json'),
+        JSON.stringify({ allowAll: [], perSkill: { 'envx:a': 'not-a-list', 'envx:b': [requester] } }),
+      );
+      expect(store.isEnvPluginUseAllowed('envx', requester)).toBe(true);
+      expect(store.isEnvPluginUseAllowed('envx', 'U0OTHER')).toBe(false);
+    });
+  });
 });
