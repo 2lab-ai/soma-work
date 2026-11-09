@@ -8596,14 +8596,21 @@ async function answerAdminApproval(id, choiceId) {
   adminInboxLoad();
   return st;
 }
+// The viewer's own card only: another admin's DM would not open for them.
 function devopsSlackLink(a) {
   var links = (a && a.links) || [];
   for (var i = 0; i < links.length; i++) if (links[i] && links[i].admin === _viewerUserId) return String(links[i].url || '');
-  return links.length && links[0] ? String(links[0].url || '') : '';
+  return '';
+}
+function devopsIsSlackLink(url) {
+  try {
+    var u = new URL(url);
+    return u.protocol === 'https:' && /[.]slack[.]com$/.test(u.hostname);
+  } catch (_e) { return false; }
 }
 function openDevopsSlackCard(id, a) {
   var url = devopsSlackLink(a);
-  if (url.indexOf('https://') !== 0) {
+  if (!devopsIsSlackLink(url)) {
     var miss = { status: 'error', message: 'Slack 카드 링크가 없어요 — Slack의 soma devops approvals 앱 DM에서 이 카드를 여세요', retry: false };
     _adminState[id] = miss;
     paintAdminInbox();

@@ -12,7 +12,9 @@
  * On a host without a broker the socket is missing and the kind lists nothing.
  */
 
+import * as fs from 'node:fs';
 import * as net from 'node:net';
+import * as path from 'node:path';
 import {
   type AdminRequest,
   DEFAULT_BROKER_SOCKET_PATH,
@@ -28,6 +30,12 @@ import { Logger } from '../logger';
 const logger = new Logger('DevopsBrokerApprovals');
 
 const LIST_TIMEOUT_MS = 3_000;
+/** The admin-approval watch reads every second; the broker is asked at most this often. */
+const REFRESH_MS = 5_000;
+/** A broker that refuses the op (an older build) or errors is left alone this long: its ledger logs each refusal. */
+const BACKOFF_MS = 10 * 60 * 1000;
+/** A Slack message link only — a listing that points anywhere else is dropped. */
+const SLACK_LINK_RE = /^https:\/\/[a-z0-9-]+\.slack\.com\/archives\/[A-Z0-9]+\/p[0-9]+(?:\?[^\s"'<>]*)?$/;
 const APPROVAL_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 const SLACK_USER_RE = /^[UW][A-Z0-9]{2,20}$/;
 
@@ -124,7 +132,8 @@ function linksOf(view: BrokerApprovalView): { admin: string; url: string }[] {
   const out: { admin: string; url: string }[] = [];
   for (const card of view.cards) {
     if (!isRecord(card) || typeof card.admin !== 'string' || !SLACK_USER_RE.test(card.admin)) continue;
-    if (typeof card.permalink !== 'string' || !/^https:\/\/[^\s"'<>]{1,2000}$/.test(card.permalink)) continue;
+    if (typeof card.permalink !== 'string' || card.permalink.length > 2000 || !SLACK_LINK_RE.test(card.permalink))
+      continue;
     out.push({ admin: card.admin, url: card.permalink });
   }
   return out;
@@ -148,27 +157,56 @@ function toApproval(view: BrokerApprovalView): AdminApproval {
   };
 }
 
-export function devopsBrokerAdminApprovalAdapter(opts: { socketPath?: string } = {}): AdminApprovalAdapter {
+/** `devops-tools.socketPath` from config.json when it is absolute (the MCP server honours the same key). */
+export function devopsBrokerSocketPath(configFile: string): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+    const section = isRecord(parsed) ? parsed['devops-tools'] : undefined;
+    const socketPath = isRecord(section) ? section.socketPath : undefined;
+    return typeof socketPath === 'string' && path.isAbsolute(socketPath) ? socketPath : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function devopsBrokerAdminApprovalAdapter(
+  opts: { socketPath?: string; now?: () => number } = {},
+): AdminApprovalAdapter {
   const socketPath = opts.socketPath ?? DEFAULT_BROKER_SOCKET_PATH;
+  const clock = opts.now ?? Date.now;
   let warned = false;
+  let views: BrokerApprovalView[] = [];
+  let nextAskAt = 0;
+  let asking: Promise<void> | null = null;
+
+  async function refresh(): Promise<void> {
+    const result = await callBrokerAdmin(socketPath);
+    if (!result.ok) {
+      views = [];
+      // No broker on this host is the normal case (ask again later); a refusal backs off and is logged once.
+      nextAskAt = clock() + (result.unreachable ? REFRESH_MS : BACKOFF_MS);
+      if (!result.unreachable && !warned) {
+        warned = true;
+        logger.warn('devops broker cards could not be listed; asking again in 10 minutes', { message: result.message });
+      }
+      return;
+    }
+    warned = false;
+    nextAskAt = clock() + REFRESH_MS;
+    const listed = isRecord(result.data) && Array.isArray(result.data.approvals) ? result.data.approvals : [];
+    views = listed.filter(isView);
+  }
+
   return {
     kind: 'devops_broker',
     async pending(now) {
-      const result = await callBrokerAdmin(socketPath);
-      if (!result.ok) {
-        // No broker on this host is the normal case; anything else is worth one line until it recovers.
-        if (!result.unreachable && !warned) {
-          warned = true;
-          logger.warn('devops broker cards could not be listed', { message: result.message });
-        }
-        return [];
+      if (clock() >= nextAskAt) {
+        asking ??= refresh().finally(() => {
+          asking = null;
+        });
+        await asking;
       }
-      warned = false;
-      const approvals = isRecord(result.data) && Array.isArray(result.data.approvals) ? result.data.approvals : [];
-      return approvals
-        .filter(isView)
-        .filter((view) => (Date.parse(view.expiresAt) || 0) > now)
-        .map(toApproval);
+      return views.filter((view) => (Date.parse(view.expiresAt) || 0) > now).map(toApproval);
     },
     resolved() {
       // Decided in Slack: the card simply leaves the broker's list.
