@@ -765,6 +765,7 @@ function answers(
       'acDrop',
       'stripRecommendedMarker',
       'acQuestionId',
+      'decisionLines',
       'answerPermission',
       'answerChoice',
     ],

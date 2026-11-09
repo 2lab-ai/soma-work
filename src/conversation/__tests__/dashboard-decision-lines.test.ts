@@ -197,7 +197,15 @@ const INJECT = {
   _acState: {},
   STRINGS: { mcCustomPlaceholder: '직접 입력' },
 };
-const BASE_FNS = ['esc', 'escAttr', 'acQuestionLock', 'acQuestionId', 'stripRecommendedMarker', 'resolveRecommendedId'];
+const BASE_FNS = [
+  'esc',
+  'escAttr',
+  'acQuestionLock',
+  'acQuestionId',
+  'decisionLines',
+  'stripRecommendedMarker',
+  'resolveRecommendedId',
+];
 const SESSION = (q: unknown) => ({ key: 'inst::C1:t1', ownerId: 'U1', activityState: 'waiting', pendingQuestion: q });
 
 type Client = {
@@ -208,7 +216,7 @@ type Client = {
 };
 const client = () =>
   load<Client>(
-    [...BASE_FNS, 'decisionLines', 'acQuestionData', 'mcFormId', 'mcStateOf', 'mcFormData', 'quickChoicesOf'],
+    [...BASE_FNS, 'acQuestionData', 'mcFormId', 'mcStateOf', 'mcFormData', 'quickChoicesOf'],
     ['AC_SIBLING', 'MC_CUSTOM_ID', '_mcState'],
     INJECT,
   );
@@ -267,9 +275,17 @@ describe('D4/D6 — the single question card', () => {
     expect('description' in c.acQuestionData(SESSION(Q), Q)).toBe(false);
   });
 
-  it('the decision lines do not change the card identity (the answer goes to the same question)', () => {
+  // Review R1 P1 (astra): the lines are part of the question's meaning — a question rewritten in place with other
+  // stakes or another verdict is another card, never the old one's answer state.
+  it('identity: other decision lines → another card; the same lines → the same card; none → the key as before', () => {
     const c = client();
-    expect(c.acQuestionData(SESSION(Q), { ...Q, ...LINES }).id).toBe(c.acQuestionData(SESSION(Q), Q).id);
+    const lined = c.acQuestionData(SESSION(Q), { ...Q, ...LINES }).id;
+    expect(lined).not.toBe(c.acQuestionData(SESSION(Q), Q).id);
+    expect(c.acQuestionData(SESSION(Q), { ...Q, ...LINES, reversible: true }).id).not.toBe(lined);
+    expect(c.acQuestionData(SESSION(Q), { ...Q, ...LINES }).id).toBe(lined);
+    expect(c.acQuestionData(SESSION(Q), Q).id).toBe(
+      `q|${JSON.stringify([Q.question, Q.choices.map((x) => [x.id, x.label, ''])])}`,
+    );
   });
 });
 
@@ -296,6 +312,52 @@ describe('D5/D6 — the multi-question form', () => {
     const d = client().mcFormData(SESSION(G), G);
     expect(d.questions[0].context).toBe('맥락\n\n🚧 막힌 작업 — 릴리스\n⚠️ **되돌릴 수 없음** — 태그 공개');
     expect(d.questions[1].context).toBe('⚖️ 걸린 것 — 변경 기록');
+  });
+
+  // Review R1 P1 (astra): an unclosed code fence in the model's context must not swallow the lines (and the warning).
+  it('D5 an unclosed code fence in the context is closed before the lines', () => {
+    const fence = '\u0060\u0060\u0060';
+    const q = { ...G, questions: [{ ...G.questions[0], context: `맥락\n${fence}\ncode never closed` }] };
+    expect(client().mcFormData(SESSION(q), q).questions[0].context).toBe(
+      `맥락\n${fence}\ncode never closed\n${fence}\n\n🚧 막힌 작업 — 릴리스\n⚠️ **되돌릴 수 없음** — 태그 공개`,
+    );
+    const closed = { ...G, questions: [{ ...G.questions[0], context: `a\n${fence}\nx\n${fence}` }] };
+    expect(client().mcFormData(SESSION(closed), closed).questions[0].context).toBe(
+      `a\n${fence}\nx\n${fence}\n\n🚧 막힌 작업 — 릴리스\n⚠️ **되돌릴 수 없음** — 태그 공개`,
+    );
+    // Without lines the context is left exactly as the model wrote it.
+    const plain = { ...G, questions: [{ id: 'q1', question: 'A?', choices: CHOICES, context: `x\n${fence}` }] };
+    expect(client().mcFormData(SESSION(plain), plain).questions[0].context).toBe(`x\n${fence}`);
+  });
+
+  it('form identity: a question whose lines change starts the form clean; none → the id as before', () => {
+    const c = load<{ mcFormId(s: unknown, q: unknown): string }>([...BASE_FNS, 'mcFormId'], [], INJECT);
+    const changed = { ...G, questions: [{ ...G.questions[0], reversible: true }, G.questions[1], G.questions[2]] };
+    expect(c.mcFormId(SESSION(G), changed)).not.toBe(c.mcFormId(SESSION(G), G));
+    const bare = { ...G, questions: G.questions.map((x) => ({ id: x.id, question: x.question, choices: x.choices })) };
+    expect(c.mcFormId(SESSION(bare), bare)).toBe(
+      `mc|inst::C1:t1|${JSON.stringify([G.title, G.questions.map((x) => [x.id, x.question])])}`,
+    );
+  });
+
+  // Review (bot, tests P2): what the form shows, not only the string it is handed — the element renders `context`
+  // with @2lab.ai/ui answerMarkdown.
+  it('D5 rendered: separate lines, the irreversible label bold, an HTML-like value shown as text', async () => {
+    const g = globalThis as Record<string, unknown>;
+    if (!g.HTMLElement) g.HTMLElement = class {};
+    if (!g.customElements) g.customElements = { define() {}, get() {} };
+    // @ts-expect-error — the package maps only `server` in typesVersions; this repo's moduleResolution is `node`.
+    const { answerMarkdown } = (await import('@2lab.ai/ui/ai-answer')) as unknown as {
+      answerMarkdown(md: string): string;
+    };
+    const q = {
+      ...G,
+      questions: [{ ...G.questions[0], blockedWork: '<em>production</em>', stakes: '돈', reversibleWhy: '태그 공개' }],
+    };
+    const html = answerMarkdown(client().mcFormData(SESSION(q), q).questions[0].context);
+    expect(html).toContain('🚧 막힌 작업 — &lt;em&gt;production&lt;/em&gt;<br>⚖️ 걸린 것 — 돈<br>');
+    expect(html).toContain('⚠️ <strong>되돌릴 수 없음</strong> — 태그 공개');
+    expect(html).not.toContain('<em>production</em>');
   });
 
   it('D6 a question without fields keeps its context as is, or none', () => {

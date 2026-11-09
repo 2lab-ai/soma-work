@@ -6,7 +6,7 @@
   - Skill spec: `src/local/skills/UIAskUserQuestion/SKILL.md`
   - Prompt injection: `src/prompt/common.prompt`
   - Extraction/normalization: `packages/slack/src/user-choice-extractor.ts`, `src/slack/user-choice-handler.ts`
-  - Slack UI: `src/slack/choice-message-builder.ts`, decision lines `packages/slack/src/decision-lines.ts`
+  - Slack UI: `packages/slack/src/choice-message-builder.ts` (re-exported by `src/slack/choice-message-builder.ts`), decision lines `packages/slack/src/decision-lines.ts`
   - Stream integration: `src/slack/stream-processor.ts`, `src/slack/pipeline/stream-executor.ts`
   - Action handling/state: `src/slack/actions/index.ts`, `src/slack/actions/choice-action-handler.ts`, `src/slack/actions/form-action-handler.ts`, `src/slack/actions/pending-form-store.ts`
   - Types: `src/types.ts`
@@ -338,7 +338,12 @@ Slack의 partial-fill 동작과 의도적으로 다릅니다. 1000+ sub-question
 - **대시보드**: 투영이 단일 질문의 `context`(전에는 버렸다)와 결정 필드를 싣는다. 클라이언트 `decisionLines(q, md)`가
   단일 질문 카드(`<ui-approval-card>` `description` = 맥락 + 줄)와 복수 질문 폼(`<ui-choice-form>` 질문 `context` =
   맥락 + 빈 줄 + 줄, 마크다운)에 같은 줄을 그린다. 결정 줄이 있는 질문은 카드 얼굴의 원클릭 답(`quickChoicesOf`)을 끄고
-  카드를 열어 답하게 한다.
+  카드를 열어 답하게 한다. 결정 줄은 질문의 뜻이라 카드 식별자(`acQuestionId`, `mcFormId`)에 들어간다 — 줄이 바뀐
+  질문은 다른 카드이고, 줄이 없으면 식별자는 예전과 같다. 복수 질문 폼의 맥락에 모델이 닫지 않은 코드 펜스가 있으면
+  줄 앞에서 닫는다(경고가 코드 블록에 묻히지 않게).
+- **표면 차이(알려진)**: 값의 인라인 마크다운(`*x*`, `` `x` ``, http 링크)은 Slack mrkdwn과 복수 질문 폼에서는 해석되고,
+  단일 질문 카드(일반 텍스트)에서는 글자 그대로다. 줄마다 따로 해석되므로 값이 다른 줄이나 호스트의 경고 라벨을 바꾸지는
+  못한다. HTML은 어디서나 escape된다.
 - **답 형식은 그대로**: 결정 줄은 사람에게만 보인다. 모델이 받는 답(선택지 id, 복수 질문은 줄마다 `질문: id. 라벨`)은
   같다(`choice-action-handler.test.ts` "#1073 — decision lines never reach the answer").
 - **알려진 범위 밖**: 도구 없는 코드 블록 경로의 질문은 지금도 대시보드에 질문 카드가 없다(`pendingQuestion`을
