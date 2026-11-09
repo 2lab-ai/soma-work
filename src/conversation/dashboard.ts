@@ -11733,6 +11733,13 @@ var _atKeyed = false;
 var _keyAt = 0;
 var KEYED_MS = 600;
 function keyedNow() { return _atKeyed && Date.now() - _keyAt < KEYED_MS; }
+// A held ←/→ on the deck nav switches card on every repeat: each of those switches is keyed too. Any other held key
+// counts once (its repeats would hold the window open for changes it did not make).
+function keyOnDeckNav(e) {
+  var path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+  for (var i = 0; i < path.length; i++) if (path[i] && path[i].tagName && String(path[i].tagName).toLowerCase() === 'ui-deck-nav') return true;
+  return false;
+}
 // The keys that open, close or move between cards — not typing: Esc anywhere; Enter, Space and the arrows outside a
 // text field (there they type or move the caret).
 function isActingKey(e) {
@@ -11900,7 +11907,7 @@ document.addEventListener('ui-toggle', function(e) {
 });
 document.addEventListener('keydown', function() { _atKeyed = true; }, true);
 document.addEventListener('pointerdown', function() { _atKeyed = false; }, true);
-document.addEventListener('keydown', function(e) { if (!e.repeat && isActingKey(e)) _keyAt = Date.now(); }, true);
+document.addEventListener('keydown', function(e) { if (isActingKey(e) && (!e.repeat || keyOnDeckNav(e))) _keyAt = Date.now(); }, true);
 
 // ── Panel scope: which node's tasks and work log the panel shows (§4.3) ──
 function panelAgentOf(s) {
