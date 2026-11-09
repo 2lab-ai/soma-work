@@ -79,6 +79,7 @@ const FNS = [
   'acRefusal',
   'answerAdminApproval',
   'devopsSlackLink',
+  'devopsIsSlackLink',
   'openDevopsSlackCard',
 ] as const;
 
@@ -531,8 +532,8 @@ describe('dashboard admin approvals (#620)', () => {
       choices: [{ id: 'open_slack', label: '↗ Slack 카드 열기 (거기서 승인·거부)' }],
       recommendedId: 'open_slack',
       links: [
-        { admin: 'UOTHER', url: 'https://example.slack.test/archives/D2/p2' },
-        { admin: 'UADMIN', url: 'https://example.slack.test/archives/D1/p1' },
+        { admin: 'UOTHER', url: 'https://example.slack.com/archives/D2/p2' },
+        { admin: 'UADMIN', url: 'https://example.slack.com/archives/D1/p1' },
       ],
       requesterId: 'U1',
       createdAt: 1_700_000_000_000,
@@ -556,9 +557,39 @@ describe('dashboard admin approvals (#620)', () => {
         choices: [{ id: 'open_slack', label: expect.stringContaining('Slack') }],
       });
       await c.answerAdminApproval('devops_broker:appr_0001abcd', 'open_slack');
-      expect(opened).toEqual([['https://example.slack.test/archives/D1/p1', '_blank', 'noopener']]);
+      expect(opened).toEqual([['https://example.slack.com/archives/D1/p1', '_blank', 'noopener']]);
       expect(calls).toEqual([]);
       expect(toasts[0].t.title).toContain('Slack 카드를 열었어요');
+    });
+
+    it('#1051 review — only the viewer’s own card, only a Slack link', async () => {
+      const opened: any[] = [];
+      const { c } = client({ window: { open: (...args: any[]) => opened.push(args) } });
+      c.applyAdminApprovals({
+        pending: [
+          {
+            ...DEVOPS_REQUEST,
+            id: 'devops_broker:a1',
+            links: [{ admin: 'UOTHER', url: 'https://example.slack.com/archives/D2/p2' }],
+          },
+        ],
+        resolved: [],
+      });
+      expect(await c.answerAdminApproval('devops_broker:a1', 'open_slack')).toMatchObject({ status: 'error' });
+      c.applyAdminApprovals({
+        pending: [
+          {
+            ...DEVOPS_REQUEST,
+            id: 'devops_broker:a2',
+            links: [{ admin: 'UADMIN', url: 'https://evil.example/archives/D1/p1' }],
+          },
+        ],
+        resolved: [],
+      });
+      expect(await c.answerAdminApproval('devops_broker:a2', 'open_slack')).toMatchObject({ status: 'error' });
+      expect(c.devopsIsSlackLink('javascript:alert(1)')).toBe(false);
+      expect(c.devopsIsSlackLink('https://x.slack.com.evil.example/a')).toBe(false);
+      expect(opened).toEqual([]);
     });
 
     it('#1051 — a devops broker card without a link says where to find it and opens nothing', async () => {
