@@ -1472,12 +1472,12 @@ describe('admin op: approvals (#1051)', () => {
     cards: [{ admin: 'U000ADMIN', permalink: 'https://example.slack.test/archives/D000ADMIN/p1700000000000001' }],
   };
 
-  it('lists the waiting cards over the socket, with a ledger row', async () => {
+  it('lists the waiting cards over the socket, leaving no ledger row (a dashboard polls)', async () => {
     const approvals = { ...fakeApprovals('denied').approvals, pending: () => [VIEW] } as unknown as Approvals;
     await start({ approvals });
     const reply = terminal(await send({ v: 1, id: 'adm-1', op: 'approvals', args: {} }));
     expect(reply).toEqual({ v: 1, id: 'adm-1', type: 'result', data: { approvals: [VIEW] } });
-    expect(ledgerRows().find((row) => row.event === 'admin-request')).toMatchObject({ op: 'approvals', outcome: 'ok' });
+    expect(ledgerRows().filter((row) => row.event === 'admin-request')).toEqual([]);
   });
 
   it('refuses any other op as bad-request', async () => {

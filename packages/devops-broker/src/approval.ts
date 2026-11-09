@@ -599,9 +599,7 @@ export function createApprovals(opts: {
         try {
           const channel = await dmChannel(admin);
           const { ts } = await slack.postMessage(channel, entry.card);
-          // A link for the dashboard; a Slack error here never touches the approval.
-          const permalink = await Promise.resolve(slack.getPermalink?.(channel, ts)).catch(() => undefined);
-          posted = { admin, channel, ts, ...(permalink ? { permalink } : {}) };
+          posted = { admin, channel, ts };
         } catch (err) {
           await ledger.append({ event: 'approval.card-post-failed', approvalId, admin, code: errorCode(err) });
           continue;
@@ -651,11 +649,35 @@ export function createApprovals(opts: {
     }
     entry.status = 'pending';
     for (const waiter of entry.waiters) announce(entry, waiter);
+    void attachPermalinks(entry);
     if (entry.waiters.size === 0) {
       await finish(entry, { kind: 'cancelled', reason: 'requester-gone' });
       return;
     }
     startLoop();
+  }
+
+  /**
+   * Links for the dashboard (#1051), fetched after every card is posted and recorded, so a slow or failing Slack
+   * call never delays a card, the next admin's card, or the approval. Best effort, never throws.
+   */
+  async function attachPermalinks(entry: Entry): Promise<void> {
+    if (slack.getPermalink === undefined) return;
+    for (const post of entry.posts) {
+      if (post.permalink !== undefined || entry.status !== 'pending') continue;
+      try {
+        const link = await slack.getPermalink(post.channel, post.ts);
+        post.permalink = link;
+        await mutate((draft) => {
+          const saved = recordOf(draft, entry.approvalId)?.posts.find(
+            (p) => p.channel === post.channel && p.ts === post.ts,
+          );
+          if (saved !== undefined) saved.permalink = link;
+        });
+      } catch {
+        // No link: the dashboard says where the card is instead.
+      }
+    }
   }
 
   function watched(): Entry[] {

@@ -1248,7 +1248,11 @@ describe('pending cards for the dashboard (#1051)', () => {
     const approvals = await makeApprovals({ admins: [ADMIN, ADMIN_B] });
     const run = start(approvals, req());
     const [pending] = await waitFor(() => run.pending.length > 0 && run.pending, 'pending');
-    const [view] = approvals.pending();
+    // Links arrive after the cards are recorded, never before.
+    const [view] = await waitFor(() => {
+      const list = approvals.pending();
+      return list.length > 0 && list[0].cards.every((c) => c.permalink !== undefined) && list;
+    }, 'links');
     expect(view).toEqual({
       approvalId: pending.approvalId,
       tool: req().tool,
