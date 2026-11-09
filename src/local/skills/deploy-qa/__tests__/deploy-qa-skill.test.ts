@@ -1,7 +1,5 @@
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { createServer, type Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -447,17 +445,17 @@ describe('deploy-qa $autoz waiver (waive=autoz)', () => {
 });
 
 /**
- * `compare` gets through gh_read only when the broker's installed classifier allows it (#998), and
- * the broker is installed apart from this plugin: an admin re-runs its installer, a deploy never
- * updates it. A host whose broker predates that rule refuses every compare `policy-denied`, so QA
- * could not confirm the deploy, list the range, or check that a merge is running (2026-11-06). A
- * compare read that is not an answer is now computed with git in a scratch clone. The direction is
- * the part a reader gets wrong: GitHub's `compare/<base>...<head>` answers `ahead` when `<base>` is
- * an ancestor of `<head>`, which is `git merge-base --is-ancestor <base> <head>`.
+ * `compare` gets through gh_read only when the broker's installed classifier allows it (#998), and the broker is
+ * installed apart from this plugin: a host whose broker predates that rule refuses every compare `policy-denied`
+ * (2026-11-06). #1015 then computed the answer with git in a scratch clone, which never runs in a sandboxed deploy
+ * session: `git init` cannot write `.git/hooks` or `.git/config` there, and `github.com` is not on the sandbox's
+ * domain list. A real deploy session (2026-11-09) walked the commits list through gh_read instead, and that list is
+ * now the one documented fallback.
  */
-const GIT = 'GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= SSH_ASKPASS= git -c core.askPass= -c credential.interactive=never';
+const LIST_READ =
+  '`repos/<owner/repo>/commits` with `"-f", "sha=<sha>", "-f", "per_page=100", "-f", "page=<N>"` and the filter `[.[] | {sha, parents: [.parents[].sha]}]`';
 
-describe('deploy-qa computes a refused compare with git', () => {
+describe('deploy-qa computes a refused compare from the commits list', () => {
   const md = read('deploy-qa');
   const github = md.slice(md.indexOf('## GitHub reads'), md.indexOf('## Args'));
   const steps = md.slice(md.indexOf('## Steps'), md.indexOf('## Final report'));
@@ -465,448 +463,276 @@ describe('deploy-qa computes a refused compare with git', () => {
   const step2 = steps.slice(steps.indexOf('2. **Commits.**'), steps.indexOf('3. **PRs.**'));
   const step5 = steps.slice(steps.indexOf('5. **Admission.**'), steps.indexOf('5.5. **Precondition gate.**'));
 
-  it('keeps gh_read first and computes the answer with git when the compare read is refused or fails', () => {
+  it('keeps gh_read first and falls back to the commits list when the compare read is refused or fails', () => {
     expect(github).toContain('Read `compare` with `gh_read` first.');
-    expect(github).toMatch(/not an answer[^\n]*`policy-denied`[^\n]*compute the same answer with git/);
+    expect(github).toMatch(/not an answer[^\n]*`policy-denied`[^\n]*answer from the commits list instead/);
     // The classifier rules above stay as they were.
     expect(github).toContain('`compare` takes full 40-character SHAs only');
+    expect(github).toContain(LIST_READ);
   });
 
-  it('fetches only the SHAs the check names, over https, blob-less, never shallow, never with a token', () => {
-    expect(github).toContain(`\`${GIT} init -q <dir>\``);
-    expect(github).toContain(`\`${GIT} -C <dir> remote add origin https://github.com/<owner/repo>.git\``);
-    expect(github).toContain(`\`${GIT} -C <dir> fetch --filter=blob:none origin <full SHAs>\``);
-    expect(github).toContain('never `--depth`');
-    expect(github).toContain('never put a token in the URL');
+  it('bounds the walk and never reads a missing answer as a pass or as "not contained"', () => {
     expect(github).toContain(
-      'Run the init and remote-add commands once per `<dir>`; a `<dir>` that already has the remote needs only the fetch.',
+      "at most 10 pages of a list (the Range reads one more of `<before>`'s), a page with fewer than 100 commits ends the list, and a page that is not an answer ends the walk with no answer",
     );
+    expect(github).toContain("`<base>`'s full SHA appears → contained; not found within 10 pages → no answer");
+    expect(github).toContain('No answer is never a pass and never "not contained": the check stays unmet');
   });
 
-  it('never waits on a login: no terminal prompt, no askpass, helpers told not to ask, each call bounded', () => {
+  it('strictly ahead excludes the same commit', () => {
+    expect(github).toContain('**Strictly ahead** (compare `ahead`): contained and `<base>` ≠ `<head>`.');
+  });
+
+  it('a range is complete when it is closed under parents, not when <before> is found', () => {
     expect(github).toContain(
-      `Every git command here starts with \`${GIT}\`: git then never asks for a login on the terminal or through an askpass program and tells credential helpers not to ask, while the session's non-interactive credential helper still supplies it.`,
+      'read pages 1…n of the list from `<after>` and 1…n+1 of the list from `<before>` (or to its end), n = 1, 2, …, 10',
     );
     expect(github).toContain(
-      "Run each git command in its own Bash call with an explicit timeout (the tool's `timeout`, e.g. 120000 ms), since a helper that ignores `credential.interactive` can still wait; a call that timed out or was killed is not an answer, the same as exit 128.",
+      'The range is complete when every parent of every range commit is in the range or in `B`; until then raise n, and past n = 10 there is no answer',
     );
-  });
-
-  it('states the direction once: ahead or identical is merge-base --is-ancestor <base> <head>', () => {
-    expect(github).toMatch(
-      /`compare\/<base>\.\.\.<head>` status `ahead` means `<base>` is an ancestor of `<head>`, `identical` that they are the same commit/,
+    expect(github).toContain('A commit with one parent has one SHA in `parents`.');
+    // Under skew the range may over-include; only admission's per-key re-checks make that safe.
+    expect(github).toContain(
+      "Under commit-date skew the range can also hold a commit `<before>` already had: that is safe only because admission (step 5) re-checks each key's tracker state and the containment of its own mergeShas in `runningSha`, and the range alone never shows that anything is deployed.",
     );
-    expect(github).toContain(`\`${GIT} -C <dir> merge-base --is-ancestor <base> <head>\` exits 0`);
-  });
-
-  it('exit 1 is an answer only from merge-base; a failed fetch, a kill or a timeout is not', () => {
-    expect(github).toContain('exit 1 is an answer too (`behind` or `diverged`), but only from merge-base.');
-    expect(github).toMatch(
-      /A git failure — a fetch that exits non-zero \(1 included\), an unknown SHA \(exit 128\), a call that timed out or was killed, any other exit — is not an answer, the same as a failed read/,
-    );
-    expect(github).toContain('a check whose fetch failed has no answer, whatever a later merge-base or rev-list says.');
-  });
-
-  it('the git directory is scratch, so --confirm and --plan-only may create it', () => {
-    expect(github).toContain('it is scratch, not a run write, so `--confirm` and `--plan-only` may create it');
   });
 
   it('names the answer source in the report notes', () => {
-    expect(github).toContain("Add `compare via git: broker refused compare` to the report's `meta.notes`");
+    expect(github).toContain("Add `compare via commits list: broker refused compare` to the report's `meta.notes`");
   });
 
-  it('step 1: after is contained in runningSha, and before is strictly behind after', () => {
+  it('steps 1, 2 and 5 take the list answer, the two SHAs in compare order', () => {
     expect(step1).toContain(
-      `answers \`ahead\` or \`identical\` — via git, \`${GIT} -C <dir> merge-base --is-ancestor <after> <runningSha>\` exits 0`,
+      'answers `ahead` or `identical` — via the commits list, `after` contained in `runningSha` (`after` is `runningSha` or one of its ancestors)',
     );
-    // `ahead` alone excludes the same commit: git's is-ancestor counts a commit as its own ancestor.
     expect(step1).toContain(
-      `(compare status \`ahead\`; via git, \`${GIT} -C <dir> merge-base --is-ancestor <before> <after>\` exits 0 and \`before\` ≠ \`after\`)`,
+      '(compare status `ahead`; via the commits list, strictly ahead: `before` contained in `after` and `before` ≠ `after`)',
     );
-  });
-
-  it('step 2: the whole range from one source, the one-parent commits, complete when rev-list exits 0', () => {
-    expect(step2).toContain(`\`${GIT} -C <dir> rev-list --reverse --min-parents=1 --max-parents=1 <before>..<after>\``);
-    expect(step2).toContain('never mix pages with git output');
-    expect(step2).toContain('complete when it exits 0');
-    // `--no-merges` alone keeps a parentless commit, which the one-parent rule drops.
-    expect(step2).not.toMatch(/`[^`]*git[^`]*--no-merges[^`]*`/);
-  });
-
-  it("step 5: each related-repo mergeSha is contained in that repo's runningSha", () => {
+    expect(step2).toContain('never mix compare pages with list pages');
+    expect(step2).toContain(
+      "the list's Range `<before>..<after>` stands in for compare's range (a complete candidate set that may also hold older commits, see Range); keep its commits with one SHA in `parents`",
+    );
+    expect(step2).toContain('A range with no answer ends `deployed, QA incomplete: range listing incomplete` too.');
     expect(step5).toContain('`repos/<owner/repo>/compare/<mergeSha>...<runningSha>`');
-    expect(step5).toContain(`via git, \`${GIT} -C <dir> merge-base --is-ancestor <mergeSha> <runningSha>\` exits 0`);
+    expect(step5).toContain('via the commits list, `mergeSha` contained in `runningSha`');
   });
 });
 
-describe('each compare and its git command name the two SHAs in the same order', () => {
+describe('no git recipe remains in the QA skills', () => {
   for (const skill of ['deploy-qa', 'qa-issue']) {
     it(skill, () => {
       const md = read(skill);
-      const lines = md.split('\n').filter((l) => /compare\/<[^<>]+>\.\.\.<[^<>]+>/.test(l) && /-C <dir>/.test(l));
-      expect(lines.length, skill).toBeGreaterThanOrEqual(skill === 'deploy-qa' ? 4 : 2);
-      for (const l of lines) {
-        for (const [, base, head] of l.matchAll(/compare\/<([^<>]+)>\.\.\.<([^<>]+)>/g)) {
-          const forward = `--is-ancestor <${base}> <${head}>`;
-          const range = `<${base}>..<${head}>`;
-          expect(l.includes(forward) || l.includes(range), `${skill}: ${l}`).toBe(true);
-          expect(l, `${skill}: ${l}`).not.toContain(`--is-ancestor <${head}> <${base}>`);
-        }
-      }
-      // Every git command carries the whole no-login prefix: a prompt would hang the step-1 poll.
-      const gitSpans = md.split('`').filter((x, i) => i % 2 === 1 && /^(?:[A-Z_]+=\S*\s+)*git\s/.test(x));
-      expect(gitSpans.length, skill).toBeGreaterThanOrEqual(skill === 'deploy-qa' ? 9 : 6);
-      for (const x of gitSpans) expect(x.startsWith(GIT), `${skill}: ${x}`).toBe(true);
-      // The running commit is always the descendant; the deployed merge never precedes the range's start.
-      expect(md).not.toContain('--is-ancestor <runningSha>');
-      expect(md).not.toContain('--is-ancestor <after> <before>');
+      expect(md).not.toMatch(
+        /git init|merge-base|rev-list|--filter=blob:none|GIT_TERMINAL_PROMPT|credential\.interactive/,
+      );
+      expect(md).not.toContain('compare via git');
+      expect(md).not.toMatch(/`(?:[A-Z_]+=\S*\s+)*git\s/);
     });
   }
 });
 
 /**
- * The documented git commands, run as written against a history whose compare answers are known.
- * main A─B─C─M─M2─D; side S1 branches at B and merges at M; U is an unrelated root merged at M2.
- * compare/B...D = ahead, D...D = identical, D...B = behind, S1...C = diverged; compare/B...D lists
- * C, S1, M, U, M2, D, and the one-parent ones are C, S1, D (U has none: `--no-merges` would keep it).
- *
- * The doc's commands run in a hostile inherited environment: GIT_ASKPASS, SSH_ASKPASS and the
- * global `core.askPass` all name a program that records that it ran and then sleeps. Only the
- * doc's own assignments and `-c` options stand between git and that program.
+ * The Range rule run against real histories. GitHub's commits list comes in `git log`'s default order, newest
+ * commit date first (this repo's list matched `git log` on 2026-11-09). A small page size stands in for pages of 100.
  */
-describe('the documented git commands give the compare answers', () => {
-  // No user or hook git state leaks in (a GIT_DIR from a hook, a global signing or URL-rewrite rule,
-  // a proxy for the local login server).
-  const clean = Object.fromEntries(
-    Object.entries(process.env).filter(
-      ([k]) => !k.startsWith('GIT_') && k !== 'SSH_ASKPASS' && !/^(?:https?|all|no)_proxy$/i.test(k),
-    ),
-  );
-  const env = { ...clean, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' };
-  const sha: Record<string, string> = {};
-  const UNKNOWN = '0123456789abcdef0123456789abcdef01234567';
-  let root = '';
-  let origin = '';
-  let dir = '';
-  let askpass = '';
-  /** The environment a session might hand the doc's commands: an askpass that would hang. */
-  let inherited: Record<string, string | undefined> = {};
+describe('the documented range rule against a real history', () => {
+  const env = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_'))),
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_NOSYSTEM: '1',
+  };
+  const roots: string[] = [];
 
-  const git = (cwd: string, args: string[], at?: number) =>
-    execFileSync('git', ['-c', 'user.name=qa', '-c', 'user.email=qa@example.com', ...args], {
-      cwd,
-      encoding: 'utf8',
-      env: at === undefined ? env : { ...env, GIT_AUTHOR_DATE: `@${at} +0000`, GIT_COMMITTER_DATE: `@${at} +0000` },
-    }).trim();
-  const commit = (name: string, at: number) => {
-    writeFileSync(join(origin, `${name}.txt`), name);
-    git(origin, ['add', `${name}.txt`]);
-    git(origin, ['commit', '-q', '-m', name], at);
-    sha[name] = git(origin, ['rev-parse', 'HEAD']);
-  };
-  const merge = (name: string, branch: string, at: number, extra: string[] = []) => {
-    git(origin, ['merge', '-q', '--no-ff', ...extra, '-m', name, branch], at);
-    sha[name] = git(origin, ['rev-parse', 'HEAD']);
-  };
-  /** An executable shell script in the test directory. */
-  const script = (name: string, body: string) => {
-    const path = join(root, name);
-    writeFileSync(path, `#!/bin/sh\n${body}\n`);
-    chmodSync(path, 0o755);
-    return path;
-  };
-  /** A global git config holding `lines`, for the inherited environment. */
-  const globalConfig = (name: string, lines: string[]) => {
-    const path = join(root, name);
-    writeFileSync(path, `${lines.join('\n')}\n`);
-    return path;
-  };
-
-  interface Command {
-    args: string[];
-    env: Record<string, string>;
+  interface Listed {
+    sha: string;
+    parents: string[];
   }
-  const gitPart = (span: string) => span.replace(/^(?:[A-Z_]+=\S*\s+)+/, '').replace(/^git (?:-c \S+ )+/, 'git ');
-  /**
-   * The doc's inline-code command whose git part (after its assignments and `-c` options) starts
-   * with `prefix`, placeholders filled: git's argv and the environment assignments before it.
-   */
-  const command = (text: string, prefix: string, fill: Record<string, string>, url = `file://${origin}`): Command => {
-    const span = text.split('`').find((s) => gitPart(s).startsWith(prefix));
-    expect(span, prefix).toBeDefined();
-    const filled = (span ?? '')
-      .replace(/https:\/\/github\.com\/<[^<>]+>\.git/, url)
-      .replace(/<([^<>]+)>/g, (_, name: string) => {
-        const value = fill[name] ?? (name === 'dir' ? dir : undefined);
-        if (value === undefined) throw new Error(`unfilled <${name}> in ${span}`);
-        return value;
-      });
-    const words = filled.split(' ');
-    const assigned: Record<string, string> = {};
-    while (words.length > 0 && /^[A-Z_]+=/.test(words[0])) {
-      const [name, ...value] = (words.shift() ?? '').split('=');
-      assigned[name] = value.join('=');
-    }
-    expect(assigned, span).toEqual({ GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '', SSH_ASKPASS: '' });
-    expect(words.slice(0, 5), span).toEqual(['git', '-c', 'core.askPass=', '-c', 'credential.interactive=never']);
-    return { args: words.slice(1), env: assigned };
-  };
-  const run = (cmd: Command) =>
-    spawnSync('git', cmd.args, { encoding: 'utf8', env: { ...inherited, ...cmd.env }, timeout: 30_000 });
+  /** One page of the commits list, or `failed` for a read that is not an answer. */
+  type Pager = (from: string, page: number) => Listed[] | 'failed';
 
-  interface Bounded {
-    status: number | null;
-    killed: boolean;
-    ms: number;
-    stderr: string;
-  }
-  /**
-   * The doc's per-call bound: run the command in its own process group and kill the whole group
-   * (git and any helper it started) when `boundMs` passes, as the Bash tool's timeout does.
-   */
-  const runBounded = (cmd: Command, boundMs: number, extra: Record<string, string> = {}) =>
-    new Promise<Bounded>((done) => {
-      const started = Date.now();
-      const child = spawn('git', cmd.args, {
-        env: { ...inherited, ...extra, ...cmd.env },
-        detached: true,
-        stdio: ['ignore', 'ignore', 'pipe'],
-      });
-      let stderr = '';
-      let killed = false;
-      child.stderr?.on('data', (chunk) => {
-        stderr += chunk;
-      });
-      const killGroup = () => {
-        try {
-          process.kill(-(child.pid ?? 0), 'SIGKILL');
-        } catch {
-          // the group is already gone
-        }
-      };
-      const timer = setTimeout(() => {
-        killed = true;
-        killGroup();
-      }, boundMs);
-      child.on('close', (status) => {
-        clearTimeout(timer);
-        killGroup();
-        done({ status, killed, ms: Date.now() - started, stderr });
-      });
-    });
-  /** The doc's reading of one git call: 0 = yes; 1 = no, from merge-base only; else no answer. */
-  const answer = (r: { status: number | null; killed?: boolean }, fromMergeBase: boolean) => {
-    if (r.killed || r.status === null) return 'no answer';
-    if (r.status === 0) return 'yes';
-    return r.status === 1 && fromMergeBase ? 'no' : 'no answer';
-  };
-
-  beforeAll(() => {
-    root = mkdtempSync(join(tmpdir(), 'deploy-qa-compare-'));
-    origin = join(root, 'origin');
-    dir = join(root, 'compare-example-org-app');
-    askpass = script('askpass.sh', 'touch "$0.ran"\nsleep 30\necho stolen');
-    inherited = {
-      ...clean,
-      GIT_ASKPASS: askpass,
-      SSH_ASKPASS: askpass,
-      GIT_CONFIG_GLOBAL: globalConfig('askpass.gitconfig', ['[core]', `\taskPass = ${askpass}`]),
-      GIT_CONFIG_NOSYSTEM: '1',
+  /** A new repository; `at` pins a commit's dates, so a test can order the list or skew it. */
+  const fixture = () => {
+    const root = mkdtempSync(join(tmpdir(), 'deploy-qa-range-'));
+    roots.push(root);
+    const sha: Record<string, string> = {};
+    const git = (args: string[], at?: number) =>
+      execFileSync('git', ['-c', 'user.name=qa', '-c', 'user.email=qa@example.com', ...args], {
+        cwd: root,
+        encoding: 'utf8',
+        env: at === undefined ? env : { ...env, GIT_AUTHOR_DATE: `@${at} +0000`, GIT_COMMITTER_DATE: `@${at} +0000` },
+      }).trim();
+    git(['init', '-q', '-b', 'main']);
+    const commit = (name: string, at: number) => {
+      writeFileSync(join(root, `${name}.txt`), name);
+      git(['add', `${name}.txt`]);
+      git(['commit', '-q', '-m', name], 1_700_000_000 + at);
+      sha[name] = git(['rev-parse', 'HEAD']);
     };
-    execFileSync('git', ['init', '-q', '-b', 'main', origin], { env });
-    commit('A', 1_700_000_001);
-    commit('B', 1_700_000_002);
-    git(origin, ['branch', 'side']);
-    commit('C', 1_700_000_003);
-    git(origin, ['checkout', '-q', 'side']);
-    commit('S1', 1_700_000_004);
-    git(origin, ['checkout', '-q', 'main']);
-    merge('M', 'side', 1_700_000_005);
-    git(origin, ['checkout', '-q', '--orphan', 'unrelated']);
-    git(origin, ['rm', '-rq', '--cached', '.']);
-    commit('U', 1_700_000_006);
-    git(origin, ['checkout', '-q', '-f', 'main']);
-    merge('M2', 'unrelated', 1_700_000_007, ['--allow-unrelated-histories']);
-    commit('D', 1_700_000_008);
-    // Serve blob-less fetches of any SHA, as GitHub does; then leave D unadvertised.
-    git(origin, ['config', 'uploadpack.allowFilter', 'true']);
-    git(origin, ['config', 'uploadpack.allowAnySHA1InWant', 'true']);
-    git(origin, ['branch', '-q', '-D', 'side', 'unrelated']);
-    git(origin, ['reset', '-q', '--hard', sha.B]);
+    const merge = (name: string, branch: string, at: number, extra: string[] = []) => {
+      git(['merge', '-q', '--no-ff', ...extra, '-m', name, branch], 1_700_000_000 + at);
+      sha[name] = git(['rev-parse', 'HEAD']);
+    };
+    /** The commits list from `from`, `size` commits per page, in GitHub's order. */
+    const pager =
+      (size: number): Pager =>
+      (from, page) =>
+        git(['log', '--format=%H %P', from])
+          .split('\n')
+          .slice((page - 1) * size, page * size)
+          .map((line) => {
+            const [s, ...parents] = line.split(' ').filter(Boolean);
+            return { sha: s, parents };
+          });
+    /**
+     * The one-parent commits `after` has and `before` lacks, from both full lists. Not `git rev-list before..after`:
+     * that walk stops by commit date, and under the skew below it lists S too.
+     */
+    const truth = (before: string, after: string) => {
+      const all = (from: string) => pager(Number.MAX_SAFE_INTEGER)(from, 1) as Listed[];
+      const had = new Set(all(before).map((c) => c.sha));
+      return all(after)
+        .filter((c) => !had.has(c.sha) && c.parents.length === 1)
+        .map((c) => c.sha)
+        .sort();
+    };
+    return { sha, git, commit, merge, pager, truth };
+  };
 
-    const github = read('deploy-qa').slice(0, read('deploy-qa').indexOf('## Args'));
-    for (const prefix of ['git init', 'git -C <dir> remote add', 'git -C <dir> fetch']) {
-      const result = run(command(github, prefix, { 'full SHAs': `${sha.B} ${sha.D}` }));
-      expect(result.status, `${prefix}: ${result.stderr}`).toBe(0);
+  /**
+   * The doc's Range: pages 1…n from `after` and 1…n+1 from `before`, n = 1…10; a short page ends a list, a failed page
+   * ends the walk. Complete once every parent of every range commit is in the range or in B. null = no answer.
+   */
+  const range = (pager: Pager, size: number, before: string, after: string): string[] | null => {
+    const read = (from: string, pages: number): Listed[] | null => {
+      const listed: Listed[] = [];
+      for (let page = 1; page <= pages; page++) {
+        const got = pager(from, page);
+        if (got === 'failed') return null;
+        listed.push(...got);
+        if (got.length < size) break;
+      }
+      return listed;
+    };
+    for (let n = 1; n <= 10; n++) {
+      const fromAfter = read(after, n);
+      const fromBefore = read(before, n + 1);
+      if (fromAfter === null || fromBefore === null) return null;
+      const b = new Set(fromBefore.map((c) => c.sha));
+      const r = fromAfter.filter((c) => !b.has(c.sha));
+      const inRange = new Set(r.map((c) => c.sha));
+      if (r.every((c) => c.parents.every((p) => inRange.has(p) || b.has(p)))) {
+        return r
+          .filter((c) => c.parents.length === 1)
+          .map((c) => c.sha)
+          .sort();
+      }
     }
-  });
+    return null;
+  };
 
   afterAll(() => {
-    if (root) rmSync(root, { recursive: true, force: true });
-  });
-
-  it('the fetch makes a blob-less, full-history clone holding both SHAs', () => {
-    expect(git(dir, ['rev-parse', '--is-shallow-repository'])).toBe('false');
-    expect(git(dir, ['config', 'remote.origin.partialclonefilter'])).toBe('blob:none');
-    expect(git(dir, ['cat-file', '-t', sha.D])).toBe('commit');
-  });
-
-  it('a later check in the same directory needs only the fetch (step 1 polls, step 5 checks many merges)', () => {
-    const md = read('deploy-qa');
-    const github = md.slice(0, md.indexOf('## Args'));
-    // Adding the remote a second time fails, which is why the doc runs it once per directory.
-    expect(run(command(github, 'git -C <dir> remote add', {})).status).not.toBe(0);
-    const again = run(command(github, 'git -C <dir> fetch', { 'full SHAs': `${sha.S1} ${sha.D}` }));
-    expect(again.status, again.stderr).toBe(0);
-    expect(git(dir, ['cat-file', '-t', sha.S1])).toBe('commit');
-  });
-
-  it("a refused fetch of an unavailable SHA is no answer, never merge-base's 'not contained'", () => {
-    const md = read('deploy-qa');
-    const github = md.slice(0, md.indexOf('## Args'));
-    const fetch = run(command(github, 'git -C <dir> fetch', { 'full SHAs': `${UNKNOWN} ${sha.D}` }));
-    expect(fetch.status, fetch.stderr).not.toBe(0);
-    expect(answer(fetch, false)).toBe('no answer');
-    // Even a fetch that exits 1 is no answer: exit 1 means "not contained" only from merge-base.
-    expect(answer({ status: 1 }, false)).toBe('no answer');
-    expect(answer({ status: 1 }, true)).toBe('no');
-    expect(existsSync(`${askpass}.ran`)).toBe(false);
-  });
-
-  it('deploy-qa step 1: is-ancestor <after> <runningSha> is 0 for ahead and identical, 1 otherwise', () => {
-    const md = read('deploy-qa');
-    const step1 = md.slice(md.indexOf('1. **Confirm the deploy**'), md.indexOf('2. **Commits.**'));
-    const status = (after: string, runningSha: string) =>
-      run(command(step1, 'git -C <dir> merge-base --is-ancestor <after>', { after, runningSha })).status;
-    expect(status(sha.B, sha.D)).toBe(0); // compare/B...D = ahead
-    expect(status(sha.D, sha.D)).toBe(0); // identical
-    expect(status(sha.D, sha.B)).toBe(1); // behind
-    expect(status(sha.S1, sha.C)).toBe(1); // diverged
-    expect(answer({ status: status(UNKNOWN, sha.D) }, true)).toBe('no answer');
-  });
-
-  it('deploy-qa step 1: is-ancestor <before> <after> holds for a range whose start precedes its end', () => {
-    const md = read('deploy-qa');
-    const step1 = md.slice(md.indexOf('1. **Confirm the deploy**'), md.indexOf('2. **Commits.**'));
-    const status = (before: string, after: string) =>
-      run(command(step1, 'git -C <dir> merge-base --is-ancestor <before>', { before, after })).status;
-    expect(status(sha.B, sha.D)).toBe(0);
-    expect(status(sha.D, sha.B)).toBe(1);
-  });
-
-  it("deploy-qa step 2: rev-list lists exactly compare's one-parent commits, oldest first", () => {
-    const md = read('deploy-qa');
-    const step2 = md.slice(md.indexOf('2. **Commits.**'), md.indexOf('3. **PRs.**'));
-    const result = run(command(step2, 'git -C <dir> rev-list', { before: sha.B, after: sha.D }));
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout.trim().split('\n')).toEqual([sha.C, sha.S1, sha.D]);
-  });
-
-  it('deploy-qa step 5 and qa-issue step 2: is-ancestor <mergeSha> <runningSha>', () => {
-    const deployQa = read('deploy-qa');
-    const step5 = deployQa.slice(
-      deployQa.indexOf('5. **Admission.**'),
-      deployQa.indexOf('5.5. **Precondition gate.**'),
-    );
-    const qaIssue = read('qa-issue');
-    const step2 = qaIssue.slice(qaIssue.indexOf('2. Deploy check'), qaIssue.indexOf('3. Build cases'));
-    for (const text of [step5, step2]) {
-      const status = (mergeSha: string, runningSha: string) =>
-        run(command(text, 'git -C <dir> merge-base --is-ancestor <mergeSha>', { mergeSha, runningSha })).status;
-      expect(status(sha.S1, sha.D)).toBe(0); // the side merge is running
-      expect(status(sha.D, sha.D)).toBe(0);
-      expect(status(sha.D, sha.C)).toBe(1); // not deployed yet
-    }
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
   });
 
   /**
-   * A login server that always answers 401, so the documented fetch has to ask for credentials:
-   * the path a private repo takes when the session's helper holds no valid login.
+   * S1 and S2 branch off B before main moves on to F (`before`), and M (`after`) merges them; U is an unrelated root
+   * that M2 merges later. With 3-commit pages `before` is on the first page of M's list and S1, S2 are not.
    */
-  describe('the documented fetch against a server that asks for a login', () => {
-    let server: Server;
-    let url = '';
-    const seen: string[] = [];
-    const BOUND = 15_000;
-
-    beforeAll(async () => {
-      server = createServer((req, res) => {
-        seen.push(req.headers.authorization ?? '');
-        res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="qa"' });
-        res.end();
-      });
-      await new Promise<void>((listening) => server.listen(0, '127.0.0.1', listening));
-      url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/example-org/app.git`;
+  describe('a merged branch older than before, and a merged root', () => {
+    const h = fixture();
+    const { sha } = h;
+    beforeAll(() => {
+      h.commit('A', 1);
+      h.commit('B', 2);
+      h.git(['checkout', '-q', '-b', 'side']);
+      h.commit('S1', 3);
+      h.commit('S2', 4);
+      h.git(['checkout', '-q', 'main']);
+      h.commit('C', 5);
+      h.commit('D', 6);
+      h.commit('E', 7);
+      h.commit('F', 8);
+      h.merge('M', 'side', 9);
+      h.git(['checkout', '-q', '--orphan', 'unrelated']);
+      h.git(['rm', '-rq', '--cached', '.']);
+      h.commit('U', 10);
+      h.git(['checkout', '-q', '-f', 'main']);
+      h.merge('M2', 'unrelated', 11, ['--allow-unrelated-histories']);
     });
 
-    afterAll(async () => {
-      await new Promise((closed) => server.close(closed));
+    it("finds compare's one-parent commits, which sit below `before` in the list", () => {
+      expect(h.truth(sha.F, sha.M)).toEqual([sha.S1, sha.S2].sort());
+      const firstPage = h.pager(3)(sha.M, 1) as Listed[];
+      expect(firstPage.map((c) => c.sha)).toContain(sha.F);
+      // Stopping at the page that holds `before` (one more page from `before`) keeps only the merge: nothing.
+      const b = new Set((h.pager(3)(sha.F, 1) as Listed[]).concat(h.pager(3)(sha.F, 2) as Listed[]).map((c) => c.sha));
+      expect(firstPage.filter((c) => !b.has(c.sha) && c.parents.length === 1)).toEqual([]);
+      expect(range(h.pager(3), 3, sha.F, sha.M)).toEqual(h.truth(sha.F, sha.M));
+      expect(range(h.pager(1), 1, sha.F, sha.M)).toEqual(h.truth(sha.F, sha.M));
     });
 
-    /** The doc's init + remote add + fetch in a new directory, the fetch run under the bound. */
-    const fetchWithLogin = async (name: string, helper: string, boundMs = BOUND, strip = false) => {
-      const github = read('deploy-qa').slice(0, read('deploy-qa').indexOf('## Args'));
-      const own = join(root, name);
-      for (const prefix of ['git init', 'git -C <dir> remote add']) {
-        const result = run(command(github, prefix, { dir: own }, url));
-        expect(result.status, `${prefix}: ${result.stderr}`).toBe(0);
-      }
-      const config = globalConfig(`${name}.gitconfig`, [
-        '[core]',
-        `\taskPass = ${askpass}`,
-        '[credential]',
-        `\thelper = ${helper}`,
-      ]);
-      const fetch = command(github, 'git -C <dir> fetch', { dir: own, 'full SHAs': sha.D }, url);
-      // `strip`: the same fetch without the doc's assignments and `-c` options, as a control.
-      const cmd = strip ? { args: fetch.args.slice(4), env: {} } : fetch;
-      return runBounded(cmd, boundMs, { GIT_CONFIG_GLOBAL: config });
+    it('a parentless root merged into the range is listed but dropped by the one-parent filter', () => {
+      const firstPage = h.pager(3)(sha.M2, 1) as Listed[];
+      expect(firstPage).toContainEqual({ sha: sha.U, parents: [] });
+      expect(range(h.pager(3), 3, sha.F, sha.M2)).toEqual(h.truth(sha.F, sha.M2));
+      expect(range(h.pager(3), 3, sha.F, sha.M2)).not.toContain(sha.U);
+    });
+
+    it('a failed page of either list is no answer, never a shorter range', () => {
+      const failing =
+        (from: string, page: number): Pager =>
+        (f, p) =>
+          f === from && p === page ? 'failed' : h.pager(1)(f, p);
+      // With 1-commit pages the walk needs page 2 of M's list and page 3 of F's.
+      expect(range(failing(sha.M, 2), 1, sha.F, sha.M)).toBeNull();
+      expect(range(failing(sha.F, 3), 1, sha.F, sha.M)).toBeNull();
+    });
+  });
+
+  /**
+   * Clock skew (review of this change, 2026-11-09): R and S are dated after the commits built on them. `before` = C7
+   * reaches S through C1…C7; X branches off S and M (`after`) merges it. M's list shows S and R on its second page,
+   * while the three pages read from C7's list stop at C2. S lands in the range and the parents check passes, so the
+   * range holds S, a commit `before` already had. That only adds a key to check: admission re-checks each key's tracker
+   * state and its own mergeShas against `runningSha`, and the range never confirms a deploy by itself.
+   */
+  describe('commit-date skew', () => {
+    const h = fixture();
+    const { sha } = h;
+    beforeAll(() => {
+      h.commit('R', 100);
+      h.commit('S', 99);
+      for (let i = 1; i <= 7; i++) h.commit(`C${i}`, i);
+      h.git(['checkout', '-q', '-b', 'side', sha.S]);
+      h.commit('X', 50);
+      h.git(['checkout', '-q', 'main']);
+      h.merge('M', 'side', 200);
+    });
+
+    it('the range can hold a commit `before` already had, and never misses one compare lists', () => {
+      expect(h.truth(sha.C7, sha.M)).toEqual([sha.X]);
+      expect((h.pager(2)(sha.M, 2) as Listed[]).map((c) => c.sha)).toEqual([sha.S, sha.R]);
+      const got = range(h.pager(2), 2, sha.C7, sha.M);
+      expect(got).toEqual([sha.S, sha.X].sort());
+      // S is `before`'s ancestor: git exits 0.
+      expect(() => h.git(['merge-base', '--is-ancestor', sha.S, sha.C7])).not.toThrow();
+      for (const c of h.truth(sha.C7, sha.M)) expect(got).toContain(c);
+    });
+  });
+
+  it('a range the parents check cannot close within 10 pages is no answer', () => {
+    // A branch of 12 one-parent commits on top of `before` (b); the list from b is b alone.
+    const chain = Array.from({ length: 12 }, (_, i) => `a${i}`);
+    const lists: Record<string, Listed[]> = {
+      a0: [...chain.map((s, i) => ({ sha: s, parents: [chain[i + 1] ?? 'b'] })), { sha: 'b', parents: [] }],
+      b: [{ sha: 'b', parents: [] }],
     };
-
-    it("control: without the doc's prefix the same environment runs the askpass and waits", async () => {
-      const empty = script('control-helper.sh', 'cat >/dev/null');
-      const askpassRan = existsSync(`${askpass}.ran`);
-      const result = await fetchWithLogin('control', empty, 2_000, true);
-      expect(result.killed).toBe(true);
-      expect(existsSync(`${askpass}.ran`)).toBe(true);
-      // Leave the marker as it was, so the other tests' "the askpass never ran" still reads it.
-      if (!askpassRan) rmSync(`${askpass}.ran`);
-    });
-
-    it('an inherited askpass never runs: with no stored login the fetch fails at once, no answer', async () => {
-      const empty = script('empty-helper.sh', 'touch "$0.ran"\ncat >/dev/null');
-      const result = await fetchWithLogin('no-login', empty);
-      expect(result.killed).toBe(false);
-      expect(result.ms).toBeLessThan(BOUND / 3);
-      expect(result.status, result.stderr).not.toBe(0);
-      expect(answer(result, false)).toBe('no answer');
-      expect(existsSync(`${empty}.ran`)).toBe(true); // the helper was still asked
-      expect(existsSync(`${askpass}.ran`)).toBe(false); // the askpass never was
-    });
-
-    it("the session's non-interactive helper still supplies the login", async () => {
-      const helper = script(
-        'login-helper.sh',
-        'cat >/dev/null\nif [ "$1" = get ]; then printf "username=qa\\npassword=helper-login\\n"; fi',
-      );
-      const before = seen.length;
-      const result = await fetchWithLogin('helper-login', helper);
-      expect(result.killed).toBe(false);
-      expect(result.ms).toBeLessThan(BOUND / 3);
-      expect(seen.slice(before)).toContain(`Basic ${Buffer.from('qa:helper-login').toString('base64')}`);
-      expect(answer(result, false)).toBe('no answer'); // this server refuses every login
-      expect(existsSync(`${askpass}.ran`)).toBe(false);
-    });
-
-    it('a helper that waits anyway is cut off by the per-call bound, and that is no answer', async () => {
-      // No git option stops a helper that ignores credential.interactive without turning off the
-      // helpers private repos need; the doc's per-call timeout does. 2 s stands in for its 120000 ms.
-      const waits = script('waiting-helper.sh', 'sleep 30');
-      const result = await fetchWithLogin('waiting-helper', waits, 2_000);
-      expect(result.killed).toBe(true);
-      expect(result.ms).toBeLessThan(BOUND / 3);
-      expect(answer(result, false)).toBe('no answer');
-      expect(existsSync(`${askpass}.ran`)).toBe(false);
-    });
+    const synthetic =
+      (size: number): Pager =>
+      (from, page) =>
+        lists[from].slice((page - 1) * size, page * size);
+    expect(range(synthetic(1), 1, 'b', 'a0')).toBeNull();
+    // The same list in 2-commit pages closes at n = 6.
+    expect(range(synthetic(2), 2, 'b', 'a0')).toEqual([...chain].sort());
   });
 });
