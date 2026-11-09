@@ -16,6 +16,7 @@
 
 import { buildOneShotOptions, runOneShotText } from '../agent-runtime';
 import { buildQueryEnv } from '../auth/query-env-builder';
+import { userTenantKey } from '../auth/user-tenant-key';
 import { ensureActiveSlotAuth, NoHealthySlotError, type SlotAuthLease } from '../credentials-manager';
 import { Logger } from '../logger';
 import { computeCompletedUpstreamHash } from '../prompt/user-instructions-block';
@@ -40,8 +41,13 @@ const inFlight = new WeakSet<ConversationSession>();
  * back to a `(summary pending…)` placeholder.
  *
  * Kept pure (no session mutation) so it can be unit-tested in isolation.
+ * `tenantUserId` = the session's user: in llmux mode the call is metered under
+ * their own key (absent → the shared key).
  */
-export async function summarizeCompletedInstructions(items: SessionInstruction[]): Promise<string | null> {
+export async function summarizeCompletedInstructions(
+  items: SessionInstruction[],
+  opts: { tenantUserId?: string } = {},
+): Promise<string | null> {
   if (!items || items.length < 2) return null;
 
   let lease: SlotAuthLease | null = null;
@@ -72,7 +78,7 @@ export async function summarizeCompletedInstructions(items: SessionInstruction[]
 Completed instructions:
 ${truncatedLines}`;
 
-    const { env } = buildQueryEnv(lease);
+    const { env } = buildQueryEnv(lease, { llmuxTenant: await userTenantKey(opts.tenantUserId) });
     const options = buildOneShotOptions({
       model: SONNET_MODEL,
       systemPrompt:
@@ -128,7 +134,9 @@ export async function regenerateInstructionsSummaryIfStale(session: Conversation
   inFlight.add(session);
 
   try {
-    const summary = await summarizeCompletedInstructions(completed);
+    const summary = await summarizeCompletedInstructions(completed, {
+      tenantUserId: session.currentInitiatorId || session.ownerId || session.userId || undefined,
+    });
     if (!summary) return false;
     // Re-fetch hash in case completed entries changed mid-flight — we tag the
     // cache with the hash of the exact subset we summarised so the next stale

@@ -73,6 +73,7 @@ describe('SummaryService', () => {
         undefined,
         undefined,
         undefined,
+        undefined, // tenantUserId — the session carries no user
       );
     });
 
@@ -93,6 +94,7 @@ describe('SummaryService', () => {
         'claude-opus-4-6',
         'sdk-session-abc123',
         '/tmp/workdir',
+        undefined,
         undefined,
       );
     });
@@ -123,6 +125,7 @@ describe('SummaryService', () => {
         'sdk-session-xyz',
         '/tmp/userId/session_1711111111111_repo', // sessionWorkingDir wins
         undefined,
+        undefined,
       );
     });
 
@@ -143,6 +146,7 @@ describe('SummaryService', () => {
         'sdk-session-xyz',
         '/tmp/fallback',
         undefined,
+        undefined,
       );
     });
 
@@ -154,7 +158,34 @@ describe('SummaryService', () => {
       const session = makeSession();
       await service.execute(session, ac.signal);
 
-      expect(mockFork).toHaveBeenCalledWith(expect.any(String), expect.anything(), undefined, undefined, ac.signal);
+      expect(mockFork).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.anything(),
+        undefined,
+        undefined,
+        ac.signal,
+        undefined,
+      );
+    });
+
+    // llmux tenant keys: the summary query is made for the session's user, so
+    // it carries their key (the current initiator first, then the owner).
+    it('execute() passes the session initiator as the llmux tenant', async () => {
+      const mockFork: ForkExecutor = vi.fn().mockResolvedValue('summary');
+      const service = new SummaryService(mockFork);
+
+      await service.execute(makeSession({ currentInitiatorId: 'U_INIT', ownerId: 'U_OWNER' }));
+
+      expect(vi.mocked(mockFork).mock.calls[0][5]).toBe('U_INIT');
+    });
+
+    it('execute() falls back to the session owner as the llmux tenant', async () => {
+      const mockFork: ForkExecutor = vi.fn().mockResolvedValue('summary');
+      const service = new SummaryService(mockFork);
+
+      await service.execute(makeSession({ ownerId: 'U_OWNER', userId: 'U_LEGACY' }));
+
+      expect(vi.mocked(mockFork).mock.calls[0][5]).toBe('U_OWNER');
     });
 
     it('execute() returns null immediately if abortSignal already aborted', async () => {

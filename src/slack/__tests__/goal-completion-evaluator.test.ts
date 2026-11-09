@@ -22,6 +22,7 @@ import {
   buildGoalEvalUserPrompt,
   decideGoalEvalOutcome,
   evaluateGoalCompletion,
+  type GoalEvalDispatcher,
   GoalEvalParseError,
   parseGoalEvalVerdict,
   shouldRunGoalIdleDriver,
@@ -123,6 +124,19 @@ describe('evaluateGoalCompletion', () => {
     expect(arg.model).toBe('claude-sonnet-4-5');
     expect(arg.systemPrompt).toMatch(/goal completion auditor/i);
     expect(arg.userPrompt).toContain('<objective>');
+  });
+
+  // llmux tenant keys: the eval is made for the session's user, so the
+  // dispatcher gets their id and the production wiring meters it under their key.
+  it('forwards the tenant user to the dispatcher; none → the param is absent', async () => {
+    __resetGoalEvalPromptCacheForTests();
+    const dispatcher = vi.fn(
+      async (_p: Parameters<GoalEvalDispatcher>[0]) => '{"completed":true,"reason":"done","remaining":[]}',
+    );
+    await evaluateGoalCompletion({ objective: 'X', workSummary: 'Y', model: 'm', tenantUserId: 'U_DAN' }, dispatcher);
+    await evaluateGoalCompletion({ objective: 'X', workSummary: 'Y', model: 'm' }, dispatcher);
+    expect(dispatcher.mock.calls[0][0].tenantUserId).toBe('U_DAN');
+    expect('tenantUserId' in dispatcher.mock.calls[1][0]).toBe(false);
   });
 
   it('propagates dispatcher rejections (network / timeout)', async () => {

@@ -285,3 +285,50 @@ describe('DispatchService — classifier model and effort', () => {
     expect(args[6]).toBe('medium');
   });
 });
+
+// llmux tenant keys: the workflow classification is made for the message's
+// sender, so it carries their key (production: a haiku classification of a
+// user's PR link reached llmux as the shared `local` tenant).
+describe('DispatchService — llmux tenant user', () => {
+  function svcWith(dispatchOneShot: (...args: unknown[]) => Promise<string>) {
+    const svc = getDispatchService() as any;
+    const saved = { handler: svc.claudeHandler, configured: svc.isConfigured, prompt: svc.dispatchPrompt };
+    svc.claudeHandler = { dispatchOneShot };
+    svc.isConfigured = true;
+    svc.dispatchPrompt = svc.dispatchPrompt || 'classify';
+    return {
+      svc,
+      restore: () =>
+        Object.assign(svc, {
+          claudeHandler: saved.handler,
+          isConfigured: saved.configured,
+          dispatchPrompt: saved.prompt,
+        }),
+    };
+  }
+
+  it('forwards the sender to dispatchOneShot as the tenant user, next to the classifier effort', async () => {
+    const dispatchOneShot = vi.fn(async (..._args: unknown[]) => '{"workflow":"pr-review","title":"PR 리뷰"}');
+    const { svc, restore } = svcWith(dispatchOneShot);
+    try {
+      const result = await svc.dispatch('PR 리뷰 부탁해 acme/repo#1', undefined, 'U_DAN');
+      expect(result.workflow).toBe('pr-review');
+      expect(dispatchOneShot).toHaveBeenCalledTimes(1);
+      expect(dispatchOneShot.mock.calls[0][6]).toBe('medium');
+      expect(dispatchOneShot.mock.calls[0][7]).toEqual({ tenantUserId: 'U_DAN' });
+    } finally {
+      restore();
+    }
+  });
+
+  it('no sender → no tenant user (the shared key)', async () => {
+    const dispatchOneShot = vi.fn(async (..._args: unknown[]) => '{"workflow":"default","title":"x"}');
+    const { svc, restore } = svcWith(dispatchOneShot);
+    try {
+      await svc.dispatch('hello');
+      expect(dispatchOneShot.mock.calls[0][7]).toEqual({ tenantUserId: undefined });
+    } finally {
+      restore();
+    }
+  });
+});

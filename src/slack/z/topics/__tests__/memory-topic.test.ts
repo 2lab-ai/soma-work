@@ -589,7 +589,7 @@ describe('applyMemory — improve branches', () => {
     const result = await applyMemory({ userId: 'I1', value: 'improve_memory_3', respond });
 
     expect(improveEntryMock).toHaveBeenCalledTimes(1);
-    expect(improveEntryMock).toHaveBeenCalledWith('entry-C', 'memory');
+    expect(improveEntryMock).toHaveBeenCalledWith('entry-C', 'memory', { tenantUserId: 'I1' });
     // CAS: expectedOldText is the original entry text captured at click-time.
     expect(replaceMemoryByIndexMock).toHaveBeenCalledWith('I1', 'memory', 3, 'refined', 'entry-C');
     expect(respond).toHaveBeenCalledTimes(1);
@@ -609,7 +609,7 @@ describe('applyMemory — improve branches', () => {
     vi.mocked(improveEntryMock).mockResolvedValueOnce('refined-u');
     const result = await applyMemory({ userId: 'I2', value: 'improve_user_2' });
 
-    expect(improveEntryMock).toHaveBeenCalledWith('u2', 'user');
+    expect(improveEntryMock).toHaveBeenCalledWith('u2', 'user', { tenantUserId: 'I2' });
     expect(replaceMemoryByIndexMock).toHaveBeenCalledWith('I2', 'user', 2, 'refined-u', 'u2');
     expect(result.ok).toBe(true);
     expect(result.rerender).toBe('topic');
@@ -624,7 +624,7 @@ describe('applyMemory — improve branches', () => {
     const result = await applyMemory({ userId: 'I3', value: 'improve_memory_all' });
 
     expect(improveAllMock).toHaveBeenCalledTimes(1);
-    expect(improveAllMock).toHaveBeenCalledWith(['a', 'b', 'c'], 'memory');
+    expect(improveAllMock).toHaveBeenCalledWith(['a', 'b', 'c'], 'memory', { tenantUserId: 'I3' });
     // CAS: 4th arg is the snapshot captured before the LLM call.
     expect(replaceAllMemoryMock).toHaveBeenCalledWith('I3', 'memory', ['x', 'y', 'z'], ['a', 'b', 'c']);
     expect(result.ok).toBe(true);
@@ -639,7 +639,7 @@ describe('applyMemory — improve branches', () => {
     vi.mocked(improveAllMock).mockResolvedValueOnce(['U-A', 'U-B']);
     const result = await applyMemory({ userId: 'I4', value: 'improve_user_all' });
 
-    expect(improveAllMock).toHaveBeenCalledWith(['u-a', 'u-b'], 'user');
+    expect(improveAllMock).toHaveBeenCalledWith(['u-a', 'u-b'], 'user', { tenantUserId: 'I4' });
     expect(replaceAllMemoryMock).toHaveBeenCalledWith('I4', 'user', ['U-A', 'U-B'], ['u-a', 'u-b']);
     expect(result.ok).toBe(true);
     expect(result.rerender).toBe('topic');

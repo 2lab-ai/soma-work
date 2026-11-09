@@ -102,7 +102,8 @@ interface RouteCheckResult {
 interface DispatchServiceLike {
   getModel(): string;
   isReady(): boolean;
-  dispatch(text: string, signal: AbortSignal): Promise<any>;
+  /** `tenantUserId` = the Slack user the classification runs for (their llmux key meters it). */
+  dispatch(text: string, signal: AbortSignal, tenantUserId?: string): Promise<any>;
 }
 
 export interface SessionInitializerProviders {
@@ -706,7 +707,7 @@ export class SessionInitializer {
             if (waitTimeoutId) clearTimeout(waitTimeoutId);
           }
         } else if (dispatchText) {
-          workSize = await this.dispatchWorkflow(channel, threadTs, dispatchText, sessionKey);
+          workSize = await this.dispatchWorkflow(channel, threadTs, dispatchText, sessionKey, undefined, user);
         } else {
           // No text available - use default workflow
           this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', PLACEHOLDER_SESSION_TITLE);
@@ -1191,6 +1192,8 @@ export class SessionInitializer {
     text: string,
     sessionKey: string,
     forcedWorkflowHint?: WorkflowType,
+    /** The Slack user who sent `text`; absent (a host continuation) → the session's current initiator / owner. */
+    senderId?: string,
   ): Promise<'small' | 'large' | undefined> {
     // Register dispatch in-flight SYNCHRONOUSLY before any async work
     // This prevents race condition where two messages both pass the check
@@ -1265,7 +1268,12 @@ export class SessionInitializer {
         isReady: dispatchService.isReady(),
       });
 
-      const result = await dispatchService.dispatch(text, abortController.signal);
+      // The classification is made for the message's sender: in llmux mode it
+      // carries their own key, so llmux meters it under their tenant.
+      const tenantSession = this.deps.claudeHandler.getSession(channel, threadTs);
+      const tenantUserId =
+        senderId || tenantSession?.currentInitiatorId || tenantSession?.ownerId || tenantSession?.userId || undefined;
+      const result = await dispatchService.dispatch(text, abortController.signal, tenantUserId);
 
       // The classifier query itself was blocked by Anthropic's safeguards: the
       // work would run on the same blocked content. Halt the session here —

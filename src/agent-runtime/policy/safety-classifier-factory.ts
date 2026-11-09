@@ -45,7 +45,8 @@ const SAFETY_SYSTEM_PROMPT = [
 export type SafetyDispatchFn = (
   userMessage: string,
   systemPrompt: string,
-  opts: { model?: string; abortController?: AbortController },
+  /** `tenantUserId` = the session user the call is made for: their llmux key meters it. */
+  opts: { model?: string; abortController?: AbortController; tenantUserId?: string },
 ) => Promise<string>;
 
 /** Env-driven environment shape, injected for testability. */
@@ -75,14 +76,18 @@ export function buildSafetyClassifier(args: BuildSafetyClassifierArgs = {}): Saf
   const timeoutMs = Number(env.PERMISSION_AUTO_CLASSIFIER_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
 
   const chat: SafetyChatFn = (prompt, opts) => {
+    const base = {
+      model: envModel || opts.model,
+      ...(opts.tenantUserId ? { tenantUserId: opts.tenantUserId } : {}),
+    };
     // The caller's abort stops the one-shot dispatch itself, not only the caller's wait (review R1, astra P2).
-    if (!opts.signal) return dispatch(prompt, SAFETY_SYSTEM_PROMPT, { model: envModel || opts.model });
+    if (!opts.signal) return dispatch(prompt, SAFETY_SYSTEM_PROMPT, base);
     const abortController = new AbortController();
     const signal = opts.signal;
     const onAbort = () => abortController.abort(signal.reason);
     if (signal.aborted) onAbort();
     else signal.addEventListener('abort', onAbort, { once: true });
-    return dispatch(prompt, SAFETY_SYSTEM_PROMPT, { model: envModel || opts.model, abortController }).finally(() =>
+    return dispatch(prompt, SAFETY_SYSTEM_PROMPT, { ...base, abortController }).finally(() =>
       signal.removeEventListener('abort', onAbort),
     );
   };

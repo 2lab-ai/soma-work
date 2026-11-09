@@ -82,6 +82,12 @@ export interface SafetyChatOptions {
   model?: string;
   /** The caller's abort (SafetyClassifyRequest.signal). */
   signal?: AbortSignal;
+  /**
+   * The Slack user the guardian call is made for (SafetyClassifyRequest.user).
+   * In llmux mode the call carries their own key, so it is metered under their
+   * tenant — not the shared key.
+   */
+  tenantUserId?: string;
 }
 
 /**
@@ -234,6 +240,7 @@ export class LlmSafetyClassifier implements SafetyClassifier {
         timeoutMs: this.timeoutMs,
         model: req.model,
         ...(req.signal ? { signal: req.signal } : {}),
+        ...(req.user ? { tenantUserId: req.user } : {}),
       });
       const blocked = typeof raw === 'string' ? parseSafeguardFlag(raw) : null;
       if (blocked) return safeguardBlockedVerdict(blocked);
