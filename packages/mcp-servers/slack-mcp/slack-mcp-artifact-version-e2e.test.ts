@@ -10,9 +10,11 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { planUploadVersion, versionFields } from '../../../packages/mcp-servers/slack-mcp/helpers/artifact-version';
-import { captureArtifactFromWorkLog, resetArtifactCaptureForTests } from '../artifact-capture';
-import { ArtifactStore } from '../artifacts';
+// The daemon's capture and store, read from the source tree for this test only: the point is the hand-off between
+// this process's reply and the daemon's record (the root tsconfig does not compile package tests).
+import { captureArtifactFromWorkLog, resetArtifactCaptureForTests } from '../../../src/conversation/artifact-capture';
+import { ArtifactStore } from '../../../src/conversation/artifacts';
+import { planUploadVersion, versionFields } from './helpers/artifact-version.js';
 
 let root: string;
 let store: ArtifactStore;

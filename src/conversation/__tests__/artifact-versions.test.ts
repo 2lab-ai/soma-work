@@ -13,7 +13,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { captureArtifactFromWorkLog, resetArtifactCaptureForTests } from '../artifact-capture';
-import { ArtifactStore, boardArtifact } from '../artifacts';
+import { ArtifactStore, boardArtifact, type SessionArtifact } from '../artifacts';
 
 let root: string;
 let srcDir: string;
@@ -118,7 +118,7 @@ describe('#1074 T6 — bytes on disk', () => {
   });
 
   it('a key keeps the bytes of its newest 10 versions; older ones keep their row and Slack link', async () => {
-    const all = [];
+    const all: Array<SessionArtifact | null> = [];
     for (let i = 1; i <= 12; i++)
       all.push(await upload('c', 'r.html', `v${i}`, { now: i, permalink: `https://s/${i}` }));
     const rows = store.versions('c', all[11]!.id);
@@ -249,7 +249,7 @@ describe('#1074 review gate r1 — the store keeps only bytes it can trust, and 
   });
 
   it('when the index cannot be saved, no version loses its bytes', async () => {
-    const all = [];
+    const all: Array<SessionArtifact | null> = [];
     for (let i = 1; i <= 10; i++) all.push(await upload('c', 'r.html', `v${i}`, { now: i }));
     const failing = store as unknown as { persist(cid: string): void };
     const real = failing.persist.bind(store);
