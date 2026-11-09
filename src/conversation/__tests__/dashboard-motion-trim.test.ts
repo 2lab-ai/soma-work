@@ -38,9 +38,17 @@ describe('dashboard motion trim', () => {
     expect(keyedNow(true, Date.now() - 5_000)).toBe(false);
     expect(keyedNow(false, Date.now())).toBe(false);
     expect(TEMPLATE).toContain(
-      "document.addEventListener('keydown', function(e) { if (!e.repeat && isActingKey(e)) _keyAt = Date.now(); }, true);",
+      "document.addEventListener('keydown', function(e) { if (isActingKey(e) && (!e.repeat || keyOnDeckNav(e))) _keyAt = Date.now(); }, true);",
     );
     expect(TEMPLATE).toMatch(/^var KEYED_MS = 600;$/m);
+  });
+
+  it('a held key counts once, except ←/→ held on the deck nav — every repeat there switches a card', () => {
+    const onNav = new Function(`${clientFn('keyOnDeckNav')}\nreturn keyOnDeckNav;`)() as (e: unknown) => boolean;
+    const el = (tagName: string) => ({ tagName });
+    expect(onNav({ composedPath: () => [el('BUTTON'), el('UI-DECK-NAV'), el('DIV')] })).toBe(true);
+    expect(onNav({ composedPath: () => [el('UI-AGENT-INBOX'), el('BODY')] })).toBe(false);
+    expect(onNav({})).toBe(false);
   });
 
   it('only a key that acts counts: Esc anywhere; Enter, Space and the arrows outside a text field; never typing', () => {
