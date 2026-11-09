@@ -211,6 +211,21 @@ async function main() {
  * two pieces of visible text drawn on top of each other, no broken image, no uncaught script error.
  */
 async function checkPage(page, pageErrors, { failOnOverflowX }) {
+  // Lazy images below the fold never load without a scroll: load every image now, so a broken one is seen.
+  await page
+    .evaluate(async () => {
+      const imgs = [...document.images];
+      for (const img of imgs) if (img.loading === 'lazy') img.loading = 'eager';
+      const settled = (img) =>
+        img.complete
+          ? null
+          : new Promise((ok) => {
+              img.addEventListener('load', ok, { once: true });
+              img.addEventListener('error', ok, { once: true });
+            });
+      await Promise.race([Promise.all(imgs.map(settled)), new Promise((ok) => setTimeout(ok, 5000))]);
+    })
+    .catch(() => {});
   const m = await page.evaluate(() => {
     const MAX_BOXES = 2000;
     const doc = document.documentElement;
