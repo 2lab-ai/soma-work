@@ -1,6 +1,6 @@
 ---
 name: break-ui
-description: Try to break a piece of UI by feeding it worst-case data — long names, unbreakable emails, one-letter names, missing fields, huge counts, zero items, long labels, non-Latin text, emoji, extreme numbers — then render it behind a "Demo data / Worst case" toggle and report everything that broke, with the fix for each. Use when the user asks to stress-test, break, or find edge cases in a component or screen, or to "try the worst case". For visual design critique use design; for motion use review-motion. Triggers on "break the ui", "worst-case data", "stress test the ui", "long names", "edge-case data", "UI 깨뜨려", "최악 데이터", "긴 이름 테스트", "엣지 데이터", "UI 스트레스 테스트".
+description: Feed a UI worst-case data (long, empty, huge, RTL, emoji) behind a dev toggle and report what breaks. Triggers on "break the ui", "worst case", "UI 깨뜨려".
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 version: 1.0.0
 license: MIT

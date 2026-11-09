@@ -1,6 +1,6 @@
 ---
 name: mobile-native
-description: Make a web app feel native on a phone — the small CSS and meta-tag fixes that separate "a website in a browser" from something that feels installed. Covers sticky hover states, tap highlight flashes, the 100vh bug, inputs that zoom the page, laggy taps, pull-to-refresh hijacking scroll, content under the notch, long-press selecting button text, carousels that scroll the wrong way, mismatched status bars, and the rule that you test on real hardware. Use when a web app is being built for or reviewed on mobile, when something "works in Chrome but feels wrong on my phone", when building a PWA, a bottom sheet, a carousel, a full-screen layout, or any touch interaction. For motion itself use motion-design. Triggers on "make it feel native", "mobile web", "sticky hover", "tap highlight", "100vh bug", "safe area", "input zoom", "모바일 네이티브", "앱처럼", "모바일 웹", "탭 하이라이트", "노치", "입력창 확대".
+description: Make a web app feel native on a phone — tap flash, 100vh, input zoom, tap lag, safe areas, theme-color. Triggers on "feel native", "mobile web", "모바일 앱처럼".
 allowed-tools: Read, Grep, Glob, Edit, Write
 version: 1.0.0
 license: MIT
