@@ -55,6 +55,7 @@ import {
 } from './public-url';
 import { getConversation, getTurnRawContent, listConversations } from './recorder';
 import { registerSettingsRoutes } from './settings-routes';
+import { registerSkillsRoutes } from './skills-routes';
 import type { ConversationTurn } from './types';
 import { registerUserMediaRoutes } from './user-media-routes';
 import { renderConversationListPage, renderConversationViewPage } from './viewer';
@@ -731,6 +732,10 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   registerMemoryRoutes(server, authMiddleware, csrfMiddleware);
   // Shared project memory — read: any signed-in user; write: admin (SSOT 2026-10-23 T4).
   registerProjectMemoryRoutes(server, authMiddleware, csrfMiddleware, (request, reply) =>
+    requireWriteAccess(request, reply, undefined),
+  );
+  // Skills — the settings page "스킬" tab (#1079): mine self only; environment-skill grants behind the admin gate.
+  registerSkillsRoutes(server, authMiddleware, csrfMiddleware, (request, reply) =>
     requireWriteAccess(request, reply, undefined),
   );
 
