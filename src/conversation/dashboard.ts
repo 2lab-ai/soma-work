@@ -15491,7 +15491,9 @@ function runLayoutCheck() {
   // A change the reader made from the keyboard (Enter opens the drawer, Esc
   // closes it) lands at once: an action repeated by key must not wait on its
   // own animation (remove-animations gate: keyboard-initiated actions).
-  var keyed = keyedNow();
+  // A key acting while a glide is still in flight retargets that glide (flipFrom moves cards in flight from where they
+  // are drawn) rather than leave it running toward a layout that is gone.
+  var keyed = keyedNow() && !flying;
   var animate = canAnimate() && !keyed;
   var reduce = reduceMotion();
   // Every card and head glides from where the reader saw it (the element does

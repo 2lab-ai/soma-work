@@ -539,6 +539,12 @@ describe('layout transition — one coordinator', () => {
     expect(k.m.state().until).toBe(0);
     expect(k.calls.measure).toBe(1);
     expect(k.calls.timers).toBe(0);
+    // A key acting while a pointer-made glide is still in flight: the glide is retargeted, not left running.
+    const midFlight = host();
+    const kf = coordinator({ snap: [[midFlight, { spots: { 'c:a': { x: 1, y: 2 } } }]], keyed: true, flying: true });
+    kf.m.runLayoutCheck();
+    expect(midFlight.flipFrom).toHaveBeenCalledTimes(1);
+    expect(kf.m.state().until).toBeGreaterThan(Date.now());
     const kr = coordinator({ snap: [[host(), { spots: {} }]], keyed: true, reduce: true });
     kr.m.runLayoutCheck();
     expect(kr.kb.animate).not.toHaveBeenCalled();

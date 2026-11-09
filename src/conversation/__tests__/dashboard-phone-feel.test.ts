@@ -125,6 +125,7 @@ describe('theme-color follows the theme as drawn — mobile-native §10 (the sha
   it('a theme switch moves it to the new colour once the transition settles, in the same meta', () => {
     const p = page('rgb(28, 28, 31)');
     p.load();
+    p.settle(); // the startup show's own delayed write runs first: what follows must come from the switch itself
     p.api.somaThemeSet('light', 'color');
     p.paint('rgb(247, 247, 247)');
     p.settle();
