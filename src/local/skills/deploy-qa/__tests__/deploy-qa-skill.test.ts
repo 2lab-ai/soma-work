@@ -174,17 +174,18 @@ describe('deploy-qa preflight and reduced mode', () => {
     expect(md).not.toContain('suggest a re-run');
   });
 
-  it('never fails the report because the PNG did not render', () => {
-    expect(md).toContain('`PNG not rendered: <reason>`');
-    expect(md).toContain('the PNG never fails the report');
+  it('publishes the HTML report alone — never a PNG of it (one report, one artifact; SSOT 2026-11-09)', () => {
+    expect(md).toContain('Never a PNG of the report');
+    expect(md).not.toMatch(/HTML and PNG|HTML \+ PNG|PNG not rendered/);
     const report = read('qa-report');
-    expect(report).toContain('png=none png-error=<one-line reason>');
-    expect(report).toContain('A PNG that cannot be rendered never fails the report');
+    expect(report).not.toMatch(/Render the PNG|png=<abs>|png=none|PNG preview\./);
+    expect(report).toContain('no PNG preview');
+    expect(report).toContain('the HTML alone, never a PNG of it');
   });
 
   it('publishes to the calling thread, the summary channel only when the profile names one', () => {
     expect(md).toContain('Then the summary channel, only when `report` names one.');
-    expect(md).toMatch(/slack-mcp `send_file` \/ `send_media`\) is a valid `report` method/);
+    expect(md).toMatch(/slack-mcp `send_file`\) is a valid `report` method/);
   });
 });
 

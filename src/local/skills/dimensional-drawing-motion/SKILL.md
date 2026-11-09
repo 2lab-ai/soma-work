@@ -84,6 +84,6 @@ node "$CLAUDE_PLUGIN_ROOT/skills/dimensional-drawing-motion/adapters/headless/re
 
 - Do not run `npm install` inside the plugin directory. Every session shares it, and the adapter's `postinstall` downloads a browser. If it prints ``playwright not found: run `npm install` in this folder``, ignore that advice for the plugin directory: copy `adapters/headless` into the working folder and install there. The same applies to the `npm install` step in `adapters/headless/README.md`.
 - Use `--fps 30` unless the user asks for 60. It renders twice as fast and is enough for a Slack preview.
-- Upload the MP4 and one still with `mcp__slack-mcp__send_media`. Reply with the film length and the beats, as below.
+- Upload the MP4 alone with `mcp__slack-mcp__send_media` — no still beside it: one film is one artifact in the thread and the dashboard's 산출물, which plays the video itself. Reply with the film length and the beats, as below.
 
 Reply in one or two sentences with the film's length and what each beat shows.

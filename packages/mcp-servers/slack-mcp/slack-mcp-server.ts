@@ -11,6 +11,10 @@
  *   - download_thread_file: Download a file attachment from the thread
  *   - send_file: Upload a file to the current Slack thread
  *   - send_media: Upload media (image/audio/video) to the current Slack thread
+ *   - send_link: Post a URL the session serves or published to the current Slack thread
+ *
+ * What send_file / send_media / send_link send is recorded by the daemon as the
+ * session's artifacts (the dashboard's 산출물) — src/conversation/artifact-capture.ts.
  *
  * Environment variables (set by McpConfigBuilder):
  *   - SLACK_BOT_TOKEN: Bot token for Slack API calls
@@ -33,6 +37,7 @@ import {
   isNonVisualMedia,
   validateFilePath,
 } from './helpers/file-validator.js';
+import { formatLinkMessage, validateLinkUrl } from './helpers/link.js';
 import { formatSingleMessage } from './helpers/message-formatter.js';
 import { fetchMessagesAfter, fetchMessagesBefore, fetchThreadSlice, getTotalCount } from './helpers/thread-fetcher.js';
 import type { GetThreadMessagesResult, SlackMcpContext } from './types.js';
@@ -202,6 +207,28 @@ class SlackMcpServer extends BaseMcpServer {
           required: ['file_path'],
         },
       },
+      {
+        name: 'send_link',
+        description: [
+          'Post a link to the Slack thread and add it to the session artifacts on the dashboard (산출물):',
+          'clicking it there opens the URL in a new tab.',
+          'Use it for a URL this session made: a page or app it serves (a local or LAN web server, a dev server),',
+          'or something it published elsewhere (a YouTube video, a GitHub release asset).',
+          'A file you have on disk goes with send_file / send_media instead — those keep a copy the dashboard can',
+          'preview and play. Do not send_link a page you already sent as a file (one output, one artifact).',
+          'http(s) only; no credentials in the URL. Use the LAN address, not localhost, when others must open it.',
+        ].join('\n'),
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            url: { type: 'string', description: 'The http(s) URL to share' },
+            title: { type: 'string', description: 'What it is — the link text in Slack and the artifact name' },
+            comment: { type: 'string', description: 'A line posted above the link' },
+            thread: { type: 'string', description: 'Which thread to post to: "work" (default) or "source"' },
+          },
+          required: ['url'],
+        },
+      },
     ];
   }
 
@@ -217,6 +244,8 @@ class SlackMcpServer extends BaseMcpServer {
         return await this.handleSendFile(args as any);
       case 'send_media':
         return await this.handleSendMedia(args as any);
+      case 'send_link':
+        return await this.handleSendLink(args as any);
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
@@ -840,6 +869,53 @@ class SlackMcpServer extends BaseMcpServer {
             size,
             media_type,
             permalink: uploadedFile.permalink || '',
+            channel: resolved.channel,
+            thread_ts: resolved.threadTs,
+          }),
+        },
+      ],
+    };
+  }
+
+  // ── send_link ──────────────────────────────────────────
+
+  private async handleSendLink(args: {
+    url: string;
+    title?: string;
+    comment?: string;
+    thread?: string;
+  }): Promise<ToolResult> {
+    const url = validateLinkUrl(args.url);
+    const title = typeof args.title === 'string' ? args.title.trim().slice(0, 200) : '';
+    const resolved = this.resolveThread(args.thread);
+
+    const posted = await this.slack.chat.postMessage({
+      channel: resolved.channel,
+      thread_ts: resolved.threadTs,
+      text: formatLinkMessage({ url, title, comment: args.comment }),
+    });
+    if (!posted.ts) throw new Error('Slack accepted the link but returned no message ts');
+
+    let permalink = '';
+    try {
+      const p = await this.slack.chat.getPermalink({ channel: resolved.channel, message_ts: posted.ts });
+      permalink = p.permalink || '';
+    } catch {
+      // The link is posted; a missing permalink only drops the dashboard's "open in Slack".
+    }
+
+    this.logger.info('Link sent', { url, ts: posted.ts, thread: args.thread || 'work' });
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            sent: true,
+            url,
+            ...(title ? { title } : {}),
+            ts: posted.ts,
+            permalink,
             channel: resolved.channel,
             thread_ts: resolved.threadTs,
           }),

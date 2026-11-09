@@ -108,7 +108,10 @@ describe('McpConfigBuilder slack-mcp server', () => {
     expect(ctx.sourceThreadTs).toBe('1700000000.000000');
   });
 
-  it('does NOT register slack-mcp server when mentionTs === threadTs (thread root)', async () => {
+  // The first turn of a session started by a channel message runs at the thread root. Without slack-mcp there
+  // it has no send_file / send_media / send_link, so its videos, audio and links never reach the dashboard's
+  // 산출물 — models fell back to uploading with their own Slack API calls, which nothing records.
+  it('registers slack-mcp at the thread root too (mentionTs === threadTs): every Slack turn can send files', async () => {
     const builder = new McpConfigBuilder(createMockMcpManager());
     const config = await builder.buildConfig({
       channel: 'C123',
@@ -117,11 +120,13 @@ describe('McpConfigBuilder slack-mcp server', () => {
       user: 'U123',
     });
 
-    expect(config.mcpServers?.['slack-mcp']).toBeUndefined();
-    expect(config.allowedTools).not.toContain('mcp__slack-mcp');
+    expect(config.mcpServers?.['slack-mcp']).toBeDefined();
+    expect(config.allowedTools).toContain('mcp__slack-mcp');
+    const ctx = JSON.parse(config.mcpServers?.['slack-mcp']?.env?.SLACK_MCP_CONTEXT || '{}');
+    expect(ctx).toMatchObject({ channel: 'C123', threadTs: '1700000000.000000', mentionTs: '1700000000.000000' });
   });
 
-  it('does NOT register slack-mcp server when mentionTs is absent', async () => {
+  it('registers slack-mcp when mentionTs is absent but the thread is known', async () => {
     const builder = new McpConfigBuilder(createMockMcpManager());
     const config = await builder.buildConfig({
       channel: 'C123',
@@ -129,7 +134,22 @@ describe('McpConfigBuilder slack-mcp server', () => {
       user: 'U123',
     });
 
+    expect(config.mcpServers?.['slack-mcp']).toBeDefined();
+    expect(config.allowedTools).toContain('mcp__slack-mcp');
+  });
+
+  it('does NOT register slack-mcp without a thread to send into', async () => {
+    const builder = new McpConfigBuilder(createMockMcpManager());
+    const config = await builder.buildConfig({ channel: 'C123', user: 'U123' });
+
     expect(config.mcpServers?.['slack-mcp']).toBeUndefined();
+    expect(config.allowedTools).not.toContain('mcp__slack-mcp');
+  });
+
+  it('isMidThreadMention still tells a mid-thread mention from the thread root (the thread-awareness hint)', () => {
+    expect(isMidThreadMention({ threadTs: '1.0', mentionTs: '2.0' })).toBe(true);
+    expect(isMidThreadMention({ threadTs: '1.0', mentionTs: '1.0' })).toBe(false);
+    expect(isMidThreadMention({ threadTs: '1.0' })).toBe(false);
   });
 
   it('sets SLACK_BOT_TOKEN in slack-mcp server env (empty string fallback)', async () => {

@@ -63,6 +63,17 @@ export function isMidThreadMention(ctx?: { mentionTs?: string; threadTs?: string
 }
 
 /**
+ * A Slack turn with a thread to send into. slack-mcp goes on every such turn — the thread root (the first turn
+ * of a session started by a channel message) included: its send_file / send_media / send_link are the only
+ * uploads the dashboard records as session artifacts. (Before 2026-11-09 it was mid-thread only, so a first
+ * turn's videos, audio and links went out by hand — a script with the bot token, YouTube — and never reached
+ * 산출물.) The thread-awareness prompt stays mid-thread only (isMidThreadMention).
+ */
+function hasSlackThread(ctx?: { channel?: string; threadTs?: string } | null): boolean {
+  return !!ctx?.channel && !!ctx.threadTs;
+}
+
+/**
  * Slack context for permission prompts
  */
 export interface SlackContext {
@@ -196,9 +207,8 @@ export class McpConfigBuilder {
       internalServers['model-command'] = this.buildModelCommandServer(slackContext, modelCommandContext);
     }
 
-    // Add slack-mcp server only for mid-thread mentions (mentionTs !== threadTs)
-    // When mentionTs === threadTs, the mention IS the thread root — no prior context to explore
-    if (isMidThreadMention(slackContext)) {
+    // slack-mcp on every Slack turn with a thread (hasSlackThread): its file and link tools feed 산출물.
+    if (hasSlackThread(slackContext)) {
       internalServers['slack-mcp'] = this.buildSlackMcpServer(slackContext!);
     }
 
@@ -522,8 +532,8 @@ export class McpConfigBuilder {
       allowedTools.push('mcp__model-command');
     }
 
-    // Allow slack-mcp tools only for mid-thread mentions
-    if (isMidThreadMention(slackContext)) {
+    // slack-mcp tools wherever the server is built (hasSlackThread)
+    if (hasSlackThread(slackContext)) {
       allowedTools.push('mcp__slack-mcp');
     }
 
