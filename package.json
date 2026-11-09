@@ -52,7 +52,8 @@
     "knip": "^6.25.0",
     "tsx": "=4.20.3",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.15"
+    "vitest": "^4.0.15",
+    "yaml": "^2.9.1"
   },
   "dependencies": {
     "@2lab.ai/ui": "0.41.0",
