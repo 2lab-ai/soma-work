@@ -6521,7 +6521,7 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
    (syncPickerFit). A tap on the title bar or the title bar's ˅ (#panel-head-back, while reading) brings the head back.
    T4 · reading tucks the composer away (data-tuck): it slides down; a ^ at the bottom right (#pc-reveal) brings it
    back, and so does the very bottom of the chat or the log. ── */
-.inbox-tools > .topbar-scope { flex: 1 1 auto; flex-wrap: wrap; margin-right: auto; }
+.inbox-tools > .topbar-scope, .inbox-chips > .topbar-scope { flex: 1 1 auto; flex-wrap: wrap; margin-right: auto; }
 .inbox-tools .topbar-defaults { display: flex; gap: 6px; align-items: center; flex: none; }
 .inbox-tools .topbar-defaults[hidden], .inbox-tools .td-also[hidden] { display: none; }
 .inbox-tools .td-prefix, .inbox-tools .td-status { display: none; }
@@ -6566,15 +6566,14 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 /* ── PHONE DOCK (2026-11-09) — under 640px the sections and 새 작업 sit in the thumb zone: @2lab.ai/ui <ui-dock
    layout="bar" fixed> (보드 · 대화 · 새 작업 · 기억 · 설정, the board's needs-you count on 보드). It takes the jobs of
    the bar's 메뉴 (the bar drops its links there: paintAppBar) and of the floating 새 작업 button (hidden there). The
-   page keeps its last row above the dock, the toasts rise over it. The board's head is two lines: the search with
+   last card clears it through the board's own clearance (.inbox.has-cards: the dock's 60px + the home indicator — a
+   board with cards only, so an empty page never scrolls by the dock's height). The board's head is two lines: the search with
    Board | List, then the chips as one row that scrolls sideways (ui-scroll-row) — the trail goes (the dock says
    where you are). A phone held sideways (PHONE_MQ's short screen) keeps the bar's 메뉴 and its height for the board. ── */
 .phone-dock { display: none; }
 @media (max-width: 639px) {
   .phone-dock { display: block; }
-  body { padding-bottom: calc(var(--ui-dock-h, 60px) + env(safe-area-inset-bottom, 0px)); }
   .new-task-fab.ui-fab { display: none !important; }
-  ui-toaster { --ts-offset: calc(var(--ui-dock-h, 60px) + 12px); }
   .inbox-head { margin-bottom: 10px; }
   .inbox-head > .crumbs { display: none; }
   .inbox-tools { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; flex: 1 1 100%; width: 100%; margin-left: 0; }
@@ -6835,8 +6834,8 @@ body.nt-open .new-task-fab { display: none !important; }
   .slide-panel:not(.is-detail) #panel-title-sub { display: none !important; }
 }
 @media (max-width: 639px) {
-  /* Responsive (SSOT 2026-10-24) — phones: the last card clears the FAB (a board
-     with cards only — an empty page must not turn scrollable); the defaults
+  /* Responsive (SSOT 2026-10-24) — phones: the last card clears the bottom dock (60px + the home indicator; it was the
+     FAB's until 2026-11-09) — a board with cards only, so an empty page never turns scrollable; the defaults
      menu and the artifact viewer are the elements' own sheets. */
   .inbox.has-cards { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }
 }
@@ -7482,6 +7481,9 @@ function syncDockNeeds(n) {
     if (typeof _dockMq.addEventListener === 'function') _dockMq.addEventListener('change', paintAppBar);
     else if (typeof _dockMq.addListener === 'function') _dockMq.addListener(paintAppBar);
   }
+  // The bar's first paint ran before _dockMq was set (dockOn() was false): on a phone it drew its links and 메뉴
+  // beside the dock. Paint it again now that the breakpoint is known.
+  paintAppBar();
 })();
 // ── Phone chrome (SSOT 2026-11-04) — on a phone the content takes the screen (see the PHONE CHROME rules). A phone is
 // narrow, or a short screen (a phone sideways) — the page's own breakpoints. ──
