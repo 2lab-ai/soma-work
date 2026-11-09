@@ -229,3 +229,58 @@ describe('#1074 — capture carries the key and the hash from slack-mcp', () => 
     expect(store.list('c')[0]).toMatchObject({ key: 'key:pr-9-body', version: 1, sha256: sha('abc'), stored: false });
   });
 });
+
+describe('#1074 review gate r1 — the store keeps only bytes it can trust, and deletes only after the index is saved', () => {
+  it('a snapshot whose hash is not what slack-mcp uploaded is not kept: the reported hash decides', async () => {
+    await upload('c', 'r.html', 'AAA', { now: 1 });
+    // The call snapshotted AAA; the file became BBB (same size) before slack-mcp hashed and uploaded it.
+    const snapshotOfOld = await store.snapshot('c', srcFile('r.html', 'AAA'));
+    const v = await store.recordSlackUpload({
+      conversationId: 'c',
+      snapshot: snapshotOfOld,
+      filename: 'r.html',
+      slackFileId: 'F-bbb',
+      size: 3,
+      sha256: sha('BBB'),
+      now: 2,
+    });
+    expect(v).toMatchObject({ version: 2, changed: true, sha256: sha('BBB'), stored: false });
+    expect(fs.readdirSync(path.join(root, 'store', 'c')).filter((f) => f.startsWith('.pending-'))).toEqual([]);
+  });
+
+  it('when the index cannot be saved, no version loses its bytes', async () => {
+    const all = [];
+    for (let i = 1; i <= 10; i++) all.push(await upload('c', 'r.html', `v${i}`, { now: i }));
+    const failing = store as unknown as { persist(cid: string): void };
+    const real = failing.persist.bind(store);
+    failing.persist = () => {
+      throw new Error('disk full');
+    };
+    try {
+      await upload('c', 'r.html', 'v11', { now: 11 });
+    } finally {
+      failing.persist = real;
+    }
+    // Version 1 fell past the cap in memory, but the index on disk still says it is stored: its bytes stay.
+    const onDisk = JSON.parse(fs.readFileSync(path.join(root, 'store', 'c', 'index.json'), 'utf-8'));
+    expect(onDisk.artifacts.find((a: { id: string }) => a.id === all[0]!.id).stored).toBe(true);
+    expect(fs.existsSync(path.join(root, 'store', 'c', all[0]!.id))).toBe(true);
+  });
+
+  it('the same content re-sent when the previous version has no copy gives that version its bytes back', async () => {
+    const v1 = await store.recordSlackUpload({
+      conversationId: 'c',
+      filename: 'r.html',
+      slackFileId: 'F1',
+      size: 4,
+      sha256: sha('same'),
+      now: 1,
+    });
+    expect(v1?.stored).toBe(false);
+    const again = await upload('c', 'r.html', 'same', { now: 2 });
+    expect(again).toBeNull();
+    const [only] = store.list('c');
+    expect(only).toMatchObject({ id: v1?.id, version: 1, stored: true });
+    expect(fs.readFileSync(store.blobPath('c', only.id)!, 'utf-8')).toBe('same');
+  });
+});
