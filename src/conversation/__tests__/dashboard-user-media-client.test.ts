@@ -68,6 +68,7 @@ const BASE_FNS = [
   'umGet',
   'umUrl',
   'artUrl',
+  'artVersionLabel',
   'artFileItem',
   'artCard',
   'umTile',

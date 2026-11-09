@@ -292,7 +292,12 @@ export async function buildStreamOptions(
   } else {
     // Get MCP configuration
     const modelCommandContext = deps.buildModelCommandContext(session, slackContext);
-    mcpConfig = await deps.mcpConfigBuilder.buildConfig(slackContext, modelCommandContext, execCtx);
+    // #1074 — slack-mcp says an upload's version from this conversation's artifact index.
+    const mcpSlackContext =
+      slackContext && session?.conversationId
+        ? { ...slackContext, conversationId: session.conversationId }
+        : slackContext;
+    mcpConfig = await deps.mcpConfigBuilder.buildConfig(mcpSlackContext, modelCommandContext, execCtx);
     options.permissionMode = mcpConfig.permissionMode;
     if (mcpConfig.allowDangerouslySkipPermissions) {
       options.allowDangerouslySkipPermissions = true;

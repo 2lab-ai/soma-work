@@ -7,8 +7,8 @@
  * Every step of a turn already reaches the daemon as a work-log entry
  * (src/index.ts wires the stream executor's `appendWorkLog` provider):
  *
- *   tool        mcp__slack-mcp__send_file|send_media  raw = the tool input JSON ({ file_path, filename, title, … })
- *   tool_result same tool                              raw = the tool's JSON reply ({ uploaded, file_id, filename, size, permalink, … })
+ *   tool        mcp__slack-mcp__send_file|send_media  raw = the tool input JSON ({ file_path, filename, title, artifact_key, … })
+ *   tool_result same tool                              raw = the tool's JSON reply ({ uploaded, file_id, filename, size, permalink, sha256, … })
  *   tool_result mcp__slack-mcp__send_link              raw = { sent, url, title, ts, permalink } — the reply alone
  *                                                       carries the link, so its call needs no pairing
  *
@@ -58,6 +58,8 @@ interface PendingUpload {
   url?: string;
   displayName: string;
   title?: string;
+  /** #1074 — the model's `artifact_key`. */
+  key?: string;
   snapshot: Promise<ArtifactSnapshot | null>;
 }
 
@@ -86,6 +88,7 @@ function pendingFromCall(entry: CaptureEntry, input: Record<string, unknown> | n
     url: str(input?.url),
     displayName: str(input?.filename) ?? (filePath ? path.basename(filePath) : ''),
     title: str(input?.title),
+    key: str(input?.artifact_key),
   };
 }
 
@@ -134,6 +137,8 @@ function uploadReply(entry: CaptureEntry) {
     permalink: str(reply?.permalink),
     url: str(reply?.url),
     size: typeof reply?.size === 'number' ? reply.size : undefined,
+    sha256: str(reply?.sha256),
+    key: str(reply?.artifact_key),
   };
 }
 
@@ -190,6 +195,8 @@ export function captureArtifactFromWorkLog(
           tool: entry.tool?.replace(/^mcp__slack-mcp__/, ''),
           turnId: entry.turnId,
           now: entry.ts,
+          key: pending?.key ?? reply.key,
+          sha256: reply.sha256,
         });
       })().catch((err) => logger.warn(`Upload artifact not recorded for ${conversationId}`, err));
     }
@@ -263,6 +270,8 @@ export function backfillArtifactsFromWorkLog(
             tool: e.tool.replace(/^mcp__slack-mcp__/, ''),
             turnId: e.turnId,
             now: e.ts,
+            key: call?.key ?? reply.key,
+            sha256: reply.sha256,
           });
         }
       }

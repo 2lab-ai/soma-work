@@ -1293,6 +1293,17 @@
   "목표 없음": "No goal",
   "목표 없음 — 눌러서 추가": "No goal — press to add one",
   "산출물": "Artifacts",
+  "판 ": "Version ",
+  " · 이전 판 이후 바뀜": " · changed since the previous version",
+  "이전 판 열기": "Open the previous version",
+  "이전 판과 비교": "Compare with the previous version",
+  "이전 판과 비교할 수 없습니다 (사본이 없거나 텍스트가 아닙니다).": "Cannot compare with the previous version (no copy here, or it is not text).",
+  "두 판이 너무 크거나 너무 달라 줄 단위로 비교하지 않았습니다.": "The two versions are too large or too different to compare line by line.",
+  "두 판의 내용이 같습니다.": "The two versions are the same.",
+  "--- 판 ": "--- version ",
+  "\n+++ 판 ": "\n+++ version ",
+  " · 판 ": " · version ",
+  " → 판 ": " → version ",
   "산출물 · 지시 첨부 ": "Artifacts · attachments: ",
   "산출물 없음": "No artifacts",
   "서브에이전트 ": "Subagents: ",
@@ -1499,5 +1510,6 @@
   "⚖️ 걸린 것 — ": "⚖️ At stake — ",
   "↩️ 되돌릴 수 있음": "↩️ Can be undone",
   "⚠️ **되돌릴 수 없음**": "⚠️ **Cannot be undone**",
-  "⚠️ 되돌릴 수 없음": "⚠️ Cannot be undone"
+  "⚠️ 되돌릴 수 없음": "⚠️ Cannot be undone",
+  "\">판 ": "\">v"
 }
