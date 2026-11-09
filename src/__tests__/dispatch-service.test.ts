@@ -1,7 +1,12 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { describe, expect, it } from 'vitest';
-import { decodeSlackEntities, getDispatchService, parseDispatchWorkSize } from '../dispatch-service';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  decodeSlackEntities,
+  getDispatchService,
+  parseDeployDirective,
+  parseDispatchWorkSize,
+} from '../dispatch-service';
 
 describe('dispatch work size (epic switch on small work)', () => {
   it('parseDispatchWorkSize takes small / large only (any case, trimmed)', () => {
@@ -114,6 +119,126 @@ describe('DispatchService — classifier blocked by safeguards', () => {
     try {
       const result = await svc.dispatch('do the thing');
       expect(result.safeguardFlag?.detail).toBe('reasoning_extraction');
+    } finally {
+      restore();
+    }
+  });
+});
+
+// A deploy directive (`repo source -> target`) routes without the classifier:
+// on a loaded host the classifier timed out, the session drifted to `default`
+// and never got the deploy workflow (its prompt and its sandbox grant).
+describe('DispatchService — deploy directive fast path', () => {
+  function svcWith(opts: { configured?: boolean } = {}) {
+    const svc = getDispatchService() as any;
+    const saved = { handler: svc.claudeHandler, configured: svc.isConfigured, prompt: svc.dispatchPrompt };
+    const dispatchOneShot = vi.fn(async () => '{"workflow":"default","title":"classified"}');
+    if (opts.configured === false) {
+      svc.claudeHandler = undefined;
+      svc.isConfigured = false;
+      svc.dispatchPrompt = undefined;
+    } else {
+      svc.claudeHandler = { dispatchOneShot };
+      svc.isConfigured = true;
+      svc.dispatchPrompt = svc.dispatchPrompt || 'classify';
+    }
+    return {
+      svc,
+      dispatchOneShot,
+      restore: () =>
+        Object.assign(svc, {
+          claudeHandler: saved.handler,
+          isConfigured: saved.configured,
+          dispatchPrompt: saved.prompt,
+        }),
+    };
+  }
+
+  it('parseDeployDirective reads repos, source and target from the first line', () => {
+    expect(parseDeployDirective('projalpha: develop -> deploy/stage')).toEqual({
+      repos: ['projalpha'],
+      source: 'develop',
+      target: 'deploy/stage',
+    });
+    expect(
+      parseDeployDirective('<@U123ABC> <@U456|someone>\n\n DEPLOY projalpha , projbeta main->prod $autoz'),
+    ).toEqual({ repos: ['projalpha', 'projbeta'], source: 'main', target: 'prod' });
+  });
+
+  it('parseDeployDirective rejects anything that is not a directive', () => {
+    for (const text of [
+      '너 배포 안할거야?',
+      'what does projalpha: develop -> deploy/stage do?',
+      'projalpha develop->stage는 언제?',
+      'projalpha develop stage',
+      'deploy develop -> stage',
+      ': develop -> stage',
+      'hello there',
+      '',
+    ]) {
+      expect(parseDeployDirective(text), text).toBeUndefined();
+    }
+  });
+
+  const directives: Array<[string, string]> = [
+    ['projalpha: develop -> deploy/stage', 'projalpha develop -> deploy/stage Deploy'],
+    ['<@U123ABC> projalpha: develop -> deploy/stage', 'projalpha develop -> deploy/stage Deploy'],
+    ['<@U123ABC|bot> projalpha: develop -&gt; deploy/stage', 'projalpha develop -> deploy/stage Deploy'],
+    ['projalpha: develop -> deploy/stage $autoz', 'projalpha develop -> deploy/stage Deploy'],
+    ['<@U123ABC> projalpha: develop -> deploy/stage 묻지 말고 머지 진행', 'projalpha develop -> deploy/stage Deploy'],
+    ['deploy projalpha,projbeta main -> prod', 'projalpha,projbeta main -> prod Deploy'],
+    ['projalpha develop -> deploy/stage', 'projalpha develop -> deploy/stage Deploy'],
+  ];
+
+  it.each(directives)('routes %j to deploy without the classifier', async (text, title) => {
+    const { svc, dispatchOneShot, restore } = svcWith();
+    try {
+      const result = await svc.dispatch(text);
+      expect(result.workflow).toBe('deploy');
+      expect(result.title).toBe(title);
+      expect(result.size).toBe('small');
+      expect(result.complexity).toBeDefined();
+      expect(dispatchOneShot).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it('keeps the links of a directive message', async () => {
+    const { svc, restore } = svcWith();
+    try {
+      const result = await svc.dispatch('projalpha develop -> deploy/stage https://github.com/org/repo/pull/7');
+      expect(result.workflow).toBe('deploy');
+      expect(result.links?.pr?.url).toBe('https://github.com/org/repo/pull/7');
+    } finally {
+      restore();
+    }
+  });
+
+  it.each([
+    '너 배포 안할거야?',
+    'what does projalpha: develop -> deploy/stage do?',
+    'projalpha develop->stage는 언제?',
+    'please look at the login page',
+  ])('leaves %j to the classifier', async (text) => {
+    const { svc, dispatchOneShot, restore } = svcWith();
+    try {
+      const result = await svc.dispatch(text);
+      expect(dispatchOneShot).toHaveBeenCalledTimes(1);
+      expect(result.workflow).toBe('default');
+      expect(result.title).toBe('classified');
+    } finally {
+      restore();
+    }
+  });
+
+  it('routes a directive even when the classifier is not configured', async () => {
+    const { svc, restore } = svcWith({ configured: false });
+    try {
+      const result = await svc.dispatch('<@U123ABC> projalpha: develop -> deploy/stage');
+      expect(result.workflow).toBe('deploy');
+      expect(result.title).toBe('projalpha develop -> deploy/stage Deploy');
+      expect((await svc.dispatch('너 배포 안할거야?')).workflow).toBe('default');
     } finally {
       restore();
     }
