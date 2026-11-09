@@ -62,14 +62,16 @@ describe('the dock element', () => {
     expect(TEMPLATE).toMatch(/^\.phone-dock \{ display: none; \}$/m);
   });
 
-  it('under 640px: the dock shows, the page keeps its last row above it, the FAB goes, the toasts rise over it', () => {
+  it('under 640px: the dock shows and the FAB goes; the last card clears the dock through the board’s own clearance', () => {
     const phone = mediaBlockWith('(max-width: 639px)', '.phone-dock { display: block; }');
     expect(phone).toContain('.phone-dock { display: block; }');
-    expect(phone).toContain(
-      'body { padding-bottom: calc(var(--ui-dock-h, 60px) + env(safe-area-inset-bottom, 0px)); }',
-    );
     expect(phone).toContain('.new-task-fab.ui-fab { display: none !important; }');
-    expect(phone).toContain('ui-toaster { --ts-offset: calc(var(--ui-dock-h, 60px) + 12px); }');
+    // No page-wide padding (a short board would scroll by the dock's height, and it would stack on the board's own
+    // clearance): the board with cards clears exactly the dock — 60px + the home indicator.
+    expect(phone).not.toMatch(/body \{ padding-bottom/);
+    expect(mediaBlockWith('(max-width: 639px)', '.inbox.has-cards')).toContain(
+      '.inbox.has-cards { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }',
+    );
   });
 
   it('the dock’s breakpoint is narrow only: a phone held sideways keeps the bar’s 메뉴 and its height', () => {
@@ -202,6 +204,19 @@ describe('the board’s head on a phone: the search with Board | List, then the 
       '.inbox-tools > .inbox-chips { --ui-bleed: 12px; grid-column: 1 / -1; grid-row: 2; display: flex;',
     );
     expect(phone).toContain('.inbox-chips > .topbar-scope { display: flex; flex: none; flex-wrap: nowrap;');
+  });
+
+  it('a phone held sideways (no dock, chips box display: contents) keeps the scope group’s growing, wrapping line', () => {
+    expect(TEMPLATE).toContain(
+      '.inbox-tools > .topbar-scope, .inbox-chips > .topbar-scope { flex: 1 1 auto; flex-wrap: wrap; margin-right: auto; }',
+    );
+  });
+
+  it('the bar is painted again once the dock knows the breakpoint (its first paint ran before _dockMq was set)', () => {
+    const start = TEMPLATE.indexOf('(function initPhoneDock() {');
+    const body = TEMPLATE.slice(start, TEMPLATE.indexOf('\n})();', start));
+    expect(body.lastIndexOf('paintAppBar();')).toBeGreaterThan(body.indexOf('_dockMq.addEventListener'));
+    expect(TEMPLATE.indexOf('var _dockMq')).toBeLessThan(start);
   });
 
   it('the scope group goes into the chips row on a phone', () => {

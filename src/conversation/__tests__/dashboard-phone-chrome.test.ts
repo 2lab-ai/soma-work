@@ -144,7 +144,7 @@ describe('T1 — the top bar is one line on a phone', () => {
 
   it('the board’s head has a place for it, and its chips keep their look there (admin on = the fail tint)', () => {
     expect(TEMPLATE).toContain('<div class="inbox-tools" id="inbox-tools">');
-    expect(cssRule('.inbox-tools > .topbar-scope')).toContain('margin-right: auto;');
+    expect(cssRule('.inbox-tools > .topbar-scope, .inbox-chips > .topbar-scope')).toContain('margin-right: auto;');
     expect(cssRule('.inbox-tools .admin-toggle[aria-pressed="true"]')).toContain('background: var(--tint-fail-bg);');
     expect(cssRule('.inbox-tools .topbar-defaults[hidden], .inbox-tools .td-also[hidden]')).toContain('display: none;');
   });
