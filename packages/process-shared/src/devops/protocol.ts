@@ -451,6 +451,43 @@ export function parseBrokerMessage(value: unknown): ParseResult<BrokerMessage> {
   return { ok: true, value: value as unknown as BrokerMessage };
 }
 
+// ── Admin op (#1051) ──────────────────────────────────────
+//
+// What the dashboard (through the bot process) asks the broker: the approval cards it is waiting on, each with a
+// link to every admin's own Slack card. Separate from the eight tools (the MCP server never offers it to the
+// model), and read-only: a card is still decided only by an admin in Slack.
+
+export const ADMIN_OPS = ['approvals'] as const;
+export type AdminOp = (typeof ADMIN_OPS)[number];
+
+export type AdminRequest = { v: number; id: string; op: 'approvals'; args: Record<string, never> };
+
+/** True for a decoded line that is an admin op (has an `op` key) rather than a tool request. */
+export function isAdminRequestLine(value: unknown): boolean {
+  return isRecord(value) && hasOwn(value, 'op');
+}
+
+/** Validates one decoded admin-op line. The version is checked before anything else. */
+export function parseAdminRequest(value: unknown): ParseResult<AdminRequest> {
+  if (!isRecord(value)) return { ok: false, code: 'bad-request', message: 'request must be a JSON object', id: null };
+  const id = readId(value);
+  if (value.v !== PROTOCOL_VERSION) {
+    return {
+      ok: false,
+      code: 'version-mismatch',
+      message: `protocol version ${JSON.stringify(value.v)} is not ${PROTOCOL_VERSION}`,
+      id,
+    };
+  }
+  const problem =
+    keysProblem(value, ['v', 'id', 'op', 'args']) ??
+    (id === null ? 'id has the wrong format' : null) ??
+    enumProblem(value.op, 'op', ADMIN_OPS) ??
+    (isRecord(value.args) ? keysProblem(value.args, []) : 'args must be an object');
+  if (problem !== null) return { ok: false, code: 'bad-request', message: problem, id };
+  return { ok: true, value: value as unknown as AdminRequest };
+}
+
 export function isTerminal(message: BrokerMessage): boolean {
   return message.type !== 'pending';
 }
@@ -484,7 +521,7 @@ export function advanceExchange(
 // ── Framing ───────────────────────────────────────────────
 
 /** One message as one line. JSON.stringify escapes every newline inside strings. */
-export function encodeMessage(message: DevopsRequest | BrokerMessage): string {
+export function encodeMessage(message: DevopsRequest | AdminRequest | BrokerMessage): string {
   const line = JSON.stringify(message);
   if (line.length > MAX_LINE_LENGTH) throw new RangeError(`message is longer than ${MAX_LINE_LENGTH} characters`);
   return `${line}\n`;

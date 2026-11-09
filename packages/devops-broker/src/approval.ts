@@ -53,6 +53,12 @@ export interface Approvals {
    * like a reaction (expiry, one use and disk-first all apply). Never throws.
    */
   decide(click: ButtonClick): Promise<'accepted' | 'ignored'>;
+  /**
+   * The cards waiting for an answer, for a surface that points the admin at them (the dashboard, #1051): what
+   * the request is and a link to each admin's own Slack card. No argument values: deciding still happens on
+   * the card, in Slack.
+   */
+  pending(): PendingApprovalView[];
   /** Cancels what is still open (approved-but-unused included) and waits for the card updates. */
   close(): Promise<void>;
 }
@@ -64,6 +70,21 @@ export interface ButtonClick {
   user: string;
   channel: string;
   messageTs: string;
+}
+
+/** One waiting card as the dashboard lists it (#1051). */
+export interface PendingApprovalView {
+  approvalId: string;
+  tool: DevopsTool;
+  /** The broker's sentence for the request (the card's first line). */
+  title: string;
+  /** Claimed requester's Slack user id — shown, never trusted. */
+  requester: string;
+  digestPrefix: string;
+  createdAt: string;
+  expiresAt: string;
+  /** Every admin's own card; `permalink` when Slack gave one. */
+  cards: { admin: string; permalink?: string }[];
 }
 
 /** How long a click on a card that is still being posted to the other admins waits for it to open. */
@@ -131,6 +152,8 @@ export interface ApprovalCardPost {
   admin: string;
   channel: string;
   ts: string;
+  /** Link to this card (chat.getPermalink, best effort) — the dashboard opens it (#1051). */
+  permalink?: string;
 }
 
 export interface ApprovalRecord {
@@ -211,6 +234,8 @@ interface Entry {
   countedAt: number;
   expiresAtMs: number;
   card: SlackCard;
+  createdAtMs: number;
+  view: Pick<PendingApprovalView, 'tool' | 'title' | 'requester'>;
   /** posting → pending → settled; only posting/pending entries count against the cap or take duplicates. */
   status: 'posting' | 'pending' | 'settled';
   posts: ApprovalCardPost[];
@@ -574,7 +599,9 @@ export function createApprovals(opts: {
         try {
           const channel = await dmChannel(admin);
           const { ts } = await slack.postMessage(channel, entry.card);
-          posted = { admin, channel, ts };
+          // A link for the dashboard; a Slack error here never touches the approval.
+          const permalink = await Promise.resolve(slack.getPermalink?.(channel, ts)).catch(() => undefined);
+          posted = { admin, channel, ts, ...(permalink ? { permalink } : {}) };
         } catch (err) {
           await ledger.append({ event: 'approval.card-post-failed', approvalId, admin, code: errorCode(err) });
           continue;
@@ -873,6 +900,8 @@ export function createApprovals(opts: {
         countedAt: createdAtMs,
         expiresAtMs,
         card,
+        createdAtMs,
+        view: { tool: req.tool, title: req.title, requester: req.claimedRequester.slackUserId },
         status: 'posting',
         posts: [],
         waiters: new Set(),
@@ -924,6 +953,23 @@ export function createApprovals(opts: {
       } catch {
         // Best effort: the result is already in the ledger through the caller.
       }
+    },
+
+    pending() {
+      return [...active.values()]
+        .filter((entry) => entry.status === 'pending')
+        .sort((a, b) => a.createdAtMs - b.createdAtMs)
+        .map((entry) => ({
+          approvalId: entry.approvalId,
+          ...entry.view,
+          digestPrefix: entry.digest.slice(0, 12),
+          createdAt: iso(entry.createdAtMs),
+          expiresAt: iso(entry.expiresAtMs),
+          cards: entry.posts.map((post) => ({
+            admin: post.admin,
+            ...(post.permalink ? { permalink: post.permalink } : {}),
+          })),
+        }));
     },
 
     async decide(click) {
