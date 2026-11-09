@@ -21,9 +21,10 @@ export const DEFAULT_BROKER_SOCKET_PATH = '/usr/local/var/soma-devops/run/broker
 export const BROKER_SOCKET_ENV = 'SOMA_DEVOPS_BROKER_SOCKET';
 
 /**
- * Where the MCP server records each approval card it waits on, one `<approvalId>.json`
- * (`PendingCardRecord`), removed when the call ends. The dashboard lists these when the broker cannot
- * list its cards itself (a broker older than the `approvals` op, #1051). Display only.
+ * Where the MCP server records each approval card it waits on, one `<approvalId>.<requestId>.json`
+ * (`PendingCardRecord`) per waiting call, removed when the call or the server ends. The dashboard lists
+ * these when the broker cannot list its cards itself (a broker older than the `approvals` op, #1051).
+ * Display only.
  */
 export const PENDING_DIR_ENV = 'SOMA_DEVOPS_PENDING_DIR';
 
@@ -159,6 +160,10 @@ export interface PendingMessage {
 export interface PendingCardRecord {
   v: number;
   approvalId: string;
+  /** The waiting call's request id: an identical request joined to the same card has its own record. */
+  requestId: string;
+  /** The MCP server process that waits: a record whose process is gone is stale. */
+  pid: number;
   tool: DevopsTool;
   digestPrefix: string;
   /** The Slack user id the request line claimed. */

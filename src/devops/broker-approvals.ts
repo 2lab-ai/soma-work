@@ -47,7 +47,9 @@ const APPROVAL_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 const SLACK_USER_RE = /^[UW][A-Z0-9]{2,20}$/;
 /** The approvals app's DM in Slack (`devops-tools.approvalsAppUrl`). */
 const APP_LINK_RE = /^https:\/\/[a-z0-9-]+\.slack\.com\/app_redirect\?app=A[A-Z0-9]{2,20}(?:&team=T[A-Z0-9]{2,20})?$/;
-const RECORD_FILE_RE = /^[A-Za-z0-9_-]{8,64}\.json$/;
+/** `<approvalId>.<requestId>.json`, as the MCP server names them. */
+const RECORD_FILE_RE = /^[A-Za-z0-9_-]{8,64}\.[A-Za-z0-9_-]{1,64}\.json$/;
+const REQUEST_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const DIGEST_PREFIX_RE = /^[0-9a-f]{12}$/;
 const MAX_RECORDS = 50;
 const MAX_RECORD_BYTES = 4096;
@@ -185,6 +187,11 @@ function isCardRecord(value: unknown): value is PendingCardRecord {
     value.v === PROTOCOL_VERSION &&
     typeof value.approvalId === 'string' &&
     APPROVAL_ID_RE.test(value.approvalId) &&
+    typeof value.requestId === 'string' &&
+    REQUEST_ID_RE.test(value.requestId) &&
+    typeof value.pid === 'number' &&
+    Number.isInteger(value.pid) &&
+    value.pid > 0 &&
     typeof value.tool === 'string' &&
     (DEVOPS_TOOLS as readonly string[]).includes(value.tool) &&
     typeof value.digestPrefix === 'string' &&
@@ -196,7 +203,34 @@ function isCardRecord(value: unknown): value is PendingCardRecord {
   );
 }
 
-/** The MCP server's records of the cards it waits on. A malformed one is skipped; a long-dead one removed. */
+/** Whether the MCP server that wrote a record still runs (same OS user, so a signal-0 probe answers). */
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/** One record file: a regular file of at most MAX_RECORD_BYTES, never through a link, never blocking on a FIFO. */
+function readRecordFile(file: string): unknown {
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.size > MAX_RECORD_BYTES) return null;
+    const buffer = Buffer.alloc(stat.size);
+    const read = fs.readSync(fd, buffer, 0, stat.size, 0);
+    return JSON.parse(buffer.subarray(0, read).toString('utf8'));
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * The MCP server's records of the cards it waits on, one per card. A malformed one is skipped; one whose
+ * process is gone, or long past its deadline, is removed.
+ */
 function readCardRecords(dir: string, now: number): PendingCardRecord[] {
   let names: string[];
   try {
@@ -204,24 +238,23 @@ function readCardRecords(dir: string, now: number): PendingCardRecord[] {
   } catch {
     return [];
   }
-  const out: PendingCardRecord[] = [];
+  const byCard = new Map<string, PendingCardRecord>();
   for (const name of names.filter((n) => RECORD_FILE_RE.test(n)).slice(0, MAX_RECORDS)) {
     const file = path.join(dir, name);
     try {
-      const stat = fs.lstatSync(file);
-      if (!stat.isFile() || stat.size > MAX_RECORD_BYTES) continue;
-      const record: unknown = JSON.parse(fs.readFileSync(file, 'utf8'));
-      if (!isCardRecord(record) || `${record.approvalId}.json` !== name) continue;
-      if (Date.parse(record.expiresAt) + PRUNE_AFTER_MS < now) {
+      const record = readRecordFile(file);
+      if (!isCardRecord(record) || `${record.approvalId}.${record.requestId}.json` !== name) continue;
+      if (Date.parse(record.expiresAt) + PRUNE_AFTER_MS < now || !processAlive(record.pid)) {
         fs.rmSync(file, { force: true });
         continue;
       }
-      out.push(record);
+      const seen = byCard.get(record.approvalId);
+      if (!seen || record.createdAt < seen.createdAt) byCard.set(record.approvalId, record);
     } catch {
-      // Being written or removed right now: the next read sees it settled.
+      // Being written or removed right now, or not a plain file: the next read sees it settled.
     }
   }
-  return out;
+  return [...byCard.values()];
 }
 
 function recordToApproval(record: PendingCardRecord, appUrl: string | undefined): AdminApproval {
@@ -303,7 +336,8 @@ export function devopsBrokerAdminApprovalAdapter(
 
   async function refresh(now: number): Promise<void> {
     if (clock() >= nextAskAt) await askBroker();
-    records = views === null && opts.pendingDir ? readCardRecords(opts.pendingDir, now) : [];
+    // Read (and prune) the records even while the broker lists: they are shown only when it cannot.
+    records = opts.pendingDir ? readCardRecords(opts.pendingDir, now) : [];
     nextReadAt = clock() + REFRESH_MS;
   }
 
