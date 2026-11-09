@@ -1133,6 +1133,26 @@ describe('SSOT 2026-11-09 T3 — link artifacts open their URL', () => {
     expect(peek.actions).toEqual([{ id: 'slack', label: 'Slack에서 열기', href: 'https://s.slack.com/p1' }]);
   });
 
+  it('review gate 2: the peek the library draws for a link shows its URL (peekHtml draws no meta line)', async () => {
+    const had = 'HTMLElement' in globalThis;
+    if (!had) (globalThis as Record<string, unknown>).HTMLElement = class {};
+    try {
+      const lib = (await import('@2lab.ai/ui/artifact-viewer')) as unknown as {
+        peekHtml(item: unknown, lang: string, now?: number): string;
+      };
+      const m = load<{ artPeekItem(cid: string, a: Art): Record<string, unknown> }>(
+        [...BASE_FNS, 'umMissingReason', 'artIsDoc', 'artViewItem', 'artPeekItem'],
+        [...BASE_VARS, '_artDocCache'],
+      );
+      const out = lib.peekHtml(m.artPeekItem('c', link), 'ko', 1792733010000);
+      expect(out).toContain('http://192.168.0.10:5173/board');
+      expect(out).toContain('링크');
+      expect(out).not.toContain('사본이 없습니다');
+    } finally {
+      if (!had) delete (globalThis as Record<string, unknown>).HTMLElement;
+    }
+  });
+
   it('review gate: a file the session also serves (send_file url) keeps one card and offers 라이브로 열기 in the viewer', () => {
     const m = load<{ artViewItem(cid: string, a: Art): Record<string, unknown> }>(
       [...BASE_FNS, 'umMissingReason', 'artViewItem'],

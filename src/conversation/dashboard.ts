@@ -21350,6 +21350,8 @@ function artIsDoc(a) {
 // the viewer fetched it, else the first 64 KB artDocHead brought in) under the kind's tint ([data-kind]).
 function artPeekItem(cid, a) {
   var item = artViewItem(cid, a);
+  // A link's peek shows its URL: the library's peek draws a file's head text, never its meta line.
+  if (a.kind === 'link' && item.url) item.head = item.url;
   if (item.text == null && artIsDoc(a)) {
     var head = _artDocCache[cid + '|' + a.id + '|head'];
     if (head != null) item.head = head;
