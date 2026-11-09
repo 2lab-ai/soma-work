@@ -117,6 +117,7 @@ import { createNewTaskProvider, createSlackSteerUploader } from './conversation/
 import { setProjectRepoSource } from './conversation/project-memory-routes';
 import { createSessionWorkLogAppender } from './conversation/session-work-log';
 import { setSettingsRegistry } from './conversation/settings-routes';
+import { setSkillsEnvRegistrySource } from './conversation/skills-routes';
 import { createSlackDirectoryLookup } from './conversation/slack-directory-lookup';
 import { flushWorkLog, readWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
 import { CronScheduler, type SyntheticMessageEvent, setActiveCronScheduler } from './cron-scheduler';
@@ -128,6 +129,7 @@ import { migrateCronOpusOnce } from './deploy/migrate-cron-opus-once';
 import { migrateThreadHeaderDashboardLinkOnce } from './deploy/migrate-threadheader-dashboard-link-once';
 import { initializeDispatchService } from './dispatch-service';
 import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR } from './env-paths';
+import { envSkillRegistry } from './env-skill-registry';
 import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
 import { createGithubReceiptChecker } from './github-receipt';
 import { InstructionApprovals, setInstructionApprovals } from './instruction-approval';
@@ -1129,6 +1131,10 @@ async function start() {
     // validators / `/z` apply functions the Slack commands use.
     setSettingsRegistry(productionSettingsRegistry());
 
+    // Connect dashboard: the settings page's 스킬 tab (#1079) — the environment plugins of the
+    // running plugin manager, the list the permission gate itself uses.
+    setSkillsEnvRegistrySource(() => envSkillRegistry(mcpManager.getPluginManager()));
+
     // Connect dashboard: session effort (SSOT 2026-10-23 T1) — the `%effort`
     // scope: this session only, read by the next turn's SDK call.
     setDashboardEffortHandler((sessionKey: string, effort: string) =>
@@ -1951,6 +1957,12 @@ async function start() {
       setDashboardCronSource({
         listJobs: () => cronStorage.getAll(),
         listHistory: () => cronStorage.getExecutionHistory(),
+        // The cron drawer's 내용 보기 / 편집 (#1080) address a job by its id; the storage changes it by (owner, name).
+        getJob: (id) => cronStorage.getAll().find((j) => j.id === id),
+        updateJob: (id, patch) => {
+          const job = cronStorage.getAll().find((j) => j.id === id);
+          return job ? cronStorage.updateJob(job.owner, job.name, patch) : null;
+        },
       });
 
       const threadCreator = async (channel: string, text: string): Promise<string | undefined> => {

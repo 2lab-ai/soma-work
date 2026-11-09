@@ -76,6 +76,7 @@ const BASE_FNS = [
   'mgHydrate',
   'renderUserMedia',
   'umMissingReason',
+  'artSafeUrl',
   'artViewItem',
 ];
 const BASE_VARS = ['ART_KIND_LABEL', '_userMedia', 'UM_GRID_MAX', '_artDocCache'];

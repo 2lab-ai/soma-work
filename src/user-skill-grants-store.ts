@@ -259,6 +259,37 @@ export function grantAllSkills(ownerId: string, requesterId: string): void {
 }
 
 /**
+ * Take back a per-skill grant (idempotent). An emptied skill entry is dropped so the file
+ * does not collect dead keys. Returns whether a grant was removed; nothing removed → no write.
+ */
+export function revokeSkill(ownerId: string, skillName: string, requesterId: string): boolean {
+  if (!isSafePathSegment(ownerId)) return false;
+  const grants = loadGrants(ownerId);
+  const list = grants.perSkill[skillName];
+  if (!Array.isArray(list) || !list.includes(requesterId)) return false;
+  const rest = list.filter((id) => id !== requesterId);
+  if (rest.length) grants.perSkill[skillName] = rest;
+  else delete grants.perSkill[skillName];
+  saveGrants(ownerId, grants);
+  logger.info('Revoked per-skill use', { ownerId, skillName, requesterId });
+  return true;
+}
+
+/**
+ * Take back an all-skills grant (idempotent). Per-skill grants of the same requester stay —
+ * they were given one by one and are taken back one by one.
+ */
+export function revokeAllSkills(ownerId: string, requesterId: string): boolean {
+  if (!isSafePathSegment(ownerId)) return false;
+  const grants = loadGrants(ownerId);
+  if (!grants.allowAll.includes(requesterId)) return false;
+  grants.allowAll = grants.allowAll.filter((id) => id !== requesterId);
+  saveGrants(ownerId, grants);
+  logger.info('Revoked all-skills use', { ownerId, requesterId });
+  return true;
+}
+
+/**
  * NON-MUTATING environment-skill check (`skillKey` = `plugin:skill`). True iff an
  * admin granted the requester all environment skills, this skill, or this skill
  * in `scope`'s thread. Admins are not checked here — the policy exempts them.
