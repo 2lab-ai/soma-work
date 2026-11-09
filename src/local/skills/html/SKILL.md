@@ -451,8 +451,8 @@ Contrast, real data and reduced motion are never overridden:
 
 You may use a Tailwind CDN (`https://cdn.tailwindcss.com`) and Google Fonts
 (`https://fonts.googleapis.com/css2?family=Noto+Sans+SC…`). Both are
-allowed at render time — Playwright waits for `networkidle` before the
-screenshot.
+allowed at check time — Playwright waits for `networkidle` before it
+measures the page.
 
 ### 5. Check the page in a headless browser (no image)
 
@@ -468,7 +468,10 @@ node "$CLAUDE_PLUGIN_ROOT/skills/html/renderer/render.mjs" \
 ```
 
 The renderer pulls geometry from `templates/index.json` based on
-`--template <name>`. Pass `--width` / `--height` to override. If the page
+`--template <name>`. Pass `--width` / `--height` to override. A fixed-canvas
+template (a swipe deck, a social card) may scroll sideways on purpose: its
+`overflowX` is reported, not failed — still set `body { margin: 0 }` so a
+card fits its viewport exactly. If the page
 starts from opacity 0 (an entrance animation), pass `--wait-ms 1500` so the
 measurement lands on a populated frame.
 
