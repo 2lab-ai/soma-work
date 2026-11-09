@@ -1,0 +1,125 @@
+// Example film: title card → two plates (a typed instruction, the result landing) → end card. Copy this file and
+// Plate.tsx.template into a Remotion project as Film.tsx and Plate.tsx, put the cut clips (scripts/cut.py) in public/clips/, register it in Root.tsx:
+//   <Composition id="Film" component={Film} durationInFrames={FILM_TOTAL} fps={30} width={1920} height={1080} />
+// Every number here is an example. Find each focus spot and camera point on the recording itself (css px of the
+// recording's viewport): screenshot the frame, read the element's box, then tune on stills before a full render.
+import React from 'react';
+import { AbsoluteFill, Easing, Sequence, useCurrentFrame } from 'remotion';
+import { Plate, type PlateSpec } from './Plate';
+
+const INK = '#EDEDED';
+const SANS = 'Inter, system-ui, sans-serif';
+const out = Easing.bezier(0.23, 1, 0.32, 1);
+const clamp = (v: number) => Math.max(0, Math.min(1, v));
+const sp = (x: number, y: number, w: number, h: number) => ({ x, y, w, h });
+/** A line of text from x0 to its right edge e: sharp end to end (never cut a line mid-word with the focus edge). */
+const line = (x0: number, e: number, y: number) => sp((x0 + e) / 2, y, (e - x0) / 2 + 44, 13);
+const RZ = 2.5; // one small roll for the whole film
+
+// How much of the page shows. Macro (heavy blur, 3-4x zoom) reads as an ad; "open" (0.7-0.8x of that, light blur)
+// keeps the content readable. Start open when the content is the point (open-source product, real work on screen),
+// and close it down only where private content would be readable.
+const OPEN = { zoom: 0.75, tilt: 0.72, grow: 2.1, padW: 70, padH: 34, blur: 9, near: 3, far: 0.86, lift: 1.1 };
+const open = (p: PlateSpec, o: Partial<typeof OPEN> = {}): PlateSpec => {
+  const O = { ...OPEN, ...o };
+  return {
+    ...p,
+    cam: p.cam.map((c) => ({ ...c, s: c.s * O.zoom, rx: (c.rx ?? 0) * O.tilt })),
+    focus: p.focus.map((k) => ({ ...k, spots: k.spots.map((q) => ({ ...q, w: q.w * O.grow + O.padW, h: q.h * O.grow + O.padH })) })),
+    blur: O.blur,
+    nearBlur: O.near,
+    far: O.far,
+    lift: Math.min(p.lift ?? 1.15, O.lift),
+  };
+};
+// A landing: the new card sharp, everything under it strongly out of focus (other cards may name private things).
+const LANDING = { zoom: 0.86, blur: 30, near: 14, far: 0.72, grow: 1.2, padW: 30, padH: 8 };
+
+const TYPE: PlateSpec = {
+  // the instruction typed into the composer; the focus grows with the line as it is typed
+  segs: [{ at: 0, dur: 76, src: 'clips/type.mp4', clipFrom: 0 }],
+  vw: 1280,
+  cam: [
+    { f: 0, x: 352, y: 356, s: 3.55, rx: 34, rz: RZ },
+    { f: 76, x: 428, y: 356, s: 3.7, rx: 33, rz: RZ },
+  ],
+  focus: [
+    { f: 0, spots: [line(313, 325, 356)], soft: 1 },
+    { f: 5, spots: [line(313, 330, 356)] },
+    { f: 60, spots: [line(313, 535, 356)] },
+    { f: 76, spots: [line(313, 535, 356)] },
+  ],
+};
+const LAND: PlateSpec = {
+  // sent: the card lands in the words typed; soft until the card exists, the camera settles with it (oy)
+  segs: [{ at: 0, dur: 46, src: 'clips/land.mp4', clipFrom: 0 }],
+  vw: 1280,
+  cam: [
+    { f: 0, x: 645, y: 226, s: 2.75, rx: 24, rz: RZ, oy: -44 },
+    { f: 13, x: 645, y: 224, s: 2.8, rx: 24, rz: RZ, oy: 0 },
+    { f: 46, x: 645, y: 220, s: 2.88, rx: 23, rz: RZ, oy: 0 },
+  ],
+  focus: [
+    { f: 0, spots: [sp(645, 214, 205, 46)], soft: 1 },
+    { f: 3, spots: [sp(645, 214, 205, 46)], soft: 1 },
+    { f: 11, spots: [sp(645, 214, 205, 46)] },
+  ],
+};
+
+type Shot = { from: number; dur: number } & ({ kind: 'title'; text: string } | { kind: 'plate'; p: PlateSpec } | { kind: 'end' });
+// Cuts on the beat: at 118 BPM a beat is 15.25 frames, so durations are multiples of ~15.25 (31 = 2 beats, 76 = 5).
+const SEQ = [
+  { kind: 'title', dur: 31, text: 'Just ask.' },
+  { kind: 'plate', dur: 76, p: open(TYPE) },
+  { kind: 'plate', dur: 46, p: open(LAND, LANDING) },
+  { kind: 'end', dur: 107 },
+] as Array<Omit<Shot, 'from'>>;
+let acc = 0;
+export const SHOTS: Shot[] = SEQ.map((s) => {
+  const o = { ...s, from: acc } as Shot;
+  acc += s.dur;
+  return o;
+});
+export const FILM_TOTAL = acc;
+
+/** 1-4 words, centred on black, blurring in over 12 frames (a soft copy fading out over a sharp one fading in). */
+const TitleCard: React.FC<{ text: string }> = ({ text }) => {
+  const f = useCurrentFrame();
+  const u = out(clamp(f / 12));
+  const style: React.CSSProperties = { fontFamily: SANS, fontWeight: 600, fontSize: 100, letterSpacing: '-0.02em', color: INK, whiteSpace: 'pre' };
+  return (
+    <AbsoluteFill style={{ background: '#000', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ position: 'relative', transform: `scale(${(1.03 - 0.03 * u).toFixed(4)})` }}>
+        <div style={{ ...style, position: 'absolute', inset: 0, filter: 'blur(14px)', opacity: 1 - u }}>{text}</div>
+        <div style={{ ...style, opacity: u }}>{text}</div>
+      </div>
+    </AbsoluteFill>
+  );
+};
+
+const EndCard: React.FC<{ dur: number }> = ({ dur }) => {
+  const f = useCurrentFrame();
+  const u = out(clamp((f - 2) / 20));
+  const t = out(clamp((f - 31) / 12)); // the line lands two beats later, on the track's drop
+  const fade = 1 - clamp((f - (dur - 16)) / 16);
+  return (
+    <AbsoluteFill style={{ background: '#000', alignItems: 'center', justifyContent: 'center', opacity: fade }}>
+      <div style={{ fontFamily: SANS, fontWeight: 600, fontSize: 100, color: INK, opacity: u }}>product v1.0</div>
+      <div style={{ marginTop: 20, fontFamily: SANS, fontSize: 62, color: '#D4D4D4', opacity: t }}>One line that says why.</div>
+    </AbsoluteFill>
+  );
+};
+
+const PlateShot: React.FC<{ p: PlateSpec }> = ({ p }) => <Plate p={p} f={useCurrentFrame()} />;
+
+export const Film: React.FC = () => (
+  <AbsoluteFill style={{ background: '#000' }}>
+    {SHOTS.map((s, i) => (
+      <Sequence key={i} from={s.from} durationInFrames={s.dur} name={`${s.kind} ${i}`}>
+        {s.kind === 'title' ? <TitleCard text={s.text} /> : s.kind === 'plate' ? <PlateShot p={s.p} /> : <EndCard dur={s.dur} />}
+      </Sequence>
+    ))}
+    {/* vignette over everything; add film grain here too if the project has a grain layer */}
+    <AbsoluteFill style={{ pointerEvents: 'none', background: 'radial-gradient(120% 95% at 50% 50%, rgba(0,0,0,0) 50%, rgba(0,0,0,0.55) 100%)' }} />
+  </AbsoluteFill>
+);
