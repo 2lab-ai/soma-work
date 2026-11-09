@@ -57,9 +57,9 @@ export interface ToolPolicyResult {
   /** Human-readable reason, prefixed with the guard that decided. For audit logs. */
   reason: string;
   /**
-   * Only set for the PR-issue, devops-secret, native write boundary, plan-pending and env-skill denies — the
-   * SDK surfaces this to the model via `permissionDecisionReason` (so it can, e.g., write in the
-   * right place). Other denies intentionally carry no surfaced message (parity with the prior
+   * Only set for the PR-issue, devops-secret, native write boundary, plan-pending, env-skill and
+   * env-plugin-mcp denies — the SDK surfaces this to the model via `permissionDecisionReason` (so it
+   * can, e.g., write in the right place). Other denies intentionally carry no surfaced message (parity with the prior
    * hooks, which only the PR-issue guard set).
    */
   denyMessage?: string;
@@ -88,7 +88,8 @@ export interface ToolPolicyContext {
    *   • `auto`   → allow non-dangerous; a dangerous-rule hit → `classify`.
    * Other tools (`mcp__` …) get `pass`: no opinion beyond the deny tier. `pass` defers to the SDK,
    * which in `auto` and `bypass` runs with `bypassPermissions`, not an `allowedTools` restriction;
-   * MCP grants are checked, for non-admins, by the deny tier's `checkMcpToolPermission` guard.
+   * MCP grants are checked, for non-admins, by the deny tier's `checkMcpToolPermission` guard, and an
+   * environment plugin's MCP tools by step 6d.
    */
   mode: PermissionMode;
   /** Live abort state at fire time (`abortController?.signal.aborted ?? false`). */
@@ -114,6 +115,14 @@ export interface ToolPolicyContext {
    * environment skills run on an admin's approval.
    */
   checkEnvSkillPermission: (toolName: string, toolInput: Record<string, unknown>) => string | null;
+  /**
+   * Returns a deny reason (the plugin name) when a `PLUGIN_MCP_TOOL_PREFIX` tool is an MCP tool of a
+   * deploy-time environment plugin that `ctx.user` holds no admin grant for — no grant of any of
+   * that plugin's skills — else null. Consulted for non-admins only (step 6d): the SDK starts every
+   * plugin's MCP servers for every session, so an environment plugin's tools run on the approval of
+   * its skills.
+   */
+  checkEnvPluginMcpPermission: (toolName: string) => string | null;
   /**
    * Incident READ-ONLY mode. **Absent (the default) → nothing changes.**
    * Present → the session is an incident receiver: `isAdmin` is ignored (the
@@ -187,6 +196,20 @@ const DEVOPS_SECRET_DENY_MESSAGE =
  */
 export const ENV_SKILL_DENY_MESSAGE =
   'Blocked: this call reaches an environment skill (calling it or reading its files), which runs only with an admin approval. When it names one skill, an approval request has been sent to the admins; when one approves, this thread receives a message to continue. Do not retry, do not read or follow the skill file another way, and report that the step waits for admin approval.';
+
+/**
+ * The prefix the SDK gives every MCP tool of a plugin's server: `mcp__plugin_<plugin>_<server>__<tool>`,
+ * the plugin name as is. Step 6d consults `ctx.checkEnvPluginMcpPermission` for these names.
+ */
+export const PLUGIN_MCP_TOOL_PREFIX = 'mcp__plugin_';
+
+/**
+ * Surfaced to the model when step 6d denies an environment plugin's MCP tool. Nothing is filed for
+ * the tool itself: the plugin opens when an admin approves one of its skills, which a denied
+ * environment skill call asks for.
+ */
+export const ENV_PLUGIN_MCP_DENY_MESSAGE =
+  "Blocked: this MCP tool belongs to an environment plugin, whose tools run only after an admin approves one of that plugin's skills for you in this thread. No approval request is sent for the tool itself. If a skill of that plugin covers this step, call that skill (its denial asks the admins); otherwise report that the step waits for admin approval. Do not retry the tool and do not work around it.";
 
 /**
  * Surfaced to the model when step 6c denies a call: the plan is not started, so the turn
@@ -342,6 +365,22 @@ export function evaluateToolPolicy(
     }
   }
 
+  // 6d. Environment plugin MCP tool (non-admins): the SDK starts every plugin's MCP servers for every
+  //     session, so an environment plugin's tools run only on an admin's grant of one of that
+  //     plugin's skills. Placed with 6b, for the same reasons; above the mode tier, whose `pass`
+  //     would leave the call to the SDK's `bypassPermissions`. Its own reason prefix: an
+  //     `env-skill: ` denial files an admin request, and there is no skill to name here.
+  if (!ctx.isAdmin && toolName.startsWith(PLUGIN_MCP_TOOL_PREFIX)) {
+    const pluginDenied = ctx.checkEnvPluginMcpPermission(toolName);
+    if (pluginDenied !== null) {
+      return {
+        decision: 'deny',
+        reason: `env-plugin-mcp: ${pluginDenied} (${toolName})`,
+        denyMessage: ENV_PLUGIN_MCP_DENY_MESSAGE,
+      };
+    }
+  }
+
   // ── ALLOW / CLASSIFY tier (only reached when no deny fired) ──
   // Mode governs the outcome. Note `legacy` falls through to `pass` below so
   // the SDK runs its own per-tool permission prompt (the old accept/reject).
@@ -366,7 +405,7 @@ export function evaluateToolPolicy(
 
   // 9. Native tools run in bypass and auto mode alike. `mcp__` tools get no
   //    opinion here: `pass` defers to the SDK, which in auto and bypass runs with
-  //    `bypassPermissions`, not an `allowedTools` restriction (grants: step 4).
+  //    `bypassPermissions`, not an `allowedTools` restriction (grants: steps 4 and 6d).
   if (ctx.mode !== 'legacy' && NATIVE_BYPASS_TOOLS.includes(toolName)) {
     return { decision: 'allow', reason: `${ctx.mode}: native tool` };
   }
@@ -388,14 +427,19 @@ export const ENV_GATED_TOOLS: readonly string[] = [
 ];
 
 /**
- * Hook matchers covering every tool the policy decides on: Bash, the native tools, `mcp__` (deny tier
- * only), `Skill` (step 6b only; every other `Skill` call gets `pass`), and the native write tools
- * outside `NATIVE_BYPASS_TOOLS` (step 3b only; the policy passes them otherwise).
+ * Hook matchers covering every tool the policy decides on: Bash, the native tools, `mcp__` tools
+ * (deny tier and steps 6, 6c, 6d only), `Skill` (step 6b only; every other `Skill` call gets `pass`),
+ * and the native write tools outside `NATIVE_BYPASS_TOOLS` (step 3b only; the policy passes them
+ * otherwise).
+ *
+ * The SDK compares a matcher made only of `[A-Za-z0-9_|]` as a `|`-list of exact tool names (Claude
+ * Code CHANGELOG v2.1.195), so a bare `mcp__` matches no tool at all; `^mcp__` is a regular
+ * expression and matches every MCP tool.
  */
 export const TOOL_POLICY_MATCHERS: readonly string[] = [
   'Bash',
   NATIVE_BYPASS_TOOLS.join('|'),
-  'mcp__',
+  '^mcp__',
   'Skill',
   NATIVE_WRITE_TOOLS.filter((tool) => !NATIVE_BYPASS_TOOLS.includes(tool)).join('|'),
 ];

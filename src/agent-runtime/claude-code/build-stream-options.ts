@@ -37,7 +37,13 @@ import {
   resolveShowSummary,
 } from '../../claude-handler';
 import { CONFIG_FILE } from '../../env-paths';
-import { checkEnvSkillAccess, type EnvSkillRegistry, envSkillSandboxDenyRead } from '../../env-skill-registry';
+import {
+  checkEnvPluginMcpAccess,
+  checkEnvSkillAccess,
+  type EnvSkillRegistry,
+  envSkillRegistry,
+  envSkillSandboxDenyRead,
+} from '../../env-skill-registry';
 import type { IncidentEvidence, IncidentEvidenceConfig } from '../../incident/evidence';
 import { assertIncidentRequest, buildIncidentSdkOptions, type IncidentRequestLike } from '../../incident/sdk-options';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
@@ -343,6 +349,15 @@ export async function buildStreamOptions(
       ? { channel: slackContext.channel, threadTs: slackContext.threadTs }
       : { channel: execCtx.sessionKey };
     const envRegistry = deps.getEnvSkillRegistry?.();
+    // Step 6d (an environment plugin's MCP tools) fails closed without the registry: the SDK starts
+    // those servers for every session from the plugin files alone, so the list is then read from
+    // config.json `plugin.envPlugins`, as `envSkillRegistry` does without a plugin manager. Read once,
+    // on the first call that needs it.
+    let envMcpRegistry = envRegistry;
+    const getEnvMcpRegistry = (): EnvSkillRegistry => {
+      envMcpRegistry ??= envSkillRegistry(undefined);
+      return envMcpRegistry;
+    };
     // Plan mode (SSOT 2026-11-02; any session since #853): a plan not started researches; step 6c refuses the work.
     const planPending = execCtx.planPending === true;
 
@@ -375,6 +390,8 @@ export async function buildStreamOptions(
           envRegistry
             ? checkEnvSkillAccess(tool, toolInput, policyUser, envSkillScope, envRegistry, workingDirectory)
             : null,
+        checkEnvPluginMcpPermission: (tool) =>
+          checkEnvPluginMcpAccess(tool, policyUser, envSkillScope, getEnvMcpRegistry()),
         ...(planPending ? { checkPlanPending: checkPlanPendingCall } : {}),
       };
 
