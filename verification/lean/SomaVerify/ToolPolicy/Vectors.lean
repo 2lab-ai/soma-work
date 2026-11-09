@@ -5,7 +5,7 @@ import SomaVerify.ToolPolicy.Model
 /-!
 # Conformance vectors for `SomaVerify.ToolPolicy`
 
-`verification/vectors/tool-policy.json` holds nine kinds of case, told apart by `kind`.
+`verification/vectors/tool-policy.json` holds ten kinds of case, told apart by `kind`.
 
 Replayed by `tool-policy.lean-conformance.test.ts`, which mocks the guard primitives with each
 row's `prims` and calls the real `evaluateToolPolicy` once per entry of `calls`. Every call also
@@ -25,10 +25,11 @@ other, so a wrong argument or a wrong check fails the replay.
 * `tool-names`: every native tool and a set of near misses (case, spacing, look-alike letters,
   prefixes, the empty name), with no primitive firing, each firing alone, and all firing, in
   every mode, for admins and non-admins.
-* Every `expect` is the output of `evaluateToolPolicyPlan`, the model of the whole TS function
-  (phase 4 with the native write boundary and plan mode); a row without `checkPlanPending` gets
-  `evaluateToolPolicyWith`'s (`ProofsPlan.lean`), and one without `checkNativeWrite` either
-  `evaluateToolPolicyEnv`'s (`ProofsNativeWrite.lean`).
+* Every `expect` is the output of `evaluateToolPolicyMcp`, the model of the whole TS function
+  (phase 4 with the native write boundary, plan mode and the environment plugin MCP step); a row
+  whose `envMcpDenied` is null gets `evaluateToolPolicyPlan`'s (`ProofsEnvMcp.lean`), one without
+  `checkPlanPending` `evaluateToolPolicyWith`'s (`ProofsPlan.lean`), and one without
+  `checkNativeWrite` either `evaluateToolPolicyEnv`'s (`ProofsNativeWrite.lean`).
 * `boundary`: the payloads the table holds fixed. A sensitive result without a reason or with
   an empty one, an empty MCP, devops-secret or environment-skill reason (and the environment-skill
   check firing for admins and alongside every other primitive), PR-issue results without a reason or a message,
@@ -54,6 +55,12 @@ other, so a wrong argument or a wrong check fails the replay.
   returns (`null`, a reason, the empty reason) with every pattern of `patterns`, in every mode, for
   admins and non-admins, with and without the live incident context, over the calls of the
   `native-write` rows. The replay answers every call with the row's value.
+* `env-plugin-mcp`: the only rows whose `envMcpDenied` (what `ctx.checkEnvPluginMcpPermission`
+  returns, step 6d) is not null: a reason and the empty reason, and null for contrast, with every
+  pattern of `patterns`, in every mode, for admins and non-admins, with and without the live
+  incident context. Each row calls tools of the `mcp__plugin_` prefix, near misses of it, other
+  `mcp__` tools and the tools of the other steps. The replay fails when the policy asks the check
+  about a tool outside the prefix, or for an admin.
 
 Replayed by `tool-policy.concrete.lean-conformance.test.ts` against the real modules, no mocks:
 
@@ -161,7 +168,8 @@ def primsJson (p : Primitives) : Json :=
   .obj [("ssh", .bool p.ssh), ("sensitive", sensitiveJson p.sensitive),
     ("crossUser", .bool p.crossUser), ("mcpDenied", mcpJson p.mcpDenied),
     ("prIssue", prIssueJson p.prIssue), ("bash", bashJson p.bash),
-    ("devopsSecret", mcpJson p.devopsSecret), ("envSkillDenied", mcpJson p.envSkillDenied)]
+    ("devopsSecret", mcpJson p.devopsSecret), ("envSkillDenied", mcpJson p.envSkillDenied),
+    ("envMcpDenied", mcpJson p.envMcpDenied)]
 
 /-! ## Mocked rows -/
 
@@ -194,7 +202,7 @@ def callJson (r : Row) (c : Call) : Json :=
   .obj [("tool", .str c.tool), ("input", c.input.getD .null),
     ("sensitiveCall", sensitiveCallJson (sensitiveCall (r.toInput c))),
     ("devopsCall", devopsCallJson (devopsCall (r.toInput c))),
-    ("expect", resultJson (evaluateToolPolicyPlan r.nativeWrite r.plan r.incident (r.toInput c)))]
+    ("expect", resultJson (evaluateToolPolicyMcp r.nativeWrite r.plan r.incident (r.toInput c)))]
 
 def rowJson (kind : String) (calls : List Call) (r : Row) : Json :=
   .obj ([("kind", .str kind), ("mode", .str (modeName r.mode)), ("isAdmin", .bool r.isAdmin),
@@ -522,6 +530,38 @@ def planRows : List Row :=
   patterns.map fun (aborted, handoff, prims) =>
     { mode, isAdmin, aborted, handoff, prims, incident, plan := some v }
 
+/-! ## Environment plugin MCP tools (step 6d) -/
+
+/-- What `ctx.checkEnvPluginMcpPermission` returns on the `env-plugin-mcp` rows: clear, a reason (an
+environment plugin name), the empty reason (still a denial: `pluginDenied !== null`). -/
+def envMcpValues : List (Option String) :=
+  [none, some "acme-env", some ""]
+
+/-- Tools of the `mcp__plugin_` prefix (an environment plugin's, another plugin's, the bare prefix),
+near misses of the prefix (case, spacing, a missing or extra letter, no `__`), other `mcp__` tools
+including the PR-create tool, and the tools of steps 6b and the mode tier. -/
+def envMcpCalls : List Call :=
+  [⟨"mcp__plugin_acme-env_browser__probe", some (.obj [("url", .str "https://example.test")])⟩,
+    ⟨"mcp__plugin_acme-env_browser__probe", none⟩, ⟨"mcp__plugin_stv_srv__t", empty⟩,
+    ⟨"mcp__plugin_", empty⟩, ⟨"mcp__plugin", empty⟩, ⟨"mcp__plugins_acme-env__probe", empty⟩,
+    ⟨"mcp__pluginacme-env_browser__probe", empty⟩, ⟨"MCP__plugin_acme-env_browser__probe", empty⟩,
+    ⟨"mcp__Plugin_acme-env_browser__probe", empty⟩, ⟨" mcp__plugin_acme-env_browser__probe", empty⟩,
+    ⟨"xmcp__plugin_acme-env_browser__probe", empty⟩, ⟨"mcp_plugin_acme-env_browser__probe", empty⟩,
+    ⟨"mcp__server-tools__db_query", empty⟩, ⟨prCreateMcpTool, empty⟩, ⟨"mcp__", empty⟩,
+    ⟨"Skill", some (.obj [("skill", .str "acme-env:post-deploy")])⟩, ⟨"Bash", empty⟩,
+    ⟨"Read", empty⟩, ⟨"Write", empty⟩, ⟨"ExitPlanMode", empty⟩]
+
+/-- Every `envMcpValues` × `patterns` × mode × `isAdmin`, without and with the live incident
+context: the step runs after step 6b, below the incident tier and above the mode tier. -/
+def envMcpRows : List Row :=
+  envMcpValues.flatMap fun v =>
+  [none, some { allowedMcpTools := [evidenceTool, "mcp__plugin_acme-env_browser__probe"] }].flatMap
+    fun incident =>
+  modes.flatMap fun mode =>
+  bools.flatMap fun isAdmin =>
+  patterns.map fun (aborted, handoff, prims) =>
+    { mode, isAdmin, aborted, handoff, prims := { prims with envMcpDenied := v }, incident }
+
 /-! ## Constants -/
 
 def constantsJson : Json :=
@@ -612,9 +652,10 @@ def concreteJson (c : Concrete) : Json :=
       ("mode", .str (modeName c.mode)), ("aborted", .bool c.aborted),
       ("handoffContext", c.handoff.getD .null), ("mcpDenied", mcpJson c.prims.mcpDenied),
       ("envSkillDenied", mcpJson c.prims.envSkillDenied),
+      ("envMcpDenied", mcpJson c.prims.envMcpDenied),
       ("disabledRules", strs c.disabledRules)] ++ incidentProp c.incident)),
     ("pre", .arr (devopsPreJson c ++ c.pre.map (preJson c))),
-    ("expect", resultJson (evaluateToolPolicyEnv c.incident c.toInput))]
+    ("expect", resultJson (evaluateToolPolicyMcp none none c.incident c.toInput))]
 
 def bashInput (command : String) : Json :=
   .obj [("command", .str command)]
@@ -855,7 +896,20 @@ def concreteCases : List Concrete :=
    { name := "incident-bash-gh-auth-token-admin-bypass", tool := "Bash",
      input := bashInput "gh auth token", isAdmin := true, mode := .bypass,
      incident := some liveIncident,
-     prims := { quiet with devopsSecret := some "gh auth token" }, pre := [] }]
+     prims := { quiet with devopsSecret := some "gh auth token" }, pre := [] },
+   { name := "mcp-env-plugin-denied-nonadmin-bypass", tool := "mcp__plugin_acme-env_browser__probe",
+     input := .obj [("url", .str "https://example.test")], mode := .bypass,
+     prims := { quiet with envMcpDenied := some "acme-env" }, pre := [] },
+   { name := "mcp-env-plugin-denied-nonadmin-auto", tool := "mcp__plugin_acme-env_browser__probe",
+     input := .obj [], mode := .auto, prims := { quiet with envMcpDenied := some "acme-env" }, pre := [] },
+   { name := "mcp-env-plugin-denied-admin-bypass", tool := "mcp__plugin_acme-env_browser__probe",
+     input := .obj [], isAdmin := true, mode := .bypass,
+     prims := { quiet with envMcpDenied := some "acme-env" }, pre := [] },
+   { name := "mcp-env-plugin-granted-nonadmin-auto", tool := "mcp__plugin_acme-env_browser__probe",
+     input := .obj [], mode := .auto, pre := [] },
+   { name := "mcp-env-plugin-gated-server-nonadmin-auto", tool := "mcp__plugin_acme-env_browser__probe",
+     input := .obj [], mode := .auto,
+     prims := { quiet with mcpDenied := some "gated server", envMcpDenied := some "acme-env" }, pre := [] }]
 
 /-- The cases written to `verification/vectors/tool-policy.json`. -/
 def cases : List Json :=
@@ -866,6 +920,7 @@ def cases : List Json :=
   incidentRows.map (rowJson "incident" incidentCalls) ++
   nativeWriteRows.map (rowJson "native-write" nativeWriteCalls) ++
   planRows.map (rowJson "plan-pending" nativeWriteCalls) ++
+  envMcpRows.map (rowJson "env-plugin-mcp" envMcpCalls) ++
   [constantsJson] ++
   concreteCases.map concreteJson
 

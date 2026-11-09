@@ -24,6 +24,7 @@ import { CONFIG_FILE } from '../../env-paths';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
 import type { ConversationSession } from '../../types';
+import { addThreadGrant, ENV_SKILL_GRANT_OWNER } from '../../user-skill-grants-store';
 import { type BuildStreamOptionsDeps, buildStreamOptions } from '../claude-code/build-stream-options';
 
 // A real, existing working directory so the cwd branch (which `fs.existsSync`
@@ -151,15 +152,82 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
     const preToolUse = options.hooks?.PreToolUse;
     expect(Array.isArray(preToolUse)).toBe(true);
     // P5 collapsed the per-concern hooks into one policy hook fanned out across
-    // its matchers: Bash, the native-bypass tool union, mcp__, Skill (step 6b),
+    // its matchers: Bash, the native-bypass tool union, every MCP tool, Skill (step 6b),
     // and the native write tools outside that union (#389).
     const matchers = (preToolUse ?? []).map((e) => (e as { matcher: string }).matcher);
     expect(matchers).toHaveLength(5);
     expect(matchers).toContain('Artifact|EnterWorktree');
     expect(matchers).toContain('Bash');
-    expect(matchers).toContain('mcp__');
+    // A regular expression: the SDK compares a bare `mcp__` as an exact tool name (matches nothing).
+    expect(matchers).toContain('^mcp__');
+    expect(matchers).not.toContain('mcp__');
     expect(matchers).toContain('Skill');
     expect(matchers.some((m) => m.includes('Write') && m.includes('Read'))).toBe(true);
+  });
+
+  describe('environment plugin MCP gate (policy step 6d) in the hook', () => {
+    const TOOL = 'mcp__plugin_acme-env_browser__probe';
+    const envRegistry = () => ({ pluginNames: new Set(['acme-env']), pluginsDir: '/nonexistent-plugins' });
+
+    async function mcpHook(deps: BuildStreamOptionsDeps, threadTs = '1700000000.0601') {
+      const { options } = await buildStreamOptions(
+        { queryEnv: {}, slackContext: makeSlackContext({ threadTs }) },
+        deps,
+      );
+      const entry = (options.hooks?.PreToolUse ?? []).find((e) => (e as { matcher: string }).matcher === '^mcp__') as {
+        hooks: Array<
+          (input: unknown) => Promise<{
+            continue?: boolean;
+            hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+          }>
+        >;
+      };
+      return (toolName: string) =>
+        entry.hooks[0]({ hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: {} } as never);
+    }
+
+    afterEach(() => {
+      fs.rmSync(CONFIG_FILE, { force: true });
+    });
+
+    it('denies a non-admin an environment plugin MCP tool without a grant, and asks nobody', async () => {
+      const onEnvSkillDenied = vi.fn(async () => undefined);
+      const run = await mcpHook(makeDeps({ getEnvSkillRegistry: envRegistry, onEnvSkillDenied }));
+
+      const out = await run(TOOL);
+
+      expect(out.hookSpecificOutput?.permissionDecision).toBe('deny');
+      expect(out.hookSpecificOutput?.permissionDecisionReason).toMatch(/environment plugin/);
+      expect(onEnvSkillDenied).not.toHaveBeenCalled();
+    });
+
+    it('lets the tool run in the thread where an admin approved one of the plugin skills', async () => {
+      const threadTs = '1700000000.0602';
+      addThreadGrant(ENV_SKILL_GRANT_OWNER, 'acme-env:post-deploy', SAFE_USER, { channel: 'C123', threadTs });
+      const run = await mcpHook(makeDeps({ getEnvSkillRegistry: envRegistry }), threadTs);
+      expect(await run(TOOL)).toEqual({ continue: true });
+
+      const elsewhere = await mcpHook(makeDeps({ getEnvSkillRegistry: envRegistry }), '1700000000.0603');
+      expect((await elsewhere(TOOL)).hookSpecificOutput?.permissionDecision).toBe('deny');
+    });
+
+    it('passes the MCP tools of other plugins and servers untouched', async () => {
+      const run = await mcpHook(makeDeps({ getEnvSkillRegistry: envRegistry }));
+      expect(await run('mcp__plugin_stv_srv__t')).toEqual({ continue: true });
+      expect(await run('mcp__plugin_acme-env-two_srv__t')).toEqual({ continue: true });
+      expect(await run('mcp__github__get_issue')).toEqual({ continue: true });
+    });
+
+    it('without a registry, reads the environment plugins from config.json and still denies (fail closed)', async () => {
+      fs.writeFileSync(CONFIG_FILE, JSON.stringify({ plugin: { envPlugins: ['acme-env@acme-market'] } }), 'utf8');
+      const run = await mcpHook(makeDeps());
+      expect((await run(TOOL)).hookSpecificOutput?.permissionDecision).toBe('deny');
+    });
+
+    it('without a registry or environment plugins in config.json, gates nothing', async () => {
+      const run = await mcpHook(makeDeps());
+      expect(await run(TOOL)).toEqual({ continue: true });
+    });
   });
 
   describe('environment-skill gate (policy step 6b) in the hook', () => {

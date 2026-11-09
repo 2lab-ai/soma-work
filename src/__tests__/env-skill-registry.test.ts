@@ -4,12 +4,14 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { DATA_DIR } from '../env-paths';
 import {
+  checkEnvPluginMcpAccess,
   checkEnvSkillAccess,
   checkEnvSkillPermission,
   ENV_SKILL_UNNAMED,
   type EnvSkillRegistry,
   envPluginDirectories,
   envPluginNamesFromConfig,
+  envPluginsOfMcpTool,
   envSkillExists,
   envSkillRegistry,
   envSkillSandboxDenyRead,
@@ -120,6 +122,93 @@ describe('env-skill-registry', () => {
 
       addThreadGrant(ENV_SKILL_GRANT_OWNER, 'acme-env:staging-qa', 'U1', thread, Date.now() - 1);
       expect(checkEnvSkillPermission('acme-env:staging-qa', 'U1', thread, registry)).toBe('acme-env:staging-qa');
+    });
+  });
+
+  // The SDK starts a plugin's MCP servers for every session and names their tools
+  // `mcp__plugin_<plugin>_<server>__<tool>`, the plugin name as is (hyphens kept).
+  describe('envPluginsOfMcpTool', () => {
+    it('names the environment plugin an MCP tool belongs to', () => {
+      expect(envPluginsOfMcpTool('mcp__plugin_acme-env_browser__probe', registry)).toEqual(['acme-env']);
+      expect(envPluginsOfMcpTool('mcp__plugin_acme-env_a_b__c', registry)).toEqual(['acme-env']);
+    });
+
+    it('leaves the tools of other plugins, other MCP servers and native tools alone', () => {
+      expect(envPluginsOfMcpTool('mcp__plugin_stv_srv__t', registry)).toEqual([]);
+      expect(envPluginsOfMcpTool('mcp__github__create_pull_request', registry)).toEqual([]);
+      expect(envPluginsOfMcpTool('mcp__acme-env__probe', registry)).toEqual([]);
+      expect(envPluginsOfMcpTool('Read', registry)).toEqual([]);
+      expect(envPluginsOfMcpTool('', registry)).toEqual([]);
+      expect(
+        envPluginsOfMcpTool('mcp__plugin_acme-env_browser__probe', { pluginNames: new Set(), pluginsDir }),
+      ).toEqual([]);
+    });
+
+    it('matches the whole plugin name up to its `_` separator, never a shorter look-alike', () => {
+      // `abc` is the environment plugin; `abc-def` is another plugin whose tools must stay open.
+      const reg = { pluginNames: new Set(['abc']), pluginsDir };
+      expect(envPluginsOfMcpTool('mcp__plugin_abc-def_srv__t', reg)).toEqual([]);
+      expect(envPluginsOfMcpTool('mcp__plugin_abcdef_srv__t', reg)).toEqual([]);
+      expect(envPluginsOfMcpTool('mcp__plugin_abc_srv__t', reg)).toEqual(['abc']);
+      // Without a server segment there is no `_` after the name: not a tool of `abc`.
+      expect(envPluginsOfMcpTool('mcp__plugin_abc', reg)).toEqual([]);
+      // Names compare exactly, case included (the SDK keeps the name as is).
+      expect(envPluginsOfMcpTool('mcp__plugin_ABC_srv__t', reg)).toEqual([]);
+    });
+
+    it('an ambiguous `_` split names every environment plugin it could be (fail closed)', () => {
+      // `mcp__plugin_abc_def_srv__t` is plugin `abc` (server `def_srv`) or plugin `abc_def`
+      // (server `srv`): both are named, and the caller needs a grant for each.
+      const both = { pluginNames: new Set(['abc_def', 'abc']), pluginsDir };
+      expect(envPluginsOfMcpTool('mcp__plugin_abc_def_srv__t', both)).toEqual(['abc', 'abc_def']);
+      // A non-environment plugin `abc_def` next to the environment plugin `abc` cannot be told
+      // apart from a tool of `abc`: its tools are gated with `abc`'s grant.
+      const one = { pluginNames: new Set(['abc']), pluginsDir };
+      expect(envPluginsOfMcpTool('mcp__plugin_abc_def_srv__t', one)).toEqual(['abc']);
+    });
+  });
+
+  describe('checkEnvPluginMcpAccess (policy step 6d)', () => {
+    const tool = 'mcp__plugin_acme-env_browser__probe';
+
+    it('denies a tool of an environment plugin without a grant, with the plugin name; passes the rest', () => {
+      expect(checkEnvPluginMcpAccess(tool, 'UMCP1', thread, registry)).toBe('acme-env');
+      expect(checkEnvPluginMcpAccess('mcp__plugin_stv_srv__t', 'UMCP1', thread, registry)).toBeNull();
+      expect(checkEnvPluginMcpAccess('mcp__github__get_issue', 'UMCP1', thread, registry)).toBeNull();
+    });
+
+    it('opens on a thread grant of any skill of that plugin, in that thread only', () => {
+      addThreadGrant(ENV_SKILL_GRANT_OWNER, 'acme-env:post-deploy', 'UMCP2', thread);
+      expect(checkEnvPluginMcpAccess(tool, 'UMCP2', thread, registry)).toBeNull();
+      expect(checkEnvPluginMcpAccess(tool, 'UMCP2', { channel: 'C1', threadTs: '999.9' }, registry)).toBe('acme-env');
+      expect(checkEnvPluginMcpAccess(tool, 'UMCP3', thread, registry)).toBe('acme-env');
+    });
+
+    it('an expired thread grant does not open it', () => {
+      addThreadGrant(ENV_SKILL_GRANT_OWNER, 'acme-env:post-deploy', 'UMCP4', thread, Date.now() - 1);
+      expect(checkEnvPluginMcpAccess(tool, 'UMCP4', thread, registry)).toBe('acme-env');
+    });
+
+    it('opens on a standing grant of one of its skills, or of all environment skills', () => {
+      grantSkill(ENV_SKILL_GRANT_OWNER, 'acme-env:staging-qa', 'UMCP5');
+      expect(checkEnvPluginMcpAccess(tool, 'UMCP5', { channel: 'C9' }, registry)).toBeNull();
+      grantAllSkills(ENV_SKILL_GRANT_OWNER, 'UMCP6');
+      expect(checkEnvPluginMcpAccess(tool, 'UMCP6', thread, registry)).toBeNull();
+    });
+
+    it('a grant of another plugin, or of a look-alike plugin name, does not open it', () => {
+      const reg = { pluginNames: new Set(['abc', 'abc-def']), pluginsDir };
+      addThreadGrant(ENV_SKILL_GRANT_OWNER, 'abc-def:qa', 'UMCP7', thread);
+      expect(checkEnvPluginMcpAccess('mcp__plugin_abc_srv__t', 'UMCP7', thread, reg)).toBe('abc');
+      expect(checkEnvPluginMcpAccess('mcp__plugin_abc-def_srv__t', 'UMCP7', thread, reg)).toBeNull();
+    });
+
+    it('an ambiguous name needs a grant for every environment plugin it could be', () => {
+      const reg = { pluginNames: new Set(['abc', 'abc_def']), pluginsDir };
+      addThreadGrant(ENV_SKILL_GRANT_OWNER, 'abc_def:qa', 'UMCP8', thread);
+      expect(checkEnvPluginMcpAccess('mcp__plugin_abc_def_srv__t', 'UMCP8', thread, reg)).toBe('abc');
+      addThreadGrant(ENV_SKILL_GRANT_OWNER, 'abc:qa', 'UMCP8', thread);
+      expect(checkEnvPluginMcpAccess('mcp__plugin_abc_def_srv__t', 'UMCP8', thread, reg)).toBeNull();
     });
   });
 
