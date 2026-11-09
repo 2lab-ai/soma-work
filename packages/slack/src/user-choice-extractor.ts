@@ -10,6 +10,8 @@ export interface UserChoice {
   choices: UserChoiceOption[];
   context?: string;
   recommendedChoiceId?: string;
+  /** #1070 — also a card on the dashboard's 관리자 승인 screen, for admins (somalib session-types). */
+  audience?: 'admins';
 }
 
 export interface UserChoiceQuestion {

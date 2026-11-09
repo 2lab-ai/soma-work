@@ -229,7 +229,9 @@ const ASK_USER_QUESTION_HELP: CommandHelp = {
   summary:
     'Ask the user (Slack thread form + dashboard card). params.payload.type must be "user_choice" or "user_choice_group". ' +
     'Every question takes 3–4 choices/options { label, ... }: choice 1 = the recommended action (recommendedChoiceId, ' +
-    'defaults to it), choices 2–4 = alternatives. The host adds 직접 입력 (direct input) as the last option — never add one.',
+    'defaults to it), choices 2–4 = alternatives. The host adds 직접 입력 (direct input) as the last option — never add one. ' +
+    'When the decision belongs to an admin (an approval, a privileged step), add audience: "admins" to a user_choice: ' +
+    "it also becomes a card on the dashboard's 관리자 승인 screen, where an admin answers it.",
   examples: [
     {
       action: 'user_choice',

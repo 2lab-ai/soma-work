@@ -1229,6 +1229,8 @@ function normalizeUserChoice(raw: Record<string, unknown>): UserChoice | null {
     context: toOptionalString(raw.context),
     choices: options,
     ...(recommendedChoiceId ? { recommendedChoiceId } : {}),
+    // #1070 — the only audience: anything else is dropped (the question stays the owner's).
+    ...(raw.audience === 'admins' ? { audience: 'admins' as const } : {}),
   };
 }
 
