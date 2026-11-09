@@ -1455,10 +1455,21 @@ describe('the detail deck — open cards and their detail cards move together (S
     // The deck switch is WAAPI (P6), not a keyframe class: each of the header and the body gets an
     // additive translate (so a second switch retargets from where it is drawn) and an opacity fade.
     const slides: Array<{ part: string; frames: Array<Record<string, unknown>>; opts: Record<string, unknown> }> = [];
+    let cancelled = 0;
+    const handles: Array<{ playState: string; done: boolean; cancel(): void }> = [];
     const part = (name: string) => ({
       animate: (frames: Array<Record<string, unknown>>, opts: Record<string, unknown>) => {
         slides.push({ part: name, frames, opts });
-        return { playState: 'running', cancel: () => {} };
+        const h = {
+          playState: 'running',
+          done: false,
+          cancel: () => {
+            cancelled++;
+            h.done = true;
+          },
+        };
+        handles.push(h);
+        return h;
       },
     });
     const parts = [part('header'), part('body')];
@@ -1475,14 +1486,15 @@ describe('the detail deck — open cards and their detail cards move together (S
     const listeners: string[] = [];
     els['panel-deck'] = { addEventListener: (n: string) => listeners.push(n) };
     els['panel-deck-peek'] = {};
-    const rig = (deck: string[], front: string) =>
+    const rig = (deck: string[], front: string, keyed = false) =>
       load<{ renderDeckNav(dir: number): void; deckNow(): string[] }>(
-        ['renderDeckNav', 'onDeckPage', 'deckSlide'],
+        ['renderDeckNav', 'onDeckPage', 'deckSlide', 'deckStop'],
         ['DECK_SLIDE_MS'],
         {
           document: { getElementById: (id: string) => els[id] ?? null },
           getComputedStyle: () => ({ opacity: '0.6' }),
           reduceMotion: () => false,
+          keyedNow: () => keyed,
           _sessionCache: {
             A: { displayHeadline: 'Alpha' },
             B: { summaryTitle: 'Beta' },
@@ -1522,7 +1534,7 @@ describe('the detail deck — open cards and their detail cards move together (S
     expect(slides.map((x) => x.part)).toEqual(['header', 'header', 'body', 'body']);
     const [move, fade] = slides;
     expect(move.frames).toEqual([{ transform: 'translateX(18px)' }, { transform: 'translateX(0)' }]);
-    expect(move.opts).toMatchObject({ duration: 320, composite: 'add', easing: 'cubic-bezier(0.23, 1, 0.32, 1)' });
+    expect(move.opts).toMatchObject({ duration: 200, composite: 'add', easing: 'cubic-bezier(0.23, 1, 0.32, 1)' });
     expect(fade.frames).toEqual([{ opacity: 0.35 }, { opacity: 1 }]);
     // A second switch the other way while the first still runs: it slides from the left, and the
     // fade carries on from the opacity drawn now rather than restarting at 0.35.
@@ -1535,6 +1547,22 @@ describe('the detail deck — open cards and their detail cards move together (S
     expect(attrs['data-deck']).toBe('0');
     expect(els['panel-deck'].hidden).toBe(true);
     expect(slides).toHaveLength(8);
+    // ←/→ on the nav (a key just acted): the front card changes at once — no new slide, and the slides a click
+    // started on the reused header and body are stopped, so they never move the new front card.
+    const before = cancelled;
+    const keyed = rig(['A', 'B'], 'B', true);
+    keyed.renderDeckNav(1);
+    expect(slides).toHaveLength(8);
+    expect(cancelled).toBeGreaterThan(before);
+    // Every slide and fade a click started is stopped — each one, not just some.
+    expect(handles.length).toBeGreaterThan(0);
+    expect(handles.every((h) => h.done)).toBe(true);
+    // …and the deck itself still moves on: the nav shows the two cards, the new one in front.
+    expect(els['panel-deck'].hidden).toBe(false);
+    expect(els['panel-deck'].data).toMatchObject({ count: 2, index: 1 });
+    const after = cancelled;
+    keyed.renderDeckNav(-1); // nothing left running: nothing more to stop
+    expect(cancelled).toBe(after);
     // No keyframe slide left in the CSS.
     expect(TEMPLATE).not.toContain('@keyframes deck-in');
   });
