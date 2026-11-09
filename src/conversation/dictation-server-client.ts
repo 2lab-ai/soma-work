@@ -107,7 +107,10 @@ function dictationServerStart(cb, env) {
           if (c.ready && !c.stopping && ws.readyState === 1) ws.send(e.data);
         };
         ws.onopen = function () {
-          ws.send(JSON.stringify({ type: 'start', lang: 'ko-KR' }));
+          // the page's display language (<html lang>, #773): an English dashboard dictates English, not English heard
+          // as Korean (the interim guesses came out in Korean before the final pass)
+          var doc = w.document && w.document.documentElement;
+          ws.send(JSON.stringify({ type: 'start', lang: doc && doc.lang === 'en' ? 'en-US' : 'ko-KR' }));
         };
         ws.onmessage = function (e) {
           var m = null;
