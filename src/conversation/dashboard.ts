@@ -1525,8 +1525,14 @@ export interface DashboardFollowupRequest {
   /** The presser may manage the session (#716: the owner, a token, an admin in admin mode): they act as its owner. */
   manages?: boolean;
 }
-/** A refusal carries the queue's own words (the item stays) and the status the route answers with. */
-export type DashboardFollowupOutcome = { ok: true; message?: string } | { ok: false; status: number; message: string };
+/**
+ * A refusal carries the queue's own words (the item stays) and the status the route answers with. `unfulfilled`: the
+ * press was answered but not carried out — a delivered note's Cancel the model beat, or one the SDK could not confirm
+ * (the note is back in the queue); the page says it as a warning, not a success.
+ */
+export type DashboardFollowupOutcome =
+  | { ok: true; message?: string; unfulfilled?: true }
+  | { ok: false; status: number; message: string };
 /**
  * The queue behind the panel (wired in src/index.ts to SlackHandler): `view` is
  * the CONTROL view (`getFollowupView` — its turnEpoch is what Send now is
@@ -4277,7 +4283,12 @@ export async function registerDashboardRoutes(
         });
         // Whatever the queue answered, the panel gets the queue as it is now.
         scheduleLiveSessionUpdate(originalKey);
-        if (outcome.ok) reply.send(outcome.message ? { ok: true, message: outcome.message } : { ok: true });
+        if (outcome.ok)
+          reply.send(
+            outcome.message
+              ? { ok: true, message: outcome.message, ...(outcome.unfulfilled ? { unfulfilled: true } : {}) }
+              : { ok: true },
+          );
         else reply.status(outcome.status).send({ error: outcome.message });
       } catch (error) {
         logger.error('Error acting on the follow-up queue', error);
@@ -20113,22 +20124,38 @@ async function steerAct(op, id, text) {
   if (op === 'edit') body.text = text;
   var ok = false;
   var said = '';
+  var unfulfilled = false;
   try {
     var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/queue/' + encodeURIComponent(id) + '/' + op, JSON.stringify(body));
     var data = {};
     try { data = await res.json(); } catch (_e) {}
     ok = res.ok;
     said = ok ? ((data && data.message) || '') : ((data && data.error) || ('HTTP ' + res.status));
+    unfulfilled = ok && !!(data && data.unfulfilled);
   } catch (e) {
     said = (e && e.message) || '네트워크 오류';
   }
-  if (ok) {
-    // The queue's receipt (취소했습니다 …, 이미 전달되어 …) — Send now says nothing; its note moves.
+  // The note goes back to the state the queue has NOW (a list pushed while the press was out — the turn ended and put
+  // a delivered note back in line — is newer than the click): rolling back to the click's state would pin a wrong
+  // label over the newer list. The element now shows another session's queue: only the toast.
+  var rollBack = function() {
+    var cur = steerItemOf(_sessionCache[key], id) || item;
+    if (panelSessionKey === key && document.getElementById('cmd-steer') === el) el.setItemState(id, STEER_STATE[cur.state] || 'queued', said);
+  };
+  if (ok && !unfulfilled) {
+    // The queue's receipt (취소했습니다 …) — Send now says nothing; its note moves.
     if (said) dashToast({ title: said, tone: 'success' });
     return;
   }
-  // The element now shows another session's queue: the refusal is only a toast.
-  if (panelSessionKey === key && document.getElementById('cmd-steer') === el) el.setItemState(id, STEER_STATE[item.state] || 'queued', said);
+  if (ok) {
+    // Answered, not done: a delivered note's Cancel the model beat (이미 모델에 전달되어 …) or the SDK could not
+    // confirm (큐로 되돌렸습니다). The note the element hid comes back with why until the list moves it (read, or
+    // back in line) — never left hidden as if it were cancelled.
+    rollBack();
+    dashToast({ title: said, tone: 'warning' });
+    return;
+  }
+  rollBack();
   dashToast({ title: STEER_FAIL[op] || '하지 못했어요', description: said, tone: 'error' });
 }
 

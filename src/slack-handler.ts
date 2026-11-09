@@ -6091,7 +6091,7 @@ export class SlackHandler {
     text?: string;
     actorUserId?: string;
     manages?: boolean;
-  }): Promise<{ ok: true; message?: string } | { ok: false; status: number; message: string }> {
+  }): Promise<{ ok: true; message?: string; unfulfilled?: true } | { ok: false; status: number; message: string }> {
     const deps = this.followupActionDeps;
     const queue = this.followupQueue;
     if (!deps || !queue || this.followupReadFailed) {
@@ -6128,11 +6128,11 @@ export class SlackHandler {
       };
     }
 
-    const said: Array<{ text: string; refused: boolean }> = [];
+    const said: Array<{ text: string; refused: boolean; unfulfilled: boolean }> = [];
     let open = true;
     const respond: FollowupRespond = async (message, verdict) => {
       const text = typeof message?.text === 'string' ? message.text : '';
-      if (open) said.push({ text, refused: verdict === 'refused' });
+      if (open) said.push({ text, refused: verdict === 'refused', unfulfilled: verdict === 'unfulfilled' });
       else this.logger.info('Dashboard queue action replied after the request ended', { itemId: request.itemId, text });
       return undefined;
     };
@@ -6153,7 +6153,11 @@ export class SlackHandler {
     const refusal = said.find((entry) => entry.refused);
     if (refusal) return { ok: false, status: 409, message: refusal.text };
     const receipt = said.filter((entry) => entry.text).pop();
-    return receipt ? { ok: true, message: receipt.text } : { ok: true };
+    if (!receipt) return { ok: true };
+    // A delivered note's Cancel that came too late or could not be confirmed: answered, not done (a warning there).
+    return receipt.unfulfilled
+      ? { ok: true, message: receipt.text, unfulfilled: true }
+      : { ok: true, message: receipt.text };
   }
 
   /**
