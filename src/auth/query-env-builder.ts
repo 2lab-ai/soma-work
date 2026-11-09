@@ -70,7 +70,7 @@ export const RESERVED_LEASE_KEYS: readonly string[] = Object.freeze([
  *
  * Hot reload is intentionally NOT supported. Operators must restart the
  * process after editing `config.json#claude.env`. This is documented in
- * README.md and `config.example.json`.
+ * docs/misc/guides/setup.md and `config.example.json`.
  */
 let _additionalEnv: Record<string, string> = {};
 

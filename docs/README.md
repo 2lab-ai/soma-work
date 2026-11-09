@@ -52,6 +52,7 @@
 
 - [misc/reference/](./misc/reference/) — architecture, workflow, Slack Block Kit reference
 - [misc/guides/](./misc/guides/) — how-to and migration guides
+- The README's reference, moved off the front page (each with a `.ko.md` pair): [features and architecture](./misc/guides/features.md), [commands](./misc/guides/commands.md), [running soma-work](./misc/guides/setup.md) (install, config, deploy, GitHub, troubleshooting), [working on soma-work](./misc/guides/contributing.md) (structure, design principles, tests)
 - [misc/research/](./misc/research/) — dated research notes
 - [misc/debugging/current/](./misc/debugging/current/) — current debug traces not yet archived
 - [debugging/](./debugging/) — top-level legacy debug traces (new traces go under `misc/debugging/current/`)

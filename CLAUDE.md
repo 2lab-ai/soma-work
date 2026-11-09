@@ -198,7 +198,7 @@ gh workflow run deploy --ref main -f confirm=deploy
 
 ## Command Surface
 
-- 명령어 체계는 4개 prefix family: `/z <topic>` (영속) · `%<sub>` (세션 전용) · `$<skill>` (강제 스킬 발동) · naked(bare `[cmd] [args]`). 상세는 `README.md`의 Commands 섹션. naked form의 source of truth는 `CommandRouter` 핸들러 체인(`CommandParser.is*Command` 매처 포함 — `auth`, `cct` 등 운영 카드). 비-admin DM에서 받는 입력은 `isDmAllowedForNonAdmin`(`packages/slack/src/z/whitelist.ts`)이 정한다.
+- 명령어 체계는 4개 prefix family: `/z <topic>` (영속) · `%<sub>` (세션 전용) · `$<skill>` (강제 스킬 발동) · naked(bare `[cmd] [args]`). 상세는 `docs/misc/guides/commands.md`. naked form의 source of truth는 `CommandRouter` 핸들러 체인(`CommandParser.is*Command` 매처 포함 — `auth`, `cct` 등 운영 카드). 비-admin DM에서 받는 입력은 `isDmAllowedForNonAdmin`(`packages/slack/src/z/whitelist.ts`)이 정한다.
 - 어느 핸들러도 잡지 않은 네이키드 텍스트는 채팅 / 워크플로우 디스패치로 처리.
 - **터미널 `somawork` 컨트롤러는 별개 surface다** (`setup` · `doctor` · `status` · `service` · `profile` · `sessions` · `help` · `version`). Slack prefix family와 아무 관계 없고, 문법의 SSOT는 `src/cli/args.ts`의 `COMMAND_GRAMMAR` + `publicCommandSummaries()` — help 텍스트가 그 테이블에서 생성되므로 drift할 수 없고, 비공개 훅 라우트는 절대 나타나지 않는다.
 - **Bare 명령 (#531)**: `persona linus`, `model sonnet` 같은 bare `[cmd] [args]` 형태는 `CommandRouter` 핸들러가 그대로 실행한다 (#506 Phase 1의 tombstone 힌트는 #531에서 제거됐다). `SOMA_ENABLE_LEGACY_SLASH=true`는 legacy 슬래시 커맨드 `/soma` · `/session` · `/new`만 되살린다.
@@ -211,7 +211,8 @@ gh workflow run deploy --ref main -f confirm=deploy
 
 1. `.claude/skills/update-docs/SKILL.md` 스킬을 따라 문서 drift를 점검한다.
 2. 변경이 아래 표면에 영향을 주면 **같은 PR에서** 함께 업데이트한다:
-   - `README.md` / `README.ko.md` — 기능, 명령어, 아키텍처, 프로젝트 구조, 설정 방법이 바뀌었을 때. 두 파일은 항상 같이 움직인다.
+   - `README.md` / `README.ko.md` — 첫 화면(독자가 묻는 순서: 맡기기 → 지켜보기 → 끼어들기 → 돌아오는 것 → 실행하기)과 그 스크린샷·GIF(`assets/readme/`)가 바뀌었을 때. 두 파일은 항상 같이 움직인다.
+   - `docs/misc/guides/{features,commands,setup,contributing}.md`와 각 `.ko.md` 짝 — 기능, 명령어, 아키텍처, 프로젝트 구조, 설정 방법이 바뀌었을 때. 영문과 한글 파일은 같이 움직인다.
    - `CLAUDE.md` / `AGENTS.md` — agent 행동 규칙, 모듈 구조, gotcha가 바뀌었을 때.
    - `docs/README.md` — docs 디렉토리 구조나 라우팅이 바뀌었을 때.
    - `docs/misc/reference/architecture.md` — 컴포넌트 와이어링이 바뀌었을 때.

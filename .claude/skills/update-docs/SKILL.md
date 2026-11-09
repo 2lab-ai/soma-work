@@ -34,8 +34,9 @@ checking and finding no impact.
 
 | Surface | Owns | Update when |
 |---|---|---|
-| `README.md` | Features, commands, architecture overview, project structure, quick start, deployment | User-visible behavior or structure changes |
+| `README.md` | Front page: what soma-work does in the order a new reader asks (ask → watch → step in → what comes back → run it), with real screenshots/GIFs in `assets/readme/` | The front-page story, quick start or a screenshot changes |
 | `README.ko.md` | Korean mirror of README.md | Always together with README.md — the two files move as a pair |
+| `docs/misc/guides/{features,commands,setup,contributing}.md` (+ `.ko.md` pairs) | Feature detail and architecture, the command reference, install/config/deploy/GitHub/troubleshooting, project structure/design/tests | Features, commands, architecture, setup or project structure change — each `.md` moves with its `.ko.md` |
 | `CLAUDE.md` | Agent behavior rules, module layout, TDD/deploy rules, gotchas | Agent-relevant rules or layout change |
 | `AGENTS.md` | Slack API guardrails, beads workflow | Slack payload constraints change |
 | `docs/README.md` | Docs routing map | Any `docs/` directory add/move/remove |
@@ -56,7 +57,7 @@ git diff --stat main...HEAD    # or the staged diff for uncommitted work
 2. For each touched area, grep the doc surfaces for claims about it:
 
 ```bash
-rg -n "<changed-module-or-command>" README.md README.ko.md CLAUDE.md AGENTS.md docs/README.md docs/misc/reference/architecture.md
+rg -n "<changed-module-or-command>" README.md README.ko.md docs/misc/guides CLAUDE.md AGENTS.md docs/README.md docs/misc/reference/architecture.md
 ```
 
 3. Verify structural claims against reality. Known drift-prone claims:
