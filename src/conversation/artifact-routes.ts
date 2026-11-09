@@ -8,6 +8,15 @@
  *     → 200 the stored bytes, or 206 for a `Range: bytes=…` request (audio/video
  *       seeking needs it — Safari will not play <audio> without range support).
  *     → 404 unknown artifact or no stored copy; 416 unsatisfiable range.
+ *   GET /api/dashboard/session/:conversationId/artifacts/:artifactId/versions        (#1074)
+ *     → 200 { key, versions: SessionArtifact[] }   (the artifact's versions, newest first; each opens by its id)
+ *   GET /api/dashboard/session/:conversationId/artifacts/:artifactId/diff[?against=<id>]   (#1074)
+ *     → 200 { from, to, text, added, removed, truncated } — the line diff from `against` (default: the
+ *       previous version) to this one, for html / markdown / text sources
+ *     → 404 no other version to compare (or another artifact's id) or a copy is missing; 415 not text
+ *
+ * The versions and their diff are this session API's only — the board (`KanbanSession.artifacts`) and the
+ * live push carry an artifact's version badge, never the version list (artifacts.ts `boardArtifact`).
  *
  * Who may read — an explicit policy, the same for the list, the content, the
  * card summary (`KanbanSession.artifacts`) and the live push: any signed-in
@@ -30,9 +39,14 @@ import * as fs from 'node:fs';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { Logger } from '../logger';
 import { backfillArtifactsFromWorkLog } from './artifact-capture';
+import { lineDiff } from './artifact-diff';
 import { type ArtifactStore, getArtifactStore, type SessionArtifact } from './artifacts';
 
 const logger = new Logger('ArtifactRoutes');
+
+/** A version compared line by line is read whole: at most this many bytes a side. */
+const MAX_DIFF_BYTES = 2 * 1024 * 1024;
+const TEXT_KINDS = new Set(['html', 'markdown', 'text']);
 
 /**
  * html: scripts run (charts, animations), nothing else — no popups, dialogs,
@@ -160,6 +174,65 @@ export async function registerArtifactRoutes(
     },
   );
 
+  server.get<{ Params: { conversationId: string; artifactId: string } }>(
+    '/api/dashboard/session/:conversationId/artifacts/:artifactId/versions',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      try {
+        reply.header('Cache-Control', 'no-store');
+        const { conversationId, artifactId } = request.params;
+        const art = store().get(conversationId, artifactId);
+        if (!art) {
+          reply.status(404).send({ error: 'not_found' });
+          return;
+        }
+        reply.send({ key: art.key ?? null, versions: store().versions(conversationId, artifactId) });
+      } catch (error) {
+        logger.error('Error listing artifact versions', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
+  server.get<{ Params: { conversationId: string; artifactId: string }; Querystring: { against?: string } }>(
+    '/api/dashboard/session/:conversationId/artifacts/:artifactId/diff',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      try {
+        reply.header('Cache-Control', 'no-store');
+        const { conversationId, artifactId } = request.params;
+        const versions = store().versions(conversationId, artifactId);
+        const to = versions.find((a) => a.id === artifactId);
+        const againstId = typeof request.query?.against === 'string' ? request.query.against : '';
+        // Only another version of the same artifact: the default is the one before this.
+        const from = againstId
+          ? versions.find((a) => a.id === againstId && a.id !== artifactId)
+          : versions.find((a) => (a.version ?? 0) < (to?.version ?? 0));
+        if (!to || !from) {
+          reply.status(404).send({ error: 'no_other_version' });
+          return;
+        }
+        if (!TEXT_KINDS.has(to.kind) || !TEXT_KINDS.has(from.kind)) {
+          reply.status(415).send({ error: 'not_text' });
+          return;
+        }
+        const [before, after] = await Promise.all([readText(store(), from), readText(store(), to)]);
+        if (before === null || after === null) {
+          reply.status(404).send({ error: 'not_stored' });
+          return;
+        }
+        const d =
+          before === TOO_BIG || after === TOO_BIG
+            ? { text: '', added: 0, removed: 0, truncated: true }
+            : lineDiff(before, after);
+        reply.send({ from: versionRef(from), to: versionRef(to), ...d });
+      } catch (error) {
+        logger.error('Error diffing artifact versions', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
   server.get<{ Params: { conversationId: string; artifactId: string }; Querystring: { download?: string } }>(
     '/api/dashboard/session/:conversationId/artifacts/:artifactId/content',
     { preHandler: [authMiddleware] },
@@ -180,4 +253,23 @@ export async function registerArtifactRoutes(
       }
     },
   );
+}
+
+function versionRef(a: SessionArtifact): { id: string; version: number; name: string; createdAt: number } {
+  return { id: a.id, version: a.version ?? 1, name: a.name, createdAt: a.createdAt };
+}
+
+/** Marks a version too large to read whole for a line diff. */
+const TOO_BIG = Symbol('too-big');
+
+/** A stored version's text; TOO_BIG past MAX_DIFF_BYTES; null when no copy is kept here. */
+async function readText(store: ArtifactStore, a: SessionArtifact): Promise<string | typeof TOO_BIG | null> {
+  const file = store.blobPath(a.conversationId, a.id);
+  if (!file) return null;
+  try {
+    if ((await fs.promises.stat(file)).size > MAX_DIFF_BYTES) return TOO_BIG;
+    return await fs.promises.readFile(file, 'utf-8');
+  } catch {
+    return null;
+  }
 }

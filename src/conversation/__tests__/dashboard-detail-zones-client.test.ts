@@ -309,6 +309,8 @@ describe('Z3 — every tab starts closed; a press opens one, a second press clos
         'viewPlanFrom',
         'viewSpec',
         'panelMidTabsOf',
+        'artSortForDisplay',
+        'artLatestOnly',
         'panelMidContext',
         'renderPanelMidbar',
         'selectPanelMid',

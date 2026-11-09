@@ -18,8 +18,10 @@
  *   2. Ensures a daemon is listening whose link for this artifact actually
  *      answers 200 — the final URL is VERIFIED over loopback before it is
  *      printed, never assumed.
- *   3. Prints JSON: { "url", "localUrl", "port", "file" } on stdout
- *      (+ "note" when a pre-durable-root daemon needed a compat copy,
+ *   3. Prints JSON: { "url", "localUrl", "port", "file", "version" } on stdout
+ *      (+ "archived" when the name's previous bytes were kept as a version,
+ *      + "unchanged" when the same bytes were already published,
+ *      + "note" when a pre-durable-root daemon needed a compat copy,
  *      + "migrated"/"migrationErrors" when a legacy sweep did work).
  *
  * Daemon mode (internal): node serve.mjs --daemon --port <port>
@@ -44,8 +46,12 @@
  * Archive semantics: artifacts are timestamped by the skill, never
  * auto-pruned here, and migrate forward automatically from the legacy
  * /tmp root when one is found (regular files only — symlinks are never
- * followed into the archive). Re-publishing the same filename intentionally
- * refreshes that artifact in place. Reclaiming disk is a human decision.
+ * followed into the archive). Re-publishing the same filename refreshes that
+ * artifact in place and keeps the bytes it replaces as `<stem>.v<N><ext>`
+ * (#1074: `report.html` → `report.v1.html`, then `report.v2.html`, …; the
+ * same bytes again keep nothing). A name keeps its newest
+ * MAX_ARCHIVED_VERSIONS earlier versions — the only files this server ever
+ * removes. Reclaiming disk otherwise is a human decision.
  *
  * Exposure policy: binds 0.0.0.0 by default — LAN reachability is the whole
  * point (the user opens the link from another machine). Everything ever
@@ -103,6 +109,8 @@ const BIND_ADDR = process.env.SOMA_HTML_SERVE_BIND || '0.0.0.0';
 const BASE_PORT = Number(process.env.SOMA_HTML_SERVE_PORT || 8763);
 const PORT_SCAN_RANGE = 20;
 const HEALTH_PATH = '/__soma-serve-health';
+/** Earlier versions of one name kept beside it (#1074). */
+const MAX_ARCHIVED_VERSIONS = 10;
 const HEALTH_BODY = 'soma-html-serve';
 
 const MIME = {
@@ -320,6 +328,53 @@ function writeFileReplacing(dstDir, name, bytes) {
   }
 }
 
+function splitName(name) {
+  const ext = extname(name);
+  return { stem: ext ? name.slice(0, -ext.length) : name, ext };
+}
+
+function versionedName(name, n) {
+  const { stem, ext } = splitName(name);
+  return `${stem}.v${n}${ext}`;
+}
+
+/** The kept versions of `name` in `dir`: [[n, file]] ascending by n. */
+function archivedVersions(dir, name) {
+  const { stem, ext } = splitName(name);
+  const out = [];
+  for (const f of readdirSync(dir)) {
+    if (!f.startsWith(`${stem}.v`) || !f.endsWith(ext)) continue;
+    const n = f.slice(stem.length + 2, f.length - ext.length);
+    if (/^[1-9]\d{0,8}$/.test(n)) out.push([Number(n), f]);
+  }
+  return out.sort((a, b) => a[0] - b[0]);
+}
+
+function archivePrevious(dir, name, bytes) {
+  // #1074 — publishing over a name keeps what it replaces as the name's next
+  // `<stem>.v<N><ext>`, so the earlier version still opens. Only a regular
+  // file is kept (read with O_NOFOLLOW; a symlink sitting there is replaced by
+  // the publish, never followed), the same bytes keep nothing, and the copy is
+  // an atomic create-if-absent (a concurrent publisher takes the next number).
+  let st;
+  try {
+    st = lstatSync(join(dir, name));
+  } catch {
+    return { version: 1 };
+  }
+  if (!st.isFile()) return { version: 1 };
+  const current = readFileNoFollow(join(dir, name));
+  const kept = archivedVersions(dir, name);
+  const top = kept.length ? kept[kept.length - 1][0] : 0;
+  if (current.equals(bytes)) return { version: top + 1, unchanged: true };
+  let n = top + 1;
+  while (!installFileIfAbsent(dir, versionedName(name, n), current)) n++;
+  for (const [, f] of archivedVersions(dir, name).slice(0, -MAX_ARCHIVED_VERSIONS)) {
+    rmSync(join(dir, f), { force: true });
+  }
+  return { version: n + 1, archived: versionedName(name, n) };
+}
+
 function startDaemon(port) {
   const self = fileURLToPath(import.meta.url);
   const child = spawn(process.execPath, [self, '--daemon', '--port', String(port)], {
@@ -517,6 +572,7 @@ async function publish(file, explicitPort) {
   for (const e of migration.errors) console.error(`legacy migration failed for ${e}`);
   const name = basename(abs);
   const artifactBytes = readFileSync(abs);
+  const kept = archivePrevious(SERVE_ROOT, name, artifactBytes);
   writeFileReplacing(SERVE_ROOT, name, artifactBytes);
 
   let chosen = null;
@@ -563,6 +619,9 @@ async function publish(file, explicitPort) {
         localUrl: `http://localhost:${chosen.port}/${encoded}`,
         port: chosen.port,
         file: join(SERVE_ROOT, name),
+        version: kept.version,
+        ...(kept.archived ? { archived: kept.archived } : {}),
+        ...(kept.unchanged ? { unchanged: true } : {}),
         ...(chosen.note ? { note: chosen.note } : {}),
         ...(migration.migrated ? { migrated: migration.migrated } : {}),
         ...(migration.errors.length ? { migrationErrors: migration.errors.length } : {}),

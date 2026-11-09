@@ -132,7 +132,7 @@ import { coerceEffort, EFFORT_LEVELS, type EffortLevel, userSettingsStore } from
 import { BUILTIN_PRESETS } from '../view-layout';
 import { fetchSiblingBoards, type InstanceEnvironment, mergeBoards, shouldAggregate } from './aggregator';
 import { backfillArtifactsFromWorkLog } from './artifact-capture';
-import { type ArtifactSummary, getArtifactStore, type SessionArtifact } from './artifacts';
+import { type ArtifactSummary, boardArtifact, getArtifactStore, type SessionArtifact } from './artifacts';
 import { buildCapacityView, type CapacityView, readSaveMode } from './capacity-view';
 import { type CardLink, cardLinksOf, followupLinksOf, settledLinkUrlsOf } from './card-links';
 import { archivedCardClocks, cardWhereOf, liveCardClocks } from './card-where';
@@ -2466,7 +2466,12 @@ function cardUserMedia(conversationId: string | undefined): { count: number } | 
 export function broadcastArtifactUpdate(artifact: SessionArtifact): void {
   if (wsClients.size > 0) {
     try {
-      const payload = JSON.stringify({ type: 'artifact_update', conversationId: artifact.conversationId, artifact });
+      // The board's projection (#1074): every signed-in viewer gets the version badge, not the hash or links.
+      const payload = JSON.stringify({
+        type: 'artifact_update',
+        conversationId: artifact.conversationId,
+        artifact: boardArtifact(artifact),
+      });
       for (const client of wsClients) {
         try {
           client.send(payload);
@@ -6729,6 +6734,10 @@ body.nt-open .new-task-fab { display: none !important; }
 .panel-arts-hint { margin-left: auto; font-size: 11px; font-weight: 400; color: var(--text-tertiary); }
 .art-strip-panel .art-tile { --fc-tile-w: 152px; }
 .turn-arts-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+/* #1074 — an artifact uploaded again is its next version: a small "판 N" pill on its card's corner (the tile's meta
+   line and the viewer say the whole "판 N · 이전 판 이후 바뀜"). */
+.art-ver-wrap { position: relative; display: inline-block; }
+.art-ver { position: absolute; top: -5px; right: -5px; z-index: 1; display: inline-flex; align-items: center; height: 16px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: var(--bg, #fff); font-size: 10px; font-weight: 700; line-height: 1; white-space: nowrap; pointer-events: none; font-variant-numeric: tabular-nums; }
 /* ── User media (SSOT 2026-10-25): the files a user attached to an instruction ──
    Above the words, as chat apps show an attachment with its message. The pictures are @2lab.ai/ui <ui-media-grid>
    (D7 I-09 / I-11): fixed 80px tiles (one picture alone in a wide box that shows it whole), "+N" on the last tile
@@ -13134,7 +13143,7 @@ function panelMidContext(s) {
   var cid = panelConvId;
   var c = cid ? _artCache[cid] : null;
   var recent = (s.artifacts && s.artifacts.recent) || [];
-  var arts = c && c.list ? c.list.length : Math.max(toNum(s.artifacts && s.artifacts.count), recent.length);
+  var arts = c && c.list ? artLatestOnly(artSortForDisplay(c.list)).length : Math.max(toNum(s.artifacts && s.artifacts.count), recent.length);
   var um = cid && _umList[cid] ? _umList[cid].length : 0;
   return {
     goalEditable: viewerCanManage(s) && col !== 'closed' && !s.terminated && !isSiblingSession(s),
@@ -21608,6 +21617,7 @@ var _artCache = Object.create(null); // conversationId → { state: 'loading'|'o
 var _artDocCache = Object.create(null); // 'cid|id' → text of a markdown / text artifact; 'cid|id|head' → its first 64 KB (the peek)
 var _artDocPending = Object.create(null); // the same keys → the one fetch under way (two askers, one request)
 var _artViewer = { cid: null, scope: 'conversation', list: [] }; // what the open viewer pages through
+var _artVerRows = Object.create(null); // cid → { id → artifact } — versions fetched by 이전 판 열기 (#1074)
 
 function artUrl(cid, id, download) {
   // A user's attachment (SSOT 2026-10-25) shares the viewer, not the route.
@@ -21791,16 +21801,41 @@ function artFileItem(cid, a) {
   if (toNum(a.createdAt) > 0) item.time = toNum(a.createdAt);
   if (a.stored) item.url = artUrl(cid, a.id);
   else item.meta = 'Slack에만 있음';
+  var ver = artVersionLabel(a);
+  if (ver) item.meta = item.meta ? item.meta + ' · ' + ver : ver;
   return item;
 }
 function artCard(cid, a, variant, playable) {
-  var v = [a.name, a.kind, toNum(a.size), toNum(a.createdAt), a.stored ? 1 : 0].join('|');
+  var v = [a.name, a.kind, toNum(a.size), toNum(a.createdAt), a.stored ? 1 : 0, toNum(a.version), a.changed ? 1 : 0].join('|');
   return '<ui-file-card class="art-card" variant="' + variant + '"' + (playable ? ' playable' : '') + ' lang="ko" data-art-cid="' + escAttr(cid) + '" data-art-id="' + escAttr(a.id)
     + '" data-art-v="' + escAttr(v) + '"></ui-file-card>';
 }
-// One chip (an answer turn's files).
+// One chip (an answer turn's files) — with its version pill when it is a later version (#1074).
 function artChip(cid, a) {
-  return artCard(cid, a, 'chip');
+  var badge = artVerBadge(a);
+  return badge ? '<span class="art-ver-wrap">' + artCard(cid, a, 'chip') + badge + '</span>' : artCard(cid, a, 'chip');
+}
+
+// ── Versions (#1074): an artifact uploaded again under the same key (the model's artifact_key, else the file
+// name without its time stamp) is its next version. Every list shows the latest version of each artifact; an
+// answer's row shows the version its turn made; the viewer opens the earlier ones (이전 판 열기) and compares two
+// line by line (이전 판과 비교). The board carries only the badge (version, changed) — the list is the session's.
+function artLatestOnly(list) {
+  var best = Object.create(null);
+  (list || []).forEach(function(a) {
+    var k = a.key || 'id:' + a.id;
+    if (!best[k] || toNum(a.version) > toNum(best[k].version)) best[k] = a;
+  });
+  return (list || []).filter(function(a) { return best[a.key || 'id:' + a.id] === a; });
+}
+function artVersionLabel(a) {
+  var v = toNum(a && a.version);
+  if (v <= 1) return '';
+  return a.changed ? '판 ' + v + ' · 이전 판 이후 바뀜' : '판 ' + v;
+}
+function artVerBadge(a) {
+  var v = toNum(a && a.version);
+  return v > 1 ? '<span class="art-ver" title="' + escAttr(artVersionLabel(a)) + '">판 ' + v + '</span>' : '';
 }
 
 // Newest first, by when each file was made (SSOT 2026-11-02 T3) — every list: the card's chips
@@ -21814,7 +21849,7 @@ function artSortForDisplay(list) {
 // A strip tile: the file card (thumbnail, name, meta; a play / pause toggle on audio — T8 — and video tiles, one
 // clip at a time across the page: playable); variant 'chip' in the panel's minimal row.
 function artTile(cid, a, variant) {
-  return '<div class="art-tile' + (a.stored ? '' : ' is-remote') + '">' + artCard(cid, a, variant || 'tile', true) + '</div>';
+  return '<div class="art-tile' + (a.stored ? '' : ' is-remote') + '">' + artCard(cid, a, variant || 'tile', true) + artVerBadge(a) + '</div>';
 }
 
 // The full list once fetched, else the card's summary (the newest few).
@@ -21830,7 +21865,7 @@ function artListFor(s) {
 var CARD_ART_TILES = 4;
 function renderCardArtifacts(s) {
   if (!s || !s.conversationId) return '';
-  var list = artSortForDisplay(artListFor(s));
+  var list = artLatestOnly(artSortForDisplay(artListFor(s)));
   if (!list.length) return '';
   var c = _artCache[s.conversationId];
   var total = c && c.list ? list.length : Math.max(toNum(s.artifacts && s.artifacts.count), list.length);
@@ -21843,7 +21878,7 @@ function renderCardArtifacts(s) {
 
 // Panel (T6): pinned above the conversation, so it is in view wherever the reader is.
 function renderPanelArtifacts(list, cid, variant) {
-  var sorted = artSortForDisplay(list);
+  var sorted = artLatestOnly(artSortForDisplay(list));
   if (!sorted.length || !cid) return '';
   return '<div class="panel-arts-head"><span>산출물</span><span class="art-count">' + sorted.length + '</span>'
     + '<span class="panel-arts-hint">올리면 미리보기 · 누르면 크게</span></div>'
@@ -21899,6 +21934,7 @@ function artFind(cid, id) {
   var c = _artCache[cid];
   var hit = c && c.list ? c.list.find(function(a) { return a.id === id; }) : null;
   if (hit) return hit;
+  if (_artVerRows[cid] && _artVerRows[cid][id]) return _artVerRows[cid][id];
   for (var k in _sessionCache) {
     var s = _sessionCache[k];
     if (s && s.conversationId === cid && s.artifacts && s.artifacts.recent) {
@@ -21940,7 +21976,7 @@ function artSettle(cid) {
   // The open viewer pages through the conversation's files: the new list is handed over (the element keeps showing
   // the same file wherever it moved). An instruction's attachments (umSiblings) are not this list.
   if (_artViewer.cid === cid && _artViewer.scope === 'conversation' && artViewerIsOpen()) {
-    _artViewer.list = artViewerPages((_artCache[cid] && _artCache[cid].list) || []);
+    _artViewer.list = artLatestOnly(artViewerPages((_artCache[cid] && _artCache[cid].list) || []));
     artViewerEl().data = { items: artViewerItems(cid, _artViewer.list) };
   }
 }
@@ -22109,6 +22145,8 @@ function artViewItem(cid, a) {
   if (a.stored && a.kind === 'html' && a.source !== 'user_upload') item.scripts = true;
   if (a.stored && a.kind === 'pdf') item.frame = true;
   var notes = [];
+  var ver = artVersionLabel(a);
+  if (ver) notes.push(ver);
   if (a.title && a.title !== a.name) notes.push(String(a.title));
   if (!a.stored) notes.push(a.source === 'user_upload' ? umMissingReason(a) : '이 파일은 대시보드에 사본이 없습니다 (100 MB 초과이거나 업로드 전에 지워졌습니다).');
   if (notes.length) item.meta = notes.join(' · ');
@@ -22118,6 +22156,13 @@ function artViewItem(cid, a) {
   if (live) actions.push({ id: 'live', label: '라이브로 열기', href: live });
   if (slack) actions.push(slack);
   if (actions.length) item.actions = actions;
+  // #1074 — a later version opens the earlier ones and, for a source (html / markdown / text), compares with the last.
+  if (toNum(a.version) > 1 && a.source !== 'user_upload') {
+    var acts = item.actions || [];
+    acts.push({ id: 'ver-prev', label: '이전 판 열기' });
+    if (a.stored && (a.kind === 'html' || a.kind === 'markdown' || a.kind === 'text')) acts.push({ id: 'ver-diff', label: '이전 판과 비교' });
+    item.actions = acts;
+  }
   var text = _artDocCache[cid + '|' + a.id];
   if ((a.kind === 'markdown' || a.kind === 'text') && a.stored && text != null) item.text = text;
   return item;
@@ -22125,6 +22170,78 @@ function artViewItem(cid, a) {
 
 function artViewerItems(cid, list) {
   return list.map(function(a) { return artViewItem(cid, a); });
+}
+
+// The versions of a's artifact the page holds (the conversation's list, the rows 이전 판 열기 fetched), newest first.
+function artVersionsOf(cid, a) {
+  if (!a || !a.key) return a ? [a] : [];
+  var c = _artCache[cid];
+  var seen = Object.create(null);
+  var rows = [];
+  var add = function(x) {
+    if (x && x.key === a.key && x.source !== 'final_answer' && !seen[x.id]) {
+      seen[x.id] = 1;
+      rows.push(x);
+    }
+  };
+  ((c && c.list) || []).forEach(add);
+  var held = _artVerRows[cid] || {};
+  for (var k in held) add(held[k]);
+  add(a);
+  return rows.sort(function(x, y) { return toNum(y.version) - toNum(x.version); });
+}
+
+// 이전 판 열기 (#1074): the artifact's versions from the session's API, the viewer at the one before the shown file.
+function artOpenPrevious(cid, a) {
+  return fetch('/api/dashboard/session/' + encodeURIComponent(cid) + '/artifacts/' + encodeURIComponent(a.id) + '/versions')
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function(data) {
+      var held = _artVerRows[cid] || (_artVerRows[cid] = Object.create(null));
+      (Array.isArray(data && data.versions) ? data.versions : []).forEach(function(x) { if (x && x.id) held[x.id] = x; });
+      var list = artVersionsOf(cid, a);
+      var at = list.findIndex(function(x) { return toNum(x.version) < toNum(a.version); });
+      var v = artViewerEl();
+      if (!v || at < 0 || _artViewer.cid !== cid || !artViewerIsOpen()) return;
+      _artViewer = { cid: cid, scope: 'versions', list: list };
+      v.open(artViewerItems(cid, list), at);
+    })
+    .catch(function() {});
+}
+
+// 이전 판과 비교 (#1074): the line diff from the version before (the session's API), shown as a text page.
+function artDiffItem(a, d) {
+  var name = String(a.name || '');
+  var from = toNum(d && d.from && d.from.version);
+  var to = toNum(d && d.to && d.to.version);
+  var text;
+  if (!d) text = '이전 판과 비교할 수 없습니다 (사본이 없거나 텍스트가 아닙니다).';
+  else if (d.truncated) text = '두 판이 너무 크거나 너무 달라 줄 단위로 비교하지 않았습니다.';
+  else if (!d.text) text = '두 판의 내용이 같습니다.';
+  else text = '--- 판 ' + from + '\\n+++ 판 ' + to + '\\n' + String(d.text);
+  return { id: 'diff:' + String(a.id), name: d ? name + ' · 판 ' + from + ' → 판 ' + to : name, kind: 'text', text: text };
+}
+function artOpenDiff(cid, a) {
+  return fetch('/api/dashboard/session/' + encodeURIComponent(cid) + '/artifacts/' + encodeURIComponent(a.id) + '/diff')
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .catch(function() { return null; })
+    .then(function(d) {
+      var v = artViewerEl();
+      if (!v || _artViewer.cid !== cid || !artViewerIsOpen()) return;
+      _artViewer = { cid: cid, scope: 'diff', list: [] };
+      v.open([artDiffItem(a, d)], 0);
+    });
+}
+
+// The viewer's own actions on the shown file (ui-action, extra: true): 이전 판 열기 / 이전 판과 비교.
+function onArtViewerAction(e) {
+  var d = e && e.detail;
+  var v = artViewerEl();
+  if (!d || !d.extra || !v || e.target !== v) return;
+  var cid = _artViewer.cid;
+  var a = cid ? artFind(cid, String(d.id)) : null;
+  if (!a) return;
+  if (d.action === 'ver-prev') artOpenPrevious(cid, a);
+  else if (d.action === 'ver-diff') artOpenDiff(cid, a);
 }
 
 // Open the viewer at a file, over the conversation's files — or, for a user's attachment, over the files of its
@@ -22141,7 +22258,7 @@ function openArtifactViewer(cid, id, opener) {
   var v = artViewerEl();
   if (!v || !cid || !id || typeof v.open !== 'function') return;
   var c = _artCache[cid];
-  var list = artViewerPages((c && c.list) || []);
+  var list = artLatestOnly(artViewerPages((c && c.list) || []));
   var scope = 'conversation';
   if (umGet(cid, id)) {
     scope = 'attachments';
@@ -22149,7 +22266,12 @@ function openArtifactViewer(cid, id, opener) {
   } else if (!list.some(function(a) { return a.id === id; })) {
     var one = artFind(cid, id);
     if (!one) return;
-    list = artViewerPages(list.concat([one]));
+    // An earlier version (an answer's row): the viewer pages through that artifact's versions (#1074).
+    var kin = artVersionsOf(cid, one);
+    if (kin.length > 1) {
+      scope = 'versions';
+      list = kin;
+    } else list = artViewerPages(list.concat([one]));
   }
   pauseArtCards();
   _artViewer = { cid: cid, scope: scope, list: list };
@@ -22212,6 +22334,7 @@ function fcHydrateIn(node) {
 })();
 
 (function initArtifactInteractions() {
+  document.addEventListener('ui-action', onArtViewerAction);
   // <ui-file-card> asks to open its file, <ui-media-grid> one of its pictures (ui-open): the viewer, at it, over the
   // conversation's files; the viewer returns focus to the card / the grid's tile. (The hovercard's ui-open — its
   // detail a trigger — is answered on the card below.)

@@ -22,11 +22,26 @@
  * Scope: what the MODEL sent (slack-mcp send_file / send_media / send_link). The daemon's
  * own uploads (usage cards, the system-prompt file, skill files) are not session
  * output and are not recorded.
+ *
+ * Versions (#1074): an upload under the same key as an earlier one (the model's
+ * `artifact_key`, else the file name without its time stamps —
+ * somalib/artifacts/artifact-version.ts) is the next version of that artifact,
+ * not an unrelated file. The same content as the latest version records no new
+ * version; the same bytes are stored once (`blob`); a key keeps the bytes of its
+ * newest MAX_KEPT_VERSIONS versions — older ones keep their row and Slack link.
  */
 
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { atomicWriteJson, readJsonWithBackup } from '@soma/common/atomic-json';
+import {
+  artifactKeyFor,
+  assignArtifactVersions,
+  isSha256Hex,
+  MAX_KEPT_VERSIONS,
+  planArtifactVersion,
+} from 'somalib/artifacts/artifact-version';
 import { ulid } from 'ulid';
 import { DATA_DIR } from '../env-paths';
 import { Logger } from '../logger';
@@ -76,10 +91,29 @@ export interface SessionArtifact {
   turnStartedAt?: number;
   /** One-line preview text (legacy answers only). */
   excerpt?: string;
+  /** #1074 — what makes two uploads the same artifact: `key:` / `url:` / `name:` (artifact-version.ts). */
+  key?: string;
+  /** #1074 — 1 for the key's first upload, one more for each upload whose content differs. */
+  version?: number;
+  /** #1074 — sha256 (hex) of the bytes, when known. */
+  sha256?: string;
+  /** #1074 — the version before this one. */
+  previousId?: string;
+  /** #1074 — true: differs from the previous version (absent: none, or a hash is unknown). */
+  changed?: boolean;
+  /** #1074 — the stored copy is this artifact's id (the same bytes are kept once). Internal. */
+  blob?: string;
+  /** #1074 — Slack files that sent this version again unchanged (dedupe). Internal. */
+  resentFileIds?: string[];
 }
 
-/** What a kanban card carries: the count plus the few newest for the face row. */
+/**
+ * What a kanban card carries — the board goes to every signed-in viewer, so the
+ * versions themselves stay on the session's own API (#1074): one entry per
+ * artifact (its latest version) with its version badge, never the version list.
+ */
 export interface ArtifactSummary {
+  /** Artifacts, a key counted once. */
   count: number;
   /** Newest first; at most SUMMARY_RECENT entries. */
   recent: SessionArtifact[];
@@ -89,6 +123,8 @@ export interface ArtifactSummary {
 export interface ArtifactSnapshot {
   id: string;
   size: number;
+  /** sha256 (hex) of the copy. */
+  sha256?: string;
 }
 
 interface ArtifactIndex {
@@ -107,6 +143,8 @@ const SUMMARY_RECENT = 4;
 const PENDING_PREFIX = '.pending-';
 /** A pending snapshot older than this lost its result (abort, crash, restart) and is swept. */
 const PENDING_TTL_MS = 60 * 60 * 1000;
+/** Slack file ids remembered per version for unchanged re-sends. */
+const MAX_RESENT_IDS = 20;
 
 const EXT_TABLE: Record<string, [FileArtifactKind, string]> = {
   png: ['image', 'image/png'],
@@ -227,6 +265,38 @@ function safeSegment(id: string): string {
   return String(id).replace(/[^a-zA-Z0-9_-]/g, '');
 }
 
+/** An artifact as the session's API serves it: without the store's bookkeeping. */
+export function publicArtifact(a: SessionArtifact): SessionArtifact {
+  const { blob: _blob, resentFileIds: _resent, ...rest } = a;
+  return rest;
+}
+
+/**
+ * An artifact as the board and its live push carry it (every signed-in viewer, #1074):
+ * its version badge (`version`, `changed`), not the hash or the link to its other versions.
+ */
+export function boardArtifact(a: SessionArtifact): SessionArtifact {
+  const { sha256: _sha, previousId: _prev, ...rest } = publicArtifact(a);
+  return rest;
+}
+
+/** The latest version of each key, newest first (rows newest first in). */
+function latestPerKey(newestFirst: SessionArtifact[]): SessionArtifact[] {
+  const best = new Map<string, SessionArtifact>();
+  for (const a of newestFirst) {
+    const k = a.key || `id:${a.id}`;
+    const cur = best.get(k);
+    if (!cur || (a.version ?? 0) > (cur.version ?? 0)) best.set(k, a);
+  }
+  return newestFirst.filter((a) => best.get(a.key || `id:${a.id}`) === a);
+}
+
+async function sha256Of(file: string): Promise<string> {
+  const hash = createHash('sha256');
+  for await (const chunk of fs.createReadStream(file)) hash.update(chunk as Buffer);
+  return hash.digest('hex');
+}
+
 function validateIndex(raw: unknown): ArtifactIndex {
   const r = raw as Partial<ArtifactIndex> | null;
   if (!r || typeof r !== 'object' || !Array.isArray(r.artifacts)) throw new Error('not an artifact index');
@@ -272,6 +342,12 @@ export class ArtifactStore {
     return seg && seg === conversationId ? path.join(this.baseDir, seg) : null;
   }
 
+  /** The conversation's index file (slack-mcp reads it, #1074); null for an unsafe id. */
+  indexFile(conversationId: string): string | null {
+    const dir = this.dir(conversationId);
+    return dir ? path.join(dir, 'index.json') : null;
+  }
+
   onRecorded(listener: ArtifactListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -286,6 +362,8 @@ export class ArtifactStore {
       sweepStalePending(dir);
       try {
         loaded = readJsonWithBackup(path.join(dir, 'index.json'), validateIndex) ?? loaded;
+        // Rows recorded before versions existed (#1074) get a key and a version on load.
+        assignArtifactVersions(loaded.artifacts);
       } catch (err) {
         // Unusable live + backup: list nothing now, but never report it as backfilled
         // or overwrite silently — the next record writes a fresh index (atomicWriteJson
@@ -309,10 +387,25 @@ export class ArtifactStore {
     return this.index(conversationId).artifacts.filter((a) => a.source !== 'final_answer');
   }
 
-  /** All artifacts of a conversation, newest first (SSOT 2026-11-02 T3). Unknown/unsafe → []. */
+  /** Every recorded version of every artifact, newest first (SSOT 2026-11-02 T3). Unknown/unsafe → []. */
   list(conversationId: string): SessionArtifact[] {
+    return this.rowsNewestFirst(conversationId).map(publicArtifact);
+  }
+
+  private rowsNewestFirst(conversationId: string): SessionArtifact[] {
     // Reversed first: files made in the same millisecond list the later-recorded one first.
     return this.files(conversationId).reverse().sort(newestFirst);
+  }
+
+  /** The versions of the artifact `artifactId` belongs to, newest version first (#1074). */
+  versions(conversationId: string, artifactId: string): SessionArtifact[] {
+    const art = this.get(conversationId, artifactId);
+    if (!art) return [];
+    const key = art.key || `id:${art.id}`;
+    return this.files(conversationId)
+      .filter((a) => (a.key || `id:${a.id}`) === key)
+      .sort((x, y) => (y.version ?? 0) - (x.version ?? 0))
+      .map(publicArtifact);
   }
 
   isBackfilled(conversationId: string): boolean {
@@ -328,9 +421,9 @@ export class ArtifactStore {
 
   summary(conversationId: string | undefined): ArtifactSummary | undefined {
     if (!conversationId) return undefined;
-    const all = this.list(conversationId);
-    if (all.length === 0) return undefined;
-    return { count: all.length, recent: all.slice(0, SUMMARY_RECENT) };
+    const latest = latestPerKey(this.rowsNewestFirst(conversationId));
+    if (latest.length === 0) return undefined;
+    return { count: latest.length, recent: latest.slice(0, SUMMARY_RECENT).map(boardArtifact) };
   }
 
   get(conversationId: string, artifactId: string): SessionArtifact | undefined {
@@ -344,7 +437,8 @@ export class ArtifactStore {
     if (!dir || !seg || seg !== artifactId) return null;
     const art = this.get(conversationId, artifactId);
     if (!art?.stored) return null;
-    return path.join(dir, seg);
+    const blob = art.blob ?? art.id;
+    return safeSegment(blob) === blob ? path.join(dir, blob) : null;
   }
 
   /**
@@ -360,7 +454,7 @@ export class ArtifactStore {
     try {
       await fs.promises.mkdir(dir, { recursive: true });
       await fs.promises.copyFile(src.real, staged);
-      return { id, size: src.size };
+      return { id, size: src.size, sha256: await sha256Of(staged) };
     } catch (err) {
       logger.warn(`Could not snapshot an upload for ${conversationId}`, err);
       await fs.promises.unlink(staged).catch(() => {});
@@ -398,7 +492,8 @@ export class ArtifactStore {
   /**
    * Record a file the model uploaded to Slack. Uses `snapshot` when the call was
    * snapshotted, else copies `filePath` now if it is still a readable upload.
-   * Same Slack file id twice → no-op (null).
+   * Same Slack file id twice → no-op (null). Same key as an earlier upload → its
+   * next version; the same content as the latest version → no new version (null).
    */
   async recordSlackUpload(input: {
     conversationId: string;
@@ -414,18 +509,20 @@ export class ArtifactStore {
     tool?: string;
     turnId?: string;
     now?: number;
+    /** #1074 — the model's `artifact_key`. */
+    key?: string;
+    /** #1074 — sha256 of the bytes slack-mcp uploaded (used when no copy is kept here). */
+    sha256?: string;
   }): Promise<SessionArtifact | null> {
     const { conversationId } = input;
     if (!this.dir(conversationId)) return null;
-    const key = input.slackFileId ? `${conversationId}|file:${input.slackFileId}` : undefined;
-    if (
-      key &&
-      (this.reserved.has(key) || this.files(conversationId).some((a) => a.slackFileId === input.slackFileId))
-    ) {
+    const fileId = input.slackFileId;
+    const reservation = fileId ? `${conversationId}|file:${fileId}` : undefined;
+    if (reservation && (this.reserved.has(reservation) || this.knowsSlackFile(conversationId, fileId as string))) {
       await this.discardSnapshot(conversationId, input.snapshot);
       return null;
     }
-    if (key) this.reserved.add(key);
+    if (reservation) this.reserved.add(reservation);
     try {
       const reported = typeof input.size === 'number' && input.size >= 0 ? input.size : undefined;
       let snap = input.snapshot ?? (input.filePath ? await this.snapshot(conversationId, input.filePath) : null);
@@ -433,6 +530,19 @@ export class ArtifactStore {
       const name = (input.filename || (input.filePath ? path.basename(input.filePath) : '') || 'file').slice(0, 200);
       const { kind, mime } = classifyArtifact(name);
       const size = snap?.size ?? reported ?? 0;
+      const sha256 = snap ? snap.sha256 : isSha256Hex(input.sha256) ? input.sha256 : undefined;
+      // From here to the index write nothing awaits: two uploads of one key never plan the same version.
+      const key = artifactKeyFor({ key: input.key, name });
+      const plan = planArtifactVersion(this.files(conversationId), key, sha256);
+      if (plan.unchanged && plan.previous) {
+        const same = plan.previous as SessionArtifact;
+        if (fileId) same.resentFileIds = [...(same.resentFileIds ?? []), fileId].slice(-MAX_RESENT_IDS);
+        this.persistLogged(conversationId);
+        if (snap) await this.unlinkUnreferenced(conversationId, [snap.id]);
+        return null;
+      }
+      // The same bytes are kept once: a stored artifact with this hash lends its copy.
+      const twin = sha256 ? this.storedWithHash(conversationId, sha256) : undefined;
       const turnStartedAt = turnStartFromTurnId(input.turnId);
       const url = normalizeArtifactUrl(input.url);
       const artifact: SessionArtifact = {
@@ -445,18 +555,26 @@ export class ArtifactStore {
         size,
         createdAt: input.now ?? Date.now(),
         source: 'slack_upload',
-        stored: !!snap,
+        stored: !!snap || !!twin,
+        ...(twin ? { blob: twin.blob ?? twin.id } : {}),
         ...(input.slackFileId ? { slackFileId: input.slackFileId } : {}),
         ...(url ? { url } : {}),
         ...(input.permalink ? { permalink: input.permalink } : {}),
         ...(input.tool ? { tool: input.tool } : {}),
         ...(input.turnId ? { turnId: input.turnId } : {}),
         ...(turnStartedAt ? { turnStartedAt } : {}),
+        key,
+        version: plan.version,
+        ...(sha256 ? { sha256 } : {}),
+        ...(plan.previous ? { previousId: plan.previous.id } : {}),
+        ...(plan.changed === true ? { changed: true } : {}),
       };
-      this.append(conversationId, artifact);
+      const freed = this.append(conversationId, artifact);
+      if (snap && twin) freed.push(snap.id);
+      await this.unlinkUnreferenced(conversationId, freed);
       return artifact;
     } finally {
-      if (key) this.reserved.delete(key);
+      if (reservation) this.reserved.delete(reservation);
     }
   }
 
@@ -487,6 +605,9 @@ export class ArtifactStore {
         ? a.messageTs === input.messageTs && (a.channel ?? '') === (input.channel ?? '')
         : !a.messageTs && a.url === url && a.turnId === input.turnId);
     if (this.files(conversationId).some(same)) return null;
+    // #1074 — the same link is the same artifact: a link's content is its URL, so posting it again adds no version.
+    const key = artifactKeyFor({ url });
+    if (this.files(conversationId).some((a) => a.key === key)) return null;
     const turnStartedAt = turnStartFromTurnId(input.turnId);
     const title = input.title?.trim().slice(0, 200);
     const artifact: SessionArtifact = {
@@ -506,26 +627,70 @@ export class ArtifactStore {
       ...(input.tool ? { tool: input.tool } : {}),
       ...(input.turnId ? { turnId: input.turnId } : {}),
       ...(turnStartedAt ? { turnStartedAt } : {}),
+      key,
+      version: 1,
     };
     this.append(conversationId, artifact);
     return artifact;
   }
 
-  private append(conversationId: string, artifact: SessionArtifact): void {
+  /** A Slack file already recorded — as a version, or as an unchanged re-send of one. */
+  private knowsSlackFile(conversationId: string, fileId: string): boolean {
+    return this.files(conversationId).some((a) => a.slackFileId === fileId || a.resentFileIds?.includes(fileId));
+  }
+
+  private storedWithHash(conversationId: string, sha256: string): SessionArtifact | undefined {
+    return this.files(conversationId).find((a) => a.stored && a.sha256 === sha256);
+  }
+
+  /**
+   * Add a version, then drop the bytes of its key's versions past MAX_KEPT_VERSIONS (their row and
+   * Slack link stay). Returns the copies that may now be unreferenced.
+   */
+  private append(conversationId: string, artifact: SessionArtifact): string[] {
     const idx = this.index(conversationId);
     idx.artifacts = [...idx.artifacts, artifact];
-    try {
-      this.persist(conversationId);
-    } catch (err) {
-      // The in-memory list still serves this process; the next record retries the write.
-      logger.error(`Failed to persist artifact index for ${conversationId}`, err);
+    const freed: string[] = [];
+    const ofKey = idx.artifacts
+      .filter((a) => a.source !== 'final_answer' && a.key === artifact.key)
+      .sort((x, y) => (y.version ?? 0) - (x.version ?? 0));
+    for (const old of ofKey.slice(MAX_KEPT_VERSIONS)) {
+      if (!old.stored) continue;
+      old.stored = false;
+      freed.push(old.blob ?? old.id);
     }
+    this.persistLogged(conversationId);
     for (const l of this.listeners) {
       try {
         l(artifact);
       } catch (err) {
         logger.warn('Artifact listener threw', err);
       }
+    }
+    return freed;
+  }
+
+  private persistLogged(conversationId: string): void {
+    try {
+      this.persist(conversationId);
+    } catch (err) {
+      // The in-memory list still serves this process; the next record retries the write.
+      logger.error(`Failed to persist artifact index for ${conversationId}`, err);
+    }
+  }
+
+  /** Delete stored copies no stored artifact points at any more (best effort). */
+  private async unlinkUnreferenced(conversationId: string, blobs: string[]): Promise<void> {
+    const dir = this.dir(conversationId);
+    if (!dir || blobs.length === 0) return;
+    const inUse = new Set(
+      this.files(conversationId)
+        .filter((a) => a.stored)
+        .map((a) => a.blob ?? a.id),
+    );
+    for (const blob of new Set(blobs)) {
+      if (inUse.has(blob) || safeSegment(blob) !== blob) continue;
+      await fs.promises.unlink(path.join(dir, blob)).catch(() => {});
     }
   }
 }

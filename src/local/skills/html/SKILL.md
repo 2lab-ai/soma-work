@@ -403,6 +403,13 @@ The `<slug>` is a 2-4 word ASCII kebab from the content's title or first
 heading; `<ts>` is `YYYYMMDD-HHMMSS`. `$(pwd)` is the runtime-guaranteed
 `/tmp/{slackId}/session_…` directory — safe for both render and Slack upload.
 
+**A revision keeps its slug.** Re-rendering a report you already sent in this
+session (fixes, new data, the user's corrections) is the next version of that
+report, not a new one: keep the same `<slug>` — only `<ts>` changes — and send
+it with the same `artifact_key` (Step 8). The dashboard then lists it once with
+"판 N · 이전 판 이후 바뀜", the earlier version still opens, and the two
+compare line by line. A different report gets a different slug.
+
 **Global hard constraints** (apply to every template — these are what stops
 the model from freestyling AI-slop defaults). The font stack, the
 pure-black/white rule and the rounded-corner rule are *defaults*: the selected
@@ -541,8 +548,9 @@ daemon can't be verified, publish starts a fresh daemon on the next free
 port instead of printing a dead link. (Old publishers meeting a new daemon
 read its health reply as foreign and self-heal onto another port — accepted
 port drift, never a silent 404.) Re-publishing the same filename refreshes
-that artifact in place — timestamps in the filename are what make archive
-entries distinct.
+that artifact in place and keeps the bytes it replaces as `<stem>.v<N><ext>`
+beside it (the JSON says `version` and `archived`; the same bytes keep nothing
+and say `unchanged`) — a name keeps its newest 10 earlier versions.
 
 **The archive is LAN-readable, indefinitely.** With the default `0.0.0.0`
 bind, everything published is listable and readable by anyone on the local
@@ -569,6 +577,7 @@ mcp__slack-mcp__send_file(
   file_path="<absolute path to HTML>",
   url="<url from Step 7>",
   title="<meaningful artifact title>",
+  artifact_key="<slug>",
   initial_comment="<template + design driver used (+ 'Impeccable — document-based application' on that driver) + any fallback note> — live (with motion): <url from Step 7>"
 )
 ```
@@ -577,6 +586,11 @@ mcp__slack-mcp__send_file(
 opens the uploaded copy, and its viewer offers 라이브로 열기 for the live page
 (with motion). Do not also `send_link` the page — one page, one artifact.
 Leave `url` out when Step 7 could not start the server.
+
+`artifact_key` is the Step 4 `<slug>`: the same report sent again is its next
+version. The upload's comment and the tool's reply say the version and whether
+it changed since the previous one (`version`, `changed`; "바뀐 것 없음" when
+the bytes are the same — then say so instead of claiming a new report).
 
 No PNG is made and none is uploaded: one page is one artifact in the thread
 and in the dashboard's artifact list (SSOT 2026-11-02, 2026-11-09). The one

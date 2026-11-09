@@ -1,5 +1,14 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
-import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -182,5 +191,61 @@ describe('local:html serve.mjs — behavioral contract (real daemon, real GET)',
     } finally {
       staleServer.close();
     }
+  });
+
+  // ── #1074 — publishing over a name keeps the version it replaces ──
+
+  function publishBytes(name: string, body: string) {
+    const artifact = join(artifactDir, name);
+    writeFileSync(artifact, body);
+    return JSON.parse(
+      execFileSync(process.execPath, [SERVER, '--file', artifact, '--port', String(PORT)], { env, encoding: 'utf8' }),
+    );
+  }
+  const archivesOf = (stem: string) =>
+    readdirSync(durableRoot)
+      .filter((f) => new RegExp(`^${stem}\\.v\\d+\\.html$`).test(f))
+      .sort((a, b) => Number(a.match(/\.v(\d+)\./)![1]) - Number(b.match(/\.v(\d+)\./)![1]));
+
+  it('#1074 T7 — re-publishing a name with new bytes keeps the previous version as <stem>.v<N><ext>', async () => {
+    expect(publishBytes('revise.html', '<p>one</p>')).toMatchObject({ version: 1 });
+    const second = publishBytes('revise.html', '<p>two</p>');
+    expect(second).toMatchObject({ version: 2, archived: 'revise.v1.html' });
+    expect(readFileSync(join(durableRoot, 'revise.v1.html'), 'utf8')).toBe('<p>one</p>');
+    expect(readFileSync(join(durableRoot, 'revise.html'), 'utf8')).toBe('<p>two</p>');
+    // The earlier version is served too (its own link), as HTML. A fresh connection: a keep-alive socket the
+    // daemon already closed would reset this read.
+    const old = await new Promise<{ status?: number; type?: string; body: string }>((ok, fail) => {
+      http
+        .get({ host: '127.0.0.1', port: PORT, path: '/revise.v1.html', agent: false }, (res) => {
+          let body = '';
+          res.on('data', (c) => (body += c));
+          res.on('end', () => ok({ status: res.statusCode, type: String(res.headers['content-type']), body }));
+        })
+        .on('error', fail);
+    });
+    expect(old).toMatchObject({ status: 200, body: '<p>one</p>' });
+    expect(old.type).toContain('text/html');
+  }, 60_000);
+
+  it('#1074 T7 — the same bytes again keep nothing new ("no changes")', () => {
+    const again = publishBytes('revise.html', '<p>two</p>');
+    expect(again).toMatchObject({ version: 2, unchanged: true });
+    expect(again).not.toHaveProperty('archived');
+    expect(archivesOf('revise')).toEqual(['revise.v1.html']);
+  }, 60_000);
+
+  it('#1074 T7 — a name keeps its newest 10 earlier versions', () => {
+    for (let i = 3; i <= 14; i++) publishBytes('revise.html', `<p>${i}</p>`);
+    const kept = archivesOf('revise');
+    expect(kept).toHaveLength(10);
+    expect(kept[0]).toBe('revise.v4.html');
+    expect(kept[9]).toBe('revise.v13.html');
+    expect(readFileSync(join(durableRoot, 'revise.v13.html'), 'utf8')).toBe('<p>13</p>');
+    expect(readFileSync(join(durableRoot, 'revise.html'), 'utf8')).toBe('<p>14</p>');
+  }, 180_000);
+
+  it('#1074 T7 — a symlink sitting at the name is replaced, never kept as a version', () => {
+    expect(readdirSync(durableRoot).filter((f) => f.startsWith('planted.v'))).toEqual([]);
   });
 });
