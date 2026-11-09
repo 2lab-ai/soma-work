@@ -236,6 +236,30 @@ describe('Dashboard API', () => {
     expect(body.board.working.map((c: any) => c.title)).toEqual(['r2', 'r1']);
   });
 
+  it('#1072 — equal waits: the newest activity first; a card with no readable activity last', async () => {
+    const T = Date.parse('2026-11-09T09:00:00Z');
+    const live = (title: string, last: unknown) => ({
+      sessionId: `sid-${title}`,
+      title,
+      ownerId: 'U1',
+      ownerName: 'Alice',
+      channelId: 'C1',
+      threadTs: title,
+      state: 'MAIN',
+      activityState: 'waiting',
+      activityStateChangedAt: T - 60_000,
+      lastActivity: last,
+    });
+    const sessions = new Map<string, any>();
+    sessions.set('C1:a', live('a', new Date(T - 50_000)));
+    sessions.set('C1:junk', live('junk', 'not a date'));
+    sessions.set('C1:b', live('b', new Date(T - 10_000)));
+    setDashboardSessionAccessor(() => sessions);
+
+    const res = await injectWebServer({ method: 'GET', url: '/api/dashboard/sessions', headers: AUTH_HEADER });
+    expect(JSON.parse(res.body).board.waiting.map((c: any) => c.title)).toEqual(['b', 'a', 'junk']);
+  });
+
   it('#1072 — waitingSortAt: its own wait, else its epic children’s oldest, else its last activity, else last', async () => {
     const { waitingSortAt } = await import('../dashboard');
     const T = Date.parse('2026-11-09T09:00:00Z');
