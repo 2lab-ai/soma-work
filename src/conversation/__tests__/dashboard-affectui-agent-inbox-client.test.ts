@@ -327,9 +327,12 @@ describe('the board’s wording (lang="ko" + data.strings, D2 group 6)', () => {
     `${cook(src.slice(0, src.indexOf('\n};\n') + 4))}\nreturn BOARD_STRINGS;`,
   )({ image: '이미지' }, (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0));
   it('the element’s Korean table (status words, sub-agents, announcement, age, clock); the page’s file chips and no lead', () => {
-    // Both boards (the kanban and every CRON lane) speak Korean: the element's own words.
+    // Both boards (the kanban and every CRON lane) speak the page's language: the element's own words (lang="ko" in the
+    // HTML, rewritten by translatePage; a lane made at run time reads <html lang>).
     expect(TEMPLATE).toContain('<ui-agent-inbox id="kanban" class="kanban" view="board" lang="ko"></ui-agent-inbox>');
-    expect(TEMPLATE).toContain("el.setAttribute('lang', 'ko');");
+    expect(TEMPLATE).toContain(
+      "el.setAttribute('lang', document.documentElement && document.documentElement.lang === 'en' ? 'en' : 'ko');",
+    );
     // What the ko table already says is not repeated; the English age (timeAgo) is gone.
     // The clock too: the ko table's duration is Korean since 0.10.0 (D2-GAPS G6-1 — the page's fmtRunKo is gone).
     for (const k of ['agents', 'agentsRunning', 'agentsFailed', 'arts', 'announce', 'ago', 'status', 'duration']) {
