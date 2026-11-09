@@ -1,7 +1,12 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { setAdmittedPluginNames } from '../../../plugin/admitted-plugin-names';
 import { SkillForceHandler } from '../skill-force-handler';
+
+// The PLUGINS_DIR plugins these tests mount are ones PluginManager admitted on a real host. A
+// directory that is not admitted is not served (see src/plugin/__tests__/admitted-plugin-names.test.ts).
+beforeEach(() => setAdmittedPluginNames(['stv', 'superpowers', 'custom', 'foo', 'bar']));
 
 // Mock fs module
 vi.mock('node:fs');

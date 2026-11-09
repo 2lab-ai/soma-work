@@ -128,4 +128,33 @@ describe('PluginManager bundled-plugin resolution (T3)', () => {
 
     expect(mgr.getPluginPaths()).toContainEqual({ type: 'local', path: bundledPath });
   });
+
+  it('a bundled name is not refused as a name collision — it never uses PLUGINS_DIR', async () => {
+    const bundledPath = path.join(tmpDir, 'bundled-local');
+    fs.mkdirSync(bundledPath, { recursive: true });
+
+    const config: PluginConfig = {
+      marketplace: [
+        { name: 'soma-work', repo: '2lab-ai/soma-work', ref: 'main' },
+        { name: 'acme-skills', repo: 'acme/acme-skills', ref: 'main' },
+      ],
+      plugins: ['zworkflow@soma-work', 'zworkflow@acme-skills'],
+    };
+    // Whatever sits under PLUGINS_DIR with that name is not the bundle's business.
+    fs.mkdirSync(path.join(tmpDir, 'zworkflow'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'zworkflow', 'README.md'), 'left by an older install\n');
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const mgr = new PluginManager(config, tmpDir, undefined, { zworkflow: bundledPath });
+    await mgr.initialize();
+
+    expect(mockFetchPlugin).not.toHaveBeenCalled();
+    expect(mgr.getResolvedPlugins().map((r) => [r.name, r.localPath])).toEqual([
+      ['zworkflow@soma-work', bundledPath],
+      ['zworkflow@acme-skills', bundledPath],
+    ]);
+    expect(consoleError.mock.calls.some((args) => /collision/i.test(String(args[0])))).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, 'zworkflow', 'README.md'))).toBe(true);
+    consoleError.mockRestore();
+  });
 });
