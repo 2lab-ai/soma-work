@@ -84,6 +84,8 @@ const BASE_FNS = [
 const BASE_VARS = ['ART_KIND_LABEL', '_userMedia', 'CARD_ART_TILES'];
 
 type Art = Record<string, unknown>;
+/** The library's peek renderer (types from its dist; the subpath itself is imported at run time). */
+type PeekModule = Pick<typeof import('@2lab.ai/ui/dist/components/artifact-viewer/index.js'), 'peekHtml'>;
 const html: Art = {
   id: 'A1',
   kind: 'html',
@@ -1137,14 +1139,18 @@ describe('SSOT 2026-11-09 T3 — link artifacts open their URL', () => {
     const had = 'HTMLElement' in globalThis;
     if (!had) (globalThis as Record<string, unknown>).HTMLElement = class {};
     try {
-      const lib = (await import('@2lab.ai/ui/artifact-viewer')) as unknown as {
-        peekHtml(item: unknown, lang: string, now?: number): string;
-      };
+      // @ts-expect-error TS2307 — the package's "exports" subpath resolves under node16 / bundler resolution; this
+      // tsconfig is "node" (vitest resolves it) — the dashboard-ko-time-words.test.ts pattern.
+      const lib = (await import('@2lab.ai/ui/artifact-viewer')) as PeekModule;
       const m = load<{ artPeekItem(cid: string, a: Art): Record<string, unknown> }>(
         [...BASE_FNS, 'umMissingReason', 'artIsDoc', 'artViewItem', 'artPeekItem'],
         [...BASE_VARS, '_artDocCache'],
       );
-      const out = lib.peekHtml(m.artPeekItem('c', link), 'ko', 1792733010000);
+      const out = lib.peekHtml(
+        m.artPeekItem('c', link) as unknown as Parameters<PeekModule['peekHtml']>[0],
+        'ko',
+        1792733010000,
+      );
       expect(out).toContain('http://192.168.0.10:5173/board');
       expect(out).toContain('링크');
       expect(out).not.toContain('사본이 없습니다');
