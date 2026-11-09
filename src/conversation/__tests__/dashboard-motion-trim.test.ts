@@ -38,7 +38,7 @@ describe('dashboard motion trim', () => {
     expect(keyedNow(true, Date.now() - 5_000)).toBe(false);
     expect(keyedNow(false, Date.now())).toBe(false);
     expect(TEMPLATE).toContain(
-      "document.addEventListener('keydown', function(e) { if (isActingKey(e)) _keyAt = Date.now(); }, true);",
+      "document.addEventListener('keydown', function(e) { if (!e.repeat && isActingKey(e)) _keyAt = Date.now(); }, true);",
     );
     expect(TEMPLATE).toMatch(/^var KEYED_MS = 600;$/m);
   });
@@ -54,6 +54,10 @@ describe('dashboard motion trim', () => {
     expect(acting({ key: ' ', target: on('DIV', true) })).toBe(false);
     expect(acting({ key: 'a', target: on('DIV') })).toBe(false);
     expect(acting({ key: 'n', ctrlKey: true, target: on('BODY') })).toBe(false);
+    // A field inside a shadow root (a <ui-composer>'s textarea): the document sees the host; the path's first is the field.
+    const host = on('UI-COMPOSER');
+    expect(acting({ key: ' ', target: host, composedPath: () => [on('TEXTAREA'), host] })).toBe(false);
+    expect(acting({ key: 'Enter', target: host, composedPath: () => [host] })).toBe(true);
   });
 
   it('the detail panel has no smooth scrolling; its corrections stay instant', () => {
@@ -71,8 +75,11 @@ describe('dashboard motion trim', () => {
   });
 
   it('runLayoutCheck and the deck switch skip their motion when a key just did it', () => {
-    expect(TEMPLATE).toContain('var animate = canAnimate() && !keyedNow();');
-    expect(TEMPLATE).toContain('if (dir && !reduceMotion() && !keyedNow()) deckSlide(panel, dir);');
+    expect(TEMPLATE).toContain('var keyed = keyedNow();\n  var animate = canAnimate() && !keyed;');
+    expect(TEMPLATE).toContain('if (keyed) { _layoutShiftUntil = 0; measureLayout(); return; }');
+    expect(TEMPLATE).toContain(
+      'if (dir && keyedNow()) deckStop(panel);\n  else if (dir && !reduceMotion()) deckSlide(panel, dir);',
+    );
     expect(TEMPLATE).toMatch(/^var DECK_SLIDE_MS = 200;$/m);
   });
 });

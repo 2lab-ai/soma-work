@@ -534,8 +534,11 @@ describe('layout transition — one coordinator', () => {
     k.m.runLayoutCheck();
     expect(keyed.flipFrom).not.toHaveBeenCalled();
     expect(k.kb.animate).not.toHaveBeenCalled();
-    // The new layout is still taken (the next pointer-made change glides from it).
+    // The new layout is taken and measured now — no settle window — so a pointer change right after glides from it.
     expect(k.m.state().key).toBe('snap|closed|board');
+    expect(k.m.state().until).toBe(0);
+    expect(k.calls.measure).toBe(1);
+    expect(k.calls.timers).toBe(0);
     const kr = coordinator({ snap: [[host(), { spots: {} }]], keyed: true, reduce: true });
     kr.m.runLayoutCheck();
     expect(kr.kb.animate).not.toHaveBeenCalled();
