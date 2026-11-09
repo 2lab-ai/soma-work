@@ -95,6 +95,33 @@ describe('ThreadSurface — the wait in the header (#1072)', () => {
     await new ThreadSurface(deps).refreshAndRender(session, KEY);
     await settle();
 
+    // A header was drawn (an absent update would pass the negative check vacuously).
+    expect(updates.length).toBeGreaterThan(0);
+    expect(rendered(updates)).toContain('마지막 활동');
+    expect(rendered(updates)).not.toContain('부터 기다림');
+  });
+
+  it('the same surface drops the wait once the answer moves the session to working', async () => {
+    const session = makeSession({
+      activityState: 'waiting',
+      activityStateChangedAt: ASKED,
+      actionPanel: { channelId: 'C1', messageTs: 'panel-ts', waitingForChoice: true, lastProgressAt: ASKED },
+    });
+    const { deps, updates } = makeDeps(session);
+    const surface = new ThreadSurface(deps);
+
+    await surface.refreshAndRender(session, KEY);
+    await settle();
+    expect(rendered(updates)).toContain(`${token(ASKED)}부터 기다림`);
+    const before = updates.length;
+
+    session.activityState = 'working';
+    session.activityStateChangedAt = ASKED + 60_000;
+    session.actionPanel = { ...session.actionPanel!, waitingForChoice: false, lastProgressAt: ASKED + 60_000 };
+    await surface.refreshAndRender(session, KEY);
+    await settle();
+
+    expect(updates.length).toBeGreaterThan(before);
     expect(rendered(updates)).not.toContain('부터 기다림');
   });
 });
