@@ -113,6 +113,8 @@ type Api = {
   boardFilterCount(f: Filter): number;
   boardCardPasses(s: Card, f: Filter, query: string, now: number): boolean;
   sortBoardColumn(list: Card[], sort: string, dir: string): Card[];
+  boardWaitingAt(s: Card): number;
+  sortWaitingColumn(list: Card[], from?: Card[]): Card[];
   boardViewOf(board: Board, f: Filter, query: string, now: number): { board: Board; hidden: number };
   boardFacetOptions(
     board: Board,
@@ -143,6 +145,8 @@ const FNS = [
   'boardCardPasses',
   'boardCardTime',
   'sortBoardColumn',
+  'boardWaitingAt',
+  'sortWaitingColumn',
   'boardViewOf',
   'boardFacetOptions',
   'boardFilterMenuItems',
@@ -748,6 +752,88 @@ describe('F4 — 정렬: 처음 시작 · 마지막 진행, 오름 · 내림차�
       '최근 먼저 (내림차순)',
       '오래된 먼저 (오름차순)',
     ]);
+  });
+});
+
+describe('#1072 — 응답 필요: the card that has waited longest leads (starred first), whatever the sort', () => {
+  const M = 60_000;
+  const w1 = card({ key: 'w1', waitingSince: NOW - 1 * H, progressAt: NOW - 1 * H, startedAt: NOW - 2 * H });
+  const w2 = card({ key: 'w2', waitingSince: NOW - 5 * H, progressAt: NOW - 30 * M, startedAt: NOW - 1 * H });
+  const w3 = card({ key: 'w3', waitingSince: NOW - 3 * H, progressAt: NOW - 3 * H, startedAt: NOW - 9 * H });
+  const ks = (l: Card[]) => l.map((s) => s.key);
+
+  it('the 응답 필요 column is oldest wait first under every sort the menu offers', () => {
+    const m = api();
+    for (const sort of ['progress', 'start']) {
+      for (const dir of ['desc', 'asc']) {
+        const f = { ...m.boardFilterDefault(), sort, dir };
+        expect(ks(m.boardViewOf(board({ waiting: [w1, w2, w3] }), f, '', NOW).board.waiting)).toEqual([
+          'w2',
+          'w3',
+          'w1',
+        ]);
+      }
+    }
+  });
+
+  it('a starred card still leads, then the oldest wait; equal waits keep the server’s order', () => {
+    const m = api();
+    const star = card({ key: 'st', starred: true, waitingSince: NOW - 10 * M });
+    const tie = card({ key: 'tie', waitingSince: NOW - 5 * H });
+    expect(ks(m.sortWaitingColumn([w1, w2, star, w3, tie]))).toEqual(['st', 'w2', 'tie', 'w3', 'w1']);
+    expect(ks(m.sortWaitingColumn([tie, w2]))).toEqual(['tie', 'w2']);
+  });
+
+  it('equal waits: the newest activity first, as the server — a sibling instance’s card appended after ours too', () => {
+    const m = api();
+    const ours = card({ key: 'ours', waitingSince: 5000, lastActivity: '2026-11-09T08:00:00Z' });
+    const sib = card({ key: 'sib', waitingSince: 5000, lastActivity: '2026-11-09T12:00:00Z' });
+    const junk = card({ key: 'junk', waitingSince: 5000, lastActivity: 'not a date' });
+    expect(ks(m.sortWaitingColumn([ours, sib]))).toEqual(['sib', 'ours']);
+    expect(ks(m.sortWaitingColumn([junk, ours, sib]))).toEqual(['sib', 'ours', 'junk']);
+  });
+
+  it('the other columns and the stored sort are untouched', () => {
+    const m = api();
+    const f = { ...m.boardFilterDefault(), sort: 'start', dir: 'asc' };
+    const frozen = JSON.stringify(f);
+    const out = m.boardViewOf(board({ working: [w1, w2, w3], waiting: [w1, w2, w3] }), f, '', NOW).board;
+    expect(ks(out.working)).toEqual(ks(m.sortBoardColumn([w1, w2, w3], 'start', 'asc')));
+    expect(ks(out.working)).toEqual(['w3', 'w1', 'w2']);
+    expect(ks(out.waiting)).toEqual(['w2', 'w3', 'w1']);
+    expect(JSON.stringify(f)).toBe(frozen);
+  });
+
+  it('the wait clock: its own stamp, else its epic children’s oldest, else its last activity, else last', () => {
+    const m = api();
+    expect(m.boardWaitingAt(w2)).toBe(NOW - 5 * H);
+    const epic = card({
+      key: 'ep',
+      kind: 'epic',
+      lastActivity: new Date(NOW - 10 * M).toISOString(),
+      epic: { state: 'needs-input', children: [card({ key: 'c1' }), card({ key: 'c2', waitingSince: NOW - 7 * H })] },
+    });
+    expect(m.boardWaitingAt(epic)).toBe(NOW - 7 * H);
+    expect(m.boardWaitingAt(card({ key: 'nw', lastActivity: new Date(NOW - 2 * H).toISOString() }))).toBe(NOW - 2 * H);
+    const unknown = { key: 'u' };
+    expect(m.boardWaitingAt(unknown)).toBe(Number.POSITIVE_INFINITY);
+    expect(ks(m.sortWaitingColumn([unknown, w1, epic, w2]))).toEqual(['ep', 'w2', 'w1', 'u']);
+  });
+
+  it('an epic keeps its place by every child’s wait, even when the filter hides the child that waits', () => {
+    const m = api();
+    const oldKid = card({ key: 'old', ownerId: 'U2', waitingSince: NOW - 8 * H });
+    const kid = card({ key: 'kid', ownerId: 'U1' });
+    const epic = card({ key: 'ep', ownerId: 'U1', epic: { state: 'needs-input', children: [kid, oldKid] } });
+    const f = { ...m.boardFilterDefault(), users: ['U1'] };
+    const out = m.boardViewOf(board({ waiting: [w2, epic] }), f, '', NOW).board.waiting;
+    expect(ks(out)).toEqual(['ep', 'w2']);
+    expect(ks((out[0].epic as { children: Card[] }).children)).toEqual(['kid']);
+  });
+
+  it('the column head says the order in one line', () => {
+    expect(TEMPLATE).toContain("boardNeedsHead: '응답 필요 · 오래 기다린 순',");
+    expect(TEMPLATE).toContain('var BOARD_LABELS = { waiting: STRINGS.boardNeedsHead,');
   });
 });
 

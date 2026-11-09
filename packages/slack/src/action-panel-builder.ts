@@ -75,6 +75,14 @@ export interface ActionPanelBuildParams {
    */
   lastSignalAt?: number;
   /**
+   * #1072 — when the session started waiting on its user (its switch to
+   * `waiting`, saved across a restart). Shown only while the head waits
+   * (입력 대기 / 대기 중), as `<date token>부터 기다림`, so the wait reads right
+   * however long the head stays up. The caller passes it only for a session
+   * whose state is `waiting`; a working session's stamp is not a wait.
+   */
+  waitingSince?: number;
+  /**
    * #1031 ⑤ — the session is SLEEPING (idle past the lifecycle limit). The
    * badge says so, with what wakes it, instead of a stale "사용 가능".
    */
@@ -153,6 +161,7 @@ export class ActionPanelBuilder {
           activeTool: params.activeTool,
           lastProgressAt: params.lastProgressAt,
           lastSignalAt: params.lastSignalAt,
+          waitingSince: params.waitingSince,
           sleeping: params.sleeping,
           now: params.now,
         }),
@@ -258,7 +267,7 @@ export class ActionPanelBuilder {
   }
 
   /**
-   * U9 — `단계 · 마지막 활동 N초 전 [· 응답 신호 N초 전]`.
+   * U9 — `단계 · [N분 전부터 기다림 ·] 마지막 활동 N초 전 [· 응답 신호 N초 전]`.
    *
    * Three independent facts, never collapsed (A19):
    *   - the STEP, chosen by priority: approval wait > running tool > agentPhase;
@@ -280,6 +289,7 @@ export class ActionPanelBuilder {
     activeTool?: string;
     lastProgressAt?: number;
     lastSignalAt?: number;
+    waitingSince?: number;
     sleeping?: boolean;
     now?: number;
   }): string | null {
@@ -304,6 +314,13 @@ export class ActionPanelBuilder {
     const now = params.now ?? Date.now();
     const parts: string[] = [];
     if (phase) parts.push(phase);
+
+    // #1072 — a head that waits on its user says since when. One phrase per
+    // case (the catalog translates it whole): "3분 전부터 기다림".
+    const waits = params.status === '입력 대기' || params.status === '대기 중';
+    if (waits && params.waitingSince !== undefined) {
+      parts.push(`${ActionPanelBuilder.ageToken(params.waitingSince, now)}부터 기다림`);
+    }
 
     parts.push(
       params.lastProgressAt === undefined
