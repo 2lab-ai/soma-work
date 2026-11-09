@@ -46,6 +46,8 @@ export interface SessionTitleBridgeSnapshot {
   lastAssistantTurnId?: string;
   summaryTitleLastUpdatedAtMs?: number;
   links?: SessionSummaryTitleLinks;
+  /** The session's user (initiator, else owner): in llmux mode the title call is metered under their own key. */
+  tenantUserId?: string;
 }
 export interface SessionTitleBridge {
   getSnapshot(conversationId: string): SessionTitleBridgeSnapshot | null;
@@ -398,7 +400,7 @@ async function _recordAssistantTurnAsync(conversationId: string, content: string
   }
 
   // Then generate summary asynchronously (don't block)
-  generateSummary(conversationId, turn.id, turn.rawContent ?? content).catch((err) => {
+  generateSummary(conversationId, turn.id, turn.rawContent ?? content, record.ownerId).catch((err) => {
     logger.error(`Failed to generate summary for turn ${turn.id}`, err);
   });
 }
@@ -443,10 +445,17 @@ async function _recordExecutiveSummaryTurnAsync(
 }
 
 /**
- * Generate summary for an assistant turn and update the record
+ * Generate summary for an assistant turn and update the record.
+ * `ownerId` = the conversation's owner: in llmux mode the summary call is
+ * metered under their own key.
  */
-async function generateSummary(conversationId: string, turnId: string, content: string): Promise<void> {
-  const summary = await summarizeResponse(content);
+async function generateSummary(
+  conversationId: string,
+  turnId: string,
+  content: string,
+  ownerId: string | undefined,
+): Promise<void> {
+  const summary = await summarizeResponse(content, { tenantUserId: ownerId || undefined });
 
   const record = await getOrLoadConversation(conversationId);
   if (!record) {
@@ -511,7 +520,7 @@ async function maybeRegenerateSessionSummaryTitle(conversationId: string, turnId
   if (!_sessionTitleBridge) return;
   const snap = _sessionTitleBridge.getSnapshot(conversationId);
   if (!snap) return;
-  const { sessionKey, userMessages, summaryTitleLastUpdatedAtMs, links } = snap;
+  const { sessionKey, userMessages, summaryTitleLastUpdatedAtMs, links, tenantUserId } = snap;
 
   // Skip: not enough user signal yet.
   if (!userMessages || userMessages.length < SUMMARY_TITLE_MIN_USER_MSG) return;
@@ -531,7 +540,7 @@ async function maybeRegenerateSessionSummaryTitle(conversationId: string, turnId
   const startTurnId = turnId;
 
   const work = (async () => {
-    const result = await generateSessionSummaryTitle(userMessages, links);
+    const result = await generateSessionSummaryTitle(userMessages, links, { tenantUserId });
     if (!result || !_sessionTitleBridge) return;
     const latest = _sessionTitleBridge.getSnapshot(conversationId);
     if (!latest || latest.sessionKey !== sessionKey) return;
@@ -579,7 +588,7 @@ export async function resummarizeTurn(conversationId: string, turnId: string): P
 
   // Re-generate summary
   const text = turn.role === 'assistant' ? stripEchoedDisplayLangTag(turn.rawContent) : turn.rawContent;
-  generateSummary(conversationId, turnId, text).catch((err) => {
+  generateSummary(conversationId, turnId, text, record.ownerId).catch((err) => {
     logger.error(`Resummarize failed for turn ${turnId}`, err);
   });
   return true;

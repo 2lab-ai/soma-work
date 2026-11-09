@@ -511,6 +511,14 @@ export interface SummarySessionInfo {
   sessionWorkingDir?: string;
   /** Claude SDK session ID — used to resume conversation for context-aware summaries. */
   sessionId?: string;
+  /**
+   * Who the summary is made for — the user who drove the turn, else the owner
+   * (legacy `userId` last). In llmux mode the summary query carries their own
+   * key, so it is metered under their tenant; none → the shared key.
+   */
+  currentInitiatorId?: string;
+  ownerId?: string;
+  userId?: string;
   links?: SessionLinks;
   /**
    * Accumulated history of every link touched in this conversation. Populated
@@ -560,6 +568,7 @@ export interface SummarySessionInfo {
  * @param model - Model to use (from session)
  * @param sessionId - Claude SDK session ID for forking conversation context
  * @param cwd - Working directory for the forked session
+ * @param tenantUserId - The Slack user the summary is made for (their llmux key meters it)
  * @returns The LLM's response text, or null on failure
  */
 export type ForkExecutor = (
@@ -568,6 +577,7 @@ export type ForkExecutor = (
   sessionId?: string,
   cwd?: string,
   abortSignal?: AbortSignal,
+  tenantUserId?: string,
 ) => Promise<string | null>;
 
 /**
@@ -724,7 +734,15 @@ export class SummaryService {
     const fullPrompt = this.buildPrompt(session);
 
     try {
-      const response = await this.forkExecutor(fullPrompt, session.model, session.sessionId, forkCwd, abortSignal);
+      const tenantUserId = session.currentInitiatorId || session.ownerId || session.userId || undefined;
+      const response = await this.forkExecutor(
+        fullPrompt,
+        session.model,
+        session.sessionId,
+        forkCwd,
+        abortSignal,
+        tenantUserId,
+      );
 
       // Check abort after await — the fork may have completed but user already sent new input
       if (abortSignal?.aborted) {

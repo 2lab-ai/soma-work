@@ -1,5 +1,6 @@
 import { buildOneShotOptions, runOneShotText } from '../../../agent-runtime';
 import { buildQueryEnv } from '../../../auth/query-env-builder';
+import { userTenantKey } from '../../../auth/user-tenant-key';
 import { config } from '../../../config';
 import { ensureActiveSlotAuth, NoHealthySlotError, type SlotAuthLease } from '../../../credentials-manager';
 import { Logger } from '../../../logger';
@@ -17,7 +18,16 @@ const MEMORY_ALL_PROMPT =
 const USER_ALL_PROMPT =
   '당신은 사용자 페르소나(말투·선호·성향)의 여러 entries를 정리하는 편집자다. 중복제거·통합해 더 짧은 entries로 재구성하되 개성은 보존하라. 출력은 JSON array of strings로만, 다른 텍스트 없이, 각 항목 200자 이내.';
 
-async function runQuery(prompt: string, systemPrompt: string): Promise<string> {
+/**
+ * Per-call options. `tenantUserId` = the user whose memory is being edited (the
+ * one who clicked improve): in llmux mode the call carries their own key, so it
+ * is metered under their tenant; absent → the shared key.
+ */
+export interface MemoryImproveOptions {
+  tenantUserId?: string;
+}
+
+async function runQuery(prompt: string, systemPrompt: string, opts: MemoryImproveOptions): Promise<string> {
   let lease: SlotAuthLease | null = null;
   try {
     try {
@@ -31,7 +41,7 @@ async function runQuery(prompt: string, systemPrompt: string): Promise<string> {
 
     // Use options.env (not process.env) so concurrent leases don't
     // clobber the shared CLAUDE_CODE_OAUTH_TOKEN.
-    const { env } = buildQueryEnv(lease);
+    const { env } = buildQueryEnv(lease, { llmuxTenant: await userTenantKey(opts.tenantUserId) });
     // `disableThinking: false` preserves the pre-refactor behaviour —
     // memory-improve is the only one-shot helper that does NOT pass
     // `thinking: { type: 'disabled' }` and lets the SDK default apply.
@@ -52,20 +62,28 @@ async function runQuery(prompt: string, systemPrompt: string): Promise<string> {
   }
 }
 
-export async function improveEntry(entry: string, target: 'memory' | 'user'): Promise<string> {
+export async function improveEntry(
+  entry: string,
+  target: 'memory' | 'user',
+  opts: MemoryImproveOptions = {},
+): Promise<string> {
   const systemPrompt = target === 'memory' ? MEMORY_ENTRY_PROMPT : USER_ENTRY_PROMPT;
   const prompt = `원본:\n${entry}\n\n개선본만 출력:`;
-  const raw = await runQuery(prompt, systemPrompt);
+  const raw = await runQuery(prompt, systemPrompt, opts);
   const text = raw.replace(/[\r\n]+/g, ' ').trim();
   if (!text) throw new Error('empty LLM output');
   const cap = getPerEntryCap(target);
   return text.substring(0, cap);
 }
 
-export async function improveAll(entries: string[], target: 'memory' | 'user'): Promise<string[]> {
+export async function improveAll(
+  entries: string[],
+  target: 'memory' | 'user',
+  opts: MemoryImproveOptions = {},
+): Promise<string[]> {
   const systemPrompt = target === 'memory' ? MEMORY_ALL_PROMPT : USER_ALL_PROMPT;
   const prompt = `다음 ${entries.length}개 항목을 정리·중복제거·통합해 더 짧은 entries로 재구성.\n출력: JSON array of strings, 다른 텍스트 없이.\n\n---\n${entries.join('\n---\n')}`;
-  const raw = await runQuery(prompt, systemPrompt);
+  const raw = await runQuery(prompt, systemPrompt, opts);
   const trimmed = raw.trim();
 
   // Try JSON array first; unreachable/malformed falls through to split.

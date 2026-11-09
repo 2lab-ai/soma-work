@@ -49,12 +49,15 @@ export function titleSourceText(record: ConversationRecord): string {
     .join('\n\n');
 }
 
-function generateOnce(conversationId: string, source: string): Promise<string | null> {
+function generateOnce(record: ConversationRecord, source: string): Promise<string | null> {
+  const conversationId = record.id;
   const running = inFlight.get(conversationId);
   if (running) return running;
   // A rejection (e.g. a credential error generateTitle rethrows) is a failed
   // generation like a null result — so it gets the same cooldown.
-  const call = generateTitle(source)
+  // The subtitle is derived from the owner's conversation, whoever asked for
+  // it: in llmux mode the call is metered under the owner's own key.
+  const call = generateTitle(source, { tenantUserId: record.ownerId || undefined })
     .catch((error) => {
       logger.warn('Title generation threw', { conversationId, error: String(error) });
       return null;
@@ -77,7 +80,7 @@ export async function ensureTitleSub(record: ConversationRecord, now = Date.now(
     lastFailedFillAt.delete(record.id);
   }
 
-  const generated = await generateOnce(record.id, source);
+  const generated = await generateOnce(record, source);
   if (!generated) {
     // Concurrent fills that shared this call all land here; one entry is enough.
     lastFailedFillAt.set(record.id, now);
@@ -91,7 +94,7 @@ export async function ensureTitleSub(record: ConversationRecord, now = Date.now(
 export async function regenerateTitleSub(record: ConversationRecord): Promise<TitleSubResult> {
   const source = titleSourceText(record);
   if (!source) return { ok: false, reason: 'no_content' };
-  const generated = await generateOnce(record.id, source);
+  const generated = await generateOnce(record, source);
   if (!generated) return { ok: false, reason: 'generation_failed' };
   lastFailedFillAt.delete(record.id);
   await updateConversationTitleSub(record.id, generated);

@@ -162,8 +162,11 @@ class DispatchService {
    * Uses ClaudeHandler.dispatchOneShot for unified auth
    * @param userMessage - The user's message to classify
    * @param abortSignal - Optional AbortSignal for cancellation
+   * @param tenantUserId - The Slack user who sent the message. In llmux mode the
+   *   classification call carries their own key (metered under their tenant);
+   *   absent → the shared key.
    */
-  async dispatch(userMessage: string, abortSignal?: AbortSignal): Promise<DispatchResult> {
+  async dispatch(userMessage: string, abortSignal?: AbortSignal, tenantUserId?: string): Promise<DispatchResult> {
     // Score complexity for every dispatch (cheap — pure function, <1ms)
     const complexity = scoreComplexity(userMessage);
 
@@ -241,6 +244,7 @@ class DispatchService {
         undefined,
         undefined,
         DISPATCH_EFFORT,
+        { tenantUserId },
       );
 
       const elapsed = Date.now() - startTime;
