@@ -47,11 +47,14 @@
  * auto-pruned here, and migrate forward automatically from the legacy
  * /tmp root when one is found (regular files only — symlinks are never
  * followed into the archive). Re-publishing the same filename refreshes that
- * artifact in place and keeps the bytes it replaces as `<stem>.v<N><ext>`
- * (#1074: `report.html` → `report.v1.html`, then `report.v2.html`, …; the
- * same bytes again keep nothing). A name keeps its newest
- * MAX_ARCHIVED_VERSIONS earlier versions — the only files this server ever
- * removes. Reclaiming disk otherwise is a human decision.
+ * artifact in place and keeps the bytes it replaces in that name's own
+ * namespace, `.versions/<name>/v<N><ext>` (#1074: `report.html` → served at
+ * `/.versions/report.html/v1.html`; the same bytes again keep nothing). The
+ * read, archive, replace and prune of one name run under its lock file
+ * (`.lock-<name>`), so two publishers of one name lose no revision. A name
+ * keeps its newest MAX_ARCHIVED_VERSIONS earlier versions — the only files
+ * this server ever removes, and only inside that namespace. Reclaiming disk
+ * otherwise is a human decision.
  *
  * Exposure policy: binds 0.0.0.0 by default — LAN reachability is the whole
  * point (the user opens the link from another machine). Everything ever
@@ -109,8 +112,12 @@ const BIND_ADDR = process.env.SOMA_HTML_SERVE_BIND || '0.0.0.0';
 const BASE_PORT = Number(process.env.SOMA_HTML_SERVE_PORT || 8763);
 const PORT_SCAN_RANGE = 20;
 const HEALTH_PATH = '/__soma-serve-health';
-/** Earlier versions of one name kept beside it (#1074). */
+/** Earlier versions of one name kept in its namespace (#1074). */
 const MAX_ARCHIVED_VERSIONS = 10;
+const VERSIONS_DIR = '.versions';
+/** A publish lock older than this is a publisher that died holding it. */
+const LOCK_STALE_MS = 30_000;
+const LOCK_WAIT_MS = 20_000;
 const HEALTH_BODY = 'soma-html-serve';
 
 const MIME = {
@@ -328,34 +335,68 @@ function writeFileReplacing(dstDir, name, bytes) {
   }
 }
 
-function splitName(name) {
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function withPublishLock(dir, name, fn) {
+  // One publisher of a name at a time (#1074 review r1): `wx` creates the lock
+  // or fails if another publisher holds it; a lock left by a dead publisher
+  // goes stale after LOCK_STALE_MS. Lock files are dotfiles — never listed.
+  const lock = join(dir, `.lock-${name}`);
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      closeSync(openSync(lock, 'wx'));
+      break;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      try {
+        if (Date.now() - lstatSync(lock).mtimeMs > LOCK_STALE_MS) rmSync(lock, { force: true });
+      } catch {
+        /* released meanwhile */
+      }
+      if (Date.now() > deadline) throw new Error(`timed out waiting for the publish lock of ${name}`);
+      sleepSync(50);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    rmSync(lock, { force: true });
+  }
+}
+
+/** `.versions/<name>` as a real directory of this user — created when missing; null when it cannot be trusted. */
+function versionsDirOf(dir, name) {
+  const base = join(dir, VERSIONS_DIR);
+  const mine = join(base, name);
+  for (const d of [base, mine]) {
+    if (!existsSync(d)) mkdirSync(d);
+    // Same trust gate as the legacy sweep: never write through a symlink.
+    if (!ownedRealDir(d)) return null;
+  }
+  return mine;
+}
+
+/** The kept versions of `name`: [[n, file]] ascending by n. */
+function archivedVersions(vdir, name) {
   const ext = extname(name);
-  return { stem: ext ? name.slice(0, -ext.length) : name, ext };
-}
-
-function versionedName(name, n) {
-  const { stem, ext } = splitName(name);
-  return `${stem}.v${n}${ext}`;
-}
-
-/** The kept versions of `name` in `dir`: [[n, file]] ascending by n. */
-function archivedVersions(dir, name) {
-  const { stem, ext } = splitName(name);
   const out = [];
-  for (const f of readdirSync(dir)) {
-    if (!f.startsWith(`${stem}.v`) || !f.endsWith(ext)) continue;
-    const n = f.slice(stem.length + 2, f.length - ext.length);
+  for (const f of readdirSync(vdir)) {
+    if (!f.startsWith('v') || !f.endsWith(ext)) continue;
+    const n = f.slice(1, f.length - ext.length);
     if (/^[1-9]\d{0,8}$/.test(n)) out.push([Number(n), f]);
   }
   return out.sort((a, b) => a[0] - b[0]);
 }
 
 function archivePrevious(dir, name, bytes) {
-  // #1074 — publishing over a name keeps what it replaces as the name's next
-  // `<stem>.v<N><ext>`, so the earlier version still opens. Only a regular
-  // file is kept (read with O_NOFOLLOW; a symlink sitting there is replaced by
-  // the publish, never followed), the same bytes keep nothing, and the copy is
-  // an atomic create-if-absent (a concurrent publisher takes the next number).
+  // #1074 — publishing over a name keeps what it replaces as the next
+  // `.versions/<name>/v<N><ext>`, so the earlier version still opens. Only a
+  // regular file is kept (read with O_NOFOLLOW; a symlink sitting there is
+  // replaced by the publish, never followed), the same bytes keep nothing.
+  // Runs under the name's publish lock (see withPublishLock).
   let st;
   try {
     st = lstatSync(join(dir, name));
@@ -364,15 +405,17 @@ function archivePrevious(dir, name, bytes) {
   }
   if (!st.isFile()) return { version: 1 };
   const current = readFileNoFollow(join(dir, name));
-  const kept = archivedVersions(dir, name);
+  const vdir = versionsDirOf(dir, name);
+  if (!vdir) return { version: 1, archiveError: `${VERSIONS_DIR}/${name} is not a real directory of this user` };
+  const kept = archivedVersions(vdir, name);
   const top = kept.length ? kept[kept.length - 1][0] : 0;
   if (current.equals(bytes)) return { version: top + 1, unchanged: true };
   let n = top + 1;
-  while (!installFileIfAbsent(dir, versionedName(name, n), current)) n++;
-  for (const [, f] of archivedVersions(dir, name).slice(0, -MAX_ARCHIVED_VERSIONS)) {
-    rmSync(join(dir, f), { force: true });
+  while (!installFileIfAbsent(vdir, `v${n}${extname(name)}`, current)) n++;
+  for (const [, f] of archivedVersions(vdir, name).slice(0, -MAX_ARCHIVED_VERSIONS)) {
+    rmSync(join(vdir, f), { force: true });
   }
-  return { version: n + 1, archived: versionedName(name, n) };
+  return { version: n + 1, archived: `${VERSIONS_DIR}/${name}/v${n}${extname(name)}` };
 }
 
 function startDaemon(port) {
@@ -572,8 +615,12 @@ async function publish(file, explicitPort) {
   for (const e of migration.errors) console.error(`legacy migration failed for ${e}`);
   const name = basename(abs);
   const artifactBytes = readFileSync(abs);
-  const kept = archivePrevious(SERVE_ROOT, name, artifactBytes);
-  writeFileReplacing(SERVE_ROOT, name, artifactBytes);
+  // Read, archive and replace as one step per name (two publishers of a name lose no revision).
+  const kept = withPublishLock(SERVE_ROOT, name, () => {
+    const k = archivePrevious(SERVE_ROOT, name, artifactBytes);
+    writeFileReplacing(SERVE_ROOT, name, artifactBytes);
+    return k;
+  });
 
   let chosen = null;
   const ports = explicitPort ? [explicitPort] : [];
@@ -621,6 +668,7 @@ async function publish(file, explicitPort) {
         file: join(SERVE_ROOT, name),
         version: kept.version,
         ...(kept.archived ? { archived: kept.archived } : {}),
+        ...(kept.archiveError ? { archiveError: kept.archiveError } : {}),
         ...(kept.unchanged ? { unchanged: true } : {}),
         ...(chosen.note ? { note: chosen.note } : {}),
         ...(migration.migrated ? { migrated: migration.migrated } : {}),

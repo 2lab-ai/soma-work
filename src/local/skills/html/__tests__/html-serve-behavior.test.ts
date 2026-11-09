@@ -193,7 +193,7 @@ describe('local:html serve.mjs — behavioral contract (real daemon, real GET)',
     }
   });
 
-  // ── #1074 — publishing over a name keeps the version it replaces ──
+  // ── #1074 — publishing over a name keeps the version it replaces, in its own namespace ──
 
   function publishBytes(name: string, body: string) {
     const artifact = join(artifactDir, name);
@@ -202,28 +202,33 @@ describe('local:html serve.mjs — behavioral contract (real daemon, real GET)',
       execFileSync(process.execPath, [SERVER, '--file', artifact, '--port', String(PORT)], { env, encoding: 'utf8' }),
     );
   }
-  const archivesOf = (stem: string) =>
-    readdirSync(durableRoot)
-      .filter((f) => new RegExp(`^${stem}\\.v\\d+\\.html$`).test(f))
-      .sort((a, b) => Number(a.match(/\.v(\d+)\./)![1]) - Number(b.match(/\.v(\d+)\./)![1]));
-
-  it('#1074 T7 — re-publishing a name with new bytes keeps the previous version as <stem>.v<N><ext>', async () => {
-    expect(publishBytes('revise.html', '<p>one</p>')).toMatchObject({ version: 1 });
-    const second = publishBytes('revise.html', '<p>two</p>');
-    expect(second).toMatchObject({ version: 2, archived: 'revise.v1.html' });
-    expect(readFileSync(join(durableRoot, 'revise.v1.html'), 'utf8')).toBe('<p>one</p>');
-    expect(readFileSync(join(durableRoot, 'revise.html'), 'utf8')).toBe('<p>two</p>');
-    // The earlier version is served too (its own link), as HTML. A fresh connection: a keep-alive socket the
-    // daemon already closed would reset this read.
-    const old = await new Promise<{ status?: number; type?: string; body: string }>((ok, fail) => {
+  const versionsDir = (name: string) => join(durableRoot, '.versions', name);
+  const archivesOf = (name: string) =>
+    existsSync(versionsDir(name))
+      ? readdirSync(versionsDir(name))
+          .filter((f) => /^v\d+\.html$/.test(f))
+          .sort((a, b) => Number(a.slice(1, -5)) - Number(b.slice(1, -5)))
+      : [];
+  const getText = (path: string) =>
+    new Promise<{ status?: number; type?: string; body: string }>((ok, fail) => {
+      // A fresh connection: a keep-alive socket the daemon already closed would reset this read.
       http
-        .get({ host: '127.0.0.1', port: PORT, path: '/revise.v1.html', agent: false }, (res) => {
+        .get({ host: '127.0.0.1', port: PORT, path, agent: false }, (res) => {
           let body = '';
           res.on('data', (c) => (body += c));
           res.on('end', () => ok({ status: res.statusCode, type: String(res.headers['content-type']), body }));
         })
         .on('error', fail);
     });
+
+  it('#1074 T7 — re-publishing a name with new bytes keeps the previous version under .versions/<name>/', async () => {
+    expect(publishBytes('revise.html', '<p>one</p>')).toMatchObject({ version: 1 });
+    const second = publishBytes('revise.html', '<p>two</p>');
+    expect(second).toMatchObject({ version: 2, archived: '.versions/revise.html/v1.html' });
+    expect(readFileSync(join(versionsDir('revise.html'), 'v1.html'), 'utf8')).toBe('<p>one</p>');
+    expect(readFileSync(join(durableRoot, 'revise.html'), 'utf8')).toBe('<p>two</p>');
+    // The earlier version is served too (its own link), as HTML.
+    const old = await getText('/.versions/revise.html/v1.html');
     expect(old).toMatchObject({ status: 200, body: '<p>one</p>' });
     expect(old.type).toContain('text/html');
   }, 60_000);
@@ -232,20 +237,49 @@ describe('local:html serve.mjs — behavioral contract (real daemon, real GET)',
     const again = publishBytes('revise.html', '<p>two</p>');
     expect(again).toMatchObject({ version: 2, unchanged: true });
     expect(again).not.toHaveProperty('archived');
-    expect(archivesOf('revise')).toEqual(['revise.v1.html']);
+    expect(archivesOf('revise.html')).toEqual(['v1.html']);
   }, 60_000);
 
-  it('#1074 T7 — a name keeps its newest 10 earlier versions', () => {
+  it('#1074 T7 — a name keeps its newest 10 earlier versions; a separately published look-alike is never touched', () => {
+    // Published on its own (not an archive): pruning must not take it (review r1).
+    writeFileSync(join(durableRoot, 'revise.v1.html'), 'STANDALONE');
     for (let i = 3; i <= 14; i++) publishBytes('revise.html', `<p>${i}</p>`);
-    const kept = archivesOf('revise');
+    const kept = archivesOf('revise.html');
     expect(kept).toHaveLength(10);
-    expect(kept[0]).toBe('revise.v4.html');
-    expect(kept[9]).toBe('revise.v13.html');
-    expect(readFileSync(join(durableRoot, 'revise.v13.html'), 'utf8')).toBe('<p>13</p>');
+    expect(kept[0]).toBe('v4.html');
+    expect(kept[9]).toBe('v13.html');
+    expect(readFileSync(join(versionsDir('revise.html'), 'v13.html'), 'utf8')).toBe('<p>13</p>');
     expect(readFileSync(join(durableRoot, 'revise.html'), 'utf8')).toBe('<p>14</p>');
+    expect(readFileSync(join(durableRoot, 'revise.v1.html'), 'utf8')).toBe('STANDALONE');
   }, 180_000);
 
+  it('#1074 r1 — two publishers of one name at once lose no revision', async () => {
+    publishBytes('race.html', 'ORIGINAL');
+    const run = (body: string) =>
+      new Promise<void>((ok, fail) => {
+        const artifact = join(artifactDir, `race-${body}.html`);
+        writeFileSync(artifact, body);
+        // Same published name: each publisher copies its own file to race.html (basename differs, so stage it).
+        const staged = join(mkdtempSync(join(tmpdir(), 'soma-serve-race-')), 'race.html');
+        writeFileSync(staged, body);
+        const child = spawn(process.execPath, [SERVER, '--file', staged, '--port', String(PORT)], { env, stdio: 'ignore' });
+        child.on('exit', (code) => (code === 0 ? ok() : fail(new Error(`publish exited ${code}`))));
+      });
+    await Promise.all([run('AAA'), run('BBB')]);
+    const seen = [
+      readFileSync(join(durableRoot, 'race.html'), 'utf8'),
+      ...archivesOf('race.html').map((f) => readFileSync(join(versionsDir('race.html'), f), 'utf8')),
+    ].sort();
+    expect(seen).toEqual(['AAA', 'BBB', 'ORIGINAL']);
+  }, 120_000);
+
   it('#1074 T7 — a symlink sitting at the name is replaced, never kept as a version', () => {
-    expect(readdirSync(durableRoot).filter((f) => f.startsWith('planted.v'))).toEqual([]);
+    expect(existsSync(versionsDir('planted.html'))).toBe(false);
+  });
+
+  it('#1074 — the directory index lists the published name, not its versions', async () => {
+    const index = await getText('/');
+    expect(index.body).toContain('revise.html');
+    expect(index.body).not.toContain('.versions');
   });
 });

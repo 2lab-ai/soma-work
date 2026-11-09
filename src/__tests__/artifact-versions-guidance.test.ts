@@ -15,7 +15,7 @@ describe('#1074 — model guidance for artifact versions', () => {
     const skill = read('src/local/skills/html/SKILL.md');
     expect(skill).toContain('**A revision keeps its slug.**');
     expect(skill).toContain('artifact_key="<slug>"');
-    expect(skill).toContain('`<stem>.v<N><ext>`');
+    expect(skill).toContain('`.versions/<name>/v<N><ext>`');
   });
 
   it('calldiff: before a PR body edit the current body is kept, after it the new one, under one key', () => {
