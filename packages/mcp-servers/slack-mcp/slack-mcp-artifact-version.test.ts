@@ -3,7 +3,7 @@
  *
  * send_file / send_media take an optional `artifact_key`. Before the upload, the server reads the
  * session's artifact index (SOMA_ARTIFACT_INDEX, written by the daemon) and applies the daemon's own
- * rule (somalib/artifacts/artifact-version.ts): the comment posted with the file and the tool's
+ * rule (the shared artifact-version module): the comment posted with the file and the tool's
  * result say "version N · changed since the previous version", or "no changes".
  */
 
