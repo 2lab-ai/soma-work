@@ -188,7 +188,7 @@ describe('ChoiceActionHandler — an admin answering a question asked for admins
     expect(onClaimed).toHaveBeenCalledTimes(1);
     expect(threadPanel.resolveChoice.mock.calls[0][3]).toContain('대시보드 · <@U_ADMIN>');
     expect(messageHandler).toHaveBeenCalledWith(
-      expect.objectContaining({ user: 'U_OWNER', text: '1' }),
+      expect.objectContaining({ user: 'U_OWNER', text: '1\n\n(관리자 <@U_ADMIN>가 대시보드 관리자 승인에서 답함)' }),
       expect.any(Function),
     );
   });
@@ -200,7 +200,7 @@ describe('ChoiceActionHandler — an admin answering a question asked for admins
     expect(result.threadPanel.resolveChoice).not.toHaveBeenCalled();
     expect(result.slackApi.updateMessage.mock.calls[0][2]).toContain('대시보드 · <@U_ADMIN>');
     expect(result.messageHandler).toHaveBeenCalledWith(
-      expect.objectContaining({ user: 'U_OWNER', text: '1' }),
+      expect.objectContaining({ user: 'U_OWNER', text: expect.stringMatching(/^1\n\n\(관리자 <@U_ADMIN>/) }),
       expect.any(Function),
     );
   });

@@ -1154,7 +1154,10 @@ export class ChoiceActionHandler {
     const choiceMessageTs = session.actionPanel?.choiceMessageTs;
     // #917 — direct input: the user's own words are the turn (not an id), and the thread shows them as such.
     const own = choiceId === CUSTOM_INPUT_CHOICE_ID;
-    const turnText = own ? label : choiceId;
+    const answer = own ? label : choiceId;
+    // #1070 — the model sees who answered: the owner's turn carries the admin who decided (a Slack-button answer
+    // to the same question, from the thread, carries no such line).
+    const turnText = adminAnswer ? `${answer}\n\n(관리자 <@${userId}>가 대시보드 관리자 승인에서 답함)` : answer;
     const picked = own
       ? `직접 입력: _${escapeSlackMrkdwn(label.substring(0, 200))}${label.length > 200 ? '...' : ''}_`
       : `선택: *${choiceId}. ${label}*`;

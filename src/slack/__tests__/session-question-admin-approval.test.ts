@@ -175,7 +175,11 @@ describe('sessionQuestionAdminApprovalAdapter wired to the real ChoiceActionHand
     });
     await vi.waitFor(() => expect(messageHandler).toHaveBeenCalled());
     // The owner's session carries on with the owner's own identity and permissions, not the admin's.
-    expect(messageHandler.mock.calls[0][0]).toMatchObject({ user: 'U_OWNER', text: 'approve' });
+    // …and the model sees which admin decided.
+    expect(messageHandler.mock.calls[0][0]).toMatchObject({
+      user: 'U_OWNER',
+      text: 'approve\n\n(관리자 <@U_ADMIN>가 대시보드 관리자 승인에서 답함)',
+    });
     expect(messageHandler.mock.calls[0][0]).not.toHaveProperty('routeContext');
     expect(threadPanel.resolveChoice.mock.calls[0][3]).toContain('<@U_ADMIN>');
   });
