@@ -8,6 +8,8 @@
  *   K3  status: the PR's live state (the thread's check, unless the link was re-recorded since) → the fetched state
  *       → the state recorded with the link; a merge from any of them wins (it never goes back)
  *   K4  status words and tones (PR 열림 · 초안 · 머지됨 · 닫힘; GitHub issue 열림 · 닫힘; Jira as named, toned by kind)
+ *   K8  (#773) the state as a key beside its words (PR open · draft · merged · closed; GitHub issue open · closed), so
+ *       the page says it in the viewer's language — the board's JSON is never translated; the words stay Korean
  */
 import { describe, expect, it } from 'vitest';
 import { cardLinksOf, followupLinksOf, linkState, settledLinkUrlsOf } from '../card-links';
@@ -326,5 +328,64 @@ describe('K7 (review round 2) — every open link, every settled one', () => {
     expect(settled).not.toContain('https://github.com/acme/app/issues/9');
     expect(settled).not.toContain('https://github.com/acme/app/issues/8');
     expect(settled).not.toContain(WIKI);
+  });
+});
+
+describe('K8 (#773) — the state as a key beside its words, for the page to say in the viewer’s language', () => {
+  it('a PR open · draft · merged · closed and a GitHub issue open · closed carry their key; the words stay Korean', () => {
+    const links = cardLinksOf(
+      {
+        linkHistory: {
+          prs: [
+            { url: 'https://github.com/acme/app/pull/1', status: 'open' },
+            { url: 'https://github.com/acme/app/pull/2', status: 'DRAFT' },
+            { url: 'https://github.com/acme/app/pull/3', status: 'open' },
+            { url: 'https://github.com/acme/app/pull/4', status: 'closed' },
+          ],
+          issues: [
+            { url: 'https://github.com/acme/app/issues/5', status: 'open' },
+            { url: 'https://github.com/acme/app/issues/6', status: 'closed' },
+          ],
+        },
+      },
+      // A merge from the link-metadata cache wins, and its key with it.
+      (url) => (url.endsWith('/pull/3') ? { status: 'merged' } : undefined),
+      { max: Number.POSITIVE_INFINITY },
+    );
+    expect(links.map((l) => [l.text, l.state, l.status])).toEqual([
+      ['#6', 'closed', '닫힘'],
+      ['#4', 'closed', '닫힘'],
+      ['#5', 'open', '열림'],
+      ['#3', 'merged', '머지됨'],
+      ['#2', 'draft', '초안'],
+      ['#1', 'open', '열림'],
+    ]);
+  });
+
+  it('a tracker’s own state name (Jira’s), an unknown or missing state and a wiki carry no key', () => {
+    const links = cardLinksOf(
+      {
+        linkHistory: {
+          issues: [
+            { url: JIRA, status: 'In Progress' },
+            { url: JIRA2, status: '완료' },
+            { url: GH_ISSUE, status: 'reopened' },
+          ],
+          prs: [{ url: PR, status: 'queued' }, { url: PR_OLD }],
+          docs: [{ url: WIKI, status: 'open' }],
+        },
+      },
+      undefined,
+      { max: Number.POSITIVE_INFINITY },
+    );
+    expect(links.map((l) => [l.text, l.state, l.status])).toEqual([
+      ['#41', undefined, 'reopened'],
+      ['#700', undefined, undefined],
+      ['Payment Form Design', undefined, undefined],
+      ['PROJ-9', undefined, '완료'],
+      ['PROJ-12', undefined, 'In Progress'],
+      ['#733', undefined, 'queued'],
+    ]);
+    expect(links.every((l) => !('state' in l))).toBe(true);
   });
 });

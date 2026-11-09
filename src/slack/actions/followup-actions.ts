@@ -81,7 +81,15 @@ const EPHEMERAL = { response_type: 'ephemeral', replace_original: false } as con
  * `respond` ignores it (an ephemeral is an ephemeral), while a transport that answers with a status — the
  * dashboard's queue routes — reads it to tell "rejected, the item stays" from "done".
  */
-export type FollowupRespond = (message: Record<string, unknown>, verdict?: 'refused') => Promise<unknown>;
+/**
+ * `refused`: the item stayed where it was. `unfulfilled`: the press was answered and the item moved, but not the way
+ * the user asked — a delivered note's Cancel that came too late (the model has it) or could not be confirmed (back in
+ * the queue). Slack ignores the verdict; the dashboard shows the first as an error and the second as a warning.
+ */
+export type FollowupRespond = (
+  message: Record<string, unknown>,
+  verdict?: 'refused' | 'unfulfilled',
+) => Promise<unknown>;
 
 /**
  * A click whose transport proved WHO made it without a Slack message to check that against: the dashboard's
@@ -885,11 +893,11 @@ async function cancelSteeredItem(
     // The model has it: the row is `resolved · consumed` history now, which is
     // just as processed as a cancel — the controls must not outlive it either.
     announceProcessed(deps, value.sessionKey, value.itemId);
-    await reply(respond, CANCEL_STEERED_DELIVERED_TEXT);
+    await replyUnfulfilled(respond, CANCEL_STEERED_DELIVERED_TEXT);
     return;
   }
   if (outcome === 'returned-to-queue') {
-    await reply(respond, CANCEL_STEERED_RETURNED_TEXT);
+    await replyUnfulfilled(respond, CANCEL_STEERED_RETURNED_TEXT);
     return;
   }
   await refuse(respond, cancelRefusal(outcome, 'steered'));
@@ -1081,6 +1089,11 @@ function reply(respond: FollowupRespond, text: string): Promise<unknown> {
 /** {@link reply}, marked as a refusal — the item stays where it was (A13/A29). */
 function refuse(respond: FollowupRespond, text: string): Promise<unknown> {
   return respond({ ...EPHEMERAL, text }, 'refused');
+}
+
+/** {@link reply}, marked as answered but not carried out — the item moved, not the way the user asked. */
+function replyUnfulfilled(respond: FollowupRespond, text: string): Promise<unknown> {
+  return respond({ ...EPHEMERAL, text }, 'unfulfilled');
 }
 
 /**

@@ -1525,8 +1525,14 @@ export interface DashboardFollowupRequest {
   /** The presser may manage the session (#716: the owner, a token, an admin in admin mode): they act as its owner. */
   manages?: boolean;
 }
-/** A refusal carries the queue's own words (the item stays) and the status the route answers with. */
-export type DashboardFollowupOutcome = { ok: true; message?: string } | { ok: false; status: number; message: string };
+/**
+ * A refusal carries the queue's own words (the item stays) and the status the route answers with. `unfulfilled`: the
+ * press was answered but not carried out — a delivered note's Cancel the model beat, or one the SDK could not confirm
+ * (the note is back in the queue); the page says it as a warning, not a success.
+ */
+export type DashboardFollowupOutcome =
+  | { ok: true; message?: string; unfulfilled?: true }
+  | { ok: false; status: number; message: string };
 /**
  * The queue behind the panel (wired in src/index.ts to SlackHandler): `view` is
  * the CONTROL view (`getFollowupView` — its turnEpoch is what Send now is
@@ -4277,7 +4283,12 @@ export async function registerDashboardRoutes(
         });
         // Whatever the queue answered, the panel gets the queue as it is now.
         scheduleLiveSessionUpdate(originalKey);
-        if (outcome.ok) reply.send(outcome.message ? { ok: true, message: outcome.message } : { ok: true });
+        if (outcome.ok)
+          reply.send(
+            outcome.message
+              ? { ok: true, message: outcome.message, ...(outcome.unfulfilled ? { unfulfilled: true } : {}) }
+              : { ok: true },
+          );
         else reply.status(outcome.status).send({ error: outcome.message });
       } catch (error) {
         logger.error('Error acting on the follow-up queue', error);
@@ -8205,7 +8216,7 @@ function dashToaster() {
   wrap.style.display = 'contents';
   t = document.createElement('ui-toaster');
   t.id = 'dash-toaster';
-  t.setAttribute('lang', 'ko');
+  t.setAttribute('lang', document.documentElement && document.documentElement.lang === 'en' ? 'en' : 'ko');
   wrap.appendChild(t);
   document.body.appendChild(wrap);
   return t;
@@ -10193,7 +10204,7 @@ function paintCronLaneCards(slots) {
       el = document.createElement('ui-agent-inbox');
       el.className = 'cron-inbox';
       el.setAttribute('view', 'list');
-      el.setAttribute('lang', 'ko');
+      el.setAttribute('lang', document.documentElement && document.documentElement.lang === 'en' ? 'en' : 'ko');
       wireInbox(el);
       box._inbox = el;
     }
@@ -10546,6 +10557,9 @@ function ctxPercent(pct) {
 // so the metric is not a link; the open card's short ref and the titled link in
 // 세션 정보 are. The state is a word on screen ("#12 머지됨") and a tone (colour,
 // never alone); an unknown state shows the bare number. The title adds the PR's title.
+// The link chips' states too (cardLinksFace, cardFollowupsOf — #773): the server sends a PR's or GitHub issue's state
+// as a key (card-links.ts CardLink.state) and the board's JSON is never translated; these words are page text, which
+// the page catalog puts in the viewer's language.
 var PR_STATE_LABEL = { open: '열림', draft: '초안', merged: '머지됨', closed: '닫힘' };
 var PR_STATE_TONE = { open: 'run', merged: 'done', closed: 'fail' };
 // The card's linked pages (KanbanSession.cardLinks, card-links.ts) as @2lab.ai/ui 0.19.0 card.links chips: the
@@ -10564,7 +10578,10 @@ function cardLinksFace(s) {
     // FACE_LINK_MAX chips are exactly this list's first FACE_LINK_MAX.
     if (!l || !CARD_LINK_KIND[l.kind] || !l.text || !/^https?:\\/\\/[^\\s]+$/i.test(String(l.url || ''))) continue;
     var link = { kind: l.kind, href: String(l.url), text: String(l.text) };
-    if (l.status) link.status = String(l.status);
+    // The state in the viewer's words (PR_STATE_LABEL) by its key; else the server's word (a tracker's own state name,
+    // or a board from a host that sends no key). As cardFollowupsOf.
+    var word = l.state && Object.prototype.hasOwnProperty.call(PR_STATE_LABEL, l.state) ? PR_STATE_LABEL[l.state] : l.status;
+    if (word) link.status = String(word);
     if (l.tone && CARD_LINK_TONES[l.tone]) link.tone = l.tone;
     link.title = CARD_LINK_KIND[l.kind] + ' ' + link.text + (l.title && l.title !== link.text ? ' — ' + l.title : '') + (link.status ? ' · ' + link.status : '');
     out.push(link);
@@ -10859,7 +10876,9 @@ function cardFollowupsOf(s, col) {
     if (l.open !== true || gone[s.key + '\\n' + l.url]) continue;
     var f = { id: String(l.url), kind: l.kind, text: String(l.text), href: String(l.url) };
     if (l.title && l.title !== l.text) f.title = String(l.title);
-    if (l.status) f.status = String(l.status);
+    // The state in the viewer's words by its key, else the server's word (as cardLinksFace).
+    var word = l.state && Object.prototype.hasOwnProperty.call(PR_STATE_LABEL, l.state) ? PR_STATE_LABEL[l.state] : l.status;
+    if (word) f.status = String(word);
     out.push(f);
   }
   return out;
@@ -12526,7 +12545,7 @@ function paintTreeTab() {
     // The element is the item (data-item): made once per opening, given data from then on.
     tree = document.createElement('ui-agent-tree');
     tree.className = 'pa-tree';
-    tree.setAttribute('lang', 'ko');
+    tree.setAttribute('lang', document.documentElement && document.documentElement.lang === 'en' ? 'en' : 'ko');
     tree.setAttribute('data-item', 'tree');
     tree.innerHTML = '<span class="at-fallback">에이전트 트리</span>';
     if (typeof host.upsertItem === 'function') host.upsertItem('tree', tree, { animate: false });
@@ -13364,7 +13383,7 @@ function renderPanelGoal() {
     var draft = card && card.tagName === 'UI-GOAL-CARD' && el._key === panelSessionKey && typeof card.draft === 'string' ? card.draft : '';
     el.innerHTML = '';
     card = document.createElement('ui-goal-card');
-    card.setAttribute('lang', 'ko');
+    card.setAttribute('lang', document.documentElement && document.documentElement.lang === 'en' ? 'en' : 'ko');
     card.setAttribute('data-goal-key', panelSessionKey);
     el.appendChild(card);
     if (draft) card.draft = draft;
@@ -16598,7 +16617,7 @@ function renderMultiChoicePanel(s) {
     container.innerHTML = '';
     el = document.createElement('ui-choice-form');
     el.className = 'mc-form';
-    el.setAttribute('lang', 'ko');
+    el.setAttribute('lang', document.documentElement && document.documentElement.lang === 'en' ? 'en' : 'ko');
     container.appendChild(el);
   }
   el.setAttribute('data-mc-key', s.key);
@@ -17897,7 +17916,7 @@ function wlCardSlots(el, d) {
   for (var k in want) {
     var c = document.createElement('ui-tool-call-card');
     c.className = 'wl-card';
-    c.setAttribute('lang', 'ko');
+    c.setAttribute('lang', document.documentElement && document.documentElement.lang === 'en' ? 'en' : 'ko');
     c.setAttribute('slot', 'tool-' + k);
     c.setAttribute('data-key', k);
     // The card is a row on the log's arrow path: the element sets its head-tabindex
@@ -20113,22 +20132,38 @@ async function steerAct(op, id, text) {
   if (op === 'edit') body.text = text;
   var ok = false;
   var said = '';
+  var unfulfilled = false;
   try {
     var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/queue/' + encodeURIComponent(id) + '/' + op, JSON.stringify(body));
     var data = {};
     try { data = await res.json(); } catch (_e) {}
     ok = res.ok;
     said = ok ? ((data && data.message) || '') : ((data && data.error) || ('HTTP ' + res.status));
+    unfulfilled = ok && !!(data && data.unfulfilled);
   } catch (e) {
     said = (e && e.message) || '네트워크 오류';
   }
-  if (ok) {
-    // The queue's receipt (취소했습니다 …, 이미 전달되어 …) — Send now says nothing; its note moves.
+  // The note goes back to the state the queue has NOW (a list pushed while the press was out — the turn ended and put
+  // a delivered note back in line — is newer than the click): rolling back to the click's state would pin a wrong
+  // label over the newer list. The element now shows another session's queue: only the toast.
+  var rollBack = function() {
+    var cur = steerItemOf(_sessionCache[key], id) || item;
+    if (panelSessionKey === key && document.getElementById('cmd-steer') === el) el.setItemState(id, STEER_STATE[cur.state] || 'queued', said);
+  };
+  if (ok && !unfulfilled) {
+    // The queue's receipt (취소했습니다 …) — Send now says nothing; its note moves.
     if (said) dashToast({ title: said, tone: 'success' });
     return;
   }
-  // The element now shows another session's queue: the refusal is only a toast.
-  if (panelSessionKey === key && document.getElementById('cmd-steer') === el) el.setItemState(id, STEER_STATE[item.state] || 'queued', said);
+  if (ok) {
+    // Answered, not done: a delivered note's Cancel the model beat (이미 모델에 전달되어 …) or the SDK could not
+    // confirm (큐로 되돌렸습니다). The note the element hid comes back with why until the list moves it (read, or
+    // back in line) — never left hidden as if it were cancelled.
+    rollBack();
+    dashToast({ title: said, tone: 'warning' });
+    return;
+  }
+  rollBack();
   dashToast({ title: STEER_FAIL[op] || '하지 못했어요', description: said, tone: 'error' });
 }
 
@@ -24295,11 +24330,11 @@ function pcFreshSteer() {
   if (!old) return;
   var el = document.createElement('ui-agent-steering');
   el.id = 'cmd-steer';
-  el.setAttribute('lang', 'ko');
+  el.setAttribute('lang', document.documentElement && document.documentElement.lang === 'en' ? 'en' : 'ko');
   var c = document.createElement('ui-composer');
   c.id = 'pc-composer';
   c.slot = 'composer';
-  c.setAttribute('lang', 'ko');
+  c.setAttribute('lang', document.documentElement && document.documentElement.lang === 'en' ? 'en' : 'ko');
   pcComposerSetup(c);
   // The model · effort controls are the composer's slot="end" child (#918): they move with the row, not copied.
   var ctl = document.getElementById('panel-controls');

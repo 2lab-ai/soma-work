@@ -15,6 +15,8 @@
 
 export type CardLinkKind = 'issue' | 'pr' | 'wiki';
 export type CardLinkTone = 'run' | 'done' | 'fail' | 'wait';
+/** A PR's or GitHub issue's state as a key, not words (CardLink.state). */
+export type CardLinkState = 'open' | 'draft' | 'merged' | 'closed';
 
 export interface CardLink {
   kind: CardLinkKind;
@@ -25,6 +27,13 @@ export interface CardLink {
   title?: string;
   /** The state in words: `열림`, `머지됨`, `In Progress`. */
   status?: string;
+  /**
+   * The same state as a key, when it is one the board names itself (a PR open · draft · merged · closed, a GitHub
+   * issue open · closed — #773): the page says it in the viewer's display language (its PR_STATE_LABEL, which the
+   * page catalog translates). The board's JSON is never translated (display-lang-web.ts), so `status` stays the
+   * Korean word; a tracker's own state name (Jira's) has no key and is shown as the tracker names it.
+   */
+  state?: CardLinkState;
   tone?: CardLinkTone;
   /**
    * Still open (SSOT 2026-11-06, #983 — the follow-up bar): a PR open or in draft, a GitHub issue open, a Jira issue
@@ -78,6 +87,13 @@ const DONE_RE = /^(done|closed|resolved|complete(d)?|fixed|released|완료|종�
 const RUN_RE = /(progress|develop|doing|working|진행|개발)/i;
 // A tracker state that ends the issue without doing it: not done, not open either.
 const DROPPED_RE = /(cancel|reject|won'?t|duplicate|obsolete|invalid|abandon|취소|반려|폐기|중복)/i;
+
+/** A PR's or GitHub issue's state as its key (CardLink.state); none for a word the board does not name itself. */
+export function linkStateKey(kind: CardLinkKind, raw: string | undefined): CardLinkState | undefined {
+  const key = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  const words = kind === 'pr' ? PR_WORDS : kind === 'issue' ? GITHUB_ISSUE_WORDS : undefined;
+  return words && Object.keys(words).includes(key) ? (key as CardLinkState) : undefined;
+}
 
 /** Whether a link in this state is still open (the follow-up bar's test). */
 export function linkIsOpen(kind: CardLinkKind, raw: string | undefined): boolean {
@@ -196,12 +212,14 @@ export function cardLinksOf(src: CardLinkSource, peek?: LinkPeek, opts: { max?: 
     } else if (kind === 'issue') {
       raw = cached?.status || link.status;
     }
+    const state = linkStateKey(kind, raw);
     out.push({
       kind,
       url,
       text: shortText(kind, link, kind === 'wiki' ? title : undefined),
       ...(title ? { title: title.trim().slice(0, 200) } : {}),
       ...linkState(kind, raw),
+      ...(state ? { state } : {}),
       ...(linkIsOpen(kind, raw) ? { open: true as const } : {}),
     });
   };
