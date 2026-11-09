@@ -107,11 +107,11 @@ export const MANIFEST_SCHEMA_VERSION = 1;
 export const RUNTIME_LAYOUT_VERSION = 1;
 
 /**
- * The CI floor, not the README's aspiration.
+ * The CI floor, which the README states too (Node.js 20+).
  *
  * `.github/workflows/ci.yml` runs Node 20 and the controller bundle is compiled
- * for `node20`; the README advertises 22+. Publishing 22 would refuse installs
- * on the exact runtime this package is verified on.
+ * for `node20`. Publishing 22 would refuse installs on the exact runtime this
+ * package is verified on.
  */
 export const MINIMUM_NODE = '20.0.0';
 
