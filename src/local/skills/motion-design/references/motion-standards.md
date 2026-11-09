@@ -164,7 +164,8 @@ Slow where the user is deciding, fast where the system responds.
   but drives them via rAF on the main thread, so they drop frames while the page
   is busy. The transform itself is fine — the *scheduling* is the problem. From
   `motion` 14.2 these shorthands (and `rotate`) are hardware-accelerated on HTML
-  elements, so check the version before flagging.) For predetermined motion on an
+  elements, so check the version before flagging. Layout animations — `layout`,
+  `layoutId` — run on the main thread in every version.) For predetermined motion on an
   older version, or a library that still schedules shorthands on rAF, prefer a CSS
   transition / full transform string the compositor can own:
   ```jsx

@@ -1,6 +1,6 @@
 ---
 name: animation-performance
-description: Keep web animations inside the frame budget — animate composite-only properties, keep motion off the main thread when the page is busy, and find the cause when an animation drops frames. Covers the layout/paint/composite pipeline, cheaper property swaps, CSS vs WAAPI vs requestAnimationFrame, Motion's hardware-accelerated path, React re-rendering per frame, inherited CSS variable recalculation, blur cost, and when `will-change` actually helps. Use when an animation is janky, choppy, stutters, or drops frames; when choosing which property to animate; when deciding between CSS and JS animation on performance grounds; or when reaching for `will-change` or GPU layers. For choosing easing, duration, or whether to animate at all use animate; for reviewing motion as a whole use review-animations. Triggers on "dropped frames", "janky animation", "animation performance", "60fps", "animation stutters", "애니메이션 버벅", "프레임 드랍", "애니메이션 성능", "애니메이션 끊김".
+description: Keep web animations inside the frame budget — animate composite-only properties, keep motion off the main thread when the page is busy, and find the cause when an animation drops frames. Covers the layout/paint/composite pipeline, cheaper property swaps, CSS vs WAAPI vs requestAnimationFrame, Motion's hardware-accelerated path, React re-rendering per frame, inherited CSS variable recalculation, blur cost, and when `will-change` actually helps. Use when an animation is janky, choppy, stutters, or drops frames; when choosing which property to animate; when deciding between CSS and JS animation on performance grounds; or when reaching for `will-change` or GPU layers. For choosing easing, duration, or whether to animate at all use motion-design; for reviewing motion as a whole use review-motion. Triggers on "dropped frames", "janky animation", "animation performance", "60fps", "animation stutters", "애니메이션 버벅", "프레임 드랍", "애니메이션 성능", "애니메이션 끊김".
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 version: 1.0.0
 license: MIT
@@ -8,7 +8,9 @@ license: MIT
 
 # Animation Performance
 
-Vendored from [`emilkowalski/skills`](https://github.com/emilkowalski/skills) (MIT); see [`LICENSES/NOTICE.md`](./LICENSES/NOTICE.md) for attribution.
+Vendored from [`emilkowalski/skills`](https://github.com/emilkowalski/skills) (MIT); see [`LICENSES/NOTICE.md`](./LICENSES/NOTICE.md) for attribution. Skill names in the body map to soma-work's: `animate` and `emil-design-eng` → `motion-design`, `review-animations` → `review-motion`; `animate-expo`, `prototype` and `pick-ui-library` are not vendored.
+
+A diagnostic skill. It does ONE thing: make motion land every frame. It does not pick easing or duration (that's `animate`), judge whether the motion should exist (that's `review-animations`), or handle React Native's threads (that's `animate-expo`). The question here is never "does it look right?" but "does each frame finish in time?".
 
 ## Why This Matters
 

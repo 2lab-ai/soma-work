@@ -1,14 +1,16 @@
 ---
 name: remove-animations
-description: Find the animations an interface doesn't need and remove them — motion on keyboard actions, high-frequency surfaces, functional data, and decoration with no purpose — then clean up what they leave behind. Edits code, but only to subtract; it never adds or retunes motion. Use when the user says the app "feels slow", "has too much animation", "feels over-animated", wants to "tone down the motion", or asks what animations to remove. For finding places that should animate, use find-animation-opportunities; for fixing animations that should stay, use improve-animations or review-animations. Triggers on "remove animations", "too much animation", "less motion", "cut the animations", "애니메이션 제거", "애니메이션 줄여", "모션 줄이기", "애니메이션 너무 많아".
-allowed-tools: Read, Grep, Glob, Edit, Write, Bash
+description: Find the animations an interface doesn't need and remove them — motion on keyboard actions, high-frequency surfaces, functional data, and decoration with no purpose — then clean up what they leave behind. Edits code, but only to subtract; it never adds or retunes motion. Use when the user says the app "feels slow", "has too much animation", "feels over-animated", wants to "tone down the motion", or asks what animations to remove. For finding places that should animate, use find-animation-opportunities; for fixing animations that should stay, use improve-animations or review-motion. Triggers on "remove animations", "too much animation", "less motion", "cut the animations", "애니메이션 제거", "애니메이션 줄여", "모션 줄이기", "애니메이션 너무 많아".
+allowed-tools: Read, Grep, Glob, Edit, Write
 version: 1.0.0
 license: MIT
 ---
 
 # Removing Animations
 
-Vendored from [`emilkowalski/skills`](https://github.com/emilkowalski/skills) (MIT); see [`LICENSES/NOTICE.md`](./LICENSES/NOTICE.md) for attribution. Pairs with the local `review-motion` (reviewer) and `motion-design` (exact values) skills.
+Vendored from [`emilkowalski/skills`](https://github.com/emilkowalski/skills) (MIT); see [`LICENSES/NOTICE.md`](./LICENSES/NOTICE.md) for attribution. Pairs with the local `review-motion` (reviewer) and `motion-design` (exact values) skills. Skill names in the body map to soma-work's: `animate` and `emil-design-eng` → `motion-design`, `review-animations` → `review-motion`; `animate-expo`, `prototype` and `pick-ui-library` are not vendored.
+
+A subtraction skill. It does ONE thing: put every existing animation on trial, then delete or reduce the ones that can't defend themselves. It is the counterpart to `find-animation-opportunities`. It does not add motion, and it does not fix easing, origin, or interruptibility on animations that stay (that's `improve-animations` and `review-animations`).
 
 ## Operating Posture
 

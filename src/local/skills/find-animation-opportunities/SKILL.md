@@ -1,14 +1,16 @@
 ---
 name: find-animation-opportunities
-description: Search a codebase or UI for places that don't animate but should, and reject everything that shouldn't. Read-only; it proposes motion with exact values, it does not implement it. Use when the user asks "what could be animated here?" or wants to "make this feel more alive". For fixing existing animations, use improve-animations or review-animations instead. Triggers on "where should this animate", "animation opportunities", "add motion where it helps", "애니메이션 기회", "어디에 모션", "모션 넣을 곳", "애니메이션 추가할 곳".
-allowed-tools: Read, Grep, Glob, Edit, Write, Bash
+description: Search a codebase or UI for places that don't animate but should, and reject everything that shouldn't. Read-only; it proposes motion with exact values, it does not implement it. Use when the user asks "what could be animated here?" or wants to "make this feel more alive". For fixing existing animations, use improve-animations or review-motion instead. Triggers on "where should this animate", "animation opportunities", "add motion where it helps", "애니메이션 기회", "어디에 모션", "모션 넣을 곳", "애니메이션 추가할 곳".
+allowed-tools: Read, Grep, Glob
 version: 1.0.0
 license: MIT
 ---
 
 # Finding Animation Opportunities
 
-Vendored from [`emilkowalski/skills`](https://github.com/emilkowalski/skills) (MIT); see [`LICENSES/NOTICE.md`](./LICENSES/NOTICE.md) for attribution. Read-only: it proposes; build with the local `motion-design` skill, review with `review-motion`.
+Vendored from [`emilkowalski/skills`](https://github.com/emilkowalski/skills) (MIT); see [`LICENSES/NOTICE.md`](./LICENSES/NOTICE.md) for attribution. Read-only: it proposes; build with the local `motion-design` skill, review with `review-motion`. Skill names in the body map to soma-work's: `animate` and `emil-design-eng` → `motion-design`, `review-animations` → `review-motion`; `animate-expo`, `prototype` and `pick-ui-library` are not vendored.
+
+A search skill. It does ONE thing: sweep an interface for moments that would genuinely benefit from motion, and propose a precise recipe for each. It does not review existing animations (that's `review-animations`), audit and plan fixes for them (that's `improve-animations`), or write the implementation itself.
 
 ## Operating Posture
 

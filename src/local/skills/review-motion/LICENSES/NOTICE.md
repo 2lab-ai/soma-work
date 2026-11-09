@@ -52,6 +52,7 @@ local `apple-design` and `animation-vocabulary` skills — see their own
 Checked against upstream `715c1807e08c497cfd1dc4feb450a2a3300ef2a9`. One fact
 changed upstream and is carried here: from `motion` 14.2 the `x`/`y`/`scale`/
 `rotate` shorthands are hardware-accelerated on HTML elements (upstream #40), so
-the rAF-scheduling caveat now names Motion before 14.2. Upstream's other edits
+the rAF-scheduling caveat now names Motion before 14.2, with upstream's note that
+layout animations (`layout`, `layoutId`) stay on the main thread in every version. Upstream's other edits
 (the course mention removed, Radix examples renamed to Base UI, a greeting-only
 "Initial Response" section) were already covered or are not carried.
