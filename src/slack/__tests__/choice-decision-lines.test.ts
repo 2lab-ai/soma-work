@@ -430,3 +430,20 @@ describe('S9 — an English reader gets the labels in English, whatever language
     expect(translateText('⚠️ *되돌릴 수 없음*', 'en')).toBe('⚠️ *Cannot be undone*');
   });
 });
+
+describe('S4b — a value cannot open a Slack code block across the lines', () => {
+  it('a run of backticks in a value is broken, so the irreversible label stays bold and outside any code block', () => {
+    const fence = '```';
+    const blocks = blocksOf(
+      ChoiceMessageBuilder.buildUserChoiceBlocks(
+        { ...BASE, blockedWork: `${fence}sh`, reversible: false, reversibleWhy: `drops ${fence}` } as UserChoice,
+        'k',
+      ),
+    );
+    const text = decisionBlocks(blocks)[0].elements[0].text as string;
+    expect(text).not.toContain(fence);
+    expect(text.split('\n')[1].startsWith('⚠️ *되돌릴 수 없음* — drops ')).toBe(true);
+    // What the reader sees is the same characters (a zero-width space between the backticks).
+    expect(text.replace(/​/g, '')).toBe(`🚧 막힌 작업 — ${fence}sh\n⚠️ *되돌릴 수 없음* — drops ${fence}`);
+  });
+});
