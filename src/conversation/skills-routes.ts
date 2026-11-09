@@ -12,9 +12,10 @@
  *   - 내 스킬 are the signed-in user's own (`authContext.userId`, never a body field). The owner reads and
  *     saves SKILL.md and says who else may run one skill or all of them — the same grant store the Slack
  *     permission flow writes (`user-skill-grants-store.ts`). A viewer-token session has no Slack user: no 내 스킬.
- *   - 환경 스킬 carry the host's environment values (test accounts, targets) — the sandbox already hides their
- *     files from non-admins. Everyone signed in sees their names and their own access; the description and
- *     the content only an admin or a user granted that skill; who has access only an admin. Changing access
+ *   - 환경 스킬 carry the host's environment values (test accounts, targets) — the sandbox hides their files
+ *     from a non-admin's shell unless an admin granted all environment skills. Everyone signed in sees their
+ *     names and their own access; the description and the content only an admin or a user granted that skill
+ *     (who may run it, so the model reads it anyway); who has access only an admin. Changing access
  *     takes the dashboard's admin gate (admin mode, or the viewer token) and an identified caller: a
  *     dashboard without credentials reads them as a non-admin and cannot change them. The content is not
  *     editable — environment plugins are fetched again from their repo on restart, so an edit would vanish.
