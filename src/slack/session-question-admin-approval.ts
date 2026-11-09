@@ -4,8 +4,11 @@
  * The model asks with `ASK_USER_QUESTION` and `audience: 'admins'` when the decision belongs to an admin (an
  * approval, a privileged step). The question still goes to its Slack thread; this adapter also lists it on the
  * 관리자 승인 screen, which only admins see, and answers it through the same path the dashboard's session view
- * takes (`ChoiceActionHandler.handleChoiceFromDashboard`). So a card answer rewrites the Slack question and the
- * session continues with it, and an answer anywhere else takes the card away.
+ * takes (`ChoiceActionHandler.handleChoiceFromDashboard`). So a card answer rewrites the Slack question (naming the
+ * admin) and the session continues with it, and an answer anywhere else takes the card away.
+ *
+ * The answer turn runs as the session's owner, not the admin: the admin decides, the owner's session carries on
+ * with the owner's own permissions. The card resolves as soon as the question is claimed for the answer.
  *
  * Only a single-choice question is listed (a multi-question form stays in its thread).
  */
@@ -29,7 +32,7 @@ type Answer = (
   label: string,
   question: string,
   actor: string,
-  opts: { adminAnswer: boolean },
+  opts: { adminAnswer: boolean; onClaimed: () => void },
 ) => Promise<void>;
 
 export interface SessionQuestionDeps {
@@ -125,14 +128,26 @@ export function sessionQuestionAdminApprovalAdapter(deps: SessionQuestionDeps): 
       }
       const choice = q.choices.find((c) => c.id === choiceId);
       if (!choice) return { ok: false, reason: 'invalid' };
+      // The answer is taken once the question is claimed for it; the turn it starts (minutes, maybe) runs on.
+      let markClaimed: () => void = () => {};
+      const claimed = new Promise<void>((resolve) => {
+        markClaimed = resolve;
+      });
+      const run = deps.answer(sessionKey, choiceId, choice.label, q.question, actor, {
+        adminAnswer: true,
+        onClaimed: markClaimed,
+      });
       try {
-        await deps.answer(sessionKey, choiceId, choice.label, q.question, actor, { adminAnswer: true });
+        await Promise.race([claimed, run]);
       } catch (error) {
         const reason = refusalOf(error);
         if (!reason) throw error;
         logger.info('Admin answer to a session question refused', { sessionKey, reason });
         return { ok: false, reason };
       }
+      run.catch((error: unknown) =>
+        logger.warn('The turn an admin answer started failed', { sessionKey, error: String(error) }),
+      );
       answered.push({ id, outcome: 'approved', choiceId, by: actor, via: 'dashboard', at: clock() });
       if (answered.length > RESOLVED_KEEP) answered.splice(0, answered.length - RESOLVED_KEEP);
       return { ok: true, outcome: 'approved' };

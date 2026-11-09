@@ -180,13 +180,27 @@ describe('ChoiceActionHandler — an admin answering a question asked for admins
     return setupResult;
   }
 
-  it('is not held for the owner: the question is answered and the turn is marked as an admin answer', async () => {
+  it('is not held for the owner: the question is answered, and the turn runs as the owner, naming the admin', async () => {
     const { handler, messageHandler, threadPanel, allows } = adminQuestion(setup(false));
-    await handler.handleChoiceFromDashboard(SESSION_KEY, '1', 'A', 'Q?', 'U_ADMIN', { adminAnswer: true });
+    const onClaimed = vi.fn();
+    await handler.handleChoiceFromDashboard(SESSION_KEY, '1', 'A', 'Q?', 'U_ADMIN', { adminAnswer: true, onClaimed });
     expect(allows).not.toHaveBeenCalled();
-    expect(threadPanel.resolveChoice).toHaveBeenCalled();
+    expect(onClaimed).toHaveBeenCalledTimes(1);
+    expect(threadPanel.resolveChoice.mock.calls[0][3]).toContain('대시보드 · <@U_ADMIN>');
     expect(messageHandler).toHaveBeenCalledWith(
-      expect.objectContaining({ user: 'U_ADMIN', text: '1', routeContext: { adminAnswer: true } }),
+      expect.objectContaining({ user: 'U_OWNER', text: '1' }),
+      expect.any(Function),
+    );
+  });
+
+  it('the legacy (non-P3) path also runs the turn as the owner and names the admin', async () => {
+    const result = adminQuestion(setup(false));
+    (result.session.actionPanel as any).pendingChoice = undefined;
+    await result.handler.handleChoiceFromDashboard(SESSION_KEY, '1', 'A', 'Q?', 'U_ADMIN', { adminAnswer: true });
+    expect(result.threadPanel.resolveChoice).not.toHaveBeenCalled();
+    expect(result.slackApi.updateMessage.mock.calls[0][2]).toContain('대시보드 · <@U_ADMIN>');
+    expect(result.messageHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ user: 'U_OWNER', text: '1' }),
       expect.any(Function),
     );
   });
