@@ -79,6 +79,7 @@ This is the path to use today for contributing, and the one the existing fleet d
 git clone https://github.com/2lab-ai/soma-work.git
 cd soma-work
 npm install
+npm run build    # the workspace packages load from their dist/; a clean clone must build once before it runs
 ```
 
 #### 2. Create a Slack app by hand

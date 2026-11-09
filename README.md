@@ -2,24 +2,24 @@
 
 <p align="center"><strong>Ask in Slack. Watch it work.</strong></p>
 
-<p align="center">Claude Code agents for your team. Start one from Slack, the dashboard or your voice. Each one is a card you can open.</p>
+<p align="center">A self-hosted Slack bot that runs Claude Code agents for your team. Every task is a card you can open.</p>
 
 <p align="center">
   <a href="https://github.com/2lab-ai/soma-work/actions/workflows/ci.yml"><img src="https://github.com/2lab-ai/soma-work/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <a href="https://github.com/2lab-ai/soma-work/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License" /></a>
+  <a href="https://github.com/2lab-ai/soma-work/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-ISC-blue.svg" alt="License: ISC" /></a>
 </p>
 
 <p align="center">
   <a href="#ask">ask</a> · <a href="#watch-it-work">watch</a> · <a href="#step-in">step in</a> · <a href="#run-it">run it</a> · <a href="#docs">docs</a> · <a href="./README.ko.md">한국어</a>
 </p>
 
-![The soma-work dashboard: three columns (needs you, running, done) of task cards, each with its status, PRs, cost and Slack channel](assets/readme/board.png)
+![The soma-work dashboard: three columns (needs response, running, done) of task cards, each with its status, PRs, cost and Slack channel](assets/readme/board.png)
 
-<sub>The real dashboard in its Modern Mono theme, 2026-11-09, filtered to this repository. Cards that name private hosts are hidden. The UI is in Korean, the default display language.</sub>
+<sub>The real dashboard, filtered to this repository (private cards hidden). The UI is in Korean by default; the EN/KO toggle is at the top right.</sub>
 
 ## Ask
 
-Three ways in. Each one starts the same thing: a Slack thread and a card on the board.
+Each way starts a Slack thread and a card on the board.
 
 - **Slack:** mention the bot in a channel, or reply in its thread.
 - **Dashboard:** **New task** (`Ctrl+N`), type, send.
@@ -33,7 +33,7 @@ Three ways in. Each one starts the same thing: a Slack thread and a card on the 
 
 Open a card.
 
-- **Conversation:** your instruction and the agent's replies. It is the same thread as in Slack.
+- **Conversation:** the Slack thread: your instruction and the agent's replies.
 - **Tasks:** the agent's plan. Each step is done, running or waiting.
 - **Work log:** every tool call as it runs, grouped by task.
 
@@ -41,31 +41,36 @@ Open a card.
 
 ## Step in
 
-- **It asks first.** A permission prompt or a question moves the card to **Needs you**. Answer on the card or in Slack.
+- **Asks first:** a permission prompt or a question moves the card to **Needs response**. Answer on the card or in Slack.
 - **Steer:** write to the running agent from the card.
-- **Stop** it, or **roll its context back** to an earlier point.
+- **Stop or roll back:** stop it, or roll its context back to an earlier point.
 
 ## What comes back
 
-- The PRs, issues and docs it made, on the card, with their state.
+- The PRs, issues and docs of the work, on the card. PRs and issues show their state.
 - A TL;DR when the work ends.
 - Cost, tokens and model, per card.
 
 ## Run it
 
-From source, today:
+You run it on your own machine. From source, today (Node.js 20+):
+
+1. Create a Slack app from [`infra/slack/slack-app-manifest.json`](infra/slack/slack-app-manifest.json) and install it. Copy the bot token (`xoxb-`) and an app-level token with `connections:write` (`xapp-`).
+2. Give it Claude: an [llmux](https://github.com/2lab-ai/llmux) on the same machine (found at start), or `CLAUDE_CODE_OAUTH_TOKEN` in `.env` (from `claude setup-token`).
+3. Build and start:
 
 ```bash
-git clone https://github.com/2lab-ai/soma-work.git && cd soma-work && npm install
+git clone https://github.com/2lab-ai/soma-work.git && cd soma-work
+npm install && npm run build
 cp .env.example .env    # SLACK_BOT_TOKEN, SLACK_APP_TOKEN, BASE_DIRECTORY
 npm run dev
 ```
 
-Create the Slack app from [`infra/slack/slack-app-manifest.json`](infra/slack/slack-app-manifest.json) first. Node.js 22+. The full guide, with deployment and GitHub setup, is [Running soma-work](docs/misc/guides/setup.md). A packaged installer (`somawork setup`) is built but not published yet.
+The dashboard is at `http://127.0.0.1:3000/dashboard` (port 33000 off `main`). Full guide: [Running soma-work](docs/misc/guides/setup.md).
 
 ## Only the workflow
 
-The agent workflow soma-work runs, `zworkflow`, is a Claude Code plugin. Use it in your own Claude Code, without Slack:
+soma-work's agent workflow, `zworkflow`, is a Claude Code plugin. Use it without Slack:
 
 ```text
 /plugin marketplace add 2lab-ai/soma-work
@@ -86,4 +91,4 @@ If you are an AI agent working on this repository, read [`CLAUDE.md`](CLAUDE.md)
 
 ## License
 
-[MIT](./LICENSE)
+[ISC](./LICENSE)

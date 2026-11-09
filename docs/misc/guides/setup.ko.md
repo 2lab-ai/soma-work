@@ -79,6 +79,7 @@ somawork setup                   # 런타임이 정확히 하나 설치돼 있�
 git clone https://github.com/2lab-ai/soma-work.git
 cd soma-work
 npm install
+npm run build    # 워크스페이스 패키지는 dist/에서 로드된다 — 새로 클론했으면 실행 전에 한 번 빌드해야 한다
 ```
 
 #### 2. Slack App 수동 생성
