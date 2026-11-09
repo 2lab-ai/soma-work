@@ -61,10 +61,12 @@ async function boot(
     working?: boolean;
     safeguardHalt?: boolean;
     postFails?: boolean;
+    onPost?: () => void;
   } = {},
 ) {
   const sessions = new Map<string, ConversationSession>([[KEY, session]]);
   const postMessage = vi.fn(async (_args: Record<string, unknown>) => {
+    opts.onPost?.();
     if (opts.postFails) throw new Error('slack_down');
     return { ok: true, ts: '1794191600.000100' };
   });
@@ -171,6 +173,41 @@ describe('restart — a cut incident attempt is settled, never resumed', () => {
     expect(postMessage).not.toHaveBeenCalled();
     expect(handleMessage).not.toHaveBeenCalled();
     expect(session.incidentAttemptFinishedId).toBeUndefined();
+    expect(session.activityState).toBe('working');
+  });
+
+  // Review of PR #1054 (astra, round 2 P2): Eagle's retry can take the thread
+  // over while the post is in flight. The old post must not touch the new
+  // attempt's markers.
+  it('leaves a retry admitted during the post alone', async () => {
+    const session = settledIncidentSession();
+    const { claudeHandler } = await boot(session, {
+      onPost: () => {
+        // The ingress handover, as event-router does it.
+        session.incidentRequest = { ...REQUEST, attempt_id: 'AT-2' } as any;
+        session.incidentAttemptFinishedId = undefined;
+        session.activityState = 'working';
+      },
+    });
+
+    expect(session.incidentAttemptPublishedId).toBeUndefined();
+    expect(session.incidentAttemptFinishedId).toBeUndefined();
+    expect(session.activityState).toBe('working');
+    // The old debt is paid: it does not linger on disk.
+    expect(session.incidentResultOwedId).toBeUndefined();
+    expect(claudeHandler.saveSessions).toHaveBeenCalled();
+  });
+
+  it('drops the debt of an attempt a retry replaced before recovery', async () => {
+    const session = settledIncidentSession({
+      activityState: 'working',
+      incidentRequest: { ...REQUEST, attempt_id: 'AT-2' },
+      incidentAttemptFinishedId: undefined,
+    } as any);
+    const { postMessage } = await boot(session);
+
+    expect(postMessage).not.toHaveBeenCalled();
+    expect(session.incidentResultOwedId).toBeUndefined();
     expect(session.activityState).toBe('working');
   });
 

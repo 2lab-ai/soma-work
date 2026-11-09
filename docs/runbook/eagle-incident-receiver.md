@@ -94,6 +94,9 @@ SOMA_INCIDENT_EVIDENCE_BASE_URL=https://<eagle-eye-host>
      이벤트를 전달하기 전, 동기로 쓴다. 그래서 ingress가 Eagle의 재시도를 바로 받는다. 결론이 게시되지 않았으면
      (`incidentAttemptPublishedId`) 결과를 빚진 것으로 남긴다. 잠든 세션은 빚지지 않는다 — Eagle은 이미 오래전에
      기다리기를 그만뒀다.
+     인시던트 세션은 정산 대상이 아니어도 항상 `idle`로 로드한다. 완료 마커는 턴이 idle이 되기 전에 저장되므로,
+     그 사이에 멈추면 마커 옆에 `working`이 남고 ingress가 재시도를 `session_busy`로 거절하기 때문이다. 빚
+     (`incidentResultOwedId`)은 아카이브와 되살리기에도 함께 간다.
   3. **복구** (`publishOwedIncidentResults`, `src/slack-handler.ts`, `notifyCrashRecovery`의 첫 단계): 빚진
      시도마다 host가 쓴 `interrupted` 결과 한 줄을 올린다(인시던트 게시와 같은 Slack 처리 끔 인자). 재시도가 이미
      스레드를 넘겨받았으면 올리지 않는다. 게시가 실패하면 `incidentResultOwedId`가 남아 다음 기동에 다시 올린다.

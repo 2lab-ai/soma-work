@@ -3770,6 +3770,11 @@ export class SlackHandler {
           threadTs,
           attemptId,
         });
+        // The debt went with the attempt: it must not linger on disk.
+        if (session?.incidentResultOwedId === attemptId) {
+          session.incidentResultOwedId = undefined;
+          this.saveSettledIncidentSessions(channel, threadTs);
+        }
         continue;
       }
       if (session.incidentAttemptPublishedId === attemptId || session.incidentResultOwedId !== attemptId) continue;
