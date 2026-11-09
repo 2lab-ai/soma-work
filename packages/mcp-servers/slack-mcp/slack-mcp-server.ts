@@ -822,7 +822,8 @@ class SlackMcpServer extends BaseMcpServer {
       const result = await this.slack.filesUploadV2(uploadArgs as any);
       const uploadedFile = (result as any).files?.[0]?.files?.[0] || (result as any).files?.[0] || null;
       // Not a new version when unchanged: the daemon keeps the version it has.
-      if (version && version.changed !== false && uploadedFile?.id) this.uploadVersions.remember(uploadedFile.id, version);
+      if (version && version.changed !== false && uploadedFile?.id)
+        this.uploadVersions.remember(uploadedFile.id, version);
       return { version, uploadedFile, result };
     });
   }
