@@ -5,6 +5,8 @@
  * S1-S2에서 확립. S3(TurnObserver)부터 소비한다.
  */
 
+import type { DecisionFields } from 'somalib/model-commands/session-types';
+
 // ─── EndTurn ───────────────────────────────────────────
 
 export type StopReason = 'end_turn' | 'max_tokens' | 'tool_use' | 'stop_sequence';
@@ -25,7 +27,8 @@ export interface ModelCommandResult {
   error?: { code: string; message: string };
 }
 
-export interface UserChoiceQuestion {
+/** The question as ASK_USER_QUESTION returned it — with its optional decision lines (#1073). */
+export interface UserChoiceQuestion extends DecisionFields {
   type: 'user_choice' | 'user_choice_group';
   question: string;
   choices: Array<{

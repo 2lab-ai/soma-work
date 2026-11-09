@@ -68,6 +68,25 @@ describe('sessionQuestionAdminApprovalAdapter', () => {
     ]);
   });
 
+  // #1073 — an admin's card shows the same decision lines as the session view and the Slack card.
+  it('carries the question’s decision lines (normalized); a question without them carries none', async () => {
+    const lined = {
+      ...QUESTION,
+      blockedWork: '  devops\n배포 ',
+      reversible: false,
+      reversibleWhy: '카드가 실행된다',
+      junk: 1,
+    };
+    const { adapter } = adapterWith([['C123:root-ts', session({}, lined)]]);
+    expect((await adapter.pending(0))[0].decision).toEqual({
+      blockedWork: 'devops 배포',
+      reversible: false,
+      reversibleWhy: '카드가 실행된다',
+    });
+    const { adapter: plain } = adapterWith([['C123:root-ts', session()]]);
+    expect('decision' in (await plain.pending(0))[0]).toBe(false);
+  });
+
   it('lists nothing for the owner’s own questions, a form, or a session that is not waiting', () => {
     const { audience: _drop, ...ownerQuestion } = QUESTION;
     const { adapter } = adapterWith([

@@ -327,6 +327,7 @@ describe('expanded body — face + delta, sections keyed on state', () => {
         'renderCardResume',
         'taskPlanCardHtml',
         'quickChoicesOf',
+        'decisionLines',
         'isBusy',
         'sessionActionsOf',
         'sessionActionHtml',

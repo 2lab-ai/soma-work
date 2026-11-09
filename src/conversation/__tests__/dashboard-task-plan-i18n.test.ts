@@ -31,6 +31,7 @@ const PLAN_CLIENT = [
   'planShownLag',
   'planLock',
   'quickChoicesOf',
+  'decisionLines',
   'quickChoiceHtml',
   'cardQuickAnswer',
   'autoOpenDecisions',

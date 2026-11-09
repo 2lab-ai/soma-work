@@ -283,6 +283,32 @@ const UPDATE_SESSION_SCHEMA = {
   additionalProperties: false,
 };
 
+/**
+ * #1073 — decision lines on a question (single, or each question of a group). Optional; most questions need none.
+ * The card shows them under the context, in this order; the answer the model gets back does not change.
+ */
+const DECISION_LINE_PROPERTIES = {
+  blockedWork: {
+    type: 'string',
+    description:
+      'Optional — most questions need none. One line: the work this answer is holding up (e.g. "PR #42 merge"). Use only when the answer blocks work.',
+  },
+  stakes: {
+    type: 'string',
+    description:
+      'Optional. One line: what is at stake in the choice (data, money, a release). Leave out when nothing is.',
+  },
+  reversible: {
+    type: 'boolean',
+    description:
+      'Optional. false = the choice cannot be undone (shown prominently, give reversibleWhy); true = it can. Leave out when it does not matter.',
+  },
+  reversibleWhy: {
+    type: 'string',
+    description: 'One line: why it can or cannot be undone. Required in practice when reversible is false.',
+  },
+} as const;
+
 const ASK_USER_QUESTION_SCHEMA = {
   type: 'object',
   properties: {
@@ -320,6 +346,7 @@ const ASK_USER_QUESTION_SCHEMA = {
                 required: ['label'],
               },
             },
+            ...DECISION_LINE_PROPERTIES,
           },
           required: ['type', 'question', 'choices'],
         },
@@ -370,6 +397,7 @@ const ASK_USER_QUESTION_SCHEMA = {
                       required: ['label'],
                     },
                   },
+                  ...DECISION_LINE_PROPERTIES,
                 },
                 required: ['question'],
               },
