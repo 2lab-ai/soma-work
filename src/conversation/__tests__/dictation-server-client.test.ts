@@ -198,6 +198,24 @@ function callbacks() {
   };
 }
 
+describe('C6 — the language follows the page (an English dashboard dictates English)', () => {
+  it.each([
+    ['en', 'en-US'],
+    ['ko', 'ko-KR'],
+    ['', 'ko-KR'],
+  ])('<html lang="%s"> → start lang %s', async (pageLang, sent) => {
+    const e = env();
+    (e.w as Record<string, unknown>).document = { documentElement: { lang: pageLang } };
+    const { cb } = callbacks();
+    api.dictationServerStart(cb, e.w);
+    await flush();
+    await flush();
+    const ws = e.sockets[0];
+    ws.open();
+    expect(ws.sent[0]).toBe(JSON.stringify({ type: 'start', lang: sent }));
+  });
+});
+
 describe('C2 — a dictation', () => {
   it('start first, audio only once ready, words as they settle, then stop → done', async () => {
     const e = env();
