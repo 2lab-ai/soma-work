@@ -122,6 +122,14 @@ describe('스킬 tab — 내 스킬', () => {
     expect(html).not.toContain('<option value="U_A">');
   });
 
+  it('a SKILL.md that starts with a blank line keeps it: the parser drops the first newline after <textarea> and <pre> (fable 1091-3)', () => {
+    const detail = { name: 'deploy', content: '\nintro', hash: 'h1', isSingleFile: true };
+    const edit = view({ sk: snapshot(), open: { section: 'mine', id: 'deploy' }, detail });
+    expect(edit).toMatch(/<textarea[^>]*>\n\nintro<\/textarea>/);
+    const sys = view({ sk: snapshot(), open: { section: 'system', id: 'stv:debug', source: 'stv' }, detail });
+    if (sys.includes('<pre')) expect(sys).toMatch(/<pre[^>]*>\n\nintro<\/pre>/);
+  });
+
   it('a viewer-token session has no 내 스킬: it says why', () => {
     const html = view({ sk: snapshot({ mine: null, me: null }) });
     expect(html).toContain('Slack 계정으로 로그인');

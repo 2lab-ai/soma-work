@@ -18,7 +18,7 @@
 
 export const SKILLS_TAB_HTML = `<div slot="skills" data-tab="skills" class="page" hidden>
   <aside class="side" aria-label="스킬 영역">
-    <input type="search" id="sk-filter" placeholder="스킬 검색" aria-label="스킬 검색" oninput="skFilter()">
+    <input type="search" class="ui-input" id="sk-filter" placeholder="스킬 검색" aria-label="스킬 검색" oninput="skFilter()">
     <nav id="sk-nav"></nav>
   </aside>
   <main>
@@ -239,8 +239,9 @@ function skFindEnv(key) {
 function skContent(editable) {
   if (_skDetailError) return '<div class="notice is-error" role="alert">' + esc(_skDetailError) + '</div>';
   if (!_skDetail) return '<div class="notice">불러오는 중…</div>';
-  if (!editable) return '<pre class="sk-code">' + esc(_skDetail.content) + '</pre>';
-  return '<textarea id="sk-edit" class="ui-input sk-code" rows="18" spellcheck="false" aria-label="SKILL.md 내용" data-name="' + escAttr(_skDetail.name) + '">' + esc(_skDetail.content) + '</textarea>'
+  // The HTML parser drops one newline right after <pre> and <textarea>: give it one, so a leading blank line survives.
+  if (!editable) return '<pre class="sk-code">\n' + esc(_skDetail.content) + '</pre>';
+  return '<textarea id="sk-edit" class="ui-input sk-code" rows="18" spellcheck="false" aria-label="SKILL.md 내용" data-name="' + escAttr(_skDetail.name) + '">\n' + esc(_skDetail.content) + '</textarea>'
     + '<div class="sk-actions"><button type="button" class="btn primary" onclick="skSaveMine()">저장</button></div>';
 }
 function skBack(label) {
