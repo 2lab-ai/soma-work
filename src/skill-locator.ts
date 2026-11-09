@@ -23,6 +23,7 @@
  * Used by:
  *   - prompt-builder.applyAutoskills (resolveAutoskillContent)
  *   - the `autoskill` add-picker UI (listAvailableSkills)
+ *   - the settings page's 시스템 스킬 list (listInstalledSkills, `conversation/skills-routes.ts`)
  */
 
 import * as fs from 'node:fs';
@@ -177,6 +178,47 @@ export function skillMdFile(skill: AvailableSkill, userId?: string): string | nu
   return skillMdPath(path.join(PLUGINS_DIR, source, 'skills'), name);
 }
 
+/** One installed skill of a built-in or installed plugin, and the SKILL.md it reads from. */
+export interface InstalledSkill {
+  /** `local` for the bundled plugins, else the plugin's directory name under PLUGINS_DIR. */
+  source: string;
+  name: string;
+  file: string;
+}
+
+/**
+ * Every installed skill of the bundled `local` plugins and of every plugin under PLUGINS_DIR, as
+ * (source, name) pairs — the settings page's 시스템 스킬 list (#1079). Not deduped by name the way
+ * {@link listAvailableSkills} is: the page shows what is installed, not what a bare name resolves to.
+ * `excludePlugins` leaves plugins out entirely — the environment plugins, whose skills carry host
+ * values and are listed (gated) elsewhere. Dot-directories (`.backups` keeps old copies of the
+ * environment plugins) are never scanned, and a PLUGINS_DIR plugin only when PluginManager admitted it
+ * (`plugin/admitted-plugin-names`). User skills live under DATA_DIR and are not part of this.
+ * Order: local (zworkflow's, then the harness's), then plugins by name; names sorted inside each.
+ */
+export function listInstalledSkills(
+  opts: { excludePlugins?: Iterable<string>; pluginsDir?: string; localDirs?: string[] } = {},
+): InstalledSkill[] {
+  const exclude = new Set(opts.excludePlugins ?? []);
+  const out: InstalledSkill[] = [];
+  const seen = new Set<string>();
+  const addDir = (source: string, dir: string): void => {
+    for (const name of listSkillDirsWithMd(dir).sort((a, b) => a.localeCompare(b))) {
+      // The two local dirs share the `local:` key; the resolver reads zworkflow's first, and so does this.
+      if (seen.has(`${source}\u0000${name}`)) continue;
+      seen.add(`${source}\u0000${name}`);
+      out.push({ source, name, file: skillMdPath(dir, name) });
+    }
+  };
+  for (const dir of opts.localDirs ?? [LOCAL_SKILLS_DIR, LOCAL_HARNESS_SKILLS_DIR]) addDir('local', dir);
+  const pluginsDir = opts.pluginsDir ?? PLUGINS_DIR;
+  for (const plugin of scanPluginNames(pluginsDir)) {
+    if (plugin.startsWith('.') || exclude.has(plugin)) continue;
+    addDir(plugin, path.join(pluginsDir, plugin, 'skills'));
+  }
+  return out;
+}
+
 /** Directory names under `dir` that contain a `SKILL.md`. Empty on any error. */
 function listSkillDirsWithMd(dir: string): string[] {
   let entries: fs.Dirent[];
@@ -198,11 +240,11 @@ function listSkillDirsWithMd(dir: string): string[] {
   return out;
 }
 
-/** Admitted plugin directory names under PLUGINS_DIR (alphabetical). Empty on error. */
-function scanPluginNames(): string[] {
+/** Admitted plugin directory names under `pluginsDir` (alphabetical). Empty on error. */
+function scanPluginNames(pluginsDir: string = PLUGINS_DIR): string[] {
   let entries: fs.Dirent[];
   try {
-    entries = fs.readdirSync(PLUGINS_DIR, { withFileTypes: true });
+    entries = fs.readdirSync(pluginsDir, { withFileTypes: true });
   } catch {
     return [];
   }

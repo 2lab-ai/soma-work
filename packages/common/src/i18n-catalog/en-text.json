@@ -2097,5 +2097,15 @@
   "▶️ 재개": "▶️ Resume",
   "• `goal pause` — 지금 목표를 일시정지하고 다음 목표로 넘어감 (없으면 goal 작업 종료)": "• `goal pause` — set the current goal aside and move on to the next one (none queued: the goal work stops)",
   "• `goal resume [n]` — 일시정지한 목표 재개: 진행 중인 목표가 없으면 바로, 있으면 그 다음에 시작": "• `goal resume [n]` — resume a paused goal: at once when no goal runs, otherwise right after the current one",
-  "• `goal clear` — 지금 목표 · 대기 · 일시정지 · 완료 목록을 모두 제거": "• `goal clear` — drop the current, queued, paused and completed goals"
+  "• `goal clear` — 지금 목표 · 대기 · 일시정지 · 완료 목록을 모두 제거": "• `goal clear` — drop the current, queued, paused and completed goals",
+  "Slack 계정으로 로그인한 사용자만 내 스킬을 볼 수 있습니다": "Only a user signed in with a Slack account can see their skills",
+  "그런 스킬이 없습니다": "No such skill",
+  "그런 환경 스킬이 없습니다": "No such environment skill",
+  "그사이 다른 곳에서 이 스킬이 바뀌어 저장하지 않았습니다": "Not saved: this skill was changed somewhere else in the meantime",
+  "내 스킬은 나는 언제나 실행할 수 있습니다 — 다른 사람을 고르세요": "You can always run your own skills — choose someone else",
+  "스킬 내용이 비어 있습니다": "The skill is empty",
+  "스킬이 최대 크기({0}KB)를 넘습니다": "The skill is over the size limit ({0}KB)",
+  "승인된 사용자가 아닙니다": "Not an approved user",
+  "이 환경 스킬을 볼 권한이 없습니다": "You are not allowed to see this environment skill",
+  "환경 스킬 권한은 로그인한 관리자만 바꿉니다 — 이 대시보드는 인증이 설정되지 않았습니다": "Only a signed-in admin can change environment skill access — this dashboard has no sign-in set up"
 }
