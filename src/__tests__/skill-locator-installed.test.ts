@@ -31,7 +31,10 @@ describe('listInstalledSkills (#1079)', () => {
   let localA: string;
   let localB: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    // PluginManager admits what PLUGINS_DIR may serve (plugin/admitted-plugin-names); `blocked` stays on disk unadmitted.
+    const { setAdmittedPluginNames } = await import('../plugin/admitted-plugin-names');
+    setAdmittedPluginNames(['stv', 'envx']);
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'soma-installed-skills-'));
     pluginsDir = path.join(root, 'plugins');
     localA = path.join(root, 'local', 'skills');
@@ -45,6 +48,8 @@ describe('listInstalledSkills (#1079)', () => {
     // a backup of the environment plugin, and a stray dir without SKILL.md
     skill(path.join(pluginsDir, '.backups', 'skills'), 'post-deploy');
     fs.mkdirSync(path.join(pluginsDir, 'stv', 'skills', 'no-skill-md'), { recursive: true });
+    // a plugin PluginManager did not admit (refused, blocked, or dropped from config) whose files stayed behind
+    skill(path.join(pluginsDir, 'blocked', 'skills'), 'evil');
   });
 
   afterEach(() => {
