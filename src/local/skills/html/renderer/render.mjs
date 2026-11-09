@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 /**
- * HTML → PNG renderer for the local:html skill.
+ * HTML page check (and, only on request, HTML → PNG) for the local:html skill.
  *
  * Contract (CLI):
- *   node render.mjs --input <html-path> --output <png-path>
+ *   node render.mjs --input <html-path> --check            ← the skills' QA step: no image is written
+ *   node render.mjs --input <html-path> --output <png-path> ← only when the user asks for an image
  *                   [--width 1200] [--height 1600] [--full-page]
  *                   [--selector body] [--device-scale-factor 1]
  *                   [--wait-ms 500] [--template <name>]
+ *
+ * --check prints `check: <json>` — { ok, textChars, overflowX, overlaps, overlapSamples, brokenImages,
+ * pageErrors, width, height } — and exits 3 when the page fails: under 20 characters of text, a horizontal
+ * scroll, text boxes that overlap, a broken image, or an uncaught script error.
  *
  * Precedence for geometry: CLI args > --template entry in templates/index.json
  *   > built-in default (1200 × 1600, fullPage=true, deviceScaleFactor=1).
@@ -19,9 +24,10 @@
  * sample text with) so callers can detect a silent fallback.
  *
  * Exit codes:
- *   0  PNG written
+ *   0  PNG written / check passed
  *   1  CLI / input error
  *   2  Playwright launch / render failure
+ *   3  check failed
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -46,6 +52,7 @@ function parseArgs(argv) {
     else if (arg === '--device-scale-factor') out.deviceScaleFactor = Number(argv[++i]);
     else if (arg === '--wait-ms') out.waitMs = Number(argv[++i]);
     else if (arg === '--template') out.template = argv[++i];
+    else if (arg === '--check') out.check = true;
     else if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
@@ -59,7 +66,7 @@ function parseArgs(argv) {
 
 function printHelp() {
   console.log(
-    'Usage: node render.mjs --input <html> --output <png> [--width N] [--height N]' +
+    'Usage: node render.mjs --input <html> (--check | --output <png>) [--width N] [--height N]' +
       ' [--full-page] [--no-full-page] [--selector S] [--device-scale-factor N]' +
       ' [--wait-ms N] [--template NAME]',
   );
@@ -92,13 +99,13 @@ function resolveGeometry(args) {
 
 async function main() {
   const args = parseArgs(process.argv);
-  if (!args.input || !args.output) {
-    console.error('--input and --output are required');
+  if (!args.input || (!args.output && !args.check)) {
+    console.error('--input and one of --check / --output are required');
     printHelp();
     process.exit(1);
   }
   const inputPath = isAbsolute(args.input) ? args.input : resolve(process.cwd(), args.input);
-  const outputPath = isAbsolute(args.output) ? args.output : resolve(process.cwd(), args.output);
+  const outputPath = args.output ? (isAbsolute(args.output) ? args.output : resolve(process.cwd(), args.output)) : null;
   if (!existsSync(inputPath)) {
     console.error(`input not found: ${inputPath}`);
     process.exit(1);
@@ -122,6 +129,8 @@ async function main() {
       deviceScaleFactor: geom.deviceScaleFactor,
     });
     const page = await context.newPage();
+    const pageErrors = [];
+    page.on('pageerror', (err) => pageErrors.push(String(err?.message ?? err).slice(0, 200)));
     const url = pathToFileURL(inputPath).toString();
     await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
     if (geom.waitMs > 0 || args.waitMs > 0) {
@@ -161,6 +170,13 @@ async function main() {
     }
     console.log(`fonts used: ${usedFonts === null ? 'unknown' : usedFonts.join(', ') || 'none'}`);
 
+    if (args.check) {
+      const verdict = await checkPage(page, pageErrors);
+      console.log(`check: ${JSON.stringify(verdict)}`);
+      if (!verdict.ok) process.exitCode = 3;
+      return;
+    }
+
     if (geom.fullPage) {
       await page.screenshot({ path: outputPath, fullPage: true, type: 'png' });
     } else {
@@ -185,6 +201,52 @@ async function main() {
   } finally {
     await browser.close();
   }
+}
+
+/**
+ * What a look at a screenshot used to catch, measured in the page instead (no image is made): text present,
+ * no horizontal scroll, no two text boxes overlapping, no broken image, no uncaught script error.
+ */
+async function checkPage(page, pageErrors) {
+  const m = await page.evaluate(() => {
+    const doc = document.documentElement;
+    const overflowX = Math.max(0, Math.ceil(doc.scrollWidth - window.innerWidth));
+    const textChars = (document.body?.innerText ?? '').replace(/\s+/g, ' ').trim().length;
+    const brokenImages = [...document.images].filter((img) => img.complete && img.naturalWidth === 0).length;
+    // Text boxes: elements that hold text of their own, laid out and visible.
+    const boxes = [];
+    for (const el of document.body ? document.body.querySelectorAll('*') : []) {
+      const own = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
+      if (!own) continue;
+      const cs = getComputedStyle(el);
+      if (cs.visibility === 'hidden' || cs.display === 'none' || Number(cs.opacity) === 0) continue;
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const r = range.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) continue;
+      boxes.push({ el, r });
+      if (boxes.length >= 400) break;
+    }
+    let overlaps = 0;
+    const samples = [];
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i];
+        const b = boxes[j];
+        if (a.el.contains(b.el) || b.el.contains(a.el)) continue;
+        const w = Math.min(a.r.right, b.r.right) - Math.max(a.r.left, b.r.left);
+        const h = Math.min(a.r.bottom, b.r.bottom) - Math.max(a.r.top, b.r.top);
+        if (w <= 0 || h <= 0) continue;
+        const smaller = Math.min(a.r.width * a.r.height, b.r.width * b.r.height);
+        if (w * h < 0.3 * smaller) continue;
+        overlaps++;
+        if (samples.length < 5) samples.push([a.el.textContent.trim().slice(0, 40), b.el.textContent.trim().slice(0, 40)]);
+      }
+    }
+    return { textChars, overflowX, overlaps, overlapSamples: samples, brokenImages, width: doc.scrollWidth, height: doc.scrollHeight };
+  });
+  const ok = m.textChars >= 20 && m.overflowX === 0 && m.overlaps === 0 && m.brokenImages === 0 && pageErrors.length === 0;
+  return { ok, ...m, pageErrors };
 }
 
 main().catch((err) => {

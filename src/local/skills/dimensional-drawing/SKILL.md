@@ -110,13 +110,13 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
 
 2. **Write** one self-contained file, `$(pwd)/dwg-<slug>-<ts>.html`, starting from the drawing kit in `examples/`.
 
-3. **Render** a QA snapshot (PNG) at 1800 px wide with the `html` skill renderer, then open it (Read tool) and fix overlaps in one pass. The snapshot is your check, not a deliverable:
+3. **Check** the sheet at 1800 px wide with the `html` skill renderer's `--check` (no image is made), then fix in one pass what its `check:` line names — `overlaps` / `overlapSamples` (labels drawn on top of each other), `overflowX`, a broken image or a script error:
 
    ```bash
    export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
    node "$CLAUDE_PLUGIN_ROOT/skills/html/renderer/render.mjs" \
-     --input "$(pwd)/dwg-<slug>-<ts>.html" --output "$(pwd)/dwg-<slug>-<ts>.png" \
-     --width 1800 --height 1200 --full-page --wait-ms 800
+     --input "$(pwd)/dwg-<slug>-<ts>.html" --check \
+     --width 1800 --height 1200 --wait-ms 800
    ```
 
 4. **Publish** the HTML for a clickable link (same server and archive as the `html` skill, Step 7). The archive is readable by anyone on the local network and is never pruned, so **skip this step when the source is private** — an internal or staging URL, a private repo, an unreleased product. Then upload the HTML only and say why there is no link.
@@ -126,7 +126,7 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
    node "$CLAUDE_PLUGIN_ROOT/skills/html/server/serve.mjs" --file "$(pwd)/dwg-<slug>-<ts>.html"
    ```
 
-5. **Upload** the HTML only, with `mcp__slack-mcp__send_file` with its `url` set to the served URL (the dashboard artifact then opens the live page too; also put the URL in `initial_comment`) — never upload the PNG snapshot: one drawing is one artifact in the thread and on the dashboard (SSOT 2026-11-02). Outside Slack, print the HTML's absolute path and the URL instead.
+5. **Upload** the HTML only, with `mcp__slack-mcp__send_file` with its `url` set to the served URL (the dashboard artifact then opens the live page too; also put the URL in `initial_comment`) — never a PNG of it (none is made): one drawing is one artifact in the thread and on the dashboard (SSOT 2026-11-02, 2026-11-09). Outside Slack, print the HTML's absolute path and the URL instead.
 
 The drawing of a third-party site is an analysis artifact: keep rule 4 (unbranded) — name it `UI-<KIND>-<NNN>` and put the source URL only in the `SOURCE` cell.
 
