@@ -1,14 +1,14 @@
 ---
 name: gestures
-description: Build drag, swipe, and sheet interactions that track the finger 1:1 and stay interruptible. Use when building or fixing anything the user drags, swipes, flings, holds, or dismisses with a gesture — drawers, sheets, swipe-to-dismiss toasts and cards, drag-to-reorder, pull-to-refresh, hold-to-confirm — or when a gesture feels laggy, disconnected from the finger, jumps on release, or can't be caught mid-animation. Triggers on — gesture, drag, draggable, swipe, swipe to dismiss, fling, momentum, velocity, drawer, sheet, bottom sheet, snap points, Vaul, dragConstraints, dragElastic, dragMomentum, onDragEnd, whileDrag, useMotionValue, rubber-band, overscroll, pull to refresh, hold to delete, press and hold, touch-action, dismiss threshold, "doesn't follow my finger", "jumps when I let go", "can't grab it mid-animation". Triggers on "drag", "swipe", "sheet gesture", "fling", "drag to dismiss", "gesture", "드래그", "스와이프", "시트 제스처", "끌어서 닫기", "제스처".
-allowed-tools: Read, Grep, Glob, Edit, Write, Bash
+description: Build drag, swipe, and sheet interactions that track the finger 1:1 and stay interruptible. Use when building or fixing anything the user drags, swipes, flings, holds, or dismisses with a gesture — drawers, sheets, swipe-to-dismiss toasts and cards, drag-to-reorder, pull-to-refresh, hold-to-confirm — or when a gesture feels laggy, disconnected from the finger, jumps on release, or can't be caught mid-animation. Triggers on — gesture, drag, draggable, swipe, swipe to dismiss, fling, momentum, velocity, drawer, sheet, bottom sheet, snap points, Vaul, dragConstraints, dragElastic, dragMomentum, onDragEnd, whileDrag, useMotionValue, rubber-band, overscroll, pull to refresh, hold to delete, press and hold, touch-action, dismiss threshold, "doesn't follow my finger", "jumps when I let go", "can't grab it mid-animation". Triggers on "drag", "swipe", "sheet gesture", "fling", "drag to dismiss", "gesture", "드래그", "스와이프", "시트 제스처", "끌어서 닫기", "스와이프 제스처".
+allowed-tools: Read, Grep, Glob, Edit, Write
 version: 1.0.0
 license: MIT
 ---
 
 # Gesture-Driven UI
 
-Vendored from [`emilkowalski/skills`](https://github.com/emilkowalski/skills) (MIT); see [`LICENSES/NOTICE.md`](./LICENSES/NOTICE.md) for attribution. The `pick-ui-library` skill it mentions is not vendored here: in soma-work, gesture surfaces build on `@2lab.ai/ui` (zero runtime dependencies — its drawer, dialog and slide-to-confirm already track the finger).
+Vendored from [`emilkowalski/skills`](https://github.com/emilkowalski/skills) (MIT); see [`LICENSES/NOTICE.md`](./LICENSES/NOTICE.md) for attribution. The `pick-ui-library` skill it mentions is not vendored here: in soma-work, gesture surfaces build on `@2lab.ai/ui` (zero runtime dependencies — its drawer, dialog and slide-to-confirm already track the finger). The default for a sheet here is the `@2lab.ai/ui` drawer, not Vaul. Skill names in the body map to soma-work's: `animate` and `emil-design-eng` → `motion-design`, `review-animations` → `review-motion`; `animate-expo`, `prototype` and `pick-ui-library` are not vendored.
 
 How to build gestures that feel physical. A gesture is direct manipulation: while the finger is down, the UI is the finger; the moment it lifts, physics takes over. Every rule below follows from that split.
 

@@ -1,14 +1,16 @@
 ---
 name: mobile-native
-description: Make a web app feel native on a phone — the small CSS and meta-tag fixes that separate "a website in a browser" from something that feels installed. Covers sticky hover states, tap highlight flashes, the 100vh bug, inputs that zoom the page, laggy taps, pull-to-refresh hijacking scroll, content under the notch, long-press selecting button text, carousels that scroll the wrong way, mismatched status bars, and the rule that you test on real hardware. Use when a web app is being built for or reviewed on mobile, when something "works in Chrome but feels wrong on my phone", when building a PWA, a bottom sheet, a carousel, a full-screen layout, or any touch interaction. For motion itself use animate; for React Native use animate-expo. Triggers on "make it feel native", "mobile web", "sticky hover", "tap highlight", "100vh bug", "safe area", "input zoom", "모바일 네이티브", "앱처럼", "모바일 웹", "탭 하이라이트", "노치", "입력창 확대".
-allowed-tools: Read, Grep, Glob, Edit, Write, Bash
+description: Make a web app feel native on a phone — the small CSS and meta-tag fixes that separate "a website in a browser" from something that feels installed. Covers sticky hover states, tap highlight flashes, the 100vh bug, inputs that zoom the page, laggy taps, pull-to-refresh hijacking scroll, content under the notch, long-press selecting button text, carousels that scroll the wrong way, mismatched status bars, and the rule that you test on real hardware. Use when a web app is being built for or reviewed on mobile, when something "works in Chrome but feels wrong on my phone", when building a PWA, a bottom sheet, a carousel, a full-screen layout, or any touch interaction. For motion itself use motion-design. Triggers on "make it feel native", "mobile web", "sticky hover", "tap highlight", "100vh bug", "safe area", "input zoom", "모바일 네이티브", "앱처럼", "모바일 웹", "탭 하이라이트", "노치", "입력창 확대".
+allowed-tools: Read, Grep, Glob, Edit, Write
 version: 1.0.0
 license: MIT
 ---
 
 # Feeling Native On Mobile
 
-Vendored from [`emilkowalski/skills`](https://github.com/emilkowalski/skills) (MIT); see [`LICENSES/NOTICE.md`](./LICENSES/NOTICE.md) for attribution. The `animate` skill it mentions is not vendored here; in soma-work the shared curves and durations live in the local `motion-design` skill.
+Vendored from [`emilkowalski/skills`](https://github.com/emilkowalski/skills) (MIT); see [`LICENSES/NOTICE.md`](./LICENSES/NOTICE.md) for attribution. Skill names in the body map to soma-work's: `animate` and `emil-design-eng` → `motion-design`, `review-animations` → `review-motion`; `animate-expo`, `prototype` and `pick-ui-library` are not vendored.
+
+A fix-it skill. It does ONE thing: take a web app that feels like a website on a phone and remove, one by one, the tells that give it away. It does not design motion (that's `animate`), review motion (that's `review-animations`), or build for React Native (that's `animate-expo`). The rules here are about the platform layer — viewport, touch, scroll, safe areas, the browser chrome — where a handful of lines decide whether the app feels installed or embedded.
 
 ## Operating Posture
 

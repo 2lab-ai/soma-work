@@ -60,7 +60,8 @@ Every animation in the diff is measured against these. A violation is a finding.
    performance finding. Library shorthand props (e.g. Motion `x`/`y`/`scale` before
    `motion` 14.2) resolve to transforms but are rAF-scheduled on the main thread —
    flag them on motion that runs while the page is busy (from 14.2 they are
-   hardware-accelerated on HTML elements: check the version first). `clip-path`/`filter` are
+   hardware-accelerated on HTML elements: check the version first; layout animations
+   — `layout`, `layoutId` — stay on the main thread in every version). `clip-path`/`filter` are
    allowed but not free; flag continuous use without a measurement note.
 8. **Accessibility.** `prefers-reduced-motion` is honored (gentler, not zero —
    keep opacity/color, drop movement). Hover animations are gated behind

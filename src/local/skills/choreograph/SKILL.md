@@ -1,14 +1,16 @@
 ---
 name: choreograph
 description: Coordinate several elements that animate together — decide what moves, in what order, how much they overlap, and what stays still — so a group reads as one intentional motion instead of a pile of separate animations. Use when building or fixing a staggered list, a hero entrance, a view swap inside a container, a multi-step flow, an element leaving while its siblings close the gap, a morph between rich states, or any interaction with several moving parts (icon + background + lines, panel + content, items flying into a target). Triggers on — stagger, staggerChildren, delayChildren, animation-delay, sequence, sequencing, orchestration, choreography, cascade, wave, timeline, "one after another", "at the same time", crossfade, popLayout, mode="wait", AnimatePresence mode, hero entrance, list entrance, multi-step, step transition, morph, useAnimate, Promise.all animations, "feels mechanical", "feels robotic", "too much going on", "feels slow to open". Triggers on "choreograph", "stagger", "코레오그래피", "순차 애니메이션".
-allowed-tools: Read, Grep, Glob, Edit, Write, Bash
+allowed-tools: Read, Grep, Glob, Edit, Write
 version: 1.0.0
 license: MIT
 ---
 
 # Choreographing Motion
 
-Vendored from [`emilkowalski/skills`](https://github.com/emilkowalski/skills) (MIT); see [`LICENSES/NOTICE.md`](./LICENSES/NOTICE.md) for attribution.
+Vendored from [`emilkowalski/skills`](https://github.com/emilkowalski/skills) (MIT); see [`LICENSES/NOTICE.md`](./LICENSES/NOTICE.md) for attribution. Skill names in the body map to soma-work's: `animate` and `emil-design-eng` → `motion-design`, `review-animations` → `review-motion`; `animate-expo`, `prototype` and `pick-ui-library` are not vendored.
+
+This skill handles the relationships *between* animations: order, overlap, timing and stillness. A single animation's easing, duration and origin belong to `animate`. Whether something should animate at all is `find-animation-opportunities` or `remove-animations`. Once two or more things move in response to the same event, the decisions here apply.
 
 ## Operating Posture
 
