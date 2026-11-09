@@ -88,6 +88,26 @@ function somaThemeShow(theme, palette, design) {
   if (bar && bar.data && (bar.data.theme !== theme || bar.data.palette !== palette || bar.data.design !== id)) {
     bar.data = Object.assign({}, bar.data, { theme: theme, palette: palette, design: id, designs: SOMA_DESIGNS });
   }
+  somaThemeColor();
+  if (typeof setTimeout === 'function') setTimeout(somaThemeColor, 400);
+}
+// The browser chrome (a phone's status bar, the tab strip) takes the page's own colour: theme-color follows the theme
+// and the design as the page draws them (mobile-native §10 — one fixed value is wrong in the other scheme). Read from
+// the drawn page, so a design's canvas is right too; before <body> exists (the head script's first run) it waits for
+// DOMContentLoaded, and once more after the theme's colour transition.
+function somaThemeColor() {
+  var b = document.body;
+  if (!b || typeof getComputedStyle !== 'function' || typeof document.querySelector !== 'function') return;
+  var c = getComputedStyle(b).backgroundColor;
+  if (!c || c === 'transparent' || c === 'rgba(0, 0, 0, 0)') c = getComputedStyle(document.documentElement).backgroundColor;
+  if (!c || c === 'transparent' || c === 'rgba(0, 0, 0, 0)') return;
+  var m = document.querySelector('meta[name="theme-color"]');
+  if (!m) {
+    m = document.createElement('meta');
+    m.setAttribute('name', 'theme-color');
+    document.head.appendChild(m);
+  }
+  if (m.getAttribute('content') !== c) m.setAttribute('content', c);
 }
 // The person chose a theme or a design. A design is stored on its own (it wins while it is there); a theme clears it,
 // and stores the light / dark only while it differs from the OS, the palette while mono.
@@ -111,6 +131,7 @@ function somaThemeSet(theme, palette, design) {
   somaThemeShow(theme, palette, null);
 }
 somaThemeShow(somaThemeSaved() || somaThemeOs(), somaPaletteSaved(), somaDesignSaved());
+document.addEventListener('DOMContentLoaded', somaThemeColor);
 // The OS switched light / dark: followed while the person has not pinned one (the palette stays); a design keeps its own.
 if (window.matchMedia) {
   var _somaThemeMq = window.matchMedia('(prefers-color-scheme: light)');
