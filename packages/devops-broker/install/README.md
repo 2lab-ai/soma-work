@@ -197,6 +197,17 @@ run. Add one `cloudflare` entry per environment, with names of 1–16 characters
 ```
 <!-- policy-template:end -->
 
+## Dashboard listing (#1051)
+
+The socket answers one read-only admin op, `approvals`. It returns the cards the broker is waiting on: tool,
+the card's first sentence, the claimed requester, the expiry, and a link to each admin's own Slack card from
+`chat.getPermalink`, which needs no extra scope. It holds no argument values. The soma-work dashboard shows
+these cards in its admin approvals and opens the Slack card. The decision is still the admin's own ✅/❌ or
+승인/거부 on that card.
+
+Nothing outside Slack can decide a card. The dashboard runs as the bot user, the same OS user as the model, so
+a decision relayed from it would let the model approve its own request.
+
 ## Secrets
 
 Secrets enter through stdin only, never through arguments or the environment. Run the installer again once

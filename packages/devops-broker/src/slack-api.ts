@@ -9,6 +9,8 @@ export interface SlackApi {
   updateMessage(channel: string, ts: string, msg: { text: string; blocks?: unknown[] }): Promise<void>;
   /** reactions.get with `full=true`; reaction names as Slack sends them. */
   getReactions(channel: string, ts: string): Promise<{ name: string; users: string[] }[]>;
+  /** chat.getPermalink → an https link to one message, in the right workspace (#1051). Optional for fakes. */
+  getPermalink?(channel: string, ts: string): Promise<string>;
 }
 
 export class SlackApiError extends Error {
@@ -120,6 +122,15 @@ export function createSlackApi(opts: { token: string; fetchImpl?: typeof fetch; 
       const body: Json = { channel, ts, text: msg.text };
       if (msg.blocks !== undefined) body.blocks = msg.blocks;
       await call('chat.update', body, 'json');
+    },
+
+    async getPermalink(channel, ts) {
+      const json = await call('chat.getPermalink', { channel, message_ts: ts }, 'form');
+      const link = json.permalink;
+      if (typeof link !== 'string' || !/^https:\/\/[^\s]{1,2000}$/.test(link)) {
+        throw new SlackApiError('chat.getPermalink', 'invalid_response');
+      }
+      return link;
     },
 
     async getReactions(channel, ts) {
