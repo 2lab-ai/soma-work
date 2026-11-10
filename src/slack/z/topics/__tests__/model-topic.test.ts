@@ -113,12 +113,28 @@ describe('model-topic.applyModel', () => {
     expect(r.description).toContain('claude-opus-5-5[1m]');
   });
 
-  it('resolves and persists `fable` as the literal claude-fable-5-1[1m]', async () => {
-    const r = await applyModel({ userId: 'U_FABLE51', value: 'fable' });
+  it('resolves and persists `fable` as the newest fable [1m] id claude-fable-5-2[1m]', async () => {
+    const r = await applyModel({ userId: 'U_FABLE52', value: 'fable' });
+    expect(r.ok).toBe(true);
+    expect(r.description).toContain('claude-fable-5-2[1m]');
+    const { userSettingsStore } = await import('../../../../user-settings-store');
+    expect(userSettingsStore.getUserDefaultModel('U_FABLE52')).toBe('claude-fable-5-2[1m]');
+  });
+
+  it('keeps the version-pinned `fable-5-1` on claude-fable-5-1[1m]', async () => {
+    const r = await applyModel({ userId: 'U_FABLE51', value: 'fable-5-1' });
     expect(r.ok).toBe(true);
     expect(r.description).toContain('claude-fable-5-1[1m]');
     const { userSettingsStore } = await import('../../../../user-settings-store');
     expect(userSettingsStore.getUserDefaultModel('U_FABLE51')).toBe('claude-fable-5-1[1m]');
+  });
+
+  it('resolves and persists `terra` as the newest terra [1m] id gpt-6.1-terra[1m]', async () => {
+    const r = await applyModel({ userId: 'U_TERRA61', value: 'terra' });
+    expect(r.ok).toBe(true);
+    expect(r.description).toContain('gpt-6.1-terra[1m]');
+    const { userSettingsStore } = await import('../../../../user-settings-store');
+    expect(userSettingsStore.getUserDefaultModel('U_TERRA61')).toBe('gpt-6.1-terra[1m]');
   });
 
   it('resolves and persists `sol` as the newest sol [1m] id gpt-6.1-sol[1m]', async () => {

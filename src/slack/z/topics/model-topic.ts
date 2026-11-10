@@ -11,8 +11,9 @@ import { buildSettingCard } from '../ui-builder';
  * Short aliases featured as primary buttons (resolved to real model ids by the store).
  *
  * Order matters: this is the exact visual order in the Slack `/z model` card.
- * `fable` leads as the flagship (it resolves to the literal
- * `claude-fable-5-1[1m]`; `opus`/`opus[1m]` resolve to `claude-opus-5-5[1m]`);
+ * `fable` leads as the flagship (it resolves to the newest fable's literal
+ * `[1m]` id, `claude-fable-5-2[1m]`; `opus`/`opus[1m]` resolve to
+ * `claude-opus-5-5[1m]`);
  * `opus[1m]` sits between `opus` and `haiku`. The featured Grok value is the
  * literal static id, so it remains available on a catalog-less cold start;
  * the generic `grok` shorthand keeps catalog semantics.

@@ -196,7 +196,8 @@ source of truth for any model not listed here:
 
 | Model | Context window | Auto-compact default |
 |---|---|---|
-| `claude-fable-5-1[1m]` (aliases `fable`, `fable[1m]`, `fable-5-1`) | 1,000,000 | 750,000 |
+| `claude-fable-5-2[1m]` (aliases `fable`, `fable[1m]`, `fable-5-2`, `fable-5-2[1m]`) | 1,000,000 | 750,000 |
+| `claude-fable-5-1[1m]` (version-pinned aliases `fable-5-1`, `fable-5-1[1m]`) | 1,000,000 | 750,000 |
 | `claude-fable-5[1m]` (version-pinned alias `fable-5`) | 1,000,000 | 750,000 |
 | `claude-opus-5-5[1m]` (aliases `opus`, `opus[1m]`, `opus-5-5`) | 1,000,000 | 750,000 |
 | `claude-opus-5[1m]` (version-pinned alias `opus-5[1m]`) | 1,000,000 | 750,000 |
@@ -208,6 +209,8 @@ source of truth for any model not listed here:
 | `gpt-6-astra` (bare literal only) | 272,000 | 240,000 |
 | `gpt-6.1-sol[1m]` (aliases `sol`, `sol[1m]`, `gpt-6.1`) | 1,000,000 | 600,000 |
 | `gpt-6.1-sol` (bare literal only) | 272,000 | 240,000 |
+| `gpt-6.1-terra[1m]` (aliases `terra`, `terra[1m]`) | 1,000,000 | 600,000 |
+| `gpt-6.1-terra` (bare literal only) | 500,000 | 450,000 |
 | `grok-4.6` | 500,000 | 450,000 |
 
 Every `gpt-…[1m]` profile, including future supported models, automatically uses

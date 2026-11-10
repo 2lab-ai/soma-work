@@ -41,6 +41,36 @@ describe('host pricing — llmux models priced by the host table, Claude by the 
     expect(p.hostPriced('grok-4.7')).toBe(true);
   });
 
+  it('every llmux model soma-work routes is host-priced at its own row, never the Sonnet fallback', () => {
+    // The live llmux catalog (2026-11-10) places these outside the claude
+    // group, so the host table is their ONLY price. Before the rows existed
+    // each one was booked at FALLBACK_SPEC ($3 in / $15 out / $0.30 cached).
+    const ids: Record<string, [group: string, inPerM: number, outPerM: number, cachedPerM: number]> = {
+      'gpt-6-sol': ['codex', 2, 10, 0.2],
+      'gpt-6-luna': ['codex', 0.1, 0.5, 0.01],
+      'gpt-6.1-terra[1m]': ['codex', 1, 5, 0.05],
+      'grok-4.7': ['grok', 2, 6, 0.5],
+      'grok-4.6': ['grok', 2, 6, 0.5],
+      'grok-4.5': ['grok', 2, 6, 0.3],
+    };
+    const p = createHostPricing({
+      resolveInput: (id: string) =>
+        id.toLowerCase() === 'terra' ? 'gpt-6.1-terra[1m]' : id.toLowerCase() in ids ? id.toLowerCase() : null,
+      getGroupFor: (id: string) => ids[id.toLowerCase()]?.[0] ?? null,
+    });
+    for (const [id, [, inPerM, outPerM, cachedPerM]] of Object.entries(ids)) {
+      expect(p.hostPriced(id)).toBe(true);
+      expect(p.calculateTokenCost(id, 1e6, 0, 0, 0)).toBeCloseTo(inPerM, 6);
+      expect(p.calculateTokenCost(id, 0, 1e6, 0, 0)).toBeCloseTo(outPerM, 6);
+      expect(p.calculateTokenCost(id, 0, 0, 1e6, 0)).toBeCloseTo(cachedPerM, 6);
+      // No cache-creation charge on the codex / grok wires.
+      expect(p.calculateTokenCost(id, 0, 0, 0, 1e6)).toBe(0);
+    }
+    // The SDK reports the alias; the host resolves it to the canonical row.
+    expect(p.hostPriced('terra')).toBe(true);
+    expect(p.calculateTokenCost('terra', 1e6, 1e6, 0, 0)).toBeCloseTo(6, 6);
+  });
+
   it('Claude models and models the catalog does not know keep the SDK cost', () => {
     const p = createHostPricing(CATALOG);
     expect(p.hostPriced('claude-opus-5-5[1m]')).toBe(false);

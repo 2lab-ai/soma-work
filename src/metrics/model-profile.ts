@@ -230,7 +230,9 @@ export const GPT_5_6_SDK_BLOCKING_LIMIT = sdkBlockingLimitFor(GPT_5_6_CONTEXT_WI
  * resolves the `astra` / `gpt-6` aliases to it (backend probe 2026-09-07).
  * Upstream, generation 6 also grew sol and luna tiers (llmux catalog,
  * 2026-09-22). soma-work declares only `gpt-6-astra` statically; the other
- * gen-6 tiers reach users through the llmux catalog overlay.
+ * gen-6 tiers reach users through the llmux catalog overlay. Generation 6.1
+ * (`gpt-6.1-sol`, `gpt-6.1-terra`) is NOT matched here — each 6.1 id is a
+ * declared POLICY_PROFILES row.
  *
  * The lookahead pins the pattern to the generation boundary: it matches
  * `gpt-6`, `gpt-6-astra` and `gpt-6-astra[1m]`, but NOT `gpt-60` or
@@ -297,6 +299,15 @@ function freezeProfile(profile: ModelProfile): ModelProfile {
  * caller.
  */
 const POLICY_PROFILES: readonly ModelProfile[] = [
+  {
+    // Fable 5.2 (2026-11-09) — the `fable` shorthand target since 2026-11-10.
+    // Same Claude 1M policy as the 5.1 row it supersedes.
+    modelId: 'claude-fable-5-2[1m]',
+    contextWindow: 1_000_000,
+    sdkBlockingLimit: ONE_M_SDK_BLOCKING_LIMIT,
+    autoCompactTokens: 750_000,
+    compactHeadroom: DEFAULT_COMPACT_HEADROOM,
+  },
   {
     modelId: 'claude-fable-5-1[1m]',
     contextWindow: 1_000_000,
@@ -380,6 +391,26 @@ const POLICY_PROFILES: readonly ModelProfile[] = [
     contextWindow: GPT_6_CONTEXT_WINDOW,
     sdkBlockingLimit: GPT_6_SDK_BLOCKING_LIMIT,
     autoCompactTokens: GPT_6_AUTO_COMPACT_TOKENS,
+    compactHeadroom: DEFAULT_COMPACT_HEADROOM,
+  },
+  {
+    // Bare gpt-6.1-terra: 500k — the openai/codex models.json context_window
+    // (NOT the 272k of gpt-6.1-sol / gpt-6-astra). GPT_6_RE does not match
+    // `gpt-6.1-*`, so without this row the bare id would fall to the catalog
+    // window or the 200k fallback. Numbers follow the one other declared
+    // 500k row, grok-4.6: the SDK formula gives a 477k blocking limit, and
+    // the trigger is the operator's ≈90%-of-window choice, 450k — the same
+    // ratio gpt-5.5 (250k/275k) and gpt-5.6-sol (340k/372k) use. The gen-6
+    // rule "trigger = blocking limit − headroom" (240k for 272k) exists only
+    // because ≈90% of 272k (245k) would be clamped by
+    // safeMaxAutoCompactTokens; at 500k the cap is 468k, so 450k is reachable
+    // and keeps 27k between the trigger and the hard block for the compact
+    // turn. The `[1m]` variant (the `terra` shorthand target) uses the shared
+    // GPT 1M policy in the suffix branch.
+    modelId: 'gpt-6.1-terra',
+    contextWindow: 500_000,
+    sdkBlockingLimit: sdkBlockingLimitFor(500_000),
+    autoCompactTokens: 450_000,
     compactHeadroom: DEFAULT_COMPACT_HEADROOM,
   },
   {

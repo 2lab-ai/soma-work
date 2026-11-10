@@ -10,7 +10,7 @@
  * Load-bearing contracts:
  *   1. The `sol` / `sol[1m]` / `gpt-6.1` shorthands select `gpt-6.1-sol[1m]` —
  *      a family shorthand always lands on the newest `[1m]` row (same rule as
- *      `astra` → `gpt-6-astra[1m]`, `fable` → `claude-fable-5-1[1m]`). The
+ *      `astra` → `gpt-6-astra[1m]`, `fable` → `claude-fable-5-2[1m]`). The
  *      upstream gateway moved its own `sol` alias to gpt-6.1-sol on 2026-10-06.
  *   2. The DEFAULT stays gpt-5.6-sol — the `gpt` alias is intentionally NOT
  *      bumped, and the literal gpt-5.6-sol ids stay selectable.
@@ -74,7 +74,8 @@ describe('gpt-6.1-sol — release wiring', () => {
     // Version-pinned gpt-5.6 spellings must NOT be silently upgraded.
     expect(MODEL_ALIASES['gpt-5.6']).toBe('gpt-5.6-sol');
     expect(MODEL_ALIASES['gpt5.6']).toBe('gpt-5.6-sol');
-    expect(MODEL_ALIASES.terra).toBe('gpt-5.6-terra');
+    // `terra` follows its own newest generation (gpt-6-1-terra.test.ts).
+    expect(MODEL_ALIASES.terra).toBe('gpt-6.1-terra[1m]');
     expect(MODEL_ALIASES.luna).toBe('gpt-5.6-luna');
   });
 
