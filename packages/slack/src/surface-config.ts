@@ -68,7 +68,7 @@ export interface SurfaceFieldConfig {
   format?: string;
   /** Max entries for list-ish fields (links per type, tools shown, tasks). */
   max?: number;
-  /** Gauge-bar styling for bar-rendering fields (contextwindow, fivehour, sevenday). */
+  /** Gauge-bar styling for bar-rendering fields (contextwindow, sevenday). */
   bar?: SurfaceBarStyle;
   /** Decimal places for percentage values. */
   decimals?: number;
@@ -135,7 +135,6 @@ export const SURFACE_FIELD_REGISTRY: Record<SurfaceName, readonly string[]> = {
     'startedat',
     'contextwindow',
     'duration',
-    'fivehour',
     'sevenday',
     'toolstats',
     'separator',
@@ -308,13 +307,6 @@ export const DEFAULT_UI_SURFACES: UiSurfacesConfig = {
           },
           { field: 'duration', show: true, label: 'Dur' },
           {
-            field: 'fivehour',
-            show: true,
-            label: '5h',
-            bar: { width: 6, filledChar: '▓', emptyChar: '░' },
-            decimals: 0,
-          },
-          {
             field: 'sevenday',
             show: true,
             label: '7d',
@@ -432,6 +424,10 @@ function normalizeField(raw: unknown, surface: SurfaceName, warnings: string[]):
     return undefined;
   }
 
+  // `fivehour` (turnend) was the 5-hour usage gauge — gone since 2026-11, no provider reports a 5-hour window. A
+  // config.json seeded before (config-loader seeds `ui` from config.default.json) still names it: drop it quietly,
+  // the operator did nothing wrong, so no warning.
+  if (surface === 'turnend' && raw.field.toLowerCase() === 'fivehour') return undefined;
   const resolved = resolveSurfaceField(surface, raw.field);
   if (!resolved) {
     warnings.push(

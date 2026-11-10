@@ -447,7 +447,6 @@ describe('Dashboard — cron lane + capacity (SSOT 2026-10-23)', () => {
           group: 'claude',
           status: 'ok',
           order: 1,
-          five_hour: { utilization: 0.5, resets_at: NOW_S + 3600, resets_in_secs: 3600 },
           seven_day: { utilization: 0.1, resets_at: NOW_S + 86400 * 3, resets_in_secs: 86400 * 3 },
         },
       ],
@@ -463,9 +462,10 @@ describe('Dashboard — cron lane + capacity (SSOT 2026-10-23)', () => {
       const first = await get('/api/dashboard/capacity');
       expect(first.capacity.available).toBe(true);
       expect(first.capacity.groups[0]).toMatchObject({ group: 'claude', label: 'Claude' });
-      // v2: max-account measures and a replayed forecast (ai7: now .5, week .9 of 1 x20)
-      expect(first.capacity.groups[0]).toMatchObject({ has5h: true, total: 1, now: 0.5, week: 0.9 });
-      expect(first.capacity.groups[0].events[0]).toMatchObject({ account: 'ai7', tier: 'claude-max-20x', cause: '5h' });
+      // v2: max-account measures and a replayed forecast (ai7: now .9, week .9 of 1 x20 — the weekly window only)
+      expect(first.capacity.groups[0]).toMatchObject({ total: 1, now: 0.9, week: 0.9 });
+      expect(first.capacity.groups[0]).not.toHaveProperty('has5h');
+      expect(first.capacity.groups[0].events[0]).toMatchObject({ account: 'ai7', tier: 'claude-max-20x', cause: '7d' });
       await get('/api/dashboard/capacity');
       expect(fetchStatus).toHaveBeenCalledTimes(1);
     });

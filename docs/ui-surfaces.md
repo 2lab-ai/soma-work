@@ -89,7 +89,8 @@ Themes: `default`, `compact`, `minimal`.
 Only these fields exist per surface — anything else warns and is skipped.
 
 - `threadheader`: `title`, `owner`, `workflow`, `model`, `contextwindow`, `links`, `linkhistory`, `dashboardLink`, `status`, `cost`, `tokens`, `task`, `steps`, `separator`
-- `turnend`: `status`, `title`, `threadlink`, `errorbody`, `persona`, `model`, `effort`, `startedat`, `contextwindow`, `duration`, `fivehour`, `sevenday`, `toolstats`, `separator`
+- `turnend`: `status`, `title`, `threadlink`, `errorbody`, `persona`, `model`, `effort`, `startedat`, `contextwindow`, `duration`, `sevenday`, `toolstats`, `separator`
+  - `fivehour` (the 5-hour usage gauge) is gone since 2026-11: no provider reports a 5-hour window. A `config.json` that still names it loads, and the entry is dropped without a warning.
 - `dashboardheader`: `title`, `owner`, `workflow`, `model`, `links`, `mergestats`, `tokens`, `cost`, `contextwindow`, `tasks`, `status`, `separator`
 
 Field names match case-insensitively. `dashboardLink` renders `📋 작업 로그`, the deep link to the session's card on the owner's dashboard (`/dashboard/<ownerId>?session=<sessionKey>`). When the conversation viewer (the web server that serves the dashboard) is not listening there is no URL and the field renders nothing. A new session also posts the same link into a thread a user started; that post is skipped in the same case. To hide the header link, set `{ "field": "dashboardLink", "show": false }` or remove that entry from each theme's lines in `config.json` — this controls the header field only.

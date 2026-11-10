@@ -13,15 +13,11 @@
  *   - Eligibility: `kind === 'cct'` AND `!disableRotation` AND
  *     `state.authState === 'healthy'` AND not tombstoned AND not in
  *     cooldown AND usage snapshot present AND `usage.sevenDay` window
- *     present (sort key) AND `fiveHour.utilization ≤ fiveHourMax` AND
- *     `sevenDay.utilization ≤ sevenDayMax`.
- *   - Cold-token allowance (#781): a missing `usage.fiveHour` window
- *     means zero requests in the last 5h, so the slot stays under any
- *     threshold and remains eligible (treated as `fiveHourUtilization = 0`).
- *     Without this, a freshly-loaded token can never be auto-rotated onto.
+ *     present (sort key) AND `sevenDay.utilization ≤ sevenDayMax`.
+ *     There is no 5-hour window any more (2026-11-10): no 5h gate, no 5h
+ *     tie-break; a `fiveHour` key left in a stored snapshot is not read.
  *   - Selection: minimum `sevenDay.resetsAt` (= soonest to reset).
- *     Tie-break 1: lower `fiveHour.utilization`.
- *     Tie-break 2: keyId lexicographic (deterministic).
+ *     Tie-break: keyId lexicographic (deterministic).
  *   - Active slot is ALWAYS in the candidate pool. If the winner equals
  *     active, no-op (no DB write, no notify). The user spec ("change to
  *     the most optimal CCT") explicitly admits the active slot already
@@ -47,8 +43,6 @@ import { isCctSlot } from '../auth/auth-key';
 import type { CctStoreSnapshot, SlotState, UsageSnapshot } from '../cct-store/types';
 
 export interface RotationThresholds {
-  /** Inclusive upper bound on `usage.fiveHour.utilization` (percent, 0..100). */
-  fiveHourMax: number;
   /** Inclusive upper bound on `usage.sevenDay.utilization` (percent, 0..100). */
   sevenDayMax: number;
 }
@@ -60,20 +54,13 @@ export interface RotationCandidate {
   sevenDayResetsAt: string;
   /** Epoch ms parsed from `sevenDayResetsAt` (for downstream comparison without re-parsing). */
   sevenDayResetsAtMs: number;
-  /** Percent (0..100). 0 when `/oauth/usage` had no fiveHour window — see policy. */
-  fiveHourUtilization: number;
   /** Percent (0..100). */
   sevenDayUtilization: number;
   /** Epoch ms parsed from `usage.fetchedAt`. Undefined when fetchedAt is missing/invalid. */
   fetchedAtMs?: number;
 }
 
-/**
- * Reason an otherwise-CCT slot was rejected. Useful for debug logs.
- *
- * `'no-five-hour-window'` is intentionally absent from the union so
- * any pattern-match still expecting it fails at compile time (#781).
- */
+/** Reason an otherwise-CCT slot was rejected. Useful for debug logs. */
 export type RejectReason =
   | 'not-cct'
   | 'disable-rotation'
@@ -82,7 +69,6 @@ export type RejectReason =
   | 'cooldown'
   | 'no-usage'
   | 'no-seven-day-window'
-  | 'over-five-hour-threshold'
   | 'over-seven-day-threshold'
   | 'invalid-resets-at'
   | 'usage-stale';
@@ -112,13 +98,9 @@ function evaluateSlot(
 
   const usage: UsageSnapshot | undefined = s?.usage;
   if (!usage) return { slot, reject: 'no-usage' };
-  // 7d window is the sort key — required. 5h window optional (cold-token allowance, see policy).
+  // 7d window is the sort key — required.
   if (!usage.sevenDay) return { slot, reject: 'no-seven-day-window' };
 
-  const fiveHourUtilization = usage.fiveHour?.utilization ?? 0;
-  if (fiveHourUtilization > thresholds.fiveHourMax) {
-    return { slot, reject: 'over-five-hour-threshold' };
-  }
   if (usage.sevenDay.utilization > thresholds.sevenDayMax) {
     return { slot, reject: 'over-seven-day-threshold' };
   }
@@ -134,7 +116,6 @@ function evaluateSlot(
       name: slot.name,
       sevenDayResetsAt: usage.sevenDay.resetsAt,
       sevenDayResetsAtMs: resetsAtMs,
-      fiveHourUtilization,
       sevenDayUtilization: usage.sevenDay.utilization,
       ...(Number.isFinite(fetchedAtMs) ? { fetchedAtMs } : {}),
     },
@@ -149,7 +130,7 @@ function evaluateSlot(
  * NOT a failure mode).
  *
  * Determinism: two snapshots with identical contents always return the
- * same `keyId`. The third tie-breaker (`keyId` lex order) exists so
+ * same `keyId`. The tie-breaker (`keyId` lex order) exists so
  * multi-bot deployments don't oscillate between two equivalent slots.
  */
 export function selectBestRotationCandidate(
@@ -195,9 +176,6 @@ export function selectBestRotationCandidateWithMaxAge(
   candidates.sort((a, b) => {
     if (a.sevenDayResetsAtMs !== b.sevenDayResetsAtMs) {
       return a.sevenDayResetsAtMs - b.sevenDayResetsAtMs;
-    }
-    if (a.fiveHourUtilization !== b.fiveHourUtilization) {
-      return a.fiveHourUtilization - b.fiveHourUtilization;
     }
     return a.keyId < b.keyId ? -1 : a.keyId > b.keyId ? 1 : 0;
   });
@@ -267,7 +245,6 @@ export interface ActiveSummary {
   keyId: string;
   name: string;
   /** Active slot's own usage stats at decision time, if present. Useful for the notify body. */
-  fiveHourUtilization?: number;
   sevenDayUtilization?: number;
   sevenDayResetsAt?: string;
 }
@@ -281,7 +258,6 @@ function summariseActive(snap: CctStoreSnapshot): ActiveSummary | null {
   return {
     keyId: id,
     name: slot.name,
-    fiveHourUtilization: usage?.fiveHour?.utilization,
     sevenDayUtilization: usage?.sevenDay?.utilization,
     sevenDayResetsAt: usage?.sevenDay?.resetsAt,
   };

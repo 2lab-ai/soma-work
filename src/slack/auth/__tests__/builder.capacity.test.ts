@@ -16,7 +16,6 @@ function account(name: string, group: string, extra: Partial<LlmuxAccount> = {})
     type: group === 'codex' ? 'codex' : 'oauth',
     status: 'ok',
     order: 1,
-    five_hour: window(0.25),
     seven_day: window(0.5, 86400),
     ...extra,
   };
@@ -48,13 +47,15 @@ describe('T1/T2 auth capacity planning', () => {
 
   it('labels normalized totals, measured coverage, remaining percent and absolute reset', () => {
     const content = text(render([account('ai1', 'claude'), account('ai2', 'claude')]));
-    expect(content).toContain('1.50계정분');
+    expect(content).toContain('1.00계정분');
     expect(content).toContain('측정 2/2');
-    expect(content).toContain('잔여 75%');
-    expect(content).toContain('<!date^1900003600^');
-    expect(content).toContain('1h');
+    expect(content).toContain('잔여 50%');
+    expect(content).toContain('<!date^1900086400^');
+    expect(content).toContain('1d 0h');
     expect(content).toContain('다음 리셋');
-    expect(content).toContain('+25%p');
+    expect(content).toContain('+50%p');
+    // No 5-hour window since 2026-11: no 5h line, no 5h total.
+    expect(content).not.toMatch(/5h[ ·]/);
     expect(content).toContain('토큰 수가 아닙니다');
   });
 
@@ -62,7 +63,6 @@ describe('T1/T2 auth capacity planning', () => {
     const content = text(
       render([
         account('grok1', 'grok', {
-          five_hour: null,
           seven_day: null,
           totals: { requests: 5, input_tokens: 1000, output_tokens: 50 },
         }),
@@ -79,7 +79,6 @@ describe('T1/T2 auth capacity planning', () => {
     const content = text(
       render([
         account('ai1', 'claude', {
-          five_hour: window(0.9, -1),
           seven_day: { utilization: Number.NaN, resets_at: Number.NaN, resets_in_secs: -1 },
         }),
       ]),
@@ -94,7 +93,7 @@ describe('T1/T2 auth capacity planning', () => {
   it('keeps cooldown, auth failure and overlapping exhausted windows out of available count', () => {
     const content = text(
       render([
-        account('ai1', 'claude', { five_hour: window(1, 60), seven_day: window(1, 3600) }),
+        account('ai1', 'claude', { seven_day: window(1, 3600) }),
         account('ai2', 'claude', { status: 'cooldown', cooldown_until: nowMs / 1000 + 600 }),
         account('ai3', 'claude', { status: 'auth_failed' }),
       ]),
@@ -105,9 +104,10 @@ describe('T1/T2 auth capacity planning', () => {
     expect(content).toContain('다른 한도');
   });
 
-  it('never presents Grok synthetic reset as a five-hour subscription reset', () => {
-    const content = text(render([account('grok1', 'grok', { five_hour: window(0.4, 60) })]));
-    expect(content).toContain('속도 한도');
+  it('a five_hour reading an older llmux sends for Grok is not read: no 5h line, no reset', () => {
+    const legacy = { five_hour: window(0.4, 60) } as Partial<LlmuxAccount>;
+    const content = text(render([account('grok1', 'grok', legacy)]));
+    expect(content).not.toContain('속도 한도');
     expect(content).not.toContain('다음 리셋:');
     expect(content).not.toContain('<!date^1900000060^');
     expect(content).not.toContain('5h 잔여');
@@ -116,7 +116,7 @@ describe('T1/T2 auth capacity planning', () => {
 
   it('falls back to relative reset only when absolute time is missing, never when expired', () => {
     const content = text(
-      render([account('ai1', 'claude', { five_hour: { utilization: 0.4, resets_at: 0, resets_in_secs: 120 } })]),
+      render([account('ai1', 'claude', { seven_day: { utilization: 0.4, resets_at: 0, resets_in_secs: 120 } })]),
     );
     expect(content).toContain('<!date^1900000120^');
   });
@@ -149,16 +149,16 @@ describe('T1/T2 auth capacity planning', () => {
     for (const page of [0, 1]) {
       const content = text(render(accounts, page));
       for (const provider of ['Claude', 'Codex', 'Grok']) expect(content).toContain(`*${provider}*`);
-      expect(content).toContain('9.00계정분');
+      expect(content).toContain('6.00계정분');
     }
   });
 
   it('localizes snapshot time and does not label Grok as a depleted subscription', () => {
-    const content = text(render([account('grok1', 'grok', { five_hour: window(0.4, 60) })]));
+    const content = text(render([account('grok1', 'grok')]));
     expect(content).toContain('조회 <!date^1900000000^');
-    expect(content).not.toContain('5h·7d 확인');
+    expect(content).not.toContain('7d 확인');
     expect(content).not.toContain('공통 한도 여유 0/1');
-    expect(content).toContain('속도 한도 측정 1/1');
+    expect(content).toContain('차단 0/1');
   });
 
   it('does not hide failed health behind current_by_group selection', () => {

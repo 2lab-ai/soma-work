@@ -42,7 +42,6 @@ const STATUS_DOC = {
       status: 'active',
       order: 1,
       blocked: null,
-      five_hour: { utilization: 0.6, resets_at: 1_900_000_000, resets_in_secs: 3600 },
       seven_day: { utilization: 0.2, resets_at: 1_900_400_000, resets_in_secs: 400_000 },
       in_flight: 0,
       totals: { requests: 10, input_tokens: 100, output_tokens: 50 },
@@ -78,7 +77,7 @@ describe('llmux-client', () => {
     );
     expect(status.current).toBe('claude:me@example.com');
     expect(status.accounts).toHaveLength(1);
-    expect(status.accounts[0].five_hour?.utilization).toBe(0.6);
+    expect(status.accounts[0].seven_day?.utilization).toBe(0.2);
   });
 
   it('honors a baseUrl override (Settings modal candidate probe)', async () => {

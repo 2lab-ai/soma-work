@@ -55,9 +55,13 @@ export interface UsageWindow {
   resetsAt: string;
 }
 
+/**
+ * One `/api/oauth/usage` read. There is no 5-hour window (owner, 2026-11-10: no
+ * provider reports one); a snapshot stored before then may still carry a
+ * `fiveHour` key on disk — nothing reads it, and the next fetch replaces it.
+ */
 export interface UsageSnapshot {
   fetchedAt: string;
-  fiveHour?: UsageWindow;
   sevenDay?: UsageWindow;
   sevenDaySonnet?: UsageWindow;
 }
