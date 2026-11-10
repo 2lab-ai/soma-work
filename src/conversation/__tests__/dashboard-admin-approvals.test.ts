@@ -92,6 +92,8 @@ const FNS = [
   'adminNotifyActive',
   'adminNotifyArrivals',
   'adminTitleBadge',
+  'devopsPageUrl',
+  'openDevopsApprovalWindow',
 ] as const;
 
 function loadClient(inject: Record<string, unknown>) {
@@ -756,6 +758,103 @@ describe('dashboard admin approvals (#620)', () => {
           ],
         }),
       ).toBe('https://example.slack.com/archives/D1/p1');
+    });
+
+    // #1056 — a broker with its approval page on lists `pageUrl`: the card opens that page (served by the broker,
+    // decided there with a passkey) in a small window instead of sending the admin to Slack.
+    const PAGE = 'https://soma-approve.home.arpa:8443/a/appr_0001abcd';
+    const PAGE_REQUEST = {
+      ...DEVOPS_REQUEST,
+      description: '승인 창에서 요청 내용 전체를 확인하고 Touch ID(패스키)로 승인·거부합니다.',
+      choices: [{ id: 'open_page', label: '승인 창 열기 (Touch ID로 승인·거부)' }],
+      recommendedId: 'open_page',
+      pageUrl: PAGE,
+    };
+
+    it('#1056 — a devops broker card with a pageUrl opens the broker’s approval window and sends nothing', async () => {
+      const calls: any[] = [];
+      const opened: any[] = [];
+      const { c, toasts } = client({
+        window: { open: (...args: any[]) => opened.push(args) },
+        fetch: async (url: string) => {
+          calls.push(url);
+          return { ok: true, status: 200, json: async () => ({ ok: true }) };
+        },
+      });
+      c.applyAdminApprovals({ pending: [PAGE_REQUEST], resolved: [] });
+      expect(c.adminApprovalData('devops_broker:appr_0001abcd')).toMatchObject({
+        kind: 'question',
+        choices: [{ id: 'open_page', label: '승인 창 열기 (Touch ID로 승인·거부)' }],
+      });
+      const st = await c.answerAdminApproval('devops_broker:appr_0001abcd', 'open_page');
+      expect(opened).toEqual([[PAGE, '_blank', 'popup,width=520,height=760,noopener,noreferrer']]);
+      expect(opened[0][2].split(',')).toEqual(expect.arrayContaining(['noopener', 'noreferrer']));
+      // Nothing reaches the answer route (or any other): the dashboard takes no part in the decision.
+      expect(calls).toEqual([]);
+      // The card stays open: it leaves when the broker stops listing it.
+      expect(st).toBeNull();
+      expect(c.state()._adminState['devops_broker:appr_0001abcd']).toBeUndefined();
+      expect(toasts).toHaveLength(1);
+      expect(toasts[0].t).toMatchObject({
+        title: '승인 창을 열었어요',
+        description:
+          'devops 승인 — Cloudflare 단기 키를 발급합니다 — 거기서 Touch ID로 승인·거부하면 이 카드도 사라져요',
+      });
+    });
+
+    it('#1056 — the window is always a new unnamed one: no handle kept, no postMessage', () => {
+      const src = String(client().c.openDevopsApprovalWindow);
+      expect(src).toContain("'_blank'");
+      expect(src).not.toContain('postMessage');
+      expect(src).not.toMatch(/=\s*window\.open|return\s+window\.open/);
+    });
+
+    it.each([
+      ['http', 'http://soma-approve.home.arpa:8443/a/appr_0001abcd'],
+      ['a public host', 'https://approve.example.com:8443/a/appr_0001abcd'],
+      ['home.arpa as a prefix of another host', 'https://soma.home.arpa.evil.example:8443/a/appr_0001abcd'],
+      ['a host that only ends in the letters', 'https://evilhome.arpa:8443/a/appr_0001abcd'],
+      ['a path outside /a/', 'https://soma-approve.home.arpa:8443/login'],
+      ['a script URL', 'javascript:alert(1)'],
+      ['not a URL', 'soma-approve.home.arpa:8443/a/appr_0001abcd'],
+      ['not a string', { href: PAGE }],
+    ])('#1056 — a pageUrl that fails the client check (%s) falls back to the Slack card', async (_what, pageUrl) => {
+      const calls: any[] = [];
+      const opened: any[] = [];
+      const { c, toasts } = client({
+        window: { open: (...args: any[]) => opened.push(args) },
+        fetch: async (url: string) => {
+          calls.push(url);
+          return { ok: true, status: 200, json: async () => ({ ok: true }) };
+        },
+      });
+      c.applyAdminApprovals({ pending: [{ ...PAGE_REQUEST, pageUrl }], resolved: [] });
+      expect(c.devopsPageUrl({ pageUrl })).toBe('');
+      await c.answerAdminApproval('devops_broker:appr_0001abcd', 'open_page');
+      expect(opened).toEqual([['https://example.slack.com/archives/D1/p1', '_blank', 'noopener']]);
+      expect(calls).toEqual([]);
+      expect(toasts[0].t.title).toBe('Slack 카드를 열었어요');
+    });
+
+    it('#1056 — a pageUrl that fails the client check on a card without a Slack link opens nothing', async () => {
+      const opened: any[] = [];
+      const { c } = client({ window: { open: (...args: any[]) => opened.push(args) } });
+      c.applyAdminApprovals({
+        pending: [{ ...PAGE_REQUEST, pageUrl: 'https://evil.example/a/appr_0001abcd', links: [] }],
+        resolved: [],
+      });
+      expect(await c.answerAdminApproval('devops_broker:appr_0001abcd', 'open_page')).toMatchObject({
+        status: 'error',
+      });
+      expect(opened).toEqual([]);
+    });
+
+    it('#1056 — a valid pageUrl opens the window even when the card has no Slack link', async () => {
+      const opened: any[] = [];
+      const { c } = client({ window: { open: (...args: any[]) => opened.push(args) } });
+      c.applyAdminApprovals({ pending: [{ ...PAGE_REQUEST, links: [] }], resolved: [] });
+      await c.answerAdminApproval('devops_broker:appr_0001abcd', 'open_page');
+      expect(opened.map((o) => o[0])).toEqual([PAGE]);
     });
 
     it('#1070 — a question the model asked for admins is labelled as such and answered like any question card', async () => {

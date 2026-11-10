@@ -176,6 +176,89 @@ describe('devopsBrokerAdminApprovalAdapter: polling and links (#1051 review)', (
   });
 });
 
+// #1056 — a broker with its approval page on lists `pageUrl` per card: the page it serves itself (another OS
+// user, its own TLS origin under home.arpa), where the admin decides with a passkey. The dashboard only opens it.
+describe('devopsBrokerAdminApprovalAdapter: the broker’s own approval page (#1056)', () => {
+  const PAGE = 'https://soma-approve.home.arpa:8443/a/appr_0001abcd';
+  const NOW = Date.parse('2026-11-09T03:01:00Z');
+
+  async function cardWith(pageUrl: unknown) {
+    await fakeBroker(() => ({ approvals: [{ ...VIEW, pageUrl }] }));
+    const adapter = devopsBrokerAdminApprovalAdapter({ socketPath });
+    const [card] = await adapter.pending(NOW);
+    return { adapter, card };
+  }
+
+  it('a card with a valid pageUrl carries it, the window text, and still its Slack link', async () => {
+    const { card } = await cardWith(PAGE);
+    expect(card).toMatchObject({
+      id: 'devops_broker:appr_0001abcd',
+      kind: 'devops_broker',
+      card: 'question',
+      pageUrl: PAGE,
+      description:
+        '승인 창에서 요청 내용 전체를 확인하고 Touch ID(패스키)로 승인·거부합니다. 승인 창은 브로커가 직접 띄우는 페이지입니다. 대시보드는 모델과 같은 계정으로 돌기 때문에 결정에 관여하지 않습니다.',
+      choices: [{ id: 'open_page', label: '승인 창 열기 (Touch ID로 승인·거부)' }],
+      recommendedId: 'open_page',
+      links: [{ admin: 'U000ADMIN', url: 'https://example.slack.com/archives/D000ADMIN/p1700000000000001' }],
+    });
+  });
+
+  it.each(['1024', '65535'])('accepts port %s, an end of the unprivileged range', async (port) => {
+    const url = `https://a.b-c.home.arpa:${port}/a/appr_0001abcd`;
+    const { card } = await cardWith(url);
+    expect(card.pageUrl).toBe(url);
+  });
+
+  it.each([
+    ['http', 'http://soma-approve.home.arpa:8443/a/appr_0001abcd'],
+    ['a public host', 'https://approve.example.com:8443/a/appr_0001abcd'],
+    ['a tailnet name (*.ts.net)', 'https://devbox-a.tail1234.ts.net:8443/a/appr_0001abcd'],
+    ['an IP address', 'https://192.168.0.10:8443/a/appr_0001abcd'],
+    ['home.arpa as a prefix of another host', 'https://soma.home.arpa.evil.example:8443/a/appr_0001abcd'],
+    ['a host that only ends in the letters', 'https://evilhome.arpa:8443/a/appr_0001abcd'],
+    ['home.arpa itself, without a name', 'https://home.arpa:8443/a/appr_0001abcd'],
+    ['an upper-case host', 'https://Soma-Approve.home.arpa:8443/a/appr_0001abcd'],
+    ['user info before the host', 'https://admin@soma-approve.home.arpa:8443/a/appr_0001abcd'],
+    ['no port', 'https://soma-approve.home.arpa/a/appr_0001abcd'],
+    ['port 443', 'https://soma-approve.home.arpa:443/a/appr_0001abcd'],
+    ['a privileged port', 'https://soma-approve.home.arpa:1023/a/appr_0001abcd'],
+    ['a port past 65535', 'https://soma-approve.home.arpa:65536/a/appr_0001abcd'],
+    ['a port with a leading zero', 'https://soma-approve.home.arpa:08443/a/appr_0001abcd'],
+    ['another path', 'https://soma-approve.home.arpa:8443/approve/appr_0001abcd'],
+    ['a longer path', 'https://soma-approve.home.arpa:8443/a/appr_0001abcd/more'],
+    ['an id that is not this card’s approvalId', 'https://soma-approve.home.arpa:8443/a/appr_9999zzzz'],
+    ['a query', 'https://soma-approve.home.arpa:8443/a/appr_0001abcd?next=1'],
+    ['an empty query', 'https://soma-approve.home.arpa:8443/a/appr_0001abcd?'],
+    ['a fragment', 'https://soma-approve.home.arpa:8443/a/appr_0001abcd#x'],
+    ['more than 300 characters', `https://${'a.'.repeat(140)}home.arpa:8443/a/appr_0001abcd`],
+    ['a non-string', 8443],
+  ])('drops a pageUrl that is %s: the card falls back to the Slack link', async (_what, pageUrl) => {
+    const { card } = await cardWith(pageUrl);
+    expect(card.id).toBe('devops_broker:appr_0001abcd');
+    expect(card).not.toHaveProperty('pageUrl');
+    expect(card.choices).toEqual([{ id: 'open_slack', label: expect.stringContaining('Slack') }]);
+    expect(card.recommendedId).toBe('open_slack');
+    expect(card.description).toContain('Slack');
+    expect(card.links).toEqual([
+      { admin: 'U000ADMIN', url: 'https://example.slack.com/archives/D000ADMIN/p1700000000000001' },
+    ]);
+  });
+
+  it('still never decides: a card with a pageUrl refuses every dashboard answer, and the broker is only listed', async () => {
+    const { adapter, card } = await cardWith(PAGE);
+    expect(card.pageUrl).toBe(PAGE);
+    for (const choice of ['approve', 'deny', 'open_page', 'open_slack']) {
+      await expect(adapter.answer('appr_0001abcd', choice, 'U000ADMIN')).resolves.toEqual({
+        ok: false,
+        reason: 'invalid',
+      });
+    }
+    expect(received.map((req) => req.op)).toEqual(['approvals']);
+    expect(await adapter.resolved(0)).toEqual([]);
+  });
+});
+
 describe('devopsBrokerAdminApprovalAdapter: a broker older than the listing (#1051, no root upgrade first)', () => {
   const APP = 'https://example.slack.com/app_redirect?app=A0000APP';
   const RECORD = {
@@ -245,6 +328,17 @@ describe('devopsBrokerAdminApprovalAdapter: a broker older than the listing (#10
     // Written by the model's OS user: the card says it is only a pointer.
     expect(card.description).toContain('보장하지 않습니다');
     expect(await adapter.answer('appr_0002efgh', 'open_slack', 'U000ADMIN')).toEqual({ ok: false, reason: 'invalid' });
+  });
+
+  it('#1056 — a record never carries a pageUrl, even one written into it (the model’s OS user writes these)', async () => {
+    await refusingBroker();
+    put({ ...RECORD, pageUrl: 'https://soma-approve.home.arpa:8443/a/appr_0002efgh' } as typeof RECORD);
+    const adapter = devopsBrokerAdminApprovalAdapter({ socketPath, pendingDir, approvalsAppUrl: APP });
+    const [card] = await adapter.pending(NOW);
+    expect(card.id).toBe('devops_broker:appr_0002efgh');
+    expect(card).not.toHaveProperty('pageUrl');
+    expect(card.choices).toEqual([{ id: 'open_slack', label: expect.stringContaining('Slack') }]);
+    expect(card.links).toEqual([{ admin: '*', url: APP }]);
   });
 
   it('shows one card for identical requests joined to the same card', async () => {

@@ -75,7 +75,7 @@ export interface AdminApproval {
   /**
    * `devops_broker` (#1051): each admin's own Slack card, or (`admin: '*'`, for a broker that cannot list its
    * cards) the approvals app's DM for any admin. The card's one choice opens the viewer's link in the browser
-   * instead of answering — a devops broker card is decided only in Slack.
+   * instead of answering — the dashboard never decides a devops broker card.
    */
   links?: { admin: string; url: string }[];
   /**
@@ -88,6 +88,14 @@ export interface AdminApproval {
    * devops broker sets it). The dashboard shows a 대기열 badge and no countdown.
    */
   queued?: boolean;
+  /**
+   * `devops_broker` (#1056): this card on the broker's own approval page,
+   * `https://<name>.home.arpa:<port>/a/<approvalId>` — a page the broker serves itself (another OS user, its own
+   * TLS origin), where the admin approves or denies with a passkey. Present only when the broker has that page
+   * on and the URL passed the adapter's check. The card's one choice then opens it in a small window; `links`
+   * stays as the second way (Slack). The dashboard only opens the page: it never decides or relays a decision.
+   */
+  pageUrl?: string;
 }
 
 /** A request that ended recently — the card shows who answered and how. */

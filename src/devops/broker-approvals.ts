@@ -1,13 +1,18 @@
 /**
- * devops broker cards in the dashboard's admin approvals (#1051).
+ * devops broker cards in the dashboard's admin approvals (#1051, #1056).
  *
  * The broker posts its approval cards to the admins' Slack DMs. This adapter lists the cards the broker is
- * waiting on, so an admin who works in the dashboard sees them. Each card's one choice opens the admin's own
- * Slack card, where the decision is made.
+ * waiting on, so an admin who works in the dashboard sees them. Each card has one choice, and it only opens
+ * the place where the card is decided:
  *
- * It never decides. This process runs as the same OS user as the model, so a decision relayed from here
- * would let the model approve its own request. The broker accepts a decision only from the admin's own
- * reaction or button on its Slack card.
+ * - the broker's own approval page (`pageUrl`), when the broker has that page on: a page the broker serves
+ *   itself, as another OS user on its own TLS origin under `home.arpa`, where the admin approves or denies
+ *   with a passkey. The dashboard opens it in a small window;
+ * - otherwise the admin's own Slack card.
+ *
+ * It never decides. This process runs as the same OS user as the model, so a decision made or relayed from
+ * here would let the model approve its own request. A card is decided on the broker's page (passkey) or in
+ * Slack (the admin's own reaction or button), never from the dashboard: `answer()` refuses every call.
  *
  * A broker older than the `approvals` op refuses the listing. Then the cards come from the records the
  * devops-tools MCP server keeps while it waits on one (`PENDING_DIR_ENV`), and the choice opens the
@@ -55,8 +60,19 @@ const MAX_RECORDS = 50;
 const MAX_RECORD_BYTES = 4096;
 /** A record this long past its card's deadline is removed: the MCP server that wrote it died before it could. */
 const PRUNE_AFTER_MS = 60 * 60 * 1000;
+/**
+ * The broker's own approval page (#1056): `https://<name>.home.arpa:<port>/a/<approvalId>` and nothing else —
+ * lower-case DNS labels, an explicit port, that one path, no user info, no query, no fragment.
+ */
+const PAGE_URL_RE =
+  /^https:\/\/((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+home\.arpa):([1-9][0-9]{3,4})\/a\/([A-Za-z0-9_-]{8,64})$/;
+const MAX_PAGE_URL_LENGTH = 300;
+const MIN_PAGE_PORT = 1024;
+const MAX_PAGE_PORT = 65535;
 
 export const OPEN_SLACK_CHOICE = 'open_slack';
+/** The one choice of a card that has a `pageUrl`: the dashboard opens the broker's approval window. */
+export const OPEN_PAGE_CHOICE = 'open_page';
 /** `links[].admin` of a link any admin may open (the approvals app's DM). */
 export const ANY_ADMIN = '*';
 
@@ -75,6 +91,8 @@ interface BrokerApprovalView {
   createdAt: string;
   expiresAt: string;
   cards: { admin: string; permalink?: string }[];
+  /** #1056 — this card on the broker's own approval page. Only from a broker that has the page on; unchecked here. */
+  pageUrl?: string;
 }
 
 type CallResult = { ok: true; data: unknown } | { ok: false; unreachable: boolean; message: string };
@@ -163,17 +181,56 @@ function linksOf(view: BrokerApprovalView): { admin: string; url: string }[] {
   return out;
 }
 
+/**
+ * The card's `pageUrl` when it is exactly this card on a broker approval page; anything else is dropped and the
+ * card falls back to its Slack link. The string is never trusted: the strict pattern and `new URL` must agree.
+ */
+function pageUrlOf(view: BrokerApprovalView): string | undefined {
+  const raw: unknown = view.pageUrl;
+  if (typeof raw !== 'string' || raw.length > MAX_PAGE_URL_LENGTH) return undefined;
+  const match = PAGE_URL_RE.exec(raw);
+  if (!match) return undefined;
+  const [, host, portText, id] = match;
+  const port = Number(portText);
+  if (port < MIN_PAGE_PORT || port > MAX_PAGE_PORT || id !== view.approvalId) return undefined;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return undefined;
+  }
+  const exact =
+    url.protocol === 'https:' &&
+    url.username === '' &&
+    url.password === '' &&
+    url.hostname === host &&
+    url.hostname.endsWith('.home.arpa') &&
+    url.port === String(port) &&
+    url.pathname === `/a/${view.approvalId}` &&
+    url.search === '' &&
+    url.hash === '' &&
+    // The parser read it as written: nothing was normalised away.
+    url.href === raw;
+  return exact ? raw : undefined;
+}
+
 function toApproval(view: BrokerApprovalView): AdminApproval {
+  const pageUrl = pageUrlOf(view);
   return {
     id: `devops_broker:${view.approvalId}`,
     kind: 'devops_broker',
     card: 'question',
     title: view.title,
-    description:
-      '승인·거부는 Slack 카드에서 합니다 (요청 내용 전체가 거기 있어요). 대시보드는 모델과 같은 계정으로 돌아서, 여기서 승인하면 모델이 자기 요청을 승인할 수 있기 때문입니다.',
+    description: pageUrl
+      ? '승인 창에서 요청 내용 전체를 확인하고 Touch ID(패스키)로 승인·거부합니다. 승인 창은 브로커가 직접 띄우는 페이지입니다. 대시보드는 모델과 같은 계정으로 돌기 때문에 결정에 관여하지 않습니다.'
+      : '승인·거부는 Slack 카드에서 합니다 (요청 내용 전체가 거기 있어요). 대시보드는 모델과 같은 계정으로 돌아서, 여기서 승인하면 모델이 자기 요청을 승인할 수 있기 때문입니다.',
     tool: `devops:${view.tool}`,
-    choices: [{ id: OPEN_SLACK_CHOICE, label: '↗ Slack 카드 열기 (거기서 승인·거부)' }],
-    recommendedId: OPEN_SLACK_CHOICE,
+    choices: pageUrl
+      ? [{ id: OPEN_PAGE_CHOICE, label: '승인 창 열기 (Touch ID로 승인·거부)' }]
+      : [{ id: OPEN_SLACK_CHOICE, label: '↗ Slack 카드 열기 (거기서 승인·거부)' }],
+    recommendedId: pageUrl ? OPEN_PAGE_CHOICE : OPEN_SLACK_CHOICE,
+    ...(pageUrl ? { pageUrl } : {}),
+    // The Slack card stays the second way to decide, also when the page is on.
     links: linksOf(view),
     requesterId: SLACK_USER_RE.test(view.requester) ? view.requester : '',
     createdAt: Date.parse(view.createdAt) || 0,
@@ -356,11 +413,12 @@ export function devopsBrokerAdminApprovalAdapter(
       return views.filter((view) => (Date.parse(view.expiresAt) || 0) > now).map(toApproval);
     },
     resolved() {
-      // Decided in Slack: the card simply leaves the broker's list.
+      // Decided on the broker's page or in Slack: the card simply leaves the broker's list.
       return [];
     },
     async answer() {
-      // The card's one choice opens Slack in the browser; nothing is ever decided from here.
+      // The card's one choice opens the broker's approval window or Slack in the browser. Nothing is ever
+      // decided, or relayed to the broker, from here — with or without a `pageUrl`.
       return { ok: false, reason: 'invalid' };
     },
   };

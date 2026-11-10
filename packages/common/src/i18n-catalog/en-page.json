@@ -1518,6 +1518,8 @@
   "Slack 카드 링크가 없어요 — Slack의 soma devops approvals 앱 DM에서 이 카드를 여세요": "There is no Slack card link — open this card from the soma devops approvals app's DM in Slack",
   "Slack 카드를 열었어요": "Opened the Slack card",
   " — 거기서 승인·거부하면 이 카드도 사라져요": " — approve or deny it there and this card goes away too",
+  "승인 창을 열었어요": "Opened the approval window",
+  " — 거기서 Touch ID로 승인·거부하면 이 카드도 사라져요": " — approve or deny it there with Touch ID and this card goes away too",
   "<span class=\"ps-sec-title\">자식 작업 ": "<span class=\"ps-sec-title\">Child tasks ",
   "<span class=\"ps-sec-title\">에픽</span><span class=\"ptl-now pf-peek\"><span class=\"pf-name\">": "<span class=\"ps-sec-title\">Epic</span><span class=\"ptl-now pf-peek\"><span class=\"pf-name\">",
   " · 열린 세션은 ": " · the open session runs at ",

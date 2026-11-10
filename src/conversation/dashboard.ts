@@ -9432,9 +9432,10 @@ function adminTitleBadge(title, n) {
 async function answerAdminApproval(id, choiceId) {
   var a = _adminLast[id];
   if (!a) return null;
-  // devops broker card (#1051): its one choice opens the viewer's own Slack card, where it is decided.
+  // devops broker card (#1051, #1056): its one choice opens the place where it is decided — the broker's own
+  // approval window when the card has a pageUrl that passes the check here, else the viewer's own Slack card.
   // Nothing is sent from here — the dashboard runs as the model's OS user, so it can never decide one.
-  if (a.kind === 'devops_broker') return openDevopsSlackCard(id, a);
+  if (a.kind === 'devops_broker') return devopsPageUrl(a) ? openDevopsApprovalWindow(id, a) : openDevopsSlackCard(id, a);
   var cur = _adminState[id];
   if (cur && (cur.status === 'sending' || cur.status === 'resolved')) return cur;
   _adminState[id] = a.card === 'question' ? { status: 'sending', choiceId: choiceId } : { status: 'sending', decision: choiceId };
@@ -9494,6 +9495,24 @@ function openDevopsSlackCard(id, a) {
   }
   window.open(url, '_blank', 'noopener');
   dashToast({ title: 'Slack 카드를 열었어요', description: adminApprovalTitle(a) + ' — 거기서 승인·거부하면 이 카드도 사라져요', tone: 'neutral' });
+  return _adminState[id] || null;
+}
+// #1056 — the card on the broker's own approval page (the server checked the exact form; this checks again
+// before anything opens): https, a home.arpa name, the /a/ path. '' when the card has none or it fails.
+function devopsPageUrl(a) {
+  var url = a && typeof a.pageUrl === 'string' ? a.pageUrl : '';
+  if (!url) return '';
+  try {
+    var u = new URL(url);
+    return u.protocol === 'https:' && /[.]home[.]arpa$/.test(u.hostname) && u.pathname.indexOf('/a/') === 0 ? url : '';
+  } catch (_e) { return ''; }
+}
+// Opens the approval window and nothing more: the admin decides there with a passkey, and the card leaves when
+// the broker stops listing it. Always '_blank' — a named window could be reused by another page. The window is
+// not kept and nothing is posted to it.
+function openDevopsApprovalWindow(id, a) {
+  window.open(devopsPageUrl(a), '_blank', 'popup,width=520,height=760,noopener,noreferrer');
+  dashToast({ title: '승인 창을 열었어요', description: adminApprovalTitle(a) + ' — 거기서 Touch ID로 승인·거부하면 이 카드도 사라져요', tone: 'neutral' });
   return _adminState[id] || null;
 }
 (function initAdminInbox() {

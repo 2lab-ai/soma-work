@@ -2149,5 +2149,7 @@
   "⚠️ *되돌릴 수 없음*": "⚠️ *Cannot be undone*",
   "↩️ 되돌릴 수 있음": "↩️ Can be undone",
   "🚧 막힌 작업 — {0}": "🚧 Blocked work — {0}",
-  "⚖️ 걸린 것 — {0}": "⚖️ At stake — {0}"
+  "⚖️ 걸린 것 — {0}": "⚖️ At stake — {0}",
+  "승인 창에서 요청 내용 전체를 확인하고 Touch ID(패스키)로 승인·거부합니다. 승인 창은 브로커가 직접 띄우는 페이지입니다. 대시보드는 모델과 같은 계정으로 돌기 때문에 결정에 관여하지 않습니다.": "Read the whole request in the approval window and approve or deny it there with Touch ID (a passkey). The approval window is a page the broker serves itself. The dashboard runs under the same account as the model, so it takes no part in the decision.",
+  "승인 창 열기 (Touch ID로 승인·거부)": "Open the approval window (approve or deny with Touch ID)"
 }
