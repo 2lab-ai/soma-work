@@ -480,7 +480,7 @@ describe('Dashboard — live surfaces (SSOT 2026-10-22)', () => {
         'grok[1m]',
       ]);
       expect(list.find((x: any) => x.nickname === 'grok[1m]')).toMatchObject({
-        model: 'grok-4.6',
+        model: 'grok-4.7',
         contextWindow: 500_000,
         autoCompactTokens: 450_000,
       });

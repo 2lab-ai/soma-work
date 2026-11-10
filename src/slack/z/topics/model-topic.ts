@@ -18,7 +18,7 @@ import { buildSettingCard } from '../ui-builder';
  * literal static id, so it remains available on a catalog-less cold start;
  * the generic `grok` shorthand keeps catalog semantics.
  */
-export const FEATURED_ALIASES = ['fable', 'sonnet', 'opus', 'opus[1m]', 'haiku', 'grok-4.6'] as const;
+export const FEATURED_ALIASES = ['fable', 'sonnet', 'opus', 'opus[1m]', 'haiku', 'grok-4.7'] as const;
 
 export async function renderModelCard(args: { userId: string; issuedAt: number }): Promise<RenderResult> {
   const { userId, issuedAt } = args;
