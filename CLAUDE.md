@@ -211,7 +211,7 @@ gh workflow run deploy --ref main -f confirm=deploy
 
 1. `.claude/skills/update-docs/SKILL.md` 스킬을 따라 문서 drift를 점검한다.
 2. 변경이 아래 표면에 영향을 주면 **같은 PR에서** 함께 업데이트한다:
-   - `README.md` / `README.ko.md` — 첫 화면(독자가 묻는 순서: 슬랙에서 시키기 → 대시보드에서 확인 → 카드에서 이어서 → 지켜보기 → 대시보드에서 바로 시키기 → 끼어들기 → 돌아오는 것 → 실행하기)과 그 스크린샷·GIF가 바뀌었을 때. 화면은 언어별로 따로 찍는다: `README.md`는 영문 UI(`assets/readme/en/`), `README.ko.md`는 한글 UI(`assets/readme/ko/`). 두 파일은 항상 같이 움직인다.
+   - `README.md` / `README.ko.md` — 첫 화면(맨 위에 데모 영상 포스터 `assets/readme/{en,ko}/demo-poster.png` → v0.3 릴리스의 언어별 영상, 그 아래 독자가 묻는 순서: 슬랙에서 시키기 → 대시보드에서 확인 → 카드에서 이어서 → 지켜보기 → 대시보드에서 바로 시키기 → 끼어들기 → 돌아오는 것 → 실행하기)과 그 스크린샷·GIF가 바뀌었을 때. 화면은 언어별로 따로 찍는다: `README.md`는 영문 UI(`assets/readme/en/`), `README.ko.md`는 한글 UI(`assets/readme/ko/`). 두 파일은 항상 같이 움직인다.
    - `docs/misc/guides/{features,commands,setup,contributing}.md`와 각 `.ko.md` 짝 — 기능, 명령어, 아키텍처, 프로젝트 구조, 설정 방법이 바뀌었을 때. 영문과 한글 파일은 같이 움직인다.
    - `CLAUDE.md` / `AGENTS.md` — agent 행동 규칙, 모듈 구조, gotcha가 바뀌었을 때.
    - `docs/README.md` — docs 디렉토리 구조나 라우팅이 바뀌었을 때.
