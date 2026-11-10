@@ -137,6 +137,8 @@ export const AVAILABLE_MODELS = [
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',
+  'claude-sonnet-5-5',
+  'claude-haiku-5-5',
   'claude-sonnet-4-6',
   'claude-sonnet-4-5-20250929',
   'claude-opus-4-5-20251101',
@@ -152,6 +154,10 @@ export const AVAILABLE_MODELS = [
   // Sonnet's 1M opt-in — one of the dashboard's representative models
   // (SSOT 2026-10-22 T4: opus / fable / sonnet / sol / astra [1m] + grok).
   'claude-sonnet-4-6[1m]',
+  // Sonnet 5.5 / Haiku 5.5 `[1m]` rows (added 2026-11-10): the targets of the
+  // `sonnet` / `haiku` shorthands, the same owners as the llmux catalog.
+  'claude-sonnet-5-5[1m]',
+  'claude-haiku-5-5[1m]',
   'gpt-5.5',
   'gpt-5.6-sol',
   'gpt-5.6-sol[1m]',
@@ -159,6 +165,8 @@ export const AVAILABLE_MODELS = [
   'gpt-5.6-luna',
   'gpt-6-astra',
   'gpt-6-astra[1m]',
+  'gpt-6-luna',
+  'gpt-6-luna[1m]',
   'gpt-6.1-sol',
   'gpt-6.1-sol[1m]',
   'gpt-6.1-terra',
@@ -204,9 +212,15 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   'fable-5-1[1m]': 'claude-fable-5-1[1m]',
   'fable-5': 'claude-fable-5[1m]',
   'fable-5[1m]': 'claude-fable-5[1m]',
-  sonnet: 'claude-sonnet-4-6',
+  // `sonnet` / `sonnet[1m]` follow the NEWEST sonnet (5.5 since 2026-11-10,
+  // the llmux `sonnet` owner since 2026-09-23) and land on its `[1m]` id —
+  // the same newest-[1m] rule as opus / fable. `sonnet-4.6*` and
+  // `sonnet-4.5` stay pinned for users who chose that generation.
+  sonnet: 'claude-sonnet-5-5[1m]',
+  'sonnet[1m]': 'claude-sonnet-5-5[1m]',
+  'sonnet-5-5': 'claude-sonnet-5-5[1m]',
+  'sonnet-5-5[1m]': 'claude-sonnet-5-5[1m]',
   'sonnet-4.6': 'claude-sonnet-4-6',
-  'sonnet[1m]': 'claude-sonnet-4-6[1m]',
   'sonnet-4.6[1m]': 'claude-sonnet-4-6[1m]',
   'sonnet-4.5': 'claude-sonnet-4-5-20250929',
   // `opus` / `opus[1m]` follow the current latest opus — bump these two rows
@@ -222,7 +236,12 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   'opus-4.7': 'claude-opus-4-7',
   'opus-4.6': 'claude-opus-4-6',
   'opus-4.5': 'claude-opus-4-5-20251101',
-  haiku: 'claude-haiku-4-5-20251001',
+  // `haiku` follows the newest haiku (5.5, released 2026-10-07; the llmux
+  // `haiku` owner since 2026-10-08) on its `[1m]` id. `haiku-4.5` stays pinned.
+  haiku: 'claude-haiku-5-5[1m]',
+  'haiku[1m]': 'claude-haiku-5-5[1m]',
+  'haiku-5-5': 'claude-haiku-5-5[1m]',
+  'haiku-5-5[1m]': 'claude-haiku-5-5[1m]',
   'haiku-4.5': 'claude-haiku-4-5-20251001',
   // `gpt` follows the current latest gpt generation (llmux codex backend) —
   // bump this row (plus AVAILABLE_MODELS) when a new generation lands;
@@ -256,7 +275,12 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   // literal ids. `gpt-6.1` stays on sol, generation 6.1's flagship.
   terra: 'gpt-6.1-terra[1m]',
   'terra[1m]': 'gpt-6.1-terra[1m]',
-  luna: 'gpt-5.6-luna',
+  // `luna` / `luna[1m]` follow the newest luna (gpt-6-luna, released
+  // 2026-09-22; the llmux `luna` owner since 2026-10-06) on its `[1m]` row —
+  // the same newest-[1m] rule as sol / terra / astra. gpt-5.6-luna stays
+  // selectable by its literal id.
+  luna: 'gpt-6-luna[1m]',
+  'luna[1m]': 'gpt-6-luna[1m]',
   // gpt-6 (2026-09-03 release, wired 2026-09-07). Selectable, NOT the
   // default — `gpt` above still points at gpt-5.6-sol. `gpt-6` is the bare
   // generation spelling and `astra` the tier shorthand; both point at the
@@ -1573,6 +1597,14 @@ export class UserSettingsStore {
         return 'Opus 4.6';
       case 'claude-opus-4-6[1m]':
         return 'Opus 4.6 (1M)';
+      case 'claude-sonnet-5-5':
+        return 'Sonnet 5.5';
+      case 'claude-sonnet-5-5[1m]':
+        return 'Sonnet 5.5 (1M)';
+      case 'claude-haiku-5-5':
+        return 'Haiku 5.5';
+      case 'claude-haiku-5-5[1m]':
+        return 'Haiku 5.5 (1M)';
       case 'claude-sonnet-4-6':
         return 'Sonnet 4.6';
       case 'claude-sonnet-4-6[1m]':
@@ -1605,6 +1637,12 @@ export class UserSettingsStore {
       case 'gpt-5.6-terra':
         // Mid tier — same 372k catalog window, half the price of sol.
         return 'GPT-5.6 Terra (372k)';
+      case 'gpt-6-luna':
+        // Generation 6 budget tier (llmux codex backend); 272k catalog window.
+        return 'GPT-6 Luna (272k)';
+      case 'gpt-6-luna[1m]':
+        // Shared GPT [1m] policy: 1M window, 977k SDK block, 600k auto-compact.
+        return 'GPT-6 Luna (1M)';
       case 'gpt-5.6-luna':
         // Budget tier — same 372k catalog window.
         return 'GPT-5.6 Luna (372k)';

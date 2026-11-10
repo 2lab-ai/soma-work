@@ -484,7 +484,7 @@ describe('Dashboard — live surfaces (SSOT 2026-10-22)', () => {
         contextWindow: 500_000,
         autoCompactTokens: 450_000,
       });
-      expect(list.find((x: any) => x.nickname === 'sonnet[1m]')).toMatchObject({ model: 'claude-sonnet-4-6[1m]' });
+      expect(list.find((x: any) => x.nickname === 'sonnet[1m]')).toMatchObject({ model: 'claude-sonnet-5-5[1m]' });
     });
   });
 });
