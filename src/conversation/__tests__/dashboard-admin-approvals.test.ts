@@ -700,6 +700,41 @@ describe('dashboard admin approvals (#620)', () => {
       expect(toasts[0].t.title).toContain('Slack 카드를 열었어요');
     });
 
+    it('#1129 — a card the broker lets the dashboard decide is answered here: 승인 posts the answer and opens no Slack', async () => {
+      const calls: { url: string; body: unknown }[] = [];
+      const opened: any[] = [];
+      const { c } = client({
+        window: { open: (...args: any[]) => opened.push(args) },
+        fetch: async (url: string, init: any) => {
+          calls.push({ url, body: init?.body ? JSON.parse(init.body) : undefined });
+          return { ok: true, status: 200, json: async () => ({ ok: true, outcome: 'approved' }) };
+        },
+      });
+      const DECIDABLE = {
+        ...DEVOPS_REQUEST,
+        card: 'permission',
+        choices: undefined,
+        recommendedId: undefined,
+        summary: 'member 계정이 example-org/app에 gh pr comment 실행',
+        rows: { 계정: 'member', '카드 번호': '0123456789ab' },
+        risk: 'medium',
+        batch: { approve: 'approve', deny: 'deny' },
+        queued: true,
+      };
+      c.applyAdminApprovals({ pending: [DECIDABLE], resolved: [] });
+      expect(await c.answerAdminApproval('devops_broker:appr_0001abcd', 'approve')).toMatchObject({
+        status: 'resolved',
+        outcome: 'approved',
+      });
+      expect(opened).toEqual([]);
+      expect(calls.filter((x) => x.url.includes('/admin-approvals/answer'))).toEqual([
+        {
+          url: '/api/dashboard/admin-approvals/answer',
+          body: { id: 'devops_broker:appr_0001abcd', choiceId: 'approve' },
+        },
+      ]);
+    });
+
     it('#1051 review — only the viewer’s own card, only a Slack link', async () => {
       const opened: any[] = [];
       const { c } = client({ window: { open: (...args: any[]) => opened.push(args) } });
