@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, createPrivateKey, createPublicKey, type KeyObject, X509Certificate } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -292,7 +292,7 @@ describe('policy template', () => {
   });
 });
 
-function writePolicy(): void {
+function writePolicy(extra: Record<string, unknown> = {}): void {
   const policy = {
     admins: ['U000ADMIN'],
     gh: {
@@ -314,6 +314,7 @@ function writePolicy(): void {
       },
     },
     approvalTimeout: '5m',
+    ...extra,
   };
   const file = at(`${DATA}/policy.json`);
   fs.writeFileSync(`${file}.new`, JSON.stringify(policy, null, 2));
@@ -811,10 +812,494 @@ describe.skipIf(process.platform !== 'darwin')('devops-broker install.sh', SLOW,
   });
 });
 
+// ---- approval page (#1056): the three --approval-page options, the certificate and the policy section ------------
+
+const PAGE_HOST = 'approve.home.arpa';
+const PAGE_PORT = '48443';
+const PAGE_LISTEN = '127.0.0.1';
+const PAGE = { origin: `https://${PAGE_HOST}:${PAGE_PORT}`, listenHost: PAGE_LISTEN };
+const TLS = `${DATA}/tls`;
+const OPENSSL = '/usr/bin/openssl';
+const DAY_MS = 86_400_000;
+const SERVER_AUTH = '1.3.6.1.5.5.7.3.1';
+
+function pageOptions(host = PAGE_HOST, port = PAGE_PORT, listen = PAGE_LISTEN): string[] {
+  return ['--approval-page-host', host, '--approval-page-port', port, '--approval-page-listen', listen];
+}
+
+function installPage(extra: string[] = [], env: Record<string, string> = {}, options = pageOptions()): Run {
+  return install([...WITH_ARCHIVES(), ...options, ...extra], env);
+}
+
+function certText(file: string): string {
+  const result = spawnSync(OPENSSL, ['x509', '-in', file, '-noout', '-text'], { encoding: 'utf8' });
+  expect(result.status).toBe(0);
+  return result.stdout;
+}
+
+function spki(key: KeyObject): string {
+  return key.export({ type: 'spki', format: 'der' }).toString('hex');
+}
+
+interface Tls {
+  ca: X509Certificate;
+  leaf: X509Certificate;
+  key: KeyObject;
+  /** The three files' bytes, to tell "kept" from "replaced". */
+  hashes: string[];
+}
+
+function readTls(): Tls {
+  expect(fs.readdirSync(at(TLS)).sort()).toEqual(['ca.pem', 'cert.pem', 'key.pem']);
+  const files = ['ca.pem', 'cert.pem', 'key.pem'].map((name) => at(`${TLS}/${name}`));
+  return {
+    ca: new X509Certificate(fs.readFileSync(files[0])),
+    leaf: new X509Certificate(fs.readFileSync(files[1])),
+    key: createPrivateKey(fs.readFileSync(files[2])),
+    hashes: files.map(sha256),
+  };
+}
+
+/** The leaf is for exactly this host, chains to ca.pem (and only as far as the CA's name constraint lets it). */
+function expectChain(tls: Tls, host: string): void {
+  expect(tls.leaf.subjectAltName).toBe(`DNS:${host}`);
+  expect(tls.leaf.ca).toBe(false);
+  expect(tls.ca.ca).toBe(true);
+  expect(tls.leaf.checkIssued(tls.ca)).toBe(true);
+  expect(tls.leaf.verify(tls.ca.publicKey)).toBe(true);
+  const verify = spawnSync(
+    OPENSSL,
+    ['verify', '-x509_strict', '-purpose', 'sslserver', '-CAfile', at(`${TLS}/ca.pem`), at(`${TLS}/cert.pem`)],
+    { encoding: 'utf8' },
+  );
+  expect(verify.stdout.trim()).toBe(`${at(`${TLS}/cert.pem`)}: OK`);
+  expect(verify.status).toBe(0);
+  // key.pem is the leaf's key, never the CA's.
+  expect(spki(createPublicKey(tls.key))).toBe(spki(tls.leaf.publicKey));
+  expect(spki(createPublicKey(tls.key))).not.toBe(spki(tls.ca.publicKey));
+}
+
+function policyBackups(): string[] {
+  return fs
+    .readdirSync(at(DATA))
+    .filter((name) => name.startsWith('policy.json.bak'))
+    .sort();
+}
+
+/** Every file in the sandbox, the checkout copy aside, that holds a private key; and every CA temp directory. */
+function keyMaterial(): { keys: string[]; caDirs: string[] } {
+  const keys: string[] = [];
+  const caDirs: string[] = [];
+  const walk = (dir: string): void => {
+    for (const name of fs.readdirSync(dir)) {
+      const file = path.join(dir, name);
+      const st = fs.lstatSync(file);
+      if (st.isDirectory()) {
+        if (name.includes('soma-devops-ca')) caDirs.push(file);
+        if (file !== repo) walk(file);
+      } else if (st.isFile() && fs.readFileSync(file, 'latin1').includes('PRIVATE KEY')) {
+        keys.push(file);
+      }
+    }
+  };
+  walk(work);
+  return { keys, caDirs };
+}
+
+function daemonLoaded(): boolean {
+  return fs.existsSync(path.join(state, 'launchd', LABEL));
+}
+
+describe.skipIf(process.platform !== 'darwin')('devops-broker install.sh approval page (#1056)', SLOW, () => {
+  // lsof is not one of the installer's required shims; here one stands in for it, so no test depends on what
+  // listens on this machine. SHIM_LSOF_UID=<uid>: one listener owned by that uid. Unset: nothing listens.
+  beforeEach(() => {
+    writeExecutable(
+      path.join(shimDir, 'lsof'),
+      [
+        '#!/bin/bash',
+        `{ printf 'lsof'; printf ' %s' "$@"; printf '\\n'; } >>"$SHIM_LOG"`,
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion, not a template
+        '[ -n "${SHIM_LSOF_UID:-}" ] || exit 1',
+        `printf 'p4242\\nu%s\\nf7\\n' "$SHIM_LSOF_UID"`,
+        '',
+      ].join('\n'),
+    );
+  });
+
+  it('refuses approval page options that are incomplete or malformed, naming the option and never the value', () => {
+    const together = /--approval-page-host, --approval-page-port and --approval-page-listen must be given together/;
+    const cases: [string[], RegExp][] = [
+      [['--approval-page-host', PAGE_HOST], together],
+      [['--approval-page-host', PAGE_HOST, '--approval-page-port', PAGE_PORT], together],
+      [['--approval-page-port', PAGE_PORT, '--approval-page-listen', PAGE_LISTEN], together],
+      [['--renew-approval-cert'], /--renew-approval-cert needs the three --approval-page options/],
+      ...['Evil.Home.Arpa', 'evil.example.com', '10.9.8.7', 'home.arpa', 'evil..home.arpa', '-evil.home.arpa'].map(
+        (host): [string[], RegExp] => [pageOptions(host), /^install\.sh: --approval-page-host must be /m],
+      ),
+      ...['evil.home.arpa.', 'evil.home.arpa:8443', 'evil_x.home.arpa', `${'x'.repeat(64)}.home.arpa`].map(
+        (host): [string[], RegExp] => [pageOptions(host), /^install\.sh: --approval-page-host must be /m],
+      ),
+      ...['1023', '65536', '08443', '8443x', '-8443', '99999999'].map((port): [string[], RegExp] => [
+        pageOptions(PAGE_HOST, port),
+        /^install\.sh: --approval-page-port must be a number from 1024 to 65535$/m,
+      ]),
+      ...['localhost.evil', '256.9.8.7', '9.8.7', '09.8.7.6', '::zz9', '1:2:3:4:5:6:7:8:9', 'FE80::9'].map(
+        (listen): [string[], RegExp] => [
+          pageOptions(PAGE_HOST, PAGE_PORT, listen),
+          /^install\.sh: --approval-page-listen must be an IP address/m,
+        ],
+      ),
+    ];
+    for (const [args, message] of cases) {
+      const result = install([...WITH_ARCHIVES(), ...args]);
+      expect(result.out).toMatch(message);
+      expect(result.status).toBe(2);
+      // The message names the option; whatever odd thing was typed is not printed back.
+      const odd = args.filter((arg) => ![PAGE_HOST, PAGE_PORT, PAGE_LISTEN].includes(arg) && !arg.startsWith('--'));
+      for (const value of odd) expect(result.out).not.toContain(value);
+    }
+    expect(fs.readdirSync(prefix)).toEqual([]);
+    expect(logLines()).toEqual([]);
+  });
+
+  it('makes the leaf from a throwaway name-constrained CA, the key as the broker user, and leaves no CA key', () => {
+    const result = installPage();
+    expect(fails(result)).toEqual([]);
+    expect(result.out).not.toMatch(/stopped at line/);
+    expect(result.status).toBe(3);
+
+    // The three files, private to the broker user.
+    expect(mode(TLS)).toBe(0o700);
+    for (const name of ['key.pem', 'cert.pem', 'ca.pem']) expect(mode(`${TLS}/${name}`)).toBe(0o600);
+    const tls = readTls();
+    expectChain(tls, PAGE_HOST);
+
+    // Leaf: P-256, server authentication only, at most 825 days and not past its CA.
+    expect(tls.key.asymmetricKeyDetails?.namedCurve).toBe('prime256v1');
+    expect(tls.leaf.keyUsage).toEqual([SERVER_AUTH]);
+    const leafText = certText(at(`${TLS}/cert.pem`));
+    expect(leafText).toMatch(/X509v3 Basic Constraints: critical\s+CA:FALSE\s/);
+    expect(leafText).toMatch(/X509v3 Extended Key Usage:\s+TLS Web Server Authentication\s/);
+    expect(leafText).toMatch(new RegExp(`X509v3 Subject Alternative Name:\\s+DNS:${PAGE_HOST}\\s`));
+    const days = (cert: X509Certificate) => (Date.parse(cert.validTo) - Date.parse(cert.validFrom)) / DAY_MS;
+    expect(days(tls.leaf)).toBeLessThanOrEqual(825);
+    expect(days(tls.ca)).toBeLessThanOrEqual(825);
+    expect(Date.parse(tls.leaf.validTo)).toBeLessThanOrEqual(Date.parse(tls.ca.validTo));
+
+    // CA: can sign one level of certificates, for this one name only; every constraint is critical.
+    const caText = certText(at(`${TLS}/ca.pem`));
+    expect(caText).toMatch(/X509v3 Basic Constraints: critical\s+CA:TRUE, pathlen:0\s/);
+    expect(caText).toMatch(/X509v3 Key Usage: critical\s+Certificate Sign\s/);
+    expect(caText).toMatch(new RegExp(`X509v3 Name Constraints: critical\\s+Permitted:\\s+DNS:${PAGE_HOST}\\s`));
+    expect(caText.match(/DNS:/g)).toHaveLength(1);
+    expect(tls.ca.publicKey.asymmetricKeyDetails?.namedCurve).toBe('prime256v1');
+
+    // The CA key is gone: the only private key anywhere in the sandbox is the leaf's, and no CA directory is left.
+    expect(keyMaterial()).toEqual({ keys: [at(`${TLS}/key.pem`)], caDirs: [] });
+
+    // Root makes and owns tls/; inside it only the broker user writes, and the key is made where it stays.
+    const log = logLines();
+    expect(log).toContain(`chown -h ${BROKER_ID}:${BROKER_ID} ${at(TLS)}`);
+    expect(log.filter((line) => line.startsWith('chown') && line.includes(`${at(TLS)}/`))).toEqual([]);
+    const asBroker = `sudo -u _somadevops -- /usr/bin/env -i PATH=${SYSTEM_PATH} HOME=/var/empty `;
+    expect(
+      log.filter(
+        (line) =>
+          line.startsWith(asBroker) && line.includes(' ecparam -name prime256v1 -genkey ') && line.endsWith('/key.pem'),
+      ),
+    ).toEqual([expect.stringMatching(new RegExp(` ${OPENSSL} ${at(`${TLS}/key.pem`)}$`))]);
+    expect(log.filter((line) => line.startsWith('lsof'))).toEqual([expect.stringContaining(`-iTCP:${PAGE_PORT}`)]);
+
+    // Checklist and next steps.
+    const checklist = result.stdout.slice(result.stdout.indexOf('== ownership and permissions'));
+    expect(checklist).toMatch(new RegExp(`^OK +_somadevops:soma-devops 0700 +${at(TLS)}$`, 'm'));
+    expect(checklist).toMatch(new RegExp(`^OK +_somadevops:soma-devops 0600 +${at(`${TLS}/key.pem`)}$`, 'm'));
+    expect(checklist).toMatch(
+      new RegExp(`^OK +certificate DNS:${PAGE_HOST}, 82[34] days left +${at(`${TLS}/cert.pem`)}$`, 'm'),
+    );
+    expect(checklist).toMatch(/^OK +CA key gone /m);
+    expect(checklist).toMatch(new RegExp(`^OK +port ${PAGE_PORT} free `, 'm'));
+    expect(checklist).toContain(`CA SHA-256 fingerprint: ${tls.ca.fingerprint256}\n`);
+    expect(checklist).toContain('security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db');
+    expect(checklist).toMatch(
+      new RegExp(`sudo -u _somadevops .* ${at(CLI)} passkey enrol <admin Slack id> --root ${at(DATA)}$`, 'm'),
+    );
+    expect(result.out).not.toMatch(/^WARN/m);
+
+    // The template policy does not pass check-policy yet, so it is left alone: no section, no backup.
+    expect(fs.readFileSync(at(`${DATA}/policy.json`), 'utf8')).toBe(readmeTemplate());
+    expect(policyBackups()).toEqual([]);
+    expect(result.stdout).toMatch(/^approvalPage not added: .* does not pass check-policy yet/m);
+  });
+
+  it('adds only the approvalPage section to a valid policy, with a backup; keeps everything on later runs', () => {
+    installAndStart();
+    expect(fs.existsSync(at(TLS))).toBe(false);
+    const policy = at(`${DATA}/policy.json`);
+    const before = fs.readFileSync(policy, 'utf8');
+    expect(before.endsWith('\n}')).toBe(true);
+
+    const added = installPage();
+    expect(fails(added)).toEqual([]);
+    expect(added.status).toBe(0);
+    expect(daemonLoaded()).toBe(true);
+    const after = fs.readFileSync(policy, 'utf8');
+    // Every byte of the old policy up to its closing brace is still there; the section is the only addition.
+    expect(after).toBe(
+      `${before.slice(0, -2)},\n  "approvalPage": { "origin": "${PAGE.origin}", "listenHost": "${PAGE.listenHost}" }\n}`,
+    );
+    expect(JSON.parse(after)).toEqual({ ...JSON.parse(before), approvalPage: PAGE });
+    expect(mode(`${DATA}/policy.json`)).toBe(0o644);
+    const saved = policyBackups();
+    expect(saved).toEqual([expect.stringMatching(/^policy\.json\.bak-\d{8}T\d{6}Z$/)]);
+    expect(fs.readFileSync(at(`${DATA}/${saved[0]}`), 'utf8')).toBe(before);
+    expect(mode(`${DATA}/${saved[0]}`)).toBe(0o644);
+    expect(logLines()).toContain(`chown -h root:wheel ${at(`${DATA}/${saved[0]}`)}`);
+    expect(added.stdout).toMatch(new RegExp(`^added approvalPage to ${policy} \\(the earlier policy: .*${saved[0]}\\)$`, 'm'));
+    // The edit is in place, and checked, before the daemon is started again.
+    expect(added.stdout.indexOf('added approvalPage')).toBeLessThan(added.stdout.indexOf('+ launchctl bootstrap'));
+    const tls = readTls();
+    expectChain(tls, PAGE_HOST);
+
+    // Again with the same options: the same certificate, the same policy, no second backup.
+    const again = installPage();
+    expect(fails(again)).toEqual([]);
+    expect(again.status).toBe(0);
+    expect(readTls().hashes).toEqual(tls.hashes);
+    expect(fs.readFileSync(policy, 'utf8')).toBe(after);
+    expect(policyBackups()).toEqual(saved);
+    expect(again.stdout).toMatch(/already has this approvalPage/);
+    expect(again.stdout).toMatch(new RegExp(`^OK +certificate DNS:${PAGE_HOST}, 82[34] days left `, 'm'));
+
+    // Without the options: nothing about tls/ or the policy changes, and tls/ is still held to its modes.
+    const plain = install();
+    expect(fails(plain)).toEqual([]);
+    expect(plain.status).toBe(0);
+    expect(readTls().hashes).toEqual(tls.hashes);
+    expect(mode(TLS)).toBe(0o700);
+    expect(fs.readFileSync(policy, 'utf8')).toBe(after);
+    expect(policyBackups()).toEqual(saved);
+    expect(plain.stdout).not.toMatch(/approvalPage|CA SHA-256/);
+    expect(plain.stdout).toMatch(new RegExp(`^OK +_somadevops:soma-devops 0600 +${at(`${TLS}/key.pem`)}$`, 'm'));
+  });
+
+  it('never makes tls/ or touches the policy when the options are not given', () => {
+    installAndStart();
+    expect(fs.existsSync(at(TLS))).toBe(false);
+    expect(policyBackups()).toEqual([]);
+    expect(logLines().filter((line) => /openssl|lsof|approvalPage/.test(line))).toEqual([]);
+  });
+
+  it('fails on another host and names --renew-approval-cert, which replaces the certificate and its CA', () => {
+    expect(installPage().status).toBe(3);
+    const first = readTls();
+
+    const other = installPage([], {}, pageOptions('other.home.arpa'));
+    expect(other.status).toBe(1);
+    expect(fails(other)).toEqual([
+      expect.stringMatching(new RegExp(`^FAIL ${at(`${TLS}/cert.pem`)} is for another name .*--renew-approval-cert`)),
+    ]);
+    expect(readTls().hashes).toEqual(first.hashes);
+
+    // A key that is not the certificate's is found the same way.
+    const key = at(`${TLS}/key.pem`);
+    const good = fs.readFileSync(key);
+    const stray = spawnSync(OPENSSL, ['ecparam', '-name', 'prime256v1', '-genkey', '-noout'], { encoding: 'utf8' });
+    fs.writeFileSync(key, stray.stdout, { mode: 0o600 });
+    const mismatch = installPage();
+    expect(mismatch.status).toBe(1);
+    expect(fails(mismatch)).toEqual([expect.stringMatching(/^FAIL .*key\.pem is not the key of .*--renew-approval-cert/)]);
+    fs.writeFileSync(key, good, { mode: 0o600 });
+
+    const renewed = installPage(['--renew-approval-cert']);
+    expect(fails(renewed)).toEqual([]);
+    expect(renewed.status).toBe(3);
+    const second = readTls();
+    for (const [i, hash] of second.hashes.entries()) expect(hash).not.toBe(first.hashes[i]);
+    expectChain(second, PAGE_HOST);
+    // A new CA, not the old one signing again: the old ca.pem does not vouch for the new leaf.
+    expect(second.leaf.verify(first.ca.publicKey)).toBe(false);
+    expect(second.ca.fingerprint256).not.toBe(first.ca.fingerprint256);
+    expect(renewed.stdout).toContain(`CA SHA-256 fingerprint: ${second.ca.fingerprint256}\n`);
+    expect(keyMaterial()).toEqual({ keys: [key], caDirs: [] });
+
+    // With the renew option another host is a new certificate for that host.
+    const moved = installPage(['--renew-approval-cert'], {}, pageOptions('other.home.arpa'));
+    expect(fails(moved)).toEqual([]);
+    expect(moved.status).toBe(3);
+    expectChain(readTls(), 'other.home.arpa');
+    expect(keyMaterial()).toEqual({ keys: [key], caDirs: [] });
+  });
+
+  it('fails on a policy that already has another approvalPage, and puts the policy back when check-policy rejects the edit', () => {
+    installAndStart();
+    const policy = at(`${DATA}/policy.json`);
+
+    // Another origin, then another listen address: the operator edits the policy, the installer does not.
+    for (const page of [
+      { ...PAGE, origin: `https://${PAGE_HOST}:48444` },
+      { ...PAGE, listenHost: '127.0.0.2' },
+    ]) {
+      writePolicy({ approvalPage: page });
+      const text = fs.readFileSync(policy, 'utf8');
+      const mark = logLines().length;
+      const refused = installPage();
+      expect(refused.status).toBe(1);
+      expect(fails(refused)).toEqual([
+        expect.stringMatching(
+          new RegExp(
+            `^FAIL ${policy} already has an approvalPage with another origin or listen address; edit the policy by hand`,
+          ),
+        ),
+      ]);
+      expect(fs.readFileSync(policy, 'utf8')).toBe(text);
+      expect(policyBackups()).toEqual([]);
+      // Refused before anything was made or stopped.
+      expect(fs.existsSync(at(`${TLS}/cert.pem`))).toBe(false);
+      expect(daemonLoaded()).toBe(true);
+      expect(
+        logLines()
+          .slice(mark)
+          .filter((line) => line.startsWith('launchctl bo')),
+      ).toEqual([]);
+    }
+
+    // The same section already there: nothing to add.
+    writePolicy({ approvalPage: PAGE });
+    const same = fs.readFileSync(policy, 'utf8');
+    const kept = installPage();
+    expect(fails(kept)).toEqual([]);
+    expect(kept.status).toBe(0);
+    expect(fs.readFileSync(policy, 'utf8')).toBe(same);
+    expect(policyBackups()).toEqual([]);
+
+    // A broker build whose check-policy rejects the section (here: one that does not know the key): the policy
+    // from before the edit is put back and the daemon stays down.
+    writePolicy();
+    const before = fs.readFileSync(policy, 'utf8');
+    const built = path.join(repo, 'packages/devops-broker/dist/policy.js');
+    const source = fs.readFileSync(built, 'utf8');
+    const older = source.replace(", 'approvalPage']", ']');
+    expect(older).not.toBe(source);
+    fs.writeFileSync(built, older);
+    const rejected = installPage();
+    expect(rejected.status).toBe(1);
+    expect(fails(rejected)).toEqual([
+      expect.stringMatching(new RegExp(`^FAIL check-policy rejects ${policy} with the approvalPage section; .* put back`)),
+    ]);
+    expect(fs.readFileSync(policy, 'utf8')).toBe(before);
+    expect(mode(`${DATA}/policy.json`)).toBe(0o644);
+    expect(policyBackups()).toEqual([]);
+    expect(daemonLoaded()).toBe(false);
+    expect(rejected.stdout).toMatch(/^daemon NOT started: 1 check\(s\) failed$/m);
+  });
+
+  it('accepts a listen port the broker itself holds, stops before the daemon when anyone else holds it, and warns a bot-user operator about enrolment', () => {
+    installAndStart();
+
+    const held = installPage(['--operator-is-bot-user'], { SHIM_LSOF_UID: BROKER_ID, SUDO_USER: 'alice' });
+    expect(fails(held)).toEqual([]);
+    expect(held.status).toBe(0);
+    const checklist = held.stdout.slice(held.stdout.indexOf('== ownership and permissions'));
+    expect(checklist).toMatch(new RegExp(`^OK +port ${PAGE_PORT} held by the broker `, 'm'));
+    expect(checklist).toMatch(/^WARN operator is the bot user \(alice\): .*README "Operator account"/m);
+    expect(checklist).toMatch(
+      /^WARN operator is the bot user \(alice\): passkey enrolment is only as trustworthy as that terminal/m,
+    );
+
+    const first = readTls();
+    const mark = logLines().length;
+    const taken = installPage([], { SHIM_LSOF_UID: BOT_UID });
+    expect(taken.status).toBe(1);
+    expect(fails(taken)).toEqual([
+      expect.stringMatching(
+        new RegExp(`^FAIL port ${PAGE_PORT} is held by another process \\(uid ${BOT_UID}\\).*--approval-page-port`),
+      ),
+    ]);
+    expect(daemonLoaded()).toBe(true);
+    expect(
+      logLines()
+        .slice(mark)
+        .filter((line) => line.startsWith('launchctl bo')),
+    ).toEqual([]);
+    expect(readTls().hashes).toEqual(first.hashes);
+    expect(taken.out).not.toMatch(/passkey enrolment/);
+  });
+
+  it('--dry-run with the options says what it would do and changes nothing', () => {
+    const result = installPage(['--dry-run']);
+    expect(fails(result)).toEqual([]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(new RegExp(`^ {2}\\+ .*certificate for ${PAGE_HOST}`, 'm'));
+    expect(result.stdout).toMatch(/^ {2}\+ .*approvalPage/m);
+    expect(fs.readdirSync(prefix)).toEqual([]);
+    expect(logLines().filter((line) => / -create | -a |^chown |^launchctl b|^curl|^lsof|openssl/.test(line))).toEqual(
+      [],
+    );
+  });
+});
+
+describe('approval page documentation', () => {
+  it('has the README section, the options in the usage text and the dashboard note', () => {
+    const readme = fs.readFileSync(README, 'utf8');
+    const start = readme.indexOf('\n## Approval page (#1056)\n');
+    expect(start).toBeGreaterThan(0);
+    const section = readme.slice(start, readme.indexOf('\n## ', start + 4));
+    for (const text of [
+      'home.arpa',
+      '--approval-page-host',
+      '--approval-page-port',
+      '--approval-page-listen',
+      '--renew-approval-cert',
+      'tls/ca.pem',
+      'security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db ca.pem',
+      '/etc/hosts',
+      'passkey enrol',
+      'passkey list',
+      'passkey revoke',
+    ]) {
+      expect(section).toContain(text);
+    }
+    expect(section).not.toMatch(/\*\*/);
+    const dashboard = readme.slice(readme.indexOf('\n## Dashboard listing (#1051)\n'), start);
+    expect(dashboard).toMatch(/approval window/);
+    const usage = spawnSync('/bin/bash', [path.join(INSTALL_SRC, 'install.sh'), '--help'], { encoding: 'utf8' });
+    expect(usage.status).toBe(0);
+    for (const option of ['--approval-page-host', '--approval-page-port', '--approval-page-listen', '--renew-approval-cert']) {
+      expect(usage.stdout).toContain(option);
+    }
+  });
+});
+
 describe.skipIf(process.platform !== 'darwin')('devops-broker uninstall.sh', SLOW, () => {
   function uninstall(extra: string[] = []): Run {
     return runScript('uninstall.sh', ['--prefix', prefix, ...extra]);
   }
+
+  it('keeps tls/ with the rest of the data, and --purge removes it and says the CA is still trusted elsewhere', () => {
+    expect(installPage().status).toBe(3);
+    const ca = at(`${TLS}/ca.pem`);
+    const stale = at('/usr/local/libexec/.soma-devops-ca.stale1');
+    fs.mkdirSync(stale, { mode: 0o700 });
+    fs.writeFileSync(path.join(stale, 'ca.key'), 'left by a killed run\n', { mode: 0o600 });
+
+    const plain = uninstall();
+    expect(fails(plain)).toEqual([]);
+    expect(plain.status).toBe(0);
+    expect(fs.existsSync(ca)).toBe(true);
+    expect(fs.existsSync(at(`${TLS}/key.pem`))).toBe(true);
+    expect(mode(TLS)).toBe(0o700);
+    // What a killed installer run could have left of a CA is removed with the code.
+    expect(fs.existsSync(stale)).toBe(false);
+    expect(plain.out).not.toMatch(/login keychain/);
+
+    const purge = uninstall(['--purge']);
+    expect(fails(purge)).toEqual([]);
+    expect(purge.status).toBe(0);
+    expect(fs.existsSync(at(DATA))).toBe(false);
+    expect(purge.stdout).toMatch(/approval page CA .* login keychain/);
+  });
 
   it('refuses --purge-user without --purge and --force-unrevoked without --purge', () => {
     const user = uninstall(['--purge-user']);
