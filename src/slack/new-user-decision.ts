@@ -301,10 +301,12 @@ export function newUserApproval(userId: string, userName: string, createdAt: num
     kind: 'new_user',
     card: 'permission',
     title: '새 사용자 접근 요청',
+    summary: `\`${userName || userId}\` 님을 사용자로 추가`,
     description: `${userName || userId} 님이 봇 사용을 요청했습니다. 승인하면 바로 사용할 수 있고, 거부하면 요청이 지워집니다.`,
     tool: 'new_user',
     rows: { 사용자: userId, ...(userName ? { 이름: userName } : {}) },
     risk: 'low',
+    batch: { approve: 'approve', deny: 'deny' },
     requesterId: userId,
     createdAt,
   };
