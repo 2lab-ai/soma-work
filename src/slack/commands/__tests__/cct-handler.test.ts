@@ -164,7 +164,6 @@ describe('CctHandler — Wave 5', () => {
   it('cct usage (no name) fetches usage for the active cct slot with oauth attachment', async () => {
     const fetchAndStoreUsage = vi.fn(async (_keyId: string) => ({
       fetchedAt: '2026-04-18T03:42:00Z',
-      fiveHour: { utilization: 42, resetsAt: new Date(Date.now() + 3 * 3_600_000).toISOString() },
       sevenDay: { utilization: 17, resetsAt: new Date(Date.now() + 5 * 86_400_000).toISOString() },
     }));
     const { CctHandler } = await loadHandlerWithMockTm({
@@ -191,7 +190,7 @@ describe('CctHandler — Wave 5', () => {
     expect(msg).toContain('(cct)');
     // M1-S2 — renderUsageLines now emits the shared formatUsageBar progress-bar
     // rows: `<label>   <bar> <pct>% · resets in …`.
-    expect(msg).toMatch(/5h\s+[█░]+\s+42%/);
+    expect(msg).not.toMatch(/5h\s/); // no 5-hour window since 2026-11
     expect(msg).toMatch(/7d\s+[█░]+\s+17%/);
     expect(msg).toContain('resets in');
   });
@@ -204,7 +203,7 @@ describe('CctHandler — Wave 5', () => {
     // Slack command surface. Only the Refresh-buttons admin path may force.
     const fetchAndStoreUsage = vi.fn(async (_keyId: string) => ({
       fetchedAt: '2026-04-18T03:42:00Z',
-      fiveHour: { utilization: 10, resetsAt: new Date(Date.now() + 3 * 3_600_000).toISOString() },
+      sevenDay: { utilization: 10, resetsAt: new Date(Date.now() + 3 * 86_400_000).toISOString() },
     }));
     const { CctHandler } = await loadHandlerWithMockTm({
       tokens: [{ keyId: 'slot-1', name: 'active', kind: 'cct' as const, status: 'healthy' }],
@@ -240,7 +239,6 @@ describe('CctHandler — Wave 5', () => {
   it('cct usage <name> looks up slot by name and calls fetchAndStoreUsage', async () => {
     const fetchAndStoreUsage = vi.fn(async (_keyId: string) => ({
       fetchedAt: '2026-04-18T03:42:00Z',
-      fiveHour: { utilization: 50, resetsAt: new Date(Date.now() + 2 * 3_600_000).toISOString() },
       sevenDay: { utilization: 25, resetsAt: new Date(Date.now() + 3 * 86_400_000).toISOString() },
     }));
     // Build a snapshot where BOTH slots carry oauthAttachment so the lookup
@@ -307,7 +305,7 @@ describe('CctHandler — Wave 5', () => {
     expect(fetchAndStoreUsage).toHaveBeenCalledWith('slot-2');
     expect(say.calls[0].text).toContain('Usage for *secondary*');
     // M1-S2 — migrated to the shared formatUsageBar progress-bar format.
-    expect(say.calls[0].text).toMatch(/5h\s+[█░]+\s+50%/);
+    expect(say.calls[0].text).not.toMatch(/5h\s/);
     expect(say.calls[0].text).toMatch(/7d\s+[█░]+\s+25%/);
   });
 
@@ -709,14 +707,14 @@ describe('renderUsageLines', () => {
       { name: 'x', kind: 'cct' },
       {
         fetchedAt: '2026-04-18T00:00:00Z',
-        fiveHour: { utilization: 42.34, resetsAt: '2026-04-18T03:45:00Z' },
         sevenDay: { utilization: 1, resetsAt: '2026-04-25T00:00:00Z' },
+        sevenDaySonnet: { utilization: 42.34, resetsAt: '2026-04-25T00:00:00Z' },
       },
       now,
     );
     expect(out).toContain('Usage for *x* (cct)');
     // M1-S2 — renderUsageLines now shares `formatUsageBar`.
-    expect(out).toMatch(/5h\s+[█░]+\s+42%/);
+    expect(out).toMatch(/7d-sonnet\s+[█░]+\s+42%/);
     expect(out).toMatch(/7d\s+[█░]+\s+1%/);
   });
 
@@ -727,11 +725,11 @@ describe('renderUsageLines', () => {
       { name: 'x', kind: 'cct' },
       {
         fetchedAt: '2026-04-18T00:00:00Z',
-        fiveHour: { utilization: 75, resetsAt: '2026-04-18T03:45:00Z' },
+        sevenDay: { utilization: 75, resetsAt: '2026-04-25T00:00:00Z' },
       },
       now,
     );
-    expect(out).toMatch(/5h\s+[█░]+\s+75%/);
+    expect(out).toMatch(/7d\s+[█░]+\s+75%/);
   });
 });
 
@@ -829,12 +827,12 @@ describe('CctHandler — cct auto (#749)', () => {
   });
 
   // ── 2: rotated (live, normal — from set) ──────────────────────────
-  it('rotated normal — emits :repeat: with 5h/7d % and resets-Δ', async () => {
+  it('rotated normal — emits :repeat: with 7d % and resets-Δ (no 5h since 2026-11)', async () => {
     const { CctHandler } = await loadHandlerForAuto({
       outcome: {
         kind: 'rotated',
-        from: { keyId: 'k1', name: 'old', fiveHourUtilization: 40, sevenDayUtilization: 50 },
-        to: candidate({ name: 'new', fiveHour: 80, sevenDay: 60 }),
+        from: { keyId: 'k1', name: 'old', sevenDayUtilization: 50 },
+        to: candidate({ name: 'new', sevenDay: 60 }),
         debug: emptyDebug(),
       },
     });
@@ -842,8 +840,8 @@ describe('CctHandler — cct auto (#749)', () => {
     await new CctHandler().execute({ user: adminUser, channel: 'C', threadTs: 'T', text: 'cct auto', say: say.fn });
     const t = say.calls[0].text;
     expect(t).toContain(':repeat: Auto-rotated *old* → *new*');
-    expect(t).toContain('80.0%'); // pct(80) pin — store-SSOT percent form (#781)
-    expect(t).toContain('60.0%');
+    expect(t).toContain('60.0%'); // pct(60) pin — store-SSOT percent form (#781)
+    expect(t).not.toContain('5h');
     expect(t).toMatch(/7d resets/);
   });
 
@@ -853,7 +851,7 @@ describe('CctHandler — cct auto (#749)', () => {
       outcome: {
         kind: 'rotated',
         from: null,
-        to: candidate({ name: 'first', fiveHour: 10, sevenDay: 20 }),
+        to: candidate({ name: 'first', sevenDay: 20 }),
         debug: emptyDebug(),
       },
     });
@@ -925,7 +923,7 @@ describe('CctHandler — cct auto (#749)', () => {
     const debug = {
       ...emptyDebug(),
       rejected: [
-        { keyId: 'k1', name: 'cct1', reason: 'over-five-hour-threshold' as const },
+        { keyId: 'k1', name: 'cct1', reason: 'over-seven-day-threshold' as const },
         { keyId: 'k2', name: 'cct2', reason: 'auth-unhealthy' as const },
       ],
     };
@@ -936,7 +934,7 @@ describe('CctHandler — cct auto (#749)', () => {
     await new CctHandler().execute({ user: adminUser, channel: 'C', threadTs: 'T', text: 'cct auto', say: say.fn });
     const t = say.calls[0].text;
     expect(t).toContain(':warning: No eligible candidate. See debug:');
-    expect(t).toContain('• cct1 (k1): rejected (over-five-hour-threshold)');
+    expect(t).toContain('• cct1 (k1): rejected (over-seven-day-threshold)');
     expect(t).toContain('• cct2 (k2): rejected (auth-unhealthy)');
   });
 
@@ -978,7 +976,7 @@ describe('CctHandler — cct auto (#749)', () => {
         kind: 'dry-run',
         would: 'rotate',
         from: { keyId: 'k1', name: 'cur' },
-        to: candidate({ name: 'best', fiveHour: 30, sevenDay: 40 }),
+        to: candidate({ name: 'best', sevenDay: 40 }),
         debug: emptyDebug(),
       },
     });
@@ -996,7 +994,7 @@ describe('CctHandler — cct auto (#749)', () => {
         kind: 'dry-run',
         would: 'rotate',
         from: null,
-        to: candidate({ name: 'first', fiveHour: 10, sevenDay: 10 }),
+        to: candidate({ name: 'first', sevenDay: 10 }),
         debug: emptyDebug(),
       },
     });
@@ -1012,7 +1010,7 @@ describe('CctHandler — cct auto (#749)', () => {
         kind: 'dry-run',
         would: 'noop',
         from: { keyId: 'k1', name: 'cur' },
-        to: candidate({ name: 'cur', fiveHour: 40, sevenDay: 50 }),
+        to: candidate({ name: 'cur', sevenDay: 50 }),
         debug: emptyDebug(),
       },
     });
@@ -1053,7 +1051,6 @@ describe('CctHandler — cct auto (#749)', () => {
         enabled: true, // ← force-on; AUTO_ROTATE_ENABLED gates only the hourly tick
         dryRun: false,
         thresholds: {
-          fiveHourMax: expect.any(Number),
           sevenDayMax: expect.any(Number),
         },
         usageMaxAgeMs: expect.any(Number),
@@ -1061,7 +1058,7 @@ describe('CctHandler — cct auto (#749)', () => {
       // Mirror the production wiring at src/index.ts:160-177 — usageMaxAgeMs
       // must be 2× the usage refresh interval. Read defaults from config.
       const { config } = await import('../../../config');
-      expect(opts.thresholds.fiveHourMax).toBe(config.autoRotate.fiveHourMax);
+      expect(opts.thresholds).not.toHaveProperty('fiveHourMax');
       expect(opts.thresholds.sevenDayMax).toBe(config.autoRotate.sevenDayMax);
       expect(opts.usageMaxAgeMs).toBe(2 * config.usage.refreshIntervalMs);
     } finally {
@@ -1083,7 +1080,7 @@ describe('CctHandler — cct auto (#749)', () => {
         kind: 'dry-run',
         would: 'noop',
         from: { keyId: 'k1', name: 'cur' },
-        to: candidate({ name: 'cur', fiveHour: 40, sevenDay: 50 }),
+        to: candidate({ name: 'cur', sevenDay: 50 }),
         debug: emptyDebug(),
       },
     });
@@ -1098,21 +1095,20 @@ describe('CctHandler — cct auto (#749)', () => {
   });
 
   // ── 18: pct formatter pin — 80 → "80.0%", undefined → "—" (#781) ──
-  it('pct formatter pin: 80 → "80.0%", undefined → "—"', async () => {
+  it('pct formatter pin: undefined → "—"', async () => {
     const { CctHandler } = await loadHandlerForAuto({
       outcome: {
         kind: 'rotated',
-        from: { keyId: 'k1', name: 'old', fiveHourUtilization: undefined, sevenDayUtilization: undefined },
-        to: candidate({ name: 'new', fiveHour: 80, sevenDay: undefined }),
+        from: { keyId: 'k1', name: 'old', sevenDayUtilization: undefined },
+        to: candidate({ name: 'new', sevenDay: undefined }),
         debug: emptyDebug(),
       },
     });
     const say = makeSayCct();
     await new CctHandler().execute({ user: adminUser, channel: 'C', threadTs: 'T', text: 'cct auto', say: say.fn });
     const t = say.calls[0].text;
-    // The rotated message includes `5h N% / 7d M%` taken from the *target*
-    // candidate, not from `from`. Pin both edge cases at once.
-    expect(t).toContain('5h 80.0%');
+    // The rotated message includes `7d M%` taken from the *target*
+    // candidate, not from `from`.
     expect(t).toContain('7d —');
   });
 
@@ -1126,7 +1122,7 @@ describe('CctHandler — cct auto (#749)', () => {
       outcome: {
         kind: 'rotated',
         from: { keyId: 'k1', name: 'old' },
-        to: candidate({ name: 'new', fiveHour: 50, sevenDay: 50 }),
+        to: candidate({ name: 'new', sevenDay: 50 }),
         debug: emptyDebug(),
       },
     });
@@ -1148,7 +1144,7 @@ describe('CctHandler — cct auto (#749)', () => {
 function emptyDebug(): import('../../../oauth/auto-rotate').RotationDebug {
   return {
     evaluatedAt: '2026-04-27T00:00:00.000Z',
-    thresholds: { fiveHourMax: 80, sevenDayMax: 90 },
+    thresholds: { sevenDayMax: 90 },
     activeKeyId: undefined,
     candidates: [],
     rejected: [],
@@ -1157,7 +1153,6 @@ function emptyDebug(): import('../../../oauth/auto-rotate').RotationDebug {
 
 function candidate(opts: {
   name: string;
-  fiveHour: number;
   sevenDay: number | undefined;
   resetsAt?: string;
 }): import('../../../oauth/auto-rotate').RotationCandidate {
@@ -1167,7 +1162,6 @@ function candidate(opts: {
     name: opts.name,
     sevenDayResetsAt: resetsAt,
     sevenDayResetsAtMs: new Date(resetsAt).getTime(),
-    fiveHourUtilization: opts.fiveHour,
     // RotationCandidate types `sevenDayUtilization` as required `number`;
     // for pct-formatter "—" tests we cast undefined deliberately.
     sevenDayUtilization: opts.sevenDay as unknown as number,

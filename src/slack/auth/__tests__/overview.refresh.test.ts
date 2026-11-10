@@ -49,7 +49,7 @@ vi.mock('../../../token-manager', () => ({
             activeLeases: [],
             usage: {
               fetchedAt: new Date().toISOString(),
-              fiveHour: { utilization: mocks.utilization, resetsAt: '2030-01-01T00:00:00Z' },
+              sevenDay: { utilization: mocks.utilization, resetsAt: '2030-01-01T00:00:00Z' },
             },
           },
         ]),
@@ -100,7 +100,7 @@ beforeEach(() => {
   mocks.fetchUsage.mockImplementation(async () => {
     expect(mocks.acked).toBe(true);
     mocks.utilization = 42;
-    return { 'slot-8': { fiveHour: { utilization: 42 } } };
+    return { 'slot-8': { sevenDay: { utilization: 42 } } };
   });
 });
 

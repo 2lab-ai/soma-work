@@ -52,7 +52,6 @@ function statusWith(saveMode: unknown) {
         group: 'claude',
         status: 'ok',
         order: 1,
-        five_hour: { utilization: 0.5, resets_at: NOW_S + 3600, resets_in_secs: 3600 },
         seven_day: { utilization: 0.1, resets_at: NOW_S + 86400, resets_in_secs: 86400 },
       },
       {
@@ -62,7 +61,6 @@ function statusWith(saveMode: unknown) {
         status: 'ok',
         order: 2,
         blocked: 'saved · 7d resets in 4d4h',
-        five_hour: { utilization: 0.1, resets_at: NOW_S + 3600, resets_in_secs: 3600 },
         seven_day: { utilization: 0.1, resets_at: NOW_S + 86400 * 4, resets_in_secs: 86400 * 4 },
       },
     ],

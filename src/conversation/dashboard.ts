@@ -6440,12 +6440,12 @@ ui-breadcrumbs.pa-path { flex: 1 1 auto; min-width: 0; }
 .slide-panel[data-read="1"] .panel-title-row > .panel-head-back { display: inline-flex; }
 .panel-title-row > .panel-title-act[aria-busy="true"] { opacity: .5; cursor: progress; }
 /* ── VIEW MODE (SSOT 2026-11-01) — 미니멀, the default: the board, and in a detail card the task list and the
-   chat. The page's extras (stats, capacity, the defaults, the board's user picker on the viewer's own board) step
-   aside — the CRON lane stays (#1080: the cron jobs are seen in both modes) — admin write mode stays: answering an admin approval needs it; the detail card's top keeps its header (title · status · Slack · Stop) and what needs the user
+   chat. The page's extras (stats, the defaults, the board's user picker on the viewer's own board) step
+   aside — the CRON lane stays (#1080: the cron jobs are seen in both modes), LLM capacity stays (owner 2026-11-10:
+   minimal shows it too, folded to its chip until opened) — admin write mode stays: answering an admin approval needs it; the detail card's top keeps its header (title · status · Slack · Stop) and what needs the user
    (approvals, the question), and gives the rest to the task list and the chat. Hidden here, never removed:
    어드밴스드 (body[data-view-mode="advanced"]) shows all of it again. ── */
 body[data-view-mode="minimal"] #stats,
-body[data-view-mode="minimal"] #capacity,
 body[data-view-mode="minimal"] #topbar-defaults,
 body[data-view-mode="minimal"][data-board-mine] #user-select,
 body[data-view-mode="minimal"] #lifecycle-btn { display: none !important; }
@@ -22186,24 +22186,21 @@ function capClockLabel(atSec, nowMs) {
   if (d.toDateString() === n.toDateString()) return hm;
   return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + hm;
 }
-// A unit's state from its own fields (review R1): counted / blocked / unmeasured5h / now —
-// binding only says which window binds first (5h or 7d). Held accounts are the element's
-// paused, the ones left out its excluded; a counted, blocked one is limited.
+// A unit's state from its own fields (review R1): counted / blocked / now. Held accounts are the
+// element's paused, the ones left out its excluded; a counted, blocked one is limited.
 function capUnitState(u) {
   if (!u.counted) return u.excluded === 'held' ? 'paused' : 'excluded';
   if (u.blocked) return 'limited';
-  if (u.unmeasured5h) return 'unmeasured';
   return Number(u.now) > 0 ? 'available' : 'spent';
 }
 // Why, as the element's reason keys (it says them in Korean); a block it has no word for is
-// 차단. A usable, spent or unmeasured account has none: its state word says it.
+// 차단. A usable or spent account has none: its state word says it.
 function capReason(u) {
   var b = u.blocks || {};
   if (u.excluded === 'held') return u.held === 'paused' ? 'paused' : u.held === 'auth' ? 'auth' : u.held === 'saved' ? '세이브 모드' : 'held';
   if (u.excluded === 'noMeasure') return 'noMeasure';
   if (u.excluded === 'unknownTier') return 'unknownTier';
   if (b.weekly) return 'weekly';
-  if (b.fiveHour) return '5h';
   if (b.scopedUntil) return 'model';
   if (b.cooldownUntil) return 'cooldown';
   return u.blocked ? '차단' : '';
@@ -22222,22 +22219,23 @@ function capDupNames(g) {
 // stop follow it to its new place in a new response — except in a pool that shows a name twice
 // (masked a***; the raw email never reaches the client): there its id carries the response's
 // fetch time and place, so it matches nothing in the next response and the card closes instead
-// of showing another account (final review R3). An assumed tier reads "x20 가정".
+// of showing another account (final review R3). An assumed tier reads "x20 가정". The element
+// names an account's usable-now share fiveHour (its card reads it as 지금, beside 주); there is
+// no 5-hour window (2026-11), so it carries the weekly share unless a block holds the account back.
 function capAccount(u, i, mint) {
   var t = CAP_TIERS[u.tier];
   var a = { id: mint ? mint + '|' + i + '|' + u.name : u.name, name: u.name, state: capUnitState(u), fiveHour: u.now, weekly: u.week };
   var why = capReason(u);
   if (why) a.reason = why;
   if (u.returnAt) a.returnAt = u.returnAt;
-  if (u.binding) a.binding = u.binding;
   if (u.tierAssumed) { a.tier = t ? t.short : 'x20'; a.tierAssumed = true; }
   else if (t) a.tier = t.label;
   if (u.estimated) a.estimated = true;
   return a;
 }
-// The capacity view as the element's data: groups → providers (has5h → two measures, else the
-// weekly one), units → accounts in llmux order, events → refills; the server's own counts for
-// the disclosure line; an unavailable view → its reason in place of the cards.
+// The capacity view as the element's data: groups → providers with the weekly measure only (no
+// 5-hour window since 2026-11, so no 5시간 bar), units → accounts in llmux order, events → refills;
+// the server's own counts for the disclosure line; an unavailable view → its reason in place of the cards.
 function capData(v) {
   var d = { timeUnit: 's', capacityNote: '계정 = 최대 플랜 계정 1개 분량 · llmux', collapsible: true, collapsed: { capacity: !secIsOpen('capacity') } };
   if (v.fetchedAtMs) d.fetchedAt = v.fetchedAtMs / 1000;
@@ -22258,11 +22256,9 @@ function capData(v) {
       countedAccounts: g.countedAccounts,
       excluded: g.excluded,
       estimated: g.estimated,
-      unmeasured5h: g.unmeasured5h,
-      refills: (g.events || []).map(function(e) { return { at: e.at, cause: e.cause, fiveHour: e.dNow, weekly: e.dWeek, account: e.account }; }),
+      refills: (g.events || []).map(function(e) { return { at: e.at, cause: e.cause, weekly: e.dWeek, account: e.account }; }),
       accounts: (g.units || []).map(function(u, i) { return capAccount(u, i, mint); }),
     };
-    if (g.has5h) p.fiveHour = g.now;
     if (g.oldestRefreshAt) p.measuredAt = g.oldestRefreshAt;
     return p;
   });

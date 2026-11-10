@@ -98,13 +98,14 @@ describe('fetchUsage', () => {
     expect(headers['anthropic-beta']).toBe('oauth-2025-04-20');
 
     expect(result.snapshot.fetchedAt).toBe('2026-04-18T12:00:00.000Z');
-    expect(result.snapshot.fiveHour).toEqual({ utilization: 25, resetsAt: '2026-04-18T17:00:00Z' });
+    // No 5-hour window since 2026-11: a five_hour the server still sends is not kept.
+    expect(result.snapshot).not.toHaveProperty('fiveHour');
     expect(result.snapshot.sevenDay).toEqual({ utilization: 50, resetsAt: '2026-04-25T00:00:00Z' });
     expect(result.snapshot.sevenDaySonnet).toEqual({ utilization: 10, resetsAt: '2026-04-25T00:00:00Z' });
     expect(result.nextFetchAllowedAtMs).toBe(Date.now() + 2 * 60 * 1000);
   });
 
-  it('parses a 200 response with only five_hour present', async () => {
+  it('a 200 response with only five_hour present yields a snapshot with no window', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -117,7 +118,7 @@ describe('fetchUsage', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const result = await fetchUsage('access-abc');
-    expect(result.snapshot.fiveHour).toEqual({ utilization: 33, resetsAt: '2026-04-18T17:00:00Z' });
+    expect(result.snapshot).not.toHaveProperty('fiveHour');
     expect(result.snapshot.sevenDay).toBeUndefined();
     expect(result.snapshot.sevenDaySonnet).toBeUndefined();
   });

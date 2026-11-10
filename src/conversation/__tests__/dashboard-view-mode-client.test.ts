@@ -464,11 +464,16 @@ describe('T4 — minimal: the detail card is the task list and the chat', () => 
   const minimalRule = (sel: string) =>
     new RegExp(`body\\[data-view-mode="minimal"\\] ${sel.replace(/[.*+?^${}()|[\]\\#]/g, '\\$&')}[,\\s{]`);
 
-  it('the page’s extras step aside: stats, capacity, the defaults, the user picker, admin write mode', () => {
-    for (const sel of ['#stats', '#capacity', '#topbar-defaults']) expect(CSS, sel).toMatch(minimalRule(sel));
+  it('the page’s extras step aside: stats, the defaults, the user picker, admin write mode', () => {
+    for (const sel of ['#stats', '#topbar-defaults']) expect(CSS, sel).toMatch(minimalRule(sel));
     // #1080 — the CRON lane stays: minimal shows the cron jobs too.
     expect(CSS).not.toMatch(minimalRule('#cron-lane'));
     expect(CSS).not.toMatch(/body\[data-view-mode="minimal"\][^{,]*#cron-(lane|aq)\b/);
+  });
+
+  it('LLM capacity stays in minimal too (owner 2026-11-10: 미니멈 모드에도 llm 가용량)', () => {
+    expect(CSS).not.toMatch(minimalRule('#capacity'));
+    expect(CSS).not.toMatch(/body\[data-view-mode="minimal"\][^{,]*#capacity(-aq)?\b/);
   });
 
   it('the detail card’s top keeps the header and what needs the user; info · goal · artifacts · agents are closed tabs, the model stays (1안, #805)', () => {

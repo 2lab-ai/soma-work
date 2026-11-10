@@ -94,25 +94,23 @@ function tosBadge(slot: AuthKey): string {
 const PROGRESS_BAR_CELLS = 10;
 
 /**
- * Label column width — right-padded so three stacked rows (`5h`, `7d`,
+ * Label column width — right-padded so the stacked rows (`7d`,
  * `7d-sonnet`) line up under one another. Matches the longest supported
  * label (`7d-sonnet` = 9 chars).
  */
 const USAGE_LABEL_WIDTH = 9;
 
-/** Narrow alphabet for the usage-bar label. */
-export type UsageWindowLabel = '5h' | '7d' | '7d-sonnet';
+/** Narrow alphabet for the usage-bar label. There is no 5-hour window (2026-11). */
+export type UsageWindowLabel = '7d' | '7d-sonnet';
 
 /** Full window duration per label (ms). Used to scale the remaining-bar. */
 const WINDOW_DURATION_MS: Record<UsageWindowLabel, number> = {
-  '5h': 5 * 3_600_000,
   '7d': 7 * 86_400_000,
   '7d-sonnet': 7 * 86_400_000,
 };
 
 /** Right-padded label per type — mirrors the earlier `padUsageLabel(label)`. */
 const LABEL_PADDED: Record<UsageWindowLabel, string> = {
-  '5h': '5h'.padEnd(USAGE_LABEL_WIDTH),
   '7d': '7d'.padEnd(USAGE_LABEL_WIDTH),
   '7d-sonnet': '7d-sonnet'.padEnd(USAGE_LABEL_WIDTH),
 };
@@ -183,8 +181,7 @@ function cooldownColor(remainingMs: number): string {
  *   `<padded_label> (no data)` — sentinel form when `util` is undefined.
  *
  * The remaining-bar is scaled against the window duration (`WINDOW_DURATION_MS`)
- * so a 7d window with 3d left is a 3/7 ≈ 43% bar, and a 5h window with 30m
- * left is a 30/300 = 10% bar. This gives operators a visual hint of how
+ * so a 7d window with 3d left is a 3/7 ≈ 43% bar. This gives operators a visual hint of how
  * much of the window has elapsed alongside the raw duration.
  *
  * The legacy `· expires in X` suffix was removed in this commit — the new
@@ -326,7 +323,7 @@ function emailSuffix(slot: AuthKey): string {
 const USAGE_STALE_WARN_MS = 10 * 60 * 1000;
 
 /**
- * Build the three usage-panel rows (5h / 7d / 7d-sonnet) as a single
+ * Build the usage-panel rows (7d / 7d-sonnet) as a single
  * context block. Returns `null` when the slot has no usage data — callers
  * simply skip the panel in that case (no placeholder rendered).
  *
@@ -342,9 +339,6 @@ const USAGE_STALE_WARN_MS = 10 * 60 * 1000;
  */
 function buildUsagePanelBlock(usage: UsageSnapshot, nowMs: number, keyId: string, state?: SlotState): ZBlock | null {
   const rows: string[] = [];
-  if (usage.fiveHour) {
-    rows.push(formatUsageBar(usage.fiveHour.utilization, usage.fiveHour.resetsAt, nowMs, '5h'));
-  }
   if (usage.sevenDay) {
     rows.push(formatUsageBar(usage.sevenDay.utilization, usage.sevenDay.resetsAt, nowMs, '7d'));
   }
@@ -395,11 +389,11 @@ function buildUsagePanelBlock(usage: UsageSnapshot, nowMs: number, keyId: string
 
 /**
  * Cooldown trigger — the reason a slot is currently parked. Priority order
- * `7d > 5h > manual` is the user-facing intent: "biggest bucket first".
- * Callers surface only the highest-priority trigger on the badge; the
- * `rate-limited via <source>` segment still carries the source separately.
+ * `7d > manual`: the weekly budget first. Callers surface only the
+ * highest-priority trigger on the badge; the `rate-limited via <source>`
+ * segment still carries the source separately. (No 5-hour window since 2026-11.)
  */
-export type CooldownSource = 'seven_day' | 'five_hour' | 'manual';
+export type CooldownSource = 'seven_day' | 'manual';
 
 export interface CooldownInfo {
   /** True when any trigger fires. False ⇒ healthy cooldown-free slot. */
@@ -434,8 +428,7 @@ function isUtilizationFull(util: number | undefined): boolean {
 
 /**
  * OAuth-slot cooldown — utilization-first, with `cooldownUntil` as a
- * lower-priority fallback. Priority: 7d full > 5h full >
- * cooldownUntil(future) > healthy.
+ * lower-priority fallback. Priority: 7d full > cooldownUntil(future) > healthy.
  *
  * "Full" is evaluated by {@link isUtilizationFull} — `util >= 100` against
  * the percent-form store SSOT (see #685/#701).
@@ -453,7 +446,7 @@ function isUtilizationFull(util: number | undefined): boolean {
  * ordering.
  *
  * The `manual` source intentionally renders as a bare "Cooldown <dur>"
- * label (no 5h/7d marker) — the SDK 429 doesn't disclose which window
+ * label (no 7d marker) — the SDK 429 doesn't disclose which window
  * triggered it, so guessing would be misleading.
  */
 function computeUsageCooldown(state: SlotState | undefined, nowMs: number): CooldownInfo {
@@ -463,12 +456,6 @@ function computeUsageCooldown(state: SlotState | undefined, nowMs: number): Cool
     const resets = new Date(sevenDay.resetsAt).getTime();
     const remaining = Number.isFinite(resets) ? Math.max(0, resets - nowMs) : 0;
     return { inCooldown: true, remainingMs: remaining, source: 'seven_day' };
-  }
-  const fiveHour = state.usage?.fiveHour;
-  if (fiveHour && isUtilizationFull(fiveHour.utilization)) {
-    const resets = new Date(fiveHour.resetsAt).getTime();
-    const remaining = Number.isFinite(resets) ? Math.max(0, resets - nowMs) : 0;
-    return { inCooldown: true, remainingMs: remaining, source: 'five_hour' };
   }
   // Codex P1 follow-up (#679): SDK 429 → state.cooldownUntil is still
   // honored by the runtime picker (isEligible/rotateOnRateLimit). When
@@ -502,9 +489,8 @@ function computeManualCooldown(state: SlotState | undefined, nowMs: number): Coo
  *   - refresh_failed | revoked       → :black_circle: Unavailable
  *   - healthy + no cooldown          → :large_green_circle: Healthy
  *   - healthy + 7d cooldown          → :{color}: 7d Cooldown <dur>
- *   - healthy + 5h cooldown          → :{color}: 5h Cooldown <dur>
  *   - healthy + manual cooldown      → :{color}: Cooldown <dur>
- *   (5h/7d label suppressed for manual since it is not budget-window-tied.)
+ *   (7d label suppressed for manual since it is not budget-window-tied.)
  *
  * Color is determined by `cooldownColor(remainingMs)`.
  */
@@ -514,7 +500,6 @@ function authStateBadge(authState: AuthState, cooldown: CooldownInfo): string {
   const color = cooldownColor(cooldown.remainingMs);
   let sourceLabel: string;
   if (cooldown.source === 'seven_day') sourceLabel = '7d Cooldown';
-  else if (cooldown.source === 'five_hour') sourceLabel = '5h Cooldown';
   else sourceLabel = 'Cooldown';
   return `${color} ${sourceLabel} ${formatUsageResetDelta(cooldown.remainingMs)}`;
 }
@@ -636,7 +621,7 @@ function buildSlotStatusLine(
     const cooldown = computeUsageCooldown(state, nowMs);
     segments.push(authStateBadge(authState, cooldown));
     // #723 +B: rate-limit source context for the OAuth bare 'Cooldown' badge.
-    // 5h/7d cooldowns self-explain (the badge names the window); only the
+    // 7d cooldowns self-explain (the badge names the window); only the
     // manual source (SDK 429 → cooldownUntil) needs this context. Gated on
     // healthy so the Unavailable branch below isn't mixed with two reasons.
     if (authState === 'healthy' && cooldown.source === 'manual') {
@@ -683,13 +668,13 @@ function buildSlotStatusLine(
 /**
  * Render a single slot row.
  *
- * Layout (subscription tier + 5h/7d/OAuth expiry for EVERY slot):
+ * Layout (subscription tier + 7d/OAuth expiry for EVERY slot):
  *   1. section  — multi-line header: name+kind+tier+ToS-risk on line 1,
  *                  healthy/rate-limited/OAuth-expiry segments on line 2.
  *   2. actions  — per-slot buttons: Activate (if not active & not api_key),
  *                  Refresh (if attached), Attach|Detach OAuth (setup source),
  *                  Rename, Remove.
- *   3. context  — usage panel (5h/7d/7d-sonnet progress bars), only when
+ *   3. context  — usage panel (7d/7d-sonnet progress bars), only when
  *                  the slot is attached and has a persisted usage snapshot.
  *   4. divider  — stripped by `buildCctCardBlocks` when the total block
  *                  count would exceed Slack's 50-block hard cap.
@@ -715,7 +700,7 @@ export function buildSlotRow(
   // Line 1: identity (name · kind · tier · ToS-risk). Tier + active marker
   // are now emitted for EVERY slot — #653 M2 removes the prior isActive
   // gating so inactive rows carry the full signal (user specifically wants
-  // tier + 5h + 7d always visible, not just on the currently-selected row).
+  // tier + 7d always visible, not just on the currently-selected row).
   //
   // #803 — readonly viewers see the SAME identity / status / usage rows
   // as admin viewers. Only the per-slot mutating actions are removed

@@ -37,13 +37,13 @@ interface UsageWindowRaw {
   resets_at?: unknown;
 }
 
+/** The windows read. A `five_hour` key the server may still send is ignored (no 5h window since 2026-11). */
 interface UsageResponseRaw {
-  five_hour?: UsageWindowRaw | null;
   seven_day?: UsageWindowRaw | null;
   seven_day_sonnet?: UsageWindowRaw | null;
 }
 
-function parseWindow(raw: UsageWindowRaw | null | undefined): UsageSnapshot['fiveHour'] | undefined {
+function parseWindow(raw: UsageWindowRaw | null | undefined): UsageSnapshot['sevenDay'] | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const util = raw.utilization;
   const resets = raw.resets_at;
@@ -102,8 +102,6 @@ export async function fetchUsage(accessToken: string): Promise<UsageFetchResult>
   const snapshot: UsageSnapshot = {
     fetchedAt: new Date().toISOString(),
   };
-  const five = parseWindow(parsed.five_hour);
-  if (five) snapshot.fiveHour = five;
   const seven = parseWindow(parsed.seven_day);
   if (seven) snapshot.sevenDay = seven;
   const sevenSonnet = parseWindow(parsed.seven_day_sonnet);

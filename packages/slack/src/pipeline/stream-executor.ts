@@ -137,8 +137,8 @@ type SaveContextResultPayload = any;
 type SessionResourceUpdateRequest = any;
 type SessionUsage = any;
 
+/** The slot's usage read. There is no 5-hour window (2026-11); a stored `fiveHour` is not read. */
 interface UsageSnapshot {
-  fiveHour?: { utilization?: number };
   sevenDay?: { utilization?: number };
 }
 
@@ -768,7 +768,6 @@ interface StreamExecuteParams {
  * as raw API percent 0..100 per #685).
  */
 interface UsagePercentSnapshot {
-  fiveHour?: number;
   sevenDay?: number;
 }
 
@@ -801,17 +800,12 @@ export function normalizeUtilizationToPercent(raw: number | undefined): number |
 /**
  * Map slot-keyed {@link UsageSnapshot} to the narrow 0..100-percent shape
  * the Slack footer / turn-notifier already know how to render. Returns
- * `null` when the snapshot has neither window populated.
+ * `null` when the snapshot has no weekly window.
  */
 function toUsagePercentSnapshot(snap: UsageSnapshot | null | undefined): UsagePercentSnapshot | null {
   if (!snap) return null;
-  const fiveHour = normalizeUtilizationToPercent(snap.fiveHour?.utilization);
   const sevenDay = normalizeUtilizationToPercent(snap.sevenDay?.utilization);
-  if (fiveHour === undefined && sevenDay === undefined) return null;
-  const out: UsagePercentSnapshot = {};
-  if (fiveHour !== undefined) out.fiveHour = fiveHour;
-  if (sevenDay !== undefined) out.sevenDay = sevenDay;
-  return out;
+  return sevenDay === undefined ? null : { sevenDay };
 }
 
 /**
@@ -3322,11 +3316,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               : undefined,
           contextUsageTokens,
           contextWindowSize: contextWindow,
-          fiveHourUsage: usageAfter?.fiveHour,
-          fiveHourDelta:
-            typeof usageAfter?.fiveHour === 'number' && typeof usageBefore?.fiveHour === 'number'
-              ? Math.round(usageAfter.fiveHour - usageBefore.fiveHour)
-              : undefined,
           sevenDayUsage: usageAfter?.sevenDay,
           sevenDayDelta:
             typeof usageAfter?.sevenDay === 'number' && typeof usageBefore?.sevenDay === 'number'
@@ -5978,26 +5967,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       lines.push(`Ctx ${this.renderBar(contextAfter)} ${contextAfter.toFixed(1)}%${contextDeltaSuffix}`);
     }
 
-    const fiveHour = data.usageAfter?.fiveHour;
     const sevenDay = data.usageAfter?.sevenDay;
-    const fiveHourDelta =
-      typeof fiveHour === 'number' && typeof data.usageBefore?.fiveHour === 'number'
-        ? Math.round(fiveHour - data.usageBefore.fiveHour)
-        : undefined;
     const sevenDayDelta =
       typeof sevenDay === 'number' && typeof data.usageBefore?.sevenDay === 'number'
         ? Math.round(sevenDay - data.usageBefore.sevenDay)
         : undefined;
 
-    const fiveHourPercent = this.formatPercent(fiveHour);
     const sevenDayPercent = this.formatPercent(sevenDay);
-    const fiveHourDeltaText = this.formatSignedDelta(fiveHourDelta, 0) ?? '--';
     const sevenDayDeltaText = this.formatSignedDelta(sevenDayDelta, 0) ?? '--';
 
-    lines.push(
-      `5h  ${this.renderBar(fiveHour ?? 0)} ${fiveHourPercent} ${fiveHourDeltaText}  ` +
-        `7d ${this.renderBar(sevenDay ?? 0, 8)} ${sevenDayPercent} ${sevenDayDeltaText}`,
-    );
+    lines.push(`7d ${this.renderBar(sevenDay ?? 0, 8)} ${sevenDayPercent} ${sevenDayDeltaText}`);
 
     // Per-request tool statistics
     if (data.toolStats) {

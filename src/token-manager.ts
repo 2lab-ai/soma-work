@@ -73,9 +73,10 @@ const DEFAULT_LEASE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const REFRESH_BUFFER_MS = 7 * 60 * 60 * 1000; // 7 hours
 const DEFAULT_COOLDOWN_MS = 60 * 60 * 1000; // 60 minutes
 const DEFAULT_REAPER_INTERVAL_MS = 30 * 1000; // 30 seconds
-// Anthropic's shortest rate-limit bucket is 5h. If a stale `rateLimitedAt`
-// survives past this window with no cooldownUntil to close it, treat it as
-// stale and refresh on the next hint — prevents indefinite stickiness.
+// If a `rateLimitedAt` survives this long with no cooldownUntil to close it,
+// treat it as stale and refresh on the next hint — prevents indefinite
+// stickiness. (Once the length of Anthropic's 5-hour bucket; that bucket is
+// gone since 2026-11, the hygiene window stays.)
 const RATE_LIMIT_WINDOW_MS = 5 * 60 * 60 * 1000;
 
 /** Month abbreviation → 0-based month index — preserved for legacy cooldown-string parsing. */
@@ -815,7 +816,7 @@ export class TokenManager {
       const state = snap.state[currentId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
       // rate-limit timestamp hygiene: overwrite if previous window has
       // expired (no cooldownUntil or cooldownUntil has passed), OR if the
-      // existing `rateLimitedAt` has aged past RATE_LIMIT_WINDOW_MS (5h)
+      // existing `rateLimitedAt` has aged past RATE_LIMIT_WINDOW_MS
       // without a cooldown closing it — prevents a stale timestamp from
       // sticking forever when the cooldown field is absent.
       const prevUntilMs = state.cooldownUntil ? new Date(state.cooldownUntil).getTime() : 0;
@@ -2005,27 +2006,22 @@ export class TokenManager {
       // #878 — Usage refresh clears stale cooldown (extends #876).
       //
       // Anthropic's /api/oauth/usage is the ground truth. A slot is "really
-      // rate-limited" iff at least one of `fiveHour` / `sevenDay` reports
-      // `utilization >= 100`. Anything else — absent window, finite value
-      // below 100 — means the slot has capacity on that window. If NEITHER
-      // window is capped, any persisted `cooldownUntil` is stale (a one-off
+      // rate-limited" iff `sevenDay` reports `utilization >= 100` (there is no
+      // 5-hour window since 2026-11). Anything else — absent window, finite
+      // value below 100 — means the slot has capacity. If the weekly window
+      // is not capped, any persisted `cooldownUntil` is stale (a one-off
       // 429 whose reset has already happened, or a residual write from the
       // now-reverted #804 propagation) and we clear it so the slot becomes
       // eligible on the next pick.
       //
       // Absent-window semantics: Anthropic omits a window from the payload
       // when there's no recent activity on it — that's effectively 0%, not
-      // "we don't know". Confirmed via prod where ai3/dev1 had no fiveHour
+      // "we don't know". Confirmed via prod where ai3/dev1 had no window
       // data yet sat stuck in cooldown after #876 shipped.
-      const fiveHourUtil = settled.snapshot.fiveHour?.utilization ?? 0;
       const sevenDayUtil = settled.snapshot.sevenDay?.utilization ?? 0;
-      const fiveHourCapped = Number.isFinite(fiveHourUtil) && fiveHourUtil >= 100;
-      const sevenDayCapped = Number.isFinite(sevenDayUtil) && sevenDayUtil >= 100;
-      const reallyCapped = fiveHourCapped || sevenDayCapped;
+      const reallyCapped = Number.isFinite(sevenDayUtil) && sevenDayUtil >= 100;
       if (st.cooldownUntil !== undefined && !reallyCapped) {
-        logger.info(
-          `fetchAndStoreUsage: clearing stale cooldown on ${keyId} (fiveHour=${fiveHourUtil}% sevenDay=${sevenDayUtil}%)`,
-        );
+        logger.info(`fetchAndStoreUsage: clearing stale cooldown on ${keyId} (sevenDay=${sevenDayUtil}%)`);
         st.cooldownUntil = undefined;
         st.rateLimitedAt = undefined;
         st.rateLimitSource = undefined;

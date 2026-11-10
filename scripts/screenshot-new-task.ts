@@ -89,7 +89,6 @@ const CONTEXT = {
         level: 0.72,
         best: 0.9,
         windows: [
-          { label: '5h', remaining: 0.9 },
           { label: '7d', remaining: 0.76 },
           { label: '7d-opus', remaining: 0.72 },
         ],

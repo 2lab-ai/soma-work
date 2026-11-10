@@ -46,7 +46,7 @@ describe('#701: usage panel fetched <ago> suffix', () => {
       activeLeases: [],
       usage: {
         fetchedAt: new Date(NOW - 2 * 60_000).toISOString(),
-        fiveHour: { utilization: 42, resetsAt: new Date(NOW + 3 * 3_600_000).toISOString() },
+        sevenDay: { utilization: 42, resetsAt: new Date(NOW + 3 * 3_600_000).toISOString() },
       },
     };
     const text = buildPanelText(state);
@@ -62,7 +62,7 @@ describe('#701: usage panel fetched <ago> suffix', () => {
       activeLeases: [],
       usage: {
         fetchedAt: new Date(NOW - 2 * 86_400_000).toISOString(),
-        fiveHour: { utilization: 3, resetsAt: new Date(NOW + 3 * 3_600_000).toISOString() },
+        sevenDay: { utilization: 3, resetsAt: new Date(NOW + 3 * 3_600_000).toISOString() },
       },
     };
     const text = buildPanelText(state);
@@ -75,7 +75,7 @@ describe('#701: usage panel fetched <ago> suffix', () => {
       activeLeases: [],
       usage: {
         fetchedAt: new Date(NOW - 9 * 60_000 - 30_000).toISOString(),
-        fiveHour: { utilization: 10, resetsAt: new Date(NOW + 3 * 3_600_000).toISOString() },
+        sevenDay: { utilization: 10, resetsAt: new Date(NOW + 3 * 3_600_000).toISOString() },
       },
     };
     const text = buildPanelText(state);
@@ -89,7 +89,7 @@ describe('#701: usage panel fetched <ago> suffix', () => {
       activeLeases: [],
       usage: {
         fetchedAt: new Date(NOW - 11 * 60_000).toISOString(),
-        fiveHour: { utilization: 10, resetsAt: new Date(NOW + 3 * 3_600_000).toISOString() },
+        sevenDay: { utilization: 10, resetsAt: new Date(NOW + 3 * 3_600_000).toISOString() },
       },
     };
     const text = buildPanelText(state);
@@ -103,7 +103,7 @@ describe('#701: usage panel fetched <ago> suffix', () => {
       activeLeases: [],
       usage: {
         fetchedAt: new Date(NOW - 30 * 60_000).toISOString(),
-        fiveHour: { utilization: 42, resetsAt: new Date(NOW + 3 * 3_600_000).toISOString() },
+        sevenDay: { utilization: 42, resetsAt: new Date(NOW + 3 * 3_600_000).toISOString() },
       },
       lastRefreshFailedAt: failedAt,
       lastRefreshError: { kind: 'rate_limited', status: 429, message: 'Refresh throttled (429)', at: failedAt },
@@ -135,7 +135,7 @@ describe('#701: usage panel fetched <ago> suffix', () => {
       activeLeases: [],
       usage: {
         fetchedAt: new Date(NOW - 30_000).toISOString(),
-        fiveHour: { utilization: 10, resetsAt: new Date(NOW + 3 * 3_600_000).toISOString() },
+        sevenDay: { utilization: 10, resetsAt: new Date(NOW + 3 * 3_600_000).toISOString() },
       },
     };
     const staleState: SlotState = {

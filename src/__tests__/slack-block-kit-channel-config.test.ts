@@ -59,8 +59,6 @@ function makeRichCompleteEvent(overrides: Partial<TurnCompletionEvent> = {}): Tu
     contextUsageDelta: -5.6,
     contextUsageTokens: 160300,
     contextWindowSize: 1000000,
-    fiveHourUsage: 42,
-    fiveHourDelta: 20,
     sevenDayUsage: 55,
     sevenDayDelta: 2,
     toolStats: {
@@ -132,7 +130,7 @@ describe('SlackBlockKitChannel — parity with pre-config hardcoded rendering', 
     expect(getBlocks(api)).toEqual([
       section(`🟢 *작업 완료* — PR #77 리뷰${THREAD_LINK}`),
       context(`\`default\` | \`opus-4.6 | high\` | ${CLOCK}`),
-      context('Ctx ▓▓▓▓░ 160.3k/1M (84.0% used) -5.6 | Dur 17:28 | 5h ▓▓▓░░░ 42% +20 | 7d ▓▓▓▓░░░░ 55% +2'),
+      context('Ctx ▓▓▓▓░ 160.3k/1M (84.0% used) -5.6 | Dur 17:28 | 7d ▓▓▓▓░░░░ 55% +2'),
       context(
         ':wrench: Bash×59: 767.4s | WebFetch×7: 118.2s | send_file:send_document×3: 44.4s | WebSearch×2: 42.5s | Task×2: 17.2s | +4 more',
       ),

@@ -10,7 +10,7 @@
  * dark and 390 light:
  *   M1  a user with no saved choice opens in minimal mode; the top bar's
  *       어드밴스드 toggle reads off (aria-pressed=false)
- *   M2  minimal: no stats strip, no capacity; the board stays, and the CRON lane
+ *   M2  minimal: no stats strip; the board stays, LLM capacity stays (2026-11-10), and the CRON lane
  *       too (#1080) — a cron run waiting on the user is its job's card there
  *   M3  minimal: a card face keeps title · status · time · the task in
  *       progress · a pending question; no tokens · cost · context · agents ·
@@ -515,6 +515,17 @@ function pageLayout(page: Page) {
     return {
       stats: vis('stats'),
       capacitySlot: !!document.getElementById('capacity'),
+      // The mode's CSS must not hide it. Read with [hidden] lifted for the measurement, so the check holds even
+      // where llmux is off or the capacity read failed (review-of-legends P2: a still-[hidden] panel passed trivially).
+      capacityModeHidden: (() => {
+        const el = document.getElementById('capacity');
+        if (!el) return true;
+        const wasHidden = el.hidden;
+        el.hidden = false;
+        const hiddenByMode = getComputedStyle(el).display === 'none';
+        el.hidden = wasHidden;
+        return hiddenByMode;
+      })(),
       cron: Array.from(document.querySelectorAll('ui-agent-inbox.cron-inbox')).some((e) =>
         (e as HTMLElement).checkVisibility(),
       ),
@@ -557,6 +568,7 @@ async function scenario(
     p0.toggle,
   );
   check(!p0.stats && p0.cron, `${tag} M2 minimal hides the stats strip and keeps the CRON lane (#1080)`, p0);
+  check(!p0.capacityModeHidden, `${tag} M2 minimal keeps LLM capacity (2026-11-10)`, p0);
   const cronInLane = await page.evaluate(
     (k) =>
       Array.from(document.querySelectorAll('ui-agent-inbox.cron-inbox')).some(

@@ -30,7 +30,7 @@ export const NEW_TASK_BODY_LIMIT = Math.ceil((NEW_TASK_LIMITS.maxTotalBytes * 4)
 
 /** One usage window of one account, normalised: `remaining` is 0..1, `resetsAt` epoch seconds. */
 export interface UsageWindowView {
-  /** `5h`, `7d`, or a model-scoped weekly window `7d-<scope>` (e.g. `7d-opus`). */
+  /** `7d`, or a model-scoped weekly window `7d-<scope>` (e.g. `7d-opus`). */
   label: string;
   remaining?: number;
   resetsAt?: number;
@@ -63,7 +63,7 @@ export function providerGroupOf(model: string): string {
   return 'claude';
 }
 
-/** Does this window bind the given model? `5h` / `7d` bind every model; `7d-<scope>` only the model it names. */
+/** Does this window bind the given model? `7d` binds every model; `7d-<scope>` only the model it names. */
 function windowApplies(label: string, model: string): boolean {
   if (!label.startsWith('7d-')) return true;
   const scope = label.slice(3).toLowerCase();

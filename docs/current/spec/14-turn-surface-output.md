@@ -98,7 +98,7 @@ from a `TurnCompletionEvent` (`turn-notifier.ts:39`). Categories:
 (`determineTurnCategory`, `turn-notifier.ts:72`). Three themes
 (default / compact / minimal) render section + context blocks: header
 (emoji+label), identity (persona | model | effort | clock), usage (Ctx% bar,
-duration, 5h/7d), tool stats. Posted as a colored **attachment**:
+duration, 7d — the 5h gauge is gone since 2026-11), tool stats. Posted as a colored **attachment**:
 `postMessage(channel, fallbackText, { threadTs, attachments: [{ color, blocks }] })`
 (`slack-block-kit-channel.ts:62`). Turn-end guarantee §C-2: if the snapshot
 misses a 3s race, `end()` returns `{ snapshotResolved: false }` and the caller
