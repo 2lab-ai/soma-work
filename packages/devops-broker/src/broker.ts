@@ -908,7 +908,7 @@ export function createBroker(deps: BrokerDeps): Broker {
     };
     return withApproval(conn, row, card, async (approvalId, row, queued) => {
       // A queued run reads the token again: it may have been rotated since the card was posted.
-      const runToken = queued ? ghToken(args.account) : token;
+      const runToken = queued ? queuedToken(approvalId, args.account) : token;
       let result: GhRunResult;
       try {
         result = await runGh(runToken, args.args);
@@ -1013,7 +1013,7 @@ export function createBroker(deps: BrokerDeps): Broker {
     if (commitMessage !== undefined) options.message = commitMessage;
     return withApproval(conn, row, card, (approvalId, row, queued) => {
       // The merge is pinned to the approved head sha, so GitHub itself refuses a PR that moved while it was queued.
-      const runToken = queued ? ghToken(args.account) : token;
+      const runToken = queued ? queuedToken(approvalId, args.account) : token;
       return githubAdminCall(
         approvalId,
         row,
@@ -1077,15 +1077,26 @@ export function createBroker(deps: BrokerDeps): Broker {
     return ok({ status: result.status, body: result.body });
   }
 
+  /** #1128: a queued run's token, read again (it may have been rotated); the cards say so when it cannot be read. */
+  function queuedToken(approvalId: string, account: string): string {
+    try {
+      return ghToken(account);
+    } catch (err) {
+      postResult(approvalId, '실행 안 함 — 브로커가 토큰을 읽지 못함 (운영자 확인 필요)');
+      throw err;
+    }
+  }
+
   /**
    * #1128: a queued request runs long after its card was posted. The card showed the current state; when GitHub now
    * says otherwise, the change the admin approved is not the one it would make, so nothing is sent.
    */
-  async function stillAsShown<T>(what: string, read: () => Promise<T>, shown: T): Promise<void> {
+  async function stillAsShown<T>(approvalId: string, what: string, read: () => Promise<T>, shown: T): Promise<void> {
     let seen: T;
     try {
       seen = await read();
     } catch (err) {
+      postResult(approvalId, '실행 안 함 — 실행 전에 현재 상태를 다시 읽지 못함');
       if (errorCode(err) === 'upstream-error' || errorCode(err) === 'result-unknown') {
         throw new Refusal(
           'upstream-error',
@@ -1096,6 +1107,7 @@ export function createBroker(deps: BrokerDeps): Broker {
       throw new Refusal('internal', `the current ${what} could not be read again before running; nothing was sent`);
     }
     if (JSON.stringify(seen) !== JSON.stringify(shown)) {
+      postResult(approvalId, '실행 안 함 — 카드를 올린 뒤 현재 상태가 바뀜 (다시 요청 필요)');
       throw new Refusal(
         'policy-denied',
         `the current ${what} changed after the card was posted, so the approved change is not the one it would make now; nothing was sent — ask again`,
@@ -1168,9 +1180,9 @@ export function createBroker(deps: BrokerDeps): Broker {
       },
     };
     return withApproval(conn, row, card, async (approvalId, row, queued) => {
-      const runToken = queued ? ghToken(name) : token;
+      const runToken = queued ? queuedToken(approvalId, name) : token;
       const readNow = () => deps.githubAdmin.getMembership(runToken, org, args.user);
-      if (queued) await stillAsShown('organization membership', readNow, current);
+      if (queued) await stillAsShown(approvalId, 'organization membership', readNow, current);
       return githubAdminCall(
         approvalId,
         row,
@@ -1239,9 +1251,9 @@ export function createBroker(deps: BrokerDeps): Broker {
       },
     };
     return withApproval(conn, row, card, async (approvalId, row, queued) => {
-      const runToken = queued ? ghToken(name) : token;
+      const runToken = queued ? queuedToken(approvalId, name) : token;
       const readNow = () => deps.githubAdmin.getCollaboratorPermission(runToken, owner, repo, args.user);
-      if (queued) await stillAsShown('repository access', readNow, current);
+      if (queued) await stillAsShown(approvalId, 'repository access', readNow, current);
       return githubAdminCall(
         approvalId,
         row,

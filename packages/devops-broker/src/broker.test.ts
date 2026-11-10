@@ -1630,8 +1630,9 @@ describe('queued runs re-check what the card showed (#1128)', () => {
   /** Approvals that queue every request at once and hand the queued run to the test. */
   function queueingApprovals() {
     let run: QueuedRun | undefined;
+    const base = fakeApprovals('denied');
     const approvals = {
-      ...fakeApprovals('denied').approvals,
+      ...base.approvals,
       async request(_req: ApprovalRequest, hooks: Parameters<Approvals['request']>[1]): Promise<ApprovalOutcome> {
         hooks.onPending({
           approvalId: 'appr-0001',
@@ -1643,7 +1644,7 @@ describe('queued runs re-check what the card showed (#1128)', () => {
         return { outcome: 'queued', approvalId: 'appr-0001', queuedUntil: '2030-01-01T00:00:00.000Z' };
       },
     } as unknown as Approvals;
-    return { approvals, run: () => run };
+    return { approvals, run: () => run, results: base.results };
   }
   const consume = async () => {};
   const queuePolicy = () => ({ ...policy, queueTimeoutSeconds: 3600 });
@@ -1666,6 +1667,8 @@ describe('queued runs re-check what the card showed (#1128)', () => {
     expect(changed?.message).toMatch(/changed after the card was posted/);
     expect(github.setMembership).not.toHaveBeenCalled();
     expect(readSecret.mock.calls.length).toBe(reads + 1);
+    // The admins' cards say nothing ran (they would otherwise stay "승인됨 · 실행 중").
+    await waitFor(() => q.results.some((line) => line.includes('현재 상태가 바뀜')));
 
     // Unchanged: sent.
     const done = await run?.('appr-0001', consume);
