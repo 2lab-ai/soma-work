@@ -515,10 +515,16 @@ function pageLayout(page: Page) {
     return {
       stats: vis('stats'),
       capacitySlot: !!document.getElementById('capacity'),
-      // Not display:none'd by the mode (the element itself stays [hidden] where llmux is off).
+      // The mode's CSS must not hide it. Read with [hidden] lifted for the measurement, so the check holds even
+      // where llmux is off or the capacity read failed (review-of-legends P2: a still-[hidden] panel passed trivially).
       capacityModeHidden: (() => {
         const el = document.getElementById('capacity');
-        return !!el && !el.hidden && getComputedStyle(el).display === 'none';
+        if (!el) return true;
+        const wasHidden = el.hidden;
+        el.hidden = false;
+        const hiddenByMode = getComputedStyle(el).display === 'none';
+        el.hidden = wasHidden;
+        return hiddenByMode;
       })(),
       cron: Array.from(document.querySelectorAll('ui-agent-inbox.cron-inbox')).some((e) =>
         (e as HTMLElement).checkVisibility(),
