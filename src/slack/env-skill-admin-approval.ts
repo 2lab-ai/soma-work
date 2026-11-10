@@ -33,6 +33,8 @@ export function envSkillApproval(req: PermissionRequest): AdminApproval {
     kind: 'env_skill',
     card: 'question',
     title: `환경 스킬 \`${req.skillName}\` 실행 요청`,
+    // #1131 — what a batch approval does: the narrowest grant (this thread, once).
+    summary: `환경 스킬 \`${req.skillName}\` 1회 실행 허용 — #${req.channel}`,
     description: '허용하면 요청한 턴을 다시 보내 이어서 실행합니다. 1회 허용은 요청한 스레드에서만 유효합니다.',
     choices: [
       { id: VALUE_KIND_ENV_SKILL_ONCE, label: '✅ 1회 허용 (이 스레드)' },
@@ -42,6 +44,8 @@ export function envSkillApproval(req: PermissionRequest): AdminApproval {
     ],
     // The narrowest grant, as the DM's primary button.
     recommendedId: VALUE_KIND_ENV_SKILL_ONCE,
+    risk: 'medium',
+    batch: { approve: VALUE_KIND_ENV_SKILL_ONCE, deny: VALUE_KIND_ENV_SKILL_DENY },
     requesterId: req.requesterId,
     place: { channel: req.channel, ...(req.threadTs ? { threadTs: req.threadTs } : {}) },
     createdAt: req.createdAt,
