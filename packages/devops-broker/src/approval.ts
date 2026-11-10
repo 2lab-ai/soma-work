@@ -527,7 +527,7 @@ export function createApprovals(opts: {
       (async () => {
         await mutate((draft) => {
           const record = recordOf(draft, entry.approvalId);
-          if (record?.status === 'pending') record.queued = true;
+          if (record !== undefined && !record.resulted) record.queued = true;
         });
         await ledger.append({
           event: 'approval.queued',
@@ -722,7 +722,10 @@ export function createApprovals(opts: {
       if (!entry.waiters.delete(waiter)) return;
       let reason = 'requester-gone';
       if (signal?.reason === QUEUE_ABORT_REASON && hooks.queued !== undefined && queueMs !== null) {
-        if (entry.status === 'pending' && (entry.queued !== undefined || queuedCount() < maxQueued)) {
+        // `settled` here = a decision is being recorded right now (settle clears the waiters when it hands out the
+        // outcome): the request stays with it, and settle runs it or stores its result.
+        const deciding = entry.status === 'settled';
+        if (deciding || (entry.status === 'pending' && (entry.queued !== undefined || queuedCount() < maxQueued))) {
           if (entry.queued === undefined) {
             entry.queued = hooks.queued;
             markQueued(entry);
@@ -758,11 +761,13 @@ export function createApprovals(opts: {
     }
   }
 
-  function finish(entry: Entry, decision: Decision): Promise<void> {
-    if (entry.status !== 'pending') return Promise.resolve();
+  /** Resolves with what the decision became (an approval can turn expired or cancelled), or undefined. */
+  function finish(entry: Entry, decision: Decision): Promise<Decision['kind'] | undefined> {
+    if (entry.status !== 'pending') return Promise.resolve(undefined);
     const work = settle(entry, decision).catch(() => undefined);
-    finishing.add(work);
-    void work.then(() => finishing.delete(work));
+    const done = work.then(() => undefined);
+    finishing.add(done);
+    void done.then(() => finishing.delete(done));
     return work;
   }
 
@@ -771,7 +776,7 @@ export function createApprovals(opts: {
     coolDowns.set(entry.sessionKey, clock() + limits.abandonedCoolDownMs);
   }
 
-  async function settle(entry: Entry, reported: Decision): Promise<void> {
+  async function settle(entry: Entry, reported: Decision): Promise<Decision['kind']> {
     entry.status = 'settled';
     active.delete(entry.approvalId);
     const approvalId = entry.approvalId;
@@ -861,8 +866,17 @@ export function createApprovals(opts: {
         });
       }
     }
+    if (entry.queued !== undefined && queuedRun === undefined) {
+      // An identical request that still waited live took the outcome: the queued one is owed no result, and a
+      // restart must not report it as a cut run.
+      await mutate((draft) => {
+        const record = recordOf(draft, approvalId);
+        if (record !== undefined) record.resulted = true;
+      }).catch(() => undefined);
+    }
     const status: CardStatus = final.kind === 'approved' || final.kind === 'denied' ? final : { kind: final.kind };
     updateCards(approvalId, entry.posts, renderCardStatus(entry.card, status));
+    return final.kind;
   }
 
   function dmChannel(admin: string): Promise<string> {
@@ -1382,13 +1396,19 @@ export function createApprovals(opts: {
             await refuse('tool-not-allowed');
             continue;
           }
-          await finish(
+          const wanted = d.action === 'approve' ? 'approved' : 'denied';
+          const final = await finish(
             entry,
             d.action === 'approve'
               ? { kind: 'approved', by: actor, via: 'dashboard' }
               : { kind: 'denied', by: actor, via: 'dashboard' },
           );
-          outcomes.push({ approvalId: d.approvalId, outcome: 'accepted' });
+          if (final === wanted) {
+            outcomes.push({ approvalId: d.approvalId, outcome: 'accepted' });
+          } else {
+            // Past its end (`approved-after-expiry`) or not recorded (state or ledger write failed): nothing took.
+            await refuse(final === 'expired' ? 'not-pending' : 'failed');
+          }
         } catch (err) {
           log(`dashboard decision on approval ${d.approvalId} failed (${errorCode(err)})`);
           outcomes.push({ approvalId: d.approvalId, outcome: 'refused', reason: 'failed' });

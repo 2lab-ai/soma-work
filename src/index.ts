@@ -2108,9 +2108,9 @@ async function start() {
     });
     const devopsResultsWatch = startBrokerResultsWatch({
       socketPath: devopsBrokerSocketPath(CONFIG_FILE),
-      sessionExists: (sessionKey) => {
+      sessionAccepts: (sessionKey, slackUserId) => {
         const s = devopsResultsRegistry.getSessionByKey(sessionKey);
-        return Boolean(s?.channelId) && !s?.terminated;
+        return Boolean(s?.channelId) && !s?.terminated && s?.ownerId === slackUserId;
       },
       deliver: (sessionKey, text, done) => devopsResultsDelivery.deliver(sessionKey, text, done),
     });

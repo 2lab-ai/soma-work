@@ -234,7 +234,11 @@ boundary needs a decision surface the broker serves itself (#1056).
 ## Queued results (#1128)
 
 `results` returns the outcome of every queued request (done with the tool's result, failed, denied, expired,
-cancelled) until `results_ack` drops it; unacknowledged results go after 7 days. A broker restart expires the
+cancelled), oldest first and at most 4 MiB per answer (`more: true` when there are others), until `results_ack`
+drops it; unacknowledged results go after 7 days. Like `approvals`, both ops answer any process in the socket's
+group, which includes the bot user and so the model: it can read every queued request's output and acknowledge a
+result away before the bot hands it to its session. The output is what the live call would have returned to the
+same user. A broker restart expires the
 cards that were queued (nothing ran) and says so in their results; a run the restart cut is reported as failed
 with an unknown outcome.
 
