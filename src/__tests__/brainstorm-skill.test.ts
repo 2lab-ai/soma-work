@@ -156,6 +156,7 @@ describe('T5 — per-field generation and picking, with the stated defaults', ()
     expect(skill).toMatch(/^- `top`[^\n]*2,000 이상/m);
     expect(skill).toMatch(/N의 3배 이상/);
     expect(skill).toMatch(/`top\.md`에 따로 쓰고/);
+    expect(skill).toMatch(/전체 모드는 `top\.md`의 N개를 싣는다/);
   });
 });
 
@@ -301,6 +302,17 @@ describe('merge.mjs — pools, ids, dedupe and survival numbers', { timeout: 30_
     expect(JSON.parse(readPluginFile(path.join(run, 'stats.json'))).total.generated).toBe(2);
   });
 
+  it('treats only the first text line as a possible lead-in, and trims a JSON idea before the period', () => {
+    const run = runWith({
+      'A1__luna.txt': ['아이디어 목록:', '실패 조건은 이렇게 정한다:', '{"idea":"얼음 바닥이 무너진다. "}'].join('\n'),
+    });
+    merge(run);
+    expect(poolLines(run, 'A')).toEqual([
+      'A1-002 [luna] 실패 조건은 이렇게 정한다:',
+      'A1-003 [luna] 얼음 바닥이 무너진다',
+    ]);
+  });
+
   it('reads cells in field then lens order, so A2 comes before A10', () => {
     const run = runWith({ 'A10__haiku.txt': '같은 생각 하나\n', 'A2__luna.txt': '같은 생각 하나\n' });
     merge(run);
@@ -311,6 +323,12 @@ describe('merge.mjs — pools, ids, dedupe and survival numbers', { timeout: 30_
   it('prints nothing for --count when no cell has been written yet', () => {
     const run = runWith({});
     expect(merge(run, '--count')).toBe('');
+  });
+
+  it('fails for a run folder that has no raw folder, also with --count (a mistyped path is not "nothing written")', () => {
+    const missing = path.join(os.tmpdir(), 'brainstorm-no-such-run');
+    expect(() => merge(missing, '--count')).toThrow(/merge: no raw folder/);
+    expect(() => merge(missing)).toThrow(/merge: no raw folder/);
   });
 
   it('removes the pool of a field whose raw files are gone', () => {

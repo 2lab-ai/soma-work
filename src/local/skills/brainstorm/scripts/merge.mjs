@@ -39,7 +39,8 @@ if (!(threshold > 0 && threshold <= 1)) fail('--threshold must be a number in (0
 
 const rawDir = path.join(runDir, 'raw');
 const FILE = /^([A-Z])([1-9]\d*)__([a-z0-9-]+)\.txt$/;
-const names = fs.existsSync(rawDir) ? fs.readdirSync(rawDir) : [];
+if (!fs.existsSync(rawDir)) fail(`no raw folder at ${rawDir}`);
+const names = fs.readdirSync(rawDir);
 const cellOrder = (name) => {
   const [, field, lens] = name.match(FILE);
   return [field, Number(lens)];
@@ -80,6 +81,7 @@ function ideaOf(line) {
   text = text
     .replace(/^(?:[-*•]|\d+[.)])\s+/, '')
     .replace(/\s+/g, ' ')
+    .trim()
     .replace(/[.。]$/, '')
     .trim();
   return keyOf(text) ? text : '';
@@ -88,11 +90,14 @@ function ideaOf(line) {
 /** The ideas of one raw file with their line numbers. Counting and merging both read through here. */
 function ideasOf(name) {
   const ideas = [];
+  let first = true;
   for (const [index, line] of fs.readFileSync(path.join(rawDir, name), 'utf8').split('\n').entries()) {
     const idea = ideaOf(line);
-    // A first line that ends in a colon is a lead-in ("Here are 50 ideas:"), not an idea.
-    if (!idea || (!ideas.length && /[:：]$/.test(idea))) continue;
-    ideas.push({ line: index + 1, idea });
+    if (!idea) continue;
+    // Only the file's first text line can be a lead-in ("Here are 50 ideas:"); later colon lines are ideas.
+    const leadIn = first && /[:：]$/.test(idea);
+    first = false;
+    if (!leadIn) ideas.push({ line: index + 1, idea });
   }
   return ideas;
 }
