@@ -44,9 +44,12 @@ import type { CronExecutionRecord, CronJob, CronJobPatch } from 'somalib/cron/cr
 import type { DecisionFields } from 'somalib/model-commands/session-types';
 import { normalizeDecisionFields } from 'somalib/model-commands/validator';
 import {
+  type AdminApprovalResolution,
   type AdminApprovalSnapshot,
   adminApprovalSnapshot,
   answerAdminApproval,
+  answerAdminApprovals,
+  MAX_BATCH_ANSWERS,
   onAdminApprovalsChanged,
   startAdminApprovalWatch,
   stopAdminApprovalWatch,
@@ -1858,6 +1861,31 @@ export function adminApprovalsForWire(snapshot: AdminApprovalSnapshot): AdminApp
     pending: snapshot.pending.map((a) => ({ ...a, id: composeSessionKey(a.id) })),
     resolved: snapshot.resolved.map((r) => ({ ...r, id: composeSessionKey(r.id) })),
   };
+}
+
+/** #1131 — one item of an answer-batch reply: the wire id it was sent with and what came of it. */
+export type AdminApprovalBatchWireResult =
+  | { id: string; ok: true; outcome: 'approved' | 'denied' }
+  | { id: string; ok: false; reason: string; resolution?: AdminApprovalResolution };
+
+/**
+ * #1131 — an answer-batch body's items, or null when it is not 1–{@link MAX_BATCH_ANSWERS} `{ id, choiceId }`
+ * string pairs (the same bounds as one answer) with every id once.
+ */
+export function adminBatchItemsOf(raw: unknown): { id: string; choiceId: string }[] | null {
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_BATCH_ANSWERS) return null;
+  const out: { id: string; choiceId: string }[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') return null;
+    const { id, choiceId } = item as { id?: unknown; choiceId?: unknown };
+    if (typeof id !== 'string' || !id || id.length > 300) return null;
+    if (typeof choiceId !== 'string' || !choiceId || choiceId.length > 64) return null;
+    if (seen.has(id)) return null;
+    seen.add(id);
+    out.push({ id, choiceId });
+  }
+  return out;
 }
 
 /** Push the admin approvals to admin viewers only — never on the shared board. */
@@ -4572,6 +4600,76 @@ export async function registerDashboardRoutes(
         reply.status(404).send({ error: '만료되었거나 더 이상 없는 요청입니다' });
       } catch (error) {
         logger.error('Error answering an admin approval from the dashboard', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
+  // #1131 — several requests decided in one pass: the same gate as one answer, each item through its kind's own
+  // decision (the registry groups them), one result per item in the order sent.
+  server.post<{ Body: { items?: unknown } }>(
+    '/api/dashboard/admin-approvals/answer-batch',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const items = adminBatchItemsOf((request.body || {}).items);
+      if (!items) {
+        reply.status(400).send({ error: `items must be 1-${MAX_BATCH_ANSWERS} { id, choiceId } pairs, each id once` });
+        return;
+      }
+      const auth = (request as { authContext?: { mode?: string; userId?: string; isAdmin?: boolean } }).authContext;
+      const actor = auth?.userId;
+      const modeHeader = request.headers?.['x-admin-mode'];
+      const adminModeOn = Array.isArray(modeHeader) ? modeHeader[0] === 'on' : modeHeader === 'on';
+      if (!actor || !isSlackAdmin(auth)) {
+        reply.status(403).send({ error: 'Slack 계정으로 로그인한 관리자만 응답할 수 있습니다' });
+        return;
+      }
+      if (!adminModeOn) {
+        reply.status(403).send({ error: '관리자 모드를 켜야 응답할 수 있습니다' });
+        return;
+      }
+      // Another instance's request is refused on its own; the rest are answered here.
+      const results: AdminApprovalBatchWireResult[] = new Array(items.length);
+      const local: { index: number; id: string; choiceId: string }[] = [];
+      const localIds = new Set<string>();
+      for (let i = 0; i < items.length; i++) {
+        const localId = stripSelfInstancePrefix(items[i].id);
+        if (localId === null) {
+          results[i] = { id: items[i].id, ok: false, reason: 'other_instance' };
+          continue;
+        }
+        if (localIds.has(localId)) {
+          reply.status(400).send({ error: 'each id may appear once' });
+          return;
+        }
+        localIds.add(localId);
+        local.push({ index: i, id: localId, choiceId: items[i].choiceId });
+      }
+      try {
+        const answered = local.length
+          ? await answerAdminApprovals(local.map((l) => ({ id: l.id, choiceId: l.choiceId })), actor)
+          : [];
+        // Every admin viewer sees the outcomes at once (the store watch would see them within a second).
+        void broadcastAdminApprovals();
+        answered.forEach((a, j) => {
+          const wireId = items[local[j].index].id;
+          const r = a.result;
+          results[local[j].index] = r.ok
+            ? { id: wireId, ok: true, outcome: r.outcome }
+            : {
+                id: wireId,
+                ok: false,
+                reason: r.reason,
+                ...(r.resolution ? { resolution: { ...r.resolution, id: wireId } } : {}),
+              };
+        });
+        logger.info('Admin approvals answered from the dashboard in one pass', {
+          actor,
+          items: local.map((l, j) => ({ id: l.id, choiceId: l.choiceId, ok: answered[j]?.result.ok })),
+        });
+        reply.send({ results });
+      } catch (error) {
+        logger.error('Error answering admin approvals in one pass from the dashboard', error);
         reply.status(500).send({ error: 'Internal Server Error' });
       }
     },
