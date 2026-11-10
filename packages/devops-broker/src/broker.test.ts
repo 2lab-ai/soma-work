@@ -1487,3 +1487,140 @@ describe('admin op: approvals (#1051)', () => {
     expect(ledgerRows().find((row) => row.event === 'admin-request')).toMatchObject({ outcome: 'bad-request' });
   });
 });
+
+describe('queued requests and dashboard decisions (#1128, #1129)', () => {
+  function realApprovals(over: Partial<BrokerPolicy>) {
+    const slack: SlackApi = {
+      openDm: async (user) => `D${user.slice(1)}`,
+      postMessage: async () => ({ ts: '1700000000.000100' }),
+      updateMessage: async () => {},
+      getReactions: async () => [],
+    };
+    const store = new StateStore<ApprovalState>(path.join(paths.stateDir, 'approvals.json'), initialApprovalState());
+    const ledger = new Ledger(paths.ledgerFile);
+    const brokerPolicy: BrokerPolicy = { ...policy, ...over };
+    return {
+      store,
+      ledger,
+      brokerPolicy,
+      make: () => createApprovals({ policy: brokerPolicy, slack, store, ledger, pollIntervalMs: 20, log: () => {} }),
+    };
+  }
+
+  function admin(op: string, args: unknown): Promise<Message[]> {
+    seq += 1;
+    return send({ v: 1, id: `adm-${seq}`, op, args });
+  }
+
+  it('answers queued when the live wait ends; a dashboard approval then runs it, and the bot reads and acknowledges the result', async () => {
+    // A 1 s live wait; the broker's clock runs 25 s ahead, so its answer deadline (live end + 25 s) is ~1 s away.
+    const real = realApprovals({
+      approvalTimeoutSeconds: 1,
+      queueTimeoutSeconds: 3600,
+      dashboardDecisionTools: ['gh_write'],
+    });
+    await real.store.load();
+    const approvals = real.make();
+    const gh = fakeGhRunner();
+    await start({
+      policy: real.brokerPolicy,
+      ghRunner: gh.runner,
+      approvals,
+      ledger: real.ledger,
+      now: () => Date.now() + 25_000,
+    });
+    const messages = await send(request('gh_write', { account: 'member', args: PR_COMMENT }));
+    expect(messages.map((m) => m.type)).toEqual(['pending', 'error']);
+    const pending = messages[0];
+    expect(typeof pending.queuedUntil).toBe('string');
+    expect(terminal(messages)).toMatchObject({ code: 'queued' });
+    expect(String(terminal(messages).message)).toContain(String(pending.queuedUntil));
+    expect(String(terminal(messages).message)).toMatch(/do not ask again/);
+    expect(gh.run).not.toHaveBeenCalled();
+    await waitFor(() => ledgerRows().some((r) => r.event === 'request' && r.tool === 'gh_write'));
+    expect(ledgerRows().find((r) => r.event === 'request' && r.tool === 'gh_write')).toMatchObject({
+      outcome: 'queued',
+    });
+
+    // The listing says it is queued and decidable, with the card's lines.
+    const listed = terminal(await admin('approvals', {}));
+    expect((listed.data as { approvals: Record<string, unknown>[] }).approvals[0]).toMatchObject({
+      approvalId: pending.approvalId,
+      queued: true,
+      decidable: true,
+      argv: PR_COMMENT,
+    });
+
+    const decided = terminal(
+      await admin('decide', {
+        decisions: [{ approvalId: pending.approvalId, digestPrefix: pending.digestPrefix, action: 'approve' }],
+        actor: 'U000ADMIN',
+        reason: 'batch review',
+      }),
+    );
+    expect(decided).toMatchObject({
+      type: 'result',
+      data: { outcomes: [{ approvalId: pending.approvalId, outcome: 'accepted' }] },
+    });
+    await waitFor(() => ledgerRows().some((r) => r.event === 'request.queued-run'));
+    expect(gh.run).toHaveBeenCalledTimes(1);
+    expect(ledgerRows().find((r) => r.event === 'request.queued-run')).toMatchObject({
+      approvalId: pending.approvalId,
+      tool: 'gh_write',
+      outcome: 'ok',
+      exitCode: 0,
+    });
+    expect(ledgerRows().find((r) => r.event === 'admin-request' && r.op === 'decide')).toMatchObject({
+      actor: 'U000ADMIN',
+      reason: 'batch review',
+      accepted: 1,
+      outcome: 'ok',
+    });
+
+    await waitFor(() => approvals.results().length > 0);
+    const results = terminal(await admin('results', {}));
+    expect((results.data as { results: Record<string, unknown>[] }).results).toMatchObject([
+      {
+        approvalId: pending.approvalId,
+        outcome: 'done',
+        via: 'dashboard',
+        decidedBy: 'U000ADMIN',
+        data: { exitCode: 0, stdout: 'out' },
+      },
+    ]);
+    const acked = terminal(await admin('results_ack', { approvalIds: [pending.approvalId] }));
+    expect(acked).toMatchObject({ type: 'result', data: { acked: 1 } });
+    expect((terminal(await admin('results', {})).data as { results: unknown[] }).results).toEqual([]);
+    await approvals.close();
+  });
+
+  it('without the policy switch, a decide is refused per card and nothing runs', async () => {
+    const real = realApprovals({});
+    await real.store.load();
+    const approvals = real.make();
+    const gh = fakeGhRunner();
+    await start({ ghRunner: gh.runner, approvals, ledger: real.ledger });
+    let decided: Message | undefined;
+    const messages = await send(request('gh_write', { account: 'member', args: PR_COMMENT }), (message, socket) => {
+      if (message.type !== 'pending') return;
+      void admin('decide', {
+        decisions: [{ approvalId: message.approvalId, digestPrefix: message.digestPrefix, action: 'approve' }],
+        actor: 'U000ADMIN',
+      }).then((reply) => {
+        decided = terminal(reply);
+        socket.destroy();
+      });
+    });
+    expect(messages[0]).not.toHaveProperty('queuedUntil');
+    expect(decided).toMatchObject({ data: { outcomes: [{ outcome: 'refused', reason: 'dashboard-decisions-off' }] } });
+    expect(gh.run).not.toHaveBeenCalled();
+    await approvals.close();
+  });
+
+  it('a malformed decide is bad-request with a ledger row', async () => {
+    await start();
+    const reply = terminal(await admin('decide', { decisions: [], actor: 'U000ADMIN' }));
+    expect(reply).toMatchObject({ type: 'error', code: 'bad-request' });
+    expect(ledgerRows().find((row) => row.event === 'admin-request')).toMatchObject({ outcome: 'bad-request' });
+  });
+});
