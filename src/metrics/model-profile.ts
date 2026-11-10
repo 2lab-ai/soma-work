@@ -414,6 +414,18 @@ const POLICY_PROFILES: readonly ModelProfile[] = [
     compactHeadroom: DEFAULT_COMPACT_HEADROOM,
   },
   {
+    // grok-4.7 — the representative grok since 2026-11-10 (llmux pin since
+    // 2026-09-23). xAI's window is 500,000 (docs.x.ai model page and the live
+    // cli-chat-proxy /v1/models upper context_windows entry), the same as
+    // 4.6, so the same declared numbers: 477k block, 450k auto-compact.
+    // Declared so a cold start with no catalog snapshot keeps them.
+    modelId: 'grok-4.7',
+    contextWindow: 500_000,
+    sdkBlockingLimit: sdkBlockingLimitFor(500_000),
+    autoCompactTokens: 450_000,
+    compactHeadroom: DEFAULT_COMPACT_HEADROOM,
+  },
+  {
     // Declared, not catalog-derived: a cold start with no catalog snapshot
     // must not downgrade grok-4.6 to the 200k fallback.
     modelId: 'grok-4.6',

@@ -211,7 +211,8 @@ source of truth for any model not listed here:
 | `gpt-6.1-sol` (bare literal only) | 272,000 | 240,000 |
 | `gpt-6.1-terra[1m]` (aliases `terra`, `terra[1m]`) | 1,000,000 | 600,000 |
 | `gpt-6.1-terra` (bare literal only) | 500,000 | 450,000 |
-| `grok-4.6` | 500,000 | 450,000 |
+| `grok-4.7` (the representative grok: dashboard `grok[1m]`, featured model button; `grok` resolves through the llmux catalog to the same pin) | 500,000 | 450,000 |
+| `grok-4.6` (literal id) | 500,000 | 450,000 |
 
 Every `gpt-…[1m]` profile, including future supported models, automatically uses
 Sol's 1M window, 977,000 SDK blocking limit and 600,000 auto-compact default.
@@ -219,10 +220,11 @@ No per-model threshold registration is needed. This policy does not create
 unsupported model variants or change explicitly selected bare model IDs.
 Session overrides still take precedence.
 
-`grok-4.6[1m]` is not a real model — grok has no 1M variant, and llmux forwards
-grok ids verbatim upstream — so it is rejected everywhere a model id is
+`grok-4.7[1m]` / `grok-4.6[1m]` are not real models — xAI's grok window is
+500,000, so a `[1m]` spelling would make the client budget for a window the
+backend does not have — so they are rejected everywhere a model id is
 accepted (model set, session model, `/autocompact`) with a visible
-`use grok-4.6` message rather than being silently rewritten.
+`use grok-4.7` / `use grok-4.6` message rather than being silently rewritten.
 
 `/compact-threshold <percent>` is a **deprecated** compatibility adapter, not a
 second setting: it converts `<percent>` against the *current* model's context

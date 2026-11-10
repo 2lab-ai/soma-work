@@ -3,8 +3,9 @@
  *
  * Only the representative models — the ones with a nickname — can be chosen:
  * opus / fable / sonnet / sol / astra `[1m]` and grok. grok has no 1M variant
- * (llmux forwards grok ids unchanged and `grok-4.6[1m]` is refused), so its
- * representative is `grok-4.6`: a 500k window that auto-compacts at 450k.
+ * (xAI's window is 500k and `grok-*[1m]` is refused), so its representative is
+ * the plain id of the llmux grok pin — `grok-4.7` since 2026-11-10 (was 4.6):
+ * a 500k window that auto-compacts at 450k.
  *
  * A switch makes the new model's auto-compact threshold the session's
  * (`applyModelSwitch` drops a session override). When the context already
@@ -31,7 +32,7 @@ export const REPRESENTATIVE_MODEL_NICKNAMES = [
 ] as const;
 
 /** What each nickname is resolved from (the model alias input). */
-const NICKNAME_INPUT: Record<string, string> = { 'grok[1m]': 'grok-4.6' };
+const NICKNAME_INPUT: Record<string, string> = { 'grok[1m]': 'grok-4.7' };
 
 export interface RepresentativeModel {
   nickname: string;
