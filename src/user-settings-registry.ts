@@ -785,7 +785,7 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
       case 'defaultModel': {
         // A representative nickname (what the menus offer, e.g. grok[1m]) is
         // saved as the model id it stands for — the /z model resolver does not
-        // know every nickname (grok[1m] → grok-4.6 lives in model-switch).
+        // know every nickname (grok[1m] → grok-4.7 lives in model-switch).
         const input = expectString(value, key).trim();
         const rep = deps.listModels(userId).find((m) => m.nickname === input);
         const choice = await deps.resolveModel(rep ? rep.model : input);

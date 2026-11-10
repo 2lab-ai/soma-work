@@ -95,6 +95,11 @@ const fireSettingsInvalidate = invalidator.fire;
 //     200K mode); the `[1m]` spelling carries the declared 750k policy row and
 //     is what the `fable` shorthands select (llmux moved its `fable` alias to
 //     the same id). The 5.1 and 5 ids stay selectable and pinned.
+//   - `grok-4.7` (added 2026-11-10; xAI release 2026-09-21, the llmux grok pin
+//     since 2026-09-23) is the representative grok: the dashboard `grok[1m]`
+//     nickname and the featured model-card button select it. Same 500k
+//     window / 450k auto-compact declared row as 4.6. `grok-4.6` stays
+//     selectable by its literal id.
 //   - `grok-4.6` (added 2026-08-26) is DECLARED here rather than left to the
 //     llmux catalog overlay: a cold start with no catalog snapshot must still
 //     be able to select the model whose 450k auto-compact default is declared
@@ -158,6 +163,7 @@ export const AVAILABLE_MODELS = [
   'gpt-6.1-sol[1m]',
   'gpt-6.1-terra',
   'gpt-6.1-terra[1m]',
+  'grok-4.7',
   'grok-4.6',
 ] as const;
 
@@ -1588,6 +1594,10 @@ export class UserSettingsStore {
         // 1M opt-in of the flagship — a distinct profile (977k blocking limit,
         // 600k auto-compact), not a bigger label on the 372k one.
         return 'GPT-5.6 Sol (1M)';
+      case 'grok-4.7':
+        // The representative grok (llmux pin since 2026-09-23); declared
+        // statically like 4.6 so the label survives a catalog-less cold start.
+        return 'Grok 4.7 (500k)';
       case 'grok-4.6':
         // Declared statically so the label survives a cold start with no llmux
         // catalog snapshot; 500k window / 450k auto-compact (model-profile.ts).

@@ -100,7 +100,7 @@ describe('renderModelCard — catalog models', () => {
 });
 
 describe('FEATURED_ALIASES — grok', () => {
-  it("includes 'grok-4.6' as the featured grok model", () => {
-    expect([...FEATURED_ALIASES]).toContain('grok-4.6');
+  it("includes 'grok-4.7' (the llmux grok pin) as the featured grok model", () => {
+    expect([...FEATURED_ALIASES]).toContain('grok-4.7');
   });
 });

@@ -70,7 +70,7 @@ describe('model-topic.renderModelCard', () => {
 describe('FEATURED_ALIASES constant', () => {
   it('has the exact SSOT order ["fable", "sonnet", "opus", "opus[1m]", "haiku", "grok-4.6"]', () => {
     // The literal Grok id remains resolvable on a catalog-less cold start.
-    expect([...FEATURED_ALIASES]).toEqual(['fable', 'sonnet', 'opus', 'opus[1m]', 'haiku', 'grok-4.6']);
+    expect([...FEATURED_ALIASES]).toEqual(['fable', 'sonnet', 'opus', 'opus[1m]', 'haiku', 'grok-4.7']);
   });
 
   it('renders the featured grok-4.6 button without a catalog snapshot', async () => {

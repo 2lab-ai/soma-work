@@ -104,6 +104,7 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'gpt-6.1-sol[1m]',
       'gpt-6.1-terra',
       'gpt-6.1-terra[1m]',
+      'grok-4.7',
       'grok-4.6',
     ]);
   });
