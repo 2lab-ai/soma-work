@@ -14829,7 +14829,8 @@ function renderCardResume(s, col) {
 }
 
 // The session's actions (spec 13) as data — the same on the open card (kit buttons,
-// sessionActionHtml) and in the panel head (<ui-status-bar>, panelHeadData): ★ Star
+// sessionActionHtml) and in the panel head (<ui-status-bar>, panelHeadData — which leaves the
+// star to the toggle right of the detail card's title, SSOT 2026-11-10 T2): ★ Star
 // (pinned on top, kept alive — starring a sleeping or archived card brings it back),
 // 살리기 on a sleeping or archived card (the conversation continues), then the state
 // action — Stop while a turn runs, else Close; Trash once archived. Owner-gated (the
