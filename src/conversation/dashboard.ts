@@ -5891,7 +5891,7 @@ html[lang="ko"] .lang-toggle .lang-cur[data-lang="ko"], html[lang="en"] .lang-to
    the confirm sheet's rows. Risk takes the status tones: high = fail, medium = wait, low = done. */
 .admin-inbox-headline { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; }
 .admin-notify-toggle[data-state="denied"], .admin-notify-toggle[data-state="unsupported"] { opacity: 0.7; }
-.admin-batch-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 4px 0 8px; position: sticky; top: 0; z-index: 1; background: var(--surface, var(--bg)); }
+.admin-batch-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 4px 0 8px; position: sticky; top: 0; z-index: 1; background: var(--ib-card, var(--surface)); }
 .admin-batch-bar[hidden] { display: none; }
 .admin-batch-count { color: var(--text-secondary); font-size: 12.5px; font-variant-numeric: tabular-nums; }
 .admin-batch-acts { display: inline-flex; gap: 6px; margin-left: auto; }
