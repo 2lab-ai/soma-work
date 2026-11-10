@@ -127,10 +127,10 @@ describe('Dashboard — model picker payload', () => {
     expect(by('opus[1m]').price).toEqual({ input: 4, output: 20 }); // Opus 5.5 official rates
     expect(by('sonnet[1m]').price).toEqual({ input: 3, output: 15 });
     expect(by('astra[1m]').price).toEqual({ input: 10, output: 50 });
-    // grok-4.6 has a registry row since 2026-11-10 (before, it had no price at all).
+    // The representative grok is grok-4.7 since 2026-11-10; it has its own registry row ($2 / $6).
     expect(by('grok[1m]').price).toEqual({ input: 2, output: 6 });
     // The rest of the contract is untouched.
-    expect(by('grok[1m]')).toMatchObject({ model: 'grok-4.6', contextWindow: 500_000, autoCompactTokens: 450_000 });
+    expect(by('grok[1m]')).toMatchObject({ model: 'grok-4.7', contextWindow: 500_000, autoCompactTokens: 450_000 });
   });
 
   it('D6 — a card carries the levels its model runs when the catalog knows the model, nothing otherwise', {
