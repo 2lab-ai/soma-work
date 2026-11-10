@@ -143,11 +143,11 @@ function mapSteerSettlement(m: Record<string, unknown>): AgentStreamEvent[] {
 /**
  * Map a `command_lifecycle`-shaped system frame (user steering).
  *
- * Duck-typed on purpose: SDK 0.3.284 describes these frames in prose
- * (sdk.d.ts:4547) but declares no type for them, so matching a declared
- * shape is impossible. The frame's OWN `uuid` is deliberately NOT used as the
- * send id — that field identifies the frame, not the message whose lifecycle it
- * reports; reading it would fabricate transitions for uuids the host never sent.
+ * Duck-typed on purpose: the SDK describes these frames in prose but declares
+ * no type for them, so matching a declared shape is impossible. The frame's
+ * OWN `uuid` is deliberately NOT used as the send id — that field identifies the
+ * frame, not the message whose lifecycle it reports; reading it would fabricate
+ * transitions for uuids the host never sent.
  */
 function mapCommandLifecycle(m: Record<string, unknown>): AgentStreamEvent[] {
   const uuid = [m.message_uuid, m.command_uuid, m.user_message_uuid].find(
@@ -157,6 +157,33 @@ function mapCommandLifecycle(m: Record<string, unknown>): AgentStreamEvent[] {
   const raw = typeof m.phase === 'string' ? m.phase : typeof m.status === 'string' ? m.status : '';
   const phase = KNOWN_STEER_PHASES.has(raw) ? (raw as 'started' | 'completed' | 'cancelled' | 'discarded') : 'observed';
   return [{ type: 'steer_lifecycle', uuid, phase }];
+}
+
+/**
+ * Map the lifecycle frame as the CLI really sends it (measured on SDK 0.3.321 /
+ * CLI 2.1.321, 2026-11-10): a TOP-LEVEL `type: 'command_lifecycle'` — outside
+ * the SDK's declared message union — naming the send in `command_uuid` and its
+ * step in `state`. Per send: `queued` when the CLI takes the message, `started`
+ * when it hands it to the model (folded into the running turn at a tool-call
+ * boundary, or opening a turn of its own), `completed` when that turn ends,
+ * `cancelled` when it was withdrawn first.
+ *
+ * Only `started` is read as a transition: it is the one signal that says, while
+ * the turn still works, that the model has the message. The other steps carry
+ * the uuid as `observed`, on purpose:
+ *   - `completed` is sent for the message that OPENED the turn too, and a
+ *     consumer reads a `completed` as "this turn folded a steered send in"
+ *     (the turn-end summary's re-judge, #846). The turn's end is the host's own
+ *     settlement frame ({@link mapSteerSettlement}), computed from the result.
+ *   - `cancelled` follows a withdrawal the host itself asked for and is already
+ *     recording (a Cancel, an interrupt's sweep); a second writer would race it.
+ *
+ * As with the system-shaped frame, the frame's own `uuid` is never the send.
+ */
+function mapCliCommandLifecycle(m: Record<string, unknown>): AgentStreamEvent[] {
+  const uuid = typeof m.command_uuid === 'string' && m.command_uuid.length > 0 ? m.command_uuid : undefined;
+  if (!uuid) return [];
+  return [{ type: 'steer_lifecycle', uuid, phase: m.state === 'started' ? 'started' : 'observed' }];
 }
 
 /**
@@ -752,10 +779,14 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
           return mapSystem(message as Extract<SDKMessage, { type: 'system' }>);
         case 'stream_event':
           return mapStreamEvent(message);
-        default:
+        default: {
+          const frame = message as unknown as Record<string, unknown>;
+          // The CLI's lifecycle frame is a frame type of its own, outside the SDK's declared union.
+          if (frame.type === 'command_lifecycle') return mapCliCommandLifecycle(frame);
           // Every other frame type maps to nothing, but a steering stamp on
           // it is still honoured.
-          return steerStartedEventsFor(message as unknown as Record<string, unknown>);
+          return steerStartedEventsFor(frame);
+        }
       }
     },
   };

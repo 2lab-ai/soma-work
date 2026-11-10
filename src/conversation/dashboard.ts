@@ -32,7 +32,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { constants as zlibConstants } from 'node:zlib';
 import { t, tr } from '@soma/common/i18n';
-import type { FollowupItem, FollowupItemState } from '@soma/slack/followup-queue';
+import { type FollowupItem, type FollowupItemState, isFollowupDelivered } from '@soma/slack/followup-queue';
 import type { FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { CommandParser } from '@soma/slack/command-parser';
 import { sumLiveUsage } from '@soma/slack/live-usage';
@@ -1580,13 +1580,26 @@ const FOLLOWUP_SHOWN_FAILED = 5;
 /** A reason that only repeats the state (`steered`) says nothing the state does not. */
 const FOLLOWUP_STATE_ECHO = new Set<string>(['steered', 'consumed']);
 
+/**
+ * A note whose own turn reached the model (`dispatched` with delivery evidence) waits for nothing: it is the turn
+ * the panel shows working. Listed, it sat under "waiting to be delivered" as 보내는 중… for as long as that turn ran
+ * (incident 2026-11-10: 25 minutes). A dispatch still being set up has no such evidence yet and stays listed — it
+ * is on its way.
+ */
+function isRunningTurn(item: FollowupItem): boolean {
+  return item.state === 'dispatched' && isFollowupDelivered(item);
+}
+
 /** The session payload's queue: what the panel lists, oldest first (the queue's arrival order). */
 export function followupsOf(sessionKey: string, ownerId: string | undefined): DashboardFollowups | undefined {
   const view = _followupHandler?.view(sessionKey);
   if (!view) return undefined;
   const failed = view.items.filter((item) => item.state === 'failed').slice(-FOLLOWUP_SHOWN_FAILED);
   const shown = view.items.filter(
-    (item) => FOLLOWUP_SHOWN_STATES.includes(item.state) && (item.state !== 'failed' || failed.includes(item)),
+    (item) =>
+      FOLLOWUP_SHOWN_STATES.includes(item.state) &&
+      (item.state !== 'failed' || failed.includes(item)) &&
+      !isRunningTurn(item),
   );
   if (shown.length === 0) return undefined;
   let names: Map<string, string> | undefined;

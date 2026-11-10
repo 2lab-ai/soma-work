@@ -118,6 +118,13 @@ Status: **in-progress** (2026-09-17, D1–D3 유저 확정) · 기준 커밋 mai
    - 한 턴은 한 번만 정산한다(`result` 프레임이 2개 와도 재정산·재interrupt 금지).
    - 위 규칙은 R1 실측 항목(S1/S3)으로 검증한다: result 이후 interrupt가 무해한지, 취소가 실제로 실행을 막는지. 실측이 다르면 이 절을 갱신한다.
    - 어댑터 세션 키: 스티어링 컨트롤은 호스트 세션 키(`executeParams.sessionKey` = `work:<channel>:<thread>`, `src/session-identity.ts`)로만 찾는다. 파생 폴백은 **없다** — `channel:threadTs` 폴백은 호스트가 지목할 수 없는 형식이라 스티어링이 불가능한 등록만 남겼다. 키가 없으면 그 턴은 등록되지 않는다(= 스티어링 불가, 큐는 다음 디스패치로).
+7. **읽음 확정 = `command_lifecycle` `started` — SDK 0.3.321 / CLI 2.1.321 실측(2026-11-10)**: 지금 설치본은 send마다 최상위 `type: 'command_lifecycle'` 프레임을 보낸다(`system` 서브타입이 아니다. 식별자는 `command_uuid`, 단계는 `state`). 순서는 `queued`(CLI가 받음) → `started`(모델에 넘김: 도는 턴의 툴 경계에서 접어 넣었거나, 제 턴을 열었다) → `completed`(그 턴 종료). 6번의 "mid-turn 소비를 프레임으로 관측할 수 없다"는 전제는 이 버전부터 성립하지 않는다.
+   - `started`를 받으면 그 행을 즉시 `steered → resolved(consumed)`로 닫고 유저 턴으로 기록한다. 그 시점부터 cancel은 `already-dequeued`이고 메시지는 세션 transcript에 있다(재시작 정산 `transcriptShowsRead`와 같은 기준).
+   - 첨부 임시 파일은 그 턴이 끝날 때까지 둔다(모델이 프롬프트의 경로로 나중에 연다). 턴 종료 정산(`completed`) 또는 턴 종료 스윕이 지운다.
+   - 프레임의 `completed`·`cancelled`·`queued`는 전이로 읽지 않는다(`observed`). `completed`는 턴을 연 메시지에도 오고, 소비자는 `completed`를 "이 턴이 스티어 메시지를 접어 넣었다"로 읽는다(#846). 턴 종료 판정은 6번의 호스트 정산 프레임이 그대로 맡는다 — `started`를 못 받은 행(구버전 CLI, 누락)의 안전망이다.
+   - 사고(2026-11-10, dev `work:C0AKY7W2UGZ:1794286993.849579`): 14:05에 보낸 지시를 모델이 14:10:31에 읽고 답했는데 행은 `steered`로 남았다. 14:12의 `Send now`가 그 턴을 끊자 스윕이 행을 "큐로 되돌렸고" 같은 지시가 제 턴으로 한 번 더 실행됐다.
+8. **턴이 도는 동안 사람이 다시 줄 세운 행도 그 턴에 넣는다**: Retry(`uncertain`/`failed` → `queued`)·Resume(`paused` → `queued`)이 턴 실행 중에 눌리면, 그 세션의 `queued` 행을 도착 순서대로 실행 중 턴에 스티어한다(D1과 같은 규칙·같은 권한 검사, `followupSteerOnOpen` 줄을 거친다). 스티어할 수 없는 행은 `queued`로 남아 턴 종료 드레인이 실행한다. 같은 사고에서 `T4부터 진행 지금 당장`이 Retry 뒤 25분 동안 실행 중 턴 뒤에서 기다렸다.
+9. **대시보드 대기 목록은 기다리는 것만 보여 준다**: 제 턴이 모델에 닿은 행(`dispatched` + `deliveredAt`)은 목록에서 뺀다 — 그 행은 패널이 보여 주는 실행 중 턴이다. 디스패치 준비 중(`deliveredAt` 없음)인 행은 "보내는 중"으로 남는다. `markDelivered`는 epoch을 올리지 않으므로 큐 변경 알림의 서명에 전달 여부를 넣어 그 순간 패널이 갱신되게 한다.
 
 ## 7. 유저 결정 (2026-09-17 확정, 원문: "D1. 자동 스티어링 ㅇㅋ / D2. 첨부도 스티어링 ㅇㅋ / D3. ㅇㅋ")
 - D1. 자동 스티어링 기본 **ON**. 제외는 §3.2의 컨트롤·합성 메시지뿐.
