@@ -20,15 +20,15 @@ const MODELS: Record<string, string> = {
   'sonnet[1m]': 'claude-sonnet-4-6[1m]',
   'sol[1m]': 'gpt-5.6-sol[1m]',
   'astra[1m]': 'gpt-6-astra[1m]',
-  'grok-4.6': 'grok-4.6',
+  'grok-4.7': 'grok-4.7',
 };
-const AUTO: Record<string, number> = { 'grok-4.6': 450_000 };
+const AUTO: Record<string, number> = { 'grok-4.7': 450_000 };
 
 function deps(session: Record<string, any> | undefined, over: Partial<ModelSwitchDeps> = {}) {
   const calls = { compact: [] as string[], saves: 0, broadcasts: 0 };
   const d: ModelSwitchDeps = {
     resolveModel: (input) => MODELS[input] ?? null,
-    contextWindow: (m) => (m === 'grok-4.6' ? 500_000 : 1_000_000),
+    contextWindow: (m) => (m === 'grok-4.7' ? 500_000 : 1_000_000),
     autoCompactFor: (m) => AUTO[m] ?? 750_000,
     displayName: (m) => `name:${m}`,
     getSession: () => session as any,
@@ -67,7 +67,7 @@ describe('representative models (T4)', () => {
     ]);
   });
 
-  it('resolve to their models with window and auto-compact threshold; grok is grok-4.6 (no 1M variant)', () => {
+  it('resolve to their models with window and auto-compact threshold; grok is grok-4.7 (no 1M variant)', () => {
     const list = listRepresentativeModels(deps(undefined).d);
     expect(list.map((m) => [m.nickname, m.model, m.autoCompactTokens])).toEqual([
       ['opus[1m]', 'claude-opus-5-5[1m]', 750_000],
@@ -75,9 +75,9 @@ describe('representative models (T4)', () => {
       ['sonnet[1m]', 'claude-sonnet-4-6[1m]', 750_000],
       ['sol[1m]', 'gpt-5.6-sol[1m]', 750_000],
       ['astra[1m]', 'gpt-6-astra[1m]', 750_000],
-      ['grok[1m]', 'grok-4.6', 450_000],
+      ['grok[1m]', 'grok-4.7', 450_000],
     ]);
-    expect(list[5]).toMatchObject({ contextWindow: 500_000, label: 'name:grok-4.6' });
+    expect(list[5]).toMatchObject({ contextWindow: 500_000, label: 'name:grok-4.7' });
   });
 
   it('a model that does not resolve right now is left out', () => {
@@ -93,7 +93,7 @@ describe('switchSessionModel (T4/T5)', () => {
   it('refuses anything but a representative model', async () => {
     const { d } = deps({ model: 'x' });
     await expect(switchSessionModel('k', 'claude-haiku-4-5-20251001', d)).rejects.toMatchObject({ statusCode: 400 });
-    await expect(switchSessionModel('k', 'grok-4.6', d)).rejects.toBeInstanceOf(ModelSwitchError);
+    await expect(switchSessionModel('k', 'grok-4.7', d)).rejects.toBeInstanceOf(ModelSwitchError);
   });
 
   it('404 for an unknown session, 409 for an ended one', async () => {
@@ -115,11 +115,11 @@ describe('switchSessionModel (T4/T5)', () => {
     expect(r).toEqual({
       status: 'switched',
       nickname: 'grok[1m]',
-      model: 'grok-4.6',
+      model: 'grok-4.7',
       autoCompactTokens: 450_000,
       usedTokens: 300_000,
     });
-    expect(session.model).toBe('grok-4.6');
+    expect(session.model).toBe('grok-4.7');
     expect(session.autoCompactTokens).toBeUndefined();
     expect(session.usage.contextWindow).toBe(500_000);
     expect(calls).toMatchObject({ compact: [], saves: 1, broadcasts: 1 });
@@ -131,12 +131,12 @@ describe('switchSessionModel (T4/T5)', () => {
     const r = await switchSessionModel('k', 'grok[1m]', d);
     expect(r).toMatchObject({
       status: 'compacting',
-      model: 'grok-4.6',
+      model: 'grok-4.7',
       autoCompactTokens: 450_000,
       usedTokens: 600_000,
     });
     expect(session.model).toBe('claude-opus-5-5[1m]');
-    expect(session.pendingModelSwitch).toEqual({ model: 'grok-4.6', nickname: 'grok[1m]', requestedAt: 42 });
+    expect(session.pendingModelSwitch).toEqual({ model: 'grok-4.7', nickname: 'grok[1m]', requestedAt: 42 });
     expect(calls.compact).toEqual(['k']);
   });
 
@@ -161,7 +161,7 @@ describe('switchSessionModel (T4/T5)', () => {
   });
 
   it('context size unknown but the target allows at least as much: switch at once', async () => {
-    const session: Record<string, any> = { model: 'grok-4.6', sessionId: 's' };
+    const session: Record<string, any> = { model: 'grok-4.7', sessionId: 's' };
     const { d, calls } = deps(session);
     expect((await switchSessionModel('k', 'opus[1m]', d)).status).toBe('switched');
     expect(calls.compact).toEqual([]);
@@ -176,7 +176,7 @@ describe('switchSessionModel (T4/T5)', () => {
   });
 
   it('mid-turn, a target with at least the same threshold switches (next turn uses it)', async () => {
-    const session: Record<string, any> = { model: 'grok-4.6', usage: usage(300_000), sessionId: 's' };
+    const session: Record<string, any> = { model: 'grok-4.7', usage: usage(300_000), sessionId: 's' };
     const { d } = deps(session, { isRequestActive: () => true });
     expect((await switchSessionModel('k', 'opus[1m]', d)).status).toBe('switched');
   });
@@ -212,7 +212,7 @@ describe('switchSessionModel (T4/T5)', () => {
     const { d, calls } = deps(session, { dispatchCompact: async () => 'queued' as const });
     expect((await switchSessionModel('k', 'grok[1m]', d)).status).toBe('compacting');
     await new Promise((r) => setTimeout(r, 0));
-    expect(session.pendingModelSwitch).toMatchObject({ model: 'grok-4.6', nickname: 'grok[1m]' });
+    expect(session.pendingModelSwitch).toMatchObject({ model: 'grok-4.7', nickname: 'grok[1m]' });
     expect(session.model).toBe('claude-opus-5-5[1m]');
     expect(calls.broadcasts).toBe(1);
   });
@@ -348,7 +348,7 @@ describe('the effort follows the model (a switch never keeps a level the target 
   const SOL = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
   const GROK = ['low', 'medium', 'high', 'xhigh'];
   const levels = (m: string) =>
-    m === 'grok-4.6' ? GROK : m.startsWith('gpt-') ? SOL : ['low', 'medium', 'high', 'xhigh', 'max'];
+    m === 'grok-4.7' ? GROK : m.startsWith('gpt-') ? SOL : ['low', 'medium', 'high', 'xhigh', 'max'];
 
   it('representative models carry the levels each runs', () => {
     const { d } = deps(undefined, { effortLevels: levels });
@@ -368,8 +368,8 @@ describe('the effort follows the model (a switch never keeps a level the target 
     };
     const { d } = deps(session, { effortLevels: levels });
     const r = await switchSessionModel('k', 'grok[1m]', d);
-    expect(r).toMatchObject({ status: 'switched', model: 'grok-4.6', effort: 'xhigh' });
-    expect(session).toMatchObject({ model: 'grok-4.6', effort: 'xhigh' });
+    expect(r).toMatchObject({ status: 'switched', model: 'grok-4.7', effort: 'xhigh' });
+    expect(session).toMatchObject({ model: 'grok-4.7', effort: 'xhigh' });
   });
 
   it('a level the target runs is kept (no effort in the result)', async () => {
@@ -395,7 +395,7 @@ describe('the effort follows the model (a switch never keeps a level the target 
     const { d } = deps(session, { effortLevels: levels });
     const r = await switchSessionModel('k', 'grok[1m]', d);
     expect(r).toMatchObject({ status: 'compacting', effort: 'xhigh' });
-    expect(session.pendingModelSwitch).toMatchObject({ model: 'grok-4.6', effort: 'xhigh', effortFrom: 'max' });
+    expect(session.pendingModelSwitch).toMatchObject({ model: 'grok-4.7', effort: 'xhigh', effortFrom: 'max' });
     expect(session.effort).toBe('max');
   });
 });
