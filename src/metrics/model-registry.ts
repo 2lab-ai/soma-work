@@ -477,6 +477,43 @@ const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
       maxOutput: 128_000,
     },
   ],
+  // Claude Sonnet 5.5 — $2 in / $10 out / $0.10 cache read, 5-min write
+  // $2.50, 1-h write $4 (platform.claude.com pricing, read 2026-11-10; llmux
+  // `SONNET_5_5`). The `sonnet` shorthand target since 2026-11-10. No other
+  // pattern above is a substring of `claude-sonnet-5-5`.
+  [
+    'sonnet-5-5',
+    {
+      pricing: {
+        inputPerMTok: 2,
+        outputPerMTok: 10,
+        cacheReadPerMTok: 0.1,
+        cache5minWritePerMTok: 2.5,
+        cache1hrWritePerMTok: 4,
+      },
+      contextWindow: 1_000_000,
+      maxOutput: 128_000,
+    },
+  ],
+  // Claude Haiku 5.5 — the ≤100k-prompt tier: $0.10 in / $0.50 out / $0.01
+  // cache read, 5-min write $0.125, 1-h write $0.20 (platform.claude.com
+  // pricing, read 2026-11-10; llmux `HAIKU_5_5`). The >100k tier (5x all
+  // rates) is not modeled — same static-tier convention as llmux. MUST stay
+  // above the generic `haiku-4-` fallback (it does not match it anyway).
+  [
+    'haiku-5-5',
+    {
+      pricing: {
+        inputPerMTok: 0.1,
+        outputPerMTok: 0.5,
+        cacheReadPerMTok: 0.01,
+        cache5minWritePerMTok: 0.125,
+        cache1hrWritePerMTok: 0.2,
+      },
+      contextWindow: 1_000_000,
+      maxOutput: 128_000,
+    },
+  ],
   [
     'sonnet-4-6',
     {

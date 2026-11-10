@@ -125,7 +125,8 @@ describe('Dashboard — model picker payload', () => {
     const list = JSON.parse(m![1]);
     const by = (n: string) => list.find((x: any) => x.nickname === n);
     expect(by('opus[1m]').price).toEqual({ input: 4, output: 20 }); // Opus 5.5 official rates
-    expect(by('sonnet[1m]').price).toEqual({ input: 3, output: 15 });
+    // `sonnet[1m]` is Sonnet 5.5 since 2026-11-10 (#1120): $2 / $10.
+    expect(by('sonnet[1m]').price).toEqual({ input: 2, output: 10 });
     expect(by('astra[1m]').price).toEqual({ input: 10, output: 50 });
     // The representative grok is grok-4.7 since 2026-11-10; it has its own registry row ($2 / $6).
     expect(by('grok[1m]').price).toEqual({ input: 2, output: 6 });
