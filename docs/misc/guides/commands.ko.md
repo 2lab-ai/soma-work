@@ -19,7 +19,7 @@
 
 - 출력 수준(`/z verbosity`, 세션 한정 `%verbosity`): `minimal` · `compact` · `detail` · `verbose`. 기본값은 `minimal`이다 — 스레드에는 task list(메인 에이전트의 것 — 서브에이전트의 목록은 대시보드의 그 서브에이전트 항목에 있다), 질문/승인, 최종 답변, 오류만 남고, 모델의 실시간 작업 설명·도구 호출·압축 공지·스킬 발동 배너(`$skill`·autoskill 포함)는 대시보드 작업 로그로 간다.
 
-- Fable 5.1·Opus 5.5(`claude-opus-5-5`, Claude Code 2.1.280 이상 필요) 지원을 위해 SDK를 `0.3.284`(네이티브 Claude Code `2.1.284`)로 고정한다. 스트리밍 턴은 `CLAUDE_CODE_ENABLE_TASKS=false`와 `MCP_CONNECTION_NONBLOCKING=0`을 강제하여 기존 Slack TodoWrite 스냅샷 처리와 첫 턴 MCP 초기화를 유지한다. 이 호환성 설정은 stream-options builder가 관리하며 운영자 설정으로 덮어쓰지 않는다.
+- Fable 5.2(`claude-fable-5-2`, 구독 엔드포인트가 Claude Code 2.1.284를 `claude_code_version_too_old`로 거부하며 Anthropic은 2.1.321 이상을 요구)·Fable 5.1·Opus 5.5(`claude-opus-5-5`, Claude Code 2.1.280 이상 필요) 지원을 위해 SDK를 `0.3.321`(네이티브 Claude Code `2.1.321`)로 고정한다. 스트리밍 턴은 `CLAUDE_CODE_ENABLE_TASKS=false`와 `MCP_CONNECTION_NONBLOCKING=0`을 강제하여 기존 Slack TodoWrite 스냅샷 처리와 첫 턴 MCP 초기화를 유지한다. 이 호환성 설정은 stream-options builder가 관리하며 운영자 설정으로 덮어쓰지 않는다.
 - 모델 별칭 `fable`·`fable[1m]`·`fable-5-2`·`fable-5-2[1m]`은 최신 Fable인 `claude-fable-5-2[1m]`을 선택한다(2026-11-10부터). 1M 컨텍스트와 750k 자동 압축 기본값을 유지하며, 버전을 지정한 `fable-5-1`·`fable-5-1[1m]`은 `claude-fable-5-1[1m]`을, `fable-5`는 기존 `claude-fable-5[1m]`을 그대로 선택한다.
 - 모델 별칭 `terra`·`terra[1m]`은 `gpt-6.1-terra[1m]`(1M 컨텍스트, 600k 자동 압축 기본값)을 선택한다(2026-11-10부터). bare 리터럴 `gpt-6.1-terra`는 500k 컨텍스트에 450k, `gpt-5.6-terra`는 리터럴 id로 계속 선택할 수 있다.
 - 모델 별칭 `opus`·`opus[1m]`·`opus-5-5`는 `claude-opus-5-5[1m]`(1M 컨텍스트, 750k 자동 압축 기본값)을 선택한다. 버전을 지정한 `opus-5`/`opus-5[1m]`은 기존 Opus 5 id를 그대로 선택한다.
