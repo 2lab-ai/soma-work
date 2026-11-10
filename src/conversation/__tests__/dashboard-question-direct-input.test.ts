@@ -57,7 +57,15 @@ const SESSION = (over: Record<string, unknown> = {}) => ({
   pendingQuestion: Q,
   ...over,
 });
-const BASE_FNS = ['esc', 'escAttr', 'acQuestionLock', 'acQuestionId', 'stripRecommendedMarker', 'resolveRecommendedId'];
+const BASE_FNS = [
+  'esc',
+  'escAttr',
+  'acQuestionLock',
+  'acQuestionId',
+  'decisionLines',
+  'stripRecommendedMarker',
+  'resolveRecommendedId',
+];
 const BASE_INJECT = (state: Record<string, unknown> = {}) => ({
   currentUserId: 'U1',
   READ_ONLY_MSG: '읽기 전용 — 내 세션이 아닙니다',
@@ -106,7 +114,7 @@ describe('client — the single-choice question takes direct input (#917)', () =
         },
       },
     );
-    const qid = load<{ acQuestionId(q: unknown): string }>(['acQuestionId'], []).acQuestionId(Q);
+    const qid = load<{ acQuestionId(q: unknown): string }>(['acQuestionId', 'decisionLines'], []).acQuestionId(Q);
     const st = await c.answerChoice('inst::C1:t1', qid, '', '  스테이징에 먼저 배포해  ');
     expect(posts).toEqual([
       [

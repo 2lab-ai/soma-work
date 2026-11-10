@@ -115,3 +115,16 @@ To audit motion code against this bar, use the sibling **`review-motion`** skill
 It applies the same standards as a dedicated review pass and produces a findings
 table plus a Block/Approve verdict. Keep review output there rather than
 duplicating it here.
+
+## Sibling skills for the next step
+
+One job each, all vendored from the same upstream (MIT, see each skill's `LICENSES/NOTICE.md`):
+
+- **`remove-animations`** — motion the interface does not need (keyboard actions, high-frequency surfaces).
+- **`find-animation-opportunities`** — the few places that should move and do not (read-only proposals).
+- **`animation-performance`** — an animation that drops frames.
+- **`choreograph`** — several elements moving together: what leads, what follows, what stays still.
+- **`gestures`** — drag, swipe and sheets that track the finger and can be caught mid-motion.
+- **`improve-animations`** — a codebase-wide motion audit with self-contained plans for other agents.
+- **`mobile-native`** — the CSS and meta fixes that make a web app feel installed on a phone.
+- **`break-ui`** — worst-case data (long names, huge counts, empty lists) thrown at a component.

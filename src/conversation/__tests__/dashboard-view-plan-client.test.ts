@@ -476,6 +476,7 @@ describe('P3 — the open card follows the plan', () => {
       'renderCardResume',
       'taskPlanCardHtml',
       'quickChoicesOf',
+      'decisionLines',
       'isBusy',
       'sessionActionsOf',
       'sessionActionHtml',

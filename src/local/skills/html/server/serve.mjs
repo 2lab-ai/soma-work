@@ -18,8 +18,10 @@
  *   2. Ensures a daemon is listening whose link for this artifact actually
  *      answers 200 — the final URL is VERIFIED over loopback before it is
  *      printed, never assumed.
- *   3. Prints JSON: { "url", "localUrl", "port", "file" } on stdout
- *      (+ "note" when a pre-durable-root daemon needed a compat copy,
+ *   3. Prints JSON: { "url", "localUrl", "port", "file", "version" } on stdout
+ *      (+ "archived" when the name's previous bytes were kept as a version,
+ *      + "unchanged" when the same bytes were already published,
+ *      + "note" when a pre-durable-root daemon needed a compat copy,
  *      + "migrated"/"migrationErrors" when a legacy sweep did work).
  *
  * Daemon mode (internal): node serve.mjs --daemon --port <port>
@@ -44,8 +46,17 @@
  * Archive semantics: artifacts are timestamped by the skill, never
  * auto-pruned here, and migrate forward automatically from the legacy
  * /tmp root when one is found (regular files only — symlinks are never
- * followed into the archive). Re-publishing the same filename intentionally
- * refreshes that artifact in place. Reclaiming disk is a human decision.
+ * followed into the archive). Re-publishing the same filename refreshes that
+ * artifact in place and keeps the bytes it replaces in that name's own
+ * namespace, `.versions/<name>/v<N><ext>` (#1074: `report.html` → served at
+ * `/.versions/report.html/v1.html`; the same bytes again keep nothing). The
+ * read, archive, replace, prune and link verification of one name run under
+ * its lock file (`.lock-<name>`, holding the publisher's pid), so two
+ * publishers of one name lose no revision and each verifies its own bytes. A
+ * previous version that cannot be kept refuses the publish (exit 2). A name
+ * keeps its newest MAX_ARCHIVED_VERSIONS earlier versions — the only files
+ * this server ever removes, and only inside that namespace. Reclaiming disk
+ * otherwise is a human decision.
  *
  * Exposure policy: binds 0.0.0.0 by default — LAN reachability is the whole
  * point (the user opens the link from another machine). Everything ever
@@ -103,6 +114,13 @@ const BIND_ADDR = process.env.SOMA_HTML_SERVE_BIND || '0.0.0.0';
 const BASE_PORT = Number(process.env.SOMA_HTML_SERVE_PORT || 8763);
 const PORT_SCAN_RANGE = 20;
 const HEALTH_PATH = '/__soma-serve-health';
+/** Earlier versions of one name kept in its namespace (#1074). */
+const MAX_ARCHIVED_VERSIONS = 10;
+const VERSIONS_DIR = '.versions';
+/** A publish lock whose holder's pid cannot be read and is older than this is abandoned. */
+const LOCK_STALE_MS = 10 * 60_000;
+/** How long a publisher waits for another publisher of the same name (it holds the lock through verification). */
+const LOCK_WAIT_MS = 60_000;
 const HEALTH_BODY = 'soma-html-serve';
 
 const MIME = {
@@ -320,6 +338,147 @@ function writeFileReplacing(dstDir, name, bytes) {
   }
 }
 
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function lockHolderGone(lock) {
+  // The lock holds its publisher's pid: abandoned when that process no longer
+  // exists, or when the lock is older than LOCK_STALE_MS whatever it holds (a
+  // publish never holds it that long; a recycled pid must not keep it forever).
+  try {
+    if (Date.now() - lstatSync(lock).mtimeMs > LOCK_STALE_MS) return true;
+    const pid = Number(readFileSync(lock, 'utf8').trim());
+    if (!Number.isSafeInteger(pid) || pid <= 0) return false; // being written — the age check covers a dead writer
+    try {
+      process.kill(pid, 0);
+      return false;
+    } catch (err) {
+      return err.code === 'ESRCH';
+    }
+  } catch {
+    return false; // released meanwhile — the next create decides
+  }
+}
+
+/** How long reclaiming an abandoned lock may take before its own reap lock counts as abandoned. */
+const REAP_STALE_MS = 5_000;
+
+function reclaimAbandonedLock(lock) {
+  // Removing an abandoned lock is check-then-unlink, so it runs under a second
+  // lock (#1074 review r3): two waiters that both judged the lock abandoned
+  // must not both remove it — the second would delete the first one's fresh
+  // lock. Under the reap lock the main lock can only change by a reaper (a
+  // creator needs it absent, a holder removes only its own), so the re-check
+  // here is final. The reap section is a few syscalls; a reap lock older than
+  // REAP_STALE_MS belongs to a reaper that died inside it.
+  const reap = `${lock}.reap`;
+  try {
+    writeFileSync(reap, String(process.pid), { flag: 'wx' });
+  } catch (err) {
+    if (err.code !== 'EEXIST') throw err;
+    try {
+      if (Date.now() - lstatSync(reap).mtimeMs > REAP_STALE_MS) rmSync(reap, { force: true });
+    } catch {
+      /* released meanwhile */
+    }
+    return;
+  }
+  try {
+    if (lockHolderGone(lock)) rmSync(lock, { force: true });
+  } finally {
+    rmSync(reap, { force: true });
+  }
+}
+
+function acquirePublishLock(dir, name) {
+  // One publisher of a name at a time, from reading the current file until its
+  // link is verified (#1074 review r1/r2): `wx` creates the lock or fails if
+  // another publisher holds it. A lock whose publisher died is removed and the
+  // create retried (only one waiter wins it). Lock files are dotfiles — never
+  // listed or served as artifacts. Returns release(); exit releases it too.
+  const lock = join(dir, `.lock-${name}`);
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      writeFileSync(lock, String(process.pid), { flag: 'wx' });
+      break;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      if (lockHolderGone(lock)) reclaimAbandonedLock(lock);
+      if (Date.now() > deadline) throw new Error(`timed out waiting for the publish lock of ${name}`);
+      sleepSync(20);
+    }
+  }
+  let held = true;
+  const release = () => {
+    if (!held) return;
+    held = false;
+    try {
+      if (readFileSync(lock, 'utf8').trim() === String(process.pid)) rmSync(lock, { force: true });
+    } catch {
+      /* already gone */
+    }
+  };
+  process.once('exit', release);
+  return release;
+}
+
+/** `.versions/<name>` as a real directory of this user — created when missing; null when it cannot be trusted. */
+function versionsDirOf(dir, name) {
+  const base = join(dir, VERSIONS_DIR);
+  const mine = join(base, name);
+  for (const d of [base, mine]) {
+    try {
+      mkdirSync(d);
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err; // made meanwhile, or something sits there: the trust gate decides
+    }
+    // Same trust gate as the legacy sweep: never write through a symlink.
+    if (!ownedRealDir(d)) return null;
+  }
+  return mine;
+}
+
+/** The kept versions of `name`: [[n, file]] ascending by n. */
+function archivedVersions(vdir, name) {
+  const ext = extname(name);
+  const out = [];
+  for (const f of readdirSync(vdir)) {
+    if (!f.startsWith('v') || !f.endsWith(ext)) continue;
+    const n = f.slice(1, f.length - ext.length);
+    if (/^[1-9]\d{0,8}$/.test(n)) out.push([Number(n), f]);
+  }
+  return out.sort((a, b) => a[0] - b[0]);
+}
+
+function archivePrevious(dir, name, bytes) {
+  // #1074 — publishing over a name keeps what it replaces as the next
+  // `.versions/<name>/v<N><ext>`, so the earlier version still opens. Only a
+  // regular file is kept (read with O_NOFOLLOW; a symlink sitting there is
+  // replaced by the publish, never followed), the same bytes keep nothing.
+  // Runs under the name's publish lock (see acquirePublishLock).
+  let st;
+  try {
+    st = lstatSync(join(dir, name));
+  } catch {
+    return { version: 1 };
+  }
+  if (!st.isFile()) return { version: 1 };
+  const current = readFileNoFollow(join(dir, name));
+  const vdir = versionsDirOf(dir, name);
+  if (!vdir) return { version: 1, archiveError: `${VERSIONS_DIR}/${name} is not a real directory of this user` };
+  const kept = archivedVersions(vdir, name);
+  const top = kept.length ? kept[kept.length - 1][0] : 0;
+  if (current.equals(bytes)) return { version: top + 1, unchanged: true };
+  let n = top + 1;
+  while (!installFileIfAbsent(vdir, `v${n}${extname(name)}`, current)) n++;
+  for (const [, f] of archivedVersions(vdir, name).slice(0, -MAX_ARCHIVED_VERSIONS)) {
+    rmSync(join(vdir, f), { force: true });
+  }
+  return { version: n + 1, archived: `${VERSIONS_DIR}/${name}/v${n}${extname(name)}` };
+}
+
 function startDaemon(port) {
   const self = fileURLToPath(import.meta.url);
   const child = spawn(process.execPath, [self, '--daemon', '--port', String(port)], {
@@ -517,6 +676,15 @@ async function publish(file, explicitPort) {
   for (const e of migration.errors) console.error(`legacy migration failed for ${e}`);
   const name = basename(abs);
   const artifactBytes = readFileSync(abs);
+  // Read, archive, replace and verify as one step per name: two publishers of a name lose no revision, and
+  // each verifies its own bytes (the lock is released after the link is checked, or on exit).
+  const release = acquirePublishLock(SERVE_ROOT, name);
+  const kept = archivePrevious(SERVE_ROOT, name, artifactBytes);
+  if (kept.archiveError) {
+    // Never replace what could not be kept (#1074 review r2): the published version stays as it is.
+    console.error(`publish refused: the previous version of ${name} could not be kept (${kept.archiveError})`);
+    process.exit(2);
+  }
   writeFileReplacing(SERVE_ROOT, name, artifactBytes);
 
   let chosen = null;
@@ -554,6 +722,7 @@ async function publish(file, explicitPort) {
     );
     process.exit(2);
   }
+  release();
 
   const encoded = encodeURIComponent(name);
   console.log(
@@ -563,6 +732,9 @@ async function publish(file, explicitPort) {
         localUrl: `http://localhost:${chosen.port}/${encoded}`,
         port: chosen.port,
         file: join(SERVE_ROOT, name),
+        version: kept.version,
+        ...(kept.archived ? { archived: kept.archived } : {}),
+        ...(kept.unchanged ? { unchanged: true } : {}),
         ...(chosen.note ? { note: chosen.note } : {}),
         ...(migration.migrated ? { migrated: migration.migrated } : {}),
         ...(migration.errors.length ? { migrationErrors: migration.errors.length } : {}),

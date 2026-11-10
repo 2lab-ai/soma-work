@@ -666,7 +666,7 @@ describe('U6 — 시작 / 취소 post the revision; 직접 입력 opens the comp
 
 describe('U7 — a simple question is buttons on the task card (T7)', () => {
   const m = load<{ quickChoicesOf(q: any): any[] | null; quickChoiceHtml(s: any, q: any, onFace?: boolean): string }>(
-    ['quickChoicesOf', 'quickChoiceHtml'],
+    ['quickChoicesOf', 'decisionLines', 'quickChoiceHtml'],
     {
       esc,
       escJs,

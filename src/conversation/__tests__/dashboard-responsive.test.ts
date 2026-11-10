@@ -311,14 +311,14 @@ describe('board columns follow the inbox width, not the viewport', () => {
     expect(rule('.inbox')).toContain('container: inbox / inline-size');
   });
 
-  it('a board narrower than 840px: the element snaps its own columns; the page only lets it shrink to the inbox', () => {
+  it('a board narrower than 720px: the element snaps its own columns; the page only lets it shrink to the inbox', () => {
     // The sideways snap is the element's own container query (@2lab.ai/ui agent-inbox styles.ts,
-    // '@container ib (max-width: 839px)'; no library test pins it yet). The page keeps no board
+    // '@container ib (max-width: 719px)' from 0.41.0, pinned by the library's own test). The page keeps no board
     // column rules: it gives the elements the inbox width, never their content's.
     expect(cssBlock('@container inbox (max-width: 839px) {')).not.toContain('.kanban');
     expect(rule('ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox')).toContain('display: block; min-width: 0;');
-    // The coordinator's mode flips at the same 840px of inbox width (layoutModeOf, below).
-    expect(clientFn('layoutModeOf')).toContain("cols: inboxW >= 840 ? 'full' : 'snap'");
+    // The coordinator's mode flips at the same 720px of inbox width (layoutModeOf, below).
+    expect(clientFn('layoutModeOf')).toContain("cols: inboxW >= 720 ? 'full' : 'snap'");
   });
 
   it('no viewport media query decides the board columns any more', () => {
@@ -442,6 +442,7 @@ function coordinator(o: {
   reduce?: boolean;
   flying?: boolean;
   autoView?: string;
+  keyed?: boolean;
 }) {
   const kb = { getAttribute: (k: string) => (k === 'view' ? 'board' : null), animate: vi.fn() };
   const calls = { setBoardView: [] as unknown[][], measure: 0, restore: [] as unknown[], timers: 0 };
@@ -456,6 +457,7 @@ function coordinator(o: {
       window: { innerWidth: 1280 },
       _layoutCheckFrame: null,
       defaultBoardView: () => o.autoView ?? 'board',
+      viewWidth: () => 1280,
       savedBoardView: () => null,
       setBoardView: (...a: unknown[]) => calls.setBoardView.push(a),
       applySectionState: () => false,
@@ -471,6 +473,7 @@ function coordinator(o: {
       _layoutScroll: { x: 0, y: 0 },
       _lastScroll: o.scrolled ?? { x: 0, y: 0 },
       canAnimate: () => true,
+      keyedNow: () => !!o.keyed,
       reduceMotion: () => !!o.reduce,
       _layoutSnap: o.snap ?? [],
       MOTION: { move: 320, fade: 160, easeOut: 'ease-out' },
@@ -489,7 +492,7 @@ const host = (connected = true): FakeHost => ({ isConnected: connected, flipFrom
 
 describe('layout transition — one coordinator', () => {
   it('runLayoutCheck re-evaluates the default view without saving it, then animates from the visible spot', () => {
-    expect(clientFn('runLayoutCheck')).toContain('defaultBoardView(window.innerWidth, savedBoardView())');
+    expect(clientFn('runLayoutCheck')).toContain('defaultBoardView(viewWidth(), savedBoardView())');
     // A fold below 640px: the default view follows, with no event — setBoardView neither saves it nor adopts it.
     const auto = coordinator({ autoView: 'list' });
     auto.m.runLayoutCheck();
@@ -523,6 +526,28 @@ describe('layout transition — one coordinator', () => {
     r.m.runLayoutCheck();
     expect(still.flipFrom).not.toHaveBeenCalled();
     expect(r.kb.animate).toHaveBeenCalledWith([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: 'linear' });
+  });
+
+  it('a change made from the keyboard (Enter opens the drawer, Esc closes it) lands at once — no glide, no fade', () => {
+    const keyed = host();
+    const k = coordinator({ snap: [[keyed, { spots: { 'c:a': { x: 1, y: 2 } } }]], keyed: true });
+    k.m.runLayoutCheck();
+    expect(keyed.flipFrom).not.toHaveBeenCalled();
+    expect(k.kb.animate).not.toHaveBeenCalled();
+    // The new layout is taken and measured now — no settle window — so a pointer change right after glides from it.
+    expect(k.m.state().key).toBe('snap|closed|board');
+    expect(k.m.state().until).toBe(0);
+    expect(k.calls.measure).toBe(1);
+    expect(k.calls.timers).toBe(0);
+    // A key acting while a pointer-made glide is still in flight: the glide is retargeted, not left running.
+    const midFlight = host();
+    const kf = coordinator({ snap: [[midFlight, { spots: { 'c:a': { x: 1, y: 2 } } }]], keyed: true, flying: true });
+    kf.m.runLayoutCheck();
+    expect(midFlight.flipFrom).toHaveBeenCalledTimes(1);
+    expect(kf.m.state().until).toBeGreaterThan(Date.now());
+    const kr = coordinator({ snap: [[host(), { spots: {} }]], keyed: true, reduce: true });
+    kr.m.runLayoutCheck();
+    expect(kr.kb.animate).not.toHaveBeenCalled();
   });
 
   it('an unchanged mode measures a settled board again and leaves a glide in flight alone', () => {
@@ -560,8 +585,22 @@ describe('layout transition — one coordinator', () => {
   });
 
   it('the default view at load comes from the same helper (List below 640px)', () => {
-    expect(TEMPLATE).toContain('setBoardView(defaultBoardView(window.innerWidth, savedBoardView()));');
+    expect(TEMPLATE).toContain('setBoardView(defaultBoardView(viewWidth(), savedBoardView()));');
     expect(clientFn('defaultBoardView')).toContain('innerWidth < 640');
+  });
+
+  it('the width it goes by is the phone breakpoint as the media query reads it, not a widened layout viewport (2026-11-09)', () => {
+    // A 390px phone whose first frames widen the layout viewport to 674px: innerWidth reads 674, the query still matches.
+    const run = (innerWidth: number, phone: boolean) =>
+      new Function('window', `${clientFn('viewWidth')}\nreturn viewWidth();`)({
+        innerWidth,
+        matchMedia: (q: string) => ({ matches: q === '(max-width: 639px)' && phone }),
+      });
+    expect(run(674, true)).toBe(639);
+    expect(run(390, true)).toBe(390);
+    expect(run(1280, false)).toBe(1280);
+    // No matchMedia (an old engine): innerWidth as before.
+    expect(new Function('window', `${clientFn('viewWidth')}\nreturn viewWidth();`)({ innerWidth: 700 })).toBe(700);
   });
 });
 

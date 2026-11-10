@@ -72,6 +72,7 @@ const FNS = [
   'adminResolutionOf',
   'adminResolvedState',
   'adminApprovalData',
+  'decisionLines',
   'applyAdminApprovals',
   'paintAdminInboxButton',
   'adminInboxAnnounce',
@@ -648,6 +649,8 @@ describe('dashboard admin approvals (#620)', () => {
         kind: 'question',
         label: expect.stringContaining('에이전트 질문'),
       });
+      // #1073 — without decision lines the description is the place alone, as before.
+      expect(c.adminApprovalData('session_question:C1:t1~ts1').description).toBe('요청 위치: #C1 스레드 t1');
       expect(await c.answerAdminApproval('session_question:C1:t1~ts1', 'approve')).toMatchObject({
         status: 'resolved',
         choiceId: 'approve',
@@ -655,6 +658,46 @@ describe('dashboard admin approvals (#620)', () => {
       expect(calls).toEqual([
         ['/api/dashboard/admin-approvals/answer', { id: 'session_question:C1:t1~ts1', choiceId: 'approve' }],
       ]);
+    });
+
+    it('#1073 — an agent question with decision lines: context, then the same lines as the session view, then the place', () => {
+      const { c } = client();
+      c.applyAdminApprovals({
+        pending: [
+          {
+            id: 'session_question:C1:t1~ts2',
+            kind: 'session_question',
+            card: 'question',
+            title: '배포할까요?',
+            description: '카드 2장이 대기 중',
+            decision: {
+              blockedWork: 'PR #42 머지',
+              stakes: '운영 DB',
+              reversible: false,
+              reversibleWhy: '되돌릴 수 없다',
+            },
+            choices: [
+              { id: 'a', label: '승인' },
+              { id: 'b', label: '보류' },
+              { id: 'c', label: '거절' },
+            ],
+            recommendedId: 'a',
+            requesterId: 'U1',
+            place: { channel: 'C1', threadTs: 't1' },
+            createdAt: 1_700_000_000_000,
+          },
+        ],
+        resolved: [],
+      });
+      expect(c.adminApprovalData('session_question:C1:t1~ts2').description).toBe(
+        [
+          '카드 2장이 대기 중',
+          '🚧 막힌 작업 — PR #42 머지',
+          '⚖️ 걸린 것 — 운영 DB',
+          '⚠️ 되돌릴 수 없음 — 되돌릴 수 없다',
+          '요청 위치: #C1 스레드 t1',
+        ].join('\n'),
+      );
     });
 
     it('answered elsewhere as a denial of a grant choice: the card shows denied, not the attempted choice', () => {

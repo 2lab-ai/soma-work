@@ -678,7 +678,7 @@ describe('tone pass P8 — copy and glyphs', () => {
     ]) {
       expect(TEMPLATE, s).not.toContain(s);
     }
-    expect(TEMPLATE).toContain('<h3 id="panel-title" tabindex="-1">작업 카드</h3>');
+    expect(TEMPLATE).toContain('<h3 id="panel-title" tabindex="-1" dir="auto">작업 카드</h3>');
     // D1 (J-01): the lifecycle dialog is @2lab.ai/ui <ui-dialog>; its Korean title is the element's heading.
     expect(TEMPLATE).toContain(
       '<ui-dialog id="lifecycle-dialog" class="lifecycle-dialog" heading="세션 수명 주기" size="sm" lang="ko">',

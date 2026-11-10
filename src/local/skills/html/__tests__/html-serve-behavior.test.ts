@@ -1,5 +1,15 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
-import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -183,4 +193,169 @@ describe('local:html serve.mjs — behavioral contract (real daemon, real GET)',
       staleServer.close();
     }
   });
+
+  // ── #1074 — publishing over a name keeps the version it replaces, in its own namespace ──
+
+  function publishBytes(name: string, body: string) {
+    const artifact = join(artifactDir, name);
+    writeFileSync(artifact, body);
+    return JSON.parse(
+      execFileSync(process.execPath, [SERVER, '--file', artifact, '--port', String(PORT)], { env, encoding: 'utf8' }),
+    );
+  }
+  const versionsDir = (name: string) => join(durableRoot, '.versions', name);
+  const archivesOf = (name: string) =>
+    existsSync(versionsDir(name))
+      ? readdirSync(versionsDir(name))
+          .filter((f) => /^v\d+\.html$/.test(f))
+          .sort((a, b) => Number(a.slice(1, -5)) - Number(b.slice(1, -5)))
+      : [];
+  const getText = (path: string) =>
+    new Promise<{ status?: number; type?: string; body: string }>((ok, fail) => {
+      // A fresh connection: a keep-alive socket the daemon already closed would reset this read.
+      http
+        .get({ host: '127.0.0.1', port: PORT, path, agent: false }, (res) => {
+          let body = '';
+          res.on('data', (c) => (body += c));
+          res.on('end', () => ok({ status: res.statusCode, type: String(res.headers['content-type']), body }));
+        })
+        .on('error', fail);
+    });
+
+  it('#1074 T7 — re-publishing a name with new bytes keeps the previous version under .versions/<name>/', async () => {
+    expect(publishBytes('revise.html', '<p>one</p>')).toMatchObject({ version: 1 });
+    const second = publishBytes('revise.html', '<p>two</p>');
+    expect(second).toMatchObject({ version: 2, archived: '.versions/revise.html/v1.html' });
+    expect(readFileSync(join(versionsDir('revise.html'), 'v1.html'), 'utf8')).toBe('<p>one</p>');
+    expect(readFileSync(join(durableRoot, 'revise.html'), 'utf8')).toBe('<p>two</p>');
+    // The earlier version is served too (its own link), as HTML.
+    const old = await getText('/.versions/revise.html/v1.html');
+    expect(old).toMatchObject({ status: 200, body: '<p>one</p>' });
+    expect(old.type).toContain('text/html');
+  }, 60_000);
+
+  it('#1074 T7 — the same bytes again keep nothing new ("no changes")', () => {
+    const again = publishBytes('revise.html', '<p>two</p>');
+    expect(again).toMatchObject({ version: 2, unchanged: true });
+    expect(again).not.toHaveProperty('archived');
+    expect(archivesOf('revise.html')).toEqual(['v1.html']);
+  }, 60_000);
+
+  it('#1074 T7 — a name keeps its newest 10 earlier versions; a separately published look-alike is never touched', () => {
+    // Published on its own (not an archive): pruning must not take it (review r1).
+    writeFileSync(join(durableRoot, 'revise.v1.html'), 'STANDALONE');
+    for (let i = 3; i <= 14; i++) publishBytes('revise.html', `<p>${i}</p>`);
+    const kept = archivesOf('revise.html');
+    expect(kept).toHaveLength(10);
+    expect(kept[0]).toBe('v4.html');
+    expect(kept[9]).toBe('v13.html');
+    expect(readFileSync(join(versionsDir('revise.html'), 'v13.html'), 'utf8')).toBe('<p>13</p>');
+    expect(readFileSync(join(durableRoot, 'revise.html'), 'utf8')).toBe('<p>14</p>');
+    expect(readFileSync(join(durableRoot, 'revise.v1.html'), 'utf8')).toBe('STANDALONE');
+  }, 180_000);
+
+  it('#1074 r1 — two publishers of one name at once lose no revision', async () => {
+    publishBytes('race.html', 'ORIGINAL');
+    const run = (body: string) =>
+      new Promise<void>((ok, fail) => {
+        const artifact = join(artifactDir, `race-${body}.html`);
+        writeFileSync(artifact, body);
+        // Same published name: each publisher copies its own file to race.html (basename differs, so stage it).
+        const staged = join(mkdtempSync(join(tmpdir(), 'soma-serve-race-')), 'race.html');
+        writeFileSync(staged, body);
+        const child = spawn(process.execPath, [SERVER, '--file', staged, '--port', String(PORT)], {
+          env,
+          stdio: 'ignore',
+        });
+        child.on('exit', (code) => (code === 0 ? ok() : fail(new Error(`publish exited ${code}`))));
+      });
+    await Promise.all([run('AAA'), run('BBB')]);
+    const seen = [
+      readFileSync(join(durableRoot, 'race.html'), 'utf8'),
+      ...archivesOf('race.html').map((f) => readFileSync(join(versionsDir('race.html'), f), 'utf8')),
+    ].sort();
+    expect(seen).toEqual(['AAA', 'BBB', 'ORIGINAL']);
+  }, 120_000);
+
+  it('#1074 T7 — a symlink sitting at the name is replaced, never kept as a version', () => {
+    expect(existsSync(versionsDir('planted.html'))).toBe(false);
+  });
+
+  it('#1074 — the directory index lists the published name, not its versions', async () => {
+    const index = await getText('/');
+    expect(index.body).toContain('revise.html');
+    expect(index.body).not.toContain('.versions');
+  });
+
+  it('#1074 r2 — a previous version that cannot be kept refuses the publish and leaves the live file alone', () => {
+    publishBytes('guarded.html', 'KEEP-ME');
+    const elsewhere = mkdtempSync(join(tmpdir(), 'soma-serve-elsewhere-'));
+    const root2 = mkdtempSync(join(tmpdir(), 'soma-serve-root2-'));
+    try {
+      // A second root whose .versions is a symlink to somewhere else (the trust gate refuses it).
+      writeFileSync(join(root2, 'guarded.html'), 'KEEP-ME');
+      symlinkSync(elsewhere, join(root2, '.versions'));
+      const artifact = join(artifactDir, 'guarded.html');
+      writeFileSync(artifact, 'NEW');
+      let code = 0;
+      try {
+        execFileSync(process.execPath, [SERVER, '--file', artifact, '--port', String(PORT)], {
+          env: { ...env, SOMA_HTML_SERVE_ROOT: root2 },
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch (err) {
+        code = (err as { status?: number }).status ?? -1;
+      }
+      expect(code).toBe(2);
+      expect(readFileSync(join(root2, 'guarded.html'), 'utf8')).toBe('KEEP-ME');
+      expect(readdirSync(elsewhere)).toEqual([]);
+      expect(existsSync(join(root2, '.lock-guarded.html'))).toBe(false);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+      rmSync(root2, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('#1074 r2 — a lock left by a publisher that died is taken over', () => {
+    writeFileSync(join(durableRoot, '.lock-orphan.html'), '999999');
+    expect(publishBytes('orphan.html', 'O')).toMatchObject({ version: 1 });
+    expect(existsSync(join(durableRoot, '.lock-orphan.html'))).toBe(false);
+  }, 60_000);
+
+  it('#1074 r3 — several publishers meeting an abandoned lock: one at a time, every revision kept', async () => {
+    publishBytes('crowd.html', 'ORIGINAL');
+    writeFileSync(join(durableRoot, '.lock-crowd.html'), '999999'); // its publisher is gone
+    const bodies = ['P1', 'P2', 'P3', 'P4'];
+    await Promise.all(
+      bodies.map(
+        (body) =>
+          new Promise<void>((ok, fail) => {
+            const staged = join(mkdtempSync(join(tmpdir(), 'soma-serve-crowd-')), 'crowd.html');
+            writeFileSync(staged, body);
+            const child = spawn(process.execPath, [SERVER, '--file', staged, '--port', String(PORT)], {
+              env,
+              stdio: 'ignore',
+            });
+            child.on('exit', (code) => (code === 0 ? ok() : fail(new Error(`publish exited ${code}`))));
+          }),
+      ),
+    );
+    const seen = [
+      readFileSync(join(durableRoot, 'crowd.html'), 'utf8'),
+      ...archivesOf('crowd.html').map((f) => readFileSync(join(versionsDir('crowd.html'), f), 'utf8')),
+    ].sort();
+    expect(seen).toEqual(['ORIGINAL', 'P1', 'P2', 'P3', 'P4']);
+    expect(existsSync(join(durableRoot, '.lock-crowd.html'))).toBe(false);
+    expect(existsSync(join(durableRoot, '.lock-crowd.html.reap'))).toBe(false);
+  }, 180_000);
+
+  it('#1074 r3 — a lock older than ten minutes is abandoned even if its pid now belongs to a live process', () => {
+    const lock = join(durableRoot, '.lock-recycled.html');
+    writeFileSync(lock, String(process.pid)); // a live pid (this test runner)
+    const old = new Date(Date.now() - 11 * 60_000);
+    utimesSync(lock, old, old);
+    expect(publishBytes('recycled.html', 'R')).toMatchObject({ version: 1 });
+    expect(existsSync(lock)).toBe(false);
+  }, 60_000);
 });

@@ -1,3 +1,4 @@
+import { AsyncResource } from 'node:async_hooks';
 import type { App } from '@slack/bolt';
 import { Logger } from '@soma/common/logger';
 
@@ -431,7 +432,11 @@ export class SlackApiHelper {
         });
       }
 
-      this.insert({ execute, resolve, reject, priority });
+      // A queued call runs in its CALLER's async context, not the drain loop's. The loop is started by whichever call
+      // found the queue idle and every call behind it would otherwise inherit that call's context — the display
+      // language among it (#774): an English user's thread header went out in Korean when a Korean turn had started
+      // the drain, and the other way round.
+      this.insert({ execute: AsyncResource.bind(execute), resolve, reject, priority });
       this.processQueue();
     });
   }

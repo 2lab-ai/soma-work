@@ -2,6 +2,7 @@ import { attachCommandHelp } from './command-help';
 import { expectedHandoffKind, extractSentinelType, isZHandoffWorkflow } from './handoff-parser';
 import { GET_SESSION_MAX_WAIT_MS } from './host-receipt';
 import type {
+  DecisionFields,
   SaveContextResultPayload,
   SessionInstructionOperation,
   SessionLink,
@@ -769,13 +770,14 @@ function shapeChoices(
  * strings for any failing rule; an empty array means the question is
  * high-quality.
  *
- * Six rules (per Epic #544 Defect B spec):
+ * Seven rules (1–6 per Epic #544 Defect B spec, 7 per #1073):
  *   1. options count must be 2..4
  *   2. question must start with a tier prefix [tiny|small|medium|large|xlarge]
  *   3. context must be present and ≥ 80 chars (trimmed)
  *   4. option labels must not be forbidden meta/approval verbs
  *   5. exactly one option must carry the Recommended marker (label only)
  *   6. question field must be non-empty (not whitespace-only)
+ *   7. a choice marked `reversible: false` says why (`reversibleWhy`)
  */
 export function checkAskUserQuestionQuality(params: AskUserQuestionParams): string[] {
   const warnings: string[] = [];
@@ -851,6 +853,9 @@ function collectUserChoiceWarnings(payload: UserChoice, warnings: string[]): voi
 
   // Rule 4 — forbidden meta labels (strip Recommended marker first)
   pushForbiddenLabelWarnings(payload.choices, '', warnings);
+
+  // Rule 7 — an irreversible choice says why (#1073)
+  pushIrreversibleWhyWarning(payload, '', warnings);
 }
 
 function collectUserChoicesWarnings(payload: UserChoices, warnings: string[]): void {
@@ -905,6 +910,17 @@ function collectUserChoicesWarnings(payload: UserChoices, warnings: string[]): v
 
     // Rule 4 — forbidden meta labels
     pushForbiddenLabelWarnings(q.choices, prefix, warnings);
+
+    // Rule 7 — an irreversible choice says why (#1073)
+    pushIrreversibleWhyWarning(q, prefix, warnings);
+  }
+}
+
+function pushIrreversibleWhyWarning(fields: DecisionFields, prefix: string, warnings: string[]): void {
+  if (fields.reversible === false && !fields.reversibleWhy?.trim()) {
+    warnings.push(
+      `${prefix}reversible is false but reversibleWhy is missing — say why the choice cannot be undone (one line)`,
+    );
   }
 }
 
@@ -1213,6 +1229,7 @@ function normalizeUserChoiceQuestion(raw: unknown, index: number): UserChoiceQue
     context: toOptionalString(raw.context),
     choices: options,
     ...(recommendedChoiceId ? { recommendedChoiceId } : {}),
+    ...normalizeDecisionFields(raw),
   };
 }
 
@@ -1231,7 +1248,55 @@ function normalizeUserChoice(raw: Record<string, unknown>): UserChoice | null {
     ...(recommendedChoiceId ? { recommendedChoiceId } : {}),
     // #1070 — the only audience: anything else is dropped (the question stays the owner's).
     ...(raw.audience === 'admins' ? { audience: 'admins' as const } : {}),
+    ...normalizeDecisionFields(raw),
   };
+}
+
+/** #1073 — a decision line's longest value: one line on a card; three escaped lines stay under Slack's 3000 chars. */
+export const DECISION_LINE_MAX_CHARS = 160;
+
+/**
+ * #1073 — the decision lines of a question (whitelist): the work this answer blocks, what is at stake, whether the
+ * choice can be undone and why. Text is one line (runs of whitespace and line breaks become one space, ends trimmed)
+ * and at most {@link DECISION_LINE_MAX_CHARS} (cut with '…'); blank or non-string text is dropped. `reversible` is a
+ * boolean, or the strings true/false/yes/no; anything else is dropped, and the why goes with it (a reason with no
+ * verdict says nothing). Returns only the fields that are present, so a question without them is unchanged.
+ *
+ * The validator (whitelist 1) and the dashboard projection (whitelist 2) both use it. `@soma/slack` has its own copy
+ * for the no-tool path and the renderer (it does not import somalib); src/__tests__/decision-fields-parity.test.ts
+ * holds the two to the same table.
+ */
+export function normalizeDecisionFields(raw: unknown): DecisionFields {
+  if (!isRecord(raw)) return {};
+  const out: DecisionFields = {};
+  const blockedWork = decisionLineText(raw.blockedWork);
+  if (blockedWork) out.blockedWork = blockedWork;
+  const stakes = decisionLineText(raw.stakes);
+  if (stakes) out.stakes = stakes;
+  const reversible = decisionReversible(raw.reversible);
+  if (reversible !== undefined) {
+    out.reversible = reversible;
+    const why = decisionLineText(raw.reversibleWhy);
+    if (why) out.reversibleWhy = why;
+  }
+  return out;
+}
+
+function decisionLineText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const line = value.replace(/\s+/g, ' ').trim();
+  if (!line) return undefined;
+  const chars = Array.from(line);
+  return chars.length > DECISION_LINE_MAX_CHARS ? `${chars.slice(0, DECISION_LINE_MAX_CHARS - 1).join('')}…` : line;
+}
+
+function decisionReversible(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') return undefined;
+  const word = value.trim().toLowerCase();
+  if (word === 'true' || word === 'yes') return true;
+  if (word === 'false' || word === 'no') return false;
+  return undefined;
 }
 
 /**

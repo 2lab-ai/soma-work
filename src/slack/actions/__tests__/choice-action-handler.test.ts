@@ -1102,4 +1102,69 @@ describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
       expect(formStore.get('form-B')).toBeUndefined();
     });
   });
+
+  /**
+   * #1073 — decision lines (blockedWork / stakes / reversible / reversibleWhy) are shown to the person only: the answer
+   * the model receives is byte for byte what it was before (issue #1073 Out of scope: 답 형식 변경).
+   */
+  describe('#1073 — decision lines never reach the answer', () => {
+    const LINES = { blockedWork: '배포', stakes: '데이터', reversible: false, reversibleWhy: '되살릴 수 없다' };
+
+    function waitingSession(pendingQuestion: unknown) {
+      const session: any = {
+        threadRootTs: 'thread-root',
+        threadTs: 'thread-root',
+        channelId: 'C1',
+        activityState: 'waiting',
+        activityStateChangedAt: 0,
+        actionPanel: { pendingQuestion },
+      };
+      claudeHandler.getSessionByKey.mockReturnValue(session);
+      return session;
+    }
+
+    it('dashboard single answer: the turn text is the choice id', async () => {
+      waitingSession({ type: 'user_choice', question: 'Q?', choices: [{ id: '2', label: 'B' }], ...LINES });
+      await handler.handleChoiceFromDashboard(sessionKey, '2', 'B', 'Q?', 'U1');
+      expect(messageHandler).toHaveBeenCalledTimes(1);
+      expect(messageHandler.mock.calls[0][0].text).toBe('2');
+    });
+
+    it('dashboard multi answer: "question: id. label" per line, nothing else', async () => {
+      waitingSession({
+        type: 'user_choices',
+        questions: [
+          { id: 'q1', question: 'Q1?', choices: [{ id: '1', label: 'A' }], ...LINES },
+          { id: 'q2', question: 'Q2?', choices: [{ id: '2', label: 'B' }], stakes: '돈' },
+        ],
+      });
+      await handler.handleMultiChoiceFromDashboard(
+        sessionKey,
+        { q1: { choiceId: '1', label: 'A' }, q2: { choiceId: '2', label: 'B' } },
+        'U1',
+      );
+      expect(messageHandler.mock.calls[0][0].text).toBe('Q1?: 1. A\nQ2?: 2. B');
+    });
+
+    it('Slack form submit: the combined answer is unchanged', async () => {
+      waitingSession(undefined);
+      formStore.set('form-1', {
+        formId: 'form-1',
+        sessionKey,
+        channel: 'C1',
+        threadTs: 'thread-root',
+        messageTs: 'form-ts',
+        questions: [{ id: 'q1', question: 'Q1?', choices: [{ id: '1', label: 'A' }], ...LINES }],
+        selections: { q1: { choiceId: '1', label: 'A' } },
+        createdAt: Date.now(),
+      });
+      await handler.handleFormSubmit({
+        actions: [{ value: JSON.stringify({ formId: 'form-1', sessionKey }) }],
+        user: { id: 'U1' },
+        channel: { id: 'C1' },
+        message: { ts: 'form-ts' },
+      });
+      expect(messageHandler.mock.calls[0][0].text).toBe('Q1?: 1. A');
+    });
+  });
 });

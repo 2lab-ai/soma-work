@@ -168,6 +168,47 @@ describe('McpConfigBuilder slack-mcp server', () => {
   });
 });
 
+describe('#1074 — slack-mcp knows the session artifact index and the display language', () => {
+  const manager = () =>
+    ({
+      getServerConfiguration: vi.fn().mockResolvedValue({}),
+      getDefaultAllowedTools: vi.fn().mockReturnValue([]),
+    }) as any;
+
+  it('passes SOMA_ARTIFACT_INDEX for the conversation and SOMA_DISPLAY_LANG for the speaker', async () => {
+    const { userSettingsStore } = await import('../user-settings-store');
+    const spy = vi.spyOn(userSettingsStore, 'getUserDisplayLanguage').mockReturnValue('en');
+    try {
+      const config = await new McpConfigBuilder(manager()).buildConfig({
+        channel: 'C123',
+        threadTs: '1700000000.000000',
+        mentionTs: '1700000010.000000',
+        user: 'U123',
+        conversationId: 'conv-1074',
+      });
+      const env = config.mcpServers?.['slack-mcp']?.env;
+      expect(env?.SOMA_ARTIFACT_INDEX).toMatch(/[/\\]artifacts[/\\]conv-1074[/\\]index\.json$/);
+      expect(env?.SOMA_DISPLAY_LANG).toBe('en');
+      expect(spy).toHaveBeenCalledWith('U123');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('no conversation (or an unsafe id) → no index: slack-mcp claims no version', async () => {
+    for (const conversationId of [undefined, '../etc']) {
+      const config = await new McpConfigBuilder(manager()).buildConfig({
+        channel: 'C123',
+        threadTs: '1700000000.000000',
+        mentionTs: '1700000010.000000',
+        user: 'U123',
+        ...(conversationId ? { conversationId } : {}),
+      });
+      expect(config.mcpServers?.['slack-mcp']?.env).not.toHaveProperty('SOMA_ARTIFACT_INDEX');
+    }
+  });
+});
+
 describe('McpConfigBuilder server-tools wiring', () => {
   // CONFIG_FILE is resolved at module load from env-paths.
   // hasServerToolsConfig() reads that file with fs.readFileSync.

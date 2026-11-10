@@ -249,4 +249,149 @@ describe('dashboard artifacts API', () => {
     });
     expect(unknown.statusCode).toBe(404);
   });
+
+  // ── #1074 — versions: the list, an earlier version's content, the line diff ──
+
+  async function versioned() {
+    const v1 = await store.recordSlackUpload({
+      conversationId: 'cv',
+      filePath: file('report.html', '<h1>R</h1>\n<p>old</p>\n'),
+      filename: 'report.html',
+      slackFileId: 'V1',
+      now: 1,
+    });
+    const v2 = await store.recordSlackUpload({
+      conversationId: 'cv',
+      filePath: file('report.html', '<h1>R</h1>\n<p>new</p>\n'),
+      filename: 'report.html',
+      slackFileId: 'V2',
+      now: 2,
+    });
+    return { v1, v2 };
+  }
+
+  it('#1074 T2/T6 — the card counts an artifact once and carries its version badge only', async () => {
+    await versioned();
+    const sessions = new Map<string, any>();
+    sessions.set('C9:t9', {
+      sessionId: 's9',
+      title: 'Versions',
+      ownerId: 'U1',
+      ownerName: 'A',
+      channelId: 'C9',
+      threadTs: 't9',
+      activityState: 'working',
+      state: 'MAIN',
+      conversationId: 'cv',
+      lastActivity: new Date('2026-11-09T00:00:00Z'),
+    });
+    dashboard.setDashboardSessionAccessor(() => sessions);
+    const res = await web.injectWebServer({ method: 'GET', url: '/api/dashboard/sessions', headers: AUTH });
+    const card = JSON.parse(res.body).board.working.find((c: any) => c.conversationId === 'cv');
+    expect(card.artifacts.count).toBe(1);
+    expect(card.artifacts.recent).toHaveLength(1);
+    expect(card.artifacts.recent[0]).toMatchObject({ name: 'report.html', version: 2, changed: true });
+    expect(card.artifacts.recent[0]).not.toHaveProperty('sha256');
+    expect(card.artifacts.recent[0]).not.toHaveProperty('previousId');
+    expect(JSON.stringify(card)).not.toContain('"versions"');
+  });
+
+  it('#1074 T4 — the versions of an artifact, newest first; an earlier version still opens; needs sign-in', async () => {
+    const { v1, v2 } = await versioned();
+    const res = await web.injectWebServer({
+      method: 'GET',
+      url: `/api/dashboard/session/cv/artifacts/${v1.id}/versions`,
+      headers: AUTH,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.key).toBe('name:report.html');
+    expect(body.versions.map((a: any) => [a.id, a.version])).toEqual([
+      [v2.id, 2],
+      [v1.id, 1],
+    ]);
+    const old = await web.injectWebServer({
+      method: 'GET',
+      url: `/api/dashboard/session/cv/artifacts/${v1.id}/content`,
+      headers: AUTH,
+    });
+    expect(old.body).toContain('<p>old</p>');
+    const anon = await web.injectWebServer({
+      method: 'GET',
+      url: `/api/dashboard/session/cv/artifacts/${v1.id}/versions`,
+    });
+    expect(anon.statusCode).toBe(401);
+    const unknown = await web.injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/session/cv/artifacts/NOPE/versions',
+      headers: AUTH,
+    });
+    expect(unknown.statusCode).toBe(404);
+  });
+
+  it('#1074 T4 — the line diff against the previous version (or a chosen one) of an HTML source', async () => {
+    const { v1, v2 } = await versioned();
+    const res = await web.injectWebServer({
+      method: 'GET',
+      url: `/api/dashboard/session/cv/artifacts/${v2.id}/diff`,
+      headers: AUTH,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['cache-control']).toBe('no-store');
+    const d = JSON.parse(res.body);
+    expect(d).toMatchObject({
+      from: { id: v1.id, version: 1 },
+      to: { id: v2.id, version: 2 },
+      added: 1,
+      removed: 1,
+      truncated: false,
+    });
+    expect(d.text).toBe('@@ -1,2 +1,2 @@\n <h1>R</h1>\n-<p>old</p>\n+<p>new</p>');
+    const back = await web.injectWebServer({
+      method: 'GET',
+      url: `/api/dashboard/session/cv/artifacts/${v1.id}/diff?against=${v2.id}`,
+      headers: AUTH,
+    });
+    expect(JSON.parse(back.body)).toMatchObject({ from: { id: v2.id }, to: { id: v1.id }, added: 1, removed: 1 });
+    const anon = await web.injectWebServer({ method: 'GET', url: `/api/dashboard/session/cv/artifacts/${v2.id}/diff` });
+    expect(anon.statusCode).toBe(401);
+  });
+
+  it('#1074 T4 — no diff for a first version, another artifact, a missing copy or a binary file', async () => {
+    const { v1, v2 } = await versioned();
+    const other = await store.recordSlackUpload({
+      conversationId: 'cv',
+      filePath: file('other.html', '<p>x</p>'),
+      filename: 'other.html',
+      slackFileId: 'O1',
+    });
+    const png1 = await store.recordSlackUpload({
+      conversationId: 'cv',
+      filePath: file('chart.png', 'P1'),
+      filename: 'chart.png',
+      slackFileId: 'P1',
+    });
+    const png2 = await store.recordSlackUpload({
+      conversationId: 'cv',
+      filePath: file('chart.png', 'P2'),
+      filename: 'chart.png',
+      slackFileId: 'P2',
+    });
+    const get = (id: string, q = '') =>
+      web.injectWebServer({ method: 'GET', url: `/api/dashboard/session/cv/artifacts/${id}/diff${q}`, headers: AUTH });
+    expect((await get(v1.id)).statusCode).toBe(404);
+    expect((await get(v2.id, `?against=${other.id}`)).statusCode).toBe(404);
+    expect(png1.version).toBe(1);
+    expect((await get(png2.id)).statusCode).toBe(415);
+    await store.recordSlackUpload({
+      conversationId: 'cv',
+      filename: 'report.html',
+      slackFileId: 'V3',
+      size: 5,
+      now: 3,
+    });
+    const v3 = store.list('cv').find((a: any) => a.slackFileId === 'V3');
+    expect(v3).toMatchObject({ version: 3, stored: false });
+    expect((await get(v3.id)).statusCode).toBe(404);
+  });
 });

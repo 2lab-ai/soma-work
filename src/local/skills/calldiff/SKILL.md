@@ -227,6 +227,23 @@ it:
 Push more source commits to the PR later? Re-run and update the block. A stale call-flow
 report is worse than none.
 
+**Keep the body you replace.** A PR body edit (`gh pr edit --body…`) overwrites the old
+body with no history anywhere. Before your first edit of a PR in a session, save the
+current body and send it to the thread as version 1 of that PR's body artifact; after
+every edit, send the new body under the same key. The session's artifacts then list the
+PR body once, say "판 N · 이전 판 이후 바뀜", open the earlier body, and diff the two line by
+line:
+
+```sh
+gh pr view <n> --json body -q .body > "$(pwd)/pr-<n>-body.md"   # before the first edit only
+# mcp__slack-mcp__send_file(file_path="$(pwd)/pr-<n>-body.md", artifact_key="pr-<n>-body")
+# … edit the body the way the PR rules say (zwork: an inline --body) …
+gh pr view <n> --json body -q .body > "$(pwd)/pr-<n>-body.md"   # after every edit
+# mcp__slack-mcp__send_file(file_path="$(pwd)/pr-<n>-body.md", artifact_key="pr-<n>-body")
+```
+
+Without the Slack tools (no thread), keep the saved file and name its path in your report.
+
 ## Limits — do not over-claim
 
 - Analysis is **syntactic** (AST-based, tree-sitter), not a typechecker. Dynamic calls,

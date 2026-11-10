@@ -77,7 +77,8 @@ describe('gpt-5.6 family — release wiring', () => {
     expect(MODEL_ALIASES.gpt).toBe('gpt-5.6-sol');
     // `sol` follows the newest sol generation, not 5.6 (see gpt-6-1-sol.test.ts).
     expect(MODEL_ALIASES.sol).toBe('gpt-6.1-sol[1m]');
-    expect(MODEL_ALIASES.terra).toBe('gpt-5.6-terra');
+    // `terra` follows the newest terra generation too (see gpt-6-1-terra.test.ts).
+    expect(MODEL_ALIASES.terra).toBe('gpt-6.1-terra[1m]');
     expect(MODEL_ALIASES.luna).toBe('gpt-5.6-luna');
     expect(MODEL_ALIASES['gpt-5.6']).toBe('gpt-5.6-sol');
     expect(MODEL_ALIASES['gpt5.6']).toBe('gpt-5.6-sol');
@@ -90,7 +91,10 @@ describe('gpt-5.6 family — release wiring', () => {
     expect(store.resolveModelInput('gpt-5.6-sol')).toBe('gpt-5.6-sol');
     expect(store.resolveModelInput('gpt')).toBe('gpt-5.6-sol');
     expect(store.resolveModelInput('  GPT-5.6 ')).toBe('gpt-5.6-sol');
-    expect(store.resolveModelInput('terra')).toBe('gpt-5.6-terra');
+    // The terra tier stays reachable by its literal id; the `terra`
+    // shorthand moved to gpt-6.1-terra[1m] on 2026-11-10.
+    expect(store.resolveModelInput('gpt-5.6-terra')).toBe('gpt-5.6-terra');
+    expect(store.resolveModelInput('terra')).toBe('gpt-6.1-terra[1m]');
     expect(store.resolveModelInput('luna')).toBe('gpt-5.6-luna');
   });
 

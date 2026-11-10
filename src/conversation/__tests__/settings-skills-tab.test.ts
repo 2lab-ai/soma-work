@@ -297,7 +297,7 @@ describe('스킬 tab — 환경 스킬', () => {
     expect(on).toContain('<option value="U_ME">');
   });
 
-  it('an open skill: no access → the ask hint and no content; admin → per-skill grants and the no-edit hint', () => {
+  it('an open skill: no access → the ask hint and no content; admin → per-skill grants; admin mode → the editor (1.b)', () => {
     const none = view({
       sk: snapshot(),
       section: 'env',
@@ -313,11 +313,70 @@ describe('스킬 tab — 환경 스킬', () => {
       open: { section: 'env', id: 'envx:post-deploy' },
       detail: { key: 'envx:post-deploy', content: 'SECRET <b>', description: 'QA' },
     });
-    expect(admin).toContain('<pre');
+    // admin mode on: SKILL.md in an editor that saves through skSaveEnv, with what the edit lasts until said first
+    expect(admin).toContain('<textarea id="sk-edit"');
+    expect(admin).toContain('data-name="envx:post-deploy"');
     expect(admin).toContain('SECRET &lt;b&gt;');
+    expect(admin).toContain('onclick="skSaveEnv()"');
     expect(admin).toContain('data-user="U_B"');
-    expect(admin).toContain('저장소에서');
-    expect(admin).not.toContain('<textarea');
+    expect(admin).toContain('저장소에 새 커밋이 생기거나');
+    expect(admin).not.toContain('<pre');
+    // admin mode off: read-only, and how to edit
+    const adminOff = view({
+      sk: snapshot({ isAdmin: true, env: adminEnv }),
+      section: 'env',
+      open: { section: 'env', id: 'envx:post-deploy' },
+      detail: { key: 'envx:post-deploy', content: 'SECRET', description: 'QA' },
+    });
+    expect(adminOff).toContain('<pre');
+    expect(adminOff).toContain('관리자 모드를 켜면 여기서 고칠 수 있습니다');
+    expect(adminOff).not.toContain('<textarea');
+    // a granted non-admin reads it, never edits
+    const granted = view({
+      sk: snapshot({
+        env: { skills: [{ key: 'envx:post-deploy', plugin: 'envx', name: 'post-deploy', access: 'granted' }] },
+      }),
+      section: 'env',
+      adminMode: true,
+      open: { section: 'env', id: 'envx:post-deploy' },
+      detail: { key: 'envx:post-deploy', content: 'SECRET', description: 'QA' },
+    });
+    expect(granted).toContain('<pre');
+    expect(granted).not.toMatch(/<textarea|skSaveEnv|관리자 모드를 켜면/);
+  });
+
+  it('an admin saves an environment skill with the hash it was read with; 409 keeps the draft; 403 says why', async () => {
+    const status: any = { textContent: '', setAttribute() {} };
+    const ta = { value: 'edited', getAttribute: () => 'envx:post-deploy' };
+    const apiWrite = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 409, error: 'conflict' })
+      .mockResolvedValueOnce({ ok: false, status: 403, error: 'Forbidden' })
+      .mockResolvedValueOnce({
+        ok: true,
+        data: { skill: { key: 'envx:post-deploy', description: '새 설명', content: 'edited', hash: 'h2' } },
+      });
+    const sk = snapshot({ isAdmin: true, env: adminEnv });
+    const fns = load<any>(['skStatus', 'skFindEnv', 'skSaveEnv'], {
+      document: { getElementById: (id: string) => (id === 'sk-edit' ? ta : status) },
+      _sk: sk,
+      _skOpen: { section: 'env', id: 'envx:post-deploy' },
+      _skDetail: { key: 'envx:post-deploy', content: 'old', hash: 'h1' },
+      apiWrite,
+      renderSkills: () => {},
+    });
+    expect(await fns.skSaveEnv()).toBe(false);
+    expect(apiWrite).toHaveBeenCalledWith('PUT', '/api/skills/env/envx%3Apost-deploy', {
+      content: 'edited',
+      hash: 'h1',
+    });
+    expect(status.textContent).toContain('다른 곳에서 이 스킬이 바뀌어');
+    expect(ta.value).toBe('edited');
+    expect(await fns.skSaveEnv()).toBe(false);
+    expect(status.textContent).toContain('권한이 없습니다');
+    expect(await fns.skSaveEnv()).toBe(true);
+    expect((sk.env.skills[0] as { description?: string }).description).toBe('새 설명');
+    expect(status.textContent).toBe('저장했습니다');
   });
 
   it('opening an env skill without access fetches nothing', async () => {

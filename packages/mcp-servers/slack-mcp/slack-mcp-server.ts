@@ -19,6 +19,8 @@
  * Environment variables (set by McpConfigBuilder):
  *   - SLACK_BOT_TOKEN: Bot token for Slack API calls
  *   - SLACK_MCP_CONTEXT: JSON { channel, threadTs, mentionTs }
+ *   - SOMA_ARTIFACT_INDEX: the session's artifact index (read only) — an upload's version (#1074)
+ *   - SOMA_DISPLAY_LANG: `ko` | `en` — the language of the version line in an upload's comment
  */
 
 import { WebClient } from '@slack/web-api';
@@ -29,6 +31,15 @@ import * as fs from 'fs/promises';
 import { markdownToBlocks as libMarkdownToBlocks } from 'markdown-to-slack-blocks';
 import * as os from 'os';
 import * as path from 'path';
+import {
+  commentWithVersion,
+  planUploadVersion,
+  type UploadVersion,
+  UploadVersions,
+  uploadKey,
+  type VersionLang,
+  versionFields,
+} from './helpers/artifact-version.js';
 import {
   ALLOWED_MEDIA_EXTENSIONS,
   getMediaType,
@@ -47,9 +58,21 @@ import type { GetThreadMessagesResult, SlackMcpContext } from './types.js';
 /** Allowed Slack file URL hosts — prevents token exfiltration to attacker-controlled domains */
 const ALLOWED_FILE_HOSTS = new Set(['files.slack.com', 'files-pri.slack.com', 'files-tmb.slack.com']);
 
+/** #1074 — how an upload becomes a new version of an earlier one. */
+const ARTIFACT_KEY_NOTE = [
+  'Versions: an upload with the same artifact_key — or, without one, the same file name apart from its time stamp —',
+  'is the next version of that artifact. The comment and the reply say the version and whether it changed since the',
+  'previous one ("no changes" when the content is identical). Give a revision the same key; give a different document a',
+  'different one.',
+].join(' ');
+const ARTIFACT_KEY_PARAM =
+  'Optional. Names the artifact this file is a version of (e.g. "weekly-report", "pr-1074-body"). The same key = the next version of it.';
+
 // ── Server ───────────────────────────────────────────────
 
 class SlackMcpServer extends BaseMcpServer {
+  /** #1074 — one upload of a key at a time, and the versions this process sent before the daemon records them. */
+  private readonly uploadVersions = new UploadVersions();
   private slack: WebClient;
   private token: string;
   private context: SlackMcpContext;
@@ -170,6 +193,7 @@ class SlackMcpServer extends BaseMcpServer {
           'Upload a file from the local filesystem to a Slack thread.',
           'Supports any file type up to 1GB. The file is shared as a thread reply.',
           'Use this for code outputs, reports, logs, archives, or any generated artifact.',
+          ARTIFACT_KEY_NOTE,
         ].join('\n'),
         inputSchema: {
           type: 'object' as const,
@@ -184,6 +208,7 @@ class SlackMcpServer extends BaseMcpServer {
                 "The http(s) address this session also serves the file at (e.g. the html skill's published page). The dashboard artifact then opens it live; no separate send_link.",
             },
             thread: { type: 'string', description: 'Which thread to upload to: "work" (default) or "source"' },
+            artifact_key: { type: 'string', description: ARTIFACT_KEY_PARAM },
           },
           required: ['file_path'],
         },
@@ -198,6 +223,7 @@ class SlackMcpServer extends BaseMcpServer {
           '- Images: jpg, jpeg, png, gif, webp, svg, bmp, ico, tiff, heic, heif, avif',
           '- Audio: mp3, wav, ogg, flac, m4a, aac, wma',
           '- Video: mp4, mov, avi, mkv, webm, wmv, m4v, mpg, mpeg, 3gp',
+          ARTIFACT_KEY_NOTE,
         ].join('\n'),
         inputSchema: {
           type: 'object' as const,
@@ -208,6 +234,7 @@ class SlackMcpServer extends BaseMcpServer {
             alt_text: { type: 'string', description: 'Alt text for images (accessibility)' },
             initial_comment: { type: 'string', description: 'Message posted alongside the media' },
             thread: { type: 'string', description: 'Which thread to upload to: "work" (default) or "source"' },
+            artifact_key: { type: 'string', description: ARTIFACT_KEY_PARAM },
           },
           required: ['file_path'],
         },
@@ -757,6 +784,50 @@ class SlackMcpServer extends BaseMcpServer {
     };
   }
 
+  // ── upload version (#1074) ─────────────────────────────
+
+  /** The version this upload is; null when the daemon gave no index or it cannot be read (never blocks the upload). */
+  private async uploadVersion(file: string, displayName: string, artifactKey: unknown): Promise<UploadVersion | null> {
+    try {
+      const lang: VersionLang = process.env.SOMA_DISPLAY_LANG === 'en' ? 'en' : 'ko';
+      return await planUploadVersion({
+        indexPath: process.env.SOMA_ARTIFACT_INDEX || undefined,
+        filePath: file,
+        displayName,
+        artifactKey,
+        lang,
+        sent: this.uploadVersions.sent(),
+      });
+    } catch (err) {
+      this.logger.warn('Could not work out the upload version', { name: displayName, error: (err as Error).message });
+      return null;
+    }
+  }
+
+  /**
+   * Plan the version, upload with the version line in the comment, and remember what was sent — one upload of a
+   * key at a time, so two uploads of one report in one turn announce 2 and 3 as the daemon records them.
+   */
+  private async uploadVersioned(
+    file: string,
+    displayName: string,
+    artifactKey: unknown,
+    initialComment: string | undefined,
+    uploadArgs: Record<string, unknown>,
+  ): Promise<{ version: UploadVersion | null; uploadedFile: any; result: unknown }> {
+    return this.uploadVersions.serialize(uploadKey(displayName, artifactKey), async () => {
+      const version = await this.uploadVersion(file, displayName, artifactKey);
+      const comment = commentWithVersion(version?.note ?? '', initialComment);
+      if (comment) uploadArgs.initial_comment = comment;
+      const result = await this.slack.filesUploadV2(uploadArgs as any);
+      const uploadedFile = (result as any).files?.[0]?.files?.[0] || (result as any).files?.[0] || null;
+      // Not a new version when unchanged: the daemon keeps the version it has.
+      if (version && version.changed !== false && uploadedFile?.id)
+        this.uploadVersions.remember(uploadedFile.id, version);
+      return { version, uploadedFile, result };
+    });
+  }
+
   // ── send_file ──────────────────────────────────────────
 
   private async handleSendFile(args: {
@@ -766,13 +837,13 @@ class SlackMcpServer extends BaseMcpServer {
     initial_comment?: string;
     url?: string;
     thread?: string;
+    artifact_key?: string;
   }): Promise<ToolResult> {
     const { resolvedPath, size } = await validateFilePath(args.file_path);
     const displayName = args.filename || path.basename(resolvedPath);
     const resolved = this.resolveThread(args.thread);
     // Checked before the upload, so a bad URL uploads nothing.
     const url = args.url !== undefined && args.url !== '' ? validateLinkUrl(args.url) : undefined;
-
     this.logger.info('Uploading file', { name: displayName, size, path: resolvedPath, thread: args.thread || 'work' });
 
     const uploadArgs: any = {
@@ -782,10 +853,13 @@ class SlackMcpServer extends BaseMcpServer {
       thread_ts: resolved.threadTs,
     };
     if (args.title) uploadArgs.title = args.title;
-    if (args.initial_comment) uploadArgs.initial_comment = args.initial_comment;
-
-    const result = await this.slack.filesUploadV2(uploadArgs);
-    const uploadedFile = (result as any).files?.[0]?.files?.[0] || (result as any).files?.[0] || null;
+    const { version, uploadedFile, result } = await this.uploadVersioned(
+      resolvedPath,
+      displayName,
+      args.artifact_key,
+      args.initial_comment,
+      uploadArgs,
+    );
 
     if (!uploadedFile?.id) {
       this.logger.error('Slack filesUploadV2 returned unexpected response shape', {
@@ -812,6 +886,7 @@ class SlackMcpServer extends BaseMcpServer {
             permalink: uploadedFile.permalink || '',
             channel: resolved.channel,
             thread_ts: resolved.threadTs,
+            ...versionFields(version),
           }),
         },
       ],
@@ -827,6 +902,7 @@ class SlackMcpServer extends BaseMcpServer {
     alt_text?: string;
     initial_comment?: string;
     thread?: string;
+    artifact_key?: string;
   }): Promise<ToolResult> {
     const { resolvedPath, size } = await validateFilePath(args.file_path);
     const displayName = args.filename || path.basename(resolvedPath);
@@ -854,10 +930,13 @@ class SlackMcpServer extends BaseMcpServer {
     };
     if (args.title) uploadArgs.title = args.title;
     if (args.alt_text) uploadArgs.alt_text = args.alt_text;
-    if (args.initial_comment) uploadArgs.initial_comment = args.initial_comment;
-
-    const result = await this.slack.filesUploadV2(uploadArgs);
-    const uploadedFile = (result as any).files?.[0]?.files?.[0] || (result as any).files?.[0] || null;
+    const { version, uploadedFile, result } = await this.uploadVersioned(
+      resolvedPath,
+      displayName,
+      args.artifact_key,
+      args.initial_comment,
+      uploadArgs,
+    );
 
     if (!uploadedFile?.id) {
       this.logger.error('Slack filesUploadV2 returned unexpected response shape', {
@@ -885,6 +964,7 @@ class SlackMcpServer extends BaseMcpServer {
             permalink: uploadedFile.permalink || '',
             channel: resolved.channel,
             thread_ts: resolved.threadTs,
+            ...versionFields(version),
           }),
         },
       ],

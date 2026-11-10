@@ -41,6 +41,8 @@ import { plainTldrLine } from '@soma/slack/summary-service';
 import type { FastifyInstance } from 'fastify';
 import { SDK_EFFORT_LEVELS } from 'soma-lib';
 import type { CronExecutionRecord, CronJob, CronJobPatch } from 'somalib/cron/cron-storage';
+import type { DecisionFields } from 'somalib/model-commands/session-types';
+import { normalizeDecisionFields } from 'somalib/model-commands/validator';
 import {
   type AdminApprovalSnapshot,
   adminApprovalSnapshot,
@@ -130,7 +132,7 @@ import { coerceEffort, EFFORT_LEVELS, type EffortLevel, userSettingsStore } from
 import { BUILTIN_PRESETS } from '../view-layout';
 import { fetchSiblingBoards, type InstanceEnvironment, mergeBoards, shouldAggregate } from './aggregator';
 import { backfillArtifactsFromWorkLog } from './artifact-capture';
-import { type ArtifactSummary, getArtifactStore, type SessionArtifact } from './artifacts';
+import { type ArtifactSummary, boardArtifact, getArtifactStore, type SessionArtifact } from './artifacts';
 import { buildCapacityView, type CapacityView, readSaveMode } from './capacity-view';
 import { type CardLink, cardLinksOf, followupLinksOf, settledLinkUrlsOf } from './card-links';
 import { archivedCardClocks, cardWhereOf, liveCardClocks } from './card-where';
@@ -549,20 +551,24 @@ export interface KanbanSession {
    */
   taskPlan?: KanbanTaskPlan;
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
-  pendingQuestion?: {
+  pendingQuestion?: DecisionFields & {
     type: 'user_choice' | 'user_choices';
     question: string;
     choices?: Array<{ id: string; label: string; description?: string }>;
     /** ID of the recommended choice (single-choice) */
     recommendedChoiceId?: string;
+    /** The single question's context (#1073 — it was dropped before). */
+    context?: string;
     /** Multi-choice fields */
-    questions?: Array<{
-      id: string;
-      question: string;
-      choices: Array<{ id: string; label: string; description?: string }>;
-      context?: string;
-      recommendedChoiceId?: string;
-    }>;
+    questions?: Array<
+      DecisionFields & {
+        id: string;
+        question: string;
+        choices: Array<{ id: string; label: string; description?: string }>;
+        context?: string;
+        recommendedChoiceId?: string;
+      }
+    >;
     questionCount?: number;
     title?: string;
     description?: string;
@@ -2460,7 +2466,12 @@ function cardUserMedia(conversationId: string | undefined): { count: number } | 
 export function broadcastArtifactUpdate(artifact: SessionArtifact): void {
   if (wsClients.size > 0) {
     try {
-      const payload = JSON.stringify({ type: 'artifact_update', conversationId: artifact.conversationId, artifact });
+      // The board's projection (#1074): every signed-in viewer gets the version badge, not the hash or links.
+      const payload = JSON.stringify({
+        type: 'artifact_update',
+        conversationId: artifact.conversationId,
+        artifact: boardArtifact(artifact),
+      });
       for (const client of wsClients) {
         try {
           client.send(payload);
@@ -2729,6 +2740,11 @@ function sessionToKanban(key: string, s: any): KanbanSession {
             ...(s.actionPanel.pendingQuestion.recommendedChoiceId
               ? { recommendedChoiceId: s.actionPanel.pendingQuestion.recommendedChoiceId }
               : {}),
+            // #1073 — the question's context (dropped before) and its decision lines, as the Slack card shows them.
+            ...(typeof s.actionPanel.pendingQuestion.context === 'string' && s.actionPanel.pendingQuestion.context.trim()
+              ? { context: s.actionPanel.pendingQuestion.context }
+              : {}),
+            ...normalizeDecisionFields(s.actionPanel.pendingQuestion),
           }
         : s.actionPanel.pendingQuestion.type === 'user_choices'
           ? {
@@ -2747,6 +2763,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
                 })),
                 context: q.context,
                 ...(q.recommendedChoiceId ? { recommendedChoiceId: q.recommendedChoiceId } : {}),
+                ...normalizeDecisionFields(q),
               })),
             }
           : undefined // Unknown question type — skip
@@ -5613,6 +5630,7 @@ window.uiPeek = { html: peekHtml, kind: fileItemKind };
 <script type="module" src="/dashboard/ui/elapsed.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/meter.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/media-grid.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/dock.js?v=${UI_LIB_VERSION}"></script>
 <!-- The theme (soma-work 830): light · dark · light·mono · dark·mono on <html> before CSS paints, and the bar's toggle. -->
 <script data-fouc>${themeClientJs()}</script>
 <!-- Interface sound (@2lab.ai/ui/sound, sound-cuelume): off until the speaker beside the theme switch turns it on. -->
@@ -5669,6 +5687,9 @@ ${TASK_PLAN_CSS}
 html,body {
   min-height: 100%;
   background: var(--bg);
+  /* mobile-native §6: the board is a live app with its own scroll areas and sheets — no pull-to-refresh, no page
+     bounce behind a drawer (the WebSocket keeps the board fresh; the build-skew banner asks for a reload). */
+  overscroll-behavior-y: none;
   color: var(--text);
   font-family: var(--font);
   font-size: 14px;
@@ -5683,6 +5704,19 @@ html:lang(ko) body { word-break: keep-all; overflow-wrap: anywhere; }
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--border); border: 2px solid var(--bg); border-radius: 999px; }
 
+/* ── PHONE FEEL (mobile-native, 2026-11-10) — the fixes that separate a website from an installed app.
+   §2 no grey tap flash (every control keeps its own :active press — the kit's scale, the page's fills);
+   §5 a tap fires at once (no double-tap-zoom wait) on every control;
+   §8 a long press on a control does not select its label or open the callout — content text stays selectable. */
+html { -webkit-tap-highlight-color: transparent; }
+:is(button, a, summary, label, select, [role="button"], [role="tab"], [role="switch"], ui-dock, ui-segmented) { touch-action: manipulation; }
+:is(button, [role="tab"], .ui-chip, .ui-btn, .ui-icon-btn, .ui-fab):not(a[href]) { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+/* §4 iOS zooms into a field under 16px and stays zoomed: every page field is 16px on a touch screen (a tablet too —
+   the phone-width rules alone left an iPad zooming into the board search). */
+@media (pointer: coarse) {
+  :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"]), textarea, select) { font-size: 16px !important; }
+}
+
 /* ── FOCUS — visible outline for keyboard nav ── */
 :focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
@@ -5690,7 +5724,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* viewport-fit=cover (SSOT 2026-10-24): the page reaches under the notch and the
    Dynamic Island, so it keeps clear of the side insets itself (landscape phones,
    the iPhone Duo cover). */
-.app { display: flex; flex-direction: column; min-height: 100vh; padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); }
+.app { display: flex; flex-direction: column; min-height: 100vh; min-height: 100dvh; padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); }
 
 /* ── TOPBAR — @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14) ──
    The bar is the library's: 56px (52 on phones), translucent over the page, one hairline;
@@ -5800,6 +5834,9 @@ ui-breadcrumbs.crumbs { flex: 1 1 160px; min-width: 0; }
 /* Board header tools: Show archives, then Board | List. Below 640px the tools
    take their own row under the breadcrumb. */
 .inbox-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; row-gap: 8px; flex: 0 1 auto; min-width: 0; margin-left: auto; }
+/* The board's chips (보관함 · 휴면 · 내 카드만 · 필터 · 정렬 · 수명 주기): one flex line with the tools from 640px (the box
+   is display: contents), the phone's own scroll row below it (PHONE DOCK). */
+.inbox-chips { display: contents; }
 /* 보관함 · 휴면 · 수명 주기 are kit chips (.ui-chip[aria-pressed], D7 D-03); a chip the board has no use for yet stays out. */
 .archives-btn[hidden] { display: none; }
 /* Board filters and sort (SSOT 2026-11-05): 필터 and 정렬 are the triggers of their <ui-menu>s; 필터 carries the count of
@@ -6233,15 +6270,20 @@ ui-breadcrumbs.pa-path { flex: 1 1 auto; min-width: 0; }
   /* The panel is the card it opened from, larger: its title is never smaller than the card's (15px). */
   font-size: 15px;
   font-weight: 650;
+  /* The full title, up to 3 lines: the card face cuts it to one, and a touch screen has no tooltip, so the open card
+     is where it is read (break-ui, 2026-11-10: "https://exa…" at 390px). An unbroken URL breaks anywhere. */
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow-wrap: anywhere;
 }
 .panel-header { flex-wrap: wrap; row-gap: 8px; }
 /* The owner pill (SSOT 2026-11-04): top right, before the deck and ✕, centred on them (the header's top line). It gives
-   way before the title does (shrinks to its ellipsis from 40% of the row); the kit's display: inline-block must not
+   way before the title does (shrinks to its ellipsis from 28% of the row, 120px at most); the kit's display: inline-block must not
    beat [hidden]. */
-.panel-header > .panel-owner { flex: 0 1 auto; min-width: 0; max-inline-size: min(40%, 168px); align-self: center; }
+.panel-header > .panel-owner { flex: 0 1 auto; min-width: 0; max-inline-size: min(28%, 120px); align-self: center; }
 .panel-header > .panel-owner[hidden] { display: none; }
 /* The title's actions (SSOT 2026-11-04): 퍼머링크 · 전체 문맥 복사 right after the title text, small. The title keeps
    its own width (no flex: 1) and ellipsizes first, so the two stay beside its last letter; the -2px margins keep the
@@ -6403,7 +6445,7 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 /* Scroll container: the common surface (large UIAskQ choices included), the
    agent tabs, Tasks and the section tabs scroll together; each section scrolls
    in its own box inside it, and .panel-command stays pinned below. */
-.panel-scroll { flex: 1 1 auto; overflow-y: auto; scroll-behavior: smooth; min-height: 0; }
+.panel-scroll { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
 /* P8: the text triangles are the icon set's chevron (16 grid, 1.5 stroke, round caps), drawn as a mask so
    it takes currentColor; .chev points down, .is-up / .is-right turn it, and a toggle's aria-expanded
    turns it open. */
@@ -6427,7 +6469,7 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 .cp-time { flex: none; white-space: nowrap; }
 .cp-over { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cp-bar { flex: 0 1000 120px; min-width: 0; max-width: 120px; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
-.cp-bar > i { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 1s linear; }
+.cp-bar > i { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
 .cp-bar.is-over > i { width: 100% !important; background: linear-gradient(90deg, transparent, var(--accent), transparent) no-repeat; background-size: 40% 100%; animation: cp-over 1.4s linear infinite; }
 @keyframes cp-over { from { background-position: -40% 0; } to { background-position: 140% 0; } }
 .cp-pct { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; }
@@ -6472,8 +6514,8 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 }
 
 /* ── BOARD RESPONSIVE (.prd/10 §5, SSOT 2026-10-24) ──
-   The columns follow the inbox's own width (container query): ≥840 three columns
-   that always fit · <840 the three columns scroll sideways inside the board (the
+   The columns follow the inbox's own width (container query): ≥720 three columns
+   that always fit (a tablet held upright, 2026-11-09) · <720 the three columns scroll sideways inside the board (the
    page itself never scrolls horizontally). <640 viewport: List by default, 44px
    taps. A docked drawer narrows the inbox, so this is not a viewport query. */
 @media (max-width: 639px) {
@@ -6505,7 +6547,7 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
    (syncPickerFit). A tap on the title bar or the title bar's ˅ (#panel-head-back, while reading) brings the head back.
    T4 · reading tucks the composer away (data-tuck): it slides down; a ^ at the bottom right (#pc-reveal) brings it
    back, and so does the very bottom of the chat or the log. ── */
-.inbox-tools > .topbar-scope { flex: 1 1 auto; flex-wrap: wrap; margin-right: auto; }
+.inbox-tools > .topbar-scope, .inbox-chips > .topbar-scope { flex: 1 1 auto; flex-wrap: wrap; margin-right: auto; }
 .inbox-tools .topbar-defaults { display: flex; gap: 6px; align-items: center; flex: none; }
 .inbox-tools .topbar-defaults[hidden], .inbox-tools .td-also[hidden] { display: none; }
 .inbox-tools .td-prefix, .inbox-tools .td-status { display: none; }
@@ -6514,8 +6556,10 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 .inbox-tools .admin-toggle { flex: none; }
 .inbox-tools .admin-toggle[aria-pressed="true"] { background: var(--tint-fail-bg); border-color: var(--tint-fail-line); color: var(--tint-fail-fg); }
 .panel-surface > .panel-status { flex: none; padding: 10px 16px 12px; }
-/* T6 (SSOT 2026-11-04): on a phone the card's title bar is one line of the board's top bar's height (52px) — title,
-   its actions and ✕, nothing under it (the status bar lives in the scroll area). */
+/* T6 (SSOT 2026-11-04): on a phone the card's title bar is one line of the board's top bar's height (52px) while the
+   reader reads — title, its actions and ✕, nothing under it (the status bar lives in the scroll area). When the card
+   opens, and whenever its head comes back, the title shows whole (up to 3 lines, break-ui 2026-11-10): the card face
+   cuts it to one line and a touch screen has no tooltip. */
 @media (max-width: 639px), (max-height: 560px) {
   /* ui-drawer.slide-panel: above the sheet's notch rule (max(12px, safe-area) on top) — the notch keeps its inset,
      the bar its 52px under it. */
@@ -6526,6 +6570,9 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 }
 /* Reading: the box is exactly the view under the section tabs (sizePanelSections) — no 160px floor on a short screen. */
 .slide-panel[data-read] .psec { min-height: 0; }
+/* Reading (T6): the title bar is one line again — the whole title (3 lines) is there when the card opens and when the
+   head comes back; the panel-scroll ResizeObserver resizes the box when the bar shrinks. */
+.slide-panel[data-read] .panel-header h3 { -webkit-line-clamp: 1; line-clamp: 1; }
 /* Reading: nothing sticks above the box — the agent strip scrolls out with the rest. */
 .slide-panel[data-read] .panel-tabs::part(list) { position: static; }
 .panel-command { position: relative; transition: transform var(--dur-move) var(--ease-out); }
@@ -6545,6 +6592,34 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 .slide-panel[data-tuck] .pc-reveal {
   opacity: 1; visibility: visible; transform: none;
   transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-move) var(--ease-out), visibility 0s;
+}
+
+/* ── PHONE DOCK (2026-11-09) — under 640px the sections and 새 작업 sit in the thumb zone: @2lab.ai/ui <ui-dock
+   layout="bar" fixed> (보드 · 대화 · 새 작업 · 기억 · 설정, the board's needs-you count on 보드). It takes the jobs of
+   the bar's 메뉴 (the bar drops its links there: paintAppBar) and of the floating 새 작업 button (hidden there). The
+   last card clears it through the board's own clearance (.inbox.has-cards: the dock's 60px + the home indicator — a
+   board with cards only, so an empty page never scrolls by the dock's height). The board's head is two lines: the search with
+   Board | List, then the chips as one row that scrolls sideways (ui-scroll-row) — the trail goes (the dock says
+   where you are). A phone held sideways (PHONE_MQ's short screen) keeps the bar's 메뉴 and its height for the board. ── */
+.phone-dock { display: none; }
+/* The page's Korean line breaking (html:lang(ko) body: overflow-wrap: anywhere) is inherited into the dock's shadow
+   DOM, where the badge has ~22px: "22" broke into "2" over "2" and "99+" stacked. The dock's labels and counts never
+   break (break-ui, 2026-11-10). */
+.phone-dock { overflow-wrap: normal; }
+@media (max-width: 639px) {
+  .phone-dock { display: block; }
+  .new-task-fab.ui-fab { display: none !important; }
+  /* 600–639px: the toaster is already in its wide placement (bottom right; it goes top-centre under 600px and sets its
+     own narrow offset there), so its bottom offset clears the dock and the home indicator. */
+  ui-toaster { --ts-offset: calc(var(--ui-dock-h, 60px) + 12px + env(safe-area-inset-bottom, 0px)); }
+  .inbox-head { margin-bottom: 10px; }
+  .inbox-head > .crumbs { display: none; }
+  .inbox-tools { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; flex: 1 1 100%; width: 100%; margin-left: 0; }
+  .inbox-tools > .bf-search { grid-column: 1; grid-row: 1; width: 100%; max-width: none; height: 40px; font-size: 16px; }
+  .inbox-tools > .bf-search:focus { flex-basis: auto; }
+  .inbox-tools > .view-seg { grid-column: 2; grid-row: 1; }
+  .inbox-tools > .inbox-chips { --ui-bleed: 12px; grid-column: 1 / -1; grid-row: 2; display: flex; gap: 6px; padding-block: 2px; }
+  .inbox-chips > .topbar-scope { display: flex; flex: none; flex-wrap: nowrap; align-items: center; gap: 6px; margin: 0; }
 }
 
 /* ── RESPONSIVE — Bauhaus grid adapts ── */
@@ -6717,6 +6792,10 @@ body.nt-open .new-task-fab { display: none !important; }
 .panel-arts-hint { margin-left: auto; font-size: 11px; font-weight: 400; color: var(--text-tertiary); }
 .art-strip-panel .art-tile { --fc-tile-w: 152px; }
 .turn-arts-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+/* #1074 — an artifact uploaded again is its next version: a small "판 N" pill on its card's corner (the tile's meta
+   line and the viewer say the whole "판 N · 이전 판 이후 바뀜"). */
+.art-ver-wrap { position: relative; display: inline-block; }
+.art-ver { position: absolute; top: -5px; right: -5px; z-index: 1; display: inline-flex; align-items: center; height: 16px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: var(--bg, #fff); font-size: 10px; font-weight: 700; line-height: 1; white-space: nowrap; pointer-events: none; font-variant-numeric: tabular-nums; }
 /* ── User media (SSOT 2026-10-25): the files a user attached to an instruction ──
    Above the words, as chat apps show an attachment with its message. The pictures are @2lab.ai/ui <ui-media-grid>
    (D7 I-09 / I-11): fixed 80px tiles (one picture alone in a wide box that shows it whole), "+N" on the last tile
@@ -6797,8 +6876,8 @@ body.nt-open .new-task-fab { display: none !important; }
   .slide-panel:not(.is-detail) #panel-title-sub { display: none !important; }
 }
 @media (max-width: 639px) {
-  /* Responsive (SSOT 2026-10-24) — phones: the last card clears the FAB (a board
-     with cards only — an empty page must not turn scrollable); the defaults
+  /* Responsive (SSOT 2026-10-24) — phones: the last card clears the bottom dock (60px + the home indicator; it was the
+     FAB's until 2026-11-09) — a board with cards only, so an empty page never turns scrollable; the defaults
      menu and the artifact viewer are the elements' own sheets. */
   .inbox.has-cards { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }
 }
@@ -6959,6 +7038,7 @@ ${pageTokenAliases()}
       <div class="inbox-head">
         <ui-breadcrumbs class="crumbs" id="inbox-trail" lang="ko"></ui-breadcrumbs>
         <div class="inbox-tools" id="inbox-tools">
+          <div class="inbox-chips ui-scroll-row is-bleed" id="inbox-chips">
           <button type="button" class="ui-chip archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><i data-ui-icon="archive"></i><span id="archives-label">보관함</span></button>
           <button type="button" class="ui-chip archives-btn" id="sleeping-toggle" aria-pressed="true" hidden onclick="toggleSleeping()"><i data-ui-icon="moon"></i><span id="sleeping-label">휴면</span></button>
           <!-- Board filters and sort (SSOT 2026-11-05): 내 카드만 (the All Users board, signed in), 필터 (사용자 · 채널 ·
@@ -6967,8 +7047,9 @@ ${pageTokenAliases()}
           <button type="button" class="ui-chip archives-btn" id="mine-toggle" aria-pressed="false" hidden title="내가 시작한 카드만 보기" onclick="toggleMineOnly()"><i data-ui-icon="user"></i><span>내 카드만</span></button>
           <ui-menu id="bf-menu" class="bf-menu" lang="ko" placement="bottom end"><button type="button" slot="trigger" class="ui-chip archives-btn bf-trigger" id="bf-trigger" aria-pressed="false" title="카드 필터"><span>필터</span><span class="ui-count" id="bf-count" hidden>0</span></button></ui-menu>
           <ui-menu id="bs-menu" class="bs-menu" lang="ko" placement="bottom end"><button type="button" slot="trigger" class="ui-chip archives-btn bs-trigger" id="bs-trigger" title="카드 정렬"><span id="bs-label">마지막 진행 ↓</span></button></ui-menu>
-          <input type="search" class="bf-search" id="bf-search" placeholder="카드 검색" aria-label="카드 검색 — 제목 · 요약 · 사용자 · 채널 · 레포" autocomplete="off" spellcheck="false" oninput="onBoardSearch(this.value)">
           <button type="button" class="ui-chip archives-btn" id="lifecycle-btn" style="display:none" title="세션 수명 주기 (관리자)" onclick="openLifecycleDialog()"><i data-ui-icon="clock"></i><span>수명 주기</span></button>
+          </div>
+          <input type="search" class="bf-search" id="bf-search" placeholder="카드 검색" aria-label="카드 검색 — 제목 · 요약 · 사용자 · 채널 · 레포" autocomplete="off" spellcheck="false" oninput="onBoardSearch(this.value)">
           <ui-segmented class="view-seg" id="view-seg"></ui-segmented>
         </div>
       </div>
@@ -7050,7 +7131,7 @@ ${pageTokenAliases()}
              press copies it, a modified press opens it) · 전체 문맥 복사 (every instruction and answer, as markdown).
              renderPanelTitleActions fills them from the open card; hidden until then. -->
         <div class="panel-title-row">
-          <h3 id="panel-title" tabindex="-1">작업 카드</h3>
+          <h3 id="panel-title" tabindex="-1" dir="auto">작업 카드</h3>
           <a id="panel-permalink" class="ui-icon-btn panel-title-act" href="/dashboard" hidden aria-label="퍼머링크 복사" title="퍼머링크 복사" onclick="return copyPanelPermalink(event)"><i data-ui-icon="external"></i></a>
           <button type="button" id="panel-copy-context" class="ui-icon-btn panel-title-act" hidden aria-label="전체 문맥 복사" title="전체 문맥 복사" onclick="copyPanelContext(this)"><i data-ui-icon="copy"></i></button>
           <!-- #918: while reading on a phone the head (the status bar, the tabs) is scrolled out under the title bar; a tap
@@ -7173,6 +7254,9 @@ ${pageTokenAliases()}
   <!-- New task (SSOT 2026-10-23): floating button (phones, and PC once the top-bar
        button scrolls away), the composer dialog, and the launch toast. -->
   <button type="button" class="ui-fab is-extended new-task-fab" id="new-task-fab" aria-label="새 작업 시작" onclick="openNewTask()"><i data-ui-icon="plus"></i><span>새 작업</span></button>
+  <!-- Phone dock (2026-11-09): @2lab.ai/ui <ui-dock> — under 640px the sections and 새 작업 in the thumb zone
+       (paintPhoneDock; PHONE DOCK rules). Hidden from 640px. -->
+  <ui-dock id="phone-dock" class="phone-dock" layout="bar" fixed lang="ko"></ui-dock>
   <!-- The composer dialog is @2lab.ai/ui <ui-dialog> (D4 H-01): its heading and ✕, scrim, focus trap, Esc / scrim
        close (ui-close; ui-closed after the exit → ntOnClosed), focus return to the opener, and on phones the sheet
        edge to edge (size-phone="full", 0.12.0 — D4 G6-1) above the soft keyboard. The page's form stays whole
@@ -7376,7 +7460,8 @@ function paintAppBar() {
   if (!bar) return;
   var data = {
     brand: { label: 'soma-work', mark: true, heading: true },
-    nav: APP_BAR_NAV,
+    // Under 640px the phone dock carries the links (PHONE DOCK): the bar draws none, so no 메뉴 either.
+    nav: typeof dockOn === 'function' && dockOn() ? [] : APP_BAR_NAV,
     navLabel: '주 메뉴',
     toolbarAt: APP_BAR_TOOLBAR_AT,
     status: _appBarStatus,
@@ -7396,6 +7481,52 @@ function paintAppBar() {
 // ── Theme — the head script owns it (themeClientJs, soma-work 830): <html>'s data-theme / data-palette, this browser's
 // choice, the OS follow and the bar's ui-theme-change. The bar's first data comes from paintAppBar. ──
 paintAppBar();
+// ── Phone dock (2026-11-09) — @2lab.ai/ui <ui-dock id="phone-dock"> under 640px (DOCK_MQ: narrow only — a phone held
+// sideways keeps the bar's 메뉴 and its height for the board). 보드 first (this page, current, the needs-you count from
+// renderBoard), then the bar's links, 새 작업 raised between them. Its links are real links; 보드 scrolls back up. ──
+var DOCK_MQ = '(max-width: 639px)';
+var _dockMq = typeof window !== 'undefined' && typeof window.matchMedia === 'function' ? window.matchMedia(DOCK_MQ) : null;
+var _dockNeeds = 0;
+function dockOn() {
+  return !!(_dockMq && _dockMq.matches);
+}
+function paintPhoneDock() {
+  var dock = document.getElementById('phone-dock');
+  if (!dock) return;
+  var home = currentUserId ? '/dashboard/' + encodeURIComponent(currentUserId) : '/dashboard';
+  var items = [{ id: 'board', label: '보드', href: home, icon: 'board', current: true, badge: _dockNeeds, title: '에이전트 인박스' }];
+  for (var i = 0; i < APP_BAR_NAV.length; i++) {
+    var l = APP_BAR_NAV[i];
+    items.push({ id: l.id, label: l.label, href: l.href, icon: l.icon, title: l.title });
+  }
+  dock.data = { label: '주 메뉴', items: items, action: { id: 'new-task', label: '새 작업', icon: 'plus' } };
+}
+// The board's needs-you count (renderBoard's announce): the dock's 보드 badge.
+function syncDockNeeds(n) {
+  var next = n > 0 ? n : 0;
+  if (next === _dockNeeds) return;
+  _dockNeeds = next;
+  paintPhoneDock();
+}
+(function initPhoneDock() {
+  if (typeof document === 'undefined') return;
+  var dock = document.getElementById('phone-dock');
+  if (!dock) return;
+  paintPhoneDock();
+  dock.addEventListener('ui-action', function () { openNewTask(); });
+  dock.addEventListener('ui-navigate', function (e) {
+    if (!e.detail || e.detail.id !== 'board') return;
+    e.preventDefault();
+    window.scrollTo({ top: 0, behavior: rdHow() });
+  });
+  if (_dockMq) {
+    if (typeof _dockMq.addEventListener === 'function') _dockMq.addEventListener('change', paintAppBar);
+    else if (typeof _dockMq.addListener === 'function') _dockMq.addListener(paintAppBar);
+  }
+  // The bar's first paint ran before _dockMq was set (dockOn() was false): on a phone it drew its links and 메뉴
+  // beside the dock. Paint it again now that the breakpoint is known.
+  paintAppBar();
+})();
 // ── Phone chrome (SSOT 2026-11-04) — on a phone the content takes the screen (see the PHONE CHROME rules). A phone is
 // narrow, or a short screen (a phone sideways) — the page's own breakpoints. ──
 var PHONE_MQ = '(max-width: 639px), (max-height: 560px)';
@@ -7408,10 +7539,16 @@ function isPhone() {
 function syncPhoneScope() {
   var scope = document.getElementById('topbar-scope');
   var bar = document.getElementById('app-bar');
-  var tools = document.getElementById('inbox-tools');
+  // In the board's chips row (the phone's scroll row) when the page has one, else at the head of the tools.
+  var tools = document.getElementById('inbox-chips') || document.getElementById('inbox-tools');
   if (!scope || !bar || !tools) return;
   if (isPhone()) {
-    if (scope.parentNode !== tools) tools.insertBefore(scope, tools.firstChild);
+    if (scope.parentNode !== tools) {
+      tools.insertBefore(scope, tools.firstChild);
+      // The row snaps to chips: after the insert it re-snapped to the chip it showed, now one place right, and opened
+      // scrolled to its end with 모든 사용자 cut off (break-ui, 2026-11-10). It starts at its first chip.
+      tools.scrollLeft = 0;
+    }
   } else if (scope.parentNode !== bar) bar.appendChild(scope);
 }
 // T2: the status bar's home — the detail card's title bar, or on a phone the top of its scroll area: everything but
@@ -7873,7 +8010,11 @@ function acPermissionData(s, p) {
 // rewritten in place is another card, never the old one's answer or focus
 // (review R2 P1).
 function acQuestionId(q) {
-  return 'q|' + JSON.stringify([q.question, (q.choices || []).map(function(c) { return [c.id, c.label, c.description || '']; })]);
+  var parts = [q.question, (q.choices || []).map(function(c) { return [c.id, c.label, c.description || '']; })];
+  // #1073 — its decision lines are part of its meaning (other stakes or another verdict is another card).
+  // Keyed on the raw fields, not the rendered labels (the display language rewrites those).
+  if (decisionLines(q).length) parts.push([q.blockedWork || '', q.stakes || '', q.reversible === undefined ? '' : q.reversible, q.reversibleWhy || '']);
+  return 'q|' + JSON.stringify(parts);
 }
 // pendingQuestion (single choice) → the card's data. The choices read as
 // before ("1. label", the recommended marker stripped). #917 — the last option
@@ -7892,6 +8033,11 @@ function acQuestionData(s, q) {
     }),
     allowOther: true,
   };
+  // #1073 — the context under the question, then its decision lines (the card keeps line breaks).
+  var desc = [];
+  if (typeof q.context === 'string' && q.context.trim()) desc.push(q.context.trim());
+  desc = desc.concat(decisionLines(q));
+  if (desc.length) d.description = desc.join('\\n');
   var rec = resolveRecommendedId(q.recommendedChoiceId, q.choices);
   if (rec) d.recommendedId = String(rec);
   var lock = acQuestionLock(s);
@@ -8610,7 +8756,8 @@ function adminApprovalData(id) {
     d.kind = 'question';
     d.question = String(a.title || '');
     var place = a.place && a.place.channel ? '요청 위치: #' + a.place.channel + (a.place.threadTs ? ' 스레드 ' + a.place.threadTs : '') : '';
-    var desc = [a.description || '', place].filter(Boolean).join('\\n');
+    // #1073 — an agent question's decision lines, drawn as the session view draws them.
+    var desc = [a.description || ''].concat(decisionLines(a.decision), [place]).filter(Boolean).join('\\n');
     if (desc) d.description = desc;
     d.choices = (a.choices || []).map(function(c) { return { id: String(c.id), label: String(c.label) }; });
     d.allowOther = false;
@@ -9664,6 +9811,25 @@ function resolveRecommendedId(explicitId, options) {
   var legacy = (options || []).find(function(o) { return /\\(Recommended(?:\\s*·\\s*\\d+\\/\\d+)?\\)\\s*$/i.test(o.label || ''); });
   return legacy ? legacy.id : null;
 }
+// #1073 — a question's decision lines, as the Slack card shows them (@soma/slack decision-lines): what the answer is
+// holding up, what is at stake, whether the choice can be undone and why — in this order, only the ones it has.
+// md: markdown for the multi-question form (the irreversible label bold); else plain text for the single question
+// card. The server already normalized the values (one line each); the page shows them as text (escaped by the element).
+function decisionLines(q, md) {
+  var out = [];
+  if (!q || typeof q !== 'object') return out;
+  var text = function(v) { return typeof v === 'string' ? v.replace(/\\s+/g, ' ').trim() : ''; };
+  var blocked = text(q.blockedWork);
+  if (blocked) out.push('🚧 막힌 작업 — ' + blocked);
+  var stakes = text(q.stakes);
+  if (stakes) out.push('⚖️ 걸린 것 — ' + stakes);
+  if (typeof q.reversible === 'boolean') {
+    var label = q.reversible ? '↩️ 되돌릴 수 있음' : (md === true ? '⚠️ **되돌릴 수 없음**' : '⚠️ 되돌릴 수 없음');
+    var why = text(q.reversibleWhy);
+    out.push(why ? label + ' — ' + why : label);
+  }
+  return out;
+}
 // A finite number or 0 — numeric fields pass through this before they reach markup.
 function toNum(v) {
   var n = Number(v);
@@ -9800,6 +9966,8 @@ function selectUser(userId) {
   syncBoardScope();
   history.replaceState(null, '', userId ? '/dashboard/' + userId : '/dashboard');
   paintTrail();
+  // The dock's 보드 is this board's address too.
+  if (typeof paintPhoneDock === 'function') paintPhoneDock();
   loadSessions();
   loadStats();
   loadCronJobs();
@@ -10073,15 +10241,17 @@ function dayKeyOf(ms) {
   return d.getFullYear() + '-' + (m < 10 ? '0' + m : m) + '-' + (day < 10 ? '0' + day : day);
 }
 function doneDayLabel(key, now) {
+  if (key === 'undated') return '날짜 없음';
   if (key === dayKeyOf(now)) return STRINGS.today;
   var y = new Date(now);
   y.setDate(y.getDate() - 1);
   if (key === dayKeyOf(y.getTime())) return STRINGS.yesterday;
   var parts = key.split('-');
   var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
-  var opts = { month: 'long', day: 'numeric', weekday: 'short' };
-  if (d.getFullYear() !== new Date(now).getFullYear()) opts.year = 'numeric';
-  return d.toLocaleDateString('ko-KR', opts);
+  // One shape with or without the year: Chrome's ko-KR drops the weekday's parentheses once the year is shown
+  // ("10월 29일 (목)" beside "2025년 12월 15일 월").
+  var label = d.getMonth() + 1 + '월 ' + d.getDate() + '일 (' + d.toLocaleDateString('ko-KR', { weekday: 'short' }) + ')';
+  return d.getFullYear() !== new Date(now).getFullYear() ? d.getFullYear() + '년 ' + label : label;
 }
 // Pure: [{ key, label, open, items }] — opened = the reader's choices.
 // SSOT 2026-10-30 T2: a starred card leaves its day for the pinned group
@@ -10098,11 +10268,17 @@ function planDoneGroups(done, now, opened, order) {
   for (var i = 0; i < done.length; i++) {
     var t = timeOf(done[i].s);
     if (done[i].s && done[i].s.starred === true) { pinned.push({ item: done[i], t: t }); continue; }
-    var k = dayKeyOf(doneTimeOf(done[i].s));
+    // A card with no usable time (0, missing, not a date) is filed under 날짜 없음, last — never under 1970; a time
+    // ahead of this clock (another instance's skew) is today, never a day above 오늘.
+    var dt = doneTimeOf(done[i].s);
+    var k = dt > 0 ? dayKeyOf(Math.min(dt, now)) : 'undated';
     if (!byKey[k]) { byKey[k] = []; keys.push(k); }
     byKey[k].push({ item: done[i], t: t });
   }
-  keys.sort(function(a, b) { return a < b ? -sign : a > b ? sign : 0; });
+  keys.sort(function(a, b) {
+    if (a === 'undated' || b === 'undated') return a === b ? 0 : a === 'undated' ? 1 : -1;
+    return a < b ? -sign : a > b ? sign : 0;
+  });
   var today = dayKeyOf(now);
   var y = new Date(now);
   y.setDate(y.getDate() - 1);
@@ -10237,6 +10413,9 @@ function renderBoard(board, partial) {
       announce: { needs: (board.waiting || []).length + kidCounts.needs, running: (board.working || []).length + kidCounts.running },
     };
     inboxPaint(kb);
+    // The phone dock's 보드 badge: the same count the board announces — only for a certified board (a partial one,
+    // painted under a failed first load, would publish an incomplete count as the truth).
+    if (typeof syncDockNeeds === 'function') syncDockNeeds(partial ? 0 : kb.data.announce.needs);
   }
   // The CRON lane (Option A): each job's lead run in its own one-column element.
   paintCronLaneCards(cronLaneSlots(cronPlan));
@@ -11549,6 +11728,30 @@ var AT_ROOT_STATUS = { running: 'running', waiting: 'needs_you', resuming: 'wait
 // Whether the last input was a key: ui-select carries only the id, and a
 // keyboard opening moves focus into the panel (a click leaves it alone).
 var _atKeyed = false;
+// The motion gate (remove-animations: keyboard-initiated actions land at once) needs "a key just did this", not the
+// sticky last input: typing in the composer, then a resize, a rotation or a pushed fold must still glide.
+var _keyAt = 0;
+var KEYED_MS = 600;
+function keyedNow() { return _atKeyed && Date.now() - _keyAt < KEYED_MS; }
+// A held ←/→ on the deck nav switches card on every repeat: each of those switches is keyed too. Any other held key
+// counts once (its repeats would hold the window open for changes it did not make).
+function keyOnDeckNav(e) {
+  var path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+  for (var i = 0; i < path.length; i++) if (path[i] && path[i].tagName && String(path[i].tagName).toLowerCase() === 'ui-deck-nav') return true;
+  return false;
+}
+// The keys that open, close or move between cards — not typing: Esc anywhere; Enter, Space and the arrows outside a
+// text field (there they type or move the caret).
+function isActingKey(e) {
+  var k = e && e.key;
+  if (k === 'Escape') return true;
+  if (k !== 'Enter' && k !== ' ' && k !== 'ArrowLeft' && k !== 'ArrowRight' && k !== 'ArrowUp' && k !== 'ArrowDown') return false;
+  // The field itself, inside a shadow root too (a <ui-composer>'s textarea): at the document the target is the host.
+  var path = typeof e.composedPath === 'function' ? e.composedPath() : null;
+  var t = (path && path[0]) || e.target;
+  var tag = t && t.tagName ? String(t.tagName).toLowerCase() : '';
+  return !(tag === 'input' || tag === 'textarea' || tag === 'select' || (t && t.isContentEditable));
+}
 
 function atIdOf(node) {
   return node.root ? AT_ROOT : String(node.id);
@@ -11704,6 +11907,7 @@ document.addEventListener('ui-toggle', function(e) {
 });
 document.addEventListener('keydown', function() { _atKeyed = true; }, true);
 document.addEventListener('pointerdown', function() { _atKeyed = false; }, true);
+document.addEventListener('keydown', function(e) { if (isActingKey(e) && (!e.repeat || keyOnDeckNav(e))) _keyAt = Date.now(); }, true);
 
 // ── Panel scope: which node's tasks and work log the panel shows (§4.3) ──
 function panelAgentOf(s) {
@@ -12790,7 +12994,7 @@ function restorePanelLiveAnchor(a) {
   var scrollEl = document.getElementById('panel-scroll');
   if (!a || !scrollEl || !document.body.contains(a.el)) return;
   var d = a.el.getBoundingClientRect().top - a.top;
-  // Instant: under scroll-behavior: smooth a correction would glide.
+  // Instant: a correction the reader did not ask for never glides.
   if (Math.abs(d) >= 1) scrollEl.scrollTo({ top: scrollEl.scrollTop + d, behavior: 'instant' });
 }
 // Write one panel part: nothing when unchanged, a morph otherwise (focus and
@@ -13093,7 +13297,7 @@ function panelMidContext(s) {
   var cid = panelConvId;
   var c = cid ? _artCache[cid] : null;
   var recent = (s.artifacts && s.artifacts.recent) || [];
-  var arts = c && c.list ? c.list.length : Math.max(toNum(s.artifacts && s.artifacts.count), recent.length);
+  var arts = c && c.list ? artLatestOnly(artSortForDisplay(c.list)).length : Math.max(toNum(s.artifacts && s.artifacts.count), recent.length);
   var um = cid && _umList[cid] ? _umList[cid].length : 0;
   return {
     goalEditable: viewerCanManage(s) && col !== 'closed' && !s.terminated && !isSiblingSession(s),
@@ -14439,6 +14643,8 @@ function focusPanelComposer(hint) {
 // on the task card by one press: its choices as buttons. Anything else keeps the approval card (pick, then 제출).
 function quickChoicesOf(q) {
   if (!q || q.type !== 'user_choice' || !Array.isArray(q.choices)) return null;
+  // #1073 — a question with decision lines is answered on the card, where the lines show — never by one press.
+  if (decisionLines(q).length) return null;
   var n = q.choices.length;
   if (n < 2 || n > 4) return null;
   for (var i = 0; i < n; i++) {
@@ -15142,6 +15348,13 @@ function boardHosts() {
 // so the "before" is a cache of each element's measure(), refreshed when the
 // board settles (render, scroll end, transition end, a finished shift) and
 // corrected for the page's scroll since.
+// The width the default view goes by: the page's phone breakpoint as the media query reads it. innerWidth is not it on a
+// phone — while the first frames are wider than the screen (a part drawn before it measured), the layout viewport widens
+// and innerWidth reads that (598 / 674 on a 390px phone, 2026-11-09), so the default was the board at random.
+function viewWidth() {
+  var w = window.innerWidth;
+  return window.matchMedia && window.matchMedia('(max-width: 639px)').matches ? Math.min(w, 639) : w;
+}
 function defaultBoardView(innerWidth, saved) {
   if (saved === 'board' || saved === 'list') return saved;
   return innerWidth < 640 ? 'list' : 'board';
@@ -15151,7 +15364,7 @@ function savedBoardView() {
 }
 function layoutModeOf(innerW, inboxW, panelOpen, view) {
   return {
-    cols: inboxW >= 840 ? 'full' : 'snap',
+    cols: inboxW >= 720 ? 'full' : 'snap',
     panel: !panelOpen ? 'closed' : (innerW >= 840 ? 'docked' : 'sheet'),
     view: view,
   };
@@ -15261,7 +15474,7 @@ function runLayoutCheck() {
   _layoutCheckFrame = frame;
   // The default view follows the screen until the reader picks one (no event:
   // setBoardView neither saves it nor adopts it — this runs the only glide).
-  var autoView = defaultBoardView(window.innerWidth, savedBoardView());
+  var autoView = defaultBoardView(viewWidth(), savedBoardView());
   if (kb.getAttribute('view') !== autoView) setBoardView(autoView);
   // The secondary sections' defaults follow the window in this same frame, so a
   // fold or a window change that also folds them is one shift.
@@ -15275,7 +15488,13 @@ function runLayoutCheck() {
   var anchor = _panelAnchor;
   var gen = _panelScrollGen;
   var sx = _lastScroll.x - _layoutScroll.x, sy = _lastScroll.y - _layoutScroll.y;
-  var animate = canAnimate();
+  // A change the reader made from the keyboard (Enter opens the drawer, Esc
+  // closes it) lands at once: an action repeated by key must not wait on its
+  // own animation (remove-animations gate: keyboard-initiated actions).
+  // A key acting while a glide is still in flight retargets that glide (flipFrom moves cards in flight from where they
+  // are drawn) rather than leave it running toward a layout that is gone.
+  var keyed = keyedNow() && !flying;
+  var animate = canAnimate() && !keyed;
   var reduce = reduceMotion();
   // Every card and head glides from where the reader saw it (the element does
   // nothing on its first paint, in a hidden tab or under reduced motion).
@@ -15291,6 +15510,9 @@ function runLayoutCheck() {
   // none under reduced motion. The page animates nothing of it.
   _layoutModeKey = layoutModeKey(mode);
   restorePanelAnchor(anchor);
+  // A keyed change moved nothing: the new layout is already the settled one. Measure it now, so a pointer change right
+  // after (Enter opens, a click closes) glides from where the cards are, not from where they were before.
+  if (keyed) { _layoutShiftUntil = 0; measureLayout(); return; }
   _layoutShiftUntil = Date.now() + MOTION.move;
   setTimeout(function() {
     if (Date.now() < _layoutShiftUntil) return;
@@ -15427,7 +15649,11 @@ function cardRepoOf(s) {
   var r = s && typeof s.repo === 'string' ? s.repo.trim() : '';
   if (!r) return null;
   var slash = r.lastIndexOf('/');
-  return { key: r, text: slash >= 0 ? r.slice(slash + 1) : r, title: '레포: ' + r };
+  var name = slash >= 0 ? r.slice(slash + 1) : r;
+  // The chip does not shrink: a 100-character repo name ran out of the card (break-ui, 2026-11-10). Cut the middle —
+  // repos of one owner differ at the end; the whole name is in the title.
+  if (name.length > 28) name = name.slice(0, 13) + '\\u2026' + name.slice(-14);
+  return { key: r, text: name, title: '레포: ' + r };
 }
 function cardChannelOf(s) {
   var id = s && typeof s.channelId === 'string' ? s.channelId : '';
@@ -16637,7 +16863,12 @@ var MC_CUSTOM_ID = '\\uC9C1\\uC811\\uC785\\uB825';
 // The form's identity: a different question (or another session) starts clean.
 function mcFormId(s, q) {
   return 'mc|' + s.key + '|'
-    + JSON.stringify([q.title || q.question || '', (q.questions || []).map(function(x) { return [x.id, x.question]; })]);
+    + JSON.stringify([q.title || q.question || '', (q.questions || []).map(function(x) {
+      // #1073 — a question whose decision lines change makes another form (its answers start clean); raw fields.
+      return decisionLines(x).length
+        ? [x.id, x.question, [x.blockedWork || '', x.stakes || '', x.reversible === undefined ? '' : x.reversible, x.reversibleWhy || '']]
+        : [x.id, x.question];
+    })]);
 }
 // The session's form state, reset when its question is another one.
 function mcStateOf(s, q) {
@@ -16672,7 +16903,15 @@ function mcFormData(s, q) {
         allowCustom: true,
         customPlaceholder: STRINGS.mcCustomPlaceholder,
       };
-      if (item.context) out.context = String(item.context);
+      // #1073 — the decision lines, a blank line, then the model's context (markdown). The lines come first here
+      // because the element renders markdown: nothing the model wrote — an open code fence, a list — comes before
+      // them, so it cannot take them (or the irreversible warning) into its block. Each line starts with its emoji,
+      // so the lines are always one plain paragraph.
+      var ctx = [];
+      var lines = decisionLines(item, true);
+      if (lines.length) ctx.push(lines.join('\\n'));
+      if (item.context) ctx.push(String(item.context));
+      if (ctx.length) out.context = ctx.join('\\n\\n');
       return out;
     }),
     answers: st.answers,
@@ -18807,7 +19046,9 @@ function renderDeckNav(dir) {
       if (peek) peek.data = data;
     }
   }
-  if (dir && !reduceMotion()) deckSlide(panel, dir);
+  // A keyed switch lands at once — and stops a slide a click started, so it never moves the new front card.
+  if (dir && keyedNow()) deckStop(panel);
+  else if (dir && !reduceMotion()) deckSlide(panel, dir);
 }
 // ‹ / › (or ←/→ on the nav): the card at that place in the deck the nav was drawn for comes to the front.
 function onDeckPage(e) {
@@ -18816,9 +19057,9 @@ function onDeckPage(e) {
   if (k && k !== panelSessionKey && _sessionCache[k]) openPanel(k);
 }
 // The deck switch (P6): the header and body glide 18px in from the side the new front card came from,
-// on --dur-move ease-out. The offset is composited ('add') onto any slide still running, so a quick
+// 200ms ease-out (a switch people repeat; ←/→ on the nav switches at once). The offset is composited ('add') onto any slide still running, so a quick
 // second switch carries on from where they are drawn; the fade restarts from the drawn opacity.
-var DECK_SLIDE_MS = 320;
+var DECK_SLIDE_MS = 200;
 function deckSlide(panel, dir) {
   var parts = panel.querySelectorAll ? panel.querySelectorAll('.panel-header, .panel-body') : [];
   for (var i = 0; i < parts.length; i++) {
@@ -18826,9 +19067,21 @@ function deckSlide(panel, dir) {
     if (typeof el.animate !== 'function') continue;
     var from = el._deckFade && el._deckFade.playState === 'running' ? Number(getComputedStyle(el).opacity) : 0.35;
     if (el._deckFade) el._deckFade.cancel();
-    el.animate([{ transform: 'translateX(' + (dir > 0 ? 18 : -18) + 'px)' }, { transform: 'translateX(0)' }],
-      { duration: DECK_SLIDE_MS, easing: 'cubic-bezier(0.23, 1, 0.32, 1)', composite: 'add' });
+    var moves = (el._deckMoves || []).filter(function(a) { return a.playState === 'running'; });
+    moves.push(el.animate([{ transform: 'translateX(' + (dir > 0 ? 18 : -18) + 'px)' }, { transform: 'translateX(0)' }],
+      { duration: DECK_SLIDE_MS, easing: 'cubic-bezier(0.23, 1, 0.32, 1)', composite: 'add' }));
+    el._deckMoves = moves;
     el._deckFade = el.animate([{ opacity: Math.min(from, 1) }, { opacity: 1 }], { duration: DECK_SLIDE_MS, easing: 'cubic-bezier(0.23, 1, 0.32, 1)' });
+  }
+}
+function deckStop(panel) {
+  var parts = panel.querySelectorAll ? panel.querySelectorAll('.panel-header, .panel-body') : [];
+  for (var i = 0; i < parts.length; i++) {
+    var el = parts[i];
+    var running = (el._deckMoves || []).concat(el._deckFade ? [el._deckFade] : []);
+    for (var j = 0; j < running.length; j++) running[j].cancel();
+    el._deckMoves = [];
+    el._deckFade = null;
   }
 }
 // The landing target of this opening, for the keyboard: the answer form, the
@@ -21552,6 +21805,7 @@ var _artCache = Object.create(null); // conversationId → { state: 'loading'|'o
 var _artDocCache = Object.create(null); // 'cid|id' → text of a markdown / text artifact; 'cid|id|head' → its first 64 KB (the peek)
 var _artDocPending = Object.create(null); // the same keys → the one fetch under way (two askers, one request)
 var _artViewer = { cid: null, scope: 'conversation', list: [] }; // what the open viewer pages through
+var _artVerRows = Object.create(null); // cid → { id → artifact } — versions fetched by 이전 판 열기 (#1074)
 
 function artUrl(cid, id, download) {
   // A user's attachment (SSOT 2026-10-25) shares the viewer, not the route.
@@ -21735,16 +21989,41 @@ function artFileItem(cid, a) {
   if (toNum(a.createdAt) > 0) item.time = toNum(a.createdAt);
   if (a.stored) item.url = artUrl(cid, a.id);
   else item.meta = 'Slack에만 있음';
+  var ver = artVersionLabel(a);
+  if (ver) item.meta = item.meta ? item.meta + ' · ' + ver : ver;
   return item;
 }
 function artCard(cid, a, variant, playable) {
-  var v = [a.name, a.kind, toNum(a.size), toNum(a.createdAt), a.stored ? 1 : 0].join('|');
+  var v = [a.name, a.kind, toNum(a.size), toNum(a.createdAt), a.stored ? 1 : 0, toNum(a.version), a.changed ? 1 : 0].join('|');
   return '<ui-file-card class="art-card" variant="' + variant + '"' + (playable ? ' playable' : '') + ' lang="ko" data-art-cid="' + escAttr(cid) + '" data-art-id="' + escAttr(a.id)
     + '" data-art-v="' + escAttr(v) + '"></ui-file-card>';
 }
-// One chip (an answer turn's files).
+// One chip (an answer turn's files) — with its version pill when it is a later version (#1074).
 function artChip(cid, a) {
-  return artCard(cid, a, 'chip');
+  var badge = artVerBadge(a);
+  return badge ? '<span class="art-ver-wrap">' + artCard(cid, a, 'chip') + badge + '</span>' : artCard(cid, a, 'chip');
+}
+
+// ── Versions (#1074): an artifact uploaded again under the same key (the model's artifact_key, else the file
+// name without its time stamp) is its next version. Every list shows the latest version of each artifact; an
+// answer's row shows the version its turn made; the viewer opens the earlier ones (이전 판 열기) and compares two
+// line by line (이전 판과 비교). The board carries only the badge (version, changed) — the list is the session's.
+function artLatestOnly(list) {
+  var best = Object.create(null);
+  (list || []).forEach(function(a) {
+    var k = a.key || 'id:' + a.id;
+    if (!best[k] || toNum(a.version) > toNum(best[k].version)) best[k] = a;
+  });
+  return (list || []).filter(function(a) { return best[a.key || 'id:' + a.id] === a; });
+}
+function artVersionLabel(a) {
+  var v = toNum(a && a.version);
+  if (v <= 1) return '';
+  return a.changed ? '판 ' + v + ' · 이전 판 이후 바뀜' : '판 ' + v;
+}
+function artVerBadge(a) {
+  var v = toNum(a && a.version);
+  return v > 1 ? '<span class="art-ver" title="' + escAttr(artVersionLabel(a)) + '">' + '판 ' + v + '</span>' : '';
 }
 
 // Newest first, by when each file was made (SSOT 2026-11-02 T3) — every list: the card's chips
@@ -21758,7 +22037,7 @@ function artSortForDisplay(list) {
 // A strip tile: the file card (thumbnail, name, meta; a play / pause toggle on audio — T8 — and video tiles, one
 // clip at a time across the page: playable); variant 'chip' in the panel's minimal row.
 function artTile(cid, a, variant) {
-  return '<div class="art-tile' + (a.stored ? '' : ' is-remote') + '">' + artCard(cid, a, variant || 'tile', true) + '</div>';
+  return '<div class="art-tile' + (a.stored ? '' : ' is-remote') + '">' + artCard(cid, a, variant || 'tile', true) + artVerBadge(a) + '</div>';
 }
 
 // The full list once fetched, else the card's summary (the newest few).
@@ -21774,7 +22053,7 @@ function artListFor(s) {
 var CARD_ART_TILES = 4;
 function renderCardArtifacts(s) {
   if (!s || !s.conversationId) return '';
-  var list = artSortForDisplay(artListFor(s));
+  var list = artLatestOnly(artSortForDisplay(artListFor(s)));
   if (!list.length) return '';
   var c = _artCache[s.conversationId];
   var total = c && c.list ? list.length : Math.max(toNum(s.artifacts && s.artifacts.count), list.length);
@@ -21787,7 +22066,7 @@ function renderCardArtifacts(s) {
 
 // Panel (T6): pinned above the conversation, so it is in view wherever the reader is.
 function renderPanelArtifacts(list, cid, variant) {
-  var sorted = artSortForDisplay(list);
+  var sorted = artLatestOnly(artSortForDisplay(list));
   if (!sorted.length || !cid) return '';
   return '<div class="panel-arts-head"><span>산출물</span><span class="art-count">' + sorted.length + '</span>'
     + '<span class="panel-arts-hint">올리면 미리보기 · 누르면 크게</span></div>'
@@ -21843,6 +22122,7 @@ function artFind(cid, id) {
   var c = _artCache[cid];
   var hit = c && c.list ? c.list.find(function(a) { return a.id === id; }) : null;
   if (hit) return hit;
+  if (_artVerRows[cid] && _artVerRows[cid][id]) return _artVerRows[cid][id];
   for (var k in _sessionCache) {
     var s = _sessionCache[k];
     if (s && s.conversationId === cid && s.artifacts && s.artifacts.recent) {
@@ -21884,7 +22164,7 @@ function artSettle(cid) {
   // The open viewer pages through the conversation's files: the new list is handed over (the element keeps showing
   // the same file wherever it moved). An instruction's attachments (umSiblings) are not this list.
   if (_artViewer.cid === cid && _artViewer.scope === 'conversation' && artViewerIsOpen()) {
-    _artViewer.list = artViewerPages((_artCache[cid] && _artCache[cid].list) || []);
+    _artViewer.list = artLatestOnly(artViewerPages((_artCache[cid] && _artCache[cid].list) || []));
     artViewerEl().data = { items: artViewerItems(cid, _artViewer.list) };
   }
 }
@@ -22053,6 +22333,8 @@ function artViewItem(cid, a) {
   if (a.stored && a.kind === 'html' && a.source !== 'user_upload') item.scripts = true;
   if (a.stored && a.kind === 'pdf') item.frame = true;
   var notes = [];
+  var ver = artVersionLabel(a);
+  if (ver) notes.push(ver);
   if (a.title && a.title !== a.name) notes.push(String(a.title));
   if (!a.stored) notes.push(a.source === 'user_upload' ? umMissingReason(a) : '이 파일은 대시보드에 사본이 없습니다 (100 MB 초과이거나 업로드 전에 지워졌습니다).');
   if (notes.length) item.meta = notes.join(' · ');
@@ -22062,6 +22344,13 @@ function artViewItem(cid, a) {
   if (live) actions.push({ id: 'live', label: '라이브로 열기', href: live });
   if (slack) actions.push(slack);
   if (actions.length) item.actions = actions;
+  // #1074 — a later version opens the earlier ones and, for a source (html / markdown / text), compares with the last.
+  if (toNum(a.version) > 1 && a.source !== 'user_upload') {
+    var acts = item.actions || [];
+    acts.push({ id: 'ver-prev', label: '이전 판 열기' });
+    if (a.stored && (a.kind === 'html' || a.kind === 'markdown' || a.kind === 'text')) acts.push({ id: 'ver-diff', label: '이전 판과 비교' });
+    item.actions = acts;
+  }
   var text = _artDocCache[cid + '|' + a.id];
   if ((a.kind === 'markdown' || a.kind === 'text') && a.stored && text != null) item.text = text;
   return item;
@@ -22069,6 +22358,78 @@ function artViewItem(cid, a) {
 
 function artViewerItems(cid, list) {
   return list.map(function(a) { return artViewItem(cid, a); });
+}
+
+// The versions of a's artifact the page holds (the conversation's list, the rows 이전 판 열기 fetched), newest first.
+function artVersionsOf(cid, a) {
+  if (!a || !a.key) return a ? [a] : [];
+  var c = _artCache[cid];
+  var seen = Object.create(null);
+  var rows = [];
+  var add = function(x) {
+    if (x && x.key === a.key && x.source !== 'final_answer' && !seen[x.id]) {
+      seen[x.id] = 1;
+      rows.push(x);
+    }
+  };
+  ((c && c.list) || []).forEach(add);
+  var held = _artVerRows[cid] || {};
+  for (var k in held) add(held[k]);
+  add(a);
+  return rows.sort(function(x, y) { return toNum(y.version) - toNum(x.version); });
+}
+
+// 이전 판 열기 (#1074): the artifact's versions from the session's API, the viewer at the one before the shown file.
+function artOpenPrevious(cid, a) {
+  return fetch('/api/dashboard/session/' + encodeURIComponent(cid) + '/artifacts/' + encodeURIComponent(a.id) + '/versions')
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function(data) {
+      var held = _artVerRows[cid] || (_artVerRows[cid] = Object.create(null));
+      (Array.isArray(data && data.versions) ? data.versions : []).forEach(function(x) { if (x && x.id) held[x.id] = x; });
+      var list = artVersionsOf(cid, a);
+      var at = list.findIndex(function(x) { return toNum(x.version) < toNum(a.version); });
+      var v = artViewerEl();
+      if (!v || at < 0 || _artViewer.cid !== cid || !artViewerIsOpen()) return;
+      _artViewer = { cid: cid, scope: 'versions', list: list };
+      v.open(artViewerItems(cid, list), at);
+    })
+    .catch(function() {});
+}
+
+// 이전 판과 비교 (#1074): the line diff from the version before (the session's API), shown as a text page.
+function artDiffItem(a, d) {
+  var name = String(a.name || '');
+  var from = toNum(d && d.from && d.from.version);
+  var to = toNum(d && d.to && d.to.version);
+  var text;
+  if (!d) text = '이전 판과 비교할 수 없습니다 (사본이 없거나 텍스트가 아닙니다).';
+  else if (d.truncated) text = '두 판이 너무 크거나 너무 달라 줄 단위로 비교하지 않았습니다.';
+  else if (!d.text) text = '두 판의 내용이 같습니다.';
+  else text = '--- 판 ' + from + '\\n+++ 판 ' + to + '\\n' + String(d.text);
+  return { id: 'diff:' + String(a.id), name: d ? name + ' · 판 ' + from + ' → 판 ' + to : name, kind: 'text', text: text };
+}
+function artOpenDiff(cid, a) {
+  return fetch('/api/dashboard/session/' + encodeURIComponent(cid) + '/artifacts/' + encodeURIComponent(a.id) + '/diff')
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .catch(function() { return null; })
+    .then(function(d) {
+      var v = artViewerEl();
+      if (!v || _artViewer.cid !== cid || !artViewerIsOpen()) return;
+      _artViewer = { cid: cid, scope: 'diff', list: [] };
+      v.open([artDiffItem(a, d)], 0);
+    });
+}
+
+// The viewer's own actions on the shown file (ui-action, extra: true): 이전 판 열기 / 이전 판과 비교.
+function onArtViewerAction(e) {
+  var d = e && e.detail;
+  var v = artViewerEl();
+  if (!d || !d.extra || !v || e.target !== v) return;
+  var cid = _artViewer.cid;
+  var a = cid ? artFind(cid, String(d.id)) : null;
+  if (!a) return;
+  if (d.action === 'ver-prev') artOpenPrevious(cid, a);
+  else if (d.action === 'ver-diff') artOpenDiff(cid, a);
 }
 
 // Open the viewer at a file, over the conversation's files — or, for a user's attachment, over the files of its
@@ -22085,7 +22446,7 @@ function openArtifactViewer(cid, id, opener) {
   var v = artViewerEl();
   if (!v || !cid || !id || typeof v.open !== 'function') return;
   var c = _artCache[cid];
-  var list = artViewerPages((c && c.list) || []);
+  var list = artLatestOnly(artViewerPages((c && c.list) || []));
   var scope = 'conversation';
   if (umGet(cid, id)) {
     scope = 'attachments';
@@ -22093,7 +22454,12 @@ function openArtifactViewer(cid, id, opener) {
   } else if (!list.some(function(a) { return a.id === id; })) {
     var one = artFind(cid, id);
     if (!one) return;
-    list = artViewerPages(list.concat([one]));
+    // An earlier version (an answer's row): the viewer pages through that artifact's versions (#1074).
+    var kin = artVersionsOf(cid, one);
+    if (kin.length > 1) {
+      scope = 'versions';
+      list = kin;
+    } else list = artViewerPages(list.concat([one]));
   }
   pauseArtCards();
   _artViewer = { cid: cid, scope: scope, list: list };
@@ -22156,6 +22522,7 @@ function fcHydrateIn(node) {
 })();
 
 (function initArtifactInteractions() {
+  document.addEventListener('ui-action', onArtViewerAction);
   // <ui-file-card> asks to open its file, <ui-media-grid> one of its pictures (ui-open): the viewer, at it, over the
   // conversation's files; the viewer returns focus to the card / the grid's tile. (The hovercard's ui-open — its
   // detail a trigger — is answered on the card below.)
@@ -22228,7 +22595,7 @@ function fcHydrateIn(node) {
   }
   // View: the saved choice, else List on narrow screens (§3.1-2); runLayoutCheck
   // re-evaluates the default when a fold or rotation crosses 640px.
-  setBoardView(defaultBoardView(window.innerWidth, savedBoardView()));
+  setBoardView(defaultBoardView(viewWidth(), savedBoardView()));
   // The secondary sections' disclosure state, before the first board render.
   applySectionState();
   // SSOT 2026-11-05 — the board's filter and sort menus: their choices, and the bar as the stored filter left it.

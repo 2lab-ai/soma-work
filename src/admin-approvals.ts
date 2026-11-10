@@ -11,6 +11,7 @@
  * answers through the kind's existing decision path.
  */
 
+import type { DecisionFields } from 'somalib/model-commands/session-types';
 import { Logger } from './logger';
 
 const logger = new Logger('AdminApprovals');
@@ -55,6 +56,11 @@ export interface AdminApproval {
   risk?: 'low' | 'medium' | 'high';
   choices?: AdminApprovalChoice[];
   recommendedId?: string;
+  /**
+   * `question` cards (#1073): the question's decision lines — what the answer is holding up, what is at stake, whether
+   * the choice can be undone. The dashboard draws them with the session view's `decisionLines`. Absent when none.
+   */
+  decision?: DecisionFields;
   /** Slack user id of whoever asked. */
   requesterId: string;
   /** Where the request was made (env skill / MCP grant). */

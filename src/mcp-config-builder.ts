@@ -19,6 +19,7 @@ import { isAdminUser } from './admin-utils';
 import type { ExecutionContext } from './agent-runtime/execution-context';
 import { NO_CONTEXT_PERMISSION_MODE, type PermissionMode } from './agent-runtime/policy/permission-mode';
 import { substituteEnvVars } from './config-env-substitution';
+import { getArtifactStore } from './conversation/artifacts';
 import { devopsPendingDir } from './devops/broker-approvals';
 import { CONFIG_FILE, DATA_DIR } from './env-paths';
 import { NATIVE_BYPASS_TOOLS } from './hooks/bypass-permission-guard';
@@ -90,6 +91,8 @@ export interface SlackContext {
   repos?: string[];
   /** Confluence wiki URL from channel description */
   confluenceUrl?: string;
+  /** #1074 — the session's conversation: slack-mcp reads its artifact index to say an upload's version. */
+  conversationId?: string;
 }
 
 /**
@@ -468,12 +471,19 @@ export class McpConfigBuilder {
       threadContext.sourceChannel = slackContext.sourceChannel;
     }
 
+    // #1074 — an upload's comment says its version: the session's artifact index (read only) and the
+    // speaker's display language for that line.
+    const artifactIndex = slackContext.conversationId
+      ? getArtifactStore().indexFile(slackContext.conversationId)
+      : null;
     return {
       command: command.command,
       args: command.args,
       env: {
         SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN || '',
         SLACK_MCP_CONTEXT: JSON.stringify(threadContext),
+        SOMA_DISPLAY_LANG: userSettingsStore.getUserDisplayLanguage(slackContext.user),
+        ...(artifactIndex ? { SOMA_ARTIFACT_INDEX: artifactIndex } : {}),
       },
     };
   }

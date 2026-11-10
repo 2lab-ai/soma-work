@@ -117,9 +117,30 @@ describe('buildStreamOptions — catalog window workaround (grok-4.5)', () => {
     expect(options.env?.DISABLE_AUTO_COMPACT).toBe('1');
   });
 
+  it('keeps gpt-6.1-terra on its policy blocking limit (477000) despite a different catalog window', async () => {
+    modelCatalog.__testSeed([
+      GROK,
+      {
+        id: 'gpt-6.1-terra',
+        aliases: ['terra'],
+        name: 'GPT-6.1 Terra',
+        efforts: [],
+        max_context: 872_000,
+        group: 'codex',
+      },
+    ]);
+    const session = { model: 'gpt-6.1-terra', systemPrompt: 'x', sessionId: 's3t' } as ConversationSession;
+    const { options } = await buildStreamOptions({ queryEnv: {}, session }, makeDeps());
+    // 500k declared window − 20k output reserve − 3k safety.
+    expect(options.env?.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE).toBe('477000');
+    expect(options.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
+    expect(options.env?.DISABLE_AUTO_COMPACT).toBe('1');
+  });
+
   it.each([
     'gpt-6-astra[1m]',
     'gpt-6.1-sol[1m]',
+    'gpt-6.1-terra[1m]',
     'gpt-99-future[1m]',
   ])('%s session gets the 1M SDK blocking policy (977000)', async (model) => {
     // Contract mirrors gpt-5.6-sol[1m]: the [1m] session must receive

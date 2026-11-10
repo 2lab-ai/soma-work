@@ -5,6 +5,7 @@ import {
   FALLBACK_CONTEXT_WINDOW,
   getModelPricing,
   getModelSpec,
+  hasModelPricing,
   hasOneMSuffix,
   isNativeOneMModel,
   isOneMContextUnavailableSignal,
@@ -16,8 +17,8 @@ import {
 
 describe('model-registry', () => {
   describe('PRICING_VERSION', () => {
-    it('should be 2026-10-27 (Opus 5.5 / Fable 5.1 rows)', () => {
-      expect(PRICING_VERSION).toBe('2026-10-27');
+    it('should be 2026-11-10 (Fable 5.2 / gpt-6.1-terra / gpt-6 sol+luna / grok rows)', () => {
+      expect(PRICING_VERSION).toBe('2026-11-10');
     });
   });
 
@@ -62,6 +63,19 @@ describe('model-registry', () => {
       expect(getModelSpec('claude-fable-5').pricing.cacheReadPerMTok).toBe(1);
     });
 
+    it('returns Fable 5.2 spec — its own cheaper row, not the Fable 5 rates its id also contains', () => {
+      for (const id of ['claude-fable-5-2', 'claude-fable-5-2[1m]']) {
+        const p = getModelSpec(id).pricing;
+        expect([
+          p.inputPerMTok,
+          p.outputPerMTok,
+          p.cacheReadPerMTok,
+          p.cache5minWritePerMTok,
+          p.cache1hrWritePerMTok,
+        ]).toEqual([8, 40, 0.2, 10, 16]);
+      }
+    });
+
     it('returns Opus 4.7 spec', () => {
       const spec = getModelSpec('claude-opus-4-7');
       expect(spec.pricing.inputPerMTok).toBe(5);
@@ -97,6 +111,43 @@ describe('model-registry', () => {
       expect(spec.pricing.inputPerMTok).toBe(1);
       expect(spec.pricing.outputPerMTok).toBe(5);
       expect(spec.contextWindow).toBe(200_000);
+    });
+
+    // llmux models outside the claude group are priced by THIS table
+    // (host-pricing.ts), never by the SDK — so a missing row means the Sonnet
+    // fallback ($3 / $15 / $0.30 / $3.75) is booked for them. Rates per llmux
+    // src/pricing.rs; cache writes stay 0 because neither the codex nor the
+    // grok wire reports cache-creation tokens.
+    it.each([
+      ['gpt-6-sol', [2, 10, 0.2, 0, 0]],
+      ['gpt-6-sol[1m]', [2, 10, 0.2, 0, 0]],
+      ['gpt-6-luna', [0.1, 0.5, 0.01, 0, 0]],
+      ['gpt-6-luna[1m]', [0.1, 0.5, 0.01, 0, 0]],
+      ['gpt-6.1-terra', [1, 5, 0.05, 0, 0]],
+      ['gpt-6.1-terra[1m]', [1, 5, 0.05, 0, 0]],
+      ['grok-4.7', [2, 6, 0.5, 0, 0]],
+      ['grok-4.7[1m]', [2, 6, 0.5, 0, 0]],
+      // The Grok Build subscription id shares the grok-4.7 row by substring.
+      ['grok-4.7-build-fast', [2, 6, 0.5, 0, 0]],
+      ['grok-4.6', [2, 6, 0.5, 0, 0]],
+      ['grok-4.5', [2, 6, 0.3, 0, 0]],
+    ] as const)('prices host-priced llmux model %s at its own row, not the Sonnet fallback', (id, rates) => {
+      expect(hasModelPricing(id)).toBe(true);
+      const p = getModelSpec(id).pricing;
+      expect([
+        p.inputPerMTok,
+        p.outputPerMTok,
+        p.cacheReadPerMTok,
+        p.cache5minWritePerMTok,
+        p.cache1hrWritePerMTok,
+      ]).toEqual(rates);
+    });
+
+    it('the gen-6 sol row does not swallow gpt-6.1-sol, and astra keeps its own row', () => {
+      // `gpt-6-sol` is not a substring of `gpt-6.1-sol` (`gpt-6-` vs `gpt-6.`).
+      expect(getModelSpec('gpt-6.1-sol').pricing.cacheReadPerMTok).toBe(0.1);
+      expect(getModelSpec('gpt-6-astra').pricing.inputPerMTok).toBe(10);
+      expect(getModelSpec('gpt-6-astra[1m]').pricing.inputPerMTok).toBe(10);
     });
 
     it('returns fallback for unknown model', () => {

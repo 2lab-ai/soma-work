@@ -104,6 +104,47 @@ Put the recommended option first and name it with the top-level `recommendedChoi
 
 > Fallback (tool unavailable): see "When `mcp__model-command__run` is missing" above. Write the payload alone, fenced, at the end of the reply. **In PR review context, plain text is strictly prohibited** — always use structured JSON or tool call.
 
+## Decision lines (optional — most questions need none)
+
+A question can carry up to three short lines that let the person answer from the card alone, without reading the
+context or scrolling up the thread (#1073). Most questions need none. Add them only when the answer is holding up work,
+or when a choice cannot be undone.
+
+| Field | Type | Use it when | The card shows |
+|---|---|---|---|
+| `blockedWork` | string | the answer is holding up named work | `🚧 막힌 작업 — PR #42 merge` |
+| `stakes` | string | something specific is at risk (data, money, a release) | `⚖️ 걸린 것 — 20k user rows` |
+| `reversible` | boolean | it matters whether the choice can be undone | `⚠️ 되돌릴 수 없음` (prominent) or `↩️ 되돌릴 수 있음` |
+| `reversibleWhy` | string | always with `reversible: false` | ` — a dropped column comes back only from backup` |
+
+- Put them next to `question` (single choice) or inside each question of a `user_choice_group`.
+- One line each. The host makes each a single line and cuts it at 160 characters.
+- `reversible: false` without `reversibleWhy` gets a quality warning: say why the choice cannot be undone.
+- Leave them out for ordinary questions (naming, wording, which of two equal approaches). A card where every question
+  says "blocked" or "irreversible" teaches the person to ignore the lines.
+- The lines are for the person only. The answer you get back is the same as without them (the choice id, or
+  `question: id. label` per line for a group).
+- A question with decision lines is never answered by one press on the dashboard card face: the person opens the card
+  and sees the lines first.
+
+```json
+{
+  "type": "user_choice",
+  "question": "[medium ~50 lines] Drop the legacy_users table now?",
+  "context": "The migration copied every row to users. Nothing reads legacy_users since PR #40.",
+  "recommendedChoiceId": "1",
+  "blockedWork": "PR #42 merge",
+  "stakes": "20k user rows",
+  "reversible": false,
+  "reversibleWhy": "a dropped table comes back only from last night's backup",
+  "choices": [
+    { "id": "1", "label": "Keep it one more release, then drop", "description": "PR #42 merges without the drop" },
+    { "id": "2", "label": "Drop it now", "description": "Rows written today are lost from the backup path" },
+    { "id": "3", "label": "Rename it to legacy_users_old", "description": "Undoable; storage stays" }
+  ]
+}
+```
+
 ## Question writing rules
 
 1. **`[tier ~N lines]` prefix** — All questions must indicate the decision weight. Tier is calculated from `decision-gate` (tiny ~5 / small ~20 / medium ~50 / large ~100 / xlarge ~500).
@@ -204,6 +245,8 @@ Each caller skill has a pre-built JSON template under [`templates/`](./templates
 | `local:ztrace` Phase 0 | [ztrace-ambiguous-scenario.json](./templates/ztrace-ambiguous-scenario.json) | Scenario confirmation when user didn't provide a scenario list |
 | `local:zexplore` | [zexplore-research-scope.json](./templates/zexplore-research-scope.json) | Research scope confirmation (narrow / as-is / broaden) |
 | `local:decision-gate` tier=medium | [decision-gate-tier-medium.json](./templates/decision-gate-tier-medium.json) | Autonomous 3-reviewer vote vs user-ask branch |
+
+The two merge-approval templates (`z-phase2.9-pr-approval`, `zcheck-pr-approve`) carry decision lines — the answer holds up a merge. The others do not: see [Decision lines](#decision-lines-optional--most-questions-need-none).
 
 **`local:zwork` does NOT own its own template.** When `zwork` needs user input during implementation, it routes through `local:decision-gate` (tier=medium) which then uses the `decision-gate-tier-medium.json` template. This keeps the "when to ask the user" decision in one place and prevents `zwork` from short-circuiting the gate.
 
