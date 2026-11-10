@@ -332,6 +332,21 @@ describe('findGitCheckouts — the real git reader (#833 R8)', () => {
     expect(found.map((c) => [fs.realpathSync(c.dir), c.branch])).toEqual([[fs.realpathSync(wt), 'feat/w']]);
   }, 30_000);
 
+  it('a closed session’s folder parked for its background delete is no checkout of anyone’s (SSOT 2026-11-10 T1)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'parked-'));
+    roots.push(root);
+    const live = repo(root, 'live', 'https://github.com/acme/live.git', 'feat/live');
+    // The registry parks a closed session's clone as `.<name>.removing-<ms>-<uuid>` beside where it was.
+    repo(
+      root,
+      '.child.removing-1794300000000-0b6f3c1e-5f0a-4c1e-9d2b-7a1c2e3f4a5b',
+      'https://github.com/acme/app.git',
+      'feat/x',
+    );
+    const found = await findGitCheckouts([root]);
+    expect(found.map((c) => c.dir)).toEqual([live]);
+  }, 30_000);
+
   it('R12 — a scan cut short by its bound says so; a scan that stops at a match is complete (astra/grok P2)', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'r12-'));
     roots.push(root);

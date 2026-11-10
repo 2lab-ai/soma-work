@@ -43,7 +43,7 @@ import { getMetricsEmitter } from './metrics/event-emitter';
 import { repriceBaseline } from './metrics/host-pricing';
 import { hostPricing } from './metrics/host-pricing-catalog';
 import { resolveContextWindow } from './metrics/model-registry';
-import { normalizeTmpPath } from './path-utils';
+import { normalizeTmpPath, parkedRemovalName } from './path-utils';
 import {
   loseRunningAgents,
   type StoppedAgentRef,
@@ -3282,7 +3282,7 @@ export class SessionRegistry {
         this.logger.warn('Skipping cleanup: path is now a symlink', { dir });
         return false;
       }
-      const parked = path.join(path.dirname(dir), `.${path.basename(dir)}.removing-${Date.now()}-${randomUUID()}`);
+      const parked = path.join(path.dirname(dir), parkedRemovalName(path.basename(dir), Date.now(), randomUUID()));
       fs.renameSync(dir, parked);
       fs.promises.rm(parked, { recursive: true, force: true }).then(
         () => this.logger.info('Cleaned up source working dir', { dir }),
