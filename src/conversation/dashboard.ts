@@ -13867,6 +13867,14 @@ function renderPanelHead() {
   writePanelPart(el, s ? panelHeadNoteHtml(s, col) : '');
   var data = s ? panelHeadData(s, col) : null;
   var sig = JSON.stringify(data);
+  // Another session in the bar (the deck moved, a card left): a press armed on the last one (Stop, Close) never
+  // carries over — the bar keeps an armed danger action whose id the new data still has, so it renders once with
+  // no data first (renderNow: at once, not batched with the data below). Review P1, SSOT 2026-11-10 T3.
+  if (el._key !== key && el._sig && typeof el.renderNow === 'function') {
+    el.data = null;
+    el.renderNow();
+    el._sig = 'null';
+  }
   el._key = key;
   // Same data, same object: the bar keeps an armed Stop and its pending busy across live repaints.
   if (el._sig === sig) return;
