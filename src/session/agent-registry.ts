@@ -63,8 +63,8 @@ export interface SpendTotals {
  * Bump it whenever the calculation or the prices change.
  */
 // 4 (#813): a spend records the agent's model — older sealed spends are re-read once to get it.
-// 5 (2026-11-10): price rows for gpt-6-sol / gpt-6-luna and grok-4.5–4.7 (before, they were priced
-// at the Sonnet fallback rates) — sealed spends are re-read.
+// 5 (2026-11-10): price rows for Fable 5.2, gpt-6.1-terra, gpt-6-sol / gpt-6-luna and grok-4.5–4.7
+// (before, they were priced at Fable 5's or the Sonnet fallback rates) — sealed spends are re-read.
 export const SPEND_CALC_VERSION = 5;
 
 /**

@@ -2,7 +2,7 @@
  * Unified model registry — single source of truth for pricing, context windows, and max output.
  * Source: https://docs.anthropic.com/en/docs/about-claude/models (claude rows); each non-claude
  * row names its own source.
- * Last updated: 2026-11-10 (gpt-6-sol / gpt-6-luna and grok rows)
+ * Last updated: 2026-11-10 (Fable 5.2, gpt-6.1-terra, gpt-6-sol / gpt-6-luna and grok rows)
  */
 
 import { resolveModelProfile } from './model-profile';
@@ -70,6 +70,29 @@ export interface ModelSpec {
  * Order matters — first match wins.
  */
 const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
+  // Claude Fable 5.2 (released 2026-11-09) — CHEAPER than Fable 5 / 5.1:
+  // $8 in / $40 out / $0.20 cache read / $10 5-min write / $16 1-h write per
+  // MTok, no long-context tier (the full 1M bills at these rates). Source:
+  // https://platform.claude.com/docs/en/about-claude/pricing (read
+  // 2026-11-10); llmux `src/pricing.rs` `FABLE_5_2` carries the same
+  // (8.0, 40.0, 0.20, 10.0). `claude-fable-5-2` also contains `fable-5`, so
+  // this row MUST stay above `fable-5` (and, by convention, above
+  // `fable-5-1`): without it every Fable 5.2 call was priced at Fable 5's
+  // $10 / $50 / $1.
+  [
+    'fable-5-2',
+    {
+      pricing: {
+        inputPerMTok: 8,
+        outputPerMTok: 40,
+        cacheReadPerMTok: 0.2,
+        cache5minWritePerMTok: 10,
+        cache1hrWritePerMTok: 16,
+      },
+      contextWindow: 1_000_000,
+      maxOutput: 128_000,
+    },
+  ],
   // Claude Fable 5.1 — same input/output as Fable 5, but cache reads at
   // $0.25/MTok (Fable 5: $1). Official first-party rates (claude-api reference,
   // 2026-09-25); the Agent SDK prices its result `modelUsage` with exactly
@@ -238,6 +261,32 @@ const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
         cache1hrWritePerMTok: 0,
       },
       contextWindow: 272_000,
+      maxOutput: 128_000,
+    },
+  ],
+  // OpenAI gpt-6.1-terra (released 2026-10-26) — generation 6.1's mid tier:
+  // $1 in / $5 out / $0.05 cache read per MTok, half of 6.1-sol (OpenAI model
+  // page https://developers.openai.com/api/docs/models/gpt-6.1-terra and the
+  // pricing page, read 2026-11-10; llmux `GPT_6_1_TERRA` = (1.0, 5.0, 0.05,
+  // 1.25)). OpenAI's $1.25 cache-write rate never applies here — llmux
+  // reports no cache-creation tokens on the codex wire — so both cache-write
+  // fields stay 0, like every codex row. The >272k-input long-context
+  // surcharge is not modeled (llmux does not model it either). 500k window —
+  // the openai/codex models.json context_window; the `[1m]` twin reaches 1M.
+  // Context numbers are policy and live in model-profile.ts. No pattern here
+  // is a substring of `gpt-6.1-terra` (`gpt-5.6-terra` differs in its
+  // generation), and it is a substring of no other id.
+  [
+    'gpt-6.1-terra',
+    {
+      pricing: {
+        inputPerMTok: 1,
+        outputPerMTok: 5,
+        cacheReadPerMTok: 0.05,
+        cache5minWritePerMTok: 0,
+        cache1hrWritePerMTok: 0,
+      },
+      contextWindow: 500_000,
       maxOutput: 128_000,
     },
   ],
