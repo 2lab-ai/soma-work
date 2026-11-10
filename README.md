@@ -13,6 +13,10 @@
   <a href="#ask-in-slack">ask in Slack</a> · <a href="#pick-it-up-on-the-dashboard">pick it up</a> · <a href="#keep-going-from-the-card">keep going</a> · <a href="#watch-it-work">watch</a> · <a href="#or-start-on-the-dashboard">start on the dashboard</a> · <a href="#step-in">step in</a> · <a href="#run-it">run it</a> · <a href="#docs">docs</a> · <a href="./README.ko.md">한국어</a>
 </p>
 
+[![Demo film, 44 seconds: a request asked in Slack, the same request as a dashboard card, a follow-up from the card with its task list and work log, then a task given by voice](assets/readme/en/demo-poster.png)](https://github.com/2lab-ai/soma-work/releases/download/v0.3/soma-work-v0.3-demo-en.mp4)
+
+<p align="center"><sub>▶ <a href="https://github.com/2lab-ai/soma-work/releases/download/v0.3/soma-work-v0.3-demo-en.mp4">Demo film, 44 s</a>: ask in Slack, see it on the dashboard, keep going from the card, or just say it. One real session, recorded from Slack and the dashboard. (<a href="https://github.com/2lab-ai/soma-work/releases/download/v0.3/soma-work-v0.3-demo-ko.mp4">Korean UI</a> · <a href="https://github.com/2lab-ai/soma-work/releases/tag/v0.3">v0.3 release</a>)</sub></p>
+
 ![The soma-work dashboard: three columns (needs response, running, done) of task cards, each with its status, PRs, cost and Slack channel](assets/readme/en/board.png)
 
 <sub>The real dashboard, filtered to this repository (private cards hidden). It starts in Korean: press EN at the top right, or send the bot `lang en`. Card titles and TL;DRs are written by the agent, so some are in Korean.</sub>
