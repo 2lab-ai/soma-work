@@ -13,6 +13,7 @@ import {
   type Approvals,
   createApprovals,
   initialApprovalState,
+  type QueuedRun,
 } from './approval.js';
 import { type BrokerDeps, createBroker } from './broker.js';
 import type { CloudflareLeases, LeaseView } from './cf-client.js';
@@ -1622,5 +1623,71 @@ describe('queued requests and dashboard decisions (#1128, #1129)', () => {
     const reply = terminal(await admin('decide', { decisions: [], actor: 'U000ADMIN' }));
     expect(reply).toMatchObject({ type: 'error', code: 'bad-request' });
     expect(ledgerRows().find((row) => row.event === 'admin-request')).toMatchObject({ outcome: 'bad-request' });
+  });
+});
+
+describe('queued runs re-check what the card showed (#1128)', () => {
+  /** Approvals that queue every request at once and hand the queued run to the test. */
+  function queueingApprovals() {
+    let run: QueuedRun | undefined;
+    const approvals = {
+      ...fakeApprovals('denied').approvals,
+      async request(_req: ApprovalRequest, hooks: Parameters<Approvals['request']>[1]): Promise<ApprovalOutcome> {
+        hooks.onPending({
+          approvalId: 'appr-0001',
+          digestPrefix: '0123456789ab',
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          queuedUntil: '2030-01-01T00:00:00.000Z',
+        });
+        run = hooks.queued;
+        return { outcome: 'queued', approvalId: 'appr-0001', queuedUntil: '2030-01-01T00:00:00.000Z' };
+      },
+    } as unknown as Approvals;
+    return { approvals, run: () => run };
+  }
+  const consume = async () => {};
+  const queuePolicy = () => ({ ...policy, queueTimeoutSeconds: 3600 });
+
+  it('an org role that changed since the card is not sent; an unchanged one is, with the token read again', async () => {
+    const q = queueingApprovals();
+    const github = fakeGithubAdmin();
+    const readSecret = vi.fn((kind: string, name: string) => `${GH_TOKEN}-${kind}-${name}`);
+    await start({ policy: queuePolicy(), approvals: q.approvals, githubAdmin: github, readSecret });
+    const messages = await send(request('gh_org_member', { action: 'add', user: 'alice', role: 'member' }));
+    expect(terminal(messages)).toMatchObject({ code: 'queued' });
+    const run = q.run();
+    expect(run).toBeDefined();
+    const reads = readSecret.mock.calls.length;
+
+    // Changed: alice became a member meanwhile — the approved "add" is not what would happen now.
+    github.getMembership.mockResolvedValueOnce({ member: true, role: 'member', state: 'active' } as never);
+    const changed = await run?.('appr-0001', consume);
+    expect(changed).toMatchObject({ outcome: 'failed' });
+    expect(changed?.message).toMatch(/changed after the card was posted/);
+    expect(github.setMembership).not.toHaveBeenCalled();
+    expect(readSecret.mock.calls.length).toBe(reads + 1);
+
+    // Unchanged: sent.
+    const done = await run?.('appr-0001', consume);
+    expect(done).toMatchObject({ outcome: 'done' });
+    expect(github.setMembership).toHaveBeenCalledTimes(1);
+    expect(
+      ledgerRows()
+        .filter((r) => r.event === 'request.queued-run')
+        .map((r) => r.outcome),
+    ).toEqual(['policy-denied', 'ok']);
+  });
+
+  it('a queued gh_write reads its token again when it runs', async () => {
+    const q = queueingApprovals();
+    const gh = fakeGhRunner();
+    let n = 0;
+    const readSecret = vi.fn((kind: string, name: string) => `${GH_TOKEN}-${kind}-${name}-${++n}`);
+    await start({ policy: queuePolicy(), approvals: q.approvals, ghRunner: gh.runner, readSecret });
+    const messages = await send(request('gh_write', { account: 'member', args: PR_COMMENT }));
+    expect(terminal(messages)).toMatchObject({ code: 'queued' });
+    const result = await q.run()?.('appr-0001', consume);
+    expect(result).toMatchObject({ outcome: 'done', data: { exitCode: 0 } });
+    expect(gh.run.mock.calls[0][0]).toBe(`${GH_TOKEN}-gh-member-2`);
   });
 });
