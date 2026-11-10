@@ -20,7 +20,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../slack/autoskill-fire', () => ({
   buildAutoskillFire: vi.fn(() => null),
@@ -69,8 +69,13 @@ describeReal('follow-up queue × a real CLI turn', () => {
   let answer: string;
   let onEvent: (type: string, event: any) => void;
   const mark = (what: string) => timeline.push({ at: Date.now() - t0, what });
-  const at = (what: string | RegExp) =>
-    timeline.find((e) => (typeof what === 'string' ? e.what === what : what.test(e.what)))?.at;
+  const at = (what: string) => timeline.find((e) => e.what === what)?.at;
+  /** Every state the queue's rows went through, in order — a row that went back in line shows twice. */
+  let rowStates: string[];
+  let lastRowState: Map<string, string>;
+  /** The real turn's abort handle and its end: a test that failed or timed out must not leave a CLI running. */
+  let turnAbort: AbortController | undefined;
+  let turnDone: Promise<unknown> | undefined;
   const queue = () => handlerAny.getFollowupQueue();
 
   beforeEach(() => {
@@ -115,7 +120,21 @@ describeReal('follow-up queue × a real CLI turn', () => {
         return pushed;
       },
     };
-    const store = { load: () => undefined, save: (_s: FollowupQueueSnapshot) => {}, recoveryWarning: undefined };
+    // The queue's save sink sees EVERY commit, in order — a listener only samples the state a tick later
+    // and would miss a row that moved twice within one tick.
+    rowStates = [];
+    lastRowState = new Map();
+    t0 = Date.now();
+    const recordRows = (snapshot: FollowupQueueSnapshot) => {
+      for (const item of snapshot.sessions.find((session) => session.sessionKey === SESSION_KEY)?.items ?? []) {
+        const now = `${item.state}@${item.epoch}`;
+        if (lastRowState.get(item.id) === now) continue;
+        lastRowState.set(item.id, now);
+        rowStates.push(`row#${item.seq} ${item.state}`);
+        mark(`row#${item.seq} ${item.state}${item.stateReason ? ` (${item.stateReason})` : ''}`);
+      }
+    };
+    const store = { load: () => undefined, save: recordRows, recoveryWarning: undefined };
     handler = new SlackHandler({ client: {}, assistant: vi.fn() } as any, claudeHandler as any, {} as any, {
       followupQueueStore: store,
     });
@@ -164,7 +183,8 @@ describeReal('follow-up queue × a real CLI turn', () => {
         const deps = handlerAny.streamExecutor.deps;
         let reached = false;
         mark(`turn dispatched (generation ${turnEpoch})`);
-        const events = real.streamAgentEvents(text, registrySession, new AbortController(), cwd, SLACK, SESSION_KEY);
+        turnAbort = new AbortController();
+        const events = real.streamAgentEvents(text, registrySession, turnAbort, cwd, SLACK, SESSION_KEY);
         for await (const event of events as AsyncIterable<any>) {
           if (!reached) {
             reached = true;
@@ -187,13 +207,16 @@ describeReal('follow-up queue × a real CLI turn', () => {
       getLastTurnSucceeded: () => true,
       getRetryAfterMs: () => undefined,
     }));
-    handler.setFollowupChangeListener(() => {
-      for (const item of queue().list(SESSION_KEY)) {
-        const seen = `row#${item.seq} ${item.state}${item.stateReason ? ` (${item.stateReason})` : ''}`;
-        if (timeline[timeline.length - 1]?.what !== seen && !timeline.some((e) => e.what === seen)) mark(seen);
-      }
-    });
-    t0 = Date.now();
+  });
+
+  afterEach(async () => {
+    // A passed test's turn is over and this is a no-op. After a failure or a timeout the CLI may still run:
+    // stop it and wait, so its late events cannot reach the next scenario.
+    onEvent = () => {};
+    turnAbort?.abort();
+    await Promise.race([turnDone?.catch(() => undefined), new Promise((resolve) => setTimeout(resolve, 10_000))]);
+    turnAbort = undefined;
+    turnDone = undefined;
   });
 
   const OPENING =
@@ -220,10 +243,11 @@ describeReal('follow-up queue × a real CLI turn', () => {
       }
     };
 
-    await handler.handleMessage(
+    turnDone = handler.handleMessage(
       message({ ts: '222.333', text: OPENING }),
       vi.fn().mockResolvedValue({ ts: 'm' }) as any,
     );
+    await turnDone;
     await sent;
 
     const [row] = queue().list(SESSION_KEY);
@@ -240,7 +264,7 @@ describeReal('follow-up queue × a real CLI turn', () => {
     // Whether the model acts on what it read is the model's call, not the queue's: reported, not asserted.
     mark(`model acted on the follow-up: ${/파일 수\s*:\s*4/.test(answer)}`);
     // It ran once: nothing went back in line, and no second turn was started for it.
-    expect(timeline.some((e) => /row#1 queued/.test(e.what) && e.at > (steered as number))).toBe(false);
+    expect(rowStates).toEqual(['row#1 queued', 'row#1 steered', 'row#1 resolved']);
     expect(handlerAny.createAgentSession).toHaveBeenCalledTimes(1);
     mark(`model: ${registrySession.model}`);
     printTimeline('mid-turn message');
@@ -255,10 +279,12 @@ describeReal('follow-up queue × a real CLI turn', () => {
     expect(queue().get(SESSION_KEY, parked.item.id).state).toBe('uncertain');
 
     let retried: Promise<unknown> | undefined;
+    let statesAtRetry = -1;
     onEvent = (type) => {
       if (type === 'tool_call' && !retried) {
         const row = queue().get(SESSION_KEY, parked.item.id);
         mark('user presses Retry on the dashboard mid-turn');
+        statesAtRetry = rowStates.length;
         retried = handler.handleDashboardFollowupAction({
           sessionKey: SESSION_KEY,
           itemId: row.id,
@@ -269,10 +295,11 @@ describeReal('follow-up queue × a real CLI turn', () => {
       }
     };
 
-    await handler.handleMessage(
+    turnDone = handler.handleMessage(
       message({ ts: '222.334', text: OPENING }),
       vi.fn().mockResolvedValue({ ts: 'm' }) as any,
     );
+    await turnDone;
     const outcome = await retried;
 
     expect(outcome).toEqual({ ok: true });
@@ -280,6 +307,9 @@ describeReal('follow-up queue × a real CLI turn', () => {
     const consumed = at('row#1 resolved (consumed)');
     const result = at('result');
     expect(consumed as number).toBeLessThan(result as number);
+    // From the press on: put back in line, handed to the running turn, read — and never back in line after that.
+    expect(rowStates.slice(0, statesAtRetry).pop()).toBe('row#1 uncertain');
+    expect(rowStates.slice(statesAtRetry)).toEqual(['row#1 queued', 'row#1 steered', 'row#1 resolved']);
     mark(`model acted on the follow-up: ${/파일 수\s*:\s*4/.test(answer)}`);
     // Into the running turn — not a turn of its own after it.
     expect(handlerAny.createAgentSession).toHaveBeenCalledTimes(1);
