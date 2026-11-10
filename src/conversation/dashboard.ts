@@ -5886,6 +5886,36 @@ html[lang="ko"] .lang-toggle .lang-cur[data-lang="ko"], html[lang="en"] .lang-to
 .admin-inbox-head { font-weight: 600; outline: none; }
 .admin-inbox-body { display: flex; flex-direction: column; gap: 12px; padding: 6px 0 16px; }
 .admin-inbox-empty { color: var(--text-secondary); font-size: 13px; padding: 12px 0; }
+/* #1131 — one pass over many: the header's alert toggle, the toolbar (전체 선택 · count · 선택 거부 / 선택 승인), each
+   pending card's line (a checkbox when it can be decided with others, the summary, risk · 대기열 · who · age) and
+   the confirm sheet's rows. Risk takes the status tones: high = fail, medium = wait, low = done. */
+.admin-inbox-headline { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; }
+.admin-notify-toggle[data-state="denied"], .admin-notify-toggle[data-state="unsupported"] { opacity: 0.7; }
+.admin-batch-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 4px 0 8px; position: sticky; top: 0; z-index: 1; background: var(--surface, var(--bg)); }
+.admin-batch-bar[hidden] { display: none; }
+.admin-batch-count { color: var(--text-secondary); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.admin-batch-acts { display: inline-flex; gap: 6px; margin-left: auto; }
+.admin-item { display: flex; flex-direction: column; gap: 6px; }
+.admin-item-meta { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.admin-sel { display: inline-flex; padding-top: 2px; cursor: pointer; }
+.admin-sel input, .ab-tick input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.admin-item-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
+.admin-item-summary { font-weight: 600; font-size: 13.5px; overflow-wrap: anywhere; }
+.admin-item-sub { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; color: var(--text-secondary); font-size: 12px; }
+.admin-risk[data-risk="high"] { --ui-tone: var(--ui-st-fail); }
+.admin-risk[data-risk="medium"] { --ui-tone: var(--ui-st-wait); }
+.admin-risk[data-risk="low"] { --ui-tone: var(--ui-st-done); }
+.admin-batch-sheet { display: flex; flex-direction: column; gap: 10px; }
+.ab-lead { margin: 0; font-size: 13.5px; }
+.ab-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; max-height: min(56vh, 520px); overflow: auto; }
+.ab-row { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
+.ab-row[data-risk="high"] { border-color: color-mix(in srgb, var(--ui-st-fail) 45%, var(--border)); }
+.ab-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ab-summary { font-weight: 600; font-size: 13px; overflow-wrap: anywhere; flex: 1; min-width: 0; }
+.ab-sub { color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; }
+.ab-tick { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; cursor: pointer; }
+.ab-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.ab-actions [hidden] { display: none; }
 /* ── MAIN — stats strip, then the board; capped at 1280px and centred (.prd/10 §3.1-2, §5) ── */
 .main { flex: 1; padding: 20px; width: 100%; max-width: 1280px; margin: 0 auto; min-width: 0; }
 
@@ -7208,12 +7238,26 @@ ${pageTokenAliases()}
     <div class="cron-drawer-body" id="cron-drawer-body"></div>
   </ui-drawer>
 
-  <!-- Admin approvals (#620): the requests the admins get by Slack DM, answerable here too. -->
+  <!-- Admin approvals (#620): the requests the admins get by Slack DM, answerable here too. #1131: several are
+       selected and decided in one pass (the toolbar, then the confirm sheet below); the header's toggle turns on a
+       desktop alert for a request that arrives while the tab is hidden. -->
   <ui-drawer class="cron-drawer" id="admin-inbox-drawer" mode="sheet" width="480" max-width="480" lang="ko">
-    <span slot="header" class="admin-inbox-head" id="admin-inbox-head" tabindex="-1">관리자 승인</span>
+    <span slot="header" class="admin-inbox-headline"><span class="admin-inbox-head" id="admin-inbox-head" tabindex="-1">관리자 승인</span><button type="button" class="ui-chip is-sm admin-notify-toggle" id="admin-notify-toggle" aria-pressed="false" onclick="toggleAdminNotify()">데스크톱 알림 켜기</button></span>
+    <div class="admin-batch-bar" id="admin-batch-bar" role="toolbar" aria-label="여러 요청 한 번에 처리" hidden>
+      <button type="button" class="ui-btn is-sm is-quiet" id="admin-batch-all" onclick="adminSelectAll()">전체 선택</button>
+      <span class="admin-batch-count" id="admin-batch-count"></span>
+      <span class="admin-batch-acts"><button type="button" class="ui-btn is-sm" id="admin-batch-deny" onclick="openAdminBatch('deny')" disabled>선택 거부</button><button type="button" class="ui-btn is-sm is-primary" id="admin-batch-approve" onclick="openAdminBatch('approve')" disabled>선택 승인</button></span>
+    </div>
     <div class="admin-inbox-body" id="admin-inbox-body"></div>
   </ui-drawer>
   <p class="ui-sr-only" id="admin-inbox-status" role="status" aria-live="polite"></p>
+  <!-- #1131: the confirm sheet — every selected request's effect, its risk and who asked; a tick for each high-risk
+       one; one confirm; then each one's outcome. Esc, the scrim and 취소 close it. -->
+  <ui-dialog id="admin-batch-dialog" class="admin-batch-dialog" heading="선택한 요청 승인" size="md" lang="ko">
+    <div class="admin-batch-sheet" id="admin-batch-body"></div>
+    <p class="ui-status-line" id="admin-batch-status" role="status" aria-live="polite"></p>
+    <div slot="footer" class="ab-actions"><button type="button" class="ui-btn" id="admin-batch-cancel" onclick="closeAdminBatch()">취소</button><button type="button" class="ui-btn is-primary" id="admin-batch-go" onclick="confirmAdminBatch()" disabled>승인</button></div>
+  </ui-dialog>
 
   <!-- Slide panel: the detail card — @2lab.ai/ui <ui-drawer> (D4 E-01, E-02): a modal sheet over its own scrim below
        840px, docked beside the board from 840px (dock-at), switched in place while open; resizable from its inner edge
@@ -8745,6 +8789,13 @@ var _adminInboxOpen = false;
 var _adminPushSeq = 0; // WebSocket snapshots seen — a GET that started before a push is older than it
 var _adminInboxReturn = null;
 var ADMIN_KIND_LABEL = { env_skill: '환경 스킬', mcp_grant: 'MCP 권한', new_user: '새 사용자', bot_delete: '메시지 삭제', devops_broker: 'devops 승인', session_question: '에이전트 질문' };
+// #1131 — several requests decided in one pass, and desktop alerts.
+var _adminSel = Object.create(null); // ids ticked for a decision together — kept across snapshots while still pending
+var _adminSeenEver = null; // every pending id this page has seen — the first load is the baseline (no desktop alert)
+var _adminBatch = null; // the confirm sheet: { decision, ids, ticks, sending, results, error, closed }
+var ADMIN_NOTIFY_KEY = 'soma_admin_notify';
+var ADMIN_RISK_LABEL = { low: '위험 낮음', medium: '위험 중간', high: '위험 높음' };
+var ADMIN_BATCH_REASON = { not_found: '만료되었거나 더 이상 없는 요청입니다', invalid: '처리하지 못했습니다 — 카드에서 하나씩 다시 시도하세요', forbidden: '관리자만 응답할 수 있습니다', busy: '다른 관리자의 응답을 처리하는 중입니다 — 잠시 후 다시 시도하세요', other_instance: '다른 인스턴스의 요청입니다 — 그 인스턴스의 대시보드에서 응답하세요' };
 
 function adminInboxLoad() {
   if (!_viewerIsAdmin || !_viewerUserId) return;
@@ -8772,20 +8823,27 @@ function applyAdminApprovals(snap) {
   var resolved = (snap && snap.resolved) || [];
   var ids = Object.create(null);
   var arrivals = [];
+  // #1131 — a desktop alert is for a request this page has never seen (not one that left and came back).
+  var fresh = [];
   for (var i = 0; i < pending.length; i++) {
     var a = pending[i];
     ids[a.id] = true;
     if (_adminKnown && !_adminKnown[a.id]) arrivals.push(a);
+    if (_adminSeenEver && !_adminSeenEver[a.id]) fresh.push(a);
     _adminLast[a.id] = a;
   }
+  if (!_adminSeenEver) _adminSeenEver = Object.create(null);
+  for (var e = 0; e < pending.length; e++) _adminSeenEver[pending[e].id] = true;
   if (_adminInboxOpen && _adminKnown) {
     for (var gone in _adminKnown) if (!ids[gone] && _adminLast[gone]) _adminKeep[gone] = true;
   }
   _adminKnown = ids;
   _adminApprovals = { pending: pending, resolved: resolved };
   for (var sid in _adminState) if (!ids[sid] && !_adminKeep[sid]) delete _adminState[sid];
+  adminPruneSelection();
   paintAdminInboxButton();
   if (_adminInboxOpen) paintAdminInbox();
+  adminNotifyArrivals(fresh, pending.length);
   if (!arrivals.length) return;
   if (_adminInboxOpen) {
     adminInboxAnnounce('새 승인 요청 — ' + adminApprovalTitle(arrivals[0]));
@@ -8799,9 +8857,14 @@ function applyAdminApprovals(snap) {
   }, function() { openAdminInbox(first.id); });
 }
 function paintAdminInboxButton() {
+  var n = _adminApprovals.pending.length;
+  // #1131 — the tab title carries the count while any request waits: "(3) …", one prefix, gone at 0.
+  if (typeof document.title === 'string') {
+    var title = adminTitleBadge(document.title, n);
+    if (title !== document.title) document.title = title;
+  }
   var btn = document.getElementById('admin-inbox-btn');
   if (!btn) return;
-  var n = _adminApprovals.pending.length;
   var c = document.getElementById('admin-inbox-count');
   if (c && c.textContent !== String(n)) c.textContent = String(n);
   // The kit count badge takes the wait tone while any request waits.
@@ -8848,8 +8911,7 @@ function adminApprovalData(id) {
   };
   var created = toNum(a.createdAt);
   if (created > 0) d.createdAt = created;
-  var until = toNum(a.expiresAt);
-  if (until > 0) d.expiresAt = until;
+  // #1131 — no countdown: a request waits until an admin decides it; the line above the card shows its age.
   if (a.card === 'question') {
     d.kind = 'question';
     d.question = String(a.title || '');
@@ -8883,12 +8945,17 @@ function paintAdminInbox() {
   if (!body) return;
   var ids = _adminApprovals.pending.map(function(a) { return a.id; });
   for (var k in _adminKeep) if (ids.indexOf(k) < 0) ids.push(k);
+  // #1131 — each card under its line (a checkbox when it can be decided with others, the summary, risk · 대기열 ·
+  // who · age); a request that ended keeps its slot (the card glides into its resolved row) without the line.
   var html = ids.length
     ? ids.map(function(id) {
         var a = _adminLast[id];
-        return acSlotHtml('admin', 'admin', 'a|' + id, id, adminApprovalTitle(a) + ' — 응답 대기');
+        var open = !!(_adminKnown && _adminKnown[id]);
+        return '<div class="admin-item" data-mk="' + escAttr('ai|' + id) + '">' + (open ? adminMetaHtml(id) : '')
+          + acSlotHtml('admin', 'admin', 'a|' + id, id, adminApprovalTitle(a) + ' — 응답 대기') + '</div>';
       }).join('')
     : '<p class="admin-inbox-empty">대기 중인 승인 요청이 없습니다.</p>';
+  paintAdminBatchBar();
   var ae = document.activeElement;
   var had = !!(ae && body.contains(ae));
   if (body._html !== html) {
@@ -8906,6 +8973,7 @@ function openAdminInbox(focusId) {
   _adminInboxOpen = true;
   _adminKeep = Object.create(null);
   paintAdminInbox();
+  paintAdminNotifyToggle();
   var d = document.getElementById('admin-inbox-drawer');
   if (d && typeof d.show === 'function') d.show();
   adminInboxLoad();
@@ -8929,6 +8997,436 @@ function closeAdminInbox() {
   var to = back && back.isConnected ? back : btn;
   if (to && to.focus) setTimeout(function() { to.focus({ preventScroll: true }); }, 0);
 }
+// ── #1131 — many requests in one pass ──
+// A request whose kind says which choices approve and deny it (a.batch) can be ticked and decided with others:
+// 선택 승인 / 선택 거부 open the confirm sheet, which lists every effect; a high-risk request is ticked there on its
+// own (and never by 전체 선택); one confirm sends them all to POST …/answer-batch, each through its kind's own
+// decision, and the sheet shows how each one ended. The WebSocket push then redraws the drawer.
+// A phrase with numbered slots — '{0}건 승인' — so each phrase is whole in one place (and in the catalog).
+function adminFmt(tpl) {
+  var args = arguments;
+  return String(tpl).replace(/\\{(\\d)\\}/g, function(m, i) {
+    var v = args[Number(i) + 1];
+    return v === undefined ? m : String(v);
+  });
+}
+// The card's one line: what an approval does, else its title.
+function adminSummaryOf(a) {
+  return String((a && (a.summary || a.title)) || '');
+}
+// Still pending, and its kind names an approve and a deny choice.
+function adminHasBatch(id) {
+  var a = _adminLast[id];
+  if (!a || !a.batch || !(_adminKnown && _adminKnown[id])) return false;
+  return typeof a.batch.approve === 'string' && !!a.batch.approve && typeof a.batch.deny === 'string' && !!a.batch.deny;
+}
+// …and no answer of this page is in flight or done for it.
+function adminCanBatch(id) {
+  if (!adminHasBatch(id)) return false;
+  var st = _adminState[id];
+  return !(st && (st.status === 'sending' || st.status === 'resolved'));
+}
+// What 전체 선택 takes: every request that can be decided together, except a high-risk one.
+function adminSafeIds() {
+  var out = [];
+  var list = _adminApprovals.pending;
+  for (var i = 0; i < list.length; i++) if (adminCanBatch(list[i].id) && list[i].risk !== 'high') out.push(list[i].id);
+  return out;
+}
+// The ticked requests that can still be decided, in the drawer's order.
+function adminSelectedIds() {
+  var out = [];
+  var list = _adminApprovals.pending;
+  for (var i = 0; i < list.length; i++) if (_adminSel[list[i].id] && adminCanBatch(list[i].id)) out.push(list[i].id);
+  return out;
+}
+// A snapshot keeps the ticks of the requests still pending; one that left (or lost its batch choices) drops out.
+function adminPruneSelection() {
+  for (var id in _adminSel) if (!adminHasBatch(id)) delete _adminSel[id];
+}
+function toggleAdminSelect(id, on) {
+  if (on && adminCanBatch(id)) _adminSel[id] = true;
+  else delete _adminSel[id];
+  paintAdminInbox();
+}
+// 전체 선택: every safe request; pressed again with all of them ticked, 선택 해제 clears every tick.
+function adminSelectAll() {
+  var safe = adminSafeIds();
+  var all = safe.length > 0;
+  for (var i = 0; i < safe.length; i++) if (!_adminSel[safe[i]]) all = false;
+  if (all) _adminSel = Object.create(null);
+  else for (var j = 0; j < safe.length; j++) _adminSel[safe[j]] = true;
+  paintAdminInbox();
+}
+// What the toolbar shows: only with a request that can be decided together.
+function adminBatchBarModel() {
+  var batchable = 0;
+  var list = _adminApprovals.pending;
+  for (var i = 0; i < list.length; i++) if (adminCanBatch(list[i].id)) batchable++;
+  var safe = adminSafeIds();
+  var sel = adminSelectedIds();
+  var allOn = safe.length > 0;
+  for (var j = 0; j < safe.length; j++) if (!_adminSel[safe[j]]) allOn = false;
+  var lock = adminApprovalLock();
+  return {
+    show: batchable > 0,
+    count: sel.length,
+    countLabel: adminFmt('{0}건 선택됨', sel.length),
+    allLabel: allOn ? '선택 해제' : '전체 선택',
+    allDisabled: !safe.length && !sel.length,
+    approveLabel: adminFmt('선택 승인 ({0})', sel.length),
+    denyLabel: adminFmt('선택 거부 ({0})', sel.length),
+    actDisabled: !sel.length || !!lock || !!(_adminBatch && _adminBatch.sending),
+    lock: lock,
+  };
+}
+function paintAdminBatchBar() {
+  var bar = document.getElementById('admin-batch-bar');
+  if (!bar) return;
+  var m = adminBatchBarModel();
+  bar.hidden = !m.show;
+  var all = document.getElementById('admin-batch-all');
+  if (all) {
+    if (all.textContent !== m.allLabel) all.textContent = m.allLabel;
+    all.disabled = m.allDisabled;
+    all.title = '높은 위험 요청은 하나씩 선택하세요';
+  }
+  var count = document.getElementById('admin-batch-count');
+  if (count && count.textContent !== m.countLabel) count.textContent = m.countLabel;
+  var acts = [['admin-batch-approve', m.approveLabel], ['admin-batch-deny', m.denyLabel]];
+  for (var i = 0; i < acts.length; i++) {
+    var b = document.getElementById(acts[i][0]);
+    if (!b) continue;
+    if (b.textContent !== acts[i][1]) b.textContent = acts[i][1];
+    b.disabled = m.actDisabled;
+    b.title = m.lock || '';
+  }
+}
+function adminRiskChipHtml(risk) {
+  var label = ADMIN_RISK_LABEL[risk];
+  return label ? '<span class="ui-chip is-sm is-toned admin-risk" data-risk="' + escAttr(risk) + '">' + esc(label) + '</span>' : '';
+}
+// One pending card's line: the checkbox (when it can be decided with others), the summary, then risk · 대기열 ·
+// who asked · how long ago (<ui-elapsed> keeps the age current; the exact time on hover).
+function adminMetaHtml(id) {
+  var a = _adminLast[id];
+  if (!a) return '';
+  var summary = adminSummaryOf(a);
+  var box = adminHasBatch(id)
+    ? '<label class="admin-sel"><input type="checkbox" class="admin-sel-box" data-admin-sel="' + escAttr(id) + '"'
+      + (_adminSel[id] && adminCanBatch(id) ? ' checked' : '') + (adminCanBatch(id) ? '' : ' disabled')
+      + ' aria-label="' + escAttr(adminFmt('함께 처리할 요청으로 선택: {0}', summary)) + '"></label>'
+    : '';
+  var sub = adminRiskChipHtml(a.risk);
+  if (a.queued) sub += '<span class="ui-chip is-sm admin-queued" title="' + escAttr('요청한 에이전트는 더 기다리지 않습니다 — 승인하면 그때 실행됩니다') + '">' + esc('대기열') + '</span>';
+  var who = adminUserName(a.requesterId);
+  if (who) sub += '<span class="admin-item-who">' + esc(adminFmt('{0} 요청', who)) + '</span>';
+  var created = toNum(a.createdAt);
+  if (created > 0) sub += '<span class="admin-item-age" title="' + escAttr(new Date(created).toLocaleString()) + '">' + agoHtml(created) + '</span>';
+  return '<div class="admin-item-meta">' + box + '<div class="admin-item-main"><div class="admin-item-summary" dir="auto">' + esc(summary)
+    + '</div><div class="admin-item-sub">' + sub + '</div></div></div>';
+}
+function adminChoiceLabel(a, choiceId) {
+  var list = (a && a.choices) || [];
+  for (var i = 0; i < list.length; i++) if (String(list[i].id) === choiceId) return String(list[i].label || '');
+  return '';
+}
+// The choice a batch decision sends for this request: its kind's approve or deny.
+function adminBatchChoiceId(a, decision) {
+  if (!a || !a.batch) return '';
+  return String(decision === 'approve' ? a.batch.approve : a.batch.deny);
+}
+// What the confirm sheet shows, from _adminBatch: one row per selected request (summary, risk, kind, who, the
+// choice a question gets, its outcome once sent), the high-risk count still unticked, the one confirm.
+function adminBatchModel() {
+  var b = _adminBatch;
+  if (!b) return null;
+  var high = 0;
+  var unticked = 0;
+  var rows = b.ids.map(function(id) {
+    var a = _adminLast[id] || {};
+    var isHigh = a.risk === 'high';
+    if (isHigh) {
+      high++;
+      if (!b.ticks[id]) unticked++;
+    }
+    return {
+      id: id,
+      summary: adminSummaryOf(a),
+      risk: a.risk || '',
+      riskLabel: ADMIN_RISK_LABEL[a.risk] || '',
+      kind: ADMIN_KIND_LABEL[a.kind] || '승인',
+      who: adminUserName(a.requesterId),
+      high: isHigh,
+      ticked: !!b.ticks[id],
+      choice: a.card === 'question' ? adminChoiceLabel(a, adminBatchChoiceId(a, b.decision)) : '',
+      outcome: b.results ? b.results[id] || null : null,
+    };
+  });
+  var n = rows.length;
+  var approve = b.decision === 'approve';
+  return {
+    decision: b.decision,
+    rows: rows,
+    high: high,
+    unticked: unticked,
+    heading: approve ? '선택한 요청 승인' : '선택한 요청 거부',
+    lead: approve ? adminFmt('{0}건을 승인합니다. 각 요청은 Slack 버튼과 같은 결정으로 처리됩니다.', n) : adminFmt('{0}건을 거부합니다. 각 요청은 Slack 버튼과 같은 결정으로 처리됩니다.', n),
+    note: unticked ? adminFmt('높은 위험 {0}건은 하나씩 확인해야 보낼 수 있습니다', unticked) : '',
+    goLabel: b.sending ? '보내는 중…' : approve ? adminFmt('{0}건 승인', n) : adminFmt('{0}건 거부', n),
+    ready: !b.sending && !b.results && n > 0 && unticked === 0,
+    sending: !!b.sending,
+    done: !!b.results,
+    error: b.error || '',
+  };
+}
+function paintAdminBatch() {
+  var m = adminBatchModel();
+  var body = document.getElementById('admin-batch-body');
+  if (!m || !body) return;
+  var dlg = document.getElementById('admin-batch-dialog');
+  if (dlg && dlg.getAttribute('heading') !== m.heading) dlg.setAttribute('heading', m.heading);
+  var html = '<p class="ab-lead">' + esc(m.lead) + '</p><ul class="ab-list">' + m.rows.map(function(r) {
+    var sub = [r.kind, r.who ? adminFmt('{0} 요청', r.who) : '', r.choice ? adminFmt('응답: {0}', r.choice) : ''].filter(Boolean).join(' · ');
+    return '<li class="ab-row" data-mk="' + escAttr('ab|' + r.id) + '"' + (r.high ? ' data-risk="high"' : '') + '>'
+      + '<div class="ab-line"><span class="ab-summary" dir="auto">' + esc(r.summary) + '</span>' + adminRiskChipHtml(r.risk) + '</div>'
+      + '<div class="ab-sub">' + esc(sub) + '</div>'
+      + (r.high && !r.outcome
+        ? '<label class="ab-tick"><input type="checkbox" data-ab-tick="' + escAttr(r.id) + '"' + (r.ticked ? ' checked' : '') + (m.sending ? ' disabled' : '')
+          + '><span>' + esc('높은 위험 — 이 요청의 내용을 확인했습니다') + '</span></label>'
+        : '')
+      + (r.outcome ? '<p class="ui-status-line ab-outcome"' + (r.outcome.tone ? ' data-tone="' + r.outcome.tone + '"' : '') + '>' + esc(r.outcome.text) + '</p>' : '')
+      + '</li>';
+  }).join('') + '</ul>';
+  if (body._html !== html) {
+    morphInnerHtml(body, html);
+    body._html = html;
+  }
+  var go = document.getElementById('admin-batch-go');
+  if (go) {
+    if (go.textContent !== m.goLabel) go.textContent = m.goLabel;
+    go.disabled = !m.ready;
+    go.hidden = m.done;
+    go.className = m.decision === 'approve' ? 'ui-btn is-primary' : 'ui-btn is-danger';
+  }
+  var cancel = document.getElementById('admin-batch-cancel');
+  if (cancel) {
+    var c = m.done ? '닫기' : '취소';
+    if (cancel.textContent !== c) cancel.textContent = c;
+  }
+  var status = document.getElementById('admin-batch-status');
+  if (status) {
+    status.textContent = m.error || m.note;
+    status.setAttribute('data-tone', m.error ? 'fail' : 'wait');
+  }
+}
+// 선택 승인 / 선택 거부: the sheet for the ticked requests (none ticked, or locked: nothing). One sheet at a time —
+// while one is sending, pressing again shows it rather than a second.
+function openAdminBatch(decision) {
+  if (decision !== 'approve' && decision !== 'deny') return null;
+  if (_adminBatch && _adminBatch.sending) return _adminBatch;
+  var ids = adminSelectedIds();
+  if (!ids.length || adminApprovalLock()) return null;
+  _adminBatch = { decision: decision, ids: ids, ticks: Object.create(null), sending: false, results: null, error: '', closed: false };
+  paintAdminBatch();
+  paintAdminBatchBar();
+  var dlg = document.getElementById('admin-batch-dialog');
+  if (dlg && typeof dlg.show === 'function') dlg.show();
+  return _adminBatch;
+}
+// A high-risk row's own tick (any other row has none).
+function tickAdminBatch(id, on) {
+  var b = _adminBatch;
+  if (!b || b.sending || b.results || b.ids.indexOf(id) < 0) return;
+  var a = _adminLast[id];
+  if (!a || a.risk !== 'high') return;
+  if (on) b.ticks[id] = true;
+  else delete b.ticks[id];
+  paintAdminBatch();
+}
+// One item's result → the sheet's line for it and its card's state (the same states one answer gives).
+function adminBatchOutcome(a, r, decision) {
+  a = a || {};
+  if (r && r.ok) {
+    var denied = r.outcome === 'denied';
+    var state = denied && decision === 'approve' || a.card !== 'question'
+      ? { status: 'resolved', outcome: denied ? 'denied' : 'approved', at: Date.now() }
+      : { status: 'resolved', outcome: 'answered', choiceId: adminBatchChoiceId(a, decision), at: Date.now() };
+    return { text: denied ? '거부됨' : '승인됨', tone: denied ? '' : 'done', state: state };
+  }
+  if (r && r.reason === 'already_answered') {
+    var st = adminResolvedState(a, r.resolution);
+    return { text: st.by ? adminFmt('이미 처리됨 — {0}', st.by) : '이미 처리됨', tone: '', state: st };
+  }
+  var why = (r && ADMIN_BATCH_REASON[r.reason]) || '응답을 받지 못했습니다';
+  return {
+    text: adminFmt('실패 — {0}', why),
+    tone: 'fail',
+    state: { status: 'error', message: why, retry: !r || r.reason === 'busy' || r.reason === 'invalid' },
+  };
+}
+// The one confirm: every item with its kind's approve (or deny) choice, in one POST; never twice.
+async function confirmAdminBatch() {
+  var b = _adminBatch;
+  if (!b || b.sending || b.results) return null;
+  var m = adminBatchModel();
+  if (!m || !m.ready) return null;
+  b.sending = true;
+  b.error = '';
+  var items = [];
+  for (var i = 0; i < b.ids.length; i++) {
+    var a = _adminLast[b.ids[i]];
+    var cid = adminBatchChoiceId(a, b.decision);
+    items.push({ id: b.ids[i], choiceId: cid });
+    _adminState[b.ids[i]] = a && a.card === 'question' ? { status: 'sending', choiceId: cid } : { status: 'sending', decision: b.decision };
+  }
+  paintAdminBatch();
+  paintAdminInbox();
+  var list = null;
+  try {
+    var res = await acPost('/api/dashboard/admin-approvals/answer-batch', JSON.stringify({ items: items }));
+    var data = {};
+    try { data = await res.json(); } catch (_e) {}
+    if (res.ok && data && Array.isArray(data.results)) list = data.results;
+    else b.error = (data && data.error) || adminFmt('보내지 못했어요 (HTTP {0})', res.status);
+  } catch (e) {
+    console.error('Admin approval batch error', e);
+    b.error = '네트워크 오류 — 다시 시도하세요';
+  }
+  b.sending = false;
+  if (!list) {
+    // Nothing was decided: the cards are answerable again, and the sheet offers the same confirm.
+    for (var k = 0; k < b.ids.length; k++) delete _adminState[b.ids[k]];
+  } else {
+    var byId = Object.create(null);
+    for (var j = 0; j < list.length; j++) if (list[j] && typeof list[j].id === 'string') byId[list[j].id] = list[j];
+    b.results = Object.create(null);
+    for (var n = 0; n < b.ids.length; n++) {
+      var id = b.ids[n];
+      var o = adminBatchOutcome(_adminLast[id], byId[id], b.decision);
+      b.results[id] = { text: o.text, tone: o.tone };
+      _adminState[id] = o.state;
+      if (o.state.status === 'resolved') {
+        delete _adminSel[id];
+        if (_adminInboxOpen) _adminKeep[id] = true;
+      }
+    }
+  }
+  if (b.closed && _adminBatch === b) _adminBatch = null;
+  else paintAdminBatch();
+  paintAdminInbox();
+  adminInboxLoad();
+  return b;
+}
+// 취소 / 닫기, Esc, the scrim. A batch still being sent finishes on its own (its outcomes land on the cards).
+function closeAdminBatch() {
+  var dlg = document.getElementById('admin-batch-dialog');
+  if (dlg && typeof dlg.hide === 'function') dlg.hide();
+  if (_adminBatch && _adminBatch.sending) _adminBatch.closed = true;
+  else _adminBatch = null;
+  paintAdminBatchBar();
+}
+
+// ── #1131 — desktop alerts for a signed-in admin ──
+// Off until the admin turns them on with the drawer's toggle: that click is the only place the browser is asked
+// for permission (never on load, never for an arriving request). With them on and allowed, a request this page
+// has never seen, arriving while the tab is hidden, raises one notification; later ones replace it (one tag).
+// A visible tab gets the in-page toast instead.
+function adminNotifyPref() {
+  try { return localStorage.getItem(ADMIN_NOTIFY_KEY) === 'on'; } catch (_e) { return false; }
+}
+function adminSetNotifyPref(on) {
+  try { localStorage.setItem(ADMIN_NOTIFY_KEY, on ? 'on' : 'off'); } catch (_e) {}
+}
+// 'on' · 'off' · 'denied' (the browser blocks this site's alerts) · 'unsupported' (no Notification API).
+function adminNotifyState() {
+  if (typeof Notification === 'undefined' || !Notification) return 'unsupported';
+  if (Notification.permission === 'denied') return 'denied';
+  return adminNotifyPref() && Notification.permission === 'granted' ? 'on' : 'off';
+}
+function adminNotifyActive() {
+  return adminNotifyState() === 'on';
+}
+// The toggle's click: off ↔ on, asking the browser first when it has not been asked.
+function toggleAdminNotify() {
+  var state = adminNotifyState();
+  if (state === 'on') {
+    adminSetNotifyPref(false);
+    paintAdminNotifyToggle();
+    return Promise.resolve('off');
+  }
+  if (state !== 'off') {
+    paintAdminNotifyToggle();
+    adminInboxAnnounce(state === 'denied' ? '브라우저가 이 사이트의 알림을 막았습니다 — 사이트 설정에서 알림을 허용하세요' : '이 브라우저는 데스크톱 알림을 지원하지 않습니다');
+    return Promise.resolve(state);
+  }
+  if (Notification.permission === 'granted') {
+    adminSetNotifyPref(true);
+    paintAdminNotifyToggle();
+    return Promise.resolve('on');
+  }
+  return new Promise(function(resolve) {
+    var settled = false;
+    function settle(p) {
+      if (settled) return;
+      settled = true;
+      adminSetNotifyPref(p === 'granted');
+      paintAdminNotifyToggle();
+      resolve(adminNotifyState());
+    }
+    try {
+      var asked = Notification.requestPermission(settle);
+      if (asked && typeof asked.then === 'function') asked.then(settle, function() { settle('default'); });
+    } catch (_e) {
+      settle('default');
+    }
+  });
+}
+function paintAdminNotifyToggle() {
+  var btn = document.getElementById('admin-notify-toggle');
+  if (!btn) return;
+  var state = adminNotifyState();
+  var label = state === 'on' ? '데스크톱 알림 끄기' : state === 'denied' ? '데스크톱 알림 차단됨' : state === 'unsupported' ? '데스크톱 알림 지원 안 됨' : '데스크톱 알림 켜기';
+  var title = state === 'on'
+    ? '탭이 가려져 있을 때 새 승인 요청을 데스크톱 알림으로 알립니다 — 누르면 끕니다'
+    : state === 'denied'
+      ? '브라우저가 이 사이트의 알림을 막았습니다 — 사이트 설정에서 알림을 허용하세요'
+      : state === 'unsupported'
+        ? '이 브라우저는 데스크톱 알림을 지원하지 않습니다'
+        : '탭이 가려져 있을 때 새 승인 요청을 데스크톱 알림으로 알립니다';
+  if (btn.textContent !== label) btn.textContent = label;
+  btn.title = title;
+  btn.setAttribute('aria-pressed', state === 'on' ? 'true' : 'false');
+  btn.setAttribute('data-state', state);
+}
+// One notification for the requests never seen before (newest first), the tab hidden: "관리자 승인 N건 대기",
+// the newest one's summary and how many more. A click brings the tab forward and opens the drawer.
+function adminNotifyArrivals(fresh, total) {
+  if (!fresh || !fresh.length || !adminNotifyActive() || !document.hidden) return null;
+  var first = fresh[0];
+  var count = Math.max(toNum(total), fresh.length);
+  var more = count - 1;
+  var body = more > 0 ? adminFmt('{0} 외 {1}건', adminSummaryOf(first), more) : adminSummaryOf(first);
+  try {
+    var n = new Notification(adminFmt('관리자 승인 {0}건 대기', count), { body: body, tag: 'soma-admin-approvals', renotify: true });
+    n.onclick = function() {
+      try { window.focus(); } catch (_e) {}
+      if (!_adminInboxOpen) openAdminInbox(first.id);
+      try { n.close(); } catch (_e2) {}
+    };
+    return n;
+  } catch (e) {
+    // Some browsers (Android Chrome) allow notifications only from a service worker.
+    console.error('Admin approval desktop alert failed', e);
+    return null;
+  }
+}
+// The tab title with the pending count in front — "(3) …" — never two of them; the bare title at 0.
+function adminTitleBadge(title, n) {
+  var base = String(title || '').replace(/^\\(\\d+\\) /, '');
+  return n > 0 ? '(' + n + ') ' + base : base;
+}
+
 // One answer per request: in flight, then the row; a refusal stays on the card
 // (answered elsewhere → its real outcome, no Retry).
 async function answerAdminApproval(id, choiceId) {
@@ -9001,6 +9499,20 @@ function openDevopsSlackCard(id, a) {
 (function initAdminInbox() {
   var d = document.getElementById('admin-inbox-drawer');
   if (d) d.addEventListener('ui-close', function(e) { e.preventDefault(); closeAdminInbox(); });
+  // #1131 — a card's checkbox and a high-risk row's tick in the sheet, by delegation (the markup is morphed).
+  var body = document.getElementById('admin-inbox-body');
+  if (body) body.addEventListener('change', function(e) {
+    var t = e.target;
+    if (t && t.getAttribute && t.getAttribute('data-admin-sel') !== null) toggleAdminSelect(t.getAttribute('data-admin-sel'), !!t.checked);
+  });
+  var sheet = document.getElementById('admin-batch-body');
+  if (sheet) sheet.addEventListener('change', function(e) {
+    var t = e.target;
+    if (t && t.getAttribute && t.getAttribute('data-ab-tick') !== null) tickAdminBatch(t.getAttribute('data-ab-tick'), !!t.checked);
+  });
+  var dlg = document.getElementById('admin-batch-dialog');
+  if (dlg) dlg.addEventListener('ui-close', function(e) { e.preventDefault(); closeAdminBatch(); });
+  paintAdminNotifyToggle();
 })();
 
 // The single-choice answer, from the card or the panel (the same element): the

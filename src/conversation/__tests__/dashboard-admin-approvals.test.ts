@@ -82,12 +82,26 @@ const FNS = [
   'devopsSlackLink',
   'devopsIsSlackLink',
   'openDevopsSlackCard',
+  // #1131 — what applyAdminApprovals / paintAdminInboxButton call: the selection, the desktop alert, the title.
+  'adminFmt',
+  'adminSummaryOf',
+  'adminHasBatch',
+  'adminPruneSelection',
+  'adminNotifyPref',
+  'adminNotifyState',
+  'adminNotifyActive',
+  'adminNotifyArrivals',
+  'adminTitleBadge',
 ] as const;
 
 function loadClient(inject: Record<string, unknown>) {
   const names = Object.keys(inject);
   const body = `${clientVar('ADMIN_KIND_LABEL')}
+${clientVar('ADMIN_NOTIFY_KEY')}
 var _adminApprovals = { pending: [], resolved: [] };
+var _adminSel = Object.create(null);
+var _adminSeenEver = null;
+var _adminBatch = null;
 var _adminKnown = null;
 var _adminLast = Object.create(null);
 var _adminKeep = Object.create(null);
