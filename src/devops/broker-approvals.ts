@@ -77,19 +77,25 @@ interface BrokerApprovalView {
   cards: { admin: string; permalink?: string }[];
 }
 
-type CallResult = { ok: true; data: unknown } | { ok: false; unreachable: boolean; message: string };
+export type CallResult = { ok: true; data: unknown } | { ok: false; unreachable: boolean; message: string };
 
 let requestSeq = 0;
 
+/** An admin op and its arguments, as `AdminRequest` types them. */
+export type BrokerAdminCall = Pick<AdminRequest, 'op' | 'args'>;
+
 /** One admin op over the broker socket: write one line, read exactly one terminal message. */
-export function callBrokerAdmin(socketPath: string, timeoutMs = LIST_TIMEOUT_MS): Promise<CallResult> {
+export function callBrokerAdmin(
+  socketPath: string,
+  call: BrokerAdminCall = { op: 'approvals', args: {} },
+  timeoutMs = LIST_TIMEOUT_MS,
+): Promise<CallResult> {
   requestSeq = (requestSeq + 1) % 1_000_000;
-  const request: AdminRequest = {
+  const request = {
     v: PROTOCOL_VERSION,
     id: `dash-${process.pid}-${requestSeq}`,
-    op: 'approvals',
-    args: {},
-  };
+    ...call,
+  } as AdminRequest;
   const line = encodeMessage(request);
   return new Promise((resolve) => {
     const socket = net.createConnection({ path: socketPath });
