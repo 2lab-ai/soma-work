@@ -217,11 +217,17 @@ export function mcpGrantApproval(requestId: string, p: PendingApproval): AdminAp
   const input = (p.input ?? {}) as { server?: unknown; level?: unknown; duration?: unknown; estimatedExpiry?: unknown };
   const server = String(input.server ?? '');
   const level = String(input.level ?? '');
+  const duration = String(input.duration ?? '');
+  const where = p.channel ? ` — #${p.channel}` : '';
   return {
     id: `mcp_grant:${requestId}`,
     kind: 'mcp_grant',
     card: 'permission',
     title: 'MCP 도구 권한 요청',
+    summary:
+      level === 'write'
+        ? `\`mcp__${server}\` 쓰기 권한 부여 (${duration})${where}`
+        : `\`mcp__${server}\` 읽기 권한 부여 (${duration})${where}`,
     description: `${server} 서버 ${level === 'write' ? '쓰기' : '읽기'} 권한을 ${String(input.duration ?? '')} 동안 요청합니다.`,
     tool: `mcp__${server}`,
     rows: {
@@ -232,6 +238,7 @@ export function mcpGrantApproval(requestId: string, p: PendingApproval): AdminAp
       '예상 만료': String(input.estimatedExpiry ?? ''),
     },
     risk: level === 'write' ? 'medium' : 'low',
+    batch: { approve: 'approve', deny: 'deny' },
     requesterId: String(p.user ?? ''),
     ...(p.channel ? { place: { channel: p.channel, ...(p.thread_ts ? { threadTs: p.thread_ts } : {}) } } : {}),
     createdAt: Number(p.created_at) || 0,
