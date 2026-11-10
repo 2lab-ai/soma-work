@@ -3262,7 +3262,13 @@ export class SessionRegistry {
 
   /**
    * Safely remove a single directory after re-validating its path.
-   * Non-blocking: logs errors but never throws. Returns true if removed.
+   * Never throws. Returns true once the directory is gone from its path.
+   *
+   * The path is freed at once — one rename to a hidden sibling (`.<name>.removing-…`, same parent, so the same
+   * filesystem) — and the tree is deleted in the background. SSOT 2026-11-10 T1: a synchronous recursive delete of
+   * a clone with its node_modules (16k files) held Node's one event loop for 24 s on a close — every dashboard
+   * request, WebSocket and Slack event waited behind it. A tree whose background delete fails stays under the
+   * parked name (logged with both paths).
    */
   private safeRemoveSourceDir(dir: string): boolean {
     if (!this.isValidSourceWorkingDirPath(dir)) {
@@ -3276,8 +3282,12 @@ export class SessionRegistry {
         this.logger.warn('Skipping cleanup: path is now a symlink', { dir });
         return false;
       }
-      fs.rmSync(dir, { recursive: true, force: true });
-      this.logger.info('Cleaned up source working dir', { dir });
+      const parked = path.join(path.dirname(dir), `.${path.basename(dir)}.removing-${Date.now()}-${randomUUID()}`);
+      fs.renameSync(dir, parked);
+      fs.promises.rm(parked, { recursive: true, force: true }).then(
+        () => this.logger.info('Cleaned up source working dir', { dir }),
+        (error) => this.logger.error('Failed to delete a removed source working dir', { dir, parked, error }),
+      );
       return true;
     } catch (error) {
       this.logger.error('Failed to cleanup source working dir (non-blocking)', { dir, error });
