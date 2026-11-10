@@ -110,8 +110,9 @@ describe('T2 — luna low and haiku low subagents generate', () => {
 
   it('retries a short cell only after moving its file away (a Write-only generator cannot overwrite)', () => {
     const skill = readPluginFile(skillFile);
-    expect(skill).toMatch(/failed\//);
+    expect(skill).toMatch(/`raw\/`, `failed\/`를 만든다/);
     expect(skill).toMatch(/덮어쓰지 못한다/);
+    expect(skill).toMatch(/아이디어가 많은 쪽을 `raw\/`에 두고/);
     expect(skill).toMatch(/merge\.mjs" "<run 폴더>" --count/);
   });
 });
@@ -128,6 +129,8 @@ describe('T3 — the session model picks, the user decides', () => {
     expect(skill).toMatch(/pool\/<[^>]+>\.md/);
     expect(skill).toMatch(/dropped\.md/);
     expect(skill).toMatch(/merge\.mjs/);
+    // Similar-looking lines stay in the pool the picker reads.
+    expect(skill).toMatch(/문형이 비슷한 줄은 지우지 않는다/);
   });
 });
 
@@ -151,6 +154,8 @@ describe('T5 — per-field generation and picking, with the stated defaults', ()
     const skill = readPluginFile(skillFile);
     expect(skill).toMatch(/칸당 50개/);
     expect(skill).toMatch(/^- `top`[^\n]*2,000 이상/m);
+    expect(skill).toMatch(/N의 3배 이상/);
+    expect(skill).toMatch(/`top\.md`에 따로 쓰고/);
   });
 });
 
@@ -176,7 +181,7 @@ describe('merge.mjs — pools, ids, dedupe and survival numbers', { timeout: 30_
   const poolLines = (run: string, field: string) =>
     readPluginFile(path.join(run, 'pool', `${field}.md`))
       .split('\n')
-      .filter((l) => /^[A-Z]\d+-\d{3} /.test(l));
+      .filter((l) => /^[A-Z]\d+-\d{3,} /.test(l));
 
   it('merges raw cell files into numbered per-field pools without duplicates', () => {
     expect(fs.existsSync(mergeScript)).toBe(true);
@@ -197,10 +202,12 @@ describe('merge.mjs — pools, ids, dedupe and survival numbers', { timeout: 30_
 
     const out = merge(run);
 
-    // Exact duplicate (list marker + trailing period) and the near duplicate in A2 are both gone.
+    // The repeated sentence (list marker + trailing period aside) is gone. The near match in A2 stays:
+    // by default only the same sentence counts as a duplicate.
     expect(poolLines(run, 'A')).toEqual([
       'A1-001 [luna] 보스가 바닥을 반으로 갈라 왕복 경로를 끊는다',
       'A1-003 [luna] 클릭한 지점에 잔상이 남아 다음 일섬의 배율이 된다',
+      'A2-001 [haiku] 보스가 바닥을 반으로 갈라서 왕복 경로를 끊는다',
       'A2-002 [haiku] 보스의 그림자만 때릴 수 있는 페이즈가 있다',
     ]);
     // Dedupe is per field: the same idea in field B stays.
@@ -208,15 +215,15 @@ describe('merge.mjs — pools, ids, dedupe and survival numbers', { timeout: 30_
 
     const stats = JSON.parse(readPluginFile(path.join(run, 'stats.json')));
     expect(stats.engines.luna).toEqual({ generated: 3, kept: 2 });
-    expect(stats.engines.haiku).toEqual({ generated: 3, kept: 2 });
-    expect(stats.fields.A).toEqual({ generated: 5, kept: 3 });
-    expect(stats.total).toEqual({ generated: 6, kept: 4 });
-    expect(out).toMatch(/6 → 4/);
+    expect(stats.engines.haiku).toEqual({ generated: 3, kept: 3 });
+    expect(stats.fields.A).toEqual({ generated: 5, kept: 4 });
+    expect(stats.total).toEqual({ generated: 6, kept: 5 });
+    expect(out).toMatch(/6 → 5/);
 
     // Nothing vanishes silently: each dropped line names the id it repeats.
     const dropped = readPluginFile(path.join(run, 'dropped.md'));
     expect(dropped).toContain('A1-002 [luna] 보스가 바닥을 반으로 갈라 왕복 경로를 끊는다 ← A1-001');
-    expect(dropped).toContain('A2-001 [haiku] 보스가 바닥을 반으로 갈라서 왕복 경로를 끊는다 ← A1-001');
+    expect(dropped).not.toContain('A2-001');
   });
 
   it('numbers an idea by its line in the raw file, also past blank lines, fences and lead-ins', () => {
@@ -245,10 +252,10 @@ describe('merge.mjs — pools, ids, dedupe and survival numbers', { timeout: 30_
     });
     merge(run);
     expect(poolLines(run, 'A')).toEqual([
-      'A10-001 [haiku] {"text":"열째 관점의 전혀 다른 생각"}',
       'A9-001 [luna] 아홉째 관점의 발상이다',
+      'A10-001 [haiku] {"text":"열째 관점의 전혀 다른 생각"}',
     ]);
-    expect(readPluginFile(path.join(run, 'pool', 'A.md'))).toMatch(/Lenses: 10, 9\./);
+    expect(readPluginFile(path.join(run, 'pool', 'A.md'))).toMatch(/Lenses: 9, 10\./);
   });
 
   it('counts ideas per raw file with --count, ignoring blank lines and the DONE line', () => {
@@ -258,22 +265,52 @@ describe('merge.mjs — pools, ids, dedupe and survival numbers', { timeout: 30_
     expect(fs.existsSync(path.join(run, 'pool'))).toBe(false);
   });
 
-  it('honours --threshold: at 1 only the exact duplicate goes, and bad values are refused', () => {
+  it('keeps same-frame ideas by default; --threshold opts in to near-match dropping and refuses bad values', () => {
+    const frame = (n: number) => `보스가 체력 ${n}퍼센트에서 바닥의 색을 바꾸고 같은 색 칸만 밟게 한다`;
     const run = runWith({
-      'A1__luna.txt': '보스가 바닥을 반으로 갈라 왕복 경로를 끊는다\n보스가 바닥을 반으로 갈라 왕복 경로를 끊는다.\n',
-      'A2__haiku.txt': '보스가 바닥을 반으로 갈라서 왕복 경로를 끊는다\n',
+      'A1__haiku.txt': `${[10, 20, 30, 40, 50].map(frame).join('\n')}\n${frame(10)}\n`,
     });
-    merge(run, '--threshold', '1');
-    expect(poolLines(run, 'A')).toEqual([
-      'A1-001 [luna] 보스가 바닥을 반으로 갈라 왕복 경로를 끊는다',
-      'A2-001 [haiku] 보스가 바닥을 반으로 갈라서 왕복 경로를 끊는다',
-    ]);
     merge(run);
+    expect(poolLines(run, 'A')).toHaveLength(5);
+    merge(run, '--threshold', '0.7');
     expect(poolLines(run, 'A')).toHaveLength(1);
+    expect(readPluginFile(path.join(run, 'dropped.md'))).toContain('← A1-001');
     for (const bad of ['0', '1.1', 'abc']) {
       expect(() => merge(run, '--threshold', bad)).toThrow(/merge: --threshold must be a number/);
     }
     expect(() => merge(run, '--threshold')).toThrow(/merge: --threshold must be a number/);
+  });
+
+  it('counts and merges by one rule: symbol-only lines are no ideas, a colon ends a lead-in only on the first line', () => {
+    const run = runWith({
+      'A1__luna.txt': [
+        '아이디어 목록:',
+        '---',
+        '***',
+        '얼음 바닥이 무너진다',
+        '실패 조건은 이렇게 정한다:',
+        '!!!',
+      ].join('\n'),
+    });
+    expect(merge(run, '--count').trim()).toBe('A1__luna.txt 2');
+    merge(run);
+    expect(poolLines(run, 'A')).toEqual([
+      'A1-004 [luna] 얼음 바닥이 무너진다',
+      'A1-005 [luna] 실패 조건은 이렇게 정한다:',
+    ]);
+    expect(JSON.parse(readPluginFile(path.join(run, 'stats.json'))).total.generated).toBe(2);
+  });
+
+  it('reads cells in field then lens order, so A2 comes before A10', () => {
+    const run = runWith({ 'A10__haiku.txt': '같은 생각 하나\n', 'A2__luna.txt': '같은 생각 하나\n' });
+    merge(run);
+    expect(poolLines(run, 'A')).toEqual(['A2-001 [luna] 같은 생각 하나']);
+    expect(readPluginFile(path.join(run, 'dropped.md'))).toContain('A10-001 [haiku] 같은 생각 하나 ← A2-001');
+  });
+
+  it('prints nothing for --count when no cell has been written yet', () => {
+    const run = runWith({});
+    expect(merge(run, '--count')).toBe('');
   });
 
   it('removes the pool of a field whose raw files are gone', () => {

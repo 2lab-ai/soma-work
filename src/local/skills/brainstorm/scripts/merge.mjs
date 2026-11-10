@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Merge a brainstorm run's raw cell files into numbered per-field pools.
 //
-//   node merge.mjs <run-dir> [--threshold 0.7]   merge
+//   node merge.mjs <run-dir>                     merge; only the same sentence counts as a duplicate
+//   node merge.mjs <run-dir> --threshold 0.7     also drop near-identical sentences (opt-in)
 //   node merge.mjs <run-dir> --count             only print how many ideas each raw file holds
 //
 // Reads  <run-dir>/raw/<F><L>__<engine>.txt   one idea per line (F = field letter, L = lens number)
@@ -12,6 +13,8 @@
 //
 // An id is <field><lens>-<line number in that raw file>, so A3-017 is line 17 of raw/A3__<engine>.txt.
 // One cell has one raw file. Duplicates are dropped per field: the same idea in two fields is two ideas.
+// The default drops only a repeated sentence (case, spacing and punctuation aside). Near-match dropping is
+// opt-in: five measured runs lost nothing at 0.7, and on same-frame input it removes ideas that differ.
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -22,7 +25,7 @@ function fail(message) {
 
 const args = process.argv.slice(2);
 let runDir;
-let threshold = 0.7;
+let threshold = 1;
 let countOnly = false;
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--threshold') threshold = Number(args[++i]);
@@ -36,11 +39,21 @@ if (!(threshold > 0 && threshold <= 1)) fail('--threshold must be a number in (0
 
 const rawDir = path.join(runDir, 'raw');
 const FILE = /^([A-Z])([1-9]\d*)__([a-z0-9-]+)\.txt$/;
-const names = fs.existsSync(rawDir) ? fs.readdirSync(rawDir).sort() : [];
-const files = names.filter((n) => FILE.test(n));
+const names = fs.existsSync(rawDir) ? fs.readdirSync(rawDir) : [];
+const cellOrder = (name) => {
+  const [, field, lens] = name.match(FILE);
+  return [field, Number(lens)];
+};
+const files = names
+  .filter((n) => FILE.test(n))
+  .sort((a, b) => {
+    const [fa, la] = cellOrder(a);
+    const [fb, lb] = cellOrder(b);
+    return fa === fb ? la - lb : fa < fb ? -1 : 1;
+  });
 const strays = names.filter((n) => !FILE.test(n) && !n.startsWith('.'));
 if (strays.length) fail(`raw file names must look like A3__luna.txt — got: ${strays.join(', ')}`);
-if (!files.length) fail(`no raw files in ${rawDir}`);
+if (!files.length && !countOnly) fail(`no raw files in ${rawDir}`);
 
 const cellFiles = {};
 for (const name of files) {
@@ -50,7 +63,9 @@ for (const name of files) {
 const crowded = Object.values(cellFiles).filter((list) => list.length > 1);
 if (crowded.length) fail(`one cell has one raw file — got: ${crowded.map((list) => list.join(' + ')).join('; ')}`);
 
-/** One raw line → the idea text, or '' when the line carries none. */
+const keyOf = (idea) => idea.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+
+/** One raw line → the idea text, or '' when the line carries none (blank, fence, DONE, symbols only). */
 function ideaOf(line) {
   let text = line.trim();
   if (!text || text.startsWith('```') || /^DONE\b/.test(text)) return '';
@@ -65,19 +80,27 @@ function ideaOf(line) {
   text = text
     .replace(/^(?:[-*•]|\d+[.)])\s+/, '')
     .replace(/\s+/g, ' ')
+    .replace(/[.。]$/, '')
     .trim();
-  if (/[:：]$/.test(text)) return ''; // a lead-in such as "Here are 50 ideas:"
-  return text.replace(/[.。]$/, '').trim();
+  return keyOf(text) ? text : '';
 }
 
-const linesOf = (name) => fs.readFileSync(path.join(rawDir, name), 'utf8').split('\n');
+/** The ideas of one raw file with their line numbers. Counting and merging both read through here. */
+function ideasOf(name) {
+  const ideas = [];
+  for (const [index, line] of fs.readFileSync(path.join(rawDir, name), 'utf8').split('\n').entries()) {
+    const idea = ideaOf(line);
+    // A first line that ends in a colon is a lead-in ("Here are 50 ideas:"), not an idea.
+    if (!idea || (!ideas.length && /[:：]$/.test(idea))) continue;
+    ideas.push({ line: index + 1, idea });
+  }
+  return ideas;
+}
 
 if (countOnly) {
-  for (const name of files) console.log(`${name} ${linesOf(name).filter((line) => ideaOf(line)).length}`);
+  for (const name of files) console.log(`${name} ${ideasOf(name).length}`);
   process.exit(0);
 }
-
-const keyOf = (idea) => idea.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 
 function trigrams(key) {
   const grams = new Set();
@@ -117,14 +140,12 @@ for (const name of files) {
   stats.cells[cell] = { engine, ...count() };
   const tallies = [stats.total, stats.engines[engine], stats.fields[field], stats.cells[cell]];
 
-  for (const [index, line] of linesOf(name).entries()) {
-    const idea = ideaOf(line);
+  for (const { line, idea } of ideasOf(name)) {
     const key = keyOf(idea);
-    if (!key) continue;
     for (const tally of tallies) tally.generated++;
-    const id = `${cell}-${String(index + 1).padStart(3, '0')}`;
-    const grams = trigrams(key);
-    const twin = kept[field].find((k) => k.key === key || similarity(k.grams, grams) >= threshold);
+    const id = `${cell}-${String(line).padStart(3, '0')}`;
+    const grams = threshold < 1 ? trigrams(key) : undefined;
+    const twin = kept[field].find((k) => k.key === key || (grams && similarity(k.grams, grams) >= threshold));
     if (twin) {
       dropped.push(`${id} [${engine}] ${idea} ← ${twin.id}`);
       continue;
@@ -156,7 +177,7 @@ for (const [field, ideas] of Object.entries(kept)) {
 }
 fs.writeFileSync(
   path.join(runDir, 'dropped.md'),
-  `# Dropped as duplicates (${dropped.length})\n\nEach line: the dropped idea ← the id it repeats. Similarity threshold ${threshold}.\n\n${dropped.join('\n')}\n`,
+  `# Dropped as duplicates (${dropped.length})\n\nEach line: the dropped idea ← the id it repeats. ${threshold < 1 ? `Near matches at ${threshold} or more count.` : 'Only a repeated sentence counts.'}\n\n${dropped.join('\n')}\n`,
 );
 fs.writeFileSync(path.join(runDir, 'stats.json'), `${JSON.stringify(stats, null, 2)}\n`);
 
