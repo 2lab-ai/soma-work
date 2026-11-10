@@ -12,6 +12,7 @@ import {
   type GhPolicyContext,
 } from '@soma/process-shared/devops/gh-policy.js';
 import {
+  type AdminRequest,
   type BrokerMessage,
   type CfApiArgs,
   type CfLeaseRequestArgs,
@@ -36,6 +37,8 @@ import {
   type ApprovalOutcome,
   type ApprovalRequest,
   type Approvals,
+  QUEUE_ABORT_REASON,
+  type QueuedRun,
 } from './approval.js';
 import type { CfApiRequest, CloudflareLeases, LeaseView } from './cf-client.js';
 import { GhRunDeniedError, type GhRunner, type GhRunResult } from './gh-runner.js';
@@ -63,7 +66,10 @@ export interface BrokerDeps {
   readSecret(kind: SecretKind, name: string): string;
   ghRunner: GhRunner;
   cfLeases: Pick<CloudflareLeases, 'mint' | 'call' | 'revoke' | 'list' | 'permissionGroupNames'>;
-  approvals: Pick<Approvals, 'request' | 'postResult' | 'release' | 'pending'>;
+  approvals: Pick<
+    Approvals,
+    'request' | 'postResult' | 'release' | 'pending' | 'decideFromDashboard' | 'results' | 'ackResults'
+  >;
   githubAdmin: GithubAdmin;
   ledger: Pick<Ledger, 'append'>;
   now?: () => number;
@@ -85,6 +91,8 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_CLOSE_TIMEOUT_MS = 30_000;
 /** The MCP client gives up 30 s after the card's expiry; answer before it does. */
 const STILL_EXECUTING_AFTER_EXPIRY_MS = 25_000;
+/** After moving a request to the queue, answer `queued` by then even if the approval module has not resolved. */
+const QUEUED_ANSWER_GRACE_MS = 2_000;
 const GROUP_NAMES_TIMEOUT_MS = 5_000;
 const PROBE_TIMEOUT_MS = 1_000;
 const MAX_CONNECTIONS = 64;
@@ -156,6 +164,15 @@ function fail(code: ErrorCode, message: string): Terminal {
 
 function notApproved(reason: 'denied' | 'expired', message: string): Terminal {
   return { type: 'error', code: 'not-approved', reason, message };
+}
+
+/** #1128: what the requester is told when its live wait ends and the request stays queued. */
+function queuedMessage(queuedUntil: string): string {
+  return (
+    `no admin answered during the live wait; the request is queued until ${queuedUntil}. ` +
+    'An admin can still approve it (Slack card or the dashboard); then the broker runs it and the result is ' +
+    'sent to this session. Nothing has run yet — do not ask again.'
+  );
 }
 
 function own<T>(table: Record<string, T>, key: string): T | undefined {
@@ -304,6 +321,8 @@ class Connection {
   /** The client was told `not-approved` at the deadline; a late approval must not run. */
   gaveUp = false;
   stillExecuting = false;
+  /** #1128: when the live wait ends, the card stays open until this (the policy has a queue). */
+  queuedUntil: string | undefined;
   private pendingSent = false;
   private terminalSent = false;
   private deadline: NodeJS.Timeout | undefined;
@@ -320,6 +339,7 @@ class Connection {
   pending(p: ApprovalPending): void {
     if (this.pendingSent || this.terminalSent || this.requestId === null) return;
     this.pendingSent = true;
+    this.queuedUntil = p.queuedUntil;
     this.send(
       {
         v: PROTOCOL_VERSION,
@@ -328,6 +348,7 @@ class Connection {
         approvalId: p.approvalId,
         digestPrefix: p.digestPrefix,
         expiresAt: p.expiresAt,
+        ...(p.queuedUntil === undefined ? {} : { queuedUntil: p.queuedUntil }),
       },
       false,
     );
@@ -342,6 +363,16 @@ class Connection {
 
   private onDeadline(): void {
     if (this.terminalSent) return;
+    if (this.phase === 'awaiting' && this.queuedUntil !== undefined) {
+      // #1128: the card stays open; the approval module answers `queued` (or `cancelled` when the queue is full).
+      this.controller.abort(QUEUE_ABORT_REASON);
+      const queuedUntil = this.queuedUntil;
+      setTimeout(() => {
+        if (this.terminalSent || this.phase !== 'awaiting') return;
+        this.finish(fail('queued', queuedMessage(queuedUntil)));
+      }, QUEUED_ANSWER_GRACE_MS).unref();
+      return;
+    }
     if (this.phase === 'awaiting') {
       this.gaveUp = true;
       this.controller.abort('answer-deadline');
@@ -669,6 +700,9 @@ export function createBroker(deps: BrokerDeps): Broker {
   }
 
   function cancelledMessage(conn: Connection): string {
+    if (conn.signal.reason === QUEUE_ABORT_REASON) {
+      return 'no admin answered during the live wait and the approval queue is full, so the card was withdrawn; nothing was run — ask again later';
+    }
     if (conn.signal.reason === 'broker-shutting-down') {
       return 'the broker is shutting down; the approval card was withdrawn and nothing was run — ask again once it is back';
     }
@@ -683,7 +717,7 @@ export function createBroker(deps: BrokerDeps): Broker {
     conn: Connection,
     row: Row,
     card: ApprovalRequest,
-    execute: (approvalId: string) => Promise<Terminal>,
+    execute: (approvalId: string, row: Row) => Promise<Terminal>,
   ): Promise<Terminal> {
     if (conn.signal.aborted) {
       row.outcome = 'cancelled';
@@ -692,11 +726,20 @@ export function createBroker(deps: BrokerDeps): Broker {
     conn.phase = 'awaiting';
     let answer: ApprovalOutcome;
     try {
-      answer = await deps.approvals.request(card, { onPending: (p) => conn.pending(p), signal: conn.signal });
+      answer = await deps.approvals.request(card, {
+        onPending: (p) => conn.pending(p),
+        signal: conn.signal,
+        ...(policy.queueTimeoutSeconds === null ? {} : { queued: queuedRun(row, execute) }),
+      });
     } catch (err) {
       throw approvalFailure(err);
     }
     row.approvalId = answer.approvalId;
+    if (answer.outcome === 'queued') {
+      row.outcome = 'queued';
+      row.queuedUntil = answer.queuedUntil;
+      return fail('queued', queuedMessage(answer.queuedUntil));
+    }
     if (answer.outcome !== 'approved') {
       row.outcome = answer.outcome;
       if (answer.outcome === 'denied') return notApproved('denied', 'an admin denied the card; nothing was run');
@@ -735,7 +778,50 @@ export function createBroker(deps: BrokerDeps): Broker {
       log(`approval ${answer.approvalId} could not be consumed: ${describeError(err)}`);
       throw new Refusal('internal', 'the approval could not be used; nothing was run');
     }
-    return execute(answer.approvalId);
+    return execute(answer.approvalId, row);
+  }
+
+  /**
+   * #1128: the run of a request approved after its requester moved to the queue. Same order as a live one
+   * (consume, then the tool), with its own ledger row (`request.queued-run`); the outcome goes to the result.
+   */
+  function queuedRun(requestRow: Row, execute: (approvalId: string, row: Row) => Promise<Terminal>): QueuedRun {
+    return async (approvalId, consume) => {
+      const row: Row = { ...requestRow, event: 'request.queued-run', approvalId };
+      delete row.outcome;
+      delete row.queuedUntil;
+      try {
+        await consume();
+      } catch (err) {
+        const reason = err instanceof ApprovalConsumeError ? err.reason : undefined;
+        row.outcome = reason === undefined ? 'approval-unusable' : `approval-${reason}`;
+        if (reason === undefined) log(`approval ${approvalId} could not be consumed: ${describeError(err)}`);
+        await audit(row);
+        const message =
+          reason === 'closed'
+            ? 'the broker shut down before it could run this request; nothing was run — ask again'
+            : reason === 'used'
+              ? 'an identical request already used this approval and ran it; this one ran nothing'
+              : 'the approval could not be used; nothing was run';
+        return { outcome: 'failed', message };
+      }
+      let terminal: Terminal;
+      try {
+        terminal = await execute(approvalId, row);
+      } catch (err) {
+        if (err instanceof Refusal) {
+          terminal = fail(err.code, err.message);
+        } else {
+          log(`queued ${String(row.tool)} run failed: ${describeError(err)}`);
+          terminal = fail('internal', 'the broker hit an internal error running this request');
+        }
+      }
+      row.outcome = terminal.type === 'result' ? 'ok' : terminal.code;
+      await audit(row);
+      return terminal.type === 'result'
+        ? { outcome: 'done', data: terminal.data }
+        : { outcome: 'failed', message: `${terminal.code}: ${terminal.message}` };
+    };
   }
 
   // ── Tools ──
@@ -813,7 +899,7 @@ export function createBroker(deps: BrokerDeps): Broker {
         claimedRequester: req.claimedRequester,
       },
     };
-    return withApproval(conn, row, card, async (approvalId) => {
+    return withApproval(conn, row, card, async (approvalId, row) => {
       let result: GhRunResult;
       try {
         result = await runGh(token, args.args);
@@ -916,7 +1002,7 @@ export function createBroker(deps: BrokerDeps): Broker {
     const options: GithubMergeOptions = { sha, method };
     if (commitTitle !== undefined) options.title = commitTitle;
     if (commitMessage !== undefined) options.message = commitMessage;
-    return withApproval(conn, row, card, (approvalId) =>
+    return withApproval(conn, row, card, (approvalId, row) =>
       githubAdminCall(
         approvalId,
         row,
@@ -1044,7 +1130,7 @@ export function createBroker(deps: BrokerDeps): Broker {
         claimedRequester: req.claimedRequester,
       },
     };
-    return withApproval(conn, row, card, (approvalId) =>
+    return withApproval(conn, row, card, (approvalId, row) =>
       githubAdminCall(
         approvalId,
         row,
@@ -1112,7 +1198,7 @@ export function createBroker(deps: BrokerDeps): Broker {
         claimedRequester: req.claimedRequester,
       },
     };
-    return withApproval(conn, row, card, (approvalId) =>
+    return withApproval(conn, row, card, (approvalId, row) =>
       githubAdminCall(
         approvalId,
         row,
@@ -1194,7 +1280,7 @@ export function createBroker(deps: BrokerDeps): Broker {
         claimedRequester: req.claimedRequester,
       },
     };
-    return withApproval(conn, row, card, async (approvalId) => {
+    return withApproval(conn, row, card, async (approvalId, row) => {
       const leaseId = randomBytes(16).toString('hex');
       row.leaseId = leaseId;
       let view: LeaseView;
@@ -1271,9 +1357,32 @@ export function createBroker(deps: BrokerDeps): Broker {
   }
 
   /**
-   * The admin op (#1051): the waiting cards, read-only. A card is still decided only in Slack. A dashboard asks
-   * every few seconds, so a successful listing leaves no ledger row; a refused or failed one does.
+   * The admin ops: `approvals` lists the waiting cards (#1051); `decide` decides cards from the dashboard when the
+   * policy allows it (#1129), each bound to the card number the admin saw; `results` / `results_ack` hand the
+   * outcomes of queued requests to the bot (#1128).
    */
+  async function adminOp(req: AdminRequest, row: Row): Promise<Terminal> {
+    switch (req.op) {
+      case 'approvals':
+        return ok({ approvals: deps.approvals.pending() as unknown as JsonValue });
+      case 'results':
+        return ok({ results: deps.approvals.results() as unknown as JsonValue });
+      case 'results_ack': {
+        const acked = await deps.approvals.ackResults(req.args.approvalIds);
+        row.acked = acked;
+        return ok({ acked });
+      }
+      case 'decide': {
+        row.actor = req.args.actor;
+        if (req.args.reason !== undefined) row.reason = req.args.reason;
+        row.decisions = req.args.decisions.map((d) => ({ approvalId: d.approvalId, action: d.action }));
+        const outcomes = await deps.approvals.decideFromDashboard(req.args.decisions, req.args.actor);
+        row.accepted = outcomes.filter((o) => o.outcome === 'accepted').length;
+        return ok({ outcomes: outcomes as unknown as JsonValue });
+      }
+    }
+  }
+
   async function handleAdmin(conn: Connection, value: unknown): Promise<void> {
     const parsed = parseAdminRequest(value);
     conn.requestId = parsed.ok ? parsed.value.id : parsed.id;
@@ -1283,17 +1392,20 @@ export function createBroker(deps: BrokerDeps): Broker {
       row.outcome = parsed.code;
       terminal = fail(parsed.code, parsed.message);
     } else {
-      row.op = parsed.value.op;
+      const req = parsed.value;
+      row.op = req.op;
       try {
-        terminal = ok({ approvals: deps.approvals.pending() as unknown as JsonValue });
+        terminal = await adminOp(req, row);
         row.outcome = 'ok';
       } catch (err) {
-        log(`approvals listing failed: ${describeError(err)}`);
+        log(`admin op ${req.op} failed: ${describeError(err)}`);
         row.outcome = 'internal';
         terminal = fail('internal', 'the broker hit an internal error on this request');
       }
     }
-    if (row.outcome !== 'ok') await audit(row);
+    // A dashboard lists every few seconds, so a listing leaves a row only when it failed; a decision or an
+    // acknowledgement always does.
+    if (row.outcome !== 'ok' || row.op === 'decide' || row.op === 'results_ack') await audit(row);
     conn.finish(terminal);
     conn.dispose();
   }

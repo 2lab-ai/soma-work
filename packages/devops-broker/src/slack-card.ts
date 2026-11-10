@@ -344,9 +344,10 @@ export function renderApprovalCard(
 }
 
 export type CardStatus =
-  | { kind: 'approved'; by: string }
+  /** `via: 'dashboard'` (#1129): the admin decided on the soma-work dashboard, not on this card. */
+  | { kind: 'approved'; by: string; via?: 'dashboard' }
   | { kind: 'done'; line: string }
-  | { kind: 'denied'; by: string }
+  | { kind: 'denied'; by: string; via?: 'dashboard' }
   | { kind: 'expired' }
   | { kind: 'cancelled' };
 
@@ -364,15 +365,19 @@ const STATUS_LABEL: Record<CardStatus['kind'], string> = {
 
 const NO_LONGER = '이후 버튼·리액션은 반영되지 않음';
 
+function viaText(via: 'dashboard' | undefined): string {
+  return via === 'dashboard' ? ' (대시보드에서)' : '';
+}
+
 /** "실행 안 함" only where the broker handed no approval out (denied, expired, cancelled). */
 function statusText(status: CardStatus): string {
   switch (status.kind) {
     case 'approved':
-      return `:white_check_mark: *승인됨* — ${mention(status.by)} · 실행 중 · ${NO_LONGER}`;
+      return `:white_check_mark: *승인됨* — ${mention(status.by)}${viaText(status.via)} · 실행 중 · ${NO_LONGER}`;
     case 'done':
       return `:checkered_flag: *실행 종료* — 결과:\n\`\`\`\n${codeValue(capLine(status.line))}\n\`\`\``;
     case 'denied':
-      return `:x: *거부됨* — ${mention(status.by)} · 실행 안 함 · ${NO_LONGER}`;
+      return `:x: *거부됨* — ${mention(status.by)}${viaText(status.via)} · 실행 안 함 · ${NO_LONGER}`;
     case 'expired':
       return `:hourglass: *만료됨* — 기한 안에 응답 없음 · 실행 안 함 · ${NO_LONGER}`;
     case 'cancelled':

@@ -1271,8 +1271,15 @@ describe('pending cards for the dashboard (#1051)', () => {
           permalink: `https://example.slack.test/archives/${dm(ADMIN_B)}/p${card(ADMIN_B).ts.replace('.', '')}`,
         },
       ],
+      // #1129: the card's own lines, so a dashboard decision is made on what the Slack card shows.
+      details: req().details,
+      warnings: req().warnings,
+      ...(req().argv === undefined ? {} : { argv: [...(req().argv ?? [])] }),
+      queued: false,
+      liveUntil: pending.expiresAt,
+      decidable: false,
     });
-    // The listing holds no argument values, warnings or session: only what the dashboard needs to point at the card.
+    // No session: the listing names the requester only.
     expect(JSON.stringify(view)).not.toContain(req().claimedRequester.sessionKey);
     fake.react(dm(ADMIN), card(ADMIN).ts, 'white_check_mark', ADMIN);
     await run.result;

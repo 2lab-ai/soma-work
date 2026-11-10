@@ -149,6 +149,16 @@ function checkPolicy(args: string[], root: string | undefined): number {
   out.push(
     `approval timeout ${formatDuration(policy.approvalTimeoutSeconds)}, at most ${policy.maxPendingApprovals} pending cards`,
   );
+  out.push(
+    policy.queueTimeoutSeconds === null
+      ? 'queue: off (a card expires with the live wait)'
+      : `queue: cards stay open ${formatDuration(policy.queueTimeoutSeconds)}, at most ${policy.maxQueuedApprovals} queued`,
+  );
+  out.push(
+    policy.dashboardDecisionTools.length === 0
+      ? 'dashboard decisions: off (cards are decided in Slack only)'
+      : `dashboard decisions: ON for ${policy.dashboardDecisionTools.join(', ')} — the bot's OS user can decide these cards`,
+  );
   out.push('secret files:');
   let healthy = true;
   for (const [kind, name] of expectedSecrets(policy)) {

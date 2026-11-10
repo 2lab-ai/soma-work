@@ -5,7 +5,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { MAX_LEASE_TTL_SECONDS, parseLeaseTtlSeconds } from '@soma/process-shared/devops/protocol.js';
+import { type DevopsTool, MAX_LEASE_TTL_SECONDS, parseLeaseTtlSeconds } from '@soma/process-shared/devops/protocol.js';
 
 export type GhAccountClass = 'member' | 'org-admin';
 
@@ -33,6 +33,20 @@ export interface BrokerPolicy {
   cloudflare: Record<string, CfEnvPolicy>;
   approvalTimeoutSeconds: number;
   maxPendingApprovals: number;
+  /**
+   * #1128: how long a card stays open after its requester's live wait (`approvalTimeoutSeconds`) ended. Null =
+   * no queue: the card expires with the live wait, as before. Set: the requester is told `queued`, and an
+   * admin's approval inside this window runs the request then; the result is kept for the bot (`results`).
+   */
+  queueTimeoutSeconds: number | null;
+  /** Queued cards at most (all sessions). A new card is refused while the queue is full. */
+  maxQueuedApprovals: number;
+  /**
+   * #1129: the tools whose cards the `decide` admin op may approve or deny (the dashboard). Empty = off. The
+   * dashboard runs as the model's OS user, so turning this on lets that user decide these cards: an operator
+   * choice recorded in this root-owned file, which the model cannot change.
+   */
+  dashboardDecisionTools: DevopsTool[];
 }
 
 export const DEFAULT_LEASE_TTL_SECONDS = 3600;
@@ -45,6 +59,17 @@ export const DEFAULT_APPROVAL_TIMEOUT_SECONDS = 600;
 export const MAX_APPROVAL_TIMEOUT_SECONDS = 600;
 export const DEFAULT_MAX_PENDING_APPROVALS = 3;
 export const MAX_PENDING_APPROVALS_LIMIT = 20;
+/** A queued card's longest life: one week. */
+export const MAX_QUEUE_TIMEOUT_SECONDS = 168 * 3600;
+export const DEFAULT_MAX_QUEUED_APPROVALS = 50;
+export const MAX_QUEUED_APPROVALS_LIMIT = 200;
+/** The tools that post a card, so the only ones a dashboard decision can apply to. */
+export const DASHBOARD_DECIDABLE_TOOLS: readonly DevopsTool[] = [
+  'gh_write',
+  'gh_org_member',
+  'gh_repo_access',
+  'cf_lease_request',
+];
 
 /** `path` is the JSON path (`policy.gh.org`) or, for file-level problems, the policy file. */
 export class PolicyError extends Error {
@@ -148,6 +173,16 @@ function duration(value: unknown, at: string, fallback: number, max: number): nu
   return seconds;
 }
 
+const LONG_DURATION_RE = /^([1-9][0-9]{0,5})([mh])$/;
+
+/** As `duration`, past the 71 h lease ceiling (a queue may run for days). */
+function longDuration(value: unknown, at: string, max: number): number {
+  const match = typeof value === 'string' ? LONG_DURATION_RE.exec(value) : null;
+  const seconds = match === null ? null : Number(match[1]) * (match[2] === 'h' ? 3600 : 60);
+  if (seconds === null || seconds > max) fail(at, `must be "<n>m" or "<n>h", at most ${formatDuration(max)}`);
+  return seconds;
+}
+
 function integer(value: unknown, at: string, fallback: number, min: number, max: number): number {
   if (value === undefined) return fallback;
   if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
@@ -223,23 +258,53 @@ function parseCloudflare(value: unknown): Record<string, CfEnvPolicy> {
   return envs;
 }
 
+function parseDashboardDecisions(value: unknown): DevopsTool[] {
+  const at = 'policy.dashboardDecisions';
+  if (value === undefined) return [];
+  const section = object(value, at, ['tools']);
+  const names = DASHBOARD_DECIDABLE_TOOLS.join(', ');
+  const toolRe = new RegExp(`^(?:${DASHBOARD_DECIDABLE_TOOLS.join('|')})$`);
+  return stringList(section.tools, `${at}.tools`, toolRe, `the tools that post a card (${names})`, 1) as DevopsTool[];
+}
+
 /**
  * Validates the on-disk policy (16 §8) and returns it with durations in seconds and defaults filled:
  * allowedOwners = [org], restWriteAllowlist = [], defaultTtl 1h (capped at maxTtl), maxTtl 71h,
- * ipCondition false, approvalTimeout 10m (at most 10m), maxPendingApprovals 3 (1-20).
+ * ipCondition false, approvalTimeout 10m (at most 10m), maxPendingApprovals 3 (1-20), queueTimeout off
+ * (at most 168h, longer than approvalTimeout), maxQueuedApprovals 50 (1-200), dashboardDecisions off.
  */
 export function parsePolicy(json: unknown): BrokerPolicy {
-  const policy = object(json, 'policy', ['admins', 'gh'], ['cloudflare', 'approvalTimeout', 'maxPendingApprovals']);
+  const policy = object(
+    json,
+    'policy',
+    ['admins', 'gh'],
+    [
+      'cloudflare',
+      'approvalTimeout',
+      'maxPendingApprovals',
+      'queueTimeout',
+      'maxQueuedApprovals',
+      'dashboardDecisions',
+    ],
+  );
+  const approvalTimeoutSeconds = duration(
+    policy.approvalTimeout,
+    'policy.approvalTimeout',
+    DEFAULT_APPROVAL_TIMEOUT_SECONDS,
+    MAX_APPROVAL_TIMEOUT_SECONDS,
+  );
+  const queueTimeoutSeconds =
+    policy.queueTimeout === undefined
+      ? null
+      : longDuration(policy.queueTimeout, 'policy.queueTimeout', MAX_QUEUE_TIMEOUT_SECONDS);
+  if (queueTimeoutSeconds !== null && queueTimeoutSeconds <= approvalTimeoutSeconds) {
+    fail('policy.queueTimeout', 'must be longer than approvalTimeout');
+  }
   return {
     admins: stringList(policy.admins, 'policy.admins', SLACK_USER_RE, 'Slack user IDs (U… or W…)', 1),
     gh: parseGh(policy.gh),
     cloudflare: parseCloudflare(policy.cloudflare),
-    approvalTimeoutSeconds: duration(
-      policy.approvalTimeout,
-      'policy.approvalTimeout',
-      DEFAULT_APPROVAL_TIMEOUT_SECONDS,
-      MAX_APPROVAL_TIMEOUT_SECONDS,
-    ),
+    approvalTimeoutSeconds,
     maxPendingApprovals: integer(
       policy.maxPendingApprovals,
       'policy.maxPendingApprovals',
@@ -247,6 +312,15 @@ export function parsePolicy(json: unknown): BrokerPolicy {
       1,
       MAX_PENDING_APPROVALS_LIMIT,
     ),
+    queueTimeoutSeconds,
+    maxQueuedApprovals: integer(
+      policy.maxQueuedApprovals,
+      'policy.maxQueuedApprovals',
+      DEFAULT_MAX_QUEUED_APPROVALS,
+      1,
+      MAX_QUEUED_APPROVALS_LIMIT,
+    ),
+    dashboardDecisionTools: parseDashboardDecisions(policy.dashboardDecisions),
   };
 }
 
