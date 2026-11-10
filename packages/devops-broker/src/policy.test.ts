@@ -3,7 +3,13 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { MAX_LEASE_TTL_SECONDS } from '@soma/process-shared/devops/protocol.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { loadPolicy, MAX_APPROVAL_TIMEOUT_SECONDS, PolicyError, parsePolicy } from './policy.js';
+import {
+  loadPolicy,
+  MAX_APPROVAL_TIMEOUT_SECONDS,
+  MAX_QUEUE_TIMEOUT_SECONDS,
+  PolicyError,
+  parsePolicy,
+} from './policy.js';
 
 const ZERO_ID = '0'.repeat(32);
 const ONE_ID = '1'.repeat(32);
@@ -85,6 +91,9 @@ describe('parsePolicy: accepts', () => {
       },
       approvalTimeoutSeconds: 300,
       maxPendingApprovals: 3,
+      queueTimeoutSeconds: null,
+      maxQueuedApprovals: 50,
+      dashboardDecisionTools: [],
     });
   });
 
@@ -329,5 +338,61 @@ describe('loadPolicy', () => {
 
   it('reports a missing file with its path', () => {
     expect(() => loadPolicy(file)).toThrow(file);
+  });
+});
+
+describe('parsePolicy: the queue and dashboard decisions (#1128, #1129)', () => {
+  it('both are off unless the policy names them', () => {
+    const policy = parsePolicy(example());
+    expect(policy.queueTimeoutSeconds).toBeNull();
+    expect(policy.maxQueuedApprovals).toBe(50);
+    expect(policy.dashboardDecisionTools).toEqual([]);
+  });
+
+  it('reads queueTimeout past the 71 h lease ceiling, up to one week', () => {
+    expect(MAX_QUEUE_TIMEOUT_SECONDS).toBe(168 * 3600);
+    expect(parsePolicy(changed(['queueTimeout'], '168h')).queueTimeoutSeconds).toBe(168 * 3600);
+    expect(parsePolicy(changed(['queueTimeout'], '90m')).queueTimeoutSeconds).toBe(5400);
+    expect(rejection(changed(['queueTimeout'], '169h')).message).toBe(
+      'policy.queueTimeout: must be "<n>m" or "<n>h", at most 168h',
+    );
+    expect(rejection(changed(['queueTimeout'], 3600)).path).toBe('policy.queueTimeout');
+    expect(rejection(changed(['queueTimeout'], '0h')).path).toBe('policy.queueTimeout');
+  });
+
+  it('a queue must outlast the live wait', () => {
+    // example(): approvalTimeout 5m
+    expect(rejection(changed(['queueTimeout'], '5m')).message).toBe(
+      'policy.queueTimeout: must be longer than approvalTimeout',
+    );
+    expect(parsePolicy(changed(['queueTimeout'], '6m')).queueTimeoutSeconds).toBe(360);
+  });
+
+  it('maxQueuedApprovals is an integer from 1 to 200', () => {
+    expect(parsePolicy(changed(['maxQueuedApprovals'], 200)).maxQueuedApprovals).toBe(200);
+    for (const bad of [0, 201, 2.5, '10']) {
+      expect(rejection(changed(['maxQueuedApprovals'], bad)).message).toBe(
+        'policy.maxQueuedApprovals: must be an integer from 1 to 200',
+      );
+    }
+  });
+
+  it('dashboardDecisions names only tools that post a card, each once', () => {
+    const tools = ['gh_write', 'gh_org_member', 'gh_repo_access', 'cf_lease_request'];
+    expect(parsePolicy(changed(['dashboardDecisions'], { tools })).dashboardDecisionTools).toEqual(tools);
+    expect(rejection(changed(['dashboardDecisions'], { tools: ['gh_read'] })).path).toBe(
+      'policy.dashboardDecisions.tools[0]',
+    );
+    expect(rejection(changed(['dashboardDecisions'], { tools: ['cf_api'] })).path).toBe(
+      'policy.dashboardDecisions.tools[0]',
+    );
+    expect(rejection(changed(['dashboardDecisions'], { tools: ['gh_write', 'gh_write'] })).message).toBe(
+      'policy.dashboardDecisions.tools[1]: is a duplicate',
+    );
+    expect(rejection(changed(['dashboardDecisions'], { tools: [] })).path).toBe('policy.dashboardDecisions.tools');
+    expect(rejection(changed(['dashboardDecisions'], { tools: ['gh_write'], all: true })).path).toBe(
+      'policy.dashboardDecisions.all',
+    );
+    expect(rejection(changed(['dashboardDecisions'], true)).path).toBe('policy.dashboardDecisions');
   });
 });
