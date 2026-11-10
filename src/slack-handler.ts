@@ -487,9 +487,10 @@ export class SlackHandler {
    * opens them from the paths its prompt carries), and the turn's settlement
    * may still say it was discarded, which puts the row back in line. Emptied
    * by the turn's own end receipt, or by the turn-end sweep
-   * ({@link releaseReadSteers}).
+   * ({@link releaseReadSteers}). `recording` is the write of the message as a
+   * user turn (its files being copied): the files outlive it.
    */
-  private followupReadSteers?: Map<string, { key: string; turnEpoch?: number }>;
+  private followupReadSteers?: Map<string, { key: string; turnEpoch?: number; recording?: Promise<void> }>;
   /**
    * Items whose "your edit did not reach the queue" notice was already said.
    * One per item: Slack redelivers `message_changed` and a user can keep
@@ -1843,17 +1844,21 @@ export class SlackHandler {
       added += 1;
     }
     if (added === 0) return;
-    // By arrival, not by when each row joined this line: the queue's own order
-    // (`seq`) within a bucket, the enqueue clock across the two buckets of a
-    // migration. Stable — a row the queue no longer holds keeps its place and
-    // is skipped at the push.
-    const entries = waiting.map((row, index) => ({ row, index, item: queue.get(row.rowKey, row.itemId) }));
-    entries.sort((a, b) => {
-      if (!a.item || !b.item) return a.index - b.index;
-      if (a.row.rowKey === b.row.rowKey) return a.item.seq - b.item.seq;
-      return a.item.enqueuedAt - b.item.enqueuedAt || a.index - b.index;
-    });
-    const ordered = entries.map((entry) => entry.row);
+    // By arrival, not by when each row joined this line. Rows the queue no
+    // longer holds are dropped first — they could never be pushed, and a row
+    // with no place in the order would make the comparison inconsistent. One
+    // total order for the rest: the enqueue clock, then the bucket, then the
+    // bucket's own sequence (within a bucket the clock follows the sequence).
+    const ordered = waiting
+      .map((row) => ({ row, item: queue.get(row.rowKey, row.itemId) }))
+      .filter((entry): entry is { row: FollowupSteerOnOpenRow; item: FollowupItem } => entry.item !== undefined)
+      .sort(
+        (a, b) =>
+          a.item.enqueuedAt - b.item.enqueuedAt ||
+          (a.row.rowKey < b.row.rowKey ? -1 : a.row.rowKey > b.row.rowKey ? 1 : 0) ||
+          a.item.seq - b.item.seq,
+      )
+      .map((entry) => entry.row);
     this.followupSteerOnOpen.set(slotKey, ordered);
     this.logger.info('Handing queued follow-ups to the running turn', { sessionKey, slotKey, count: added });
     void this.drainFollowupsWaitingForOpen(slotKey, turnEpoch);
@@ -6394,14 +6399,17 @@ export class SlackHandler {
     const instruction = this.followupSteerInstructions?.get(uuid);
     this.followupSteerInstructions?.delete(uuid);
     const slotKey = this.boundFollowupSlot(sessionKey) ?? sessionKey;
+    // Never rejects (`recordSteeredInstruction` reports its own failure).
+    const recording = instruction
+      ? this.recordSteeredInstruction(sessionKey, instruction, this.followupSteerFiles?.get(uuid) ?? [])
+      : undefined;
     this.followupReadSteers ??= new Map();
     this.followupReadSteers.set(uuid, {
       key: queueKey,
       turnEpoch: this.followupDispatcher?.liveTurnEpoch(slotKey),
+      ...(recording ? { recording } : {}),
     });
-    if (instruction) {
-      await this.recordSteeredInstruction(sessionKey, instruction, this.followupSteerFiles?.get(uuid) ?? []);
-    }
+    await recording;
   }
 
   /**
@@ -6412,20 +6420,26 @@ export class SlackHandler {
    * settlement is still to come.
    *
    * Which messages are released is decided before the first await, so a turn
-   * that starts while files are being deleted keeps its own.
+   * that starts while files are being deleted keeps its own. A message still
+   * being recorded (its files being copied into the conversation) is waited
+   * for: losing the slot does not mean that copy finished.
    */
   private async releaseReadSteers(sessionKey: string): Promise<void> {
     const read = this.followupReadSteers;
     if (!read || read.size === 0) return;
     const slotKey = this.boundFollowupSlot(sessionKey) ?? sessionKey;
     const live = this.followupDispatcher?.liveTurnEpoch(slotKey);
-    const released: ProcessedFile[][] = [];
+    const released: Array<{ files: ProcessedFile[]; recording?: Promise<void> }> = [];
     for (const [uuid, note] of [...read]) {
       if (note.key !== sessionKey) continue;
       if (live !== undefined && note.turnEpoch === live) continue;
-      released.push(this.takeSteerFiles(uuid));
+      released.push({ files: this.takeSteerFiles(uuid), recording: note.recording });
     }
-    for (const files of released) await this.cleanupSteerFiles(files);
+    for (const { files, recording } of released) {
+      // The copy of these files into the conversation may still be running.
+      await recording;
+      await this.cleanupSteerFiles(files);
+    }
   }
 
   /**
@@ -6435,7 +6449,10 @@ export class SlackHandler {
    */
   private async finishConsumedSteer(sessionKey: string, uuid: string): Promise<void> {
     const instruction = this.followupSteerInstructions?.get(uuid);
+    // Recorded at its read already ({@link recordReadSteer}): that write may still be copying the files.
+    const recording = this.followupReadSteers?.get(uuid)?.recording;
     const files = this.takeSteerFiles(uuid);
+    await recording;
     if (instruction) await this.recordSteeredInstruction(sessionKey, instruction, files);
     await this.cleanupSteerFiles(files);
   }

@@ -4444,6 +4444,65 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(order).toEqual(['capture', 'record', 'cleanup']);
     });
 
+    // Whose files a sweep may delete is decided by the run that read them, not by "some turn is
+    // live": a `Send now` puts run B in the slot while run A is still ending, and A's end sweeps the
+    // session. A's files go; the files of a message B read stay; A's read is final (review #1178).
+    it("a sweep under a replacement turn releases the old turn's files and keeps the new turn's", async () => {
+      const { uuid: uuidA, settle, order, processed } = await steerWithFile('A가 읽은 지시');
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid: uuidA, phase: 'read' });
+      const epochA = handlerAny.followupReadSteers.get(uuidA).turnEpoch;
+      expect(typeof epochA).toBe('number');
+      // Run B holds the slot now, and has read a message of its own.
+      const epochB = epochA + 1;
+      vi.spyOn(handlerAny.followupDispatcher, 'liveTurnEpoch').mockReturnValue(epochB);
+      const filesB = [{ name: 'b.png', path: '/tmp/slack-file-2-b.png', isImage: true }];
+      handlerAny.followupSteerFiles.set('uuid-b', filesB);
+      handlerAny.followupReadSteers.set('uuid-b', { key: SESSION_KEY, turnEpoch: epochB });
+
+      await handlerAny.sweepSteeredFollowups(SESSION_KEY);
+
+      const cleanup = handlerAny.fileHandler.cleanupTempFiles;
+      expect(cleanup).toHaveBeenCalledTimes(1);
+      expect(cleanup).toHaveBeenCalledWith(processed);
+      expect(order).toEqual(['capture', 'record', 'cleanup']);
+      expect([...handlerAny.followupReadSteers.keys()]).toEqual(['uuid-b']);
+      expect(handlerAny.followupSteerFiles.get('uuid-b')).toBe(filesB);
+      // A's turn is over: a late `discarded` for its message reopens nothing.
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid: uuidA, phase: 'discarded' });
+      expect(items()[0].state).toBe('resolved');
+
+      handlerAny.followupReadSteers.delete('uuid-b');
+      handlerAny.followupSteerFiles.delete('uuid-b');
+      vi.mocked(handlerAny.followupDispatcher.liveTurnEpoch).mockRestore();
+      await settle();
+    });
+
+    // The read is recorded (its files copied) while the sweep of an ended turn may already run:
+    // the files are deleted only after that copy finished (review #1178).
+    it("a sweep waits for a read message's recording before it deletes the files", async () => {
+      const { uuid, settle, order } = await steerWithFile('복사 중인 첨부');
+      const gate = deferred<any>();
+      handlerAny.userMediaRecorder.capture = vi.fn(async () => {
+        order.push('capture-start');
+        const attachments = await gate.promise;
+        order.push('capture-done');
+        return attachments;
+      });
+
+      const reading = lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'read' });
+      await tick();
+      expect(order).toEqual(['capture-start']);
+      const settling = settle(); // the turn ends: its sweep runs with the copy still pending
+      await tick();
+      await tick();
+      expect(order).toEqual(['capture-start']);
+
+      gate.resolve([]);
+      await reading;
+      await settling;
+      await vi.waitFor(() => expect(order).toEqual(['capture-start', 'capture-done', 'record', 'cleanup']));
+    });
+
     it('a dashboard send steered into the running turn keeps its ref on the turn it records (#785)', async () => {
       const { uuid, settle, record } = await steerWithFile('대시보드에서 보낸 지시', {
         dashboardClientRef: 'optimistic-1-ab',
