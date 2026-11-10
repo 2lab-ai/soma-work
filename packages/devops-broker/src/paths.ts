@@ -1,5 +1,5 @@
 // Broker data layout (.prd/16-devops-tools-architecture.md §8). The installer creates the tree:
-// root 0750 broker:soma-devops, secrets/ and state/ 0700, run/ 0750 holding the 0660 socket.
+// root 0750 broker:soma-devops, secrets/, state/ and tls/ 0700, run/ 0750 holding the 0660 socket.
 
 import * as path from 'node:path';
 
@@ -16,6 +16,8 @@ export interface BrokerPaths {
   ledgerFile: string;
   runDir: string;
   socketPath: string;
+  /** The approval page's certificate and key (#1056): 0700, broker user only. */
+  tlsDir: string;
 }
 
 export function brokerPaths(root: string = process.env[BROKER_ROOT_ENV] || DEFAULT_BROKER_ROOT): BrokerPaths {
@@ -30,5 +32,6 @@ export function brokerPaths(root: string = process.env[BROKER_ROOT_ENV] || DEFAU
     ledgerFile: path.join(stateDir, 'ledger.jsonl'),
     runDir,
     socketPath: path.join(runDir, 'broker.sock'),
+    tlsDir: path.join(base, 'tls'),
   };
 }

@@ -13,6 +13,8 @@ import { type SlackApi, SlackApiError } from './slack-api.js';
 import {
   ApprovalError,
   type ApprovalRequest,
+  approvalHeader,
+  approvalWarnings,
   type CardStatus,
   renderApprovalCard,
   renderCardStatus,
@@ -59,6 +61,19 @@ export interface Approvals {
    * the card, in Slack.
    */
   pending(): PendingApprovalView[];
+  /**
+   * One waiting card in full, for the broker's own approval page (#1056): everything the Slack card says, from
+   * the broker's entry. Undefined unless the card is waiting for an answer.
+   */
+  describe(approvalId: string): ApprovalDescription | undefined;
+  /**
+   * A decision the approval page verified against an admin's passkey. Counts only when that admin is still in
+   * the policy, the card is still waiting and `digest` is the request the card shows; then it is decided
+   * exactly like a reaction (expiry, one use and disk-first all apply). The evidence goes to the ledger first:
+   * no evidence row, no decision. Resolves with how the card ended — an approval that arrives after the
+   * deadline ends `expired` — or `ignored` when nothing was decided. Never throws.
+   */
+  decideVerified(decision: VerifiedDecision): Promise<'approved' | 'denied' | 'expired' | 'cancelled' | 'ignored'>;
   /** Cancels what is still open (approved-but-unused included) and waits for the card updates. */
   close(): Promise<void>;
 }
@@ -85,6 +100,39 @@ export interface PendingApprovalView {
   expiresAt: string;
   /** Every admin's own card; `permalink` when Slack gave one. */
   cards: { admin: string; permalink?: string }[];
+  /** The card on the broker's approval page (#1056), when the page is on. */
+  pageUrl?: string;
+}
+
+/** What the approval page shows for one waiting card (#1056). */
+export interface ApprovalDescription {
+  approvalId: string;
+  /** sha256 of the request; a page decision is bound to it. */
+  digest: string;
+  createdAt: string;
+  expiresAt: string;
+  tool: DevopsTool;
+  header: string;
+  title: string;
+  warnings: string[];
+  /** gh argv (without `gh`), in order. */
+  argv?: string[];
+  details: { label: string; value: string }[];
+  /** Claimed requester's Slack user id and session — shown, never trusted. */
+  requester: string;
+  sessionKey: string;
+}
+
+/** A decision whose passkey assertion the approval page already verified. */
+export interface VerifiedDecision {
+  approvalId: string;
+  action: 'approve' | 'deny';
+  /** The admin the passkey belongs to. */
+  admin: string;
+  /** The request digest the signed challenge covered. */
+  digest: string;
+  /** What was verified (passkey fingerprint, nonce, the signed bytes), for the ledger. Never a secret. */
+  evidence: Record<string, string>;
 }
 
 /** How long a click on a card that is still being posted to the other admins waits for it to open. */
@@ -236,6 +284,8 @@ interface Entry {
   card: SlackCard;
   createdAtMs: number;
   view: Pick<PendingApprovalView, 'tool' | 'title' | 'requester'>;
+  /** The request as the approval page shows it. */
+  content: Pick<ApprovalDescription, 'header' | 'warnings' | 'argv' | 'details' | 'sessionKey'>;
   /** posting → pending → settled; only posting/pending entries count against the cap or take duplicates. */
   status: 'posting' | 'pending' | 'settled';
   posts: ApprovalCardPost[];
@@ -267,6 +317,8 @@ export function createApprovals(opts: {
   limits?: Partial<ApprovalLimits>;
   /** Put 승인 / 거부 buttons on new cards (only when something calls `decide` with their clicks). */
   buttons?: boolean;
+  /** The approval page's origin while the page is serving (#1056): each listed card then carries its address. */
+  pageOrigin?: () => string | undefined;
   /** Operator log line (never a secret); default stderr. */
   log?: (line: string) => void;
 }): Approvals {
@@ -284,7 +336,7 @@ export function createApprovals(opts: {
   /** sessionKey → clock() until which it may not open a new card. */
   const coolDowns = new Map<string, number>();
   /** finish() calls not yet done; close() waits for them. */
-  const finishing = new Set<Promise<void>>();
+  const finishing = new Set<Promise<unknown>>();
 
   /** posting/pending entries by approval id. */
   const active = new Map<string, Entry>();
@@ -463,8 +515,9 @@ export function createApprovals(opts: {
     }
   }
 
-  function finish(entry: Entry, decision: Decision): Promise<void> {
-    if (entry.status !== 'pending') return Promise.resolve();
+  /** Resolves with how the card ended (undefined when it was not waiting, or settling failed). */
+  function finish(entry: Entry, decision: Decision): Promise<Decision['kind'] | undefined> {
+    if (entry.status !== 'pending') return Promise.resolve(undefined);
     const work = settle(entry, decision).catch(() => undefined);
     finishing.add(work);
     void work.then(() => finishing.delete(work));
@@ -476,7 +529,7 @@ export function createApprovals(opts: {
     coolDowns.set(entry.sessionKey, clock() + limits.abandonedCoolDownMs);
   }
 
-  async function settle(entry: Entry, reported: Decision): Promise<void> {
+  async function settle(entry: Entry, reported: Decision): Promise<Decision['kind']> {
     entry.status = 'settled';
     active.delete(entry.approvalId);
     const approvalId = entry.approvalId;
@@ -551,6 +604,7 @@ export function createApprovals(opts: {
     }
     const status: CardStatus = final.kind === 'approved' || final.kind === 'denied' ? final : { kind: final.kind };
     updateCards(approvalId, entry.posts, renderCardStatus(entry.card, status));
+    return final.kind;
   }
 
   function dmChannel(admin: string): Promise<string> {
@@ -919,6 +973,13 @@ export function createApprovals(opts: {
         card,
         createdAtMs,
         view: { tool: req.tool, title: req.title, requester: req.claimedRequester.slackUserId },
+        content: {
+          header: approvalHeader(req.tool),
+          warnings: approvalWarnings(req),
+          ...(req.argv !== undefined && req.argv.length > 0 ? { argv: [...req.argv] } : {}),
+          details: req.details.map(({ label, value }) => ({ label, value })),
+          sessionKey: req.claimedRequester.sessionKey,
+        },
         status: 'posting',
         posts: [],
         waiters: new Set(),
@@ -973,6 +1034,7 @@ export function createApprovals(opts: {
     },
 
     pending() {
+      const pageOrigin = opts.pageOrigin?.();
       return [...active.values()]
         .filter((entry) => entry.status === 'pending')
         .sort((a, b) => a.createdAtMs - b.createdAtMs)
@@ -986,7 +1048,67 @@ export function createApprovals(opts: {
             admin: post.admin,
             ...(post.permalink ? { permalink: post.permalink } : {}),
           })),
+          ...(pageOrigin ? { pageUrl: `${pageOrigin}/a/${entry.approvalId}` } : {}),
         }));
+    },
+
+    describe(approvalId) {
+      const entry = active.get(approvalId);
+      if (entry === undefined || entry.status !== 'pending') return undefined;
+      return {
+        approvalId: entry.approvalId,
+        digest: entry.digest,
+        createdAt: iso(entry.createdAtMs),
+        expiresAt: iso(entry.expiresAtMs),
+        tool: entry.view.tool,
+        title: entry.view.title,
+        requester: entry.view.requester,
+        header: entry.content.header,
+        warnings: [...entry.content.warnings],
+        ...(entry.content.argv ? { argv: [...entry.content.argv] } : {}),
+        details: entry.content.details.map((detail) => ({ ...detail })),
+        sessionKey: entry.content.sessionKey,
+      };
+    },
+
+    async decideVerified(decision) {
+      const { approvalId, admin, action } = decision;
+      const ignore = async (reason: string): Promise<'ignored'> => {
+        await ledger
+          .append({ event: 'approval.passkey-ignored', approvalId, user: admin, reason })
+          .catch(() => undefined);
+        return 'ignored';
+      };
+      try {
+        if (closed) return ignore('closed');
+        if (!admins.has(admin)) return ignore('not-admin');
+        const entry = active.get(approvalId);
+        if (entry === undefined || entry.status !== 'pending') return ignore('not-pending');
+        if (entry.digest !== decision.digest) return ignore('wrong-digest');
+        try {
+          // The row holds what was verified, so the decision can be checked again from the ledger alone.
+          await ledger.append({
+            ...decision.evidence,
+            event: 'approval.passkey-decision',
+            approvalId,
+            admin,
+            action,
+            digest: entry.digest,
+          });
+        } catch {
+          return 'ignored';
+        }
+        // The ledger write gave way to other work: a reaction may have settled the card meanwhile.
+        if (closed || entry.status !== 'pending') return ignore('not-pending');
+        const ended = await finish(
+          entry,
+          action === 'approve' ? { kind: 'approved', by: admin } : { kind: 'denied', by: admin },
+        );
+        return ended ?? 'ignored';
+      } catch (err) {
+        log(`passkey decision on approval ${approvalId} failed (${errorCode(err)})`);
+        return 'ignored';
+      }
     },
 
     async decide(click) {

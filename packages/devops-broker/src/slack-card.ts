@@ -276,6 +276,16 @@ function approvalButtons(approvalId: string): SlackBlock {
   };
 }
 
+/** The card's first line. The approval page (#1056) shows the same one. */
+export function approvalHeader(tool: DevopsTool): string {
+  return TOOL_HEADERS[tool] ?? HEADER;
+}
+
+/** Every warning the card carries, the broker's own lease note included. The approval page shows the same list. */
+export function approvalWarnings(req: Pick<ApprovalRequest, 'tool' | 'warnings'>): string[] {
+  return req.tool === 'cf_lease_request' ? [...req.warnings, LEASE_BEARER_NOTE] : [...req.warnings];
+}
+
 /**
  * Throws ApprovalError('card-too-long') when the card cannot be shown whole. `buttons` adds 승인 / 거부 buttons
  * (only when the broker can receive their clicks over Socket Mode); reactions count either way.
@@ -285,12 +295,12 @@ export function renderApprovalCard(
   meta: { approvalId: string; digest: string; expiresAtMs: number },
   opts: { buttons?: boolean } = {},
 ): SlackCard {
-  const header = TOOL_HEADERS[req.tool] ?? HEADER;
+  const header = approvalHeader(req.tool);
   const blocks: SlackBlock[] = [
     { type: 'header', text: { type: 'plain_text', text: header, emoji: false } },
     { type: 'section', text: { type: 'plain_text', text: plain(req.title), emoji: false } },
   ];
-  const warnings = req.tool === 'cf_lease_request' ? [...req.warnings, LEASE_BEARER_NOTE] : req.warnings;
+  const warnings = approvalWarnings(req);
   if (warnings.length > 0) {
     blocks.push(mrkdwn(`:warning: *주의*\n${warnings.map((warning) => `• ${prose(warning)}`).join('\n')}`));
   }

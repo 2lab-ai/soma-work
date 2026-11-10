@@ -101,6 +101,7 @@ interface Extra {
   ledger?: Ledger;
   limits?: Partial<ApprovalLimits>;
   buttons?: boolean;
+  pageOrigin?: string;
 }
 
 /** Log lines the approvals wrote (the default writes to stderr). */
@@ -125,6 +126,7 @@ async function makeApprovals(
     pollIntervalMs,
     limits: extra.limits,
     buttons: extra.buttons,
+    pageOrigin: () => extra.pageOrigin,
     log: (line) => logged.push(line),
   });
   open.push(approvals);
@@ -1287,5 +1289,192 @@ describe('pending cards for the dashboard (#1051)', () => {
     expect(approvals.pending()[0].cards).toEqual([{ admin: ADMIN }]);
     fake.react(dm(ADMIN), card(ADMIN).ts, 'white_check_mark', ADMIN);
     await expect(run.result).resolves.toMatchObject({ outcome: 'approved' });
+  });
+});
+
+describe('the approval page (#1056)', () => {
+  const ORIGIN = 'https://approve.home.arpa:8443';
+  const evidence = { fingerprint: 'AAAA-BBBB-CCCC-DDDD', nonce: 'n-0001', signature: 'c2ln' };
+
+  async function pendingCard(approvals: Approvals, request = req()) {
+    const run = start(approvals, request);
+    const [pending] = await waitFor(() => run.pending.length > 0 && run.pending, 'pending');
+    return { run, pending, digest: approvalDigest(request) };
+  }
+
+  it("describes a waiting card in full, from the broker's own entry", async () => {
+    const approvals = await makeApprovals();
+    const request = req(1, { warnings: ['CI 코드 실행 가능'] });
+    const { pending, digest, run } = await pendingCard(approvals, request);
+    expect(approvals.describe(pending.approvalId)).toEqual({
+      approvalId: pending.approvalId,
+      digest,
+      createdAt: new Date(START).toISOString(),
+      expiresAt: pending.expiresAt,
+      tool: 'gh_write',
+      header: 'GitHub 쓰기 승인 요청',
+      title: request.title,
+      warnings: ['CI 코드 실행 가능'],
+      argv: request.argv,
+      details: request.details,
+      requester: 'U000ALICE',
+      sessionKey: request.claimedRequester.sessionKey,
+    });
+    expect(approvals.describe('no-such-approval-id')).toBeUndefined();
+    expect(approvals.describe('__proto__')).toBeUndefined();
+    fake.react(dm(ADMIN), card(ADMIN).ts, 'x', ADMIN);
+    await run.result;
+    expect(approvals.describe(pending.approvalId)).toBeUndefined();
+  });
+
+  it('shows the same warnings as the Slack card (the lease note included)', async () => {
+    const approvals = await makeApprovals();
+    const request = req(1, { tool: 'cf_lease_request', argv: undefined, warnings: [] });
+    const { pending } = await pendingCard(approvals, request);
+    const described = approvals.describe(pending.approvalId);
+    expect(described?.header).toBe('Cloudflare 단기 키 승인 요청');
+    expect(described?.warnings).toHaveLength(1);
+    expect(JSON.stringify(card(ADMIN).blocks)).toContain(described?.warnings[0].slice(0, 20));
+    expect(described?.argv).toBeUndefined();
+  });
+
+  it('lists the page address of each waiting card only when the page is on', async () => {
+    const withPage = await makeApprovals({}, 10, { pageOrigin: ORIGIN });
+    const { pending } = await pendingCard(withPage);
+    expect(withPage.pending()[0].pageUrl).toBe(`${ORIGIN}/a/${pending.approvalId}`);
+    await withPage.close();
+    const without = await makeApprovals();
+    await pendingCard(without, req(2));
+    expect(without.pending()[0]).not.toHaveProperty('pageUrl');
+  });
+
+  it("a verified passkey decision approves exactly like the admin's own click, with its evidence in the ledger first", async () => {
+    const approvals = await makeApprovals({ admins: [ADMIN, ADMIN_B] });
+    const { run, pending, digest } = await pendingCard(approvals);
+    await expect(
+      approvals.decideVerified({ approvalId: pending.approvalId, action: 'approve', admin: ADMIN_B, digest, evidence }),
+    ).resolves.toBe('approved');
+    const outcome = await run.result;
+    expect(outcome).toMatchObject({ outcome: 'approved', approvalId: pending.approvalId });
+    if (outcome.outcome !== 'approved') throw new Error('not approved');
+    await outcome.consume();
+    await expect(outcome.consume()).rejects.toMatchObject({ reason: 'used' });
+    const mine = rows().filter((row) => row.approvalId === pending.approvalId);
+    const at = (event: string) => mine.findIndex((row) => row.event === event);
+    expect(at('approval.passkey-decision')).toBeGreaterThan(-1);
+    expect(at('approval.passkey-decision')).toBeLessThan(at('approval.approved'));
+    expect(mine[at('approval.passkey-decision')]).toMatchObject({
+      admin: ADMIN_B,
+      action: 'approve',
+      digest,
+      ...evidence,
+    });
+    expect(mine[at('approval.approved')]).toMatchObject({ by: ADMIN_B });
+    expect(stateOnDisk().approvals[pending.approvalId]).toMatchObject({ status: 'consumed', decidedBy: ADMIN_B });
+    // Slack shows the same outcome on every admin's card.
+    for (const admin of [ADMIN, ADMIN_B]) {
+      await waitFor(() => card(admin).updates.length > 0, 'card update');
+      expect(lastUpdateText(card(admin))).toContain('승인됨');
+    }
+    // Decided once: a later decision, by either way, changes nothing.
+    await expect(
+      approvals.decideVerified({ approvalId: pending.approvalId, action: 'deny', admin: ADMIN, digest, evidence }),
+    ).resolves.toBe('ignored');
+  });
+
+  it('a verified 거부 denies', async () => {
+    const approvals = await makeApprovals();
+    const { run, pending, digest } = await pendingCard(approvals);
+    await expect(
+      approvals.decideVerified({ approvalId: pending.approvalId, action: 'deny', admin: ADMIN, digest, evidence }),
+    ).resolves.toBe('denied');
+    await expect(run.result).resolves.toMatchObject({ outcome: 'denied' });
+    expect(rows().find((row) => row.event === 'approval.denied')).toMatchObject({ by: ADMIN });
+  });
+
+  it.each<
+    [string, (ctx: { approvalId: string; digest: string }) => Parameters<Approvals['decideVerified']>[0], string]
+  >([
+    ['someone who is not an admin', (c) => ({ ...c, action: 'approve', admin: OTHER, evidence }), 'not-admin'],
+    ['the bot', (c) => ({ ...c, action: 'approve', admin: BOT, evidence }), 'not-admin'],
+    [
+      'another approval id',
+      (c) => ({ ...c, approvalId: 'no-such-approval-id', action: 'approve', admin: ADMIN, evidence }),
+      'not-pending',
+    ],
+    [
+      'a digest of another request',
+      (c) => ({ ...c, digest: 'f'.repeat(64), action: 'approve', admin: ADMIN, evidence }),
+      'wrong-digest',
+    ],
+  ])('ignores a decision from %s and leaves the card waiting', async (_name, build, reason) => {
+    const approvals = await makeApprovals();
+    const { run, pending, digest } = await pendingCard(approvals);
+    await expect(approvals.decideVerified(build({ approvalId: pending.approvalId, digest }))).resolves.toBe('ignored');
+    expect(run.settled()).toBe(false);
+    expect(approvals.describe(pending.approvalId)).toBeDefined();
+    expect(rows().at(-1)).toMatchObject({ event: 'approval.passkey-ignored', reason });
+    expect(events()).not.toContain('approval.passkey-decision');
+  });
+
+  it('an approval signed in time but arriving after the deadline expires the card instead', async () => {
+    const approvals = await makeApprovals();
+    const { run, pending, digest } = await pendingCard(approvals);
+    clock = Date.parse(pending.expiresAt);
+    // The page is told the truth: not approved.
+    await expect(
+      approvals.decideVerified({ approvalId: pending.approvalId, action: 'approve', admin: ADMIN, digest, evidence }),
+    ).resolves.not.toBe('approved');
+    await expect(run.result).resolves.toMatchObject({ outcome: 'expired' });
+    expect(events(pending.approvalId)).not.toContain('approval.approved');
+  });
+
+  it('without the evidence row there is no decision', async () => {
+    // A ledger that cannot write the evidence row (and only that one).
+    const noEvidence = {
+      append: (row: { event: string } & Record<string, unknown>) =>
+        row.event === 'approval.passkey-decision'
+          ? Promise.reject(new Error('EIO: simulated ledger failure'))
+          : ledger.append(row),
+    } as unknown as Ledger;
+    const approvals = await makeApprovals({}, 10, { ledger: noEvidence });
+    const { run, pending, digest } = await pendingCard(approvals);
+    await expect(
+      approvals.decideVerified({ approvalId: pending.approvalId, action: 'approve', admin: ADMIN, digest, evidence }),
+    ).resolves.toBe('ignored');
+    expect(run.settled()).toBe(false);
+    expect(stateOnDisk().approvals[pending.approvalId].status).toBe('pending');
+    expect(events(pending.approvalId)).not.toContain('approval.approved');
+    // The card is still there to decide.
+    fake.react(dm(ADMIN), card(ADMIN).ts, 'white_check_mark', ADMIN);
+    await expect(run.result).resolves.toMatchObject({ outcome: 'approved' });
+  });
+
+  it('a passkey decision and a Slack reaction at the same moment settle the card once', async () => {
+    const approvals = await makeApprovals();
+    const { run, pending, digest } = await pendingCard(approvals);
+    fake.react(dm(ADMIN), card(ADMIN).ts, 'x', ADMIN);
+    const viaPage = approvals.decideVerified({
+      approvalId: pending.approvalId,
+      action: 'approve',
+      admin: ADMIN,
+      digest,
+      evidence,
+    });
+    const outcome = await run.result;
+    await viaPage;
+    const decided = events(pending.approvalId).filter((e) => e === 'approval.approved' || e === 'approval.denied');
+    expect(decided).toHaveLength(1);
+    expect(decided[0]).toBe(`approval.${outcome.outcome}`);
+    expect(stateOnDisk().approvals[pending.approvalId].status).toBe(outcome.outcome);
+  });
+
+  it('ignores every decision once the approvals are closed', async () => {
+    const approvals = await makeApprovals();
+    const { pending, digest } = await pendingCard(approvals);
+    await approvals.close();
+    await expect(
+      approvals.decideVerified({ approvalId: pending.approvalId, action: 'approve', admin: ADMIN, digest, evidence }),
+    ).resolves.toBe('ignored');
   });
 });

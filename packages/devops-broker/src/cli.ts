@@ -7,12 +7,26 @@
 import * as path from 'node:path';
 import { PROTOCOL_VERSION } from '@soma/process-shared/devops/protocol.js';
 import { APPROVAL_STATE_FILE, createApprovals, initialApprovalState } from './approval.js';
+import { type ApprovalPage, loadPageTls, type PageTls, startApprovalPage } from './approval-page.js';
 import { createBroker } from './broker.js';
 import { createCloudflareLeases, type LeaseView, loadCfLeaseStores } from './cf-client.js';
 import { createGhRunner, type GhRunner } from './gh-runner.js';
 import { createGithubAdmin } from './github-admin.js';
 import { Ledger } from './ledger.js';
-import { operatorSocketPath, PASSKEY_USAGE, runPasskeyCommand } from './operator.js';
+import {
+  type OperatorServer,
+  operatorSocketPath,
+  PASSKEY_USAGE,
+  runPasskeyCommand,
+  startOperatorSocket,
+} from './operator.js';
+import {
+  createPasskeys,
+  initialPasskeyState,
+  PASSKEY_STATE_FILE,
+  type PasskeyState,
+  type Passkeys,
+} from './passkeys.js';
 import { brokerPaths } from './paths.js';
 import { type BrokerPolicy, formatDuration, loadPolicy } from './policy.js';
 import {
@@ -178,6 +192,18 @@ function checkPolicy(args: string[], root: string | undefined): number {
     }
   }
   out.push(`  ${`slack/${SLACK_SOCKET_SECRET_NAME}`.padEnd(24)} ${socket}`);
+  if (policy.approvalPage === undefined) {
+    out.push('approval page: off (cards are decided in Slack only)');
+  } else {
+    out.push(`approval page: ${policy.approvalPage.origin} (listens on ${policy.approvalPage.listenHost})`);
+    try {
+      const { daysLeft } = loadPageTls(paths.tlsDir, policy.approvalPage.rpId, Date.now());
+      out.push(`  certificate ok (${daysLeft} ${daysLeft === 1 ? 'day' : 'days'} left)`);
+    } catch (err) {
+      healthy = false;
+      out.push(`  certificate bad (${startupError(err)})`);
+    }
+  }
   process.stdout.write(`${out.join('\n')}\n`);
   return healthy ? 0 : 1;
 }
@@ -189,6 +215,19 @@ function log(line: string): void {
 /** Startup errors name files and modes (policy, secrets, gh, run directory), never a secret value. */
 function startupError(err: unknown): string {
   return err instanceof Error ? err.message : 'unexpected error';
+}
+
+/** A passkey now decides approval cards: every admin hears of it from the broker's own app, best effort. */
+function notifyPasskeyEnrolled(slack: SlackApi, policy: BrokerPolicy, admin: string, fingerprint: string): void {
+  const text =
+    `devops 승인 패스키가 등록됐습니다 — 어드민 <@${admin}>, 지문 ${fingerprint}. ` +
+    '이 패스키로 승인 창에서 승인·거부할 수 있습니다. 본인이 등록한 것이 아니면 운영자가 passkey revoke로 폐기해야 합니다.';
+  for (const each of policy.admins) {
+    slack
+      .openDm(each)
+      .then((channel) => slack.postMessage(channel, { text }))
+      .catch((err: unknown) => log(`passkey notice to an admin failed: ${describeError(err)}`));
+  }
 }
 
 /** A lease the broker could not confirm deleted: tell every admin, best effort (the sweeper retries). */
@@ -243,6 +282,32 @@ async function serve(args: string[], root: string | undefined, ghPath: string): 
       log(`approval buttons off: ${describeError(err)}`);
     }
   }
+  // The approval page (#1056) is optional and never takes the broker down: without a usable certificate it
+  // stays off and cards are decided in Slack as before.
+  let pageTls: PageTls | undefined;
+  let passkeys: Passkeys | undefined;
+  if (policy.approvalPage !== undefined) {
+    try {
+      pageTls = loadPageTls(paths.tlsDir, policy.approvalPage.rpId, Date.now());
+      const passkeyStore = new StateStore<PasskeyState>(
+        path.join(paths.stateDir, PASSKEY_STATE_FILE),
+        initialPasskeyState(),
+      );
+      await passkeyStore.load();
+      passkeys = createPasskeys({
+        rp: { origin: policy.approvalPage.origin, rpId: policy.approvalPage.rpId },
+        isAdmin: (user) => policy.admins.includes(user),
+        store: passkeyStore,
+        ledger,
+      });
+    } catch (err) {
+      pageTls = undefined;
+      passkeys = undefined;
+      log(`approval page off: ${startupError(err)}`);
+    }
+  }
+  /** Set once the page is listening: only then does a listed card carry its page address. */
+  let pageOrigin: string | undefined;
   const approvals = createApprovals({
     policy,
     slack,
@@ -250,6 +315,7 @@ async function serve(args: string[], root: string | undefined, ghPath: string): 
     ledger,
     log,
     buttons: appToken !== undefined,
+    pageOrigin: () => pageOrigin,
   });
   let socket: SocketModeClient | undefined;
   const cfLeases = createCloudflareLeases({
@@ -288,6 +354,27 @@ async function serve(args: string[], root: string | undefined, ghPath: string): 
   if (appToken !== undefined) {
     socket = startSocketMode({ appToken, log, onClick: (click) => approvals.decide(click) });
   }
+  let approvalPage: ApprovalPage | undefined;
+  let operator: OperatorServer | undefined;
+  if (policy.approvalPage !== undefined && pageTls !== undefined && passkeys !== undefined) {
+    const page = policy.approvalPage;
+    try {
+      approvalPage = await startApprovalPage({ page, tls: pageTls, approvals, passkeys, log });
+      operator = await startOperatorSocket({
+        socketPath: operatorSocketPath(paths),
+        passkeys,
+        enrolUrl: `${page.origin}/enroll`,
+        onEnrolled: (admin, fingerprint) => notifyPasskeyEnrolled(slack, policy, admin, fingerprint),
+        log,
+      });
+      pageOrigin = page.origin;
+      log(`approval page on ${page.origin} (certificate: ${pageTls.daysLeft} days left)`);
+    } catch (err) {
+      await approvalPage?.close();
+      approvalPage = undefined;
+      log(`approval page off: ${startupError(err)}`);
+    }
+  }
   await ledger.append({ event: 'broker.start', protocol: PROTOCOL_VERSION }).catch(() => undefined);
   log(`listening on ${paths.socketPath} (protocol v${PROTOCOL_VERSION})`);
   // Leases a crash left mid-operation (minting, revoking, expired) are handled now, not one interval later.
@@ -300,6 +387,9 @@ async function serve(args: string[], root: string | undefined, ghPath: string): 
   const signal = await stopped;
   log(`${signal}: no new requests; waiting for running ones`);
   stopSweeper();
+  pageOrigin = undefined;
+  await operator?.close();
+  await approvalPage?.close();
   await server.close();
   await socket?.close();
   await approvals.close();

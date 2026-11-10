@@ -24,6 +24,7 @@ describe('brokerPaths', () => {
       ledgerFile: '/srv/devops/state/ledger.jsonl',
       runDir: '/srv/devops/run',
       socketPath: '/srv/devops/run/broker.sock',
+      tlsDir: '/srv/devops/tls',
     });
   });
 
