@@ -695,6 +695,7 @@ describe('the open card’s tree is <ui-agent-tree> (affectUI review batch 2) �
         faceOf: (c: unknown) => c,
         cardAsks: () => false,
         cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
+        isBusy: () => false, // a close on its way (SSOT 2026-11-10 T1, viewCardOf) — none in this harness
         cardTldrOf: () => null, // the face's Executive Summary TL;DR (SSOT 2026-11-02 T7) — none in this harness
         cardFollowupsOf: () => [], // the face's follow-up bar (#983) — none in this harness
         isPickingModel: () => false,
@@ -969,6 +970,7 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
       faceOf: (c: unknown) => c,
       cardAsks: () => false,
       cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
+      isBusy: () => false, // a close on its way (SSOT 2026-11-10 T1, viewCardOf) — none in this harness
       cardTldrOf: () => null, // the face's Executive Summary TL;DR (SSOT 2026-11-02 T7) — none in this harness
       cardFollowupsOf: () => [], // the face's follow-up bar (#983) — none in this harness
     };
