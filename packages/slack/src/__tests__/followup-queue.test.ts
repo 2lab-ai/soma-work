@@ -1383,6 +1383,51 @@ describe('FollowupQueue steer settlement (consumed / unsteer)', () => {
     expect(queue.enqueue(SESSION, event({ ts: '1.2' })).status).toBe('queued');
   });
 
+  // The read receipt closes a row while its turn still works; that turn's settlement keeps the last
+  // word. A turn that ended with nothing proving the message ran sends the row back in line.
+  describe("reopenConsumed — the reading turn's settlement said discarded", () => {
+    it('puts a consumed row back in line at its own place, the uuid dropped', () => {
+      const queue = new FollowupQueue();
+      queue.enqueue(SESSION, event({ ts: '1.1' }));
+      queue.enqueue(SESSION, event({ ts: '1.2' }));
+      const steered = steerFirst(queue, 'uuid-abc');
+      queue.markConsumed(SESSION, 'uuid-abc');
+
+      const reopened = queue.reopenConsumed(SESSION, 'uuid-abc', 'why');
+
+      expect(reopened.ok && reopened.item).toMatchObject({ id: steered.id, state: 'queued', stateReason: 'why' });
+      expect(reopened.ok && reopened.item.steerUuid).toBeUndefined();
+      // First in line again: the drain claims it before the row sent after it.
+      const claimed = queue.claimNext(SESSION);
+      expect(claimed.ok && claimed.item.id).toBe(steered.id);
+    });
+
+    it('is not held to capacity — the row was pending a moment ago, and refusing it would lose it', () => {
+      const queue = new FollowupQueue({ capacity: 1 });
+      queue.enqueue(SESSION, event({ ts: '1.1' }));
+      steerFirst(queue, 'uuid-abc');
+      queue.markConsumed(SESSION, 'uuid-abc');
+      expect(queue.enqueue(SESSION, event({ ts: '1.2' })).status).toBe('queued'); // the freed slot is taken
+
+      expect(queue.reopenConsumed(SESSION, 'uuid-abc').ok).toBe(true);
+    });
+
+    it('touches only a row that was consumed under that uuid', () => {
+      const queue = new FollowupQueue();
+      queue.enqueue(SESSION, event({ ts: '1.1' }));
+      steerFirst(queue, 'uuid-abc');
+
+      // Still steered: that is `unsteer`'s row, not this door's.
+      expect(queue.reopenConsumed(SESSION, 'uuid-abc')).toEqual({ ok: false, reason: 'invalid-state' });
+      expect(queue.reopenConsumed(SESSION, 'uuid-other')).toEqual({ ok: false, reason: 'not-found' });
+
+      queue.markConsumed(SESSION, 'uuid-abc');
+      expect(queue.reopenConsumed(SESSION, 'uuid-abc').ok).toBe(true);
+      // Once: the uuid is gone with the transition.
+      expect(queue.reopenConsumed(SESSION, 'uuid-abc')).toEqual({ ok: false, reason: 'not-found' });
+    });
+  });
+
   it('reports not-found for a uuid no item carries', () => {
     const queue = new FollowupQueue();
     queue.enqueue(SESSION, event({ ts: '1.1' }));

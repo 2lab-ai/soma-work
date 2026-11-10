@@ -255,6 +255,32 @@ describe('Dashboard — the follow-up queue (batch 2)', () => {
       expect(steered.stateReason).toBeUndefined();
     });
 
+    // Incident 2026-11-10 (dev): a note sent with 지금 보내기 ran as the session's turn for 25 minutes and the
+    // sheet "다음 단계에 전달 대기" kept listing it as 보내는 중… the whole time. Once its own turn reached the
+    // model it waits for nothing — it IS the turn the panel shows working. Before that (the dispatch is still
+    // being set up) it is on its way and stays listed.
+    it('does not list a note whose own turn reached the model — it is the running turn, not a waiting note', async () => {
+      view = {
+        sessionKey: KEY,
+        turnEpoch: 7,
+        items: [
+          item('dispatched', { text: 'on its way', deliveredAt: undefined }),
+          item('dispatched', { text: 'the running turn', deliveredAt: 1_793_000_100_000 }),
+          item('queued', { text: 'still waiting' }),
+        ],
+      };
+      const f = (await card()).followups;
+      expect(f.items.map((i: any) => [i.text, i.state])).toEqual([
+        ['on its way', 'dispatched'],
+        ['still waiting', 'queued'],
+      ]);
+    });
+
+    it('sends no queue at all when the only note is the running turn', async () => {
+      view = { sessionKey: KEY, turnEpoch: 7, items: [item('dispatched', { deliveredAt: 1_793_000_100_000 })] };
+      expect((await card()).followups).toBeUndefined();
+    });
+
     // SSOT 2026-11-02 — anyone may write here, so Edit is offered on anyone's queued words, to their writer
     // (authorId; the page shows it to that viewer only, the server checks the author again).
     it('offers Edit on queued words that are not a goal’s opening turn, naming their writer', async () => {

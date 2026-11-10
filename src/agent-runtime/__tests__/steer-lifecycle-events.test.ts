@@ -184,6 +184,70 @@ describe('steer_lifecycle mapping (user-steering WU1)', () => {
     expect(steerEvents(events)).toEqual([]);
   });
 
+  /**
+   * The frame as the installed CLI really sends it (measured on SDK 0.3.321 / CLI 2.1.321,
+   * 2026-11-10): a TOP-LEVEL `type: 'command_lifecycle'` — not a `system` subtype — naming the
+   * send in `command_uuid` and its step in `state`. A message pushed into a running turn reports
+   * `queued` when the CLI takes it, `started` when it is folded into the turn (the model has it
+   * from the next call on) and `completed` when that turn ends. Before this was read, a steered
+   * message the model had answered stayed "waiting" until the turn's result (incident 2026-11-10).
+   */
+  describe('the command_lifecycle frame the CLI sends', () => {
+    const frame = (state: string) =>
+      ({
+        type: 'command_lifecycle',
+        command_uuid: 'send-1',
+        state,
+        uuid: 'frame-uuid',
+        session_id: 's1',
+      }) as never;
+
+    // Its own phase, not `started`: a `started` also comes from a reply frame's stamp, which the CLI
+    // puts on a synthetic API-error message too — a reply that proves no read (review #1178).
+    it('maps `started` to read — the CLI handed the message to the model', () => {
+      expect(steerEvents(mapper().map(frame('started')))).toEqual([
+        { type: 'steer_lifecycle', uuid: 'send-1', phase: 'read' },
+      ]);
+    });
+
+    it("a reply frame's stamp stays `started` — it is no read receipt", () => {
+      const events = mapper().map({
+        type: 'assistant',
+        user_message_uuid: 'send-1',
+        message: { id: 'm1', content: [], usage: {} },
+        error: 'authentication_failed',
+      } as never);
+      expect(steerEvents(events)).toEqual([{ type: 'steer_lifecycle', uuid: 'send-1', phase: 'started' }]);
+    });
+
+    it('maps `queued` to observed — taken by the CLI, not read by the model', () => {
+      expect(steerEvents(mapper().map(frame('queued')))).toEqual([
+        { type: 'steer_lifecycle', uuid: 'send-1', phase: 'observed' },
+      ]);
+    });
+
+    // The CLI sends `completed` for the message that OPENED the turn too; a consumer reads a
+    // `completed` as "this turn folded a steered send in" (#846). The turn's end stays the host's
+    // own settlement frame.
+    it('maps `completed` to observed — the turn end is the host settlement, not this frame', () => {
+      expect(steerEvents(mapper().map(frame('completed')))).toEqual([
+        { type: 'steer_lifecycle', uuid: 'send-1', phase: 'observed' },
+      ]);
+    });
+
+    // A withdrawal is the host's own act (a Cancel, an interrupt's sweep) and it records it itself.
+    it('maps `cancelled` to observed — the host that asked for the withdrawal records it', () => {
+      expect(steerEvents(mapper().map(frame('cancelled')))).toEqual([
+        { type: 'steer_lifecycle', uuid: 'send-1', phase: 'observed' },
+      ]);
+    });
+
+    it("never reads the frame's own uuid as the send", () => {
+      const events = mapper().map({ type: 'command_lifecycle', state: 'started', uuid: 'frame-uuid' } as never);
+      expect(steerEvents(events)).toEqual([]);
+    });
+  });
+
   it('emits started from a partial stream_event stamp (includePartialMessages mode)', () => {
     const events = mapper().map({
       type: 'stream_event',

@@ -165,10 +165,12 @@ export type AgentStreamEvent =
   // first reply frame and on the turn result — the join key binding a queued
   // Slack message to the turn that consumed it. `observed` carries the uuid
   // without claiming a transition (a backend phase this seam does not model).
+  // `read`: the backend handed the send to the model (its own lifecycle frame) —
+  // unlike `started`, which a reply frame's stamp also produces.
   | {
       type: 'steer_lifecycle';
       uuid: string;
-      phase: 'started' | 'completed' | 'cancelled' | 'discarded' | 'observed';
+      phase: 'started' | 'read' | 'completed' | 'cancelled' | 'discarded' | 'observed';
     };
 
 export type AgentStreamEventOf<T extends AgentStreamEvent['type']> = Extract<AgentStreamEvent, { type: T }>;

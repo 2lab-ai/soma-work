@@ -671,6 +671,13 @@ interface StreamExecutorDeps {
     sessionKey: string;
     uuid: string;
     phase: AgentStreamEventOf<'steer_lifecycle'>['phase'];
+    /**
+     * The turn generation this execution runs under (`followupTurnEpoch`), when
+     * it has one: which RUN reported the frame. A `Send now` puts the next run
+     * in the session's slot while this one is still ending, so the host cannot
+     * read that off the slot.
+     */
+    turnEpoch?: number;
   }) => void | Promise<void>;
   /**
    * Operator routing for `release_notes` (SOMA_RELEASE_NOTES_CHANNELS, parsed by
@@ -2383,6 +2390,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             sessionKey: ctx.sessionKey,
             uuid: event.uuid,
             phase: event.phase,
+            ...(turnEpochToken !== undefined ? { turnEpoch: turnEpochToken } : {}),
           });
         },
         // Spec 12 — the session's agent tree (subagent spawn / tasks / result /
