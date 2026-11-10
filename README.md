@@ -17,6 +17,13 @@
 
 <p align="center"><sub>▶ <a href="https://github.com/2lab-ai/soma-work/releases/download/v0.3/soma-work-v0.3-demo-en.mp4">Demo film, 44 s</a>: ask in Slack, see it on the dashboard, keep going from the card, or just say it. One real session, recorded from Slack and the dashboard. (<a href="https://github.com/2lab-ai/soma-work/releases/download/v0.3/soma-work-v0.3-demo-ko.mp4">Korean UI</a> · <a href="https://github.com/2lab-ai/soma-work/releases/tag/v0.3">v0.3 release</a>)</sub></p>
 
+<p align="center">
+  <a href="https://github.com/2lab-ai/soma-work/releases/download/v0.3/soma-work-llmux-demo-en.mp4"><img src="assets/readme/en/usage-poster.png" width="49%" alt="Real-use demo film, 76 seconds: a request asked in Slack and continued from its card, a task given by voice, a task split across several models, then each raw request and what it cost" /></a>
+  <a href="https://github.com/2lab-ai/soma-work/releases/download/v0.3/soma-work-x-llmux-en.mp4"><img src="assets/readme/en/llmux-poster.png" width="49%" alt="soma-work × llmux film, 51 seconds: a request asked in Slack, its card, and every model call the agent made, opened down to the raw request in llmux" /></a>
+</p>
+
+<p align="center"><sub>▶ <a href="https://github.com/2lab-ai/soma-work/releases/download/v0.3/soma-work-llmux-demo-en.mp4">Real-use demo, 76 s</a>: ask in Slack, keep going from the card, say a task, split one across several models, then open every request and what it cost. ▶ <a href="https://github.com/2lab-ai/soma-work/releases/download/v0.3/soma-work-x-llmux-en.mp4">soma-work × llmux, 51 s</a>: every call the agent makes goes through <a href="https://github.com/2lab-ai/llmux">llmux</a>, and you can open each one. (Korean versions: <a href="https://github.com/2lab-ai/soma-work/releases/download/v0.3/soma-work-llmux-demo-ko.mp4">demo</a> · <a href="https://github.com/2lab-ai/soma-work/releases/download/v0.3/soma-work-x-llmux-ko.mp4">soma-work × llmux</a>. The multi-model part is the same Korean session in both.)</sub></p>
+
 ![The soma-work dashboard: three columns (needs response, running, done) of task cards, each with its status, PRs, cost and Slack channel](assets/readme/en/board.png)
 
 <sub>The real dashboard, filtered to this repository (private cards hidden). It starts in Korean: press EN at the top right, or send the bot `lang en`. Card titles and TL;DRs are written by the agent, so some are in Korean.</sub>
@@ -73,7 +80,7 @@ Write your next instruction in the card's message box. It goes into the same Sla
 You run it on your own machine. From source, today (Node.js 20+):
 
 1. Create a Slack app from [`infra/slack/slack-app-manifest.json`](infra/slack/slack-app-manifest.json) and install it. Copy the bot token (`xoxb-`) and an app-level token with `connections:write` (`xapp-`).
-2. Give it Claude: an [llmux](https://github.com/2lab-ai/llmux) on the same machine (found at start), or `CLAUDE_CODE_OAUTH_TOKEN` in `.env` (from `claude setup-token`).
+2. Give it Claude: an [llmux](https://github.com/2lab-ai/llmux) on the same machine (found at start; ▶ [what llmux shows, 48 s](https://github.com/2lab-ai/llmux/releases/download/v0.2.26/llmux-intro-en.mp4)), or `CLAUDE_CODE_OAUTH_TOKEN` in `.env` (from `claude setup-token`).
 3. Build and start:
 
 ```bash
