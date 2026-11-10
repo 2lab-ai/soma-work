@@ -202,10 +202,22 @@ describe('steer_lifecycle mapping (user-steering WU1)', () => {
         session_id: 's1',
       }) as never;
 
-    it('maps `started` — the message was handed to the model', () => {
+    // Its own phase, not `started`: a `started` also comes from a reply frame's stamp, which the CLI
+    // puts on a synthetic API-error message too — a reply that proves no read (review #1178).
+    it('maps `started` to read — the CLI handed the message to the model', () => {
       expect(steerEvents(mapper().map(frame('started')))).toEqual([
-        { type: 'steer_lifecycle', uuid: 'send-1', phase: 'started' },
+        { type: 'steer_lifecycle', uuid: 'send-1', phase: 'read' },
       ]);
+    });
+
+    it("a reply frame's stamp stays `started` — it is no read receipt", () => {
+      const events = mapper().map({
+        type: 'assistant',
+        user_message_uuid: 'send-1',
+        message: { id: 'm1', content: [], usage: {} },
+        error: 'authentication_failed',
+      } as never);
+      expect(steerEvents(events)).toEqual([{ type: 'steer_lifecycle', uuid: 'send-1', phase: 'started' }]);
     });
 
     it('maps `queued` to observed — taken by the CLI, not read by the model', () => {

@@ -4179,17 +4179,26 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
-    /**
-     * Incident 2026-11-10 (dev, work:C0AKY7W2UGZ:1794286993.849579): a message steered at 14:05 was
-     * folded into the turn at 14:10:31 — the CLI said so (`command_lifecycle` `started`) and the model
-     * answered it — yet its row stayed `steered` for the rest of the turn. A `Send now` then cut the
-     * turn, the sweep put the row "back in line", and the message ran a second time as its own turn.
-     * `started` is the read receipt: the CLI took the message off its queue and handed it to the model.
-     */
-    it('resolves the item as consumed once the CLI handed it to the model (started)', async () => {
+    it('leaves the item alone for started/observed — neither is a settlement', async () => {
       const { uuid, settle } = await steerOne();
 
       await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'started' });
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'observed' });
+
+      expect(items()[0].state).toBe('steered');
+      await settle();
+    });
+
+    /**
+     * Incident 2026-11-10 (dev): a message steered at 14:05 was folded into the turn at 14:10:31 —
+     * the CLI said so (`command_lifecycle` `started`, the `read` phase here) and the model answered
+     * it — yet its row stayed `steered` for the rest of the turn. A `Send now` then cut the turn, the
+     * sweep put the row "back in line", and the message ran a second time as its own turn.
+     */
+    it('resolves the item as consumed once the CLI handed it to the model (read)', async () => {
+      const { uuid, settle } = await steerOne();
+
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'read' });
 
       const [item] = items();
       expect(item.state).toBe('resolved');
@@ -4199,7 +4208,7 @@ describe('SlackHandler — follow-up queue host', () => {
 
     it('a message the model read is not put back in line when its turn is cut', async () => {
       const { uuid, settle } = await steerOne();
-      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'started' });
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'read' });
 
       // The turn ends with no settlement frame (a Send now or a stop aborted it): the turn-end sweep runs.
       await handlerAny.sweepSteeredFollowups(SESSION_KEY);
@@ -4209,16 +4218,48 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(items()[0].state).toBe('resolved');
     });
 
-    it('the turn-end receipts that follow a read message change nothing', async () => {
+    it('the turn-end `completed` that follows a read message changes nothing', async () => {
       const { uuid, settle } = await steerOne();
-      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'started' });
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'read' });
       const epoch = items()[0].epoch;
 
       await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'completed' });
+      // Confirmed: a `discarded` redelivered after it moves nothing either.
       await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'discarded' });
 
       expect(items()[0]).toMatchObject({ state: 'resolved', stateReason: 'consumed', epoch });
       await settle();
+    });
+
+    /**
+     * The host's settlement keeps the last word (06 §6.6 — a false `consumed` loses a message, a
+     * false `discarded` only runs it again). A `read` says the CLI handed the message over; when the
+     * turn's own result then says nothing proves it ran — an API error, an unhealthy result, a held
+     * turn that ended before the message's own result — the row goes back in line, as it did before
+     * the read receipt existed (review #1178).
+     */
+    it("a read message goes back in line when the turn's settlement says it was discarded", async () => {
+      const { uuid, settle } = await steerOne();
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'read' });
+      expect(items()[0].state).toBe('resolved');
+
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'discarded' });
+
+      const [item] = items();
+      expect(item.state).toBe('queued');
+      expect(item.steerUuid).toBeUndefined();
+      await settle();
+    });
+
+    it('a discarded that names a row an EARLIER turn consumed reopens nothing', async () => {
+      const { uuid, settle } = await steerOne();
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'read' });
+      await settle(); // the turn is over: its read receipts are final
+      await vi.waitFor(() => expect(handlerAny.followupReadSteers?.size ?? 0).toBe(0));
+
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'discarded' });
+
+      expect(items()[0].state).toBe('resolved');
     });
 
     it('leaves the item alone for observed — the CLI took it, the model has not read it', async () => {
@@ -4227,6 +4268,22 @@ describe('SlackHandler — follow-up queue host', () => {
       await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'observed' });
 
       expect(items()[0].state).toBe('steered');
+      await settle();
+    });
+
+    /**
+     * The sweep runs behind an idle check (`sweepSteerBucketsIfIdle`). Nothing may be awaited
+     * between that check and the queue write: a turn that takes the slot in between and is handed a
+     * message would have that message put back in line under it, and delivered twice (review #1178).
+     */
+    it('the sweep returns steered rows to the queue before it awaits anything', async () => {
+      const { settle } = await steerOne();
+      const unsteerAll = vi.spyOn(handlerAny.followupDispatcher, 'unsteerAll');
+
+      const sweeping = handlerAny.sweepSteeredFollowups(SESSION_KEY);
+
+      expect(unsteerAll).toHaveBeenCalledTimes(1);
+      await sweeping;
       await settle();
     });
 
@@ -4339,14 +4396,14 @@ describe('SlackHandler — follow-up queue host', () => {
     });
 
     /**
-     * `started` comes at the fold, while the turn still works: the model opens the files from the
+     * The read receipt comes at the fold, while the turn still works: the model opens the files from the
      * paths its prompt carries later in that turn. The message is recorded (its files copied) at
      * once; the temp files go when the turn says it is over, or at the turn-end sweep.
      */
     it('records a read message at once and keeps its files until the turn is over', async () => {
       const { uuid, settle, capture, record, order, processed } = await steerWithFile('이것도 같이 봐줘');
 
-      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'started' });
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'read' });
 
       expect(capture).toHaveBeenCalledWith('conv_steer', processed);
       expect(record).toHaveBeenCalledTimes(1);
@@ -4361,11 +4418,30 @@ describe('SlackHandler — follow-up queue host', () => {
 
     it('deletes a read message’s files at the turn-end sweep when no turn-end receipt came', async () => {
       const { uuid, settle, order } = await steerWithFile('이것도 같이 봐줘');
-      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'started' });
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'read' });
       expect(order).toEqual(['capture', 'record']);
 
       await settle();
       await vi.waitFor(() => expect(order).toEqual(['capture', 'record', 'cleanup']));
+    });
+
+    // The sweep also runs at ANOTHER turn's end while this one works: a `Send now` takes the slot
+    // before the turn it cut has finished, and that turn's end sweeps the session (review #1178).
+    // The files of a message the live turn read are that turn's to open — they stay.
+    it('a sweep that runs while the turn that read the message still works keeps its files', async () => {
+      const { uuid, settle, order } = await steerWithFile('이것도 같이 봐줘');
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'read' });
+
+      await handlerAny.sweepSteeredFollowups(SESSION_KEY);
+      await handlerAny.sweepSteeredFollowups(SESSION_KEY);
+
+      expect(order).toEqual(['capture', 'record']);
+
+      await settle();
+      await vi.waitFor(() => expect(order).toEqual(['capture', 'record', 'cleanup']));
+      // Once: the next boundary finds nothing left to delete.
+      await handlerAny.sweepSteeredFollowups(SESSION_KEY);
+      expect(order).toEqual(['capture', 'record', 'cleanup']);
     });
 
     it('a dashboard send steered into the running turn keeps its ref on the turn it records (#785)', async () => {

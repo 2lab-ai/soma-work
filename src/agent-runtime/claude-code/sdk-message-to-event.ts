@@ -168,9 +168,12 @@ function mapCommandLifecycle(m: Record<string, unknown>): AgentStreamEvent[] {
  * boundary, or opening a turn of its own), `completed` when that turn ends,
  * `cancelled` when it was withdrawn first.
  *
- * Only `started` is read as a transition: it is the one signal that says, while
- * the turn still works, that the model has the message. The other steps carry
- * the uuid as `observed`, on purpose:
+ * Only `started` is read as a transition, and as its own phase — `read`: it is
+ * the one signal that says, while the turn still works, that the CLI handed the
+ * message to the model. Not the `started` phase: that one is also produced from
+ * a reply frame's `user_message_uuid` stamp ({@link steerStartedEventsFor}),
+ * which the CLI puts on a synthetic API-error message too — a reply that proves
+ * no read. The other steps carry the uuid as `observed`, on purpose:
  *   - `completed` is sent for the message that OPENED the turn too, and a
  *     consumer reads a `completed` as "this turn folded a steered send in"
  *     (the turn-end summary's re-judge, #846). The turn's end is the host's own
@@ -183,7 +186,7 @@ function mapCommandLifecycle(m: Record<string, unknown>): AgentStreamEvent[] {
 function mapCliCommandLifecycle(m: Record<string, unknown>): AgentStreamEvent[] {
   const uuid = typeof m.command_uuid === 'string' && m.command_uuid.length > 0 ? m.command_uuid : undefined;
   if (!uuid) return [];
-  return [{ type: 'steer_lifecycle', uuid, phase: m.state === 'started' ? 'started' : 'observed' }];
+  return [{ type: 'steer_lifecycle', uuid, phase: m.state === 'started' ? 'read' : 'observed' }];
 }
 
 /**
