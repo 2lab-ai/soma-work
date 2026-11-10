@@ -951,6 +951,27 @@ export class FollowupQueue {
   }
 
   /**
+   * `resolved (consumed) → queued`: the turn that read the message ended with a
+   * settlement that says nothing proves it ran — an API error, an unhealthy
+   * result, a held turn cut before the message's own result. The read receipt
+   * closed the row while the turn worked; the settlement has the last word, and
+   * a message that runs twice costs less than one that is lost (06 §6.6).
+   *
+   * Only a row `markConsumed` closed under this very uuid: any other `resolved`
+   * row is somebody else's verdict. Back at its original seq, the uuid dropped —
+   * exactly where {@link unsteer} leaves a row the model never read. Not held to
+   * capacity: the row was pending until moments ago, and refusing it here is
+   * the loss this door exists to prevent.
+   */
+  reopenConsumed(sessionKey: string, uuid: string, reason?: string): FollowupOpResult {
+    return this.mutateBySteerUuid(sessionKey, uuid, (item) => {
+      if (item.state !== 'resolved' || item.stateReason !== 'consumed') return 'invalid-state';
+      this.enter(item, 'queued', reason);
+      return undefined;
+    });
+  }
+
+  /**
    * `steered → queued`: the push did not stick, or the turn ended with the
    * message still sitting unread in the SDK queue (`still_queued`, 06 §3.2 S3).
    * The item returns to its original seq — FIFO position is never lost — and the

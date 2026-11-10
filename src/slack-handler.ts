@@ -480,6 +480,18 @@ export class SlackHandler {
    */
   private followupSteerUuids?: Map<string, string>;
   /**
+   * Steered messages the model has read (`read`) in a turn that is not over
+   * yet, by steer uuid: `key` is the queue bucket the row lives in, `turnEpoch`
+   * the run that read it (the generation its frame carried; the slot's, without one). Until that turn ends, two things
+   * are still open for such a message: its temp files stay on disk (the turn
+   * opens them from the paths its prompt carries), and the turn's settlement
+   * may still say it was discarded, which puts the row back in line. Emptied
+   * by the turn's own end receipt, or by the turn-end sweep
+   * ({@link releaseReadSteers}). `recording` is the write of the message as a
+   * user turn (its files being copied): the files outlive it.
+   */
+  private followupReadSteers?: Map<string, { key: string; turnEpoch?: number; recording?: Promise<void> }>;
+  /**
    * Items whose "your edit did not reach the queue" notice was already said.
    * One per item: Slack redelivers `message_changed` and a user can keep
    * editing, and repeating the refusal in the thread is noise, not information.
@@ -949,7 +961,8 @@ export class SlackHandler {
       onSteerLifecycle: (args: {
         sessionKey: string;
         uuid: string;
-        phase: 'started' | 'completed' | 'cancelled' | 'discarded' | 'observed';
+        phase: 'started' | 'read' | 'completed' | 'cancelled' | 'discarded' | 'observed';
+        turnEpoch?: number;
       }) => this.settleSteeredFollowup(args),
       // A deploy turn's `release_notes` directive goes where the operator mapped
       // that repo + branch (SOMA_RELEASE_NOTES_CHANNELS); the executor asks only
@@ -1245,6 +1258,7 @@ export class SlackHandler {
           this.noteChainSettled(sessionKey, final?.outcome);
         });
       },
+      handToLiveTurn: (sessionKey) => this.handQueuedFollowupsToLiveTurn(sessionKey),
       // #854 — a click's run that opened no drain still ended its chain (review #872 R2 astra).
       chainSettled: (sessionKey, settled) => {
         this.noteChainSettled(sessionKey, settled.outcome);
@@ -1773,6 +1787,82 @@ export class SlackHandler {
         error: (error as Error)?.message ?? String(error),
       });
     }
+  }
+
+  /**
+   * A person put rows of `sessionKey` back in line while a turn runs (Retry on
+   * a cut row, Resume on parked ones): offer every `queued` row to that turn,
+   * oldest first — the steer a message gets when it arrives mid-turn (06 §3.2
+   * D1). Without it the row waited for the turn to end with `Send now` as its
+   * only way in (incident 2026-11-10: 25 minutes behind a working turn).
+   *
+   * A stored row is replayed work, so it passes what the drain checks before it
+   * runs one ({@link authorizeFollowupDispatch}: its author still accepted, the
+   * working directory it was stored for still theirs). A row that check refuses
+   * stays queued — the drain at the turn's end refuses it with the reason.
+   * Every rule of the steer still decides after that ({@link trySteerFollowup}).
+   *
+   * Through the rows-waiting-for-the-turn line, merged in by arrival: a row
+   * sent before one that already waits there goes in ahead of it, and a run
+   * that has not opened its input yet gets them when it does. Nothing running,
+   * or a halted lane: nothing happens here.
+   */
+  private handQueuedFollowupsToLiveTurn(sessionKey: string): void {
+    const dispatcher = this.followupDispatcher;
+    const queue = this.followupQueue;
+    if (!dispatcher || !queue || this.followupReadFailed) return;
+    if (dispatcher.drainHalt(sessionKey)) return;
+    // Which key holds the live slot — resolved as the steer itself resolves it.
+    const migrated = this.followupMigration?.byCanonical.get(sessionKey);
+    const slotKey = dispatcher.isBusy(sessionKey)
+      ? sessionKey
+      : migrated !== undefined && dispatcher.isBusy(migrated)
+        ? migrated
+        : undefined;
+    if (slotKey === undefined) return;
+    const turnEpoch = dispatcher.liveTurnEpoch(slotKey);
+    if (turnEpoch === undefined) return;
+    const waiting = this.followupSteerOnOpen.get(slotKey) ?? [];
+    let added = 0;
+    for (const item of queue.list(sessionKey)) {
+      if (item.state !== 'queued') continue;
+      if (waiting.some((row) => row.rowKey === sessionKey && row.itemId === item.id)) continue;
+      const authorized = this.authorizeFollowupDispatch(sessionKey, item.message as MessageEvent, item.context);
+      if (!authorized.allowed) {
+        this.logger.info('Queued follow-up not handed to the running turn — left for the drain', {
+          sessionKey,
+          itemId: item.id,
+          reason: authorized.reason,
+        });
+        continue;
+      }
+      waiting.push({
+        rowKey: sessionKey,
+        itemId: item.id,
+        turnEpoch,
+        what: 'Follow-up put back in line while a turn runs',
+      });
+      added += 1;
+    }
+    if (added === 0) return;
+    // By arrival, not by when each row joined this line. Rows the queue no
+    // longer holds are dropped first — they could never be pushed, and a row
+    // with no place in the order would make the comparison inconsistent. One
+    // total order for the rest: the enqueue clock, then the bucket, then the
+    // bucket's own sequence (within a bucket the clock follows the sequence).
+    const ordered = waiting
+      .map((row) => ({ row, item: queue.get(row.rowKey, row.itemId) }))
+      .filter((entry): entry is { row: FollowupSteerOnOpenRow; item: FollowupItem } => entry.item !== undefined)
+      .sort(
+        (a, b) =>
+          a.item.enqueuedAt - b.item.enqueuedAt ||
+          (a.row.rowKey < b.row.rowKey ? -1 : a.row.rowKey > b.row.rowKey ? 1 : 0) ||
+          a.item.seq - b.item.seq,
+      )
+      .map((entry) => entry.row);
+    this.followupSteerOnOpen.set(slotKey, ordered);
+    this.logger.info('Handing queued follow-ups to the running turn', { sessionKey, slotKey, count: added });
+    void this.drainFollowupsWaitingForOpen(slotKey, turnEpoch);
   }
 
   /**
@@ -3966,8 +4056,10 @@ export class SlackHandler {
     const shown = (this.followupShown ??= new Map());
     const changed: string[] = [];
     for (const session of snapshot.sessions) {
+      // Delivery evidence moves no epoch (`markDelivered`), and it is what takes a
+      // note off the panel's waiting list — so it is part of what was shown.
       const signature = `${session.turnEpoch}|${session.freeze?.at ?? ''}|${session.items
-        .map((item) => `${item.id}:${item.epoch}`)
+        .map((item) => `${item.id}:${item.epoch}${isFollowupDelivered(item) ? 'd' : ''}`)
         .join(',')}`;
       if (shown.get(session.sessionKey) === signature) continue;
       shown.set(session.sessionKey, signature);
@@ -5591,11 +5683,25 @@ export class SlackHandler {
    * The SDK's verdict on a steered message (06 §6.6), arriving as a
    * `steer_lifecycle` frame of the turn that holds it.
    *
-   * `started`/`observed` settle nothing — the message is in the SDK's hands and
-   * this host has no transition for "in progress". `completed` is the only
-   * consumption receipt; `discarded`/`cancelled` mean the model never acted on
-   * it, so the item goes back to `queued` at its original seq and the ordinary
-   * drain owns it again (S3).
+   * `read` is the CLI's own word that it took the message off its queue and
+   * handed it to the model — folded into the running turn, or opening a turn of
+   * its own in a held query. From there on a cancel answers `already-dequeued`
+   * and the message is in the session's transcript, so the row is `resolved`
+   * (`consumed`) at once. Waiting for the turn's end instead left a read message
+   * `steered` for the rest of the turn, and a turn cut before its result (a
+   * `Send now`, a stop) put it back in line to run a second time (incident
+   * 2026-11-10).
+   *
+   * The host's settlement at the turn's result keeps the last word (a false
+   * `consumed` loses a message, a false `discarded` only runs it again):
+   * `completed` confirms a read row, and is the receipt itself for a row no
+   * `read` reached; `discarded`/`cancelled` send the row back to `queued` at its
+   * original seq — also one this turn's `read` had closed, because a turn that
+   * ended in an API error or an unhealthy result proves nothing ran.
+   *
+   * `started` (a reply frame's stamp — also on a synthetic API-error reply) and
+   * `observed` settle nothing. A receipt for a row that already settled in an
+   * earlier turn moves nothing.
    *
    * Nothing in here may fail the turn: a bookkeeping error is the host's
    * problem, not the user's answer.
@@ -5603,18 +5709,26 @@ export class SlackHandler {
   private async settleSteeredFollowup(args: {
     sessionKey: string;
     uuid: string;
-    phase: 'started' | 'completed' | 'cancelled' | 'discarded' | 'observed';
+    phase: 'started' | 'read' | 'completed' | 'cancelled' | 'discarded' | 'observed';
+    /** The generation of the run that reported the frame (the executor's own), when it has one. */
+    turnEpoch?: number;
   }): Promise<void> {
     const { sessionKey, uuid, phase } = args;
     if (phase === 'started' || phase === 'observed') return;
     const dispatcher = this.followupDispatcher;
     if (!dispatcher) return;
+    const consumed = phase === 'read' || phase === 'completed';
+    const backReason = phase === 'cancelled' ? '취소됨' : '모델이 읽기 전에 턴이 끝나 큐로 되돌림';
 
     try {
-      const settle = (key: string) =>
-        phase === 'completed'
-          ? dispatcher.markConsumed(key, uuid)
-          : dispatcher.unsteer(key, uuid, phase === 'cancelled' ? '취소됨' : '모델이 읽기 전에 턴이 끝나 큐로 되돌림');
+      // A row this turn's `read` closed is still this turn's to reopen.
+      const readHere = this.followupReadSteers?.get(uuid);
+      const settle = (key: string): FollowupOpResult => {
+        if (consumed) return dispatcher.markConsumed(key, uuid);
+        const back = dispatcher.unsteer(key, uuid, backReason);
+        if (back.ok || back.reason !== 'invalid-state' || readHere?.key !== key) return back;
+        return dispatcher.reopenConsumed(key, uuid, '읽은 턴이 정상 종료되지 않아 큐로 되돌림');
+      };
 
       // The frame carries the SESSION key the executor ran under (the canonical
       // work-thread key under a bot-thread migration). Since #233 a steer
@@ -5633,7 +5747,9 @@ export class SlackHandler {
       }
       if (!settled.ok) {
         // A receipt for an item this queue no longer holds (already settled,
-        // frozen, restarted). Reported, never invented into a transition.
+        // frozen, restarted), or — every turn's `read` — for the message that
+        // opened the turn, which is no steered row. Reported, never invented
+        // into a transition.
         this.logger.debug('Steer settlement had nothing to record', {
           sessionKey,
           uuid,
@@ -5642,24 +5758,37 @@ export class SlackHandler {
         });
       } else {
         this.forgetSteerBookkeeping(settled.item.id);
-        // `completed` is the consumption receipt (the row is `resolved`); the
-        // other phases unsteer it back to `queued`, where it is pending again
-        // and its controls have to come back. One call either way — the queue
-        // is what decides which of the two just happened.
+        if (!consumed && readHere) {
+          this.logger.warn('Read follow-up returned to the queue — its turn ended without proof it ran', {
+            sessionKey,
+            itemId: settled.item.id,
+            phase,
+          });
+        }
+        // A read receipt leaves the row `resolved`; the other phases send it
+        // back to `queued`, where it is pending again and its controls have to
+        // come back. One call either way — the queue is what decides which of
+        // the two just happened.
         void this.syncFollowupReactions(queueKey, settled.item.id);
       }
-      // Consumed: the message is part of the conversation now — record it (and
-      // copy its files) before they are deleted. A message the queue took back
-      // is recorded by the drain's ordinary turn instead.
-      if (phase === 'completed' && settled.ok) await this.finishConsumedSteer(sessionKey, uuid);
+      // Read: the message is part of the conversation now — record it (and copy
+      // its files). A message the queue took back is recorded by the drain's
+      // ordinary turn instead.
+      if (phase === 'read') {
+        // The turn still works and opens the files later: they stay until it is
+        // over. A `read` that moved nothing (the opening message) touches no file.
+        if (settled.ok) await this.recordReadSteer(sessionKey, queueKey, uuid, args.turnEpoch);
+      } else if (phase === 'completed' && settled.ok) await this.finishConsumedSteer(sessionKey, uuid);
       else await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
       // NOT awaited: the executor awaits this hook inside its stream loop, so a
       // Slack round-trip here delays the answer the user is waiting for. The
       // queue mutation above is the part that must be finished before the turn
-      // moves on; the repaint is not.
-      void this.refreshFollowupSurface(queueKey).catch((error) => {
-        this.logger.debug('Steer settlement repaint failed', { error: (error as Error)?.message ?? String(error) });
-      });
+      // moves on; the repaint is not. A `read` that moved nothing is every
+      // turn's opening message: no repaint for it.
+      if (settled.ok || phase !== 'read')
+        void this.refreshFollowupSurface(queueKey).catch((error) => {
+          this.logger.debug('Steer settlement repaint failed', { error: (error as Error)?.message ?? String(error) });
+        });
     } catch (error) {
       this.logger.warn('Steer settlement failed', {
         sessionKey,
@@ -6256,7 +6385,66 @@ export class SlackHandler {
     const files = this.followupSteerFiles?.get(uuid) ?? [];
     this.followupSteerFiles?.delete(uuid);
     this.followupSteerInstructions?.delete(uuid);
+    this.followupReadSteers?.delete(uuid);
     return files;
+  }
+
+  /**
+   * The model read a steered message while its turn still works (`read`):
+   * record it as the user turn it is — its files copied — and keep the temp
+   * files, which that turn opens from the paths its prompt carries. Noted as
+   * read in this turn ({@link followupReadSteers}): the turn's end receipt or
+   * the turn-end sweep ({@link releaseReadSteers}) closes that note and deletes
+   * the files. Takes the recorded words, so a later receipt records nothing
+   * twice.
+   */
+  private async recordReadSteer(sessionKey: string, queueKey: string, uuid: string, turnEpoch?: number): Promise<void> {
+    const instruction = this.followupSteerInstructions?.get(uuid);
+    this.followupSteerInstructions?.delete(uuid);
+    // Whose read it is: the run that reported it. The slot is only the fallback —
+    // a `Send now` puts the next run there while the reading one is still ending.
+    const slotKey = this.boundFollowupSlot(sessionKey) ?? sessionKey;
+    // Never rejects (`recordSteeredInstruction` reports its own failure).
+    const recording = instruction
+      ? this.recordSteeredInstruction(sessionKey, instruction, this.followupSteerFiles?.get(uuid) ?? [])
+      : undefined;
+    this.followupReadSteers ??= new Map();
+    this.followupReadSteers.set(uuid, {
+      key: queueKey,
+      turnEpoch: turnEpoch ?? this.followupDispatcher?.liveTurnEpoch(slotKey),
+      ...(recording ? { recording } : {}),
+    });
+    await recording;
+  }
+
+  /**
+   * Turn over: what that turn read ({@link recordReadSteer}) is final now — no
+   * settlement of it can still arrive (a turn cut before its result sends
+   * none) — and its temp files go. A message read by the run that holds the
+   * slot right now is left alone: that turn may still open its files, and its
+   * settlement is still to come.
+   *
+   * Which messages are released is decided before the first await, so a turn
+   * that starts while files are being deleted keeps its own. A message still
+   * being recorded (its files being copied into the conversation) is waited
+   * for: losing the slot does not mean that copy finished.
+   */
+  private async releaseReadSteers(sessionKey: string): Promise<void> {
+    const read = this.followupReadSteers;
+    if (!read || read.size === 0) return;
+    const slotKey = this.boundFollowupSlot(sessionKey) ?? sessionKey;
+    const live = this.followupDispatcher?.liveTurnEpoch(slotKey);
+    const released: Array<{ files: ProcessedFile[]; recording?: Promise<void> }> = [];
+    for (const [uuid, note] of [...read]) {
+      if (note.key !== sessionKey) continue;
+      if (live !== undefined && note.turnEpoch === live) continue;
+      released.push({ files: this.takeSteerFiles(uuid), recording: note.recording });
+    }
+    for (const { files, recording } of released) {
+      // The copy of these files into the conversation may still be running.
+      await recording;
+      await this.cleanupSteerFiles(files);
+    }
   }
 
   /**
@@ -6266,7 +6454,10 @@ export class SlackHandler {
    */
   private async finishConsumedSteer(sessionKey: string, uuid: string): Promise<void> {
     const instruction = this.followupSteerInstructions?.get(uuid);
+    // Recorded at its read already ({@link recordReadSteer}): that write may still be copying the files.
+    const recording = this.followupReadSteers?.get(uuid)?.recording;
     const files = this.takeSteerFiles(uuid);
+    await recording;
     if (instruction) await this.recordSteeredInstruction(sessionKey, instruction, files);
     await this.cleanupSteerFiles(files);
   }
@@ -6784,7 +6975,12 @@ export class SlackHandler {
     const dispatcher = this.followupDispatcher;
     if (!dispatcher) return;
     try {
+      // FIRST, with nothing awaited before it: the callers checked the session
+      // idle a moment ago (`sweepSteerBucketsIfIdle`), and a turn that took the
+      // slot during an await here would have the message just handed to it put
+      // back in line under it — delivered twice.
       const swept = dispatcher.unsteerAll(sessionKey, '턴 종료 — 정산 없이 큐로 복귀');
+      await this.releaseReadSteers(sessionKey);
       if (swept.length === 0) return;
       this.logger.info('Steered follow-ups returned to the queue at turn end', {
         sessionKey,
