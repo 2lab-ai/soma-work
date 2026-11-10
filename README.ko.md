@@ -17,6 +17,13 @@
 
 <p align="center"><sub>▶ <a href="https://github.com/2lab-ai/soma-work/releases/download/v0.3/soma-work-v0.3-demo-ko.mp4">데모 영상, 41초</a>: 슬랙에서 시키고, 대시보드에서 보고, 카드에서 이어서 시키고, 말로도 맡깁니다. 실제 세션 하나를 슬랙과 대시보드에서 찍었습니다. (<a href="https://github.com/2lab-ai/soma-work/releases/download/v0.3/soma-work-v0.3-demo-en.mp4">영문 UI</a> · <a href="https://github.com/2lab-ai/soma-work/releases/tag/v0.3">v0.3 릴리스</a>)</sub></p>
 
+<p align="center">
+  <a href="https://github.com/2lab-ai/soma-work/releases/download/v0.3/soma-work-llmux-demo-ko.mp4"><img src="assets/readme/ko/usage-poster.png" width="49%" alt="73초 실제 사용 데모: 슬랙에서 시킨 일을 카드에서 이어 가고, 말로 일을 맡기고, 여러 모델이 나눠 맡은 일의 요청 원문과 비용까지 연다" /></a>
+  <a href="https://github.com/2lab-ai/soma-work/releases/download/v0.3/soma-work-x-llmux-ko.mp4"><img src="assets/readme/ko/llmux-poster.png" width="49%" alt="51초 soma-work × llmux 영상: 슬랙에서 시킨 일과 그 카드, 에이전트가 부른 모델 호출을 llmux에서 요청 원문까지 연다" /></a>
+</p>
+
+<p align="center"><sub>▶ <a href="https://github.com/2lab-ai/soma-work/releases/download/v0.3/soma-work-llmux-demo-ko.mp4">실제 사용 데모, 73초</a>: 슬랙에서 시키고, 카드에서 이어 가고, 말로 맡기고, 여러 모델에 나눠 맡기고, 요청 원문과 비용까지 봅니다. ▶ <a href="https://github.com/2lab-ai/soma-work/releases/download/v0.3/soma-work-x-llmux-ko.mp4">soma-work × llmux, 51초</a>: 에이전트의 모든 호출은 <a href="https://github.com/2lab-ai/llmux">llmux</a>를 거치고, 하나하나 열어 볼 수 있습니다. (영문판: <a href="https://github.com/2lab-ai/soma-work/releases/download/v0.3/soma-work-llmux-demo-en.mp4">데모</a> · <a href="https://github.com/2lab-ai/soma-work/releases/download/v0.3/soma-work-x-llmux-en.mp4">soma-work × llmux</a>)</sub></p>
+
 ![soma-work 대시보드: 응답 필요·실행 중·완료 세 열에 작업 카드가 놓이고, 카드마다 상태·PR·비용·슬랙 채널이 보인다](assets/readme/ko/board.png)
 
 <sub>실제 대시보드 화면입니다. 이 저장소 카드만 걸러 보여 주고, 비공개 카드는 숨겼습니다.</sub>
@@ -73,7 +80,7 @@
 내 컴퓨터에서 직접 띄웁니다. 지금은 소스에서 실행합니다(Node.js 20 이상).
 
 1. [`infra/slack/slack-app-manifest.json`](infra/slack/slack-app-manifest.json)으로 슬랙 앱을 만들고 설치합니다. 봇 토큰(`xoxb-`)과 `connections:write` 권한의 앱 토큰(`xapp-`)을 복사합니다.
-2. Claude를 연결합니다. 같은 컴퓨터에 [llmux](https://github.com/2lab-ai/llmux)가 떠 있으면 시작할 때 알아서 찾고, 아니면 `.env`에 `CLAUDE_CODE_OAUTH_TOKEN`(`claude setup-token`으로 발급)을 넣습니다.
+2. Claude를 연결합니다. 같은 컴퓨터에 [llmux](https://github.com/2lab-ai/llmux)가 떠 있으면 시작할 때 알아서 찾고(▶ [llmux 소개 영상, 48초](https://github.com/2lab-ai/llmux/releases/download/v0.2.26/llmux-intro-ko.mp4)), 아니면 `.env`에 `CLAUDE_CODE_OAUTH_TOKEN`(`claude setup-token`으로 발급)을 넣습니다.
 3. 빌드하고 띄웁니다.
 
 ```bash
