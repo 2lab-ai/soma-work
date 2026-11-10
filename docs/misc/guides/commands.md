@@ -200,6 +200,9 @@ source of truth for any model not listed here:
 | `claude-fable-5-1[1m]` (version-pinned aliases `fable-5-1`, `fable-5-1[1m]`) | 1,000,000 | 750,000 |
 | `claude-fable-5[1m]` (version-pinned alias `fable-5`) | 1,000,000 | 750,000 |
 | `claude-opus-5-5[1m]` (aliases `opus`, `opus[1m]`, `opus-5-5`) | 1,000,000 | 750,000 |
+| `claude-sonnet-5-5[1m]` (aliases `sonnet`, `sonnet[1m]`, `sonnet-5-5`, `sonnet-5-5[1m]`) | 1,000,000 | 750,000 |
+| `claude-sonnet-4-6[1m]` (version-pinned alias `sonnet-4.6[1m]`) | 1,000,000 | 750,000 |
+| `claude-haiku-5-5[1m]` (aliases `haiku`, `haiku[1m]`, `haiku-5-5`, `haiku-5-5[1m]`) | 1,000,000 | 750,000 |
 | `claude-opus-5[1m]` (version-pinned alias `opus-5[1m]`) | 1,000,000 | 750,000 |
 | `claude-opus-5-5` (bare, no `[1m]`) | 200,000 | none — falls back to the legacy per-user percentage below |
 | `claude-opus-5` (bare, no `[1m]`) | 200,000 | none — falls back to the legacy per-user percentage below |
@@ -207,6 +210,8 @@ source of truth for any model not listed here:
 | `gpt-5.6-sol` (bare; the default, alias `gpt`) | 372,000 | 340,000 |
 | `gpt-6-astra[1m]` (aliases `astra`, `astra[1m]`, `gpt-6`, `gpt6`) | 1,000,000 | 600,000 |
 | `gpt-6-astra` (bare literal only) | 272,000 | 240,000 |
+| `gpt-6-luna[1m]` (aliases `luna`, `luna[1m]`) | 1,000,000 | 600,000 |
+| `gpt-6-luna` (bare literal only) | 272,000 | 240,000 |
 | `gpt-6.1-sol[1m]` (aliases `sol`, `sol[1m]`, `gpt-6.1`) | 1,000,000 | 600,000 |
 | `gpt-6.1-sol` (bare literal only) | 272,000 | 240,000 |
 | `gpt-6.1-terra[1m]` (aliases `terra`, `terra[1m]`) | 1,000,000 | 600,000 |
