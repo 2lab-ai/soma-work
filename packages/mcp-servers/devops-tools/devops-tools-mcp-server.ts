@@ -56,6 +56,10 @@ export const PENDING_GRACE_MS = 30_000;
 /** Only a broker `not-approved` terminal carries this: the broker itself decided nothing will run. */
 const RETRY_GUIDANCE = '승인되지 않음 — 다시 요청 가능 (not approved; you may request it again)';
 const CHECK_BEFORE_RETRY = 'Check the current state before requesting the same action again.';
+/** #1128: the broker kept the card open past the live wait; an admin's approval runs it later. */
+const QUEUED_GUIDANCE =
+  '대기열에 들어감 — 다시 요청하지 말 것. 어드민이 승인하면 브로커가 그때 실행하고 결과가 이 세션으로 전달됨 ' +
+  '(queued: do not request it again; if an admin approves it, the broker runs it then and the result is sent to this session)';
 const MAX_DETAIL_LENGTH = 200;
 const VERSION_HINT =
   'the MCP server and the devops broker speak different protocol versions; they must be deployed together, and retrying will not help';
@@ -63,7 +67,10 @@ const VERSION_HINT =
 // ── Tool table ────────────────────────────────────────────
 
 const NO_TOKENS = 'Never ask users for tokens; the broker holds every credential.';
-const NEEDS_APPROVAL = 'Needs an admin ✅ on a Slack approval card; the call may wait up to 10 minutes for it.';
+const NEEDS_APPROVAL =
+  'Needs an admin ✅ on a Slack approval card; the call may wait up to 10 minutes for it. When the broker keeps ' +
+  'unanswered cards in a queue, the call ends with `queued` instead: do not ask again — the result is sent to ' +
+  'this session once an admin decides.';
 const STRUCTURED_GH = 'For org membership or repo collaborator changes use gh_org_member / gh_repo_access, not gh api.';
 
 const ghArgsSchema = {
@@ -385,6 +392,7 @@ export function formatOutcome(outcome: BrokerOutcome): ToolResult {
         return textResult(`error not-approved (${error.reason}): ${error.message}\n${RETRY_GUIDANCE}`, true);
       if (error.code === 'version-mismatch')
         return textResult(`error version-mismatch: ${error.message} — ${VERSION_HINT}`, true);
+      if (error.code === 'queued') return textResult(`queued: ${error.message}\n${QUEUED_GUIDANCE}`, false);
       return textResult(`error ${error.code}: ${error.message}`, true);
     }
     case 'rejected':
@@ -591,7 +599,10 @@ export class DevopsToolsMCPServer extends BaseMcpServer {
             params: {
               progressToken,
               progress: 0,
-              message: `waiting for an admin ✅ on Slack card ${pending.digestPrefix} (expires ${pending.expiresAt})`,
+              message:
+                pending.queuedUntil === undefined
+                  ? `waiting for an admin ✅ on Slack card ${pending.digestPrefix} (expires ${pending.expiresAt})`
+                  : `waiting for an admin ✅ on card ${pending.digestPrefix} (live until ${pending.expiresAt}, then queued until ${pending.queuedUntil})`,
             },
           })
           .catch(() => {});
