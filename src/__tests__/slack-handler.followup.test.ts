@@ -4179,10 +4179,51 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
-    it('leaves the item alone for started/observed — neither is a settlement', async () => {
+    /**
+     * Incident 2026-11-10 (dev, work:C0AKY7W2UGZ:1794286993.849579): a message steered at 14:05 was
+     * folded into the turn at 14:10:31 — the CLI said so (`command_lifecycle` `started`) and the model
+     * answered it — yet its row stayed `steered` for the rest of the turn. A `Send now` then cut the
+     * turn, the sweep put the row "back in line", and the message ran a second time as its own turn.
+     * `started` is the read receipt: the CLI took the message off its queue and handed it to the model.
+     */
+    it('resolves the item as consumed once the CLI handed it to the model (started)', async () => {
       const { uuid, settle } = await steerOne();
 
       await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'started' });
+
+      const [item] = items();
+      expect(item.state).toBe('resolved');
+      expect(item.stateReason).toBe('consumed');
+      await settle();
+    });
+
+    it('a message the model read is not put back in line when its turn is cut', async () => {
+      const { uuid, settle } = await steerOne();
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'started' });
+
+      // The turn ends with no settlement frame (a Send now or a stop aborted it): the turn-end sweep runs.
+      await handlerAny.sweepSteeredFollowups(SESSION_KEY);
+
+      expect(items()[0].state).toBe('resolved');
+      await settle();
+      expect(items()[0].state).toBe('resolved');
+    });
+
+    it('the turn-end receipts that follow a read message change nothing', async () => {
+      const { uuid, settle } = await steerOne();
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'started' });
+      const epoch = items()[0].epoch;
+
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'completed' });
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'discarded' });
+
+      expect(items()[0]).toMatchObject({ state: 'resolved', stateReason: 'consumed', epoch });
+      await settle();
+    });
+
+    it('leaves the item alone for observed — the CLI took it, the model has not read it', async () => {
+      const { uuid, settle } = await steerOne();
+
       await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'observed' });
 
       expect(items()[0].state).toBe('steered');
@@ -4295,6 +4336,36 @@ describe('SlackHandler — follow-up queue host', () => {
       );
       expect(order).toEqual(['capture', 'record', 'cleanup']);
       await settle();
+    });
+
+    /**
+     * `started` comes at the fold, while the turn still works: the model opens the files from the
+     * paths its prompt carries later in that turn. The message is recorded (its files copied) at
+     * once; the temp files go when the turn says it is over, or at the turn-end sweep.
+     */
+    it('records a read message at once and keeps its files until the turn is over', async () => {
+      const { uuid, settle, capture, record, order, processed } = await steerWithFile('이것도 같이 봐줘');
+
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'started' });
+
+      expect(capture).toHaveBeenCalledWith('conv_steer', processed);
+      expect(record).toHaveBeenCalledTimes(1);
+      expect(order).toEqual(['capture', 'record']);
+
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'completed' });
+
+      expect(order).toEqual(['capture', 'record', 'cleanup']);
+      expect(record).toHaveBeenCalledTimes(1);
+      await settle();
+    });
+
+    it('deletes a read message’s files at the turn-end sweep when no turn-end receipt came', async () => {
+      const { uuid, settle, order } = await steerWithFile('이것도 같이 봐줘');
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'started' });
+      expect(order).toEqual(['capture', 'record']);
+
+      await settle();
+      await vi.waitFor(() => expect(order).toEqual(['capture', 'record', 'cleanup']));
     });
 
     it('a dashboard send steered into the running turn keeps its ref on the turn it records (#785)', async () => {

@@ -185,6 +185,63 @@ describe('SlackHandler — the dashboard’s follow-up queue controls', () => {
     });
   });
 
+  /**
+   * Incident 2026-11-10 (dev): "T4부터 진행 지금 당장" was cut 16 s into its turn by another row's
+   * Send now, its Retry put it back in line — and it waited 25 minutes behind the turn that was
+   * running, with 지금 보내기 as the only way in. A message sent while a turn works is handed to that
+   * turn (06 §3.2 D1); a row a person puts back in line while a turn works is the same message.
+   */
+  describe('a row put back in line while a turn runs', () => {
+    async function busyTurn() {
+      let finish: (value: { hasPendingChoice: boolean }) => void = () => {};
+      startWithContinuation.mockImplementationOnce(
+        () => new Promise<{ hasPendingChoice: boolean }>((resolve) => (finish = resolve)),
+      );
+      const turn = handler.handleMessage(message({ ts: '310.1', text: '시작' }), vi.fn() as any);
+      await vi.waitFor(() => expect(startWithContinuation).toHaveBeenCalled());
+      return async () => {
+        finish({ hasPendingChoice: false });
+        await turn;
+      };
+    }
+    /** A row whose own turn was cut (`uncertain`), as an interrupt leaves it. */
+    function cutRow(overrides: Record<string, any>) {
+      const item = park(overrides);
+      const claimed = queue().claimNext(SESSION_KEY);
+      const marked = queue().markDispatched(SESSION_KEY, item.id, claimed.item.epoch);
+      queue().markInterrupted(SESSION_KEY, item.id, marked.item.epoch, '턴이 중단되었습니다');
+      return queue().get(SESSION_KEY, item.id);
+    }
+
+    it('Retry hands it to the running turn', async () => {
+      const cut = cutRow({ ts: '310.2', text: 'T4부터 진행 지금 당장' });
+      expect(cut.state).toBe('uncertain');
+      const steerTurn = vi.fn().mockReturnValue(true);
+      handlerAny.claudeHandler.steerTurn = steerTurn;
+      const settle = await busyTurn();
+
+      const res = await act({ itemId: cut.id, op: 'promote', epoch: cut.epoch });
+
+      expect(res).toEqual({ ok: true });
+      await vi.waitFor(() => expect(steerTurn).toHaveBeenCalledTimes(1));
+      expect(steerTurn.mock.calls[0][1].text).toContain('T4부터 진행 지금 당장');
+      expect(queue().get(SESSION_KEY, cut.id)?.state).toBe('steered');
+      await settle();
+    });
+
+    it('Retry with nothing running still runs it as its own turn', async () => {
+      const cut = cutRow({ ts: '310.3', text: '혼자 실행' });
+      const steerTurn = vi.fn().mockReturnValue(true);
+      handlerAny.claudeHandler.steerTurn = steerTurn;
+
+      const res = await act({ itemId: cut.id, op: 'promote', epoch: cut.epoch });
+
+      expect(res).toEqual({ ok: true });
+      await vi.waitFor(() => expect(startWithContinuation).toHaveBeenCalled());
+      expect(steerTurn).not.toHaveBeenCalled();
+    });
+  });
+
   describe('Cancel', () => {
     it('cancels the note under the owner’s name and says so', async () => {
       const item = park({ ts: '301.1' });
@@ -394,6 +451,31 @@ describe('SlackHandler — the dashboard’s follow-up queue controls', () => {
     queue().editQueued(SESSION_KEY, item.id, item.epoch, 'edited');
     await tick();
     expect(seen).toHaveLength(2);
+    handler.setFollowupChangeListener(undefined);
+  });
+
+  // Delivery evidence moves no generation (`markDelivered` keeps the run's settle token), yet it is what takes a
+  // note off the panel's waiting list (dashboard.ts isRunningTurn): the dashboard has to hear that write too.
+  it('tells the dashboard when a note’s own turn reached the model', async () => {
+    // Listening from the start: the first write a listener hears is always new to it.
+    const seen: string[] = [];
+    handler.setFollowupChangeListener((key) => seen.push(key));
+    const item = park({ ts: '304.5' });
+    const claimed = queue().claimNext(SESSION_KEY);
+    const marked = queue().markDispatched(SESSION_KEY, item.id, claimed.item.epoch);
+    await tick();
+    expect(seen.length).toBeGreaterThan(0);
+    seen.length = 0;
+
+    const delivered = queue().markDelivered(SESSION_KEY, item.id, marked.item.epoch);
+    await tick();
+
+    expect(delivered.ok && delivered.item.epoch).toBe(marked.item.epoch);
+    expect(seen).toEqual([SESSION_KEY]);
+    // Idempotent: every later leg of the turn reports again, and nothing changed.
+    queue().markDelivered(SESSION_KEY, item.id, marked.item.epoch);
+    await tick();
+    expect(seen).toEqual([SESSION_KEY]);
     handler.setFollowupChangeListener(undefined);
   });
 

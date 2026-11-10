@@ -212,6 +212,13 @@ export interface FollowupActionsDeps {
    */
   runDrain(sessionKey: string, settled?: RunReport): void | Promise<void>;
   /**
+   * A person put rows back in line (Retry, Resume) while a turn runs: hand them
+   * to that turn, as a message sent while it works is handed over (06 §3.2 D1)
+   * — `runDrain` does nothing until the turn ends. Does nothing with no turn
+   * running. Optional: a host without steering leaves the rows to the drain.
+   */
+  handToLiveTurn?(sessionKey: string): void;
+  /**
    * #854 — the run a `Send now` started ended without opening a drain (`canDrain` false): its chain
    * is over all the same. The host hears it as a chain end (an epic's child tells its epic).
    */
@@ -567,8 +574,10 @@ async function handleResume(
   try {
     deps.queue.resume(value.sessionKey);
     deps.dispatcher.clearDrainHalt(value.sessionKey, 'resume');
-    // Never start a second turn on top of a live one; if something is running,
-    // its own settle boundary will drive the next drain.
+    // Never start a second turn on top of a live one: a running turn is handed
+    // the resumed rows, and whatever it does not take its own settle boundary
+    // drains.
+    deps.handToLiveTurn?.(value.sessionKey);
     if (!deps.dispatcher.isBusy(value.sessionKey)) await deps.runDrain(value.sessionKey);
   } finally {
     await safeRefresh(deps, value.sessionKey);
@@ -655,6 +664,9 @@ export async function handleRetry(
       return;
     }
     deps.dispatcher.clearDrainHalt(value.sessionKey, 'retry');
+    // A turn is running: the row goes into it now, not after it (a no-op with
+    // nothing running).
+    deps.handToLiveTurn?.(value.sessionKey);
     // `runDrain` is the host's loop and is a no-op while a dispatch is in
     // flight; it decides the boundary, this handler only reopens it.
     await deps.runDrain(value.sessionKey);
