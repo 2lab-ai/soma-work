@@ -45,6 +45,11 @@ export const DEVOPS_ERROR_CODES = [
   'not-approved',
   /** Approved and running; the outcome will land in the ledger and on the card. Do not ask again. */
   'still-executing',
+  /**
+   * #1128 — nobody answered within the live wait, and the broker keeps the request queued: it runs when an admin
+   * approves it, and the outcome is delivered to the requesting session. Do not ask again.
+   */
+  'queued',
   /** A remote write was sent and its outcome is unknown (lost response). Never retried automatically. */
   'result-unknown',
   'too-many-pending-approvals',
@@ -149,8 +154,13 @@ export interface PendingMessage {
   approvalId: string;
   /** First 12 hex characters of the sha256 the card shows. */
   digestPrefix: string;
-  /** ISO 8601 UTC. */
+  /** ISO 8601 UTC: the end of the live wait. */
   expiresAt: string;
+  /**
+   * #1128 — ISO 8601 UTC, present when the broker queues this request past the live wait: until then an admin can
+   * still approve it, and it runs then.
+   */
+  queuedUntil?: string;
 }
 
 /**
@@ -423,19 +433,22 @@ export function parseRequest(value: unknown): ParseResult<DevopsRequest> {
   return { ok: true, value: value as unknown as DevopsRequest };
 }
 
+function isoProblem(value: unknown, name: string): Problem {
+  return typeof value === 'string' && ISO_UTC_RE.test(value) && !Number.isNaN(Date.parse(value))
+    ? null
+    : `${name} must be an ISO 8601 UTC timestamp`;
+}
+
 function brokerProblem(value: Record<string, unknown>): Problem {
   switch (value.type) {
     case 'pending':
       return (
-        keysProblem(value, ['v', 'id', 'type', 'approvalId', 'digestPrefix', 'expiresAt']) ??
+        keysProblem(value, ['v', 'id', 'type', 'approvalId', 'digestPrefix', 'expiresAt'], ['queuedUntil']) ??
         stringProblem(value.id, 'id', REQUEST_ID_RE) ??
         stringProblem(value.approvalId, 'approvalId', APPROVAL_ID_RE) ??
         stringProblem(value.digestPrefix, 'digestPrefix', DIGEST_PREFIX_RE) ??
-        (typeof value.expiresAt === 'string' &&
-        ISO_UTC_RE.test(value.expiresAt) &&
-        !Number.isNaN(Date.parse(value.expiresAt))
-          ? null
-          : 'expiresAt must be an ISO 8601 UTC timestamp')
+        isoProblem(value.expiresAt, 'expiresAt') ??
+        (value.queuedUntil === undefined ? null : isoProblem(value.queuedUntil, 'queuedUntil'))
       );
     case 'result':
       return (
@@ -480,20 +493,137 @@ export function parseBrokerMessage(value: unknown): ParseResult<BrokerMessage> {
   return { ok: true, value: value as unknown as BrokerMessage };
 }
 
-// ── Admin op (#1051) ──────────────────────────────────────
+// ── Admin ops (#1051, #1128, #1129) ───────────────────────
 //
-// What the dashboard (through the bot process) asks the broker: the approval cards it is waiting on, each with a
-// link to every admin's own Slack card. Separate from the eight tools (the MCP server never offers it to the
-// model), and read-only: a card is still decided only by an admin in Slack.
+// What the dashboard (through the bot process) asks the broker. Separate from the eight tools: the MCP server never
+// offers them to the model.
+// - `approvals`: the requests the broker is waiting on, live or queued.
+// - `decide`: decisions taken on the dashboard. The broker accepts them only when its root-owned policy turns
+//   dashboard decisions on for the tool. A process running as the bot user can send this op, so with dashboard
+//   decisions on, the approval no longer stops a model set on approving its own request (#1127).
+// - `results`: what became of queued requests (ran, failed, denied, expired), for delivery to their sessions.
+// - `results_ack`: those results were delivered.
 
-export const ADMIN_OPS = ['approvals'] as const;
+export const ADMIN_OPS = ['approvals', 'decide', 'results', 'results_ack'] as const;
 export type AdminOp = (typeof ADMIN_OPS)[number];
 
-export type AdminRequest = { v: number; id: string; op: 'approvals'; args: Record<string, never> };
+/** At most this many decisions in one `decide`. */
+export const MAX_DASHBOARD_DECISIONS = 50;
+/** At most this many acknowledgements in one `results_ack`. */
+export const MAX_RESULT_ACKS = 100;
+const MAX_DECISION_REASON_LENGTH = 500;
+
+export interface DashboardDecision {
+  approvalId: string;
+  /** The card number the admin saw: the decision counts only for that exact request. */
+  digestPrefix: string;
+  action: 'approve' | 'deny';
+}
+
+export type AdminRequest =
+  | { v: number; id: string; op: 'approvals'; args: Record<string, never> }
+  | { v: number; id: string; op: 'results'; args: Record<string, never> }
+  | {
+      v: number;
+      id: string;
+      op: 'decide';
+      /** `actor` = the dashboard's signed-in admin (Slack user id). The broker checks it against `admins`. */
+      args: { decisions: DashboardDecision[]; actor: string; reason?: string };
+    }
+  | { v: number; id: string; op: 'results_ack'; args: { approvalIds: string[] } };
+
+/** How one dashboard decision ended (`decide` result `data.decisions[]`). */
+export interface DashboardDecisionOutcome {
+  approvalId: string;
+  outcome: 'accepted' | 'refused';
+  /** Why a decision was refused. */
+  reason?:
+    | 'not-pending'
+    | 'digest-mismatch'
+    | 'not-admin'
+    | 'dashboard-decisions-off'
+    | 'tool-not-allowed'
+    | 'closed'
+    | 'failed';
+}
+
+/** What became of one queued request (`results` result `data.results[]`). */
+export interface QueuedResultView {
+  approvalId: string;
+  tool: DevopsTool;
+  digestPrefix: string;
+  /** The broker's sentence for the request. */
+  title: string;
+  /** The claim the request carried: delivered only to a session whose owner is this user. */
+  claimedRequester: UnverifiedRequesterClaim;
+  outcome: 'done' | 'failed' | 'denied' | 'expired' | 'cancelled';
+  /** For `done`: the tool's result data (clipped by the broker). */
+  data?: JsonValue;
+  /** For everything but `done`: what happened, in words the model can act on. */
+  message?: string;
+  /** Who decided, when someone did. */
+  decidedBy?: string;
+  via?: 'slack' | 'dashboard';
+  finishedAt: string;
+}
 
 /** True for a decoded line that is an admin op (has an `op` key) rather than a tool request. */
 export function isAdminRequestLine(value: unknown): boolean {
   return isRecord(value) && hasOwn(value, 'op');
+}
+
+function decisionProblem(value: unknown, at: number): Problem {
+  if (!isRecord(value)) return `decisions[${at}] must be an object`;
+  return (
+    keysProblem(value, ['approvalId', 'digestPrefix', 'action']) ??
+    stringProblem(value.approvalId, `decisions[${at}].approvalId`, APPROVAL_ID_RE) ??
+    stringProblem(value.digestPrefix, `decisions[${at}].digestPrefix`, DIGEST_PREFIX_RE) ??
+    enumProblem(value.action, `decisions[${at}].action`, ['approve', 'deny'])
+  );
+}
+
+function adminArgsProblem(op: AdminOp, args: Record<string, unknown>): Problem {
+  switch (op) {
+    case 'approvals':
+    case 'results':
+      return keysProblem(args, []);
+    case 'decide': {
+      const keys = keysProblem(args, ['decisions', 'actor'], ['reason']);
+      if (keys !== null) return keys;
+      if (!Array.isArray(args.decisions) || args.decisions.length === 0) return 'decisions must be a non-empty array';
+      if (args.decisions.length > MAX_DASHBOARD_DECISIONS) {
+        return `at most ${MAX_DASHBOARD_DECISIONS} decisions per request`;
+      }
+      for (let at = 0; at < args.decisions.length; at += 1) {
+        const problem = decisionProblem(args.decisions[at], at);
+        if (problem !== null) return problem;
+      }
+      const ids = new Set((args.decisions as DashboardDecision[]).map((d) => d.approvalId));
+      if (ids.size !== args.decisions.length) return 'decisions must not repeat an approvalId';
+      return (
+        stringProblem(args.actor, 'actor', SLACK_USER_RE) ??
+        (args.reason === undefined ||
+        (typeof args.reason === 'string' &&
+          args.reason.length <= MAX_DECISION_REASON_LENGTH &&
+          !CONTROL_RE.test(args.reason))
+          ? null
+          : `reason must be at most ${MAX_DECISION_REASON_LENGTH} printable characters`)
+      );
+    }
+    case 'results_ack': {
+      const keys = keysProblem(args, ['approvalIds']);
+      if (keys !== null) return keys;
+      if (!Array.isArray(args.approvalIds) || args.approvalIds.length === 0) {
+        return 'approvalIds must be a non-empty array';
+      }
+      if (args.approvalIds.length > MAX_RESULT_ACKS) return `at most ${MAX_RESULT_ACKS} approvalIds per request`;
+      for (let at = 0; at < args.approvalIds.length; at += 1) {
+        const problem = stringProblem(args.approvalIds[at], `approvalIds[${at}]`, APPROVAL_ID_RE);
+        if (problem !== null) return problem;
+      }
+      return null;
+    }
+  }
 }
 
 /** Validates one decoded admin-op line. The version is checked before anything else. */
@@ -512,7 +642,7 @@ export function parseAdminRequest(value: unknown): ParseResult<AdminRequest> {
     keysProblem(value, ['v', 'id', 'op', 'args']) ??
     (id === null ? 'id has the wrong format' : null) ??
     enumProblem(value.op, 'op', ADMIN_OPS) ??
-    (isRecord(value.args) ? keysProblem(value.args, []) : 'args must be an object');
+    (isRecord(value.args) ? adminArgsProblem(value.op as AdminOp, value.args) : 'args must be an object');
   if (problem !== null) return { ok: false, code: 'bad-request', message: problem, id };
   return { ok: true, value: value as unknown as AdminRequest };
 }
