@@ -41,20 +41,22 @@ describe('fable-5 — release wiring', () => {
     expect(AVAILABLE_MODELS as readonly string[]).toContain('claude-fable-5[1m]');
   });
 
-  it('advances the unversioned alias to 5.1 while preserving the version-pinned alias', () => {
-    expect(MODEL_ALIASES.fable).toBe('claude-fable-5-1[1m]');
+  it('the unversioned alias follows the newest fable while the version-pinned alias stays', () => {
+    // `fable` moved 5 → 5.1 (2026-09-11) → 5.2 (2026-11-10, fable-5-2.test.ts).
+    expect(MODEL_ALIASES.fable).toBe('claude-fable-5-2[1m]');
     expect(MODEL_ALIASES['fable-5']).toBe('claude-fable-5[1m]');
   });
 
   it('keeps explicit [1m] aliases on their respective generations', () => {
-    expect(MODEL_ALIASES['fable[1m]']).toBe('claude-fable-5-1[1m]');
+    expect(MODEL_ALIASES['fable[1m]']).toBe('claude-fable-5-2[1m]');
+    expect(MODEL_ALIASES['fable-5-1[1m]']).toBe('claude-fable-5-1[1m]');
     expect(MODEL_ALIASES['fable-5[1m]']).toBe('claude-fable-5[1m]');
   });
 
   it('the literal [1m] id round-trips through resolve + coerce (never downgraded)', () => {
     const store = makeStore();
     expect(store.resolveModelInput('claude-fable-5[1m]')).toBe('claude-fable-5[1m]');
-    expect(store.resolveModelInput('fable')).toBe('claude-fable-5-1[1m]');
+    expect(store.resolveModelInput('fable')).toBe('claude-fable-5-2[1m]');
     expect(coerceToAvailableModel('claude-fable-5[1m]')).toBe('claude-fable-5[1m]');
     expect(coerceToAvailableModel('claude-fable-5[1M]')).toBe('claude-fable-5[1m]');
   });
@@ -90,11 +92,11 @@ describe('fable-5.1 — selectable and persistence-safe without a catalog', () =
     expect(store.getModelDisplayName(model)).toBe(model.endsWith('[1m]') ? 'Fable 5.1 (1M)' : 'Fable 5.1');
   });
 
-  it.each(['fable', ' FABLE ', 'fable[1m]', 'fable-5-1', 'fable-5-1[1m]'])('resolves %s to the 5.1 1M id', (input) => {
+  it.each(['fable-5-1', ' FABLE-5-1 ', 'fable-5-1[1m]'])('resolves the version-pinned %s to the 5.1 1M id', (input) => {
     expect(makeStore().resolveModelInput(input)).toBe('claude-fable-5-1[1m]');
   });
 
-  it('model fable updates both the user default and current session', async () => {
+  it('model fable-5-1 updates both the user default and current session', async () => {
     const { userSettingsStore } = await import('../user-settings-store');
     const store = makeStore();
     const setDefault = vi.spyOn(userSettingsStore, 'setUserDefaultModel').mockImplementation((user, model) => {
@@ -109,9 +111,9 @@ describe('fable-5.1 — selectable and persistence-safe without a catalog', () =
         claudeHandler: { getSession: () => session },
       } as unknown as CommandDependencies);
       const say = vi.fn().mockResolvedValue(undefined);
-      expect(handler.canHandle('model fable')).toBe(true);
+      expect(handler.canHandle('model fable-5-1')).toBe(true);
       await handler.execute({
-        text: 'model fable',
+        text: 'model fable-5-1',
         user: 'U_FABLE51',
         channel: 'C_TEST',
         threadTs: '123.456',
@@ -126,7 +128,7 @@ describe('fable-5.1 — selectable and persistence-safe without a catalog', () =
     }
   });
 
-  it('preserves the 1M window and 750k auto-compact policy on the new alias target', () => {
+  it('preserves the 1M window and 750k auto-compact policy on the pinned 5.1 alias target', () => {
     expect(resolveModelProfile('claude-fable-5-1[1m]')).toMatchObject({
       modelId: 'claude-fable-5-1[1m]',
       contextWindow: 1_000_000,

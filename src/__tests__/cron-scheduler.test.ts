@@ -760,7 +760,7 @@ describe('CronScheduler — Model Override', () => {
       expect(injectedMessages[0].modelOverride).toBe(expected);
     }
     expect(resolveModelOverride({ type: 'opus' })).toBe('claude-opus-5-5[1m]');
-    expect(resolveModelOverride({ type: 'fable' })).toBe('claude-fable-5-1[1m]');
+    expect(resolveModelOverride({ type: 'fable' })).toBe('claude-fable-5-2[1m]');
   });
 
   it('custom model type sets modelOverride to specified model', async () => {
