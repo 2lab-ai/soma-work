@@ -19,6 +19,7 @@ import { canonicalLinkUrl, classifyLinkUrl } from '@soma/slack/session-link-capt
 import { execFile } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
+import { isParkedRemoval } from './path-utils';
 import type { SessionLink } from './types';
 
 export interface Checkout {
@@ -309,7 +310,10 @@ export async function scanGitCheckouts(
     if (await isCheckout(root)) candidates.push(root);
     let entries: string[] = [];
     try {
-      const dirsOnly = (await fs.readdir(root, { withFileTypes: true })).filter((e) => e.isDirectory());
+      // A closed session's folder parked for its background delete is nobody's checkout (SSOT 2026-11-10 T1).
+      const dirsOnly = (await fs.readdir(root, { withFileTypes: true })).filter(
+        (e) => e.isDirectory() && !isParkedRemoval(e.name),
+      );
       if (dirsOnly.length > MAX_CHILDREN) read = false;
       entries = dirsOnly.slice(0, MAX_CHILDREN).map((e) => path.join(root, e.name));
     } catch (error) {

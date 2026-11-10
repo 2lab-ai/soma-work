@@ -673,7 +673,8 @@ describe('panel header — <ui-status-bar>: the session status, its time and its
     const stop = d.actions.find((a) => a.id === 'stop');
     expect(stop).toMatchObject({ label: '중지', tone: 'danger', icon: 'stop' });
     expect(stop?.disabled).toBeUndefined();
-    expect(d.actions.map((a) => a.id)).toEqual(['star', 'stop']);
+    // The star sits right of the title now (SSOT 2026-11-10 T2), not in the bar.
+    expect(d.actions.map((a) => a.id)).toEqual(['stop']);
   });
 
   it('not running: the session’s total active time instead of a clock', () => {
@@ -686,14 +687,15 @@ describe('panel header — <ui-status-bar>: the session status, its time and its
     const idle = head(card({ activityState: 'idle' }), 'idle');
     expect(idle.status).toBe('idle');
     expect(idle.words.idle).toBe('대기');
-    expect(idle.actions.map((a) => a.id)).toEqual(['star', 'close']);
-    expect(idle.actions[1].tone).toBeUndefined();
+    expect(idle.actions.map((a) => a.id)).toEqual(['close']);
+    // Close is always red and asks once (SSOT 2026-11-10 T3): the bar's danger tone takes two presses.
+    expect(idle.actions[0].tone).toBe('danger');
     const archived = head(card({ activityState: 'idle', terminated: true }), 'closed');
-    expect(archived.actions.map((a) => a.id)).toEqual(['star', 'revive', 'trash']);
+    expect(archived.actions.map((a) => a.id)).toEqual(['revive', 'trash']);
     expect(archived.words.idle).toBe('보관');
     const sleeping = head(card({ activityState: 'idle' }), 'closed');
     expect(sleeping.words.idle).toBe('휴면');
-    expect(sleeping.actions.map((a) => a.id)).toEqual(['star', 'revive', 'close']);
+    expect(sleeping.actions.map((a) => a.id)).toEqual(['revive', 'close']);
   });
 
   it('an armed resume reads 재개 대기 and says when, which attempt and why in the bar’s slot', () => {
@@ -706,7 +708,7 @@ describe('panel header — <ui-status-bar>: the session status, its time and its
     expect(d.status).toBe('waiting');
     expect(d.words.waiting).toBe('재개 대기');
     expect(d.startedAt).toBeUndefined();
-    expect(d.actions.map((a) => a.id)).toEqual(['star', 'close']);
+    expect(d.actions.map((a) => a.id)).toEqual(['close']);
     const note = m.panelHeadNoteHtml(s, 'working');
     expect(note).toContain('class="ps-resume" title="429 rate limit"');
     expect(note).toContain('자동 재개 · 시도 2/3');
@@ -730,19 +732,15 @@ describe('panel header — <ui-status-bar>: the session status, its time and its
     for (const a of d.actions) expect(a.busy, a.id).toBe(true);
   });
 
-  it('D6b (D3-GAPS G6-1): the actions are named for what they do to the session; Star carries its pressed state and tooltip; Trash is quiet', () => {
+  it('D6b (D3-GAPS G6-1): the actions are named for what they do to the session; Close is red; Trash is quiet', () => {
     const d = head(card({ activityState: 'idle', starred: true }), 'idle');
-    expect(d.actions.find((a) => a.id === 'star')).toEqual({
-      id: 'star',
-      label: '즐겨찾기',
-      icon: 'star',
-      pressed: true,
-      title: '즐겨찾기 해제 — 다시 자동 sleep·보관 대상이 돼요',
-    });
+    // The star sits right of the title (SSOT 2026-11-10 T2 — dashboard-close-star-plan-client.test.ts).
+    expect(d.actions.find((a) => a.id === 'star')).toBeUndefined();
     expect(d.actions.find((a) => a.id === 'close')).toEqual({
       id: 'close',
       label: '닫기',
       ariaLabel: '닫기 — 세션 종료',
+      tone: 'danger',
     });
     expect(head(card(), 'working').actions.find((a) => a.id === 'stop')?.ariaLabel).toBe('중지 — 세션 중지');
     const closed = head(card({ activityState: 'idle', terminated: true }), 'closed');
@@ -751,10 +749,6 @@ describe('panel header — <ui-status-bar>: the session status, its time and its
       label: '휴지통',
       ariaLabel: '휴지통 — 세션 휴지통으로',
       tone: 'quiet',
-    });
-    expect(closed.actions.find((a) => a.id === 'star')).toMatchObject({
-      pressed: false,
-      title: expect.stringContaining('(지금 살려요)'),
     });
     expect(closed.actions.find((a) => a.id === 'revive')?.title).toContain('세션을 살려요');
     // A sibling instance's pointer keeps its own words (the lock says where to go): no name over them.
@@ -773,7 +767,8 @@ describe('panel header — <ui-status-bar>: the session status, its time and its
     expect(src).toContain('if (el._sig === sig) return;');
     const on = clientFn('onPanelHeadAction');
     expect(on).toContain("id === 'slack'");
-    expect(on).toContain('doStar(key, s.starred !== true)');
+    expect(on).not.toContain('doStar(');
+    expect(src).toContain('renderPanelStar(s, col);');
     expect(on).toContain('doRevive(key)');
     expect(on).toContain('doAction(key, id)');
     expect(PAGE).toContain('<ui-status-bar class="panel-status" id="panel-status" lang="ko"></ui-status-bar>');

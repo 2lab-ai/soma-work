@@ -2,7 +2,7 @@
  * Plan mode on the dashboard (SSOT 2026-11-02, T1 · T5 · T6 · T7) — the shipped client code cut out of
  * renderDashboardPage()'s template, with fakes — no DOM.
  *
- *   U1 (T1) the composer's 작업 계획 switch: on by default, sent as `plan`; since ui 0.26.0 it is the composer's
+ *   U1 (T1) the composer's 작업 계획 switch: off by default (SSOT 2026-11-10 T4), sent as `plan`; since ui 0.26.0 it is the composer's
  *      own day / night switch beside the send button, which reads 계획 시작 while it is on.
  *   U2 (T6) the task card (open body): the plan's state and summary, 시작 · 취소 · 직접 입력 as buttons.
  *   U3 (T6) the face says a plan waits; the card asks.
@@ -74,10 +74,13 @@ describe('U1 — the composer’s 작업 계획 switch (T1)', () => {
     'ntBuildPayload',
   ]);
   const ctx = { defaultModel: 'opus', defaultEffort: 'high', defaultChannelId: 'C1', autogoalDefault: false };
-  it('is on by default and rides every new task’s body — a Slack launch too (#853); off is sent as off', () => {
+  it('is off by default (SSOT 2026-11-10 T4) and rides every new task’s body — a Slack launch too (#853); off is sent as off', () => {
     const state = m.ntDefaultState(ctx, null);
-    expect(state.plan).toBe(true);
-    const task = { ...state, destination: 'task', prompt: '대시보드 개선해줘' };
+    expect(state.plan).toBe(false);
+    expect(m.ntBuildPayload({ ...state, destination: 'task', prompt: 'x' }, [], 'req-1')).toMatchObject({
+      plan: false,
+    });
+    const task = { ...state, destination: 'task', prompt: '대시보드 개선해줘', plan: true };
     expect(m.ntBuildPayload(task, [], 'req-1')).toMatchObject({ destination: 'task', plan: true });
     expect(m.ntBuildPayload({ ...task, plan: false }, [], 'req-1')).toMatchObject({ plan: false });
     expect(m.ntBuildPayload({ ...task, destination: 'slack', autogoal: true }, [], 'req-1')).toMatchObject({
@@ -119,7 +122,7 @@ describe('U1 — the composer’s 작업 계획 switch (T1)', () => {
       submitLabel: '계획 시작',
     });
     expect(data({ plan: false }).mode.on).toBe(false);
-    expect(data({}).mode.on).toBe(true); // on unless turned off (#853)
+    expect(data({}).mode.on).toBe(false); // off unless turned on (SSOT 2026-11-10 T4)
   });
   it('a press on the switch (ui-mode) is the plan state; the page repaints so autogoal / autoz lock with it', () => {
     const ntRender = vi.fn();

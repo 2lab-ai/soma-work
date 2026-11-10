@@ -54,7 +54,7 @@ describe('C1 — the request body', () => {
       prompt: '로그인 고쳐줘',
       channelId: 'C1',
       epic: true,
-      plan: true, // plan mode is on by default; an epic plans before it makes children
+      plan: false, // plan mode is off by default (SSOT 2026-11-10 T4); the switch turns it on
     });
     expect(m.ntBuildPayload(slack(), [], 'req-1').epic).toBeUndefined();
     expect(m.ntBuildPayload(slack({ kind: 'bogus' }), [], 'req-1').epic).toBeUndefined();

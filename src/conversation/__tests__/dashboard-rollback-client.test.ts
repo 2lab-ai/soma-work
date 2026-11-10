@@ -79,7 +79,7 @@ describe('the panel head has 되돌리기 모드 and Redo; the board’s card ha
     const head = clientFn('onPanelHeadAction');
     expect(head).toContain("else if (id === 'rollback') rbToggle(key);");
     expect(head).toContain("else if (id === 'redo') rbRedo(key);");
-    expect(clientFn('panelHeadData')).toContain("if (a.id === 'star' || a.id === 'rollback') x.pressed = !!a.pressed;");
+    expect(clientFn('panelHeadData')).toContain("if (a.id === 'rollback') x.pressed = !!a.pressed;");
   });
 });
 
