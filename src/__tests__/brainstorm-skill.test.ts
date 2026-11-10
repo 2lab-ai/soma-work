@@ -23,10 +23,10 @@ const skillFile = path.join(skillDir, 'SKILL.md');
 const mergeScript = path.join(skillDir, 'scripts', 'merge.mjs');
 const agentsDir = path.join(pluginRoot, 'agents');
 
-const readText = (file: string) => fs.readFileSync(file, 'utf8');
+const readPluginFile = (file: string) => fs.readFileSync(file, 'utf8');
 
-function frontmatter(file: string): Record<string, string> {
-  const fm = readText(file).match(/^---\n([\s\S]*?)\n---/)?.[1] ?? '';
+function pluginFrontmatter(file: string): Record<string, string> {
+  const fm = readPluginFile(file).match(/^---\n([\s\S]*?)\n---/)?.[1] ?? '';
   const out: Record<string, string> = {};
   for (const line of fm.split('\n')) {
     const m = line.match(/^([A-Za-z-]+):\s*(.*)$/);
@@ -35,12 +35,12 @@ function frontmatter(file: string): Record<string, string> {
   return out;
 }
 
-const instructionsOf = (file: string) => readText(file).replace(/^---\n[\s\S]*?\n---\n/, '');
+const instructionsOf = (file: string) => readPluginFile(file).replace(/^---\n[\s\S]*?\n---\n/, '');
 
 describe('T1 — the brainstorm skill exists and is callable', () => {
   it('has a SKILL.md named brainstorm with Korean and English triggers', () => {
     expect(fs.existsSync(skillFile)).toBe(true);
-    const fm = frontmatter(skillFile);
+    const fm = pluginFrontmatter(skillFile);
     expect(fm.name).toBe('brainstorm');
     expect(fm.description).toMatch(/brainstorm/);
     expect(fm.description).toMatch(/브레인스토밍/);
@@ -51,7 +51,7 @@ describe('T1 — the brainstorm skill exists and is callable', () => {
   });
 
   it('makes no soma-work harness call (the plugin also runs outside soma-work)', () => {
-    expect(readText(skillFile)).not.toMatch(/ASK_USER_QUESTION|UPDATE_SESSION|GET_SESSION|mcp__model-command/);
+    expect(readPluginFile(skillFile)).not.toMatch(/ASK_USER_QUESTION|UPDATE_SESSION|GET_SESSION|mcp__model-command/);
   });
 });
 
@@ -62,10 +62,10 @@ describe('T2 — luna low and haiku low subagents generate', () => {
   ])('agent %s exists with model %s, effort low and Write as its only tool', (agent, model) => {
     const file = path.join(agentsDir, `${agent}.md`);
     expect(fs.existsSync(file)).toBe(true);
-    const fm = frontmatter(file);
+    const fm = pluginFrontmatter(file);
     expect(fm.model).toBe(model);
     expect(fm.effort).toBe('low');
-    const tools = readText(file).match(/^tools:\n((?:\s+- .*\n)+)/m)?.[1] ?? '';
+    const tools = readPluginFile(file).match(/^tools:\n((?:\s+- .*\n)+)/m)?.[1] ?? '';
     expect(
       tools
         .trim()
@@ -88,7 +88,7 @@ describe('T2 — luna low and haiku low subagents generate', () => {
   });
 
   it('dispatches exactly the two generator agents, each call at effort low', () => {
-    const skill = readText(skillFile);
+    const skill = readPluginFile(skillFile);
     const dispatched = [...skill.matchAll(/subagent_type:\s*"([^"]+)"/g)].map((m) => m[1]);
     expect(new Set(dispatched)).toEqual(new Set(['zworkflow:brainstorm-luna', 'zworkflow:brainstorm-haiku']));
     const calls = [...skill.matchAll(/Agent\(\{[^}]*\}\)/g)].map((m) => m[0]);
@@ -97,19 +97,19 @@ describe('T2 — luna low and haiku low subagents generate', () => {
   });
 
   it('never fills a dead engine with the other one silently', () => {
-    expect(readText(skillFile)).toMatch(/다른 엔진으로 채우지 않는다/);
+    expect(readPluginFile(skillFile)).toMatch(/다른 엔진으로 채우지 않는다/);
   });
 });
 
 describe('T3 — the session model picks, the user decides', () => {
   it('states that the skill draws no conclusion and the user makes the final call', () => {
-    const skill = readText(skillFile);
+    const skill = readPluginFile(skillFile);
     expect(skill).toMatch(/최종 결정은 유저/);
     expect(skill).toMatch(/결론을 내리지 않는다/);
   });
 
   it('keeps the whole pool on disk and hands its path to the user', () => {
-    const skill = readText(skillFile);
+    const skill = readPluginFile(skillFile);
     expect(skill).toMatch(/pool\/<[^>]+>\.md/);
     expect(skill).toMatch(/merge\.mjs/);
   });
@@ -117,7 +117,7 @@ describe('T3 — the session model picks, the user decides', () => {
 
 describe('T4 — hints are an input', () => {
   it('takes the hints as a named input and uses them as the picking criterion', () => {
-    const skill = readText(skillFile);
+    const skill = readPluginFile(skillFile);
     expect(skill).toMatch(/^- `hints`/m);
     expect(skill).toMatch(/힌트를 몇 개 살리나/);
   });
@@ -125,7 +125,7 @@ describe('T4 — hints are an input', () => {
 
 describe('T5 — per-field generation and picking, with the stated defaults', () => {
   it('defaults to 300 generated and 20 picked per field, and top 100 in overall mode', () => {
-    const skill = readText(skillFile);
+    const skill = readPluginFile(skillFile);
     expect(skill).toMatch(/^- `per-field`[^\n]*기본 300/m);
     expect(skill).toMatch(/^- `pick`[^\n]*기본 20/m);
     expect(skill).toMatch(/^- `top`[^\n]*100/m);
@@ -158,7 +158,7 @@ describe('merge.mjs — pools, ids, dedupe and survival numbers', () => {
 
     const out = execFileSync('node', [mergeScript, run], { encoding: 'utf8' });
 
-    const poolA = readText(path.join(run, 'pool', 'A.md'));
+    const poolA = readPluginFile(path.join(run, 'pool', 'A.md'));
     const linesA = poolA.split('\n').filter((l) => /^[A-Z]\d-\d{3} /.test(l));
     // Exact duplicate (list marker + trailing period) and the near duplicate in A2 are both gone.
     expect(linesA).toEqual([
@@ -167,11 +167,11 @@ describe('merge.mjs — pools, ids, dedupe and survival numbers', () => {
       'A2-002 [haiku] 보스의 그림자만 때릴 수 있는 페이즈가 있다',
     ]);
     // Dedupe is per field: the same idea in field B stays.
-    expect(readText(path.join(run, 'pool', 'B.md'))).toContain(
+    expect(readPluginFile(path.join(run, 'pool', 'B.md'))).toContain(
       'B1-001 [haiku] 보스가 바닥을 반으로 갈라 왕복 경로를 끊는다',
     );
 
-    const stats = JSON.parse(readText(path.join(run, 'stats.json')));
+    const stats = JSON.parse(readPluginFile(path.join(run, 'stats.json')));
     expect(stats.engines.luna).toEqual({ generated: 3, kept: 2 });
     expect(stats.engines.haiku).toEqual({ generated: 3, kept: 2 });
     expect(stats.fields.A).toEqual({ generated: 5, kept: 3 });
