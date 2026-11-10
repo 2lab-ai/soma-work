@@ -717,7 +717,7 @@ export function createBroker(deps: BrokerDeps): Broker {
     conn: Connection,
     row: Row,
     card: ApprovalRequest,
-    execute: (approvalId: string, row: Row) => Promise<Terminal>,
+    execute: (approvalId: string, row: Row, queued: boolean) => Promise<Terminal>,
   ): Promise<Terminal> {
     if (conn.signal.aborted) {
       row.outcome = 'cancelled';
@@ -778,14 +778,17 @@ export function createBroker(deps: BrokerDeps): Broker {
       log(`approval ${answer.approvalId} could not be consumed: ${describeError(err)}`);
       throw new Refusal('internal', 'the approval could not be used; nothing was run');
     }
-    return execute(answer.approvalId, row);
+    return execute(answer.approvalId, row, false);
   }
 
   /**
    * #1128: the run of a request approved after its requester moved to the queue. Same order as a live one
    * (consume, then the tool), with its own ledger row (`request.queued-run`); the outcome goes to the result.
    */
-  function queuedRun(requestRow: Row, execute: (approvalId: string, row: Row) => Promise<Terminal>): QueuedRun {
+  function queuedRun(
+    requestRow: Row,
+    execute: (approvalId: string, row: Row, queued: boolean) => Promise<Terminal>,
+  ): QueuedRun {
     return async (approvalId, consume) => {
       const row: Row = { ...requestRow, event: 'request.queued-run', approvalId };
       delete row.outcome;
@@ -807,7 +810,7 @@ export function createBroker(deps: BrokerDeps): Broker {
       }
       let terminal: Terminal;
       try {
-        terminal = await execute(approvalId, row);
+        terminal = await execute(approvalId, row, true);
       } catch (err) {
         if (err instanceof Refusal) {
           terminal = fail(err.code, err.message);
@@ -899,10 +902,12 @@ export function createBroker(deps: BrokerDeps): Broker {
         claimedRequester: req.claimedRequester,
       },
     };
-    return withApproval(conn, row, card, async (approvalId, row) => {
+    return withApproval(conn, row, card, async (approvalId, row, queued) => {
+      // A queued run reads the token again: it may have been rotated since the card was posted.
+      const runToken = queued ? ghToken(args.account) : token;
       let result: GhRunResult;
       try {
-        result = await runGh(token, args.args);
+        result = await runGh(runToken, args.args);
       } catch (err) {
         postResult(approvalId, '실패 — gh를 실행하지 못함 (보내지 않음)');
         throw err;
@@ -1002,20 +1007,22 @@ export function createBroker(deps: BrokerDeps): Broker {
     const options: GithubMergeOptions = { sha, method };
     if (commitTitle !== undefined) options.title = commitTitle;
     if (commitMessage !== undefined) options.message = commitMessage;
-    return withApproval(conn, row, card, (approvalId, row) =>
-      githubAdminCall(
+    return withApproval(conn, row, card, (approvalId, row, queued) => {
+      // The merge is pinned to the approved head sha, so GitHub itself refuses a PR that moved while it was queued.
+      const runToken = queued ? ghToken(args.account) : token;
+      return githubAdminCall(
         approvalId,
         row,
-        () => deps.githubAdmin.mergePullRequest(token, owner, repo, number, options),
+        () => deps.githubAdmin.mergePullRequest(runToken, owner, repo, number, options),
         async () => {
-          const pr = await deps.githubAdmin.getPullRequest(token, owner, repo, number);
+          const pr = await deps.githubAdmin.getPullRequest(runToken, owner, repo, number);
           const text = pr.merged
             ? `머지됨 (${pr.mergeCommitSha === null ? '머지 커밋 불명' : pr.mergeCommitSha.slice(0, 12)})`
             : `머지 안 됨 (상태 ${pr.state})`;
           return { json: { merged: pr.merged, mergeCommitSha: pr.mergeCommitSha, state: pr.state }, text };
         },
-      ),
-    );
+      );
+    });
   }
 
   /** What a confirming read saw after a lost answer (§5.5): ledger value and card text. */
@@ -1064,6 +1071,32 @@ export function createBroker(deps: BrokerDeps): Broker {
     postResult(approvalId, `${success ? '완료' : '실패'} — GitHub ${result.status}`);
     if (!success) return fail('upstream-error', `GitHub answered ${result.status}: ${clip(result.body, 600)}`);
     return ok({ status: result.status, body: result.body });
+  }
+
+  /**
+   * #1128: a queued request runs long after its card was posted. The card showed the current state; when GitHub now
+   * says otherwise, the change the admin approved is not the one it would make, so nothing is sent.
+   */
+  async function stillAsShown<T>(what: string, read: () => Promise<T>, shown: T): Promise<void> {
+    let seen: T;
+    try {
+      seen = await read();
+    } catch (err) {
+      if (errorCode(err) === 'upstream-error' || errorCode(err) === 'result-unknown') {
+        throw new Refusal(
+          'upstream-error',
+          `the current ${what} could not be read again before running; nothing was sent`,
+        );
+      }
+      log(`re-reading the current ${what} failed: ${describeError(err)}`);
+      throw new Refusal('internal', `the current ${what} could not be read again before running; nothing was sent`);
+    }
+    if (JSON.stringify(seen) !== JSON.stringify(shown)) {
+      throw new Refusal(
+        'policy-denied',
+        `the current ${what} changed after the card was posted, so the approved change is not the one it would make now; nothing was sent — ask again`,
+      );
+    }
   }
 
   /** The current state goes on the card; without it the card cannot say what the PUT changes. */
@@ -1130,20 +1163,23 @@ export function createBroker(deps: BrokerDeps): Broker {
         claimedRequester: req.claimedRequester,
       },
     };
-    return withApproval(conn, row, card, (approvalId, row) =>
-      githubAdminCall(
+    return withApproval(conn, row, card, async (approvalId, row, queued) => {
+      const runToken = queued ? ghToken(name) : token;
+      const readNow = () => deps.githubAdmin.getMembership(runToken, org, args.user);
+      if (queued) await stillAsShown('organization membership', readNow, current);
+      return githubAdminCall(
         approvalId,
         row,
         () =>
           role === null
-            ? deps.githubAdmin.removeMembership(token, org, args.user)
-            : deps.githubAdmin.setMembership(token, org, args.user, role),
+            ? deps.githubAdmin.removeMembership(runToken, org, args.user)
+            : deps.githubAdmin.setMembership(runToken, org, args.user, role),
         async () => {
-          const seen = await readMembership();
+          const seen = await readNow();
           return { json: seen, text: membershipText(seen) };
         },
-      ),
-    );
+      );
+    });
   }
 
   async function ghRepoAccess(conn: Connection, req: DevopsRequest, args: GhRepoAccessArgs, row: Row) {
@@ -1198,20 +1234,23 @@ export function createBroker(deps: BrokerDeps): Broker {
         claimedRequester: req.claimedRequester,
       },
     };
-    return withApproval(conn, row, card, (approvalId, row) =>
-      githubAdminCall(
+    return withApproval(conn, row, card, async (approvalId, row, queued) => {
+      const runToken = queued ? ghToken(name) : token;
+      const readNow = () => deps.githubAdmin.getCollaboratorPermission(runToken, owner, repo, args.user);
+      if (queued) await stillAsShown('repository access', readNow, current);
+      return githubAdminCall(
         approvalId,
         row,
         () =>
           permission === null
-            ? deps.githubAdmin.removeCollaborator(token, owner, repo, args.user)
-            : deps.githubAdmin.addCollaborator(token, owner, repo, args.user, permission),
+            ? deps.githubAdmin.removeCollaborator(runToken, owner, repo, args.user)
+            : deps.githubAdmin.addCollaborator(runToken, owner, repo, args.user, permission),
         async () => {
-          const seen = await readAccess();
+          const seen = await readNow();
           return { json: seen, text: accessText(seen) };
         },
-      ),
-    );
+      );
+    });
   }
 
   async function cfLeaseRequest(conn: Connection, req: DevopsRequest, args: CfLeaseRequestArgs, row: Row) {
