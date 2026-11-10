@@ -66,7 +66,7 @@ for everyone — admins included:
   alphabetically; within a group, accounts follow the scheduler's selection
   order.
 - **Normalized account equivalents, not tokens** — per-group totals sum the
-  remaining `5h` / `7d` (and scoped weekly, e.g. `7d-fable`) window ratios as
+  remaining `7d` (and scoped weekly, e.g. `7d-fable`) window ratios as
   account equivalents: 100% of one account = 1, with no plan weighting. The
   llmux status contract carries only utilization ratios and reset times — no
   token denominators exist, so a token balance is never shown or implied, and
@@ -80,11 +80,11 @@ for everyone — admins included:
   as "not supplied / re-query needed", never as 0% or 100%; model-scoped
   windows are listed separately from the shared limits, and cold/null values
   are excluded from totals with the measured coverage shown (`measured n/m`).
-- **Grok / API-key accounts** — upstream llmux collapses raw request/token
-  counts into a utilization ratio and attaches a synthetic short reset horizon
-  to Grok's reset-less burst limits; the card shows the rate-limit ratio but
-  suppresses that synthetic reset instead of presenting it as a real quota
-  window with a countdown.
+- **No 5-hour window** — no provider reports one since 2026-11, so the card has
+  no `5h` line, total or reset. A `five_hour` an older llmux still sends is not
+  read.
+- **Grok / API-key accounts** — no subscription window: the card says the
+  remaining amount and reset are not supplied, and shows consumption only.
 - **Codex manual resets** — observed `usage_control` counters (owned /
   currently applicable) display read-only; soma-work never redeems them
   automatically.
@@ -103,13 +103,15 @@ for everyone — admins included:
 The web dashboard shows the same llmux pool as an **LLM 가용량** section between
 the stats strip and the Agent inbox (`GET /api/dashboard/capacity`, llmux read at
 most every 30 s; the page refetches every 60 s). It starts folded on every window
-(your unfold choice is kept per device); folded, one chip per subscription provider
-gives both windows as max accounts' worth of the total and %:
-`Claude 지금 5.2/16.0 33% · 주 5.6/16.0 35%`. Below 840px the chips wrap, breaking
-only between the two measures. A chip whose oldest reading is over a day old, or
+(your unfold choice is kept per device). It shows in both views, 미니멀 and
+어드밴스드 (2026-11-10). Folded, one chip per subscription provider gives the
+weekly window as max accounts' worth of the total and %: `Claude 주 5.6/16.0 35%`.
+Below 840px the chips wrap. A chip whose oldest reading is over a day old, or
 whose pool counts fewer than 80% of its accounts, carries a warning:
-`Codex 주 2.37/2.4 99% ⚠ 5일 전 · 3/5 반영`. Why two bars, 5h on top: see
-[`docs/misc/research/2026-10-25-capacity-dual-window.md`](../../../docs/misc/research/2026-10-25-capacity-dual-window.md).
+`Codex 주 2.37/2.4 99% ⚠ 5일 전 · 3/5 반영`. There is one bar: no provider reports
+a 5-hour window since 2026-11, so the 5시간 bar of
+[`docs/misc/research/2026-10-25-capacity-dual-window.md`](../../../docs/misc/research/2026-10-25-capacity-dual-window.md)
+is gone, and a `five_hour` an older llmux still sends is not read.
 
 **llmux save mode (admins, top bar).** The **세이브** chip in the top bar sets
 llmux save mode: until a time you choose, llmux uses only the accounts whose
@@ -127,13 +129,10 @@ hidden on an older one).
 Unfolded, each provider (Claude, Codex; API-key pools have no plan unit and are
 not shown) is one simple card:
 
-- **Two bars** — `5시간 · 지금 쓸 수 있음` (the smaller of the 5h and weekly
-  remaining; 0 while blocked) and `일주일 · 이번 주 남음`, each
-  `x / total 계정 · %`, with one line for what raises it next — how much and when,
-  `다음 +1.0계정 · 1시간 23분 후` (the cause is named only when it is not the bar's
-  own reset, e.g. `· 차단 해제`; the account is in the tooltip; a 5시간 bar held by
-  the weekly limit reads `일주일 한도에 묶임 · 다음 …`). Codex (no 5h data) has the
-  weekly bar only. "계정" = max accounts' worth: tier weight (Max x20 = 1, x5 = ¼,
+- **One bar** — `일주일 · 이번 주 남음`, `x / total 계정 · %`, with one line for
+  what raises it next — how much and when, `다음 +1.0계정 · 1시간 23분 후` (the
+  account is in the tooltip). An account's card reads 지금 (its weekly remaining,
+  0 while blocked) and 주. "계정" = max accounts' worth: tier weight (Max x20 = 1, x5 = ¼,
   Pro $500 = 1, $200 = 0.4) × remaining — a normalised estimate, not tokens. The %
   is from the raw ratio (100% only when full); a count that rounds to the total
   keeps two decimals (`2.37 / 2.4 · 99%`).
@@ -141,13 +140,10 @@ not shown) is one simple card:
   `16/17 반영(차단 6 포함) · 제외 1(보류) · 측정 4시간 전` — accounts counted (and how
   many of them are blocked right now), left out (paused / auth failure / no known lift = 보류, an untiered Codex account,
   no weekly reading), Claude accounts counted on an assumed x20 plan and the oldest llmux reading when over an hour old.
-- **One timeline**, now → 24h (55% of the width) → 7d: ● is a gain to the 5시간 bar
-  (label above), ◆ a gain to the 일주일 bar (label below), in the bars' colours;
-  refills whose labels would collide merge into one marker with a span. Gains come
-  from replaying each account's resets in time order (blocks lifted first, then
-  5h, then weekly). With no 5h gain in 7 days the ● key says "늘어날 양 없음"; with only small ones
-  (each under 0.05) it gives their sum, `+0.1계정 미만` or e.g. `+0.1계정`, in the same words
-  as the bars' next line and the chip tooltip.
+- **One timeline**, now → 24h (55% of the width) → 7d: ◆ is a gain to the 일주일
+  bar, in the bar's colour; refills whose labels would collide merge into one
+  marker with a span. Gains come from replaying each account's resets in time
+  order (blocks lifted first, then the weekly reset).
 - Tiers: llmux ≥ 0.2.26 reports each account's plan — Claude `rate_limit_tier`
   (`default_claude_max_20x`), Codex `plan_type` (`pro` = $200, `promax` = $500) — and
   the dashboard uses it with no configuration. Order: `SOMA_LLMUX_ACCOUNT_TIERS`

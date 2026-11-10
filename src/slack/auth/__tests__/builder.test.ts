@@ -23,8 +23,7 @@ const STATUS: LlmuxStatus = {
       group: 'claude',
       status: 'active',
       order: 1,
-      five_hour: { utilization: 0.6, resets_at: NOW / 1000 + 3600, resets_in_secs: 3600 },
-      seven_day: { utilization: 0.2, resets_at: NOW / 1000 + 400_000, resets_in_secs: 400_000 },
+      seven_day: { utilization: 0.6, resets_at: NOW / 1000 + 400_000, resets_in_secs: 400_000 },
     },
     {
       name: 'claude:other@example.com',
@@ -33,7 +32,6 @@ const STATUS: LlmuxStatus = {
       status: 'cooldown',
       order: 2,
       blocked: 'cooldown 12m',
-      five_hour: { utilization: 0.95, resets_at: NOW / 1000 + 600, resets_in_secs: 600 },
       seven_day: null,
     },
   ],
@@ -143,7 +141,7 @@ describe('auth card builder (#llmux runtime switch)', () => {
 
 /**
  * Model-scoped weekly windows (llmux `fable_weekly` / `scoped_limits[]`) —
- * the auth card must surface every usage window llmux emits, not just 5h/7d.
+ * the auth card must surface every usage window llmux emits, not just the weekly one.
  */
 describe('auth card — scoped weekly usage windows (fable)', () => {
   const FABLE = { utilization: 0.42, resets_at: NOW / 1000 + 200_000, resets_in_secs: 200_000 };

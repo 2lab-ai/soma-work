@@ -94,7 +94,6 @@ describe('buildSlotRow', () => {
       rateLimitSource: 'response_header',
       usage: {
         fetchedAt: '2026-04-18T03:42:00Z',
-        fiveHour: { utilization: 72, resetsAt: '2026-04-18T08:37:00Z' },
         sevenDay: { utilization: 33, resetsAt: '2026-04-25T03:37:00Z' },
       },
     };
@@ -124,7 +123,7 @@ describe('buildSlotRow', () => {
       activeLeases: [],
       usage: {
         fetchedAt: '2026-04-18T00:00:00Z',
-        fiveHour: { utilization: 77, resetsAt: '2026-04-18T05:00:00Z' },
+        sevenDay: { utilization: 77, resetsAt: '2026-04-18T05:00:00Z' },
       },
     };
     const blocks = buildSlotRow(slot, state, true, Date.parse('2026-04-18T00:01:00Z'));
@@ -169,7 +168,7 @@ describe('buildSlotRow', () => {
       rateLimitedAt: '2026-04-18T03:37:00Z',
       usage: {
         fetchedAt: '2026-04-18T03:42:00Z',
-        fiveHour: { utilization: 90, resetsAt: '2026-04-18T08:37:00Z' },
+        sevenDay: { utilization: 90, resetsAt: '2026-04-18T08:37:00Z' },
       },
     };
     const now = Date.parse('2026-04-18T03:42:00Z');
@@ -438,7 +437,6 @@ describe('buildCctCardBlocks', () => {
         activeLeases: [],
         usage: {
           fetchedAt: '2026-04-21T00:00:00Z',
-          fiveHour: { utilization: 50, resetsAt: '2026-04-21T03:00:00Z' },
           sevenDay: { utilization: 20, resetsAt: '2026-04-28T00:00:00Z' },
         },
       },
@@ -453,7 +451,6 @@ describe('buildCctCardBlocks', () => {
     // Usage progress glyph must still be present so non-admin sees usage.
     const flat = JSON.stringify(blocks);
     expect(flat).toMatch(/█/);
-    expect(flat).toMatch(/5h/);
     expect(flat).toMatch(/7d/);
   });
 });
@@ -613,12 +610,12 @@ describe('formatUsageBar (M1-S2)', () => {
   const now = Date.parse('2026-04-21T00:00:00Z');
 
   it('renders a left-padded label + utilization bar + percent + remaining bar + "resets in" hint', () => {
-    const iso = new Date(now + 2 * 3_600_000 + 15 * 60_000).toISOString();
+    const iso = new Date(now + 2 * 86_400_000 + 2 * 3_600_000 + 15 * 60_000).toISOString();
     // #701 — utilization is now percent-only; `82` means 82%.
-    const out = formatUsageBar(82, iso, now, '5h');
+    const out = formatUsageBar(82, iso, now, '7d');
     // Padded label, filled util blocks, percent, remaining bar, `resets in` hint.
-    // Structure: `5h {utilBar} 82% · {remainingBar} resets in 2h 15m`
-    expect(out).toMatch(/^5h\s+[█░]+\s+82% · [█░]+ resets in 2h 15m$/);
+    // Structure: `7d {utilBar} 82% · {remainingBar} resets in 2d 2h`
+    expect(out).toMatch(/^7d\s+[█░]+\s+82% · [█░]+ resets in 2d 2h$/);
   });
 
   it('renders a stable "(no data)" form when util is undefined', () => {
@@ -655,7 +652,7 @@ describe('formatUsageBar (M1-S2)', () => {
     ];
     for (const [input, expected] of rows) {
       it(`utilToPctInt(${input}) → ${expected}%`, () => {
-        const out = formatUsageBar(input, iso, now, '5h');
+        const out = formatUsageBar(input, iso, now, '7d');
         // Fixed width bar; check the percent segment explicitly.
         expect(out).toMatch(new RegExp(`\\s${expected}%\\s`));
       });
@@ -688,14 +685,13 @@ describe('buildSlotRow — usage panel (M1-S2)', () => {
     };
   }
 
-  it('emits three usage lines when state.usage is populated (5h / 7d / 7d-sonnet)', () => {
+  it('emits the usage lines when state.usage is populated (7d / 7d-sonnet; no 5h since 2026-11)', () => {
     const slot = slotWithAttachment();
     const state: SlotState = {
       authState: 'healthy',
       activeLeases: [],
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 80, resetsAt: new Date(now + 2 * 3_600_000).toISOString() },
         sevenDay: { utilization: 28, resetsAt: new Date(now + 3 * 86_400_000).toISOString() },
         sevenDaySonnet: { utilization: 18, resetsAt: new Date(now + 3 * 86_400_000).toISOString() },
       },
@@ -704,8 +700,8 @@ describe('buildSlotRow — usage panel (M1-S2)', () => {
     // panel is emitted only on the active row.
     const blocks = buildSlotRow(slot, state, true, now);
     const flat = JSON.stringify(blocks);
-    // Three independent progress rows — label starts-of-line in the rendered text.
-    expect(flat).toMatch(/5h[^"]*█/);
+    // Independent progress rows — label starts-of-line in the rendered text.
+    expect(flat).not.toMatch(/5h[^"]*█/);
     expect(flat).toMatch(/7d[^"]*█/);
     expect(flat).toMatch(/7d-sonnet[^"]*█/);
   });
@@ -727,7 +723,6 @@ describe('buildSlotRow — usage panel (M1-S2)', () => {
       activeLeases: [],
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 50, resetsAt: new Date(now + 3_600_000).toISOString() },
         sevenDay: { utilization: 20, resetsAt: new Date(now + 86_400_000).toISOString() },
       },
     };
@@ -775,7 +770,6 @@ describe('buildCctCardBlocks — Slack 50-block hard cap (#644 review P1)', () =
         rateLimitedAt: new Date(now - 60_000).toISOString(),
         usage: {
           fetchedAt: new Date(now).toISOString(),
-          fiveHour: { utilization: 45, resetsAt: new Date(now + 3 * 3_600_000).toISOString() },
           sevenDay: { utilization: 20, resetsAt: new Date(now + 6 * 86_400_000).toISOString() },
           sevenDaySonnet: { utilization: 10, resetsAt: new Date(now + 6 * 86_400_000).toISOString() },
         },
@@ -1056,14 +1050,13 @@ describe('authStateBadge + buildSlotStatusLine — option A (PR #672 follow-up)'
 
   // ── OAuth slots ────────────────────────────────────────────────────
 
-  it('OAuth healthy (5h util=0.5, 7d util=0.5) → green Healthy + OAuth refresh hint only', () => {
+  it('OAuth healthy (7d util=0.5) → green Healthy + OAuth refresh hint only', () => {
     const slot = oauthAttachedSlot();
     const state: SlotState = {
       authState: 'healthy',
       activeLeases: [],
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 50, resetsAt: new Date(now + 2 * HOUR).toISOString() },
         sevenDay: { utilization: 50, resetsAt: new Date(now + 3 * 86_400_000).toISOString() },
       },
     };
@@ -1074,42 +1067,42 @@ describe('authStateBadge + buildSlotStatusLine — option A (PR #672 follow-up)'
     expect(text).not.toMatch(/Cooldown/);
   });
 
-  it('OAuth 5h util=1.0, fiveHour.resetsAt = now + 30m → yellow 5h Cooldown 30m', () => {
+  it('OAuth 7d util=1.0, sevenDay.resetsAt = now + 30m → yellow 7d Cooldown 30m', () => {
     const slot = oauthAttachedSlot();
     const state: SlotState = {
       authState: 'healthy',
       activeLeases: [],
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 100, resetsAt: new Date(now + 30 * 60_000).toISOString() },
+        sevenDay: { utilization: 100, resetsAt: new Date(now + 30 * 60_000).toISOString() },
       },
     };
     const text = statusText(slot, state);
-    expect(text).toContain(':large_yellow_circle: 5h Cooldown 30m');
+    expect(text).toContain(':large_yellow_circle: 7d Cooldown 30m');
   });
 
-  it('OAuth 5h util=1.0, fiveHour.resetsAt = now + 3h → orange 5h Cooldown 3h 0m', () => {
+  it('OAuth 7d util=1.0, sevenDay.resetsAt = now + 3h → orange 7d Cooldown 3h 0m', () => {
     const slot = oauthAttachedSlot();
     const state: SlotState = {
       authState: 'healthy',
       activeLeases: [],
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 100, resetsAt: new Date(now + 3 * HOUR).toISOString() },
+        sevenDay: { utilization: 100, resetsAt: new Date(now + 3 * HOUR).toISOString() },
       },
     };
     const text = statusText(slot, state);
-    expect(text).toContain(':large_orange_circle: 5h Cooldown 3h 0m');
+    expect(text).toContain(':large_orange_circle: 7d Cooldown 3h 0m');
   });
 
-  it('OAuth boundary: 5h util=1.0, resetsAt = now + 1h exact → yellow (≤1h inclusive)', () => {
+  it('OAuth boundary: 7d util=1.0, resetsAt = now + 1h exact → yellow (≤1h inclusive)', () => {
     const slot = oauthAttachedSlot();
     const state: SlotState = {
       authState: 'healthy',
       activeLeases: [],
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 100, resetsAt: new Date(now + HOUR).toISOString() },
+        sevenDay: { utilization: 100, resetsAt: new Date(now + HOUR).toISOString() },
       },
     };
     const text = statusText(slot, state);
@@ -1117,14 +1110,14 @@ describe('authStateBadge + buildSlotStatusLine — option A (PR #672 follow-up)'
     expect(text).not.toContain(':large_orange_circle:');
   });
 
-  it('OAuth boundary: 5h util=1.0, resetsAt = now + 5h exact → orange (≤5h inclusive)', () => {
+  it('OAuth boundary: 7d util=1.0, resetsAt = now + 5h exact → orange (≤5h inclusive)', () => {
     const slot = oauthAttachedSlot();
     const state: SlotState = {
       authState: 'healthy',
       activeLeases: [],
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 100, resetsAt: new Date(now + 5 * HOUR).toISOString() },
+        sevenDay: { utilization: 100, resetsAt: new Date(now + 5 * HOUR).toISOString() },
       },
     };
     const text = statusText(slot, state);
@@ -1190,20 +1183,20 @@ describe('authStateBadge + buildSlotStatusLine — option A (PR #672 follow-up)'
     expect(text).toContain(':red_circle: 7d Cooldown 2d 0h');
   });
 
-  it('OAuth priority: 7d util=1 + 5h util=1 simultaneously → 7d wins', () => {
+  it('a stored 5h reading at 100% never parks the slot (no 5-hour window since 2026-11)', () => {
     const slot = oauthAttachedSlot();
-    const state: SlotState = {
+    const state = {
       authState: 'healthy',
       activeLeases: [],
       usage: {
         fetchedAt: new Date(now).toISOString(),
         fiveHour: { utilization: 100, resetsAt: new Date(now + 30 * 60_000).toISOString() },
-        sevenDay: { utilization: 100, resetsAt: new Date(now + 12 * HOUR).toISOString() },
+        sevenDay: { utilization: 10, resetsAt: new Date(now + 12 * HOUR).toISOString() },
       },
-    };
+    } as unknown as SlotState;
     const text = statusText(slot, state);
-    expect(text).toContain('7d Cooldown');
-    expect(text).not.toContain('5h Cooldown');
+    expect(text).toContain(':large_green_circle: Healthy');
+    expect(text).not.toContain('Cooldown');
   });
 
   it('OAuth authState=refresh_failed → :black_circle: Unavailable · :warning: OAuth refresh failed (D fallback, no refresh hint)', () => {
@@ -1237,11 +1230,11 @@ describe('authStateBadge + buildSlotStatusLine — option A (PR #672 follow-up)'
       activeLeases: [],
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 100, resetsAt: new Date(now + 30 * 60_000).toISOString() },
+        sevenDay: { utilization: 100, resetsAt: new Date(now + 30 * 60_000).toISOString() },
       },
     };
     const text = statusText(slot, state);
-    expect(text).toContain('5h Cooldown');
+    expect(text).toContain('7d Cooldown');
   });
 
   it('OAuth utilization === 99.9 → still Healthy (cooldown not triggered)', () => {
@@ -1251,7 +1244,7 @@ describe('authStateBadge + buildSlotStatusLine — option A (PR #672 follow-up)'
       activeLeases: [],
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 99.9, resetsAt: new Date(now + 30 * 60_000).toISOString() },
+        sevenDay: { utilization: 99.9, resetsAt: new Date(now + 30 * 60_000).toISOString() },
       },
     };
     const text = statusText(slot, state);
@@ -1266,11 +1259,11 @@ describe('authStateBadge + buildSlotStatusLine — option A (PR #672 follow-up)'
       activeLeases: [],
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 100, resetsAt: 'not-a-valid-iso' },
+        sevenDay: { utilization: 100, resetsAt: 'not-a-valid-iso' },
       },
     };
     const text = statusText(slot, state);
-    expect(text).toContain('5h Cooldown <1m');
+    expect(text).toContain('7d Cooldown <1m');
     // 0ms remaining ≤ 1h → yellow.
     expect(text).toContain(':large_yellow_circle:');
   });
@@ -1282,11 +1275,11 @@ describe('authStateBadge + buildSlotStatusLine — option A (PR #672 follow-up)'
       activeLeases: [],
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 100, resetsAt: new Date(now - HOUR).toISOString() },
+        sevenDay: { utilization: 100, resetsAt: new Date(now - HOUR).toISOString() },
       },
     };
     const text = statusText(slot, state);
-    expect(text).toContain('5h Cooldown <1m');
+    expect(text).toContain('7d Cooldown <1m');
     expect(text).toContain(':large_yellow_circle:');
   });
 
@@ -1299,14 +1292,13 @@ describe('authStateBadge + buildSlotStatusLine — option A (PR #672 follow-up)'
   // wrongly badged as Cooldown). The fix applies a `> 1.5` percent-vs-fraction
   // disambiguation (the one the since-deleted OAuth header parser used).
 
-  it('#684: OAuth utilization=19 (percent form, 5h=19%) → Healthy, not Cooldown', () => {
+  it('#684: OAuth utilization=19 (percent form, 7d=19%) → Healthy, not Cooldown', () => {
     const slot = oauthAttachedSlot();
     const state: SlotState = {
       authState: 'healthy',
       activeLeases: [],
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 19, resetsAt: new Date(now + HOUR).toISOString() },
         sevenDay: { utilization: 63, resetsAt: new Date(now + 15 * HOUR).toISOString() },
       },
     };
@@ -1322,7 +1314,6 @@ describe('authStateBadge + buildSlotStatusLine — option A (PR #672 follow-up)'
       activeLeases: [],
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 2, resetsAt: new Date(now + 4 * HOUR).toISOString() },
         sevenDay: { utilization: 94, resetsAt: new Date(now + 24 * HOUR).toISOString() },
       },
     };
@@ -1345,18 +1336,18 @@ describe('authStateBadge + buildSlotStatusLine — option A (PR #672 follow-up)'
     expect(text).toContain('7d Cooldown');
   });
 
-  it('#684: OAuth utilization=150 (percent form, over-budget) → 5h Cooldown', () => {
+  it('#684: OAuth utilization=150 (percent form, over-budget) → 7d Cooldown', () => {
     const slot = oauthAttachedSlot();
     const state: SlotState = {
       authState: 'healthy',
       activeLeases: [],
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 150, resetsAt: new Date(now + 30 * 60_000).toISOString() },
+        sevenDay: { utilization: 150, resetsAt: new Date(now + 30 * 60_000).toISOString() },
       },
     };
     const text = statusText(slot, state);
-    expect(text).toContain('5h Cooldown');
+    expect(text).toContain('7d Cooldown');
   });
 
   it('#701: OAuth utilization=1 is percent-form 1% (NOT full — does not trigger Cooldown)', () => {
@@ -1371,7 +1362,7 @@ describe('authStateBadge + buildSlotStatusLine — option A (PR #672 follow-up)'
       activeLeases: [],
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 1, resetsAt: new Date(now + 30 * 60_000).toISOString() },
+        sevenDay: { utilization: 1, resetsAt: new Date(now + 30 * 60_000).toISOString() },
       },
     };
     const text = statusText(slot, state);
@@ -1602,7 +1593,7 @@ describe('Codex P1 follow-up (#679): OAuth cooldownUntil priority', () => {
       cooldownUntil: new Date(now + 3 * HOUR).toISOString(),
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 50, resetsAt: new Date(now + 4 * HOUR).toISOString() },
+        sevenDay: { utilization: 50, resetsAt: new Date(now + 4 * HOUR).toISOString() },
       },
     };
     const text = statusText(slot, state);
@@ -1637,11 +1628,11 @@ describe('Codex P1 follow-up (#679): OAuth cooldownUntil priority', () => {
       cooldownUntil: new Date(now + 3 * HOUR).toISOString(),
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 100, resetsAt: new Date(now + 30 * 60_000).toISOString() },
+        sevenDay: { utilization: 100, resetsAt: new Date(now + 30 * 60_000).toISOString() },
       },
     };
     const text = statusText(slot, state);
-    expect(text).toContain(':large_yellow_circle: 5h Cooldown 30m');
+    expect(text).toContain(':large_yellow_circle: 7d Cooldown 30m');
     expect(text).not.toMatch(/(^|\s)Cooldown 3h/);
   });
 
@@ -1653,7 +1644,6 @@ describe('Codex P1 follow-up (#679): OAuth cooldownUntil priority', () => {
       cooldownUntil: new Date(now - HOUR).toISOString(),
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 50, resetsAt: new Date(now + 2 * HOUR).toISOString() },
         sevenDay: { utilization: 50, resetsAt: new Date(now + 3 * 86_400_000).toISOString() },
       },
     };
@@ -1670,7 +1660,6 @@ describe('Codex P1 follow-up (#679): OAuth cooldownUntil priority', () => {
       cooldownUntil: new Date(now + 2 * HOUR).toISOString(),
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 30, resetsAt: new Date(now + HOUR).toISOString() },
         sevenDay: { utilization: 40, resetsAt: new Date(now + 6 * 86_400_000).toISOString() },
       },
     };
@@ -1800,11 +1789,11 @@ describe('B+D UX context (#723)', () => {
         rateLimitSource: 'response_header',
         usage: {
           fetchedAt: new Date(now).toISOString(),
-          fiveHour: { utilization: 100, resetsAt: new Date(now + 30 * 60_000).toISOString() },
+          sevenDay: { utilization: 100, resetsAt: new Date(now + 30 * 60_000).toISOString() },
         },
       }),
     );
-    expect(text).toContain('5h Cooldown');
+    expect(text).toContain('7d Cooldown');
     // 5h self-explains; B is quiet so we don't double-attribute.
     expect(text).not.toContain('rate-limited');
   });
@@ -2037,7 +2026,7 @@ describe('buildSlotRow — 7d-sonnet 0% hide (#668 follow-up)', () => {
       activeLeases: [],
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 10, resetsAt: new Date(now + 3_600_000).toISOString() },
+        sevenDay: { utilization: 10, resetsAt: new Date(now + 3_600_000).toISOString() },
         sevenDaySonnet: { utilization: 0, resetsAt: new Date(now + 6 * 86_400_000).toISOString() },
       },
     };
@@ -2052,7 +2041,7 @@ describe('buildSlotRow — 7d-sonnet 0% hide (#668 follow-up)', () => {
       activeLeases: [],
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 10, resetsAt: new Date(now + 3_600_000).toISOString() },
+        sevenDay: { utilization: 10, resetsAt: new Date(now + 3_600_000).toISOString() },
         sevenDaySonnet: { utilization: 1, resetsAt: new Date(now + 6 * 86_400_000).toISOString() },
       },
     };
@@ -2069,20 +2058,20 @@ describe('formatUsageBar — second gauge bar (card v2 follow-up)', () => {
     // The duplicated `expires in` hint was replaced by a second
     // progress bar that visualises the remaining portion of the window.
     const iso = new Date(now + 3 * 3_600_000).toISOString();
-    const out = formatUsageBar(0.5, iso, now, '5h');
+    const out = formatUsageBar(0.5, iso, now, '7d');
     expect(out).not.toMatch(/expires in/);
     expect(out).toMatch(/resets in 3h 0m$/);
   });
 
-  it('mid-window 5h with 2.5h remaining → remaining bar roughly half-filled (5/10 cells)', () => {
-    const iso = new Date(now + 2.5 * 3_600_000).toISOString();
-    const out = formatUsageBar(0.5, iso, now, '5h');
-    // Format: `5h <utilBar> 50% · <remainingBar> resets in 2h 30m`.
+  it('mid-window 7d with 3.5d remaining → remaining bar roughly half-filled (5/10 cells)', () => {
+    const iso = new Date(now + 3.5 * 86_400_000).toISOString();
+    const out = formatUsageBar(0.5, iso, now, '7d');
+    // Format: `7d <utilBar> 50% · <remainingBar> resets in 3d 12h`.
     const m = out.match(/· ([█░]+) resets in/);
     expect(m).not.toBeNull();
     const rBar = m![1];
     expect(rBar.length).toBe(10);
-    // 2.5/5 = 50% → 5 filled cells.
+    // 3.5/7 = 50% → 5 filled cells.
     expect(rBar).toBe('█████░░░░░');
   });
 
@@ -2109,7 +2098,7 @@ describe('formatUsageBar — second gauge bar (card v2 follow-up)', () => {
   });
 
   it('invalid resetsAt → dotted-placeholder remaining bar + "<1m" hint', () => {
-    const out = formatUsageBar(0.3, 'not-a-valid-iso', now, '5h');
+    const out = formatUsageBar(0.3, 'not-a-valid-iso', now, '7d');
     // Dotted placeholder signals the column can't be computed without
     // dropping the row entirely.
     expect(out).toContain('··········');
@@ -2146,7 +2135,6 @@ describe('buildCctCardBlocks — 15-slot fleet stays under cap (PR #672 follow-u
         activeLeases: [],
         usage: {
           fetchedAt: new Date(now).toISOString(),
-          fiveHour: { utilization: 30, resetsAt: new Date(now + 3 * 3_600_000).toISOString() },
           sevenDay: {
             utilization: i * 0.05,
             resetsAt: new Date(now + (i + 1) * 86_400_000).toISOString(),

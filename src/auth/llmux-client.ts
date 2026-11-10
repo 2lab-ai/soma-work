@@ -24,7 +24,7 @@ const logger = new Logger('LlmuxClient');
  * runtime setting.
  */
 
-/** One `five_hour` / `seven_day` window from `/llmux/status`. */
+/** One `seven_day` window from `/llmux/status`. */
 export interface LlmuxWindow {
   /** 0..1 effective utilization (llmux emits a ratio, not a percent). */
   utilization: number;
@@ -60,7 +60,7 @@ export interface LlmuxAccount {
   order: number;
   /** Blocking reason for ineligible accounts, null/absent otherwise. */
   blocked?: string | null;
-  five_hour?: LlmuxWindow | null;
+  /** The weekly window. There is no 5-hour window (2026-11): a `five_hour` an older llmux still sends is not read. */
   seven_day?: LlmuxWindow | null;
   /**
    * Model-scoped weekly windows (additive, llmux ≥ status-v2). `fable_weekly`

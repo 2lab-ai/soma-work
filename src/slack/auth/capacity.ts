@@ -117,7 +117,7 @@ export function accountUnavailable(account: LlmuxAccount, nowMs: number): boolea
     account.status === 'auth_failed' ||
     account.status === 'cooldown' ||
     (Number.isFinite(account.cooldown_until) && (account.cooldown_until ?? 0) > nowMs / 1000) ||
-    [account.five_hour, account.seven_day].some((w) => remaining(w, nowMs) === 0)
+    remaining(account.seven_day, nowMs) === 0
   );
 }
 
@@ -129,27 +129,15 @@ function windowTotals(label: string, rows: (LlmuxWindow | null | undefined)[], t
 
 export function groupSummary(accounts: LlmuxAccount[], nowMs: number): string[] {
   const subscriptions = accounts.filter(hasSubscriptionWindows);
-  const known = subscriptions.filter(
-    (a) => remaining(a.five_hour, nowMs) !== undefined && remaining(a.seven_day, nowMs) !== undefined,
-  );
+  const known = subscriptions.filter((a) => remaining(a.seven_day, nowMs) !== undefined);
   const available = known.filter((a) => !accountUnavailable(a, nowMs)).length;
   const blocked = accounts.filter((a) => accountUnavailable(a, nowMs)).length;
   const lines = subscriptions.length
     ? [
-        `공통 한도 여유 ${available}/${accounts.length} (5h·7d 확인, 모델별 한도 별도) · 차단 ${blocked} · 미확인 ${accounts.length - available - blocked}`,
+        `공통 한도 여유 ${available}/${accounts.length} (7d 확인, 모델별 한도 별도) · 차단 ${blocked} · 미확인 ${accounts.length - available - blocked}`,
       ]
-    : [
-        `속도 한도 측정 ${accounts.filter((a) => remaining(a.five_hour, nowMs) !== undefined).length}/${accounts.length} · 차단 ${blocked} · 구독 잔여량 미제공`,
-      ];
+    : [`차단 ${blocked}/${accounts.length} · 구독 잔여량 미제공`];
   if (subscriptions.length) {
-    lines.push(
-      windowTotals(
-        '5h',
-        subscriptions.map((a) => a.five_hour),
-        subscriptions.length,
-        nowMs,
-      ),
-    );
     lines.push(
       windowTotals(
         '7d',
@@ -168,15 +156,11 @@ export function groupSummary(accounts: LlmuxAccount[], nowMs: number): string[] 
     for (const [label, rows] of scopes) lines.push(windowTotals(label, rows, subscriptions.length, nowMs));
     lines.push('합계는 차단 계정 포함 · 계정별 100%=1계정분, 플랜 가중치 없음 · 토큰 수가 아닙니다.');
   } else {
-    lines.push('총 잔여량 미제공 · 속도 한도는 구독 토큰 잔고가 아닙니다.');
+    lines.push('총 잔여량 미제공 · 구독 계정이 아닙니다.');
   }
   const resets = subscriptions
     .flatMap((account) =>
-      [
-        { label: '5h', window: account.five_hour },
-        { label: '7d', window: account.seven_day },
-        ...collectScopedWindows(account),
-      ].flatMap(({ label, window }) => {
+      [{ label: '7d', window: account.seven_day }, ...collectScopedWindows(account)].flatMap(({ label, window }) => {
         const at = window && resetAt(window, nowMs);
         const amount = remaining(window, nowMs);
         return at && at > nowMs / 1000 && amount !== undefined && amount < 1
@@ -197,9 +181,7 @@ export function groupSummary(accounts: LlmuxAccount[], nowMs: number): string[] 
 
 export function accountLines(account: LlmuxAccount, nowMs: number): string[] {
   const timed = hasSubscriptionWindows(account);
-  const lines = timed
-    ? [windowLine('5h', account.five_hour, nowMs), windowLine('7d', account.seven_day, nowMs)]
-    : [windowLine('속도 한도', account.five_hour, nowMs, false), '잔여 토큰·요청 수 미제공 · 리셋 시각 미제공'];
+  const lines = timed ? [windowLine('7d', account.seven_day, nowMs)] : ['잔여 토큰·요청 수 미제공 · 리셋 시각 미제공'];
   for (const { label, window } of collectScopedWindows(account)) lines.push(windowLine(label, window, nowMs, timed));
   if (
     account.cooldown_until &&

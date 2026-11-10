@@ -35,8 +35,6 @@ function makeRichEvent(overrides: Partial<TurnCompletionEvent> = {}): TurnComple
     contextUsageDelta: -5.6,
     contextUsageTokens: 160300,
     contextWindowSize: 1000000,
-    fiveHourUsage: 42,
-    fiveHourDelta: 20,
     sevenDayUsage: 55,
     sevenDayDelta: 2,
     toolStats: {
@@ -130,8 +128,8 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
   });
 
   // Trace: Scenario 3, Section 3a Line 5
-  describe('5h/7d usage line', () => {
-    it('renders 5h/7d usage when available', async () => {
+  describe('7d usage line (no 5-hour window since 2026-11)', () => {
+    it('renders 7d usage when available, and no 5h gauge', async () => {
       const api = createMockSlackApi();
       const channel = new SlackBlockKitChannel(api);
       await channel.send(makeRichEvent());
@@ -142,22 +140,18 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
         .map((b: any) => b.elements?.map((e: any) => e.text).join('') ?? b.text?.text ?? '')
         .join('\n');
 
-      expect(allText).toContain('5h');
-      expect(allText).toContain('42%');
-      expect(allText).toContain('+20');
+      expect(allText).not.toMatch(/5h\s/);
       expect(allText).toContain('7d');
       expect(allText).toContain('55%');
       expect(allText).toContain('+2');
     });
 
     // Trace: Scenario 3, Section 5
-    it('omits 5h/7d line when not available', async () => {
+    it('omits the 7d gauge when not available', async () => {
       const api = createMockSlackApi();
       const channel = new SlackBlockKitChannel(api);
       await channel.send(
         makeRichEvent({
-          fiveHourUsage: undefined,
-          fiveHourDelta: undefined,
           sevenDayUsage: undefined,
           sevenDayDelta: undefined,
         }),
@@ -277,8 +271,6 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
       expect(event.contextUsageDelta).toBe(-5.6);
       expect(event.contextUsageTokens).toBe(160300);
       expect(event.contextWindowSize).toBe(1000000);
-      expect(event.fiveHourUsage).toBe(42);
-      expect(event.fiveHourDelta).toBe(20);
       expect(event.sevenDayUsage).toBe(55);
       expect(event.sevenDayDelta).toBe(2);
       expect(event.toolStats).toBeDefined();

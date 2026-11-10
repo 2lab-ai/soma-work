@@ -1543,7 +1543,7 @@ export class CommandParser {
       '• `cct` - Show OAuth token pool status (Block Kit card)',
       '• `cct set <name>` - Switch active token (e.g., `cct set cct2`)',
       '• `cct next` - Rotate to next available token',
-      '• `cct usage [<name>]` - Show usage snapshot (5h/7d) for a slot; defaults to active',
+      '• `cct usage [<name>]` - Show usage snapshot (7d/7d-sonnet) for a slot; defaults to active',
       '• `cct auto` - Run auto-rotation evaluation now (ignores `AUTO_ROTATE_ENABLED`; rotates if a better slot wins)',
       '• `cct auto dry` - Same evaluation, but only reports what *would* happen (no rotation)',
       '• _Note: token add/remove via text is disabled — use the *Add* / *Remove* buttons on the `/z cct` card._',
