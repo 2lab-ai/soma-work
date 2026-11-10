@@ -411,16 +411,25 @@ export async function reconcileBotDeletes(slackApi: BotDeleteSlackApi): Promise<
   return finished;
 }
 
+/** #1131 — how much of the message the one-line summary quotes. */
+const SUMMARY_PREVIEW_CHARS = 80;
+
 export function botDeleteApproval(
   requestId: string,
   req: { requesterId: string; data: Record<string, string>; createdAt: number },
 ): AdminApproval {
   const { targetChannel, targetTs, preview } = req.data;
+  const shown = preview
+    ? preview.length > SUMMARY_PREVIEW_CHARS
+      ? `${preview.slice(0, SUMMARY_PREVIEW_CHARS)}…`
+      : preview
+    : '';
   return {
     id: `bot_delete:${requestId}`,
     kind: 'bot_delete',
     card: 'permission',
     title: '봇 메시지 삭제 요청',
+    summary: shown ? `봇 메시지 삭제 — #${targetChannel}: ${shown}` : `봇 메시지 삭제 — #${targetChannel}`,
     description: `승인하면 이 봇 메시지를 지웁니다. ${permalinkOf(targetChannel, targetTs)}`,
     tool: 'delete_message',
     rows: {
@@ -430,6 +439,7 @@ export function botDeleteApproval(
       ...(preview ? { 미리보기: preview } : {}),
     },
     risk: 'medium',
+    batch: { approve: 'approve', deny: 'deny' },
     requesterId: req.requesterId,
     place: { channel: targetChannel },
     createdAt: req.createdAt,
