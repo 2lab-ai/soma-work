@@ -48,6 +48,11 @@ export interface AdminApproval {
   /** `question`: pick one of `choices`. `permission`: Approve (`approve`) / Deny (`deny`). */
   card: 'question' | 'permission';
   title: string;
+  /**
+   * #1131 — one line: what happens if it is approved (for example "`alice`를 사용자로 추가"). The card's main line
+   * and the batch confirm sheet's row. Absent: the dashboard shows `title`.
+   */
+  summary?: string;
   description?: string;
   /** `permission` cards: the tool name the card's icon reads (for example `mcp__github`). */
   tool?: string;
@@ -73,6 +78,16 @@ export interface AdminApproval {
    * instead of answering — a devops broker card is decided only in Slack.
    */
   links?: { admin: string; url: string }[];
+  /**
+   * #1131 — the choice ids that mean approve and deny for this request. Present: it can be selected and decided
+   * with others in one pass ({@link answerAdminApprovals}). Absent: it is decided one at a time only (a free question).
+   */
+  batch?: { approve: string; deny: string };
+  /**
+   * #1131 — the requester's live wait is over and the request waits in a queue until an admin decides it (the
+   * devops broker sets it). The dashboard shows a 대기열 badge and no countdown.
+   */
+  queued?: boolean;
 }
 
 /** A request that ended recently — the card shows who answered and how. */
@@ -117,6 +132,11 @@ export interface AdminApprovalAdapter {
    * the requester's notice) may still be running.
    */
   answer(requestId: string, choiceId: string, actor: string): Promise<AdminApprovalAnswer>;
+  /**
+   * #1131 — answer several requests of this kind in one call (a store that decides them together). The answers
+   * are in the same order as `items`, one per item. Absent: {@link answerAdminApprovals} calls `answer` per item.
+   */
+  answerMany?(items: { requestId: string; choiceId: string }[], actor: string): Promise<AdminApprovalAnswer[]>;
 }
 
 /** How long an ended request stays in the snapshot as a resolved row. */
@@ -183,6 +203,120 @@ export async function answerAdminApproval(id: string, choiceId: string, actor: s
   }
   notifyAdminApprovalsChanged();
   return result;
+}
+
+/** #1131 — the most items one {@link answerAdminApprovals} call decides. */
+export const MAX_BATCH_ANSWERS = 50;
+
+const FAILED: AdminApprovalAnswer = { ok: false, reason: 'invalid' };
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** One kind's items of a batch: their places in the input and their request ids. */
+interface BatchGroup {
+  adapter: AdminApprovalAdapter;
+  slots: { index: number; id: string; requestId: string; choiceId: string }[];
+}
+
+async function answerGroup(group: BatchGroup, actor: string): Promise<AdminApprovalAnswer[]> {
+  const { adapter, slots } = group;
+  if (adapter.answerMany) {
+    try {
+      const answers = await adapter.answerMany(
+        slots.map((s) => ({ requestId: s.requestId, choiceId: s.choiceId })),
+        actor,
+      );
+      if (Array.isArray(answers) && answers.length === slots.length) return answers;
+      logger.error('Admin approval batch: answerMany returned the wrong number of answers', {
+        kind: adapter.kind,
+        expected: slots.length,
+        got: Array.isArray(answers) ? answers.length : typeof answers,
+      });
+    } catch (error) {
+      logger.error('Admin approval batch: answerMany failed', { kind: adapter.kind, error: errorText(error) });
+    }
+    return slots.map(() => FAILED);
+  }
+  // One at a time, in order: an adapter's own exactly-once rule never sees two of its answers at once.
+  const answers: AdminApprovalAnswer[] = [];
+  for (const slot of slots) {
+    try {
+      answers.push(await adapter.answer(slot.requestId, slot.choiceId, actor));
+    } catch (error) {
+      logger.error('Admin approval batch: answer failed', { id: slot.id, error: errorText(error) });
+      answers.push(FAILED);
+    }
+  }
+  return answers;
+}
+
+/** A lost race carries the winning resolution, as {@link answerAdminApproval} does — one read per kind. */
+async function withResolutions(
+  adapter: AdminApprovalAdapter,
+  slots: BatchGroup['slots'],
+  answers: AdminApprovalAnswer[],
+): Promise<AdminApprovalAnswer[]> {
+  const lost = (a: AdminApprovalAnswer) => !a.ok && a.reason === 'already_answered' && !a.resolution;
+  if (!answers.some(lost)) return answers;
+  let resolutions: AdminApprovalResolution[] = [];
+  try {
+    resolutions = await adapter.resolved(0);
+  } catch (error) {
+    logger.warn('Admin approval batch: resolution lookup failed', { kind: adapter.kind, error: errorText(error) });
+  }
+  return answers.map((a, i) => {
+    if (!lost(a)) return a;
+    const resolution = resolutions.find((r) => r.id === slots[i].id);
+    return resolution ? { ...a, resolution } : a;
+  });
+}
+
+/**
+ * #1131 — answer several requests in one pass from the dashboard, as admin `actor`. Items are grouped by kind (in
+ * the order each kind first appears); a kind whose adapter has `answerMany` is called once with its items, any
+ * other kind's `answer` once per item, in order. A kind that fails gives its own items `invalid` (logged) and
+ * never costs another kind its results. The results are in the input order. Throws (and answers nothing) for an
+ * empty batch, more than {@link MAX_BATCH_ANSWERS} items, a malformed item, or an id given twice.
+ */
+export async function answerAdminApprovals(
+  items: { id: string; choiceId: string }[],
+  actor: string,
+): Promise<{ id: string; result: AdminApprovalAnswer }[]> {
+  if (!Array.isArray(items) || items.length === 0) throw new RangeError('a batch needs at least one item');
+  if (items.length > MAX_BATCH_ANSWERS) throw new RangeError(`a batch takes at most ${MAX_BATCH_ANSWERS} items`);
+  const seen = new Set<string>();
+  for (const item of items) {
+    if (!item || typeof item.id !== 'string' || typeof item.choiceId !== 'string') {
+      throw new TypeError('each item needs a string id and choiceId');
+    }
+    if (seen.has(item.id)) throw new RangeError(`the batch names ${item.id} twice`);
+    seen.add(item.id);
+  }
+
+  const results: AdminApprovalAnswer[] = items.map(() => ({ ok: false, reason: 'not_found' }));
+  const groups = new Map<AdminApprovalKind, BatchGroup>();
+  items.forEach((item, index) => {
+    const parsed = parseAdminApprovalId(item.id);
+    const adapter = parsed ? adapters.get(parsed.kind) : undefined;
+    if (!parsed || !adapter) return;
+    let group = groups.get(parsed.kind);
+    if (!group) {
+      group = { adapter, slots: [] };
+      groups.set(parsed.kind, group);
+    }
+    group.slots.push({ index, id: item.id, requestId: parsed.requestId, choiceId: item.choiceId });
+  });
+
+  for (const group of groups.values()) {
+    const answers = await withResolutions(group.adapter, group.slots, await answerGroup(group, actor));
+    group.slots.forEach((slot, i) => {
+      results[slot.index] = answers[i];
+    });
+  }
+  notifyAdminApprovalsChanged();
+  return items.map((item, i) => ({ id: item.id, result: results[i] }));
 }
 
 /** Subscribe to "the requests changed" (an answer here, or a store change the watch saw). */
