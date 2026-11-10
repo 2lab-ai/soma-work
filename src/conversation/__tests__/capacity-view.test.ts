@@ -499,7 +499,56 @@ describe('capacity v2 — state and freshness', () => {
     expect(view.groups.map((g) => g.group)).toEqual(['claude']);
   });
 
-  it('state reads the weekly measure: low under 20%, empty at 0 with capacity counted', () => {
+  // trinity PR #1180 review (grok P1): the state says what can run now, not what the week still holds.
+  it('a pool whose every account is held back by a block is empty even with weekly quota left', () => {
+    const g = group([
+      acct({
+        name: 'claude:ai1@c',
+        group: 'claude',
+        status: 'cooldown',
+        blocked: 'cooldown 2h',
+        cooldown_until: NOW_S + 2 * H,
+        seven_day: w(0.3, 3 * D),
+      }),
+      acct({
+        name: 'claude:ai2@c',
+        group: 'claude',
+        blocked: 'fable 99.0% > 98%',
+        seven_day: w(0.2, 5 * D),
+        scoped_limits: [{ scope_label: 'Fable', utilization: 0.99, resets_at: NOW_S + D, resets_in_secs: D }],
+      }),
+    ]);
+    expect(g.now).toBe(0);
+    expect(r1(g.week)).toBe(1.5);
+    expect(g.state).toBe('empty');
+    // one of the two held back: half the pool usable now → ok; a sliver usable → low
+    const half = group([
+      acct({ name: 'claude:ai1@c', group: 'claude', seven_day: w(0.3, 3 * D) }),
+      acct({
+        name: 'claude:ai2@c',
+        group: 'claude',
+        status: 'cooldown',
+        blocked: 'cooldown 2h',
+        cooldown_until: NOW_S + 2 * H,
+        seven_day: w(0, 3 * D),
+      }),
+    ]);
+    expect(half.state).toBe('ok');
+    const sliver = group([
+      acct({ name: 'claude:ai1@c', group: 'claude', seven_day: w(0.9, 3 * D) }),
+      acct({
+        name: 'claude:ai2@c',
+        group: 'claude',
+        status: 'cooldown',
+        blocked: 'cooldown 2h',
+        cooldown_until: NOW_S + 2 * H,
+        seven_day: w(0, 3 * D),
+      }),
+    ]);
+    expect(sliver.state).toBe('low');
+  });
+
+  it('state: low under 20% of the pool usable now, ok above', () => {
     const low = group([acct({ name: 'claude:ai1@c', group: 'claude', seven_day: w(0.9, D) })]);
     expect(low.state).toBe('low');
     const ok = group([acct({ name: 'claude:ai1@c', group: 'claude', seven_day: w(0.2, D) })]);

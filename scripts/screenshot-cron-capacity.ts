@@ -9,8 +9,8 @@
  *     strip and the inbox, the CRON lane above the columns, no page-level
  *     sideways scroll (cron-capacity-<w>-<theme>.png)
  *   - cron cards are in the lane, not in the columns, and lead with the CRON badge
- *   - capacity (simplified): Claude shows a 5시간 and an 일주일 bar, Codex the
- *     weekly bar only, one timeline per card, an honest disclosure line
+ *   - capacity (simplified): every provider shows the 일주일 bar only (no 5-hour
+ *     window since 2026-11), one timeline per card, an honest disclosure line
  *   - "지난 실행" opens the run drawer with one row per run; Escape closes it
  *     (cron-drawer-<theme>.png)
  *

@@ -14,7 +14,8 @@
  *   - llmux reports window UTILIZATION, not tokens. "계정분" (account-
  *     equivalents) = Σ tier weight × remaining ratio — a normalised estimate.
  *   - Per account: now = weekly remaining unless a block is active (then 0);
- *     week = weekly remaining. The group's measure is the weekly one.
+ *     week = weekly remaining. The group's bar is the weekly one; its state
+ *     (ok / low / empty) reads "now", so a pool held back by blocks is empty.
  *   - Blocks are tracked on their own — weekly ceiling (lifts at the weekly
  *     reset), cooldown over 120 s (cooldown_until),
  *     model-scoped ceiling such as "fable …" (that window's reset). A block
@@ -99,7 +100,7 @@ export interface CapacityGroupView {
   countedAccounts: number;
   /** Σ weight of the counted accounts (account-equivalents). */
   total: number;
-  /** Usable now: the weekly remaining of the accounts no block holds back. */
+  /** Usable now: the weekly remaining of the accounts no block holds back. Decides `state`. */
   now: number;
   /** Left this week — the group's measure. */
   week: number;
@@ -407,8 +408,11 @@ function buildGroup(
     });
   }
 
+  // The state reads what can run NOW (trinity PR #1180 review, grok P1): a pool whose every account is held
+  // back by a cooldown or a model ceiling is empty even with weekly quota left — the card then counts down to
+  // the first return. With nothing blocked, now equals week.
   const state: CapacityGroupView['state'] =
-    total <= EPS ? 'unknown' : week <= EPS ? 'empty' : (week / total) * 100 < CAPACITY_LOW_PCT ? 'low' : 'ok';
+    total <= EPS ? 'unknown' : now <= EPS ? 'empty' : (now / total) * 100 < CAPACITY_LOW_PCT ? 'low' : 'ok';
   return {
     group,
     label: providerName(group),
