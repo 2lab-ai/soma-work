@@ -1416,7 +1416,7 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
     const { app, actionHandlers } = makeApp();
     const fetchAndStoreUsage = vi.fn(async (keyId: string) => ({
       fetchedAt: new Date().toISOString(),
-      fiveHour: { utilization: 0.1, resetsAt: new Date().toISOString() },
+      sevenDay: { utilization: 0.1, resetsAt: new Date().toISOString() },
       _keyId: keyId,
     }));
     const refreshAllAttachedOAuthTokens = vi.fn(async () => ({}));
@@ -1487,7 +1487,7 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
     const { app, actionHandlers } = makeApp();
     const fetchAndStoreUsage = vi.fn(async (keyId: string) => ({
       fetchedAt: new Date().toISOString(),
-      fiveHour: { utilization: 0.1, resetsAt: new Date().toISOString() },
+      sevenDay: { utilization: 0.1, resetsAt: new Date().toISOString() },
       _keyId: keyId,
     }));
     const tm = { ...tmWithAttachedSlots(['slot-A']), fetchAndStoreUsage } as any;
@@ -1540,7 +1540,7 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
     const { app, actionHandlers } = makeApp();
     const fetchAndStoreUsage = vi.fn(async (keyId: string) => ({
       fetchedAt: new Date().toISOString(),
-      fiveHour: { utilization: 0.1, resetsAt: new Date().toISOString() },
+      sevenDay: { utilization: 0.1, resetsAt: new Date().toISOString() },
       _keyId: keyId,
     }));
     const tm = { ...tmWithAttachedSlots(['slot-A']), fetchAndStoreUsage } as any;
@@ -1916,7 +1916,7 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
     const { app, actionHandlers } = makeApp();
     const fetchAndStoreUsage = vi.fn(async (keyId: string) => ({
       fetchedAt: new Date().toISOString(),
-      fiveHour: { utilization: 0.1, resetsAt: new Date().toISOString() },
+      sevenDay: { utilization: 0.1, resetsAt: new Date().toISOString() },
       _keyId: keyId,
     }));
     const tm = { ...tmWithAttachedSlots(['slot-A']), fetchAndStoreUsage } as any;
@@ -1958,7 +1958,7 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
     const { app, actionHandlers } = makeApp();
     const fetchAndStoreUsage = vi.fn(async (keyId: string) => ({
       fetchedAt: new Date().toISOString(),
-      fiveHour: { utilization: 0.1, resetsAt: new Date().toISOString() },
+      sevenDay: { utilization: 0.1, resetsAt: new Date().toISOString() },
       _keyId: keyId,
     }));
     const tm = { ...tmWithAttachedSlots(['slot-A']), fetchAndStoreUsage } as any;
@@ -1995,7 +1995,7 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
     const { app, actionHandlers } = makeApp();
     const fetchAndStoreUsage = vi.fn(async (keyId: string) => ({
       fetchedAt: new Date().toISOString(),
-      fiveHour: { utilization: 0.1, resetsAt: new Date().toISOString() },
+      sevenDay: { utilization: 0.1, resetsAt: new Date().toISOString() },
       _keyId: keyId,
     }));
     const tm = { ...tmWithAttachedSlots(['slot-A']), fetchAndStoreUsage } as any;
@@ -2032,7 +2032,7 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
     const { app, actionHandlers } = makeApp();
     const fetchAndStoreUsage = vi.fn(async (keyId: string) => ({
       fetchedAt: new Date().toISOString(),
-      fiveHour: { utilization: 0.1, resetsAt: new Date().toISOString() },
+      sevenDay: { utilization: 0.1, resetsAt: new Date().toISOString() },
       _keyId: keyId,
     }));
     const tm = { ...tmWithAttachedSlots(['slot-A']), fetchAndStoreUsage } as any;

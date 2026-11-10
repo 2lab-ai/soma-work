@@ -14,7 +14,7 @@ import type { CommandContext, CommandHandler, CommandResult } from './types';
  *   - `cct`                 — show token status (Block Kit card)
  *   - `cct set <name>`      — switch active token (text ack)
  *   - `cct next`            — rotate to next available token
- *   - `cct usage [<name>]`  — show per-slot usage snapshot (5h / 7d windows)
+ *   - `cct usage [<name>]`  — show per-slot usage snapshot (7d / 7d-sonnet windows)
  *
  * Forbidden via text (use the `/z cct` card buttons instead):
  *   - `cct add …`           — open the *Add* modal from the card
@@ -174,7 +174,6 @@ export class CctHandler implements CommandHandler {
           enabled: true,
           dryRun: action.dry,
           thresholds: {
-            fiveHourMax: config.autoRotate.fiveHourMax,
             sevenDayMax: config.autoRotate.sevenDayMax,
           },
           usageMaxAgeMs: 2 * config.usage.refreshIntervalMs,
@@ -295,7 +294,6 @@ async function loadSlotState(keyId: string): Promise<SlotState | undefined> {
  * by the CCT card. Output format:
  *   Usage for *{name}* ({kind})
  *   ```
- *   5h        ██████░░░░ 60% · resets in 3h 12m
  *   7d        ██░░░░░░░░ 20% · resets in 5d 0h 0m
  *   7d-sonnet █░░░░░░░░░ 10% · resets in 5d 0h 0m
  *   ```
@@ -311,9 +309,6 @@ export function renderUsageLines(
   const now = nowMs ?? Date.now();
   const header = `Usage for *${slot.name}* (${slot.kind})`;
   const rows: string[] = [];
-  if (snapshot.fiveHour) {
-    rows.push(formatUsageBar(snapshot.fiveHour.utilization, snapshot.fiveHour.resetsAt, now, '5h'));
-  }
   if (snapshot.sevenDay) {
     rows.push(formatUsageBar(snapshot.sevenDay.utilization, snapshot.sevenDay.resetsAt, now, '7d'));
   }
@@ -395,9 +390,8 @@ async function renderRotationOutcome(outcome: RotationOutcome): Promise<string> 
   if (outcome.kind === 'rotated') {
     const fromName = outcome.from?.name ?? '(none)';
     const resets = formatDurationUntil(outcome.to.sevenDayResetsAt, { fallback: '—' });
-    const five = pct(outcome.to.fiveHourUtilization);
     const seven = pct(outcome.to.sevenDayUtilization);
-    return `:repeat: Auto-rotated *${fromName}* → *${outcome.to.name}* (7d resets ${resets}, 5h ${five} / 7d ${seven})`;
+    return `:repeat: Auto-rotated *${fromName}* → *${outcome.to.name}* (7d resets ${resets}, 7d ${seven})`;
   }
 
   if (outcome.kind === 'noop') {

@@ -96,7 +96,6 @@ describe('computeModelBattery — T3 remaining quota as a battery', () => {
   const claudeA: UsageAccountView = {
     group: 'claude',
     windows: [
-      { label: '5h', remaining: 0.8, resetsAt: 2_000 },
       { label: '7d', remaining: 0.5, resetsAt: 9_000 },
       { label: '7d-opus', remaining: 0.3, resetsAt: 8_000 },
       { label: '7d-fable', remaining: 0.9 },
@@ -104,14 +103,11 @@ describe('computeModelBattery — T3 remaining quota as a battery', () => {
   };
   const claudeB: UsageAccountView = {
     group: 'claude',
-    windows: [
-      { label: '5h', remaining: 1 },
-      { label: '7d', remaining: 0.7 },
-    ],
+    windows: [{ label: '7d', remaining: 0.7 }],
   };
 
   it('level = pool average of each account’s binding window for that model', () => {
-    // A: min(0.8, 0.5, opus 0.3) = 0.3 · B: min(1, 0.7) = 0.7 → 0.5
+    // A: min(0.5, opus 0.3) = 0.3 · B: 0.7 → 0.5
     const battery = computeModelBattery('claude-opus-5-5[1m]', [claudeA, claudeB]);
     expect(battery.level).toBeCloseTo(0.5);
     expect(battery.accounts).toEqual({ measured: 2, total: 2, available: 2 });
@@ -120,14 +116,13 @@ describe('computeModelBattery — T3 remaining quota as a battery', () => {
   });
 
   it('a model-scoped weekly window only binds the model it names', () => {
-    // fable: A = min(0.8, 0.5, 0.9) = 0.5 · B = 0.7 → 0.6
+    // fable: A = min(0.5, 0.9) = 0.5 · B = 0.7 → 0.6
     expect(computeModelBattery('claude-fable-5-1[1m]', [claudeA, claudeB]).level).toBeCloseTo(0.6);
   });
 
   it('breaks the level down per window (average remaining, earliest reset)', () => {
     const battery = computeModelBattery('claude-opus-5-5[1m]', [claudeA, claudeB]);
     expect(battery.windows).toEqual([
-      { label: '5h', remaining: 0.9, resetsAt: 2_000 },
       { label: '7d', remaining: 0.6, resetsAt: 9_000 },
       { label: '7d-opus', remaining: 0.3, resetsAt: 8_000 },
     ]);
@@ -142,12 +137,12 @@ describe('computeModelBattery — T3 remaining quota as a battery', () => {
   });
 
   it('an exhausted binding window makes the account unavailable', () => {
-    const empty: UsageAccountView = { group: 'claude', windows: [{ label: '5h', remaining: 0 }] };
+    const empty: UsageAccountView = { group: 'claude', windows: [{ label: '7d', remaining: 0 }] };
     expect(computeModelBattery('claude-opus-5-5[1m]', [empty, claudeB]).accounts.available).toBe(1);
   });
 
   it('only accounts of the model’s provider count', () => {
-    const grok: UsageAccountView = { group: 'grok', windows: [{ label: '5h', remaining: 0.1 }] };
+    const grok: UsageAccountView = { group: 'grok', windows: [{ label: '7d', remaining: 0.1 }] };
     expect(computeModelBattery('claude-opus-5-5[1m]', [claudeB, grok]).level).toBeCloseTo(0.7);
     expect(computeModelBattery('grok-4.6', [claudeB, grok]).level).toBeCloseTo(0.1);
   });
@@ -155,7 +150,7 @@ describe('computeModelBattery — T3 remaining quota as a battery', () => {
   it('no measured data → level null (rendered as an unknown battery, never as full)', () => {
     expect(computeModelBattery('claude-opus-5-5[1m]', []).level).toBeNull();
     expect(computeModelBattery('claude-opus-5-5[1m]', null).level).toBeNull();
-    const unmeasured: UsageAccountView = { group: 'claude', windows: [{ label: '5h' }] };
+    const unmeasured: UsageAccountView = { group: 'claude', windows: [{ label: '7d' }] };
     expect(computeModelBattery('claude-opus-5-5[1m]', [unmeasured])).toMatchObject({
       level: null,
       best: null,
@@ -302,7 +297,7 @@ describe('buildNewTaskContext — T3/T4/T5/T6 composer defaults', () => {
   });
 
   it('labels the battery as a shared-pool estimate with its source and freshness', () => {
-    const accounts: UsageAccountView[] = [{ group: 'claude', windows: [{ label: '5h', remaining: 0.4 }] }];
+    const accounts: UsageAccountView[] = [{ group: 'claude', windows: [{ label: '7d', remaining: 0.4 }] }];
     const ctx = buildNewTaskContext(input({ usageAccounts: accounts, usageSource: 'llmux', usageFetchedAt: 1234 }));
     expect(ctx.usage).toEqual({ scope: 'shared-pool', source: 'llmux', fetchedAt: 1234 });
     expect(ctx.models[0].battery.level).toBeCloseTo(0.4);

@@ -39,7 +39,6 @@ function staleState(keyId: string): SlotState {
     consecutiveRefreshFailures: 3,
     usage: {
       fetchedAt: new Date(NOW - 2 * 86_400_000).toISOString(),
-      fiveHour: { utilization: 5, resetsAt: new Date(NOW + 3 * 3_600_000).toISOString() },
       sevenDay: { utilization: 2, resetsAt: new Date(NOW + 4 * 86_400_000).toISOString() },
     },
   };
@@ -66,7 +65,7 @@ describe('#701 block-budget invariant', () => {
         activeLeases: [],
         usage: {
           fetchedAt: new Date(NOW - 30_000).toISOString(),
-          fiveHour: { utilization: 10, resetsAt: new Date(NOW + 3 * 3_600_000).toISOString() },
+          sevenDay: { utilization: 10, resetsAt: new Date(NOW + 3 * 3_600_000).toISOString() },
         },
       },
     };

@@ -428,7 +428,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       expect(until).toBeLessThan(beforeMs + 61 * 60 * 1000);
     });
 
-    it('recordRateLimitHint refreshes rateLimitedAt once it ages past the 5h window (no cooldownUntil)', async () => {
+    it('recordRateLimitHint refreshes rateLimitedAt once it ages past the stale window (no cooldownUntil)', async () => {
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
@@ -447,7 +447,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const secondAt = (await store.load()).state[s1.keyId].rateLimitedAt;
       expect(secondAt).toBe(firstAt);
 
-      // Age the stored timestamp past the 5h window by rewriting it.
+      // Age the stored timestamp past the stale window (RATE_LIMIT_WINDOW_MS) by rewriting it.
       await store.mutate((snap) => {
         snap.state[s1.keyId].rateLimitedAt = new Date(Date.now() - (5 * 60 + 1) * 60 * 1000).toISOString();
       });
@@ -802,29 +802,29 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       fetchUsageMock.mockResolvedValueOnce({
         snapshot: {
           fetchedAt: new Date().toISOString(),
-          fiveHour: { utilization: 50, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+          sevenDay: { utilization: 50, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
         },
         nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
       });
       const result = await tm.fetchAndStoreUsage(s.keyId);
       expect(result).not.toBeNull();
       // #701 — percent-form stored verbatim.
-      expect(result?.fiveHour?.utilization).toBe(50);
+      expect(result?.sevenDay?.utilization).toBe(50);
       const snap = await store.load();
-      expect(snap.state[s.keyId].usage?.fiveHour?.utilization).toBe(50);
+      expect(snap.state[s.keyId].usage?.sevenDay?.utilization).toBe(50);
       expect(snap.state[s.keyId].lastUsageFetchedAt).toBeDefined();
     });
 
     // ── #876 — Usage refresh clears stale cooldown ──────────────
     //
     // Anthropic's /api/oauth/usage endpoint is ground truth: when fresh
-    // `fiveHour.utilization < 100` lands on a slot, the slot demonstrably has
+    // `sevenDay.utilization < 100` lands on a slot, the slot demonstrably has
     // capacity left and is NOT actually in cooldown — any persisted
     // `cooldownUntil` is stale (either a one-off 429 that's now reset, or a
     // legacy `inferred_shared` mark from #804 that never matched a real
     // upstream limit). Clear the cooldown fields so the slot becomes
     // eligible again on the next pick.
-    it('#876: fresh usage with fiveHour.utilization < 100 clears stale cooldown fields', async () => {
+    it('#876: fresh usage with sevenDay.utilization < 100 clears stale cooldown fields', async () => {
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
@@ -848,7 +848,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       fetchUsageMock.mockResolvedValueOnce({
         snapshot: {
           fetchedAt: new Date().toISOString(),
-          fiveHour: { utilization: 8, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+          sevenDay: { utilization: 8, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
         },
         nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
       });
@@ -861,10 +861,10 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       expect(snap.state[s.keyId].rateLimitedAt).toBeUndefined();
       expect(snap.state[s.keyId].rateLimitSource).toBeUndefined();
       // Usage snapshot still persisted.
-      expect(snap.state[s.keyId].usage?.fiveHour?.utilization).toBe(8);
+      expect(snap.state[s.keyId].usage?.sevenDay?.utilization).toBe(8);
     });
 
-    it('#876: fresh usage with fiveHour.utilization === 100 preserves cooldown (slot really is capped)', async () => {
+    it('#876: fresh usage with sevenDay.utilization === 100 preserves cooldown (slot really is capped)', async () => {
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
@@ -884,7 +884,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       fetchUsageMock.mockResolvedValueOnce({
         snapshot: {
           fetchedAt: new Date().toISOString(),
-          fiveHour: { utilization: 100, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+          sevenDay: { utilization: 100, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
         },
         nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
       });
@@ -894,14 +894,9 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       expect(snap.state[s.keyId].rateLimitSource).toBe('error_string');
     });
 
-    it('#878: fresh usage with fiveHour absent (sevenDay low) clears cooldown — absent window treated as 0%', async () => {
-      // Anthropic frequently omits the five_hour window from the /usage payload
-      // when the slot's recent activity is too sparse to register. Observed in
-      // prod for ai3 + dev1 + several siblings — they sat stuck in cooldown
-      // because #876 only acted on a present fiveHour. Treat an absent window
-      // as 0% utilization: the slot is demonstrably not saturated on that
-      // window. If at least one window proves capacity, clear the stale
-      // cooldown.
+    it('#878: fresh usage with a low sevenDay clears cooldown — a 5-hour window is no longer read (2026-11)', async () => {
+      // #878 once treated an absent five_hour window as 0%. There is no 5-hour
+      // window since 2026-11: the weekly window alone decides.
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
@@ -927,14 +922,13 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       });
       await tm.fetchAndStoreUsage(s.keyId);
       const snap = await store.load();
-      // Cooldown cleared — fiveHour absent treated as 0%, sevenDay 7% also
-      // below saturation → no window is capped → stale cooldown.
+      // Cooldown cleared — sevenDay 7% is below saturation → stale cooldown.
       expect(snap.state[s.keyId].cooldownUntil).toBeUndefined();
       expect(snap.state[s.keyId].rateLimitedAt).toBeUndefined();
       expect(snap.state[s.keyId].rateLimitSource).toBeUndefined();
     });
 
-    it('#878: fresh usage with both fiveHour and sevenDay absent clears cooldown', async () => {
+    it('#878: fresh usage with no window at all clears cooldown', async () => {
       // The other corner case: Anthropic returns a payload with no usage
       // windows at all. We treat this as "no evidence of saturation" → clear.
       // If the slot really is rate-limited it'll 429 again on the next call
@@ -967,8 +961,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
     });
 
     it('#878: fresh usage with sevenDay === 100 preserves cooldown (weekly cap is a real signal)', async () => {
-      // A slot that hit the 7-day cap really IS rate-limited even if fiveHour
-      // looks fine. Don't clear under that condition — the operator (or the
+      // A slot that hit the 7-day cap really IS rate-limited. Don't clear under that condition — the operator (or the
       // upstream API) should see the cooldown stay until the weekly window
       // resets.
       const { mod, storeMod } = await importSut();
@@ -990,7 +983,6 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       fetchUsageMock.mockResolvedValueOnce({
         snapshot: {
           fetchedAt: new Date().toISOString(),
-          fiveHour: { utilization: 30, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
           sevenDay: { utilization: 100, resetsAt: new Date(Date.now() + 7 * 24 * 3_600_000).toISOString() },
         },
         nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
@@ -1017,7 +1009,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       fetchUsageMock.mockResolvedValueOnce({
         snapshot: {
           fetchedAt: new Date().toISOString(),
-          fiveHour: { utilization: 10, resetsAt: new Date().toISOString() },
+          sevenDay: { utilization: 10, resetsAt: new Date().toISOString() },
         },
         nextFetchAllowedAtMs: Date.now() + 120_000,
       });
@@ -1306,7 +1298,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       fetchUsageMock.mockImplementation(async () => ({
         snapshot: {
           fetchedAt: new Date().toISOString(),
-          fiveHour: { utilization: 30, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+          sevenDay: { utilization: 30, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
         },
         nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
       }));
@@ -1339,12 +1331,12 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       resolveFetch({
         snapshot: {
           fetchedAt: new Date().toISOString(),
-          fiveHour: { utilization: 50, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+          sevenDay: { utilization: 50, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
         },
         nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
       });
       const results = await parallel;
-      expect(results.every((r) => r?.fiveHour?.utilization === 50)).toBe(true);
+      expect(results.every((r) => r?.sevenDay?.utilization === 50)).toBe(true);
       // Critical assertion: upstream fetch hit at most once thanks to dedupe.
       expect(fetchUsageMock).toHaveBeenCalledTimes(1);
     });
@@ -1431,7 +1423,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
           ...(snap.state[slot.keyId] ?? { authState: 'healthy', activeLeases: [] }),
           usage: {
             fetchedAt: new Date().toISOString(),
-            fiveHour: { utilization: 42, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+            sevenDay: { utilization: 42, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
           },
           lastUsageFetchedAt: new Date().toISOString(),
         };
@@ -1547,7 +1539,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         return {
           snapshot: {
             fetchedAt: '2026-04-19T00:00:00Z',
-            fiveHour: { utilization: 50, resetsAt: '2026-04-19T05:00:00Z' },
+            sevenDay: { utilization: 50, resetsAt: '2026-04-19T05:00:00Z' },
           },
           nextFetchAllowedAtMs: Date.now() + 60_000,
         };
@@ -1839,7 +1831,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         return {
           snapshot: {
             fetchedAt: '2026-04-19T00:00:00Z',
-            fiveHour: { utilization: 99, resetsAt: '2026-04-19T05:00:00Z' },
+            sevenDay: { utilization: 99, resetsAt: '2026-04-19T05:00:00Z' },
           },
           nextFetchAllowedAtMs: Date.now() + 60_000,
         };
@@ -1888,7 +1880,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
     // the next card open.
     const usageSnapshot = (utilization: number) => ({
       fetchedAt: '2026-04-19T00:00:00Z',
-      fiveHour: { utilization, resetsAt: '2026-04-19T05:00:00Z' },
+      sevenDay: { utilization, resetsAt: '2026-04-19T05:00:00Z' },
     });
     const STALE_USAGE = usageSnapshot(11);
     const FRESH_USAGE = usageSnapshot(22);
@@ -2147,7 +2139,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       fetchUsageMock.mockResolvedValueOnce({
         snapshot: {
           fetchedAt: new Date().toISOString(),
-          fiveHour: { utilization: 90, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+          sevenDay: { utilization: 90, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
         },
         nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
       });
@@ -2155,7 +2147,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const result = await tm.fetchAndStoreUsage(s.keyId, { force: true });
       expect(fetchUsageMock).toHaveBeenCalledTimes(1);
       // #701 — percent-form stored verbatim.
-      expect(result?.fiveHour?.utilization).toBe(90);
+      expect(result?.sevenDay?.utilization).toBe(90);
     });
 
     it('fetchUsageForAllAttached does NOT accept or forward force to per-slot calls (dedupe-over-force)', async () => {
@@ -2190,7 +2182,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       fetchUsageMock.mockResolvedValue({
         snapshot: {
           fetchedAt: new Date().toISOString(),
-          fiveHour: { utilization: 10, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+          sevenDay: { utilization: 10, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
         },
         nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
       });
@@ -2246,7 +2238,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         return {
           snapshot: {
             fetchedAt: '2026-04-19T00:00:00Z',
-            fiveHour: { utilization: 42, resetsAt: '2026-04-19T05:00:00Z' },
+            sevenDay: { utilization: 42, resetsAt: '2026-04-19T05:00:00Z' },
           },
           nextFetchAllowedAtMs: Date.now() + 60_000,
         };
@@ -2296,7 +2288,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         return {
           snapshot: {
             fetchedAt: '2026-04-20T00:00:00Z',
-            fiveHour: { utilization: 77, resetsAt: '2026-04-20T05:00:00Z' },
+            sevenDay: { utilization: 77, resetsAt: '2026-04-20T05:00:00Z' },
           },
           nextFetchAllowedAtMs: Date.now() + 60_000,
         };
@@ -3321,7 +3313,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       fetchUsageMock.mockResolvedValueOnce({
         snapshot: {
           fetchedAt: new Date().toISOString(),
-          fiveHour: { utilization: 20, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+          sevenDay: { utilization: 20, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
         },
         nextFetchAllowedAtMs: Date.now() + 120_000,
       });

@@ -59,9 +59,9 @@ export async function notifyAutoRotation(client: WebClient, payload: RotationNot
   }
 
   const fromText = payload.from
-    ? `\`${payload.from.name}\` (5h ${fmtPct(payload.from.fiveHourUtilization)} · 7d ${fmtPct(payload.from.sevenDayUtilization)})`
+    ? `\`${payload.from.name}\` (7d ${fmtPct(payload.from.sevenDayUtilization)})`
     : '_없음_';
-  const toText = `\`${payload.to.name}\` (5h ${fmtPct(payload.to.fiveHourUtilization)} · 7d ${fmtPct(payload.to.sevenDayUtilization)})`;
+  const toText = `\`${payload.to.name}\` (7d ${fmtPct(payload.to.sevenDayUtilization)})`;
 
   const text = `:repeat: Auto CCT rotation: ${payload.from?.name ?? 'none'} → ${payload.to.name}`;
 

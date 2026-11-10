@@ -23,17 +23,15 @@ describe('llmuxAccountsToUsage', () => {
       group: 'claude',
       status: 'ok',
       order: 1,
-      five_hour: w(0.2),
       seven_day: w(0.5, 86_400),
       scoped_limits: [{ ...w(0.7, 86_400), scope_label: 'Opus' }],
       ...over,
     }) as any;
 
-  it('maps 5h / 7d / model-scoped windows to remaining ratios with their resets', () => {
-    const [view] = llmuxAccountsToUsage([account()], NOW_MS);
+  it('maps 7d / model-scoped windows to remaining ratios with their resets (no 5h since 2026-11)', () => {
+    const [view] = llmuxAccountsToUsage([account({ five_hour: w(0.2) })], NOW_MS);
     expect(view.group).toBe('claude');
     expect(view.windows).toEqual([
-      { label: '5h', remaining: 0.8, resetsAt: NOW_S + 3600 },
       { label: '7d', remaining: 0.5, resetsAt: NOW_S + 86_400 },
       { label: '7d-opus', remaining: expect.closeTo(0.3, 5), resetsAt: NOW_S + 86_400 },
     ]);
@@ -58,7 +56,7 @@ describe('llmuxAccountsToUsage', () => {
   });
 
   it('a window without data stays unmeasured', () => {
-    const [view] = llmuxAccountsToUsage([account({ five_hour: null, seven_day: null, scoped_limits: [] })], NOW_MS);
+    const [view] = llmuxAccountsToUsage([account({ seven_day: null, scoped_limits: [] })], NOW_MS);
     expect(view.windows.every((x) => x.remaining === undefined)).toBe(true);
   });
 });
@@ -70,7 +68,6 @@ describe('cctSlotsToUsage', () => {
       activeLeases: [],
       usage: {
         fetchedAt: new Date(NOW_MS).toISOString(),
-        fiveHour: { utilization: 25, resetsAt: new Date(NOW_MS + 3_600_000).toISOString() },
         sevenDay: { utilization: 60, resetsAt: new Date(NOW_MS + 86_400_000).toISOString() },
         sevenDaySonnet: { utilization: 10, resetsAt: new Date(NOW_MS + 86_400_000).toISOString() },
       },
@@ -81,7 +78,6 @@ describe('cctSlotsToUsage', () => {
     const [view] = cctSlotsToUsage([slot()], NOW_MS);
     expect(view.group).toBe('claude');
     expect(view.windows).toEqual([
-      { label: '5h', remaining: 0.75, resetsAt: NOW_S + 3600 },
       { label: '7d', remaining: 0.4, resetsAt: NOW_S + 86_400 },
       { label: '7d-sonnet', remaining: 0.9, resetsAt: NOW_S + 86_400 },
     ]);

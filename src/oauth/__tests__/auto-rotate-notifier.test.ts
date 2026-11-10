@@ -44,14 +44,12 @@ const candidate = {
   name: 'B',
   sevenDayResetsAt: '2026-04-28T00:00:00Z',
   sevenDayResetsAtMs: new Date('2026-04-28T00:00:00Z').getTime(),
-  fiveHourUtilization: 42,
   sevenDayUtilization: 55,
 };
 
 const activeSummary = {
   keyId: 'a',
   name: 'A',
-  fiveHourUtilization: 70,
   sevenDayUtilization: 80,
   sevenDayResetsAt: '2026-05-01T00:00:00Z',
 };
@@ -99,8 +97,9 @@ describe('notifyAutoRotation (#737)', () => {
     const blockText = JSON.stringify(arg.blocks);
     expect(blockText).toContain('A');
     expect(blockText).toContain('B');
-    expect(blockText).toContain('42.0%');
+    expect(blockText).toContain('80.0%');
     expect(blockText).toContain('55.0%');
+    expect(blockText).not.toContain('5h');
   });
 
   it('posts even when from is null (first-boot rotation)', async () => {

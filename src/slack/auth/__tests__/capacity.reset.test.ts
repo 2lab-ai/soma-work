@@ -18,7 +18,7 @@ describe('T2 invalid absolute reset must not become a relative forecast', () => 
     const reading = window(absolute);
     expect(resetAt(reading, nowMs)).toBeUndefined();
     expect(remaining(reading, nowMs)).toBeUndefined();
-    const line = windowLine('5h', reading, nowMs);
+    const line = windowLine('7d', reading, nowMs);
     expect(line).toContain('재조회 필요');
     expect(line).not.toContain('<!date^');
     expect(line).not.toContain('잔여 60%');
@@ -28,11 +28,10 @@ describe('T2 invalid absolute reset must not become a relative forecast', () => 
       group: 'claude',
       status: 'ok',
       order: 1,
-      five_hour: reading,
-      seven_day: null,
+      seven_day: reading,
     };
     const summary = groupSummary([account], nowMs).join('\n');
-    expect(summary).toContain('5h 잔여량 미제공 · 측정 0/1');
+    expect(summary).toContain('7d 잔여량 미제공 · 측정 0/1');
     expect(summary).not.toContain('다음 리셋:');
   });
 

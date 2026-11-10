@@ -19,7 +19,6 @@ vi.mock('../../../auth/llmux-client', () => ({
       group: 'claude',
       status: 'ok',
       order: i + 1,
-      five_hour: { utilization: 0.25, resets_at: 1_900_003_600, resets_in_secs: 3600 },
       seven_day: { utilization: 0.5, resets_at: 1_900_086_400, resets_in_secs: 86400 },
     })),
   })),
@@ -112,7 +111,7 @@ describe('T1–T3 real command → renderer → emitted button → registered ac
     } as never)) as Card;
     for (const card of [naked, topic]) {
       expect(contains(card, '*Claude*')).toBe(true);
-      expect(contains(card, '7.50계정분')).toBe(true);
+      expect(contains(card, '5.00계정분')).toBe(true);
       expect(contains(card, AUTH_ACTION_IDS.settings)).toBe(false);
       expect(contains(card, AUTH_ACTION_IDS.switch)).toBe(false);
       expect(button(card, AUTH_ACTION_IDS.viewer).value).toContain('admin');

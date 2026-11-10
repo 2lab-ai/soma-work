@@ -527,7 +527,7 @@ describe('ntBatteryView — T3 the battery (its reading for <ui-meter>, D7 H-03)
     level,
     best: level,
     windows: [
-      { label: '5h', remaining: 0.9 },
+      { label: '7d', remaining: 0.9 },
       { label: '7d-opus', remaining: level },
     ],
     accounts: { measured: 2, total: 2, available: 2 },
@@ -547,7 +547,7 @@ describe('ntBatteryView — T3 the battery (its reading for <ui-meter>, D7 H-03)
   it('its label says it is a shared-pool estimate and breaks the windows down', () => {
     const { label } = ntBatteryView(battery(0.72));
     expect(label).toContain('공유 풀 추정');
-    expect(label).toContain('5h 90%');
+    expect(label).toContain('7d 90%');
     expect(label).toContain('7d-opus 72%');
     expect(label).toContain('가용 2/2');
   });
