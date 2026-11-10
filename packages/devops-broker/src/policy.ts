@@ -4,8 +4,10 @@
 // path, and no error echoes a value.
 
 import * as fs from 'node:fs';
+import * as net from 'node:net';
 import * as path from 'node:path';
 import { MAX_LEASE_TTL_SECONDS, parseLeaseTtlSeconds } from '@soma/process-shared/devops/protocol.js';
+import { relyingParty } from './webauthn.js';
 
 export type GhAccountClass = 'member' | 'org-admin';
 
@@ -21,6 +23,21 @@ export interface CfEnvPolicy {
   ipCondition: false;
 }
 
+/**
+ * The broker's own approval page (#1056): where an admin decides a card with a passkey, without Slack. The
+ * broker serves it itself over TLS; no proxy sits in front, so the bot user never holds this origin.
+ */
+export interface ApprovalPagePolicy {
+  /** `https://<name>.home.arpa:<port>` — what the browser shows and what every passkey is bound to. */
+  origin: string;
+  /** The origin's host: the WebAuthn rp id. */
+  rpId: string;
+  /** The address the page listens on (an IP literal). */
+  listenHost: string;
+  /** The origin's port; the page listens on it. 1024 or above: the broker is not root. */
+  port: number;
+}
+
 export interface BrokerPolicy {
   /** Slack user IDs whose reaction approves or denies a card — the only admin list the broker trusts. */
   admins: string[];
@@ -33,6 +50,8 @@ export interface BrokerPolicy {
   cloudflare: Record<string, CfEnvPolicy>;
   approvalTimeoutSeconds: number;
   maxPendingApprovals: number;
+  /** Absent = no approval page: cards are decided in Slack only. */
+  approvalPage?: ApprovalPagePolicy;
 }
 
 export const DEFAULT_LEASE_TTL_SECONDS = 3600;
@@ -223,13 +242,39 @@ function parseCloudflare(value: unknown): Record<string, CfEnvPolicy> {
   return envs;
 }
 
+function parseApprovalPage(value: unknown): ApprovalPagePolicy | undefined {
+  const at = 'policy.approvalPage';
+  if (value === undefined) return undefined;
+  const page = object(value, at, ['origin', 'listenHost']);
+  const what = 'https://<name>.home.arpa:<port> with a port from 1024 to 65535 and nothing after it';
+  if (typeof page.origin !== 'string') fail(`${at}.origin`, `must be ${what}`);
+  let rpId: string;
+  try {
+    rpId = relyingParty(page.origin).rpId;
+  } catch {
+    fail(`${at}.origin`, `must be ${what}`);
+  }
+  const port = Number(new URL(page.origin).port);
+  if (!Number.isInteger(port) || port < 1024) fail(`${at}.origin`, `must be ${what}`);
+  if (typeof page.listenHost !== 'string' || net.isIP(page.listenHost) === 0) {
+    fail(`${at}.listenHost`, 'must be an IP address');
+  }
+  return { origin: page.origin, rpId, listenHost: page.listenHost, port };
+}
+
 /**
  * Validates the on-disk policy (16 §8) and returns it with durations in seconds and defaults filled:
  * allowedOwners = [org], restWriteAllowlist = [], defaultTtl 1h (capped at maxTtl), maxTtl 71h,
  * ipCondition false, approvalTimeout 10m (at most 10m), maxPendingApprovals 3 (1-20).
  */
 export function parsePolicy(json: unknown): BrokerPolicy {
-  const policy = object(json, 'policy', ['admins', 'gh'], ['cloudflare', 'approvalTimeout', 'maxPendingApprovals']);
+  const policy = object(
+    json,
+    'policy',
+    ['admins', 'gh'],
+    ['cloudflare', 'approvalTimeout', 'maxPendingApprovals', 'approvalPage'],
+  );
+  const approvalPage = parseApprovalPage(policy.approvalPage);
   return {
     admins: stringList(policy.admins, 'policy.admins', SLACK_USER_RE, 'Slack user IDs (U… or W…)', 1),
     gh: parseGh(policy.gh),
@@ -247,6 +292,7 @@ export function parsePolicy(json: unknown): BrokerPolicy {
       1,
       MAX_PENDING_APPROVALS_LIMIT,
     ),
+    ...(approvalPage ? { approvalPage } : {}),
   };
 }
 

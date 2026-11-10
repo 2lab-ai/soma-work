@@ -270,6 +270,51 @@ describe('parsePolicy: rejects, naming the JSON path', () => {
   });
 });
 
+describe('parsePolicy: approvalPage (#1056)', () => {
+  const page = { origin: 'https://approve.home.arpa:8443', listenHost: '127.0.0.1' };
+
+  it('is off when the section is absent', () => {
+    expect(parsePolicy(example()).approvalPage).toBeUndefined();
+  });
+
+  it('takes the rp id and the port from the origin', () => {
+    expect(parsePolicy(changed(['approvalPage'], page)).approvalPage).toEqual({
+      origin: 'https://approve.home.arpa:8443',
+      rpId: 'approve.home.arpa',
+      listenHost: '127.0.0.1',
+      port: 8443,
+    });
+    expect(parsePolicy(changed(['approvalPage'], { ...page, listenHost: '::' })).approvalPage?.listenHost).toBe('::');
+  });
+
+  it.each<[string, unknown, string]>([
+    ['not an object', 'https://approve.home.arpa:8443', 'policy.approvalPage'],
+    ['an unknown key', { ...page, cert: 'x' }, 'policy.approvalPage.cert'],
+    ['a missing origin', { listenHost: '127.0.0.1' }, 'policy.approvalPage.origin'],
+    ['a missing listenHost', { origin: page.origin }, 'policy.approvalPage.listenHost'],
+    ['a public name', { ...page, origin: 'https://approve.example.com:8443' }, 'policy.approvalPage.origin'],
+    ['a tailnet name', { ...page, origin: 'https://host.tailnet.ts.net:8443' }, 'policy.approvalPage.origin'],
+    ['an address', { ...page, origin: 'https://192.168.0.2:8443' }, 'policy.approvalPage.origin'],
+    ['plain http', { ...page, origin: 'http://approve.home.arpa:8443' }, 'policy.approvalPage.origin'],
+    ['a path', { ...page, origin: 'https://approve.home.arpa:8443/a' }, 'policy.approvalPage.origin'],
+    ['no port (443 needs root)', { ...page, origin: 'https://approve.home.arpa' }, 'policy.approvalPage.origin'],
+    ['a privileged port', { ...page, origin: 'https://approve.home.arpa:444' }, 'policy.approvalPage.origin'],
+    ['a host name to listen on', { ...page, listenHost: 'localhost' }, 'policy.approvalPage.listenHost'],
+    ['a number to listen on', { ...page, listenHost: 0 }, 'policy.approvalPage.listenHost'],
+  ])('rejects %s', (_name, value, where) => {
+    expect(rejection(changed(['approvalPage'], value)).path).toBe(where);
+  });
+
+  it('never echoes the origin or the address', () => {
+    for (const value of [
+      { ...page, origin: `https://${MARKER.toLowerCase()}.example.com:8443` },
+      { ...page, listenHost: MARKER },
+    ]) {
+      expect(rejection(changed(['approvalPage'], value)).message.toLowerCase()).not.toContain(MARKER.toLowerCase());
+    }
+  });
+});
+
 describe('loadPolicy', () => {
   let dir: string;
   let file: string;
