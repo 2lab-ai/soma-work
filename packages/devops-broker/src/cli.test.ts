@@ -170,6 +170,33 @@ describe('soma-devops-broker other commands', () => {
     const result = run(['help']);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('usage: soma-devops-broker');
+    expect(result.stdout).toContain('passkey enrol <admin>');
+  });
+});
+
+describe('soma-devops-broker passkey (#1056)', () => {
+  it('without a running broker, says so and exits 1 (it only ever talks to the broker)', () => {
+    fs.mkdirSync(path.join(root, 'state'), { mode: 0o700 });
+    const result = run(['passkey', 'list', '--root', root]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('no broker with an approval page is running');
+    expect(result.stderr).toContain(path.join(root, 'state', 'operator.sock'));
+    // The command wrote nothing: passkeys are stored by the broker process only.
+    expect(fs.readdirSync(path.join(root, 'state'))).toEqual([]);
+  });
+
+  it.each([
+    [['passkey']],
+    [['passkey', 'enrol']],
+    [['passkey', 'frobnicate', 'x']],
+  ])('%j prints the passkey usage and exits 2', (args) => {
+    const result = run([...args, '--root', root]);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('passkey enrol <admin>');
+  });
+
+  it('refuses --gh', () => {
+    expect(run(['passkey', 'list', '--gh', '/usr/bin/true', '--root', root]).status).toBe(2);
   });
 });
 

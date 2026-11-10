@@ -12,6 +12,7 @@ import { createCloudflareLeases, type LeaseView, loadCfLeaseStores } from './cf-
 import { createGhRunner, type GhRunner } from './gh-runner.js';
 import { createGithubAdmin } from './github-admin.js';
 import { Ledger } from './ledger.js';
+import { operatorSocketPath, PASSKEY_USAGE, runPasskeyCommand } from './operator.js';
 import { brokerPaths } from './paths.js';
 import { type BrokerPolicy, formatDuration, loadPolicy } from './policy.js';
 import {
@@ -37,6 +38,7 @@ const USAGE = [
   '  serve [--gh <path>]    run the broker (gh default: /usr/local/libexec/soma-devops/gh, must be root-owned)',
   '  ingest <kind> <name>   store a secret piped on stdin (gh <account> | cf <env> | slack broker-app | slack broker-app-socket)',
   '  check-policy           validate policy.json and list which secret files are in place (never their values)',
+  ...PASSKEY_USAGE,
   '',
   '  --root <dir>           data root (default: $SOMA_DEVOPS_ROOT or /usr/local/var/soma-devops)',
 ].join('\n');
@@ -320,6 +322,14 @@ export async function main(argv: readonly string[]): Promise<number> {
       return checkPolicy(parsed.positional, parsed.root);
     case 'serve':
       return serve(parsed.positional, parsed.root, parsed.gh ?? DEFAULT_GH_PATH);
+    case 'passkey':
+      // Talks to the running broker only: this process never reads or writes the passkey file.
+      return runPasskeyCommand(parsed.positional, {
+        socketPath: operatorSocketPath(brokerPaths(parsed.root)),
+        stdin: process.stdin,
+        stdout: process.stdout,
+        stderr: process.stderr,
+      });
     case undefined:
       return usageError('missing command');
     default:
