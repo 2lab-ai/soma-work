@@ -9432,9 +9432,12 @@ function adminTitleBadge(title, n) {
 async function answerAdminApproval(id, choiceId) {
   var a = _adminLast[id];
   if (!a) return null;
-  // devops broker card (#1051): its one choice opens the viewer's own Slack card, where it is decided.
-  // Nothing is sent from here — the dashboard runs as the model's OS user, so it can never decide one.
-  if (a.kind === 'devops_broker') return openDevopsSlackCard(id, a);
+  // devops broker card (#1051): a card the broker does not let the dashboard decide has one choice, which opens
+  // the viewer's own Slack card. A card its policy lets the dashboard decide (#1129) names its approve / deny
+  // choices in its batch field, and those are answered here like any other approval.
+  if (a.kind === 'devops_broker' && !(a.batch && (choiceId === a.batch.approve || choiceId === a.batch.deny))) {
+    return openDevopsSlackCard(id, a);
+  }
   var cur = _adminState[id];
   if (cur && (cur.status === 'sending' || cur.status === 'resolved')) return cur;
   _adminState[id] = a.card === 'question' ? { status: 'sending', choiceId: choiceId } : { status: 'sending', decision: choiceId };
