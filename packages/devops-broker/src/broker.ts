@@ -1271,7 +1271,8 @@ export function createBroker(deps: BrokerDeps): Broker {
   }
 
   /**
-   * The admin op (#1051): the waiting cards, read-only. A card is still decided only in Slack. A dashboard asks
+   * The admin op (#1051): the waiting cards, read-only. Nothing is decided over this socket: a card is decided in
+   * Slack or on the broker's own approval page (#1056), whose address each listed card carries. A dashboard asks
    * every few seconds, so a successful listing leaves no ledger row; a refused or failed one does.
    */
   async function handleAdmin(conn: Connection, value: unknown): Promise<void> {

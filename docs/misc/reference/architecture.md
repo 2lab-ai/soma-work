@@ -143,6 +143,7 @@ updates inside its terminal-cleanup boundary, including setup failures.
 - 내장 서버(등록 조건은 `McpConfigBuilder`가 SSOT): slack-mcp(스레드가 있는 모든 Slack 턴), agent, model-command, server-tools, devops-tools, permission, cron, mcp-tool-permission
 - devops-tools는 Slack 컨텍스트가 있는 세션에서 config.json에 `devops-tools` 섹션과 `permission` 맵이 있을 때만 등록 (`hasDevopsToolsConfig` / `buildDevopsToolsServer`, 콜 타임아웃 `DEVOPS_TOOLS_CALL_TIMEOUT_MS = 660_000` — 승인 카드 10분 + MCP 중계의 전체 대기 상한 655초보다 길게)
 - devops-tools는 키를 갖지 않고 unix 소켓으로 `packages/devops-broker`에 중계한다. 브로커는 root 소유 코드로 별도 OS 유저로 돌고, `packages/devops-broker/install/install.sh`로 설치 (절차: `packages/devops-broker/install/README.md`)
+- 브로커 승인 페이지(#1056): 정책에 `approvalPage`가 있으면 브로커가 `*.home.arpa` origin에서 HTTPS를 직접 받아 카드를 보여 주고, 어드민의 패스키(WebAuthn) 서명을 직접 검증해 결정한다. 대시보드(봇 프로세스 = 모델과 같은 OS 유저)는 그 주소를 새 창으로 열 뿐 결정을 중계하지 않는다 (`packages/devops-broker/src/approval-page.ts`, 설계 `.prd/16-devops-tools-architecture.md` §5.1)
 - 외부 MCP는 config.json 기반 프로비저닝, GitHub 인증 주입
 
 ### Security (`src/sandbox/`, `somalib/permission/`, `src/dangerous-command-filter.ts`)
@@ -292,7 +293,7 @@ packages/
   common/             # 공유 상수·헬퍼
   process-shared/     # MCP 클라이언트, config 캐시
   mcp-servers/        # 내장 MCP 서버 (목록은 디렉터리가 SSOT)
-  devops-broker/      # 별도 OS 유저 브로커 — gh 토큰·Cloudflare forge 키 보관, 자체 Slack 앱 카드로 admin 승인
+  devops-broker/      # 별도 OS 유저 브로커 — gh 토큰·Cloudflare forge 키 보관, 자체 Slack 앱 카드 또는 자체 승인 페이지(패스키)로 admin 승인
   test-utils/         # 모킹 유틸
 somalib/              # soma 계열 공유 라이브러리 (model-commands, permission, cron)
 services/a2t/         # 음성 전사 Python worker
