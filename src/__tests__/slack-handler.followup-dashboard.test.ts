@@ -205,8 +205,10 @@ describe('SlackHandler — the dashboard’s follow-up queue controls', () => {
       };
     }
     /** A row whose own turn was cut (`uncertain`), as an interrupt leaves it. */
-    function cutRow(overrides: Record<string, any>) {
-      const item = park(overrides);
+    function cutRow(overrides: Record<string, any>, context: Record<string, unknown> = {}) {
+      const result = queue().enqueue(SESSION_KEY, message(overrides), context);
+      if (result.status !== 'queued') throw new Error(`not queued: ${result.status}`);
+      const item = result.item;
       const claimed = queue().claimNext(SESSION_KEY);
       const marked = queue().markDispatched(SESSION_KEY, item.id, claimed.item.epoch);
       queue().markInterrupted(SESSION_KEY, item.id, marked.item.epoch, '턴이 중단되었습니다');
@@ -226,6 +228,59 @@ describe('SlackHandler — the dashboard’s follow-up queue controls', () => {
       await vi.waitFor(() => expect(steerTurn).toHaveBeenCalledTimes(1));
       expect(steerTurn.mock.calls[0][1].text).toContain('T4부터 진행 지금 당장');
       expect(queue().get(SESSION_KEY, cut.id)?.state).toBe('steered');
+      await settle();
+    });
+
+    // The stored row is replayed work: what the drain checks before it runs one, the hand-over checks
+    // too (`authorizeFollowupDispatch` — the author still accepted, the directory it was stored for
+    // still theirs). A refused row stays in line; the drain says why (review #1178).
+    it('a row whose stored working directory is no longer the author’s is not handed over', async () => {
+      const cut = cutRow({ ts: '310.4', text: '다른 디렉토리에서 저장된 지시' }, { workingDirectory: '/tmp/work' });
+      const steerTurn = vi.fn().mockReturnValue(true);
+      handlerAny.claudeHandler.steerTurn = steerTurn;
+      const settle = await busyTurn();
+      handlerAny.messageValidator.validateWorkingDirectory.mockReturnValue({
+        valid: true,
+        workingDirectory: '/tmp/moved-elsewhere',
+      });
+      expect(queue().get(SESSION_KEY, cut.id).context?.workingDirectory).toBe('/tmp/work');
+
+      await act({ itemId: cut.id, op: 'promote', epoch: cut.epoch });
+      await tick();
+      await tick();
+
+      expect(steerTurn).not.toHaveBeenCalled();
+      expect(queue().get(SESSION_KEY, cut.id)?.state).toBe('queued');
+      handlerAny.messageValidator.validateWorkingDirectory.mockReturnValue({
+        valid: true,
+        workingDirectory: '/tmp/work',
+      });
+      await settle();
+    });
+
+    // FIFO holds: an older row put back in line goes in ahead of a newer one already waiting for the
+    // turn to open its input (review #1178).
+    it('an older row goes in ahead of a newer row that already waits for the turn', async () => {
+      const older = cutRow({ ts: '310.5', text: '먼저 보낸 지시' });
+      const newer = park({ ts: '310.6', text: '나중에 보낸 지시' });
+      const steerTurn = vi.fn().mockReturnValue(true);
+      handlerAny.claudeHandler.steerTurn = steerTurn;
+      const settle = await busyTurn();
+      const live = handlerAny.followupDispatcher.liveTurnEpoch(SESSION_KEY);
+      handlerAny.waitForTurnOpen(SESSION_KEY, {
+        rowKey: SESSION_KEY,
+        itemId: newer.id,
+        turnEpoch: live,
+        what: 'test: waits for the turn',
+      });
+
+      await act({ itemId: older.id, op: 'promote', epoch: older.epoch });
+
+      await vi.waitFor(() => expect(steerTurn).toHaveBeenCalledTimes(2));
+      expect(steerTurn.mock.calls.map((call) => call[1].text)).toEqual([
+        expect.stringContaining('먼저 보낸 지시'),
+        expect.stringContaining('나중에 보낸 지시'),
+      ]);
       await settle();
     });
 

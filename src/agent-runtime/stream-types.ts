@@ -198,10 +198,13 @@ export type AgentStreamEvent =
   // `observed` is the honest fallback for a lifecycle phase the backend reports
   // but this seam does not model — it carries the uuid without claiming a
   // transition, so a consumer can refresh rather than guess.
+  // `read` is the backend's own word that it handed the send to the model (the
+  // CLI's `command_lifecycle` `started`) — stronger than `started`, which a reply
+  // frame's stamp also produces, on a synthetic API-error reply too.
   | {
       type: 'steer_lifecycle';
       uuid: string;
-      phase: 'started' | 'completed' | 'cancelled' | 'discarded' | 'observed';
+      phase: 'started' | 'read' | 'completed' | 'cancelled' | 'discarded' | 'observed';
     };
 
 /** Convenience: extract a single event variant by its `type` tag. */
