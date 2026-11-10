@@ -99,15 +99,26 @@ describe('devopsBrokerAdminApprovalAdapter', () => {
     expect(rest).toEqual([]);
   });
 
-  it('never decides: every dashboard answer is refused without reaching the broker', async () => {
-    await fakeBroker(() => ({ approvals: [] }));
+  it('never decides a card the broker does not mark decidable: refused without reaching the broker', async () => {
+    await fakeBroker(() => ({ approvals: [VIEW] }));
     const adapter = devopsBrokerAdminApprovalAdapter({ socketPath });
-    for (const choice of ['approve', 'deny', 'open_slack']) {
+    await adapter.pending(Date.parse('2026-11-09T03:01:00Z'));
+    received = [];
+    for (const choice of ['approve', 'deny']) {
       await expect(adapter.answer('appr_0001abcd', choice, 'U000ADMIN')).resolves.toEqual({
         ok: false,
-        reason: 'invalid',
+        reason: 'forbidden',
       });
     }
+    await expect(adapter.answer('appr_0001abcd', 'open_slack', 'U000ADMIN')).resolves.toEqual({
+      ok: false,
+      reason: 'invalid',
+    });
+    // A card the dashboard was never shown.
+    await expect(adapter.answer('appr_9999zzzz', 'approve', 'U000ADMIN')).resolves.toEqual({
+      ok: false,
+      reason: 'not_found',
+    });
     expect(received).toEqual([]);
     expect(await adapter.resolved(0)).toEqual([]);
   });
@@ -342,5 +353,134 @@ describe('devopsBrokerAdminApprovalAdapter: a broker older than the listing (#10
       fs.writeFileSync(file, JSON.stringify({ 'devops-tools': { approvalsAppUrl } }));
       expect(devopsApprovalsAppUrl(file)).toBe(expected);
     }
+  });
+});
+
+describe('devopsBrokerAdminApprovalAdapter: dashboard decisions (#1129)', () => {
+  const DECIDABLE = {
+    ...VIEW,
+    tool: 'gh_write',
+    title: 'member 계정이 example-org/app에 gh pr comment 실행',
+    details: [
+      { label: '계정', value: 'member (alice-bot)' },
+      { label: '레포', value: 'example-org/app' },
+    ],
+    argv: ['pr', 'comment', '7', '-R', 'example-org/app', '--body', 'hello'],
+    warnings: [],
+    queued: true,
+    queuedUntil: '2026-11-09T04:00:00.000Z',
+    liveUntil: '2026-11-09T03:10:00.000Z',
+    decidable: true,
+  };
+  const MERGE = {
+    ...DECIDABLE,
+    approvalId: 'appr_0002merge',
+    digestPrefix: 'fedcba987654',
+    title: 'member 계정이 example-org/app PR #7 즉시 머지',
+    argv: undefined,
+    warnings: ['PR의 대상(base) 브랜치에 바로 병합'],
+    queued: false,
+  };
+
+  it('shows a decidable card as approve / deny, batchable, with the Slack card lines and its risk', async () => {
+    await fakeBroker(() => ({ approvals: [DECIDABLE, MERGE] }));
+    const adapter = devopsBrokerAdminApprovalAdapter({ socketPath });
+    const [card, merge] = await adapter.pending(Date.parse('2026-11-09T03:20:00Z'));
+    expect(card).toMatchObject({
+      id: 'devops_broker:appr_0001abcd',
+      card: 'permission',
+      summary: DECIDABLE.title,
+      batch: { approve: 'approve', deny: 'deny' },
+      queued: true,
+      risk: 'medium',
+      // The queue's end, not the live wait's: still listed after the live wait ended.
+      expiresAt: Date.parse('2026-11-09T04:00:00.000Z'),
+      rows: {
+        계정: 'member (alice-bot)',
+        레포: 'example-org/app',
+        명령: 'gh "pr" "comment" "7" "-R" "example-org/app" "--body" "hello"',
+        '카드 번호': '0123456789ab',
+      },
+    });
+    expect(card.description).toContain('결과를 요청한 세션으로');
+    expect(merge).toMatchObject({ risk: 'high', rows: { 주의: 'PR의 대상(base) 브랜치에 바로 병합' } });
+    expect(merge.queued).toBeUndefined();
+  });
+
+  it('decides several cards in one broker call, bound to the card numbers shown, and maps each outcome', async () => {
+    await fakeBroker((req) => {
+      if (req.op === 'approvals') return { approvals: [DECIDABLE, MERGE] };
+      const { decisions } = req.args as { decisions: { approvalId: string }[] };
+      return {
+        outcomes: decisions.map((d) =>
+          d.approvalId === 'appr_0001abcd'
+            ? { approvalId: d.approvalId, outcome: 'accepted' }
+            : { approvalId: d.approvalId, outcome: 'refused', reason: 'not-pending' },
+        ),
+      };
+    });
+    const adapter = devopsBrokerAdminApprovalAdapter({ socketPath });
+    await adapter.pending(Date.parse('2026-11-09T03:20:00Z'));
+    received = [];
+    const answers = await adapter.answerMany?.(
+      [
+        { requestId: 'appr_0001abcd', choiceId: 'approve' },
+        { requestId: 'appr_0002merge', choiceId: 'deny' },
+        { requestId: 'appr_0003gone', choiceId: 'approve' },
+      ],
+      'U000ADMIN',
+    );
+    expect(answers).toEqual([
+      { ok: true, outcome: 'approved' },
+      { ok: false, reason: 'already_answered' },
+      { ok: false, reason: 'not_found' },
+    ]);
+    expect(received).toHaveLength(1);
+    expect(received[0]).toMatchObject({
+      op: 'decide',
+      args: {
+        actor: 'U000ADMIN',
+        decisions: [
+          { approvalId: 'appr_0001abcd', digestPrefix: '0123456789ab', action: 'approve' },
+          { approvalId: 'appr_0002merge', digestPrefix: 'fedcba987654', action: 'deny' },
+        ],
+      },
+    });
+    expect(await adapter.resolved(0)).toMatchObject([
+      { id: 'devops_broker:appr_0001abcd', outcome: 'approved', by: 'U000ADMIN', via: 'dashboard' },
+    ]);
+  });
+
+  it('maps the broker refusals, and a broker that cannot be reached is busy', async () => {
+    const reasons = ['digest-mismatch', 'not-admin', 'dashboard-decisions-off', 'tool-not-allowed', 'closed', 'failed'];
+    await fakeBroker((req) => {
+      if (req.op === 'approvals') {
+        return { approvals: reasons.map((_, i) => ({ ...DECIDABLE, approvalId: `appr_000${i}rsn` })) };
+      }
+      const { decisions } = req.args as { decisions: { approvalId: string }[] };
+      return {
+        outcomes: decisions.map((d, i) => ({ approvalId: d.approvalId, outcome: 'refused', reason: reasons[i] })),
+      };
+    });
+    const adapter = devopsBrokerAdminApprovalAdapter({ socketPath });
+    await adapter.pending(Date.parse('2026-11-09T03:20:00Z'));
+    const answers = await adapter.answerMany?.(
+      reasons.map((_, i) => ({ requestId: `appr_000${i}rsn`, choiceId: 'approve' })),
+      'U000ADMIN',
+    );
+    expect(answers?.map((a) => (a.ok ? 'ok' : a.reason))).toEqual([
+      'invalid',
+      'forbidden',
+      'forbidden',
+      'forbidden',
+      'busy',
+      'invalid',
+    ]);
+    await new Promise<void>((resolve) => server?.close(() => resolve()));
+    server = undefined;
+    await expect(adapter.answer('appr_0000rsn', 'approve', 'U000ADMIN')).resolves.toEqual({
+      ok: false,
+      reason: 'busy',
+    });
   });
 });

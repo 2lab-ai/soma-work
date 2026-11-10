@@ -1,13 +1,15 @@
 /**
- * devops broker cards in the dashboard's admin approvals (#1051).
+ * devops broker cards in the dashboard's admin approvals (#1051, #1129).
  *
  * The broker posts its approval cards to the admins' Slack DMs. This adapter lists the cards the broker is
- * waiting on, so an admin who works in the dashboard sees them. Each card's one choice opens the admin's own
- * Slack card, where the decision is made.
+ * waiting on, so an admin who works in the dashboard sees them, with the card's own lines.
  *
- * It never decides. This process runs as the same OS user as the model, so a decision relayed from here
- * would let the model approve its own request. The broker accepts a decision only from the admin's own
- * reaction or button on its Slack card.
+ * Whether the dashboard may decide a card is the broker's call, from its root-owned policy
+ * (`dashboardDecisions`): the listing marks each card `decidable`. A decidable card is an approve / deny card
+ * that can be decided with others in one pass; the answer goes to the broker's `decide` op, bound to the card
+ * number (digest prefix) the admin saw. This process runs as the same OS user as the model, so with that switch
+ * on the model's user can decide those cards too — the operator's recorded trade-off (#1127). Any other card's one
+ * choice opens the admin's own Slack card, where the decision is made.
  *
  * A broker older than the `approvals` op refuses the listing. Then the cards come from the records the
  * devops-tools MCP server keeps while it waits on one (`PENDING_DIR_ENV`), and the choice opens the
@@ -31,12 +33,23 @@ import {
   parseJsonLine,
   splitLines,
 } from '@soma/process-shared/devops/protocol.js';
-import type { AdminApproval, AdminApprovalAdapter } from '../admin-approvals';
+import type {
+  AdminApproval,
+  AdminApprovalAdapter,
+  AdminApprovalAnswer,
+  AdminApprovalResolution,
+} from '../admin-approvals';
 import { Logger } from '../logger';
 
 const logger = new Logger('DevopsBrokerApprovals');
 
 const LIST_TIMEOUT_MS = 3_000;
+/** A `decide` of up to 50 cards writes each decision to disk and the ledger before it answers. */
+const DECIDE_TIMEOUT_MS = 15_000;
+/** Dashboard decisions are remembered this long, for the resolved rows. */
+const RESOLVED_KEEP_MS = 10 * 60 * 1000;
+export const APPROVE_CHOICE = 'approve';
+export const DENY_CHOICE = 'deny';
 /** The admin-approval watch reads every second; the broker is asked at most this often. */
 const REFRESH_MS = 5_000;
 /** A broker that refuses the op (an older build) or errors is left alone this long: its ledger logs each refusal. */
@@ -65,7 +78,7 @@ export function devopsPendingDir(dataDir: string): string {
   return path.join(dataDir, 'devops-pending');
 }
 
-/** The broker's `approvals` result, as `approval.ts` `PendingApprovalView` writes it. */
+/** The broker's `approvals` result, as `approval.ts` `PendingApprovalView` writes it (#1129 fields optional: an older broker). */
 interface BrokerApprovalView {
   approvalId: string;
   tool: string;
@@ -75,7 +88,20 @@ interface BrokerApprovalView {
   createdAt: string;
   expiresAt: string;
   cards: { admin: string; permalink?: string }[];
+  details?: { label: string; value: string }[];
+  argv?: string[];
+  warnings?: string[];
+  queued?: boolean;
+  queuedUntil?: string;
+  liveUntil?: string;
+  decidable?: boolean;
 }
+
+type DecideOutcome = {
+  approvalId: string;
+  outcome: 'accepted' | 'refused';
+  reason?: string;
+};
 
 export type CallResult = { ok: true; data: unknown } | { ok: false; unreachable: boolean; message: string };
 
@@ -143,6 +169,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+const isStringList = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === 'string');
+
+const isDetails = (value: unknown): value is { label: string; value: string }[] =>
+  Array.isArray(value) &&
+  value.every((item) => isRecord(item) && typeof item.label === 'string' && typeof item.value === 'string');
+
 /** Only what the dashboard shows: a malformed entry is skipped, never half-rendered. */
 function isView(value: unknown): value is BrokerApprovalView {
   if (!isRecord(value)) return false;
@@ -152,10 +185,57 @@ function isView(value: unknown): value is BrokerApprovalView {
     typeof value.tool === 'string' &&
     typeof value.title === 'string' &&
     typeof value.requester === 'string' &&
+    typeof value.digestPrefix === 'string' &&
+    DIGEST_PREFIX_RE.test(value.digestPrefix) &&
     typeof value.createdAt === 'string' &&
     typeof value.expiresAt === 'string' &&
-    Array.isArray(value.cards)
+    Array.isArray(value.cards) &&
+    (value.details === undefined || isDetails(value.details)) &&
+    (value.argv === undefined || isStringList(value.argv)) &&
+    (value.warnings === undefined || isStringList(value.warnings)) &&
+    (value.queued === undefined || typeof value.queued === 'boolean') &&
+    (value.queuedUntil === undefined || typeof value.queuedUntil === 'string') &&
+    (value.decidable === undefined || typeof value.decidable === 'boolean')
   );
+}
+
+/** How much an approval can do: org and repo access, merges and edit leases are high; other writes medium. */
+export function brokerCardRisk(
+  view: Pick<BrokerApprovalView, 'tool' | 'title' | 'argv' | 'warnings'>,
+): 'medium' | 'high' {
+  if (view.tool === 'gh_org_member' || view.tool === 'gh_repo_access') return 'high';
+  if (view.tool === 'gh_write') {
+    const merge = (view.argv?.[0] === 'pr' && view.argv?.[1] === 'merge') || view.title.includes('머지');
+    return merge || (view.warnings ?? []).length > 0 ? 'high' : 'medium';
+  }
+  if (view.tool === 'cf_lease_request') {
+    return (view.warnings ?? []).some((w) => w.includes('변경 권한')) ? 'high' : 'medium';
+  }
+  return 'medium';
+}
+
+const MAX_ROW_VALUE = 2_000;
+
+function clipRow(text: string): string {
+  return text.length > MAX_ROW_VALUE ? `${text.slice(0, MAX_ROW_VALUE - 1)}…` : text;
+}
+
+/** The Slack card's lines as labelled rows: details, the gh command, the warnings, the card number. */
+function cardRows(view: BrokerApprovalView): Record<string, string> {
+  const rows: Record<string, string> = {};
+  const used = new Set<string>();
+  const put = (label: string, value: string) => {
+    let key = label;
+    for (let n = 2; used.has(key); n++) key = `${label} (${n})`;
+    used.add(key);
+    rows[key] = clipRow(value);
+  };
+  for (const d of view.details ?? []) put(d.label, d.value);
+  if (view.argv !== undefined && view.argv.length > 0)
+    put('명령', `gh ${view.argv.map((a) => JSON.stringify(a)).join(' ')}`);
+  if ((view.warnings ?? []).length > 0) put('주의', (view.warnings ?? []).join(' · '));
+  put('카드 번호', view.digestPrefix);
+  return rows;
 }
 
 function linksOf(view: BrokerApprovalView): { admin: string; url: string }[] {
@@ -169,7 +249,37 @@ function linksOf(view: BrokerApprovalView): { admin: string; url: string }[] {
   return out;
 }
 
+/** The card's own end: the queue's end when it is queued (or the broker has a queue), else its expiry. */
+function cardEnd(view: BrokerApprovalView): number | undefined {
+  return Date.parse(view.queuedUntil ?? view.expiresAt) || undefined;
+}
+
+/** #1129 — a card the broker lets the dashboard decide: approve / deny, batchable, bound to its card number. */
+function toDecidableApproval(view: BrokerApprovalView): AdminApproval {
+  const queued = view.queued === true;
+  return {
+    id: `devops_broker:${view.approvalId}`,
+    kind: 'devops_broker',
+    card: 'permission',
+    title: view.title,
+    summary: view.title,
+    description: queued
+      ? `요청자는 더 기다리지 않습니다. 승인하면 브로커가 그때 실행하고 결과를 요청한 세션으로 보냅니다. Slack 카드 ${view.digestPrefix}와 같은 요청입니다.`
+      : `요청자가 응답을 기다리는 중입니다. Slack 카드 ${view.digestPrefix}와 같은 요청이고, 어느 쪽에서 결정해도 같습니다.`,
+    tool: `devops:${view.tool}`,
+    rows: cardRows(view),
+    risk: brokerCardRisk(view),
+    batch: { approve: APPROVE_CHOICE, deny: DENY_CHOICE },
+    ...(queued ? { queued: true } : {}),
+    links: linksOf(view),
+    requesterId: SLACK_USER_RE.test(view.requester) ? view.requester : '',
+    createdAt: Date.parse(view.createdAt) || 0,
+    expiresAt: cardEnd(view),
+  };
+}
+
 function toApproval(view: BrokerApprovalView): AdminApproval {
+  if (view.decidable === true) return toDecidableApproval(view);
   return {
     id: `devops_broker:${view.approvalId}`,
     kind: 'devops_broker',
@@ -178,12 +288,16 @@ function toApproval(view: BrokerApprovalView): AdminApproval {
     description:
       '승인·거부는 Slack 카드에서 합니다 (요청 내용 전체가 거기 있어요). 대시보드는 모델과 같은 계정으로 돌아서, 여기서 승인하면 모델이 자기 요청을 승인할 수 있기 때문입니다.',
     tool: `devops:${view.tool}`,
+    summary: view.title,
+    risk: brokerCardRisk(view),
+    ...(view.queued === true ? { queued: true } : {}),
+    ...(view.details !== undefined ? { rows: cardRows(view) } : {}),
     choices: [{ id: OPEN_SLACK_CHOICE, label: '↗ Slack 카드 열기 (거기서 승인·거부)' }],
     recommendedId: OPEN_SLACK_CHOICE,
     links: linksOf(view),
     requesterId: SLACK_USER_RE.test(view.requester) ? view.requester : '',
     createdAt: Date.parse(view.createdAt) || 0,
-    expiresAt: Date.parse(view.expiresAt) || undefined,
+    expiresAt: cardEnd(view),
   };
 }
 
@@ -347,6 +461,87 @@ export function devopsBrokerAdminApprovalAdapter(
     nextReadAt = clock() + REFRESH_MS;
   }
 
+  /** Dashboard decisions this process sent and the broker accepted, for the resolved rows. */
+  let resolutions: AdminApprovalResolution[] = [];
+
+  function refusal(reason: string | undefined): AdminApprovalAnswer {
+    switch (reason) {
+      case 'not-pending':
+        return { ok: false, reason: 'already_answered' };
+      case 'not-admin':
+      case 'dashboard-decisions-off':
+      case 'tool-not-allowed':
+        return { ok: false, reason: 'forbidden' };
+      case 'closed':
+        return { ok: false, reason: 'busy' };
+      default:
+        // digest-mismatch (the card changed under the admin), failed, or an answer this build does not know.
+        return { ok: false, reason: 'invalid' };
+    }
+  }
+
+  async function decide(
+    items: { requestId: string; choiceId: string }[],
+    actor: string,
+  ): Promise<AdminApprovalAnswer[]> {
+    const answers: (AdminApprovalAnswer | undefined)[] = items.map(() => undefined);
+    const decisions: { approvalId: string; digestPrefix: string; action: 'approve' | 'deny' }[] = [];
+    const slots: number[] = [];
+    items.forEach((item, i) => {
+      const action = item.choiceId === APPROVE_CHOICE ? 'approve' : item.choiceId === DENY_CHOICE ? 'deny' : null;
+      // The card number the admin saw: the listing this process last showed. A card not in it was never shown.
+      // No broker listing (an older broker: the MCP server's records) or `open_slack`: nothing to decide here.
+      if (views === null || action === null) {
+        answers[i] = { ok: false, reason: 'invalid' };
+        return;
+      }
+      const view = views.find((v) => v.approvalId === item.requestId);
+      if (view === undefined) {
+        answers[i] = { ok: false, reason: 'not_found' };
+        return;
+      }
+      if (view.decidable !== true) {
+        answers[i] = { ok: false, reason: 'forbidden' };
+        return;
+      }
+      decisions.push({ approvalId: view.approvalId, digestPrefix: view.digestPrefix, action });
+      slots.push(i);
+    });
+    if (decisions.length > 0) {
+      const result = await callBrokerAdmin(socketPath, { op: 'decide', args: { decisions, actor } }, DECIDE_TIMEOUT_MS);
+      const outcomes: DecideOutcome[] =
+        result.ok && isRecord(result.data) && Array.isArray(result.data.outcomes)
+          ? (result.data.outcomes as DecideOutcome[])
+          : [];
+      if (!result.ok) logger.warn('devops broker decide failed', { message: result.message });
+      const at = clock();
+      decisions.forEach((d, k) => {
+        const outcome = outcomes.find((o) => isRecord(o) && o.approvalId === d.approvalId);
+        const i = slots[k];
+        if (!result.ok) {
+          answers[i] = { ok: false, reason: 'busy' };
+        } else if (outcome?.outcome === 'accepted') {
+          const verdict = d.action === 'approve' ? 'approved' : 'denied';
+          answers[i] = { ok: true, outcome: verdict };
+          resolutions.push({
+            id: `devops_broker:${d.approvalId}`,
+            outcome: verdict,
+            choiceId: d.action,
+            by: actor,
+            via: 'dashboard',
+            at,
+          });
+        } else {
+          answers[i] = refusal(outcome?.reason);
+        }
+      });
+      // The decided cards leave the broker's list: read it again on the next look.
+      nextReadAt = 0;
+      nextAskAt = 0;
+    }
+    return answers.map((a) => a ?? { ok: false, reason: 'invalid' });
+  }
+
   return {
     kind: 'devops_broker',
     async pending(now) {
@@ -359,15 +554,18 @@ export function devopsBrokerAdminApprovalAdapter(
       if (views === null) {
         return records.filter((r) => Date.parse(r.expiresAt) > now).map((r) => recordToApproval(r, appUrl));
       }
-      return views.filter((view) => (Date.parse(view.expiresAt) || 0) > now).map(toApproval);
+      return views.filter((view) => (cardEnd(view) ?? 0) > now).map(toApproval);
     },
-    resolved() {
-      // Decided in Slack: the card simply leaves the broker's list.
-      return [];
+    resolved(since) {
+      // A Slack decision: the card simply leaves the broker's list. A dashboard one is remembered here a while.
+      resolutions = resolutions.filter((r) => r.at >= clock() - RESOLVED_KEEP_MS);
+      return resolutions.filter((r) => r.at >= since);
     },
-    async answer() {
-      // The card's one choice opens Slack in the browser; nothing is ever decided from here.
-      return { ok: false, reason: 'invalid' };
+    async answer(requestId, choiceId, actor) {
+      // `open_slack` opens Slack in the browser (the client does it); only a decidable card is answered here.
+      const [answer] = await decide([{ requestId, choiceId }], actor);
+      return answer;
     },
+    answerMany: (items, actor) => decide(items, actor),
   };
 }

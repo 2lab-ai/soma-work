@@ -53,6 +53,8 @@ const OUTCOME_TEXT: Record<QueuedResultView['outcome'], string> = {
   cancelled: '취소됨 — 실행 안 함 (cancelled, nothing ran)',
 };
 
+const OUTCOMES = new Set<string>(Object.keys(OUTCOME_TEXT));
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -68,7 +70,7 @@ function isResult(value: unknown): value is QueuedResultView {
     typeof value.digestPrefix === 'string' &&
     typeof value.title === 'string' &&
     typeof value.outcome === 'string' &&
-    Object.prototype.hasOwnProperty.call(OUTCOME_TEXT, value.outcome) &&
+    OUTCOMES.has(value.outcome) &&
     typeof value.finishedAt === 'string' &&
     isRecord(claim) &&
     typeof claim.sessionKey === 'string' &&
