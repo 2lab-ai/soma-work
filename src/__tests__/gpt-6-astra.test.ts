@@ -59,13 +59,14 @@ function makeStore(): UserSettingsStore {
 }
 
 describe('gpt-6-astra — release wiring', () => {
-  it('lists the astra tier id statically; no other gpt-6 tier is declared', () => {
+  it('lists the astra and luna tier ids statically; sol / terra are not declared', () => {
     const models = AVAILABLE_MODELS as readonly string[];
     expect(models).toContain('gpt-6-astra');
     expect(models).not.toContain('gpt-6');
     expect(models).not.toContain('gpt-6-sol');
     expect(models).not.toContain('gpt-6-terra');
-    expect(models).not.toContain('gpt-6-luna');
+    // gpt-6-luna is declared since 2026-11-10 (the `luna` shorthand target).
+    expect(models).toContain('gpt-6-luna');
   });
 
   it('ships the `[1m]` variant alongside the bare id (user-selectable 1M opt-in)', () => {
