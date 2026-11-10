@@ -121,10 +121,10 @@ function capacityFixture(nowMs: number) {
   const status = {
     current: null,
     accounts: [
-      acct('acct-a', 'claude', { five_hour: w(0.7, 2), seven_day: w(0.3, 90) }),
-      acct('acct-b', 'claude', { five_hour: w(0.1, 3), seven_day: w(0.6, 30) }),
-      acct('acct-c', 'claude', { five_hour: null, seven_day: w(1, 50), blocked: '7d 100.0% > 99%' }),
-      acct('acct-d', 'claude', { five_hour: w(0, 1), seven_day: w(0.2, 120) }),
+      acct('acct-a', 'claude', { seven_day: w(0.3, 90) }),
+      acct('acct-b', 'claude', { seven_day: w(0.6, 30) }),
+      acct('acct-c', 'claude', { seven_day: w(1, 50), blocked: '7d 100.0% > 99%' }),
+      acct('acct-d', 'claude', { seven_day: w(0.2, 120) }),
       acct('acct-e', 'codex', { seven_day: w(0.9, 100) }),
       acct('acct-f', 'codex', { seven_day: w(0.95, 60) }),
     ],

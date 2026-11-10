@@ -60,7 +60,7 @@ const HEADER_TEXT_MAX_CHARS = 150;
  * value-specific, e.g. "Ctx ▓▓▓░░ …" puts the label before the bar).
  * The generic decorator must NOT prefix the label again for these.
  */
-const LABEL_CONSUMING_FIELDS = new Set(['contextwindow', 'duration', 'fivehour', 'sevenday', 'separator']);
+const LABEL_CONSUMING_FIELDS = new Set(['contextwindow', 'duration', 'sevenday', 'separator']);
 
 /**
  * Fields whose renderer consumes `field.truncate` itself (errorbody applies
@@ -397,8 +397,6 @@ export class SlackBlockKitChannel implements NotificationChannel {
         return this.renderContextWindow(field, event);
       case 'duration':
         return event.durationMs ? `${field.label ? `${field.label} ` : ''}${this.formatElapsed(event.durationMs)}` : '';
-      case 'fivehour':
-        return this.renderUsageGauge(field, event.fiveHourUsage, event.fiveHourDelta, 6);
       case 'sevenday':
         return this.renderUsageGauge(field, event.sevenDayUsage, event.sevenDayDelta, 8);
       case 'toolstats':
@@ -534,8 +532,8 @@ export class SlackBlockKitChannel implements NotificationChannel {
   }
 
   /**
-   * `fivehour` / `sevenday` — `${label} ${bar} ${pct}%${delta}` gauge with
-   * config-driven bar width (defaults 6 / 8 for historical parity).
+   * `sevenday` — `${label} ${bar} ${pct}%${delta}` gauge with
+   * config-driven bar width (default 8 for historical parity).
    */
   private renderUsageGauge(
     field: SurfaceFieldConfig,

@@ -47,7 +47,6 @@ const STATUS: LlmuxStatus = {
       group: 'claude',
       status: 'active',
       order: 1,
-      five_hour: { utilization: 0.17, resets_at: NOW_SECS + 3600, resets_in_secs: 3600 },
       seven_day: { utilization: 0.36, resets_at: NOW_SECS + 400_000, resets_in_secs: 400_000 },
     },
   ],

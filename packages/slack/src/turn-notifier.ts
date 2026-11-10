@@ -70,8 +70,6 @@ export interface TurnCompletionEvent {
   contextUsageDelta?: number;
   contextUsageTokens?: number;
   contextWindowSize?: number;
-  fiveHourUsage?: number;
-  fiveHourDelta?: number;
   sevenDayUsage?: number;
   sevenDayDelta?: number;
   toolStats?: Record<string, ToolStatEntry>;

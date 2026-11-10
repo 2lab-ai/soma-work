@@ -543,7 +543,6 @@ async function start() {
             enabled: config.autoRotate.enabled,
             dryRun: config.autoRotate.dryRun,
             thresholds: {
-              fiveHourMax: config.autoRotate.fiveHourMax,
               sevenDayMax: config.autoRotate.sevenDayMax,
             },
             // Reject candidates whose usage snapshot is older than 2× the

@@ -7,7 +7,10 @@
  *   - llmux mode: `/llmux/status` accounts (utilization 0..1, model-scoped
  *     weekly windows). Read through the same helpers the `auth` card uses
  *     (`src/slack/auth/capacity.ts`), so the dashboard and Slack agree.
- *   - CCT mode: TokenManager slots (utilization 0..100, 5h / 7d / 7d-sonnet).
+ *   - CCT mode: TokenManager slots (utilization 0..100, 7d / 7d-sonnet).
+ *
+ * There is no 5-hour window (2026-11): a `five_hour` an older llmux still sends,
+ * or a `fiveHour` left in a stored CCT snapshot, is not read.
  *
  * Only routable accounts count: blocked, auth-failed and API-key accounts are
  * left out of the battery.
@@ -34,7 +37,6 @@ export function llmuxAccountsToUsage(accounts: LlmuxAccount[], nowMs: number): U
     .map((a) => ({
       group: accountGroup(a),
       windows: [
-        llmuxWindow('5h', a.five_hour, nowMs),
         llmuxWindow('7d', a.seven_day, nowMs),
         ...collectScopedWindows(a).map(({ label, window }) => llmuxWindow(label, window, nowMs)),
       ],
@@ -61,11 +63,7 @@ export function cctSlotsToUsage(slots: SlotState[], nowMs: number): UsageAccount
       const cooldown = s.cooldownUntil ? Date.parse(s.cooldownUntil) : Number.NaN;
       return {
         group: 'claude',
-        windows: [
-          cctWindow('5h', s.usage?.fiveHour),
-          cctWindow('7d', s.usage?.sevenDay),
-          cctWindow('7d-sonnet', s.usage?.sevenDaySonnet),
-        ],
+        windows: [cctWindow('7d', s.usage?.sevenDay), cctWindow('7d-sonnet', s.usage?.sevenDaySonnet)],
         unavailable: Number.isFinite(cooldown) && cooldown > nowMs,
       };
     });

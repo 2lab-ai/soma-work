@@ -210,37 +210,37 @@ const cronJobs = [
 ];
 
 // LLM capacity v2: an llmux snapshot shaped like the live pool of 2026-10-25
-// (names neutral) through the real buildCapacityView. Per row: [name, 5h used,
-// 5h reset in h (null = no 5h window), 7d used, 7d reset in h, status, reason,
-// measured h ago]. Claude: 1 account 5h-capped, 9 weekly-capped, 3 at the
-// weekly ceiling, 3 in a cooldown that ends 1 s before their weekly reset, 1 paused.
-type Row = [string, number | null, number | null, number, number, string, string | null, number];
+// (names neutral) through the real buildCapacityView. Per row: [name, 7d used,
+// 7d reset in h, status, reason, measured h ago]. There is no 5-hour window
+// since 2026-11. Claude: 3 at the weekly ceiling, 3 in a cooldown that ends 1 s
+// before their weekly reset, 1 paused.
+type Row = [string, number, number, string, string | null, number];
 const CLAUDE: Row[] = [
-  ['ai15', 0.23, 0.2, 0.29, 137.2, 'active', null, 4.2],
-  ['ai1', 0.01, 4.8, 0.0, 157.2, 'active', null, 3.9],
-  ['ai30', 0.0, -3.3, 0.09, 149.2, 'ok', null, 1.2],
-  ['ai40', 0.0, -14, 0.24, 138.2, 'ok', null, 1.5],
-  ['ai9', 0.0, -12.8, 0.25, 139.2, 'ok', null, 4.4],
-  ['ai41', 0.0, -16.3, 0.36, 131.2, 'ok', null, 1.9],
-  ['ai44', 0.0, -5.8, 0.36, 134.2, 'ok', null, 0.9],
-  ['ai5', 0.0, -16.8, 0.61, 109.2, 'ok', null, 1.7],
-  ['ai2', 0.05, 4.2, 0.76, 104.2, 'ok', null, 1.0],
-  ['ai6', 0.19, 0.2, 0.78, 114.2, 'ok', null, 3.0],
-  ['ai8', null, null, 1.0, 8.2, 'ok', '7d 100.0% > 99%', 2.5],
-  ['ai3', null, null, 1.0, 33.2, 'ok', '7d 100.0% > 99%', 2.2],
-  ['ai7', 0.0, -37, 1.0, 43.2, 'cooldown', 'cooldown 1d19h', 0.2],
-  ['ai43', 0.0, -38.7, 1.0, 55.2, 'cooldown', 'cooldown 2d7h', 3.2],
-  ['ai10', null, null, 1.0, 28.2, 'ok', '7d 100.0% > 99%', 0.5],
-  ['ai4', 0.0, -38.7, 1.0, 90.2, 'cooldown', 'cooldown 3d18h', 3.7],
-  ['ai11', 0.0, -0.8, 0.02, 150.2, 'ok', 'paused', 3.5],
+  ['ai15', 0.29, 137.2, 'active', null, 4.2],
+  ['ai1', 0.0, 157.2, 'active', null, 3.9],
+  ['ai30', 0.09, 149.2, 'ok', null, 1.2],
+  ['ai40', 0.24, 138.2, 'ok', null, 1.5],
+  ['ai9', 0.25, 139.2, 'ok', null, 4.4],
+  ['ai41', 0.36, 131.2, 'ok', null, 1.9],
+  ['ai44', 0.36, 134.2, 'ok', null, 0.9],
+  ['ai5', 0.61, 109.2, 'ok', null, 1.7],
+  ['ai2', 0.76, 104.2, 'ok', null, 1.0],
+  ['ai6', 0.78, 114.2, 'ok', null, 3.0],
+  ['ai8', 1.0, 8.2, 'ok', '7d 100.0% > 99%', 2.5],
+  ['ai3', 1.0, 33.2, 'ok', '7d 100.0% > 99%', 2.2],
+  ['ai7', 1.0, 43.2, 'cooldown', 'cooldown 1d19h', 0.2],
+  ['ai43', 1.0, 55.2, 'cooldown', 'cooldown 2d7h', 3.2],
+  ['ai10', 1.0, 28.2, 'ok', '7d 100.0% > 99%', 0.5],
+  ['ai4', 1.0, 90.2, 'cooldown', 'cooldown 3d18h', 3.7],
+  ['ai11', 0.02, 150.2, 'ok', 'paused', 3.5],
 ];
-// Codex reports no 5h window: the weekly measure only. ai12 · ai13 have no tier.
+// Codex: the weekly measure. ai12 · ai13 have no tier.
 const CODEX: Row[] = [
-  ['ai12', null, null, 0.2, 135.4, 'active', null, 114.9],
-  ['ai13', null, null, 0.01, 138.2, 'ok', null, 204.1],
-  ['ai2', null, null, 0.23, 135.5, 'ok', null, 115.4],
-  ['ai5', null, null, 0.0, 167.8, 'ok', null, 60.2],
-  ['ai6', null, null, 1.0, 135.2, 'ok', '7d 100.0% > 99%', 60.1],
+  ['ai12', 0.2, 135.4, 'active', null, 114.9],
+  ['ai13', 0.01, 138.2, 'ok', null, 204.1],
+  ['ai2', 0.23, 135.5, 'ok', null, 115.4],
+  ['ai5', 0.0, 167.8, 'ok', null, 60.2],
+  ['ai6', 1.0, 135.2, 'ok', '7d 100.0% > 99%', 60.1],
 ];
 const win = (used: number, inH: number) => ({
   utilization: used,
@@ -248,7 +248,7 @@ const win = (used: number, inH: number) => ({
   resets_in_secs: Math.round(inH * H),
 });
 const toAccount = (group: string) => (r: Row) => {
-  const [name, u5, r5, u7, r7, status, blocked, agoH] = r;
+  const [name, u7, r7, status, blocked, agoH] = r;
   return {
     name: `${group}:${name}@corp.example`,
     type: group === 'codex' ? 'codex' : 'oauth',
@@ -256,7 +256,6 @@ const toAccount = (group: string) => (r: Row) => {
     status,
     order: 1,
     blocked,
-    five_hour: u5 === null || r5 === null ? null : win(u5, r5),
     seven_day: win(u7, r7),
     // live llmux: a long cooldown ends one second before the weekly reset
     cooldown_until: status === 'cooldown' ? Math.round(NOW_S + r7 * H) - 1 : null,

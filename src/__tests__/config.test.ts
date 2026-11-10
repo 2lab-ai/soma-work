@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getBgKeepaliveMaxMs, parseAuthMode, parseBool, parsePositiveIntEnv, parseUnitIntervalEnv } from '../config';
+import {
+  config,
+  getBgKeepaliveMaxMs,
+  parseAuthMode,
+  parseBool,
+  parsePositiveIntEnv,
+  parseUnitIntervalEnv,
+} from '../config';
 
 // One shared spy for every Logger instance, so a getter's warn can be asserted.
 const { loggerWarn } = vi.hoisted(() => ({ loggerWarn: vi.fn() }));
@@ -82,8 +89,8 @@ describe('parsePositiveIntEnv (#641 M1-S1)', () => {
   });
 });
 
-// #737 — `parseUnitIntervalEnv` gates `AUTO_ROTATE_FIVEH_THRESHOLD` and
-// `AUTO_ROTATE_SEVEND_THRESHOLD`. Two foot-guns to defend against:
+// #737 — `parseUnitIntervalEnv` gates `AUTO_ROTATE_SEVEND_THRESHOLD` (the
+// 5-hour knob went with the 5-hour window, 2026-11). Two foot-guns to defend against:
 //   - operator types `80` instead of `0.8` → clamp to 1.0, NOT silently
 //     accept 80 as "always passes".
 //   - operator types `-0.5` → clamp to 0.0, NOT fallback (we want a known
@@ -117,7 +124,7 @@ describe('parseUnitIntervalEnv (#737)', () => {
   });
 
   it('value above maximum → clamp to maximum (NOT fallback)', () => {
-    // Operator typo: `AUTO_ROTATE_FIVEH_THRESHOLD=80` instead of `0.8`.
+    // Operator typo: `AUTO_ROTATE_SEVEND_THRESHOLD=80` instead of `0.8`.
     // Clamping to 1.0 is safer than the fallback (0.8) because at least
     // the warn log will tell the operator something is off.
     process.env[ENV_NAME] = '80';
@@ -151,7 +158,7 @@ describe('parseUnitIntervalEnv (#737)', () => {
   });
 });
 
-// #781 — `config.autoRotate.{fiveHourMax,sevenDayMax}` must be in the
+// #781 — `config.autoRotate.sevenDayMax` must be in the
 // store-SSOT percent unit (0..100). The env knobs stay in 0..1 form for
 // operator compatibility; conversion happens at the `config.ts` boundary
 // (`parseUnitIntervalEnv(...) * 100`). This test pins the boundary so a
@@ -159,28 +166,27 @@ describe('parseUnitIntervalEnv (#737)', () => {
 // fails loudly before `cct auto` silently goes back to rejecting every
 // realistic candidate the way #781 found it.
 describe('config.autoRotate unit boundary (#781)', () => {
-  const FIVE_H = 'AUTO_ROTATE_FIVEH_THRESHOLD';
   const SEVEN_D = 'AUTO_ROTATE_SEVEND_THRESHOLD';
 
   beforeEach(() => {
-    delete process.env[FIVE_H];
     delete process.env[SEVEN_D];
   });
   afterEach(() => {
-    delete process.env[FIVE_H];
     delete process.env[SEVEN_D];
   });
 
-  it('default (no env): fiveHourMax === 80, sevenDayMax === 90 (percent form)', () => {
-    expect(parseUnitIntervalEnv(FIVE_H, 0.8) * 100).toBe(80);
+  it('default (no env): sevenDayMax === 90 (percent form)', () => {
     expect(parseUnitIntervalEnv(SEVEN_D, 0.9) * 100).toBe(90);
   });
 
   it('operator sets 0..1 env: stored as percent (0..100) — same legacy contract', () => {
-    process.env[FIVE_H] = '0.7';
     process.env[SEVEN_D] = '0.85';
-    expect(parseUnitIntervalEnv(FIVE_H, 0.8) * 100).toBe(70);
     expect(parseUnitIntervalEnv(SEVEN_D, 0.9) * 100).toBeCloseTo(85, 9);
+  });
+
+  it('the 5-hour knob is gone: config.autoRotate has no fiveHourMax (2026-11)', () => {
+    expect(config.autoRotate).not.toHaveProperty('fiveHourMax');
+    expect(Object.keys(config.autoRotate).sort()).toEqual(['dryRun', 'enabled', 'sevenDayMax']);
   });
 });
 

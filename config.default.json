@@ -245,17 +245,6 @@
               "label": "Dur"
             },
             {
-              "field": "fivehour",
-              "show": true,
-              "label": "5h",
-              "bar": {
-                "width": 6,
-                "filledChar": "▓",
-                "emptyChar": "░"
-              },
-              "decimals": 0
-            },
-            {
               "field": "sevenday",
               "show": true,
               "label": "7d",

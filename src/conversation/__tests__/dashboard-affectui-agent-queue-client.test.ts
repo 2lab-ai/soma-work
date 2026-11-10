@@ -98,7 +98,6 @@ const a = (over: Record<string, unknown>) => ({
   status: 'ok',
   order: 1,
   blocked: null,
-  five_hour: null,
   seven_day: null,
   ...over,
 });
@@ -111,21 +110,19 @@ const TIERS = {
   'claude:ab': 'claude-max-20x',
 };
 const POOL = [
-  // usable, the week binds first; its reading is 4 hours old
+  // usable; its reading is 4 hours old
   a({
     name: 'claude:ai1@c',
     group: 'claude',
-    five_hour: w(0.35, 2 * H + 600),
     seven_day: w(0.42, 3 * D),
     last_refresh_ms: NOW - 4 * H * 1000,
   }),
-  // 5h ceiling, back at the 5h reset in 80 minutes
+  // weekly ceiling, back at the weekly reset in 80 minutes
   a({
     name: 'claude:ai3@c',
     group: 'claude',
-    blocked: '5h 100.0% > 99%',
-    five_hour: w(1, 80 * 60),
-    seven_day: w(0.7, 4 * D),
+    blocked: '7d 100.0% > 99%',
+    seven_day: w(1, 80 * 60),
   }),
   // a cooldown longer than the throttle: back in 25 minutes (untiered → x20 assumed)
   a({
@@ -134,14 +131,13 @@ const POOL = [
     status: 'cooldown',
     blocked: 'cooldown',
     cooldown_until: NOW_S + 25 * 60,
-    five_hour: w(0.2, 3 * H),
     seven_day: w(0.3, 5 * D),
   }),
   // paused by the operator: held out of the totals
-  a({ name: 'claude:ai6@c', group: 'claude', blocked: 'paused', five_hour: w(0, H), seven_day: w(0, D) }),
-  // unblocked, no 5h reading (untiered → x20 assumed) · the week spent without a block · no reading at all
+  a({ name: 'claude:ai6@c', group: 'claude', blocked: 'paused', seven_day: w(0, D) }),
+  // unblocked (untiered → x20 assumed) · the week spent without a block · no reading at all
   a({ name: 'claude:ai9@c', group: 'claude', seven_day: w(0.2, 2 * D) }),
-  a({ name: 'claude:aa@c', group: 'claude', five_hour: w(0.1, H), seven_day: w(1, 2 * D) }),
+  a({ name: 'claude:aa@c', group: 'claude', seven_day: w(1, 2 * D) }),
   a({ name: 'claude:ab@c', group: 'claude' }),
   // Codex: weekly window only; one at its weekly ceiling, one with no tier (left out)
   a({ name: 'codex:ai5@c', group: 'codex', type: 'codex', seven_day: w(0.5, 3 * D + 2 * H) }),
@@ -245,36 +241,35 @@ describe('capData — the capacity view as the element’s providers', () => {
     expect(d.providers.map((p: any) => p.id)).toEqual(['claude', 'codex']);
   });
 
-  it('a provider keeps the server’s numbers: both measures only with a 5h window, its counts, its oldest reading', () => {
+  it('a provider keeps the server’s numbers: the weekly measure only (no 5시간 bar since 2026-11), its counts, its oldest reading', () => {
     const [claude, codex] = capFns().capData(MAIN).providers;
     expect(claude).toMatchObject({
       id: 'claude',
       name: CLAUDE.label,
       source: 'llmux',
       total: CLAUDE.total,
-      fiveHour: CLAUDE.now,
       weekly: CLAUDE.week,
       state: CLAUDE.state,
       accountCount: 7,
       countedAccounts: 5,
       excluded: { unknownTier: 0, held: 1, noMeasure: 1 },
       estimated: CLAUDE.estimated,
-      unmeasured5h: CLAUDE.unmeasured5h,
       measuredAt: CLAUDE.oldestRefreshAt,
     });
     expect(CLAUDE.oldestRefreshAt).toBeGreaterThan(0);
+    expect('fiveHour' in claude).toBe(false);
+    expect('unmeasured5h' in claude).toBe(false);
     expect('fiveHour' in codex).toBe(false);
     expect(codex.weekly).toBe(MAIN.groups[1].week);
   });
 
-  it('events become refills: same time (seconds), cause and account; dNow → fiveHour, dWeek → weekly', () => {
+  it('events become refills: same time (seconds), cause and account; dWeek → weekly (no 5-hour gain)', () => {
     const [claude] = capFns().capData(MAIN).providers;
     expect(claude.refills).toHaveLength(CLAUDE.events.length);
     CLAUDE.events.forEach((e: any, i: number) => {
       expect(claude.refills[i]).toEqual({
         at: e.at,
         cause: e.cause,
-        fiveHour: e.dNow,
         weekly: e.dWeek,
         account: e.account,
       });
@@ -286,9 +281,10 @@ describe('capData — the capacity view as the element’s providers', () => {
     const by = (p: any) => Object.fromEntries(p.accounts.map((x: any) => [x.name, x]));
     const c = by(claude);
     expect(claude.accounts.map((x: any) => x.name)).toEqual(CLAUDE.units.map((u: any) => u.name));
-    expect(c.ai1).toMatchObject({ id: 'ai1', state: 'available', binding: '7d', tier: 'Max x20' });
+    expect(c.ai1).toMatchObject({ id: 'ai1', state: 'available', tier: 'Max x20' });
+    expect('binding' in c.ai1).toBe(false);
     expect(c.ai1.reason).toBeUndefined();
-    expect(c.ai3).toMatchObject({ state: 'limited', reason: '5h', tier: 'Max x5', returnAt: NOW_S + 80 * 60 });
+    expect(c.ai3).toMatchObject({ state: 'limited', reason: 'weekly', tier: 'Max x5', returnAt: NOW_S + 80 * 60 });
     expect(c.ai4).toMatchObject({
       state: 'limited',
       reason: 'cooldown',
@@ -297,7 +293,7 @@ describe('capData — the capacity view as the element’s providers', () => {
       returnAt: NOW_S + 25 * 60,
     });
     expect(c.ai6).toMatchObject({ state: 'paused', reason: 'paused' });
-    expect(c.ai9).toMatchObject({ state: 'unmeasured', tier: 'x20', tierAssumed: true });
+    expect(c.ai9).toMatchObject({ state: 'available', tier: 'x20', tierAssumed: true });
     expect(c.aa).toMatchObject({ state: 'spent' });
     expect(c.ab).toMatchObject({ state: 'excluded', reason: 'noMeasure' });
     const x = by(codex);
@@ -305,7 +301,7 @@ describe('capData — the capacity view as the element’s providers', () => {
     expect(x.ai5).toMatchObject({ state: 'available', tier: 'Pro ($500)' });
     expect(x.ai9).toMatchObject({ state: 'excluded', reason: 'unknownTier' });
     expect(x.ai9.tier).toBeUndefined();
-    // the account card's numbers: this account's own 0..1
+    // the account card's numbers: this account's own 0..1 (지금 · 주; the element names 지금 fiveHour)
     expect(c.ai1.fiveHour).toBe(CLAUDE.units.find((u: any) => u.name === 'ai1').now);
   });
 
@@ -329,9 +325,9 @@ describe('capData — the capacity view as the element’s providers', () => {
     expect(lib.poolState(codex)).toBe(MAIN.groups[1].state);
     // the chip's / pill's "⏸ 2 · 24분": the first return among the counted, blocked accounts
     expect(lib.firstReturn(claude)).toBe((NOW_S + 25 * 60) * 1000);
-    // the 5시간 bar's "다음 +0.7계정 · 25분 후 · 차단 해제": ai4's cooldown lifting
-    const next = lib.nextRefill(claude, 'fiveHour', NOW);
-    expect(next).toMatchObject({ at: (NOW_S + 25 * 60) * 1000, cause: 'release', account: 'ai4' });
+    // the weekly bar's next gain: ai3's weekly reset in 80 minutes (a cooldown lifting adds nothing to the week)
+    const next = lib.nextRefill(claude, 'weekly', NOW);
+    expect(next).toMatchObject({ at: (NOW_S + 80 * 60) * 1000, cause: '7d', account: 'ai3' });
     expect(lib.LOW_PCT).toBe(CAPACITY_LOW_PCT);
   });
 
@@ -351,12 +347,11 @@ describe('identity — never the (masked) name alone (final review R3)', () => {
       name: 'claude:ai1@corp.example',
       group: 'claude',
       order,
-      blocked: '5h 100.0% > 99%',
-      five_hour: w(1, 40 * 60),
-      seven_day: w(0.5, 3 * D),
+      blocked: '7d 100.0% > 99%',
+      seven_day: w(1, 40 * 60),
     });
   const usable = (order: number) =>
-    a({ name: 'claude:ai2@corp.example', group: 'claude', order, five_hour: w(0.2, H), seven_day: w(0.1, 3 * D) });
+    a({ name: 'claude:ai2@corp.example', group: 'claude', order, seven_day: w(0.1, 3 * D) });
   const ids = (v: any) =>
     capFns()
       .capData(v)
