@@ -270,6 +270,7 @@ describe('protocol: broker messages', () => {
       [
         'not-approved',
         'still-executing',
+        'queued',
         'result-unknown',
         'too-many-pending-approvals',
         'policy-denied',
@@ -462,5 +463,73 @@ describe('protocol: admin ops (#1051)', () => {
       ok: false,
       code: 'version-mismatch',
     });
+  });
+});
+
+describe('protocol: queued requests and dashboard decisions (#1128, #1129)', () => {
+  const pending = {
+    v: PROTOCOL_VERSION,
+    id: 'req-1',
+    type: 'pending',
+    approvalId: 'appr-0001',
+    digestPrefix: '0123456789ab',
+    expiresAt: '2026-11-10T01:10:00.000Z',
+  };
+
+  it('a pending message may say until when the request stays queued', () => {
+    const queued = { ...pending, queuedUntil: '2026-11-11T01:00:00.000Z' };
+    expect(parseBrokerMessage(queued)).toEqual({ ok: true, value: queued });
+    expect(parseBrokerMessage(pending).ok).toBe(true);
+    expect(parseBrokerMessage({ ...pending, queuedUntil: 'tomorrow' }).ok).toBe(false);
+  });
+
+  it('a queued terminal is an error code the client knows', () => {
+    const message = { v: PROTOCOL_VERSION, id: 'req-1', type: 'error', code: 'queued', message: 'queued until …' };
+    expect(parseBrokerMessage(message)).toEqual({ ok: true, value: message });
+  });
+
+  const decide = (args: unknown) => parseAdminRequest({ v: PROTOCOL_VERSION, id: 'r1', op: 'decide', args });
+  const one = { approvalId: 'appr-0001', digestPrefix: '0123456789ab', action: 'approve' };
+
+  it('decide takes 1–50 distinct decisions, an admin id and an optional reason', () => {
+    expect(decide({ decisions: [one], actor: 'U000ADMIN' })).toMatchObject({ ok: true, value: { op: 'decide' } });
+    expect(
+      decide({
+        decisions: [one, { ...one, approvalId: 'appr-0002', action: 'deny' }],
+        actor: 'U000ADMIN',
+        reason: 'too broad',
+      }).ok,
+    ).toBe(true);
+    const tooMany = Array.from({ length: 51 }, (_, i) => ({
+      ...one,
+      approvalId: `appr-${String(i).padStart(4, '0')}`,
+    }));
+    for (const args of [
+      { decisions: [], actor: 'U000ADMIN' },
+      { decisions: tooMany, actor: 'U000ADMIN' },
+      { decisions: [one, one], actor: 'U000ADMIN' },
+      { decisions: [{ ...one, action: 'maybe' }], actor: 'U000ADMIN' },
+      { decisions: [{ ...one, digestPrefix: 'XYZ' }], actor: 'U000ADMIN' },
+      { decisions: [{ ...one, extra: 1 }], actor: 'U000ADMIN' },
+      { decisions: [one], actor: 'not-a-user' },
+      { decisions: [one] },
+      { decisions: [one], actor: 'U000ADMIN', reason: 'x'.repeat(501) },
+      { decisions: [one], actor: 'U000ADMIN', reason: 'line\nbreak' },
+    ]) {
+      expect(decide(args).ok, JSON.stringify(args).slice(0, 80)).toBe(false);
+    }
+  });
+
+  it('results takes no arguments; results_ack takes 1–100 approval ids', () => {
+    const op = (name: string, args: unknown) => parseAdminRequest({ v: PROTOCOL_VERSION, id: 'r1', op: name, args });
+    expect(op('results', {}).ok).toBe(true);
+    expect(op('results', { all: true }).ok).toBe(false);
+    expect(op('results_ack', { approvalIds: ['appr-0001'] }).ok).toBe(true);
+    expect(op('results_ack', { approvalIds: [] }).ok).toBe(false);
+    expect(op('results_ack', { approvalIds: ['x'] }).ok).toBe(false);
+    expect(
+      op('results_ack', { approvalIds: Array.from({ length: 101 }, (_, i) => `appr-${String(i).padStart(4, '0')}`) })
+        .ok,
+    ).toBe(false);
   });
 });
