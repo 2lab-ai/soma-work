@@ -160,19 +160,6 @@ const FIELD_ALIASES: Record<string, { field: string; format?: string }> = {
   name: { field: 'owner', format: 'name' },
 };
 
-/**
- * Fields that existed once and are gone. A config.json seeded before the
- * removal (config-loader seeds `ui` from config.default.json) still names them:
- * they are dropped quietly — the operator did nothing wrong, so no warning.
- *   - `fivehour` (turnend): the 5-hour usage gauge — no provider reports a
- *     5-hour window since 2026-11.
- */
-const REMOVED_FIELDS: Readonly<Record<SurfaceName, readonly string[]>> = {
-  threadheader: [],
-  turnend: ['fivehour'],
-  dashboardheader: [],
-};
-
 const SURFACE_NAMES: readonly SurfaceName[] = ['threadheader', 'turnend', 'dashboardheader'];
 const THEME_NAMES: readonly SurfaceTheme[] = ['default', 'compact', 'minimal'];
 const BLOCK_TYPES = new Set(['header', 'section', 'context', 'divider']);
@@ -437,7 +424,10 @@ function normalizeField(raw: unknown, surface: SurfaceName, warnings: string[]):
     return undefined;
   }
 
-  if (REMOVED_FIELDS[surface].includes(raw.field.toLowerCase())) return undefined;
+  // `fivehour` (turnend) was the 5-hour usage gauge — gone since 2026-11, no provider reports a 5-hour window. A
+  // config.json seeded before (config-loader seeds `ui` from config.default.json) still names it: drop it quietly,
+  // the operator did nothing wrong, so no warning.
+  if (surface === 'turnend' && raw.field.toLowerCase() === 'fivehour') return undefined;
   const resolved = resolveSurfaceField(surface, raw.field);
   if (!resolved) {
     warnings.push(
