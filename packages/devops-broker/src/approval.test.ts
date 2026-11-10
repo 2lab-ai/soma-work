@@ -1355,9 +1355,9 @@ describe('queued approvals (#1128)', () => {
       via: 'slack',
     });
     expect(stateOnDisk().approvals[pending.approvalId]).toMatchObject({ status: 'consumed', resulted: true });
-    expect(events(pending.approvalId)).toEqual(
-      expect.arrayContaining(['approval.queued', 'approval.approved', 'approval.consumed', 'approval.result-stored']),
-    );
+    // The result is visible once it is on disk; its ledger row is appended right after, so wait for it.
+    const wanted = ['approval.queued', 'approval.approved', 'approval.consumed', 'approval.result-stored'];
+    await waitFor(() => wanted.every((e) => events(pending.approvalId).includes(e)), 'ledger rows');
     // Acknowledged results are gone, from memory and disk.
     await expect(approvals.ackResults([pending.approvalId, 'unknown-id'])).resolves.toBe(1);
     expect(approvals.results()).toEqual([]);
