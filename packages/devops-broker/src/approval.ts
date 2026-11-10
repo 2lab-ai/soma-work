@@ -6,7 +6,14 @@
 // have buttons, so a Socket Mode outage never blocks an approval.
 
 import { createHash, randomBytes } from 'node:crypto';
-import type { DevopsTool, UnverifiedRequesterClaim } from '@soma/process-shared/devops/protocol.js';
+import type {
+  DashboardDecision,
+  DashboardDecisionOutcome,
+  DevopsTool,
+  JsonValue,
+  QueuedResultView,
+  UnverifiedRequesterClaim,
+} from '@soma/process-shared/devops/protocol.js';
 import type { Ledger } from './ledger.js';
 import type { BrokerPolicy } from './policy.js';
 import { type SlackApi, SlackApiError } from './slack-api.js';
@@ -25,7 +32,30 @@ export { ApprovalError, type ApprovalErrorCode, type ApprovalRequest } from './s
 
 export type ApprovalOutcome =
   | { outcome: 'approved'; approvalId: string; consume(): Promise<void> }
-  | { outcome: 'denied' | 'expired' | 'cancelled'; approvalId: string };
+  | { outcome: 'denied' | 'expired' | 'cancelled'; approvalId: string }
+  /** #1128: the requester stopped waiting and the card stays open until `queuedUntil`. */
+  | { outcome: 'queued'; approvalId: string; queuedUntil: string };
+
+/** What the broker's run of a queued request reports (#1128). `data` is the tool's result. */
+export interface QueuedRunResult {
+  outcome: 'done' | 'failed';
+  data?: JsonValue;
+  message?: string;
+}
+
+/**
+ * #1128: what runs when a queued request is approved. The run consumes the approval first (`consume`), exactly
+ * as a waiting requester would; `consume` throwing means nothing may run.
+ */
+export type QueuedRun = (approvalId: string, consume: () => Promise<void>) => Promise<QueuedRunResult>;
+
+/** The `pending` message's fields: `expiresAt` = the end of the live wait, `queuedUntil` = the card's own end. */
+export interface PendingNotice {
+  approvalId: string;
+  digestPrefix: string;
+  expiresAt: string;
+  queuedUntil?: string;
+}
 
 export interface Approvals {
   /**
@@ -35,8 +65,14 @@ export interface Approvals {
   request(
     req: ApprovalRequest,
     hooks: {
-      onPending(p: { approvalId: string; digestPrefix: string; expiresAt: string }): void;
+      onPending(p: PendingNotice): void;
+      /**
+       * Aborting resolves `cancelled` (the card is withdrawn once nobody waits) — except with the reason
+       * {@link QUEUE_ABORT_REASON} while the policy has a queue and `queued` is given: then it resolves `queued`
+       * and the card stays open; an approval runs `queued`.
+       */
       signal?: AbortSignal;
+      queued?: QueuedRun;
     },
   ): Promise<ApprovalOutcome>;
   /** One line in each card's thread and the cards marked done; best effort, never throws. */
@@ -59,9 +95,23 @@ export interface Approvals {
    * the card, in Slack.
    */
   pending(): PendingApprovalView[];
+  /**
+   * #1129: decisions from the dashboard (the `decide` admin op), in order. Each counts only when the policy lets
+   * the dashboard decide that tool, `actor` is an admin, the card is still pending and its digest starts with
+   * the prefix the admin saw; then it is decided like a click (expiry, one use and disk-first all apply) and
+   * the ledger says `via: dashboard`. Never throws.
+   */
+  decideFromDashboard(decisions: readonly DashboardDecision[], actor: string): Promise<DashboardDecisionOutcome[]>;
+  /** #1128: what became of queued requests, oldest first, until the bot acknowledges them. */
+  results(): QueuedResultView[];
+  /** Drops acknowledged results; returns how many were held. Never throws. */
+  ackResults(approvalIds: readonly string[]): Promise<number>;
   /** Cancels what is still open (approved-but-unused included) and waits for the card updates. */
   close(): Promise<void>;
 }
+
+/** The abort reason that moves a waiting request into the queue instead of withdrawing its card (#1128). */
+export const QUEUE_ABORT_REASON = 'queued';
 
 /** What the Socket Mode client reads from a block_actions payload (Slack, not the requester, sets `user`). */
 export interface ButtonClick {
@@ -85,10 +135,23 @@ export interface PendingApprovalView {
   expiresAt: string;
   /** Every admin's own card; `permalink` when Slack gave one. */
   cards: { admin: string; permalink?: string }[];
+  /** #1129: the card's lines, so an admin deciding on the dashboard sees what the Slack card shows. */
+  details: { label: string; value: string }[];
+  argv?: string[];
+  warnings: string[];
+  /** #1128: nobody waits for it any more; an approval runs it then. */
+  queued: boolean;
+  /** #1128: when the policy has a queue, the card's end (= `expiresAt`); the live wait ends at `liveUntil`. */
+  queuedUntil?: string;
+  liveUntil: string;
+  /** #1129: the policy lets the dashboard decide this card's tool. */
+  decidable: boolean;
 }
 
 /** How long a click on a card that is still being posted to the other admins waits for it to open. */
 const CLICK_WHILE_POSTING_WAIT_MS = 5_000;
+/** Queued cards' reactions are read one poll round in this many (buttons and the dashboard decide them at once). */
+const QUEUED_POLL_EVERY = 6;
 
 /** Why a handed-out approval goes unused. */
 export type ApprovalReleaseReason = 'requester-stopped-waiting';
@@ -164,8 +227,16 @@ export interface ApprovalRecord {
   claimedRequester: UnverifiedRequesterClaim;
   createdAt: string;
   expiresAt: string;
+  /** The card's first line, kept so a restart can still say what a queued request was (#1128). */
+  title?: string;
+  /** #1128: the requester stopped waiting; whatever becomes of it goes to `results`. */
+  queued?: true;
+  /** #1128: its result was stored (it may since have been acknowledged and dropped). */
+  resulted?: true;
   decidedAt?: string;
   decidedBy?: string;
+  /** #1129: where the decision came from (absent = Slack). */
+  decidedVia?: 'dashboard';
   consumedAt?: string;
   reason?: string;
   posts: ApprovalCardPost[];
@@ -175,6 +246,8 @@ export interface ApprovalRecord {
 
 export interface ApprovalState {
   approvals: Record<string, ApprovalRecord>;
+  /** #1128: outcomes of queued requests, until the bot acknowledges them (`results_ack`). */
+  results?: Record<string, QueuedResultView>;
 }
 
 /** Lives in the broker's state directory (`state/approvals.json`). */
@@ -193,6 +266,17 @@ const DEFAULT_RETRY_AFTER_SECONDS = 30;
 const RECORD_RETENTION_MS = 24 * 3600 * 1000;
 /** Approved cards remembered in memory for postResult. */
 const MAX_REMEMBERED_DECISIONS = 100;
+/** Unacknowledged results are kept this long, and at most this many (the oldest go first). */
+const RESULT_RETENTION_MS = 7 * 24 * 3600 * 1000;
+const MAX_RESULTS = 200;
+/** A result's data past this many JSON characters is dropped (the message says so; the card thread has the line). */
+const MAX_RESULT_DATA_CHARS = 64 * 1024;
+const RESTART_RESULT_MESSAGE =
+  'the broker restarted while this request was queued; nothing was run — ask again if it is still needed';
+const CLOSING_RESULT_MESSAGE =
+  'the broker shut down while this request was queued; nothing was run — ask again if it is still needed';
+const CRASHED_RUN_MESSAGE =
+  'the broker stopped while this request was running; the outcome is unknown — check before asking again';
 
 /** Key-sorted JSON at every level; same values give the same text whatever the key order. */
 function canonicalJson(value: unknown): string {
@@ -214,15 +298,15 @@ export function approvalDigest(req: Pick<ApprovalRequest, 'tool' | 'canonical' |
 }
 
 type Decision =
-  | { kind: 'approved'; by: string }
-  | { kind: 'denied'; by: string }
+  | { kind: 'approved'; by: string; via?: 'dashboard' }
+  | { kind: 'denied'; by: string; via?: 'dashboard' }
   | { kind: 'expired'; reason?: string }
   | { kind: 'cancelled'; reason: string };
 
 interface Waiter {
   resolve(outcome: ApprovalOutcome): void;
   reject(err: unknown): void;
-  onPending(p: { approvalId: string; digestPrefix: string; expiresAt: string }): void;
+  onPending(p: PendingNotice): void;
   detach(): void;
 }
 
@@ -232,10 +316,16 @@ interface Entry {
   sessionKey: string;
   /** When this card was counted against the windows (released if it reached no admin). */
   countedAt: number;
+  /** The card's end: the live wait's end without a queue, the queue's end with one. */
   expiresAtMs: number;
+  /** The end of the requester's live wait (#1128). */
+  liveExpiresAtMs: number;
   card: SlackCard;
   createdAtMs: number;
-  view: Pick<PendingApprovalView, 'tool' | 'title' | 'requester'>;
+  claimedRequester: UnverifiedRequesterClaim;
+  view: Pick<PendingApprovalView, 'tool' | 'title' | 'requester' | 'details' | 'argv' | 'warnings'>;
+  /** #1128: set when the first requester moved to the queue; an approval with nobody waiting runs it. */
+  queued?: QueuedRun;
   /** posting → pending → settled; only posting/pending entries count against the cap or take duplicates. */
   status: 'posting' | 'pending' | 'settled';
   posts: ApprovalCardPost[];
@@ -255,6 +345,87 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** Own entries only: an approval id from a caller is never looked up on the prototype. */
 function recordOf(state: ApprovalState, approvalId: string): ApprovalRecord | undefined {
   return Object.hasOwn(state.approvals, approvalId) ? state.approvals[approvalId] : undefined;
+}
+
+/** What a stored result says about its request (#1128). */
+interface ResultBase {
+  approvalId: string;
+  tool: DevopsTool;
+  digest: string;
+  title: string;
+  claimedRequester: UnverifiedRequesterClaim;
+}
+
+type ResultFields = Pick<QueuedResultView, 'outcome' | 'data' | 'message' | 'decidedBy' | 'via'>;
+
+/** A result as the `results` op returns it; data past MAX_RESULT_DATA_CHARS is dropped and the message says so. */
+function resultView(base: ResultBase, fields: ResultFields, finishedAt: string): QueuedResultView {
+  let data = fields.data;
+  let message = fields.message;
+  if (data !== undefined) {
+    const size = JSON.stringify(data)?.length ?? 0;
+    if (size > MAX_RESULT_DATA_CHARS) {
+      data = undefined;
+      const note = `the result (${size} characters) was too large to keep; the card thread has its summary line`;
+      message = message === undefined ? note : `${message}; ${note}`;
+    }
+  }
+  return {
+    approvalId: base.approvalId,
+    tool: base.tool,
+    digestPrefix: base.digest.slice(0, 12),
+    title: base.title,
+    claimedRequester: { slackUserId: base.claimedRequester.slackUserId, sessionKey: base.claimedRequester.sessionKey },
+    outcome: fields.outcome,
+    ...(data === undefined ? {} : { data }),
+    ...(message === undefined ? {} : { message }),
+    ...(fields.decidedBy === undefined ? {} : { decidedBy: fields.decidedBy }),
+    ...(fields.via === undefined ? {} : { via: fields.via }),
+    finishedAt,
+  };
+}
+
+function recordBase(record: ApprovalRecord): ResultBase {
+  return {
+    approvalId: record.approvalId,
+    tool: record.tool,
+    digest: record.digest,
+    title: record.title ?? `${record.tool} 요청`,
+    claimedRequester: record.claimedRequester,
+  };
+}
+
+/** Results older than RESULT_RETENTION_MS go, and the oldest past MAX_RESULTS. */
+function pruneResults(draft: ApprovalState, nowMs: number): void {
+  if (draft.results === undefined) return;
+  if (!isRecord(draft.results)) {
+    draft.results = {};
+    return;
+  }
+  const kept = Object.entries(draft.results)
+    .filter(([, view]) => {
+      const at = isRecord(view) && typeof view.finishedAt === 'string' ? Date.parse(view.finishedAt) : Number.NaN;
+      return Number.isFinite(at) && nowMs - at <= RESULT_RETENTION_MS;
+    })
+    .sort(([, a], [, b]) => a.finishedAt.localeCompare(b.finishedAt))
+    .slice(-MAX_RESULTS);
+  draft.results = Object.fromEntries(kept);
+}
+
+function deniedMessage(via: 'slack' | 'dashboard'): string {
+  return via === 'dashboard'
+    ? 'an admin denied it on the dashboard; nothing was run'
+    : 'an admin denied it; nothing was run';
+}
+
+function unrunMessage(decision: Decision): string {
+  if (decision.kind === 'denied') return deniedMessage(decision.via ?? 'slack');
+  if (decision.kind === 'expired') return 'no admin answered before the queue ended; nothing was run';
+  if (decision.kind === 'cancelled' && decision.reason === 'broker-closing') return CLOSING_RESULT_MESSAGE;
+  if (decision.kind === 'cancelled' && decision.reason.endsWith('-write-failed')) {
+    return 'the approval could not be recorded, so nothing was run — ask again';
+  }
+  return 'the request was cancelled; nothing was run';
 }
 
 export function createApprovals(opts: {
@@ -277,6 +448,11 @@ export function createApprovals(opts: {
   const log = opts.log ?? ((line: string) => process.stderr.write(`soma-devops-broker: ${line}\n`));
   const admins = new Set(policy.admins);
   const iso = (ms: number) => new Date(ms).toISOString();
+  const liveMs = policy.approvalTimeoutSeconds * 1000;
+  /** #1128: how long a card stays open in all, or null without a queue. */
+  const queueMs = typeof policy.queueTimeoutSeconds === 'number' ? policy.queueTimeoutSeconds * 1000 : null;
+  const maxQueued = policy.maxQueuedApprovals ?? 50;
+  const dashboardTools = new Set<DevopsTool>(policy.dashboardDecisionTools ?? []);
 
   /** Times new cards were counted, overall and per session (pruned to the window on every check). */
   const globalCards: { at: number; approvalId: string }[] = [];
@@ -301,6 +477,94 @@ export function createApprovals(opts: {
   let wakeLoop: (() => void) | undefined;
   /** performance.now() before which reactions.get is not called (Retry-After). */
   let blockedUntil = 0;
+
+  /** #1128: the requester moved to the queue and nobody waits live any more. */
+  function isQueued(entry: Entry): boolean {
+    return entry.queued !== undefined && entry.waiters.size === 0;
+  }
+
+  function queuedCount(): number {
+    let n = 0;
+    for (const entry of active.values()) if (isQueued(entry)) n += 1;
+    return n;
+  }
+
+  function entryBase(entry: Entry): ResultBase {
+    return {
+      approvalId: entry.approvalId,
+      tool: entry.view.tool,
+      digest: entry.digest,
+      title: entry.view.title,
+      claimedRequester: entry.claimedRequester,
+    };
+  }
+
+  /** Never throws: a result that cannot be stored is logged (the ledger and the card thread still have it). */
+  async function storeResult(base: ResultBase, fields: ResultFields): Promise<void> {
+    const view = resultView(base, fields, iso(clock()));
+    try {
+      await mutate((draft) => {
+        if (!isRecord(draft.results)) draft.results = {};
+        draft.results[base.approvalId] = view;
+        const record = recordOf(draft, base.approvalId);
+        if (record !== undefined) record.resulted = true;
+        pruneResults(draft, clock());
+      });
+      await ledger
+        .append({ event: 'approval.result-stored', approvalId: base.approvalId, outcome: view.outcome })
+        .catch(() => undefined);
+    } catch (err) {
+      log(`storing the result of queued approval ${base.approvalId} failed (${errorCode(err)})`);
+      await ledger
+        .append({ event: 'approval.result-store-failed', approvalId: base.approvalId, code: errorCode(err) })
+        .catch(() => undefined);
+    }
+  }
+
+  /** On disk and in the ledger: this card has moved to the queue. Best effort (the entry in memory is what counts). */
+  function markQueued(entry: Entry): void {
+    track(
+      (async () => {
+        await mutate((draft) => {
+          const record = recordOf(draft, entry.approvalId);
+          if (record !== undefined && !record.resulted) record.queued = true;
+        });
+        await ledger.append({
+          event: 'approval.queued',
+          approvalId: entry.approvalId,
+          queuedUntil: iso(entry.expiresAtMs),
+        });
+      })().catch((err: unknown) => {
+        log(`recording queued approval ${entry.approvalId} failed (${errorCode(err)})`);
+      }),
+    );
+  }
+
+  /**
+   * An approved queued request: the broker's run (consume first, then the tool) is not waited for by whoever
+   * decided it; its outcome is stored for the bot.
+   */
+  function startQueuedRun(
+    entry: Entry,
+    run: QueuedRun,
+    consume: () => Promise<void>,
+    by: string,
+    via: 'slack' | 'dashboard',
+  ): void {
+    const base = entryBase(entry);
+    track(
+      (async () => {
+        let result: QueuedRunResult;
+        try {
+          result = await run(base.approvalId, consume);
+        } catch (err) {
+          log(`queued run of approval ${base.approvalId} failed (${errorCode(err)})`);
+          result = { outcome: 'failed', message: 'the broker hit an internal error running this request' };
+        }
+        await storeResult(base, { ...result, decidedBy: by, via });
+      })(),
+    );
+  }
 
   /** Every transition re-reads the file first: the file, not this process's memory, is the authority. */
   async function mutate<R>(fn: (draft: ApprovalState) => R): Promise<R> {
@@ -347,6 +611,7 @@ export function createApprovals(opts: {
       const last = Date.parse(record.consumedAt ?? record.decidedAt ?? record.createdAt);
       if (!Number.isFinite(last) || nowMs - last > RECORD_RETENTION_MS) delete draft.approvals[id];
     }
+    pruneResults(draft, nowMs);
   }
 
   /**
@@ -363,8 +628,20 @@ export function createApprovals(opts: {
       const nowMs = clock();
       toAnnounce = await mutate((draft) => {
         const out: { approvalId: string; posts: ApprovalCardPost[]; card?: SlackCard }[] = [];
+        const finishedAt = iso(nowMs);
+        const result = (record: ApprovalRecord, fields: ResultFields) => {
+          if (!isRecord(draft.results)) draft.results = {};
+          draft.results[record.approvalId] = resultView(recordBase(record), fields, finishedAt);
+          record.resulted = true;
+        };
         for (const record of Object.values(draft.approvals)) {
+          // #1128: a queued request the previous process approved and started, but never finished.
+          if (record.queued && !record.resulted && record.status === 'consumed') {
+            result(record, { outcome: 'failed', message: CRASHED_RUN_MESSAGE, decidedBy: record.decidedBy });
+          }
           if (record.status !== 'pending' && record.status !== 'approved') continue;
+          if (record.queued && !record.resulted)
+            result(record, { outcome: 'expired', message: RESTART_RESULT_MESSAGE });
           out.push({ approvalId: record.approvalId, posts: record.posts ?? [], card: record.card });
           record.status = 'expired';
           record.decidedAt = iso(nowMs);
@@ -403,13 +680,18 @@ export function createApprovals(opts: {
   }
   ready().catch(() => undefined);
 
-  function announce(entry: Entry, waiter: Waiter): void {
+  function notice(entry: Entry): PendingNotice {
+    return {
+      approvalId: entry.approvalId,
+      digestPrefix: entry.digest.slice(0, 12),
+      expiresAt: iso(entry.liveExpiresAtMs),
+      ...(queueMs === null ? {} : { queuedUntil: iso(entry.expiresAtMs) }),
+    };
+  }
+
+  function announce(entry: Entry, waiter: Pick<Waiter, 'onPending'>): void {
     try {
-      waiter.onPending({
-        approvalId: entry.approvalId,
-        digestPrefix: entry.digest.slice(0, 12),
-        expiresAt: iso(entry.expiresAtMs),
-      });
+      waiter.onPending(notice(entry));
     } catch {
       // The caller's callback failing does not change the approval.
     }
@@ -438,9 +720,25 @@ export function createApprovals(opts: {
     const signal = hooks.signal;
     const onAbort = () => {
       if (!entry.waiters.delete(waiter)) return;
+      let reason = 'requester-gone';
+      if (signal?.reason === QUEUE_ABORT_REASON && hooks.queued !== undefined && queueMs !== null) {
+        // `settled` here = a decision is being recorded right now (settle clears the waiters when it hands out the
+        // outcome): the request stays with it, and settle runs it or stores its result.
+        const deciding = entry.status === 'settled';
+        if (deciding || (entry.status === 'pending' && (entry.queued !== undefined || queuedCount() < maxQueued))) {
+          if (entry.queued === undefined) {
+            entry.queued = hooks.queued;
+            markQueued(entry);
+          }
+          resolve({ outcome: 'queued', approvalId: entry.approvalId, queuedUntil: iso(entry.expiresAtMs) });
+          return;
+        }
+        reason = 'queue-full';
+      }
       resolve({ outcome: 'cancelled', approvalId: entry.approvalId });
-      if (entry.waiters.size === 0 && entry.status === 'pending') {
-        void finish(entry, { kind: 'cancelled', reason: 'requester-gone' });
+      // A queued request keeps its card when an identical request that joined it stops waiting.
+      if (entry.waiters.size === 0 && entry.status === 'pending' && entry.queued === undefined) {
+        void finish(entry, { kind: 'cancelled', reason });
       }
     };
     const waiter: Waiter = {
@@ -463,11 +761,13 @@ export function createApprovals(opts: {
     }
   }
 
-  function finish(entry: Entry, decision: Decision): Promise<void> {
-    if (entry.status !== 'pending') return Promise.resolve();
+  /** Resolves with what the decision became (an approval can turn expired or cancelled), or undefined. */
+  function finish(entry: Entry, decision: Decision): Promise<Decision['kind'] | undefined> {
+    if (entry.status !== 'pending') return Promise.resolve(undefined);
     const work = settle(entry, decision).catch(() => undefined);
-    finishing.add(work);
-    void work.then(() => finishing.delete(work));
+    const done = work.then(() => undefined);
+    finishing.add(done);
+    void done.then(() => finishing.delete(done));
     return work;
   }
 
@@ -476,7 +776,7 @@ export function createApprovals(opts: {
     coolDowns.set(entry.sessionKey, clock() + limits.abandonedCoolDownMs);
   }
 
-  async function settle(entry: Entry, reported: Decision): Promise<void> {
+  async function settle(entry: Entry, reported: Decision): Promise<Decision['kind']> {
     entry.status = 'settled';
     active.delete(entry.approvalId);
     const approvalId = entry.approvalId;
@@ -495,7 +795,10 @@ export function createApprovals(opts: {
         if (record === undefined || record.status !== 'pending') throw new Error('approval record is not pending');
         record.status = decision.kind;
         record.decidedAt = decidedAt;
-        if (decision.kind === 'approved' || decision.kind === 'denied') record.decidedBy = decision.by;
+        if (decision.kind === 'approved' || decision.kind === 'denied') {
+          record.decidedBy = decision.by;
+          if (decision.via !== undefined) record.decidedVia = decision.via;
+        }
         if ((decision.kind === 'expired' || decision.kind === 'cancelled') && decision.reason !== undefined) {
           record.reason = decision.reason;
         }
@@ -508,7 +811,10 @@ export function createApprovals(opts: {
         .append({ event: 'approval.state-write-failed', approvalId, code: errorCode(err) })
         .catch(() => undefined);
     }
-    const by = final.kind === 'approved' || final.kind === 'denied' ? { by: final.by } : {};
+    const by =
+      final.kind === 'approved' || final.kind === 'denied'
+        ? { by: final.by, ...(final.via === undefined ? {} : { via: final.via }) }
+        : {};
     const reason =
       (final.kind === 'expired' || final.kind === 'cancelled') && final.reason ? { reason: final.reason } : {};
     try {
@@ -523,7 +829,9 @@ export function createApprovals(opts: {
         }).catch(() => undefined);
       }
     }
-    if (final.kind === 'approved' && (closed || entry.waiters.size === 0)) {
+    // #1128: a queued request with nobody waiting live is run by the broker itself once approved.
+    const queuedRun = entry.waiters.size === 0 ? entry.queued : undefined;
+    if (final.kind === 'approved' && (closed || (entry.waiters.size === 0 && queuedRun === undefined))) {
       // Nobody is left to use it (or the broker is closing): never leave an approved record behind.
       const reason = closed ? 'broker-closing' : 'requester-gone';
       final = { kind: 'cancelled', reason };
@@ -539,18 +847,36 @@ export function createApprovals(opts: {
     }
     if (final.kind === 'approved') {
       const consume = consumer(approvalId);
-      decided.set(approvalId, { posts: entry.posts, card: entry.card, holders: entry.waiters.size });
+      const holders = queuedRun === undefined ? entry.waiters.size : 1;
+      decided.set(approvalId, { posts: entry.posts, card: entry.card, holders });
       if (decided.size > MAX_REMEMBERED_DECISIONS) {
         const oldest = decided.keys().next().value;
         if (oldest !== undefined) decided.delete(oldest);
       }
       settleWaiters(entry, (waiter) => waiter.resolve({ outcome: 'approved', approvalId, consume }));
+      if (queuedRun !== undefined) startQueuedRun(entry, queuedRun, consume, final.by, final.via ?? 'slack');
     } else {
       const outcome = final.kind;
       settleWaiters(entry, (waiter) => waiter.resolve({ outcome, approvalId }));
+      if (queuedRun !== undefined) {
+        await storeResult(entryBase(entry), {
+          outcome,
+          message: unrunMessage(final),
+          ...(final.kind === 'denied' ? { decidedBy: final.by, via: final.via ?? 'slack' } : {}),
+        });
+      }
+    }
+    if (entry.queued !== undefined && queuedRun === undefined) {
+      // An identical request that still waited live took the outcome: the queued one is owed no result, and a
+      // restart must not report it as a cut run.
+      await mutate((draft) => {
+        const record = recordOf(draft, approvalId);
+        if (record !== undefined) record.resulted = true;
+      }).catch(() => undefined);
     }
     const status: CardStatus = final.kind === 'approved' || final.kind === 'denied' ? final : { kind: final.kind };
     updateCards(approvalId, entry.posts, renderCardStatus(entry.card, status));
+    return final.kind;
   }
 
   function dmChannel(admin: string): Promise<string> {
@@ -579,6 +905,7 @@ export function createApprovals(opts: {
           claimedRequester: { ...req.claimedRequester },
           createdAt: iso(createdAtMs),
           expiresAt: iso(entry.expiresAtMs),
+          title: req.title,
           posts: [],
           card: entry.card,
         };
@@ -724,13 +1051,19 @@ export function createApprovals(opts: {
     return { ratelimited: false };
   }
 
+  /** Poll rounds so far: queued cards (nobody waits on them) are read every QUEUED_POLL_EVERY-th round only. */
+  let round = 0;
+
   async function pollOnce(): Promise<void> {
     for (const entry of watched()) {
       if (clock() >= entry.expiresAtMs) await finish(entry, { kind: 'expired' });
     }
     if (performance.now() < blockedUntil) return;
+    round += 1;
+    const readQueued = round % QUEUED_POLL_EVERY === 0;
     for (const entry of watched()) {
       if (closed) return;
+      if (isQueued(entry) && !readQueued) continue;
       const { decision, ratelimited } = await readDecision(entry);
       if (decision !== undefined) await finish(entry, decision);
       if (ratelimited) return;
@@ -742,7 +1075,11 @@ export function createApprovals(opts: {
     while (!closed) {
       const entries = watched();
       if (entries.length === 0) return;
-      const cards = entries.reduce((sum, entry) => sum + entry.posts.length, 0);
+      // Queued cards are read one round in QUEUED_POLL_EVERY, so they weigh that much less on the gap.
+      const cards = entries.reduce(
+        (sum, entry) => sum + entry.posts.length / (isQueued(entry) ? QUEUED_POLL_EVERY : 1),
+        0,
+      );
       await sleep(pollIntervalMs * Math.max(1, Math.ceil(cards / 2)));
       if (closed) return;
       try {
@@ -807,8 +1144,19 @@ export function createApprovals(opts: {
   /** The first limit a new card from this session would break, or null. Synchronous: check and count are atomic. */
   function overLimit(sessionKey: string, nowMs: number): Refusal | null {
     forget(nowMs);
-    if (active.size >= policy.maxPendingApprovals) return { limit: 'pending' };
-    const pendingHere = [...active.values()].filter((entry) => entry.sessionKey === sessionKey).length;
+    // #1128: queued cards (nobody waits on them) count against the queue's own cap, not the live ones.
+    const live = [...active.values()].filter((entry) => !isQueued(entry));
+    if (live.length >= policy.maxPendingApprovals) return { limit: 'pending' };
+    if (queueMs !== null) {
+      const queued = active.size - live.length;
+      if (queued >= maxQueued) {
+        return {
+          limit: 'queue',
+          message: `the approval queue is full (${queued} requests wait for an admin); try again after some are decided`,
+        };
+      }
+    }
+    const pendingHere = live.filter((entry) => entry.sessionKey === sessionKey).length;
     if (pendingHere >= limits.sessionPending) {
       return {
         limit: 'session-pending',
@@ -882,6 +1230,14 @@ export function createApprovals(opts: {
 
       // From here to `active.set` nothing awaits, so concurrent requests see each other.
       const same = [...active.values()].find((entry) => entry.digest === digest);
+      if (same !== undefined && isQueued(same)) {
+        // #1128: the same request is already queued; this one is told so at once and runs nothing itself.
+        announce(same, hooks);
+        void ledger
+          .append({ event: 'approval.attached', approvalId: same.approvalId, queued: true })
+          .catch(() => undefined);
+        return { outcome: 'queued', approvalId: same.approvalId, queuedUntil: iso(same.expiresAtMs) };
+      }
       if (same !== undefined) {
         return new Promise<ApprovalOutcome>((resolve, reject) => {
           const waiter = addWaiter(same, hooks, resolve, reject);
@@ -892,7 +1248,9 @@ export function createApprovals(opts: {
 
       const createdAtMs = clock();
       const approvalId = freshId();
-      const expiresAtMs = createdAtMs + policy.approvalTimeoutSeconds * 1000;
+      const liveExpiresAtMs = createdAtMs + liveMs;
+      // #1128: with a queue the card stays open past the live wait, and states the queue's end.
+      const expiresAtMs = createdAtMs + (queueMs ?? liveMs);
       // Limits first: an over-limit session is refused without rendering anything.
       const sessionKey = req.claimedRequester.sessionKey;
       const over = overLimit(sessionKey, createdAtMs);
@@ -916,9 +1274,18 @@ export function createApprovals(opts: {
         sessionKey,
         countedAt: createdAtMs,
         expiresAtMs,
+        liveExpiresAtMs,
         card,
         createdAtMs,
-        view: { tool: req.tool, title: req.title, requester: req.claimedRequester.slackUserId },
+        claimedRequester: { ...req.claimedRequester },
+        view: {
+          tool: req.tool,
+          title: req.title,
+          requester: req.claimedRequester.slackUserId,
+          details: req.details.map((d) => ({ label: d.label, value: d.value })),
+          ...(req.argv === undefined ? {} : { argv: [...req.argv] }),
+          warnings: [...req.warnings],
+        },
         status: 'posting',
         posts: [],
         waiters: new Set(),
@@ -986,7 +1353,97 @@ export function createApprovals(opts: {
             admin: post.admin,
             ...(post.permalink ? { permalink: post.permalink } : {}),
           })),
+          queued: isQueued(entry),
+          ...(queueMs === null ? {} : { queuedUntil: iso(entry.expiresAtMs) }),
+          liveUntil: iso(entry.liveExpiresAtMs),
+          decidable: dashboardTools.has(entry.view.tool),
         }));
+    },
+
+    async decideFromDashboard(decisions, actor) {
+      const outcomes: DashboardDecisionOutcome[] = [];
+      for (const d of decisions) {
+        const refuse = async (reason: NonNullable<DashboardDecisionOutcome['reason']>) => {
+          await ledger
+            .append({ event: 'approval.dashboard-refused', approvalId: d.approvalId, user: actor, reason })
+            .catch(() => undefined);
+          outcomes.push({ approvalId: d.approvalId, outcome: 'refused', reason });
+        };
+        try {
+          if (closed) {
+            await refuse('closed');
+            continue;
+          }
+          if (dashboardTools.size === 0) {
+            await refuse('dashboard-decisions-off');
+            continue;
+          }
+          if (!admins.has(actor)) {
+            await refuse('not-admin');
+            continue;
+          }
+          const entry = active.get(d.approvalId);
+          if (entry === undefined || entry.status !== 'pending') {
+            await refuse('not-pending');
+            continue;
+          }
+          // The admin decided the card they saw: its number, which the digest of every argument backs.
+          if (entry.digest.slice(0, 12) !== d.digestPrefix) {
+            await refuse('digest-mismatch');
+            continue;
+          }
+          if (!dashboardTools.has(entry.view.tool)) {
+            await refuse('tool-not-allowed');
+            continue;
+          }
+          const wanted = d.action === 'approve' ? 'approved' : 'denied';
+          const final = await finish(
+            entry,
+            d.action === 'approve'
+              ? { kind: 'approved', by: actor, via: 'dashboard' }
+              : { kind: 'denied', by: actor, via: 'dashboard' },
+          );
+          if (final === wanted) {
+            outcomes.push({ approvalId: d.approvalId, outcome: 'accepted' });
+          } else {
+            // Past its end (`approved-after-expiry`) or not recorded (state or ledger write failed): nothing took.
+            await refuse(final === 'expired' ? 'not-pending' : 'failed');
+          }
+        } catch (err) {
+          log(`dashboard decision on approval ${d.approvalId} failed (${errorCode(err)})`);
+          outcomes.push({ approvalId: d.approvalId, outcome: 'refused', reason: 'failed' });
+        }
+      }
+      return outcomes;
+    },
+
+    results() {
+      const results = store.get().results;
+      if (!isRecord(results)) return [];
+      return Object.values(results)
+        .filter((view): view is QueuedResultView => isRecord(view) && typeof view.finishedAt === 'string')
+        .sort((a, b) => a.finishedAt.localeCompare(b.finishedAt));
+    },
+
+    async ackResults(approvalIds) {
+      try {
+        const dropped = await mutate((draft) => {
+          if (!isRecord(draft.results)) return 0;
+          let n = 0;
+          for (const id of approvalIds) {
+            if (!Object.hasOwn(draft.results, id)) continue;
+            delete draft.results[id];
+            n += 1;
+          }
+          return n;
+        });
+        if (dropped > 0)
+          await ledger.append({ event: 'approval.results-acked', count: dropped }).catch(() => undefined);
+        return dropped;
+      } catch (err) {
+        log(`acknowledging results failed (${errorCode(err)})`);
+        return 0;
+      }
     },
 
     async decide(click) {

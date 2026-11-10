@@ -127,6 +127,8 @@ import { migrateAllUsersMinimalOnce } from './deploy/migrate-all-users-minimal-o
 import { migrateAllUsersOpusOnce } from './deploy/migrate-all-users-opus-once';
 import { migrateCronOpusOnce } from './deploy/migrate-cron-opus-once';
 import { migrateThreadHeaderDashboardLinkOnce } from './deploy/migrate-threadheader-dashboard-link-once';
+import { devopsBrokerSocketPath } from './devops/broker-approvals';
+import { startBrokerResultsWatch } from './devops/broker-results';
 import { initializeDispatchService } from './dispatch-service';
 import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR } from './env-paths';
 import { envSkillRegistry } from './env-skill-registry';
@@ -2075,6 +2077,44 @@ async function start() {
       timing('Session PR watch started');
     }
 
+    // #1128 — the outcome of a devops broker request that waited in the broker's queue (decided after its tool call
+    // ended) reaches the session that asked, as a host turn once the session is settled. Nothing on a host without
+    // a broker (the socket is missing: the watch asks quietly every 15 s).
+    const devopsResultsRegistry = claudeHandler.getSessionRegistry();
+    const devopsResultsDelivery = createSettledDelivery({
+      state: (sessionKey) => {
+        const s = devopsResultsRegistry.getSessionByKey(sessionKey);
+        if (!s?.channelId || s.terminated) return 'gone';
+        if (s.activityState && s.activityState !== 'idle') return 'busy';
+        return slackHandler.isHostTurnFree(s.channelId, s.threadTs) ? 'ready' : 'busy';
+      },
+      inject: async (sessionKey, text) => {
+        const s = devopsResultsRegistry.getSessionByKey(sessionKey);
+        if (!s?.channelId) return;
+        await messageInjector({
+          user: s.ownerId,
+          channel: s.channelId,
+          thread_ts: s.threadTs,
+          ts: `${Date.now() / 1000}`,
+          text,
+          synthetic: true,
+          skipDispatch: true,
+          routeContext: { skipAutoBotThread: true },
+        });
+      },
+      // A result days old still matters (the request ran): keep it until the session settles, up to a day.
+      maxWaitMs: 24 * 60 * 60 * 1000,
+      logger,
+    });
+    const devopsResultsWatch = startBrokerResultsWatch({
+      socketPath: devopsBrokerSocketPath(CONFIG_FILE),
+      sessionAccepts: (sessionKey, slackUserId) => {
+        const s = devopsResultsRegistry.getSessionByKey(sessionKey);
+        return Boolean(s?.channelId) && !s?.terminated && s?.ownerId === slackUserId;
+      },
+      deliver: (sessionKey, text, done) => devopsResultsDelivery.deliver(sessionKey, text, done),
+    });
+
     // Goal auto-continuation loop — idle-settle driver.
     //
     // Spec (docs/goal-command/spec.md §Auto-Continuation Loop):
@@ -2360,6 +2400,8 @@ async function start() {
         }
         sessionPrWatch?.stop();
         prWatchDelivery?.stop();
+        devopsResultsWatch.stop();
+        devopsResultsDelivery.stop();
 
         // Stop CCT usage refresh scheduler before TM so no pump fires mid-teardown
         if (usageRefreshScheduler) {

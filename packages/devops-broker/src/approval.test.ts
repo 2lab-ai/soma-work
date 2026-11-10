@@ -16,6 +16,9 @@ import {
   createApprovals,
   DEFAULT_APPROVAL_LIMITS,
   initialApprovalState,
+  QUEUE_ABORT_REASON,
+  type QueuedRun,
+  type QueuedRunResult,
 } from './approval.js';
 import { Ledger } from './ledger.js';
 import type { BrokerPolicy } from './policy.js';
@@ -1271,8 +1274,15 @@ describe('pending cards for the dashboard (#1051)', () => {
           permalink: `https://example.slack.test/archives/${dm(ADMIN_B)}/p${card(ADMIN_B).ts.replace('.', '')}`,
         },
       ],
+      // #1129: the card's own lines, so a dashboard decision is made on what the Slack card shows.
+      details: req().details,
+      warnings: req().warnings,
+      ...(req().argv === undefined ? {} : { argv: [...(req().argv ?? [])] }),
+      queued: false,
+      liveUntil: pending.expiresAt,
+      decidable: false,
     });
-    // The listing holds no argument values, warnings or session: only what the dashboard needs to point at the card.
+    // No session: the listing names the requester only.
     expect(JSON.stringify(view)).not.toContain(req().claimedRequester.sessionKey);
     fake.react(dm(ADMIN), card(ADMIN).ts, 'white_check_mark', ADMIN);
     await run.result;
@@ -1287,5 +1297,343 @@ describe('pending cards for the dashboard (#1051)', () => {
     expect(approvals.pending()[0].cards).toEqual([{ admin: ADMIN }]);
     fake.react(dm(ADMIN), card(ADMIN).ts, 'white_check_mark', ADMIN);
     await expect(run.result).resolves.toMatchObject({ outcome: 'approved' });
+  });
+});
+
+// ── #1128 / #1129 ─────────────────────────────────────────
+
+const QUEUE = { queueTimeoutSeconds: 3600 } as const;
+
+/** A request whose requester can move to the queue, with a run that records what it did. */
+function startQueued(
+  approvals: Approvals,
+  request: ApprovalRequest,
+  outcome: QueuedRunResult = { outcome: 'done', data: { ok: true } },
+) {
+  const controller = new AbortController();
+  const pending: Array<Pending & { queuedUntil?: string }> = [];
+  const runs: string[] = [];
+  const queued: QueuedRun = async (approvalId, consume) => {
+    await consume();
+    runs.push(approvalId);
+    return outcome;
+  };
+  const result = approvals.request(request, { onPending: (p) => pending.push(p), signal: controller.signal, queued });
+  return { pending, result, runs, toQueue: () => controller.abort(QUEUE_ABORT_REASON), controller };
+}
+
+describe('queued approvals (#1128)', () => {
+  it('a requester that stops waiting is told queued, the card stays open, and an approval then runs it once', async () => {
+    const approvals = await makeApprovals(QUEUE);
+    const run = startQueued(approvals, req());
+    const [pending] = await waitFor(() => run.pending.length > 0 && run.pending, 'pending');
+    // The live wait ends with approvalTimeout; the card itself with the queue.
+    expect(pending.expiresAt).toBe(new Date(START + 300_000).toISOString());
+    expect(pending.queuedUntil).toBe(new Date(START + 3_600_000).toISOString());
+    run.toQueue();
+    await expect(run.result).resolves.toEqual({
+      outcome: 'queued',
+      approvalId: pending.approvalId,
+      queuedUntil: pending.queuedUntil,
+    });
+    expect(approvals.pending()).toMatchObject([{ approvalId: pending.approvalId, queued: true }]);
+    await waitFor(() => stateOnDisk().approvals[pending.approvalId]?.queued === true, 'queued on disk');
+    expect(fake.cards(dm(ADMIN))[0].updates).toEqual([]);
+
+    fake.react(dm(ADMIN), card(ADMIN).ts, 'white_check_mark', ADMIN);
+    const [result] = await waitFor(() => approvals.results().length > 0 && approvals.results(), 'result');
+    expect(run.runs).toEqual([pending.approvalId]);
+    expect(result).toMatchObject({
+      approvalId: pending.approvalId,
+      tool: 'gh_write',
+      digestPrefix: pending.digestPrefix,
+      title: req().title,
+      claimedRequester: req().claimedRequester,
+      outcome: 'done',
+      data: { ok: true },
+      decidedBy: ADMIN,
+      via: 'slack',
+    });
+    expect(stateOnDisk().approvals[pending.approvalId]).toMatchObject({ status: 'consumed', resulted: true });
+    expect(events(pending.approvalId)).toEqual(
+      expect.arrayContaining(['approval.queued', 'approval.approved', 'approval.consumed', 'approval.result-stored']),
+    );
+    // Acknowledged results are gone, from memory and disk.
+    await expect(approvals.ackResults([pending.approvalId, 'unknown-id'])).resolves.toBe(1);
+    expect(approvals.results()).toEqual([]);
+    expect(stateOnDisk().results).toEqual({});
+  });
+
+  it('without a queue in the policy the same abort withdraws the card', async () => {
+    const approvals = await makeApprovals();
+    const run = startQueued(approvals, req());
+    const [pending] = await waitFor(() => run.pending.length > 0 && run.pending, 'pending');
+    expect(pending.queuedUntil).toBeUndefined();
+    run.toQueue();
+    await expect(run.result).resolves.toMatchObject({ outcome: 'cancelled' });
+    await waitFor(() => stateOnDisk().approvals[pending.approvalId]?.status === 'cancelled', 'cancelled');
+    expect(approvals.pending()).toEqual([]);
+    expect(approvals.results()).toEqual([]);
+  });
+
+  it('a queued card that is denied, or reaches the end of the queue, leaves that as its result and runs nothing', async () => {
+    const approvals = await makeApprovals(QUEUE);
+    const denied = startQueued(approvals, req(1));
+    const expired = startQueued(approvals, req(2));
+    await waitFor(() => denied.pending.length > 0 && expired.pending.length > 0, 'pending');
+    denied.toQueue();
+    expired.toQueue();
+    await denied.result;
+    await expired.result;
+    fake.react(dm(ADMIN), cardWith(ADMIN, denied.pending[0].approvalId).ts, 'x', ADMIN);
+    await waitFor(() => approvals.results().length === 1, 'denied result');
+    expect(approvals.results()[0]).toMatchObject({ outcome: 'denied', decidedBy: ADMIN, via: 'slack' });
+    clock = START + 3_600_000;
+    await waitFor(() => approvals.results().length === 2, 'expired result');
+    expect(approvals.results()[1]).toMatchObject({
+      approvalId: expired.pending[0].approvalId,
+      outcome: 'expired',
+      message: 'no admin answered before the queue ended; nothing was run',
+    });
+    expect([...denied.runs, ...expired.runs]).toEqual([]);
+  });
+
+  it('an identical request while one is queued is told queued at once and the approval runs once', async () => {
+    const approvals = await makeApprovals(QUEUE);
+    const first = startQueued(approvals, req());
+    await waitFor(() => first.pending.length > 0, 'pending');
+    first.toQueue();
+    await first.result;
+    const again = startQueued(approvals, req());
+    await expect(again.result).resolves.toMatchObject({ outcome: 'queued', approvalId: first.pending[0].approvalId });
+    expect(again.pending).toHaveLength(1);
+    expect(fake.cards(dm(ADMIN))).toHaveLength(1);
+    fake.react(dm(ADMIN), card(ADMIN).ts, 'white_check_mark', ADMIN);
+    await waitFor(() => approvals.results().length > 0, 'result');
+    expect([...first.runs, ...again.runs]).toEqual([first.pending[0].approvalId]);
+  });
+
+  it('queued cards do not hold the live cap', async () => {
+    const approvals = await makeApprovals({ ...QUEUE, maxPendingApprovals: 1 });
+    const first = startQueued(approvals, req(1));
+    await waitFor(() => first.pending.length > 0, 'pending');
+    // Live cap 1: a second live card is refused while the first is live...
+    await expect(caughtApprovalError(approvals.request(req(2), { onPending: () => {} }))).resolves.toMatchObject({
+      code: 'too-many-pending-approvals',
+    });
+    first.toQueue();
+    await first.result;
+    // ...and posted once the first is queued.
+    const second = startQueued(approvals, req(3));
+    await waitFor(() => second.pending.length > 0, 'second pending');
+    expect(approvals.pending().map((v) => v.queued)).toEqual([true, false]);
+  });
+
+  it('the queue has a cap of its own: past it a card is withdrawn, and no new card is posted', async () => {
+    const approvals = await makeApprovals({ ...QUEUE, maxPendingApprovals: 2, maxQueuedApprovals: 1 });
+    const first = startQueued(approvals, req(1));
+    const second = startQueued(approvals, req(2));
+    await waitFor(() => first.pending.length > 0 && second.pending.length > 0, 'pending');
+    first.toQueue();
+    await expect(first.result).resolves.toMatchObject({ outcome: 'queued' });
+    second.toQueue();
+    await expect(second.result).resolves.toMatchObject({ outcome: 'cancelled' });
+    await waitFor(
+      () => rows().find((row) => row.event === 'approval.cancelled' && row.reason === 'queue-full'),
+      'queue-full row',
+    );
+    const refused = await caughtApprovalError(approvals.request(req(3), { onPending: () => {} }));
+    expect(refused.message).toContain('the approval queue is full');
+  });
+
+  it('a restart turns a queued card into an expired result; a run cut by the restart into a failed one', async () => {
+    const before = await makeApprovals(QUEUE);
+    const waiting = startQueued(before, req(1));
+    await waitFor(() => waiting.pending.length > 0, 'pending');
+    waiting.toQueue();
+    await waiting.result;
+    await waitFor(() => stateOnDisk().approvals[waiting.pending[0].approvalId]?.queued === true, 'queued on disk');
+    // A run the previous process started (consumed) but never finished.
+    const store = new StateStore<ApprovalState>(stateFile, initialApprovalState());
+    await store.load();
+    await store.update((draft) => {
+      draft.approvals['cut-run-0000000001'] = {
+        approvalId: 'cut-run-0000000001',
+        tool: 'gh_write',
+        digest: 'f'.repeat(64),
+        status: 'consumed',
+        claimedRequester: { slackUserId: 'U000ALICE', sessionKey: session(9) },
+        createdAt: new Date(START).toISOString(),
+        expiresAt: new Date(START + 3_600_000).toISOString(),
+        consumedAt: new Date(START).toISOString(),
+        title: 'cut run',
+        queued: true,
+        decidedBy: ADMIN,
+        posts: [],
+      };
+    });
+    const after = await makeApprovals(QUEUE, 10, { store });
+    await waitFor(() => after.results().length === 2, 'results after restart');
+    const byId = Object.fromEntries(after.results().map((r) => [r.approvalId, r]));
+    expect(byId[waiting.pending[0].approvalId]).toMatchObject({ outcome: 'expired' });
+    expect(byId[waiting.pending[0].approvalId].message).toContain('the broker restarted');
+    expect(byId['cut-run-0000000001']).toMatchObject({ outcome: 'failed', decidedBy: ADMIN, title: 'cut run' });
+    expect(byId['cut-run-0000000001'].message).toContain('the outcome is unknown');
+  });
+
+  it('close() cancels a queued card and leaves a cancelled result', async () => {
+    const approvals = await makeApprovals(QUEUE);
+    const run = startQueued(approvals, req());
+    await waitFor(() => run.pending.length > 0, 'pending');
+    run.toQueue();
+    await run.result;
+    await approvals.close();
+    expect(approvals.results()).toMatchObject([{ outcome: 'cancelled' }]);
+    expect(approvals.results()[0].message).toContain('the broker shut down');
+    expect(run.runs).toEqual([]);
+  });
+
+  it('a result too large to keep loses its data and says so', async () => {
+    const approvals = await makeApprovals(QUEUE);
+    const run = startQueued(approvals, req(), { outcome: 'done', data: { stdout: 'x'.repeat(70_000) } });
+    await waitFor(() => run.pending.length > 0, 'pending');
+    run.toQueue();
+    await run.result;
+    fake.react(dm(ADMIN), card(ADMIN).ts, 'white_check_mark', ADMIN);
+    const [result] = await waitFor(() => approvals.results().length > 0 && approvals.results(), 'result');
+    expect(result.data).toBeUndefined();
+    expect(result.message).toContain('too large to keep');
+  });
+});
+
+describe('dashboard decisions (#1129)', () => {
+  const DASH = { dashboardDecisionTools: ['gh_write'] } as Partial<BrokerPolicy>;
+
+  it('approves a waiting card bound to the number the admin saw; the ledger and the card say it was the dashboard', async () => {
+    const approvals = await makeApprovals(DASH);
+    const run = start(approvals, req());
+    const [pending] = await waitFor(() => run.pending.length > 0 && run.pending, 'pending');
+    expect(approvals.pending()[0].decidable).toBe(true);
+    await expect(
+      approvals.decideFromDashboard(
+        [{ approvalId: pending.approvalId, digestPrefix: pending.digestPrefix, action: 'approve' }],
+        ADMIN,
+      ),
+    ).resolves.toEqual([{ approvalId: pending.approvalId, outcome: 'accepted' }]);
+    await expect(run.result).resolves.toMatchObject({ outcome: 'approved' });
+    expect(rows().find((row) => row.event === 'approval.approved')).toMatchObject({ by: ADMIN, via: 'dashboard' });
+    expect(stateOnDisk().approvals[pending.approvalId]).toMatchObject({ decidedBy: ADMIN, decidedVia: 'dashboard' });
+    await waitFor(() => card(ADMIN).updates.length > 0, 'card update');
+    expect(lastUpdateText(card(ADMIN))).toContain('대시보드에서');
+  });
+
+  it('refuses when the policy is off, for a non-admin, a wrong card number, a decided card or a tool not listed', async () => {
+    const off = await makeApprovals();
+    const run = start(off, req(1));
+    const [pending] = await waitFor(() => run.pending.length > 0 && run.pending, 'pending');
+    const decision = { approvalId: pending.approvalId, digestPrefix: pending.digestPrefix, action: 'approve' as const };
+    await expect(off.decideFromDashboard([decision], ADMIN)).resolves.toEqual([
+      { approvalId: pending.approvalId, outcome: 'refused', reason: 'dashboard-decisions-off' },
+    ]);
+    expect(off.pending()[0].decidable).toBe(false);
+    await off.close();
+
+    const on = await makeApprovals({ dashboardDecisionTools: ['cf_lease_request'] });
+    const other = start(on, req(2));
+    const [p2] = await waitFor(() => other.pending.length > 0 && other.pending, 'pending');
+    const reasons = await on.decideFromDashboard(
+      [
+        { approvalId: p2.approvalId, digestPrefix: p2.digestPrefix, action: 'approve' },
+        { approvalId: p2.approvalId, digestPrefix: '000000000000', action: 'approve' },
+        { approvalId: 'no-such-approval', digestPrefix: p2.digestPrefix, action: 'deny' },
+      ],
+      ADMIN,
+    );
+    expect(reasons.map((r) => r.reason)).toEqual(['tool-not-allowed', 'digest-mismatch', 'not-pending']);
+    await expect(
+      on.decideFromDashboard([{ approvalId: p2.approvalId, digestPrefix: p2.digestPrefix, action: 'approve' }], OTHER),
+    ).resolves.toMatchObject([{ outcome: 'refused', reason: 'not-admin' }]);
+    // Nothing was decided: the card still waits, and every refusal has a ledger row.
+    expect(on.pending()).toHaveLength(1);
+    expect(rows().filter((row) => row.event === 'approval.dashboard-refused')).toHaveLength(5);
+  });
+
+  it('decides several queued cards in one call; each runs and leaves its result', async () => {
+    const approvals = await makeApprovals({ ...QUEUE, ...DASH });
+    const runs = [1, 2, 3].map((n) => startQueued(approvals, req(n)));
+    await waitFor(() => runs.every((r) => r.pending.length > 0), 'pending');
+    for (const r of runs) r.toQueue();
+    await Promise.all(runs.map((r) => r.result));
+    const decisions = runs.map((r, i) => ({
+      approvalId: r.pending[0].approvalId,
+      digestPrefix: r.pending[0].digestPrefix,
+      action: i < 2 ? ('approve' as const) : ('deny' as const),
+    }));
+    const outcomes = await approvals.decideFromDashboard(decisions, ADMIN);
+    expect(outcomes.map((o) => o.outcome)).toEqual(['accepted', 'accepted', 'accepted']);
+    await waitFor(() => approvals.results().length === 3, 'three results');
+    const byId = Object.fromEntries(approvals.results().map((r) => [r.approvalId, r]));
+    expect(byId[decisions[0].approvalId]).toMatchObject({ outcome: 'done', via: 'dashboard', decidedBy: ADMIN });
+    expect(byId[decisions[1].approvalId]).toMatchObject({ outcome: 'done', via: 'dashboard' });
+    expect(byId[decisions[2].approvalId]).toMatchObject({ outcome: 'denied', via: 'dashboard' });
+    expect(runs.flatMap((r) => r.runs)).toEqual([decisions[0].approvalId, decisions[1].approvalId]);
+  });
+});
+
+describe('queue and decide edge cases (#1128 review)', () => {
+  const QD = { queueTimeoutSeconds: 3600, dashboardDecisionTools: ['gh_write'] } as Partial<BrokerPolicy>;
+
+  it('a requester that moves to the queue while an approval is being recorded keeps it: the broker runs it', async () => {
+    const ctl = await controlledStore();
+    const approvals = await makeApprovals(QD, 10, { store: ctl.store });
+    const run = startQueued(approvals, req());
+    const [pending] = await waitFor(() => run.pending.length > 0 && run.pending, 'pending');
+    await waitFor(() => stateOnDisk().approvals[pending.approvalId]?.status === 'pending', 'on disk');
+    ctl.hold();
+    const decided = approvals.decideFromDashboard(
+      [{ approvalId: pending.approvalId, digestPrefix: pending.digestPrefix, action: 'approve' }],
+      ADMIN,
+    );
+    await waitFor(() => ctl.held(), 'settle holding');
+    run.toQueue();
+    await expect(run.result).resolves.toMatchObject({ outcome: 'queued' });
+    ctl.release();
+    await expect(decided).resolves.toEqual([{ approvalId: pending.approvalId, outcome: 'accepted' }]);
+    await waitFor(() => approvals.results().length > 0, 'result');
+    expect(approvals.results()[0]).toMatchObject({ outcome: 'done', via: 'dashboard' });
+    expect(run.runs).toEqual([pending.approvalId]);
+    expect(events(pending.approvalId)).not.toContain('approval.cancelled');
+  });
+
+  it('a dashboard approval that lands past the card end is refused, not reported accepted', async () => {
+    const approvals = await makeApprovals(QD, 60_000);
+    const run = start(approvals, req());
+    const [pending] = await waitFor(() => run.pending.length > 0 && run.pending, 'pending');
+    clock = START + 3_600_000;
+    await expect(
+      approvals.decideFromDashboard(
+        [{ approvalId: pending.approvalId, digestPrefix: pending.digestPrefix, action: 'approve' }],
+        ADMIN,
+      ),
+    ).resolves.toEqual([{ approvalId: pending.approvalId, outcome: 'refused', reason: 'not-pending' }]);
+    await expect(run.result).resolves.toMatchObject({ outcome: 'expired' });
+  });
+
+  it('a queued request whose identical live twin took the approval owes no result and is not reported cut after a restart', async () => {
+    const approvals = await makeApprovals(QUEUE);
+    const queued = startQueued(approvals, req());
+    await waitFor(() => queued.pending.length > 0, 'pending');
+    const live = start(approvals, req());
+    await waitFor(() => live.pending.length > 0, 'twin attached');
+    queued.toQueue();
+    await expect(queued.result).resolves.toMatchObject({ outcome: 'queued' });
+    fake.react(dm(ADMIN), card(ADMIN).ts, 'white_check_mark', ADMIN);
+    const outcome = await live.result;
+    if (outcome.outcome !== 'approved') throw new Error('not approved');
+    await outcome.consume();
+    const id = queued.pending[0].approvalId;
+    await waitFor(() => stateOnDisk().approvals[id]?.resulted === true, 'no result owed');
+    expect(queued.runs).toEqual([]);
+    expect(approvals.results()).toEqual([]);
   });
 });
