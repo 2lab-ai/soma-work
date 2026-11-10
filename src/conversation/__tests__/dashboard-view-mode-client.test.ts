@@ -285,6 +285,7 @@ describe('T3 — minimal: a card shows what matters', () => {
         cardOf,
         REPRESENTATIVE_MODELS: [],
         cardStarOf: () => ({ on: false }),
+        isBusy: () => false, // a close on its way (SSOT 2026-11-10 T1, viewCardOf) — none in this harness
         cardTldrOf: () => null,
         cardFollowupsOf: () => [],
       },

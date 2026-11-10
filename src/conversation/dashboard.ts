@@ -6439,6 +6439,14 @@ ui-breadcrumbs.pa-path { flex: 1 1 auto; min-width: 0; }
 .panel-title-row > .panel-head-back { display: none; }
 .slide-panel[data-read="1"] .panel-title-row > .panel-head-back { display: inline-flex; }
 .panel-title-row > .panel-title-act[aria-busy="true"] { opacity: .5; cursor: progress; }
+/* The star (SSOT 2026-11-10 T2) — the board card's face toggle: a muted outline, the filled amber star when on. */
+.panel-title-row > .panel-star > svg { width: 16px; height: 16px; fill: none; }
+.panel-title-row > .panel-star.is-on { color: var(--yellow); }
+.panel-title-row > .panel-star.is-on svg { fill: currentColor; }
+.panel-title-row > .panel-star[aria-disabled="true"] { cursor: default; opacity: .6; }
+.panel-title-row > .panel-star:not([aria-disabled="true"]):hover { color: var(--yellow); }
+/* Close asks once (SSOT 2026-11-10 T3): the armed press reads in the danger tone, filled. */
+.ui-btn.is-danger[data-armed] { border-color: var(--st-fail); background: color-mix(in srgb, var(--st-fail) calc(16% * var(--chroma, 1)), transparent); }
 /* ── VIEW MODE (SSOT 2026-11-01) — 미니멀, the default: the board, and in a detail card the task list and the
    chat. The page's extras (stats, the defaults, the board's user picker on the viewer's own board) step
    aside — the CRON lane stays (#1080: the cron jobs are seen in both modes), LLM capacity stays (owner 2026-11-10:
@@ -7287,6 +7295,8 @@ ${pageTokenAliases()}
              renderPanelTitleActions fills them from the open card; hidden until then. -->
         <div class="panel-title-row">
           <h3 id="panel-title" tabindex="-1" dir="auto">작업 카드</h3>
+          <!-- The star (SSOT 2026-11-10 T2): the board card's toggle, right after the title text — renderPanelStar. -->
+          <button type="button" id="panel-star" class="ui-icon-btn panel-title-act panel-star" hidden aria-pressed="false" aria-label="즐겨찾기" title="즐겨찾기" onclick="panelStarPress()"><i data-ui-icon="star"></i></button>
           <a id="panel-permalink" class="ui-icon-btn panel-title-act" href="/dashboard" hidden aria-label="퍼머링크 복사" title="퍼머링크 복사" onclick="return copyPanelPermalink(event)"><i data-ui-icon="external"></i></a>
           <button type="button" id="panel-copy-context" class="ui-icon-btn panel-title-act" hidden aria-label="전체 문맥 복사" title="전체 문맥 복사" onclick="copyPanelContext(this)"><i data-ui-icon="copy"></i></button>
           <!-- #918: while reading on a phone the head (the status bar, the tabs) is scrolled out under the title bar; a tap
@@ -7513,6 +7523,9 @@ var STRINGS = {
   statusSleeping: '휴면',
   statusArchived: '보관됨',
   statusSafeguard: '세이프가드 에러 · 관리자만 재시도',
+  // SSOT 2026-11-10 T1/T3: a close on its way (the face, the button), and the open card's Close asking once.
+  statusClosing: '닫는 중',
+  closeArmed: '한 번 더 눌러 닫기',
   archives: '보관함',
   sleeping: '휴면',
   // #814: why a sibling instance's session cannot be acted on here (the actions' lock, 지금 압축's reason).
@@ -11961,6 +11974,15 @@ function viewCardOf(s, col) {
   // #805 review: the gauge draws the level the model runs (effortEffective when it caps the set one); an archive's
   // effort is the owner's default today, not the run's — no gauge (effortFromDefault).
   var eff = s.effortFromDefault ? '' : s.effortEffective || s.effort;
+  // A close on its way (SSOT 2026-11-10 T1): from the confirmed press the face says 닫는 중 in the red tone — not a
+  // clock, not the viewer's NEEDS YOU cue — until the board has it closed.
+  if (isBusy(s.key, 'closing')) {
+    c.status = 'failed';
+    c.statusText = STRINGS.statusClosing;
+    delete c.since;
+    delete c.elapsedMs;
+    delete c.attention;
+  }
   return faceOf(c, s.model, viewSpec().face, cardAsks(s, col), eff, s.effortFromDefault ? '' : s.effort);
 }
 
@@ -13718,7 +13740,7 @@ function steerItemOf(s, id) {
 // data). An armed resume's when / attempt / why is a note in the bar's slot.
 var PS_BAR_STATUS = { running: 'running', waiting: 'waiting', resuming: 'waiting', idle: 'idle', sleeping: 'idle', archived: 'idle' };
 // The bar's buttons named for what they do to the session (D3-GAPS G6-1, 0.12.0 ariaLabel): Close is never
-// taken for the panel's ✕ (작업 카드 닫기). Star carries its pressed state and its tooltip; Trash the quiet tone.
+// taken for the panel's ✕ (작업 카드 닫기). Rollback carries its pressed state and its tooltip; Trash the quiet tone.
 var SESSION_ACTION_ARIA = { stop: '중지 — 세션 중지', close: '닫기 — 세션 종료', trash: '휴지통 — 세션 휴지통으로' };
 function panelHeadData(s, col) {
   var st = rootStatusOf(s, col);
@@ -13732,13 +13754,16 @@ function panelHeadData(s, col) {
   else if (acc) d.activeMs = acc;
   if (s.slackThreadUrl) d.link = { id: 'slack', href: String(s.slackThreadUrl), label: 'Slack' };
   // Plan mode — 시작 · 취소 lead the bar while a plan waits (the bottom bar has them too, with 직접 입력).
-  d.actions = planHeadActions(s).concat(sessionActionsOf(s, col).map(function(a) {
+  // The star is not the bar's (SSOT 2026-11-10 T2): it sits right of the title, as on the board card (renderPanelStar).
+  d.actions = planHeadActions(s).concat(sessionActionsOf(s, col).filter(function(a) { return a.id !== 'star'; }).map(function(a) {
     var x = { id: a.id, label: a.label };
     if (SESSION_ACTION_ARIA[a.id] && !a.sibling) x.ariaLabel = SESSION_ACTION_ARIA[a.id];
     if (a.id === 'stop' && !a.sibling) { x.tone = 'danger'; x.icon = 'stop'; }
+    // Close is always red and asks once (SSOT 2026-11-10 T3): the bar's danger tone takes two presses.
+    if (a.id === 'close') x.tone = 'danger';
     if (a.icon && !a.sibling) x.icon = a.icon;
     if (a.id === 'trash') x.tone = 'quiet';
-    if (a.id === 'star' || a.id === 'rollback') x.pressed = !!a.pressed;
+    if (a.id === 'rollback') x.pressed = !!a.pressed;
     if (a.tip) x.title = a.tip;
     if (a.lock) x.disabled = a.lock;
     if (a.busy) x.busy = true;
@@ -13838,14 +13863,52 @@ function renderPanelHead() {
     el.addEventListener('ui-action', onPanelHeadAction);
   }
   var col = s ? sessionColOf(key) : '';
+  renderPanelStar(s, col);
   writePanelPart(el, s ? panelHeadNoteHtml(s, col) : '');
   var data = s ? panelHeadData(s, col) : null;
   var sig = JSON.stringify(data);
+  // Another session in the bar (the deck moved, a card left): a press armed on the last one (Stop, Close) never
+  // carries over — the bar keeps an armed danger action whose id the new data still has, so it renders once with
+  // no data first (renderNow: at once, not batched with the data below). Review P1, SSOT 2026-11-10 T3.
+  if (el._key !== key && el._sig && typeof el.renderNow === 'function') {
+    el.data = null;
+    el.renderNow();
+    el._sig = 'null';
+  }
   el._key = key;
   // Same data, same object: the bar keeps an armed Stop and its pending busy across live repaints.
   if (el._sig === sig) return;
   el._sig = sig;
   el.data = data;
+}
+// The detail card's star (SSOT 2026-11-10 T2: "즐겨 찾기 레이블 필요 없음 이름 오른쪽에 작업 카드 처럼"): the board card's
+// face toggle right after the title text — the same data (cardStarOf): pressed and the filled amber star when on, no
+// label (its name is the aria-label), inert with the reason for anyone but the owner or while a star write runs.
+// Painted with the head (renderPanelHead runs on every write's start and end). No open card: hidden.
+function renderPanelStar(s, col) {
+  var el = document.getElementById('panel-star');
+  if (!el) return;
+  if (!s) {
+    el.hidden = true;
+    return;
+  }
+  var st = cardStarOf(s, col);
+  var on = st.on === true;
+  var why = typeof st.disabled === 'string' ? st.disabled : '';
+  el.hidden = false;
+  el.classList.toggle('is-on', on);
+  el.setAttribute('aria-pressed', on ? 'true' : 'false');
+  el.title = why || st.title || '즐겨찾기';
+  if (st.disabled) el.setAttribute('aria-disabled', 'true');
+  else el.removeAttribute('aria-disabled');
+}
+// Its press: the open card's star flips (doStar — the board card's own write); inert, nothing.
+function panelStarPress() {
+  var el = document.getElementById('panel-star');
+  var key = panelSessionKey;
+  var s = key ? _sessionCache[key] : null;
+  if (!s || !el || el.getAttribute('aria-disabled') === 'true') return;
+  doStar(key, s.starred !== true);
 }
 // The bar's ui-action: the session it was drawn for (the deck may have moved on since). The
 // Slack link opens in a new tab by itself.
@@ -13856,7 +13919,6 @@ function onPanelHeadAction(e) {
   if (!s || !id || id === 'slack') return;
   if (id === 'plan-start') doPlanDecision(key, 'start');
   else if (id === 'plan-cancel') doPlanDecision(key, 'cancel');
-  else if (id === 'star') doStar(key, s.starred !== true);
   else if (id === 'revive') doRevive(key);
   else if (id === 'rollback') rbToggle(key);
   else if (id === 'redo') rbRedo(key);
@@ -14775,7 +14837,8 @@ function renderCardResume(s, col) {
 }
 
 // The session's actions (spec 13) as data — the same on the open card (kit buttons,
-// sessionActionHtml) and in the panel head (<ui-status-bar>, panelHeadData): ★ Star
+// sessionActionHtml) and in the panel head (<ui-status-bar>, panelHeadData — which leaves the
+// star to the toggle right of the detail card's title, SSOT 2026-11-10 T2): ★ Star
 // (pinned on top, kept alive — starring a sleeping or archived card brings it back),
 // 살리기 on a sleeping or archived card (the conversation continues), then the state
 // action — Stop while a turn runs, else Close; Trash once archived. Owner-gated (the
@@ -14812,11 +14875,17 @@ function sessionActionsOf(s, col) {
     if (toNum(s.rewindRedo) > 0) out.push({ id: 'redo', label: '↪︎ Redo', lock: lock, busy: false,
       tip: manages ? '마지막 되돌리기를 취소해요 (다음 지시를 보내기 전까지)' : OWNER_ONLY_MSG });
   }
-  out.push({ id: kind, label: label, lock: lock, busy: isBusy(s.key, 'action') });
+  // SSOT 2026-11-10 T1: from the confirmed press until the board has it closed, Close reads 닫는 중 on both surfaces.
+  // armed: the open card's first press on Close (pressClose) — that surface asks for the second.
+  var closing = kind === 'close' && isBusy(s.key, 'closing');
+  var act = { id: kind, label: closing ? STRINGS.statusClosing : label, lock: lock, busy: isBusy(s.key, 'action') };
+  if (kind === 'close' && !closing && isBusy(s.key, 'close-armed')) act.armed = true;
+  out.push(act);
   return out;
 }
-// The open card's action buttons (kit .ui-btn): Stop reads as the danger tone, Trash as a quiet one.
-var SESSION_ACTION_TONE = { stop: ' is-danger', close: '', trash: ' is-quiet' };
+// The open card's action buttons (kit .ui-btn): Stop and Close read as the danger tone (SSOT 2026-11-10 T3: Close is
+// always red), Trash as a quiet one.
+var SESSION_ACTION_TONE = { stop: ' is-danger', close: ' is-danger', trash: ' is-quiet' };
 // noStar: the face's star toggle is the one star (a plan's open card has no ☆ button of its own).
 function sessionActionHtml(s, col, noStar) {
   var key = escJs(s.key);
@@ -14831,6 +14900,11 @@ function sessionActionHtml(s, col, noStar) {
     if (a.id === 'revive') {
       return '<button type="button" class="ui-btn" data-action="revive"' + off + ' title="' + escAttr(a.tip) + '"'
         + ' onclick="event.stopPropagation();doRevive(\\'' + key + '\\')">' + esc(a.label) + '</button>';
+    }
+    // Close asks once (SSOT 2026-11-10 T3): its press goes through pressClose — armed, it reads 한 번 더 눌러 닫기.
+    if (a.id === 'close') {
+      return '<button class="ui-btn' + SESSION_ACTION_TONE.close + '" data-action="close"' + (a.armed ? ' data-armed' : '') + off + (a.lock ? ' title="' + escAttr(a.lock) + '"' : '')
+        + ' onclick="event.stopPropagation();pressClose(\\'' + key + '\\')">' + esc(a.armed ? STRINGS.closeArmed : a.label) + '</button>';
     }
     return '<button class="ui-btn' + SESSION_ACTION_TONE[a.id] + '" data-action="' + a.id + '"' + off + (a.lock ? ' title="' + escAttr(a.lock) + '"' : '')
       + ' onclick="event.stopPropagation();doAction(\\'' + key + '\\',\\'' + a.id + '\\')">' + esc(a.label) + '</button>';
@@ -17356,12 +17430,40 @@ async function loadSessions() {
   }
 }
 
+// ── Close asks once (SSOT 2026-11-10 T3: "닫기 버튼은 … 한번 컨펌해줘") ──
+// The open card's Close: the first press arms it — it reads 한 번 더 눌러 닫기 — and the second, within 4 s, closes. Left
+// alone it disarms. (The panel head's <ui-status-bar> asks the same itself: its danger actions take two presses.)
+var CLOSE_ARM_MS = 4000;
+var _closeArmTimer = Object.create(null); // card key → the timer that disarms its Close
+function pressClose(key) {
+  if (isBusy(key, 'action')) return;
+  clearTimeout(_closeArmTimer[key]);
+  delete _closeArmTimer[key];
+  if (isBusy(key, 'close-armed')) {
+    setBusy(key, 'close-armed', false);
+    doAction(key, 'close');
+    return;
+  }
+  setBusy(key, 'close-armed', true);
+  refreshCard(key);
+  _closeArmTimer[key] = setTimeout(function() {
+    delete _closeArmTimer[key];
+    setBusy(key, 'close-armed', false);
+    refreshCard(key);
+  }, CLOSE_ARM_MS);
+}
+
 // ── Action handler (with CSRF retry on 403 after JWT rotation) ──
+// A close shows at once (SSOT 2026-11-10 T1: "즉시 반응하고 닫는중 빨갛게 표시하고 비동기로 처리"): from the press the
+// card reads 닫는 중 in red (viewCardOf, sessionActionsOf) — the request runs behind it, nothing waits on it — and it
+// holds until the board has reloaded with the card closed; a failure lets go at once.
 async function doAction(key, action) {
   if (isBusy(key, 'action')) return; // Stop / Close / Trash once, from either surface
   setBusy(key, 'action', true);
+  if (action === 'close') setBusy(key, 'closing', true);
   refreshCard(key);
   if (panelOpen && panelSessionKey === key) renderPanelHead();
+  var done = false;
   try {
     const headers = {};
     if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
@@ -17374,8 +17476,10 @@ async function doAction(key, action) {
       res = await fetch(url, { method: 'POST', headers: retryHeaders });
     }
     var title = (_sessionCache[key] && _sessionCache[key].title) || '';
-    if (res.ok) dashToast({ title: DA_DONE[action] || '완료했어요', description: title || undefined, tone: 'success' });
-    else {
+    if (res.ok) {
+      done = true;
+      dashToast({ title: DA_DONE[action] || '완료했어요', description: title || undefined, tone: 'success' });
+    } else {
       console.error('Action failed', action, key);
       // A refusal (409) carries its reason: show it instead of the bare status.
       var reason = '';
@@ -17394,10 +17498,16 @@ async function doAction(key, action) {
       function() { doAction(key, action); },
     );
   }
+  // A close that went through stays 닫는 중 until the board has it closed — no flash back to the old face — but never
+  // longer than a board load may take (a hung poll must not leave the card locked).
+  if (done && action === 'close') {
+    await Promise.race([loadSessions(), new Promise(function(r) { setTimeout(r, BOARD_LOAD_TIMEOUT_MS); })]);
+  }
   setBusy(key, 'action', false);
+  setBusy(key, 'closing', false);
   refreshCard(key);
   if (panelOpen && panelSessionKey === key) renderPanelHead();
-  loadSessions();
+  if (!(done && action === 'close')) loadSessions();
 }
 
 // ── Task star + revive (SSOT 2026-10-30) ──
@@ -23382,8 +23492,9 @@ function ntDefaultState(ctx, draft) {
     // #600 ⑥: a Slack channel (the default) or a dashboard task, and its folder by name ('' = a new folder).
     destination: 'slack',
     folder: '',
-    // Plan mode (SSOT 2026-11-02): a dashboard task plans first and works once it is started — on by default.
-    plan: true,
+    // Plan mode (SSOT 2026-11-02): a task plans first and works once it is started. Off by default (SSOT 2026-11-10
+    // T4: "계획 모드는 디폴트로 꺼줘") — the composer's switch turns it on.
+    plan: false,
     // 2026-11-05 — a new repo channel (channelId '__new__'): the repo as typed, the channel's name (follows the
     // repo until the admin edits it), private or not.
     newRepo: '',
@@ -23450,13 +23561,13 @@ function ntBuildPayload(state, attachments, requestId) {
     if (state.folder) body.folder = state.folder;
     // E4 ⑨b — an epic (offered only behind the user's flag; the server checks it again).
     if (state.kind === 'epic') body.kind = 'epic';
-    // Plan mode: the 작업 계획 switch, always sent (off is a choice too).
-    body.plan = state.plan !== false;
+    // Plan mode: the 작업 계획 switch, always sent (off is a choice too) — on only when turned on.
+    body.plan = state.plan === true;
     return body;
   }
   // #853 — the 작업 계획 switch rides a Slack task too (always sent: off is a choice too). While it
   // plans, autogoal and autoz are off — a goal or a forced skill would drive work the plan holds back.
-  var planOn = state.plan !== false;
+  var planOn = state.plan === true;
   // 2026-11-05 — a new repo channel in place of a channel id: the server makes (or finds) it first.
   var newChannel = state.channelId === '__new__';
   return {
@@ -23796,7 +23907,7 @@ function ntRender() {
   }
   ntRenderNewChannel(isTask);
   // #853 — while the task plans first, autogoal and autoz do not apply: shown off and locked (the server agrees).
-  var planning = _ntState.plan !== false;
+  var planning = _ntState.plan === true;
   ['autogoal', 'autoz'].forEach(function (k) {
     var sw = ntEl('nt-' + k);
     if (!sw) return;
@@ -23826,12 +23937,12 @@ function ntComposerData() {
     image: false,
     submitLabel: '작업 시작',
     // Plan mode (#853) — the 작업 계획 switch is the composer's own (ui 0.26.0 data.mode), right beside the send:
-    // night (on, the default) plans first and the send reads 계획 시작; day starts the work at once (ntOnPlanMode).
+    // night (on) plans first and the send reads 계획 시작; day (off, the default) starts the work at once (ntOnPlanMode).
     mode: {
       id: 'plan',
       label: '계획 먼저 — 전체 작업 계획(SSOT · 의도 → 단계 → 작업 → 디테일)을 세워 보여 주고, 시작을 눌러야 작업합니다',
       text: '계획',
-      on: !_ntState || _ntState.plan !== false,
+      on: !!_ntState && _ntState.plan === true,
       submitLabel: '계획 시작',
     },
     // No busy state: a launch leaves the dialog at once (SSOT 2026-11-02 T1) — the composer is the next task's.

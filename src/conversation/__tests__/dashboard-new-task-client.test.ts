@@ -577,7 +577,7 @@ describe('ntDefaultState / ntBuildPayload / ntCanSubmit — T4–T9', () => {
       prompt: '',
       destination: 'slack',
       folder: '',
-      plan: true, // plan mode (SSOT 2026-11-02): on by default for a dashboard task
+      plan: false, // plan mode (SSOT 2026-11-02): off by default (SSOT 2026-11-10 T4)
       // 2026-11-05 — a new repo channel's fields, empty until "＋ 새 repo 채널" is chosen
       newRepo: '',
       newChannelName: '',
@@ -593,8 +593,8 @@ describe('ntDefaultState / ntBuildPayload / ntCanSubmit — T4–T9', () => {
     expect(s.model).toBe('opus[1m]');
   });
 
-  it('#853 — the plan switch (on by default) rides a Slack task too; autogoal / autoz are off while it plans', () => {
-    const state = { ...fns.ntDefaultState(ctx, null), prompt: '개선해줘', autoz: true };
+  it('#853 — the plan switch (off by default — SSOT 2026-11-10 T4) rides a Slack task too; autogoal / autoz are off while it plans', () => {
+    const state = { ...fns.ntDefaultState(ctx, null), prompt: '개선해줘', autoz: true, plan: true };
     expect(fns.ntBuildPayload(state, [], 'req-0123456789')).toMatchObject({
       channelId: 'C_ALPHA',
       plan: true,
@@ -645,7 +645,7 @@ describe('ntDefaultState / ntBuildPayload / ntCanSubmit — T4–T9', () => {
         prompt: '고쳐줘',
         model: 'opus[1m]', // the server resolves the nickname against the models it offers (#640 R1)
         folder: 'repo-a',
-        plan: true, // the 작업 계획 switch, on by default
+        plan: false, // the 작업 계획 switch, off by default (SSOT 2026-11-10 T4)
       });
       // A new folder (the default) sends no folder.
       expect(fns.ntBuildPayload(task(), [], 'req-0123456789')).toEqual({
@@ -653,7 +653,7 @@ describe('ntDefaultState / ntBuildPayload / ntCanSubmit — T4–T9', () => {
         destination: 'task',
         prompt: '고쳐줘',
         model: 'opus[1m]',
-        plan: true,
+        plan: false,
       });
     });
 

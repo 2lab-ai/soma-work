@@ -1446,6 +1446,8 @@
   " · 일시정지 ": " · paused ",
   ">재개</button>": ">Resume</button>",
   "한 번 더 눌러 삭제": "Press again to delete",
+  "한 번 더 눌러 닫기": "Press again to close",
+  "닫는 중": "Closing",
   "<div class=\"ui-section-head\"><h4>일시정지된 목표</h4><span class=\"ui-count\">": "<div class=\"ui-section-head\"><h4>Paused goals</h4><span class=\"ui-count\">",
   "재개하면 지금 목표 다음에 시작합니다.": "A resumed goal starts right after the current goal.",
   "재개하면 바로 지금 목표로 시작합니다.": "A resumed goal starts now as the current goal.",
