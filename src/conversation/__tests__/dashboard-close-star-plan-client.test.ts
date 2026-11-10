@@ -369,6 +369,48 @@ describe('T3 — Close is always red and asks once', () => {
     expect(head(session(), 'closed').actions.find((a) => a.id === 'close')?.tone).toBe('danger');
   });
 
+  it('K1 — an arm on one session’s status bar never carries over to the next session the bar shows (astra P1)', () => {
+    // <ui-status-bar> keeps an armed danger action whose id the new data still has; the page clears it when the bar
+    // moves to another session (the deck moved, the card left) — a synchronous render with no data (renderNow).
+    const seen: unknown[] = [];
+    const el: Record<string, unknown> = {
+      _wired: true,
+      renderNow: vi.fn(() => seen.push(`render:${JSON.stringify(el.data)}`)),
+    };
+    let dataValue: unknown;
+    Object.defineProperty(el, 'data', {
+      get: () => dataValue,
+      set: (v) => {
+        dataValue = v;
+        seen.push(`data:${v === null ? 'null' : (v as { key: string }).key}`);
+      },
+    });
+    const sessions: Record<string, unknown> = { A: session({ key: 'A' }), B: session({ key: 'B' }) };
+    const env: Record<string, unknown> = {
+      document: { getElementById: (id: string) => (id === 'panel-status' ? el : null) },
+      panelSessionKey: 'A',
+      _sessionCache: sessions,
+      wlSyncRewinds: () => {},
+      sessionColOf: () => 'idle',
+      renderPanelStar: () => {},
+      writePanelPart: () => {},
+      panelHeadNoteHtml: () => '',
+      panelHeadData: (s: { key: string }) => ({ key: s.key }),
+      onPanelHeadAction: () => {},
+    };
+    const names = Object.keys(env);
+    const m = new Function(
+      ...names,
+      `${clientFn('renderPanelHead')}\nreturn { renderPanelHead, __set: function(v) { panelSessionKey = v; } };`,
+    )(...names.map((n) => env[n])) as { renderPanelHead(): void; __set(v: string): void };
+    m.renderPanelHead();
+    m.renderPanelHead(); // the same session again: nothing to clear
+    expect(el.renderNow).not.toHaveBeenCalled();
+    m.__set('B');
+    m.renderPanelHead();
+    expect(seen).toEqual(['data:A', 'data:null', 'render:null', 'data:B']);
+  });
+
   it('K2 — armed: the button asks for the second press', () => {
     const html = actions({ [`${KEY}|close-armed`]: true }).sessionActionHtml(session(), 'idle');
     expect(html).toMatch(
