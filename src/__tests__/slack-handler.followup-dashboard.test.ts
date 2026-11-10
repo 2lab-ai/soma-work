@@ -284,6 +284,58 @@ describe('SlackHandler — the dashboard’s follow-up queue controls', () => {
       await settle();
     });
 
+    // A row the queue no longer holds may still sit in the waiting line (it is skipped at the push).
+    // It must not decide the order of the rows around it (review #1178).
+    it('a stale entry between them does not keep a newer row ahead of an older one', async () => {
+      const older = cutRow({ ts: '310.7', text: '먼저 보낸 지시' });
+      const newer = park({ ts: '310.8', text: '나중에 보낸 지시' });
+      const steerTurn = vi.fn().mockReturnValue(true);
+      handlerAny.claudeHandler.steerTurn = steerTurn;
+      const settle = await busyTurn();
+      const live = handlerAny.followupDispatcher.liveTurnEpoch(SESSION_KEY);
+      const wait = (itemId: string) =>
+        handlerAny.waitForTurnOpen(SESSION_KEY, { rowKey: SESSION_KEY, itemId, turnEpoch: live, what: 'test' });
+      wait(newer.id);
+      wait(`${SESSION_KEY}#gone`);
+
+      await act({ itemId: older.id, op: 'promote', epoch: older.epoch });
+
+      await vi.waitFor(() => expect(steerTurn).toHaveBeenCalledTimes(2));
+      expect(steerTurn.mock.calls.map((call) => call[1].text)).toEqual([
+        expect.stringContaining('먼저 보낸 지시'),
+        expect.stringContaining('나중에 보낸 지시'),
+      ]);
+      await settle();
+    });
+
+    // The slot is taken at dispatch; the turn opens its input only when the SDK query answers. A
+    // Retry pressed in between is refused by the push — the row has to stay in the line for that
+    // run and go in once it opens, not fall back to waiting for the turn's end (review #1178).
+    it('Retry before the turn opened its input: the row goes in when it opens, once', async () => {
+      const cut = cutRow({ ts: '310.9', text: '입력이 열리기 전 재시도' });
+      const steerTurn = vi.fn().mockReturnValue(false); // the input channel is not open yet
+      handlerAny.claudeHandler.steerTurn = steerTurn;
+      const settle = await busyTurn();
+      const live = handlerAny.followupDispatcher.liveTurnEpoch(SESSION_KEY);
+
+      const res = await act({ itemId: cut.id, op: 'promote', epoch: cut.epoch });
+
+      expect(res).toEqual({ ok: true });
+      await vi.waitFor(() => expect(steerTurn).toHaveBeenCalledTimes(1));
+      await tick();
+      expect(queue().get(SESSION_KEY, cut.id)?.state).toBe('queued');
+      expect(startWithContinuation).toHaveBeenCalledTimes(1); // no second turn was started for it
+
+      steerTurn.mockReturnValue(true);
+      handlerAny.onFollowupTurnReachedModel({ sessionKey: SESSION_KEY, turnEpoch: live });
+
+      await vi.waitFor(() => expect(queue().get(SESSION_KEY, cut.id)?.state).toBe('steered'));
+      await tick();
+      expect(steerTurn).toHaveBeenCalledTimes(2);
+      expect(steerTurn.mock.calls[1][1].text).toContain('입력이 열리기 전 재시도');
+      await settle();
+    });
+
     it('Retry with nothing running still runs it as its own turn', async () => {
       const cut = cutRow({ ts: '310.3', text: '혼자 실행' });
       const steerTurn = vi.fn().mockReturnValue(true);
