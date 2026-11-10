@@ -1,7 +1,8 @@
 /**
  * Unified model registry — single source of truth for pricing, context windows, and max output.
- * Source: https://docs.anthropic.com/en/docs/about-claude/models
- * Last updated: 2026-06-09 (Claude Fable 5 release, 2026-06-09)
+ * Source: https://docs.anthropic.com/en/docs/about-claude/models (claude rows); each non-claude
+ * row names its own source.
+ * Last updated: 2026-11-10 (gpt-6-sol / gpt-6-luna and grok rows)
  */
 
 import { resolveModelProfile } from './model-profile';
@@ -38,7 +39,7 @@ export {
   stripOneMSuffix,
 } from './model-profile';
 
-export const PRICING_VERSION = '2026-10-27';
+export const PRICING_VERSION = '2026-11-10';
 
 export interface ModelPricingSpec {
   inputPerMTok: number;
@@ -173,6 +174,47 @@ const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
       maxOutput: 128_000,
     },
   ],
+  // OpenAI gpt-6-sol (released 2026-09-22) — $2 in / $10 out / $0.20 cache
+  // read per MTok (developers.openai.com model page; llmux `src/pricing.rs`
+  // `GPT_6_SOL` = (2.0, 10.0, 0.20, 2.5)). Not a static allow-list id — it
+  // reaches users through the llmux catalog overlay, and as a non-claude
+  // catalog model it is priced by THIS table (host-pricing.ts), so without a
+  // row it was booked at FALLBACK_SPEC's Sonnet rates. Cache writes stay 0:
+  // llmux reports no cache-creation tokens on the codex wire. `gpt-6-sol` is
+  // not a substring of `gpt-6.1-sol` (`gpt-6-` vs `gpt-6.`), and no other
+  // pattern here is a substring of it.
+  [
+    'gpt-6-sol',
+    {
+      pricing: {
+        inputPerMTok: 2,
+        outputPerMTok: 10,
+        cacheReadPerMTok: 0.2,
+        cache5minWritePerMTok: 0,
+        cache1hrWritePerMTok: 0,
+      },
+      contextWindow: 272_000,
+      maxOutput: 128_000,
+    },
+  ],
+  // OpenAI gpt-6-luna (released 2026-09-22) — $0.10 in / $0.50 out / $0.01
+  // cache read per MTok (OpenAI pricing page; llmux `GPT_6_LUNA` = (0.10,
+  // 0.50, 0.01, 0.125)). Catalog-overlay model, host-priced like gpt-6-sol;
+  // cache writes 0 for the same codex-wire reason.
+  [
+    'gpt-6-luna',
+    {
+      pricing: {
+        inputPerMTok: 0.1,
+        outputPerMTok: 0.5,
+        cacheReadPerMTok: 0.01,
+        cache5minWritePerMTok: 0,
+        cache1hrWritePerMTok: 0,
+      },
+      contextWindow: 272_000,
+      maxOutput: 128_000,
+    },
+  ],
   // OpenAI gpt-6.1-sol — the newest sol generation ($2 in / $10 out / $0.10
   // cache-read per MTok, OpenAI standard-tier rates). OpenAI also lists a
   // $2.50 cache-write rate and llmux carries it (`llmux/src/pricing.rs`
@@ -279,6 +321,63 @@ const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
         cache1hrWritePerMTok: 0,
       },
       contextWindow: 275_000,
+      maxOutput: 128_000,
+    },
+  ],
+  // xAI grok rows — served through llmux's grok group, so (like the codex
+  // rows) host-priced by THIS table via host-pricing.ts; without them every
+  // grok call was booked at FALLBACK_SPEC's Sonnet rates. Rates are xAI's
+  // list prices below 200k prompt tokens (docs.x.ai models / pricing pages,
+  // re-read 2026-11-10) and match llmux `src/pricing.rs` `GROK_4_7` /
+  // `GROK_4_6` / `GROK_4_5`. The ≥200k tier (rates double) is not modeled,
+  // and both cache-write fields are 0: xAI lists no cache-write rate and
+  // llmux reports no cache-creation tokens for grok. Windows are 500k each;
+  // xAI publishes no max output, so `maxOutput` is a placeholder (only tests
+  // read that field).
+  // `grok-4.7` also prices the Grok Build subscription id
+  // `grok-4.7-build-fast` by substring (same model; xAI lists its Fast mode
+  // at 2x, which is not modeled). No grok pattern is a substring of another.
+  [
+    'grok-4.7',
+    {
+      pricing: {
+        inputPerMTok: 2,
+        outputPerMTok: 6,
+        cacheReadPerMTok: 0.5,
+        cache5minWritePerMTok: 0,
+        cache1hrWritePerMTok: 0,
+      },
+      contextWindow: 500_000,
+      maxOutput: 128_000,
+    },
+  ],
+  [
+    'grok-4.6',
+    {
+      pricing: {
+        inputPerMTok: 2,
+        outputPerMTok: 6,
+        cacheReadPerMTok: 0.5,
+        cache5minWritePerMTok: 0,
+        cache1hrWritePerMTok: 0,
+      },
+      contextWindow: 500_000,
+      maxOutput: 128_000,
+    },
+  ],
+  // grok-4.5 lists $0.30 cached (not 4.6 / 4.7's $0.50) — llmux corrected
+  // its row to this on 2026-10-23.
+  [
+    'grok-4.5',
+    {
+      pricing: {
+        inputPerMTok: 2,
+        outputPerMTok: 6,
+        cacheReadPerMTok: 0.3,
+        cache5minWritePerMTok: 0,
+        cache1hrWritePerMTok: 0,
+      },
+      contextWindow: 500_000,
       maxOutput: 128_000,
     },
   ],

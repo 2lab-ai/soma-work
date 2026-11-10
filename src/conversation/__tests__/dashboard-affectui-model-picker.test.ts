@@ -66,11 +66,13 @@ describe('D5 — findModelPricing: the registry price, or none', () => {
     expect(reg.findModelPricing('claude-opus-5-5[1m]')).toMatchObject({ inputPerMTok: 4, outputPerMTok: 20 });
     expect(reg.findModelPricing('claude-sonnet-4-6[1m]')).toMatchObject({ inputPerMTok: 3, outputPerMTok: 15 });
     expect(reg.findModelPricing('gpt-5.6-sol[1m]')).toMatchObject({ inputPerMTok: 5, outputPerMTok: 30 });
-    expect(reg.findModelPricing('grok-4.6')).toBeNull();
+    // grok-4.6 has its own row since 2026-11-10 (xAI list price, $2 / $6).
+    expect(reg.findModelPricing('grok-4.6')).toMatchObject({ inputPerMTok: 2, outputPerMTok: 6 });
+    expect(reg.findModelPricing('some-unknown-model')).toBeNull();
     expect(reg.findModelPricing('')).toBeNull();
     expect(reg.findModelPricing(undefined)).toBeNull();
     // Existing callers: unchanged behaviour (cost math still prices an unknown id at the fallback).
-    expect(reg.getModelPricing('grok-4.6')).toMatchObject({ inputPerMTok: 3, outputPerMTok: 15 });
+    expect(reg.getModelPricing('some-unknown-model')).toMatchObject({ inputPerMTok: 3, outputPerMTok: 15 });
     expect(reg.getModelPricing('claude-opus-5-5[1m]')).toBe(reg.findModelPricing('claude-opus-5-5[1m]'));
     expect(reg.getModelPricing(undefined)).toMatchObject({ inputPerMTok: 3, outputPerMTok: 15 });
   });
@@ -114,7 +116,7 @@ describe('Dashboard — model picker payload', () => {
     expect(pickerEffortLevels(null)).toBeUndefined();
   });
 
-  it('D5 — the page lists each representative model with its price per M tokens; grok has none', {
+  it('D5 — the page lists each representative model with its price per M tokens, grok included', {
     timeout: 30_000,
   }, async () => {
     const res = await injectWebServer({ method: 'GET', url: '/dashboard', headers: AUTH_HEADER });
@@ -125,7 +127,8 @@ describe('Dashboard — model picker payload', () => {
     expect(by('opus[1m]').price).toEqual({ input: 4, output: 20 }); // Opus 5.5 official rates
     expect(by('sonnet[1m]').price).toEqual({ input: 3, output: 15 });
     expect(by('astra[1m]').price).toEqual({ input: 10, output: 50 });
-    expect(by('grok[1m]')).not.toHaveProperty('price');
+    // grok-4.6 has a registry row since 2026-11-10 (before, it had no price at all).
+    expect(by('grok[1m]').price).toEqual({ input: 2, output: 6 });
     // The rest of the contract is untouched.
     expect(by('grok[1m]')).toMatchObject({ model: 'grok-4.6', contextWindow: 500_000, autoCompactTokens: 450_000 });
   });
