@@ -330,6 +330,25 @@ const POLICY_PROFILES: readonly ModelProfile[] = [
     compactHeadroom: DEFAULT_COMPACT_HEADROOM,
   },
   {
+    // Sonnet 5.5 `[1m]` — the `sonnet` shorthand target since 2026-11-10.
+    // Same Claude 1M policy as fable / opus (750k). Bare `claude-sonnet-5-5`
+    // keeps the 200k fallback, the same product contract as bare sonnet 4.6.
+    modelId: 'claude-sonnet-5-5[1m]',
+    contextWindow: 1_000_000,
+    sdkBlockingLimit: ONE_M_SDK_BLOCKING_LIMIT,
+    autoCompactTokens: 750_000,
+    compactHeadroom: DEFAULT_COMPACT_HEADROOM,
+  },
+  {
+    // Haiku 5.5 `[1m]` — the `haiku` shorthand target since 2026-11-10
+    // (Anthropic: native 1M context, 128k output). Same Claude 1M policy.
+    modelId: 'claude-haiku-5-5[1m]',
+    contextWindow: 1_000_000,
+    sdkBlockingLimit: ONE_M_SDK_BLOCKING_LIMIT,
+    autoCompactTokens: 750_000,
+    compactHeadroom: DEFAULT_COMPACT_HEADROOM,
+  },
+  {
     // Sonnet's 1M opt-in — same Claude 1M policy as fable / opus (750k).
     modelId: 'claude-sonnet-4-6[1m]',
     contextWindow: 1_000_000,

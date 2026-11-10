@@ -76,7 +76,7 @@ describe('gpt-6.1-sol — release wiring', () => {
     expect(MODEL_ALIASES['gpt5.6']).toBe('gpt-5.6-sol');
     // `terra` follows its own newest generation (gpt-6-1-terra.test.ts).
     expect(MODEL_ALIASES.terra).toBe('gpt-6.1-terra[1m]');
-    expect(MODEL_ALIASES.luna).toBe('gpt-5.6-luna');
+    expect(MODEL_ALIASES.luna).toBe('gpt-6-luna[1m]');
   });
 
   it('resolveModelInput resolves the shorthands to gpt-6.1-sol[1m]', () => {

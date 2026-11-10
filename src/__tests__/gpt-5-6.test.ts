@@ -79,7 +79,8 @@ describe('gpt-5.6 family — release wiring', () => {
     expect(MODEL_ALIASES.sol).toBe('gpt-6.1-sol[1m]');
     // `terra` follows the newest terra generation too (see gpt-6-1-terra.test.ts).
     expect(MODEL_ALIASES.terra).toBe('gpt-6.1-terra[1m]');
-    expect(MODEL_ALIASES.luna).toBe('gpt-5.6-luna');
+    // `luna` follows the newest luna (gpt-6-luna[1m]) since 2026-11-10; 5.6 luna stays literal.
+    expect(MODEL_ALIASES.luna).toBe('gpt-6-luna[1m]');
     expect(MODEL_ALIASES['gpt-5.6']).toBe('gpt-5.6-sol');
     expect(MODEL_ALIASES['gpt5.6']).toBe('gpt-5.6-sol');
     // The version-pinned gpt-5.5 alias must NOT be silently upgraded.
@@ -95,7 +96,7 @@ describe('gpt-5.6 family — release wiring', () => {
     // shorthand moved to gpt-6.1-terra[1m] on 2026-11-10.
     expect(store.resolveModelInput('gpt-5.6-terra')).toBe('gpt-5.6-terra');
     expect(store.resolveModelInput('terra')).toBe('gpt-6.1-terra[1m]');
-    expect(store.resolveModelInput('luna')).toBe('gpt-5.6-luna');
+    expect(store.resolveModelInput('luna')).toBe('gpt-6-luna[1m]');
   });
 
   it('coerce passes tier ids through and falls back to sol for unknown/legacy ids', () => {
