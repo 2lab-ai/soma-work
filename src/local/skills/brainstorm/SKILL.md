@@ -1,6 +1,6 @@
 ---
 name: brainstorm
-description: "Mass brainstorm: cheap low-effort subagents (luna + haiku) pour hundreds to thousands of ideas per field into files, the session model picks the best per field against the user's hints, and the user makes the final call. Use when the user wants many ideas to choose from — design options, mechanics, features, names, angles. Triggers on brainstorm, mass brainstorm, 브레인스토밍, 대량 아이디어, 아이디어 300개, 아이디어 뽑아줘. Args — topic and hints (free text); optional fields, per-field, pick, top, engines."
+description: "Mass brainstorm: low-effort luna + haiku subagents write hundreds of ideas per field, the session model picks the best against the user's hints, the user decides. Triggers: brainstorm, 브레인스토밍, 대량 아이디어."
 ---
 
 # brainstorm — 싸게 넓게 뽑고, 추려서 주고, 유저가 고른다
@@ -19,21 +19,21 @@ description: "Mass brainstorm: cheap low-effort subagents (luna + haiku) pour hu
 
 - `topic` — 무엇을 위한 아이디어인가. 유저 원문을 그대로 브리프에 넣는다.
 - `hints` — 살릴 특징, 제약, 취향. `H1`, `H2`…로 번호를 붙인다. 생성과 선별 양쪽의 기준이다. 유저가 주지 않으면 주제에서 3~5개를 뽑고 `추론`이라 표시한다.
-- `fields` — 분야·부분 목록. 없으면 주제를 서로 겹치지 않는 5~10개로 나눈다. 분야마다 글자(`A`, `B`…)와 범위 한 줄을 붙인다.
+- `fields` — 분야·부분 목록. 없으면 주제를 서로 겹치지 않는 5~10개로 나눈다. 분야마다 글자(`A`, `B`…)와 범위 한 줄을 붙인다. 최대 26개.
 - `per-field` — 분야당 생성 수. 기본 300.
 - `pick` — 분야당 골라 줄 수. 기본 20.
-- `top` — 전체 모드. 유저가 "상위 100개"처럼 전체 수를 말하면 켠다. 분야 구분 없이 전체 풀(보통 2~3천 개)에서 그 수만큼 준다.
-- `engines` — 기본 `luna,haiku`. 유저가 하나만 지정하면 그것만 쓴다.
+- `top` — 전체 모드. 유저가 "상위 100개"처럼 전체 수를 말하면 켠다. 분야별 몫 없이 전체 풀에서 그 수만큼 준다. 총 생성 수가 2,000 이상이 되게 분야 수를 정한다 (300씩이면 7개 이상).
+- `engines` — 기본 `luna,haiku`. 유저가 하나만 지정하면 모든 칸을 그 엔진에 준다.
 
 ## 1. 계획
 
-1. run 폴더 `<cwd>/brainstorm/<slug>-<YYYYMMDD-HHMM>/`을 만든다.
+1. run 폴더 `<cwd>/brainstorm/<slug>-<YYYYMMDD-HHMMSS>/`과 그 안의 `raw/`를 만든다. 실행마다 새 폴더다. 같은 이름이 이미 있으면 `-2`를 붙인다. 있던 폴더는 끊긴 실행을 이어 갈 때만 다시 쓴다.
 2. `brief.md`에 topic 원문, hints, fields, 숫자를 쓴다. `labels.json`에 `{"fields":{"A":"이름"},"lenses":{"1":"정공"}}`을 쓴다.
-3. 칸을 만든다. 칸 = 분야 × 관점, 칸당 50개. `per-field`가 300이면 분야마다 관점 6개다. 한 생성기에 300개를 한 번에 시키지 않는다. 그렇게 시킨 시험에서 203개와 259개만 돌아왔다.
-4. 칸을 엔진에 번갈아 배정한다 (홀수 관점 luna, 짝수 관점 haiku). 분야마다 두 엔진이 반씩 맡는다.
+3. 칸을 만든다. 칸 = 분야 × 관점, 칸당 50개. 분야의 칸 수 = `per-field` ÷ 50을 올림한 수 (300이면 6칸). 한 생성기에 300개를 한 번에 시키지 않는다. 그렇게 시킨 시험에서 203개와 259개만 돌아왔다.
+4. 칸을 엔진에 번갈아 배정한다 (홀수 관점 luna, 짝수 관점 haiku). 칸 하나는 엔진 하나, 파일 하나다.
 5. 계획을 한 화면으로 보여 주고 (분야 표, 칸 수, 생성할 총 수) 기다리지 않고 진행한다.
 
-관점은 같은 분야를 다른 방향에서 보게 하는 지시다. 기본 6개이고, 주제에 안 맞는 것은 바꿔도 된다.
+관점은 같은 분야를 다른 방향에서 보게 하는 지시다. 기본 6개이고, 주제에 안 맞는 것은 바꿔도 된다. 칸이 6개보다 많으면 7번부터 새 관점을 지어 붙인다. 같은 관점을 한 분야에 두 번 쓰지 않는다.
 
 | # | 관점 | 지시 |
 |---|---|---|
@@ -46,11 +46,11 @@ description: "Mass brainstorm: cheap low-effort subagents (luna + haiku) pour hu
 
 ## 2. 생성
 
-칸마다 Agent 하나를 백그라운드로 띄운다. 한 메시지에 최대 10개.
+칸마다 Agent 하나를 띄운다. 한 메시지에 Agent 호출을 최대 10개 넣고, 그 묶음이 전부 돌아온 뒤 다음 묶음을 보낸다.
 
 ```
-Agent({ subagent_type: "zworkflow:brainstorm-luna",  effort: "low", run_in_background: true, description: "brainstorm A1", prompt: <칸 브리프> })
-Agent({ subagent_type: "zworkflow:brainstorm-haiku", effort: "low", run_in_background: true, description: "brainstorm A2", prompt: <칸 브리프> })
+Agent({ subagent_type: "zworkflow:brainstorm-luna",  effort: "low", run_in_background: false, description: "brainstorm A1", prompt: <칸 브리프> })
+Agent({ subagent_type: "zworkflow:brainstorm-haiku", effort: "low", run_in_background: false, description: "brainstorm A2", prompt: <칸 브리프> })
 ```
 
 칸 브리프는 이 형식 그대로다. 생성기는 이것만 본다.
@@ -68,10 +68,10 @@ Agent({ subagent_type: "zworkflow:brainstorm-haiku", effort: "low", run_in_backg
 ```
 
 - 파일 이름은 `raw/<분야 글자><관점 숫자>__<엔진>.txt`다. 병합 스크립트가 이 이름으로 읽는다.
-- 완료 알림을 기다린다. 파일을 반복해서 들여다보지 않는다. 한 묶음이 끝나면 다음 묶음을 띄운다.
-- 생성기가 답한 개수를 믿지 않는다. `wc -l`로 파일의 줄 수를 센다. 파일이 없거나 줄 수가 요청의 80% 미만이면 같은 엔진으로 한 번 다시 띄운다.
-- 엔진이 죽었으면 (스폰 실패, 빈 출력이 재시도 뒤에도 반복) 그 엔진의 칸은 비워 둔다. 다른 엔진으로 채우지 않는다. 빈 칸을 미니맵에 적는다. 유저가 `engines`를 지정하면 그때 다시 돌린다.
-- 생성이 끝날 때까지 턴을 끝내지 않는다. 턴이 끝나면 백그라운드 에이전트가 죽는 호스트가 있다. 다시 시작할 때는 `raw/`에 이미 있는 칸을 건너뛴다.
+- 첫 묶음은 엔진마다 칸 하나씩만 보낸다. 파일을 쓰지 못한 엔진은 죽은 것이다. 그 엔진의 칸은 띄우지 않고 비워 둔다. 다른 엔진으로 채우지 않는다. 빈 칸을 미니맵에 적는다. 유저가 `engines`를 지정하면 그때 다시 돌린다.
+- 묶음이 돌아올 때마다 센다: `node "<이 스킬의 base directory>/scripts/merge.mjs" "<run 폴더>" --count`. 생성기가 답한 개수는 믿지 않는다.
+- 파일이 없거나 아이디어 수가 요청의 80% 미만인 칸은 같은 엔진으로 한 번 다시 띄운다. 그 전에 모자란 파일을 `<run 폴더>/failed/`로 옮긴다 (`mv`). 생성기는 이미 있는 파일을 덮어쓰지 못한다. 다시 해도 모자라면 있는 만큼 쓰고 미니맵에 적는다.
+- 도중에 끊겼다가 다시 시작할 때는 먼저 `--count`로 센다. 수를 채운 칸만 건너뛰고, 모자란 칸은 위 규칙대로 다시 띄운다.
 - Agent 툴이 `effort` 인자를 받지 않는 환경이면 그 인자만 빼고 부른다. 에이전트 정의에 low가 들어 있다.
 
 ## 3. 병합
@@ -80,11 +80,11 @@ Agent({ subagent_type: "zworkflow:brainstorm-haiku", effort: "low", run_in_backg
 node "<이 스킬의 base directory>/scripts/merge.mjs" "<run 폴더>"
 ```
 
-분야 안에서 같은 문장과 거의 같은 문장을 지우고, 살아남은 것을 `pool/<분야>.md`에 번호를 붙여 쓴다. 번호 `A3-017`은 분야 A, 관점 3, 그 칸의 17번째 줄이다. `stats.json`과 출력에 엔진별·분야별 생성 수 → 생존 수가 나온다.
+분야 안에서 같은 문장과 거의 같은 문장을 지우고, 살아남은 것을 `pool/<분야>.md`에 번호를 붙여 쓴다. 번호 `A3-017`은 `raw/A3__<엔진>.txt`의 17번째 줄이다. 지운 줄은 무엇과 겹쳤는지와 함께 `dropped.md`에 남는다. `stats.json`과 출력에 엔진별·분야별 생성 수 → 생존 수가 나온다.
 
 ## 4. 선별
 
-분야별 풀을 끝까지 읽고 고른다. 앞부분만 읽고 고르지 않는다. 풀이 크면 분야 하나씩 읽는다.
+분야별 풀을 끝까지 읽고 고른다. 앞부분만 읽고 고르지 않는다. 분야 하나를 읽고 고를 때마다 `picks.md`에 덧붙인다. 다 읽은 뒤 한 번에 쓰지 않는다.
 
 기준은 이 순서다.
 
@@ -95,15 +95,13 @@ node "<이 스킬의 base directory>/scripts/merge.mjs" "<run 폴더>"
 - 같은 계열은 최대 3개까지만 고른다. 고른 것이 한 발상의 변주로 채워지면 안 된다.
 - 안전한 것만 고르지 않는다. 분야마다 2~3개는 이상하지만 눈에 띄는 것으로 채우고 `와일드카드`라 표시한다.
 - 아이디어 문장을 고쳐 쓰지 않는다. 풀의 원문과 번호를 그대로 쓴다.
-- 전체 모드(`top`)는 분야마다 먼저 넉넉히 추린 뒤 그 안에서 전체 N개를 고른다. 분야별로 몇 개가 들어갔는지 적는다.
-
-결과를 `picks.md`에 쓴다.
+- 전체 모드(`top`)는 분야를 하나씩 읽으며 후보를 `picks.md`에 모은다. 분야별 몫은 없다. 강한 분야에서는 많이, 약한 분야에서는 적게 모은다. 모든 분야를 읽은 뒤 그 후보 전체에서 N개를 고르고, 분야별로 몇 개가 들어갔는지 적는다.
 
 ## 5. 전달
 
 1. 미니맵 — 한 줄 요약과 분야별 표: 생성 수, 생존 수, 고른 수, 빈 칸.
 2. 분야별 목록 — 한 줄에 하나: `A3-017 아이디어 원문 — 살리는 힌트 H1·H2 — 고른 이유 한 줄`.
-3. 파일 경로 — `picks.md`와 `pool/<분야>.md`. 고르지 않은 아이디어도 전부 풀에 있다는 것을 말한다.
+3. 파일 경로 — `picks.md`, `pool/<분야>.md`, `dropped.md`. 고르지 않은 아이디어도 전부 풀에 있다는 것을 말한다.
 4. 다음 한 줄 — 번호로 골라 주면 그것을 씨앗으로 다음 라운드를 돈다.
 
 스킬은 결론을 내리지 않는다. "이걸로 하자", 1등 지목, 여러 아이디어를 합친 최종안을 쓰지 않는다. 최종 결정은 유저가 한다.
