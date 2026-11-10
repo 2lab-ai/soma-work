@@ -82,12 +82,26 @@ const FNS = [
   'devopsSlackLink',
   'devopsIsSlackLink',
   'openDevopsSlackCard',
+  // #1131 — what applyAdminApprovals / paintAdminInboxButton call: the selection, the desktop alert, the title.
+  'adminFmt',
+  'adminSummaryOf',
+  'adminHasBatch',
+  'adminPruneSelection',
+  'adminNotifyPref',
+  'adminNotifyState',
+  'adminNotifyActive',
+  'adminNotifyArrivals',
+  'adminTitleBadge',
 ] as const;
 
 function loadClient(inject: Record<string, unknown>) {
   const names = Object.keys(inject);
   const body = `${clientVar('ADMIN_KIND_LABEL')}
+${clientVar('ADMIN_NOTIFY_KEY')}
 var _adminApprovals = { pending: [], resolved: [] };
+var _adminSel = Object.create(null);
+var _adminSeenEver = null;
+var _adminBatch = null;
 var _adminKnown = null;
 var _adminLast = Object.create(null);
 var _adminKeep = Object.create(null);
@@ -198,6 +212,129 @@ describe('dashboard admin approvals (#620)', () => {
       payload: JSON.stringify(body),
     });
   }
+
+  function postBatch(who: { cookie: string; csrf: string } | null, body: unknown, adminMode = 'on', extra = {}) {
+    return injectWebServer({
+      method: 'POST',
+      url: '/api/dashboard/admin-approvals/answer-batch',
+      headers: {
+        ...(who ? { cookie: who.cookie, 'x-csrf-token': who.csrf } : {}),
+        'x-admin-mode': adminMode,
+        'content-type': 'application/json',
+        ...extra,
+      },
+      payload: JSON.stringify(body),
+    });
+  }
+
+  describe('#1131 — POST /api/dashboard/admin-approvals/answer-batch', () => {
+    let userAnswer: ReturnType<typeof vi.fn>;
+    beforeEach(() => {
+      userAnswer = vi.fn(async (_id: string, choiceId: string) =>
+        choiceId === 'approve' ? { ok: true, outcome: 'approved' } : { ok: false, reason: 'already_answered' },
+      );
+      registry.registerAdminApprovalAdapter({
+        kind: 'new_user',
+        pending: () => [],
+        resolved: () => [{ id: 'new_user:U0USER02', outcome: 'denied', by: 'U0OTHER1', via: 'slack', at: 4 }],
+        answer: userAnswer as any,
+      });
+    });
+
+    it('an admin in admin mode decides several kinds in one call; the results keep the order', async () => {
+      const admin = await signIn('UADMIN');
+      const res = await postBatch(admin, {
+        items: [
+          { id: 'new_user:U0USER01', choiceId: 'approve' },
+          { id: 'env_skill:req-1', choiceId: 'env_skill_once' },
+          { id: 'new_user:U0USER02', choiceId: 'deny' },
+        ],
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({
+        results: [
+          { id: 'new_user:U0USER01', ok: true, outcome: 'approved' },
+          { id: 'env_skill:req-1', ok: true, outcome: 'approved' },
+          {
+            id: 'new_user:U0USER02',
+            ok: false,
+            reason: 'already_answered',
+            resolution: { id: 'new_user:U0USER02', outcome: 'denied', by: 'U0OTHER1', via: 'slack', at: 4 },
+          },
+        ],
+      });
+      expect(answer).toHaveBeenCalledWith('req-1', 'env_skill_once', 'UADMIN');
+      expect(userAnswer.mock.calls.map((c) => c.slice(0, 3))).toEqual([
+        ['U0USER01', 'approve', 'UADMIN'],
+        ['U0USER02', 'deny', 'UADMIN'],
+      ]);
+    });
+
+    it('the same gate as one answer: admin mode off, a non-admin, a viewer token — nothing is answered', async () => {
+      const body = { items: [{ id: 'env_skill:req-1', choiceId: 'env_skill_once' }] };
+      const admin = await signIn('UADMIN');
+      expect((await postBatch(admin, body, 'off')).statusCode).toBe(403);
+      const user = await signIn('U2');
+      expect((await postBatch(user, body)).statusCode).toBe(403);
+      expect((await postBatch(null, body, 'on', { authorization: 'Bearer test-token' })).statusCode).toBe(403);
+      // No CSRF token: refused before anything is read.
+      const noCsrf = await injectWebServer({
+        method: 'POST',
+        url: '/api/dashboard/admin-approvals/answer-batch',
+        headers: { cookie: admin.cookie, 'x-admin-mode': 'on', 'content-type': 'application/json' },
+        payload: JSON.stringify(body),
+      });
+      expect(noCsrf.statusCode).toBe(403);
+      expect(answer).not.toHaveBeenCalled();
+    });
+
+    it('refuses a malformed batch: no items, too many, a repeated id, a non-string or oversized field', async () => {
+      const admin = await signIn('UADMIN');
+      const one = { id: 'env_skill:req-1', choiceId: 'env_skill_once' };
+      const bodies = [
+        {},
+        { items: 'x' },
+        { items: [] },
+        { items: Array.from({ length: 51 }, (_, i) => ({ id: `new_user:U${i}`, choiceId: 'approve' })) },
+        { items: [one, one] },
+        { items: [{ id: 'env_skill:req-1' }] },
+        { items: [{ id: 7, choiceId: 'approve' }] },
+        { items: [{ id: 'x'.repeat(301), choiceId: 'approve' }] },
+        { items: [{ id: 'env_skill:req-1', choiceId: 'c'.repeat(65) }] },
+        { items: [null] },
+      ];
+      for (const body of bodies) expect((await postBatch(admin, body)).statusCode, JSON.stringify(body)).toBe(400);
+      expect(answer).not.toHaveBeenCalled();
+      expect(userAnswer).not.toHaveBeenCalled();
+      // Exactly the limit is fine.
+      const full = await postBatch(admin, {
+        items: Array.from({ length: 50 }, (_, i) => ({ id: `new_user:U${i}`, choiceId: 'approve' })),
+      });
+      expect(full.statusCode).toBe(200);
+      expect(JSON.parse(full.body).results).toHaveLength(50);
+    });
+
+    it('shares the gate with one answer (isSlackAdmin, admin mode) and pushes every admin the outcome', async () => {
+      const route = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf("'/api/dashboard/admin-approvals/answer-batch'"));
+      const head = route.slice(0, route.indexOf('answerAdminApprovals('));
+      expect(head).toContain('!isSlackAdmin(auth)');
+      expect(head).toContain('adminModeOn');
+      expect(route.slice(0, route.indexOf('server.', 10))).toContain('broadcastAdminApprovals()');
+      const msgs: any[] = [];
+      const admin = await signIn('UADMIN');
+      sockets.push(
+        await injectWebServerWS('/ws/dashboard', { headers: { cookie: admin.cookie } }, (s: any) =>
+          s.on('message', (d: any) => msgs.push(JSON.parse(d.toString()))),
+        ),
+      );
+      await postBatch(admin, { items: [{ id: 'env_skill:req-1', choiceId: 'env_skill_once' }] });
+      await vi.waitFor(() => {
+        const all = msgs.filter((m) => m.type === 'admin_approvals');
+        expect(all.length).toBeGreaterThan(0);
+        expect(all[all.length - 1].snapshot.pending).toEqual([]);
+      });
+    });
+  });
 
   it('T3 — an admin reads the pending requests; a non-admin is refused', async () => {
     const admin = await signIn('UADMIN');
