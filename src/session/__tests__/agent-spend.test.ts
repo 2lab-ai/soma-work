@@ -437,9 +437,9 @@ describe('agent spend — calls the transcript recorded with no usage (llmux mod
   });
 
   it('2026-11-10 price rows — a spend sealed under version 4 (llmux models at the fallback rate) is re-read', () => {
-    // gpt-6-sol / gpt-6-luna / grok-4.x had no price row (Sonnet fallback); a
-    // seal from before those rows keeps the wrong cost unless the bump
-    // unseals it.
+    // gpt-6-sol / gpt-6-luna / gpt-6.1-terra / grok-4.x had no price row and
+    // Fable 5.2 matched Fable 5's; a seal from before those rows keeps the
+    // wrong cost unless the bump unseals it.
     expect(SPEND_CALC_VERSION).toBeGreaterThanOrEqual(5);
     const reg = holder().agents;
     if (!reg) throw new Error('holder() has an agent registry');

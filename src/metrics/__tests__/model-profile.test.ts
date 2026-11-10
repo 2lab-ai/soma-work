@@ -53,6 +53,18 @@ interface TableRow {
 
 /** The requested policy table, verbatim from the plan's global constraints. */
 const POLICY_TABLE: TableRow[] = [
+  {
+    modelId: 'claude-fable-5-2[1m]',
+    contextWindow: 1_000_000,
+    sdkBlockingLimit: 977_000,
+    autoCompactTokens: 750_000,
+  },
+  {
+    modelId: 'claude-fable-5-1[1m]',
+    contextWindow: 1_000_000,
+    sdkBlockingLimit: 977_000,
+    autoCompactTokens: 750_000,
+  },
   { modelId: 'claude-fable-5[1m]', contextWindow: 1_000_000, sdkBlockingLimit: 977_000, autoCompactTokens: 750_000 },
   {
     modelId: 'claude-opus-5-5[1m]',
@@ -65,6 +77,7 @@ const POLICY_TABLE: TableRow[] = [
   { modelId: 'claude-opus-5', contextWindow: 200_000, sdkBlockingLimit: 177_000, autoCompactTokens: undefined },
   { modelId: 'gpt-5.6-sol[1m]', contextWindow: 1_000_000, sdkBlockingLimit: 977_000, autoCompactTokens: 600_000 },
   { modelId: 'gpt-5.6-sol', contextWindow: 372_000, sdkBlockingLimit: 349_000, autoCompactTokens: 340_000 },
+  { modelId: 'gpt-6.1-terra', contextWindow: 500_000, sdkBlockingLimit: 477_000, autoCompactTokens: 450_000 },
   { modelId: 'grok-4.6', contextWindow: 500_000, sdkBlockingLimit: 477_000, autoCompactTokens: 450_000 },
 ];
 
@@ -113,6 +126,7 @@ describe('resolveModelProfile — canonical policy table', () => {
 describe('resolveModelProfile — shared GPT 1M policy', () => {
   it.each([
     'gpt-6-astra[1m]',
+    'gpt-6.1-terra[1m]',
     'gpt-5.6-sol[1m]',
     'gpt-5.6-terra[1m]',
     'gpt-5.6-luna[1m]',

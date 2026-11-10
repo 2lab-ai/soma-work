@@ -17,7 +17,7 @@ import {
 
 describe('model-registry', () => {
   describe('PRICING_VERSION', () => {
-    it('should be 2026-11-10 (gpt-6 sol+luna / grok rows)', () => {
+    it('should be 2026-11-10 (Fable 5.2 / gpt-6.1-terra / gpt-6 sol+luna / grok rows)', () => {
       expect(PRICING_VERSION).toBe('2026-11-10');
     });
   });
@@ -61,6 +61,19 @@ describe('model-registry', () => {
         p.cache1hrWritePerMTok,
       ]).toEqual([10, 50, 0.25, 12.5, 20]);
       expect(getModelSpec('claude-fable-5').pricing.cacheReadPerMTok).toBe(1);
+    });
+
+    it('returns Fable 5.2 spec — its own cheaper row, not the Fable 5 rates its id also contains', () => {
+      for (const id of ['claude-fable-5-2', 'claude-fable-5-2[1m]']) {
+        const p = getModelSpec(id).pricing;
+        expect([
+          p.inputPerMTok,
+          p.outputPerMTok,
+          p.cacheReadPerMTok,
+          p.cache5minWritePerMTok,
+          p.cache1hrWritePerMTok,
+        ]).toEqual([8, 40, 0.2, 10, 16]);
+      }
     });
 
     it('returns Opus 4.7 spec', () => {
@@ -110,6 +123,8 @@ describe('model-registry', () => {
       ['gpt-6-sol[1m]', [2, 10, 0.2, 0, 0]],
       ['gpt-6-luna', [0.1, 0.5, 0.01, 0, 0]],
       ['gpt-6-luna[1m]', [0.1, 0.5, 0.01, 0, 0]],
+      ['gpt-6.1-terra', [1, 5, 0.05, 0, 0]],
+      ['gpt-6.1-terra[1m]', [1, 5, 0.05, 0, 0]],
       ['grok-4.7', [2, 6, 0.5, 0, 0]],
       ['grok-4.7[1m]', [2, 6, 0.5, 0, 0]],
       // The Grok Build subscription id shares the grok-4.7 row by substring.

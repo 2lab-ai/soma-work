@@ -81,11 +81,25 @@ const fireSettingsInvalidate = invalidator.fire;
 //     blocking limit, 600k auto-compact). The `sol` / `sol[1m]` / `gpt-6.1`
 //     shorthands point at the `[1m]` variant; the default stays
 //     `gpt-5.6-sol`, whose literal ids remain selectable.
+//   - `gpt-6.1-terra` (added 2026-11-10) is generation 6.1's mid tier (OpenAI
+//     release 2026-10-26) and rides the same llmux codex passthrough (llmux
+//     moved its own `terra` alias to it on 2026-11-10). Unlike sol and astra
+//     its openai/codex catalog context_window is 500,000, so it is a declared
+//     row in metrics/model-profile.ts with the grok-4.6 numbers for that
+//     window (477k blocking limit, 450k auto-compact). The `[1m]` opt-in
+//     variant ships alongside it under the shared GPT `[1m]` policy. The
+//     `terra` / `terra[1m]` shorthands point at the `[1m]` variant;
+//     `gpt-5.6-terra` stays selectable by its literal id.
+//   - `claude-fable-5-2` (added 2026-11-10; Anthropic release 2026-11-09) is
+//     the newest fable and leads both claude blocks. Native 1M like 5.1 (no
+//     200K mode); the `[1m]` spelling carries the declared 750k policy row and
+//     is what the `fable` shorthands select (llmux moved its `fable` alias to
+//     the same id). The 5.1 and 5 ids stay selectable and pinned.
 //   - `grok-4.6` (added 2026-08-26) is DECLARED here rather than left to the
 //     llmux catalog overlay: a cold start with no catalog snapshot must still
 //     be able to select the model whose 450k auto-compact default is declared
 //     policy in metrics/model-profile.ts.
-//   - The 6 `[1m]` entries are additive and share one convention: the Claude
+//   - The `[1m]` entries are additive and share one convention: the Claude
 //     Agent SDK (≥ 0.2.111) detects the suffix, strips it before the API call,
 //     and injects the `context-1m-2025-08-07` beta header; llmux does the
 //     equivalent for the codex `gpt-5.6-sol[1m]` id.
@@ -110,6 +124,7 @@ const fireSettingsInvalidate = invalidator.fire;
 // abandoned PR #652) silently deletes user-selectable models. Tests assert
 // exact array equality — NOT just length — to catch that class of mistake.
 export const AVAILABLE_MODELS = [
+  'claude-fable-5-2',
   'claude-fable-5-1',
   'claude-fable-5',
   'claude-opus-5-5',
@@ -121,6 +136,7 @@ export const AVAILABLE_MODELS = [
   'claude-sonnet-4-5-20250929',
   'claude-opus-4-5-20251101',
   'claude-haiku-4-5-20251001',
+  'claude-fable-5-2[1m]',
   'claude-fable-5-1[1m]',
   'claude-fable-5[1m]',
   'claude-opus-5-5[1m]',
@@ -140,6 +156,8 @@ export const AVAILABLE_MODELS = [
   'gpt-6-astra[1m]',
   'gpt-6.1-sol',
   'gpt-6.1-sol[1m]',
+  'gpt-6.1-terra',
+  'gpt-6.1-terra[1m]',
   'grok-4.6',
 ] as const;
 
@@ -166,13 +184,19 @@ export type ModelInputResolution =
 //   - Version-pinned aliases (`opus-4.8`, `opus-4.7`, ...) remain stable so
 //     users who explicitly chose a generation don't get silently upgraded.
 export const MODEL_ALIASES: Record<string, ModelId> = {
-  // Unversioned Fable aliases follow 5.1 and retain the literal 1M profile.
-  // Version-pinned aliases remain stable; bare full ids stay selectable.
-  fable: 'claude-fable-5-1[1m]',
+  // Unversioned Fable aliases follow the NEWEST fable (5.2 since 2026-11-10,
+  // matching llmux's own `fable` alias) and land on its literal `[1m]` id —
+  // the spelling that carries the declared 1M / 750k profile. Bump these rows
+  // (plus AVAILABLE_MODELS) when a newer fable lands. Version-pinned aliases
+  // (`fable-5-1*`, `fable-5*`) remain stable so a user who chose a generation
+  // is not silently upgraded; bare full ids stay selectable.
+  fable: 'claude-fable-5-2[1m]',
+  'fable[1m]': 'claude-fable-5-2[1m]',
+  'fable-5-2': 'claude-fable-5-2[1m]',
+  'fable-5-2[1m]': 'claude-fable-5-2[1m]',
   'fable-5-1': 'claude-fable-5-1[1m]',
   'fable-5-1[1m]': 'claude-fable-5-1[1m]',
   'fable-5': 'claude-fable-5[1m]',
-  'fable[1m]': 'claude-fable-5-1[1m]',
   'fable-5[1m]': 'claude-fable-5[1m]',
   sonnet: 'claude-sonnet-4-6',
   'sonnet-4.6': 'claude-sonnet-4-6',
@@ -219,7 +243,13 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   sol: 'gpt-6.1-sol[1m]',
   'sol[1m]': 'gpt-6.1-sol[1m]',
   'gpt-6.1': 'gpt-6.1-sol[1m]',
-  terra: 'gpt-5.6-terra',
+  // `terra` / `terra[1m]` follow the NEWEST terra generation (gpt-6.1-terra
+  // since 2026-11-10, matching llmux's own `terra` alias) and land on its
+  // `[1m]` row — the same newest-[1m] family-shorthand rule as `sol`. The
+  // bare gpt-6.1-terra (500k) and gpt-5.6-terra stay reachable by their
+  // literal ids. `gpt-6.1` stays on sol, generation 6.1's flagship.
+  terra: 'gpt-6.1-terra[1m]',
+  'terra[1m]': 'gpt-6.1-terra[1m]',
   luna: 'gpt-5.6-luna',
   // gpt-6 (2026-09-03 release, wired 2026-09-07). Selectable, NOT the
   // default — `gpt` above still points at gpt-5.6-sol. `gpt-6` is the bare
@@ -1502,6 +1532,10 @@ export class UserSettingsStore {
    */
   getModelDisplayName(model: string): string {
     switch (model) {
+      case 'claude-fable-5-2':
+        return 'Fable 5.2';
+      case 'claude-fable-5-2[1m]':
+        return 'Fable 5.2 (1M)';
       case 'claude-fable-5-1':
         return 'Fable 5.1';
       case 'claude-fable-5-1[1m]':
@@ -1578,6 +1612,13 @@ export class UserSettingsStore {
       case 'gpt-6.1-sol[1m]':
         // Shared GPT [1m] policy: 1M window, 977k SDK block, 600k auto-compact.
         return 'GPT-6.1 Sol (1M)';
+      case 'gpt-6.1-terra':
+        // Generation 6.1 mid tier (llmux codex backend); 500k catalog window,
+        // 450k auto-compact (model-profile.ts).
+        return 'GPT-6.1 Terra (500k)';
+      case 'gpt-6.1-terra[1m]':
+        // Shared GPT [1m] policy: 1M window, 977k SDK block, 600k auto-compact.
+        return 'GPT-6.1 Terra (1M)';
       default:
         // llmux model-catalog overlay — catalog models carry their llmux
         // display name (e.g. `grok-4.5` → "Grok 4.5"); anything else echoes
