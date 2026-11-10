@@ -274,6 +274,8 @@ export interface FollowupQueuePort {
   markConsumed(sessionKey: string, uuid: string): FollowupOpResult;
   /** `steered → queued` at the same seq. The returned item carries the NEW epoch a reserve must use. */
   unsteer(sessionKey: string, uuid: string, reason?: string): FollowupOpResult;
+  /** `resolved (consumed) → queued`: the reading turn's settlement said the message was discarded. */
+  reopenConsumed(sessionKey: string, uuid: string, reason?: string): FollowupOpResult;
   /** End-of-turn sweep: every `steered` item of the session back to `queued`, returned. */
   unsteerAll(sessionKey: string, reason: string): FollowupItem[];
 }
@@ -707,6 +709,19 @@ export class FollowupDispatcher {
    */
   unsteer(sessionKey: string, uuid: string, reason: string): FollowupOpResult {
     const result = this.deps.queue.unsteer(sessionKey, uuid, reason);
+    if (result.ok) {
+      this.safeNotify({ type: 'item-unsteered', sessionKey, itemId: result.item.id, reason });
+    }
+    return result;
+  }
+
+  /**
+   * The settlement of the turn that read a message says it was discarded: the
+   * row the read receipt closed goes back in line (`FollowupQueue.reopenConsumed`).
+   * Same pass-through discipline as `markConsumed`.
+   */
+  reopenConsumed(sessionKey: string, uuid: string, reason: string): FollowupOpResult {
+    const result = this.deps.queue.reopenConsumed(sessionKey, uuid, reason);
     if (result.ok) {
       this.safeNotify({ type: 'item-unsteered', sessionKey, itemId: result.item.id, reason });
     }
