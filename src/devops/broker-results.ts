@@ -6,12 +6,14 @@
  * runs it, or not, and keeps the outcome. This watch reads those outcomes (`results`), hands each to its session
  * as a host turn once the session is settled, and acknowledges it (`results_ack`) so the broker drops it.
  *
- * The session comes from the request's claimed requester — a claim only, as everywhere in the broker protocol.
- * The turn says what the broker reported and nothing more: the tool, the card, the outcome, who decided, and the
- * tool's result as data.
+ * The session comes from the request's claimed requester — a claim only, as everywhere in the broker protocol — and
+ * a result is delivered only to a session whose owner is the claimed user: a model that names another user's
+ * session in its claim cannot land a turn there. The turn says what the broker reported and nothing more: the tool,
+ * the card, the outcome, who decided, and the tool's result fenced as data.
  *
- * At most once: an outcome is acknowledged once its turn was handed over (or could not be: no such session, or the
- * session is gone). A bot restart while one waits leaves it unacknowledged, and the next read delivers it.
+ * At least once: an outcome is acknowledged after its turn was handed over (or could not be: no such session, the
+ * owner differs, or the session is gone). A bot restart between the hand-over and the acknowledgement delivers it
+ * again; the turn says not to repeat the request, so a repeat costs a turn, not an action.
  */
 
 import { DEFAULT_BROKER_SOCKET_PATH, type QueuedResultView } from '@soma/process-shared/devops/protocol.js';
@@ -35,8 +37,8 @@ export type DeliveryOutcome = 'injected' | 'expired' | 'gone';
 export interface BrokerResultsDeps {
   /** Default: the broker's default socket. */
   socketPath?: string;
-  /** Whether the session exists and can take a turn at all (false = drop the result). */
-  sessionExists(sessionKey: string): boolean;
+  /** Whether the session exists, can take a turn, and is owned by `slackUserId` (false = drop the result). */
+  sessionAccepts(sessionKey: string, slackUserId: string): boolean;
   /** Queue a host turn into the session; `done` reports how it ended. False = the session cannot take one. */
   deliver(sessionKey: string, text: string, done: (outcome: DeliveryOutcome) => void): Promise<boolean>;
   intervalMs?: number;
@@ -162,8 +164,10 @@ export function startBrokerResultsWatch(deps: BrokerResultsDeps): { stop(): void
         if (handled.has(item.approvalId)) continue;
         handled.add(item.approvalId);
         const sessionKey = item.claimedRequester.sessionKey;
-        if (!deps.sessionExists(sessionKey)) {
-          logger.info('devops result dropped: its session is not here', { approvalId: item.approvalId });
+        if (!deps.sessionAccepts(sessionKey, item.claimedRequester.slackUserId)) {
+          logger.info('devops result dropped: no such session here, or its owner is not the requester', {
+            approvalId: item.approvalId,
+          });
           settled(item.approvalId);
           continue;
         }

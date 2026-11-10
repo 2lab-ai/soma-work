@@ -1691,3 +1691,49 @@ describe('queued runs re-check what the card showed (#1128)', () => {
     expect(gh.run.mock.calls[0][0]).toBe(`${GH_TOKEN}-gh-member-2`);
   });
 });
+
+describe('broker review fixes (#1128)', () => {
+  it('a denial whose ledger row is slow is still answered as a denial, not as queued', async () => {
+    const ledger = new Ledger(paths.ledgerFile);
+    const slowLedger = {
+      append: async (row: { event: string } & Record<string, unknown>) => {
+        if (row.event === 'request') await new Promise((resolve) => setTimeout(resolve, 2_600));
+        return ledger.append(row);
+      },
+    } as unknown as Ledger;
+    const approvals = {
+      ...fakeApprovals('denied').approvals,
+      async request(_req: ApprovalRequest, hooks: Parameters<Approvals['request']>[1]): Promise<ApprovalOutcome> {
+        // The live wait is already over: the broker's answer deadline fires at once.
+        hooks.onPending({
+          approvalId: 'appr-0001',
+          digestPrefix: '0123456789ab',
+          expiresAt: new Date(Date.now() - 30_000).toISOString(),
+          queuedUntil: '2030-01-01T00:00:00.000Z',
+        });
+        return { outcome: 'denied', approvalId: 'appr-0001' };
+      },
+    } as unknown as Approvals;
+    await start({ policy: { ...policy, queueTimeoutSeconds: 3600 }, approvals, ledger: slowLedger });
+    const messages = await send(request('gh_write', { account: 'member', args: PR_COMMENT }));
+    expect(terminal(messages)).toMatchObject({ code: 'not-approved', reason: 'denied' });
+  }, 10_000);
+
+  it('results come in pages that fit one line, oldest first, with `more` when others wait', async () => {
+    const big = (n: number) => ({
+      approvalId: `appr-${String(n).padStart(4, '0')}`,
+      outcome: 'done',
+      data: { stdout: 'x'.repeat(1_900_000) },
+      finishedAt: `2026-11-10T00:00:0${n}.000Z`,
+    });
+    const approvals = {
+      ...fakeApprovals('denied').approvals,
+      results: () => [big(1), big(2), big(3)],
+    } as unknown as Approvals;
+    await start({ approvals });
+    const reply = terminal(await send({ v: 1, id: 'adm-page', op: 'results', args: {} }));
+    const data = reply.data as { results: { approvalId: string }[]; more: boolean };
+    expect(data.results.map((r) => r.approvalId)).toEqual(['appr-0001', 'appr-0002']);
+    expect(data.more).toBe(true);
+  });
+});

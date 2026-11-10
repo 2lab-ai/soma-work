@@ -78,7 +78,7 @@ describe('startBrokerResultsWatch', () => {
       socketPath: '/nonexistent.sock',
       intervalMs: 60_000,
       call: broker.call,
-      sessionExists: (key) => key === SESSION,
+      sessionAccepts: (key, user) => key === SESSION && user === 'U000ALICE',
       deliver: async (key, text, done) => {
         delivered.push({ key, text });
         done('injected');
@@ -102,7 +102,7 @@ describe('startBrokerResultsWatch', () => {
       socketPath: '/nonexistent.sock',
       intervalMs: 60_000,
       call: broker.call,
-      sessionExists: () => true,
+      sessionAccepts: () => true,
       deliver: async (_key, _text, done) => {
         finish = done;
         return true;
@@ -122,15 +122,18 @@ describe('startBrokerResultsWatch', () => {
       { approvalId: 'x', outcome: 'done' } as unknown as QueuedResultView,
     ]);
     const deliver = vi.fn(async () => true);
+    const sessionAccepts = vi.fn(() => false);
     watch = startBrokerResultsWatch({
       socketPath: '/nonexistent.sock',
       intervalMs: 60_000,
       call: broker.call,
-      sessionExists: () => false,
+      sessionAccepts,
       deliver,
     });
     await vi.waitFor(() => expect(broker.held().map((r) => r.approvalId)).toEqual(['x']));
     expect(deliver).not.toHaveBeenCalled();
+    // The session must be the claimed user's own: the claim's user is checked, not only the key.
+    expect(sessionAccepts).toHaveBeenCalledWith('work:C1:2', 'U000BOB');
   });
 
   it('backs off from a broker that refuses the op', async () => {
@@ -141,7 +144,7 @@ describe('startBrokerResultsWatch', () => {
       intervalMs: 60_000,
       call,
       now: () => now,
-      sessionExists: () => true,
+      sessionAccepts: () => true,
       deliver: async () => true,
     });
     await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(1));

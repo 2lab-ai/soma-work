@@ -91,6 +91,8 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_CLOSE_TIMEOUT_MS = 30_000;
 /** The MCP client gives up 30 s after the card's expiry; answer before it does. */
 const STILL_EXECUTING_AFTER_EXPIRY_MS = 25_000;
+/** A `results` answer holds at most this many characters of results (the line limit is 8 MiB). */
+const RESULTS_PAGE_CHARS = 4 * 1024 * 1024;
 /** After moving a request to the queue, answer `queued` by then even if the approval module has not resolved. */
 const QUEUED_ANSWER_GRACE_MS = 2_000;
 const GROUP_NAMES_TIMEOUT_MS = 5_000;
@@ -323,6 +325,8 @@ class Connection {
   stillExecuting = false;
   /** #1128: when the live wait ends, the card stays open until this (the policy has a queue). */
   queuedUntil: string | undefined;
+  /** The route returned its terminal (sent once the ledger row is written): the deadline must not answer instead. */
+  answered = false;
   private pendingSent = false;
   private terminalSent = false;
   private deadline: NodeJS.Timeout | undefined;
@@ -362,13 +366,13 @@ class Connection {
   }
 
   private onDeadline(): void {
-    if (this.terminalSent) return;
+    if (this.terminalSent || this.answered) return;
     if (this.phase === 'awaiting' && this.queuedUntil !== undefined) {
       // #1128: the card stays open; the approval module answers `queued` (or `cancelled` when the queue is full).
       this.controller.abort(QUEUE_ABORT_REASON);
       const queuedUntil = this.queuedUntil;
       setTimeout(() => {
-        if (this.terminalSent || this.phase !== 'awaiting') return;
+        if (this.terminalSent || this.answered || this.phase !== 'awaiting') return;
         this.finish(fail('queued', queuedMessage(queuedUntil)));
       }, QUEUED_ANSWER_GRACE_MS).unref();
       return;
@@ -1404,8 +1408,19 @@ export function createBroker(deps: BrokerDeps): Broker {
     switch (req.op) {
       case 'approvals':
         return ok({ approvals: deps.approvals.pending() as unknown as JsonValue });
-      case 'results':
-        return ok({ results: deps.approvals.results() as unknown as JsonValue });
+      case 'results': {
+        // One line at most MAX_LINE_LENGTH: the oldest results that fit; the bot acknowledges them and reads on.
+        const all = deps.approvals.results();
+        const page: typeof all = [];
+        let size = 0;
+        for (const view of all) {
+          const n = JSON.stringify(view).length;
+          if (page.length > 0 && size + n > RESULTS_PAGE_CHARS) break;
+          page.push(view);
+          size += n;
+        }
+        return ok({ results: page as unknown as JsonValue, more: page.length < all.length });
+      }
       case 'results_ack': {
         const acked = await deps.approvals.ackResults(req.args.approvalIds);
         row.acked = acked;
@@ -1480,6 +1495,7 @@ export function createBroker(deps: BrokerDeps): Broker {
         terminal = fail('internal', 'the broker hit an internal error on this request');
       }
     }
+    conn.answered = true;
     if (row.outcome === undefined) row.outcome = terminal.type === 'result' ? 'ok' : terminal.code;
     if (conn.stillExecuting) row.stillExecuting = true;
     await audit(row);
