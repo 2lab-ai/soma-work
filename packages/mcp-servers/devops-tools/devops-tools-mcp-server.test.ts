@@ -959,3 +959,25 @@ describe('progress while pending', () => {
     expect(call.sendNotification).not.toHaveBeenCalled();
   });
 });
+
+describe('queued (#1128)', () => {
+  it('a pending card with a queue end, then `queued`: the model is told not to ask again, and it is not an error', async () => {
+    const queuedUntil = new Date(Date.now() + 3_600_000).toISOString();
+    const broker = await fakeBroker((request, socket) => {
+      send(socket, { ...pending(request.id, new Date(Date.now() + 60_000).toISOString()), queuedUntil });
+      setTimeout(() => send(socket, error(request.id, 'queued', `the request is queued until ${queuedUntil}`)), 20);
+    });
+    const seen: unknown[] = [];
+    const out = await runDevopsTool('gh_write', GH_WRITE_ARGS, {
+      env: ENV,
+      socketPath: broker.socketPath,
+      onPending: (p) => seen.push(p),
+    });
+    expect(seen).toMatchObject([{ queuedUntil }]);
+    expect(out.isError).toBeUndefined();
+    expect(textOf(out)).toContain(`queued: the request is queued until ${queuedUntil}`);
+    expect(textOf(out)).toContain('다시 요청하지 말 것');
+    expect(textOf(out)).toContain('the result is sent to this session');
+    for (const word of RETRY_WORDS) expect(textOf(out)).not.toContain(word);
+  });
+});

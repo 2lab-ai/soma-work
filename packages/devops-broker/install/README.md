@@ -167,8 +167,19 @@ run the installer again from the new account without the flag.
 The first run installs this template. Every `<…>` placeholder fails validation, so the daemon cannot start until
 you replace all of them. Edit the file with `sudo` and keep it `root:wheel 0644`; the installer resets that on every
 run. Add one `cloudflare` entry per environment, with names of 1–16 characters from `a-z 0-9 -`. Leave
-`cloudflare` out if there is none. Optional keys: `gh.allowedOwners` (default `[org]`) and `maxPendingApprovals`
-(default 3). See `parsePolicy` in `src/policy.ts` for the rules.
+`cloudflare` out if there is none. Optional keys: `gh.allowedOwners` (default `[org]`), `maxPendingApprovals`
+(default 3), and the queue and dashboard switches below (both off by default). See `parsePolicy` in
+`src/policy.ts` for the rules.
+
+- `queueTimeout` (`"<n>m"` or `"<n>h"`, at most `168h`, longer than `approvalTimeout`): a card nobody answered
+  during the live wait stays open this long. The requester is told `queued` and stops waiting. An admin's
+  approval inside the window runs the request then, with its own ledger row (`request.queued-run`), and the
+  outcome is kept for the bot (`results`), which hands it to the requesting session. Queued cards do not count
+  against `maxPendingApprovals`.
+- `maxQueuedApprovals` (1–200, default 50): queued cards at most. While the queue is full, a new card is refused.
+- `dashboardDecisions` (`{ "tools": [...] }`, any of `gh_write`, `gh_org_member`, `gh_repo_access`,
+  `cf_lease_request`): the cards of these tools may also be approved or denied from the soma-work dashboard
+  (the `decide` op). Read "Dashboard decisions" below before you turn this on.
 
 <!-- policy-template:begin -->
 ```json
@@ -199,14 +210,37 @@ run. Add one `cloudflare` entry per environment, with names of 1–16 characters
 
 ## Dashboard listing (#1051)
 
-The socket answers one read-only admin op, `approvals`. It returns the cards the broker is waiting on: tool,
-the card's first sentence, the claimed requester, the expiry, and a link to each admin's own Slack card from
-`chat.getPermalink`, which needs no extra scope. It holds no argument values. The soma-work dashboard shows
-these cards in its admin approvals and opens the Slack card. The decision is still the admin's own ✅/❌ or
-승인/거부 on that card.
+The admin op `approvals` returns the cards the broker is waiting on: tool, the card's first sentence and its
+lines (details, gh argv, warnings — what the Slack card shows), the claimed requester, the live and queue ends,
+whether the card is queued and whether the dashboard may decide it, and a link to each admin's own Slack card
+from `chat.getPermalink`, which needs no extra scope. The soma-work dashboard shows these cards in its admin
+approvals.
 
-Nothing outside Slack can decide a card. The dashboard runs as the bot user, the same OS user as the model, so
-a decision relayed from it would let the model approve its own request.
+## Dashboard decisions (#1129)
+
+Off by default, a card is decided only by an admin's own ✅/❌ or 승인/거부 on it. With `dashboardDecisions` in
+the policy, the admin op `decide` also decides the cards of the listed tools: up to 50 at once, each bound to
+the card number (digest prefix) the admin saw and refused when it does not match, the deciding admin named
+(`actor`, checked against `admins`). The ledger says `via: dashboard`, and every admin's Slack card is
+rewritten "(대시보드에서)".
+
+The trade-off is the operator's: the dashboard runs as the bot user, the same OS user as the model, and the
+socket cannot tell the dashboard from any other process of that user. With the switch on, that user can decide
+the listed cards, so the approval no longer stops a model that sets out to approve its own request. What still
+holds: the keys never leave the broker, the policy allowlists and the lease scope and TTL caps apply, and every
+decision is in the ledger. The switch lives in this root-owned file, which the model cannot change. A hard
+boundary needs a decision surface the broker serves itself (#1056).
+
+## Queued results (#1128)
+
+`results` returns the outcome of every queued request (done with the tool's result, failed, denied, expired,
+cancelled), oldest first and at most 4 MiB per answer (`more: true` when there are others), until `results_ack`
+drops it; unacknowledged results go after 7 days. Like `approvals`, both ops answer any process in the socket's
+group, which includes the bot user and so the model: it can read every queued request's output and acknowledge a
+result away before the bot hands it to its session. The output is what the live call would have returned to the
+same user. A broker restart expires the
+cards that were queued (nothing ran) and says so in their results; a run the restart cut is reported as failed
+with an unknown outcome.
 
 A broker installed before this op refuses it (`unknown key "op"`). The dashboard does not need the broker
 upgraded first: the devops-tools MCP server records each call it has waiting on a card in the bot's data

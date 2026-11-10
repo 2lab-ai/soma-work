@@ -13,6 +13,7 @@ import {
   type Approvals,
   createApprovals,
   initialApprovalState,
+  type QueuedRun,
 } from './approval.js';
 import { type BrokerDeps, createBroker } from './broker.js';
 import type { CloudflareLeases, LeaseView } from './cf-client.js';
@@ -1485,5 +1486,257 @@ describe('admin op: approvals (#1051)', () => {
     const reply = terminal(await send({ v: 1, id: 'adm-2', op: 'approval_decide', args: {} }));
     expect(reply).toMatchObject({ type: 'error', code: 'bad-request' });
     expect(ledgerRows().find((row) => row.event === 'admin-request')).toMatchObject({ outcome: 'bad-request' });
+  });
+});
+
+describe('queued requests and dashboard decisions (#1128, #1129)', () => {
+  function realApprovals(over: Partial<BrokerPolicy>) {
+    const slack: SlackApi = {
+      openDm: async (user) => `D${user.slice(1)}`,
+      postMessage: async () => ({ ts: '1700000000.000100' }),
+      updateMessage: async () => {},
+      getReactions: async () => [],
+    };
+    const store = new StateStore<ApprovalState>(path.join(paths.stateDir, 'approvals.json'), initialApprovalState());
+    const ledger = new Ledger(paths.ledgerFile);
+    const brokerPolicy: BrokerPolicy = { ...policy, ...over };
+    return {
+      store,
+      ledger,
+      brokerPolicy,
+      make: () => createApprovals({ policy: brokerPolicy, slack, store, ledger, pollIntervalMs: 20, log: () => {} }),
+    };
+  }
+
+  function admin(op: string, args: unknown): Promise<Message[]> {
+    seq += 1;
+    return send({ v: 1, id: `adm-${seq}`, op, args });
+  }
+
+  it('answers queued when the live wait ends; a dashboard approval then runs it, and the bot reads and acknowledges the result', async () => {
+    // A 1 s live wait; the broker's clock runs 25 s ahead, so its answer deadline (live end + 25 s) is ~1 s away.
+    const real = realApprovals({
+      approvalTimeoutSeconds: 1,
+      queueTimeoutSeconds: 3600,
+      dashboardDecisionTools: ['gh_write'],
+    });
+    await real.store.load();
+    const approvals = real.make();
+    const gh = fakeGhRunner();
+    await start({
+      policy: real.brokerPolicy,
+      ghRunner: gh.runner,
+      approvals,
+      ledger: real.ledger,
+      now: () => Date.now() + 25_000,
+    });
+    const messages = await send(request('gh_write', { account: 'member', args: PR_COMMENT }));
+    expect(messages.map((m) => m.type)).toEqual(['pending', 'error']);
+    const pending = messages[0];
+    expect(typeof pending.queuedUntil).toBe('string');
+    expect(terminal(messages)).toMatchObject({ code: 'queued' });
+    expect(String(terminal(messages).message)).toContain(String(pending.queuedUntil));
+    expect(String(terminal(messages).message)).toMatch(/do not ask again/);
+    expect(gh.run).not.toHaveBeenCalled();
+    await waitFor(() => ledgerRows().some((r) => r.event === 'request' && r.tool === 'gh_write'));
+    expect(ledgerRows().find((r) => r.event === 'request' && r.tool === 'gh_write')).toMatchObject({
+      outcome: 'queued',
+    });
+
+    // The listing says it is queued and decidable, with the card's lines.
+    const listed = terminal(await admin('approvals', {}));
+    expect((listed.data as { approvals: Record<string, unknown>[] }).approvals[0]).toMatchObject({
+      approvalId: pending.approvalId,
+      queued: true,
+      decidable: true,
+      argv: PR_COMMENT,
+    });
+
+    const decided = terminal(
+      await admin('decide', {
+        decisions: [{ approvalId: pending.approvalId, digestPrefix: pending.digestPrefix, action: 'approve' }],
+        actor: 'U000ADMIN',
+        reason: 'batch review',
+      }),
+    );
+    expect(decided).toMatchObject({
+      type: 'result',
+      data: { outcomes: [{ approvalId: pending.approvalId, outcome: 'accepted' }] },
+    });
+    await waitFor(() => ledgerRows().some((r) => r.event === 'request.queued-run'));
+    expect(gh.run).toHaveBeenCalledTimes(1);
+    expect(ledgerRows().find((r) => r.event === 'request.queued-run')).toMatchObject({
+      approvalId: pending.approvalId,
+      tool: 'gh_write',
+      outcome: 'ok',
+      exitCode: 0,
+    });
+    expect(ledgerRows().find((r) => r.event === 'admin-request' && r.op === 'decide')).toMatchObject({
+      actor: 'U000ADMIN',
+      reason: 'batch review',
+      accepted: 1,
+      outcome: 'ok',
+    });
+
+    await waitFor(() => approvals.results().length > 0);
+    const results = terminal(await admin('results', {}));
+    expect((results.data as { results: Record<string, unknown>[] }).results).toMatchObject([
+      {
+        approvalId: pending.approvalId,
+        outcome: 'done',
+        via: 'dashboard',
+        decidedBy: 'U000ADMIN',
+        data: { exitCode: 0, stdout: 'out' },
+      },
+    ]);
+    const acked = terminal(await admin('results_ack', { approvalIds: [pending.approvalId] }));
+    expect(acked).toMatchObject({ type: 'result', data: { acked: 1 } });
+    expect((terminal(await admin('results', {})).data as { results: unknown[] }).results).toEqual([]);
+    await approvals.close();
+  });
+
+  it('without the policy switch, a decide is refused per card and nothing runs', async () => {
+    const real = realApprovals({});
+    await real.store.load();
+    const approvals = real.make();
+    const gh = fakeGhRunner();
+    await start({ ghRunner: gh.runner, approvals, ledger: real.ledger });
+    let decided: Message | undefined;
+    const messages = await send(request('gh_write', { account: 'member', args: PR_COMMENT }), (message, socket) => {
+      if (message.type !== 'pending') return;
+      void admin('decide', {
+        decisions: [{ approvalId: message.approvalId, digestPrefix: message.digestPrefix, action: 'approve' }],
+        actor: 'U000ADMIN',
+      }).then((reply) => {
+        decided = terminal(reply);
+        socket.destroy();
+      });
+    });
+    expect(messages[0]).not.toHaveProperty('queuedUntil');
+    expect(decided).toMatchObject({ data: { outcomes: [{ outcome: 'refused', reason: 'dashboard-decisions-off' }] } });
+    expect(gh.run).not.toHaveBeenCalled();
+    await approvals.close();
+  });
+
+  it('a malformed decide is bad-request with a ledger row', async () => {
+    await start();
+    const reply = terminal(await admin('decide', { decisions: [], actor: 'U000ADMIN' }));
+    expect(reply).toMatchObject({ type: 'error', code: 'bad-request' });
+    expect(ledgerRows().find((row) => row.event === 'admin-request')).toMatchObject({ outcome: 'bad-request' });
+  });
+});
+
+describe('queued runs re-check what the card showed (#1128)', () => {
+  /** Approvals that queue every request at once and hand the queued run to the test. */
+  function queueingApprovals() {
+    let run: QueuedRun | undefined;
+    const base = fakeApprovals('denied');
+    const approvals = {
+      ...base.approvals,
+      async request(_req: ApprovalRequest, hooks: Parameters<Approvals['request']>[1]): Promise<ApprovalOutcome> {
+        hooks.onPending({
+          approvalId: 'appr-0001',
+          digestPrefix: '0123456789ab',
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          queuedUntil: '2030-01-01T00:00:00.000Z',
+        });
+        run = hooks.queued;
+        return { outcome: 'queued', approvalId: 'appr-0001', queuedUntil: '2030-01-01T00:00:00.000Z' };
+      },
+    } as unknown as Approvals;
+    return { approvals, run: () => run, results: base.results };
+  }
+  const consume = async () => {};
+  const queuePolicy = () => ({ ...policy, queueTimeoutSeconds: 3600 });
+
+  it('an org role that changed since the card is not sent; an unchanged one is, with the token read again', async () => {
+    const q = queueingApprovals();
+    const github = fakeGithubAdmin();
+    const readSecret = vi.fn((kind: string, name: string) => `${GH_TOKEN}-${kind}-${name}`);
+    await start({ policy: queuePolicy(), approvals: q.approvals, githubAdmin: github, readSecret });
+    const messages = await send(request('gh_org_member', { action: 'add', user: 'alice', role: 'member' }));
+    expect(terminal(messages)).toMatchObject({ code: 'queued' });
+    const run = q.run();
+    expect(run).toBeDefined();
+    const reads = readSecret.mock.calls.length;
+
+    // Changed: alice became a member meanwhile — the approved "add" is not what would happen now.
+    github.getMembership.mockResolvedValueOnce({ member: true, role: 'member', state: 'active' } as never);
+    const changed = await run?.('appr-0001', consume);
+    expect(changed).toMatchObject({ outcome: 'failed' });
+    expect(changed?.message).toMatch(/changed after the card was posted/);
+    expect(github.setMembership).not.toHaveBeenCalled();
+    expect(readSecret.mock.calls.length).toBe(reads + 1);
+    // The admins' cards say nothing ran (they would otherwise stay "승인됨 · 실행 중").
+    await waitFor(() => q.results.some((line) => line.includes('현재 상태가 바뀜')));
+
+    // Unchanged: sent.
+    const done = await run?.('appr-0001', consume);
+    expect(done).toMatchObject({ outcome: 'done' });
+    expect(github.setMembership).toHaveBeenCalledTimes(1);
+    expect(
+      ledgerRows()
+        .filter((r) => r.event === 'request.queued-run')
+        .map((r) => r.outcome),
+    ).toEqual(['policy-denied', 'ok']);
+  });
+
+  it('a queued gh_write reads its token again when it runs', async () => {
+    const q = queueingApprovals();
+    const gh = fakeGhRunner();
+    let n = 0;
+    const readSecret = vi.fn((kind: string, name: string) => `${GH_TOKEN}-${kind}-${name}-${++n}`);
+    await start({ policy: queuePolicy(), approvals: q.approvals, ghRunner: gh.runner, readSecret });
+    const messages = await send(request('gh_write', { account: 'member', args: PR_COMMENT }));
+    expect(terminal(messages)).toMatchObject({ code: 'queued' });
+    const result = await q.run()?.('appr-0001', consume);
+    expect(result).toMatchObject({ outcome: 'done', data: { exitCode: 0 } });
+    expect(gh.run.mock.calls[0][0]).toBe(`${GH_TOKEN}-gh-member-2`);
+  });
+});
+
+describe('broker review fixes (#1128)', () => {
+  it('a denial whose ledger row is slow is still answered as a denial, not as queued', async () => {
+    const ledger = new Ledger(paths.ledgerFile);
+    const slowLedger = {
+      append: async (row: { event: string } & Record<string, unknown>) => {
+        if (row.event === 'request') await new Promise((resolve) => setTimeout(resolve, 2_600));
+        return ledger.append(row);
+      },
+    } as unknown as Ledger;
+    const approvals = {
+      ...fakeApprovals('denied').approvals,
+      async request(_req: ApprovalRequest, hooks: Parameters<Approvals['request']>[1]): Promise<ApprovalOutcome> {
+        // The live wait is already over: the broker's answer deadline fires at once.
+        hooks.onPending({
+          approvalId: 'appr-0001',
+          digestPrefix: '0123456789ab',
+          expiresAt: new Date(Date.now() - 30_000).toISOString(),
+          queuedUntil: '2030-01-01T00:00:00.000Z',
+        });
+        return { outcome: 'denied', approvalId: 'appr-0001' };
+      },
+    } as unknown as Approvals;
+    await start({ policy: { ...policy, queueTimeoutSeconds: 3600 }, approvals, ledger: slowLedger });
+    const messages = await send(request('gh_write', { account: 'member', args: PR_COMMENT }));
+    expect(terminal(messages)).toMatchObject({ code: 'not-approved', reason: 'denied' });
+  }, 10_000);
+
+  it('results come in pages that fit one line, oldest first, with `more` when others wait', async () => {
+    const big = (n: number) => ({
+      approvalId: `appr-${String(n).padStart(4, '0')}`,
+      outcome: 'done',
+      data: { stdout: 'x'.repeat(1_900_000) },
+      finishedAt: `2026-11-10T00:00:0${n}.000Z`,
+    });
+    const approvals = {
+      ...fakeApprovals('denied').approvals,
+      results: () => [big(1), big(2), big(3)],
+    } as unknown as Approvals;
+    await start({ approvals });
+    const reply = terminal(await send({ v: 1, id: 'adm-page', op: 'results', args: {} }));
+    const data = reply.data as { results: { approvalId: string }[]; more: boolean };
+    expect(data.results.map((r) => r.approvalId)).toEqual(['appr-0001', 'appr-0002']);
+    expect(data.more).toBe(true);
   });
 });
