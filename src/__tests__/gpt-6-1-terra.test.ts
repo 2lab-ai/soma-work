@@ -14,7 +14,7 @@
  *      family shorthand lands on the newest `[1m]` row (same rule as `sol` →
  *      `gpt-6.1-sol[1m]`, `astra` → `gpt-6-astra[1m]`).
  *   2. gpt-5.6-terra stays selectable by its literal id; the DEFAULT stays
- *      gpt-5.6-sol and the `gpt` / `luna` aliases do not move.
+ *      gpt-5.6-sol and the `gpt` alias do not move (`luna` follows gpt-6-luna).
  *   3. Bare `gpt-6.1-terra` is a DECLARED policy row (500k / 477k / 450k — the
  *      grok-4.6 numbers for the same window), so it never drops to the 200k
  *      fallback or to a catalog window. The `[1m]` id takes the shared GPT 1M
@@ -87,7 +87,7 @@ describe('gpt-6.1-terra — release wiring', () => {
     // `gpt-6.1` stays on sol — sol is generation 6.1's flagship.
     expect(MODEL_ALIASES['gpt-6.1']).toBe('gpt-6.1-sol[1m]');
     expect(MODEL_ALIASES.sol).toBe('gpt-6.1-sol[1m]');
-    expect(MODEL_ALIASES.luna).toBe('gpt-5.6-luna');
+    expect(MODEL_ALIASES.luna).toBe('gpt-6-luna[1m]');
     expect(MODEL_ALIASES.astra).toBe('gpt-6-astra[1m]');
   });
 

@@ -70,6 +70,8 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
     // `sol` shorthand target, still NOT the default. Fable 5.2 (2026-11-10)
     // leads both claude blocks as the newest fable; `gpt-6.1-terra` and its
     // `[1m]` variant (2026-11-10, the `terra` shorthand target) follow sol.
+    // Sonnet 5.5 / Haiku 5.5 (bare + `[1m]`) and gpt-6-luna (+ `[1m]`) join
+    // on 2026-11-10 as the `sonnet` / `haiku` / `luna` targets (#1120).
     // Historical entries MUST survive every bump.
     expect([...AVAILABLE_MODELS]).toEqual([
       'claude-fable-5-2',
@@ -80,6 +82,8 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'claude-opus-4-8',
       'claude-opus-4-7',
       'claude-opus-4-6',
+      'claude-sonnet-5-5',
+      'claude-haiku-5-5',
       'claude-sonnet-4-6',
       'claude-sonnet-4-5-20250929',
       'claude-opus-4-5-20251101',
@@ -93,6 +97,8 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'claude-opus-4-7[1m]',
       'claude-opus-4-6[1m]',
       'claude-sonnet-4-6[1m]',
+      'claude-sonnet-5-5[1m]',
+      'claude-haiku-5-5[1m]',
       'gpt-5.5',
       'gpt-5.6-sol',
       'gpt-5.6-sol[1m]',
@@ -100,6 +106,8 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'gpt-5.6-luna',
       'gpt-6-astra',
       'gpt-6-astra[1m]',
+      'gpt-6-luna',
+      'gpt-6-luna[1m]',
       'gpt-6.1-sol',
       'gpt-6.1-sol[1m]',
       'gpt-6.1-terra',
@@ -120,7 +128,7 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
     expect(AVAILABLE_MODELS as readonly string[]).toContain('claude-fable-5');
   });
 
-  it('MODEL_ALIASES has exactly the 42 expected key→value mappings', () => {
+  it('MODEL_ALIASES has exactly the 48 expected key→value mappings', () => {
     // `fable` / `fable[1m]` → the newest fable's literal 1M id (Fable 5.2
     // since 2026-11-10). `opus` / `opus[1m]` follow "latest opus" semantics →
     // Opus 5.5, and both land on the `[1m]` variant because that is the id
@@ -135,9 +143,12 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'fable-5-1[1m]': 'claude-fable-5-1[1m]',
       'fable-5': 'claude-fable-5[1m]',
       'fable-5[1m]': 'claude-fable-5[1m]',
-      sonnet: 'claude-sonnet-4-6',
+      // `sonnet` / `haiku` / `luna` follow the llmux alias owners (#1120).
+      sonnet: 'claude-sonnet-5-5[1m]',
+      'sonnet[1m]': 'claude-sonnet-5-5[1m]',
+      'sonnet-5-5': 'claude-sonnet-5-5[1m]',
+      'sonnet-5-5[1m]': 'claude-sonnet-5-5[1m]',
       'sonnet-4.6': 'claude-sonnet-4-6',
-      'sonnet[1m]': 'claude-sonnet-4-6[1m]',
       'sonnet-4.6[1m]': 'claude-sonnet-4-6[1m]',
       'sonnet-4.5': 'claude-sonnet-4-5-20250929',
       opus: 'claude-opus-5-5[1m]',
@@ -147,7 +158,10 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'opus-4.7': 'claude-opus-4-7',
       'opus-4.6': 'claude-opus-4-6',
       'opus-4.5': 'claude-opus-4-5-20251101',
-      haiku: 'claude-haiku-4-5-20251001',
+      haiku: 'claude-haiku-5-5[1m]',
+      'haiku[1m]': 'claude-haiku-5-5[1m]',
+      'haiku-5-5': 'claude-haiku-5-5[1m]',
+      'haiku-5-5[1m]': 'claude-haiku-5-5[1m]',
       'haiku-4.5': 'claude-haiku-4-5-20251001',
       gpt: 'gpt-5.6-sol',
       'gpt5.5': 'gpt-5.5',
@@ -164,7 +178,8 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       // literal id.
       terra: 'gpt-6.1-terra[1m]',
       'terra[1m]': 'gpt-6.1-terra[1m]',
-      luna: 'gpt-5.6-luna',
+      luna: 'gpt-6-luna[1m]',
+      'luna[1m]': 'gpt-6-luna[1m]',
       // gpt-6 (2026-09-07): selectable aliases only — `gpt` above still
       // points at gpt-5.6-sol, so the default is unchanged. Shorthand
       // aliases resolve to the `[1m]` opt-in id (same rule as `opus` /
