@@ -34,7 +34,7 @@ checking and finding no impact.
 
 | Surface | Owns | Update when |
 |---|---|---|
-| `README.md` | Front page: what soma-work does in the order a new reader asks (ask in Slack → pick it up on the dashboard → keep going from the card → watch it work → start on the dashboard → step in → what comes back → run it), with real screenshots/GIFs of the English UI in `assets/readme/en/` (`README.ko.md`: the Korean UI, `assets/readme/ko/`) | The front-page story, quick start or a screenshot changes |
+| `README.md` | Front page: the demo film first (a poster, `assets/readme/en/demo-poster.png`, linking the v0.3 release's film in that language), then what soma-work does in the order a new reader asks (ask in Slack → pick it up on the dashboard → keep going from the card → watch it work → start on the dashboard → step in → what comes back → run it), with real screenshots/GIFs of the English UI in `assets/readme/en/` (`README.ko.md`: the Korean UI, `assets/readme/ko/`) | The front-page story, quick start or a screenshot changes |
 | `README.ko.md` | Korean mirror of README.md | Always together with README.md — the two files move as a pair |
 | `docs/misc/guides/{features,commands,setup,contributing}.md` (+ `.ko.md` pairs) | Feature detail and architecture, the command reference, install/config/deploy/GitHub/troubleshooting, project structure/design/tests | Features, commands, architecture, setup or project structure change — each `.md` moves with its `.ko.md` |
 | `CLAUDE.md` | Agent behavior rules, module layout, TDD/deploy rules, gotchas | Agent-relevant rules or layout change |

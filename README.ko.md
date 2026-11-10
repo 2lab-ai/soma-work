@@ -13,6 +13,10 @@
   <a href="#슬랙에서-시키기">슬랙에서 시키기</a> · <a href="#대시보드에서-확인하기">대시보드에서 확인</a> · <a href="#카드에서-이어서-시키기">이어서 시키기</a> · <a href="#지켜보기">지켜보기</a> · <a href="#대시보드에서-바로-시키기">바로 시키기</a> · <a href="#끼어들기">끼어들기</a> · <a href="#실행하기">실행하기</a> · <a href="#문서">문서</a> · <a href="./README.md">English</a>
 </p>
 
+[![41초 데모 영상: 슬랙에서 시킨 일이 대시보드에 카드로 뜨고, 카드에서 이어서 시키면 작업 목록과 작업 로그가 움직이고, 말로도 일을 맡긴다](assets/readme/ko/demo-poster.png)](https://github.com/2lab-ai/soma-work/releases/download/v0.3/soma-work-v0.3-demo-ko.mp4)
+
+<p align="center"><sub>▶ <a href="https://github.com/2lab-ai/soma-work/releases/download/v0.3/soma-work-v0.3-demo-ko.mp4">데모 영상, 41초</a>: 슬랙에서 시키고, 대시보드에서 보고, 카드에서 이어서 시키고, 말로도 맡깁니다. 실제 세션 하나를 슬랙과 대시보드에서 찍었습니다. (<a href="https://github.com/2lab-ai/soma-work/releases/download/v0.3/soma-work-v0.3-demo-en.mp4">영문 UI</a> · <a href="https://github.com/2lab-ai/soma-work/releases/tag/v0.3">v0.3 릴리스</a>)</sub></p>
+
 ![soma-work 대시보드: 응답 필요·실행 중·완료 세 열에 작업 카드가 놓이고, 카드마다 상태·PR·비용·슬랙 채널이 보인다](assets/readme/ko/board.png)
 
 <sub>실제 대시보드 화면입니다. 이 저장소 카드만 걸러 보여 주고, 비공개 카드는 숨겼습니다.</sub>
