@@ -233,6 +233,26 @@ describe('StreamExecutor — steering join key', () => {
     ]);
   });
 
+  // The host has to know WHICH run reported a frame: a `Send now` puts the next run in the session's
+  // slot while this one is still ending, so "the run that holds the slot" is not it (review #1178).
+  it('stamps the frame with the turn generation this execution runs under', async () => {
+    const onSteerLifecycle = vi.fn();
+    const deps = createDeps(steerStream({ type: 'steer_lifecycle', uuid: 'u-1', phase: 'read' }), {
+      onSteerLifecycle,
+    });
+    const executor = new StreamExecutor(deps);
+
+    await executor.execute({ ...createParams(createSession(), new AbortController()), followupTurnEpoch: 7 });
+    await settle();
+
+    expect(onSteerLifecycle).toHaveBeenCalledWith({
+      sessionKey: SESSION_KEY,
+      uuid: 'u-1',
+      phase: 'read',
+      turnEpoch: 7,
+    });
+  });
+
   it('runs the turn normally when no hook is wired', async () => {
     const deps = createDeps(steerStream({ type: 'steer_lifecycle', uuid: 'u-1', phase: 'observed' }));
     const executor = new StreamExecutor(deps);
