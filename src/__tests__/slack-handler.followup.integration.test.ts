@@ -45,16 +45,8 @@ const SLACK: SlackContext = { user: 'U_OWNER', channel: CHANNEL, threadTs: THREA
 // A VITEST_-prefixed name: the test-env isolation drops any other variable before this file loads.
 const MODEL = process.env.VITEST_FOLLOWUP_MODEL || 'claude-haiku-4-5';
 
-function message(overrides: Record<string, any> = {}): any {
-  return {
-    user: 'U_OWNER',
-    channel: CHANNEL,
-    team: 'T1',
-    ts: '222.333',
-    thread_ts: THREAD_TS,
-    text: '지시',
-    ...overrides,
-  };
+function message(overrides: { ts: string; text: string }): any {
+  return { user: 'U_OWNER', channel: CHANNEL, team: 'T1', thread_ts: THREAD_TS, ...overrides };
 }
 
 describeReal('follow-up queue × a real CLI turn', () => {
@@ -69,7 +61,31 @@ describeReal('follow-up queue × a real CLI turn', () => {
   let answer: string;
   let onEvent: (type: string, event: any) => void;
   const mark = (what: string) => timeline.push({ at: Date.now() - t0, what });
-  const at = (what: string) => timeline.find((e) => e.what === what)?.at;
+  /** Where an entry sits in the ORDER of what happened (-1: it did not). Times are for the printout only. */
+  const position = (what: string) => timeline.findIndex((e) => e.what === what);
+  /**
+   * The row was closed by the CLI's mid-turn read receipt, with the turn still working after it: the host handled
+   * a `read` frame, the row resolved inside that handling, the model went on to another tool call, and only then
+   * did the turn's settlement (`completed`) and its result arrive. Order, not clock: frames drained together can
+   * share a millisecond.
+   */
+  function expectClosedMidTurn(after: string) {
+    const what = timeline.map((e) => e.what);
+    const sent = position(after);
+    const resolved = what.indexOf('row#1 resolved (consumed)', sent);
+    expect(sent, `"${after}" happened`).toBeGreaterThanOrEqual(0);
+    expect(resolved, 'the row resolved after it').toBeGreaterThan(sent);
+    // Inside the host's handling of a `read` frame — not of the turn-end `completed`.
+    expect(what.lastIndexOf('frame steer_lifecycle read', resolved)).toBeGreaterThan(sent);
+    expect(what.indexOf('host handled read', resolved)).toBeGreaterThan(resolved);
+    expect(what.slice(sent, resolved)).not.toContain('frame steer_lifecycle completed');
+    // The turn was not over: the model called another tool after the row closed, before the result.
+    const result = what.indexOf('result', resolved);
+    expect(result, 'the result came after the row resolved').toBeGreaterThan(resolved);
+    expect(what.slice(resolved, result), 'the turn still worked after the row closed').toContain('tool_call');
+  }
+  /** Bumped per scenario: a turn of an earlier scenario that is still running stops at its next event. */
+  let scenario = 0;
   /** Every state the queue's rows went through, in order — a row that went back in line shows twice. */
   let rowStates: string[];
   let lastRowState: Map<string, string>;
@@ -181,11 +197,14 @@ describeReal('follow-up queue × a real CLI turn', () => {
       startWithContinuation: async (text: string) => {
         const turnEpoch = handlerAny.followupDispatcher.liveTurnEpoch(SESSION_KEY);
         const deps = handlerAny.streamExecutor.deps;
+        const mine = scenario;
         let reached = false;
         mark(`turn dispatched (generation ${turnEpoch})`);
         turnAbort = new AbortController();
         const events = real.streamAgentEvents(text, registrySession, turnAbort, cwd, SLACK, SESSION_KEY);
         for await (const event of events as AsyncIterable<any>) {
+          // Another scenario owns the shared timeline now: leave (the generator's cleanup closes the CLI's input).
+          if (mine !== scenario) break;
           if (!reached) {
             reached = true;
             deps.onTurnReachedModel?.({ sessionKey: SESSION_KEY, turnEpoch });
@@ -212,11 +231,21 @@ describeReal('follow-up queue × a real CLI turn', () => {
   afterEach(async () => {
     // A passed test's turn is over and this is a no-op. After a failure or a timeout the CLI may still run:
     // stop it and wait, so its late events cannot reach the next scenario.
+    scenario += 1;
     onEvent = () => {};
     turnAbort?.abort();
-    await Promise.race([turnDone?.catch(() => undefined), new Promise((resolve) => setTimeout(resolve, 10_000))]);
+    const stopped = await Promise.race([
+      (turnDone ?? Promise.resolve()).then(
+        () => true,
+        () => true,
+      ),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 10_000)),
+    ]);
     turnAbort = undefined;
     turnDone = undefined;
+    // Its events can no longer reach the next scenario (`scenario` moved on), but a CLI that will not stop is
+    // a leak worth failing for.
+    if (!stopped) throw new Error('the real CLI turn did not stop within 10 s of its abort');
   });
 
   const OPENING =
@@ -252,15 +281,8 @@ describeReal('follow-up queue × a real CLI turn', () => {
 
     const [row] = queue().list(SESSION_KEY);
     expect(row).toMatchObject({ state: 'resolved', stateReason: 'consumed' });
-    const steered = at('row#1 steered (steered)');
-    const consumed = at('row#1 resolved (consumed)');
-    const result = at('result');
-    expect(steered).toBeDefined();
-    expect(consumed).toBeDefined();
-    expect(result).toBeDefined();
     // Closed while the turn still worked — not at its result.
-    expect(consumed as number).toBeLessThan(result as number);
-    expect(timeline.map((e) => e.what)).toContain('frame steer_lifecycle read');
+    expectClosedMidTurn('user sends a message mid-turn');
     // Whether the model acts on what it read is the model's call, not the queue's: reported, not asserted.
     mark(`model acted on the follow-up: ${/파일 수\s*:\s*4/.test(answer)}`);
     // It ran once: nothing went back in line, and no second turn was started for it.
@@ -304,9 +326,7 @@ describeReal('follow-up queue × a real CLI turn', () => {
 
     expect(outcome).toEqual({ ok: true });
     expect(queue().get(SESSION_KEY, parked.item.id)).toMatchObject({ state: 'resolved', stateReason: 'consumed' });
-    const consumed = at('row#1 resolved (consumed)');
-    const result = at('result');
-    expect(consumed as number).toBeLessThan(result as number);
+    expectClosedMidTurn('user presses Retry on the dashboard mid-turn');
     // From the press on: put back in line, handed to the running turn, read — and never back in line after that.
     expect(rowStates.slice(0, statesAtRetry).pop()).toBe('row#1 uncertain');
     expect(rowStates.slice(statesAtRetry)).toEqual(['row#1 queued', 'row#1 steered', 'row#1 resolved']);
