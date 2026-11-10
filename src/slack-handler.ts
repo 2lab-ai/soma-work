@@ -482,7 +482,7 @@ export class SlackHandler {
   /**
    * Steered messages the model has read (`read`) in a turn that is not over
    * yet, by steer uuid: `key` is the queue bucket the row lives in, `turnEpoch`
-   * the run that held the slot at the read. Until that turn ends, two things
+   * the run that read it (the generation its frame carried; the slot's, without one). Until that turn ends, two things
    * are still open for such a message: its temp files stay on disk (the turn
    * opens them from the paths its prompt carries), and the turn's settlement
    * may still say it was discarded, which puts the row back in line. Emptied
@@ -962,6 +962,7 @@ export class SlackHandler {
         sessionKey: string;
         uuid: string;
         phase: 'started' | 'read' | 'completed' | 'cancelled' | 'discarded' | 'observed';
+        turnEpoch?: number;
       }) => this.settleSteeredFollowup(args),
       // A deploy turn's `release_notes` directive goes where the operator mapped
       // that repo + branch (SOMA_RELEASE_NOTES_CHANNELS); the executor asks only
@@ -5709,6 +5710,8 @@ export class SlackHandler {
     sessionKey: string;
     uuid: string;
     phase: 'started' | 'read' | 'completed' | 'cancelled' | 'discarded' | 'observed';
+    /** The generation of the run that reported the frame (the executor's own), when it has one. */
+    turnEpoch?: number;
   }): Promise<void> {
     const { sessionKey, uuid, phase } = args;
     if (phase === 'started' || phase === 'observed') return;
@@ -5774,7 +5777,7 @@ export class SlackHandler {
       if (phase === 'read') {
         // The turn still works and opens the files later: they stay until it is
         // over. A `read` that moved nothing (the opening message) touches no file.
-        if (settled.ok) await this.recordReadSteer(sessionKey, queueKey, uuid);
+        if (settled.ok) await this.recordReadSteer(sessionKey, queueKey, uuid, args.turnEpoch);
       } else if (phase === 'completed' && settled.ok) await this.finishConsumedSteer(sessionKey, uuid);
       else await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
       // NOT awaited: the executor awaits this hook inside its stream loop, so a
@@ -6395,9 +6398,11 @@ export class SlackHandler {
    * the files. Takes the recorded words, so a later receipt records nothing
    * twice.
    */
-  private async recordReadSteer(sessionKey: string, queueKey: string, uuid: string): Promise<void> {
+  private async recordReadSteer(sessionKey: string, queueKey: string, uuid: string, turnEpoch?: number): Promise<void> {
     const instruction = this.followupSteerInstructions?.get(uuid);
     this.followupSteerInstructions?.delete(uuid);
+    // Whose read it is: the run that reported it. The slot is only the fallback —
+    // a `Send now` puts the next run there while the reading one is still ending.
     const slotKey = this.boundFollowupSlot(sessionKey) ?? sessionKey;
     // Never rejects (`recordSteeredInstruction` reports its own failure).
     const recording = instruction
@@ -6406,7 +6411,7 @@ export class SlackHandler {
     this.followupReadSteers ??= new Map();
     this.followupReadSteers.set(uuid, {
       key: queueKey,
-      turnEpoch: this.followupDispatcher?.liveTurnEpoch(slotKey),
+      turnEpoch: turnEpoch ?? this.followupDispatcher?.liveTurnEpoch(slotKey),
       ...(recording ? { recording } : {}),
     });
     await recording;

@@ -4477,6 +4477,64 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
+    // A `read` of run A can reach the host after a `Send now` put run B in the slot (A is still
+    // ending). The frame says which run it came from; the note is A's, and A's end releases it —
+    // tagged with "the run that holds the slot" it would have waited for B to end (review #1178).
+    it('a read that arrives after a replacement turn took the slot still belongs to the turn that read it', async () => {
+      const { uuid, settle, order } = await steerWithFile('A가 읽은 지시');
+      const epochA = handlerAny.followupDispatcher.liveTurnEpoch(SESSION_KEY);
+      expect(typeof epochA).toBe('number');
+      vi.spyOn(handlerAny.followupDispatcher, 'liveTurnEpoch').mockReturnValue(epochA + 1); // run B holds the slot
+
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'read', turnEpoch: epochA });
+
+      expect(handlerAny.followupReadSteers.get(uuid).turnEpoch).toBe(epochA);
+      await handlerAny.sweepSteeredFollowups(SESSION_KEY); // A's end, B still live
+      expect(order).toEqual(['capture', 'record', 'cleanup']);
+      expect(handlerAny.followupReadSteers.size).toBe(0);
+
+      vi.mocked(handlerAny.followupDispatcher.liveTurnEpoch).mockRestore();
+      await settle();
+    });
+
+    // Bot-thread migration: the run holds its slot under the SOURCE key while the session — and the
+    // steered row — live under the work-thread key the executor speaks. The read note has to find
+    // the live run through that binding, or a sweep of the work-thread bucket deletes files the
+    // migrated turn still opens (review #1178).
+    it("under a bot-thread migration a live sweep of the row's bucket keeps the files the turn read", async () => {
+      const WORK_KEY = 'C123:999.000';
+      const processed = [{ name: 'shot.png', path: '/tmp/slack-file-9-shot.png', isImage: true }];
+      const cleanupTempFiles = vi.fn().mockResolvedValue(undefined);
+      handlerAny.fileHandler = { formatFilePrompt: vi.fn().mockResolvedValue('t'), cleanupTempFiles };
+      const { settle } = await startBusyTurn(); // the slot is under SESSION_KEY (the source key)
+      handlerAny.followupMigration = {
+        bySlot: new Map([[SESSION_KEY, WORK_KEY]]),
+        byCanonical: new Map([[WORK_KEY, SESSION_KEY]]),
+      };
+      // The steered row of the work-thread bucket, as a reply in the work thread leaves it.
+      const queue = handlerAny.getFollowupQueue();
+      const parked = queue.enqueue(
+        WORK_KEY,
+        message({ ts: '999.111', thread_ts: '999.000', text: '이관 후 지시' }),
+        {},
+      );
+      queue.steer(WORK_KEY, parked.item.id, parked.item.epoch, 'uuid-migrated');
+      handlerAny.followupSteerFiles = new Map([['uuid-migrated', processed]]);
+
+      // The executor reports under the canonical key, with no generation of its own on the frame.
+      await lifecycle()({ sessionKey: WORK_KEY, uuid: 'uuid-migrated', phase: 'read' });
+
+      expect(queue.get(WORK_KEY, parked.item.id).state).toBe('resolved');
+      await handlerAny.sweepSteerBuckets(WORK_KEY);
+      await handlerAny.sweepSteerBuckets(SESSION_KEY);
+      expect(cleanupTempFiles).not.toHaveBeenCalled();
+
+      await settle(); // the turn ends with no settlement: its sweep releases what it read
+      await vi.waitFor(() => expect(cleanupTempFiles).toHaveBeenCalledTimes(1));
+      expect(cleanupTempFiles).toHaveBeenCalledWith(processed);
+      expect(queue.get(WORK_KEY, parked.item.id).state).toBe('resolved');
+    });
+
     // The read is recorded (its files copied) while the sweep of an ended turn may already run:
     // the files are deleted only after that copy finished (review #1178).
     it("a sweep waits for a read message's recording before it deletes the files", async () => {
