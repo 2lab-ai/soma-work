@@ -21316,13 +21316,15 @@ async function steerAct(op, id, text) {
 // reader chose. The choice is saved per device; the default never is. A folded CRON
 // lane still shows every job whose run waits for a reply (never hidden behind a fold).
 // Both are @2lab.ai/ui <ui-agent-queue> (re-agent-queue): its own 펼치기 / 접기 toggle in
-// each section's head row asks through ui-collapse; the page decides and hands the state
-// back as data.collapsed (paintCapacity, syncCronLane).
+// each section's head row — and, for capacity, a press on its folded lines or its head row —
+// asks through ui-collapse; the page decides and hands the state back as data.collapsed
+// (paintCapacity, syncCronLane).
 var SEC_OPEN_QUERY = '(min-width: 840px) and (min-height: 1000px)';
 var _secMql = window.matchMedia ? window.matchMedia(SEC_OPEN_QUERY) : null;
-// Capacity v2 unfolded is taller than any common first screen (two measures, lanes and
-// per-account bars per provider; at 1440×1400 it pushed the first board card to 1670px).
-// So it starts folded everywhere — its chips carry both measures as count and % — and
+// Capacity unfolded is taller than any common first screen (a detail card per provider with
+// its accounts and a 7-day forecast under each line; v2 at 1440×1400 pushed the first board
+// card to 1670px). So it starts folded everywhere — its lines carry the measure as count and
+// %, the next gain and notes — and
 // the reader's unfold choice persists per device (trinity chip confirm, fable/astra).
 var _secChoice = {};           // this page's choices, even when storage refuses the write
 var _cronLaneRevealed = false; // a deep link into a folded lane opens it for this page load
@@ -22282,8 +22284,10 @@ function cronCountdownHtml(atMs) {
 // <ui-agent-queue> with providers only. The server (capacity-view.ts) counts each provider in
 // max accounts' worth (tier-weighted) and replays every account's resets in time order, in
 // epoch SECONDS: the element is told so (timeUnit 's') and converts once. capData maps the
-// view; the element draws the folded chips, the bars, the disclosure line, the account marks
-// and their card, the 7-day timeline, ticks every countdown, and speaks a pool's change.
+// view; the element (@2lab.ai/ui 0.42.0) draws one line per provider — name, ink meter, left /
+// total, %, the next gain, notes in words — the same lines folded and unfolded, and unfolded a
+// detail card under each (the disclosure, the account marks and their card, the 7-day step
+// forecast); it ticks every countdown and speaks a pool's change.
 var CAP_TIERS = { 'claude-max-5x': { short: 'x5', label: 'Max x5' }, 'claude-max-20x': { short: 'x20', label: 'Max x20' }, 'chatgpt-pro-200': { short: '$200', label: 'Pro ($200)' }, 'chatgpt-pro-500': { short: '$500', label: 'Pro ($500)' } };
 var _capacityView = null;
 var _capacityLoadSeq = 0; // a save-mode change bumps it: a capacity read started before it is dropped
@@ -25999,7 +26003,7 @@ paintLangToggle();
 setInterval(loadSessions, 30000);
 // CRON lane jobs and the llmux capacity view poll on their own cadence (the
 // server caches llmux for 30s); capacity is handed again every 30s, so its element
-// re-lays out once a minute and the timeline's markers slide toward now (it ticks
+// re-lays out once a minute and the forecast's steps slide toward now (it ticks
 // its countdowns itself). A hidden tab polls nothing and catches up when shown.
 loadCronJobs();
 loadCapacity();
@@ -26011,7 +26015,7 @@ document.addEventListener('visibilitychange', function() {
 });
 // The capacity section sits above the board, outside #inbox: no observer sees the
 // board move when it appears, folds or changes height, so the shift cache learns it
-// here. (Its element sizes its own timeline on its own width — a docked session panel
+// here. (Its element sizes its own forecast on its own width — a docked session panel
 // narrows the page without a window resize, SSOT 2026-10-24.)
 (function initCapacityResize() {
   var cap = document.getElementById('capacity');
