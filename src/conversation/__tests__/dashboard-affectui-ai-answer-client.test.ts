@@ -47,6 +47,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { nextActionSeams } from '../__fixtures__/viewer-scope';
 import { UI_LIB_FILE, uiLibDistDir } from '../ui-lib';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
@@ -85,6 +86,7 @@ function clientVar(name: string): string {
 }
 /** `__set(name, value)` reassigns an injected binding (e.g. `_panelGen`) after load, as the page would. */
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
+  inject = { ...nextActionSeams(fns, inject), ...inject };
   const names = Object.keys(inject);
   const setter = '__set: function(n, v) { eval(n + " = v"); }';
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${[...fns, setter].join(', ')} };`;
