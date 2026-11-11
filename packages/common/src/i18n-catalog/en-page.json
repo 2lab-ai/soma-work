@@ -1559,5 +1559,7 @@
   "⚖️ 걸린 것 — ": "⚖️ At stake — ",
   "↩️ 되돌릴 수 있음": "↩️ Can be undone",
   "⚠️ **되돌릴 수 없음**": "⚠️ **Cannot be undone**",
-  "⚠️ 되돌릴 수 없음": "⚠️ Cannot be undone"
+  "⚠️ 되돌릴 수 없음": "⚠️ Cannot be undone",
+  "다음 행동": "Next actions",
+  "다음 행동을 보냈어요": "Sent the next action"
 }
