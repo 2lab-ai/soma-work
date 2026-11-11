@@ -36,3 +36,16 @@ export function normalizeTmpPath(inputPath: string): string {
   }
   return '/tmp' + rest;
 }
+
+/**
+ * A folder parked for its background delete (SSOT 2026-11-10 T1): `.<name>.removing-<ms>-<uuid>` beside where it was.
+ * The session registry moves a closed session's folder to this name at once and deletes the tree off the event loop;
+ * a scan of live folders (who has a branch checked out) skips it.
+ */
+export function parkedRemovalName(base: string, atMs: number, id: string): string {
+  return `.${base}.removing-${atMs}-${id}`;
+}
+const PARKED_REMOVAL = /^\..+\.removing-\d+-[0-9a-f-]{36}$/;
+export function isParkedRemoval(name: string): boolean {
+  return PARKED_REMOVAL.test(name);
+}
