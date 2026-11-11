@@ -7668,7 +7668,7 @@ describe('SlackHandler — follow-up queue host', () => {
    * The card shows both asks at once: the goal's cap decision makes the board
    * read NEEDS YOU, and the question the model asked earlier is still recorded
    * on the session — idle, because the turns that ran after it lowered the
-   * open-choice bit (fable-m5max dev, sessions 1792795612.514029 and
+   * open-choice bit (owner-mac dev, sessions 1792795612.514029 and
    * 1793067439.273589). Answering it must run the answer as the user's turn,
    * which ends the cap round, so the goal goes on from there.
    */

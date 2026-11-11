@@ -102,7 +102,7 @@ describe('resumeActiveGoals (T1)', () => {
    * SSOT 2026-11-02 (T3). A goal session waiting on its user's answer is not a
    * stale turn: no turn has to run for the question to stay open. Forcing it
    * idle let the loop run ten continuations over the unanswered question until
-   * the cap decision asked "keep going?" next to it (fable-m5max dev,
+   * the cap decision asked "keep going?" next to it (owner-mac dev,
    * 1792795612.514029: asked 02:32Z, restart 04:12Z, cap 04:32Z).
    */
   it('keeps a session waiting on its question waiting — the goal goes on once the user answers', () => {
@@ -215,7 +215,7 @@ describe('resumeActiveGoals (T1)', () => {
   /**
    * 2026-11-02 restart incident. Before the "no output is no evidence" rule a
    * restart-interrupted turn was judged "the same failure" and the goal
-   * stopped on a stall question (fable-m5max dev: 1793150219.639969 stalled at
+   * stopped on a stall question (owner-mac dev: 1793150219.639969 stalled at
    * 05:08:54Z, then every later restart held it as "waiting on its question").
    * A stall opened on no turn text is not a real stall: the restart ends it,
    * withdraws its question, and resumes the goal.

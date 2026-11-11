@@ -5,7 +5,7 @@
  * goal을 완료 하기위해 마지막으로 유저가 지시할만한 대표 행동 3개만 꼽고 그것을 유저에게
  * 질문 하도록 처리").
  *
- * Evidence behind it (fable-m5max dev logs, 2026-06-17 → 2026-11-02): 49 goal
+ * Evidence behind it (owner-mac dev logs, 2026-06-17 → 2026-11-02): 49 goal
  * runs reached 10/10; 20 of them ended in 3+ continuation turns under two
  * minutes each, the model restating "still waiting on you". The evaluator never
  * saw its own previous verdict, so it could not tell a repeat from new work.
@@ -477,7 +477,7 @@ describe('review fixes (trinity round 2)', () => {
 });
 
 /**
- * 2026-11-02 restart incident (fable-m5max dev, restarts 05:08Z / 05:44Z /
+ * 2026-11-02 restart incident (owner-mac dev, restarts 05:08Z / 05:44Z /
  * 06:23Z): a restart interrupts the running turns, which leaves them with no
  * text. The restart kick then judged "(no assistant text)" against a previous
  * verdict that said the same — the evaluator answered sameAsPrevious 0.96–0.97

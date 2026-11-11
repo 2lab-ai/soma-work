@@ -201,7 +201,7 @@ describe('lockdown isolation invariants', () => {
     // that triggers the rule under that user.
     const syntheticCmdFor: Record<string, { command: string; ctx?: { userId?: string } }> = {
       'cross-user-access': {
-        command: 'cat /tmp/U09F1M5MML1/file.txt',
+        command: 'cat /tmp/U0TESTUSER1/file.txt',
         ctx: { userId: 'U094E5L4A15' },
       },
       'ssh-remote': { command: 'ssh user@host ls' },
@@ -232,7 +232,7 @@ describe('lockdown isolation invariants', () => {
     // lockdown matches MUST degrade to 'allow' here. The parent process denies
     // them in the deny tier of evaluateToolPolicy (`isCrossUserAccess` always,
     // `isSshCommand` for non-admins), before the permission mode is consulted.
-    const crossUserCmd = 'cat /tmp/U09F1M5MML1/file.txt';
+    const crossUserCmd = 'cat /tmp/U0TESTUSER1/file.txt';
     expect(bypassBashPermissionDecision(crossUserCmd)).toEqual({
       decision: 'allow',
       matchedRuleIds: [],

@@ -27,7 +27,9 @@ jobs:
   scan:
     # Same allow-list guard as `.github/workflows/ci.yml`, and this job has the
     # larger stake of the two. The repository is public, `pull_request` fires
-    # for forks, and the scan step is handed `secrets.SANITIZE_PATTERNS` while
+    # for forks, and the scan step is handed the pattern secrets
+    # (`SANITIZE_PATTERNS_SHARED`, the list 2lab-ai/llmux holds too, and this
+    # repository's own `SANITIZE_PATTERNS`) while
     # the script it runs (`scripts/sanitize-scan.sh`) is a file the pull request can
     # rewrite. Without this guard a fork PR could replace that script with one
     # that prints the secret, and the gate that exists to keep patterns out of
@@ -58,5 +60,6 @@ jobs:
           fetch-tags: true
       - name: Full-history forbidden-pattern scan
         env:
+          SANITIZE_PATTERNS_SHARED: ${{ secrets.SANITIZE_PATTERNS_SHARED }}
           SANITIZE_PATTERNS: ${{ secrets.SANITIZE_PATTERNS }}
         run: bash scripts/sanitize-scan.sh

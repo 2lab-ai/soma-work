@@ -419,7 +419,7 @@ export class GoalLoopController {
     //    cut short leaves none, and an empty summary is no evidence either way:
     //    the evaluator can only restate the last gap — and, shown its previous
     //    "no output" verdict, called the silence "the same failure" and stopped
-    //    every goal a restart interrupted (2026-11-02, fable-m5max dev, restarts
+    //    every goal a restart interrupted (2026-11-02, owner-mac dev, restarts
     //    05:08Z/05:44Z/06:23Z/06:51Z/07:38Z). With no earlier gap there is
     //    nothing to reuse: the eval runs as before #746, and with no previous
     //    verdict it cannot stall.

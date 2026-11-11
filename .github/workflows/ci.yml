@@ -25,7 +25,7 @@ permissions:
 jobs:
   quality-gates:
     # GitHub-hosted: the repository is public, so standard hosted runners are free and unmetered.
-    # Until 2026-10-28 this job ran on `[self-hosted, fable-m5max]` — a maintainer's workstation,
+    # Until 2026-10-28 this job ran on a self-hosted maintainer's workstation,
     # one job at a time, sharing its CPUs with unrelated builds. On 2026-10-27 the three PR gates
     # asked that one machine for 3,049 runner-minutes in a 1,440-minute day and the queue reached
     # 70 jobs. (It moved there on 2026-08-03 because of an org billing block while the repo was
