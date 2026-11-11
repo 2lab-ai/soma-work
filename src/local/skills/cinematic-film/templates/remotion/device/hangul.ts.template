@@ -1,0 +1,62 @@
+// Typing as keys: a text becomes the key presses of an iPhone keyboard (Korean 2-set, English, 123) and the text
+// shown after each press, so a mock composer can grow jamo by jamo and the keyboard can light the key that made it.
+const L = 'ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ';
+const V = 'ㅏㅐㅑㅒㅓㅔㅕㅖㅗㅘㅙㅚㅛㅜㅝㅞㅟㅠㅡㅢㅣ';
+const T = ['', 'ㄱ', 'ㄲ', 'ㄳ', 'ㄴ', 'ㄵ', 'ㄶ', 'ㄷ', 'ㄹ', 'ㄺ', 'ㄻ', 'ㄼ', 'ㄽ', 'ㄾ', 'ㄿ', 'ㅀ', 'ㅁ', 'ㅂ', 'ㅄ', 'ㅅ', 'ㅆ', 'ㅇ', 'ㅈ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'];
+const VK: Record<string, string> = { ㅘ: 'ㅗㅏ', ㅙ: 'ㅗㅐ', ㅚ: 'ㅗㅣ', ㅝ: 'ㅜㅓ', ㅞ: 'ㅜㅔ', ㅟ: 'ㅜㅣ', ㅢ: 'ㅡㅣ' };
+const TK: Record<string, string> = { ㄳ: 'ㄱㅅ', ㄵ: 'ㄴㅈ', ㄶ: 'ㄴㅎ', ㄺ: 'ㄹㄱ', ㄻ: 'ㄹㅁ', ㄼ: 'ㄹㅂ', ㄽ: 'ㄹㅅ', ㄾ: 'ㄹㅌ', ㄿ: 'ㄹㅍ', ㅀ: 'ㄹㅎ', ㅄ: 'ㅂㅅ' };
+// Shifted jamo: the base key pressed with shift.
+export const SHIFTED: Record<string, string> = { ㄲ: 'ㄱ', ㄸ: 'ㄷ', ㅃ: 'ㅂ', ㅆ: 'ㅅ', ㅉ: 'ㅈ', ㅒ: 'ㅐ', ㅖ: 'ㅔ' };
+const syl = (l: number, v: number, t: number) => String.fromCharCode(0xac00 + (l * 21 + v) * 28 + t);
+
+export type Layout = 'ko' | 'en' | 'num';
+export type Press = { key: string; layout: Layout; shift: boolean; text: string };
+
+const NUM = '1234567890-/:;()$&@".,?!\'';
+const layoutOf = (ch: string): Layout => (/[a-zA-Z]/.test(ch) ? 'en' : NUM.includes(ch) ? 'num' : 'ko');
+
+/** The presses that type `text`, each with the text visible after it (Hangul composes in place). */
+export function presses(text: string): Press[] {
+  const out: Press[] = [];
+  let shown = '';
+  let layout: Layout = 'ko';
+  for (const ch of text) {
+    const code = ch.charCodeAt(0);
+    if (code >= 0xac00 && code <= 0xd7a3) {
+      const s = code - 0xac00, l = Math.floor(s / 588), v = Math.floor((s % 588) / 28), t = s % 28;
+      const keys: Array<{ k: string; show: string }> = [];
+      const lj = L[l];
+      keys.push({ k: lj, show: lj });
+      const vj = V[v];
+      const vk = VK[vj] || vj;
+      // Each vowel key: the syllable with the vowel typed so far.
+      if (vk.length === 2) {
+        const v1 = V.indexOf(vk[0]);
+        keys.push({ k: vk[0], show: syl(l, v1, 0) });
+      }
+      keys.push({ k: vk[vk.length - 1], show: syl(l, v, 0) });
+      if (t) {
+        const tj = T[t];
+        const tk = TK[tj] || tj;
+        if (tk.length === 2) keys.push({ k: tk[0], show: syl(l, v, T.indexOf(tk[0])) });
+        keys.push({ k: tk[tk.length - 1], show: syl(l, v, t) });
+      }
+      if (layout !== 'ko') { layout = 'ko'; }
+      for (const { k, show } of keys) {
+        const base = SHIFTED[k] || k;
+        out.push({ key: base, layout: 'ko', shift: !!SHIFTED[k], text: shown + show });
+      }
+      shown += ch;
+    } else if (ch === ' ') {
+      shown += ch; out.push({ key: 'space', layout, shift: false, text: shown });
+    } else if (ch === '\n') {
+      shown += ch; out.push({ key: 'return', layout, shift: false, text: shown });
+    } else {
+      const lay = layoutOf(ch);
+      layout = lay;
+      shown += ch;
+      out.push({ key: lay === 'en' ? ch.toLowerCase() : ch, layout: lay, shift: lay === 'en' && ch !== ch.toLowerCase(), text: shown });
+    }
+  }
+  return out;
+}

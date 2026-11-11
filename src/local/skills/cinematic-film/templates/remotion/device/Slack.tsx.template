@@ -1,0 +1,68 @@
+import React from 'react';
+import { FONT, SCREEN } from './tokens';
+
+// A Slack-for-iPhone mock in dark mode (the one screen we do not record): a channel or a thread, messages, and the
+// composer. Everything is a pure function of its props; the film drives the props frame by frame.
+export const SK = { bg: '#1a1d21', bar: '#1f2226', line: 'rgba(255,255,255,0.08)', text: '#d1d2d3', name: '#f8f8f8', dim: '#9a9b9e', link: '#1d9bd1', mention: 'rgba(29,155,209,0.18)', green: '#007a5a' };
+export type Msg = { who: 'z' | 'bot'; time: string; body: React.ReactNode; replies?: string; o?: number; dy?: number };
+// Who the two speakers are: the person (an initial) and the app (its display name). Set once per film.
+export const PEOPLE = { me: 'Z', meInitial: 'Z', bot: 'Agent' };
+
+const Avatar: React.FC<{ who: 'z' | 'bot' }> = ({ who }) => (
+  <div style={{ width: 38, height: 38, borderRadius: 9, flex: 'none', background: who === 'z' ? '#3b3f46' : '#0f0f10', border: who === 'bot' ? '1px solid rgba(255,255,255,0.14)' : undefined, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', font: `700 17px ${FONT.ui}` }}>
+    {who === 'z' ? PEOPLE.meInitial : (
+      <svg width="20" height="20" viewBox="0 0 20 20">{[[2, 2, 1], [11, 2, 0.55], [2, 11, 0.55], [11, 11, 0.85]].map(([x, y, o], i) => <rect key={i} x={x} y={y} width="7" height="7" rx="1.6" fill="#fff" opacity={o} />)}</svg>
+    )}
+  </div>
+);
+export const Message: React.FC<{ m: Msg }> = ({ m }) => (
+  <div style={{ display: 'flex', gap: 10, padding: '10px 16px', opacity: m.o ?? 1, transform: `translateY(${m.dy ?? 0}px)` }}>
+    <Avatar who={m.who} />
+    <div style={{ minWidth: 0, flex: 1 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+        <span style={{ font: `700 15.5px ${FONT.ui}`, color: SK.name }}>{m.who === 'z' ? PEOPLE.me : PEOPLE.bot}</span>
+        {m.who === 'bot' && <span style={{ font: `600 10px ${FONT.ui}`, color: SK.dim, background: 'rgba(255,255,255,0.1)', borderRadius: 3, padding: '1px 4px' }}>AGENT</span>}
+        <span style={{ font: `400 12.5px ${FONT.ui}`, color: SK.dim }}>{m.time}</span>
+      </div>
+      <div style={{ marginTop: 3, font: `400 15.5px/1.42 ${FONT.ui}`, color: SK.text, wordBreak: 'keep-all' }}>{m.body}</div>
+      {m.replies && <div style={{ marginTop: 6, font: `600 13.5px ${FONT.ui}`, color: SK.link }}>{m.replies}</div>}
+    </div>
+  </div>
+);
+export const Mention: React.FC<{ children: React.ReactNode }> = ({ children }) => <span style={{ color: SK.link, background: SK.mention, borderRadius: 3, padding: '0 2px' }}>{children}</span>;
+
+export const SlackHeader: React.FC<{ title: string; sub: string; thread?: boolean }> = ({ title, sub, thread }) => (
+  <div style={{ position: 'absolute', left: 0, top: 0, width: SCREEN.w, height: SCREEN.status + 52, background: SK.bar, borderBottom: `0.5px solid ${SK.line}`, zIndex: 20 }}>
+    <svg style={{ position: 'absolute', left: 14, top: SCREEN.status + 14 }} width="12" height="20" viewBox="0 0 12 20" fill="none" stroke="#e8e8e8" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 2 2 10l8 8" /></svg>
+    <div style={{ position: 'absolute', left: 0, right: 0, top: SCREEN.status + 6, textAlign: 'center' }}>
+      <div style={{ font: `700 16.5px ${FONT.ui}`, color: SK.name }}>{thread ? '스레드' : title}</div>
+      <div style={{ font: `400 12px ${FONT.ui}`, color: SK.dim, marginTop: 2 }}>{thread ? title : sub}</div>
+    </div>
+  </div>
+);
+
+export const Composer: React.FC<{ text: string; placeholder: string; caret: boolean; bottom: number; focused: boolean }> = ({ text, placeholder, caret, bottom, focused }) => (
+  <div style={{ position: 'absolute', left: 0, width: SCREEN.w, bottom, background: SK.bar, borderTop: `0.5px solid ${SK.line}`, padding: '10px 12px 12px', zIndex: 25 }}>
+    <div style={{ minHeight: 22, maxHeight: 132, overflow: 'hidden', font: `400 16px/1.38 ${FONT.ui}`, color: text ? SK.text : SK.dim, wordBreak: 'keep-all', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+      <div>{text ? renderMention(text) : placeholder}{focused && caret && <span style={{ display: 'inline-block', width: 2, height: 19, background: SK.link, verticalAlign: 'text-bottom', marginLeft: 1 }} />}</div>
+    </div>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 18, marginTop: 10, color: '#c9cacc' }}>
+      <div style={{ width: 28, height: 28, borderRadius: 14, background: 'rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', font: `400 22px ${FONT.ui}` }}>+</div>
+      <span style={{ font: `500 18px ${FONT.ui}` }}>Aa</span>
+      <span style={{ font: `500 18px ${FONT.ui}` }}>@</span>
+      <span style={{ font: `500 18px ${FONT.ui}` }}>☺</span>
+      <div style={{ flex: 1 }} />
+      <div style={{ width: 34, height: 30, borderRadius: 7, background: text ? SK.green : 'rgba(255,255,255,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <svg width="16" height="16" viewBox="0 0 16 16"><path d="M1.5 14.5 15 8 1.5 1.5 1.5 6.6 10 8 1.5 9.4z" fill={text ? '#fff' : '#77787a'} /></svg>
+      </div>
+    </div>
+  </div>
+);
+// "@<bot>" at the start of a typed text renders as a mention chip.
+export const renderMention = (t: string) => { const m = '@' + PEOPLE.bot; return t.startsWith(m) ? <><Mention>{m}</Mention>{t.slice(m.length)}</> : t; };
+
+export const Divider: React.FC<{ label: string }> = ({ label }) => (
+  <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 16px' }}>
+    <div style={{ flex: 1, height: 0.5, background: SK.line }} /><div style={{ font: `600 12px ${FONT.ui}`, color: SK.dim, border: `0.5px solid ${SK.line}`, borderRadius: 12, padding: '3px 10px' }}>{label}</div><div style={{ flex: 1, height: 0.5, background: SK.line }} />
+  </div>
+);

@@ -1,8 +1,8 @@
 ---
 name: cinematic-film
-description: Turn real screen recordings into a cinematic product-ad film — the page on a tilted 3D plane, a shallow depth of field (out-of-focus bokeh with one line sharp), rack focus, beat-synced hard cuts, 1-4-word title cards, grain and vignette, a -14 LUFS mix, then independent review until it ships. Use when asked to make a screen recording look like a product ad, a launch film or a cinematic demo; make-product-demo uses it for the look. Triggers on "cinematic", "시네마틱", "아웃오브포커스", "out-of-focus", "depth of field", "광고 영상처럼", "launch film".
+description: Turn real screen recordings into a cinematic product film, in one of two looks. The plane look — the page on a tilted 3D plane, a shallow depth of field (out-of-focus bokeh with one line sharp), rack focus, beat-synced hard cuts, 1-4-word title cards, grain and vignette. The device look — the real app recorded at a phone viewport and played inside an iPhone mockup on a flat dark stage, with tap discs, a typing keyboard (Hangul jamo by jamo), Safari's bar, native pushes and a chapter caption on the left. Both mix to -14 LUFS and go through independent review until they ship. Use when asked to make a screen recording look like a product ad, a launch film, a cinematic demo or a real-use phone demo; make-product-demo uses it for the look; films built from code go to cinetic. Triggers on "cinematic", "시네마틱", "아웃오브포커스", "out-of-focus", "depth of field", "광고 영상처럼", "launch film", "iPhone mockup", "아이폰 목업", "실사용 데모", "device demo", "phone demo".
 allowed-tools: Read, Grep, Glob, Bash, Write, Edit
-version: 1.0.0
+version: 1.1.0
 ---
 
 # Cinematic film from real screen recordings
@@ -11,6 +11,27 @@ A screen recording looks like a product ad when the screen stops being a flat re
 3D space, tilted back. The camera moves slowly over it. One element is sharp and bright, and the rest of the page falls
 into smooth bokeh. Cuts land on the music's beats, and titles are a few words on black. This skill is that look and
 the pipeline that makes it from real takes. It does not decide what to film; for that, use `make-product-demo`.
+
+## Two looks, and when to use cinetic
+
+| The film | Look |
+| --- | --- |
+| Desktop recordings made to feel like an ad: the page in 3D, one line sharp, the rest in bokeh | **plane** (the rules below) |
+| Real use on a phone: the real app at a phone viewport inside an iPhone mockup, chapter captions on the left | **device** (`references/device-demo.md`) |
+| Built from code, brand and copy (launch film, update video, logo sting, motion design) | not this skill: `cinetic` |
+
+### The device look in short
+
+A flat near-black stage at 60 fps, one phone on the right that does not move while the app is used in it, and a
+caption on the left per chapter (a mono eyebrow `01 / SLACK`, then two lines: ink, then grey). Every tap shows a
+touch disc from the take's markers; typing raises the keyboard and lights each key (Hangul jamo by jamo); an app switch
+or a Safari tab swipe pushes; a jump inside the app fades. Record with `scripts/mobile_capture.cjs` (iPhone viewport,
+device scale 3, 716 css with Safari's bar or 504 css with the keyboard up, markers for taps, swipes and keys), cut with
+`scripts/cut_phone.py`, and build on `templates/remotion/device/` (`Device`, `Safari`, `Keyboard` + `hangul`, `Touch`,
+`Caption`, a `Slack` mock for the one app you cannot record, and `PhoneFilm.example`). Mock only what cannot be
+recorded and say so. The full rules, the measured reference and the pipeline are in `references/device-demo.md`.
+
+The rest of this page is the plane look.
 
 ## The look, as rules
 

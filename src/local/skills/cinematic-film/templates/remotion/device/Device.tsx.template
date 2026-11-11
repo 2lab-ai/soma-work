@@ -1,0 +1,37 @@
+import React from 'react';
+import { BEZEL, FONT, SCREEN } from './tokens';
+
+// The phone: a dark body with a thin rim, black glass round the screen, the Dynamic Island, the status bar and the
+// home indicator. Children are drawn in screen css units (0..393 x 0..852). Transforms only; pure in the frame.
+const Signal: React.FC = () => (
+  <svg width="19" height="12" viewBox="0 0 19 12">{[0, 1, 2, 3].map((i) => <rect key={i} x={i * 5} y={9 - i * 3} width="3.4" height={3 + i * 3} rx="0.9" fill="#fff" />)}</svg>
+);
+const Wifi: React.FC = () => (
+  <svg width="17" height="12" viewBox="0 0 17 12"><path d="M8.5 11.6 6.2 9.2a3.3 3.3 0 0 1 4.6 0zM3.9 6.9a6.6 6.6 0 0 1 9.2 0l-1.6 1.6a4.4 4.4 0 0 0-6 0zM1.6 4.6a9.9 9.9 0 0 1 13.8 0l-1.6 1.6a7.7 7.7 0 0 0-10.6 0z" fill="#fff" /></svg>
+);
+const Battery: React.FC = () => (
+  <svg width="27" height="13" viewBox="0 0 27 13"><rect x="0.5" y="0.5" width="23" height="12" rx="3.6" fill="none" stroke="rgba(255,255,255,0.45)" /><rect x="2.2" y="2.2" width="19.6" height="8.6" rx="2.2" fill="#fff" /><path d="M25 4.3v4.4a2.3 2.3 0 0 0 0-4.4z" fill="rgba(255,255,255,0.45)" /></svg>
+);
+export const StatusBar: React.FC<{ time?: string; tint?: string }> = ({ time = '9:41', tint = 'transparent' }) => (
+  <div style={{ position: 'absolute', left: 0, top: 0, width: SCREEN.w, height: SCREEN.status, background: tint, zIndex: 40 }}>
+    <div style={{ position: 'absolute', left: 0, width: 132, top: 17, textAlign: 'center', font: `600 17px ${FONT.ui}`, color: '#fff', letterSpacing: -0.2 }}>{time}</div>
+    <div style={{ position: 'absolute', right: 30, top: 21, display: 'flex', gap: 6, alignItems: 'center' }}><Signal /><Wifi /><Battery /></div>
+  </div>
+);
+export const HomeBar: React.FC<{ color?: string }> = ({ color = 'rgba(255,255,255,0.86)' }) => (
+  <div style={{ position: 'absolute', left: (SCREEN.w - 140) / 2, bottom: 8, width: 140, height: 5, borderRadius: 3, background: color, zIndex: 60 }} />
+);
+
+export const Device: React.FC<{ cx: number; cy: number; scale: number; children?: React.ReactNode; rot?: string; opacity?: number }> = ({ cx, cy, scale, children, rot = '', opacity = 1 }) => {
+  const W = SCREEN.w + BEZEL * 2, H = SCREEN.h + BEZEL * 2;
+  return (
+    <div style={{ position: 'absolute', left: cx - W / 2, top: cy - H / 2, width: W, height: H, transform: `scale(${scale}) ${rot}`, transformOrigin: '50% 50%', opacity }}>
+      <div style={{ position: 'absolute', inset: -3, borderRadius: 66, background: 'linear-gradient(160deg,#3b3e44,#1b1c1f 40%,#26282c)', boxShadow: '0 30px 80px rgba(0,0,0,0.55)' }} />
+      <div style={{ position: 'absolute', inset: 0, borderRadius: 63, background: '#030304', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.06)' }} />
+      <div style={{ position: 'absolute', left: BEZEL, top: BEZEL, width: SCREEN.w, height: SCREEN.h, borderRadius: 52, overflow: 'hidden', background: '#000', isolation: 'isolate' }}>
+        {children}
+        <div style={{ position: 'absolute', left: (SCREEN.w - 124) / 2, top: 11, width: 124, height: 36, borderRadius: 18, background: '#000', zIndex: 70 }} />
+      </div>
+    </div>
+  );
+};

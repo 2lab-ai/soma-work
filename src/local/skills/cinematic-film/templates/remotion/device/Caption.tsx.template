@@ -1,0 +1,40 @@
+import React from 'react';
+import { interpolate } from 'remotion';
+import { FONT, STAGE } from './tokens';
+
+// The chapter caption on the left: a rule and a mono eyebrow ("01 / SLACK"), then two lines, the first in ink and
+// the second dimmed. A new caption blurs in over 14 frames while the old one blurs out (the phone never moves for it).
+export type Cap = { f: number; eyebrow: string; a: string; b: string };
+const one = (c: Cap, o: number, blur: number, dy: number) => (
+  <div style={{ position: 'absolute', left: 130, top: 430 + dy, opacity: o, filter: blur > 0.05 ? `blur(${blur}px)` : undefined, width: 900 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 16, height: 36 }}>
+      <div style={{ width: 40, height: 1.5, background: STAGE.rule }} />
+      <div style={{ font: `400 19px ${FONT.mono}`, letterSpacing: '0.22em', color: STAGE.eyebrow, textTransform: 'uppercase' }}>{c.eyebrow}</div>
+    </div>
+    <div style={{ marginTop: 22, font: `640 70px/1.06 ${FONT.head}`, letterSpacing: '-0.035em', color: STAGE.ink, whiteSpace: 'pre' }}>{c.a}</div>
+    <div style={{ font: `640 70px/1.06 ${FONT.head}`, letterSpacing: '-0.035em', color: STAGE.dim, whiteSpace: 'pre' }}>{c.b}</div>
+  </div>
+);
+export const Captions: React.FC<{ frame: number; caps: Cap[]; out?: number }> = ({ frame, caps, out }) => {
+  let i = -1;
+  caps.forEach((c, k) => { if (frame >= c.f) i = k; });
+  const nodes: React.ReactNode[] = [];
+  if (i >= 0) {
+    const c = caps[i], d = frame - c.f;
+    const inO = interpolate(d, [0, 14], [0, 1], { extrapolateRight: 'clamp' }), inB = interpolate(d, [0, 14], [10, 0], { extrapolateRight: 'clamp' });
+    let o = inO, b = inB;
+    if (out !== undefined && frame >= out) { o *= interpolate(frame - out, [0, 14], [1, 0], { extrapolateRight: 'clamp' }); b = Math.max(b, interpolate(frame - out, [0, 14], [0, 10], { extrapolateRight: 'clamp' })); }
+    nodes.push(<React.Fragment key={'c' + i}>{one(c, o, b, interpolate(d, [0, 14], [6, 0], { extrapolateRight: 'clamp' }))}</React.Fragment>);
+    if (i > 0 && d < 14) { const p = caps[i - 1]; nodes.push(<React.Fragment key={'p' + i}>{one(p, interpolate(d, [0, 12], [1, 0], { extrapolateRight: 'clamp' }), interpolate(d, [0, 12], [0, 10], { extrapolateRight: 'clamp' }), 0)}</React.Fragment>); }
+  }
+  return <>{nodes}</>;
+};
+// A centred two-line card (the opening and the end): ink line over a dim line, with an optional sub line.
+export const CentreCard: React.FC<{ a: string; b: string; sub?: string; url?: string; o?: number; align?: 'left' | 'centre' }> = ({ a, b, sub, url, o = 1, align = 'centre' }) => (
+  <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: align === 'centre' ? 'center' : 'flex-start', justifyContent: 'center', paddingLeft: align === 'centre' ? 0 : 130, opacity: o }}>
+    <div style={{ font: `640 ${align === 'centre' ? 92 : 70}px/1.06 ${FONT.head}`, letterSpacing: '-0.035em', color: STAGE.ink, textAlign: align === 'centre' ? 'center' : 'left' }}>{a}</div>
+    <div style={{ font: `640 ${align === 'centre' ? 92 : 70}px/1.06 ${FONT.head}`, letterSpacing: '-0.035em', color: STAGE.dim, textAlign: align === 'centre' ? 'center' : 'left' }}>{b}</div>
+    {sub && <div style={{ marginTop: 44, font: `500 30px ${FONT.head}`, color: STAGE.dim, letterSpacing: '-0.01em' }}>{sub}</div>}
+    {url && <div style={{ marginTop: 26, font: `600 30px ${FONT.head}`, color: STAGE.ink }}>{url}</div>}
+  </div>
+);
