@@ -8,18 +8,8 @@ import { parse as parseYaml } from 'yaml';
 const SKILL_ROOT = resolve(__dirname, '..');
 const read = (...p: string[]) => readFileSync(resolve(SKILL_ROOT, ...p), 'utf8');
 
-function parseFrontmatter(md: string): Record<string, string> {
-  const match = md.match(/^---\n([\s\S]*?)\n---/);
-  if (!match) return {};
-  const out: Record<string, string> = {};
-  for (const line of match[1].split('\n')) {
-    const colon = line.indexOf(':');
-    if (colon === -1) continue;
-    const key = line.slice(0, colon).trim();
-    if (key) out[key] = line.slice(colon + 1).trim();
-  }
-  return out;
-}
+const parseFrontmatter = (md: string): Record<string, string> =>
+  parseYaml(md.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? '') ?? {};
 
 describe('cinetic skill — a pinned loader for the upstream skill', () => {
   it('SKILL.md front matter is valid YAML', () => {
@@ -102,9 +92,14 @@ describe('cinetic skill — a pinned loader for the upstream skill', () => {
     env.CINETIC_REPO = `file://${up}`;
     env.CINETIC_PIN = pin2;
     const t = Date.now();
-    expect(await run()).toMatchObject({ code: 0, out: join(dir, 'home', pin2, 'skills', 'cinetic') });
+    // two installers find the stale lock at once: one reclaims it, both finish on the same checkout
+    const root2 = join(dir, 'home', pin2, 'skills', 'cinetic');
+    const [c, d] = await Promise.all([run(), run()]);
+    for (const r of [c, d]) expect(r, r.err).toMatchObject({ code: 0, out: root2 });
     expect(Date.now() - t).toBeLessThan(20_000);
+    expect(readFileSync(join(root2, 'SKILL.md'), 'utf8')).toBe('later\n');
     expect(existsSync(join(dir, 'home', `${pin2}.lock`))).toBe(false);
+    expect(existsSync(join(dir, 'home', `${pin2}.lock.reclaim`))).toBe(false);
     // a pin that is not a sha is refused before anything is removed or cloned
     env.CINETIC_PIN = '../..';
     expect((await run()).code).not.toBe(0);

@@ -20,8 +20,11 @@ if ! finished; then
   tries=0
   until mkdir "$LOCK" 2>/dev/null; do
     owner="$(cat "$LOCK/pid" 2>/dev/null || true)"
-    if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null && mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then
-      rm -rf "$LOCK.stale.$$"
+    if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null && mkdir "$LOCK.reclaim" 2>/dev/null; then
+      # one reclaimer at a time, and only the lock that still names the dead owner: a lock another run has just
+      # taken (with a live pid) is never removed
+      if [ "$(cat "$LOCK/pid" 2>/dev/null || true)" = "$owner" ]; then rm -rf "$LOCK"; fi
+      rmdir "$LOCK.reclaim"
       continue
     fi
     if [ "$tries" -ge 600 ]; then

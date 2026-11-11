@@ -15,18 +15,23 @@ export type Press = { key: string; layout: Layout; shift: boolean; text: string 
 const NUM = '1234567890-/:;()$&@".,?!\'';
 const layoutOf = (ch: string): Layout => (/[a-zA-Z]/.test(ch) ? 'en' : NUM.includes(ch) ? 'num' : 'ko');
 
-/** The presses that type `text`, each with the text visible after it (Hangul composes in place). */
+/** The presses that type `text`, each with the text visible after it (Hangul composes in place). Like the 2-set
+ *  IME, a consonant typed right after a syllable first lands on it as its final (하 + ㅇ = 항, 갈 + ㅂ = 갋) and moves
+ *  to the new syllable when the vowel comes (하이, 갈비). */
 export function presses(text: string): Press[] {
   const out: Press[] = [];
   let shown = '';
   let layout: Layout = 'ko';
+  let prev: { l: number; v: number; t: number } | null = null; // the syllable just typed, if the last char was one
   for (const ch of text) {
     const code = ch.charCodeAt(0);
     if (code >= 0xac00 && code <= 0xd7a3) {
       const s = code - 0xac00, l = Math.floor(s / 588), v = Math.floor((s % 588) / 28), t = s % 28;
       const keys: Array<{ k: string; show: string }> = [];
       const lj = L[l];
-      keys.push({ k: lj, show: lj });
+      // the initial first shows as the last syllable's final (or compound final) when the IME can put it there
+      const asFinal = !prev ? -1 : prev.t === 0 ? T.indexOf(lj) : T.indexOf(Object.keys(TK).find((c) => TK[c] === T[prev!.t] + lj) ?? '');
+      keys.push({ k: lj, show: prev && asFinal > 0 ? `\b${syl(prev.l, prev.v, asFinal)}` : lj });
       const vj = V[v];
       const vk = VK[vj] || vj;
       // Each vowel key: the syllable with the vowel typed so far.
@@ -44,12 +49,17 @@ export function presses(text: string): Press[] {
       if (layout !== 'ko') { layout = 'ko'; }
       for (const { k, show } of keys) {
         const base = SHIFTED[k] || k;
-        out.push({ key: base, layout: 'ko', shift: !!SHIFTED[k], text: shown + show });
+        // a show starting with \b replaces the last syllable instead of following it
+        const text = show.startsWith('\b') ? shown.slice(0, -1) + show.slice(1) : shown + show;
+        out.push({ key: base, layout: 'ko', shift: !!SHIFTED[k], text });
       }
       shown += ch;
+      prev = { l, v, t };
     } else if (ch === ' ' || ch === '\n') {
+      prev = null;
       shown += ch; out.push({ key: ch === ' ' ? 'space' : 'return', layout, shift: false, text: shown });
     } else {
+      prev = null;
       const lay = layoutOf(ch);
       layout = lay;
       shown += ch;

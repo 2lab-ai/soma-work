@@ -66,8 +66,10 @@ const tapsOf = (s: Placed): Tap[] => [
   ...s.ev.filter((e) => e.k === 'swipe').map((e) => ({ f: s.at + e.f, x: SWIPE_X, y: e.y! + SCREEN.status, hold: Math.max(8, (e.to ?? e.f + 30) - e.f), toX: SWIPE_X, toY: e.y! + SCREEN.status - Math.max(-220, Math.min(220, e.dy! * 0.45)) })),
 ];
 
-// afterKeyboard: the shot before had the keyboard up and this one does not (it slides down); kbStays: both have it up
-const ShotScreen: React.FC<{ s: Placed; t: number; freeze?: boolean; afterKeyboard?: boolean; kbStays?: boolean }> = ({ s, t, freeze, afterKeyboard, kbStays }) => {
+// The layout the keyboard is on at the end of a shot (what it shows while it slides away after it).
+const lastLayout = (s: Placed): Layout => keysOf(s).pop()?.layout ?? ((s.kb as Layout) || 'ko');
+// afterKeyboard: the shot before had the keyboard up and this one does not (it slides down, on fromLayout); kbStays: both have it up
+const ShotScreen: React.FC<{ s: Placed; t: number; freeze?: boolean; afterKeyboard?: boolean; fromLayout?: Layout; kbStays?: boolean }> = ({ s, t, freeze, afterKeyboard, fromLayout = 'ko', kbStays }) => {
   const kbUp = s.vh < 700;
   const vid = <div style={{ position: 'absolute', left: 0, top: SCREEN.status, width: SCREEN.w, height: s.vh, overflow: 'hidden' }}><OffthreadVideo src={staticFile(s.src)} style={{ width: SCREEN.w, height: s.vh, display: 'block' }} muted /></div>;
   const downs = kbUp ? keysOf(s) : [];
@@ -79,7 +81,7 @@ const ShotScreen: React.FC<{ s: Placed; t: number; freeze?: boolean; afterKeyboa
   return (
     <div style={{ position: 'absolute', inset: 0, background: '#000' }}>
       {freeze ? <Freeze frame={s.dur - 1}>{vid}</Freeze> : vid}
-      {kbUp || (afterKeyboard && t < 12) ? <Keyboard layout={kbUp ? lay : 'ko'} down={d ? d.key : null} shift={!!d?.shift} y={kbY} /> : null}
+      {kbUp || (afterKeyboard && t < 12) ? <Keyboard layout={kbUp ? lay : fromLayout} down={d ? d.key : null} shift={!!d?.shift} y={kbY} /> : null}
       <SafariBar domain={s.domain || ''} hidden={kbUp} progress={load} />
       <StatusBar tint="#000" />
     </div>
@@ -97,7 +99,7 @@ export const PhoneFilm: React.FC = () => {
   else if (!cur) screen = <ShotScreen s={PLACED[PLACED.length - 1]} t={PLACED[PLACED.length - 1].dur - 1} freeze kbStays />;
   else {
     const i = PLACED.indexOf(cur), t = f - cur.at, tr = INTO[cur.id], prev = i > 0 ? PLACED[i - 1] : null;
-    const node = <Sequence from={cur.at} durationInFrames={cur.dur} layout="none"><ShotScreen s={cur} t={t} afterKeyboard={!!prev && prev.vh < 700 && cur.vh > 700} kbStays={!!prev && prev.vh < 700 && cur.vh < 700} /></Sequence>;
+    const node = <Sequence from={cur.at} durationInFrames={cur.dur} layout="none"><ShotScreen s={cur} t={t} afterKeyboard={!!prev && prev.vh < 700 && cur.vh > 700} fromLayout={prev ? lastLayout(prev) : 'ko'} kbStays={!!prev && prev.vh < 700 && cur.vh < 700} /></Sequence>;
     if (tr && t < tr.dur) {
       const p = interpolate(t, [0, tr.dur], [0, 1], { ...clamp, easing: Easing.bezier(0.3, 0, 0.1, 1) });
       const back = prev ? <ShotScreen s={prev} t={prev.dur - 1} freeze kbStays /> : MOCK ? <MOCK.Scene t={MOCK.dur} /> : null;

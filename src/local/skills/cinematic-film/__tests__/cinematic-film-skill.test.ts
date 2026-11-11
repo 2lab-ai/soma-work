@@ -143,6 +143,10 @@ describe('cinematic-film skill — contract', () => {
       ['a', 'en', true],
       ['.', 'num', false],
     ]);
+    // the 2-set IME puts a consonant on the last syllable first, then moves it when the vowel comes
+    expect(presses('하이').map((p) => p.text)).toEqual(['ㅎ', '하', '항', '하이']);
+    expect(presses('갈비').map((p) => p.text)).toEqual(['ㄱ', '가', '갈', '갋', '갈비']);
+    expect(presses('아빠').map((p) => p.text)).toEqual(['ㅇ', '아', '아ㅃ', '아빠']); // ㅃ is never a final
     const typed = presses('세 줄');
     expect(typed[typed.length - 1]?.text).toBe('세 줄');
   });
