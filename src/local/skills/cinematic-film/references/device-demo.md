@@ -54,7 +54,8 @@ film (a mobile app for coding agents, 49.9 s, 1080p60) and proven on a 2:54 soma
 - Anonymise in the data, not only on screen: rewrite emails in the API responses (`context.route`, JSON bodies)
   and keep a DOM mask (a MutationObserver on the document and every shadow root) as a backstop. A mask that runs on
   an interval lets a real address paint for a frame or two when a sheet opens. Use the product's own setting too
-  when it has one, and turn it back off after.
+  when it has one, and turn it back off after. `maskResponses` buffers each response before it rewrites it, so a
+  stream must pass through: EventSource requests do on their own; name a fetch-read stream with `stream(req)`.
 - Paint dark from the first frame (`html { background: #000 }` before the app's CSS) and turn off the tap highlight
   (`-webkit-tap-highlight-color: transparent`): both otherwise leave one-to-four-frame flashes a reviewer will catch.
   Frames that still flash can be dropped at cut time (`drop` ranges in `shots.json`; the frame before holds).
@@ -65,7 +66,9 @@ film (a mobile app for coding agents, 49.9 s, 1080p60) and proven on a 2:54 soma
    `domain` for Safari's bar, `kb` for the keyboard rows, `load` for Safari's progress bar, `drop` source-time ranges to
    remove, `extra` taps the take did not mark, such as the close that motivates a cut to the board).
 2. `cut_phone.py shots.json --takes takes --public <film>/public --gen <film>/src/phone/shots.gen.ts` cuts 60 fps clips
-   (1180 wide) and writes the shot table with every marker in film frames.
+   (1180 wide) and writes the shot table with every marker in film frames. It cuts only clean takes (stopped with
+   `rec-stop`, never `rec-failed`) and keeps each frame's capture time to the millisecond: ffmpeg reads a lone image
+   at 25 fps, and that time base alone turns a 60 fps scroll into 25 distinct frames a second.
 3. Copy the device templates into the film (`.tsx.template` → `.tsx`), fill the CONFIG block of `PhoneFilm.tsx`
    (opening line, chapter captions placed from shot starts, transitions, end card, an optional mock scene), render
    stills of every chapter and every transition at full size before the first full render.

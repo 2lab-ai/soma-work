@@ -1,21 +1,37 @@
 #!/usr/bin/env bash
 # Fetch the upstream cinetic skill (Leonxlnx/cinetic, MIT) at the pinned commit and print its skill root.
 # The checkout lives outside the plugin (CINETIC_HOME/<pin>, default ~/.cache/cinetic/<pin>): the skill is 18 MB of scripts,
-# references and a Remotion starter, so it is pinned here, not vendored. Re-running is cheap: it only fetches when the
-# pinned commit is not there yet. Override the pin for a trial with CINETIC_PIN=<sha>.
+# references and a Remotion starter, so it is pinned here, not vendored. Re-running is cheap: a finished checkout is
+# returned at once. Override the pin for a trial with CINETIC_PIN=<sha>; CINETIC_REPO points at a mirror (or a test fixture).
 set -euo pipefail
 PIN="${CINETIC_PIN:-f4bbfc844877891fe92279d47b7874fb44d485ae}"
 REPO="${CINETIC_REPO:-https://github.com/Leonxlnx/cinetic.git}"
+[[ "$PIN" =~ ^[0-9a-f]{7,40}$ ]] || { echo "cinetic: CINETIC_PIN must be a commit sha, got '$PIN'" >&2; exit 1; }
+BASE="${CINETIC_HOME:-$HOME/.cache/cinetic}"
 # one checkout per pin: a trial pin never swaps the files under a skill root another run already got
-DIR="${CINETIC_HOME:-$HOME/.cache/cinetic}/$PIN"
-if [ ! -d "$DIR/.git" ]; then
-  mkdir -p "$(dirname "$DIR")"
-  git clone --quiet --filter=blob:none --no-checkout "$REPO" "$DIR"
-fi
-if ! git -C "$DIR" cat-file -e "${PIN}^{commit}" 2>/dev/null; then
-  git -C "$DIR" fetch --quiet origin
-fi
-git -C "$DIR" -c advice.detachedHead=false checkout --quiet "$PIN"
+DIR="$BASE/$PIN"
 ROOT="$DIR/skills/cinetic"
+finished() { [ -f "$DIR/.cinetic-ok" ]; }
+if ! finished; then
+  mkdir -p "$BASE"
+  # one installer per pin at a time: a second first run waits for the first instead of cloning into the same directory
+  LOCK="$DIR.lock"
+  tries=0
+  until mkdir "$LOCK" 2>/dev/null; do
+    if [ "$tries" -ge 600 ]; then
+      echo "cinetic: $LOCK has been held for 2 minutes; remove it if no install is running" >&2
+      exit 1
+    fi
+    sleep 0.2
+    tries=$((tries + 1))
+  done
+  trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
+  if ! finished; then
+    rm -rf "$DIR" # a checkout without the finished mark is an interrupted install: start it over
+    git clone --quiet --filter=blob:none --no-checkout "$REPO" "$DIR"
+    git -C "$DIR" -c advice.detachedHead=false checkout --quiet "$PIN"
+    touch "$DIR/.cinetic-ok"
+  fi
+fi
 [ -f "$ROOT/SKILL.md" ] || { echo "cinetic: $ROOT/SKILL.md missing at $PIN" >&2; exit 1; }
 echo "$ROOT"

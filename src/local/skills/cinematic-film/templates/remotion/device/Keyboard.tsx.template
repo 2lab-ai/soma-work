@@ -21,10 +21,8 @@ export function keyBoxes(layout: Layout): Record<string, Box> {
   const rows = ROWS[layout];
   rows.forEach((row, r) => {
     const n = row.length;
-    let x0: number;
-    if (r < 2) x0 = (SCREEN.w - (n * kw + (n - 1) * KB.gap)) / 2;
-    else x0 = layout === 'num' ? (SCREEN.w - (n * (kw * 1.38) + (n - 1) * KB.gap)) / 2 : (SCREEN.w - (n * kw + (n - 1) * KB.gap)) / 2;
-    const w = r === 2 && layout === 'num' ? kw * 1.38 : kw;
+    const w = r === 2 && layout === 'num' ? kw * 1.38 : kw; // 123's third row has wider keys
+    const x0 = (SCREEN.w - (n * w + (n - 1) * KB.gap)) / 2;
     row.forEach((k, i) => { out[k] = { x: x0 + i * (w + KB.gap), y: rowY(r), w, h: KB.keyH }; });
   });
   const side = kw * 1.32;

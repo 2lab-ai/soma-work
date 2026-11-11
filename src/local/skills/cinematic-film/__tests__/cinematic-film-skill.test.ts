@@ -1,9 +1,10 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import ts from 'typescript';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 const SKILL_ROOT = resolve(__dirname, '..');
 const SKILL_MD = resolve(SKILL_ROOT, 'SKILL.md');
@@ -133,7 +134,8 @@ describe('cinematic-film skill — contract', () => {
       ['a', 'en', true],
       ['.', 'num', false],
     ]);
-    expect(presses('세 줄').at(-1)?.text).toBe('세 줄');
+    const typed = presses('세 줄');
+    expect(typed[typed.length - 1]?.text).toBe('세 줄');
   });
 
   const hasPython = spawnSync('python3', ['--version']).status === 0;
@@ -149,6 +151,7 @@ describe('cinematic-film skill — contract', () => {
         { ts: 102.2, name: 'key', ch: '요' },
         { ts: 102.5, name: 'swipe-end' },
         { ts: 104, name: 'tap', what: 'outside', x: 1, y: 1 },
+        { ts: 105, name: 'rec-stop', frames: 0 },
       ];
       writeFileSync(join(dir, 'takes', 't1', 'markers.jsonl'), `${marks.map((m) => JSON.stringify(m)).join('\n')}\n`);
       const shot = {
@@ -193,6 +196,227 @@ describe('cinematic-film skill — contract', () => {
       expect(s1).not.toHaveProperty('take');
     },
   );
+
+  // the cutter for real: frames on disk -> clip -> decoded colours per film frame
+  const canCut =
+    spawnSync('python3', ['-c', 'import PIL']).status === 0 && spawnSync('ffmpeg', ['-version']).status === 0;
+  it.skipIf(!canCut)(
+    'cut_phone.py keeps capture timing to the 60 fps frame, honours drops and covers the whole window',
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), 'cut-phone-frames-'));
+      const take = (name: string, frames: Array<[number, string]>) => {
+        mkdirSync(join(dir, 'takes', name, 'frames'), { recursive: true });
+        const rows = frames.map(([ts, colour], i) => {
+          const file = `${String(i + 1).padStart(6, '0')}.jpg`;
+          const r = spawnSync('ffmpeg', [
+            '-loglevel',
+            'error',
+            '-y',
+            '-f',
+            'lavfi',
+            '-i',
+            `color=c=${colour}:s=1179x30`,
+            '-frames:v',
+            '1',
+            join(dir, 'takes', name, 'frames', file),
+          ]);
+          expect(r.status, String(r.stderr)).toBe(0);
+          return JSON.stringify({ i: i + 1, ts, file });
+        });
+        writeFileSync(join(dir, 'takes', name, 'frames.jsonl'), `${rows.join('\n')}\n`);
+        const marks = [
+          { ts: 100, name: 'rec-start' },
+          { ts: 102, name: 'rec-stop', frames: frames.length },
+        ];
+        writeFileSync(join(dir, 'takes', name, 'markers.jsonl'), `${marks.map((m) => JSON.stringify(m)).join('\n')}\n`);
+      };
+      // t1: red, a magenta flash just before the window, a green flash inside it, blue 0.41 s into the window
+      take('t1', [
+        [100, 'red'],
+        [100.15, 'magenta'],
+        [100.3, 'lime'],
+        [100.61, 'blue'],
+      ]);
+      // t2: the first frame arrives 0.1 s after the window opens
+      take('t2', [
+        [100.1, 'red'],
+        [100.3, 'blue'],
+      ]);
+      const shots = [
+        {
+          id: 'w',
+          take: 't1',
+          t0: 0.2,
+          t1: 1,
+          speed: 1,
+          vh: 10,
+          drop: [
+            [0.12, 0.18],
+            [0.25, 0.35],
+          ],
+        },
+        { id: 'late', take: 't2', t0: 0, t1: 0.5, vh: 10 },
+      ];
+      writeFileSync(join(dir, 'shots.json'), JSON.stringify({ fps: 60, shots }));
+      const gen = join(dir, 'shots.gen.ts');
+      const r = spawnSync(
+        'python3',
+        [
+          resolve(SKILL_ROOT, 'scripts', 'cut_phone.py'),
+          join(dir, 'shots.json'),
+          '--takes',
+          join(dir, 'takes'),
+          '--public',
+          join(dir, 'pub'),
+          '--gen',
+          gen,
+        ],
+        { encoding: 'utf8' },
+      );
+      expect(r.status, r.stderr).toBe(0);
+      const colours = (id: string) => {
+        const raw = spawnSync('ffmpeg', [
+          '-loglevel',
+          'error',
+          '-i',
+          join(dir, 'pub', 'phone', `${id}.mp4`),
+          '-vf',
+          'scale=1:1',
+          '-f',
+          'rawvideo',
+          '-pix_fmt',
+          'rgb24',
+          '-',
+        ]).stdout;
+        const out: string[] = [];
+        for (let i = 0; i + 2 < raw.length; i += 3) {
+          const [R, G, B] = [raw[i], raw[i + 1], raw[i + 2]];
+          out.push(R > 128 && B > 128 ? 'magenta' : R > 128 ? 'red' : G > 128 ? 'green' : B > 128 ? 'blue' : '?');
+        }
+        return out;
+      };
+      const w = colours('w');
+      expect(w.length).toBe(48); // 0.8 s at 60 fps
+      // blue lands 0.41 s in: after film frame 24 (0.400 s), on frame 25 (0.417 s). A 25 fps time base moves it.
+      expect(
+        w.slice(0, 25).every((c) => c === 'red'),
+        w.join(' '),
+      ).toBe(true);
+      expect(
+        w.slice(25).every((c) => c === 'blue'),
+        w.join(' '),
+      ).toBe(true);
+      // the late take still fills its whole window, opening on its first frame
+      const late = colours('late');
+      expect(late.length).toBe(30);
+      expect(late[0]).toBe('red');
+      // the default speed is written out: the film divides source seconds by it
+      const ts = readFileSync(gen, 'utf8');
+      const table = JSON.parse(ts.slice(ts.indexOf('Record<string, Shot> = ') + 23, ts.lastIndexOf(';')));
+      expect(table.late.speed).toBe(1);
+    },
+  );
+
+  it('cut_phone.py refuses a failed or unfinished take', () => {
+    if (!hasPython) return;
+    const dir = mkdtempSync(join(tmpdir(), 'cut-phone-bad-'));
+    const cut = (marks: object[]) => {
+      mkdirSync(join(dir, 'takes', 't'), { recursive: true });
+      writeFileSync(join(dir, 'takes', 't', 'markers.jsonl'), `${marks.map((m) => JSON.stringify(m)).join('\n')}\n`);
+      writeFileSync(
+        join(dir, 'shots.json'),
+        JSON.stringify({ fps: 60, shots: [{ id: 's', take: 't', t0: 0, t1: 1, vh: 716 }] }),
+      );
+      return spawnSync(
+        'python3',
+        [
+          resolve(SKILL_ROOT, 'scripts', 'cut_phone.py'),
+          join(dir, 'shots.json'),
+          '--takes',
+          join(dir, 'takes'),
+          '--public',
+          join(dir, 'pub'),
+          '--gen',
+          join(dir, 'g.ts'),
+          '--events-only',
+        ],
+        { encoding: 'utf8' },
+      );
+    };
+    expect(
+      cut([
+        { ts: 1, name: 'rec-start' },
+        { ts: 3, name: 'rec-failed', frames: 0 },
+      ]).stderr,
+    ).toMatch(/rec-failed/);
+    expect(cut([{ ts: 1, name: 'rec-start' }]).stderr).toMatch(/unfinished take/);
+    expect(
+      cut([
+        { ts: 1, name: 'rec-start' },
+        { ts: 3, name: 'rec-stop', frames: 9 },
+      ]).status,
+    ).toBe(0);
+  });
+
+  it('maskResponses rewrites a response, aborts on a failed fetch or rewrite (never replays), passes streams', async () => {
+    const { maskResponses } = createRequire(__filename)(resolve(SKILL_ROOT, 'scripts', 'mobile_capture.cjs'));
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const handlerFor = async (opts?: object) => {
+      let h: (route: unknown) => Promise<unknown> = async () => {};
+      const ctx = {
+        route: async (_m: unknown, fn: typeof h) => {
+          h = fn;
+        },
+      };
+      await maskResponses(
+        ctx,
+        () => true,
+        (t: string) => {
+          if (t.includes('boom')) throw new Error('bad');
+          return t.replace('a@b.co', 'x@example.com');
+        },
+        opts,
+      );
+      return h;
+    };
+    const route = (accept: string, fetch: () => Promise<unknown>) => ({
+      request: () => ({ headers: () => ({ accept }), url: () => 'http://x/api' }),
+      fetch: vi.fn(fetch),
+      fulfill: vi.fn(),
+      abort: vi.fn(),
+      continue: vi.fn(),
+    });
+    const json = (body: string) => async () => ({
+      headers: () => ({ 'content-type': 'application/json' }),
+      text: async () => body,
+    });
+    const h = await handlerFor();
+    const ok = route('application/json', json('{"e":"a@b.co"}'));
+    await h(ok);
+    expect(ok.fulfill).toHaveBeenCalledWith(expect.objectContaining({ body: '{"e":"x@example.com"}' }));
+    expect(ok.fetch).toHaveBeenCalledWith({ timeout: 15000 });
+    for (const bad of [
+      route('application/json', json('boom')),
+      route('application/json', async () => {
+        throw new Error('timeout');
+      }),
+    ]) {
+      await h(bad);
+      expect(bad.abort).toHaveBeenCalledWith('failed');
+      expect(bad.fulfill).not.toHaveBeenCalled();
+      expect(bad.continue).not.toHaveBeenCalled();
+      expect(bad.fetch).toHaveBeenCalledTimes(1);
+    }
+    const sse = route('text/event-stream', json('{}'));
+    await h(sse);
+    expect(sse.continue).toHaveBeenCalled();
+    expect(sse.fetch).not.toHaveBeenCalled();
+    const named = route('*/*', json('{}'));
+    await (await handlerFor({ stream: () => true }))(named);
+    expect(named.continue).toHaveBeenCalled();
+    expect(named.fetch).not.toHaveBeenCalled();
+    quiet.mockRestore();
+  });
 
   it('names the Remotion license condition instead of hiding it', () => {
     expect(read('SKILL.md')).toMatch(/Remotion.*licen[cs]e/i);

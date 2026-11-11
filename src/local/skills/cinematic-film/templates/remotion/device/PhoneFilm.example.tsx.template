@@ -12,7 +12,7 @@ import { presses, type Layout } from './hangul';
 import { SafariBar } from './Safari';
 import { SHOTS, type Shot } from './shots.gen';
 import { type Tap, Touches } from './Touch';
-import { FACES_PHONE, PHONE, SCREEN, STAGE } from './tokens';
+import { FACES_PHONE, PFPS, PHONE, SCREEN, STAGE } from './tokens';
 
 // ---- CONFIG ------------------------------------------------------------------------------------------------------
 const OPEN_LINES = { a: 'Ask in Slack,', b: 'see it through on your phone.' };
@@ -67,7 +67,8 @@ const ShotScreen: React.FC<{ s: Placed; t: number; freeze?: boolean; afterKeyboa
   const d = downs.filter((k) => t >= k.f && t < k.f + 5).pop();
   const kbY = kbUp ? interpolate(t, [0, 14], [SCREEN.h, SCREEN.h - SCREEN.keyboard], { ...clamp, easing: ease }) : interpolate(t, [0, 12], [SCREEN.h - SCREEN.keyboard, SCREEN.h], { ...clamp, easing: Easing.in(Easing.quad) });
   const lay = downs.filter((k) => t >= k.f).pop()?.layout ?? ((s.kb as Layout) || 'ko');
-  const load = s.load ? interpolate(t, [(s.load[0] - s.t0) * 60, (s.load[1] - s.t0) * 60], [0.08, 1], clamp) : undefined;
+  // load is in source seconds: a sped-up shot reaches it sooner
+  const load = s.load ? interpolate(t, [((s.load[0] - s.t0) / s.speed) * PFPS, ((s.load[1] - s.t0) / s.speed) * PFPS], [0.08, 1], clamp) : undefined;
   return (
     <div style={{ position: 'absolute', inset: 0, background: '#000' }}>
       {freeze ? <Freeze frame={s.dur - 1}>{vid}</Freeze> : vid}

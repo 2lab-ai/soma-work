@@ -18,11 +18,15 @@
 const { createRequire } = require('module');
 const fs = require('fs');
 const path = require('path');
-const fromDir = path.resolve(process.env.PLAYWRIGHT_FROM || path.join(process.env.CLAUDE_PLUGIN_ROOT || path.join(__dirname, '..', '..', '..'), 'skills', 'html', 'renderer'));
-// createRequire takes a file path: anchor it inside the directory so its node_modules is searched
-const { chromium, devices } = createRequire(path.join(fromDir, 'package.json'))('playwright');
+// Loaded when a browser opens, so the helpers below (maskResponses) load without it.
+function playwright() {
+  const fromDir = path.resolve(process.env.PLAYWRIGHT_FROM || path.join(process.env.CLAUDE_PLUGIN_ROOT || path.join(__dirname, '..', '..', '..'), 'skills', 'html', 'renderer'));
+  // createRequire takes a file path: anchor it inside the directory so its node_modules is searched
+  return createRequire(path.join(fromDir, 'package.json'))('playwright');
+}
 
 async function open({ h = 716, dsf = 3, gpu = true, cookies = [], initScripts = [], args = [], permissions = [] } = {}) {
+  const { chromium, devices } = playwright();
   const dev = devices['iPhone 15 Pro'];
   const a = gpu ? [...args, `--force-device-scale-factor=${dsf}`, '--use-angle=metal', '--enable-gpu-rasterization', '--ignore-gpu-blocklist'] : args;
   const browser = await chromium.launch(gpu ? { args: a, channel: 'chromium' } : { args: a });
@@ -83,14 +87,18 @@ async function swipe(page, rec, dy, { x = 196, y = 420, steps = 18, dur = 700 } 
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Rewrite text in API responses before the page sees them (e.g. emails -> aliases), so no frame can paint the real
-// value. `match(url)` picks the requests; event streams pass through untouched (a buffered stream never ends).
-async function maskResponses(ctx, match, rewrite) {
+// value. `match(url)` picks the requests. A response is buffered before it is rewritten, and a buffered stream never
+// ends: streams must pass through. EventSource asks for text/event-stream; a fetch()-read stream (NDJSON, chunked
+// text) may not, so name it with `stream(req)` or keep it out of `match`. One that slips through fails loudly when
+// its fetch times out (`timeout` ms), it does not hang the page silently.
+const asksForStream = (req) => /text\/event-stream|application\/x-ndjson/.test(req.headers()['accept'] || '');
+async function maskResponses(ctx, match, rewrite, { stream = asksForStream, timeout = 15000 } = {}) {
   await ctx.route((u) => match(u), async (route) => {
     const req = route.request();
-    if ((req.headers()['accept'] || '').includes('text/event-stream')) return route.continue();
-    // never replay: the request already reached the server once; a failed rewrite aborts it (and says so)
+    if (stream(req)) return route.continue();
+    // never replay: the request already reached the server once; a failed fetch or rewrite aborts it (and says so)
     let res;
-    try { res = await route.fetch(); } catch (e) { return route.abort('failed'); }
+    try { res = await route.fetch({ timeout }); } catch (e) { console.error('maskResponses: fetch failed (a stream? pass it through with stream(req)), request aborted:', req.url(), String(e)); return route.abort('failed'); }
     const ct = res.headers()['content-type'] || '';
     if (!/json|text/.test(ct)) return route.fulfill({ response: res });
     try { return route.fulfill({ response: res, body: rewrite(await res.text()) }); } catch (e) { console.error('maskResponses: rewrite failed, request aborted:', req.url(), String(e)); return route.abort('failed'); }
