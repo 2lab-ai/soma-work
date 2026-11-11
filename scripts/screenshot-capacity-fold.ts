@@ -321,11 +321,40 @@ async function shoot(browser: Browser) {
       await page.waitForSelector('#capacity-aq .cap-detail', { state: 'visible' });
       await page.mouse.move(1, 1);
       await page.waitForTimeout(700);
-      check((await aq.locator('.cap-detail').count()) === groups, `${tag}: a press on a line unfolds — a detail card per provider`);
-      check((await aq.locator('.cap-fc-svg').count()) >= 1 && (await aq.locator('.cap-tl').count()) === 0, `${tag}: 7-day step forecast, no log timeline`);
+      check(
+        (await aq.locator('.cap-detail').count()) === groups,
+        `${tag}: a press on a line unfolds — a detail card per provider`,
+      );
+      check(
+        (await aq.locator('.cap-fc-svg').count()) >= 1 && (await aq.locator('.cap-tl').count()) === 0,
+        `${tag}: 7-day step forecast, no log timeline`,
+      );
       const sideways = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
       check(sideways <= 0, `${tag}: no page-level sideways scroll (${sideways}px)`);
       await page.locator('#capacity').screenshot({ path: path.join(OUT, `capacity-${tag}-open.png`) });
+      // A press on an account opens its card and leaves the section open.
+      await aq.locator('.aq-mark').first().click();
+      check(
+        (await aq.locator('.aq-pop').count()) === 1 && (await aq.locator('.cap-detail').count()) === groups,
+        `${tag}: an account press opens its card, the section stays open`,
+      );
+      await page.keyboard.press('Escape');
+      // The head row folds it; the choice is saved per device and survives a reload.
+      await aq.locator('.cap-title').click();
+      await page.waitForTimeout(200);
+      check((await aq.locator('.cap-detail').count()) === 0, `${tag}: a press on the head row folds it`);
+      check(
+        (await page.evaluate(() => localStorage.getItem('soma-sec-capacity'))) === 'closed',
+        `${tag}: the fold is saved (soma-sec-capacity = closed)`,
+      );
+      await aq.locator('.cap-line').first().click();
+      await page.reload();
+      await page.waitForSelector('#boot', { state: 'detached' });
+      await page.waitForSelector('#capacity-aq .cap-detail', { state: 'attached' });
+      check(
+        (await aq.locator('.cap-detail').count()) === groups,
+        `${tag}: unfolded stays unfolded after a reload (soma-sec-capacity = open)`,
+      );
       await page.context().close();
       console.log(`shot ${tag}`);
     }

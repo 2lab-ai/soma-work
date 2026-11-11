@@ -304,41 +304,35 @@ async function checkSecondary(page: Page, touch: boolean): Promise<Check[]> {
     }
     const lane = document.getElementById('cron-lane') as HTMLElement;
     out.push({ ok: !cap.hidden && !lane.hidden, msg: 'capacity and the CRON lane are shown (seeded)' });
-    // Collapsed (capacity: every posture; CRON: below 840×1000): chips for capacity.
-    if (cap.classList.contains('is-collapsed')) {
+    // Collapsed capacity (every posture until the reader opens it; @2lab.ai/ui ≥ 0.42.0, in the element's shadow root):
+    // one line per provider — name, meter, left / total, next, notes in words — no chip and no glyph.
+    const capSec = document.getElementById('capacity-aq')?.shadowRoot?.querySelector('.capacity') as HTMLElement | null;
+    if (capSec?.classList.contains('is-collapsed')) {
       const h = cap.getBoundingClientRect().height;
-      // Below 840px the chips may wrap to a second row (labelled counts, totals and % for both windows).
-      const limit = window.innerWidth < 840 ? 96 : 64;
-      out.push({
-        ok: h <= limit,
-        msg: `collapsed capacity is one row, two below 840px (${Math.round(h)} ≤ ${limit}px)`,
-      });
-      const chips = Array.from(cap.querySelectorAll('.cap-chip')).map((c) =>
-        (c as HTMLElement).innerText.replace(/\s+/g, ' '),
+      const limit = window.innerWidth < 760 ? 180 : 140;
+      out.push({ ok: h <= limit, msg: `collapsed capacity is a line per provider (${Math.round(h)} ≤ ${limit}px)` });
+      const lines = Array.from(capSec.querySelectorAll('.cap-line')).map((l) =>
+        Array.from(l.querySelectorAll('[aria-hidden="true"]'))
+          .map((c) => (c as HTMLElement).innerText)
+          .join(' ')
+          .replace(/\s+/g, ' ')
+          .trim(),
       );
       out.push({
         ok:
-          chips.length === 2 &&
-          chips[0].indexOf('Claude') === 0 &&
-          chips[0].indexOf('·') > 0 &&
-          (chips[0].match(/\d+%/g) || []).length === 2 &&
-          chips[0].indexOf('지금') > 0 &&
-          (chips[0].match(/\d\.\d/g) || []).length >= 2 &&
-          chips[1].indexOf('▲ Codex') === 0 &&
-          chips[1].indexOf('·') < 0 &&
-          (chips[1].match(/\d+%/g) || []).length === 1,
-        msg: `capacity chips: ${chips.join(' / ')}`,
+          lines.length === 2 &&
+          lines[0].indexOf('Claude') === 0 &&
+          lines[1].indexOf('Codex') === 0 &&
+          lines.every((l) => !/[⏸⚠◌✗▲●]/.test(l)),
+        msg: `capacity lines: ${lines.join(' / ')}`,
       });
-      // Whole chips: none runs past the row's visible edge (the glyph and % would hide).
-      const row = (cap.querySelector('.cap-summary') as HTMLElement).getBoundingClientRect();
-      const cut = Array.from(cap.querySelectorAll('.cap-chip')).filter(
-        (c) => (c as HTMLElement).getBoundingClientRect().right > row.right + 0.5,
+      // Every line fits the section (a long name or next text gives way before the row overflows).
+      const box = capSec.getBoundingClientRect();
+      const cut = Array.from(capSec.querySelectorAll('.cap-line')).filter(
+        (l) => (l as HTMLElement).getBoundingClientRect().right > box.right + 0.5,
       ).length;
-      out.push({
-        ok: cut === 0,
-        msg: `every capacity chip is whole on the row (${cut} cut at ${Math.round(row.right)})`,
-      });
-      const title = (cap.querySelector('.cap-title') as HTMLElement).getBoundingClientRect();
+      out.push({ ok: cut === 0, msg: `every capacity line fits the section (${cut} past ${Math.round(box.right)})` });
+      const title = (capSec.querySelector('.cap-title') as HTMLElement).getBoundingClientRect();
       out.push({ ok: title.height <= 24, msg: `the capacity title is one line (${Math.round(title.height)}px)` });
     }
     if (lane.classList.contains('is-collapsed') && !lane.querySelector('.cron-group.is-waiting')) {
@@ -1174,13 +1168,15 @@ async function transitions(
       );
       await openDashboard(page, baseUrl);
       await page.waitForFunction(() => !(document.getElementById('capacity') as HTMLElement).hidden);
-      const chip = await page.evaluate(() => {
-        const c = document.querySelector('#capacity .cap-chip') as HTMLElement | null;
+      const said = await page.evaluate(() => {
+        const c = document
+          .getElementById('capacity-aq')
+          ?.shadowRoot?.querySelector('.cap-off.is-error') as HTMLElement | null;
         return c ? c.innerText : '';
       });
       expect(
-        chip.indexOf('가용량 미확인') >= 0,
-        `an unreachable llmux shows in the collapsed chip (${chip || 'no chip'})`,
+        said.indexOf('가용량을 불러오지 못했습니다') >= 0,
+        `an unreachable llmux says so in the folded section (${said || 'no line'})`,
       );
       await ctx.close();
     }
