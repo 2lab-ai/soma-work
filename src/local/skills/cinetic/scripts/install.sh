@@ -19,6 +19,8 @@ if ! finished; then
   LOCK="$DIR.lock"
   tries=0
   until mkdir "$LOCK" 2>/dev/null; do
+    # a reclaim mutex left by a reclaimer that was killed is itself stale after a minute
+    [ -z "$(find "$LOCK.reclaim" -maxdepth 0 -mmin +1 2>/dev/null)" ] || rmdir "$LOCK.reclaim" 2>/dev/null || true
     owner="$(cat "$LOCK/pid" 2>/dev/null || true)"
     # stale: its owner is gone, or it never got a pid (killed between mkdir and the write) and is over a minute old
     if { if [ -n "$owner" ]; then ! kill -0 "$owner" 2>/dev/null; else [ -n "$(find "$LOCK" -maxdepth 0 -mmin +1 2>/dev/null)" ]; fi; } &&
@@ -36,8 +38,8 @@ if ! finished; then
     sleep 0.2
     tries=$((tries + 1))
   done
+  trap 'rm -rf "$LOCK"' EXIT # armed before the pid is written: an interrupted write leaves no lock
   echo $$ >"$LOCK/pid"
-  trap 'rm -rf "$LOCK"' EXIT
   if ! finished; then
     rm -rf "$DIR" # a checkout without the finished mark is an interrupted install: start it over
     git clone --quiet --filter=blob:none --no-checkout "$REPO" "$DIR"

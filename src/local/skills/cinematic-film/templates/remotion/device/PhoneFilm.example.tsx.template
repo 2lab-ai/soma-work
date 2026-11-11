@@ -10,14 +10,14 @@ import { Device, HomeBar, StatusBar } from './Device';
 import { Keyboard } from './Keyboard';
 import { presses, type Layout } from './hangul';
 import { SafariBar } from './Safari';
-import { SHOTS, type Shot } from './shots.gen';
+import { SHOT_ORDER, SHOTS, type Shot } from './shots.gen';
 import { type Tap, Touches } from './Touch';
 import { FACES_PHONE, PFPS, PHONE, SCREEN, STAGE } from './tokens';
 
 // ---- CONFIG ------------------------------------------------------------------------------------------------------
 const OPEN_LINES = { a: 'Ask in Slack,', b: 'see it through on your phone.' };
 const END = { a: 'Ask anywhere,', b: 'finish on your phone.', sub: 'product × product', url: 'github.com/org/repo' };
-const ORDER: string[] = Object.keys(SHOTS); // the shots in film order (cut_phone.py keeps shots.json order)
+const ORDER: string[] = SHOT_ORDER; // the shots in film order: shots.json order, as cut_phone.py wrote it
 // The transition INTO a shot: an app switch or a Safari tab swipe pushes (pull = back), a jump inside the app fades.
 const INTO: Record<string, { kind: 'push' | 'pull' | 'fade'; dur: number }> = {};
 // An optional mocked app before the recordings (frames, and the scene drawn from frames since it began).

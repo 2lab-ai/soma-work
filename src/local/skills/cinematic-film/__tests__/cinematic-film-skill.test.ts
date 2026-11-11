@@ -190,7 +190,9 @@ describe('cinematic-film skill — contract', () => {
       });
       expect(r.status, r.stderr).toBe(0);
       const ts = readFileSync(gen, 'utf8');
-      const table = JSON.parse(ts.slice(ts.indexOf('Record<string, Shot> = ') + 23, ts.lastIndexOf(';')));
+      const table = JSON.parse(
+        ts.slice(ts.indexOf('Record<string, Shot> = ') + 23, ts.indexOf(';\nexport const SHOT_ORDER')),
+      );
       const s1 = table.s1;
       // 2 s of source at speed 2 = 1 s of film = 60 frames; source time t lands at (t - t0) / speed * 60
       expect(s1.dur).toBe(60);
@@ -338,7 +340,9 @@ describe('cinematic-film skill — contract', () => {
       expect(late[0]).toBe('red');
       // the default speed is written out: the film divides source seconds by it
       const ts = readFileSync(gen, 'utf8');
-      const table = JSON.parse(ts.slice(ts.indexOf('Record<string, Shot> = ') + 23, ts.lastIndexOf(';')));
+      const table = JSON.parse(
+        ts.slice(ts.indexOf('Record<string, Shot> = ') + 23, ts.indexOf(';\nexport const SHOT_ORDER')),
+      );
       expect(table.late.speed).toBe(1);
       // speed 2 halves the source timing in the encoded clip, to the frame
       const fast = colours('fast');
@@ -451,10 +455,13 @@ describe('cinematic-film skill — contract', () => {
     );
     expect(r.status, r.stderr).toBe(0);
     const ts = readFileSync(gen, 'utf8');
-    const table = JSON.parse(ts.slice(ts.indexOf('Record<string, Shot> = ') + 23, ts.lastIndexOf(';')));
+    const table = JSON.parse(
+      ts.slice(ts.indexOf('Record<string, Shot> = ') + 23, ts.indexOf(';\nexport const SHOT_ORDER')),
+    );
     const whats = (id: string) =>
       table[id].ev.filter((e: { k: string }) => e.k === 'tap').map((e: { what: string }) => e.what);
     expect(whats('a')).toEqual(['edge', 'last']);
+    expect(ts).toContain('export const SHOT_ORDER: string[] = ["a", "b"];');
     // 0.995 s rounds to frame 60 of a 60-frame shot: it stays on the shot's last frame (59)
     expect(table.a.ev.find((e: { what?: string }) => e.what === 'last').f).toBe(59);
     expect(whats('b')).toEqual(['at-cut']);
