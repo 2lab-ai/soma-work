@@ -31,7 +31,7 @@ jobs:
       github.event_name == 'push' ||
       (github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: [self-hosted, owner-mac]
+    runs-on: [self-hosted, "${{ vars.CONTROL_RUNNER_LABEL }}"]
     timeout-minutes: 60
 
     steps:
