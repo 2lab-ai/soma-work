@@ -161,7 +161,7 @@ import {
 } from './new-task';
 import type { RepoChannelResult } from './new-task-channel';
 import type { NewTaskLaunchResult } from './new-task-launcher';
-import { nextActionsOf } from './next-actions';
+import { nextActionsOfTurn } from './next-actions';
 import { verifyDashboardTokenRaw } from './oauth';
 import {
   type DashboardPermissionRequest,
@@ -3425,7 +3425,7 @@ export function broadcastConversationUpdate(conversationId: string, turn: any): 
     // 2026-11-11 — the open card and the detail card draw them as buttons).
     const sanitizedTurn =
       turn?.role === 'assistant' && turn?.rawContent
-        ? { ...turn, rawContent: undefined, nextActions: nextActionsOf(turn.rawContent) }
+        ? { ...turn, rawContent: undefined, nextActions: nextActionsOfTurn(turn) }
         : turn;
     const payload = JSON.stringify({ type: 'conversation_update', conversationId, turn: sanitizedTurn });
     sendToConversationAudience(conversationId, payload);
@@ -4062,7 +4062,7 @@ export async function registerDashboardRoutes(
         // User media (SSOT 2026-10-25): the files this instruction carried, metadata only.
         attachments: t.role === 'user' ? t.attachments : undefined,
         // SSOT 2026-11-11: the next actions an answer ends with — the open card and the detail card's buttons.
-        nextActions: t.role === 'assistant' ? nextActionsOf(t.rawContent) : undefined,
+        nextActions: t.role === 'assistant' ? nextActionsOfTurn(t) : undefined,
         // SSOT 2026-10-27: who put a user turn there (a host turn reads as one
         // line), and a /compact turn's compaction (estimate, then its result).
         origin: t.role === 'user' ? t.origin : undefined,
@@ -15476,11 +15476,14 @@ function nextActionsHtml(s, na, where) {
   if (!buttons) return '';
   return '<div class="next-actions is-' + where + '" role="group" aria-label="' + escAttr(NEXT_ACTIONS_LABEL) + '"><span class="na-kicker">' + esc(NEXT_ACTIONS_LABEL) + '</span><div class="na-row">' + buttons + '</div></div>';
 }
-// The open task card's steps: the latest answer the card's 지시/응답 fetch read (fetchCardIo).
+// The open task card's steps: the latest answer the card's 지시/응답 fetch read (fetchCardIo) — only from a fetch
+// that is current: while it refetches, or after it failed, the steps it held may belong to an answer a newer
+// instruction already followed (trinity R1, astra P2 · fable P3).
 function cardNextActionsHtml(s, col) {
   if (col === 'closed' || !s.conversationId) return '';
   var c = _ioCache[s.conversationId];
-  return nextActionsHtml(s, c && c.data ? c.data.nextActions : null, 'card');
+  if (!c || c.state !== 'ok' || !c.data || c.stamp !== String(s.lastActivity || '')) return '';
+  return nextActionsHtml(s, c.data.nextActions, 'card');
 }
 // The detail card's steps, right above its composer: the latest answer of the conversation it shows.
 function renderPanelNext() {
@@ -15524,6 +15527,10 @@ async function nextActionPost(key, command) {
   var why = '';
   var data = {};
   try {
+    // A level picked just before goes first, as the composer's send waits for it; a refused switch sends nothing
+    // (trinity R1, astra · grok P2).
+    var level = await effortSettled(key);
+    if (level && !level.ok) throw new Error('추론 강도를 바꾸지 못해 보내지 않았어요 — ' + level.error);
     var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/command', JSON.stringify(pcCommandBody(command, [], '')));
     try { data = await res.json(); } catch (_e) {}
     if (!res.ok) why = ((data && data.error) || '') + ' (HTTP ' + res.status + ')';
