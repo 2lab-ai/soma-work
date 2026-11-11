@@ -228,6 +228,7 @@ describe('the detail card — right above its composer', () => {
         panelSessionKey: 'inst::C1:t1',
         _sessionCache: { 'inst::C1:t1': SESSION() },
         _panelTurnsCid: 'conv-1',
+        _panelTurnsAct: '',
         _panelTurnsList: [
           { id: 'u1', role: 'user' },
           { id: 'a1', role: 'assistant', nextActions: STEPS },
@@ -256,6 +257,18 @@ describe('the detail card — right above its composer', () => {
       }).hidden,
     ).toBe(true);
     expect(panel({ panelOpen: false }).hidden).toBe(true);
+  });
+
+  it('a viewer outside the live audience: only turns fetched at the latest activity count (trinity R2)', () => {
+    // someone else's task in a channel: this viewer may instruct it but gets no live turns
+    const other = { _sessionCache: { 'inst::C1:t1': SESSION({ ownerId: 'U2', lastActivity: 'L2' }) } };
+    expect(panel({ ...other, _panelTurnsAct: 'L1' }).hidden).toBe(true);
+    expect(panel({ ...other, _panelTurnsAct: 'L2' }).hidden).toBe(false);
+    // the owner and an admin get every turn live: the fetch time does not matter
+    expect(
+      panel({ _sessionCache: { 'inst::C1:t1': SESSION({ lastActivity: 'L2' }) }, _panelTurnsAct: 'L1' }).hidden,
+    ).toBe(false);
+    expect(panel({ ...other, _panelTurnsAct: 'L1', _viewerIsAdmin: true }).hidden).toBe(false);
   });
 
   it('the page has the bar right after the plan bar, inside the command row', () => {

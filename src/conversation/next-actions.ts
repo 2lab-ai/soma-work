@@ -80,6 +80,8 @@ function emphasisLine(line: string): string | null {
   if (t.endsWith(':') || t.endsWith('：')) t = t.slice(0, -1).trimEnd();
   for (const m of ['**', '__', '*', '_']) {
     if (t.length > m.length * 2 && t.startsWith(m) && t.endsWith(m)) {
+      // `* note **x**` is a bullet, not `*…*`: a single marker hugs its words (trinity R2, fable P3).
+      if (m.length === 1 && (t[1] === ' ' || t[t.length - 2] === ' ')) continue;
       const inner = t.slice(m.length, t.length - m.length).trim();
       return inner || null;
     }
@@ -185,9 +187,15 @@ function sectionMarks(lines: string[]): Mark[] {
       marks.push({ line: i, level: HARD_END, next: false });
       continue;
     }
-    if (atx) marks.push({ line: i, level: atx.level, next: TITLE.test(words) });
+    const next = TITLE.test(words);
+    // The ⚠️ mark is reserved for the unfinished-work signal: a heading or bold title that starts with it, however
+    // worded, ends the section too (trinity R2, fable P2).
+    if (!next && (atx || em !== null) && (atx ? atx.text : (em as string)).startsWith('⚠')) {
+      marks.push({ line: i, level: HARD_END, next: false });
+      continue;
+    }
+    if (atx) marks.push({ line: i, level: atx.level, next });
     else if (em !== null) {
-      const next = TITLE.test(words);
       // A bold step label right above its block belongs to the section it sits in.
       if (next || !labelsABlock(lines, i)) marks.push({ line: i, level: EMPHASIS_LEVEL, next });
     }

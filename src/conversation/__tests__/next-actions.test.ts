@@ -227,3 +227,17 @@ describe('trinity R1 — never slow (P1: a heading regex stalled the server)', (
     expect(nextActionsOfTurn({ rawContent: 'none' })).toBeUndefined();
   });
 });
+
+describe('trinity R2 — non-blocking hardening (fable P2 · P3)', () => {
+  it('any ⚠️ title ends the section, reworded or numbered — the contract reserves the mark', () => {
+    for (const title of ['**⚠️ 사용자 조치 필요**', '**⚠️ User follow-up required (1)**', '#### ⚠️ 직접 하실 일']) {
+      const md = ['### 다음 행동', FENCE, 'a', FENCE, title, '실행:', FENCE, 'gh pr merge 830', FENCE].join('\n');
+      expect(extractNextActions(md)).toEqual([{ label: '', command: 'a' }]);
+    }
+  });
+
+  it('a `*` bullet that ends in bold is a step label, not a title', () => {
+    const md = ['**Next Actions**', '* note **x**', '* do **a**', FENCE, 'a', FENCE].join('\n');
+    expect(extractNextActions(md)).toEqual([{ label: 'do a', command: 'a' }]);
+  });
+});
