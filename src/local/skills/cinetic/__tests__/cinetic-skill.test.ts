@@ -1,5 +1,14 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -63,7 +72,23 @@ describe('cinetic skill — a pinned loader for the upstream skill', () => {
     const pin = git('rev-parse', 'HEAD');
     writeFileSync(join(up, 'skills', 'cinetic', 'SKILL.md'), 'later\n');
     git('commit', '--quiet', '-am', 'two');
-    const env = { ...process.env, CINETIC_REPO: `file://${up}`, CINETIC_PIN: pin, CINETIC_HOME: join(dir, 'home') };
+    // a git on PATH that logs every clone, so the test can count checkouts
+    const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+    const clones = join(dir, 'clones.log');
+    mkdirSync(join(dir, 'bin'));
+    writeFileSync(
+      join(dir, 'bin', 'git'),
+      `#!/bin/sh\n[ "$1" = clone ] && echo clone >> '${clones}'\nexec '${realGit}' "$@"\n`,
+    );
+    chmodSync(join(dir, 'bin', 'git'), 0o755);
+    const cloneCount = () => (existsSync(clones) ? readFileSync(clones, 'utf8').trim().split('\n').length : 0);
+    const env = {
+      ...process.env,
+      PATH: `${join(dir, 'bin')}:${process.env.PATH}`,
+      CINETIC_REPO: `file://${up}`,
+      CINETIC_PIN: pin,
+      CINETIC_HOME: join(dir, 'home'),
+    };
     const run = () =>
       new Promise<{ code: number | null; out: string; err: string }>((done) => {
         const p = spawn('bash', [resolve(SKILL_ROOT, 'scripts', 'install.sh')], { env });
@@ -80,6 +105,7 @@ describe('cinetic skill — a pinned loader for the upstream skill', () => {
       expect(r.out).toBe(root);
     }
     expect(readFileSync(join(root, 'SKILL.md'), 'utf8')).toBe('pinned\n');
+    expect(cloneCount(), 'two racing first runs clone once').toBe(1);
     expect(existsSync(join(dir, 'home', `${pin}.lock`))).toBe(false);
     // a finished checkout is returned again without touching the network (the upstream may be gone)
     env.CINETIC_REPO = `file://${join(dir, 'gone')}`;
@@ -100,6 +126,15 @@ describe('cinetic skill — a pinned loader for the upstream skill', () => {
     expect(readFileSync(join(root2, 'SKILL.md'), 'utf8')).toBe('later\n');
     expect(existsSync(join(dir, 'home', `${pin2}.lock`))).toBe(false);
     expect(existsSync(join(dir, 'home', `${pin2}.lock.reclaim`))).toBe(false);
+    expect(cloneCount(), 'one more clone for the second pin').toBe(2);
+    // a lock without a pid (its owner was killed before writing it) is reclaimed once it is over a minute old
+    const pin3 = git('rev-parse', 'HEAD~1').slice(0, 12);
+    mkdirSync(join(dir, 'home', `${pin3}.lock`));
+    const old = new Date(Date.now() - 5 * 60_000);
+    utimesSync(join(dir, 'home', `${pin3}.lock`), old, old);
+    env.CINETIC_PIN = pin3;
+    expect(await run()).toMatchObject({ code: 0, out: join(dir, 'home', pin3, 'skills', 'cinetic') });
+    expect(existsSync(join(dir, 'home', `${pin3}.lock`))).toBe(false);
     // a pin that is not a sha is refused before anything is removed or cloned
     env.CINETIC_PIN = '../..';
     expect((await run()).code).not.toBe(0);

@@ -19,7 +19,7 @@ Every Bash call is a fresh shell, so set the plugin root in each block.
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory of this skill>/../..}"
-CINETIC_ROOT="$(bash "$CLAUDE_PLUGIN_ROOT/skills/cinetic/scripts/install.sh")"
+CINETIC_ROOT="$(bash "$CLAUDE_PLUGIN_ROOT/skills/cinetic/scripts/install.sh")" || { echo "cinetic: install failed, stop here" >&2; exit 1; }
 echo "$CINETIC_ROOT"
 ```
 

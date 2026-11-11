@@ -87,6 +87,7 @@ for s in spec['shots']:
     for i, m in enumerate(mk):
         if m['name'] in ('rec-start', 'rec-stop', 'swipe-end') or owner(s['take'], m['ts'] - T0) != s['id']: continue
         f, k = fof(m['ts']), m['name']
+        if a <= m['ts'] < b: f = min(f, n - 1)  # a marker inside the window stays on this shot's frames after rounding
         if k == 'tap': ev.append({'f': f, 'k': 'tap', 'x': round(m['x'], 1), 'y': round(m['y'], 1), 'what': m.get('what', '')})
         elif k == 'swipe':
             end = next((e for e in mk[i + 1:] if e['name'] == 'swipe-end'), None)  # its end, wherever the shot ends

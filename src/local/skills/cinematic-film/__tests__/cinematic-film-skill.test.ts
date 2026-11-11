@@ -421,6 +421,7 @@ describe('cinematic-film skill — contract', () => {
     const marks = [
       { ts: 100, name: 'rec-start' },
       { ts: 100.98, name: 'tap', what: 'edge', x: 10, y: 10 },
+      { ts: 100.995, name: 'tap', what: 'last', x: 10, y: 10 },
       { ts: 101, name: 'tap', what: 'at-cut', x: 10, y: 10 },
       { ts: 101.4, name: 'swipe', x: 196, y: 420, dy: 300 },
       { ts: 102.3, name: 'swipe-end' },
@@ -453,7 +454,9 @@ describe('cinematic-film skill — contract', () => {
     const table = JSON.parse(ts.slice(ts.indexOf('Record<string, Shot> = ') + 23, ts.lastIndexOf(';')));
     const whats = (id: string) =>
       table[id].ev.filter((e: { k: string }) => e.k === 'tap').map((e: { what: string }) => e.what);
-    expect(whats('a')).toEqual(['edge']);
+    expect(whats('a')).toEqual(['edge', 'last']);
+    // 0.995 s rounds to frame 60 of a 60-frame shot: it stays on the shot's last frame (59)
+    expect(table.a.ev.find((e: { what?: string }) => e.what === 'last').f).toBe(59);
     expect(whats('b')).toEqual(['at-cut']);
     // a swipe that runs past its shot keeps its end
     expect(table.b.ev).toContainEqual({ f: 24, k: 'swipe', x: 196, y: 420, dy: 300, to: 78 });
@@ -496,14 +499,31 @@ describe('cinematic-film skill — contract', () => {
         text: async () => body,
         dispose: disposed,
       });
+    const redirect = (to: string) => async () => ({
+      status: () => 302,
+      headers: () => ({ location: to }),
+      text: async () => '',
+      dispose: disposed,
+    });
     const h = await handlerFor();
     const ok = route('application/json', json('{"e":"a@b.co"}'));
     await h(ok);
     expect(ok.fulfill).toHaveBeenCalledWith(expect.objectContaining({ body: '{"e":"x@example.com"}' }));
     // redirects are followed inside the route (the browser would not route the redirected request), so the final
     // body is the one masked; the buffered response is freed after
-    expect(ok.fetch).toHaveBeenCalledWith({ timeout: 15000 });
+    expect(ok.fetch).toHaveBeenCalledWith({ timeout: 15000, maxRedirects: 0 });
     expect(disposed).toHaveBeenCalledTimes(1);
+    // a same-origin redirect is followed here and its final body masked; one to another origin is aborted
+    const hop = route('application/json', redirect('/api/v2'));
+    hop.fetch.mockImplementationOnce(redirect('/api/v2')).mockImplementationOnce(json('{"e":"a@b.co"}'));
+    await h(hop);
+    expect(hop.fetch).toHaveBeenLastCalledWith({ url: 'http://x/api/v2', timeout: 15000, maxRedirects: 0 });
+    expect(hop.fulfill).toHaveBeenCalledWith(expect.objectContaining({ body: '{"e":"x@example.com"}' }));
+    const away = route('application/json', redirect('http://127.0.0.1:9/secret'));
+    await h(away);
+    expect(away.fetch).toHaveBeenCalledTimes(1);
+    expect(away.abort).toHaveBeenCalledWith('failed');
+    expect(away.fulfill).not.toHaveBeenCalled();
     for (const bad of [
       route('application/json', json('boom')),
       route('application/json', async () => {
@@ -535,7 +555,27 @@ describe('cinematic-film skill — contract', () => {
   });
 
   it('recorder.stop finalises the frame log, then marks rec-stop (or rec-failed and throws)', async () => {
-    const { recorder } = createRequire(__filename)(resolve(SKILL_ROOT, 'scripts', 'mobile_capture.cjs'));
+    const req = createRequire(__filename);
+    const { recorder } = req(resolve(SKILL_ROOT, 'scripts', 'mobile_capture.cjs'));
+    // watch the two logs: when the frame log ends and when rec-stop is written
+    const fsMod = req('node:fs');
+    const order: string[] = [];
+    const real = fsMod.createWriteStream;
+    const spy = vi.spyOn(fsMod, 'createWriteStream').mockImplementation((...args: unknown[]) => {
+      const w = real.apply(fsMod, args);
+      const file = String(args[0]);
+      const end = w.end.bind(w);
+      const write = w.write.bind(w);
+      w.end = (...a: unknown[]) => {
+        if (file.endsWith('frames.jsonl')) order.push('frames-end');
+        return end(...a);
+      };
+      w.write = (chunk: unknown, ...a: unknown[]) => {
+        if (file.endsWith('markers.jsonl') && /rec-(stop|failed)/.test(String(chunk))) order.push('rec-stop');
+        return write(chunk, ...a);
+      };
+      return w;
+    });
     const take = async (failStop: boolean) => {
       const out = join(mkdtempSync(join(tmpdir(), 'rec-')), 'take');
       let onFrame: (f: unknown) => Promise<void> = async () => {};
@@ -572,6 +612,9 @@ describe('cinematic-film skill — contract', () => {
     const good = await take(false);
     expect(good.err).toBeNull();
     expect(good.names).toEqual(['rec-start', 'tap', 'rec-stop']);
+    spy.mockRestore();
+    // both takes closed the frame log before writing their completion marker
+    expect(order).toEqual(['frames-end', 'rec-stop', 'frames-end', 'rec-stop']);
   });
 
   it('names the Remotion license condition instead of hiding it', () => {

@@ -20,8 +20,10 @@ if ! finished; then
   tries=0
   until mkdir "$LOCK" 2>/dev/null; do
     owner="$(cat "$LOCK/pid" 2>/dev/null || true)"
-    if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null && mkdir "$LOCK.reclaim" 2>/dev/null; then
-      # one reclaimer at a time, and only the lock that still names the dead owner: a lock another run has just
+    # stale: its owner is gone, or it never got a pid (killed between mkdir and the write) and is over a minute old
+    if { if [ -n "$owner" ]; then ! kill -0 "$owner" 2>/dev/null; else [ -n "$(find "$LOCK" -maxdepth 0 -mmin +1 2>/dev/null)" ]; fi; } &&
+      mkdir "$LOCK.reclaim" 2>/dev/null; then
+      # one reclaimer at a time, and only the lock that still names the same owner: a lock another run has just
       # taken (with a live pid) is never removed
       if [ "$(cat "$LOCK/pid" 2>/dev/null || true)" = "$owner" ]; then rm -rf "$LOCK"; fi
       rmdir "$LOCK.reclaim"

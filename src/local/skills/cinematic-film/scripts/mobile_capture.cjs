@@ -102,8 +102,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // value. `match(url)` picks the requests. A response is buffered before it is rewritten, and a buffered stream never
 // ends: streams must pass through. EventSource asks for text/event-stream and always passes; a fetch()-read stream
 // (NDJSON, chunked text) may not ask, so name it with `stream(req)` as well, or keep it out of `match`. One that slips
-// through fails loudly when its fetch times out (`timeout` ms), it does not hang the page silently. Redirects are
-// followed here, so the final body is the one masked (the browser would not route the redirected request again); the
+// through fails loudly when its fetch times out (`timeout` ms), it does not hang the page silently. Same-origin
+// redirects are followed here, so the final body is the one masked (the browser would not route the redirected request
+// again); one to another origin is aborted, since this Node-side fetch could otherwise reach hosts the page cannot. The
 // page keeps the first URL, so match API calls, not page navigations.
 const asksForStream = (req) => /text\/event-stream|application\/x-ndjson/.test(req.headers()['accept'] || '');
 async function maskResponses(ctx, match, rewrite, { stream = () => false, timeout = 15000 } = {}) {
@@ -112,7 +113,19 @@ async function maskResponses(ctx, match, rewrite, { stream = () => false, timeou
     if (asksForStream(req) || stream(req)) return route.continue();
     // never replay: the request already reached the server once; a failed fetch or rewrite aborts it (and says so)
     let res;
-    try { res = await route.fetch({ timeout }); } catch (e) { console.error('maskResponses: fetch failed (a stream? pass it through with stream(req)), request aborted:', req.url(), String(e)); return route.abort('failed'); }
+    try {
+      res = await route.fetch({ timeout, maxRedirects: 0 });
+      for (let hop = 0; res.status() >= 300 && res.status() < 400 && res.headers()['location']; hop++) {
+        const next = new URL(res.headers()['location'], req.url());
+        if (hop >= 5 || next.origin !== new URL(req.url()).origin) throw new Error(`redirect to ${next.origin} not followed`);
+        await res.dispose?.();
+        res = await route.fetch({ url: next.href, timeout, maxRedirects: 0 });
+      }
+    } catch (e) {
+      await res?.dispose?.();
+      console.error('maskResponses: fetch failed (a stream? pass it through with stream(req)), request aborted:', req.url(), String(e));
+      return route.abort('failed');
+    }
     const ct = res.headers()['content-type'] || '';
     try {
       if (!/json|text/.test(ct)) return await route.fulfill({ response: res });
