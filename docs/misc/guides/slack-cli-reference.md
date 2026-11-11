@@ -75,7 +75,7 @@ slack auth token --no-prompt
 slack auth list
 # 출력 예:
 # yourcompany (Team ID: T00000000)
-# User ID: U09F1M5MML1
+# User ID: U0TESTUSER1
 # Authorization Level: Workspace
 ```
 
@@ -94,7 +94,7 @@ slack auth list
     "token": "xoxe.xoxp-...",
     "team_domain": "yourcompany",
     "team_id": "T00000000",
-    "user_id": "U09F1M5MML1",
+    "user_id": "U0TESTUSER1",
     "refresh_token": "xoxe-1-...",
     "exp": 1772718891
   }

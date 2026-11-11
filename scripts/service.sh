@@ -1005,7 +1005,7 @@ launchd_domains() {
 
 # "Held" means `launchctl print` SAW the job — exit 0 and nothing else.
 #
-# Measured 2026-09-17: as the runner user on fable-m5max, `launchctl print
+# Measured 2026-09-17: as the runner user on owner-mac, `launchctl print
 # system/<label>` exits 113 for BOTH a registered and a non-existent label —
 # a non-root process cannot see into the system domain at all. On work-m16 (admin
 # user) the same probe exits 0 for a registered label and 113 for a missing one,
@@ -1393,7 +1393,7 @@ log_line_epoch() {
 }
 
 cmd_verify_restart() {
-    # 180s, not 60: measured on fable-m5max 2026-09-17, the supervisor took 5–8s
+    # 180s, not 60: measured on owner-mac 2026-09-17, the supervisor took 5–8s
     # to log "bot is running" on a warm start but 88s and 129s on two cold
     # starts. A 60s budget fails deploys that actually restarted correctly.
     local since="" want_version="" timeout=180
