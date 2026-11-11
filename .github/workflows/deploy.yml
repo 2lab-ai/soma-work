@@ -24,7 +24,7 @@ permissions:
 
 jobs:
   prepare:
-    runs-on: [self-hosted, owner-mac]
+    runs-on: [self-hosted, "${{ vars.CONTROL_RUNNER_LABEL }}"]
     timeout-minutes: 15
     outputs:
       matrix: ${{ steps.targets.outputs.matrix }}
@@ -379,7 +379,7 @@ jobs:
     name: Cleanup deploy bundle release
     needs: [prepare, deploy]
     if: always() && needs.prepare.result == 'success'
-    runs-on: [self-hosted, owner-mac]
+    runs-on: [self-hosted, "${{ vars.CONTROL_RUNNER_LABEL }}"]
     timeout-minutes: 5
     steps:
       - name: Delete draft bundle release

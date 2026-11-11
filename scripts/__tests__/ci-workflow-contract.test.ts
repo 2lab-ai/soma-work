@@ -84,7 +84,7 @@ function runSteps(workflowPath: string, jobName: string): { name: string; run: s
 
 /**
  * The three pull-request gates run on GitHub-hosted runners, never on a self-hosted machine.
- * Until 2026-10-28 they shared one maintainer workstation (`[self-hosted, owner-mac]`), one job
+ * Until 2026-10-28 they shared one self-hosted maintainer workstation, one job
  * at a time: on 2026-10-27 they asked it for 3,049 runner-minutes in a 1,440-minute day and the
  * queue reached 70 jobs. The repository is public, so standard hosted runners are free and
  * unmetered. Deploy jobs stay self-hosted: they run on the hosts they deploy to.
@@ -295,7 +295,9 @@ describe('sanitize gate workflow contract', () => {
     // `${{ … }}` is substituted textually before the shell parses the line, so a
     // secret reaching a `run:` body would be one quote away from executing —
     // and, on this runner, from being echoed into a public log.
-    expect(workflow).toMatch(/\n {8}env:\n {10}SANITIZE_PATTERNS: \$\{\{ secrets\.SANITIZE_PATTERNS \}\}\n/);
+    expect(workflow).toMatch(
+      /\n {8}env:\n {10}SANITIZE_PATTERNS_SHARED: \$\{\{ secrets\.SANITIZE_PATTERNS_SHARED \}\}\n {10}SANITIZE_PATTERNS: \$\{\{ secrets\.SANITIZE_PATTERNS \}\}\n/,
+    );
     for (const step of runSteps(SANITIZE_WORKFLOW, 'scan')) {
       expect(step.run.includes('${{'), `${step.name} interpolates an expression into a shell body`).toBe(false);
     }
@@ -310,7 +312,7 @@ describe('sanitize gate workflow contract', () => {
     const script = read('scripts/sanitize-scan.sh');
     // Regex, not a string literal: the literal form reads as an unterminated
     // JS template placeholder to Biome.
-    expect(script).toMatch(/P="\$\{SANITIZE_PATTERNS:-\}"/);
+    expect(script).toMatch(/P="\$\{SANITIZE_PATTERNS_SHARED\}\$\{SANITIZE_PATTERNS:\+\|\$SANITIZE_PATTERNS\}"/);
     expect(script).toMatch(/-E "\$P"/);
   });
 
