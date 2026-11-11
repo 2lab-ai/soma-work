@@ -666,7 +666,10 @@ describe('sanitize-scan.sh — shared and repository pattern lists', () => {
 
   it('passes when neither list matches', () => {
     git('update-ref', 'refs/remotes/origin/feature/dirty', dirty);
-    const r = scan('push', { SANITIZE_PATTERNS_SHARED: 'unrelated-name-[0-9]+', SANITIZE_PATTERNS: 'other-name-[0-9]+' });
+    const r = scan('push', {
+      SANITIZE_PATTERNS_SHARED: 'unrelated-name-[0-9]+',
+      SANITIZE_PATTERNS: 'other-name-[0-9]+',
+    });
     expect(r.out).toContain('sanitize-scan: clean');
     expect(r.status).toBe(0);
   });
