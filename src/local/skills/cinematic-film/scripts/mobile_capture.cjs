@@ -18,8 +18,9 @@
 const { createRequire } = require('module');
 const fs = require('fs');
 const path = require('path');
-const from = process.env.PLAYWRIGHT_FROM || path.join(process.env.CLAUDE_PLUGIN_ROOT || path.join(__dirname, '..', '..', '..'), 'skills', 'html', 'renderer') + path.sep;
-const { chromium, devices } = createRequire(from)('playwright');
+const fromDir = path.resolve(process.env.PLAYWRIGHT_FROM || path.join(process.env.CLAUDE_PLUGIN_ROOT || path.join(__dirname, '..', '..', '..'), 'skills', 'html', 'renderer'));
+// createRequire takes a file path: anchor it inside the directory so its node_modules is searched
+const { chromium, devices } = createRequire(path.join(fromDir, 'package.json'))('playwright');
 
 async function open({ h = 716, dsf = 3, gpu = true, cookies = [], initScripts = [], args = [], permissions = [] } = {}) {
   const dev = devices['iPhone 15 Pro'];
@@ -28,7 +29,16 @@ async function open({ h = 716, dsf = 3, gpu = true, cookies = [], initScripts = 
   const ctx = await browser.newContext({ viewport: { width: 393, height: h }, deviceScaleFactor: gpu ? 1 : dsf, isMobile: true, hasTouch: true, userAgent: dev.userAgent, bypassCSP: true, permissions });
   if (cookies.length) await ctx.addCookies(cookies);
   // a dark first paint and no tap highlight: both otherwise flash for a few frames a reviewer will catch
-  await ctx.addInitScript(() => { const add = () => { if (document.getElementById('cap-css')) return; const st = document.createElement('style'); st.id = 'cap-css'; st.textContent = '*{-webkit-tap-highlight-color:transparent!important}html{background:#000}'; (document.head || document.documentElement).appendChild(st); }; add(); document.addEventListener('DOMContentLoaded', add); });
+  await ctx.addInitScript(() => {
+    const add = () => {
+      const root = document.head || document.documentElement;
+      if (!root || document.getElementById('cap-css')) return;
+      const st = document.createElement('style'); st.id = 'cap-css';
+      st.textContent = '*{-webkit-tap-highlight-color:transparent!important}html{background:#000}';
+      root.appendChild(st);
+    };
+    document.addEventListener('DOMContentLoaded', add); add();
+  });
   for (const s of initScripts) await ctx.addInitScript(s);
   const page = await ctx.newPage();
   return { browser, ctx, page };
@@ -47,7 +57,14 @@ async function recorder(ctx, page, OUT) {
   return {
     mark,
     start: async () => { await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 92, maxWidth: 1179, maxHeight: 2400, everyNthFrame: 1 }); mark('rec-start'); },
-    stop: async () => { mark('rec-stop', { frames: n }); await cdp.send('Page.stopScreencast').catch(() => {}); await new Promise((r) => setTimeout(r, 400)); fr.end(); mk.end(); },
+    // a failed stop is a failed take: mark it and throw, so a cut never pads a broken take with its last frame
+    stop: async () => {
+      let err = null;
+      try { await cdp.send('Page.stopScreencast'); } catch (e) { err = e; }
+      mark(err ? 'rec-failed' : 'rec-stop', { frames: n, ...(err ? { e: String(err).slice(0, 200) } : {}) });
+      await new Promise((r) => setTimeout(r, 400)); fr.end(); mk.end();
+      if (err) throw err;
+    },
   };
 }
 // A tap: the marker carries the element's centre (css), then a real touch tap. Use `what`, not `name`, for the label.
@@ -71,11 +88,12 @@ async function maskResponses(ctx, match, rewrite) {
   await ctx.route((u) => match(u), async (route) => {
     const req = route.request();
     if ((req.headers()['accept'] || '').includes('text/event-stream')) return route.continue();
-    try {
-      const res = await route.fetch(); const ct = res.headers()['content-type'] || '';
-      if (!/json|text/.test(ct)) return route.fulfill({ response: res });
-      return route.fulfill({ response: res, body: rewrite(await res.text()) });
-    } catch { return route.continue(); }
+    // never replay: the request already reached the server once; a failed rewrite aborts it (and says so)
+    let res;
+    try { res = await route.fetch(); } catch (e) { return route.abort('failed'); }
+    const ct = res.headers()['content-type'] || '';
+    if (!/json|text/.test(ct)) return route.fulfill({ response: res });
+    try { return route.fulfill({ response: res, body: rewrite(await res.text()) }); } catch (e) { console.error('maskResponses: rewrite failed, request aborted:', req.url(), String(e)); return route.abort('failed'); }
   });
 }
 module.exports = { open, recorder, tap, swipe, sleep, maskResponses };

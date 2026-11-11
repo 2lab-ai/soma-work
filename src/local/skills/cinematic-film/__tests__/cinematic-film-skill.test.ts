@@ -1,5 +1,7 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
@@ -133,6 +135,64 @@ describe('cinematic-film skill — contract', () => {
     ]);
     expect(presses('세 줄').at(-1)?.text).toBe('세 줄');
   });
+
+  const hasPython = spawnSync('python3', ['--version']).status === 0;
+  it.skipIf(!hasPython)(
+    'cut_phone.py maps take markers to film frames (speed, offsets, swipe ends, extra taps)',
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), 'cut-phone-'));
+      mkdirSync(join(dir, 'takes', 't1'), { recursive: true });
+      const marks = [
+        { ts: 100, name: 'rec-start' },
+        { ts: 101.5, name: 'swipe', x: 196, y: 420, dy: 300 },
+        { ts: 102, name: 'tap', what: 'open', x: 120.04, y: 300 },
+        { ts: 102.2, name: 'key', ch: '요' },
+        { ts: 102.5, name: 'swipe-end' },
+        { ts: 104, name: 'tap', what: 'outside', x: 1, y: 1 },
+      ];
+      writeFileSync(join(dir, 'takes', 't1', 'markers.jsonl'), `${marks.map((m) => JSON.stringify(m)).join('\n')}\n`);
+      const shot = {
+        id: 's1',
+        take: 't1',
+        t0: 1,
+        t1: 3,
+        speed: 2,
+        vh: 716,
+        drop: [[1.1, 1.2]],
+        extra: [{ t: 2.5, x: 350, y: 26, what: 'close' }],
+      };
+      writeFileSync(join(dir, 'shots.json'), JSON.stringify({ fps: 60, shots: [shot] }));
+      const gen = join(dir, 'shots.gen.ts');
+      const args = [
+        resolve(SKILL_ROOT, 'scripts', 'cut_phone.py'),
+        join(dir, 'shots.json'),
+        '--takes',
+        join(dir, 'takes'),
+      ];
+      const r = spawnSync('python3', [...args, '--public', join(dir, 'pub'), '--gen', gen, '--events-only'], {
+        encoding: 'utf8',
+      });
+      expect(r.status, r.stderr).toBe(0);
+      const ts = readFileSync(gen, 'utf8');
+      const table = JSON.parse(ts.slice(ts.indexOf('Record<string, Shot> = ') + 23, ts.lastIndexOf(';')));
+      const s1 = table.s1;
+      // 2 s of source at speed 2 = 1 s of film = 60 frames; source time t lands at (t - t0) / speed * 60
+      expect(s1.dur).toBe(60);
+      expect(s1.ev).toEqual(
+        expect.arrayContaining([
+          { f: 15, k: 'swipe', x: 196, y: 420, dy: 300, to: 45 },
+          { f: 30, k: 'tap', x: 120, y: 300, what: 'open' },
+          { f: 36, k: 'key', ch: '요' },
+          { f: 45, k: 'tap', x: 350, y: 26, what: 'close' },
+        ]),
+      );
+      expect(s1.ev.some((e: { what?: string }) => e.what === 'outside')).toBe(false);
+      // cut-only fields never reach the film's Shot type
+      expect(s1).not.toHaveProperty('drop');
+      expect(s1).not.toHaveProperty('extra');
+      expect(s1).not.toHaveProperty('take');
+    },
+  );
 
   it('names the Remotion license condition instead of hiding it', () => {
     expect(read('SKILL.md')).toMatch(/Remotion.*licen[cs]e/i);
