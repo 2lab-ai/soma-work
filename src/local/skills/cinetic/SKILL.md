@@ -1,6 +1,6 @@
 ---
 name: cinetic
-description: Make a motion film from code with the upstream cinetic skill (Leonxlnx/cinetic, MIT), pinned and fetched on first use — launch films, update videos ("v2 is out"), UI walkthroughs built as live components, capability reels, logo stings and social ads, with a script checked for plain words, a licensed music track, recorded effects and measured finishing. Use when the film is built from code, brand and copy rather than cut from screen recordings; for real recordings use cinematic-film (a tilted plane with depth of field, or the device look with the real app inside a phone). Triggers on "cinetic", "시네틱", "런칭 필름", "업데이트 영상", "모션 그래픽", "launch film from code", "update video", "logo sting".
+description: Make a motion film from code (launch film, update video, UI walkthrough, logo sting, social ad) with the upstream cinetic skill (Leonxlnx/cinetic, MIT), pinned and fetched on first use. Films cut from screen recordings go to cinematic-film. Triggers on "cinetic", "시네틱", "모션 그래픽", "업데이트 영상", "update video", "logo sting".
 allowed-tools: Read, Grep, Glob, Bash, Write, Edit
 version: 1.0.0
 license: MIT (upstream Leonxlnx/cinetic; see LICENSES/NOTICE.md)

@@ -242,6 +242,11 @@ describe('cinematic-film skill — contract', () => {
         [100.1, 'red'],
         [100.3, 'blue'],
       ]);
+      // t3: blue 0.91 s into a window played at speed 2, so 0.455 s into the film: frame 27 (27.3)
+      take('t3', [
+        [100, 'red'],
+        [100.91, 'blue'],
+      ]);
       const shots = [
         {
           id: 'w',
@@ -256,6 +261,7 @@ describe('cinematic-film skill — contract', () => {
           ],
         },
         { id: 'late', take: 't2', t0: 0, t1: 0.5, vh: 10 },
+        { id: 'fast', take: 't3', t0: 0, t1: 1.6, speed: 2, vh: 10 },
       ];
       writeFileSync(join(dir, 'shots.json'), JSON.stringify({ fps: 60, shots }));
       const gen = join(dir, 'shots.gen.ts');
@@ -314,18 +320,26 @@ describe('cinematic-film skill — contract', () => {
       const ts = readFileSync(gen, 'utf8');
       const table = JSON.parse(ts.slice(ts.indexOf('Record<string, Shot> = ') + 23, ts.lastIndexOf(';')));
       expect(table.late.speed).toBe(1);
+      // speed 2 halves the source timing in the encoded clip, to the frame
+      const fast = colours('fast');
+      expect(fast.length).toBe(48); // 1.6 s of source at speed 2
+      expect(
+        fast.slice(0, 27).every((c) => c === 'red') && fast.slice(27).every((c) => c === 'blue'),
+        fast.join(' '),
+      ).toBe(true);
     },
+    60_000, // seven ffmpeg runs: slow on a loaded runner
   );
 
   it('cut_phone.py refuses a failed or unfinished take', () => {
     if (!hasPython) return;
     const dir = mkdtempSync(join(tmpdir(), 'cut-phone-bad-'));
-    const cut = (marks: object[]) => {
+    const cut = (marks: object[], t1 = 1) => {
       mkdirSync(join(dir, 'takes', 't'), { recursive: true });
       writeFileSync(join(dir, 'takes', 't', 'markers.jsonl'), `${marks.map((m) => JSON.stringify(m)).join('\n')}\n`);
       writeFileSync(
         join(dir, 'shots.json'),
-        JSON.stringify({ fps: 60, shots: [{ id: 's', take: 't', t0: 0, t1: 1, vh: 716 }] }),
+        JSON.stringify({ fps: 60, shots: [{ id: 's', take: 't', t0: 0, t1, vh: 716 }] }),
       );
       return spawnSync(
         'python3',
@@ -343,19 +357,79 @@ describe('cinematic-film skill — contract', () => {
         { encoding: 'utf8' },
       );
     };
-    expect(
-      cut([
+    const refused = (marks: object[], why: RegExp, t1 = 1) => {
+      const r = cut(marks, t1);
+      expect(r.status, r.stdout).not.toBe(0);
+      expect(r.stderr).toMatch(why);
+      expect(existsSync(join(dir, 'g.ts')), 'no shot table from a refused take').toBe(false);
+    };
+    refused(
+      [
         { ts: 1, name: 'rec-start' },
         { ts: 3, name: 'rec-failed', frames: 0 },
-      ]).stderr,
-    ).toMatch(/rec-failed/);
-    expect(cut([{ ts: 1, name: 'rec-start' }]).stderr).toMatch(/unfinished take/);
+      ],
+      /rec-failed/,
+    );
+    refused([{ ts: 1, name: 'rec-start' }], /unfinished take/);
+    // a window past the recording (a retake shorter than the plan)
+    refused(
+      [
+        { ts: 1, name: 'rec-start' },
+        { ts: 3, name: 'rec-stop', frames: 9 },
+      ],
+      /window outside the take/,
+      2.5,
+    );
     expect(
       cut([
         { ts: 1, name: 'rec-start' },
         { ts: 3, name: 'rec-stop', frames: 9 },
       ]).status,
     ).toBe(0);
+  });
+
+  it.skipIf(!hasPython)('cut_phone.py gives a tap on the boundary of two adjacent shots to one shot only', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cut-phone-edge-'));
+    mkdirSync(join(dir, 'takes', 't'), { recursive: true });
+    const marks = [
+      { ts: 100, name: 'rec-start' },
+      { ts: 100.98, name: 'tap', what: 'edge', x: 10, y: 10 },
+      { ts: 101, name: 'tap', what: 'at-cut', x: 10, y: 10 },
+      { ts: 101.4, name: 'swipe', x: 196, y: 420, dy: 300 },
+      { ts: 102.3, name: 'swipe-end' },
+      { ts: 103, name: 'rec-stop', frames: 0 },
+    ];
+    writeFileSync(join(dir, 'takes', 't', 'markers.jsonl'), `${marks.map((m) => JSON.stringify(m)).join('\n')}\n`);
+    const shots = [
+      { id: 'a', take: 't', t0: 0, t1: 1, vh: 716 },
+      { id: 'b', take: 't', t0: 1, t1: 2, vh: 716 },
+    ];
+    writeFileSync(join(dir, 'shots.json'), JSON.stringify({ fps: 60, shots }));
+    const gen = join(dir, 'g.ts');
+    const r = spawnSync(
+      'python3',
+      [
+        resolve(SKILL_ROOT, 'scripts', 'cut_phone.py'),
+        join(dir, 'shots.json'),
+        '--takes',
+        join(dir, 'takes'),
+        '--public',
+        join(dir, 'pub'),
+        '--gen',
+        gen,
+        '--events-only',
+      ],
+      { encoding: 'utf8' },
+    );
+    expect(r.status, r.stderr).toBe(0);
+    const ts = readFileSync(gen, 'utf8');
+    const table = JSON.parse(ts.slice(ts.indexOf('Record<string, Shot> = ') + 23, ts.lastIndexOf(';')));
+    const whats = (id: string) =>
+      table[id].ev.filter((e: { k: string }) => e.k === 'tap').map((e: { what: string }) => e.what);
+    expect(whats('a')).toEqual(['edge']);
+    expect(whats('b')).toEqual(['at-cut']);
+    // a swipe that runs past its shot keeps its end
+    expect(table.b.ev).toContainEqual({ f: 24, k: 'swipe', x: 196, y: 420, dy: 300, to: 78 });
   });
 
   it('maskResponses rewrites a response, aborts on a failed fetch or rewrite (never replays), passes streams', async () => {
@@ -386,15 +460,22 @@ describe('cinematic-film skill — contract', () => {
       abort: vi.fn(),
       continue: vi.fn(),
     });
-    const json = (body: string) => async () => ({
-      headers: () => ({ 'content-type': 'application/json' }),
-      text: async () => body,
-    });
+    const json =
+      (body: string, status = 200) =>
+      async () => ({
+        status: () => status,
+        headers: () => ({ 'content-type': 'application/json' }),
+        text: async () => body,
+      });
     const h = await handlerFor();
     const ok = route('application/json', json('{"e":"a@b.co"}'));
     await h(ok);
     expect(ok.fulfill).toHaveBeenCalledWith(expect.objectContaining({ body: '{"e":"x@example.com"}' }));
-    expect(ok.fetch).toHaveBeenCalledWith({ timeout: 15000 });
+    expect(ok.fetch).toHaveBeenCalledWith({ timeout: 15000, maxRedirects: 0 });
+    // a redirect goes back to the browser as it came (the page's URL follows it), not rewritten or followed here
+    const moved = route('application/json', json('{"e":"a@b.co"}', 302));
+    await h(moved);
+    expect(moved.fulfill).toHaveBeenCalledWith({ response: expect.anything() });
     for (const bad of [
       route('application/json', json('boom')),
       route('application/json', async () => {
@@ -411,11 +492,49 @@ describe('cinematic-film skill — contract', () => {
     await h(sse);
     expect(sse.continue).toHaveBeenCalled();
     expect(sse.fetch).not.toHaveBeenCalled();
+    // a custom predicate adds streams; EventSource still passes with it
+    const custom = await handlerFor({ stream: (req: { url: () => string }) => req.url().endsWith('/feed') });
     const named = route('*/*', json('{}'));
-    await (await handlerFor({ stream: () => true }))(named);
+    named.request = () => ({ headers: () => ({ accept: '*/*' }), url: () => 'http://x/feed' });
+    await custom(named);
     expect(named.continue).toHaveBeenCalled();
     expect(named.fetch).not.toHaveBeenCalled();
+    const sse2 = route('text/event-stream', json('{}'));
+    await custom(sse2);
+    expect(sse2.continue).toHaveBeenCalled();
+    expect(sse2.fetch).not.toHaveBeenCalled();
     quiet.mockRestore();
+  });
+
+  it('recorder.stop marks a failed stop rec-failed, throws, and has both logs on disk when it settles', async () => {
+    const { recorder } = createRequire(__filename)(resolve(SKILL_ROOT, 'scripts', 'mobile_capture.cjs'));
+    const take = async (failStop: boolean) => {
+      const out = join(mkdtempSync(join(tmpdir(), 'rec-')), 'take');
+      const cdp = {
+        on: () => {},
+        send: async (m: string) => {
+          if (failStop && m === 'Page.stopScreencast') throw new Error('target closed');
+        },
+      };
+      const rec = await recorder({ newCDPSession: async () => cdp }, {}, out);
+      await rec.start();
+      rec.mark('tap', { what: 'x', x: 1, y: 1 });
+      const err = await rec.stop().then(
+        () => null,
+        (e: Error) => e,
+      );
+      const names = readFileSync(join(out, 'markers.jsonl'), 'utf8')
+        .trim()
+        .split('\n')
+        .map((l) => JSON.parse(l).name);
+      return { err, names };
+    };
+    const bad = await take(true);
+    expect(String(bad.err)).toMatch(/target closed/);
+    expect(bad.names).toEqual(['rec-start', 'tap', 'rec-failed']);
+    const good = await take(false);
+    expect(good.err).toBeNull();
+    expect(good.names).toEqual(['rec-start', 'tap', 'rec-stop']);
   });
 
   it('names the Remotion license condition instead of hiding it', () => {

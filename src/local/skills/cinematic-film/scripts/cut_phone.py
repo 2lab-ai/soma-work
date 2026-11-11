@@ -27,6 +27,14 @@ if not events_only:
 FPS = spec.get('fps', 60)
 os.makedirs(os.path.join(PUB, 'phone'), exist_ok=True)
 gen, cache = [], {}
+
+def owner(take, r):
+    """The one shot a marker r seconds into a take belongs to: the first (in shots.json order) whose [t0, t1) holds it,
+    else the first whose window widened by 50 ms does. Adjacent shots never both draw one tap."""
+    same = [x for x in spec['shots'] if x['take'] == take]
+    hit = next((x for x in same if x['t0'] <= r < x['t1']), None) or next((x for x in same if x['t0'] - 0.05 <= r < x['t1'] + 0.05), None)
+    return hit and hit['id']
+
 for s in spec['shots']:
     R = os.path.abspath(os.path.join(TAKES, s['take']))
     if s['take'] not in cache:
@@ -41,6 +49,9 @@ for s in spec['shots']:
         cache[s['take']] = (fr, mk, mk[0]['ts'], {})
     fr, mk, T0, sizes = cache[s['take']]
     sp = s.get('speed', 1)
+    # a window past the recording would be padded with its last frame: refuse it (a retake shorter than the plan)
+    stop = next(m['ts'] for m in mk if m['name'] == 'rec-stop') - T0
+    assert 0 <= s['t0'] < s['t1'] <= stop + 0.001, ('window outside the take', s['id'], s['t0'], s['t1'], round(stop, 3))
     a, b = T0 + s['t0'], T0 + s['t1']
     H = round(s['vh'] * 3)
     def h(f):
@@ -69,14 +80,14 @@ for s in spec['shots']:
         # 1180 wide: libx264 needs even sizes (the capture is 1179 = 393 x 3)
         subprocess.run(['ffmpeg', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', lst, '-vf', f'scale=1180:{H},fps={FPS},format=yuv420p', '-frames:v', str(n), '-c:v', 'libx264', '-crf', '15', '-preset', 'medium', '-movflags', '+faststart', dst], check=True)
     ev = []
-    for m in mk:
-        if not (a - 0.05 <= m['ts'] <= b + 0.05): continue
-        f, k = round((m['ts'] - a) / sp * FPS), m['name']
+    fof = lambda ts: round((ts - a) / sp * FPS)
+    for i, m in enumerate(mk):
+        if m['name'] in ('rec-start', 'rec-stop', 'swipe-end') or owner(s['take'], m['ts'] - T0) != s['id']: continue
+        f, k = fof(m['ts']), m['name']
         if k == 'tap': ev.append({'f': f, 'k': 'tap', 'x': round(m['x'], 1), 'y': round(m['y'], 1), 'what': m.get('what', '')})
-        elif k == 'swipe': ev.append({'f': f, 'k': 'swipe', 'x': m['x'], 'y': m['y'], 'dy': m['dy']})
-        elif k == 'swipe-end':
-            for o in reversed(ev):
-                if o['k'] == 'swipe' and 'to' not in o: o['to'] = f; break
+        elif k == 'swipe':
+            end = next((e for e in mk[i + 1:] if e['name'] == 'swipe-end'), None)  # its end, wherever the shot ends
+            ev.append({'f': f, 'k': 'swipe', 'x': m['x'], 'y': m['y'], 'dy': m['dy'], **({'to': fof(end['ts'])} if end else {})})
         elif k == 'key': ev.append({'f': f, 'k': 'key', 'ch': m['ch']})
         elif k == 'dict': ev.append({'f': f, 'k': 'dict', 'final': m.get('final', ''), 'interim': m.get('interim', '')})
     for x in s.get('extra', []):  # taps the take did not mark: {"t": source s, "x", "y", "what"}

@@ -47,10 +47,8 @@ export function presses(text: string): Press[] {
         out.push({ key: base, layout: 'ko', shift: !!SHIFTED[k], text: shown + show });
       }
       shown += ch;
-    } else if (ch === ' ') {
-      shown += ch; out.push({ key: 'space', layout, shift: false, text: shown });
-    } else if (ch === '\n') {
-      shown += ch; out.push({ key: 'return', layout, shift: false, text: shown });
+    } else if (ch === ' ' || ch === '\n') {
+      shown += ch; out.push({ key: ch === ' ' ? 'space' : 'return', layout, shift: false, text: shown });
     } else {
       const lay = layoutOf(ch);
       layout = lay;
