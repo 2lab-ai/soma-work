@@ -161,6 +161,7 @@ import {
 } from './new-task';
 import type { RepoChannelResult } from './new-task-channel';
 import type { NewTaskLaunchResult } from './new-task-launcher';
+import { nextActionsOfTurn } from './next-actions';
 import { verifyDashboardTokenRaw } from './oauth';
 import {
   type DashboardPermissionRequest,
@@ -3420,8 +3421,12 @@ function sendToConversationAudience(conversationId: string, payload: string): vo
 export function broadcastConversationUpdate(conversationId: string, turn: any): void {
   if (wsClients.size === 0) return;
   try {
-    // Strip rawContent from assistant turns to reduce bandwidth
-    const sanitizedTurn = turn?.role === 'assistant' && turn?.rawContent ? { ...turn, rawContent: undefined } : turn;
+    // Strip rawContent from assistant turns to reduce bandwidth; the next actions it ends with go along (SSOT
+    // 2026-11-11 — the open card and the detail card draw them as buttons).
+    const sanitizedTurn =
+      turn?.role === 'assistant' && turn?.rawContent
+        ? { ...turn, rawContent: undefined, nextActions: nextActionsOfTurn(turn) }
+        : turn;
     const payload = JSON.stringify({ type: 'conversation_update', conversationId, turn: sanitizedTurn });
     sendToConversationAudience(conversationId, payload);
   } catch (error) {
@@ -4056,6 +4061,8 @@ export async function registerDashboardRoutes(
         clientRef: t.role === 'user' ? t.clientRef : undefined,
         // User media (SSOT 2026-10-25): the files this instruction carried, metadata only.
         attachments: t.role === 'user' ? t.attachments : undefined,
+        // SSOT 2026-11-11: the next actions an answer ends with — the open card and the detail card's buttons.
+        nextActions: t.role === 'assistant' ? nextActionsOfTurn(t) : undefined,
         // SSOT 2026-10-27: who put a user turn there (a host turn reads as one
         // line), and a /compact turn's compaction (estimate, then its result).
         origin: t.role === 'user' ? t.origin : undefined,
@@ -7080,6 +7087,21 @@ body.nt-open .new-task-fab { display: none !important; }
 .panel-plan-bar { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; padding: 8px 12px; margin-bottom: 8px; border-radius: 10px; background: var(--tint-wait-soft); border: 1px solid var(--tint-wait-line); }
 .ppb-label { flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 600; color: var(--tint-wait-fg); }
 @media (hover: hover) and (pointer: fine) { .card-plan-link:hover, .pp-full:hover { text-decoration: underline; } }
+/* Next actions (SSOT 2026-11-11): the latest answer's next steps as buttons — stacked on the open task card, in a
+   wrapping row right above the detail card's composer. A step reads what it does, then the command it sends. */
+.next-actions { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.card-body .next-actions { margin-top: 12px; }
+.na-kicker { font-size: 12px; font-weight: 600; color: var(--ib-muted); }
+.na-row { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.na-btn { justify-content: flex-start; gap: 8px; max-width: 100%; min-width: 0; text-align: left; }
+.na-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.na-cmd { flex: 0 1 auto; min-width: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11.5px; opacity: 0.72; }
+.card-body .na-row { flex-direction: column; align-items: stretch; }
+.card-body .na-btn { flex-wrap: wrap; row-gap: 2px; padding-top: 7px; padding-bottom: 7px; }
+.card-body .na-label { white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
+.card-body .na-cmd { flex-basis: 100%; max-width: 100%; }
+.panel-next-bar { padding: 8px 12px; margin-bottom: 8px; border-radius: 10px; background: var(--ib-col); border: 1px solid var(--ib-card-border); }
+.panel-next-bar[hidden] { display: none; }
 </style>
 <!-- The first screen (#965, boot-screen.ts): over the page until what the viewport shows is drawn. -->
 <style id="boot-screen">${bootScreenCss()}</style>
@@ -7399,6 +7421,9 @@ ${pageTokenAliases()}
     <div class="panel-command" id="panel-command">
       <!-- Plan mode: 시작 · 취소 · 직접 입력 at the bottom while a plan waits (the composer right under it is the direct input). -->
       <div class="panel-plan-bar" id="panel-plan-bar" role="group" aria-label="작업 계획 결정" hidden></div>
+      <!-- Next actions (SSOT 2026-11-11): the latest answer's next steps as buttons, right above the composer — one press
+           sends that step as an instruction, the composer under it is the direct input (renderPanelNext). -->
+      <div class="panel-next-bar" id="panel-next-bar" hidden></div>
       <!-- The composer and the session's follow-up queue — @2lab.ai/ui <ui-agent-steering> (dashboard batch 2) with
            a <ui-composer slot="composer"> as its field (E-30, 0.10.0): multiline; files, images (paste, drop, picker)
            and voice, their chips, the limits and the error line are the composer's; Enter queues, ⌘/Ctrl+Enter
@@ -13380,6 +13405,7 @@ function sizePanelSections() {
 // their conversation, and what the list says before or without turns.
 var _panelTurnsList = [];
 var _panelTurnsCid = '';
+var _panelTurnsAct = ''; // the session's lastActivity when the panel last fetched its turns (renderPanelNext)
 var _panelTurnsMsg = ''; // 'loading' | 'none' | 'failed' | 'unrecorded' | '' (the turns)
 var _panelTurnsWhy = ''; // why the first page failed (the element's error)
 var _panelOlderWhy = ''; // why the last older page failed ('' = it did not)
@@ -13614,6 +13640,7 @@ function repaintPanelSession() {
   renderPanelControls(s);
   renderPanelComposer(s);
   renderPanelPlan(s);
+  renderPanelNext();
   renderPanelFamily();
   repaintPanelScope();
   convPaint(); // re-ai-answer D12 — the 응답 작성 중 row (and a /compact's progress) follow the session state
@@ -14765,6 +14792,8 @@ function fetchCardIo(cid) {
     .then(function(data) {
       // The Executive Summary is a turn of its own in the chat; the card's 응답 stays the model's reply
       // (its TL;DR has a box of its own on the face). One more turn is fetched so it can be skipped.
+      // The steps the latest answer ends with — the Executive Summary's own included (nextActionsOfTurns).
+      var nextActions = nextActionsOfTurns((data && data.turns) || []);
       var turns = ((data && data.turns) || []).filter(function(t) { return !t.executiveSummary; });
       var ui = -1;
       for (var i = turns.length - 1; i >= 0; i--) { if (turns[i].role === 'user') { ui = i; break; } }
@@ -14787,10 +14816,10 @@ function fetchCardIo(cid) {
           .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
           .then(function(rawData) {
             var text = rawData && typeof rawData.raw === 'string' ? rawData.raw : '';
-            return { instruction: instruction, response: text ? { title: '', body: text.slice(0, 600) + (text.length > 600 ? '…' : '') } : null };
-          }, function() { return { instruction: instruction, response: null, partial: true }; });
+            return { instruction: instruction, response: text ? { title: '', body: text.slice(0, 600) + (text.length > 600 ? '…' : '') } : null, nextActions: nextActions };
+          }, function() { return { instruction: instruction, response: null, partial: true, nextActions: nextActions }; });
       }
-      return { instruction: instruction, response: reply ? { title: reply.summaryTitle || '', body: reply.summaryBody || '' } : null };
+      return { instruction: instruction, response: reply ? { title: reply.summaryTitle || '', body: reply.summaryBody || '' } : null, nextActions: nextActions };
     });
 }
 
@@ -15056,7 +15085,8 @@ function renderCardBody(s, col, spec, face) {
     + permissionHtml
     + renderCardResume(s, col)
     + taskPlanCardHtml(s)
-    + questionHtml;
+    + questionHtml
+    + cardNextActionsHtml(s, col);
 
   const lane = col === 'working' ? 'work' : col === 'waiting' ? 'wait' : 'done';
   const parts = spec && spec[lane] ? spec[lane]
@@ -15387,6 +15417,140 @@ function cardQuickDirectInput(btn) {
   var key = btn.getAttribute('data-quick-key');
   if (!(panelOpen && panelSessionKey === key)) openPanel(key);
   dashToast({ title: '직접 입력', description: '입력 필요의 질문 카드에서 직접 입력을 골라 답을 적어 보내세요', tone: 'neutral' });
+}
+// ── Next actions as buttons (SSOT 2026-11-11, Z: "이렇게 대화 완료(대기)처리된후에 다음 행동을 3개씩 주는데 이걸
+// 버튼으로 표현해줘. 카드 펼쳤을때랑 디테일에 버튼으로 보여줘. 기존 입력처림할지 어떻게 할지는 니가 리서치해서 알아서
+// 1안으로 처리") ──
+// The answer that ends a turn names its next steps (the Executive Summary's Next Actions: a line saying what each
+// does, then its command in a block). The server reads them out of the answer (next-actions.ts) and sends them with
+// the turn (nextActions). The open task card shows them under its decisions, the detail card right above its
+// composer. One press sends the step's command as the viewer's instruction on the composer's own path (the command
+// route): it is the viewer's turn in the chat, waits for the owner's approval on someone else's task, as typed words
+// would. Shown only once the turn is over and nothing else is asked: a question, a permission, a plan to start or the
+// goal's decision is answered first.
+var _naSent = Object.create(null); // card key → the answer whose step was sent from the card (its buttons go)
+var NEXT_ACTIONS_LABEL = '다음 행동';
+// Pure: the steps of the latest answer — the answers after the latest instruction, newest first; null once a newer
+// instruction (a person's or the host's, an optimistic one included) follows it.
+function nextActionsOfTurns(turns) {
+  var list = Array.isArray(turns) ? turns : [];
+  for (var i = list.length - 1; i >= 0; i--) {
+    var t = list[i];
+    if (!t) continue;
+    if (t.role === 'user') return null;
+    if (t.role === 'assistant' && Array.isArray(t.nextActions) && t.nextActions.length) {
+      return { turnId: String(t.id || ''), list: t.nextActions };
+    }
+  }
+  return null;
+}
+// The steps go out now: the viewer may instruct this task on this instance, it is open (not ended or asleep), no
+// turn holds it, and it asks nothing else.
+function nextActionsOpen(s) {
+  if (!s || isSiblingSession(s) || pcModeOf(s) !== 'open' || turnHolds(s)) return false;
+  if (s.pendingQuestion || s.pendingGoalDecision) return false;
+  if (Array.isArray(s.pendingPermissions) && s.pendingPermissions.length) return false;
+  return !(s.taskPlan && s.taskPlan.state === 'awaiting');
+}
+// The buttons: what the step does, and the command it sends (the whole command is the tooltip). (권장) is the
+// one primary. The command rides as attribute data, never as inline JS.
+function nextActionsHtml(s, na, where) {
+  if (!na || !Array.isArray(na.list) || !na.list.length || !nextActionsOpen(s)) return '';
+  if (na.turnId && _naSent[s.key] === na.turnId) return '';
+  var busy = isBusy(s.key, 'next');
+  var key = escAttr(s.key);
+  var turn = escAttr(na.turnId || '');
+  var buttons = '';
+  for (var i = 0; i < na.list.length; i++) {
+    var a = na.list[i] || {};
+    var cmd = String(a.command || '');
+    if (!cmd) continue;
+    var label = String(a.label || '');
+    buttons += '<button type="button" class="ui-btn na-btn' + (a.recommended ? ' is-primary' : '') + '"'
+      + (busy ? ' disabled aria-busy="true"' : '')
+      + ' title="' + escAttr(cmd) + '" data-na-key="' + key + '" data-na-turn="' + turn + '" data-na-cmd="' + escAttr(cmd) + '"'
+      + ' onclick="event.stopPropagation();nextActionButton(this)">'
+      + '<span class="na-label">' + esc(label || cmd) + '</span>'
+      + (label ? '<code class="na-cmd">' + esc(cmd.split('\\n')[0]) + '</code>' : '')
+      + '</button>';
+  }
+  if (!buttons) return '';
+  return '<div class="next-actions is-' + where + '" role="group" aria-label="' + escAttr(NEXT_ACTIONS_LABEL) + '"><span class="na-kicker">' + esc(NEXT_ACTIONS_LABEL) + '</span><div class="na-row">' + buttons + '</div></div>';
+}
+// The open task card's steps: the latest answer the card's 지시/응답 fetch read (fetchCardIo) — only from a fetch
+// that is current: while it refetches, or after it failed, the steps it held may belong to an answer a newer
+// instruction already followed (trinity R1, astra P2 · fable P3).
+function cardNextActionsHtml(s, col) {
+  if (col === 'closed' || !s.conversationId) return '';
+  var c = _ioCache[s.conversationId];
+  if (!c || c.state !== 'ok' || !c.data || c.stamp !== String(s.lastActivity || '')) return '';
+  return nextActionsHtml(s, c.data.nextActions, 'card');
+}
+// The detail card's steps, right above its composer: the latest answer of the conversation it shows.
+function renderPanelNext() {
+  var bar = document.getElementById('panel-next-bar');
+  if (!bar) return;
+  var s = panelOpen && panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  // The conversation's live audience (its owner, an admin) gets every new turn while the panel is open; anyone else
+  // gets none, so their steps count only when the turns were fetched at the session's latest activity — never an
+  // answer a later turn already followed (trinity R2, astra P2).
+  var fresh = !!s && (viewerOwns(s) || _viewerIsAdmin || _panelTurnsAct === String(s.lastActivity || ''));
+  var na = s && fresh && _panelTurnsCid && _panelTurnsCid === s.conversationId ? nextActionsOfTurns(_panelTurnsList) : null;
+  var html = s ? nextActionsHtml(s, na, 'panel') : '';
+  bar.hidden = !html;
+  if (bar._html !== html) {
+    bar.innerHTML = html;
+    bar._html = html;
+  }
+}
+function nextActionsRepaint(key) {
+  refreshCard(key);
+  if (panelOpen && panelSessionKey === key) renderPanelNext();
+}
+function nextActionButton(btn) {
+  if (!btn || btn.disabled) return;
+  sendNextAction(btn.getAttribute('data-na-key'), btn.getAttribute('data-na-turn'), btn.getAttribute('data-na-cmd'));
+}
+// One press, one send. The detail card open on this task: the composer's own send (its pending turn in the chat, the
+// queue, the toasts). Otherwise the same route from here, its outcome in a toast. Sent: the answer's buttons go.
+async function sendNextAction(key, turnId, command) {
+  var s = key ? _sessionCache[key] : null;
+  if (!s || !command || isBusy(key, 'next') || !nextActionsOpen(s)) return;
+  setBusy(key, 'next', true);
+  nextActionsRepaint(key);
+  var ok = false;
+  try {
+    if (panelOpen && panelSessionKey === key) ok = (await sendCommand(command)) === true;
+    else ok = await nextActionPost(key, command);
+  } finally {
+    setBusy(key, 'next', false);
+  }
+  if (ok && turnId) _naSent[key] = turnId;
+  nextActionsRepaint(key);
+}
+async function nextActionPost(key, command) {
+  var why = '';
+  var data = {};
+  try {
+    // A level picked just before goes first, as the composer's send waits for it; a refused switch sends nothing
+    // (trinity R1, astra · grok P2).
+    var level = await effortSettled(key);
+    if (level && !level.ok) throw new Error('추론 강도를 바꾸지 못해 보내지 않았어요 — ' + level.error);
+    var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/command', JSON.stringify(pcCommandBody(command, [], '')));
+    try { data = await res.json(); } catch (_e) {}
+    if (!res.ok) why = ((data && data.error) || '') + ' (HTTP ' + res.status + ')';
+  } catch (e) {
+    why = (e && e.message) || '네트워크 오류';
+  }
+  if (why) {
+    dashToast({ title: '메시지를 보내지 못했어요', description: why.trim(), tone: 'error' });
+    return false;
+  }
+  if (data && data.pendingApproval) dashToast({ title: '작업 소유자의 승인을 기다려요', description: '소유자가 승인하면 실행됩니다 — 소유자에게 DM과 대시보드로 요청했어요', tone: 'wait' });
+  else if (data && data.answer === 'thread') dashToast(pcThreadAnswerToast(_sessionCache[key]));
+  else dashToast({ title: '다음 행동을 보냈어요', description: command, tone: 'success' });
+  loadSessions();
+  return true;
 }
 var _autoOpenWait = false;
 function autoOpenWhenDefined() {
@@ -19610,7 +19774,9 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   _panelTurnsOldestId = null;
   _panelTurnsList = [];
   _panelTurnsCid = '';
+  _panelTurnsAct = '';
   _panelTurnsMsg = s.conversationId ? 'loading' : 'unrecorded';
+  renderPanelNext(); // the previous card's steps go with its turns
   _panelTurnsWhy = '';
   _panelOlderWhy = '';
 
@@ -19851,6 +20017,8 @@ function loadPanelTurns(land) {
   _panelTurnsWhy = '';
   var loadingConvId = s.conversationId;
   var loadingGen = _panelGen;
+  // What the session had done when this fetch was asked for: a slow answer is never newer than that (trinity R2, grok).
+  var loadingAct = String(s.lastActivity || '');
   fetch('/api/dashboard/session/' + encodeURIComponent(loadingConvId) + '?limit=' + PANEL_TURNS_PAGE)
     .then(function(r) {
       if (r && r.ok === false) throw new Error('HTTP ' + r.status);
@@ -19876,10 +20044,12 @@ function loadPanelTurns(land) {
       // optimistic instruction the page already records (T1: it would show twice).
       _panelTurnsList = ptMergeFetched(turns, _panelTurnsList);
       _panelTurnsCid = data.id || loadingConvId;
+      _panelTurnsAct = loadingAct;
       _panelTurnsHasMore = turns.length > 0 && !!data.hasMore;
       _panelTurnsOldestId = turns.length ? turns[0].id : null;
       _panelTurnsMsg = _panelTurnsList.length ? '' : 'none';
       _panelTurnsLoading = false;
+      renderPanelNext();
       if (_psec === 'conv') {
         convPaint();
         psecToNewest();
@@ -20543,6 +20713,7 @@ function convPaintSoon() {
 function appendTurnToPanel(turn, own, replaceId) {
   if (!turn) return;
   ptUpsert(_panelTurnsList, turn, replaceId);
+  renderPanelNext(); // a new answer brings its steps; an instruction takes them away
   if (_panelTurnsMsg !== 'loading') _panelTurnsMsg = '';
   if (_psec !== 'conv' || _panelAgent || _panelTurnsMsg === 'loading') return;
   convPaint();
@@ -20564,6 +20735,7 @@ function dropTurnFromPanel(id) {
     if (_panelTurnsList[i] && _panelTurnsList[i].id === id) {
       _panelTurnsList.splice(i, 1);
       convPaint();
+      renderPanelNext();
       return true;
     }
   }
@@ -21040,6 +21212,8 @@ function closePanel() {
   _panelTurnsOldestId = null;
   _panelTurnsList = [];
   _panelTurnsMsg = '';
+  var nextBar = document.getElementById('panel-next-bar');
+  if (nextBar) { nextBar.innerHTML = ''; nextBar._html = ''; nextBar.hidden = true; }
   resetWorkLog(null);
   // A closed panel holds no section nodes.
   for (var si = 0; si < PSEC_ORDER.length; si++) psecClear(PSEC_ORDER[si]);
@@ -21216,7 +21390,7 @@ async function sendCommand(text, ref, files) {
     delete _pcFailed[ref];
   }
   // Only the card that sent it changes: a late answer never touches the card opened meanwhile.
-  if (panelSessionKey !== sendingSessionKey) return;
+  if (panelSessionKey !== sendingSessionKey) return !why;
   // The session left the board meanwhile (archived, a folded day): fail closed. The next live
   // render that finds it again re-applies its real state (the mode cache is cleared).
   if (!_sessionCache[sendingSessionKey]) {
@@ -21228,7 +21402,8 @@ async function sendCommand(text, ref, files) {
     el._sig = '';
     el.data = Object.assign({}, el.data, { disabled: true });
   }
-  if (!why) return;
+  // Sent: true — a next-action button that sent it lets its answer's buttons go (sendNextAction).
+  if (!why) return true;
   // Not sent: the note's row says so with Retry (the element's), and the
   // optimistic turn leaves the transcript — found by its own id, not by being the
   // list's last child (the 응답 작성 중 row may follow it, re-ai-answer D12).

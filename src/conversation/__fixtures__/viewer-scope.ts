@@ -20,6 +20,25 @@ export const VIEWER_FNS = ['viewerOwns', 'viewerCanManage', 'viewerCanInstruct']
  */
 export const CARD_FAMILY_FNS = ['epicChildCol', 'epicChildrenOf', 'epicFamilyOf', 'epicChildFace'] as const;
 
+/**
+ * Next actions as buttons (SSOT 2026-11-11): the open card's body (`renderCardBody` → `cardNextActionsHtml`), its
+ * 지시/응답 fetch (`fetchCardIo` → `nextActionsOfTurns`) and the panel's turn paths (`renderPanelNext`) call these. A
+ * harness that loads one of those callers without them gets a pass-through seam; one that loads them gets the real
+ * function. Pinned by dashboard-next-actions-client.test.ts.
+ */
+export const NEXT_ACTION_SEAMS: Readonly<Record<string, unknown>> = {
+  cardNextActionsHtml: () => '',
+  nextActionsOfTurns: () => null,
+  renderPanelNext: () => {},
+};
+export function nextActionSeams(fns: readonly string[], inject: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [name, seam] of Object.entries(NEXT_ACTION_SEAMS)) {
+    if (!fns.includes(name) && !(name in inject)) out[name] = seam;
+  }
+  return out;
+}
+
 export function viewerScope(
   fns: readonly string[],
   inject: Record<string, unknown>,
@@ -36,6 +55,7 @@ export function viewerScope(
   defaults._epicParentOf = Object.create(null);
   const family = fns.includes('cardOf') ? CARD_FAMILY_FNS.filter((f) => !fns.includes(f)) : [];
   if (fns.includes('cardOf')) defaults._sessionCache = Object.create(null);
+  Object.assign(defaults, nextActionSeams(fns, inject));
   return {
     fns: [...VIEWER_FNS.filter((f) => !fns.includes(f)), ...family, ...fns],
     inject: { ...defaults, ...inject },
