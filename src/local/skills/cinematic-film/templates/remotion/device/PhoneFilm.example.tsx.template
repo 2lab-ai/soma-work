@@ -48,14 +48,18 @@ const FontGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 };
 
 // A typed character's key presses: a Hangul syllable is its jamo, pressed just before the syllable shows.
-const keysOf = (s: Placed) => s.ev.filter((e) => e.k === 'key').flatMap((e) => {
-  const ch = e.ch!, lay = (s.kb as Layout) || 'ko';
-  if (ch === '\n') return [{ f: e.f, key: 'return', shift: false, layout: lay }];
-  if (ch === '\b') return [{ f: e.f, key: 'delete', shift: false, layout: lay }];
-  if (ch === ' ') return [{ f: e.f, key: 'space', shift: false, layout: lay }];
-  const ps = presses(ch);
-  return ps.map((p, i) => ({ f: e.f - (ps.length - 1 - i) * 4, key: p.key, shift: p.shift, layout: s.kb === 'num' ? ('num' as Layout) : p.layout }));
-});
+// Space, return and delete stay on the layout the last letter used (no flip back to Hangul after English).
+const keysOf = (s: Placed) => {
+  let lay = (s.kb as Layout) || 'ko';
+  return s.ev.filter((e) => e.k === 'key').flatMap((e) => {
+    const ch = e.ch!;
+    const ctl = ch === '\n' ? 'return' : ch === '\b' ? 'delete' : ch === ' ' ? 'space' : null;
+    if (ctl) return [{ f: e.f, key: ctl, shift: false, layout: lay }];
+    const ps = presses(ch).map((p) => ({ ...p, layout: s.kb === 'num' ? ('num' as Layout) : p.layout }));
+    lay = ps[ps.length - 1]?.layout ?? lay;
+    return ps.map((p, i) => ({ f: e.f - (ps.length - 1 - i) * 4, key: p.key, shift: p.shift, layout: p.layout }));
+  });
+};
 const tapsOf = (s: Placed): Tap[] => [
   ...s.ev.filter((e) => e.k === 'tap').map((e) => ({ f: s.at + e.f, x: e.x!, y: e.y! + SCREEN.status })),
   // a scroll is drawn near the right edge: a disc dragged over the content in the middle reads as a tap on it
@@ -90,7 +94,7 @@ export const PhoneFilm: React.FC = () => {
   const cur = PLACED.find((p) => f >= p.at && f < p.at + p.dur);
   let screen: React.ReactNode = null;
   if (f < PLACED[0].at) screen = MOCK ? <MOCK.Scene t={Math.max(0, f - MOCK_AT)} /> : null;
-  else if (!cur) screen = <ShotScreen s={PLACED[PLACED.length - 1]} t={0} freeze />;
+  else if (!cur) screen = <ShotScreen s={PLACED[PLACED.length - 1]} t={PLACED[PLACED.length - 1].dur - 1} freeze kbStays />;
   else {
     const i = PLACED.indexOf(cur), t = f - cur.at, tr = INTO[cur.id], prev = i > 0 ? PLACED[i - 1] : null;
     const node = <Sequence from={cur.at} durationInFrames={cur.dur} layout="none"><ShotScreen s={cur} t={t} afterKeyboard={!!prev && prev.vh < 700 && cur.vh > 700} kbStays={!!prev && prev.vh < 700 && cur.vh < 700} /></Sequence>;

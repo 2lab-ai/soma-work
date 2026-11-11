@@ -31,7 +31,8 @@ async function open({ h = 716, dsf = 3, gpu = true, cookies = [], initScripts = 
   const a = gpu ? [...args, `--force-device-scale-factor=${dsf}`, '--use-angle=metal', '--enable-gpu-rasterization', '--ignore-gpu-blocklist'] : args;
   const browser = await chromium.launch(gpu ? { args: a, channel: 'chromium' } : { args: a });
   try {
-    const ctx = await browser.newContext({ viewport: { width: 393, height: h }, deviceScaleFactor: gpu ? 1 : dsf, isMobile: true, hasTouch: true, userAgent: dev.userAgent, bypassCSP: true, permissions });
+    // serviceWorkers 'block': a service worker would answer from its cache and skip maskResponses' route
+    const ctx = await browser.newContext({ viewport: { width: 393, height: h }, deviceScaleFactor: gpu ? 1 : dsf, isMobile: true, hasTouch: true, userAgent: dev.userAgent, bypassCSP: true, permissions, serviceWorkers: 'block' });
     if (cookies.length) await ctx.addCookies(cookies);
     // a dark first paint and no tap highlight: both otherwise flash for a few frames a reviewer will catch. The init
     // script runs before the document has a root, so the style goes in the moment the root appears, not at DOMContentLoaded
@@ -57,8 +58,9 @@ async function open({ h = 716, dsf = 3, gpu = true, cookies = [], initScripts = 
 async function recorder(ctx, page, OUT) {
   fs.mkdirSync(OUT + '/frames', { recursive: true });
   const fr = fs.createWriteStream(OUT + '/frames.jsonl'), mk = fs.createWriteStream(OUT + '/markers.jsonl');
-  const cdp = await ctx.newCDPSession(page); let n = 0;
+  const cdp = await ctx.newCDPSession(page); let n = 0, closed = false;
   cdp.on('Page.screencastFrame', async (f) => {
+    if (closed) return; // after stop: the frame log is already final
     n++; const name = String(n).padStart(6, '0') + '.jpg';
     fs.writeFileSync(`${OUT}/frames/${name}`, Buffer.from(f.data, 'base64'));
     fr.write(JSON.stringify({ i: n, ts: f.metadata.timestamp, file: name }) + '\n');
@@ -72,9 +74,11 @@ async function recorder(ctx, page, OUT) {
     stop: async () => {
       let err = null;
       try { await cdp.send('Page.stopScreencast'); } catch (e) { err = e; }
-      mark(err ? 'rec-failed' : 'rec-stop', { frames: n, ...(err ? { e: String(err).slice(0, 200) } : {}) });
       await new Promise((r) => setTimeout(r, 400)); // the last frames in flight
-      await Promise.all([fr, mk].map((w) => new Promise((r) => w.end(r)))); // both logs on disk before stop resolves
+      closed = true;
+      await new Promise((r) => fr.end(r)); // the frame log is final before rec-stop says the take is complete
+      mark(err ? 'rec-failed' : 'rec-stop', { frames: n, ...(err ? { e: String(err).slice(0, 200) } : {}) });
+      await new Promise((r) => mk.end(r));
       if (err) throw err;
     },
   };
@@ -98,8 +102,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // value. `match(url)` picks the requests. A response is buffered before it is rewritten, and a buffered stream never
 // ends: streams must pass through. EventSource asks for text/event-stream and always passes; a fetch()-read stream
 // (NDJSON, chunked text) may not ask, so name it with `stream(req)` as well, or keep it out of `match`. One that slips
-// through fails loudly when its fetch times out (`timeout` ms), it does not hang the page silently. A redirect goes
-// back to the browser as a redirect, so the page's URL (and its relative links) follow it.
+// through fails loudly when its fetch times out (`timeout` ms), it does not hang the page silently. Redirects are
+// followed here, so the final body is the one masked (the browser would not route the redirected request again); the
+// page keeps the first URL, so match API calls, not page navigations.
 const asksForStream = (req) => /text\/event-stream|application\/x-ndjson/.test(req.headers()['accept'] || '');
 async function maskResponses(ctx, match, rewrite, { stream = () => false, timeout = 15000 } = {}) {
   await ctx.route((u) => match(u), async (route) => {
@@ -107,10 +112,16 @@ async function maskResponses(ctx, match, rewrite, { stream = () => false, timeou
     if (asksForStream(req) || stream(req)) return route.continue();
     // never replay: the request already reached the server once; a failed fetch or rewrite aborts it (and says so)
     let res;
-    try { res = await route.fetch({ timeout, maxRedirects: 0 }); } catch (e) { console.error('maskResponses: fetch failed (a stream? pass it through with stream(req)), request aborted:', req.url(), String(e)); return route.abort('failed'); }
+    try { res = await route.fetch({ timeout }); } catch (e) { console.error('maskResponses: fetch failed (a stream? pass it through with stream(req)), request aborted:', req.url(), String(e)); return route.abort('failed'); }
     const ct = res.headers()['content-type'] || '';
-    if ((res.status() >= 300 && res.status() < 400) || !/json|text/.test(ct)) return route.fulfill({ response: res });
-    try { return route.fulfill({ response: res, body: rewrite(await res.text()) }); } catch (e) { console.error('maskResponses: rewrite failed, request aborted:', req.url(), String(e)); return route.abort('failed'); }
+    try {
+      if (!/json|text/.test(ct)) return await route.fulfill({ response: res });
+      let body;
+      try { body = rewrite(await res.text()); } catch (e) { console.error('maskResponses: rewrite failed, request aborted:', req.url(), String(e)); return await route.abort('failed'); }
+      return await route.fulfill({ response: res, body });
+    } finally {
+      await res.dispose?.(); // a long take routes thousands of responses: free each buffered body
+    }
   });
 }
 module.exports = { open, recorder, tap, swipe, sleep, maskResponses };

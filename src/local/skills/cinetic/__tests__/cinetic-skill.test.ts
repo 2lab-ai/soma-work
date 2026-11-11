@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { parse as parseYaml } from 'yaml';
 
 const SKILL_ROOT = resolve(__dirname, '..');
 const read = (...p: string[]) => readFileSync(resolve(SKILL_ROOT, ...p), 'utf8');
@@ -21,6 +22,11 @@ function parseFrontmatter(md: string): Record<string, string> {
 }
 
 describe('cinetic skill — a pinned loader for the upstream skill', () => {
+  it('SKILL.md front matter is valid YAML', () => {
+    const fm = read('SKILL.md').match(/^---\n([\s\S]*?)\n---/)?.[1] ?? '';
+    expect(parseYaml(fm)).toMatchObject({ name: 'cinetic', license: expect.stringMatching(/MIT/) });
+  });
+
   it('SKILL.md has frontmatter name cinetic, EN/KO triggers and a license line', () => {
     const fm = parseFrontmatter(read('SKILL.md'));
     expect(fm.name).toBe('cinetic');
@@ -88,6 +94,17 @@ describe('cinetic skill — a pinned loader for the upstream skill', () => {
     // a finished checkout is returned again without touching the network (the upstream may be gone)
     env.CINETIC_REPO = `file://${join(dir, 'gone')}`;
     expect(await run()).toMatchObject({ code: 0, out: root });
+    // a lock left by a killed install (its pid is gone) is taken over, not waited on for 2 minutes
+    const dead = spawnSync('true').pid as number;
+    const pin2 = git('rev-parse', 'HEAD');
+    mkdirSync(join(dir, 'home', `${pin2}.lock`), { recursive: true });
+    writeFileSync(join(dir, 'home', `${pin2}.lock`, 'pid'), String(dead));
+    env.CINETIC_REPO = `file://${up}`;
+    env.CINETIC_PIN = pin2;
+    const t = Date.now();
+    expect(await run()).toMatchObject({ code: 0, out: join(dir, 'home', pin2, 'skills', 'cinetic') });
+    expect(Date.now() - t).toBeLessThan(20_000);
+    expect(existsSync(join(dir, 'home', `${pin2}.lock`))).toBe(false);
     // a pin that is not a sha is refused before anything is removed or cloned
     env.CINETIC_PIN = '../..';
     expect((await run()).code).not.toBe(0);

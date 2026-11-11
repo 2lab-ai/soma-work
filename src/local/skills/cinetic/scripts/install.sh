@@ -14,18 +14,25 @@ ROOT="$DIR/skills/cinetic"
 finished() { [ -f "$DIR/.cinetic-ok" ]; }
 if ! finished; then
   mkdir -p "$BASE"
-  # one installer per pin at a time: a second first run waits for the first instead of cloning into the same directory
+  # one installer per pin at a time: a second first run waits for the first instead of cloning into the same directory.
+  # The lock holds its owner's pid; a lock whose owner is gone (killed mid-install) is taken over, not waited on.
   LOCK="$DIR.lock"
   tries=0
   until mkdir "$LOCK" 2>/dev/null; do
+    owner="$(cat "$LOCK/pid" 2>/dev/null || true)"
+    if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null && mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then
+      rm -rf "$LOCK.stale.$$"
+      continue
+    fi
     if [ "$tries" -ge 600 ]; then
-      echo "cinetic: $LOCK has been held for 2 minutes; remove it if no install is running" >&2
+      echo "cinetic: $LOCK has been held for 2 minutes by pid ${owner:-?}; remove it if no install is running" >&2
       exit 1
     fi
     sleep 0.2
     tries=$((tries + 1))
   done
-  trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
+  echo $$ >"$LOCK/pid"
+  trap 'rm -rf "$LOCK"' EXIT
   if ! finished; then
     rm -rf "$DIR" # a checkout without the finished mark is an interrupted install: start it over
     git clone --quiet --filter=blob:none --no-checkout "$REPO" "$DIR"

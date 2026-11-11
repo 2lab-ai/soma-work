@@ -1,6 +1,6 @@
 ---
 name: cinematic-film
-description: Turn real screen recordings into a cinematic product film in one of two looks: the plane look (the page on a tilted 3D plane, shallow depth of field, rack focus, beat cuts, title cards, grain) or the device look (the real app inside an iPhone mockup with taps, a typing keyboard and chapter captions). A -14 LUFS mix and independent review until it ships. Use for a product ad, launch film, cinematic demo or real-use phone demo; make-product-demo uses it; films built from code go to cinetic. Triggers on "cinematic", "시네마틱", "아웃오브포커스", "out-of-focus", "광고 영상처럼", "launch film", "iPhone mockup", "아이폰 목업", "실사용 데모", "phone demo".
+description: Turn real screen recordings into a cinematic product film in one of two looks, the plane look (the page on a tilted 3D plane, shallow depth of field, rack focus, beat cuts, title cards, grain) or the device look (the real app inside an iPhone mockup with taps, a typing keyboard and chapter captions). A -14 LUFS mix and independent review until it ships. Use for a product ad, launch film, cinematic demo or real-use phone demo; make-product-demo uses it; films built from code go to cinetic. Triggers on "cinematic", "시네마틱", "아웃오브포커스", "out-of-focus", "광고 영상처럼", "launch film", "iPhone mockup", "아이폰 목업", "실사용 데모", "phone demo".
 allowed-tools: Read, Grep, Glob, Bash, Write, Edit
 version: 1.1.0
 ---

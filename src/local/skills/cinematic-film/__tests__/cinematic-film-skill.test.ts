@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
+import { parse as parseYaml } from 'yaml';
 
 const SKILL_ROOT = resolve(__dirname, '..');
 const SKILL_MD = resolve(SKILL_ROOT, 'SKILL.md');
@@ -24,6 +25,14 @@ function parseFrontmatter(md: string): Record<string, string> {
 }
 
 describe('cinematic-film skill — contract', () => {
+  it('SKILL.md front matter is valid YAML (a loader that parses YAML must not drop the skill)', () => {
+    const fm = read('SKILL.md').match(/^---\n([\s\S]*?)\n---/)?.[1] ?? '';
+    expect(parseYaml(fm)).toMatchObject({
+      name: 'cinematic-film',
+      description: expect.stringMatching(/iPhone mockup/),
+    });
+  });
+
   it('SKILL.md has frontmatter name cinematic-film and a trigger-bearing description', () => {
     expect(existsSync(SKILL_MD)).toBe(true);
     const fm = parseFrontmatter(read('SKILL.md'));
@@ -204,9 +213,9 @@ describe('cinematic-film skill — contract', () => {
     'cut_phone.py keeps capture timing to the 60 fps frame, honours drops and covers the whole window',
     () => {
       const dir = mkdtempSync(join(tmpdir(), 'cut-phone-frames-'));
-      const take = (name: string, frames: Array<[number, string]>) => {
+      const take = (name: string, frames: Array<[number, string, number?]>) => {
         mkdirSync(join(dir, 'takes', name, 'frames'), { recursive: true });
-        const rows = frames.map(([ts, colour], i) => {
+        const rows = frames.map(([ts, colour, height = 30], i) => {
           const file = `${String(i + 1).padStart(6, '0')}.jpg`;
           const r = spawnSync('ffmpeg', [
             '-loglevel',
@@ -215,7 +224,7 @@ describe('cinematic-film skill — contract', () => {
             '-f',
             'lavfi',
             '-i',
-            `color=c=${colour}:s=1179x30`,
+            `color=c=${colour}:s=1179x${height}`,
             '-frames:v',
             '1',
             join(dir, 'takes', name, 'frames', file),
@@ -243,6 +252,12 @@ describe('cinematic-film skill — contract', () => {
         [100.3, 'blue'],
       ]);
       // t3: blue 0.91 s into a window played at speed 2, so 0.455 s into the film: frame 27 (27.3)
+      // t4: red at this height, then the viewport changes (green at another height), then blue at this height again
+      take('t4', [
+        [100, 'red'],
+        [100.2, 'lime', 60],
+        [100.5, 'blue'],
+      ]);
       take('t3', [
         [100, 'red'],
         [100.91, 'blue'],
@@ -262,6 +277,7 @@ describe('cinematic-film skill — contract', () => {
         },
         { id: 'late', take: 't2', t0: 0, t1: 0.5, vh: 10 },
         { id: 'fast', take: 't3', t0: 0, t1: 1.6, speed: 2, vh: 10 },
+        { id: 'resized', take: 't4', t0: 0.3, t1: 0.8, vh: 10 },
       ];
       writeFileSync(join(dir, 'shots.json'), JSON.stringify({ fps: 60, shots }));
       const gen = join(dir, 'shots.gen.ts');
@@ -326,6 +342,13 @@ describe('cinematic-film skill — contract', () => {
       expect(
         fast.slice(0, 27).every((c) => c === 'red') && fast.slice(27).every((c) => c === 'blue'),
         fast.join(' '),
+      ).toBe(true);
+      // after a viewport change the old red frame is stale: the shot holds its first frame of this size (blue)
+      const resized = colours('resized');
+      expect(resized.length).toBe(30);
+      expect(
+        resized.every((c) => c === 'blue'),
+        resized.join(' '),
       ).toBe(true);
     },
     60_000, // seven ffmpeg runs: slow on a loaded runner
@@ -460,22 +483,23 @@ describe('cinematic-film skill — contract', () => {
       abort: vi.fn(),
       continue: vi.fn(),
     });
+    const disposed = vi.fn(async () => {});
     const json =
       (body: string, status = 200) =>
       async () => ({
         status: () => status,
         headers: () => ({ 'content-type': 'application/json' }),
         text: async () => body,
+        dispose: disposed,
       });
     const h = await handlerFor();
     const ok = route('application/json', json('{"e":"a@b.co"}'));
     await h(ok);
     expect(ok.fulfill).toHaveBeenCalledWith(expect.objectContaining({ body: '{"e":"x@example.com"}' }));
-    expect(ok.fetch).toHaveBeenCalledWith({ timeout: 15000, maxRedirects: 0 });
-    // a redirect goes back to the browser as it came (the page's URL follows it), not rewritten or followed here
-    const moved = route('application/json', json('{"e":"a@b.co"}', 302));
-    await h(moved);
-    expect(moved.fulfill).toHaveBeenCalledWith({ response: expect.anything() });
+    // redirects are followed inside the route (the browser would not route the redirected request), so the final
+    // body is the one masked; the buffered response is freed after
+    expect(ok.fetch).toHaveBeenCalledWith({ timeout: 15000 });
+    expect(disposed).toHaveBeenCalledTimes(1);
     for (const bad of [
       route('application/json', json('boom')),
       route('application/json', async () => {
@@ -506,12 +530,15 @@ describe('cinematic-film skill — contract', () => {
     quiet.mockRestore();
   });
 
-  it('recorder.stop marks a failed stop rec-failed, throws, and has both logs on disk when it settles', async () => {
+  it('recorder.stop finalises the frame log, then marks rec-stop (or rec-failed and throws)', async () => {
     const { recorder } = createRequire(__filename)(resolve(SKILL_ROOT, 'scripts', 'mobile_capture.cjs'));
     const take = async (failStop: boolean) => {
       const out = join(mkdtempSync(join(tmpdir(), 'rec-')), 'take');
+      let onFrame: (f: unknown) => Promise<void> = async () => {};
       const cdp = {
-        on: () => {},
+        on: (_e: string, fn: typeof onFrame) => {
+          onFrame = fn;
+        },
         send: async (m: string) => {
           if (failStop && m === 'Page.stopScreencast') throw new Error('target closed');
         },
@@ -519,10 +546,16 @@ describe('cinematic-film skill — contract', () => {
       const rec = await recorder({ newCDPSession: async () => cdp }, {}, out);
       await rec.start();
       rec.mark('tap', { what: 'x', x: 1, y: 1 });
-      const err = await rec.stop().then(
+      const jpeg = Buffer.from('ff', 'hex').toString('base64');
+      await onFrame({ data: jpeg, sessionId: 1, metadata: { timestamp: 1 } });
+      const stopping = rec.stop().then(
         () => null,
         (e: Error) => e,
       );
+      const err = await stopping;
+      await onFrame({ data: jpeg, sessionId: 2, metadata: { timestamp: 2 } }); // after stop: ignored
+      const frames = readFileSync(join(out, 'frames.jsonl'), 'utf8').trim().split('\n');
+      expect(frames.map((l) => JSON.parse(l).ts)).toEqual([1]);
       const names = readFileSync(join(out, 'markers.jsonl'), 'utf8')
         .trim()
         .split('\n')

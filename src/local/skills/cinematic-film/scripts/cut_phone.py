@@ -60,8 +60,10 @@ for s in spec['shots']:
     drops = [(T0 + x, T0 + y) for x, y in s.get('drop', [])]  # flashes: their frames go, the frame before holds
     keep = lambda f: abs(h(f) - H) <= 6 and not any(x <= f['ts'] <= y for x, y in drops)
     sel = [f for f in fr if a <= f['ts'] <= b and keep(f)]
-    prev = [f for f in fr if f['ts'] < a and keep(f)]  # the held boundary frame obeys the drops too
-    # the shot opens on the frame on screen at t0; with none before it, the first frame is held back to t0
+    # the shot opens on the frame on screen at t0 (drops apply to it too). If the screen at t0 was another height (a
+    # viewport change just before), an older frame of this height is stale: hold the first frame back to t0 instead
+    before = [f for f in fr if f['ts'] < a and not any(x <= f['ts'] <= y for x, y in drops)]
+    prev = before[-1:] if before and keep(before[-1]) else []
     if prev: sel = [dict(prev[-1], ts=a)] + sel
     elif sel: sel[0] = dict(sel[0], ts=a)
     assert sel or events_only, ('no frames in window', s['id'])  # one held frame is a valid static shot
