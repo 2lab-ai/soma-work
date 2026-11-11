@@ -21321,9 +21321,10 @@ async function steerAct(op, id, text) {
 // (paintCapacity, syncCronLane).
 var SEC_OPEN_QUERY = '(min-width: 840px) and (min-height: 1000px)';
 var _secMql = window.matchMedia ? window.matchMedia(SEC_OPEN_QUERY) : null;
-// Capacity v2 unfolded is taller than any common first screen (two measures, lanes and
-// per-account bars per provider; at 1440×1400 it pushed the first board card to 1670px).
-// So it starts folded everywhere — its lines carry the measure as count and % — and
+// Capacity unfolded is taller than any common first screen (a detail card per provider with
+// its accounts and a 7-day forecast under each line; v2 at 1440×1400 pushed the first board
+// card to 1670px). So it starts folded everywhere — its lines carry the measure as count and
+// %, the next gain and notes — and
 // the reader's unfold choice persists per device (trinity chip confirm, fable/astra).
 var _secChoice = {};           // this page's choices, even when storage refuses the write
 var _cronLaneRevealed = false; // a deep link into a folded lane opens it for this page load
@@ -26014,7 +26015,7 @@ document.addEventListener('visibilitychange', function() {
 });
 // The capacity section sits above the board, outside #inbox: no observer sees the
 // board move when it appears, folds or changes height, so the shift cache learns it
-// here. (Its element sizes its own timeline on its own width — a docked session panel
+// here. (Its element sizes its own forecast on its own width — a docked session panel
 // narrows the page without a window resize, SSOT 2026-10-24.)
 (function initCapacityResize() {
   var cap = document.getElementById('capacity');

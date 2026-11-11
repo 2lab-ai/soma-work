@@ -9,17 +9,21 @@
  * glyph — and short; a press on a line unfolds it into a detail card per provider with the
  * 7-day forecast; no page-level sideways scroll.
  * Run from the repo root:
- *   SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst npx tsx scripts/screenshot-capacity-fold.ts [outDir]
+ *   SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst [RECEIPT_PORT=33919] npx tsx scripts/screenshot-capacity-fold.ts [outDir]
  */
 
 import * as fs from 'node:fs';
+import * as net from 'node:net';
 import * as path from 'node:path';
 import { type Browser, chromium, type Page } from 'playwright';
 
 const OUT = process.argv[2] || path.join(__dirname, '..', 'screenshots', 'capacity-fold');
 fs.mkdirSync(OUT, { recursive: true });
-const PORT = process.env.CONVERSATION_VIEWER_PORT || '33919';
+// Its own port (RECEIPT_PORT), never the one the shell inherits from a deployment.
+const PORT = process.env.RECEIPT_PORT || '33919';
 process.env.CONVERSATION_VIEWER_PORT = PORT;
+// The server runs auth-less below: it listens on loopback only, whatever the shell carries.
+process.env.CONVERSATION_VIEWER_HOST = '127.0.0.1';
 for (const k of ['CONVERSATION_VIEWER_TOKEN', 'DASHBOARD_JWT_SECRET', 'GOOGLE_CLIENT_ID', 'MICROSOFT_CLIENT_ID']) {
   process.env[k] = '';
 }
@@ -361,7 +365,21 @@ async function shoot(browser: Browser) {
   }
 }
 
+/** The web server moves to the next port when one is taken; the receipt must talk to its own server, so it refuses. */
+function portFree(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once('error', () => resolve(false));
+    probe.once('listening', () => probe.close(() => resolve(true)));
+    probe.listen(port, '127.0.0.1');
+  });
+}
+
 async function main() {
+  if (!(await portFree(Number(PORT)))) {
+    console.error(`port ${PORT} is taken — set RECEIPT_PORT to a free port`);
+    process.exit(1);
+  }
   const { buildCapacityView } = await import('../src/conversation/capacity-view');
   buildCapacity(buildCapacityView as never);
   const dashboard = await import('../src/conversation/dashboard');
