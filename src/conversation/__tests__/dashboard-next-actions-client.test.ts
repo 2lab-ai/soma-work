@@ -169,7 +169,7 @@ describe('nextActionsHtml — the buttons', () => {
 
 describe('the open task card', () => {
   it('reads the steps its 지시/응답 fetch brought; none on an ended card', () => {
-    const io = { 'conv-1': { state: 'ok', data: { nextActions: { turnId: 'a1', list: STEPS } } } };
+    const io = { 'conv-1': { state: 'ok', stamp: '', data: { nextActions: { turnId: 'a1', list: STEPS } } } };
     const c = load<{ cardNextActionsHtml(s: unknown, col: string): string }>(
       [...HTML_FNS, 'cardNextActionsHtml'],
       BASE_INJECT({ _ioCache: io }),
@@ -178,6 +178,21 @@ describe('the open task card', () => {
     expect(c.cardNextActionsHtml(SESSION(), 'waiting')).toContain('$user:dev');
     expect(c.cardNextActionsHtml(SESSION(), 'closed')).toBe('');
     expect(c.cardNextActionsHtml(SESSION({ conversationId: 'conv-2' }), 'idle')).toBe('');
+  });
+
+  it('only from a current fetch: not while it refetches, after it failed, or for an older activity (trinity R1)', () => {
+    const data = { nextActions: { turnId: 'a1', list: STEPS } };
+    const html = (entry: unknown, s = SESSION({ lastActivity: '2026-11-11T10:00:00.000Z' })) =>
+      load<{ cardNextActionsHtml(s: unknown, col: string): string }>(
+        [...HTML_FNS, 'cardNextActionsHtml'],
+        BASE_INJECT({ _ioCache: { 'conv-1': entry } }),
+      ).cardNextActionsHtml(s, 'idle');
+    expect(html({ state: 'ok', stamp: '2026-11-11T10:00:00.000Z', data })).toContain('$user:dev');
+    expect(html({ state: 'loading', stamp: '2026-11-11T10:00:00.000Z', data })).toBe('');
+    expect(html({ state: 'error', stamp: '2026-11-11T10:00:00.000Z', data })).toBe('');
+    expect(html({ state: 'ok', stamp: '2026-11-11T09:00:00.000Z', data })).toBe('');
+    // a landed turn invalidates the entry (invalidateCardIo sets its stamp to null)
+    expect(html({ state: 'ok', stamp: null, data })).toBe('');
   });
 
   it('its body draws them with what it needs — after the question, before the rest', () => {
@@ -278,6 +293,7 @@ describe('a press — the step goes as the viewer’s instruction (1안: the com
           sent.push(text);
           return true;
         },
+        effortSettled: async () => null,
         ...inject,
       }),
     );
@@ -320,6 +336,15 @@ describe('a press — the step goes as the viewer’s instruction (1안: the com
     });
     await p.c.sendNextAction('inst::C1:t1', 'a1', '$user:dev');
     expect(p.toasts[0]).toMatchObject({ title: '작업 소유자의 승인을 기다려요', tone: 'wait' });
+  });
+
+  it('a level picked just before goes first; a refused switch sends nothing (trinity R1)', async () => {
+    const p = press({ effortSettled: async () => ({ ok: false, error: 'busy' }) });
+    await p.c.sendNextAction('inst::C1:t1', 'a1', '$user:dev');
+    expect(p.posts).toEqual([]);
+    expect(p.naSent['inst::C1:t1']).toBeUndefined();
+    expect(p.toasts[0]).toMatchObject({ title: '메시지를 보내지 못했어요', tone: 'error' });
+    expect(String(p.toasts[0].description)).toContain('busy');
   });
 
   it('a running turn: nothing is sent', async () => {

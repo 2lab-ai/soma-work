@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { extractNextActions } from '../next-actions';
+import { extractNextActions, nextActionsOfTurn } from '../next-actions';
 
 /**
  * Next actions as buttons (SSOT 2026-11-11, Z): "이렇게 대화 완료(대기)처리된후에 다음 행동을 3개씩 주는데 이걸
@@ -136,5 +136,94 @@ describe('extractNextActions', () => {
       '\n',
     );
     expect(extractNextActions(md)).toEqual([{ label: 'Run local:zcheck on PR #12', command: 'zcheck' }]);
+  });
+});
+
+describe('trinity R1 — the follow-up section, labels, unclosed blocks', () => {
+  const FOLLOW = ['Steps:', FENCE, 'gh pr merge 830 --squash', FENCE, FENCE, 'gh pr view 830 --json state', FENCE];
+
+  it('the template shape: `### N. Next Actions` then a bold ⚠️ follow-up title — the user’s own commands stay out', () => {
+    const md = [
+      '### 6. Next Actions',
+      'Deploy:',
+      FENCE,
+      '$user:dev',
+      FENCE,
+      '**⚠️ User follow-up required**',
+      ...FOLLOW,
+    ];
+    expect(extractNextActions(md.join('\n'))).toEqual([{ label: 'Deploy', command: '$user:dev' }]);
+  });
+
+  it('a deeper ATX follow-up title, an emoji-first plain title and a Korean one end it too', () => {
+    for (const title of [
+      '### ⚠️ User follow-up required',
+      '⚠️ User follow-up required',
+      'User follow-up required:',
+      '## ⚠️ 후속 조치 필요',
+    ]) {
+      const md = ['## 다음 행동', FENCE, 'a', FENCE, title, ...FOLLOW].join('\n');
+      expect(extractNextActions(md)).toEqual([{ label: '', command: 'a' }]);
+    }
+  });
+
+  it('a bold step label right above its block is a label, not the end of a bold-titled section', () => {
+    const md = [
+      '**다음 행동**',
+      '**1. 머지 (권장)**',
+      FENCE,
+      'gh pr merge 1',
+      FENCE,
+      '**2. 보류**',
+      FENCE,
+      'hold',
+      FENCE,
+    ];
+    expect(extractNextActions(md.join('\n'))).toEqual([
+      { label: '1. 머지', command: 'gh pr merge 1', recommended: true },
+      { label: '2. 보류', command: 'hold' },
+    ]);
+  });
+
+  it('Slack-style *title* and an emoji before the step number read as the title', () => {
+    expect(extractNextActions(['*다음 행동*', FENCE, 'a', FENCE].join('\n'))).toEqual([{ label: '', command: 'a' }]);
+    expect(extractNextActions(['### 🚀 4. Next Actions (3)', FENCE, 'b', FENCE].join('\n'))).toEqual([
+      { label: '', command: 'b' },
+    ]);
+  });
+
+  it('a block whose closing fence never comes is not a step (a cut-off answer)', () => {
+    const md = ['### Next Actions', 'ok:', FENCE, 'a', FENCE, 'cut:', FENCE, 'cmd', '', '### After', 'text'].join('\n');
+    expect(extractNextActions(md)).toEqual([{ label: 'ok', command: 'a' }]);
+  });
+});
+
+describe('trinity R1 — never slow (P1: a heading regex stalled the server)', () => {
+  const ms = (f: () => void) => {
+    const t = performance.now();
+    f();
+    return performance.now() - t;
+  };
+  it.each([
+    ['a heading with a long run of spaces', `# a${' '.repeat(20000)}x\n## Next Actions\n${FENCE}\na\n${FENCE}`],
+    ['a long bold line', `**${'x'.repeat(20000)}\n## Next Actions\n${FENCE}\na\n${FENCE}`],
+    ['a label of 40k brackets', `## Next Actions\n${'['.repeat(40000)}\n${FENCE}\na\n${FENCE}`],
+    ['a label of 40k backticks and spaces', `## Next Actions\n${'` '.repeat(20000)}(\n${FENCE}\na\n${FENCE}`],
+    ['a long rule-like line', `## Next Actions\n${'- '.repeat(20000)}x\n${FENCE}\na\n${FENCE}`],
+    ['a long recommended-like run', `## Next Actions\n${' '.repeat(20000)}(권장x\n${FENCE}\na\n${FENCE}`],
+  ])('%s: under 50 ms', (_name, md) => {
+    extractNextActions(md);
+    expect(ms(() => extractNextActions(md))).toBeLessThan(50);
+  });
+
+  it('a turn is read once: the same turn object answers from memory', () => {
+    const turn = { rawContent: `## Next Actions\n${FENCE}\na\n${FENCE}` };
+    const first = nextActionsOfTurn(turn);
+    expect(first).toEqual([{ label: '', command: 'a' }]);
+    expect(nextActionsOfTurn(turn)).toBe(first);
+    // its text changed (it never does for a recorded answer, but say so): read again
+    turn.rawContent = `## Next Actions\n${FENCE}\nb\n${FENCE}`;
+    expect(nextActionsOfTurn(turn)).toEqual([{ label: '', command: 'b' }]);
+    expect(nextActionsOfTurn({ rawContent: 'none' })).toBeUndefined();
   });
 });

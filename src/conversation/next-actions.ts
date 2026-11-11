@@ -28,17 +28,26 @@ export const NEXT_ACTIONS_MAX = 5;
 /** A block longer than this is a listing, not a step to send. */
 const COMMAND_MAX_CHARS = 2000;
 const LABEL_MAX_CHARS = 120;
+/**
+ * A line longer than this is body text: never a heading, a rule, a title or a label (trinity R1, fable P1 — a heading
+ * regex that backtracked on a long line stalled the server). Every pattern below runs on lines this short, and the
+ * structure itself is read with plain string steps, so a whole answer reads in linear time.
+ */
+const MAX_SCAN_LINE = 500;
 
 const TITLE =
   /^(?:(?:suggested\s+)?next\s+(?:actions?|steps?)|다음\s*(?:행동|액션|단계|할\s*일|작업))(?:\s*[(（][^)）]*[)）])?$/i;
-const ATX_HEADING = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
-const BOLD_LINE = /^\s*(?:\*\*|__)(.+?)(?:\*\*|__)\s*:?\s*$/;
-const RULE = /^\s{0,3}(?:-\s*){3,}$|^\s{0,3}(?:\*\s*){3,}$|^\s{0,3}(?:_\s*){3,}$/;
+/**
+ * The ⚠️ User follow-up required section (auto-es) holds the user's own commands. Its title ends a Next Actions section
+ * whatever its form or level — `##`, `###`, bold, or a plain line (trinity R1, P1 from all three panelists).
+ */
+const FOLLOW_UP_TITLE = /^(?:user\s+)?follow[-\s]?ups?\s+required$|^(?:사용자\s*)?후속\s*(?:조치|작업|확인)?\s*필요$/i;
 const FENCE_OPEN = /^(\s*)(`{3,}|~{3,})(.*)$/;
 const RECOMMENDED = /\s*[(（]\s*(?:권장|추천|recommended)\s*[)）]/gi;
-/** A bold line is a heading below every `#` level: it ends only a bold-titled section. */
-const BOLD_LEVEL = 7;
-const RULE_LEVEL = 0;
+/** Every `#` level ends at a heading of its own level or higher; a bold title is below them all. */
+const EMPHASIS_LEVEL = 7;
+/** A rule or a follow-up title ends any section. */
+const HARD_END = 0;
 
 interface Mark {
   line: number;
@@ -46,20 +55,69 @@ interface Mark {
   next: boolean;
 }
 
-function isNextTitle(text: string): boolean {
-  const t = text
+/** `#`…`######` heading: its level and text (closing `#`s dropped), or null. Linear. */
+function atxHeading(line: string): { level: number; text: string } | null {
+  if (line.length > MAX_SCAN_LINE) return null;
+  let i = 0;
+  while (i < 3 && line[i] === ' ') i++;
+  let n = 0;
+  while (line[i + n] === '#') n++;
+  if (n < 1 || n > 6) return null;
+  const rest = line.slice(i + n);
+  if (rest && rest[0] !== ' ' && rest[0] !== '\t') return null;
+  let text = rest.trim();
+  let k = text.length;
+  while (k > 0 && text[k - 1] === '#') k--;
+  if (k === 0) text = '';
+  else if (k < text.length && (text[k - 1] === ' ' || text[k - 1] === '\t')) text = text.slice(0, k).trimEnd();
+  return { level: n, text };
+}
+
+/** A whole line in `**…**`, `__…__`, `*…*` or `_…_` (a trailing colon allowed): its text, or null. */
+function emphasisLine(line: string): string | null {
+  if (line.length > MAX_SCAN_LINE) return null;
+  let t = line.trim();
+  if (t.endsWith(':') || t.endsWith('：')) t = t.slice(0, -1).trimEnd();
+  for (const m of ['**', '__', '*', '_']) {
+    if (t.length > m.length * 2 && t.startsWith(m) && t.endsWith(m)) {
+      const inner = t.slice(m.length, t.length - m.length).trim();
+      return inner || null;
+    }
+  }
+  return null;
+}
+
+function isRule(line: string): boolean {
+  if (line.length > MAX_SCAN_LINE) return false;
+  const t = line.replace(/[ \t]/g, '');
+  return t.length >= 3 && (/^-+$/.test(t) || /^\*+$/.test(t) || /^_+$/.test(t));
+}
+
+/** A title's words: emphasis, a trailing colon, a leading emoji or mark and a step number dropped. */
+function titleWords(text: string): string {
+  return text
     .replace(/\*\*|__/g, '')
-    .replace(/[:：]\s*$/, '')
     .trim()
+    .replace(/[:：]$/, '')
+    .trim()
+    .replace(/^[^\p{L}\p{N}]+/u, '')
     .replace(/^\d+[.)]\s*/, '')
     .replace(/^[^\p{L}\p{N}]+/u, '')
     .trim();
-  return TITLE.test(t);
 }
 
 function fenceCloses(line: string, ch: string, len: number): boolean {
   const t = line.trim();
   return t.length >= len && t === ch.repeat(t.length);
+}
+
+/** The next non-blank line from `i` opens a fence: a bold line there is the step's label, not a title. */
+function labelsABlock(lines: string[], i: number): boolean {
+  for (let j = i + 1; j < lines.length; j++) {
+    if (!lines[j].trim()) continue;
+    return FENCE_OPEN.test(lines[j]);
+  }
+  return false;
 }
 
 function dedent(lines: string[]): string {
@@ -78,6 +136,7 @@ function dedent(lines: string[]): string {
 
 function cleanLabel(raw: string): { label: string; recommended: boolean } {
   let t = raw
+    .slice(0, MAX_SCAN_LINE)
     .trim()
     .replace(/^(?:[-*+•]|\d+[.)])\s+/, '')
     .replace(/\*\*|__/g, '')
@@ -99,12 +158,8 @@ function cleanLabel(raw: string): { label: string; recommended: boolean } {
   return { label: t, recommended };
 }
 
-/** The next actions an answer ends with — [] when it has no Next Actions section. */
-export function extractNextActions(markdown: string | null | undefined): NextAction[] {
-  if (typeof markdown !== 'string' || !markdown) return [];
-  const lines = markdown.split(/\r?\n/);
-
-  // Headings and rules outside code: where sections start and end.
+/** Where sections start and end: headings, bold titles, rules and follow-up titles outside code. */
+function sectionMarks(lines: string[]): Mark[] {
   const marks: Mark[] = [];
   let fence: { ch: string; len: number } | null = null;
   for (let i = 0; i < lines.length; i++) {
@@ -118,18 +173,33 @@ export function extractNextActions(markdown: string | null | undefined): NextAct
       fence = { ch: open[2][0], len: open[2].length };
       continue;
     }
-    const atx = ATX_HEADING.exec(line);
-    if (atx) {
-      marks.push({ line: i, level: atx[1].length, next: isNextTitle(atx[2]) });
+    if (line.length > MAX_SCAN_LINE) continue;
+    if (isRule(line)) {
+      marks.push({ line: i, level: HARD_END, next: false });
       continue;
     }
-    const bold = BOLD_LINE.exec(line);
-    if (bold) {
-      marks.push({ line: i, level: BOLD_LEVEL, next: isNextTitle(bold[1]) });
+    const atx = atxHeading(line);
+    const em = atx ? null : emphasisLine(line);
+    const words = titleWords(atx ? atx.text : (em ?? line));
+    if (FOLLOW_UP_TITLE.test(words)) {
+      marks.push({ line: i, level: HARD_END, next: false });
       continue;
     }
-    if (RULE.test(line)) marks.push({ line: i, level: RULE_LEVEL, next: false });
+    if (atx) marks.push({ line: i, level: atx.level, next: TITLE.test(words) });
+    else if (em !== null) {
+      const next = TITLE.test(words);
+      // A bold step label right above its block belongs to the section it sits in.
+      if (next || !labelsABlock(lines, i)) marks.push({ line: i, level: EMPHASIS_LEVEL, next });
+    }
   }
+  return marks;
+}
+
+/** The next actions an answer ends with — [] when it has no Next Actions section. */
+export function extractNextActions(markdown: string | null | undefined): NextAction[] {
+  if (typeof markdown !== 'string' || !markdown) return [];
+  const lines = markdown.split(/\r?\n/);
+  const marks = sectionMarks(lines);
 
   let head = -1;
   for (let m = marks.length - 1; m >= 0; m--) {
@@ -162,6 +232,8 @@ export function extractNextActions(markdown: string | null | undefined): NextAct
     const body: string[] = [];
     let j = i + 1;
     while (j < end && !fenceCloses(lines[j], ch, len)) body.push(lines[j++]);
+    // A block whose closing fence never comes is a cut-off answer, not a step (trinity R1, fable P3).
+    if (j >= end) break;
     i = j;
     const command = dedent(body);
     if (command && command.length <= COMMAND_MAX_CHARS) {
@@ -177,4 +249,20 @@ export function extractNextActions(markdown: string | null | undefined): NextAct
 export function nextActionsOf(markdown: string | null | undefined): NextAction[] | undefined {
   const list = extractNextActions(markdown);
   return list.length ? list : undefined;
+}
+
+/**
+ * The same, for a recorded turn, read once: the conversation route and the live push ask for every answer in their
+ * window on every request, and a recorded answer's text never changes (trinity R1, fable P1). Keyed by the turn
+ * object the recorder keeps in memory; a turn whose text did change is read again.
+ */
+const _turnReads = new WeakMap<object, { raw: unknown; value: NextAction[] | undefined }>();
+export function nextActionsOfTurn(turn: { rawContent?: string | null } | null | undefined): NextAction[] | undefined {
+  if (!turn || typeof turn !== 'object') return undefined;
+  const raw = turn.rawContent;
+  const hit = _turnReads.get(turn);
+  if (hit && hit.raw === raw) return hit.value;
+  const value = nextActionsOf(raw);
+  _turnReads.set(turn, { raw, value });
+  return value;
 }
