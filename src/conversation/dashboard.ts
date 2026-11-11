@@ -13405,6 +13405,7 @@ function sizePanelSections() {
 // their conversation, and what the list says before or without turns.
 var _panelTurnsList = [];
 var _panelTurnsCid = '';
+var _panelTurnsAct = ''; // the session's lastActivity when the panel last fetched its turns (renderPanelNext)
 var _panelTurnsMsg = ''; // 'loading' | 'none' | 'failed' | 'unrecorded' | '' (the turns)
 var _panelTurnsWhy = ''; // why the first page failed (the element's error)
 var _panelOlderWhy = ''; // why the last older page failed ('' = it did not)
@@ -15490,7 +15491,11 @@ function renderPanelNext() {
   var bar = document.getElementById('panel-next-bar');
   if (!bar) return;
   var s = panelOpen && panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  var na = s && _panelTurnsCid && _panelTurnsCid === s.conversationId ? nextActionsOfTurns(_panelTurnsList) : null;
+  // The conversation's live audience (its owner, an admin) gets every new turn while the panel is open; anyone else
+  // gets none, so their steps count only when the turns were fetched at the session's latest activity — never an
+  // answer a later turn already followed (trinity R2, astra P2).
+  var fresh = !!s && (viewerOwns(s) || _viewerIsAdmin || _panelTurnsAct === String(s.lastActivity || ''));
+  var na = s && fresh && _panelTurnsCid && _panelTurnsCid === s.conversationId ? nextActionsOfTurns(_panelTurnsList) : null;
   var html = s ? nextActionsHtml(s, na, 'panel') : '';
   bar.hidden = !html;
   if (bar._html !== html) {
@@ -19769,6 +19774,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   _panelTurnsOldestId = null;
   _panelTurnsList = [];
   _panelTurnsCid = '';
+  _panelTurnsAct = '';
   _panelTurnsMsg = s.conversationId ? 'loading' : 'unrecorded';
   renderPanelNext(); // the previous card's steps go with its turns
   _panelTurnsWhy = '';
@@ -20011,6 +20017,8 @@ function loadPanelTurns(land) {
   _panelTurnsWhy = '';
   var loadingConvId = s.conversationId;
   var loadingGen = _panelGen;
+  // What the session had done when this fetch was asked for: a slow answer is never newer than that (trinity R2, grok).
+  var loadingAct = String(s.lastActivity || '');
   fetch('/api/dashboard/session/' + encodeURIComponent(loadingConvId) + '?limit=' + PANEL_TURNS_PAGE)
     .then(function(r) {
       if (r && r.ok === false) throw new Error('HTTP ' + r.status);
@@ -20036,6 +20044,7 @@ function loadPanelTurns(land) {
       // optimistic instruction the page already records (T1: it would show twice).
       _panelTurnsList = ptMergeFetched(turns, _panelTurnsList);
       _panelTurnsCid = data.id || loadingConvId;
+      _panelTurnsAct = loadingAct;
       _panelTurnsHasMore = turns.length > 0 && !!data.hasMore;
       _panelTurnsOldestId = turns.length ? turns[0].id : null;
       _panelTurnsMsg = _panelTurnsList.length ? '' : 'none';
