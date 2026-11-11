@@ -490,8 +490,8 @@ describe('cinematic-film skill — contract', () => {
       );
       return h;
     };
-    const route = (accept: string, fetch: () => Promise<unknown>) => ({
-      request: () => ({ headers: () => ({ accept }), url: () => 'http://x/api' }),
+    const route = (accept: string, fetch: () => Promise<unknown>, method = 'GET') => ({
+      request: () => ({ headers: () => ({ accept }), url: () => 'http://x/api', method: () => method }),
       fetch: vi.fn(fetch),
       fulfill: vi.fn(),
       abort: vi.fn(),
@@ -521,11 +521,33 @@ describe('cinematic-film skill — contract', () => {
     expect(ok.fetch).toHaveBeenCalledWith({ timeout: 15000, maxRedirects: 0 });
     expect(disposed).toHaveBeenCalledTimes(1);
     // a same-origin redirect is followed here and its final body masked; one to another origin is aborted
+    // (each hop resolves against the URL before it: /api/v2 then ok -> /api/ok)
     const hop = route('application/json', redirect('/api/v2'));
-    hop.fetch.mockImplementationOnce(redirect('/api/v2')).mockImplementationOnce(json('{"e":"a@b.co"}'));
+    hop.fetch
+      .mockImplementationOnce(redirect('/api/v2'))
+      .mockImplementationOnce(redirect('ok'))
+      .mockImplementationOnce(json('{"e":"a@b.co"}'));
     await h(hop);
-    expect(hop.fetch).toHaveBeenLastCalledWith({ url: 'http://x/api/v2', timeout: 15000, maxRedirects: 0 });
+    expect(hop.fetch).toHaveBeenLastCalledWith(
+      expect.objectContaining({ url: 'http://x/api/ok', method: 'GET', timeout: 15000, maxRedirects: 0 }),
+    );
     expect(hop.fulfill).toHaveBeenCalledWith(expect.objectContaining({ body: '{"e":"x@example.com"}' }));
+    // a POST answered 303 continues as a GET without its body; a 307 keeps the POST
+    const see = (status: number) => async () => ({
+      status: () => status,
+      headers: () => ({ location: '/api/result' }),
+      text: async () => '',
+      dispose: disposed,
+    });
+    const posted = route('application/json', see(303), 'POST');
+    posted.fetch.mockImplementationOnce(see(303)).mockImplementationOnce(json('{}'));
+    await h(posted);
+    expect(posted.fetch).toHaveBeenLastCalledWith(expect.objectContaining({ method: 'GET', postData: '' }));
+    const kept = route('application/json', see(307), 'POST');
+    kept.fetch.mockImplementationOnce(see(307)).mockImplementationOnce(json('{}'));
+    await h(kept);
+    expect(kept.fetch).toHaveBeenLastCalledWith(expect.objectContaining({ method: 'POST' }));
+    expect((kept.fetch.mock.lastCall as unknown[] | undefined)?.[0]).not.toHaveProperty('postData');
     const away = route('application/json', redirect('http://127.0.0.1:9/secret'));
     await h(away);
     expect(away.fetch).toHaveBeenCalledTimes(1);
@@ -550,7 +572,7 @@ describe('cinematic-film skill — contract', () => {
     // a custom predicate adds streams; EventSource still passes with it
     const custom = await handlerFor({ stream: (req: { url: () => string }) => req.url().endsWith('/feed') });
     const named = route('*/*', json('{}'));
-    named.request = () => ({ headers: () => ({ accept: '*/*' }), url: () => 'http://x/feed' });
+    named.request = () => ({ headers: () => ({ accept: '*/*' }), url: () => 'http://x/feed', method: () => 'GET' });
     await custom(named);
     expect(named.continue).toHaveBeenCalled();
     expect(named.fetch).not.toHaveBeenCalled();
@@ -571,12 +593,9 @@ describe('cinematic-film skill — contract', () => {
     const spy = vi.spyOn(fsMod, 'createWriteStream').mockImplementation((...args: unknown[]) => {
       const w = real.apply(fsMod, args);
       const file = String(args[0]);
-      const end = w.end.bind(w);
       const write = w.write.bind(w);
-      w.end = (...a: unknown[]) => {
-        if (file.endsWith('frames.jsonl')) order.push('frames-end');
-        return end(...a);
-      };
+      // 'finish': the frame log is flushed and complete, not just asked to end
+      if (file.endsWith('frames.jsonl')) w.on('finish', () => order.push('frames-end'));
       w.write = (chunk: unknown, ...a: unknown[]) => {
         if (file.endsWith('markers.jsonl') && /rec-(stop|failed)/.test(String(chunk))) order.push('rec-stop');
         return write(chunk, ...a);

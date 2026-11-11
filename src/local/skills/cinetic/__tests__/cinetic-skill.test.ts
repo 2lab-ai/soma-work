@@ -155,8 +155,14 @@ describe('cinetic skill — a pinned loader for the upstream skill', () => {
       env.CINETIC_PIN = pin4;
       expect(await run()).toMatchObject({ code: 0, out: join(dir, 'home', pin4, 'skills', 'cinetic') });
       // a pin that is not a sha is refused before anything is removed or cloned
-      env.CINETIC_PIN = '../..';
-      expect((await run()).code).not.toBe(0);
+      for (const bad of ['../..', 'HEAD', 'main']) {
+        // HEAD and main would check out fine: they are refused because they move, not because they fail
+        env.CINETIC_PIN = bad;
+        const r = await run();
+        expect(r.code, bad).not.toBe(0);
+        expect(r.err).toMatch(/must be a commit sha/);
+        if (!bad.includes('/')) expect(existsSync(join(dir, 'home', bad)), bad).toBe(false);
+      }
     },
     60_000,
   ); // several clones and lock waits: slow on a loaded runner

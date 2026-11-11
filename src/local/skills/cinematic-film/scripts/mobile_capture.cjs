@@ -115,11 +115,17 @@ async function maskResponses(ctx, match, rewrite, { stream = () => false, timeou
     let res;
     try {
       res = await route.fetch({ timeout, maxRedirects: 0 });
+      let url = req.url(), method = req.method();
       for (let hop = 0; res.status() >= 300 && res.status() < 400 && res.headers()['location']; hop++) {
-        const next = new URL(res.headers()['location'], req.url());
+        const st = res.status(), next = new URL(res.headers()['location'], url); // relative to this hop, not the first
         if (hop >= 5 || next.origin !== new URL(req.url()).origin) throw new Error(`redirect to ${next.origin} not followed`);
         await res.dispose?.();
-        res = await route.fetch({ url: next.href, timeout, maxRedirects: 0 });
+        // as a browser does: 303 (and 301/302 after a POST) continue as a GET without the body; 307/308 keep both
+        const toGet = (st === 303 && method !== 'HEAD') || ((st === 301 || st === 302) && method === 'POST');
+        const headers = { ...req.headers() };
+        if (toGet) { method = 'GET'; delete headers['content-type']; delete headers['content-length']; }
+        res = await route.fetch({ url: next.href, method, headers, ...(toGet ? { postData: '' } : {}), timeout, maxRedirects: 0 });
+        url = next.href;
       }
     } catch (e) {
       await res?.dispose?.();

@@ -27,7 +27,11 @@ if ! finished; then
       mkdir "$LOCK.reclaim" 2>/dev/null; then
       # one reclaimer at a time, and only the lock that still names the same owner: a lock another run has just
       # taken (with a live pid) is never removed
-      if [ "$(cat "$LOCK/pid" 2>/dev/null || true)" = "$owner" ]; then rm -rf "$LOCK"; fi
+      # (a pid-less lock must also still be over a minute old: a fresh one belongs to a run about to write its pid)
+      if [ "$(cat "$LOCK/pid" 2>/dev/null || true)" = "$owner" ] &&
+        { [ -n "$owner" ] || [ -n "$(find "$LOCK" -maxdepth 0 -mmin +1 2>/dev/null)" ]; }; then
+        rm -rf "$LOCK"
+      fi
       rmdir "$LOCK.reclaim"
       continue
     fi
