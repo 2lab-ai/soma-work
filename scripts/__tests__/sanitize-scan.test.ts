@@ -48,7 +48,8 @@ function commit(file: string, content: string, message: string): string {
 
 function scan(event: string, extraEnv: Record<string, string> = {}) {
   // The CI runner exports its own GITHUB_* values; each case sets only its own.
-  const env: NodeJS.ProcessEnv = { ...process.env, SANITIZE_PATTERNS: PATTERN };
+  const env: NodeJS.ProcessEnv = { ...process.env, SANITIZE_PATTERNS_SHARED: PATTERN };
+  delete env.SANITIZE_PATTERNS;
   delete env.GITHUB_EVENT_NAME;
   delete env.GITHUB_HEAD_REF;
   delete env.GITHUB_BASE_REF;
@@ -196,7 +197,7 @@ describe('sanitize-scan.sh — push scope', () => {
     // BSD grep accepts a lazy quantifier that git's regcomp rejects; git's error
     // message quotes the whole pattern — the secret — into a public log.
     git('update-ref', 'refs/remotes/origin/feature/dirty', dirty);
-    const r = scan('push', { SANITIZE_PATTERNS: 'forbidden-token-[0-9]+?' });
+    const r = scan('push', { SANITIZE_PATTERNS_SHARED: 'forbidden-token-[0-9]+?' });
     expect(r.status).not.toBe(0);
     expect(r.out).not.toContain('[0-9]+?');
   });
@@ -416,7 +417,7 @@ describe('sanitize-scan.sh — known leaks', () => {
     expect(scan('pull_request').status).toBe(1);
   });
 
-  it('on push, exempts only a commit main already had before the push', () => {
+  it('on push, exempts only a commit main already had before the push, when no other ref has it', () => {
     const next = publishDirtyMain();
     listKnown(dirty);
     const pushed = pushScan(clean);
@@ -427,6 +428,82 @@ describe('sanitize-scan.sh — known leaks', () => {
     const bare = scan('push');
     expect(bare.out).toContain('is not on the published base');
     expect(bare.status).toBe(1);
+  });
+
+  // 2026-11-11: a list shared across repositories reaches commits that were published on deploy
+  // branches and release tags, never on main. A push to main cannot take them back either, so on a
+  // push another published ref counts — but only for an entry main's list had before the push.
+  function commitKnown(...lines: string[]): string {
+    listKnown(...lines);
+    git('add', 'scripts/sanitize-known-leaks.txt');
+    git('commit', '-q', '-m', 'list known leaks');
+    return git('rev-parse', 'HEAD');
+  }
+
+  it('on push, exempts a commit another published branch carries once main already lists it', () => {
+    git('update-ref', 'refs/remotes/origin/deploy/dev', dirty);
+    const listed = commitKnown(dirty);
+    git('update-ref', 'refs/remotes/origin/main', listed);
+    const r = pushScan(listed);
+    expect(r.out).toContain(`known leak ${dirty} — exempted`);
+    expect(r.out).toContain('sanitize-scan: clean');
+    expect(r.status).toBe(0);
+  });
+
+  it('on push, exempts a commit only a tag carries once main already lists it', () => {
+    git('tag', 'v0.0.1-dev', dirty);
+    const listed = commitKnown(dirty);
+    git('update-ref', 'refs/remotes/origin/main', listed);
+    const r = pushScan(listed);
+    expect(r.out).toContain(`known leak ${dirty} — exempted`);
+    expect(r.status).toBe(0);
+  });
+
+  it('on push, never lets an entry new in this push lean on a ref the same push may have created', () => {
+    // One push lands the entry and (for all the scan can tell) the tag or branch that carries the
+    // commit. Current refs are not proof of what existed before the push, so nothing is exempted.
+    for (const [publish, unpublish] of [
+      [() => git('tag', 'v0.0.2-dev', dirty), () => git('tag', '-d', 'v0.0.2-dev')],
+      [
+        () => git('update-ref', 'refs/remotes/origin/side', dirty),
+        () => git('update-ref', '-d', 'refs/remotes/origin/side'),
+      ],
+    ]) {
+      publish();
+      git('checkout', '-q', '--detach', clean);
+      const listed = commitKnown(dirty);
+      git('update-ref', 'refs/remotes/origin/main', listed);
+      const r = pushScan(clean);
+      expect(r.out).toContain(`known leak ${dirty} is not on the published base`);
+      expect(r.out).toContain(`hit in commit ${dirty}`);
+      expect(r.status).toBe(1);
+      // The push after it, with the entry now on main, exempts it.
+      expect(pushScan(listed).status).toBe(0);
+      unpublish();
+    }
+  });
+
+  it('on push, never counts the pushed branch itself as another published ref', () => {
+    // main before the push lists the commit; the only refs holding it are the pushed branch and
+    // origin/HEAD, which points at it.
+    const before = commitKnown(dirty);
+    git('checkout', '-q', '--detach', dirty);
+    const after = commitKnown(dirty);
+    git('update-ref', 'refs/remotes/origin/main', after);
+    git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main');
+    const r = pushScan(before);
+    expect(r.out).toContain(`known leak ${dirty} is not on the published base`);
+    expect(r.status).toBe(1);
+  });
+
+  it('on a PR, never exempts a commit that only another branch carries', () => {
+    // The PR merges a published branch's dirty commit; main never had it.
+    git('update-ref', 'refs/remotes/origin/deploy/dev', dirty);
+    git('checkout', '-q', '--detach', dirty);
+    listKnown(dirty);
+    const r = prScan();
+    expect(r.out).toContain(`known leak ${dirty} is not on the published base`);
+    expect(r.status).toBe(1);
   });
 
   it('fails a tag that points straight at a blob carrying the known text', () => {
@@ -504,12 +581,26 @@ describe('sanitize-scan.sh — known leaks', () => {
     expect(r.status).toBe(2);
   });
 
-  it('exempts nothing for an entry that is not in the clone, and says so', () => {
+  // Review 2026-11-11: an entry for a commit nobody has published used to be skipped, so it could
+  // sit in main's list until the commit appeared on a side branch — and then be exempted by the next
+  // push with no red run in between. Every entry must name a commit the clone has.
+  it('refuses an entry that is not a commit in the clone instead of skipping it', () => {
     publishDirtyMain();
     listKnown('0123456789abcdef0123456789abcdef01234567');
     const r = prScan();
-    expect(r.status).toBe(1);
+    expect(r.status).toBe(2);
     expect(r.out).toContain('0123456789abcdef0123456789abcdef01234567');
+    expect(r.out).toContain('not a commit in this clone');
+    expect(r.out).not.toContain('sanitize-scan: clean');
+  });
+
+  it('refuses an unpublished entry even when the history is clean', () => {
+    // main is clean; the entry names a commit that exists nowhere in the clone.
+    listKnown('fedcba9876543210fedcba9876543210fedcba98');
+    for (const r of [prScan(), pushScan(clean)]) {
+      expect(r.status).toBe(2);
+      expect(r.out).not.toContain('sanitize-scan: clean');
+    }
   });
 });
 
@@ -519,7 +610,7 @@ describe('sanitize-scan.sh — fails closed', () => {
     try {
       const r = spawnSync('bash', [SCAN_SH], {
         cwd: empty,
-        env: { ...process.env, SANITIZE_PATTERNS: PATTERN, GITHUB_EVENT_NAME: 'push' },
+        env: { ...process.env, SANITIZE_PATTERNS_SHARED: PATTERN, GITHUB_EVENT_NAME: 'push' },
         encoding: 'utf8',
       });
       expect(r.stdout).not.toContain('sanitize-scan: clean');
@@ -542,8 +633,58 @@ describe('sanitize-scan.sh — fails closed', () => {
 it('refuses to run without patterns', () => {
   const r = spawnSync('bash', [SCAN_SH], {
     cwd: repo,
-    env: { ...process.env, SANITIZE_PATTERNS: '' },
+    env: { ...process.env, SANITIZE_PATTERNS_SHARED: '', SANITIZE_PATTERNS: '' },
     encoding: 'utf8',
   });
   expect(r.status).toBe(2);
+});
+
+/**
+ * One gate for every 2lab-ai public repository (2026-11-11): soma-work and llmux run this same
+ * script. `SANITIZE_PATTERNS_SHARED` is the list both repositories hold with the same value (private
+ * host names, other companies' names and domains); `SANITIZE_PATTERNS` is a repository's own
+ * additions. The shared list is required, so a repository cannot drop it by leaving the secret unset.
+ */
+describe('sanitize-scan.sh — shared and repository pattern lists', () => {
+  it('refuses to run with only the repository list', () => {
+    const r = scan('pull_request', { SANITIZE_PATTERNS_SHARED: '', SANITIZE_PATTERNS: PATTERN });
+    expect(r.status).toBe(2);
+    expect(r.out).toContain('SANITIZE_PATTERNS_SHARED');
+  });
+
+  it('fails on a hit from the repository list as well as from the shared one', () => {
+    git('update-ref', 'refs/remotes/origin/feature/dirty', dirty);
+    const viaRepo = scan('push', { SANITIZE_PATTERNS_SHARED: 'unrelated-name-[0-9]+', SANITIZE_PATTERNS: PATTERN });
+    expect(viaRepo.status).toBe(1);
+    expect(viaRepo.out).toContain(dirty);
+    expect(viaRepo.out).not.toMatch(/forbidden-token-\d/);
+
+    const viaShared = scan('push', { SANITIZE_PATTERNS_SHARED: PATTERN, SANITIZE_PATTERNS: 'unrelated-name-[0-9]+' });
+    expect(viaShared.status).toBe(1);
+    expect(viaShared.out).toContain(dirty);
+  });
+
+  it('passes when neither list matches', () => {
+    git('update-ref', 'refs/remotes/origin/feature/dirty', dirty);
+    const r = scan('push', {
+      SANITIZE_PATTERNS_SHARED: 'unrelated-name-[0-9]+',
+      SANITIZE_PATTERNS: 'other-name-[0-9]+',
+    });
+    expect(r.out).toContain('sanitize-scan: clean');
+    expect(r.status).toBe(0);
+  });
+
+  it('refuses an empty alternative in either list instead of matching everything', () => {
+    for (const env of [
+      { SANITIZE_PATTERNS_SHARED: `${PATTERN}|` },
+      { SANITIZE_PATTERNS_SHARED: `|${PATTERN}` },
+      { SANITIZE_PATTERNS_SHARED: `${PATTERN}||x` },
+      { SANITIZE_PATTERNS_SHARED: PATTERN, SANITIZE_PATTERNS: '|other-name' },
+    ]) {
+      const r = scan('pull_request', env);
+      expect(r.status, JSON.stringify(env)).toBe(2);
+      expect(r.out).not.toContain('sanitize-scan: clean');
+      expect(r.out).not.toContain('[0-9]+');
+    }
+  });
 });

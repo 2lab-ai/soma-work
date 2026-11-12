@@ -89,7 +89,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: [self-hosted, owner-mac]
+    runs-on: [self-hosted, "${{ vars.CONTROL_RUNNER_LABEL }}"]
     timeout-minutes: 60
 
     steps:

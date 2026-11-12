@@ -30,6 +30,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { buildGoalContinuationPrompt } from '../../prompt/session-goal-block';
 import { GOAL_CONTINUATION_TEXT_PREFIX } from '../../slack/goal-continuation';
 import type { SessionGoal } from '../../types';
+import { nextActionSeams } from '../__fixtures__/viewer-scope';
 
 const ROOT = join(__dirname, '..', '..', '..');
 const read = (p: string) => readFileSync(join(ROOT, p), 'utf-8');
@@ -75,6 +76,7 @@ function cutVar(name: string): string {
   return cook(m[1]);
 }
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
+  inject = { ...nextActionSeams(fns, inject), ...inject };
   const names = Object.keys(inject);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
