@@ -122,6 +122,34 @@ export function protectedWriteDenyRules(paths: {
 }
 
 /**
+ * Credential files under the home directory: ssh keys, the gh login, cloud and registry logins. No model
+ * reads them — host commands go through server-tools' `ssh_exec`, which runs outside the sandbox
+ * (.prd/25-env-access-architecture.md §1). Not `~/.npmrc` (npm reads it to install) and not the
+ * keychain files (the TLS check reads them; keychain items stay behind the keychain service).
+ */
+const CREDENTIAL_PATHS = [
+  '.ssh',
+  '.config/gh',
+  '.config/gcloud',
+  '.aws',
+  '.azure',
+  '.kube',
+  '.docker/config.json',
+  '.netrc',
+  '.git-credentials',
+  '.gnupg',
+];
+
+export function credentialPaths(home: string): string[] {
+  return CREDENTIAL_PATHS.map((p) => path.join(home, p));
+}
+
+/** `Read` deny rules (they cover Grep and Glob) for {@link credentialPaths}, each path and what is under it. */
+export function credentialReadDenyRules(home: string): string[] {
+  return credentialPaths(home).flatMap((p) => [`Read(/${p})`, `Read(/${p}/**)`]);
+}
+
+/**
  * The sandbox is off only for an admin who turned it off, on a host whose operator allows that
  * (`SOMA_SANDBOX_OFF_ALLOWED`). Otherwise the setting is stored but the session stays sandboxed.
  */

@@ -22,6 +22,7 @@ import * as path from 'node:path';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { CONFIG_FILE, SECRETS_DIR } from '../../env-paths';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
+import { credentialPaths } from '../../sandbox/admin-sandbox-profile';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
 import type { ConversationSession } from '../../types';
 import { addThreadGrant, ENV_SKILL_GRANT_OWNER } from '../../user-skill-grants-store';
@@ -303,15 +304,21 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
         makeDeps({ getEnvSkillRegistry: () => envRegistry('/srv/soma/plugins') }),
       );
       const denyRead = (options.sandbox as { filesystem?: { denyRead?: string[] } } | undefined)?.filesystem?.denyRead;
-      expect(denyRead).toEqual([SECRETS_DIR, '/srv/soma/plugins/acme-env', '/srv/soma/plugins/.backups/acme-env']);
+      expect(denyRead).toEqual([
+        SECRETS_DIR,
+        ...credentialPaths(os.homedir()),
+        '/srv/soma/plugins/acme-env',
+        '/srv/soma/plugins/.backups/acme-env',
+      ]);
       // The write mount is kept.
       expect((options.sandbox as { filesystem?: { allowWrite?: string[] } }).filesystem?.allowWrite?.length).toBe(1);
     });
 
-    it('only the secret store is read-denied on a host without environment plugins', async () => {
+    it('only the secret store and the credential files are read-denied on a host without environment plugins', async () => {
       const { options } = await buildStreamOptions({ queryEnv: {}, slackContext: makeSlackContext() }, makeDeps());
       expect((options.sandbox as { filesystem?: { denyRead?: string[] } } | undefined)?.filesystem?.denyRead).toEqual([
         SECRETS_DIR,
+        ...credentialPaths(os.homedir()),
       ]);
     });
   });
@@ -776,6 +783,20 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
         ]),
       );
       expect(deny).toEqual(expect.arrayContaining(secretStoreDenyRules()));
+      expect(deny, `${user} off=${off}`).toEqual(
+        expect.arrayContaining([`Read(/${path.join(os.homedir(), '.ssh')}/**)`]),
+      );
+    }
+  });
+
+  it('every sandboxed session, admin or not, read-denies the ssh keys and the logins (#1210)', async () => {
+    await asAdmin();
+    for (const user of [SAFE_USER, ADMIN]) {
+      const { options } = await withSettings(false, () => build(user));
+      const denyRead = (options.sandbox as { filesystem?: { denyRead?: string[] } }).filesystem?.denyRead ?? [];
+      expect(denyRead, user).toEqual(
+        expect.arrayContaining([path.join(os.homedir(), '.ssh'), path.join(os.homedir(), '.config', 'gh')]),
+      );
     }
   });
 });

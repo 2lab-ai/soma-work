@@ -10,6 +10,8 @@ import { describe, expect, it } from 'vitest';
 import {
   ADMIN_ALL_DOMAINS_RULE,
   adminSandboxProfile,
+  credentialPaths,
+  credentialReadDenyRules,
   isSandboxOffInEffect,
   protectedWriteDenyRules,
 } from '../admin-sandbox-profile';
@@ -94,5 +96,25 @@ describe('isSandboxOffInEffect', () => {
     expect(isSandboxOffInEffect({ ...base, hostAllows: false })).toBe(false);
     expect(isSandboxOffInEffect({ ...base, requested: false })).toBe(false);
     expect(isSandboxOffInEffect({ ...base, isAdmin: false })).toBe(false);
+  });
+});
+
+describe('credential files (env-access WU2, #1210): no model reads a key, a token or a login', () => {
+  it('names the ssh keys, gh, cloud and registry logins under the home directory', () => {
+    const paths = credentialPaths(HOME);
+    for (const p of ['.ssh', '.config/gh', '.aws', '.netrc', '.git-credentials', '.docker/config.json', '.kube']) {
+      expect(paths).toContain(path.join(HOME, p));
+    }
+    // npm reads its own ~/.npmrc for installs; the keychain files are read by the TLS check.
+    expect(paths).not.toContain(path.join(HOME, '.npmrc'));
+    expect(paths).not.toContain(path.join(HOME, 'Library/Keychains'));
+  });
+
+  it('turns them into Read deny rules for the file tools, the path and everything under it', () => {
+    const rules = credentialReadDenyRules(HOME);
+    expect(rules).toEqual(
+      expect.arrayContaining([`Read(/${HOME}/.ssh)`, `Read(/${HOME}/.ssh/**)`, `Read(/${HOME}/.aws/**)`]),
+    );
+    expect(rules.every((rule) => rule.startsWith('Read(//'))).toBe(true);
   });
 });

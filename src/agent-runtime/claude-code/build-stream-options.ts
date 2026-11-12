@@ -58,6 +58,8 @@ import type { SdkPluginPath } from '../../plugin/types';
 import { getProjectMemoryStore, projectMemoryPromptBlock } from '../../project-memory-store';
 import {
   adminSandboxProfile,
+  credentialPaths,
+  credentialReadDenyRules,
   isSandboxOffInEffect,
   protectedWriteDenyRules,
 } from '../../sandbox/admin-sandbox-profile';
@@ -739,8 +741,9 @@ export async function buildStreamOptions(
     // Every model: the secret store is unreadable and unwritable, and no approval or grant record is
     // writable (.prd/25-env-access-architecture.md §2). The OS enforces it for every Bash spelling;
     // policy step 1b covers the native tools.
+    // And (WU2, #1210) no model reads an ssh key or a login: host commands go through `ssh_exec`.
     sandboxConfig.filesystem = {
-      denyRead: [SECRETS_DIR],
+      denyRead: [SECRETS_DIR, ...credentialPaths(os.homedir())],
       denyWrite: [SECRETS_DIR, ...approvalRecordPaths()],
     };
     // Mount only the user's /tmp/{userId} directory for writes.
@@ -821,6 +824,7 @@ export async function buildStreamOptions(
     const deny = [
       ...(base.permissions?.deny ?? []),
       ...secretStoreDenyRules(),
+      ...credentialReadDenyRules(os.homedir()),
       ...protectedWriteDenyRules({
         deployRoot: path.dirname(CONFIG_FILE),
         dataDir: DATA_DIR,
