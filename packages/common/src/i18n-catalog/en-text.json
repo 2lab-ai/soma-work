@@ -338,6 +338,8 @@
   "default — 대기열 사용": "default — use the queue",
   "default — 만든 사람의 현재 기본 모델을 실행 시점에 사용": "default — uses the creator's current default model at run time",
   "default — 만든 사람의 현재 모델": "default — the creator's current model",
+  "fast — 만든 사람 모델의 sonnet급": "fast — sonnet tier of the creator's model",
+  "fast — 실행 시점에 만든 사람 모델의 sonnet급 (sonnet·terra·grok)": "fast — sonnet tier of the creator's model at run time (sonnet·terra·grok)",
   "default(만든 사람의 현재 모델)": "default (creator's current model)",
   "delivery failed ({0}) — cron history 확인": "delivery failed ({0}) — check cron history",
   "dev 배포 + QA": "Deploy to dev + QA",

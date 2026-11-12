@@ -56,6 +56,12 @@ export interface BuildOneShotOptionsInput {
    * SDK-default adaptive behaviour (currently only `memory-improve.ts`).
    */
   disableThinking?: boolean;
+  /**
+   * Reasoning effort (`ClaudeCodeExtensionOptions.effort` → SDK `Options.effort`).
+   * Set only when supplied, so a call without it keeps the SDK default. The aux
+   * tier sets it for a grok main model (`aux-model.ts`: low / medium).
+   */
+  effort?: string;
 }
 
 /**
@@ -68,7 +74,7 @@ export interface BuildOneShotOptionsInput {
  *   • `stderr` trims the trailing newline before forwarding to the logger.
  */
 export function buildOneShotOptions(input: BuildOneShotOptionsInput): AgentRunOptions {
-  const { model, systemPrompt, env, logger, stderrLabel, disableThinking = true } = input;
+  const { model, systemPrompt, env, logger, stderrLabel, disableThinking = true, effort } = input;
   return {
     model,
     maxTurns: 1,
@@ -83,6 +89,7 @@ export function buildOneShotOptions(input: BuildOneShotOptionsInput): AgentRunOp
         stderr: (data: string) => {
           logger.warn(`${stderrLabel} stderr`, { data: data.trimEnd() });
         },
+        ...(effort ? { effort } : {}),
       },
     },
   };

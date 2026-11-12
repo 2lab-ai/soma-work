@@ -140,7 +140,9 @@ export class AgentMCPServer extends BaseMcpServer {
     }
 
     const agentConfig = this.agentConfigs[agentName];
-    const model = agentConfig.model || 'claude-sonnet-4-20250514';
+    // No user store / main model reaches this process (only SOMA_AGENT_CONFIGS):
+    // the `sonnet` alias, resolved downstream, instead of a pinned Sonnet id.
+    const model = agentConfig.model || 'sonnet';
 
     this.logger.info(`agent_chat: routing to agent '${agentName}'`, { model });
 

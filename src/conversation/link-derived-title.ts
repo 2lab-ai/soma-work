@@ -212,6 +212,7 @@ async function maybeWriteSessionTitle(
       issueTitle,
       prTitle,
       session.currentInitiatorId || session.ownerId || session.userId || undefined,
+      session.model,
     );
   } else {
     derived = clampTitle(titles.join(' · '));
@@ -239,22 +240,26 @@ async function maybeWriteSessionTitle(
 }
 
 /**
- * Ask Haiku to fold issue + PR titles into a single concise headline. Falls
- * back to `${issue} · ${pr}` (clamped) when the LLM call returns null or throws.
+ * Ask the `haiku` aux tier (sonnet-tier fallback, via the session summary
+ * title) to fold issue + PR titles into a single concise headline. Falls back
+ * to `${issue} · ${pr}` (clamped) when the LLM call returns null or throws.
  *
  * Exported so unit tests can target the issue+PR branch directly.
  * `tenantUserId` = the session's user: in llmux mode the call is metered under
- * their own key (absent → the shared key).
+ * their own key (absent → the shared key). `mainModel` = the session's model:
+ * the tiers follow its provider (absent → the user's default model).
  */
 export async function summarizeIssueAndPrTitles(
   issueTitle: string,
   prTitle: string,
   tenantUserId?: string,
+  mainModel?: string,
 ): Promise<string> {
   const fallback = clampTitle(`${issueTitle} · ${prTitle}`);
   try {
     const result = await generateSessionSummaryTitle([`Issue: ${issueTitle}`, `PR: ${prTitle}`], undefined, {
       tenantUserId,
+      mainModel,
     });
     if (result?.title) {
       const cleaned = clampTitle(result.title);

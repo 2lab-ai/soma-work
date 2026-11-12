@@ -40,6 +40,7 @@ setSessionUiManagerProviders({
   },
   getUserSessionTheme: (userId) => userSettingsStore.getUserSessionTheme(userId),
   getModelDisplayName: (model) => userSettingsStore.getModelDisplayName(model as any),
+  getUserDefaultModel: (userId) => (userId ? userSettingsStore.getUserDefaultModel(userId) : undefined),
   getSessionLifecycle: () => {
     const { sleepAfterMs, archiveAfterMs } = getSessionLifecyclePolicy();
     return { sleepAfterMs, archiveAfterMs };

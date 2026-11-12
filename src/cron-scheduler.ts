@@ -14,6 +14,7 @@ import {
   type CronStorage,
   matchesCronExpression,
 } from 'somalib/cron/cron-storage';
+import { auxModelFor } from './agent-runtime/aux-model';
 import { Logger } from './logger';
 import { buildWorkSessionKey } from './session-identity';
 import type { SessionRegistry } from './session-registry';
@@ -93,18 +94,19 @@ function minuteKey(epochMinute: number): string {
   return new Date(epochMinute * MINUTE_MS).toISOString().slice(0, 16);
 }
 
-const FAST_MODEL = 'claude-sonnet-4-20250514';
-
 /**
  * Resolve model override string from CronModelConfig. undefined = use session default.
  * `opus` / `fable` read MODEL_ALIASES on every fire, so they follow the latest
- * generation without rewriting stored jobs.
+ * generation without rewriting stored jobs. `fast` is the `sonnet` aux tier of
+ * the job creator's (`owner`) default model, also resolved on every fire:
+ * Claude → `sonnet`, Codex → `terra`, Grok → `grok` (agent-runtime/aux-model.ts).
+ * Grok's tier effort is not applied: a cron fire carries a model override only.
  */
-export function resolveModelOverride(config?: CronModelConfig): string | undefined {
+export function resolveModelOverride(config?: CronModelConfig, owner?: string): string | undefined {
   if (!config || config.type === 'default') return undefined;
   if (config.type === 'opus') return MODEL_ALIASES.opus;
   if (config.type === 'fable') return MODEL_ALIASES.fable;
-  if (config.type === 'fast') return FAST_MODEL;
+  if (config.type === 'fast') return auxModelFor('sonnet', { userId: owner }).model;
   if (config.type === 'custom' && config.model) return config.model;
   return undefined;
 }
@@ -380,7 +382,7 @@ export class CronScheduler {
       text: cronText(job),
       synthetic: true,
       skipDispatch: true,
-      modelOverride: resolveModelOverride(job.modelConfig),
+      modelOverride: resolveModelOverride(job.modelConfig, job.owner),
       cron: cronOrigin(job),
       routeContext: { skipAutoBotThread: true },
     };
@@ -465,7 +467,7 @@ export class CronScheduler {
       text: cronText(job),
       synthetic: true,
       skipDispatch: true,
-      modelOverride: resolveModelOverride(job.modelConfig),
+      modelOverride: resolveModelOverride(job.modelConfig, job.owner),
       cron: cronOrigin(job),
       routeContext: { skipAutoBotThread: true },
     };
@@ -549,7 +551,7 @@ export class CronScheduler {
       text,
       synthetic: true,
       skipDispatch: true,
-      modelOverride: resolveModelOverride(job.modelConfig),
+      modelOverride: resolveModelOverride(job.modelConfig, job.owner),
       cron: cronOrigin(job),
       routeContext: { skipAutoBotThread: true },
     };

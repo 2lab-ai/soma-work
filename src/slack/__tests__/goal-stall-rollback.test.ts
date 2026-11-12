@@ -71,7 +71,7 @@ function harness(goal: SessionGoal, verdicts: GoalEvalVerdict[], anchors: string
       questions.push(q);
     },
     logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-    fallbackModel: 'm',
+    fallbackModel: () => 'm',
   });
   // One settle per verdict: each "turn" ends at the next anchor with new text.
   const settle = async (n: number) => {

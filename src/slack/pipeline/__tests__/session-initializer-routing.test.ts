@@ -231,7 +231,41 @@ describe('SessionInitializer - channel routing advisory', () => {
       'Review PR https://github.com/acme/repo/pull/1',
       expect.any(AbortSignal),
       'U123',
+      // No session in the registry yet → no session model: the sender's default decides the tier.
+      undefined,
     );
+  });
+
+  // The classifier is the haiku aux tier of the MAIN model: when the session the
+  // message lands in exists, its model picks the provider — for the dispatch and
+  // for the "Dispatching… (model)" notice alike.
+  it("dispatches with the session's model as the main model", async () => {
+    mockClaudeHandler.setActivityState = vi.fn();
+    mockClaudeHandler.getSession.mockImplementation(() => ({
+      ownerId: 'U123',
+      userId: 'U123',
+      channelId: 'C123',
+      threadTs: 'thread123',
+      model: 'gpt-6.1-sol[1m]',
+    }));
+    const event = {
+      user: 'U123',
+      channel: 'C123',
+      thread_ts: undefined,
+      ts: 'thread123',
+      text: 'Review PR https://github.com/acme/repo/pull/1',
+    };
+
+    await sessionInitializer.initialize(event as any, '/test/dir');
+
+    const service = vi.mocked(getDispatchService)();
+    expect(service.dispatch as unknown as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+      'Review PR https://github.com/acme/repo/pull/1',
+      expect.any(AbortSignal),
+      'U123',
+      'gpt-6.1-sol[1m]',
+    );
+    expect(service.getModel as unknown as ReturnType<typeof vi.fn>).toHaveBeenCalledWith('U123', 'gpt-6.1-sol[1m]');
   });
 
   it('advisory userMessage preserves inline-directive raw text (codex review of #1268)', async () => {

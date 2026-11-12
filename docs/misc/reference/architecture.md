@@ -91,6 +91,16 @@ Slack Event (Socket Mode)
       Slack · DM · Telegram · Webhook 출력 라우팅
 ```
 
+## Aux model calls
+
+작업 바깥에서 soma-work가 스스로 부르는 모델 호출(디스패치 분류, 세션·턴 요약과 제목, 완료 지시 요약,
+메모리 dreaming·improve, cron `fast`, goal 판정 fallback)은 모델 id를 박지 않고 **tier**(`haiku` = 싸고 빠름,
+`sonnet` = 중간)만 고른다. 실제 모델은 `src/agent-runtime/aux-model.ts`의 `auxModelFor`가 메인 모델(세션 모델 →
+유저 기본 모델 → `DEFAULT_MODEL`)의 프로바이더로 정한다: Claude → `haiku`/`sonnet`, Codex → `luna`/`terra`,
+Grok → `grok`(effort low/medium). 별칭은 호출 시점에 `userSettingsStore.resolveModelInput`(→ `MODEL_ALIASES`
+→ llmux 카탈로그)으로 풀리므로, 모델 업데이트는 별칭 표만 고치면 모든 aux 호출에 반영된다. 운영 env
+(`SUMMARY_MODEL`, `DEFAULT_DISPATCH_MODEL`, `GOAL_EVAL_MODEL`)는 그대로 우선한다.
+
 ## Native assistant status
 
 `packages/slack/src/assistant-status-manager.ts` owns native Slack status writes.

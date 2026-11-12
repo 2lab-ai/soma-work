@@ -245,9 +245,11 @@ describe('DispatchService — deploy directive fast path', () => {
   });
 });
 
-// The workflow classifier names Haiku 5.5 by its own id and asks for effort `medium`. Before, it sent
-// `claude-haiku-4-5-20251001` with no effort: Claude Code put a 31,999-token thinking budget on the wire
-// (max_tokens 32,000), told the model it was Haiku 4.5, and only llmux's float of the old id made 5.5 answer.
+// The workflow classifier is a `haiku`-tier aux call (agent-runtime/aux-model.ts): the model follows the
+// provider of the session's model (else the sender's default model) — Claude → the `haiku` alias, Codex → `luna`,
+// Grok → `grok` at effort low — resolved through the alias table at call time. Other providers keep effort
+// `medium` (with no effort, Claude Code sent Haiku a fixed 31,999-token thinking budget). DEFAULT_DISPATCH_MODEL
+// (operator) still wins as-is.
 describe('DispatchService — classifier model and effort', () => {
   async function freshService(envModel: string | undefined) {
     const saved = process.env.DEFAULT_DISPATCH_MODEL;
@@ -256,33 +258,77 @@ describe('DispatchService — classifier model and effort', () => {
     vi.resetModules();
     try {
       const mod = await import('../dispatch-service');
+      const settings = await import('../user-settings-store');
       const svc = mod.getDispatchService() as any;
       const dispatchOneShot = vi.fn(async () => '{"workflow":"default","title":"classified"}');
       svc.claudeHandler = { dispatchOneShot };
       svc.isConfigured = true;
       svc.dispatchPrompt = svc.dispatchPrompt || 'classify';
-      return { svc, dispatchOneShot };
+      return { svc, dispatchOneShot, settings };
     } finally {
       if (saved === undefined) delete process.env.DEFAULT_DISPATCH_MODEL;
       else process.env.DEFAULT_DISPATCH_MODEL = saved;
     }
   }
 
-  it('classifies on claude-haiku-5-5 at effort medium', async () => {
-    const { svc, dispatchOneShot } = await freshService(undefined);
-    await svc.dispatch('https://github.com/org/repo/pull/745');
+  /** The [model, effort] of the single classifier call. */
+  function modelAndEffort(dispatchOneShot: ReturnType<typeof vi.fn>): [unknown, unknown] {
     expect(dispatchOneShot).toHaveBeenCalledTimes(1);
     const args = dispatchOneShot.mock.calls[0] as unknown[];
-    expect(args[2]).toBe('claude-haiku-5-5');
-    expect(args[6]).toBe('medium');
+    return [args[2], args[6]];
+  }
+
+  it("a Claude user's message classifies on the `haiku` alias at effort medium", async () => {
+    const { svc, dispatchOneShot, settings } = await freshService(undefined);
+    vi.spyOn(settings.userSettingsStore, 'getUserDefaultModel').mockReturnValue('claude-opus-5-5[1m]');
+    await svc.dispatch('https://github.com/org/repo/pull/745', undefined, 'U_CLAUDE');
+    expect(modelAndEffort(dispatchOneShot)).toEqual([settings.MODEL_ALIASES.haiku, 'medium']);
+    expect(settings.MODEL_ALIASES.haiku).toBe('claude-haiku-5-5[1m]');
   });
 
-  it('DEFAULT_DISPATCH_MODEL still picks the model; the effort stays medium', async () => {
-    const { svc, dispatchOneShot } = await freshService('claude-sonnet-4-6');
-    await svc.dispatch('please look at the login page');
-    const args = dispatchOneShot.mock.calls[0] as unknown[];
-    expect(args[2]).toBe('claude-sonnet-4-6');
-    expect(args[6]).toBe('medium');
+  it("a Codex user's message classifies on the `luna` alias at effort medium", async () => {
+    const { svc, dispatchOneShot, settings } = await freshService(undefined);
+    vi.spyOn(settings.userSettingsStore, 'getUserDefaultModel').mockReturnValue('gpt-6.1-sol[1m]');
+    await svc.dispatch('fix the login page', undefined, 'U_CODEX');
+    expect(modelAndEffort(dispatchOneShot)).toEqual([settings.MODEL_ALIASES.luna, 'medium']);
+  });
+
+  it("a Grok user's message classifies on grok at effort low", async () => {
+    const { svc, dispatchOneShot, settings } = await freshService(undefined);
+    vi.spyOn(settings.userSettingsStore, 'getUserDefaultModel').mockReturnValue('grok-4.7');
+    await svc.dispatch('fix the login page', undefined, 'U_GROK');
+    const [model, effort] = modelAndEffort(dispatchOneShot);
+    expect(model).toMatch(/^grok-/);
+    expect(effort).toBe('low');
+  });
+
+  it("the session's model, when given, picks the provider over the sender's default", async () => {
+    const { svc, dispatchOneShot, settings } = await freshService(undefined);
+    vi.spyOn(settings.userSettingsStore, 'getUserDefaultModel').mockReturnValue('claude-opus-5-5[1m]');
+    await svc.dispatch('fix the login page', undefined, 'U_CLAUDE', 'gpt-6.1-sol[1m]');
+    expect(modelAndEffort(dispatchOneShot)).toEqual([settings.MODEL_ALIASES.luna, 'medium']);
+  });
+
+  it('no sender and no session → DEFAULT_MODEL picks the provider', async () => {
+    const { svc, dispatchOneShot, settings } = await freshService(undefined);
+    await svc.dispatch('fix the login page');
+    const expected = /^gpt-/.test(settings.DEFAULT_MODEL) ? settings.MODEL_ALIASES.luna : settings.MODEL_ALIASES.haiku;
+    expect(modelAndEffort(dispatchOneShot)).toEqual([expected, 'medium']);
+  });
+
+  it('getModel names the model that dispatch would use for the same sender / session', async () => {
+    const { svc, settings } = await freshService(undefined);
+    vi.spyOn(settings.userSettingsStore, 'getUserDefaultModel').mockReturnValue('gpt-6.1-sol[1m]');
+    expect(svc.getModel('U_CODEX')).toBe(settings.MODEL_ALIASES.luna);
+    expect(svc.getModel('U_CODEX', 'claude-opus-5-5[1m]')).toBe(settings.MODEL_ALIASES.haiku);
+  });
+
+  it('DEFAULT_DISPATCH_MODEL still picks the model as-is; the effort stays medium', async () => {
+    const { svc, dispatchOneShot, settings } = await freshService('claude-sonnet-4-6');
+    vi.spyOn(settings.userSettingsStore, 'getUserDefaultModel').mockReturnValue('grok-4.7');
+    await svc.dispatch('please look at the login page', undefined, 'U_GROK');
+    expect(modelAndEffort(dispatchOneShot)).toEqual(['claude-sonnet-4-6', 'medium']);
+    expect(svc.getModel('U_GROK')).toBe('claude-sonnet-4-6');
   });
 });
 

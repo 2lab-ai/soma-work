@@ -467,7 +467,12 @@ export const config = {
     .filter(Boolean),
   debug: process.env.DEBUG === 'true' || process.env.NODE_ENV === 'development',
   conversation: {
-    summaryModel: process.env.SUMMARY_MODEL || 'claude-sonnet-4-6',
+    /**
+     * Operator override for the summary-class aux calls (dreaming, titles, turn
+     * summaries, memory improve). Unset (the default): each call runs the
+     * `sonnet` tier of its main model's provider (`agent-runtime/aux-model.ts`).
+     */
+    summaryModel: process.env.SUMMARY_MODEL || undefined,
     viewerHost: process.env.CONVERSATION_VIEWER_HOST || '127.0.0.1',
     viewerPort: process.env.CONVERSATION_VIEWER_PORT ? parseInt(process.env.CONVERSATION_VIEWER_PORT, 10) : 0,
     viewerUrl: process.env.CONVERSATION_VIEWER_URL || '',

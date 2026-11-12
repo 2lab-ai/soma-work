@@ -76,6 +76,8 @@ export interface SessionUiManagerProviders {
   isPRMergeable?: (details: GitHubPRDetails) => boolean;
   getUserSessionTheme?: (userId: string) => SessionTheme;
   getModelDisplayName?: (model: string) => string;
+  /** The user's default model — what a session with no model of its own runs on. */
+  getUserDefaultModel?: (userId: string) => string | undefined;
   /** Idle-to-sleep and sleep-to-end durations the host's lifecycle policy uses. */
   getSessionLifecycle?: () => SessionLifecycleDurations;
 }
@@ -102,6 +104,7 @@ let sessionUiManagerProviders: Required<SessionUiManagerProviders> = {
   isPRMergeable: () => false,
   getUserSessionTheme: () => 'default',
   getModelDisplayName: (model) => model,
+  getUserDefaultModel: () => undefined,
   getSessionLifecycle: () => ({ sleepAfterMs: 24 * 60 * 60 * 1000, archiveAfterMs: 7 * 24 * 60 * 60 * 1000 }),
 };
 
@@ -300,7 +303,10 @@ export class SessionUiManager {
   private async fetchCardData(session: ConversationSession, theme: SessionTheme = 'default') {
     const channelName = await this.slackApi.getChannelName(session.channelId);
     const timeAgo = MessageFormatter.formatTimeAgo(session.lastActivity);
-    const modelDisplay = session.model ? sessionUiManagerProviders.getModelDisplayName(session.model) : 'Sonnet 4';
+    // No model of its own → the session runs on its owner's default model; show that one.
+    const shownModel =
+      session.model || sessionUiManagerProviders.getUserDefaultModel(session.ownerId || session.userId || '');
+    const modelDisplay = shownModel ? sessionUiManagerProviders.getModelDisplayName(shownModel) : 'default';
     const permalink = session.threadTs ? await this.slackApi.getPermalink(session.channelId, session.threadTs) : null;
     const activityEmoji = this.formatActivityEmoji(session.activityState);
 

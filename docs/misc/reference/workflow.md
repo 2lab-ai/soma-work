@@ -41,7 +41,7 @@ Slack 채널에서 @제갈량(봇)을 통해 실행하는 주요 워크플로우
 │  │  (src/dispatch-service.ts)                           │  │     │
 │  │                                                      │  │     │
 │  │  ┌────────────────────────────────────────────────┐  │  │     │
-│  │  │ Model: claude-haiku-5-5, effort medium        │  │  │     │
+│  │  │ Model: haiku tier of the main model (aux)     │  │  │     │
 │  │  │ System: dispatch.prompt (분류 규칙)            │  │  │     │
 │  │  │ User: "{text}" (유저 원문)                     │  │  │     │
 │  │  │                                                │  │  │     │

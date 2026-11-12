@@ -6,6 +6,7 @@
 import { parseSafeguardFlag, type SafeguardFlagInfo, safeguardFlagOf } from '@soma/common/safeguard';
 import * as fs from 'fs';
 import * as path from 'path';
+import { type AuxModel, auxModelFor } from './agent-runtime/aux-model';
 import type { ClaudeHandler } from './claude-handler';
 import { type ComplexityResult, scoreComplexity } from './complexity-scorer';
 import { decodeSlackEntities, PLACEHOLDER_SESSION_TITLE, sanitizeSessionTitle } from './format/display-title';
@@ -17,13 +18,14 @@ import type { EffortLevel } from './user-settings-store';
 // here for existing importers.
 export { decodeSlackEntities, sanitizeSessionTitle } from './format/display-title';
 
-// Default dispatch model - fast and cheap for classification. Named by its own id: the old
-// `claude-haiku-4-5-20251001` only reached Haiku 5.5 through llmux's float of that id, and Claude Code
-// still told the model it was Haiku 4.5. Can be overridden via DEFAULT_DISPATCH_MODEL env var.
-const FALLBACK_DISPATCH_MODEL = 'claude-haiku-5-5';
+// The classifier is a `haiku`-tier aux call (agent-runtime/aux-model.ts): the `haiku` alias for a Claude main
+// model, `luna` for Codex, `grok` at effort low for Grok — resolved through the alias table at call time, so a
+// model update needs no change here. The main model is the session's model, else the sender's default model.
+// DEFAULT_DISPATCH_MODEL (operator) overrides it as-is.
 
-// Reasoning effort for the classifier. With no effort, Claude Code sends Haiku a fixed 31,999-token
-// thinking budget (max_tokens 32,000); with it the request carries adaptive thinking at this effort.
+// Reasoning effort for the classifier when the tier names none (every provider but Grok). With no effort,
+// Claude Code sends Haiku a fixed 31,999-token thinking budget (max_tokens 32,000); with it the request
+// carries adaptive thinking at this effort.
 const DISPATCH_EFFORT: EffortLevel = 'medium';
 
 // Dispatch prompt file path
@@ -95,14 +97,15 @@ export interface DispatchResult {
  */
 class DispatchService {
   private logger = new Logger('DispatchService');
-  private model: string;
+  /** DEFAULT_DISPATCH_MODEL — the operator override; unset → the `haiku` tier of the main model. */
+  private modelOverride: string | undefined;
   private dispatchPrompt: string | undefined;
   private isConfigured: boolean = false;
   private claudeHandler: ClaudeHandler | undefined;
 
   constructor(claudeHandler?: ClaudeHandler) {
     this.claudeHandler = claudeHandler;
-    this.model = process.env.DEFAULT_DISPATCH_MODEL || FALLBACK_DISPATCH_MODEL;
+    this.modelOverride = process.env.DEFAULT_DISPATCH_MODEL || undefined;
     this.loadDispatchPrompt();
     this.validateConfiguration();
   }
@@ -135,7 +138,7 @@ class DispatchService {
     if (!this.dispatchPrompt) {
       this.logger.error('DISPATCH CONFIG ERROR: No dispatch prompt loaded. All sessions will use default workflow.', {
         expectedPath: DISPATCH_PROMPT_PATH,
-        model: this.model,
+        modelOverride: this.modelOverride,
       });
       this.isConfigured = false;
       return;
@@ -144,7 +147,7 @@ class DispatchService {
     // Note: No ANTHROPIC_API_KEY check needed - we use ClaudeHandler's auth (subscription credentials)
     this.isConfigured = true;
     this.logger.debug('Dispatch service configured', {
-      model: this.model,
+      modelOverride: this.modelOverride,
       promptLength: this.dispatchPrompt.length,
       hasClaudeHandler: !!this.claudeHandler,
     });
@@ -164,9 +167,17 @@ class DispatchService {
    * @param abortSignal - Optional AbortSignal for cancellation
    * @param tenantUserId - The Slack user who sent the message. In llmux mode the
    *   classification call carries their own key (metered under their tenant);
-   *   absent → the shared key.
+   *   absent → the shared key. Their default model is the main model when no
+   *   session model is given.
+   * @param mainModel - The model of the session the message lands in, when it
+   *   exists: the classifier's tier follows its provider.
    */
-  async dispatch(userMessage: string, abortSignal?: AbortSignal, tenantUserId?: string): Promise<DispatchResult> {
+  async dispatch(
+    userMessage: string,
+    abortSignal?: AbortSignal,
+    tenantUserId?: string,
+    mainModel?: string,
+  ): Promise<DispatchResult> {
     // Score complexity for every dispatch (cheap — pure function, <1ms)
     const complexity = scoreComplexity(userMessage);
 
@@ -211,9 +222,11 @@ class DispatchService {
     }
 
     const startTime = Date.now();
+    const aux = this.auxModel(tenantUserId, mainModel);
     try {
       this.logger.info('🎯 DISPATCH: Starting classification', {
-        model: this.model,
+        model: aux.model,
+        effort: aux.effort ?? DISPATCH_EFFORT,
         messageLength: userMessage.length,
         messagePreview: userMessage.substring(0, 100),
       });
@@ -239,11 +252,11 @@ class DispatchService {
       const responseText = await this.claudeHandler.dispatchOneShot(
         userMessage,
         this.dispatchPrompt,
-        this.model,
+        aux.model,
         abortController,
         undefined,
         undefined,
-        DISPATCH_EFFORT,
+        aux.effort ?? DISPATCH_EFFORT,
         { tenantUserId },
       );
 
@@ -597,11 +610,16 @@ class DispatchService {
     return title.length === 50 ? `${title}...` : title || PLACEHOLDER_SESSION_TITLE;
   }
 
+  /** The classifier's model (and grok effort) for this sender / session — see the tier note at the top. */
+  private auxModel(tenantUserId?: string, mainModel?: string): AuxModel {
+    return auxModelFor('haiku', { mainModel, userId: tenantUserId, override: this.modelOverride });
+  }
+
   /**
-   * Get current dispatch model
+   * The model a dispatch for this sender / session runs on (for the "Dispatching… (model)" notice).
    */
-  getModel(): string {
-    return this.model;
+  getModel(tenantUserId?: string, mainModel?: string): string {
+    return this.auxModel(tenantUserId, mainModel).model;
   }
 }
 

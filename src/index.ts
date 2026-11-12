@@ -52,6 +52,7 @@ import {
   shutdownA2tService,
   shutdownDictationA2tService,
 } from './a2t/a2t-service';
+import { auxModelFor } from './agent-runtime/aux-model';
 import { getClaudeChildProcessRegistry } from './agent-runtime/claude-child-process-registry';
 import { initAuthRuntimeDefault } from './auth/auth-runtime';
 import { isLlmuxUp } from './auth/llmux-client';
@@ -1728,6 +1729,7 @@ async function start() {
           summaryTitleLastUpdatedAtMs: session.summaryTitleLastUpdatedAtMs,
           links,
           tenantUserId: session.currentInitiatorId || session.ownerId || session.userId || undefined,
+          mainModel: session.model || undefined,
         };
       },
       setLastAssistantTurnId: (conversationId, turnId) => {
@@ -2199,7 +2201,8 @@ async function start() {
         // #788: while the host stops, no loop run starts and a landing verdict is dropped.
         isShuttingDown: () => slackHandler.isShuttingDown(),
         logger,
-        fallbackModel: 'claude-sonnet-4-20250514',
+        // A session with no model (legacy): the sonnet aux tier of its owner's default model.
+        fallbackModel: (ownerId) => auxModelFor('sonnet', { userId: ownerId }).model,
         // S9: optional cheaper eval tier. Unset → eval matches the work model.
         evalModelOverride: process.env.GOAL_EVAL_MODEL || undefined,
       });

@@ -4,9 +4,10 @@
  * are ≥ 2 completed entries.
  *
  * Design rationale (see docs/PLAN §5):
- *   - Sonnet direct (no haiku first pass). The completed entries are typically
- *     short; haiku adds latency + fallback complexity without meaningful cost
- *     savings at ≤ 50 entries.
+ *   - The `sonnet` aux tier direct (no haiku first pass). The completed entries
+ *     are typically short; the haiku tier adds latency + fallback complexity
+ *     without meaningful cost savings at ≤ 50 entries. The tier follows the
+ *     session's model's provider (`agent-runtime/aux-model.ts`).
  *   - Fire-and-forget regen when `upstreamHash` mismatches. The block builder
  *     renders a `(summary pending…)` placeholder for the first turn; the
  *     next turn sees the fresh summary once the async call resolves.
@@ -15,6 +16,7 @@
  */
 
 import { buildOneShotOptions, runOneShotText } from '../agent-runtime';
+import { auxModelFor } from '../agent-runtime/aux-model';
 import { buildQueryEnv } from '../auth/query-env-builder';
 import { userTenantKey } from '../auth/user-tenant-key';
 import { ensureActiveSlotAuth, NoHealthySlotError, type SlotAuthLease } from '../credentials-manager';
@@ -24,13 +26,6 @@ import { getTokenManager } from '../token-manager';
 import type { ConversationSession, SessionInstruction } from '../types';
 
 const logger = new Logger('InstructionsSummarizer');
-
-/**
- * Sonnet direct — see doc comment. Kept local (rather than imported from
- * `conversation/summarizer.ts`) so a future model swap here doesn't
- * accidentally drift the session-summary-title model.
- */
-const SONNET_MODEL = 'claude-sonnet-4-5';
 
 /** In-flight regen tracker — one concurrent summary per session is sufficient. */
 const inFlight = new WeakSet<ConversationSession>();
@@ -42,11 +37,12 @@ const inFlight = new WeakSet<ConversationSession>();
  *
  * Kept pure (no session mutation) so it can be unit-tested in isolation.
  * `tenantUserId` = the session's user: in llmux mode the call is metered under
- * their own key (absent → the shared key).
+ * their own key (absent → the shared key). The model is the `sonnet` aux tier of
+ * `mainModel` (the session's model), else of that user's default model.
  */
 export async function summarizeCompletedInstructions(
   items: SessionInstruction[],
-  opts: { tenantUserId?: string } = {},
+  opts: { tenantUserId?: string; mainModel?: string } = {},
 ): Promise<string | null> {
   if (!items || items.length < 2) return null;
 
@@ -79,8 +75,10 @@ Completed instructions:
 ${truncatedLines}`;
 
     const { env } = buildQueryEnv(lease, { llmuxTenant: await userTenantKey(opts.tenantUserId) });
+    const aux = auxModelFor('sonnet', { mainModel: opts.mainModel, userId: opts.tenantUserId });
     const options = buildOneShotOptions({
-      model: SONNET_MODEL,
+      model: aux.model,
+      effort: aux.effort,
       systemPrompt:
         'You compress completed-instruction logs into a compact prose summary. Output only the summary text.',
       env,
@@ -136,6 +134,7 @@ export async function regenerateInstructionsSummaryIfStale(session: Conversation
   try {
     const summary = await summarizeCompletedInstructions(completed, {
       tenantUserId: session.currentInitiatorId || session.ownerId || session.userId || undefined,
+      mainModel: session.model,
     });
     if (!summary) return false;
     // Re-fetch hash in case completed entries changed mid-flight — we tag the

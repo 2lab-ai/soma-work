@@ -47,7 +47,7 @@ function harness(
     injectContinuation,
     postNotice: async () => undefined,
     logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-    fallbackModel: 'm',
+    fallbackModel: () => 'm',
     scheduleEvalRetry: () => undefined,
     onRunSettled: (key, info) => settled.push([key, info]),
   });
