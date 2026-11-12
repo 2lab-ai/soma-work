@@ -7,7 +7,8 @@
  *
  * - It never refuses what `isSshCommand` let through (it starts from that check).
  * - The text must be literal: an expansion, escape, glob, brace or expanding heredoc anywhere refuses
- *   (`shellChanges`). Single quotes, quoted heredocs and `"$(cat <<'EOF' … EOF\n)"` stay literal.
+ *   (`shellChanges`), and so does any heredoc or a character outside ASCII outside quotes. Single quotes stay
+ *   literal. A commit message or a document that names the word is written from a file (`git commit -F`).
  * - A recursive scan finds every simple command, including those inside `$(…)`, `$((…))`, `${…}`, backticks
  *   (nested ones too), `(…)`, `<(…)`, `>(…)` and the substitutions of unquoted heredoc bodies. It knows quotes,
  *   `$'…'`, heredocs and comments, so a `)` inside them does not end a substitution.
@@ -622,37 +623,20 @@ function verdict(cmd: SimpleCommand): Verdict | 'runs' {
   return 'may-run';
 }
 
-/** `$(cat <<'WORD'` … `WORD` + `)`: the usual commit-message substitution, whose output is the literal body. */
-const CAT_HEREDOC = /^\$\(cat <<-?'([A-Za-z_][A-Za-z0-9_]*)'\n/;
-
 /**
- * Does the shell change this text before it runs it? Any expansion (`$`, a backtick), escape (a backslash), glob
- * (`*`, `?`, `[…]`, a `(` that ends a word), brace, or heredoc whose body expands. The scan below reads every
- * command it finds, but each such feature can assemble an option, a program or a variable name it cannot see
- * (review-of-legends kept finding one more: ANSI-C escapes, brace expansion, quoted line continuations,
- * indirect expansion …). So a text that names ssh is read only when it is literal; otherwise it refuses.
+ * Does the shell change this text before it runs it? Any expansion (`$` or a backtick outside single quotes), escape
+ * (a backslash), glob (`*`, `?`, `[…]`, a `(` that ends a word), brace, heredoc, or a character outside ASCII
+ * outside quotes (Bash and this scan may not agree on what separates words). The scan below reads every command it
+ * finds, but each such feature can assemble an option, a program or a variable name it cannot see — review-of-legends
+ * kept finding one more (ANSI-C escapes, brace expansion, line continuations, indirect expansion, heredoc
+ * delimiters, comments after a non-ASCII space). So a text that names the word is read only when it is literal;
+ * otherwise it refuses. Write a commit message or a document that names it from a file (`git commit -F`).
  *
- * Literal stays literal: single quotes (a `$` in them is checked where a program evaluates it — `test -v`),
- * a heredoc with a quoted plain delimiter (`<<'EOF'`, `<<"EOF"`), and `"$(cat <<'EOF' … EOF\n)"`.
+ * Literal stays literal: single quotes (a `$` in them is checked where a program evaluates it — `test -v`), and
+ * a comment that starts after ASCII space, tab, newline or an operator.
  */
 function shellChanges(src: string): boolean {
   let quote: "'" | '"' | null = null;
-  const bodies: { word: string; tabs: boolean }[] = [];
-  const quotedHeredoc = /^<<(-?)[ \t]*(['"])([A-Za-z_][A-Za-z0-9_]*)\2/;
-  // Skip the heredoc bodies that start after the newline at `nl`; -1 when one is not closed.
-  const skipBodies = (nl: number): number => {
-    let at = nl + 1;
-    for (const body of bodies.splice(0)) {
-      for (;;) {
-        if (at > src.length) return -1;
-        const end = src.indexOf('\n', at);
-        const line = src.slice(at, end < 0 ? src.length : end);
-        at = end < 0 ? src.length + 1 : end + 1;
-        if ((body.tabs ? line.replace(/^\t+/, '') : line) === body.word) break;
-      }
-    }
-    return at - 1;
-  };
   for (let i = 0; i < src.length; i++) {
     const c = src[i];
     if (quote === "'") {
@@ -660,36 +644,12 @@ function shellChanges(src: string): boolean {
       continue;
     }
     if (quote === '"') {
-      if (c === '"') {
-        quote = null;
-        continue;
-      }
-      if (c === '$') {
-        const m = CAT_HEREDOC.exec(src.slice(i));
-        if (!m) return true;
-        // The body ends at the first line that is the delimiter, and the substitution must close right there.
-        const tabs = m[0].includes('<<-');
-        let at = i + m[0].length;
-        let closed = -1;
-        while (at <= src.length) {
-          const end = src.indexOf('\n', at);
-          const line = src.slice(at, end < 0 ? src.length : end);
-          if ((tabs ? line.replace(/^\t+/, '') : line) === m[1]) {
-            closed = end;
-            break;
-          }
-          if (end < 0) break;
-          at = end + 1;
-        }
-        if (closed < 0 || src[closed + 1] !== ')') return true;
-        i = closed + 1;
-        continue;
-      }
-      if (c === '`' || c === '\\') return true;
+      if (c === '"') quote = null;
+      else if (c === '$' || c === '`' || c === '\\') return true;
       continue;
     }
-    // A comment runs to the end of the line: its quotes and `<<` mean nothing. `#` starts one only at a word start.
-    if (c === '#' && (i === 0 || /[\s;&|()<>]/.test(src[i - 1]))) {
+    // A comment runs to the end of the line. `#` starts one only after ASCII blank, newline or an operator.
+    if (c === '#' && (i === 0 || ' \t\n;&|()<>'.includes(src[i - 1]))) {
       const nl = src.indexOf('\n', i);
       if (nl < 0) break;
       i = nl - 1;
@@ -699,28 +659,18 @@ function shellChanges(src: string): boolean {
       quote = c;
       continue;
     }
-    if (c === '\n' && bodies.length > 0) {
-      const after = skipBodies(i);
-      if (after < 0) return true;
-      i = after;
-      continue;
-    }
-    if (c === '<' && src.startsWith('<<<', i)) {
+    if (c === '<' && src[i + 1] === '<' && src[i + 2] === '<') {
       i += 2;
       continue;
     }
-    if (c === '<' && src[i + 1] === '<') {
-      const m = quotedHeredoc.exec(src.slice(i));
-      if (!m) return true;
-      bodies.push({ word: m[3], tabs: m[1] === '-' });
-      i += m[0].length - 1;
-      continue;
-    }
+    if (c === '<' && src[i + 1] === '<') return true;
+    const code = c.charCodeAt(0);
+    if (code > 0x7e || (code < 0x20 && c !== '\n' && c !== '\t')) return true;
     if ('$`\\{}*?'.includes(c)) return true;
-    if (c === '[' && src[i + 1] !== undefined && !/[\s[]/.test(src[i + 1])) return true;
-    if (c === '(' && i > 0 && !/[\s;&|(<>!]/.test(src[i - 1])) return true;
+    if (c === '[' && src[i + 1] !== undefined && !' \t\n['.includes(src[i + 1])) return true;
+    if (c === '(' && i > 0 && !' \t\n;&|(<>!'.includes(src[i - 1])) return true;
   }
-  return quote !== null || bodies.length > 0;
+  return quote !== null;
 }
 
 /** True when the Bash command runs ssh, scp or sftp, or could (see the file header). */

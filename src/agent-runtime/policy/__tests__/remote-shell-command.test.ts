@@ -199,15 +199,18 @@ const RUNS = [
   "# <<'true'\necho x > target-host\nrg --{pre=ssh,hidden} . target-host\ntrue",
   // ack evaluates `--output` as Perl: ack is not a data command.
   "echo x | ack --output='@{[system(q(ssh prod-host))]}' x",
+  // review-of-legends (84a19d999): heredoc delimiters, comments after a non-ASCII space, nested heredocs.
+  "cat <<'true'EOF\nx\ntrueEOF\necho x > target-host\nrg --{pre=ssh,hidden} . target-host\ntrue",
+  'test -v "$(cat <<\'EOF\'\nBASH_VERSINFO[$(ssh prod-host >&2)0]\nEOF\n)"',
+  "cat <<'true'x\nbody\ntruex\necho x > target-host\nrg --{pre=ssh,hidden} . target-host\ntrue\n",
+  'echo x > target-host; rg\u00a0# --{pre=ssh,hidden} target-host',
+  "echo x > prod-host; cat <<'true' <(cat <<'false'\nfalse\nrg --{pre=ssh,hidden} . prod-host\n)\ntrue\nfalse",
 ];
 
 const DATA = [
   "grep ssh x # it's a comment",
   "grep -rn 'ssh.*$' src",
   "rg 'ssh [a-z]+' src",
-  "cat > notes.md <<-'EOF'\n\tssh $(date) `x` \\ * ? {a,b}\n\tEOF",
-  'cat > a.md <<"EOF"\nssh ${HOME}\nEOF\ngit add a.md',
-  'git commit -m "$(cat <<\'EOF\'\nfix: ssh $(not run) `nor this`\nEOF\n)"',
   '[ -f x ] && grep ssh x',
   '[[ -f x ]] && grep ssh x',
   'grep -rn ssh src',
@@ -218,7 +221,6 @@ const DATA = [
   'git commit -F msg.txt && git push origin main',
   'git add -A && git commit -m "ssh ban" && git push',
   'git -C repo show HEAD:src/ssh.ts',
-  "cat > notes.md <<'EOF'\nBash ssh is blocked; use ssh_exec\nEOF",
   'echo "use ssh_exec instead of ssh"',
   'gh pr create --title "ssh ban" --body "scp too"',
   'gh -R o/r pr view 1 --json body | jq .body',
@@ -236,9 +238,6 @@ const DATA = [
   'diff <(echo ssh) <(echo scp)',
   'grep ssh x # ssh in a comment',
   'if grep -q ssh x; then echo found; fi',
-  // A commit message or PR body through a heredoc in `$(…)`, with an apostrophe in it (trinity R2, fable).
-  "git commit -m \"$(cat <<'EOF'\nfix: don't refuse ssh mentions\nEOF\n)\"",
-  "gh pr create --body \"$(cat <<'EOF'\nit's about ssh (and scp)\nEOF\n)\"",
   'echo ssh > out.txt 2>&1',
   'grep ssh x >> log.txt',
   'cat <<< "ssh host"',
@@ -255,6 +254,14 @@ const DATA = [
  * command that names the word, even when this use is harmless.
  */
 const CONSERVATIVE = [
+  // review-of-legends (84a19d999): heredocs refuse too — write a message or document from a file.
+  "cat > notes.md <<-'EOF'\n\tssh $(date) `x` \\ * ? {a,b}\n\tEOF",
+  'cat > a.md <<"EOF"\nssh ${HOME}\nEOF\ngit add a.md',
+  'git commit -m "$(cat <<\'EOF\'\nfix: ssh $(not run) `nor this`\nEOF\n)"',
+  "cat > notes.md <<'EOF'\nBash ssh is blocked; use ssh_exec\nEOF",
+  // A commit message or PR body through a heredoc in `$(…)`, with an apostrophe in it (trinity R2, fable).
+  "git commit -m \"$(cat <<'EOF'\nfix: don't refuse ssh mentions\nEOF\n)\"",
+  "gh pr create --body \"$(cat <<'EOF'\nit's about ssh (and scp)\nEOF\n)\"",
   // review-of-legends (a2e0e953b): a command that names the word is read only when it is literal.
   'cat <<-EOF > notes.md\n\tssh is text, $(date) is not ssh\n\tEOF',
   'echo "ssh $((1+2))"',
