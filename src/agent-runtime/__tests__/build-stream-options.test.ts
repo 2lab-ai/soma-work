@@ -761,6 +761,25 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
     }
   });
 
+  it('never write-protects / or a directory above the sandbox write roots, and says so (fable R2)', async () => {
+    // A daemon started without a working directory runs in `/`.
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue('/');
+    try {
+      const deps = makeDeps();
+      const { options } = await withSettings(false, () => build(SAFE_USER, deps));
+      const deny = (options.settings as { permissions?: { deny?: string[] } }).permissions?.deny ?? [];
+      expect(deny).not.toContain('Edit(//)');
+      expect(deny).not.toContain('Edit(///**)');
+      expect(deny.some((rule) => rule === 'Edit(//tmp/**)' || rule === 'Edit(//private/**)')).toBe(false);
+      expect(deps.logger.error).toHaveBeenCalledWith(
+        expect.stringContaining('protected root'),
+        expect.objectContaining({ root: '/' }),
+      );
+    } finally {
+      cwd.mockRestore();
+    }
+  });
+
   it('denies both spellings of the home directory and of a data directory not created yet (grok R1)', async () => {
     // On macOS the temp directory is under /var, which is /private/var: a home there has two spellings.
     const home = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'home-')), 'owner');

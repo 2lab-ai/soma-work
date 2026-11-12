@@ -833,7 +833,12 @@ export async function buildStreamOptions(
       ...(base.permissions?.deny ?? []),
       ...secretStoreDenyRules(),
       ...homeSpellings().flatMap(credentialReadDenyRules),
-      ...homeSpellings().flatMap((home) => protectedWriteDenyRules({ roots: protectedRoots(), home })),
+      ...homeSpellings().flatMap((home) =>
+        protectedWriteDenyRules({
+          roots: protectedRoots([...(sandboxUserDir ? [sandboxUserDir] : []), realTmpdir()], logger),
+          home,
+        }),
+      ),
     ];
     const allow = [...(base.permissions?.allow ?? []), ...(adminProfile?.allowRules ?? [])];
     options.settings = {
@@ -1017,12 +1022,31 @@ const SSH_EXEC_ADMIN_ONLY = 'ssh_exec runs a command on a host and is for admins
 /**
  * What no model writes (env-access WU2, #1210), each as written and as the OS resolves it: the
  * configuration directory, the running code's root (it can differ from the configuration directory),
- * the bot's own directory, and the data and plugin directories.
+ * the bot's own directory, and the data and plugin directories. A root that is `/` or holds one of
+ * `writeRoots` (the sandbox's own write roots) is a misconfiguration — a daemon started in `/` — and
+ * protecting it would stop every session from writing at all: it is skipped and logged as an error.
+ * A root that only holds a session's working directory is not skipped: what the session would write
+ * there is code or configuration the bot runs.
  */
-function protectedRoots(): string[] {
+function protectedRoots(writeRoots: readonly string[], logger: BuildStreamOptionsDeps['logger']): string[] {
   const runtimeRoot = path.resolve(__dirname, '..', '..', '..');
   const roots = [path.dirname(CONFIG_FILE), runtimeRoot, process.cwd(), DATA_DIR, PLUGINS_DIR];
-  return [...new Set(roots.flatMap(spellingsOf))];
+  const keep = writeRoots.flatMap(spellingsOf);
+  return [...new Set(roots.flatMap(spellingsOf))].filter((root) => {
+    const tooWide = root === path.parse(root).root || keep.some((k) => isWithinPath(k, root));
+    if (tooWide) {
+      logger.error('A protected root holds the sandbox write roots; not write-protecting it (check the daemon cwd)', {
+        root,
+      });
+    }
+    return !tooWide;
+  });
+}
+
+/** True when `p` is `root` or inside it. */
+function isWithinPath(p: string, root: string): boolean {
+  const relative = path.relative(root, p);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
 /**

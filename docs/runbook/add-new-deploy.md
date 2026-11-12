@@ -455,6 +455,10 @@ install -d -m 700 "${DEPLOY_DIR}/secrets"
   그런 호스트만 `.env`에 `SOMA_SANDBOX_ALLOW_UNAVAILABLE=true`를 명시한다. 그때 비밀 저장소는 정책 단계만 지킨다.
 - 어드민도 샌드박스로 돈다(#1210). 어드민 프로필이 막는 작업(도커 소켓, `launchctl` 같은 시스템 서비스)이 급히 필요하면 그 호스트의
   `.env`에 `SOMA_SANDBOX_OFF_ALLOWED=true`를 두고 재시작한다 — 그때만 어드민의 `sandbox off`가 효과를 낸다. 일이 끝나면 지운다.
+- 어떤 모델도 배포(설정 디렉터리 · 실행 코드 · 봇의 cwd · `data` · `plugins`)를 쓰지 못한다. 그래서 `BASE_DIRECTORY`(세션 작업
+  디렉터리)는 배포 밖에 둔다 — 안에 두면 그 세션은 자기 디렉터리에 쓰지 못한다(저장소 체크아웃에서 봇을 띄우는 개발 모드도 같다).
+  봇의 cwd가 `/`처럼 샌드박스 쓰기 디렉터리(`/tmp/{uid}`, 임시 디렉터리)를 품으면 그 경로는 보호에서 빠지고 에러 로그가 남는다 —
+  서비스의 `WorkingDirectory`를 배포 디렉터리로 맞춘다.
 - 모델은 Bash ssh를 못 하고 ssh 키를 못 읽는다. 호스트 명령은 server-tools `ssh_exec`(어드민 전용)로 한다: 위 `server-tools` 절의
   `ssh.host`가 봇 유저의 ssh 설정·키로 접속할 수 있어야 한다(`BatchMode=yes` — 비밀번호·호스트 키 질문 없이).
 

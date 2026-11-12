@@ -56,6 +56,8 @@ export function sandboxCacheEnv(userTmpDir: string): Record<string, string> {
   return {
     XDG_CACHE_HOME: cache,
     npm_config_cache: path.join(cache, 'npm'),
+    // pnpm reads npm_config_* settings: its store, which would otherwise be in the home directory.
+    npm_config_store_dir: path.join(cache, 'pnpm-store'),
     YARN_CACHE_FOLDER: path.join(cache, 'yarn'),
     BUN_INSTALL_CACHE_DIR: path.join(cache, 'bun'),
     PIP_CACHE_DIR: path.join(cache, 'pip'),
