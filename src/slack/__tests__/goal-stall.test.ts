@@ -226,7 +226,7 @@ function makeHarness(
       questions.push(q);
     },
     logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-    fallbackModel: () => 'claude-sonnet-4',
+    fallbackModel: () => ({ model: 'claude-sonnet-4' }),
     ...opts.deps,
   });
   return { controller, goal, session, injected, notices, questions, prompts };

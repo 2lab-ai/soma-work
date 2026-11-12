@@ -2202,7 +2202,7 @@ async function start() {
         isShuttingDown: () => slackHandler.isShuttingDown(),
         logger,
         // A session with no model (legacy): the sonnet aux tier of its owner's default model.
-        fallbackModel: (ownerId) => auxModelFor('sonnet', { userId: ownerId }).model,
+        fallbackModel: (ownerId) => auxModelFor('sonnet', { userId: ownerId }),
         // S9: optional cheaper eval tier. Unset → eval matches the work model.
         evalModelOverride: process.env.GOAL_EVAL_MODEL || undefined,
       });

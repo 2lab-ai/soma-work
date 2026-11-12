@@ -1063,6 +1063,14 @@ function getAllSessions(): Map<string, any> {
   return _getSessionsFn();
 }
 
+/** The model of the live session recording `conversationId`, if it is still live. */
+function liveSessionModel(conversationId: string): string | undefined {
+  for (const [, s] of getAllSessions()) {
+    if (s?.conversationId === conversationId) return typeof s.model === 'string' && s.model ? s.model : undefined;
+  }
+  return undefined;
+}
+
 // ── Build identity (build skew, 2026-10-31) ────────────────────────
 // A dashboard tab outlives the server that served it: after a deploy its
 // socket reconnects and its poll goes on, so the new server's data meets the
@@ -4133,7 +4141,7 @@ export async function registerDashboardRoutes(
           reply.status(404).send({ error: 'Not found' });
           return;
         }
-        sendTitleSubResult(reply, await ensureTitleSub(record));
+        sendTitleSubResult(reply, await ensureTitleSub(record, Date.now(), liveSessionModel(record.id)));
       } catch (error) {
         logger.error('Error filling title', error);
         reply.status(500).send({ error: 'Internal Server Error' });
@@ -4155,7 +4163,7 @@ export async function registerDashboardRoutes(
         // #716 / Oracle re-review P2: same write-access policy as
         // resummarize and kanban actions.
         if (!requireConversationWriteAccess(request, reply, record.ownerId)) return;
-        sendTitleSubResult(reply, await regenerateTitleSub(record));
+        sendTitleSubResult(reply, await regenerateTitleSub(record, liveSessionModel(record.id)));
       } catch (error) {
         logger.error('Error generating title', error);
         reply.status(500).send({ error: 'Internal Server Error' });

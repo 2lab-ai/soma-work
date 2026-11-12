@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CronScheduler,
   type CronSchedulerDeps,
+  resolveEffortOverride,
   resolveModelOverride,
   type SyntheticMessageEvent,
 } from '../cron-scheduler';
@@ -736,6 +737,39 @@ describe('CronScheduler — Model Override', () => {
     expect(injectedMessages).toHaveLength(1);
     expect(injectedMessages[0].modelOverride).toBe(MODEL_ALIASES.sonnet);
     expect(defaults).toHaveBeenCalledWith('U123');
+  });
+
+  // Grok has one model line, so its `fast` tier lowers effort instead; the fire
+  // carries that effort beside the model, or the session keeps its xhigh/max.
+  it('fast in a Grok owner’s fire carries the tier effort; Claude and Codex keep the session effort', async () => {
+    const defaults = vi.spyOn(userSettingsStore, 'getUserDefaultModel').mockReturnValue('grok-4.7');
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({
+      name: 'fast-grok',
+      expression: '* * * * *',
+      prompt: 'Quick task',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
+      modelConfig: { type: 'fast' },
+    });
+    const { deps, injectedMessages } = createMockDeps(storage);
+    deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'thread-1');
+    deps.sessionRegistry.transitionToMain('C456', 'thread-1', 'default');
+    deps.sessionRegistry.setActivityState('C456', 'thread-1', 'idle');
+    await new CronScheduler(deps).tick();
+
+    expect(injectedMessages).toHaveLength(1);
+    expect(injectedMessages[0].modelOverride).toMatch(/^grok-/);
+    expect(injectedMessages[0].effortOverride).toBe('medium');
+
+    defaults.mockReturnValue('claude-opus-5-5[1m]');
+    expect(resolveEffortOverride({ type: 'fast' }, 'U1')).toBeUndefined();
+    defaults.mockReturnValue('gpt-6.1-sol[1m]');
+    expect(resolveEffortOverride({ type: 'fast' }, 'U1')).toBeUndefined();
+    defaults.mockReturnValue('grok-4.7');
+    expect(resolveEffortOverride({ type: 'opus' }, 'U1')).toBeUndefined();
+    expect(resolveEffortOverride(undefined, 'U1')).toBeUndefined();
   });
 
   it('fast follows the creator’s provider and the alias table at fire time', () => {

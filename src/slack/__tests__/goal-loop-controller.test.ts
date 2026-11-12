@@ -104,7 +104,7 @@ function makeHarness(opts: {
       return undefined;
     },
     logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-    fallbackModel: opts.fallbackModel ?? (() => 'claude-sonnet-4'),
+    fallbackModel: opts.fallbackModel ?? (() => ({ model: 'claude-sonnet-4' })),
     evalModelOverride: opts.evalModelOverride,
     evalTimeoutMs: opts.evalTimeoutMs,
     scheduleEvalRetry: (fn, delayMs) => {
@@ -170,11 +170,17 @@ describe('GoalLoopController', () => {
   // (index.ts) — asked for that owner; GOAL_EVAL_MODEL beats both.
   it('eval model: GOAL_EVAL_MODEL, else the session model, else fallbackModel(owner)', async () => {
     const models: string[] = [];
+    const efforts: (string | undefined)[] = [];
     const dispatcher: GoalLoopControllerDeps['dispatcher'] = async (params) => {
       models.push(params.model);
+      efforts.push(params.effort);
       return JSON.stringify({ completed: true, reason: 'all done', remaining: [] });
     };
-    const fallbackModel = vi.fn((owner: string | undefined) => `fallback-for-${owner}`);
+    // The fallback aux tier can name its own effort (Grok: medium).
+    const fallbackModel = vi.fn((owner: string | undefined) => ({
+      model: `fallback-for-${owner}`,
+      effort: 'medium' as const,
+    }));
 
     const withModel = makeHarness({ dispatcher, fallbackModel });
     withModel.controller.onTurnSettled(SESSION_KEY);
@@ -191,6 +197,9 @@ describe('GoalLoopController', () => {
     await override.controller.settled(SESSION_KEY);
 
     expect(models).toEqual(['claude-opus-4', 'fallback-for-U_OWNER', 'cheap-eval']);
+    // Only the fallback call takes the tier's effort; the others keep the session's.
+    expect(efforts[1]).toBe('medium');
+    expect(efforts[0]).toBe(efforts[2]);
     expect(fallbackModel).toHaveBeenCalledTimes(1);
     expect(fallbackModel).toHaveBeenCalledWith('U_OWNER');
   });
@@ -779,7 +788,7 @@ describe('GoalLoopController — dashboard visibility of loop steps', () => {
       injectContinuation: async () => undefined,
       postNotice: async () => undefined,
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-      fallbackModel: () => 'claude-sonnet-4',
+      fallbackModel: () => ({ model: 'claude-sonnet-4' }),
       now: () => now,
       scheduleEvalRetry: (fn, delayMs) => {
         scheduledRetries.push({ fn, delayMs });

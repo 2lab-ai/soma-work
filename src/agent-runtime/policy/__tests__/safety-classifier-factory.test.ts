@@ -85,6 +85,24 @@ describe('dispatch-backed classifier', () => {
     expect(codex).not.toMatch(/astra|claude/);
   });
 
+  // Trinity R1 (soma-work#1224): Grok has one model line, so its haiku tier is
+  // the Grok pin at low effort — the effort must reach the dispatch, or the
+  // classifier runs at the session's (xhigh) effort.
+  it('carries the tier effort: Grok low, Claude/Codex medium, env model override none', async () => {
+    const dispatch = vi.fn().mockResolvedValue('{"verdict":"allow","reason":"ok"}');
+    await buildSafetyClassifier({ dispatch }).classify({ ...REQ, model: 'grok-4.7' });
+    expect(dispatch.mock.calls[0][2]).toMatchObject({ model: expect.stringMatching(/^grok-/), effort: 'low' });
+    await buildSafetyClassifier({ dispatch }).classify({ ...REQ, model: 'claude-opus-4-8[1m]' });
+    expect(dispatch.mock.calls[1][2].effort).toBe('medium');
+    await buildSafetyClassifier({ dispatch }).classify({ ...REQ, model: 'gpt-6-astra[1m]' });
+    expect(dispatch.mock.calls[2][2].effort).toBe('medium');
+    await buildSafetyClassifier({ env: { PERMISSION_AUTO_CLASSIFIER_MODEL: 'forced' }, dispatch }).classify({
+      ...REQ,
+      model: 'grok-4.7',
+    });
+    expect(dispatch.mock.calls[3][2].effort).toBeUndefined();
+  });
+
   it('env override beats the session model when both are present', async () => {
     const dispatch = vi.fn().mockResolvedValue('{"verdict":"ask","reason":"x"}');
     await buildSafetyClassifier({ env: { PERMISSION_AUTO_CLASSIFIER_MODEL: 'forced' }, dispatch }).classify({

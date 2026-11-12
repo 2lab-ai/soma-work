@@ -68,7 +68,7 @@ function makeHarness(
       return { channel: 'D-owner', ts: '1700000000.000100' };
     },
     logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-    fallbackModel: () => 'claude-sonnet-4',
+    fallbackModel: () => ({ model: 'claude-sonnet-4' }),
   } satisfies GoalLoopControllerDeps);
 
   return { controller, session, goal, dms, notices, broadcasts };

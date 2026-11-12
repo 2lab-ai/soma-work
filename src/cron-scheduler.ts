@@ -45,6 +45,8 @@ export interface SyntheticMessageEvent {
   skipDispatch?: boolean;
   /** Model override for cron jobs with non-default model config */
   modelOverride?: string;
+  /** Effort that goes with `modelOverride` (Grok's `fast` tier lowers effort instead of the model). */
+  effortOverride?: string;
   /**
    * The job behind this fire (SSOT 2026-10-23 T1): a session the fire creates
    * is named after it and filed under it on the dashboard.
@@ -100,7 +102,8 @@ function minuteKey(epochMinute: number): string {
  * generation without rewriting stored jobs. `fast` is the `sonnet` aux tier of
  * the job creator's (`owner`) default model, also resolved on every fire:
  * Claude → `sonnet`, Codex → `terra`, Grok → `grok` (agent-runtime/aux-model.ts).
- * Grok's tier effort is not applied: a cron fire carries a model override only.
+ * Grok has one model line, so its tier lowers effort instead — see
+ * `resolveEffortOverride`, which every fire sends beside this override.
  */
 export function resolveModelOverride(config?: CronModelConfig, owner?: string): string | undefined {
   if (!config || config.type === 'default') return undefined;
@@ -109,6 +112,15 @@ export function resolveModelOverride(config?: CronModelConfig, owner?: string): 
   if (config.type === 'fast') return auxModelFor('sonnet', { userId: owner }).model;
   if (config.type === 'custom' && config.model) return config.model;
   return undefined;
+}
+
+/**
+ * The effort that goes with `resolveModelOverride`. Only the `fast` tier sets
+ * one, and only when the tier is served by lowering effort (Grok → `medium`);
+ * Claude and Codex tiers are smaller models and keep the session's effort.
+ */
+export function resolveEffortOverride(config?: CronModelConfig, owner?: string): string | undefined {
+  return config?.type === 'fast' ? auxModelFor('sonnet', { userId: owner }).effort : undefined;
 }
 
 /** The structured origin every injected fire carries. */
@@ -383,6 +395,7 @@ export class CronScheduler {
       synthetic: true,
       skipDispatch: true,
       modelOverride: resolveModelOverride(job.modelConfig, job.owner),
+      effortOverride: resolveEffortOverride(job.modelConfig, job.owner),
       cron: cronOrigin(job),
       routeContext: { skipAutoBotThread: true },
     };
@@ -468,6 +481,7 @@ export class CronScheduler {
       synthetic: true,
       skipDispatch: true,
       modelOverride: resolveModelOverride(job.modelConfig, job.owner),
+      effortOverride: resolveEffortOverride(job.modelConfig, job.owner),
       cron: cronOrigin(job),
       routeContext: { skipAutoBotThread: true },
     };
@@ -552,6 +566,7 @@ export class CronScheduler {
       synthetic: true,
       skipDispatch: true,
       modelOverride: resolveModelOverride(job.modelConfig, job.owner),
+      effortOverride: resolveEffortOverride(job.modelConfig, job.owner),
       cron: cronOrigin(job),
       routeContext: { skipAutoBotThread: true },
     };

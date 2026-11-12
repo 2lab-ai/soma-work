@@ -128,7 +128,7 @@ function validateMessage(value: unknown, where: string): { channel: string; ts: 
   const channel = text(message.channel, `${where}.channel`);
   const ts = text(message.ts, `${where}.ts`);
 
-  for (const field of ['team', 'thread_ts', 'text', 'inlineDirectiveRawText', 'modelOverride']) {
+  for (const field of ['team', 'thread_ts', 'text', 'inlineDirectiveRawText', 'modelOverride', 'effortOverride']) {
     optionalText(message[field], `${where}.${field}`);
   }
   for (const field of ['synthetic', 'skipDispatch']) {
