@@ -18,6 +18,7 @@
  *   • `PERMISSION_AUTO_CLASSIFIER_TIMEOUT_MS=<n>` — override the per-call timeout.
  */
 
+import { auxModelFor } from '../aux-model';
 import {
   LlmSafetyClassifier,
   type SafetyChatFn,
@@ -68,16 +69,18 @@ export function buildSafetyClassifier(args: BuildSafetyClassifierArgs = {}): Saf
     return new StaticSafetyClassifier();
   }
   const dispatch = args.dispatch;
-  // Model precedence: ops env override > the session's current model (threaded
-  // per-call via opts.model) > undefined (let dispatch/SDK pick its default).
-  // Default behaviour (#model-call-unify): the classifier runs on the SAME
-  // model the session is using.
+  // Model precedence: ops env override > the `haiku` aux tier of the session's
+  // current model (threaded per-call via opts.model; else the user's default):
+  // Claude → `haiku`, Codex → `luna`, Grok → `grok` (`../aux-model.ts`). A cheap
+  // model on the session's own provider — rules/permission.md: the default is a
+  // cheap model, never the session model itself; and no hardcoded Claude model
+  // in a GPT/Grok session (#model-call-unify).
   const envModel = env.PERMISSION_AUTO_CLASSIFIER_MODEL || undefined;
   const timeoutMs = Number(env.PERMISSION_AUTO_CLASSIFIER_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
 
   const chat: SafetyChatFn = (prompt, opts) => {
     const base = {
-      model: envModel || opts.model,
+      model: envModel || auxModelFor('haiku', { mainModel: opts.model, userId: opts.tenantUserId }).model,
       ...(opts.tenantUserId ? { tenantUserId: opts.tenantUserId } : {}),
     };
     // The caller's abort stops the one-shot dispatch itself, not only the caller's wait (review R1, astra P2).
