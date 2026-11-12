@@ -1,0 +1,127 @@
+// The device look, one file: an opening line, an optional mocked app (MOCK, e.g. a Slack mock built from Slack.tsx),
+// then the recorded shots (shots.gen.ts from scripts/cut_phone.py) inside the phone with Safari's bar or the keyboard,
+// taps and swipes as touch discs, a chapter caption on the left, and an end card. 60 fps. Copy as PhoneFilm.tsx and
+// edit the CONFIG block; register <Composition id="PhoneFilm" fps={60} width={1920} height={1080}
+// durationInFrames={PHONE_TOTAL} component={PhoneFilm} />.
+import React, { useEffect, useState } from 'react';
+import { AbsoluteFill, continueRender, delayRender, Easing, Freeze, interpolate, OffthreadVideo, Sequence, staticFile, useCurrentFrame } from 'remotion';
+import { CentreCard, Captions, type Cap } from './Caption';
+import { Device, HomeBar, StatusBar } from './Device';
+import { Keyboard } from './Keyboard';
+import { presses, type Layout } from './hangul';
+import { SafariBar } from './Safari';
+import { SHOT_ORDER, SHOTS, type Shot } from './shots.gen';
+import { type Tap, Touches } from './Touch';
+import { FACES_PHONE, PFPS, PHONE, SCREEN, STAGE } from './tokens';
+
+// ---- CONFIG ------------------------------------------------------------------------------------------------------
+const OPEN_LINES = { a: 'Ask in Slack,', b: 'see it through on your phone.' };
+const END = { a: 'Ask anywhere,', b: 'finish on your phone.', sub: 'product × product', url: 'github.com/org/repo' };
+const ORDER: string[] = SHOT_ORDER; // the shots in film order: shots.json order, as cut_phone.py wrote it
+// The transition INTO a shot: an app switch or a Safari tab swipe pushes (pull = back), a jump inside the app fades.
+const INTO: Record<string, { kind: 'push' | 'pull' | 'fade'; dur: number }> = {};
+// An optional mocked app before the recordings (frames, and the scene drawn from frames since it began).
+// (a cast, not an annotation: an annotated `= null` narrows MOCK to null and `MOCK?.dur` stops type-checking)
+type Mock = { dur: number; Scene: React.FC<{ t: number }>; taps: Tap[] };
+const MOCK = null as Mock | null;
+const CAPTIONS = (_at: (id: string) => number, mockAt: number): Cap[] => [
+  { f: mockAt + 20, eyebrow: '01 / Chapter', a: 'First line in ink,', b: 'second line dimmed.' },
+  // { f: _at('c2a') - 6, eyebrow: '02 / Next', a: '...', b: '...' }, (rename _at to at once you use it)
+];
+// ------------------------------------------------------------------------------------------------------------------
+
+const OPEN = 170, OUTRO = 30, END_CARD = 300, SWIPE_X = 334;
+const MOCK_AT = OPEN - 20;
+type Placed = Shot & { at: number };
+const PLACED: Placed[] = (() => { let t = MOCK_AT + (MOCK?.dur ?? 0); return ORDER.map((id) => { const s = { ...SHOTS[id], at: t }; t += s.dur; return s; }); })();
+const SHOTS_END = PLACED[PLACED.length - 1].at + PLACED[PLACED.length - 1].dur;
+export const PHONE_TOTAL = SHOTS_END + OUTRO + END_CARD;
+const at = (id: string) => PLACED.find((p) => p.id === id)!.at;
+const clamp = { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' } as const;
+const ease = Easing.bezier(0.22, 1, 0.36, 1);
+
+const FontGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [h] = useState(() => delayRender('fonts'));
+  const [ok, setOk] = useState(false);
+  useEffect(() => { Promise.all(FACES_PHONE.map((f) => document.fonts.load(f))).then(() => { setOk(true); requestAnimationFrame(() => continueRender(h)); }); }, [h]);
+  return ok ? <>{children}</> : null;
+};
+
+// A typed character's key presses: a Hangul syllable is its jamo, pressed just before the syllable shows.
+// Space, return and delete stay on the layout the last letter used (no flip back to Hangul after English).
+const keysOf = (s: Placed) => {
+  let lay = (s.kb as Layout) || 'ko';
+  return s.ev.filter((e) => e.k === 'key').flatMap((e) => {
+    const ch = e.ch!;
+    const ctl = ch === '\n' ? 'return' : ch === '\b' ? 'delete' : ch === ' ' ? 'space' : null;
+    if (ctl) return [{ f: e.f, key: ctl, shift: false, layout: lay }];
+    const ps = presses(ch).map((p) => ({ ...p, layout: s.kb === 'num' ? ('num' as Layout) : p.layout }));
+    lay = ps[ps.length - 1]?.layout ?? lay;
+    return ps.map((p, i) => ({ f: e.f - (ps.length - 1 - i) * 4, key: p.key, shift: p.shift, layout: p.layout }));
+  });
+};
+const tapsOf = (s: Placed): Tap[] => [
+  ...s.ev.filter((e) => e.k === 'tap').map((e) => ({ f: s.at + e.f, x: e.x!, y: e.y! + SCREEN.status })),
+  // a scroll is drawn near the right edge: a disc dragged over the content in the middle reads as a tap on it
+  ...s.ev.filter((e) => e.k === 'swipe').map((e) => ({ f: s.at + e.f, x: SWIPE_X, y: e.y! + SCREEN.status, hold: Math.max(8, (e.to ?? e.f + 30) - e.f), toX: SWIPE_X, toY: e.y! + SCREEN.status - Math.max(-220, Math.min(220, e.dy! * 0.45)) })),
+];
+
+// The layout the keyboard is on at the end of a shot (what it shows while it slides away after it).
+const lastLayout = (s: Placed): Layout => keysOf(s).pop()?.layout ?? ((s.kb as Layout) || 'ko');
+// afterKeyboard: the shot before had the keyboard up and this one does not (it slides down, on fromLayout); kbStays: both have it up
+const ShotScreen: React.FC<{ s: Placed; t: number; freeze?: boolean; afterKeyboard?: boolean; fromLayout?: Layout; kbStays?: boolean }> = ({ s, t, freeze, afterKeyboard, fromLayout = 'ko', kbStays }) => {
+  const kbUp = s.vh < 700;
+  const vid = <div style={{ position: 'absolute', left: 0, top: SCREEN.status, width: SCREEN.w, height: s.vh, overflow: 'hidden' }}><OffthreadVideo src={staticFile(s.src)} style={{ width: SCREEN.w, height: s.vh, display: 'block' }} muted /></div>;
+  const downs = kbUp ? keysOf(s) : [];
+  const d = downs.filter((k) => t >= k.f && t < k.f + 5).pop();
+  const kbY = kbUp ? (kbStays ? SCREEN.h - SCREEN.keyboard : interpolate(t, [0, 14], [SCREEN.h, SCREEN.h - SCREEN.keyboard], { ...clamp, easing: ease })) : interpolate(t, [0, 12], [SCREEN.h - SCREEN.keyboard, SCREEN.h], { ...clamp, easing: Easing.in(Easing.quad) });
+  const lay = downs.filter((k) => t >= k.f).pop()?.layout ?? ((s.kb as Layout) || 'ko');
+  // load is in source seconds: a sped-up shot reaches it sooner
+  const load = s.load ? interpolate(t, [((s.load[0] - s.t0) / s.speed) * PFPS, ((s.load[1] - s.t0) / s.speed) * PFPS], [0.08, 1], clamp) : undefined;
+  return (
+    <div style={{ position: 'absolute', inset: 0, background: '#000' }}>
+      {freeze ? <Freeze frame={s.dur - 1}>{vid}</Freeze> : vid}
+      {kbUp || (afterKeyboard && t < 12) ? <Keyboard layout={kbUp ? lay : fromLayout} down={d ? d.key : null} shift={!!d?.shift} y={kbY} /> : null}
+      <SafariBar domain={s.domain || ''} hidden={kbUp} progress={load} />
+      <StatusBar tint="#000" />
+    </div>
+  );
+};
+
+export const PhoneFilm: React.FC = () => {
+  const f = useCurrentFrame();
+  // the opening line is gone before the phone arrives (they never overlap)
+  const enter = interpolate(f, [OPEN - 30, OPEN + 14], [0, 1], { ...clamp, easing: ease });
+  const leave = interpolate(f, [SHOTS_END, SHOTS_END + OUTRO], [1, 0], { ...clamp, easing: Easing.in(Easing.quad) });
+  const cur = PLACED.find((p) => f >= p.at && f < p.at + p.dur);
+  let screen: React.ReactNode = null;
+  if (f < PLACED[0].at) screen = MOCK ? <MOCK.Scene t={Math.max(0, f - MOCK_AT)} /> : null;
+  else if (!cur) screen = <ShotScreen s={PLACED[PLACED.length - 1]} t={PLACED[PLACED.length - 1].dur - 1} freeze kbStays />;
+  else {
+    const i = PLACED.indexOf(cur), t = f - cur.at, tr = INTO[cur.id], prev = i > 0 ? PLACED[i - 1] : null;
+    const node = <Sequence from={cur.at} durationInFrames={cur.dur} layout="none"><ShotScreen s={cur} t={t} afterKeyboard={!!prev && prev.vh < 700 && cur.vh > 700} fromLayout={prev ? lastLayout(prev) : 'ko'} kbStays={!!prev && prev.vh < 700 && cur.vh < 700} /></Sequence>;
+    if (tr && t < tr.dur) {
+      const p = interpolate(t, [0, tr.dur], [0, 1], { ...clamp, easing: Easing.bezier(0.3, 0, 0.1, 1) });
+      const back = prev ? <ShotScreen s={prev} t={prev.dur - 1} freeze kbStays /> : MOCK ? <MOCK.Scene t={MOCK.dur} /> : null;
+      if (tr.kind === 'fade') screen = <>{back}<div style={{ position: 'absolute', inset: 0, opacity: p }}>{node}</div></>;
+      else { const dir = tr.kind === 'push' ? 1 : -1; screen = <><div style={{ position: 'absolute', inset: 0, transform: `translateX(${-dir * p * SCREEN.w * 0.32}px)`, filter: `brightness(${1 - p * 0.45})` }}>{back}</div><div style={{ position: 'absolute', inset: 0, transform: `translateX(${dir * (1 - p) * SCREEN.w}px)` }}>{node}</div></>; }
+    } else screen = node;
+  }
+  const taps = [...(MOCK?.taps ?? []).map((tp) => ({ ...tp, f: tp.f + MOCK_AT })), ...PLACED.flatMap(tapsOf)];
+  return (
+    <FontGate>
+      <AbsoluteFill style={{ background: STAGE.bg }}>
+        {f < OPEN + 10 && <CentreCard a={OPEN_LINES.a} b={OPEN_LINES.b} o={interpolate(f, [0, 16, OPEN - 62, OPEN - 34], [0, 1, 1, 0], clamp)} />}
+        {f >= OPEN - 40 && f < SHOTS_END + OUTRO && <Captions frame={f} caps={CAPTIONS(at, MOCK_AT)} out={SHOTS_END} />}
+        {enter * leave > 0.001 && (
+          <Device cx={PHONE.cx + (1 - enter) * 260} cy={PHONE.cy} scale={PHONE.scale} opacity={enter * leave}>
+            {screen}
+            <Touches frame={f} taps={taps} />
+            <HomeBar />
+          </Device>
+        )}
+        {f >= SHOTS_END + OUTRO - 6 && <CentreCard a={END.a} b={END.b} sub={END.sub} url={END.url} o={interpolate(f, [SHOTS_END + OUTRO - 6, SHOTS_END + OUTRO + 18, PHONE_TOTAL - 30, PHONE_TOTAL], [0, 1, 1, 0], clamp)} />}
+      </AbsoluteFill>
+    </FontGate>
+  );
+};

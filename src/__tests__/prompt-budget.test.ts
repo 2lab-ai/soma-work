@@ -53,7 +53,8 @@ const ONE_OFF_BUDGET: Record<string, number> = {
 
 /** Descriptions the SDK lists on every turn: skills (zworkflow + harness plugins) and commands; subagents. */
 const LISTING_BUDGET = {
-  skills: { total: 28_200, each: 1_400 },
+  // #1194 raised it 28_200 -> 28_700 on purpose: the new cinetic skill (321) and cinematic-film's device look (+92)
+  skills: { total: 28_700, each: 1_400 },
   agents: { total: 11_400, each: 2_200 },
 };
 

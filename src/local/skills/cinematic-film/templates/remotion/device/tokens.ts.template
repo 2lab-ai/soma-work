@@ -1,0 +1,14 @@
+// Device-look tokens (cinematic-film, references/device-demo.md): a flat near-black stage, a chapter caption on the left, one phone on the right.
+// Sizes are px at 1920x1080; the phone's screen is drawn in iPhone css units (393 x 852) and scaled.
+export const PFPS = 60;
+export const STAGE = { bg: '#0e0f11', ink: '#f2f3f5', dim: '#8d9099', rule: '#4a4d54', eyebrow: '#7b7f88' };
+export const SCREEN = { w: 393, h: 852, status: 54, toolbar: 82, keyboard: 294 };
+// The phone at rest: centre x, centre y, and the screen's scale (css px -> film px).
+export const PHONE = { cx: 1395, cy: 540, scale: 1.03 };
+export const BEZEL = 12; // css px of black glass round the screen
+export const FONT = {
+  head: '"Pretendard Variable", "Geist Variable", sans-serif',
+  mono: '"Geist Mono Variable", ui-monospace, monospace',
+  ui: '-apple-system, "SF Pro Text", "Pretendard Variable", sans-serif',
+};
+export const FACES_PHONE = ['600 16px "Pretendard Variable"', '500 16px "Pretendard Variable"', '400 16px "Geist Mono Variable"', '600 16px "Geist Variable"'];

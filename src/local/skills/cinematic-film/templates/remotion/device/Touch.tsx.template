@@ -1,0 +1,19 @@
+import React from 'react';
+import { interpolate } from 'remotion';
+
+// A finger on the glass: a soft grey disc that lands (scale 0.6 -> 1), holds while pressed and lifts (fades out).
+// `taps`: frame of touch-down, x/y in screen css, hold frames (a long press or a drag holds longer).
+export type Tap = { f: number; x: number; y: number; hold?: number; toX?: number; toY?: number };
+export const Touches: React.FC<{ frame: number; taps: Tap[] }> = ({ frame, taps }) => (
+  <>
+    {taps.map((t, i) => {
+      const hold = t.hold ?? 8, d = frame - t.f;
+      if (d < 0 || d > hold + 14) return null;
+      const s = interpolate(d, [0, 5], [0.55, 1], { extrapolateRight: 'clamp' });
+      const o = d <= hold ? interpolate(d, [0, 3], [0, 1], { extrapolateRight: 'clamp' }) : interpolate(d, [hold, hold + 14], [1, 0], { extrapolateRight: 'clamp' });
+      const k = t.toX === undefined ? 0 : interpolate(d, [0, hold], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+      const x = t.toX === undefined ? t.x : t.x + (t.toX - t.x) * k, y = t.toY === undefined ? t.y : t.y + (t.toY! - t.y) * k;
+      return <div key={i} style={{ position: 'absolute', left: x - 21, top: y - 21, width: 42, height: 42, borderRadius: 21, background: 'rgba(235,235,240,0.34)', boxShadow: '0 0 0 1px rgba(255,255,255,0.28), 0 2px 10px rgba(0,0,0,0.25)', transform: `scale(${s})`, opacity: o, zIndex: 90, pointerEvents: 'none' }} />;
+    })}
+  </>
+);

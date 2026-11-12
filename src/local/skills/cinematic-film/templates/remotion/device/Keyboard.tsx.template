@@ -1,0 +1,66 @@
+import React from 'react';
+import { FONT, SCREEN } from './tokens';
+import type { Layout } from './hangul';
+
+// An iPhone keyboard in dark mode, drawn in screen css units (393 wide, 294 tall incl. the globe/mic row).
+// `down` is the key held this frame (its key is lit and a balloon shows the letter above it); `layout` picks the rows.
+const ROWS: Record<Layout, string[][]> = {
+  ko: [['ㅂ', 'ㅈ', 'ㄷ', 'ㄱ', 'ㅅ', 'ㅛ', 'ㅕ', 'ㅑ', 'ㅐ', 'ㅔ'], ['ㅁ', 'ㄴ', 'ㅇ', 'ㄹ', 'ㅎ', 'ㅗ', 'ㅓ', 'ㅏ', 'ㅣ'], ['ㅋ', 'ㅌ', 'ㅊ', 'ㅍ', 'ㅠ', 'ㅜ', 'ㅡ']],
+  en: [['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'], ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'], ['z', 'x', 'c', 'v', 'b', 'n', 'm']],
+  num: [['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'], ['-', '/', ':', ';', '(', ')', '$', '&', '@', '"'], ['.', ',', '?', '!', "'"]],
+};
+const SHIFT_KO: Record<string, string> = { ㅂ: 'ㅃ', ㅈ: 'ㅉ', ㄷ: 'ㄸ', ㄱ: 'ㄲ', ㅅ: 'ㅆ', ㅐ: 'ㅒ', ㅔ: 'ㅖ' };
+export const KB = { padX: 3, gap: 6, keyH: 42, rowGap: 12, top: 8 };
+
+type Box = { x: number; y: number; w: number; h: number };
+/** Every key's box (css) for a layout: letters, shift, delete, 123, space, return. Pure. */
+export function keyBoxes(layout: Layout): Record<string, Box> {
+  const out: Record<string, Box> = {};
+  const kw = (SCREEN.w - KB.padX * 2 - KB.gap * 9) / 10;
+  const rowY = (r: number) => KB.top + r * (KB.keyH + KB.rowGap);
+  const rows = ROWS[layout];
+  rows.forEach((row, r) => {
+    const n = row.length;
+    const w = r === 2 && layout === 'num' ? kw * 1.38 : kw; // 123's third row has wider keys
+    const x0 = (SCREEN.w - (n * w + (n - 1) * KB.gap)) / 2;
+    row.forEach((k, i) => { out[k] = { x: x0 + i * (w + KB.gap), y: rowY(r), w, h: KB.keyH }; });
+  });
+  const side = kw * 1.32;
+  out.shift = { x: KB.padX, y: rowY(2), w: side, h: KB.keyH };
+  out.delete = { x: SCREEN.w - KB.padX - side, y: rowY(2), w: side, h: KB.keyH };
+  const y3 = rowY(3), w123 = kw * 2.4, wret = kw * 2.4;
+  out['123'] = { x: KB.padX, y: y3, w: w123, h: KB.keyH };
+  out.return = { x: SCREEN.w - KB.padX - wret, y: y3, w: wret, h: KB.keyH };
+  out.space = { x: KB.padX + w123 + KB.gap, y: y3, w: SCREEN.w - KB.padX * 2 - w123 - wret - KB.gap * 2, h: KB.keyH };
+  return out;
+}
+
+export const Keyboard: React.FC<{ layout: Layout; down?: string | null; shift?: boolean; y?: number }> = ({ layout, down, shift = false, y = SCREEN.h - SCREEN.keyboard }) => {
+  const boxes = keyBoxes(layout);
+  const label = (k: string) => (layout === 'ko' && shift && SHIFT_KO[k] ? SHIFT_KO[k] : layout === 'en' && shift ? k.toUpperCase() : k);
+  const letter = (k: string) => ROWS[layout].some((r) => r.includes(k));
+  const keyStyle = (k: string, b: Box, fn: boolean): React.CSSProperties => ({
+    position: 'absolute', left: b.x, top: b.y, width: b.w, height: b.h, borderRadius: 8.5,
+    background: down === k && !letter(k) ? '#8a8a8e' : fn ? '#3a3a3c' : '#6b6b6e',
+    boxShadow: '0 1px 0 rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff',
+    font: `${fn ? 500 : 400} ${fn ? 16 : layout === 'ko' ? 21 : 23}px ${FONT.ui}`,
+  });
+  const balloon = down && letter(down) ? boxes[down] : null;
+  return (
+    <div style={{ position: 'absolute', left: 0, top: y, width: SCREEN.w, height: SCREEN.keyboard, background: 'rgba(40,40,42,0.97)', zIndex: 50 }}>
+      {Object.entries(boxes).map(([k, b]) => {
+        const fn = !letter(k) && k !== 'space';
+        const txt = k === 'shift' ? (layout === 'num' ? '#+=' : '⇧') : k === 'delete' ? '⌫' : k === '123' ? (layout === 'num' ? 'ABC' : '123') : k === 'return' ? '⏎' : k === 'space' ? '' : label(k);
+        return <div key={k} style={{ ...keyStyle(k, b, fn), background: k === 'shift' && shift ? '#e5e5ea' : keyStyle(k, b, fn).background, color: k === 'shift' && shift ? '#000' : '#fff' }}>{txt}</div>;
+      })}
+      {balloon && (
+        <div style={{ position: 'absolute', left: balloon.x - 9, top: balloon.y - 56, width: balloon.w + 18, height: 56 + balloon.h, zIndex: 3 }}>
+          <div style={{ position: 'absolute', left: 0, top: 0, width: balloon.w + 18, height: 58, borderRadius: 11, background: '#8a8a8e', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', font: `400 34px ${FONT.ui}`, boxShadow: '0 4px 10px rgba(0,0,0,0.35)' }}>{label(down!)}</div>
+          <div style={{ position: 'absolute', left: 9, top: 54, width: balloon.w, height: balloon.h + 2, borderRadius: '0 0 8px 8px', background: '#8a8a8e' }} />
+        </div>
+      )}
+      <svg style={{ position: 'absolute', left: 26, top: 246 }} width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#c7c7cc" strokeWidth="1.6"><circle cx="12" cy="12" r="9.5" /><path d="M2.5 12h19M12 2.5c3 3 3 16 0 19M12 2.5c-3 3-3 16 0 19" /></svg>
+      <svg style={{ position: 'absolute', right: 26, top: 246 }} width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#c7c7cc" strokeWidth="1.6"><rect x="8.5" y="2.5" width="7" height="12" rx="3.5" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3.5" /></svg>
+    </div>
+  );
+};
