@@ -21,7 +21,7 @@ import { NO_CONTEXT_PERMISSION_MODE, type PermissionMode } from './agent-runtime
 import { substituteEnvVars } from './config-env-substitution';
 import { getArtifactStore } from './conversation/artifacts';
 import { devopsPendingDir } from './devops/broker-approvals';
-import { CONFIG_FILE, DATA_DIR } from './env-paths';
+import { CONFIG_FILE, DATA_DIR, SECRETS_DIR } from './env-paths';
 import { NATIVE_BYPASS_TOOLS } from './hooks/bypass-permission-guard';
 import {
   type InternalMcpServerCommand,
@@ -773,6 +773,9 @@ export class McpConfigBuilder {
       args: command.args,
       env: {
         SOMA_CONFIG_FILE: CONFIG_FILE,
+        // The secret store its `{"$secret": name}` references resolve from (.prd/25 §2). The server
+        // runs outside every model sandbox; the models are denied this directory.
+        SOMA_SECRETS_DIR: SECRETS_DIR,
       },
     };
   }

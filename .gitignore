@@ -121,3 +121,6 @@ verification/lean/SomaVerify/ImportGraph/Generated.lean
 scripts/i18n/out/
 scripts/i18n/*.js
 scripts/i18n/*.js.map
+
+# Secret store (env-access WU1): one file per secret, never committed
+/secrets/
