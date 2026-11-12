@@ -699,8 +699,8 @@ function envGithub(server: unknown): { name: string; config: ServerConfig; githu
       }
     }
   }
-  if (!isList(github.repos) || !isList(github.mergeMethods)) {
-    throw new Error(`Server ${server}: github.repos and github.mergeMethods must be lists`);
+  if (!isList(github.repos) || !isList(github.mergeMethods) || !isList(github.requiredChecks)) {
+    throw new Error(`Server ${server}: github.repos, github.mergeMethods and github.requiredChecks must be lists`);
   }
   return { name: server, config: config[server], github };
 }

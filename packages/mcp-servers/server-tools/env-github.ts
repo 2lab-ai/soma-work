@@ -194,6 +194,8 @@ export async function prState(fetch: Fetch, config: EnvGithubConfig, repo: strin
   const pending: string[] = [];
   const failing: string[] = [];
   const succeeded = new Set<string>();
+  /** `name\0appId` of every successful check run: an app-bound requirement needs that app's run. */
+  const succeededByApp = new Set<string>();
   let passed = 0;
   const checkRuns = Array.isArray(runs.check_runs) ? runs.check_runs.map(obj) : [];
   for (const run of checkRuns) {
@@ -203,6 +205,8 @@ export async function prState(fetch: Fetch, config: EnvGithubConfig, repo: strin
     else if (run.conclusion === 'success') {
       passed++;
       succeeded.add(name);
+      const appId = obj(run.app).id;
+      if (typeof appId === 'number') succeededByApp.add(`${name}\u0000${appId}`);
     }
   }
   // More check runs than one page cannot be judged here: not green.
@@ -226,7 +230,9 @@ export async function prState(fetch: Fetch, config: EnvGithubConfig, repo: strin
   const total = checkRuns.length + statuses.length;
   const base = str(obj(pr.base).ref);
   const required = await requiredChecks(fetch, config, repo, base);
-  const missing = (required ?? []).filter((name) => !succeeded.has(name));
+  const missing = (required ?? [])
+    .filter((r) => (r.appId === undefined ? !succeeded.has(r.name) : !succeededByApp.has(`${r.name}\u0000${r.appId}`)))
+    .map((r) => r.name);
   return {
     repo,
     number,
@@ -244,23 +250,32 @@ export async function prState(fetch: Fetch, config: EnvGithubConfig, repo: strin
       green: required !== null && missing.length === 0 && passed > 0 && pending.length === 0 && failing.length === 0,
       pending,
       failing,
-      required,
+      required: required === null ? null : required.map((r) => r.name),
       missing,
     },
   };
 }
 
+/** One check that must pass: by name, and — when the branch protection binds it to an app — by that app only. */
+interface RequiredCheck {
+  name: string;
+  appId?: number;
+}
+
 /**
  * The checks that must pass on a PR into `base`: the environment's `requiredChecks`, else the base branch's
- * protection (its required status checks). Null when neither names any.
+ * protection (its required status checks, each bound to its app when the protection says so). Null when neither
+ * names any, or the protection cannot be read — unknown, so no write goes ahead.
  */
 async function requiredChecks(
   fetch: Fetch,
   config: EnvGithubConfig,
   repo: string,
   base: string,
-): Promise<string[] | null> {
-  if (Array.isArray(config.requiredChecks) && config.requiredChecks.length > 0) return config.requiredChecks;
+): Promise<RequiredCheck[] | null> {
+  if (Array.isArray(config.requiredChecks) && config.requiredChecks.length > 0) {
+    return config.requiredChecks.map((name) => ({ name }));
+  }
   let protection: Obj;
   try {
     protection = obj(
@@ -271,18 +286,24 @@ async function requiredChecks(
         `/repos/${repo}/branches/${encodeURIComponent(base)}/protection/required_status_checks`,
       ),
     );
-  } catch (err) {
-    // No protection on the base (404): nothing is known to be required.
-    if (err instanceof GithubError && / answered 404:/.test(err.message)) return null;
-    throw err;
+  } catch {
+    // No protection on the base (404), or none this token may read: nothing is known to be required.
+    return null;
   }
-  const names = new Set<string>();
-  for (const c of Array.isArray(protection.contexts) ? protection.contexts : [])
-    if (typeof c === 'string') names.add(c);
+  const required: RequiredCheck[] = [];
+  const bound = new Set<string>();
   for (const c of Array.isArray(protection.checks) ? protection.checks.map(obj) : []) {
-    if (typeof c.context === 'string') names.add(c.context);
+    if (typeof c.context !== 'string') continue;
+    bound.add(c.context);
+    // app_id null or -1 means any source.
+    required.push(
+      typeof c.app_id === 'number' && c.app_id > 0 ? { name: c.context, appId: c.app_id } : { name: c.context },
+    );
   }
-  return names.size > 0 ? [...names] : null;
+  for (const c of Array.isArray(protection.contexts) ? protection.contexts : []) {
+    if (typeof c === 'string' && !bound.has(c)) required.push({ name: c });
+  }
+  return required.length > 0 ? required : null;
 }
 
 function checksProblem(pr: PrState): string | undefined {

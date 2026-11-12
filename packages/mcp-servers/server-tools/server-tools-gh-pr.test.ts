@@ -195,6 +195,17 @@ describe('gh_pr', () => {
     expect(ledger().map((r) => r.phase)).toEqual(['intent', 'unknown']);
   });
 
+  it('refuses a requiredChecks that is not a list', async () => {
+    const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    cfg['server-tools'].dev2.github.requiredChecks = 'ci';
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg));
+    resetConfigCache();
+    const { fetch } = github();
+    await expect(handleGhPr({ server: 'dev2', action: 'view', repo: 'acme/app', pr: 7 }, fetch)).rejects.toThrow(
+      /must be lists/,
+    );
+  });
+
   it('refuses conditions that are not lists', async () => {
     const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
     cfg['server-tools'].dev2.github.approveWhen.authors = 'soma-bot[bot]';

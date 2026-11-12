@@ -229,10 +229,43 @@ describe('prState', () => {
       [PROTECTION]: { contexts: ['lint'], checks: [{ context: 'build' }] },
     });
     expect((await prState(protectedBase.fetch, noReq, 'acme/app', 7)).checks).toMatchObject({
-      required: ['lint', 'build'],
+      required: ['build', 'lint'],
       missing: ['build'],
       green: false,
     });
+
+    // review-of-legends R2 (astra): a protection-required check bound to an app is satisfied only by that app.
+    const appBound = fakeFetch({
+      'GET /repos/acme/app/pulls/7': PULL,
+      [RUNS]: {
+        total_count: 1,
+        check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success', app: { id: 99 } }],
+      },
+      [STATUS]: NO_STATUS,
+      [PROTECTION]: { contexts: ['ci'], checks: [{ context: 'ci', app_id: 42 }] },
+    });
+    expect((await prState(appBound.fetch, noReq, 'acme/app', 7)).checks).toMatchObject({
+      green: false,
+      missing: ['ci'],
+    });
+    const rightApp = fakeFetch({
+      'GET /repos/acme/app/pulls/7': PULL,
+      [RUNS]: {
+        total_count: 1,
+        check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success', app: { id: 42 } }],
+      },
+      [STATUS]: NO_STATUS,
+      [PROTECTION]: { checks: [{ context: 'ci', app_id: 42 }] },
+    });
+    expect((await prState(rightApp.fetch, noReq, 'acme/app', 7)).checks).toMatchObject({ green: true, missing: [] });
+    // A protection lookup that fails (403) leaves the required checks unknown: view works, writes refuse.
+    const forbidden = fakeFetch({
+      'GET /repos/acme/app/pulls/7': PULL,
+      [RUNS]: lintOnly,
+      [STATUS]: NO_STATUS,
+      [PROTECTION]: { __status: 403 },
+    });
+    expect((await prState(forbidden.fetch, noReq, 'acme/app', 7)).checks.required).toBeNull();
 
     const unprotected = fakeFetch({
       'GET /repos/acme/app/pulls/7': PULL,
