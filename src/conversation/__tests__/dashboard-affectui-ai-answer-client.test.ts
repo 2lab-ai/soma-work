@@ -488,6 +488,8 @@ describe('the section’s data and the element’s requests (convPaint, convRetr
     const noteFiles: Record<string, unknown[]> = {};
     const toast = vi.fn();
     const file = { name: 'shot.png', type: 'image/png' };
+    const appended: Record<string, unknown>[] = [];
+    const dropped: string[] = [];
     let unreadable = false;
     const api = load<{ sendCommand(text: string, ref: string, files?: unknown[]): Promise<void> }>(
       ['esc', 'escJs', 'pcCanSend', 'pcCommandBody', 'acPost', 'pcGiveBack', 'sendCommand'],
@@ -497,8 +499,9 @@ describe('the section’s data and the element’s requests (convPaint, convRetr
           getElementById: (id: string) => (id === 'cmd-steer' ? steer : id === 'pc-composer' ? composer : null),
           querySelector: () => null,
         },
-        appendTurnToPanel: () => {},
-        dropTurnFromPanel: () => false,
+        appendTurnToPanel: (turn: Record<string, unknown>) => appended.push(turn),
+        dropTurnFromPanel: (id: string) => dropped.push(id) > 0,
+        _viewerUserId: 'U_Z',
         fetch: (_url: string, init: { body: string }) => {
           bodies.push(init.body);
           const status = statuses.shift() ?? 200;
@@ -525,17 +528,35 @@ describe('the section’s data and the element’s requests (convPaint, convRetr
     );
     await api.sendCommand('look', 'as-1', [file]);
     const sent = { message: 'look', attachments: [{ name: 'shot.png', mimetype: 'image/png', data: 'QUJD' }] };
-    expect(JSON.parse(bodies[0])).toEqual(sent);
+    // SSOT 2026-11-12: a note sent while a turn runs shows in the chat at once too — this browser's own turn,
+    // marked as sent into a running turn (the chat says what is happening to it), under the ref the send carries.
+    expect(appended).toHaveLength(1);
+    expect(appended[0]).toMatchObject({
+      role: 'user',
+      userName: '나',
+      rawContent: 'look\n📎 shot.png',
+      _optimistic: true,
+      _running: true,
+      _sent: 'look',
+      _files: 1,
+      _by: 'U_Z',
+    });
+    expect(JSON.parse(bodies[0])).toEqual({ ...sent, clientRef: appended[0].id });
     expect(steer.setItemState).toHaveBeenCalledWith('as-1', 'failed', '(HTTP 500)');
+    // Refused: the turn leaves the chat again; the queue row keeps the Retry.
+    expect(dropped).toEqual([appended[0].id]);
     expect(noteFiles).toEqual({ 'as-1': [file] });
     // Retry: the same ref, no files — the kept ones go; sent, they are forgotten.
     await api.sendCommand('look', 'as-1');
-    expect(JSON.parse(bodies[1])).toEqual(sent);
+    expect(JSON.parse(bodies[1])).toEqual({ ...sent, clientRef: appended[1].id });
+    expect(appended[1].id).not.toBe(appended[0].id);
+    expect(dropped).toHaveLength(1);
     expect(noteFiles).toEqual({});
     // A file that cannot be read: nothing is posted, the row goes, text and file return to the composer.
     unreadable = true;
     await api.sendCommand('again', 'as-2', [file]);
     expect(bodies).toHaveLength(2);
+    expect(appended).toHaveLength(2);
     expect(steer.setItemState).toHaveBeenCalledWith('as-2', 'cancelled');
     expect(steer.value).toBe('again');
     expect(composer.addFiles).toHaveBeenCalledWith([file]);

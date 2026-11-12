@@ -27,6 +27,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { nextActionSeams } from '../__fixtures__/viewer-scope';
 import { uiLibKitCss } from '../ui-lib';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
@@ -61,7 +62,8 @@ const PAGE_STRINGS = new Function(
   `${cook(TEMPLATE.slice(TEMPLATE.indexOf('var STRINGS = {'), TEMPLATE.indexOf('\n};\n', TEMPLATE.indexOf('var STRINGS = {')) + 3))}\nreturn STRINGS;`,
 )();
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}, extra: string[] = []): T {
-  inject = { STRINGS: PAGE_STRINGS, ...inject };
+  // The panel paths' pass-through seams (next actions, the queue's turns in the chat) unless the test loads them.
+  inject = { STRINGS: PAGE_STRINGS, ...nextActionSeams(fns, inject), ...inject };
   const names = Object.keys(inject);
   const extraNames = extra.map((src) => /^function (\w+)/.exec(src)?.[1] ?? '').filter(Boolean);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\n${extra.join('\n')}\nreturn { ${[...fns, ...extraNames].join(', ')}, get _state() { return { ${vars.join(', ')} }; } };`;

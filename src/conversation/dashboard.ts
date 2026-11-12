@@ -1522,11 +1522,25 @@ export interface DashboardFollowupItem {
   /** Edit is possible: `queued`, someone's words, not a goal's opening turn — to its writer only (`authorId`;
    *  the server checks again). */
   editable: boolean;
+  /** The dashboard send it was (#785 — `message.dashboardClientRef`): the chat finds the sender's own turn by it. */
+  clientRef?: string;
+}
+/** A note that just left the queue, and what it came to (SSOT 2026-11-12). */
+export interface DashboardSettledFollowup extends DashboardFollowupItem {
+  /** `consumed`: the running turn read it. `cancelled`: it will never run. */
+  outcome: 'consumed' | 'cancelled';
 }
 export interface DashboardFollowups {
   /** The session's turn generation (the control view's): Send now sends it back. */
   turnEpoch: number;
   items: DashboardFollowupItem[];
+  /**
+   * The notes that left the queue in the last {@link FOLLOWUP_SETTLED_SHOWN_MS}, oldest first — read by the
+   * running turn, or cancelled. The chat keeps a read one in place (반영됨) until its recorded turn lands, and
+   * takes a cancelled one out. Absent when there is none. A note that ran as a turn of its own is not here:
+   * that turn is in the chat.
+   */
+  settled?: DashboardSettledFollowup[];
 }
 export type DashboardFollowupOp = 'promote' | 'cancel' | 'edit';
 export interface DashboardFollowupRequest {
@@ -1580,6 +1594,19 @@ const FOLLOWUP_SHOWN_STATES: readonly FollowupItemState[] = [
 const FOLLOWUP_SHOWN_FAILED = 5;
 /** A reason that only repeats the state (`steered`) says nothing the state does not. */
 const FOLLOWUP_STATE_ECHO = new Set<string>(['steered', 'consumed']);
+/** How long a note that left the queue is still named with what it came to (`DashboardFollowups.settled`). */
+const FOLLOWUP_SETTLED_SHOWN_MS = 2 * 60_000;
+/** At most this many of them — the newest. */
+const FOLLOWUP_SETTLED_SHOWN = 10;
+
+/** What a note that left the queue came to, when the chat has something to say about it. */
+function settledOutcome(item: FollowupItem): DashboardSettledFollowup['outcome'] | undefined {
+  if (item.state === 'cancelled') return 'cancelled';
+  // `consumed` is the read receipt of a steered note (`FollowupQueue.markConsumed`); a note that ran as its own
+  // turn resolves without it.
+  if (item.state === 'resolved' && item.stateReason === 'consumed') return 'consumed';
+  return undefined;
+}
 
 /**
  * A note whose own turn reached the model (`dispatched` with delivery evidence) waits for nothing: it is the turn
@@ -1602,7 +1629,11 @@ export function followupsOf(sessionKey: string, ownerId: string | undefined): Da
       (item.state !== 'failed' || failed.includes(item)) &&
       !isRunningTurn(item),
   );
-  if (shown.length === 0) return undefined;
+  const since = Date.now() - FOLLOWUP_SETTLED_SHOWN_MS;
+  const settled = view.items
+    .filter((item) => item.updatedAt >= since && settledOutcome(item) !== undefined)
+    .slice(-FOLLOWUP_SETTLED_SHOWN);
+  if (shown.length === 0 && settled.length === 0) return undefined;
   let names: Map<string, string> | undefined;
   const nameOf = (userId: string): string => {
     if (!names) {
@@ -1611,24 +1642,35 @@ export function followupsOf(sessionKey: string, ownerId: string | undefined): Da
     }
     return names.get(userId) ?? userId;
   };
+  const project = (item: FollowupItem): DashboardFollowupItem => {
+    const author = item.message?.user;
+    const ref = item.message?.dashboardClientRef;
+    const out: DashboardFollowupItem = {
+      id: item.id,
+      text: typeof item.message?.text === 'string' ? item.message.text : '',
+      files: (item.message?.files ?? []).map((f) => String(f?.name || 'file')),
+      enqueuedAt: item.enqueuedAt,
+      state: item.state,
+      epoch: item.epoch,
+      editable: item.state === 'queued' && !!author && item.message?.routeContext?.goalOpeningId === undefined,
+      ...(author ? { authorId: author } : {}),
+      ...(isClientRef(ref) ? { clientRef: ref } : {}),
+    };
+    if (author && author !== ownerId) out.author = nameOf(author);
+    if (item.stateReason && !FOLLOWUP_STATE_ECHO.has(item.stateReason)) out.stateReason = item.stateReason;
+    return out;
+  };
   return {
     turnEpoch: view.turnEpoch ?? 0,
-    items: shown.map((item: FollowupItem) => {
-      const author = item.message?.user;
-      const out: DashboardFollowupItem = {
-        id: item.id,
-        text: typeof item.message?.text === 'string' ? item.message.text : '',
-        files: (item.message?.files ?? []).map((f) => String(f?.name || 'file')),
-        enqueuedAt: item.enqueuedAt,
-        state: item.state,
-        epoch: item.epoch,
-        editable: item.state === 'queued' && !!author && item.message?.routeContext?.goalOpeningId === undefined,
-        ...(author ? { authorId: author } : {}),
-      };
-      if (author && author !== ownerId) out.author = nameOf(author);
-      if (item.stateReason && !FOLLOWUP_STATE_ECHO.has(item.stateReason)) out.stateReason = item.stateReason;
-      return out;
-    }),
+    items: shown.map(project),
+    ...(settled.length > 0
+      ? {
+          settled: settled.map((item) => ({
+            ...project(item),
+            outcome: settledOutcome(item) as DashboardSettledFollowup['outcome'],
+          })),
+        }
+      : {}),
   };
 }
 
@@ -6331,6 +6373,18 @@ ui-breadcrumbs.pa-path { flex: 1 1 auto; min-width: 0; }
 .psec-el > * { flex: 1 1 auto; min-height: 0; }
 .psec-el > ui-conversation, .psec-el > ui-work-log, .psec-el > ui-log-scroller { padding: 4px 8px 0; }
 .cv-arts-slot .turn-arts-row { margin-top: 2px; }
+/* SSOT 2026-11-12 — what is happening to a message sent while a turn works, above its words (the turn's media
+   slot): waiting (quiet), on its way into a turn (the accent, a pulsing dot), failed, taken in. */
+.cv-steer { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; margin: 0 0 6px; padding: 2px 9px 2px 7px;
+  border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--text-secondary);
+  font-size: 12px; line-height: 18px; }
+.cv-steer-dot { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.cv-steer-work { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+.cv-steer-work .cv-steer-dot { animation: cv-steer-pulse 1.2s ease-in-out infinite; }
+.cv-steer-fail { color: var(--red); border-color: color-mix(in srgb, var(--red) 35%, transparent); }
+.cv-steer-done { color: var(--green); border-color: color-mix(in srgb, var(--green) 35%, transparent); }
+@keyframes cv-steer-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .cv-steer-work .cv-steer-dot { animation: none; } }
 .psec[hidden] { display: none; }
 /* 자세히 (T1.6) is the view mode now (SSOT 2026-11-01): 어드밴스드 puts .is-detail on the panel, which gates the
    detail-only parts; 미니멀 leaves it off. */
@@ -13758,6 +13812,85 @@ function steerItemOf(s, id) {
   return null;
 }
 
+// ── A message sent while a turn works, in 지시와 답변 (SSOT 2026-11-12) ──
+// It showed in the composer's queue only: the chat said nothing until the model answered, and a Send now that
+// took a minute (the running turn is stopped, a new one started) read as a lost press. Every message the queue
+// holds is a turn of the chat now, under what is happening to it — sent, waiting, being processed — and a
+// message the running turn took in says so for good (its recorded turn: origin.steered).
+// One phrase per state (never composed: the catalog translates each whole).
+var STEER_CHIP_SENDING = '보내는 중…';
+var STEER_CHIP_QUEUED = '대기 중 · 진행 중인 작업이 끝나면 실행돼요';
+var STEER_CHIP_STEERED = '처리 중 · 진행 중인 작업에 전달했어요, 모델이 곧 읽어요';
+var STEER_CHIP_STARTING = '처리 중 · 이 메시지로 새 작업을 시작하고 있어요';
+var STEER_CHIP_FAILED = '보내지 못했어요 · 입력창의 대기열에서 다시 보내거나 취소하세요';
+var STEER_CHIP_APPLIED = '반영됨 · 진행 중이던 작업이 이 메시지를 읽었어요';
+// kind → [tone, words]. Tones: wait (nothing runs it yet), work (on its way into a turn), fail, done.
+var STEER_CHIP = { sending: ['wait', STEER_CHIP_SENDING], queued: ['wait', STEER_CHIP_QUEUED], steered: ['work', STEER_CHIP_STEERED], starting: ['work', STEER_CHIP_STARTING], failed: ['fail', STEER_CHIP_FAILED], applied: ['done', STEER_CHIP_APPLIED] };
+// The element's five states (STEER_STATE) as the chat's kinds.
+var STEER_CHIP_OF = { queued: 'queued', steered: 'steered', sending: 'starting', failed: 'failed' };
+// The state above a turn's words (the turn's media slot — the page's own light DOM).
+function steerChipHtml(kind) {
+  var c = STEER_CHIP[kind];
+  if (!c) return '';
+  return '<div class="cv-steer cv-steer-' + c[0] + '" role="status"><span class="cv-steer-dot" aria-hidden="true"></span><span>' + esc(c[1]) + '</span></div>';
+}
+// Pure: the session's queue (s.followups) over the turns the panel holds (list) —
+//   chips: turn id → kind. This browser's own turn the queue lists carries the row's state; one sent while a
+//          turn ran that the queue has not listed yet reads 보내는 중; once listed and off the list again it
+//          carries nothing (its recorded turn is on the way).
+//   extra: a turn for every listed message the panel holds no turn for (sent in Slack, in another tab, before
+//          a reload) — unless a recorded turn is already its record (ptRecorded: its ref, else sender + words).
+//          An old failure is the queue's to show (Retry and Cancel are there).
+//   seen:  this browser's turns the queue listed (convPaint marks them).  drop: the ones cancelled.
+// fu.settled: the messages that just left the queue — read by the running turn (반영됨 until the recorded turn
+// takes the place) or cancelled.
+function convQueueTurns(list, fu, ownerName) {
+  var out = { chips: {}, extra: [], seen: [], drop: [] };
+  var own = Object.create(null);
+  for (var i = 0; i < list.length; i++) if (list[i] && list[i]._optimistic) own[String(list[i].id)] = list[i];
+  var rows = [];
+  ((fu && fu.items) || []).forEach(function(f) { rows.push({ f: f, kind: (f && STEER_CHIP_OF[STEER_STATE[f.state]]) || '' }); });
+  ((fu && fu.settled) || []).forEach(function(f) { rows.push({ f: f, kind: f && f.outcome === 'cancelled' ? 'cancelled' : 'applied' }); });
+  var held = Object.create(null);
+  var used = Object.create(null);
+  for (var r = 0; r < rows.length; r++) {
+    var f = rows[r].f;
+    var kind = rows[r].kind;
+    if (!f || !f.id || !kind) continue;
+    var mine = f.clientRef ? own[String(f.clientRef)] : null;
+    if (mine) {
+      out.seen.push(String(mine.id));
+      if (kind === 'cancelled') out.drop.push(String(mine.id));
+      else out.chips[String(mine.id)] = kind;
+      continue;
+    }
+    if (kind === 'failed' || kind === 'cancelled') continue;
+    var names = (f.files || []).map(String);
+    var said = String(f.text || '');
+    var probe = { id: String(f.clientRef || ('queue-' + f.id)), _optimistic: true, _sent: said, _files: names.length, _by: String(f.authorId || ''), timestamp: toNum(f.enqueuedAt) };
+    var rec = ptRecorded(list, probe, held, used);
+    if (rec) {
+      used[rec] = true;
+      continue;
+    }
+    var id = 'queue-' + f.id;
+    out.extra.push({
+      id: id,
+      role: 'user',
+      timestamp: toNum(f.enqueuedAt),
+      userName: f.authorId && f.authorId === _viewerUserId ? '나' : String(f.author || ownerName || '사용자'),
+      rawContent: said + (names.length ? (said ? '\\n' : '') + '📎 ' + names.join(', ') : ''),
+      origin: { by: 'user' },
+      _queued: true,
+    });
+    out.chips[id] = kind;
+  }
+  for (var k in own) {
+    if (own[k]._running && !own[k]._rowSeen && !out.chips[k] && out.seen.indexOf(k) < 0) out.chips[k] = 'sending';
+  }
+  return out;
+}
+
 // The panel head (spec 13) — @2lab.ai/ui <ui-status-bar> (D3 E-08): the session's status
 // in the root vocabulary (rootStatusOf onto the bar's six states, the page's words — 재개
 // 대기 / 휴면 / 보관 keep theirs; the bar announces a change, never the ticking clock);
@@ -20532,10 +20665,14 @@ function convTurnsOf(list, c) {
       }
       // 되돌리기 모드: a person's instruction carries its button in the same slot, above its words.
       var rbp = !sys && c.rb ? c.rb[String(t.id)] : null;
-      if (atts.length || rbp) {
+      // SSOT 2026-11-12: what is happening to a message the queue holds (c.chips, convQueueTurns), or — for
+      // good — that the running turn took it in (the recorded turn's origin.steered). Same slot, first.
+      var chip = sys ? '' : (c.chips && c.chips[id]) || (t.origin && t.origin.steered ? 'applied' : '');
+      if (atts.length || rbp || chip) {
         u.media = true;
         slots.push({ name: 'media-' + id, kind: 'media', list: atts, turn: t });
         if (rbp) slots[slots.length - 1].rb = rbp;
+        if (chip) slots[slots.length - 1].chip = chip;
       }
       // #744: a turn a rollback dropped says so (a person's by its name, a system turn in its line).
       if (c.rewinds && rewoundBy(c.rewinds, ts)) {
@@ -20586,7 +20723,7 @@ function convSlots(el, slots, cid) {
     var sl = slots[i];
     if (sl.kind === 'media') umRegister(cid, sl.list, sl.turn);
     want[sl.name] = sl.kind === 'media'
-      ? (sl.rb ? rbTurnButtonHtml(sl.rb, sl.turn.id) : '') + renderUserMedia(cid, sl.list)
+      ? (sl.chip ? steerChipHtml(sl.chip) : '') + (sl.rb ? rbTurnButtonHtml(sl.rb, sl.turn.id) : '') + renderUserMedia(cid, sl.list)
       : renderTurnArtifacts(sl.list, cid, sl.start, sl.end);
   }
   var kids = Array.prototype.slice.call(el.children);
@@ -20668,15 +20805,27 @@ function convPaint() {
   // board is not running; before the board's first load it is undecided.
   var working = s ? s.activityState === 'working' : Object.keys(_sessionCache).length === 0;
   var rbIdx = rbIndex();
-  var built = convTurnsOf(_panelTurnsList, {
+  // SSOT 2026-11-12: the messages the session's queue holds are turns of the chat, each under its state
+  // (convQueueTurns). This browser's own turn the queue listed is marked (off the list again, it waits for its
+  // recorded turn without a state); one whose message was cancelled leaves.
+  var q = convQueueTurns(_panelTurnsList, s && s.followups, s && s.ownerName);
+  for (var qi = _panelTurnsList.length - 1; qi >= 0; qi--) {
+    var qt = _panelTurnsList[qi];
+    if (!qt || !qt._optimistic) continue;
+    if (q.drop.indexOf(String(qt.id)) >= 0) _panelTurnsList.splice(qi, 1);
+    else if (q.seen.indexOf(String(qt.id)) >= 0) qt._rowSeen = true;
+  }
+  var shown = q.extra.length ? _panelTurnsList.concat(q.extra) : _panelTurnsList;
+  var built = convTurnsOf(shown, {
     cid: cid, bot: botNameOf(s), now: Date.now(), working: working,
     rewinds: rewindSpansOf(s),
     rb: rbIdx ? rbIdx.turns : null,
+    chips: q.chips,
     answers: _rawLoadedCache, failed: _ansFailed, resum: _resumSent,
     arts: cid && _artCache[cid] ? _artCache[cid].list || [] : [],
     titles: ansLinkTitles(ansSession(cid)),
   });
-  var last = _panelTurnsList.length ? _panelTurnsList[_panelTurnsList.length - 1] : null;
+  var last = shown.length ? shown[shown.length - 1] : null;
   var msg = _panelTurnsMsg;
   var d = {
     turns: built.turns,
@@ -21332,27 +21481,26 @@ async function sendCommand(text, ref, files) {
   // The card changed while the files were read: this instruction was for the other one.
   if (panelSessionKey !== sendingSessionKey) return;
 
-  // Optimistic, idle only: the turn this starts shows in the transcript at once
-  // (its files by name — the recorded turn brings their previews). A note sent
-  // while a turn runs shows in the queue instead.
-  var optimisticId = '';
-  if (!running) {
-    const shown = msg + (list.length ? (msg ? '\\n' : '') + '📎 ' + list.map(function(f) { return f.name; }).join(', ') : '');
-    optimisticId = 'optimistic-' + Date.now();
-    optimisticId += '-' + Math.random().toString(36).slice(2, 8); // two tabs in the same ms never share a ref (#785)
-    appendTurnToPanel({
-      id: optimisticId,
-      role: 'user',
-      timestamp: Date.now(),
-      userName: '나',
-      rawContent: shown,
-      origin: { by: 'user' },
-      _optimistic: true,
-      _sent: msg, // the words the recorded turn is matched by (ptOptimisticFor)
-      _files: list.length, // a files-only send (no words) is matched by a recorded turn with no words
-      _by: _viewerUserId || '', // who sent it — someone else's turn with the same words never takes it
-    }, true);
-  }
+  // Optimistic: the message shows in the transcript at once (its files by name — the recorded turn brings
+  // their previews). Idle, it is the turn this starts. While a turn runs (SSOT 2026-11-12) it is in the queue
+  // too, and the chat says what is happening to it under the same turn (_running → convQueueTurns: 보내는 중,
+  // then the queue row's state by this ref, then the recorded turn).
+  var optimisticId = 'optimistic-' + Date.now();
+  optimisticId += '-' + Math.random().toString(36).slice(2, 8); // two tabs in the same ms never share a ref (#785)
+  const shown = msg + (list.length ? (msg ? '\\n' : '') + '📎 ' + list.map(function(f) { return f.name; }).join(', ') : '');
+  appendTurnToPanel({
+    id: optimisticId,
+    role: 'user',
+    timestamp: Date.now(),
+    userName: '나',
+    rawContent: shown,
+    origin: { by: 'user' },
+    _optimistic: true,
+    _running: running, // sent into a running turn: the chat shows its state until it is recorded
+    _sent: msg, // the words the recorded turn is matched by (ptOptimisticFor)
+    _files: list.length, // a files-only send (no words) is matched by a recorded turn with no words
+    _by: _viewerUserId || '', // who sent it — someone else's turn with the same words never takes it
+  }, true);
 
   var why = '';
   var awaitsOwner = false;

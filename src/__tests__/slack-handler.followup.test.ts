@@ -4277,7 +4277,13 @@ describe('SlackHandler — follow-up queue host', () => {
 
         // The button the panel rendered against the steered row is stale now.
         const turnEpoch = handlerAny.followupDispatcher.liveTurnEpoch(SESSION_KEY);
-        const sent = await handlerAny.followupDispatcher.sendNow(SESSION_KEY, item.id, steeredEpoch, 'U_OWNER', turnEpoch);
+        const sent = await handlerAny.followupDispatcher.sendNow(
+          SESSION_KEY,
+          item.id,
+          steeredEpoch,
+          'U_OWNER',
+          turnEpoch,
+        );
         expect(sent.status).toBe('rejected');
         expect(abortSession).not.toHaveBeenCalled();
         await settle();
@@ -4489,8 +4495,9 @@ describe('SlackHandler — follow-up queue host', () => {
         attachments,
         {
           timestamp: 1792900000000,
-          // A steered message is always a person's (dashboard SSOT 2026-10-27).
-          origin: { by: 'user' },
+          // A steered message is always a person's (dashboard SSOT 2026-10-27), taken in by a running turn
+          // (SSOT 2026-11-12: the chat says 반영됨 on it).
+          origin: { by: 'user', steered: true },
         },
       );
       expect(order).toEqual(['capture', 'record', 'cleanup']);
@@ -4670,7 +4677,7 @@ describe('SlackHandler — follow-up queue host', () => {
       await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'completed' });
       expect((record.mock.calls[0] as unknown[])[5]).toEqual({
         timestamp: 1792900000000,
-        origin: { by: 'user' },
+        origin: { by: 'user', steered: true },
         clientRef: 'optimistic-1-ab',
       });
       await settle();
@@ -5156,8 +5163,9 @@ describe('SlackHandler — follow-up queue host', () => {
         attachments,
         {
           timestamp: 1792900000000,
-          // A steered message is always a person's (dashboard SSOT 2026-10-27).
-          origin: { by: 'user' },
+          // A steered message is always a person's (dashboard SSOT 2026-10-27), taken in by a running turn
+          // (SSOT 2026-11-12: the chat says 반영됨 on it).
+          origin: { by: 'user', steered: true },
         },
       );
       expect(order).toEqual(['capture', 'record', 'cleanup']);

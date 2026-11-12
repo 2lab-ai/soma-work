@@ -56,6 +56,20 @@ describe('T1.1 — who put the turn there', () => {
     }
   });
 
+  // SSOT 2026-11-12: a message the running turn took in says so in the chat — for good, so the turn keeps it.
+  it('keeps that a person’s message was taken in by a turn that was already running (steered)', async () => {
+    const cid = createConversation('C1', '1700000000.000330', 'U1', 'Zhuge');
+    const steered = nextTurn();
+    recordUserTurn(cid, '테스트도 돌려줘', 'Zhuge', 'U1', undefined, { origin: { by: 'user', steered: true } });
+    expect((await steered).origin).toEqual({ by: 'user', steered: true });
+    // Only `true` is kept, and only that: an origin is who and how, nothing else rides on it.
+    const plain = nextTurn();
+    recordUserTurn(cid, 'hello', 'Zhuge', 'U1', undefined, {
+      origin: { by: 'user', steered: false, extra: 1 } as never,
+    });
+    expect((await plain).origin).toEqual({ by: 'user' });
+  });
+
   it('a turn recorded without one has none (older callers)', async () => {
     const cid = createConversation('C1', '1700000000.000400', 'U1', 'Zhuge');
     const seen = nextTurn();

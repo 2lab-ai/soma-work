@@ -293,6 +293,70 @@ describe('Dashboard — the follow-up queue (batch 2)', () => {
       expect(editable[14]).toBe(false); // a goal's opening turn
     });
 
+    // SSOT 2026-11-12 — the chat shows a message sent while a turn works under what is happening to it. It finds
+    // this browser's own turn by the send's ref, and it needs to know what a message that just left the queue
+    // came to: read by the running turn (the chat says 반영됨 until the recorded turn lands) or cancelled (its
+    // turn leaves the chat). History older than that stays history.
+    it('names the dashboard send a note is, when it was one', async () => {
+      view = {
+        sessionKey: KEY,
+        turnEpoch: 7,
+        items: [
+          item('steered', {
+            message: {
+              type: 'message',
+              channel: 'C1',
+              thread_ts: 't1',
+              ts: '5.0',
+              user: 'U1',
+              text: 'from the dashboard',
+              dashboardClientRef: 'optimistic-1794000000000-ab12cd',
+            } as any,
+          }),
+          item('queued', { text: 'from Slack' }),
+        ],
+      };
+      const [fromDashboard, fromSlack] = (await card()).followups.items;
+      expect(fromDashboard.clientRef).toBe('optimistic-1794000000000-ab12cd');
+      expect(fromSlack).not.toHaveProperty('clientRef');
+    });
+
+    it('says what a note that just left the queue came to — read by the running turn, or cancelled', async () => {
+      const now = Date.now();
+      view = {
+        sessionKey: KEY,
+        turnEpoch: 7,
+        items: [
+          item('resolved', { text: 'read a while ago', stateReason: 'consumed' }), // history
+          item('resolved', { text: 'read just now', stateReason: 'consumed', updatedAt: now - 1_000 }),
+          item('cancelled', { text: 'cancelled just now', updatedAt: now - 2_000 }),
+          // Ran as its own turn: that turn is in the chat as a turn — nothing to say about it here.
+          item('resolved', { text: 'ran as a turn', updatedAt: now - 1_000 }),
+          item('queued', { text: 'still waiting' }),
+        ],
+      };
+      const f = (await card()).followups;
+      expect(f.items.map((i: any) => i.text)).toEqual(['still waiting']);
+      expect(f.settled.map((i: any) => [i.text, i.outcome])).toEqual([
+        ['read just now', 'consumed'],
+        ['cancelled just now', 'cancelled'],
+      ]);
+      // The same shape as a listed note: the chat draws it the same way.
+      expect(f.settled[0]).toMatchObject({ state: 'resolved', authorId: 'U1', files: [], editable: false });
+      expect(f.settled[0].id).toMatch(new RegExp(`^${KEY}#\\d+$`));
+    });
+
+    it('a queue with nothing waiting still says what just left it', async () => {
+      view = {
+        sessionKey: KEY,
+        turnEpoch: 7,
+        items: [item('resolved', { stateReason: 'consumed', updatedAt: Date.now() - 500 })],
+      };
+      const f = (await card()).followups;
+      expect(f.items).toEqual([]);
+      expect(f.settled).toHaveLength(1);
+    });
+
     it('a session with nothing to show carries no followups', async () => {
       view = { sessionKey: KEY, turnEpoch: 7, items: [item('resolved'), item('cancelled')] };
       expect((await card()).followups).toBeUndefined();

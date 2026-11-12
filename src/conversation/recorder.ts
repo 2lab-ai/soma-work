@@ -261,7 +261,7 @@ async function _recordUserTurnAsync(
     userId,
     rawContent: content,
     ...(attachments && attachments.length > 0 ? { attachments: [...attachments] } : {}),
-    ...(origin ? { origin: { by: origin.by } } : {}),
+    ...(origin ? { origin: { by: origin.by, ...(origin.steered === true ? { steered: true as const } : {}) } } : {}),
     ...(opts.compact ? { compact: estimateMs !== undefined ? { estimateMs } : {} } : {}),
     ...(typeof opts.anchor === 'string' && opts.anchor ? { anchor: opts.anchor } : {}),
     ...(isClientRef(opts.clientRef) ? { clientRef: opts.clientRef } : {}),

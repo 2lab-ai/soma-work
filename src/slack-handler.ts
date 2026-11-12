@@ -6506,10 +6506,11 @@ export class SlackHandler {
         userName,
         userId,
         attachments?.length ? attachments : undefined,
-        // A steered message is always a person's (dashboard SSOT 2026-10-27).
+        // A steered message is always a person's (dashboard SSOT 2026-10-27), and
+        // one a running turn took in: the chat says so on it (SSOT 2026-11-12).
         {
           timestamp: instruction.sentAt,
-          origin: { by: 'user' },
+          origin: { by: 'user', steered: true },
           // #785: the dashboard send it was — the panel replaces its pending copy by it.
           ...(instruction.clientRef ? { clientRef: instruction.clientRef } : {}),
         },
