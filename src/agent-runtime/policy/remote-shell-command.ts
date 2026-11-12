@@ -22,8 +22,9 @@
  *   `RIPGREP_CONFIG_PATH=… rg`), and so does an assignment that holds the word or sets `PATH`, and a git global
  *   option that holds the word. An expansion where a program could be named — a git setting, the arguments of
  *   a data program with a run option, `find`'s arguments — is unknown, so it refuses too. Two exceptions:
- *   locale, time zone and color settings in front of a program (`LC_ALL=C grep …`), and `$HOME`, `$PWD`,
- *   `$TMPDIR` when the command does not set them (absolute paths the bot set: never an option).
+ *   harmless settings in front of a program (`LC_ALL=C grep …`, see PLAIN_ENVIRONMENT), and `$HOME`, `$TMPDIR`
+ *   when the command does not name them otherwise (absolute paths the bot set: never an option). `read` and
+ *   `printf -v`, which set variables, are not data commands.
  *
  * Not covered, as with a command split in two: a data program that reads configuration an earlier part of the
  * same command wrote (`… >> .git/config; git log`).
@@ -94,7 +95,6 @@ const DATA_COMMANDS = new Set([
   'sleep',
   'date',
   'set',
-  'read',
   'fi',
   'done',
   'esac',
@@ -183,15 +183,17 @@ class Parser {
 }
 
 /**
- * `$HOME`, `$PWD`, `$TMPDIR` hold absolute paths the bot set, so they can never become an option or a program
- * name — unless the command itself sets them (`HOME=…`, `read HOME`, `export HOME`), which any other mention of
- * the name in the command is taken to mean.
+ * `$HOME` and `$TMPDIR` hold absolute paths without spaces that the bot set, so they can never become an option
+ * or a program name — unless the command itself sets them (`HOME=…`, `read HOME`, `export HOME`), which any other
+ * mention of the name in the command is taken to mean, quotes and backslashes removed (`H\OME`). `$PWD` is not
+ * trusted: `cd` changes it, and bash splits it unquoted.
  */
-const TRUSTED_VARIABLES = new Set(['HOME', 'PWD', 'TMPDIR']);
+const TRUSTED_VARIABLES = new Set(['HOME', 'TMPDIR']);
 
 function trustedVariable(root: string, name: string): boolean {
   if (!TRUSTED_VARIABLES.has(name)) return false;
-  const mentions = root.match(new RegExp(`(?<![A-Za-z0-9_])${name}(?![A-Za-z0-9_])`, 'g'))?.length ?? 0;
+  const plain = root.replace(/[\\'"]/g, '');
+  const mentions = plain.match(new RegExp(`(?<![A-Za-z0-9_])${name}(?![A-Za-z0-9_])`, 'g'))?.length ?? 0;
   const expansions = root.match(new RegExp(`\\$\\{?${name}(?![A-Za-z0-9_])`, 'g'))?.length ?? 0;
   return mentions === expansions;
 }
@@ -606,6 +608,8 @@ function verdict(cmd: SimpleCommand): Verdict | 'runs' {
   // zsh closes a brace group at a bare `}` and reads on (`{ echo a } always { cmd }`).
   const brace = args.indexOf('}');
   if (brace >= 0 && brace < args.length - 1) return 'may-run';
+  // `printf -v NAME` sets a variable, possibly one trusted above; `read` is not a data command for the same reason.
+  if (program === 'printf' && args.some((a) => a.startsWith('-v'))) return 'may-run';
   if (DATA_COMMANDS.has(program)) return namesProgram(program, args) ? 'may-run' : 'data';
   if (program === 'git') return gitVerdict(args);
   if (program === 'gh') return ghVerdict(args);

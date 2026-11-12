@@ -119,7 +119,12 @@ const RUNS = [
   "ack --pager='ssh host' x",
   'rg --hostname-bin ssh x',
   // trinity R4 (astra, P2): line continuations in a delimiter and in an unquoted heredoc body.
-  // A trusted variable the command itself sets is not trusted.
+  // A trusted variable the command itself sets is not trusted, however its name is spelled (trinity R6).
+  `read H"OME" <<< '--pre=ssh'; rg pattern "$HOME" host`,
+  "read H\\OME <<< x; rg x $HOME ssh",
+  "printf -v H\\OME '%s' --pre=ssh; rg x $HOME",
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
+  'x=HO; read "${x}ME" <<< y; rg ssh $HOME',
   'HOME=--pre=x; rg ssh "$HOME"',
   'read HOME; rg ssh $HOME',
   'x=--pre=x; rg ssh "$x"',
@@ -175,7 +180,6 @@ const DATA = [
   'rg -n ssh "$HOME/x"',
   // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
   'rg -n ssh ${HOME}/x',
-  'find "$PWD" -name "*ssh*"',
   'grep -rn ssh "$TMPDIR"',
   'LC_ALL=C grep ssh x',
   // trinity R5 (grok): harmless settings in front of a data program.
@@ -198,8 +202,9 @@ const CONSERVATIVE = [
   // An environment for a data program can make it run another (`RIPGREP_CONFIG_PATH`, `GIT_PAGER` …).
   'GIT_EDITOR=vi git commit -m "ssh"',
   'RIPGREP_CONFIG_PATH=./rc rg ssh x',
-  // A variable set in the command could be anything.
+  // A variable set in the command could be anything; `cd` changes `$PWD`, and bash splits it unquoted.
   'dir=src; find "$dir" -name "*ssh*"',
+  'find "$PWD" -name "*ssh*"',
 ];
 
 describe('isRemoteShellCommand', () => {
