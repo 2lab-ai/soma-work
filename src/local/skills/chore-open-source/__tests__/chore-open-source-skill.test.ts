@@ -245,6 +245,61 @@ esac
     expect(big.stdout).toMatch(/a\.txt \(blob [0-9a-f]+, 6 bytes\) is over CHOS_MAX_BLOB/);
   });
 
+  it('recon: POSIX bracket classes match as in the gate; archive member paths and unread media count', () => {
+    const d = mkdtempSync(join(scratch, 'recon-media-'));
+    const genv = {
+      ...process.env,
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_AUTHOR_NAME: 'a',
+      GIT_AUTHOR_EMAIL: 'a@example.com',
+      GIT_COMMITTER_NAME: 'a',
+      GIT_COMMITTER_EMAIL: 'a@example.com',
+    };
+    run(
+      'bash',
+      [
+        '-c',
+        `set -e
+      git init -q --bare -b main remote.git && git init -q -b main seed && cd seed
+      echo "runs on secret-host-b" > a.txt && printf '\\x89PNG\\r\\n\\x1a\\n' > img.png
+      git add -A && git commit -q -m init && git push -q ../remote.git main && cd ..
+      mkdir -p pkg/docs && echo x > pkg/docs/secret-host-c.txt && tar -czf pkg.tar.gz -C pkg docs`,
+      ],
+      { cwd: d, env: genv },
+    );
+    mkdirSync(join(d, 'bin'));
+    writeFileSync(
+      join(d, 'bin', 'gh'),
+      `#!/usr/bin/env bash
+case "$*" in
+  "repo view"*) echo '{"visibility":"PUBLIC"}' ;;
+  *"/actions/secrets"*) echo '{"secrets":[]}' ;;
+  *"/actions/variables"*) echo '{"variables":[]}' ;;
+  *"releases/assets/5"*) cat "${join(d, 'pkg.tar.gz')}" ;;
+  *"/releases"*) echo '[[{"tag_name":"v1","name":"v1","body":"","assets":[{"id":5,"name":"pkg.tar.gz"}]}]]' ;;
+  "api "*) echo '[[]]' ;;
+  *) echo "stub gh: $*" >&2; exit 1 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    mkdirSync(join(d, 'config'));
+    // [[:alpha:]] is a POSIX class to the gate's grep -E; Python's re would read it as a set + "]".
+    writeFileSync(join(d, 'config', 'patterns.txt'), 'secret-host-[[:alpha:]]\n');
+    const env = {
+      ...process.env,
+      PATH: `${join(d, 'bin')}:${process.env.PATH}`,
+      CHOS_WORK: d,
+      CHOS_URL: join(d, 'remote.git'),
+    };
+    const r = run('python3', ['-I', '-B', resolve(SCRIPTS, 'recon.py'), 'o/r'], { env });
+    expect(r.status, r.stdout + r.stderr).toBe(3); // img.png was not OCR-read: unread, not clean
+    const report = readFileSync(join(d, 'recon', 'r.md'), 'utf8');
+    expect(report).toMatch(/at a\.txt \(blob/);
+    expect(report).toMatch(/release asset v1\/pkg\.tar\.gz \(member path\)/);
+    expect(report).toMatch(/1 image\/video\/PDF blob\(s\) in history were not OCR-read/);
+  });
+
   it('swap keeps branch names out of program text (sed/awk scripts)', () => {
     const swap = readFileSync(resolve(SCRIPTS, 'swap.sh'), 'utf8');
     expect(swap).not.toMatch(/sed [^\n]*\$MAIN/);
@@ -423,5 +478,24 @@ describe.skipIf(!hasFilterRepo)('local:chore-open-source — offline run of the 
     expect(r.status, r.stdout + r.stderr).toBe(0);
     expect(r.stdout).toMatch(/main already contains it/);
     expect(r.stdout).toMatch(/1 ref\(s\) moved or appeared since, all on the new history/);
+  });
+
+  it('a landed swap is recognised after refs moved on, even without its marker', () => {
+    const chos = workDir('work', `${W}\n`);
+    rmSync(join(chos.CHOS_WORK, 'out', 'r', 'swapped'));
+    const r = shAt(`"${SCRIPTS}/swap.sh" o/r`, chos);
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/already holds this rewrite \(an earlier push completed\): resuming/);
+    expect(r.stdout).not.toMatch(/rewriting again/);
+  });
+
+  it('a ref pushed back with commits of the original history fails the swap verification', () => {
+    const chos = workDir('work', `${W}\n`);
+    sh(
+      `git -C "${join(chos.CHOS_WORK, 'out', 'r', 'orig.git')}" push -q "${join(T, 'remote.git')}" main:refs/heads/old-again`,
+    );
+    const r = shAt(`"${SCRIPTS}/swap.sh" o/r`, chos);
+    expect(r.status, r.stdout + r.stderr).toBe(1);
+    expect(r.stdout).toMatch(/refs\/heads\/old-again [0-9a-f]+ carries \d+ commit\(s\) of the original history/);
   });
 });

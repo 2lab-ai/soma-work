@@ -54,6 +54,17 @@ def git(*a, cwd=clone, check=True, inp=None, env=None):
     return r.stdout
 
 
+# The forbidden lists are POSIX extended regexes — the dialect the gate's `grep -E` reads. Bracket
+# classes such as [[:alpha:]] mean something else to Python's re; translate them so both agree.
+POSIX_CLASSES = {'alpha': 'a-zA-Z', 'digit': '0-9', 'alnum': 'a-zA-Z0-9', 'upper': 'A-Z', 'lower': 'a-z',
+                 'space': r'\s', 'blank': r' \t', 'xdigit': '0-9A-Fa-f', 'punct': r'!-/:-@\[-`{-~',
+                 'cntrl': r'\x00-\x1f\x7f', 'print': r'\x20-\x7e', 'graph': r'\x21-\x7e'}
+
+
+def ere(p):
+    return re.sub(r'\[:([a-z]+):\]', lambda m: POSIX_CLASSES.get(m.group(1), m.group(0)), p)
+
+
 def load_map(p):
     return dict(l.split() for l in pathlib.Path(p).read_text().splitlines()[1:] if l.strip())
 
@@ -63,7 +74,7 @@ first_changed = [l.split()[0] for l in (fr / 'first-changed-commits').read_text(
 # The shared list and this repository's own list: a local-only commit must pass both.
 _pats = [l.strip() for name in ('patterns.txt', 'repo-patterns.txt') if (work / 'config' / name).is_file()
          for l in (work / 'config' / name).read_text().splitlines() if l.strip() and not l.startswith('#')]
-PAT = re.compile('|'.join(_pats), re.I) if _pats else None
+PAT = re.compile('|'.join(ere(p) for p in _pats), re.I) if _pats else None
 new_tags = dict((r.split()[1][10:], r.split()[0]) for r in git('for-each-ref', '--format=%(objectname) %(refname)', 'refs/tags', cwd=out / 'new.git').splitlines())
 
 

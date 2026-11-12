@@ -53,9 +53,20 @@ def patterns(name):
     return [l.strip() for l in p.read_text().splitlines() if l.strip() and not l.startswith('#')] if p.is_file() else []
 
 
+# The forbidden lists are POSIX extended regexes — the dialect the gate's `grep -E` reads. Bracket
+# classes such as [[:alpha:]] mean something else to Python's re; translate them so both agree.
+POSIX_CLASSES = {'alpha': 'a-zA-Z', 'digit': '0-9', 'alnum': 'a-zA-Z0-9', 'upper': 'A-Z', 'lower': 'a-z',
+                 'space': r'\s', 'blank': r' \t', 'xdigit': '0-9A-Fa-f', 'punct': r'!-/:-@\[-`{-~',
+                 'cntrl': r'\x00-\x1f\x7f', 'print': r'\x20-\x7e', 'graph': r'\x21-\x7e'}
+
+
+def ere(p):
+    return re.sub(r'\[:([a-z]+):\]', lambda m: POSIX_CLASSES.get(m.group(1), m.group(0)), p)
+
+
 forbidden = patterns('patterns.txt') + patterns('repo-patterns.txt')
 CLASSES = {
-    'forbidden list': re.compile('|'.join(forbidden), re.I) if forbidden else None,
+    'forbidden list': re.compile('|'.join(ere(p) for p in forbidden), re.I) if forbidden else None,
     'home path': re.compile(r'(/Users|/home)/(?!(runner|operator|ci|user|me|you|example|name|username|USER|\$USER|\{USER\})\b)[A-Za-z0-9._-]{2,}'),
     'e-mail': re.compile(r'\b[A-Za-z0-9._%+-]+@(?!(?:[a-z0-9-]+\.)*(?:example\.(?:com|org|net)|example|invalid|test|localhost|users\.noreply\.github\.com|noreply\.github\.com)\b)[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', re.I),
     'private address': re.compile(r'\b(?:10\.(?:\d{1,3}\.){2}\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})\b'),
@@ -160,47 +171,69 @@ for blob, ps in blob_paths.items():
     for p in sorted(ps):
         if MEDIA.search(p) and blob != '0' * 40:
             media.setdefault(blob, p)
-ocr_hits = {}
-if ocr and media:
+VIDEO = ('.gif', '.mp4', '.mov', '.webm', '.mkv')
+
+
+def tool(*a, text=True):
+    """Run a tool; None when it is missing or fails."""
+    if not shutil.which(a[0]):
+        return None
+    r = subprocess.run(list(a), capture_output=True, text=text, errors='replace' if text else None)
+    return None if r.returncode else r
+
+
+def ocr_media(data, name, label):
+    """Text shown in an image, video or PDF, or None (recorded as incomplete) when it cannot be read.
+    A PDF is read twice: its text layer, and every page rasterised for OCR — an image-only page has no
+    text layer."""
     tmp = pathlib.Path(tempfile.mkdtemp(prefix='chos-ocr-'))
-    for blob, p in media.items():
-        f = tmp / (blob + pathlib.Path(p).suffix.lower())
-        f.write_bytes(git('cat-file', 'blob', blob, binary=True))
-        frames = [f]
-        if f.suffix in ('.gif', '.mp4', '.mov', '.webm', '.mkv'):
-            fd = tmp / blob
-            fd.mkdir()
-            r = subprocess.run(['ffmpeg', '-loglevel', 'error', '-i', str(f), '-vf', 'fps=1', str(fd / '%04d.png')],
-                               capture_output=True) if shutil.which('ffmpeg') else None
-            frames = sorted(fd.glob('*.png'))
-            if r is None or r.returncode or not frames:
-                incomplete.append(f'media {blob[:10]} {p}: frames could not be extracted (ffmpeg)')
-                continue
-        text = ''
-        if f.suffix == '.pdf':
-            r = subprocess.run(['pdftotext', str(f), '-'], capture_output=True, text=True, errors='replace') \
-                if shutil.which('pdftotext') else None
-            if r is None or r.returncode:
-                incomplete.append(f'media {blob[:10]} {p}: text could not be extracted (pdftotext)')
-                continue
-            text = r.stdout
-        else:
-            bad = 0
-            for fr in frames:
-                r = subprocess.run(['tesseract', str(fr), '-'], capture_output=True, text=True, errors='replace') \
-                    if shutil.which('tesseract') else None
-                if r is None or r.returncode:
-                    bad += 1
-                    continue
+    try:
+        f = tmp / ('m' + pathlib.Path(name).suffix.lower())
+        f.write_bytes(data)
+        frames, text = [f], ''
+        if f.suffix in VIDEO:
+            r = tool('ffmpeg', '-loglevel', 'error', '-i', str(f), '-vf', 'fps=1', str(tmp / 'f%04d.png'))
+            frames = sorted(tmp.glob('f*.png'))
+            if r is None or not frames:
+                incomplete.append(f'{label}: frames could not be extracted (ffmpeg)')
+                return None
+        elif f.suffix == '.pdf':
+            r = tool('pdftotext', str(f), '-')
+            pages = tool('pdftoppm', '-r', '150', '-png', str(f), str(tmp / 'page'))
+            frames = sorted(tmp.glob('page*.png'))
+            if r is None or pages is None or not frames:
+                incomplete.append(f'{label}: PDF text or pages could not be extracted (pdftotext, pdftoppm)')
+                return None
+            text = r.stdout + '\n'
+        bad = 0
+        for fr in frames:
+            r = tool('tesseract', str(fr), '-')
+            if r is None:
+                bad += 1
+            else:
                 text += r.stdout + '\n'
-            if bad:
-                incomplete.append(f'media {blob[:10]} {p}: {bad} of {len(frames)} frame(s) could not be read (tesseract)')
+        if bad:
+            incomplete.append(f'{label}: {bad} of {len(frames)} frame(s) or page(s) could not be read (tesseract)')
+            return None
+        return text
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+ocr_hits = {}
+if media and not ocr:
+    incomplete.append(f'media: {len(media)} image/video/PDF blob(s) in history were not OCR-read (rerun with --ocr)')
+if ocr:
+    for blob, p in media.items():
+        label = f'media {blob[:10]} {p}'
+        text = ocr_media(git('cat-file', 'blob', blob, binary=True), p, label)
+        if text is None:
+            continue
         before = sum(sum(c.values()) for c in hits.values())
-        scan(text, f'media {blob[:10]} {p}')
+        scan(text, label)
         n = sum(sum(c.values()) for c in hits.values()) - before
         if n:
             ocr_hits[f'{blob[:10]} {p}'] = n
-    shutil.rmtree(tmp, ignore_errors=True)
 
 # ---- workflows -----------------------------------------------------------------------------
 wf_notes = []
@@ -256,19 +289,33 @@ if github and shutil.which('gh'):
             if r.returncode:
                 incomplete.append(f'github: release asset {rel["tag_name"]}/{a["name"]} could not be downloaded')
                 continue
-            data = r.stdout
-            texts = [data]
+            data, where_ = r.stdout, f'release asset {rel["tag_name"]}/{a["name"]}'
+            # (name, bytes) of what the asset holds: archive members (their paths are scanned too), or itself.
+            parts = [(a['name'], data)]
             try:
-                if a['name'].endswith(('.tar.gz', '.tgz')):
+                if a['name'].endswith(('.tar.gz', '.tgz', '.tar')):
                     with tarfile.open(fileobj=io.BytesIO(data)) as tf:
-                        texts = [tf.extractfile(m).read() for m in tf.getmembers() if m.isfile()]
+                        parts = [(m.name, tf.extractfile(m).read()) for m in tf.getmembers() if m.isfile()]
+                        for m in tf.getmembers():
+                            scan(m.name, f'{where_} (member path)')
                 elif a['name'].endswith('.zip'):
                     with zipfile.ZipFile(io.BytesIO(data)) as zf:
-                        texts = [zf.read(n) for n in zf.namelist()]
+                        parts = [(n, zf.read(n)) for n in zf.namelist() if not n.endswith('/')]
+                        for n in zf.namelist():
+                            scan(n, f'{where_} (member path)')
             except Exception as e:
-                incomplete.append(f'github: release asset {rel["tag_name"]}/{a["name"]} could not be unpacked ({e})')
-            for t in texts:
-                scan(t.decode('utf-8', 'replace'), f'release asset {rel["tag_name"]}/{a["name"]}')
+                incomplete.append(f'github: {where_} could not be unpacked ({e})')
+                continue
+            for pname, pdata in parts:
+                if MEDIA.search(pname):
+                    if not ocr:
+                        incomplete.append(f'github: {where_} {pname} is media and was not OCR-read (rerun with --ocr)')
+                        continue
+                    t = ocr_media(pdata, pname, f'{where_} {pname}')
+                    if t is not None:
+                        scan(t, f'{where_} {pname} (OCR)')
+                else:
+                    scan(pdata.decode('utf-8', 'replace'), where_)
 
 # ---- report --------------------------------------------------------------------------------
 L = [f'# recon {slug} — LOCAL ONLY (quotes matched text; never paste it into a PR, issue, commit or chat)', '',

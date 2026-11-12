@@ -56,13 +56,11 @@ while [ ! -e "$OUT/swapped" ]; do
   remote_refs > "$OUT/remote-now.refs"
   diff -q "$OUT/snapshot.refs" "$OUT/remote-now.refs" >/dev/null && break
   # An earlier run whose atomic push landed but which stopped before writing the marker: the remote
-  # already holds this rewrite (main at the list or the top commit). Resume; rewriting the
-  # rewritten remote would replace the commit map clone migration needs.
-  mine=$(git -C "$NEW" for-each-ref --format='%(objectname) %(refname)' refs/heads refs/tags | sort)
-  top=$(git -C "$NEW" rev-parse "refs/post/$MAIN")
-  if [ "$mine" = "$(cat "$OUT/remote-now.refs")" ] \
-     || [ "$(printf '%s\n' "$mine" | with_main "$top" | sort)" = "$(cat "$OUT/remote-now.refs")" ]; then
-    echo "    the remote already holds this rewrite (an earlier push completed): resuming"
+  # main contains this rewrite's list commit (made only by this run), even if refs moved on since.
+  # Resume; rewriting the rewritten remote would replace the commit map clone migration needs.
+  git -C "$NEW" fetch -q "$URL" "+refs/heads/$MAIN:refs/swap-check/main" 2>/dev/null || true
+  if git -C "$NEW" merge-base --is-ancestor "$(git -C "$NEW" rev-parse "refs/heads/$MAIN")" refs/swap-check/main 2>/dev/null; then
+    echo "    the remote $MAIN already holds this rewrite (an earlier push completed): resuming"
     date > "$OUT/swapped"
     break
   fi
@@ -100,7 +98,12 @@ if [ ${#PAUSE[@]} -eq 0 ]; then
   echo "==> 2. no workflow to pause (SWAP_PAUSE empty)"
 else
   echo "==> 2. pause ${PAUSE[*]}"
-  for w in "${PAUSE[@]}"; do gh workflow disable "$w" -R "$SLUG"; PAUSED+=("$w"); done
+  for w in "${PAUSE[@]}"; do
+    # One that is already off stays off afterwards: only what this run disabled is turned back on.
+    state=$(W=$w gh workflow list -R "$SLUG" --all --json path,state -q '.[] | select(.path | endswith("/" + env.W)) | .state')
+    case $state in disabled*) echo "    $w is already disabled (left as it is)"; continue;; esac
+    gh workflow disable "$w" -R "$SLUG"; PAUSED+=("$w")
+  done
 fi
 
 echo "==> 3. replace every branch and tag (atomic, each ref leased to its snapshot value)"
@@ -140,9 +143,15 @@ else
   while read -r sha ref; do
     grep -qxF "$sha $ref" "$OUT/expected.refs" && continue
     moved=$((moved + 1))
-    if git -C "$NEW" rev-list "$sha" ${exp[@]+"${exp[@]}"} | git -C "$OUT/orig.git" cat-file --batch-check='%(objecttype)' \
-         | grep -qx commit; then
-      echo "    $ref ${sha:0:12} carries commits of the original history"; bad=$((bad + 1))
+    # Read the whole list before counting: `grep -q` would stop early, and under pipefail the
+    # writer's SIGPIPE would turn a hit into a pass. A list that cannot be read is a failure.
+    if ! list=$(git -C "$NEW" rev-list "$sha" ${exp[@]+"${exp[@]}"}); then
+      echo "    $ref ${sha:0:12} could not be read"; bad=$((bad + 1)); continue
+    fi
+    [ -n "$list" ] || continue
+    olds=$(printf '%s\n' "$list" | git -C "$OUT/orig.git" cat-file --batch-check='%(objecttype)' | grep -cx commit || true)
+    if [ "${olds:-0}" -gt 0 ]; then
+      echo "    $ref ${sha:0:12} carries $olds commit(s) of the original history"; bad=$((bad + 1))
     fi
   done < "$OUT/remote-after.refs"
   git -C "$NEW" for-each-ref --format='delete %(refname)' refs/swap-check | git -C "$NEW" update-ref --stdin
