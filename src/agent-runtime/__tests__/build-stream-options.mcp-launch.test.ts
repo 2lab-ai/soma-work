@@ -1,6 +1,6 @@
 /**
  * env-access #1241: every stdio MCP server a session starts — soma-work's own and every plugin's — runs from
- * `<DATA_DIR>/mcp-launch`, not from the session's working directory. soma-work's servers are wrapped in the
+ * `/`, not from the session's working directory. soma-work's servers are wrapped in the
  * options; a cached plugin's are wrapped in its own config, which the CLI still reads and resolves.
  */
 
@@ -13,7 +13,7 @@ import { LAUNCH_SCRIPT } from '../../sandbox/mcp-launch-dir';
 import type { ConversationSession } from '../../types';
 import { type BuildStreamOptionsDeps, buildStreamOptions } from '../claude-code/build-stream-options';
 
-const launchDir = path.join(DATA_DIR, 'mcp-launch');
+const launchDir = '/';
 let pluginRoot: string;
 
 beforeEach(() => {
@@ -29,7 +29,6 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(pluginRoot, { recursive: true, force: true });
-  if (fs.existsSync(launchDir)) fs.chmodSync(launchDir, 0o755);
 });
 
 function makeDeps(plugins = [{ type: 'local' as const, path: pluginRoot }]): BuildStreamOptionsDeps {
@@ -72,7 +71,7 @@ const input = {
 };
 
 describe('MCP launch directory (env-access #1241)', () => {
-  it("starts soma-work's stdio servers from <DATA_DIR>/mcp-launch and leaves HTTP alone", async () => {
+  it("starts soma-work's stdio servers from / and leaves HTTP alone", async () => {
     const { options } = await buildStreamOptions(input, makeDeps());
     expect(options.mcpServers?.filesystem).toEqual({
       command: '/bin/sh',
@@ -88,7 +87,6 @@ describe('MCP launch directory (env-access #1241)', () => {
       ],
     });
     expect(options.mcpServers?.remote).toEqual({ type: 'http', url: 'https://example.com/mcp' });
-    expect(fs.statSync(launchDir).mode & 0o777).toBe(0o555);
   });
 
   it("wraps a cached plugin's server in its own config and leaves the plugin to the CLI", async () => {

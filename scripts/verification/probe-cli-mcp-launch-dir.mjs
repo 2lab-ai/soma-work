@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Probe: where does the pinned Claude Code CLI start stdio MCP servers, and does soma-work's launch wrapper move
- * them to a directory no model writes (env-access #1241, `src/sandbox/mcp-launch-dir.ts`)?
+ * them to `/`, which has nothing above it and which no model writes (env-access #1241, `src/sandbox/mcp-launch-dir.ts`)?
  *
  * A stdio MCP server runs outside the sandbox. Its launcher (npx, uvx …) reads package-manager config from its
  * working directory and the directories above it, and the CLI starts it in the session's working directory,
@@ -62,9 +62,8 @@ function wrap(config, dir) {
 async function run(withWrapper) {
   const base = fs.mkdtempSync(path.join(tmp, 'mcp-launch-'));
   const cwd = path.join(base, 'user', 'session');
-  const launch = path.join(base, 'host', 'launch');
+  const launch = '/'; // MCP_LAUNCH_DIR
   fs.mkdirSync(cwd, { recursive: true });
-  fs.mkdirSync(launch, { recursive: true });
   const plugin = path.join(base, 'plugin');
   fs.mkdirSync(path.join(plugin, '.claude-plugin'), { recursive: true });
   fs.writeFileSync(path.join(plugin, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'probeplugin', version: '0.0.1' }));
@@ -107,7 +106,9 @@ const wrapped = await run(true);
 const shown = control.direct === control.cwd && control.plugin === control.cwd;
 // The plugin server only starts at all if the CLI filled ${CLAUDE_PLUGIN_ROOT} in the wrapped arguments.
 const leaked = wrapped.direct !== wrapped.launch || wrapped.plugin !== wrapped.launch;
-const sameTools = JSON.stringify(control.tools) === JSON.stringify(wrapped.tools);
+// Both servers must have answered the CLI (a marker alone is written before initialization), in both runs.
+const expected = JSON.stringify(['mcp__direct__echo', 'mcp__plugin_probeplugin_srv__echo']);
+const sameTools = JSON.stringify(control.tools) === expected && JSON.stringify(wrapped.tools) === expected;
 const verdict = leaked ? 'STARTED IN THE WORKING DIRECTORY' : shown && sameTools ? 'LAUNCH DIR HOLDS' : 'INCONCLUSIVE';
 console.log(JSON.stringify({ verdict, model, control, wrapped }, null, 2));
 process.exit(leaked ? 1 : shown && sameTools ? 0 : 2);

@@ -2,17 +2,18 @@
  * Where stdio MCP servers start (env-access #1241).
  *
  * The CLI starts every stdio MCP server outside the sandbox, as the bot, in the session's working directory —
- * which the model writes. A launcher such as npx or uvx reads package-manager configuration (`.npmrc`,
- * `package.json`, `uv.toml` …) from its working directory and the directories above it, so a file the model
- * planted there would steer the next server start. The CLI ignores a `cwd` field on the server config, so every
- * stdio server is started through `sh -c 'cd <dir> && exec …'` from `<DATA_DIR>/mcp-launch`: read-only, empty,
- * outside every directory a session writes (measured on CLI 2.1.321:
- * `scripts/verification/probe-cli-mcp-launch-dir.mjs`).
+ * which the model writes. A launcher such as npx or uvx reads package-manager configuration and packages
+ * (`.npmrc`, `package.json`, `node_modules/.bin`, `uv.toml` …) from its working directory and every directory
+ * above it, so a file the model planted there would steer the next server start. The CLI ignores a `cwd` field on
+ * the server config, so every stdio server is started through `sh -c 'cd / && exec …'`: the filesystem root has
+ * no directory above it, and neither a session nor the bot can write it (measured on CLI 2.1.321:
+ * `scripts/verification/probe-cli-mcp-launch-dir.mjs`). A directory of the bot's own would not do: a launcher
+ * would still walk up into whatever lies above it.
  *
- * soma-work's own servers are wrapped in the options. A plugin's servers are wrapped where the CLI reads them —
- * the plugin's `.mcp.json` and manifest in the plugin cache, which no session writes — so the CLI still does
+ * soma-work's own servers are wrapped in the options. A plugin's are wrapped where the CLI reads them — the
+ * plugin's `.mcp.json` and manifest in the plugin cache, which no session writes — so the CLI still does
  * everything else itself (placeholders, `user_config`, plugin data, server names, transports). A plugin whose
- * servers cannot be wrapped there has its MCP servers turned off.
+ * stdio servers cannot be wrapped there has its MCP servers turned off.
  */
 
 import fs from 'node:fs';
@@ -20,8 +21,8 @@ import path from 'node:path';
 import type { McpServerConfig, McpStdioServerConfig, SdkPluginConfig } from '@anthropic-ai/claude-agent-sdk';
 import { writeRootHolding } from './project-config-root';
 
-const DIR_NAME = 'mcp-launch';
-const DIR_MODE = 0o555;
+/** The directory every stdio MCP server starts from. */
+export const MCP_LAUNCH_DIR = '/';
 /** `sh -c` script: `$1` is the directory, the rest is the server's own command and arguments. */
 export const LAUNCH_SCRIPT = 'cd -- "$1" || exit 1; shift; exec "$@"';
 const LAUNCH_NAME = 'mcp-launch';
@@ -33,36 +34,35 @@ export class McpLaunchDirError extends Error {
   }
 }
 
-/**
- * The directory stdio MCP servers start from: `<DATA_DIR>/mcp-launch`, created on first use and kept read-only
- * (0555) and empty, so neither a session nor a server can leave a launcher config in it. Throws
- * `McpLaunchDirError` when it is not a plain empty directory or lies inside one of `writeRoots`.
- */
-export function mcpLaunchDir(dataDir: string, writeRoots: readonly string[]): string {
-  const dir = path.join(dataDir, DIR_NAME);
-  let stat: fs.Stats;
-  let entries: string[];
+function writableByThisProcess(dir: string): boolean {
   try {
-    fs.mkdirSync(dir, { recursive: true, mode: DIR_MODE });
-    stat = fs.lstatSync(dir);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new McpLaunchDirError(`${dir} is not a plain directory`);
-    if ((stat.mode & 0o777) !== DIR_MODE) fs.chmodSync(dir, DIR_MODE);
-    entries = fs.readdirSync(dir);
-  } catch (err) {
-    if (err instanceof McpLaunchDirError) throw err;
-    throw new McpLaunchDirError(`could not prepare ${dir} (${(err as NodeJS.ErrnoException).code ?? 'error'})`);
+    fs.accessSync(dir, fs.constants.W_OK);
+    return true;
+  } catch {
+    return false;
   }
-  if (entries.length > 0) throw new McpLaunchDirError(`${dir} must stay empty but holds ${entries.join(', ')}`);
-  const holder = writeRootHolding(dir, writeRoots);
-  if (holder !== undefined) throw new McpLaunchDirError(`${dir} lies inside ${holder}, which a session writes`);
-  return dir;
 }
 
-function isStdio(config: McpServerConfig): config is McpStdioServerConfig {
-  return (
-    (config.type === undefined || config.type === 'stdio') &&
-    typeof (config as { command?: unknown }).command === 'string'
-  );
+/**
+ * The launch directory, after checking that no session and not the bot itself can write it. Throws
+ * `McpLaunchDirError` otherwise (a bot running as root, a session given `/` to write).
+ */
+export function mcpLaunchDir(writeRoots: readonly string[], writable = writableByThisProcess): string {
+  if (writable(MCP_LAUNCH_DIR)) {
+    throw new McpLaunchDirError(
+      `${MCP_LAUNCH_DIR} is writable by the bot, so a server could leave a launcher config there`,
+    );
+  }
+  const holder = writeRootHolding(MCP_LAUNCH_DIR, writeRoots);
+  if (holder !== undefined)
+    throw new McpLaunchDirError(`${MCP_LAUNCH_DIR} lies inside ${holder}, which a session writes`);
+  return MCP_LAUNCH_DIR;
+}
+
+function isStdio(config: unknown): config is McpStdioServerConfig {
+  if (typeof config !== 'object' || config === null || Array.isArray(config)) return false;
+  const c = config as { type?: unknown; command?: unknown };
+  return (c.type === undefined || c.type === 'stdio') && typeof c.command === 'string';
 }
 
 function isLaunched(config: McpStdioServerConfig): boolean {
@@ -96,29 +96,46 @@ function isObject(value: unknown): value is Json {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Wrap the stdio entries of a servers object; undefined when nothing changes. */
-function wrapServers(dir: string, servers: Json): Json | undefined {
+class UnwrappableServer extends Error {}
+
+interface Wrapped {
+  servers: Json;
+  /** Whether any server is stdio — one that needs the launch directory. */
+  stdio: boolean;
+  changed: boolean;
+}
+
+/** A servers map (server name → config) with its stdio servers started from `dir`. */
+function wrapServers(dir: string, servers: Json): Wrapped {
   let changed = false;
+  let stdio = false;
   const out: Json = {};
   for (const [name, config] of Object.entries(servers)) {
-    if (isObject(config) && isStdio(config as McpServerConfig)) {
-      const wrapped = launchFrom(dir, config as McpStdioServerConfig);
+    if (isStdio(config)) {
+      stdio = true;
+      // Wrapping spreads `args`: anything but a list of strings would turn into a different command line.
+      const args = (config as { args?: unknown }).args;
+      if (args !== undefined && !(Array.isArray(args) && args.every((a) => typeof a === 'string'))) {
+        throw new UnwrappableServer(`server ${name} has args that are not a list of strings`);
+      }
+      const wrapped = launchFrom(dir, config);
       if (JSON.stringify(wrapped) !== JSON.stringify(config)) changed = true;
       out[name] = wrapped;
     } else {
       out[name] = config;
     }
   }
-  return changed ? out : undefined;
+  return { servers: out, stdio, changed };
 }
 
 /** A config file's servers live under `mcpServers`, or at its top level. */
-function wrapConfigFile(dir: string, json: Json): Json | undefined {
+function wrapConfigFile(dir: string, json: Json): { json: Json; stdio: boolean; changed: boolean } {
   if (isObject(json.mcpServers)) {
-    const servers = wrapServers(dir, json.mcpServers);
-    return servers ? { ...json, mcpServers: servers } : undefined;
+    const w = wrapServers(dir, json.mcpServers);
+    return { json: { ...json, mcpServers: w.servers }, stdio: w.stdio, changed: w.changed };
   }
-  return wrapServers(dir, json);
+  const w = wrapServers(dir, json);
+  return { json: w.servers, stdio: w.stdio, changed: w.changed };
 }
 
 function writeJsonAtomically(file: string, json: Json): void {
@@ -133,31 +150,31 @@ function isInside(p: string, root: string): boolean {
 }
 
 export interface PluginLaunchers {
-  /** The plugins to load: unchanged, or with `skipMcpDiscovery` when their servers could not be wrapped. */
+  /** The plugins to load: unchanged, or with `skipMcpDiscovery` when their stdio servers could not be wrapped. */
   plugins: SdkPluginConfig[];
   /** Plugins whose MCP servers are off, with the reason. */
   turnedOff: string[];
 }
 
 /**
- * Point every stdio MCP server a plugin declares — in `.mcp.json` and in the manifest's `mcpServers` (inline, a
- * JSON file, or a list) — at `dir`, by rewriting those files in place. Only plugins inside `pluginsDir` (the
- * plugin cache, which no session writes) are rewritten. A plugin that declares servers it cannot be made to
- * start from `dir` — outside the cache, an MCP bundle (`.mcpb`), a file outside the plugin, a file that cannot
- * be read or written — is loaded with `skipMcpDiscovery`, so the CLI starts none of its servers.
+ * Point every stdio MCP server a plugin declares — in `.mcp.json` and in the manifest's `mcpServers` (an inline
+ * server map, a JSON file, or a list of them) — at `dir`, by rewriting those files in place. Only plugins inside
+ * `pluginsDir` (the plugin cache, which no session writes) are rewritten; one that declares only HTTP, SSE or
+ * WebSocket servers needs nothing. A plugin whose stdio servers cannot be wrapped — outside the cache, an MCP
+ * bundle (`.mcpb`), a file outside the plugin, a config that cannot be read or written, `args` that are not a
+ * list of strings — is loaded with `skipMcpDiscovery`, so the CLI starts none of its servers.
  */
 export function wrapPluginLaunchers(
   plugins: readonly SdkPluginConfig[],
   dir: string,
   pluginsDir: string,
 ): PluginLaunchers {
-  const realCache = (() => {
-    try {
-      return fs.realpathSync(pluginsDir);
-    } catch {
-      return path.resolve(pluginsDir);
-    }
-  })();
+  let realCache: string;
+  try {
+    realCache = fs.realpathSync(pluginsDir);
+  } catch {
+    realCache = path.resolve(pluginsDir);
+  }
   const turnedOff: string[] = [];
   const out = plugins.map((plugin) => {
     const reason = wrapPlugin(plugin, dir, realCache);
@@ -168,7 +185,7 @@ export function wrapPluginLaunchers(
   return { plugins: out, turnedOff };
 }
 
-/** Undefined when the plugin's servers now start from `dir` (or it has none); otherwise why they cannot. */
+/** Undefined when the plugin's stdio servers now start from `dir` (or it has none); otherwise why they cannot. */
 function wrapPlugin(plugin: SdkPluginConfig, dir: string, realCache: string): string | undefined {
   let root: string;
   try {
@@ -190,9 +207,8 @@ function wrapPlugin(plugin: SdkPluginConfig, dir: string, realCache: string): st
   const hasMcpFile = fs.existsSync(mcpFile);
   if (!hasMcpFile && sources.length === 0) return undefined;
   if (manifest === undefined) return 'its manifest cannot be read';
-  if (!isInside(root, realCache) || root === realCache) return 'it is not in the plugin cache';
 
-  // Every file to rewrite, read and checked before any is written.
+  // Every config is read and every rewrite worked out before any file is written.
   const files = new Map<string, Json>();
   const read = (file: string): string | undefined => {
     let real: string;
@@ -216,32 +232,45 @@ function wrapPlugin(plugin: SdkPluginConfig, dir: string, realCache: string): st
     const problem = read(mcpFile);
     if (problem) return problem;
   }
+  let stdio = false;
   let inlineChanged = false;
   const newSources: unknown[] = [];
-  for (const source of sources) {
-    if (typeof source === 'string') {
-      if (!source.endsWith('.json')) return `${source} is not a JSON MCP config (an MCP bundle cannot be wrapped)`;
-      const problem = read(path.resolve(root, source));
-      if (problem) return problem;
-      newSources.push(source);
-    } else if (isObject(source)) {
-      const wrapped = wrapConfigFile(dir, source);
-      if (wrapped) inlineChanged = true;
-      newSources.push(wrapped ?? source);
-    } else {
-      return 'its manifest mcpServers entry is not a path or an object';
-    }
-  }
-
+  const writes: [string, Json][] = [];
   try {
+    for (const source of sources) {
+      if (typeof source === 'string') {
+        if (!source.endsWith('.json')) return `${source} is not a JSON MCP config (an MCP bundle cannot be wrapped)`;
+        const problem = read(path.resolve(root, source));
+        if (problem) return problem;
+        newSources.push(source);
+      } else if (isObject(source)) {
+        // An inline manifest entry is a server map: a server may even be named `mcpServers`.
+        const w = wrapServers(dir, source);
+        stdio ||= w.stdio;
+        if (w.changed) inlineChanged = true;
+        newSources.push(w.servers);
+      } else {
+        return 'its manifest mcpServers entry is not a path or an object';
+      }
+    }
     for (const [file, json] of files) {
-      const wrapped = wrapConfigFile(dir, json);
-      if (wrapped) writeJsonAtomically(file, wrapped);
+      const w = wrapConfigFile(dir, json);
+      stdio ||= w.stdio;
+      if (w.changed) writes.push([file, w.json]);
     }
-    if (inlineChanged) {
-      const mcpServers = Array.isArray(declared) ? newSources : newSources[0];
-      writeJsonAtomically(fs.realpathSync(manifestFile), { ...manifest, mcpServers });
-    }
+  } catch (err) {
+    if (err instanceof UnwrappableServer) return err.message;
+    throw err;
+  }
+  // Only HTTP, SSE or WebSocket servers: nothing starts locally, nothing to move.
+  if (!stdio) return undefined;
+  if (!isInside(root, realCache) || root === realCache) return 'it is not in the plugin cache';
+  if (inlineChanged) {
+    const mcpServers = Array.isArray(declared) ? newSources : newSources[0];
+    writes.push([fs.realpathSync(manifestFile), { ...manifest, mcpServers }]);
+  }
+  try {
+    for (const [file, json] of writes) writeJsonAtomically(file, json);
   } catch (err) {
     return `its MCP config could not be rewritten (${(err as NodeJS.ErrnoException).code ?? 'error'})`;
   }

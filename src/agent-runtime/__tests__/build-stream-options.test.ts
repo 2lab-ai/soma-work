@@ -107,12 +107,12 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
 
     expect(options.permissionMode).toBe('bypassPermissions');
     expect(options.allowDangerouslySkipPermissions).toBe(true);
-    // Started from <DATA_DIR>/mcp-launch, not the working directory (#1241).
+    // Started from /, not the working directory (#1241).
     expect(options.mcpServers).toEqual({
       mcp__demo: {
         type: 'stdio',
         command: '/bin/sh',
-        args: ['-c', LAUNCH_SCRIPT, 'mcp-launch', path.join(DATA_DIR, 'mcp-launch'), 'demo'],
+        args: ['-c', LAUNCH_SCRIPT, 'mcp-launch', '/', 'demo'],
       },
     });
     expect(options.allowedTools).toEqual(['Bash', 'Read']);
