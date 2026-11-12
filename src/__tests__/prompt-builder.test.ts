@@ -221,7 +221,10 @@ describe('PromptBuilder', () => {
       expect(prompt.indexOf('## Restart Re-Attach')).toBeGreaterThan(-1);
       expect(section).toContain('cancel-in-progress');
       expect(section).toContain('`deploy-state.json`');
-      expect(section).toMatch(/for this deploy request only/);
+      expect(section).toMatch(/for this deploy request only\. A restart replays the same request; it is not a new one/);
+      expect(section).toMatch(
+        /merged with its deploy run still in progress, ask \(or continue that merged one at step 5\) instead of starting step 2/,
+      );
       for (const field of [
         '`source_sha`',
         '`target_sha`',
@@ -234,7 +237,7 @@ describe('PromptBuilder', () => {
         expect(section).toContain(field);
       }
       // Resume comes before the up-to-date drop (a merged deploy reads ahead_by 0).
-      expect(check).toMatch(/a repo whose deploy PR is merged, in `deploy-state\.json` or on GitHub, skips this check/);
+      expect(check).toMatch(/a repo whose PR it identifies as this request's is merged skips this check/);
       expect(section).toMatch(/before any write in steps 2–4, read that file and GitHub/);
       expect(section).toMatch(/never create a PR, merge or push for that repo again/);
       expect(section).toMatch(
