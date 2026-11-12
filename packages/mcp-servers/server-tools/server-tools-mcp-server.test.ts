@@ -51,6 +51,7 @@ import {
   handleLogs,
   handleMongoDBQuery,
   handleRedisQuery,
+  handleSshExec,
   loadConfig,
   resetConfigCache,
   validateClickHouseQuery,
@@ -1719,5 +1720,147 @@ describe('handleClickHouseQuery', () => {
     await expect(handleClickHouseQuery({ server: 'prod', database: 'app_db', query: 'SELECT 1' })).rejects.toThrow(
       'Database "app_db" is type "mysql", not "clickhouse"',
     );
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+// handleSshExec (env-access WU2, #1210): host commands go through this tool, not Bash ssh
+// ══════════════════════════════════════════════════════════════
+
+describe('handleSshExec', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    resetConfigCache();
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.restoreAllMocks();
+  });
+
+  it("runs one command on the server's ssh host, non-interactively, with both streams piped", () => {
+    mockConfig(PROD_CONFIG, 8100);
+    mockLogsRun('up 3 days\n');
+    const result = handleSshExec({ server: 'prod', command: 'uptime' });
+    expect(child_process.spawnSync).toHaveBeenCalledWith(
+      'ssh',
+      ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '--', 'prod.example.com', 'uptime'],
+      expect.objectContaining({ timeout: 60000, maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] }),
+    );
+    expect(result.content[0].text).toBe('exit 0\nup 3 days\n');
+  });
+
+  it("returns a failing command's exit status and its stderr, redacted, instead of throwing", () => {
+    mockConfig(PROD_CONFIG, 8101);
+    vi.mocked(child_process.spawnSync).mockReturnValue(
+      spawnResult({ status: 2, stdout: 'partial\n', stderr: 'ls: cannot access x\npassword=hunter2xyz\n' }),
+    );
+    const text = handleSshExec({ server: 'prod', command: 'ls x' }).content[0].text;
+    expect(text.startsWith('exit 2\n')).toBe(true);
+    expect(text).toContain('partial');
+    expect(text).toContain('----- stderr -----');
+    expect(text).toContain('ls: cannot access x');
+    expect(text).not.toContain('hunter2xyz');
+  });
+
+  it('honours a timeout between 1 and 600 seconds and refuses anything else', () => {
+    mockConfig(PROD_CONFIG, 8102);
+    mockLogsRun('');
+    handleSshExec({ server: 'prod', command: 'sleep 1', timeout_s: 300 });
+    expect(child_process.spawnSync).toHaveBeenCalledWith(
+      'ssh',
+      expect.any(Array),
+      expect.objectContaining({ timeout: 300000 }),
+    );
+    for (const timeout_s of [0, 601, 1.5, -3]) {
+      expect(() => handleSshExec({ server: 'prod', command: 'true', timeout_s })).toThrow(/timeout_s/);
+    }
+  });
+
+  it("throws on a timeout or an ssh that cannot run, without the child's raw output", () => {
+    mockConfig(PROD_CONFIG, 8103);
+    vi.mocked(child_process.spawnSync).mockReturnValue(
+      spawnResult({
+        status: null,
+        signal: 'SIGTERM',
+        error: spawnError('ETIMEDOUT'),
+        stdout: 'STDOUT-MARK secret-ish',
+        stderr: 'STDERR-MARK password=hunter2xyz\n',
+      }),
+    );
+    const err = thrownBy(() => handleSshExec({ server: 'prod', command: 'sleep 999' }));
+    expect(err.message).toContain('timed out');
+    expect(err.message).not.toContain('secret-ish');
+    expect(err.message).not.toContain('hunter2xyz');
+    // The whole error, not only its message: the stderr logger spreads its own properties (review-of-legends R4).
+    expect(Object.keys(err)).toEqual([]);
+    expect(JSON.stringify(err, Object.getOwnPropertyNames(err))).not.toMatch(/STDOUT-MARK|hunter2xyz/);
+  });
+
+  it('says a timed-out remote command may still be running: only the local ssh client is stopped (review-of-legends R4)', () => {
+    mockConfig(PROD_CONFIG, 8106);
+    vi.mocked(child_process.spawnSync).mockReturnValue(
+      spawnResult({ status: null, signal: 'SIGTERM', error: spawnError('ETIMEDOUT'), stdout: '', stderr: '' }),
+    );
+    const err = thrownBy(() => handleSshExec({ server: 'prod', command: 'sleep 30; touch /tmp/done', timeout_s: 5 }));
+    expect(err.message.split('\n')[0]).toBe('ssh_exec failed on prod: timed out after 5s');
+    expect(err.message).toContain('may still be running');
+    expect(err.message).toContain('before running it again');
+  });
+
+  it('says the same when ssh was stopped for output over 1 MB, but not when ssh could not start (trinity R4)', () => {
+    mockConfig(PROD_CONFIG, 8108);
+    vi.mocked(child_process.spawnSync).mockReturnValue(
+      spawnResult({ status: null, signal: 'SIGTERM', error: spawnError('ENOBUFS'), stdout: '', stderr: '' }),
+    );
+    const overflow = thrownBy(() => handleSshExec({ server: 'prod', command: 'cat /var/log/big.log' }));
+    expect(overflow.message).toContain('may still be running');
+    vi.mocked(child_process.spawnSync).mockReturnValue(
+      spawnResult({ status: null, error: spawnError('ENOENT'), stdout: '', stderr: '' }),
+    );
+    const notStarted = thrownBy(() => handleSshExec({ server: 'prod', command: 'uptime' }));
+    expect(notStarted.message).toContain('ssh could not run');
+    expect(notStarted.message).not.toContain('may still be running');
+    // Killed by a signal with no spawn error (fable R4): ssh ran, so the remote command may too.
+    vi.mocked(child_process.spawnSync).mockReturnValue(
+      spawnResult({ status: null, signal: 'SIGKILL', stdout: '', stderr: '' }),
+    );
+    const killed = thrownBy(() => handleSshExec({ server: 'prod', command: 'deploy.sh' }));
+    expect(killed.message.split('\n')[0]).toBe('ssh_exec failed on prod: killed by SIGKILL');
+    expect(killed.message).toContain('may still be running');
+  });
+
+  it("redacts secret shapes in a successful command's stdout and keeps the rest (review-of-legends R4)", () => {
+    mockConfig(PROD_CONFIG, 8107);
+    vi.mocked(child_process.spawnSync).mockReturnValue(
+      spawnResult({ status: 0, stdout: 'ready\npassword=hunter2xyz\n', stderr: '' }),
+    );
+    const text = handleSshExec({ server: 'prod', command: 'cat app.env' }).content[0].text;
+    expect(text.startsWith('exit 0\nready\n')).toBe(true);
+    expect(text).not.toContain('hunter2xyz');
+    expect(text).not.toContain('----- stderr -----');
+  });
+
+  it('ends ssh options before the host, so a command that looks like an option stays the remote command (fable R1 P1)', () => {
+    mockConfig(PROD_CONFIG, 8105);
+    mockLogsRun('');
+    // OpenSSH parses options again after the host unless `--` came first: `-oProxyCommand=…` would run a
+    // local command as the bot, outside every sandbox.
+    handleSshExec({ server: 'prod', command: '-oProxyCommand=touch /tmp/pwned' });
+    const argv = vi.mocked(child_process.spawnSync).mock.calls.at(-1)?.[1] as string[];
+    expect(argv.indexOf('--')).toBeGreaterThan(-1);
+    expect(argv.indexOf('--')).toBeLessThan(argv.indexOf('prod.example.com'));
+    expect(argv.at(-1)).toBe('-oProxyCommand=touch /tmp/pwned');
+  });
+
+  it('refuses an unknown server, an empty command and one over 8 KB, before running ssh', () => {
+    mockConfig(PROD_CONFIG, 8104);
+    vi.mocked(child_process.spawnSync).mockClear();
+    expect(() => handleSshExec({ server: 'nope', command: 'uptime' })).toThrow(/Unknown server/);
+    expect(() => handleSshExec({ server: 'prod', command: '   ' })).toThrow(/command/);
+    expect(() => handleSshExec({ server: 'prod', command: 'x'.repeat(8193) })).toThrow(/command/);
+    expect(child_process.spawnSync).not.toHaveBeenCalled();
   });
 });

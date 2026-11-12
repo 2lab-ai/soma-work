@@ -24,6 +24,7 @@
 import type { HookInput, HookJSONOutput, Options } from '@anthropic-ai/claude-agent-sdk';
 import { type SafeguardFlagInfo, safeguardFlagOf } from '@soma/common/safeguard';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { isSdkEffortLevel } from 'soma-lib';
 import type { ModelCommandContext } from 'somalib/model-commands/types';
@@ -36,8 +37,8 @@ import {
   handleClaudeStderrChunk,
   resolveShowSummary,
 } from '../../claude-handler';
-import { getSandboxAllowUnavailable } from '../../config';
-import { CONFIG_FILE, SECRETS_DIR } from '../../env-paths';
+import { getSandboxAllowUnavailable, getSandboxOffAllowed } from '../../config';
+import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR, SECRETS_DIR } from '../../env-paths';
 import {
   checkEnvPluginMcpAccess,
   checkEnvSkillAccess,
@@ -55,6 +56,13 @@ import { clampEffortToModel, modelCatalog } from '../../model-catalog';
 import { isSafePathSegment, normalizeTmpPath } from '../../path-utils';
 import type { SdkPluginPath } from '../../plugin/types';
 import { getProjectMemoryStore, projectMemoryPromptBlock } from '../../project-memory-store';
+import {
+  adminSandboxProfile,
+  credentialPaths,
+  credentialReadDenyRules,
+  isSandboxOffInEffect,
+  protectedWriteDenyRules,
+} from '../../sandbox/admin-sandbox-profile';
 import { extendSandboxWithGrant, loadDeploySandboxGrant } from '../../sandbox/deploy-sandbox-grant';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
 import type { SessionRegistry } from '../../session-registry';
@@ -329,12 +337,36 @@ export async function buildStreamOptions(
   // default) and `/tmp/{userId}` (`allowWrite`, mounted below). The policy hook
   // confines the native file tools of a non-admin to the same roots
   // (`native-write-boundary.ts`); with the sandbox off neither is confined.
-  const sandboxDisabled = contextUser ? userSettingsStore.getUserSandboxDisabled(contextUser) : false;
+  //
+  // The sandbox is off only for an admin who turned it off on a host that allows it
+  // (`SOMA_SANDBOX_OFF_ALLOWED`, env-access WU2 #1210); otherwise the admin runs with the admin profile.
+  const contextIsAdmin = contextUser ? isAdminUser(contextUser) : false;
+  const sandboxOffRequested = contextUser ? userSettingsStore.getUserSandboxDisabled(contextUser) : false;
+  const sandboxDisabled = isSandboxOffInEffect({
+    isAdmin: contextIsAdmin,
+    requested: sandboxOffRequested,
+    hostAllows: getSandboxOffAllowed(),
+  });
+  if (sandboxOffRequested && !sandboxDisabled) {
+    logger.warn('Sandbox off is not allowed on this host (SOMA_SANDBOX_OFF_ALLOWED): running sandboxed', {
+      user: contextUser,
+    });
+  }
+  // Admin profile (env-access WU2, #1210): every domain, gh's TLS check, local servers and the temp
+  // directory. The write protection added to every session still holds.
+  const adminProfile =
+    contextIsAdmin && !sandboxDisabled ? adminSandboxProfile({ home: os.homedir(), tmpdir: realTmpdir() }) : undefined;
   const sandboxUserDir =
     contextUser && isSafePathSegment(contextUser) ? normalizeTmpPath(path.join('/tmp', contextUser)) : undefined;
+  // An admin's native writes are held to the same roots as its sandboxed Bash, the temp directory
+  // included (env-access WU2, #1210): a native Write anywhere else could replace a binary the bot runs.
   const nativeWriteRoots: readonly string[] | undefined = sandboxDisabled
     ? undefined
-    : [...(workingDirectory ? [workingDirectory] : []), ...(sandboxUserDir ? [sandboxUserDir] : [])];
+    : [
+        ...(workingDirectory ? [workingDirectory] : []),
+        ...(sandboxUserDir ? [sandboxUserDir] : []),
+        ...(adminProfile ? adminProfile.allowWrite : []),
+      ];
 
   // PreToolUse hooks — for every turn that has a context (D3).
   if (execCtx && mcpConfig) {
@@ -388,10 +420,14 @@ export async function buildStreamOptions(
         handoffContext: slackContext
           ? deps.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs)?.handoffContext
           : deps.sessionRegistry.getSessionByKey(execCtx.sessionKey)?.handoffContext,
+        // Step 4 runs for non-admins only. Host commands (`ssh_exec`, env-access WU2 #1210) are an admin's,
+        // whatever the server-tools grants say; the other tools follow the grants.
         checkMcpToolPermission: (name) =>
-          gatedServerNames.length > 0
-            ? (deps.checkMcpToolPermission(name, policyUser, cachedPermConfig, gatedServerNames) ?? null)
-            : null,
+          name === SSH_EXEC_TOOL
+            ? SSH_EXEC_ADMIN_ONLY
+            : gatedServerNames.length > 0
+              ? (deps.checkMcpToolPermission(name, policyUser, cachedPermConfig, gatedServerNames) ?? null)
+              : null,
         ...(nativeWriteRoots ? { checkNativeWrite: createNativeWriteCheck(nativeWriteRoots, hookCwd) } : {}),
         checkEnvSkillPermission: (tool, toolInput) =>
           envRegistry
@@ -711,23 +747,27 @@ export async function buildStreamOptions(
     // Every model: the secret store is unreadable and unwritable, and no approval or grant record is
     // writable (.prd/25-env-access-architecture.md §2). The OS enforces it for every Bash spelling;
     // policy step 1b covers the native tools.
+    // And (WU2, #1210) no model reads an ssh key or a login: host commands go through `ssh_exec`.
     sandboxConfig.filesystem = {
-      denyRead: [SECRETS_DIR],
+      denyRead: [SECRETS_DIR, ...homeSpellings().flatMap(credentialPaths)],
       denyWrite: [SECRETS_DIR, ...approvalRecordPaths()],
     };
     // Mount only the user's /tmp/{userId} directory for writes.
     if (sandboxUserDir) {
       sandboxConfig.filesystem.allowWrite = [sandboxUserDir];
     }
-    // Plan mode writes its plan file with the native Write tool, by default
-    // to ~/.claude/plans — outside the write boundary of a non-admin. Keep
-    // the plans inside the working directory (the SDK requires a path within
-    // the project root).
-    if (contextUser && !isAdminUser(contextUser)) {
-      options.settings = { plansDirectory: '.claude/plans' };
+    if (adminProfile) {
+      sandboxConfig.filesystem.allowWrite = [
+        ...(sandboxConfig.filesystem.allowWrite ?? []),
+        ...adminProfile.allowWrite,
+      ];
+      sandboxConfig.enableWeakerNetworkIsolation = adminProfile.enableWeakerNetworkIsolation;
     }
     const networkDisabled = contextUser ? userSettingsStore.getUserNetworkDisabled(contextUser) : false;
-    if (!networkDisabled) {
+    if (adminProfile) {
+      // Every domain is allowed by the rule added to `settings.permissions.allow` below.
+      sandboxConfig.network = { ...adminProfile.network, allowedDomains: [...adminProfile.network.allowedDomains] };
+    } else if (!networkDisabled) {
       sandboxConfig.network = { allowedDomains: [...DEV_DOMAIN_ALLOWLIST] };
     }
     // Deploy-workflow grant (`config.json#deploySandbox`, written per runner
@@ -765,6 +805,10 @@ export async function buildStreamOptions(
       }
     }
     options.sandbox = sandboxConfig;
+    // No package cache env here (env-access WU2, #1210, astra R2): `options.env` is the CLI's
+    // environment, and the stdio MCP servers it starts (`npx -y`, `uvx`) inherit it outside the
+    // sandbox — a cache the model can write would then hold code the bot runs. Home caches stay the
+    // bot's, read-only in the sandbox; a sandboxed install passes its own cache (`--cache /tmp/{uid}/npm`).
     logger.debug('Sandbox enabled', {
       user: contextUser,
       network: networkDisabled ? 'off' : 'on',
@@ -776,10 +820,31 @@ export async function buildStreamOptions(
   // Every session, the sandbox on or off: CLI deny rules for the secret store and the approval records
   // (.prd/25-env-access-architecture.md §1). The CLI matches them after its own path expansion, so they
   // also hold for a spelling relative to the session's directory, which policy step 1b cannot resolve.
+  // And (WU2, #1210) no model writes the deployment, its data, or a file that runs outside the sandbox:
+  // `Edit` rules cover Write and NotebookEdit, and the CLI merges their paths into the sandbox denyWrite.
   {
     const base = options.settings && typeof options.settings === 'object' ? options.settings : {};
-    const deny = [...(base.permissions?.deny ?? []), ...secretStoreDenyRules()];
-    options.settings = { ...base, permissions: { ...(base.permissions ?? {}), deny } };
+    const deny = [
+      ...(base.permissions?.deny ?? []),
+      ...secretStoreDenyRules(),
+      ...homeSpellings().flatMap(credentialReadDenyRules),
+      ...homeSpellings().flatMap((home) =>
+        protectedWriteDenyRules({
+          roots: protectedRoots([...(sandboxUserDir ? [sandboxUserDir] : []), realTmpdir()], logger),
+          home,
+        }),
+      ),
+    ];
+    const allow = [...(base.permissions?.allow ?? []), ...(adminProfile?.allowRules ?? [])];
+    options.settings = {
+      ...base,
+      // Plan mode writes its plan file with the native Write tool, by default under the CLI's config
+      // directory — outside a non-admin's write boundary, and inside the write-protected deployment
+      // when the deployment holds that directory. Every session keeps its plans in the working
+      // directory (the SDK requires a path within the project root).
+      ...(contextUser ? { plansDirectory: '.claude/plans' } : {}),
+      permissions: { ...(base.permissions ?? {}), deny, ...(allow.length > 0 ? { allow } : {}) },
+    };
   }
   // Plan mode (SSOT 2026-11-02): a planning turn runs no shell — a skill's or command's inline `!` lines
   // included, which the SDK runs before the content reaches the model and without the PreToolUse hook
@@ -943,4 +1008,75 @@ function readIncidentRequest(session: ConversationSession | undefined): Incident
   const candidate = (session as { incidentRequest?: unknown } | undefined)?.incidentRequest;
   if (candidate === undefined) return undefined;
   return assertIncidentRequest(candidate);
+}
+
+/** server-tools' host-command tool (env-access WU2, #1210): admins only. */
+const SSH_EXEC_TOOL = 'mcp__server-tools__ssh_exec';
+const SSH_EXEC_ADMIN_ONLY = 'ssh_exec runs a command on a host and is for admins only.';
+
+/**
+ * What no model writes (env-access WU2, #1210), each as written and as the OS resolves it: the
+ * configuration directory, the running code's root (it can differ from the configuration directory),
+ * the bot's own directory, and the data and plugin directories. A root that is `/` or holds one of
+ * `writeRoots` (the sandbox's own write roots) is a misconfiguration — a daemon started in `/` — and
+ * protecting it would stop every session from writing at all: it is skipped and logged as an error.
+ * A root that only holds a session's working directory is not skipped: what the session would write
+ * there is code or configuration the bot runs.
+ */
+function protectedRoots(writeRoots: readonly string[], logger: BuildStreamOptionsDeps['logger']): string[] {
+  const runtimeRoot = path.resolve(__dirname, '..', '..', '..');
+  const roots = [path.dirname(CONFIG_FILE), runtimeRoot, process.cwd(), DATA_DIR, PLUGINS_DIR];
+  const keep = writeRoots.flatMap(spellingsOf);
+  return [...new Set(roots.flatMap(spellingsOf))].filter((root) => {
+    const tooWide = root === path.parse(root).root || keep.some((k) => isWithinPath(k, root));
+    if (tooWide) {
+      logger.error('A protected root holds the sandbox write roots; not write-protecting it (check the daemon cwd)', {
+        root,
+      });
+    }
+    return !tooWide;
+  });
+}
+
+/** True when `p` is `root` or inside it. */
+function isWithinPath(p: string, root: string): boolean {
+  const relative = path.relative(root, p);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+/**
+ * `p` as written and as the OS resolves it, when the two differ: through its deepest existing
+ * ancestor when `p` does not exist yet (on macOS `/var/…` is `/private/var/…`).
+ */
+function spellingsOf(p: string): string[] {
+  const missing: string[] = [];
+  let current = p;
+  for (let depth = 0; depth < 64; depth++) {
+    try {
+      const real = fs.realpathSync(current);
+      const resolved = missing.length ? path.join(real, ...[...missing].reverse()) : real;
+      return resolved === p ? [p] : [p, resolved];
+    } catch {
+      // Not there yet: try the parent.
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    missing.push(path.basename(current));
+    current = parent;
+  }
+  return [p];
+}
+
+/** Both spellings of the home directory, for the rules about the files in it. */
+function homeSpellings(): string[] {
+  return spellingsOf(os.homedir());
+}
+
+/** The temp directory as the OS resolves it (on macOS `/var/folders/…` is `/private/var/folders/…`). */
+function realTmpdir(): string {
+  try {
+    return fs.realpathSync(os.tmpdir());
+  } catch {
+    return os.tmpdir();
+  }
 }

@@ -25,9 +25,11 @@ other, so a wrong argument or a wrong check fails the replay.
 * `tool-names`: every native tool and a set of near misses (case, spacing, look-alike letters,
   prefixes, the empty name), with no primitive firing, each firing alone, and all firing, in
   every mode, for admins and non-admins.
-* Every `expect` is the output of `evaluateToolPolicyMcp`, the model of the whole TS function
-  (phase 4 with the native write boundary, plan mode and the environment plugin MCP step); a row
-  whose `envMcpDenied` is null gets `evaluateToolPolicyPlan`'s (`ProofsEnvMcp.lean`), one without
+* Every `expect` is the output of `evaluateToolPolicySsh`, the model of the whole TS function
+  (phase 4 with the native write boundary, plan mode, the environment plugin MCP step, and phase 8:
+  the ssh ban for every user and a message per devops-secret reason); a row whose call is not a
+  Bash ssh and whose devops-secret reason keeps the old message gets `evaluateToolPolicyMcp`'s
+  (`ProofsSsh.lean`), one whose `envMcpDenied` is null `evaluateToolPolicyPlan`'s (`ProofsEnvMcp.lean`), one without
   `checkPlanPending` `evaluateToolPolicyWith`'s (`ProofsPlan.lean`), and one without
   `checkNativeWrite` either `evaluateToolPolicyEnv`'s (`ProofsNativeWrite.lean`).
 * `boundary`: the payloads the table holds fixed. A sensitive result without a reason or with
@@ -202,7 +204,7 @@ def callJson (r : Row) (c : Call) : Json :=
   .obj [("tool", .str c.tool), ("input", c.input.getD .null),
     ("sensitiveCall", sensitiveCallJson (sensitiveCall (r.toInput c))),
     ("devopsCall", devopsCallJson (devopsCall (r.toInput c))),
-    ("expect", resultJson (evaluateToolPolicyMcp r.nativeWrite r.plan r.incident (r.toInput c)))]
+    ("expect", resultJson (evaluateToolPolicySsh r.nativeWrite r.plan r.incident (r.toInput c)))]
 
 def rowJson (kind : String) (calls : List Call) (r : Row) : Json :=
   .obj ([("kind", .str kind), ("mode", .str (modeName r.mode)), ("isAdmin", .bool r.isAdmin),
@@ -294,6 +296,8 @@ def patterns : List (Bool × Bool × Primitives) :=
   [(false, false, quiet),
     (true, false, quiet),
     (false, false, { quiet with devopsSecret := some devopsReason }),
+    (false, false, { quiet with devopsSecret := some "secret store path" }),
+    (false, false, { quiet with devopsSecret := some "approval record" }),
     (false, false, { quiet with ssh := true }),
     (false, false, { quiet with sensitive := sensitiveHit }),
     (false, false, { quiet with crossUser := true }),
@@ -655,7 +659,7 @@ def concreteJson (c : Concrete) : Json :=
       ("envMcpDenied", mcpJson c.prims.envMcpDenied),
       ("disabledRules", strs c.disabledRules)] ++ incidentProp c.incident)),
     ("pre", .arr (devopsPreJson c ++ c.pre.map (preJson c))),
-    ("expect", resultJson (evaluateToolPolicyMcp none none c.incident c.toInput))]
+    ("expect", resultJson (evaluateToolPolicySsh none none c.incident c.toInput))]
 
 def bashInput (command : String) : Json :=
   .obj [("command", .str command)]

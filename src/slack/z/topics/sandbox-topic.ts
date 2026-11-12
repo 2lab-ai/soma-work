@@ -7,6 +7,8 @@
  */
 
 import { isAdminUser } from '../../../admin-utils';
+import { getSandboxOffAllowed } from '../../../config';
+import { isSandboxOffInEffect } from '../../../sandbox/admin-sandbox-profile';
 import { DEV_DOMAIN_ALLOWLIST } from '../../../sandbox/dev-domain-allowlist';
 import { userSettingsStore } from '../../../user-settings-store';
 import type { ApplyResult, RenderResult, ZTopicBinding } from '../../actions/z-settings-actions';
@@ -14,18 +16,32 @@ import { buildSettingCard } from '../ui-builder';
 
 export async function renderSandboxCard(args: { userId: string; issuedAt: number }): Promise<RenderResult> {
   const { userId, issuedAt } = args;
-  const sandboxDisabled = userSettingsStore.getUserSandboxDisabled(userId);
+  const offRequested = userSettingsStore.getUserSandboxDisabled(userId);
   const networkDisabled = userSettingsStore.getUserNetworkDisabled(userId);
   const admin = isAdminUser(userId);
+  // The state sessions actually run with (env-access WU2, #1210): off only for an admin, on a host that
+  // allows it.
+  const sandboxDisabled = isSandboxOffInEffect({
+    isAdmin: admin,
+    requested: offRequested,
+    hostAllows: getSandboxOffAllowed(),
+  });
 
   const currentLabel = sandboxDisabled ? 'OFF' : 'ON';
 
   const sandboxLine = sandboxDisabled
     ? '• Sandbox: `OFF` — bash runs without isolation'
-    : '• Sandbox: `ON` — bash runs in an isolated environment';
+    : offRequested && admin
+      ? '• Sandbox: `ON` — off was requested, but this host runs admins in the admin sandbox (`SOMA_SANDBOX_OFF_ALLOWED` is not set)'
+      : admin
+        ? '• Sandbox: `ON` — admin sandbox: every domain, gh, local servers and caches; secrets, approval records and the deployment stay blocked'
+        : '• Sandbox: `ON` — bash runs in an isolated environment';
 
   let networkLine: string;
-  if (networkDisabled) {
+  if (admin && !sandboxDisabled) {
+    // The admin profile allows every domain; the allowlist toggle does not apply to it.
+    networkLine = '• Network: every domain (admin sandbox) — the network allowlist toggle does not apply to admins';
+  } else if (networkDisabled) {
     networkLine = sandboxDisabled
       ? '• Network allowlist: `OFF` _(stored; inactive while sandbox is OFF)_'
       : '• Network allowlist: `OFF` — outbound traffic is not restricted to the dev allowlist';
@@ -44,12 +60,15 @@ export async function renderSandboxCard(args: { userId: string; issuedAt: number
       label: '🛡️ Sandbox ON',
       description: '샌드박스 격리 활성화 (기본)',
     });
-    options.push({
-      id: 'off',
-      label: '⚠️ Sandbox OFF',
-      description: '⚠️ 샌드박스 격리 해제 (admin only)',
-      style: 'danger',
-    });
+    // Off is offered only where it would take effect (`SOMA_SANDBOX_OFF_ALLOWED`, env-access WU2 #1210).
+    if (getSandboxOffAllowed()) {
+      options.push({
+        id: 'off',
+        label: '⚠️ Sandbox OFF',
+        description: '⚠️ 샌드박스 격리 해제 (admin only, 이 호스트가 허용)',
+        style: 'danger',
+      });
+    }
   }
   // Network allowlist toggles are user-wide.
   options.push({
@@ -95,6 +114,15 @@ export async function applySandbox(args: { userId: string; value: string }): Pro
       };
     }
     const disable = normalized === 'off';
+    if (disable && !getSandboxOffAllowed()) {
+      // env-access WU2 (#1210): admins run in the admin sandbox; only the host's operator allows off.
+      return {
+        ok: false,
+        summary: '🛡️ Sandbox stays ON — 이 호스트는 sandbox off를 허용하지 않습니다 (`SOMA_SANDBOX_OFF_ALLOWED`).',
+        description:
+          '어드민은 어드민 샌드박스에서 실행됩니다(모든 도메인·gh·로컬 서버 사용 가능, 비밀 저장소·승인 기록·배포 디렉터리는 막힘). 홈의 패키지 캐시는 읽기 전용이니 설치 명령에 임시 디렉터리 캐시를 직접 지정하세요(`npm install --cache /tmp/<유저 ID>/npm` 또는 그 도구의 캐시 옵션). 끄기는 호스트 운영자가 `.env`에서만 허용합니다.',
+      };
+    }
     userSettingsStore.setUserSandboxDisabled(userId, disable);
     return {
       ok: true,

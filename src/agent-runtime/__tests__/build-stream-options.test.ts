@@ -22,6 +22,7 @@ import * as path from 'node:path';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { CONFIG_FILE, SECRETS_DIR } from '../../env-paths';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
+import { credentialPaths } from '../../sandbox/admin-sandbox-profile';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
 import type { ConversationSession } from '../../types';
 import { addThreadGrant, ENV_SKILL_GRANT_OWNER } from '../../user-skill-grants-store';
@@ -229,6 +230,16 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
       const run = await mcpHook(makeDeps());
       expect(await run(TOOL)).toEqual({ continue: true });
     });
+
+    // env-access WU2 (#1210): host commands are an admin's, whatever the server-tools grants say.
+    it('denies a non-admin ssh_exec whatever the grants say, and leaves the other server-tools to them', async () => {
+      const checkMcpToolPermission = vi.fn(() => null);
+      const run = await mcpHook(makeDeps({ checkMcpToolPermission }));
+      const out = await run('mcp__server-tools__ssh_exec');
+      expect(out.hookSpecificOutput?.permissionDecision).toBe('deny');
+      expect(checkMcpToolPermission).not.toHaveBeenCalled();
+      expect(await run('mcp__server-tools__logs')).toEqual({ continue: true });
+    });
   });
 
   describe('environment-skill gate (policy step 6b) in the hook', () => {
@@ -293,15 +304,21 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
         makeDeps({ getEnvSkillRegistry: () => envRegistry('/srv/soma/plugins') }),
       );
       const denyRead = (options.sandbox as { filesystem?: { denyRead?: string[] } } | undefined)?.filesystem?.denyRead;
-      expect(denyRead).toEqual([SECRETS_DIR, '/srv/soma/plugins/acme-env', '/srv/soma/plugins/.backups/acme-env']);
+      expect(denyRead).toEqual([
+        SECRETS_DIR,
+        ...credentialPaths(os.homedir()),
+        '/srv/soma/plugins/acme-env',
+        '/srv/soma/plugins/.backups/acme-env',
+      ]);
       // The write mount is kept.
       expect((options.sandbox as { filesystem?: { allowWrite?: string[] } }).filesystem?.allowWrite?.length).toBe(1);
     });
 
-    it('only the secret store is read-denied on a host without environment plugins', async () => {
+    it('only the secret store and the credential files are read-denied on a host without environment plugins', async () => {
       const { options } = await buildStreamOptions({ queryEnv: {}, slackContext: makeSlackContext() }, makeDeps());
       expect((options.sandbox as { filesystem?: { denyRead?: string[] } } | undefined)?.filesystem?.denyRead).toEqual([
         SECRETS_DIR,
+        ...credentialPaths(os.homedir()),
       ]);
     });
   });
@@ -648,6 +665,236 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
   });
 });
 
+// env-access WU2 (#1210): an admin's session is sandboxed too, with the admin profile; only a host
+// that allows it lets an admin turn the sandbox off. Every session write-protects the deployment and
+// the files that run outside the sandbox.
+describe('sandbox: admin profile and write protection (env-access WU2, #1210)', () => {
+  const ADMIN = 'U0ADMIN001';
+  const savedAdmins = process.env.ADMIN_USERS;
+  const savedOffAllowed = process.env.SOMA_SANDBOX_OFF_ALLOWED;
+
+  async function withSettings<T>(sandboxDisabled: boolean, run: () => Promise<T>): Promise<T> {
+    const spy = vi.spyOn(await import('../../user-settings-store'), 'userSettingsStore', 'get').mockReturnValue({
+      getUserDefaultModel: () => 'm',
+      getUserPermissionMode: () => 'bypass',
+      getUserThinkingEnabled: () => true,
+      getUserShowThinking: () => false,
+      getUserSandboxDisabled: () => sandboxDisabled,
+      getUserNetworkDisabled: () => false,
+    } as never);
+    try {
+      return await run();
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  async function build(user: string, deps = makeDeps()) {
+    return buildStreamOptions(
+      { queryEnv: {}, slackContext: makeSlackContext({ user }), workingDirectory: WORK_DIR },
+      deps,
+    );
+  }
+
+  afterEach(async () => {
+    if (savedAdmins === undefined) delete process.env.ADMIN_USERS;
+    else process.env.ADMIN_USERS = savedAdmins;
+    if (savedOffAllowed === undefined) delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
+    else process.env.SOMA_SANDBOX_OFF_ALLOWED = savedOffAllowed;
+    (await import('../../admin-utils')).resetAdminUsersCache();
+  });
+
+  async function asAdmin() {
+    process.env.ADMIN_USERS = ADMIN;
+    (await import('../../admin-utils')).resetAdminUsersCache();
+  }
+
+  it('an admin who turned the sandbox off still runs sandboxed, and the host says why', async () => {
+    await asAdmin();
+    delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
+    const deps = makeDeps();
+    const { options } = await withSettings(true, () => build(ADMIN, deps));
+    const sandbox = options.sandbox as { enabled?: boolean; failIfUnavailable?: boolean } | undefined;
+    expect(sandbox?.enabled).toBe(true);
+    expect(sandbox?.failIfUnavailable).toBe(true);
+    expect(deps.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('SOMA_SANDBOX_OFF_ALLOWED'),
+      expect.objectContaining({ user: ADMIN }),
+    );
+  });
+
+  it('a host that allows it lets an admin run without the sandbox', async () => {
+    await asAdmin();
+    process.env.SOMA_SANDBOX_OFF_ALLOWED = 'true';
+    const { options } = await withSettings(true, () => build(ADMIN));
+    expect(options.sandbox).toBeUndefined();
+  });
+
+  it('an admin gets the admin profile: every domain, gh TLS, local binding, the caches writable', async () => {
+    await asAdmin();
+    const { options } = await withSettings(false, () => build(ADMIN));
+    const sandbox = options.sandbox as {
+      enableWeakerNetworkIsolation?: boolean;
+      network?: { allowedDomains?: string[]; allowLocalBinding?: boolean };
+      filesystem?: { allowWrite?: string[]; denyRead?: string[]; denyWrite?: string[] };
+    };
+    expect(sandbox.enableWeakerNetworkIsolation).toBe(true);
+    expect(sandbox.network?.allowLocalBinding).toBe(true);
+    expect(sandbox.network?.allowedDomains).toEqual(expect.arrayContaining(['localhost', '127.0.0.1']));
+    // The user's temp directory and the OS temp directory, no home cache (astra R1).
+    expect(sandbox.filesystem?.allowWrite).toEqual(
+      expect.arrayContaining([path.join('/tmp', ADMIN), fs.realpathSync(os.tmpdir())]),
+    );
+    expect(sandbox.filesystem?.allowWrite).not.toContain(path.join(os.homedir(), '.npm'));
+    expect(sandbox.filesystem?.denyRead).toContain(SECRETS_DIR);
+    expect(sandbox.filesystem?.denyWrite).toEqual(expect.arrayContaining(approvalRecordPaths()));
+    const settings = options.settings as { permissions?: { allow?: string[] } };
+    expect(settings.permissions?.allow).toContain('WebFetch(domain:*)');
+  });
+
+  it('an admin keeps plan files in the working directory, sandbox on or off (the deployment is write-protected)', async () => {
+    await asAdmin();
+    process.env.SOMA_SANDBOX_OFF_ALLOWED = 'true';
+    for (const off of [false, true]) {
+      const { options } = await withSettings(off, () => build(ADMIN));
+      expect((options.settings as { plansDirectory?: string }).plansDirectory, `off=${off}`).toBe('.claude/plans');
+    }
+  });
+
+  it('never write-protects / or a directory above the sandbox write roots, and says so (fable R2)', async () => {
+    // A daemon started without a working directory runs in `/`.
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue('/');
+    try {
+      const deps = makeDeps();
+      const { options } = await withSettings(false, () => build(SAFE_USER, deps));
+      const deny = (options.settings as { permissions?: { deny?: string[] } }).permissions?.deny ?? [];
+      expect(deny).not.toContain('Edit(//)');
+      expect(deny).not.toContain('Edit(///**)');
+      expect(deny.some((rule) => rule === 'Edit(//tmp/**)' || rule === 'Edit(//private/**)')).toBe(false);
+      expect(deps.logger.error).toHaveBeenCalledWith(
+        expect.stringContaining('protected root'),
+        expect.objectContaining({ root: '/' }),
+      );
+    } finally {
+      cwd.mockRestore();
+    }
+  });
+
+  it('denies both spellings of the home directory and of a data directory not created yet (grok R1)', async () => {
+    // On macOS the temp directory is under /var, which is /private/var: a home there has two spellings.
+    const home = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'home-')), 'owner');
+    fs.mkdirSync(home);
+    const realHome = fs.realpathSync(home);
+    const saved = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const { options } = await withSettings(false, () => build(SAFE_USER));
+      const denyRead = (options.sandbox as { filesystem?: { denyRead?: string[] } }).filesystem?.denyRead ?? [];
+      const deny = (options.settings as { permissions?: { deny?: string[] } }).permissions?.deny ?? [];
+      expect(denyRead).toEqual(expect.arrayContaining([path.join(home, '.ssh'), path.join(realHome, '.ssh')]));
+      expect(deny).toEqual(
+        expect.arrayContaining([`Read(/${path.join(realHome, '.ssh')}/**)`, `Edit(/${path.join(realHome, '.zshrc')})`]),
+      );
+      if (realHome !== home) expect(denyRead).toContain(path.join(home, '.ssh'));
+    } finally {
+      process.env.HOME = saved;
+    }
+  });
+
+  it('sets no package cache in the CLI environment, which the MCP launchers inherit (astra R2)', async () => {
+    // The CLI hands its environment to every stdio MCP server it starts (`npx -y …`, plugin servers). A
+    // cache the model can write there would let it plant code those servers run outside the sandbox.
+    await asAdmin();
+    const CACHE_KEYS = [
+      'npm_config_cache',
+      'npm_config_store_dir',
+      'XDG_CACHE_HOME',
+      'YARN_CACHE_FOLDER',
+      'BUN_INSTALL_CACHE_DIR',
+      'PIP_CACHE_DIR',
+      'UV_CACHE_DIR',
+      'GOCACHE',
+      'GOMODCACHE',
+    ];
+    for (const user of [SAFE_USER, ADMIN]) {
+      const { options } = await withSettings(false, () => build(user));
+      for (const key of CACHE_KEYS) expect(options.env?.[key], `${user} ${key}`).toBeUndefined();
+    }
+  });
+
+  it('an admin native Write outside the sandbox roots is refused, as its Bash would be (astra R1)', async () => {
+    await asAdmin();
+    const { options } = await withSettings(false, () => build(ADMIN));
+    const entry = (options.hooks?.PreToolUse ?? []).find((e) =>
+      ((e as { matcher?: string }).matcher ?? '').split('|').includes('Write'),
+    ) as { hooks: Array<(input: unknown) => Promise<{ hookSpecificOutput?: { permissionDecision?: string } }>> };
+    const write = (file_path: string) =>
+      entry.hooks[0]({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Write',
+        tool_input: { file_path, content: 'x' },
+      } as never);
+    // A binary on the bot's PATH, which the bot later runs outside every sandbox.
+    expect((await write(path.join(os.homedir(), '.local', 'bin', 'node'))).hookSpecificOutput?.permissionDecision).toBe(
+      'deny',
+    );
+    expect((await write(path.join(WORK_DIR, 'notes.txt'))).hookSpecificOutput?.permissionDecision).not.toBe('deny');
+    expect((await write(path.join('/tmp', ADMIN, 'x.txt'))).hookSpecificOutput?.permissionDecision).not.toBe('deny');
+  });
+
+  it('a non-admin keeps the narrow profile', async () => {
+    const { options } = await withSettings(false, () => build(SAFE_USER));
+    const sandbox = options.sandbox as {
+      enableWeakerNetworkIsolation?: boolean;
+      network?: { allowLocalBinding?: boolean };
+      filesystem?: { allowWrite?: string[] };
+    };
+    expect(sandbox.enableWeakerNetworkIsolation).toBeUndefined();
+    expect(sandbox.network?.allowLocalBinding).toBeUndefined();
+    expect(sandbox.filesystem?.allowWrite).toEqual([path.join('/tmp', SAFE_USER)]);
+    const settings = options.settings as { permissions?: { allow?: string[] } };
+    expect(settings.permissions?.allow ?? []).not.toContain('WebFetch(domain:*)');
+  });
+
+  it('every session, admin or not, sandbox on or off, write-denies the deployment and the startup files', async () => {
+    await asAdmin();
+    process.env.SOMA_SANDBOX_OFF_ALLOWED = 'true';
+    const deployRoot = path.dirname(CONFIG_FILE);
+    for (const [user, off] of [
+      [SAFE_USER, false],
+      [ADMIN, false],
+      [ADMIN, true],
+    ] as const) {
+      const { options } = await withSettings(off, () => build(user));
+      const deny = (options.settings as { permissions?: { deny?: string[] } }).permissions?.deny ?? [];
+      expect(deny, `${user} off=${off}`).toEqual(
+        expect.arrayContaining([
+          `Edit(/${deployRoot}/**)`,
+          // The running code's root and the bot's own directory, not only the config directory (astra R1).
+          `Edit(/${process.cwd()}/**)`,
+          `Edit(/${path.join(os.homedir(), 'Library', 'LaunchAgents')}/**)`,
+          `Edit(/${path.join(os.homedir(), '.zshrc')})`,
+        ]),
+      );
+      expect(deny).toEqual(expect.arrayContaining(secretStoreDenyRules()));
+      expect(deny, `${user} off=${off}`).toEqual(
+        expect.arrayContaining([`Read(/${path.join(os.homedir(), '.ssh')}/**)`]),
+      );
+    }
+  });
+
+  it('every sandboxed session, admin or not, read-denies the ssh keys and the logins (#1210)', async () => {
+    await asAdmin();
+    for (const user of [SAFE_USER, ADMIN]) {
+      const { options } = await withSettings(false, () => build(user));
+      const denyRead = (options.sandbox as { filesystem?: { denyRead?: string[] } }).filesystem?.denyRead ?? [];
+      expect(denyRead, user).toEqual(
+        expect.arrayContaining([path.join(os.homedir(), '.ssh'), path.join(os.homedir(), '.config', 'gh')]),
+      );
+    }
+  });
+});
+
 // Post-deploy QA, run by the deploy workflow in the requester's session, needs
 // a few host directories and the QA environment's hostnames. The host grants
 // exactly that, from config.json#deploySandbox (written per runner at deploy
@@ -837,8 +1084,13 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
     }
   });
 
-  it('(e) sandbox-disabled user: unchanged, no sandbox at all', async () => {
+  it('(e) sandbox-disabled admin on a host that allows it: no sandbox at all, so no grant', async () => {
     writeHostConfig({ deploySandbox: GRANT });
+    const savedAdmins = process.env.ADMIN_USERS;
+    process.env.ADMIN_USERS = APPROVED;
+    process.env.SOMA_SANDBOX_OFF_ALLOWED = 'true';
+    const { resetAdminUsersCache } = await import('../../admin-utils');
+    resetAdminUsersCache();
     const spy = await mockUserSettings({ sandboxDisabled: true });
     try {
       const deps = makeDeps();
@@ -849,6 +1101,24 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
 
       expect(options.sandbox).toBeUndefined();
       expect(grantLogs(deps)).toEqual([]);
+    } finally {
+      spy.mockRestore();
+      if (savedAdmins === undefined) delete process.env.ADMIN_USERS;
+      else process.env.ADMIN_USERS = savedAdmins;
+      delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
+      resetAdminUsersCache();
+    }
+  });
+
+  it('(e2) a non-admin with a stored sandbox-off setting stays sandboxed (WU2, #1210)', async () => {
+    writeHostConfig({ deploySandbox: GRANT });
+    const spy = await mockUserSettings({ sandboxDisabled: true });
+    try {
+      const { options } = await buildStreamOptions(
+        { queryEnv: {}, session: session('deploy'), slackContext: makeSlackContext({ user: APPROVED }) },
+        makeDeps(),
+      );
+      expect((options.sandbox as { enabled?: boolean } | undefined)?.enabled).toBe(true);
     } finally {
       spy.mockRestore();
     }
