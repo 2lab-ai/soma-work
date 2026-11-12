@@ -127,10 +127,24 @@ for oid, n in sized:
             incomplete.append(f'history: {first_path[oid]} (blob {oid[:10]}, {n} bytes) is over CHOS_MAX_BLOB and was not scanned')
         continue
     data = git('cat-file', 'blob', oid, binary=True)
-    if b'\0' not in data[:8000]:
-        scan(data.decode('utf-8', 'replace'), f'{first_path[oid]} (blob {oid[:10]})')
-for i in range(0, len(blobs), 400):
-    chunk = blobs[i:i + 400]
+    scan(data.decode('latin-1') if b'\0' in data[:8000] else data.decode('utf-8', 'replace'), f'{first_path[oid]} (blob {oid[:10]})')
+# Batches bounded by bytes, not count: a few highly compressible blobs can be gigabytes inflated.
+size_of = dict(sized)
+chunks, cur, total = [], [], 0
+for oid in blobs:
+    if cur and total + size_of[oid] > 64_000_000:
+        chunks.append(cur); cur, total = [], 0
+    cur.append(oid); total += size_of[oid]
+if cur:
+    chunks.append(cur)
+
+
+def text_of(data):
+    # A binary is read byte for byte (latin-1), as the gate's `grep -a` reads it; media is OCR'd too.
+    return data.decode('latin-1') if b'\0' in data[:8000] else data.decode('utf-8', 'replace')
+
+
+for chunk in chunks:
     out = subprocess.run(['git', '-C', str(mirror), 'cat-file', '--batch'], input=('\n'.join(chunk) + '\n').encode(),
                          capture_output=True).stdout
     pos = 0
@@ -139,9 +153,7 @@ for i in range(0, len(blobs), 400):
         size = int(out[pos:nl].split()[2])
         data = out[nl + 1:nl + 1 + size]
         pos = nl + 1 + size + 1
-        if b'\0' in data[:8000]:
-            continue  # binary: media goes through OCR below
-        scan(data.decode('utf-8', 'replace'), f'{first_path[oid]} (blob {oid[:10]})')
+        scan(text_of(data), f'{first_path[oid]} (blob {oid[:10]})')
 for c, body in zip(commits, git('log', '--all', '--format=%B%x00').split('\0')):
     scan(body, 'commit messages')
 idents = Counter(git('log', '--all', '--format=%an <%ae>%n%cn <%ce>').splitlines())

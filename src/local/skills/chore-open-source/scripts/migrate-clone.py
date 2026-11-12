@@ -76,6 +76,7 @@ _pats = [l.strip() for name in ('patterns.txt', 'repo-patterns.txt') if (work / 
          for l in (work / 'config' / name).read_text().splitlines() if l.strip() and not l.startswith('#')]
 PAT = re.compile('|'.join(ere(p) for p in _pats), re.I | re.M) if _pats else None
 new_tags = dict((r.split()[1][10:], r.split()[0]) for r in git('for-each-ref', '--format=%(objectname) %(refname)', 'refs/tags', cwd=out / 'new.git').splitlines())
+orig_tags = dict((r.split()[1][10:], r.split()[0]) for r in git('for-each-ref', '--format=%(objectname) %(refname)', 'refs/tags', cwd=out / 'orig.git').splitlines())
 
 
 def rows(*ns):
@@ -104,8 +105,11 @@ def old_refs():
     for c in first_changed:
         if has(c):
             found |= set(git('for-each-ref', '--contains', c, '--format=%(refname)', 'refs/heads', 'refs/remotes', 'refs/tags').split())
-    for _, c, r in rows('refs/heads', 'refs/remotes', 'refs/tags'):
+    for o, c, r in rows('refs/heads', 'refs/remotes', 'refs/tags'):
         if A.get(c, c) != c or (r.startswith('refs/heads/') and r not in found and reaches_old(c)):
+            found.add(r)
+        # An annotated tag the rewrite changed (its message, say) while its commit stayed the same.
+        elif r.startswith('refs/tags/') and orig_tags.get(r[10:]) == o and new_tags.get(r[10:], o) != o:
             found.add(r)
     return sorted(found)
 
@@ -233,6 +237,12 @@ def move_worktree(wt, old, target, label, detach):
     """Move a checkout to target keeping uncommitted edits (index and worktree, via stash --index).
     Any conflict puts it back exactly as it was. Returns None on success, else the reason."""
     stash = ''
+    if git('rev-parse', 'HEAD', cwd=wt).strip() != old:
+        return f'worktree {wt} moved since the plan was made (new commits?) — left as it is'
+    # Checkout overwrites ignored files without asking: one where the target tracks a file would be lost.
+    ignored = set(git('ls-files', '--others', '--ignored', '--exclude-standard', '-z', cwd=wt).split('\0')) - {''}
+    if ignored & set(git('ls-tree', '-r', '--name-only', '-z', target, cwd=wt).split('\0')):
+        return f'worktree {wt} has ignored files where the rewritten commit tracks files — left as it is'
     if git('status', '--porcelain', '--untracked-files=no', cwd=wt).strip():
         (bdir / f'edits-{label.replace("/", "_")}.patch').write_text(git('diff', 'HEAD', '--binary', cwd=wt))
         before = git('rev-parse', '-q', '--verify', 'refs/stash', cwd=wt, check=False).strip()
@@ -272,7 +282,10 @@ for b, c, target, how in plan:
         moved.append(f'{b} [{how}]' + (f' (worktree {wt})' if wt else ''))
         continue
     if not wt:
-        git('update-ref', ref, target, c)
+        # Leased to the planned value: a branch that got new commits since the plan stays as it is.
+        if subprocess.run(['git', '-C', str(clone), 'update-ref', ref, target, c], capture_output=True).returncode:
+            left.append(f'{b}: moved since the plan was made (new commits?) — left as it is')
+            continue
         moved.append(f'{b} [{how}] -> {target[:10]}')
         continue
     edited = bool(git('status', '--porcelain', '--untracked-files=no', cwd=wt).strip())

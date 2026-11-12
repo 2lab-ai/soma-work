@@ -41,7 +41,8 @@ URL=${SWAP_URL:-https://github.com/$SLUG.git}
 with_main() { M="refs/heads/$MAIN" T=$1 awk '$2 == ENVIRON["M"] { $1 = ENVIRON["T"] } { print }'; }
 landed() {
   local proven=0 sha ref was rem
-  git -C "$NEW" fetch -q "$URL" '+refs/heads/*:refs/swap-check/heads/*' '+refs/tags/*:refs/swap-check/tags/*' 2>/dev/null || return 1
+  # 0 = landed, 1 = not landed, 2 = could not tell (the remote could not be read)
+  git -C "$NEW" fetch -q --no-tags "$URL" '+refs/heads/*:refs/swap-check/heads/*' '+refs/tags/*:refs/swap-check/tags/*' 2>/dev/null || return 2
   while read -r sha ref; do
     was=$(R=$ref awk '$2 == ENVIRON["R"] { print $1 }' "$OUT/snapshot.refs")
     [ "$sha" = "$was" ] && continue                      # not changed by the rewrite: proves nothing
@@ -55,6 +56,8 @@ landed() {
   git -C "$NEW" for-each-ref --format='delete %(refname)' refs/swap-check | git -C "$NEW" update-ref --stdin
   [ "$proven" = 1 ]
 }
+# Every fetch into the rewritten repo is --no-tags: auto-followed tags would land in its own refs/tags
+# and become part of what the remote is checked against.
 remote_refs() {
   git ls-remote "$URL" 'refs/heads/*' 'refs/tags/*' | grep -v '\^{}$' | grep -v " *refs/heads/$REVIEW\$" \
     | awk '{print $1" "$2}' | sort
@@ -75,10 +78,14 @@ while [ ! -e "$OUT/swapped" ]; do
   # this rewrite changed is on the remote at its rewritten value (a branch may have moved on from it),
   # and no changed ref is still at its original value — the push is atomic, so it is all or nothing.
   # Resume; rewriting the rewritten remote would replace the commit map clone migration needs.
-  if landed; then
+  rc=0; landed || rc=$?
+  if [ "$rc" = 0 ]; then
     echo "    the remote already holds this rewrite (an earlier push completed): resuming"
     date > "$OUT/swapped"
     break
+  elif [ "$rc" = 2 ]; then
+    echo "swap.sh: could not read the remote refs to tell whether an earlier push landed; nothing changed" >&2
+    exit 1
   fi
   { diff "$OUT/snapshot.refs" "$OUT/remote-now.refs" || true; } | head -10
   if [ "$attempt" -ge 5 ]; then
@@ -116,7 +123,7 @@ else
   echo "==> 2. pause ${PAUSE[*]}"
   for w in "${PAUSE[@]}"; do
     # One that is already off stays off afterwards: only what this run disabled is turned back on.
-    state=$(W=$w gh workflow list -R "$SLUG" --all --json path,state -q '.[] | select(.path | endswith("/" + env.W)) | .state')
+    state=$(W=$w gh workflow list -R "$SLUG" --all -L 1000 --json path,state -q '.[] | select(.path | endswith("/" + env.W)) | .state')
     case $state in disabled*) echo "    $w is already disabled (left as it is)"; continue;; esac
     gh workflow disable "$w" -R "$SLUG"; PAUSED+=("$w")
   done
@@ -138,7 +145,7 @@ fi
 
 echo "==> 4. top commit on $MAIN"
 TOP=$(git -C "$NEW" rev-parse "refs/post/$MAIN")
-git -C "$NEW" fetch -q "$URL" "+refs/heads/$MAIN:refs/swap-check/main" 2>/dev/null || true
+git -C "$NEW" fetch -q --no-tags "$URL" "+refs/heads/$MAIN:refs/swap-check/main" 2>/dev/null || true
 if git -C "$NEW" merge-base --is-ancestor "$TOP" refs/swap-check/main 2>/dev/null; then
   echo "    $MAIN already contains it"   # a resumed run, possibly after $MAIN moved on
 else
@@ -153,7 +160,7 @@ if diff -q "$OUT/expected.refs" "$OUT/remote-after.refs" >/dev/null; then
 else
   # Refs that moved or appeared after the replacement (a resumed run, people pushing on the new
   # history) are fine; a ref whose history holds a commit of the original history is not.
-  git -C "$NEW" fetch -q "$URL" '+refs/heads/*:refs/swap-check/heads/*' '+refs/tags/*:refs/swap-check/tags/*'
+  git -C "$NEW" fetch -q --no-tags "$URL" '+refs/heads/*:refs/swap-check/heads/*' '+refs/tags/*:refs/swap-check/tags/*'
   exp=(); while read -r sha _; do exp+=("^$sha"); done < "$OUT/expected.refs"
   bad=0 moved=0
   while read -r sha ref; do

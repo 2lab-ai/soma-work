@@ -261,7 +261,7 @@ esac
         '-c',
         `set -e
       git init -q --bare -b main remote.git && git init -q -b main seed && cd seed
-      printf 'runs on secret-host-b\\nanchored-word\\n' > a.txt && printf '\\x89PNG\\r\\n\\x1a\\n' > img.png
+      printf 'runs on secret-host-b\\nanchored-word\\n' > a.txt && printf '\\000\\001secret-host-e\\000' > bin.dat && printf '\\x89PNG\\r\\n\\x1a\\n' > img.png
       git add -A && git commit -q -m init && git push -q ../remote.git main && cd ..
       mkdir -p pkg/docs && echo x > pkg/docs/secret-host-c.txt && tar -czf pkg.tar.gz -C pkg docs`,
       ],
@@ -300,6 +300,7 @@ esac
     expect(report).toMatch(/release asset v1\/pkg\.tar\.gz \(member path\)/);
     expect(report).toMatch(/1 image\/video\/PDF blob\(s\) in history were not OCR-read/);
     expect(report).toContain('`anchored-word`'); // ^…$ anchor per line, as grep does
+    expect(report).toMatch(/at bin\.dat \(blob/); // a binary is read byte for byte, like grep -a
     expect(report).toMatch(/release asset v1\/notes-secret-host-d\.txt \(name\)/);
   });
 
@@ -375,9 +376,14 @@ describe.skipIf(!hasFilterRepo)('local:chore-open-source — offline run of the 
       mkdir scripts && printf '# list\\n%s  #1\\n' 0123456789012345678901234567890123456789 > scripts/sanitize-known-leaks.txt
       echo "victim" > "${T}/victim.txt" && ln -s "${T}/victim.txt" scripts/sanitize-known-leaks.txt.new
       echo "on ${W}" > app.conf && git add -A && git commit -q -m init && git push -q ../remote-sym.git main && cd ..
-      git init -q --bare -b main remote-tag.git && git init -q -b main tagseed && cd tagseed
-      echo plain > p.txt && git add -A && git commit -q -m init && git tag -a v1 -m "cut on ${W}"
-      git push -q ../remote-tag.git main v1 && cd ..
+      git init -q --bare -b main remote-tag.git && git init -q -b main tagseed
+      # Clean author and tagger: the tag message is the only private text, so no commit changes.
+      ( cd tagseed && export GIT_AUTHOR_EMAIL=dev@example.com GIT_COMMITTER_EMAIL=dev@example.com
+        echo plain > p.txt && git add -A && git commit -q -m init && git tag -a v1 -m "cut on ${W}"
+        git push -q ../remote-tag.git main v1 )
+      git clone -q remote-tag.git clonetag
+      git clone -q remote.git clone5 && git -C clone5 worktree add -q --detach ../wt-ign main
+      echo "docs/shared-host.md" >> clone5/.git/info/exclude && echo precious > wt-ign/docs/shared-host.md
       git clone -q remote.git clone4 && git -C clone4 branch -q nl origin/feature
       git -C clone4 worktree add -q "$(printf '%s/wt\\nnl' "$PWD")" nl`);
   });
@@ -440,6 +446,18 @@ describe.skipIf(!hasFilterRepo)('local:chore-open-source — offline run of the 
     expect(list).not.toMatch(/^[0-9a-f]{40}/m);
   });
 
+  it('comment lines of the replace.txt template never become rules', () => {
+    const chos = workDir('work-tmpl', `${W}\n`, 'remote-sym.git');
+    const template = readFileSync(resolve(SKILL_ROOT, 'templates', 'replace.txt.example'), 'utf8');
+    writeFileSync(join(chos.CHOS_WORK, 'config', 'replace.txt'), `${template}\nregex:${W}==>shared-host\n`);
+    expect(sh(`"${SCRIPTS}/rewrite.sh" o/sym`, chos)).toMatch(/^scan: clean$/m);
+    const list = sh(
+      `git -C "${join(chos.CHOS_WORK, 'out', 'sym', 'new.git')}" show main:scripts/sanitize-known-leaks.txt`,
+    );
+    expect(list).toContain('# list'); // a bare "#" template line would have replaced every # in history
+    expect(sh(`git -C "${join(chos.CHOS_WORK, 'out', 'sym', 'new.git')}" show main:app.conf`)).toBe('on shared-host\n');
+  });
+
   it('a relative CHOS_WORK works (the run folder is resolved before any cd)', () => {
     workDir('work-rel', `${W}\n`, 'remote-sym.git');
     const r = shAt(`"${SCRIPTS}/rewrite.sh" o/sym`, { CHOS_WORK: 'work-rel', CHOS_URL: join(T, 'remote-sym.git') });
@@ -472,6 +490,13 @@ describe.skipIf(!hasFilterRepo)('local:chore-open-source — offline run of the 
     );
     expect(run('git', ['-C', wt, 'status', '--porcelain'], { env }).stdout).toBe('');
     expect(run('git', ['-C', wt, 'rev-parse', 'HEAD'], { env }).stdout).toBe(sh('git -C remote.git rev-parse feature'));
+  });
+
+  it('an ignored file where the rewritten commit tracks a file is not overwritten', () => {
+    const chos = workDir('work', `${W}\n`);
+    const r = shAt(`python3 -I -B "${SCRIPTS}/migrate-clone.py" o/r "${join(T, 'clone5')}" --apply`, chos);
+    expect(r.stdout).toMatch(/has ignored files where the rewritten commit tracks files/);
+    expect(readFileSync(join(T, 'wt-ign', 'docs', 'shared-host.md'), 'utf8')).toBe('precious\n');
   });
 
   it('a worktree whose edits conflict with the rewrite is left exactly as it was', () => {
@@ -530,6 +555,17 @@ describe.skipIf(!hasFilterRepo)('local:chore-open-source — offline run of the 
     expect(r.status, r.stdout + r.stderr).toBe(0);
     expect(r.stdout).not.toMatch(/already holds this rewrite/); // main unchanged proves nothing
     expect(sh("git -C remote-tag.git for-each-ref --format='%(contents)' refs/tags")).not.toContain(W);
+  });
+
+  it('a clone whose only old ref is an annotated tag is reported, then migrated', () => {
+    const chos = workDir('work-tag', `${W}\n`, 'remote-tag.git');
+    const check = shAt(`python3 -I -B "${SCRIPTS}/migrate-clone.py" o/tag "${join(T, 'clonetag')}" --check`, chos);
+    expect(check.status, check.stdout + check.stderr).toBe(1);
+    expect(check.stdout).toMatch(/refs on the old history 1;/);
+    expect(sh(`python3 -I -B "${SCRIPTS}/migrate-clone.py" o/tag "${join(T, 'clonetag')}" --apply`, chos)).toMatch(
+      /history 0;/,
+    );
+    expect(sh("git -C clonetag for-each-ref --format='%(contents)' refs/tags")).not.toContain(W);
   });
 
   it('an original annotated tag pushed back fails the swap verification', () => {

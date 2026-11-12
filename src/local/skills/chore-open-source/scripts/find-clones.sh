@@ -11,6 +11,9 @@ shift
 SCRIPTS=$(cd "$(dirname "$0")" && pwd)
 [ $# -gt 0 ] || set -- "$HOME" "${TMPDIR:-/tmp}" /tmp
 bad=0 n=0 seen=" "
+for root in "$@"; do
+  [ -d "$root" ] && [ -r "$root" ] && [ -x "$root" ] || { echo "cannot read search root $root" >&2; bad=$((bad + 1)); }
+done
 while IFS= read -r g; do
   d=${g%/.git}
   u=$(git -C "$d" config --get remote.origin.url 2>/dev/null) || continue

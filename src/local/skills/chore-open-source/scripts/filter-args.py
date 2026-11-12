@@ -5,7 +5,8 @@ One source for rewrite.sh and migrate-clone.py, so a clone migrated later gets e
 rules the pushed history got. Reads the run folder $CHOS_WORK:
 
   config/replace.txt     required. filter-repo --replace-text rules, used for file contents and
-                         commit messages; filename-callback.py applies them to path names too
+                         commit messages; filename-callback.py applies them to path names too.
+                         Lines starting with # and blank lines are comments (removed before use)
   config/mailmap         optional. author / committer rewrites (git mailmap format)
   config/blob-map.txt    optional. "<old blob id> <file with the new bytes>" per line (media)
   config/filter-args     optional. extra filter-repo arguments, one per line
@@ -22,7 +23,11 @@ replace = cfg / 'replace.txt'
 if not replace.is_file():
     sys.exit(f'filter-args.py: missing {replace}')
 
-args = ['--force', '--replace-text', str(replace), '--replace-message', str(replace),
+# filter-repo has no comment syntax: a "# ..." line would be a literal rule (a bare "#" line would
+# replace every # in the history). Hand it the rules only; '#' at line start marks a comment here.
+rules = cfg / '.replace-text.rules'
+rules.write_text(''.join(l + '\n' for l in replace.read_text().splitlines() if l.strip() and not l.lstrip().startswith('#')))
+args = ['--force', '--replace-text', str(rules), '--replace-message', str(rules),
         '--blob-callback', (here / 'blob-callback.py').read_text(),
         '--filename-callback', (here / 'filename-callback.py').read_text(),
         '--prune-empty', 'never', '--prune-degenerate', 'never']
