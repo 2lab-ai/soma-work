@@ -140,6 +140,10 @@ describe('gh_read', () => {
     await expect(refuse('repos/acme/app/issues/1/sub_issues')).rejects.toThrow(/not a part gh_read reads/);
     await expect(refuse('repos/acme/app/issues/1/timeline')).rejects.toThrow(/not a part gh_read reads/);
     await expect(refuse('repos/acme/app/pulls/1/requested_reviewers/x')).rejects.toThrow(/not a part gh_read reads/);
+    // trinity R2 (fable): a compare across forks reads another repository; a branch path that decodes to protection.
+    await expect(refuse('repos/acme/app/compare/main...other:branch')).rejects.toThrow(/another repository/);
+    await expect(refuse('repos/acme/app/compare/main...other%3Arepo%3Abranch')).rejects.toThrow(/another repository/);
+    await expect(refuse('repos/acme/app/branches/main%2Fprotection')).rejects.toThrow(/not a part gh_read reads/);
     await expect(refuse('repos/acme/app/pulls/../../../user')).rejects.toThrow(/path/);
     await expect(refuse('repos/acme/app/pulls?state=all')).rejects.toThrow(/path/);
     await expect(refuse('user/repos')).rejects.toThrow(/path/);
@@ -156,7 +160,7 @@ describe('gh_read', () => {
     for (const p of [
       'repos/acme/app/contents/src/app/(auth)/page.tsx',
       'repos/acme/app/contents/src/hooks/use-x.ts',
-      'repos/acme/app/compare/main...alice:feature+1',
+      'repos/acme/app/compare/main...feature+1',
       'repos/acme/app/git/ref/heads/deploy/dev2',
     ]) {
       await handleGhRead({ server: 'dev2', path: p }, fetch);

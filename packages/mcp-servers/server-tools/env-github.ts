@@ -267,6 +267,15 @@ export function repoReadPath(config: EnvGithubConfig, value: unknown): string {
   const repo = allowedRepo(config, `${segments[1]}/${segments[2]}`);
   const rest = segments.slice(3).join('/');
   if (!READ_SHAPES.some((shape) => shape.test(rest))) throw new GithubError(`${rest} is not a part gh_read reads`);
+  const decoded = segments.slice(3).map((s) => decodeURIComponent(s));
+  // `base...owner:branch` compares across the fork network: another repository's commits.
+  if (decoded[0] === 'compare' && decoded.slice(1).some((s) => s.includes(':'))) {
+    throw new GithubError('compare across forks reads another repository');
+  }
+  // A branch name may hold `/` (encoded or not); one that reaches the protection settings is not read.
+  if (decoded[0] === 'branches' && decoded.slice(1).join('/').split('/').includes('protection')) {
+    throw new GithubError(`${rest} is not a part gh_read reads`);
+  }
   return ['repos', repo, ...segments.slice(3)].join('/');
 }
 

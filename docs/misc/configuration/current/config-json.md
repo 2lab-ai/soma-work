@@ -343,7 +343,7 @@ comments|merge]]`; `commits[/<sha>[/check-runs|check-suites|status|statuses|pull
 labels; `actions/runs[/<id>[/jobs|attempts/<n>[/jobs]]]`, `actions/jobs/<id>`, `actions/workflows[/<id>[/runs]]`.
 Not settings (`branches/<b>/protection`), secrets, variables, hooks, keys, environments or collaborators, and not
 routes that answer with another repository's data (`issues/<n>/parent`, `sub_issues`, a timeline's
-cross-references) — the token may be an org admin's. Segments may hold GitHub path characters (`(auth)`,
+cross-references, a `compare` across forks with `owner:branch`, a branch path that reaches `protection`) — the token may be an org admin's. Segments may hold GitHub path characters (`(auth)`,
 `alice:branch`, `a+b`); a segment that does not decode, or decodes to a `.`/`..` component, a backslash or a NUL,
 is refused. It answers `{path, status, truncated, body}`: a 204 (`pulls/<n>/merge` of a merged PR) is
 `body: null`; a body longer than 200000 characters of JSON comes back cut, as text, with `truncated: true`. Reads are not written to the audit ledger. Like `gh_pr`, it is admin-only except on an
