@@ -269,6 +269,40 @@ Every string value above accepts `${VAR}` substitution. Keep DB passwords out of
 }
 ```
 
+### Environment user and `gh_pr` (env-access WU3, #1211)
+
+A server entry can stand for an environment that acts as its own user: `envUser` names it, and `github` gives it the
+environment's own GitHub token and what it may approve and merge. The token is a `{"$secret": "<name>"}` reference into
+the secret store (`<config dir>/secrets/<name>`); server-tools reads it outside every model sandbox and no model sees it.
+
+```jsonc
+{
+  "server-tools": {
+    "dev2": {
+      "envUser": "env:acme-dev2",
+      "ssh": { "host": "dev2" },
+      "github": {
+        "token": { "$secret": "gh-org-admin" },
+        "repos": ["acme/app"],
+        "approveWhen": { "authors": ["soma-bot[bot]"], "bases": ["develop"], "requiredChecksGreen": true },
+        "mergeBases": ["develop"],
+        "mergeMethods": ["merge", "squash"]
+      }
+    }
+  }
+}
+```
+
+| `gh_pr` action | Runs when |
+|---|---|
+| `view` | the repository is one of `repos`. Returns state, author, base, head SHA and checks |
+| `approve` | the PR is open and not a draft, its author is in `approveWhen.authors`, its base in `approveWhen.bases`, every check is green (unless `requiredChecksGreen` is `false`), and `sha` is still the head |
+| `merge` | the PR is open and not a draft, its base is in `mergeBases`, every check is green, the method is in `mergeMethods` (default `merge` only), and `sha` is still the head |
+
+`approve` and `merge` write an intent line to `DATA_DIR/env-audit/env-audit.jsonl` before they call GitHub, and a
+`done` or `failed` line after. If the intent cannot be written, nothing is called. Each line names the server, the
+`envUser` and the Slack user the session runs for. `gh_pr` is for admins only until per-environment grants land (WU4, #1212).
+
 ## Where the substitution happens in code
 
 - `src/config-env-substitution.ts` — pure substitution + `.env` discovery

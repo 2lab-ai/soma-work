@@ -7,6 +7,20 @@ import { resolveSecretRefs, SecretRefError } from '@soma/process-shared/secret-r
 import { StderrLogger } from '@soma/process-shared/stderr-logger.js';
 import { type ChildProcess, execFileSync, type SpawnSyncReturns, spawn, spawnSync } from 'child_process';
 import { redactLogSecrets } from './redact-logs.js';
+import { AuditError, appendAudit } from './env-audit.js';
+import {
+  allowedRepo,
+  approvalProblem,
+  approve,
+  type EnvGithubConfig,
+  type Fetch,
+  GithubError,
+  headSha,
+  merge,
+  mergeProblem,
+  prNumber,
+  prState,
+} from './env-github.js';
 
 const configLogger = new StderrLogger('server-tools:config');
 
@@ -58,8 +72,15 @@ interface ClickHouseConfig {
 type DatabaseConfig = MySQLConfig | RedisConfig | MongoDBConfig | ClickHouseConfig;
 
 interface ServerConfig {
+  /**
+   * The environment user this server acts as (env-access WU3, #1211), e.g. `env:acme-dev2`: a non-human user with
+   * the environment's own GitHub token and accounts. Its writes are audited under this name.
+   */
+  envUser?: string;
   ssh: { host: string };
   databases?: Record<string, DatabaseConfig>;
+  /** The environment's GitHub token and what it may approve and merge (`gh_pr`). */
+  github?: EnvGithubConfig;
 }
 
 type ServerToolsConfig = Record<string, ServerConfig>;
@@ -647,6 +668,85 @@ export function handleLogs(args: Record<string, unknown>) {
  */
 const SSH_EXEC_DEFAULT_TIMEOUT_S = 60;
 const SSH_EXEC_MAX_TIMEOUT_S = 600;
+// ── gh_pr: an environment user's PR actions (env-access WU3, #1211) ──
+
+const GH_PR_ACTIONS = ['view', 'approve', 'merge'] as const;
+
+function envGithub(server: unknown): { name: string; config: ServerConfig; github: EnvGithubConfig } {
+  const config = loadConfig();
+  if (typeof server !== 'string' || !Object.keys(config).includes(server)) throw new Error(`Unknown server: ${server}`);
+  const github = config[server].github;
+  if (!github || typeof github.token !== 'string' || !Array.isArray(github.repos)) {
+    throw new Error(`Server ${server} has no github section (token and repos)`);
+  }
+  return { name: server, config: config[server], github };
+}
+
+/**
+ * view / approve / merge one PR as the environment user, with the environment's token. approve and merge run only
+ * under the environment's conditions and at the head SHA the caller passes; each is written to the audit ledger
+ * before it runs, and again with its outcome. `fetchImpl` is for tests.
+ */
+export async function handleGhPr(
+  args: Record<string, unknown>,
+  fetchImpl: Fetch = globalThis.fetch as unknown as Fetch,
+) {
+  const action = args.action;
+  if (typeof action !== 'string' || !(GH_PR_ACTIONS as readonly string[]).includes(action)) {
+    throw new Error(`Invalid action: one of ${GH_PR_ACTIONS.join(', ')}`);
+  }
+  const env = envGithub(args.server);
+  try {
+    const repo = allowedRepo(env.github, args.repo);
+    const number = prNumber(args.pr);
+    const state = await prState(fetchImpl, env.github, repo, number);
+    if (action === 'view') return { content: [{ type: 'text' as const, text: JSON.stringify(state) }] };
+
+    const sha = headSha(args.sha);
+    const method = action === 'merge' ? (typeof args.method === 'string' ? args.method : 'merge') : undefined;
+    const problem =
+      action === 'approve'
+        ? approvalProblem(env.github, state, sha)
+        : mergeProblem(env.github, state, sha, method ?? 'merge');
+    if (problem) throw new GithubError(`not ${action === 'approve' ? 'approved' : 'merged'}: ${problem}`);
+
+    const audit = {
+      server: env.name,
+      ...(env.config.envUser ? { envUser: env.config.envUser } : {}),
+      ...(process.env.SOMA_REQUESTER ? { requester: process.env.SOMA_REQUESTER } : {}),
+      tool: 'gh_pr',
+      action,
+    };
+    const detail = { repo, pr: number, sha, ...(method ? { method } : {}) };
+    appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'intent', detail });
+    try {
+      if (action === 'approve') {
+        const body =
+          typeof args.body === 'string' && args.body.trim() !== '' ? args.body : 'Approved by environment user.';
+        await approve(fetchImpl, env.github, repo, number, sha, body);
+        appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'done', detail });
+        return { content: [{ type: 'text' as const, text: `approved ${repo}#${number} at ${sha}` }] };
+      }
+      const merged = await merge(fetchImpl, env.github, repo, number, sha, method ?? 'merge');
+      appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'done', detail: { ...detail, mergeSha: merged } });
+      return { content: [{ type: 'text' as const, text: `merged ${repo}#${number} at ${sha} as ${merged}` }] };
+    } catch (err) {
+      if (!(err instanceof AuditError)) {
+        appendAudit(process.env.SOMA_AUDIT_DIR, {
+          ...audit,
+          phase: 'failed',
+          detail: { ...detail, error: (err as Error).message },
+        });
+      }
+      throw err;
+    }
+  } catch (err) {
+    // Only messages this module wrote: never a token, never a raw response.
+    if (err instanceof GithubError || err instanceof AuditError) throw new Error(err.message);
+    throw new Error(`gh_pr failed on ${env.name}`);
+  }
+}
+
 const SSH_EXEC_MAX_COMMAND_CHARS = 8192;
 const SSH_EXEC_TIMEOUT_NOTE =
   'Only the local ssh client was stopped: the remote command may still be running and its outcome is unknown. ' +
@@ -1069,6 +1169,27 @@ class ServerToolsMCPServer extends BaseMcpServer {
         },
       },
       {
+        name: 'gh_pr',
+        description:
+          "Act on one GitHub PR as a server's environment user, with that environment's own token (no model reads it). " +
+          "view: the PR's state, author, base, head SHA and checks. approve: only when the environment's approveWhen " +
+          'holds (author, base, all checks green) and `sha` is still the head. merge: only into one of the ' +
+          "environment's mergeBases, with all checks green, at `sha`. approve and merge are audited. Admins only.",
+        inputSchema: {
+          type: 'object',
+          properties: {
+            server: { type: 'string', description: 'Server name from config (see list) whose github section to use.' },
+            action: { type: 'string', enum: ['view', 'approve', 'merge'] },
+            repo: { type: 'string', description: "owner/name, one of the environment's repos." },
+            pr: { type: 'number', description: 'PR number.' },
+            sha: { type: 'string', description: 'approve/merge: the full head SHA you looked at with view.' },
+            method: { type: 'string', enum: ['merge', 'squash', 'rebase'], description: 'merge: default merge.' },
+            body: { type: 'string', description: 'approve: review text.' },
+          },
+          required: ['server', 'action', 'repo', 'pr'],
+        },
+      },
+      {
         name: 'logs',
         description:
           'Fetch Docker container logs (or Swarm service logs when stack is set) from a server via SSH. Default mode: docker logs. With stack: docker service logs (caller must pass the full <stack>_<svc> name in service). NOTE: --until is not supported in stack mode. Container stderr follows stdout under a "----- stderr -----" line. Output is redacted for common secret shapes (tokens, API keys, passwords, URL credentials, private key blocks).',
@@ -1193,6 +1314,8 @@ class ServerToolsMCPServer extends BaseMcpServer {
         return handleLogs(args);
       case 'ssh_exec':
         return handleSshExec(args);
+      case 'gh_pr':
+        return await handleGhPr(args);
       case 'db_query':
         return await handleDbQuery(args);
       case 'redis_query':

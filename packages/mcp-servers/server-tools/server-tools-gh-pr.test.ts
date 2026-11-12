@@ -1,0 +1,176 @@
+/**
+ * env-access WU3 (#1211): server-tools `gh_pr` — an environment user's PR actions with the environment's own token,
+ * read from the secret store, under the environment's conditions, audited.
+ */
+
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('@modelcontextprotocol/sdk/server/index.js', () => ({
+  Server: class {
+    setRequestHandler() {}
+    connect() {}
+  },
+}));
+vi.mock('@modelcontextprotocol/sdk/server/stdio.js', () => ({ StdioServerTransport: class {} }));
+vi.mock('@modelcontextprotocol/sdk/types.js', () => ({
+  CallToolRequestSchema: Symbol('CallToolRequestSchema'),
+  ListToolsRequestSchema: Symbol('ListToolsRequestSchema'),
+}));
+vi.mock('@soma/process-shared/stderr-logger.js', () => ({
+  StderrLogger: class {
+    debug() {}
+    info() {}
+    warn() {}
+    error() {}
+  },
+}));
+
+import type { Fetch } from './env-github.js';
+import { handleGhPr, loadConfig, resetConfigCache } from './server-tools-mcp-server.js';
+
+const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'server-tools-gh-pr-'));
+const CONFIG_FILE = path.join(ROOT, 'config.json');
+const SECRETS = path.join(ROOT, 'secrets');
+const AUDIT = path.join(ROOT, 'data', 'env-audit');
+const SHA = 'a'.repeat(40);
+const saved = { ...process.env };
+
+afterAll(() => fs.rmSync(ROOT, { recursive: true, force: true }));
+
+beforeEach(() => {
+  fs.mkdirSync(SECRETS, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(SECRETS, 'gh-org-admin'), 'tok-from-store\n', { mode: 0o600 });
+  fs.writeFileSync(
+    CONFIG_FILE,
+    JSON.stringify({
+      'server-tools': {
+        dev2: {
+          envUser: 'env:acme-dev2',
+          ssh: { host: 'dev2' },
+          github: {
+            token: { $secret: 'gh-org-admin' },
+            repos: ['acme/app'],
+            approveWhen: { authors: ['soma-bot[bot]'], bases: ['develop'], requiredChecksGreen: true },
+            mergeBases: ['develop'],
+          },
+        },
+        nogh: { ssh: { host: 'x' } },
+      },
+    }),
+  );
+  process.env.SOMA_CONFIG_FILE = CONFIG_FILE;
+  process.env.SOMA_SECRETS_DIR = SECRETS;
+  process.env.SOMA_AUDIT_DIR = AUDIT;
+  process.env.SOMA_REQUESTER = 'U123';
+  resetConfigCache();
+  loadConfig();
+});
+
+afterEach(() => {
+  process.env = { ...saved };
+  fs.rmSync(path.join(ROOT, 'data'), { recursive: true, force: true });
+});
+
+function github(prOver: Record<string, unknown> = {}, failWrite = false) {
+  const calls: { method: string; url: string; auth: string; body?: string }[] = [];
+  const fetch: Fetch = async (url, init) => {
+    calls.push({ method: init.method, url, auth: init.headers.Authorization, body: init.body });
+    const p = url.replace('https://api.github.com', '');
+    const json = (v: unknown, status = 200) => ({ ok: status < 400, status, json: async () => v });
+    if (init.method === 'GET' && p === '/repos/acme/app/pulls/7') {
+      return json({
+        title: 'T',
+        state: 'open',
+        draft: false,
+        user: { login: 'soma-bot[bot]' },
+        base: { ref: 'develop' },
+        head: { sha: SHA },
+        ...prOver,
+      });
+    }
+    if (p.includes('/check-runs'))
+      return json({ total_count: 1, check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success' }] });
+    if (p.endsWith('/status')) return json({ statuses: [] });
+    if (init.method === 'POST' || init.method === 'PUT') {
+      return failWrite ? json({ message: 'Review cannot be requested' }, 422) : json({ sha: 'c'.repeat(40) });
+    }
+    return json({ message: 'nope' }, 404);
+  };
+  return { fetch, calls };
+}
+
+const ledger = () =>
+  fs.existsSync(path.join(AUDIT, 'env-audit.jsonl'))
+    ? fs
+        .readFileSync(path.join(AUDIT, 'env-audit.jsonl'), 'utf8')
+        .trim()
+        .split('\n')
+        .map((l) => JSON.parse(l))
+    : [];
+
+describe('gh_pr', () => {
+  it('views a PR with the token from the secret store, and audits nothing', async () => {
+    const { fetch, calls } = github();
+    const out = await handleGhPr({ server: 'dev2', action: 'view', repo: 'acme/app', pr: 7 }, fetch);
+    expect(JSON.parse(out.content[0].text)).toMatchObject({
+      headSha: SHA,
+      author: 'soma-bot[bot]',
+      checks: { green: true },
+    });
+    expect(calls.every((c) => c.auth === 'Bearer tok-from-store')).toBe(true);
+    expect(ledger()).toEqual([]);
+  });
+
+  it('approves under the conditions, pinned to the SHA, with intent and done in the ledger', async () => {
+    const { fetch, calls } = github();
+    const out = await handleGhPr({ server: 'dev2', action: 'approve', repo: 'acme/app', pr: 7, sha: SHA }, fetch);
+    expect(out.content[0].text).toBe(`approved acme/app#7 at ${SHA}`);
+    const review = calls.find((c) => c.method === 'POST');
+    expect(JSON.parse(review?.body ?? '{}')).toMatchObject({ event: 'APPROVE', commit_id: SHA });
+    expect(ledger().map((r) => [r.phase, r.envUser, r.requester, r.action, r.detail.pr])).toEqual([
+      ['intent', 'env:acme-dev2', 'U123', 'approve', 7],
+      ['done', 'env:acme-dev2', 'U123', 'approve', 7],
+    ]);
+  });
+
+  it('refuses, writes nothing and calls no write API when a condition fails', async () => {
+    const { fetch, calls } = github({ user: { login: 'someone' } });
+    await expect(
+      handleGhPr({ server: 'dev2', action: 'approve', repo: 'acme/app', pr: 7, sha: SHA }, fetch),
+    ).rejects.toThrow(/not approved: author someone/);
+    expect(calls.some((c) => c.method !== 'GET')).toBe(false);
+    expect(ledger()).toEqual([]);
+  });
+
+  it('refuses the write when the ledger cannot be written', async () => {
+    delete process.env.SOMA_AUDIT_DIR;
+    const { fetch, calls } = github();
+    await expect(
+      handleGhPr({ server: 'dev2', action: 'merge', repo: 'acme/app', pr: 7, sha: SHA }, fetch),
+    ).rejects.toThrow(/audit ledger is not configured/);
+    expect(calls.some((c) => c.method !== 'GET')).toBe(false);
+  });
+
+  it('records a failed write, and never shows the token', async () => {
+    const { fetch } = github({}, true);
+    const err = await handleGhPr({ server: 'dev2', action: 'merge', repo: 'acme/app', pr: 7, sha: SHA }, fetch).catch(
+      (e: Error) => e,
+    );
+    expect(String(err)).toMatch(/answered 422/);
+    expect(String(err)).not.toContain('tok-from-store');
+    expect(ledger().map((r) => r.phase)).toEqual(['intent', 'failed']);
+  });
+
+  it('refuses a repository the environment does not list, and a server without github', async () => {
+    const { fetch } = github();
+    await expect(handleGhPr({ server: 'dev2', action: 'view', repo: 'acme/other', pr: 7 }, fetch)).rejects.toThrow(
+      /not one of this environment's repositories/,
+    );
+    await expect(handleGhPr({ server: 'nogh', action: 'view', repo: 'acme/app', pr: 7 }, fetch)).rejects.toThrow(
+      /no github section/,
+    );
+  });
+});
