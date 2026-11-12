@@ -330,6 +330,9 @@ export interface EventRouterDeps {
   offerSourceThreadNewTask?: (request: SourceThreadNewTaskRequest) => Promise<boolean>;
 }
 
+/** How long a source-thread mention stays answered — Slack's second delivery of one message comes within seconds. */
+const SOURCE_MENTION_DEDUP_MS = 10 * 60_000;
+
 /** A source-thread instruction to offer as a new task — where it is and who sent it. */
 export interface SourceThreadNewTaskRequest {
   channel: string;
@@ -338,8 +341,10 @@ export interface SourceThreadNewTaskRequest {
   /** The mention message itself. */
   ts: string;
   user: string;
-  /** The instruction as the pipeline would get it (bot mention removed) — shown in the DM. */
+  /** The instruction as the pipeline would get it (bot mention removed) — shown in the DM. Empty for files only. */
   text: string;
+  /** Files attached to the mention (a `file_share` message) — they go with the instruction. */
+  fileCount?: number;
   /** The work threads already started from this source thread. */
   linked: Array<{ title?: string; activityState?: string }>;
 }
@@ -868,44 +873,15 @@ export class EventRouter {
         : (event as MessageEvent).routeContext;
 
       // Source thread re-mention: the thread's earlier mention already moved to its own work thread(s).
-      // The thread gets their status card. An instruction there is new work (SSOT 2026-11-12): its sender is
-      // asked by DM whether to run it as a new task — never dropped, never run without that answer.
       // (Runs AFTER the `/z` gate so `/z …` commands can execute in source threads.)
-      if (event.thread_ts) {
-        const existingSession = this.deps.claudeHandler.getSession(event.channel, event.thread_ts);
-        if (!existingSession) {
-          const linkedSessions = this.deps.claudeHandler.findSessionsBySourceThread(event.channel, event.thread_ts);
-          if (linkedSessions.length > 0) {
-            let offered = false;
-            const instruction = nextText.trim();
-            if (instruction && event.user && this.deps.offerSourceThreadNewTask) {
-              try {
-                offered = await this.deps.offerSourceThreadNewTask({
-                  channel: event.channel,
-                  threadTs: event.thread_ts,
-                  ts: event.ts,
-                  user: event.user,
-                  text: instruction,
-                  linked: linkedSessions.map((s) => ({ title: s.title, activityState: s.activityState })),
-                });
-              } catch (error) {
-                this.logger.warn('Source thread new-task offer failed', {
-                  channel: event.channel,
-                  threadTs: event.thread_ts,
-                  error: (error as Error)?.message,
-                });
-              }
-            }
-            await this.respondWithLinkedSessionStatus(
-              event.channel,
-              event.thread_ts,
-              linkedSessions,
-              say,
-              offered ? `📨 <@${event.user}> 님, 이 지시를 새 작업으로 진행할지 DM으로 물었습니다.` : undefined,
-            );
-            return;
-          }
-        }
+      if (
+        event.thread_ts &&
+        (await this.answerSourceThreadMention(
+          { channel: event.channel, threadTs: event.thread_ts, ts: event.ts, user: event.user, text: nextText },
+          say,
+        ))
+      ) {
+        return;
       }
 
       await this.messageHandler(
@@ -1413,6 +1389,26 @@ export class EventRouter {
     const text: string = messageEvent.text || '';
     const botId = await this.deps.slackApi.getBotUserId();
     if (botId && text.includes(`<@${botId}>`)) {
+      // SSOT 2026-11-12 — in a source thread this is an instruction like any other mention there: the same DM
+      // confirmation, never a direct start (app_mention defers a mention with files to this path). That includes
+      // `/z …` with files: it runs, if approved, in the new work thread — never on the source thread's key.
+      const instruction = text.replace(new RegExp(`<@${botId}>`, 'g'), '').trim();
+      if (
+        threadTs &&
+        (await this.answerSourceThreadMention(
+          {
+            channel,
+            threadTs,
+            ts,
+            user: messageEvent.user,
+            text: instruction,
+            fileCount: Array.isArray(messageEvent.files) ? messageEvent.files.length : 0,
+          },
+          say,
+        ))
+      ) {
+        return;
+      }
       this.logger.info('Handling file upload with bot mention as new session initiation', {
         channel,
         user: messageEvent.user,
@@ -1651,6 +1647,76 @@ export class EventRouter {
     };
 
     this.deps.claudeHandler.setExpiryCallbacks(callbacks);
+  }
+
+  /**
+   * Source-thread mentions already answered (`channel:ts`): whether the status card went and whether the offer was
+   * sent — a twice-delivered message gets one card and one offer.
+   */
+  private readonly answeredSourceMentions = new Map<string, { at: number; carded: boolean; offered: boolean }>();
+
+  /**
+   * A mention in a thread with no session of its own whose earlier mention already moved to its own work
+   * thread(s) — a source thread. The thread gets the status of every work thread started from it. An instruction
+   * there (text, or files) is new work (SSOT 2026-11-12): its sender is asked by DM whether to run it as a new task —
+   * never dropped, never run without that answer. True when this handled the mention (the thread is a source thread).
+   */
+  private async answerSourceThreadMention(
+    mention: { channel: string; threadTs: string; ts: string; user?: string; text: string; fileCount?: number },
+    say: SayFn,
+  ): Promise<boolean> {
+    if (this.deps.claudeHandler.getSession(mention.channel, mention.threadTs)) return false;
+    const linkedSessions = this.deps.claudeHandler.findSessionsBySourceThread(mention.channel, mention.threadTs);
+    if (linkedSessions.length === 0) return false;
+    // Slack can deliver one message as both `app_mention` (its files missing) and `file_share`. The status card
+    // goes once; the offer goes once it is sent — a first delivery that had nothing to offer (a files-only mention
+    // whose files were missing) or whose DM failed leaves the offer to the second delivery.
+    const key = `${mention.channel}:${mention.ts}`;
+    const now = Date.now();
+    for (const [k, seen] of this.answeredSourceMentions) {
+      if (now - seen.at > SOURCE_MENTION_DEDUP_MS) this.answeredSourceMentions.delete(k);
+    }
+    const seen = this.answeredSourceMentions.get(key) ?? { at: now, carded: false, offered: false };
+    this.answeredSourceMentions.set(key, seen);
+    if (seen.offered) return true;
+
+    let offered = false;
+    const instruction = mention.text.trim();
+    const fileCount = mention.fileCount ?? 0;
+    if ((instruction || fileCount > 0) && mention.user && this.deps.offerSourceThreadNewTask) {
+      seen.offered = true; // claimed before the await: a concurrent second delivery does not offer again
+      try {
+        offered = await this.deps.offerSourceThreadNewTask({
+          channel: mention.channel,
+          threadTs: mention.threadTs,
+          ts: mention.ts,
+          user: mention.user,
+          text: instruction,
+          ...(fileCount > 0 ? { fileCount } : {}),
+          linked: linkedSessions.map((s) => ({ title: s.title, activityState: s.activityState })),
+        });
+      } catch (error) {
+        this.logger.warn('Source thread new-task offer failed', {
+          channel: mention.channel,
+          threadTs: mention.threadTs,
+          error: (error as Error)?.message,
+        });
+      }
+      seen.offered = offered; // a failed DM may be tried again by the second delivery
+    }
+    const note = offered ? `📨 <@${mention.user}> 님, 이 지시를 새 작업으로 진행할지 DM으로 물었습니다.` : undefined;
+    if (!seen.carded) {
+      seen.carded = true;
+      await this.respondWithLinkedSessionStatus(mention.channel, mention.threadTs, linkedSessions, say, note);
+    } else if (note) {
+      // The card went with the first delivery; this one only completed the offer.
+      try {
+        await say({ text: note, thread_ts: mention.threadTs });
+      } catch (error) {
+        this.logger.warn('Source thread new-task note failed', { error: (error as Error)?.message });
+      }
+    }
+    return true;
   }
 
   /**
