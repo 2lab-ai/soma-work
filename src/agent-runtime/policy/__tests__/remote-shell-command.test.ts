@@ -121,6 +121,9 @@ const RUNS = [
   // A variable, `$HOME` included, could be set by the command in many ways (trinity R6–R7).
   `read H"OME" <<< '--pre=ssh'; rg pattern "$HOME" host`,
   `flag=-v; name=HO; printf "$flag" "\${name}ME" %s --pre=ssh; rg pattern "$HOME" host`,
+  // trinity R8 (astra): a run-time `printf -v PATH` makes a bare data name run anything.
+  'ln -s /usr/bin/ssh ./cat; flag=-v; printf "$flag" PATH %s .; cat host',
+  'printf -vPATH %s .; cat ssh',
   // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
   ': ${HOME::=--pre=ssh}; rg x $HOME',
   // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template

@@ -99,13 +99,18 @@ const DATA_COMMANDS = new Set([
   'esac',
   '}',
 ]);
-/** Options of a data program that name a program for it to run: long forms, and letters of short bundles. */
+/**
+ * Options of a data program that name a program for it to run, or set a variable: long forms, and letters of
+ * short bundles. An expansion among such a program's arguments could become one of them, so it refuses too.
+ */
 const EXEC_OPTIONS: Record<string, { long: readonly string[]; short: string }> = {
   rg: { long: ['--pre', '--hostname-bin'], short: '' },
   ag: { long: ['--pager'], short: '' },
   ack: { long: ['--pager'], short: '' },
   man: { long: ['--pager', '--html'], short: 'PH' },
   sort: { long: ['--compress-program'], short: '' },
+  // `printf -v PATH …` sets a variable, PATH included, which changes what every bare name runs.
+  printf: { long: [], short: 'v' },
   'git grep': { long: ['--open-files-in-pager'], short: 'O' },
 };
 /** git subcommands that read or record: their arguments are paths, revisions and messages. */
@@ -586,8 +591,6 @@ function verdict(cmd: SimpleCommand): Verdict | 'runs' {
   // zsh closes a brace group at a bare `}` and reads on (`{ echo a } always { cmd }`).
   const brace = args.indexOf('}');
   if (brace >= 0 && brace < args.length - 1) return 'may-run';
-  // `printf -v NAME` sets a variable, possibly one trusted above; `read` is not a data command for the same reason.
-  if (program === 'printf' && args.some((a) => a.startsWith('-v'))) return 'may-run';
   if (DATA_COMMANDS.has(program)) return namesProgram(program, args) ? 'may-run' : 'data';
   if (program === 'git') return gitVerdict(args);
   if (program === 'gh') return ghVerdict(args);
