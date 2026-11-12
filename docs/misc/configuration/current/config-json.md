@@ -369,7 +369,7 @@ it.
 | `format` | `json` (default) posts `body` as JSON; `form` posts it as `application/x-www-form-urlencoded` (values must be strings, numbers or booleans) |
 | `body` | the object posted; any value may be a `$secret` reference |
 | `token` | where the session comes back: `json:<dot.path>` (a non-empty string in the JSON answer, returned as `kind: "bearer"`) or `cookie:<name>` (a cookie the answer sets, returned as `kind: "cookie"`; the last `Set-Cookie` for it wins, and one that deletes it — empty value, `Max-Age` ≤ 0, `Expires` past — leaves no session) |
-| `successRedirect` | for a `cookie:` login that answers with a redirect: the path a successful login goes to. A redirect is taken only to that path (or below it) on the login's own host; without `successRedirect` a redirect is refused — a refused form login often redirects back to the login page with an anonymous cookie |
+| `successRedirect` | for a `cookie:` login that answers with a redirect: the path a successful login goes to. A redirect is taken only to that path (or below it; `/` means the root page only) on the login's own host, never to the login page or below it; without `successRedirect` a redirect is refused — a refused form login often redirects back to the login page with an anonymous cookie |
 
 `login` answers `{server, account, kind, token}` (and `cookie` for a cookie session). A refused login says only the
 host and the status — never the answer's body, which may echo what was sent. No redirect is followed: a `cookie:`

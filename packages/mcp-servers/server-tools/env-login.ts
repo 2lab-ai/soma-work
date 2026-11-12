@@ -138,9 +138,15 @@ function redirectProblem(spec: WebLogin, status: number, location: string | null
     return `login to ${host} redirected to an unreadable location`;
   }
   if (target.origin !== new URL(spec.url).origin) return `login to ${host} redirected to another host`;
+  // Never the location itself in the message: a refusal may carry what was sent in its path.
   const goal = spec.successRedirect;
-  const arrived = target.pathname === goal || target.pathname.startsWith(goal.endsWith('/') ? goal : `${goal}/`);
-  return arrived ? null : `login to ${host} redirected to ${target.pathname}, not ${goal}`;
+  const loginPath = new URL(spec.url).pathname;
+  const under = (path: string, root: string) =>
+    path === root || path.startsWith(root.endsWith('/') ? root : `${root}/`);
+  // `/` names the root page only; a path under the goal counts, the login page and what is under it never do.
+  const arrived = goal === '/' ? target.pathname === '/' : under(target.pathname, goal);
+  if (!arrived || under(target.pathname, loginPath)) return `login to ${host} did not redirect to successRedirect`;
+  return null;
 }
 
 function encode(spec: WebLogin): { contentType: string; body: string } {

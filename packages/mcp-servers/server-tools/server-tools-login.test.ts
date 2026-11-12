@@ -185,11 +185,39 @@ describe('login', () => {
     const cookie = ['SESSION=anon; Path=/'];
     const refused = (account: string, location: string | undefined) =>
       handleLogin({ server: 'dev2', account }, web({ status: 302, setCookie: cookie, location }).fetch);
-    await expect(refused('bo', '/login?error=1')).rejects.toThrow(/redirected to \/login, not \/home/);
+    await expect(refused('bo', '/login?error=1')).rejects.toThrow(/did not redirect to successRedirect/);
     await expect(refused('bo', 'https://elsewhere.example.test/home')).rejects.toThrow(/redirected to another host/);
     await expect(refused('bo', undefined)).rejects.toThrow(/redirected without a location/);
     await expect(refused('nogoal', '/home')).rejects.toThrow(/answered 302; set successRedirect/);
     expect(ledger().filter((r) => r.phase === 'done')).toEqual([]);
+  });
+
+  // trinity R2 (grok): `/` is the root page only, the login page never counts, and the location never shows.
+  it('takes `/` as the root page only, never the login page under the goal, and never repeats the location', async () => {
+    const cookie = ['SESSION=anon; Path=/'];
+    writeConfig({
+      root: {
+        url: 'https://bo.example.test/login',
+        body: { pw: { $secret: 'dev2-player' } },
+        token: 'cookie:SESSION',
+        successRedirect: '/',
+      },
+      app: {
+        url: 'https://bo.example.test/app/login',
+        body: { pw: { $secret: 'dev2-player' } },
+        token: 'cookie:SESSION',
+        successRedirect: '/app',
+      },
+    });
+    const go = (account: string, location: string) =>
+      handleLogin({ server: 'dev2', account }, web({ status: 302, setCookie: cookie, location }).fetch);
+    await expect(go('root', '/login')).rejects.toThrow(/did not redirect to successRedirect/);
+    await expect(go('app', '/app/login?error=1')).rejects.toThrow(/did not redirect to successRedirect/);
+    const leak = await go('root', `/login/${PASSWORD}`).catch((e: Error) => e);
+    expect(String(leak)).not.toContain(PASSWORD);
+    expect(JSON.stringify(ledger())).not.toContain(PASSWORD);
+    expect(JSON.parse((await go('root', '/')).content[0].text).token).toBe('anon');
+    expect(JSON.parse((await go('app', '/app/home')).content[0].text).token).toBe('anon');
   });
 
   it('never hands out a cookie the answer deletes, and takes the last one it sets', async () => {
