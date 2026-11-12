@@ -95,6 +95,9 @@ describe('sandbox-topic.applySandbox', () => {
     const r = await applySandbox({ userId: 'U1', value: 'off' });
     expect(r.ok).toBe(false);
     expect(r.summary).toContain('SOMA_SANDBOX_OFF_ALLOWED');
+    // The home package caches are read-only in the sandbox (fable R3): the card says how to install.
+    expect(r.description).not.toContain('패키지 캐시 사용 가능');
+    expect(r.description).toContain('--cache /tmp/');
   });
 
   it('anyone can toggle network allowlist', async () => {

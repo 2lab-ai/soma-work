@@ -19,8 +19,9 @@ import type { CommandContext, CommandHandler, CommandResult } from './types';
  */
 /** Reply to an admin's `sandbox off` on a host whose operator has not allowed it. */
 export const SANDBOX_OFF_NOT_ALLOWED_TEXT =
-  `🛡️ *Sandbox stays ON*\n\nAdmins run in the admin sandbox: every network domain, gh, local servers and the package caches ` +
-  `work, while the secret store, the approval records and the deployment stay out of reach. ` +
+  `🛡️ *Sandbox stays ON*\n\nAdmins run in the admin sandbox: every network domain, gh and local servers work, while the ` +
+  `secret store, the approval records and the deployment stay out of reach. The home package caches are read-only: ` +
+  `give the install command its own cache in your temp directory (\`npm install --cache /tmp/<your user id>/npm\`, or the tool's cache option). ` +
   `Turning it off is allowed only by the host's operator (\`SOMA_SANDBOX_OFF_ALLOWED=true\` in \`.env\`), for an emergency.`;
 
 export class SandboxHandler implements CommandHandler {

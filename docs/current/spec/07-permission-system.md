@@ -480,7 +480,7 @@ this.app.action('deny_tool', async ({ ack, body, respond }) => {
 
 | 무엇 | 어떻게 | 위치 |
 |---|---|---|
-| 어드민 세션 | 항상 샌드박스. 어드민 프로필 = 모든 도메인(`WebFetch(domain:*)` 허용 규칙) · `localhost`/`127.0.0.1` · 로컬 바인딩 · gh TLS(`enableWeakerNetworkIsolation`) · 임시 디렉터리 쓰기. 홈의 캐시는 쓰지 않는다(봇이 `npx -y`로 띄우는 MCP 코드가 npm 캐시에 있다). 캐시를 env로 옮기지도 않는다 — CLI env는 stdio MCP 자식이 물려받는다. 샌드박스 안 설치는 `--cache /tmp/{uid}/npm`처럼 캐시를 직접 지정 | `src/sandbox/admin-sandbox-profile.ts` `adminSandboxProfile` |
+| 어드민 세션 | 항상 샌드박스. 어드민 프로필 = 모든 도메인(`WebFetch(domain:*)` 허용 규칙) · `localhost`/`127.0.0.1` · 로컬 바인딩 · gh TLS(`enableWeakerNetworkIsolation`) · 임시 디렉터리 쓰기. 홈의 캐시는 쓰지 않는다(봇이 `npx -y`로 띄우는 MCP 코드가 npm 캐시에 있다). 캐시를 env로 옮기지도 않는다 — CLI env는 stdio MCP 자식이 물려받는다. 샌드박스 안 설치는 그 명령에만 캐시를 지정(`npm install --cache /tmp/{uid}/npm`, pnpm `--store-dir`, `PIP_CACHE_DIR`, `UV_CACHE_DIR`, `GOCACHE`) | `src/sandbox/admin-sandbox-profile.ts` `adminSandboxProfile` |
 | 어드민 네이티브 쓰기 | 3b(쓰기 경계)가 어드민에게도 걸린다: 샌드박스 Bash와 같은 뿌리(작업 디렉터리 · `/tmp/{uid}` · 임시 디렉터리) 밖의 Write·Edit·NotebookEdit는 거부. PATH의 실행 파일(봇 유저 소유 `/opt/homebrew` 등)을 덮어 샌드박스 밖 실행을 얻는 길을 막는다 | `tool-policy.ts` 3b `else if` · Lean `adminNativeWriteGuard` |
 | `sandbox off` | 호스트 운영자가 `.env`에 `SOMA_SANDBOX_OFF_ALLOWED=true`를 둔 호스트의 어드민에게만 효과. 그 밖에는 명령이 거부 이유를 답하고 세션은 샌드박스로 돈다(로그 경고) | `getSandboxOffAllowed` · `isSandboxOffInEffect` · `sandbox-handler.ts` · `sandbox-topic.ts` |
 | 쓰기 보호(모든 세션, 샌드박스 켜짐·꺼짐 모두) | `Edit` 거부 규칙: 설정 디렉터리 · 실행 코드 루트 · 봇의 cwd · `DATA_DIR` · plugins 전체(각 경로의 링크·실경로 둘 다, 작업 디렉터리가 그 안이어도 예외 없음), 홈의 시작·신뢰 파일(LaunchAgents · 셸 rc · `.ssh` · git·CLI 설정, 홈의 두 표기 모두). CLI가 샌드박스 `denyWrite`에도 합친다 | `protectedWriteDenyRules` |

@@ -120,7 +120,7 @@ export async function applySandbox(args: { userId: string; value: string }): Pro
         ok: false,
         summary: '🛡️ Sandbox stays ON — 이 호스트는 sandbox off를 허용하지 않습니다 (`SOMA_SANDBOX_OFF_ALLOWED`).',
         description:
-          '어드민은 어드민 샌드박스에서 실행됩니다(모든 도메인·gh·로컬 서버·패키지 캐시 사용 가능, 비밀 저장소·승인 기록·배포 디렉터리는 막힘). 끄기는 호스트 운영자가 `.env`에서만 허용합니다.',
+          '어드민은 어드민 샌드박스에서 실행됩니다(모든 도메인·gh·로컬 서버 사용 가능, 비밀 저장소·승인 기록·배포 디렉터리는 막힘). 홈의 패키지 캐시는 읽기 전용이니 설치 명령에 임시 디렉터리 캐시를 직접 지정하세요(`npm install --cache /tmp/<유저 ID>/npm` 또는 그 도구의 캐시 옵션). 끄기는 호스트 운영자가 `.env`에서만 허용합니다.',
       };
     }
     userSettingsStore.setUserSandboxDisabled(userId, disable);

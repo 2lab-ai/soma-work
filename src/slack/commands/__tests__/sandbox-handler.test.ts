@@ -167,6 +167,9 @@ describe('SandboxHandler', () => {
       expect(userSettingsStore.setUserSandboxDisabled).not.toHaveBeenCalled();
       expect(sayCall(ctx)).toContain('SOMA_SANDBOX_OFF_ALLOWED');
       expect(sayCall(ctx)).toContain('admin sandbox');
+      // The home package caches are read-only in the sandbox (fable R3): the reply says how to install.
+      expect(sayCall(ctx)).not.toMatch(/package caches\s+work/);
+      expect(sayCall(ctx)).toContain('--cache /tmp/');
     });
 
     it('admin can enable sandbox', async () => {
