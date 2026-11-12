@@ -1170,22 +1170,13 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
   });
 });
 
-// env-access #1242: files the CLI loads when a session starts are moved out of the session directory before
-// every start, and refused to the file tools while it runs.
-describe('session start files (env-access #1242)', () => {
-  const START_FILES = [path.join(WORK_DIR, '.mcp.json'), path.join(WORK_DIR, '.claude', 'settings.json')];
-  const QUARANTINE = path.join(DATA_DIR, 'quarantine', 'session-start-files');
-
-  function plant() {
-    for (const f of START_FILES) {
-      fs.mkdirSync(path.dirname(f), { recursive: true });
-      fs.writeFileSync(f, '{}');
-    }
-  }
+// env-access #1242: the CLI reads project settings and the project MCP config from an empty host directory under
+// DATA_DIR, never from the working directory a model session writes. CLAUDE.md and plan files stay in the cwd.
+describe('project config root (env-access #1242)', () => {
+  const ROOT = path.join(DATA_DIR, 'session-project-config');
 
   afterEach(() => {
-    for (const f of START_FILES) fs.rmSync(f, { force: true });
-    fs.rmSync(path.join(DATA_DIR, 'quarantine'), { recursive: true, force: true });
+    fs.rmSync(ROOT, { recursive: true, force: true });
   });
 
   async function build() {
@@ -1195,25 +1186,16 @@ describe('session start files (env-access #1242)', () => {
     );
   }
 
-  it('moves them into the quarantine under DATA_DIR before the CLI starts', async () => {
-    plant();
-    await build();
-    for (const f of START_FILES) expect(fs.existsSync(f), f).toBe(false);
-    expect(fs.readdirSync(QUARANTINE)).toHaveLength(1);
-  });
-
-  it('refuses them to the file tools: Edit deny rules for the session directory', async () => {
+  it('points the CLI at an empty directory under DATA_DIR, not the working directory', async () => {
     const { options } = await build();
-    const deny = (options.settings as { permissions?: { deny?: string[] } }).permissions?.deny ?? [];
-    expect(deny).toContain(`Edit(/${path.join(WORK_DIR, '.mcp.json')})`);
-    expect(deny).toContain(`Edit(/${path.join(WORK_DIR, '.claude', 'settings.json')})`);
+    expect(options.projectConfigRoot).toBe(ROOT);
+    expect(options.cwd).toBe(WORK_DIR);
+    expect(fs.readdirSync(ROOT)).toEqual([]);
+    expect(options.settingSources).toEqual(['project']);
   });
 
-  it('fails closed: the session does not start when a file cannot be moved', async () => {
-    plant();
-    fs.mkdirSync(path.join(DATA_DIR, 'quarantine'), { recursive: true });
-    fs.writeFileSync(QUARANTINE, 'not a directory');
+  it('fails closed: a session does not start when the root holds anything', async () => {
+    fs.mkdirSync(path.join(ROOT, '.claude'), { recursive: true });
     await expect(build()).rejects.toThrow(/session was not started/);
-    expect(fs.existsSync(START_FILES[0])).toBe(true);
   });
 });

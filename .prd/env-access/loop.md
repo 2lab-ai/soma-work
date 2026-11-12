@@ -35,7 +35,8 @@ ssot = [`ssot.md`](ssot.md)
   dev에서 확인될 때까지. 둘 다 #1240 이전부터 main에 있던 것이고 #1240이 넓히지 않는다.
 
 - **WU2 리뷰가 남긴 후속 (PR #1240):**
-  - #1242: 세션 시작 때 CLI가 읽는 파일을 통한 샌드박스 탈출 → 시작 전마다 격리 + 실행 중 쓰기 거부(브랜치 `fix/env-access-1242`).
+  - #1242: 세션 시작 때 CLI가 읽는 파일을 통한 샌드박스 탈출 → `projectConfigRoot`를 빈 `DATA_DIR` 디렉터리로(브랜치 `fix/env-access-1242`).
+    첫 시도(시작 전 격리 + 쓰기 거부)는 리뷰에서 같은 유저의 다른 세션이 가드와 시작 사이에 다시 심을 수 있어(fable R1) 버렸다.
   - 어드민 샌드박스 실측(2026-11-13)에서 나온 것:
     - `ps`·`pgrep` 막힘(sysmond) — 세션 안 `verify-restart`가 멈춘다.
     - `.git/config` 쓰기 막힘 — upstream 추적 설정 불가(`git switch -c … --no-track`, `git push`로 우회).
