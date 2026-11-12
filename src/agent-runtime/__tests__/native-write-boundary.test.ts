@@ -329,12 +329,16 @@ describe('evaluateToolPolicy — step 3b, the native write boundary', () => {
     ).toBe('pass');
   });
 
-  it('exempts admins, and asks nothing of a session without a boundary or of another tool', () => {
+  it('holds admins to it too (env-access WU2, #1210), and asks nothing of a session without a boundary or of another tool', () => {
     const spy = vi.fn(() => 'outside');
-    expect(evaluateToolPolicy('Write', outsideWrite, ctx({ isAdmin: true, checkNativeWrite: spy })).decision).toBe(
-      'allow',
-    );
+    const admin = evaluateToolPolicy('Write', outsideWrite, ctx({ isAdmin: true, checkNativeWrite: spy }));
+    expect(admin.decision).toBe('deny');
+    expect(admin.reason).toBe('write-boundary: outside');
+    spy.mockClear();
     expect(evaluateToolPolicy('Write', outsideWrite, ctx({ checkNativeWrite: undefined })).decision).toBe('allow');
+    expect(
+      evaluateToolPolicy('Write', outsideWrite, ctx({ isAdmin: true, checkNativeWrite: undefined })).decision,
+    ).toBe('allow');
     for (const tool of ['Read', 'Bash', 'Glob', 'TodoWrite', 'mcp__x__write', 'MultiEdit', 'write']) {
       evaluateToolPolicy(tool, outsideWrite, ctx({ checkNativeWrite: spy }));
     }
@@ -480,6 +484,12 @@ describe('buildStreamOptions — a non-admin session with the sandbox on', () =>
       getUserSandboxDisabled: () => true,
       getUserNetworkDisabled: () => false,
     } as never);
+    // Off takes effect only for an admin on a host that allows it (env-access WU2, #1210).
+    const savedAdmins = process.env.ADMIN_USERS;
+    process.env.ADMIN_USERS = SESSION_USER;
+    process.env.SOMA_SANDBOX_OFF_ALLOWED = 'true';
+    const { resetAdminUsersCache } = await import('../../admin-utils');
+    resetAdminUsersCache();
     try {
       const { call, options } = await writeHook(path.join(ROOT, 'repo'));
       expect(options.sandbox).toBeUndefined();
@@ -487,6 +497,10 @@ describe('buildStreamOptions — a non-admin session with the sandbox on', () =>
       expect(out.hookSpecificOutput?.permissionDecision).toBe('allow');
     } finally {
       spy.mockRestore();
+      if (savedAdmins === undefined) delete process.env.ADMIN_USERS;
+      else process.env.ADMIN_USERS = savedAdmins;
+      delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
+      resetAdminUsersCache();
     }
   });
 });

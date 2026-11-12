@@ -21,6 +21,7 @@ vi.mock('../../../../user-settings-store', () => {
 });
 
 import { isAdminUser } from '../../../../admin-utils';
+import { userSettingsStore } from '../../../../user-settings-store';
 import { applySandbox, createSandboxTopicBinding, renderSandboxCard } from '../sandbox-topic';
 
 function actionIds(blocks: any[]): string[] {
@@ -44,12 +45,28 @@ describe('sandbox-topic.renderSandboxCard', () => {
     expect(ids).toContain('z_setting_sandbox_cancel');
   });
 
-  it('exposes on/off buttons for admins', async () => {
+  it('exposes on/off buttons for admins on a host that allows off', async () => {
     vi.mocked(isAdminUser).mockReturnValue(true);
-    const { blocks } = await renderSandboxCard({ userId: 'U1', issuedAt: 2 });
+    process.env.SOMA_SANDBOX_OFF_ALLOWED = 'true';
+    try {
+      const { blocks } = await renderSandboxCard({ userId: 'U1', issuedAt: 2 });
+      const ids = actionIds(blocks);
+      expect(ids).toContain('z_setting_sandbox_set_on');
+      expect(ids).toContain('z_setting_sandbox_set_off');
+    } finally {
+      delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
+    }
+  });
+
+  it('offers an admin no OFF button where off would not take effect, and says the network is every domain (fable R1)', async () => {
+    vi.mocked(isAdminUser).mockReturnValue(true);
+    delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
+    const { blocks, text } = await renderSandboxCard({ userId: 'U1', issuedAt: 3 });
     const ids = actionIds(blocks);
     expect(ids).toContain('z_setting_sandbox_set_on');
-    expect(ids).toContain('z_setting_sandbox_set_off');
+    expect(ids).not.toContain('z_setting_sandbox_set_off');
+    expect(text).toContain('every domain');
+    expect(text).not.toContain('preset dev domains');
   });
 });
 
@@ -61,11 +78,29 @@ describe('sandbox-topic.applySandbox', () => {
     expect(r.summary).toContain('Admin');
   });
 
-  it('admin can turn sandbox off', async () => {
+  it('admin can turn sandbox off on a host that allows it (SOMA_SANDBOX_OFF_ALLOWED)', async () => {
     vi.mocked(isAdminUser).mockReturnValue(true);
-    const r = await applySandbox({ userId: 'U1', value: 'off' });
-    expect(r.ok).toBe(true);
-    expect(r.summary).toContain('OFF');
+    process.env.SOMA_SANDBOX_OFF_ALLOWED = 'true';
+    try {
+      const r = await applySandbox({ userId: 'U1', value: 'off' });
+      expect(r.ok).toBe(true);
+      expect(r.summary).toContain('OFF');
+    } finally {
+      delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
+    }
+  });
+
+  it('admin cannot turn sandbox off on a host that does not allow it', async () => {
+    vi.mocked(isAdminUser).mockReturnValue(true);
+    delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
+    const r = await applySandbox({ userId: 'U-REFUSED', value: 'off' });
+    expect(r.ok).toBe(false);
+    expect(r.summary).toContain('SOMA_SANDBOX_OFF_ALLOWED');
+    // Nothing stored: a refused OFF must not take effect later if the host starts allowing it (review-of-legends R4).
+    expect(userSettingsStore.getUserSandboxDisabled('U-REFUSED')).toBe(false);
+    // The home package caches are read-only in the sandbox (fable R3): the card says how to install.
+    expect(r.description).not.toContain('패키지 캐시 사용 가능');
+    expect(r.description).toContain('--cache /tmp/');
   });
 
   it('anyone can toggle network allowlist', async () => {

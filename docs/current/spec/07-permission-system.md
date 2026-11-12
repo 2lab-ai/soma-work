@@ -471,12 +471,37 @@ this.app.action('deny_tool', async ({ ack, body, respond }) => {
   조상까지). Bash는 `/`가 든 낱말마다 같은 방식(`$HOME` 포함)으로 본다. 절대 Glob 패턴은 `path`와 상관없이 패턴만으로도
   보고, `{a,b}`는 펼쳐서 본다(256개를 넘으면 거부). 상대 경로는 `..`로 올라간 뒤 저장소의 마지막 두 이름이 보일 때만
   잡는다 — 그 밖의 상대 경로와 `cd` 뒤의 Bash는 CLI 거부 규칙(`settings.permissions.deny`)과 샌드박스가 막는다.
-- 아직 막지 못하는 것(#1210에서 닫는다): 어드민이 자기 샌드박스를 끈(`sandbox off`) 세션의 Bash, 그리고 어드민 모델의
-  네이티브 Write·Edit가 배포 디렉터리(`config.json`·`mcp-servers.json`·코드)를 고치는 경로 — 설정을 고쳐 비밀 참조를 다른
-  필드나 다른 호스트로 돌릴 수 있다. 그래서 #1210 전에는 비밀 저장소가 일반 유저 모델과 어드민의 네이티브 읽기만 막는다.
-- 샌드박스(`build-stream-options.ts`)는 모든 모델 세션에 같은 경로를 OS 수준으로 건다: `denyRead: [SECRETS_DIR]`,
+- 거부 문구는 이유를 따른다: 비밀 저장소, 승인 기록, 그 밖(GitHub·키체인 자격, 브로커 파일) 셋.
+- 샌드박스(`build-stream-options.ts`)는 모든 모델 세션에 같은 경로를 OS 수준으로 건다: `denyRead: [SECRETS_DIR, …자격 파일]`,
   `denyWrite: [SECRETS_DIR, …승인 기록]`, `failIfUnavailable: true`(샌드박스가 뜨지 못하면 명령을 실행하지 않는다.
   예외는 `.env`의 `SOMA_SANDBOX_ALLOW_UNAVAILABLE=true` — `src/config.ts` `getSandboxAllowUnavailable`).
+
+### 6a-2. 어드민도 샌드박스 안 (env-access WU2, #1210)
+
+| 무엇 | 어떻게 | 위치 |
+|---|---|---|
+| 어드민 세션 | 항상 샌드박스. 어드민 프로필 = 모든 도메인(`WebFetch(domain:*)` 허용 규칙) · `localhost`/`127.0.0.1` · 로컬 바인딩 · gh TLS(`enableWeakerNetworkIsolation`) · 임시 디렉터리 쓰기. 홈의 캐시는 쓰지 않는다(봇이 `npx -y`로 띄우는 MCP 코드가 npm 캐시에 있다). 캐시를 env로 옮기지도 않는다 — CLI env는 stdio MCP 자식이 물려받는다. 샌드박스 안 설치는 그 명령에만 캐시를 지정(`npm install --cache /tmp/{uid}/npm`, pnpm `--store-dir`, `PIP_CACHE_DIR`, `UV_CACHE_DIR`, `GOCACHE`) | `src/sandbox/admin-sandbox-profile.ts` `adminSandboxProfile` |
+| 어드민 네이티브 쓰기 | 3b(쓰기 경계)가 어드민에게도 걸린다: 샌드박스 Bash와 같은 뿌리(작업 디렉터리 · `/tmp/{uid}` · 임시 디렉터리) 밖의 Write·Edit·NotebookEdit는 거부. PATH의 실행 파일(봇 유저 소유 `/opt/homebrew` 등)을 덮어 샌드박스 밖 실행을 얻는 길을 막는다 | `tool-policy.ts` 3b `else if` · Lean `adminNativeWriteGuard` |
+| `sandbox off` | 호스트 운영자가 `.env`에 `SOMA_SANDBOX_OFF_ALLOWED=true`를 둔 호스트의 어드민에게만 효과. 그 밖에는 명령이 거부 이유를 답하고 세션은 샌드박스로 돈다(로그 경고) | `getSandboxOffAllowed` · `isSandboxOffInEffect` · `sandbox-handler.ts` · `sandbox-topic.ts` |
+| 쓰기 보호(모든 세션, 샌드박스 켜짐·꺼짐 모두) | `Edit` 거부 규칙: 설정 디렉터리 · 실행 코드 루트 · 봇의 cwd · `DATA_DIR` · plugins 전체(각 경로의 링크·실경로 둘 다, 작업 디렉터리가 그 안이어도 예외 없음), 홈의 시작·신뢰 파일(LaunchAgents · 셸 rc · `.ssh` · git·CLI 설정, 홈의 두 표기 모두). CLI가 샌드박스 `denyWrite`에도 합친다 | `protectedWriteDenyRules` |
+| 자격 파일 읽기(모든 세션) | `.ssh` · `.config/gh` · `.config/gcloud` · `.aws` · `.azure` · `.kube` · `.docker/config.json` · `.netrc` · `.git-credentials` · `.gnupg` — 샌드박스 `denyRead` + `Read` 거부 규칙. 봇 자신의 GitHub App 토큰(`~/.gitconfig`의 `url.…insteadOf`, `$DATA_DIR/gh/hosts.yml`)은 git push·gh가 쓰므로 일부러 열어 둔다(한 시간짜리 봇 토큰) | `credentialPaths` · `credentialReadDenyRules` |
+| ssh | 2단계 ssh 금지가 어드민 블록을 떠나 모든 사용자에게(`ssh-ban: ssh command`, 문구는 `ssh_exec` 안내). 호스트 명령은 server-tools `ssh_exec`(샌드박스 밖, 봇의 키) — 비어드민은 4단계가 항상 거부 | `tool-policy.ts` · `server-tools-mcp-server.ts` `handleSshExec` |
+| Lean | `evaluateToolPolicySsh`(`Model.lean`), `ProofsSsh.lean` — 1b는 결정이 그대로이고 문구만 이유를 따름, ssh 금지는 어드민·사고 세션까지, 어드민 네이티브 쓰기 경계, 셋 다 해당 없으면 `evaluateToolPolicyMcp`와 같음 | `verification/lean/SomaVerify/ToolPolicy/` |
+
+CLI 순서 가정: 쓰기 보호와 자격 파일 읽기 금지는 CLI 거부 규칙이다. 정책 훅은 auto·bypass 모드의 네이티브 도구에
+`allow`를 돌려준다. 그래도 두 규칙이 지켜지는 것은 CLI가 훅의 `allow`와 상관없이 거부된 경로를 막기 때문이다.
+CLI 2.1.321에서 실측했다(`settingSources: ['project']`, `bypassPermissions`, 훅은 항상 `allow`).
+- 거부된 파일의 Read: 절대 경로, 상대 경로 모두 실패
+- 거부된 디렉터리의 Write와 기존 파일 Edit: 실패
+- 같은 디렉터리를 가리키는 심볼릭 링크를 거친 Write: 실패
+- NotebookEdit: 실패
+- Grep·Glob: 그 파일을 결과에서 뺀다
+- 허용된 Read: 성공하고 훅에 닿는다
+
+SDK·CLI 버전을 올릴 때마다 `node scripts/verification/probe-cli-deny-before-hooks.mjs`를 다시 돌린다. 이 스크립트는 단계마다 도구 호출을 따로 맞춰 보고 결과 전체와 디스크를 확인한다. 보호 단계는 CLI의 권한 거부 문구가 나와야 증명으로 친다. 종료 코드: 0 = 유지, 1 = 뚫림, 2 = 판정 불가(빠졌거나 다른 이유로 실패한 단계가 있음).
+
+남는 길: 운영자가 `SOMA_SANDBOX_OFF_ALLOWED=true`로 연 호스트의 어드민 `sandbox off` 세션 — OS 규칙이 없고 CLI 거부 규칙과
+정책 1b만 남는다.
 - 설정은 비밀을 `{"$secret": "<name>"}`으로 가리킨다. 해석은 `@soma/process-shared/secret-ref`(이름 검증, 저장소 밖 링크 거부,
   없거나 빈 파일 = 오류). server-tools는 봇이 넘기는 `SOMA_SECRETS_DIR`로 해석하고, 풀리지 않는 서버는 뺀다.
 

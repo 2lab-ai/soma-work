@@ -534,9 +534,9 @@ const LOGS_ERROR_DETAIL_CHARS = 2000;
 const LOGS_STDERR_SEPARATOR = '----- stderr -----';
 
 /** Why a `logs` run failed, from fields that hold no output. */
-function logsFailureReason(result: SpawnSyncReturns<string>): string {
+function logsFailureReason(result: SpawnSyncReturns<string>, timeoutMs = LOGS_TIMEOUT_MS): string {
   const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
-  if (code === 'ETIMEDOUT') return `timed out after ${LOGS_TIMEOUT_MS / 1000}s`;
+  if (code === 'ETIMEDOUT') return `timed out after ${timeoutMs / 1000}s`;
   if (code === 'ENOBUFS') {
     return `output exceeded ${LOGS_MAX_BUFFER / (1024 * 1024)} MB on one stream; narrow the window with since/until or lower tail`;
   }
@@ -550,13 +550,18 @@ function logsFailureReason(result: SpawnSyncReturns<string>): string {
  * child's streams are never thrown — base-mcp-server returns the message to the model and the stderr logger
  * spreads the error's own properties, so raw `stdout`/`stderr` on it would reach both.
  */
-function logsFailure(result: SpawnSyncReturns<string>, command: string, server: string): Error {
+function logsFailure(
+  result: SpawnSyncReturns<string>,
+  command: string,
+  server: string,
+  timeoutMs = LOGS_TIMEOUT_MS,
+): Error {
   let stderr = result.stderr ?? '';
   // A killed child can stop mid-line, and a secret cut short no longer matches its shape: keep whole lines only.
   if (result.error || result.signal) stderr = stderr.slice(0, stderr.lastIndexOf('\n') + 1);
   let detail = redactLogSecrets(stderr).trimEnd();
   if (detail.length > LOGS_ERROR_DETAIL_CHARS) detail = `${detail.slice(0, LOGS_ERROR_DETAIL_CHARS)} [truncated]`;
-  const head = `${command} failed on ${server}: ${logsFailureReason(result)}`;
+  const head = `${command} failed on ${server}: ${logsFailureReason(result, timeoutMs)}`;
   return new Error(detail.length > 0 ? `${head}\n${detail}` : head);
 }
 
@@ -630,6 +635,79 @@ export function handleLogs(args: Record<string, unknown>) {
 
   return {
     content: [{ type: 'text' as const, text }],
+  };
+}
+
+// ── ssh_exec (env-access WU2, #1210) ─────────────────────
+
+/**
+ * Host commands run here, outside every model sandbox, with this process's ssh keys — no model reads
+ * a key or runs Bash ssh. The model sees the command's output, redacted for secret shapes. Admins
+ * only: policy step 4 denies `ssh_exec` to everyone else (`build-stream-options.ts`).
+ */
+const SSH_EXEC_DEFAULT_TIMEOUT_S = 60;
+const SSH_EXEC_MAX_TIMEOUT_S = 600;
+const SSH_EXEC_MAX_COMMAND_CHARS = 8192;
+const SSH_EXEC_TIMEOUT_NOTE =
+  'Only the local ssh client was stopped: the remote command may still be running and its outcome is unknown. ' +
+  'Check the host before running it again.';
+
+export function handleSshExec(args: Record<string, unknown>) {
+  const server = args.server as string;
+  const command = args.command;
+  const timeoutS = args.timeout_s ?? SSH_EXEC_DEFAULT_TIMEOUT_S;
+
+  const config = loadConfig();
+  // Own keys only: `__proto__` or `toString` is not a server.
+  if (typeof server !== 'string' || !Object.keys(config).includes(server)) {
+    throw new Error(`Unknown server: ${server}`);
+  }
+  if (typeof command !== 'string' || command.trim() === '' || command.length > SSH_EXEC_MAX_COMMAND_CHARS) {
+    throw new Error(`Invalid command: a non-empty string of at most ${SSH_EXEC_MAX_COMMAND_CHARS} characters`);
+  }
+  if (
+    typeof timeoutS !== 'number' ||
+    !Number.isInteger(timeoutS) ||
+    timeoutS < 1 ||
+    timeoutS > SSH_EXEC_MAX_TIMEOUT_S
+  ) {
+    throw new Error(`Invalid timeout_s: an integer between 1 and ${SSH_EXEC_MAX_TIMEOUT_S}`);
+  }
+
+  // BatchMode: never prompt for a password or a host key. `--` ends ssh's options before the host: OpenSSH
+  // parses options again after the host otherwise, and a command such as `-oProxyCommand=…` would run on
+  // this host, as the bot, outside every sandbox. The remote shell runs `command` as one string.
+  const result = spawnSync(
+    'ssh',
+    ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '--', config[server].ssh.host, command],
+    {
+      timeout: timeoutS * 1000,
+      maxBuffer: LOGS_MAX_BUFFER,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
+  if (result.error || result.signal) {
+    // Same failure shape as `logs`: a fresh error from redacted, capped stderr, never the raw output.
+    const failure = logsFailure(result, 'ssh_exec', server, timeoutS * 1000);
+    const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
+    // ssh ran and was stopped here (the timeout, output over the buffer, a signal): only the local client
+    // stopped, and a remote command with no terminal keeps running (review-of-legends R4, trinity R4). Say so,
+    // so a retry does not repeat a deploy that is still going. An ssh that never started ran nothing.
+    const stoppedLocally = code === 'ETIMEDOUT' || code === 'ENOBUFS' || (!result.error && result.signal);
+    if (!stoppedLocally) throw failure;
+    const [head, ...detail] = failure.message.split('\n');
+    throw new Error([head, SSH_EXEC_TIMEOUT_NOTE, ...detail].join('\n'));
+  }
+
+  const stdout = redactLogSecrets(result.stdout ?? '');
+  const stderr = result.stderr ?? '';
+  const body =
+    stderr.length === 0
+      ? stdout
+      : `${stdout}${stdout === '' || stdout.endsWith('\n') ? '' : '\n'}${LOGS_STDERR_SEPARATOR}\n${redactLogSecrets(stderr)}`;
+  return {
+    content: [{ type: 'text' as const, text: `exit ${result.status}\n${body}` }],
   };
 }
 
@@ -970,6 +1048,27 @@ class ServerToolsMCPServer extends BaseMcpServer {
         },
       },
       {
+        name: 'ssh_exec',
+        description:
+          'Run one shell command on a configured server over SSH and return "exit <status>", its stdout and, after a "----- stderr -----" line, its stderr. Output is redacted for common secret shapes. This is the only way to run a command on a host: Bash ssh is blocked, and no model reads an ssh key. Admins only.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            server: { type: 'string', description: 'Server name from config (see list).' },
+            command: {
+              type: 'string',
+              description: 'The command line the remote shell runs, at most 8192 characters.',
+            },
+            timeout_s: {
+              type: 'number',
+              description:
+                'Seconds before the local ssh client is stopped: an integer from 1 to 600. Default 60. The remote command is not guaranteed to stop with it; after a timeout, check the host before running the command again.',
+            },
+          },
+          required: ['server', 'command'],
+        },
+      },
+      {
         name: 'logs',
         description:
           'Fetch Docker container logs (or Swarm service logs when stack is set) from a server via SSH. Default mode: docker logs. With stack: docker service logs (caller must pass the full <stack>_<svc> name in service). NOTE: --until is not supported in stack mode. Container stderr follows stdout under a "----- stderr -----" line. Output is redacted for common secret shapes (tokens, API keys, passwords, URL credentials, private key blocks).',
@@ -1092,6 +1191,8 @@ class ServerToolsMCPServer extends BaseMcpServer {
         return handleListStack(args);
       case 'logs':
         return handleLogs(args);
+      case 'ssh_exec':
+        return handleSshExec(args);
       case 'db_query':
         return await handleDbQuery(args);
       case 'redis_query':
