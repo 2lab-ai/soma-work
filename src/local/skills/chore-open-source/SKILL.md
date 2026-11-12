@@ -1,6 +1,6 @@
 ---
 name: chore-open-source
-description: "Use when a repository goes public (or is) and must hold nothing private — hosts, other companies, personal paths, secrets — in tree, history, PR text, releases or clones: recon, shared sanitize gate, history rewrite, approved swap, clone migration. Triggers on 'chore-open-source', '오픈소스 청소', '오픈소스 공개 준비'. Args — OWNER/REPO. NOT for branch/PR hygiene (chore)."
+description: "Use when a repository is about to go public, or already is, and private traces — host names, other companies, personal paths, secrets — must leave its files, history, PR text, releases and clones. Triggers: 'chore-open-source', '오픈소스 청소', '오픈소스 공개 준비', 'clean before open-sourcing'. Not for branch or PR hygiene (chore)."
 ---
 
 # chore-open-source — publish nothing private, prove it, keep every clone working
@@ -20,6 +20,11 @@ every clone to the new history.
 | 6 | Finalize | `$ENGINE/finalize.sh` | shared secret complete, gate rerun green | yes if it widens the list |
 | 7 | After | `$ENGINE/find-clones.sh`, `$ENGINE/migrate-clone.py` | every clone clean | forks, Support: **owner decides** |
 | 8 | Going public | checklist below | `gh repo edit --visibility public` | **yes** |
+
+## Args
+
+`OWNER/REPO` — the repository to clean (required; there is no default target). Several repositories that share
+one pattern list are cleaned one at a time and finalized together (phase 6).
 
 Read the rules, then run the phases in order. Each phase ends with evidence in the report (counts, file
 paths, run URLs — never a matched value).

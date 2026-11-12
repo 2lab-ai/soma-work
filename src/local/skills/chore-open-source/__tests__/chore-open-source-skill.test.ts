@@ -39,13 +39,14 @@ const run = (cmd: string, args: string[], opts: { cwd?: string; env?: NodeJS.Pro
 const hasFilterRepo = run('git', ['filter-repo', '--version']).status === 0;
 
 describe('local:chore-open-source — SKILL.md and its engine', () => {
-  it('frontmatter: name, a quoted one-line description with its argument and the boundary to chore', () => {
+  it('frontmatter: name, a when-only description with its trigger and the boundary to chore; the argument in the body', () => {
     const fm = md.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? '';
     expect(fm).toMatch(/^name: chore-open-source$/m);
     const description = fm.match(/^description: "(.*)"$/m)?.[1] ?? '';
+    expect(description).toMatch(/^Use when /);
     expect(description).toContain("'chore-open-source'");
-    expect(description).toContain('OWNER/REPO');
-    expect(description).toMatch(/NOT for/);
+    expect(description).toMatch(/Not for .*\(chore\)/);
+    expect(md).toMatch(/^## Args\n\n`OWNER\/REPO` — the repository to clean \(required/m); // the argument lives in the body
   });
 
   it('every $ENGINE file the skill names ships in scripts/ and is executable', () => {
