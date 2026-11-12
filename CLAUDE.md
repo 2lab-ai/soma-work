@@ -80,8 +80,7 @@ src/
 └── local/           # Claude Code SDK 로컬 플러그인 `zworkflow` (skills/, agents/, hooks/) — 범용, 하네스 호출 금지
 
 packages/            # 워크스페이스 패키지
-├── mcp-servers/     # 내장 MCP 서버 (agent, cron, model-command, permission, devops-tools, ...)
-├── devops-broker/   # 별도 OS 유저 브로커 — gh 토큰·Cloudflare forge 키 보관, admin 승인 카드
+├── mcp-servers/     # 내장 MCP 서버 (agent, cron, model-command, permission, server-tools, ...)
 ├── common/ · slack/ · process-shared/ · test-utils/
 
 somalib/             # soma 계열 공유 라이브러리 (model-commands, permission, cron)
@@ -192,7 +191,7 @@ gh workflow run deploy --ref main -f confirm=deploy
 - **듀얼 인스턴스 금지**: 같은 Slack 토큰으로 여러 인스턴스 실행 시 메시지 중복/충돌. 개발은 `npm start`만 사용.
 - **고정 작업 디렉토리**: 각 유저별 `{BASE_DIRECTORY}/{userId}/` 고정. 유저가 직접 설정 불가 (보안 격리).
 - **Git push = 봇 identity만**: 봇 세션은 봇 자신의 GitHub App 토큰으로 push한다. `git`은 갱신마다 다시 쓰이는 gitconfig를, `gh`는 `GH_CONFIG_DIR`(`$DATA_DIR/gh/hosts.yml`, 갱신마다 다시 씀)를 읽는다 — 그 hosts.yml이 쓰여 있는 동안 에이전트 env에 `GITHUB_TOKEN`은 없다(쓰기에 실패하면 env로 돌아간다. 턴 시작 때 복사된 토큰은 한 시간 뒤 만료되어 `gh`가 401을 냈다, #834). 사람 gh 계정의 토큰을 꺼내 쓰지 마라 — `devops-secret-guard`가 `gh auth token` · `gh auth status --show-token` · `gh auth git-credential` · 키체인 덤프를 모든 봇·모든 권한 모드·admin까지 거부한다.
-  계정별 gh 작업은 `devops-tools` MCP(`gh_read`, `gh_write` — 쓰기는 브로커 Slack 카드에 admin ✅ 필요)로 한다. 그 배포에 devops-tools가 없거나 거부되면 유저에게 알린다.
+  환경(고객 저장소) 계정의 gh 작업은 server-tools 환경 도구로 한다 — `gh_read`(GET, 경로 모양 허용 목록)·`gh_pr`(view·approve·merge, 조건표·감사 원장). 토큰은 `config.json` 환경 절의 `{"$secret"}`이고 어떤 모델도 보지 않는다. 별도 브로커(devops-tools·devops-broker)는 #1214에서 제거됐다.
   App identity로 push가 안 되면(그 repo에 앱 미설치, workflow 파일 변경 등) 우회하지 말고 멈춰서 유저에게 알린다.
 - **공개 레포 — 호스트 이름·타사 이름 금지 (Sanitize Gate)**: `.github/workflows/sanitize-gate.yml`이 공개된 모든 커밋(파일·커밋 메시지·author 줄·브랜치/태그 이름)을 비밀 패턴으로 검사한다. 패턴은 두 secret에만 있다 — `SANITIZE_PATTERNS_SHARED`(2lab-ai/llmux와 같은 값: 사설 호스트 이름, 다른 회사 이름·도메인)와 이 레포 전용 `SANITIZE_PATTERNS`. 스크립트 `scripts/sanitize-scan.sh`는 llmux에 같은 사본이 있다 — 고치면 둘 다 고친다. 문서·주석·커밋 메시지에는 머신 이름 대신 "owner-mac", "공유 호스트"처럼 쓴다. 워크플로가 특정 러너를 골라야 하면 라벨을 repo 변수(`vars.CONTROL_RUNNER_LABEL`, `PREVIEW_DEPLOY_TARGETS`)에 둔다. 걸리면 커밋을 고쳐 쓴다(`git commit --amend`, force-push). 이미 공개된 커밋도 예외 목록에 올리지 않고 히스토리를 고쳐 쓴다(2026-11-12 전체 재작성). `scripts/sanitize-known-leaks.txt`는 비어 있다. 레포를 공개하거나 비공개 흔적을 히스토리째 지울 때는 `local:chore-open-source` 스킬 절차(조사 → 규칙 → 게이트 → 재작성 → 승인 후 교체 → clone 이전)를 따른다.
 - **Permission MCP Server**: `mcp-config-builder.ts`에서 `__filename` 기반 동적 확장자 사용 (.ts dev / .js prod). 하드코딩 금지.
