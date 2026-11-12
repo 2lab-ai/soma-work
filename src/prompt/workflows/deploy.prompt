@@ -40,22 +40,23 @@ Find repo full name candidates from the channel description, recent conversation
 
 ## Delta and Risk Check (Required, before the confirmation)
 
-For each repo, before the confirmation question (and again after `Modify target`). First apply Restart Re-Attach below: a repo with a merged PR in `deploy-state.json` skips this check. The reads follow the GitHub access rules in Execution Process; a refused or failed read stops that repo as step 1 does, it is not a risk signal.
+For each repo, before the confirmation question (and again after `Modify target`). Apply Restart Re-Attach below first: a repo whose deploy PR is merged, in `deploy-state.json` or on GitHub, skips this check. The reads follow the GitHub access rules in Execution Process; a refused or failed read stops that repo as step 1 does, it is not a risk signal.
 
 1. Pin both tips: `git ls-remote https://github.com/<owner/repo> refs/heads/<source> refs/heads/<target>` gives `source_sha` and `target_sha`. The read tool accepts `compare/<a>...<b>` only between SHAs.
 2. Read `repos/<owner/repo>/compare/<target_sha>...<source_sha>`, filter `{ahead_by, total_commits, files: [.files[]|{filename, status}], commits: [.commits[]|{parents: (.parents|length), subject: (.commit.message|split("\n")[0])}]}`. `ahead_by` 0 → post "`<owner/repo>`: `<target>` is already up to date" and drop the repo: no PR, no merge.
-3. Write a delta executive summary: one line on what ships for users; the PRs (`Merge pull request #N` subjects and squash subjects ending `(#N)`), each with its title; commit and file counts. Read each PR's body (`repos/<owner/repo>/pulls/<N>`, filter `.body`) for the scan.
-4. Scan the file list, the subjects and the PR bodies for risk signals, and read the patch of any file whose name or status points at one (`.files[]|select(.filename == "<path>")|.patch` of the same compare):
+3. Write a delta executive summary: one line on what ships for users; the PRs (numbers from `Merge pull request #N` subjects and squash subjects ending `(#N)`, then `{title, body}` of `repos/<owner/repo>/pulls/<N>`); commit and file counts.
+4. Scan for risk signals — the file list, the subjects, the PR bodies and the full changed content (clone, then search `git diff <target_sha>...<source_sha>`):
    - secrets or credentials
    - a destructive database or data migration
    - deleted configuration or data paths (`status` `removed`)
    - a half-finished feature with no flag
-   - target-only work the merge must keep: non-merge commits in `compare/<source_sha>...<target_sha>` (`select(.parents|length == 1)`), named one by one. The deploy merge commits this workflow leaves on the target are not a signal.
-   - a cut list: `files` holds 300 entries or `total_commits` is over 250. Clone and finish the scan locally (`git diff --name-status <target_sha>...<source_sha>`, a content search of that diff, `git log --format=%s <target_sha>..<source_sha>`). A scan you could not finish is a risk signal itself.
+   - target-only work the merge must keep: non-merge commits of `compare/<source_sha>...<target_sha>` (`select(.parents|length == 1)`, with its `total_commits`), named one by one. The deploy merge commits this workflow leaves on the target are not a signal.
+   - a cut list: `files` holds 300 entries or either `total_commits` is over 250. Finish locally (`git diff --name-status <target_sha>...<source_sha>`, `git log --format=%s` over both ranges, two dots, `--no-merges` for the target-only side).
+   - A scan you could not finish is a risk signal itself.
 
 **Risk stop.** With any risk signal, the question leads with the signals, its recommended option is `Cancel`, and `Proceed with deployment` becomes `Proceed despite the listed risks` — only that explicit answer continues the repo. Nothing said before the question ("don't ask", "just merge", "묻지 말고") is consent to merge past a risk signal.
 
-**The answer covers these SHAs only.** Step 2 merges `source_sha` onto `target_sha`. If either branch tip has moved by the time you merge, run this check again and ask again.
+**The answer covers these SHAs only.** Steps 2–3 build the working branch at `target_sha` and merge `source_sha` into it. Right before the step 4 merge, pin both tips again; if either differs from the approved SHAs, run this check again and ask again; after the new answer, merge the new `source_sha` into the same working branch, push it, keep the same PR and update both SHAs in `deploy-state.json`.
 
 ## Pre-Execution Confirmation (Required)
 
@@ -183,13 +184,13 @@ Only after the merge actually succeeds may you produce the deployment result / r
 
 A deploy can restart this session's own host and cut the session. A second merge or push to the target then ships twice, and with `concurrency: cancel-in-progress` it cancels the deploy already running.
 
-- Keep `deploy-state.json` in the session working directory for this deploy request only (a new request moves an old file aside and starts fresh). Per repo: `repo`, `source`, `target`, `source_sha`, `target_sha`, `pr`, `merged`, `after_sha`, `releaseNotes`. Write each field the moment it is known, before the next action; `target_sha` is the `before_sha` of steps 6 and 7.
+- Keep `deploy-state.json` in the session working directory for this deploy request only (a new request moves an old file aside and starts fresh). Per repo: `repo`, `source`, `target`, `source_sha`, `target_sha`, `branch` (the deploy working branch, written before its first push), `pr`, `merged`, `after_sha`, `releaseNotes`. Write each field the moment it is known, before the next action; `target_sha` is the `before_sha` of steps 6 and 7.
 - Release notes: set `releaseNotes` to `intent` immediately before emitting the directive, `emitted` right after. On resume, either value means do not emit again; if it is `intent` and the notes are not in this thread, say "release notes may already be posted; not emitted again".
-- At the start of every turn of a deploy session, and before any write in steps 2–4, read that file and GitHub: PRs with `base=<target>` and a head starting `deploy/<source>-to-<target>-`.
-  - PR merged → never create a PR, merge or push for that repo again. Continue at step 5 with the saved `target_sha` and `after_sha`; never resolve the target tip again for them.
+- At the start of every turn of a deploy session, and before any write in steps 2–4, read that file and GitHub. A GitHub PR belongs to this request only when it is the file's `pr` or its head is the file's `branch`; older deploy PRs never count. With no file but an open deploy PR for this source and target, ask instead of opening another.
+  - PR merged → never create a PR, merge or push for that repo again. Save its `merge_commit_sha` as `after_sha` if the file lacks it. Continue at step 5 with the saved `target_sha` and `after_sha`; never resolve the target tip again for them.
   - PR open → reuse it, continue at step 4. Never open a second PR.
   - PR closed unmerged → report it and ask; do not open a new one unasked.
-  - no PR in the file and none on GitHub → continue at step 2.
+  - no PR for this request → continue at step 2.
 - Never cancel, re-run or re-trigger a deploy run to recover from a restart.
 
 ## Conflict Handling Policy

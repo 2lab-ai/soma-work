@@ -177,14 +177,15 @@ describe('PromptBuilder', () => {
       expect(check).not.toContain('compare/<target>...<source>');
       expect(check).toMatch(/`ahead_by` 0[^\n]*already up to date[^\n]*no PR, no merge/);
       expect(check).toContain('delta executive summary');
-      expect(check).toMatch(/squash subjects ending `\(#N\)`/);
+      expect(check).toMatch(/squash subjects ending `\(#N\)`, then `\{title, body\}`/);
       for (const signal of [
         'secrets or credentials',
         'destructive database or data migration',
         'deleted configuration or data paths',
         'no flag',
-        'non-merge commits in `compare/<source_sha>...<target_sha>`',
-        '`files` holds 300 entries or `total_commits` is over 250',
+        'non-merge commits of `compare/<source_sha>...<target_sha>`',
+        '`files` holds 300 entries or either `total_commits` is over 250',
+        'the full changed content (clone, then search `git diff <target_sha>...<source_sha>`)',
       ]) {
         expect(check).toContain(signal);
       }
@@ -196,7 +197,9 @@ describe('PromptBuilder', () => {
       expect(check).toContain('`Proceed despite the listed risks`');
       expect(check).toMatch(/Nothing said before the question[^\n]*is consent to merge past a risk signal/);
       // The answer is bound to the scanned SHAs.
-      expect(check).toMatch(/Step 2 merges `source_sha` onto `target_sha`[^\n]*run this check again and ask again/);
+      expect(check).toMatch(
+        /Steps 2–3 build the working branch at `target_sha` and merge `source_sha` into it\. Right before the step 4 merge, pin both tips again[^\n]*run this check again and ask again/,
+      );
       expect(prompt).toContain('Create a deploy working branch at `target_sha`');
       expect(prompt).toContain('Merge `source_sha` into the working branch');
       expect(confirm).toContain('The delta executive summary');
@@ -219,18 +222,32 @@ describe('PromptBuilder', () => {
       expect(section).toContain('cancel-in-progress');
       expect(section).toContain('`deploy-state.json`');
       expect(section).toMatch(/for this deploy request only/);
-      for (const field of ['`source_sha`', '`target_sha`', '`pr`', '`merged`', '`after_sha`', '`releaseNotes`']) {
+      for (const field of [
+        '`source_sha`',
+        '`target_sha`',
+        '`branch`',
+        '`pr`',
+        '`merged`',
+        '`after_sha`',
+        '`releaseNotes`',
+      ]) {
         expect(section).toContain(field);
       }
       // Resume comes before the up-to-date drop (a merged deploy reads ahead_by 0).
-      expect(check).toMatch(/a repo with a merged PR in `deploy-state\.json` skips this check/);
+      expect(check).toMatch(/a repo whose deploy PR is merged, in `deploy-state\.json` or on GitHub, skips this check/);
       expect(section).toMatch(/before any write in steps 2–4, read that file and GitHub/);
       expect(section).toMatch(/never create a PR, merge or push for that repo again/);
       expect(section).toMatch(
         /Continue at step 5 with the saved `target_sha` and `after_sha`; never resolve the target tip again/,
       );
+      expect(section).toMatch(/Save its `merge_commit_sha` as `after_sha` if the file lacks it/);
+      // Only this request's PR counts — an older merged deploy PR must not hijack a new deploy.
+      expect(section).toMatch(
+        /belongs to this request only when it is the file's `pr` or its head is the file's `branch`; older deploy PRs never count/,
+      );
       expect(section).toMatch(/reuse it, continue at step 4\. Never open a second PR/);
       expect(section).toMatch(/closed unmerged → report it and ask/);
+      expect(check).toMatch(/merge the new `source_sha` into the same working branch, push it, keep the same PR/);
       // Release notes: intent before, emitted after; either value blocks a second emission.
       expect(section).toMatch(/`intent` immediately before emitting the directive, `emitted` right after/);
       expect(section).toMatch(/either value means do not emit again/);
