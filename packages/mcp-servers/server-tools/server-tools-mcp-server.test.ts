@@ -51,6 +51,7 @@ import {
   handleLogs,
   handleMongoDBQuery,
   handleRedisQuery,
+  handleSshExec,
   loadConfig,
   resetConfigCache,
   validateClickHouseQuery,
@@ -1719,5 +1720,81 @@ describe('handleClickHouseQuery', () => {
     await expect(handleClickHouseQuery({ server: 'prod', database: 'app_db', query: 'SELECT 1' })).rejects.toThrow(
       'Database "app_db" is type "mysql", not "clickhouse"',
     );
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+// handleSshExec (env-access WU2, #1210): host commands go through this tool, not Bash ssh
+// ══════════════════════════════════════════════════════════════
+
+describe('handleSshExec', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    resetConfigCache();
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.restoreAllMocks();
+  });
+
+  it("runs one command on the server's ssh host, non-interactively, with both streams piped", () => {
+    mockConfig(PROD_CONFIG, 8100);
+    mockLogsRun('up 3 days\n');
+    const result = handleSshExec({ server: 'prod', command: 'uptime' });
+    expect(child_process.spawnSync).toHaveBeenCalledWith(
+      'ssh',
+      ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', 'prod.example.com', 'uptime'],
+      expect.objectContaining({ timeout: 60000, maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] }),
+    );
+    expect(result.content[0].text).toBe('exit 0\nup 3 days\n');
+  });
+
+  it("returns a failing command's exit status and its stderr, redacted, instead of throwing", () => {
+    mockConfig(PROD_CONFIG, 8101);
+    vi.mocked(child_process.spawnSync).mockReturnValue(
+      spawnResult({ status: 2, stdout: 'partial\n', stderr: 'ls: cannot access x\npassword=hunter2xyz\n' }),
+    );
+    const text = handleSshExec({ server: 'prod', command: 'ls x' }).content[0].text;
+    expect(text.startsWith('exit 2\n')).toBe(true);
+    expect(text).toContain('partial');
+    expect(text).toContain('----- stderr -----');
+    expect(text).toContain('ls: cannot access x');
+    expect(text).not.toContain('hunter2xyz');
+  });
+
+  it('honours a timeout between 1 and 600 seconds and refuses anything else', () => {
+    mockConfig(PROD_CONFIG, 8102);
+    mockLogsRun('');
+    handleSshExec({ server: 'prod', command: 'sleep 1', timeout_s: 300 });
+    expect(child_process.spawnSync).toHaveBeenCalledWith(
+      'ssh',
+      expect.any(Array),
+      expect.objectContaining({ timeout: 300000 }),
+    );
+    for (const timeout_s of [0, 601, 1.5, -3]) {
+      expect(() => handleSshExec({ server: 'prod', command: 'true', timeout_s })).toThrow(/timeout_s/);
+    }
+  });
+
+  it("throws on a timeout or an ssh that cannot run, without the child's raw output", () => {
+    mockConfig(PROD_CONFIG, 8103);
+    vi.mocked(child_process.spawnSync).mockReturnValue(
+      spawnResult({ status: null, error: spawnError('ETIMEDOUT'), stdout: 'secret-ish', stderr: '' }),
+    );
+    const err = thrownBy(() => handleSshExec({ server: 'prod', command: 'sleep 999' }));
+    expect(err.message).toContain('timed out');
+    expect(err.message).not.toContain('secret-ish');
+  });
+
+  it('refuses an unknown server, an empty command and one over 8 KB, before running ssh', () => {
+    mockConfig(PROD_CONFIG, 8104);
+    vi.mocked(child_process.spawnSync).mockClear();
+    expect(() => handleSshExec({ server: 'nope', command: 'uptime' })).toThrow(/Unknown server/);
+    expect(() => handleSshExec({ server: 'prod', command: '   ' })).toThrow(/command/);
+    expect(() => handleSshExec({ server: 'prod', command: 'x'.repeat(8193) })).toThrow(/command/);
+    expect(child_process.spawnSync).not.toHaveBeenCalled();
   });
 });

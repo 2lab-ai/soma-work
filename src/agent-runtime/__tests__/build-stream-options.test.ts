@@ -229,6 +229,16 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
       const run = await mcpHook(makeDeps());
       expect(await run(TOOL)).toEqual({ continue: true });
     });
+
+    // env-access WU2 (#1210): host commands are an admin's, whatever the server-tools grants say.
+    it('denies a non-admin ssh_exec whatever the grants say, and leaves the other server-tools to them', async () => {
+      const checkMcpToolPermission = vi.fn(() => null);
+      const run = await mcpHook(makeDeps({ checkMcpToolPermission }));
+      const out = await run('mcp__server-tools__ssh_exec');
+      expect(out.hookSpecificOutput?.permissionDecision).toBe('deny');
+      expect(checkMcpToolPermission).not.toHaveBeenCalled();
+      expect(await run('mcp__server-tools__logs')).toEqual({ continue: true });
+    });
   });
 
   describe('environment-skill gate (policy step 6b) in the hook', () => {

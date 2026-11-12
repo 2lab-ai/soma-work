@@ -412,10 +412,14 @@ export async function buildStreamOptions(
         handoffContext: slackContext
           ? deps.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs)?.handoffContext
           : deps.sessionRegistry.getSessionByKey(execCtx.sessionKey)?.handoffContext,
+        // Step 4 runs for non-admins only. Host commands (`ssh_exec`, env-access WU2 #1210) are an admin's,
+        // whatever the server-tools grants say; the other tools follow the grants.
         checkMcpToolPermission: (name) =>
-          gatedServerNames.length > 0
-            ? (deps.checkMcpToolPermission(name, policyUser, cachedPermConfig, gatedServerNames) ?? null)
-            : null,
+          name === SSH_EXEC_TOOL
+            ? SSH_EXEC_ADMIN_ONLY
+            : gatedServerNames.length > 0
+              ? (deps.checkMcpToolPermission(name, policyUser, cachedPermConfig, gatedServerNames) ?? null)
+              : null,
         ...(nativeWriteRoots ? { checkNativeWrite: createNativeWriteCheck(nativeWriteRoots, hookCwd) } : {}),
         checkEnvSkillPermission: (tool, toolInput) =>
           envRegistry
@@ -993,6 +997,10 @@ function readIncidentRequest(session: ConversationSession | undefined): Incident
   if (candidate === undefined) return undefined;
   return assertIncidentRequest(candidate);
 }
+
+/** server-tools' host-command tool (env-access WU2, #1210): admins only. */
+const SSH_EXEC_TOOL = 'mcp__server-tools__ssh_exec';
+const SSH_EXEC_ADMIN_ONLY = 'ssh_exec runs a command on a host and is for admins only.';
 
 /** The temp directory as the OS resolves it (on macOS `/var/folders/…` is `/private/var/folders/…`). */
 function realTmpdir(): string {
