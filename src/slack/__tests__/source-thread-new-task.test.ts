@@ -17,12 +17,13 @@ function makeSlackApi() {
   return {
     openDmChannel: vi.fn().mockResolvedValue('D_Z'),
     // The DM gets dm.1, a top-level post in the source channel (the new work thread's header) root.1.
-    postMessage: vi.fn(async (channel: string, _text: string, options?: any): Promise<any> =>
-      channel === 'D_Z'
-        ? { ts: 'dm.1', channel: 'D_Z' }
-        : options?.threadTs
-          ? { ts: `reply.${options.threadTs}`, channel }
-          : { ts: 'root.1', channel },
+    postMessage: vi.fn(
+      async (channel: string, _text: string, options?: any): Promise<any> =>
+        channel === 'D_Z'
+          ? { ts: 'dm.1', channel: 'D_Z' }
+          : options?.threadTs
+            ? { ts: `reply.${options.threadTs}`, channel }
+            : { ts: 'root.1', channel },
     ),
     getUserName: vi.fn().mockResolvedValue('Z'),
     updateMessage: vi.fn().mockResolvedValue(undefined),
