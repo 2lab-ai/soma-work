@@ -77,7 +77,9 @@ export function buildNewTaskOfferMessage(
 ): { text: string; blocks: any[] } {
   const value = JSON.stringify({ c: request.channel, t: request.threadTs, m: request.ts, u: request.user });
   const thread = sourceLink ? `<${sourceLink}|소스 스레드>` : '소스 스레드';
-  const blocks: any[] = [section(`*${thread}에 남긴 지시를 새 작업으로 진행할까요?*\n${quote(request.text)}`)];
+  const files = request.fileCount ? `📎 첨부 파일 ${request.fileCount}개` : '';
+  const body = [request.text ? quote(request.text) : '', files].filter(Boolean).join('\n');
+  const blocks: any[] = [section(`*${thread}에 남긴 지시를 새 작업으로 진행할까요?*\n${body}`)];
   if (request.linked.length > 0) {
     const lines = request.linked.map(
       (s) => `• "${escapeMrkdwn(s.title || 'Untitled')}" — ${escapeMrkdwn(s.activityState || 'unknown')}`,
@@ -210,7 +212,9 @@ export class SourceThreadNewTask {
     }
     const botId = await this.deps.slackApi.getBotUserId().catch(() => undefined);
     const text = (botId ? original.text.replace(new RegExp(`<@${botId}>`, 'g'), '') : original.text).trim();
-    if (!text) {
+    // The mention's files go with it — a files-only mention is an instruction too.
+    const files = Array.isArray(original.files) && original.files.length > 0 ? original.files : undefined;
+    if (!text && !files) {
       await this.updateDm(dm, `⚠️ 지시 내용이 없어 시작하지 않았습니다 — ${thread}`);
       return;
     }
@@ -233,7 +237,8 @@ export class SourceThreadNewTask {
     const origin = instructionLink ? `<${instructionLink}|소스 스레드>` : thread;
     const workLink = await this.deps.slackApi.getPermalink(ref.channel, rootTs).catch(() => null);
     const work = workLink ? `<${workLink}|작업 스레드>` : '작업 스레드';
-    await this.post(ref.channel, `<@${ref.user}> 님이 ${origin}에 남긴 지시:\n${quote(text)}`, rootTs);
+    const echo = [text ? quote(text) : '', files ? `📎 첨부 파일 ${files.length}개` : ''].filter(Boolean).join('\n');
+    await this.post(ref.channel, `<@${ref.user}> 님이 ${origin}에 남긴 지시:\n${echo}`, rootTs);
     await this.post(ref.channel, `🧵 <@${ref.user}> 님의 지시로 새 작업을 시작합니다 → ${work}`, ref.threadTs);
     await this.updateDm(dm, `✅ 새 작업을 시작했습니다 → ${work}. 끝나면 결과를 ${thread}에 보고합니다.`);
     logger.info('Starting a source-thread instruction as a new task', {
@@ -257,6 +262,7 @@ export class SourceThreadNewTask {
       sourceThreadLink: { channel: ref.channel, threadTs: ref.threadTs },
       routeContext: { skipAutoBotThread: true },
       ...(typeof original.team === 'string' && original.team ? { team: original.team } : {}),
+      ...(files ? { files } : {}),
     };
     const say: SayFn = async (args: any) =>
       this.deps.slackApi.postMessage(ref.channel, (typeof args === 'string' ? args : args?.text) || ' ', {

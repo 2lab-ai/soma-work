@@ -266,3 +266,91 @@ describe('EventRouter — source thread re-mention with an instruction (new task
     expect(posted).not.toContain('DM으로');
   });
 });
+
+/**
+ * SSOT 2026-11-12 — a mention WITH files in a source thread is an instruction too. Slack sends it as a
+ * `file_share` message (app_mention defers to it), so the same DM confirmation must guard that path as well;
+ * before, it started a first mention directly, skipping the sender's answer.
+ */
+describe('EventRouter — source thread mention with files (file_share path)', () => {
+  let mockSlackApi: ReturnType<typeof createMockSlackApi>;
+  let mockClaudeHandler: ReturnType<typeof createMockClaudeHandler>;
+  let mockApp: ReturnType<typeof createMockApp>;
+  let mockMessageHandler: MessageHandler;
+  let offerNewTask: any;
+  let router: EventRouter;
+
+  beforeEach(() => {
+    mockSlackApi = createMockSlackApi();
+    mockClaudeHandler = createMockClaudeHandler();
+    mockApp = createMockApp();
+    mockMessageHandler = vi.fn().mockResolvedValue(undefined) as unknown as MessageHandler;
+    offerNewTask = vi.fn().mockResolvedValue(true);
+    const deps: EventRouterDeps = {
+      slackApi: mockSlackApi as unknown as SlackApiHelper,
+      claudeHandler: mockClaudeHandler as unknown as ClaudeHandler,
+      sessionManager: createMockSessionManager() as unknown as SessionUiManager,
+      actionHandlers: createMockActionHandlers() as unknown as ActionHandlers,
+      offerSourceThreadNewTask: offerNewTask,
+    };
+    router = new EventRouter(mockApp as any, deps, mockMessageHandler);
+    router.setup();
+    mockClaudeHandler.findSessionsBySourceThread.mockReturnValue([
+      createMockSession({ channelId: 'C123', threadRootTs: '999.000', title: '앞 작업', activityState: 'idle' }),
+    ]);
+  });
+
+  afterEach(() => {
+    router.cleanup();
+  });
+
+  const messageHandler = () => mockApp.event.mock.calls.find((c) => c[0] === 'message')![1];
+  const fileMention = (text: string) => ({
+    user: 'U_Z',
+    channel: 'C123',
+    ts: '200.300',
+    thread_ts: '100.200',
+    text,
+    subtype: 'file_share',
+    files: [{ id: 'F1', name: 'log.txt', mimetype: 'text/plain' }],
+  });
+
+  it('asks the sender by DM instead of starting a task directly', async () => {
+    const say = vi.fn();
+    await messageHandler()({ event: fileMention('<@B123> 이 로그 봐줘'), say });
+
+    expect(mockMessageHandler).not.toHaveBeenCalled();
+    expect(offerNewTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: 'C123',
+        threadTs: '100.200',
+        ts: '200.300',
+        user: 'U_Z',
+        text: '이 로그 봐줘',
+        fileCount: 1,
+      }),
+    );
+    const posted = say.mock.calls.map((c) => c[0].text).join('\n');
+    expect(posted).toContain('앞 작업');
+    expect(posted).toContain('DM');
+  });
+
+  it('a mention with only files is still an instruction: it is offered too', async () => {
+    const say = vi.fn();
+    await messageHandler()({ event: fileMention('<@B123>'), say });
+
+    expect(mockMessageHandler).not.toHaveBeenCalled();
+    expect(offerNewTask).toHaveBeenCalledWith(expect.objectContaining({ text: '', fileCount: 1 }));
+  });
+
+  it('a file mention in a thread with no linked work still starts a first mention as before', async () => {
+    mockClaudeHandler.findSessionsBySourceThread.mockReturnValue([]);
+    await messageHandler()({ event: fileMention('<@B123> 이 로그 봐줘'), say: vi.fn() });
+
+    expect(offerNewTask).not.toHaveBeenCalled();
+    expect(mockMessageHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ text: '이 로그 봐줘' }),
+      expect.anything(),
+    );
+  });
+});
