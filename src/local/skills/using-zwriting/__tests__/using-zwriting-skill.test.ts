@@ -100,9 +100,11 @@ describe('local:using-zwriting — layered explanation (T2)', () => {
     expect(md()).toMatch(/Every rung is true at its depth/);
   });
 
-  it('nothing lost, nothing added', () => {
+  it('nothing lost, nothing added, nothing said twice', () => {
     expect(md()).toMatch(/Nothing is lost/);
     expect(md()).toMatch(/Nothing is added/);
+    expect(md()).toMatch(/Say each fact in full once/);
+    expect(md()).toMatch(/within about 1\.2 times the length of its source/);
   });
 
   it('keeps the planning-artifact layer rule (epic → issue → PR) the callers rely on', () => {
@@ -131,8 +133,9 @@ describe('local:using-zwriting — research fixes (T3)', () => {
   it('gaps in the source stay visible and no fact is added', () => {
     const md = read(SKILL_MD);
     expect(md).toMatch(/Do not guess at gaps/);
-    expect(md).toMatch(/Not stated in the source/);
-    expect(md).toMatch(/원문에 없음/);
+    expect(md).toMatch(/For the writer — not stated in the source/);
+    expect(md).toMatch(/작성자 확인 — 원문에 없음/);
+    expect(md).toMatch(/add no remarks about the source/);
     expect(md).toMatch(/No fact that is not in the source/);
   });
 

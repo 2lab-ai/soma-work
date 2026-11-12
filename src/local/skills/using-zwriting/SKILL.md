@@ -21,29 +21,30 @@ Everything below is the detail rung of this skill. Load the references when you 
 
 ## The contract
 
-1. Always a ladder, never one flat layer. At least 2 rungs: one line, then the detail. Usually 3: one line, the map, the detail. Long documents get more — each section opens with its own one line.
+1. Always a ladder, never one flat layer. At least 2 rungs: one line, then the detail. A long document adds a map; its sections may open with their own one line.
 2. Top first. Conclusion before evidence, evidence before background — in the document, each section, each paragraph.
 3. Each rung closes in its own words. A sentence on one rung uses no term from the rung below it. File paths, function names, environment variables and jargon appear first on the rung that explains or uses them.
 4. Every rung is true at its depth. A reader who stops anywhere believes nothing false. A simpler rung is a smaller view of the same claim, not a softer or different one.
 5. Nothing is lost. The bottom rung keeps every number, name, condition, caveat and failure mode of the source.
-6. Nothing is added. No fact that is not in the source or your own evidence.
-7. Plain sentences on every rung (`references/plain-language.md`).
+6. Say each fact in full once. The detail states it; an upper rung names only what the reader must know to act, in fewer words, and does not copy the detail. A rung that repeats the one below is a wasted rung.
+7. Nothing is added. No fact that is not in the source or your own evidence, and no placeholder link.
+8. Plain sentences on every rung (`references/plain-language.md`).
 
 Nothing is exempt for looking easy. When the content is already plain, the top rung shrinks to one sentence. It never disappears.
 
 ## The rungs
 
-**One line.** What it is, why it matters to this reader, what happens next — in that order, in at most 2 sentences. Keep the number that carries the point: "6 tries in 15 minutes" beats "a few tries". Name the concrete thing: the service that breaks, the person who waits.
+**One line.** What it is, why it matters to this reader, what happens next — in that order, in at most 2 sentences. It carries what the reader must do and any warning that could hurt them if missed. Keep the number that carries the point: "6 tries in 15 minutes" beats "a few tries". Name the concrete thing: the service that breaks, the person who waits.
 
-**The map.** The whole structure in plain words, before any detail: a short tree, or 3 to 7 bullets. Each node is a summary of its content ("the fix needs a restart"), not a label ("fix"). End with a reading guide: which part to read for which question. A map node uses no term from the detail rung.
+**The map.** Only for a long document — about 4 sections or more. The whole structure in plain words, before any detail: a short tree, or 3 to 7 bullets. Each node is a summary of its content ("the fix needs a restart"), not a label ("fix"). End with a reading guide: which part to read for which question. A map node uses no term from the detail rung.
 
-**The detail.** Full precision, ordered conclusion → evidence → background. An expert who skipped the top rungs still gets everything.
+**The detail.** Full precision, ordered conclusion → evidence → background. An expert who skipped the top rungs still gets everything. A section's opening line is its first sentence — never a separate summary followed by the same facts again.
 
 How many rungs: ask how many times the idea must be split before it can be acted on. Fewer is cheaper — add a rung only when a rung would otherwise mix "why" and "how". Never fix the count in advance, and never label rungs with numbers like L1 or L7.
 
-Caps: one line ≤ 2 sentences; a map ≤ 7 nodes per level and ≤ 150 words; a section's opening line ≤ 2 sentences. If a top rung will not fit, you are explaining 2 things: split them and give each its own ladder.
+Caps: one line ≤ 2 sentences; a map ≤ 7 nodes per level and ≤ 150 words. If a top rung will not fit, you are explaining 2 things: split them and give each its own ladder. A rewrite stays within about 1.2 times the length of its source (the note for the writer not counted); when it runs longer, cut repetition first.
 
-Label the rungs so the reader can skip: "In short / Detail" in English, "한 줄 / 구조 / 자세히" in Korean. Keep one set of labels through a document.
+Label the top rung so the reader can stop there: "In short:" in English, "요약:" in Korean. Below it, use headings that name their content — no "Map", "Detail", "구조" or "자세히" labels in a document meant for its readers.
 
 **One analogy, at most.** Allowed only on the top rung, and only when it maps onto the real mechanism part for part, is stated as an analogy ("this works like knocking on a door"), and the mechanism it stands for appears literally in the detail. Outside that, no metaphors.
 
@@ -58,7 +59,8 @@ Label the rungs so the reader can skip: "In short / Detail" in English, "한 줄
 
 ## Faithful to the source
 
-- Do not guess at gaps. If the source is vague, contradicts itself, or leaves out who acts, where to send something or when a period starts, keep the gap visible ("Not stated in the source: …" / "원문에 없음: …") and list it for the writer. Never smooth it over or pick one side silently.
+- Do not guess at gaps. If the source is vague, contradicts itself, or leaves out who acts, where to send something or when a period starts, never smooth it over, fill it in, or pick one side silently.
+- Keep the reader's text clean and the gaps visible. When you rewrite someone else's text for their readers, list every gap and contradiction once, in a note for the writer after the text ("For the writer — not stated in the source: …" / "작성자 확인 — 원문에 없음: …"). Inside the reader's text, keep the source's wording where a gap sits (both sides of a contradiction) and add no remarks about the source. When you are the author, state an unknown as an unknown, in the reader's terms ("we do not know yet when …").
 - Substance wins over plainness. When a defined, legal, eligibility or technical term has no everyday word with the same meaning, keep the term and explain it once. A stated reason, condition or exception stays even if it sounds like marketing.
 - Repeat a key date, amount or deadline where a reader who skims straight to that heading needs it.
 - Bring implicit structure to the surface — the unstated assumption that links evidence to a claim — only when the source grounds it. Promotion is not invention.
