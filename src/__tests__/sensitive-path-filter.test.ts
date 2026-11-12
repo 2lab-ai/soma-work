@@ -188,6 +188,26 @@ describe('checkSensitivePath', () => {
       expect(checkSensitivePath(`${HOME}/.SSHX/key`).isSensitive).toBe(false);
     });
   });
+
+  // Regression: macOS links /etc to /private/etc, but only /private/tmp was written through its
+  // link, so /private/etc/shadow opened /etc/shadow unchecked.
+  describe('writes /private/etc as /etc', () => {
+    it.each([
+      ['/private/etc/shadow', '/private/etc'],
+      ['/PRIVATE/ETC/shadow', 'in upper case'],
+      ['//private/./etc/shadow', 'with empty and current-directory segments'],
+      ['/private/etc/shadow/../x', 'a walk through it'],
+    ])('blocks: %s (%s)', (filePath) => {
+      expect(checkSensitivePath(filePath).isSensitive).toBe(true);
+    });
+
+    it.each([
+      ['/private/etcetera/x', 'a sibling that only shares a name prefix'],
+      ['/private/etc/hosts', 'a file in /etc that is not sensitive'],
+    ])('allows: %s (%s)', (filePath) => {
+      expect(checkSensitivePath(filePath).isSensitive).toBe(false);
+    });
+  });
 });
 
 describe('checkBashSensitivePaths', () => {
@@ -351,6 +371,135 @@ describe('checkBashSensitivePaths', () => {
       expect(checkBashSensitivePaths(command).isSensitive).toBe(false);
     });
   });
+
+  // Regression: only cat, head, tail and the other commands then listed were read, so wc, grep,
+  // scp and the other file readers reached a sensitive file unchecked; a path was only taken from
+  // its first `/`, so a relative `.env` without one was never checked; and /private/etc was not
+  // written as /etc.
+  describe('reads the other file readers, relative paths and /private/etc', () => {
+    it.each([
+      ['wc -c ~/.ssh/id_rsa', 'wc'],
+      ['grep x ~/.aws/credentials', 'grep'],
+      ['rg . /etc/shadow', 'rg'],
+      ['rg x /etc/shadow', 'rg with a pattern'],
+      ['scp ~/.ssh/id_rsa h:', 'scp source'],
+      ['scp h:x ~/.ssh/authorized_keys', 'scp destination'],
+      ['cat .env', 'relative .env'],
+      ['source ./.env', 'source of a relative .env'],
+      ['source .env', 'source of a bare .env'],
+      ['. ./.env', 'dot-source of a relative .env'],
+      ['wc -l < ./.env', 'redirect from a relative .env'],
+      ['wc -l <.env', 'redirect from a bare .env'],
+      ['grep -r x . --include=.env', 'a relative path after ='],
+      ['jq . config/secrets.json', 'relative path with a directory'],
+      ['cat /private/etc/shadow', '/private/etc'],
+    ])('blocks: %s (%s)', (command) => {
+      expect(checkBashSensitivePaths(command).isSensitive).toBe(true);
+    });
+
+    const otherReaders = ['sort', 'uniq', 'tac', 'nl', 'od', 'cmp', 'diff'];
+    it.each(otherReaders)('blocks: %s ~/.ssh/id_rsa', (reader) => {
+      expect(checkBashSensitivePaths(`${reader} ~/.ssh/id_rsa`).isSensitive).toBe(true);
+    });
+
+    // The pattern or program comes first: `grep PATTERN FILE`.
+    const patternFirst = ['egrep x', 'fgrep x', 'awk 1', 'sed -n p', 'jq .'];
+    it.each(patternFirst)('blocks: %s ~/.ssh/id_rsa', (reader) => {
+      expect(checkBashSensitivePaths(`${reader} ~/.ssh/id_rsa`).isSensitive).toBe(true);
+    });
+
+    it.each([
+      ['grep x README.md', 'grep, safe relative path'],
+      ['wc -l src/a.ts', 'wc, safe relative path'],
+      ['cat ./notes.txt', 'cat, safe relative path'],
+      ['source ./setup.sh', 'source of a safe relative script'],
+      ['echo Done. secrets.json', 'a sentence end is not a dot-source'],
+    ])('allows: %s (%s)', (command) => {
+      expect(checkBashSensitivePaths(command).isSensitive).toBe(false);
+    });
+  });
+});
+
+// Regression: every word after grep, sed, awk or jq was taken as a file, the pattern or program
+// included, so an ordinary search for `.env` was blocked; and a relative `cd .env` was never read.
+describe('checkBashSensitivePaths: pattern operands and relative cd', () => {
+  it.each([
+    ['grep -f .env x', 'patterns read from .env'],
+    ['grep -e foo .env', 'the pattern given by -e'],
+    ['sed -n 1p .env', 'sed script, then the file'],
+    ['awk 1 .env', 'awk program, then the file'],
+    ['jq . .env', 'jq filter, then the file'],
+    ['cd .env', 'relative cd'],
+    ['pushd .env', 'relative pushd'],
+    ['cd -P .env', 'cd with an option'],
+    ['grep -rne foo .env', '-e at the end of a cluster of options'],
+    ['grep -epattern .env', '-e with its pattern attached'],
+    ['grep -fpatterns.txt .env', '-f with its file attached'],
+    ['grep -f.env x', '-f with .env attached'],
+    ['grep --file=.env x', '--file=.env'],
+    ['grep --file .env x', '--file .env'],
+    ['grep --fil .env x', 'an abbreviated --file'],
+    ['grep --regexp foo .env', '--regexp'],
+    ['grep -A 2 x .env', 'an option with a number before the pattern'],
+    ['grep -m1 x .env', 'an option with its number attached'],
+    ['grep x -- .env', 'a file after --'],
+    ['grep -- -x .env', 'a pattern after --'],
+    ['grep -r --include .env TODO .', '--include names the files read'],
+    ['rg -g .env TODO .', 'rg -g names the files read'],
+    ['rg --files ~/.ssh', 'rg --files takes no pattern'],
+    ['sed -f .env x', 'sed script read from .env'],
+    ['sed -e p -e p .env', 'sed scripts given by -e'],
+    ['awk -f prog.awk .env', 'awk program read from a file'],
+    ['awk -F: 1 .env', 'awk -F with its separator attached'],
+    ['awk -v x=1 1 .env', 'awk -v with its assignment'],
+    ['jq -f filter.jq .env', 'jq filter read from a file'],
+    ['git grep -n foo -- .env', 'git grep with a file'],
+    ['grep x ~/.aws/credentials', 'an absolute file after the pattern'],
+  ])('blocks: %s (%s)', (command) => {
+    expect(checkBashSensitivePaths(command).isSensitive).toBe(true);
+  });
+
+  it.each([
+    ['grep -rn "\\.env" src/', 'a search for .env'],
+    ['grep -rn id_rsa docs/', 'a search for id_rsa'],
+    ['rg "\\.env" .', 'rg search for .env'],
+    ['jq .env config.json', 'a jq filter named like .env'],
+    ['sed s/.env/x/ notes.txt', 'a sed script that mentions .env'],
+    ['grep -m 1 "\\.env" src/', 'an option with a number before the pattern'],
+    ['grep -rn "~/.ssh" docs/', 'a search for ~/.ssh'],
+    ['grep -rn /etc/shadow docs/', 'a search for /etc/shadow'],
+    ['grep -rn -e "\\.env" -e secrets.json src/', 'patterns given by -e'],
+    ['cd ..', 'cd to the parent'],
+  ])('allows: %s (%s)', (command) => {
+    expect(checkBashSensitivePaths(command).isSensitive).toBe(false);
+  });
+});
+
+// Developer commands that search for or mention sensitive names without opening those files.
+const DEVELOPER_COMMANDS: ReadonlyArray<string> = [
+  'grep -rn "\\.env" src/',
+  'git grep -n "\\.env"',
+  'rg -n id_rsa docs/',
+  "rg -g '!.env' TODO",
+  'rg --files | grep "\\.env"',
+  "sed -n '/credentials.json/p' docs/setup.md",
+  "awk '/\\.env/ {print FILENAME}' src/index.ts",
+  "jq '.env' package.json",
+  'grep -c .env .gitignore',
+  'grep -m 1 "\\.env" src/',
+  'grep -rn "~/.ssh" docs/',
+  'grep -rln secrets.yaml k8s/',
+  'grep -rn "aws/credentials" README.md',
+  'git ls-files | grep -E "(^|/)\\.env"',
+  'find . -name .env',
+  'git log -p -- .env',
+  'ls -la ~/.ssh',
+];
+
+describe('checkBashSensitivePaths: developer commands that only mention sensitive names', () => {
+  it.each(DEVELOPER_COMMANDS)('allows: %s', (command) => {
+    expect(checkBashSensitivePaths(command).isSensitive).toBe(false);
+  });
 });
 
 describe('checkSensitiveGlob', () => {
@@ -393,6 +542,18 @@ describe('checkSensitiveGlob', () => {
   it('allows a glob over the files directly in HOME', () => {
     expect(checkSensitiveGlob(`${HOME}/*.txt`).isSensitive).toBe(false);
   });
+
+  // Regression: /private/etc was not written as /etc (macOS links one to the other).
+  it.each([
+    ['/private/etc/shadow*', undefined],
+    ['*', '/private/etc/shadow'],
+  ])('blocks a glob through /private/etc: %s in %s', (pattern, basePath) => {
+    expect(checkSensitiveGlob(pattern, basePath).isSensitive).toBe(true);
+  });
+
+  it('answers a glob over /private/etc as it answers one over /etc', () => {
+    expect(checkSensitiveGlob('/private/etc/*')).toEqual(checkSensitiveGlob('/etc/*'));
+  });
 });
 
 // Regression: checked paths have /private/tmp rewritten to /tmp, but the tables were built from
@@ -405,6 +566,89 @@ describe('with HOME under /private/tmp', () => {
     ['/private/tmp/soma-home/.gitconfig', 'exact file'],
   ])('blocks: %s (%s)', async (filePath) => {
     vi.stubEnv('HOME', '/private/tmp/soma-home');
+    vi.resetModules();
+    try {
+      const filter = await import('../sensitive-path-filter');
+      expect(filter.checkSensitivePath(filePath).isSensitive).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+});
+
+// Regression: macOS firmlinks every top-level entry of /usr/share/firmlinks (Users, opt, private,
+// ...) to the same name under /System/Volumes/Data, so /System/Volumes/Data/Users/<u>/.ssh is
+// ~/.ssh (one inode), but only the short spelling was checked.
+describe('writes /System/Volumes/Data/<firmlink> as /<firmlink>', () => {
+  const DATA = '/System/Volumes/Data';
+  it.each([
+    [`${DATA}/private/etc/shadow`, '/etc/shadow through /private/etc'],
+    [`${DATA}/opt/soma-work/dev/config.json`, 'a service config'],
+    [`${DATA}/opt/soma/prod/.env`, 'a service .env'],
+    ['/system/volumes/data/PRIVATE/ETC/shadow', 'in another case'],
+    ['/SYSTEM/VOLUMES/DATA/private/etc/shadow/../x', 'a walk through it'],
+    [`//System/./Volumes/Data//private/etc/shadow`, 'with empty and current-directory segments'],
+  ])('blocks: %s (%s)', (filePath) => {
+    expect(checkSensitivePath(filePath).isSensitive).toBe(true);
+  });
+
+  it.each([
+    `cat ${DATA}/private/etc/shadow`,
+    `wc -l < ${DATA}/private/etc/shadow`,
+    `cp ${DATA}/opt/soma-work/dev/config.json /tmp/x`,
+  ])('blocks: %s', (command) => {
+    expect(checkBashSensitivePaths(command).isSensitive).toBe(true);
+  });
+
+  it.each([
+    [`${DATA}/private/etc/shadow*`, undefined],
+    ['config.json', `${DATA}/opt/soma-work/dev`],
+    ['*', `${DATA}/private/etc/shadow`],
+  ])('blocks the glob %s in %s', (pattern, basePath) => {
+    expect(checkSensitiveGlob(pattern, basePath).isSensitive).toBe(true);
+  });
+
+  it.each([
+    `${DATA}/tmp-not-a-firmlink/x`,
+    DATA,
+    `${DATA}/private`,
+    `${DATA}/private/etc`,
+    `${DATA}/etc/shadow`,
+    '/System/Volumes/Datax/private/etc/shadow',
+    `${DATA}/private/etcetera/x`,
+  ])('allows: %s', (filePath) => {
+    expect(checkSensitivePath(filePath).isSensitive).toBe(false);
+  });
+
+  it.each([
+    [`${DATA}/Users/soma-home/.ssh/id_rsa`, 'Read'],
+    [`cat ${DATA}/Users/soma-home/.ssh/id_rsa`, 'Bash'],
+    [`${DATA}/Users/soma-home/.ssh/*`, 'Glob'],
+  ])('blocks %s (%s) under HOME /Users/soma-home', async (input, tool) => {
+    vi.stubEnv('HOME', '/Users/soma-home');
+    vi.resetModules();
+    try {
+      const filter = await import('../sensitive-path-filter');
+      const check =
+        tool === 'Read'
+          ? filter.checkSensitivePath(input)
+          : tool === 'Bash'
+            ? filter.checkBashSensitivePaths(input)
+            : filter.checkSensitiveGlob(input);
+      expect(check.isSensitive).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
+  it.each([
+    '~/.ssh/id_rsa',
+    '/Users/soma-home/.ssh/id_rsa',
+    `${DATA}/Users/soma-home/.gitconfig`,
+  ])('blocks %s under HOME /System/Volumes/Data/Users/soma-home', async (filePath) => {
+    vi.stubEnv('HOME', `${DATA}/Users/soma-home`);
     vi.resetModules();
     try {
       const filter = await import('../sensitive-path-filter');
