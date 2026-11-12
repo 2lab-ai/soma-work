@@ -267,12 +267,11 @@ describe('a bare 다음 / Next title (SSOT 2026-11-12 screenshot: "## 다음" sh
   it.each([
     '## 다음',
     '### 다음:',
-    '**다음**',
     '## 5. 다음',
     '## 🔜 다음',
     '## 다음 할 것',
     '## 다음 스텝',
-    '## Next',
+    '**다음 단계**',
     '### Next up',
     "## What's next",
     '## What’s next?',
@@ -286,7 +285,54 @@ describe('a bare 다음 / Next title (SSOT 2026-11-12 screenshot: "## 다음" sh
     '## 다음 주 일정',
     '## Next release notes',
     '## 다음은 위험',
+    // review (astra P2): bare English `Next` also names a framework
+    '## Next',
+    // review (fable P2): a bold or italic one-word 다음 is a transition in prose, not a section
+    '**다음**',
+    '_다음_',
+    // review (fable P3): a qualified bare word, and a ⚠️ one
+    '## Next (v2)',
+    '## 다음 (참고)',
+    '## ⚠️ 다음',
   ])('%s is not — other words after it make it another section', (title) => {
     expect(extractNextActions([title, FENCE, 'go', FENCE].join('\n'))).toEqual([]);
+  });
+});
+
+describe('review of the bare title (PR #1205)', () => {
+  it('a framework comparison under `## Next` sends nothing (astra P2)', () => {
+    const md = [
+      '## Vite',
+      FENCE,
+      'export default {}',
+      FENCE,
+      '## Next',
+      FENCE,
+      'module.exports = { reactStrictMode: true }',
+      FENCE,
+    ].join('\n');
+    expect(extractNextActions(md)).toEqual([]);
+  });
+
+  it('a title after the ⚠️ follow-up section never takes over (fable P2)', () => {
+    for (const sub of ['**다음 단계**', '### Next steps', '## 다음']) {
+      const md = [
+        '## Next Actions',
+        FENCE,
+        '1193 진행',
+        FENCE,
+        '## ⚠️ User follow-up required',
+        sub,
+        FENCE,
+        'gh pr view 830',
+        FENCE,
+      ].join('\n');
+      expect(extractNextActions(md)).toEqual([{ label: '', command: '1193 진행' }]);
+    }
+  });
+
+  it('a bold 다음 between how-to steps leaves the block alone (fable P2)', () => {
+    const md = ['## 설치', '**다음**', FENCE, 'npm i', FENCE, '## 결과', 'ok'].join('\n');
+    expect(extractNextActions(md)).toEqual([]);
   });
 });
