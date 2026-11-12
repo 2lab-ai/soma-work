@@ -62,6 +62,17 @@ describe('T7 — the harness plugin', () => {
     expect(build).toContain('cp -r src/local-harness dist/');
   });
 
+  // tsc compiles skill scripts into dist/local (github-pr/scripts/extract-pr-data.js). Clearing the
+  // plugin folders after tsc deleted them and failed the deploy bundle's staged-artifact check.
+  it('the build clears dist/local and dist/local-harness before tsc, then copies the sources', () => {
+    const steps = (JSON.parse(read('package.json')).scripts.build as string).split(' && ');
+    const at = (step: string) => steps.indexOf(step);
+    expect(at('rm -rf dist/local dist/local-harness')).toBeGreaterThan(-1);
+    expect(at('rm -rf dist/local dist/local-harness')).toBeLessThan(at('tsc'));
+    expect(at('tsc')).toBeLessThan(at('cp -r src/local dist/'));
+    expect(at('tsc')).toBeLessThan(at('cp -r src/local-harness dist/'));
+  });
+
   it('its skills never shadow a zworkflow skill (one name, one owner)', () => {
     const list = (dir: string) =>
       fs
