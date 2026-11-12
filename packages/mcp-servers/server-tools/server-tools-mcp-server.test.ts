@@ -1823,6 +1823,13 @@ describe('handleSshExec', () => {
     const notStarted = thrownBy(() => handleSshExec({ server: 'prod', command: 'uptime' }));
     expect(notStarted.message).toContain('ssh could not run');
     expect(notStarted.message).not.toContain('may still be running');
+    // Killed by a signal with no spawn error (fable R4): ssh ran, so the remote command may too.
+    vi.mocked(child_process.spawnSync).mockReturnValue(
+      spawnResult({ status: null, signal: 'SIGKILL', stdout: '', stderr: '' }),
+    );
+    const killed = thrownBy(() => handleSshExec({ server: 'prod', command: 'deploy.sh' }));
+    expect(killed.message.split('\n')[0]).toBe('ssh_exec failed on prod: killed by SIGKILL');
+    expect(killed.message).toContain('may still be running');
   });
 
   it("redacts secret shapes in a successful command's stdout and keeps the rest (review-of-legends R4)", () => {

@@ -12,9 +12,10 @@
  *   node scripts/verification/probe-cli-deny-before-hooks.mjs [model]      # default claude-haiku-4-5
  *
  * Every step below must be attempted, each matched to its own tool call by id; the full results are checked.
- * Exit 0: the control read worked and reached the hook, and every denied step was refused.
+ * Exit 0: the control read worked and reached the hook, every protected step got the CLI's permission refusal
+ * (another error, such as "File has not been read yet", proves nothing), and both searches ran.
  * Exit 1: a denied path got through (content, a file name, or a change on disk).
- * Exit 2: inconclusive — a step was not attempted or the control failed. Run it again.
+ * Exit 2: inconclusive — a step was not attempted, failed for another reason, or the control failed. Run it again.
  */
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -128,22 +129,26 @@ for await (const m of q) {
   }
 }
 
+/** The CLI's own refusal of a denied path (2.1.321 wording); any other error tested nothing (astra R4). */
+const PERMISSION_DENIED = /denied by your permission settings|Permission to .+ (?:has been )?denied/i;
 const after = before();
 const outcome = STEPS.map((step) => {
   const ids = [...calls].filter(([, c]) => c.name === step.tool && step.match(c.input)).map(([id]) => id);
   const res = ids.map((id) => results.get(id)).filter(Boolean);
   const all = res.map((r) => r.text).join('\n');
+  const isSearch = step.tool === 'Grep' || step.tool === 'Glob';
   const leaked =
     all.includes(nonce) ||
     (step.id === 'glob' && all.includes('secret.txt')) ||
-    (step.id === 'control-read' ? false : step.tool !== 'Grep' && step.tool !== 'Glob' && res.some((r) => !r.isError));
-  return {
-    id: step.id,
-    attempted: res.length > 0,
-    leaked,
-    ok: step.id === 'control-read' ? res.some((r) => !r.isError && r.text.includes('OK-FILE')) : !leaked,
-    result: all.slice(0, 160),
-  };
+    (step.id !== 'control-read' && !isSearch && res.some((r) => !r.isError));
+  // A step proves something only when the CLI refused it (a protected step) or ran it (the control, a search).
+  const proved =
+    step.id === 'control-read'
+      ? res.some((r) => !r.isError && r.text.includes('OK-FILE'))
+      : isSearch
+        ? res.some((r) => !r.isError)
+        : res.some((r) => r.isError && PERMISSION_DENIED.test(r.text));
+  return { id: step.id, attempted: res.length > 0, proved, leaked, result: all.slice(0, 160) };
 });
 const diskLeak =
   fs.existsSync(path.join(protectedDir, 'x.txt')) ||
@@ -152,7 +157,7 @@ const diskLeak =
   after.notebook !== initial.notebook;
 const controlHook = hookCalls.some((h) => h.tool === 'Read' && h.input?.file_path === permitted);
 const leaked = diskLeak || outcome.some((o) => o.leaked);
-const complete = outcome.every((o) => o.attempted) && outcome[0].ok && controlHook;
+const complete = outcome.every((o) => o.proved) && controlHook;
 const verdict = leaked ? 'DENY BYPASSED' : complete ? 'DENY HELD' : 'INCONCLUSIVE';
 console.log(JSON.stringify({ verdict, model, diskLeak, controlHook, outcome }, null, 2));
 process.exit(leaked ? 1 : complete ? 0 : 2);

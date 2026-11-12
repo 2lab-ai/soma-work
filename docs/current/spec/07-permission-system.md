@@ -498,7 +498,7 @@ CLI 2.1.321에서 실측했다(`settingSources: ['project']`, `bypassPermissions
 - Grep·Glob: 그 파일을 결과에서 뺀다
 - 허용된 Read: 성공하고 훅에 닿는다
 
-SDK·CLI 버전을 올릴 때마다 `node scripts/verification/probe-cli-deny-before-hooks.mjs`를 다시 돌린다. 이 스크립트는 단계마다 도구 호출을 따로 맞춰 보고 결과 전체와 디스크를 확인한다. 종료 코드: 0 = 유지, 1 = 뚫림, 2 = 판정 불가(빠진 단계가 있음).
+SDK·CLI 버전을 올릴 때마다 `node scripts/verification/probe-cli-deny-before-hooks.mjs`를 다시 돌린다. 이 스크립트는 단계마다 도구 호출을 따로 맞춰 보고 결과 전체와 디스크를 확인한다. 보호 단계는 CLI의 권한 거부 문구가 나와야 증명으로 친다. 종료 코드: 0 = 유지, 1 = 뚫림, 2 = 판정 불가(빠졌거나 다른 이유로 실패한 단계가 있음).
 
 남는 길: 운영자가 `SOMA_SANDBOX_OFF_ALLOWED=true`로 연 호스트의 어드민 `sandbox off` 세션 — OS 규칙이 없고 CLI 거부 규칙과
 정책 1b만 남는다.
