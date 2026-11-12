@@ -91,10 +91,12 @@ describe('SkillForceHandler — environment-skill gate', () => {
       threadTs: '171.1',
       originalText: text,
     });
+    // The fourth argument is the skill's environment (env-access WU4); none is configured here.
     expect(h.envAllowed).toHaveBeenCalledWith(
       'acme-env:post-deploy',
       'U1',
       expect.objectContaining({ channel: 'C1', threadTs: '171.1' }),
+      undefined,
     );
     expect(JSON.stringify(mockSay.mock.calls)).not.toContain('ACME post-deploy');
   });

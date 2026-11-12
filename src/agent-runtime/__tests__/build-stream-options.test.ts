@@ -25,7 +25,7 @@ import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import { credentialPaths } from '../../sandbox/admin-sandbox-profile';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
 import type { ConversationSession } from '../../types';
-import { addThreadGrant, ENV_SKILL_GRANT_OWNER } from '../../user-skill-grants-store';
+import { addThreadGrant, ENV_SKILL_GRANT_OWNER, grantEnvironment } from '../../user-skill-grants-store';
 import { type BuildStreamOptionsDeps, buildStreamOptions } from '../claude-code/build-stream-options';
 import { approvalRecordPaths, secretStoreDenyRules } from '../policy/devops-secret-guard';
 
@@ -184,8 +184,8 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
           }>
         >;
       };
-      return (toolName: string) =>
-        entry.hooks[0]({ hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: {} } as never);
+      return (toolName: string, toolInput: Record<string, unknown> = {}) =>
+        entry.hooks[0]({ hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: toolInput } as never);
     }
 
     afterEach(() => {
@@ -239,6 +239,26 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
       expect(out.hookSpecificOutput?.permissionDecision).toBe('deny');
       expect(checkMcpToolPermission).not.toHaveBeenCalled();
       expect(await run('mcp__server-tools__logs')).toEqual({ continue: true });
+    });
+
+    // env-access WU4 (#1212): the tools of an environment's server follow that environment's grant.
+    it("lets a non-admin use an environment's server-tools tools on its grant, admin-only ones included", async () => {
+      fs.writeFileSync(
+        CONFIG_FILE,
+        JSON.stringify({ 'server-tools': { dev2: { envUser: 'env:acme-dev2', skills: ['acme-env:post-deploy'] } } }),
+        'utf8',
+      );
+      const checkMcpToolPermission = vi.fn(() => null);
+      const run = await mcpHook(makeDeps({ checkMcpToolPermission }));
+      const ask = (tool: string, server: string) =>
+        run(tool, { server }).then((o: any) => o.hookSpecificOutput?.permissionDecision ?? 'continue');
+      expect(await ask('mcp__server-tools__ssh_exec', 'dev2')).toBe('deny');
+      grantEnvironment('env:acme-dev2', SAFE_USER);
+      expect(await ask('mcp__server-tools__ssh_exec', 'dev2')).toBe('continue');
+      expect(await ask('mcp__server-tools__gh_pr', 'dev2')).toBe('continue');
+      // A server that is no environment's stays admin-only.
+      expect(await ask('mcp__server-tools__ssh_exec', 'other')).toBe('deny');
+      expect(checkMcpToolPermission).not.toHaveBeenCalled();
     });
 
     // env-access WU3 (#1211): an environment user's PR approvals and merges are an admin's until per-environment

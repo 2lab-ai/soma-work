@@ -12,6 +12,7 @@
  * asks again rather than waiting on a prompt nobody saw.
  */
 import { getAdminUsers } from '../admin-utils';
+import { type Environment, environmentOfSkill, loadEnvironments } from '../env-users';
 import { Logger } from '../logger';
 import {
   createPermissionRequest,
@@ -53,6 +54,8 @@ export interface RequestEnvSkillPermissionInput {
   dashboardClientRef?: string;
   /** Test seam — defaults to ADMIN_USERS. */
   admins?: readonly string[];
+  /** Test seam — defaults to this host's environments (`config.json`). */
+  environments?: readonly Environment[];
   /**
    * Post the "already pending" notice when an identical ask is unanswered (default true). The
    * model-side hook passes false: a run may hit the same skill several times, and one notice is enough.
@@ -155,7 +158,8 @@ async function deliver(input: RequestEnvSkillPermissionInput, requestId: string)
     logger.error('env-skill permission: no admin configured (ADMIN_USERS)', { skillKey });
     return 'none';
   }
-  const msg = buildEnvSkillPermissionMessage({ requestId, requesterId, skillKey, channel, threadTs });
+  const environment = environmentOfSkill(skillKey, input.environments ?? loadEnvironments());
+  const msg = buildEnvSkillPermissionMessage({ requestId, requesterId, skillKey, channel, threadTs, environment });
 
   const prompts: PromptRef[] = [];
   for (const admin of admins) {

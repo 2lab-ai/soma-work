@@ -49,11 +49,19 @@ export interface SkillGrants {
   allowAll: string[];
   /** skillName → requester uids allowed to use that specific skill. */
   perSkill: Record<string, string[]>;
+  /**
+   * Environment-skill owner only (env-access WU4, #1212): environment id (`env:<name>`) → requester uids
+   * allowed every skill and every server-tools tool of that environment ("this environment, always").
+   */
+  perEnvironment?: Record<string, string[]>;
 }
 
 function emptyGrants(): SkillGrants {
   return { allowAll: [], perSkill: {} };
 }
+
+/** `env:` and a lower-case name (`env-users.ts`); anything else is never a key in the grant file. */
+const ENVIRONMENT_ID = /^env:[a-z0-9][a-z0-9-]{0,62}$/;
 
 function grantsFile(ownerId: string): string {
   if (ownerId === ENV_SKILL_GRANT_OWNER) return path.join(DATA_DIR, 'env-skill-grants.json');
@@ -78,6 +86,9 @@ export function loadGrants(ownerId: string): SkillGrants {
     return {
       allowAll: Array.isArray(parsed.allowAll) ? parsed.allowAll : [],
       perSkill: parsed.perSkill && typeof parsed.perSkill === 'object' ? parsed.perSkill : {},
+      ...(parsed.perEnvironment && typeof parsed.perEnvironment === 'object'
+        ? { perEnvironment: parsed.perEnvironment }
+        : {}),
     };
   } catch {
     return emptyGrants();
@@ -289,29 +300,115 @@ export function revokeAllSkills(ownerId: string, requesterId: string): boolean {
   return true;
 }
 
+// --- environment grants (env-access WU4, #1212) ---
+
+function environmentRequesters(grants: SkillGrants, environmentId: string): string[] {
+  if (!ENVIRONMENT_ID.test(environmentId) || !grants.perEnvironment) return [];
+  if (!Object.prototype.hasOwnProperty.call(grants.perEnvironment, environmentId)) return [];
+  const list = grants.perEnvironment[environmentId];
+  return Array.isArray(list) ? list : [];
+}
+
+/** Has an admin granted the requester the whole environment `environmentId`? */
+export function hasEnvironmentGrant(environmentId: string, requesterId: string): boolean {
+  return environmentRequesters(loadGrants(ENV_SKILL_GRANT_OWNER), environmentId).includes(requesterId);
+}
+
+/** Persist "this environment, always" for the requester (idempotent). */
+export function grantEnvironment(environmentId: string, requesterId: string): void {
+  if (!ENVIRONMENT_ID.test(environmentId)) throw new Error(`Invalid environment id: ${environmentId}`);
+  const grants = loadGrants(ENV_SKILL_GRANT_OWNER);
+  const perEnvironment = grants.perEnvironment ?? {};
+  const list = environmentRequesters(grants, environmentId);
+  if (list.includes(requesterId)) return;
+  perEnvironment[environmentId] = [...list, requesterId];
+  saveGrants(ENV_SKILL_GRANT_OWNER, { ...grants, perEnvironment });
+  logger.info('Granted environment use', { environmentId, requesterId });
+}
+
+/** Take back an environment grant (idempotent). Returns whether one was removed. */
+export function revokeEnvironment(environmentId: string, requesterId: string): boolean {
+  const grants = loadGrants(ENV_SKILL_GRANT_OWNER);
+  const list = environmentRequesters(grants, environmentId);
+  if (!list.includes(requesterId) || !grants.perEnvironment) return false;
+  const rest = list.filter((id) => id !== requesterId);
+  if (rest.length) grants.perEnvironment[environmentId] = rest;
+  else delete grants.perEnvironment[environmentId];
+  saveGrants(ENV_SKILL_GRANT_OWNER, grants);
+  logger.info('Revoked environment use', { environmentId, requesterId });
+  return true;
+}
+
 /**
  * NON-MUTATING environment-skill check (`skillKey` = `plugin:skill`). True iff an
- * admin granted the requester all environment skills, this skill, or this skill
- * in `scope`'s thread. Admins are not checked here — the policy exempts them.
+ * admin granted the requester all environment skills, this skill, this skill
+ * in `scope`'s thread, or the whole environment `environmentId` the skill belongs to.
+ * Admins are not checked here — the policy exempts them.
  */
-export function isEnvSkillUseAllowed(skillKey: string, requesterId: string, scope?: GrantScope): boolean {
+export function isEnvSkillUseAllowed(
+  skillKey: string,
+  requesterId: string,
+  scope?: GrantScope,
+  environmentId?: string,
+): boolean {
   const grants = loadGrants(ENV_SKILL_GRANT_OWNER);
   if (grants.allowAll.includes(requesterId)) return true;
   if (grants.perSkill[skillKey]?.includes(requesterId)) return true;
+  if (environmentId !== undefined && environmentRequesters(grants, environmentId).includes(requesterId)) return true;
   return scope !== undefined && hasThreadGrant(ENV_SKILL_GRANT_OWNER, skillKey, requesterId, scope);
+}
+
+/**
+ * NON-MUTATING: may the requester use the server-tools tools of `environment` (its servers) — directly or from
+ * one of its skills? True iff an admin granted the whole environment, all environment skills, or one of its
+ * skills — always, or in `scope`'s thread. A skill's grant opens its environment's tools in the same scope: the
+ * skill runs on them. Admins are not checked here — the policy exempts them.
+ */
+export function isEnvironmentToolUseAllowed(
+  environment: { id: string; skills: readonly string[] },
+  requesterId: string,
+  scope?: GrantScope,
+): boolean {
+  const grants = loadGrants(ENV_SKILL_GRANT_OWNER);
+  if (grants.allowAll.includes(requesterId)) return true;
+  if (environmentRequesters(grants, environment.id).includes(requesterId)) return true;
+  for (const pattern of environment.skills) {
+    if (pattern.endsWith(':*')) {
+      const plugin = pattern.slice(0, -2);
+      const prefix = `${plugin}:`;
+      for (const [key, requesters] of Object.entries(grants.perSkill)) {
+        if (key.startsWith(prefix) && Array.isArray(requesters) && requesters.includes(requesterId)) return true;
+      }
+      if (scope !== undefined && hasThreadGrantForPlugin(ENV_SKILL_GRANT_OWNER, plugin, requesterId, scope)) {
+        return true;
+      }
+    } else {
+      if (grants.perSkill[pattern]?.includes(requesterId)) return true;
+      if (scope !== undefined && hasThreadGrant(ENV_SKILL_GRANT_OWNER, pattern, requesterId, scope)) return true;
+    }
+  }
+  return false;
 }
 
 /**
  * NON-MUTATING environment-plugin check: may the requester use the environment plugin `pluginName`
  * as a whole — its MCP tools (policy step 6d)? True iff an admin granted the requester all
- * environment skills, any skill of this plugin (a `pluginName:` key), or any skill of this plugin in
- * `scope`'s thread: the plugin's tools run on the approval of any of its skills. Admins are not
+ * environment skills, any skill of this plugin (a `pluginName:` key), any skill of this plugin in
+ * `scope`'s thread, or one of `environmentIds` (the environments whose skills come from this plugin)
+ * whole: the plugin's tools run on the approval of any of its skills. Admins are not
  * checked here — the policy exempts them.
  */
-export function isEnvPluginUseAllowed(pluginName: string, requesterId: string, scope?: GrantScope): boolean {
+export function isEnvPluginUseAllowed(
+  pluginName: string,
+  requesterId: string,
+  scope?: GrantScope,
+  environmentIds: readonly string[] = [],
+): boolean {
   if (!pluginName) return false;
   const grants = loadGrants(ENV_SKILL_GRANT_OWNER);
   if (grants.allowAll.includes(requesterId)) return true;
+  // An environment granted whole whose skills come from this plugin (env-access WU4).
+  if (environmentIds.some((id) => environmentRequesters(grants, id).includes(requesterId))) return true;
   const prefix = `${pluginName}:`;
   for (const [skillKey, requesters] of Object.entries(grants.perSkill)) {
     if (skillKey.startsWith(prefix) && Array.isArray(requesters) && requesters.includes(requesterId)) return true;

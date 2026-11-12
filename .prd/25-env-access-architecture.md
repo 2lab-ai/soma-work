@@ -64,6 +64,7 @@ Slack 유저 ──▶ soma-work 봇 프로세스 (OS 유저 = 봇 유저, 샌�
 "server-tools": {
   "dev2": {
     "envUser": "env:acme-dev2",
+    "skills": ["acme-env:deploy-dev2", "acme-env:qa-dev2"],
     "ssh": { "host": "dev2" },
     "databases": { "app": { "type": "mysql", "host": "127.0.0.1", "port": 3306, "user": "app", "password": { "$secret": "dev2-db-app" } } },
     "github": {

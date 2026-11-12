@@ -280,6 +280,7 @@ the secret store (`<config dir>/secrets/<name>`); server-tools reads it outside 
   "server-tools": {
     "dev2": {
       "envUser": "env:acme-dev2",
+      "skills": ["acme-env:deploy-dev2", "acme-env:qa-dev2"],
       "ssh": { "host": "dev2" },
       "github": {
         "token": { "$secret": "gh-org-admin" },
@@ -311,15 +312,24 @@ written, the tool says the write was made and must not be retried. A write that 
 connection, the 30-second timeout, an unreadable body) is looked up — the environment's own approval at that SHA,
 or whether the PR is merged — and recorded as `done` when found; anything short of that (not seen yet, a lookup
 that fails or answers something unexpected) is recorded as `unknown` and the tool says to check the PR before
-retrying. `authors`, `bases`, `repos` and `mergeMethods` must be
-lists: a string there is refused, since it would match by substring.
+retrying. `authors`, `bases`, `repos`, `mergeMethods` and `requiredChecks` must be lists: a string there is refused,
+since it would match by substring. Each line names the server, the `envUser` and the Slack user the session runs for.
 
 "Every check is green" means: each required check has passed, and nothing else on the head is unfinished or red.
-The required checks are `requiredChecks`, else the base branch's protection (its required status checks); when
-neither names any, no PR is green — a check that has not registered yet would otherwise go unseen. A server or
-gateway error (5xx) on approve or merge is treated like no answer: the write is looked up. An approval carries a
-marker unique to the call, so a lost answer is matched to that approval and never to an older one. Each line names the server, the
-`envUser` and the Slack user the session runs for. `gh_pr` is for admins only until per-environment grants land (WU4, #1212).
+The required checks are `requiredChecks`, else the base branch's protection (its required status checks; a check
+the protection binds to an app counts only from that app's check run — list it in `requiredChecks` if that app
+reports a commit status instead). When neither names any, or the protection cannot be read, no PR is green — a
+check that has not registered yet would otherwise go unseen. A server or gateway error (5xx) on approve or merge is
+treated like no answer: the write is looked up. An approval carries a marker unique to the call, so a lost answer is
+matched to that approval and never to an older one.
+
+`skills` lists the environment-plugin skills that belong to this environment (`plugin:skill`, or `plugin:*`).
+Entries that share an `envUser` are one environment. When a non-admin asks for one of its skills, the admins' card
+offers **accept (this thread) · reject · this skill always · `<environment>` always**; the last one grants the requester
+every skill of the environment and every server-tools tool on its servers (`ssh_exec` and `gh_pr` included), kept in
+`DATA_DIR/env-skill-grants.json` `perEnvironment` (env-access WU4, #1212). A server-tools call that names one of
+the environment's servers runs for a non-admin only on such a grant, or on a grant of one of its skills. On a server
+that is no environment's, `ssh_exec` and `gh_pr` stay admin-only.
 
 ## Where the substitution happens in code
 

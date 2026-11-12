@@ -9,16 +9,12 @@
  */
 
 import type { AdminApproval, AdminApprovalAdapter, AdminApprovalResolution } from '../admin-approvals';
+import { environmentOfSkill, loadEnvironments } from '../env-users';
 import { Logger } from '../logger';
 import { listPermissionRequests, type PermissionRequest } from '../skill-permission-request-store';
 import { ENV_SKILL_GRANT_OWNER } from '../user-skill-grants-store';
 import { type EnvSkillPermissionActionHandler, isEnvPermKind } from './actions/env-skill-permission-action-handler';
-import {
-  VALUE_KIND_ENV_SKILL_ALL,
-  VALUE_KIND_ENV_SKILL_ALWAYS,
-  VALUE_KIND_ENV_SKILL_DENY,
-  VALUE_KIND_ENV_SKILL_ONCE,
-} from './env-skill-permission-blocks';
+import { envSkillChoices, VALUE_KIND_ENV_SKILL_DENY, VALUE_KIND_ENV_SKILL_ONCE } from './env-skill-permission-blocks';
 
 const logger = new Logger('EnvSkillAdminApproval');
 
@@ -35,13 +31,12 @@ export function envSkillApproval(req: PermissionRequest): AdminApproval {
     title: `환경 스킬 \`${req.skillName}\` 실행 요청`,
     // #1131 — what a batch approval does: the narrowest grant (this thread, once).
     summary: `환경 스킬 \`${req.skillName}\` 1회 실행 허용 — #${req.channel}`,
-    description: '허용하면 요청한 턴을 다시 보내 이어서 실행합니다. 1회 허용은 요청한 스레드에서만 유효합니다.',
-    choices: [
-      { id: VALUE_KIND_ENV_SKILL_ONCE, label: '✅ 1회 허용 (이 스레드)' },
-      { id: VALUE_KIND_ENV_SKILL_ALWAYS, label: `📋 \`${req.skillName}\` 항상 허용` },
-      { id: VALUE_KIND_ENV_SKILL_ALL, label: '🌐 모든 환경 스킬 항상 허용' },
-      { id: VALUE_KIND_ENV_SKILL_DENY, label: '❌ 거부' },
-    ],
+    description: '허용하면 요청한 턴을 다시 보내 이어서 실행합니다. 수락은 요청한 스레드에서만 유효합니다.',
+    // The same answers as the admins' DM (env-access WU4): accept · reject · this skill · this environment.
+    choices: envSkillChoices(req.skillName, environmentOfSkill(req.skillName, loadEnvironments())).map((c) => ({
+      id: c.kind,
+      label: c.label,
+    })),
     // The narrowest grant, as the DM's primary button.
     recommendedId: VALUE_KIND_ENV_SKILL_ONCE,
     risk: 'medium',

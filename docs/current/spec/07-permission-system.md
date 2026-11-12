@@ -522,7 +522,9 @@ SDK·CLI 버전을 올릴 때마다 `node scripts/verification/probe-cli-deny-be
 | 집행 — 어드민 요청 | `build-stream-options.ts` 훅의 `onEnvSkillDenied` → `slack/env-skill-permission-request.ts` (어드민 DM, 실패 시 스레드) |
 | 허용 저장 | `user-skill-grants-store.ts`, 예약 소유자 `env-skills` → `DATA_DIR/env-skill-grants.json` + 스레드 허용(메모리, 12h) |
 | 요청 저장 | `skill-permission-request-store.ts` (소유자 `env-skills`, 스레드별 중복 제거, 어드민 DM 위치 기록) |
-| 어드민 답 | `slack/actions/env-skill-permission-action-handler.ts` (`env_skill_perm_*`: 1회/항상/전체/거부) |
+| 어드민 답 | `slack/actions/env-skill-permission-action-handler.ts` (`env_skill_perm_*`: 수락/거절/이 스킬 항상/이 환경 전체 항상, WU4 전 카드의 "모든 환경 스킬") |
+| 환경 (WU4, #1212) | `env-users.ts` — `server-tools` 절의 `envUser` + `skills`. 환경 허용은 `perEnvironment`(`grantEnvironment`) |
+| 환경 서버 도구 (WU4) | `build-stream-options.ts` 4단계 콜백 → `checkEnvironmentToolAccess`: `server`가 환경 서버면 그 환경 허용(`isEnvironmentToolUseAllowed`)으로만 열고 닫는다 — 어드민 전용 도구(`ssh_exec`·`gh_pr`)도 허용이 있으면 열린다 |
 
 - 결정은 하나: 어드민이 아니고, 도구가 `ENV_GATED_TOOLS`(`Skill`·`Read`·`Glob`·`Grep`·`Bash`·`Write`·`Edit`·`NotebookEdit`) 중 하나이고,
   `ctx.checkEnvSkillPermission(toolName, input)`(→ `checkEnvSkillAccess`)이 이유를 돌려주면 거부한다. 이유는
@@ -534,7 +536,8 @@ SDK·CLI 버전을 올릴 때마다 `node scripts/verification/probe-cli-deny-be
 - 6d: SDK는 모든 세션에 모든 플러그인의 MCP 서버를 띄우고 그 도구를 `mcp__plugin_<plugin>_<server>__<tool>`로
   부른다(플러그인 이름 그대로). 어드민이 아니고, 이름이 `mcp__plugin_`로 시작하고, `checkEnvPluginMcpAccess`가 이유(플러그인
   이름)를 돌려주면 `env-plugin-mcp: <plugin> (<toolName>)`로 거부하고 모델에게 `ENV_PLUGIN_MCP_DENY_MESSAGE`가 간다.
-  그 플러그인의 스킬 하나라도 허용(전체 허용, 항상 허용, 이 스레드의 1회 허용 — `isEnvPluginUseAllowed`)이 있으면 연다.
+  그 플러그인의 스킬 하나라도 허용(전체 허용, 항상 허용, 이 스레드의 1회 허용 — `isEnvPluginUseAllowed`)이 있거나, 그
+  플러그인 스킬을 가진 환경의 전체 허용이 있으면 연다.
   도구 자체로는 어드민에게 묻지 않는다(사유 접두어가 `env-skill: `가 아니다) — 스킬 호출이 묻는다. 이름의 `_`는 플러그인
   이름에도 들어갈 수 있어, 맞을 수 있는 환경 플러그인 모두의 허용을 요구한다(fail-closed). 레지스트리가 없으면 목록은
   `config.json`에서 읽는다.

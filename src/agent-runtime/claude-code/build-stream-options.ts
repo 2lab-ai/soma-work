@@ -40,12 +40,14 @@ import {
 import { getSandboxAllowUnavailable, getSandboxOffAllowed } from '../../config';
 import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR, SECRETS_DIR } from '../../env-paths';
 import {
+  checkEnvironmentToolAccess,
   checkEnvPluginMcpAccess,
   checkEnvSkillAccess,
   type EnvSkillRegistry,
   envSkillRegistry,
   envSkillSandboxDenyRead,
 } from '../../env-skill-registry';
+import { loadEnvironments } from '../../env-users';
 import type { IncidentEvidence, IncidentEvidenceConfig } from '../../incident/evidence';
 import { assertIncidentRequest, buildIncidentSdkOptions, type IncidentRequestLike } from '../../incident/sdk-options';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
@@ -424,11 +426,19 @@ export async function buildStreamOptions(
         // Step 4 runs for non-admins only. Host commands (`ssh_exec`, env-access WU2 #1210) and an environment
         // user's PR approvals and merges (`gh_pr`, WU3 #1211) are an admin's, whatever the server-tools grants
         // say; the other tools follow the grants.
-        checkMcpToolPermission: (name) =>
-          ADMIN_ONLY_SERVER_TOOLS.get(name) ??
-          (gatedServerNames.length > 0
-            ? (deps.checkMcpToolPermission(name, policyUser, cachedPermConfig, gatedServerNames) ?? null)
-            : null),
+        checkMcpToolPermission: (name, toolInput) => {
+          // An environment's server runs on that environment's grant (WU4, #1212), admin-only tools included.
+          const environment = envSkillScope
+            ? checkEnvironmentToolAccess(name, toolInput, policyUser, envSkillScope, loadEnvironments())
+            : undefined;
+          if (environment !== undefined) return environment;
+          return (
+            ADMIN_ONLY_SERVER_TOOLS.get(name) ??
+            (gatedServerNames.length > 0
+              ? (deps.checkMcpToolPermission(name, policyUser, cachedPermConfig, gatedServerNames) ?? null)
+              : null)
+          );
+        },
         ...(nativeWriteRoots ? { checkNativeWrite: createNativeWriteCheck(nativeWriteRoots, hookCwd) } : {}),
         checkEnvSkillPermission: (tool, toolInput) =>
           envRegistry

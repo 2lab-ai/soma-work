@@ -5,6 +5,8 @@ const h = vi.hoisted(() => ({
   addThreadGrant: vi.fn(),
   grantSkill: vi.fn(),
   grantAllSkills: vi.fn(),
+  grantEnvironment: vi.fn(),
+  environments: [] as any[],
   envSkillExists: vi.fn((_k: string) => true),
   admins: new Set<string>(['UADMIN1', 'UADMIN2']),
 }));
@@ -20,6 +22,11 @@ vi.mock('../../../user-skill-grants-store', () => ({
   addThreadGrant: h.addThreadGrant,
   grantSkill: h.grantSkill,
   grantAllSkills: h.grantAllSkills,
+  grantEnvironment: h.grantEnvironment,
+}));
+vi.mock('../../../env-users', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../env-users')>()),
+  loadEnvironments: () => h.environments,
 }));
 vi.mock('../../../env-skill-registry', () => ({
   envSkillRegistry: () => ({ pluginNames: new Set(['acme-env']), pluginsDir: '/mock' }),
@@ -31,6 +38,7 @@ import {
   VALUE_KIND_ENV_SKILL_ALL,
   VALUE_KIND_ENV_SKILL_ALWAYS,
   VALUE_KIND_ENV_SKILL_DENY,
+  VALUE_KIND_ENV_SKILL_ENV,
   VALUE_KIND_ENV_SKILL_ONCE,
 } from '../../env-skill-permission-blocks';
 import { EnvSkillPermissionActionHandler } from '../env-skill-permission-action-handler';
@@ -123,7 +131,26 @@ describe('EnvSkillPermissionActionHandler', () => {
     expect(messageHandler).toHaveBeenCalledTimes(1);
   });
 
-  it('모든 환경 스킬 항상 허용: a persisted all-environment-skills grant', async () => {
+  // env-access WU4 (#1212): the fourth answer — every skill and tool of the skill's environment.
+  it('이 환경 전체 항상: a persisted grant of the environment the skill belongs to', async () => {
+    h.environments = [{ id: 'env:acme-dev2', servers: ['dev2'], skills: ['acme-env:*'] }];
+    await handler.handleAction(click(VALUE_KIND_ENV_SKILL_ENV), respond);
+    expect(h.grantEnvironment).toHaveBeenCalledWith('env:acme-dev2', 'U1');
+    expect(messageHandler).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(slackApi.updateMessage.mock.calls)).toContain('acme-dev2');
+    h.environments = [];
+  });
+
+  it('이 환경 전체 항상 for a skill no environment owns any more: nothing granted, the request stays open', async () => {
+    h.environments = [];
+    await handler.handleAction(click(VALUE_KIND_ENV_SKILL_ENV), respond);
+    expect(h.grantEnvironment).not.toHaveBeenCalled();
+    expect(messageHandler).not.toHaveBeenCalled();
+    expect(h.requests.get('req-1').handled).toBe(false);
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
+  });
+
+  it('모든 환경 스킬 항상 허용 (a card from before WU4): a persisted all-environment-skills grant', async () => {
     await handler.handleAction(click(VALUE_KIND_ENV_SKILL_ALL), respond);
     expect(h.grantAllSkills).toHaveBeenCalledWith('env-skills', 'U1');
     expect(messageHandler).toHaveBeenCalledTimes(1);
