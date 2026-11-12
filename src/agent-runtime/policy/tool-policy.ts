@@ -99,7 +99,7 @@ export interface ToolPolicyContext {
   /** Live handoff context; `undefined` → the PR-issue precondition is inactive. */
   handoffContext?: HandoffContext;
   /** Returns a deny reason for a permission-gated MCP tool, else null. */
-  checkMcpToolPermission: (toolName: string) => string | null;
+  checkMcpToolPermission: (toolName: string, toolInput?: Record<string, unknown>) => string | null;
   /**
    * Native write boundary (`native-write-boundary.ts`): for a call of a
    * `NATIVE_WRITE_TOOLS` tool, a deny reason when a path it writes lands outside
@@ -337,7 +337,7 @@ export function evaluateToolPolicy(
     //    call, so a grant that expires mid-session is denied. The query-start
     //    `allowedTools` list only decides which tools run without a prompt.
     if (toolName.startsWith('mcp__')) {
-      const denied = ctx.checkMcpToolPermission(toolName);
+      const denied = ctx.checkMcpToolPermission(toolName, input);
       if (denied !== null) {
         return { decision: 'deny', reason: `mcp-permission: ${denied}` };
       }

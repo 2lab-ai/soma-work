@@ -11,13 +11,59 @@ vi.mock('../../skill-permission-request-store', () => ({
   setRequestPrompts: h.setPrompts,
 }));
 
-import { ENV_SKILL_PERM_ACTION_ID_PREFIX } from '../env-skill-permission-blocks';
+import { buildEnvSkillPermissionMessage, ENV_SKILL_PERM_ACTION_ID_PREFIX } from '../env-skill-permission-blocks';
 import { describeEnvSkillDelivery, requestEnvSkillPermission } from '../env-skill-permission-request';
 
 /**
  * The admins' ask: record the request under the reserved environment-skill owner, DM every admin
  * the 4-button prompt, fall back to the asking thread, and always tell the requester the truth.
  */
+describe('the four answers (env-access WU4, #1212)', () => {
+  const env = { id: 'env:acme-dev2', servers: ['dev2'], skills: ['acme-env:post-deploy', 'acme-env:qa'] };
+
+  it('offers accept, reject, this skill always and this environment always, in that order', () => {
+    const msg = buildEnvSkillPermissionMessage({
+      requestId: 'r1',
+      requesterId: 'U1',
+      skillKey: 'acme-env:post-deploy',
+      channel: 'C1',
+      threadTs: '171.1',
+      environment: env,
+    });
+    const actions = msg.blocks.find((b: any) => b.type === 'actions');
+    expect(actions.elements.map((e: any) => [e.action_id, e.text.text])).toEqual([
+      [`${ENV_SKILL_PERM_ACTION_ID_PREFIX}env_skill_once`, '✅ 수락 (이 스레드)'],
+      [`${ENV_SKILL_PERM_ACTION_ID_PREFIX}env_skill_deny`, '❌ 거절'],
+      [`${ENV_SKILL_PERM_ACTION_ID_PREFIX}env_skill_always`, '📋 이 스킬 항상 — `acme-env:post-deploy`'],
+      [`${ENV_SKILL_PERM_ACTION_ID_PREFIX}env_skill_env`, '🌐 `acme-dev2` 전체 항상'],
+    ]);
+    expect(JSON.stringify(msg.blocks)).toContain('acme-env:qa');
+  });
+
+  it('asks with the environment the skill belongs to', async () => {
+    const slackApi = {
+      openDmChannel: vi.fn(async (u: string) => `D-${u}`),
+      postMessage: vi.fn(async (channel: string, _t: string, _o?: any) => ({ ts: `${channel}.ts`, channel })),
+      updateMessage: vi.fn(async () => undefined),
+    };
+    await requestEnvSkillPermission({
+      slackApi,
+      requesterId: 'U1',
+      skillKey: 'acme-env:post-deploy',
+      channel: 'C1',
+      originalText: 'x',
+      admins: ['UADMIN1'],
+      environments: [env],
+    });
+    const dm = slackApi.postMessage.mock.calls.find((c) => String(c[0]).startsWith('D-'));
+    expect(JSON.stringify(dm?.[2]?.blocks)).toContain(`${ENV_SKILL_PERM_ACTION_ID_PREFIX}env_skill_env`);
+    // trinity R1 (fable): the request remembers which environment the card offered.
+    expect(h.createReq).toHaveBeenCalledWith(expect.objectContaining({ environment: 'env:acme-dev2' }));
+    // Accepting a skill opens the environment's servers for it too, and the card says so.
+    expect(JSON.stringify(dm?.[2]?.blocks)).toContain('ssh_exec');
+  });
+});
+
 describe('requestEnvSkillPermission', () => {
   type PostOptions = { threadTs?: string; blocks?: any[] };
   const slackApi = {
@@ -64,8 +110,10 @@ describe('requestEnvSkillPermission', () => {
     const blocks = JSON.stringify(dms[0][2]?.blocks);
     expect(blocks).toContain(`${ENV_SKILL_PERM_ACTION_ID_PREFIX}env_skill_once`);
     expect(blocks).toContain(`${ENV_SKILL_PERM_ACTION_ID_PREFIX}env_skill_always`);
-    expect(blocks).toContain(`${ENV_SKILL_PERM_ACTION_ID_PREFIX}env_skill_all`);
     expect(blocks).toContain(`${ENV_SKILL_PERM_ACTION_ID_PREFIX}env_skill_deny`);
+    // env-access WU4 (#1212): no "every environment skill" answer any more; a skill with no environment gets three.
+    expect(blocks).not.toContain(`${ENV_SKILL_PERM_ACTION_ID_PREFIX}env_skill_all`);
+    expect(blocks).not.toContain(`${ENV_SKILL_PERM_ACTION_ID_PREFIX}env_skill_env`);
     // Buttons carry only the request id.
     expect(blocks).not.toContain('UADMIN1');
     expect(h.setPrompts).toHaveBeenCalledWith('env-req-1', [

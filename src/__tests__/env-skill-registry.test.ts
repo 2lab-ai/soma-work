@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { DATA_DIR } from '../env-paths';
 import {
+  checkEnvironmentToolAccess,
   checkEnvPluginMcpAccess,
   checkEnvSkillAccess,
   checkEnvSkillPermission,
@@ -21,6 +22,7 @@ import {
   addThreadGrant,
   ENV_SKILL_GRANT_OWNER,
   grantAllSkills,
+  grantEnvironment,
   grantSkill,
   isEnvSkillUseAllowed,
   isSkillUseAllowed,
@@ -122,6 +124,122 @@ describe('env-skill-registry', () => {
 
       addThreadGrant(ENV_SKILL_GRANT_OWNER, 'acme-env:staging-qa', 'U1', thread, Date.now() - 1);
       expect(checkEnvSkillPermission('acme-env:staging-qa', 'U1', thread, registry)).toBe('acme-env:staging-qa');
+    });
+  });
+
+  // env-access WU4 (#1212): environments from config.json — the admin's "this environment, always".
+  describe('environments', () => {
+    const dev2 = { id: 'env:acme-dev2', servers: ['dev2', 'dev2-db'], skills: ['acme-env:post-deploy'] };
+    const stage0 = { id: 'env:acme-stage0', servers: ['stage0'], skills: ['acme-env:staging-qa'] };
+    const withEnvs = (): EnvSkillRegistry => ({ ...registry, environments: [dev2, stage0] });
+
+    it("an environment grant opens that environment's skills and its plugin's tools, not another's", () => {
+      grantEnvironment('env:acme-dev2', 'UENVGRANT1');
+      expect(checkEnvSkillPermission('acme-env:post-deploy', 'UENVGRANT1', thread, withEnvs())).toBeNull();
+      expect(checkEnvSkillPermission('acme-env:staging-qa', 'UENVGRANT1', thread, withEnvs())).toBe(
+        'acme-env:staging-qa',
+      );
+      expect(checkEnvSkillPermission('acme-env:post-deploy', 'UENVGRANT2', thread, withEnvs())).toBe(
+        'acme-env:post-deploy',
+      );
+      expect(
+        checkEnvPluginMcpAccess('mcp__plugin_acme-env_browser__probe', 'UENVGRANT1', thread, withEnvs()),
+      ).toBeNull();
+      // Without the environments the grant names nothing.
+      expect(checkEnvSkillPermission('acme-env:post-deploy', 'UENVGRANT1', thread, registry)).toBe(
+        'acme-env:post-deploy',
+      );
+    });
+
+    it("gates the server-tools tools of an environment's servers on its grant", () => {
+      const call = (tool: string, input: Record<string, unknown>, user = 'UENVGRANT1') =>
+        checkEnvironmentToolAccess(tool, input, user, thread, [dev2, stage0]);
+      // Not an environment's server, or no server named: not this gate's call.
+      expect(call('mcp__server-tools__logs', { server: 'other' })).toBeUndefined();
+      expect(call('mcp__server-tools__list', {})).toBeUndefined();
+      expect(call('mcp__github__get_issue', { server: 'dev2' })).toBeUndefined();
+      // An environment's server without a grant: denied, naming the environment.
+      expect(call('mcp__server-tools__ssh_exec', { server: 'dev2-db', command: 'uptime' })).toMatch(/acme-dev2/);
+      grantEnvironment('env:acme-dev2', 'UENVGRANT1');
+      expect(call('mcp__server-tools__ssh_exec', { server: 'dev2-db', command: 'uptime' })).toBeNull();
+      expect(call('mcp__server-tools__gh_pr', { server: 'dev2', action: 'view' })).toBeNull();
+      expect(call('mcp__server-tools__ssh_exec', { server: 'stage0', command: 'uptime' })).toMatch(/acme-stage0/);
+      expect(call('mcp__server-tools__ssh_exec', { server: 'dev2' }, 'UENVGRANT2')).toMatch(/acme-dev2/);
+    });
+
+    it('a thread grant of one of its skills opens its servers in that thread', () => {
+      addThreadGrant(ENV_SKILL_GRANT_OWNER, 'acme-env:staging-qa', 'UENVGRANT1', thread);
+      expect(
+        checkEnvironmentToolAccess('mcp__server-tools__logs', { server: 'stage0' }, 'UENVGRANT1', thread, [stage0]),
+      ).toBeNull();
+      expect(
+        checkEnvironmentToolAccess('mcp__server-tools__logs', { server: 'stage0' }, 'UENVGRANT1', { channel: 'C2' }, [
+          stage0,
+        ]),
+      ).toMatch(/acme-stage0/);
+    });
+
+    // trinity R1 (fable): after "environment always", reading the skill's own files must not ask again.
+    it("an environment grant also opens reading its skills' files", () => {
+      const file = path.join(pluginsDir, 'acme-env', 'skills', 'post-deploy', 'SKILL.md');
+      expect(checkEnvSkillAccess('Read', { file_path: file }, 'UENVREAD1', thread, withEnvs())).toBe(
+        'acme-env:post-deploy',
+      );
+      grantEnvironment('env:acme-dev2', 'UENVREAD1');
+      expect(checkEnvSkillAccess('Read', { file_path: file }, 'UENVREAD1', thread, withEnvs())).toBeNull();
+    });
+
+    // trinity R1 (fable): `plugin:*` in one environment must not count another environment's skill grant.
+    it("a plugin:* environment does not open on a grant of another environment's skill", () => {
+      const prod = { id: 'env:acme-prod', servers: ['prod'], skills: ['acme-env:*'] };
+      const envs = [dev2, prod];
+      grantSkill(ENV_SKILL_GRANT_OWNER, 'acme-env:post-deploy', 'UENVSTAR1');
+      addThreadGrant(ENV_SKILL_GRANT_OWNER, 'acme-env:post-deploy', 'UENVSTAR2', thread);
+      // post-deploy is claimed by both (dev2 by name, prod by acme-env:*): its grant opens neither.
+      expect(
+        checkEnvironmentToolAccess('mcp__server-tools__logs', { server: 'dev2' }, 'UENVSTAR1', thread, envs),
+      ).toMatch(/acme-dev2/);
+      expect(
+        checkEnvironmentToolAccess('mcp__server-tools__logs', { server: 'prod' }, 'UENVSTAR1', thread, envs),
+      ).toMatch(/acme-prod/);
+      expect(
+        checkEnvironmentToolAccess('mcp__server-tools__logs', { server: 'prod' }, 'UENVSTAR2', thread, envs),
+      ).toMatch(/acme-prod/);
+      // staging-qa only prod claims: its grant opens prod.
+      grantSkill(ENV_SKILL_GRANT_OWNER, 'acme-env:staging-qa', 'UENVSTAR1');
+      expect(
+        checkEnvironmentToolAccess('mcp__server-tools__logs', { server: 'prod' }, 'UENVSTAR1', thread, envs),
+      ).toBeNull();
+    });
+
+    // trinity R1 (astra): a skill two environments claim belongs to neither — its grant opens neither's servers.
+    it("a skill two environments both claim opens neither environment's servers", () => {
+      const a = { id: 'env:acme-a', servers: ['a'], skills: ['acme-env:post-deploy'] };
+      const b = { id: 'env:acme-b', servers: ['b'], skills: ['acme-env:*'] };
+      addThreadGrant(ENV_SKILL_GRANT_OWNER, 'acme-env:post-deploy', 'UENVBOTH1', thread);
+      grantSkill(ENV_SKILL_GRANT_OWNER, 'acme-env:post-deploy', 'UENVBOTH2');
+      for (const user of ['UENVBOTH1', 'UENVBOTH2']) {
+        expect(checkEnvironmentToolAccess('mcp__server-tools__logs', { server: 'a' }, user, thread, [a, b])).toMatch(
+          /acme-a/,
+        );
+        expect(checkEnvironmentToolAccess('mcp__server-tools__logs', { server: 'b' }, user, thread, [a, b])).toMatch(
+          /acme-b/,
+        );
+      }
+    });
+
+    it('reads the environments from config.json', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'env-reg-config-'));
+      const file = path.join(dir, 'config.json');
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          plugin: { envPlugins: ['acme-env@m'] },
+          'server-tools': { dev2: { envUser: 'env:acme-dev2', skills: ['acme-env:*'] } },
+        }),
+      );
+      const reg = envSkillRegistry(undefined, pluginsDir, file);
+      expect(reg.environments?.map((e) => e.id)).toEqual(['env:acme-dev2']);
     });
   });
 

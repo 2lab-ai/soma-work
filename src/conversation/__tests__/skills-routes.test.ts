@@ -86,7 +86,12 @@ describe('skills routes (#1079)', () => {
     (await import('../../plugin/admitted-plugin-names')).setAdmittedPluginNames(['envx', 'stv']);
     routes = await import('../skills-routes');
     grants = await import('../../user-skill-grants-store');
-    routes.setSkillsEnvRegistrySource(() => ({ pluginNames: new Set(['envx']), pluginsDir }));
+    routes.setSkillsEnvRegistrySource(() => ({
+      pluginNames: new Set(['envx']),
+      pluginsDir,
+      // env-access WU4: one environment owning the plugin's skills.
+      environments: [{ id: 'env:acme-dev2', servers: ['dev2'], skills: ['envx:*'] }],
+    }));
     routes.setSkillsUserSource(() => USERS);
     routes.setSkillsLocalDirsForTests([localDir]);
 
@@ -171,6 +176,7 @@ describe('skills routes (#1079)', () => {
             allowed: ['U_OTHER'],
           },
         ],
+        environments: [{ id: 'env:acme-dev2', label: 'acme-dev2', skills: ['envx:*'], allowed: [] }],
       });
       const granted = await get('/api/skills', await signIn('U_OTHER'));
       expect(granted.body.env).toEqual({
@@ -439,6 +445,59 @@ describe('skills routes (#1079)', () => {
       const r = await grant(BEARER, { scope: 'env', skill: 'envx:post-deploy', userId: 'U_OTHER', allow: true });
       expect(r.status).toBe(200);
       expect(grants.isEnvSkillUseAllowed('envx:post-deploy', 'U_OTHER')).toBe(true);
+    });
+
+    // trinity R1 (fable): an environment grant is shown, counted, and can be taken back here.
+    it('an admin grants and takes back a whole environment; the granted user reads its skills', async () => {
+      const on = { ...(await signIn('U_ADMIN')), 'x-admin-mode': 'on' };
+      let r = await grant(on, { scope: 'environment', skill: 'env:acme-dev2', userId: 'U_OTHER', allow: true });
+      expect(r.status).toBe(200);
+      expect(r.body.env.environments).toEqual([
+        { id: 'env:acme-dev2', label: 'acme-dev2', skills: ['envx:*'], allowed: ['U_OTHER'] },
+      ]);
+      expect(grants.hasEnvironmentGrant('env:acme-dev2', 'U_OTHER')).toBe(true);
+      const other = await signIn('U_OTHER');
+      const list = await get('/api/skills', other);
+      expect(list.body.env.skills[0]).toMatchObject({ key: 'envx:post-deploy', access: 'granted' });
+      expect(list.body.env.environments).toBeUndefined();
+      r = await grant(on, { scope: 'environment', skill: 'env:acme-dev2', userId: 'U_OTHER', allow: false });
+      expect(r.body.env.environments[0].allowed).toEqual([]);
+      expect(grants.hasEnvironmentGrant('env:acme-dev2', 'U_OTHER')).toBe(false);
+    });
+
+    // trinity R2 (fable): a grant left for an environment no longer in config is shown and can be taken back,
+    // so re-adding the environment does not silently bring it back.
+    it('lists and takes back a grant of an environment that left the config, but grants none there', async () => {
+      grants.grantEnvironment('env:acme-gone', 'U_OTHER');
+      const on = { ...(await signIn('U_ADMIN')), 'x-admin-mode': 'on' };
+      const list = await get('/api/skills', on);
+      expect(list.body.env.environments).toContainEqual({
+        id: 'env:acme-gone',
+        label: 'acme-gone',
+        skills: [],
+        allowed: ['U_OTHER'],
+        inConfig: false,
+      });
+      expect(
+        (await grant(on, { scope: 'environment', skill: 'env:acme-gone', userId: 'U_OWNER', allow: true })).status,
+      ).toBe(404);
+      const r = await grant(on, { scope: 'environment', skill: 'env:acme-gone', userId: 'U_OTHER', allow: false });
+      expect(r.status).toBe(200);
+      expect(grants.hasEnvironmentGrant('env:acme-gone', 'U_OTHER')).toBe(false);
+      expect(r.body.env.environments.map((e: { id: string }) => e.id)).toEqual(['env:acme-dev2']);
+    });
+
+    it('refuses an environment grant for an unknown environment or from a non-admin', async () => {
+      const on = { ...(await signIn('U_ADMIN')), 'x-admin-mode': 'on' };
+      expect(
+        (await grant(on, { scope: 'environment', skill: 'env:acme-prod', userId: 'U_OTHER', allow: true })).status,
+      ).toBe(404);
+      expect((await grant(on, { scope: 'environment', skill: null, userId: 'U_OTHER', allow: true })).status).toBe(400);
+      const plain = { ...(await signIn('U_OWNER')), 'x-admin-mode': 'on' };
+      expect(
+        (await grant(plain, { scope: 'environment', skill: 'env:acme-dev2', userId: 'U_OWNER', allow: true })).status,
+      ).toBe(403);
+      expect(grants.hasEnvironmentGrant('env:acme-dev2', 'U_OWNER')).toBe(false);
     });
 
     it('a write without a CSRF token is refused', async () => {

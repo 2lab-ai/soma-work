@@ -7,7 +7,9 @@
  *   GET  /api/skills/env/:key              an environment skill's SKILL.md and its hash (admin, or a user granted it)
  *   PUT  /api/skills/env/:key              { content, hash } — an admin saves it (409 when it changed meanwhile)
  *   GET  /api/skills/system/:source/:name  an installed skill's SKILL.md
- *   POST /api/skills/grants                { scope: 'mine'|'env', skill: name|null, userId, allow } — who may run
+ *   POST /api/skills/grants                { scope: 'mine'|'env', skill: name|null, userId, allow } — who may run;
+ *                                          { scope: 'environment', skill: 'env:<name>', userId, allow } — a whole
+ *                                          environment's skills and server tools (env-access WU4, admin)
  *
  * Who sees and changes what, enforced here (the page only mirrors it):
  *   - 내 스킬 are the signed-in user's own (`authContext.userId`, never a body field). The owner reads and
@@ -30,18 +32,22 @@
 
 import * as fs from 'node:fs';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { type EnvSkillRegistry, envSkillExists, envSkillRegistry } from '../env-skill-registry';
+import { type EnvSkillRegistry, envSkillAllowed, envSkillExists, envSkillRegistry } from '../env-skill-registry';
+import { environmentLabel } from '../env-users';
 import { Logger } from '../logger';
 import { isSafePathSegment } from '../path-utils';
 import { type InstalledSkill, listInstalledSkills } from '../skill-locator';
 import { userSettingsStore } from '../user-settings-store';
 import {
   ENV_SKILL_GRANT_OWNER,
+  environmentGrantees,
+  environmentGrantIds,
   grantAllSkills,
+  grantEnvironment,
   grantSkill,
-  isEnvSkillUseAllowed,
   loadGrants,
   revokeAllSkills,
+  revokeEnvironment,
   revokeSkill,
 } from '../user-skill-grants-store';
 import {
@@ -173,23 +179,45 @@ function mineView(userId: string) {
 
 type EnvAccess = 'admin' | 'granted' | 'none';
 
-function envAccess(key: string, viewer: Viewer): EnvAccess {
+function envAccess(key: string, viewer: Viewer, registry: EnvSkillRegistry): EnvAccess {
   if (viewer.isAdmin) return 'admin';
-  // No thread scope: a thread grant ("1회") opens one Slack thread, not this page.
-  return viewer.userId && isEnvSkillUseAllowed(key, viewer.userId) ? 'granted' : 'none';
+  // No thread scope: a thread grant ("1회") opens one Slack thread, not this page. An environment grant counts.
+  return viewer.userId && envSkillAllowed(key, viewer.userId, undefined, registry.environments ?? [])
+    ? 'granted'
+    : 'none';
 }
 
 function envView(registry: EnvSkillRegistry, viewer: Viewer) {
   const grants = viewer.isAdmin ? loadGrants(ENV_SKILL_GRANT_OWNER) : null;
   const skills = envSkills(registry).map((s) => {
     const key = `${s.source}:${s.name}`;
-    const access = envAccess(key, viewer);
+    const access = envAccess(key, viewer, registry);
     const row: Record<string, unknown> = { key, plugin: s.source, name: s.name, access };
     if (access !== 'none') row.description = readDescription(s.file);
     if (grants) row.allowed = idsOf(grants.perSkill[key]);
     return row;
   });
-  return grants ? { allowAll: idsOf(grants.allowAll), skills } : { skills };
+  if (!grants) return { skills };
+  // env-access WU4: who holds each environment whole — shown so an admin can take it back. A grant left for an
+  // environment that is no longer in config is listed too: re-adding that environment would otherwise revive it.
+  const configured = registry.environments ?? [];
+  const environments: Record<string, unknown>[] = configured.map((env) => ({
+    id: env.id,
+    label: environmentLabel(env.id),
+    skills: env.skills,
+    allowed: idsOf(environmentGrantees(env.id)),
+  }));
+  for (const id of environmentGrantIds()) {
+    if (configured.some((env) => env.id === id)) continue;
+    environments.push({
+      id,
+      label: environmentLabel(id),
+      skills: [],
+      allowed: idsOf(environmentGrantees(id)),
+      inConfig: false,
+    });
+  }
+  return { allowAll: idsOf(grants.allowAll), skills, environments };
 }
 
 function envDetail(skill: InstalledSkill) {
@@ -321,12 +349,13 @@ export function registerSkillsRoutes(
     try {
       const viewer = viewerOf(request);
       const key = request.params.key;
-      const skill = envSkills(envRegistry()).find((s) => `${s.source}:${s.name}` === key);
+      const registry = envRegistry();
+      const skill = envSkills(registry).find((s) => `${s.source}:${s.name}` === key);
       if (!skill) {
         reply.status(404).send({ error: '그런 환경 스킬이 없습니다' });
         return;
       }
-      if (envAccess(key, viewer) === 'none') {
+      if (envAccess(key, viewer, registry) === 'none') {
         reply.status(403).send({ error: '이 환경 스킬을 볼 권한이 없습니다' });
         return;
       }
@@ -426,8 +455,8 @@ export function registerSkillsRoutes(
     async (request, reply) => {
       const body = request.body || {};
       const scope = body.scope;
-      if (scope !== 'mine' && scope !== 'env') {
-        reply.status(400).send({ error: 'scope must be mine or env' });
+      if (scope !== 'mine' && scope !== 'env' && scope !== 'environment') {
+        reply.status(400).send({ error: 'scope must be mine, env or environment' });
         return;
       }
       const viewer = viewerOf(request);
@@ -448,6 +477,10 @@ export function registerSkillsRoutes(
         owner = ENV_SKILL_GRANT_OWNER;
       }
       const { skill, userId: target, allow } = body;
+      if (scope === 'environment' && typeof skill !== 'string') {
+        reply.status(400).send({ error: 'skill must name the environment (env:<name>)' });
+        return;
+      }
       if (skill !== null && typeof skill !== 'string') {
         reply.status(400).send({ error: 'skill must be a skill name, or null for all skills' });
         return;
@@ -486,6 +519,27 @@ export function registerSkillsRoutes(
           return;
         }
         const registry = envRegistry();
+        if (scope === 'environment') {
+          const id = skill as string;
+          // Granting needs an environment in config; taking back also works for one that left it.
+          const known =
+            (registry.environments ?? []).some((env) => env.id === id) ||
+            (!allow && environmentGrantIds().includes(id));
+          if (!known) {
+            reply.status(404).send({ error: '그런 환경이 없습니다' });
+            return;
+          }
+          if (allow) grantEnvironment(id, target);
+          else revokeEnvironment(id, target);
+          logger.info('Environment grant changed from the settings page', {
+            environment: id,
+            userId: target,
+            allow,
+            actor: viewer.actor,
+          });
+          reply.send({ ok: true, env: envView(registry, viewer) });
+          return;
+        }
         if (skill !== null && !envSkillExists(skill, registry)) {
           reply.status(404).send({ error: '그런 환경 스킬이 없습니다' });
           return;
