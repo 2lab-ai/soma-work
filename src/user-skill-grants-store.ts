@@ -326,9 +326,16 @@ export function revokeAllSkills(ownerId: string, requesterId: string): boolean {
 
 function environmentRequesters(grants: SkillGrants, environmentId: string): string[] {
   if (!ENVIRONMENT_ID.test(environmentId) || !grants.perEnvironment) return [];
-  if (!Object.prototype.hasOwnProperty.call(grants.perEnvironment, environmentId)) return [];
+  // Own keys only (the id shape already rules out `__proto__`).
+  if (!Object.keys(grants.perEnvironment).includes(environmentId)) return [];
   const list = grants.perEnvironment[environmentId];
   return Array.isArray(list) ? list : [];
+}
+
+/** The environments some requester holds whole — config's or not (the settings page lists them all). */
+export function environmentGrantIds(): string[] {
+  const per = loadGrants(ENV_SKILL_GRANT_OWNER).perEnvironment ?? {};
+  return Object.keys(per).filter((id) => ENVIRONMENT_ID.test(id) && Array.isArray(per[id]) && per[id].length > 0);
 }
 
 /** Who holds the whole environment `environmentId` (the settings page lists them). */

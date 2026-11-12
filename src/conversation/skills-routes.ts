@@ -41,6 +41,7 @@ import { userSettingsStore } from '../user-settings-store';
 import {
   ENV_SKILL_GRANT_OWNER,
   environmentGrantees,
+  environmentGrantIds,
   grantAllSkills,
   grantEnvironment,
   grantSkill,
@@ -197,13 +198,25 @@ function envView(registry: EnvSkillRegistry, viewer: Viewer) {
     return row;
   });
   if (!grants) return { skills };
-  // env-access WU4: who holds each environment whole — shown so an admin can take it back.
-  const environments = (registry.environments ?? []).map((env) => ({
+  // env-access WU4: who holds each environment whole — shown so an admin can take it back. A grant left for an
+  // environment that is no longer in config is listed too: re-adding that environment would otherwise revive it.
+  const configured = registry.environments ?? [];
+  const environments: Record<string, unknown>[] = configured.map((env) => ({
     id: env.id,
     label: environmentLabel(env.id),
     skills: env.skills,
     allowed: idsOf(environmentGrantees(env.id)),
   }));
+  for (const id of environmentGrantIds()) {
+    if (configured.some((env) => env.id === id)) continue;
+    environments.push({
+      id,
+      label: environmentLabel(id),
+      skills: [],
+      allowed: idsOf(environmentGrantees(id)),
+      inConfig: false,
+    });
+  }
   return { allowAll: idsOf(grants.allowAll), skills, environments };
 }
 
@@ -508,7 +521,11 @@ export function registerSkillsRoutes(
         const registry = envRegistry();
         if (scope === 'environment') {
           const id = skill as string;
-          if (!(registry.environments ?? []).some((env) => env.id === id)) {
+          // Granting needs an environment in config; taking back also works for one that left it.
+          const known =
+            (registry.environments ?? []).some((env) => env.id === id) ||
+            (!allow && environmentGrantIds().includes(id));
+          if (!known) {
             reply.status(404).send({ error: '그런 환경이 없습니다' });
             return;
           }

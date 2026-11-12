@@ -465,6 +465,28 @@ describe('skills routes (#1079)', () => {
       expect(grants.hasEnvironmentGrant('env:acme-dev2', 'U_OTHER')).toBe(false);
     });
 
+    // trinity R2 (fable): a grant left for an environment no longer in config is shown and can be taken back,
+    // so re-adding the environment does not silently bring it back.
+    it('lists and takes back a grant of an environment that left the config, but grants none there', async () => {
+      grants.grantEnvironment('env:acme-gone', 'U_OTHER');
+      const on = { ...(await signIn('U_ADMIN')), 'x-admin-mode': 'on' };
+      const list = await get('/api/skills', on);
+      expect(list.body.env.environments).toContainEqual({
+        id: 'env:acme-gone',
+        label: 'acme-gone',
+        skills: [],
+        allowed: ['U_OTHER'],
+        inConfig: false,
+      });
+      expect(
+        (await grant(on, { scope: 'environment', skill: 'env:acme-gone', userId: 'U_OWNER', allow: true })).status,
+      ).toBe(404);
+      const r = await grant(on, { scope: 'environment', skill: 'env:acme-gone', userId: 'U_OTHER', allow: false });
+      expect(r.status).toBe(200);
+      expect(grants.hasEnvironmentGrant('env:acme-gone', 'U_OTHER')).toBe(false);
+      expect(r.body.env.environments.map((e: { id: string }) => e.id)).toEqual(['env:acme-dev2']);
+    });
+
     it('refuses an environment grant for an unknown environment or from a non-admin', async () => {
       const on = { ...(await signIn('U_ADMIN')), 'x-admin-mode': 'on' };
       expect(
