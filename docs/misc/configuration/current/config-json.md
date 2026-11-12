@@ -306,7 +306,11 @@ out of branches it must not touch.
 
 `approve` and `merge` write an intent line to `DATA_DIR/env-audit/env-audit.jsonl` before they call GitHub, and a
 `done` or `failed` line after. If the intent cannot be written, nothing is called. If only the outcome cannot be
-written, the tool says the write was made and must not be retried. Each line names the server, the
+written, the tool says the write was made and must not be retried. A write that gets no answer (a dropped
+connection, the 30-second timeout, an unreadable body) is looked up — the environment's own approval at that SHA,
+or whether the PR is merged — and recorded as `done` or `failed`; when even that cannot be read it is recorded as
+`unknown` and the tool says to check the PR before retrying. `authors`, `bases`, `repos` and `mergeMethods` must be
+lists: a string there is refused, since it would match by substring. Each line names the server, the
 `envUser` and the Slack user the session runs for. `gh_pr` is for admins only until per-environment grants land (WU4, #1212).
 
 ## Where the substitution happens in code

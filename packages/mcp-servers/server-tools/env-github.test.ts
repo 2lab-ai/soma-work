@@ -5,6 +5,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import {
+  OutcomeUnknownError,
   allowedRepo,
   approvalProblem,
   approve,
@@ -51,7 +52,10 @@ function fakeFetch(routes: Record<string, unknown>, status = 200) {
     calls.push({ url, method: init.method, body: init.body, auth: init.headers.Authorization });
     const key = `${init.method} ${url.replace('https://api.github.com', '')}`;
     if (!(key in routes)) return { ok: false, status: 404, json: async () => ({ message: `no route ${key}` }) };
-    return { ok: status < 400, status, json: async () => routes[key] };
+    // A route may be a function: it answers each call afresh, or throws as a dropped connection does.
+    const route = routes[key];
+    const answer = typeof route === 'function' ? (route as () => unknown)() : route;
+    return { ok: status < 400, status, json: async () => answer };
   });
   return { fetch, calls };
 }
@@ -168,6 +172,28 @@ describe('prState', () => {
     const state = await prState(fetch, config, 'acme/app', 7);
     expect(state.checks.green).toBe(false);
     expect(approvalProblem(config, state, SHA)).toMatch(/no check has passed/);
+  });
+
+  // trinity R2 (astra): an answer that cannot be read, or that is not the shape asked for, is no answer.
+  it('refuses to judge checks from an unreadable or malformed answer', async () => {
+    const unreadable: Fetch = async (url) => {
+      const p = url.replace('https://api.github.com', '');
+      if (p.includes('/check-runs')) return { ok: true, status: 200, json: async () => JSON.parse('{') };
+      if (p.includes('/status?'))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ state: 'success', total_count: 1, statuses: [{ context: 'a', state: 'success' }] }),
+        };
+      return { ok: true, status: 200, json: async () => PULL };
+    };
+    await expect(prState(unreadable, config, 'acme/app', 7)).rejects.toThrow(GithubError);
+    const malformed = fakeFetch({
+      'GET /repos/acme/app/pulls/7': PULL,
+      [RUNS]: { message: 'nothing here' },
+      [STATUS]: { state: 'success', total_count: 1, statuses: [{ context: 'a', state: 'success' }] },
+    });
+    await expect(prState(malformed.fetch, config, 'acme/app', 7)).rejects.toThrow(/unexpected/);
   });
 
   it('turns a GitHub error into GithubError with its status, never the token', async () => {
@@ -292,6 +318,67 @@ describe('approve and merge', () => {
     expect(await merge(fetch, config, 'acme/app', 7, SHA, 'develop', 'merge')).toBe('c'.repeat(40));
     expect(calls.map((c) => c.method)).toEqual(['GET', 'PUT']);
     expect(JSON.parse(calls[1].body ?? '{}')).toEqual({ sha: SHA, merge_method: 'merge' });
+  });
+
+  // trinity R2 (fable): a dropped connection leaves the write's outcome unknown — it is looked up, not assumed.
+  describe('when the connection drops on the write', () => {
+    const drop = () => {
+      throw new TypeError('fetch failed');
+    };
+
+    it('approve: finds its own approval at the SHA and goes on to confirm it', async () => {
+      const { fetch } = fakeFetch({
+        'POST /repos/acme/app/pulls/7/reviews': drop,
+        'GET /user': { login: 'env-bot' },
+        'GET /repos/acme/app/pulls/7/reviews?per_page=100': [
+          { id: 9, user: { login: 'someone' }, state: 'APPROVED', commit_id: SHA },
+          { id: 11, user: { login: 'env-bot' }, state: 'APPROVED', commit_id: SHA },
+        ],
+        'GET /repos/acme/app/pulls/7': PULL,
+      });
+      await expect(approve(fetch, config, 'acme/app', 7, SHA, 'develop', 'ok')).resolves.toBeUndefined();
+    });
+
+    it('approve: no approval of its own there means none was made', async () => {
+      const { fetch } = fakeFetch({
+        'POST /repos/acme/app/pulls/7/reviews': drop,
+        'GET /user': { login: 'env-bot' },
+        'GET /repos/acme/app/pulls/7/reviews?per_page=100': [],
+      });
+      await expect(approve(fetch, config, 'acme/app', 7, SHA, 'develop', 'ok')).rejects.toThrow(/was not made/);
+    });
+
+    it('approve: when it cannot look, the outcome is unknown', async () => {
+      const { fetch } = fakeFetch({ 'POST /repos/acme/app/pulls/7/reviews': drop });
+      const err = await approve(fetch, config, 'acme/app', 7, SHA, 'develop', 'ok').catch((e) => e);
+      expect(err).toBeInstanceOf(OutcomeUnknownError);
+      expect(String(err)).toMatch(/may stand.*check/);
+    });
+
+    it('merge: a merged PR is a merge made; an open one is not; an unreadable one is unknown', async () => {
+      let reads = 0;
+      const merged = fakeFetch({
+        'GET /repos/acme/app/pulls/7': () =>
+          ++reads === 1 ? PULL : { ...PULL, merged: true, merge_commit_sha: 'c'.repeat(40) },
+        'PUT /repos/acme/app/pulls/7/merge': drop,
+      });
+      expect(await merge(merged.fetch, config, 'acme/app', 7, SHA, 'develop', 'merge')).toBe('c'.repeat(40));
+
+      const open = fakeFetch({ 'GET /repos/acme/app/pulls/7': PULL, 'PUT /repos/acme/app/pulls/7/merge': drop });
+      await expect(merge(open.fetch, config, 'acme/app', 7, SHA, 'develop', 'merge')).rejects.toThrow(/was not made/);
+
+      let n = 0;
+      const lost = fakeFetch({
+        'GET /repos/acme/app/pulls/7': () => {
+          if (++n > 1) throw new TypeError('fetch failed');
+          return PULL;
+        },
+        'PUT /repos/acme/app/pulls/7/merge': drop,
+      });
+      await expect(merge(lost.fetch, config, 'acme/app', 7, SHA, 'develop', 'merge')).rejects.toBeInstanceOf(
+        OutcomeUnknownError,
+      );
+    });
   });
 
   it('does not merge a PR retargeted since the look', async () => {

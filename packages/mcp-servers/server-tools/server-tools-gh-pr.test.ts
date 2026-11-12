@@ -167,6 +167,45 @@ describe('gh_pr', () => {
     expect(ledger().map((r) => r.phase)).toEqual(['intent', 'failed']);
   });
 
+  // trinity R2 (fable): a write whose outcome cannot be known is recorded as unknown, not as failed.
+  it('records an unknown outcome when the connection drops and the PR cannot be read again', async () => {
+    let reads = 0;
+    const fetch: Fetch = async (url, init) => {
+      const p = url.replace('https://api.github.com', '');
+      const json = (v: unknown) => ({ ok: true, status: 200, json: async () => v });
+      if (init.method === 'PUT') throw new TypeError('fetch failed');
+      if (p === '/repos/acme/app/pulls/7') {
+        if (++reads > 2) throw new TypeError('fetch failed');
+        return json({
+          state: 'open',
+          draft: false,
+          user: { login: 'soma-bot[bot]' },
+          base: { ref: 'develop' },
+          head: { sha: SHA },
+        });
+      }
+      if (p.includes('/check-runs'))
+        return json({ total_count: 1, check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success' }] });
+      return json({ state: 'pending', total_count: 0, statuses: [] });
+    };
+    await expect(
+      handleGhPr({ server: 'dev2', action: 'merge', repo: 'acme/app', pr: 7, sha: SHA }, fetch),
+    ).rejects.toThrow(/outcome is unknown.*check/);
+    expect(ledger().map((r) => r.phase)).toEqual(['intent', 'unknown']);
+  });
+
+  it('refuses conditions that are not lists', async () => {
+    const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    cfg['server-tools'].dev2.github.approveWhen.authors = 'soma-bot[bot]';
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg));
+    resetConfigCache();
+    const { fetch, calls } = github();
+    await expect(
+      handleGhPr({ server: 'dev2', action: 'approve', repo: 'acme/app', pr: 7, sha: SHA }, fetch),
+    ).rejects.toThrow(/approveWhen.authors must be a list/);
+    expect(calls).toEqual([]);
+  });
+
   // trinity R1 (fable): every write names the person it was made for.
   it('refuses a write when the session has no requester', async () => {
     delete process.env.SOMA_REQUESTER;

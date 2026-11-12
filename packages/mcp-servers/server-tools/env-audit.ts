@@ -24,8 +24,8 @@ export interface AuditRecord {
   requester?: string;
   tool: string;
   action: string;
-  /** `intent` before the write, then `done` or `failed`. */
-  phase: 'intent' | 'done' | 'failed';
+  /** `intent` before the write, then `done`, `failed`, or `unknown` (no answer, and the result could not be looked up). */
+  phase: 'intent' | 'done' | 'failed' | 'unknown';
   detail?: Record<string, unknown>;
 }
 

@@ -47,7 +47,7 @@ export interface HttpResponse {
 }
 export type Fetch = (
   url: string,
-  init: { method: string; headers: Record<string, string>; body?: string },
+  init: { method: string; headers: Record<string, string>; body?: string; signal?: AbortSignal },
 ) => Promise<HttpResponse>;
 
 export interface Checks {
@@ -80,6 +80,20 @@ export class GithubError extends Error {
   }
 }
 
+/** A request that got no answer (a dropped connection, the timeout): it may or may not have reached GitHub. */
+class NoAnswerError extends GithubError {}
+
+/** A write that may have been made: it got no answer and its result could not be looked up either. */
+export class OutcomeUnknownError extends GithubError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OutcomeUnknownError';
+  }
+}
+
+/** No GitHub call waits longer than this. */
+const CALL_TIMEOUT_MS = 30_000;
+
 const API = 'https://api.github.com';
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const SHA = /^[0-9a-f]{40}$/;
@@ -106,21 +120,29 @@ export function headSha(value: unknown): string {
 }
 
 async function call(fetch: Fetch, token: string, method: string, path: string, body?: unknown): Promise<unknown> {
-  const res = await fetch(`${API}${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-      'User-Agent': 'soma-work-server-tools',
-      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
+  let res: HttpResponse;
+  try {
+    res = await fetch(`${API}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'User-Agent': 'soma-work-server-tools',
+        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
+    });
+  } catch (err) {
+    throw new NoAnswerError(`GitHub ${method} ${path} got no answer (${err instanceof Error ? err.name : 'error'})`);
+  }
   let json: unknown;
   try {
     json = await res.json();
   } catch {
+    // A success whose body cannot be read is no answer: a read refuses, a write is looked up.
+    if (res.ok) throw new NoAnswerError(`GitHub ${method} ${path} answered ${res.status} with an unreadable body`);
     json = undefined;
   }
   if (!res.ok) {
@@ -146,6 +168,13 @@ export async function prState(fetch: Fetch, config: EnvGithubConfig, repo: strin
   const sha = str(head.sha);
   const runs = obj(await call(fetch, config.token, 'GET', `/repos/${repo}/commits/${sha}/check-runs?per_page=100`));
   const status = obj(await call(fetch, config.token, 'GET', `/repos/${repo}/commits/${sha}/status?per_page=100`));
+  // Only the shape asked for is judged: anything else is not "no checks".
+  if (!Array.isArray(runs.check_runs) || typeof runs.total_count !== 'number') {
+    throw new GithubError(`GitHub answered an unexpected check-runs body for ${repo}#${number}`);
+  }
+  if (!Array.isArray(status.statuses) || typeof status.total_count !== 'number' || typeof status.state !== 'string') {
+    throw new GithubError(`GitHub answered an unexpected status body for ${repo}#${number}`);
+  }
   const pending: string[] = [];
   const failing: string[] = [];
   let passed = 0;
@@ -217,8 +246,12 @@ function openAtHead(pr: PrState, sha: string): string | undefined {
 function conditionsProblem(when: PrConditions, pr: PrState, sha: string, verb: string): string | undefined {
   const notOpen = openAtHead(pr, sha);
   if (notOpen) return notOpen;
-  if (!when.authors?.includes(pr.author)) return `author ${pr.author} is not one this environment ${verb}`;
-  if (!when.bases?.includes(pr.base)) return `base ${pr.base} is not one this environment ${verb} into`;
+  if (!Array.isArray(when.authors) || !when.authors.includes(pr.author)) {
+    return `author ${pr.author} is not one this environment ${verb}`;
+  }
+  if (!Array.isArray(when.bases) || !when.bases.includes(pr.base)) {
+    return `base ${pr.base} is not one this environment ${verb} into`;
+  }
   // Green checks are required unless the environment explicitly says otherwise.
   if (when.requiredChecksGreen !== false) return checksProblem(pr);
   return undefined;
@@ -260,13 +293,19 @@ export async function approve(
   base: string,
   body: string,
 ): Promise<void> {
-  const review = obj(
-    await call(fetch, config.token, 'POST', `/repos/${repo}/pulls/${number}/reviews`, {
-      event: 'APPROVE',
-      commit_id: sha,
-      body,
-    }),
-  );
+  let review: Obj;
+  try {
+    review = obj(
+      await call(fetch, config.token, 'POST', `/repos/${repo}/pulls/${number}/reviews`, {
+        event: 'APPROVE',
+        commit_id: sha,
+        body,
+      }),
+    );
+  } catch (err) {
+    if (!(err instanceof NoAnswerError)) throw err;
+    review = await ownApproval(fetch, config, repo, number, sha);
+  }
   let changed: string;
   try {
     const now = await headAndBase(fetch, config, repo, number);
@@ -291,6 +330,28 @@ export async function approve(
 }
 
 /**
+ * After an approval that got no answer: this token's own approval of `sha`, when one was made. Throws `GithubError`
+ * when none was, and `OutcomeUnknownError` when it cannot be looked up.
+ */
+async function ownApproval(fetch: Fetch, config: EnvGithubConfig, repo: string, number: number, sha: string) {
+  let login: string;
+  let reviews: unknown;
+  try {
+    login = str(obj(await call(fetch, config.token, 'GET', '/user')).login);
+    reviews = await call(fetch, config.token, 'GET', `/repos/${repo}/pulls/${number}/reviews?per_page=100`);
+  } catch {
+    throw new OutcomeUnknownError(
+      `the approval of ${repo}#${number} got no answer and could not be looked up: it may stand — check the PR before retrying`,
+    );
+  }
+  const mine = (Array.isArray(reviews) ? reviews.map(obj) : []).find(
+    (r) => login !== '' && str(obj(r.user).login) === login && r.state === 'APPROVED' && r.commit_id === sha,
+  );
+  if (!mine) throw new GithubError(`the approval of ${repo}#${number} got no answer and was not made`);
+  return mine;
+}
+
+/**
  * Merge at `sha` with `method`. Head and base are read once more first; the merge itself is pinned to the SHA.
  * Returns the merge commit SHA.
  */
@@ -307,8 +368,23 @@ export async function merge(
   if (now.head !== sha || now.base !== base) {
     throw new GithubError(`the PR changed since the look (head ${now.head}, base ${now.base}): look again`);
   }
-  const res = obj(
-    await call(fetch, config.token, 'PUT', `/repos/${repo}/pulls/${number}/merge`, { sha, merge_method: method }),
-  );
-  return str(res.sha);
+  try {
+    const res = obj(
+      await call(fetch, config.token, 'PUT', `/repos/${repo}/pulls/${number}/merge`, { sha, merge_method: method }),
+    );
+    return str(res.sha);
+  } catch (err) {
+    if (!(err instanceof NoAnswerError)) throw err;
+  }
+  // No answer: the PR says whether the merge was made.
+  let after: Obj;
+  try {
+    after = obj(await call(fetch, config.token, 'GET', `/repos/${repo}/pulls/${number}`));
+  } catch {
+    throw new OutcomeUnknownError(
+      `the merge of ${repo}#${number} got no answer and the PR could not be read again: it may be merged — check before retrying`,
+    );
+  }
+  if (after.merged === true) return str(after.merge_commit_sha);
+  throw new GithubError(`the merge of ${repo}#${number} got no answer and was not made (the PR is not merged)`);
 }

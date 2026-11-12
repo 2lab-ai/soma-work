@@ -15,6 +15,7 @@ import {
   type Fetch,
   GithubError,
   headSha,
+  OutcomeUnknownError,
   merge,
   mergeProblem,
   prNumber,
@@ -687,6 +688,20 @@ function envGithub(server: unknown): { name: string; config: ServerConfig; githu
   if (!github || typeof github.token !== 'string' || !Array.isArray(github.repos)) {
     throw new Error(`Server ${server} has no github section (token and repos)`);
   }
+  // A string where a list belongs would match by substring (`"bot"` in `"renovate[bot]"`): refuse the section.
+  const isList = (v: unknown) => v === undefined || (Array.isArray(v) && v.every((x) => typeof x === 'string'));
+  for (const key of ['approveWhen', 'mergeWhen'] as const) {
+    const when = github[key] as Record<string, unknown> | undefined;
+    if (when === undefined) continue;
+    for (const field of ['authors', 'bases']) {
+      if (typeof when !== 'object' || !isList(when[field])) {
+        throw new Error(`Server ${server}: github.${key}.${field} must be a list`);
+      }
+    }
+  }
+  if (!isList(github.repos) || !isList(github.mergeMethods)) {
+    throw new Error(`Server ${server}: github.repos and github.mergeMethods must be lists`);
+  }
   return { name: server, config: config[server], github };
 }
 
@@ -748,9 +763,16 @@ export async function handleGhPr(
         result = `merged ${repo}#${number} at ${sha} as ${merged}`;
       }
     } catch (err) {
-      const message = err instanceof GithubError ? err.message : `gh_pr failed on ${env.name}`;
+      // No answer and no way to look it up: the write may have been made. Say so, and record it as such.
+      const unknown = err instanceof OutcomeUnknownError;
+      const reason = err instanceof GithubError ? err.message : `gh_pr failed on ${env.name}`;
+      const message = unknown ? `${action}: the outcome is unknown — ${reason}` : reason;
       try {
-        appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'failed', detail: { ...detail, error: message } });
+        appendAudit(process.env.SOMA_AUDIT_DIR, {
+          ...audit,
+          phase: unknown ? 'unknown' : 'failed',
+          detail: { ...detail, error: message },
+        });
       } catch (auditErr) {
         throw new GithubError(
           `${message}; the audit ledger could not record the failure (${(auditErr as Error).message})`,
