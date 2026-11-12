@@ -171,24 +171,34 @@ describe('PromptBuilder', () => {
 
       expect(prompt.indexOf('## Delta and Risk Check')).toBeGreaterThan(-1);
       expect(prompt.indexOf('## Delta and Risk Check')).toBeLessThan(prompt.indexOf('## Pre-Execution Confirmation'));
-      expect(check).toContain('repos/<owner/repo>/compare/<target>...<source>');
+      // The read broker accepts compare/<a>...<b> only between SHAs (gh-policy COMPARE_SHA_RANGE_RE).
+      expect(check).toContain('git ls-remote https://github.com/<owner/repo> refs/heads/<source> refs/heads/<target>');
+      expect(check).toContain('repos/<owner/repo>/compare/<target_sha>...<source_sha>');
+      expect(check).not.toContain('compare/<target>...<source>');
       expect(check).toMatch(/`ahead_by` 0[^\n]*already up to date[^\n]*no PR, no merge/);
       expect(check).toContain('delta executive summary');
+      expect(check).toMatch(/squash subjects ending `\(#N\)`/);
       for (const signal of [
-        'secrets',
+        'secrets or credentials',
         'destructive database or data migration',
         'deleted configuration or data paths',
         'no flag',
-        '`behind_by` > 0',
-        '300 files or 250 commits',
+        'non-merge commits in `compare/<source_sha>...<target_sha>`',
+        '`files` holds 300 entries or `total_commits` is over 250',
       ]) {
         expect(check).toContain(signal);
       }
-      expect(check).toMatch(/a scan you could not finish is a risk signal/i);
+      expect(check).toMatch(/deploy merge commits this workflow leaves on the target are not a signal/);
+      expect(check).toMatch(/A scan you could not finish is a risk signal/);
+      expect(check).toMatch(/a refused or failed read stops that repo as step 1 does, it is not a risk signal/);
       // Risk stop: Cancel is recommended, proceeding is a separate explicit choice, earlier words are not consent.
       expect(check).toMatch(/recommended option is `Cancel`/);
       expect(check).toContain('`Proceed despite the listed risks`');
       expect(check).toMatch(/Nothing said before the question[^\n]*is consent to merge past a risk signal/);
+      // The answer is bound to the scanned SHAs.
+      expect(check).toMatch(/Step 2 merges `source_sha` onto `target_sha`[^\n]*run this check again and ask again/);
+      expect(prompt).toContain('Create a deploy working branch at `target_sha`');
+      expect(prompt).toContain('Merge `source_sha` into the working branch');
       expect(confirm).toContain('The delta executive summary');
       expect(confirm).toContain('`no risk signals found`');
     });
@@ -200,17 +210,30 @@ describe('PromptBuilder', () => {
         prompt.indexOf('## Restart Re-Attach'),
         prompt.indexOf('## Conflict Handling Policy'),
       );
+      const check = prompt.slice(
+        prompt.indexOf('## Delta and Risk Check'),
+        prompt.indexOf('## Pre-Execution Confirmation'),
+      );
 
       expect(prompt.indexOf('## Restart Re-Attach')).toBeGreaterThan(-1);
       expect(section).toContain('cancel-in-progress');
       expect(section).toContain('`deploy-state.json`');
-      for (const field of ['`pr`', '`before_sha`', '`merged`', '`after_sha`', '`releaseNotesEmitted`']) {
+      expect(section).toMatch(/for this deploy request only/);
+      for (const field of ['`source_sha`', '`target_sha`', '`pr`', '`merged`', '`after_sha`', '`releaseNotes`']) {
         expect(section).toContain(field);
       }
+      // Resume comes before the up-to-date drop (a merged deploy reads ahead_by 0).
+      expect(check).toMatch(/a repo with a merged PR in `deploy-state\.json` skips this check/);
+      expect(section).toMatch(/before any write in steps 2–4, read that file and GitHub/);
       expect(section).toMatch(/never create a PR, merge or push for that repo again/);
-      expect(section).toMatch(/Continue at step 5 with the same `before_sha` and `after_sha`/);
-      expect(section).toMatch(/reuse it[^\n]*Never open a second PR/);
-      expect(section).toMatch(/do not emit `release_notes` again/);
+      expect(section).toMatch(
+        /Continue at step 5 with the saved `target_sha` and `after_sha`; never resolve the target tip again/,
+      );
+      expect(section).toMatch(/reuse it, continue at step 4\. Never open a second PR/);
+      expect(section).toMatch(/closed unmerged → report it and ask/);
+      // Release notes: intent before, emitted after; either value blocks a second emission.
+      expect(section).toMatch(/`intent` immediately before emitting the directive, `emitted` right after/);
+      expect(section).toMatch(/either value means do not emit again/);
       expect(section).toMatch(/Never cancel, re-run or re-trigger a deploy run/);
     });
 
