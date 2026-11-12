@@ -46,9 +46,9 @@ describe('local:import-skills', () => {
     expect(md).toContain('skill path `<path>/<category>/<skill>`');
     expect(md).toContain('skill path `<path>/<skill>`');
     expect(md).toContain('git/trees/<dir sha>?recursive=1');
-    expect(md).toMatch(
-      /`truncated: true`, or a `commit` \(submodule\) or symlink entry in that tree → stop and report; never import a\s+partial file set\./,
-    );
+    // The listing must show what the stop rule checks: every entry's type and mode, not only blob paths.
+    expect(md).toContain("--jq '{truncated, entries: [.tree[]|{path,type,mode}]}'");
+    expect(md).toMatch(/`type` `commit` \(a submodule\) or `mode` `120000` \(a symlink\) → stop and\s+report/);
     expect(md).toContain('(not the value of `target=`)');
     const pin = md.indexOf('commits/HEAD --jq .sha');
     expect(pin).toBeGreaterThan(-1);

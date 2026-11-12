@@ -67,9 +67,9 @@ the table is the question and the user's reply is the answer. Never import witho
    - fetch every file under the skill path at the `$SHA` pinned in Phase 1 — never a new `HEAD`. List the skill
      directory's own tree, not the whole repository's (a large repository's tree comes back truncated): its tree SHA is
      the `sha` of the skill directory in its parent's `contents` listing at `?ref=$SHA`; then
-     `gh api "repos/<o>/<r>/git/trees/<dir sha>?recursive=1" --jq '{truncated, files: [.tree[]|select(.type=="blob")|.path]}'`.
-     `truncated: true`, or a `commit` (submodule) or symlink entry in that tree → stop and report; never import a
-     partial file set. Read each file at `?ref=$SHA`;
+     `gh api "repos/<o>/<r>/git/trees/<dir sha>?recursive=1" --jq '{truncated, entries: [.tree[]|{path,type,mode}]}'`.
+     `truncated: true`, or an entry with `type` `commit` (a submodule) or `mode` `120000` (a symlink) → stop and
+     report; never import a partial file set. Import the `blob` entries; read each at `?ref=$SHA`;
    - place it at `<plugin root>/skills/<name>/` — never over an existing directory;
    - frontmatter, `LICENSES/NOTICE.md` (source link, `$SHA` and date, license, `## Local changes`), the upstream license
      text, the contract test `__tests__/<name>-skill.test.ts`;
