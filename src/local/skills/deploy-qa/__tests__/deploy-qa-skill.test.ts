@@ -103,7 +103,9 @@ describe('deploy-qa preflight and reduced mode', () => {
   const md = read('deploy-qa');
 
   it('advertises the partial answer in its Args and preflight', () => {
-    expect(md).toContain('`--preflight`: readiness check, see below. No writes. Replies with one of applies / partial: <checks> / not-applicable / missing: <fields>.');
+    expect(md).toContain(
+      '`--preflight`: readiness check, see below. No writes. Replies with one of applies / partial: <checks> / not-applicable / missing: <fields>.',
+    );
     expect(md).toMatch(/Only adapter, screenshots-directory, and\/or `lockDir` checks fail → `partial: <checks>`/);
     // lockDir and the screenshots directory may not exist yet: creating them is the test.
     expect(md).toContain(
