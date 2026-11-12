@@ -215,6 +215,12 @@ const RUNS = [
   'gh pr checkout https://github.com/acme/ssh/pull/1',
   'gh pr merge 1 --delete-branch # ssh',
   'gh repo clone acme/ssh',
+  // review-of-legends (140c2be18): a quote in a comment after an operator must not hide the next line from the veto;
+  // a transport's own text is checked with its quotes removed.
+  "echo x > target-host;# '\nrg --{pre=ssh,hidden} . target-host\n# '",
+  "git clone s''sh://example.com/repo; echo ssh",
+  'echo ssh; rsync -e s""sh a host:b',
+  'echo ssh; git ls-remote s""sh://host/repo',
   // A program named by a path is no data command, whatever its base name.
   './cat ssh',
   '/usr/bin/grep ssh src',

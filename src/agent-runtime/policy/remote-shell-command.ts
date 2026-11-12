@@ -674,7 +674,7 @@ function verdict(cmd: SimpleCommand): Verdict | 'runs' {
  * otherwise it refuses. Write a commit message or a document that names it from a file (`git commit -F`).
  *
  * Literal stays literal: single quotes (a `$` in them is checked where a program evaluates it — `test -v`), and
- * a comment that starts after ASCII space, tab or newline.
+ * a comment that starts after ASCII space, tab, newline or an operator, as the parser reads it.
  */
 function shellChanges(src: string): boolean {
   let quote: "'" | '"' | null = null;
@@ -689,9 +689,10 @@ function shellChanges(src: string): boolean {
       else if (c === '$' || c === '`' || c === '\\') return true;
       continue;
     }
-    // A comment runs to the end of the line. `#` starts one here only after ASCII blank or newline: after a `)`
-    // it can be part of the word (`<(…)#`), so the text after it is read as well.
-    if (c === '#' && (i === 0 || ' \t\n'.includes(src[i - 1]))) {
+    // A comment runs to the end of the line. `#` starts one where the parser starts one: at the start of a word,
+    // after ASCII blank, newline or an operator — a quote in a comment must not open a span here that the parser
+    // skips. (After `)` the word could go on only after `<(`, `>(`, `$(` or a glob `(`, all refused below.)
+    if (c === '#' && (i === 0 || ' \t\n;&|()<>'.includes(src[i - 1]))) {
       const nl = src.indexOf('\n', i);
       if (nl < 0) break;
       i = nl - 1;
@@ -727,7 +728,10 @@ export function isRemoteShellCommand(command: string): boolean {
   if (p.unreadable) return true;
   return p.commands.some((cmd) => {
     const v = verdict(cmd);
-    if (v === 'own-text') return isSshCommand(cmd.raw) || cmd.heredocs.some((h) => isSshCommand(h));
+    // Its own text as written and with the quotes removed (`s''sh://…` is `ssh://…` to the program).
+    if (v === 'own-text') {
+      return isSshCommand(cmd.raw) || isSshCommand(cmd.words.join(' ')) || cmd.heredocs.some((h) => isSshCommand(h));
+    }
     // The text names it (checked above) and this program could run it.
     return v === 'runs' || v === 'may-run';
   });
