@@ -248,7 +248,10 @@ describe('CI workflow contract', () => {
     // the job before the long test run) and still compiles the workspace packages' dist/ that
     // root tsc and several tests resolve `@soma/*` through.
     const scripts = JSON.parse(read('package.json')).scripts as Record<string, string>;
-    expect(scripts.build).toMatch(/^npm run check && npm run build:somalib && npm run build:packages && tsc &&/);
+    // The plugin folders are cleared before tsc (tsc writes compiled skill scripts into dist/local).
+    expect(scripts.build).toMatch(
+      /^npm run check && npm run build:somalib && npm run build:packages && rm -rf dist\/local dist\/local-harness && tsc &&/,
+    );
 
     const job = jobBlock(CI_WORKFLOW, 'quality-gates');
     const runs = [...job.matchAll(/^ {8}run: (.+)$/gm)].map((match) => match[1].trim());
