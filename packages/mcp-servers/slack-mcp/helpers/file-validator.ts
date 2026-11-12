@@ -85,11 +85,12 @@ export async function validateFilePath(filePath: string): Promise<{ resolvedPath
     throw new Error('file_path is required');
   }
 
-  const resolvedPath = path.resolve(filePath);
-
-  if (!path.isAbsolute(resolvedPath)) {
+  // A relative path would resolve against this server's working directory, which is the MCP launch directory, not
+  // the session's (env-access #1241): ask for the absolute path instead of guessing.
+  if (!path.isAbsolute(filePath)) {
     throw new Error(`file_path must be absolute: ${filePath}`);
   }
+  const resolvedPath = path.resolve(filePath);
 
   const segments = resolvedPath.split(path.sep);
   if (segments.some((seg) => seg === '..')) {

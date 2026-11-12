@@ -49,6 +49,14 @@ function isWithin(p: string, root: string): boolean {
   return p === root || p.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
 }
 
+/** The first of `writeRoots` that holds `dir`, compared both as written and resolved; undefined when none does. */
+export function writeRootHolding(dir: string, writeRoots: readonly string[]): string | undefined {
+  const realDir = real(dir);
+  return writeRoots.find(
+    (writeRoot) => isWithin(realDir, real(writeRoot)) || isWithin(path.resolve(dir), path.resolve(writeRoot)),
+  );
+}
+
 /**
  * The project config root for every session: `<DATA_DIR>/session-project-config`, created on first use.
  * `writeRoots` are the directories this session may write; the root must be outside all of them.
@@ -72,12 +80,8 @@ export function projectConfigRoot(dataDir: string, writeRoots: readonly string[]
   if (entries.length > 0) fail(`${root} must stay empty but holds ${entries.join(', ')}`);
 
   const realRoot = real(root);
-  for (const writeRoot of writeRoots) {
-    const realWrite = real(writeRoot);
-    if (isWithin(realRoot, realWrite) || isWithin(root, path.resolve(writeRoot))) {
-      fail(`${root} lies inside ${writeRoot}, which a session writes`);
-    }
-  }
+  const holder = writeRootHolding(root, writeRoots);
+  if (holder !== undefined) fail(`${root} lies inside ${holder}, which a session writes`);
   // The CLI looks for a project MCP config in every directory above the root, up to /.
   for (const start of new Set([path.dirname(root), path.dirname(realRoot)])) {
     for (let dir = start; ; dir = path.dirname(dir)) {

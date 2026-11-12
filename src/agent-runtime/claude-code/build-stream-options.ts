@@ -65,6 +65,7 @@ import {
 } from '../../sandbox/admin-sandbox-profile';
 import { extendSandboxWithGrant, loadDeploySandboxGrant } from '../../sandbox/deploy-sandbox-grant';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
+import { launchAllFrom, mcpLaunchDir, wrapPluginLaunchers } from '../../sandbox/mcp-launch-dir';
 import { projectConfigRoot } from '../../sandbox/project-config-root';
 import type { SessionRegistry } from '../../session-registry';
 import { isPlanPending } from '../../task-turn/task-plan';
@@ -969,12 +970,29 @@ export async function buildStreamOptions(
   // #1242). CLAUDE.md and plan files still come from the working directory. Checked last, against every directory
   // this session writes once all of them are known — deploy grants included (astra R3), sandbox on or off.
   // Throws: the session does not start.
-  options.projectConfigRoot = projectConfigRoot(DATA_DIR, [
+  const writeRoots = [
     ...(workingDirectory ? [workingDirectory] : []),
     ...(sandboxUserDir ? [sandboxUserDir] : []),
     ...(adminProfile ? adminProfile.allowWrite : []),
     ...(options.sandbox?.filesystem?.allowWrite ?? []),
-  ]);
+  ];
+  options.projectConfigRoot = projectConfigRoot(DATA_DIR, writeRoots);
+
+  // Every stdio MCP server starts from `/`, not from the working directory, where its launcher (npx, uvx …) would
+  // read package-manager config the model planted, or from any directory a launcher could walk up from (env-access
+  // #1241). soma-work's servers are wrapped here; a plugin's are wrapped in its config in the plugin cache, so the
+  // CLI still resolves everything else about them. Throws: the session does not start.
+  const launchDir = mcpLaunchDir(writeRoots);
+  if (options.mcpServers) options.mcpServers = launchAllFrom(launchDir, options.mcpServers);
+  if (options.plugins && options.plugins.length > 0) {
+    const launchers = wrapPluginLaunchers(options.plugins, launchDir, PLUGINS_DIR);
+    if (launchers.turnedOff.length > 0) {
+      logger.warn("Plugin MCP servers turned off: they could not be made to start outside the session's directory", {
+        plugins: launchers.turnedOff,
+      });
+    }
+    options.plugins = launchers.plugins;
+  }
 
   return attachStderrCapture(options, logger);
 }

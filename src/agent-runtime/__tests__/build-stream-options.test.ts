@@ -24,6 +24,7 @@ import { CONFIG_FILE, DATA_DIR, SECRETS_DIR } from '../../env-paths';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import { credentialPaths } from '../../sandbox/admin-sandbox-profile';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
+import { LAUNCH_SCRIPT } from '../../sandbox/mcp-launch-dir';
 import type { ConversationSession } from '../../types';
 import { addThreadGrant, ENV_SKILL_GRANT_OWNER } from '../../user-skill-grants-store';
 import { type BuildStreamOptionsDeps, buildStreamOptions } from '../claude-code/build-stream-options';
@@ -106,7 +107,14 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
 
     expect(options.permissionMode).toBe('bypassPermissions');
     expect(options.allowDangerouslySkipPermissions).toBe(true);
-    expect(options.mcpServers).toEqual({ mcp__demo: { type: 'stdio', command: 'demo' } });
+    // Started from /, not the working directory (#1241).
+    expect(options.mcpServers).toEqual({
+      mcp__demo: {
+        type: 'stdio',
+        command: '/bin/sh',
+        args: ['-c', LAUNCH_SCRIPT, 'mcp-launch', '/', 'demo'],
+      },
+    });
     expect(options.allowedTools).toEqual(['Bash', 'Read']);
     expect(options.disallowedTools).toEqual(['SomeNativeInteractiveTool']);
     expect(options.permissionPromptToolName).toBe('mcp__permission-prompt__permission_prompt');
