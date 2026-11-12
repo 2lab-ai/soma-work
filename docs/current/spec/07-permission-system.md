@@ -455,6 +455,24 @@ this.app.action('deny_tool', async ({ ack, body, respond }) => {
 });
 ```
 
+## 6a. Secret Store and Approval Records — every model, every mode
+
+`evaluateToolPolicy` 1b단계(`devops-secret`)는 어드민을 포함한 모든 사용자, 모든 권한 모드에서 다음을 거부한다
+(`.prd/25-env-access-architecture.md` §1·§2, WU1).
+
+| 대상 | 거부 | 이유 |
+|---|---|---|
+| 비밀 저장소 `SECRETS_DIR` (`<config dir>/secrets`) | Bash 문자열에 경로가 보일 때 · Read · Edit · Write · 그 안을 가리키는 Grep·Glob · 그 위 디렉터리를 훑는 Grep·Glob(와일드카드) | `devops-secret: secret store path` |
+| 승인·grant 기록 (`DATA_DIR`의 `env-skill-grants.json` · `mcp-tool-grants.json` · `skill-perm-requests.json` · `admin-requests.json` · `cron-run-requests.json` · `instruction-approvals.json`, `DATA_DIR/<owner>/skill-grants.json`) | Read · Edit · Write | `devops-secret: approval record` |
+
+- 판단은 `src/agent-runtime/policy/devops-secret-guard.ts`. `checkDevopsSecretForTool`이 도구마다 부르는 호출 모양은 그대로라
+  Lean ToolPolicy 모델(`devopsSecret` 기본값)은 바뀌지 않는다.
+- 샌드박스(`build-stream-options.ts`)는 모든 모델 세션에 같은 경로를 OS 수준으로 건다: `denyRead: [SECRETS_DIR]`,
+  `denyWrite: [SECRETS_DIR, …승인 기록]`, `failIfUnavailable: true`(샌드박스가 뜨지 못하면 명령을 실행하지 않는다.
+  예외는 `.env`의 `SOMA_SANDBOX_ALLOW_UNAVAILABLE=true` — `src/config.ts` `getSandboxAllowUnavailable`).
+- 설정은 비밀을 `{"$secret": "<name>"}`으로 가리킨다. 해석은 `@soma/process-shared/secret-ref`(이름 검증, 저장소 밖 링크 거부,
+  없거나 빈 파일 = 오류). server-tools는 봇이 넘기는 `SOMA_SECRETS_DIR`로 해석하고, 풀리지 않는 서버는 뺀다.
+
 ## 6b. Environment Skill Admin Approval
 
 환경 플러그인(배포가 `config.json` `plugin.envPlugins`에 표시한 플러그인)의 스킬은 어드민(`ADMIN_USERS`)만 바로

@@ -86,13 +86,19 @@ export const SYSTEM_PROMPT_FILE = systemPromptFile;
 export const CONFIG_FILE = configFile;
 export const PLUGINS_DIR = pluginsDir;
 export const DATA_DIR = dataDir;
+/**
+ * The secret store: one file per secret, read by the bot process and its MCP servers only. Every model
+ * sandbox read-denies it and the policy hard-denies it for every tool (`.prd/25-env-access-architecture.md`).
+ * Configuration refers to a secret by name (`{"$secret": "<name>"}`), never by value.
+ */
+export const SECRETS_DIR = path.join(path.dirname(configFile), 'secrets');
 
 // Load environment variables from the resolved .env file
 dotenv.config({ path: ENV_FILE });
 
 // Startup log
 console.log(
-  `[env-paths] ${mode} env=${ENV_FILE} data=${DATA_DIR} config=${CONFIG_FILE} plugins=${PLUGINS_DIR} prompt=${SYSTEM_PROMPT_FILE}`,
+  `[env-paths] ${mode} env=${ENV_FILE} data=${DATA_DIR} config=${CONFIG_FILE} secrets=${SECRETS_DIR} plugins=${PLUGINS_DIR} prompt=${SYSTEM_PROMPT_FILE}`,
 );
 
 /**

@@ -196,6 +196,7 @@ gh workflow run deploy --ref main -f confirm=deploy
   App identity로 push가 안 되면(그 repo에 앱 미설치, workflow 파일 변경 등) 우회하지 말고 멈춰서 유저에게 알린다.
 - **공개 레포 — 호스트 이름·타사 이름 금지 (Sanitize Gate)**: `.github/workflows/sanitize-gate.yml`이 공개된 모든 커밋(파일·커밋 메시지·author 줄·브랜치/태그 이름)을 비밀 패턴으로 검사한다. 패턴은 두 secret에만 있다 — `SANITIZE_PATTERNS_SHARED`(2lab-ai/llmux와 같은 값: 사설 호스트 이름, 다른 회사 이름·도메인)와 이 레포 전용 `SANITIZE_PATTERNS`. 스크립트 `scripts/sanitize-scan.sh`는 llmux에 같은 사본이 있다 — 고치면 둘 다 고친다. 문서·주석·커밋 메시지에는 머신 이름 대신 "owner-mac", "공유 호스트"처럼 쓴다. 워크플로가 특정 러너를 골라야 하면 라벨을 repo 변수(`vars.CONTROL_RUNNER_LABEL`, `PREVIEW_DEPLOY_TARGETS`)에 둔다. 걸리면 커밋을 고쳐 쓴다(`git commit --amend`, force-push). 이미 공개된 커밋도 예외 목록에 올리지 않고 히스토리를 고쳐 쓴다(2026-11-12 전체 재작성). `scripts/sanitize-known-leaks.txt`는 비어 있다.
 - **Permission MCP Server**: `mcp-config-builder.ts`에서 `__filename` 기반 동적 확장자 사용 (.ts dev / .js prod). 하드코딩 금지.
+- **비밀 저장소 `secrets/` (env-access WU1)**: 배포 설정의 비밀은 `<config dir>/secrets/<name>` 파일에 두고 설정은 `{"$secret": "<name>"}`로 가리킨다(`@soma/process-shared/secret-ref`). 어떤 모델도(어드민 포함) 그 폴더를 읽거나 승인·grant 기록 파일을 다루지 못한다 — 정책 1b(`devops-secret-guard.ts`) + 샌드박스 `denyRead`/`denyWrite`. 샌드박스는 fail-closed(`failIfUnavailable: true`, 예외 `SOMA_SANDBOX_ALLOW_UNAVAILABLE`). 새 env-paths mock에는 `SECRETS_DIR`를 넣는다.
 
 ## Command Surface
 

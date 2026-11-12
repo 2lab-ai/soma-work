@@ -168,6 +168,17 @@ export function getBgKeepaliveMaxMs(): number {
 }
 
 /**
+ * Typed accessor for `SOMA_SANDBOX_ALLOW_UNAVAILABLE` — the ONLY read of that variable
+ * (`rules/config.md`). Default `false`: a model session whose sandbox cannot start runs no command
+ * (`failIfUnavailable: true`, `.prd/25-env-access-architecture.md` §1). `true` is the explicit,
+ * logged opt-out for a host that cannot run the sandbox (a container without bubblewrap); there the
+ * secret store is guarded by the policy tier alone.
+ */
+export function getSandboxAllowUnavailable(): boolean {
+  return parseBool(process.env.SOMA_SANDBOX_ALLOW_UNAVAILABLE, false);
+}
+
+/**
  * Backend auth backend selector (#llmux). See {@link config.auth}.
  */
 export type AuthMode = 'ccp' | 'llmux';

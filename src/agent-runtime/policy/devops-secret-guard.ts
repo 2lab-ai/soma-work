@@ -6,9 +6,16 @@
  * arguments per tool (`checkDevopsSecretForTool`) and denies on any reason, in every permission
  * mode and for admins too. Lexical only, like the sensitive-path checks. Defense in depth: the real
  * boundary is the broker's separate OS user, not these checks.
+ *
+ * Also the secret store (`SECRETS_DIR`) and the approval records (.prd/25-env-access-architecture.md
+ * §1, §2): no model reaches the store with any tool, and no model handles an approval or grant
+ * record with a file tool. For sandboxed Bash the OS `denyRead`/`denyWrite` of the same paths
+ * (`build-stream-options.ts`) is the boundary; these checks are the boundary for the native tools.
  */
 
+import * as fs from 'node:fs';
 import { posix as posixPath } from 'node:path';
+import { DATA_DIR, SECRETS_DIR } from '../../env-paths';
 
 /** Root-owned code and broker-owned data of the devops broker (.prd/16-devops-tools-architecture.md §2, §8). */
 const DEVOPS_BROKER_ROOTS = ['/usr/local/var/soma-devops', '/usr/local/libexec/soma-devops'];
@@ -28,6 +35,82 @@ const KEYCHAIN_SECRET_SUBCOMMANDS = ['find-generic-password', 'find-internet-pas
 
 function isBrokerPath(p: string): boolean {
   return p !== '' && DEVOPS_BROKER_PATH_RE.test(posixPath.normalize(p));
+}
+
+const SECRET_STORE_REASON = 'secret store path';
+const APPROVAL_RECORD_REASON = 'approval record';
+
+/** The approval and grant records in `DATA_DIR` that only the bot's buttons and dashboard write. */
+const APPROVAL_RECORD_FILES: readonly string[] = [
+  'env-skill-grants.json',
+  'mcp-tool-grants.json',
+  'skill-perm-requests.json',
+  'admin-requests.json',
+  'cron-run-requests.json',
+  'instruction-approvals.json',
+];
+
+/** Per-owner grants: `DATA_DIR/<owner>/skill-grants.json` (`user-skill-grants-store.ts`). */
+const PER_OWNER_APPROVAL_RECORD = 'skill-grants.json';
+
+/** The fixed approval records of `dataDir` — the paths every model sandbox write-denies. */
+export function approvalRecordPaths(dataDir: string = DATA_DIR): string[] {
+  return APPROVAL_RECORD_FILES.map((file) => posixPath.join(dataDir, file));
+}
+
+/** `p` as written (normalized) and, when it exists, as the OS resolves it; lower-cased (macOS volumes are). */
+function spellings(p: string): string[] {
+  const out = [posixPath.normalize(p)];
+  try {
+    out.push(fs.realpathSync(p));
+  } catch {
+    // Not there (yet): the lexical spelling is what the tool would open.
+  }
+  return [...new Set(out.map((s) => (s.replace(/\/+$/, '') || '/').toLowerCase()))];
+}
+
+function isWithin(p: string, root: string): boolean {
+  return p === root || p.startsWith(root === '/' ? '/' : `${root}/`);
+}
+
+/**
+ * True when `p` is the secret store or inside it, or — with `scan`, which reaches everything below
+ * it — a directory above it. Absolute paths only: a relative spelling is the session's to resolve.
+ */
+function isSecretStorePath(p: string, scan: boolean): boolean {
+  if (!posixPath.isAbsolute(p)) return false;
+  const roots = spellings(SECRETS_DIR);
+  for (const s of spellings(p)) {
+    for (const root of roots) {
+      if (isWithin(s, root) || (scan && isWithin(root, s))) return true;
+    }
+  }
+  return false;
+}
+
+/** `DATA_DIR/<fixed record>` or `DATA_DIR/<owner>/skill-grants.json`. */
+function isApprovalRecord(p: string): boolean {
+  if (!posixPath.isAbsolute(p)) return false;
+  const dataRoots = spellings(DATA_DIR);
+  for (const s of spellings(p)) {
+    for (const root of dataRoots) {
+      if (s === root || !isWithin(s, root)) continue;
+      const parts = s.slice(root === '/' ? 1 : root.length + 1).split('/');
+      if (parts.length === 1 && APPROVAL_RECORD_FILES.includes(parts[0])) return true;
+      if (parts.length === 2 && parts[1] === PER_OWNER_APPROVAL_RECORD) return true;
+    }
+  }
+  return false;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** The secret store named in an unquoted shell string, not continued by another name character. */
+function namesSecretStore(unquoted: string): boolean {
+  const lower = unquoted.toLowerCase();
+  return spellings(SECRETS_DIR).some((root) => new RegExp(`${escapeRegExp(root)}(?![\\w.-])`).test(lower));
 }
 
 /** True for a short-flag cluster or long flag that makes `gh auth status` print the token. */
@@ -61,6 +144,7 @@ export function checkDevopsSecretCommand(command: string): string | null {
   if (DEVOPS_BROKER_PATH_RE.test(unquoted) || /soma-devops-broker/i.test(unquoted)) {
     return BROKER_PATH_REASON;
   }
+  if (namesSecretStore(unquoted)) return SECRET_STORE_REASON;
   for (const words of shellSegments(unquoted)) {
     for (let i = 0; i < words.length; i++) {
       const name = basename(words[i]);
@@ -81,13 +165,30 @@ export function checkDevopsSecretCommand(command: string): string | null {
   return null;
 }
 
-/** Read, Edit and Write `file_path`, Grep `path`: a path under a broker root. */
+/**
+ * Read, Edit and Write `file_path`, Grep `path`: a path under a broker root; the secret store, a path
+ * in it or (Grep's scan) a directory above it; an approval record.
+ */
 export function checkDevopsSecretPath(filePath: string): string | null {
-  return isBrokerPath(filePath) ? BROKER_PATH_REASON : null;
+  if (isBrokerPath(filePath)) return BROKER_PATH_REASON;
+  if (isSecretStorePath(filePath, true)) return SECRET_STORE_REASON;
+  if (isApprovalRecord(filePath)) return APPROVAL_RECORD_REASON;
+  return null;
 }
 
-/** Glob: the pattern, the base path, or both joined, under a broker root. */
+/**
+ * Glob: the pattern, the base path, or both joined, under a broker root; a walk that starts in the
+ * secret store or above it.
+ */
 export function checkDevopsSecretGlob(pattern: string, basePath: string): string | null {
   const joined = basePath && pattern ? posixPath.join(basePath, pattern) : '';
-  return isBrokerPath(pattern) || isBrokerPath(basePath) || isBrokerPath(joined) ? BROKER_PATH_REASON : null;
+  if (isBrokerPath(pattern) || isBrokerPath(basePath) || isBrokerPath(joined)) return BROKER_PATH_REASON;
+  // A wildcard segment never names a directory: the literal part before the first one is where the
+  // walk starts, and a walk reaches everything below it.
+  const target = joined || pattern;
+  const wildcard = /[*?[{]/.test(target);
+  // A relative pattern (`**/*.ts`) walks the session's directory, which this lexical check cannot see.
+  const literal = target.split(/[*?[{]/)[0];
+  if (literal !== '' && isSecretStorePath(literal, wildcard)) return SECRET_STORE_REASON;
+  return null;
 }

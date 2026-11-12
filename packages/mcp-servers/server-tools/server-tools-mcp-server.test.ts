@@ -619,6 +619,52 @@ describe('Config loading', () => {
     expect(dbs.analytics.type).toBe('clickhouse');
   });
 
+  it('resolves {"$secret": name} from the secret store (SOMA_SECRETS_DIR)', () => {
+    const secrets = path.join(CONFIG_DIR, 'secrets');
+    fs.mkdirSync(secrets, { recursive: true });
+    fs.writeFileSync(path.join(secrets, 'prod-db-app'), 'from-store\n', { mode: 0o600 });
+    process.env.SOMA_SECRETS_DIR = secrets;
+    mockConfig(
+      {
+        'server-tools': {
+          prod: {
+            ssh: { host: 'prod.example.com' },
+            databases: {
+              app_db: {
+                type: 'mysql',
+                host: 'db.internal',
+                port: 3306,
+                user: 'u',
+                password: { $secret: 'prod-db-app' },
+              },
+            },
+          },
+        },
+      },
+      1200,
+    );
+    expect(loadConfig().prod.databases?.app_db.password).toBe('from-store');
+  });
+
+  it('drops a server whose secret does not resolve, and keeps the others (fail closed)', () => {
+    process.env.SOMA_SECRETS_DIR = path.join(CONFIG_DIR, 'secrets-missing');
+    mockConfig(
+      {
+        'server-tools': {
+          broken: {
+            ssh: { host: 'b.example.com' },
+            databases: { db: { type: 'mysql', host: 'h', port: 1, user: 'u', password: { $secret: 'nope' } } },
+          },
+          fine: { ssh: { host: 'f.example.com' } },
+        },
+      },
+      1300,
+    );
+    const config = loadConfig();
+    expect(config).not.toHaveProperty('broken');
+    expect(config.fine.ssh.host).toBe('f.example.com');
+  });
+
   it('returns empty config when server-tools section is missing', () => {
     process.env.SOMA_CONFIG_FILE = CONFIG_FILE;
     writeConfig({ other: {} }, 2000);

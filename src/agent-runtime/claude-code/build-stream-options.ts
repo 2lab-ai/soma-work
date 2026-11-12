@@ -36,7 +36,8 @@ import {
   handleClaudeStderrChunk,
   resolveShowSummary,
 } from '../../claude-handler';
-import { CONFIG_FILE } from '../../env-paths';
+import { getSandboxAllowUnavailable } from '../../config';
+import { CONFIG_FILE, SECRETS_DIR } from '../../env-paths';
 import {
   checkEnvPluginMcpAccess,
   checkEnvSkillAccess,
@@ -62,6 +63,7 @@ import type { ConversationSession, WorkflowType } from '../../types';
 import { DEFAULT_THINKING_ENABLED, userSettingsStore } from '../../user-settings-store';
 import { createTrackedClaudeProcessSpawner } from '../claude-child-process-registry';
 import { type ExecutionContext, executionContextFromSlack } from '../execution-context';
+import { approvalRecordPaths } from '../policy/devops-secret-guard';
 import { createNativeWriteCheck } from '../policy/native-write-boundary';
 import { permissionAdviceBoard } from '../policy/permission-advice';
 import { checkPlanPendingCall } from '../policy/plan-pending-guard';
@@ -692,15 +694,30 @@ export async function buildStreamOptions(
   // `query()` init and OS-enforced (Seatbelt on macOS, bubblewrap on
   // Linux), so in-flight queries keep the previous policy.
   if (!sandboxDisabled) {
+    // Fail closed (.prd/25-env-access-architecture.md §1): a session whose sandbox cannot start runs
+    // no command, unless the host opted out explicitly (`SOMA_SANDBOX_ALLOW_UNAVAILABLE`).
+    const allowUnavailable = getSandboxAllowUnavailable();
     const sandboxConfig: NonNullable<Options['sandbox']> = {
       enabled: true,
       autoAllowBashIfSandboxed: true,
-      failIfUnavailable: false,
+      failIfUnavailable: !allowUnavailable,
       allowUnsandboxedCommands: false,
+    };
+    if (allowUnavailable) {
+      logger.warn(
+        'Sandbox may run unavailable (SOMA_SANDBOX_ALLOW_UNAVAILABLE): the secret store is guarded by policy only',
+      );
+    }
+    // Every model: the secret store is unreadable and unwritable, and no approval or grant record is
+    // writable (.prd/25-env-access-architecture.md §2). The OS enforces it for every Bash spelling;
+    // policy step 1b covers the native tools.
+    sandboxConfig.filesystem = {
+      denyRead: [SECRETS_DIR],
+      denyWrite: [SECRETS_DIR, ...approvalRecordPaths()],
     };
     // Mount only the user's /tmp/{userId} directory for writes.
     if (sandboxUserDir) {
-      sandboxConfig.filesystem = { allowWrite: [sandboxUserDir] };
+      sandboxConfig.filesystem.allowWrite = [sandboxUserDir];
     }
     // Plan mode writes its plan file with the native Write tool, by default
     // to ~/.claude/plans — outside the write boundary of a non-admin. Keep
