@@ -13,7 +13,32 @@ export interface EnvCloudflareConfig {
   zones: Record<string, string>;
   /** Writes (POST, PUT, PATCH, DELETE) allowed. Default false: reads only. */
   write?: boolean;
+  /** Zone parts reachable beyond the default list (`DEFAULT_PARTS`), e.g. `["logpush"]`. */
+  parts?: string[];
 }
+
+/**
+ * The zone parts `cf_api` reaches by default: DNS, settings, cache, rules, TLS, custom hostnames, firewall, workers
+ * routes, load balancers, health checks, analytics. Anything else (logpush destinations, access, …) only when the
+ * operator lists it in `cloudflare.parts` — an answer there may carry another system's credentials.
+ */
+export const DEFAULT_PARTS: readonly string[] = [
+  'dns_records',
+  'settings',
+  'purge_cache',
+  'rulesets',
+  'pagerules',
+  'ssl',
+  'custom_hostnames',
+  'firewall',
+  'filters',
+  'rate_limits',
+  'workers',
+  'load_balancers',
+  'healthchecks',
+  'analytics',
+  'cache',
+];
 
 export interface CfResponse {
   ok: boolean;
@@ -82,6 +107,10 @@ export function zonePath(config: EnvCloudflareConfig, value: unknown): { path: s
   if (lower.some((s) => s.includes('token') || s.includes('member') || s.startsWith('user'))) {
     throw new CfError('key management, users and memberships are never reachable');
   }
+  const part = segments[2];
+  if (part !== undefined && !DEFAULT_PARTS.includes(part) && !(config.parts ?? []).includes(part)) {
+    throw new CfError(`${part} is not a part cf_api reaches (an operator can add it to cloudflare.parts)`);
+  }
   return { path: value, zone: zone[0] };
 }
 
@@ -138,6 +167,8 @@ export function cfRequest(config: EnvCloudflareConfig, args: Record<string, unkn
   const { path, zone } = zonePath(config, args.path);
   if (method !== 'GET' && config.write !== true)
     throw new CfError('this environment reads only (cloudflare.write is not true)');
+  // Deleting, pausing or re-planning the zone itself is never an environment's call.
+  if (method !== 'GET' && path.split('/').length < 4) throw new CfError('the zone itself is never written');
   return { method, path, zone, query: queryString(args.query), body: bodyText(method, args.body) };
 }
 
@@ -170,10 +201,25 @@ export async function cfCall(
     throw new CfError(`Cloudflare GET got no answer (${why})`);
   }
   let json: unknown;
+  let readable = true;
   try {
     json = await res.json();
   } catch {
     json = undefined;
+    readable = false;
+  }
+  // A write answered 2xx is done only when its body says so: unreadable → may have been made; `success: false` → not.
+  if (res.ok && request.method !== 'GET') {
+    if (!readable) {
+      throw new CfOutcomeUnknownError(
+        `Cloudflare ${request.method} answered ${res.status} with an unreadable body: the write may have been made — check before retrying`,
+      );
+    }
+    if ((json as { success?: unknown } | null)?.success === false) {
+      throw new CfError(
+        `Cloudflare ${request.method} ${request.path} answered ${res.status}: ${errorsOf(json, config.token)}`,
+      );
+    }
   }
   if (!res.ok) {
     if (request.method !== 'GET' && res.status >= 500) {

@@ -354,8 +354,14 @@ reads the token from the secret store outside every model sandbox; no model sees
 `cf_api {server, method, path, query, body}` calls `https://api.cloudflare.com/client/v4<path>`. `path` is
 `/zones/<id>/…` for one of `zones` (32-hex IDs), with plain segments only (no `..`, `//`, `%`, `\`, `?`, `#`); the
 query goes in `query`. Paths with `token`, `member` or a `user…` segment are never reachable, whatever the token's
-scope. `GET` always runs; `POST`/`PUT`/`PATCH`/`DELETE` only with `write: true`, for a session that names a Slack
-user, with an intent line in `env-audit.jsonl` before the call and `done`/`failed` after. A write that gets no
+scope. Below the zone, only these parts are reachable: `dns_records`, `settings`, `purge_cache`, `rulesets`,
+`pagerules`, `ssl`, `custom_hostnames`, `firewall`, `filters`, `rate_limits`, `workers`, `load_balancers`,
+`healthchecks`, `analytics`, `cache`, plus any the operator lists in `cloudflare.parts`. A part such as `logpush` can
+answer with another system's credentials, so it is reachable only once the operator lists it. The zone itself can be
+read but never written: no delete, pause or plan change. `GET` always runs; `POST`/`PUT`/`PATCH`/`DELETE` only with `write: true`, for a session that names a Slack
+user, with an intent line in `env-audit.jsonl` before the call and `done`/`failed` after. The line records the zone, the
+path, the query and the SHA-256 of the body, but not the body itself. A 2xx whose body says `success: false` is
+recorded `failed`; one whose body cannot be read is recorded `unknown`. A write that gets no
 answer (or a 5xx) is recorded `unknown` and the tool says to check before retrying. Errors give Cloudflare's status
 and `errors[]` codes and messages, with the token scrubbed. A token written into config.json is ignored and the
 section left out. Like the other environment tools, `cf_api` is admin-only except on an environment's server for a

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createHash } from 'node:crypto';
 import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { ConfigCache } from '@soma/process-shared/mcp/config-cache.js';
@@ -817,7 +818,13 @@ export async function handleCfApi(
       tool: 'cf_api',
       action: request.method,
     };
-    const detail = { zone: request.zone, path: request.path };
+    // What was sent, without the body itself (it may hold a value the ledger should not keep): its SHA-256.
+    const detail = {
+      zone: request.zone,
+      path: request.path,
+      ...(request.query ? { query: request.query.slice(1) } : {}),
+      ...(request.body !== undefined ? { bodySha256: createHash('sha256').update(request.body).digest('hex') } : {}),
+    };
     try {
       appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'intent', detail });
     } catch (err) {

@@ -144,6 +144,54 @@ describe('cf_api', () => {
     expect(ro.calls).toEqual([]);
   });
 
+  // trinity R1 (fable): the zone itself is never written; only listed parts are reachable; the ledger says what
+  // was sent; a 2xx that says it failed, or cannot be read, is not `done`.
+  it('never writes the zone itself, reaches only listed parts, and records what was sent', async () => {
+    const { fetch, calls } = cloudflare({ json: { success: true, result: {} } });
+    await expect(handleCfApi({ server: 'dev2', method: 'DELETE', path: `/zones/${ZONE}` }, fetch)).rejects.toThrow(
+      /zone itself/,
+    );
+    await expect(
+      handleCfApi({ server: 'dev2', method: 'PATCH', path: `/zones/${ZONE}`, body: { paused: true } }, fetch),
+    ).rejects.toThrow(/zone itself/);
+    await expect(
+      handleCfApi({ server: 'dev2', method: 'GET', path: `/zones/${ZONE}/logpush/jobs` }, fetch),
+    ).rejects.toThrow(/not a part cf_api reaches/);
+    expect(calls).toEqual([]);
+    // The zone itself can be read; an operator can add a part.
+    await handleCfApi({ server: 'dev2', method: 'GET', path: `/zones/${ZONE}` }, fetch);
+    writeConfig({ token: { $secret: 'cf-dev2' }, zones: { 'dev2.example': ZONE }, write: true, parts: ['logpush'] });
+    await handleCfApi({ server: 'dev2', method: 'GET', path: `/zones/${ZONE}/logpush/jobs` }, fetch);
+    expect(calls).toHaveLength(2);
+
+    const body = { type: 'A', name: 'c.dev2.example', content: '10.0.0.3' };
+    await handleCfApi(
+      { server: 'dev2', method: 'PUT', path: `/zones/${ZONE}/dns_records/r3`, query: { a: '1' }, body },
+      fetch,
+    );
+    const intent = ledger().find((r) => r.phase === 'intent');
+    expect(intent.detail).toMatchObject({ zone: 'dev2.example', path: `/zones/${ZONE}/dns_records/r3`, query: 'a=1' });
+    expect(intent.detail.bodySha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('records a 2xx that says it failed as failed, and an unreadable one as unknown', async () => {
+    const said = cloudflare({ json: { success: false, errors: [{ code: 81057, message: 'record exists' }] } });
+    await expect(
+      handleCfApi({ server: 'dev2', method: 'POST', path: `/zones/${ZONE}/dns_records`, body: {} }, said.fetch),
+    ).rejects.toThrow(/81057 record exists/);
+    const unreadable: CfFetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new Error('bad json');
+      },
+    });
+    await expect(
+      handleCfApi({ server: 'dev2', method: 'POST', path: `/zones/${ZONE}/dns_records`, body: {} }, unreadable),
+    ).rejects.toThrow(/may have been made/);
+    expect(ledger().map((r) => r.phase)).toEqual(['intent', 'failed', 'intent', 'unknown']);
+  });
+
   it('says a write that got no answer may have been made', async () => {
     const { fetch } = cloudflare({ throws: true });
     await expect(
