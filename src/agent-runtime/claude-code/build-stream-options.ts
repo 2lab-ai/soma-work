@@ -65,7 +65,7 @@ import {
 } from '../../sandbox/admin-sandbox-profile';
 import { extendSandboxWithGrant, loadDeploySandboxGrant } from '../../sandbox/deploy-sandbox-grant';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
-import { launchAllFrom, mcpLaunchDir, pluginMcpServers } from '../../sandbox/mcp-launch-dir';
+import { launchAllFrom, mcpLaunchDir, wrapPluginLaunchers } from '../../sandbox/mcp-launch-dir';
 import { projectConfigRoot } from '../../sandbox/project-config-root';
 import type { SessionRegistry } from '../../session-registry';
 import { isPlanPending } from '../../task-turn/task-plan';
@@ -978,22 +978,21 @@ export async function buildStreamOptions(
   ];
   options.projectConfigRoot = projectConfigRoot(DATA_DIR, writeRoots);
 
-  // Every stdio MCP server starts from a directory no session writes, not from the working directory, where its
-  // launcher (npx, uvx …) would read package-manager config the model planted (env-access #1241). The CLI starts
-  // plugin servers itself in the working directory, so it is told to leave them and they are declared here under
-  // its names. Throws: the session does not start.
+  // Every stdio MCP server starts from a read-only, empty directory no session writes, not from the working
+  // directory, where its launcher (npx, uvx …) would read package-manager config the model planted (env-access
+  // #1241). soma-work's servers are wrapped here; a plugin's are wrapped in its config in the plugin cache, so the
+  // CLI still resolves everything else about them. Throws: the session does not start.
   const launchDir = mcpLaunchDir(DATA_DIR, writeRoots);
-  const plugins = options.plugins ?? [];
-  // Placeholders are filled from the environment the CLI itself would use: the session's, not the bot's own.
-  const pluginMcp = pluginMcpServers(plugins, options.env ?? process.env);
-  if (pluginMcp.skipped.length > 0) {
-    logger.warn('Plugin MCP servers not started: a placeholder could not be filled or the config is unreadable', {
-      servers: pluginMcp.skipped,
-    });
+  if (options.mcpServers) options.mcpServers = launchAllFrom(launchDir, options.mcpServers);
+  if (options.plugins && options.plugins.length > 0) {
+    const launchers = wrapPluginLaunchers(options.plugins, launchDir, PLUGINS_DIR);
+    if (launchers.turnedOff.length > 0) {
+      logger.warn("Plugin MCP servers turned off: they could not be made to start outside the session's directory", {
+        plugins: launchers.turnedOff,
+      });
+    }
+    options.plugins = launchers.plugins;
   }
-  options.plugins = plugins.map((plugin) => ({ ...plugin, skipMcpDiscovery: true }));
-  const declared = { ...pluginMcp.servers, ...(options.mcpServers ?? {}) };
-  if (Object.keys(declared).length > 0) options.mcpServers = launchAllFrom(launchDir, declared);
 
   return attachStderrCapture(options, logger);
 }

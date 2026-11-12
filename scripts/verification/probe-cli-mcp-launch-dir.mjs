@@ -6,8 +6,9 @@
  * A stdio MCP server runs outside the sandbox. Its launcher (npx, uvx …) reads package-manager config from its
  * working directory and the directories above it, and the CLI starts it in the session's working directory,
  * which the model writes. The CLI ignores a `cwd` field on the server config. soma-work therefore starts every
- * stdio server through `sh -c 'cd <dir> && exec …'`, and starts plugin servers itself under the CLI's own names,
- * with `skipMcpDiscovery` on the plugin so the CLI does not start its own copy.
+ * stdio server through `sh -c 'cd <dir> && exec …'`: its own servers in the options, a plugin's in the plugin's
+ * own `.mcp.json`, which the CLI still reads — so the CLI still fills `${CLAUDE_PLUGIN_ROOT}` (here in the
+ * wrapped arguments) and names the server.
  *
  * Measured with CLI 2.1.321. Re-run on every Claude Agent SDK / CLI bump. Two short model sessions (cheap model).
  *
@@ -15,9 +16,9 @@
  *   PROBE_ISOLATED_CONFIG=1 node …   # a fresh CLAUDE_CONFIG_DIR (needed inside a sandboxed session)
  *
  * Exit 0: control — a direct server and a plugin server start in the working directory, the `cwd` field is
- *         ignored; with the wrapper — both start in the launch directory, the plugin's own copy does not start,
- *         and the tool names are the same as in the control.
- * Exit 1: with the wrapper, a server started in the working directory, or the plugin's own copy started.
+ *         ignored; wrapped — both start in the launch directory, the plugin server's `${CLAUDE_PLUGIN_ROOT}`
+ *         argument was filled by the CLI, and the tool names are the same as in the control.
+ * Exit 1: wrapped, a server started in the working directory.
  * Exit 2: inconclusive (the control did not show the problem, or tool names differ).
  */
 import * as fs from 'node:fs';
@@ -69,19 +70,12 @@ async function run(withWrapper) {
   fs.writeFileSync(path.join(plugin, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'probeplugin', version: '0.0.1' }));
   fs.writeFileSync(path.join(plugin, 'server.mjs'), SERVER);
   const marker = (name) => path.join(base, `cwd-${name}`);
-  const pluginServer = { command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/server.mjs', marker('plugin-own')] };
-  fs.writeFileSync(path.join(plugin, '.mcp.json'), JSON.stringify({ mcpServers: { srv: pluginServer } }));
+  const pluginServer = { command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/server.mjs', marker('plugin')] };
+  // Wrapped the way wrapPluginLaunchers rewrites a cached plugin's .mcp.json: placeholders stay for the CLI.
+  const pluginConfig = withWrapper ? wrap(pluginServer, launch) : pluginServer;
+  fs.writeFileSync(path.join(plugin, '.mcp.json'), JSON.stringify({ mcpServers: { srv: pluginConfig } }));
   const direct = { type: 'stdio', command: 'node', args: [path.join(plugin, 'server.mjs'), marker('direct')] };
-  const mcpServers = withWrapper
-    ? {
-        direct: wrap(direct, launch),
-        // The plugin's server, started by soma-work under the CLI's name for it.
-        plugin_probeplugin_srv: wrap(
-          { type: 'stdio', command: 'node', args: [path.join(plugin, 'server.mjs'), marker('plugin-wrapped')] },
-          launch,
-        ),
-      }
-    : { direct: { ...direct, cwd: launch } };
+  const mcpServers = withWrapper ? { direct: wrap(direct, launch) } : { direct: { ...direct, cwd: launch } };
   const env = process.env.PROBE_ISOLATED_CONFIG
     ? { ...process.env, CLAUDE_CONFIG_DIR: fs.mkdtempSync(path.join(tmp, 'probe-config-')) }
     : undefined;
@@ -96,7 +90,7 @@ async function run(withWrapper) {
       settingSources: [],
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
-      plugins: [{ type: 'local', path: plugin, ...(withWrapper ? { skipMcpDiscovery: true } : {}) }],
+      plugins: [{ type: 'local', path: plugin }],
       mcpServers,
     },
   })) {
@@ -105,13 +99,14 @@ async function run(withWrapper) {
   }
   await new Promise((r) => setTimeout(r, 1000));
   const where = (name) => (fs.existsSync(marker(name)) ? fs.readFileSync(marker(name), 'utf8') : null);
-  return { cwd, launch, tools, direct: where('direct'), pluginOwn: where('plugin-own'), pluginWrapped: where('plugin-wrapped') };
+  return { cwd, launch, tools, direct: where('direct'), plugin: where('plugin') };
 }
 
 const control = await run(false);
 const wrapped = await run(true);
-const shown = control.direct === control.cwd && control.pluginOwn === control.cwd;
-const leaked = wrapped.direct !== wrapped.launch || wrapped.pluginWrapped !== wrapped.launch || wrapped.pluginOwn !== null;
+const shown = control.direct === control.cwd && control.plugin === control.cwd;
+// The plugin server only starts at all if the CLI filled ${CLAUDE_PLUGIN_ROOT} in the wrapped arguments.
+const leaked = wrapped.direct !== wrapped.launch || wrapped.plugin !== wrapped.launch;
 const sameTools = JSON.stringify(control.tools) === JSON.stringify(wrapped.tools);
 const verdict = leaked ? 'STARTED IN THE WORKING DIRECTORY' : shown && sameTools ? 'LAUNCH DIR HOLDS' : 'INCONCLUSIVE';
 console.log(JSON.stringify({ verdict, model, control, wrapped }, null, 2));

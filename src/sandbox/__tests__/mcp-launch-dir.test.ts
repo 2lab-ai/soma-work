@@ -1,8 +1,8 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: plugin configs use `${…}` placeholders, not templates
 
 /**
- * env-access #1241: stdio MCP servers start from `<DATA_DIR>/mcp-launch`, not from the session's working
- * directory, where a model could plant a launcher's package-manager config.
+ * env-access #1241: stdio MCP servers start from `<DATA_DIR>/mcp-launch` — read-only, empty, outside every write
+ * root — not from the session's working directory, where a model could plant a launcher's package-manager config.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -10,7 +10,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { launchAllFrom, launchFrom, McpLaunchDirError, mcpLaunchDir, pluginMcpServers } from '../mcp-launch-dir';
+import {
+  LAUNCH_SCRIPT,
+  launchAllFrom,
+  launchFrom,
+  McpLaunchDirError,
+  mcpLaunchDir,
+  wrapPluginLaunchers,
+} from '../mcp-launch-dir';
 
 let work: string;
 
@@ -19,6 +26,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // The launch directory is read-only; let the cleanup in.
+  for (const dir of [path.join(work, 'mcp-launch'), path.join(work, 'data', 'mcp-launch')]) {
+    if (fs.existsSync(dir)) fs.chmodSync(dir, 0o755);
+  }
   fs.rmSync(work, { recursive: true, force: true });
 });
 
@@ -52,6 +63,11 @@ describe('launchFrom', () => {
     expect(wrapped).toMatchObject({ type: 'stdio', command: '/bin/sh', env: { A: '1' }, timeout: 5000 });
     expect(wrapped.args?.slice(3)).toEqual(['/x', 'npx', '-y', 'pkg']);
   });
+
+  it('points an already wrapped server at the new directory instead of wrapping it twice', () => {
+    const once = launchFrom('/old', { command: 'npx', args: ['pkg'] });
+    expect(launchFrom('/new', once).args).toEqual(['-c', LAUNCH_SCRIPT, 'mcp-launch', '/new', 'npx', 'pkg']);
+  });
 });
 
 describe('launchAllFrom', () => {
@@ -68,11 +84,22 @@ describe('launchAllFrom', () => {
 });
 
 describe('mcpLaunchDir', () => {
-  it('is <DATA_DIR>/mcp-launch, made on first use', () => {
+  it('is <DATA_DIR>/mcp-launch, made on first use, read-only', () => {
     const dir = mcpLaunchDir(work, []);
     expect(dir).toBe(path.join(work, 'mcp-launch'));
-    expect(fs.statSync(dir).isDirectory()).toBe(true);
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o555);
     expect(mcpLaunchDir(work, [])).toBe(dir);
+  });
+
+  it('makes a directory that was opened up read-only again', () => {
+    fs.mkdirSync(path.join(work, 'mcp-launch'), { mode: 0o755 });
+    expect(fs.statSync(mcpLaunchDir(work, [])).mode & 0o777).toBe(0o555);
+  });
+
+  it('refuses a directory that holds anything', () => {
+    fs.mkdirSync(path.join(work, 'mcp-launch'));
+    fs.writeFileSync(path.join(work, 'mcp-launch', '.npmrc'), 'registry=x');
+    expect(() => mcpLaunchDir(work, [])).toThrow(/must stay empty but holds \.npmrc/);
   });
 
   it('refuses a linked directory', () => {
@@ -87,50 +114,107 @@ describe('mcpLaunchDir', () => {
   });
 });
 
-describe('pluginMcpServers', () => {
-  function plugin(name: string, files: Record<string, unknown>): string {
-    const root = path.join(work, 'plugins', name);
+describe('wrapPluginLaunchers', () => {
+  const dir = '/launch';
+  let cache: string;
+
+  beforeEach(() => {
+    cache = path.join(work, 'plugins');
+    fs.mkdirSync(cache);
+  });
+
+  function plugin(name: string, files: Record<string, unknown>, parent = cache): string {
+    const root = path.join(parent, name);
     fs.mkdirSync(path.join(root, '.claude-plugin'), { recursive: true });
-    for (const [file, json] of Object.entries(files)) {
+    for (const [file, content] of Object.entries(files)) {
       fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
-      fs.writeFileSync(path.join(root, file), JSON.stringify(json));
+      fs.writeFileSync(path.join(root, file), typeof content === 'string' ? content : JSON.stringify(content));
     }
     return root;
   }
+  const json = (file: string) => JSON.parse(fs.readFileSync(file, 'utf8'));
 
-  it('reads .mcp.json and the manifest, under the CLI names, with placeholders filled', () => {
-    const root = plugin('dir-name', {
-      '.claude-plugin/plugin.json': {
-        name: 'pw',
-        mcpServers: ['./more.json', { inline: { command: 'uvx', args: ['tool', '${REGION:-eu}'] } }],
-      },
-      '.mcp.json': { mcpServers: { browser: { command: 'npx', args: ['${CLAUDE_PLUGIN_ROOT}/cli.js', '${TOKEN}'] } } },
-      'more.json': { remote: { type: 'http', url: 'https://${HOST}/mcp' } },
-    });
-    const { servers, skipped } = pluginMcpServers([{ type: 'local', path: root }], { TOKEN: 't', HOST: 'h.io' });
-    expect(skipped).toEqual([]);
-    expect(servers).toEqual({
-      plugin_pw_browser: { command: 'npx', args: [`${root}/cli.js`, 't'], env: { CLAUDE_PLUGIN_ROOT: root } },
-      plugin_pw_inline: { command: 'uvx', args: ['tool', 'eu'], env: { CLAUDE_PLUGIN_ROOT: root } },
-      plugin_pw_remote: { type: 'http', url: 'https://h.io/mcp' },
-    });
-  });
-
-  it('skips a server with a placeholder it cannot fill, or with no command or url', () => {
-    const root = plugin('p', {
+  it('wraps the stdio servers in .mcp.json in place and leaves placeholders and other transports to the CLI', () => {
+    const root = plugin('pw', {
       '.mcp.json': {
-        data: { command: 'x', args: ['${CLAUDE_PLUGIN_DATA}'] },
-        broken: { args: ['y'] },
-        ok: { command: 'z' },
+        mcpServers: {
+          browser: {
+            command: '${CLAUDE_PLUGIN_ROOT}/bin/run',
+            args: ['${user_config.key}'],
+            env: { D: '${CLAUDE_PLUGIN_DATA}' },
+          },
+          remote: { type: 'http', url: 'https://${HOST}/mcp', headers: { A: '${TOKEN}' } },
+          socket: { type: 'ws', url: 'wss://x' },
+        },
       },
     });
-    const { servers, skipped } = pluginMcpServers([{ type: 'local', path: root }], {});
-    expect(Object.keys(servers)).toEqual(['plugin_p_ok']);
-    expect(skipped.sort()).toEqual(['plugin_p_broken', 'plugin_p_data']);
+    const out = wrapPluginLaunchers([{ type: 'local', path: root }], dir, cache);
+    expect(out).toEqual({ plugins: [{ type: 'local', path: root }], turnedOff: [] });
+    expect(json(path.join(root, '.mcp.json')).mcpServers).toEqual({
+      browser: {
+        command: '/bin/sh',
+        args: ['-c', LAUNCH_SCRIPT, 'mcp-launch', dir, '${CLAUDE_PLUGIN_ROOT}/bin/run', '${user_config.key}'],
+        env: { D: '${CLAUDE_PLUGIN_DATA}' },
+      },
+      remote: { type: 'http', url: 'https://${HOST}/mcp', headers: { A: '${TOKEN}' } },
+      socket: { type: 'ws', url: 'wss://x' },
+    });
   });
 
-  it('declares nothing for a plugin without MCP servers', () => {
-    const root = plugin('plain', { '.claude-plugin/plugin.json': { name: 'plain' } });
-    expect(pluginMcpServers([{ type: 'local', path: root }], {})).toEqual({ servers: {}, skipped: [] });
+  it('wraps servers inline in the manifest and in a JSON file it names, and leaves the rest of the manifest', () => {
+    const root = plugin('m', {
+      '.claude-plugin/plugin.json': {
+        name: 'm',
+        version: '1.0.0',
+        mcpServers: ['./servers.json', { inline: { command: 'uvx', args: ['tool'] } }],
+      },
+      'servers.json': { file: { command: 'npx', args: ['-y', 'pkg'] } },
+    });
+    expect(wrapPluginLaunchers([{ type: 'local', path: root }], dir, cache).turnedOff).toEqual([]);
+    const manifest = json(path.join(root, '.claude-plugin', 'plugin.json'));
+    expect(manifest).toMatchObject({ name: 'm', version: '1.0.0' });
+    expect(manifest.mcpServers[0]).toBe('./servers.json');
+    expect(manifest.mcpServers[1].inline.args).toEqual(['-c', LAUNCH_SCRIPT, 'mcp-launch', dir, 'uvx', 'tool']);
+    expect(json(path.join(root, 'servers.json')).file.args.slice(3)).toEqual([dir, 'npx', '-y', 'pkg']);
+  });
+
+  it('writes nothing the second time, and re-points the servers when the directory moves', () => {
+    const root = plugin('p', { '.mcp.json': { s: { command: 'npx' } } });
+    wrapPluginLaunchers([{ type: 'local', path: root }], dir, cache);
+    const first = fs.statSync(path.join(root, '.mcp.json')).mtimeMs;
+    const firstText = fs.readFileSync(path.join(root, '.mcp.json'), 'utf8');
+    wrapPluginLaunchers([{ type: 'local', path: root }], dir, cache);
+    expect(fs.readFileSync(path.join(root, '.mcp.json'), 'utf8')).toBe(firstText);
+    expect(fs.statSync(path.join(root, '.mcp.json')).mtimeMs).toBe(first);
+    wrapPluginLaunchers([{ type: 'local', path: root }], '/moved', cache);
+    expect(json(path.join(root, '.mcp.json')).s.args).toEqual(['-c', LAUNCH_SCRIPT, 'mcp-launch', '/moved', 'npx']);
+  });
+
+  it('leaves a plugin without MCP servers alone, wherever it is', () => {
+    const outside = plugin('plain', { '.claude-plugin/plugin.json': { name: 'plain' } }, work);
+    expect(wrapPluginLaunchers([{ type: 'local', path: outside }], dir, cache)).toEqual({
+      plugins: [{ type: 'local', path: outside }],
+      turnedOff: [],
+    });
+  });
+
+  it('turns the MCP servers off when they cannot be wrapped where the CLI reads them', () => {
+    const outside = plugin('out', { '.mcp.json': { s: { command: 'npx' } } }, work);
+    const bundle = plugin('bundle', { '.claude-plugin/plugin.json': { name: 'b', mcpServers: './server.mcpb' } });
+    const escape = plugin('esc', { '.claude-plugin/plugin.json': { name: 'e', mcpServers: '../../out/.mcp.json' } });
+    const broken = plugin('broken', { '.mcp.json': '{ not json' });
+    const out = wrapPluginLaunchers(
+      [outside, bundle, escape, broken].map((p) => ({ type: 'local' as const, path: p })),
+      dir,
+      cache,
+    );
+    expect(out.plugins.map((p) => p.skipMcpDiscovery)).toEqual([true, true, true, true]);
+    expect(out.turnedOff).toEqual([
+      `${outside}: it is not in the plugin cache`,
+      `${bundle}: ./server.mcpb is not a JSON MCP config (an MCP bundle cannot be wrapped)`,
+      `${escape}: ../../out/.mcp.json lies outside the plugin`,
+      `${broken}: .mcp.json cannot be read`,
+    ]);
+    expect(json(path.join(outside, '.mcp.json'))).toEqual({ s: { command: 'npx' } });
   });
 });

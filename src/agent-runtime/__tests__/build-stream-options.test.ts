@@ -92,8 +92,7 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
     // env passed by reference — matches inline behaviour (no clone).
     expect(options.env).toBe(queryEnv);
     expect(options.settingSources).toEqual(['project']);
-    // The CLI leaves the plugin's MCP servers to soma-work, which starts them from the launch directory (#1241).
-    expect(options.plugins).toEqual([{ type: 'local', path: '/plugins/demo', skipMcpDiscovery: true }]);
+    expect(options.plugins).toEqual([{ type: 'local', path: '/plugins/demo' }]);
   });
 
   it('preserves TodoWrite snapshots and first-turn MCP readiness on SDK 0.3', async () => {
