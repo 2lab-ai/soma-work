@@ -21,7 +21,9 @@
  * - An environment set in front of a program refuses (`GIT_PAGER=… git log`, `RSYNC_RSH=… rsync`,
  *   `RIPGREP_CONFIG_PATH=… rg`), and so does an assignment that holds the word or sets `PATH`, and a git global
  *   option that holds the word. An expansion where a program could be named — a git setting, the arguments of
- *   a data program with a run option, `find`'s arguments — is unknown, so it refuses too.
+ *   a data program with a run option, `find`'s arguments — is unknown, so it refuses too. Two exceptions:
+ *   locale, time zone and color settings in front of a program (`LC_ALL=C grep …`), and `$HOME`, `$PWD`,
+ *   `$TMPDIR` when the command does not set them (absolute paths the bot set: never an option).
  *
  * Not covered, as with a command split in two: a data program that reads configuration an earlier part of the
  * same command wrote (`… >> .git/config; git log`).
@@ -142,6 +144,8 @@ const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--na
 /** gh command groups that only send and print data. */
 const GH_DATA = new Set(['pr', 'issue', 'api', 'search', 'run', 'release', 'label', 'workflow', 'status']);
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)\+?=/;
+/** Locale, time zone and color settings: they change how a program prints, never what it runs. */
+const PLAIN_ENVIRONMENT = /^(LC_[A-Z]+|LANG|LANGUAGE|TZ|NO_COLOR|FORCE_COLOR|COLUMNS)$/;
 /** Nesting this deep is not a command anyone types: refuse rather than guess. */
 const MAX_DEPTH = 8;
 /** Stands in a word for an expansion (`$x`, `$(…)`, backticks): a program named through one is unknown. */
@@ -165,7 +169,25 @@ class Parser {
   i = 0;
   readonly commands: SimpleCommand[] = [];
   unreadable = false;
-  constructor(readonly src: string) {}
+  /** `src` is the text scanned now; `root` is the whole command. */
+  constructor(
+    readonly src: string,
+    readonly root: string = src,
+  ) {}
+}
+
+/**
+ * `$HOME`, `$PWD`, `$TMPDIR` hold absolute paths the bot set, so they can never become an option or a program
+ * name — unless the command itself sets them (`HOME=…`, `read HOME`, `export HOME`), which any other mention of
+ * the name in the command is taken to mean.
+ */
+const TRUSTED_VARIABLES = new Set(['HOME', 'PWD', 'TMPDIR']);
+
+function trustedVariable(root: string, name: string): boolean {
+  if (!TRUSTED_VARIABLES.has(name)) return false;
+  const mentions = root.match(new RegExp(`(?<![A-Za-z0-9_])${name}(?![A-Za-z0-9_])`, 'g'))?.length ?? 0;
+  const expansions = root.match(new RegExp(`\\$\\{?${name}(?![A-Za-z0-9_])`, 'g'))?.length ?? 0;
+  return mentions === expansions;
 }
 
 /** Commands in a separate text (a backtick body, an expanded heredoc body, arithmetic), merged into `p`. */
@@ -174,7 +196,7 @@ function scanText(p: Parser, text: string, depth: number, expandOnly: boolean): 
     p.unreadable = true;
     return;
   }
-  const q = new Parser(text);
+  const q = new Parser(text, p.root);
   if (expandOnly) expansions(q, depth);
   else list(q, false, depth);
   p.commands.push(...q.commands);
@@ -237,12 +259,14 @@ function dollar(p: Parser, depth: number): string {
       p.i = src.length;
       return '';
     }
-    scanText(p, src.slice(open + 1, j), depth + 1, true);
+    const inner = src.slice(open + 1, j);
+    scanText(p, inner, depth + 1, true);
     p.i = j;
-    return EXPANDED;
+    return trustedVariable(p.root, inner) ? `$${inner}` : EXPANDED;
   }
-  // `$x`, `$1`, `$@`: a parameter.
-  return EXPANDED;
+  // `$x`, `$1`, `$@`: a parameter. Its name is read on by the caller.
+  const name = /^[A-Za-z_][A-Za-z0-9_]*/.exec(src.slice(open))?.[0] ?? '';
+  return trustedVariable(p.root, name) ? '$' : EXPANDED;
 }
 
 /**
@@ -550,7 +574,7 @@ function verdict(cmd: SimpleCommand): Verdict | 'runs' {
     if (assignment) {
       // `x='ssh …'` may be run later as `$x`; a new `PATH` changes what every bare name runs.
       if (assignment[1] === 'PATH' || isSshCommand(words[0])) return 'may-run';
-      environment = true;
+      if (!PLAIN_ENVIRONMENT.test(assignment[1]) || words[0].includes(EXPANDED)) environment = true;
       words = words.slice(1);
     } else if (words.length > 0 && KEYWORDS.has(words[0])) {
       words = words.slice(1);

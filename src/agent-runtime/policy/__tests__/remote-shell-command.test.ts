@@ -119,6 +119,12 @@ const RUNS = [
   "ack --pager='ssh host' x",
   'rg --hostname-bin ssh x',
   // trinity R4 (astra, P2): line continuations in a delimiter and in an unquoted heredoc body.
+  // A trusted variable the command itself sets is not trusted.
+  'HOME=--pre=x; rg ssh "$HOME"',
+  'read HOME; rg ssh $HOME',
+  'x=--pre=x; rg ssh "$x"',
+  'dir=-exec; find "$dir" ssh host \\;',
+  'LC_ALL=$(printf x) grep ssh x',
   'cat <<"E\\\nOF"\ntext\nEOF\nssh host',
   'cat <<E\\\nOF\ntext\nEOF\nssh host',
   'cat <<EOF\nEO\\\nF\nssh host',
@@ -165,6 +171,13 @@ const DATA = [
   // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
   'echo "${HOME}/ssh"',
   'cat <<< "ssh host"',
+  // The bot's own absolute paths, and locale settings (trinity R5, fable P2).
+  'rg -n ssh "$HOME/x"',
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
+  'rg -n ssh ${HOME}/x',
+  'find "$PWD" -name "*ssh*"',
+  'grep -rn ssh "$TMPDIR"',
+  'LC_ALL=C grep ssh x',
 ];
 
 /**
@@ -179,7 +192,9 @@ const CONSERVATIVE = [
   'find . -name "*ssh*" -exec cat {} \\;',
   'git config core.sshCommand "ssh -i k"',
   // An environment for a data program can make it run another (`RIPGREP_CONFIG_PATH`, `GIT_PAGER` …).
-  'LC_ALL=C grep ssh x',
+  'GIT_AUTHOR_NAME=x git commit -m "ssh"',
+  // A variable set in the command could be anything.
+  'dir=src; find "$dir" -name "*ssh*"',
 ];
 
 describe('isRemoteShellCommand', () => {
