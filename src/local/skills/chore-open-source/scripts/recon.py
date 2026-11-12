@@ -56,7 +56,7 @@ forbidden = patterns('patterns.txt') + patterns('repo-patterns.txt')
 CLASSES = {
     'forbidden list': re.compile('|'.join(forbidden), re.I) if forbidden else None,
     'home path': re.compile(r'(/Users|/home)/(?!(runner|operator|ci|user|me|you|example|name|username|USER|\$USER|\{USER\})\b)[A-Za-z0-9._-]{2,}'),
-    'e-mail': re.compile(r'\b[A-Za-z0-9._%+-]+@(?!(?:[a-z0-9-]+\.)*(?:example\.(?:com|org|net)|example|invalid|test|localhost|users\.noreply\.github\.com|noreply\.github\.com)\b)[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'),
+    'e-mail': re.compile(r'\b[A-Za-z0-9._%+-]+@(?!(?:[a-z0-9-]+\.)*(?:example\.(?:com|org|net)|example|invalid|test|localhost|users\.noreply\.github\.com|noreply\.github\.com)\b)[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', re.I),
     'private address': re.compile(r'\b(?:10\.(?:\d{1,3}\.){2}\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})\b'),
     'cgnat/tailnet address': re.compile(r'\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b'),
     'internal host': re.compile(r'\b[A-Za-z0-9-]+\.(?:[A-Za-z0-9-]+\.)*(?:ts\.net|internal|corp|lan|local|intranet)\b', re.I),
@@ -65,6 +65,9 @@ CLASSES = {
     'private key': re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----'),
 }
 CLASSES = {k: v for k, v in CLASSES.items() if v is not None}
+# config/allow.txt: one regex per line for matches already judged harmless in this repository
+# (test fixtures, code identifiers); the forbidden list is never filtered by it.
+ALLOW = [re.compile(l) for l in patterns('allow.txt')]
 hits = defaultdict(Counter)       # class -> Counter(matched text)
 where = defaultdict(set)          # class -> {location}
 
@@ -72,6 +75,8 @@ where = defaultdict(set)          # class -> {location}
 def scan(text, loc):
     for k, rx in CLASSES.items():
         for m in rx.finditer(text):
+            if k != 'forbidden list' and any(a.search(m.group(0)) for a in ALLOW):
+                continue
             hits[k][m.group(0)] += 1
             if len(where[k]) < 400:
                 where[k].add(loc)
