@@ -206,6 +206,16 @@ describe('cf_api', () => {
     expect(JSON.parse(out.content[0].text)).toMatchObject({ status: 204, body: null });
   });
 
+  // trinity R2 (fable): a string where the parts list belongs would match by substring.
+  it('refuses a cloudflare.parts that is not a list of strings', async () => {
+    writeConfig({ token: { $secret: 'cf-dev2' }, zones: { 'dev2.example': ZONE }, parts: 'logpush_access' });
+    const { fetch, calls } = cloudflare();
+    await expect(
+      handleCfApi({ server: 'dev2', method: 'GET', path: `/zones/${ZONE}/access/apps` }, fetch),
+    ).rejects.toThrow(/parts must be a list/);
+    expect(calls).toEqual([]);
+  });
+
   it('says a write that got no answer may have been made', async () => {
     const { fetch } = cloudflare({ throws: true });
     await expect(

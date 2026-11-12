@@ -790,6 +790,11 @@ function envCloudflare(server: unknown): { name: string; config: ServerConfig; c
   if (!cloudflare || typeof cloudflare.token !== 'string' || !zonesOk) {
     throw new Error(`Server ${server} has no cloudflare section (token and zones of 32-hex IDs)`);
   }
+  // A string where a list belongs would match by substring (`"logpush_access"` → `access`): refuse the section.
+  const parts = cloudflare.parts;
+  if (parts !== undefined && !(Array.isArray(parts) && parts.every((p) => typeof p === 'string'))) {
+    throw new Error(`Server ${server}: cloudflare.parts must be a list of strings`);
+  }
   return { name: server, config: config[server], cloudflare };
 }
 
