@@ -370,7 +370,14 @@ describe('approve and merge', () => {
       expect(dismissed).toEqual(['12']);
 
       const full = Array.from({ length: 100 }, (_, i) => ({ id: i, user: { login: 'x' }, state: 'COMMENTED' }));
-      for (const list of [full, { message: 'not a list' }]) {
+      // trinity R4 (astra, grok): a full page with an older matching approval on it is still unknown.
+      const fullWithOld = [{ id: 1, user: { login: 'env-bot' }, state: 'APPROVED', commit_id: SHA }, ...full.slice(1)];
+      // The token's latest review must itself be the approval: a later comment supersedes an older approval.
+      const superseded = [
+        { id: 1, user: { login: 'env-bot' }, state: 'APPROVED', commit_id: SHA },
+        { id: 2, user: { login: 'env-bot' }, state: 'COMMENTED', commit_id: SHA },
+      ];
+      for (const list of [full, fullWithOld, superseded, { message: 'not a list' }]) {
         const { fetch } = fakeFetch({
           'POST /repos/acme/app/pulls/7/reviews': drop,
           'GET /user': { login: 'env-bot' },
@@ -398,9 +405,25 @@ describe('approve and merge', () => {
       });
       expect(await merge(merged.fetch, config, 'acme/app', 7, SHA, 'develop', 'merge')).toBe('c'.repeat(40));
 
+      // trinity R4 (grok): merged, but not the head or base this call merged — not this merge.
+      for (const after of [
+        { ...PULL, base: { ref: 'main' }, merged: true, merge_commit_sha: 'c'.repeat(40) },
+        { ...PULL, head: { sha: OTHER }, merged: true, merge_commit_sha: 'c'.repeat(40) },
+        { ...PULL, merged: true, merge_commit_sha: null },
+      ]) {
+        let n = 0;
+        const other = fakeFetch({
+          'GET /repos/acme/app/pulls/7': () => (++n === 1 ? PULL : after),
+          'PUT /repos/acme/app/pulls/7/merge': drop,
+        });
+        await expect(merge(other.fetch, config, 'acme/app', 7, SHA, 'develop', 'merge')).rejects.toBeInstanceOf(
+          OutcomeUnknownError,
+        );
+      }
+
       const open = fakeFetch({ 'GET /repos/acme/app/pulls/7': PULL, 'PUT /repos/acme/app/pulls/7/merge': drop });
       await expect(merge(open.fetch, config, 'acme/app', 7, SHA, 'develop', 'merge')).rejects.toThrow(
-        /not merged yet.*check/,
+        /not seen merged.*check/,
       );
 
       let n = 0;

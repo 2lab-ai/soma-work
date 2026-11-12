@@ -330,7 +330,7 @@ export async function approve(
 }
 
 /**
- * After an approval that got no answer: this token's latest approval of `sha`. Anything short of finding it —
+ * After an approval that got no answer: this token's latest review, when it is the approval of `sha`. Anything short of that —
  * not seen yet (GitHub may still be applying it), a full page, a malformed list, a failed lookup — is an
  * `OutcomeUnknownError`: the approval may stand.
  */
@@ -348,12 +348,15 @@ async function ownApproval(fetch: Fetch, config: EnvGithubConfig, repo: string, 
     throw unknown('could not be looked up');
   }
   if (login === '' || !Array.isArray(reviews)) throw unknown('the lookup answered something unexpected');
-  const mine = reviews
+  // Reviews come oldest first: a full page may hide the newest one, so nothing on it is proof.
+  if (reviews.length >= 100) throw unknown('the reviews fill a whole page');
+  // The token's latest review of any kind must be this approval; an older approval it superseded is not.
+  const latest = reviews
     .map(obj)
-    .filter((r) => str(obj(r.user).login) === login && r.state === 'APPROVED' && r.commit_id === sha)
+    .filter((r) => str(obj(r.user).login) === login)
     .sort((a, b) => Number(b.id) - Number(a.id))[0];
-  if (mine) return mine;
-  throw unknown(reviews.length >= 100 ? 'is not on the first page of reviews' : 'is not seen yet');
+  if (latest && latest.state === 'APPROVED' && latest.commit_id === sha) return latest;
+  throw unknown('is not seen yet');
 }
 
 /**
@@ -390,9 +393,18 @@ export async function merge(
       `the merge of ${repo}#${number} got no answer and the PR could not be read again: it may be merged — check before retrying`,
     );
   }
-  if (after.merged === true) return str(after.merge_commit_sha);
+  // Merged — and merged as this call asked: the head it pinned, into the base it checked.
+  const mergeSha = str(after.merge_commit_sha);
+  if (
+    after.merged === true &&
+    mergeSha !== '' &&
+    str(obj(after.head).sha) === sha &&
+    str(obj(after.base).ref) === base
+  ) {
+    return mergeSha;
+  }
   // GitHub may still be applying it: not merged yet is not proof it was not made.
   throw new OutcomeUnknownError(
-    `the merge of ${repo}#${number} got no answer and the PR is not merged yet — check before retrying`,
+    `the merge of ${repo}#${number} got no answer and the PR is not seen merged as asked (head, base) — check before retrying`,
   );
 }
