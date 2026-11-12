@@ -248,6 +248,16 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
       expect(checkMcpToolPermission).not.toHaveBeenCalled();
       expect(await run('mcp__server-tools__logs')).toEqual({ continue: true });
     });
+
+    // env-access WU3 (#1211): an environment user's PR approvals and merges are an admin's until per-environment
+    // grants exist (WU4, #1212).
+    it('denies a non-admin gh_pr whatever the grants say', async () => {
+      const checkMcpToolPermission = vi.fn(() => null);
+      const run = await mcpHook(makeDeps({ checkMcpToolPermission }));
+      const out = await run('mcp__server-tools__gh_pr');
+      expect(out.hookSpecificOutput?.permissionDecision).toBe('deny');
+      expect(checkMcpToolPermission).not.toHaveBeenCalled();
+    });
   });
 
   describe('environment-skill gate (policy step 6b) in the hook', () => {

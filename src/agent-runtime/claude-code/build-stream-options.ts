@@ -422,14 +422,14 @@ export async function buildStreamOptions(
         handoffContext: slackContext
           ? deps.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs)?.handoffContext
           : deps.sessionRegistry.getSessionByKey(execCtx.sessionKey)?.handoffContext,
-        // Step 4 runs for non-admins only. Host commands (`ssh_exec`, env-access WU2 #1210) are an admin's,
-        // whatever the server-tools grants say; the other tools follow the grants.
+        // Step 4 runs for non-admins only. Host commands (`ssh_exec`, env-access WU2 #1210) and an environment
+        // user's PR approvals and merges (`gh_pr`, WU3 #1211) are an admin's, whatever the server-tools grants
+        // say; the other tools follow the grants.
         checkMcpToolPermission: (name) =>
-          name === SSH_EXEC_TOOL
-            ? SSH_EXEC_ADMIN_ONLY
-            : gatedServerNames.length > 0
-              ? (deps.checkMcpToolPermission(name, policyUser, cachedPermConfig, gatedServerNames) ?? null)
-              : null,
+          ADMIN_ONLY_SERVER_TOOLS.get(name) ??
+          (gatedServerNames.length > 0
+            ? (deps.checkMcpToolPermission(name, policyUser, cachedPermConfig, gatedServerNames) ?? null)
+            : null),
         ...(nativeWriteRoots ? { checkNativeWrite: createNativeWriteCheck(nativeWriteRoots, hookCwd) } : {}),
         checkEnvSkillPermission: (tool, toolInput) =>
           envRegistry
@@ -1041,9 +1041,14 @@ function readIncidentRequest(session: ConversationSession | undefined): Incident
   return assertIncidentRequest(candidate);
 }
 
-/** server-tools' host-command tool (env-access WU2, #1210): admins only. */
-const SSH_EXEC_TOOL = 'mcp__server-tools__ssh_exec';
-const SSH_EXEC_ADMIN_ONLY = 'ssh_exec runs a command on a host and is for admins only.';
+/**
+ * server-tools tools that are an admin's whatever the grants say: host commands (env-access WU2, #1210), and an
+ * environment user's PR approvals and merges (WU3, #1211) until per-environment grants exist (WU4, #1212).
+ */
+const ADMIN_ONLY_SERVER_TOOLS: ReadonlyMap<string, string> = new Map([
+  ['mcp__server-tools__ssh_exec', 'ssh_exec runs a command on a host and is for admins only.'],
+  ['mcp__server-tools__gh_pr', "gh_pr acts on a PR with an environment's own token and is for admins only."],
+]);
 
 /**
  * What no model writes (env-access WU2, #1210), each as written and as the OS resolves it: the

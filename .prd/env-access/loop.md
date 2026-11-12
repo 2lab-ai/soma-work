@@ -13,7 +13,8 @@ ssot = [`ssot.md`](ssot.md)
 | WU0 | 설계 문서 | ✅ | #1208 | `docs/env-access-prd` (PR #1215 머지) | `.prd/23-25`, `.prd/env-access/` | PR 머지 |
 | WU1 | 비밀 저장소 + 전원 거부 + fail-closed 샌드박스 | ✅ | #1209 | `feat/env-access-secrets` (PR #1218 머지, dev 배포·실측 2026-11-12) | 25 §5 WU1 | 25 §5 WU1 + dev 실측 |
 | WU2 | 어드민 샌드박스 프로필 + 어드민 쓰기 경계 + ssh는 MCP로만 | ✅ | #1210 | `feat/env-access-admin-sandbox` (PR #1240 머지, dev v0.3.32 배포·실측 2026-11-13 — 결과는 #1210 댓글) | 25 §5 WU2 + #1218 리뷰가 넘긴 두 길(`sandbox off` Bash, 배포 설정 쓰기) | 25 §5 WU2 + 두 길의 적대적 테스트 |
-| WU3 | 환경 사용자 + 환경 도구 `gh` · `login` | 🔴 | #1211 | — | 25 §5 WU3 | 25 §5 WU3 |
+| WU3a | 환경 사용자(`envUser`) + `gh_pr`(view·approve·merge) + 감사 원장 + 비어드민 거부 | 🟡 | #1211 | `feat/env-access-env-users` | 25 §5 WU3 중 gh·원장 | 조건 충족 PR만 승인·머지, 원장 의도→결과, dev 실측 |
+| WU3b | `login`(환경 계정 → 세션) + `$env:<id>:<skill>` 호출·환경 사용자 스킬 저장소 | 🔴 | #1211 | — | 25 §5 WU3 나머지 | `login` 세션으로 환경 API 200, `$env:` 스킬 실행 |
 | WU4 | 환경 grant + 4버튼 + 정책 단계 | 🔴 | #1212 | — | 25 §5 WU4 | 25 §5 WU4 |
 | WU5 | 배포·QA 스킬 이전 + 배포 → QA 연결 | 🔴 | #1213 | — | 25 §5 WU5 | 25 §5 WU5 |
 | WU6 | 브로커 제거 | 🔴 | #1214 | — | 25 §5 WU6 | 25 §5 WU6 |

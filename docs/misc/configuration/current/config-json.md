@@ -269,6 +269,58 @@ Every string value above accepts `${VAR}` substitution. Keep DB passwords out of
 }
 ```
 
+### Environment user and `gh_pr` (env-access WU3, #1211)
+
+A server entry can stand for an environment that acts as its own user: `envUser` names it, and `github` gives it the
+environment's own GitHub token and what it may approve and merge. The token is a `{"$secret": "<name>"}` reference into
+the secret store (`<config dir>/secrets/<name>`); server-tools reads it outside every model sandbox and no model sees it.
+
+```jsonc
+{
+  "server-tools": {
+    "dev2": {
+      "envUser": "env:acme-dev2",
+      "ssh": { "host": "dev2" },
+      "github": {
+        "token": { "$secret": "gh-org-admin" },
+        "repos": ["acme/app"],
+        "approveWhen": { "authors": ["soma-bot[bot]"], "bases": ["develop"] },
+        "mergeWhen": { "authors": ["soma-bot[bot]"], "bases": ["develop"] },
+        "mergeMethods": ["merge", "squash"],
+        "requiredChecks": ["ci"]
+      }
+    }
+  }
+}
+```
+
+| `gh_pr` action | Runs when |
+|---|---|
+| `view` | the repository is one of `repos`. Returns state, author, base, head SHA and checks |
+| `approve` | the PR is open and not a draft, its author is in `approveWhen.authors`, its base in `approveWhen.bases`, every check has reported and is green (unless `requiredChecksGreen` is `false`), and `sha` is still the head. If the head or base changes while the review is posted, the review is dismissed |
+| `merge` | the same conditions under `mergeWhen`, and the method is in `mergeMethods` (default `merge` only). Head and base are read once more right before the merge, which is pinned to `sha` |
+
+`token` must be a `{"$secret": …}` reference; a token written into config.json is ignored and the `github` section is
+left out. Approve and merge refuse to run for a session that names no Slack user. A retarget in the last moment
+before a merge is not caught by the tool — a branch rule on the repository is what keeps the environment's token
+out of branches it must not touch.
+
+`approve` and `merge` write an intent line to `DATA_DIR/env-audit/env-audit.jsonl` before they call GitHub, and a
+`done` or `failed` line after. If the intent cannot be written, nothing is called. If only the outcome cannot be
+written, the tool says the write was made and must not be retried. A write that gets no answer (a dropped
+connection, the 30-second timeout, an unreadable body) is looked up — the environment's own approval at that SHA,
+or whether the PR is merged — and recorded as `done` when found; anything short of that (not seen yet, a lookup
+that fails or answers something unexpected) is recorded as `unknown` and the tool says to check the PR before
+retrying. `authors`, `bases`, `repos` and `mergeMethods` must be
+lists: a string there is refused, since it would match by substring.
+
+"Every check is green" means: each required check has passed, and nothing else on the head is unfinished or red.
+The required checks are `requiredChecks`, else the base branch's protection (its required status checks); when
+neither names any, no PR is green — a check that has not registered yet would otherwise go unseen. A server or
+gateway error (5xx) on approve or merge is treated like no answer: the write is looked up. An approval carries a
+marker unique to the call, so a lost answer is matched to that approval and never to an older one. Each line names the server, the
+`envUser` and the Slack user the session runs for. `gh_pr` is for admins only until per-environment grants land (WU4, #1212).
+
 ## Where the substitution happens in code
 
 - `src/config-env-substitution.ts` — pure substitution + `.env` discovery

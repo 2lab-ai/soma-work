@@ -52,7 +52,7 @@ Slack 유저 ──▶ soma-work 봇 프로세스 (OS 유저 = 봇 유저, 샌�
 | 샌드박스 프로필 | `src/agent-runtime/claude-code/build-stream-options.ts` | `failIfUnavailable: true`, 공통 `denyRead`·`denyWrite`, 어드민 프로필(PR2), 환경 grant가 더하는 도메인·작업 폴더(PR4) |
 | 어드민 토글 | `src/slack/commands/sandbox-handler.ts` · `user-settings-store.ts` | `sandboxDisabled`는 비상용으로만. 켜진 세션은 스레드에 경고 한 줄 |
 | ssh 금지 | `tool-policy.ts` 2단계 | 어드민 면제를 없앤다 → Lean ToolPolicy 모델 변경 (PR2) |
-| 환경 도구 | `packages/mcp-servers/server-tools/server-tools-mcp-server.ts` | 환경 절에 `envUser` · `github` · `web` · `cloudflare` 추가, 도구 `ssh_exec` · `gh` · `login` · `cf_*` 추가, 감사 원장 |
+| 환경 도구 | `packages/mcp-servers/server-tools/server-tools-mcp-server.ts` · `env-github.ts` · `env-audit.ts` | 환경 절에 `envUser` · `github` · `web` · `cloudflare` 추가, 도구 `ssh_exec` · `gh_pr`(WU3a: view·approve·merge, head SHA 고정) · `login` · `cf_*` 추가, 감사 원장 `DATA_DIR/env-audit/env-audit.jsonl`(쓰기 전 의도 → 결과, 의도를 못 쓰면 실행 안 함) |
 | 환경 사용자 | `config.json` server-tools 환경 절의 `envUser: "env:<org>-dev2"` + 스킬 저장소 `DATA_DIR/env-users/<id>/skills/` | 환경 하나 = 설정 한 절. 스킬은 `$env:<id>:<skill>` |
 | 환경 grant | `src/user-skill-grants-store.ts` (예약 소유자 `env-skills` → 환경 사용자 ID로 일반화) · `src/slack/env-skill-permission-*.ts` · `src/slack/actions/env-skill-permission-action-handler.ts` | 4버튼(수락 · 거절 · 이 스킬 항상 · 이 환경 전체 항상), 저장 하나 |
 | 환경 grant 정책 단계 | `tool-policy.ts` (6d 옆, 추가형) | 비어드민의 `mcp__server-tools__*` 호출 → 그 `server` 인자의 환경 사용자 grant 확인. github MCP 쓰기 도구도 grant 필요. Lean 추가형 단계 + Proofs |
@@ -68,9 +68,10 @@ Slack 유저 ──▶ soma-work 봇 프로세스 (OS 유저 = 봇 유저, 샌�
     "databases": { "app": { "type": "mysql", "host": "127.0.0.1", "port": 3306, "user": "app", "password": { "$secret": "dev2-db-app" } } },
     "github": {
       "repos": ["acme/app"],
-      "approver": { "$secret": "gh-org-admin" },
-      "approveWhen": { "author": "bot-app", "base": ["develop"], "requiredChecksGreen": true },
-      "mergeBases": ["develop", "deploy/dev2"]
+      "token": { "$secret": "gh-org-admin" },
+      "approveWhen": { "authors": ["bot-app[bot]"], "bases": ["develop"] },
+      "mergeWhen": { "authors": ["bot-app[bot]"], "bases": ["develop", "deploy/dev2"] },
+      "mergeMethods": ["merge"]
     },
     "web": {
       "domains": ["app.example.test", "bo.app.example.test"],

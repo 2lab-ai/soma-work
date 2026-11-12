@@ -222,7 +222,7 @@ export class McpConfigBuilder {
 
     // Conditionally add server-tools when config.json has server-tools section
     if (this.hasServerToolsConfig()) {
-      internalServers['server-tools'] = this.buildServerToolsServer();
+      internalServers['server-tools'] = this.buildServerToolsServer(slackContext);
     }
 
     // devops-tools relays to the devops broker, which holds the keys and posts the approval cards;
@@ -766,8 +766,10 @@ export class McpConfigBuilder {
   /**
    * Build server-tools MCP server configuration
    */
-  private buildServerToolsServer(): Record<string, any> {
+  private buildServerToolsServer(slackContext?: SlackContext): Record<string, any> {
     const command = this.getInternalServerCommand('server-tools');
+    // The person this session runs for, as Slack signed it — only a well-formed user ID reaches the ledger.
+    const requester = slackContext?.user && /^[UW][A-Z0-9]+$/.test(slackContext.user) ? slackContext.user : undefined;
     return {
       command: command.command,
       args: command.args,
@@ -776,6 +778,10 @@ export class McpConfigBuilder {
         // The secret store its `{"$secret": name}` references resolve from (.prd/25 §2). The server
         // runs outside every model sandbox; the models are denied this directory.
         SOMA_SECRETS_DIR: SECRETS_DIR,
+        // Where an environment user's writes (gh_pr approve/merge) are audited (env-access WU3, #1211). Under
+        // DATA_DIR, which no model session writes.
+        SOMA_AUDIT_DIR: path.join(DATA_DIR, 'env-audit'),
+        ...(requester ? { SOMA_REQUESTER: requester } : {}),
       },
     };
   }
