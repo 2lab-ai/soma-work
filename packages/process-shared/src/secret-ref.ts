@@ -88,7 +88,7 @@ function resolve(value: unknown, secretsDir: string | undefined): unknown {
   if (Array.isArray(value)) return value.map((item) => resolve(item, secretsDir));
   if (value !== null && typeof value === 'object') {
     // A `$secret` key in any other shape is a reference written wrong — never pass it through as data.
-    if (Object.hasOwn(value, '$secret')) throw new SecretRefError('malformed secret reference');
+    if (Object.keys(value).includes('$secret')) throw new SecretRefError('malformed secret reference');
     const out: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value)) out[key] = resolve(item, secretsDir);
     return out;
