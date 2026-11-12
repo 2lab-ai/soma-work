@@ -27,6 +27,7 @@ SLUG=${1:?usage: swap.sh OWNER/REPO}
 case $SLUG in */*) ;; *) echo "swap.sh: expected OWNER/REPO, got '$SLUG'" >&2; exit 2;; esac
 REPO=${SLUG#*/}
 WORK=${CHOS_WORK:?set CHOS_WORK to this run folder}
+WORK=$(cd "$WORK" 2>/dev/null && pwd) || { echo "$(basename "$0"): run folder $CHOS_WORK does not exist" >&2; exit 2; }
 SCRIPTS=$(cd "$(dirname "$0")" && pwd)
 OUT=$WORK/out/$REPO
 NEW=$OUT/new.git
@@ -35,6 +36,9 @@ REVIEW=${CHOS_REVIEW_BRANCH:-main-rewritten}
 URL=${SWAP_URL:-https://github.com/$SLUG.git}
 [ -d "$NEW" ] || { echo "swap.sh: run rewrite.sh $SLUG first" >&2; exit 1; }
 
+# Rewrites the value of refs/heads/<main> in "<sha> <ref>" lines. Branch names travel in the
+# environment, never inside a program text.
+with_main() { M="refs/heads/$MAIN" T=$1 awk '$2 == ENVIRON["M"] { $1 = ENVIRON["T"] } { print }'; }
 remote_refs() {
   git ls-remote "$URL" 'refs/heads/*' 'refs/tags/*' | grep -v '\^{}$' | grep -v " *refs/heads/$REVIEW\$" \
     | awk '{print $1" "$2}' | sort
@@ -57,7 +61,7 @@ while [ ! -e "$OUT/swapped" ]; do
   mine=$(git -C "$NEW" for-each-ref --format='%(objectname) %(refname)' refs/heads refs/tags | sort)
   top=$(git -C "$NEW" rev-parse "refs/post/$MAIN")
   if [ "$mine" = "$(cat "$OUT/remote-now.refs")" ] \
-     || [ "$(printf '%s\n' "$mine" | sed "s|^[0-9a-f]* refs/heads/$MAIN\$|$top refs/heads/$MAIN|" | sort)" = "$(cat "$OUT/remote-now.refs")" ]; then
+     || [ "$(printf '%s\n' "$mine" | with_main "$top" | sort)" = "$(cat "$OUT/remote-now.refs")" ]; then
     echo "    the remote already holds this rewrite (an earlier push completed): resuming"
     date > "$OUT/swapped"
     break
@@ -114,18 +118,43 @@ else
 fi
 
 echo "==> 4. top commit on $MAIN"
-git -C "$NEW" push "$URL" "refs/post/$MAIN:refs/heads/$MAIN"
+TOP=$(git -C "$NEW" rev-parse "refs/post/$MAIN")
+git -C "$NEW" fetch -q "$URL" "+refs/heads/$MAIN:refs/swap-check/main" 2>/dev/null || true
+if git -C "$NEW" merge-base --is-ancestor "$TOP" refs/swap-check/main 2>/dev/null; then
+  echo "    $MAIN already contains it"   # a resumed run, possibly after $MAIN moved on
+else
+  git -C "$NEW" push "$URL" "refs/post/$MAIN:refs/heads/$MAIN"
+fi
 
 echo "==> 5. verify the remote"
-git -C "$NEW" for-each-ref --format='%(objectname) %(refname)' refs/heads refs/tags \
-  | sed "s|^[0-9a-f]* refs/heads/$MAIN\$|$(git -C "$NEW" rev-parse "refs/post/$MAIN") refs/heads/$MAIN|" | sort > "$OUT/expected.refs"
+git -C "$NEW" for-each-ref --format='%(objectname) %(refname)' refs/heads refs/tags | with_main "$TOP" | sort > "$OUT/expected.refs"
 remote_refs > "$OUT/remote-after.refs"
 if diff -q "$OUT/expected.refs" "$OUT/remote-after.refs" >/dev/null; then
   echo "    remote matches the rewritten repo ($(wc -l < "$OUT/expected.refs" | tr -d ' ') refs)"
 else
-  echo "    MISMATCH:"; { diff "$OUT/expected.refs" "$OUT/remote-after.refs" || true; } | head -20; exit 1
+  # Refs that moved or appeared after the replacement (a resumed run, people pushing on the new
+  # history) are fine; a ref whose history holds a commit of the original history is not.
+  git -C "$NEW" fetch -q "$URL" '+refs/heads/*:refs/swap-check/heads/*' '+refs/tags/*:refs/swap-check/tags/*'
+  exp=(); while read -r sha _; do exp+=("^$sha"); done < "$OUT/expected.refs"
+  bad=0 moved=0
+  while read -r sha ref; do
+    grep -qxF "$sha $ref" "$OUT/expected.refs" && continue
+    moved=$((moved + 1))
+    if git -C "$NEW" rev-list "$sha" ${exp[@]+"${exp[@]}"} | git -C "$OUT/orig.git" cat-file --batch-check='%(objecttype)' \
+         | grep -qx commit; then
+      echo "    $ref ${sha:0:12} carries commits of the original history"; bad=$((bad + 1))
+    fi
+  done < "$OUT/remote-after.refs"
+  git -C "$NEW" for-each-ref --format='delete %(refname)' refs/swap-check | git -C "$NEW" update-ref --stdin
+  if [ "$bad" -gt 0 ]; then
+    echo "    MISMATCH:"; { diff "$OUT/expected.refs" "$OUT/remote-after.refs" || true; } | head -20; exit 1
+  fi
+  echo "    remote holds the rewritten history; $moved ref(s) moved or appeared since, all on the new history"
 fi
-git -C "$NEW" push -q "$URL" --delete "$REVIEW" 2>/dev/null && echo "    deleted $REVIEW" || true
+if git ls-remote --exit-code "$URL" "refs/heads/$REVIEW" >/dev/null 2>&1; then
+  git -C "$NEW" push -q "$URL" --delete "$REVIEW" && echo "    deleted $REVIEW" \
+    || { echo "swap.sh: could not delete the review branch $REVIEW — delete it by hand" >&2; exit 1; }
+fi
 
 echo "==> 6. resume workflows"
 trap - EXIT

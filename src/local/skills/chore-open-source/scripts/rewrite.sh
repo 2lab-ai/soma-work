@@ -28,6 +28,7 @@ SLUG=${1:?usage: rewrite.sh OWNER/REPO}
 case $SLUG in */*) ;; *) echo "rewrite.sh: expected OWNER/REPO, got '$SLUG'" >&2; exit 2;; esac
 REPO=${SLUG#*/}
 WORK=${CHOS_WORK:?set CHOS_WORK to this run folder}
+WORK=$(cd "$WORK" 2>/dev/null && pwd) || { echo "$(basename "$0"): run folder $CHOS_WORK does not exist" >&2; exit 2; }
 SCRIPTS=$(cd "$(dirname "$0")" && pwd)
 CFG=$WORK/config
 OUT=$WORK/out/$REPO

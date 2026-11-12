@@ -192,6 +192,65 @@ esac
     expect(remote.stdout).toMatch(/INCOMPLETE — \d+ read\(s\) failed/);
   });
 
+  it('recon: submitted review bodies are read, and a blob over CHOS_MAX_BLOB makes it incomplete', () => {
+    const d = mkdtempSync(join(scratch, 'recon-gh-'));
+    const genv = {
+      ...process.env,
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_AUTHOR_NAME: 'a',
+      GIT_AUTHOR_EMAIL: 'a@example.com',
+      GIT_COMMITTER_NAME: 'a',
+      GIT_COMMITTER_EMAIL: 'a@example.com',
+    };
+    run(
+      'bash',
+      [
+        '-c',
+        'git init -q --bare -b main remote.git && git init -q -b main seed && cd seed && echo hello > a.txt && git add -A && git commit -q -m init && git push -q ../remote.git main',
+      ],
+      { cwd: d, env: genv },
+    );
+    mkdirSync(join(d, 'bin'));
+    // Answers every read recon makes; the only private text is in a submitted review's body.
+    writeFileSync(
+      join(d, 'bin', 'gh'),
+      `#!/usr/bin/env bash
+case "$*" in
+  "repo view"*) echo '{"visibility":"PUBLIC"}' ;;
+  *"/actions/secrets"*) echo '{"secrets":[]}' ;;
+  *"/actions/variables"*) echo '{"variables":[]}' ;;
+  *"/issues?state=all"*) echo '[[{"number":7,"title":"t","body":"","pull_request":{}}]]' ;;
+  *"/pulls/7/reviews"*) echo '[[{"id":9,"body":"approved on secret-host-a"}]]' ;;
+  "api "*) echo '[[]]' ;;
+  *) echo "stub gh: $*" >&2; exit 1 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    mkdirSync(join(d, 'config'));
+    writeFileSync(join(d, 'config', 'patterns.txt'), 'secret-host-a\n');
+    const env = {
+      ...process.env,
+      PATH: `${join(d, 'bin')}:${process.env.PATH}`,
+      CHOS_WORK: d,
+      CHOS_URL: join(d, 'remote.git'),
+    };
+    const r = run('python3', ['-I', '-B', resolve(SCRIPTS, 'recon.py'), 'o/r'], { env });
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(readFileSync(join(d, 'recon', 'r.md'), 'utf8')).toMatch(/at github review on #7/);
+    const big = run('python3', ['-I', '-B', resolve(SCRIPTS, 'recon.py'), 'o/r', '--no-github'], {
+      env: { ...env, CHOS_MAX_BLOB: '2' },
+    });
+    expect(big.status, big.stdout + big.stderr).toBe(3);
+    expect(big.stdout).toMatch(/a\.txt \(blob [0-9a-f]+, 6 bytes\) is over CHOS_MAX_BLOB/);
+  });
+
+  it('swap keeps branch names out of program text (sed/awk scripts)', () => {
+    const swap = readFileSync(resolve(SCRIPTS, 'swap.sh'), 'utf8');
+    expect(swap).not.toMatch(/sed [^\n]*\$MAIN/);
+    expect(swap).not.toMatch(/awk [^\n]*\$MAIN/);
+  });
+
   it('the engine carries no organisation of its own', () => {
     for (const f of readdirSync(SCRIPTS).filter((n) => /\.(sh|py)$/.test(n))) {
       expect(readFileSync(resolve(SCRIPTS, f), 'utf8'), f).not.toMatch(/2lab-ai/);
@@ -317,6 +376,23 @@ describe.skipIf(!hasFilterRepo)('local:chore-open-source — offline run of the 
     expect(list).not.toMatch(/^[0-9a-f]{40}/m);
   });
 
+  it('a relative CHOS_WORK works (the run folder is resolved before any cd)', () => {
+    workDir('work-rel', `${W}\n`, 'remote-sym.git');
+    const r = shAt(`"${SCRIPTS}/rewrite.sh" o/sym`, { CHOS_WORK: 'work-rel', CHOS_URL: join(T, 'remote-sym.git') });
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/^scan: clean$/m);
+  });
+
+  it('find-clones reaches a repository through a linked worktree alone (.git file)', () => {
+    sh(`set -e
+      mkdir -p gh/o fc-root outside
+      git clone -q --bare remote.git gh/o/r.git
+      git clone -q gh/o/r.git outside/r
+      git -C outside/r worktree add -q "${join(T, 'fc-root', 'wt-r')}" -b wt-only`);
+    const out = shAt(`"${SCRIPTS}/find-clones.sh" o/r "${join(T, 'fc-root')}"`, workDir('work', `${W}\n`)).stdout;
+    expect(out).toMatch(/clones of o\/r: 1,/);
+  });
+
   it('a local-only merge whose resolution adds a forbidden word is refused, not rebuilt', () => {
     const chos = workDir('work', `${W}\nleakword\n`);
     const r = shAt(`python3 -I -B "${SCRIPTS}/migrate-clone.py" o/r "${join(T, 'clone3')}" --apply`, chos);
@@ -337,5 +413,15 @@ describe.skipIf(!hasFilterRepo)('local:chore-open-source — offline run of the 
         'git -C wt-conflict rev-parse HEAD; git -C wt-conflict status --porcelain; cat wt-conflict/app.conf; git -C wt-conflict diff --cached',
       ),
     ).toBe(before);
+  });
+
+  it('a resumed swap accepts a main that moved on after the replacement (runs last: it moves main)', () => {
+    sh(`set -e
+      git clone -q remote.git after && cd after && echo next > next.txt && git add -A && git commit -q -m "after the swap"
+      git push -q origin main`);
+    const r = shAt(`"${SCRIPTS}/swap.sh" o/r`, workDir('work', `${W}\n`));
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/main already contains it/);
+    expect(r.stdout).toMatch(/1 ref\(s\) moved or appeared since, all on the new history/);
   });
 });

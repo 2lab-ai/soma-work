@@ -10,17 +10,22 @@ case $SLUG in */*) ;; *) echo "find-clones.sh: expected OWNER/REPO, got '$SLUG'"
 shift
 SCRIPTS=$(cd "$(dirname "$0")" && pwd)
 [ $# -gt 0 ] || set -- "$HOME" "${TMPDIR:-/tmp}" /tmp
-bad=0 n=0
+bad=0 n=0 seen=" "
 while IFS= read -r g; do
   d=${g%/.git}
   u=$(git -C "$d" config --get remote.origin.url 2>/dev/null) || continue
   case "$u" in *"$SLUG" | *"$SLUG".git | *"$SLUG"/) ;; *) continue;; esac
+  # A linked worktree (.git file) shares refs with its main repository: check each repository once,
+  # but find it from any of its checkouts — a main repository outside the roots still counts.
+  common=$(git -C "$d" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || continue
+  case "$seen" in *" $common "*) continue;; esac
+  seen="$seen$common "
   n=$((n + 1))
   if out=$(python3 -I "$SCRIPTS/migrate-clone.py" "$SLUG" "$d" --check 2>&1); then
     echo "clean  $d"
   else
     bad=$((bad + 1)); echo "OLD    $d"; printf '%s\n' "$out" | sed 's/^/       /' | head -6
   fi
-done < <(for root in "$@"; do find "$root" -maxdepth 4 -name .git -type d -not -path '*/Library/*' 2>/dev/null; done | sort -u)
+done < <(for root in "$@"; do find "$root" -maxdepth 4 -name .git \( -type d -o -type f \) -not -path '*/Library/*' 2>/dev/null; done | sort -u)
 echo "clones of $SLUG: $n, still on the old history or with pattern hits: $bad"
 [ "$bad" -eq 0 ]

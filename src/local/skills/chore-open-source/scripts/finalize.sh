@@ -11,6 +11,7 @@
 set -euo pipefail
 [ $# -ge 1 ] || { echo "usage: finalize.sh OWNER/REPO..." >&2; exit 2; }
 WORK=${CHOS_WORK:?set CHOS_WORK to this run folder}
+WORK=$(cd "$WORK" 2>/dev/null && pwd) || { echo "$(basename "$0"): run folder $CHOS_WORK does not exist" >&2; exit 2; }
 MAIN=${CHOS_MAIN:-main}
 TRIES=${CHOS_POLL_TRIES:-40}
 SECS=${CHOS_POLL_SECS:-10}

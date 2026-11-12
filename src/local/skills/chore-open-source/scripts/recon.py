@@ -30,7 +30,7 @@ slug = sys.argv[1]
 repo = slug.split('/', 1)[1]
 ocr = '--ocr' in sys.argv
 github = '--no-github' not in sys.argv
-work = pathlib.Path(os.environ.get('CHOS_WORK') or sys.exit('recon.py: set CHOS_WORK to the run folder'))
+work = pathlib.Path(os.environ.get('CHOS_WORK') or sys.exit('recon.py: set CHOS_WORK to the run folder')).resolve()
 url = os.environ.get('CHOS_URL') or f'https://github.com/{slug}.git'
 rdir = work / 'recon'
 rdir.mkdir(parents=True, exist_ok=True)
@@ -101,7 +101,22 @@ for l in git('rev-list', '--objects', '--all').splitlines():
         first_path.setdefault(oid, p)
 check = subprocess.run(['git', '-C', str(mirror), 'cat-file', '--batch-check=%(objectname) %(objecttype) %(objectsize)'],
                        input='\n'.join(first_path) + '\n', capture_output=True, text=True).stdout.split('\n')
-blobs = [f[0] for f in (l.split() for l in check) if len(f) == 3 and f[1] == 'blob' and int(f[2]) < 20_000_000]
+MEDIA = re.compile(r'\.(png|jpe?g|gif|webp|bmp|tiff?|mp4|mov|webm|mkv|pdf)$', re.I)
+MAX_BLOB = int(os.environ.get('CHOS_MAX_BLOB') or 200_000_000)
+BATCH = min(20_000_000, MAX_BLOB + 1)   # blobs read 400 at a time; larger ones one by one
+sized = [(f[0], int(f[2])) for f in (l.split() for l in check) if len(f) == 3 and f[1] == 'blob']
+blobs = [o for o, n in sized if n < BATCH]
+for oid, n in sized:
+    if n < BATCH:
+        continue
+    if n > MAX_BLOB:
+        # Media goes through OCR below; any other file this large is unread, not clean.
+        if not MEDIA.search(first_path[oid]):
+            incomplete.append(f'history: {first_path[oid]} (blob {oid[:10]}, {n} bytes) is over CHOS_MAX_BLOB and was not scanned')
+        continue
+    data = git('cat-file', 'blob', oid, binary=True)
+    if b'\0' not in data[:8000]:
+        scan(data.decode('utf-8', 'replace'), f'{first_path[oid]} (blob {oid[:10]})')
 for i in range(0, len(blobs), 400):
     chunk = blobs[i:i + 400]
     out = subprocess.run(['git', '-C', str(mirror), 'cat-file', '--batch'], input=('\n'.join(chunk) + '\n').encode(),
@@ -137,7 +152,6 @@ for p in paths:
     scan(p, 'path names')
 
 # ---- media ---------------------------------------------------------------------------------
-MEDIA = re.compile(r'\.(png|jpe?g|gif|webp|bmp|tiff?|mp4|mov|webm|mkv|pdf)$', re.I)
 media = {}
 for l in git('rev-list', '--objects', '--all').splitlines():
     if ' ' in l and MEDIA.search(l.split(' ', 1)[1]):
@@ -222,11 +236,18 @@ if github and shutil.which('gh'):
     gh['forks'] = [f['full_name'] for f in ghpages(f'repos/{slug}/forks')]
     gh['secrets'] = [s['name'] for s in ((ghj('api', f'repos/{slug}/actions/secrets') or {}).get('secrets') or [])]
     gh['variables'] = [s['name'] for s in ((ghj('api', f'repos/{slug}/actions/variables') or {}).get('variables') or [])]
+    prs = []
     for kind, path in (('issue/PR', 'issues?state=all&per_page=100'), ('issue/PR comment', 'issues/comments?per_page=100'),
                        ('review comment', 'pulls/comments?per_page=100'), ('commit comment', 'comments?per_page=100'),
                        ('release', 'releases?per_page=100')):
         for item in ghpages(f'repos/{slug}/{path}'):
             scan(' '.join(str(item.get(k) or '') for k in ('title', 'name', 'body')), f'github {kind} {item.get("number") or item.get("id")}')
+            if kind == 'issue/PR' and 'pull_request' in item:
+                prs.append(item['number'])
+    # A submitted review's own body is not a review comment: read each pull request's reviews.
+    for n in prs:
+        for rv in ghpages(f'repos/{slug}/pulls/{n}/reviews?per_page=100'):
+            scan(str(rv.get('body') or ''), f'github review on #{n} ({rv.get("id")})')
     gh['assets'] = 0
     for rel in ghpages(f'repos/{slug}/releases'):
         for a in rel.get('assets') or []:

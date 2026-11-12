@@ -40,7 +40,7 @@ mode = (sys.argv[3] if len(sys.argv) > 3 else '--check').lstrip('-')
 if mode not in ('check', 'plan', 'apply'):
     sys.exit(f'migrate-clone.py: unknown mode {sys.argv[3]}')
 repo = slug.split('/', 1)[1]
-work = pathlib.Path(os.environ.get('CHOS_WORK') or sys.exit('migrate-clone.py: set CHOS_WORK to the run folder'))
+work = pathlib.Path(os.environ.get('CHOS_WORK') or sys.exit('migrate-clone.py: set CHOS_WORK to the run folder')).resolve()
 out = work / 'out' / repo
 fr = out / 'new.git' / 'filter-repo'
 if not (fr / 'commit-map').is_file():
@@ -223,8 +223,11 @@ def move_worktree(wt, old, target, label, detach):
     stash = ''
     if git('status', '--porcelain', '--untracked-files=no', cwd=wt).strip():
         (bdir / f'edits-{label.replace("/", "_")}.patch').write_text(git('diff', 'HEAD', '--binary', cwd=wt))
+        before = git('rev-parse', '-q', '--verify', 'refs/stash', cwd=wt, check=False).strip()
         git('stash', 'push', '-q', '-m', f'migrate-clone: edits of {label}', cwd=wt)
-        stash = git('rev-parse', 'stash@{0}', cwd=wt).strip()
+        after = git('rev-parse', '-q', '--verify', 'refs/stash', cwd=wt, check=False).strip()
+        # `stash push` can save nothing and still succeed; then stash@{0} is someone else's stash.
+        stash = after if after and after != before else ''
     go = ['checkout', '-q', '--detach', target] if detach else ['reset', '-q', '--keep', target]
     if subprocess.run(['git', '-C', wt, *go]).returncode:
         if stash:
