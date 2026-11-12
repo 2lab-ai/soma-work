@@ -229,6 +229,73 @@ describe('login', () => {
     expect(JSON.parse(out.content[0].text).token).toBe('fresh');
   });
 
+  // trinity R3 (fable): residuals — an array of logins, a 2xx where a redirect is expected, a login page at `/`.
+  it('drops an array of logins, refuses a 2xx where a redirect is expected, and allows a login page at /', async () => {
+    fs.writeFileSync(
+      CONFIG_FILE,
+      JSON.stringify({
+        'server-tools': {
+          dev2: {
+            envUser: 'env:acme-dev2',
+            web: { logins: [{ url: 'https://bo.example.test/login', body: { pw: 'hunter2' }, token: 'cookie:S' }] },
+          },
+        },
+      }),
+    );
+    resetConfigCache();
+    loadConfig();
+    const none = web({ setCookie: ['S=1'] });
+    await expect(handleLogin({ server: 'dev2', account: '0' }, none.fetch)).rejects.toThrow(
+      /no (web logins|login named 0)/,
+    );
+    expect(none.calls).toEqual([]);
+
+    writeConfig({
+      bo: {
+        url: 'https://bo.example.test/login',
+        body: { pw: { $secret: 'dev2-player' } },
+        token: 'cookie:S',
+        successRedirect: '/home',
+      },
+      rootLogin: {
+        url: 'https://bo.example.test/',
+        body: { pw: { $secret: 'dev2-player' } },
+        token: 'cookie:S',
+        successRedirect: '/',
+      },
+    });
+    await expect(handleLogin({ server: 'dev2', account: 'bo' }, web({ setCookie: ['S=anon'] }).fetch)).rejects.toThrow(
+      /answered 200, not the redirect successRedirect expects/,
+    );
+    const ok = web({ status: 303, setCookie: ['S=live'], location: '/' });
+    expect(
+      JSON.parse((await handleLogin({ server: 'dev2', account: 'rootLogin' }, ok.fetch)).content[0].text).token,
+    ).toBe('live');
+  });
+
+  // trinity R3 (astra): Max-Age wins over Expires; a secret nested in a JSON body counts.
+  it('takes Max-Age over Expires, and keeps a login whose secret is nested in its JSON body', async () => {
+    const live = web({ setCookie: ['SESSION=fresh; Max-Age=3600; Expires=Thu, 01 Jan 1970 00:00:00 GMT'] });
+    expect(
+      JSON.parse((await handleLogin({ server: 'dev2', account: 'admin' }, live.fetch)).content[0].text).token,
+    ).toBe('fresh');
+    const gone = web({ setCookie: ['SESSION=x; Max-Age=0; Expires=Fri, 01 Jan 2100 00:00:00 GMT'] });
+    await expect(handleLogin({ server: 'dev2', account: 'admin' }, gone.fetch)).rejects.toThrow(/no session token/);
+
+    writeConfig({
+      nested: {
+        url: 'https://app.example.test/api/login',
+        body: { credentials: { username: 'qa', password: { $secret: 'dev2-player' } } },
+        token: 'json:token',
+      },
+    });
+    const { fetch, calls } = web({ json: { token: 't-1' } });
+    expect(JSON.parse((await handleLogin({ server: 'dev2', account: 'nested' }, fetch)).content[0].text).token).toBe(
+      't-1',
+    );
+    expect(JSON.parse(calls[0].body ?? '{}')).toEqual({ credentials: { username: 'qa', password: PASSWORD } });
+  });
+
   it('leaves out a login whose body names no secret: a password in config.json is not used', async () => {
     writeConfig({
       inline: { url: 'https://bo.example.test/login', body: { id: 'qa', pw: 'hunter2' }, token: 'cookie:S' },

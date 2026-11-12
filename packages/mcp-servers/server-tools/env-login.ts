@@ -98,17 +98,18 @@ function fromJson(json: unknown, path: string): string | undefined {
 /** A `Set-Cookie` that deletes its cookie: an empty value, `Max-Age` of zero or less, or an `Expires` already past. */
 function deletes(value: string, attributes: string[], now: number): boolean {
   if (value === '') return true;
+  let maxAge: number | undefined;
+  let expires: number | undefined;
   for (const attribute of attributes) {
     const eq = attribute.indexOf('=');
     const key = (eq < 0 ? attribute : attribute.slice(0, eq)).trim().toLowerCase();
     const raw = eq < 0 ? '' : attribute.slice(eq + 1).trim();
-    if (key === 'max-age' && /^-?\d+$/.test(raw) && Number(raw) <= 0) return true;
-    if (key === 'expires') {
-      const at = Date.parse(raw);
-      if (!Number.isNaN(at) && at <= now) return true;
-    }
+    if (key === 'max-age' && /^-?\d+$/.test(raw)) maxAge = Number(raw);
+    if (key === 'expires' && !Number.isNaN(Date.parse(raw))) expires = Date.parse(raw);
   }
-  return false;
+  // A valid Max-Age wins over Expires (RFC 6265 §5.3).
+  if (maxAge !== undefined) return maxAge <= 0;
+  return expires !== undefined && expires <= now;
 }
 
 /** The value the answer leaves for cookie `name`: the last `Set-Cookie` for it wins, and a deletion leaves none. */
@@ -143,9 +144,11 @@ function redirectProblem(spec: WebLogin, status: number, location: string | null
   const loginPath = new URL(spec.url).pathname;
   const under = (path: string, root: string) =>
     path === root || path.startsWith(root.endsWith('/') ? root : `${root}/`);
-  // `/` names the root page only; a path under the goal counts, the login page and what is under it never do.
+  // `/` names the root page only; a path under the goal counts, the login page and what is under it never do
+  // (unless the login itself is at `/`, where that would refuse every redirect).
   const arrived = goal === '/' ? target.pathname === '/' : under(target.pathname, goal);
-  if (!arrived || under(target.pathname, loginPath)) return `login to ${host} did not redirect to successRedirect`;
+  const backToLogin = loginPath !== '/' && under(target.pathname, loginPath);
+  if (!arrived || backToLogin) return `login to ${host} did not redirect to successRedirect`;
   return null;
 }
 
@@ -185,6 +188,9 @@ export async function login(fetch: LoginFetch, spec: WebLogin): Promise<LoginSes
   if (redirect) {
     const problem = redirectProblem(spec, res.status, res.location());
     if (problem) throw new LoginError(problem);
+  } else if (cookieSession && spec.successRedirect !== undefined) {
+    // The account says a successful login redirects: a 2xx is the login page shown again.
+    throw new LoginError(`login to ${host} answered ${res.status}, not the redirect successRedirect expects`);
   }
   if (cookieSession) {
     const cookie = spec.token.slice('cookie:'.length);

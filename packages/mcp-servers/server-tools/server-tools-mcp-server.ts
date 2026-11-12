@@ -112,6 +112,13 @@ const configCache = new ConfigCache<ServerToolsConfig>(
  * resolve is left out — never run with a missing password — and only its name and the secret's name
  * are logged.
  */
+/** True when a `{"$secret": …}` reference sits anywhere in `value` (as `resolveSecretRefs` would resolve it). */
+function namesSecret(value: unknown, depth = 0): boolean {
+  if (isSecretRef(value)) return true;
+  if (depth > 32 || !value || typeof value !== 'object') return false;
+  return Object.values(value as Record<string, unknown>).some((v) => namesSecret(v, depth + 1));
+}
+
 /**
  * An environment's web logins keep their password in the secret store (WU3b, #1211): a login whose body names no
  * `{"$secret": …}` is left out, so a password written into config.json is never posted.
@@ -119,12 +126,15 @@ const configCache = new ConfigCache<ServerToolsConfig>(
 function withSecretLogins(name: string, server: unknown): unknown {
   const web = (server as { web?: { logins?: unknown } } | null)?.web;
   const logins = web?.logins;
-  if (!logins || typeof logins !== 'object' || Array.isArray(logins)) return server;
+  if (logins === undefined || logins === null) return server;
+  if (typeof logins !== 'object' || Array.isArray(logins)) {
+    configLogger.warn(`server "${name}": web.logins left out — it must be an object of named logins`);
+    return { ...(server as Record<string, unknown>), web: { ...web, logins: {} } };
+  }
   const kept: Record<string, unknown> = {};
   for (const [account, spec] of Object.entries(logins as Record<string, unknown>)) {
     const body = (spec as { body?: unknown } | null)?.body;
-    const values = body && typeof body === 'object' && !Array.isArray(body) ? Object.values(body) : [];
-    if (values.some(isSecretRef)) kept[account] = spec;
+    if (namesSecret(body)) kept[account] = spec;
     else
       configLogger.warn(`server "${name}": login "${account}" left out — its body must name a {"$secret": "<name>"}`);
   }
@@ -832,7 +842,8 @@ export async function handleLogin(args: Record<string, unknown>, fetchImpl: Logi
   if (typeof server !== 'string' || !Object.keys(config).includes(server)) throw new Error(`Unknown server: ${server}`);
   if (typeof account !== 'string' || account === '') throw new Error('account is required');
   const logins = config[server].web?.logins;
-  if (!logins || typeof logins !== 'object') throw new Error(`Server ${server} has no web logins`);
+  if (!logins || typeof logins !== 'object' || Array.isArray(logins))
+    throw new Error(`Server ${server} has no web logins`);
   if (!Object.keys(logins).includes(account)) throw new Error(`Server ${server} has no login named ${account}`);
   const env = config[server];
   try {
