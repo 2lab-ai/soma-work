@@ -113,8 +113,13 @@ on app_mention(event) with event.thread_ts:
     // 경로 1과 동일한 전처리
     ...
     // 원본 스레드의 linked session 조회 — event-router.ts:166-174
-    linked := findSessionBySourceThread(event.channel, event.thread_ts)
-    if linked: post linked session card to thread; return   // 중복 생성 방지
+    linked := findSessionsBySourceThread(event.channel, event.thread_ts)   // 소스 스레드 1 : 작업 스레드 N
+    if linked not empty:
+        if stripBotMention(event.text) not empty:              // 지시가 있으면 새 작업 — SSOT 2026-11-12
+            offerSourceThreadNewTask(...)                       // 보낸 사람에게 DM: 새 작업으로 진행 / 취소
+        post every linked session's card to thread; return    // 답하기 전에는 실행하지 않음
+    // DM에서 '새 작업으로 진행' → 소스 채널에 새 헤더 루트 → 그 루트로 messageHandler
+    //   (botThreadRoot + sourceThreadLink + skipAutoBotThread — 소스 스레드 키의 실행 슬롯을 거치지 않음)
 
     ctx := { channelId: event.channel,
              threadTs: event.thread_ts,    // 원본 parent

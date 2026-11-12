@@ -90,6 +90,7 @@ import {
   toTurnUsage,
 } from '../session-usage-math';
 import type { SlackApiHelper } from '../slack-api-helper';
+import { reportSourceThreadResult } from '../source-thread-summary';
 import type { StatusReporter } from '../status-reporter';
 import {
   AgentStreamProcessor,
@@ -3447,7 +3448,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       ) {
         this.deps.summaryTimer.start(
           sessionKey,
-          () => this.onSummaryTimerFire(session, sessionKey),
+          () => this.onSummaryTimerFire(session, sessionKey, category),
           (remainingMs) => this.onSummaryCountdownTick(session, sessionKey, remainingMs),
         );
       }
@@ -3463,6 +3464,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         this.deps.threadPanel?.updatePanel(session, sessionKey)?.catch((err: any) => {
           this.logger.warn('es TL;DR thread render failed', { sessionKey, error: err?.message });
         });
+        // A turn waiting on the user (a question) is not a result.
+        if (category === 'WorkflowComplete') this.reportToSourceThread(session, sessionKey);
       }
 
       // Completion message tracking moved to SlackBlockKitChannel.send()
@@ -5343,10 +5346,42 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   private static readonly FILE_ACCESS_RETRY_DELAY_MS = 5_000;
 
   /**
+   * SSOT 2026-11-12 — a session started from a mention in another thread (its source thread) reports its result
+   * there when its Executive Summary lands: the TL;DR, its links and the work thread. Fire-and-forget; a failed post
+   * never touches the turn or the summary.
+   */
+  private reportToSourceThread(session: ConversationSession, sessionKey: string): void {
+    if (!session.sourceThread || !this.deps.slackApi) return;
+    // The same result twice (a re-rendered summary, a repeated es) is reported once.
+    const tldr = (session.executiveSummary?.tldr ?? []).join('\n');
+    if (!tldr || this.reportedSourceTldr.get(session) === tldr) return;
+    this.reportedSourceTldr.set(session, tldr);
+    void reportSourceThreadResult(this.deps.slackApi as any, session as any).then((posted) => {
+      if (!posted) {
+        if (this.reportedSourceTldr.get(session) === tldr) this.reportedSourceTldr.delete(session);
+        return;
+      }
+      // The card's ts outlives a restart, so the next result refreshes it instead of posting another.
+      try {
+        this.deps.claudeHandler?.saveSessions?.();
+      } catch (err: any) {
+        this.logger.warn('saveSessions after the source thread report failed', { sessionKey, error: err?.message });
+      }
+    });
+  }
+
+  /** The TL;DR last reported to each session's source thread (in memory — a restart may report it once more). */
+  private readonly reportedSourceTldr = new WeakMap<ConversationSession, string>();
+
+  /**
    * Summary timer callback — executes fork query and renders result to thread panel.
    * Extracted as a named method so it can be tested independently.
    */
-  private async onSummaryTimerFire(session: ConversationSession, sessionKey: string): Promise<void> {
+  private async onSummaryTimerFire(
+    session: ConversationSession,
+    sessionKey: string,
+    turnCategory?: TurnCategory,
+  ): Promise<void> {
     if (!this.deps.summaryService) return;
     // A safeguards halt that landed after the turn (the goal eval was blocked):
     // the summary is another Claude query on the halted session — never run it
@@ -5414,6 +5449,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         } catch (err: any) {
           this.logger.warn('recordExecutiveSummary failed', { sessionKey, error: err?.message });
         }
+        // SSOT 2026-11-12 — a finished turn's result goes back to the source thread the work started from (a turn
+        // that ended waiting on the user is not a result).
+        if (turnCategory === 'WorkflowComplete') this.reportToSourceThread(session, sessionKey);
         // Trigger re-render so the summary blocks appear in the Slack thread header.
         // Without this, summaryBlocks sit in memory but the message is never updated.
         await this.deps.threadPanel?.updatePanel(session, sessionKey);

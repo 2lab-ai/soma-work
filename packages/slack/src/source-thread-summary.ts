@@ -1,6 +1,6 @@
 /**
  * Source Thread Summary — posts work summary back to the original thread
- * when a mid-thread-created session completes (PR merge or session close).
+ * when a mid-thread-created session completes (its Executive Summary lands, a PR merge, or session close).
  *
  * Bauhaus Block Kit design: form follows function, grid-based fields,
  * functional color only, zero decorative emoji.
@@ -8,6 +8,7 @@
 
 import { Logger } from '@soma/common/logger';
 import type { SessionLinks } from './directives/session-link-directive';
+import { cleanTldrLine, plainTldrLine } from './summary-service';
 
 export interface SourceThreadConversationSession {
   ownerId?: string;
@@ -21,6 +22,8 @@ export interface SourceThreadConversationSession {
     channel: string;
     threadTs: string;
   };
+  /** SSOT 2026-11-12 — the result card already posted to the source thread (a later result refreshes it). */
+  sourceThreadReportTs?: string;
   links?: SessionLinks;
 }
 
@@ -31,6 +34,8 @@ export interface SourceThreadSlackApi {
     text: string,
     options?: { threadTs?: string; blocks?: SlackBlock[]; [key: string]: unknown },
   ): Promise<unknown>;
+  /** Refreshes the result card in place. Without it every result is a new post. */
+  updateMessage?(channel: string, ts: string, text: string, blocks?: SlackBlock[]): Promise<unknown>;
 }
 
 const logger = new Logger('SourceThreadSummary');
@@ -167,7 +172,7 @@ function buildLinkSection(
  */
 export function buildRequestCompleteBlocks(
   session: SourceThreadConversationSession,
-  trigger: 'merged' | 'closed',
+  trigger: SourceThreadSummaryTrigger,
   options?: {
     workThreadPermalink?: string | null;
     turnSummary?: string;
@@ -181,7 +186,7 @@ export function buildRequestCompleteBlocks(
   const safeTitle = truncate(title, SLACK_LIMITS.HEADER_TEXT);
   const model = session.model ? formatModelName(session.model) : undefined;
   const workflow = session.workflow || 'default';
-  const statusLabel = trigger === 'merged' ? '머지 완료' : '완료';
+  const statusLabel = STATUS_LABEL[trigger];
 
   // Parse turn summary for elapsed time
   const elapsed = options?.turnSummary?.match(/⏱\s*(.+?)(?:\s*·|$)/)?.[1]?.trim();
@@ -318,17 +323,32 @@ export function buildRequestCompleteBlocks(
 }
 
 /**
+ * What made the work report back: its Executive Summary landed (`completed`, or `attention` when the summary flags
+ * unfinished work with a ⚠️ line), its PR merged, or the session closed.
+ */
+export type SourceThreadSummaryTrigger = 'completed' | 'attention' | 'merged' | 'closed';
+
+const STATUS_LABEL: Record<SourceThreadSummaryTrigger, string> = {
+  completed: '완료',
+  attention: '확인 필요',
+  merged: '머지 완료',
+  closed: '완료',
+};
+
+/**
  * Post a work summary to the original (source) thread.
  * Returns true on success, false on failure or when no sourceThread exists.
  *
  * @param slackApi - Slack API helper
  * @param session - The session that completed
- * @param trigger - What triggered the summary ('merged' | 'closed')
+ * @param trigger - What triggered the summary
+ * @param options - `executiveSummary`: the result to show as the conclusion (the work's TL;DR)
  */
 export async function postSourceThreadSummary(
   slackApi: SourceThreadSlackApi,
   session: SourceThreadConversationSession,
-  trigger: 'merged' | 'closed',
+  trigger: SourceThreadSummaryTrigger,
+  options?: { executiveSummary?: string },
 ): Promise<boolean> {
   if (!session.sourceThread) {
     return false;
@@ -357,6 +377,7 @@ export async function postSourceThreadSummary(
 
     const payload = buildRequestCompleteBlocks(session, trigger, {
       workThreadPermalink,
+      ...(options?.executiveSummary ? { executiveSummary: options.executiveSummary } : {}),
     });
 
     await slackApi.postMessage(channel, payload.text, {
@@ -375,6 +396,62 @@ export async function postSourceThreadSummary(
     return true;
   } catch (error) {
     logger.error('Failed to post source thread summary', error);
+    return false;
+  }
+}
+
+/**
+ * SSOT 2026-11-12 — a finished turn's Executive Summary (the host's turn-end summary or the model's es) is the work's
+ * result: report it — its TL;DR, links and work thread — to the source thread the work started from. One card per
+ * work session: the first result posts it (`session.sourceThreadReportTs`), later results refresh it in place. A
+ * TL;DR with a ⚠️ line (unfinished work) is labelled 확인 필요, not 완료. Several work threads may share one source
+ * thread; each keeps its own card. False when there is no source thread, no TL;DR, or Slack refused. Never throws.
+ */
+export async function reportSourceThreadResult(
+  slackApi: SourceThreadSlackApi,
+  session: SourceThreadConversationSession & { executiveSummary?: { tldr?: string[] } },
+): Promise<boolean> {
+  if (!session.sourceThread) return false;
+  const tldr = (session.executiveSummary?.tldr ?? [])
+    .filter((line): line is string => typeof line === 'string')
+    .map((line) => plainTldrLine(cleanTldrLine(line)))
+    .filter((line) => line.length > 0);
+  if (tldr.length === 0) return false;
+  const trigger: SourceThreadSummaryTrigger = tldr.some((line) => line.startsWith('⚠️')) ? 'attention' : 'completed';
+  const executiveSummary = tldr.map((line) => `• ${line}`).join('\n');
+  const { channel, threadTs } = session.sourceThread;
+
+  try {
+    const sessionThreadTs = session.threadRootTs || session.threadTs;
+    const workThreadPermalink =
+      session.channelId && sessionThreadTs
+        ? await slackApi.getPermalink(session.channelId, sessionThreadTs).catch(() => null)
+        : null;
+    const payload = buildRequestCompleteBlocks(session, trigger, { workThreadPermalink, executiveSummary });
+
+    if (session.sourceThreadReportTs && slackApi.updateMessage) {
+      try {
+        await slackApi.updateMessage(channel, session.sourceThreadReportTs, payload.text, payload.blocks);
+        logger.info('Refreshed the source thread result card', { sourceChannel: channel, sourceThreadTs: threadTs });
+        return true;
+      } catch (error) {
+        // The card is gone (deleted by someone): post a new one.
+        logger.warn('Could not refresh the source thread result card — posting a new one', { error });
+      }
+    }
+
+    const posted = (await slackApi.postMessage(channel, payload.text, { threadTs, blocks: payload.blocks })) as
+      | { ts?: string }
+      | undefined;
+    if (posted?.ts) session.sourceThreadReportTs = posted.ts;
+    logger.info('Posted the work result to its source thread', {
+      trigger,
+      sourceChannel: channel,
+      sourceThreadTs: threadTs,
+    });
+    return true;
+  } catch (error) {
+    logger.error('Failed to report the work result to its source thread', error);
     return false;
   }
 }

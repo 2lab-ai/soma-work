@@ -315,6 +315,17 @@ describe('dashboard task on a header root (botThreadRoot) — the Slack thread m
     expect(rootPosts).toEqual([]);
   });
 
+  // SSOT 2026-11-12 — a new task started from an instruction in a source thread runs on its own header root
+  // (never the source thread's key) and is linked back to that source thread.
+  it('a task started from a source-thread instruction is linked back to its source thread', async () => {
+    await sessionInitializer.initialize(
+      dashboardTaskEvent({ botThreadRoot: true, sourceThreadLink: { channel: 'C123', threadTs: '100.200' } }) as any,
+      '/test/dir',
+    );
+    expect(createdSession.sourceThread).toEqual({ channel: 'C123', threadTs: '100.200' });
+    expect(createdSession.threadRootTs).toBe(ROOT_TS);
+  });
+
   it('without the flag the thread model is untouched (a user-started thread keeps its link reply)', async () => {
     await sessionInitializer.initialize(dashboardTaskEvent() as any, '/test/dir');
     expect(createdSession.threadModel).toBeUndefined();

@@ -137,6 +137,11 @@ export interface ActionHandlerDelegates {
    * Optional for older delegate providers.
    */
   instructionApprovalHandler?: { handleAction(body: any, respond: RespondFn): Promise<void> };
+  /**
+   * SSOT 2026-11-12 — the sender's DM buttons for an instruction given in a source thread: run it as a new task
+   * (a new work thread) or cancel. Optional for older delegate providers.
+   */
+  sourceThreadNewTaskHandler?: { handleAction(body: any, respond: RespondFn): Promise<void> };
   userSkillMenuHandler: { handleAction(body: any, respond: RespondFn, client: any): Promise<void> };
   userSkillPermissionHandler: { handleAction(body: any, respond: RespondFn, client: any): Promise<void> };
   /** Admin-facing buttons of the environment-skill permission prompt (once/always/all/deny). */
@@ -339,6 +344,12 @@ export class ActionHandlers {
     app.action(/^instr_approval_/, async ({ ack, body, respond }) => {
       await ack();
       await this.delegates.instructionApprovalHandler?.handleAction(body, respond as RespondFn);
+    });
+
+    // SSOT 2026-11-12 — the sender's answer to "run this source-thread instruction as a new task?" (DM'd prompt).
+    app.action(/^src_new_task_/, async ({ ack, body, respond }) => {
+      await ack();
+      await this.delegates.sourceThreadNewTaskHandler?.handleAction(body, respond as RespondFn);
     });
 
     app.view(CRON_EDIT_MODAL_CALLBACK_ID, async ({ ack, body }) => {

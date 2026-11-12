@@ -19,6 +19,7 @@ import { envSkillAdminApprovalAdapter } from '../env-skill-admin-approval';
 import { mcpGrantAdminApprovalAdapter } from '../mcp-grant-decision';
 import { newUserAdminApprovalAdapter } from '../new-user-decision';
 import { sessionQuestionAdminApprovalAdapter } from '../session-question-admin-approval';
+import { SourceThreadNewTask } from '../source-thread-new-task';
 import { buildDefaultTopicRegistry } from '../z/topics';
 import { ActionPanelActionHandler } from './action-panel-action-handler';
 import { AutoskillActionHandler } from './autoskill-action-handler';
@@ -179,6 +180,12 @@ setActionHandlersProviders({
         slackApi: ctx.slackApi as any,
       }),
       instructionApprovalHandler: new InstructionApprovalActionHandler({ getApprovals: getInstructionApprovals }),
+      // The DM's answer runs the instruction through the normal entry. (The offer itself is sent by the event
+      // router's own instance — it keeps no state; the answered-set that stops a double start lives here.)
+      sourceThreadNewTaskHandler: new SourceThreadNewTask({
+        slackApi: ctx.slackApi as any,
+        messageHandler: ctx.messageHandler as any,
+      }),
       userSkillMenuHandler: new UserSkillMenuActionHandler({
         slackApi: ctx.slackApi as any,
         claudeHandler: ctx.claudeHandler,

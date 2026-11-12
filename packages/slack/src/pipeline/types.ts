@@ -158,6 +158,13 @@ export interface MessageEvent {
    */
   botThreadRoot?: boolean;
   /**
+   * SSOT 2026-11-12 — the new session is a task its sender started from an instruction in another thread (a source
+   * thread whose earlier mention already has a work thread): link it back there (`session.sourceThread`), so its
+   * result is reported to that thread. Set only by the host (`src/slack/source-thread-new-task.ts`); dropped from
+   * Slack events (`HOST_ONLY_EVENT_FIELDS`).
+   */
+  sourceThreadLink?: { channel: string; threadTs: string };
+  /**
    * #854 — the first message of an epic's child, in its own new thread: the new session takes
    * the id its epic reserved, and its place under the epic (`SessionRegistry.bindEpicChild`).
    * Set only by the epic's host (`spawn_child`).

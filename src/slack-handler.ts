@@ -160,6 +160,7 @@ import {
   undoPause,
 } from './slack/session-goal';
 import { announceSessionNotice, recordSessionNotice } from './slack/session-notice';
+import { SourceThreadNewTask } from './slack/source-thread-new-task';
 import { type SessionFollowUp, SummaryService, setFollowUpListener } from './slack/summary-service';
 import { SummaryTimer } from './slack/summary-timer';
 import { ToolFormatter } from './slack/tool-formatter';
@@ -977,6 +978,11 @@ export class SlackHandler {
     // #917 — every Executive Summary verdict on a follow-up: a new one may ask its question, a gone one retracts it.
     setFollowUpListener((session, previous) => this.onFollowUpVerdict(session, previous));
 
+    // The DM's buttons are answered by the action handler's instance (src/slack/actions); this one only sends it.
+    const sourceThreadNewTask = new SourceThreadNewTask({
+      slackApi: this.slackApi,
+      messageHandler: this.handleMessage.bind(this) as any,
+    });
     // EventRouter for event handling
     const eventRouterDeps: EventRouterDeps = {
       slackApi: this.slackApi,
@@ -995,6 +1001,8 @@ export class SlackHandler {
       isFollowupControlReaction: (name) => this.followupReactions().isControlReaction(name),
       // #767 — a non-owner's `/z …` mention goes to the message gate instead of ZRouter.
       holdsForOwnerApproval: (event) => this.ownerApprovalHold(event as MessageEvent) !== undefined,
+      // SSOT 2026-11-12 — an instruction in a source thread: ask its sender by DM whether to run it as a new task.
+      offerSourceThreadNewTask: (request) => sourceThreadNewTask.offer(request),
     };
     this.eventRouter = new EventRouter(app, eventRouterDeps, this.handleMessage.bind(this));
 
