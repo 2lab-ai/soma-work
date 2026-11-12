@@ -178,6 +178,10 @@ const DATA = [
   'find "$PWD" -name "*ssh*"',
   'grep -rn ssh "$TMPDIR"',
   'LC_ALL=C grep ssh x',
+  // trinity R5 (grok): harmless settings in front of a data program.
+  'LC_ALL=C grep -n ssh src',
+  'GIT_OPTIONAL_LOCKS=0 git commit -m "ssh ban"',
+  'GIT_AUTHOR_NAME=bot GIT_AUTHOR_EMAIL=b@x git commit -m "ssh"',
 ];
 
 /**
@@ -192,7 +196,8 @@ const CONSERVATIVE = [
   'find . -name "*ssh*" -exec cat {} \\;',
   'git config core.sshCommand "ssh -i k"',
   // An environment for a data program can make it run another (`RIPGREP_CONFIG_PATH`, `GIT_PAGER` …).
-  'GIT_AUTHOR_NAME=x git commit -m "ssh"',
+  'GIT_EDITOR=vi git commit -m "ssh"',
+  'RIPGREP_CONFIG_PATH=./rc rg ssh x',
   // A variable set in the command could be anything.
   'dir=src; find "$dir" -name "*ssh*"',
 ];

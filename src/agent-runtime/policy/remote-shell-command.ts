@@ -144,8 +144,14 @@ const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--na
 /** gh command groups that only send and print data. */
 const GH_DATA = new Set(['pr', 'issue', 'api', 'search', 'run', 'release', 'label', 'workflow', 'status']);
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)\+?=/;
-/** Locale, time zone and color settings: they change how a program prints, never what it runs. */
-const PLAIN_ENVIRONMENT = /^(LC_[A-Z]+|LANG|LANGUAGE|TZ|NO_COLOR|FORCE_COLOR|COLUMNS)$/;
+/**
+ * Settings that change how a program prints, locks or signs, never which program it runs: locale, time zone,
+ * color and terminal size, git identity and locking, gh prompts. Any other name in front of a program could
+ * select one (`GIT_PAGER`, `PAGER`, `EDITOR`, `RIPGREP_CONFIG_PATH`, `LD_PRELOAD` …), so this is a short allow
+ * list rather than a deny list.
+ */
+const PLAIN_ENVIRONMENT =
+  /^(LC_[A-Z]+|LANG|LANGUAGE|TZ|NO_COLOR|FORCE_COLOR|CLICOLOR|CLICOLOR_FORCE|COLUMNS|LINES|CI|GIT_OPTIONAL_LOCKS|GIT_TERMINAL_PROMPT|GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL|DATE)|GH_PROMPT_DISABLED|GH_NO_UPDATE_NOTIFIER)$/;
 /** Nesting this deep is not a command anyone types: refuse rather than guess. */
 const MAX_DEPTH = 8;
 /** Stands in a word for an expansion (`$x`, `$(…)`, backticks): a program named through one is unknown. */
