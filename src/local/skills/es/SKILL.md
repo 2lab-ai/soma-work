@@ -70,7 +70,7 @@ Decision rule (apply top to bottom, first match wins):
 - **Same language as the conversation** — Korean session ⇒ Korean ES.
 - **No tool calls when run as one-shot fork** (Path B). When run manually as Path A you may use `git` / `gh` for discovery only.
 
-## HA discipline (binding from `using-zwriting` — one artifact, one rung)
+## HA discipline (binding from `using-zwriting` — each mode closes in its own words)
 
 A sentence at one mode must close without using terms from the mode below.
 

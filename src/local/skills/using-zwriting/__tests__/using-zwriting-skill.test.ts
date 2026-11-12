@@ -117,7 +117,9 @@ describe('local:using-zwriting — layered explanation (T2)', () => {
     expect(md()).toMatch(/never paragraph by paragraph/);
     expect(md()).toMatch(/mark the boundary with `---` and a new heading, one boundary per rung/);
     expect(md()).toMatch(/Briefing a research agent: pass this skill/);
-    expect(md()).toMatch(/Asked for a summary: the top rungs are the summary/);
+    expect(md()).toMatch(/Asked for a summary: the top rungs are the summary; the bottom rung still keeps every fact/);
+    // The label rule holds in the skill's own example: only the top rung is labelled.
+    expect(md()).not.toMatch(/^> Detail:/m);
   });
 
   it('keeps the calldiff-first rule for PR bodies and the 2 closed exceptions', () => {

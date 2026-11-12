@@ -2,7 +2,7 @@
 
 In short: say who does what, in short sentences and everyday words, with the point first. Open it up, do not dumb it down — keep every fact, nuance and condition, and strip only what makes it hard to read.
 
-Detail: the shared rules come first, then English (GOV.UK A to Z, checked 2026-11-12), then Korean.
+The shared rules come first, then English (GOV.UK A to Z, checked 2026-11-12), then Korean.
 
 ## Shared rules (any language)
 

@@ -11,9 +11,9 @@ Every explanation is a ladder. The top rung is one line a smart outsider underst
 
 This skill replaces using-govuk, using-eli5, using-ha-thinking and structurize. Their rules live on here, merged and corrected.
 
-## Detail
+## The rules
 
-Everything below is the detail rung of this skill. Load the references when you reach the step that names them:
+Everything below is the full version of this skill. Load the references when you reach the step that names them:
 
 - `references/plain-language.md` — sentence rules: English (GOV.UK A to Z) and Korean
 - `references/structure-engine.md` — restructuring someone else's text without losing anything
@@ -75,7 +75,7 @@ An epic, an issue and a PR are rungs of one ladder. Titles, goals and summaries 
 - PR and issue bodies: the calldiff block keeps the first position, as the calldiff skill requires. The one line and the map come directly after it.
 - Reports (es, html): the top summary is the top rung; the sections are the detail.
 - Rungs sit at document and section level, never paragraph by paragraph.
-- Asked for a summary: the top rungs are the summary, and nothing is lost because the source stays linked — point to it rather than restating every fact.
+- Asked for a summary: the top rungs are the summary; the bottom rung still keeps every fact.
 - Briefing a research agent: pass this skill so its report comes back in the same shape.
 - Korean text: run the `zkorean` agent on the finished draft when a Korean sentence reads stiffly.
 
@@ -98,9 +98,9 @@ After:
 
 > In short: when a job fails because the far side is broken, we wait and try again — 6 tries over 15 minutes. If it still fails, we park the job somewhere safe instead of losing it.
 >
-> Detail: the scheduler retries any dispatch that fails with a 5xx status. Each retry waits longer than the last (exponential backoff), plus a random offset (jitter) so retries do not all arrive together. It stops after 6 attempts or 15 minutes, whichever comes first, and moves the job to the dead-letter queue.
+> The scheduler retries any dispatch that fails with a 5xx status. Each retry waits longer than the last (exponential backoff), plus a random offset (jitter) so retries do not all arrive together. It stops after 6 attempts or 15 minutes, whichever comes first, and moves the job to the dead-letter queue.
 
-Nothing was dropped: the 5xx status, the backoff, the jitter, the 6 attempts, the 15 minutes and the dead-letter queue all survive on the detail rung.
+Nothing was dropped: the 5xx status, the backoff, the jitter, the 6 attempts, the 15 minutes and the dead-letter queue all survive below the top rung.
 
 ## Before you finish
 
