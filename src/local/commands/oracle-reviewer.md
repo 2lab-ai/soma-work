@@ -1,5 +1,5 @@
 ---
-description: "Oracle code reviewer — trinity chain (astra-zhuge / grok-elon / fable-zhuge)"
+description: "Use when code needs a review by the trinity panel."
 argument-hint: "[review task or diff description]"
 allowed-tools:
   - Agent

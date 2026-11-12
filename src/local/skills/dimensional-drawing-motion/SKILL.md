@@ -1,6 +1,6 @@
 ---
 name: dimensional-drawing-motion
-description: Turn a finished dimensional drawing sheet into a ~10 s Apple-style motion film — lines draw themselves in, the camera pulls back, layers lift into an exploded view, the full sheet resolves. Use after the dimensional-drawing skill, or when asked to animate a spec sheet or anatomy drawing. Triggers on "animate this drawing", "drawing motion", "도면 애니메이션", "도면 영상", "도면 모션".
+description: "Use when a finished dimensional drawing sheet should be animated into a short motion film, or after the dimensional-drawing skill when motion is wanted. Triggers: 'animate this drawing', 'drawing motion', '도면 애니메이션', '도면 영상', '도면 모션'."
 allowed-tools: Read, Grep, Glob, Bash, Write, Edit
 version: 1.0.0
 license: MIT

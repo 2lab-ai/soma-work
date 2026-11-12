@@ -19,3 +19,4 @@ Upstream commit referenced: `f76beceb7d3fc8c43309cefad5a095a206103a4e`
   upstream. The glossary mirrors the upstream `/vocabulary` page; when
   refreshing this skill, re-sync from upstream rather than editing terms
   locally.
+- 2026-11-12: the frontmatter `description` was rewritten to say only when to use the skill (zworkflow `skill-description` rule). What the skill does stays in the body.

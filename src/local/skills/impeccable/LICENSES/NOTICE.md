@@ -31,3 +31,4 @@ rendering of `skill/SKILL.src.md` and `skill/reference/`).
 
 Integration decision: trinity consensus (grok-elon · astra-zhuge · fable-zhuge, round 3/5,
 2026-10-26) — standalone docs-only skill, selected by the `html` skill as `design=impeccable`.
+- 2026-11-12: the frontmatter `description` was rewritten to say only when to use the skill (zworkflow `skill-description` rule). What the skill does stays in the body.

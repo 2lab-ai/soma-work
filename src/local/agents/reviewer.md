@@ -1,5 +1,5 @@
 ---
-description: "Uncompromising code reviewer inspired by Linus Torvalds. Applies Occam's Razor and First Principles thinking. Use as 3rd reviewer in /deepwork for ruthless quality gate. BLOCKING execution."
+description: "Use when a diff needs a ruthless third review focused on simplicity and first principles."
 model: opus
 tools:
   - Read
@@ -10,5 +10,7 @@ tools:
   - TaskUpdate
 color: "#DC143C"
 ---
+
+> Applies Occam's Razor and First Principles thinking. BLOCKING execution.
 
 @include(${CLAUDE_PLUGIN_ROOT}/prompts/reviewer-persona.md)

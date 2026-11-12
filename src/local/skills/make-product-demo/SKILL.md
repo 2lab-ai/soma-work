@@ -1,6 +1,6 @@
 ---
 name: make-product-demo
-description: Make a product demo from the real product — the story in the order the audience asks, real takes of real work (no mockups), one film per display language with a TTS voice for spoken input, README screenshots and GIFs per language, cut with the cinematic-film look, independently reviewed until it ships. Use when asked for a product demo, launch video, demo film, or README demo GIFs. Triggers on "make-product-demo", "제품 데모", "데모 영상", "런칭 영상", "demo video", "product demo", "README GIF".
+description: "Use when asked for a product demo, launch video, demo film or README demo GIFs made from the real product. Triggers: 'make-product-demo', '제품 데모', '데모 영상', '런칭 영상', 'demo video', 'product demo', 'README GIF'."
 allowed-tools: Read, Grep, Glob, Bash, Write, Edit
 version: 1.0.0
 ---

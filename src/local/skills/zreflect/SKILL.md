@@ -1,6 +1,6 @@
 ---
 name: zreflect
-description: "Self-reflection when re-instruction detected. Treats re-instruction as drift, applies `local:using-ssot` Hook 2 (SSOT-LIST append + SSOT-TASK-TREE regen + diff), then produces a gap-analysis reflection report before resuming work."
+description: "Use when the user re-instructs mid-task, or repeats or corrects an instruction already given. Triggers: 'zreflect', '다시 말하지만', '아까 말했잖아'."
 ---
 
 # zreflect — Self-Reflection + Drift handler

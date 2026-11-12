@@ -1,6 +1,6 @@
 ---
 name: using-zwriting
-description: "Use when writing or rewriting anything a person will read — an answer, report, summary, PR or issue body, doc, research write-up, incident note, plan — or when asked to explain, simplify, structure or tidy up a text. Triggers: 'using-zwriting', 'zwriting', '쉽게 설명해줘', '풀어서 설명', '구조화해줘', '정리해줘', 'eli5', 'plain english', 'govuk style'. Not for code, config, logs or machine-read payloads."
+description: "Use when writing or rewriting anything a person will read — an answer, report, summary, PR or issue body, doc, research write-up, incident note, plan — or when asked to explain, simplify, structure or tidy up a text. Triggers: 'using-zwriting', '쉽게 설명해줘', '풀어서 설명', '구조화해줘', '정리해줘', 'eli5', 'plain english', 'govuk style'. Not for code, config, logs or machine-read payloads."
 ---
 
 # using-zwriting — write so a person understands it on the first read

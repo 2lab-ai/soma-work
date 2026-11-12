@@ -1,6 +1,6 @@
 ---
 name: auto-es
-description: "soma-work only. The Executive Summary inside soma-work — run it instead of es (z phase5, autoz terminal report, a final report, $es). Runs zworkflow:es for the document, then adds the harness rules: own issues/PRs/documents with their state, a bold ⚠️ TL;DR line when one of them is unfinished, a final user follow-up section, a question to the user about it (1 recommended action, 2–3 alternatives, direct input last), and the session task card sync + card check through the model-command MCP, so the card waits in NEEDS YOU — on that question — while work is unfinished. The host's turn-end summary runs its turn-end contract (reference/turn-end.md)."
+description: "Use when an Executive Summary is due inside soma-work — z phase5, the autoz terminal report, a final report, $es, or the host's turn-end summary. Also when es would otherwise be picked inside soma-work. Triggers: 'auto-es', '$es', 'executive summary', '최종 보고'. Not for use outside soma-work (es)."
 ---
 
 # auto-es — es + the soma-work harness

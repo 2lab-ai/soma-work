@@ -1,6 +1,6 @@
 ---
 name: import-skills
-description: "Use when skills from other agent repos should be vendored into this plugin: inventories candidates, drops name or capability collisions and out-of-scope ones, asks once which to import, then adds them under the plugin's vendoring contract in one PR. Triggers: 'import-skills', '스킬 가져오기'. Args — [<owner/repo|url>…] [--limit=N] [--all] [--dry-run = no clone, commit, push or PR]."
+description: "Use when skills from other agent repos should be brought into this plugin. Triggers: 'import-skills', '스킬 가져오기', 'vendor skills'."
 argument-hint: "[<owner/repo|url>…] [--limit=N] [--all] [--dry-run] [target=<owner/repo>[:<plugin root>]]"
 ---
 

@@ -1,8 +1,10 @@
 ---
 name: zkorean
-description: 한글 텍스트와 zkorean 룰북을 받아 명백히 어색한 부분만 자연스러운 한글로 교정한다. 의미·수치·고유명사·직접 인용은 한 글자도 건드리지 않는다. 단일 호출 — 다른 에이전트를 부르지 않는다.
+description: "Use when the zkorean skill hands Korean text and its rule book for one correction pass."
 model: opus
 ---
+
+> 의미·수치·고유명사·직접 인용은 한 글자도 건드리지 않는다. 단일 호출 — 다른 에이전트를 부르지 않는다.
 
 # zkorean
 

@@ -1,6 +1,6 @@
 ---
 name: improve-animations
-description: Audit a codebase's motion and write prioritized fix plans for other agents; edits no source. Triggers on "audit animations", "motion audit", "모션 감사".
+description: "Use when the motion across a whole codebase needs an audit with prioritised fix plans, without editing source. Triggers: 'audit animations', 'motion audit', '모션 감사'."
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash, Agent
 version: 1.0.0
 license: MIT

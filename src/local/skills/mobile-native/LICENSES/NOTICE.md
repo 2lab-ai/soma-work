@@ -28,3 +28,4 @@ Upstream commit referenced: `715c1807e08c497cfd1dc4feb450a2a3300ef2a9`
   visual viewport, not `dvh` — a bottom-pinned composer follows
   `window.visualViewport`.
 - Body content is otherwise kept verbatim from upstream.
+- 2026-11-12: the frontmatter `description` was rewritten to say only when to use the skill (zworkflow `skill-description` rule). What the skill does stays in the body.

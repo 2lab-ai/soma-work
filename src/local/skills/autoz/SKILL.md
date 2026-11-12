@@ -1,6 +1,6 @@
 ---
 name: autoz
-description: "Autonomous z-pipeline driver. Triggered by `autoz` or `$autoz`. Builds SSOT-LIST + SSOT-TASK-TREE (per `local:using-ssot`), maps unknowns, runs a code-based multi-tier Analysis step with an HTML problem-analysis artifact, reproduces the instruction as a RED test, then drives the full local:using-z / local:z pipeline end-to-end without user questions. Open decisions resolve by the local:trinity consensus chain (trinity 3-agent panel astra-zhuge / grok-elon / fable-zhuge → single-panelist fallback in that order, each downgrade with a visible warning). A trinity-chain code review of the final PR diff is a mandatory gate before approve — the chain degrades automatically tier by tier and never approves/merges/deploys on an empty review gate. After approval, posts the SSOT success proof to the source issue and ships the final ES report as a second HTML artifact."
+description: "Use when the user wants a task taken from instruction to approved, reviewed PR without being asked anything along the way. Triggers: 'autoz', '$autoz'."
 ---
 
 # autoz — Autonomous z-pipeline

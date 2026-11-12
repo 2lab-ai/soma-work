@@ -1,6 +1,6 @@
 ---
 name: github-pr
-description: Fetch PR data from GitHub with token-efficient output. Use when reviewing PRs, checking PR status, or preparing PR summaries.
+description: "Use when reviewing a GitHub PR, checking its status, or preparing a PR summary. Triggers: 'github-pr', 'PR 상태', 'PR 데이터'."
 argument-hint: <PR_URL or owner/repo#number>
 allowed-tools: Bash, Read, mcp__github__get_pull_request, mcp__github__get_pull_request_reviews, mcp__github__get_pull_request_comments, mcp__github__get_pull_request_files
 ---

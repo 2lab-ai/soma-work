@@ -1,6 +1,6 @@
 ---
 name: lottie
-description: Author Lottie (Bodymovin) JSON animations from scratch and embed them in HTML pages. Vendored adaptation of diffusionstudio/lottie "text-to-lottie". Use when the user asks to create, generate, edit, or fix a Lottie animation, asks for "an animation", or when the html skill needs a motion layer. Triggers on "lottie", "애니메이션 만들어줘", "animate this", "add motion", "모션 넣어줘".
+description: "Use when the user asks to create, edit or fix a Lottie animation, asks for an animation in a page, or when the html skill needs a motion layer. Triggers: 'lottie', '애니메이션 만들어줘', 'animate this', 'add motion', '모션 넣어줘'."
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
 version: 0.1.0
 license: ISC

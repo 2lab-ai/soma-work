@@ -1,5 +1,5 @@
 ---
-description: "External documentation and open-source codebase understanding. Use for official docs, best practices, library APIs, GitHub source analysis. MUST provide GitHub permalinks as evidence. Background execution."
+description: "Use when official docs, library APIs, best practices or open-source source code must be looked up outside this codebase."
 model: opus
 tools:
   - Read
@@ -16,6 +16,8 @@ tools:
   - mcp__plugin_context7_context7__query-docs
 color: "#9370DB"
 ---
+
+> MUST provide GitHub permalinks as evidence. Runs as background execution.
 
 @include(${CLAUDE_PLUGIN_ROOT}/prompts/librarian-persona.md)
 

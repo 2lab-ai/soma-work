@@ -1,6 +1,6 @@
 ---
 name: mobile-native
-description: Make a web app feel native on a phone — tap flash, 100vh, input zoom, tap lag, safe areas, theme-color. Triggers on "feel native", "mobile web", "모바일 앱처럼".
+description: "Use when a web app should feel native on a phone: tap flashes, viewport height, input zoom, tap delay, safe areas. Triggers: 'feel native', 'mobile web', '모바일 앱처럼'."
 allowed-tools: Read, Grep, Glob, Edit, Write
 version: 1.0.0
 license: MIT

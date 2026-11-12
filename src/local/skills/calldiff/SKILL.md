@@ -1,6 +1,6 @@
 ---
 name: calldiff
-description: "Diff call stacks across git refs — git diff for who-calls-whom. Shows which callees appeared, disappeared, or moved under an entrypoint across 22 languages (diff / tree / reach). Use it to summarize what a change actually did to call flow when work completes, and during code review when line diffs bury the shape of the change. Triggers on 'calldiff', '콜스택 diff', '호출 흐름 변경', '코드 변경점 요약', 'summarize the code changes', 'call flow changed'."
+description: "Use when work that changed code is finishing and its call-flow change must be summarised, or when a code review needs who-calls-whom across two refs. Triggers: 'calldiff', '콜스택 diff', '호출 흐름 변경', '코드 변경점 요약', 'summarize the code changes', 'call flow changed'."
 ---
 
 # calldiff — diff the call flow, not just the lines

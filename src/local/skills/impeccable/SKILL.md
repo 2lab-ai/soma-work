@@ -1,6 +1,6 @@
 ---
 name: impeccable
-description: "Use when the user wants to design, redesign, shape, critique, audit, polish, simplify, harden, animate, or otherwise improve a frontend interface: websites, landing pages, dashboards, product UI, components, forms, settings, onboarding, empty states, and native iOS or Android screens. Handles UX review, hierarchy, layout, typography, color, motion, UX copy, accessibility, responsive behavior, edge cases, and capturing or documenting design systems (DESIGN.md, tokens). Also for making bland UI bolder, loud UI quieter, or ambitious visual effects. Not for backend-only or non-UI tasks. In soma-work it is also the `design=impeccable` driver of the `html` skill (document-based, no engine). Triggers on 'impeccable', '임페커블', 'design critique', 'design audit', 'polish this UI', '디자인 비평', '디자인 다듬어줘', 'UI 폴리시', 'bolder', 'quieter'."
+description: "Use when the user wants to design, redesign, critique, audit, polish or harden a frontend interface, or capture its design system, or when the html skill is asked for design=impeccable. Triggers: 'impeccable', '임페커블', 'design critique', 'design audit', 'polish this UI', '디자인 비평', '디자인 다듬어줘'. Not for backend-only work."
 version: 4.7.1
 user-invocable: true
 argument-hint: "[shape · audit|critique · animate|bolder|colorize|delight|layout|overdrive|quieter|typeset · adapt|clarify|distill · harden|onboard|optimize|polish · init|document|extract|live|generate] [target]"

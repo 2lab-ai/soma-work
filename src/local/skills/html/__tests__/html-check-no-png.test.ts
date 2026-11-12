@@ -184,8 +184,8 @@ describe('the skills check the page with --check and render no PNG', () => {
     expect(steps).toContain('--check');
     expect(steps).not.toMatch(/\.png|PNG=/);
     expect(s).not.toContain('QA snapshot');
-    const fm = s.slice(0, s.indexOf('\n---', 4));
-    expect(fm).toContain('no image is made');
+    // The description says only when; the no-image rule is stated in the body's opening.
+    expect(s).toContain('no image of it is made');
   });
 
   it('dimensional-drawing: Step 3 checks the sheet with --check; no PNG snapshot; the upstream screenshot step is overridden', () => {

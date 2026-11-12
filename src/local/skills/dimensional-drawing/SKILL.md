@@ -1,6 +1,6 @@
 ---
 name: dimensional-drawing
-description: Make an Apple-style monochrome dimensional drawing of a UI component or physical product — title-block summary plus one dense drawing sheet with variable-based dimensions. Use when asked for an anatomy, spec sheet, redline or dimensional drawing of a component, or to take apart how a well-designed site builds a component (paddings, gaps, radii, layers). Triggers on "dimensional drawing", "anatomy", "spec sheet", "redline", "도면", "치수 도면", "컴포넌트 해부", "스펙 시트", "레드라인", "사이트 뜯어줘".
+description: "Use when asked for an anatomy, spec sheet, redline or dimensional drawing of a UI component or physical product, or to take apart how a site builds a component. Triggers: 'dimensional drawing', 'anatomy', 'spec sheet', 'redline', '도면', '치수 도면', '컴포넌트 해부', '사이트 뜯어줘'."
 allowed-tools: Read, Grep, Glob, Bash, Write, Edit
 version: 1.0.0
 license: MIT

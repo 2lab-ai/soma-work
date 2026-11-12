@@ -1,9 +1,13 @@
 ---
 name: chore
-description: "Use when the user wants hygiene on a GitHub repo listed in the caller's registry (env CHORE_REPOS_MD) — stale/merged branch cleanup, a sweep of every open PR and issue, cleanup of the Jira tickets assigned to them that are already handled, moving the issues worth keeping to the repo's bound Jira project, worktree prune. Triggers on '/chore', 'chore 작업', '레포 정리', '레포 청소', '브랜치 정리', 'PR·이슈 정리', '지라 정리', '이슈 Jira로 옮기기'. Args — target repo (required; registry name, `owner/repo`, or a GitHub URL); the registry = the file named by env CHORE_REPOS_MD. NOT for code fixes, issue gating, local disk reclaim, or only listing Jira tickets."
+description: "Use when the user wants housekeeping on a registered GitHub repo: stale or merged branches, a sweep of every open PR and issue, handled Jira tickets, issues to move to Jira, stale worktrees. Triggers: '/chore', 'chore 작업', '레포 정리', '레포 청소', '브랜치 정리', 'PR·이슈 정리', '지라 정리'. Not for code fixes, issue gating or local disk cleanup."
 ---
 
 # chore — act only on what is provably done, after the user approves the exact plan
+
+## Args
+
+- target repo (required): a registry name, `owner/repo`, or a GitHub URL. The registry is the file named by env `CHORE_REPOS_MD`.
 
 Engine = `$ENGINE/chore.sh` (rules in its header): `report` · `apply` (approved plan only, by sha256) · `verify` ·
 `check-plan`. Read-only helpers: `$ENGINE/chore-evidence.py` (facts per unit), `$ENGINE/chore-judge.py` build

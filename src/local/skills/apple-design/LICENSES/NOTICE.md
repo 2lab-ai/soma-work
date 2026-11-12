@@ -20,3 +20,4 @@ Experiences*), as distilled and translated for the web by the upstream author.
 - Added the attribution paragraph linking to this NOTICE and cross-referencing
   the local `motion-design` / `review-motion` skills.
 - Body content is otherwise kept verbatim from upstream.
+- 2026-11-12: the frontmatter `description` was rewritten to say only when to use the skill (zworkflow `skill-description` rule). What the skill does stays in the body.

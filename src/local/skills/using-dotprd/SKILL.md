@@ -1,10 +1,16 @@
 ---
 name: using-dotprd
-description: "Use when a large feature, rebuild, or port in a repo should be driven through a repo-root `.prd/` folder (numbered spec docs fixed first, then a per-workstream ssot.md / loop.md / loop.done.md converge loop), or when starting multi-session work that needs that spec→converge discipline. Triggers: '.prd 만들고 진행', 'dotprd로 진행', '/using-dotprd', '다른 레포 .prd처럼'. Args — <target repo path> (required); <work item / mission> (required); optional reference docs (existing PRDs, captures, upstream links). NOT for single quick fixes, docs-only edits, or personal notes kept outside a repo."
+description: "Use when a large feature, rebuild or port in a repo should be driven through a repo-root .prd folder, or multi-session work needs a spec-then-converge discipline. Triggers: '.prd 만들고 진행', 'dotprd로 진행', '/using-dotprd', '다른 레포 .prd처럼'. Not for quick fixes, docs-only edits or personal notes."
 argument-hint: "<target repo path> <work item / mission> [reference docs…]"
 ---
 
 # using-dotprd — .prd 폴더로 스펙을 고정하고 그 위에서 컨버지한다
+
+## Args
+
+- `<target repo path>` (required)
+- `<work item / mission>` (required)
+- reference docs (optional): existing PRDs, captures, upstream links.
 
 여러 레포의 `.prd` 관행(번호 스펙 문서 + 워크스트림별 컨버지 폴더)을 합친 것이다.
 

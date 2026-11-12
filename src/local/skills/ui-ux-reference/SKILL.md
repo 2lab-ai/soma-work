@@ -1,6 +1,6 @@
 ---
 name: ui-ux-reference
-description: "Capture a real-world website's visual design language as a reusable design.md reference for the `ui-ux` skill. Point it at any URL (an Awwwards page, a live site, a portfolio) plus a short name; it extracts the palette, typography, layout, motion, imagery, tone, and signature techniques into references/<name>/design.md and registers it in references/index.json so the `ui-ux` skill can apply it by name. Triggers on: 'add a ui-ux reference', 'ui-ux-reference', '레퍼런스 추가', '이 사이트를 레퍼런스로', 'extract design from <url>', 'design reference from this site', 'capture this site's design', 'use <site> as a design reference'."
+description: "Use when a real website's visual design should be saved as a named reference the ui-ux skill can apply. Triggers: 'add a ui-ux reference', 'ui-ux-reference', '레퍼런스 추가', '이 사이트를 레퍼런스로', 'extract design from this site'."
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, WebFetch, WebSearch
 version: 0.2.0
 license: MIT

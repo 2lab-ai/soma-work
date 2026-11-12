@@ -51,14 +51,15 @@ function engineCalls(): Array<[string, string]> {
 }
 
 describe('local:chore — SKILL.md names a bundled engine that exists', () => {
-  it('frontmatter: name chore, a quoted one-line description with its args and the registry env', () => {
+  it('frontmatter: name chore and a quoted one-line when-only description; the body carries the args and the registry env', () => {
     const fm = md.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? '';
     expect(fm).toMatch(/^name: chore$/m);
     const description = fm.match(/^description: "(.*)"$/m)?.[1] ?? '';
+    expect(description).toMatch(/^Use when /);
     expect(description).toContain("'/chore'");
-    expect(description).toContain('CHORE_REPOS_MD');
-    expect(description).toMatch(/Args — target repo \(required/);
-    expect(description).toMatch(/NOT for /);
+    expect(description).toMatch(/Not for /);
+    expect(description).not.toContain('Args');
+    expect(md).toMatch(/## Args\n\n- target repo \(required\)[^\n]*`CHORE_REPOS_MD`/);
   });
 
   it('every $ENGINE/<file> it names is in scripts/, and judge-prompt.md sits next to SKILL.md', () => {

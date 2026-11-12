@@ -1,5 +1,5 @@
 ---
-description: "Strategic technical advisor with deep reasoning — the Oracle persona running DIRECTLY on the astra engine (no gateway, no LLM MCP tool). Use for architecture decisions, after 3 failed fix attempts, unfamiliar patterns, security/performance concerns. Read-only consultant - BLOCKING execution. For judgment/review gates callers run local:trinity first; this agent is a single-engine consult."
+description: "Use when an architecture decision, an unfamiliar pattern, a security or performance concern, or a bug after 3 failed fixes needs a single-engine deep consult. Not for review gates (trinity)."
 model: astra
 tools:
   - Read
@@ -13,6 +13,8 @@ tools:
   - AskUserQuestion
 color: "#FFD700"
 ---
+
+> Read-only consultant — BLOCKING execution. Runs directly on the astra engine (no gateway, no LLM MCP tool). For judgment and review gates, callers run local:trinity first; this agent is a single-engine consult.
 
 
 ## Chain position

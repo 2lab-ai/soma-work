@@ -1,6 +1,6 @@
 ---
 name: explore-unknowns
-description: "Map a task's unknowns as a four-quadrant walk before speccing or building — known knowns, known unknowns, unknown knowns, unknown unknowns — ending with a complete map in the user's hands. Use when a request is ambiguous or underspecified, the codebase or domain is unfamiliar, the user will 'know it when they see it', a reference implementation must be understood before porting, or a spec/autoz run needs its fog burned off first. Triggers: 'explore unknowns', 'explore-unknown', '탐구', '뭘 모르는지 모르겠다', before stv:spec interviews and autoz RED. Has an Autonomous Mode for no-question pipelines (autoz)."
+description: "Use when a request is ambiguous or underspecified, the codebase or domain is unfamiliar, the user will know it when they see it, a reference implementation must be understood before porting, or before stv:spec interviews and autoz RED. Triggers: 'explore unknowns', 'explore-unknown', '탐구', '뭘 모르는지 모르겠다'."
 ---
 
 # Explore Unknowns

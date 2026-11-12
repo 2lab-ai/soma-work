@@ -27,12 +27,14 @@ const scratch = mkdtempSync(join(tmpdir(), 'using-dotprd-'));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
 describe('local:using-dotprd — SKILL.md and its bundled files', () => {
-  it('is named using-dotprd and describes WHEN + Args + NOT in one quoted line', () => {
+  it('is named using-dotprd; the description says only when (with Not for), the body carries the args', () => {
     expect(md()).toMatch(/^name: using-dotprd$/m);
     const description = md().match(/^description: "(.*)"$/m)?.[1] ?? '';
+    expect(description).toMatch(/^Use when /);
     expect(description).toContain('/using-dotprd');
-    expect(description).toContain('Args');
-    expect(description).toContain('NOT for');
+    expect(description).not.toContain('Args');
+    expect(description).toContain('Not for');
+    expect(md()).toMatch(/## Args\n\n- `<target repo path>` \(required\)/);
   });
 
   it('every $CLAUDE_PLUGIN_ROOT/skills/using-dotprd/ path it names exists in the skill folder', () => {

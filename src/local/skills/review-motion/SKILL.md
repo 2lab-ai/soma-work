@@ -1,6 +1,6 @@
 ---
 name: review-motion
-description: Reviews animation and motion code against a high craft bar — the motion-design standards. Default to flagging; approval is earned. Use it explicitly when asked to review transitions, easing, durations, drawers, toasts, popovers, drag gestures, or any motion code. It reviews ONLY motion; for general code review use a general review skill.
+description: "Use when asked to review animation or motion code: transitions, easing, durations, drawers, toasts, popovers, drag gestures. Triggers: 'review motion', 'review this animation', '모션 리뷰'. Not for general code review."
 disable-model-invocation: true
 allowed-tools: Read, Grep, Glob
 version: 1.0.0

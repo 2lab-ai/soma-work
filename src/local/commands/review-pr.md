@@ -1,5 +1,5 @@
 ---
-description: "Comprehensive PR review using specialized agents"
+description: "Use when a PR needs a full review by specialised review agents."
 argument-hint: "[review-aspects]"
 allowed-tools: ["Bash", "Glob", "Grep", "Read", "Agent", "Task", "TaskOutput", "Skill"]
 ---

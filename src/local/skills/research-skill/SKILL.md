@@ -1,10 +1,14 @@
 ---
 name: research-skill
-description: "Use when a skill should get better by running it for real: seeded probe runs, blind review by fresh reviewers against a rubric, defects grouped by root cause, fixes proven by paired re-runs before anything merges. Triggers: 'research-skill', '스킬 리서치', 'evaluate this skill'. Args — <skill name or SKILL.md path> [--probes N] [--seed S] [run=<dir>]."
+description: "Use when a skill should get better by running it for real, or when the user wants a skill evaluated. Triggers: 'research-skill', '스킬 리서치', 'evaluate this skill'."
 argument-hint: "<skill name or SKILL.md path> [--probes N] [--seed S] [run=<dir>]"
 ---
 
 # research-skill — improve a skill by running it
+
+## Args
+
+`<skill name or SKILL.md path> [--probes N] [--seed S] [run=<dir>]`
 
 A skill only gets better if it runs on inputs it was not written for, and someone other than its author looks at the
 result. This skill does that N times (default 10), fixes the causes, and proves the fixes before they land.

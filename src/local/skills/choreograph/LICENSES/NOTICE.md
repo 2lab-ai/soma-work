@@ -29,3 +29,4 @@ Upstream commit referenced: `715c1807e08c497cfd1dc4feb450a2a3300ef2a9`
   stop before the new `animate()` calls start (upstream passed an array, which
   starts them first).
 - Body content is otherwise kept verbatim from upstream. Supporting files are copied verbatim apart from the local notes listed above.
+- 2026-11-12: the frontmatter `description` was rewritten to say only when to use the skill (zworkflow `skill-description` rule). What the skill does stays in the body.

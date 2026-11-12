@@ -1,6 +1,6 @@
 ---
 name: cron
-description: "Cron/schedule manager UI. Trigger when the user types cron, schedule, scheduler, 크론, 스케줄, 스케쥴, 스케줄러, 스케쥴러 — or asks to see/change their cron jobs' model or output target. Lists all visible cron jobs (admins see every user's jobs with owner; non-admins see their own), then offers one-tap changes for the per-job model (default = creator's current model / opus / fable / fast / a specific model) and the output target (channel/thread/dm) via structured choice buttons."
+description: "Use when the user wants to see or change scheduled jobs, including a job's model or where its output goes. Triggers: 'cron', 'schedule', 'scheduler', '크론', '스케줄', '스케쥴', '스케줄러'."
 ---
 
 # cron — 크론잡 관리 UI

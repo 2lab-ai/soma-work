@@ -102,9 +102,10 @@ describe('post-deploy QA skills read GitHub through devops-tools gh_read', () =>
 describe('deploy-qa preflight and reduced mode', () => {
   const md = read('deploy-qa');
 
-  it('advertises the partial answer in its description and preflight', () => {
-    const description = md.match(/^description: "(.*)"$/m)?.[1] ?? '';
-    expect(description).toContain('applies / partial: <checks> / not-applicable / missing: <fields>');
+  it('advertises the partial answer in its Args and preflight', () => {
+    expect(md).toContain(
+      '`--preflight`: readiness check, see below. No writes. Replies with one of applies / partial: <checks> / not-applicable / missing: <fields>.',
+    );
     expect(md).toMatch(/Only adapter, screenshots-directory, and\/or `lockDir` checks fail → `partial: <checks>`/);
     // lockDir and the screenshots directory may not exist yet: creating them is the test.
     expect(md).toContain(
@@ -115,10 +116,6 @@ describe('deploy-qa preflight and reduced mode', () => {
   });
 
   it('answers --confirm with step 1 only, in one line, writing nothing', () => {
-    const description = md.match(/^description: "(.*)"$/m)?.[1] ?? '';
-    expect(description).toContain(
-      '--confirm = deploy confirmation only, replies confirmed / unconfirmed: <reason> / failed: <run> concluded <conclusion>',
-    );
     expect(md).toContain('[--confirm]');
     const args = md.slice(md.indexOf('## Args'), md.indexOf('## Profile'));
     expect(args).toContain('`--confirm`: run the deploy confirmation of step 1 only');
@@ -380,9 +377,10 @@ describe('deploy-qa $autoz waiver (waive=autoz)', () => {
   const step7 = steps.slice(steps.indexOf('7. **QA, one issue at a time**'), steps.indexOf('8. **Carry-over.**'));
   const final = md.slice(md.indexOf('## Final report'), md.indexOf('## Continuation'));
 
-  it('advertises waive=autoz in its description, argument hint and Args', () => {
+  it('advertises waive=autoz in its argument hint and Args (the description says only when)', () => {
     const description = md.match(/^description: "(.*)"$/m)?.[1] ?? '';
-    expect(description).toContain('waive=autoz');
+    expect(description).toMatch(/^Use when /);
+    expect(description).not.toContain('waive=');
     expect(md).toMatch(/^argument-hint: "[^"]*\[waive=autoz\][^"]*"$/m);
     expect(args).toContain('`waive=autoz`');
     // The request is the requester's answer; QA is never skipped or reduced by it.

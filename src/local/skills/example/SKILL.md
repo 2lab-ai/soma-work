@@ -1,6 +1,6 @@
 ---
 name: example
-description: Example skill for testing
+description: "Use when testing how the plugin loads a skill. Triggers: 'example skill'."
 allowed-tools: Read, Grep, Glob
 ---
 

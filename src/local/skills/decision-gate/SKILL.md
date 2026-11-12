@@ -1,6 +1,6 @@
 ---
 name: decision-gate
-description: A gate that decides between autonomous judgment, user question, or halt-and-decompose based on switching cost. Used in all situations requiring a decision, and to route implementation requests into Case A/B/C for using-epic-tasks.
+description: "Use when a decision has to be made and it is unclear whether to decide alone, ask the user, or stop and split the work. Also when an implementation request must be sized before using-epic-tasks. Triggers: 'decision-gate', '판단 게이트'."
 ---
 
 # Decision Gate — Autonomous Judgment vs User Question Discriminator

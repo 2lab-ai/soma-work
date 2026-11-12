@@ -1,6 +1,6 @@
 ---
 name: gestures
-description: Build drag, swipe and sheet gestures that follow the finger and release with velocity. Triggers on "drag gesture", "swipe to dismiss", "스와이프 제스처".
+description: "Use when building drag, swipe or bottom-sheet gestures that should follow the finger. Triggers: 'drag gesture', 'swipe to dismiss', 'bottom sheet gesture', '스와이프 제스처'."
 allowed-tools: Read, Grep, Glob, Edit, Write
 version: 1.0.0
 license: MIT
