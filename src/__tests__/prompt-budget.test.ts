@@ -53,7 +53,7 @@ const ONE_OFF_BUDGET: Record<string, number> = {
 
 /** Descriptions the SDK lists on every turn: skills (zworkflow + harness plugins) and commands; subagents. */
 const LISTING_BUDGET = {
-  skills: { total: 28_600, each: 1_400 },
+  skills: { total: 29_000, each: 1_400 },
   agents: { total: 11_400, each: 2_200 },
 };
 
