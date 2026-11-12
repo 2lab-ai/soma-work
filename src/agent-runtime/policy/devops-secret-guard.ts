@@ -14,6 +14,7 @@
  */
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import { posix as posixPath } from 'node:path';
 import { DATA_DIR, SECRETS_DIR } from '../../env-paths';
 
@@ -50,23 +51,128 @@ const APPROVAL_RECORD_FILES: readonly string[] = [
   'instruction-approvals.json',
 ];
 
-/** Per-owner grants: `DATA_DIR/<owner>/skill-grants.json` (`user-skill-grants-store.ts`). */
+/**
+ * Per-owner grants: `DATA_DIR/<owner>/skill-grants.json` (`user-skill-grants-store.ts`).
+ * Note: these checks read the filesystem (`realpath`), so the step-1b decision depends on what
+ * exists — `evaluateToolPolicy` is pure in its inputs apart from this guard.
+ */
 const PER_OWNER_APPROVAL_RECORD = 'skill-grants.json';
 
-/** The fixed approval records of `dataDir` — the paths every model sandbox write-denies. */
+/**
+ * The approval records of `dataDir` every model sandbox write-denies: the fixed files, and the
+ * per-owner grants of every owner directory that exists when the session starts. A file need not
+ * exist to be denied — creating one is the forgery.
+ */
 export function approvalRecordPaths(dataDir: string = DATA_DIR): string[] {
-  return APPROVAL_RECORD_FILES.map((file) => posixPath.join(dataDir, file));
+  const fixed = APPROVAL_RECORD_FILES.map((file) => posixPath.join(dataDir, file));
+  let owners: string[] = [];
+  try {
+    owners = fs
+      .readdirSync(dataDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => posixPath.join(dataDir, entry.name, PER_OWNER_APPROVAL_RECORD));
+  } catch {
+    // No data directory yet: nothing of it is writable either.
+  }
+  return [...fixed, ...owners];
 }
 
-/** `p` as written (normalized) and, when it exists, as the OS resolves it; lower-cased (macOS volumes are). */
-function spellings(p: string): string[] {
-  const out = [posixPath.normalize(p)];
-  try {
-    out.push(fs.realpathSync(p));
-  } catch {
-    // Not there (yet): the lexical spelling is what the tool would open.
+/**
+ * The permission rules every session gets (`settings.permissions.deny`, .prd/25 §1): the CLI checks
+ * them after its own path expansion, so they also hold for spellings this lexical guard cannot
+ * resolve (a path relative to the session's directory). Read rules cover Grep and Glob, Edit rules
+ * Write.
+ */
+export function secretStoreDenyRules(secretsDir: string = SECRETS_DIR, dataDir: string = DATA_DIR): string[] {
+  const rule = (tool: string, p: string) => `${tool}(/${p})`;
+  const stores = rootsOf(secretsDir);
+  const records = rootsOf(dataDir).flatMap((root) => [
+    ...APPROVAL_RECORD_FILES.map((file) => posixPath.join(root, file)),
+    posixPath.join(root, '*', PER_OWNER_APPROVAL_RECORD),
+  ]);
+  return [
+    ...stores.flatMap((store) => [
+      rule('Read', store),
+      rule('Read', `${store}/**`),
+      rule('Edit', store),
+      rule('Edit', `${store}/**`),
+    ]),
+    ...records.flatMap((record) => [rule('Read', record), rule('Edit', record)]),
+  ];
+}
+
+/**
+ * `p` as written and as the OS resolves it — through its deepest existing ancestor when it does not
+ * exist yet (on macOS `/var/…` is `/private/var/…`) — the spellings a root is known by.
+ */
+function rootsOf(p: string): string[] {
+  const lexical = posixPath.normalize(p);
+  return [...new Set([lexical, landing(lexical)])];
+}
+
+/**
+ * Where the target of a path lands: the deepest existing ancestor through `realpath`, then the
+ * missing names. A dangling symbolic link on the way is followed to where it points (a write through
+ * it creates its target). Lexical when nothing resolves.
+ */
+function landing(p: string, depth = 0): string {
+  const missing: string[] = [];
+  let current = p;
+  for (;;) {
+    try {
+      const real = fs.realpathSync(current);
+      return missing.length ? posixPath.join(real, ...missing.reverse()) : real;
+    } catch {
+      // Not there: maybe a dangling link, else go up.
+    }
+    try {
+      if (depth < 40 && fs.lstatSync(current).isSymbolicLink()) {
+        const target = posixPath.resolve(posixPath.dirname(current), fs.readlinkSync(current));
+        return landing(missing.length ? posixPath.join(target, ...[...missing].reverse()) : target, depth + 1);
+      }
+    } catch {
+      // Not there either.
+    }
+    const parent = posixPath.dirname(current);
+    if (parent === current) return p;
+    missing.push(posixPath.basename(current));
+    current = parent;
   }
-  return [...new Set(out.map((s) => (s.replace(/\/+$/, '') || '/').toLowerCase()))];
+}
+
+function normalizeCase(s: string): string {
+  return (s.replace(/\/+$/, '') || '/').toLowerCase();
+}
+
+/**
+ * Every absolute path a tool may open for `raw`, the way the SDK reads one — trimmed, `~` / `~/` to
+ * the home directory, Unicode NFC — each also where it lands through links; lower-cased (macOS
+ * volumes are). Empty for a relative spelling, which {@link relativeHits} checks instead.
+ */
+function readingsOf(raw: string): string[] {
+  const trimmed = raw.trim();
+  const expanded =
+    trimmed === '~'
+      ? os.homedir()
+      : trimmed.startsWith('~/')
+        ? posixPath.join(os.homedir(), trimmed.slice(2))
+        : trimmed;
+  const out = new Set<string>();
+  for (const candidate of [raw, trimmed, expanded]) {
+    for (const form of [candidate, candidate.normalize('NFC')]) {
+      if (!posixPath.isAbsolute(form)) continue;
+      const lexical = posixPath.normalize(form);
+      out.add(normalizeCase(lexical));
+      out.add(normalizeCase(landing(lexical)));
+    }
+  }
+  return [...out];
+}
+
+/** The last two names of `p`, lower-cased: how a relative spelling that reaches it must end. */
+function tailOf(p: string): string {
+  const parts = posixPath.normalize(p).split('/').filter(Boolean);
+  return parts.slice(-2).join('/').toLowerCase();
 }
 
 function isWithin(p: string, root: string): boolean {
@@ -74,13 +180,33 @@ function isWithin(p: string, root: string): boolean {
 }
 
 /**
- * True when `p` is the secret store or inside it, or — with `scan`, which reaches everything below
- * it — a directory above it. Absolute paths only: a relative spelling is the session's to resolve.
+ * A relative spelling (resolved by the session, which this check cannot see) that names the secret
+ * store by its last two names — `../../dev/secrets/x` — or, when it climbs with `..`, an approval
+ * record. The CLI deny rules ({@link secretStoreDenyRules}) hold for the rest.
  */
-function isSecretStorePath(p: string, scan: boolean): boolean {
-  if (!posixPath.isAbsolute(p)) return false;
-  const roots = spellings(SECRETS_DIR);
-  for (const s of spellings(p)) {
+function relativeHits(raw: string): 'store' | 'record' | null {
+  const trimmed = raw.trim().normalize('NFC');
+  if (trimmed === '' || posixPath.isAbsolute(trimmed) || trimmed.startsWith('~')) return null;
+  const rel = `/${posixPath.normalize(trimmed).toLowerCase().replace(/\/+$/, '')}/`;
+  if (rel.includes(`/${tailOf(SECRETS_DIR)}/`)) return 'store';
+  if (!rel.split('/').includes('..')) return null;
+  const data = posixPath.basename(DATA_DIR).toLowerCase();
+  for (const file of APPROVAL_RECORD_FILES) {
+    if (rel.endsWith(`/${data}/${file}/`)) return 'record';
+  }
+  return new RegExp(`/${escapeRegExp(data)}/[^/]+/${escapeRegExp(PER_OWNER_APPROVAL_RECORD)}/$`).test(rel)
+    ? 'record'
+    : null;
+}
+
+/**
+ * True when `raw` is the secret store or inside it, or — with `scan`, which reaches everything below
+ * it — a directory above it.
+ */
+function isSecretStorePath(raw: string, scan: boolean): boolean {
+  if (relativeHits(raw) === 'store') return true;
+  const roots = rootsOf(SECRETS_DIR).map(normalizeCase);
+  for (const s of readingsOf(raw)) {
     for (const root of roots) {
       if (isWithin(s, root) || (scan && isWithin(root, s))) return true;
     }
@@ -89,10 +215,10 @@ function isSecretStorePath(p: string, scan: boolean): boolean {
 }
 
 /** `DATA_DIR/<fixed record>` or `DATA_DIR/<owner>/skill-grants.json`. */
-function isApprovalRecord(p: string): boolean {
-  if (!posixPath.isAbsolute(p)) return false;
-  const dataRoots = spellings(DATA_DIR);
-  for (const s of spellings(p)) {
+function isApprovalRecord(raw: string): boolean {
+  if (relativeHits(raw) === 'record') return true;
+  const dataRoots = rootsOf(DATA_DIR).map(normalizeCase);
+  for (const s of readingsOf(raw)) {
     for (const root of dataRoots) {
       if (s === root || !isWithin(s, root)) continue;
       const parts = s.slice(root === '/' ? 1 : root.length + 1).split('/');
@@ -107,10 +233,12 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** The secret store named in an unquoted shell string, not continued by another name character. */
-function namesSecretStore(unquoted: string): boolean {
-  const lower = unquoted.toLowerCase();
-  return spellings(SECRETS_DIR).some((root) => new RegExp(`${escapeRegExp(root)}(?![\\w.-])`).test(lower));
+/** The secret store named in a string (lower-cased match), not continued by another name character. */
+function namesSecretStore(text: string): boolean {
+  const lower = text.toLowerCase();
+  return rootsOf(SECRETS_DIR)
+    .map(normalizeCase)
+    .some((root) => new RegExp(`${escapeRegExp(root)}(?![\\w.-])`).test(lower));
 }
 
 /** True for a short-flag cluster or long flag that makes `gh auth status` print the token. */
@@ -183,12 +311,15 @@ export function checkDevopsSecretPath(filePath: string): string | null {
 export function checkDevopsSecretGlob(pattern: string, basePath: string): string | null {
   const joined = basePath && pattern ? posixPath.join(basePath, pattern) : '';
   if (isBrokerPath(pattern) || isBrokerPath(basePath) || isBrokerPath(joined)) return BROKER_PATH_REASON;
-  // A wildcard segment never names a directory: the literal part before the first one is where the
-  // walk starts, and a walk reaches everything below it.
-  const target = joined || pattern;
-  const wildcard = /[*?[{]/.test(target);
-  // A relative pattern (`**/*.ts`) walks the session's directory, which this lexical check cannot see.
-  const literal = target.split(/[*?[{]/)[0];
-  if (literal !== '' && isSecretStorePath(literal, wildcard)) return SECRET_STORE_REASON;
+  const target = (joined || pattern).trim();
+  if (namesSecretStore(target)) return SECRET_STORE_REASON;
+  const first = target.search(/[*?[{]/);
+  if (first === -1) return isSecretStorePath(target, false) ? SECRET_STORE_REASON : null;
+  // The walk starts at the directory above the first segment with a wildcard (`/cfg/sec*/x` walks
+  // `/cfg/`), and reaches everything below it. A relative pattern (`**/*.ts`) walks the session's
+  // directory, which this lexical check cannot see — the CLI deny rules hold there.
+  const head = target.slice(0, first);
+  const walkRoot = head.slice(0, head.lastIndexOf('/') + 1);
+  if (walkRoot !== '' && isSecretStorePath(walkRoot, true)) return SECRET_STORE_REASON;
   return null;
 }

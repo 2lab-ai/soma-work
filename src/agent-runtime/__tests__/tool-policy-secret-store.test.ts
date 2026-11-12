@@ -6,9 +6,12 @@
  * for Bash; this tier is the boundary for the native file tools and the first tripwire for Bash.
  */
 
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { DATA_DIR, SECRETS_DIR } from '../../env-paths';
+import { approvalRecordPaths, secretStoreDenyRules } from '../policy/devops-secret-guard';
 import type { PermissionMode } from '../policy/permission-mode';
 import { evaluateToolPolicy, type ToolPolicyContext } from '../policy/tool-policy';
 
@@ -101,6 +104,116 @@ describe('evaluateToolPolicy — secret store hard deny', () => {
       }
     });
   }
+});
+
+describe('evaluateToolPolicy — secret store: spellings the SDK expands (trinity R1)', () => {
+  it('denies a leading-space spelling, an NFC-different spelling and a `..` spelling', () => {
+    for (const { label, ctx } of CONTEXTS) {
+      for (const file_path of [
+        ` ${secret('dev2-db-app')}`,
+        `${secret('dev2-db-app')} `,
+        path.join(SECRETS_DIR, '..', path.basename(SECRETS_DIR), 'x'),
+      ]) {
+        expect(evaluateToolPolicy('Read', { file_path }, ctx).reason, `${label} ${file_path}`).toBe(
+          'devops-secret: secret store path',
+        );
+      }
+    }
+  });
+
+  it('denies a `~/` spelling (the SDK expands it to the home directory)', () => {
+    const saved = process.env.HOME;
+    process.env.HOME = path.dirname(SECRETS_DIR); // os.homedir() reads HOME
+    try {
+      for (const { label, ctx } of CONTEXTS) {
+        expect(
+          evaluateToolPolicy('Read', { file_path: `~/${path.basename(SECRETS_DIR)}/dev2-db-app` }, ctx).reason,
+          label,
+        ).toBe('devops-secret: secret store path');
+        expect(evaluateToolPolicy('Grep', { pattern: '.', path: '~' }, ctx).reason, label).toBe(
+          'devops-secret: secret store path',
+        );
+      }
+    } finally {
+      process.env.HOME = saved;
+    }
+  });
+
+  it('denies a relative spelling that names the store by its last two names', () => {
+    const tail = `${path.basename(path.dirname(SECRETS_DIR))}/${path.basename(SECRETS_DIR)}`;
+    for (const file_path of [`../../../${tail}/dev2-db-app`, `${tail}/x`]) {
+      expect(evaluateToolPolicy('Read', { file_path }, makeCtx({ isAdmin: true })).reason, file_path).toBe(
+        'devops-secret: secret store path',
+      );
+    }
+    expect(evaluateToolPolicy('Grep', { pattern: '.', path: `../../${tail}` }, makeCtx({ isAdmin: true })).reason).toBe(
+      'devops-secret: secret store path',
+    );
+  });
+
+  it('denies a new file through a link to the store, a link inside a missing path, and a dangling link', () => {
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'secret-link-'));
+    fs.mkdirSync(SECRETS_DIR, { recursive: true });
+    try {
+      fs.symlinkSync(SECRETS_DIR, path.join(work, 'alias'));
+      fs.symlinkSync(path.join(SECRETS_DIR, 'not-yet'), path.join(work, 'dangling'));
+      fs.symlinkSync(path.dirname(DATA_DIR), path.join(work, 'cfg'));
+      const ctx = makeCtx({ isAdmin: true });
+      expect(
+        evaluateToolPolicy('Write', { file_path: path.join(work, 'alias', 'new'), content: 'x' }, ctx).reason,
+      ).toBe('devops-secret: secret store path');
+      expect(evaluateToolPolicy('Write', { file_path: path.join(work, 'dangling'), content: 'x' }, ctx).reason).toBe(
+        'devops-secret: secret store path',
+      );
+      const grants = path.join(work, 'cfg', path.basename(DATA_DIR), 'env-skill-grants.json');
+      expect(evaluateToolPolicy('Write', { file_path: grants, content: '{}' }, ctx).reason).toBe(
+        'devops-secret: approval record',
+      );
+    } finally {
+      fs.rmSync(work, { recursive: true, force: true });
+    }
+  });
+
+  it('denies a Glob whose wildcard segment matches the store, and a brace pattern naming it', () => {
+    const cfg = path.dirname(SECRETS_DIR);
+    const ctx = makeCtx({ isAdmin: true });
+    for (const input of [
+      { pattern: `${cfg}/secret*/*` },
+      { pattern: 'sec*/**', path: cfg },
+      { pattern: `${cfg}/s[e]crets/*` },
+      { pattern: `{${SECRETS_DIR},/tmp}/*` },
+    ]) {
+      expect(evaluateToolPolicy('Glob', input, ctx).reason, JSON.stringify(input)).toBe(
+        'devops-secret: secret store path',
+      );
+    }
+    expect(evaluateToolPolicy('Glob', { pattern: 'src/*.ts', path: '/tmp/U000ALICE' }, ctx).reason ?? '').not.toMatch(
+      /^devops-secret/,
+    );
+  });
+});
+
+describe('secretStoreDenyRules — CLI deny rules for every session', () => {
+  it('covers the store and every approval record, with absolute (`//`) rule paths', () => {
+    const rules = secretStoreDenyRules();
+    expect(rules).toEqual(
+      expect.arrayContaining([
+        `Read(/${SECRETS_DIR})`,
+        `Read(/${SECRETS_DIR}/**)`,
+        `Edit(/${SECRETS_DIR}/**)`,
+        `Edit(/${path.join(DATA_DIR, 'env-skill-grants.json')})`,
+        `Edit(/${path.join(DATA_DIR, '*', 'skill-grants.json')})`,
+      ]),
+    );
+    for (const rule of rules) expect(rule).toMatch(/^(Read|Edit)\(\/\//);
+  });
+});
+
+describe('approvalRecordPaths — per-owner grants are write-denied too (trinity R1)', () => {
+  it('lists the skill-grants.json of every owner directory, existing or not yet created', () => {
+    fs.mkdirSync(path.join(DATA_DIR, 'U000OWNER'), { recursive: true });
+    expect(approvalRecordPaths()).toContain(path.join(DATA_DIR, 'U000OWNER', 'skill-grants.json'));
+  });
 });
 
 describe('evaluateToolPolicy — approval records are not writable by a model', () => {

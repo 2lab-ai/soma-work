@@ -40,7 +40,8 @@ export function isSecretRef(value: unknown): value is SecretRef {
  */
 export function readSecret(name: string, secretsDir: string | undefined): string {
   if (!SECRET_NAME_RE.test(name) || name.includes('..')) {
-    throw new SecretRefError(`invalid secret name: ${JSON.stringify(name)}`);
+    // Not echoed: an operator may have pasted the value where the name goes.
+    throw new SecretRefError(`invalid secret name (${name.length} characters)`);
   }
   if (!secretsDir) {
     throw new SecretRefError(`secret "${name}": no secret store is configured`);
@@ -86,6 +87,8 @@ function resolve(value: unknown, secretsDir: string | undefined): unknown {
   if (isSecretRef(value)) return readSecret(value.$secret, secretsDir);
   if (Array.isArray(value)) return value.map((item) => resolve(item, secretsDir));
   if (value !== null && typeof value === 'object') {
+    // A `$secret` key in any other shape is a reference written wrong — never pass it through as data.
+    if (Object.hasOwn(value, '$secret')) throw new SecretRefError('malformed secret reference');
     const out: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value)) out[key] = resolve(item, secretsDir);
     return out;

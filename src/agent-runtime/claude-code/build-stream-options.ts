@@ -63,7 +63,7 @@ import type { ConversationSession, WorkflowType } from '../../types';
 import { DEFAULT_THINKING_ENABLED, userSettingsStore } from '../../user-settings-store';
 import { createTrackedClaudeProcessSpawner } from '../claude-child-process-registry';
 import { type ExecutionContext, executionContextFromSlack } from '../execution-context';
-import { approvalRecordPaths } from '../policy/devops-secret-guard';
+import { approvalRecordPaths, secretStoreDenyRules } from '../policy/devops-secret-guard';
 import { createNativeWriteCheck } from '../policy/native-write-boundary';
 import { permissionAdviceBoard } from '../policy/permission-advice';
 import { checkPlanPendingCall } from '../policy/plan-pending-guard';
@@ -772,6 +772,14 @@ export async function buildStreamOptions(
     });
   } else {
     logger.info('Sandbox disabled by admin setting', { user: contextUser });
+  }
+  // Every session, the sandbox on or off: CLI deny rules for the secret store and the approval records
+  // (.prd/25-env-access-architecture.md §1). The CLI matches them after its own path expansion, so they
+  // also hold for a spelling relative to the session's directory, which policy step 1b cannot resolve.
+  {
+    const base = options.settings && typeof options.settings === 'object' ? options.settings : {};
+    const deny = [...(base.permissions?.deny ?? []), ...secretStoreDenyRules()];
+    options.settings = { ...base, permissions: { ...(base.permissions ?? {}), deny } };
   }
   // Plan mode (SSOT 2026-11-02): a planning turn runs no shell — a skill's or command's inline `!` lines
   // included, which the SDK runs before the content reaches the model and without the PreToolUse hook

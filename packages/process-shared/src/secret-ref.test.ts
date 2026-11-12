@@ -94,6 +94,20 @@ describe('resolveSecretRefs', () => {
     expect(resolveSecretRefs(plain, undefined)).toEqual(plain);
   });
 
+  it('refuses a `$secret` key in any other shape instead of passing it through', () => {
+    expect(() => resolveSecretRefs({ a: { $secret: 1 } }, dir)).toThrow(SecretRefError);
+    expect(() => resolveSecretRefs({ a: { $secret: 'db-app', note: 'x' } }, dir)).toThrow(SecretRefError);
+  });
+
+  it('never echoes an invalid name (it may be a pasted value)', () => {
+    try {
+      readSecret('p@ss w0rd!', dir);
+      expect.unreachable();
+    } catch (error) {
+      expect((error as Error).message).not.toContain('p@ss');
+    }
+  });
+
   it('throws on the first unresolvable reference', () => {
     expect(() => resolveSecretRefs({ a: { $secret: 'nope' } }, dir)).toThrow(SecretRefError);
   });

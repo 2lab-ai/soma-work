@@ -26,7 +26,7 @@ import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
 import type { ConversationSession } from '../../types';
 import { addThreadGrant, ENV_SKILL_GRANT_OWNER } from '../../user-skill-grants-store';
 import { type BuildStreamOptionsDeps, buildStreamOptions } from '../claude-code/build-stream-options';
-import { approvalRecordPaths } from '../policy/devops-secret-guard';
+import { approvalRecordPaths, secretStoreDenyRules } from '../policy/devops-secret-guard';
 
 // A real, existing working directory so the cwd branch (which `fs.existsSync`
 // gates) actually sets `options.cwd`.
@@ -346,6 +346,12 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
     expect(sandbox.filesystem?.denyRead).toContain(SECRETS_DIR);
     expect(sandbox.filesystem?.denyWrite).toEqual(expect.arrayContaining(approvalRecordPaths()));
     expect(sandbox.filesystem?.denyWrite).toContain(SECRETS_DIR);
+  });
+
+  it('settings: every session gets the secret-store and approval-record CLI deny rules', async () => {
+    const { options } = await buildStreamOptions({ queryEnv: {}, slackContext: makeSlackContext() }, makeDeps());
+    const settings = options.settings as { permissions?: { deny?: string[] } };
+    expect(settings.permissions?.deny).toEqual(expect.arrayContaining(secretStoreDenyRules()));
   });
 
   it('sandbox: network omitted when user disabled network', async () => {
