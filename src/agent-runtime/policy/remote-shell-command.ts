@@ -285,11 +285,13 @@ function delimiterWord(src: string, at: number): { delim: string; quoted: boolea
       delim += text;
       i = end < 0 ? src.length : end;
     } else if (c === '"' || locale) {
-      // In double quotes a backslash escapes only `\`, `$`, a backtick, `"` and a newline.
+      // In double quotes a backslash escapes only `\`, `$`, a backtick and `"`; with a newline it joins lines.
       quoted = true;
       let j = (locale ? i + 1 : i) + 1;
       for (; j < src.length && src[j] !== '"'; j++) {
-        if (src[j] === '\\' && '\\$`"\n'.includes(src[j + 1] ?? 'x')) {
+        if (src[j] === '\\' && src[j + 1] === '\n') {
+          j++;
+        } else if (src[j] === '\\' && '\\$`"'.includes(src[j + 1] ?? 'x')) {
           delim += src[j + 1];
           j++;
         } else {
@@ -297,6 +299,9 @@ function delimiterWord(src: string, at: number): { delim: string; quoted: boolea
         }
       }
       i = j;
+    } else if (c === '\\' && src[i + 1] === '\n') {
+      // A line continuation: the word goes on after it.
+      i++;
     } else if (c === '\\') {
       quoted = true;
       delim += src[i + 1] ?? '';
@@ -433,8 +438,15 @@ function list(p: Parser, closed: boolean, depth: number): void {
       for (const h of pending.splice(0)) {
         const body: string[] = [];
         while (pos < src.length) {
-          const nl = src.indexOf('\n', pos);
-          const line = src.slice(pos, nl < 0 ? src.length : nl);
+          let nl = src.indexOf('\n', pos);
+          let line = src.slice(pos, nl < 0 ? src.length : nl);
+          // In an unquoted heredoc a backslash at the end of a line joins it to the next, before the delimiter
+          // is looked for (`EO\` + `F` ends it).
+          while (!h.quoted && nl >= 0 && /(^|[^\\])(\\\\)*\\$/.test(line)) {
+            const next = src.indexOf('\n', nl + 1);
+            line = line.slice(0, -1) + src.slice(nl + 1, next < 0 ? src.length : next);
+            nl = next;
+          }
           pos = nl < 0 ? src.length : nl + 1;
           if ((h.stripTabs ? line.replace(/^\t+/, '') : line) === h.delim) break;
           body.push(line);

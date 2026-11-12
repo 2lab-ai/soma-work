@@ -118,6 +118,10 @@ const RUNS = [
   '{ echo a } always { ssh host }',
   "ack --pager='ssh host' x",
   'rg --hostname-bin ssh x',
+  // trinity R4 (astra, P2): line continuations in a delimiter and in an unquoted heredoc body.
+  'cat <<"E\\\nOF"\ntext\nEOF\nssh host',
+  'cat <<E\\\nOF\ntext\nEOF\nssh host',
+  'cat <<EOF\nEO\\\nF\nssh host',
 ];
 
 const DATA = [
