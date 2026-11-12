@@ -180,16 +180,18 @@ function isWithin(p: string, root: string): boolean {
 }
 
 /**
- * A relative spelling (resolved by the session, which this check cannot see) that names the secret
- * store by its last two names — `../../dev/secrets/x` — or, when it climbs with `..`, an approval
- * record. The CLI deny rules ({@link secretStoreDenyRules}) hold for the rest.
+ * A relative spelling (resolved by the session, which this check cannot see) that climbs with `..`
+ * and then names the secret store by its last two names — `../../dev/secrets/x` — or an approval
+ * record. Without a climb a relative path stays below the session's directory, and a project's own
+ * `dev/secrets/` folder is not the store. The CLI deny rules ({@link secretStoreDenyRules}) hold for
+ * the rest.
  */
 function relativeHits(raw: string): 'store' | 'record' | null {
   const trimmed = raw.trim().normalize('NFC');
   if (trimmed === '' || posixPath.isAbsolute(trimmed) || trimmed.startsWith('~')) return null;
   const rel = `/${posixPath.normalize(trimmed).toLowerCase().replace(/\/+$/, '')}/`;
-  if (rel.includes(`/${tailOf(SECRETS_DIR)}/`)) return 'store';
   if (!rel.split('/').includes('..')) return null;
+  if (rel.includes(`/${tailOf(SECRETS_DIR)}/`)) return 'store';
   const data = posixPath.basename(DATA_DIR).toLowerCase();
   for (const file of APPROVAL_RECORD_FILES) {
     if (rel.endsWith(`/${data}/${file}/`)) return 'record';
@@ -241,6 +243,67 @@ function namesSecretStore(text: string): boolean {
     .some((root) => new RegExp(`${escapeRegExp(root)}(?![\\w.-])`).test(lower));
 }
 
+/**
+ * A word of a shell string that holds a `/`, cut at the characters that join a path to an option,
+ * a list or a file argument (`--in=/p`, `a:/p`, `curl -d @/p`).
+ */
+const PATH_WORD_RE = /[^\s;&|()`<>=:,@]*\/[^\s;&|()`<>=:,@]*/g;
+
+/**
+ * A path word of an unquoted shell string that reaches the secret store the way the OS reads it:
+ * `~` and `$HOME` expanded, `.` and `..` collapsed, through links, any case. A command that changes
+ * directory first (`cd <cfg> && cat secrets/x`) is past a lexical check — the sandbox `denyRead`
+ * holds there.
+ */
+function commandReachesSecretStore(unquoted: string): boolean {
+  for (const [word] of unquoted.matchAll(PATH_WORD_RE)) {
+    const expanded = word.replace(/^(?:~|\$HOME|\$\{HOME\})(?=\/|$)/, os.homedir());
+    if (isSecretStorePath(expanded, false)) return true;
+  }
+  return false;
+}
+
+/** Most alternatives a Glob brace pattern may expand to before the check refuses it. */
+const MAX_GLOB_ALTERNATIVES = 256;
+
+/**
+ * Every alternative of a brace pattern (`{a,b}` and nested ones), innermost first; null past
+ * {@link MAX_GLOB_ALTERNATIVES} — a pattern this check cannot enumerate is not let through.
+ */
+function expandBraces(pattern: string): string[] | null {
+  let out = [pattern];
+  for (;;) {
+    const next: string[] = [];
+    let expanded = false;
+    for (const p of out) {
+      const m = /\{([^{}]*)\}/.exec(p);
+      if (!m) {
+        next.push(p);
+        continue;
+      }
+      expanded = true;
+      for (const alt of m[1].split(',')) next.push(p.slice(0, m.index) + alt + p.slice(m.index + m[0].length));
+      if (next.length > MAX_GLOB_ALTERNATIVES) return null;
+    }
+    if (!expanded) return out;
+    out = next;
+  }
+}
+
+/**
+ * A Glob walk over `target` that starts in the secret store or above it. The walk starts at the
+ * directory above the first segment with a wildcard (`/cfg/sec*\/x` walks `/cfg/`) and reaches
+ * everything below it.
+ */
+function globWalkReachesStore(target: string): boolean {
+  if (namesSecretStore(target)) return true;
+  const first = target.search(/[*?[]/);
+  if (first === -1) return isSecretStorePath(target, false);
+  const head = target.slice(0, first);
+  const walkRoot = head.slice(0, head.lastIndexOf('/') + 1);
+  return walkRoot !== '' && isSecretStorePath(walkRoot, true);
+}
+
 /** True for a short-flag cluster or long flag that makes `gh auth status` print the token. */
 function isShowTokenFlag(word: string): boolean {
   return word === '--show-token' || word.startsWith('--show-token=') || /^-[A-Za-z]*t[A-Za-z]*$/.test(word);
@@ -272,7 +335,7 @@ export function checkDevopsSecretCommand(command: string): string | null {
   if (DEVOPS_BROKER_PATH_RE.test(unquoted) || /soma-devops-broker/i.test(unquoted)) {
     return BROKER_PATH_REASON;
   }
-  if (namesSecretStore(unquoted)) return SECRET_STORE_REASON;
+  if (namesSecretStore(unquoted) || commandReachesSecretStore(unquoted)) return SECRET_STORE_REASON;
   for (const words of shellSegments(unquoted)) {
     for (let i = 0; i < words.length; i++) {
       const name = basename(words[i]);
@@ -306,20 +369,18 @@ export function checkDevopsSecretPath(filePath: string): string | null {
 
 /**
  * Glob: the pattern, the base path, or both joined, under a broker root; a walk that starts in the
- * secret store or above it.
+ * secret store or above it. An absolute pattern walks from its own root — the CLI ignores `path`
+ * then — so the pattern is checked alone as well as joined to `path`. A relative pattern with no
+ * `path` (`**\/*.ts`) walks the session's directory, which this check cannot see — the CLI deny
+ * rules hold there.
  */
 export function checkDevopsSecretGlob(pattern: string, basePath: string): string | null {
   const joined = basePath && pattern ? posixPath.join(basePath, pattern) : '';
   if (isBrokerPath(pattern) || isBrokerPath(basePath) || isBrokerPath(joined)) return BROKER_PATH_REASON;
-  const target = (joined || pattern).trim();
-  if (namesSecretStore(target)) return SECRET_STORE_REASON;
-  const first = target.search(/[*?[{]/);
-  if (first === -1) return isSecretStorePath(target, false) ? SECRET_STORE_REASON : null;
-  // The walk starts at the directory above the first segment with a wildcard (`/cfg/sec*/x` walks
-  // `/cfg/`), and reaches everything below it. A relative pattern (`**/*.ts`) walks the session's
-  // directory, which this lexical check cannot see — the CLI deny rules hold there.
-  const head = target.slice(0, first);
-  const walkRoot = head.slice(0, head.lastIndexOf('/') + 1);
-  if (walkRoot !== '' && isSecretStorePath(walkRoot, true)) return SECRET_STORE_REASON;
+  for (const target of new Set([pattern.trim(), joined.trim()])) {
+    if (target === '') continue;
+    const alternatives = expandBraces(target);
+    if (alternatives === null || alternatives.some(globWalkReachesStore)) return SECRET_STORE_REASON;
+  }
   return null;
 }
