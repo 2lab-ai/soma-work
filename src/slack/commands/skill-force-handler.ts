@@ -7,6 +7,7 @@ import { checkEnvSkillPermission, type EnvSkillRegistry, envSkillRegistry } from
 import { Logger } from '../../logger';
 import { isSafePathSegment } from '../../path-utils';
 import { isAdmittedPluginName } from '../../plugin/admitted-plugin-names';
+import { RETIRED_SKILL_SUCCESSORS } from '../../skill-locator';
 import { createPermissionRequest } from '../../skill-permission-request-store';
 import type { ConversationSession } from '../../types';
 import { extractCopiedFrom } from '../../user-skill-frontmatter';
@@ -652,6 +653,9 @@ export class SkillForceHandler implements CommandHandler {
         matches: matches.map((p) => `${p}:${name}`),
       };
     }
+    // A retired name (folded into another skill) resolves to its successor, as a stored autoskill does.
+    const successor = RETIRED_SKILL_SUCCESSORS.get(name);
+    if (successor) return this.resolveBareSkill(successor, userId);
     return { kind: 'not_found', name };
   }
 

@@ -47,7 +47,7 @@ Formatting:
 Numbers, dates, times:
 
 - Write "one", then numerals from 2 upwards (2, 9, 25).
-- A number that starts a sentence is written out in full ("Twelve people applied"), or the sentence is reworded.
+- A number that starts a sentence is written out in full ("Twelve people applied"), or the sentence is reworded — except in a title or subheading.
 - % with numerals (50%). £ with no decimals unless there are pence (£75, £75.50). Spell out millions and billions (£5 million).
 - Ranges with "to", not a hyphen: 10 to 20, Monday to Friday, 4 to 8 June (hyphens only inside tables).
 - Dates: 4 June 2026 — no comma, no "th".

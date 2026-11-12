@@ -34,7 +34,7 @@ Nothing is exempt for looking easy. When the content is already plain, the top r
 
 ## The rungs
 
-**One line.** What it is, why it matters to this reader, what happens next — in that order, in at most 2 sentences. It carries what the reader must do and any warning that could hurt them if missed. Keep the number that carries the point: "6 tries in 15 minutes" beats "a few tries". Name the concrete thing: the service that breaks, the person who waits.
+**One line.** What it is, why it matters to this reader, what happens next — in that order, in at most 2 sentences. It carries what the reader must do and any warning that could hurt them if missed. Keep the number that carries the point: "6 tries in 15 minutes" beats "a few tries". Write for a clever outsider, not a child: no baby talk, and do not open with "basically", "simply" or "just". Name the concrete thing: the service that breaks, the person who waits.
 
 **The map.** Only for a long document — about 4 sections or more. The whole structure in plain words, before any detail: a short tree, or 3 to 7 bullets. Each node is a summary of its content ("the fix needs a restart"), not a label ("fix"). End with a reading guide: which part to read for which question. A map node uses no term from the detail rung.
 
@@ -67,13 +67,16 @@ Label the top rung so the reader can stop there: "In short:" in English, "요약
 
 ## Planning artifacts: one artifact, one rung
 
-An epic, an issue and a PR are rungs of one ladder. Titles, goals and summaries of upper artifacts carry no file paths, function names, environment variables or code blocks — those belong in the leaf (the PR, or an issue's implementation-spec section). Symptoms of a broken ladder: a plan that names functions, a paragraph that mixes "why" and "how", a review that stops at implementation detail, a document no one can re-enter after a session break. Move up a rung when you cannot say why; move down when you cannot say what to do next. Every upper rung needs a way down.
+An epic, an issue and a PR are rungs of one ladder. Titles, goals and summaries of upper artifacts carry no file paths, function names, environment variables or code blocks — those belong in the leaf (the PR, or an issue's implementation-spec section). Symptoms of a broken ladder: a plan that names functions, a paragraph that mixes "why" and "how", a review that stops at implementation detail, a document no one can re-enter after a session break. Move up a rung when you cannot say why; move down when you cannot say what to do next. Every upper rung needs a way down. Inside one artifact the ladder uses only that artifact's vocabulary; when one document must carry two of these rungs, mark the boundary with `---` and a new heading, one boundary per rung.
 
 ## Where the rungs go
 
 - Answers and chat: one line first, then the map, then the detail.
 - PR and issue bodies: the calldiff block keeps the first position, as the calldiff skill requires. The one line and the map come directly after it.
 - Reports (es, html): the top summary is the top rung; the sections are the detail.
+- Rungs sit at document and section level, never paragraph by paragraph.
+- Asked for a summary: the top rungs are the summary, and nothing is lost because the source stays linked — point to it rather than restating every fact.
+- Briefing a research agent: pass this skill so its report comes back in the same shape.
 - Korean text: run the `zkorean` agent on the finished draft when a Korean sentence reads stiffly.
 
 ## When there is no ladder

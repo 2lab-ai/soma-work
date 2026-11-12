@@ -102,6 +102,16 @@ export function resolveAutoskillContent(name: string, userId?: string): Resolved
   return successor ? resolveExactSkill(successor, userId) : null;
 }
 
+/**
+ * The name to store for a requested skill: a retired name that resolves only through its successor
+ * is stored as the successor, so a stored list never carries a name the picker cannot show.
+ */
+export function canonicalSkillName(name: string, userId?: string): string {
+  if (resolveExactSkill(name, userId)) return name;
+  const successor = RETIRED_SKILL_SUCCESSORS.get(name);
+  return successor && resolveExactSkill(successor, userId) ? successor : name;
+}
+
 function resolveExactSkill(name: string, userId?: string): ResolvedAutoskill | null {
   if (!isSafePathSegment(name)) return null;
 

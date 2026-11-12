@@ -16,7 +16,7 @@ vi.mock('node:fs', () => ({
 
 import * as fs from 'node:fs';
 import { setAdmittedPluginNames } from '../plugin/admitted-plugin-names';
-import { autoskillExists, listAvailableSkills, resolveAutoskillContent } from '../skill-locator';
+import { autoskillExists, canonicalSkillName, listAvailableSkills, resolveAutoskillContent } from '../skill-locator';
 
 // The PLUGINS_DIR plugins these tests mount are ones PluginManager admitted on a real host. A
 // directory that is not admitted is not served (see src/plugin/__tests__/admitted-plugin-names.test.ts).
@@ -122,6 +122,14 @@ describe('resolveAutoskillContent — retired skill names', () => {
     );
     vi.mocked(fs.readFileSync).mockReturnValue('USER GOVUK' as any);
     expect(resolveAutoskillContent('using-govuk', 'U1')?.key).toBe('user:using-govuk');
+  });
+
+  it('canonicalSkillName stores the successor for a retired name, and keeps any name that resolves itself', () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => LOCAL(String(p)) && String(p).includes('/using-zwriting/'));
+    expect(canonicalSkillName('using-govuk', 'U1')).toBe('using-zwriting');
+    expect(canonicalSkillName('using-zwriting', 'U1')).toBe('using-zwriting');
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => String(p).includes('/data/U1/skills/using-govuk/'));
+    expect(canonicalSkillName('using-govuk', 'U1')).toBe('using-govuk');
   });
 
   it('a name that is neither present nor retired still resolves to null', () => {

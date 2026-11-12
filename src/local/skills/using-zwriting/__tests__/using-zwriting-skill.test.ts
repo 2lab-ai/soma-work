@@ -79,7 +79,7 @@ describe('local:using-zwriting — registration (T1)', () => {
   });
 
   it('SKILL.md stays lean — detail lives in references', () => {
-    expect(Buffer.byteLength(read(SKILL_MD))).toBeLessThanOrEqual(10_240);
+    expect(Buffer.byteLength(read(SKILL_MD))).toBeLessThanOrEqual(12_288);
     for (const ref of ['plain-language.md', 'structure-engine.md', 'renderers.md']) {
       expect(read(SKILL_MD)).toContain(`references/${ref}`);
     }
@@ -112,6 +112,14 @@ describe('local:using-zwriting — layered explanation (T2)', () => {
     expect(md()).toMatch(/no file paths, function names, environment variables or code blocks/);
   });
 
+  it('keeps the using-eli5 and using-ha-thinking rules callers relied on', () => {
+    expect(md()).toMatch(/no baby talk, and do not open with "basically", "simply" or "just"/);
+    expect(md()).toMatch(/never paragraph by paragraph/);
+    expect(md()).toMatch(/mark the boundary with `---` and a new heading, one boundary per rung/);
+    expect(md()).toMatch(/Briefing a research agent: pass this skill/);
+    expect(md()).toMatch(/Asked for a summary: the top rungs are the summary/);
+  });
+
   it('keeps the calldiff-first rule for PR bodies and the 2 closed exceptions', () => {
     expect(md()).toMatch(/calldiff block keeps the first position/);
     expect(md()).toMatch(/do not invent a third case/);
@@ -127,7 +135,7 @@ describe('local:using-zwriting — research fixes (T3)', () => {
   });
 
   it('a number that starts a sentence is written out', () => {
-    expect(read(PLAIN_MD)).toMatch(/A number that starts a sentence is written out/);
+    expect(read(PLAIN_MD)).toMatch(/A number that starts a sentence is written out[^\n]*except in a title or subheading/);
   });
 
   it('gaps in the source stay visible and no fact is added', () => {
