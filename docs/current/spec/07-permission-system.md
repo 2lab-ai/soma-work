@@ -463,7 +463,7 @@ this.app.action('deny_tool', async ({ ack, body, respond }) => {
 | 대상 | 거부 | 이유 |
 |---|---|---|
 | 비밀 저장소 `SECRETS_DIR` (`<config dir>/secrets`) | Bash 문자열에 경로가 보일 때 · Read · Edit · Write · 그 안을 가리키는 Grep·Glob · 그 위 디렉터리를 훑는 Grep·Glob(와일드카드) | `devops-secret: secret store path` |
-| 승인·grant 기록 (`DATA_DIR`의 `env-skill-grants.json` · `mcp-tool-grants.json` · `skill-perm-requests.json` · `admin-requests.json` · `cron-run-requests.json` · `instruction-approvals.json`, `DATA_DIR/<owner>/skill-grants.json`) | Read · Edit · Write | `devops-secret: approval record` |
+| 승인·grant 기록 (`DATA_DIR`의 `env-skill-grants.json` · `mcp-tool-grants.json` · `skill-perm-requests.json` · `admin-requests.json` · `cron-run-requests.json` · `instruction-approvals.json`, `DATA_DIR/<owner>/skill-grants.json`, 각 기록 옆의 `.bak`·임시 파일 — 기록이 깨지면 `.bak`을 읽으므로 위조된 백업은 위조된 기록이다) | Read · Edit · Write | `devops-secret: approval record` |
 
 - 판단은 `src/agent-runtime/policy/devops-secret-guard.ts`. `checkDevopsSecretForTool`이 도구마다 부르는 호출 모양은 그대로라
   Lean ToolPolicy 모델(`devopsSecret` 기본값)은 바뀌지 않는다.
@@ -471,6 +471,9 @@ this.app.action('deny_tool', async ({ ack, body, respond }) => {
   조상까지). Bash는 `/`가 든 낱말마다 같은 방식(`$HOME` 포함)으로 본다. 절대 Glob 패턴은 `path`와 상관없이 패턴만으로도
   보고, `{a,b}`는 펼쳐서 본다(256개를 넘으면 거부). 상대 경로는 `..`로 올라간 뒤 저장소의 마지막 두 이름이 보일 때만
   잡는다 — 그 밖의 상대 경로와 `cd` 뒤의 Bash는 CLI 거부 규칙(`settings.permissions.deny`)과 샌드박스가 막는다.
+- 아직 막지 못하는 것(#1210에서 닫는다): 어드민이 자기 샌드박스를 끈(`sandbox off`) 세션의 Bash, 그리고 어드민 모델의
+  네이티브 Write·Edit가 배포 디렉터리(`config.json`·`mcp-servers.json`·코드)를 고치는 경로 — 설정을 고쳐 비밀 참조를 다른
+  필드나 다른 호스트로 돌릴 수 있다. 그래서 #1210 전에는 비밀 저장소가 일반 유저 모델과 어드민의 네이티브 읽기만 막는다.
 - 샌드박스(`build-stream-options.ts`)는 모든 모델 세션에 같은 경로를 OS 수준으로 건다: `denyRead: [SECRETS_DIR]`,
   `denyWrite: [SECRETS_DIR, …승인 기록]`, `failIfUnavailable: true`(샌드박스가 뜨지 못하면 명령을 실행하지 않는다.
   예외는 `.env`의 `SOMA_SANDBOX_ALLOW_UNAVAILABLE=true` — `src/config.ts` `getSandboxAllowUnavailable`).

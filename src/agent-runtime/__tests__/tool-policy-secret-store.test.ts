@@ -309,6 +309,8 @@ describe('secretStoreDenyRules — CLI deny rules for every session', () => {
         `Edit(/${SECRETS_DIR}/**)`,
         `Edit(/${path.join(DATA_DIR, 'env-skill-grants.json')})`,
         `Edit(/${path.join(DATA_DIR, '*', 'skill-grants.json')})`,
+        `Edit(/${path.join(DATA_DIR, 'instruction-approvals.json')}.*)`,
+        `Edit(/${path.join(DATA_DIR, '*', 'skill-grants.json')}.*)`,
       ]),
     );
     for (const rule of rules) expect(rule).toMatch(/^(Read|Edit)\(\/\//);
@@ -319,6 +321,13 @@ describe('approvalRecordPaths — per-owner grants are write-denied too (trinity
   it('lists the skill-grants.json of every owner directory, existing or not yet created', () => {
     fs.mkdirSync(path.join(DATA_DIR, 'U000OWNER'), { recursive: true });
     expect(approvalRecordPaths()).toContain(path.join(DATA_DIR, 'U000OWNER', 'skill-grants.json'));
+  });
+
+  it('lists the `.bak` each record falls back to (astra R3)', () => {
+    fs.mkdirSync(path.join(DATA_DIR, 'U000OWNER'), { recursive: true });
+    const paths = approvalRecordPaths();
+    expect(paths).toContain(path.join(DATA_DIR, 'instruction-approvals.json.bak'));
+    expect(paths).toContain(path.join(DATA_DIR, 'U000OWNER', 'skill-grants.json.bak'));
   });
 });
 
@@ -351,9 +360,40 @@ describe('evaluateToolPolicy — approval records are not writable by a model', 
     });
   }
 
+  // A damaged live record is replaced by its `.bak` (`readJsonWithBackup`), so a forged backup is a
+  // forged record; temp files share the record's name too (astra R3).
+  for (const sibling of [
+    path.join(DATA_DIR, 'instruction-approvals.json.bak'),
+    path.join(DATA_DIR, 'admin-requests.json.bak'),
+    path.join(DATA_DIR, 'env-skill-grants.json.123.abc.tmp'),
+    path.join(DATA_DIR, 'U000OWNER', 'skill-grants.json.bak'),
+  ]) {
+    it(`denies Write and Edit of the record sibling ${path.relative(DATA_DIR, sibling)} for users and admins`, () => {
+      for (const { label, ctx } of CONTEXTS) {
+        for (const [tool, input] of [
+          ['Write', { file_path: sibling, content: '{"version":1,"requests":{}}' }],
+          ['Edit', { file_path: sibling, old_string: 'a', new_string: 'b' }],
+        ] as const) {
+          expect(evaluateToolPolicy(tool, input, ctx).reason, `${label} ${tool}`).toBe(
+            'devops-secret: approval record',
+          );
+        }
+      }
+    });
+  }
+
+  it('denies a relative `..` spelling of a record backup', () => {
+    const rel = `../../${path.basename(DATA_DIR)}/instruction-approvals.json.bak`;
+    expect(evaluateToolPolicy('Write', { file_path: rel, content: '{}' }, makeCtx()).reason).toBe(
+      'devops-secret: approval record',
+    );
+  });
+
   it('leaves other files in DATA_DIR and a deeper skill-grants.json alone', () => {
     for (const file of [
       path.join(DATA_DIR, 'sessions.json'),
+      path.join(DATA_DIR, 'sessions.json.bak'),
+      path.join(DATA_DIR, 'env-skill-grants.jsonl'),
       path.join(DATA_DIR, 'U000OWNER', 'skills', 'x', 'skill-grants.json'),
     ]) {
       expect(

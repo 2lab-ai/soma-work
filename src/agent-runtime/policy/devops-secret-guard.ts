@@ -59,18 +59,28 @@ const APPROVAL_RECORD_FILES: readonly string[] = [
 const PER_OWNER_APPROVAL_RECORD = 'skill-grants.json';
 
 /**
- * The approval records of `dataDir` every model sandbox write-denies: the fixed files, and the
- * per-owner grants of every owner directory that exists when the session starts. A file need not
- * exist to be denied — creating one is the forgery.
+ * `name` is `record` or a sibling the stores keep beside it: the `.bak` a damaged live file falls
+ * back to (`readJsonWithBackup`), so a forged backup is a forged record, and the temp files.
+ */
+function isRecordName(name: string, record: string): boolean {
+  return name === record || name.startsWith(`${record}.`);
+}
+
+/**
+ * The approval records of `dataDir` every model sandbox write-denies, each with the `.bak` it falls
+ * back to: the fixed files, and the per-owner grants of every owner directory that exists when the
+ * session starts. A file need not exist to be denied — creating one is the forgery. (Temp files
+ * have names no model can guess, opened exclusively; the CLI deny rules cover them by pattern.)
  */
 export function approvalRecordPaths(dataDir: string = DATA_DIR): string[] {
-  const fixed = APPROVAL_RECORD_FILES.map((file) => posixPath.join(dataDir, file));
+  const withBackup = (record: string) => [record, `${record}.bak`];
+  const fixed = APPROVAL_RECORD_FILES.flatMap((file) => withBackup(posixPath.join(dataDir, file)));
   let owners: string[] = [];
   try {
     owners = fs
       .readdirSync(dataDir, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
-      .map((entry) => posixPath.join(dataDir, entry.name, PER_OWNER_APPROVAL_RECORD));
+      .flatMap((entry) => withBackup(posixPath.join(dataDir, entry.name, PER_OWNER_APPROVAL_RECORD)));
   } catch {
     // No data directory yet: nothing of it is writable either.
   }
@@ -97,7 +107,13 @@ export function secretStoreDenyRules(secretsDir: string = SECRETS_DIR, dataDir: 
       rule('Edit', store),
       rule('Edit', `${store}/**`),
     ]),
-    ...records.flatMap((record) => [rule('Read', record), rule('Edit', record)]),
+    // `<record>.*`: the `.bak` and the temp files beside each record.
+    ...records.flatMap((record) => [
+      rule('Read', record),
+      rule('Edit', record),
+      rule('Read', `${record}.*`),
+      rule('Edit', `${record}.*`),
+    ]),
   ];
 }
 
@@ -200,12 +216,12 @@ function relativeHits(raw: string): 'store' | 'record' | null {
   if (!rel.split('/').includes('..')) return null;
   if (rel.includes(`/${tailOf(SECRETS_DIR)}/`)) return 'store';
   const data = posixPath.basename(DATA_DIR).toLowerCase();
-  for (const file of APPROVAL_RECORD_FILES) {
-    if (rel.endsWith(`/${data}/${file}/`)) return 'record';
+  const names = rel.split('/').filter(Boolean);
+  const name = names[names.length - 1] ?? '';
+  if (names[names.length - 2] === data && APPROVAL_RECORD_FILES.some((file) => isRecordName(name, file))) {
+    return 'record';
   }
-  return new RegExp(`/${escapeRegExp(data)}/[^/]+/${escapeRegExp(PER_OWNER_APPROVAL_RECORD)}/$`).test(rel)
-    ? 'record'
-    : null;
+  return names[names.length - 3] === data && isRecordName(name, PER_OWNER_APPROVAL_RECORD) ? 'record' : null;
 }
 
 /** The spellings of the secret store, lower-cased, resolved now (it may not exist yet). */
@@ -227,7 +243,7 @@ function isSecretStorePath(raw: string, scan: boolean, roots: string[] = storeRo
   return false;
 }
 
-/** `DATA_DIR/<fixed record>` or `DATA_DIR/<owner>/skill-grants.json`. */
+/** `DATA_DIR/<fixed record>` or `DATA_DIR/<owner>/skill-grants.json`, or a sibling of one ({@link isRecordName}). */
 function isApprovalRecord(raw: string): boolean {
   if (relativeHits(raw) === 'record') return true;
   const dataRoots = rootsOf(DATA_DIR).map(normalizeCase);
@@ -235,8 +251,8 @@ function isApprovalRecord(raw: string): boolean {
     for (const root of dataRoots) {
       if (s === root || !isWithin(s, root)) continue;
       const parts = s.slice(root === '/' ? 1 : root.length + 1).split('/');
-      if (parts.length === 1 && APPROVAL_RECORD_FILES.includes(parts[0])) return true;
-      if (parts.length === 2 && parts[1] === PER_OWNER_APPROVAL_RECORD) return true;
+      if (parts.length === 1 && APPROVAL_RECORD_FILES.some((file) => isRecordName(parts[0], file))) return true;
+      if (parts.length === 2 && isRecordName(parts[1], PER_OWNER_APPROVAL_RECORD)) return true;
     }
   }
   return false;
@@ -275,10 +291,12 @@ const MAX_LINK_RESOLVED_WORDS = 64;
 function commandReachesSecretStore(unquoted: string): boolean {
   const roots = storeRoots();
   const seen = new Set<string>();
+  const seenPieces = new Set<string>();
   for (const word of unquoted.split(SHELL_WORD_SPLIT_RE)) {
     if (!word.includes('/')) continue;
     for (const piece of [word, ...word.split(SHELL_PIECE_SPLIT_RE)]) {
-      if (!piece.includes('/')) continue;
+      if (!piece.includes('/') || seenPieces.has(piece)) continue;
+      seenPieces.add(piece);
       // Too many braces to expand: read as written (the sandbox holds what that misses).
       for (const alternative of expandBraces(piece) ?? [piece]) {
         const path = alternative.replace(/^(?:~|\$HOME)(?=\/|$)/, os.homedir());
