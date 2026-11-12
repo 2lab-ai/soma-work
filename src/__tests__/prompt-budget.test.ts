@@ -30,7 +30,8 @@ const WORKFLOWS_DIR = path.join(PROMPT_DIR, 'workflows');
 const WORKFLOW_BUDGET: Record<string, number> = {
   // 2026-11-06: + 'Before Refusing or Narrowing an Instruction' (verify the premise of a refusal; incident in the section).
   default: 11_400,
-  deploy: 30_900,
+  // 2026-11-12 (#1232): + Delta and Risk Check before the confirmation, + Restart Re-Attach.
+  deploy: 33_000,
   'jira-brainstorming': 8_000,
   'jira-create-pr': 9_900,
   'jira-executive-summary': 6_500,

@@ -157,6 +157,63 @@ describe('PromptBuilder', () => {
       expect(section).toMatch(/never emit twice/i);
     });
 
+    // #1232 — the requester sees what ships, and a risky delta does not merge on a default answer.
+    it('deploy workflow shows a delta summary and stops on risk signals before the confirmation', () => {
+      const prompt = builder.loadWorkflowPrompt('deploy')!;
+      const check = prompt.slice(
+        prompt.indexOf('## Delta and Risk Check'),
+        prompt.indexOf('## Pre-Execution Confirmation'),
+      );
+      const confirm = prompt.slice(
+        prompt.indexOf('## Pre-Execution Confirmation'),
+        prompt.indexOf('## Execution Process'),
+      );
+
+      expect(prompt.indexOf('## Delta and Risk Check')).toBeGreaterThan(-1);
+      expect(prompt.indexOf('## Delta and Risk Check')).toBeLessThan(prompt.indexOf('## Pre-Execution Confirmation'));
+      expect(check).toContain('repos/<owner/repo>/compare/<target>...<source>');
+      expect(check).toMatch(/`ahead_by` 0[^\n]*already up to date[^\n]*no PR, no merge/);
+      expect(check).toContain('delta executive summary');
+      for (const signal of [
+        'secrets',
+        'destructive database or data migration',
+        'deleted configuration or data paths',
+        'no flag',
+        '`behind_by` > 0',
+        '300 files or 250 commits',
+      ]) {
+        expect(check).toContain(signal);
+      }
+      expect(check).toMatch(/a scan you could not finish is a risk signal/i);
+      // Risk stop: Cancel is recommended, proceeding is a separate explicit choice, earlier words are not consent.
+      expect(check).toMatch(/recommended option is `Cancel`/);
+      expect(check).toContain('`Proceed despite the listed risks`');
+      expect(check).toMatch(/Nothing said before the question[^\n]*is consent to merge past a risk signal/);
+      expect(confirm).toContain('The delta executive summary');
+      expect(confirm).toContain('`no risk signals found`');
+    });
+
+    // #1232 — a deploy that restarts this host must not be merged a second time by the resumed session.
+    it('deploy workflow re-attaches to the same deploy after a restart instead of merging again', () => {
+      const prompt = builder.loadWorkflowPrompt('deploy')!;
+      const section = prompt.slice(
+        prompt.indexOf('## Restart Re-Attach'),
+        prompt.indexOf('## Conflict Handling Policy'),
+      );
+
+      expect(prompt.indexOf('## Restart Re-Attach')).toBeGreaterThan(-1);
+      expect(section).toContain('cancel-in-progress');
+      expect(section).toContain('`deploy-state.json`');
+      for (const field of ['`pr`', '`before_sha`', '`merged`', '`after_sha`', '`releaseNotesEmitted`']) {
+        expect(section).toContain(field);
+      }
+      expect(section).toMatch(/never create a PR, merge or push for that repo again/);
+      expect(section).toMatch(/Continue at step 5 with the same `before_sha` and `after_sha`/);
+      expect(section).toMatch(/reuse it[^\n]*Never open a second PR/);
+      expect(section).toMatch(/do not emit `release_notes` again/);
+      expect(section).toMatch(/Never cancel, re-run or re-trigger a deploy run/);
+    });
+
     it('deploy workflow reads GitHub through devops-tools gh_read and writes through the github MCP', () => {
       const prompt = builder.loadWorkflowPrompt('deploy')!;
       const execution = prompt.slice(prompt.indexOf('## Execution Process'), prompt.indexOf('### 1) Pre-Validation'));

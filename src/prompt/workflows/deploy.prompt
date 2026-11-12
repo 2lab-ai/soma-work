@@ -38,6 +38,16 @@ Find repo full name candidates from the channel description, recent conversation
 - e.g.: If the channel description contains `2lab-ai/projalpha`, map `projalpha` -> `2lab-ai/projalpha`
 - If multiple candidates are found, ask rather than auto-selecting
 
+## Delta and Risk Check (Required, before the confirmation)
+
+For each repo, before the confirmation question:
+
+1. Read the delta: `repos/<owner/repo>/compare/<target>...<source>`, filter `{ahead_by, behind_by, total_commits, files: (.files|length)}`. `ahead_by` 0 → post "`<owner/repo>`: `<target>` is already up to date" and drop that repo: no PR, no merge.
+2. Write a delta executive summary: one line on what ships for users, the merged PRs (number and title, from the merge commits of the same read), the commit and file counts.
+3. Scan files, commit messages and PR bodies for risk signals: secrets or credentials; a destructive database or data migration; deleted configuration or data paths; a half-finished feature with no flag; `behind_by` > 0 (target-only commits the merge must keep); a delta over 300 files or 250 commits (the compare list is cut — clone and use `git diff --stat` / `git log --merges` on `origin/<target>...origin/<source>`). A scan you could not finish is a risk signal itself.
+
+**Risk stop.** With any risk signal, the question leads with the signals, its recommended option is `Cancel`, and `Proceed with deployment` becomes `Proceed despite the listed risks` — only that explicit answer continues the repo. Nothing said before the question ("don't ask", "just merge", "묻지 말고") is consent to merge past a risk signal.
+
 ## Pre-Execution Confirmation (Required)
 
 A confirmation must be obtained via `local:UIAskUserQuestion` before execution.
@@ -48,6 +58,8 @@ The question must include the following information:
 - Source branch
 - Target branch
 - Execution order (if multiple repos)
+- The delta executive summary of each repo (from the Delta and Risk Check)
+- Every risk signal found, or `no risk signals found`
 
 Example options:
 
@@ -157,6 +169,18 @@ If CI is still running, you **must wait for it in-turn** and then merge. The mer
    - **Any failure** → do NOT merge. Report the failing check (name + log summary) in the thread and request a user decision via `local:UIAskUserQuestion`. Halt the merge until a response is received.
 
 Only after the merge actually succeeds may you produce the deployment result / release-notes / completion output.
+
+## Restart Re-Attach
+
+A deploy can restart this session's own host and cut the session. A second merge or push to the target then ships twice, and with `concurrency: cancel-in-progress` it cancels the deploy already running.
+
+- Keep `deploy-state.json` in the session working directory, per repo: `repo`, `target`, `pr`, `before_sha`, `merged`, `after_sha`, `releaseNotesEmitted`. Write each field the moment it becomes true, before the next action.
+- On resume (or finding that file), read it and GitHub before any write:
+  - PR merged → never create a PR, merge or push for that repo again. Continue at step 5 with the same `before_sha` and `after_sha`, waiting in-turn for the deploy run of `after_sha` as step 7 does.
+  - PR open → reuse it, continue at step 4. Never open a second PR.
+  - no PR → continue at step 2.
+  - `releaseNotesEmitted` true → do not emit `release_notes` again.
+- Never cancel, re-run or re-trigger a deploy run to recover from a restart.
 
 ## Conflict Handling Policy
 
