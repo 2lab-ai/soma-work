@@ -234,7 +234,7 @@ describe('PromptBuilder', () => {
       expect(section).toMatch(/a new request while the old deploy is not `done` reports it and asks first/);
       // No record: never adopt someone's deploy unasked; a fork's same-named branch never counts.
       expect(section).toMatch(
-        /merged with its deploy run still in progress, ask instead of starting step 2; never adopt it unasked/,
+        /in this repo \(never a fork's\) that is open, or merged with its deploy run still in progress, ask instead of starting step 2; never adopt it unasked/,
       );
       expect(section).toMatch(/`head\.repo\.full_name` is `<owner\/repo>` — a fork's branch never counts/);
       for (const field of [
@@ -269,7 +269,7 @@ describe('PromptBuilder', () => {
         /merge the new `target_sha` and the new `source_sha` into the same working branch, push it, keep the same PR/,
       );
       expect(check).toMatch(
-        /wait for CI on the new head again\. If the old `source_sha` is not an ancestor of the new one[^\n]*stop and ask/,
+        /wait for CI on the new head again\. If an old SHA is not an ancestor of its new one \(source or target rewritten\), stop and ask/,
       );
       // Release notes: intent before, emitted after; either value blocks a second emission.
       expect(section).toMatch(/`intent` immediately before emitting the directive, `emitted` right after/);
