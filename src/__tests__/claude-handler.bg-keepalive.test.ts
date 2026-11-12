@@ -67,6 +67,7 @@ import {
 } from '../claude-handler';
 import { Logger } from '../logger';
 import type { McpManager } from '../mcp-manager';
+import { asSdkQuery } from '../test-utils/fake-sdk-query';
 
 const SESSION_KEY = 'C123:1700000000.1';
 // A turn runs only under an execution context (#597): these turns are Slack turns.
@@ -239,7 +240,7 @@ function installScriptedQuery(
 ): void {
   queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
     const inputs = (prompt as AsyncIterable<unknown>)[Symbol.asyncIterator]();
-    return Object.assign(script(inputs), {
+    return asSdkQuery(script(inputs), {
       interrupt: vi.fn(async () => interruptReceipt()),
       cancelAsyncMessage: vi.fn(async () => true),
       stopTask: cli.stopTask,
@@ -295,6 +296,17 @@ async function isPending(p: Promise<unknown>): Promise<boolean> {
   );
   await new Promise<void>((resolve) => setImmediate(resolve));
   return !settled;
+}
+
+/**
+ * The script ran past a result: the CLI SENT it. The host reads frames ahead of
+ * its consumer, and until the consumer has processed that result a steer is
+ * refused — the CLI ended a turn there (`TurnInputChannel.holdPushes`). These
+ * tests steer into a turn that is held open after its answer, so they wait for
+ * the consumer first. Microtasks only: some of them run on fake timers.
+ */
+async function hostCaughtUp(): Promise<void> {
+  for (let i = 0; i < 50; i++) await Promise.resolve();
 }
 
 function newHandler(): ClaudeHandler {
@@ -405,6 +417,7 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
 
     const framesPromise = collect(startTurn(handler));
     await pulledPastOpening.promise;
+    await hostCaughtUp();
     // Deferred, not settled: the channel is neither sealed nor closed.
     expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'and also' })).toBe(true);
     steerGate.resolve();
@@ -771,6 +784,7 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
 
       const framesPromise = collect(startTurn(handler));
       await pulledPastOpening.promise;
+      await hostCaughtUp();
       expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-queued', text: 'and this' })).toBe(true);
       steerGate.resolve();
       const frames = await framesPromise;
@@ -805,6 +819,7 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
 
       const framesPromise = collect(startTurn(handler));
       await pulledPastOpening.promise;
+      await hostCaughtUp();
       // Pushed after the held result was captured: that result cannot account for it.
       expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-late', text: 'still there?' })).toBe(true);
 
@@ -1228,6 +1243,7 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
 
     const framesPromise = collect(startTurn(handler));
     await gates.pulledPastOpening.promise;
+    await hostCaughtUp();
     expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'count to ten' })).toBe(true);
     gates.steerGate.resolve();
     const frames = await framesPromise;
@@ -1251,6 +1267,7 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
 
     const framesPromise = collect(startTurn(handler));
     await gates.pulledPastOpening.promise;
+    await hostCaughtUp();
     expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'count to ten' })).toBe(true);
     gates.steerGate.resolve();
     const frames = await framesPromise;
@@ -1270,6 +1287,7 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
 
     const framesPromise = collect(startTurn(handler));
     await gates.pulledPastOpening.promise;
+    await hostCaughtUp();
     expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'count to ten' })).toBe(true);
     gates.steerGate.resolve();
     await gates.pulledPastLastResult.promise;
@@ -1333,6 +1351,7 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
 
       const framesPromise = collect(startTurn(handler));
       await pulledPastOpening.promise;
+      await hostCaughtUp();
       expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'count to a thousand' })).toBe(true);
       steerGate.resolve();
       await pulledPastSettle.promise;
@@ -1343,6 +1362,7 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
       const timersBeforeSteerResult = vi.getTimerCount();
       longGeneration.resolve();
       await pulledPastSteerResult.promise;
+      await hostCaughtUp();
       // Not ended by the steered result: the follow-up grace is armed instead.
       expect(cli.inputEnded).toBe(false);
       expect(vi.getTimerCount()).toBe(timersBeforeSteerResult + 1);
@@ -1398,6 +1418,7 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
 
       const framesPromise = collect(startTurn(handler));
       await pulledPastOpening.promise;
+      await hostCaughtUp();
       expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'count to ten' })).toBe(true);
       steerGate.resolve();
       await pulledPastSteerResult.promise; // the grace is armed now
@@ -1804,6 +1825,7 @@ describe('ClaudeHandler: a late result does not cut a notification turn of a bac
 
     const framesPromise = readLikeTheProcessor(startTurn(handler));
     await pulledPastOpening.promise;
+    await hostCaughtUp();
     expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'and also' })).toBe(true);
     steerGate.resolve();
     const frames = await framesPromise;
@@ -2280,6 +2302,7 @@ describe('ClaudeHandler keepalive cap measures silence, not age (#1039)', () => 
 
       const framesPromise = collect(startTurn(handler));
       await pulledPastOpening.promise;
+      await hostCaughtUp();
       expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'and also' })).toBe(true);
       steerGate.resolve();
       await pulledPastSteer.promise;
@@ -2342,6 +2365,7 @@ describe('ClaudeHandler keepalive cap measures silence, not age (#1039)', () => 
 
       const framesPromise = collect(startTurn(handler));
       await pulledPastOpening.promise;
+      await hostCaughtUp();
       expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'and also' })).toBe(true);
       steerGate.resolve();
       await pulledPastSteer.promise;
@@ -2433,6 +2457,7 @@ describe('ClaudeHandler keepalive cap measures silence, not age (#1039)', () => 
 
       const framesPromise = collect(startTurn(handler));
       await pulledPastOpening.promise;
+      await hostCaughtUp();
       expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-real', text: 'do this too' })).toBe(true);
       steerGate.resolve();
       await vi.advanceTimersByTimeAsync(CAP_MS);

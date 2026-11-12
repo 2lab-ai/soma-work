@@ -54,6 +54,7 @@ import { STEER_SETTLEMENT_SUBTYPE } from '../agent-runtime/steer-settlement';
 import { ClaudeHandler, NON_TURN_RESULT_IDLE_MS } from '../claude-handler';
 import { Logger } from '../logger';
 import type { McpManager } from '../mcp-manager';
+import { asSdkQuery } from '../test-utils/fake-sdk-query';
 
 const SESSION_KEY = 'C123:1700000000.1';
 // A turn runs only under an execution context (#597): these turns are Slack turns.
@@ -201,7 +202,7 @@ function installOrphanDrainQuery(
       await probe;
     })();
 
-    return Object.assign(gen, {
+    return asSdkQuery(gen, {
       interrupt: vi.fn(async () => ({ still_queued: [], cancelled: [] })),
       cancelAsyncMessage: vi.fn(async () => true),
     });
@@ -285,7 +286,7 @@ function installScriptedQuery(
 ): void {
   queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
     const inputs = (prompt as AsyncIterable<unknown>)[Symbol.asyncIterator]();
-    return Object.assign(script(inputs), {
+    return asSdkQuery(script(inputs), {
       interrupt: vi.fn(async () => ({ still_queued: [], cancelled: [] })),
       cancelAsyncMessage: vi.fn(async () => true),
     });

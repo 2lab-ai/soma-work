@@ -28,6 +28,7 @@ import { type AgentRunOptions, type AgentStreamEvent, runAgentStream, runOneShot
 import { liveAgentIds, liveNonAgentTaskIds, MAX_TIMER_DELAY_MS } from './agent-runtime/background-keepalive';
 import { buildStreamOptions, type EnvSkillDenial } from './agent-runtime/claude-code/build-stream-options';
 import { ExecutionContextMissingError } from './agent-runtime/execution-context';
+import { pumpFrames } from './agent-runtime/frame-pump';
 import { permissionAdviceBoard, resolvePermissionAdvice } from './agent-runtime/policy/permission-advice';
 import type { SafetyClassifier } from './agent-runtime/policy/safety-classifier';
 import { buildSafetyClassifier } from './agent-runtime/policy/safety-classifier-factory';
@@ -37,6 +38,7 @@ import {
   buildSteerUserMessage,
   type SteerInput,
   type SteerInterruptReceipt,
+  type SteerSignals,
   TurnInputChannel,
   type TurnSteeringPort,
 } from './agent-runtime/turn-input-channel';
@@ -529,6 +531,30 @@ function isHealthyTurnResult(raw: Record<string, unknown>): boolean {
   if (raw.subtype !== 'success' || raw.is_error === true) return false;
   const terminalReason = raw.terminal_reason;
   return terminalReason === undefined || terminalReason === HEALTHY_TERMINAL_REASON;
+}
+
+/**
+ * The query as a frame source whose `return()` is the QUERY's.
+ *
+ * `for await (… of query)` iterates the SDK's inner generator, and ending that
+ * one early waits for the read it is parked in — which, once the frames are
+ * read ahead (`pumpFrames`), is nearly always. The query's own `return()` runs
+ * the SDK's cleanup first (the CLI is closed and its exit awaited), which ends
+ * that read: the teardown a turn had before the read-ahead.
+ */
+function queryFrames(activeQuery: Query): AsyncIterable<SDKMessage> {
+  return {
+    [Symbol.asyncIterator]: () => {
+      const inner = activeQuery[Symbol.asyncIterator]();
+      return {
+        next: () => inner.next(),
+        return: async () => {
+          await activeQuery.return(undefined);
+          return { done: true as const, value: undefined };
+        },
+      };
+    },
+  };
 }
 
 /** Did this result's turn actually run (`num_turns > 0`)? A drain's result ran nothing. */
@@ -1531,6 +1557,27 @@ export class ClaudeHandler implements TurnSteeringPort {
       if (steerKey) {
         this.activeQueries.set(steerKey, { query: activeQuery, channel });
       }
+      // The frames, read as fast as the CLI sends them (`pumpFrames`): the loop
+      // below hands each one to a consumer that renders it before asking for
+      // the next, and two facts must not wait for that —
+      //   - a `result`: the CLI ended a turn. Until this loop has processed it,
+      //     a steer is refused (`holdPushes`) instead of opening a turn the
+      //     host is about to cut;
+      //   - the CLI handing a steered message to the model: its row is closed
+      //     now, not when the consumer gets there.
+      const frames = pumpFrames(queryFrames(activeQuery), (frame) => {
+        const raw = frame as unknown as Record<string, unknown>;
+        if (raw.type === 'result') {
+          channel.holdPushes();
+          return;
+        }
+        if (!steerKey || raw.type !== 'command_lifecycle' || raw.state !== 'started') return;
+        const uuid = raw.command_uuid;
+        // The opening message is reported the same way: only a steer counts.
+        if (typeof uuid === 'string' && channel.pushedUuids().includes(uuid)) {
+          this.steerSignals?.read(steerKey, uuid);
+        }
+      });
 
       // Set once the turn's steered sends have been settled (the settlement
       // frame was emitted). Guards the abandonment warning in the finally AND
@@ -1760,7 +1807,7 @@ export class ClaudeHandler implements TurnSteeringPort {
         return { settlement, result: errorResult ?? heldTurnResult(turn) };
       };
       try {
-        for await (const message of activeQuery) {
+        for await (const message of frames) {
           const raw = message as unknown as Record<string, unknown>;
           frameSeq += 1;
           // #1039 — the keepalive cap measures silence: any sign of the held
@@ -1873,6 +1920,24 @@ export class ClaudeHandler implements TurnSteeringPort {
           if (message.type === 'result') {
             prevResultSeq = lastResultSeq;
             lastResultSeq = frameSeq;
+            // This result is no longer in transit: steers are taken again —
+            // unless it ends the turn, which seals the input below with no
+            // await in between. A steer refused meanwhile is offered again
+            // once that is decided (the microtask runs at this loop's next
+            // await: after the seal of a turn that ends, so it says nothing).
+            if (channel.releasePushes() && steerKey) {
+              queueMicrotask(() => {
+                if (!channel.acceptsPushes) return;
+                try {
+                  this.steerSignals?.inputReopened(steerKey);
+                } catch (error) {
+                  this.logger.debug('Steer signal listener failed', {
+                    signal: 'inputReopened',
+                    error: error instanceof Error ? error.message : String(error),
+                  });
+                }
+              });
+            }
           }
 
           if (message.type === 'result' && held) {
@@ -2498,6 +2563,14 @@ export class ClaudeHandler implements TurnSteeringPort {
       this.streamQuery(prompt, session, abortController, workingDirectory, slackContext, sessionKey),
       { calculateTokenCost: hostPricing.calculateTokenCost, hostPriced: hostPricing.hostPriced },
     );
+  }
+
+  /** Who is told what a running turn knows at frame arrival ({@link SteerSignals}). */
+  private steerSignals?: SteerSignals;
+
+  /** Register the host's listener for {@link SteerSignals}. One listener; a second call replaces it. */
+  setSteerSignals(signals: SteerSignals): void {
+    this.steerSignals = signals;
   }
 
   /**

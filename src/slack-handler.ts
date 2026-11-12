@@ -973,6 +973,17 @@ export class SlackHandler {
       // the dispatched follow-up, and the restart takeover's moment.
       onTurnReachedModel: (args) => this.onFollowupTurnReachedModel(args),
     });
+    // What a running turn knows the moment the CLI's frame arrives — ahead of
+    // the stream the executor renders, which runs seconds behind the CLI under
+    // load (12 s, 2026-11-12). A steered message the model has read is closed
+    // at once: while its row still said "waiting", a `Send now` on it killed
+    // the turn that was running that very message. And a steer refused while a
+    // result was in transit is offered again when the turn goes on.
+    // Optional: a handler double without the seam keeps its behavior.
+    this.claudeHandler.setSteerSignals?.({
+      read: (sessionKey, uuid) => void this.settleSteeredFollowup({ sessionKey, uuid, phase: 'read' }),
+      inputReopened: (sessionKey) => this.onFollowupInputReopened(sessionKey),
+    });
     // Goal stall: a question whose round ended without an answer is retracted.
     setGoalStallRetiredListener((goal, stall, cause) => this.onGoalStallRetired(goal, stall, cause));
     // #917 — every Executive Summary verdict on a follow-up: a new one may ask its question, a gone one retracts it.
@@ -6778,6 +6789,23 @@ export class SlackHandler {
     if (resume?.turnEpoch !== turnEpoch) return;
     this.followupResumeRun.delete(slotKey);
     this.takeOverCutFollowups(slotKey, turnEpoch, resume.items);
+  }
+
+  /**
+   * The running turn's input takes messages again (`SteerSignals.inputReopened`):
+   * a steer was refused while a `result` the CLI had sent waited for the host,
+   * and that result did not end the turn. The refused rows wait in the same
+   * line as rows refused before the turn opened ({@link waitForTurnOpen}):
+   * push them into the run that holds the slot. Nothing running → nothing to
+   * do; the turn's end drains them.
+   */
+  private onFollowupInputReopened(sessionKey: string): void {
+    const dispatcher = this.followupDispatcher;
+    if (!dispatcher) return;
+    const slotKey = this.boundFollowupSlot(sessionKey) ?? sessionKey;
+    const turnEpoch = dispatcher.liveTurnEpoch(slotKey);
+    if (turnEpoch === undefined) return;
+    this.steerFollowupsWaitingForOpen(slotKey, turnEpoch);
   }
 
   /**

@@ -83,6 +83,26 @@ export interface TurnSteeringPort {
 }
 
 /**
+ * What a running turn tells the host the moment the CLI's frame ARRIVES — not
+ * when the stream's consumer gets to it. The consumer renders every frame
+ * (Slack round-trips behind a shared rate limit) and can run many seconds
+ * behind the CLI; these two facts must not wait for it.
+ *
+ * Both are called synchronously from the turn's frame loop: do no slow work
+ * inline. A throw is dropped — a listener is never part of the turn.
+ */
+export interface SteerSignals {
+  /** The CLI handed the steered message `uuid` to the model (its `command_lifecycle` `started`). */
+  read(sessionKey: string, uuid: string): void;
+  /**
+   * A steer was refused while a `result` was in transit ({@link TurnInputChannel.holdPushes}),
+   * that result did not end the turn, and the input takes messages again:
+   * offer the refused ones once more.
+   */
+  inputReopened(sessionKey: string): void;
+}
+
+/**
  * Build the opening message of a streaming-input turn from the prompt text.
  *
  * `uuid` is the turn's attribution key: the CLI echoes it as the
@@ -165,6 +185,10 @@ export class TurnInputChannel implements AsyncIterable<SteerUserMessage> {
   private readonly pushed: string[] = [];
   private closed = false;
   private sealed = false;
+  /** `result` frames the CLI has sent that the host has not processed yet ({@link holdPushes}). */
+  private resultsInTransit = 0;
+  /** A push was refused because of {@link resultsInTransit} since the last {@link releasePushes} said so. */
+  private refusedInTransit = false;
   /** Resolver of the promise a parked consumer is waiting on, if any. */
   private wake?: () => void;
 
@@ -177,13 +201,23 @@ export class TurnInputChannel implements AsyncIterable<SteerUserMessage> {
     return this.closed;
   }
 
+  /** Would {@link push} take a message right now? */
+  get acceptsPushes(): boolean {
+    return !this.closed && !this.sealed && this.resultsInTransit === 0;
+  }
+
   /**
    * Enqueue a message for the running turn. Returns `false` when the channel is
-   * already sealed or closed (the turn is settling / ended); the caller must
-   * then treat the message as undelivered rather than assume the agent saw it.
+   * already sealed or closed (the turn is settling / ended), or while a
+   * `result` is in transit ({@link holdPushes}); the caller must then treat the
+   * message as undelivered rather than assume the agent saw it.
    */
   push(message: SteerUserMessage): boolean {
     if (this.closed || this.sealed) return false;
+    if (this.resultsInTransit > 0) {
+      this.refusedInTransit = true;
+      return false;
+    }
     this.queue.push(message);
     const uuid = (message as { uuid?: unknown }).uuid;
     if (typeof uuid === 'string' && uuid.length > 0) {
@@ -212,6 +246,41 @@ export class TurnInputChannel implements AsyncIterable<SteerUserMessage> {
    */
   pushedUuids(): string[] {
     return [...this.pushed];
+  }
+
+  /**
+   * A `result` frame arrived from the CLI and the host has not processed it
+   * yet: refuse pushes until it has ({@link releasePushes}).
+   *
+   * WHY: the CLI ended a turn with that frame. A message pushed now is not
+   * folded into anything — the CLI starts a turn of its own for it — while the
+   * host, when it gets to the result, settles against a `queued_turn_count`
+   * written before the push existed: it reads the message as consumed, ends
+   * the turn and closes the input, and the CLI is cut in the middle of the
+   * answer nobody will read (incident 2026-11-12: the host ran 12 s behind
+   * the CLI). Refused, the message stays queued and runs when the host has
+   * caught up: as the next turn, or pushed again if this result does not end
+   * the turn.
+   *
+   * Counted, not flagged: several results can be in transit at once.
+   * Host-authored messages ({@link pushUntracked}) are not held — the host
+   * sends them from the frame loop, which is not behind itself.
+   */
+  holdPushes(): void {
+    this.resultsInTransit += 1;
+  }
+
+  /**
+   * The host processed one `result` ({@link holdPushes}). Answers `true` when
+   * no result is in transit any more AND a push was refused meanwhile — the
+   * caller then says the input is open again, if the turn goes on.
+   */
+  releasePushes(): boolean {
+    if (this.resultsInTransit === 0) return false;
+    this.resultsInTransit -= 1;
+    if (this.resultsInTransit > 0 || !this.refusedInTransit) return false;
+    this.refusedInTransit = false;
+    return true;
   }
 
   /**
