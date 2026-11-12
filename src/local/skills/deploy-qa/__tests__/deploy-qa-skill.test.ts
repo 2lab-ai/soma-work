@@ -95,6 +95,9 @@ describe('post-deploy QA skills read GitHub through devops-tools gh_read', () =>
       expect(section).toContain("apply the read's `--jq` filter yourself to the answer's `body`");
       expect(section).toContain('An answer there is a result whose `truncated` is false');
       expect(section).toContain('A repository or path it refuses is `missing: github`');
+      // trinity R1 (astra): a smaller page size restarts the listing and ends it at that size, not at 100.
+      expect(section).toContain('restarting that listing at page 1');
+      expect(section).toContain('a page holding fewer items than that `per_page` — not 100 — ends the listing');
       expect(section).toContain(
         'Without `github.server`, read through the broker as below until it is removed (#1214)',
       );
