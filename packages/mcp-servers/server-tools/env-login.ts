@@ -14,6 +14,8 @@ export interface LoginResponse {
   setCookies(): string[];
   /** The answer's `Location` header, if any. */
   location(): string | null;
+  /** Release a body that will not be read (the connection is not held for it). */
+  discard?(): void;
 }
 export type LoginFetch = (
   url: string,
@@ -169,7 +171,8 @@ export async function login(fetch: LoginFetch, spec: WebLogin): Promise<LoginSes
       method: 'POST',
       headers: {
         'Content-Type': contentType,
-        Accept: 'application/json',
+        // A cookie login is often a form whose answer is a page; a token login answers JSON.
+        Accept: spec.token.startsWith('cookie:') ? 'text/html,application/json;q=0.9,*/*;q=0.8' : 'application/json',
         'User-Agent': 'soma-work-server-tools',
       },
       body,
@@ -178,6 +181,17 @@ export async function login(fetch: LoginFetch, spec: WebLogin): Promise<LoginSes
   } catch (err) {
     throw new LoginError(`login to ${host} got no answer (${err instanceof Error ? err.name : 'error'})`);
   }
+  let bodyRead = false;
+  try {
+    return await session(res, spec, host, () => {
+      bodyRead = true;
+    });
+  } finally {
+    if (!bodyRead) res.discard?.();
+  }
+}
+
+async function session(res: LoginResponse, spec: WebLogin, host: string, reading: () => void): Promise<LoginSession> {
   // A 2xx; for a cookie session also the redirect a successful form login answers with (it is not followed).
   const cookieSession = spec.token.startsWith('cookie:');
   const redirect = res.status >= 300 && res.status < 400;
@@ -200,6 +214,7 @@ export async function login(fetch: LoginFetch, spec: WebLogin): Promise<LoginSes
   }
   let json: unknown;
   try {
+    reading();
     json = await res.json();
   } catch {
     json = undefined;
@@ -216,6 +231,9 @@ export const defaultLoginFetch: LoginFetch = async (url, init) => {
     status: res.status,
     location: () => res.headers.get('location'),
     json: () => res.json(),
+    discard: () => {
+      res.body?.cancel().catch(() => {});
+    },
     setCookies: () =>
       typeof (res.headers as { getSetCookie?: () => string[] }).getSetCookie === 'function'
         ? (res.headers as { getSetCookie: () => string[] }).getSetCookie()

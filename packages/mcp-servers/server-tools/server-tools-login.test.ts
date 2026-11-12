@@ -296,6 +296,53 @@ describe('login', () => {
     expect(JSON.parse(calls[0].body ?? '{}')).toEqual({ credentials: { username: 'qa', password: PASSWORD } });
   });
 
+  // review-of-legends (3330a7a11): an unread body is released; a cookie login accepts a page.
+  it('releases a body it does not read, and asks a cookie login for a page as well as JSON', async () => {
+    const seen: { accept?: string }[] = [];
+    let discarded = 0;
+    const fetch: LoginFetch = async (_url, init) => {
+      seen.push({ accept: init.headers.Accept });
+      return {
+        status: 200,
+        json: async () => ({}),
+        setCookies: () => ['SESSION=s1'],
+        location: () => null,
+        discard: () => {
+          discarded++;
+        },
+      };
+    };
+    await handleLogin({ server: 'dev2', account: 'admin' }, fetch);
+    expect(discarded).toBe(1);
+    expect(seen[0].accept).toMatch(/^text\/html/);
+    const refused: LoginFetch = async () => ({
+      status: 401,
+      json: async () => ({}),
+      setCookies: () => [],
+      location: () => null,
+      discard: () => {
+        discarded++;
+      },
+    });
+    await expect(handleLogin({ server: 'dev2', account: 'player' }, refused)).rejects.toThrow(/answered 401/);
+    expect(discarded).toBe(2);
+    const read: LoginFetch = async (_url, init) => {
+      seen.push({ accept: init.headers.Accept });
+      return {
+        status: 200,
+        json: async () => ({ data: { accessToken: 't' } }),
+        setCookies: () => [],
+        location: () => null,
+        discard: () => {
+          discarded++;
+        },
+      };
+    };
+    await handleLogin({ server: 'dev2', account: 'player' }, read);
+    expect(discarded).toBe(2);
+    expect(seen[1].accept).toBe('application/json');
+  });
+
   it('leaves out a login whose body names no secret: a password in config.json is not used', async () => {
     writeConfig({
       inline: { url: 'https://bo.example.test/login', body: { id: 'qa', pw: 'hunter2' }, token: 'cookie:S' },
