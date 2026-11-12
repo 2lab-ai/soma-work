@@ -27,6 +27,7 @@ vi.mock('../slack/autoskill-fire', () => ({
 }));
 
 import type { FollowupQueueSnapshot } from '@soma/slack/followup-queue';
+import type { SteerSignals } from '../agent-runtime/turn-input-channel';
 import { ClaudeHandler } from '../claude-handler';
 import type { SlackContext } from '../mcp-config-builder';
 import { McpManager } from '../mcp-manager';
@@ -60,6 +61,12 @@ describeReal('follow-up queue × a real CLI turn', () => {
   let t0: number;
   let answer: string;
   let onEvent: (type: string, event: any) => void;
+  /** After the host handled a signal of the running turn (`read`). */
+  let onSignal: (signal: string) => void;
+  /** How long the executor's part takes per tool frame (ms) — the Slack round-trips of the real one. 0: none. */
+  let lagMs: number;
+  /** Held by a scenario: the executor's part does not take its first event until this resolves. */
+  let consumerGate: Promise<void> | undefined;
   const mark = (what: string) => timeline.push({ at: Date.now() - t0, what });
   /** Where an entry sits in the ORDER of what happened (-1: it did not). Times are for the printout only. */
   const position = (what: string) => timeline.findIndex((e) => e.what === what);
@@ -75,8 +82,9 @@ describeReal('follow-up queue × a real CLI turn', () => {
     const resolved = what.indexOf('row#1 resolved (consumed)', sent);
     expect(sent, `"${after}" happened`).toBeGreaterThanOrEqual(0);
     expect(resolved, 'the row resolved after it').toBeGreaterThan(sent);
-    // Inside the host's handling of a `read` frame — not of the turn-end `completed`.
-    expect(what.lastIndexOf('frame steer_lifecycle read', resolved)).toBeGreaterThan(sent);
+    // By the CLI's read receipt, at the frame's arrival (the turn's own signal) — not at the turn-end
+    // `completed`. The same receipt comes down the stream afterwards and moves nothing.
+    expect(what.lastIndexOf('signal read (frame arrival)', resolved)).toBeGreaterThan(sent);
     expect(what.indexOf('host handled read', resolved)).toBeGreaterThan(resolved);
     expect(what.slice(sent, resolved)).not.toContain('frame steer_lifecycle completed');
     // The turn was not over: the model called another tool after the row closed, before the result.
@@ -106,6 +114,9 @@ describeReal('follow-up queue × a real CLI turn', () => {
     timeline = [];
     answer = '';
     onEvent = () => {};
+    onSignal = () => {};
+    lagMs = 0;
+    consumerGate = undefined;
     real = new ClaudeHandler(new McpManager(''));
     registrySession = {
       ownerId: 'U_OWNER',
@@ -135,6 +146,19 @@ describeReal('follow-up queue × a real CLI turn', () => {
         mark(`steerTurn pushed=${pushed}`);
         return pushed;
       },
+      // What the real turn says the moment the CLI's frame arrives — ahead of the stream the executor reads.
+      setSteerSignals: (signals: SteerSignals) =>
+        real.setSteerSignals({
+          read: (key, uuid) => {
+            mark('signal read (frame arrival)');
+            signals.read(key, uuid);
+            onSignal('read');
+          },
+          inputReopened: (key) => {
+            mark('signal input reopened');
+            signals.inputReopened(key);
+          },
+        }),
     };
     // The queue's save sink sees EVERY commit, in order — a listener only samples the state a tick later
     // and would miss a row that moved twice within one tick.
@@ -204,6 +228,15 @@ describeReal('follow-up queue × a real CLI turn', () => {
         const events = real.streamAgentEvents(text, registrySession, turnAbort, cwd, SLACK, SESSION_KEY);
         for await (const event of events as AsyncIterable<any>) {
           // Another scenario owns the shared timeline now: leave (the generator's cleanup closes the CLI's input).
+          if (mine !== scenario) break;
+          // The executor renders before it asks for the next frame: it runs behind the CLI.
+          if (consumerGate) {
+            await consumerGate;
+            consumerGate = undefined;
+          }
+          if (lagMs > 0 && (event.type === 'tool_call' || event.type === 'tool_result')) {
+            await new Promise((resolve) => setTimeout(resolve, lagMs));
+          }
           if (mine !== scenario) break;
           if (!reached) {
             reached = true;
@@ -335,4 +368,133 @@ describeReal('follow-up queue × a real CLI turn', () => {
     expect(handlerAny.createAgentSession).toHaveBeenCalledTimes(1);
     printTimeline('Retry mid-turn');
   }, 180_000);
+
+  /**
+   * Incident 2026-11-12 (dev). The executor ran 12 s behind the CLI (Slack round-trips behind a rate limit all
+   * sessions share). The model was already answering a steered message while its row still said "waiting";
+   * `Send now` pressed then killed the turn that was running that very message — first reaction 90 s later.
+   */
+  it('behind a slow executor the row still closes when the CLI reads it — and Send now cannot cut that turn', async () => {
+    lagMs = 2_500;
+    let sent: Promise<void> | undefined;
+    let steered: { id: string; epoch: number } | undefined;
+    let pressed: Promise<unknown> | undefined;
+    onEvent = (type) => {
+      if (type === 'tool_call' && !sent) {
+        mark('user sends a message mid-turn');
+        sent = handler
+          .handleMessage(message({ ts: '333.445', text: FOLLOW_UP }), vi.fn().mockResolvedValue({ ts: 'm' }) as any)
+          .then(() => {
+            const row = queue().list(SESSION_KEY)[0];
+            // What the panel rendered its `Send now` against: the steered row.
+            if (row?.state === 'steered') steered = { id: row.id, epoch: row.epoch };
+          });
+      }
+    };
+    onSignal = (signal) => {
+      // The user presses Send now on the button the panel still shows, right after the CLI read the message.
+      if (signal !== 'read' || pressed) return;
+      const row = queue().list(SESSION_KEY)[0];
+      mark('user presses Send now');
+      pressed = handler.handleDashboardFollowupAction({
+        sessionKey: SESSION_KEY,
+        itemId: row.id,
+        op: 'promote',
+        epoch: steered?.epoch ?? row.epoch,
+        turnEpoch: handler.getFollowupView(SESSION_KEY)?.turnEpoch ?? 0,
+      } as any);
+    };
+
+    turnDone = handler.handleMessage(
+      message({ ts: '222.335', text: OPENING }),
+      vi.fn().mockResolvedValue({ ts: 'm' }) as any,
+    );
+    await turnDone;
+    await sent;
+    const outcome = (await pressed) as { ok: boolean; error?: string } | undefined;
+
+    const what = timeline.map((e) => e.what);
+    const arrived = what.indexOf('signal read (frame arrival)');
+    const closed = what.indexOf('row#1 resolved (consumed)');
+    // (The opening message's own receipt comes first: the one after the row closed is the steer's.)
+    const streamed = what.indexOf('frame steer_lifecycle read', closed);
+    printTimeline('slow executor: read at arrival, Send now refused');
+    // Closed at the frame's arrival; the executor got to that frame later.
+    expect(arrived).toBeGreaterThanOrEqual(0);
+    expect(closed).toBeGreaterThan(arrived);
+    expect(streamed, 'the stream delivered the same receipt after the row had closed').toBeGreaterThan(closed);
+    mark(
+      `the row closed ${((timeline[streamed].at - timeline[closed].at) / 1000).toFixed(1)} s before the executor reached the receipt`,
+    );
+    // Send now on the closed row: refused, nothing was cut — one turn, ended by its own result.
+    expect(pressed, 'Send now was pressed').toBeDefined();
+    expect(outcome?.ok).toBe(false);
+    expect(handlerAny.createAgentSession).toHaveBeenCalledTimes(1);
+    expect(what).toContain('result');
+    expect(rowStates).toEqual(['row#1 queued', 'row#1 steered', 'row#1 resolved']);
+    mark(`Send now answered: ${JSON.stringify(outcome)}`);
+    printTimeline('slow executor: verdict');
+  }, 240_000);
+
+  /**
+   * The other half of the same lag. The CLI has ended the turn (its `result` is sent) and the executor has not
+   * got to it. A message pushed now is not folded into anything: the CLI starts a turn of its own for it, and the
+   * host — settling the result it finally reads against a `queued_turn_count` written before the push — records
+   * the message as consumed, ends the turn and closes the input on the CLI mid-answer. The answer is lost.
+   */
+  it('a message sent after the CLI ended the turn, before the executor read that, runs as the next turn', async () => {
+    let release: () => void = () => {};
+    consumerGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const QUICK = 'Reply with exactly the single word READY and nothing else. Do not use any tool.';
+    const SECOND = 'Now reply with exactly the single word SECOND and nothing else. Do not use any tool.';
+
+    turnDone = handler.handleMessage(
+      message({ ts: '222.336', text: QUICK }),
+      vi.fn().mockResolvedValue({ ts: 'm' }) as any,
+    );
+    // Wait until the CLI's result is in while the executor is held: the real turn's input stops taking steers
+    // the moment it arrives. A build without that hold never says so — there the wait is the whole 15 s, by
+    // which a one-word answer is long over, and the message below goes into the ended turn (the old behaviour).
+    const inputOf = () =>
+      (real as any).activeQueries.get(SESSION_KEY)?.channel as { acceptsPushes: boolean } | undefined;
+    const waitUntil = Date.now() + 15_000;
+    while (inputOf()?.acceptsPushes !== false && Date.now() < waitUntil) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    mark('the CLI ended the turn (result arrived); the executor has not read it');
+    mark('user sends a message');
+    const sent = handler.handleMessage(
+      message({ ts: '333.446', text: SECOND }),
+      vi.fn().mockResolvedValue({ ts: 'm' }) as any,
+    );
+    await sent;
+    release();
+    await turnDone;
+    // The drain runs the queued message as the session's next turn.
+    const settleBy = Date.now() + 120_000;
+    while (queue().list(SESSION_KEY)[0]?.state !== 'resolved') {
+      if (Date.now() > settleBy) break;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+
+    printTimeline('message in the gap after the CLI ended the turn');
+    mark(`row states: ${rowStates.join(' → ')}`);
+    // Never pushed into a turn the CLI had already ended: offered when it was sent, and once more when the
+    // executor took its first event — the result was still unread both times.
+    const pushes = timeline.filter((e) => e.what.startsWith('steerTurn pushed=')).map((e) => e.what);
+    expect(pushes.length).toBeGreaterThanOrEqual(1);
+    expect(new Set(pushes)).toEqual(new Set(['steerTurn pushed=false']));
+    // It ran as its own turn, to its result, and its answer was read.
+    expect(handlerAny.createAgentSession).toHaveBeenCalledTimes(2);
+    expect(timeline.filter((e) => e.what === 'result')).toHaveLength(2);
+    expect(queue().list(SESSION_KEY)[0]).toMatchObject({ state: 'resolved' });
+    // Each refused offer was rolled back to `queued`; then the drain ran it: claimed, dispatched, resolved.
+    expect(rowStates.filter((state) => state === 'row#1 steered')).toHaveLength(pushes.length);
+    expect(rowStates.slice(-4)).toEqual(['row#1 queued', 'row#1 claimed', 'row#1 dispatched', 'row#1 resolved']);
+    expect(timeline.map((e) => e.what)).not.toContain('row#1 resolved (consumed)');
+    expect(answer).toMatch(/READY/);
+    expect(answer).toMatch(/SECOND/);
+  }, 300_000);
 });
