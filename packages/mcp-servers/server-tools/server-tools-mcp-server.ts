@@ -690,9 +690,12 @@ export function handleSshExec(args: Record<string, unknown>) {
   if (result.error || result.signal) {
     // Same failure shape as `logs`: a fresh error from redacted, capped stderr, never the raw output.
     const failure = logsFailure(result, 'ssh_exec', server, timeoutS * 1000);
-    if ((result.error as NodeJS.ErrnoException | undefined)?.code !== 'ETIMEDOUT') throw failure;
-    // The timeout stops the local ssh client only: a remote command with no terminal keeps running
-    // (review-of-legends R4). Say so, so a retry does not repeat a deploy that is still going.
+    const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
+    // ssh ran and was stopped here (the timeout, output over the buffer, a signal): only the local client
+    // stopped, and a remote command with no terminal keeps running (review-of-legends R4, trinity R4). Say so,
+    // so a retry does not repeat a deploy that is still going. An ssh that never started ran nothing.
+    const stoppedLocally = code === 'ETIMEDOUT' || code === 'ENOBUFS' || (!result.error && result.signal);
+    if (!stoppedLocally) throw failure;
     const [head, ...detail] = failure.message.split('\n');
     throw new Error([head, SSH_EXEC_TIMEOUT_NOTE, ...detail].join('\n'));
   }

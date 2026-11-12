@@ -1810,6 +1810,21 @@ describe('handleSshExec', () => {
     expect(err.message).toContain('before running it again');
   });
 
+  it('says the same when ssh was stopped for output over 1 MB, but not when ssh could not start (trinity R4)', () => {
+    mockConfig(PROD_CONFIG, 8108);
+    vi.mocked(child_process.spawnSync).mockReturnValue(
+      spawnResult({ status: null, signal: 'SIGTERM', error: spawnError('ENOBUFS'), stdout: '', stderr: '' }),
+    );
+    const overflow = thrownBy(() => handleSshExec({ server: 'prod', command: 'cat /var/log/big.log' }));
+    expect(overflow.message).toContain('may still be running');
+    vi.mocked(child_process.spawnSync).mockReturnValue(
+      spawnResult({ status: null, error: spawnError('ENOENT'), stdout: '', stderr: '' }),
+    );
+    const notStarted = thrownBy(() => handleSshExec({ server: 'prod', command: 'uptime' }));
+    expect(notStarted.message).toContain('ssh could not run');
+    expect(notStarted.message).not.toContain('may still be running');
+  });
+
   it("redacts secret shapes in a successful command's stdout and keeps the rest (review-of-legends R4)", () => {
     mockConfig(PROD_CONFIG, 8107);
     vi.mocked(child_process.spawnSync).mockReturnValue(

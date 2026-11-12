@@ -489,10 +489,16 @@ this.app.action('deny_tool', async ({ ack, body, respond }) => {
 | Lean | `evaluateToolPolicySsh`(`Model.lean`), `ProofsSsh.lean` — 1b는 결정이 그대로이고 문구만 이유를 따름, ssh 금지는 어드민·사고 세션까지, 어드민 네이티브 쓰기 경계, 셋 다 해당 없으면 `evaluateToolPolicyMcp`와 같음 | `verification/lean/SomaVerify/ToolPolicy/` |
 
 CLI 순서 가정: 쓰기 보호와 자격 파일 읽기 금지는 CLI 거부 규칙이다. 정책 훅은 auto·bypass 모드의 네이티브 도구에
-`allow`를 돌려준다. 두 규칙이 지켜지는 이유는 CLI가 거부된 경로를 훅을 부르기 전, 입력 검증에서 막기 때문이다.
-CLI 2.1.321에서 실측했다: Read·Write는 "denied by your permission settings"로 실패하고 훅은 불리지 않는다.
-Grep·Glob은 그 파일을 결과에서 뺀다. 허용된 Read는 훅에 닿는다. SDK·CLI 버전을 올릴 때마다
-`node scripts/verification/probe-cli-deny-before-hooks.mjs`를 다시 돌린다(종료 0 = 유지, 1 = 뚫림, 2 = 판정 불가).
+`allow`를 돌려준다. 그래도 두 규칙이 지켜지는 것은 CLI가 훅의 `allow`와 상관없이 거부된 경로를 막기 때문이다.
+CLI 2.1.321에서 실측했다(`settingSources: ['project']`, `bypassPermissions`, 훅은 항상 `allow`).
+- 거부된 파일의 Read: 절대 경로, 상대 경로 모두 실패
+- 거부된 디렉터리의 Write와 기존 파일 Edit: 실패
+- 같은 디렉터리를 가리키는 심볼릭 링크를 거친 Write: 실패
+- NotebookEdit: 실패
+- Grep·Glob: 그 파일을 결과에서 뺀다
+- 허용된 Read: 성공하고 훅에 닿는다
+
+SDK·CLI 버전을 올릴 때마다 `node scripts/verification/probe-cli-deny-before-hooks.mjs`를 다시 돌린다. 이 스크립트는 단계마다 도구 호출을 따로 맞춰 보고 결과 전체와 디스크를 확인한다. 종료 코드: 0 = 유지, 1 = 뚫림, 2 = 판정 불가(빠진 단계가 있음).
 
 남는 길: 운영자가 `SOMA_SANDBOX_OFF_ALLOWED=true`로 연 호스트의 어드민 `sandbox off` 세션 — OS 규칙이 없고 CLI 거부 규칙과
 정책 1b만 남는다.

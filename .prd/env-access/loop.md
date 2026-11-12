@@ -37,7 +37,7 @@ ssot = [`ssot.md`](ssot.md)
     #1240 이전부터 있던 구멍이다 → #1241. 캐시를 `options.env`로 옮기는 고침은 같은 구멍을 넓히므로 쓰지 않는다(astra R2).
   - 샌드박스 세션의 모델에게 "홈 캐시는 읽기 전용, 설치는 `--cache /tmp/{uid}/npm`"을 알리는 프롬프트 한 줄(fable R3 P2).
     지금은 CLI의 Bash 도구 설명에 나오는 샌드박스 쓰기 목록으로만 알 수 있다.
-  - `ssh_exec`를 비동기 `spawn`으로(review-of-legends R4 P2). 지금은 server-tools의 `logs`처럼 `spawnSync`라서,
+  - `ssh_exec`를 비동기 `spawn`으로(review-of-legends R4 P2; 타임아웃·출력 초과 때 원격 명령이 남을 수 있다는 안내는 #1240에 들어감). 지금은 server-tools의 `logs`처럼 `spawnSync`라서,
     최대 600초 동안 그 세션의 다른 server-tools 호출이 멈춘다(server-tools는 세션마다 따로 뜨는 stdio 자식이다).
   - 쓰기 보호·자격 파일 읽기 금지는 CLI가 거부 규칙을 훅보다 먼저 적용한다는 사실에 기댄다(spec 07 §6a-2, 실측 2.1.321).
     CLI를 올릴 때마다 `scripts/verification/probe-cli-deny-before-hooks.mjs`를 다시 돌린다.
