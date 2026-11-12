@@ -94,7 +94,9 @@ describe('pumpFrames', () => {
     expect(torndown).toBe(true);
   });
 
-  it('ends a source that finished on its own, too', async () => {
+  // `for await` tells a source it is over only when the consumer stops early; one that ended or failed by
+  // itself has nothing left to be told.
+  it('a source that finished or failed on its own is not told again', async () => {
     const onReturn = vi.fn(async () => ({ done: true as const, value: undefined }));
     const frames = [1, 2];
     const finished: AsyncIterable<number> = {
@@ -107,7 +109,54 @@ describe('pumpFrames', () => {
     const seen: number[] = [];
     for await (const frame of pumpFrames(finished, () => {})) seen.push(frame);
     expect(seen).toEqual([1, 2]);
-    expect(onReturn).toHaveBeenCalledTimes(1);
+    expect(onReturn).not.toHaveBeenCalled();
+
+    const boom = new Error('cli died');
+    const failing: AsyncIterable<number> = {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          throw boom;
+        },
+        return: onReturn,
+      }),
+    };
+    await expect(
+      (async () => {
+        for await (const _frame of pumpFrames(failing, () => {})) {
+          // never reached
+        }
+      })(),
+    ).rejects.toBe(boom);
+    expect(onReturn).not.toHaveBeenCalled();
+  });
+
+  // A teardown that failed is not a clean exit: the caller hears of it, as it does from a plain `for await`.
+  it('a teardown that fails on an early stop is the consumer’s to hear', async () => {
+    const teardown = new Error('the CLI would not close');
+    const cli: AsyncIterable<number> = {
+      [Symbol.asyncIterator]: () => {
+        let reads = 0;
+        return {
+          next: () =>
+            ++reads === 1 ? Promise.resolve({ done: false, value: 1 }) : new Promise<IteratorResult<number>>(() => {}),
+          return: async () => {
+            throw teardown;
+          },
+        };
+      },
+    };
+    await expect(
+      (async () => {
+        for await (const _frame of pumpFrames(cli, () => {})) break;
+      })(),
+    ).rejects.toBe(teardown);
+    // The consumer's own failure is the one that is reported, not the teardown's (as `for await` does).
+    const own = new Error('consumer bug');
+    await expect(
+      (async () => {
+        for await (const _frame of pumpFrames(cli, () => {})) throw own;
+      })(),
+    ).rejects.toBe(own);
   });
 
   it('a listener that throws loses no frame', async () => {

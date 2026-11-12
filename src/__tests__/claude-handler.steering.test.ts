@@ -760,6 +760,80 @@ describe('ClaudeHandler acts on a frame when it arrives, not when the consumer r
     expect((await it.next()).done).toBe(true);
   });
 
+  // PR #1227 review: two results in a row that both leave the turn open (a held turn's tail). The second arrives
+  // before the host could say the input reopened after the first — the refused steer must still be offered again.
+  it('still says the input reopened when a second result arrived before it could', async () => {
+    const cli = installScriptedCli();
+    const handler = newHandler();
+    const inputReopened = vi.fn();
+    handler.setSteerSignals({ read: vi.fn(), inputReopened });
+    const it = handler
+      .streamQuery('hello there', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
+      [Symbol.asyncIterator]();
+    cli.send(INIT);
+    await it.next();
+    const opening = await cli.nextInput();
+    cli.send(resultFor('someone-elses-uuid'));
+    cli.send(resultFor('another-uuid'));
+    await settle();
+    expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-1', text: 'do Y' })).toBe(false);
+
+    const parked = it.next(); // the consumer works through both skipped results
+    await settle();
+    expect(inputReopened).toHaveBeenCalledTimes(1);
+    expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-1', text: 'do Y' })).toBe(true);
+
+    cli.send(resultFor(opening?.uuid));
+    cli.end();
+    expect(((await parked).value as { subtype: string }).subtype).toBe(STEER_SETTLEMENT_SUBTYPE);
+    await it.next();
+    expect((await it.next()).done).toBe(true);
+  });
+
+  // PR #1227 review: the SDK's `Query` is not its own iterator. `for await` over it reads an inner generator, and
+  // ending THAT one waits for the read it is parked in; only the query's own `return()` closes the CLI first. The
+  // fakes above cannot tell the two apart (a generator is its own iterator), so this one keeps them apart.
+  it('ends the turn through the query’s own return(), which answers while a read is parked', async () => {
+    let endRead: (r: IteratorResult<unknown>) => void = () => {};
+    const frames: unknown[] = [INIT];
+    const innerReturn = vi.fn(() => new Promise<IteratorResult<unknown>>(() => {})); // waits for the read: never
+    const inner = {
+      next: () =>
+        frames.length > 0
+          ? Promise.resolve({ done: false as const, value: frames.shift() })
+          : new Promise<IteratorResult<unknown>>((resolve) => {
+              endRead = resolve;
+            }),
+      return: innerReturn,
+    };
+    let cleanedUp = false;
+    const queryReturn = vi.fn(async () => {
+      await settle(); // the SDK's cleanup: the CLI is closed and its exit awaited
+      cleanedUp = true;
+      endRead({ done: true, value: undefined });
+      return { done: true as const, value: undefined };
+    });
+    queryMock.mockImplementation(() => ({
+      [Symbol.asyncIterator]: () => inner,
+      next: inner.next,
+      return: queryReturn,
+      interrupt: vi.fn(),
+      cancelAsyncMessage: vi.fn(),
+    }));
+    const handler = newHandler();
+    const it = handler
+      .streamQuery('hello there', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
+      [Symbol.asyncIterator]();
+    await it.next(); // init; the read-ahead is parked in the next read
+
+    await it.return?.(undefined); // the consumer leaves
+    expect(queryReturn).toHaveBeenCalledTimes(1);
+    expect(innerReturn).not.toHaveBeenCalled();
+    // Leaving waited for the query's cleanup.
+    expect(cleanedUp).toBe(true);
+    expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-late', text: 'too late' })).toBe(false);
+  });
+
   it('says nothing about the input when no steer was refused in the gap', async () => {
     const cli = installScriptedCli();
     const handler = newHandler();

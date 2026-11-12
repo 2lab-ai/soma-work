@@ -187,7 +187,7 @@ export class TurnInputChannel implements AsyncIterable<SteerUserMessage> {
   private sealed = false;
   /** `result` frames the CLI has sent that the host has not processed yet ({@link holdPushes}). */
   private resultsInTransit = 0;
-  /** A push was refused because of {@link resultsInTransit} since the last {@link releasePushes} said so. */
+  /** A push was refused because of {@link resultsInTransit}, and {@link takeReopened} has not said so yet. */
   private refusedInTransit = false;
   /** Resolver of the promise a parked consumer is waiting on, if any. */
   private wake?: () => void;
@@ -270,15 +270,20 @@ export class TurnInputChannel implements AsyncIterable<SteerUserMessage> {
     this.resultsInTransit += 1;
   }
 
+  /** The host processed one `result` ({@link holdPushes}). */
+  releasePushes(): void {
+    if (this.resultsInTransit > 0) this.resultsInTransit -= 1;
+  }
+
   /**
-   * The host processed one `result` ({@link holdPushes}). Answers `true` when
-   * no result is in transit any more AND a push was refused meanwhile — the
-   * caller then says the input is open again, if the turn goes on.
+   * Was a push refused in a gap that is over — the input takes messages again
+   * ({@link acceptsPushes})? Answers `true` once per refusal; the caller then
+   * says the input reopened. While another `result` is in transit, or once the
+   * turn sealed or closed its input, the answer is `false` and the refusal is
+   * kept: asked again after the next {@link releasePushes}, it is still there.
    */
-  releasePushes(): boolean {
-    if (this.resultsInTransit === 0) return false;
-    this.resultsInTransit -= 1;
-    if (this.resultsInTransit > 0 || !this.refusedInTransit) return false;
+  takeReopened(): boolean {
+    if (!this.refusedInTransit || !this.acceptsPushes) return false;
     this.refusedInTransit = false;
     return true;
   }

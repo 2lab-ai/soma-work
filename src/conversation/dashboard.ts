@@ -1630,8 +1630,11 @@ export function followupsOf(sessionKey: string, ownerId: string | undefined): Da
       !isRunningTurn(item),
   );
   const since = Date.now() - FOLLOWUP_SETTLED_SHOWN_MS;
+  // The ones that left most recently, oldest first (ties keep the queue's order): an old note cancelled just
+  // now is newer than ten later notes that settled before it.
   const settled = view.items
     .filter((item) => item.updatedAt >= since && settledOutcome(item) !== undefined)
+    .sort((a, b) => a.updatedAt - b.updatedAt || a.seq - b.seq)
     .slice(-FOLLOWUP_SETTLED_SHOWN);
   if (shown.length === 0 && settled.length === 0) return undefined;
   let names: Map<string, string> | undefined;
@@ -13842,31 +13845,38 @@ function steerChipHtml(kind) {
 //          a reload) — unless a recorded turn is already its record (ptRecorded: its ref, else sender + words).
 //          An old failure is the queue's to show (Retry and Cancel are there).
 //   seen:  this browser's turns the queue listed (convPaint marks them).  drop: the ones cancelled.
+//   edits: this browser's turns whose queued message was edited since (id → the words and files it holds now).
 // fu.settled: the messages that just left the queue — read by the running turn (반영됨 until the recorded turn
-// takes the place) or cancelled.
+// takes the place) or cancelled. They come first: they left earlier than what still waits, and a read message
+// claims its recorded turn before a newer message with the same words can.
 function convQueueTurns(list, fu, ownerName) {
-  var out = { chips: {}, extra: [], seen: [], drop: [] };
+  var out = { chips: {}, extra: [], seen: [], drop: [], edits: {} };
   var own = Object.create(null);
   for (var i = 0; i < list.length; i++) if (list[i] && list[i]._optimistic) own[String(list[i].id)] = list[i];
   var rows = [];
-  ((fu && fu.items) || []).forEach(function(f) { rows.push({ f: f, kind: (f && STEER_CHIP_OF[STEER_STATE[f.state]]) || '' }); });
   ((fu && fu.settled) || []).forEach(function(f) { rows.push({ f: f, kind: f && f.outcome === 'cancelled' ? 'cancelled' : 'applied' }); });
+  ((fu && fu.items) || []).forEach(function(f) { rows.push({ f: f, kind: (f && STEER_CHIP_OF[STEER_STATE[f.state]]) || '' }); });
   var held = Object.create(null);
   var used = Object.create(null);
   for (var r = 0; r < rows.length; r++) {
     var f = rows[r].f;
     var kind = rows[r].kind;
     if (!f || !f.id || !kind) continue;
+    var names = (f.files || []).map(String);
+    var said = String(f.text || '');
+    var shown = said + (names.length ? (said ? '\\n' : '') + '📎 ' + names.join(', ') : '');
     var mine = f.clientRef ? own[String(f.clientRef)] : null;
     if (mine) {
       out.seen.push(String(mine.id));
       if (kind === 'cancelled') out.drop.push(String(mine.id));
-      else out.chips[String(mine.id)] = kind;
+      else {
+        out.chips[String(mine.id)] = kind;
+        // Edited in the queue since: the chat shows the words that will run.
+        if (ptSentKey(said) !== ptSentKey(mine._sent)) out.edits[String(mine.id)] = { rawContent: shown, sent: said, files: names.length };
+      }
       continue;
     }
     if (kind === 'failed' || kind === 'cancelled') continue;
-    var names = (f.files || []).map(String);
-    var said = String(f.text || '');
     var probe = { id: String(f.clientRef || ('queue-' + f.id)), _optimistic: true, _sent: said, _files: names.length, _by: String(f.authorId || ''), timestamp: toNum(f.enqueuedAt) };
     var rec = ptRecorded(list, probe, held, used);
     if (rec) {
@@ -13879,7 +13889,7 @@ function convQueueTurns(list, fu, ownerName) {
       role: 'user',
       timestamp: toNum(f.enqueuedAt),
       userName: f.authorId && f.authorId === _viewerUserId ? '나' : String(f.author || ownerName || '사용자'),
-      rawContent: said + (names.length ? (said ? '\\n' : '') + '📎 ' + names.join(', ') : ''),
+      rawContent: shown,
       origin: { by: 'user' },
       _queued: true,
     });
@@ -20807,13 +20817,23 @@ function convPaint() {
   var rbIdx = rbIndex();
   // SSOT 2026-11-12: the messages the session's queue holds are turns of the chat, each under its state
   // (convQueueTurns). This browser's own turn the queue listed is marked (off the list again, it waits for its
-  // recorded turn without a state); one whose message was cancelled leaves.
+  // recorded turn without a state); one whose message was cancelled leaves; one edited in the queue shows the
+  // words that will run.
   var q = convQueueTurns(_panelTurnsList, s && s.followups, s && s.ownerName);
   for (var qi = _panelTurnsList.length - 1; qi >= 0; qi--) {
     var qt = _panelTurnsList[qi];
     if (!qt || !qt._optimistic) continue;
-    if (q.drop.indexOf(String(qt.id)) >= 0) _panelTurnsList.splice(qi, 1);
-    else if (q.seen.indexOf(String(qt.id)) >= 0) qt._rowSeen = true;
+    if (q.drop.indexOf(String(qt.id)) >= 0) {
+      _panelTurnsList.splice(qi, 1);
+      continue;
+    }
+    if (q.seen.indexOf(String(qt.id)) >= 0) qt._rowSeen = true;
+    var qe = q.edits[String(qt.id)];
+    if (qe) {
+      qt.rawContent = qe.rawContent;
+      qt._sent = qe.sent;
+      qt._files = qe.files;
+    }
   }
   var shown = q.extra.length ? _panelTurnsList.concat(q.extra) : _panelTurnsList;
   var built = convTurnsOf(shown, {

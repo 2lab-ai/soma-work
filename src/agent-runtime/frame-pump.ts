@@ -20,28 +20,28 @@
  * - Nothing is read before the consumer's first `next()`.
  * - A failure of the source surfaces after the frames that came before it —
  *   the order a plain `for await` gives.
- * - When the consumer is done — the end, a failure, or stopping early
- *   (`break`, `return`, a throw) — the source's `return()` is called and
- *   awaited, as a plain `for await` does on an early stop. A read is usually
- *   outstanding then: the source must answer `return()` all the same.
+ * - A consumer that stops early (`break`, `return`, a throw) ends the source:
+ *   its `return()` is called and awaited, and a teardown that fails is the
+ *   consumer's to hear — all as a plain `for await` does. A read is usually
+ *   outstanding then: the source must answer `return()` all the same. A
+ *   source that ended or failed by itself is not told again.
  * - `onArrival` is synchronous, and a throw from it is dropped: it is an
  *   observer, never part of the stream.
  *
  * Neutral zone: no SDK import.
  */
-export function pumpFrames<T>(source: AsyncIterable<T>, onArrival: (frame: T) => void): AsyncIterable<T> {
-  return {
-    [Symbol.asyncIterator]: () => pump(source, onArrival),
-  };
-}
-
 type Slot<T> = { kind: 'frame'; frame: T } | { kind: 'end' } | { kind: 'error'; error: unknown };
 
-async function* pump<T>(source: AsyncIterable<T>, onArrival: (frame: T) => void): AsyncGenerator<T, void, unknown> {
+export async function* pumpFrames<T>(
+  source: AsyncIterable<T>,
+  onArrival: (frame: T) => void,
+): AsyncGenerator<T, void, unknown> {
   const reader = source[Symbol.asyncIterator]();
   const buffered: Slot<T>[] = [];
   let wake: (() => void) | undefined;
   let stopped = false;
+  /** The source ended or failed by itself: there is nothing left to tell it. */
+  let sourceOver = false;
   const put = (slot: Slot<T>) => {
     buffered.push(slot);
     const w = wake;
@@ -80,23 +80,25 @@ async function* pump<T>(source: AsyncIterable<T>, onArrival: (frame: T) => void)
         });
         continue;
       }
-      if (slot.kind === 'end') return;
-      if (slot.kind === 'error') throw slot.error;
+      if (slot.kind === 'end') {
+        sourceOver = true;
+        return;
+      }
+      if (slot.kind === 'error') {
+        sourceOver = true;
+        throw slot.error;
+      }
       yield slot.frame;
     }
   } finally {
-    // The consumer is done (the end, a failure, or it stopped early): the
-    // source is told, and whatever the read-ahead still gets is dropped.
+    // The consumer is done: whatever the read-ahead still gets is dropped.
     stopped = true;
     buffered.length = 0;
-    try {
-      // Awaited, as `for await` awaits it: the source's teardown is part of the
-      // consumer's. The read-ahead is usually parked in a read at this point,
-      // so the source's `return()` must answer while one is outstanding (a
-      // bare async generator does not — it queues the return behind the read).
-      await reader.return?.();
-    } catch {
-      // A source that cannot be told it is over is over all the same.
-    }
+    // It stopped early: the source is told, and its teardown awaited — part of
+    // the consumer's own, as with `for await`. Not caught: a teardown that
+    // failed is no clean exit. (The read-ahead is usually parked in a read
+    // here, so the source's `return()` must answer while one is outstanding —
+    // a bare async generator does not: it queues the return behind the read.)
+    if (!sourceOver) await reader.return?.();
   }
 }

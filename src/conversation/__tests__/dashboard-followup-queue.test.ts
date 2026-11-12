@@ -337,13 +337,34 @@ describe('Dashboard — the follow-up queue (batch 2)', () => {
       };
       const f = (await card()).followups;
       expect(f.items.map((i: any) => i.text)).toEqual(['still waiting']);
+      // In the order they left the queue.
       expect(f.settled.map((i: any) => [i.text, i.outcome])).toEqual([
-        ['read just now', 'consumed'],
         ['cancelled just now', 'cancelled'],
+        ['read just now', 'consumed'],
       ]);
       // The same shape as a listed note: the chat draws it the same way.
-      expect(f.settled[0]).toMatchObject({ state: 'resolved', authorId: 'U1', files: [], editable: false });
-      expect(f.settled[0].id).toMatch(new RegExp(`^${KEY}#\\d+$`));
+      expect(f.settled[1]).toMatchObject({ state: 'resolved', authorId: 'U1', files: [], editable: false });
+      expect(f.settled[1].id).toMatch(new RegExp(`^${KEY}#\\d+$`));
+    });
+
+    // PR #1227 review: the cap keeps the ones that left most recently — not the ones enqueued last. An old
+    // message cancelled just now must not fall off behind ten newer ones that settled earlier.
+    it('keeps the ten that left most recently, oldest first', async () => {
+      const now = Date.now();
+      view = {
+        sessionKey: KEY,
+        turnEpoch: 7,
+        items: [
+          item('cancelled', { text: 'old message, cancelled just now', updatedAt: now - 100 }),
+          ...Array.from({ length: 11 }, (_, i) =>
+            item('resolved', { text: `read ${i}`, stateReason: 'consumed', updatedAt: now - 60_000 + i * 1_000 }),
+          ),
+        ],
+      };
+      const settled = (await card()).followups.settled.map((i: any) => i.text);
+      expect(settled).toHaveLength(10);
+      expect(settled[9]).toBe('old message, cancelled just now');
+      expect(settled.slice(0, 9)).toEqual(Array.from({ length: 9 }, (_, i) => `read ${i + 2}`));
     });
 
     it('a queue with nothing waiting still says what just left it', async () => {

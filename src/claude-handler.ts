@@ -548,10 +548,7 @@ function queryFrames(activeQuery: Query): AsyncIterable<SDKMessage> {
       const inner = activeQuery[Symbol.asyncIterator]();
       return {
         next: () => inner.next(),
-        return: async () => {
-          await activeQuery.return(undefined);
-          return { done: true as const, value: undefined };
-        },
+        return: () => activeQuery.return(undefined),
       };
     },
   };
@@ -1923,11 +1920,14 @@ export class ClaudeHandler implements TurnSteeringPort {
             // This result is no longer in transit: steers are taken again —
             // unless it ends the turn, which seals the input below with no
             // await in between. A steer refused meanwhile is offered again
-            // once that is decided (the microtask runs at this loop's next
-            // await: after the seal of a turn that ends, so it says nothing).
-            if (channel.releasePushes() && steerKey) {
+            // once that is decided: the microtask runs at this loop's next
+            // await — after the seal of a turn that ends (it says nothing), or
+            // while another result is already in transit (the refusal is
+            // kept, and the microtask of that result's processing says it).
+            channel.releasePushes();
+            if (steerKey) {
               queueMicrotask(() => {
-                if (!channel.acceptsPushes) return;
+                if (!channel.takeReopened()) return;
                 try {
                   this.steerSignals?.inputReopened(steerKey);
                 } catch (error) {
