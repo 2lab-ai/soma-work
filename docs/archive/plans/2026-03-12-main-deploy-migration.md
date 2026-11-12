@@ -2,9 +2,9 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Keep the current `dev` deployment intact while making `main` deploy safely to `/opt/soma-work/main` with one-time legacy bootstrap on macmini.
+**Goal:** Keep the current `dev` deployment intact while making `main` deploy safely to `/opt/soma-work/main` with one-time legacy bootstrap on devbox-a.
 
-**Architecture:** Add a tested bootstrap module that runs only for `main` deployments, copies seed config/runtime files from known macmini paths, normalizes legacy data with current compatibility logic, and then falls back to the existing rsync + `scripts/service.sh install` deploy path. Update setup scripts/docs so all operator-facing branch references align to `dev`.
+**Architecture:** Add a tested bootstrap module that runs only for `main` deployments, copies seed config/runtime files from known devbox-a paths, normalizes legacy data with current compatibility logic, and then falls back to the existing rsync + `scripts/service.sh install` deploy path. Update setup scripts/docs so all operator-facing branch references align to `dev`.
 
 **Tech Stack:** GitHub Actions, TypeScript, Vitest, bash setup scripts, macOS LaunchAgents
 

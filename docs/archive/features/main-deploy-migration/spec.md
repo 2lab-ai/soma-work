@@ -4,20 +4,20 @@
 
 ## 1. Overview
 
-현재 macmini 배포는 `dev` 브랜치 기준 `/opt/soma-work/dev` 환경을 중심으로 운영된다. 이 변경은 기존 `dev` 배포를 그대로 유지하면서, `main` 브랜치도 동일한 macmini에 `/opt/soma-work/main`으로 독립 배포되도록 만든다.
+현재 devbox-a 배포는 `dev` 브랜치 기준 `/opt/soma-work/dev` 환경을 중심으로 운영된다. 이 변경은 기존 `dev` 배포를 그대로 유지하면서, `main` 브랜치도 동일한 devbox-a에 `/opt/soma-work/main`으로 독립 배포되도록 만든다.
 
 첫 `main` 배포는 빈 디렉토리에 코드만 rsync 하는 것으로는 충분하지 않다. `main` 환경은 `/opt/soma-work/dev`의 설정 구조를 seed로 사용하고, legacy 운영 경로인 `/Users/dd/app.claude-code-slack-bot`에서 `.env`와 `data/`를 가져와 현재 런타임이 읽을 수 있는 형태로 정규화해야 한다.
 
 ## 2. User Stories
 
-- As a maintainer, I want `main` pushes to deploy to `/opt/soma-work/main` on macmini, so that production and development run independently.
+- As a maintainer, I want `main` pushes to deploy to `/opt/soma-work/main` on devbox-a, so that production and development run independently.
 - As an operator, I want the first `main` deployment to bootstrap config and legacy runtime data automatically, so that I do not have to manually rebuild the environment over SSH each time.
 - As a maintainer, I want setup scripts and docs to use the current `dev` branch naming consistently, so that operators do not accidentally target the obsolete `develop` branch.
 
 ## 3. Acceptance Criteria
 
 - [ ] Existing `dev` deployment behavior remains unchanged for `/opt/soma-work/dev`.
-- [ ] `main` branch pushes deploy to macmini `/opt/soma-work/main` and restart `ai.2lab.soma-work.main`.
+- [ ] `main` branch pushes deploy to devbox-a `/opt/soma-work/main` and restart `ai.2lab.soma-work.main`.
 - [ ] On the first `main` deployment, the runner seeds `/opt/soma-work/main` from `/opt/soma-work/dev` structure, copies legacy `.env` from `/Users/dd/app.claude-code-slack-bot/.env`, and copies legacy data from `/Users/dd/app.claude-code-slack-bot/data`.
 - [ ] Legacy bootstrap is idempotent: once completed, later `main` deploys do not overwrite runtime config/data.
 - [ ] Legacy data is normalized through current migration logic for user settings and session persistence before the service is restarted.
@@ -29,9 +29,9 @@
 ### In-Scope
 
 - `.github/workflows/deploy.yml` main-branch bootstrap and deploy sequencing
-- New deploy bootstrap/migration module for macmini main environment
+- New deploy bootstrap/migration module for devbox-a main environment
 - Setup scripts that still point at `develop`
-- Operator documentation for first-time `main` bootstrap on macmini
+- Operator documentation for first-time `main` bootstrap on devbox-a
 - Automated tests for bootstrap idempotence and branch naming expectations
 
 ### Out-of-Scope

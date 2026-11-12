@@ -5,7 +5,7 @@
  * `ts` is the turn's identity from the ingress on: the follow-up queue keys every item
  * on `<channel>:<ts>` (dedup, A3) and its store refuses an empty one. A turn sent with
  * `ts: ''` while its session was busy therefore could not be queued at all
- * (work-m64 dev, 2026-10-28: "큐 저장에 실패 — …message.ts is not a non-empty string").
+ * (team-host dev, 2026-10-28: "큐 저장에 실패 — …message.ts is not a non-empty string").
  * A fixed placeholder would not do either: two such turns would share one key, and the
  * queue would drop the second as a duplicate.
  *

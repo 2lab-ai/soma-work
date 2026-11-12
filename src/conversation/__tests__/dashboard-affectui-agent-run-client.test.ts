@@ -1723,7 +1723,7 @@ const CARD = (over: Record<string, unknown> = {}) => ({
     totalCostUsd: 12.4,
     contextUsagePercent: 31,
   },
-  environment: { instanceName: 'mac-mini', host: 'h', port: 1 },
+  environment: { instanceName: 'devbox-a', host: 'h', port: 1 },
   slackThreadUrl: 'https://slack/x',
   ...over,
 });
@@ -1801,7 +1801,7 @@ describe('세부 — Details inside 세션 정보 (D19)', () => {
     // D7 K-03: the live time is <ui-elapsed> — since = the leg's start less what ran before it (no page clock).
     expect(row(html, '활성 시간')).toBe(`<ui-elapsed since="${T0 - 65000}" lang="ko"></ui-elapsed>`);
     expect(row(html, '워크플로')).toBe('zwork');
-    expect(text(row(html, '환경') ?? '')).toBe('mac-mini h:1');
+    expect(text(row(html, '환경') ?? '')).toBe('devbox-a h:1');
   });
 
   it('more subagents than the card carries: a lower bound; an idle session: no live leg; no record: no count', () => {

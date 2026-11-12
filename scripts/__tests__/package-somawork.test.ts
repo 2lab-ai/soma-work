@@ -960,8 +960,11 @@ describe('publication gates', () => {
       // every offending path, so merging these costs no coverage and keeps the
       // suite from spawning a full package build per family — `npm test` runs
       // this file alongside 488 others.
+      // The machine name is assembled like every blocked term, so this file never spells it out.
+      const machine = BLOCKED_TERMS.find((term) => term.name === 'private machine name');
+      if (!machine) throw new Error('setup-package.js lists no private machine name');
       const run = packageMutated('private-strings', (root) => {
-        fs.writeFileSync(path.join(root, 'dist/leaky-host.js'), '// observed on oudwood-512 during a deploy\n');
+        fs.writeFileSync(path.join(root, 'dist/leaky-host.js'), `// observed on ${machine.text}-512 during a deploy\n`);
         fs.writeFileSync(
           path.join(root, 'dist/leaky-report.js'),
           '// root cause at SnapshotServer.Protein.Receive.cs:689, SettlementService never notified\n',
@@ -1756,8 +1759,9 @@ describe('sanitize contract across the repository', () => {
     }
   }
 
-  it('assembles the three permanently prohibited terms instead of writing them', () => {
-    expect(BLOCKED_TERMS).toHaveLength(3);
+  it('assembles the permanently prohibited terms instead of writing them', () => {
+    // Three client and host identifiers, then six machine names and runner labels.
+    expect(BLOCKED_TERMS).toHaveLength(9);
     for (const term of BLOCKED_TERMS) {
       // Assembly must not have weakened the scan: the regex still matches the
       // real string, in context, case-insensitively.

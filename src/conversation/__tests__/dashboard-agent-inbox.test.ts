@@ -534,51 +534,51 @@ describe('agent inbox board — deep link (§3.1-8)', () => {
   });
 
   it('matches an exact board key (prefixed form, or unprefixed single-instance board)', () => {
-    const prefixed = ['mac-mini::work:C1:1700000000.000100', 'mac-mini::work:C2:1700000000.000200'];
-    expect(resolve('mac-mini::work:C2:1700000000.000200', prefixed, 'mac-mini')).toBe(
-      'mac-mini::work:C2:1700000000.000200',
+    const prefixed = ['devbox-a::work:C1:1700000000.000100', 'devbox-a::work:C2:1700000000.000200'];
+    expect(resolve('devbox-a::work:C2:1700000000.000200', prefixed, 'devbox-a')).toBe(
+      'devbox-a::work:C2:1700000000.000200',
     );
     const raw = ['work:C1:1700000000.000100', 'work:C2:1700000000.000200'];
     expect(resolve('work:C1:1700000000.000100', raw, null)).toBe('work:C1:1700000000.000100');
   });
 
   it('maps the Slack registry key (no instance prefix) to the unique "::<key>" card', () => {
-    const keys = ['mac-mini::work:C1:1700000000.000100', 'mac-mini::work:C2:1700000000.000200'];
-    expect(resolve('work:C1:1700000000.000100', keys, 'mac-mini')).toBe('mac-mini::work:C1:1700000000.000100');
+    const keys = ['devbox-a::work:C1:1700000000.000100', 'devbox-a::work:C2:1700000000.000200'];
+    expect(resolve('work:C1:1700000000.000100', keys, 'devbox-a')).toBe('devbox-a::work:C1:1700000000.000100');
     // Sibling card, self instance unknown — still unique by suffix.
-    expect(resolve('work:C2:1700000000.000200', keys, null)).toBe('mac-mini::work:C2:1700000000.000200');
+    expect(resolve('work:C2:1700000000.000200', keys, null)).toBe('devbox-a::work:C2:1700000000.000200');
   });
 
   it('prefers this instance when the same thread is on two instances, else refuses to guess', () => {
-    const keys = ['oud::work:C1:1700000000.000100', 'mac-mini::work:C1:1700000000.000100'];
-    expect(resolve('work:C1:1700000000.000100', keys, 'mac-mini')).toBe('mac-mini::work:C1:1700000000.000100');
+    const keys = ['oud::work:C1:1700000000.000100', 'devbox-a::work:C1:1700000000.000100'];
+    expect(resolve('work:C1:1700000000.000100', keys, 'devbox-a')).toBe('devbox-a::work:C1:1700000000.000100');
     expect(resolve('work:C1:1700000000.000100', keys, 'other')).toBeNull();
   });
 
   it('with no live card, maps the Slack key to its latest archive ("…archived_<ref>_<archivedAt>")', () => {
     const ref = 'work:C1:1700000000.000100';
     const keys = [
-      'mac-mini::work:C2:1700000000.000200',
-      `mac-mini::archived_${ref}_1790000000000`,
-      `mac-mini::archived_${ref}_1792000000000`,
+      'devbox-a::work:C2:1700000000.000200',
+      `devbox-a::archived_${ref}_1790000000000`,
+      `devbox-a::archived_${ref}_1792000000000`,
       `oud::archived_${ref}_1791000000000`,
-      `mac-mini::archived_${ref}_17920x`, // not an archivedAt
-      `mac-mini::archived_${ref}.5_1799000000000`, // another thread whose key extends this one
+      `devbox-a::archived_${ref}_17920x`, // not an archivedAt
+      `devbox-a::archived_${ref}.5_1799000000000`, // another thread whose key extends this one
     ];
-    expect(resolve(ref, keys, 'mac-mini')).toBe(`mac-mini::archived_${ref}_1792000000000`);
+    expect(resolve(ref, keys, 'devbox-a')).toBe(`devbox-a::archived_${ref}_1792000000000`);
     // Single-instance board: archive keys carry no instance prefix.
     expect(resolve(ref, [`archived_${ref}_1790000000000`], null)).toBe(`archived_${ref}_1790000000000`);
     // A live card of the thread wins over any archive.
-    expect(resolve(ref, [...keys, `mac-mini::${ref}`], 'mac-mini')).toBe(`mac-mini::${ref}`);
+    expect(resolve(ref, [...keys, `devbox-a::${ref}`], 'devbox-a')).toBe(`devbox-a::${ref}`);
     // Two live cards on two siblings are still refused, archives or not.
-    expect(resolve(ref, [...keys, `oud::${ref}`, `mac-mini::${ref}`], 'other')).toBeNull();
+    expect(resolve(ref, [...keys, `oud::${ref}`, `devbox-a::${ref}`], 'other')).toBeNull();
   });
 
   it('returns null when nothing matches yet (caller retries on the next render)', () => {
-    expect(resolve('work:C9:1700000000.000900', ['mac-mini::work:C1:1700000000.000100'], 'mac-mini')).toBeNull();
+    expect(resolve('work:C9:1700000000.000900', ['devbox-a::work:C1:1700000000.000100'], 'devbox-a')).toBeNull();
     // A bare suffix of a key segment is not a match.
-    expect(resolve('1700000000.000100', ['mac-mini::work:C1:1700000000.000100'], 'mac-mini')).toBeNull();
-    expect(resolve('', ['mac-mini::work:C1:1700000000.000100'], 'mac-mini')).toBeNull();
+    expect(resolve('1700000000.000100', ['devbox-a::work:C1:1700000000.000100'], 'devbox-a')).toBeNull();
+    expect(resolve('', ['devbox-a::work:C1:1700000000.000100'], 'devbox-a')).toBeNull();
   });
 });
 

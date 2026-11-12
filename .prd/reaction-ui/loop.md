@@ -31,7 +31,7 @@
 ## 라운드 1 — 리뷰·출하 (2026-09-18)
 - 외부 리뷰(gpt6-zhuge+gpt6-elon, 유닛 A/B/C, 2~3라운드): block → 수정 → merge-with-nits. 반영: 정직한 painted 상태(`no_reaction`/`already_reacted`만 허용), 메시지별 직렬화 페인트, 라이브 항목 축출 없음, reserved/claimed = 영수증만, failed/uncertain = `:warning:`+Retry(`ui_send_now`)+Cancel, 세션 forget 펜스(세대 카운터+직렬 삭제).
 - 남은 nit(미반영, 원장): 헬퍼/표면 중복 WARN, `followupForgetGenerations` 미정리, 큐된 forget 삭제가 실행 시 소유권 재확인 안 함, 첫 페인트 중단 회귀 테스트 추가.
-- 출하: PR #237 머지(6eeac00) → 프리뷰 배포 run 35319583747 (work-m16·fable 둘 다 `bot is running! [v0.2.1144 (6eeac00)]`).
+- 출하: PR #237 머지(6eeac00) → 프리뷰 배포 run 35319583747 (prod-host·fable 둘 다 `bot is running! [v0.2.1144 (6eeac00)]`).
 
 ## 실측 R1 (2026-09-18 16:42–16:49 KST, 2lab.ai `#workspace-soma-work`, Claude in Chrome)
 | # | 절차 | 관측 | 판정 |
@@ -58,7 +58,7 @@
 ## 라운드 3 — 유저 정정(취소 지연·컨트롤 분리 도착) → 재출하 (2026-09-21 12:40–13:30)
 - 정정 원문: "미드턴에 메세지보내고 바로 취소 눌러도 취소가 안되네 … 지금 취소 이모지가 좇나 늦게 떠 … 왜 지금 실행 이모지랑 취소 이모지가 서로 다른 시간에 추가됨?" / "스티어링시에 서로 다른 메세지를 한번에 합쳐서 보내? … 1 보내고 2 보내면 12로 보내짐?"
 - 원인(블랙박스 트레이스 `docs/debugging/reaction-latency-202609211240/trace.md`): A) enqueue 직후 `📥`만 칠하고 `trySteerFollowup` 뒤에 두 번째 paint에서 `ui_send_now`·`ui_cancel`을 추가 → 컨트롤이 두 시점에 도착. B) `reactions.add`가 스트리밍 `chat.update`와 같은 토큰버킷 FIFO를 공유해 큐 뒤에서 대기 → 수 초~수십 초 지연. 그 사이 클릭은 항목이 이미 읽힌 뒤라 조용히 무시.
-- PR #241 머지(263870dd): enqueue 시 `rolesForFollowupState('queued')` 3종을 한 번의 paint로, 컨트롤 리액션은 API 헬퍼 priority lane(버스트 3 뒤 일반 1 양보, 재시도는 자기 레인 유지), 이미 읽힌 항목의 클릭은 ephemeral 피드백. 프리뷰 run 35559906707 재디스패치 → 양 대상 `bot is running! [v0.2.1147 (263870d)]`(work-m16 PID 23234, owner-mac PID 15136).
+- PR #241 머지(263870dd): enqueue 시 `rolesForFollowupState('queued')` 3종을 한 번의 paint로, 컨트롤 리액션은 API 헬퍼 priority lane(버스트 3 뒤 일반 1 양보, 재시도는 자기 레인 유지), 이미 읽힌 항목의 클릭은 ephemeral 피드백. 프리뷰 run 35559906707 재디스패치 → 양 대상 `bot is running! [v0.2.1147 (263870d)]`(prod-host PID 23234, owner-mac PID 15136).
 - 합침 여부: 코드상 각 메시지는 `buildSteerUserMessage`로 별도 SDK user 메시지(uuid 별개)로 push되고 drain은 한 번에 1건만 claim(`src/agent-runtime/turn-input-channel.ts`). 실측 R3-3·R5-3으로 확인.
 
 ## 실측 R3 (2026-09-21 16:22–16:36 KST, 2lab.ai `#workspace-soma-work`, Claude in Chrome, v0.2.1147, 처리 호스트 owner-mac)

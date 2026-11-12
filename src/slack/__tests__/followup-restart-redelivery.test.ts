@@ -29,7 +29,7 @@ function row(over: Partial<FollowupItem> = {}): FollowupItem {
   } as FollowupItem;
 }
 
-/** The two shapes the work-m64 transcript held on 2026-11-03 (trimmed to the fields read). */
+/** The two shapes the team-host transcript held on 2026-11-03 (trimmed to the fields read). */
 const QUEUED_COMMAND_LINE = JSON.stringify({
   parentUuid: 'dd4c4fa2-9991-4e58-9856-a32e3a97f969',
   attachment: {

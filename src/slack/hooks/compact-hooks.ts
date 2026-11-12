@@ -703,7 +703,7 @@ export async function postCompactCompleteIfNeeded(
   // silently lost: the next resume loads the UNCOMPACTED transcript, usage
   // stays at pre-compact levels (`now ~85% ← was ~85%`), the threshold
   // re-trips, and the session loops compact→abort→compact forever
-  // (observed on work-m64 dev, session f4ee1a3f, 2026-07-08 07:46/07:57/08:51Z).
+  // (observed on team-host dev, session f4ee1a3f, 2026-07-08 07:46/07:57/08:51Z).
   promotePendingToDispatchQueue(session);
 
   await postPromise;

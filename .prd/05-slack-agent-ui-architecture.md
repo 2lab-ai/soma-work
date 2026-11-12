@@ -214,12 +214,12 @@ terminal = `resolved` / `cancelled`. 세션 삭제는 **terminal이 아닌 모�
 `:53-71`에서 그 변수의 **모든 줄**(`{runner-label}:{target-dir}`)을 matrix로 확장한다. **제외 필터가 없다.**
 `:117-127`의 deploy job이 `matrix.runner_label`을 self-hosted 라벨로 그대로 쓴다.
 
-따라서 **"work-m64 제외"는 현재 미구현이며 구현됐다고 적지 않는다.** 성립 절차:
-두 변수를 **읽기 전용**으로 열거 → runner label과 실제 host alias를 대조해 work-m64의 canonical 이름·alias 확정 →
+따라서 **"team-host 제외"는 현재 미구현이며 구현됐다고 적지 않는다.** 성립 절차:
+두 변수를 **읽기 전용**으로 열거 → runner label과 실제 host alias를 대조해 team-host의 canonical 이름·alias 확정 →
 **프리뷰 한정** per-run allowlist 확정. 그 메커니즘이 워크플로 파일이나 repo variable 변경을 요구하면
 **별도 리뷰·승인** 대상이다(다른 배포 채널에 영향). 미상 target이 남으면 **fail closed** —
 무필터 `main:deploy/dev` push 금지, prod 채널은 이 임무 밖(유저 게이트).
-repo 내 `work-m64` 문자열 매치는 0(`.prd` 제외)이므로 alias는 in-repo 증거로 해결할 수 없다.
+repo 내 `team-host` 문자열 매치는 0(`.prd` 제외)이므로 alias는 in-repo 증거로 해결할 수 없다.
 
 ## 10. 미검증 / 채택 보류
 

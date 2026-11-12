@@ -2,7 +2,7 @@
  * bootModelCatalog — llmux model-catalog boot step gated on the RUNTIME auth
  * mode (auth-runtime), not the static `config.auth.mode`.
  *
- * Regression: work-m64-class hosts boot with static mode `ccp` (no AUTH_MODE
+ * Regression: team-host-class hosts boot with static mode `ccp` (no AUTH_MODE
  * env) and only FLIP to llmux at runtime via `initAuthRuntimeDefault`'s
  * reachability probe. The catalog fetch used to live inside the static
  * `config.auth.mode === 'llmux'` block in index.ts, so those hosts never

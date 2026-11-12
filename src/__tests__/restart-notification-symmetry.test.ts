@@ -146,7 +146,7 @@ describe('Restart symmetry: notifyShutdown stamps recovery markers', () => {
   // ─────────────────────────────────────────────────────────────────────
   // Race-1: activityState flips to 'idle' DURING the awaited postMessage
   //
-  // Observed at work-m64 2026-05-15T07:31:14Z. Every "Sent shutdown
+  // Observed at team-host 2026-05-15T07:31:14Z. Every "Sent shutdown
   // notification" log line printed `wasWorking:false`, including for the
   // session that was actively running tools (creating PR #2590). Cause:
   // notifyShutdown read `session.activityState === 'working'` AFTER
@@ -189,7 +189,7 @@ describe('Restart symmetry: notifyShutdown stamps recovery markers', () => {
   // ─────────────────────────────────────────────────────────────────────
   // Race-2: process.exit beats slow postMessage
   //
-  // Same work-m64 incident: notifyShutdown is bounded by a 5s
+  // Same team-host incident: notifyShutdown is bounded by a 5s
   // `Promise.race` and the parent cleanup runs `saveSessions()` +
   // `process.exit(0)` immediately after. With 60 sessions at ~300ms
   // Slack roundtrip each, ~49 sessions' postMessage never returns

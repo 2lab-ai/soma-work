@@ -75,7 +75,7 @@ describe('aggregator: fetchSiblingBoards — self exclusion', () => {
   it('excludes the entry whose port matches self', async () => {
     mockReadAllInstances.mockResolvedValue([
       { port: 33000, instanceName: 'self', host: '127.0.0.1', pid: 999, lastSeen: Date.now() },
-      { port: 33001, instanceName: 'mac-mini-dev', host: '127.0.0.1', pid: 1001, lastSeen: Date.now() },
+      { port: 33001, instanceName: 'devbox-a-dev', host: '127.0.0.1', pid: 1001, lastSeen: Date.now() },
     ]);
 
     const fetchStub = makeFetchStub({
@@ -102,7 +102,7 @@ describe('aggregator: fetchSiblingBoards — self exclusion', () => {
     mockReadAllInstances.mockResolvedValue([
       { port: 33000, instanceName: 'self', host: '127.0.0.1', pid: 999, lastSeen: Date.now() },
       { port: 33002, instanceName: 'leftover-self', host: '127.0.0.1', pid: 999, lastSeen: Date.now() },
-      { port: 33001, instanceName: 'mac-mini-dev', host: '127.0.0.1', pid: 1001, lastSeen: Date.now() },
+      { port: 33001, instanceName: 'devbox-a-dev', host: '127.0.0.1', pid: 1001, lastSeen: Date.now() },
     ]);
 
     const fetchStub = makeFetchStub({
@@ -379,9 +379,9 @@ describe('aggregator: mergeBoards', () => {
     };
     const siblingBoards = [
       {
-        instanceName: 'mac-mini-dev',
+        instanceName: 'devbox-a-dev',
         port: 33001,
-        host: 'mac-mini.local',
+        host: 'devbox-a.local',
         board: {
           working: [{ key: 'orig-key', title: 't' }],
           waiting: [],
@@ -399,9 +399,9 @@ describe('aggregator: mergeBoards', () => {
 
     const card = merged.working[0] as any;
     expect(card.environment).toEqual({
-      instanceName: 'mac-mini-dev',
+      instanceName: 'devbox-a-dev',
       port: 33001,
-      host: 'mac-mini.local',
+      host: 'devbox-a.local',
     });
   });
 
@@ -411,7 +411,7 @@ describe('aggregator: mergeBoards', () => {
     };
     const siblings = [
       {
-        instanceName: 'mac-mini-dev',
+        instanceName: 'devbox-a-dev',
         port: 33001,
         host: '127.0.0.1',
         board: {
@@ -431,7 +431,7 @@ describe('aggregator: mergeBoards', () => {
 
     const keys = merged.working.map((s: any) => s.key);
     expect(keys).toContain('self::C1:t1');
-    expect(keys).toContain('mac-mini-dev::C1:t1');
+    expect(keys).toContain('devbox-a-dev::C1:t1');
     expect(new Set(keys).size).toBe(keys.length); // no duplicates
   });
 });

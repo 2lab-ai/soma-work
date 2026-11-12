@@ -179,8 +179,8 @@ main 머지 시 자동 배포 없음. 명시적 브랜치 push로만 배포된�
 
 | 명령 | 대상 환경 | 배포 호스트 |
 |------|----------|------------|
-| `git push origin main:deploy/dev` | dev | mac-mini dev, oudwood-512 dev |
-| `git push origin main:deploy/prod` | prod (main) | mac-mini main |
+| `git push origin main:deploy/dev` | dev | repo 변수 `PREVIEW_DEPLOY_TARGETS`의 dev 호스트 |
+| `git push origin main:deploy/prod` | prod (main) | repo 변수 `PRODUCTION_DEPLOY_TARGETS`의 호스트 |
 
 수동 트리거도 가능:
 ```bash

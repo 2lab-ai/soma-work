@@ -5,7 +5,7 @@
  * lose its decision due to stream-closed transport errors).
  *
  * Field evidence motivating this layer (in addition to PR #880's PreToolUse
- * hook): on work-m64 dev 2026-05-13 ~07:53:37 UTC, `Write` tool_use
+ * hook): on team-host dev 2026-05-13 ~07:53:37 UTC, `Write` tool_use
  * `toolu_013AWy39iYXE5NtzEAJrHWyR` triggered Slack permission UI for a
  * `/tmp/<self>/...` file path even though buildConfig logged
  * `userBypass:true`. SDK semantics codex check (cli.js:8643:4

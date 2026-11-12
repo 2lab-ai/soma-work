@@ -451,9 +451,9 @@ describe('ConversationWebServer Authentication', () => {
     it('falls back to viewerHost when it is a real hostname, not a bind token', async () => {
       mockConfig.conversation.viewerUrl = '';
       mockConfig.conversation.viewerPort = 33000;
-      mockConfig.conversation.viewerHost = 'oudwood-512';
+      mockConfig.conversation.viewerHost = 'devbox-b';
       const { getViewerBaseUrl } = await import('../web-server');
-      expect(getViewerBaseUrl()).toBe('http://oudwood-512:33000');
+      expect(getViewerBaseUrl()).toBe('http://devbox-b:33000');
       mockConfig.conversation.viewerHost = '127.0.0.1';
       mockConfig.conversation.viewerPort = 0;
     });

@@ -1,7 +1,7 @@
 # Dashboard Multi-Instance Aggregation (#814)
 
 When two or more soma-work instances run on the **same host** (e.g.
-`oudwood-dev:33000` + `mac-mini-dev:33001`), each instance now publishes a
+`devbox-b-dev:33000` + `devbox-a-dev:33001`), each instance now publishes a
 heartbeat file under `~/.soma/instances/<port>.json` and the dashboard at
 `:33000/dashboard` automatically fans out to its siblings, merges their
 kanban boards, and tags every card with an environment badge.
@@ -9,7 +9,7 @@ kanban boards, and tags every card with an environment badge.
 ## Operator setup
 
 1. Set `INSTANCE_NAME` on **every** instance (e.g.
-   `INSTANCE_NAME=oudwood-dev`). Without it the heartbeat record falls
+   `INSTANCE_NAME=devbox-b-dev`). Without it the heartbeat record falls
    back to `${hostname}:${port}` — still functional, just less readable.
 2. Set the **same** `CONVERSATION_VIEWER_TOKEN` on every instance that
    should aggregate together. The aggregator authenticates cross-port
@@ -30,7 +30,7 @@ instance writes its own heartbeat and discovers others independently.
   actions disabled there, labelled with the instance to act from.
 - The topbar **token usage** stat is the sum across instances. Hovering
   the value reveals an env-grouped breakdown:
-  `oudwood-dev: 12K · mac-mini-dev: 8K · Total: 20K`. On touch
+  `devbox-b-dev: 12K · devbox-a-dev: 8K · Total: 20K`. On touch
   devices, tap the value to toggle.
 - Single-env case (one instance running, or `INSTANCE_NAME` unset) keeps
   the topbar quiet — no tooltip, no badge — so single-instance deploys

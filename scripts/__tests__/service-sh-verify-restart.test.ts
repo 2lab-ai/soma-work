@@ -1,7 +1,7 @@
 /**
  * Contract tests for `scripts/service.sh <env> verify-restart`.
  *
- * Incident 2026-09-17, deploy run 35184945142, target work-m16: the Verify step
+ * Incident 2026-09-17, deploy run 35184945142, target prod-host: the Verify step
  * ran `service.sh main status`, which took the PID out of `launchctl list` —
  * 61554, the process the PREVIOUS deploy had started four hours earlier — and
  * printed "Service is RUNNING". The job went green while the old bundle kept

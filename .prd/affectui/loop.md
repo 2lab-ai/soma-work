@@ -82,7 +82,7 @@ Memory Panel은 `settings-memory-tab.ts`만 고친다 — 열린 PR #380과 같�
 - 2026-10-27 00:28 KST — #456 CI(상위 집합 head 8cbbe0d) scan · lean-verify 14m43s · quality-gates 12m21s 통과. icedac 승인 후 #456 머지 → main `9de150c`. 스택 아래 #450–#455 함께 MERGED, 서브이슈 #438–#444 자동 닫힘. 아래 층 PR의 중복 CI(24건)는 상위 집합 CI로 대체하고 취소했다.
 - 2026-10-27 00:33 KST — 머지 기준 SSOT 증명(문서·PR·리뷰·CI)을 에픽 #437에 올렸다([코멘트](https://github.com/2lab-ai/soma-work/issues/437#issuecomment-6420008967)). dev 배포 PR #459(main → deploy/dev)
   머지, Deploy run 40350480733 시작 — 배포 결과는 아래 08:18 기록.
-- 2026-10-27 01:17 KST — run 40350480733(#459): t1(work-m16)·t2(work-m64) 성공, t3(owner-mac)는 러너 대기 중 취소.
+- 2026-10-27 01:17 KST — run 40350480733(#459): t1(prod-host)·t2(team-host) 성공, t3(owner-mac)는 러너 대기 중 취소.
   같은 concurrency 그룹(`deploy-deploy/dev`, cancel-in-progress)의 뒤 배포가 앞 run을 취소한다: #461(run 40360618036, `aadca4e7`)
   → #462(run 40367075865, `9e2aeb0`). 뒤 배포의 head는 모두 `9de150c`를 포함하므로 t3는 다음 run이 이어받는다.
   배포 전 기준선(dev, 실제 브라우저): 새 화면 요소 0 · 페이지 오류 0.

@@ -49,7 +49,7 @@ export function shouldDropGoalContinuation(
  * flushed a few seconds after the PostCompact hook fires, and an aborted
  * process never writes it. The session then resumes UNCOMPACTED, the
  * threshold re-trips, and the thread loops compact→abort→compact (observed
- * on work-m64 dev, session f4ee1a3f, 2026-07-08: three consecutive /compact
+ * on team-host dev, session f4ee1a3f, 2026-07-08: three consecutive /compact
  * runs each aborted by the immediately re-dispatched pending message, context
  * pinned at 82–93% of a 1M window). Pure predicate, M2-style, so the rule is
  * unit-testable without the full initializer.

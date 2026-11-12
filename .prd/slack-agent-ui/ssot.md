@@ -2,7 +2,7 @@
 
 Status: planned (문서 계약 확정, 제품 게이트 미실행)
 Date: 2026-09-14
-Scope: **현재 임무 = 이 PRD의 구현 + 검증 + 프리뷰 배포(work-m64 제외) + Chrome 화면 검증.**
+Scope: **현재 임무 = 이 PRD의 구현 + 검증 + 프리뷰 배포(team-host 제외) + Chrome 화면 검증.**
 "문서만"은 PRD 작성 세션에 한정됐던 과거 제한이며 현재 임무가 아니다(→ §1.1).
 
 ## 1. 유저 원문 지시 (verbatim — source mandate, 수정 금지)
@@ -11,7 +11,7 @@ Scope: **현재 임무 = 이 PRD의 구현 + 검증 + 프리뷰 배포(work-m64 
 
 ```text
 여기까지 내용으로 /using-dotprd 로 먼저 정의해주고
-해당 내용으로 구현해주고 work-m64빼고 배포해줘
+해당 내용으로 구현해주고 team-host빼고 배포해줘
 
 단, 다음은 수정해줘.
 1. 유저의 추가 메세지가 그냥 무시되면 안되고 모델의 턴이 끝나면 처리되야하는데
@@ -51,8 +51,8 @@ PRD 작성 세션의 범위를 좁혔던 지시 (**그 세션에 한정**):
 같은 세션의 사용자 확인: "PRD까지만 유지". 그 다음 지시:
 "아니 병신아 PRD까지는 작업 끝냈잖아 PRD를 구현하는 goal을 설명해줘 필요한 정보 (링크) 모두 포함해서".
 
-**"문서만"은 작성 세션에만 유효했던 제한이다.** §1 원 지시(구현 + work-m64 제외 배포)는 철회된 적이 없고,
-현재 유저 지시로 **활성**이다 — 구현 + 검증 + 프리뷰 배포(work-m64 제외) + Chrome 화면 검증.
+**"문서만"은 작성 세션에만 유효했던 제한이다.** §1 원 지시(구현 + team-host 제외 배포)는 철회된 적이 없고,
+현재 유저 지시로 **활성**이다 — 구현 + 검증 + 프리뷰 배포(team-host 제외) + Chrome 화면 검증.
 작성 세션의 "실행하지 않았다" 문구를 구현 금지 지시로 재사용하지 않는다. §1 원문은 수정 금지로 남는다.
 
 작성 기준 SHA: `7546179677e4dfb671a55f077b0b578693f064e4`. 문서 속 좌표·버전·상태는 리드이지 현재 진실이
@@ -150,7 +150,7 @@ Queue
     05 §2/§4의 reserve-before-abort를 상태 기계에 드러내기 위한 분리다(→ §8 R2).
   - 예약/claim **롤백은 같은 seq로 `queued` 복귀** — FIFO 순서 불변, seq 재발급 없음(→ §8 R5).
 - 재시작 시:
-  - **재시작이 막은 메시지는 그 뒤에 반드시 보낸다 (2026-11-03 오너 지시, work-m64 dev 실측)** —
+  - **재시작이 막은 메시지는 그 뒤에 반드시 보낸다 (2026-11-03 오너 지시, team-host dev 실측)** —
     원문: "서비스 재부팅하면 자동으로 처리되지 않은 메세지는 그 이후에 반드시 보내야함 작업이 중단된거 아니면".
     아래 `paused`/`uncertain` 규칙보다 먼저 적용된다. 부팅(레지스트리 로드 직후)이 한 번 판정한다.
     - 대상: 셧다운 stop(`실행이 중단되었습니다 (shutdown)`)이나 크래시 복구(`process restart`)가 멈춘
@@ -172,7 +172,7 @@ Queue
   - (2026-11-03 이전 규칙, 위 지시가 대체) `queued` → 복원하되 **paused**, 유저 resume 전까지 자동 dispatch 금지.
   - `reserved` → **paused**. 예약은 dispatch가 아니다(**아직 디스패치되지 않았다**) — 블라인드 승격 금지.
   - `claimed` / `dispatched` → `uncertain`으로 표시. **블라인드 재실행 금지**(부작용 발생 여부 불명, → §8 R6).
-  - **호스트 중단 후 이어받기 (2026-11-02, work-m64 dev 실측)**: 항목의 턴이 **모델에 닿았다는 증거**
+  - **호스트 중단 후 이어받기 (2026-11-02, team-host dev 실측)**: 항목의 턴이 **모델에 닿았다는 증거**
     (`deliveredAt` — 그 턴의 첫 SDK 이벤트에 기록)가 있고 **호스트가** 끊은(`shutdown` stop · 크래시 복구 ·
     `auto-compact` stop) `uncertain` 항목은, 그 대화를 이어가는 다음 턴이 모델에 닿는 순간 그 턴이 인수한다.
     재실행이 아니다 — 그 말은 이미 모델이 읽었고 다음 턴이 같은 대화를 이어간다.
@@ -238,7 +238,7 @@ Queue
 | `packages/slack/src/mcp-status-tracker.ts:176` | cleanup이 in-memory. |
 | `.github/workflows/deploy.yml:40-71` ("Resolve deploy targets") | `:49`가 채널에 따라 `PRODUCTION_DEPLOY_TARGETS`(deploy/prod) 또는 `PREVIEW_DEPLOY_TARGETS`(그 외)를 고르고, `:53-71`이 그 변수의 **모든** 줄(`{runner-label}:{target-dir}`)을 matrix로 확장한다. **필터 없음**, 0건이면 error exit. |
 | `.github/workflows/deploy.yml:117-127` | deploy job은 `matrix.runner_label`을 self-hosted 라벨로 그대로 사용. |
-| `rg -n 'work-m64'` (repo, `.prd` 제외) | 매치 **0** — 토폴로지는 repo 밖 Actions variables에 있어 canonical alias를 in-repo 증거로 해결할 수 없다. |
+| `rg -n 'team-host'` (repo, `.prd` 제외) | 매치 **0** — 토폴로지는 repo 밖 Actions variables에 있어 canonical alias를 in-repo 증거로 해결할 수 없다. |
 | `rules/config.md:11`, `:37` | 로드 실패 시 WARN 로그 + `.bak` 폴백 의무(조용한 빈값 금지). |
 | `rules/config.md:8`, `:12` | 새 env는 설정 모듈의 타입드 getter 1회 선언 + `SOMA_` 프리픽스. |
 | `packages/process-shared/src/mcp-tool-grant-store.ts:121` | 검증된 atomic temp+rename 저장 패턴(재사용 대상). |
@@ -247,11 +247,11 @@ Queue
 
 ## 5. 배포 안전 (현재 임무 — 프리뷰 채널 한정)
 
-- **"work-m64 제외"는 아직 구현돼 있지 않다.** 워크플로에 target 필터가 없다(§4 `deploy.yml:40-71`).
+- **"team-host 제외"는 아직 구현돼 있지 않다.** 워크플로에 target 필터가 없다(§4 `deploy.yml:40-71`).
   구현됐다고 주장하지 않는다.
 - 성립 조건(순서대로):
   1. `PREVIEW_DEPLOY_TARGETS`(및 대조용 `PRODUCTION_DEPLOY_TARGETS`)를 **읽기 전용**으로 열거.
-  2. 각 줄의 `{runner-label}`을 실제 host alias와 대조해 **work-m64의 canonical 이름 + alias 전수**를 확정.
+  2. 각 줄의 `{runner-label}`을 실제 host alias와 대조해 **team-host의 canonical 이름 + alias 전수**를 확정.
   3. 프리뷰 한정 per-run allowlist 메커니즘을 확정.
 - 3)이 **워크플로 파일이나 repo variable 변경을 요구하면 별도 리뷰·승인 대상**이다 — 배포 토폴로지 변경은
   이 임무 밖의 다른 배포 채널에도 영향을 준다(→ §8 R7).
@@ -285,4 +285,4 @@ Queue
 | R4 | stop 시 A17의 "전부 paused" vs A31의 분기 | **A31 분기가 정본**, A17은 A31을 참조 | 문구 2곳 동기화 부담. 합치면 실행 중이던 항목을 paused로 오기재한다 |
 | R5 | 예약/claim 롤백 시 seq 재발급 | **같은 seq로 `queued` 복귀** (FIFO 불변) | seq는 dedup 키와 분리돼야 한다. 재발급하면 나중 항목이 앞선다 |
 | R6 | 크래시 후 `claimed` 판정 | **원안 유지 = `uncertain`** (부작용 여부 불명) | 사람 확인 1회. paused로 낙관하면 중복 실행 위험 |
-| R7 | work-m64 제외를 워크플로 수정으로 풀 것인가 | 이번 임무에선 **미결** — 읽기 전용 열거가 먼저, 변경은 별도 승인 | 승인 왕복 1회. 무단 변경은 다른 채널 배포까지 바꾼다 |
+| R7 | team-host 제외를 워크플로 수정으로 풀 것인가 | 이번 임무에선 **미결** — 읽기 전용 열거가 먼저, 변경은 별도 승인 | 승인 왕복 1회. 무단 변경은 다른 채널 배포까지 바꾼다 |

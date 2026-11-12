@@ -238,7 +238,7 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
   });
   const single = {
     type: 'user_choice',
-    question: 'macmini:main prod 배포',
+    question: 'devbox-a:main prod 배포',
     choices: [
       { id: '1', label: 'auto-deploy' },
       { id: '2', label: 'manual-deploy' },
@@ -329,7 +329,7 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
 
     const st = await client.answerChoice(KEY, useSingle(), '2');
 
-    expect(handler).toHaveBeenCalledWith(KEY, '2', 'manual-deploy', 'macmini:main prod 배포', undefined);
+    expect(handler).toHaveBeenCalledWith(KEY, '2', 'manual-deploy', 'devbox-a:main prod 배포', undefined);
     expect(st).toMatchObject({ status: 'resolved', outcome: 'answered', choiceId: '2' });
   });
 

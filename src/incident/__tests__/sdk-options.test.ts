@@ -52,7 +52,7 @@ import {
 /** A request whose `summary` is hostile on purpose — it must never steer anything. */
 const REQUEST: IncidentRequestLike = {
   version: 1,
-  incident_id: 'host:mac-mini-dev',
+  incident_id: 'host:devbox-a-dev',
   lifecycle_id: 'lc-0001',
   attempt_id: 'att-0001',
   channel_id: 'C0EAGLEINC',

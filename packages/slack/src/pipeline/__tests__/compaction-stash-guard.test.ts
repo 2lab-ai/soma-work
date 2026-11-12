@@ -5,7 +5,7 @@
  * turn (open compact cycle), the incoming message is stashed for post-compact
  * re-dispatch instead of displacing (and thereby killing) the compaction.
  *
- * Root cause this protects against (work-m64 dev, 2026-07-08, session f4ee1a3f):
+ * Root cause this protects against (team-host dev, 2026-07-08, session f4ee1a3f):
  * the CLI flushes the compacted transcript a few seconds AFTER the
  * PostCompact hook fires; aborting the process in that window loses the
  * compaction, the session resumes uncompacted at 82–93% usage, and the

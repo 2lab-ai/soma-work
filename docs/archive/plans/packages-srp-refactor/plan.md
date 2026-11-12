@@ -157,7 +157,7 @@ target install: rsync 후 타깃에서 `npm ci --omit=dev --workspaces` → 타�
 
 **(A) `npm pack` 기반:** 각 워크스페이스 패키지 → `npm pack` → 8 + 11 = 19개 tarball을 deploy artifact로 묶고, 타깃에서 `npm install ./tarballs/*.tgz`. **장점:** 표준 install, 검증 가능. **단점:** tarball 관리 부담.
 
-**(B) 빌드된 소스 번들 + 타깃에서 prod install (권장):** **`node_modules`는 rsync하지 않는다** — `@resvg/resvg-js` 같은 native deps가 빌드 머신(linux x64)과 타깃(darwin arm64 mac-mini-dev) 사이에 arch-incompatible. 빌드는 `packages/*/dist/` + `package.json` + `package-lock.json` + 워크스페이스 메타만 묶고, 타깃에서 `npm ci --omit=dev --workspaces`로 native deps를 자기 arch로 빌드. `dist/`, `mcp-servers/`, `somalib/` 세 트리는 하나의 소스 번들로 합쳐진다.
+**(B) 빌드된 소스 번들 + 타깃에서 prod install (권장):** **`node_modules`는 rsync하지 않는다** — `@resvg/resvg-js` 같은 native deps가 빌드 머신(linux x64)과 타깃(darwin arm64 devbox-a-dev) 사이에 arch-incompatible. 빌드는 `packages/*/dist/` + `package.json` + `package-lock.json` + 워크스페이스 메타만 묶고, 타깃에서 `npm ci --omit=dev --workspaces`로 native deps를 자기 arch로 빌드. `dist/`, `mcp-servers/`, `somalib/` 세 트리는 하나의 소스 번들로 합쳐진다.
 
   ```yaml
   # .github/workflows/deploy.yml (after)

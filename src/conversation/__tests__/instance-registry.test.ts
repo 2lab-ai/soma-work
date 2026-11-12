@@ -36,7 +36,7 @@ describe('instance-registry: writeHeartbeat', () => {
   it('writes a JSON file at <dir>/<port>.json with required payload fields', async () => {
     await writeHeartbeat({
       port: 33000,
-      instanceName: 'oudwood-dev',
+      instanceName: 'devbox-b-dev',
       host: '127.0.0.1',
       pid: 4242,
     });
@@ -47,7 +47,7 @@ describe('instance-registry: writeHeartbeat', () => {
     const raw = await fs.readFile(join(tempDir, '33000.json'), 'utf8');
     const parsed = JSON.parse(raw);
     expect(parsed.port).toBe(33000);
-    expect(parsed.instanceName).toBe('oudwood-dev');
+    expect(parsed.instanceName).toBe('devbox-b-dev');
     expect(parsed.host).toBe('127.0.0.1');
     expect(parsed.pid).toBe(4242);
     expect(typeof parsed.lastSeen).toBe('number');
@@ -57,7 +57,7 @@ describe('instance-registry: writeHeartbeat', () => {
   it('uses 0600 file permissions (owner read/write only) on POSIX', async () => {
     await writeHeartbeat({
       port: 33001,
-      instanceName: 'mac-mini-dev',
+      instanceName: 'devbox-a-dev',
       host: '127.0.0.1',
       pid: 1234,
     });
@@ -82,7 +82,7 @@ describe('instance-registry: writeHeartbeat', () => {
       writes.push(
         writeHeartbeat({
           port: 33000,
-          instanceName: 'oudwood-dev',
+          instanceName: 'devbox-b-dev',
           host: '127.0.0.1',
           pid: 100 + i,
         }),
@@ -110,7 +110,7 @@ describe('instance-registry: writeHeartbeat', () => {
 
     await writeHeartbeat({
       port: 33000,
-      instanceName: 'oudwood-dev',
+      instanceName: 'devbox-b-dev',
       host: '127.0.0.1',
       pid: 99,
     });

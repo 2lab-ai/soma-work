@@ -263,8 +263,8 @@ const CREDENTIAL_PATTERNS = [
  * useful context. In a tarball on a public release page it is somebody's
  * infrastructure map, published by accident.
  *
- * The first three entries are the repository's permanent sanitize block list
- * (`scripts/sanitize-scan.sh` enforces the same three across git history) and
+ * The assembled entries are the repository's permanent sanitize block list
+ * (`scripts/sanitize-scan.sh` enforces the same names across git history) and
  * are assembled from fragments rather than written out — see
  * {@link BLOCKED_TERM_SPECS} for why that is not decoration. The rest were found
  * in the staged artifact while packaging it and neutralized at their sources.
@@ -285,7 +285,7 @@ const CREDENTIAL_PATTERNS = [
  * package and are deliberately absent from this table.
  */
 /**
- * The three permanently prohibited strings — assembled at load time, never
+ * The permanently prohibited strings — assembled at load time, never
  * written out here.
  *
  * The sanitize contract they come from covers **files, diffs, commits, logs and
@@ -308,6 +308,14 @@ const BLOCKED_TERM_SPECS = [
   { name: 'private client identifier', pieces: ['insi', 'ghtq', 'uest'], wordBounded: false },
   { name: 'private client identifier', pieces: ['bets', '.', 'pla', 'ce'], wordBounded: false },
   { name: 'private host label', pieces: ['iq', '-', '6', '4'], wordBounded: true },
+  // Machine names and runner labels. Word-bounded at both ends, so a suffixed
+  // form (`<name>-512`, `<name>-dev`) still matches at the hyphen.
+  { name: 'private machine name', pieces: ['oud', 'wo', 'od'], wordBounded: true },
+  { name: 'private machine name', pieces: ['ma', 'c-m', 'ini'], wordBounded: true },
+  { name: 'private machine name', pieces: ['ma', 'cm', 'ini'], wordBounded: true },
+  { name: 'private machine name', pieces: ['fab', 'le-m', '5m', 'ax'], wordBounded: true },
+  { name: 'private machine name', pieces: ['wor', 'k-m', '64'], wordBounded: true },
+  { name: 'private machine name', pieces: ['wor', 'k-m', '16'], wordBounded: true },
 ];
 
 /** The literal a scan must find. Assembled, so this file never contains it. */
@@ -335,8 +343,6 @@ const PRIVATE_IDENTITY_PATTERNS = [
   ...BLOCKED_TERMS.map((term) => ({ name: term.name, re: term.re, category: 'private' })),
   { name: 'operator account name', re: /\bicedac\b/i, category: 'private' },
   { name: 'operator account name', re: /\bzhugehyuk\b/i, category: 'private' },
-  { name: 'private machine name', re: /\boudwood(?:-[A-Za-z0-9]+)?\b/i, category: 'private' },
-  { name: 'private machine name', re: /\bmac-?mini(?:-[A-Za-z0-9]+)?\b/i, category: 'private' },
   { name: 'operator account name', re: /\bosun50s\b/i, category: 'private' },
   // An external codebase's own file names, from a real incident report that was
   // pasted into a shipped skill example. `Protein` was that project's internal
@@ -1447,7 +1453,7 @@ function checkMutations(harness) {
 /**
  * What a problem message must never contain: the thing it is reporting.
  *
- * Built rather than written for the same reason the patterns are — the three
+ * Built rather than written for the same reason the patterns are — the
  * prohibited terms may not appear contiguously in this file.
  */
 const REPEATED_PRIVATE_STRING_RE = new RegExp(
@@ -1455,8 +1461,6 @@ const REPEATED_PRIVATE_STRING_RE = new RegExp(
     ...BLOCKED_TERMS.map((term) => escapeForRegex(term.text)),
     'icedac',
     'zhugehyuk',
-    'oudwood',
-    'macmini',
     'osun50s',
     'Protein',
     'Settlement',
@@ -1469,8 +1473,6 @@ function checkPrivateIdentityMutations(fixtures) {
   const planted = [
     ['dist/leaked-operator.js', '// reviewed by icedac before the deploy\n', 'operator account name'],
     ['dist/leaked-author.js', 'module.exports = { author: "zhugehyuk" };\n', 'operator account name'],
-    ['dist/leaked-host.js', '// observed on oudwood-512 at 05:42Z\n', 'private machine name'],
-    ['dist/leaked-host-alias.js', '// also reproduced on macmini\n', 'private machine name'],
     // One fixture per prohibited term, planted from the assembled string rather
     // than a literal — the fixtures are under the same contract as the patterns.
     ...BLOCKED_TERMS.map((term, index) => [

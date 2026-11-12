@@ -42,8 +42,8 @@ describe('deploy config expectations', () => {
     // `scripts/new-deploy-setup.sh` no longer carries deploy topology: it is a
     // deprecation shim into `somawork setup`, whose contract lives in
     // `scripts/__tests__/legacy-setup-shims.test.ts`.
-    expect(deployDoc).toContain('main 브랜치가 macmini와 oudwood-512의 `/opt/soma-work/dev`로 배포');
-    expect(deployDoc).toContain('deploy/prod 브랜치는 macmini의 `/opt/soma-work/main`으로 배포');
+    expect(deployDoc).toContain('main 브랜치가 devbox-a와 devbox-b의 `/opt/soma-work/dev`로 배포');
+    expect(deployDoc).toContain('deploy/prod 브랜치는 devbox-a의 `/opt/soma-work/main`으로 배포');
     expect(prFixWorkflow).toContain('git rebase origin/main');
     expect(prFixWorkflow).toContain('origin/main...HEAD');
     expect(versionBump).toContain('deploy/prod');

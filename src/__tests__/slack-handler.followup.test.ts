@@ -335,7 +335,7 @@ describe('SlackHandler — follow-up queue host', () => {
   });
 
   /**
-   * work-m64 dev, 2026-10-28: an admin approved an environment skill while the requester's
+   * team-host dev, 2026-10-28: an admin approved an environment skill while the requester's
    * session was still running, the approval sent the requester's turn again with
    * `ts: ''`, and the queue store refused it — "큐 저장에 실패 — …message.ts is not a
    * non-empty string". The action handlers that inject a turn (env-skill and skill
@@ -640,7 +640,7 @@ describe('SlackHandler — follow-up queue host', () => {
   });
 
   /**
-   * Incident 2026-10-01 (a goal session on work-m64 dev):
+   * Incident 2026-10-01 (a goal session on team-host dev):
    * `goal <objective>` typed while a goal turn runs is queued as
    * `control-with-dispatch`. At the boundary it re-routes through
    * `processMessage`, where `GoalHandler` queues it BEHIND the active goal and
@@ -2093,13 +2093,13 @@ describe('SlackHandler — follow-up queue host', () => {
   describe('incident-owned thread', () => {
     const INCIDENT_REQUEST = {
       version: 1,
-      incident_id: 'host:mac-mini-dev',
+      incident_id: 'host:devbox-a-dev',
       lifecycle_id: 'lc-1',
       attempt_id: 'att-1',
       channel_id: CHANNEL,
       parent_ts: THREAD_TS,
       env: 'dev2',
-      summary: 'mac-mini-dev unreachable',
+      summary: 'devbox-a-dev unreachable',
     };
 
     it('drops an ordinary upload while the attempt runs: not parked, painted, downloaded or steered', async () => {
@@ -3291,7 +3291,7 @@ describe('SlackHandler — follow-up queue host', () => {
     });
 
     /**
-     * #956 (work-m64 dev, 2026-11-05 07:10–07:34Z): the dispatch slot is taken
+     * #956 (team-host dev, 2026-11-05 07:10–07:34Z): the dispatch slot is taken
      * the moment a turn is dispatched, but the turn's input channel exists only
      * once its SDK query starts — 66 s later that day (session setup, prompt
      * build). A follow-up sent in that gap found the slot busy, was refused by
@@ -8149,7 +8149,7 @@ describe('SlackHandler — follow-up queue host', () => {
   });
 
   /**
-   * Live report (work-m64 dev, 2026-11-02 13:06–13:08 KST): a follow-up was
+   * Live report (team-host dev, 2026-11-02 13:06–13:08 KST): a follow-up was
    * dispatched and its turn was running when a deploy restarted the service.
    * The stop froze it `uncertain`. After the restart the session was resumed on
    * the same conversation and the model carried on with that instruction — yet
@@ -8295,7 +8295,7 @@ describe('SlackHandler — follow-up queue host', () => {
       expect((booted as any).getFollowupQueue().freezeReason(SESSION_KEY)).toBeUndefined();
     });
 
-    it('the goal loop resume takes it over too — the path the work-m64 dev session took', async () => {
+    it('the goal loop resume takes it over too — the path the team-host dev session took', async () => {
       const snapshot = await interruptedByShutdown(true);
       const { booted } = bootFrom(snapshot, []);
       const goal = { status: 'active', objective: '패스키 계획 정리', goalId: 'g-1', epoch: 1 };
@@ -8523,7 +8523,7 @@ describe('SlackHandler — follow-up queue host', () => {
     });
 
     /**
-     * Live report (work-m64 dev, 2026-11-03 16:39 KST): a message steered into the
+     * Live report (team-host dev, 2026-11-03 16:39 KST): a message steered into the
      * running turn 4 s before a deploy stopped it was frozen `uncertain` with its
      * uuid wiped. The transcript showed the model never read it; another one, cut at
      * 17:28, had been read at 08:25:37Z. Both read 보내지 못했습니다 through every later
@@ -8835,7 +8835,7 @@ describe('SlackHandler — follow-up queue host', () => {
   });
 
   /**
-   * The same thread, half an hour later (work-m64 dev, 2026-11-02 04:31–04:33Z):
+   * The same thread, half an hour later (team-host dev, 2026-11-02 04:31–04:33Z):
    * a follow-up's turn crossed the auto-compact threshold and was stopped. The
    * stop parked it `uncertain` ("auto-compact"), the next queued follow-up ran
    * — compacting first — and carried the conversation on, yet the cut row kept

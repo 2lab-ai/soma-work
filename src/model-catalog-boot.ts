@@ -3,7 +3,7 @@
  * mode, not the static `config.auth.mode`.
  *
  * Why the runtime gate matters: hosts without an `AUTH_MODE=llmux` env
- * (e.g. work-m64 dev) boot with static mode `ccp`, and `initAuthRuntimeDefault`
+ * (e.g. team-host dev) boot with static mode `ccp`, and `initAuthRuntimeDefault`
  * only flips the LIVE mode to llmux after its reachability probe. The
  * catalog fetch originally lived inside the static `config.auth.mode ===
  * 'llmux'` block in index.ts, so those hosts never fetched the catalog:

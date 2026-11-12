@@ -366,7 +366,7 @@ describe('U9 — heartbeat vs real progress in the header patches', () => {
 
 /**
  * `onTurnReachedModel` — the host's delivery evidence for a dispatched
- * follow-up (work-m64 dev, 2026-11-02). It must mean "the SDK took the prompt":
+ * follow-up (team-host dev, 2026-11-02). It must mean "the SDK took the prompt":
  * fired by the FIRST SDK event of the execution, exactly once, with the turn
  * generation the run was dispatched under — and never at all for a stream
  * that produced nothing.

@@ -1,7 +1,7 @@
 /**
  * Contract tests for `scripts/service.sh <env> stop`.
  *
- * Incident 2026-09-17, deploy run 35184945142, target work-m16:
+ * Incident 2026-09-17, deploy run 35184945142, target prod-host:
  *   1. the Deploy step ran `service.sh main stop || true`;
  *   2. stop printed "Failed to stop service via LaunchAgent" — the label was
  *      registered in more than one launchd domain, so `launchctl unload
@@ -364,7 +364,7 @@ describe('scripts/service.sh stop — a failed unload is not the end of stop', (
   // The sticky `system` domain is polled for the full bootout budget before it
   // is declared stuck, so this case pays that wall-clock wait.
   it('exits non-zero when a launchd domain still holds the label (multi-domain refusal)', () => {
-    // `launchctl print system/<label>` showed a live pid on work-m16: the label
+    // `launchctl print system/<label>` showed a live pid on prod-host: the label
     // was registered in a second domain that the session's plist unload never
     // touched, and only root can boot the system domain out.
     const bin = installFakeLaunchctl({

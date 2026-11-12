@@ -97,7 +97,7 @@ __pycache__/
 *.pyo
 
 # cleanup sweep 2026-07-08
-*.oudwood
+*.devbox-b
 .beads/*.lock
 .sandbox-write-probe
 .worktrees/

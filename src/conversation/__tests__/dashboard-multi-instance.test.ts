@@ -180,11 +180,11 @@ describe('Dashboard multi-instance aggregation (#814)', () => {
     setDashboardSessionAccessor(() => sessions);
 
     mockReadAllInstances.mockResolvedValue([
-      { port: 33001, instanceName: 'mac-mini-dev', host: '127.0.0.1', pid: 1001, lastSeen: Date.now() },
+      { port: 33001, instanceName: 'devbox-a-dev', host: '127.0.0.1', pid: 1001, lastSeen: Date.now() },
     ]);
     mockFetchSiblingBoards.mockResolvedValue([
       {
-        instanceName: 'mac-mini-dev',
+        instanceName: 'devbox-a-dev',
         port: 33001,
         host: '127.0.0.1',
         board: {
@@ -218,9 +218,9 @@ describe('Dashboard multi-instance aggregation (#814)', () => {
     expect(body.board.working[0].key).toBe('self-host::C1:t1');
     expect(body.board.working[0].environment.instanceName).toBe('self-host');
     // Sibling card stamped with sibling env and composite key.
-    expect(body.board.working[1].key).toBe('mac-mini-dev::C9:t9');
+    expect(body.board.working[1].key).toBe('devbox-a-dev::C9:t9');
     expect(body.board.working[1].environment).toEqual({
-      instanceName: 'mac-mini-dev',
+      instanceName: 'devbox-a-dev',
       port: 33001,
       host: '127.0.0.1',
     });
@@ -241,7 +241,7 @@ describe('Dashboard multi-instance aggregation (#814)', () => {
     setDashboardSessionAccessor(() => sessions);
 
     mockReadAllInstances.mockResolvedValue([
-      { port: 33001, instanceName: 'mac-mini-dev', host: '127.0.0.1', pid: 1001, lastSeen: Date.now() },
+      { port: 33001, instanceName: 'devbox-a-dev', host: '127.0.0.1', pid: 1001, lastSeen: Date.now() },
     ]);
     mockFetchSiblingBoards.mockRejectedValue(new Error('boom'));
 
@@ -272,11 +272,11 @@ describe('Dashboard multi-instance aggregation (#814)', () => {
     setDashboardSessionAccessor(() => sessions);
 
     mockReadAllInstances.mockResolvedValue([
-      { port: 33001, instanceName: 'mac-mini-dev', host: '127.0.0.1', pid: 1001, lastSeen: Date.now() },
+      { port: 33001, instanceName: 'devbox-a-dev', host: '127.0.0.1', pid: 1001, lastSeen: Date.now() },
     ]);
     mockFetchSiblingBoards.mockResolvedValue([
       {
-        instanceName: 'mac-mini-dev',
+        instanceName: 'devbox-a-dev',
         port: 33001,
         host: '127.0.0.1',
         board: {
@@ -305,7 +305,7 @@ describe('Dashboard multi-instance aggregation (#814)', () => {
 
     const body = JSON.parse(res.body);
     const keys = body.board.working.map((s: any) => s.key).sort();
-    expect(keys).toEqual(['mac-mini-dev::C1:t1', 'self-host::C1:t1']);
+    expect(keys).toEqual(['devbox-a-dev::C1:t1', 'self-host::C1:t1']);
     expect(new Set(keys).size).toBe(keys.length);
   });
 
@@ -471,7 +471,7 @@ describe('Dashboard multi-instance aggregation (#814)', () => {
 
         const res = await injectWebServer({
           method: ep.verb,
-          url: `/api/dashboard/session/${encodeURIComponent('mac-mini-dev::C1:t1')}/${ep.path}`,
+          url: `/api/dashboard/session/${encodeURIComponent('devbox-a-dev::C1:t1')}/${ep.path}`,
           headers: AUTH_HEADER,
           payload: ep.bodyForOk,
         });
@@ -479,7 +479,7 @@ describe('Dashboard multi-instance aggregation (#814)', () => {
         expect(res.statusCode).toBe(409);
         const body = JSON.parse(res.body);
         expect(body.error).toMatch(/Cross-instance/i);
-        expect(body.wireKey).toBe('mac-mini-dev::C1:t1');
+        expect(body.wireKey).toBe('devbox-a-dev::C1:t1');
         // Critical: handler must NOT have been invoked for a foreign prefix.
         expect(handler).not.toHaveBeenCalled();
       });
@@ -540,11 +540,11 @@ describe('Dashboard multi-instance aggregation (#814)', () => {
     setDashboardSessionAccessor(() => new Map());
 
     mockReadAllInstances.mockResolvedValue([
-      { port: 33001, instanceName: 'mac-mini-dev', host: '127.0.0.1', pid: 1001, lastSeen: Date.now() },
+      { port: 33001, instanceName: 'devbox-a-dev', host: '127.0.0.1', pid: 1001, lastSeen: Date.now() },
     ]);
     mockFetchSiblingBoards.mockResolvedValue([
       {
-        instanceName: 'mac-mini-dev',
+        instanceName: 'devbox-a-dev',
         port: 33001,
         host: '127.0.0.1',
         board: {
@@ -574,10 +574,10 @@ describe('Dashboard multi-instance aggregation (#814)', () => {
     const body = JSON.parse(res.body);
     expect(body.board.working).toHaveLength(1);
     const sibling = body.board.working[0];
-    expect(sibling.environment.instanceName).toBe('mac-mini-dev');
+    expect(sibling.environment.instanceName).toBe('devbox-a-dev');
     // Sibling card must carry env so the renderCard sibling-detection
     // (env.instanceName !== SELF_INSTANCE_NAME) can match.
-    expect(sibling.key).toBe('mac-mini-dev::C9:t9');
+    expect(sibling.key).toBe('devbox-a-dev::C9:t9');
   });
 
   it('stopWebServer removes the heartbeat file on shutdown', async () => {

@@ -1516,7 +1516,7 @@ describe('FollowupDispatcher auto-steering (06 §3.2)', () => {
 });
 
 /**
- * Delivery evidence and the restart takeover (work-m64 dev, 2026-11-02): the
+ * Delivery evidence and the restart takeover (team-host dev, 2026-11-02): the
  * run's first SDK event marks its own item delivered, and a resuming run can
  * take a delivered `uncertain` item over so that ITS outcome settles the row.
  */

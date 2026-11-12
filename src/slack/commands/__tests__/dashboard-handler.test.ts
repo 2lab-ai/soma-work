@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // Each is stubbed so the test stays unit-scoped (no Fastify, no fs).
 
 vi.mock('../../../conversation/web-server', () => ({
-  getViewerBaseUrl: vi.fn(() => 'http://macmini:33000'),
+  getViewerBaseUrl: vi.fn(() => 'http://devbox-a:33000'),
 }));
 
 const mockIssueSlackToken = vi.fn();
@@ -109,7 +109,7 @@ describe('DashboardHandler (#704)', () => {
 
       const sayArg = (ctx.say as any).mock.calls[0][0];
       expect(sayArg.thread_ts).toBe('thread1');
-      expect(sayArg.text).toContain('http://macmini:33000/auth/sso?token=signed.jwt.value');
+      expect(sayArg.text).toContain('http://devbox-a:33000/auth/sso?token=signed.jwt.value');
       // URL-encode reserved characters if the signer ever returns any
       expect(sayArg.text).toMatch(/auth\/sso\?token=[^\s]+/);
     });
@@ -164,7 +164,7 @@ describe('DashboardHandler (#704)', () => {
       expect(postEphemeral).toHaveBeenCalledTimes(1);
       const arg = postEphemeral.mock.calls[0][0];
       expect(arg.text).toContain('Dashboard login link');
-      expect(arg.text).toContain('http://macmini:33000/auth/sso?token=signed.jwt');
+      expect(arg.text).toContain('http://devbox-a:33000/auth/sso?token=signed.jwt');
       expect(ctx.say).not.toHaveBeenCalled();
     });
 

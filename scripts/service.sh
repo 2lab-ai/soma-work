@@ -501,7 +501,7 @@ is_alive() {
 # Real incident: a dev-channel deploy run on 2026-06-15.
 #
 # Both calls used to end in `2>/dev/null || true`, which is how deploy run
-# 35184945142 (2026-09-17, work-m16) lost its only signal: kickstart failed,
+# 35184945142 (2026-09-17, prod-host) lost its only signal: kickstart failed,
 # nothing was printed, and the Verify step then read the PREVIOUS deploy's PID
 # out of `launchctl list` and called it green. Stderr is now surfaced and a
 # failed kickstart returns non-zero; callers (cmd_start / cmd_install /
@@ -979,7 +979,7 @@ cmd_start() {
 
 # --- stop: the three things that can keep old code running ---------------
 #
-# Incident 2026-09-17, deploy run 35184945142, target work-m16. `service.sh main
+# Incident 2026-09-17, deploy run 35184945142, target prod-host. `service.sh main
 # stop` printed "Failed to stop service via LaunchAgent", the pidfile fallback
 # matched nothing, the deploy step swallowed the failure with `|| true`, and the
 # supervisor from the PREVIOUS deploy (pid 61554, started 4h earlier) kept
@@ -1007,7 +1007,7 @@ launchd_domains() {
 #
 # Measured 2026-09-17: as the runner user on owner-mac, `launchctl print
 # system/<label>` exits 113 for BOTH a registered and a non-existent label —
-# a non-root process cannot see into the system domain at all. On work-m16 (admin
+# a non-root process cannot see into the system domain at all. On prod-host (admin
 # user) the same probe exits 0 for a registered label and 113 for a missing one,
 # and `gui/<uid>/<label>` exits 0 where registered, 125 where not. So 113/125
 # (and any other non-zero) can only be read as "not visible to me", never as
@@ -1340,7 +1340,7 @@ cmd_stop() {
 cmd_restart() {
     print_status "Restarting $SERVICE_NAME..."
     # Starting on top of a stop that left something alive is how a host ends up
-    # with two supervisor trees (incident 2026-09-17, work-m16).
+    # with two supervisor trees (incident 2026-09-17, prod-host).
     if ! cmd_stop; then
         print_error "Refusing to start on top of a failed stop."
         return 1

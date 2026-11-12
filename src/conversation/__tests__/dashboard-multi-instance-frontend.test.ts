@@ -91,7 +91,7 @@ describe('Dashboard multi-instance frontend (#814)', () => {
     expect(DASHBOARD_TS).toContain('SELF_INSTANCE_NAME');
     expect(DASHBOARD_TS).toContain('s.environment.instanceName !== SELF_INSTANCE_NAME');
     // The disabled placeholder uses the redirect arrow (\u2192) so the
-    // user sees `Stop -> mac-mini-dev` instead of a live button.
+    // user sees `Stop -> devbox-a-dev` instead of a live button.
     expect(DASHBOARD_TS).toContain('\\u2192');
   });
 

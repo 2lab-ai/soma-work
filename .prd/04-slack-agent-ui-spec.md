@@ -2,7 +2,7 @@
 
 Status: planned (구현 미착수 · 게이트 전부 미실행)
 Date: 2026-09-14
-현재 임무: **구현 + 검증 + 프리뷰 배포(work-m64 제외) + Chrome 화면 검증.** "문서만"은 PRD 작성 세션에
+현재 임무: **구현 + 검증 + 프리뷰 배포(team-host 제외) + Chrome 화면 검증.** "문서만"은 PRD 작성 세션에
 한정됐던 과거 제한이다(근거·verbatim = SSOT §1, §1.1).
 SSOT: [`.prd/slack-agent-ui/ssot.md`](slack-agent-ui/ssot.md) · Loop: [`.prd/slack-agent-ui/loop.md`](slack-agent-ui/loop.md)
 Architecture: [`.prd/05-slack-agent-ui-architecture.md`](05-slack-agent-ui-architecture.md)
@@ -125,7 +125,7 @@ SDK 업그레이드와 Agent Sessions / task·plan 블록은 **비목표가 아�
 | A22 | 스트리밍 블록 미지원 | legacy fallback에서도 Queue/Send now 유지 |
 | A23 | 첨부만 있는 메시지 | 렌더 허용 + 의미 있는 접근성 fallback |
 | A24 | 스레드 post/update/outbox | rate limit 준수 + 재시작 후 idempotent(중복 카드 없음) |
-| A25 | 배포 host 제외(work-m64), 프리뷰 채널 | `.github/workflows/deploy.yml:40-71`은 채널 변수의 **모든** 줄을 확장하며 필터가 없다 → 제외는 **미구현**(구현 주장 금지). `PREVIEW_DEPLOY_TARGETS`를 읽기 전용으로 열거 → runner label ↔ host alias 대조로 work-m64 canonical+alias 확정 → 프리뷰 한정 allowlist. 워크플로/변수 변경이 필요하면 **별도 리뷰·승인**. 미상 target 존재 시 **fail closed**(무필터 push 금지) |
+| A25 | 배포 host 제외(team-host), 프리뷰 채널 | `.github/workflows/deploy.yml:40-71`은 채널 변수의 **모든** 줄을 확장하며 필터가 없다 → 제외는 **미구현**(구현 주장 금지). `PREVIEW_DEPLOY_TARGETS`를 읽기 전용으로 열거 → runner label ↔ host alias 대조로 team-host canonical+alias 확정 → 프리뷰 한정 allowlist. 워크플로/변수 변경이 필요하면 **별도 리뷰·승인**. 미상 target 존재 시 **fail closed**(무필터 push 금지) |
 | A26 | 실행 중이 아닐 때(idle) 도착한 일반 메시지 | 큐를 타지 않고 **즉시 dispatch**. 큐는 실행 중일 때만 개입한다 |
 | A27 | 큐가 `paused`인 상태에서 새 메시지 도착 | 기존 `paused` 항목은 계속 `paused` 유지(자동 재개 없음). 새 메시지는 A26/A1 규칙을 따른다 |
 | A28 | 끝나가는 옛 턴의 지연 쓰기(late write)가 새 dispatch 시작 후 도착 | 새 상태/새 턴 표면을 **덮어쓰지 않음**(A12와 **같은 epoch 값**으로 거절), 옛 턴 출력은 자기 위치에 남음 |
@@ -157,7 +157,7 @@ SDK 업그레이드와 Agent Sessions / task·plan 블록은 **비목표가 아�
 - `packages/slack/src/request-coordinator.ts:173-174` `canStartRequest`는 **큐 보장이 아니다.** 새 큐가 실제 SSOT여야 한다.
 - `packages/slack/src/mcp-status-tracker.ts:176` in-memory cleanup은 재시작 후 상태 재구성에 영향.
 - Slack 신 블록(task/plan) 가용성 미검증 — 채택 전 SDK/워크스페이스 capability 확인 필요(A35).
-- work-m64의 canonical runner label은 **repo 안에 증거가 없다**(`rg -n 'work-m64'` 매치 0, `.prd` 제외).
+- team-host의 canonical runner label은 **repo 안에 증거가 없다**(`rg -n 'team-host'` 매치 0, `.prd` 제외).
   토폴로지가 Actions repo variable에만 있으므로 A25의 1단계(읽기 전용 열거) 없이는 allowlist를 만들 수 없다.
 - `reserved` 상태 신설은 저장 스키마를 바꾼다 — 기존 저장 파일이 없더라도 스키마 버전 필드를 함께 넣지 않으면
   다음 변경 때 같은 문제가 반복된다(SSOT §8 R2).

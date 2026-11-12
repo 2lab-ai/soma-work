@@ -2,7 +2,7 @@
  * Compaction in-flight state predicates — shared by the message pipeline
  * (session-initializer concurrency control) and the compact hook helpers.
  *
- * Why this exists (compact re-loop bug, work-m64 dev 2026-07-08):
+ * Why this exists (compact re-loop bug, team-host dev 2026-07-08):
  *
  * The SDK CLI performs `/compact` as a long (2–3 min) turn that emits no
  * stream events while the summarization request is in flight. The compacted

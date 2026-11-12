@@ -44,7 +44,7 @@ Status: planned · 스펙 = [`../06-user-steering-spec.md`](../06-user-steering-
 
 ## 검증 (관측 기반)
 - 로컬: 위 게이트 + SDK 스트리밍 입력 모의(uuid 프레임) 테스트.
-- 실측: 2lab.ai Slack(dev 봇, 단독 인스턴스)에서 실제 스레드로 — 라운드 3 표 참조(2026-09-18). iq 워크스페이스는 Socket Mode 이벤트가 work-m64 hot-spare에 고정돼 검증 불가(2026-09-17 실측).
+- 실측: 2lab.ai Slack(dev 봇, 단독 인스턴스)에서 실제 스레드로 — 라운드 3 표 참조(2026-09-18). iq 워크스페이스는 Socket Mode 이벤트가 team-host hot-spare에 고정돼 검증 불가(2026-09-17 실측).
 
 ## gap matrix
 | 갭 | 상태 |

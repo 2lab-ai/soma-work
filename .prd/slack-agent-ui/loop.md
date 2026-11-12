@@ -5,7 +5,7 @@ Date: 2026-09-14
 SSOT: [`ssot.md`](ssot.md) · Spec: [`../04-slack-agent-ui-spec.md`](../04-slack-agent-ui-spec.md) ·
 Arch: [`../05-slack-agent-ui-architecture.md`](../05-slack-agent-ui-architecture.md)
 
-**현재 임무 = 구현 + 검증 + 프리뷰 배포(work-m64 제외) + Chrome 화면 검증.** "문서만"은 PRD 작성 세션에
+**현재 임무 = 구현 + 검증 + 프리뷰 배포(team-host 제외) + Chrome 화면 검증.** "문서만"은 PRD 작성 세션에
 한정됐던 과거 제한이며(SSOT §1.1) 구현 금지 지시가 아니다.
 **현재 진행 상태: 로컬 통합 리시트는 확보됐고(빌드·스모크 exit 0, bounded `npm test` 8462 passed),
 live acceptance는 미확인이다.** 두 가지는 다른 물건이다 — 로컬 green은 화면에서의 수용을 증명하지 않는다.
@@ -41,10 +41,10 @@ live acceptance는 미확인이다.** 두 가지는 다른 물건이다 — 로�
 | U12 | Liveness·outbox | 침묵 하드 abort 없음, 도구/승인 대기 구분, rate limit + 재시작 idempotency, 옛 턴 late write가 새 턴 표면을 덮지 않음 | A20, A24, A28 | 작성 중 — A24a surface-outbox-store 구현 중 **배선 없음** → A24 미성립 |
 | U13 | 관측 지표 | 큐 depth·상태 전이 카운트·drain/interrupt latency·거절 사유별 카운트, 마지막 실제 진행 타임스탬프는 헤더와 같은 소스 | A34 | 작성 중 — host 배선(U13b) 구현 + targeted host 28건, **거절 경로·집계 미완 → A34 미종결** |
 | U14 | Slack capability preflight (문서 → 실측) | **타입 표면 실측분**: 설치본(web-api 7.15.1 / types 2.20.1)에 task_card·plan·`task_update`/`plan_update`·`task_display_mode` 존재, `agents.*` lifecycle 부재 → 업그레이드는 Agent Sessions 채택 시에만 게이트(04 §4.3). **live 채택·렌더는 NOT TESTED.** red면 legacy fallback 유지. `agent_view`는 **인가 없음 → 검증·채택 제외** | A35 | 타입 표면 실측 / live NOT TESTED |
-| U15 | 배포 target allowlist (프리뷰 한정) | `.github/workflows/deploy.yml:40-71`은 `:49`에서 채널 변수를 고르고 `:53-71`에서 **모든 줄을 필터 없이** 확장한다 → ① `PREVIEW_DEPLOY_TARGETS`·`PRODUCTION_DEPLOY_TARGETS`를 **읽기 전용**으로 열거 ② runner label ↔ 실제 host alias 대조로 work-m64 canonical+alias 확정 ③ **프리뷰 한정 per-run allowlist** 확정. ③이 워크플로/변수 변경을 요구하면 **별도 리뷰·승인 필수**. 미상 target = fail closed, 무필터 push 금지 | A25 | **blocked-by-user** — 유저 결정 "워크플로 변경 보류"(아래 §유저 결정). 읽기 전용 인벤토리 보고만 접수(alias 대조는 재검증 대상), 변경·배포 없음 |
+| U15 | 배포 target allowlist (프리뷰 한정) | `.github/workflows/deploy.yml:40-71`은 `:49`에서 채널 변수를 고르고 `:53-71`에서 **모든 줄을 필터 없이** 확장한다 → ① `PREVIEW_DEPLOY_TARGETS`·`PRODUCTION_DEPLOY_TARGETS`를 **읽기 전용**으로 열거 ② runner label ↔ 실제 host alias 대조로 team-host canonical+alias 확정 ③ **프리뷰 한정 per-run allowlist** 확정. ③이 워크플로/변수 변경을 요구하면 **별도 리뷰·승인 필수**. 미상 target = fail closed, 무필터 push 금지 | A25 | **blocked-by-user** — 유저 결정 "워크플로 변경 보류"(아래 §유저 결정). 읽기 전용 인벤토리 보고만 접수(alias 대조는 재검증 대상), 변경·배포 없음 |
 
 **완료(`verified`)로 닫힌 유닛 = 0.** targeted 테스트 green은 유닛 완료가 아니며, host 와이어링·버튼 등록·
-surface 작업이 남아 있다. U14는 타입 표면만 실측했고 live는 NOT TESTED. work-m64 제외는 아직 구현돼 있지 않다.
+surface 작업이 남아 있다. U14는 타입 표면만 실측했고 live는 NOT TESTED. team-host 제외는 아직 구현돼 있지 않다.
 
 ### 열린 명확화 — `turnEpoch` vs 항목 `epoch`
 
@@ -74,14 +74,14 @@ U15는 어떤 배포보다 선행. U9–U12의 병렬 실행은 **주장하지 �
 1. 유닛별 TDD (RED 재현 → GREEN) + 위 6개 게이트 직접 재실행.
 2. 외부 리뷰어 에이전트 경유(§2 delegation-first). 유닛당 1 디스패치(§3 per-unit).
 3. 재발-결함 성격이면 RED-on-master 재현 고정.
-4. CI green → 머지 → **프리뷰 배포(U15 allowlist 성립 후, work-m64 제외)** → 배포 후 실측.
+4. CI green → 머지 → **프리뷰 배포(U15 allowlist 성립 후, team-host 제외)** → 배포 후 실측.
 5. 실제 Slack 스레드에서 Chrome로 화면 검증(Queue 표시, `Send now` 동작, 헤더 활동 시각) — 임무의 마지막 리시트.
 6. prod 게이트는 유지 — 비가역 액션(prod 배포, `agent_view`)은 유저 승인 대상.
 
 ## 배포 안전 (U15 — 배포보다 선행)
 
 - `deploy.yml:40-71`은 `:49`에서 채널 변수(`PREVIEW_DEPLOY_TARGETS` / `PRODUCTION_DEPLOY_TARGETS`)를 고르고
-  `:53-71`에서 **모든 줄을 필터 없이** 확장한다 → "work-m64 제외"는 **미구현**. 구현됐다고 적지 않는다.
+  `:53-71`에서 **모든 줄을 필터 없이** 확장한다 → "team-host 제외"는 **미구현**. 구현됐다고 적지 않는다.
 - 두 변수는 **읽기 전용**으로 열거만 한다. runner label ↔ host alias 대조로 canonical+alias를 확정한 뒤
   **프리뷰 한정** per-run allowlist를 만든다. 워크플로/변수 변경이 필요하면 **별도 리뷰·승인**.
 - 미상 target = fail closed. 무필터 `main:deploy/dev` 또는 prod push 금지.
@@ -91,7 +91,7 @@ U15는 어떤 배포보다 선행. U9–U12의 병렬 실행은 **주장하지 �
 - 물어본 것: per-run 프리뷰 target 선택 + dev 태그 보호를 위한 워크플로 변경 여부.
 - **유저 선택: "워크플로 변경 보류".** 따라서 U15의 워크플로/변수 변경과 그에 딸린 **배포는 blocked-by-user**다.
 - 우회 배포 경로는 **인가되지 않았다** — 다른 채널·수동 트리거·필터 없는 push 모두 금지. 대기가 정답이다.
-- 이 결정은 **원 지시(구현 + work-m64 제외 배포)를 철회하지 않는다** — 배포 수단만 보류된 상태이고, SSOT §1 원문과
+- 이 결정은 **원 지시(구현 + team-host 제외 배포)를 철회하지 않는다** — 배포 수단만 보류된 상태이고, SSOT §1 원문과
   현재 임무 정의는 그대로다.
 - 보류 중에도 **로컬 구현·테스트는 계속한다**(게이트·targeted 리시트는 위 표 그대로 유지).
 

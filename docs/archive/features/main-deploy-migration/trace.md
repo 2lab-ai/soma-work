@@ -15,7 +15,7 @@
 
 - Trigger: GitHub Actions `deploy` job for `github.ref_name == "main"`
 - File: `.github/workflows/deploy.yml`
-- Auth/AuthZ: Executes on the self-hosted macmini runner with filesystem access to `/opt/soma-work` and `/Users/dd/app.claude-code-slack-bot`
+- Auth/AuthZ: Executes on the self-hosted devbox-a runner with filesystem access to `/opt/soma-work` and `/Users/dd/app.claude-code-slack-bot`
 
 ### 2. Input
 
@@ -186,7 +186,7 @@
 
 - Workflow logs:
   - `bootstrap: skipped`
-  - `Deploying mac-mini-main to /opt/soma-work/main`
+  - `Deploying devbox-a-main to /opt/soma-work/main`
   - `service status`
 
 ### Contract Tests (RED)

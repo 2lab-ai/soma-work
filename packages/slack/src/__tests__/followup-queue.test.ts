@@ -1821,7 +1821,7 @@ describe('FollowupQueue holdsPending (dashboard model switch, review R3-2)', () 
 });
 
 /**
- * Delivery evidence and the restart takeover (work-m64 dev, 2026-11-02).
+ * Delivery evidence and the restart takeover (team-host dev, 2026-11-02).
  *
  * A follow-up was dispatched, its turn was running, and a deploy restarted the
  * service. The stop froze it `uncertain` — correct: nobody knew what it had
@@ -1948,7 +1948,7 @@ describe('FollowupQueue delivery evidence and the restart takeover', () => {
 });
 
 /**
- * Owner directive (2026-11-03, work-m64 dev): "서비스 재부팅하면 자동으로 처리되지 않은
+ * Owner directive (2026-11-03, team-host dev): "서비스 재부팅하면 자동으로 처리되지 않은
  * 메세지는 그 이후에 반드시 보내야함 작업이 중단된거 아니면". A message steered into a
  * turn 4 s before a deploy stopped it was frozen `uncertain` with its uuid wiped, so
  * the next boot could not ask the transcript whether the model had read it, and the

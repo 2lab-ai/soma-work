@@ -502,7 +502,7 @@ describe('SlackApiHelper', () => {
     });
 
     /**
-     * Regression guard (2026-07-09 work-m64 incident): an over-limit Block Kit
+     * Regression guard (2026-07-09 team-host incident): an over-limit Block Kit
      * payload (`invalid_blocks`) must DEGRADE to the text fallback instead of
      * throwing — the goal-status blocks blew Slack's 3000-char section cap,
      * the throw crashed GoalHandler, and the raw `goal` text got hijacked by

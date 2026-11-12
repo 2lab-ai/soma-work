@@ -72,7 +72,7 @@
 - 같은 Slack 토큰으로 2개 인스턴스 절대 금지 (메시지 중복/충돌)
 - 설정 파일(.env 등)은 배포 시 보존됨 (rsync exclude)
 
-> **macmini main bootstrap**: 첫 `deploy/prod` 배포는 self-hosted runner가 `/opt/soma-work/dev`의 설정 구조를 seed로 복사하고, legacy 운영 경로 `/Users/dd/app.claude-code-slack-bot/.env` 및 `/Users/dd/app.claude-code-slack-bot/data`를 `/opt/soma-work/main`으로 가져온 뒤 `.main-bootstrap.json` marker를 남긴다. marker가 생긴 뒤에는 이후 `deploy/prod` 배포가 코드만 갱신한다.
+> **devbox-a main bootstrap**: 첫 `deploy/prod` 배포는 self-hosted runner가 `/opt/soma-work/dev`의 설정 구조를 seed로 복사하고, legacy 운영 경로 `/Users/dd/app.claude-code-slack-bot/.env` 및 `/Users/dd/app.claude-code-slack-bot/data`를 `/opt/soma-work/main`으로 가져온 뒤 `.main-bootstrap.json` marker를 남긴다. marker가 생긴 뒤에는 이후 `deploy/prod` 배포가 코드만 갱신한다.
 
 ---
 
@@ -871,5 +871,5 @@ jobs:
       - ${{ github.ref_name == 'deploy/prod' && 'prod-node' || 'dev-node' }}
 ```
 
-현재 워크플로우에서는 main 브랜치가 macmini와 oudwood-512의 `/opt/soma-work/dev`로 배포되고,
-deploy/prod 브랜치는 macmini의 `/opt/soma-work/main`으로 배포된다.
+현재 워크플로우에서는 main 브랜치가 devbox-a와 devbox-b의 `/opt/soma-work/dev`로 배포되고,
+deploy/prod 브랜치는 devbox-a의 `/opt/soma-work/main`으로 배포된다.

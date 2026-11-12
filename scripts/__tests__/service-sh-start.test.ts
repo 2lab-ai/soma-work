@@ -1,7 +1,7 @@
 /**
  * Contract test for `scripts/service.sh start` — the agent must actually SPAWN.
  *
- * Background (deploy run 27553669625, oudwood-dev, 2026-06-15): the Deploy step
+ * Background (deploy run 27553669625, devbox-b-dev, 2026-06-15): the Deploy step
  * runs `service.sh <env> install`, which did `launchctl load "$PLIST"` and then
  * checked for a live PID. `launchctl load` only REGISTERS the LaunchAgent in the
  * user domain. When the deploy runs from a non-GUI/Aqua session — exactly the

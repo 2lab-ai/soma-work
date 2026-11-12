@@ -217,7 +217,7 @@ trinity Round 2(상호 반박 + 수리 증거) 진행 중. 잔여(비차단): `f
 
 ### R12 — main 병합 + sanitize 게이트 (2026-09-15 14:30)
 
-main이 41커밋 앞서 PR #218이 CONFLICTING → `origin/main` 병합(코드 충돌 4파일 9헝크: stream-executor '생각 중' 전이 재배치 + epoch 토큰 재부착, slack-api-helper 반환 타입 확장 + rendered-empty 가드, turn-surface 네이티브 상태 lifecycle + 우리 마커/A32 close, slack-handler import; 온보딩 문서 5종은 main 채택). 병합 후 main의 신규 게이트 2건 실패 → 수리: SDK 핀(`npm ci`로 0.3.251 설치, 코드 변경 없음), 저장소 sanitize(PRD 문서의 사설 호스트 라벨 → 러너 라벨 `work-m64`).
+main이 41커밋 앞서 PR #218이 CONFLICTING → `origin/main` 병합(코드 충돌 4파일 9헝크: stream-executor '생각 중' 전이 재배치 + epoch 토큰 재부착, slack-api-helper 반환 타입 확장 + rendered-empty 가드, turn-surface 네이티브 상태 lifecycle + 우리 마커/A32 close, slack-handler import; 온보딩 문서 5종은 main 채택). 병합 후 main의 신규 게이트 2건 실패 → 수리: SDK 핀(`npm ci`로 0.3.251 설치, 코드 변경 없음), 저장소 sanitize(PRD 문서의 사설 호스트 라벨 → 러너 라벨 `team-host`).
 
 | 게이트 | 로그 | 결과 |
 |---|---|---|

@@ -100,38 +100,38 @@ type PermalinkApi = { panelPermalinkOf: (s: unknown, origin: string, selfInstanc
 type ResolveApi = { resolveDeepLinkKey: (ref: string | null, keys: string[], selfInstance: string) => string | null };
 
 describe('A2 — 퍼머링크: the card’s deep link, the one the Slack thread head carries', () => {
-  const SELF = 'mac-mini-dev';
+  const SELF = 'devbox-a-dev';
   const panelPermalinkOf = (s: unknown, origin: string, selfInstance: string = SELF) =>
     load<PermalinkApi>(['panelPermalinkOf']).panelPermalinkOf(s, origin, selfInstance);
   const env = { instanceName: SELF, port: 3000, host: 'h' };
-  const sib = { instanceName: 'oudwood-dev', port: 3001, host: 'o' };
+  const sib = { instanceName: 'devbox-b-dev', port: 3001, host: 'o' };
   const ORIGIN = 'https://soma.example';
 
   it('a live card: /dashboard/<owner>?session=<registry key> — this instance’s prefix (#814) dropped', () => {
     expect(
-      panelPermalinkOf({ key: 'mac-mini-dev::work:C1:1700000000.000100', ownerId: 'U1', environment: env }, ORIGIN),
+      panelPermalinkOf({ key: 'devbox-a-dev::work:C1:1700000000.000100', ownerId: 'U1', environment: env }, ORIGIN),
     ).toBe('https://soma.example/dashboard/U1?session=work%3AC1%3A1700000000.000100');
   });
 
   it('an archived card: the thread’s key — the link keeps opening the thread (its latest archive)', () => {
     expect(
       panelPermalinkOf(
-        { key: 'mac-mini-dev::archived_work:C1:1700000000.000100_1762000000000', ownerId: 'U1', environment: env },
+        { key: 'devbox-a-dev::archived_work:C1:1700000000.000100_1762000000000', ownerId: 'U1', environment: env },
         ORIGIN,
       ),
     ).toBe('https://soma.example/dashboard/U1?session=work%3AC1%3A1700000000.000100');
   });
 
   it('a sibling instance’s card keeps its instance (the same thread may be ours too); its archive wrapper goes', () => {
-    expect(panelPermalinkOf({ key: 'oudwood-dev::work:C2:1.2', ownerId: 'U2', environment: sib }, ORIGIN)).toBe(
-      'https://soma.example/dashboard/U2?session=oudwood-dev%3A%3Awork%3AC2%3A1.2',
+    expect(panelPermalinkOf({ key: 'devbox-b-dev::work:C2:1.2', ownerId: 'U2', environment: sib }, ORIGIN)).toBe(
+      'https://soma.example/dashboard/U2?session=devbox-b-dev%3A%3Awork%3AC2%3A1.2',
     );
     expect(
       panelPermalinkOf(
-        { key: 'oudwood-dev::archived_work:C2:1.2_1762000000000', ownerId: 'U2', environment: sib },
+        { key: 'devbox-b-dev::archived_work:C2:1.2_1762000000000', ownerId: 'U2', environment: sib },
         ORIGIN,
       ),
-    ).toBe('https://soma.example/dashboard/U2?session=oudwood-dev%3A%3Awork%3AC2%3A1.2');
+    ).toBe('https://soma.example/dashboard/U2?session=devbox-b-dev%3A%3Awork%3AC2%3A1.2');
   });
 
   it('no instance wired (no environment — composeSessionKey adds no prefix then): the key as it is', () => {
@@ -150,8 +150,8 @@ describe('A2 — 퍼머링크: the card’s deep link, the one the Slack thread 
     const refOf = (url: string) => new URL(url).searchParams.get('session');
     const resolve = (ref: string | null, keys: string[]) =>
       load<ResolveApi>(['resolveDeepLinkKey']).resolveDeepLinkKey(ref, keys, SELF);
-    const SELF_LIVE = 'mac-mini-dev::work:C1:1.1';
-    const SIB_LIVE = 'oudwood-dev::work:C1:1.1'; // the same thread on both instances
+    const SELF_LIVE = 'devbox-a-dev::work:C1:1.1';
+    const SIB_LIVE = 'devbox-b-dev::work:C1:1.1'; // the same thread on both instances
     const card = (key: string, e: unknown) => ({ key, ownerId: 'U1', environment: e });
 
     it('this instance’s card and a sibling’s card on the same thread open themselves, not each other', () => {
@@ -164,27 +164,27 @@ describe('A2 — 퍼머링크: the card’s deep link, the one the Slack thread 
       const selfLink = refOf(panelPermalinkOf(card(SELF_LIVE, env), ORIGIN));
       const sibLink = refOf(panelPermalinkOf(card(SIB_LIVE, sib), ORIGIN));
       const keys = [
-        'mac-mini-dev::archived_work:C1:1.1_1000',
-        'mac-mini-dev::archived_work:C1:1.1_2000',
-        'oudwood-dev::archived_work:C1:1.1_1500',
-        'oudwood-dev::archived_work:C1:1.1_3000',
+        'devbox-a-dev::archived_work:C1:1.1_1000',
+        'devbox-a-dev::archived_work:C1:1.1_2000',
+        'devbox-b-dev::archived_work:C1:1.1_1500',
+        'devbox-b-dev::archived_work:C1:1.1_3000',
       ];
-      expect(resolve(selfLink, keys)).toBe('mac-mini-dev::archived_work:C1:1.1_2000');
-      expect(resolve(sibLink, keys)).toBe('oudwood-dev::archived_work:C1:1.1_3000');
+      expect(resolve(selfLink, keys)).toBe('devbox-a-dev::archived_work:C1:1.1_2000');
+      expect(resolve(sibLink, keys)).toBe('devbox-b-dev::archived_work:C1:1.1_3000');
     });
 
     it('this instance’s card archived, a sibling’s still live on the same thread: the bare link opens ours', () => {
-      const keys = ['mac-mini-dev::archived_work:C1:1.1_2000', SIB_LIVE];
+      const keys = ['devbox-a-dev::archived_work:C1:1.1_2000', SIB_LIVE];
       expect(resolve(refOf(panelPermalinkOf(card(SELF_LIVE, env), ORIGIN)), keys)).toBe(
-        'mac-mini-dev::archived_work:C1:1.1_2000',
+        'devbox-a-dev::archived_work:C1:1.1_2000',
       );
       // …and the sibling’s own link still opens the sibling’s live card.
       expect(resolve(refOf(panelPermalinkOf(card(SIB_LIVE, sib), ORIGIN)), keys)).toBe(SIB_LIVE);
     });
 
     it('a bare link (Slack’s) with no archive here still finds the thread’s archive on another instance', () => {
-      const keys = ['oudwood-dev::archived_work:C1:1.1_1500'];
-      expect(resolve('work:C1:1.1', keys)).toBe('oudwood-dev::archived_work:C1:1.1_1500');
+      const keys = ['devbox-b-dev::archived_work:C1:1.1_1500'];
+      expect(resolve('work:C1:1.1', keys)).toBe('devbox-b-dev::archived_work:C1:1.1_1500');
     });
 
     it('an instance-qualified link never matches an instance whose name only ends the same (dev vs mac-dev)', () => {
@@ -194,9 +194,9 @@ describe('A2 — 퍼머링크: the card’s deep link, the one the Slack thread 
     });
 
     it('an archived card’s own link opens that thread’s latest archive', () => {
-      const archived = card('oudwood-dev::archived_work:C1:1.1_1500', sib);
-      const keys = ['oudwood-dev::archived_work:C1:1.1_1500', 'oudwood-dev::archived_work:C1:1.1_3000'];
-      expect(resolve(refOf(panelPermalinkOf(archived, ORIGIN)), keys)).toBe('oudwood-dev::archived_work:C1:1.1_3000');
+      const archived = card('devbox-b-dev::archived_work:C1:1.1_1500', sib);
+      const keys = ['devbox-b-dev::archived_work:C1:1.1_1500', 'devbox-b-dev::archived_work:C1:1.1_3000'];
+      expect(resolve(refOf(panelPermalinkOf(archived, ORIGIN)), keys)).toBe('devbox-b-dev::archived_work:C1:1.1_3000');
     });
   });
 });
@@ -240,8 +240,8 @@ describe('A3 — the buttons follow the open card', () => {
       {
         document,
         location: { origin: 'https://soma.example' },
-        SELF_INSTANCE_NAME: 'mac-mini-dev',
-        isSiblingSession: (x: any) => !!(x?.environment && x.environment.instanceName !== 'mac-mini-dev'),
+        SELF_INSTANCE_NAME: 'devbox-a-dev',
+        isSiblingSession: (x: any) => !!(x?.environment && x.environment.instanceName !== 'devbox-a-dev'),
       },
     );
     return { link, copy, renderPanelTitleActions };
@@ -263,13 +263,13 @@ describe('A3 — the buttons follow the open card', () => {
   it('a sibling instance’s card (#814): its link, but no 전체 문맥 복사 — its conversation is not on this server', () => {
     const { link, copy, renderPanelTitleActions } = setup();
     renderPanelTitleActions({
-      key: 'oudwood-dev::work:C2:1',
+      key: 'devbox-b-dev::work:C2:1',
       ownerId: 'U1',
       conversationId: 'conv-2',
-      environment: { instanceName: 'oudwood-dev' },
+      environment: { instanceName: 'devbox-b-dev' },
     });
     expect(link.hidden).toBe(false);
-    expect(link.attrs.href).toBe('https://soma.example/dashboard/U1?session=oudwood-dev%3A%3Awork%3AC2%3A1');
+    expect(link.attrs.href).toBe('https://soma.example/dashboard/U1?session=devbox-b-dev%3A%3Awork%3AC2%3A1');
     expect(copy.hidden).toBe(true);
   });
 
@@ -374,7 +374,7 @@ describe('A5 — a press on 전체 문맥 복사 copies every turn as markdown',
         if (!opts.refreshKeepsToken) scope._csrfToken = 'tok-2';
         return Promise.resolve();
       },
-      isSiblingSession: (x: any) => !!(x?.environment && x.environment.instanceName !== 'mac-mini-dev'),
+      isSiblingSession: (x: any) => !!(x?.environment && x.environment.instanceName !== 'devbox-a-dev'),
       isCsrfRejection: (status: number, data: any) => status === 403 && !!data && data.code === 'csrf_failed',
       copyToClipboard: (p: Promise<string>) =>
         Promise.resolve(p).then((t) => {
@@ -470,9 +470,9 @@ describe('A5 — a press on 전체 문맥 복사 copies every turn as markdown',
 
   it('a sibling instance’s card: nothing is posted (its conversation lives on that instance)', async () => {
     const h = setup([{ status: 200, body: MD }], {
-      key: 'oudwood-dev::work:C2:1',
+      key: 'devbox-b-dev::work:C2:1',
       conversationId: 'conv-2',
-      environment: { instanceName: 'oudwood-dev' },
+      environment: { instanceName: 'devbox-b-dev' },
     });
     await h.api.copyPanelContext(el({ hidden: false }));
     expect(h.calls).toHaveLength(0);

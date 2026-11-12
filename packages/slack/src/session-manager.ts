@@ -1173,7 +1173,7 @@ export class SessionUiManager {
    * because `setActivityState('working')` does NOT save).
    *
    * The pre-await stamp closes two races that bit a real incident
-   * (work-m64 2026-05-15T07:31:14Z, see PR description for log evidence):
+   * (team-host 2026-05-15T07:31:14Z, see PR description for log evidence):
    *
    *   1. *activityState flip during await.* While `await postMessage`
    *      yielded to the event loop, in-flight Claude SDK turns

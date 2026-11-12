@@ -153,7 +153,7 @@ describe('buildGoalStatusBlocks — pause / resume (SSOT 2026-11-06)', () => {
 
 describe('buildGoalStatusBlocks — Slack 3000-char section cap (goal-status invalid_blocks regression)', () => {
   /**
-   * Live incident (2026-07-09, work-m64 dev): 6 completed goals whose
+   * Live incident (2026-07-09, team-host dev): 6 completed goals whose
    * `completionReason` each carried a multi-hundred-char eval paragraph were
    * JOINED into one history section → 3000+ chars → chat.postMessage failed
    * with `invalid_blocks` → GoalHandler threw → CommandRouter fell through →

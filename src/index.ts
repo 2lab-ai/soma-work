@@ -419,7 +419,7 @@ async function start() {
     // llmux-dependent boot steps (codex pin sync + model-catalog fetch) run
     // AFTER initAuthRuntimeDefault below — gating them on the static
     // `config.auth.mode` missed hosts that boot as ccp and only flip to
-    // llmux via the runtime reachability probe (work-m64 dev: no grok in the
+    // llmux via the runtime reachability probe (team-host dev: no grok in the
     // model list because the catalog was never fetched).
 
     // Run preflight checks
@@ -457,7 +457,7 @@ async function start() {
     // socketMode: true })`) for three reasons:
     //   1. Raise `clientPingTimeout` above the 5s default — that default
     //      was producing false-positive disconnects that wedged the
-    //      internal reconnect loop on work-m64 dev (PR #992).
+    //      internal reconnect loop on team-host dev (PR #992).
     //   2. Honor `SLACK_LOG_LEVEL=debug` per-host (PR #990) and propagate
     //      it to the SocketMode receiver so wss lifecycle transitions are
     //      observable when the next incident hits.

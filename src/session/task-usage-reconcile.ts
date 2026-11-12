@@ -5,7 +5,7 @@
  * (`notifyLiveUsage` → `creditTaskUsage`). For a Claude call that frame is the
  * SDK's assistant frame, which carries the call's `message_start` usage: input
  * and cache counts are final, output is the handful of tokens counted at the
- * start. Measured on dev host work-m64, 2026-10-29: two calls of 326 output tokens each
+ * start. Measured on dev host team-host, 2026-10-29: two calls of 326 output tokens each
  * were credited 24 each. The CLI's transcript has every call's final usage:
  *
  *   <config>/projects/<cwd>/<sdkSessionId>.jsonl          (main agent)

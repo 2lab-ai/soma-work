@@ -1,5 +1,5 @@
 /**
- * 2026-10-29 T5, live follow-up — measured on dev host work-m64 (v0.2.1205) with a real
+ * 2026-10-29 T5, live follow-up — measured on dev host team-host (v0.2.1205) with a real
  * 3-step task: a task's output tokens were the few counted at each call's
  * start (T1: 48 credited, 652 produced over its two calls) because the SDK's
  * assistant frame carries the call's `message_start` usage. The final usage is
@@ -83,7 +83,7 @@ afterEach(() => {
   fs.rmSync(configDir, { recursive: true, force: true });
 });
 
-/** The work-m64 run's list: T1 running, then T2 — each credited live with its call's start usage. */
+/** The team-host run's list: T1 running, then T2 — each credited live with its call's start usage. */
 function liveRun(): TaskLedger {
   const t0 = Date.parse('2026-10-29T14:52:28Z');
   let l = applyTodoList(emptyTaskLedger(t0 - 5000), list(['in_progress', 'pending', 'pending']), t0);

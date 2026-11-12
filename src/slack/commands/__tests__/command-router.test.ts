@@ -1305,7 +1305,7 @@ describe('CommandRouter — `new <command>` remainder re-route (recursive)', () 
 });
 
 /**
- * Regression guard (2026-07-09 work-m64 incident): a handler that CLAIMED the
+ * Regression guard (2026-07-09 team-host incident): a handler that CLAIMED the
  * text (canHandle → true) but THREW during execute must consume the message.
  *
  * Old behavior returned `{ handled: false, error }`, which let the raw

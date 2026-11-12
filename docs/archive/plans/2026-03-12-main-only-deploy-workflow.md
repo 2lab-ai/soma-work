@@ -4,7 +4,7 @@
 
 **Goal:** Replace the old `dev` branch deployment model with a `main` development line and a `deploy/prod` production deployment line.
 
-**Architecture:** Keep the existing two deployment directories and services (`/opt/soma-work/dev` and `/opt/soma-work/main`), but decouple them from branch names. `main` becomes the source branch for dev deployments on both dev runners, while `deploy/prod` becomes the source branch for production deployments on macmini. Update setup defaults, environment policies, and operator docs to match.
+**Architecture:** Keep the existing two deployment directories and services (`/opt/soma-work/dev` and `/opt/soma-work/main`), but decouple them from branch names. `main` becomes the source branch for dev deployments on both dev runners, while `deploy/prod` becomes the source branch for production deployments on devbox-a. Update setup defaults, environment policies, and operator docs to match.
 
 **Tech Stack:** GitHub Actions, shell setup scripts, Markdown operator docs, Vitest config tests
 
@@ -17,7 +17,7 @@
 
 - Assert `.github/workflows/deploy.yml` triggers on `main` and `deploy/prod`
 - Assert `main` branch deploys to `/opt/soma-work/dev` on both dev runners
-- Assert `deploy/prod` deploys to `/opt/soma-work/main` on macmini
+- Assert `deploy/prod` deploys to `/opt/soma-work/main` on devbox-a
 - Assert setup/docs defaults use `main` as the PR target and `deploy/prod` as the production branch policy
 
 **Step 2: Run test to verify it fails**
@@ -38,8 +38,8 @@ Expected: FAIL because current workflow still depends on `dev`
 
 **Step 1: Update branch-to-environment mapping**
 
-- `main` push triggers dev deployment matrix on macmini + oudwood-512 into `/opt/soma-work/dev`
-- `deploy/prod` push triggers production deployment on macmini into `/opt/soma-work/main`
+- `main` push triggers dev deployment matrix on devbox-a + devbox-b into `/opt/soma-work/dev`
+- `deploy/prod` push triggers production deployment on devbox-a into `/opt/soma-work/main`
 
 **Step 2: Update release/version track logic**
 

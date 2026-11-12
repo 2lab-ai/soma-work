@@ -95,7 +95,7 @@ import type { ConversationSession, SessionIncidentRequest } from '../../types';
 import { INCIDENT_EVIDENCE_SERVER_NAME, INCIDENT_EVIDENCE_TOOL, INCIDENT_EVIDENCE_TOOL_NAME } from '../sdk-options';
 
 const EAGLE_ORIGIN = 'https://eagle.internal';
-const HOST_ID = 'mac-mini-dev';
+const HOST_ID = 'devbox-a-dev';
 const EXPECTED_REF = `eagle:/api/snapshot#hosts[id=${HOST_ID}]`;
 /** Only ever written by the fake model. Its presence downstream is a leak. */
 const MODEL_ONLY_FACT = 'MODEL-FABRICATED-FACT-the-host-never-observed-this';
@@ -103,13 +103,13 @@ const MODEL_PROSE = 'Here is my analysis, which nobody validated yet.';
 
 const REQUEST: SessionIncidentRequest = {
   version: 1,
-  incident_id: 'host:mac-mini-dev',
+  incident_id: 'host:devbox-a-dev',
   lifecycle_id: 'lc-itest-1',
   attempt_id: 'att-itest-1',
   channel_id: 'C0EAGLEINC',
   parent_ts: '1757600000.000100',
   env: 'dev2',
-  summary: 'mac-mini-dev unreachable',
+  summary: 'devbox-a-dev unreachable',
 };
 
 function makeMcpManager(): McpManager {
@@ -272,11 +272,11 @@ function markerLine(evidence: Array<{ id: string; observed_at: string }>): strin
   return `EAGLE_INCIDENT_RESULT: ${JSON.stringify({
     version: 1,
     status: 'succeeded',
-    summary: 'collector still reports mac-mini-dev unreachable in dev2',
+    summary: 'collector still reports devbox-a-dev unreachable in dev2',
     evidence: evidence.map((item) => ({ ...item, fact: MODEL_ONLY_FACT })),
     proposal: {
       id: 'p1',
-      action: 'have an operator check power and LAN on mac-mini-dev',
+      action: 'have an operator check power and LAN on devbox-a-dev',
       risk: 'read-only until the operator acts',
       rollback: 'none required',
       verification: 'eagle-eye host row reports reachable=true',

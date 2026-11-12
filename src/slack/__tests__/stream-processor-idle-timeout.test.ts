@@ -201,7 +201,7 @@ describe('StreamProcessor — idle timeout (C-1 replacement for PR #926 watchdog
  *   `process()` must finalize the turn on `result` regardless of whether the
  *   SDK ever closes the iterator afterwards.
  *
- * Prod incident (2026-05-29, work-m64 dev): a 19-min / $82 turn emitted a
+ * Prod incident (2026-05-29, team-host dev): a 19-min / $82 turn emitted a
  * `result` (subtype:"success", hasResult:true), posted its final answer to
  * Slack, then the SDK async generator NEVER closed — `iterator.next()` for
  * the terminal `done` hung. The loop sat in raceNextStep until the 2h idle

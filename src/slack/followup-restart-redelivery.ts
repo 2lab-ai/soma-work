@@ -2,7 +2,7 @@
  * After a restart, which follow-up rows the restart kept from being processed,
  * and whether the model had read each one before the process went away.
  *
- * Owner directive (SSOT 2026-11-03, work-m64 dev): "서비스 재부팅하면 자동으로 처리되지
+ * Owner directive (SSOT 2026-11-03, team-host dev): "서비스 재부팅하면 자동으로 처리되지
  * 않은 메세지는 그 이후에 반드시 보내야함 작업이 중단된거 아니면". Before it, a row a
  * deploy cut stayed `paused` or `uncertain` (보내지 못했습니다) until a person pressed
  * Resume or Retry, through every later restart.
@@ -11,7 +11,7 @@
  * message pushed into a running turn lands there as a `queued_command`
  * attachment whose `source_uuid` is the uuid the host pushed it under, or as a
  * user entry with that `uuid` when it started a turn of its own (both measured
- * on the work-m64 transcript of 2026-11-03).
+ * on the team-host transcript of 2026-11-03).
  *
  * Pure: the caller reads the transcript and owns every queue write.
  */

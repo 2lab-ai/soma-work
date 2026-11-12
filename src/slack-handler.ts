@@ -618,7 +618,7 @@ export class SlackHandler {
    *
    *  - rows the running turn's input refused, pinned to the generation of the
    *    run that refused them (#956). The slot is taken at dispatch, but the input
-   *    channel exists only once the SDK query starts — 66 s later on work-m64 dev,
+   *    channel exists only once the SDK query starts — 66 s later on team-host dev,
    *    2026-11-05 — and every steer in between is refused;
    *  - rows a restart cut while they were steered into a turn, put back in line
    *    by the boot because the model had not read them (SSOT 2026-11-03): for the
@@ -2522,7 +2522,7 @@ export class SlackHandler {
       // behind the active goal lands here (control-with-dispatch that did not
       // dispatch) — reported as `blocked`, it stranded every later follow-up
       // AND the autogoal driver deferred under §3.6, so the goal loop that was
-      // supposed to finish the active goal never resumed (work-m64 dev,
+      // supposed to finish the active goal never resumed (team-host dev,
       // 2026-10-01 11:25Z).
       this.logger.info('Command consumed the message — no turn to run', { channel, threadTs: originalThreadTs });
       return { result: 'safe' };

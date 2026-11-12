@@ -16,7 +16,7 @@ PR의 CI + **Sanitize Gate**(리시트는 PR 자신의 체크) · 외부 리뷰 
 ## 다음 착수점
 
 코드는 main에 있다(PR #465, 라운드 1 기록 = `loop.done.md`). 봇 설정에 `devops-tools` 절이 없으면 도구는 등록되지 않으므로,
-설정을 넣은 봇(`work-m64` dev) 말고는 하드 거부(사람 gh 계정 키 꺼내기·키체인 덤프·브로커 경로 접근) 하나만 바뀐다. 순서:
+설정을 넣은 봇(`team-host` dev) 말고는 하드 거부(사람 gh 계정 키 꺼내기·키체인 덤프·브로커 경로 접근) 하나만 바뀐다. 순서:
 1. (끝, 2026-11-06) 앱 수준 토큰 입력 → 브로커 연결 1 · `approval buttons on`. org-admin 토큰 `admin:org` 재발급 → `ingest gh org-admin` → `check-policy` ok.
 2. 버튼 승인 1회(카드 → 승인 버튼 → lease → GET → revoke), `gh_org_member` 1회(현재 역할과 같은 `set-role`처럼 바뀌는 것이 없는 호출). 2026-11-09부터 카드는 대시보드 관리자 승인에 뜨고, 카드 버튼이 승인 앱 DM을 연다(결정은 Slack에서). (끝, 2026-11-09 — 아래 결과 줄)
 3. WU8 닫기 공지 확인 — 4주 grant 만료(2026-12-04) 전에 계속 쓰는 사용자의 연장 요청이 카드로 들어오는지. (stage0 포지키 = 끝, stage2 = 계획만 — 아래 "stage2 계획")
@@ -25,7 +25,7 @@ PR의 CI + **Sanitize Gate**(리시트는 PR 자신의 체크) · 외부 리뷰 
 
 순서: WU0(닫힘, `loop.done.md`) → WU7 → WU8.
 
-WU7 측정(2026-10-27, `work-m64` dev):
+WU7 측정(2026-10-27, `team-host` dev):
 - 설치 1회차 = 점검표 FAIL 1(새로 만든 그룹에 "nested groups") → 원인 = macOS 15.6.1 `dscl . -read <레코드> <없는 속성>`이 stderr "No such key" + exit 0 → PR #491(조회 실패도 FAIL, 셈 실측화, 테스트 2건) 머지 `b21f07fb`.
 - PR #491 브랜치 머리로 만든 묶음으로 재설치 = FAIL 0 · WARN 1(운영자 = 봇 유저, 운영자 결정) · 데몬 running · 소켓 `0660 _somadevops:soma-devops` · `check-policy` valid · 비밀 4개(gh 2 · Slack 앱 1 · Cloudflare dev2 1) 입력. 이동 경로(운영 콘솔 스크립트 기준): Slack·Cloudflare 키 = 발급 화면 Copy → 운영자 Mac 클립보드 → ssh stdin → `ingest`(직후 클립보드 비움), gh 토큰 = 대상 호스트 안 파이프(`gh auth token -u <계정>` → `ingest`). 파일·명령 인자·출력에 값을 쓰는 단계 없음. 첫 Cloudflare 입력은 시험 중 클립보드가 바뀌어 다른 값(43바이트)이 들어갔고, 길이 + Cloudflare verify(토큰 id·active) 확인 뒤 다시 입력해 덮어씀 → 클립보드 경유 입력은 verify 확인 후에만.
 - 봇: `config.json`에 `devops-tools.permission`(도구 8개 = read) → `service.sh restart` + `verify-restart` 통과. 비관리자 세션 = "Permission-gated server blocked — no active grant", 관리자 = 전면 허용.
@@ -41,18 +41,18 @@ WU7 측정(2026-10-27, `work-m64` dev):
 
 | WU | 하는 일 | 파일 소유 | RED로 먼저 고정할 것 |
 |---|---|---|---|
-| WU7 설치 (`work-m64` dev, 라이브) | 설치·비밀 입력·봇 연결 끝(위 측정). 남은 것 = 어드민 ✅ 라이브 실행, stage0·stage2 포지키, org-admin `admin:org` | 운영 원장 (코드는 WU7a로 닫힘) | (라이브) 측정됨: A16(어드민 세션 `cf_lease_request` → 카드, ✅ 전 실행 0) · A10 카드 내용(환경·권한·존·수명·사유·요청자) · A7 일부(`auth` 거부) · A2 일부(grant 없는 비어드민 세션에 서버 미등록 — 안내 문구는 미확인) · 카드 게시 지연 < 30초(약 2.4초). 미측정: A2 안내 문구, A3(read grant 유저), A4, A5, A6, A7 나머지, A8, A9, A10 ✅ 이후, A11, A12, A13, A15, A17, A18, 봇 토큰 ✅ 무효, 카드 `edited`/`text` 필드 유무, 계정 단위 lease가 존 권한에 미치는 범위 |
-| WU8 이관·닫기 (라이브) | 세션 env `GITHUB_TOKEN` 재확인 + 세션 밖 작업(크론·배포 스크립트·LaunchAgent)의 gh 사용 조사 → `work-m64`·`work-m16` 봇 유저 gh 사람 계정 로그아웃(D6), server-tools `permission` 추가(D5) + 새 턴·진행 중 스레드 실측 + 공지 | 배포 설정(코드 변경 없음) | (라이브) A14, A19. 2026-11-06: D6 · D5 끝(아래) |
+| WU7 설치 (`team-host` dev, 라이브) | 설치·비밀 입력·봇 연결 끝(위 측정). 남은 것 = 어드민 ✅ 라이브 실행, stage0·stage2 포지키, org-admin `admin:org` | 운영 원장 (코드는 WU7a로 닫힘) | (라이브) 측정됨: A16(어드민 세션 `cf_lease_request` → 카드, ✅ 전 실행 0) · A10 카드 내용(환경·권한·존·수명·사유·요청자) · A7 일부(`auth` 거부) · A2 일부(grant 없는 비어드민 세션에 서버 미등록 — 안내 문구는 미확인) · 카드 게시 지연 < 30초(약 2.4초). 미측정: A2 안내 문구, A3(read grant 유저), A4, A5, A6, A7 나머지, A8, A9, A10 ✅ 이후, A11, A12, A13, A15, A17, A18, 봇 토큰 ✅ 무효, 카드 `edited`/`text` 필드 유무, 계정 단위 lease가 존 권한에 미치는 범위 |
+| WU8 이관·닫기 (라이브) | 세션 env `GITHUB_TOKEN` 재확인 + 세션 밖 작업(크론·배포 스크립트·LaunchAgent)의 gh 사용 조사 → `team-host`·`prod-host` 봇 유저 gh 사람 계정 로그아웃(D6), server-tools `permission` 추가(D5) + 새 턴·진행 중 스레드 실측 + 공지 | 배포 설정(코드 변경 없음) | (라이브) A14, A19. 2026-11-06: D6 · D5 끝(아래) |
 
 WU8 측정(2026-11-06):
-- D6 사전 조사: 세션 밖에서 사람 로그인을 쓰는 작업 = `work-m64`의 고객 문서 동기화 cron 하나(자기 gitconfig의 gh credential helper). 사람 로그인을 숨긴 상태(`GH_CONFIG_DIR` = 빈 폴더)로 각 작업을 돌려 확인: 문서 동기화 = 실패, 다른 자동 배포 fetch = 성공(전역 설정의 앱 토큰), 러너 워크플로 = 잡 토큰. 봇 프로세스(플러그인 fetch)는 `GITHUB_TOKEN` = 앱 토큰, 세션은 #834의 앱 토큰 gh 폴더.
+- D6 사전 조사: 세션 밖에서 사람 로그인을 쓰는 작업 = `team-host`의 고객 문서 동기화 cron 하나(자기 gitconfig의 gh credential helper). 사람 로그인을 숨긴 상태(`GH_CONFIG_DIR` = 빈 폴더)로 각 작업을 돌려 확인: 문서 동기화 = 실패, 다른 자동 배포 fetch = 성공(전역 설정의 앱 토큰), 러너 워크플로 = 잡 토큰. 봇 프로세스(플러그인 fetch)는 `GITHUB_TOKEN` = 앱 토큰, 세션은 #834의 앱 토큰 gh 폴더.
 - 문서 동기화 helper를 봇의 앱 토큰 gh 폴더로 바꿈(이전 파일 백업) → 사람 로그인을 숨긴 상태에서 성공, 실제 cron 명령 exit 0. 남는 위험: 봇이 1시간 넘게 멈추면 그 폴더의 토큰이 만료돼 동기화가 멈추고, 봇이 다시 뜨면 3분 안에 돌아온다.
-- `gh auth logout`: `work-m64` 2계정, `work-m16` 1계정 → 둘 다 "not logged into any GitHub hosts". 로그아웃은 로컬 설정만 지우고 토큰을 무효화하지 않으므로 브로커 사본은 그대로 — 직후 `gh_read` 두 계정 정상(WRITE · ADMIN), 문서 동기화 exit 0, 자동 배포 fetch 정상, 앱 토큰 gh 정상.
-- D5: research §D5 맵(read = list·list_service·list_stack·logs, write = 쿼리 4종)을 `owner-mac` dev에 적용(백업, 봇의 로더로 `server-tools` gated 확인, 새 턴부터 반영). `work-m64` dev·`work-m16` dev·main은 같은 패치 dry-run만 — `work-m64`에서 고객 개발자 세션이 지금 쓰고 있어(로그 1일치에 쿼리 도구 호출 다수) grant 없이 켜면 진행 중인 작업이 끊긴다.
-- 덤: `work-m64`에서 devops-tools에 `permission`이 생긴 뒤로 "게이트 서버가 하나도 없을 때만" 주는 server-tools 일괄 허용이 꺼졌다 — 막히지는 않고(호출마다 검사는 게이트 서버만), bypass가 아닌 사용자에게 확인 창이 뜬다. D5를 켜면 정리된다.
-- D5 나머지 3개(같은 날, 운영자 결정 "기존 사용자 4주 grant 먼저 → 켜기 → 공지"): 지금 쓰는 사람 = 최근 28일 에이전트 기록에서 server-tools `tool_use`가 있는 세션 주인. `work-m64` dev = 비어드민 10명, `work-m16` dev·main = 0명(28일 동안 에이전트 턴 0), `owner-mac` dev = 어드민만. → `work-m64`의 10명에게 server-tools read·write grant를 봇의 grant 저장소 API로 4주(2026-12-04) 부여 → 세 봇에 같은 `permission` 맵 적용(백업) → 봇 모듈로 판정 재현: 어드민 = 허용, grant 사용자 = 허용, grant 없는 비어드민 = 거부 + 권한 요청 안내 → `work-m64` 인프라 채널에 공지 1건(멘션 없음, 우회 방법 없음). A19 = 판정 재현으로 측정(새 턴 실측은 다음 비어드민 턴).
+- `gh auth logout`: `team-host` 2계정, `prod-host` 1계정 → 둘 다 "not logged into any GitHub hosts". 로그아웃은 로컬 설정만 지우고 토큰을 무효화하지 않으므로 브로커 사본은 그대로 — 직후 `gh_read` 두 계정 정상(WRITE · ADMIN), 문서 동기화 exit 0, 자동 배포 fetch 정상, 앱 토큰 gh 정상.
+- D5: research §D5 맵(read = list·list_service·list_stack·logs, write = 쿼리 4종)을 `owner-mac` dev에 적용(백업, 봇의 로더로 `server-tools` gated 확인, 새 턴부터 반영). `team-host` dev·`prod-host` dev·main은 같은 패치 dry-run만 — `team-host`에서 고객 개발자 세션이 지금 쓰고 있어(로그 1일치에 쿼리 도구 호출 다수) grant 없이 켜면 진행 중인 작업이 끊긴다.
+- 덤: `team-host`에서 devops-tools에 `permission`이 생긴 뒤로 "게이트 서버가 하나도 없을 때만" 주는 server-tools 일괄 허용이 꺼졌다 — 막히지는 않고(호출마다 검사는 게이트 서버만), bypass가 아닌 사용자에게 확인 창이 뜬다. D5를 켜면 정리된다.
+- D5 나머지 3개(같은 날, 운영자 결정 "기존 사용자 4주 grant 먼저 → 켜기 → 공지"): 지금 쓰는 사람 = 최근 28일 에이전트 기록에서 server-tools `tool_use`가 있는 세션 주인. `team-host` dev = 비어드민 10명, `prod-host` dev·main = 0명(28일 동안 에이전트 턴 0), `owner-mac` dev = 어드민만. → `team-host`의 10명에게 server-tools read·write grant를 봇의 grant 저장소 API로 4주(2026-12-04) 부여 → 세 봇에 같은 `permission` 맵 적용(백업) → 봇 모듈로 판정 재현: 어드민 = 허용, grant 사용자 = 허용, grant 없는 비어드민 = 거부 + 권한 요청 안내 → `team-host` 인프라 채널에 공지 1건(멘션 없음, 우회 방법 없음). A19 = 판정 재현으로 측정(새 턴 실측은 다음 비어드민 턴).
 - 2026-11-06 결과: org-admin 토큰 재발급 = 계정 이름 확인 · org role admin · scopes ∋ `admin:org` → `ingest gh org-admin` → `check-policy` ok, 임시 폴더 비움. 같은 날 버튼 카드와 `gh_org_member` 카드는 모두 10분 무응답으로 만료(실행 0). 원인 = 어드민이 Slack 승인 앱 DM을 보지 않음.
-- 2026-11-09 승인 요청을 대시보드로(운영자 지시 "물어보지 않거나 대시보드에서 승인요청으로", 에픽 #1051): 대시보드에서 직접 승인(패스키)은 기각. 대시보드는 모델과 같은 OS 유저로 돌아서 페이지를 모델이 바꿀 수 있고, 인증기는 서명하는 챌린지 내용을 보여 주지 않는다 → Slack 없는 결정은 브로커가 서빙하는 페이지로만(#1056). 대신 목록만: 브로커 읽기 전용 `approvals` op(#1052)와 대시보드 어댑터(#1055). 브로커 코드는 root 소유라 새 op를 쓰려면 재설치(sudo)가 필요하다. 그래서 devops-tools MCP 서버가 대기 중인 카드를 봇 데이터 폴더에 기록하고, 브로커가 목록을 거부하는 동안 대시보드가 그 기록을 보여 준다(#1060). 카드 버튼은 승인 앱 DM(`devops-tools.approvalsAppUrl`)을 연다. `work-m64` dev 배포 뒤 봇 로그 = `using the MCP server records`. 시험 카드 2장(Cloudflare read lease, `gh_org_member` 무변경 — 사전에 현재 역할 `member active` 확인)이 대시보드 관리자 승인에 뜨는 것을 배포된 어댑터로 확인. 무응답 만료 시 어드민이 그 봇에서 활동 중일 때만 다시 게시(최대 12회).
+- 2026-11-09 승인 요청을 대시보드로(운영자 지시 "물어보지 않거나 대시보드에서 승인요청으로", 에픽 #1051): 대시보드에서 직접 승인(패스키)은 기각. 대시보드는 모델과 같은 OS 유저로 돌아서 페이지를 모델이 바꿀 수 있고, 인증기는 서명하는 챌린지 내용을 보여 주지 않는다 → Slack 없는 결정은 브로커가 서빙하는 페이지로만(#1056). 대신 목록만: 브로커 읽기 전용 `approvals` op(#1052)와 대시보드 어댑터(#1055). 브로커 코드는 root 소유라 새 op를 쓰려면 재설치(sudo)가 필요하다. 그래서 devops-tools MCP 서버가 대기 중인 카드를 봇 데이터 폴더에 기록하고, 브로커가 목록을 거부하는 동안 대시보드가 그 기록을 보여 준다(#1060). 카드 버튼은 승인 앱 DM(`devops-tools.approvalsAppUrl`)을 연다. `team-host` dev 배포 뒤 봇 로그 = `using the MCP server records`. 시험 카드 2장(Cloudflare read lease, `gh_org_member` 무변경 — 사전에 현재 역할 `member active` 확인)이 대시보드 관리자 승인에 뜨는 것을 배포된 어댑터로 확인. 무응답 만료 시 어드민이 그 봇에서 활동 중일 때만 다시 게시(최대 12회).
 - 2026-11-09 라이브 통과: 무응답 만료 3라운드 뒤, 운영자가 "대시보드에서 승인"을 고른 다음부터는 만료되는 대로 바로 다시 게시했다. 다섯 번째 게시 약 5분 뒤 두 카드가 승인됐다(경로 = 대시보드 카드 → 승인 앱 DM 카드. 버튼인지 리액션인지는 root 소유 브로커 원장에만 남는다).
   - Cloudflare: read lease 발급 → `GET /zones/<id>/dns_records` = 200 · success → `cf_lease_revoke` = `revoked`(포지키 GET 404를 본 뒤에만 쓰는 상태) → 활성 lease 0.
   - `gh_org_member set-role <이미 member인 계정> member` = 200, 사후 조회도 `member active`로 바뀐 것이 없다.
@@ -61,8 +61,8 @@ WU8 측정(2026-11-06):
 - 2026-11-10 대기열과 대시보드 일괄 결정(운영자 지시 "여러개가 모인경우 … 한번에 수락 … 대시보드에서 한번에 처리 … 즉시 알림", 에픽 #1127): 카드가 하나씩 와서 10분 안에 만료되는 구조가 승인 게이트를 쓸모없게 만들었다.
   - 브로커 정책에 두 스위치(기본 off): `queueTimeout`(실시간 대기가 끝나면 카드를 열어 둔 채 요청자에게 `queued`, 승인되면 브로커가 그때 실행하고 결과를 보관 → 봇이 요청 세션에 전달), `dashboardDecisions.tools`(그 도구 카드를 대시보드에서 결정, 카드 번호에 묶음, 원장 `via: dashboard`). 대시보드는 모델과 같은 OS 유저라 이 스위치를 켜면 그 유저도 카드를 결정할 수 있다 — 운영자가 기록으로 받아들인 trade-off(브로커 README "Dashboard decisions"). 하드 경계 대안은 #1056.
   - 대시보드(#1135): 한 줄 요약·위험도·경과 시간, 체크박스 + 전체 선택(고위험 제외), 확인 시트 한 번에 일괄 결정, 탭이 가려진 동안 데스크톱 알림, 탭 제목 대기 수.
-  - 브로커·봇(#1136): 독립 리뷰 R1 REVISE 9건 → R2 APPROVE. 배포 #1176(`work-m64` dev).
-  - `work-m64` 브로커 재설치(운영자 sudo 1회): 번들 sha256 확인 → 정책 패치(실시간 대기 2m, 대기열 72h·최대 50, 대시보드 결정 4개 도구)를 새 파서로 검증한 뒤 기록 → `check-policy` 0 → 데몬 기동, 버튼 연결 유지.
+  - 브로커·봇(#1136): 독립 리뷰 R1 REVISE 9건 → R2 APPROVE. 배포 #1176(`team-host` dev).
+  - `team-host` 브로커 재설치(운영자 sudo 1회): 번들 sha256 확인 → 정책 패치(실시간 대기 2m, 대기열 72h·최대 50, 대시보드 결정 4개 도구)를 새 파서로 검증한 뒤 기록 → `check-policy` 0 → 데몬 기동, 버튼 연결 유지.
   - 라이브 통과: 시험용 요청자 이름으로 카드 4장(Cloudflare read lease 3, `gh_org_member` 무변경 1) → 각 2분 25초 뒤 `queued`(도구 호출은 오류 아님으로 끝남) → 브로커 목록에서 4장 모두 queued·decidable → 운영자가 대시보드 관리자 승인에서 두 번 확인(medium 3장 일괄, 고위험 1장 별도) → 브로커가 바로 실행: lease 3개 발급(시험 뒤 회수 `revoked`), 조직 멤버 PUT 200(바뀐 것 없음). 결과 4건 모두 `done · via dashboard`. Slack 카드를 거치지 않았다. 결과의 세션 전달은 시험용 이름에 세션이 없어 설계대로 건너뛰고 확인 처리됐다(세션 전달 자체는 테스트로만 확인).
 
 ## 열린 질문
