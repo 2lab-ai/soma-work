@@ -162,9 +162,45 @@ const RUNS = [
   'cat <<"E\\\nOF"\ntext\nEOF\nssh host',
   'cat <<E\\\nOF\ntext\nEOF\nssh host',
   'cat <<EOF\nEO\\\nF\nssh host',
+  // review-of-legends (a2e0e953b): a text that names ssh is read only when it is literal — no expansion, escape,
+  // glob, brace or unquoted heredoc. Each of these re-assembled an option or a program the scan could not see.
+  "set -a; GIT_EDITOR=$(echo 'ssh host'); git commit --allow-empty --edit -m msg",
+  'set -a; GIT_EDITOR="$(printf \'%s%s%s prod-host\' s s h)"; git commit --allow-empty -m ssh --edit',
+  "ln -sf /usr/bin/ssh ./cat; printf $'\\x2dv' PATH %s .; cat host",
+  'git grep "--open-files-in-\\\npager=ssh prod-host" needle',
+  'rg --{pre=ssh,hidden} pattern host',
+  "a=0; x=$(printf '%s' 'a[$(ssh host >&2)]'); echo \"${!x}\"",
+  "test -v 'BASH_VERSINFO[$(ssh host >&2)0]'",
+  "[[ -v 'a[$(ssh host)]' ]]",
+  'rg --p* ssh x',
+  'rg ssh ?',
+  'ls x[ab] ssh',
+  "ls x(e:'ssh host':)",
+  // Abbreviated long options that getopt and git accept.
+  'rg --pr=ssh x',
+  'rg --hostname=ssh x',
+  'git grep --open-files=ssh x',
+  'ack --pag=ssh x',
+  // A standalone setting reaches the programs after it (`set -a` exports it).
+  'set -a; GIT_EDITOR=vi; git commit -m ssh',
+  'x=1; grep ssh f',
+  // A git setting or option before the subcommand can name what git runs.
+  'git -c core.pager=less log --grep ssh',
+  'git --exec-path=/tmp/x commit -m ssh',
+  // Programs that place or rename a binary, or print into a variable, are not data any more.
+  'ln -s /usr/bin/ssh x',
+  'cp /usr/bin/ssh ./cat',
+  'printf %s ssh',
 ];
 
 const DATA = [
+  "grep -rn 'ssh.*$' src",
+  "rg 'ssh [a-z]+' src",
+  "cat > notes.md <<-'EOF'\n\tssh $(date) `x` \\ * ? {a,b}\n\tEOF",
+  'cat > a.md <<"EOF"\nssh ${HOME}\nEOF\ngit add a.md',
+  'git commit -m "$(cat <<\'EOF\'\nfix: ssh $(not run) `nor this`\nEOF\n)"',
+  '[ -f x ] && grep ssh x',
+  '[[ -f x ]] && grep ssh x',
   'grep -rn ssh src',
   "rg '\\bssh\\b' src",
   'git commit -m "ssh ban for everyone"',
@@ -174,14 +210,10 @@ const DATA = [
   'git add -A && git commit -m "ssh ban" && git push',
   'git -C repo show HEAD:src/ssh.ts',
   "cat > notes.md <<'EOF'\nBash ssh is blocked; use ssh_exec\nEOF",
-  'cat <<-EOF > notes.md\n\tssh is text, $(date) is not ssh\n\tEOF',
   'echo "use ssh_exec instead of ssh"',
-  'echo "ssh $((1+2))"',
-  "printf 'ssh\\n'",
   'gh pr create --title "ssh ban" --body "scp too"',
   'gh -R o/r pr view 1 --json body | jq .body',
   'gh api repos/o/r/issues -f body="ssh"',
-  'gh issue comment 1 --body-file - <<EOF\nssh is refused\nEOF',
   'ls ~/.ssh',
   'which ssh',
   'type ssh',
@@ -193,20 +225,15 @@ const DATA = [
   'rg ssh src &> out.txt',
   'grep ssh <<< "ssh host"',
   'diff <(echo ssh) <(echo scp)',
-  'grep -n \\\n  ssh src',
   'grep ssh x # ssh in a comment',
   'if grep -q ssh x; then echo found; fi',
-  'echo "$(date): ssh"',
   // A commit message or PR body through a heredoc in `$(…)`, with an apostrophe in it (trinity R2, fable).
   "git commit -m \"$(cat <<'EOF'\nfix: don't refuse ssh mentions\nEOF\n)\"",
   "gh pr create --body \"$(cat <<'EOF'\nit's about ssh (and scp)\nEOF\n)\"",
   'echo ssh > out.txt 2>&1',
   'grep ssh x >> log.txt',
-  // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
-  'echo "${HOME}/ssh"',
   'cat <<< "ssh host"',
   // A variable where it cannot name a program (grep has no run option), and locale settings (trinity R5).
-  'grep -rn ssh "$TMPDIR"',
   'LC_ALL=C grep ssh x',
   // trinity R5 (grok): harmless settings in front of a data program.
   'LC_ALL=C grep -n ssh src',
@@ -219,6 +246,18 @@ const DATA = [
  * command that names the word, even when this use is harmless.
  */
 const CONSERVATIVE = [
+  // review-of-legends (a2e0e953b): a command that names the word is read only when it is literal.
+  'cat <<-EOF > notes.md\n\tssh is text, $(date) is not ssh\n\tEOF',
+  'echo "ssh $((1+2))"',
+  "printf 'ssh\\n'",
+  'gh issue comment 1 --body-file - <<EOF\nssh is refused\nEOF',
+  'grep -n \\\n  ssh src',
+  'echo "$(date): ssh"',
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
+  'echo "${HOME}/ssh"',
+  'grep -rn ssh "$TMPDIR"',
+  'grep -rn "ssh\\b" src',
+  "grep -rn 'ssh' *.md",
   'sed -n 1,5p ssh.md',
   "awk '{print}' ssh.log",
   'npx vitest run src/ssh.test.ts',

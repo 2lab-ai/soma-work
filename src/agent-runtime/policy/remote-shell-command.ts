@@ -6,13 +6,16 @@
  * command through only when nothing in it can run the word:
  *
  * - It never refuses what `isSshCommand` let through (it starts from that check).
+ * - The text must be literal: an expansion, escape, glob, brace or expanding heredoc anywhere refuses
+ *   (`shellChanges`). Single quotes, quoted heredocs and `"$(cat <<'EOF' … EOF\n)"` stay literal.
  * - A recursive scan finds every simple command, including those inside `$(…)`, `$((…))`, `${…}`, backticks
  *   (nested ones too), `(…)`, `<(…)`, `>(…)` and the substitutions of unquoted heredoc bodies. It knows quotes,
  *   `$'…'`, heredocs and comments, so a `)` inside them does not end a substitution.
  * - ssh, scp or sftp named as a program refuses.
  * - Every other program must only handle the word as data, and be named bare (`./cat` could be anything): grep,
  *   echo, cat and the like (not with an option that names a program to run, such as `rg --pre`); the git
- *   subcommands that read or record (commit, log, grep …); the gh groups pr, issue, api, search, run, release,
+ *   subcommands that read or record (commit, log, grep …) with no global option but `-C` and `--no-pager`;
+ *   the gh groups pr, issue, api, search, run, release,
  *   label, workflow and status. A heredoc fed to them is data too. git's transport subcommands (push, fetch, pull,
  *   clone …) and rsync keep the old check on their own text.
  * - Anything else — a shell, an interpreter, a wrapper (`sudo`, `env`, `xargs`, `timeout` …), `eval`, sed, awk,
@@ -22,8 +25,10 @@
  *   `RIPGREP_CONFIG_PATH=… rg`), and so does an assignment that holds the word or sets `PATH`, and a git global
  *   option that holds the word. An expansion where a program could be named — a git setting, the arguments of
  *   a data program with a run option, `find`'s arguments — is unknown, so it refuses too. Two exceptions:
- *   harmless settings in front of a program (`LC_ALL=C grep …`, see PLAIN_ENVIRONMENT). No variable is trusted,
- *   `$HOME` included: `rg ssh "$HOME/x"` refuses. `read` and `printf -v` are not data commands.
+ *   harmless settings in front of a program (`LC_ALL=C grep …`, see PLAIN_ENVIRONMENT). A setting with no program
+ *   after it refuses too: `set -a` exports it to the next one. `read`, `printf`, `set`, `cp`, `mv`, `ln` and
+ *   `chmod` are not data commands — they set variables or place a binary under another name. A long option
+ *   counts by any prefix getopt and git accept (`rg --pr=…`).
  *
  * Not covered, as with a command split in two: a data program that reads configuration an earlier part of the
  * same command wrote (`… >> .git/config; git log`).
@@ -46,7 +51,6 @@ const DATA_COMMANDS = new Set([
   'ag',
   'ack',
   'echo',
-  'printf',
   'cat',
   'head',
   'tail',
@@ -61,11 +65,7 @@ const DATA_COMMANDS = new Set([
   'mkdir',
   'rmdir',
   'touch',
-  'cp',
-  'mv',
   'rm',
-  'ln',
-  'chmod',
   'diff',
   'cmp',
   'jq',
@@ -93,7 +93,6 @@ const DATA_COMMANDS = new Set([
   'apropos',
   'sleep',
   'date',
-  'set',
   'fi',
   'done',
   'esac',
@@ -143,8 +142,8 @@ const GIT_DATA = new Set([
 ]);
 /** git subcommands that reach a remote: a remote named in their own text (`ssh://…`) runs ssh. */
 const GIT_TRANSPORT = new Set(['clone', 'fetch', 'pull', 'push', 'ls-remote', 'remote', 'submodule']);
-/** git options before the subcommand that take the next word as their value. */
-const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env']);
+/** git options before the subcommand that change only how it prints or where it works (`-C` takes a directory). */
+const GIT_PLAIN_OPTIONS = new Set(['-C', '--no-pager', '-P', '--no-optional-locks', '--literal-pathspecs']);
 /** gh command groups that only send and print data. */
 const GH_DATA = new Set(['pr', 'issue', 'api', 'search', 'run', 'release', 'label', 'workflow', 'status']);
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)\+?=/;
@@ -529,7 +528,11 @@ function namesProgram(program: string, args: readonly string[]): boolean {
     (a) =>
       // An expansion could become any option (`rg $(printf -- '--pre=…')`).
       a.includes(EXPANDED) ||
-      options.long.some((o) => a === o || a.startsWith(`${o}=`)) ||
+      // getopt and git take any unambiguous prefix of a long option (`--pr` for `--pre`).
+      options.long.some((o) => {
+        const name = a.split('=')[0];
+        return name.length > 2 && name.startsWith('--') && o.startsWith(name);
+      }) ||
       (options.short !== '' && /^-[^-]/.test(a) && [...a.slice(1)].some((ch) => options.short.includes(ch))),
   );
 }
@@ -540,14 +543,11 @@ function gitVerdict(args: readonly string[]): Verdict {
   let k = 0;
   for (; k < args.length && args[k].startsWith('-'); k++) {
     const option = args[k];
-    // `-c alias.x='!ssh …'`, `-cdiff.external=…`, `--config-env=…`: a setting that names it may run it.
-    // An expansion could hold anything (`-c diff.external="$(printf …)"`).
-    if (isSshCommand(option) || option.includes(EXPANDED)) return 'may-run';
-    if (GIT_VALUE_OPTIONS.has(option)) {
-      const value = args[k + 1] ?? '';
-      if ((option === '-c' || option === '--config-env') && (isSshCommand(value) || value.includes(EXPANDED))) {
-        return 'may-run';
-      }
+    // Any other global option can name what git runs: a setting (`-c core.pager=…`, `--config-env`), the
+    // directory its own programs come from (`--exec-path`), a repository whose configuration differs.
+    if (!GIT_PLAIN_OPTIONS.has(option)) return 'may-run';
+    if (option === '-C') {
+      if ((args[k + 1] ?? '').includes(EXPANDED)) return 'may-run';
       k++;
     }
   }
@@ -583,7 +583,8 @@ function verdict(cmd: SimpleCommand): Verdict | 'runs' {
       break;
     }
   }
-  if (words.length === 0) return 'data';
+  // A setting with no program after it reaches the programs after it (`set -a` exports it, `PATH` changes them).
+  if (words.length === 0) return environment ? 'may-run' : 'data';
   const program = words[0];
   const args = words.slice(1);
   if (REMOTE_SHELLS.has(base(program))) return 'runs';
@@ -593,6 +594,10 @@ function verdict(cmd: SimpleCommand): Verdict | 'runs' {
   // A path (`./cat`) can name any program, and so can an expansion (`$(printf …)echo`); only a bare name means
   // the one on PATH.
   if (program.includes('/') || program.includes(EXPANDED)) return 'may-run';
+  // `test -v 'a[$(cmd)]'` evaluates the subscript as arithmetic, where `$(cmd)` runs, even from single quotes.
+  if ((program === '[[' || program === '[' || program === 'test') && args.some((a) => /\S\[/.test(a))) {
+    return 'may-run';
+  }
   if (program === '[[' || program === '[') {
     // zsh runs `if [[ … ]] cmd`: words after the closing bracket are a command.
     const close = args.indexOf(program === '[[' ? ']]' : ']');
@@ -619,9 +624,91 @@ function verdict(cmd: SimpleCommand): Verdict | 'runs' {
   return 'may-run';
 }
 
+/** `$(cat <<'WORD'` … `WORD` + `)`: the usual commit-message substitution, whose output is the literal body. */
+const CAT_HEREDOC = /^\$\(cat <<-?'([A-Za-z_][A-Za-z0-9_]*)'\n/;
+
+/**
+ * Does the shell change this text before it runs it? Any expansion (`$`, a backtick), escape (a backslash), glob
+ * (`*`, `?`, `[…]`, a `(` that ends a word), brace, or heredoc whose body expands. The scan below reads every
+ * command it finds, but each such feature can assemble an option, a program or a variable name it cannot see
+ * (review-of-legends kept finding one more: ANSI-C escapes, brace expansion, quoted line continuations,
+ * indirect expansion …). So a text that names ssh is read only when it is literal; otherwise it refuses.
+ *
+ * Literal stays literal: single quotes (a `$` in them is checked where a program evaluates it — `test -v`),
+ * a heredoc with a quoted plain delimiter (`<<'EOF'`, `<<"EOF"`), and `"$(cat <<'EOF' … EOF\n)"`.
+ */
+function shellChanges(src: string): boolean {
+  let quote: "'" | '"' | null = null;
+  const bodies: { word: string; tabs: boolean }[] = [];
+  const quotedHeredoc = /^<<(-?)[ \t]*(['"])([A-Za-z_][A-Za-z0-9_]*)\2/;
+  // Skip the heredoc bodies that start after the newline at `nl`; -1 when one is not closed.
+  const skipBodies = (nl: number): number => {
+    let at = nl + 1;
+    for (const body of bodies.splice(0)) {
+      for (;;) {
+        if (at > src.length) return -1;
+        const end = src.indexOf('\n', at);
+        const line = src.slice(at, end < 0 ? src.length : end);
+        at = end < 0 ? src.length + 1 : end + 1;
+        if ((body.tabs ? line.replace(/^\t+/, '') : line) === body.word) break;
+      }
+    }
+    return at - 1;
+  };
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (quote === "'") {
+      if (c === "'") quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      if (c === '"') {
+        quote = null;
+        continue;
+      }
+      if (c === '$') {
+        const m = CAT_HEREDOC.exec(src.slice(i));
+        if (!m) return true;
+        const close = src.indexOf(`\n${m[1]}\n)`, i + m[0].length - 1);
+        if (close < 0) return true;
+        i = close + m[1].length + 2;
+        continue;
+      }
+      if (c === '`' || c === '\\') return true;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quote = c;
+      continue;
+    }
+    if (c === '\n' && bodies.length > 0) {
+      const after = skipBodies(i);
+      if (after < 0) return true;
+      i = after;
+      continue;
+    }
+    if (c === '<' && src.startsWith('<<<', i)) {
+      i += 2;
+      continue;
+    }
+    if (c === '<' && src[i + 1] === '<') {
+      const m = quotedHeredoc.exec(src.slice(i));
+      if (!m) return true;
+      bodies.push({ word: m[3], tabs: m[1] === '-' });
+      i += m[0].length - 1;
+      continue;
+    }
+    if ('$`\\{}*?'.includes(c)) return true;
+    if (c === '[' && src[i + 1] !== undefined && !/[\s[]/.test(src[i + 1])) return true;
+    if (c === '(' && i > 0 && !/[\s;&|(<>!]/.test(src[i - 1])) return true;
+  }
+  return quote !== null || bodies.length > 0;
+}
+
 /** True when the Bash command runs ssh, scp or sftp, or could (see the file header). */
 export function isRemoteShellCommand(command: string): boolean {
   if (!isSshCommand(command)) return false;
+  if (shellChanges(command)) return true;
   const p = new Parser(command);
   list(p, false, 0);
   if (p.unreadable) return true;
