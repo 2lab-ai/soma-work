@@ -21,16 +21,8 @@ describe('local:research-skill', () => {
     expect(description.length).toBeLessThanOrEqual(400);
   });
 
-  it('holds no machine, person, private path or video-kit specifics', () => {
-    for (const leak of [
-      /\/Users\//,
-      /~\/2lab\.ai/,
-      /ARTIFACTS/,
-      /cwon/i,
-      /make-docent-book/,
-      /make-3b1b/,
-      /audio_check/,
-    ]) {
+  it('holds no home or personal path and no kit script of a particular target', () => {
+    for (const leak of [/\/Users\//, /\/home\//, /~\/(?!skill-research\/)/, /\.py\b/]) {
       expect(md, String(leak)).not.toMatch(leak);
     }
   });
@@ -59,6 +51,8 @@ describe('local:research-skill', () => {
     expect(verify).toBeGreaterThan(-1);
     expect(land).toBeGreaterThan(verify);
     expect(body).toContain('otherwise stop at the open PR');
+    expect(body).toContain('Nothing\n  touches the live skill before step 7.');
+    expect(body).toContain('only after the review passed');
     expect(body).toContain('Never publish, deploy, merge or message people from a probe.');
   });
 });

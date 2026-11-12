@@ -63,14 +63,17 @@ it. Everything below (`RUN/…`) writes there, so a cut run resumes from its fil
   tools/environment.
 - Rank by frequency × severity × user weight. A defect in ≥ 3 probes is systemic: fix the cause, not the instances.
 
-## 5. Improve (on a branch)
+## 5. Improve (staged, not live)
+- Stage every change: a branch in the skill's repo, or — for a host-kept user skill — `RUN/improved/SKILL.md`. Nothing
+  touches the live skill before step 7.
 - The smallest change that removes each top cause: skill text (keep `SKILL.md` lean — move long material into its
-  reference files), references and templates, code (with a test or a demo output for every primitive touched).
+  reference files; a host's skill store may cap the size, soma-work at 10 KB), references and templates, code (with a
+  test or a demo output for every primitive touched).
 - Every defect class a script can detect gets an automatic check, so it cannot come back silently.
 - Harvest the authors' workarounds that are worth keeping into the skill's library.
 
 ## 6. Verify — before anything merges
-- Re-run the 3 worst probes and 2 new random ones with the improved branch; review them blind with the same rubric.
+- Re-run the 3 worst probes and 2 new random ones with the staged change; review them blind with the same rubric.
 - `RUN/scorecard.md`: per criterion, mean before → after, and defect counts. Read the paired re-runs first (same
   input, before → after): different reviewers shift absolute scores by a few tenths, so a flat all-probe mean can hide
   real gains. A fix that does not move its criterion is reverted or reworked.
@@ -78,13 +81,14 @@ it. Everything below (`RUN/…`) writes there, so a cut run resumes from its fil
 - A change to a default (timing, layout, wording) can break outputs that passed: re-check every sample the owner
   will see, at full size, yourself.
 
-## 7. Land
-- Open the PR (or the user-skill update) with the defects it closes and the scorecard.
-- Review it with `local:trinity` (one reviewer if the panel cannot run). Reviewers who open the real output catch
-  what checks cannot — never skip the review for a "small" change. A CI job that fails before any step runs is not a
-  check result: run the gates locally.
-- Merge only when the target repo's policy allows it and the owner asked for it; otherwise stop at the open PR.
-  A host-kept user skill is written back with the skill manager (`update`) only after step 6.
+## 7. Land — review first, then go live
+- Review the staged change with `local:trinity` (one reviewer if the panel cannot run), with the defects it closes
+  and the scorecard. Reviewers who open the real output catch what checks cannot — never skip the review for a
+  "small" change.
+- Repo-backed skill: open the PR. A CI job that fails before any step runs is not a check result: run the gates
+  locally. Merge only when the target repo's policy allows it and the owner asked for it; otherwise stop at the open PR.
+- Host-kept user skill: an `update` replaces the live skill at once, so write `RUN/improved/SKILL.md` back with the
+  skill manager only after the review passed.
 
 ## 8. Report and log
 - Append a dated entry to the research log (the recipe's path; default `RUN/../RESEARCH-LOG.md`): seed, probes,
@@ -97,4 +101,5 @@ it. Everything below (`RUN/…`) writes there, so a cut run resumes from its fil
 - Probes are real runs with the real tools; no mock outputs, no "would have".
 - The author of a probe never reviews it.
 - Inputs are drawn, not chosen; the seed is recorded so a run can be repeated.
-- Never publish, deploy, merge or message people from a probe. Only the improvement lands, after step 6.
+- Never publish, deploy, merge or message people from a probe. Only the improvement lands — verified (step 6), then
+  reviewed (step 7).
