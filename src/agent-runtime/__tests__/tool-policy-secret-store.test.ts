@@ -11,7 +11,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { DATA_DIR, SECRETS_DIR } from '../../env-paths';
-import { approvalRecordPaths, secretStoreDenyRules } from '../policy/devops-secret-guard';
+import { approvalRecordPaths, checkDevopsSecretCommand, secretStoreDenyRules } from '../policy/devops-secret-guard';
 import type { PermissionMode } from '../policy/permission-mode';
 import { evaluateToolPolicy, type ToolPolicyContext } from '../policy/tool-policy';
 
@@ -241,6 +241,26 @@ describe('evaluateToolPolicy — secret store: spellings the SDK expands (trinit
     expect(evaluateToolPolicy('Glob', { pattern: 'src/*.ts', path: '/tmp/U000ALICE' }, ctx).reason ?? '').not.toMatch(
       /^devops-secret/,
     );
+  });
+
+  it('decides a 200 KB Bash command in bounded time, whatever its words (fable R3: no backtracking)', () => {
+    // The guard alone: the non-admin sensitive-path tier has its own cost on long paths.
+    const cfg = path.dirname(SECRETS_DIR);
+    const store = path.basename(SECRETS_DIR);
+    const cases: Array<[string, boolean]> = [
+      [`echo ${'a'.repeat(200_000)} | xxd -r -p > out.bin`, false],
+      [`cat ${'/x'.repeat(100_000)}`, false],
+      [`echo ${Array.from({ length: 20_000 }, (_, i) => `/tmp/w${i}`).join(' ')}`, false],
+      [`echo ${'{a,b}/'.repeat(40_000)}`, false],
+      [`echo ${'=/x'.repeat(60_000)} ${cfg}/q/../${store}/db-app`, true],
+    ];
+    for (const [command, denied] of cases) {
+      const started = performance.now();
+      const reason = checkDevopsSecretCommand(command);
+      const elapsed = performance.now() - started;
+      expect(elapsed, `${command.slice(0, 40)}… took ${Math.round(elapsed)} ms`).toBeLessThan(2_000);
+      expect(reason).toBe(denied ? 'secret store path' : null);
+    }
   });
 
   it('denies an absolute Glob pattern whatever `path` says — the CLI walks the pattern alone (grok R1)', () => {

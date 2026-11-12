@@ -110,12 +110,16 @@ function rootsOf(p: string): string[] {
   return [...new Set([lexical, landing(lexical)])];
 }
 
+/** Longer than any path the OS opens (`PATH_MAX` is 1024 on macOS, 4096 on Linux). */
+const MAX_OPENABLE_PATH = 4096;
+
 /**
  * Where the target of a path lands: the deepest existing ancestor through `realpath`, then the
  * missing names. A dangling symbolic link on the way is followed to where it points (a write through
- * it creates its target). Lexical when nothing resolves.
+ * it creates its target). Lexical when nothing resolves, or when `p` is too long to open at all.
  */
 function landing(p: string, depth = 0): string {
+  if (p.length > MAX_OPENABLE_PATH) return p;
   const missing: string[] = [];
   let current = p;
   for (;;) {
@@ -146,10 +150,11 @@ function normalizeCase(s: string): string {
 
 /**
  * Every absolute path a tool may open for `raw`, the way the SDK reads one — trimmed, `~` / `~/` to
- * the home directory, Unicode NFC — each also where it lands through links; lower-cased (macOS
- * volumes are). Empty for a relative spelling, which {@link relativeHits} checks instead.
+ * the home directory, Unicode NFC — each also where it lands through links unless `resolveLinks` is
+ * off; lower-cased (macOS volumes are). Empty for a relative spelling, which {@link relativeHits}
+ * checks instead.
  */
-function readingsOf(raw: string): string[] {
+function readingsOf(raw: string, resolveLinks = true): string[] {
   const trimmed = raw.trim();
   const expanded =
     trimmed === '~'
@@ -157,14 +162,16 @@ function readingsOf(raw: string): string[] {
       : trimmed.startsWith('~/')
         ? posixPath.join(os.homedir(), trimmed.slice(2))
         : trimmed;
-  const out = new Set<string>();
+  const lexicals = new Set<string>();
   for (const candidate of [raw, trimmed, expanded]) {
     for (const form of [candidate, candidate.normalize('NFC')]) {
-      if (!posixPath.isAbsolute(form)) continue;
-      const lexical = posixPath.normalize(form);
-      out.add(normalizeCase(lexical));
-      out.add(normalizeCase(landing(lexical)));
+      if (posixPath.isAbsolute(form)) lexicals.add(posixPath.normalize(form));
     }
+  }
+  const out = new Set<string>();
+  for (const lexical of lexicals) {
+    out.add(normalizeCase(lexical));
+    if (resolveLinks) out.add(normalizeCase(landing(lexical)));
   }
   return [...out];
 }
@@ -201,14 +208,18 @@ function relativeHits(raw: string): 'store' | 'record' | null {
     : null;
 }
 
+/** The spellings of the secret store, lower-cased, resolved now (it may not exist yet). */
+function storeRoots(): string[] {
+  return rootsOf(SECRETS_DIR).map(normalizeCase);
+}
+
 /**
  * True when `raw` is the secret store or inside it, or — with `scan`, which reaches everything below
  * it — a directory above it.
  */
-function isSecretStorePath(raw: string, scan: boolean): boolean {
+function isSecretStorePath(raw: string, scan: boolean, roots: string[] = storeRoots(), resolveLinks = true): boolean {
   if (relativeHits(raw) === 'store') return true;
-  const roots = rootsOf(SECRETS_DIR).map(normalizeCase);
-  for (const s of readingsOf(raw)) {
+  for (const s of readingsOf(raw, resolveLinks)) {
     for (const root of roots) {
       if (isWithin(s, root) || (scan && isWithin(root, s))) return true;
     }
@@ -243,34 +254,59 @@ function namesSecretStore(text: string): boolean {
     .some((root) => new RegExp(`${escapeRegExp(root)}(?![\\w.-])`).test(lower));
 }
 
+/** What separates the words of a shell string. A plain split: linear on any input. */
+const SHELL_WORD_SPLIT_RE = /[\s;&|()`<>]+/;
+
+/** What joins a path to an option, a list or a file argument (`--in=/p`, `a:/p`, `curl -d @/p`). */
+const SHELL_PIECE_SPLIT_RE = /[=:,@]/;
+
 /**
- * A word of a shell string that holds a `/`, cut at the characters that join a path to an option,
- * a list or a file argument (`--in=/p`, `a:/p`, `curl -d @/p`).
+ * Path words whose links {@link commandReachesSecretStore} resolves. Past it the words are read
+ * lexically only, so one command cannot cost unbounded file-system calls; the sandbox holds links.
  */
-const PATH_WORD_RE = /[^\s;&|()`<>=:,@]*\/[^\s;&|()`<>=:,@]*/g;
+const MAX_LINK_RESOLVED_WORDS = 64;
 
 /**
  * A path word of an unquoted shell string that reaches the secret store the way the OS reads it:
- * `~` and `$HOME` expanded, `.` and `..` collapsed, through links, any case. A command that changes
- * directory first (`cd <cfg> && cat secrets/x`) is past a lexical check — the sandbox `denyRead`
- * holds there.
+ * the word and its pieces, `{a,b}` expanded, `~` and `$HOME` expanded, `.` and `..` collapsed,
+ * through links, any case. A command that changes directory first (`cd <cfg> && cat secrets/x`) or
+ * a shell wildcard (`<cfg>/sec*\/x`) is past a lexical check — the sandbox `denyRead` holds there.
  */
 function commandReachesSecretStore(unquoted: string): boolean {
-  for (const [word] of unquoted.matchAll(PATH_WORD_RE)) {
-    const expanded = word.replace(/^(?:~|\$HOME|\$\{HOME\})(?=\/|$)/, os.homedir());
-    if (isSecretStorePath(expanded, false)) return true;
+  const roots = storeRoots();
+  const seen = new Set<string>();
+  for (const word of unquoted.split(SHELL_WORD_SPLIT_RE)) {
+    if (!word.includes('/')) continue;
+    for (const piece of [word, ...word.split(SHELL_PIECE_SPLIT_RE)]) {
+      if (!piece.includes('/')) continue;
+      // Too many braces to expand: read as written (the sandbox holds what that misses).
+      for (const alternative of expandBraces(piece) ?? [piece]) {
+        const path = alternative.replace(/^(?:~|\$HOME)(?=\/|$)/, os.homedir());
+        if (seen.has(path)) continue;
+        seen.add(path);
+        if (isSecretStorePath(path, false, roots, seen.size <= MAX_LINK_RESOLVED_WORDS)) return true;
+      }
+    }
   }
   return false;
 }
 
-/** Most alternatives a Glob brace pattern may expand to before the check refuses it. */
+/** Most alternatives a brace pattern may expand to before the check gives up enumerating it. */
 const MAX_GLOB_ALTERNATIVES = 256;
 
+/** Most brace groups a pattern may hold before the check gives up enumerating it. */
+const MAX_BRACE_GROUPS = 64;
+
 /**
- * Every alternative of a brace pattern (`{a,b}` and nested ones), innermost first; null past
- * {@link MAX_GLOB_ALTERNATIVES} — a pattern this check cannot enumerate is not let through.
+ * Every alternative of a brace pattern (`{a,b}` and nested ones), innermost first; null for a
+ * pattern longer than any openable path, or past {@link MAX_BRACE_GROUPS} or
+ * {@link MAX_GLOB_ALTERNATIVES} — the caller decides what a pattern it cannot enumerate means.
  */
 function expandBraces(pattern: string): string[] | null {
+  if (!pattern.includes('{')) return [pattern];
+  if (pattern.length > MAX_OPENABLE_PATH) return null;
+  let groups = 0;
+  for (const ch of pattern) if (ch === '{' && ++groups > MAX_BRACE_GROUPS) return null;
   let out = [pattern];
   for (;;) {
     const next: string[] = [];
