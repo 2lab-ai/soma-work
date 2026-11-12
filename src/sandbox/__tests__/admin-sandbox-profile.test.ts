@@ -82,8 +82,25 @@ describe('isSandboxOffInEffect', () => {
 describe('credential files (env-access WU2, #1210): no model reads a key, a token or a login', () => {
   it('names the ssh keys, gh, cloud and registry logins under the home directory', () => {
     const paths = credentialPaths(HOME);
-    for (const p of ['.ssh', '.config/gh', '.aws', '.netrc', '.git-credentials', '.docker/config.json', '.kube']) {
-      expect(paths).toContain(path.join(HOME, p));
+    // The whole list, written out here and not taken from the module: dropping one entry fails this test
+    // (review-of-legends R4).
+    const REQUIRED = [
+      '.ssh',
+      '.config/gh',
+      '.config/gcloud',
+      '.aws',
+      '.azure',
+      '.kube',
+      '.docker/config.json',
+      '.netrc',
+      '.git-credentials',
+      '.gnupg',
+    ];
+    expect([...paths].sort()).toEqual(REQUIRED.map((p) => path.join(HOME, p)).sort());
+    const rules = credentialReadDenyRules(HOME);
+    for (const p of REQUIRED) {
+      expect(rules).toContain(`Read(/${path.join(HOME, p)})`);
+      expect(rules).toContain(`Read(/${path.join(HOME, p)}/**)`);
     }
     // npm reads its own ~/.npmrc for installs; the keychain files are read by the TLS check.
     expect(paths).not.toContain(path.join(HOME, '.npmrc'));

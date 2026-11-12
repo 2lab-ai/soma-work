@@ -488,6 +488,12 @@ this.app.action('deny_tool', async ({ ack, body, respond }) => {
 | ssh | 2단계 ssh 금지가 어드민 블록을 떠나 모든 사용자에게(`ssh-ban: ssh command`, 문구는 `ssh_exec` 안내). 호스트 명령은 server-tools `ssh_exec`(샌드박스 밖, 봇의 키) — 비어드민은 4단계가 항상 거부 | `tool-policy.ts` · `server-tools-mcp-server.ts` `handleSshExec` |
 | Lean | `evaluateToolPolicySsh`(`Model.lean`), `ProofsSsh.lean` — 1b는 결정이 그대로이고 문구만 이유를 따름, ssh 금지는 어드민·사고 세션까지, 어드민 네이티브 쓰기 경계, 셋 다 해당 없으면 `evaluateToolPolicyMcp`와 같음 | `verification/lean/SomaVerify/ToolPolicy/` |
 
+CLI 순서 가정: 쓰기 보호와 자격 파일 읽기 금지는 CLI 거부 규칙이다. 정책 훅은 auto·bypass 모드의 네이티브 도구에
+`allow`를 돌려준다. 두 규칙이 지켜지는 이유는 CLI가 거부된 경로를 훅을 부르기 전, 입력 검증에서 막기 때문이다.
+CLI 2.1.321에서 실측했다: Read·Write는 "denied by your permission settings"로 실패하고 훅은 불리지 않는다.
+Grep·Glob은 그 파일을 결과에서 뺀다. 허용된 Read는 훅에 닿는다. SDK·CLI 버전을 올릴 때마다
+`node scripts/verification/probe-cli-deny-before-hooks.mjs`를 다시 돌린다(종료 0 = 유지, 1 = 뚫림, 2 = 판정 불가).
+
 남는 길: 운영자가 `SOMA_SANDBOX_OFF_ALLOWED=true`로 연 호스트의 어드민 `sandbox off` 세션 — OS 규칙이 없고 CLI 거부 규칙과
 정책 1b만 남는다.
 - 설정은 비밀을 `{"$secret": "<name>"}`으로 가리킨다. 해석은 `@soma/process-shared/secret-ref`(이름 검증, 저장소 밖 링크 거부,

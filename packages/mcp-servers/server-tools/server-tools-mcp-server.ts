@@ -648,6 +648,9 @@ export function handleLogs(args: Record<string, unknown>) {
 const SSH_EXEC_DEFAULT_TIMEOUT_S = 60;
 const SSH_EXEC_MAX_TIMEOUT_S = 600;
 const SSH_EXEC_MAX_COMMAND_CHARS = 8192;
+const SSH_EXEC_TIMEOUT_NOTE =
+  'Only the local ssh client was stopped: the remote command may still be running and its outcome is unknown. ' +
+  'Check the host before running it again.';
 
 export function handleSshExec(args: Record<string, unknown>) {
   const server = args.server as string;
@@ -686,7 +689,12 @@ export function handleSshExec(args: Record<string, unknown>) {
   );
   if (result.error || result.signal) {
     // Same failure shape as `logs`: a fresh error from redacted, capped stderr, never the raw output.
-    throw logsFailure(result, 'ssh_exec', server, timeoutS * 1000);
+    const failure = logsFailure(result, 'ssh_exec', server, timeoutS * 1000);
+    if ((result.error as NodeJS.ErrnoException | undefined)?.code !== 'ETIMEDOUT') throw failure;
+    // The timeout stops the local ssh client only: a remote command with no terminal keeps running
+    // (review-of-legends R4). Say so, so a retry does not repeat a deploy that is still going.
+    const [head, ...detail] = failure.message.split('\n');
+    throw new Error([head, SSH_EXEC_TIMEOUT_NOTE, ...detail].join('\n'));
   }
 
   const stdout = redactLogSecrets(result.stdout ?? '');
@@ -1050,7 +1058,8 @@ class ServerToolsMCPServer extends BaseMcpServer {
             },
             timeout_s: {
               type: 'number',
-              description: 'Seconds before the command is killed: an integer from 1 to 600. Default 60.',
+              description:
+                'Seconds before the local ssh client is stopped: an integer from 1 to 600. Default 60. The remote command is not guaranteed to stop with it; after a timeout, check the host before running the command again.',
             },
           },
           required: ['server', 'command'],

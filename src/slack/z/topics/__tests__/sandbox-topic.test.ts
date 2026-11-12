@@ -21,6 +21,7 @@ vi.mock('../../../../user-settings-store', () => {
 });
 
 import { isAdminUser } from '../../../../admin-utils';
+import { userSettingsStore } from '../../../../user-settings-store';
 import { applySandbox, createSandboxTopicBinding, renderSandboxCard } from '../sandbox-topic';
 
 function actionIds(blocks: any[]): string[] {
@@ -92,9 +93,11 @@ describe('sandbox-topic.applySandbox', () => {
   it('admin cannot turn sandbox off on a host that does not allow it', async () => {
     vi.mocked(isAdminUser).mockReturnValue(true);
     delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
-    const r = await applySandbox({ userId: 'U1', value: 'off' });
+    const r = await applySandbox({ userId: 'U-REFUSED', value: 'off' });
     expect(r.ok).toBe(false);
     expect(r.summary).toContain('SOMA_SANDBOX_OFF_ALLOWED');
+    // Nothing stored: a refused OFF must not take effect later if the host starts allowing it (review-of-legends R4).
+    expect(userSettingsStore.getUserSandboxDisabled('U-REFUSED')).toBe(false);
     // The home package caches are read-only in the sandbox (fable R3): the card says how to install.
     expect(r.description).not.toContain('패키지 캐시 사용 가능');
     expect(r.description).toContain('--cache /tmp/');

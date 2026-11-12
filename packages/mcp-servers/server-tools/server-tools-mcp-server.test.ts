@@ -1782,11 +1782,43 @@ describe('handleSshExec', () => {
   it("throws on a timeout or an ssh that cannot run, without the child's raw output", () => {
     mockConfig(PROD_CONFIG, 8103);
     vi.mocked(child_process.spawnSync).mockReturnValue(
-      spawnResult({ status: null, error: spawnError('ETIMEDOUT'), stdout: 'secret-ish', stderr: '' }),
+      spawnResult({
+        status: null,
+        signal: 'SIGTERM',
+        error: spawnError('ETIMEDOUT'),
+        stdout: 'STDOUT-MARK secret-ish',
+        stderr: 'STDERR-MARK password=hunter2xyz\n',
+      }),
     );
     const err = thrownBy(() => handleSshExec({ server: 'prod', command: 'sleep 999' }));
     expect(err.message).toContain('timed out');
     expect(err.message).not.toContain('secret-ish');
+    expect(err.message).not.toContain('hunter2xyz');
+    // The whole error, not only its message: the stderr logger spreads its own properties (review-of-legends R4).
+    expect(Object.keys(err)).toEqual([]);
+    expect(JSON.stringify(err, Object.getOwnPropertyNames(err))).not.toMatch(/STDOUT-MARK|hunter2xyz/);
+  });
+
+  it('says a timed-out remote command may still be running: only the local ssh client is stopped (review-of-legends R4)', () => {
+    mockConfig(PROD_CONFIG, 8106);
+    vi.mocked(child_process.spawnSync).mockReturnValue(
+      spawnResult({ status: null, signal: 'SIGTERM', error: spawnError('ETIMEDOUT'), stdout: '', stderr: '' }),
+    );
+    const err = thrownBy(() => handleSshExec({ server: 'prod', command: 'sleep 30; touch /tmp/done', timeout_s: 5 }));
+    expect(err.message.split('\n')[0]).toBe('ssh_exec failed on prod: timed out after 5s');
+    expect(err.message).toContain('may still be running');
+    expect(err.message).toContain('before running it again');
+  });
+
+  it("redacts secret shapes in a successful command's stdout and keeps the rest (review-of-legends R4)", () => {
+    mockConfig(PROD_CONFIG, 8107);
+    vi.mocked(child_process.spawnSync).mockReturnValue(
+      spawnResult({ status: 0, stdout: 'ready\npassword=hunter2xyz\n', stderr: '' }),
+    );
+    const text = handleSshExec({ server: 'prod', command: 'cat app.env' }).content[0].text;
+    expect(text.startsWith('exit 0\nready\n')).toBe(true);
+    expect(text).not.toContain('hunter2xyz');
+    expect(text).not.toContain('----- stderr -----');
   });
 
   it('ends ssh options before the host, so a command that looks like an option stays the remote command (fable R1 P1)', () => {
