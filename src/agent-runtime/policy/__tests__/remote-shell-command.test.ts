@@ -118,10 +118,14 @@ const RUNS = [
   '{ echo a } always { ssh host }',
   "ack --pager='ssh host' x",
   'rg --hostname-bin ssh x',
-  // trinity R4 (astra, P2): line continuations in a delimiter and in an unquoted heredoc body.
-  // A trusted variable the command itself sets is not trusted, however its name is spelled (trinity R6).
+  // A variable, `$HOME` included, could be set by the command in many ways (trinity R6–R7).
   `read H"OME" <<< '--pre=ssh'; rg pattern "$HOME" host`,
-  "read H\\OME <<< x; rg x $HOME ssh",
+  `flag=-v; name=HO; printf "$flag" "\${name}ME" %s --pre=ssh; rg pattern "$HOME" host`,
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
+  ': ${HOME::=--pre=ssh}; rg x $HOME',
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
+  'echo ${TMPDIR::=--pre=ssh}; rg x $TMPDIR',
+  'read H\\OME <<< x; rg x $HOME ssh',
   "printf -v H\\OME '%s' --pre=ssh; rg x $HOME",
   // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
   'x=HO; read "${x}ME" <<< y; rg ssh $HOME',
@@ -130,6 +134,7 @@ const RUNS = [
   'x=--pre=x; rg ssh "$x"',
   'dir=-exec; find "$dir" ssh host \\;',
   'LC_ALL=$(printf x) grep ssh x',
+  // trinity R4 (astra, P2): line continuations in a delimiter and in an unquoted heredoc body.
   'cat <<"E\\\nOF"\ntext\nEOF\nssh host',
   'cat <<E\\\nOF\ntext\nEOF\nssh host',
   'cat <<EOF\nEO\\\nF\nssh host',
@@ -176,10 +181,7 @@ const DATA = [
   // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
   'echo "${HOME}/ssh"',
   'cat <<< "ssh host"',
-  // The bot's own absolute paths, and locale settings (trinity R5, fable P2).
-  'rg -n ssh "$HOME/x"',
-  // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
-  'rg -n ssh ${HOME}/x',
+  // A variable where it cannot name a program (grep has no run option), and locale settings (trinity R5).
   'grep -rn ssh "$TMPDIR"',
   'LC_ALL=C grep ssh x',
   // trinity R5 (grok): harmless settings in front of a data program.
@@ -205,6 +207,7 @@ const CONSERVATIVE = [
   // A variable set in the command could be anything; `cd` changes `$PWD`, and bash splits it unquoted.
   'dir=src; find "$dir" -name "*ssh*"',
   'find "$PWD" -name "*ssh*"',
+  'rg -n ssh "$HOME/x"',
 ];
 
 describe('isRemoteShellCommand', () => {

@@ -22,9 +22,8 @@
  *   `RIPGREP_CONFIG_PATH=… rg`), and so does an assignment that holds the word or sets `PATH`, and a git global
  *   option that holds the word. An expansion where a program could be named — a git setting, the arguments of
  *   a data program with a run option, `find`'s arguments — is unknown, so it refuses too. Two exceptions:
- *   harmless settings in front of a program (`LC_ALL=C grep …`, see PLAIN_ENVIRONMENT), and `$HOME`, `$TMPDIR`
- *   when the command does not name them otherwise (absolute paths the bot set: never an option). `read` and
- *   `printf -v`, which set variables, are not data commands.
+ *   harmless settings in front of a program (`LC_ALL=C grep …`, see PLAIN_ENVIRONMENT). No variable is trusted,
+ *   `$HOME` included: `rg ssh "$HOME/x"` refuses. `read` and `printf -v` are not data commands.
  *
  * Not covered, as with a command split in two: a data program that reads configuration an earlier part of the
  * same command wrote (`… >> .git/config; git log`).
@@ -175,27 +174,7 @@ class Parser {
   i = 0;
   readonly commands: SimpleCommand[] = [];
   unreadable = false;
-  /** `src` is the text scanned now; `root` is the whole command. */
-  constructor(
-    readonly src: string,
-    readonly root: string = src,
-  ) {}
-}
-
-/**
- * `$HOME` and `$TMPDIR` hold absolute paths without spaces that the bot set, so they can never become an option
- * or a program name — unless the command itself sets them (`HOME=…`, `read HOME`, `export HOME`), which any other
- * mention of the name in the command is taken to mean, quotes and backslashes removed (`H\OME`). `$PWD` is not
- * trusted: `cd` changes it, and bash splits it unquoted.
- */
-const TRUSTED_VARIABLES = new Set(['HOME', 'TMPDIR']);
-
-function trustedVariable(root: string, name: string): boolean {
-  if (!TRUSTED_VARIABLES.has(name)) return false;
-  const plain = root.replace(/[\\'"]/g, '');
-  const mentions = plain.match(new RegExp(`(?<![A-Za-z0-9_])${name}(?![A-Za-z0-9_])`, 'g'))?.length ?? 0;
-  const expansions = root.match(new RegExp(`\\$\\{?${name}(?![A-Za-z0-9_])`, 'g'))?.length ?? 0;
-  return mentions === expansions;
+  constructor(readonly src: string) {}
 }
 
 /** Commands in a separate text (a backtick body, an expanded heredoc body, arithmetic), merged into `p`. */
@@ -204,7 +183,7 @@ function scanText(p: Parser, text: string, depth: number, expandOnly: boolean): 
     p.unreadable = true;
     return;
   }
-  const q = new Parser(text, p.root);
+  const q = new Parser(text);
   if (expandOnly) expansions(q, depth);
   else list(q, false, depth);
   p.commands.push(...q.commands);
@@ -267,14 +246,13 @@ function dollar(p: Parser, depth: number): string {
       p.i = src.length;
       return '';
     }
-    const inner = src.slice(open + 1, j);
-    scanText(p, inner, depth + 1, true);
+    scanText(p, src.slice(open + 1, j), depth + 1, true);
     p.i = j;
-    return trustedVariable(p.root, inner) ? `$${inner}` : EXPANDED;
+    return EXPANDED;
   }
-  // `$x`, `$1`, `$@`: a parameter. Its name is read on by the caller.
-  const name = /^[A-Za-z_][A-Za-z0-9_]*/.exec(src.slice(open))?.[0] ?? '';
-  return trustedVariable(p.root, name) ? '$' : EXPANDED;
+  // `$x`, `$1`, `$@`: a parameter, `$HOME` included — a command can set any variable in more ways than a scan can
+  // follow (`read`, `printf -v`, zsh's `${x::=…}`), so none is trusted.
+  return EXPANDED;
 }
 
 /**
