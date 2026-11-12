@@ -6,18 +6,23 @@
  * command through only when nothing in it can run the word:
  *
  * - It never refuses what `isSshCommand` let through (it starts from that check).
- * - A scan that knows quotes, `$'…'`, heredocs, comments and `$(…)` / `$((…))` / backticks / `<(…)` / `>(…)` finds
- *   every simple command, including those inside substitutions and inside unquoted heredoc bodies.
+ * - A recursive scan finds every simple command, including those inside `$(…)`, `$((…))`, `${…}`, backticks
+ *   (nested ones too), `(…)`, `<(…)`, `>(…)` and the substitutions of unquoted heredoc bodies. It knows quotes,
+ *   `$'…'`, heredocs and comments, so a `)` inside them does not end a substitution.
  * - ssh, scp or sftp named as a program refuses.
- * - Every other program must only handle the word as data: grep, echo, cat and the like, the git subcommands that
- *   read or record (commit, log, grep …) and the gh groups pr, issue, api, search, run, release, label, workflow.
- *   A heredoc fed to them is data too. git's transport subcommands (push, fetch, pull, clone …) and rsync keep the
- *   old check on their own text.
+ * - Every other program must only handle the word as data, and be named bare (`./cat` could be anything): grep,
+ *   echo, cat and the like (not with an option that names a program to run, such as `rg --pre`); the git
+ *   subcommands that read or record (commit, log, grep …); the gh groups pr, issue, api, search, run, release,
+ *   label, workflow and status. A heredoc fed to them is data too. git's transport subcommands (push, fetch, pull,
+ *   clone …) and rsync keep the old check on their own text.
  * - Anything else — a shell, an interpreter, a wrapper (`sudo`, `env`, `xargs`, `timeout` …), `eval`, sed, awk,
  *   `find -exec`, an unknown program — refuses, because the word is in the text and that program could run it:
  *   from its arguments, from a pipe, from a file written earlier in the same command, or from a fifo.
- * - An assignment that holds the word (`GIT_PAGER='ssh …' git log`, `RSYNC_RSH=ssh rsync`) refuses, and so does a
- *   git `-c` setting that holds it.
+ * - An assignment that holds the word (`GIT_PAGER='ssh …' git log`, `RSYNC_RSH=ssh rsync`) or sets `PATH`
+ *   refuses, and so does a git `-c` setting that holds the word.
+ *
+ * Not covered, as with a command split in two: a data program that reads configuration an earlier part of the
+ * same command wrote (`… >> .git/config; git log`).
  *
  * The ban is a clear message and one more layer, not the boundary: in the OS sandbox ssh has no route out (it
  * does not use the proxy) and no session reads `~/.ssh`. Hosts are reached with server-tools `ssh_exec`.
@@ -41,8 +46,6 @@ const DATA_COMMANDS = new Set([
   'cat',
   'head',
   'tail',
-  'less',
-  'more',
   'wc',
   'sort',
   'uniq',
@@ -81,7 +84,6 @@ const DATA_COMMANDS = new Set([
   'which',
   'whereis',
   'type',
-  'hash',
   'man',
   'whatis',
   'apropos',
@@ -94,6 +96,14 @@ const DATA_COMMANDS = new Set([
   'esac',
   '}',
 ]);
+/** Options of a data program that name a program for it to run: long forms, and letters of short bundles. */
+const EXEC_OPTIONS: Record<string, { long: readonly string[]; short: string }> = {
+  rg: { long: ['--pre'], short: '' },
+  ag: { long: ['--pager'], short: '' },
+  man: { long: ['--pager', '--html'], short: 'PH' },
+  sort: { long: ['--compress-program'], short: '' },
+  'git grep': { long: ['--open-files-in-pager'], short: 'O' },
+};
 /** git subcommands that read or record: their arguments are paths, revisions and messages. */
 const GIT_DATA = new Set([
   'add',
@@ -128,7 +138,11 @@ const GIT_TRANSPORT = new Set(['clone', 'fetch', 'pull', 'push', 'ls-remote', 'r
 const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env']);
 /** gh command groups that only send and print data. */
 const GH_DATA = new Set(['pr', 'issue', 'api', 'search', 'run', 'release', 'label', 'workflow', 'status']);
-const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
+const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)\+?=/;
+/** Nesting this deep is not a command anyone types: refuse rather than guess. */
+const MAX_DEPTH = 8;
+/** Stands in a word for an expansion (`$x`, `$(…)`, backticks): a program named through one is unknown. */
+const EXPANDED = '\u0000';
 
 interface SimpleCommand {
   words: string[];
@@ -136,67 +150,117 @@ interface SimpleCommand {
   heredocs: string[];
 }
 
-interface Scan {
-  commands: SimpleCommand[];
-  /** Text the scan could not split safely (a heredoc delimiter it cannot read). */
-  unreadable: boolean;
+interface PendingHeredoc {
+  delim: string;
+  quoted: boolean;
+  stripTabs: boolean;
+  owner: SimpleCommand;
 }
 
-/** Matching close of `(` at `open` in `src`, skipping quotes; -1 when unbalanced. */
-function closingParen(src: string, open: number): number {
+/** Scan state over one text: the position, what was found, and heredocs whose bodies start at the next newline. */
+class Parser {
+  i = 0;
+  readonly commands: SimpleCommand[] = [];
+  readonly pending: PendingHeredoc[] = [];
+  unreadable = false;
+  constructor(readonly src: string) {}
+}
+
+/** Commands in a separate text (a backtick body, an expanded heredoc body, arithmetic), merged into `p`. */
+function scanText(p: Parser, text: string, depth: number, expandOnly: boolean): void {
+  if (depth > MAX_DEPTH) {
+    p.unreadable = true;
+    return;
+  }
+  const q = new Parser(text);
+  if (expandOnly) expansions(q, depth);
+  else list(q, false, depth);
+  p.commands.push(...q.commands);
+  p.unreadable ||= q.unreadable;
+}
+
+/** Text the shell expands but does not split into commands: only its substitutions run. */
+function expansions(p: Parser, depth: number): void {
+  for (; p.i < p.src.length; p.i++) {
+    const c = p.src[p.i];
+    if (c === '\\') p.i++;
+    else if (c === '$') dollar(p, depth);
+    else if (c === '`') backtick(p, depth);
+  }
+}
+
+/** Index of the `)` matching the `(` at `open`, counting parens only; -1 when unbalanced. */
+function matchingParen(src: string, open: number): number {
   let depth = 0;
   for (let i = open; i < src.length; i++) {
-    const c = src[i];
-    if (c === '\\') {
-      i++;
-    } else if (c === "'") {
-      const end = src.indexOf("'", i + 1);
-      if (end < 0) return -1;
-      i = end;
-    } else if (c === '"') {
-      for (i++; i < src.length && src[i] !== '"'; i++) if (src[i] === '\\') i++;
-    } else if (c === '(') {
-      depth++;
-    } else if (c === ')') {
-      depth--;
-      if (depth === 0) return i;
-    }
+    if (src[i] === '(') depth++;
+    else if (src[i] === ')' && --depth === 0) return i;
   }
   return -1;
 }
 
 /**
- * `$(…)` or `$((…))` with `(` at `open`: the text that runs as commands goes to `subs`. Arithmetic runs only the
- * substitutions inside it. Returns the index of the closing paren.
+ * At `$`: a substitution (`$(…)`, arithmetic `$((…))`, `${…}`) is scanned for the commands it runs; `p.i` ends
+ * on its last character. Returns what stands for it in the word: `EXPANDED`, since its value is not known here.
  */
-function dollarParen(src: string, open: number, subs: string[]): number {
-  const close = closingParen(src, open);
-  if (close < 0) {
-    subs.push(src.slice(open + 1));
-    return src.length;
+function dollar(p: Parser, depth: number): string {
+  const src = p.src;
+  const open = p.i + 1;
+  if (src[open] === '(') {
+    // `$((1+2))` is arithmetic: the inner `(` closes right before the outer one. `$((cmd) )` is a subshell.
+    const close = matchingParen(src, open);
+    if (src[open + 1] === '(' && close > 0 && matchingParen(src, open + 1) === close - 1) {
+      scanText(p, src.slice(open + 2, close - 1), depth + 1, true);
+      p.i = close;
+      return EXPANDED;
+    }
+    p.i = open + 1;
+    list(p, true, depth + 1);
+    return EXPANDED;
   }
-  // `$((1+2))` is arithmetic: the inner `(` closes right before the outer one. `$((cmd) )` is a subshell.
-  if (src[open + 1] === '(' && closingParen(src, open + 1) === close - 1) {
-    expansions(src.slice(open + 2, close - 1), subs);
-  } else {
-    subs.push(src.slice(open + 1, close));
+  if (src[open] === '{') {
+    // `${x:-$(cmd)}`: the braces hold text, and maybe substitutions; a `)` in them is not a close.
+    let level = 0;
+    let j = open;
+    for (; j < src.length; j++) {
+      const c = src[j];
+      if (c === '\\') j++;
+      else if (c === "'") j = src.indexOf("'", j + 1) < 0 ? src.length : src.indexOf("'", j + 1);
+      else if (c === '{') level++;
+      else if (c === '}' && --level === 0) break;
+    }
+    if (j >= src.length) {
+      p.unreadable = true;
+      p.i = src.length;
+      return '';
+    }
+    scanText(p, src.slice(open + 1, j), depth + 1, true);
+    p.i = j;
+    return EXPANDED;
   }
-  return close;
+  // `$x`, `$1`, `$@`: a parameter.
+  return EXPANDED;
 }
 
-/** Substitutions in text the shell expands but does not split into commands (an unquoted heredoc, arithmetic). */
-function expansions(text: string, subs: string[]): void {
-  for (let i = 0; i < text.length; i++) {
-    if (text[i] === '\\') {
-      i++;
-    } else if (text[i] === '$' && text[i + 1] === '(') {
-      i = dollarParen(text, i + 1, subs);
-    } else if (text[i] === '`') {
-      const end = text.indexOf('`', i + 1);
-      subs.push(text.slice(i + 1, end < 0 ? text.length : end));
-      i = end < 0 ? text.length : end;
+/**
+ * At a backtick: its body, with `` \` `` `\\` `\$` unescaped, is scanned as commands. `p.i` ends on the close.
+ * Returns what stands for it in the word.
+ */
+function backtick(p: Parser, depth: number): string {
+  const src = p.src;
+  let inner = '';
+  let j = p.i + 1;
+  for (; j < src.length && src[j] !== '`'; j++) {
+    if (src[j] === '\\' && (src[j + 1] === '`' || src[j + 1] === '\\' || src[j + 1] === '$')) {
+      inner += src[j + 1];
+      j++;
+    } else {
+      inner += src[j];
     }
   }
+  scanText(p, inner, depth + 1, false);
+  p.i = j;
+  return EXPANDED;
 }
 
 /** A heredoc delimiter word starting at `at`: its text with quotes removed, whether it was quoted, where it ends. */
@@ -206,7 +270,15 @@ function delimiterWord(src: string, at: number): { delim: string; quoted: boolea
   let i = at;
   for (; i < src.length && !/[\s;&|<>()]/.test(src[i]); i++) {
     const c = src[i];
-    if (c === "'" || c === '"') {
+    if (c === '$' && (src[i + 1] === "'" || src[i + 1] === '"')) {
+      // `$'EOF'` is `EOF`; with escapes in it, the text is not read here.
+      const end = src.indexOf(src[i + 1], i + 2);
+      const text = src.slice(i + 2, end < 0 ? src.length : end);
+      if (text.includes('\\')) return { delim: '', quoted: true, end: i };
+      quoted = true;
+      delim += text;
+      i = end < 0 ? src.length : end;
+    } else if (c === "'" || c === '"') {
       quoted = true;
       const end = src.indexOf(c, i + 1);
       delim += src.slice(i + 1, end < 0 ? src.length : end);
@@ -222,101 +294,126 @@ function delimiterWord(src: string, at: number): { delim: string; quoted: boolea
   return { delim, quoted, end: i };
 }
 
-/** Every simple command in shell text, those inside substitutions and expanded heredoc bodies included. */
-function scan(src: string, depth = 0): Scan {
-  const commands: SimpleCommand[] = [];
-  const subs: string[] = [];
-  let unreadable = false;
+/**
+ * Scan a command list from `p.i`. With `closed`, stop on the `)` that closes it (`p.i` ends there); otherwise run
+ * to the end of the text.
+ */
+function list(p: Parser, closed: boolean, depth: number): void {
+  const src = p.src;
+  if (depth > MAX_DEPTH) {
+    p.unreadable = true;
+    p.i = src.length;
+    return;
+  }
   let current: SimpleCommand = { words: [], raw: '', heredocs: [] };
   let word = '';
   let inWord = false;
-  let rawStart = 0;
-  const pending: { delim: string; quoted: boolean; stripTabs: boolean; owner: SimpleCommand }[] = [];
+  let rawStart = p.i;
+  // The next word is a redirection's target (`> file`, `<<< text`), not an argument or the program.
+  let target = false;
 
   const endWord = () => {
-    if (inWord) current.words.push(word);
+    if (inWord) {
+      if (target) target = false;
+      else current.words.push(word);
+    }
     word = '';
     inWord = false;
   };
+  /** At a redirection operator: a number right before it is its file descriptor; the next word is its target. */
+  const redirection = () => {
+    if (inWord && /^\d+$/.test(word)) {
+      word = '';
+      inWord = false;
+    }
+    endWord();
+    target = true;
+  };
   const endCommand = (at: number) => {
     endWord();
+    target = false;
     current.raw = src.slice(rawStart, at);
-    if (current.words.length > 0 || current.heredocs.length > 0) commands.push(current);
+    if (current.words.length > 0 || current.heredocs.length > 0) p.commands.push(current);
     current = { words: [], raw: '', heredocs: [] };
     rawStart = at + 1;
   };
 
-  for (let i = 0; i < src.length; i++) {
-    const c = src[i];
+  for (; p.i < src.length; p.i++) {
+    const c = src[p.i];
     if (c === '\\') {
-      if (src[i + 1] !== '\n') {
-        word += src[i + 1] ?? '';
+      if (src[p.i + 1] !== '\n') {
+        word += src[p.i + 1] ?? '';
         inWord = true;
       }
-      i++;
+      p.i++;
     } else if (c === "'") {
-      const end = src.indexOf("'", i + 1);
-      word += src.slice(i + 1, end < 0 ? src.length : end);
+      const end = src.indexOf("'", p.i + 1);
+      word += src.slice(p.i + 1, end < 0 ? src.length : end);
       inWord = true;
-      i = end < 0 ? src.length : end;
-    } else if (c === '$' && src[i + 1] === "'") {
+      p.i = end < 0 ? src.length : end;
+    } else if (c === '$' && src[p.i + 1] === "'") {
       // `$'…'`: a backslash escapes the closing quote.
-      let j = i + 2;
+      let j = p.i + 2;
       for (; j < src.length && src[j] !== "'"; j++) {
         if (src[j] === '\\') j++;
         word += src[j] ?? '';
       }
       inWord = true;
-      i = j;
+      p.i = j;
     } else if (c === '"') {
       inWord = true;
-      for (i++; i < src.length && src[i] !== '"'; i++) {
-        if (src[i] === '\\') {
-          word += src[i + 1] ?? '';
-          i++;
-        } else if (src[i] === '$' && src[i + 1] === '(') {
-          i = dollarParen(src, i + 1, subs);
-        } else if (src[i] === '`') {
-          const end = src.indexOf('`', i + 1);
-          subs.push(src.slice(i + 1, end < 0 ? src.length : end));
-          i = end < 0 ? src.length : end;
+      for (p.i++; p.i < src.length && src[p.i] !== '"'; p.i++) {
+        const d = src[p.i];
+        if (d === '\\') {
+          word += src[p.i + 1] ?? '';
+          p.i++;
+        } else if (d === '$') {
+          word += dollar(p, depth);
+        } else if (d === '`') {
+          word += backtick(p, depth);
         } else {
-          word += src[i];
+          word += d;
         }
       }
-    } else if (c === '$' && src[i + 1] === '(') {
+    } else if (c === '$') {
       inWord = true;
-      i = dollarParen(src, i + 1, subs);
+      word += dollar(p, depth);
     } else if (c === '`') {
-      const end = src.indexOf('`', i + 1);
-      subs.push(src.slice(i + 1, end < 0 ? src.length : end));
       inWord = true;
-      i = end < 0 ? src.length : end;
-    } else if ((c === '<' || c === '>') && src[i + 1] === '(') {
-      // Process substitution runs its commands wherever it is written.
+      word += backtick(p, depth);
+    } else if ((c === '<' || c === '>') && src[p.i + 1] === '(') {
+      // Process substitution runs its commands wherever it is written. As a redirection's target it is the target.
       endWord();
-      const close = closingParen(src, i + 1);
-      subs.push(src.slice(i + 2, close < 0 ? src.length : close));
-      i = close < 0 ? src.length : close;
-    } else if (c === '<' && src[i + 1] === '<' && src[i + 2] !== '<') {
+      target = false;
+      p.i += 2;
+      list(p, true, depth + 1);
+    } else if (c === '<' && src[p.i + 1] === '<' && src[p.i + 2] === '<') {
+      // `<<< text`: the text is input.
+      redirection();
+      p.i += 2;
+    } else if (c === '<' && src[p.i + 1] === '<') {
+      if (inWord && /^\d+$/.test(word)) {
+        word = '';
+        inWord = false;
+      }
       endWord();
-      let j = i + 2;
+      let j = p.i + 2;
       const stripTabs = src[j] === '-';
       if (stripTabs) j++;
       while (src[j] === ' ' || src[j] === '\t') j++;
       const { delim, quoted, end } = delimiterWord(src, j);
-      if (delim === '') unreadable = true;
-      else pending.push({ delim, quoted, stripTabs, owner: current });
-      i = end - 1;
+      if (delim === '') p.unreadable = true;
+      else p.pending.push({ delim, quoted, stripTabs, owner: current });
+      p.i = end - 1;
     } else if (c === '#' && !inWord) {
-      const end = src.indexOf('\n', i);
-      i = (end < 0 ? src.length : end) - 1;
+      const end = src.indexOf('\n', p.i);
+      p.i = (end < 0 ? src.length : end) - 1;
     } else if (c === '\n') {
-      endCommand(i);
+      endCommand(p.i);
       // Heredoc bodies start on the next line. They are input to the command that named them, not commands; an
       // unquoted delimiter still expands the substitutions in them.
-      let pos = i + 1;
-      for (const h of pending.splice(0)) {
+      let pos = p.i + 1;
+      for (const h of p.pending.splice(0)) {
         const body: string[] = [];
         while (pos < src.length) {
           const nl = src.indexOf('\n', pos);
@@ -327,21 +424,35 @@ function scan(src: string, depth = 0): Scan {
         }
         const text = body.join('\n');
         h.owner.heredocs.push(text);
-        if (!h.quoted) expansions(text, subs);
-        if (!commands.includes(h.owner)) commands.push(h.owner);
+        if (!h.quoted) scanText(p, text, depth + 1, true);
+        if (!p.commands.includes(h.owner)) p.commands.push(h.owner);
       }
-      i = pos - 1;
+      p.i = pos - 1;
       rawStart = pos;
-    } else if ((c === '<' || c === '>') && (src[i + 1] === '&' || src[i + 1] === '|')) {
+    } else if ((c === '<' || c === '>') && (src[p.i + 1] === '&' || src[p.i + 1] === '|')) {
       // `2>&1`, `<&3`, `>|`: a redirection, not a separator.
-      endWord();
-      i++;
-    } else if (c === '&' && src[i + 1] === '>') {
+      redirection();
+      p.i++;
+    } else if (c === '&' && src[p.i + 1] === '>') {
       // `&>`, `&>>`: a redirection, not a separator.
-      endWord();
-    } else if (c === ';' || c === '&' || c === '|' || c === '(' || c === ')') {
-      endCommand(i);
-    } else if (c === ' ' || c === '\t' || c === '<' || c === '>') {
+      redirection();
+      p.i += src[p.i + 2] === '>' ? 2 : 1;
+    } else if (c === '<' || c === '>') {
+      // `>`, `>>`, `<`, `<>`: one operator, one target.
+      redirection();
+      if (src[p.i + 1] === '>') p.i++;
+    } else if (c === '(') {
+      // A subshell: its commands are scanned to the matching `)`.
+      endCommand(p.i);
+      p.i++;
+      list(p, true, depth + 1);
+      rawStart = p.i + 1;
+    } else if (c === ')') {
+      endCommand(p.i);
+      if (closed) return;
+    } else if (c === ';' || c === '&' || c === '|') {
+      endCommand(p.i);
+    } else if (c === ' ' || c === '\t') {
       endWord();
     } else {
       word += c;
@@ -350,19 +461,21 @@ function scan(src: string, depth = 0): Scan {
   }
   endCommand(src.length);
   // A heredoc whose line never ended (no newline after its command): its body is missing, nothing to add.
-
-  // Nesting this deep is not a command anyone types: refuse rather than guess.
-  if (depth > 8 && subs.length > 0) return { commands, unreadable: true };
-  for (const sub of subs) {
-    const inner = scan(sub, depth + 1);
-    commands.push(...inner.commands);
-    unreadable ||= inner.unreadable;
-  }
-  return { commands, unreadable };
 }
 
 function base(word: string): string {
   return word.slice(word.lastIndexOf('/') + 1);
+}
+
+/** Does any argument name a program for this data program to run (`rg --pre x`, `git grep -nO'x'`)? */
+function namesProgram(program: string, args: readonly string[]): boolean {
+  const options = EXEC_OPTIONS[program];
+  if (!options) return false;
+  return args.some(
+    (a) =>
+      options.long.some((o) => a === o || a.startsWith(`${o}=`)) ||
+      (options.short !== '' && /^-[^-]/.test(a) && [...a.slice(1)].some((ch) => options.short.includes(ch))),
+  );
 }
 
 type Verdict = 'data' | 'own-text' | 'may-run';
@@ -371,21 +484,18 @@ function gitVerdict(args: readonly string[]): Verdict {
   let k = 0;
   for (; k < args.length && args[k].startsWith('-'); k++) {
     const option = args[k];
-    const [name, inline] = option.includes('=') ? [option.slice(0, option.indexOf('=')), option] : [option, ''];
-    // `-c alias.x='!ssh …'`, `-c core.pager=…`, `-c core.sshCommand=…`: a setting that names it runs it.
-    if ((name === '-c' || name === '--config-env') && isSshCommand(inline || (args[k + 1] ?? ''))) return 'may-run';
-    if (GIT_VALUE_OPTIONS.has(name) && !inline) k++;
+    // `-c alias.x='!ssh …'`, `-cdiff.external=…`, `--config-env=…`: a setting that names it may run it.
+    if (isSshCommand(option)) return 'may-run';
+    if (GIT_VALUE_OPTIONS.has(option)) {
+      if ((option === '-c' || option === '--config-env') && isSshCommand(args[k + 1] ?? '')) return 'may-run';
+      k++;
+    }
   }
   const sub = args[k];
-  const rest = args.slice(k + 1);
   if (sub === undefined) return 'data';
   if (GIT_TRANSPORT.has(sub)) return 'own-text';
   if (!GIT_DATA.has(sub)) return 'may-run';
-  // `git grep -O<pager>` opens the matches in a program it names.
-  if (sub === 'grep' && rest.some((w) => w.startsWith('-O') || w.startsWith('--open-files-in-pager'))) {
-    return 'may-run';
-  }
-  return 'data';
+  return namesProgram(`git ${sub}`, args.slice(k + 1)) ? 'may-run' : 'data';
 }
 
 function ghVerdict(args: readonly string[]): Verdict {
@@ -400,9 +510,11 @@ function ghVerdict(args: readonly string[]): Verdict {
 function verdict(cmd: SimpleCommand): Verdict | 'runs' {
   let words = cmd.words;
   for (;;) {
-    if (words.length > 0 && ASSIGNMENT.test(words[0])) {
-      // `GIT_PAGER='ssh …' git log`, `RSYNC_RSH=ssh rsync`, `x='ssh …'`: an environment that names it may run it.
-      if (isSshCommand(words[0])) return 'may-run';
+    const assignment = words.length > 0 ? ASSIGNMENT.exec(words[0]) : null;
+    if (assignment) {
+      // `GIT_PAGER='ssh …' git log`, `RSYNC_RSH=ssh rsync`, `x='ssh …'`: an environment that names it may run
+      // it. A new `PATH` changes what every bare name runs.
+      if (assignment[1] === 'PATH' || isSshCommand(words[0])) return 'may-run';
       words = words.slice(1);
     } else if (words.length > 0 && KEYWORDS.has(words[0])) {
       words = words.slice(1);
@@ -411,16 +523,24 @@ function verdict(cmd: SimpleCommand): Verdict | 'runs' {
     }
   }
   if (words.length === 0) return 'data';
-  const name = base(words[0]);
+  const program = words[0];
   const args = words.slice(1);
-  if (REMOTE_SHELLS.has(name)) return 'runs';
-  if (DATA_COMMANDS.has(name)) return 'data';
-  if (name === 'git') return gitVerdict(args);
-  if (name === 'gh') return ghVerdict(args);
-  if (name === 'rsync') return 'own-text';
+  if (REMOTE_SHELLS.has(base(program))) return 'runs';
+  // A path (`./cat`) can name any program, and so can an expansion (`$(printf …)echo`); only a bare name means
+  // the one on PATH.
+  if (program.includes('/') || program.includes(EXPANDED)) return 'may-run';
+  if (program === '[[' || program === '[') {
+    // zsh runs `if [[ … ]] cmd`: words after the closing bracket are a command.
+    const close = args.indexOf(program === '[[' ? ']]' : ']');
+    return close >= 0 && close < args.length - 1 ? 'may-run' : 'data';
+  }
+  if (DATA_COMMANDS.has(program)) return namesProgram(program, args) ? 'may-run' : 'data';
+  if (program === 'git') return gitVerdict(args);
+  if (program === 'gh') return ghVerdict(args);
+  if (program === 'rsync') return 'own-text';
   // `command -v ssh` looks a program up; it runs nothing.
-  if (name === 'command' && (args[0] === '-v' || args[0] === '-V')) return 'data';
-  if (name === 'find') {
+  if (program === 'command' && (args[0] === '-v' || args[0] === '-V')) return 'data';
+  if (program === 'find') {
     return args.some((w) => w === '-exec' || w === '-execdir' || w === '-ok' || w === '-okdir') ? 'may-run' : 'data';
   }
   return 'may-run';
@@ -429,9 +549,10 @@ function verdict(cmd: SimpleCommand): Verdict | 'runs' {
 /** True when the Bash command runs ssh, scp or sftp, or could (see the file header). */
 export function isRemoteShellCommand(command: string): boolean {
   if (!isSshCommand(command)) return false;
-  const { commands, unreadable } = scan(command);
-  if (unreadable) return true;
-  return commands.some((cmd) => {
+  const p = new Parser(command);
+  list(p, false, 0);
+  if (p.unreadable) return true;
+  return p.commands.some((cmd) => {
     const v = verdict(cmd);
     if (v === 'own-text') return isSshCommand(cmd.raw) || cmd.heredocs.some((h) => isSshCommand(h));
     // The text names it (checked above) and this program could run it.

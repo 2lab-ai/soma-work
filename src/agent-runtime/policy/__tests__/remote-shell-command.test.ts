@@ -83,6 +83,29 @@ const RUNS = [
   "echo $'\\'' ; ssh host",
   'sudo --user git ssh host',
   'exec -a git ssh host',
+  // trinity R2 (fable): a `)` in a heredoc body or a comment does not close a substitution; nested backticks.
+  'echo "$(cat <<\'EOF\'\n)\nEOF\nssh host)"',
+  'echo "$(: # )\nssh host)"',
+  'echo "$(echo ok # )\nssh host\n)"',
+  'echo `echo \\`ssh host\\``',
+  // A data program's name on a path, or reached through PATH or an expansion, could be anything.
+  'ln -s /usr/bin/ssh ./cat && ./cat host',
+  'PATH=.:$PATH cat ssh',
+  "$(printf 'ssh host ')echo",
+  // Data programs told to run a program.
+  'rg --pre ssh pattern dir',
+  "man -P 'ssh host' ls",
+  "sort --compress-program='ssh host' big",
+  "ag --pager 'ssh host' x",
+  "git grep -nO'ssh host' x",
+  "git -cdiff.external='ssh host' diff --ext-diff",
+  // zsh's short `if`, and redirections around the program (trinity R1, astra).
+  'if [[ -n x ]] ssh host',
+  '>echo ssh host',
+  '2>/dev/null ssh host',
+  '> >(true) ssh echo hi',
+  'cat <<< ssh\nssh host',
+  "cat <<$'EOF'\ntext\nEOF\nssh host",
 ];
 
 const DATA = [
@@ -118,6 +141,14 @@ const DATA = [
   'grep ssh x # ssh in a comment',
   'if grep -q ssh x; then echo found; fi',
   'echo "$(date): ssh"',
+  // A commit message or PR body through a heredoc in `$(…)`, with an apostrophe in it (trinity R2, fable).
+  "git commit -m \"$(cat <<'EOF'\nfix: don't refuse ssh mentions\nEOF\n)\"",
+  "gh pr create --body \"$(cat <<'EOF'\nit's about ssh (and scp)\nEOF\n)\"",
+  'echo ssh > out.txt 2>&1',
+  'grep ssh x >> log.txt',
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
+  'echo "${HOME}/ssh"',
+  'cat <<< "ssh host"',
 ];
 
 /**
@@ -150,6 +181,12 @@ describe('isRemoteShellCommand', () => {
     for (const command of [...RUNS, ...DATA, ...CONSERVATIVE, 'ls -la', 'git push', 'echo hi', 's"s"h host']) {
       if (!isSshCommand(command)) expect(isRemoteShellCommand(command), command).toBe(false);
     }
+  });
+
+  it('refuses nesting too deep to read, without exhausting the stack', () => {
+    const deep = `echo ssh ${'$(('.repeat(20000)}1${'))'.repeat(20000)}`;
+    expect(isRemoteShellCommand(deep)).toBe(true);
+    expect(isRemoteShellCommand(`echo ssh ${'$('.repeat(20000)}true${')'.repeat(20000)}`)).toBe(true);
   });
 
   it('keeps every command the old check refused that runs ssh, scp or sftp', () => {
