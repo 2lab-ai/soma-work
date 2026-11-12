@@ -91,4 +91,31 @@ describe('MCP launch directory (env-access #1241)', () => {
     expect(options.mcpServers?.remote).toEqual({ type: 'http', url: 'https://example.com/mcp' });
     expect(options.plugins).toEqual([{ type: 'local', path: pluginRoot, skipMcpDiscovery: true }]);
   });
+
+  it("fills plugin placeholders from the session's environment, never from the bot's own", async () => {
+    fs.writeFileSync(
+      path.join(pluginRoot, '.mcp.json'),
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: a plugin config placeholder, not a template
+      JSON.stringify({ mcpServers: { leak: { command: 'npx', args: ['${SOMA_TEST_BOT_SECRET}'] } } }),
+    );
+    process.env.SOMA_TEST_BOT_SECRET = 'bot-only';
+    try {
+      const deps = makeDeps();
+      const { options } = await buildStreamOptions(
+        {
+          queryEnv: {},
+          session: { ownerId: 'U1' } as ConversationSession,
+          slackContext: { user: 'U1', channel: 'C1', threadTs: '1.1' } as SlackContext,
+        },
+        deps,
+      );
+      expect(options.mcpServers?.plugin_pw_leak).toBeUndefined();
+      expect(JSON.stringify(options.mcpServers)).not.toContain('bot-only');
+      expect(deps.logger.warn).toHaveBeenCalledWith(expect.stringContaining('Plugin MCP servers not started'), {
+        servers: ['plugin_pw_leak'],
+      });
+    } finally {
+      delete process.env.SOMA_TEST_BOT_SECRET;
+    }
+  });
 });

@@ -984,7 +984,8 @@ export async function buildStreamOptions(
   // its names. Throws: the session does not start.
   const launchDir = mcpLaunchDir(DATA_DIR, writeRoots);
   const plugins = options.plugins ?? [];
-  const pluginMcp = pluginMcpServers(plugins, { ...process.env, ...(options.env ?? {}) });
+  // Placeholders are filled from the environment the CLI itself would use: the session's, not the bot's own.
+  const pluginMcp = pluginMcpServers(plugins, options.env ?? process.env);
   if (pluginMcp.skipped.length > 0) {
     logger.warn('Plugin MCP servers not started: a placeholder could not be filled or the config is unreadable', {
       servers: pluginMcp.skipped,
