@@ -93,6 +93,45 @@ describe('resolveAutoskillContent — fallback order', () => {
   });
 });
 
+// Skills folded into using-zwriting keep resolving under their old names, so a
+// registered autoskill (a real user has `using-govuk`) does not silently stop firing.
+describe('resolveAutoskillContent — retired skill names', () => {
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.clearAllMocks());
+
+  it.each([
+    'using-govuk',
+    'using-eli5',
+    'using-ha-thinking',
+    'structurize',
+  ])('%s resolves to local:using-zwriting once the old folder is gone', (oldName) => {
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => LOCAL(String(p)) && String(p).includes('/using-zwriting/'));
+    vi.mocked(fs.readFileSync).mockReturnValue('ZWRITING BODY' as any);
+    const r = resolveAutoskillContent(oldName, 'U1');
+    expect(r).toEqual({
+      key: 'local:using-zwriting',
+      content: 'ZWRITING BODY',
+      file: expect.stringMatching(/\/local\/skills\/using-zwriting\/SKILL\.md$/),
+    });
+    expect(autoskillExists(oldName, 'U1')).toBe(true);
+  });
+
+  it("a user's own skill under a retired name still wins over the successor", () => {
+    vi.mocked(fs.existsSync).mockImplementation(
+      (p: any) => String(p).includes('/data/U1/skills/using-govuk/') || String(p).includes('/using-zwriting/'),
+    );
+    vi.mocked(fs.readFileSync).mockReturnValue('USER GOVUK' as any);
+    expect(resolveAutoskillContent('using-govuk', 'U1')?.key).toBe('user:using-govuk');
+  });
+
+  it('a name that is neither present nor retired still resolves to null', () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    vi.mocked(fs.readdirSync).mockReturnValue([] as any);
+    expect(resolveAutoskillContent('constructor', 'U1')).toBeNull();
+    expect(resolveAutoskillContent('ghost', 'U1')).toBeNull();
+  });
+});
+
 describe('listAvailableSkills', () => {
   beforeEach(() => vi.clearAllMocks());
 

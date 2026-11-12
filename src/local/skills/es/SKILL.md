@@ -70,7 +70,7 @@ Decision rule (apply top to bottom, first match wins):
 - **Same language as the conversation** — Korean session ⇒ Korean ES.
 - **No tool calls when run as one-shot fork** (Path B). When run manually as Path A you may use `git` / `gh` for discovery only.
 
-## HA discipline (binding from `using-ha-thinking`)
+## HA discipline (binding from `using-zwriting` — one artifact, one rung)
 
 A sentence at one mode must close without using terms from the mode below.
 
@@ -92,5 +92,5 @@ Violating this is the most common reason an `epic` ES degenerates into a 4-page 
 
 - **Path A entry (inside z pipeline)**: z phase3 `local:zcheck` → phase4 `local:ztrace` + approve → phase5 `local:es`. `es` runs **after** `zcheck` has passed at phase3, not before. The `local:zwork` exit → `local:es` direct path only applies when `es` is invoked outside the z pipeline (standalone `$es`).
 - **Path B entry**: `src/slack/pipeline/stream-executor.ts` `onSummaryTimerFire` → `SummaryService.execute` → forked one-shot using this skill's templates inlined in the prompt.
-- **Sister skills**: `using-ssot` (SSOT-TASK-TREE source of truth — every mode renders the tree result), `using-ha-thinking` (layer discipline), `using-epic-tasks` (planning-side Case A/B/C), `decision-gate` (switching-cost tiers).
+- **Sister skills**: `using-ssot` (SSOT-TASK-TREE source of truth — every mode renders the tree result), `using-zwriting` (layer discipline and plain writing), `using-epic-tasks` (planning-side Case A/B/C), `decision-gate` (switching-cost tiers).
 - **Legacy references** (kept, not deleted): `reference/executive-summary-template.md`, `reference/executive-summary-example.md`. These cover the previous fixed 8-section format and serve as the conceptual ancestor of the current `epic` template.

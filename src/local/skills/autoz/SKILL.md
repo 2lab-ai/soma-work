@@ -20,7 +20,7 @@ autoz
 ├── local:explore-unknowns      — pre-RED unknowns map (Autonomous Mode only)
 ├── Analysis layer (pipeline step 5 + step 15)
 │   ├── stv:trace               — code-based multi-tier behavior verification
-│   ├── local:structurize       — lossless structuring of the trace result
+│   ├── local:using-zwriting    — lossless structuring of the trace result (structure engine)
 │   └── local:html              — HTML artifact rendering
 │       ├── local:ui-ux (+ local:design / local:motion-design / local:apple-design)
 │       │                       — design engine; `openai` named reference
@@ -33,7 +33,7 @@ autoz
 │       ├── local:decision-gate       — switching-cost tier judgment
 │       │   ├── zworkflow:oracle-reviewer + subagent (opus) — 3-person majority review voters
 │       │   └── local:using-epic-tasks — Case A/B/C issue/epic routing
-│       │       └── local:using-ha-thinking — layer discipline for artifact bodies
+│       │       └── local:using-zwriting — layer discipline for artifact bodies
 │       ├── local:zwork               — implementation (RED → subagent-driven GREEN → PR)
 │       │   ├── stv:verify            — spec-compliance verification loop
 │       │   └── local:review-pr       — PR review pass
@@ -85,7 +85,7 @@ Runs after Explore, before RED (pipeline step 5); its terminal counterpart runs 
 
 1. **Derive the tier surface from the project.** Identify every tier the scenario actually crosses. A chain like `backoffice UI → model → backoffice API → DB → game API → model → front → user` is an example, not a fixed list (예시일 뿐, 고정된 목록이 아니다) — reason from the actual codebase; the real project may have more or fewer tier surfaces. Derive the chain by reading entry points and call paths, never by template.
 2. **Trace with `stv:trace`.** Verify the behavior across the derived tiers at callstack depth, entry point to side effect. For every data store touched, name where the data is actually stored (table / collection / key — derived from code and schema; "the DB" is not an answer) with a concrete example record. The example is **synthesized from the schema or taken from fixtures/redacted samples — never fetched from a live store and never published with live values** (PII, tokens, production data).
-3. **Structurize.** Run `local:structurize` on the trace result — the analysis must be a lossless hierarchy, not a narrative.
+3. **Structurize.** Run `local:using-zwriting` (its structure engine) on the trace result — the analysis must be a lossless hierarchy, not a narrative.
 4. **Problem-analysis artifact (HTML, artifact 1 of 2).** Render the structured analysis via `local:html` (design driven by the `ui-ux` skill with the `openai` reference): the tier-surface chain, traced callstacks, data-store locations with real examples, and the problem definition. Ship it to the thread before implementation starts.
 5. **Final ES report artifact (HTML, artifact 2 of 2)** — at the terminal report, whether solved or concluded unsolvable: render the full story starting high-level and descending into every low-level detail, embedding the initial problem analysis, the resolution (or why it cannot be resolved), and the QA checklist. Two artifacts total, always — problem analysis first, final ES report last.
 
@@ -114,7 +114,7 @@ Stop and report — never silently fail — only when:
 2. **Scope consult (trinity chain).** Align acceptance criteria per `ssot-task`. Save verdict/transcript reference.
 3. **Workspace.** Clone / locate working tree. Create branch.
 4. **Explore.** `local:explore-unknowns` Autonomous Mode per Rule 2 — unknowns map into the artifact trail (PR body `<details>`).
-5. **Analysis.** Analysis Step 1–4: derive tier surface → `stv:trace` → `local:structurize` → problem-analysis HTML artifact to the thread.
+5. **Analysis.** Analysis Step 1–4: derive tier surface → `stv:trace` → `local:using-zwriting` structure engine → problem-analysis HTML artifact to the thread.
 6. **RED.** Write RED test(s) from the unknowns map + analysis, tagged with `ssot-task` IDs. Run. Confirm RED.
 7. **GREEN.** Implement until GREEN. Re-run target tests + full suite + lint + typecheck.
 8. **Commit, push, open PR** — body carries scope notes, the SSOT-TASK-TREE (`ssot-subtask` layer collapsed in `<details>`), and the unknowns map (`<details>`).
@@ -144,7 +144,7 @@ The Skill Tree above shows structure; this table records the contracts that are 
 |---|---|
 | `local:using-ssot` | autoz binds every Hook (1·2·3·4). Tree shape, drift diff, handoff payload, completion mapping all live there. |
 | `local:explore-unknowns` | Autonomous Mode only (Rule 2). Interactive quadrant walk is forbidden inside autoz. |
-| `stv:trace` / `local:structurize` / `local:html` | Analysis Step engine — trace, structure, render. `local:html` applies the `ui-ux` skill (`openai` reference) as its design engine. |
+| `stv:trace` / `local:using-zwriting` / `local:html` | Analysis Step engine — trace, structure, render. `local:html` applies the `ui-ux` skill (`openai` reference) as its design engine. |
 | `local:z` | z phase0 reuses the SSOT-TASK-TREE autoz built — no rebuild. autoz never re-implements z phases. |
 | `local:zcheck` | Runs before approve; blocking findings must be fixed first. Its persuasion step ties findings to `ssot-task` IDs. |
 | `local:decision-gate` | z phase0 runs it for tier selection (tree shape is a tier signal). autoz itself never gates on user input. |

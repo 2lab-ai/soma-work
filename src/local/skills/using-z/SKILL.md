@@ -16,7 +16,7 @@ z 컨트롤러 계열 스킬의 **진입점 선택 가이드 + 세션 핸드오�
 | `ztrace` | 시나리오별 콜스택 설명 | `z` phase4 자동 |
 | `es` | 완료 공지 | `z` phase5 자동 |
 | `using-epic-tasks` | tier 받아 Case A/B/C 라우팅 (이슈·에픽·서브이슈 구조 규율) | `z` phase0/phase1 자동 |
-| `using-ha-thinking` | 각 산출물 본문의 층 규율 | using-epic-tasks에서 자동 참조 |
+| `using-zwriting` | 각 산출물 본문의 층 규율 (한 산출물 = 한 층) | using-epic-tasks에서 자동 참조 |
 | `decision-gate` | tier 판정. 유저 질문 vs 자율 판단 gate | `z` phase0 자동 |
 
 ## Decision Table
@@ -158,7 +158,7 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 3. **Handoff 예산 — 세션당 자동 1회**. 한 세션은 자동 handoff를 **최대 1회** 발행할 수 있다. 단, handoff로 시작된 **새 세션은 자신의 수명주기에서 다시 1회**를 발행할 수 있다 (phase2 구현 세션이 phase5에서 Handoff #2를 발행하는 것은 이 예산 안). 금지되는 것은: 한 세션 안에서 두 번 이상 발행, 또는 `work-complete` 수신 세션이 다음 서브이슈를 자동 체인으로 발행하는 것.
 4. `<z-handoff>` sentinel 없는 prompt는 직접 유저 요청이므로 phase0부터 정상 진행.
 5. `forceWorkflow: "z-plan-to-work"` (Handoff #1) 또는 `"z-epic-update"` (Handoff #2) 사용. 이 workflow 타입들은 host-level로 구현되어 — host가 sentinel 존재/유효성/type 매핑을 검증하고 safe-stop (누락/malformed/mismatch 시). 기존 `"default"` 값은 legacy path로만 유효하며 결정적 새 세션 진입 보장이 없음.
-6. payload의 `<z-handoff>` 블록 안에는 **구현 토큰(파일 경로, 함수명, ENV) 금지** — `using-ha-thinking` 규율. Summary / Plan / SSOT-TASK-TREE 노드 라벨은 behavior 레벨. 예외 두 곳: `## SSOT-LIST`(유저 raw text 인용 — 원문 그대로), `## Analysis Summary` + `## RED Mapping`(콜스택 기반 carriage — 이 두 섹션 안에서만 구현 토큰 허용).
+6. payload의 `<z-handoff>` 블록 안에는 **구현 토큰(파일 경로, 함수명, ENV) 금지** — `using-zwriting` 층 규율. Summary / Plan / SSOT-TASK-TREE 노드 라벨은 behavior 레벨. 예외 두 곳: `## SSOT-LIST`(유저 raw text 인용 — 원문 그대로), `## Analysis Summary` + `## RED Mapping`(콜스택 기반 carriage — 이 두 섹션 안에서만 구현 토큰 허용).
 
 ### Enforcement Status
 
