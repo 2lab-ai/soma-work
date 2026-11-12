@@ -191,9 +191,18 @@ const RUNS = [
   'ln -s /usr/bin/ssh x',
   'cp /usr/bin/ssh ./cat',
   'printf %s ssh',
+  // review-of-legends (8a643f890): comments and the commit-message substitution must not hide text from the veto.
+  "echo \"$(cat <<'EOF'\nEOF\nrg --{pre=ssh,hidden} pattern host\ncat <<'EOF'\nEOF\n)\"",
+  "# '\nrg --{pre=ssh,hidden} pattern host\n# '",
+  "echo ssh # '\nrg --{pre=ssh,hidden} x /etc/hosts # '",
+  "echo ssh # <<'EOF'\nrg --{pre=ssh,hidden} . /etc/hosts\ncat <<'EOF'\nEOF",
+  "# <<'true'\necho x > target-host\nrg --{pre=ssh,hidden} . target-host\ntrue",
+  // ack evaluates `--output` as Perl: ack is not a data command.
+  "echo x | ack --output='@{[system(q(ssh prod-host))]}' x",
 ];
 
 const DATA = [
+  "grep ssh x # it's a comment",
   "grep -rn 'ssh.*$' src",
   "rg 'ssh [a-z]+' src",
   "cat > notes.md <<-'EOF'\n\tssh $(date) `x` \\ * ? {a,b}\n\tEOF",
@@ -296,6 +305,8 @@ describe('isRemoteShellCommand', () => {
     const deep = `echo ssh ${'$(('.repeat(20000)}1${'))'.repeat(20000)}`;
     expect(isRemoteShellCommand(deep)).toBe(true);
     expect(isRemoteShellCommand(`echo ssh ${'$('.repeat(20000)}true${')'.repeat(20000)}`)).toBe(true);
+    // Literal nesting reaches the parser itself (review-of-legends P2).
+    expect(isRemoteShellCommand(`echo ssh; ${'( '.repeat(20000)}true${' )'.repeat(20000)}`)).toBe(true);
   });
 
   it('keeps every command the old check refused that runs ssh, scp or sftp', () => {

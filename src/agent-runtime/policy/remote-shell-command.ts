@@ -49,7 +49,6 @@ const DATA_COMMANDS = new Set([
   'fgrep',
   'rg',
   'ag',
-  'ack',
   'echo',
   'cat',
   'head',
@@ -105,7 +104,6 @@ const DATA_COMMANDS = new Set([
 const EXEC_OPTIONS: Record<string, { long: readonly string[]; short: string }> = {
   rg: { long: ['--pre', '--hostname-bin'], short: '' },
   ag: { long: ['--pager'], short: '' },
-  ack: { long: ['--pager'], short: '' },
   man: { long: ['--pager', '--html'], short: 'PH' },
   sort: { long: ['--compress-program'], short: '' },
   // `printf -v PATH …` sets a variable, PATH included, which changes what every bare name runs.
@@ -669,12 +667,32 @@ function shellChanges(src: string): boolean {
       if (c === '$') {
         const m = CAT_HEREDOC.exec(src.slice(i));
         if (!m) return true;
-        const close = src.indexOf(`\n${m[1]}\n)`, i + m[0].length - 1);
-        if (close < 0) return true;
-        i = close + m[1].length + 2;
+        // The body ends at the first line that is the delimiter, and the substitution must close right there.
+        const tabs = m[0].includes('<<-');
+        let at = i + m[0].length;
+        let closed = -1;
+        while (at <= src.length) {
+          const end = src.indexOf('\n', at);
+          const line = src.slice(at, end < 0 ? src.length : end);
+          if ((tabs ? line.replace(/^\t+/, '') : line) === m[1]) {
+            closed = end;
+            break;
+          }
+          if (end < 0) break;
+          at = end + 1;
+        }
+        if (closed < 0 || src[closed + 1] !== ')') return true;
+        i = closed + 1;
         continue;
       }
       if (c === '`' || c === '\\') return true;
+      continue;
+    }
+    // A comment runs to the end of the line: its quotes and `<<` mean nothing. `#` starts one only at a word start.
+    if (c === '#' && (i === 0 || /[\s;&|()<>]/.test(src[i - 1]))) {
+      const nl = src.indexOf('\n', i);
+      if (nl < 0) break;
+      i = nl - 1;
       continue;
     }
     if (c === "'" || c === '"') {
