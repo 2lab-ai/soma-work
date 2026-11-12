@@ -336,3 +336,21 @@ describe('review of the bare title (PR #1205)', () => {
     expect(extractNextActions(md)).toEqual([]);
   });
 });
+
+describe('review of the bare title, round 2 (PR #1205)', () => {
+  it('a reworded ⚠️ title is a follow-up too: a title after it never takes over (all three P2)', () => {
+    for (const [warn, sub] of [
+      ['## ⚠️ 사용자 조치 필요', '### 다음'],
+      ['**⚠️ 사용자 조치 필요**', '## 다음'],
+      ['## ⚠️ User follow-up required (1)', '### 다음'],
+    ]) {
+      const md = ['## 다음 행동', FENCE, '1193 진행', FENCE, warn, sub, FENCE, 'gh pr merge 830', FENCE].join('\n');
+      expect(extractNextActions(md)).toEqual([{ label: '', command: '1193 진행' }]);
+    }
+  });
+
+  it('a plain "Follow-up required" line earlier in the answer does not hide the steps (fable P3)', () => {
+    const md = ['Follow-up required', '', '## Next Actions', FENCE, 'a', FENCE].join('\n');
+    expect(extractNextActions(md)).toEqual([{ label: '', command: 'a' }]);
+  });
+});

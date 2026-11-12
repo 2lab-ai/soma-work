@@ -197,14 +197,19 @@ function sectionMarks(lines: string[]): Mark[] {
     const em = atx ? null : emphasisLine(line);
     const words = titleWords(atx ? atx.text : (em ?? line));
     if (FOLLOW_UP_TITLE.test(words)) {
-      marks.push({ line: i, level: HARD_END, next: false, followUp: true });
+      // A heading or bold title, or a line that carries ⚠️: the follow-up section. A bare plain line is only an end.
+      const followUp = !!atx || em !== null || line.includes('⚠');
+      marks.push(
+        followUp ? { line: i, level: HARD_END, next: false, followUp } : { line: i, level: HARD_END, next: false },
+      );
       continue;
     }
     const next = TITLE.test(words) || (!!atx && !atx.text.startsWith('⚠') && BARE_TITLE.test(words));
     // The ⚠️ mark is reserved for the unfinished-work signal: a heading or bold title that starts with it, however
     // worded, ends the section too (trinity R2, fable P2).
+    // It opens the follow-up section as well: no title after it is the answer's (PR #1205 review, all three P2).
     if (!next && (atx || em !== null) && (atx ? atx.text : (em as string)).startsWith('⚠')) {
-      marks.push({ line: i, level: HARD_END, next: false });
+      marks.push({ line: i, level: HARD_END, next: false, followUp: true });
       continue;
     }
     if (atx) marks.push({ line: i, level: atx.level, next });
