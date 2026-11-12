@@ -124,6 +124,11 @@ const RUNS = [
   // trinity R8 (astra): a run-time `printf -v PATH` makes a bare data name run anything.
   'ln -s /usr/bin/ssh ./cat; flag=-v; printf "$flag" PATH %s .; cat host',
   'printf -vPATH %s .; cat ssh',
+  // trinity R9 (fable, P2): an assigning expansion changes PATH too.
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
+  'ln -s /usr/bin/ssh ./cat; : ${PATH::=.}; cat host',
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
+  'echo ${PATH:=.} >/dev/null; cat ssh',
   // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
   ': ${HOME::=--pre=ssh}; rg x $HOME',
   // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template

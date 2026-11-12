@@ -251,7 +251,10 @@ function dollar(p: Parser, depth: number): string {
       p.i = src.length;
       return '';
     }
-    scanText(p, src.slice(open + 1, j), depth + 1, true);
+    const inner = src.slice(open + 1, j);
+    // `${PATH:=.}`, `${PATH::=.}` (zsh), `${x=v}` assign: PATH among them changes what every bare name runs.
+    if (/^[A-Za-z_][A-Za-z0-9_]*:{0,2}=/.test(inner)) p.unreadable = true;
+    scanText(p, inner, depth + 1, true);
     p.i = j;
     return EXPANDED;
   }
