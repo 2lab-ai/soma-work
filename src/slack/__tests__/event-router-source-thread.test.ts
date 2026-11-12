@@ -357,11 +357,40 @@ describe('EventRouter — source thread mention with files (file_share path)', (
     expect(mockMessageHandler).not.toHaveBeenCalled();
   });
 
-  it('a `/z` command with files in a source thread runs as a command, not an offer', async () => {
-    await messageHandler()({ event: fileMention('<@B123> /z persona'), say: vi.fn() });
+  it('a files-only mention whose app_mention (files missing) came first is still offered when file_share follows', async () => {
+    const say = vi.fn();
+    await getAppMentionHandler(mockApp)({
+      event: { user: 'U_Z', channel: 'C123', ts: '200.300', text: '<@B123>', thread_ts: '100.200' },
+      say,
+    });
+    expect(offerNewTask).not.toHaveBeenCalled(); // nothing to offer yet: no text, files not in the event
+    await messageHandler()({ event: fileMention('<@B123>'), say });
 
-    expect(offerNewTask).not.toHaveBeenCalled();
-    expect(mockMessageHandler).toHaveBeenCalledWith(expect.objectContaining({ text: '/z persona' }), expect.anything());
+    expect(offerNewTask).toHaveBeenCalledTimes(1);
+    expect(offerNewTask).toHaveBeenCalledWith(expect.objectContaining({ text: '', fileCount: 1 }));
+    expect(mockMessageHandler).not.toHaveBeenCalled();
+    // One status card; the second delivery adds only the DM line.
+    const posted = say.mock.calls.map((c) => c[0].text);
+    expect(posted.filter((t: string) => t.includes('앞 작업'))).toHaveLength(1);
+    expect(posted.join('\n')).toContain('DM');
+  });
+
+  it('a DM that failed on the first delivery is tried again on the second', async () => {
+    offerNewTask.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const say = vi.fn();
+    await getAppMentionHandler(mockApp)({
+      event: { user: 'U_Z', channel: 'C123', ts: '200.300', text: '<@B123> 이 로그 봐줘', thread_ts: '100.200' },
+      say,
+    });
+    await messageHandler()({ event: fileMention('<@B123> 이 로그 봐줘'), say });
+    expect(offerNewTask).toHaveBeenCalledTimes(2);
+  });
+
+  it('a `/z` command with files in a source thread is offered like any instruction (never run on the source key)', async () => {
+    await messageHandler()({ event: fileMention('<@B123> /z new 이 로그 봐줘'), say: vi.fn() });
+
+    expect(mockMessageHandler).not.toHaveBeenCalled();
+    expect(offerNewTask).toHaveBeenCalledWith(expect.objectContaining({ text: '/z new 이 로그 봐줘', fileCount: 1 }));
   });
 
   it('a file mention in a thread with no linked work still starts a first mention as before', async () => {

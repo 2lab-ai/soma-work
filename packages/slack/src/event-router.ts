@@ -1390,12 +1390,11 @@ export class EventRouter {
     const botId = await this.deps.slackApi.getBotUserId();
     if (botId && text.includes(`<@${botId}>`)) {
       // SSOT 2026-11-12 — in a source thread this is an instruction like any other mention there: the same DM
-      // confirmation, never a direct start (app_mention defers a mention with files to this path). A `/z …` command
-      // runs as a command, as it does on the app_mention path (whose `/z` gate runs before this guard).
+      // confirmation, never a direct start (app_mention defers a mention with files to this path). That includes
+      // `/z …` with files: it runs, if approved, in the new work thread — never on the source thread's key.
       const instruction = text.replace(new RegExp(`<@${botId}>`, 'g'), '').trim();
       if (
         threadTs &&
-        stripZPrefix(instruction) === null &&
         (await this.answerSourceThreadMention(
           {
             channel,
@@ -1650,8 +1649,11 @@ export class EventRouter {
     this.deps.claudeHandler.setExpiryCallbacks(callbacks);
   }
 
-  /** Source-thread mentions already answered (`channel:ts` → when), so a twice-delivered message is answered once. */
-  private readonly answeredSourceMentions = new Map<string, number>();
+  /**
+   * Source-thread mentions already answered (`channel:ts`): whether the status card went and whether the offer was
+   * sent — a twice-delivered message gets one card and one offer.
+   */
+  private readonly answeredSourceMentions = new Map<string, { at: number; carded: boolean; offered: boolean }>();
 
   /**
    * A mention in a thread with no session of its own whose earlier mention already moved to its own work
@@ -1666,19 +1668,23 @@ export class EventRouter {
     if (this.deps.claudeHandler.getSession(mention.channel, mention.threadTs)) return false;
     const linkedSessions = this.deps.claudeHandler.findSessionsBySourceThread(mention.channel, mention.threadTs);
     if (linkedSessions.length === 0) return false;
-    // Slack can deliver one message as both `app_mention` (its files missing) and `file_share`: answer it once.
+    // Slack can deliver one message as both `app_mention` (its files missing) and `file_share`. The status card
+    // goes once; the offer goes once it is sent — a first delivery that had nothing to offer (a files-only mention
+    // whose files were missing) or whose DM failed leaves the offer to the second delivery.
     const key = `${mention.channel}:${mention.ts}`;
     const now = Date.now();
-    for (const [k, at] of this.answeredSourceMentions) {
-      if (now - at > SOURCE_MENTION_DEDUP_MS) this.answeredSourceMentions.delete(k);
+    for (const [k, seen] of this.answeredSourceMentions) {
+      if (now - seen.at > SOURCE_MENTION_DEDUP_MS) this.answeredSourceMentions.delete(k);
     }
-    if (this.answeredSourceMentions.has(key)) return true;
-    this.answeredSourceMentions.set(key, now);
+    const seen = this.answeredSourceMentions.get(key) ?? { at: now, carded: false, offered: false };
+    this.answeredSourceMentions.set(key, seen);
+    if (seen.offered) return true;
 
     let offered = false;
     const instruction = mention.text.trim();
     const fileCount = mention.fileCount ?? 0;
     if ((instruction || fileCount > 0) && mention.user && this.deps.offerSourceThreadNewTask) {
+      seen.offered = true; // claimed before the await: a concurrent second delivery does not offer again
       try {
         offered = await this.deps.offerSourceThreadNewTask({
           channel: mention.channel,
@@ -1696,14 +1702,20 @@ export class EventRouter {
           error: (error as Error)?.message,
         });
       }
+      seen.offered = offered; // a failed DM may be tried again by the second delivery
     }
-    await this.respondWithLinkedSessionStatus(
-      mention.channel,
-      mention.threadTs,
-      linkedSessions,
-      say,
-      offered ? `📨 <@${mention.user}> 님, 이 지시를 새 작업으로 진행할지 DM으로 물었습니다.` : undefined,
-    );
+    const note = offered ? `📨 <@${mention.user}> 님, 이 지시를 새 작업으로 진행할지 DM으로 물었습니다.` : undefined;
+    if (!seen.carded) {
+      seen.carded = true;
+      await this.respondWithLinkedSessionStatus(mention.channel, mention.threadTs, linkedSessions, say, note);
+    } else if (note) {
+      // The card went with the first delivery; this one only completed the offer.
+      try {
+        await say({ text: note, thread_ts: mention.threadTs });
+      } catch (error) {
+        this.logger.warn('Source thread new-task note failed', { error: (error as Error)?.message });
+      }
+    }
     return true;
   }
 
