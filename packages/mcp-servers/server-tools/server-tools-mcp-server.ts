@@ -21,6 +21,7 @@ import {
   prNumber,
   prState,
 } from './env-github.js';
+import { defaultLoginFetch, LoginError, type LoginFetch, login, loginSpec } from './env-login.js';
 import { redactLogSecrets } from './redact-logs.js';
 
 const configLogger = new StderrLogger('server-tools:config');
@@ -82,6 +83,8 @@ interface ServerConfig {
   databases?: Record<string, DatabaseConfig>;
   /** The environment's GitHub token and what it may approve and merge (`gh_pr`). */
   github?: EnvGithubConfig;
+  /** The environment's web app accounts (`login`, WU3b): url, body (its password a `$secret`), where the session is. */
+  web?: { logins?: Record<string, unknown> };
 }
 
 type ServerToolsConfig = Record<string, ServerConfig>;
@@ -795,6 +798,69 @@ export async function handleGhPr(
   }
 }
 
+// ── login: an environment user's web session (env-access WU3b, #1211) ──
+
+/**
+ * Log in to the environment's web app as one of its accounts and return the session — never the password. Runs for
+ * the person the bot names (`SOMA_REQUESTER`) and is written to the audit ledger before and after, without the
+ * session. `fetchImpl` is for tests.
+ */
+export async function handleLogin(args: Record<string, unknown>, fetchImpl: LoginFetch = defaultLoginFetch) {
+  const server = args.server;
+  const account = args.account;
+  const config = loadConfig();
+  if (typeof server !== 'string' || !Object.keys(config).includes(server)) throw new Error(`Unknown server: ${server}`);
+  if (typeof account !== 'string' || account === '') throw new Error('account is required');
+  const logins = config[server].web?.logins;
+  if (!logins || typeof logins !== 'object') throw new Error(`Server ${server} has no web logins`);
+  if (!Object.keys(logins).includes(account)) throw new Error(`Server ${server} has no login named ${account}`);
+  const env = config[server];
+  try {
+    const spec = loginSpec(logins[account], account);
+    const requester = process.env.SOMA_REQUESTER;
+    if (!requester) throw new LoginError('not logged in: the session has no requester to record');
+    const audit = {
+      server,
+      ...(env.envUser ? { envUser: env.envUser } : {}),
+      requester,
+      tool: 'login',
+      action: 'login',
+    };
+    const detail = { account, host: new URL(spec.url).host };
+    try {
+      appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'intent', detail });
+    } catch (err) {
+      throw new LoginError(`not logged in: ${(err as Error).message}`);
+    }
+    let session: Awaited<ReturnType<typeof login>>;
+    try {
+      session = await login(fetchImpl, spec);
+    } catch (err) {
+      const message = err instanceof LoginError ? err.message : `login failed on ${server}`;
+      try {
+        appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'failed', detail: { ...detail, error: message } });
+      } catch (auditErr) {
+        throw new LoginError(
+          `${message}; the audit ledger could not record the failure (${(auditErr as Error).message})`,
+        );
+      }
+      throw new LoginError(message);
+    }
+    try {
+      appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'done', detail: { ...detail, kind: session.kind } });
+    } catch (err) {
+      throw new LoginError(
+        `logged in to ${detail.host} as ${account}, but the audit ledger could not record it (${(err as Error).message}); the session was not handed out`,
+      );
+    }
+    return { content: [{ type: 'text' as const, text: JSON.stringify({ server, account, ...session }) }] };
+  } catch (err) {
+    // Only messages this module wrote: never the password, never a response body.
+    if (err instanceof LoginError) throw new Error(err.message);
+    throw new Error(`login failed on ${server}`);
+  }
+}
+
 const SSH_EXEC_MAX_COMMAND_CHARS = 8192;
 const SSH_EXEC_TIMEOUT_NOTE =
   'Only the local ssh client was stopped: the remote command may still be running and its outcome is unknown. ' +
@@ -1217,6 +1283,22 @@ class ServerToolsMCPServer extends BaseMcpServer {
         },
       },
       {
+        name: 'login',
+        description:
+          "Log in to a server's environment web app as one of its configured accounts (web.logins) and get the " +
+          'session: a bearer token, or a session cookie. The account password stays in the secret store and is ' +
+          'never shown. Audited. Use the session for the API calls the task needs. Admins, or a user the ' +
+          "environment's admin approved.",
+        inputSchema: {
+          type: 'object',
+          properties: {
+            server: { type: 'string', description: 'Server name from config (see list) whose web logins to use.' },
+            account: { type: 'string', description: "One of that server's web.logins names." },
+          },
+          required: ['server', 'account'],
+        },
+      },
+      {
         name: 'gh_pr',
         description:
           "Act on one GitHub PR as a server's environment user, with that environment's own token (no model reads it). " +
@@ -1363,6 +1445,8 @@ class ServerToolsMCPServer extends BaseMcpServer {
         return handleLogs(args);
       case 'ssh_exec':
         return handleSshExec(args);
+      case 'login':
+        return await handleLogin(args);
       case 'gh_pr':
         return await handleGhPr(args);
       case 'db_query':

@@ -329,7 +329,50 @@ offers **accept (this thread) · reject · this skill always · `<environment>` 
 every skill of the environment and every server-tools tool on its servers (`ssh_exec` and `gh_pr` included), kept in
 `DATA_DIR/env-skill-grants.json` `perEnvironment` (env-access WU4, #1212). A server-tools call that names one of
 the environment's servers runs for a non-admin only on such a grant, or on a grant of one of its skills. On a server
-that is no environment's, `ssh_exec` and `gh_pr` stay admin-only.
+that is no environment's, `ssh_exec`, `gh_pr` and `login` stay admin-only.
+
+### Environment web logins (`login`, env-access WU3b, #1211)
+
+`web.logins` names the environment's own web app accounts. `login` posts one of them and hands back only the session —
+the password is a `{"$secret": …}` reference that server-tools resolves outside every model sandbox, and no model sees
+it.
+
+```jsonc
+{
+  "server-tools": {
+    "dev2": {
+      "envUser": "env:acme-dev2",
+      "web": {
+        "logins": {
+          "player": {
+            "url": "https://app.dev2.example/api/login",
+            "body": { "username": "qa-player", "password": { "$secret": "dev2-player" } },
+            "token": "json:data.accessToken"
+          },
+          "backoffice": {
+            "url": "https://bo.dev2.example/login",
+            "body": { "id": "qa-admin", "pw": { "$secret": "dev2-backoffice" } },
+            "token": "cookie:SESSION"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `url` | where the account is posted, as JSON. `https` only — the password travels in the body |
+| `body` | the JSON object posted; any value may be a `$secret` reference |
+| `token` | where the session comes back: `json:<dot.path>` (a non-empty string in the JSON answer, returned as `kind: "bearer"`) or `cookie:<name>` (a cookie the answer sets, returned as `kind: "cookie"`) |
+
+`login` answers `{server, account, kind, token}` (and `cookie` for a cookie session). A refused login says only the
+host and the status — never the answer's body, which may echo what was sent. No redirect is followed. Each login
+writes an intent line to `DATA_DIR/env-audit/env-audit.jsonl` and a `done` (with `kind`) or `failed` line after,
+without the session or the password; if the intent cannot be written nothing is posted, and if the `done` line cannot
+be written the session is not handed out. A session that names no Slack user is refused. On an environment's server a
+non-admin needs that environment's grant (above); elsewhere `login` is admin-only.
 
 ## Where the substitution happens in code
 
