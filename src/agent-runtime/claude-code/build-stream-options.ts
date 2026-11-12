@@ -757,13 +757,6 @@ export async function buildStreamOptions(
       ];
       sandboxConfig.enableWeakerNetworkIsolation = adminProfile.enableWeakerNetworkIsolation;
     }
-    // Plan mode writes its plan file with the native Write tool, by default
-    // to ~/.claude/plans — outside the write boundary of a non-admin. Keep
-    // the plans inside the working directory (the SDK requires a path within
-    // the project root).
-    if (contextUser && !isAdminUser(contextUser)) {
-      options.settings = { plansDirectory: '.claude/plans' };
-    }
     const networkDisabled = contextUser ? userSettingsStore.getUserNetworkDisabled(contextUser) : false;
     if (adminProfile) {
       // Every domain is allowed by the rule added to `settings.permissions.allow` below.
@@ -835,6 +828,11 @@ export async function buildStreamOptions(
     const allow = [...(base.permissions?.allow ?? []), ...(adminProfile?.allowRules ?? [])];
     options.settings = {
       ...base,
+      // Plan mode writes its plan file with the native Write tool, by default under the CLI's config
+      // directory — outside a non-admin's write boundary, and inside the write-protected deployment
+      // when the deployment holds that directory. Every session keeps its plans in the working
+      // directory (the SDK requires a path within the project root).
+      ...(contextUser ? { plansDirectory: '.claude/plans' } : {}),
       permissions: { ...(base.permissions ?? {}), deny, ...(allow.length > 0 ? { allow } : {}) },
     };
   }

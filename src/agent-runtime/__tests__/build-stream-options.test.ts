@@ -750,6 +750,15 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
     expect(settings.permissions?.allow).toContain('WebFetch(domain:*)');
   });
 
+  it('an admin keeps plan files in the working directory, sandbox on or off (the deployment is write-protected)', async () => {
+    await asAdmin();
+    process.env.SOMA_SANDBOX_OFF_ALLOWED = 'true';
+    for (const off of [false, true]) {
+      const { options } = await withSettings(off, () => build(ADMIN));
+      expect((options.settings as { plansDirectory?: string }).plansDirectory, `off=${off}`).toBe('.claude/plans');
+    }
+  });
+
   it('a non-admin keeps the narrow profile', async () => {
     const { options } = await withSettings(false, () => build(SAFE_USER));
     const sandbox = options.sandbox as {
