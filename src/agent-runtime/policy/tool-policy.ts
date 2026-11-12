@@ -28,7 +28,7 @@
  * SDK-agnostic: this file imports only the pure guard primitives (no SDK type).
  */
 
-import { bypassBashPermissionDecision, isCrossUserAccess, isSshCommand } from '../../dangerous-command-filter';
+import { bypassBashPermissionDecision, isCrossUserAccess } from '../../dangerous-command-filter';
 import { NATIVE_BYPASS_TOOLS } from '../../hooks/bypass-permission-guard';
 import { handlePrIssuePrecondition } from '../../hooks/pr-issue-guard';
 import {
@@ -41,6 +41,7 @@ import type { HandoffContext } from '../../types';
 import { checkDevopsSecretCommand, checkDevopsSecretGlob, checkDevopsSecretPath } from './devops-secret-guard';
 import { NATIVE_WRITE_TOOLS, type NativeWriteCheck } from './native-write-boundary';
 import type { PermissionMode } from './permission-mode';
+import { isRemoteShellCommand } from './remote-shell-command';
 
 const PR_CREATE_MCP_TOOL = 'mcp__github__create_pull_request';
 
@@ -314,7 +315,7 @@ export function evaluateToolPolicy(
 
   // 2. SSH ban (Bash) — every user, admins too (env-access WU2, #1210): no model runs ssh or reads a
   //    key; host commands go through server-tools' `ssh_exec`.
-  if (toolName === 'Bash' && isSshCommand(command)) {
+  if (toolName === 'Bash' && isRemoteShellCommand(command)) {
     return { decision: 'deny', reason: 'ssh-ban: ssh command', denyMessage: SSH_BAN_DENY_MESSAGE };
   }
 

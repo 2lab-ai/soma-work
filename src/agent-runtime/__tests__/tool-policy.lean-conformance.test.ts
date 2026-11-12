@@ -44,7 +44,9 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('../../dangerous-command-filter', () => ({
   bypassBashPermissionDecision: vi.fn(),
   isCrossUserAccess: vi.fn(),
-  isSshCommand: vi.fn(),
+}));
+vi.mock('../policy/remote-shell-command', () => ({
+  isRemoteShellCommand: vi.fn(),
 }));
 vi.mock('../../sensitive-path-filter', () => ({
   checkBashSensitivePaths: vi.fn(),
@@ -64,7 +66,6 @@ import {
   type BypassBashPermissionResult,
   bypassBashPermissionDecision,
   isCrossUserAccess,
-  isSshCommand,
 } from '../../dangerous-command-filter';
 import { handlePrIssuePrecondition, type PrIssueGuardResult } from '../../hooks/pr-issue-guard';
 import {
@@ -77,6 +78,7 @@ import type { HandoffContext } from '../../types';
 import { checkDevopsSecretCommand, checkDevopsSecretGlob, checkDevopsSecretPath } from '../policy/devops-secret-guard';
 import { NATIVE_WRITE_TOOLS } from '../policy/native-write-boundary';
 import type { PermissionMode } from '../policy/permission-mode';
+import { isRemoteShellCommand } from '../policy/remote-shell-command';
 import {
   ENV_GATED_TOOLS,
   evaluateToolPolicy,
@@ -234,7 +236,7 @@ function mockDevopsChecks(expected: DevopsCall | null, value: string | null): vo
 }
 
 function mockPrimitives(prims: Primitives): void {
-  vi.mocked(isSshCommand).mockReturnValue(prims.ssh);
+  vi.mocked(isRemoteShellCommand).mockReturnValue(prims.ssh);
   vi.mocked(isCrossUserAccess).mockReturnValue(prims.crossUser);
   vi.mocked(handlePrIssuePrecondition).mockReturnValue(prims.prIssue as PrIssueGuardResult);
   vi.mocked(bypassBashPermissionDecision).mockReturnValue(prims.bash);

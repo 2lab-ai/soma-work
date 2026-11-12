@@ -22,7 +22,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { describe, expect, it } from 'vitest';
-import { bypassBashPermissionDecision, isCrossUserAccess, isSshCommand } from '../../dangerous-command-filter';
+import { bypassBashPermissionDecision, isCrossUserAccess } from '../../dangerous-command-filter';
 import { NATIVE_BYPASS_TOOLS } from '../../hooks/bypass-permission-guard';
 import { handlePrIssuePrecondition, type PrIssueGuardInput } from '../../hooks/pr-issue-guard';
 import { checkBashSensitivePaths, checkSensitiveGlob, checkSensitivePath } from '../../sensitive-path-filter';
@@ -30,6 +30,7 @@ import type { HandoffContext } from '../../types';
 import { checkDevopsSecretCommand, checkDevopsSecretGlob, checkDevopsSecretPath } from '../policy/devops-secret-guard';
 import { NATIVE_WRITE_TOOLS } from '../policy/native-write-boundary';
 import type { PermissionMode } from '../policy/permission-mode';
+import { isRemoteShellCommand } from '../policy/remote-shell-command';
 import {
   evaluateToolPolicy,
   INCIDENT_TOOL_POLICY_MATCHERS,
@@ -114,8 +115,9 @@ const constants = vectors.cases.filter((c) => c.kind === 'constants') as Constan
 
 function call(pre: PrimitiveCall): unknown {
   switch (pre.fn) {
+    // The vectors name the primitive `isSshCommand`; policy step 2 asks `isRemoteShellCommand`.
     case 'isSshCommand':
-      return isSshCommand(pre.args[0]);
+      return isRemoteShellCommand(pre.args[0]);
     case 'checkBashSensitivePaths':
       return checkBashSensitivePaths(pre.args[0]);
     case 'checkSensitivePath':
