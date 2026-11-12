@@ -3,7 +3,7 @@
  * (env-access WU2, #1210 — `.prd/25-env-access-architecture.md` §0, §1).
  *
  * Admins run in a sandbox too, a wide one: every network domain, gh's TLS check through trustd,
- * local servers, and the package caches writable. What no model writes — admin or not, sandbox on or
+ * local servers, and the temp directory writable (package caches go to the user's temp directory). What no model writes — admin or not, sandbox on or
  * off — is the deployment (its code, configuration and data: rewriting them runs the model's code as
  * the bot, outside any sandbox) and the files that something outside the sandbox later runs or trusts
  * (launch agents, shell startup files, ssh's authorized keys, git and CLI settings).
@@ -20,26 +20,6 @@ import { DEV_DOMAIN_ALLOWLIST } from './dev-domain-allowlist';
  */
 export const ADMIN_ALL_DOMAINS_RULE = 'WebFetch(domain:*)';
 
-/**
- * Package caches under the home directory that installs and builds write. Never a directory on the
- * PATH (`~/.bun/bin`, `~/.local/bin`, `~/.cargo/bin`): a binary planted there would run outside the
- * sandbox later.
- */
-const ADMIN_CACHE_DIRS = [
-  '.npm',
-  '.cache',
-  'Library/Caches',
-  '.bun/install/cache',
-  '.cargo/registry',
-  '.cargo/git',
-  'go/pkg',
-  '.gradle/caches',
-  '.m2/repository',
-  'Library/pnpm/store',
-  '.local/share/pnpm/store',
-  '.yarn/berry/cache',
-];
-
 export interface AdminSandboxProfile {
   /** Added to the sandbox `filesystem.allowWrite`. */
   allowWrite: string[];
@@ -50,15 +30,38 @@ export interface AdminSandboxProfile {
   allowRules: string[];
 }
 
+/**
+ * No home directory is writable, caches included: the bot runs code from them outside every sandbox
+ * (the npm cache holds the MCP servers it starts with `npx -y`). Package caches go to the user's own
+ * temp directory instead ({@link sandboxCacheEnv}).
+ */
 export function adminSandboxProfile(paths: { home: string; tmpdir: string }): AdminSandboxProfile {
   return {
-    allowWrite: [paths.tmpdir, ...ADMIN_CACHE_DIRS.map((dir) => path.join(paths.home, dir))],
+    allowWrite: [paths.tmpdir],
     network: {
       allowedDomains: [...new Set([...DEV_DOMAIN_ALLOWLIST, 'localhost', '127.0.0.1'])],
       allowLocalBinding: true,
     },
     enableWeakerNetworkIsolation: true,
     allowRules: [ADMIN_ALL_DOMAINS_RULE],
+  };
+}
+
+/**
+ * Environment for a sandboxed session: every package cache in the user's own temp directory, where the
+ * sandbox lets it write and from where nothing outside the sandbox runs code.
+ */
+export function sandboxCacheEnv(userTmpDir: string): Record<string, string> {
+  const cache = path.join(userTmpDir, '.cache');
+  return {
+    XDG_CACHE_HOME: cache,
+    npm_config_cache: path.join(cache, 'npm'),
+    YARN_CACHE_FOLDER: path.join(cache, 'yarn'),
+    BUN_INSTALL_CACHE_DIR: path.join(cache, 'bun'),
+    PIP_CACHE_DIR: path.join(cache, 'pip'),
+    UV_CACHE_DIR: path.join(cache, 'uv'),
+    GOCACHE: path.join(cache, 'go-build'),
+    GOMODCACHE: path.join(cache, 'go-mod'),
   };
 }
 
@@ -79,51 +82,19 @@ const HOME_STARTUP_FILES = [
 const HOME_STARTUP_DIRS = ['Library/LaunchAgents', '.ssh', '.config/git', '.config/fish'];
 
 /**
- * The files of a deployment the bot runs or reads as its own, for a session whose working directory
- * lies inside the deployment (where denying the whole of it would deny the session's own work).
- */
-const DEPLOY_CRITICAL_FILES = ['config.json', 'mcp-servers.json', '.env', 'package.json', '.system.prompt'];
-const DEPLOY_CRITICAL_DIRS = ['dist', 'node_modules', 'packages', 'plugins', 'scripts', 'somalib', 'services'];
-
-function isWithin(p: string, root: string): boolean {
-  const relative = path.relative(root, p);
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
-}
-
-/**
  * `Edit` deny rules (they cover Write and NotebookEdit, and the CLI merges their paths into the
- * sandbox `denyWrite`) for the deployment, its data directory, and the home directory's startup and
- * trust files. Absolute (`//`) rule paths. Each of `deployRoot`, `dataDir` and `workingDirectory`
- * may come with its other spellings (a symbolic link and where it points): every spelling of a
- * protected path gets a rule, and the session counts as working inside the deployment when any
- * spelling of its directory lies inside any spelling of the deployment.
+ * sandbox `denyWrite`) for every protected root as a whole — the deployment's configuration
+ * directory, the running code's root, the bot's own directory, the data and plugin directories, each
+ * spelling of each — and the home directory's startup and trust files. No exception for a session
+ * working inside a root: what it would write there is code or configuration the bot runs. Absolute
+ * (`//`) rule paths.
  */
-export function protectedWriteDenyRules(paths: {
-  deployRoot: string | readonly string[];
-  dataDir: string | readonly string[];
-  home: string;
-  workingDirectory?: string | readonly string[];
-}): string[] {
-  const list = (v: string | readonly string[] | undefined): string[] =>
-    v === undefined ? [] : typeof v === 'string' ? [v] : [...v];
+export function protectedWriteDenyRules(paths: { roots: readonly string[]; home: string }): string[] {
   const edit = (p: string) => `Edit(/${path.normalize(p)})`;
   const tree = (dir: string) => [edit(dir), `Edit(/${path.normalize(dir)}/**)`];
-  const deployRoots = list(paths.deployRoot);
-  const workingInside = list(paths.workingDirectory).some((wd) =>
-    deployRoots.some((root) => isWithin(path.resolve(wd), path.resolve(root))),
-  );
-  const deployRules = deployRoots.flatMap((deploy) =>
-    workingInside
-      ? [
-          ...DEPLOY_CRITICAL_FILES.map((file) => edit(path.join(deploy, file))),
-          ...DEPLOY_CRITICAL_DIRS.flatMap((dir) => tree(path.join(deploy, dir))),
-        ]
-      : tree(deploy),
-  );
   return [
     ...new Set([
-      ...deployRules,
-      ...list(paths.dataDir).flatMap(tree),
+      ...paths.roots.flatMap(tree),
       ...HOME_STARTUP_FILES.map((file) => edit(path.join(paths.home, file))),
       ...HOME_STARTUP_DIRS.flatMap((dir) => tree(path.join(paths.home, dir))),
     ]),

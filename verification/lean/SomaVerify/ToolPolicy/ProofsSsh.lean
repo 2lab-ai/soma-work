@@ -14,8 +14,12 @@ combination of primitive values.
 * The ssh ban fires exactly on a Bash call whose command is ssh (`sshGuardAll_eq_none_iff`), and
   then, unless the session was aborted or step 1b fired first, the result is the ban, for admins
   and in incident sessions too (`ssh_denied_for_everyone`).
-* Wherever neither change applies the result is `evaluateToolPolicyMcp`'s, the function every
-  earlier theorem is about (`evaluateToolPolicySsh_of_silent`).
+* The native write boundary holds admins outside an incident session: a refused native write is
+  denied with the boundary's reason (`admin_native_write_denied`); the step is silent for non-admins
+  and in incident sessions (`adminNativeWriteGuard_of_not_admin_or_incident`), where the earlier block
+  already applies it.
+* Wherever no change applies the result is `evaluateToolPolicyMcp`'s, the function every earlier
+  theorem is about (`evaluateToolPolicySsh_of_silent`).
 -/
 
 namespace SomaVerify.ToolPolicy
@@ -59,13 +63,34 @@ theorem ssh_denied_for_everyone {nw plan : Option (Option String)} {inc : Option
       { decision := .deny, reason := "ssh-ban: ssh command", denyMessage := some sshBanDenyMessage } := by
   simp [evaluateToolPolicySsh, ha, hd, sshGuardAll, hb, hs]
 
-/-! ## Where neither change applies, nothing changes -/
+/-! ## The native write boundary for admins -/
 
-/-- With the ssh ban silent and step 1b giving what it gave before, the result is
+/-- The admin step is silent for every non-admin and in every incident session. -/
+theorem adminNativeWriteGuard_of_not_admin_or_incident {nw : Option (Option String)}
+    {inc : Option IncidentReadOnly} {i : Input} (h : i.isAdmin = false ∨ inc.isSome = true) :
+    adminNativeWriteGuard nw inc i = none := by
+  unfold adminNativeWriteGuard
+  rcases h with h | h
+  · simp [h]
+  · cases inc <;> simp_all
+
+/-- Outside an incident session, an admin's native write that the session's boundary refuses is
+denied with that reason, unless the session was aborted, step 1b fired, or the call was a Bash ssh
+(none of which is a native write tool). -/
+theorem admin_native_write_denied {plan : Option (Option String)} {i : Input} {outside : String}
+    (hadmin : i.isAdmin = true) (htool : i.toolName ∈ nativeWriteTools) (ha : abortGuard i = none)
+    (hd : devopsGuardFor i = none) (hs : sshGuardAll i = none) :
+    evaluateToolPolicySsh (some (some outside)) plan none i =
+      { decision := .deny, reason := "write-boundary: " ++ outside, denyMessage := some outside } := by
+  simp [evaluateToolPolicySsh, ha, hd, hs, adminNativeWriteGuard, hadmin, nativeWriteCheck, htool]
+
+/-! ## Where no change applies, nothing changes -/
+
+/-- With the ssh ban and the admin step silent and step 1b giving what it gave before, the result is
 `evaluateToolPolicyMcp`'s, decision, reason, deny message and rule ids alike. -/
 theorem evaluateToolPolicySsh_of_silent {nw plan : Option (Option String)}
     {inc : Option IncidentReadOnly} {i : Input} (hs : sshGuardAll i = none)
-    (hd : devopsGuardFor i = devopsGuard i) :
+    (hw : adminNativeWriteGuard nw inc i = none) (hd : devopsGuardFor i = devopsGuard i) :
     evaluateToolPolicySsh nw plan inc i = evaluateToolPolicyMcp nw plan inc i := by
   unfold evaluateToolPolicySsh
   rw [hd]
@@ -76,7 +101,7 @@ theorem evaluateToolPolicySsh_of_silent {nw plan : Option (Option String)}
     cases hdev : devopsGuard i with
     | some r => rfl
     | none =>
-      simp only [hs]
+      simp only [hs, hw]
       unfold evaluateToolPolicyMcp
       simp [habort, hdev]
 

@@ -741,9 +741,11 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
     expect(sandbox.enableWeakerNetworkIsolation).toBe(true);
     expect(sandbox.network?.allowLocalBinding).toBe(true);
     expect(sandbox.network?.allowedDomains).toEqual(expect.arrayContaining(['localhost', '127.0.0.1']));
+    // The user's temp directory and the OS temp directory, no home cache (astra R1).
     expect(sandbox.filesystem?.allowWrite).toEqual(
-      expect.arrayContaining([path.join('/tmp', ADMIN), path.join(os.homedir(), '.npm')]),
+      expect.arrayContaining([path.join('/tmp', ADMIN), fs.realpathSync(os.tmpdir())]),
     );
+    expect(sandbox.filesystem?.allowWrite).not.toContain(path.join(os.homedir(), '.npm'));
     expect(sandbox.filesystem?.denyRead).toContain(SECRETS_DIR);
     expect(sandbox.filesystem?.denyWrite).toEqual(expect.arrayContaining(approvalRecordPaths()));
     const settings = options.settings as { permissions?: { allow?: string[] } };
@@ -757,6 +759,56 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
       const { options } = await withSettings(off, () => build(ADMIN));
       expect((options.settings as { plansDirectory?: string }).plansDirectory, `off=${off}`).toBe('.claude/plans');
     }
+  });
+
+  it('denies both spellings of the home directory and of a data directory not created yet (grok R1)', async () => {
+    // On macOS the temp directory is under /var, which is /private/var: a home there has two spellings.
+    const home = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'home-')), 'owner');
+    fs.mkdirSync(home);
+    const realHome = fs.realpathSync(home);
+    const saved = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const { options } = await withSettings(false, () => build(SAFE_USER));
+      const denyRead = (options.sandbox as { filesystem?: { denyRead?: string[] } }).filesystem?.denyRead ?? [];
+      const deny = (options.settings as { permissions?: { deny?: string[] } }).permissions?.deny ?? [];
+      expect(denyRead).toEqual(expect.arrayContaining([path.join(home, '.ssh'), path.join(realHome, '.ssh')]));
+      expect(deny).toEqual(
+        expect.arrayContaining([`Read(/${path.join(realHome, '.ssh')}/**)`, `Edit(/${path.join(realHome, '.zshrc')})`]),
+      );
+      if (realHome !== home) expect(denyRead).toContain(path.join(home, '.ssh'));
+    } finally {
+      process.env.HOME = saved;
+    }
+  });
+
+  it('every sandboxed session caches packages in its own temp directory, not the home caches (astra R1)', async () => {
+    await asAdmin();
+    for (const user of [SAFE_USER, ADMIN]) {
+      const { options } = await withSettings(false, () => build(user));
+      expect(options.env?.npm_config_cache, user).toBe(path.join('/tmp', user, '.cache', 'npm'));
+      expect(options.env?.XDG_CACHE_HOME, user).toBe(path.join('/tmp', user, '.cache'));
+    }
+  });
+
+  it('an admin native Write outside the sandbox roots is refused, as its Bash would be (astra R1)', async () => {
+    await asAdmin();
+    const { options } = await withSettings(false, () => build(ADMIN));
+    const entry = (options.hooks?.PreToolUse ?? []).find((e) =>
+      ((e as { matcher?: string }).matcher ?? '').split('|').includes('Write'),
+    ) as { hooks: Array<(input: unknown) => Promise<{ hookSpecificOutput?: { permissionDecision?: string } }>> };
+    const write = (file_path: string) =>
+      entry.hooks[0]({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Write',
+        tool_input: { file_path, content: 'x' },
+      } as never);
+    // A binary on the bot's PATH, which the bot later runs outside every sandbox.
+    expect((await write(path.join(os.homedir(), '.local', 'bin', 'node'))).hookSpecificOutput?.permissionDecision).toBe(
+      'deny',
+    );
+    expect((await write(path.join(WORK_DIR, 'notes.txt'))).hookSpecificOutput?.permissionDecision).not.toBe('deny');
+    expect((await write(path.join('/tmp', ADMIN, 'x.txt'))).hookSpecificOutput?.permissionDecision).not.toBe('deny');
   });
 
   it('a non-admin keeps the narrow profile', async () => {
@@ -787,6 +839,8 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
       expect(deny, `${user} off=${off}`).toEqual(
         expect.arrayContaining([
           `Edit(/${deployRoot}/**)`,
+          // The running code's root and the bot's own directory, not only the config directory (astra R1).
+          `Edit(/${process.cwd()}/**)`,
           `Edit(/${path.join(os.homedir(), 'Library', 'LaunchAgents')}/**)`,
           `Edit(/${path.join(os.homedir(), '.zshrc')})`,
         ]),

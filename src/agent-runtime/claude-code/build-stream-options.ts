@@ -38,7 +38,7 @@ import {
   resolveShowSummary,
 } from '../../claude-handler';
 import { getSandboxAllowUnavailable, getSandboxOffAllowed } from '../../config';
-import { CONFIG_FILE, DATA_DIR, SECRETS_DIR } from '../../env-paths';
+import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR, SECRETS_DIR } from '../../env-paths';
 import {
   checkEnvPluginMcpAccess,
   checkEnvSkillAccess,
@@ -62,6 +62,7 @@ import {
   credentialReadDenyRules,
   isSandboxOffInEffect,
   protectedWriteDenyRules,
+  sandboxCacheEnv,
 } from '../../sandbox/admin-sandbox-profile';
 import { extendSandboxWithGrant, loadDeploySandboxGrant } from '../../sandbox/deploy-sandbox-grant';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
@@ -358,9 +359,15 @@ export async function buildStreamOptions(
     contextIsAdmin && !sandboxDisabled ? adminSandboxProfile({ home: os.homedir(), tmpdir: realTmpdir() }) : undefined;
   const sandboxUserDir =
     contextUser && isSafePathSegment(contextUser) ? normalizeTmpPath(path.join('/tmp', contextUser)) : undefined;
+  // An admin's native writes are held to the same roots as its sandboxed Bash, the temp directory
+  // included (env-access WU2, #1210): a native Write anywhere else could replace a binary the bot runs.
   const nativeWriteRoots: readonly string[] | undefined = sandboxDisabled
     ? undefined
-    : [...(workingDirectory ? [workingDirectory] : []), ...(sandboxUserDir ? [sandboxUserDir] : [])];
+    : [
+        ...(workingDirectory ? [workingDirectory] : []),
+        ...(sandboxUserDir ? [sandboxUserDir] : []),
+        ...(adminProfile ? adminProfile.allowWrite : []),
+      ];
 
   // PreToolUse hooks — for every turn that has a context (D3).
   if (execCtx && mcpConfig) {
@@ -743,7 +750,7 @@ export async function buildStreamOptions(
     // policy step 1b covers the native tools.
     // And (WU2, #1210) no model reads an ssh key or a login: host commands go through `ssh_exec`.
     sandboxConfig.filesystem = {
-      denyRead: [SECRETS_DIR, ...credentialPaths(os.homedir())],
+      denyRead: [SECRETS_DIR, ...homeSpellings().flatMap(credentialPaths)],
       denyWrite: [SECRETS_DIR, ...approvalRecordPaths()],
     };
     // Mount only the user's /tmp/{userId} directory for writes.
@@ -799,6 +806,14 @@ export async function buildStreamOptions(
       }
     }
     options.sandbox = sandboxConfig;
+    // Package caches in the user's temp directory (env-access WU2, #1210): the home caches are not
+    // writable, and the bot runs code from them outside the sandbox. Operator values win.
+    if (sandboxUserDir) {
+      if (!options.env) options.env = {};
+      for (const [key, value] of Object.entries(sandboxCacheEnv(sandboxUserDir))) {
+        if (options.env[key] === undefined) options.env[key] = value;
+      }
+    }
     logger.debug('Sandbox enabled', {
       user: contextUser,
       network: networkDisabled ? 'off' : 'on',
@@ -817,13 +832,8 @@ export async function buildStreamOptions(
     const deny = [
       ...(base.permissions?.deny ?? []),
       ...secretStoreDenyRules(),
-      ...credentialReadDenyRules(os.homedir()),
-      ...protectedWriteDenyRules({
-        deployRoot: spellingsOf(path.dirname(CONFIG_FILE)),
-        dataDir: spellingsOf(DATA_DIR),
-        home: os.homedir(),
-        workingDirectory: workingDirectory ? spellingsOf(workingDirectory) : undefined,
-      }),
+      ...homeSpellings().flatMap(credentialReadDenyRules),
+      ...homeSpellings().flatMap((home) => protectedWriteDenyRules({ roots: protectedRoots(), home })),
     ];
     const allow = [...(base.permissions?.allow ?? []), ...(adminProfile?.allowRules ?? [])];
     options.settings = {
@@ -1004,14 +1014,43 @@ function readIncidentRequest(session: ConversationSession | undefined): Incident
 const SSH_EXEC_TOOL = 'mcp__server-tools__ssh_exec';
 const SSH_EXEC_ADMIN_ONLY = 'ssh_exec runs a command on a host and is for admins only.';
 
-/** `p` as written and as the OS resolves it, when it exists and the two differ. */
+/**
+ * What no model writes (env-access WU2, #1210), each as written and as the OS resolves it: the
+ * configuration directory, the running code's root (it can differ from the configuration directory),
+ * the bot's own directory, and the data and plugin directories.
+ */
+function protectedRoots(): string[] {
+  const runtimeRoot = path.resolve(__dirname, '..', '..', '..');
+  const roots = [path.dirname(CONFIG_FILE), runtimeRoot, process.cwd(), DATA_DIR, PLUGINS_DIR];
+  return [...new Set(roots.flatMap(spellingsOf))];
+}
+
+/**
+ * `p` as written and as the OS resolves it, when the two differ: through its deepest existing
+ * ancestor when `p` does not exist yet (on macOS `/var/…` is `/private/var/…`).
+ */
 function spellingsOf(p: string): string[] {
-  try {
-    const real = fs.realpathSync(p);
-    return real === p ? [p] : [p, real];
-  } catch {
-    return [p];
+  const missing: string[] = [];
+  let current = p;
+  for (let depth = 0; depth < 64; depth++) {
+    try {
+      const real = fs.realpathSync(current);
+      const resolved = missing.length ? path.join(real, ...[...missing].reverse()) : real;
+      return resolved === p ? [p] : [p, resolved];
+    } catch {
+      // Not there yet: try the parent.
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    missing.push(path.basename(current));
+    current = parent;
   }
+  return [p];
+}
+
+/** Both spellings of the home directory, for the rules about the files in it. */
+function homeSpellings(): string[] {
+  return spellingsOf(os.homedir());
 }
 
 /** The temp directory as the OS resolves it (on macOS `/var/folders/…` is `/private/var/folders/…`). */

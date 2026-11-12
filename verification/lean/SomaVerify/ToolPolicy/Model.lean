@@ -746,12 +746,15 @@ def evaluateToolPolicyMcp (nativeWrite : Option (Option String)) (plan : Option 
 
 /-! ## ssh for everyone, and a message per devops-secret reason (env-access WU2, #1210)
 
-Phase 8 changes two deny steps of the earlier code. Step 2, the ssh ban, leaves the admin block: a
+Phase 8 changes three deny steps of the earlier code. Step 2, the ssh ban, leaves the admin block: a
 Bash call whose command `isSshCommand` matches is denied for every user, admins included, with
 reason `ssh-ban: ssh command` and `SSH_BAN_DENY_MESSAGE` (host commands go through server-tools'
 `ssh_exec`). Step 1b keeps its decision and reason, and its message now follows the reason:
 `SECRET_STORE_DENY_MESSAGE` for `secret store path`, `APPROVAL_RECORD_DENY_MESSAGE` for
-`approval record`, `DEVOPS_SECRET_DENY_MESSAGE` for every other reason.
+`approval record`, `DEVOPS_SECRET_DENY_MESSAGE` for every other reason. Step 3b, the native write
+boundary, now holds admins too, outside an incident session (where it already did): an `else if`
+after the non-admin block, so an admin's native write outside the roots the session sets is denied
+with reason `write-boundary: <outside>`.
 
 `evaluateToolPolicyMcp` above is the function without the change and keeps its name, so every
 theorem about it stands as proved. `evaluateToolPolicySsh` is the TS function now: steps 1 and 1b,
@@ -792,8 +795,15 @@ def sshGuardAll (i : Input) : Option Result :=
     some { decision := .deny, reason := "ssh-ban: ssh command", denyMessage := some sshBanDenyMessage }
   else none
 
-/-- `evaluateToolPolicy`, all of it: steps 1 and 1b, the ssh ban for every user, then the steps
-of `evaluateToolPolicyMcp`. -/
+/-- 3b for admins: outside an incident session (where the non-admin block runs for everyone), an
+admin's call of a native write tool is held to the boundary when the session sets one — the
+`else if` after the non-admin block. -/
+def adminNativeWriteGuard (nativeWrite : Option (Option String)) (incident : Option IncidentReadOnly)
+    (i : Input) : Option Result :=
+  if i.isAdmin = true ∧ incident.isNone = true then nativeWriteCheck nativeWrite i else none
+
+/-- `evaluateToolPolicy`, all of it: steps 1 and 1b, the ssh ban for every user, the native write
+boundary for admins, then the steps of `evaluateToolPolicyMcp`. -/
 def evaluateToolPolicySsh (nativeWrite : Option (Option String)) (plan : Option (Option String))
     (incident : Option IncidentReadOnly) (i : Input) : Result :=
   match abortGuard i with
@@ -803,6 +813,9 @@ def evaluateToolPolicySsh (nativeWrite : Option (Option String)) (plan : Option 
   | some r => r
   | none =>
   match sshGuardAll i with
+  | some r => r
+  | none =>
+  match adminNativeWriteGuard nativeWrite incident i with
   | some r => r
   | none => evaluateToolPolicyMcp nativeWrite plan incident i
 

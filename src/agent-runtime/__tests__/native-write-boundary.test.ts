@@ -329,12 +329,16 @@ describe('evaluateToolPolicy — step 3b, the native write boundary', () => {
     ).toBe('pass');
   });
 
-  it('exempts admins, and asks nothing of a session without a boundary or of another tool', () => {
+  it('holds admins to it too (env-access WU2, #1210), and asks nothing of a session without a boundary or of another tool', () => {
     const spy = vi.fn(() => 'outside');
-    expect(evaluateToolPolicy('Write', outsideWrite, ctx({ isAdmin: true, checkNativeWrite: spy })).decision).toBe(
-      'allow',
-    );
+    const admin = evaluateToolPolicy('Write', outsideWrite, ctx({ isAdmin: true, checkNativeWrite: spy }));
+    expect(admin.decision).toBe('deny');
+    expect(admin.reason).toBe('write-boundary: outside');
+    spy.mockClear();
     expect(evaluateToolPolicy('Write', outsideWrite, ctx({ checkNativeWrite: undefined })).decision).toBe('allow');
+    expect(
+      evaluateToolPolicy('Write', outsideWrite, ctx({ isAdmin: true, checkNativeWrite: undefined })).decision,
+    ).toBe('allow');
     for (const tool of ['Read', 'Bash', 'Glob', 'TodoWrite', 'mcp__x__write', 'MultiEdit', 'write']) {
       evaluateToolPolicy(tool, outsideWrite, ctx({ checkNativeWrite: spy }));
     }

@@ -14,6 +14,7 @@ import {
   credentialReadDenyRules,
   isSandboxOffInEffect,
   protectedWriteDenyRules,
+  sandboxCacheEnv,
 } from '../admin-sandbox-profile';
 import { DEV_DOMAIN_ALLOWLIST } from '../dev-domain-allowlist';
 
@@ -32,29 +33,42 @@ describe('adminSandboxProfile', () => {
     expect(profile.enableWeakerNetworkIsolation).toBe(true);
   });
 
-  it('writes the temp directory and the package caches, not the home directory itself', () => {
-    expect(profile.allowWrite).toContain(TMP);
-    for (const cache of ['.npm', '.cache', 'Library/Caches', '.bun/install/cache', '.cargo/registry']) {
-      expect(profile.allowWrite).toContain(path.join(HOME, cache));
+  it('writes the temp directory only: no home cache the bot also runs code from (astra R1)', () => {
+    // The npm cache holds the MCP servers the bot launches with `npx -y`, outside every sandbox.
+    expect(profile.allowWrite).toEqual([TMP]);
+  });
+});
+
+describe('sandboxCacheEnv', () => {
+  it("points every package cache at the user's own temp directory", () => {
+    const env = sandboxCacheEnv('/tmp/U1');
+    expect(env.npm_config_cache).toBe('/tmp/U1/.cache/npm');
+    expect(env.XDG_CACHE_HOME).toBe('/tmp/U1/.cache');
+    for (const key of [
+      'BUN_INSTALL_CACHE_DIR',
+      'PIP_CACHE_DIR',
+      'UV_CACHE_DIR',
+      'GOCACHE',
+      'GOMODCACHE',
+      'YARN_CACHE_FOLDER',
+    ]) {
+      expect(env[key], key).toMatch(/^\/tmp\/U1\/\.cache\//);
     }
-    expect(profile.allowWrite).not.toContain(HOME);
-    // A directory on the PATH would let a planted binary run outside the sandbox later.
-    expect(profile.allowWrite).not.toContain(path.join(HOME, '.bun'));
-    expect(profile.allowWrite).not.toContain(path.join(HOME, '.local'));
   });
 });
 
 describe('protectedWriteDenyRules', () => {
-  const DEPLOY = '/opt/soma/dev';
-  const DATA = '/opt/soma/dev/data';
-
-  it('write-denies the whole deployment, the data directory and what runs outside the sandbox', () => {
-    const rules = protectedWriteDenyRules({ deployRoot: DEPLOY, dataDir: DATA, home: HOME });
+  it('write-denies every protected root as a whole, and the files the home directory runs or trusts', () => {
+    const rules = protectedWriteDenyRules({
+      roots: ['/opt/soma/dev', '/opt/soma/dev/data', '/srv/soma-runtime'],
+      home: HOME,
+    });
     expect(rules).toEqual(
       expect.arrayContaining([
-        `Edit(/${DEPLOY})`,
-        `Edit(/${DEPLOY}/**)`,
-        `Edit(/${DATA}/**)`,
+        'Edit(//opt/soma/dev)',
+        'Edit(//opt/soma/dev/**)',
+        'Edit(//opt/soma/dev/data/**)',
+        'Edit(//srv/soma-runtime/**)',
         `Edit(/${HOME}/Library/LaunchAgents/**)`,
         `Edit(/${HOME}/.ssh/**)`,
         `Edit(/${HOME}/.zshrc)`,
@@ -67,48 +81,10 @@ describe('protectedWriteDenyRules', () => {
     expect(rules.every((rule) => rule.startsWith('Edit(//'))).toBe(true);
   });
 
-  it('keeps a session working inside the deployment workable: only the files the bot runs are denied', () => {
-    const rules = protectedWriteDenyRules({
-      deployRoot: DEPLOY,
-      dataDir: DATA,
-      home: HOME,
-      workingDirectory: `${DEPLOY}/workspace/U1`,
-    });
-    expect(rules).not.toContain(`Edit(/${DEPLOY}/**)`);
-    expect(rules).toEqual(
-      expect.arrayContaining([
-        `Edit(/${DEPLOY}/config.json)`,
-        `Edit(/${DEPLOY}/mcp-servers.json)`,
-        `Edit(/${DEPLOY}/.env)`,
-        `Edit(/${DEPLOY}/dist/**)`,
-        `Edit(/${DEPLOY}/node_modules/**)`,
-        `Edit(/${DEPLOY}/plugins/**)`,
-        `Edit(/${DATA}/**)`,
-      ]),
-    );
-  });
-});
-
-describe('protectedWriteDenyRules — spellings (fable R1 P3)', () => {
-  it('denies every spelling, and counts the session inside the deployment by any spelling', () => {
-    const rules = protectedWriteDenyRules({
-      deployRoot: ['/opt/soma/dev', '/Volumes/data/soma/dev'],
-      dataDir: ['/opt/soma/dev/data', '/Volumes/data/soma/dev/data'],
-      home: HOME,
-      // The session's directory is inside the deployment only by its real spelling.
-      workingDirectory: ['/work/U1', '/Volumes/data/soma/dev/workspace/U1'],
-    });
-    expect(rules).not.toContain('Edit(//opt/soma/dev/**)');
-    expect(rules).not.toContain('Edit(//Volumes/data/soma/dev/**)');
-    expect(rules).toEqual(
-      expect.arrayContaining([
-        'Edit(//opt/soma/dev/config.json)',
-        'Edit(//Volumes/data/soma/dev/config.json)',
-        'Edit(//Volumes/data/soma/dev/dist/**)',
-        'Edit(//opt/soma/dev/data/**)',
-        'Edit(//Volumes/data/soma/dev/data/**)',
-      ]),
-    );
+  it('has no exception for a session working inside a root: its source and configuration run as the bot (astra R1)', () => {
+    const rules = protectedWriteDenyRules({ roots: ['/opt/soma/dev'], home: HOME });
+    expect(rules).toContain('Edit(//opt/soma/dev/**)');
+    expect(rules).not.toContain('Edit(//opt/soma/dev/config.json)');
   });
 });
 

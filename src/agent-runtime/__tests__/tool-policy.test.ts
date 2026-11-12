@@ -78,6 +78,25 @@ describe('evaluateToolPolicy — guards (epic #1023 P5)', () => {
       }
     });
 
+    it('native write boundary: an admin is held to it too when the session sets it (env-access WU2, #1210)', () => {
+      const checkNativeWrite = vi.fn(() => 'Write outside the writable directories');
+      const result = evaluateToolPolicy(
+        'Write',
+        { file_path: '/opt/brew/bin/node', content: 'x' },
+        makeCtx({ isAdmin: true, mode: 'bypass', checkNativeWrite }),
+      );
+      expect(result.decision).toBe('deny');
+      expect(result.reason).toBe('write-boundary: Write outside the writable directories');
+      // Without the check (the sandbox off on an allowing host) an admin's native write is not confined.
+      expect(
+        evaluateToolPolicy(
+          'Write',
+          { file_path: '/opt/brew/bin/node', content: 'x' },
+          makeCtx({ isAdmin: true, mode: 'bypass' }),
+        ).decision,
+      ).not.toBe('deny');
+    });
+
     it('devops-secret: the deny message names what was refused (secret store, approval record, credentials)', () => {
       const store = evaluateToolPolicy('Read', { file_path: `${SECRETS_DIR}/x` }, makeCtx({ isAdmin: true }));
       expect(store.reason).toBe('devops-secret: secret store path');

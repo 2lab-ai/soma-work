@@ -318,7 +318,8 @@ export function evaluateToolPolicy(
     return { decision: 'deny', reason: 'ssh-ban: ssh command', denyMessage: SSH_BAN_DENY_MESSAGE };
   }
 
-  // 3-4. Admins bypass the sensitive / write-boundary / mcp guards; an incident session gets no admin privilege.
+  // 3-4. Admins bypass the sensitive and mcp guards (not the write boundary, below); an incident session gets
+  //      no admin privilege.
   if (!ctx.isAdmin || ctx.incidentReadOnly) {
     // 3. Sensitive-path (Bash/Read/Glob/Grep).
     const sensitive = checkSensitiveForTool(toolName, input);
@@ -340,6 +341,14 @@ export function evaluateToolPolicy(
       if (denied !== null) {
         return { decision: 'deny', reason: `mcp-permission: ${denied}` };
       }
+    }
+  } else if (ctx.checkNativeWrite && NATIVE_WRITE_TOOLS.includes(toolName)) {
+    // 3b for admins (env-access WU2, #1210): an admin's native writes are held to the roots its
+    // sandboxed Bash may write, when the session sets them (the sandbox on). A native Write anywhere
+    // else could replace a binary or a file the bot later runs outside every sandbox.
+    const outside = ctx.checkNativeWrite(toolName, input);
+    if (outside !== null) {
+      return { decision: 'deny', reason: `write-boundary: ${outside}`, denyMessage: outside };
     }
   }
 
