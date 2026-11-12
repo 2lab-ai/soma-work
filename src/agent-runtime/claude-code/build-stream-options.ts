@@ -65,6 +65,7 @@ import {
 } from '../../sandbox/admin-sandbox-profile';
 import { extendSandboxWithGrant, loadDeploySandboxGrant } from '../../sandbox/deploy-sandbox-grant';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
+import { guardSessionStartFiles, sessionStartFileDenyRules } from '../../sandbox/session-start-files';
 import type { SessionRegistry } from '../../session-registry';
 import { isPlanPending } from '../../task-turn/task-plan';
 import type { ConversationSession, WorkflowType } from '../../types';
@@ -358,6 +359,13 @@ export async function buildStreamOptions(
     contextIsAdmin && !sandboxDisabled ? adminSandboxProfile({ home: os.homedir(), tmpdir: realTmpdir() }) : undefined;
   const sandboxUserDir =
     contextUser && isSafePathSegment(contextUser) ? normalizeTmpPath(path.join('/tmp', contextUser)) : undefined;
+  // Every directory a model session may write, the sandbox on or off: where a file the CLI loads at the next
+  // start must not stay (env-access #1242, `session-start-files.ts`).
+  const startFileWriteRoots: string[] = [
+    ...(workingDirectory ? [workingDirectory] : []),
+    ...(sandboxUserDir ? [sandboxUserDir] : []),
+    ...(adminProfile ? adminProfile.allowWrite : []),
+  ];
   // An admin's native writes are held to the same roots as its sandboxed Bash, the temp directory
   // included (env-access WU2, #1210): a native Write anywhere else could replace a binary the bot runs.
   const nativeWriteRoots: readonly string[] | undefined = sandboxDisabled
@@ -827,6 +835,10 @@ export async function buildStreamOptions(
     const deny = [
       ...(base.permissions?.deny ?? []),
       ...secretStoreDenyRules(),
+      // Files the CLI runs commands from at the next start (env-access #1242).
+      ...(workingDirectory
+        ? sessionStartFileDenyRules({ cwd: workingDirectory, writeRoots: startFileWriteRoots })
+        : []),
       ...homeSpellings().flatMap(credentialReadDenyRules),
       ...homeSpellings().flatMap((home) =>
         protectedWriteDenyRules({
@@ -934,6 +946,16 @@ export async function buildStreamOptions(
     }
     if (fs.existsSync(workingDirectory)) {
       options.cwd = workingDirectory;
+      // Before the CLI starts: no file it would load and run commands from stays in a directory a model
+      // writes (env-access #1242). Throws, and the session does not start, when one cannot be moved.
+      const moved = guardSessionStartFiles({
+        cwd: workingDirectory,
+        writeRoots: startFileWriteRoots,
+        quarantineDir: path.join(DATA_DIR, 'quarantine', 'session-start-files'),
+      });
+      if (moved.length > 0) {
+        logger.warn('Moved files the CLI loads at start out of the session directory', { user: contextUser, moved });
+      }
     }
 
     // Expand SDK's allowed directory scope to user's root /tmp/{userId} directory.

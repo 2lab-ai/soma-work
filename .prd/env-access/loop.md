@@ -10,9 +10,9 @@ ssot = [`ssot.md`](ssot.md)
 
 | ID | WU | Status | 이슈 | 브랜치 | 스코프 | 끝상태 확인 |
 |---|---|---|---|---|---|---|
-| WU0 | 설계 문서 | 🟡 | #1208 | `docs/env-access-prd` | `.prd/23-25`, `.prd/env-access/` | PR 머지 |
-| WU1 | 비밀 저장소 + 전원 거부 + fail-closed 샌드박스 | 🟡 | #1209 | `feat/env-access-secrets` (PR #1218, trinity 만장일치 승인 2026-11-12) | 25 §5 WU1 | 25 §5 WU1 + dev 실측 |
-| WU2 | 어드민 샌드박스 프로필 + 어드민 쓰기 경계 + ssh는 MCP로만 | 🟡 | #1210 | `feat/env-access-admin-sandbox` | 25 §5 WU2 + #1218 리뷰가 넘긴 두 길(`sandbox off` Bash, 배포 설정 쓰기) | 25 §5 WU2 + 두 길의 적대적 테스트 |
+| WU0 | 설계 문서 | ✅ | #1208 | `docs/env-access-prd` (PR #1215 머지) | `.prd/23-25`, `.prd/env-access/` | PR 머지 |
+| WU1 | 비밀 저장소 + 전원 거부 + fail-closed 샌드박스 | ✅ | #1209 | `feat/env-access-secrets` (PR #1218 머지, dev 배포·실측 2026-11-12) | 25 §5 WU1 | 25 §5 WU1 + dev 실측 |
+| WU2 | 어드민 샌드박스 프로필 + 어드민 쓰기 경계 + ssh는 MCP로만 | ✅ | #1210 | `feat/env-access-admin-sandbox` (PR #1240 머지, dev v0.3.32 배포·실측 2026-11-13 — 결과는 #1210 댓글) | 25 §5 WU2 + #1218 리뷰가 넘긴 두 길(`sandbox off` Bash, 배포 설정 쓰기) | 25 §5 WU2 + 두 길의 적대적 테스트 |
 | WU3 | 환경 사용자 + 환경 도구 `gh` · `login` | 🔴 | #1211 | — | 25 §5 WU3 | 25 §5 WU3 |
 | WU4 | 환경 grant + 4버튼 + 정책 단계 | 🔴 | #1212 | — | 25 §5 WU4 | 25 §5 WU4 |
 | WU5 | 배포·QA 스킬 이전 + 배포 → QA 연결 | 🔴 | #1213 | — | 25 §5 WU5 | 25 §5 WU5 |
@@ -35,7 +35,14 @@ ssot = [`ssot.md`](ssot.md)
   dev에서 확인될 때까지. 둘 다 #1240 이전부터 main에 있던 것이고 #1240이 넓히지 않는다.
 
 - **WU2 리뷰가 남긴 후속 (PR #1240):**
-  - #1242(세부 비공개): 세션 시작 때 읽히는 파일을 통한 샌드박스 탈출. 다음 WU로 바로 고친다.
+  - #1242: 세션 시작 때 CLI가 읽는 파일을 통한 샌드박스 탈출 → 시작 전마다 격리 + 실행 중 쓰기 거부(브랜치 `fix/env-access-1242`).
+  - 어드민 샌드박스 실측(2026-11-13)에서 나온 것:
+    - `ps`·`pgrep` 막힘(sysmond) — 세션 안 `verify-restart`가 멈춘다.
+    - `.git/config` 쓰기 막힘 — upstream 추적 설정 불가(`git switch -c … --no-track`, `git push`로 우회).
+    - 세션 안에서 soma-work 전체 테스트를 돌리면 다른 `/tmp/<uid>`를 쓰는 테스트들이 EPERM으로 실패한다(CI는 샌드박스 밖이라 영향 없음)
+      — 테스트 하네스가 `os.tmpdir()` 아래만 쓰게 고칠 후보.
+    - ssh 금지 판정(soma-lib `isSshCommand`, `\bssh\b`)이 명령 글자 어디든 ssh라는 단어가 있으면 막는다(grep 패턴, 커밋 메시지,
+      문서 heredoc). WU2 전에는 어드민이 빠져 있어 드러나지 않았다 → 명령 위치만 보는 판정으로 바꾸는 별도 PR.
   - #1241(세부 비공개): stdio MCP 런처가 샌드박스 밖에서 모델이 쓸 수 있는 설정을 읽는다. 캐시를 `options.env`로 옮기는 고침은
     같은 부류라 쓰지 않는다(astra R2).
   - 샌드박스 세션의 모델에게 "홈 캐시는 읽기 전용, 설치는 `--cache /tmp/{uid}/npm`"을 알리는 프롬프트 한 줄(fable R3 P2).
@@ -47,4 +54,4 @@ ssot = [`ssot.md`](ssot.md)
 
 ## 다음 착수점
 
-WU0 · WU1 머지 → dev 배포 · 실측 → WU2(#1210) 브랜치 `feat/env-access-admin-sandbox` → 머지 · dev 실측 → #1242 · #1241 → WU3(#1211).
+WU0 · WU1 · WU2 머지 · dev 실측 완료 → #1242(`fix/env-access-1242`) · ssh 판정 오탐 PR → #1241 → WU3(#1211).

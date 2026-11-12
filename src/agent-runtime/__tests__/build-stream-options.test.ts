@@ -20,7 +20,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
-import { CONFIG_FILE, SECRETS_DIR } from '../../env-paths';
+import { CONFIG_FILE, DATA_DIR, SECRETS_DIR } from '../../env-paths';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import { credentialPaths } from '../../sandbox/admin-sandbox-profile';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
@@ -1167,5 +1167,53 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
     expect(sandboxOf((await buildStreamOptions(input, makeDeps())).options)?.filesystem?.allowWrite).toEqual([
       path.join('/tmp', APPROVED),
     ]);
+  });
+});
+
+// env-access #1242: files the CLI loads when a session starts are moved out of the session directory before
+// every start, and refused to the file tools while it runs.
+describe('session start files (env-access #1242)', () => {
+  const START_FILES = [path.join(WORK_DIR, '.mcp.json'), path.join(WORK_DIR, '.claude', 'settings.json')];
+  const QUARANTINE = path.join(DATA_DIR, 'quarantine', 'session-start-files');
+
+  function plant() {
+    for (const f of START_FILES) {
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(f, '{}');
+    }
+  }
+
+  afterEach(() => {
+    for (const f of START_FILES) fs.rmSync(f, { force: true });
+    fs.rmSync(path.join(DATA_DIR, 'quarantine'), { recursive: true, force: true });
+  });
+
+  async function build() {
+    return buildStreamOptions(
+      { queryEnv: {}, slackContext: makeSlackContext({ user: SAFE_USER }), workingDirectory: WORK_DIR },
+      makeDeps(),
+    );
+  }
+
+  it('moves them into the quarantine under DATA_DIR before the CLI starts', async () => {
+    plant();
+    await build();
+    for (const f of START_FILES) expect(fs.existsSync(f), f).toBe(false);
+    expect(fs.readdirSync(QUARANTINE)).toHaveLength(1);
+  });
+
+  it('refuses them to the file tools: Edit deny rules for the session directory', async () => {
+    const { options } = await build();
+    const deny = (options.settings as { permissions?: { deny?: string[] } }).permissions?.deny ?? [];
+    expect(deny).toContain(`Edit(/${path.join(WORK_DIR, '.mcp.json')})`);
+    expect(deny).toContain(`Edit(/${path.join(WORK_DIR, '.claude', 'settings.json')})`);
+  });
+
+  it('fails closed: the session does not start when a file cannot be moved', async () => {
+    plant();
+    fs.mkdirSync(path.join(DATA_DIR, 'quarantine'), { recursive: true });
+    fs.writeFileSync(QUARANTINE, 'not a directory');
+    await expect(build()).rejects.toThrow(/session was not started/);
+    expect(fs.existsSync(START_FILES[0])).toBe(true);
   });
 });
