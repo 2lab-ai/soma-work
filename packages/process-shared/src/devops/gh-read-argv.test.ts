@@ -60,6 +60,9 @@ const FILL: Record<string, string> = {
   sha: FULL_SHA('d'),
   runningSha: FULL_SHA('e'),
   mergeSha: FULL_SHA('f'),
+  // #1232: the deploy's delta check pins both tips and compares them by SHA.
+  target_sha: FULL_SHA('1'),
+  source_sha: FULL_SHA('2'),
   'short sha': SHORT_SHA,
 };
 
@@ -166,6 +169,8 @@ describe('every gh_read argv the deploy and QA docs prescribe classifies as read
     expect(has(deploy, /\/commits\/a{40}\/status /)).toBe(true);
     expect(has(deploy, /\/actions\/runs .*--jq /, `head_sha=${FULL_SHA('a')}`)).toBe(true);
     expect(has(deploy, /\/actions\/runs /, 'branch=deploy/dev')).toBe(true);
+    // #1232: the delta check's compare read, by SHA, with its filter.
+    expect(has(deploy, /\/compare\/1{40}\.\.\.2{40} --jq /)).toBe(true);
     // deploy-qa: the JSON form, the CD workflow runs by branch, both compares, the closed PRs by base.
     expect(deployQa.some((r) => r.args !== null)).toBe(true);
     expect(has(deployQa, /\/actions\/workflows\/deploy\.yml\/runs /, 'branch=deploy/dev')).toBe(true);
