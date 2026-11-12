@@ -7,7 +7,7 @@
 - 에픽·서브이슈 제목 + Goal + Scope → **하이레벨 컨셉 언어**. 파일 경로, 함수·클래스 이름, ENV 변수, 코드 블록 금지.
 - PR body 또는 서브이슈 `## 구현 스펙` 이하 → 구체 토큰 허용.
 - 경계선 `---`는 한 산출물 안에 두 층을 섞을 때만. 가능하면 산출물을 분리.
-- 상세: `using-ha-thinking`.
+- 상세: `using-zwriting` (Planning artifacts: one artifact, one rung).
 
 ---
 

@@ -139,6 +139,18 @@ describe('SkillForceHandler', () => {
       expect(handler.canHandle('$model opus')).toBe(false);
     });
 
+    // A retired skill name typed by habit resolves to its successor, like a stored autoskill does.
+    it('matches bare "$using-govuk" through its successor using-zwriting', () => {
+      vi.mocked(fs.existsSync).mockImplementation((p) => String(p).includes('local/skills/using-zwriting/SKILL.md'));
+      expect(handler.canHandle('$using-govuk')).toBe(true);
+      expect(handler.canHandle('$structurize 해줘')).toBe(true);
+    });
+
+    it('does NOT alias a retired name when the successor is missing too', () => {
+      vi.mocked(fs.existsSync).mockReturnValue(false);
+      expect(handler.canHandle('$using-eli5')).toBe(false);
+    });
+
     it('does NOT match bare "$nonexistent" when no namespace owns it', () => {
       vi.mocked(fs.existsSync).mockReturnValue(false);
       expect(handler.canHandle('$nonexistent')).toBe(false);

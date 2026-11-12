@@ -557,7 +557,7 @@ export interface UserSettings {
    * Per-user autoskills. Each entry is a skill NAME (kebab-case, resolved via
    * the same user→local→plugin fallback chain as `$skill`). When non-empty,
    * the FIRST turn of every new session visibly force-fires these skills —
-   * exactly like the user had typed `$using-ssot $using-govuk` (RPG banner +
+   * exactly like the user had typed `$using-ssot $using-zwriting` (RPG banner +
    * `<invoked_skills>` block injected into that turn's prompt), AFTER the
    * Autogoal step. Not a silent system-prompt embed. Managed via the
    * `autoskill` command + card. Undefined ⇒ none.

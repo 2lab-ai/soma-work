@@ -1,4 +1,4 @@
-import { autoskillExists } from '../../skill-locator';
+import { autoskillExists, canonicalSkillName } from '../../skill-locator';
 import { MAX_AUTOSKILLS, userSettingsStore } from '../../user-settings-store';
 import { buildAutoskillCard } from '../autoskill-blocks';
 import { CommandParser } from '../command-parser';
@@ -55,8 +55,11 @@ export class AutoskillHandler implements CommandHandler {
     const valid: string[] = [];
     const unknown: string[] = [];
     for (const name of requested) {
-      if (autoskillExists(name, user)) valid.push(name);
-      else unknown.push(name);
+      if (!autoskillExists(name, user)) unknown.push(name);
+      else {
+        const stored = canonicalSkillName(name, user); // a retired name is stored as its successor
+        if (!valid.includes(stored)) valid.push(stored);
+      }
     }
 
     if (valid.length === 0) {
