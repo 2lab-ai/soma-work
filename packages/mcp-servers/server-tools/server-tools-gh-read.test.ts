@@ -179,6 +179,28 @@ describe('gh_read', () => {
     });
   });
 
+  // trinity R1 (grok): text in the repository can hold the token (an issue body, a committed file); never hand it on.
+  it('never hands the token on: not in a body, not in a base64 file, not in an error', async () => {
+    const file = Buffer.from(`GH_TOKEN=${TOKEN}\nother=1\n`).toString('base64');
+    const { fetch } = github({
+      json: { body: `leaked ${TOKEN} here`, files: [{ encoding: 'base64', content: file }] },
+    });
+    const out = await handleGhRead({ server: 'dev2', path: 'repos/acme/app/issues/1' }, fetch);
+    expect(out.content[0].text).not.toContain(TOKEN);
+    const answer = text(out);
+    expect(answer.body.body).toBe('leaked [redacted] here');
+    const decoded = Buffer.from(answer.body.files[0].content, 'base64').toString('utf8');
+    expect(decoded).toBe('GH_TOKEN=[redacted]\nother=1\n');
+    expect(decoded).not.toContain(TOKEN);
+
+    const refused = github({ status: 422, json: { message: `bad ${TOKEN}` } });
+    const err = await handleGhRead({ server: 'dev2', path: 'repos/acme/app/issues/1' }, refused.fetch).catch(
+      (e: Error) => e,
+    );
+    expect(String(err)).toMatch(/answered 422/);
+    expect(String(err)).not.toContain(TOKEN);
+  });
+
   it("says GitHub's status and message on a refusal, and cuts a long answer", async () => {
     const refused = github({ status: 404, json: { message: 'Not Found' } });
     await expect(handleGhRead({ server: 'dev2', path: 'repos/acme/app/pulls/9' }, refused.fetch)).rejects.toThrow(

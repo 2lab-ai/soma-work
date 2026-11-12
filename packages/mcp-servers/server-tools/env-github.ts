@@ -178,7 +178,8 @@ async function callWithStatus(
       json && typeof json === 'object' && typeof (json as { message?: unknown }).message === 'string'
         ? (json as { message: string }).message
         : 'no message';
-    throw new GithubError(`GitHub ${method} ${path} answered ${res.status}: ${message}`);
+    // GitHub's message can quote what was sent or stored; the token never rides along.
+    throw new GithubError(`GitHub ${method} ${path} answered ${res.status}: ${scrubToken(message, token)}`);
   }
   return { status: res.status, json };
 }
@@ -301,11 +302,37 @@ export async function repoRead(
   query?: unknown,
 ): Promise<{ path: string; status: number; truncated: boolean; body: unknown }> {
   const checked = repoReadPath(config, path);
-  const { status, json } = await callWithStatus(fetch, config.token, 'GET', `/${checked}${readQuery(query)}`);
-  const text = JSON.stringify(json ?? null);
+  const { status, json: raw } = await callWithStatus(fetch, config.token, 'GET', `/${checked}${readQuery(query)}`);
+  // Text in the repository (an issue body, a commit message, a committed file) can hold the token: never hand it on.
+  const json = scrubJson(raw ?? null, config.token);
+  const text = JSON.stringify(json);
   return text.length > READ_MAX_CHARS
     ? { path: checked, status, truncated: true, body: text.slice(0, READ_MAX_CHARS) }
     : { path: checked, status, truncated: false, body: json ?? null };
+}
+
+/** `text` with every occurrence of `token` replaced. */
+export function scrubToken(text: string, token: string): string {
+  return token ? text.split(token).join('[redacted]') : text;
+}
+
+/**
+ * Every string in a JSON answer with the token replaced, keys included; a base64 `content` (a file, a blob) is
+ * decoded, scrubbed and encoded again. Past 64 levels the rest is scrubbed as text.
+ */
+function scrubJson(value: unknown, token: string, depth = 0): unknown {
+  if (typeof value === 'string') return scrubToken(value, token);
+  if (!value || typeof value !== 'object') return value;
+  if (depth > 64) return JSON.parse(scrubToken(JSON.stringify(value), token));
+  if (Array.isArray(value)) return value.map((v) => scrubJson(v, token, depth + 1));
+  const out: Record<string, unknown> = {};
+  const o = value as Record<string, unknown>;
+  for (const [k, v] of Object.entries(o)) out[scrubToken(k, token)] = scrubJson(v, token, depth + 1);
+  if (o.encoding === 'base64' && typeof o.content === 'string') {
+    const decoded = Buffer.from(o.content.replace(/\s/g, ''), 'base64').toString('utf8');
+    if (decoded.includes(token)) out.content = Buffer.from(scrubToken(decoded, token), 'utf8').toString('base64');
+  }
+  return out;
 }
 
 type Obj = Record<string, unknown>;
