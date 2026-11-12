@@ -27,9 +27,8 @@ describe('local:research-skill', () => {
     }
   });
 
-  it('teaches no harness or retired transport call; a host-kept user skill goes through using-user-skills', () => {
+  it('teaches no harness call (the retired llm transport is banned repo-wide by llm-mcp-removal-contract); a host-kept user skill goes through using-user-skills', () => {
     expect(md).not.toMatch(/\b(MANAGE_SKILL|GET_SESSION|UPDATE_SESSION)\b/);
-    expect(md).not.toMatch(/mcp__llm__/);
     expect(md).toContain('local:using-user-skills');
   });
 
