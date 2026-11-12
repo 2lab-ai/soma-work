@@ -65,6 +65,7 @@ import {
 } from '../../sandbox/admin-sandbox-profile';
 import { extendSandboxWithGrant, loadDeploySandboxGrant } from '../../sandbox/deploy-sandbox-grant';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
+import { launchAllFrom, mcpLaunchDir, pluginMcpServers } from '../../sandbox/mcp-launch-dir';
 import { projectConfigRoot } from '../../sandbox/project-config-root';
 import type { SessionRegistry } from '../../session-registry';
 import { isPlanPending } from '../../task-turn/task-plan';
@@ -969,12 +970,29 @@ export async function buildStreamOptions(
   // #1242). CLAUDE.md and plan files still come from the working directory. Checked last, against every directory
   // this session writes once all of them are known — deploy grants included (astra R3), sandbox on or off.
   // Throws: the session does not start.
-  options.projectConfigRoot = projectConfigRoot(DATA_DIR, [
+  const writeRoots = [
     ...(workingDirectory ? [workingDirectory] : []),
     ...(sandboxUserDir ? [sandboxUserDir] : []),
     ...(adminProfile ? adminProfile.allowWrite : []),
     ...(options.sandbox?.filesystem?.allowWrite ?? []),
-  ]);
+  ];
+  options.projectConfigRoot = projectConfigRoot(DATA_DIR, writeRoots);
+
+  // Every stdio MCP server starts from a directory no session writes, not from the working directory, where its
+  // launcher (npx, uvx …) would read package-manager config the model planted (env-access #1241). The CLI starts
+  // plugin servers itself in the working directory, so it is told to leave them and they are declared here under
+  // its names. Throws: the session does not start.
+  const launchDir = mcpLaunchDir(DATA_DIR, writeRoots);
+  const plugins = options.plugins ?? [];
+  const pluginMcp = pluginMcpServers(plugins, { ...process.env, ...(options.env ?? {}) });
+  if (pluginMcp.skipped.length > 0) {
+    logger.warn('Plugin MCP servers not started: a placeholder could not be filled or the config is unreadable', {
+      servers: pluginMcp.skipped,
+    });
+  }
+  options.plugins = plugins.map((plugin) => ({ ...plugin, skipMcpDiscovery: true }));
+  const declared = { ...pluginMcp.servers, ...(options.mcpServers ?? {}) };
+  if (Object.keys(declared).length > 0) options.mcpServers = launchAllFrom(launchDir, declared);
 
   return attachStderrCapture(options, logger);
 }
