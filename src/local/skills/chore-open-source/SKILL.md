@@ -88,6 +88,8 @@ branch except the gate list and docs. Then write the rewrite rules in `W/config/
 - `blob-map.txt` — `<old blob id> <file with new bytes>` for media the owner wants repainted.
 - `filter-args` — extra filter-repo arguments, one per line (`--path`, `--invert-paths` to drop a file).
 - `post-rewrite.sh` — optional executable run in a worktree of the rewritten tip (docs that describe the gate).
+- `sanitize-scan.sh` — the **trusted** gate script (the canonical copy from phase 3). The engine never runs
+  the repository's own copy: anyone who can push could change it, and the engine runs with your credentials.
 
 ## 3. Shared gate
 
@@ -103,9 +105,9 @@ never on a command line or in output.
 ## 4. Rewrite (nothing is pushed)
 
 `"$ENGINE/rewrite.sh" OWNER/REPO` mirrors the remote, rewrites every branch and tag with the rules, adds the
-list-emptying commit and the `post-rewrite.sh` commit, and writes `W/out/<repo>/verify.txt`. Require: commit
-counts identical on every ref, tip-tree differences only the gate list and docs, pattern hits 0 in messages,
-authors, tags, ref names, paths and contents, and `scan: clean`. Publish the top commit as a review branch
+list-emptying commit and the `post-rewrite.sh` commit, and writes `W/out/<repo>/verify.txt`; it exits 1 unless
+the rewrite is clean. Require: commit counts identical on every ref, tip-tree differences only the gate list
+and docs, pattern hits 0 in messages, authors, tags, ref names, paths and contents, and `scan: clean`. Publish the top commit as a review branch
 for the owner: `git -C W/out/<repo>/new.git push https://github.com/OWNER/REPO.git refs/post/main:refs/heads/main-rewritten`.
 Reruns are deterministic (same remote state → same ids). Optional proof against the real secrets nobody can
 read back: [templates/rewrite-verify.yml](templates/rewrite-verify.yml) on a throwaway branch, run by a
@@ -117,7 +119,9 @@ self-hosted runner that can read W; delete the branch right after.
 rewrites again (up to 5 times) when someone pushed meanwhile — other sessions keep pushing to active
 branches; pushes all branches and tags atomically with a lease per ref (a ref that moved fails the whole push,
 nothing changes); pushes the top commit; verifies the remote equals the rewritten repo; deletes the review
-branch. `SWAP_PAUSE` needs `actions:write`; a bot App token usually gets HTTP 403 — leave it empty only when the
+branch. It pushes nothing unless `verify.txt` is clean (`SWAP_ALLOW_UNSCANNED=1` accepts a skipped scan), and
+after the atomic push it marks the run so a rerun resumes instead of rewriting the already-rewritten remote —
+whose commit map would no longer lead back to the original history. `SWAP_PAUSE` needs `actions:write`; a bot App token usually gets HTTP 403 — leave it empty only when the
 pushes start nothing harmful (GitHub creates no push event for a push carrying more than three tags; a push
 to the default branch builds a preview as on every merge). Deploy branches with a deploy workflow must be
 paused by someone who can.
@@ -125,15 +129,16 @@ paused by someone who can.
 ## 6. Finalize
 
 After every repository sharing the list has swapped: `"$ENGINE/finalize.sh" OWNER/REPO...` stores
-`W/config/patterns.txt` as each one's `SANITIZE_PATTERNS_SHARED` and re-runs the latest default-branch
-sanitize run. Wait for it and quote `sanitize-scan: clean` and the run URL; check CI on the new tip too.
+`W/config/patterns.txt` as each one's `SANITIZE_PATTERNS_SHARED`, then re-runs the sanitize run of the
+rewritten tip (not merely the latest run) and waits for it; it exits 1 unless every one succeeds. Quote
+`sanitize-scan: clean` and the run URL; check CI on the new tip too.
 
 ## 7. After the swap
 
 - **Clones:** `"$ENGINE/find-clones.sh" OWNER/REPO [roots]` lists every clone and its state;
-  `python3 -I "$ENGINE/migrate-clone.py" OWNER/REPO <clone> --plan`, then `--apply` (backup first, worktree
-  edits kept, local-only branches rebuilt with the same rules, shallow clones handled, refuses rather than
-  guesses). Another session's or person's clone: only with the owner's approval. A folder the owner keeps
+  `python3 -I "$ENGINE/migrate-clone.py" OWNER/REPO <clone> --plan`, then `--apply` (backup first; worktree
+  edits kept with their staged/unstaged split, or the worktree put back exactly as it was; detached HEADs and
+  shallow clones handled; local-only branches rebuilt with the same rules; refuses rather than guesses). Another session's or person's clone: only with the owner's approval. A folder the owner keeps
   as a deliberate backup of the old history is left alone.
 - **Forks** keep the old history; only the fork owner can force-sync or delete them. Ask.
 - **GitHub Support** removes pull request refs and cached commit pages. Ask; if the owner wants it, give

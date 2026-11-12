@@ -13,7 +13,12 @@
 #    that moved in between makes the whole push fail and nothing changes
 # 4. pushes the top commit (docs) on the default branch, a normal fast-forward
 # 5. checks the remote now equals the rewritten repo, deletes the review branch
-# 6. turns the paused workflows back on (also on failure)
+# 6. turns the paused workflows back on (also on failure), and fails naming any it could not
+#
+# Fail-closed: nothing is pushed unless verify.txt shows 0 pattern hits and `scan: clean`
+# (SWAP_ALLOW_UNSCANNED=1 accepts `scan: skipped`). After step 3 succeeds, out/<repo>/swapped
+# marks the run: a rerun resumes at step 4 instead of rewriting the already-rewritten remote
+# (which would lose the commit map every clone migration needs).
 #
 # Env: CHOS_WORK (run folder), SWAP_PAUSE, CHOS_MAIN (default main), CHOS_REVIEW_BRANCH
 # (default main-rewritten), SWAP_URL (push target; a local path for a dry run).
@@ -34,8 +39,15 @@ remote_refs() {
   git ls-remote "$URL" 'refs/heads/*' 'refs/tags/*' | grep -v '\^{}$' | grep -v " *refs/heads/$REVIEW\$" \
     | awk '{print $1" "$2}' | sort
 }
+verified() {
+  grep -qE '^pattern hits — messages\+authors: 0, tags: 0, ref names: 0, paths: 0, contents: 0 ' "$OUT/verify.txt" \
+    && ! grep -q '^commit counts: DIFFER' "$OUT/verify.txt" \
+    && { grep -q '^scan: clean' "$OUT/verify.txt" \
+         || { [ "${SWAP_ALLOW_UNSCANNED:-}" = 1 ] && grep -q '^scan: skipped' "$OUT/verify.txt"; }; }
+}
 attempt=1
-while :; do
+[ -e "$OUT/swapped" ] && echo "==> resuming: the branches and tags were already replaced by an earlier run"
+while [ ! -e "$OUT/swapped" ]; do
   echo "==> 1. remote unchanged since the rewrite snapshot? (check $attempt)"
   remote_refs > "$OUT/remote-now.refs"
   diff -q "$OUT/snapshot.refs" "$OUT/remote-now.refs" >/dev/null && break
@@ -46,28 +58,48 @@ while :; do
   fi
   echo "    the remote moved: rewriting again (log: $WORK/out-$REPO.rewrite.log)"
   CHOS_URL=${SWAP_URL:-${CHOS_URL:-}} "$SCRIPTS/rewrite.sh" "$SLUG" > "$WORK/out-$REPO.rewrite.log" 2>&1 \
-    || { echo "rewrite.sh failed: see $WORK/out-$REPO.rewrite.log" >&2; exit 1; }
-  grep -qE '^scan: (clean|skipped)' "$OUT/verify.txt" || { cat "$OUT/verify.txt"; echo "the new rewrite is not clean; stopping" >&2; exit 1; }
+    || { echo "rewrite.sh failed or the rewrite is not clean: see $WORK/out-$REPO.rewrite.log" >&2; exit 1; }
   attempt=$((attempt + 1))
 done
+if [ ! -e "$OUT/swapped" ] && ! verified; then
+  cat "$OUT/verify.txt" >&2
+  echo "swap.sh: verify.txt does not show a clean rewrite; nothing pushed" >&2
+  exit 1
+fi
 
 read -r -a PAUSE <<< "${SWAP_PAUSE:-}"
-resume() { for w in ${PAUSE[@]+"${PAUSE[@]}"}; do gh workflow enable "$w" -R "$SLUG" >/dev/null 2>&1 && echo "    enabled $w"; done; }
+PAUSED=()
+resume() {
+  local failed=()
+  for w in ${PAUSED[@]+"${PAUSED[@]}"}; do
+    if gh workflow enable "$w" -R "$SLUG"; then echo "    enabled $w"; else failed+=("$w"); fi
+  done
+  PAUSED=()
+  if [ ${#failed[@]} -gt 0 ]; then
+    echo "swap.sh: could not re-enable: ${failed[*]} — run: gh workflow enable <file> -R $SLUG" >&2
+    return 1
+  fi
+}
+trap 'resume || true' EXIT
 if [ ${#PAUSE[@]} -eq 0 ]; then
   echo "==> 2. no workflow to pause (SWAP_PAUSE empty)"
 else
   echo "==> 2. pause ${PAUSE[*]}"
-  for w in "${PAUSE[@]}"; do gh workflow disable "$w" -R "$SLUG"; done
+  for w in "${PAUSE[@]}"; do gh workflow disable "$w" -R "$SLUG"; PAUSED+=("$w"); done
 fi
-trap resume EXIT
 
 echo "==> 3. replace every branch and tag (atomic, each ref leased to its snapshot value)"
-leases=()
-while read -r sha ref; do leases+=("--force-with-lease=$ref:$sha"); done < "$OUT/snapshot.refs"
-if ! git -C "$NEW" push --atomic ${leases[@]+"${leases[@]}"} "$URL" 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*'; then
-  echo "Nothing was changed: a ref moved after the check (stale info) or the push was refused." >&2
-  echo "Run this script again; it rewrites again when the remote moved." >&2
-  exit 1
+if [ -e "$OUT/swapped" ]; then
+  echo "    already done"
+else
+  leases=()
+  while read -r sha ref; do leases+=("--force-with-lease=$ref:$sha"); done < "$OUT/snapshot.refs"
+  if ! git -C "$NEW" push --atomic ${leases[@]+"${leases[@]}"} "$URL" 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*'; then
+    echo "Nothing was changed: a ref moved after the check (stale info) or the push was refused." >&2
+    echo "Run this script again; it rewrites again when the remote moved." >&2
+    exit 1
+  fi
+  date > "$OUT/swapped"
 fi
 
 echo "==> 4. top commit on $MAIN"
@@ -86,5 +118,5 @@ git -C "$NEW" push -q "$URL" --delete "$REVIEW" 2>/dev/null && echo "    deleted
 
 echo "==> 6. resume workflows"
 trap - EXIT
-resume
+resume || exit 1
 echo "done: $SLUG. Next: finalize.sh, then migrate-clone.py for every local clone."

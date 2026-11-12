@@ -60,8 +60,10 @@ def load_map(p):
 
 A = load_map(fr / 'commit-map')
 first_changed = [l.split()[0] for l in (fr / 'first-changed-commits').read_text().splitlines() if l.strip()]
-pat_file = work / 'config' / 'patterns.txt'
-PAT = re.compile('|'.join(l.strip() for l in pat_file.read_text().splitlines() if l.strip()), re.I) if pat_file.is_file() else None
+# The shared list and this repository's own list: a local-only commit must pass both.
+_pats = [l.strip() for name in ('patterns.txt', 'repo-patterns.txt') if (work / 'config' / name).is_file()
+         for l in (work / 'config' / name).read_text().splitlines() if l.strip() and not l.startswith('#')]
+PAT = re.compile('|'.join(_pats), re.I) if _pats else None
 new_tags = dict((r.split()[1][10:], r.split()[0]) for r in git('for-each-ref', '--format=%(objectname) %(refname)', 'refs/tags', cwd=out / 'new.git').splitlines())
 
 
@@ -98,16 +100,30 @@ def old_refs():
 
 
 def live_worktrees():
+    """({branch ref: worktree}, [(worktree, HEAD) for detached ones]) of this repository's live
+    worktrees; a registration whose path now belongs to another repository is stale and skipped."""
     me = os.path.realpath(git('rev-parse', '--path-format=absolute', '--git-common-dir').strip())
-    res, w = {}, None
-    for line in git('worktree', 'list', '--porcelain').splitlines():
+    branches, detached, w, head = {}, [], None, None
+
+    def mine(path):
+        cd = subprocess.run(['git', '-C', path, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+                            capture_output=True, text=True).stdout.strip()
+        return os.path.isdir(path) and os.path.realpath(cd) == me
+    for line in git('worktree', 'list', '--porcelain').splitlines() + ['']:
         if line.startswith('worktree '):
-            w = line[9:]
-        elif line.startswith('branch ') and w and os.path.isdir(w):
-            cd = subprocess.run(['git', '-C', w, 'rev-parse', '--path-format=absolute', '--git-common-dir'], capture_output=True, text=True).stdout.strip()
-            if os.path.realpath(cd) == me:  # a registration whose path now belongs to another repo is stale
-                res[line[7:]] = w
-    return res
+            w, head = line[9:], None
+        elif line.startswith('HEAD '):
+            head = line[5:]
+        elif line.startswith('branch ') and w and mine(w):
+            branches[line[7:]] = w
+        elif line == 'detached' and w and head and mine(w):
+            detached.append((w, head))
+    return branches, detached
+
+
+def old_heads():
+    """Detached worktrees whose checked-out commit is still on the old history."""
+    return [(w, h) for w, h in live_worktrees()[1] if A.get(h, h) != h or reaches_old(h)]
 
 
 def report():
@@ -117,6 +133,7 @@ def report():
     if PAT and heads and git('rev-list', *heads, '--not', '--remotes', check=False).strip():
         log = git('log', '-p', '--format=%B%an %ae%n%cn %ce', *heads, '--not', '--remotes', check=False)
         hits = sum(1 for l in log.splitlines() if PAT.search(l))
+    old += [f'HEAD of {w} (detached)' for w, _ in old_heads()]
     print(f'{slug} @ {clone}: refs on the old history {len(old)}; pattern lines in local-only commits {hits}')
     for r in old:
         print('    ' + r)
@@ -141,7 +158,7 @@ if mode == 'apply':
         r = subprocess.run(['git', '-C', str(clone), 'fetch', '-q', '--prune', '--force', 'origin'], capture_output=True, text=True)
         print('   fetched origin' if r.returncode == 0 else f'   origin fetch failed (left as is): {r.stderr.strip()[:120]}')
 
-wts = live_worktrees()
+wts, detached_wts = live_worktrees()
 tips = {r[11:]: c for _, c, r in rows('refs/heads')}
 plan = []  # (branch, old, target or None, how)
 local_only = []
@@ -153,7 +170,6 @@ for b, c in tips.items():
     else:
         local_only.append(b)
 
-made_trees = {}
 if local_only and mode == 'apply':
     # The pushed rewrite's input plus these branches, filtered by the same rules.
     scratch = work / 'clone-backups' / f'{repo}-rebuild-{os.getpid()}.git'
@@ -201,6 +217,29 @@ for b in local_only:
         continue
     plan.append((b, c, target, f'rebuilt {len(local)} local commit(s)'))
 
+def move_worktree(wt, old, target, label, detach):
+    """Move a checkout to target keeping uncommitted edits (index and worktree, via stash --index).
+    Any conflict puts it back exactly as it was. Returns None on success, else the reason."""
+    stash = ''
+    if git('status', '--porcelain', '--untracked-files=no', cwd=wt).strip():
+        (bdir / f'edits-{label.replace("/", "_")}.patch').write_text(git('diff', 'HEAD', '--binary', cwd=wt))
+        git('stash', 'push', '-q', '-m', f'migrate-clone: edits of {label}', cwd=wt)
+        stash = git('rev-parse', 'stash@{0}', cwd=wt).strip()
+    go = ['checkout', '-q', '--detach', target] if detach else ['reset', '-q', '--keep', target]
+    if subprocess.run(['git', '-C', wt, *go]).returncode:
+        if stash:
+            git('stash', 'pop', '-q', '--index', cwd=wt)
+        return f'worktree {wt} could not move'
+    if stash and subprocess.run(['git', '-C', wt, 'stash', 'apply', '-q', '--index', stash], capture_output=True).returncode:
+        git('reset', '-q', '--hard', 'HEAD', cwd=wt)
+        git(*(['checkout', '-q', '--detach', old] if detach else ['reset', '-q', '--keep', old]), cwd=wt)
+        git('stash', 'pop', '-q', '--index', cwd=wt)
+        return f'worktree {wt} has edits in lines the rewrite changed — left exactly as it was (patch in {bdir})'
+    if stash:
+        git('stash', 'drop', '-q', cwd=wt)
+    return None
+
+
 moved, left = [], []
 for b, c, target, how in plan:
     if not target:
@@ -214,27 +253,22 @@ for b, c, target, how in plan:
         git('update-ref', ref, target, c)
         moved.append(f'{b} [{how}] -> {target[:10]}')
         continue
-    dirty = bool(git('status', '--porcelain', '--untracked-files=no', cwd=wt).strip())
-    stash = ''
-    if dirty:
-        (bdir / f'edits-{b.replace("/", "_")}.patch').write_text(git('diff', 'HEAD', '--binary', cwd=wt))
-        git('stash', 'push', '-q', '-m', f'migrate-clone: edits of {b}', cwd=wt)
-        stash = git('rev-parse', 'stash@{0}', cwd=wt).strip()
-    if subprocess.run(['git', '-C', wt, 'reset', '-q', '--keep', target]).returncode:
-        if stash:
-            git('stash', 'pop', '-q', cwd=wt)
-        left.append(f'{b}: worktree {wt} could not move')
+    edited = bool(git('status', '--porcelain', '--untracked-files=no', cwd=wt).strip())
+    why = move_worktree(wt, c, target, b, detach=False)
+    if why:
+        left.append(f'{b}: {why}')
+    else:
+        moved.append(f'{b} [{how}] -> {target[:10]} (worktree {wt}{", edits kept" if edited else ""})')
+for wt, h in detached_wts:
+    if A.get(h, h) == h:
+        if reaches_old(h):
+            left.append(f'detached HEAD of {wt}: local commits on the old history — check out a migrated branch there')
         continue
-    if stash and subprocess.run(['git', '-C', wt, 'stash', 'apply', '-q', stash], capture_output=True).returncode:
-        # Put the worktree back exactly as it was: old commit, edits re-applied there.
-        git('reset', '-q', '--hard', 'HEAD', cwd=wt)
-        git('reset', '-q', '--keep', c, cwd=wt)
-        git('stash', 'pop', '-q', cwd=wt)
-        left.append(f'{b}: worktree {wt} has edits in lines the rewrite changed — left as it was (patch in {bdir})')
+    if mode != 'apply':
+        moved.append(f'detached HEAD of {wt} [maps]')
         continue
-    if stash:
-        git('stash', 'drop', '-q', cwd=wt)
-    moved.append(f'{b} [{how}] -> {target[:10]} (worktree {wt}{", edits kept" if stash else ""})')
+    why = move_worktree(wt, h, A[h], 'detached-' + pathlib.Path(wt).name, detach=True)
+    (left if why else moved).append(f'detached HEAD of {wt}: ' + (why or f'-> {A[h][:10]}'))
 
 if mode == 'apply':
     for o, c, r in rows('refs/tags'):

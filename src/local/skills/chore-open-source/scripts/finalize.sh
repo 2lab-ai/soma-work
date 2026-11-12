@@ -17,11 +17,27 @@ for slug in "$@"; do
   printf '%s' "$VALUE" | gh secret set SANITIZE_PATTERNS_SHARED -R "$slug"
   echo "updated SANITIZE_PATTERNS_SHARED in $slug"
 done
+status=0
 for slug in "$@"; do
   wf=${SANITIZE_WORKFLOW:-$(gh workflow list -R "$slug" --all --json path -q '.[].path' | grep -i sanitize | head -1 | xargs -n1 basename 2>/dev/null || true)}
-  [ -n "$wf" ] || { echo "no sanitize workflow found in $slug"; continue; }
-  id=$(gh run list -R "$slug" --workflow "$wf" --branch "$MAIN" --event push -L 1 --json databaseId -q '.[0].databaseId')
-  [ -n "$id" ] && gh run rerun "$id" -R "$slug" && echo "re-running $wf run $id in $slug"
+  [ -n "$wf" ] || { echo "no sanitize workflow found in $slug" >&2; status=1; continue; }
+  # The run of the rewritten tip — not merely the latest one, which may predate the swap.
+  tip=$(gh api "repos/$slug/commits/$MAIN" --jq .sha)
+  id=""
+  for _ in $(seq 1 40); do
+    id=$(gh run list -R "$slug" --workflow "$wf" --branch "$MAIN" -L 20 --json databaseId,headSha \
+           -q "map(select(.headSha == \"$tip\")) | .[0].databaseId // empty")
+    [ -n "$id" ] && break
+    sleep 15
+  done
+  if [ -z "$id" ]; then echo "no $wf run for the $MAIN tip ${tip:0:12} in $slug" >&2; status=1; continue; fi
+  gh run watch "$id" -R "$slug" >/dev/null 2>&1 || true
+  gh run rerun "$id" -R "$slug" >/dev/null && echo "re-running $wf run $id (tip ${tip:0:12}) in $slug with the new list"
+  sleep 10
+  gh run watch "$id" -R "$slug" >/dev/null 2>&1 || true
+  c=$(gh run view "$id" -R "$slug" --json conclusion -q .conclusion)
+  echo "  $slug: $wf on ${tip:0:12} -> $c"
+  [ "$c" = success ] || status=1
 done
 cat <<'EOF'
 
@@ -33,3 +49,4 @@ Left for the owner (no push reaches these):
   - forks keep the old history; only their owners can replace or delete them.
   - every clone keeps the old history: migrate-clone.py <OWNER/REPO> <clone> --apply, or re-clone.
 EOF
+exit $status

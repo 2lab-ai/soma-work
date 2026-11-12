@@ -6,8 +6,9 @@ Writes $CHOS_WORK/recon/<repo>.md and prints its summary. Changes nothing anywhe
 The report quotes the matched text so the rules can be written from it. It is LOCAL ONLY: never
 paste it, or any matched value, into a pull request, issue, commit message, release note or chat.
 
-  history    every line any commit ever added (all branches, tags, pull request refs), commit
-             messages, author and committer lines, tag messages, ref names, path names
+  history    every version of every text file that ever existed (all branches, tags, pull
+             request refs — merge resolutions included), commit messages, author and committer
+             lines, tag messages, ref names, path names
   patterns   $CHOS_WORK/config/patterns.txt (the forbidden list, one regex per line), optional
              config/repo-patterns.txt — and built-in leak classes: home paths, e-mail addresses
              outside example domains, private and CGNAT addresses, tailnet / .internal / .local
@@ -90,14 +91,29 @@ heads = git('for-each-ref', '--format=%(refname)', 'refs/heads').split()
 tags = git('for-each-ref', '--format=%(refname)', 'refs/tags').split()
 pulls = git('for-each-ref', '--format=%(refname)', 'refs/pull/*/head').split()
 commits = git('rev-list', '--all').split()
-commit, path = '', ''
-for line in git('log', '--all', '-p', '--no-color', '--format=@@commit %H').splitlines():
-    if line.startswith('@@commit '):
-        commit = line[9:]
-    elif line.startswith('+++ '):
-        path = line[6:] if line.startswith('+++ b/') else line[4:]
-    elif line.startswith('+') and not line.startswith('+++'):
-        scan(line[1:], f'{commit[:10]} {path}')
+# Every blob ever reachable, not `log -p` additions: those omit merge commits, so a value added
+# while resolving a conflict (and removed later) would never be seen.
+first_path = {}
+for l in git('rev-list', '--objects', '--all').splitlines():
+    oid, _, p = l.partition(' ')
+    if p:
+        first_path.setdefault(oid, p)
+check = subprocess.run(['git', '-C', str(mirror), 'cat-file', '--batch-check=%(objectname) %(objecttype) %(objectsize)'],
+                       input='\n'.join(first_path) + '\n', capture_output=True, text=True).stdout.split('\n')
+blobs = [f[0] for f in (l.split() for l in check) if len(f) == 3 and f[1] == 'blob' and int(f[2]) < 20_000_000]
+for i in range(0, len(blobs), 400):
+    chunk = blobs[i:i + 400]
+    out = subprocess.run(['git', '-C', str(mirror), 'cat-file', '--batch'], input=('\n'.join(chunk) + '\n').encode(),
+                         capture_output=True).stdout
+    pos = 0
+    for oid in chunk:
+        nl = out.index(b'\n', pos)
+        size = int(out[pos:nl].split()[2])
+        data = out[nl + 1:nl + 1 + size]
+        pos = nl + 1 + size + 1
+        if b'\0' in data[:8000]:
+            continue  # binary: media goes through OCR below
+        scan(data.decode('utf-8', 'replace'), f'{first_path[oid]} (blob {oid[:10]})')
 for c, body in zip(commits, git('log', '--all', '--format=%B%x00').split('\0')):
     scan(body, 'commit messages')
 idents = Counter(git('log', '--all', '--format=%an <%ae>%n%cn <%ce>').splitlines())
@@ -162,17 +178,22 @@ if github and shutil.which('gh'):
     def ghj(*a):
         r = subprocess.run(['gh', *a], capture_output=True, text=True)
         return json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else None
+
+    def ghpages(path):
+        # --paginate prints one JSON document per page; --slurp wraps them in one array.
+        pages = ghj('api', path, '--paginate', '--slurp') or []
+        return [x for page in pages for x in (page if isinstance(page, list) else [page])]
     gh['repo'] = ghj('repo', 'view', slug, '--json', 'visibility,licenseInfo,forkCount,isFork')
-    gh['forks'] = [f['full_name'] for f in (ghj('api', f'repos/{slug}/forks', '--paginate') or [])]
+    gh['forks'] = [f['full_name'] for f in ghpages(f'repos/{slug}/forks')]
     gh['secrets'] = [s['name'] for s in ((ghj('api', f'repos/{slug}/actions/secrets') or {}).get('secrets') or [])]
     gh['variables'] = [s['name'] for s in ((ghj('api', f'repos/{slug}/actions/variables') or {}).get('variables') or [])]
     for kind, path in (('issue/PR', 'issues?state=all&per_page=100'), ('issue/PR comment', 'issues/comments?per_page=100'),
                        ('review comment', 'pulls/comments?per_page=100'), ('commit comment', 'comments?per_page=100'),
                        ('release', 'releases?per_page=100')):
-        for item in ghj('api', f'repos/{slug}/{path}', '--paginate') or []:
+        for item in ghpages(f'repos/{slug}/{path}'):
             scan(' '.join(str(item.get(k) or '') for k in ('title', 'name', 'body')), f'github {kind} {item.get("number") or item.get("id")}')
     gh['assets'] = 0
-    for rel in ghj('api', f'repos/{slug}/releases', '--paginate') or []:
+    for rel in ghpages(f'repos/{slug}/releases'):
         for a in rel.get('assets') or []:
             gh['assets'] += 1
             data = subprocess.run(['gh', 'api', '-H', 'Accept: application/octet-stream', f'repos/{slug}/releases/assets/{a["id"]}'], capture_output=True).stdout

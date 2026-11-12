@@ -9,6 +9,9 @@
 #   config/mailmap, config/blob-map.txt, config/filter-args   optional (filter-args.py)
 #   config/post-rewrite.sh  optional hook, run in a worktree of the rewritten default branch;
 #                           whatever it changes becomes the second post-rewrite commit (docs)
+#   config/sanitize-scan.sh the TRUSTED gate script (the canonical copy, reviewed). The copy
+#                           inside the repository is never executed: anyone who can push could
+#                           change it, and this runs with the operator's credentials.
 # Output ($CHOS_WORK/out/REPO):
 #   orig.git        untouched mirror (rollback source)    snapshot.refs  remote refs at clone time
 #   new.git         rewritten repo: refs/heads/<main> = list commit, refs/post/<main> = top commit
@@ -18,6 +21,8 @@
 # branch, default main), CHOS_REVIEW_BRANCH (branch name never rewritten, default main-rewritten),
 # CHOS_DATE (date of the post-rewrite commits; fixed so reruns give the same ids).
 # Deterministic: the same remote state in gives the same commit ids out.
+# Exit status: 0 only when verify.txt shows 0 pattern hits and the gate scan clean (or skipped
+# because no trusted scanner was given); 1 otherwise, after writing verify.txt.
 set -euo pipefail
 SLUG=${1:?usage: rewrite.sh OWNER/REPO}
 case $SLUG in */*) ;; *) echo "rewrite.sh: expected OWNER/REPO, got '$SLUG'" >&2; exit 2;; esac
@@ -37,6 +42,12 @@ POST_DATE=${CHOS_DATE:-$(cat "$DATE_FILE")}
 export CHOS_WORK=$WORK
 
 mkdir -p "$WORK/out" "$WORK/.trash"
+if [ -e "$OUT/swapped" ] && [ "${CHOS_FORCE_REWRITE:-}" != 1 ]; then
+  # Its commit map is what every clone migration needs; a new rewrite would read the
+  # already-rewritten remote and map nothing back to the original history.
+  echo "rewrite.sh: $OUT was already pushed by swap.sh; refusing to replace it (CHOS_FORCE_REWRITE=1 to override)" >&2
+  exit 2
+fi
 if [ -e "$OUT" ]; then mv "$OUT" "$WORK/.trash/$REPO.$(date +%s)"; fi
 mkdir -p "$OUT"
 
@@ -113,12 +124,12 @@ SCAN=$OUT/scan-wt
 git clone -q "$OUT/new.git" "$SCAN"
 git -C "$SCAN" fetch -q origin "refs/post/$MAIN"
 git -C "$SCAN" checkout -q --detach FETCH_HEAD
-if git -C "$SCAN" cat-file -e HEAD:scripts/sanitize-scan.sh 2>/dev/null; then
-  git -C "$SCAN" show HEAD:scripts/sanitize-scan.sh > "$OUT/sanitize-scan.sh"
-elif [ -f "$CFG/sanitize-scan.sh" ]; then
+if [ -f "$CFG/sanitize-scan.sh" ]; then
   cp "$CFG/sanitize-scan.sh" "$OUT/sanitize-scan.sh"
-fi
-if [ -f "$OUT/sanitize-scan.sh" ]; then
+  if git -C "$SCAN" cat-file -e HEAD:scripts/sanitize-scan.sh 2>/dev/null \
+     && ! git -C "$SCAN" show HEAD:scripts/sanitize-scan.sh | cmp -s - "$OUT/sanitize-scan.sh"; then
+    echo "note: the repository's scripts/sanitize-scan.sh differs from the trusted copy (not executed)" >> "$OUT/verify.txt"
+  fi
   RP=""; [ -f "$CFG/repo-patterns.txt" ] && RP=$(grep -v '^[[:space:]]*$' "$CFG/repo-patterns.txt" | paste -sd'|' -)
   if ( cd "$SCAN" && unset GITHUB_EVENT_NAME GITHUB_EVENT_PATH GITHUB_BASE_REF GITHUB_HEAD_REF \
          && SANITIZE_PATTERNS_SHARED="$P" SANITIZE_PATTERNS="$RP" bash "$OUT/sanitize-scan.sh" ) > "$OUT/scan.log" 2>&1; then
@@ -128,6 +139,11 @@ if [ -f "$OUT/sanitize-scan.sh" ]; then
   fi
   tail -2 "$OUT/scan.log" >> "$OUT/verify.txt"
 else
-  echo "scan: skipped (no scripts/sanitize-scan.sh in the repo and none in config/)" >> "$OUT/verify.txt"
+  echo "scan: skipped (no trusted scanner at config/sanitize-scan.sh)" >> "$OUT/verify.txt"
 fi
 cat "$OUT/verify.txt"
+if grep -q '^scan: FAILED' "$OUT/verify.txt" || grep -q '^commit counts: DIFFER' "$OUT/verify.txt" \
+   || ! grep -qE '^pattern hits — messages\+authors: 0, tags: 0, ref names: 0, paths: 0, contents: 0 ' "$OUT/verify.txt"; then
+  echo "rewrite.sh: the rewrite is not clean (see $OUT/verify.txt); do not swap it" >&2
+  exit 1
+fi
