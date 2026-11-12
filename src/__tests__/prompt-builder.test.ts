@@ -221,11 +221,24 @@ describe('PromptBuilder', () => {
       expect(prompt.indexOf('## Restart Re-Attach')).toBeGreaterThan(-1);
       expect(section).toContain('cancel-in-progress');
       expect(section).toContain('`deploy-state.json`');
-      expect(section).toMatch(/for this deploy request only\. A restart replays the same request; it is not a new one/);
+      // The record: atomic, keyed by the request's message ts, retired only when done or a different tuple.
       expect(section).toMatch(
-        /merged with its deploy run still in progress, ask \(or continue that merged one at step 5, its `before_sha` being the first parent of its `merge_commit_sha`\) instead of starting step 2/,
+        /written atomically \(a temp file, then rename\); an unreadable file stops the repo and asks/,
       );
+      expect(section).toMatch(
+        /`request` is the deploy request's message ts: a restart keeps it, a new request has a new one/,
+      );
+      expect(section).toMatch(
+        /Move an old file aside when its `done` is true[^\n]*or its repo, source or target differs/,
+      );
+      expect(section).toMatch(/a new request while the old deploy is not `done` reports it and asks first/);
+      // No record: never adopt someone's deploy unasked; a fork's same-named branch never counts.
+      expect(section).toMatch(
+        /merged with its deploy run still in progress, ask instead of starting step 2; never adopt it unasked/,
+      );
+      expect(section).toMatch(/`head\.repo\.full_name` is `<owner\/repo>` — a fork's branch never counts/);
       for (const field of [
+        '`request`',
         '`source_sha`',
         '`target_sha`',
         '`branch`',
@@ -247,11 +260,14 @@ describe('PromptBuilder', () => {
       expect(section).toMatch(/Save its `merge_commit_sha` as `after_sha` if the file lacks it/);
       // Only this request's PR counts — an older merged deploy PR must not hijack a new deploy.
       expect(section).toMatch(
-        /belongs to this request only when it is the file's `pr` or its head is the file's `branch`; older deploy PRs never count/,
+        /belongs to this request only when it is the file's `pr`, or its head is the file's `branch` in this same repo/,
       );
+      expect(section).toMatch(/older deploy PRs never count/);
       expect(section).toMatch(/reuse it, continue at step 4\. Never open a second PR/);
       expect(section).toMatch(/closed unmerged → report it and ask/);
-      expect(check).toMatch(/merge the new `source_sha` into the same working branch, push it, keep the same PR/);
+      expect(check).toMatch(
+        /merge the new `target_sha` and the new `source_sha` into the same working branch, push it, keep the same PR/,
+      );
       expect(check).toMatch(
         /wait for CI on the new head again\. If the old `source_sha` is not an ancestor of the new one[^\n]*stop and ask/,
       );
