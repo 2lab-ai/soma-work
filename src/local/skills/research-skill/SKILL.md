@@ -47,6 +47,10 @@ fixed once the recipe is read (step 0.3). Never a session temp folder — long r
 - Parallel batches of 3–5 subagents, each with a self-contained brief (the frozen skill, its probe, where to write).
   Each writes its artifacts plus `friction.md`: every place the skill was unclear, wrong, missing a step or needed a
   workaround — with the exact error text — and how long each step took.
+- **Every brief carries the probe rules, word for word, and they override the target skill:** this is a research
+  probe; write only under `RUN/<probe id>/`; do not publish, upload, deploy, merge, open a PR or issue, push, message
+  people, or change the target skill, its repository or its kit. Skip the target's delivery and self-improvement
+  (retro) stages and record in `friction.md` what they would have done.
 - A shared slow resource (a GPU, a rate-limited API): authors prepare all inputs first, then the resource runs the
   jobs one after another within the recipe's budget.
 - Workarounds are data: anything an author built to get past a gap is a candidate for the skill's library.

@@ -56,5 +56,8 @@ describe('local:research-skill', () => {
     expect(body).toMatch(/cannot be read → stop and report/);
     expect(body).toContain('only after the review passed');
     expect(body).toContain('Never publish, deploy, merge or message people from a probe.');
+    // The rule must reach the probe authors themselves, not only the controller.
+    expect(body).toMatch(/Every brief carries the probe rules, word for word, and they override the target skill/);
+    expect(body).toMatch(/Skip the target's delivery and self-improvement\s+\(retro\) stages/);
   });
 });
