@@ -10,12 +10,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CronScheduler,
   type CronSchedulerDeps,
+  resolveEffortOverride,
   resolveModelOverride,
   type SyntheticMessageEvent,
 } from '../cron-scheduler';
 import { SessionRegistry } from '../session-registry';
 import { ConversationSession } from '../types';
-import { MODEL_ALIASES } from '../user-settings-store';
+import { MODEL_ALIASES, userSettingsStore } from '../user-settings-store';
 
 function createTestJob(overrides: Partial<CronJob> = {}): CronJob {
   return {
@@ -705,9 +706,14 @@ describe('CronScheduler — Model Override', () => {
 
   beforeEach(() => {
     tmpFile = path.join(os.tmpdir(), `cron-sched-model-${Date.now()}.json`);
+    vi.restoreAllMocks();
   });
 
-  it('fast model type sets modelOverride to sonnet', async () => {
+  // `fast` = the `sonnet` aux tier of the job creator's default model, resolved at
+  // fire time (agent-runtime/aux-model.ts): Claude → `sonnet`, Codex → `terra`,
+  // Grok → `grok` — each through the alias table, like `opus` / `fable`.
+  it('fast model type sets modelOverride to the sonnet tier of the creator’s default model', async () => {
+    const defaults = vi.spyOn(userSettingsStore, 'getUserDefaultModel').mockReturnValue('claude-opus-5-5[1m]');
     const storage = new CronStorage(tmpFile);
     storage.addJob({
       name: 'fast-model',
@@ -729,7 +735,63 @@ describe('CronScheduler — Model Override', () => {
     await scheduler.tick();
 
     expect(injectedMessages).toHaveLength(1);
-    expect(injectedMessages[0].modelOverride).toBe('claude-sonnet-4-20250514');
+    expect(injectedMessages[0].modelOverride).toBe(MODEL_ALIASES.sonnet);
+    expect(defaults).toHaveBeenCalledWith('U123');
+  });
+
+  // Grok has one model line, so its `fast` tier lowers effort instead; the fire
+  // carries that effort beside the model, or the session keeps its xhigh/max.
+  it('fast in a Grok owner’s fire carries the tier effort; Claude and Codex keep the session effort', async () => {
+    const defaults = vi.spyOn(userSettingsStore, 'getUserDefaultModel').mockReturnValue('grok-4.7');
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({
+      name: 'fast-grok',
+      expression: '* * * * *',
+      prompt: 'Quick task',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
+      modelConfig: { type: 'fast' },
+    });
+    const { deps, injectedMessages } = createMockDeps(storage);
+    deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'thread-1');
+    deps.sessionRegistry.transitionToMain('C456', 'thread-1', 'default');
+    deps.sessionRegistry.setActivityState('C456', 'thread-1', 'idle');
+    await new CronScheduler(deps).tick();
+
+    expect(injectedMessages).toHaveLength(1);
+    expect(injectedMessages[0].modelOverride).toMatch(/^grok-/);
+    expect(injectedMessages[0].effortOverride).toBe('medium');
+
+    defaults.mockReturnValue('claude-opus-5-5[1m]');
+    expect(resolveEffortOverride({ type: 'fast' }, 'U1')).toBeUndefined();
+    defaults.mockReturnValue('gpt-6.1-sol[1m]');
+    expect(resolveEffortOverride({ type: 'fast' }, 'U1')).toBeUndefined();
+    defaults.mockReturnValue('grok-4.7');
+    expect(resolveEffortOverride({ type: 'opus' }, 'U1')).toBeUndefined();
+    expect(resolveEffortOverride(undefined, 'U1')).toBeUndefined();
+  });
+
+  it('fast follows the creator’s provider and the alias table at fire time', () => {
+    const defaults = vi.spyOn(userSettingsStore, 'getUserDefaultModel');
+    defaults.mockReturnValue('claude-opus-5-5[1m]');
+    expect(resolveModelOverride({ type: 'fast' }, 'U1')).toBe(MODEL_ALIASES.sonnet);
+    defaults.mockReturnValue('gpt-6.1-sol[1m]');
+    expect(resolveModelOverride({ type: 'fast' }, 'U1')).toBe(MODEL_ALIASES.terra);
+    defaults.mockReturnValue('grok-4.7');
+    expect(resolveModelOverride({ type: 'fast' }, 'U1')).toMatch(/^grok-/);
+
+    defaults.mockReturnValue('claude-opus-5-5[1m]');
+    const before = MODEL_ALIASES.sonnet;
+    try {
+      MODEL_ALIASES.sonnet = 'claude-sonnet-4-6';
+      expect(resolveModelOverride({ type: 'fast' }, 'U1')).toBe('claude-sonnet-4-6');
+    } finally {
+      MODEL_ALIASES.sonnet = before;
+    }
+    // Other types do not depend on the creator.
+    expect(resolveModelOverride({ type: 'opus' }, 'U1')).toBe(MODEL_ALIASES.opus);
+    expect(resolveModelOverride({ type: 'default' }, 'U1')).toBeUndefined();
   });
 
   it('opus / fable alias types resolve to the latest MODEL_ALIASES target at fire time', async () => {
@@ -814,6 +876,7 @@ describe('CronScheduler — Model Override', () => {
   });
 
   it('model override passes through to new_thread path', async () => {
+    vi.spyOn(userSettingsStore, 'getUserDefaultModel').mockReturnValue('gpt-6.1-sol[1m]');
     const storage = new CronStorage(tmpFile);
     storage.addJob({
       name: 'new-thread-model',
@@ -833,7 +896,7 @@ describe('CronScheduler — Model Override', () => {
     await scheduler.tick();
 
     expect(injectedMessages).toHaveLength(1);
-    expect(injectedMessages[0].modelOverride).toBe('claude-sonnet-4-20250514');
+    expect(injectedMessages[0].modelOverride).toBe(MODEL_ALIASES.terra);
   });
 });
 

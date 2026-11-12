@@ -48,6 +48,8 @@ export interface SessionTitleBridgeSnapshot {
   links?: SessionSummaryTitleLinks;
   /** The session's user (initiator, else owner): in llmux mode the title call is metered under their own key. */
   tenantUserId?: string;
+  /** The session's model: the summary / title aux tiers follow its provider. */
+  mainModel?: string;
 }
 export interface SessionTitleBridge {
   getSnapshot(conversationId: string): SessionTitleBridgeSnapshot | null;
@@ -455,7 +457,9 @@ async function generateSummary(
   content: string,
   ownerId: string | undefined,
 ): Promise<void> {
-  const summary = await summarizeResponse(content, { tenantUserId: ownerId || undefined });
+  // The live session's model (when one holds this conversation) picks the aux tier's provider.
+  const mainModel = _sessionTitleBridge?.getSnapshot(conversationId)?.mainModel;
+  const summary = await summarizeResponse(content, { tenantUserId: ownerId || undefined, mainModel });
 
   const record = await getOrLoadConversation(conversationId);
   if (!record) {
@@ -520,7 +524,7 @@ async function maybeRegenerateSessionSummaryTitle(conversationId: string, turnId
   if (!_sessionTitleBridge) return;
   const snap = _sessionTitleBridge.getSnapshot(conversationId);
   if (!snap) return;
-  const { sessionKey, userMessages, summaryTitleLastUpdatedAtMs, links, tenantUserId } = snap;
+  const { sessionKey, userMessages, summaryTitleLastUpdatedAtMs, links, tenantUserId, mainModel } = snap;
 
   // Skip: not enough user signal yet.
   if (!userMessages || userMessages.length < SUMMARY_TITLE_MIN_USER_MSG) return;
@@ -540,7 +544,7 @@ async function maybeRegenerateSessionSummaryTitle(conversationId: string, turnId
   const startTurnId = turnId;
 
   const work = (async () => {
-    const result = await generateSessionSummaryTitle(userMessages, links, { tenantUserId });
+    const result = await generateSessionSummaryTitle(userMessages, links, { tenantUserId, mainModel });
     if (!result || !_sessionTitleBridge) return;
     const latest = _sessionTitleBridge.getSnapshot(conversationId);
     if (!latest || latest.sessionKey !== sessionKey) return;

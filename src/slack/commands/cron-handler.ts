@@ -184,7 +184,8 @@ export class CronCommandHandler implements CommandHandler {
       desc = `${lower} — 실행 시점의 최신 ${lower}(1M)`;
     } else if (lower === 'fast') {
       patch = { modelConfig: { type: 'fast' } };
-      desc = 'fast (sonnet)';
+      // The sonnet aux tier of the creator's default model, resolved at fire time.
+      desc = 'fast — 실행 시점에 만든 사람 모델의 sonnet급 (sonnet·terra·grok)';
     } else {
       // Cache miss → forced llmux catalog re-fetch + one retry before erroring.
       const modelId = await userSettingsStore.resolveModelInputWithRefresh(value);

@@ -7,12 +7,15 @@ vi.mock('../../user-settings-store', async (importOriginal) => {
     userSettingsStore: {
       ...actual.userSettingsStore,
       getUserSessionTheme: vi.fn().mockReturnValue('default'),
+      getUserDefaultModel: vi.fn().mockReturnValue('claude-opus-5-5[1m]'),
+      getModelDisplayName: vi.fn((model: string) => actual.userSettingsStore.getModelDisplayName(model as any)),
     },
   };
 });
 
 import type { ClaudeHandler } from '../../claude-handler';
 import type { ConversationSession } from '../../types';
+import { userSettingsStore } from '../../user-settings-store';
 import { SessionUiManager } from '../session-manager';
 import type { SlackApiHelper } from '../slack-api-helper';
 
@@ -178,8 +181,10 @@ describe('SessionUiManager', () => {
       const metaCtx = cardBlocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('·'));
       expect(metaCtx).toBeDefined();
       const metaText = metaCtx.elements[0].text;
-      // No session model → the card's default model label.
-      expect(metaText).toContain('`Sonnet 4`');
+      // No session model → the owner's default model, by its display name (not a hardcoded "Sonnet 4").
+      expect(metaText).not.toContain('Sonnet 4');
+      expect(metaText).toContain(`\`${userSettingsStore.getModelDisplayName('claude-opus-5-5[1m]' as any)}\``);
+      expect(userSettingsStore.getUserDefaultModel).toHaveBeenCalledWith('U123');
       expect(metaText).toContain('5분 전');
     });
 

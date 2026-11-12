@@ -74,7 +74,7 @@ function makeHarness(opts: {
     },
     ...(opts.withDm ? { postOwnerDm: async () => undefined } : {}),
     logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-    fallbackModel: 'claude-sonnet-4',
+    fallbackModel: () => ({ model: 'claude-sonnet-4' }),
   };
   const controller = new GoalLoopController(deps);
   return { controller, session, notices, injected };

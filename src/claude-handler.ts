@@ -1003,8 +1003,8 @@ export class ClaudeHandler implements TurnSteeringPort {
     if (!this.safetyClassifierCache) {
       this.safetyClassifierCache = buildSafetyClassifier({
         // The guardian call is made for the session's user: it carries their llmux key.
-        dispatch: (userMessage, systemPrompt, { model, abortController, tenantUserId }) =>
-          this.dispatchOneShot(userMessage, systemPrompt, model, abortController, undefined, undefined, undefined, {
+        dispatch: (userMessage, systemPrompt, { model, effort, abortController, tenantUserId }) =>
+          this.dispatchOneShot(userMessage, systemPrompt, model, abortController, undefined, undefined, effort, {
             tenantUserId,
           }),
       });

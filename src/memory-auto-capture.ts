@@ -16,6 +16,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { memoryRoot } from 'somalib/model-commands/hierarchical-memory-store';
 import { runOneShotText } from './agent-runtime';
+import { auxModelFor } from './agent-runtime/aux-model';
 import { buildOneShotOptions } from './agent-runtime/one-shot-options';
 import { ensureTenantKey } from './auth/llmux-tenant-keys';
 import { buildQueryEnv } from './auth/query-env-builder';
@@ -150,8 +151,12 @@ async function runConsolidationQuery(prompt: string, userId: string): Promise<st
     const settings = userSettingsStore.getUserSettings(userId);
     const llmuxTenant = await ensureTenantKey(userId, { name: settings?.slackName, email: settings?.email });
     const { env } = buildQueryEnv(lease, { llmuxTenant });
+    // Dreaming is per user (not per session): the `sonnet` tier of that user's
+    // default model's provider. SUMMARY_MODEL (operator) still wins.
+    const aux = auxModelFor('sonnet', { userId, override: config.conversation.summaryModel });
     const options = buildOneShotOptions({
-      model: config.conversation.summaryModel,
+      model: aux.model,
+      effort: aux.effort,
       systemPrompt: CONSOLIDATION_SYSTEM_PROMPT,
       env,
       logger,

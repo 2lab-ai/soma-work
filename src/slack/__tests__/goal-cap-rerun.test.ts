@@ -156,7 +156,7 @@ describe('SSOT 2026-10-30 — the 10/10 goal runs again after user input', () =>
       postNotice: async () => undefined,
       postOwnerDm: async () => undefined,
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-      fallbackModel: 'claude-sonnet-4',
+      fallbackModel: () => ({ model: 'claude-sonnet-4' }),
     } satisfies GoalLoopControllerDeps);
     return { controller, injected };
   }

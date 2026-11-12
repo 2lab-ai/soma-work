@@ -89,7 +89,7 @@ function modelOptions(): { text: { type: 'plain_text'; text: string }; value: st
     { text: { type: 'plain_text' as const, text: 'default — 만든 사람의 현재 모델' }, value: CRON_MODEL_DEFAULT },
     { text: { type: 'plain_text' as const, text: 'opus — 최신 opus(1M)' }, value: CRON_MODEL_OPUS },
     { text: { type: 'plain_text' as const, text: 'fable — 최신 fable(1M)' }, value: CRON_MODEL_FABLE },
-    { text: { type: 'plain_text' as const, text: 'fast — sonnet' }, value: CRON_MODEL_FAST },
+    { text: { type: 'plain_text' as const, text: 'fast — 만든 사람 모델의 sonnet급' }, value: CRON_MODEL_FAST },
     ...AVAILABLE_MODELS.map((m) => ({ text: { type: 'plain_text' as const, text: m }, value: `custom:${m}` })),
   ];
 }

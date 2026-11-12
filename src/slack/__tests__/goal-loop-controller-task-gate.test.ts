@@ -87,7 +87,7 @@ function makeHarness(opts: { verdict: GoalEvalVerdict; ledger?: TaskLedger; goal
       return undefined;
     },
     logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-    fallbackModel: 'claude-sonnet-4',
+    fallbackModel: () => ({ model: 'claude-sonnet-4' }),
     scheduleEvalRetry: () => undefined,
   });
   return Object.assign(h, { controller, session, goal, injected, notices, evalPrompts });

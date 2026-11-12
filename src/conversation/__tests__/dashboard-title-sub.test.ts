@@ -156,6 +156,29 @@ describe('dashboard subtitle routes (ensure-title / generate-title)', () => {
     expect(llm.generateTitle.mock.calls[0][0]).toContain('$autoz <https://github.com/acme/board/issues/1234>');
   });
 
+  // soma-work#1224: the subtitle is an aux call of the session, so it follows the
+  // live session's model (its provider's `sonnet` tier), not the owner's default.
+  it('both routes pass the live session’s model to the title call; no live session → none', async () => {
+    const { setDashboardSessionAccessor } = await import('../dashboard');
+    setDashboardSessionAccessor(
+      () => new Map<string, any>([['C1:1.1', { conversationId: CONV_ID, ownerId: 'U_OWNER', model: 'grok-4.7' }]]),
+    );
+    await seed();
+    llm.generateTitle.mockResolvedValue('부제');
+    const owner = await signIn('U_OWNER');
+
+    expect((await post('ensure-title', owner)).statusCode).toBe(200);
+    expect((await post('generate-title', owner)).statusCode).toBe(200);
+    expect(llm.generateTitle.mock.calls.map((c) => c[1])).toEqual([
+      { tenantUserId: 'U_OWNER', mainModel: 'grok-4.7' },
+      { tenantUserId: 'U_OWNER', mainModel: 'grok-4.7' },
+    ]);
+
+    setDashboardSessionAccessor(() => new Map());
+    await post('generate-title', owner);
+    expect(llm.generateTitle.mock.calls[2][1]).toEqual({ tenantUserId: 'U_OWNER', mainModel: undefined });
+  });
+
   it('T1 — returns the stored subtitle without an LLM call when one already exists', async () => {
     await seed({ titleSub: '이미 있는 부제' });
     const viewer = await signIn('U_VIEWER');

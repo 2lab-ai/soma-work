@@ -180,8 +180,12 @@ export interface GoalLoopControllerDeps {
    */
   onRunSettled?: (sessionKey: string, info: { continued: boolean; queued: boolean }) => void;
   logger: GoalLoopLogger;
-  /** Default work model when the session has none. */
-  fallbackModel: string;
+  /**
+   * Eval model when the session has no model (legacy sessions; new ones are
+   * created with one), asked for the session's owner. Production: the `sonnet`
+   * aux tier of the owner's default model (`agent-runtime/aux-model.ts`).
+   */
+  fallbackModel: (ownerId: string | undefined) => { model: string; effort?: EffortLevel };
   /**
    * Optional cheaper eval tier (S9). When set, the completion eval runs on
    * this model instead of the session's work model — the eval only emits a
@@ -910,6 +914,10 @@ export class GoalLoopController {
         );
       }, this.evalTimeoutMs);
     });
+    const fallback =
+      this.deps.evalModelOverride || session.model
+        ? undefined
+        : this.deps.fallbackModel(session.ownerId || session.userId || undefined);
     try {
       return await Promise.race([
         evaluateGoalCompletion(
@@ -918,8 +926,10 @@ export class GoalLoopController {
             workSummary,
             // S9: prefer the configured cheaper eval tier; otherwise match the
             // work model so the eval is never weaker than the worker.
-            model: this.deps.evalModelOverride || session.model || this.deps.fallbackModel,
-            effort: session.effort as EffortLevel | undefined,
+            model: this.deps.evalModelOverride || session.model || fallback?.model || '',
+            // A legacy session with no model runs the fallback aux tier, with
+            // that tier's effort (Grok: medium) when it names one.
+            effort: (fallback?.effort ?? session.effort) as EffortLevel | undefined,
             abortController,
             cwd: session.workingDirectory,
             previous,

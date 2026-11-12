@@ -1,4 +1,5 @@
 import { buildOneShotOptions, runOneShotText } from '../agent-runtime';
+import { type AuxModel, type AuxTier, auxModelFor } from '../agent-runtime/aux-model';
 import type { TenantKeyLease } from '../auth/llmux-tenant-keys';
 import { buildQueryEnv } from '../auth/query-env-builder';
 import { userTenantKey } from '../auth/user-tenant-key';
@@ -18,19 +19,21 @@ export interface SummaryResult {
 }
 
 /**
- * Get the summary model from config (default: claude-haiku-4-20250414)
- */
-function getSummaryModel(): string {
-  return config.conversation.summaryModel;
-}
-
-/**
  * Per-call options of the summarizers. `tenantUserId` = the user the summary is
  * made for (the conversation's / session's user): in llmux mode the call carries
  * their own key, so it is metered under their tenant; absent → the shared key.
+ * `mainModel` = the session's model when the summary is made for a live session.
+ * The model is an aux tier of the main model — `mainModel`, else the user's
+ * default model (`agent-runtime/aux-model.ts`).
  */
 export interface SummarizerCallOptions {
   tenantUserId?: string;
+  mainModel?: string;
+}
+
+/** The aux model of `tier` for this call. */
+function auxFor(tier: AuxTier, opts: SummarizerCallOptions, override?: string): AuxModel {
+  return auxModelFor(tier, { mainModel: opts.mainModel, userId: opts.tenantUserId, override });
 }
 
 /**
@@ -67,8 +70,11 @@ ${truncatedContent}`;
     // Use options.env (not process.env) so concurrent leases don't
     // clobber the shared CLAUDE_CODE_OAUTH_TOKEN.
     const { env } = buildQueryEnv(lease, { llmuxTenant: await userTenantKey(opts.tenantUserId) });
+    // The `sonnet` tier of the main model; SUMMARY_MODEL (operator) overrides it.
+    const aux = auxFor('sonnet', opts, config.conversation.summaryModel);
     const options = buildOneShotOptions({
-      model: getSummaryModel(),
+      model: aux.model,
+      effort: aux.effort,
       systemPrompt: 'You are a concise summarizer. Output only what is requested.',
       env,
       logger,
@@ -118,11 +124,9 @@ export interface SessionSummaryTitleLinks {
 
 export interface SessionSummaryTitleResult {
   title: string;
-  model: 'haiku' | 'sonnet';
+  /** The aux TIER that produced the title (the model is that tier of the main model). */
+  model: AuxTier;
 }
-
-const HAIKU_MODEL = 'claude-haiku-4-5';
-const SONNET_MODEL = 'claude-sonnet-4-5';
 
 /**
  * Non-printable character ratio — used as a quality gate on LLM output.
@@ -174,7 +178,7 @@ ${joined || '(empty)'}${linkBlock}`;
 }
 
 async function runTitleQuery(
-  model: string,
+  aux: AuxModel,
   system: string,
   prompt: string,
   lease: SlotAuthLease,
@@ -182,7 +186,8 @@ async function runTitleQuery(
 ): Promise<string | null> {
   const { env } = buildQueryEnv(lease, { llmuxTenant });
   const options = buildOneShotOptions({
-    model,
+    model: aux.model,
+    effort: aux.effort,
     systemPrompt: system,
     env,
     logger,
@@ -206,8 +211,10 @@ async function runTitleQuery(
 
 /**
  * Generate a concise session-level task title from a list of user messages,
- * optionally informed by linked issue/PR metadata. Haiku first — falls back
- * to Sonnet when the Haiku output fails the quality gate.
+ * optionally informed by linked issue/PR metadata. The `haiku` aux tier first —
+ * falls back to the `sonnet` tier when its output fails the quality gate. Both
+ * tiers follow the main model's provider (`opts.mainModel`, else the user's
+ * default model).
  */
 export async function generateSessionSummaryTitle(
   userMessages: string[],
@@ -231,8 +238,8 @@ export async function generateSessionSummaryTitle(
     // Resolved once: the Sonnet fallback below runs for the same user.
     const llmuxTenant = await userTenantKey(opts.tenantUserId);
 
-    // Haiku first — cheap default.
-    let title = await runTitleQuery(HAIKU_MODEL, system, prompt, lease, llmuxTenant);
+    // The haiku tier first — cheap default.
+    let title = await runTitleQuery(auxFor('haiku', opts), system, prompt, lease, llmuxTenant);
     if (title && titlePassesQuality(title)) {
       return { title, model: 'haiku' };
     }
@@ -240,7 +247,7 @@ export async function generateSessionSummaryTitle(
       preview: title?.slice(0, 40),
     });
 
-    title = await runTitleQuery(SONNET_MODEL, system, prompt, lease, llmuxTenant);
+    title = await runTitleQuery(auxFor('sonnet', opts), system, prompt, lease, llmuxTenant);
     if (title && titlePassesQuality(title)) {
       return { title, model: 'sonnet' };
     }

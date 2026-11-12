@@ -542,7 +542,7 @@ class CronMcpServer {
                 type: 'string',
                 enum: ['default', 'opus', 'fable', 'fast', 'custom'],
                 description:
-                  "Model selection. default: use the creator's current default model at fire time. opus / fable: the latest opus / fable (1M), resolved at fire time. fast: use sonnet. custom: specify model_name.",
+                  "Model selection. default: use the creator's current default model at fire time. opus / fable: the latest opus / fable (1M), resolved at fire time. fast: the sonnet tier of the creator's current default model, resolved at fire time (Claude → sonnet, Codex → terra, Grok → grok). custom: specify model_name.",
               },
               model_name: {
                 type: 'string',
@@ -556,7 +556,7 @@ class CronMcpServer {
           name: 'cron_update',
           description:
             'Update fields of an existing cron job (partial update — omitted fields stay unchanged). ' +
-            "Model: model_type 'default' clears the override so the job uses the creator's current default model at fire time; 'opus' / 'fable' use the latest opus / fable (1M) resolved at fire time; 'fast' uses sonnet; 'custom' requires model_name. " +
+            "Model: model_type 'default' clears the override so the job uses the creator's current default model at fire time; 'opus' / 'fable' use the latest opus / fable (1M) resolved at fire time; 'fast' uses the sonnet tier of the creator's current default model (Claude → sonnet, Codex → terra, Grok → grok), resolved at fire time; 'custom' requires model_name. " +
             "Output: target 'channel' posts a new channel message (clears thread anchor); 'thread' replies in a thread (requires threadTs); 'dm' messages the job owner. " +
             "Admins may pass owner to update another user's job.",
           inputSchema: {
@@ -587,7 +587,7 @@ class CronMcpServer {
                 type: 'string',
                 enum: ['default', 'opus', 'fable', 'fast', 'custom'],
                 description:
-                  "Model selection. default: use the creator's current default model at fire time. opus / fable: the latest opus / fable (1M), resolved at fire time. fast: use sonnet. custom: specify model_name.",
+                  "Model selection. default: use the creator's current default model at fire time. opus / fable: the latest opus / fable (1M), resolved at fire time. fast: the sonnet tier of the creator's current default model, resolved at fire time (Claude → sonnet, Codex → terra, Grok → grok). custom: specify model_name.",
               },
               model_name: {
                 type: 'string',

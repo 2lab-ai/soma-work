@@ -206,14 +206,16 @@ describe('Agent MCP Server — Edge Cases', () => {
     );
   });
 
-  // Codex review: default model fallback
-  it('AgentChat_DefaultModel — uses default model when agent has no model', async () => {
+  // Codex review: default model fallback. The server has no user store and no
+  // main model, so the default is the `sonnet` alias (resolved downstream), not a
+  // pinned Sonnet id.
+  it('AgentChat_DefaultModel — uses the sonnet alias when agent has no model', async () => {
     const result = await server.handleTool('chat', {
       agent: 'gwanu',
       prompt: 'test default model',
     });
     const parsed = JSON.parse(result.content[0].text);
-    expect(parsed.model).toBe('claude-sonnet-4-20250514');
+    expect(parsed.model).toBe('sonnet');
   });
 
   // Codex review: multi-session uniqueness

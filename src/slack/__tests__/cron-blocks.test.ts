@@ -75,7 +75,7 @@ describe('buildCronCard', () => {
       'default — 만든 사람의 현재 모델',
       'opus — 최신 opus(1M)',
       'fable — 최신 fable(1M)',
-      'fast — sonnet',
+      'fast — 만든 사람 모델의 sonnet급',
     ]);
   });
 

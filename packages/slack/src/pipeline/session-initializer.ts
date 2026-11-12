@@ -100,10 +100,14 @@ interface RouteCheckResult {
 }
 
 interface DispatchServiceLike {
-  getModel(): string;
+  /** The classifier model for this sender / session (the haiku aux tier of its main model). */
+  getModel(tenantUserId?: string, mainModel?: string): string;
   isReady(): boolean;
-  /** `tenantUserId` = the Slack user the classification runs for (their llmux key meters it). */
-  dispatch(text: string, signal: AbortSignal, tenantUserId?: string): Promise<any>;
+  /**
+   * `tenantUserId` = the Slack user the classification runs for (their llmux key meters it).
+   * `mainModel` = the session's model: the classifier's tier follows its provider.
+   */
+  dispatch(text: string, signal: AbortSignal, tenantUserId?: string, mainModel?: string): Promise<any>;
 }
 
 export interface SessionInitializerProviders {
@@ -1244,7 +1248,14 @@ export class SessionInitializer {
 
     try {
       const dispatchService = providers.getDispatchService();
-      const model = dispatchService.getModel();
+      // The classification is made for the message's sender: in llmux mode it
+      // carries their own key, so llmux meters it under their tenant. Its model
+      // is the haiku aux tier of the session's model (else the sender's default).
+      const tenantSession = this.deps.claudeHandler.getSession(channel, threadTs);
+      const tenantUserId =
+        senderId || tenantSession?.currentInitiatorId || tenantSession?.ownerId || tenantSession?.userId || undefined;
+      const mainModel = tenantSession?.model || undefined;
+      const model = dispatchService.getModel(tenantUserId, mainModel);
 
       await updateDispatchPanel('워크플로우 분석 중', 'working');
 
@@ -1273,12 +1284,7 @@ export class SessionInitializer {
         isReady: dispatchService.isReady(),
       });
 
-      // The classification is made for the message's sender: in llmux mode it
-      // carries their own key, so llmux meters it under their tenant.
-      const tenantSession = this.deps.claudeHandler.getSession(channel, threadTs);
-      const tenantUserId =
-        senderId || tenantSession?.currentInitiatorId || tenantSession?.ownerId || tenantSession?.userId || undefined;
-      const result = await dispatchService.dispatch(text, abortController.signal, tenantUserId);
+      const result = await dispatchService.dispatch(text, abortController.signal, tenantUserId, mainModel);
 
       // The classifier query itself was blocked by Anthropic's safeguards: the
       // work would run on the same blocked content. Halt the session here —
