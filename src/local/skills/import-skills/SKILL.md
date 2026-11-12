@@ -19,16 +19,23 @@ lets the user pick, and opens one PR that adds the picks under the target's vend
 - **Flags**: `--limit=N` caps the candidates shown (default 15). `--all` skips the relevance filter (the collision
   filters stay). `--dry-run` stops after the candidate table: no clone, branch, commit, push, PR or question.
 
-## Phase 1 — Inventory the sources (cheap)
-1. List skill directories with `gh api repos/<owner>/<repo>/contents/<path>`.
-2. Per candidate, read only the `SKILL.md` frontmatter and first ~40 lines
-   (`gh api repos/<o>/<r>/contents/<path>/<skill>/SKILL.md --jq .content | base64 -d | head -60`); no `SKILL.md` →
-   `DESCRIPTION.md`, then `README.md`; none → skip with the reason.
-3. Note the repository's license (`gh api repos/<o>/<r>/license --jq .license.spdx_id`; 404 = none).
-4. Keep `{source, name, summary, triggers, license, html_url}` per candidate. Fetch no bodies yet.
+## Phase 1 — Inventory the sources (cheap, pinned)
+1. **Pin each source once:** `SHA=$(gh api repos/<o>/<r>/commits/HEAD --jq .sha)`. Every read below and every file
+   imported in Phase 5 uses `?ref=$SHA` — what the user approves is exactly what is imported.
+2. List skill directories: `gh api "repos/<o>/<r>/contents/<path>?ref=$SHA" --jq '.[]|select(.type=="dir")|.name'`.
+   1-level layout → each directory is a candidate. 2-level layout → each directory is a category: list it the same way
+   (`contents/<path>/<category>?ref=$SHA`) and each of its subdirectories is a candidate (`<category>/<skill>`).
+3. Per candidate, read only the `SKILL.md` frontmatter and first ~40 lines
+   (`gh api "repos/<o>/<r>/contents/<skill path>/SKILL.md?ref=$SHA" --jq .content | base64 -d | head -60`); no
+   `SKILL.md` → `DESCRIPTION.md`, then `README.md`; none → skip with the reason.
+4. **License per candidate:** the repository's (`gh api "repos/<o>/<r>/license?ref=$SHA" --jq .license.spdx_id`;
+   404 or `NOASSERTION` = none) and any `LICENSE*` / `NOTICE*` inside the skill's own directory, which wins for that
+   skill.
+5. Keep `{source, SHA, skill path, name, summary, triggers, license, html_url}` per candidate. Fetch no bodies yet.
 
 ## Phase 2 — Inventory what the target has
-- The target plugin's skills: names and descriptions under `<plugin root>/skills/` (`gh api` contents, or the clone).
+- The target plugin's skills: names and descriptions under `<plugin root>/skills/`, read with `gh api` contents (no
+  clone — a dry run clones nothing).
 - Skills already visible in this session's skill list (other plugins, the user's own skills).
 
 ## Phase 3 — Diff and filter
@@ -38,27 +45,30 @@ lets the user pick, and opens one PR that adds the picks under the target's vend
 3. **Relevance** (skipped by `--all`) — the target's scope is what its plugin README says it is for. Drop skills tied
    to consumer apps, smart-home, games or hardware that the scope does not cover. Keep agent meta-patterns (planning,
    debugging, research, review, skill authoring), developer tooling, and anything orthogonal to what exists.
-4. **License** — no license or a non-permissive one (GPL, AGPL, custom) → keep, but mark it: it needs the user's
-   explicit yes for that one skill.
+4. **License** — follow the target's vendoring contract: no license, `NOASSERTION`, or a non-permissive one (GPL,
+   AGPL, custom) → drop, unless the rights holder's written redistribution grant exists (keep its link for the NOTICE).
+   The user's or the target owner's yes is not a license.
 5. Sort by novelty, then summary quality, then source authority; cap at `--limit`.
 6. Show the candidate table: name · source · one-line summary · license · overlap note · recommendation.
    **`--dry-run` ends here.**
 
 ## Phase 4 — Ask once
-One question with one choice per candidate (yes / no / skip) via `local:UIAskUserQuestion` (a choice group); where
-there is no question tool, the table is the question and the user's reply is the answer. Recommend `yes` only for
-strong novelty and relevance, `no` for an overlap, `skip` for the rest. Never import without an explicit yes.
+One question set via `local:UIAskUserQuestion` (a choice group): per candidate the choices import / don't import /
+skip for now, **the recommended one first** (the question tool takes choice 1 as the recommendation). Recommend import
+only for strong novelty and relevance, don't import for an overlap, skip for the rest. Where there is no question tool,
+the table is the question and the user's reply is the answer. Never import without an explicit yes.
 
 ## Phase 5 — Import and open one PR
 1. A fresh working folder under the session's working directory; clone the target; one branch
    `import-skills/<YYYYMMDD>-<shortid>`.
 2. Per approved skill, following the target's vendoring contract:
-   - pin the source: `SHA=$(gh api repos/<o>/<r>/commits/HEAD --jq .sha)`; fetch every file at `?ref=$SHA`;
+   - fetch every file of the skill's directory at the `$SHA` pinned in Phase 1 (`?ref=$SHA`) — never a new `HEAD`;
    - place it at `<plugin root>/skills/<name>/` — never over an existing directory;
    - frontmatter, `LICENSES/NOTICE.md` (source link, `$SHA` and date, license, `## Local changes`), the upstream license
      text, the contract test `__tests__/<name>-skill.test.ts`;
-   - supporting files (`references/`, `scripts/`, `templates/`) only when they hold no platform-specific paths;
-     note any you left out for the PR body.
+   - supporting files (`references/`, `scripts/`, `templates/`, `examples/`, checkers) come along; a platform-specific
+     path is fixed, or the body instruction that uses the file is changed with it — the body never points at a file
+     that is not there; if neither works, the skill is not imported. Record what changed in `## Local changes`;
 3. Checks per file: the frontmatter parses; no home paths (`/Users/`, `/home/`), machine names or credentials; no
    harness calls; `SKILL.md` under ~50 KB (move bulk into `references/`).
 4. The plugin version bump and, if the descriptions push the skills listing over it, the prompt budget — both in the

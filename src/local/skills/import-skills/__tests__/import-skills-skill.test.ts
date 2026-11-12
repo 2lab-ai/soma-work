@@ -25,6 +25,8 @@ describe('local:import-skills', () => {
   it('carries no fixed identity, home path or user-skill registration of its own', () => {
     expect(md).not.toMatch(/Co-Authored-By/i);
     expect(md).not.toMatch(/\/Users\/[a-z]/);
+    expect(md).not.toMatch(/\/home\/[a-z]/);
+    expect(md).not.toMatch(/mcp__llm__/);
     expect(md).not.toMatch(/\b(MANAGE_SKILL|GET_SESSION|UPDATE_SESSION)\b/);
     expect(md).not.toContain('--personal');
     expect(md).toContain("follow the session's or the repository's commit rule");
@@ -38,8 +40,20 @@ describe('local:import-skills', () => {
     expect(md.indexOf('**`--dry-run` ends here.**')).toBeLessThan(md.indexOf('## Phase 4'));
   });
 
+  it('walks both layouts and pins each source once, before the user is asked', () => {
+    expect(md).toContain('2-level layout → each directory is a category');
+    const pin = md.indexOf('commits/HEAD --jq .sha');
+    expect(pin).toBeGreaterThan(-1);
+    expect(pin).toBeLessThan(md.indexOf('## Phase 4'));
+    expect(md).toContain('never a new `HEAD`');
+  });
+
+  it('takes no license exception from a yes, and asks with the recommended choice first', () => {
+    expect(md).toContain("The user's or the target owner's yes is not a license.");
+    expect(md).toContain('**the recommended one first**');
+  });
+
   it('pins the source commit, follows the vendoring contract and never merges', () => {
-    expect(md).toContain('commits/HEAD --jq .sha');
     expect(md).toContain('?ref=$SHA');
     expect(md).toContain('LICENSES/NOTICE.md');
     expect(md).toContain('Never auto-merge.');
@@ -48,6 +62,7 @@ describe('local:import-skills', () => {
 
   it('the vendoring contract it follows is written down in the plugin CLAUDE.md', () => {
     expect(contract).toContain('## 벤더링 규약');
+    expect(contract).toContain('가져오는 사람이나 이 저장소 오너의 승낙은 허락이 아니다');
     for (const rule of [
       '원본 commit SHA',
       'LICENSES/NOTICE.md',
