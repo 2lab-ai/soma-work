@@ -51,7 +51,9 @@ describe('local:research-skill', () => {
     expect(verify).toBeGreaterThan(-1);
     expect(land).toBeGreaterThan(verify);
     expect(body).toContain('otherwise stop at the open PR');
-    expect(body).toContain('Nothing\n  touches the live skill before step 7.');
+    expect(body).toMatch(/Nothing\s+touches the live skill before step 7\./);
+    expect(body).toMatch(/only after every change it depends on in another repository[\s\S]*has landed/);
+    expect(body).toMatch(/cannot be read → stop and report/);
     expect(body).toContain('only after the review passed');
     expect(body).toContain('Never publish, deploy, merge or message people from a probe.');
   });

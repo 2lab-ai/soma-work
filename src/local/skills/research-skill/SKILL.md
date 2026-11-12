@@ -10,25 +10,28 @@ A skill only gets better if it runs on inputs it was not written for, and someon
 result. This skill does that N times (default 10), fixes the causes, and proves the fixes before they land.
 
 ## Run folder
-`run=<dir>`; default `~/skill-research/<skill>/<YYYY-MM-DD-HHMM>/`. Never a session temp folder — long runs outlive
-it. Everything below (`RUN/…`) writes there, so a cut run resumes from its files.
+`run=<dir>`, else the folder the target's recipe names, else `~/skill-research/<skill>/<YYYY-MM-DD-HHMM>/`. It is
+fixed once the recipe is read (step 0.3). Never a session temp folder — long runs outlive it. Everything below
+(`RUN/…`) writes there, so a cut run resumes from its files.
 
 ## 0. Read and freeze the target (fix, do not ask)
 1. **Resolve the target.** A path → that `SKILL.md` (or its directory). A plugin skill name → its `SKILL.md` in the
-   repo that ships the plugin (clone it). A user skill kept by the host → export its text into `RUN/` with the host's
-   skill manager (`local:using-user-skills`, action `get`); the improved text goes back the same way in step 7.
+   repo that ships the plugin (clone it). A user skill kept by the host → read its text with the host's skill manager
+   (`local:using-user-skills`, action `get`); the improved text goes back the same way in step 7.
 2. Read the skill and every file it points to (references, templates, lessons log, the code it drives). List its
    promises (what a good output is, in its own words) and its failure history: the user's complaints, its lessons or
    research log, recent QA reports.
 3. **Research recipe.** If the target has a `## Research recipe` section (or names a recipe file), it decides: the
-   probe pool and probe shape, shared slow resources and their queue budget, the review evidence a reviewer gets, the
-   automatic checks, the deliverable, and the research log path. Anything it does not say uses the defaults below.
+   run folder, how to freeze what the skill drives, the probe pool and probe shape, shared slow resources and their
+   queue budget, the review evidence a reviewer gets, the automatic checks, where improvements land, the deliverable,
+   and the research log path. Anything it does not say uses the defaults below. A recipe the target names but that
+   cannot be read → stop and report; never fall back to the defaults silently.
 4. When the skill makes a craft claim (layout, sound, writing style, …), research the domain for about 15 minutes and
    cite the sources in `RUN/sources.md`.
 5. `RUN/rubric.md`: 8–12 criteria scored 1–5 with anchors for 1, 3 and 5, plus the automatic checks a script can run.
    Weight ×2 the criteria the user has complained about.
-6. **Freeze.** Copy the skill text into `RUN/frozen/`; for a repo-backed skill `git archive <commit>` the code into
-   `RUN/kit/` and note the commit. Probes use only the frozen copy. Improvements go on a branch, never into the
+6. **Freeze.** Copy the skill text into `RUN/frozen/`; for a repo-backed skill `git archive <commit>` everything the
+   skill drives into `RUN/kit/` (the recipe says what; default the whole repository) and note the commit. Probes use only the frozen copy. Improvements go on a branch, never into the
    frozen copy — a target that changes under running probes invalidates them.
 
 ## 1. Design probes
@@ -88,11 +91,12 @@ it. Everything below (`RUN/…`) writes there, so a cut run resumes from its fil
 - Repo-backed skill: open the PR. A CI job that fails before any step runs is not a check result: run the gates
   locally. Merge only when the target repo's policy allows it and the owner asked for it; otherwise stop at the open PR.
 - Host-kept user skill: an `update` replaces the live skill at once, so write `RUN/improved/SKILL.md` back with the
-  skill manager only after the review passed.
+  skill manager only after the review passed — and only after every change it depends on in another repository (a
+  kit PR, a reference file) has landed. Until then it stays staged.
+- The research log entry (the recipe's path; default `RUN/../RESEARCH-LOG.md`) — seed, probes, scorecard, changes,
+  open gaps — goes into the same change, so a repo-backed log ships in the reviewed PR.
 
-## 8. Report and log
-- Append a dated entry to the research log (the recipe's path; default `RUN/../RESEARCH-LOG.md`): seed, probes,
-  scorecard, changes, open gaps.
+## 8. Report
 - Deliver the scorecard, the PR link and the recipe's deliverable (for example a reel of the probes before and after).
 - Report: what the skill got wrong, what changed (text / references / templates / code), before → after, what is
   still weak.
