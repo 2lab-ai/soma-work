@@ -154,7 +154,7 @@ function redirectProblem(spec: WebLogin, status: number, location: string | null
   return null;
 }
 
-function encode(spec: WebLogin): { contentType: string; body: string } {
+function encodeLoginBody(spec: WebLogin): { contentType: string; body: string } {
   if (spec.format === 'json') return { contentType: 'application/json', body: JSON.stringify(spec.body) };
   const form = new URLSearchParams();
   for (const [key, value] of Object.entries(spec.body)) form.append(key, String(value));
@@ -164,7 +164,7 @@ function encode(spec: WebLogin): { contentType: string; body: string } {
 /** Post the account and return the session. Throws `LoginError` with the host and status only. */
 export async function login(fetch: LoginFetch, spec: WebLogin): Promise<LoginSession> {
   const host = new URL(spec.url).host;
-  const { contentType, body } = encode(spec);
+  const { contentType, body } = encodeLoginBody(spec);
   let res: LoginResponse;
   try {
     res = await fetch(spec.url, {
