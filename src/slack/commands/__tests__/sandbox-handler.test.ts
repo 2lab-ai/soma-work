@@ -49,6 +49,7 @@ describe('SandboxHandler', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
   });
 
   describe('canHandle', () => {
@@ -93,6 +94,8 @@ describe('SandboxHandler', () => {
 
     it('sandbox OFF + network ON (stored but inactive)', async () => {
       vi.mocked(userSettingsStore.getUserSandboxDisabled).mockReturnValue(true);
+      vi.mocked(isAdminUser).mockReturnValue(true);
+      process.env.SOMA_SANDBOX_OFF_ALLOWED = 'true';
       const ctx = makeCtx({ text: 'sandbox' });
       await handler.execute(ctx);
       const text = sayCall(ctx);
@@ -101,8 +104,20 @@ describe('SandboxHandler', () => {
       expect(text).toContain('stored; inactive');
     });
 
+    it('an admin whose off is not allowed on this host sees the sandbox ON and why', async () => {
+      vi.mocked(userSettingsStore.getUserSandboxDisabled).mockReturnValue(true);
+      vi.mocked(isAdminUser).mockReturnValue(true);
+      const ctx = makeCtx({ text: 'sandbox' });
+      await handler.execute(ctx);
+      const text = sayCall(ctx);
+      expect(text).toContain('Sandbox: `ON`');
+      expect(text).toContain('SOMA_SANDBOX_OFF_ALLOWED');
+    });
+
     it('sandbox OFF + network OFF (stored but inactive)', async () => {
       vi.mocked(userSettingsStore.getUserSandboxDisabled).mockReturnValue(true);
+      vi.mocked(isAdminUser).mockReturnValue(true);
+      process.env.SOMA_SANDBOX_OFF_ALLOWED = 'true';
       vi.mocked(userSettingsStore.getUserNetworkDisabled).mockReturnValue(true);
       const ctx = makeCtx({ text: 'sandbox network status' });
       await handler.execute(ctx);
@@ -130,13 +145,28 @@ describe('SandboxHandler', () => {
       expect(sayCall(ctx)).toContain('Permission Denied');
     });
 
-    it('admin can disable sandbox', async () => {
+    it('admin can disable sandbox on a host that allows it (SOMA_SANDBOX_OFF_ALLOWED)', async () => {
       vi.mocked(isAdminUser).mockReturnValue(true);
+      process.env.SOMA_SANDBOX_OFF_ALLOWED = 'true';
+      try {
+        const ctx = makeCtx({ text: 'sandbox off' });
+        await handler.execute(ctx);
+        expect(userSettingsStore.setUserSandboxDisabled).toHaveBeenCalledWith('U_TEST', true);
+        expect(sayCall(ctx)).toContain('Sandbox Disabled');
+        expect(sayCall(ctx)).toContain('next message');
+      } finally {
+        delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
+      }
+    });
+
+    it('admin cannot disable sandbox on a host that does not allow it: nothing stored, the reply says why', async () => {
+      vi.mocked(isAdminUser).mockReturnValue(true);
+      delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
       const ctx = makeCtx({ text: 'sandbox off' });
       await handler.execute(ctx);
-      expect(userSettingsStore.setUserSandboxDisabled).toHaveBeenCalledWith('U_TEST', true);
-      expect(sayCall(ctx)).toContain('Sandbox Disabled');
-      expect(sayCall(ctx)).toContain('next message');
+      expect(userSettingsStore.setUserSandboxDisabled).not.toHaveBeenCalled();
+      expect(sayCall(ctx)).toContain('SOMA_SANDBOX_OFF_ALLOWED');
+      expect(sayCall(ctx)).toContain('admin sandbox');
     });
 
     it('admin can enable sandbox', async () => {
@@ -168,6 +198,8 @@ describe('SandboxHandler', () => {
 
     it('network toggle while sandbox is OFF shows "stored but inactive" hint', async () => {
       vi.mocked(userSettingsStore.getUserSandboxDisabled).mockReturnValue(true);
+      vi.mocked(isAdminUser).mockReturnValue(true);
+      process.env.SOMA_SANDBOX_OFF_ALLOWED = 'true';
       const ctx = makeCtx({ text: 'sandbox network on' });
       await handler.execute(ctx);
       expect(userSettingsStore.setUserNetworkDisabled).toHaveBeenCalledWith('U_TEST', false);

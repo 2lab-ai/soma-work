@@ -1,4 +1,6 @@
 import { isAdminUser } from '../../admin-utils';
+import { getSandboxOffAllowed } from '../../config';
+import { isSandboxOffInEffect } from '../../sandbox/admin-sandbox-profile';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
 import { userSettingsStore } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
@@ -15,6 +17,12 @@ import type { CommandContext, CommandHandler, CommandResult } from './types';
  * via the /z topic module. Explicit on/off/network subcommands retain their
  * prior text output for CLI-style back-compat.
  */
+/** Reply to an admin's `sandbox off` on a host whose operator has not allowed it. */
+export const SANDBOX_OFF_NOT_ALLOWED_TEXT =
+  `🛡️ *Sandbox stays ON*\n\nAdmins run in the admin sandbox: every network domain, gh, local servers and the package caches ` +
+  `work, while the secret store, the approval records and the deployment stay out of reach. ` +
+  `Turning it off is allowed only by the host's operator (\`SOMA_SANDBOX_OFF_ALLOWED=true\` in \`.env\`), for an emergency.`;
+
 export class SandboxHandler implements CommandHandler {
   canHandle(text: string): boolean {
     return CommandParser.isSandboxCommand(text);
@@ -24,7 +32,12 @@ export class SandboxHandler implements CommandHandler {
     const { user, text, threadTs, say } = ctx;
     const { target, action } = CommandParser.parseSandboxCommand(text);
 
-    const sandboxDisabled = userSettingsStore.getUserSandboxDisabled(user);
+    // The state sessions actually run with (env-access WU2, #1210).
+    const sandboxDisabled = isSandboxOffInEffect({
+      isAdmin: isAdminUser(user),
+      requested: userSettingsStore.getUserSandboxDisabled(user),
+      hostAllows: getSandboxOffAllowed(),
+    });
 
     if (action === 'status') {
       // Phase 2: render Block Kit card by default.
@@ -46,6 +59,11 @@ export class SandboxHandler implements CommandHandler {
         return { handled: true };
       }
 
+      if (action === 'off' && !getSandboxOffAllowed()) {
+        // env-access WU2 (#1210): admins run in the admin sandbox; only the host's operator allows off.
+        await say({ text: SANDBOX_OFF_NOT_ALLOWED_TEXT, thread_ts: threadTs });
+        return { handled: true };
+      }
       if (action === 'off') {
         userSettingsStore.setUserSandboxDisabled(user, true);
         await say({

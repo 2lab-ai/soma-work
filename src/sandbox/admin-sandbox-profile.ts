@@ -1,0 +1,130 @@
+/**
+ * The admin sandbox profile, and the write protection every model session gets
+ * (env-access WU2, #1210 — `.prd/25-env-access-architecture.md` §0, §1).
+ *
+ * Admins run in a sandbox too, a wide one: every network domain, gh's TLS check through trustd,
+ * local servers, and the package caches writable. What no model writes — admin or not, sandbox on or
+ * off — is the deployment (its code, configuration and data: rewriting them runs the model's code as
+ * the bot, outside any sandbox) and the files that something outside the sandbox later runs or trusts
+ * (launch agents, shell startup files, ssh's authorized keys, git and CLI settings).
+ *
+ * Pure: callers pass the paths.
+ */
+
+import * as path from 'node:path';
+import { DEV_DOMAIN_ALLOWLIST } from './dev-domain-allowlist';
+
+/**
+ * The permission rule that puts every domain on the sandbox's network allowlist (Claude Code
+ * 2.1.186+). It also lets the WebFetch tool fetch any domain — admins could already.
+ */
+export const ADMIN_ALL_DOMAINS_RULE = 'WebFetch(domain:*)';
+
+/**
+ * Package caches under the home directory that installs and builds write. Never a directory on the
+ * PATH (`~/.bun/bin`, `~/.local/bin`, `~/.cargo/bin`): a binary planted there would run outside the
+ * sandbox later.
+ */
+const ADMIN_CACHE_DIRS = [
+  '.npm',
+  '.cache',
+  'Library/Caches',
+  '.bun/install/cache',
+  '.cargo/registry',
+  '.cargo/git',
+  'go/pkg',
+  '.gradle/caches',
+  '.m2/repository',
+  'Library/pnpm/store',
+  '.local/share/pnpm/store',
+  '.yarn/berry/cache',
+];
+
+export interface AdminSandboxProfile {
+  /** Added to the sandbox `filesystem.allowWrite`. */
+  allowWrite: string[];
+  network: { allowedDomains: string[]; allowLocalBinding: true };
+  /** macOS: trustd lookups, so gh and other Go tools can check TLS certificates in the sandbox. */
+  enableWeakerNetworkIsolation: true;
+  /** Added to `settings.permissions.allow`. */
+  allowRules: string[];
+}
+
+export function adminSandboxProfile(paths: { home: string; tmpdir: string }): AdminSandboxProfile {
+  return {
+    allowWrite: [paths.tmpdir, ...ADMIN_CACHE_DIRS.map((dir) => path.join(paths.home, dir))],
+    network: {
+      allowedDomains: [...new Set([...DEV_DOMAIN_ALLOWLIST, 'localhost', '127.0.0.1'])],
+      allowLocalBinding: true,
+    },
+    enableWeakerNetworkIsolation: true,
+    allowRules: [ADMIN_ALL_DOMAINS_RULE],
+  };
+}
+
+/** Files and directories under the home directory that run, or are trusted, outside the sandbox. */
+const HOME_STARTUP_FILES = [
+  '.zshrc',
+  '.zshenv',
+  '.zprofile',
+  '.zlogin',
+  '.bashrc',
+  '.bash_profile',
+  '.bash_login',
+  '.profile',
+  '.gitconfig',
+  '.claude/settings.json',
+  '.claude/settings.local.json',
+];
+const HOME_STARTUP_DIRS = ['Library/LaunchAgents', '.ssh', '.config/git', '.config/fish'];
+
+/**
+ * The files of a deployment the bot runs or reads as its own, for a session whose working directory
+ * lies inside the deployment (where denying the whole of it would deny the session's own work).
+ */
+const DEPLOY_CRITICAL_FILES = ['config.json', 'mcp-servers.json', '.env', 'package.json', '.system.prompt'];
+const DEPLOY_CRITICAL_DIRS = ['dist', 'node_modules', 'packages', 'plugins', 'scripts', 'somalib', 'services'];
+
+function isWithin(p: string, root: string): boolean {
+  const relative = path.relative(root, p);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+/**
+ * `Edit` deny rules (they cover Write and NotebookEdit, and the CLI merges their paths into the
+ * sandbox `denyWrite`) for the deployment, its data directory, and the home directory's startup and
+ * trust files. Absolute (`//`) rule paths.
+ */
+export function protectedWriteDenyRules(paths: {
+  deployRoot: string;
+  dataDir: string;
+  home: string;
+  workingDirectory?: string;
+}): string[] {
+  const edit = (p: string) => `Edit(/${path.normalize(p)})`;
+  const tree = (dir: string) => [edit(dir), `Edit(/${path.normalize(dir)}/**)`];
+  const deploy = paths.deployRoot;
+  const deployRules =
+    paths.workingDirectory && isWithin(path.resolve(paths.workingDirectory), path.resolve(deploy))
+      ? [
+          ...DEPLOY_CRITICAL_FILES.map((file) => edit(path.join(deploy, file))),
+          ...DEPLOY_CRITICAL_DIRS.flatMap((dir) => tree(path.join(deploy, dir))),
+        ]
+      : tree(deploy);
+  return [
+    ...new Set([
+      ...deployRules,
+      ...tree(paths.dataDir),
+      ...HOME_STARTUP_FILES.map((file) => edit(path.join(paths.home, file))),
+      ...HOME_STARTUP_DIRS.flatMap((dir) => tree(path.join(paths.home, dir))),
+    ]),
+  ];
+}
+
+/**
+ * The sandbox is off only for an admin who turned it off, on a host whose operator allows that
+ * (`SOMA_SANDBOX_OFF_ALLOWED`). Otherwise the setting is stored but the session stays sandboxed.
+ */
+export function isSandboxOffInEffect(input: { isAdmin: boolean; requested: boolean; hostAllows: boolean }): boolean {
+  return input.isAdmin && input.requested && input.hostAllows;
+}

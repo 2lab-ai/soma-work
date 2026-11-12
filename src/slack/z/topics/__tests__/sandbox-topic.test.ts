@@ -61,11 +61,24 @@ describe('sandbox-topic.applySandbox', () => {
     expect(r.summary).toContain('Admin');
   });
 
-  it('admin can turn sandbox off', async () => {
+  it('admin can turn sandbox off on a host that allows it (SOMA_SANDBOX_OFF_ALLOWED)', async () => {
     vi.mocked(isAdminUser).mockReturnValue(true);
+    process.env.SOMA_SANDBOX_OFF_ALLOWED = 'true';
+    try {
+      const r = await applySandbox({ userId: 'U1', value: 'off' });
+      expect(r.ok).toBe(true);
+      expect(r.summary).toContain('OFF');
+    } finally {
+      delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
+    }
+  });
+
+  it('admin cannot turn sandbox off on a host that does not allow it', async () => {
+    vi.mocked(isAdminUser).mockReturnValue(true);
+    delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
     const r = await applySandbox({ userId: 'U1', value: 'off' });
-    expect(r.ok).toBe(true);
-    expect(r.summary).toContain('OFF');
+    expect(r.ok).toBe(false);
+    expect(r.summary).toContain('SOMA_SANDBOX_OFF_ALLOWED');
   });
 
   it('anyone can toggle network allowlist', async () => {

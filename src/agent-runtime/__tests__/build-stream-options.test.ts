@@ -648,6 +648,128 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
   });
 });
 
+// env-access WU2 (#1210): an admin's session is sandboxed too, with the admin profile; only a host
+// that allows it lets an admin turn the sandbox off. Every session write-protects the deployment and
+// the files that run outside the sandbox.
+describe('sandbox: admin profile and write protection (env-access WU2, #1210)', () => {
+  const ADMIN = 'U0ADMIN001';
+  const savedAdmins = process.env.ADMIN_USERS;
+  const savedOffAllowed = process.env.SOMA_SANDBOX_OFF_ALLOWED;
+
+  async function withSettings<T>(sandboxDisabled: boolean, run: () => Promise<T>): Promise<T> {
+    const spy = vi.spyOn(await import('../../user-settings-store'), 'userSettingsStore', 'get').mockReturnValue({
+      getUserDefaultModel: () => 'm',
+      getUserPermissionMode: () => 'bypass',
+      getUserThinkingEnabled: () => true,
+      getUserShowThinking: () => false,
+      getUserSandboxDisabled: () => sandboxDisabled,
+      getUserNetworkDisabled: () => false,
+    } as never);
+    try {
+      return await run();
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  async function build(user: string, deps = makeDeps()) {
+    return buildStreamOptions(
+      { queryEnv: {}, slackContext: makeSlackContext({ user }), workingDirectory: WORK_DIR },
+      deps,
+    );
+  }
+
+  afterEach(async () => {
+    if (savedAdmins === undefined) delete process.env.ADMIN_USERS;
+    else process.env.ADMIN_USERS = savedAdmins;
+    if (savedOffAllowed === undefined) delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
+    else process.env.SOMA_SANDBOX_OFF_ALLOWED = savedOffAllowed;
+    (await import('../../admin-utils')).resetAdminUsersCache();
+  });
+
+  async function asAdmin() {
+    process.env.ADMIN_USERS = ADMIN;
+    (await import('../../admin-utils')).resetAdminUsersCache();
+  }
+
+  it('an admin who turned the sandbox off still runs sandboxed, and the host says why', async () => {
+    await asAdmin();
+    delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
+    const deps = makeDeps();
+    const { options } = await withSettings(true, () => build(ADMIN, deps));
+    const sandbox = options.sandbox as { enabled?: boolean; failIfUnavailable?: boolean } | undefined;
+    expect(sandbox?.enabled).toBe(true);
+    expect(sandbox?.failIfUnavailable).toBe(true);
+    expect(deps.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('SOMA_SANDBOX_OFF_ALLOWED'),
+      expect.objectContaining({ user: ADMIN }),
+    );
+  });
+
+  it('a host that allows it lets an admin run without the sandbox', async () => {
+    await asAdmin();
+    process.env.SOMA_SANDBOX_OFF_ALLOWED = 'true';
+    const { options } = await withSettings(true, () => build(ADMIN));
+    expect(options.sandbox).toBeUndefined();
+  });
+
+  it('an admin gets the admin profile: every domain, gh TLS, local binding, the caches writable', async () => {
+    await asAdmin();
+    const { options } = await withSettings(false, () => build(ADMIN));
+    const sandbox = options.sandbox as {
+      enableWeakerNetworkIsolation?: boolean;
+      network?: { allowedDomains?: string[]; allowLocalBinding?: boolean };
+      filesystem?: { allowWrite?: string[]; denyRead?: string[]; denyWrite?: string[] };
+    };
+    expect(sandbox.enableWeakerNetworkIsolation).toBe(true);
+    expect(sandbox.network?.allowLocalBinding).toBe(true);
+    expect(sandbox.network?.allowedDomains).toEqual(expect.arrayContaining(['localhost', '127.0.0.1']));
+    expect(sandbox.filesystem?.allowWrite).toEqual(
+      expect.arrayContaining([path.join('/tmp', ADMIN), path.join(os.homedir(), '.npm')]),
+    );
+    expect(sandbox.filesystem?.denyRead).toContain(SECRETS_DIR);
+    expect(sandbox.filesystem?.denyWrite).toEqual(expect.arrayContaining(approvalRecordPaths()));
+    const settings = options.settings as { permissions?: { allow?: string[] } };
+    expect(settings.permissions?.allow).toContain('WebFetch(domain:*)');
+  });
+
+  it('a non-admin keeps the narrow profile', async () => {
+    const { options } = await withSettings(false, () => build(SAFE_USER));
+    const sandbox = options.sandbox as {
+      enableWeakerNetworkIsolation?: boolean;
+      network?: { allowLocalBinding?: boolean };
+      filesystem?: { allowWrite?: string[] };
+    };
+    expect(sandbox.enableWeakerNetworkIsolation).toBeUndefined();
+    expect(sandbox.network?.allowLocalBinding).toBeUndefined();
+    expect(sandbox.filesystem?.allowWrite).toEqual([path.join('/tmp', SAFE_USER)]);
+    const settings = options.settings as { permissions?: { allow?: string[] } };
+    expect(settings.permissions?.allow ?? []).not.toContain('WebFetch(domain:*)');
+  });
+
+  it('every session, admin or not, sandbox on or off, write-denies the deployment and the startup files', async () => {
+    await asAdmin();
+    process.env.SOMA_SANDBOX_OFF_ALLOWED = 'true';
+    const deployRoot = path.dirname(CONFIG_FILE);
+    for (const [user, off] of [
+      [SAFE_USER, false],
+      [ADMIN, false],
+      [ADMIN, true],
+    ] as const) {
+      const { options } = await withSettings(off, () => build(user));
+      const deny = (options.settings as { permissions?: { deny?: string[] } }).permissions?.deny ?? [];
+      expect(deny, `${user} off=${off}`).toEqual(
+        expect.arrayContaining([
+          `Edit(/${deployRoot}/**)`,
+          `Edit(/${path.join(os.homedir(), 'Library', 'LaunchAgents')}/**)`,
+          `Edit(/${path.join(os.homedir(), '.zshrc')})`,
+        ]),
+      );
+      expect(deny).toEqual(expect.arrayContaining(secretStoreDenyRules()));
+    }
+  });
+});
+
 // Post-deploy QA, run by the deploy workflow in the requester's session, needs
 // a few host directories and the QA environment's hostnames. The host grants
 // exactly that, from config.json#deploySandbox (written per runner at deploy
@@ -837,8 +959,13 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
     }
   });
 
-  it('(e) sandbox-disabled user: unchanged, no sandbox at all', async () => {
+  it('(e) sandbox-disabled admin on a host that allows it: no sandbox at all, so no grant', async () => {
     writeHostConfig({ deploySandbox: GRANT });
+    const savedAdmins = process.env.ADMIN_USERS;
+    process.env.ADMIN_USERS = APPROVED;
+    process.env.SOMA_SANDBOX_OFF_ALLOWED = 'true';
+    const { resetAdminUsersCache } = await import('../../admin-utils');
+    resetAdminUsersCache();
     const spy = await mockUserSettings({ sandboxDisabled: true });
     try {
       const deps = makeDeps();
@@ -849,6 +976,24 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
 
       expect(options.sandbox).toBeUndefined();
       expect(grantLogs(deps)).toEqual([]);
+    } finally {
+      spy.mockRestore();
+      if (savedAdmins === undefined) delete process.env.ADMIN_USERS;
+      else process.env.ADMIN_USERS = savedAdmins;
+      delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
+      resetAdminUsersCache();
+    }
+  });
+
+  it('(e2) a non-admin with a stored sandbox-off setting stays sandboxed (WU2, #1210)', async () => {
+    writeHostConfig({ deploySandbox: GRANT });
+    const spy = await mockUserSettings({ sandboxDisabled: true });
+    try {
+      const { options } = await buildStreamOptions(
+        { queryEnv: {}, session: session('deploy'), slackContext: makeSlackContext({ user: APPROVED }) },
+        makeDeps(),
+      );
+      expect((options.sandbox as { enabled?: boolean } | undefined)?.enabled).toBe(true);
     } finally {
       spy.mockRestore();
     }

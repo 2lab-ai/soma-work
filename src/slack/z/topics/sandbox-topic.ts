@@ -7,6 +7,8 @@
  */
 
 import { isAdminUser } from '../../../admin-utils';
+import { getSandboxOffAllowed } from '../../../config';
+import { isSandboxOffInEffect } from '../../../sandbox/admin-sandbox-profile';
 import { DEV_DOMAIN_ALLOWLIST } from '../../../sandbox/dev-domain-allowlist';
 import { userSettingsStore } from '../../../user-settings-store';
 import type { ApplyResult, RenderResult, ZTopicBinding } from '../../actions/z-settings-actions';
@@ -14,15 +16,26 @@ import { buildSettingCard } from '../ui-builder';
 
 export async function renderSandboxCard(args: { userId: string; issuedAt: number }): Promise<RenderResult> {
   const { userId, issuedAt } = args;
-  const sandboxDisabled = userSettingsStore.getUserSandboxDisabled(userId);
+  const offRequested = userSettingsStore.getUserSandboxDisabled(userId);
   const networkDisabled = userSettingsStore.getUserNetworkDisabled(userId);
   const admin = isAdminUser(userId);
+  // The state sessions actually run with (env-access WU2, #1210): off only for an admin, on a host that
+  // allows it.
+  const sandboxDisabled = isSandboxOffInEffect({
+    isAdmin: admin,
+    requested: offRequested,
+    hostAllows: getSandboxOffAllowed(),
+  });
 
   const currentLabel = sandboxDisabled ? 'OFF' : 'ON';
 
   const sandboxLine = sandboxDisabled
     ? '• Sandbox: `OFF` — bash runs without isolation'
-    : '• Sandbox: `ON` — bash runs in an isolated environment';
+    : offRequested && admin
+      ? '• Sandbox: `ON` — off was requested, but this host runs admins in the admin sandbox (`SOMA_SANDBOX_OFF_ALLOWED` is not set)'
+      : admin
+        ? '• Sandbox: `ON` — admin sandbox: every domain, gh, local servers and caches; secrets, approval records and the deployment stay blocked'
+        : '• Sandbox: `ON` — bash runs in an isolated environment';
 
   let networkLine: string;
   if (networkDisabled) {
@@ -95,6 +108,15 @@ export async function applySandbox(args: { userId: string; value: string }): Pro
       };
     }
     const disable = normalized === 'off';
+    if (disable && !getSandboxOffAllowed()) {
+      // env-access WU2 (#1210): admins run in the admin sandbox; only the host's operator allows off.
+      return {
+        ok: false,
+        summary: '🛡️ Sandbox stays ON — 이 호스트는 sandbox off를 허용하지 않습니다 (`SOMA_SANDBOX_OFF_ALLOWED`).',
+        description:
+          '어드민은 어드민 샌드박스에서 실행됩니다(모든 도메인·gh·로컬 서버·패키지 캐시 사용 가능, 비밀 저장소·승인 기록·배포 디렉터리는 막힘). 끄기는 호스트 운영자가 `.env`에서만 허용합니다.',
+      };
+    }
     userSettingsStore.setUserSandboxDisabled(userId, disable);
     return {
       ok: true,
