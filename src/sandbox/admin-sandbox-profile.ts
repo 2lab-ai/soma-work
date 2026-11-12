@@ -3,7 +3,7 @@
  * (env-access WU2, #1210 — `.prd/25-env-access-architecture.md` §0, §1).
  *
  * Admins run in a sandbox too, a wide one: every network domain, gh's TLS check through trustd,
- * local servers, and the temp directory writable (package caches go to the user's temp directory). What no model writes — admin or not, sandbox on or
+ * local servers, and the temp directory writable. What no model writes — admin or not, sandbox on or
  * off — is the deployment (its code, configuration and data: rewriting them runs the model's code as
  * the bot, outside any sandbox) and the files that something outside the sandbox later runs or trusts
  * (launch agents, shell startup files, ssh's authorized keys, git and CLI settings).
@@ -32,8 +32,9 @@ export interface AdminSandboxProfile {
 
 /**
  * No home directory is writable, caches included: the bot runs code from them outside every sandbox
- * (the npm cache holds the MCP servers it starts with `npx -y`). Package caches go to the user's own
- * temp directory instead ({@link sandboxCacheEnv}).
+ * (the npm cache holds the MCP servers it starts with `npx -y`). Nor is a cache moved by environment:
+ * the CLI's environment is also its MCP servers' (astra R2). A sandboxed install that must write a
+ * cache names one the session can write itself (`npm install --cache /tmp/{uid}/npm`).
  */
 export function adminSandboxProfile(paths: { home: string; tmpdir: string }): AdminSandboxProfile {
   return {
@@ -44,26 +45,6 @@ export function adminSandboxProfile(paths: { home: string; tmpdir: string }): Ad
     },
     enableWeakerNetworkIsolation: true,
     allowRules: [ADMIN_ALL_DOMAINS_RULE],
-  };
-}
-
-/**
- * Environment for a sandboxed session: every package cache in the user's own temp directory, where the
- * sandbox lets it write and from where nothing outside the sandbox runs code.
- */
-export function sandboxCacheEnv(userTmpDir: string): Record<string, string> {
-  const cache = path.join(userTmpDir, '.cache');
-  return {
-    XDG_CACHE_HOME: cache,
-    npm_config_cache: path.join(cache, 'npm'),
-    // pnpm reads npm_config_* settings: its store, which would otherwise be in the home directory.
-    npm_config_store_dir: path.join(cache, 'pnpm-store'),
-    YARN_CACHE_FOLDER: path.join(cache, 'yarn'),
-    BUN_INSTALL_CACHE_DIR: path.join(cache, 'bun'),
-    PIP_CACHE_DIR: path.join(cache, 'pip'),
-    UV_CACHE_DIR: path.join(cache, 'uv'),
-    GOCACHE: path.join(cache, 'go-build'),
-    GOMODCACHE: path.join(cache, 'go-mod'),
   };
 }
 

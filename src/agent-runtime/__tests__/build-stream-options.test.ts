@@ -801,12 +801,24 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
     }
   });
 
-  it('every sandboxed session caches packages in its own temp directory, not the home caches (astra R1)', async () => {
+  it('sets no package cache in the CLI environment, which the MCP launchers inherit (astra R2)', async () => {
+    // The CLI hands its environment to every stdio MCP server it starts (`npx -y …`, plugin servers). A
+    // cache the model can write there would let it plant code those servers run outside the sandbox.
     await asAdmin();
+    const CACHE_KEYS = [
+      'npm_config_cache',
+      'npm_config_store_dir',
+      'XDG_CACHE_HOME',
+      'YARN_CACHE_FOLDER',
+      'BUN_INSTALL_CACHE_DIR',
+      'PIP_CACHE_DIR',
+      'UV_CACHE_DIR',
+      'GOCACHE',
+      'GOMODCACHE',
+    ];
     for (const user of [SAFE_USER, ADMIN]) {
       const { options } = await withSettings(false, () => build(user));
-      expect(options.env?.npm_config_cache, user).toBe(path.join('/tmp', user, '.cache', 'npm'));
-      expect(options.env?.XDG_CACHE_HOME, user).toBe(path.join('/tmp', user, '.cache'));
+      for (const key of CACHE_KEYS) expect(options.env?.[key], `${user} ${key}`).toBeUndefined();
     }
   });
 

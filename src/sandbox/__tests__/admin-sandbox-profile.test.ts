@@ -14,7 +14,6 @@ import {
   credentialReadDenyRules,
   isSandboxOffInEffect,
   protectedWriteDenyRules,
-  sandboxCacheEnv,
 } from '../admin-sandbox-profile';
 import { DEV_DOMAIN_ALLOWLIST } from '../dev-domain-allowlist';
 
@@ -36,26 +35,6 @@ describe('adminSandboxProfile', () => {
   it('writes the temp directory only: no home cache the bot also runs code from (astra R1)', () => {
     // The npm cache holds the MCP servers the bot launches with `npx -y`, outside every sandbox.
     expect(profile.allowWrite).toEqual([TMP]);
-  });
-});
-
-describe('sandboxCacheEnv', () => {
-  it("points every package cache at the user's own temp directory", () => {
-    const env = sandboxCacheEnv('/tmp/U1');
-    expect(env.npm_config_cache).toBe('/tmp/U1/.cache/npm');
-    expect(env.XDG_CACHE_HOME).toBe('/tmp/U1/.cache');
-    // pnpm reads npm_config_* too: its store goes there instead of failing on the home one (grok R2).
-    expect(env.npm_config_store_dir).toBe('/tmp/U1/.cache/pnpm-store');
-    for (const key of [
-      'BUN_INSTALL_CACHE_DIR',
-      'PIP_CACHE_DIR',
-      'UV_CACHE_DIR',
-      'GOCACHE',
-      'GOMODCACHE',
-      'YARN_CACHE_FOLDER',
-    ]) {
-      expect(env[key], key).toMatch(/^\/tmp\/U1\/\.cache\//);
-    }
   });
 });
 

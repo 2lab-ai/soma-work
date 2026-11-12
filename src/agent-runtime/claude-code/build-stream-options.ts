@@ -62,7 +62,6 @@ import {
   credentialReadDenyRules,
   isSandboxOffInEffect,
   protectedWriteDenyRules,
-  sandboxCacheEnv,
 } from '../../sandbox/admin-sandbox-profile';
 import { extendSandboxWithGrant, loadDeploySandboxGrant } from '../../sandbox/deploy-sandbox-grant';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
@@ -353,8 +352,8 @@ export async function buildStreamOptions(
       user: contextUser,
     });
   }
-  // Admin profile (env-access WU2, #1210): every domain, gh's TLS check, local servers, the temp
-  // directory and the package caches. The write protection added to every session still holds.
+  // Admin profile (env-access WU2, #1210): every domain, gh's TLS check, local servers and the temp
+  // directory. The write protection added to every session still holds.
   const adminProfile =
     contextIsAdmin && !sandboxDisabled ? adminSandboxProfile({ home: os.homedir(), tmpdir: realTmpdir() }) : undefined;
   const sandboxUserDir =
@@ -806,14 +805,10 @@ export async function buildStreamOptions(
       }
     }
     options.sandbox = sandboxConfig;
-    // Package caches in the user's temp directory (env-access WU2, #1210): the home caches are not
-    // writable, and the bot runs code from them outside the sandbox. Operator values win.
-    if (sandboxUserDir) {
-      if (!options.env) options.env = {};
-      for (const [key, value] of Object.entries(sandboxCacheEnv(sandboxUserDir))) {
-        if (options.env[key] === undefined) options.env[key] = value;
-      }
-    }
+    // No package cache env here (env-access WU2, #1210, astra R2): `options.env` is the CLI's
+    // environment, and the stdio MCP servers it starts (`npx -y`, `uvx`) inherit it outside the
+    // sandbox — a cache the model can write would then hold code the bot runs. Home caches stay the
+    // bot's, read-only in the sandbox; a sandboxed install passes its own cache (`--cache /tmp/{uid}/npm`).
     logger.debug('Sandbox enabled', {
       user: contextUser,
       network: networkDisabled ? 'off' : 'on',
