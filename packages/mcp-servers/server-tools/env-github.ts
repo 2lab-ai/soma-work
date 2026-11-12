@@ -132,6 +132,16 @@ export function headSha(value: unknown): string {
 }
 
 async function call(fetch: Fetch, token: string, method: string, path: string, body?: unknown): Promise<unknown> {
+  return (await callWithStatus(fetch, token, method, path, body)).json;
+}
+
+async function callWithStatus(
+  fetch: Fetch,
+  token: string,
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<{ status: number; json: unknown }> {
   let res: HttpResponse;
   try {
     res = await fetch(`${API}${path}`, {
@@ -149,6 +159,8 @@ async function call(fetch: Fetch, token: string, method: string, path: string, b
   } catch (err) {
     throw new NoAnswerError(`GitHub ${method} ${path} got no answer (${err instanceof Error ? err.name : 'error'})`);
   }
+  // A GET answered 204 (no content, e.g. `pulls/<n>/merge` for a merged PR) is an answer with no body.
+  if (method === 'GET' && res.status === 204) return { status: 204, json: null };
   let json: unknown;
   try {
     json = await res.json();
@@ -168,48 +180,68 @@ async function call(fetch: Fetch, token: string, method: string, path: string, b
         : 'no message';
     throw new GithubError(`GitHub ${method} ${path} answered ${res.status}: ${message}`);
   }
-  return json;
+  return { status: res.status, json };
 }
 
 // ── gh_read: a GET of the environment's repository (env-access WU5, #1213) ──
 
 /**
- * The parts of a repository `gh_read` reads: what deploy confirmation and QA read (commits, compares, PRs and issues,
- * workflow runs and jobs, checks and statuses, branches, contents, releases). Not settings, secrets, variables,
- * hooks, keys, environments or collaborators — the token may be an org admin's.
+ * The routes `gh_read` reads, as shapes of the path below `repos/<owner>/<name>`: what deploy confirmation and QA
+ * read (commits, compares, PRs and issues, workflow runs and jobs, checks and statuses, branches, contents, releases).
+ * An allowlist of shapes, not of first segments: below a part QA reads there are settings (`branches/<b>/protection`)
+ * and routes that answer with another repository's data (`issues/<n>/parent`, a timeline's cross-references) — the
+ * token may be an org admin's.
  */
-const READ_PARTS = new Set([
+const S = '[^/]+';
+const N = '[0-9]+';
+const READ_SHAPES: readonly RegExp[] = [
+  '',
   'pulls',
+  `pulls/${N}`,
+  `pulls/${N}/(files|commits|reviews|comments|merge)`,
   'commits',
-  'compare',
+  `commits/${S}`,
+  `commits/${S}/(check-runs|check-suites|status|statuses|pulls)`,
+  `compare/${S}`,
   'issues',
+  `issues/${N}`,
+  `issues/${N}/(comments|events|labels)`,
+  '(issues)/(comments|events)',
+  `issues/(comments|events)/${N}`,
   'branches',
+  `branches/${S}`,
   'contents',
-  'statuses',
-  'check-runs',
-  'check-suites',
+  'contents/.+',
+  `statuses/${S}`,
+  `check-runs/${N}`,
+  `check-runs/${N}/annotations`,
+  `check-suites/${N}`,
+  `check-suites/${N}/check-runs`,
   'deployments',
+  `deployments/${N}`,
+  `deployments/${N}/statuses`,
   'releases',
+  `releases/(${N}|latest)`,
+  `releases/tags/${S}`,
   'tags',
-  'git',
+  'git/(ref|refs|matching-refs)/.+',
+  `git/(commits|trees|tags|blobs)/${S}`,
   'milestones',
+  `milestones/${N}`,
   'labels',
-]);
-const READ_ACTIONS = new Set(['runs', 'jobs', 'workflows']);
-/** Segments that name settings, secrets or access wherever they appear below a part. */
-const SETTINGS_SEGMENTS = new Set([
-  'protection',
-  'protected_branches',
-  'secrets',
-  'variables',
-  'hooks',
-  'keys',
-  'collaborators',
-  'invitations',
-  'permissions',
-  'environments',
-]);
-const SEGMENT = /^[A-Za-z0-9_.~%-]+$/;
+  `labels/${S}`,
+  'actions/runs',
+  `actions/runs/${N}`,
+  `actions/runs/${N}/jobs`,
+  `actions/runs/${N}/attempts/${N}`,
+  `actions/runs/${N}/attempts/${N}/jobs`,
+  `actions/jobs/${N}`,
+  'actions/workflows',
+  `actions/workflows/${S}`,
+  `actions/workflows/${S}/runs`,
+].map((shape) => new RegExp(`^${shape}$`));
+/** GitHub path characters (RFC 3986 unreserved + the sub-delims paths use: `(auth)`, `alice:branch`, `a+b`). */
+const SEGMENT = /^[A-Za-z0-9_.~%()+:@,=!$*;-]+$/;
 const QUERY_KEY = /^[A-Za-z0-9_[\]]+$/;
 /** Longest answer handed back, in characters of JSON; a longer one is cut and marked. */
 const READ_MAX_CHARS = 200_000;
@@ -233,14 +265,8 @@ export function repoReadPath(config: EnvGithubConfig, value: unknown): string {
     throw new GithubError('path must be repos/<owner>/<name>/… (no query, no dot segments)');
   }
   const repo = allowedRepo(config, `${segments[1]}/${segments[2]}`);
-  const part = segments[3];
-  // Settings and access under a part QA reads (`branches/<b>/protection`, `…/collaborators`) are not read either.
-  const settingsBelow = segments.slice(4).some((s) => SETTINGS_SEGMENTS.has(decodeURIComponent(s).toLowerCase()));
-  const allowed =
-    !settingsBelow &&
-    (part === undefined || READ_PARTS.has(part) || (part === 'actions' && READ_ACTIONS.has(segments[4] ?? '')));
-  if (!allowed)
-    throw new GithubError(`${part}${part === 'actions' ? `/${segments[4] ?? ''}` : ''} is not a part gh_read reads`);
+  const rest = segments.slice(3).join('/');
+  if (!READ_SHAPES.some((shape) => shape.test(rest))) throw new GithubError(`${rest} is not a part gh_read reads`);
   return ['repos', repo, ...segments.slice(3)].join('/');
 }
 
@@ -264,13 +290,13 @@ export async function repoRead(
   config: EnvGithubConfig,
   path: unknown,
   query?: unknown,
-): Promise<{ path: string; truncated: boolean; body: unknown }> {
+): Promise<{ path: string; status: number; truncated: boolean; body: unknown }> {
   const checked = repoReadPath(config, path);
-  const json = await call(fetch, config.token, 'GET', `/${checked}${readQuery(query)}`);
+  const { status, json } = await callWithStatus(fetch, config.token, 'GET', `/${checked}${readQuery(query)}`);
   const text = JSON.stringify(json ?? null);
   return text.length > READ_MAX_CHARS
-    ? { path: checked, truncated: true, body: text.slice(0, READ_MAX_CHARS) }
-    : { path: checked, truncated: false, body: json ?? null };
+    ? { path: checked, status, truncated: true, body: text.slice(0, READ_MAX_CHARS) }
+    : { path: checked, status, truncated: false, body: json ?? null };
 }
 
 type Obj = Record<string, unknown>;

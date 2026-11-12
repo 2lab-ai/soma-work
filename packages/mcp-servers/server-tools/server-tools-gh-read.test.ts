@@ -90,6 +90,7 @@ describe('gh_read', () => {
     ]);
     expect(text(out)).toEqual({
       path: 'repos/acme/app/commits',
+      status: 200,
       truncated: false,
       body: [{ sha: 'abc', commit: { message: 'fix' } }],
     });
@@ -134,6 +135,11 @@ describe('gh_read', () => {
     await expect(refuse('repos/acme/app/contents/a%2F%2E%2E%2Fb')).rejects.toThrow(/path/);
     await expect(refuse('repos/acme/app/contents/%E0%A4%A')).rejects.toThrow(/path/);
     await expect(refuse('repos/acme/app/contents/a%5Cb')).rejects.toThrow(/path/);
+    // review-of-legends (999ec6829): issue routes that answer with another repository's issue are not read.
+    await expect(refuse('repos/acme/app/issues/1/parent')).rejects.toThrow(/not a part gh_read reads/);
+    await expect(refuse('repos/acme/app/issues/1/sub_issues')).rejects.toThrow(/not a part gh_read reads/);
+    await expect(refuse('repos/acme/app/issues/1/timeline')).rejects.toThrow(/not a part gh_read reads/);
+    await expect(refuse('repos/acme/app/pulls/1/requested_reviewers/x')).rejects.toThrow(/not a part gh_read reads/);
     await expect(refuse('repos/acme/app/pulls/../../../user')).rejects.toThrow(/path/);
     await expect(refuse('repos/acme/app/pulls?state=all')).rejects.toThrow(/path/);
     await expect(refuse('user/repos')).rejects.toThrow(/path/);
@@ -142,6 +148,31 @@ describe('gh_read', () => {
     await expect(refuse('repos/acme/app/pulls', { state: { nested: 1 } })).rejects.toThrow(/query/);
     await expect(handleGhRead({ server: 'nogh', path: 'repos/acme/app' }, fetch)).rejects.toThrow(/no github/);
     expect(calls).toEqual([]);
+  });
+
+  // review-of-legends (999ec6829): GitHub path characters QA meets, and a 204 that is an answer.
+  it('reads paths with GitHub path characters, and takes a 204 as an empty answer', async () => {
+    const { fetch, calls } = github();
+    for (const p of [
+      'repos/acme/app/contents/src/app/(auth)/page.tsx',
+      'repos/acme/app/contents/src/hooks/use-x.ts',
+      'repos/acme/app/compare/main...alice:feature+1',
+      'repos/acme/app/git/ref/heads/deploy/dev2',
+    ]) {
+      await handleGhRead({ server: 'dev2', path: p }, fetch);
+    }
+    expect(calls).toHaveLength(4);
+    const merged: Fetch = async () => ({
+      ok: true,
+      status: 204,
+      json: async () => {
+        throw new Error('no body');
+      },
+    });
+    expect(text(await handleGhRead({ server: 'dev2', path: 'repos/acme/app/pulls/12/merge' }, merged))).toMatchObject({
+      status: 204,
+      body: null,
+    });
   });
 
   it("says GitHub's status and message on a refusal, and cuts a long answer", async () => {
