@@ -20,7 +20,7 @@ import {
   OutcomeUnknownError,
   prNumber,
   prState,
-  read,
+  repoRead,
 } from './env-github.js';
 import { defaultLoginFetch, LoginError, type LoginFetch, login, loginSpec } from './env-login.js';
 import { redactLogSecrets } from './redact-logs.js';
@@ -741,7 +741,7 @@ function envGithub(server: unknown): { name: string; config: ServerConfig; githu
 
 /**
  * `gh_read` (env-access WU5, #1213): one GET of the environment's own repository with its token, for deploy
- * confirmation and QA. Only the parts `readPath` allows; nothing is written, so nothing is audited.
+ * confirmation and QA. Only the parts `repoReadPath` allows; nothing is written, so nothing is audited.
  */
 export async function handleGhRead(
   args: Record<string, unknown>,
@@ -749,7 +749,7 @@ export async function handleGhRead(
 ) {
   const env = envGithub(args.server);
   try {
-    const answer = await read(fetchImpl, env.github, args.path, args.query);
+    const answer = await repoRead(fetchImpl, env.github, args.path, args.query);
     return { content: [{ type: 'text' as const, text: JSON.stringify(answer) }] };
   } catch (err) {
     if (err instanceof GithubError) throw new Error(err.message);

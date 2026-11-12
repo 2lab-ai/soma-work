@@ -202,7 +202,7 @@ const QUERY_KEY = /^[A-Za-z0-9_[\]]+$/;
 const READ_MAX_CHARS = 200_000;
 
 /** `repos/<owner>/<name>/…` as asked, checked: its repository is the environment's and its part one QA reads. */
-export function readPath(config: EnvGithubConfig, value: unknown): string {
+export function repoReadPath(config: EnvGithubConfig, value: unknown): string {
   if (typeof value !== 'string') throw new GithubError('path must be repos/<owner>/<name>/…');
   const segments = value.replace(/^\//, '').split('/');
   const unsafe = segments.some(
@@ -235,13 +235,13 @@ function readQuery(value: unknown): string {
 }
 
 /** GET one path of the environment's repository; a long answer comes back cut, as text, with `truncated`. */
-export async function read(
+export async function repoRead(
   fetch: Fetch,
   config: EnvGithubConfig,
   path: unknown,
   query?: unknown,
 ): Promise<{ path: string; truncated: boolean; body: unknown }> {
-  const checked = readPath(config, path);
+  const checked = repoReadPath(config, path);
   const json = await call(fetch, config.token, 'GET', `/${checked}${readQuery(query)}`);
   const text = JSON.stringify(json ?? null);
   return text.length > READ_MAX_CHARS
