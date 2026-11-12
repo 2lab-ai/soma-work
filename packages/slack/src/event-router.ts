@@ -330,6 +330,9 @@ export interface EventRouterDeps {
   offerSourceThreadNewTask?: (request: SourceThreadNewTaskRequest) => Promise<boolean>;
 }
 
+/** How long a source-thread mention stays answered — Slack's second delivery of one message comes within seconds. */
+const SOURCE_MENTION_DEDUP_MS = 10 * 60_000;
+
 /** A source-thread instruction to offer as a new task — where it is and who sent it. */
 export interface SourceThreadNewTaskRequest {
   channel: string;
@@ -1387,16 +1390,19 @@ export class EventRouter {
     const botId = await this.deps.slackApi.getBotUserId();
     if (botId && text.includes(`<@${botId}>`)) {
       // SSOT 2026-11-12 — in a source thread this is an instruction like any other mention there: the same DM
-      // confirmation, never a direct start (app_mention defers a mention with files to this path).
+      // confirmation, never a direct start (app_mention defers a mention with files to this path). A `/z …` command
+      // runs as a command, as it does on the app_mention path (whose `/z` gate runs before this guard).
+      const instruction = text.replace(new RegExp(`<@${botId}>`, 'g'), '').trim();
       if (
         threadTs &&
+        stripZPrefix(instruction) === null &&
         (await this.answerSourceThreadMention(
           {
             channel,
             threadTs,
             ts,
             user: messageEvent.user,
-            text: text.replace(new RegExp(`<@${botId}>`, 'g'), '').trim(),
+            text: instruction,
             fileCount: Array.isArray(messageEvent.files) ? messageEvent.files.length : 0,
           },
           say,
@@ -1644,6 +1650,9 @@ export class EventRouter {
     this.deps.claudeHandler.setExpiryCallbacks(callbacks);
   }
 
+  /** Source-thread mentions already answered (`channel:ts` → when), so a twice-delivered message is answered once. */
+  private readonly answeredSourceMentions = new Map<string, number>();
+
   /**
    * A mention in a thread with no session of its own whose earlier mention already moved to its own work
    * thread(s) — a source thread. The thread gets the status of every work thread started from it. An instruction
@@ -1657,6 +1666,14 @@ export class EventRouter {
     if (this.deps.claudeHandler.getSession(mention.channel, mention.threadTs)) return false;
     const linkedSessions = this.deps.claudeHandler.findSessionsBySourceThread(mention.channel, mention.threadTs);
     if (linkedSessions.length === 0) return false;
+    // Slack can deliver one message as both `app_mention` (its files missing) and `file_share`: answer it once.
+    const key = `${mention.channel}:${mention.ts}`;
+    const now = Date.now();
+    for (const [k, at] of this.answeredSourceMentions) {
+      if (now - at > SOURCE_MENTION_DEDUP_MS) this.answeredSourceMentions.delete(k);
+    }
+    if (this.answeredSourceMentions.has(key)) return true;
+    this.answeredSourceMentions.set(key, now);
 
     let offered = false;
     const instruction = mention.text.trim();

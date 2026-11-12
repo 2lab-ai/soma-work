@@ -343,6 +343,27 @@ describe('EventRouter — source thread mention with files (file_share path)', (
     expect(offerNewTask).toHaveBeenCalledWith(expect.objectContaining({ text: '', fileCount: 1 }));
   });
 
+  it('one message delivered as both app_mention (files missing) and file_share is answered once', async () => {
+    const say = vi.fn();
+    const mention = getAppMentionHandler(mockApp);
+    await mention({
+      event: { user: 'U_Z', channel: 'C123', ts: '200.300', text: '<@B123> 이 로그 봐줘', thread_ts: '100.200' },
+      say,
+    });
+    await messageHandler()({ event: fileMention('<@B123> 이 로그 봐줘'), say });
+
+    expect(offerNewTask).toHaveBeenCalledTimes(1);
+    expect(say).toHaveBeenCalledTimes(1);
+    expect(mockMessageHandler).not.toHaveBeenCalled();
+  });
+
+  it('a `/z` command with files in a source thread runs as a command, not an offer', async () => {
+    await messageHandler()({ event: fileMention('<@B123> /z persona'), say: vi.fn() });
+
+    expect(offerNewTask).not.toHaveBeenCalled();
+    expect(mockMessageHandler).toHaveBeenCalledWith(expect.objectContaining({ text: '/z persona' }), expect.anything());
+  });
+
   it('a file mention in a thread with no linked work still starts a first mention as before', async () => {
     mockClaudeHandler.findSessionsBySourceThread.mockReturnValue([]);
     await messageHandler()({ event: fileMention('<@B123> 이 로그 봐줘'), say: vi.fn() });
