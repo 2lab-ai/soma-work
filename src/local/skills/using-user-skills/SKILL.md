@@ -40,6 +40,7 @@ Slack 에서 `$user:<name>` 로 트리거. 호스트가 해당 스킬 본문을 
 | action | params |
 |---|---|
 | `list`   | 없음 — 본인의 스킬 목록 반환 |
+| `get`    | `name` — 그 스킬의 본문 전체(`content`) 반환. 고치기 전에 읽을 때 |
 | `update` | `name`, `content` (전체 본문 교체) |
 | `delete` | `name` |
 
