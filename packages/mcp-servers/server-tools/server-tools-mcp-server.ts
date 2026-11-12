@@ -740,12 +740,6 @@ function envGithub(server: unknown): { name: string; config: ServerConfig; githu
 }
 
 /**
- * view / approve / merge one PR as the environment user, with the environment's token. approve and merge run only
- * under the environment's conditions, at the head SHA the caller passes, for the person the bot names
- * (`SOMA_REQUESTER`); each is written to the audit ledger before it runs, and again with its outcome. `fetchImpl`
- * is for tests.
- */
-/**
  * `gh_read` (env-access WU5, #1213): one GET of the environment's own repository with its token, for deploy
  * confirmation and QA. Only the parts `readPath` allows; nothing is written, so nothing is audited.
  */
@@ -763,6 +757,12 @@ export async function handleGhRead(
   }
 }
 
+/**
+ * view / approve / merge one PR as the environment user, with the environment's token. approve and merge run only
+ * under the environment's conditions, at the head SHA the caller passes, for the person the bot names
+ * (`SOMA_REQUESTER`); each is written to the audit ledger before it runs, and again with its outcome. `fetchImpl`
+ * is for tests.
+ */
 export async function handleGhPr(
   args: Record<string, unknown>,
   fetchImpl: Fetch = globalThis.fetch as unknown as Fetch,
