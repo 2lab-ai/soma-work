@@ -423,12 +423,13 @@ CONFIG_EOF
 #### 비밀은 `secrets/`에 (`.prd/25-env-access-architecture.md` WU1)
 
 비밀번호·토큰은 `config.json`에 값으로 적지 않는다. 배포 디렉터리의 `secrets/`에 비밀 하나당 파일 하나로 두고, 설정에는 이름만 적는다.
-일반 유저의 모델 세션은 이 폴더를 읽거나 쓰지 못한다 — 샌드박스가 OS 수준에서 막고, 정책이 Read·Grep·Glob·Write·Edit를 막는다.
-어드민 모델은 Read·Grep·Glob·Write·Edit로는 못 읽지만, 아직 두 길이 남아 있다: 샌드박스를 끈(`sandbox off`) 세션의 Bash,
-그리고 네이티브 Write·Edit로 배포 디렉터리(`config.json` 등)를 고쳐 참조를 다른 곳으로 돌리는 것. 봇 프로세스와 server-tools만 읽는다.
+어떤 모델 세션도(어드민 포함) 이 폴더를 읽거나 쓰지 못한다 — 샌드박스가 OS 수준에서 막고(어드민도 어드민 프로필 샌드박스로 돈다,
+#1210), 정책과 CLI 거부 규칙이 Read·Grep·Glob·Write·Edit를 막는다. 어떤 모델도 배포 디렉터리(`config.json` 등)를 고쳐 참조를
+다른 곳으로 돌리지 못한다. 봇 프로세스와 server-tools만 읽는다.
 
-> **출시 게이트: 실제 비밀은 #1210(어드민 샌드박스 · 어드민 쓰기 경계)이 배포되고 그 적대적 테스트가 통과한 뒤에 옮긴다.**
-> 그 전에는 이 절차를 시험용 값으로만 쓴다.
+> **출시 게이트: 실제 비밀은 #1210이 그 호스트에 배포되고 dev 실측(어드민 세션이 샌드박스로 돌고, 배포 디렉터리 쓰기와 자격 파일
+> 읽기가 거부됨)이 끝난 뒤에 옮긴다.** 그 호스트가 `SOMA_SANDBOX_OFF_ALLOWED=true`를 두면 그 호스트의 어드민 `sandbox off` 세션에는
+> OS 규칙이 없다 — 비밀을 둔 호스트에서는 켜지 않는다.
 
 ```bash
 install -d -m 700 "${DEPLOY_DIR}/secrets"
@@ -452,6 +453,10 @@ install -d -m 700 "${DEPLOY_DIR}/secrets"
 - 평문 값도 계속 동작한다. 옮기는 순서: 파일을 만들고 → 설정의 값을 참조로 바꾸고 → 조회가 되는지 확인한다.
 - 샌드박스를 띄울 수 없는 호스트(bubblewrap 없는 컨테이너 등)는 모델 명령이 실행되지 않는다(fail-closed).
   그런 호스트만 `.env`에 `SOMA_SANDBOX_ALLOW_UNAVAILABLE=true`를 명시한다. 그때 비밀 저장소는 정책 단계만 지킨다.
+- 어드민도 샌드박스로 돈다(#1210). 어드민 프로필이 막는 작업(도커 소켓, `launchctl` 같은 시스템 서비스)이 급히 필요하면 그 호스트의
+  `.env`에 `SOMA_SANDBOX_OFF_ALLOWED=true`를 두고 재시작한다 — 그때만 어드민의 `sandbox off`가 효과를 낸다. 일이 끝나면 지운다.
+- 모델은 Bash ssh를 못 하고 ssh 키를 못 읽는다. 호스트 명령은 server-tools `ssh_exec`(어드민 전용)로 한다: 위 `server-tools` 절의
+  `ssh.host`가 봇 유저의 ssh 설정·키로 접속할 수 있어야 한다(`BatchMode=yes` — 비밀번호·호스트 키 질문 없이).
 
 ### 8.4 (제거됨) mcp-servers.json
 

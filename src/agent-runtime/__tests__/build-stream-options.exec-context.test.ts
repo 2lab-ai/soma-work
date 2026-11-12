@@ -174,6 +174,12 @@ describe('plan mode — a session whose plan is not started (SSOT 2026-11-02, st
 
   it('…with the sandbox turned off too, no skill shell (trinity R5, astra P1)', async () => {
     const off = vi.spyOn(userSettingsStore, 'getUserSandboxDisabled').mockReturnValue(true);
+    // Off takes effect only for an admin on a host that allows it (env-access WU2, #1210).
+    const savedAdmins = process.env.ADMIN_USERS;
+    process.env.ADMIN_USERS = USER;
+    process.env.SOMA_SANDBOX_OFF_ALLOWED = 'true';
+    const { resetAdminUsersCache } = await import('../../admin-utils');
+    resetAdminUsersCache();
     try {
       const { options } = await buildStreamOptions(
         { queryEnv: {}, workingDirectory: WORK_DIR, session: planning as ConversationSession, slackContext },
@@ -183,6 +189,10 @@ describe('plan mode — a session whose plan is not started (SSOT 2026-11-02, st
       expect((options.settings as { disableSkillShellExecution?: boolean }).disableSkillShellExecution).toBe(true);
     } finally {
       off.mockRestore();
+      if (savedAdmins === undefined) delete process.env.ADMIN_USERS;
+      else process.env.ADMIN_USERS = savedAdmins;
+      delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
+      resetAdminUsersCache();
     }
   });
 
