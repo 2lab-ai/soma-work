@@ -125,6 +125,15 @@ describe('gh_read', () => {
     await expect(refuse('repos/acme/app/hooks')).rejects.toThrow(/not a part gh_read reads/);
     await expect(refuse('repos/acme/app/keys')).rejects.toThrow(/not a part gh_read reads/);
     await expect(refuse('repos/acme/app/environments/dev2/secrets')).rejects.toThrow(/not a part gh_read reads/);
+    // trinity R1 (fable): settings under a part QA reads, and encoded dot segments.
+    await expect(refuse('repos/acme/app/branches/main/protection')).rejects.toThrow(/not a part gh_read reads/);
+    await expect(refuse('repos/acme/app/branches/main/protection/restrictions')).rejects.toThrow(
+      /not a part gh_read reads/,
+    );
+    await expect(refuse('repos/acme/app/contents/..%2F..%2Fhooks')).rejects.toThrow(/path/);
+    await expect(refuse('repos/acme/app/contents/a%2F%2E%2E%2Fb')).rejects.toThrow(/path/);
+    await expect(refuse('repos/acme/app/contents/%E0%A4%A')).rejects.toThrow(/path/);
+    await expect(refuse('repos/acme/app/contents/a%5Cb')).rejects.toThrow(/path/);
     await expect(refuse('repos/acme/app/pulls/../../../user')).rejects.toThrow(/path/);
     await expect(refuse('repos/acme/app/pulls?state=all')).rejects.toThrow(/path/);
     await expect(refuse('user/repos')).rejects.toThrow(/path/);

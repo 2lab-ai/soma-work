@@ -196,6 +196,19 @@ const READ_PARTS = new Set([
   'labels',
 ]);
 const READ_ACTIONS = new Set(['runs', 'jobs', 'workflows']);
+/** Segments that name settings, secrets or access wherever they appear below a part. */
+const SETTINGS_SEGMENTS = new Set([
+  'protection',
+  'protected_branches',
+  'secrets',
+  'variables',
+  'hooks',
+  'keys',
+  'collaborators',
+  'invitations',
+  'permissions',
+  'environments',
+]);
 const SEGMENT = /^[A-Za-z0-9_.~%-]+$/;
 const QUERY_KEY = /^[A-Za-z0-9_[\]]+$/;
 /** Longest answer handed back, in characters of JSON; a longer one is cut and marked. */
@@ -205,16 +218,27 @@ const READ_MAX_CHARS = 200_000;
 export function repoReadPath(config: EnvGithubConfig, value: unknown): string {
   if (typeof value !== 'string') throw new GithubError('path must be repos/<owner>/<name>/…');
   const segments = value.replace(/^\//, '').split('/');
-  const unsafe = segments.some(
-    (s) => !SEGMENT.test(s) || s === '.' || s === '..' || /%2e|%00|%5c/i.test(s) || s.includes('%2F%2E'),
-  );
+  // Each segment as GitHub may decode it: no `.` or `..` component, no backslash or NUL, and it must decode.
+  const unsafeDecoded = (s: string) => {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(s);
+    } catch {
+      return true;
+    }
+    return /[\\\0]/.test(decoded) || decoded.split('/').some((c) => c === '.' || c === '..');
+  };
+  const unsafe = segments.some((s) => !SEGMENT.test(s) || s === '.' || s === '..' || unsafeDecoded(s));
   if (segments[0] !== 'repos' || segments.length < 3 || unsafe) {
     throw new GithubError('path must be repos/<owner>/<name>/… (no query, no dot segments)');
   }
   const repo = allowedRepo(config, `${segments[1]}/${segments[2]}`);
   const part = segments[3];
+  // Settings and access under a part QA reads (`branches/<b>/protection`, `…/collaborators`) are not read either.
+  const settingsBelow = segments.slice(4).some((s) => SETTINGS_SEGMENTS.has(decodeURIComponent(s).toLowerCase()));
   const allowed =
-    part === undefined || READ_PARTS.has(part) || (part === 'actions' && READ_ACTIONS.has(segments[4] ?? ''));
+    !settingsBelow &&
+    (part === undefined || READ_PARTS.has(part) || (part === 'actions' && READ_ACTIONS.has(segments[4] ?? '')));
   if (!allowed)
     throw new GithubError(`${part}${part === 'actions' ? `/${segments[4] ?? ''}` : ''} is not a part gh_read reads`);
   return ['repos', repo, ...segments.slice(3)].join('/');
