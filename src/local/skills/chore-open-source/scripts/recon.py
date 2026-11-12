@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""recon.py OWNER/REPO [--ocr] [--no-github] — read-only inventory before an open-source cleanup.
+
+Writes $CHOS_WORK/recon/<repo>.md and prints its summary. Changes nothing anywhere.
+
+The report quotes the matched text so the rules can be written from it. It is LOCAL ONLY: never
+paste it, or any matched value, into a pull request, issue, commit message, release note or chat.
+
+  history    every line any commit ever added (all branches, tags, pull request refs), commit
+             messages, author and committer lines, tag messages, ref names, path names
+  patterns   $CHOS_WORK/config/patterns.txt (the forbidden list, one regex per line), optional
+             config/repo-patterns.txt — and built-in leak classes: home paths, e-mail addresses
+             outside example domains, private and CGNAT addresses, tailnet / .internal / .local
+             hosts, chat workspace ids, token shapes, private keys
+  media      every image / video / PDF blob in history; --ocr reads them (tesseract, ffmpeg) and
+             matches the same patterns against the text in the frames
+  workflows  pull_request_target, self-hosted runners reachable from fork pull requests, secrets
+             handed to jobs fork pull requests trigger, missing top-level permissions
+  github     visibility, license, forks, Actions secret and variable names, and the text and
+             release assets no git rewrite reaches: pull request and issue bodies and comments,
+             review comments, commit comments, release notes, release asset contents
+"""
+import io, json, os, pathlib, re, shutil, subprocess, sys, tarfile, tempfile, zipfile
+from collections import Counter, defaultdict
+
+if len(sys.argv) < 2 or '/' not in sys.argv[1]:
+    sys.exit('usage: recon.py OWNER/REPO [--ocr] [--no-github]')
+slug = sys.argv[1]
+repo = slug.split('/', 1)[1]
+ocr = '--ocr' in sys.argv
+github = '--no-github' not in sys.argv
+work = pathlib.Path(os.environ.get('CHOS_WORK') or sys.exit('recon.py: set CHOS_WORK to the run folder'))
+url = os.environ.get('CHOS_URL') or f'https://github.com/{slug}.git'
+rdir = work / 'recon'
+rdir.mkdir(parents=True, exist_ok=True)
+mirror = rdir / f'{repo}.git'
+
+
+def run(*a, cwd=None, check=True, binary=False):
+    r = subprocess.run(list(a), cwd=cwd, capture_output=True, text=not binary, errors=None if binary else 'replace')
+    if check and r.returncode:
+        raise RuntimeError(f"{' '.join(a[:3])}…: {r.stderr if not binary else r.stderr.decode(errors='replace')}")
+    return r.stdout
+
+
+def git(*a, check=True, binary=False):
+    return run('git', '-C', str(mirror), *a, check=check, binary=binary)
+
+
+def patterns(name):
+    p = work / 'config' / name
+    return [l.strip() for l in p.read_text().splitlines() if l.strip() and not l.startswith('#')] if p.is_file() else []
+
+
+forbidden = patterns('patterns.txt') + patterns('repo-patterns.txt')
+CLASSES = {
+    'forbidden list': re.compile('|'.join(forbidden), re.I) if forbidden else None,
+    'home path': re.compile(r'(/Users|/home)/(?!(runner|operator|ci|user|me|you|example|name|username|USER|\$USER|\{USER\})\b)[A-Za-z0-9._-]{2,}'),
+    'e-mail': re.compile(r'\b[A-Za-z0-9._%+-]+@(?!(?:[a-z0-9-]+\.)*(?:example\.(?:com|org|net)|example|invalid|test|localhost|users\.noreply\.github\.com|noreply\.github\.com)\b)[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'),
+    'private address': re.compile(r'\b(?:10\.(?:\d{1,3}\.){2}\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})\b'),
+    'cgnat/tailnet address': re.compile(r'\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b'),
+    'internal host': re.compile(r'\b[A-Za-z0-9-]+\.(?:[A-Za-z0-9-]+\.)*(?:ts\.net|internal|corp|lan|local|intranet)\b', re.I),
+    'chat workspace id': re.compile(r'\b[UTCWG]0[A-Z0-9]{8,10}\b'),
+    'token shape': re.compile(r'\b(?:gh[pousr]_[A-Za-z0-9]{30,}|xox[abprs]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35})\b'),
+    'private key': re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----'),
+}
+CLASSES = {k: v for k, v in CLASSES.items() if v is not None}
+hits = defaultdict(Counter)       # class -> Counter(matched text)
+where = defaultdict(set)          # class -> {location}
+
+
+def scan(text, loc):
+    for k, rx in CLASSES.items():
+        for m in rx.finditer(text):
+            hits[k][m.group(0)] += 1
+            if len(where[k]) < 400:
+                where[k].add(loc)
+
+
+# ---- history -------------------------------------------------------------------------------
+if mirror.exists():
+    shutil.move(str(mirror), str(rdir / f'{repo}.git.old-{os.getpid()}'))
+run('git', 'clone', '-q', '--mirror', url, str(mirror))
+heads = git('for-each-ref', '--format=%(refname)', 'refs/heads').split()
+tags = git('for-each-ref', '--format=%(refname)', 'refs/tags').split()
+pulls = git('for-each-ref', '--format=%(refname)', 'refs/pull/*/head').split()
+commits = git('rev-list', '--all').split()
+commit, path = '', ''
+for line in git('log', '--all', '-p', '--no-color', '--format=@@commit %H').splitlines():
+    if line.startswith('@@commit '):
+        commit = line[9:]
+    elif line.startswith('+++ '):
+        path = line[6:] if line.startswith('+++ b/') else line[4:]
+    elif line.startswith('+') and not line.startswith('+++'):
+        scan(line[1:], f'{commit[:10]} {path}')
+for c, body in zip(commits, git('log', '--all', '--format=%B%x00').split('\0')):
+    scan(body, 'commit messages')
+idents = Counter(git('log', '--all', '--format=%an <%ae>%n%cn <%ce>').splitlines())
+for i in idents:
+    scan(i, 'author/committer lines')
+for t in git('for-each-ref', '--format=%(refname) %(taggername) %(taggeremail) %(contents)', 'refs/tags').splitlines():
+    scan(t, 'tags')
+for r in git('for-each-ref', '--format=%(refname)').split():
+    scan(r, 'ref names')
+paths = set(l.split(' ', 1)[1] for l in git('rev-list', '--objects', '--all').splitlines() if ' ' in l)
+for p in paths:
+    scan(p, 'path names')
+
+# ---- media ---------------------------------------------------------------------------------
+MEDIA = re.compile(r'\.(png|jpe?g|gif|webp|bmp|tiff?|mp4|mov|webm|mkv|pdf)$', re.I)
+media = {}
+for l in git('rev-list', '--objects', '--all').splitlines():
+    if ' ' in l and MEDIA.search(l.split(' ', 1)[1]):
+        media.setdefault(l.split(' ', 1)[0], l.split(' ', 1)[1])
+ocr_hits = {}
+if ocr and media:
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix='chos-ocr-'))
+    for blob, p in media.items():
+        f = tmp / (blob + pathlib.Path(p).suffix.lower())
+        f.write_bytes(git('cat-file', 'blob', blob, binary=True))
+        frames = [f]
+        if f.suffix in ('.gif', '.mp4', '.mov', '.webm', '.mkv'):
+            fd = tmp / blob
+            fd.mkdir()
+            run('ffmpeg', '-loglevel', 'error', '-i', str(f), '-vf', 'fps=1', str(fd / '%04d.png'), check=False)
+            frames = sorted(fd.glob('*.png'))
+        text = ''
+        if f.suffix == '.pdf':
+            text = run('pdftotext', str(f), '-', check=False) if shutil.which('pdftotext') else ''
+        else:
+            for fr in frames:
+                text += run('tesseract', str(fr), '-', check=False) + '\n'
+        before = sum(sum(c.values()) for c in hits.values())
+        scan(text, f'media {blob[:10]} {p}')
+        n = sum(sum(c.values()) for c in hits.values()) - before
+        if n:
+            ocr_hits[f'{blob[:10]} {p}'] = n
+    shutil.rmtree(tmp, ignore_errors=True)
+
+# ---- workflows -----------------------------------------------------------------------------
+wf_notes = []
+default = git('symbolic-ref', '--short', 'HEAD', check=False).strip() or 'main'
+for p in git('ls-tree', '--name-only', f'{default}:.github/workflows', check=False).split():
+    y = git('show', f'{default}:.github/workflows/{p}', check=False)
+    if 'pull_request_target' in y:
+        wf_notes.append(f'{p}: pull_request_target — runs with secrets on fork pull requests; check what it checks out')
+    if re.search(r'runs-on:.*self-hosted', y) and re.search(r'^\s*pull_request:?\s*$|pull_request\b', y, re.M):
+        wf_notes.append(f'{p}: self-hosted runner on a pull_request trigger — guard jobs to same-repo pull requests')
+    if 'secrets.' in y and 'pull_request' in y and 'head.repo.full_name' not in y:
+        wf_notes.append(f'{p}: secrets in a workflow fork pull requests trigger, without a same-repo guard')
+    if not re.search(r'^permissions:', y, re.M):
+        wf_notes.append(f'{p}: no top-level permissions block (token defaults apply)')
+
+# ---- GitHub side ---------------------------------------------------------------------------
+gh = {}
+if github and shutil.which('gh'):
+    def ghj(*a):
+        r = subprocess.run(['gh', *a], capture_output=True, text=True)
+        return json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else None
+    gh['repo'] = ghj('repo', 'view', slug, '--json', 'visibility,licenseInfo,forkCount,isFork')
+    gh['forks'] = [f['full_name'] for f in (ghj('api', f'repos/{slug}/forks', '--paginate') or [])]
+    gh['secrets'] = [s['name'] for s in ((ghj('api', f'repos/{slug}/actions/secrets') or {}).get('secrets') or [])]
+    gh['variables'] = [s['name'] for s in ((ghj('api', f'repos/{slug}/actions/variables') or {}).get('variables') or [])]
+    for kind, path in (('issue/PR', 'issues?state=all&per_page=100'), ('issue/PR comment', 'issues/comments?per_page=100'),
+                       ('review comment', 'pulls/comments?per_page=100'), ('commit comment', 'comments?per_page=100'),
+                       ('release', 'releases?per_page=100')):
+        for item in ghj('api', f'repos/{slug}/{path}', '--paginate') or []:
+            scan(' '.join(str(item.get(k) or '') for k in ('title', 'name', 'body')), f'github {kind} {item.get("number") or item.get("id")}')
+    gh['assets'] = 0
+    for rel in ghj('api', f'repos/{slug}/releases', '--paginate') or []:
+        for a in rel.get('assets') or []:
+            gh['assets'] += 1
+            data = subprocess.run(['gh', 'api', '-H', 'Accept: application/octet-stream', f'repos/{slug}/releases/assets/{a["id"]}'], capture_output=True).stdout
+            texts = [data]
+            try:
+                if a['name'].endswith(('.tar.gz', '.tgz')):
+                    with tarfile.open(fileobj=io.BytesIO(data)) as tf:
+                        texts = [tf.extractfile(m).read() for m in tf.getmembers() if m.isfile()]
+                elif a['name'].endswith('.zip'):
+                    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                        texts = [zf.read(n) for n in zf.namelist()]
+            except Exception:
+                pass
+            for t in texts:
+                scan(t.decode('utf-8', 'replace'), f'release asset {rel["tag_name"]}/{a["name"]}')
+
+# ---- report --------------------------------------------------------------------------------
+L = [f'# recon {slug} — LOCAL ONLY (quotes matched text; never paste it into a PR, issue, commit or chat)', '',
+     f'- refs: {len(heads)} branches, {len(tags)} tags, {len(pulls)} pull request heads; {len(commits)} commits',
+     f'- identities ({len(idents)}): ' + ', '.join(sorted({i.split("<")[-1].rstrip(">").split("@")[-1] for i in idents})),
+     f'- media blobs in history: {len(media)}' + (f' (OCR hits in {len(ocr_hits)})' if ocr else ' (not OCR-read; rerun with --ocr)'), '']
+L.append('## Hits by class')
+for k in CLASSES:
+    total = sum(hits[k].values())
+    L.append(f'- **{k}**: {total} match(es), {len(hits[k])} distinct')
+    for v, n in hits[k].most_common(25):
+        L.append(f'    - `{v}` ×{n}')
+    for w in sorted(where[k])[:15]:
+        L.append(f'    - at {w}')
+if ocr_hits:
+    L += ['', '## Media with OCR hits'] + [f'- {k}: {n}' for k, n in ocr_hits.items()]
+L += ['', '## Workflow hazards'] + ([f'- {n}' for n in wf_notes] or ['- none found'])
+if gh:
+    L += ['', '## GitHub', f'- repo: {json.dumps(gh.get("repo"))}', f'- forks: {gh.get("forks")}',
+          f'- Actions secrets: {gh.get("secrets")}', f'- Actions variables: {gh.get("variables")}',
+          f'- release assets scanned: {gh.get("assets")}']
+(rdir / f'{repo}.md').write_text('\n'.join(L) + '\n')
+print('\n'.join(l for l in L if not l.startswith('    - ')))
+print(f'\nfull report (local only): {rdir / (repo + ".md")}')

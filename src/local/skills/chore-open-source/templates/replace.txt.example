@@ -1,0 +1,14 @@
+# W/config/replace.txt — git filter-repo --replace-text rules. Copy to W/config/replace.txt and fill in.
+# Applied to file contents (non-binary), commit and tag messages, and path names (filename-callback.py).
+# Order matters: specific rules before general ones. Never commit this file anywhere public.
+#
+#   literal-text==>replacement
+#   regex:PATTERN==>replacement           Python regex; (?i) for case-insensitive, \1 for groups
+#   a line without ==> replaces with ***REMOVED***
+#
+# Examples (placeholders, not real names):
+#   regex:(?i)build-box-01\.tailnet-xyz\.ts\.net==>
+#   regex:(?i)build-box-01==>shared-host
+#   regex:(?i)othercompany\.example==>example.com
+#   regex:(?i)([A-Za-z0-9._%+-]+)@othercompany\.example==>\1@example.com
+#   regex:\bU0ABCDEF12\b==>U0TESTUSER1
