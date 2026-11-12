@@ -121,7 +121,10 @@ P=$(grep -v '^[[:space:]]*$' "$CFG/patterns.txt" | paste -sd'|' -)
 {
   echo "repo: $SLUG"
   echo "$MAIN (push 1): $LIST_COMMIT  top commit (push 2): $TOP_COMMIT"
-  if diff <(grep -v "^refs/heads/$MAIN " "$OUT/counts.before") <(grep -v "^refs/heads/$MAIN " "$OUT/counts.after") >/dev/null; then
+  # Counts compared as a multiset: a ref the rules renamed keeps its commit count under its new name.
+  if diff <(grep -v "^refs/heads/$MAIN " "$OUT/counts.before" | awk '{print $NF}' | sort) \
+          <(grep -v "^refs/heads/$MAIN " "$OUT/counts.after" | awk '{print $NF}' | sort) >/dev/null \
+     && [ "$(wc -l < "$OUT/counts.before")" = "$(wc -l < "$OUT/counts.after")" ]; then
     echo "commit counts: identical on all $(wc -l < "$OUT/counts.after" | tr -d ' ') refs ($MAIN checked separately)"
   else
     echo "commit counts: DIFFER"; { diff "$OUT/counts.before" "$OUT/counts.after" || true; } | head

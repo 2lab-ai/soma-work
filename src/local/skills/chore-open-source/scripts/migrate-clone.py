@@ -77,6 +77,8 @@ _pats = [l.strip() for name in ('patterns.txt', 'repo-patterns.txt') if (work / 
 PAT = re.compile('|'.join(ere(p) for p in _pats), re.I | re.M) if _pats else None
 new_tags = dict((r.split()[1][10:], r.split()[0]) for r in git('for-each-ref', '--format=%(objectname) %(refname)', 'refs/tags', cwd=out / 'new.git').splitlines())
 orig_tags = dict((r.split()[1][10:], r.split()[0]) for r in git('for-each-ref', '--format=%(objectname) %(refname)', 'refs/tags', cwd=out / 'orig.git').splitlines())
+# original tag object -> the rewritten one (by the name it had), for objects the rewrite replaced
+orig_tag_objects = {o: new_tags[n] for n, o in orig_tags.items() if n in new_tags and new_tags[n] != o}
 
 
 def rows(*ns):
@@ -109,8 +111,8 @@ def old_refs():
         if A.get(c, c) != c or (r.startswith('refs/heads/') and r not in found and reaches_old(c)):
             found.add(r)
         # An annotated tag the rewrite changed (its message, say) while its commit stayed the same.
-        elif r.startswith('refs/tags/') and orig_tags.get(r[10:]) == o and new_tags.get(r[10:], o) != o:
-            found.add(r)
+        elif r.startswith('refs/tags/') and o in orig_tag_objects:
+            found.add(r)  # an original tag object the rewrite replaced, under its own name or another
     return sorted(found)
 
 
@@ -142,13 +144,33 @@ def old_heads():
     return [(w, h) for w, h in live_worktrees()[1] if A.get(h, h) != h or reaches_old(h)]
 
 
+def leak_lines(*revs):
+    """Lines matching the forbidden lists in the commits `git rev-list <revs>` names: their messages and
+    identities, and every blob they introduce (merges against each parent). Blobs are read whole, line by
+    line, so ^/$ anchor as in the gate and a binary is read byte for byte, as `grep -a` reads it."""
+    if not PAT:
+        return 0
+    n, seen = 0, set()
+    for c in git('rev-list', *revs, check=False).split():
+        meta = git('show', '-s', '--format=%B%n%an %ae%n%cn %ce', c)
+        n += sum(1 for l in meta.splitlines() if PAT.search(l))
+        raw = git('diff-tree', '-r', '-m', '--root', '--no-renames', '--no-commit-id', c, check=False)
+        for l in raw.splitlines():
+            f = l.split()
+            if len(f) >= 5 and l.startswith(':') and f[3] != '0' * len(f[3]) and f[3] not in seen:
+                seen.add(f[3])
+                data = subprocess.run(['git', '-C', str(clone), 'cat-file', 'blob', f[3]], capture_output=True).stdout
+                text = data.decode('latin-1') if b'\0' in data[:8000] else data.decode('utf-8', 'replace')
+                n += sum(1 for line in text.splitlines() if PAT.search(line))
+    return n
+
+
 def report():
     old = old_refs()
     heads = [r for _, _, r in rows('refs/heads') if r not in old]
     hits = 0
     if PAT and heads and git('rev-list', *heads, '--not', '--remotes', check=False).strip():
-        log = git('log', '-p', '-m', '--format=%B%an %ae%n%cn %ce', *heads, '--not', '--remotes', check=False)
-        hits = sum(1 for l in log.splitlines() if PAT.search(l))
+        hits = leak_lines(*heads, '--not', '--remotes')
     old += [f'HEAD of {w} (detached)' for w, _ in old_heads()]
     print(f'{slug} @ {clone}: refs on the old history {len(old)}; pattern lines in local-only commits {hits}')
     for r in old:
@@ -227,8 +249,7 @@ for b in local_only:
     target = made[c]
     src = git('rev-parse', f'refs/partial-src/{b}').strip()
     ok_tree = git('rev-parse', target + '^{tree}').strip() == git('rev-parse', src + '^{tree}').strip()
-    text = git('log', '-p', '-m', '--format=%B%an %ae%n%cn %ce', target, '--not', *[A[p] for l in local for p in l[1:] if p in A])
-    if not ok_tree or (PAT and PAT.search(text)):
+    if not ok_tree or leak_lines(target, '--not', *[A[p] for l in local for p in l[1:] if p in A]):
         plan.append((b, c, None, 'rebuild REFUSED (tree differs or a pattern is left)'))
         continue
     plan.append((b, c, target, f'rebuilt {len(local)} local commit(s)'))
@@ -241,7 +262,13 @@ def move_worktree(wt, old, target, label, detach):
         return f'worktree {wt} moved since the plan was made (new commits?) — left as it is'
     # Checkout overwrites ignored files without asking: one where the target tracks a file would be lost.
     ignored = set(git('ls-files', '--others', '--ignored', '--exclude-standard', '-z', cwd=wt).split('\0')) - {''}
-    if ignored & set(git('ls-tree', '-r', '--name-only', '-z', target, cwd=wt).split('\0')):
+    files = set(git('ls-tree', '-r', '--name-only', '-z', target, cwd=wt).split('\0')) - {''}
+    dirs = {f.rsplit('/', i)[0] for f in files for i in range(1, f.count('/') + 1)}
+
+    def parents(path):
+        return {path.rsplit('/', i)[0] for i in range(1, path.count('/') + 1)}
+    # Same path, an ignored file where the target has a folder, or an ignored folder where it has a file.
+    if any(i in files or i in dirs or parents(i) & files for i in ignored):
         return f'worktree {wt} has ignored files where the rewritten commit tracks files — left as it is'
     if git('status', '--porcelain', '--untracked-files=no', cwd=wt).strip():
         (bdir / f'edits-{label.replace("/", "_")}.patch').write_text(git('diff', 'HEAD', '--binary', cwd=wt))
@@ -308,7 +335,9 @@ for wt, h in detached_wts:
 if mode == 'apply':
     for o, c, r in rows('refs/tags'):
         name = r[10:]
-        if name in new_tags and new_tags[name] != o:
+        if o in orig_tag_objects:
+            git('update-ref', r, orig_tag_objects[o], o)
+        elif name in new_tags and new_tags[name] != o and orig_tags.get(name) == o:
             git('update-ref', r, new_tags[name], o)
         elif A.get(c, c) != c:
             git('update-ref', r, A[c], o)

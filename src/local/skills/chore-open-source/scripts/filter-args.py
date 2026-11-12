@@ -6,7 +6,8 @@ rules the pushed history got. Reads the run folder $CHOS_WORK:
 
   config/replace.txt     required. filter-repo --replace-text rules, used for file contents and
                          commit messages; filename-callback.py applies them to path names too.
-                         Lines starting with # and blank lines are comments (removed before use)
+                         Lines starting with # and blank lines are comments (removed before use);
+                         refname-callback.py applies the rules to branch and tag names
   config/mailmap         optional. author / committer rewrites (git mailmap format)
   config/blob-map.txt    optional. "<old blob id> <file with the new bytes>" per line (media)
   config/filter-args     optional. extra filter-repo arguments, one per line
@@ -30,6 +31,7 @@ rules.write_text(''.join(l + '\n' for l in replace.read_text().splitlines() if l
 args = ['--force', '--replace-text', str(rules), '--replace-message', str(rules),
         '--blob-callback', (here / 'blob-callback.py').read_text(),
         '--filename-callback', (here / 'filename-callback.py').read_text(),
+        '--refname-callback', (here / 'refname-callback.py').read_text(),
         '--prune-empty', 'never', '--prune-degenerate', 'never']
 if (cfg / 'mailmap').is_file():
     args += ['--mailmap', str(cfg / 'mailmap')]

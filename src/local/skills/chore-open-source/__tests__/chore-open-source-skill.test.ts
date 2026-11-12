@@ -264,7 +264,9 @@ esac
       git init -q --bare -b main remote.git && git init -q -b main seed && cd seed
       printf 'runs on secret-host-b\\nanchored-word\\n' > a.txt && printf '\\000\\001secret-host-e\\000' > bin.dat && printf '\\x89PNG\\r\\n\\x1a\\n' > img.png
       git add -A && git commit -q -m init && git push -q ../remote.git main && cd ..
-      mkdir -p pkg/docs && echo x > pkg/docs/secret-host-c.txt && tar -czf pkg.tar.gz -C pkg docs`,
+      mkdir -p pkg/docs && echo x > pkg/docs/secret-host-c.txt && tar -czf pkg.tar.gz -C pkg docs
+      python3 -I -c "import io,tarfile;b=b'built on secret-host-f';t=tarfile.open('pkg2.tar.xz','w:xz');i=tarfile.TarInfo('notes.txt');i.size=len(b);t.addfile(i,io.BytesIO(b));t.close()"
+      printf '7z\\274\\257\\047\\034rest' > blob.7z`,
       ],
       { cwd: d, env: genv },
     );
@@ -278,7 +280,9 @@ case "$*" in
   *"/actions/variables"*) echo '{"variables":[]}' ;;
   *"releases/assets/5"*) cat "${join(d, 'pkg.tar.gz')}" ;;
   *"releases/assets/6"*) echo x ;;
-  *"/releases"*) echo '[[{"tag_name":"v1","name":"v1","body":"","assets":[{"id":5,"name":"pkg.tar.gz"},{"id":6,"name":"notes-secret-host-d.txt"}]}]]' ;;
+  *"releases/assets/7"*) cat "${join(d, 'pkg2.tar.xz')}" ;;
+  *"releases/assets/8"*) cat "${join(d, 'blob.7z')}" ;;
+  *"/releases"*) echo '[[{"tag_name":"v1","name":"v1","body":"","assets":[{"id":5,"name":"pkg.tar.gz"},{"id":6,"name":"notes-secret-host-d.txt"},{"id":7,"name":"pkg2.tar.xz"},{"id":8,"name":"blob.7z"}]}]]' ;;
   "api "*) echo '[[]]' ;;
   *) echo "stub gh: $*" >&2; exit 1 ;;
 esac
@@ -303,6 +307,8 @@ esac
     expect(report).toContain('`anchored-word`'); // ^…$ anchor per line, as grep does
     expect(report).toMatch(/at bin\.dat \(blob/); // a binary is read byte for byte, like grep -a
     expect(report).toMatch(/release asset v1\/notes-secret-host-d\.txt \(name\)/);
+    expect(report).toMatch(/at release asset v1\/pkg2\.tar\.xz$/m); // unpacked by content, not by name
+    expect(report).toMatch(/blob\.7z blob\.7z is 7z, which recon cannot open — not examined/);
   });
 
   it('swap keeps branch names out of program text (sed/awk scripts)', () => {
@@ -385,6 +391,16 @@ describe.skipIf(!hasFilterRepo)('local:chore-open-source — offline run of the 
       git clone -q remote-tag.git clonetag
       git clone -q remote.git clone5 && git -C clone5 worktree add -q --detach ../wt-ign main
       echo "docs/shared-host.md" >> clone5/.git/info/exclude && echo precious > wt-ign/docs/shared-host.md
+      git init -q --bare -b main remote-ref.git && git init -q -b main refseed && cd refseed
+      echo clean > c.txt && git add -A && git commit -q -m init && git branch "wip-${W}"
+      git push -q ../remote-ref.git main "wip-${W}" && cd ..
+      git clone -q remote.git clone6 && cd clone6
+      git checkout -q -b bin-only origin/main && printf '\\000leakbin\\000' > bin.dat && git add -A && git commit -q -m bin
+      git checkout -q -b anchor-only origin/main && printf 'x\\nanchorword\\n' > anc.txt && git add -A && git commit -q -m anc
+      git checkout -q main && cd ..
+      git clone -q remote.git clone8 && git -C clone8 worktree add -q --detach ../wt-igndir main
+      echo "docs/shared-host.md/" >> clone8/.git/info/exclude
+      mkdir -p wt-igndir/docs/shared-host.md && echo precious > wt-igndir/docs/shared-host.md/keep.txt
       git clone -q remote.git clone4 && git -C clone4 branch -q nl origin/feature
       git -C clone4 worktree add -q "$(printf '%s/wt\\nnl' "$PWD")" nl`);
   });
@@ -459,6 +475,15 @@ describe.skipIf(!hasFilterRepo)('local:chore-open-source — offline run of the 
     expect(sh(`git -C "${join(chos.CHOS_WORK, 'out', 'sym', 'new.git')}" show main:app.conf`)).toBe('on shared-host\n');
   });
 
+  it('a branch named after a private host is renamed, and the old name leaves the remote', () => {
+    const chos = workDir('work-ref', `${W}\n`, 'remote-ref.git');
+    expect(sh(`"${SCRIPTS}/rewrite.sh" o/ref`, chos)).toMatch(/^scan: clean$/m);
+    expect(sh(`"${SCRIPTS}/swap.sh" o/ref`, chos)).toMatch(/deleting 1 ref\(s\) the rules renamed/);
+    const refs = sh("git -C remote-ref.git for-each-ref --format='%(refname)'");
+    expect(refs).not.toContain(W);
+    expect(refs).toContain('refs/heads/wip-shared-host');
+  });
+
   it('a relative CHOS_WORK works (the run folder is resolved before any cd)', () => {
     workDir('work-rel', `${W}\n`, 'remote-sym.git');
     const r = shAt(`"${SCRIPTS}/rewrite.sh" o/sym`, { CHOS_WORK: 'work-rel', CHOS_URL: join(T, 'remote-sym.git') });
@@ -498,6 +523,20 @@ describe.skipIf(!hasFilterRepo)('local:chore-open-source — offline run of the 
     const r = shAt(`python3 -I -B "${SCRIPTS}/migrate-clone.py" o/r "${join(T, 'clone5')}" --apply`, chos);
     expect(r.stdout).toMatch(/has ignored files where the rewritten commit tracks files/);
     expect(readFileSync(join(T, 'wt-ign', 'docs', 'shared-host.md'), 'utf8')).toBe('precious\n');
+  });
+
+  it('local-only commits are checked blob by blob: a binary and a line-anchored leak are refused', () => {
+    const chos = workDir('work', `${W}\nleakbin\n^anchorword$\n`);
+    const r = shAt(`python3 -I -B "${SCRIPTS}/migrate-clone.py" o/r "${join(T, 'clone6')}" --apply`, chos);
+    expect(r.stdout).toMatch(/bin-only: rebuild REFUSED/);
+    expect(r.stdout).toMatch(/anchor-only: rebuild REFUSED/);
+  });
+
+  it('an ignored folder where the rewritten commit tracks a file is not removed', () => {
+    const chos = workDir('work', `${W}\n`);
+    const r = shAt(`python3 -I -B "${SCRIPTS}/migrate-clone.py" o/r "${join(T, 'clone8')}" --apply`, chos);
+    expect(r.stdout).toMatch(/has ignored files where the rewritten commit tracks files/);
+    expect(readFileSync(join(T, 'wt-igndir', 'docs', 'shared-host.md', 'keep.txt'), 'utf8')).toBe('precious\n');
   });
 
   it('a worktree whose edits conflict with the rewrite is left exactly as it was', () => {

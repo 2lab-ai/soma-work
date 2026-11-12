@@ -262,6 +262,83 @@ for p in git('ls-tree', '--name-only', f'{default}:.github/workflows', check=Fal
     if not re.search(r'^permissions:', y, re.M):
         wf_notes.append(f'{p}: no top-level permissions block (token defaults apply)')
 
+# ---- release asset unpacking ---------------------------------------------------------------------
+MAX_EXPANDED = int(os.environ.get('CHOS_MAX_EXPANDED') or 1_000_000_000)
+UNREADABLE = ((b'\x28\xb5\x2f\xfd', 'zstd'), (b'\x37\x7a\xbc\xaf\x27\x1c', '7z'), (b'Rar!', 'rar'),
+              (b'!<arch>', 'ar (deb)'), (b'xar!', 'xar (pkg)'), (b'MSCF', 'cab'))
+
+
+def unpack(name, data, where_, depth=0, budget=None):
+    """[(name, bytes)] an asset holds, by content not by file name: zip, tar (any compression), single
+    gzip/bz2/xz streams, nested once more. A format this cannot open (zstd, 7z, rar, deb, pkg, cab) or an
+    expansion past CHOS_MAX_EXPANDED returns None and marks the recon incomplete."""
+    import bz2, gzip, lzma
+    budget = budget if budget is not None else [MAX_EXPANDED]
+    for magic, kind in UNREADABLE:
+        if data.startswith(magic):
+            incomplete.append(f'github: {where_} {name} is {kind}, which recon cannot open — not examined')
+            return None
+    out = []
+    try:
+        if data.startswith(b'PK\x03\x04'):
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                for info in zf.infolist():
+                    scan(info.filename, f'{where_} (member path)')
+                    if info.is_dir():
+                        continue
+                    budget[0] -= info.file_size
+                    if budget[0] < 0:
+                        raise OverflowError
+                    out.append((info.filename, zf.read(info)))
+        else:
+            try:
+                tf = tarfile.open(fileobj=io.BytesIO(data), mode='r:*')
+            except tarfile.TarError:
+                tf = None
+            if tf is not None:
+                with tf:
+                    for m in tf.getmembers():
+                        scan(m.name, f'{where_} (member path)')
+                        if m.issym() or m.islnk():
+                            scan(m.linkname, f'{where_} (link target)')
+                        if not m.isfile():
+                            continue
+                        budget[0] -= m.size
+                        if budget[0] < 0:
+                            raise OverflowError
+                        out.append((m.name, tf.extractfile(m).read()))
+            else:
+                single = {b'\x1f\x8b': gzip.decompress, b'BZh': bz2.decompress, b'\xfd7zXZ\x00': lzma.decompress}
+                fn = next((f for m, f in single.items() if data.startswith(m)), None)
+                if fn is None:
+                    return [(name, data)]
+                inner = fn(data)
+                budget[0] -= len(inner)
+                if budget[0] < 0:
+                    raise OverflowError
+                if depth >= 2:
+                    return [(name, inner)]
+                return unpack(name.rsplit('.', 1)[0], inner, where_, depth + 1, budget)
+    except OverflowError:
+        incomplete.append(f'github: {where_} expands past CHOS_MAX_EXPANDED — not fully examined')
+        return None
+    except Exception as e:
+        incomplete.append(f'github: {where_} could not be unpacked ({e})')
+        return None
+    if depth < 2:
+        nested = []
+        for n, d in out:
+            if d[:4] == b'PK\x03\x04' or d[:2] == b'\x1f\x8b' or d[:3] == b'BZh' or d[:6] == b'\xfd7zXZ\x00':
+                inner = unpack(n, d, where_, depth + 1, budget)
+                if inner is None:
+                    return None
+                nested += inner
+            else:
+                nested.append((n, d))
+        out = nested
+    return out
+
+
 # ---- GitHub side ---------------------------------------------------------------------------
 gh = {}
 if github and not shutil.which('gh'):
@@ -304,21 +381,8 @@ if github and shutil.which('gh'):
                 continue
             data, where_ = r.stdout, f'release asset {rel["tag_name"]}/{a["name"]}'
             scan(a['name'], f'{where_} (name)')
-            # (name, bytes) of what the asset holds: archive members (their paths are scanned too), or itself.
-            parts = [(a['name'], data)]
-            try:
-                if a['name'].endswith(('.tar.gz', '.tgz', '.tar')):
-                    with tarfile.open(fileobj=io.BytesIO(data)) as tf:
-                        parts = [(m.name, tf.extractfile(m).read()) for m in tf.getmembers() if m.isfile()]
-                        for m in tf.getmembers():
-                            scan(m.name, f'{where_} (member path)')
-                elif a['name'].endswith('.zip'):
-                    with zipfile.ZipFile(io.BytesIO(data)) as zf:
-                        parts = [(n, zf.read(n)) for n in zf.namelist() if not n.endswith('/')]
-                        for n in zf.namelist():
-                            scan(n, f'{where_} (member path)')
-            except Exception as e:
-                incomplete.append(f'github: {where_} could not be unpacked ({e})')
+            parts = unpack(a['name'], data, where_)
+            if parts is None:
                 continue
             for pname, pdata in parts:
                 if MEDIA.search(pname):
@@ -329,7 +393,7 @@ if github and shutil.which('gh'):
                     if t is not None:
                         scan(t, f'{where_} {pname} (OCR)')
                 else:
-                    scan(pdata.decode('utf-8', 'replace'), where_)
+                    scan(pdata.decode('latin-1') if b'\0' in pdata[:8000] else pdata.decode('utf-8', 'replace'), where_)
 
 # ---- report --------------------------------------------------------------------------------
 L = [f'# recon {slug} — LOCAL ONLY (quotes matched text; never paste it into a PR, issue, commit or chat)', '',

@@ -133,9 +133,14 @@ echo "==> 3. replace every branch and tag (atomic, each ref leased to its snapsh
 if [ -e "$OUT/swapped" ]; then
   echo "    already done"
 else
-  leases=()
-  while read -r sha ref; do leases+=("--force-with-lease=$ref:$sha"); done < "$OUT/snapshot.refs"
-  if ! git -C "$NEW" push --atomic ${leases[@]+"${leases[@]}"} "$URL" 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*'; then
+  leases=() gone=()
+  while read -r sha ref; do
+    leases+=("--force-with-lease=$ref:$sha")
+    # A ref the rules renamed: its old name goes away in the same atomic push.
+    git -C "$NEW" show-ref --verify -q "$ref" || gone+=(":$ref")
+  done < "$OUT/snapshot.refs"
+  [ ${#gone[@]} -eq 0 ] || echo "    deleting ${#gone[@]} ref(s) the rules renamed"
+  if ! git -C "$NEW" push --atomic ${leases[@]+"${leases[@]}"} "$URL" 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*' ${gone[@]+"${gone[@]}"}; then
     echo "Nothing was changed: a ref moved after the check (stale info) or the push was refused." >&2
     echo "Run this script again; it rewrites again when the remote moved." >&2
     exit 1
@@ -168,7 +173,11 @@ else
     moved=$((moved + 1))
     # An object of the original repository itself (a tag object pushed back, a branch reset to an
     # original commit) is refused outright: its own text — a tag message — is not a commit.
-    if git -C "$OUT/orig.git" cat-file -e "$sha" 2>/dev/null; then
+    # (An unchanged commit — one the rewrite kept as it was — is part of the new history too. Only a
+    # commit: --contains would peel a tag object to its commit and let an original tag through.)
+    if git -C "$OUT/orig.git" cat-file -e "$sha" 2>/dev/null \
+       && ! { [ "$(git -C "$NEW" cat-file -t "$sha" 2>/dev/null)" = commit ] \
+              && [ -n "$(git -C "$NEW" for-each-ref --contains "$sha" --count=1 refs/heads refs/tags 2>/dev/null)" ]; }; then
       echo "    $ref ${sha:0:12} is an object of the original history"; bad=$((bad + 1)); continue
     fi
     # Read the whole list before counting: `grep -q` would stop early, and under pipefail the
