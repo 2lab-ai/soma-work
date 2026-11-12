@@ -64,9 +64,11 @@ the table is the question and the user's reply is the answer. Never import witho
 1. A fresh working folder under the session's working directory; clone the target; one branch
    `import-skills/<YYYYMMDD>-<shortid>`.
 2. Per approved skill, following the target's vendoring contract:
-   - fetch every file under the skill path at the `$SHA` pinned in Phase 1 — never a new `HEAD`. List them with
-     `gh api "repos/<o>/<r>/git/trees/$SHA?recursive=1" --jq '.tree[]|select(.type=="blob")|.path'` (keep the paths
-     under the skill path; `contents` lists one level only) and read each at `?ref=$SHA`;
+   - fetch every file under the skill path at the `$SHA` pinned in Phase 1 — never a new `HEAD`. List the skill
+     directory's own tree, not the whole repository's (a large repository's tree comes back truncated): its tree SHA is
+     the `sha` of the skill directory in its parent's `contents` listing at `?ref=$SHA`; then
+     `gh api "repos/<o>/<r>/git/trees/<dir sha>?recursive=1" --jq '{truncated, files: [.tree[]|select(.type=="blob")|.path]}'`.
+     `truncated: true` → stop and report; never import a partial file set. Read each file at `?ref=$SHA`;
    - place it at `<plugin root>/skills/<name>/` — never over an existing directory;
    - frontmatter, `LICENSES/NOTICE.md` (source link, `$SHA` and date, license, `## Local changes`), the upstream license
      text, the contract test `__tests__/<name>-skill.test.ts`;
