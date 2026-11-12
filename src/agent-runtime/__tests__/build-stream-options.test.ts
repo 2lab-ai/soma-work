@@ -261,6 +261,26 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
       expect(checkMcpToolPermission).not.toHaveBeenCalled();
     });
 
+    // trinity R1 (fable): without an environment grant, the ordinary tools of an environment's server keep
+    // following the server-tools grants they followed before.
+    it("keeps the existing grants for an environment server's ordinary tools", async () => {
+      fs.writeFileSync(
+        CONFIG_FILE,
+        JSON.stringify({
+          // An environment nobody holds a grant for (the test above granted acme-dev2).
+          'server-tools': { permission: { logs: 'read', db_query: 'write' }, dev2: { envUser: 'env:acme-dev9' } },
+        }),
+        'utf8',
+      );
+      const checkMcpToolPermission = vi.fn((name: string) => (name.endsWith('__db_query') ? 'no write grant' : null));
+      const run = await mcpHook(makeDeps({ checkMcpToolPermission }), '1700000000.0777');
+      const decide = (tool: string) =>
+        run(tool, { server: 'dev2' }).then((o: any) => o.hookSpecificOutput?.permissionDecision ?? 'continue');
+      expect(await decide('mcp__server-tools__logs')).toBe('continue');
+      expect(await decide('mcp__server-tools__db_query')).toBe('deny');
+      expect(await decide('mcp__server-tools__ssh_exec')).toBe('deny');
+    });
+
     // env-access WU3 (#1211): an environment user's PR approvals and merges are an admin's until per-environment
     // grants exist (WU4, #1212).
     it('denies a non-admin gh_pr whatever the grants say', async () => {

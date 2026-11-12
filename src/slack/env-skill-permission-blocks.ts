@@ -90,7 +90,10 @@ export function buildEnvSkillPermissionMessage(input: EnvSkillPermissionMessageI
   const where = environment
     ? `환경 \`${environmentLabel(environment.id)}\`의 스킬입니다 (이 환경의 스킬: ${environment.skills
         .map((s) => `\`${s}\``)
-        .join(', ')}). *전체 항상*은 이 환경의 모든 스킬과 서버 도구를 엽니다.\n`
+        .join(
+          ', ',
+        )}). *수락*·*이 스킬 항상*도 그 스킬이 쓰는 이 환경 서버 도구(\`ssh_exec\`·\`gh_pr\` 포함)를 엽니다. ` +
+      '*전체 항상*은 이 환경의 모든 스킬과 서버 도구를 엽니다.\n'
     : '';
   return {
     text,

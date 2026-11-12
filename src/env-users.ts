@@ -92,13 +92,16 @@ export function loadEnvironments(configFile: string = CONFIG_FILE): Environment[
   if (cache && cache.file === configFile && cache.mtimeMs === stat.mtimeMs && cache.size === stat.size) {
     return cache.envs;
   }
-  let envs: Environment[] = [];
+  let envs: Environment[];
   try {
     envs = environmentsFromConfig(JSON.parse(fs.readFileSync(configFile, 'utf-8')));
   } catch (error) {
-    logger.warn('config.json unreadable while resolving environments', {
+    // A config that stops parsing (a half-written edit) must not drop the environment gate: keep the last
+    // environments read from this file. server-tools keeps its last servers on the same failure.
+    logger.warn('config.json unreadable while resolving environments — keeping the last ones read', {
       error: (error as Error)?.message ?? String(error),
     });
+    return cache && cache.file === configFile ? cache.envs : [];
   }
   cache = { file: configFile, mtimeMs: stat.mtimeMs, size: stat.size, envs };
   return envs;

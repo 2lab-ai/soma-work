@@ -188,6 +188,15 @@ export class EnvSkillPermissionActionHandler {
         message: `⚠️ \`${req.skillName}\` 은 지금 어느 환경에도 속하지 않습니다. 다른 답을 골라 주세요.`,
       };
     }
+    // The card offered one environment: a config change since must not turn that answer into another's grant.
+    if (kind === VALUE_KIND_ENV_SKILL_ENV && environment && req.environment !== environment.id) {
+      const asked = req.environment ? environmentLabel(req.environment) : '(없음)';
+      return {
+        ok: false,
+        reason: 'not_found',
+        message: `⚠️ 이 카드는 환경 \`${asked}\` 기준인데 \`${req.skillName}\` 은 지금 \`${environmentLabel(environment.id)}\` 에 속합니다. 다른 답을 골라 주세요.`,
+      };
+    }
 
     let grantLabel: string;
     switch (kind) {

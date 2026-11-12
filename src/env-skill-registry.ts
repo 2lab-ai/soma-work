@@ -154,6 +154,20 @@ export function envSkillExists(skillKey: string, registry: EnvSkillRegistry): bo
 }
 
 /**
+ * May the requester run the environment skill `skillKey` — on a grant of it, of all environment skills, or of the
+ * environment it belongs to (env-access WU4)? The one check every caller uses: the policy, `$plugin:skill`, the
+ * skill files and the dashboard.
+ */
+export function envSkillAllowed(
+  skillKey: string,
+  requesterId: string,
+  scope: GrantScope | undefined,
+  environments: readonly Environment[],
+): boolean {
+  return isEnvSkillUseAllowed(skillKey, requesterId, scope, environmentOfSkill(skillKey, environments)?.id);
+}
+
+/**
  * `ctx.checkEnvSkillPermission` for a non-admin `requesterId` in `scope`'s thread: the environment
  * skill key when `skillId` names an environment skill the requester holds no grant for (step 6b
  * denies it with that reason), else null.
@@ -166,8 +180,7 @@ export function checkEnvSkillPermission(
 ): string | null {
   const key = resolveEnvSkillKey(skillId, registry);
   if (key === null) return null;
-  const environment = environmentOfSkill(key, registry.environments ?? []);
-  return isEnvSkillUseAllowed(key, requesterId, scope, environment?.id) ? null : key;
+  return envSkillAllowed(key, requesterId, scope, registry.environments ?? []) ? null : key;
 }
 
 /** The prefix the SDK gives every MCP tool of a plugin's server — policy step 6d tests the same one. */
@@ -230,7 +243,8 @@ export function checkEnvironmentToolAccess(
   if (typeof server !== 'string') return undefined;
   const environment = environmentOfServer(server, environments);
   if (!environment) return undefined;
-  if (isEnvironmentToolUseAllowed(environment, requesterId, scope)) return null;
+  const owns = (key: string) => environmentOfSkill(key, environments)?.id === environment.id;
+  if (isEnvironmentToolUseAllowed(environment, requesterId, scope, owns)) return null;
   const label = environmentLabel(environment.id);
   const skills = environment.skills.length > 0 ? ` (its skills: ${environment.skills.join(', ')})` : '';
   return `${server} belongs to environment ${label}: an admin must allow you this environment or one of its skills${skills}.`;
@@ -403,7 +417,7 @@ export function checkEnvSkillAccess(
   const allowAll = targets.length > 0 && loadGrants(ENV_SKILL_GRANT_OWNER).allowAll.includes(requesterId);
   for (const target of targets) {
     if (allowAll) continue;
-    if (target.includes(':') && isEnvSkillUseAllowed(target, requesterId, scope)) continue;
+    if (target.includes(':') && envSkillAllowed(target, requesterId, scope, registry.environments ?? [])) continue;
     return target;
   }
   return null;

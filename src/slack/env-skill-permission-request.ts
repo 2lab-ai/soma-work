@@ -94,6 +94,7 @@ export async function requestEnvSkillPermission(
   input: RequestEnvSkillPermissionInput,
 ): Promise<{ requestId: string; delivered: EnvSkillPermissionDelivery }> {
   const { slackApi, requesterId, skillKey, channel, threadTs } = input;
+  const environment = environmentOfSkill(skillKey, input.environments ?? loadEnvironments());
   const req = createPermissionRequest({
     operation: 'invoke',
     requesterId,
@@ -103,6 +104,7 @@ export async function requestEnvSkillPermission(
     threadTs,
     originalText: input.originalText,
     ...(input.dashboardClientRef ? { dashboardClientRef: input.dashboardClientRef } : {}),
+    ...(environment ? { environment: environment.id } : {}),
   });
 
   let delivered: EnvSkillPermissionDelivery;
@@ -160,6 +162,7 @@ async function deliver(input: RequestEnvSkillPermissionInput, requestId: string)
   }
   const environment = environmentOfSkill(skillKey, input.environments ?? loadEnvironments());
   const msg = buildEnvSkillPermissionMessage({ requestId, requesterId, skillKey, channel, threadTs, environment });
+  // (the same environment the request recorded, read the same way)
 
   const prompts: PromptRef[] = [];
   for (const admin of admins) {

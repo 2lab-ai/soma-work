@@ -41,6 +41,7 @@ const RENDER = [
   'skBack',
   'skMineList',
   'skEnvList',
+  'skPickId',
   'skSystemList',
   'skMineDetail',
   'skEnvDetail',
@@ -209,7 +210,7 @@ describe('스킬 tab — grants', () => {
     const sk = snapshot();
     const fresh = { allowAll: [], skills: [] };
     const apiWrite = vi.fn().mockResolvedValue({ ok: true, data: { mine: fresh } });
-    const fns = load<any>(['skStatus', 'skSetGrant', 'skAddGrant', 'skRemoveGrant'], {
+    const fns = load<any>(['skStatus', 'skSetGrant', 'skAddGrant', 'skRemoveGrant', 'skPickId'], {
       document: { getElementById: (id: string) => (id === 'sk-pick-all' ? { value: 'U_B' } : status) },
       _sk: sk,
       apiWrite,
@@ -228,6 +229,13 @@ describe('스킬 tab — grants', () => {
     expect(apiWrite).toHaveBeenLastCalledWith('POST', '/api/skills/grants', {
       scope: 'env',
       skill: 'envx:post-deploy',
+      userId: 'U_A',
+      allow: false,
+    });
+    await fns.skRemoveGrant(btn({ 'data-scope': 'environment', 'data-skill': 'env:acme-dev2', 'data-user': 'U_A' }));
+    expect(apiWrite).toHaveBeenLastCalledWith('POST', '/api/skills/grants', {
+      scope: 'environment',
+      skill: 'env:acme-dev2',
       userId: 'U_A',
       allow: false,
     });
@@ -295,6 +303,21 @@ describe('스킬 tab — 환경 스킬', () => {
     expect(on).toContain('data-scope="env"');
     // the admin may pick anyone, themselves included (admins are exempt anyway, but the list is not 'mine')
     expect(on).toContain('<option value="U_ME">');
+  });
+
+  // env-access WU4 (#1212): who holds each environment whole, and taking it back.
+  it('an admin sees who holds each environment whole; in admin mode adds and removes them', () => {
+    const env = {
+      ...adminEnv,
+      environments: [{ id: 'env:acme-dev2', label: 'acme-dev2', skills: ['envx:*'], allowed: ['U_B'] }],
+    };
+    const ro = view({ sk: snapshot({ isAdmin: true, env }), section: 'env' });
+    expect(ro).toContain('acme-dev2');
+    expect(ro).toContain('비');
+    expect(ro).not.toContain('data-scope="environment"');
+    const on = view({ sk: snapshot({ isAdmin: true, env }), section: 'env', adminMode: true });
+    expect(on).toContain('data-scope="environment" data-skill="env:acme-dev2"');
+    expect(on).toContain('id="sk-pick-env-env:acme-dev2"');
   });
 
   it('an open skill: no access → the ask hint and no content; admin → per-skill grants; admin mode → the editor (1.b)', () => {

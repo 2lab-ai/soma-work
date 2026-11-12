@@ -57,6 +57,10 @@ describe('the four answers (env-access WU4, #1212)', () => {
     });
     const dm = slackApi.postMessage.mock.calls.find((c) => String(c[0]).startsWith('D-'));
     expect(JSON.stringify(dm?.[2]?.blocks)).toContain(`${ENV_SKILL_PERM_ACTION_ID_PREFIX}env_skill_env`);
+    // trinity R1 (fable): the request remembers which environment the card offered.
+    expect(h.createReq).toHaveBeenCalledWith(expect.objectContaining({ environment: 'env:acme-dev2' }));
+    // Accepting a skill opens the environment's servers for it too, and the card says so.
+    expect(JSON.stringify(dm?.[2]?.blocks)).toContain('ssh_exec');
   });
 });
 

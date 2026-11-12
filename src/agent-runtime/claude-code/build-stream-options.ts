@@ -427,17 +427,18 @@ export async function buildStreamOptions(
         // user's PR approvals and merges (`gh_pr`, WU3 #1211) are an admin's, whatever the server-tools grants
         // say; the other tools follow the grants.
         checkMcpToolPermission: (name, toolInput) => {
-          // An environment's server runs on that environment's grant (WU4, #1212), admin-only tools included.
+          // An environment's grant opens every tool on its servers, admin-only ones included (WU4, #1212).
           const environment = envSkillScope
             ? checkEnvironmentToolAccess(name, toolInput, policyUser, envSkillScope, loadEnvironments())
             : undefined;
-          if (environment !== undefined) return environment;
-          return (
-            ADMIN_ONLY_SERVER_TOOLS.get(name) ??
-            (gatedServerNames.length > 0
-              ? (deps.checkMcpToolPermission(name, policyUser, cachedPermConfig, gatedServerNames) ?? null)
-              : null)
-          );
+          if (environment === null) return null;
+          // Without it, an admin-only tool stays shut (naming the environment, when it is one's server) …
+          const adminOnly = ADMIN_ONLY_SERVER_TOOLS.get(name);
+          if (adminOnly !== undefined) return environment ?? adminOnly;
+          // … and an ordinary tool keeps following the server-tools grants, on an environment's server too.
+          return gatedServerNames.length > 0
+            ? (deps.checkMcpToolPermission(name, policyUser, cachedPermConfig, gatedServerNames) ?? null)
+            : null;
         },
         ...(nativeWriteRoots ? { checkNativeWrite: createNativeWriteCheck(nativeWriteRoots, hookCwd) } : {}),
         checkEnvSkillPermission: (tool, toolInput) =>

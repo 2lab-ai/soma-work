@@ -134,10 +134,22 @@ describe('EnvSkillPermissionActionHandler', () => {
   // env-access WU4 (#1212): the fourth answer — every skill and tool of the skill's environment.
   it('이 환경 전체 항상: a persisted grant of the environment the skill belongs to', async () => {
     h.environments = [{ id: 'env:acme-dev2', servers: ['dev2'], skills: ['acme-env:*'] }];
+    h.requests.get('req-1').environment = 'env:acme-dev2';
     await handler.handleAction(click(VALUE_KIND_ENV_SKILL_ENV), respond);
     expect(h.grantEnvironment).toHaveBeenCalledWith('env:acme-dev2', 'U1');
     expect(messageHandler).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(slackApi.updateMessage.mock.calls)).toContain('acme-dev2');
+    h.environments = [];
+  });
+
+  // trinity R1 (fable): the card named one environment; config moved the skill to another since.
+  it('이 환경 전체 항상 on a card for another environment than the skill belongs to now: refused', async () => {
+    h.requests.get('req-1').environment = 'env:acme-dev2';
+    h.environments = [{ id: 'env:acme-prod', servers: ['prod'], skills: ['acme-env:*'] }];
+    await handler.handleAction(click(VALUE_KIND_ENV_SKILL_ENV), respond);
+    expect(h.grantEnvironment).not.toHaveBeenCalled();
+    expect(h.requests.get('req-1').handled).toBe(false);
+    expect(JSON.stringify(respond.mock.calls)).toContain('acme-dev2');
     h.environments = [];
   });
 

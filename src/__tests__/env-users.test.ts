@@ -67,5 +67,8 @@ describe('environments', () => {
     fs.writeFileSync(file, JSON.stringify({ 'server-tools': { x: { envUser: 'env:only', skills: [] } } }));
     expect(loadEnvironments(file).map((e) => e.id)).toEqual(['env:only']);
     expect(loadEnvironments(path.join(path.dirname(file), 'missing.json'))).toEqual([]);
+    // trinity R1 (astra): a config that stops parsing keeps the last environments read, not none (the gate stays).
+    fs.writeFileSync(file, '{ not json');
+    expect(loadEnvironments(file).map((e) => e.id)).toEqual(['env:only']);
   });
 });

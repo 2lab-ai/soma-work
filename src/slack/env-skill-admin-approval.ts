@@ -9,7 +9,6 @@
  */
 
 import type { AdminApproval, AdminApprovalAdapter, AdminApprovalResolution } from '../admin-approvals';
-import { environmentOfSkill, loadEnvironments } from '../env-users';
 import { Logger } from '../logger';
 import { listPermissionRequests, type PermissionRequest } from '../skill-permission-request-store';
 import { ENV_SKILL_GRANT_OWNER } from '../user-skill-grants-store';
@@ -33,7 +32,8 @@ export function envSkillApproval(req: PermissionRequest): AdminApproval {
     summary: `환경 스킬 \`${req.skillName}\` 1회 실행 허용 — #${req.channel}`,
     description: '허용하면 요청한 턴을 다시 보내 이어서 실행합니다. 수락은 요청한 스레드에서만 유효합니다.',
     // The same answers as the admins' DM (env-access WU4): accept · reject · this skill · this environment.
-    choices: envSkillChoices(req.skillName, environmentOfSkill(req.skillName, loadEnvironments())).map((c) => ({
+    // The environment the request recorded when the card was made: the answer grants that one or nothing.
+    choices: envSkillChoices(req.skillName, req.environment ? { id: req.environment } : null).map((c) => ({
       id: c.kind,
       label: c.label,
     })),

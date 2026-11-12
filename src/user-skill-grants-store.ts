@@ -221,6 +221,28 @@ export function hasThreadGrantForPlugin(
   return false;
 }
 
+/** The skill keys (`plugin:skill`) of `pluginName` with a live thread grant for (owner, requester) in `scope`. */
+export function liveThreadGrantSkills(
+  ownerId: string,
+  pluginName: string,
+  requesterId: string,
+  scope: GrantScope,
+): string[] {
+  const keys = threadGrantsByPlugin.get(pluginThreadKey(ownerId, pluginName, requesterId, scope));
+  if (keys === undefined) return [];
+  const now = Date.now();
+  const skills: string[] = [];
+  const prefix = `${[ownerId].join('\u0000')}\u0000`;
+  for (const key of keys) {
+    const exp = threadGrants.get(key);
+    if (exp === undefined || exp <= now) continue;
+    // key = owner\0skill\0requester\0channel\0thread
+    const skill = key.slice(prefix.length).split('\u0000')[0];
+    if (skill) skills.push(skill);
+  }
+  return skills;
+}
+
 /** Non-mutating apart from dropping an expired entry: is there a live thread grant? */
 export function hasThreadGrant(ownerId: string, skillName: string, requesterId: string, scope: GrantScope): boolean {
   const key = threadKey(ownerId, skillName, requesterId, scope);
@@ -309,6 +331,11 @@ function environmentRequesters(grants: SkillGrants, environmentId: string): stri
   return Array.isArray(list) ? list : [];
 }
 
+/** Who holds the whole environment `environmentId` (the settings page lists them). */
+export function environmentGrantees(environmentId: string): string[] {
+  return [...environmentRequesters(loadGrants(ENV_SKILL_GRANT_OWNER), environmentId)];
+}
+
 /** Has an admin granted the requester the whole environment `environmentId`? */
 export function hasEnvironmentGrant(environmentId: string, requesterId: string): boolean {
   return environmentRequesters(loadGrants(ENV_SKILL_GRANT_OWNER), environmentId).includes(requesterId);
@@ -361,28 +388,35 @@ export function isEnvSkillUseAllowed(
 /**
  * NON-MUTATING: may the requester use the server-tools tools of `environment` (its servers) — directly or from
  * one of its skills? True iff an admin granted the whole environment, all environment skills, or one of its
- * skills — always, or in `scope`'s thread. A skill's grant opens its environment's tools in the same scope: the
+ * skills — always, or in `scope`'s thread. `owns` says which `plugin:skill` keys are this environment's (a
+ * `plugin:*` entry must not count a skill another environment lists by name). A skill's grant opens its environment's tools in the same scope: the
  * skill runs on them. Admins are not checked here — the policy exempts them.
  */
 export function isEnvironmentToolUseAllowed(
   environment: { id: string; skills: readonly string[] },
   requesterId: string,
   scope?: GrantScope,
+  owns: (skillKey: string) => boolean = () => true,
 ): boolean {
   const grants = loadGrants(ENV_SKILL_GRANT_OWNER);
   if (grants.allowAll.includes(requesterId)) return true;
   if (environmentRequesters(grants, environment.id).includes(requesterId)) return true;
   for (const pattern of environment.skills) {
     if (pattern.endsWith(':*')) {
+      // Only skills this environment owns: another environment may list one of the plugin's skills by name.
       const plugin = pattern.slice(0, -2);
       const prefix = `${plugin}:`;
       for (const [key, requesters] of Object.entries(grants.perSkill)) {
-        if (key.startsWith(prefix) && Array.isArray(requesters) && requesters.includes(requesterId)) return true;
+        if (key.startsWith(prefix) && owns(key) && Array.isArray(requesters) && requesters.includes(requesterId)) {
+          return true;
+        }
       }
-      if (scope !== undefined && hasThreadGrantForPlugin(ENV_SKILL_GRANT_OWNER, plugin, requesterId, scope)) {
-        return true;
+      if (scope !== undefined) {
+        if (liveThreadGrantSkills(ENV_SKILL_GRANT_OWNER, plugin, requesterId, scope).some(owns)) return true;
       }
     } else {
+      // A skill another environment also claims belongs to neither.
+      if (!owns(pattern)) continue;
       if (grants.perSkill[pattern]?.includes(requesterId)) return true;
       if (scope !== undefined && hasThreadGrant(ENV_SKILL_GRANT_OWNER, pattern, requesterId, scope)) return true;
     }

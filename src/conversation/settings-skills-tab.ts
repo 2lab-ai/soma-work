@@ -158,8 +158,13 @@ function skGrantEditor(scope, skill, allowed, editable) {
     opts += '<option value="' + escAttr(users[j].id) + '">' + esc(users[j].name) + '</option>';
   }
   var off = opts ? '' : ' disabled';
-  return html + '<div class="line"><select class="ui-input" id="sk-pick-' + (skill ? 'one' : 'all') + '" aria-label="허용할 사람"' + off + '><option value="">사람 선택…</option>' + opts + '</select>'
+  return html + '<div class="line"><select class="ui-input" id="' + escAttr(skPickId(scope, skill)) + '" aria-label="허용할 사람"' + off + '><option value="">사람 선택…</option>' + opts + '</select>'
     + '<button type="button" class="btn" data-scope="' + scope + '" data-skill="' + escAttr(skill || '') + '" onclick="skAddGrant(this)"' + off + '>추가</button></div>';
+}
+// The picker of one grant editor: one per environment, one for a skill, one for all.
+function skPickId(scope, skill) {
+  if (scope === 'environment') return 'sk-pick-env-' + skill;
+  return 'sk-pick-' + (skill ? 'one' : 'all');
 }
 function skEnvBanner() {
   if (!skIsAdmin()) return '<div class="sk-banner" role="note"><span>권한 없는 환경 스킬이 필요하면 Slack에서 $플러그인:스킬 형식으로 실행하세요. 관리자에게 승인 요청이 갑니다.</span></div>';
@@ -197,6 +202,13 @@ function skEnvList() {
   var html = '<h2>환경 스킬</h2><p class="meta">이 호스트의 환경 플러그인 스킬입니다. 테스트 계정이나 대상 같은 호스트 환경 값이 들어 있어, 관리자가 허용한 사람만 실행하고 내용을 볼 수 있습니다.</p>'
     + skEnvBanner();
   if (skIsAdmin()) html += '<div class="sk-box"><h3>모든 환경 스킬을 실행할 수 있는 사람</h3>' + skGrantEditor('env', null, env.allowAll || [], skCanEditEnv()) + '</div>';
+  // env-access WU4: an environment held whole opens its skills and its servers' tools (ssh_exec, gh_pr too).
+  var envs = (skIsAdmin() && env.environments) || [];
+  for (var e = 0; e < envs.length; e++) {
+    html += '<div class="sk-box"><h3>환경 ' + esc(envs[e].label) + ' 전체(스킬·서버 도구)를 쓸 수 있는 사람</h3>'
+      + '<p class="meta">' + esc(envs[e].skills.join(', ')) + '</p>'
+      + skGrantEditor('environment', envs[e].id, envs[e].allowed || [], skCanEditEnv()) + '</div>';
+  }
   if (!env.skills.length) return html + '<p class="lock">이 호스트에는 환경 스킬이 없습니다.</p>';
   var q = skFilterText();
   var rows = '';
@@ -396,7 +408,7 @@ async function skSetGrant(scope, skill, userId, allow) {
 }
 function skAddGrant(btn) {
   var skill = btn.getAttribute('data-skill') || null;
-  var sel = document.getElementById('sk-pick-' + (skill ? 'one' : 'all'));
+  var sel = document.getElementById(skPickId(btn.getAttribute('data-scope'), skill));
   if (!sel || !sel.value) return;
   return skSetGrant(btn.getAttribute('data-scope'), skill, sel.value, true);
 }
