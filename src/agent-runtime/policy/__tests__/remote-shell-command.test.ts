@@ -124,6 +124,22 @@ const RUNS = [
   // trinity R8 (astra): a run-time `printf -v PATH` makes a bare data name run anything.
   'ln -s /usr/bin/ssh ./cat; flag=-v; printf "$flag" PATH %s .; cat host',
   'printf -vPATH %s .; cat ssh',
+  // review-of-legends (dbfea4c84): a quoted `}` inside `${…}`, and arithmetic that evaluates a variable's value.
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
+  'x=; echo ${x:-$(echo "}"; ssh host)}',
+  "echo 'a[$(ssh host)]' > f; x=$(cat f); echo $((x))",
+  "echo 'a[$(ssh host)]' > f; x=$(cat f); [[ x -eq 0 ]]",
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
+  "echo 'a[$(ssh host)]' > f; i=$(cat f); echo ${arr[i]}",
+  "echo 'a[$(ssh host)]' > f; i=$(cat f); echo $arr[i]",
+  // review-of-legends: the paths it reported, pinned.
+  "GIT_SSH_COMMAND='ssh -F cfg' git fetch",
+  'env GIT_SSH=/usr/bin/ssh git fetch',
+  "git -c core.sshCommand='ssh -F cfg' fetch",
+  'action=-exec; find . "$action" ssh host \\;',
+  `GIT_EDITOR="$(printf 'ssh host')" git commit --allow-empty`,
+  'cat <<"E\\"OF"\nbody\nE"OF\nssh host',
+  "printf -v 'a[$(ssh prod-host >&2)]' %s x",
   // trinity R9 (fable, P2): an assigning expansion changes PATH too.
   // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
   'ln -s /usr/bin/ssh ./cat; : ${PATH::=.}; cat host',

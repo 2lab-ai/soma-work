@@ -226,7 +226,10 @@ function dollar(p: Parser, depth: number): string {
     // `$((1+2))` is arithmetic: the inner `(` closes right before the outer one. `$((cmd) )` is a subshell.
     const close = matchingParen(src, open);
     if (src[open + 1] === '(' && close > 0 && matchingParen(src, open + 1) === close - 1) {
-      scanText(p, src.slice(open + 2, close - 1), depth + 1, true);
+      const math = src.slice(open + 2, close - 1);
+      // Arithmetic evaluates a variable's value as an expression, and `a[$(cmd)]` in that value runs cmd.
+      if (/[A-Za-z_]/.test(math)) p.unreadable = true;
+      scanText(p, math, depth + 1, true);
       p.i = close;
       return EXPANDED;
     }
@@ -240,9 +243,10 @@ function dollar(p: Parser, depth: number): string {
     let j = open;
     for (; j < src.length; j++) {
       const c = src[j];
-      // A `'` here is a quote outside double quotes and a letter inside them: not read here.
-      if (c === "'") p.unreadable = true;
-      else if (c === '\\') j++;
+      // Quotes and substitutions inside `${…}` can hide its closing brace (`${x:-$(echo "}"; …)}`), and a
+      // subscript (`${a[i]}`) evaluates `i` as arithmetic: none of these is read here.
+      if (c === "'" || c === '"' || c === '`' || c === '[' || (c === '$' && src[j + 1] === '(')) p.unreadable = true;
+      if (c === '\\') j++;
       else if (c === '{') level++;
       else if (c === '}' && --level === 0) break;
     }
@@ -258,6 +262,9 @@ function dollar(p: Parser, depth: number): string {
     p.i = j;
     return EXPANDED;
   }
+  // `$[…]` is old arithmetic; zsh reads `$a[i]` as a subscript, evaluated as arithmetic.
+  const name = /^[A-Za-z_][A-Za-z0-9_]*/.exec(src.slice(open))?.[0] ?? '';
+  if (src[open + name.length] === '[') p.unreadable = true;
   // `$x`, `$1`, `$@`: a parameter, `$HOME` included — a command can set any variable in more ways than a scan can
   // follow (`read`, `printf -v`, zsh's `${x::=…}`), so none is trusted.
   return EXPANDED;
@@ -589,7 +596,10 @@ function verdict(cmd: SimpleCommand): Verdict | 'runs' {
   if (program === '[[' || program === '[') {
     // zsh runs `if [[ … ]] cmd`: words after the closing bracket are a command.
     const close = args.indexOf(program === '[[' ? ']]' : ']');
-    return close >= 0 && close < args.length - 1 ? 'may-run' : 'data';
+    if (close >= 0 && close < args.length - 1) return 'may-run';
+    // `[[ x -eq 0 ]]` evaluates `x`'s value as arithmetic, where `a[$(cmd)]` runs cmd.
+    if (program === '[[' && args.some((a) => /^-(eq|ne|lt|le|gt|ge)$/.test(a))) return 'may-run';
+    return 'data';
   }
   // zsh closes a brace group at a bare `}` and reads on (`{ echo a } always { cmd }`).
   const brace = args.indexOf('}');
