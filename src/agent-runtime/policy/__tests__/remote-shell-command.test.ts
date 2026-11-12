@@ -1,7 +1,8 @@
 /**
  * Policy step 2 (the ssh ban, every user since env-access WU2 #1210) asks whether a Bash command runs ssh,
  * scp or sftp. The old check matched the word anywhere — a grep pattern, a commit message, a document written
- * through a heredoc — and since WU2 that refusal reaches admins too. This one looks at what runs.
+ * through a heredoc — and since WU2 that refusal reaches admins too. This one lets a command through only when
+ * every program in it handles the word as data.
  */
 
 import { isSshCommand } from 'soma-lib';
@@ -36,12 +37,52 @@ const RUNS = [
   'command ssh host',
   'exec ssh host',
   'ssh prod-host',
-  // An interpreter or an unknown program keeps the old, broad check: it may start ssh itself.
+  'time ssh host',
+  '( ssh host )',
+  // An interpreter or an unknown program could start it.
   `python3 -c "import os; os.system('ssh host')"`,
   "node -e \"require('child_process').execSync('ssh host')\"",
   'awk \'BEGIN { system("ssh host") }\'',
   'python3 - <<EOF\nimport os\nos.system("ssh host")\nEOF',
   'bash <<EOF\nssh host\nEOF',
+  'bash <<< "ssh host"',
+  'bash <(echo ssh host)',
+  // trinity R1 (fable): an unquoted heredoc expands its substitutions.
+  'cat <<EOF\n$(ssh host uname)\nEOF',
+  'cat <<EOF\n`ssh host uname`\nEOF',
+  // A shell or another program reading the word from a pipe, a file, a fifo or a process substitution.
+  'echo ssh host | bash',
+  'cat <<EOF | bash\nssh host\nEOF',
+  'echo ssh host | (bash)',
+  'echo ssh host | { bash; }',
+  'echo ssh host |& sh',
+  'echo ssh host | tee >(bash)',
+  'echo "ssh host" > run.sh && bash run.sh',
+  'mkfifo p; bash < p & echo ssh host > p',
+  'echo ssh host | xargs -I{} sh -c {}',
+  // rsync and environment that names it.
+  'rsync -avze ssh a host:b',
+  'RSYNC_RSH=ssh rsync a host:b',
+  "GIT_PAGER='ssh host' git log",
+  "GIT_SSH_COMMAND='ssh -i k' git push",
+  "x='ssh host'; $x",
+  // git and gh subcommands that run programs.
+  "git rebase --exec 'ssh host make' main",
+  "git -c alias.x='!ssh host' x",
+  "git -c core.pager='ssh host' log",
+  "git grep --open-files-in-pager='ssh host' x",
+  'git push ssh://host/repo main',
+  'gh codespace ssh',
+  "gh alias set x '!ssh host'",
+  // A heredoc delimiter in pieces ends where the shell ends it.
+  'cat <<E"O"F\nx\nEOF\nssh host',
+  "cat <<'E'OF\nx\nEOF\nssh host",
+  // Substitution inside arithmetic-looking text, ANSI-C quoting, wrapper options.
+  'echo "$((ssh host) )"',
+  'echo $(( $(ssh host) ))',
+  "echo $'\\'' ; ssh host",
+  'sudo --user git ssh host',
+  'exec -a git ssh host',
 ];
 
 const DATA = [
@@ -49,25 +90,51 @@ const DATA = [
   "rg '\\bssh\\b' src",
   'git commit -m "ssh ban for everyone"',
   'git log --grep ssh',
+  'git log --grep=ssh --oneline | grep -i ssh',
   'git commit -F msg.txt && git push origin main',
+  'git add -A && git commit -m "ssh ban" && git push',
+  'git -C repo show HEAD:src/ssh.ts',
   "cat > notes.md <<'EOF'\nBash ssh is blocked; use ssh_exec\nEOF",
+  'cat <<-EOF > notes.md\n\tssh is text, $(date) is not ssh\n\tEOF',
   'echo "use ssh_exec instead of ssh"',
+  'echo "ssh $((1+2))"',
   "printf 'ssh\\n'",
   'gh pr create --title "ssh ban" --body "scp too"',
+  'gh -R o/r pr view 1 --json body | jq .body',
+  'gh api repos/o/r/issues -f body="ssh"',
   'gh issue comment 1 --body-file - <<EOF\nssh is refused\nEOF',
   'ls ~/.ssh',
   'which ssh',
   'type ssh',
   'man ssh',
+  'command -v ssh',
   'git clone git@github.com:o/r.git',
   'head -3 docs/ssh.md | wc -l',
+  'grep -rn ssh src 2>&1 | head -20',
+  'rg ssh src &> out.txt',
+  'grep ssh <<< "ssh host"',
+  'diff <(echo ssh) <(echo scp)',
+  'grep -n \\\n  ssh src',
+  'grep ssh x # ssh in a comment',
+  'if grep -q ssh x; then echo found; fi',
+  'echo "$(date): ssh"',
 ];
 
-/** Programs that can start another (GNU sed's `e`, awk's `system`) keep the old check even on data. */
-const CONSERVATIVE = ['sed -n 1,5p ssh.md', "awk '{print}' ssh.log"];
+/**
+ * Still refused: a program that can start another (GNU sed's `e`, awk's `system`, an unknown tool) anywhere in a
+ * command that names the word, even when this use is harmless.
+ */
+const CONSERVATIVE = [
+  'sed -n 1,5p ssh.md',
+  "awk '{print}' ssh.log",
+  'npx vitest run src/ssh.test.ts',
+  'npm test && git commit -m "ssh ban"',
+  'find . -name "*ssh*" -exec cat {} \\;',
+  'git config core.sshCommand "ssh -i k"',
+];
 
 describe('isRemoteShellCommand', () => {
-  it.each(CONSERVATIVE)('keeps the old check where a program can start another: %s', (command) => {
+  it.each(CONSERVATIVE)('keeps the old check where a program could run the word: %s', (command) => {
     expect(isRemoteShellCommand(command)).toBe(true);
   });
 
@@ -80,7 +147,7 @@ describe('isRemoteShellCommand', () => {
   });
 
   it('never refuses what the old check let through', () => {
-    for (const command of [...RUNS, ...DATA, 'ls -la', 'git push', 'echo hi', 's"s"h host']) {
+    for (const command of [...RUNS, ...DATA, ...CONSERVATIVE, 'ls -la', 'git push', 'echo hi', 's"s"h host']) {
       if (!isSshCommand(command)) expect(isRemoteShellCommand(command), command).toBe(false);
     }
   });
