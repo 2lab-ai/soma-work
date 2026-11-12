@@ -68,8 +68,9 @@ chat workspace ids, token shapes, private keys); media text by OCR; workflow haz
 rewrite reaches — PR and issue bodies and comments, review and commit comments, release notes, release asset
 contents, forks, secret and variable names.
 
-Exit 3 = incomplete: a GitHub read, a release asset or a media file could not be read (the report's
-`INCOMPLETE` section names each). An incomplete recon proves nothing clean — fix the access or tool and rerun.
+Exit 3 = incomplete: a GitHub read, a release asset, an oversized blob or a media file was not read — media
+needs `--ocr` (tesseract; ffmpeg for video, pdftotext + pdftoppm for PDFs). The report's `INCOMPLETE` section
+names each. An incomplete recon proves nothing clean — fix the access or tool and rerun.
 
 Read the whole report. A match judged harmless (a test fixture, a code identifier) goes into `W/config/allow.txt` as a regex so reruns show only what is left; the forbidden list is never filtered. The classes cannot know internal vocabulary: also grep for product code names,
 customer, colleague and team names, internal repository and service names the owner gives you. Decide per
