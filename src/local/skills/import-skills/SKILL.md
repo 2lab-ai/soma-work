@@ -10,7 +10,8 @@ Pulls candidate skills from other agents' skill repositories, diffs them against
 lets the user pick, and opens one PR that adds the picks under the target's vendoring contract.
 
 ## Input
-- **Sources**: every GitHub URL or `owner/repo` slug in the request. None → the defaults:
+- **Sources**: every positional GitHub URL or `owner/repo` slug in the request (not the value of `target=`). None →
+  the defaults:
   - `NousResearch/hermes-agent`, path `skills/`, 2-level layout (`skills/<category>/<skill>/SKILL.md`);
   - `openclaw/openclaw`, path `skills/`, 1-level layout (`skills/<skill>/SKILL.md`).
   Other sources: infer the layout — top-level entries that hold a `SKILL.md` are 1-level, otherwise recurse one level.
@@ -23,8 +24,9 @@ lets the user pick, and opens one PR that adds the picks under the target's vend
 1. **Pin each source once:** `SHA=$(gh api repos/<o>/<r>/commits/HEAD --jq .sha)`. Every read below and every file
    imported in Phase 5 uses `?ref=$SHA` — what the user approves is exactly what is imported.
 2. List skill directories: `gh api "repos/<o>/<r>/contents/<path>?ref=$SHA" --jq '.[]|select(.type=="dir")|.name'`.
-   1-level layout → each directory is a candidate. 2-level layout → each directory is a category: list it the same way
-   (`contents/<path>/<category>?ref=$SHA`) and each of its subdirectories is a candidate (`<category>/<skill>`).
+   1-level layout → each directory is a candidate, skill path `<path>/<skill>`. 2-level layout → each directory is a
+   category: list it the same way (`contents/<path>/<category>?ref=$SHA`); each of its subdirectories is a candidate,
+   skill path `<path>/<category>/<skill>` (for example `skills/apple/apple-notes`).
 3. Per candidate, read only the `SKILL.md` frontmatter and first ~40 lines
    (`gh api "repos/<o>/<r>/contents/<skill path>/SKILL.md?ref=$SHA" --jq .content | base64 -d | head -60`); no
    `SKILL.md` → `DESCRIPTION.md`, then `README.md`; none → skip with the reason.
@@ -62,7 +64,9 @@ the table is the question and the user's reply is the answer. Never import witho
 1. A fresh working folder under the session's working directory; clone the target; one branch
    `import-skills/<YYYYMMDD>-<shortid>`.
 2. Per approved skill, following the target's vendoring contract:
-   - fetch every file of the skill's directory at the `$SHA` pinned in Phase 1 (`?ref=$SHA`) — never a new `HEAD`;
+   - fetch every file under the skill path at the `$SHA` pinned in Phase 1 — never a new `HEAD`. List them with
+     `gh api "repos/<o>/<r>/git/trees/$SHA?recursive=1" --jq '.tree[]|select(.type=="blob")|.path'` (keep the paths
+     under the skill path; `contents` lists one level only) and read each at `?ref=$SHA`;
    - place it at `<plugin root>/skills/<name>/` — never over an existing directory;
    - frontmatter, `LICENSES/NOTICE.md` (source link, `$SHA` and date, license, `## Local changes`), the upstream license
      text, the contract test `__tests__/<name>-skill.test.ts`;

@@ -41,7 +41,12 @@ describe('local:import-skills', () => {
   });
 
   it('walks both layouts and pins each source once, before the user is asked', () => {
-    expect(md).toContain('2-level layout → each directory is a category');
+    expect(md).toContain('2-level layout → each directory is a');
+    // The skill path keeps the source path: both defaults keep their skills under `skills/`.
+    expect(md).toContain('skill path `<path>/<category>/<skill>`');
+    expect(md).toContain('skill path `<path>/<skill>`');
+    expect(md).toContain('git/trees/$SHA?recursive=1');
+    expect(md).toContain('(not the value of `target=`)');
     const pin = md.indexOf('commits/HEAD --jq .sha');
     expect(pin).toBeGreaterThan(-1);
     expect(pin).toBeLessThan(md.indexOf('## Phase 4'));
