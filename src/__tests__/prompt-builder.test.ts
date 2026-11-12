@@ -223,7 +223,7 @@ describe('PromptBuilder', () => {
       expect(section).toContain('`deploy-state.json`');
       expect(section).toMatch(/for this deploy request only\. A restart replays the same request; it is not a new one/);
       expect(section).toMatch(
-        /merged with its deploy run still in progress, ask \(or continue that merged one at step 5\) instead of starting step 2/,
+        /merged with its deploy run still in progress, ask \(or continue that merged one at step 5, its `before_sha` being the first parent of its `merge_commit_sha`\) instead of starting step 2/,
       );
       for (const field of [
         '`source_sha`',
@@ -233,6 +233,7 @@ describe('PromptBuilder', () => {
         '`merged`',
         '`after_sha`',
         '`releaseNotes`',
+        '`done`',
       ]) {
         expect(section).toContain(field);
       }
