@@ -106,6 +106,18 @@ const RUNS = [
   '> >(true) ssh echo hi',
   'cat <<< ssh\nssh host',
   "cat <<$'EOF'\ntext\nEOF\nssh host",
+  // trinity R3 (astra): an expansion where a program or setting is named; heredoc scope; escaped delimiter.
+  `git -c diff.external="$(printf 'ssh host')" diff --ext-diff`,
+  "rg $(printf -- '--pre=ssh') pattern host",
+  `GIT_PAGER="$(printf 'ssh host')" git log`,
+  "find . $(printf -- '-exec') ssh host \\;",
+  `cat <<'EOF' "$(echo ok\nssh host\n)"\ntext\nEOF`,
+  'cat <<"E\\\\OF"\ntext\nE\\OF\nssh host',
+  // trinity R3 (fable, P2): a quote inside `${…}`, zsh `always`, more run options.
+  `echo "\${x:-it's}"; ssh host; echo 'a}'`,
+  '{ echo a } always { ssh host }',
+  "ack --pager='ssh host' x",
+  'rg --hostname-bin ssh x',
 ];
 
 const DATA = [
@@ -162,6 +174,8 @@ const CONSERVATIVE = [
   'npm test && git commit -m "ssh ban"',
   'find . -name "*ssh*" -exec cat {} \\;',
   'git config core.sshCommand "ssh -i k"',
+  // An environment for a data program can make it run another (`RIPGREP_CONFIG_PATH`, `GIT_PAGER` …).
+  'LC_ALL=C grep ssh x',
 ];
 
 describe('isRemoteShellCommand', () => {

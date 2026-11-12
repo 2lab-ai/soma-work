@@ -18,8 +18,10 @@
  * - Anything else — a shell, an interpreter, a wrapper (`sudo`, `env`, `xargs`, `timeout` …), `eval`, sed, awk,
  *   `find -exec`, an unknown program — refuses, because the word is in the text and that program could run it:
  *   from its arguments, from a pipe, from a file written earlier in the same command, or from a fifo.
- * - An assignment that holds the word (`GIT_PAGER='ssh …' git log`, `RSYNC_RSH=ssh rsync`) or sets `PATH`
- *   refuses, and so does a git `-c` setting that holds the word.
+ * - An environment set in front of a program refuses (`GIT_PAGER=… git log`, `RSYNC_RSH=… rsync`,
+ *   `RIPGREP_CONFIG_PATH=… rg`), and so does an assignment that holds the word or sets `PATH`, and a git global
+ *   option that holds the word. An expansion where a program could be named — a git setting, the arguments of
+ *   a data program with a run option, `find`'s arguments — is unknown, so it refuses too.
  *
  * Not covered, as with a command split in two: a data program that reads configuration an earlier part of the
  * same command wrote (`… >> .git/config; git log`).
@@ -98,8 +100,9 @@ const DATA_COMMANDS = new Set([
 ]);
 /** Options of a data program that name a program for it to run: long forms, and letters of short bundles. */
 const EXEC_OPTIONS: Record<string, { long: readonly string[]; short: string }> = {
-  rg: { long: ['--pre'], short: '' },
+  rg: { long: ['--pre', '--hostname-bin'], short: '' },
   ag: { long: ['--pager'], short: '' },
+  ack: { long: ['--pager'], short: '' },
   man: { long: ['--pager', '--html'], short: 'PH' },
   sort: { long: ['--compress-program'], short: '' },
   'git grep': { long: ['--open-files-in-pager'], short: 'O' },
@@ -157,11 +160,10 @@ interface PendingHeredoc {
   owner: SimpleCommand;
 }
 
-/** Scan state over one text: the position, what was found, and heredocs whose bodies start at the next newline. */
+/** Scan state over one text: the position and what was found. */
 class Parser {
   i = 0;
   readonly commands: SimpleCommand[] = [];
-  readonly pending: PendingHeredoc[] = [];
   unreadable = false;
   constructor(readonly src: string) {}
 }
@@ -224,8 +226,9 @@ function dollar(p: Parser, depth: number): string {
     let j = open;
     for (; j < src.length; j++) {
       const c = src[j];
-      if (c === '\\') j++;
-      else if (c === "'") j = src.indexOf("'", j + 1) < 0 ? src.length : src.indexOf("'", j + 1);
+      // A `'` here is a quote outside double quotes and a letter inside them: not read here.
+      if (c === "'") p.unreadable = true;
+      else if (c === '\\') j++;
       else if (c === '{') level++;
       else if (c === '}' && --level === 0) break;
     }
@@ -270,19 +273,30 @@ function delimiterWord(src: string, at: number): { delim: string; quoted: boolea
   let i = at;
   for (; i < src.length && !/[\s;&|<>()]/.test(src[i]); i++) {
     const c = src[i];
-    if (c === '$' && (src[i + 1] === "'" || src[i + 1] === '"')) {
-      // `$'EOF'` is `EOF`; with escapes in it, the text is not read here.
-      const end = src.indexOf(src[i + 1], i + 2);
-      const text = src.slice(i + 2, end < 0 ? src.length : end);
-      if (text.includes('\\')) return { delim: '', quoted: true, end: i };
+    const ansi = c === '$' && src[i + 1] === "'";
+    const locale = c === '$' && src[i + 1] === '"';
+    if (c === "'" || ansi) {
+      // `'EOF'` is `EOF`, and so is `$'EOF'`; with escapes in `$'…'`, the text is not read here.
+      const open = ansi ? i + 1 : i;
+      const end = src.indexOf("'", open + 1);
+      const text = src.slice(open + 1, end < 0 ? src.length : end);
+      if (ansi && text.includes('\\')) return { delim: '', quoted: true, end: i };
       quoted = true;
       delim += text;
       i = end < 0 ? src.length : end;
-    } else if (c === "'" || c === '"') {
+    } else if (c === '"' || locale) {
+      // In double quotes a backslash escapes only `\`, `$`, a backtick, `"` and a newline.
       quoted = true;
-      const end = src.indexOf(c, i + 1);
-      delim += src.slice(i + 1, end < 0 ? src.length : end);
-      i = end < 0 ? src.length : end;
+      let j = (locale ? i + 1 : i) + 1;
+      for (; j < src.length && src[j] !== '"'; j++) {
+        if (src[j] === '\\' && '\\$`"\n'.includes(src[j + 1] ?? 'x')) {
+          delim += src[j + 1];
+          j++;
+        } else {
+          delim += src[j];
+        }
+      }
+      i = j;
     } else if (c === '\\') {
       quoted = true;
       delim += src[i + 1] ?? '';
@@ -311,6 +325,9 @@ function list(p: Parser, closed: boolean, depth: number): void {
   let rawStart = p.i;
   // The next word is a redirection's target (`> file`, `<<< text`), not an argument or the program.
   let target = false;
+  // Heredocs of this list, whose bodies start after its next newline. A newline inside a nested substitution is
+  // that substitution's own: the shell reads it before the outer heredoc's body.
+  const pending: PendingHeredoc[] = [];
 
   const endWord = () => {
     if (inWord) {
@@ -403,7 +420,7 @@ function list(p: Parser, closed: boolean, depth: number): void {
       while (src[j] === ' ' || src[j] === '\t') j++;
       const { delim, quoted, end } = delimiterWord(src, j);
       if (delim === '') p.unreadable = true;
-      else p.pending.push({ delim, quoted, stripTabs, owner: current });
+      else pending.push({ delim, quoted, stripTabs, owner: current });
       p.i = end - 1;
     } else if (c === '#' && !inWord) {
       const end = src.indexOf('\n', p.i);
@@ -413,7 +430,7 @@ function list(p: Parser, closed: boolean, depth: number): void {
       // Heredoc bodies start on the next line. They are input to the command that named them, not commands; an
       // unquoted delimiter still expands the substitutions in them.
       let pos = p.i + 1;
-      for (const h of p.pending.splice(0)) {
+      for (const h of pending.splice(0)) {
         const body: string[] = [];
         while (pos < src.length) {
           const nl = src.indexOf('\n', pos);
@@ -473,6 +490,8 @@ function namesProgram(program: string, args: readonly string[]): boolean {
   if (!options) return false;
   return args.some(
     (a) =>
+      // An expansion could become any option (`rg $(printf -- '--pre=…')`).
+      a.includes(EXPANDED) ||
       options.long.some((o) => a === o || a.startsWith(`${o}=`)) ||
       (options.short !== '' && /^-[^-]/.test(a) && [...a.slice(1)].some((ch) => options.short.includes(ch))),
   );
@@ -485,9 +504,13 @@ function gitVerdict(args: readonly string[]): Verdict {
   for (; k < args.length && args[k].startsWith('-'); k++) {
     const option = args[k];
     // `-c alias.x='!ssh …'`, `-cdiff.external=…`, `--config-env=…`: a setting that names it may run it.
-    if (isSshCommand(option)) return 'may-run';
+    // An expansion could hold anything (`-c diff.external="$(printf …)"`).
+    if (isSshCommand(option) || option.includes(EXPANDED)) return 'may-run';
     if (GIT_VALUE_OPTIONS.has(option)) {
-      if ((option === '-c' || option === '--config-env') && isSshCommand(args[k + 1] ?? '')) return 'may-run';
+      const value = args[k + 1] ?? '';
+      if ((option === '-c' || option === '--config-env') && (isSshCommand(value) || value.includes(EXPANDED))) {
+        return 'may-run';
+      }
       k++;
     }
   }
@@ -509,12 +532,13 @@ function ghVerdict(args: readonly string[]): Verdict {
 /** What one simple command does with the word, once assignments and reserved words are taken off its front. */
 function verdict(cmd: SimpleCommand): Verdict | 'runs' {
   let words = cmd.words;
+  let environment = false;
   for (;;) {
     const assignment = words.length > 0 ? ASSIGNMENT.exec(words[0]) : null;
     if (assignment) {
-      // `GIT_PAGER='ssh …' git log`, `RSYNC_RSH=ssh rsync`, `x='ssh …'`: an environment that names it may run
-      // it. A new `PATH` changes what every bare name runs.
+      // `x='ssh …'` may be run later as `$x`; a new `PATH` changes what every bare name runs.
       if (assignment[1] === 'PATH' || isSshCommand(words[0])) return 'may-run';
+      environment = true;
       words = words.slice(1);
     } else if (words.length > 0 && KEYWORDS.has(words[0])) {
       words = words.slice(1);
@@ -526,6 +550,9 @@ function verdict(cmd: SimpleCommand): Verdict | 'runs' {
   const program = words[0];
   const args = words.slice(1);
   if (REMOTE_SHELLS.has(base(program))) return 'runs';
+  // An environment set for one program can make a data program run another (`GIT_PAGER=…`, `PAGER=…`,
+  // `RIPGREP_CONFIG_PATH=…`), whatever the value says.
+  if (environment) return 'may-run';
   // A path (`./cat`) can name any program, and so can an expansion (`$(printf …)echo`); only a bare name means
   // the one on PATH.
   if (program.includes('/') || program.includes(EXPANDED)) return 'may-run';
@@ -534,6 +561,9 @@ function verdict(cmd: SimpleCommand): Verdict | 'runs' {
     const close = args.indexOf(program === '[[' ? ']]' : ']');
     return close >= 0 && close < args.length - 1 ? 'may-run' : 'data';
   }
+  // zsh closes a brace group at a bare `}` and reads on (`{ echo a } always { cmd }`).
+  const brace = args.indexOf('}');
+  if (brace >= 0 && brace < args.length - 1) return 'may-run';
   if (DATA_COMMANDS.has(program)) return namesProgram(program, args) ? 'may-run' : 'data';
   if (program === 'git') return gitVerdict(args);
   if (program === 'gh') return ghVerdict(args);
@@ -541,7 +571,10 @@ function verdict(cmd: SimpleCommand): Verdict | 'runs' {
   // `command -v ssh` looks a program up; it runs nothing.
   if (program === 'command' && (args[0] === '-v' || args[0] === '-V')) return 'data';
   if (program === 'find') {
-    return args.some((w) => w === '-exec' || w === '-execdir' || w === '-ok' || w === '-okdir') ? 'may-run' : 'data';
+    // An expansion could become `-exec`.
+    const runs = (w: string) =>
+      w === '-exec' || w === '-execdir' || w === '-ok' || w === '-okdir' || w.includes(EXPANDED);
+    return args.some(runs) ? 'may-run' : 'data';
   }
   return 'may-run';
 }
