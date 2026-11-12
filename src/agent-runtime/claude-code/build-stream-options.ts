@@ -65,6 +65,7 @@ import {
 } from '../../sandbox/admin-sandbox-profile';
 import { extendSandboxWithGrant, loadDeploySandboxGrant } from '../../sandbox/deploy-sandbox-grant';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
+import { projectConfigRoot } from '../../sandbox/project-config-root';
 import type { SessionRegistry } from '../../session-registry';
 import { isPlanPending } from '../../task-turn/task-plan';
 import type { ConversationSession, WorkflowType } from '../../types';
@@ -962,6 +963,18 @@ export async function buildStreamOptions(
   if (abortController) {
     options.abortController = abortController;
   }
+
+  // Project settings, the project MCP config and the `.claude` config trees come from an empty host directory no
+  // model writes, not from the working directory: the CLI runs their commands outside the sandbox (env-access
+  // #1242). CLAUDE.md and plan files still come from the working directory. Checked last, against every directory
+  // this session writes once all of them are known — deploy grants included (astra R3), sandbox on or off.
+  // Throws: the session does not start.
+  options.projectConfigRoot = projectConfigRoot(DATA_DIR, [
+    ...(workingDirectory ? [workingDirectory] : []),
+    ...(sandboxUserDir ? [sandboxUserDir] : []),
+    ...(adminProfile ? adminProfile.allowWrite : []),
+    ...(options.sandbox?.filesystem?.allowWrite ?? []),
+  ]);
 
   return attachStderrCapture(options, logger);
 }
