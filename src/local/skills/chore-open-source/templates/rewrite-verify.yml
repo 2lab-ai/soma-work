@@ -1,0 +1,33 @@
+# Optional proof that the rewritten history passes the real pattern secrets, which nobody can read
+# back. Commit this as .github/workflows/rewrite-verify.yml on a throwaway branch (on top of the
+# rewritten tip), push the branch, read the run, delete the branch. It only works on a self-hosted
+# runner that can read the run folder; replace the four placeholders first. The scanner is the
+# trusted copy in the run folder (config/sanitize-scan.sh): nothing from the scanned checkout runs
+# while the secrets are in the environment.
+name: Rewrite verify (temporary)
+on:
+  push:
+    branches: [tmp/rewrite-verify]
+permissions:
+  contents: read
+jobs:
+  scan:
+    runs-on: [self-hosted, "${{ vars.RUNNER_LABEL }}"]   # placeholder: a label of a runner that can read W
+    steps:
+      - name: Scan every rewritten branch and tag, no exemptions
+        env:
+          SANITIZE_PATTERNS_SHARED: ${{ secrets.SANITIZE_PATTERNS_SHARED }}
+          SANITIZE_PATTERNS: ${{ secrets.SANITIZE_PATTERNS }}
+          SRC: /path/to/W/out/REPO/new.git                 # placeholder: the rewritten repo
+          EXPECT_TIP: 0000000000000000000000000000000000000000  # placeholder: refs/post/main
+          SCANNER: /path/to/W/config/sanitize-scan.sh      # placeholder: the trusted scanner
+        run: |
+          set -euo pipefail
+          echo "shared secret: $([ -n "$SANITIZE_PATTERNS_SHARED" ] && echo set || echo MISSING)"
+          D=$(mktemp -d); git clone -q "$SRC" "$D/scan"; cd "$D/scan"
+          git fetch -q origin refs/post/main; git checkout -q --detach FETCH_HEAD
+          [ "$(git rev-parse HEAD)" = "$EXPECT_TIP" ] || { echo "tip mismatch"; exit 1; }
+          echo "branches: $(git for-each-ref refs/remotes/origin | grep -vc '/HEAD$')  tags: $(git for-each-ref refs/tags | wc -l)"
+          echo "known-leaks entries: $(grep -cE '^[0-9a-f]{40}' scripts/sanitize-known-leaks.txt || true)"
+          unset GITHUB_EVENT_NAME GITHUB_EVENT_PATH GITHUB_BASE_REF GITHUB_HEAD_REF
+          bash "$SCANNER"
