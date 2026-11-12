@@ -59,5 +59,8 @@ describe('local:research-skill', () => {
     // The rule must reach the probe authors themselves, not only the controller.
     expect(body).toMatch(/Every brief carries the probe rules, word for word, and they override the target skill/);
     expect(body).toMatch(/Skip the target's delivery and self-improvement\s+\(retro\) stages/);
+    expect(body).toMatch(/write only under `RUN\/<probe id>\/`/);
+    expect(body).toMatch(/do not publish, upload, deploy, merge, open a PR or issue, push, message\s+people/);
+    expect(body).not.toMatch(/private channel/);
   });
 });

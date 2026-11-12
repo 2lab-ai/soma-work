@@ -40,7 +40,7 @@ fixed once the recipe is read (step 0.3). Never a session temp folder — long r
   author does not pick.
 - Each probe is the smallest run that still exercises the whole pipeline end to end. A probe that skips a stage
   cannot find that stage's defects.
-- Default probe shape: one real invocation in a sandbox (scratch repo, private channel, draft mode).
+- Default probe shape: one real invocation in a sandbox (a scratch repo or draft mode, writing only under `RUN/`).
 - `RUN/probes.md`: id, input, why it is in the set, what it should stress.
 
 ## 2. Run
