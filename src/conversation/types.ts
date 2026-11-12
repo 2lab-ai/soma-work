@@ -14,6 +14,12 @@ import type { TurnAttachment } from '@soma/slack/user-media';
  */
 export interface TurnOrigin {
   by: 'user' | 'system';
+  /**
+   * A person's message that a turn already running took in (steered into it,
+   * SSOT 2026-11-12) rather than one that opened a turn of its own. The
+   * dashboard says so on the turn (반영됨). Absent otherwise.
+   */
+  steered?: true;
 }
 
 /**

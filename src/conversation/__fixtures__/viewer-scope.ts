@@ -30,6 +30,9 @@ export const NEXT_ACTION_SEAMS: Readonly<Record<string, unknown>> = {
   cardNextActionsHtml: () => '',
   nextActionsOfTurns: () => null,
   renderPanelNext: () => {},
+  // SSOT 2026-11-12 — `convPaint` asks what the session's queue adds to the chat (`convQueueTurns`): nothing,
+  // unless the test loads the real one (pinned by dashboard-steer-chat-client.test.ts).
+  convQueueTurns: () => ({ chips: {}, extra: [], seen: [], drop: [], edits: {} }),
 };
 export function nextActionSeams(fns: readonly string[], inject: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};

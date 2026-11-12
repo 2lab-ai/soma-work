@@ -723,7 +723,6 @@ describe('ClaudeHandler.streamQuery — an incident attempt is outside steering 
     vi.stubEnv('SOMA_BG_KEEPALIVE_MAX_MS', String(5 * 60_000));
     const info = vi.spyOn(Logger.prototype, 'info');
     try {
-      let resumedAfterResult = false;
       harness.runQuery = async function* run({ prompt }) {
         const openingUuid = await readOpeningUuid(prompt);
         yield systemInit();
@@ -736,9 +735,6 @@ describe('ClaudeHandler.streamQuery — an incident attempt is outside steering 
         };
         yield assistantText('waiting for the agent');
         yield sdkSuccessResult(openingUuid);
-        // Reached only if the handler asked for another frame after the
-        // answering result, i.e. held the turn open for the agent.
-        resumedAfterResult = true;
       };
 
       const handler = new ClaudeHandler(makeMcpManager());
@@ -747,7 +743,9 @@ describe('ClaudeHandler.streamQuery — an incident attempt is outside steering 
         handler.streamQuery('incident attempt', session, undefined, undefined, SLACK_CONTEXT as never, SESSION_KEY),
       );
 
-      expect(resumedAfterResult).toBe(false);
+      // Not held open for the agent: the hold is what logs the deferral. (The
+      // handler reads frames ahead of its consumer, so "it asked for another
+      // frame after the result" says nothing about a hold any more.)
       expect(info.mock.calls.filter(([logged]) => logged === DEFER_LOG)).toHaveLength(0);
       expect(markerOf(messages).payload.attempt_id).toBe(REQUEST.attempt_id);
       expect(session.incidentAttemptFinishedId).toBe(REQUEST.attempt_id);

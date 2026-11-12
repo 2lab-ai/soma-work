@@ -66,7 +66,7 @@ Write your next instruction in the card's message box. It goes into the same Sla
 ## Step in
 
 - **When it asks:** a permission prompt or a question moves the card to **Needs response**. Answer on the card or in Slack.
-- **Steer:** while it runs, ↵ queues your note as the next step; ⌘↵ (Ctrl+↵) steers it now.
+- **Steer:** while it runs, ↵ queues your note as the next step; ⌘↵ (Ctrl+↵) steers it now. The chat shows the note at once with what is happening to it — waiting, processing, applied.
 - **Stop or roll back:** stop it, or roll its context back to an earlier point.
 
 ## What comes back
