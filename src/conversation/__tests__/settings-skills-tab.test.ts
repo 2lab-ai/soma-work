@@ -320,6 +320,18 @@ describe('스킬 tab — 환경 스킬', () => {
     expect(on).toContain('id="sk-pick-env-env:acme-dev2"');
   });
 
+  // trinity R3 (fable): a grant left for an environment no longer in config is marked, and only removable.
+  it('marks an environment that left the config and offers no way to add to it', () => {
+    const env = {
+      ...adminEnv,
+      environments: [{ id: 'env:acme-gone', label: 'acme-gone', skills: [], allowed: ['U_B'], inConfig: false }],
+    };
+    const on = view({ sk: snapshot({ isAdmin: true, env }), section: 'env', adminMode: true });
+    expect(on).toContain('설정에 없음');
+    expect(on).toContain('onclick="skRemoveGrant(this)"');
+    expect(on).not.toContain('id="sk-pick-env-env:acme-gone"');
+  });
+
   it('an open skill: no access → the ask hint and no content; admin → per-skill grants; admin mode → the editor (1.b)', () => {
     const none = view({
       sk: snapshot(),

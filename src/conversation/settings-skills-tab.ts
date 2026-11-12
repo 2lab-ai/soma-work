@@ -205,9 +205,13 @@ function skEnvList() {
   // env-access WU4: an environment held whole opens its skills and its servers' tools (ssh_exec, gh_pr too).
   var envs = (skIsAdmin() && env.environments) || [];
   for (var e = 0; e < envs.length; e++) {
-    html += '<div class="sk-box"><h3>환경 ' + esc(envs[e].label) + ' 전체(스킬·서버 도구)를 쓸 수 있는 사람</h3>'
-      + '<p class="meta">' + esc(envs[e].skills.join(', ')) + '</p>'
-      + skGrantEditor('environment', envs[e].id, envs[e].allowed || [], skCanEditEnv()) + '</div>';
+    // A grant left for an environment no longer in config: marked, and it can only be taken back.
+    var gone = envs[e].inConfig === false;
+    var editor = skGrantEditor('environment', envs[e].id, envs[e].allowed || [], skCanEditEnv());
+    if (gone) editor = editor.replace(/<div class="line">[\s\S]*$/, '');
+    html += '<div class="sk-box"><h3>환경 ' + esc(envs[e].label) + ' 전체(스킬·서버 도구)를 쓸 수 있는 사람' + (gone ? ' — 설정에 없음' : '') + '</h3>'
+      + '<p class="meta">' + (gone ? '설정에서 빠진 환경입니다. 다시 넣으면 이 허용이 되살아나니 필요 없으면 빼세요.' : esc(envs[e].skills.join(', '))) + '</p>'
+      + editor + '</div>';
   }
   if (!env.skills.length) return html + '<p class="lock">이 호스트에는 환경 스킬이 없습니다.</p>';
   var q = skFilterText();
