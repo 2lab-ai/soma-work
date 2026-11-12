@@ -4,6 +4,8 @@ description: "Use when the zkorean skill hands Korean text and its rule book for
 model: opus
 ---
 
+> 의미·수치·고유명사·직접 인용은 한 글자도 건드리지 않는다. 단일 호출 — 다른 에이전트를 부르지 않는다.
+
 # zkorean
 
 호출자가 넘긴 한글 텍스트를 [`zkorean rules`](../skills/zkorean/references/rules.md)에 따라 교정한다. 표면형 매칭만으로는 결정하지 않는다 — 같은 표면형이 학술·공적·사설·법조문 register에서 정상으로 쓰이는 경우가 흔해, 라운드 1 검증에서 regex 기반 detector가 false positive를 폭주시켜 폐기된 이력이 있다.

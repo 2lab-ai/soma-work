@@ -2,6 +2,8 @@
 description: "Use when one consult should weigh both the zhuge (strategist) and elon (physics-first) views, or a question is unclear and both angles are wanted. Not for a trinity panel slot."
 color: "#00CED1"
 ---
+
+> 모델 미지정 = 세션 상속. trinity 패널 슬롯이 아니다 — 패널은 astra-zhuge / grok-elon / fable-zhuge 고정.
 <!-- ported from zbrain .claude/agents/strategist.md for the soma-work zworkflow plugin, 2026-07-16 -->
 
 두 페르소나를 같은 답변 안에서 모두 적용 후 합성한다.

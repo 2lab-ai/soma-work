@@ -1,6 +1,7 @@
-import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error — plain ESM script shipped with the skill, no type declarations
 import { checkDescription, describedFiles, readDescription, sentences } from '../scripts/check-descriptions.mjs';
@@ -42,6 +43,10 @@ describe('local:skill-description — the skill (T1)', () => {
   it('never loses a rule: it moves arguments and constraints into the body first', () => {
     expect(md()).toMatch(/moves into the body first/);
     expect(md()).toMatch(/a rule is never lost in the rewrite/);
+  });
+
+  it('says the checker is a floor, not proof', () => {
+    expect(md()).toMatch(/The checker is a floor, not proof/);
   });
 
   it('carries the soma-work user-skill quote caveat', () => {
@@ -96,5 +101,24 @@ describe('applied to every description (T3)', () => {
 
   it('the CLI exits 0 on the plugin', () => {
     expect(() => execFileSync(process.execPath, [CHECKER, ZWORKFLOW, HARNESS], { encoding: 'utf8' })).not.toThrow();
+  });
+
+  it('the CLI fails a bad description and a folder with nothing to check, also through a symlinked path', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'skill-desc-'));
+    mkdirSync(join(dir, 'skills', 'bad'), { recursive: true });
+    writeFileSync(
+      join(dir, 'skills', 'bad', 'SKILL.md'),
+      '---\nname: bad\ndescription: "Render things to PNG."\n---\n',
+    );
+    const link = join(dir, 'checker-link.mjs');
+    symlinkSync(CHECKER, link);
+    for (const script of [CHECKER, link]) {
+      const bad = spawnSync(process.execPath, [script, dir], { encoding: 'utf8' });
+      expect(bad.status).toBe(1);
+      expect(bad.stdout).toMatch(/does not start with "Use when "/);
+      const empty = spawnSync(process.execPath, [script, join(dir, 'skills')], { encoding: 'utf8' });
+      expect(empty.status).toBe(1);
+      expect(empty.stdout).toMatch(/nothing to check|no SKILL\.md/);
+    }
   });
 });

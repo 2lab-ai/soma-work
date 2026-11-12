@@ -14,6 +14,8 @@ tools:
 color: "#FFD700"
 ---
 
+> Read-only consultant — BLOCKING execution. Runs directly on the astra engine (no gateway, no LLM MCP tool). For judgment and review gates, callers run local:trinity first; this agent is a single-engine consult.
+
 
 ## Chain position
 

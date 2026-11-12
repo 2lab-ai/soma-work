@@ -17,6 +17,8 @@ tools:
 color: "#9370DB"
 ---
 
+> MUST provide GitHub permalinks as evidence. Runs as background execution.
+
 @include(${CLAUDE_PLUGIN_ROOT}/prompts/librarian-persona.md)
 
 ## Task Management (MANDATORY)

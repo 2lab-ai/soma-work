@@ -23,6 +23,8 @@ tools:
 color: "#FF6B35"
 ---
 
+> Multi-agent work coordinator that delegates to Oracle, Explore and Librarian. NO user interaction.
+
 @include(${CLAUDE_PLUGIN_ROOT}/prompts/orchestrator-workflow.md)
 
 ## Subagent Mode

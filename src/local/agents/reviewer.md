@@ -11,4 +11,6 @@ tools:
 color: "#DC143C"
 ---
 
+> Applies Occam's Razor and First Principles thinking. BLOCKING execution.
+
 @include(${CLAUDE_PLUGIN_ROOT}/prompts/reviewer-persona.md)

@@ -21,7 +21,7 @@ A description is the only part of a skill the model reads before it decides to l
 Use when <situation>[, or <situation>]. [Also when <situation>.] Triggers: '<phrase>', '<phrase>'. [Not for <situation> (<sibling>).]
 ```
 
-1. Every sentence starts with `Use when`, `Also when`, `Triggers:` or `Not for` — nothing else. `scripts/check-descriptions.mjs` enforces this.
+1. Every sentence starts with `Use when`, `Also when`, `Triggers:` or `Not for` — nothing else. `scripts/check-descriptions.mjs` enforces this. The checker is a floor, not proof: what/how inside a `Use when` sentence still passes it, so read every description yourself.
 2. A situation is something visible before the skill runs: what the user asks or says, the input at hand, the point in a workflow ("after a PR is opened", "when local:z reaches phase 3"), a symptom ("animations stutter").
 3. Never in a description: what the skill produces, its steps, tools, engines or models, file paths, arguments or flags, phase names that only make sense after reading the body, praise ("comprehensive", "powerful").
 4. Triggers: up to 8 short phrases a user actually types, in every language its users write in.

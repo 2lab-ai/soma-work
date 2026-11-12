@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // Check that every skill, command and agent description says only WHEN to use it.
 // Usage: node check-descriptions.mjs <file-or-dir>...   (dirs are searched for SKILL.md, commands/*.md, agents/*.md)
-// Exit 0 = clean, 1 = violations (one per line), 2 = usage error.
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+// Exit 0 = clean, 1 = violations (one per line) or a path with nothing to check, 2 = usage error.
+// A floor, not proof: it checks sentence lead-ins, length and a few how-tokens; a person still reads the words.
+import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export const LEAD_INS = ['Use when ', 'Also when ', 'Triggers: ', 'Not for '];
 export const MAX_CHARS = 400;
@@ -59,17 +61,20 @@ export function checkDescription(desc) {
 export function describedFiles(root) {
   if (statSync(root).isFile()) return [root];
   const out = [];
+  // A missing optional folder (no commands/ or agents/) is fine; any other read error is not.
   const list = (dir) => {
     try {
       return readdirSync(dir).filter((n) => !n.startsWith('.'));
-    } catch {
-      return [];
+    } catch (err) {
+      if (err && err.code === 'ENOENT') return [];
+      throw err;
     }
   };
   if (list(root).includes('SKILL.md')) out.push(join(root, 'SKILL.md'));
   for (const name of list(join(root, 'skills'))) {
-    const p = join(root, 'skills', name, 'SKILL.md');
-    if (list(join(root, 'skills', name)).includes('SKILL.md')) out.push(p);
+    if (statSync(join(root, 'skills', name)).isDirectory() && list(join(root, 'skills', name)).includes('SKILL.md')) {
+      out.push(join(root, 'skills', name, 'SKILL.md'));
+    }
   }
   for (const group of ['commands', 'agents']) {
     for (const name of list(join(root, group))) if (name.endsWith('.md')) out.push(join(root, group, name));
@@ -83,14 +88,23 @@ function main(args) {
     return 2;
   }
   let bad = 0;
-  for (const file of args.flatMap(describedFiles)) {
-    const desc = readDescription(readFileSync(file, 'utf8'));
-    for (const v of checkDescription(desc)) {
-      console.log(`${file}: ${v}`);
+  for (const arg of args) {
+    const files = describedFiles(arg);
+    // A folder that yields nothing to check is a wrong path, not a clean result.
+    if (files.length === 0) {
+      console.log(`${arg}: no SKILL.md, commands/*.md or agents/*.md found here`);
       bad++;
+    }
+    for (const file of files) {
+      for (const v of checkDescription(readDescription(readFileSync(file, 'utf8')))) {
+        console.log(`${file}: ${v}`);
+        bad++;
+      }
     }
   }
   return bad === 0 ? 0 : 1;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) process.exit(main(process.argv.slice(2)));
+// Run only when executed directly — compared as real paths, so a symlinked or URL-escaped path still runs.
+const invoked = process.argv[1] ? realpathSync(process.argv[1]) : '';
+if (invoked === realpathSync(fileURLToPath(import.meta.url))) process.exit(main(process.argv.slice(2)));

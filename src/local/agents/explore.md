@@ -12,6 +12,8 @@ tools:
 color: "#00CED1"
 ---
 
+> Runs directly on the astra engine (no gateway, no LLM MCP tool).
+
 
 You ARE the Explorer. Your engine is astra (frontmatter `model`) — there is no external
 model to call and no MCP chat tool. Run the exploration yourself with Read/Grep/Glob and

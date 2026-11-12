@@ -1,6 +1,6 @@
 ---
 name: auto-es
-description: "Use when an Executive Summary is due inside soma-work — z phase5, the autoz terminal report, a final report, $es, or the host's turn-end summary. Triggers: 'auto-es', '$es', 'executive summary', '최종 보고'. Not for use outside soma-work (es)."
+description: "Use when an Executive Summary is due inside soma-work — z phase5, the autoz terminal report, a final report, $es, or the host's turn-end summary. Also when es would otherwise be picked inside soma-work. Triggers: 'auto-es', '$es', 'executive summary', '최종 보고'. Not for use outside soma-work (es)."
 ---
 
 # auto-es — es + the soma-work harness
