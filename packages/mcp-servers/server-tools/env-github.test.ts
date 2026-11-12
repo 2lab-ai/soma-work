@@ -39,7 +39,7 @@ function pr(over: Partial<PrState> = {}): PrState {
     author: 'soma-bot[bot]',
     base: 'develop',
     headSha: SHA,
-    checks: { total: 2, green: true, pending: [], failing: [] },
+    checks: { total: 2, passed: 2, green: true, pending: [], failing: [] },
     ...over,
   };
 }
@@ -100,7 +100,7 @@ describe('prState', () => {
     });
     const state = await prState(fetch, config, 'acme/app', 7);
     expect(state).toMatchObject({ author: 'soma-bot[bot]', base: 'develop', headSha: SHA });
-    expect(state.checks).toEqual({ total: 4, green: false, pending: ['lint'], failing: ['e2e'] });
+    expect(state.checks).toEqual({ total: 4, passed: 2, green: false, pending: ['lint'], failing: ['e2e'] });
     expect(calls.every((c) => c.auth === 'Bearer tok-secret')).toBe(true);
   });
 
@@ -108,6 +108,7 @@ describe('prState', () => {
     const { fetch } = fakeFetch({ 'GET /repos/acme/app/pulls/7': PULL, [RUNS]: GREEN_RUNS, [STATUS]: NO_STATUS });
     expect((await prState(fetch, config, 'acme/app', 7)).checks).toEqual({
       total: 1,
+      passed: 1,
       green: true,
       pending: [],
       failing: [],
@@ -151,6 +152,24 @@ describe('prState', () => {
     expect(approvalProblem(config, state, SHA)).toMatch(/no check has reported/);
   });
 
+  // trinity R2 (grok): skipped and neutral runs alone are not a pass — one success is the least.
+  it('is not green when every check was skipped or neutral', async () => {
+    const { fetch } = fakeFetch({
+      'GET /repos/acme/app/pulls/7': PULL,
+      [RUNS]: {
+        total_count: 2,
+        check_runs: [
+          { name: 'a', status: 'completed', conclusion: 'skipped' },
+          { name: 'b', status: 'completed', conclusion: 'neutral' },
+        ],
+      },
+      [STATUS]: NO_STATUS,
+    });
+    const state = await prState(fetch, config, 'acme/app', 7);
+    expect(state.checks.green).toBe(false);
+    expect(approvalProblem(config, state, SHA)).toMatch(/no check has passed/);
+  });
+
   it('turns a GitHub error into GithubError with its status, never the token', async () => {
     const { fetch } = fakeFetch({}, 404);
     await expect(prState(fetch, config, 'acme/app', 7)).rejects.toThrow(/answered 404/);
@@ -173,14 +192,14 @@ describe('approvalProblem', () => {
     [
       'red checks',
       config,
-      pr({ checks: { total: 1, green: false, pending: [], failing: ['ci'] } }),
+      pr({ checks: { total: 1, passed: 0, green: false, pending: [], failing: ['ci'] } }),
       SHA,
       /not green: ci/,
     ],
     [
       'red checks, requiredChecksGreen unset',
       { ...config, approveWhen: { authors: ['soma-bot[bot]'], bases: ['develop'] } },
-      pr({ checks: { total: 1, green: false, pending: ['ci'], failing: [] } }),
+      pr({ checks: { total: 1, passed: 0, green: false, pending: ['ci'], failing: [] } }),
       SHA,
       /not finished: ci/,
     ],
@@ -194,7 +213,7 @@ describe('approvalProblem', () => {
       approveWhen: { authors: ['soma-bot[bot]'], bases: ['develop'], requiredChecksGreen: false },
     };
     expect(
-      approvalProblem(lax, pr({ checks: { total: 1, green: false, pending: [], failing: ['ci'] } }), SHA),
+      approvalProblem(lax, pr({ checks: { total: 1, passed: 0, green: false, pending: [], failing: ['ci'] } }), SHA),
     ).toBeUndefined();
   });
 });
@@ -213,7 +232,7 @@ describe('mergeProblem', () => {
     [
       'pending checks',
       config,
-      pr({ checks: { total: 1, green: false, pending: ['ci'], failing: [] } }),
+      pr({ checks: { total: 1, passed: 0, green: false, pending: ['ci'], failing: [] } }),
       'merge',
       /not finished: ci/,
     ],
@@ -248,6 +267,21 @@ describe('approve and merge', () => {
       /changed while it was being approved.*dismissed/,
     );
     expect(calls.at(-1)?.method).toBe('PUT');
+  });
+
+  // trinity R2 (grok): when the PR cannot be read again, the approval is not left standing unannounced.
+  it('dismisses its approval when the PR cannot be read again, and says so when that fails too', async () => {
+    const dismissed = fakeFetch({
+      'POST /repos/acme/app/pulls/7/reviews': { id: 11 },
+      'PUT /repos/acme/app/pulls/7/reviews/11/dismissals': { id: 11 },
+    });
+    await expect(approve(dismissed.fetch, config, 'acme/app', 7, SHA, 'develop', 'ok')).rejects.toThrow(
+      /could not be confirmed.*dismissed/,
+    );
+    const stands = fakeFetch({ 'POST /repos/acme/app/pulls/7/reviews': { id: 11 } });
+    await expect(approve(stands.fetch, config, 'acme/app', 7, SHA, 'develop', 'ok')).rejects.toThrow(
+      /could not be confirmed.*it still stands/,
+    );
   });
 
   it('pins the merge to the SHA, after confirming head and base once more', async () => {

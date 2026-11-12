@@ -52,6 +52,8 @@ export type Fetch = (
 
 export interface Checks {
   total: number;
+  /** Checks that finished with success. Skipped and neutral ones are not a pass on their own. */
+  passed: number;
   green: boolean;
   /** Names of checks that are not finished. */
   pending: string[];
@@ -146,11 +148,13 @@ export async function prState(fetch: Fetch, config: EnvGithubConfig, repo: strin
   const status = obj(await call(fetch, config.token, 'GET', `/repos/${repo}/commits/${sha}/status?per_page=100`));
   const pending: string[] = [];
   const failing: string[] = [];
+  let passed = 0;
   const checkRuns = Array.isArray(runs.check_runs) ? runs.check_runs.map(obj) : [];
   for (const run of checkRuns) {
     const name = str(run.name) || 'check';
     if (run.status !== 'completed') pending.push(name);
     else if (!GREEN_CONCLUSIONS.has(str(run.conclusion))) failing.push(name);
+    else if (run.conclusion === 'success') passed++;
   }
   // More check runs than one page cannot be judged here: not green.
   if (typeof runs.total_count === 'number' && runs.total_count > checkRuns.length) pending.push('(more checks)');
@@ -159,6 +163,7 @@ export async function prState(fetch: Fetch, config: EnvGithubConfig, repo: strin
     const name = str(s.context) || 'status';
     if (s.state === 'pending') pending.push(name);
     else if (s.state !== 'success') failing.push(name);
+    else passed++;
   }
   // The combined state covers every status, also those past this page. GitHub says `pending` when there are none.
   const statusTotal = typeof status.total_count === 'number' ? status.total_count : statuses.length;
@@ -178,8 +183,10 @@ export async function prState(fetch: Fetch, config: EnvGithubConfig, repo: strin
     headSha: sha,
     checks: {
       total,
-      // Right after a push nothing has reported yet: that is not green.
-      green: total > 0 && pending.length === 0 && failing.length === 0,
+      passed,
+      // Right after a push nothing has reported yet, and a path filter may skip every workflow: green needs one
+      // success and nothing unfinished or red.
+      green: passed > 0 && pending.length === 0 && failing.length === 0,
       pending,
       failing,
     },
@@ -188,8 +195,10 @@ export async function prState(fetch: Fetch, config: EnvGithubConfig, repo: strin
 
 function checksProblem(pr: PrState): string | undefined {
   if (pr.checks.green) return undefined;
-  if (pr.checks.total === 0 && pr.checks.pending.length === 0 && pr.checks.failing.length === 0) {
-    return 'no check has reported on the head yet';
+  if (pr.checks.pending.length === 0 && pr.checks.failing.length === 0) {
+    return pr.checks.total === 0
+      ? 'no check has reported on the head yet'
+      : 'no check has passed on the head (only skipped or neutral ones)';
   }
   const parts = [
     pr.checks.pending.length > 0 ? `not finished: ${pr.checks.pending.join(', ')}` : '',
@@ -239,7 +248,8 @@ async function headAndBase(fetch: Fetch, config: EnvGithubConfig, repo: string, 
 
 /**
  * Approve at `sha`. The review is pinned to the SHA; afterwards the PR is read again, and if its head or base is
- * no longer what was approved, the review is dismissed and a `GithubError` says so.
+ * no longer what was approved — or the read fails — the review is dismissed and a `GithubError` says so (or that
+ * the approval still stands, when the dismissal fails too).
  */
 export async function approve(
   fetch: Fetch,
@@ -257,9 +267,16 @@ export async function approve(
       body,
     }),
   );
-  const now = await headAndBase(fetch, config, repo, number);
-  if (now.head === sha && now.base === base) return;
-  const changed = `the PR changed while it was being approved (head ${now.head}, base ${now.base})`;
+  let changed: string;
+  try {
+    const now = await headAndBase(fetch, config, repo, number);
+    if (now.head === sha && now.base === base) return;
+    changed = `the PR changed while it was being approved (head ${now.head}, base ${now.base})`;
+  } catch (err) {
+    // Not knowing is not confirming: the approval is taken back as if the PR had changed.
+    const why = err instanceof GithubError ? err.message : 'error';
+    changed = `the approval could not be confirmed (${why})`;
+  }
   try {
     if (typeof review.id !== 'number') throw new GithubError('no review id');
     await call(fetch, config.token, 'PUT', `/repos/${repo}/pulls/${number}/reviews/${review.id}/dismissals`, {
