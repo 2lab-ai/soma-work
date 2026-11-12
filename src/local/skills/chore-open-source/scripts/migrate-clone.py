@@ -75,10 +75,24 @@ first_changed = [l.split()[0] for l in (fr / 'first-changed-commits').read_text(
 _pats = [l.strip() for name in ('patterns.txt', 'repo-patterns.txt') if (work / 'config' / name).is_file()
          for l in (work / 'config' / name).read_text().splitlines() if l.strip() and not l.startswith('#')]
 PAT = re.compile('|'.join(ere(p) for p in _pats), re.I | re.M) if _pats else None
+# Ref names go through the same rules the rewrite used: refname-callback.py, run as a function.
+os.environ['CHOS_WORK'] = str(work)
+_ref_ns = {}
+exec('def _refname_cb(refname):\n' + ''.join('    ' + l + '\n' for l in (HERE / 'refname-callback.py').read_text().splitlines()), _ref_ns)
+
+
+def renamed(ref):
+    return _ref_ns['_refname_cb'](ref.encode()).decode()
+
+
 new_tags = dict((r.split()[1][10:], r.split()[0]) for r in git('for-each-ref', '--format=%(objectname) %(refname)', 'refs/tags', cwd=out / 'new.git').splitlines())
 orig_tags = dict((r.split()[1][10:], r.split()[0]) for r in git('for-each-ref', '--format=%(objectname) %(refname)', 'refs/tags', cwd=out / 'orig.git').splitlines())
 # original tag object -> the rewritten one (by the name it had), for objects the rewrite replaced
-orig_tag_objects = {o: new_tags[n] for n, o in orig_tags.items() if n in new_tags and new_tags[n] != o}
+orig_tag_objects = {}
+for n, o in orig_tags.items():
+    rn = renamed('refs/tags/' + n)[10:]   # the name the rewrite gave it
+    if rn in new_tags and new_tags[rn] != o:
+        orig_tag_objects[o] = new_tags[rn]
 
 
 def rows(*ns):
@@ -113,6 +127,9 @@ def old_refs():
         # An annotated tag the rewrite changed (its message, say) while its commit stayed the same.
         elif r.startswith('refs/tags/') and o in orig_tag_objects:
             found.add(r)  # an original tag object the rewrite replaced, under its own name or another
+        elif renamed(r) != r or (r.startswith('refs/remotes/') and '/' in r[13:]
+                                  and renamed('refs/heads/' + r[13:].split('/', 1)[1]) != 'refs/heads/' + r[13:].split('/', 1)[1]):
+            found.add(r)  # its name holds what the rules replace
     return sorted(found)
 
 
@@ -154,10 +171,14 @@ def leak_lines(*revs):
     for c in git('rev-list', *revs, check=False).split():
         meta = git('show', '-s', '--format=%B%n%an %ae%n%cn %ce', c)
         n += sum(1 for l in meta.splitlines() if PAT.search(l))
-        raw = git('diff-tree', '-r', '-m', '--root', '--no-renames', '--no-commit-id', c, check=False)
-        for l in raw.splitlines():
+        raw = git('diff-tree', '-r', '-m', '--root', '--no-renames', '--no-commit-id', '-z', c, check=False).split('\0')
+        for i, l in enumerate(raw):
             f = l.split()
-            if len(f) >= 5 and l.startswith(':') and f[3] != '0' * len(f[3]) and f[3] not in seen:
+            if not (l.startswith(':') and len(f) >= 5):
+                continue
+            if i + 1 < len(raw) and PAT.search(raw[i + 1]):
+                n += 1   # the path name itself
+            if f[3] != '0' * len(f[3]) and f[3] not in seen:
                 seen.add(f[3])
                 data = subprocess.run(['git', '-C', str(clone), 'cat-file', 'blob', f[3]], capture_output=True).stdout
                 text = data.decode('latin-1') if b'\0' in data[:8000] else data.decode('utf-8', 'replace')
@@ -247,7 +268,7 @@ for b in local_only:
         ps = [x for p in parents for x in ('-p', A[p] if p in A else made[p])]
         made[cc] = git('commit-tree', hdr['tree'], *ps, inp=msg, env=env).strip()
     target = made[c]
-    src = git('rev-parse', f'refs/partial-src/{b}').strip()
+    src = P[c]   # by commit id: the rules may have renamed the scratch ref
     ok_tree = git('rev-parse', target + '^{tree}').strip() == git('rev-parse', src + '^{tree}').strip()
     if not ok_tree or leak_lines(target, '--not', *[A[p] for l in local for p in l[1:] if p in A]):
         plan.append((b, c, None, 'rebuild REFUSED (tree differs or a pattern is left)'))
@@ -346,6 +367,19 @@ if mode == 'apply':
             continue
         if A.get(c, c) != c:
             git('update-ref', r, A[c], o)
+    for _, _, r in rows('refs/heads', 'refs/tags'):
+        nr = renamed(r)
+        if nr == r:
+            continue
+        if subprocess.run(['git', '-C', str(clone), 'show-ref', '--verify', '-q', nr]).returncode == 0:
+            left.append(f'{r[5:]}: its name holds a replaced word, and {nr[5:]} already exists — rename it by hand')
+            continue
+        if r.startswith('refs/heads/'):
+            git('branch', '-m', r[11:], nr[11:])   # also moves worktree HEADs
+        else:
+            git('update-ref', nr, git('rev-parse', r).strip())
+            git('update-ref', '-d', r)
+        moved.append(f'{r[5:]} renamed to {nr[5:]} (its name held a replaced word)')
     gone = [r for r in old_refs() if r.startswith(('refs/tags/', 'refs/remotes/'))]
     git('update-ref', '--stdin', inp=''.join(f'delete {r}\n' for r in gone))
     git('update-ref', '--stdin', inp=''.join(f'delete {r}\n' for r in git('for-each-ref', '--format=%(refname)', 'refs/rewrite-src', 'refs/partial-src').split()))

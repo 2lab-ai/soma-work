@@ -266,7 +266,8 @@ esac
       git add -A && git commit -q -m init && git push -q ../remote.git main && cd ..
       mkdir -p pkg/docs && echo x > pkg/docs/secret-host-c.txt && tar -czf pkg.tar.gz -C pkg docs
       python3 -I -c "import io,tarfile;b=b'built on secret-host-f';t=tarfile.open('pkg2.tar.xz','w:xz');i=tarfile.TarInfo('notes.txt');i.size=len(b);t.addfile(i,io.BytesIO(b));t.close()"
-      printf '7z\\274\\257\\047\\034rest' > blob.7z`,
+      printf '7z\\274\\257\\047\\034rest' > blob.7z
+      python3 -I -c "import zipfile;z=zipfile.ZipFile('bundle.zip','w');z.writestr('inner.7z',b'7z\\xbc\\xaf\\x27\\x1crest');z.close()"`,
       ],
       { cwd: d, env: genv },
     );
@@ -282,7 +283,8 @@ case "$*" in
   *"releases/assets/6"*) echo x ;;
   *"releases/assets/7"*) cat "${join(d, 'pkg2.tar.xz')}" ;;
   *"releases/assets/8"*) cat "${join(d, 'blob.7z')}" ;;
-  *"/releases"*) echo '[[{"tag_name":"v1","name":"v1","body":"","assets":[{"id":5,"name":"pkg.tar.gz"},{"id":6,"name":"notes-secret-host-d.txt"},{"id":7,"name":"pkg2.tar.xz"},{"id":8,"name":"blob.7z"}]}]]' ;;
+  *"releases/assets/9"*) cat "${join(d, 'bundle.zip')}" ;;
+  *"/releases"*) echo '[[{"tag_name":"v1","name":"v1","body":"","assets":[{"id":5,"name":"pkg.tar.gz"},{"id":6,"name":"notes-secret-host-d.txt"},{"id":7,"name":"pkg2.tar.xz"},{"id":8,"name":"blob.7z"},{"id":9,"name":"bundle.zip"}]}]]' ;;
   "api "*) echo '[[]]' ;;
   *) echo "stub gh: $*" >&2; exit 1 ;;
 esac
@@ -309,6 +311,7 @@ esac
     expect(report).toMatch(/release asset v1\/notes-secret-host-d\.txt \(name\)/);
     expect(report).toMatch(/at release asset v1\/pkg2\.tar\.xz$/m); // unpacked by content, not by name
     expect(report).toMatch(/blob\.7z blob\.7z is 7z, which recon cannot open — not examined/);
+    expect(report).toMatch(/bundle\.zip inner\.7z is 7z, which recon cannot open — not examined/); // nested too
   });
 
   it('swap keeps branch names out of program text (sed/awk scripts)', () => {
@@ -391,12 +394,20 @@ describe.skipIf(!hasFilterRepo)('local:chore-open-source — offline run of the 
       git clone -q remote-tag.git clonetag
       git clone -q remote.git clone5 && git -C clone5 worktree add -q --detach ../wt-ign main
       echo "docs/shared-host.md" >> clone5/.git/info/exclude && echo precious > wt-ign/docs/shared-host.md
-      git init -q --bare -b main remote-ref.git && git init -q -b main refseed && cd refseed
-      echo clean > c.txt && git add -A && git commit -q -m init && git branch "wip-${W}"
-      git push -q ../remote-ref.git main "wip-${W}" && cd ..
+      git init -q --bare -b main remote-ref.git && git init -q -b main refseed
+      # Clean author: only ref names hold the word, so no commit changes.
+      ( cd refseed && export GIT_AUTHOR_EMAIL=dev@example.com GIT_COMMITTER_EMAIL=dev@example.com
+        echo clean > c.txt && git add -A && git commit -q -m init && git branch "wip-${W}"
+        git branch main-rewritten/keep && git tag -a "rel-${W}" -m release
+        git push -q ../remote-ref.git main "wip-${W}" main-rewritten/keep "rel-${W}" )
+      git clone -q remote-ref.git cloneref && git -C cloneref branch -q "wip-${W}" "origin/wip-${W}"
+      git init -q --bare -b main remote-adv.git && git init -q -b main advseed
+      ( cd advseed && echo base > b.txt && git add -A && git commit -q -m "base on ${W}" && git push -q ../remote-adv.git main )
       git clone -q remote.git clone6 && cd clone6
       git checkout -q -b bin-only origin/main && printf '\\000leakbin\\000' > bin.dat && git add -A && git commit -q -m bin
       git checkout -q -b anchor-only origin/main && printf 'x\\nanchorword\\n' > anc.txt && git add -A && git commit -q -m anc
+      git checkout -q -b path-only origin/main && echo clean > leakpath.txt && git add -A && git commit -q -m path
+      git checkout -q -b "loc-${W}" origin/main && echo fine > fine.txt && git add -A && git commit -q -m fine
       git checkout -q main && cd ..
       git clone -q remote.git clone8 && git -C clone8 worktree add -q --detach ../wt-igndir main
       echo "docs/shared-host.md/" >> clone8/.git/info/exclude
@@ -478,10 +489,22 @@ describe.skipIf(!hasFilterRepo)('local:chore-open-source — offline run of the 
   it('a branch named after a private host is renamed, and the old name leaves the remote', () => {
     const chos = workDir('work-ref', `${W}\n`, 'remote-ref.git');
     expect(sh(`"${SCRIPTS}/rewrite.sh" o/ref`, chos)).toMatch(/^scan: clean$/m);
-    expect(sh(`"${SCRIPTS}/swap.sh" o/ref`, chos)).toMatch(/deleting 1 ref\(s\) the rules renamed/);
+    expect(sh(`"${SCRIPTS}/swap.sh" o/ref`, chos)).toMatch(/deleting 2 ref\(s\) the rules renamed/);
     const refs = sh("git -C remote-ref.git for-each-ref --format='%(refname)'");
     expect(refs).not.toContain(W);
     expect(refs).toContain('refs/heads/wip-shared-host');
+    expect(refs).toContain('refs/tags/rel-shared-host');
+    expect(refs).toContain('refs/heads/main-rewritten/keep'); // only the exact review branch is ever dropped
+  });
+
+  it('a clone whose refs differ only by name is reported, then renamed', () => {
+    const chos = workDir('work-ref', `${W}\n`, 'remote-ref.git');
+    const check = shAt(`python3 -I -B "${SCRIPTS}/migrate-clone.py" o/ref "${join(T, 'cloneref')}" --check`, chos);
+    expect(check.status, check.stdout + check.stderr).toBe(1);
+    expect(check.stdout).toMatch(/refs on the old history [2-9]/);
+    const r = shAt(`python3 -I -B "${SCRIPTS}/migrate-clone.py" o/ref "${join(T, 'cloneref')}" --apply`, chos);
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(sh("git -C cloneref for-each-ref --format='%(refname)' refs/heads refs/tags refs/remotes")).not.toContain(W);
   });
 
   it('a relative CHOS_WORK works (the run folder is resolved before any cd)', () => {
@@ -526,10 +549,13 @@ describe.skipIf(!hasFilterRepo)('local:chore-open-source — offline run of the 
   });
 
   it('local-only commits are checked blob by blob: a binary and a line-anchored leak are refused', () => {
-    const chos = workDir('work', `${W}\nleakbin\n^anchorword$\n`);
+    const chos = workDir('work', `${W}\nleakbin\n^anchorword$\nleakpath\n`);
     const r = shAt(`python3 -I -B "${SCRIPTS}/migrate-clone.py" o/r "${join(T, 'clone6')}" --apply`, chos);
+    expect(r.stderr).not.toMatch(/Traceback/);
     expect(r.stdout).toMatch(/bin-only: rebuild REFUSED/);
     expect(r.stdout).toMatch(/anchor-only: rebuild REFUSED/);
+    expect(r.stdout).toMatch(/path-only: rebuild REFUSED/); // a path name counts like file text
+    expect(r.stdout).toMatch(/renamed to heads\/loc-shared-host/); // rebuilt by commit id, then renamed
   });
 
   it('an ignored folder where the rewritten commit tracks a file is not removed', () => {
@@ -616,5 +642,27 @@ describe.skipIf(!hasFilterRepo)('local:chore-open-source — offline run of the 
     const r = shAt(`"${SCRIPTS}/swap.sh" o/tag`, chos);
     expect(r.status, r.stdout + r.stderr).toBe(1);
     expect(r.stdout).toMatch(/refs\/tags\/v1-old [0-9a-f]+ is an object of the original history/);
+  });
+
+  it('a main that moved on from the list commit gets the top commit re-applied, not a failed push', () => {
+    const chos = workDir('work-adv', `${W}\n`, 'remote-adv.git');
+    writeFileSync(
+      join(chos.CHOS_WORK, 'config', 'post-rewrite.sh'),
+      '#!/bin/sh\necho "history rewritten" > NOTE.md\n',
+      { mode: 0o755 },
+    );
+    sh(`"${SCRIPTS}/rewrite.sh" o/adv`, chos);
+    const out = join(chos.CHOS_WORK, 'out', 'adv');
+    // As if the atomic push landed and someone pushed on the list commit before the second push.
+    sh(`set -e
+      git -C "${out}/new.git" push -q --force "${join(T, 'remote-adv.git')}" 'refs/heads/*:refs/heads/*'
+      date > "${out}/swapped"
+      git clone -q remote-adv.git advafter && cd advafter && echo more > more.txt && git add -A
+      git commit -q -m "on the list commit" && git push -q origin main`);
+    const r = shAt(`"${SCRIPTS}/swap.sh" o/adv`, chos);
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/moved on from the list commit; the top commit was re-applied on it/);
+    expect(sh('git -C remote-adv.git show main:NOTE.md')).toBe('history rewritten\n');
+    expect(sh('git -C remote-adv.git log --format=%s main')).toContain('on the list commit');
   });
 });

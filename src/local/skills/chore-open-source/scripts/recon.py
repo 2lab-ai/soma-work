@@ -308,11 +308,18 @@ def unpack(name, data, where_, depth=0, budget=None):
                             raise OverflowError
                         out.append((m.name, tf.extractfile(m).read()))
             else:
-                single = {b'\x1f\x8b': gzip.decompress, b'BZh': bz2.decompress, b'\xfd7zXZ\x00': lzma.decompress}
-                fn = next((f for m, f in single.items() if data.startswith(m)), None)
-                if fn is None:
+                import zlib
+                single = {b'\x1f\x8b': lambda: zlib.decompressobj(16 + zlib.MAX_WBITS), b'BZh': bz2.BZ2Decompressor,
+                          b'\xfd7zXZ\x00': lzma.LZMADecompressor}
+                make = next((f for m, f in single.items() if data.startswith(m)), None)
+                if make is None:
                     return [(name, data)]
-                inner = fn(data)
+                # Never more than the budget allows: a small stream can inflate to gigabytes.
+                d = make()
+                if isinstance(d, type(zlib.decompressobj())):
+                    inner = d.decompress(data, budget[0] + 1)
+                else:
+                    inner = d.decompress(data, max_length=budget[0] + 1)
                 budget[0] -= len(inner)
                 if budget[0] < 0:
                     raise OverflowError
@@ -328,13 +335,10 @@ def unpack(name, data, where_, depth=0, budget=None):
     if depth < 2:
         nested = []
         for n, d in out:
-            if d[:4] == b'PK\x03\x04' or d[:2] == b'\x1f\x8b' or d[:3] == b'BZh' or d[:6] == b'\xfd7zXZ\x00':
-                inner = unpack(n, d, where_, depth + 1, budget)
-                if inner is None:
-                    return None
-                nested += inner
-            else:
-                nested.append((n, d))
+            inner = unpack(n, d, where_, depth + 1, budget)   # a 7z inside a zip is as unread as a 7z
+            if inner is None:
+                return None
+            nested += inner
         out = nested
     return out
 

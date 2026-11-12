@@ -59,8 +59,8 @@ landed() {
 # Every fetch into the rewritten repo is --no-tags: auto-followed tags would land in its own refs/tags
 # and become part of what the remote is checked against.
 remote_refs() {
-  git ls-remote "$URL" 'refs/heads/*' 'refs/tags/*' | grep -v '\^{}$' | grep -v " *refs/heads/$REVIEW\$" \
-    | awk '{print $1" "$2}' | sort
+  git ls-remote "$URL" 'refs/heads/*' 'refs/tags/*' | grep -v '\^{}$' \
+    | R="refs/heads/$REVIEW" awk '$2 != ENVIRON["R"] { print $1" "$2 }' | sort
 }
 verified() {
   grep -qE '^pattern hits — messages\+authors: 0, tags: 0, ref names: 0, paths: 0, contents: 0 ' "$OUT/verify.txt" \
@@ -151,8 +151,33 @@ fi
 echo "==> 4. top commit on $MAIN"
 TOP=$(git -C "$NEW" rev-parse "refs/post/$MAIN")
 git -C "$NEW" fetch -q --no-tags "$URL" "+refs/heads/$MAIN:refs/swap-check/main" 2>/dev/null || true
+LIST=$(git -C "$NEW" rev-parse "refs/heads/$MAIN")
 if git -C "$NEW" merge-base --is-ancestor "$TOP" refs/swap-check/main 2>/dev/null; then
   echo "    $MAIN already contains it"   # a resumed run, possibly after $MAIN moved on
+elif [ "$(git -C "$NEW" rev-parse refs/swap-check/main 2>/dev/null)" != "$LIST" ] \
+     && git -C "$NEW" merge-base --is-ancestor "$LIST" refs/swap-check/main 2>/dev/null; then
+  # Someone pushed on top of the list commit before this push: the top commit cannot fast-forward.
+  # Its changes are re-applied on the moved main (an empty top commit is simply not needed: that push
+  # already gave the gate a `before` in the rewritten history).
+  if [ "$(git -C "$NEW" rev-parse "$LIST^{tree}")" = "$(git -C "$NEW" rev-parse "$TOP^{tree}")" ]; then
+    echo "    $MAIN moved on from the list commit; the top commit changes nothing — skipped"
+  else
+    moved=$(git -C "$NEW" rev-parse refs/swap-check/main)
+    WT2=$OUT/top-wt; mkdir -p "$WORK/.trash"; [ ! -e "$WT2" ] || mv "$WT2" "$WORK/.trash/top-wt.$(date +%s)"
+    git -C "$NEW" worktree add -q --detach "$WT2" "$moved"
+    if git -C "$WT2" cherry-pick "$LIST..$TOP" >/dev/null \
+       && git -C "$WT2" push -q --force-with-lease="refs/heads/$MAIN:$moved" "$URL" "HEAD:refs/heads/$MAIN"; then
+      git -C "$NEW" update-ref "refs/post/$MAIN" "$(git -C "$WT2" rev-parse HEAD)"
+      TOP=$(git -C "$NEW" rev-parse "refs/post/$MAIN")
+      echo "    $MAIN moved on from the list commit; the top commit was re-applied on it"
+    else
+      git -C "$WT2" cherry-pick --abort 2>/dev/null || true
+      git -C "$NEW" worktree remove --force "$WT2"
+      echo "swap.sh: $MAIN moved on and the top commit could not be re-applied; apply it by a normal PR (git -C $NEW show $LIST..$TOP)" >&2
+      exit 1
+    fi
+    git -C "$NEW" worktree remove --force "$WT2"
+  fi
 else
   git -C "$NEW" push "$URL" "refs/post/$MAIN:refs/heads/$MAIN"
 fi

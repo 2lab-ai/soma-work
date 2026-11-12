@@ -55,12 +55,14 @@ mkdir -p "$OUT"
 echo "==> mirror $URL"
 git clone -q --mirror "$URL" "$OUT/orig.git"
 git -C "$OUT/orig.git" for-each-ref --format='%(objectname) %(refname)' refs/heads refs/tags \
-  | grep -v " refs/heads/$REVIEW\$" | sort > "$OUT/snapshot.refs" || true
+  | R="refs/heads/$REVIEW" awk '$2 != ENVIRON["R"]' | sort > "$OUT/snapshot.refs"
 git clone -q --mirror "$OUT/orig.git" "$OUT/new.git"
 cd "$OUT/new.git"
 git remote remove origin 2>/dev/null || true
 # Pull request refs are read-only on GitHub (only Support can drop them); the review branch is ours.
-git for-each-ref --format='delete %(refname)' refs/pull "refs/heads/$REVIEW" | git update-ref --stdin
+git for-each-ref --format='delete %(refname)' refs/pull | git update-ref --stdin
+# The review branch by its exact name: a for-each-ref pattern would also take refs/heads/$REVIEW/*.
+if git show-ref --verify -q "refs/heads/$REVIEW"; then git update-ref -d "refs/heads/$REVIEW"; fi
 count_refs() { git for-each-ref refs/heads refs/tags --format='%(refname)' | while read -r r; do echo "$r $(git rev-list --count "$r")"; done; }
 count_refs > "$OUT/counts.before"
 
