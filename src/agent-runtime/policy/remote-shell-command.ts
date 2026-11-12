@@ -107,8 +107,6 @@ const EXEC_OPTIONS: Record<string, { long: readonly string[]; short: string }> =
   ag: { long: ['--pager'], short: '' },
   man: { long: ['--pager', '--html'], short: 'PH' },
   sort: { long: ['--compress-program'], short: '' },
-  // `printf -v PATH …` sets a variable, PATH included, which changes what every bare name runs.
-  printf: { long: [], short: 'v' },
   'git grep': { long: ['--open-files-in-pager'], short: 'O' },
 };
 /** git subcommands that read or record: their arguments are paths, revisions and messages. */
@@ -143,8 +141,41 @@ const GIT_DATA = new Set([
 const GIT_TRANSPORT = new Set(['clone', 'fetch', 'pull', 'push', 'ls-remote', 'remote', 'submodule']);
 /** git options before the subcommand that change only how it prints or where it works (`-C` takes a directory). */
 const GIT_PLAIN_OPTIONS = new Set(['-C', '--no-pager', '-P', '--no-optional-locks', '--literal-pathspecs']);
-/** gh command groups that only send and print data. */
-const GH_DATA = new Set(['pr', 'issue', 'api', 'search', 'run', 'release', 'label', 'workflow', 'status']);
+/**
+ * gh subcommands that only call the GitHub API and print (`null`: every subcommand of the group). Those that run
+ * git on the local repository — `pr checkout`, `pr create` (it may push), `pr merge` (it may pull and switch),
+ * `issue develop`, `repo …` — can reach a remote over the word: they keep the old check.
+ */
+const GH_DATA: ReadonlyMap<string, ReadonlySet<string> | null> = new Map([
+  [
+    'pr',
+    new Set(['view', 'list', 'diff', 'comment', 'review', 'edit', 'close', 'reopen', 'ready', 'status', 'checks']),
+  ],
+  [
+    'issue',
+    new Set([
+      'view',
+      'list',
+      'comment',
+      'edit',
+      'close',
+      'reopen',
+      'status',
+      'create',
+      'lock',
+      'unlock',
+      'pin',
+      'unpin',
+    ]),
+  ],
+  ['api', null],
+  ['search', null],
+  ['run', new Set(['view', 'list', 'watch', 'rerun', 'cancel', 'download', 'delete'])],
+  ['release', new Set(['view', 'list', 'download'])],
+  ['label', new Set(['list', 'create', 'edit', 'delete', 'clone'])],
+  ['workflow', new Set(['view', 'list', 'run', 'enable', 'disable'])],
+  ['status', null],
+]);
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)\+?=/;
 /**
  * Settings that change how a program prints, locks or signs, never which program it runs: locale, time zone,
@@ -557,12 +588,21 @@ function gitVerdict(args: readonly string[]): Verdict {
   return namesProgram(`git ${sub}`, args.slice(k + 1)) ? 'may-run' : 'data';
 }
 
-function ghVerdict(args: readonly string[]): Verdict {
-  let k = 0;
+/** Index of the first word at or after `k` that is not an option (`-R`/`--repo` take a value). */
+function ghWord(args: readonly string[], k: number): number {
   for (; k < args.length && args[k].startsWith('-'); k++) {
     if ((args[k] === '-R' || args[k] === '--repo') && k + 1 < args.length) k++;
   }
-  return GH_DATA.has(args[k] ?? '') ? 'data' : 'may-run';
+  return k;
+}
+
+function ghVerdict(args: readonly string[]): Verdict {
+  const g = ghWord(args, 0);
+  const group = args[g] ?? '';
+  if (!GH_DATA.has(group)) return 'may-run';
+  const subcommands = GH_DATA.get(group);
+  if (subcommands === null || subcommands === undefined) return 'data';
+  return subcommands.has(args[ghWord(args, g + 1)] ?? '') ? 'data' : 'may-run';
 }
 
 /** What one simple command does with the word, once assignments and reserved words are taken off its front. */
@@ -625,7 +665,8 @@ function verdict(cmd: SimpleCommand): Verdict | 'runs' {
 
 /**
  * Does the shell change this text before it runs it? Any expansion (`$` or a backtick outside single quotes), escape
- * (a backslash), glob (`*`, `?`, `[…]`, a `(` that ends a word), brace, heredoc, or a character outside ASCII
+ * (a backslash), glob (`*`, `?`, `[…]`, a `(` that ends a word), brace, heredoc, process substitution, arithmetic
+ * command (`((…))`), or a character outside ASCII
  * outside quotes (Bash and this scan may not agree on what separates words). The scan below reads every command it
  * finds, but each such feature can assemble an option, a program or a variable name it cannot see — review-of-legends
  * kept finding one more (ANSI-C escapes, brace expansion, line continuations, indirect expansion, heredoc
@@ -633,7 +674,7 @@ function verdict(cmd: SimpleCommand): Verdict | 'runs' {
  * otherwise it refuses. Write a commit message or a document that names it from a file (`git commit -F`).
  *
  * Literal stays literal: single quotes (a `$` in them is checked where a program evaluates it — `test -v`), and
- * a comment that starts after ASCII space, tab, newline or an operator.
+ * a comment that starts after ASCII space, tab or newline.
  */
 function shellChanges(src: string): boolean {
   let quote: "'" | '"' | null = null;
@@ -648,8 +689,9 @@ function shellChanges(src: string): boolean {
       else if (c === '$' || c === '`' || c === '\\') return true;
       continue;
     }
-    // A comment runs to the end of the line. `#` starts one only after ASCII blank, newline or an operator.
-    if (c === '#' && (i === 0 || ' \t\n;&|()<>'.includes(src[i - 1]))) {
+    // A comment runs to the end of the line. `#` starts one here only after ASCII blank or newline: after a `)`
+    // it can be part of the word (`<(…)#`), so the text after it is read as well.
+    if (c === '#' && (i === 0 || ' \t\n'.includes(src[i - 1]))) {
       const nl = src.indexOf('\n', i);
       if (nl < 0) break;
       i = nl - 1;
@@ -668,7 +710,10 @@ function shellChanges(src: string): boolean {
     if (code > 0x7e || (code < 0x20 && c !== '\n' && c !== '\t')) return true;
     if ('$`\\{}*?'.includes(c)) return true;
     if (c === '[' && src[i + 1] !== undefined && !' \t\n['.includes(src[i + 1])) return true;
-    if (c === '(' && i > 0 && !' \t\n;&|(<>!'.includes(src[i - 1])) return true;
+    // A `(` that ends a word (a glob), a process substitution (`<(…)`, `>(…)`, joined to the word around it), an
+    // extended glob (`!(…)`) or an arithmetic command (`((…))`, read like double quotes, so `'$(…)'` in it runs).
+    if (c === '(' && i > 0 && !' \t\n;&|('.includes(src[i - 1])) return true;
+    if (c === '(' && src[i + 1] === '(') return true;
   }
   return quote !== null;
 }

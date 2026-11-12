@@ -205,6 +205,19 @@ const RUNS = [
   "cat <<'true'x\nbody\ntruex\necho x > target-host\nrg --{pre=ssh,hidden} . target-host\ntrue\n",
   'echo x > target-host; rg\u00a0# --{pre=ssh,hidden} target-host',
   "echo x > prod-host; cat <<'true' <(cat <<'false'\nfalse\nrg --{pre=ssh,hidden} . prod-host\n)\ntrue\nfalse",
+  // review-of-legends (11de9e096): a process substitution joins the word around it; an arithmetic command reads
+  // single quotes like double quotes; gh subcommands that run git locally.
+  'echo <(true)#; ssh host',
+  'cat<(echo ssh) prod-host',
+  'mkdir -p cat/dev/fd/63; cat<(true)/../../../../../../usr/bin/ssh host',
+  "(( echo '$(ssh host)' ))",
+  'echo !(x)#; ssh host',
+  'gh pr checkout https://github.com/acme/ssh/pull/1',
+  'gh pr merge 1 --delete-branch # ssh',
+  'gh repo clone acme/ssh',
+  // A program named by a path is no data command, whatever its base name.
+  './cat ssh',
+  '/usr/bin/grep ssh src',
 ];
 
 const DATA = [
@@ -222,7 +235,10 @@ const DATA = [
   'git add -A && git commit -m "ssh ban" && git push',
   'git -C repo show HEAD:src/ssh.ts',
   'echo "use ssh_exec instead of ssh"',
-  'gh pr create --title "ssh ban" --body "scp too"',
+  'gh pr comment 1 --body "ssh ban for everyone"',
+  'gh pr view 1 -R o/r --json title | jq .title',
+  'gh issue create --title "ssh ban" --body-file body.md',
+  'echo ssh;# a comment after an operator',
   'gh -R o/r pr view 1 --json body | jq .body',
   'gh api repos/o/r/issues -f body="ssh"',
   'ls ~/.ssh',
@@ -235,7 +251,6 @@ const DATA = [
   'grep -rn ssh src 2>&1 | head -20',
   'rg ssh src &> out.txt',
   'grep ssh <<< "ssh host"',
-  'diff <(echo ssh) <(echo scp)',
   'grep ssh x # ssh in a comment',
   'if grep -q ssh x; then echo found; fi',
   'echo ssh > out.txt 2>&1',
@@ -254,6 +269,9 @@ const DATA = [
  * command that names the word, even when this use is harmless.
  */
 const CONSERVATIVE = [
+  // review-of-legends (11de9e096): process substitutions refuse; `gh pr create` may push, so its text is checked.
+  'diff <(echo ssh) <(echo scp)',
+  'gh pr create --title "ssh ban" --body "scp too"',
   // review-of-legends (84a19d999): heredocs refuse too — write a message or document from a file.
   "cat > notes.md <<-'EOF'\n\tssh $(date) `x` \\ * ? {a,b}\n\tEOF",
   'cat > a.md <<"EOF"\nssh ${HOME}\nEOF\ngit add a.md',
