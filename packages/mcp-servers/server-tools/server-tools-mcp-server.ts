@@ -15,9 +15,9 @@ import {
   type Fetch,
   GithubError,
   headSha,
-  OutcomeUnknownError,
   merge,
   mergeProblem,
+  OutcomeUnknownError,
   prNumber,
   prState,
 } from './env-github.js';

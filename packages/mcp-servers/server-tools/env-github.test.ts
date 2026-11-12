@@ -5,7 +5,6 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import {
-  OutcomeUnknownError,
   allowedRepo,
   approvalProblem,
   approve,
@@ -15,6 +14,7 @@ import {
   headSha,
   merge,
   mergeProblem,
+  OutcomeUnknownError,
   type PrState,
   prNumber,
   prState,
