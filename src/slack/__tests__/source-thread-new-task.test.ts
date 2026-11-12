@@ -147,6 +147,22 @@ describe('SourceThreadNewTask.handleAction', () => {
     );
   });
 
+  it('start: the original message’s files go with the instruction', async () => {
+    const files = [{ id: 'F1', name: 'log.txt', url_private_download: 'https://files.slack.test/F1' }];
+    slackApi.getThreadMessage.mockResolvedValue({ ts: '200.300', user: 'U_Z', text: '<@B_BOT> 이 로그 봐줘', files });
+    await flow.handleAction(clickBody(start.action_id, start.value), respond);
+    await vi.waitFor(() => expect(messageHandler).toHaveBeenCalledTimes(1));
+    expect(messageHandler.mock.calls[0][0]).toMatchObject({ text: '이 로그 봐줘', files });
+  });
+
+  it('start: a mention with only files is an instruction — it runs with its files and no text', async () => {
+    const files = [{ id: 'F1', name: 'spec.pdf' }];
+    slackApi.getThreadMessage.mockResolvedValue({ ts: '200.300', user: 'U_Z', text: '<@B_BOT>', files });
+    await flow.handleAction(clickBody(start.action_id, start.value), respond);
+    await vi.waitFor(() => expect(messageHandler).toHaveBeenCalledTimes(1));
+    expect(messageHandler.mock.calls[0][0]).toMatchObject({ text: '', files });
+  });
+
   it('the work thread could not be made: nothing runs, and the button stays usable', async () => {
     slackApi.postMessage.mockImplementationOnce(async () => undefined as any);
     await flow.handleAction(clickBody(start.action_id, start.value), respond);
@@ -196,6 +212,11 @@ describe('SourceThreadNewTask.handleAction', () => {
 });
 
 describe('buildNewTaskOfferMessage', () => {
+  it('names the attached files, and still renders a files-only instruction', () => {
+    const message = buildNewTaskOfferMessage({ ...REQUEST, text: '', fileCount: 2, linked: [] }, null);
+    expect(JSON.stringify(message.blocks)).toContain('첨부 파일 2개');
+  });
+
   it('keeps a long instruction inside the Slack section limit', () => {
     const message = buildNewTaskOfferMessage(
       { ...REQUEST, text: 'x'.repeat(10_000), linked: [] },
