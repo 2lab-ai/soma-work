@@ -86,7 +86,7 @@ describe('mcpLaunchDir', () => {
     expect(mcpLaunchDir([path.join(work, 'session')], () => false)).toBe('/');
   });
 
-  it('is not writable by this process here', () => {
+  it.skipIf(process.getuid?.() === 0)('is not writable by this process here (a non-root run)', () => {
     expect(() => mcpLaunchDir([])).not.toThrow();
   });
 

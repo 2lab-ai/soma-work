@@ -262,7 +262,7 @@ function wrapPlugin(plugin: SdkPluginConfig, dir: string, realCache: string): st
     if (err instanceof UnwrappableServer) return err.message;
     throw err;
   }
-  // Only HTTP, SSE or WebSocket servers: nothing starts locally, nothing to move.
+  // No stdio server: nothing to wrap. (An HTTP server's `headersHelper` command is #1247's, with hooks and LSP.)
   if (!stdio) return undefined;
   if (!isInside(root, realCache) || root === realCache) return 'it is not in the plugin cache';
   if (inlineChanged) {
