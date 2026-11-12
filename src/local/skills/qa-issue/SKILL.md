@@ -30,7 +30,9 @@ $local:qa-issue <KEY> qa=<default|medium|high|max> env=<profile> [transition=don
 
 ## GitHub reads
 
-Read GitHub only through the devops-tools tool `mcp__devops-tools__gh_read`. It runs `gh` through a broker outside the sandbox, so the session never holds a token. The tool policy denies `gh auth token` to everyone: never use `gh auth token`, never put a token in a command, and never run `gh` network commands in Bash inside a sandbox (they fail TLS verification there). A **GitHub read** is one call with this input:
+**The environment's reader first (env-access WU5, #1213).** When the profile names `github.server` — the server-tools server of this environment, whose `github.repos` lists the repo — make every GitHub read a call to `mcp__server-tools__gh_read` instead of the broker: `{"server": "<github.server>", "path": "<path>", "query": {"<key>": "<value>"}}`, with `<path>` and the `-f` pairs of the read as this skill writes it (no `?` in `path`; `--paginate` becomes `page` = 1, 2, … in `query`), and apply the read's `--jq` filter yourself to the answer's `body`, keeping only those fields. server-tools runs outside the sandbox with the environment's own token, which the session never sees. An answer there is a result whose `truncated` is false; a tool error, a policy refusal, or a truncated answer is a failed read (ask again with a smaller `per_page`). A repository or path it refuses is `missing: github`. Job logs are not read there: use the broker path below for a log, or report the step from the job's `steps`. Without `github.server`, read through the broker as below until it is removed (#1214).
+
+Otherwise read GitHub only through the devops-tools tool `mcp__devops-tools__gh_read`. It runs `gh` through a broker outside the sandbox, so the session never holds a token. The tool policy denies `gh auth token` to everyone: never use `gh auth token`, never put a token in a command, and never run `gh` network commands in Bash inside a sandbox (they fail TLS verification there). A **GitHub read** is one call with this input:
 
 ```json
 {"account": "<account>", "args": ["api", "-X", "GET", "<path>", "-f", "<key>=<value>", "--jq", "<filter>"]}
@@ -49,8 +51,8 @@ Paging: add `"-f", "per_page=100", "-f", "page=<N>"` and request N = 1, 2, … u
 ## Profile fields
 
 - Every run: `keyPattern`; `deploy` (per repo: how to read the running version and the running commit); `tracker` (site, state IDs for qa / done / in-progress, comment conventions); `qaEnv` (health URL(s), API bases, front-end URLs, test-account references, browser primitives `open` / `eval` / `screenshot`, screenshots directory); `lockDir` when no `runDir=` is passed. Optional: `severity`.
-- Optional: `github.account` (the devops-tools account for GitHub reads; absent = the account GitHub reads picks).
-- Optional, read by the Precondition gate: `qaEnv.accounts` (role → account reference; any listed account may be used by any case), `qaEnv.writes` (`allowed` with the test accounts, or `forbidden`), `qaEnv.seed` (bounded setup actions QA may run, each with its cleanup), `qaEnv.logs` (how to read server errors for a time window). An absent optional field is never an error: the preconditions that need it are `missing`. The profile revision is the SHA-256 of the profile skill's SKILL.md.
+- Optional: `github.server` (the server-tools server whose environment token reads GitHub through `mcp__server-tools__gh_read`; preferred) and `github.account` (the devops-tools account for GitHub reads; absent = the account GitHub reads picks).
+- Optional: `qaEnv.logins` (role → `{server, account}` of a server-tools web login, env-access WU5; preferred over a password reference for that role). Optional, read by the Precondition gate: `qaEnv.accounts` (role → account reference; any listed account may be used by any case), `qaEnv.writes` (`allowed` with the test accounts, or `forbidden`), `qaEnv.seed` (bounded setup actions QA may run, each with its cleanup), `qaEnv.logs` (how to read server errors for a time window). An absent optional field is never an error: the preconditions that need it are `missing`. The profile revision is the SHA-256 of the profile skill's SKILL.md.
 - With `transition=done`, also: `doneConditions`, `repos`, the tracker's transition to done.
 - Any of these absent, a browser primitive that fails to run, no tracker access, no GitHub read account (`github`), a missing account reference, or no masker → verdict `blocked`, reason `missing: <fields>`, no transition. Comment only if the tracker is usable.
 
@@ -149,7 +151,7 @@ Use only the profile's three primitives: `open(url)`, `eval(js)`, `screenshot(pa
 - Screenshots go to `<screenshotsDir>/<KEY>-<caseId>.png` — never `/tmp` or a session sandbox path. After each capture, read the file to confirm it exists and is not empty.
 - API values behind cookies or CSRF: `open` a page on that origin, then `eval` a same-origin `fetch(url, {credentials: 'include'})` that returns `{status, body: await r.text()}`. If the profile names a CSRF cookie and header, copy the token from that cookie into that header. A direct HTTP call rejected with 403 is not a product failure.
 - Endpoints: read them from the front-end API client source (grep its calls) or the PR diff, and use the method that client uses. Never guess.
-- Login: use the profile's account reference. Fill inputs with the native value setter plus an `input` event, submit, and wait for the post-login page.
+- Login: when the profile maps the role to `qaEnv.logins.<role>` = `{"server": …, "account": …}`, get the session with `mcp__server-tools__login` (the account's password stays in the secret store; the tool returns only a `bearer` token or a `cookie`): send a bearer token as the API's `Authorization` header and set a cookie session through the profile's browser primitive, from a file you write under the run directory (mode 600) and reference by path — never type the token into a command, `eval` source, `steps` or a report. Otherwise use the profile's account reference. Fill inputs with the native value setter plus an `input` event, submit, and wait for the post-login page.
 
 ## QA levels and severity
 

@@ -11,7 +11,9 @@ Generic procedure. It holds no environment values: the profile is the environmen
 Sub-skills: `$local:qa-issue` (one issue) and `$local:qa-report` (the HTML report). Through the SDK Skill tool they are `zworkflow:qa-issue` and `zworkflow:qa-report`.
 
 ## GitHub reads
-Read GitHub only through the devops-tools tool `mcp__devops-tools__gh_read`. It runs `gh` through a broker outside the sandbox, so the session never holds a token. The tool policy denies `gh auth token` to everyone: never use `gh auth token`, never put a token in a command, and never run `gh` network commands in Bash inside a sandbox (they fail TLS verification there). A **GitHub read** is one call with this input:
+**The environment's reader first (env-access WU5, #1213).** When the profile names `github.server` — the server-tools server of this environment, whose `github.repos` lists the repo — make every GitHub read a call to `mcp__server-tools__gh_read` instead of the broker: `{"server": "<github.server>", "path": "<path>", "query": {"<key>": "<value>"}}`, with `<path>` and the `-f` pairs of the read as this skill writes it (no `?` in `path`; `--paginate` becomes `page` = 1, 2, … in `query`), and apply the read's `--jq` filter yourself to the answer's `body`, keeping only those fields. server-tools runs outside the sandbox with the environment's own token, which the session never sees. An answer there is a result whose `truncated` is false; a tool error, a policy refusal, or a truncated answer is a failed read (ask again with a smaller `per_page`). A repository or path it refuses is `missing: github`. Job logs are not read there: use the broker path below for a log, or report the step from the job's `steps`. Without `github.server`, read through the broker as below until it is removed (#1214).
+
+Otherwise read GitHub only through the devops-tools tool `mcp__devops-tools__gh_read`. It runs `gh` through a broker outside the sandbox, so the session never holds a token. The tool policy denies `gh auth token` to everyone: never use `gh auth token`, never put a token in a command, and never run `gh` network commands in Bash inside a sandbox (they fail TLS verification there). A **GitHub read** is one call with this input:
 
 ```json
 {"account": "<account>", "args": ["api", "-X", "GET", "<path>", "-f", "<key>=<value>", "--jq", "<filter>"]}
@@ -45,7 +47,7 @@ Read GitHub only through the devops-tools tool `mcp__devops-tools__gh_read`. It 
 - `admission` (ordered rules) · `doneConditions` · `lockDir` · `checkpointEvery`.
 - `qaEnv`: the adapter commands `open`, `eval`, `screenshot`; `screenshotsDir`; health URL(s); test-account references. Optional, read by the precondition gate (absent = those preconditions are `missing`, never a `missing:` answer here): `qaEnv.accounts`, `qaEnv.writes`, `qaEnv.seed`, `qaEnv.logs` — see `qa-issue` Profile fields.
 - `report`: thread publishing (serve command or upload method; uploading the files with the session's Slack file tool is one) and, if any, the summary channel.
-- Optional: `github.account` — the devops-tools account for GitHub reads (absent = the account GitHub reads picks, never a `missing:` answer by itself).
+- Optional: `github.server` — the server-tools server whose environment token reads GitHub (`mcp__server-tools__gh_read`; preferred). Optional: `github.account` — the devops-tools account for GitHub reads (absent = the account GitHub reads picks, never a `missing:` answer by itself).
 
 Any entry absent → reply with exactly one line `missing: <field,…>` and stop. Never guess a value or take one from another host. Account entries are references to where credentials live; never print, comment, or file-name a credential.
 

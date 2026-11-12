@@ -331,6 +331,23 @@ every skill of the environment and every server-tools tool on its servers (`ssh_
 the environment's servers runs for a non-admin only on such a grant, or on a grant of one of its skills. On a server
 that is no environment's, `ssh_exec`, `gh_pr` and `login` stay admin-only.
 
+### Environment repository reads (`gh_read`, env-access WU5, #1213)
+
+`gh_read {server, path, query}` GETs one path of the environment's repository with the same `github.token` that
+`gh_pr` uses, outside every model sandbox. `path` is `repos/<owner>/<name>/…` with the repository in `github.repos`
+and no query string (parameters go in `query`: strings, numbers, booleans). It reads only what deploy confirmation
+and QA read — the repository itself, `pulls`, `commits`, `compare`, `issues`, `branches`, `contents`, `statuses`,
+`check-runs`, `check-suites`, `deployments`, `releases`, `tags`, `git`, `milestones`, `labels`, and `actions/runs`,
+`actions/jobs`, `actions/workflows` — never settings, secrets, variables, hooks, keys, environments or collaborators
+(the token may be an org admin's). Dot segments and encoded dots are refused. It answers
+`{path, truncated, body}`; a body longer than 200000 characters of JSON comes back cut, as text, with
+`truncated: true`. Reads are not written to the audit ledger. Like `gh_pr`, it is admin-only except on an
+environment's server for a user that environment's admin granted.
+
+The QA skills (`deploy-qa`, `qa-issue`) read through it when the environment profile names `github.server`, and
+log in through `login` when it maps a role to `qaEnv.logins.<role>` = `{server, account}`. Without `github.server`
+they read through the broker until it is removed (#1214).
+
 ### Environment web logins (`login`, env-access WU3b, #1211)
 
 `web.logins` names the environment's own web app accounts. `login` posts one of them and hands back only the session —

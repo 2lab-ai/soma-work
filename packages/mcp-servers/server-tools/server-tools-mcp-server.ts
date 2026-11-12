@@ -20,6 +20,7 @@ import {
   OutcomeUnknownError,
   prNumber,
   prState,
+  read,
 } from './env-github.js';
 import { defaultLoginFetch, LoginError, type LoginFetch, login, loginSpec } from './env-login.js';
 import { redactLogSecrets } from './redact-logs.js';
@@ -744,6 +745,24 @@ function envGithub(server: unknown): { name: string; config: ServerConfig; githu
  * (`SOMA_REQUESTER`); each is written to the audit ledger before it runs, and again with its outcome. `fetchImpl`
  * is for tests.
  */
+/**
+ * `gh_read` (env-access WU5, #1213): one GET of the environment's own repository with its token, for deploy
+ * confirmation and QA. Only the parts `readPath` allows; nothing is written, so nothing is audited.
+ */
+export async function handleGhRead(
+  args: Record<string, unknown>,
+  fetchImpl: Fetch = globalThis.fetch as unknown as Fetch,
+) {
+  const env = envGithub(args.server);
+  try {
+    const answer = await read(fetchImpl, env.github, args.path, args.query);
+    return { content: [{ type: 'text' as const, text: JSON.stringify(answer) }] };
+  } catch (err) {
+    if (err instanceof GithubError) throw new Error(err.message);
+    throw new Error(`gh_read failed on ${env.name}`);
+  }
+}
+
 export async function handleGhPr(
   args: Record<string, unknown>,
   fetchImpl: Fetch = globalThis.fetch as unknown as Fetch,
@@ -1330,6 +1349,27 @@ class ServerToolsMCPServer extends BaseMcpServer {
         },
       },
       {
+        name: 'gh_read',
+        description:
+          "GET one path of a server's environment repository with the environment's own GitHub token (never shown): " +
+          'commits, compare, pulls, issues, actions runs/jobs/workflows, check-runs, statuses, branches, contents, ' +
+          'releases, tags, deployments. Returns {path, truncated, body} (body is the JSON answer, or its first ' +
+          "200000 characters as text when truncated). For deploy confirmation and QA. Admins, or a user the environment's admin approved.",
+        inputSchema: {
+          type: 'object',
+          properties: {
+            server: { type: 'string', description: 'Server name from config (see list) whose github section to use.' },
+            path: { type: 'string', description: 'repos/<owner>/<name>/… — no query string; put parameters in query.' },
+            query: {
+              type: 'object',
+              description:
+                'Query parameters (strings, numbers, booleans), e.g. {"per_page": 50, "sha": "deploy/dev2"}.',
+            },
+          },
+          required: ['server', 'path'],
+        },
+      },
+      {
         name: 'gh_pr',
         description:
           "Act on one GitHub PR as a server's environment user, with that environment's own token (no model reads it). " +
@@ -1478,6 +1518,8 @@ class ServerToolsMCPServer extends BaseMcpServer {
         return handleSshExec(args);
       case 'login':
         return await handleLogin(args);
+      case 'gh_read':
+        return await handleGhRead(args);
       case 'gh_pr':
         return await handleGhPr(args);
       case 'db_query':

@@ -82,6 +82,30 @@ describe('post-deploy QA skills read GitHub through devops-tools gh_read', () =>
     });
   }
 
+  // env-access WU5 (#1213): the environment's own reader comes first; the broker stays only until #1214.
+  for (const skill of ['deploy-qa', 'qa-issue']) {
+    it(`${skill} reads through the environment's server-tools gh_read when the profile names github.server`, () => {
+      const md = read(skill);
+      const section = md.slice(md.indexOf('## GitHub reads'), md.indexOf('\n## ', md.indexOf('## GitHub reads') + 1));
+      expect(section.indexOf('`mcp__server-tools__gh_read`')).toBeLessThan(section.indexOf('`mcp__devops-tools__gh_read`'));
+      expect(section).toContain('When the profile names `github.server`');
+      expect(section).toContain('`{"server": "<github.server>", "path": "<path>", "query": {"<key>": "<value>"}}`');
+      expect(section).toContain("apply the read's `--jq` filter yourself to the answer's `body`");
+      expect(section).toContain('An answer there is a result whose `truncated` is false');
+      expect(section).toContain('A repository or path it refuses is `missing: github`');
+      expect(section).toContain('Without `github.server`, read through the broker as below until it is removed (#1214)');
+      expect(md).toContain('`github.server`');
+    });
+  }
+
+  it('qa-issue logs in through server-tools login when the profile maps the role, never typing the token', () => {
+    const md = read('qa-issue');
+    expect(md).toContain('`qaEnv.logins.<role>` = `{"server": …, "account": …}`');
+    expect(md).toContain('get the session with `mcp__server-tools__login`');
+    expect(md).toContain('never type the token into a command, `eval` source, `steps` or a report');
+    expect(md).toContain('Optional: `qaEnv.logins`');
+  });
+
   it('deploy-qa keeps only merged PRs from the closed listing', () => {
     expect(read('deploy-qa')).toContain(
       '`repos/<owner/repo>/pulls` with `"-f", "state=closed", "-f", "base=<integrationBranch>"`, keeping only PRs with `merged_at` set',

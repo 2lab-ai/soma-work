@@ -171,6 +171,84 @@ async function call(fetch: Fetch, token: string, method: string, path: string, b
   return json;
 }
 
+// ── gh_read: a GET of the environment's repository (env-access WU5, #1213) ──
+
+/**
+ * The parts of a repository `gh_read` reads: what deploy confirmation and QA read (commits, compares, PRs and issues,
+ * workflow runs and jobs, checks and statuses, branches, contents, releases). Not settings, secrets, variables,
+ * hooks, keys, environments or collaborators — the token may be an org admin's.
+ */
+const READ_PARTS = new Set([
+  'pulls',
+  'commits',
+  'compare',
+  'issues',
+  'branches',
+  'contents',
+  'statuses',
+  'check-runs',
+  'check-suites',
+  'deployments',
+  'releases',
+  'tags',
+  'git',
+  'milestones',
+  'labels',
+]);
+const READ_ACTIONS = new Set(['runs', 'jobs', 'workflows']);
+const SEGMENT = /^[A-Za-z0-9_.~%-]+$/;
+const QUERY_KEY = /^[A-Za-z0-9_[\]]+$/;
+/** Longest answer handed back, in characters of JSON; a longer one is cut and marked. */
+const READ_MAX_CHARS = 200_000;
+
+/** `repos/<owner>/<name>/…` as asked, checked: its repository is the environment's and its part one QA reads. */
+export function readPath(config: EnvGithubConfig, value: unknown): string {
+  if (typeof value !== 'string') throw new GithubError('path must be repos/<owner>/<name>/…');
+  const segments = value.replace(/^\//, '').split('/');
+  const unsafe = segments.some(
+    (s) => !SEGMENT.test(s) || s === '.' || s === '..' || /%2e|%00|%5c/i.test(s) || s.includes('%2F%2E'),
+  );
+  if (segments[0] !== 'repos' || segments.length < 3 || unsafe) {
+    throw new GithubError('path must be repos/<owner>/<name>/… (no query, no dot segments)');
+  }
+  const repo = allowedRepo(config, `${segments[1]}/${segments[2]}`);
+  const part = segments[3];
+  const allowed =
+    part === undefined || READ_PARTS.has(part) || (part === 'actions' && READ_ACTIONS.has(segments[4] ?? ''));
+  if (!allowed)
+    throw new GithubError(`${part}${part === 'actions' ? `/${segments[4] ?? ''}` : ''} is not a part gh_read reads`);
+  return ['repos', repo, ...segments.slice(3)].join('/');
+}
+
+function readQuery(value: unknown): string {
+  if (value === undefined) return '';
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new GithubError('query must be an object');
+  const params = new URLSearchParams();
+  for (const [key, v] of Object.entries(value)) {
+    if (!QUERY_KEY.test(key) || !['string', 'number', 'boolean'].includes(typeof v)) {
+      throw new GithubError(`query ${key} must be a string, number or boolean`);
+    }
+    params.append(key, String(v));
+  }
+  const s = params.toString();
+  return s ? `?${s}` : '';
+}
+
+/** GET one path of the environment's repository; a long answer comes back cut, as text, with `truncated`. */
+export async function read(
+  fetch: Fetch,
+  config: EnvGithubConfig,
+  path: unknown,
+  query?: unknown,
+): Promise<{ path: string; truncated: boolean; body: unknown }> {
+  const checked = readPath(config, path);
+  const json = await call(fetch, config.token, 'GET', `/${checked}${readQuery(query)}`);
+  const text = JSON.stringify(json ?? null);
+  return text.length > READ_MAX_CHARS
+    ? { path: checked, truncated: true, body: text.slice(0, READ_MAX_CHARS) }
+    : { path: checked, truncated: false, body: json ?? null };
+}
+
 type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj => (v && typeof v === 'object' ? (v as Obj) : {});
 const str = (v: unknown): string => (typeof v === 'string' ? v : '');
