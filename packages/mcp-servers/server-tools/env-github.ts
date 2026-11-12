@@ -15,6 +15,8 @@
  * Every approve and merge is written to the audit ledger before it runs and again with its outcome.
  */
 
+import { randomUUID } from 'node:crypto';
+
 export interface EnvGithubConfig {
   /** The environment's GitHub token (resolved from `{"$secret": …}`). */
   token: string;
@@ -26,6 +28,12 @@ export interface EnvGithubConfig {
   mergeWhen?: PrConditions;
   /** Allowed merge methods; default `merge`. */
   mergeMethods?: ('merge' | 'squash' | 'rebase')[];
+  /**
+   * The checks (check-run names or status contexts) that must each have passed on the head. Unset: the base
+   * branch's protection says which. When neither names any, no head is green — a check that has not registered
+   * yet would otherwise go unseen.
+   */
+  requiredChecks?: string[];
 }
 
 export interface PrConditions {
@@ -34,8 +42,8 @@ export interface PrConditions {
   /** Base branches. */
   bases?: string[];
   /**
-   * Every check run and commit status on the head must have reported and be green. Default true; only `false`
-   * turns it off.
+   * Every required check must have passed and nothing else on the head may be unfinished or red. Default true;
+   * only `false` turns it off.
    */
   requiredChecksGreen?: boolean;
 }
@@ -59,6 +67,10 @@ export interface Checks {
   pending: string[];
   /** Names of checks that finished other than success, neutral or skipped. */
   failing: string[];
+  /** The checks that must pass (`requiredChecks`, else the base's protection); null when none is known. */
+  required: string[] | null;
+  /** Required checks that have not passed on the head (not reported yet, unfinished or red). */
+  missing: string[];
 }
 
 export interface PrState {
@@ -145,6 +157,10 @@ async function call(fetch: Fetch, token: string, method: string, path: string, b
     if (res.ok) throw new NoAnswerError(`GitHub ${method} ${path} answered ${res.status} with an unreadable body`);
     json = undefined;
   }
+  // A gateway or server error after a write may come after the write was made: that is no answer, not a refusal.
+  if (method !== 'GET' && res.status >= 500) {
+    throw new NoAnswerError(`GitHub ${method} ${path} answered ${res.status}: the write may have been made`);
+  }
   if (!res.ok) {
     const message =
       json && typeof json === 'object' && typeof (json as { message?: unknown }).message === 'string'
@@ -177,13 +193,17 @@ export async function prState(fetch: Fetch, config: EnvGithubConfig, repo: strin
   }
   const pending: string[] = [];
   const failing: string[] = [];
+  const succeeded = new Set<string>();
   let passed = 0;
   const checkRuns = Array.isArray(runs.check_runs) ? runs.check_runs.map(obj) : [];
   for (const run of checkRuns) {
     const name = str(run.name) || 'check';
     if (run.status !== 'completed') pending.push(name);
     else if (!GREEN_CONCLUSIONS.has(str(run.conclusion))) failing.push(name);
-    else if (run.conclusion === 'success') passed++;
+    else if (run.conclusion === 'success') {
+      passed++;
+      succeeded.add(name);
+    }
   }
   // More check runs than one page cannot be judged here: not green.
   if (typeof runs.total_count === 'number' && runs.total_count > checkRuns.length) pending.push('(more checks)');
@@ -192,7 +212,10 @@ export async function prState(fetch: Fetch, config: EnvGithubConfig, repo: strin
     const name = str(s.context) || 'status';
     if (s.state === 'pending') pending.push(name);
     else if (s.state !== 'success') failing.push(name);
-    else passed++;
+    else {
+      passed++;
+      succeeded.add(name);
+    }
   }
   // The combined state covers every status, also those past this page. GitHub says `pending` when there are none.
   const statusTotal = typeof status.total_count === 'number' ? status.total_count : statuses.length;
@@ -201,6 +224,9 @@ export async function prState(fetch: Fetch, config: EnvGithubConfig, repo: strin
     (status.state === 'pending' ? pending : failing).push('(combined status)');
   }
   const total = checkRuns.length + statuses.length;
+  const base = str(obj(pr.base).ref);
+  const required = await requiredChecks(fetch, config, repo, base);
+  const missing = (required ?? []).filter((name) => !succeeded.has(name));
   return {
     repo,
     number,
@@ -208,32 +234,72 @@ export async function prState(fetch: Fetch, config: EnvGithubConfig, repo: strin
     state: str(pr.state),
     draft: pr.draft === true,
     author: str(obj(pr.user).login),
-    base: str(obj(pr.base).ref),
+    base,
     headSha: sha,
     checks: {
       total,
       passed,
       // Right after a push nothing has reported yet, and a path filter may skip every workflow: green needs one
       // success and nothing unfinished or red.
-      green: passed > 0 && pending.length === 0 && failing.length === 0,
+      green: required !== null && missing.length === 0 && passed > 0 && pending.length === 0 && failing.length === 0,
       pending,
       failing,
+      required,
+      missing,
     },
   };
 }
 
+/**
+ * The checks that must pass on a PR into `base`: the environment's `requiredChecks`, else the base branch's
+ * protection (its required status checks). Null when neither names any.
+ */
+async function requiredChecks(
+  fetch: Fetch,
+  config: EnvGithubConfig,
+  repo: string,
+  base: string,
+): Promise<string[] | null> {
+  if (Array.isArray(config.requiredChecks) && config.requiredChecks.length > 0) return config.requiredChecks;
+  let protection: Obj;
+  try {
+    protection = obj(
+      await call(
+        fetch,
+        config.token,
+        'GET',
+        `/repos/${repo}/branches/${encodeURIComponent(base)}/protection/required_status_checks`,
+      ),
+    );
+  } catch (err) {
+    // No protection on the base (404): nothing is known to be required.
+    if (err instanceof GithubError && / answered 404:/.test(err.message)) return null;
+    throw err;
+  }
+  const names = new Set<string>();
+  for (const c of Array.isArray(protection.contexts) ? protection.contexts : [])
+    if (typeof c === 'string') names.add(c);
+  for (const c of Array.isArray(protection.checks) ? protection.checks.map(obj) : []) {
+    if (typeof c.context === 'string') names.add(c.context);
+  }
+  return names.size > 0 ? [...names] : null;
+}
+
 function checksProblem(pr: PrState): string | undefined {
   if (pr.checks.green) return undefined;
-  if (pr.checks.pending.length === 0 && pr.checks.failing.length === 0) {
-    return pr.checks.total === 0
-      ? 'no check has reported on the head yet'
-      : 'no check has passed on the head (only skipped or neutral ones)';
+  if (pr.checks.required === null) {
+    return `no required checks are known for ${pr.base}: list them in github.requiredChecks or require them on the branch`;
   }
-  const parts = [
-    pr.checks.pending.length > 0 ? `not finished: ${pr.checks.pending.join(', ')}` : '',
-    pr.checks.failing.length > 0 ? `not green: ${pr.checks.failing.join(', ')}` : '',
-  ].filter(Boolean);
-  return `checks are not all green (${parts.join('; ')})`;
+  if (pr.checks.total === 0) return 'no check has reported on the head yet';
+  if (pr.checks.pending.length > 0 || pr.checks.failing.length > 0) {
+    const parts = [
+      pr.checks.pending.length > 0 ? `not finished: ${pr.checks.pending.join(', ')}` : '',
+      pr.checks.failing.length > 0 ? `not green: ${pr.checks.failing.join(', ')}` : '',
+    ].filter(Boolean);
+    return `checks are not all green (${parts.join('; ')})`;
+  }
+  if (pr.checks.passed === 0) return 'no check has passed on the head (only skipped or neutral ones)';
+  return `required checks not passed yet: ${pr.checks.missing.join(', ')}`;
 }
 
 function openAtHead(pr: PrState, sha: string): string | undefined {
@@ -293,18 +359,20 @@ export async function approve(
   base: string,
   body: string,
 ): Promise<void> {
+  // A marker only this call writes: a lost answer is matched to this approval, never to an older one.
+  const marker = `<!-- soma-env-approval ${randomUUID()} -->`;
   let review: Obj;
   try {
     review = obj(
       await call(fetch, config.token, 'POST', `/repos/${repo}/pulls/${number}/reviews`, {
         event: 'APPROVE',
         commit_id: sha,
-        body,
+        body: `${body}\n\n${marker}`,
       }),
     );
   } catch (err) {
     if (!(err instanceof NoAnswerError)) throw err;
-    review = await ownApproval(fetch, config, repo, number, sha);
+    review = await ownApproval(fetch, config, repo, number, sha, marker);
   }
   let changed: string;
   try {
@@ -330,33 +398,33 @@ export async function approve(
 }
 
 /**
- * After an approval that got no answer: this token's latest review, when it is the approval of `sha`. Anything short of that —
- * not seen yet (GitHub may still be applying it), a full page, a malformed list, a failed lookup — is an
- * `OutcomeUnknownError`: the approval may stand.
+ * After an approval that got no answer: the review this call wrote (its `marker`), when it is an approval of `sha`.
+ * Anything short of finding it — not seen yet (GitHub may still be applying it), a full page, a malformed list, a
+ * failed lookup — is an `OutcomeUnknownError`: the approval may stand.
  */
-async function ownApproval(fetch: Fetch, config: EnvGithubConfig, repo: string, number: number, sha: string) {
+async function ownApproval(
+  fetch: Fetch,
+  config: EnvGithubConfig,
+  repo: string,
+  number: number,
+  sha: string,
+  marker: string,
+) {
   const unknown = (why: string) =>
     new OutcomeUnknownError(
       `the approval of ${repo}#${number} got no answer and ${why}: it may stand — check the PR before retrying`,
     );
-  let login: string;
   let reviews: unknown;
   try {
-    login = str(obj(await call(fetch, config.token, 'GET', '/user')).login);
     reviews = await call(fetch, config.token, 'GET', `/repos/${repo}/pulls/${number}/reviews?per_page=100`);
   } catch {
     throw unknown('could not be looked up');
   }
-  if (login === '' || !Array.isArray(reviews)) throw unknown('the lookup answered something unexpected');
-  // Reviews come oldest first: a full page may hide the newest one, so nothing on it is proof.
-  if (reviews.length >= 100) throw unknown('the reviews fill a whole page');
-  // The token's latest review of any kind must be this approval; an older approval it superseded is not.
-  const latest = reviews
-    .map(obj)
-    .filter((r) => str(obj(r.user).login) === login)
-    .sort((a, b) => Number(b.id) - Number(a.id))[0];
-  if (latest && latest.state === 'APPROVED' && latest.commit_id === sha) return latest;
-  throw unknown('is not seen yet');
+  if (!Array.isArray(reviews)) throw unknown('the lookup answered something unexpected');
+  const mine = reviews.map(obj).find((r) => str(r.body).includes(marker));
+  if (mine && mine.state === 'APPROVED' && mine.commit_id === sha) return mine;
+  if (mine) throw unknown('was written but is not an approval of the head');
+  throw unknown(reviews.length >= 100 ? 'is not on the first page of reviews' : 'is not seen yet');
 }
 
 /**

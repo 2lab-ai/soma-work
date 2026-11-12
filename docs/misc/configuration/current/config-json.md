@@ -286,7 +286,8 @@ the secret store (`<config dir>/secrets/<name>`); server-tools reads it outside 
         "repos": ["acme/app"],
         "approveWhen": { "authors": ["soma-bot[bot]"], "bases": ["develop"] },
         "mergeWhen": { "authors": ["soma-bot[bot]"], "bases": ["develop"] },
-        "mergeMethods": ["merge", "squash"]
+        "mergeMethods": ["merge", "squash"],
+        "requiredChecks": ["ci"]
       }
     }
   }
@@ -311,7 +312,13 @@ connection, the 30-second timeout, an unreadable body) is looked up — the envi
 or whether the PR is merged — and recorded as `done` when found; anything short of that (not seen yet, a lookup
 that fails or answers something unexpected) is recorded as `unknown` and the tool says to check the PR before
 retrying. `authors`, `bases`, `repos` and `mergeMethods` must be
-lists: a string there is refused, since it would match by substring. Each line names the server, the
+lists: a string there is refused, since it would match by substring.
+
+"Every check is green" means: each required check has passed, and nothing else on the head is unfinished or red.
+The required checks are `requiredChecks`, else the base branch's protection (its required status checks); when
+neither names any, no PR is green — a check that has not registered yet would otherwise go unseen. A server or
+gateway error (5xx) on approve or merge is treated like no answer: the write is looked up. An approval carries a
+marker unique to the call, so a lost answer is matched to that approval and never to an older one. Each line names the server, the
 `envUser` and the Slack user the session runs for. `gh_pr` is for admins only until per-environment grants land (WU4, #1212).
 
 ## Where the substitution happens in code

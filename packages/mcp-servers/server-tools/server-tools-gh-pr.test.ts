@@ -55,6 +55,7 @@ beforeEach(() => {
             repos: ['acme/app'],
             approveWhen: { authors: ['soma-bot[bot]'], bases: ['develop'], requiredChecksGreen: true },
             mergeWhen: { authors: ['soma-bot[bot]'], bases: ['develop'] },
+            requiredChecks: ['ci'],
           },
         },
         nogh: { ssh: { host: 'x' } },

@@ -28,6 +28,7 @@ const config: EnvGithubConfig = {
   repos: ['acme/app'],
   approveWhen: { authors: ['soma-bot[bot]'], bases: ['develop'], requiredChecksGreen: true },
   mergeWhen: { authors: ['soma-bot[bot]'], bases: ['develop', 'deploy/dev2'] },
+  requiredChecks: ['ci'],
 };
 
 function pr(over: Partial<PrState> = {}): PrState {
@@ -40,7 +41,7 @@ function pr(over: Partial<PrState> = {}): PrState {
     author: 'soma-bot[bot]',
     base: 'develop',
     headSha: SHA,
-    checks: { total: 2, passed: 2, green: true, pending: [], failing: [] },
+    checks: { total: 2, passed: 2, green: true, pending: [], failing: [], required: ['ci'], missing: [] },
     ...over,
   };
 }
@@ -55,6 +56,11 @@ function fakeFetch(routes: Record<string, unknown>, status = 200) {
     // A route may be a function: it answers each call afresh, or throws as a dropped connection does.
     const route = routes[key];
     const answer = typeof route === 'function' ? (route as () => unknown)() : route;
+    // `{ __status, body }` answers with that HTTP status (a gateway error after a write, a missing protection).
+    if (answer && typeof answer === 'object' && '__status' in answer) {
+      const { __status, body } = answer as { __status: number; body?: unknown };
+      return { ok: __status < 400, status: __status, json: async () => body ?? { message: `status ${__status}` } };
+    }
     return { ok: status < 400, status, json: async () => answer };
   });
   return { fetch, calls };
@@ -104,7 +110,15 @@ describe('prState', () => {
     });
     const state = await prState(fetch, config, 'acme/app', 7);
     expect(state).toMatchObject({ author: 'soma-bot[bot]', base: 'develop', headSha: SHA });
-    expect(state.checks).toEqual({ total: 4, passed: 2, green: false, pending: ['lint'], failing: ['e2e'] });
+    expect(state.checks).toEqual({
+      total: 4,
+      passed: 2,
+      green: false,
+      pending: ['lint'],
+      failing: ['e2e'],
+      required: ['ci'],
+      missing: [],
+    });
     expect(calls.every((c) => c.auth === 'Bearer tok-secret')).toBe(true);
   });
 
@@ -116,6 +130,8 @@ describe('prState', () => {
       green: true,
       pending: [],
       failing: [],
+      required: ['ci'],
+      missing: [],
     });
   });
 
@@ -196,6 +212,39 @@ describe('prState', () => {
     await expect(prState(malformed.fetch, config, 'acme/app', 7)).rejects.toThrow(/unexpected/);
   });
 
+  // review-of-legends (4d3f85ac2): a required check that has not registered yet is missing, not absent.
+  it('is not green until every required check has passed, from config or from the branch protection', async () => {
+    const lintOnly = { total_count: 1, check_runs: [{ name: 'lint', status: 'completed', conclusion: 'success' }] };
+    const cfg = fakeFetch({ 'GET /repos/acme/app/pulls/7': PULL, [RUNS]: lintOnly, [STATUS]: NO_STATUS });
+    const viaConfig = await prState(cfg.fetch, { ...config, requiredChecks: ['ci', 'lint'] }, 'acme/app', 7);
+    expect(viaConfig.checks).toMatchObject({ green: false, missing: ['ci'] });
+    expect(approvalProblem(config, viaConfig, SHA)).toMatch(/required checks not passed yet: ci/);
+
+    const noReq = { ...config, requiredChecks: undefined };
+    const PROTECTION = 'GET /repos/acme/app/branches/develop/protection/required_status_checks';
+    const protectedBase = fakeFetch({
+      'GET /repos/acme/app/pulls/7': PULL,
+      [RUNS]: lintOnly,
+      [STATUS]: NO_STATUS,
+      [PROTECTION]: { contexts: ['lint'], checks: [{ context: 'build' }] },
+    });
+    expect((await prState(protectedBase.fetch, noReq, 'acme/app', 7)).checks).toMatchObject({
+      required: ['lint', 'build'],
+      missing: ['build'],
+      green: false,
+    });
+
+    const unprotected = fakeFetch({
+      'GET /repos/acme/app/pulls/7': PULL,
+      [RUNS]: lintOnly,
+      [STATUS]: NO_STATUS,
+      [PROTECTION]: { __status: 404 },
+    });
+    const state = await prState(unprotected.fetch, noReq, 'acme/app', 7);
+    expect(state.checks).toMatchObject({ required: null, green: false });
+    expect(approvalProblem(noReq, state, SHA)).toMatch(/no required checks are known/);
+  });
+
   it('turns a GitHub error into GithubError with its status, never the token', async () => {
     const { fetch } = fakeFetch({}, 404);
     await expect(prState(fetch, config, 'acme/app', 7)).rejects.toThrow(/answered 404/);
@@ -218,14 +267,18 @@ describe('approvalProblem', () => {
     [
       'red checks',
       config,
-      pr({ checks: { total: 1, passed: 0, green: false, pending: [], failing: ['ci'] } }),
+      pr({
+        checks: { total: 1, passed: 0, green: false, pending: [], failing: ['ci'], required: ['ci'], missing: ['ci'] },
+      }),
       SHA,
       /not green: ci/,
     ],
     [
       'red checks, requiredChecksGreen unset',
       { ...config, approveWhen: { authors: ['soma-bot[bot]'], bases: ['develop'] } },
-      pr({ checks: { total: 1, passed: 0, green: false, pending: ['ci'], failing: [] } }),
+      pr({
+        checks: { total: 1, passed: 0, green: false, pending: ['ci'], failing: [], required: ['ci'], missing: ['ci'] },
+      }),
       SHA,
       /not finished: ci/,
     ],
@@ -239,7 +292,21 @@ describe('approvalProblem', () => {
       approveWhen: { authors: ['soma-bot[bot]'], bases: ['develop'], requiredChecksGreen: false },
     };
     expect(
-      approvalProblem(lax, pr({ checks: { total: 1, passed: 0, green: false, pending: [], failing: ['ci'] } }), SHA),
+      approvalProblem(
+        lax,
+        pr({
+          checks: {
+            total: 1,
+            passed: 0,
+            green: false,
+            pending: [],
+            failing: ['ci'],
+            required: ['ci'],
+            missing: ['ci'],
+          },
+        }),
+        SHA,
+      ),
     ).toBeUndefined();
   });
 });
@@ -258,7 +325,9 @@ describe('mergeProblem', () => {
     [
       'pending checks',
       config,
-      pr({ checks: { total: 1, passed: 0, green: false, pending: ['ci'], failing: [] } }),
+      pr({
+        checks: { total: 1, passed: 0, green: false, pending: ['ci'], failing: [], required: ['ci'], missing: ['ci'] },
+      }),
       'merge',
       /not finished: ci/,
     ],
@@ -275,7 +344,10 @@ describe('approve and merge', () => {
       'GET /repos/acme/app/pulls/7': PULL,
     });
     await approve(fetch, config, 'acme/app', 7, SHA, 'develop', 'ok');
-    expect(JSON.parse(calls[0].body ?? '{}')).toEqual({ event: 'APPROVE', commit_id: SHA, body: 'ok' });
+    const posted = JSON.parse(calls[0].body ?? '{}');
+    expect(posted).toMatchObject({ event: 'APPROVE', commit_id: SHA });
+    // A marker unique to this call, so a lost answer can be matched to this write and no other.
+    expect(posted.body).toMatch(/^ok\n\n<!-- soma-env-approval [0-9a-f-]{36} -->$/);
     expect(calls.map((c) => c.method)).toEqual(['POST', 'GET']);
   });
 
@@ -320,96 +392,92 @@ describe('approve and merge', () => {
     expect(JSON.parse(calls[1].body ?? '{}')).toEqual({ sha: SHA, merge_method: 'merge' });
   });
 
-  // trinity R2 (fable): a dropped connection leaves the write's outcome unknown — it is looked up, not assumed.
-  describe('when the connection drops on the write', () => {
+  // trinity R2 (fable), review-of-legends: a write with no answer — a dropped connection, a timeout, a 5xx — is
+  // looked up, never assumed; and only this call's own approval counts.
+  describe('when the write gets no answer', () => {
     const drop = () => {
       throw new TypeError('fetch failed');
     };
+    const REVIEWS = 'GET /repos/acme/app/pulls/7/reviews?per_page=100';
+    /** The marker the last POST carried. */
+    const markerOf = (calls: { method: string; body?: string }[]) =>
+      /<!-- soma-env-approval ([0-9a-f-]{36}) -->/.exec(
+        JSON.parse(calls.filter((c) => c.method === 'POST').at(-1)?.body ?? '{}').body ?? '',
+      )?.[0] ?? '';
 
-    it('approve: finds its own approval at the SHA and goes on to confirm it', async () => {
-      const { fetch } = fakeFetch({
-        'POST /repos/acme/app/pulls/7/reviews': drop,
-        'GET /user': { login: 'env-bot' },
-        'GET /repos/acme/app/pulls/7/reviews?per_page=100': [
-          { id: 9, user: { login: 'someone' }, state: 'APPROVED', commit_id: SHA },
-          { id: 11, user: { login: 'env-bot' }, state: 'APPROVED', commit_id: SHA },
-        ],
-        'GET /repos/acme/app/pulls/7': PULL,
+    for (const [why, post] of [
+      ['a dropped connection', drop],
+      ['a 502 from the gateway', () => ({ __status: 502 })],
+    ] as const) {
+      it(`approve after ${why}: finds this call's approval by its marker and goes on to confirm it`, async () => {
+        let calls: { method: string; body?: string }[] = [];
+        const f = fakeFetch({
+          'POST /repos/acme/app/pulls/7/reviews': post,
+          [REVIEWS]: () => [
+            // An older approval by the same token at the same SHA is not this call's.
+            { id: 3, state: 'APPROVED', commit_id: SHA, body: 'Approved earlier.' },
+            { id: 11, state: 'APPROVED', commit_id: SHA, body: `ok\n\n${markerOf(calls)}` },
+          ],
+          'GET /repos/acme/app/pulls/7': PULL,
+        });
+        calls = f.calls;
+        await expect(approve(f.fetch, config, 'acme/app', 7, SHA, 'develop', 'ok')).resolves.toBeUndefined();
       });
-      await expect(approve(fetch, config, 'acme/app', 7, SHA, 'develop', 'ok')).resolves.toBeUndefined();
-    });
+    }
 
-    // trinity R3 (fable, astra): not seen yet is not proof — GitHub may still be applying it, or it is past the page.
-    it('approve: no approval of its own seen yet is an unknown outcome, not a failure', async () => {
-      const { fetch } = fakeFetch({
+    it("approve: an older approval without this call's marker is not proof, and a retarget then dismisses this one", async () => {
+      const older = fakeFetch({
         'POST /repos/acme/app/pulls/7/reviews': drop,
-        'GET /user': { login: 'env-bot' },
-        'GET /repos/acme/app/pulls/7/reviews?per_page=100': [],
+        [REVIEWS]: [{ id: 3, state: 'APPROVED', commit_id: SHA, body: 'Approved earlier.' }],
       });
-      const err = await approve(fetch, config, 'acme/app', 7, SHA, 'develop', 'ok').catch((e) => e);
-      expect(err).toBeInstanceOf(OutcomeUnknownError);
-      expect(String(err)).toMatch(/not seen.*check/);
-    });
+      await expect(approve(older.fetch, config, 'acme/app', 7, SHA, 'develop', 'ok')).rejects.toBeInstanceOf(
+        OutcomeUnknownError,
+      );
 
-    it('approve: picks its latest approval at the SHA, and a full page or a malformed list is unknown', async () => {
       const dismissed: string[] = [];
-      const latest = fakeFetch({
+      let calls: { method: string; body?: string }[] = [];
+      const f = fakeFetch({
         'POST /repos/acme/app/pulls/7/reviews': drop,
-        'GET /user': { login: 'env-bot' },
-        'GET /repos/acme/app/pulls/7/reviews?per_page=100': [
-          { id: 5, user: { login: 'env-bot' }, state: 'APPROVED', commit_id: SHA },
-          { id: 12, user: { login: 'env-bot' }, state: 'APPROVED', commit_id: SHA },
+        [REVIEWS]: () => [
+          { id: 3, state: 'APPROVED', commit_id: SHA, body: 'Approved earlier.' },
+          { id: 12, state: 'APPROVED', commit_id: SHA, body: `ok\n\n${markerOf(calls)}` },
         ],
-        'GET /repos/acme/app/pulls/7': { ...PULL, head: { sha: OTHER } },
+        'GET /repos/acme/app/pulls/7': { ...PULL, base: { ref: 'main' } },
         'PUT /repos/acme/app/pulls/7/reviews/12/dismissals': () => {
           dismissed.push('12');
           return { id: 12 };
         },
       });
-      await expect(approve(latest.fetch, config, 'acme/app', 7, SHA, 'develop', 'ok')).rejects.toThrow(/dismissed/);
+      calls = f.calls;
+      await expect(approve(f.fetch, config, 'acme/app', 7, SHA, 'develop', 'ok')).rejects.toThrow(/dismissed/);
       expect(dismissed).toEqual(['12']);
+    });
 
-      const full = Array.from({ length: 100 }, (_, i) => ({ id: i, user: { login: 'x' }, state: 'COMMENTED' }));
-      // trinity R4 (astra, grok): a full page with an older matching approval on it is still unknown.
-      const fullWithOld = [{ id: 1, user: { login: 'env-bot' }, state: 'APPROVED', commit_id: SHA }, ...full.slice(1)];
-      // The token's latest review must itself be the approval: a later comment supersedes an older approval.
-      const superseded = [
-        { id: 1, user: { login: 'env-bot' }, state: 'APPROVED', commit_id: SHA },
-        { id: 2, user: { login: 'env-bot' }, state: 'COMMENTED', commit_id: SHA },
-      ];
-      for (const list of [full, fullWithOld, superseded, { message: 'not a list' }]) {
-        const { fetch } = fakeFetch({
-          'POST /repos/acme/app/pulls/7/reviews': drop,
-          'GET /user': { login: 'env-bot' },
-          'GET /repos/acme/app/pulls/7/reviews?per_page=100': list,
-        });
-        await expect(approve(fetch, config, 'acme/app', 7, SHA, 'develop', 'ok')).rejects.toBeInstanceOf(
-          OutcomeUnknownError,
-        );
+    it('approve: not seen, a full page, a malformed list or a failed lookup is an unknown outcome', async () => {
+      const full = Array.from({ length: 100 }, (_, i) => ({ id: i, state: 'COMMENTED', body: '' }));
+      for (const list of [[], full, { message: 'not a list' }, { __status: 500 }]) {
+        const { fetch } = fakeFetch({ 'POST /repos/acme/app/pulls/7/reviews': drop, [REVIEWS]: list });
+        const err = await approve(fetch, config, 'acme/app', 7, SHA, 'develop', 'ok').catch((e) => e);
+        expect(err).toBeInstanceOf(OutcomeUnknownError);
+        expect(String(err)).toMatch(/may stand.*check/);
       }
     });
 
-    it('approve: when it cannot look, the outcome is unknown', async () => {
-      const { fetch } = fakeFetch({ 'POST /repos/acme/app/pulls/7/reviews': drop });
-      const err = await approve(fetch, config, 'acme/app', 7, SHA, 'develop', 'ok').catch((e) => e);
-      expect(err).toBeInstanceOf(OutcomeUnknownError);
-      expect(String(err)).toMatch(/may stand.*check/);
-    });
-
-    it('merge: a merged PR is a merge made; an open or unreadable one is unknown', async () => {
-      let reads = 0;
-      const merged = fakeFetch({
-        'GET /repos/acme/app/pulls/7': () =>
-          ++reads === 1 ? PULL : { ...PULL, merged: true, merge_commit_sha: 'c'.repeat(40) },
-        'PUT /repos/acme/app/pulls/7/merge': drop,
-      });
-      expect(await merge(merged.fetch, config, 'acme/app', 7, SHA, 'develop', 'merge')).toBe('c'.repeat(40));
-
-      // trinity R4 (grok): merged, but not the head or base this call merged — not this merge.
+    it('merge: a merged PR at the pinned head and checked base is a merge made; anything else is unknown', async () => {
+      for (const put of [drop, () => ({ __status: 504 })]) {
+        let reads = 0;
+        const merged = fakeFetch({
+          'GET /repos/acme/app/pulls/7': () =>
+            ++reads === 1 ? PULL : { ...PULL, merged: true, merge_commit_sha: 'c'.repeat(40) },
+          'PUT /repos/acme/app/pulls/7/merge': put,
+        });
+        expect(await merge(merged.fetch, config, 'acme/app', 7, SHA, 'develop', 'merge')).toBe('c'.repeat(40));
+      }
       for (const after of [
         { ...PULL, base: { ref: 'main' }, merged: true, merge_commit_sha: 'c'.repeat(40) },
         { ...PULL, head: { sha: OTHER }, merged: true, merge_commit_sha: 'c'.repeat(40) },
         { ...PULL, merged: true, merge_commit_sha: null },
+        PULL,
       ]) {
         let n = 0;
         const other = fakeFetch({
@@ -420,12 +488,6 @@ describe('approve and merge', () => {
           OutcomeUnknownError,
         );
       }
-
-      const open = fakeFetch({ 'GET /repos/acme/app/pulls/7': PULL, 'PUT /repos/acme/app/pulls/7/merge': drop });
-      await expect(merge(open.fetch, config, 'acme/app', 7, SHA, 'develop', 'merge')).rejects.toThrow(
-        /not seen merged.*check/,
-      );
-
       let n = 0;
       const lost = fakeFetch({
         'GET /repos/acme/app/pulls/7': () => {
@@ -437,6 +499,17 @@ describe('approve and merge', () => {
       await expect(merge(lost.fetch, config, 'acme/app', 7, SHA, 'develop', 'merge')).rejects.toBeInstanceOf(
         OutcomeUnknownError,
       );
+    });
+
+    it('a 4xx on the write is a refusal, not an unknown outcome', async () => {
+      const { fetch } = fakeFetch({
+        'GET /repos/acme/app/pulls/7': PULL,
+        'PUT /repos/acme/app/pulls/7/merge': { __status: 405, body: { message: 'Pull Request is not mergeable' } },
+      });
+      const err = await merge(fetch, config, 'acme/app', 7, SHA, 'develop', 'merge').catch((e) => e);
+      expect(err).toBeInstanceOf(GithubError);
+      expect(err).not.toBeInstanceOf(OutcomeUnknownError);
+      expect(String(err)).toMatch(/answered 405/);
     });
   });
 
