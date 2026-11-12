@@ -46,7 +46,9 @@ describe('local:import-skills', () => {
     expect(md).toContain('skill path `<path>/<category>/<skill>`');
     expect(md).toContain('skill path `<path>/<skill>`');
     expect(md).toContain('git/trees/<dir sha>?recursive=1');
-    expect(md).toContain('`truncated: true` → stop and report; never import a partial file set.');
+    expect(md).toMatch(
+      /`truncated: true`, or a `commit` \(submodule\) or symlink entry in that tree → stop and report; never import a\s+partial file set\./,
+    );
     expect(md).toContain('(not the value of `target=`)');
     const pin = md.indexOf('commits/HEAD --jq .sha');
     expect(pin).toBeGreaterThan(-1);
