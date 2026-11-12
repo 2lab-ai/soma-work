@@ -40,3 +40,7 @@ SOFTWARE.
 - Referenced via pinned CDN URL
   (`https://cdn.jsdelivr.net/npm/lottie-web@5.13.0/build/player/lottie.min.js`)
   in generated HTML artifacts and in the validator. No source is vendored.
+
+## Local changes
+
+- 2026-11-12: the frontmatter `description` was rewritten to say only when to use the skill (zworkflow `skill-description` rule). What the skill does stays in the body.

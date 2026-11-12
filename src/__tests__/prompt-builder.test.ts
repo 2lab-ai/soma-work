@@ -157,6 +157,126 @@ describe('PromptBuilder', () => {
       expect(section).toMatch(/never emit twice/i);
     });
 
+    // #1232 — the requester sees what ships, and a risky delta does not merge on a default answer.
+    it('deploy workflow shows a delta summary and stops on risk signals before the confirmation', () => {
+      const prompt = builder.loadWorkflowPrompt('deploy')!;
+      const check = prompt.slice(
+        prompt.indexOf('## Delta and Risk Check'),
+        prompt.indexOf('## Pre-Execution Confirmation'),
+      );
+      const confirm = prompt.slice(
+        prompt.indexOf('## Pre-Execution Confirmation'),
+        prompt.indexOf('## Execution Process'),
+      );
+
+      expect(prompt.indexOf('## Delta and Risk Check')).toBeGreaterThan(-1);
+      expect(prompt.indexOf('## Delta and Risk Check')).toBeLessThan(prompt.indexOf('## Pre-Execution Confirmation'));
+      // The read broker accepts compare/<a>...<b> only between SHAs (gh-policy COMPARE_SHA_RANGE_RE).
+      expect(check).toContain('git ls-remote https://github.com/<owner/repo> refs/heads/<source> refs/heads/<target>');
+      expect(check).toContain('repos/<owner/repo>/compare/<target_sha>...<source_sha>');
+      expect(check).not.toContain('compare/<target>...<source>');
+      expect(check).toMatch(/`ahead_by` 0[^\n]*already up to date[^\n]*no PR, no merge/);
+      expect(check).toContain('delta executive summary');
+      expect(check).toMatch(/squash subjects ending `\(#N\)`, then `\{title, body\}`/);
+      for (const signal of [
+        'secrets or credentials',
+        'destructive database or data migration',
+        'deleted configuration or data paths',
+        'no flag',
+        'non-merge commits of `compare/<source_sha>...<target_sha>`',
+        '`files` holds 300 entries or either `total_commits` is over 250',
+        'the full changed content (clone, then search `git diff <target_sha>...<source_sha>`)',
+      ]) {
+        expect(check).toContain(signal);
+      }
+      expect(check).toMatch(/deploy merge commits this workflow leaves on the target are not a signal/);
+      expect(check).toMatch(/A scan you could not finish is a risk signal/);
+      expect(check).toMatch(/a refused or failed read stops that repo as step 1 does, it is not a risk signal/);
+      // Risk stop: Cancel is recommended, proceeding is a separate explicit choice, earlier words are not consent.
+      expect(check).toMatch(/recommended option is `Cancel`/);
+      expect(check).toContain('`Proceed despite the listed risks`');
+      expect(check).toMatch(/Nothing said before the question[^\n]*is consent to merge past a risk signal/);
+      // The answer is bound to the scanned SHAs.
+      expect(check).toMatch(
+        /Steps 2–3 build the working branch at `target_sha` and merge `source_sha` into it\. Right before the step 4 merge, pin both tips again[^\n]*run this check again and ask again/,
+      );
+      expect(prompt).toContain('Create a deploy working branch at `target_sha`');
+      expect(prompt).toContain('Merge `source_sha` into the working branch');
+      expect(confirm).toContain('The delta executive summary');
+      expect(confirm).toContain('`no risk signals found`');
+    });
+
+    // #1232 — a deploy that restarts this host must not be merged a second time by the resumed session.
+    it('deploy workflow re-attaches to the same deploy after a restart instead of merging again', () => {
+      const prompt = builder.loadWorkflowPrompt('deploy')!;
+      const section = prompt.slice(
+        prompt.indexOf('## Restart Re-Attach'),
+        prompt.indexOf('## Conflict Handling Policy'),
+      );
+      const check = prompt.slice(
+        prompt.indexOf('## Delta and Risk Check'),
+        prompt.indexOf('## Pre-Execution Confirmation'),
+      );
+
+      expect(prompt.indexOf('## Restart Re-Attach')).toBeGreaterThan(-1);
+      expect(section).toContain('cancel-in-progress');
+      expect(section).toContain('`deploy-state.json`');
+      // The record: atomic, keyed by the request's message ts, retired only when done or a different tuple.
+      expect(section).toMatch(
+        /written atomically \(a temp file, then rename\); an unreadable file stops the repo and asks/,
+      );
+      expect(section).toMatch(
+        /`request` is the deploy request's message ts: a restart keeps it, a new request has a new one/,
+      );
+      expect(section).toMatch(
+        /Move an old file aside when its `done` is true[^\n]*or its repo, source or target differs/,
+      );
+      expect(section).toMatch(/a new request while the old deploy is not `done` reports it and asks first/);
+      // No record: never adopt someone's deploy unasked; a fork's same-named branch never counts.
+      expect(section).toMatch(
+        /in this repo \(never a fork's\) that is open, or merged with its deploy run still in progress, ask instead of starting step 2; never adopt it unasked/,
+      );
+      expect(section).toMatch(/`head\.repo\.full_name` is `<owner\/repo>` — a fork's branch never counts/);
+      for (const field of [
+        '`request`',
+        '`source_sha`',
+        '`target_sha`',
+        '`branch`',
+        '`pr`',
+        '`merged`',
+        '`after_sha`',
+        '`releaseNotes`',
+        '`done`',
+      ]) {
+        expect(section).toContain(field);
+      }
+      // Resume comes before the up-to-date drop (a merged deploy reads ahead_by 0).
+      expect(check).toMatch(/a repo whose PR it identifies as this request's is merged skips this check/);
+      expect(section).toMatch(/before any write in steps 2–4, read that file and GitHub/);
+      expect(section).toMatch(/never create a PR, merge or push for that repo again/);
+      expect(section).toMatch(
+        /Continue at step 5 with the saved `target_sha` and `after_sha`; never resolve the target tip again/,
+      );
+      expect(section).toMatch(/Save its `merge_commit_sha` as `after_sha` if the file lacks it/);
+      // Only this request's PR counts — an older merged deploy PR must not hijack a new deploy.
+      expect(section).toMatch(
+        /belongs to this request only when it is the file's `pr`, or its head is the file's `branch` in this same repo/,
+      );
+      expect(section).toMatch(/older deploy PRs never count/);
+      expect(section).toMatch(/reuse it, continue at step 4\. Never open a second PR/);
+      expect(section).toMatch(/closed unmerged → report it and ask/);
+      expect(check).toMatch(
+        /merge the new `target_sha` and the new `source_sha` into the same working branch, push it, keep the same PR/,
+      );
+      expect(check).toMatch(
+        /wait for CI on the new head again\. If an old SHA is not an ancestor of its new one \(source or target rewritten\), stop and ask/,
+      );
+      // Release notes: intent before, emitted after; either value blocks a second emission.
+      expect(section).toMatch(/`intent` immediately before emitting the directive, `emitted` right after/);
+      expect(section).toMatch(/either value means do not emit again/);
+      expect(section).toMatch(/Never cancel, re-run or re-trigger a deploy run/);
+    });
+
     it('deploy workflow reads GitHub through devops-tools gh_read and writes through the github MCP', () => {
       const prompt = builder.loadWorkflowPrompt('deploy')!;
       const execution = prompt.slice(prompt.indexOf('## Execution Process'), prompt.indexOf('### 1) Pre-Validation'));

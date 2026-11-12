@@ -1,6 +1,6 @@
 ---
 name: zthink
-description: "Pre-code deliberation discipline. Reduces common LLM coding mistakes by forcing assumption surfacing, scope control, and goal verification before edits. Triggered by: zthink, 생각, 고민, think before coding, 코드 짜기 전에, deliberate, sanity check."
+description: "Use when code is about to be edited and the assumptions, scope or goal are not yet pinned down. Triggers: 'zthink', '생각', '고민', 'think before coding', '코드 짜기 전에', 'sanity check'."
 ---
 
 # zthink — Think Before Coding

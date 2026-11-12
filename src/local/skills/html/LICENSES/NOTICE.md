@@ -27,3 +27,7 @@ The CJK-first font stack, 8 px baseline grid, contrast ≥ 4.5, and
 must-use-real-data constraints encoded in `SKILL.md` originate from
 [`alchaincyf/huashu-design`](https://github.com/alchaincyf/huashu-design)
 (anti-AI-slop discipline) by way of html-anything.
+
+## Local changes
+
+- 2026-11-12: the frontmatter `description` was rewritten to say only when to use the skill (zworkflow `skill-description` rule). What the skill does stays in the body.

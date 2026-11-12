@@ -1,6 +1,6 @@
 ---
 name: find-animation-opportunities
-description: Read-only hunt for the few places motion would really help, with a recipe each. Triggers on "where should this animate", "애니메이션 기회".
+description: "Use when the user wants to know where motion would really help in an interface, before anything is built. Triggers: 'where should this animate', 'animation opportunities', '애니메이션 기회'."
 allowed-tools: Read, Grep, Glob
 version: 1.0.0
 license: MIT

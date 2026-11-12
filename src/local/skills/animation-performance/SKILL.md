@@ -1,6 +1,6 @@
 ---
 name: animation-performance
-description: Fix janky motion — composite-only properties, main thread, will-change, frame budget. Triggers on "animation jank", "dropped frames", "프레임 드랍".
+description: "Use when an animation stutters, drops frames or makes the page feel heavy. Triggers: 'animation jank', 'dropped frames', 'janky scroll', '프레임 드랍', '애니메이션 버벅'."
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 version: 1.0.0
 license: MIT

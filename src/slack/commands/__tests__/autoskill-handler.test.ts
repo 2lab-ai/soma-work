@@ -10,9 +10,10 @@ vi.mock('../../../user-settings-store', () => ({
 
 vi.mock('../../../skill-locator', () => ({
   autoskillExists: vi.fn(),
+  canonicalSkillName: vi.fn((name: string) => name),
 }));
 
-import { autoskillExists } from '../../../skill-locator';
+import { autoskillExists, canonicalSkillName } from '../../../skill-locator';
 import { userSettingsStore } from '../../../user-settings-store';
 import { AutoskillHandler } from '../autoskill-handler';
 import type { CommandContext } from '../types';
@@ -84,6 +85,16 @@ describe('AutoskillHandler', () => {
     await handler.execute(ctx);
     expect(userSettingsStore.setUserAutoskills).toHaveBeenCalledWith('U_TEST', ['using-ssot']);
     expect(ctx.say).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining('무시된') }));
+  });
+
+  it('set stores a retired name as its successor, once', async () => {
+    vi.mocked(autoskillExists).mockReturnValue(true);
+    vi.mocked(canonicalSkillName).mockImplementation((name: string) =>
+      ['using-govuk', 'using-eli5'].includes(name) ? 'using-zwriting' : name,
+    );
+    vi.mocked(userSettingsStore.getUserAutoskills).mockReturnValue(['using-ssot', 'using-zwriting']);
+    await handler.execute(makeCtx({ text: 'set autoskill using-ssot using-govuk using-eli5' }));
+    expect(userSettingsStore.setUserAutoskills).toHaveBeenCalledWith('U_TEST', ['using-ssot', 'using-zwriting']);
   });
 
   it('set clear empties the list', async () => {

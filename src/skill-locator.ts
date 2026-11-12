@@ -75,12 +75,44 @@ function userSkillsDir(userId: string): string {
 }
 
 /**
+ * Skills that were folded into another skill. A stored name (a registered
+ * autoskill) keeps resolving to the successor instead of silently firing
+ * nothing. Consulted only after the old name itself resolves nowhere, so a
+ * user's own skill with an old name still wins.
+ */
+export const RETIRED_SKILL_SUCCESSORS: ReadonlyMap<string, string> = new Map([
+  ['using-govuk', 'using-zwriting'],
+  ['using-eli5', 'using-zwriting'],
+  ['using-ha-thinking', 'using-zwriting'],
+  ['structurize', 'using-zwriting'],
+]);
+
+/**
  * Resolve a bare skill name to its SKILL.md content using the shared fallback
  * chain. Returns null when no namespace owns the name (caller logs/skips).
+ * A retired name with no skill of its own resolves to its successor
+ * ({@link RETIRED_SKILL_SUCCESSORS}).
  * Pure read-only filesystem probing — no permission gate (autoskills only ever
  * reference the OWNER's own user namespace + shared local/plugin skills).
  */
 export function resolveAutoskillContent(name: string, userId?: string): ResolvedAutoskill | null {
+  const exact = resolveExactSkill(name, userId);
+  if (exact) return exact;
+  const successor = RETIRED_SKILL_SUCCESSORS.get(name);
+  return successor ? resolveExactSkill(successor, userId) : null;
+}
+
+/**
+ * The name to store for a requested skill: a retired name that resolves only through its successor
+ * is stored as the successor, so a stored list never carries a name the picker cannot show.
+ */
+export function canonicalSkillName(name: string, userId?: string): string {
+  if (resolveExactSkill(name, userId)) return name;
+  const successor = RETIRED_SKILL_SUCCESSORS.get(name);
+  return successor && resolveExactSkill(successor, userId) ? successor : name;
+}
+
+function resolveExactSkill(name: string, userId?: string): ResolvedAutoskill | null {
   if (!isSafePathSegment(name)) return null;
 
   const candidates: Array<{ key: string; file: string }> = [];

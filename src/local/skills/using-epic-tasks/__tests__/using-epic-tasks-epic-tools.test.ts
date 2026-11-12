@@ -119,8 +119,10 @@ describe('using-epic-tasks — the dashboard epic task loop (E4 ⑩a, D13)', () 
       '에픽 세션 안에서 크론·폴링·sleep으로 자식을 기다리거나 오너 페이지를 만들기',
     );
     expect(flat(section(md, /^## Integration/m))).toContain('**에픽 세션** — `epic` 서버가 있으면');
+    // The description says only when ("inside an epic session"); the loop itself is in the body.
     const description = md.split('\n').find((l) => l.startsWith('description:')) ?? '';
-    expect(description).toContain('plan_write → spawn_child → child_status → accepted → done');
+    expect(description).toContain('inside an epic session');
+    expect(md).toContain('plan_write → spawn_child → child_status → accepted → done');
     // Every road into the drive turns an epic task away from it.
     const handedOver = flat(section(md, /^## 전제$/m))
       .split(' - ')

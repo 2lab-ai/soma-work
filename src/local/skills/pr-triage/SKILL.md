@@ -1,6 +1,6 @@
 ---
 name: pr-triage
-description: "Use when every open PR of a GitHub repo must end in exactly one of 4 buckets (ready-to-merge / needs-review / close+spec-issue / close-obsolete) with the action taken — evidence-based verdicts, parallel cluster investigation, bold close of rotted PRs, real problems preserved as issues. Triggers: 'pr-triage', 'PR 정리 분류', '열린 PR 트리아지'. Args — <REPO> (required; org/repo or a GitHub repo/pulls URL); [TRACKER] (optional; Jira base URL or github-issues, default github-issues — used only for issue linking and spec preservation). NOT for an approval-gated sweep of PRs, issues, branches and Jira together (chore)."
+description: "Use when every open PR of a GitHub repo must be sorted to a final outcome and acted on. Triggers: 'pr-triage', 'PR 정리 분류', '열린 PR 트리아지'. Not for a sweep of PRs, issues, branches and Jira together (chore)."
 argument-hint: "<org/repo or repo-url> [tracker-base-url | github-issues]"
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: ui-ux
-description: "UI/UX design intelligence for web and mobile. Includes 50+ styles, 161 color palettes, 57 font pairings, 161 product types, 99 UX guidelines, and 25 chart types across 10 stacks (React, Next.js, Vue, Svelte, SwiftUI, React Native, Flutter, Tailwind, shadcn/ui, and HTML/CSS). Actions: plan, build, create, design, implement, review, fix, improve, optimize, enhance, refactor, and check UI/UX code. Projects: website, landing page, dashboard, admin panel, e-commerce, SaaS, portfolio, blog, and mobile app. Elements: button, modal, navbar, sidebar, card, table, form, and chart. Styles: glassmorphism, claymorphism, minimalism, brutalism, neumorphism, bento grid, dark mode, responsive, skeuomorphism, and flat design. Topics: color systems, accessibility, animation, layout, typography, font pairing, spacing, interaction states, shadow, and gradient. Named design references: apply a saved real-world site reference by name (e.g. 'use the claude reference') — see 'Named Design References'; defaults to the 'openai' reference when none is named. Integrations: shadcn/ui MCP for component search and examples."
+description: "Use when planning, building, reviewing or fixing the UI or UX of a web or mobile interface, or when a named design reference should be applied. Triggers: 'ui ux', 'landing page design', 'dashboard design', 'color palette', 'font pairing', 'use the claude reference', 'UI 디자인', 'UX 개선'."
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, WebFetch, WebSearch
 version: 2.6.2
 license: MIT

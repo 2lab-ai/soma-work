@@ -24,9 +24,11 @@ describe('qa-issue — the two anchors other skills point at', () => {
     expect(md).toContain('## Precondition gate');
   });
 
-  it('advertises the plan-only mode and the decisions file', () => {
-    expect(description).toContain('--plan');
-    expect(description).toContain('decisions=<gate file>');
+  it('advertises the plan-only mode and the decisions file in its Args (the description says only when)', () => {
+    expect(description).toMatch(/^Use when /);
+    expect(md).toMatch(/## Args\n\n`<ISSUE-KEY>[^`]*\[--plan\] \[decisions=<gate file>\]`/);
+    expect(md).toContain('- `--plan`: plan and gate only, run nothing.');
+    expect(md).toContain("- `decisions=<gate file>`: resume with the requester's recorded answer.");
     expect(md).toMatch(/argument-hint: "[^"]*\[--plan\][^"]*\[decisions=<gate file>\]/);
   });
 });

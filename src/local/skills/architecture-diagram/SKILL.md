@@ -1,6 +1,6 @@
 ---
 name: architecture-diagram
-description: Draw a system architecture diagram as Excalidraw JSON + rendered PNG, then upload the PNG to Slack (one diagram, one artifact). Triggers on "아키텍처 그려줘", "아키텍쳐 다이어그램", "구조도 그려줘", "architecture diagram", "system diagram", "draw architecture".
+description: "Use when the user asks for a drawing of a system architecture or component structure. Triggers: '아키텍처 그려줘', '아키텍쳐 다이어그램', '구조도 그려줘', 'architecture diagram', 'system diagram', 'draw architecture'."
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
 version: 2.1.0
 license: MIT

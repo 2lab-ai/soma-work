@@ -69,4 +69,16 @@ describe('buildAutoskillFire', () => {
     expect(fire?.invokedBlock).toContain('local:using-ssot');
     expect(fire?.invokedBlock).not.toContain('ghost');
   });
+
+  it('fires a skill once when two registered names resolve to the same skill (retired aliases)', () => {
+    vi.mocked(userSettingsStore.getUserAutoskills).mockReturnValue(['using-ssot', 'using-govuk', 'using-eli5']);
+    vi.mocked(resolveAutoskillContent).mockImplementation((name: string) =>
+      name === 'using-ssot'
+        ? { key: 'local:using-ssot', content: 'SSOT BODY', file: '/skills/using-ssot/SKILL.md' }
+        : { key: 'local:using-zwriting', content: 'ZW BODY', file: '/skills/using-zwriting/SKILL.md' },
+    );
+    const fire = buildAutoskillFire(U, '<@U_FIRE>');
+    expect(fire?.keys).toEqual(['local:using-ssot', 'local:using-zwriting']);
+    expect(fire?.invokedBlock.match(/<local:using-zwriting>/g)).toHaveLength(1);
+  });
 });

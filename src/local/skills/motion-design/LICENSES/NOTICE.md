@@ -56,3 +56,7 @@ the rAF-scheduling caveat now names Motion before 14.2, with upstream's note tha
 layout animations (`layout`, `layoutId`) stay on the main thread in every version. Upstream's other edits
 (the course mention removed, Radix examples renamed to Base UI, a greeting-only
 "Initial Response" section) were already covered or are not carried.
+
+## Local changes
+
+- 2026-11-12: the frontmatter `description` was rewritten to say only when to use the skill (zworkflow `skill-description` rule). What the skill does stays in the body.

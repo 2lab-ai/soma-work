@@ -1,6 +1,6 @@
 ---
 name: zdeepresearch
-description: "Background deep research worker. Dispatches long-form reasoning on a topic to one zworkflow strategist subagent (default astra-zhuge; grok-elon for physics/cost lenses) via local:llm-dispatch and returns a structured brief. Use as Phase 1-C worker of local:zexplore or standalone for focused deep dives. Triggered by: zdeepresearch, 딥리서치, deep research."
+description: "Use when a topic needs a long, focused deep dive in the background, standalone or as a worker of local:zexplore. Triggers: 'zdeepresearch', '딥리서치', 'deep research'."
 ---
 
 # zdeepresearch — Background Deep Research Worker

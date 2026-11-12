@@ -1,6 +1,6 @@
 ---
 name: setup-ai-docs
-description: "One-shot setup skill: pick a target repo and install the docs-sync system so docs and README stay in sync with the code on every future task. Audits doc claims against code (drift table), fixes drift, sets up CLAUDE.md/AGENTS.md agent entry docs, adds a mandatory Documentation Sync completion gate, and installs a repo-local update-docs skill that auto-triggers on task completion. Triggered by: setup-ai-docs <repo>, 'docs 셋업', 'setup docs sync', '문서 체계 셋업'. Companion of setup-ai-workflow (work/deploy axis)."
+description: "Use when a repo should get a system that keeps its docs and README in sync with its code on every future task. Triggers: 'setup-ai-docs', 'docs 셋업', 'setup docs sync', '문서 체계 셋업'."
 ---
 
 # setup-ai-docs — 대상 repo에 문서 동기화 체계를 1회 셋업

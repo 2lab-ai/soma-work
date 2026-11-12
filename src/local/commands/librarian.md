@@ -1,5 +1,5 @@
 ---
-description: "Search external docs, best practices, library APIs using Librarian agent (Opus 4.5)"
+description: "Use when external documentation, library APIs, best practices or open-source source code must be looked up."
 argument-hint: "QUESTION"
 allowed-tools:
   - Agent

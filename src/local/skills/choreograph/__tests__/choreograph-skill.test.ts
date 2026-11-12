@@ -34,7 +34,7 @@ describe('local:choreograph skill — vendored contract', () => {
     expect(fm.name).toBe('choreograph');
     expect(typeof fm.description).toBe('string');
     const description = fm.description as string;
-    expect(description).toMatch(/Triggers on /);
+    expect(description).toMatch(/Triggers(?::| on) /);
     expect(description).toMatch(/[가-힣]/);
     expect(description.length).toBeLessThanOrEqual(1024);
     expect(fm['allowed-tools']).toBe('Read, Grep, Glob, Edit, Write');

@@ -1,5 +1,5 @@
 ---
-description: "Multi-agent work coordinator. Delegates to Oracle/Explore/Librarian. Runs in current context (can use AskUserQuestion)."
+description: "Use when a multi-part task should be coordinated across the Oracle, Explore and Librarian agents in the current context."
 argument-hint: "TASK"
 allowed-tools:
   - Agent

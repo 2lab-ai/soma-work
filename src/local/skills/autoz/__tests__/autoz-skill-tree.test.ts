@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest';
  *
  *  - T4: autoz SKILL.md carries an Analysis step — stv:trace across the
  *        project's actual multi-tier surface (backoffice→…→user is an
- *        example, not a fixed list), structurize + html visualization,
+ *        example, not a fixed list), using-zwriting structure engine + html visualization,
  *        two HTML artifacts (problem analysis / final ES report + QA list).
  *  - T1/T3: logical holes fixed across the referenced skill tree —
  *        decision-gate small..medium gap, zwork dispatch-before-RED
@@ -45,9 +45,9 @@ describe('T4 — autoz Analysis step', () => {
     expect(md.toLowerCase()).toMatch(/example, not a fixed list|예시일 뿐|고정된 목록이 아니다/);
   });
 
-  it('analysis uses structurize + html, and data stores name the real storage location with examples', () => {
+  it('analysis uses the using-zwriting structure engine + html, and data stores name the real storage location with examples', () => {
     const md = read('autoz');
-    expect(md).toMatch(/local:structurize/);
+    expect(md).toMatch(/local:using-zwriting/);
     expect(md).toMatch(/local:html/);
     expect(md.toLowerCase()).toMatch(/data store|데이터 스토어/);
     expect(md.toLowerCase()).toMatch(/where .*actually stored|실제로 어디에 저장/);
@@ -145,7 +145,7 @@ describe('T5 — gpt-5.6-sol review findings folded in', () => {
       'superpowers:dispatching-parallel-agents',
       'local:review-pr',
       'local:UIAskUserQuestion',
-      'local:using-ha-thinking',
+      'local:using-zwriting',
       'local:lottie',
       'oracle-reviewer',
     ]) {

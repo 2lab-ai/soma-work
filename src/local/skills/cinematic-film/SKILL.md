@@ -1,6 +1,6 @@
 ---
 name: cinematic-film
-description: Turn real screen recordings into a cinematic product-ad film — the page on a tilted 3D plane, a shallow depth of field (out-of-focus bokeh with one line sharp), rack focus, beat-synced hard cuts, 1-4-word title cards, grain and vignette, a -14 LUFS mix, then independent review until it ships. Use when asked to make a screen recording look like a product ad, a launch film or a cinematic demo; make-product-demo uses it for the look. Triggers on "cinematic", "시네마틱", "아웃오브포커스", "out-of-focus", "depth of field", "광고 영상처럼", "launch film".
+description: "Use when screen recordings should become a cinematic product-ad or launch film, or when make-product-demo needs its look. Triggers: 'cinematic', '시네마틱', '아웃오브포커스', 'out-of-focus', 'depth of field', '광고 영상처럼', 'launch film'."
 allowed-tools: Read, Grep, Glob, Bash, Write, Edit
 version: 1.0.0
 ---

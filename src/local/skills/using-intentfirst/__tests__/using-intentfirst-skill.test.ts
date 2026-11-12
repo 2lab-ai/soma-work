@@ -71,7 +71,7 @@ describe('local:using-intentfirst skill — plugin registration (T1)', () => {
   it('frontmatter name is using-intentfirst with a load-first description', () => {
     const fm = parseFrontmatter(body());
     expect(fm.name).toBe('using-intentfirst');
-    expect(fm.description ?? '').toMatch(/^Load first on every instruction/);
+    expect(fm.description ?? '').toMatch(/^Use when an instruction from G arrives, before any research, plan or build/);
   });
 });
 

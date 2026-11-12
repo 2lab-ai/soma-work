@@ -1,6 +1,6 @@
 ---
 name: z
-description: "Work controller (phase 0–5): SSOT intake, planning, implementation dispatch, post-implementation gate, approve, and terminal report. Triggered by `z` + a plain instruction, todo, issue link, or PR link."
+description: "Use when the user gives z with a plain instruction, a todo, an issue link or a PR link. Triggers: 'z', '$z'."
 ---
 
 # z

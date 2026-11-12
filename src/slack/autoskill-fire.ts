@@ -5,7 +5,7 @@
  * This is the `$skill`-equivalent for autoskills: instead of silently embedding
  * skill content in the system prompt, the registered autoskills are *fired* on
  * the first turn of a new session — exactly like the user had typed
- * `$using-ssot $using-govuk`. The caller (slack-handler) posts the RPG banner
+ * `$using-ssot $using-zwriting`. The caller (slack-handler) posts the RPG banner
  * and appends `invokedBlock` to that turn's dispatch prompt so the model
  * actually executes the skills.
  *
@@ -43,6 +43,7 @@ export function buildAutoskillFire(userId: string, casterName: string): Autoskil
   for (const name of names) {
     const resolved = resolveAutoskillContent(name, userId);
     if (!resolved) continue; // skip unresolvable names silently (same as $skill)
+    if (keys.includes(resolved.key)) continue; // two names, one skill (a retired alias) — fire it once
     const header = `Base directory for this skill: ${path.dirname(resolved.file)}`;
     blocks.push(`<${resolved.key}>\n${header}\n\n${resolved.content}\n</${resolved.key}>`);
     keys.push(resolved.key);

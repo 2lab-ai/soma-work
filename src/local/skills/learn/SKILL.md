@@ -1,6 +1,6 @@
 ---
 name: learn
-description: "Self-reflection on the current conversation. Extracts learnings, identifies mistakes, and saves durable facts to persistent memory via SAVE_MEMORY."
+description: "Use when the conversation should be reflected on so that mistakes and durable facts get saved for future sessions. Triggers: 'learn', '배운 것 정리', 'reflect on this session'."
 ---
 
 # learn — Conversation Self-Reflection & Memory

@@ -1,6 +1,6 @@
 ---
 name: zcheck
-description: "Post-implementation gate. Trigger before asking the user for approval, and just after you think work is done. Runs CI + review-comment resolution + ztrace coverage check. Invoked by local:z phase3 after zwork produces a PR."
+description: "Use when work looks done and before asking the user for approval, or when local:z phase3 reaches the post-implementation gate after zwork opened a PR. Triggers: 'zcheck'."
 ---
 
 # zcheck — Post-Implementation Verification Gate

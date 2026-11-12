@@ -1,6 +1,6 @@
 ---
 name: toss-design
-description: 'Toss-style UI design system for HTML output, distilled from the public TDS Mobile (Toss Design System, Apps in Toss) docs. Gives tokens, component recipes (Top, ListRow, ListHeader, Button, BottomCTA, Badge, Tab, TextField, Toast, Dialog, BottomSheet, Skeleton), Korean UX-writing rules and accessibility checks, with a selectable brand colour - theme=toss-blue (default, Toss Blue #3182F6) or theme=toss-black (Toss near-black #191F28). Use when a page, report, mock-up or mini-app screen should look like Toss / TDS, or when another skill (for example an HTML generator) passes theme=toss-blue|toss-black. Triggers on "toss design", "toss style", "TDS", "Toss Design System", "apps in toss", "toss-blue", "toss-black", "토스 디자인", "토스 스타일로", "토스처럼", "토스 느낌", "TDS 스타일", "앱인토스", "토스 블루", "토스 블랙".'
+description: "Use when a page, report, mock-up or mini-app screen should look like Toss, or another skill passes theme=toss-blue or theme=toss-black. Triggers: 'toss design', 'toss style', 'TDS', 'apps in toss', '토스 디자인', '토스 스타일로', '토스처럼', '앱인토스'."
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, WebFetch
 version: 0.1.0
 license: "Original distillation of the publicly documented TDS (Toss Design System) design language, written for this skill. TDS, Toss and Apps in Toss marks belong to Viva Republica, Inc. No proprietary Toss assets, fonts, icons, Figma UI Kit parts or package code are vendored; output is Toss-style, not an official Toss product."

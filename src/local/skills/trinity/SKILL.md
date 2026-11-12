@@ -1,9 +1,15 @@
 ---
 name: trinity
-description: "Use when a brief (code review, plan review, decision, tie-break) needs the 3-agent consensus panel run until unanimous — the PRIMARY vehicle for every review/consult gate (z phase1 plan review, zwork RED-coverage review, zreflect evaluation, zexplore secondary lint, autoz Rule 1(b) consults + Rule 8 review gate, oracle-reviewer). Panel = `astra-zhuge` (astra) / `grok-elon` (grok) / `fable-zhuge` (fable), dispatched directly as subagents — no LLM MCP tool. Triggers on 'trinity', '트리니티', '3엔진 합의', 'trinity로 리뷰/판단해줘'. Args — the brief to adjudicate (required; text, file path, or PR/diff reference); optional --max-rounds N (default 5). Degrades to a single panelist (astra-zhuge → grok-elon → fable-zhuge), never by silently skipping the gate."
+description: "Use when a code review, plan review, decision or tie-break needs the 3-agent consensus panel, including every review or consult gate another skill sends to it. Triggers: 'trinity', '트리니티', '3엔진 합의', 'trinity로 리뷰해줘'."
 ---
 
 # trinity — 3-agent consensus loop
+
+## Args
+
+- the brief to adjudicate (required): text, a file path, or a PR/diff reference.
+- `--max-rounds N` (optional, default 5).
+- Panel: `astra-zhuge` (astra) / `grok-elon` (grok) / `fable-zhuge` (fable), dispatched directly as subagents — no LLM MCP tool. It degrades to a single panelist (`astra-zhuge` → `grok-elon` → `fable-zhuge`), never by silently skipping the gate.
 
 같은 브리프를 서로 다른 엔진의 서브에이전트 3개에 병렬로 주고, **전원 합의(unanimous)** 까지 상호 반박 라운드를 돈다. 최대 라운드 도달 시 분열 보고로 종결 — dispatcher가 조용히 승자를 고르지 않는다.
 

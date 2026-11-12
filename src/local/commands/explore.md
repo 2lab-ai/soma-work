@@ -1,5 +1,5 @@
 ---
-description: "Search THIS codebase using the Explore agent (astra engine). Find implementations, patterns, code flow."
+description: "Use when something must be found in this codebase: an implementation, a pattern, a code path."
 argument-hint: "QUESTION"
 allowed-tools:
   - Agent

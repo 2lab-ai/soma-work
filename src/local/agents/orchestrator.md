@@ -1,5 +1,5 @@
 ---
-description: "Multi-agent work coordinator. Delegates to Oracle/Explore/Librarian. Use as subagent for autonomous task execution. NO user interaction."
+description: "Use when a multi-part task should run autonomously as a subagent, coordinating Oracle, Explore and Librarian, with no user interaction."
 model: opus
 tools:
   - Agent
@@ -22,6 +22,8 @@ tools:
   - mcp__plugin_ohmyclaude_claude-as-mcp__chat-reply
 color: "#FF6B35"
 ---
+
+> Multi-agent work coordinator that delegates to Oracle, Explore and Librarian. NO user interaction.
 
 @include(${CLAUDE_PLUGIN_ROOT}/prompts/orchestrator-workflow.md)
 
