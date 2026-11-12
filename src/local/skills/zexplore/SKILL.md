@@ -1,6 +1,6 @@
 ---
 name: zexplore
-description: "Hardcore research orchestrator. Use when the user asks to deeply research a topic (architecture, libraries, prior art, trade-offs) before any plan or code. Triggered by: zexplore, 러서치, research, 조사, prior art, 선행 조사, 아키텍처 탐색."
+description: "Use when the user asks for a topic to be researched in depth (architecture, libraries, prior art, trade-offs) before any plan or code. Triggers: 'zexplore', '러서치', 'research', '조사', 'prior art', '선행 조사', '아키텍처 탐색'."
 ---
 
 # zexplore — Hardcore Research Orchestrator

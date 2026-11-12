@@ -1,5 +1,5 @@
 ---
-description: "깊은 사고·전략 Oracle (astra 엔진판) — elon 인격을 astra 엔진으로 단독 자문할 때. trinity 패널 대타가 아니다 (패널은 엔진 대체 없이 3종 성립 또는 단일 패널리스트 fallback 강등). 비-anthropic 모델은 llmux 경유 — llmux 데몬 다운이면 즉시 가시적으로 실패하라"
+description: "Use when the elon persona (physics-first, cost structure) should advise alone on the astra engine. Not for a trinity panel slot."
 model: astra
 color: "#9370DB"
 ---

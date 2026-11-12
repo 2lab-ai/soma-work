@@ -1,6 +1,6 @@
 ---
 name: es
-description: "Trigger: when local:zwork completes, or at turn-end via the harness. Routes to a tiered (brief / issue / epic) Executive Summary by work volume, mirroring using-epic-tasks Case A/B/C but for the report layer."
+description: "Use when local:zwork completes, at turn end when finished work needs an Executive Summary, or when the user asks for one. Triggers: 'es', 'executive summary', '요약 보고'."
 ---
 
 # Executive Summary (`local:es`) — tiered router

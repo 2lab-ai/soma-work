@@ -65,13 +65,14 @@ describe('local:html skill — RED contract', () => {
     const fm = parseFrontmatter(md);
     expect(fm.name).toBe('html');
     expect(fm.description).toBeDefined();
-    const desc = (fm.description ?? '').toLowerCase();
-    expect(desc).toMatch(/html/);
-    // Slack upload is the whole point — must be advertised in the trigger description.
-    expect(desc).toMatch(/slack|thread|upload|file/);
+    const desc = fm.description ?? '';
+    // The description says only when to use it (skill-description rule); delivery lives in the body.
+    expect(desc).toMatch(/^Use when /);
+    expect(desc.toLowerCase()).toMatch(/html/);
     // SSOT 2026-11-02 T2: a visualization ships as HTML only — the PNG is a local QA snapshot.
-    expect(desc).toContain('upload the html only');
-    expect(desc).not.toMatch(/upload both files/);
+    expect(md).toContain('The HTML is the artifact — the only file uploaded');
+    expect(md).toContain('no image of it is made');
+    expect(md).not.toMatch(/upload both files/);
   });
 
   it('SSOT 2026-11-02 T2 — delivery uploads the HTML only; the PNG is a QA snapshot that is never uploaded', () => {

@@ -13,13 +13,14 @@ const frontmatter = md.match(/^---\n([\s\S]*?)\n---\n/)?.[1] ?? '';
 const contract = readFileSync(resolve(__dirname, '..', '..', '..', 'CLAUDE.md'), 'utf8');
 
 describe('local:import-skills', () => {
-  it('is named import-skills and describes WHEN + triggers + Args (with --dry-run) in one quoted line', () => {
+  it('is named import-skills; the description says only when (one quoted line), the body carries the input and --dry-run', () => {
     expect(frontmatter).toMatch(/^name: import-skills$/m);
     const description = frontmatter.match(/^description: "(.*)"$/m)?.[1] ?? '';
-    expect(description).toContain('import-skills');
-    expect(description).toContain('Args');
-    expect(description).toContain('--dry-run');
-    expect(description.length).toBeLessThanOrEqual(420);
+    expect(description).toMatch(/^Use when /);
+    expect(description).toContain("'import-skills'");
+    expect(description).not.toMatch(/Args|--dry-run/);
+    expect(md).toMatch(/## Input/);
+    expect(md).toContain('--dry-run');
   });
 
   it('carries no fixed identity, home path or user-skill registration of its own', () => {

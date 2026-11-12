@@ -1,6 +1,6 @@
 ---
 name: motion-design
-description: Design-engineering advisor for UI animation and motion. Decides whether to animate at all, then which easing, duration, origin, and interruptibility make an interaction feel right instead of merely run. Supplies exact easing curves, duration budgets, spring configs, clip-path/gesture techniques, and performance/accessibility rules. Use when building or tuning transitions, drawers, toasts, popovers, drag gestures, or any motion; pairs with the review-motion skill for reviews. Triggers on "animation", "motion", "transition", "easing", "make it feel right", "애니메이션", "모션", "트랜지션", "이징", "동작 자연스럽게".
+description: "Use when building or tuning any UI motion: transitions, drawers, toasts, popovers, drag gestures, easing and durations. Triggers: 'animation', 'motion', 'transition', 'easing', 'make it feel right', '애니메이션', '모션', '트랜지션', '이징'. Not for reviewing existing motion code (review-motion)."
 allowed-tools: Read, Grep, Glob, Edit, Write
 version: 1.0.0
 ---

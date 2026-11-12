@@ -1,6 +1,6 @@
 ---
 name: llm-dispatch
-description: "Harness-side long-running external-model dispatch. Spawns one zworkflow subagent (astra-zhuge / grok-elon / fable-zhuge / astra-elon / strategist) via Agent(run_in_background:true), persists the raw turn to a caller-supplied artifact, and returns a completion envelope. Continuation via SendMessage to the same agent; cancellation via TaskStop. External engines are reached ONLY through the subagent's frontmatter model — the former CLI and MCP chat transports are retired (2026-09-30). Triggered by: llm-dispatch, llm 디스패치, long-running llm."
+description: "Use when an external-model consultation must run long in the background, be continued later or be cancelled. Triggers: 'llm-dispatch', 'llm 디스패치', 'long-running llm'."
 ---
 
 # llm-dispatch — Long-Running Subagent Dispatch

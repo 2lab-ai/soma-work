@@ -82,7 +82,7 @@ describe('local:html skill — motion layer + local web server contract', () => 
   it('ui-ux design driver is the unconditional default, not opt-in', () => {
     const md = readFileSync(SKILL_MD, 'utf8');
     expect(md).toMatch(/not opt-in/i);
-    expect(md).toMatch(/every invocation/i);
+    expect(md).toMatch(/every\s+invocation/i);
   });
 
   it('server/serve.mjs is a self-contained node static server with health + traversal guard', () => {

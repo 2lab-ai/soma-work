@@ -1,10 +1,18 @@
 ---
 name: qa-issue
-description: "Use when one tracker issue that is already deployed to a QA environment needs QA at a chosen depth, recorded on the issue — called per issue by local:deploy-qa, or standalone. At high and max it covers what a human QA covers (Coverage matrix) and checks every case's preconditions before running anything, asking the requester once when one is missing (Precondition gate). Args — <ISSUE-KEY> qa=default|medium|high|max env=<environment skill whose Environment and Policy sections are the profile> [transition=done mergeShas=<repo:sha,…> excludeBases=<list> excludeHeads=<list>] [runDir=<dir>] [catalog=<case catalog path>] [--plan = plan and gate only, run nothing] [decisions=<gate file> = resume with the requester's recorded answer]."
+description: "Use when one tracker issue already deployed to a QA environment needs QA recorded on the issue, called per issue by local:deploy-qa or on its own. Triggers: 'qa-issue', '이슈 QA'."
 argument-hint: "<ISSUE-KEY> qa=<default|medium|high|max> env=<profile> [transition=done mergeShas=<repo:sha,…> excludeBases=<list> excludeHeads=<list>] [runDir=<dir>] [catalog=<path>] [--plan] [decisions=<gate file>]"
 ---
 
 # qa-issue — QA one deployed issue, record it on the tracker, write JSON
+
+## Args
+
+`<ISSUE-KEY> qa=default|medium|high|max env=<environment skill whose Environment and Policy sections are the profile> [transition=done mergeShas=<repo:sha,…> excludeBases=<list> excludeHeads=<list>] [runDir=<dir>] [catalog=<case catalog path>] [--plan] [decisions=<gate file>]`
+
+- `--plan`: plan and gate only, run nothing.
+- `decisions=<gate file>`: resume with the requester's recorded answer.
+- At `high` and `max` the run covers what a human QA covers (Coverage matrix) and checks every case's preconditions before running anything, asking the requester once when one is missing (Precondition gate).
 
 One issue per call. The procedure is generic; every environment value (hosts, accounts, states, browser commands) comes from the profile.
 

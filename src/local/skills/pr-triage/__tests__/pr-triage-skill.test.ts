@@ -12,12 +12,14 @@ const md = readFileSync(resolve(__dirname, '..', 'SKILL.md'), 'utf8');
 const frontmatter = md.match(/^---\n([\s\S]*?)\n---\n/)?.[1] ?? '';
 
 describe('local:pr-triage', () => {
-  it('is named pr-triage and describes WHEN + Args + NOT in one quoted line', () => {
+  it('is named pr-triage; the description says only when and separates chore, the body carries the input', () => {
     expect(frontmatter).toMatch(/^name: pr-triage$/m);
     const description = frontmatter.match(/^description: "(.*)"$/m)?.[1] ?? '';
-    expect(description).toContain('pr-triage');
-    expect(description).toContain('Args');
-    expect(description).toContain('NOT for an approval-gated sweep');
+    expect(description).toMatch(/^Use when /);
+    expect(description).toContain("'pr-triage'");
+    expect(description).not.toContain('Args');
+    expect(description).toMatch(/Not for [^.]*\(chore\)/);
+    expect(md).toMatch(/## Input/);
   });
 
   it('names no fixed co-author; attribution follows the session or repo rule', () => {

@@ -1,6 +1,6 @@
 ---
 name: using-epic-tasks
-description: "유저의 구현 요청을 받으면 decision-gate로 규모를 판정한 뒤 3 케이스로 라우팅. Case A (이슈 1 + PR 1, tier ≤ large), Case B (에픽 + 서브이슈 N + PR N, tier = xlarge), Case C (에픽 여러 개 분량이면 중지·쪼개기 요청, tier ≥ xxlarge). 작업 시작 전 decision-gate 통과 필수. 각 산출물 본문은 using-zwriting의 층 규율을 따른다. Case B 에픽을 실환경 실측까지 모는 실행 루프는 reference/epic-drive.md. 에픽 세션 안(epic 서버가 있을 때)에서는 plan_write → spawn_child → child_status → accepted → done 루프."
+description: "Use when the user asks for something to be implemented and the work must be sized into one issue and PR, an epic with sub-issues, or a stop to split it. Also when running inside an epic session. Triggers: 'using-epic-tasks', '에픽으로 진행', '이슈로 쪼개줘'."
 ---
 
 # using-epic-tasks
@@ -88,6 +88,8 @@ tier가 `tiny (~5 lines)` 또는 `small (~20 lines)`이면 **이슈 생성 생�
 하루 보고 — 24시간마다 직전 하루를 완료 조건 기준 사실표로 닫고, `trinity` 1라운드 판정을 받아 셀프 리플렉션을 그날 실행한다. 상세 = `reference/epic-drive.md` §하루 보고.
 
 ## Case B 에픽 태스크 — 에픽 세션 안에서
+
+한 줄: plan_write → spawn_child → child_status → accepted → done 루프.
 
 **When**: 에픽 세션의 턴 안에서 돌 때 — `epic` MCP 서버가 붙어 있다(`mcp__epic__plan_write` · `mcp__epic__spawn_child` · `mcp__epic__child_status` · `mcp__epic__instruct_child` · `mcp__epic__find_tasks` · `mcp__epic__adopt_child`). 이 서버는 에픽 세션(새 작업 창의 에픽 스위치로 만든 Slack 스레드)에만 붙는다 — 일반 세션·로컬·에픽의 자식에는 없으므로 그쪽은 위의 Case B 드라이브(또는 Case A)를 그대로 쓴다. 단, 에픽의 자식은 자기 노드만 맡는다 — 노드가 Case A보다 크면 드라이브를 시작하지 말고 그 사실을 답으로 남기고 턴을 끝낸다(에픽이 계획을 고친다). 에픽 세션 안이면 넘겨받은 에픽이라도 드라이브로 가지 않는다.
 

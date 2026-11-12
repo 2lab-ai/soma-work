@@ -1,6 +1,6 @@
 ---
 name: zkorean
-description: AI(ChatGPT·Claude·Gemini 등)가 작성한 한글 텍스트를 받아 명백히 어색한 부분만 자연스러운 한글로 교정한다. 학술·공적·사설·법조문 register에서 정상으로 쓰이는 표현은 건드리지 않는다. 의미·수치·고유명사·직접 인용은 한 글자도 변경하지 않는다. 트리거 — "zkorean", "AI 티 없애줘", "AI 같은 글 자연스럽게", "GPT/ChatGPT 문체", "AI 번역투 고쳐", "사람이 쓴 것처럼 윤문", "한글 윤문", "AI 윤문", "ChatGPT 티 제거", "한글 자연스럽게", "번역투 제거", "humanize Korean", "naturalize Korean".
+description: "Use when Korean text written by an AI reads unnaturally and should sound like a person wrote it. Triggers: 'zkorean', 'AI 티 없애줘', 'AI 번역투 고쳐', '사람이 쓴 것처럼 윤문', '한글 윤문', '번역투 제거', 'humanize Korean'."
 ---
 
 # zkorean

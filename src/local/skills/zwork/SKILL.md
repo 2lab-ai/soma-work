@@ -1,6 +1,6 @@
 ---
 name: zwork
-description: "Implementation phase. Subagent-driven development, PR creation, and verification. Invoked by local:z after planning is complete."
+description: "Use when local:z has finished planning and implementation should start. Triggers: 'zwork'."
 ---
 
 # zwork — Implementation

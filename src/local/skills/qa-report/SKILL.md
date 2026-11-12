@@ -1,6 +1,6 @@
 ---
 name: qa-report
-description: "Use when per-issue QA results (JSON from the `qa-issue` skill) must become the evidence report a reviewer can verify without asking: one self-contained interactive HTML (issue list ↔ per-case request/response and screenshots, all embedded) and nothing else — no PNG preview (one report, one artifact). Called by `deploy-qa` at its report step, or standalone. Args — <report-input.json> (required; qa-issue JSON array + per-key links + keys handled without QA); shots=<screenshots dir> (the profile's screenshots directory; required to embed screenshots); optional title=<text>."
+description: "Use when per-issue QA results must become an evidence report a reviewer can check without asking, called by deploy-qa at its report step or on its own. Triggers: 'qa-report', 'QA 리포트'."
 argument-hint: <report-input.json> shots=<dir> [title=<text>]
 ---
 

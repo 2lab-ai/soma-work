@@ -1,6 +1,6 @@
 ---
 name: deploy-qa
-description: "Use when a deploy has landed and the host's environment plugin (its `post-deploy` skill) hands over the deploy range so that every issue it shipped is QA'd and closed out with a full QA report in the calling thread; also for that run's readiness check or dry run. Called from an environment skill, which names the profile skill. Args — repo=<owner/repo> target=<branch> before=<sha> after=<sha> (before/after not needed with --preflight, before not needed with --confirm); env=<profile skill> (default: the calling skill); --preflight = readiness only, replies applies / partial: <checks> / not-applicable / missing: <fields>; --confirm = deploy confirmation only, replies confirmed / unconfirmed: <reason> / failed: <run> concluded <conclusion>; --plan-only = admission table only, no writes; keys=<K,…> = limit the run to these keys; decisions=<gate file> = resume after the requester answered the precondition gate (step 5.5 plans every key and asks once, before any QA); waive=autoz = the deploy request carries $autoz, so that question counts as answered 'proceed without' (open preconditions waived in the same run, nothing asked)."
+description: "Use when a deploy has landed and a host's post-deploy skill hands over the deploy range so that every issue it shipped gets QA'd and closed out, or asks for that run's readiness check, deploy confirmation or dry run. Triggers: 'deploy-qa', '배포 QA'."
 argument-hint: "repo=<owner/repo> target=<branch> before=<sha> after=<sha> [env=<skill>] [--preflight] [--confirm] [--plan-only] [keys=<K,…>] [decisions=<gate file>] [waive=autoz]"
 ---
 
@@ -28,8 +28,8 @@ Read GitHub only through the devops-tools tool `mcp__devops-tools__gh_read`. It 
 ## Args
 - `repo`, `target`: the deployed repo and the branch the deploy merged into, exactly as the deploy reported them.
 - `before`, `after`: the target SHA before the deploy and the deployed merge commit. The range is `before..after` — nothing else (no ledger).
-- `env`: the profile skill (e.g. `acme-env:staging-qa`); absent → the calling skill. The same name is passed to `qa-issue` as `env=`.
-- `--preflight`: readiness check, see below. No writes.
+- `env`: the profile skill (e.g. `acme-env:staging-qa`); absent → the calling skill (this skill is called from an environment skill, which names the profile skill). The same name is passed to `qa-issue` as `env=`.
+- `--preflight`: readiness check, see below. No writes. Replies with one of applies / partial: <checks> / not-applicable / missing: <fields>.
 - `--confirm`: run the deploy confirmation of step 1 only, for `repo`, `target`, and `after` (both ways, the same budget), and write nothing: no lock, no run directory, no tracker read or write, no post. Answer with exactly one line: `confirmed`, `unconfirmed: <reason>`, or `failed: <run> concluded <conclusion>`. Budget spent → `unconfirmed: not confirmed in time`; a profile entry step 1 needs is absent → `unconfirmed: missing: <fields>`. The deploy workflow asks this for every repo with QA before it QAs any repo, and reports the answer as that repo's deploy confirmation.
 - `--plan-only`: steps 1–5 without the run directory, post the admission table, stop. No lock, no tracker writes, no QA.
 - `keys=<K,…>`: restrict the target set to these keys; they still go through admission. Used for re-runs.

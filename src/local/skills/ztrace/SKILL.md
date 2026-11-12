@@ -1,6 +1,6 @@
 ---
 name: ztrace
-description: "Scenario-driven workflow analysis at callstack depth. Triggered by: 워크플로우 분석, 콜스택 추적, 시나리오별 동작 분석, 어떻게 작동하는지 추적"
+description: "Use when the user wants to know how a workflow behaves, scenario by scenario, down to the call stack. Triggers: '워크플로우 분석', '콜스택 추적', '시나리오별 동작 분석', '어떻게 작동하는지 추적', 'ztrace'."
 ---
 
 # ztrace — Scenario-Driven Callstack Trace

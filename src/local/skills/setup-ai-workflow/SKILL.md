@@ -1,6 +1,6 @@
 ---
 name: setup-ai-workflow
-description: "One-shot setup skill: pick a target repo and install the AI work-execution system — check gate (task runner), commit/PR conventions, worktree isolation policy, build/deploy/release runbook skills generated from the repo's actual CI/CD (deployment included), and optional issue/PR gates with a label-driven agent work queue. Generalized from 2lab-ai/llmux and 2lab-ai/herdr-mx. Triggered by: setup-ai-workflow <repo>, 'AI 워크플로우 셋업', 'agent 작업 체계 셋업'. Companion of setup-ai-docs (docs axis)."
+description: "Use when a repo should get an AI work-execution system: check gate, commit and PR conventions, worktrees, build, deploy and release runbooks. Triggers: 'setup-ai-workflow', 'AI 워크플로우 셋업', 'agent 작업 체계 셋업'."
 ---
 
 # setup-ai-workflow — 대상 repo에 AI 작업·배포 체계를 1회 셋업

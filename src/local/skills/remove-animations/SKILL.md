@@ -1,6 +1,6 @@
 ---
 name: remove-animations
-description: Delete or cut animations that cost more than they give (frequent, keyboard-driven, slow). Triggers on "remove animations", "애니메이션 줄여".
+description: "Use when animations cost more than they give — frequent, keyboard-driven or slow — and should be cut. Triggers: 'remove animations', 'too much animation', '애니메이션 줄여'."
 allowed-tools: Read, Grep, Glob, Edit, Write
 version: 1.0.0
 license: MIT

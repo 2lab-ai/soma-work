@@ -50,7 +50,9 @@ describe('T7 — auto-es is es plus the harness', () => {
   });
 
   it('is what soma-work runs wherever es is asked for', () => {
-    expect(skill.slice(0, skill.indexOf('\n---', 4))).toMatch(/instead of `?es`?/i);
+    const fm = skill.slice(0, skill.indexOf('\n---', 4));
+    expect(fm).toMatch(/Executive Summary is due inside soma-work/);
+    expect(fm).toMatch(/Not for use outside soma-work \(es\)/);
   });
 });
 

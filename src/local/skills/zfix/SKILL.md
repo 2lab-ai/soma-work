@@ -1,6 +1,6 @@
 ---
 name: zfix
-description: "Verify-first variant of local:z. Use when implementation already exists but has gaps. Detects intent-vs-impl gaps via scenario trace, then dispatches to local:z pipeline."
+description: "Use when an implementation already exists but has gaps against what was asked. Triggers: 'zfix', '구현 빈틈 고쳐'."
 ---
 
 # zfix — Gap-Driven z Execution

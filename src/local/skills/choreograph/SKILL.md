@@ -1,6 +1,6 @@
 ---
 name: choreograph
-description: Order, overlap and stagger several animations so they read as one moment. Triggers on "choreograph", "stagger", "순차 애니메이션".
+description: "Use when several animations on one screen must be ordered, overlapped or staggered so they read as one moment. Triggers: 'choreograph', 'stagger', 'sequence these animations', '순차 애니메이션'."
 allowed-tools: Read, Grep, Glob, Edit, Write
 version: 1.0.0
 license: MIT

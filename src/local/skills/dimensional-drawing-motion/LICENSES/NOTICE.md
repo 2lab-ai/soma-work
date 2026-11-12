@@ -32,3 +32,4 @@ Upstream commit referenced: `5c457437c8c83524308aad3b7443e81adcc13153`
   0 with no file written. It now exits 1 with the ffmpeg exit code or signal.
   Covered by `__tests__/headless-render-exit.test.ts` (stub `playwright`, fake
   encoder). Worth sending upstream.
+- 2026-11-12: the frontmatter `description` was rewritten to say only when to use the skill (zworkflow `skill-description` rule). What the skill does stays in the body.

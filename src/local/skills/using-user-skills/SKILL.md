@@ -1,6 +1,6 @@
 ---
 name: using-user-skills
-description: 유저 개인 스킬을 만들고 사용하는 법. MANAGE_SKILL 모델 커맨드로 create/update/delete/list 하고 $user:name 으로 호출. 저장은 DATA_DIR/{userId}/skills/{name}/SKILL.md 로 멀티테넌트 격리.
+description: "Use when the user wants to make, change, read, list, delete or run their own personal skills. Triggers: '개인 스킬', 'my skill', 'user skill', 'MANAGE_SKILL', '$user:'."
 ---
 
 # using-user-skills

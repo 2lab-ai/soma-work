@@ -108,9 +108,10 @@ describe('local:using-epic-tasks — Case B drive section in SKILL.md (T1)', () 
     );
   });
 
-  it('frontmatter description routes to the drive reference', () => {
+  it('the body routes Case B to the drive reference (the description says only when)', () => {
     const fm = skill().match(/^---\n([\s\S]*?)\n---/);
-    expect(fm?.[1] ?? '').toMatch(/^description: ".*reference\/epic-drive\.md.*"$/m);
+    expect(fm?.[1] ?? '').toMatch(/^description: "Use when /m);
+    expect(skill()).toContain('reference/epic-drive.md');
   });
 });
 

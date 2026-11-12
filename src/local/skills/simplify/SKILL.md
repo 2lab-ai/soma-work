@@ -1,15 +1,6 @@
 ---
 name: simplify
-description: >
-  Review changed code for over-engineering, then fix what should be cut —
-  reinvented standard library, unneeded dependencies, speculative abstractions,
-  dead flexibility, code that could be one line. Also acts as a writing stance
-  that forces the laziest solution that actually works. Use when reviewing a
-  diff or PR before approval (zcheck Step 0, pr-fix-and-update cleanup), or
-  whenever the user says "simplify", "단순화", "간소화", "is this
-  over-engineered", "what can we delete", "yagni", "do less", or complains
-  about bloat, boilerplate, or unnecessary dependencies. Do NOT use for
-  non-coding requests (prose, translation, summaries).
+description: "Use when reviewing a diff or PR before approval for over-engineering, or when the user asks what can be cut or complains about bloat, boilerplate or unneeded dependencies. Triggers: 'simplify', '단순화', '간소화', 'is this over-engineered', 'what can we delete', 'yagni'. Not for prose, translation or summaries."
 argument-hint: "[review|fix|stance]"
 license: MIT
 ---

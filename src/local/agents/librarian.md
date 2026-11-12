@@ -1,5 +1,5 @@
 ---
-description: "External documentation and open-source codebase understanding. Use for official docs, best practices, library APIs, GitHub source analysis. MUST provide GitHub permalinks as evidence. Background execution."
+description: "Use when official docs, library APIs, best practices or open-source source code must be looked up outside this codebase."
 model: opus
 tools:
   - Read

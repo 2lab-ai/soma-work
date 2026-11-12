@@ -1,5 +1,5 @@
 ---
-description: "깊은 사고·전략 Oracle (grok 엔진판) — trinity 패널의 physics-first 슬롯, 또는 elon 인격을 grok 엔진으로 단독 자문할 때. 비-anthropic 모델은 llmux 경유 — llmux 데몬 다운이면 즉시 가시적으로 실패하라 (trinity fallback chain이 처리한다)"
+description: "Use when the trinity panel needs its physics-first slot, or the elon persona should advise alone on the grok engine."
 model: grok
 color: "#00CED1"
 ---

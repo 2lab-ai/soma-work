@@ -1,6 +1,6 @@
 ---
 name: release-notes
-description: Generate bilingual (EN/KO) release notes from two git refs. Analyzes commits and diffs to produce user-centric, Keep a Changelog formatted notes.
+description: "Use when release notes are needed for the changes between two git refs, or a deploy reaches its release-notes step. Triggers: 'release notes', '릴리즈 노트', 'changelog'."
 argument-hint: <BASE_REF> <HEAD_REF>
 allowed-tools: Bash, Read, Grep, Glob
 ---

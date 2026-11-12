@@ -1,5 +1,5 @@
 ---
-description: "Ask Oracle for architecture advice, design decisions, or failure analysis"
+description: "Use when an architecture decision, a design choice or a failure analysis needs a deep second opinion."
 argument-hint: "QUESTION"
 allowed-tools:
   - Agent

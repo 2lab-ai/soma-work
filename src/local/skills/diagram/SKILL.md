@@ -1,6 +1,6 @@
 ---
 name: diagram
-description: Router skill that classifies visual requests and delegates to the right renderer. Triggers on "비주얼로 표현해줘", "다이어그램 그려줘", "그림으로", "시각화해줘", "visualize", "draw diagram", "visualize this", "show as diagram". Single turn; no preamble.
+description: "Use when the user asks for something to be shown visually and the kind of picture is not yet decided. Triggers: '비주얼로 표현해줘', '다이어그램 그려줘', '그림으로', '시각화해줘', 'visualize', 'draw diagram', 'show as diagram'."
 allowed-tools: Read, Bash
 version: 1.1.0
 license: MIT

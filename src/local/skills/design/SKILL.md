@@ -1,6 +1,6 @@
 ---
 name: design
-description: Design advisor for HTML visual output — picks a deliberate design direction from a 20-philosophy style library, enforces an anti-AI-slop discipline, and supplies typography/scale/contrast/critique rules so generated HTML reads like a real design team made it, not a model's default. Distilled from the MIT-licensed huashu-design skill (alchaincyf / 花叔). Consumed by the `html` skill at generation time, and usable standalone for design-direction advice. Triggers on "디자인", "디자인 방향", "스타일 추천", "어떤 스타일", "비주얼 품질", "예쁘게", "design direction", "design style", "pick a style", "make it look good", "anti AI slop", "design review", "비평", "review this design".
+description: "Use when generated HTML or another visual output needs a deliberate design direction or a design critique, or when the user asks how to make it look good. Triggers: '디자인', '디자인 방향', '스타일 추천', '예쁘게', 'design direction', 'pick a style', 'make it look good', 'design review'."
 allowed-tools: Read, Grep, Glob, WebSearch
 version: 0.1.1
 license: MIT

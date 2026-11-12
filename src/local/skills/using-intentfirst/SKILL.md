@@ -1,6 +1,6 @@
 ---
 name: "using-intentfirst"
-description: "Load first on every instruction from G, before any research, plan or build. Runs the intent layer on top of using-ssot: fixes the SSOT, separates G's intent, diagnoses why instruction and intent diverge, builds INTENT-LIST and INTENT-TASK-TREE, decides build-vs-reuse and objections, diffs against SSOT-TASK-TREE, and proceeds on the intent tree without waiting; steers on interrupt."
+description: "Use when an instruction from G arrives, before any research, plan or build. Triggers: 'using-intentfirst', '의도 먼저'."
 ---
 
 # Intent-first (의도 우선) — using-ssot 위의 의도 층

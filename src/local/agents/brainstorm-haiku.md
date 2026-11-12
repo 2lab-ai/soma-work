@@ -1,5 +1,5 @@
 ---
-description: "브레인스토밍 생성기 (haiku 엔진, 추론 강도 low) — brainstorm 스킬이 칸(분야 × 관점) 하나를 맡길 때만 쓴다. 아이디어를 한 줄에 하나씩 파일에 쓰고 평가는 하지 않는다"
+description: "Use when the brainstorm skill hands one cell (field and angle) to the haiku engine. Not for any other task."
 model: haiku
 effort: low
 tools:

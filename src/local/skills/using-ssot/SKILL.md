@@ -1,6 +1,6 @@
 ---
 name: using-ssot
-description: "SSOT / SSOT-LIST / SSOT-TASK-TREE 단일 출처. 유저의 raw 지시를 어떻게 보존하고, 모델이 수행 가능한 atomic·self-contained task의 의존성 트리로 분해하고, drift 시 업데이트하고, 완료 시 계층 보고하는지 정의한다. autoz / z / zfix / es / zcheck / zreflect / using-epic-tasks가 참조한다."
+description: "Use when a user instruction must be kept as the single source of truth for the work, split into a task tree, updated after a re-instruction, or reported on at the end. Triggers: 'using-ssot', 'SSOT', 'SSOT-TASK-TREE'."
 ---
 
 # using-ssot — Single Source of Truth for user instructions

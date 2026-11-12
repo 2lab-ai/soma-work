@@ -52,9 +52,11 @@ const ONE_OFF_BUDGET: Record<string, number> = {
 };
 
 /** Descriptions the SDK lists on every turn: skills (zworkflow + harness plugins) and commands; subagents. */
+// 2026-11-12: descriptions say only when to use a skill (local:skill-description). Skills 28,916 -> 14,602
+// chars, agents 10,603 -> 2,359; the budget follows so the saving cannot grow back unnoticed.
 const LISTING_BUDGET = {
-  skills: { total: 29_000, each: 1_400 },
-  agents: { total: 11_400, each: 2_200 },
+  skills: { total: 15_500, each: 400 },
+  agents: { total: 3_000, each: 400 },
 };
 
 /**

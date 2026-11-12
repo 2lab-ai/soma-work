@@ -1,6 +1,6 @@
 ---
 name: break-ui
-description: Feed a UI worst-case data (long, empty, huge, RTL, emoji) behind a dev toggle and report what breaks. Triggers on "break the ui", "worst case", "UI 깨뜨려".
+description: "Use when a UI must be tested against worst-case data (very long, empty, huge, right-to-left, emoji) before it ships. Triggers: 'break the ui', 'worst case', 'stress the layout', 'UI 깨뜨려'."
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 version: 1.0.0
 license: MIT

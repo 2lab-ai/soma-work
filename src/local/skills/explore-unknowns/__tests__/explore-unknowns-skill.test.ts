@@ -59,9 +59,10 @@ describe('local:explore-unknowns skill — contract (T4)', () => {
     const md = readFileSync(SKILL_MD, 'utf8');
     const fm = parseFrontmatter(md);
     expect(fm.name).toBe('explore-unknowns');
-    const desc = (fm.description ?? '').toLowerCase();
-    expect(desc).toMatch(/unknown/);
-    expect(desc).toMatch(/quadrant|map/);
+    const desc = fm.description ?? '';
+    expect(desc).toMatch(/^Use when /);
+    expect(desc.toLowerCase()).toMatch(/unknown/);
+    expect(md.toLowerCase()).toMatch(/quadrant/);
   });
 
   it('walks the four quadrants via progressive-disclosure stage references', () => {

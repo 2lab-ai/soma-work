@@ -1,5 +1,5 @@
 ---
-description: "Internal codebase exploration agent running DIRECTLY on the astra engine (no gateway, no LLM MCP tool). Use for finding implementations, patterns, code flow in THIS codebase."
+description: "Use when something must be found in this codebase — an implementation, a pattern, a code path — and only the conclusion is needed."
 model: astra
 tools:
   - Read

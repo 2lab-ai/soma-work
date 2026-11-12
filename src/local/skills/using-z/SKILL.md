@@ -1,6 +1,6 @@
 ---
 name: using-z
-description: "z / zcheck / ztrace / using-epic-tasks 라우팅 결정표 + 세션 핸드오프 프로토콜. 유저 요청이 들어오면 진입 스킬 하나를 고르고, phase 경계에서 CONTINUE_SESSION으로 세션을 갈아끼운다 — 내부 로직은 각 스킬 파일이 소유."
+description: "Use when a user request must be routed to the right entry skill (z, zcheck, ztrace, using-epic-tasks), or a session hands over at a phase boundary. Triggers: 'using-z', 'z 라우팅'."
 ---
 
 # using-z

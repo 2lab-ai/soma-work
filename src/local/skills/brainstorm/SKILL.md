@@ -1,6 +1,6 @@
 ---
 name: brainstorm
-description: "Mass brainstorm: low-effort luna + haiku subagents write hundreds of ideas per field, the session model picks the best against the user's hints, the user decides. Triggers: brainstorm, 브레인스토밍, 대량 아이디어."
+description: "Use when the user wants a very large number of ideas on a topic to choose from. Triggers: 'brainstorm', '브레인스토밍', '대량 아이디어', '아이디어 많이'."
 ---
 
 # brainstorm — 싸게 넓게 뽑고, 추려서 주고, 유저가 고른다

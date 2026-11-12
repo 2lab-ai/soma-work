@@ -1,5 +1,5 @@
 ---
-description: "전략가 (fable 엔진판) — trinity 패널의 anthropic 책사 슬롯, 또는 zhuge 인격을 fable 엔진으로 단독 자문할 때. 패널의 유일한 anthropic 엔진 — llmux 비-anthropic 라우팅이 죽어도 이 슬롯은 살아 있어야 한다"
+description: "Use when the trinity panel needs its anthropic strategist slot, or the zhuge persona should advise alone on the fable engine."
 model: fable
 color: "#D2691E"
 ---

@@ -13,12 +13,13 @@ const frontmatter = md.match(/^---\n([\s\S]*?)\n---\n/)?.[1] ?? '';
 const body = md.slice(frontmatter.length);
 
 describe('local:research-skill', () => {
-  it('is named research-skill and describes WHEN + triggers + Args in one quoted line', () => {
+  it('is named research-skill; the description says only when (one quoted line), the body carries the args', () => {
     expect(frontmatter).toMatch(/^name: research-skill$/m);
     const description = frontmatter.match(/^description: "(.*)"$/m)?.[1] ?? '';
-    expect(description).toContain('research-skill');
-    expect(description).toContain('Args');
-    expect(description.length).toBeLessThanOrEqual(400);
+    expect(description).toMatch(/^Use when /);
+    expect(description).toContain("'research-skill'");
+    expect(description).not.toContain('Args');
+    expect(md).toMatch(/## Args\n\n`<skill name or SKILL\.md path> \[--probes N\] \[--seed S\] \[run=<dir>\]`/);
   });
 
   it('holds no home or personal path and no kit script of a particular target', () => {

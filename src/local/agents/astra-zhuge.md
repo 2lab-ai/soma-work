@@ -1,5 +1,5 @@
 ---
-description: "전략가 (astra 엔진판) — trinity 패널의 책사 슬롯, 또는 zhuge 인격을 astra 엔진으로 단독 자문할 때. 비-anthropic 모델은 llmux 경유 — llmux 데몬 다운이면 즉시 가시적으로 실패하라 (trinity fallback chain이 처리한다)"
+description: "Use when the trinity panel needs its astra strategist slot, or the zhuge persona should advise alone on the astra engine."
 model: astra
 color: "#8A2BE2"
 ---

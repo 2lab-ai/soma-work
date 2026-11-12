@@ -1,6 +1,6 @@
 ---
 name: UIAskUserQuestion
-description: Send structured user-choice questions via model-command tool (Slack UI renders as buttons)
+description: "Use when the user must choose between options or answer a question before work can go on, and the answer should come back as a button click. Triggers: 'ask the user', '선택지 물어봐', 'UIAskUserQuestion'."
 ---
 
 # UIAskUserQuestion — Structured User Choice
