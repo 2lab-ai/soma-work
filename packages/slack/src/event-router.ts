@@ -178,7 +178,8 @@ export function buildIncidentHostPrompt(request: IncidentRequest): string {
 
 export interface ClaudeSessionEventRouter {
   getSession(channel: string, threadTs?: string): EventConversationSession | undefined;
-  findSessionBySourceThread(channel: string, threadTs?: string): EventConversationSession | undefined;
+  /** Every work session started from a mention in this thread (its source thread) — one source thread may have several. */
+  findSessionsBySourceThread(channel: string, threadTs?: string): EventConversationSession[];
   setExpiryCallbacks(callbacks: SessionExpiryCallbacks): void;
   cleanupInactiveSessions(): Promise<void>;
   broadcastSessionUpdate(): void;
@@ -320,6 +321,27 @@ export interface EventRouterDeps {
    * the mention goes to the message handler as typed, where the gate holds it.
    */
   holdsForOwnerApproval?: (event: MessageEvent) => boolean;
+  /**
+   * SSOT 2026-11-12 — someone gave an instruction in a source thread (its earlier mention already moved to a work
+   * thread). It is new work: the host asks its sender by DM whether to run it as a new task, which then starts a new
+   * work thread linked to the same source thread. Resolves true when the DM was sent. Unwired: the thread gets the
+   * status card only.
+   */
+  offerSourceThreadNewTask?: (request: SourceThreadNewTaskRequest) => Promise<boolean>;
+}
+
+/** A source-thread instruction to offer as a new task — where it is and who sent it. */
+export interface SourceThreadNewTaskRequest {
+  channel: string;
+  /** The source thread. */
+  threadTs: string;
+  /** The mention message itself. */
+  ts: string;
+  user: string;
+  /** The instruction as the pipeline would get it (bot mention removed) — shown in the DM. */
+  text: string;
+  /** The work threads already started from this source thread. */
+  linked: Array<{ title?: string; activityState?: string }>;
 }
 
 /**
@@ -844,15 +866,42 @@ export class EventRouter {
         ? { ...(event as MessageEvent).routeContext, verbatimPrompt: true }
         : (event as MessageEvent).routeContext;
 
-      // Source thread re-mention: if mentioned in a thread that has a linked bot session,
-      // respond with that session's status instead of creating a new session.
+      // Source thread re-mention: the thread's earlier mention already moved to its own work thread(s).
+      // The thread gets their status card. An instruction there is new work (SSOT 2026-11-12): its sender is
+      // asked by DM whether to run it as a new task — never dropped, never run without that answer.
       // (Runs AFTER the `/z` gate so `/z …` commands can execute in source threads.)
       if (event.thread_ts) {
         const existingSession = this.deps.claudeHandler.getSession(event.channel, event.thread_ts);
         if (!existingSession) {
-          const linkedSession = this.deps.claudeHandler.findSessionBySourceThread(event.channel, event.thread_ts);
-          if (linkedSession) {
-            await this.respondWithLinkedSessionStatus(event.channel, event.thread_ts, linkedSession, say);
+          const linkedSessions = this.deps.claudeHandler.findSessionsBySourceThread(event.channel, event.thread_ts);
+          if (linkedSessions.length > 0) {
+            let offered = false;
+            const instruction = nextText.trim();
+            if (instruction && event.user && this.deps.offerSourceThreadNewTask) {
+              try {
+                offered = await this.deps.offerSourceThreadNewTask({
+                  channel: event.channel,
+                  threadTs: event.thread_ts,
+                  ts: event.ts,
+                  user: event.user,
+                  text: instruction,
+                  linked: linkedSessions.map((s) => ({ title: s.title, activityState: s.activityState })),
+                });
+              } catch (error) {
+                this.logger.warn('Source thread new-task offer failed', {
+                  channel: event.channel,
+                  threadTs: event.thread_ts,
+                  error: (error as Error)?.message,
+                });
+              }
+            }
+            await this.respondWithLinkedSessionStatus(
+              event.channel,
+              event.thread_ts,
+              linkedSessions,
+              say,
+              offered ? `📨 <@${event.user}> 님, 이 지시를 새 작업으로 진행할지 DM으로 물었습니다.` : undefined,
+            );
             return;
           }
         }
@@ -1604,33 +1653,39 @@ export class EventRouter {
   }
 
   /**
-   * Respond with linked session status when bot is re-mentioned in the source thread.
+   * Respond with the status of every work session linked to this source thread when the bot is re-mentioned there.
+   * `note` is one more line under them (the new-task DM notice).
    */
   private async respondWithLinkedSessionStatus(
     channel: string,
     threadTs: string,
-    session: EventConversationSession,
+    sessions: EventConversationSession[],
     say: SayFn,
+    note?: string,
   ): Promise<void> {
     try {
-      const title = session.title || 'Untitled';
-      const status = session.activityState || 'unknown';
-      const lines: string[] = [`📋 *"${title}"* — ${status}`];
+      const lines: string[] = [];
+      for (const session of sessions) {
+        const title = session.title || 'Untitled';
+        const status = session.activityState || 'unknown';
+        lines.push(`📋 *"${title}"* — ${status}`);
 
-      if (session.links?.issue?.url) {
-        lines.push(`📌 *이슈*: <${session.links.issue.url}|${session.links.issue.label || 'Issue'}>`);
-      }
-      if (session.links?.pr?.url) {
-        lines.push(`🔀 *PR*: <${session.links.pr.url}|${session.links.pr.label || 'PR'}>`);
-      }
+        if (session.links?.issue?.url) {
+          lines.push(`📌 *이슈*: <${session.links.issue.url}|${session.links.issue.label || 'Issue'}>`);
+        }
+        if (session.links?.pr?.url) {
+          lines.push(`🔀 *PR*: <${session.links.pr.url}|${session.links.pr.label || 'PR'}>`);
+        }
 
-      const workThreadTs = session.threadRootTs || session.threadTs;
-      if (session.channelId && workThreadTs) {
-        const permalink = await this.deps.slackApi.getPermalink(session.channelId, workThreadTs);
-        if (permalink) {
-          lines.push(`🧵 *작업 스레드*: <${permalink}|열기>`);
+        const workThreadTs = session.threadRootTs || session.threadTs;
+        if (session.channelId && workThreadTs) {
+          const permalink = await this.deps.slackApi.getPermalink(session.channelId, workThreadTs);
+          if (permalink) {
+            lines.push(`🧵 *작업 스레드*: <${permalink}|열기>`);
+          }
         }
       }
+      if (note) lines.push(note);
 
       await say({ text: lines.join('\n'), thread_ts: threadTs });
     } catch (error) {

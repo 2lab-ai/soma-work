@@ -1,6 +1,6 @@
 /**
  * Source Thread Summary — posts work summary back to the original thread
- * when a mid-thread-created session completes (PR merge or session close).
+ * when a mid-thread-created session completes (its Executive Summary lands, a PR merge, or session close).
  *
  * Bauhaus Block Kit design: form follows function, grid-based fields,
  * functional color only, zero decorative emoji.
@@ -8,6 +8,7 @@
 
 import { Logger } from '@soma/common/logger';
 import type { SessionLinks } from './directives/session-link-directive';
+import { cleanTldrLine, plainTldrLine } from './summary-service';
 
 export interface SourceThreadConversationSession {
   ownerId?: string;
@@ -167,7 +168,7 @@ function buildLinkSection(
  */
 export function buildRequestCompleteBlocks(
   session: SourceThreadConversationSession,
-  trigger: 'merged' | 'closed',
+  trigger: SourceThreadSummaryTrigger,
   options?: {
     workThreadPermalink?: string | null;
     turnSummary?: string;
@@ -318,17 +319,25 @@ export function buildRequestCompleteBlocks(
 }
 
 /**
+ * What made the work report back: its Executive Summary landed (`completed`), its PR merged, or the session closed.
+ * Each renders as 완료 except `merged` (머지 완료).
+ */
+export type SourceThreadSummaryTrigger = 'completed' | 'merged' | 'closed';
+
+/**
  * Post a work summary to the original (source) thread.
  * Returns true on success, false on failure or when no sourceThread exists.
  *
  * @param slackApi - Slack API helper
  * @param session - The session that completed
- * @param trigger - What triggered the summary ('merged' | 'closed')
+ * @param trigger - What triggered the summary
+ * @param options - `executiveSummary`: the result to show as the conclusion (the work's TL;DR)
  */
 export async function postSourceThreadSummary(
   slackApi: SourceThreadSlackApi,
   session: SourceThreadConversationSession,
-  trigger: 'merged' | 'closed',
+  trigger: SourceThreadSummaryTrigger,
+  options?: { executiveSummary?: string },
 ): Promise<boolean> {
   if (!session.sourceThread) {
     return false;
@@ -357,6 +366,7 @@ export async function postSourceThreadSummary(
 
     const payload = buildRequestCompleteBlocks(session, trigger, {
       workThreadPermalink,
+      ...(options?.executiveSummary ? { executiveSummary: options.executiveSummary } : {}),
     });
 
     await slackApi.postMessage(channel, payload.text, {
@@ -377,6 +387,27 @@ export async function postSourceThreadSummary(
     logger.error('Failed to post source thread summary', error);
     return false;
   }
+}
+
+/**
+ * SSOT 2026-11-12 — the work is done when its Executive Summary lands (the host's turn-end summary or the model's
+ * es): report that result — its TL;DR — to the source thread the work started from. Several work threads may share
+ * one source thread; each reports its own result. False when the session has no source thread or no TL;DR.
+ * Never throws.
+ */
+export async function reportSourceThreadResult(
+  slackApi: SourceThreadSlackApi,
+  session: SourceThreadConversationSession & { executiveSummary?: { tldr?: string[] } },
+): Promise<boolean> {
+  if (!session.sourceThread) return false;
+  const tldr = (session.executiveSummary?.tldr ?? [])
+    .filter((line): line is string => typeof line === 'string')
+    .map((line) => plainTldrLine(cleanTldrLine(line)))
+    .filter((line) => line.length > 0);
+  if (tldr.length === 0) return false;
+  return postSourceThreadSummary(slackApi, session, 'completed', {
+    executiveSummary: tldr.map((line) => `• ${line}`).join('\n'),
+  });
 }
 
 // Re-export for testing

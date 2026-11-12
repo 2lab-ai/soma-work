@@ -1657,16 +1657,18 @@ export class SessionRegistry {
   }
 
   /**
-   * Find a session that was created from a mid-thread mention in the given thread.
-   * Reverse lookup: original thread → bot-initiated session.
+   * Every session that was created from a mention in the given thread (its source thread).
+   * Reverse lookup: source thread → bot-initiated work sessions. One source thread may start several
+   * work threads — each instruction there that its sender runs as a new task gets its own.
    */
-  findSessionBySourceThread(channel: string, threadTs: string): ConversationSession | undefined {
+  findSessionsBySourceThread(channel: string, threadTs: string): ConversationSession[] {
+    const linked: ConversationSession[] = [];
     for (const session of this.sessions.values()) {
       if (session.sourceThread?.channel === channel && session.sourceThread?.threadTs === threadTs) {
-        return session;
+        linked.push(session);
       }
     }
-    return undefined;
+    return linked;
   }
 
   /**

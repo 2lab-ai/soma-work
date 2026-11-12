@@ -787,8 +787,8 @@ export class ClaudeHandler implements TurnSteeringPort {
     return this.sessionRegistry.getSessionByKey(sessionKey);
   }
 
-  findSessionBySourceThread(channel: string, threadTs: string): ConversationSession | undefined {
-    return this.sessionRegistry.findSessionBySourceThread(channel, threadTs);
+  findSessionsBySourceThread(channel: string, threadTs: string): ConversationSession[] {
+    return this.sessionRegistry.findSessionsBySourceThread(channel, threadTs);
   }
 
   getAllSessions(): Map<string, ConversationSession> {
