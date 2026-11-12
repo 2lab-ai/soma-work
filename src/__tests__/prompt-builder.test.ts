@@ -248,6 +248,9 @@ describe('PromptBuilder', () => {
       expect(section).toMatch(/reuse it, continue at step 4\. Never open a second PR/);
       expect(section).toMatch(/closed unmerged → report it and ask/);
       expect(check).toMatch(/merge the new `source_sha` into the same working branch, push it, keep the same PR/);
+      expect(check).toMatch(
+        /wait for CI on the new head again\. If the old `source_sha` is not an ancestor of the new one[^\n]*stop and ask/,
+      );
       // Release notes: intent before, emitted after; either value blocks a second emission.
       expect(section).toMatch(/`intent` immediately before emitting the directive, `emitted` right after/);
       expect(section).toMatch(/either value means do not emit again/);

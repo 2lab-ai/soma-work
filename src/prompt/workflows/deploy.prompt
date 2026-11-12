@@ -56,7 +56,7 @@ For each repo, before the confirmation question (and again after `Modify target`
 
 **Risk stop.** With any risk signal, the question leads with the signals, its recommended option is `Cancel`, and `Proceed with deployment` becomes `Proceed despite the listed risks` — only that explicit answer continues the repo. Nothing said before the question ("don't ask", "just merge", "묻지 말고") is consent to merge past a risk signal.
 
-**The answer covers these SHAs only.** Steps 2–3 build the working branch at `target_sha` and merge `source_sha` into it. Right before the step 4 merge, pin both tips again; if either differs from the approved SHAs, run this check again and ask again; after the new answer, merge the new `source_sha` into the same working branch, push it, keep the same PR and update both SHAs in `deploy-state.json`.
+**The answer covers these SHAs only.** Steps 2–3 build the working branch at `target_sha` and merge `source_sha` into it. Right before the step 4 merge, pin both tips again; if either differs from the approved SHAs, run this check again and ask again; after the new answer, merge the new `source_sha` into the same working branch, push it, keep the same PR, update both SHAs in `deploy-state.json` and wait for CI on the new head again. If the old `source_sha` is not an ancestor of the new one (the source was rewritten), stop and ask instead.
 
 ## Pre-Execution Confirmation (Required)
 
