@@ -290,8 +290,10 @@ describe('environment-skill admin approval — full flow', () => {
       // dev2's server tools, admin-only ones included, in any thread.
       expect(serverTool(HOST_TOOL, 'dev2', elsewhere)).toBeNull();
       expect(serverTool('mcp__server-tools__gh_pr', 'dev2', elsewhere)).toBeNull();
+      expect(serverTool('mcp__server-tools__login', 'dev2', elsewhere)).toBeNull();
       // stage0 is another environment: still closed.
       expect(serverTool(HOST_TOOL, 'stage0', elsewhere)).toMatch(/acme-stage0/);
+      expect(serverTool('mcp__server-tools__login', 'stage0', elsewhere)).toMatch(/acme-stage0/);
       expect(policy('Skill', { skill: 'acme-env:stage0-qa' }, elsewhere).decision).toBe('deny');
     } finally {
       if (saved === null) fs.rmSync(CONFIG_FILE, { force: true });

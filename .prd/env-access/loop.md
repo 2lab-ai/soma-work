@@ -14,7 +14,7 @@ ssot = [`ssot.md`](ssot.md)
 | WU1 | 비밀 저장소 + 전원 거부 + fail-closed 샌드박스 | ✅ | #1209 | `feat/env-access-secrets` (PR #1218 머지, dev 배포·실측 2026-11-12) | 25 §5 WU1 | 25 §5 WU1 + dev 실측 |
 | WU2 | 어드민 샌드박스 프로필 + 어드민 쓰기 경계 + ssh는 MCP로만 | ✅ | #1210 | `feat/env-access-admin-sandbox` (PR #1240 머지, dev v0.3.32 배포·실측 2026-11-13 — 결과는 #1210 댓글) | 25 §5 WU2 + #1218 리뷰가 넘긴 두 길(`sandbox off` Bash, 배포 설정 쓰기) | 25 §5 WU2 + 두 길의 적대적 테스트 |
 | WU3a | 환경 사용자(`envUser`) + `gh_pr`(view·approve·merge) + 감사 원장 + 비어드민 거부 | 🟡 | #1211 | `feat/env-access-env-users` | 25 §5 WU3 중 gh·원장 | 조건 충족 PR만 승인·머지, 원장 의도→결과, dev 실측 |
-| WU3b | `login`(환경 계정 → 세션) + `$env:<id>:<skill>` 호출·환경 사용자 스킬 저장소 | 🔴 | #1211 | — | 25 §5 WU3 나머지 | `login` 세션으로 환경 API 200, `$env:` 스킬 실행 |
+| WU3b | `login`(환경 계정 → 세션). `$env:<id>:<skill>` 호출·별도 스킬 저장소는 WU4가 대체 — 환경 스킬 = 환경 플러그인 스킬을 server-tools `skills`로 묶음, 이전은 WU5 | 🟡 | #1211 | `feat/env-access-login` (WU4 위에 쌓음) | 25 §5 WU3 나머지 | `login` 세션으로 환경 API 200(dev 실측), 비밀번호·세션이 원장·오류에 없음(`server-tools-login.test.ts`) |
 | WU4 | 환경 grant + 4버튼 + 정책 단계 | 🟡 | #1212 | `feat/env-access-env-grants` (WU3a 위에 쌓음) | 환경 = server-tools `envUser`+`skills`, `perEnvironment` grant, 카드 수락·거절·이 스킬 항상·이 환경 전체 항상, 환경 서버의 server-tools는 그 환경 grant로 | 비어드민 카드 1장 → "환경 전체 항상" → 다음 카드 0장 (`env-skill-approval-flow.test.ts`), dev 실측 |
 | WU5 | 배포·QA 스킬 이전 + 배포 → QA 연결 | 🔴 | #1213 | — | 25 §5 WU5 | 25 §5 WU5 |
 | WU6 | 브로커 제거 | 🔴 | #1214 | — | 25 §5 WU6 | 25 §5 WU6 |

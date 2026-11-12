@@ -1053,12 +1053,14 @@ function readIncidentRequest(session: ConversationSession | undefined): Incident
 }
 
 /**
- * server-tools tools that are an admin's whatever the grants say: host commands (env-access WU2, #1210), and an
- * environment user's PR approvals and merges (WU3, #1211) until per-environment grants exist (WU4, #1212).
+ * server-tools tools that are an admin's whatever the server-tools grants say — or, on an environment's server, a
+ * user's that environment's admin granted it (WU4, #1212): host commands (env-access WU2, #1210), and an environment
+ * user's PR approvals and merges and web logins with its own accounts (WU3, #1211).
  */
 const ADMIN_ONLY_SERVER_TOOLS: ReadonlyMap<string, string> = new Map([
   ['mcp__server-tools__ssh_exec', 'ssh_exec runs a command on a host and is for admins only.'],
   ['mcp__server-tools__gh_pr', "gh_pr acts on a PR with an environment's own token and is for admins only."],
+  ['mcp__server-tools__login', "login signs in with an environment's own account and is for admins only."],
 ]);
 
 /**

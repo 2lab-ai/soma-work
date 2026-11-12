@@ -264,7 +264,9 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
       grantEnvironment('env:acme-dev2', SAFE_USER);
       expect(await ask('mcp__server-tools__ssh_exec', 'dev2')).toBe('continue');
       expect(await ask('mcp__server-tools__gh_pr', 'dev2')).toBe('continue');
+      expect(await ask('mcp__server-tools__login', 'dev2')).toBe('continue');
       // A server that is no environment's stays admin-only.
+      expect(await ask('mcp__server-tools__login', 'other')).toBe('deny');
       expect(await ask('mcp__server-tools__ssh_exec', 'other')).toBe('deny');
       expect(checkMcpToolPermission).not.toHaveBeenCalled();
     });
@@ -295,6 +297,16 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
       const checkMcpToolPermission = vi.fn(() => null);
       const run = await mcpHook(makeDeps({ checkMcpToolPermission }));
       const out = await run('mcp__server-tools__gh_pr');
+      expect(out.hookSpecificOutput?.permissionDecision).toBe('deny');
+      expect(checkMcpToolPermission).not.toHaveBeenCalled();
+    });
+
+    // env-access WU3b (#1211): an environment account's web session is an admin's, or a user's the environment's
+    // admin approved (see the environment grant test above).
+    it('denies a non-admin login whatever the grants say', async () => {
+      const checkMcpToolPermission = vi.fn(() => null);
+      const run = await mcpHook(makeDeps({ checkMcpToolPermission }));
+      const out = await run('mcp__server-tools__login');
       expect(out.hookSpecificOutput?.permissionDecision).toBe('deny');
       expect(checkMcpToolPermission).not.toHaveBeenCalled();
     });
