@@ -208,9 +208,13 @@ export async function cfCall(
     json = undefined;
     readable = false;
   }
+  // An empty 204 is an answer; any other 2xx needs a body it can read.
+  if (res.ok && !readable && res.status !== 204 && request.method === 'GET') {
+    throw new CfError(`Cloudflare GET ${request.path} answered ${res.status} with an unreadable body`);
+  }
   // A write answered 2xx is done only when its body says so: unreadable → may have been made; `success: false` → not.
   if (res.ok && request.method !== 'GET') {
-    if (!readable) {
+    if (!readable && res.status !== 204) {
       throw new CfOutcomeUnknownError(
         `Cloudflare ${request.method} answered ${res.status} with an unreadable body: the write may have been made — check before retrying`,
       );

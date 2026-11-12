@@ -190,6 +190,20 @@ describe('cf_api', () => {
       handleCfApi({ server: 'dev2', method: 'POST', path: `/zones/${ZONE}/dns_records`, body: {} }, unreadable),
     ).rejects.toThrow(/may have been made/);
     expect(ledger().map((r) => r.phase)).toEqual(['intent', 'failed', 'intent', 'unknown']);
+    // trinity R1 (astra): a read whose body cannot be read is a failed read, never an empty answer.
+    await expect(
+      handleCfApi({ server: 'dev2', method: 'GET', path: `/zones/${ZONE}/dns_records` }, unreadable),
+    ).rejects.toThrow(/unreadable/);
+    // An empty 204 is an answer.
+    const empty: CfFetch = async () => ({
+      ok: true,
+      status: 204,
+      json: async () => {
+        throw new Error('no body');
+      },
+    });
+    const out = await handleCfApi({ server: 'dev2', method: 'DELETE', path: `/zones/${ZONE}/dns_records/r1` }, empty);
+    expect(JSON.parse(out.content[0].text)).toMatchObject({ status: 204, body: null });
   });
 
   it('says a write that got no answer may have been made', async () => {
