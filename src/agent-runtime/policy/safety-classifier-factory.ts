@@ -18,6 +18,8 @@
  *   • `PERMISSION_AUTO_CLASSIFIER_TIMEOUT_MS=<n>` — override the per-call timeout.
  */
 
+import type { EffortLevel } from '../../user-settings-store';
+import { auxModelFor } from '../aux-model';
 import {
   LlmSafetyClassifier,
   type SafetyChatFn,
@@ -26,6 +28,8 @@ import {
 } from './safety-classifier';
 
 const DEFAULT_TIMEOUT_MS = 20_000;
+/** Effort for the classifier when its tier names none (every provider but Grok). */
+const CLASSIFIER_EFFORT: EffortLevel = 'medium';
 
 /** System prompt for the dispatch one-shot — the guardian reviewer role. */
 const SAFETY_SYSTEM_PROMPT = [
@@ -46,7 +50,7 @@ export type SafetyDispatchFn = (
   userMessage: string,
   systemPrompt: string,
   /** `tenantUserId` = the session user the call is made for: their llmux key meters it. */
-  opts: { model?: string; abortController?: AbortController; tenantUserId?: string },
+  opts: { model?: string; effort?: EffortLevel; abortController?: AbortController; tenantUserId?: string },
 ) => Promise<string>;
 
 /** Env-driven environment shape, injected for testability. */
@@ -68,16 +72,23 @@ export function buildSafetyClassifier(args: BuildSafetyClassifierArgs = {}): Saf
     return new StaticSafetyClassifier();
   }
   const dispatch = args.dispatch;
-  // Model precedence: ops env override > the session's current model (threaded
-  // per-call via opts.model) > undefined (let dispatch/SDK pick its default).
-  // Default behaviour (#model-call-unify): the classifier runs on the SAME
-  // model the session is using.
+  // Model precedence: ops env override > the `haiku` aux tier of the session's
+  // current model (threaded per-call via opts.model; else the user's default):
+  // Claude → `haiku`, Codex → `luna`, Grok → `grok` (`../aux-model.ts`). A cheap
+  // model on the session's own provider — rules/permission.md: the default is a
+  // cheap model, never the session model itself; and no hardcoded Claude model
+  // in a GPT/Grok session (#model-call-unify).
   const envModel = env.PERMISSION_AUTO_CLASSIFIER_MODEL || undefined;
   const timeoutMs = Number(env.PERMISSION_AUTO_CLASSIFIER_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
 
   const chat: SafetyChatFn = (prompt, opts) => {
+    const aux = auxModelFor('haiku', { mainModel: opts.model, userId: opts.tenantUserId });
     const base = {
-      model: envModel || opts.model,
+      model: envModel || aux.model,
+      // The tier's effort (Grok lowers effort instead of the model: low), else
+      // medium — the dispatch one-shot's default. An env model override keeps
+      // the call path's own default.
+      ...(envModel ? {} : { effort: aux.effort ?? CLASSIFIER_EFFORT }),
       ...(opts.tenantUserId ? { tenantUserId: opts.tenantUserId } : {}),
     };
     // The caller's abort stops the one-shot dispatch itself, not only the caller's wait (review R1, astra P2).

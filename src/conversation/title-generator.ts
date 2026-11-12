@@ -1,4 +1,5 @@
 import { buildOneShotOptions, runOneShotText } from '../agent-runtime';
+import { auxModelFor } from '../agent-runtime/aux-model';
 import { buildQueryEnv } from '../auth/query-env-builder';
 import { userTenantKey } from '../auth/user-tenant-key';
 import { config } from '../config';
@@ -15,10 +16,12 @@ const logger = new Logger('TitleGenerator');
  *
  * `tenantUserId` = the user whose conversation it is: in llmux mode the call
  * carries their own key (metered under their tenant); absent → the shared key.
+ * The model is the `sonnet` aux tier of `mainModel` (the session's model), else
+ * of that user's default model; `SUMMARY_MODEL` overrides it.
  */
 export async function generateTitle(
   conversationContent: string,
-  opts: { tenantUserId?: string } = {},
+  opts: { tenantUserId?: string; mainModel?: string } = {},
 ): Promise<string | null> {
   let lease: SlotAuthLease | null = null;
   try {
@@ -42,8 +45,14 @@ export async function generateTitle(
     // Use options.env (not process.env) so concurrent leases don't
     // clobber the shared CLAUDE_CODE_OAUTH_TOKEN.
     const { env } = buildQueryEnv(lease, { llmuxTenant: await userTenantKey(opts.tenantUserId) });
+    const aux = auxModelFor('sonnet', {
+      mainModel: opts.mainModel,
+      userId: opts.tenantUserId,
+      override: config.conversation.summaryModel,
+    });
     const options = buildOneShotOptions({
-      model: config.conversation.summaryModel,
+      model: aux.model,
+      effort: aux.effort,
       systemPrompt: 'You generate concise conversation titles. Output only the title text.',
       env,
       logger,

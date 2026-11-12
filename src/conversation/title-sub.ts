@@ -49,7 +49,12 @@ export function titleSourceText(record: ConversationRecord): string {
     .join('\n\n');
 }
 
-function generateOnce(record: ConversationRecord, source: string): Promise<string | null> {
+/**
+ * `mainModel` is the live session's model, when the conversation still has one:
+ * the subtitle is an aux call of that session, so it runs on that model's
+ * provider (agent-runtime/aux-model.ts). Without one, the owner's default model decides.
+ */
+function generateOnce(record: ConversationRecord, source: string, mainModel?: string): Promise<string | null> {
   const conversationId = record.id;
   const running = inFlight.get(conversationId);
   if (running) return running;
@@ -57,7 +62,7 @@ function generateOnce(record: ConversationRecord, source: string): Promise<strin
   // generation like a null result — so it gets the same cooldown.
   // The subtitle is derived from the owner's conversation, whoever asked for
   // it: in llmux mode the call is metered under the owner's own key.
-  const call = generateTitle(source, { tenantUserId: record.ownerId || undefined })
+  const call = generateTitle(source, { tenantUserId: record.ownerId || undefined, mainModel })
     .catch((error) => {
       logger.warn('Title generation threw', { conversationId, error: String(error) });
       return null;
@@ -68,7 +73,11 @@ function generateOnce(record: ConversationRecord, source: string): Promise<strin
 }
 
 /** Fill a missing subtitle; any signed-in viewer. Never overwrites. */
-export async function ensureTitleSub(record: ConversationRecord, now = Date.now()): Promise<TitleSubResult> {
+export async function ensureTitleSub(
+  record: ConversationRecord,
+  now = Date.now(),
+  mainModel?: string,
+): Promise<TitleSubResult> {
   if (record.titleSub) return { ok: true, titleSub: record.titleSub };
   const source = titleSourceText(record);
   if (!source) return { ok: false, reason: 'no_content' };
@@ -80,7 +89,7 @@ export async function ensureTitleSub(record: ConversationRecord, now = Date.now(
     lastFailedFillAt.delete(record.id);
   }
 
-  const generated = await generateOnce(record, source);
+  const generated = await generateOnce(record, source, mainModel);
   if (!generated) {
     // Concurrent fills that shared this call all land here; one entry is enough.
     lastFailedFillAt.set(record.id, now);
@@ -91,10 +100,10 @@ export async function ensureTitleSub(record: ConversationRecord, now = Date.now(
 }
 
 /** Replace the subtitle; the caller must have passed the #716 write gate. */
-export async function regenerateTitleSub(record: ConversationRecord): Promise<TitleSubResult> {
+export async function regenerateTitleSub(record: ConversationRecord, mainModel?: string): Promise<TitleSubResult> {
   const source = titleSourceText(record);
   if (!source) return { ok: false, reason: 'no_content' };
-  const generated = await generateOnce(record, source);
+  const generated = await generateOnce(record, source, mainModel);
   if (!generated) return { ok: false, reason: 'generation_failed' };
   lastFailedFillAt.delete(record.id);
   await updateConversationTitleSub(record.id, generated);

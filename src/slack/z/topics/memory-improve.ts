@@ -1,4 +1,5 @@
 import { buildOneShotOptions, runOneShotText } from '../../../agent-runtime';
+import { auxModelFor } from '../../../agent-runtime/aux-model';
 import { buildQueryEnv } from '../../../auth/query-env-builder';
 import { userTenantKey } from '../../../auth/user-tenant-key';
 import { config } from '../../../config';
@@ -47,8 +48,11 @@ async function runQuery(prompt: string, systemPrompt: string, opts: MemoryImprov
     // `thinking: { type: 'disabled' }` and lets the SDK default apply.
     // The explicit flag surfaces the divergence; a separate behaviour PR
     // can decide whether this is intentional or a latent #762-class risk.
+    // The `sonnet` tier of the user's default model; SUMMARY_MODEL (operator) overrides it.
+    const aux = auxModelFor('sonnet', { userId: opts.tenantUserId, override: config.conversation.summaryModel });
     const options = buildOneShotOptions({
-      model: config.conversation.summaryModel,
+      model: aux.model,
+      effort: aux.effort,
       systemPrompt,
       env,
       logger,

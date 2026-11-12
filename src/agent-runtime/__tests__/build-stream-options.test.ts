@@ -20,12 +20,13 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
-import { CONFIG_FILE } from '../../env-paths';
+import { CONFIG_FILE, SECRETS_DIR } from '../../env-paths';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
 import type { ConversationSession } from '../../types';
 import { addThreadGrant, ENV_SKILL_GRANT_OWNER } from '../../user-skill-grants-store';
 import { type BuildStreamOptionsDeps, buildStreamOptions } from '../claude-code/build-stream-options';
+import { approvalRecordPaths, secretStoreDenyRules } from '../policy/devops-secret-guard';
 
 // A real, existing working directory so the cwd branch (which `fs.existsSync`
 // gates) actually sets `options.cwd`.
@@ -292,16 +293,16 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
         makeDeps({ getEnvSkillRegistry: () => envRegistry('/srv/soma/plugins') }),
       );
       const denyRead = (options.sandbox as { filesystem?: { denyRead?: string[] } } | undefined)?.filesystem?.denyRead;
-      expect(denyRead).toEqual(['/srv/soma/plugins/acme-env', '/srv/soma/plugins/.backups/acme-env']);
+      expect(denyRead).toEqual([SECRETS_DIR, '/srv/soma/plugins/acme-env', '/srv/soma/plugins/.backups/acme-env']);
       // The write mount is kept.
       expect((options.sandbox as { filesystem?: { allowWrite?: string[] } }).filesystem?.allowWrite?.length).toBe(1);
     });
 
-    it('no read deny is added on a host without environment plugins', async () => {
+    it('only the secret store is read-denied on a host without environment plugins', async () => {
       const { options } = await buildStreamOptions({ queryEnv: {}, slackContext: makeSlackContext() }, makeDeps());
-      expect(
-        (options.sandbox as { filesystem?: { denyRead?: string[] } } | undefined)?.filesystem?.denyRead,
-      ).toBeUndefined();
+      expect((options.sandbox as { filesystem?: { denyRead?: string[] } } | undefined)?.filesystem?.denyRead).toEqual([
+        SECRETS_DIR,
+      ]);
     });
   });
 
@@ -333,6 +334,24 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
     const network = sandbox?.network as { allowedDomains?: string[] } | undefined;
     expect(Array.isArray(network?.allowedDomains)).toBe(true);
     expect((network?.allowedDomains ?? []).length).toBeGreaterThan(0);
+  });
+
+  it('sandbox: fails closed, and no model reads the secret store or writes an approval record', async () => {
+    const { options } = await buildStreamOptions({ queryEnv: {}, slackContext: makeSlackContext() }, makeDeps());
+    const sandbox = options.sandbox as {
+      failIfUnavailable?: boolean;
+      filesystem?: { denyRead?: string[]; denyWrite?: string[] };
+    };
+    expect(sandbox.failIfUnavailable).toBe(true);
+    expect(sandbox.filesystem?.denyRead).toContain(SECRETS_DIR);
+    expect(sandbox.filesystem?.denyWrite).toEqual(expect.arrayContaining(approvalRecordPaths()));
+    expect(sandbox.filesystem?.denyWrite).toContain(SECRETS_DIR);
+  });
+
+  it('settings: every session gets the secret-store and approval-record CLI deny rules', async () => {
+    const { options } = await buildStreamOptions({ queryEnv: {}, slackContext: makeSlackContext() }, makeDeps());
+    const settings = options.settings as { permissions?: { deny?: string[] } };
+    expect(settings.permissions?.deny).toEqual(expect.arrayContaining(secretStoreDenyRules()));
   });
 
   it('sandbox: network omitted when user disabled network', async () => {

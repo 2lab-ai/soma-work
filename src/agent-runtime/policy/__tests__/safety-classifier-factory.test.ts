@@ -7,6 +7,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+import { auxModelFor } from '../../aux-model';
 import { LlmSafetyClassifier, type SafetyClassifyRequest, StaticSafetyClassifier } from '../safety-classifier';
 import { buildSafetyClassifier } from '../safety-classifier-factory';
 
@@ -48,9 +49,9 @@ describe('dispatch-backed classifier', () => {
     const [userMessage, systemPrompt, opts] = dispatch.mock.calls[0];
     expect(userMessage).toContain('rm -rf /tmp/U1/x'); // command threaded into the prompt
     expect(systemPrompt).toMatch(/SAFETY REVIEWER/i);
-    // No model on the request + no env override → undefined, so dispatch/SDK
-    // pick the default (the classifier no longer hardcodes a model).
-    expect(opts.model).toBeUndefined();
+    // No model on the request + no env override → the `haiku` aux tier of the
+    // default model's provider, resolved through the alias table now.
+    expect(opts.model).toBe(auxModelFor('haiku').model);
   });
 
   it('escalates (ask) when dispatch returns ask', async () => {
@@ -69,12 +70,37 @@ describe('dispatch-backed classifier', () => {
     expect(dispatch.mock.calls[0][2].model).toBe('custom-model');
   });
 
-  // ── #model-call-unify: default classifier model = the session's CURRENT
-  // model (threaded via req.model), not a hardcoded cheap model. ──
-  it('defaults to the session model carried on the request', async () => {
+  // ── Default classifier model = the cheap (`haiku`) aux tier of the session's
+  // CURRENT model's provider (threaded via req.model): never the session model
+  // itself (rules/permission.md) and never a Claude model in a GPT/Grok session. ──
+  it('defaults to the haiku tier of the session model carried on the request', async () => {
     const dispatch = vi.fn().mockResolvedValue('{"verdict":"allow","reason":"ok"}');
     await buildSafetyClassifier({ dispatch }).classify({ ...REQ, model: 'claude-opus-4-8[1m]' });
-    expect(dispatch.mock.calls[0][2].model).toBe('claude-opus-4-8[1m]');
+    const claude = dispatch.mock.calls[0][2].model;
+    expect(claude).toBe(auxModelFor('haiku', { mainModel: 'claude-opus-4-8[1m]' }).model);
+    expect(claude).toMatch(/haiku/);
+    await buildSafetyClassifier({ dispatch }).classify({ ...REQ, model: 'gpt-6-astra[1m]' });
+    const codex = dispatch.mock.calls[1][2].model;
+    expect(codex).toMatch(/luna/);
+    expect(codex).not.toMatch(/astra|claude/);
+  });
+
+  // Trinity R1 (soma-work#1224): Grok has one model line, so its haiku tier is
+  // the Grok pin at low effort — the effort must reach the dispatch, or the
+  // classifier runs at the session's (xhigh) effort.
+  it('carries the tier effort: Grok low, Claude/Codex medium, env model override none', async () => {
+    const dispatch = vi.fn().mockResolvedValue('{"verdict":"allow","reason":"ok"}');
+    await buildSafetyClassifier({ dispatch }).classify({ ...REQ, model: 'grok-4.7' });
+    expect(dispatch.mock.calls[0][2]).toMatchObject({ model: expect.stringMatching(/^grok-/), effort: 'low' });
+    await buildSafetyClassifier({ dispatch }).classify({ ...REQ, model: 'claude-opus-4-8[1m]' });
+    expect(dispatch.mock.calls[1][2].effort).toBe('medium');
+    await buildSafetyClassifier({ dispatch }).classify({ ...REQ, model: 'gpt-6-astra[1m]' });
+    expect(dispatch.mock.calls[2][2].effort).toBe('medium');
+    await buildSafetyClassifier({ env: { PERMISSION_AUTO_CLASSIFIER_MODEL: 'forced' }, dispatch }).classify({
+      ...REQ,
+      model: 'grok-4.7',
+    });
+    expect(dispatch.mock.calls[3][2].effort).toBeUndefined();
   });
 
   it('env override beats the session model when both are present', async () => {

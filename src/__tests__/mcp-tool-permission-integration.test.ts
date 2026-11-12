@@ -15,6 +15,7 @@ vi.mock('../env-paths', () => {
   fsMod.mkdirSync(dataDir, { recursive: true });
   return {
     CONFIG_FILE: pathMod.join(dir, 'config.json'),
+    SECRETS_DIR: pathMod.join(dir, 'secrets'),
     DATA_DIR: dataDir,
     MCP_SERVERS_FILE: '',
   };

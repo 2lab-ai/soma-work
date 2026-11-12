@@ -168,6 +168,17 @@ export function getBgKeepaliveMaxMs(): number {
 }
 
 /**
+ * Typed accessor for `SOMA_SANDBOX_ALLOW_UNAVAILABLE` — the ONLY read of that variable
+ * (`rules/config.md`). Default `false`: a model session whose sandbox cannot start runs no command
+ * (`failIfUnavailable: true`, `.prd/25-env-access-architecture.md` §1). `true` is the explicit,
+ * logged opt-out for a host that cannot run the sandbox (a container without bubblewrap); there the
+ * secret store is guarded by the policy tier alone.
+ */
+export function getSandboxAllowUnavailable(): boolean {
+  return parseBool(process.env.SOMA_SANDBOX_ALLOW_UNAVAILABLE, false);
+}
+
+/**
  * Backend auth backend selector (#llmux). See {@link config.auth}.
  */
 export type AuthMode = 'ccp' | 'llmux';
@@ -467,7 +478,12 @@ export const config = {
     .filter(Boolean),
   debug: process.env.DEBUG === 'true' || process.env.NODE_ENV === 'development',
   conversation: {
-    summaryModel: process.env.SUMMARY_MODEL || 'claude-sonnet-4-6',
+    /**
+     * Operator override for the summary-class aux calls (dreaming, titles, turn
+     * summaries, memory improve). Unset (the default): each call runs the
+     * `sonnet` tier of its main model's provider (`agent-runtime/aux-model.ts`).
+     */
+    summaryModel: process.env.SUMMARY_MODEL || undefined,
     viewerHost: process.env.CONVERSATION_VIEWER_HOST || '127.0.0.1',
     viewerPort: process.env.CONVERSATION_VIEWER_PORT ? parseInt(process.env.CONVERSATION_VIEWER_PORT, 10) : 0,
     viewerUrl: process.env.CONVERSATION_VIEWER_URL || '',

@@ -3,8 +3,12 @@
 import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { ConfigCache } from '@soma/process-shared/mcp/config-cache.js';
+import { resolveSecretRefs, SecretRefError } from '@soma/process-shared/secret-ref.js';
+import { StderrLogger } from '@soma/process-shared/stderr-logger.js';
 import { type ChildProcess, execFileSync, type SpawnSyncReturns, spawn, spawnSync } from 'child_process';
 import { redactLogSecrets } from './redact-logs.js';
+
+const configLogger = new StderrLogger('server-tools:config');
 
 // ── Constants ─────────────────────────────────────────────
 
@@ -70,12 +74,31 @@ const configCache = new ConfigCache<ServerToolsConfig>(
       if (raw && typeof raw === 'object') {
         // Exclude "permission" reserved key — it's tool-level permission config, not a server entry
         const { permission, ...servers } = raw;
-        return servers as ServerToolsConfig;
+        return resolveServerSecrets(servers);
       }
       return {} as ServerToolsConfig; // Section removed/invalid → clear config
     },
   },
 );
+
+/**
+ * Each server with its `{"$secret": name}` references replaced from the secret store the bot names in
+ * `SOMA_SECRETS_DIR` (.prd/25-env-access-architecture.md §2). A server whose reference does not
+ * resolve is left out — never run with a missing password — and only its name and the secret's name
+ * are logged.
+ */
+function resolveServerSecrets(servers: Record<string, unknown>): ServerToolsConfig {
+  const out: ServerToolsConfig = {};
+  for (const [name, server] of Object.entries(servers)) {
+    try {
+      out[name] = resolveSecretRefs(server, process.env.SOMA_SECRETS_DIR) as ServerConfig;
+    } catch (error) {
+      if (!(error instanceof SecretRefError)) throw error;
+      configLogger.warn(`server "${name}" left out: ${error.message}`);
+    }
+  }
+  return out;
+}
 
 export function loadConfig(): ServerToolsConfig {
   return configCache.get();

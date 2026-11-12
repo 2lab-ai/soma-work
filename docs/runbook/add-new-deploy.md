@@ -420,6 +420,39 @@ cat > "${DEPLOY_DIR}/config.json" << 'CONFIG_EOF'
 CONFIG_EOF
 ```
 
+#### 비밀은 `secrets/`에 (`.prd/25-env-access-architecture.md` WU1)
+
+비밀번호·토큰은 `config.json`에 값으로 적지 않는다. 배포 디렉터리의 `secrets/`에 비밀 하나당 파일 하나로 두고, 설정에는 이름만 적는다.
+일반 유저의 모델 세션은 이 폴더를 읽거나 쓰지 못한다 — 샌드박스가 OS 수준에서 막고, 정책이 Read·Grep·Glob·Write·Edit를 막는다.
+어드민 모델은 Read·Grep·Glob·Write·Edit로는 못 읽지만, 아직 두 길이 남아 있다: 샌드박스를 끈(`sandbox off`) 세션의 Bash,
+그리고 네이티브 Write·Edit로 배포 디렉터리(`config.json` 등)를 고쳐 참조를 다른 곳으로 돌리는 것. 봇 프로세스와 server-tools만 읽는다.
+
+> **출시 게이트: 실제 비밀은 #1210(어드민 샌드박스 · 어드민 쓰기 경계)이 배포되고 그 적대적 테스트가 통과한 뒤에 옮긴다.**
+> 그 전에는 이 절차를 시험용 값으로만 쓴다.
+
+```bash
+install -d -m 700 "${DEPLOY_DIR}/secrets"
+# 값은 화면·셸 기록에 남기지 않는다: 붙여 넣고 Ctrl-D
+( umask 077; cat > "${DEPLOY_DIR}/secrets/dev2-db-app" )
+```
+
+```json
+"server-tools": {
+  "dev2": {
+    "ssh": { "host": "dev2" },
+    "databases": { "app": { "type": "mysql", "host": "127.0.0.1", "port": 3306, "user": "app",
+                            "password": { "$secret": "dev2-db-app" } } }
+  }
+}
+```
+
+- 이름은 영문·숫자·`.`·`_`·`-`만(점으로 시작 금지). 파일 끝 줄바꿈 하나는 무시한다.
+- 풀리지 않는 참조(파일 없음·빈 파일·폴더 밖 링크)가 있는 서버는 server-tools가 목록에서 뺀다. 다른 서버는 그대로 동작한다.
+- 비밀 파일만 바꿨다면 `touch "${DEPLOY_DIR}/config.json"`으로 server-tools가 다시 읽게 한다.
+- 평문 값도 계속 동작한다. 옮기는 순서: 파일을 만들고 → 설정의 값을 참조로 바꾸고 → 조회가 되는지 확인한다.
+- 샌드박스를 띄울 수 없는 호스트(bubblewrap 없는 컨테이너 등)는 모델 명령이 실행되지 않는다(fail-closed).
+  그런 호스트만 `.env`에 `SOMA_SANDBOX_ALLOW_UNAVAILABLE=true`를 명시한다. 그때 비밀 저장소는 정책 단계만 지킨다.
+
 ### 8.4 (제거됨) mcp-servers.json
 
 `mcpServers` 섹션은 `config.json` 안에 통합됨 — 별도 파일 생성 불필요. PR #808 참조.

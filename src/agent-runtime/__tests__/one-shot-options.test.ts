@@ -94,4 +94,11 @@ describe('buildOneShotOptions', () => {
     });
     expect(opts.extensions?.claudeCode?.env).toBe(env);
   });
+  it('forwards an effort only when one is given (aux tier: grok low / medium)', () => {
+    const base = { model: 'm', systemPrompt: 'sys', env: {}, logger: { warn: vi.fn() }, stderrLabel: 'X' };
+    expect(buildOneShotOptions({ ...base, effort: 'low' }).extensions?.claudeCode?.effort).toBe('low');
+    // No effort → no key at all, so the SDK Options stay byte-for-byte what they were.
+    expect('effort' in (buildOneShotOptions(base).extensions?.claudeCode ?? {})).toBe(false);
+    expect('effort' in (buildOneShotOptions({ ...base, effort: undefined }).extensions?.claudeCode ?? {})).toBe(false);
+  });
 });

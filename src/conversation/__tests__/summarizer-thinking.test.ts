@@ -57,6 +57,7 @@ vi.mock('../../prompt/user-instructions-block', () => ({
   computeCompletedUpstreamHash: vi.fn(() => 'fake-hash'),
 }));
 
+import { MODEL_ALIASES } from '../../user-settings-store';
 import { summarizeCompletedInstructions } from '../instructions-summarizer';
 import { generateSessionSummaryTitle, summarizeResponse } from '../summarizer';
 import { generateTitle } from '../title-generator';
@@ -125,11 +126,11 @@ describe('#762 — thinking option propagates through every title/summary LLM si
         };
       })();
     });
-    await generateSessionSummaryTitle(['please refactor auth']);
-    // Haiku attempt was made — verify thinking was disabled.
+    await generateSessionSummaryTitle(['please refactor auth'], undefined, { mainModel: 'claude-opus-5-5[1m]' });
+    // The haiku-tier attempt was made — verify thinking was disabled.
     const haikuOptions = nthCallOptions(0);
     expect(haikuOptions.thinking).toEqual({ type: 'disabled' });
-    expect(haikuOptions.model).toBe('claude-haiku-4-5');
+    expect(haikuOptions.model).toBe(MODEL_ALIASES.haiku);
   });
 
   it('generateSessionSummaryTitle disables thinking on Sonnet fallback too', async () => {
@@ -150,12 +151,12 @@ describe('#762 — thinking option propagates through every title/summary LLM si
           };
         })();
       });
-    const result = await generateSessionSummaryTitle(['msg']);
+    const result = await generateSessionSummaryTitle(['msg'], undefined, { mainModel: 'claude-opus-5-5[1m]' });
     expect(result?.model).toBe('sonnet');
     expect(queryMock).toHaveBeenCalledTimes(2);
     const sonnetOptions = nthCallOptions(1);
     expect(sonnetOptions.thinking).toEqual({ type: 'disabled' });
-    expect(sonnetOptions.model).toBe('claude-sonnet-4-5');
+    expect(sonnetOptions.model).toBe(MODEL_ALIASES.sonnet);
   });
 
   it('summarizeCompletedInstructions passes thinking: { type: "disabled" }', async () => {

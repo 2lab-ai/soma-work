@@ -18,7 +18,12 @@ vi.mock('../env-paths', () => {
   const dir = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'mcp-exec-ctx-'));
   const dataDir = pathMod.join(dir, 'data');
   fsMod.mkdirSync(dataDir, { recursive: true });
-  return { CONFIG_FILE: pathMod.join(dir, 'config.json'), DATA_DIR: dataDir, MCP_SERVERS_FILE: '' };
+  return {
+    CONFIG_FILE: pathMod.join(dir, 'config.json'),
+    DATA_DIR: dataDir,
+    SECRETS_DIR: pathMod.join(dir, 'secrets'),
+    MCP_SERVERS_FILE: '',
+  };
 });
 
 vi.mock('../admin-utils', () => ({
