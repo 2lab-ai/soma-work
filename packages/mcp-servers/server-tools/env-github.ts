@@ -330,25 +330,30 @@ export async function approve(
 }
 
 /**
- * After an approval that got no answer: this token's own approval of `sha`, when one was made. Throws `GithubError`
- * when none was, and `OutcomeUnknownError` when it cannot be looked up.
+ * After an approval that got no answer: this token's latest approval of `sha`. Anything short of finding it —
+ * not seen yet (GitHub may still be applying it), a full page, a malformed list, a failed lookup — is an
+ * `OutcomeUnknownError`: the approval may stand.
  */
 async function ownApproval(fetch: Fetch, config: EnvGithubConfig, repo: string, number: number, sha: string) {
+  const unknown = (why: string) =>
+    new OutcomeUnknownError(
+      `the approval of ${repo}#${number} got no answer and ${why}: it may stand — check the PR before retrying`,
+    );
   let login: string;
   let reviews: unknown;
   try {
     login = str(obj(await call(fetch, config.token, 'GET', '/user')).login);
     reviews = await call(fetch, config.token, 'GET', `/repos/${repo}/pulls/${number}/reviews?per_page=100`);
   } catch {
-    throw new OutcomeUnknownError(
-      `the approval of ${repo}#${number} got no answer and could not be looked up: it may stand — check the PR before retrying`,
-    );
+    throw unknown('could not be looked up');
   }
-  const mine = (Array.isArray(reviews) ? reviews.map(obj) : []).find(
-    (r) => login !== '' && str(obj(r.user).login) === login && r.state === 'APPROVED' && r.commit_id === sha,
-  );
-  if (!mine) throw new GithubError(`the approval of ${repo}#${number} got no answer and was not made`);
-  return mine;
+  if (login === '' || !Array.isArray(reviews)) throw unknown('the lookup answered something unexpected');
+  const mine = reviews
+    .map(obj)
+    .filter((r) => str(obj(r.user).login) === login && r.state === 'APPROVED' && r.commit_id === sha)
+    .sort((a, b) => Number(b.id) - Number(a.id))[0];
+  if (mine) return mine;
+  throw unknown(reviews.length >= 100 ? 'is not on the first page of reviews' : 'is not seen yet');
 }
 
 /**
@@ -386,5 +391,8 @@ export async function merge(
     );
   }
   if (after.merged === true) return str(after.merge_commit_sha);
-  throw new GithubError(`the merge of ${repo}#${number} got no answer and was not made (the PR is not merged)`);
+  // GitHub may still be applying it: not merged yet is not proof it was not made.
+  throw new OutcomeUnknownError(
+    `the merge of ${repo}#${number} got no answer and the PR is not merged yet — check before retrying`,
+  );
 }

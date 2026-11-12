@@ -339,13 +339,47 @@ describe('approve and merge', () => {
       await expect(approve(fetch, config, 'acme/app', 7, SHA, 'develop', 'ok')).resolves.toBeUndefined();
     });
 
-    it('approve: no approval of its own there means none was made', async () => {
+    // trinity R3 (fable, astra): not seen yet is not proof — GitHub may still be applying it, or it is past the page.
+    it('approve: no approval of its own seen yet is an unknown outcome, not a failure', async () => {
       const { fetch } = fakeFetch({
         'POST /repos/acme/app/pulls/7/reviews': drop,
         'GET /user': { login: 'env-bot' },
         'GET /repos/acme/app/pulls/7/reviews?per_page=100': [],
       });
-      await expect(approve(fetch, config, 'acme/app', 7, SHA, 'develop', 'ok')).rejects.toThrow(/was not made/);
+      const err = await approve(fetch, config, 'acme/app', 7, SHA, 'develop', 'ok').catch((e) => e);
+      expect(err).toBeInstanceOf(OutcomeUnknownError);
+      expect(String(err)).toMatch(/not seen.*check/);
+    });
+
+    it('approve: picks its latest approval at the SHA, and a full page or a malformed list is unknown', async () => {
+      const dismissed: string[] = [];
+      const latest = fakeFetch({
+        'POST /repos/acme/app/pulls/7/reviews': drop,
+        'GET /user': { login: 'env-bot' },
+        'GET /repos/acme/app/pulls/7/reviews?per_page=100': [
+          { id: 5, user: { login: 'env-bot' }, state: 'APPROVED', commit_id: SHA },
+          { id: 12, user: { login: 'env-bot' }, state: 'APPROVED', commit_id: SHA },
+        ],
+        'GET /repos/acme/app/pulls/7': { ...PULL, head: { sha: OTHER } },
+        'PUT /repos/acme/app/pulls/7/reviews/12/dismissals': () => {
+          dismissed.push('12');
+          return { id: 12 };
+        },
+      });
+      await expect(approve(latest.fetch, config, 'acme/app', 7, SHA, 'develop', 'ok')).rejects.toThrow(/dismissed/);
+      expect(dismissed).toEqual(['12']);
+
+      const full = Array.from({ length: 100 }, (_, i) => ({ id: i, user: { login: 'x' }, state: 'COMMENTED' }));
+      for (const list of [full, { message: 'not a list' }]) {
+        const { fetch } = fakeFetch({
+          'POST /repos/acme/app/pulls/7/reviews': drop,
+          'GET /user': { login: 'env-bot' },
+          'GET /repos/acme/app/pulls/7/reviews?per_page=100': list,
+        });
+        await expect(approve(fetch, config, 'acme/app', 7, SHA, 'develop', 'ok')).rejects.toBeInstanceOf(
+          OutcomeUnknownError,
+        );
+      }
     });
 
     it('approve: when it cannot look, the outcome is unknown', async () => {
@@ -355,7 +389,7 @@ describe('approve and merge', () => {
       expect(String(err)).toMatch(/may stand.*check/);
     });
 
-    it('merge: a merged PR is a merge made; an open one is not; an unreadable one is unknown', async () => {
+    it('merge: a merged PR is a merge made; an open or unreadable one is unknown', async () => {
       let reads = 0;
       const merged = fakeFetch({
         'GET /repos/acme/app/pulls/7': () =>
@@ -365,7 +399,9 @@ describe('approve and merge', () => {
       expect(await merge(merged.fetch, config, 'acme/app', 7, SHA, 'develop', 'merge')).toBe('c'.repeat(40));
 
       const open = fakeFetch({ 'GET /repos/acme/app/pulls/7': PULL, 'PUT /repos/acme/app/pulls/7/merge': drop });
-      await expect(merge(open.fetch, config, 'acme/app', 7, SHA, 'develop', 'merge')).rejects.toThrow(/was not made/);
+      await expect(merge(open.fetch, config, 'acme/app', 7, SHA, 'develop', 'merge')).rejects.toThrow(
+        /not merged yet.*check/,
+      );
 
       let n = 0;
       const lost = fakeFetch({
