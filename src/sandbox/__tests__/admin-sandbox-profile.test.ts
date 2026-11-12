@@ -89,6 +89,29 @@ describe('protectedWriteDenyRules', () => {
   });
 });
 
+describe('protectedWriteDenyRules — spellings (fable R1 P3)', () => {
+  it('denies every spelling, and counts the session inside the deployment by any spelling', () => {
+    const rules = protectedWriteDenyRules({
+      deployRoot: ['/opt/soma/dev', '/Volumes/data/soma/dev'],
+      dataDir: ['/opt/soma/dev/data', '/Volumes/data/soma/dev/data'],
+      home: HOME,
+      // The session's directory is inside the deployment only by its real spelling.
+      workingDirectory: ['/work/U1', '/Volumes/data/soma/dev/workspace/U1'],
+    });
+    expect(rules).not.toContain('Edit(//opt/soma/dev/**)');
+    expect(rules).not.toContain('Edit(//Volumes/data/soma/dev/**)');
+    expect(rules).toEqual(
+      expect.arrayContaining([
+        'Edit(//opt/soma/dev/config.json)',
+        'Edit(//Volumes/data/soma/dev/config.json)',
+        'Edit(//Volumes/data/soma/dev/dist/**)',
+        'Edit(//opt/soma/dev/data/**)',
+        'Edit(//Volumes/data/soma/dev/data/**)',
+      ]),
+    );
+  });
+});
+
 describe('isSandboxOffInEffect', () => {
   it('turns the sandbox off only for an admin who asked, on a host that allows it', () => {
     const base = { isAdmin: true, requested: true, hostAllows: true };

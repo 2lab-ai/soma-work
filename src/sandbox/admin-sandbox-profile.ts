@@ -93,28 +93,37 @@ function isWithin(p: string, root: string): boolean {
 /**
  * `Edit` deny rules (they cover Write and NotebookEdit, and the CLI merges their paths into the
  * sandbox `denyWrite`) for the deployment, its data directory, and the home directory's startup and
- * trust files. Absolute (`//`) rule paths.
+ * trust files. Absolute (`//`) rule paths. Each of `deployRoot`, `dataDir` and `workingDirectory`
+ * may come with its other spellings (a symbolic link and where it points): every spelling of a
+ * protected path gets a rule, and the session counts as working inside the deployment when any
+ * spelling of its directory lies inside any spelling of the deployment.
  */
 export function protectedWriteDenyRules(paths: {
-  deployRoot: string;
-  dataDir: string;
+  deployRoot: string | readonly string[];
+  dataDir: string | readonly string[];
   home: string;
-  workingDirectory?: string;
+  workingDirectory?: string | readonly string[];
 }): string[] {
+  const list = (v: string | readonly string[] | undefined): string[] =>
+    v === undefined ? [] : typeof v === 'string' ? [v] : [...v];
   const edit = (p: string) => `Edit(/${path.normalize(p)})`;
   const tree = (dir: string) => [edit(dir), `Edit(/${path.normalize(dir)}/**)`];
-  const deploy = paths.deployRoot;
-  const deployRules =
-    paths.workingDirectory && isWithin(path.resolve(paths.workingDirectory), path.resolve(deploy))
+  const deployRoots = list(paths.deployRoot);
+  const workingInside = list(paths.workingDirectory).some((wd) =>
+    deployRoots.some((root) => isWithin(path.resolve(wd), path.resolve(root))),
+  );
+  const deployRules = deployRoots.flatMap((deploy) =>
+    workingInside
       ? [
           ...DEPLOY_CRITICAL_FILES.map((file) => edit(path.join(deploy, file))),
           ...DEPLOY_CRITICAL_DIRS.flatMap((dir) => tree(path.join(deploy, dir))),
         ]
-      : tree(deploy);
+      : tree(deploy),
+  );
   return [
     ...new Set([
       ...deployRules,
-      ...tree(paths.dataDir),
+      ...list(paths.dataDir).flatMap(tree),
       ...HOME_STARTUP_FILES.map((file) => edit(path.join(paths.home, file))),
       ...HOME_STARTUP_DIRS.flatMap((dir) => tree(path.join(paths.home, dir))),
     ]),

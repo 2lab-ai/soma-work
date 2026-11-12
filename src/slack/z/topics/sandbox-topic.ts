@@ -38,7 +38,10 @@ export async function renderSandboxCard(args: { userId: string; issuedAt: number
         : '• Sandbox: `ON` — bash runs in an isolated environment';
 
   let networkLine: string;
-  if (networkDisabled) {
+  if (admin && !sandboxDisabled) {
+    // The admin profile allows every domain; the allowlist toggle does not apply to it.
+    networkLine = '• Network: every domain (admin sandbox) — the network allowlist toggle does not apply to admins';
+  } else if (networkDisabled) {
     networkLine = sandboxDisabled
       ? '• Network allowlist: `OFF` _(stored; inactive while sandbox is OFF)_'
       : '• Network allowlist: `OFF` — outbound traffic is not restricted to the dev allowlist';
@@ -57,12 +60,15 @@ export async function renderSandboxCard(args: { userId: string; issuedAt: number
       label: '🛡️ Sandbox ON',
       description: '샌드박스 격리 활성화 (기본)',
     });
-    options.push({
-      id: 'off',
-      label: '⚠️ Sandbox OFF',
-      description: '⚠️ 샌드박스 격리 해제 (admin only)',
-      style: 'danger',
-    });
+    // Off is offered only where it would take effect (`SOMA_SANDBOX_OFF_ALLOWED`, env-access WU2 #1210).
+    if (getSandboxOffAllowed()) {
+      options.push({
+        id: 'off',
+        label: '⚠️ Sandbox OFF',
+        description: '⚠️ 샌드박스 격리 해제 (admin only, 이 호스트가 허용)',
+        style: 'danger',
+      });
+    }
   }
   // Network allowlist toggles are user-wide.
   options.push({

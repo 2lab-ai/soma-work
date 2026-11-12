@@ -671,10 +671,12 @@ export function handleSshExec(args: Record<string, unknown>) {
     throw new Error(`Invalid timeout_s: an integer between 1 and ${SSH_EXEC_MAX_TIMEOUT_S}`);
   }
 
-  // BatchMode: never prompt for a password or a host key. The remote shell runs `command` as one string.
+  // BatchMode: never prompt for a password or a host key. `--` ends ssh's options before the host: OpenSSH
+  // parses options again after the host otherwise, and a command such as `-oProxyCommand=…` would run on
+  // this host, as the bot, outside every sandbox. The remote shell runs `command` as one string.
   const result = spawnSync(
     'ssh',
-    ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', config[server].ssh.host, command],
+    ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '--', config[server].ssh.host, command],
     {
       timeout: timeoutS * 1000,
       maxBuffer: LOGS_MAX_BUFFER,

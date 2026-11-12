@@ -44,12 +44,28 @@ describe('sandbox-topic.renderSandboxCard', () => {
     expect(ids).toContain('z_setting_sandbox_cancel');
   });
 
-  it('exposes on/off buttons for admins', async () => {
+  it('exposes on/off buttons for admins on a host that allows off', async () => {
     vi.mocked(isAdminUser).mockReturnValue(true);
-    const { blocks } = await renderSandboxCard({ userId: 'U1', issuedAt: 2 });
+    process.env.SOMA_SANDBOX_OFF_ALLOWED = 'true';
+    try {
+      const { blocks } = await renderSandboxCard({ userId: 'U1', issuedAt: 2 });
+      const ids = actionIds(blocks);
+      expect(ids).toContain('z_setting_sandbox_set_on');
+      expect(ids).toContain('z_setting_sandbox_set_off');
+    } finally {
+      delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
+    }
+  });
+
+  it('offers an admin no OFF button where off would not take effect, and says the network is every domain (fable R1)', async () => {
+    vi.mocked(isAdminUser).mockReturnValue(true);
+    delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
+    const { blocks, text } = await renderSandboxCard({ userId: 'U1', issuedAt: 3 });
     const ids = actionIds(blocks);
     expect(ids).toContain('z_setting_sandbox_set_on');
-    expect(ids).toContain('z_setting_sandbox_set_off');
+    expect(ids).not.toContain('z_setting_sandbox_set_off');
+    expect(text).toContain('every domain');
+    expect(text).not.toContain('preset dev domains');
   });
 });
 

@@ -819,10 +819,10 @@ export async function buildStreamOptions(
       ...secretStoreDenyRules(),
       ...credentialReadDenyRules(os.homedir()),
       ...protectedWriteDenyRules({
-        deployRoot: path.dirname(CONFIG_FILE),
-        dataDir: DATA_DIR,
+        deployRoot: spellingsOf(path.dirname(CONFIG_FILE)),
+        dataDir: spellingsOf(DATA_DIR),
         home: os.homedir(),
-        workingDirectory,
+        workingDirectory: workingDirectory ? spellingsOf(workingDirectory) : undefined,
       }),
     ];
     const allow = [...(base.permissions?.allow ?? []), ...(adminProfile?.allowRules ?? [])];
@@ -1003,6 +1003,16 @@ function readIncidentRequest(session: ConversationSession | undefined): Incident
 /** server-tools' host-command tool (env-access WU2, #1210): admins only. */
 const SSH_EXEC_TOOL = 'mcp__server-tools__ssh_exec';
 const SSH_EXEC_ADMIN_ONLY = 'ssh_exec runs a command on a host and is for admins only.';
+
+/** `p` as written and as the OS resolves it, when it exists and the two differ. */
+function spellingsOf(p: string): string[] {
+  try {
+    const real = fs.realpathSync(p);
+    return real === p ? [p] : [p, real];
+  } catch {
+    return [p];
+  }
+}
 
 /** The temp directory as the OS resolves it (on macOS `/var/folders/…` is `/private/var/folders/…`). */
 function realTmpdir(): string {

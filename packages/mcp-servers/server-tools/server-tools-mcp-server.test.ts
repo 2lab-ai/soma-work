@@ -1746,7 +1746,7 @@ describe('handleSshExec', () => {
     const result = handleSshExec({ server: 'prod', command: 'uptime' });
     expect(child_process.spawnSync).toHaveBeenCalledWith(
       'ssh',
-      ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', 'prod.example.com', 'uptime'],
+      ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '--', 'prod.example.com', 'uptime'],
       expect.objectContaining({ timeout: 60000, maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] }),
     );
     expect(result.content[0].text).toBe('exit 0\nup 3 days\n');
@@ -1787,6 +1787,18 @@ describe('handleSshExec', () => {
     const err = thrownBy(() => handleSshExec({ server: 'prod', command: 'sleep 999' }));
     expect(err.message).toContain('timed out');
     expect(err.message).not.toContain('secret-ish');
+  });
+
+  it('ends ssh options before the host, so a command that looks like an option stays the remote command (fable R1 P1)', () => {
+    mockConfig(PROD_CONFIG, 8105);
+    mockLogsRun('');
+    // OpenSSH parses options again after the host unless `--` came first: `-oProxyCommand=…` would run a
+    // local command as the bot, outside every sandbox.
+    handleSshExec({ server: 'prod', command: '-oProxyCommand=touch /tmp/pwned' });
+    const argv = vi.mocked(child_process.spawnSync).mock.calls.at(-1)?.[1] as string[];
+    expect(argv.indexOf('--')).toBeGreaterThan(-1);
+    expect(argv.indexOf('--')).toBeLessThan(argv.indexOf('prod.example.com'));
+    expect(argv.at(-1)).toBe('-oProxyCommand=touch /tmp/pwned');
   });
 
   it('refuses an unknown server, an empty command and one over 8 KB, before running ssh', () => {
