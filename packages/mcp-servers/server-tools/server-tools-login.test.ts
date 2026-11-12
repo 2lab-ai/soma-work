@@ -72,7 +72,7 @@ beforeEach(() => {
       body: { id: 'qa-admin', pw: { $secret: 'dev2-player' } },
       token: 'cookie:SESSION',
     },
-    plain: { url: 'http://app.example.test/login', body: {}, token: 'json:token' },
+    plain: { url: 'http://app.example.test/login', body: { pw: { $secret: 'dev2-player' } }, token: 'json:token' },
   });
 });
 
@@ -81,15 +81,19 @@ afterEach(() => {
   fs.rmSync(path.join(ROOT, 'data'), { recursive: true, force: true });
 });
 
-function web(answer: { status?: number; json?: unknown; setCookie?: string[] } = {}) {
+function web(
+  answer: { status?: number; json?: unknown; setCookie?: string[]; location?: string; during?: () => void } = {},
+) {
   const calls: { url: string; method: string; body?: string; contentType?: string }[] = [];
   const fetch: LoginFetch = async (url, init) => {
     calls.push({ url, method: init.method, body: init.body, contentType: init.headers['Content-Type'] });
+    answer.during?.();
     const status = answer.status ?? 200;
     return {
       status,
       json: async () => answer.json ?? {},
       setCookies: () => answer.setCookie ?? [],
+      location: () => answer.location ?? null,
     };
   };
   return { fetch, calls };
@@ -128,20 +132,17 @@ describe('login', () => {
     expect(result).toEqual({ server: 'dev2', account: 'admin', kind: 'cookie', cookie: 'SESSION', token: 's3ss' });
   });
 
-  it('posts a form when the account says so, and takes the cookie of a redirect that follows a form login', async () => {
+  it('posts a form when the account says so, and takes the cookie of the redirect a successful form login answers', async () => {
     writeConfig({
       bo: {
         url: 'https://bo.example.test/login',
         format: 'form',
         body: { id: 'qa admin', pw: { $secret: 'dev2-player' }, remember: true },
         token: 'cookie:SESSION',
+        successRedirect: '/home',
       },
     });
-    const calls: { body?: string; contentType?: string }[] = [];
-    const fetch: LoginFetch = async (_url, init) => {
-      calls.push({ body: init.body, contentType: init.headers['Content-Type'] });
-      return { status: 302, json: async () => ({}), setCookies: () => ['SESSION=f0rm; Path=/'] };
-    };
+    const { fetch, calls } = web({ status: 302, setCookie: ['SESSION=f0rm; Path=/'], location: '/home/dashboard' });
     const result = JSON.parse((await handleLogin({ server: 'dev2', account: 'bo' }, fetch)).content[0].text);
     expect(result).toMatchObject({ kind: 'cookie', cookie: 'SESSION', token: 'f0rm' });
     expect(calls[0].contentType).toBe('application/x-www-form-urlencoded');
@@ -156,11 +157,80 @@ describe('login', () => {
     const { fetch } = web({ status: 302, json: { data: { accessToken: 'tok' } } });
     await expect(handleLogin({ server: 'dev2', account: 'player' }, fetch)).rejects.toThrow(/answered 302/);
     writeConfig({
-      nested: { url: 'https://bo.example.test/login', format: 'form', body: { a: { b: 1 } }, token: 'cookie:S' },
-      odd: { url: 'https://bo.example.test/login', format: 'xml', body: {}, token: 'cookie:S' },
+      nested: {
+        url: 'https://bo.example.test/login',
+        format: 'form',
+        body: { a: { b: 1 }, pw: { $secret: 'dev2-player' } },
+        token: 'cookie:S',
+      },
+      odd: {
+        url: 'https://bo.example.test/login',
+        format: 'xml',
+        body: { pw: { $secret: 'dev2-player' } },
+        token: 'cookie:S',
+      },
     });
     await expect(handleLogin({ server: 'dev2', account: 'nested' }, fetch)).rejects.toThrow(/form value a/);
     await expect(handleLogin({ server: 'dev2', account: 'odd' }, fetch)).rejects.toThrow(/format must be json or form/);
+  });
+
+  // trinity R1 (fable, astra): a refused form login can redirect back with an anonymous or deleted cookie.
+  it('takes a redirect only to where the account says a successful login goes', async () => {
+    const base = {
+      url: 'https://bo.example.test/login',
+      body: { pw: { $secret: 'dev2-player' } },
+      token: 'cookie:SESSION',
+    };
+    writeConfig({ bo: { ...base, successRedirect: '/home' }, nogoal: base });
+    const cookie = ['SESSION=anon; Path=/'];
+    const refused = (account: string, location: string | undefined) =>
+      handleLogin({ server: 'dev2', account }, web({ status: 302, setCookie: cookie, location }).fetch);
+    await expect(refused('bo', '/login?error=1')).rejects.toThrow(/redirected to \/login, not \/home/);
+    await expect(refused('bo', 'https://elsewhere.example.test/home')).rejects.toThrow(/redirected to another host/);
+    await expect(refused('bo', undefined)).rejects.toThrow(/redirected without a location/);
+    await expect(refused('nogoal', '/home')).rejects.toThrow(/answered 302; set successRedirect/);
+    expect(ledger().filter((r) => r.phase === 'done')).toEqual([]);
+  });
+
+  it('never hands out a cookie the answer deletes, and takes the last one it sets', async () => {
+    const ask = (setCookie: string[]) => handleLogin({ server: 'dev2', account: 'admin' }, web({ setCookie }).fetch);
+    await expect(ask(['SESSION=deleted; Path=/; Max-Age=0'])).rejects.toThrow(/no session token/);
+    await expect(ask(['SESSION=old; Expires=Thu, 01 Jan 1970 00:00:00 GMT'])).rejects.toThrow(/no session token/);
+    await expect(ask(['SESSION=fresh; Path=/', 'SESSION=; Max-Age=0'])).rejects.toThrow(/no session token/);
+    const out = await ask(['SESSION=deleted; Max-Age=0', 'SESSION=fresh; Path=/; Max-Age=600']);
+    expect(JSON.parse(out.content[0].text).token).toBe('fresh');
+  });
+
+  it('leaves out a login whose body names no secret: a password in config.json is not used', async () => {
+    writeConfig({
+      inline: { url: 'https://bo.example.test/login', body: { id: 'qa', pw: 'hunter2' }, token: 'cookie:S' },
+    });
+    const { fetch, calls } = web({ setCookie: ['S=1'] });
+    await expect(handleLogin({ server: 'dev2', account: 'inline' }, fetch)).rejects.toThrow(/no login named inline/);
+    expect(calls).toEqual([]);
+  });
+
+  // trinity R1 (fable): the ledger ordering, pinned.
+  it('posts nothing when the intent cannot be written, and withholds the session when done cannot be', async () => {
+    fs.mkdirSync(path.dirname(AUDIT), { recursive: true });
+    fs.writeFileSync(AUDIT, 'not a directory');
+    const first = web({ json: { data: { accessToken: 'tok-1' } } });
+    await expect(handleLogin({ server: 'dev2', account: 'player' }, first.fetch)).rejects.toThrow(/not logged in/);
+    expect(first.calls).toEqual([]);
+    fs.rmSync(AUDIT, { force: true });
+
+    const second = web({
+      json: { data: { accessToken: 'tok-2' } },
+      during: () => {
+        fs.rmSync(AUDIT, { recursive: true, force: true });
+        fs.writeFileSync(AUDIT, 'not a directory');
+      },
+    });
+    const err = await handleLogin({ server: 'dev2', account: 'player' }, second.fetch).catch((e: Error) => e);
+    expect(String(err)).toMatch(/the session was not handed out/);
+    expect(String(err)).not.toContain('tok-2');
+    expect(second.calls).toHaveLength(1);
+    fs.rmSync(AUDIT, { force: true });
   });
 
   it('never shows the password: a refused login says only its status', async () => {

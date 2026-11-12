@@ -112,6 +112,25 @@ const configCache = new ConfigCache<ServerToolsConfig>(
  * resolve is left out — never run with a missing password — and only its name and the secret's name
  * are logged.
  */
+/**
+ * An environment's web logins keep their password in the secret store (WU3b, #1211): a login whose body names no
+ * `{"$secret": …}` is left out, so a password written into config.json is never posted.
+ */
+function withSecretLogins(name: string, server: unknown): unknown {
+  const web = (server as { web?: { logins?: unknown } } | null)?.web;
+  const logins = web?.logins;
+  if (!logins || typeof logins !== 'object' || Array.isArray(logins)) return server;
+  const kept: Record<string, unknown> = {};
+  for (const [account, spec] of Object.entries(logins as Record<string, unknown>)) {
+    const body = (spec as { body?: unknown } | null)?.body;
+    const values = body && typeof body === 'object' && !Array.isArray(body) ? Object.values(body) : [];
+    if (values.some(isSecretRef)) kept[account] = spec;
+    else
+      configLogger.warn(`server "${name}": login "${account}" left out — its body must name a {"$secret": "<name>"}`);
+  }
+  return { ...(server as Record<string, unknown>), web: { ...web, logins: kept } };
+}
+
 function resolveServerSecrets(servers: Record<string, unknown>): ServerToolsConfig {
   const out: ServerToolsConfig = {};
   for (const [name, entry] of Object.entries(servers)) {
@@ -123,6 +142,7 @@ function resolveServerSecrets(servers: Record<string, unknown>): ServerToolsConf
       const { github: _dropped, ...rest } = entry as Record<string, unknown>;
       server = rest;
     }
+    server = withSecretLogins(name, server);
     try {
       out[name] = resolveSecretRefs(server, process.env.SOMA_SECRETS_DIR) as ServerConfig;
     } catch (error) {

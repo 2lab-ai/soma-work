@@ -10,8 +10,10 @@
 export interface LoginResponse {
   status: number;
   json(): Promise<unknown>;
-  /** Every `Set-Cookie` header of the answer. */
+  /** Every `Set-Cookie` header of the answer, in order. */
   setCookies(): string[];
+  /** The answer's `Location` header, if any. */
+  location(): string | null;
 }
 export type LoginFetch = (
   url: string,
@@ -26,6 +28,11 @@ export interface WebLogin {
   body: Record<string, unknown>;
   /** `json:<dot.path>` — a string in the JSON answer; `cookie:<name>` — a cookie the answer sets. */
   token: string;
+  /**
+   * For a `cookie:` session: the path a successful login redirects to (a refused form login often redirects back to
+   * the login page, with an anonymous cookie). A redirect is taken only to it, on the login's own host.
+   */
+  successRedirect?: string;
 }
 
 export type LoginSession = { kind: 'bearer'; token: string } | { kind: 'cookie'; cookie: string; token: string };
@@ -66,7 +73,17 @@ export function loginSpec(raw: unknown, account: string): WebLogin {
   if (typeof spec.token !== 'string' || !TOKEN.test(spec.token)) {
     throw new LoginError(`login ${account}: token must be json:<path> or cookie:<name>`);
   }
-  return { url: url.toString(), format, body: spec.body as Record<string, unknown>, token: spec.token };
+  const successRedirect = spec.successRedirect;
+  if (successRedirect !== undefined && (typeof successRedirect !== 'string' || !successRedirect.startsWith('/'))) {
+    throw new LoginError(`login ${account}: successRedirect must be a path starting with /`);
+  }
+  return {
+    url: url.toString(),
+    format,
+    body: spec.body as Record<string, unknown>,
+    token: spec.token,
+    ...(successRedirect !== undefined ? { successRedirect } : {}),
+  };
 }
 
 function fromJson(json: unknown, path: string): string | undefined {
@@ -78,16 +95,52 @@ function fromJson(json: unknown, path: string): string | undefined {
   return typeof at === 'string' && at !== '' ? at : undefined;
 }
 
-function fromCookies(cookies: string[], name: string): string | undefined {
-  for (const header of cookies) {
-    const first = header.split(';')[0] ?? '';
-    const eq = first.indexOf('=');
-    if (eq > 0 && first.slice(0, eq).trim() === name) {
-      const value = first.slice(eq + 1).trim();
-      if (value !== '') return value;
+/** A `Set-Cookie` that deletes its cookie: an empty value, `Max-Age` of zero or less, or an `Expires` already past. */
+function deletes(value: string, attributes: string[], now: number): boolean {
+  if (value === '') return true;
+  for (const attribute of attributes) {
+    const eq = attribute.indexOf('=');
+    const key = (eq < 0 ? attribute : attribute.slice(0, eq)).trim().toLowerCase();
+    const raw = eq < 0 ? '' : attribute.slice(eq + 1).trim();
+    if (key === 'max-age' && /^-?\d+$/.test(raw) && Number(raw) <= 0) return true;
+    if (key === 'expires') {
+      const at = Date.parse(raw);
+      if (!Number.isNaN(at) && at <= now) return true;
     }
   }
-  return undefined;
+  return false;
+}
+
+/** The value the answer leaves for cookie `name`: the last `Set-Cookie` for it wins, and a deletion leaves none. */
+function fromCookies(cookies: string[], name: string, now = Date.now()): string | undefined {
+  let live: string | undefined;
+  for (const header of cookies) {
+    const [first = '', ...attributes] = header.split(';');
+    const eq = first.indexOf('=');
+    if (eq <= 0 || first.slice(0, eq).trim() !== name) continue;
+    const value = first.slice(eq + 1).trim();
+    live = deletes(value, attributes, now) ? undefined : value;
+  }
+  return live;
+}
+
+/** Why a redirect is not a successful login, or `null` when it goes where `successRedirect` says. */
+function redirectProblem(spec: WebLogin, status: number, location: string | null): string | null {
+  const host = new URL(spec.url).host;
+  if (spec.successRedirect === undefined) {
+    return `login to ${host} answered ${status}; set successRedirect to the path a successful login goes to`;
+  }
+  if (!location) return `login to ${host} redirected without a location`;
+  let target: URL;
+  try {
+    target = new URL(location, spec.url);
+  } catch {
+    return `login to ${host} redirected to an unreadable location`;
+  }
+  if (target.origin !== new URL(spec.url).origin) return `login to ${host} redirected to another host`;
+  const goal = spec.successRedirect;
+  const arrived = target.pathname === goal || target.pathname.startsWith(goal.endsWith('/') ? goal : `${goal}/`);
+  return arrived ? null : `login to ${host} redirected to ${target.pathname}, not ${goal}`;
 }
 
 function encode(spec: WebLogin): { contentType: string; body: string } {
@@ -116,11 +169,17 @@ export async function login(fetch: LoginFetch, spec: WebLogin): Promise<LoginSes
   } catch (err) {
     throw new LoginError(`login to ${host} got no answer (${err instanceof Error ? err.name : 'error'})`);
   }
-  // A 2xx; for a cookie session also the redirect a form login answers with (it is not followed).
+  // A 2xx; for a cookie session also the redirect a successful form login answers with (it is not followed).
   const cookieSession = spec.token.startsWith('cookie:');
-  const accepted = (res.status >= 200 && res.status < 300) || (cookieSession && res.status >= 300 && res.status < 400);
+  const redirect = res.status >= 300 && res.status < 400;
   // Never the answer's body: a refused login may echo what was sent.
-  if (!accepted) throw new LoginError(`login to ${host} answered ${res.status}`);
+  if (!(res.status >= 200 && res.status < 300) && !(cookieSession && redirect)) {
+    throw new LoginError(`login to ${host} answered ${res.status}`);
+  }
+  if (redirect) {
+    const problem = redirectProblem(spec, res.status, res.location());
+    if (problem) throw new LoginError(problem);
+  }
   if (cookieSession) {
     const cookie = spec.token.slice('cookie:'.length);
     const token = fromCookies(res.setCookies(), cookie);
@@ -143,6 +202,7 @@ export const defaultLoginFetch: LoginFetch = async (url, init) => {
   const res = await fetch(url, { ...init, redirect: 'manual' });
   return {
     status: res.status,
+    location: () => res.headers.get('location'),
     json: () => res.json(),
     setCookies: () =>
       typeof (res.headers as { getSetCookie?: () => string[] }).getSetCookie === 'function'
