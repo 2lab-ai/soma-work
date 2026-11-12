@@ -151,4 +151,86 @@ describe('TurnInputChannel (user-steering WU1)', () => {
     channel.pushedUuids().push('forged');
     expect(channel.pushedUuids()).toEqual(['u-1']);
   });
+
+  // A `result` the CLI sent that the host has not processed yet (2026-11-12):
+  // the CLI ended a turn there, so a message pushed now would open a turn of
+  // its own that the host then cuts when it gets to that result.
+  it('refuses a steer while a result is in transit, and takes it again once the host has processed it', () => {
+    const channel = new TurnInputChannel(userMessage('first'));
+    expect(channel.acceptsPushes).toBe(true);
+
+    channel.holdPushes();
+    expect(channel.acceptsPushes).toBe(false);
+    expect(channel.push(steerMessage('in the gap', 'u-1'))).toBe(false);
+    expect(channel.pushedUuids()).toEqual([]);
+    // Still held: nothing reopened yet.
+    expect(channel.takeReopened()).toBe(false);
+
+    channel.releasePushes();
+    expect(channel.acceptsPushes).toBe(true);
+    // A push was refused meanwhile: the caller is told the input is open again — once.
+    expect(channel.takeReopened()).toBe(true);
+    expect(channel.takeReopened()).toBe(false);
+    expect(channel.push(steerMessage('again', 'u-1'))).toBe(true);
+    expect(channel.pushedUuids()).toEqual(['u-1']);
+  });
+
+  it('takeReopened() says nothing when no push was refused', () => {
+    const channel = new TurnInputChannel(userMessage('first'));
+    channel.holdPushes();
+    channel.releasePushes();
+    expect(channel.takeReopened()).toBe(false);
+    // More releases than holds change nothing.
+    channel.releasePushes();
+    expect(channel.acceptsPushes).toBe(true);
+  });
+
+  // PR #1227 review: the refusal must outlive a result that arrives before the host said "reopened" — or a
+  // message refused in the first gap waits for the turn's end although the turn went on.
+  it('a refusal is remembered across a second result in transit, until the input is really open', () => {
+    const channel = new TurnInputChannel(userMessage('first'));
+    channel.holdPushes(); // result A arrives
+    expect(channel.push(steerMessage('in the gap', 'u-1'))).toBe(false);
+    channel.releasePushes(); // the host processed A ...
+    channel.holdPushes(); // ... and result B arrived before it could say so
+    expect(channel.takeReopened()).toBe(false);
+    channel.releasePushes(); // the host processed B
+    expect(channel.takeReopened()).toBe(true);
+  });
+
+  it('two results in transit at once: the input stays shut until the host has processed both', () => {
+    const channel = new TurnInputChannel(userMessage('first'));
+    channel.holdPushes();
+    channel.holdPushes();
+    expect(channel.push(steerMessage('in the gap', 'u-1'))).toBe(false);
+
+    channel.releasePushes(); // one of the two processed
+    expect(channel.acceptsPushes).toBe(false);
+    expect(channel.takeReopened()).toBe(false);
+    expect(channel.push(steerMessage('still in the gap', 'u-1'))).toBe(false);
+
+    channel.releasePushes();
+    expect(channel.acceptsPushes).toBe(true);
+    expect(channel.takeReopened()).toBe(true);
+    expect(channel.push(steerMessage('now', 'u-1'))).toBe(true);
+  });
+
+  it('a result in transit does not hold a host-authored message', async () => {
+    const channel = new TurnInputChannel(userMessage('first'));
+    channel.holdPushes();
+    expect(channel.pushUntracked(userMessage('host note'))).toBe(true);
+    channel.close();
+    expect((await drain(channel)).map((m) => m.message.content)).toEqual(['first', 'host note']);
+  });
+
+  it('a sealed or closed channel stays shut whatever is released', () => {
+    const channel = new TurnInputChannel(userMessage('first'));
+    channel.holdPushes();
+    expect(channel.push(steerMessage('in the gap', 'u-0'))).toBe(false);
+    channel.seal();
+    channel.releasePushes();
+    expect(channel.acceptsPushes).toBe(false);
+    expect(channel.takeReopened()).toBe(false);
+    expect(channel.push(steerMessage('too late', 'u-1'))).toBe(false);
+  });
 });

@@ -139,6 +139,7 @@ describe('SlackHandler — follow-up queue host', () => {
       canInterrupt: vi.fn().mockReturnValue(true),
       setActivityStateByKey: vi.fn(),
       broadcastSessionUpdate: vi.fn(),
+      setSteerSignals: vi.fn(),
     };
 
     const store = {
@@ -3349,6 +3350,46 @@ describe('SlackHandler — follow-up queue host', () => {
         await turn.release();
       });
 
+      /**
+       * 2026-11-12: a steer is also refused while a `result` the CLI already
+       * sent waits for the host to process it. When that result does not end
+       * the turn (a held turn, a result for something else), the turn's input
+       * takes messages again — and says so, ahead of the stream.
+       */
+      it('is pushed again when the running turn says its input reopened', async () => {
+        const steerTurn = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+        claudeHandler.steerTurn = steerTurn;
+        const turn = turnStillSettingUp();
+        await tick();
+
+        await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+        expect(items()[0].state).toBe('queued');
+
+        const signals = claudeHandler.setSteerSignals.mock.calls[0][0];
+        signals.inputReopened(SESSION_KEY);
+        for (let i = 0; i < 4; i++) await tick();
+
+        expect(steerTurn).toHaveBeenCalledTimes(2);
+        expect(steerTurn.mock.calls[1][1]).toMatchObject({ text: '이것도 같이 봐줘' });
+        expect(items()[0].state).toBe('steered');
+        await turn.release();
+      });
+
+      it('a reopened input with nothing running, or nothing waiting, does nothing', async () => {
+        const steerTurn = vi.fn().mockReturnValue(true);
+        claudeHandler.steerTurn = steerTurn;
+        const signals = claudeHandler.setSteerSignals.mock.calls[0][0];
+
+        expect(() => signals.inputReopened(SESSION_KEY)).not.toThrow();
+        const turn = turnStillSettingUp();
+        await tick();
+        signals.inputReopened(SESSION_KEY);
+        for (let i = 0; i < 4; i++) await tick();
+
+        expect(steerTurn).not.toHaveBeenCalled();
+        await turn.release();
+      });
+
       it('is never pushed into a different run — only the one that refused it', async () => {
         const steerTurn = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
         claudeHandler.steerTurn = steerTurn;
@@ -4206,6 +4247,89 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
+    /**
+     * Incident 2026-11-12 (dev): the stream the executor renders ran 12 s behind
+     * the CLI (Slack round-trips behind a shared rate limit). The model was
+     * already answering a steered message while its row still said "waiting";
+     * `Send now` pressed in that gap killed the turn that was running that very
+     * message — first reaction 90 s later. The running turn now reports the
+     * read the moment the CLI's frame arrives, on its own signal.
+     */
+    describe('a read reported ahead of the stream (the running turn’s own signal)', () => {
+      const signals = () => claudeHandler.setSteerSignals.mock.calls[0][0];
+
+      it('is registered with the Claude handler', () => {
+        expect(claudeHandler.setSteerSignals).toHaveBeenCalledTimes(1);
+        expect(typeof signals().read).toBe('function');
+        expect(typeof signals().inputReopened).toBe('function');
+      });
+
+      it('closes the row at once, and Send now can no longer cut the turn that is running it', async () => {
+        const { uuid, settle } = await steerOne();
+        const steeredEpoch = items()[0].epoch;
+
+        signals().read(SESSION_KEY, uuid);
+        await tick();
+
+        const [item] = items();
+        expect(item.state).toBe('resolved');
+        expect(item.stateReason).toBe('consumed');
+
+        // The button the panel rendered against the steered row is stale now.
+        const turnEpoch = handlerAny.followupDispatcher.liveTurnEpoch(SESSION_KEY);
+        const sent = await handlerAny.followupDispatcher.sendNow(
+          SESSION_KEY,
+          item.id,
+          steeredEpoch,
+          'U_OWNER',
+          turnEpoch,
+        );
+        expect(sent.status).toBe('rejected');
+        expect(abortSession).not.toHaveBeenCalled();
+        await settle();
+      });
+
+      // PR #1227 review: the signal is fired from the turn's frame loop and nobody awaits it. A settlement that
+      // rejects must end in a log line, never in an unhandled rejection (which can take the process down).
+      it('a settlement that fails is logged, not left unhandled', async () => {
+        const warn = vi.spyOn(handlerAny.logger, 'warn').mockImplementation(() => {});
+        const original = handlerAny.settleSteeredFollowup;
+        handlerAny.settleSteeredFollowup = vi.fn().mockRejectedValue(new Error('disk full'));
+        try {
+          expect(() => signals().read(SESSION_KEY, 'uuid-x')).not.toThrow();
+          await tick();
+          expect(warn.mock.calls.some(([line]) => String(line).includes('Steer read signal'))).toBe(true);
+        } finally {
+          handlerAny.settleSteeredFollowup = original;
+          warn.mockRestore();
+        }
+      });
+
+      it('the same read arriving later on the stream moves nothing', async () => {
+        const { uuid, settle } = await steerOne();
+        signals().read(SESSION_KEY, uuid);
+        await tick();
+        const epochAfterSignal = items()[0].epoch;
+
+        await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'read' });
+
+        expect(items()[0].state).toBe('resolved');
+        expect(items()[0].epoch).toBe(epochAfterSignal);
+        await settle();
+      });
+
+      it('a turn that then ends without proof it ran still puts the row back in line', async () => {
+        const { uuid, settle } = await steerOne();
+        signals().read(SESSION_KEY, uuid);
+        await tick();
+
+        await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'discarded' });
+
+        expect(items()[0].state).toBe('queued');
+        await settle();
+      });
+    });
+
     it('a message the model read is not put back in line when its turn is cut', async () => {
       const { uuid, settle } = await steerOne();
       await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'read' });
@@ -4387,8 +4511,9 @@ describe('SlackHandler — follow-up queue host', () => {
         attachments,
         {
           timestamp: 1792900000000,
-          // A steered message is always a person's (dashboard SSOT 2026-10-27).
-          origin: { by: 'user' },
+          // A steered message is always a person's (dashboard SSOT 2026-10-27), taken in by a running turn
+          // (SSOT 2026-11-12: the chat says 반영됨 on it).
+          origin: { by: 'user', steered: true },
         },
       );
       expect(order).toEqual(['capture', 'record', 'cleanup']);
@@ -4568,7 +4693,7 @@ describe('SlackHandler — follow-up queue host', () => {
       await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'completed' });
       expect((record.mock.calls[0] as unknown[])[5]).toEqual({
         timestamp: 1792900000000,
-        origin: { by: 'user' },
+        origin: { by: 'user', steered: true },
         clientRef: 'optimistic-1-ab',
       });
       await settle();
@@ -5054,8 +5179,9 @@ describe('SlackHandler — follow-up queue host', () => {
         attachments,
         {
           timestamp: 1792900000000,
-          // A steered message is always a person's (dashboard SSOT 2026-10-27).
-          origin: { by: 'user' },
+          // A steered message is always a person's (dashboard SSOT 2026-10-27), taken in by a running turn
+          // (SSOT 2026-11-12: the chat says 반영됨 on it).
+          origin: { by: 'user', steered: true },
         },
       );
       expect(order).toEqual(['capture', 'record', 'cleanup']);

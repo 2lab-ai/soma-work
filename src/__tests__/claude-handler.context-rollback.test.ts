@@ -29,6 +29,7 @@ vi.mock('../agent-runtime/claude-code/build-stream-options', () => ({
 import { decodeContextAnchor, encodeContextAnchor } from '@soma/slack/context-anchor';
 import { ClaudeHandler } from '../claude-handler';
 import type { McpManager } from '../mcp-manager';
+import { asSdkQuery } from '../test-utils/fake-sdk-query';
 
 const SID = 'a1b2c3d4-0000-4000-8000-000000000001';
 const U = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -41,7 +42,7 @@ function installTurn(frames: (opening: Record<string, unknown>) => Record<string
       const opening = (await inputs.next()).value as Record<string, unknown>;
       for (const f of frames(opening)) yield f;
     })();
-    return Object.assign(gen, {
+    return asSdkQuery(gen, {
       interrupt: vi.fn(async () => ({ still_queued: [], cancelled: [] })),
       cancelAsyncMessage: vi.fn(async () => true),
     });
