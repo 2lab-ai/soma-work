@@ -8,6 +8,14 @@ import { StderrLogger } from '@soma/process-shared/stderr-logger.js';
 import { type ChildProcess, execFileSync, type SpawnSyncReturns, spawn, spawnSync } from 'child_process';
 import { appendAudit } from './env-audit.js';
 import {
+  CfError,
+  type CfFetch,
+  CfOutcomeUnknownError,
+  cfCall,
+  cfRequest,
+  type EnvCloudflareConfig,
+} from './env-cloudflare.js';
+import {
   allowedRepo,
   approvalProblem,
   approve,
@@ -84,6 +92,8 @@ interface ServerConfig {
   databases?: Record<string, DatabaseConfig>;
   /** The environment's GitHub token and what it may approve and merge (`gh_pr`). */
   github?: EnvGithubConfig;
+  /** The environment's scoped Cloudflare token and zones (`cf_api`, env-access WU6, #1214). */
+  cloudflare?: EnvCloudflareConfig;
   /** The environment's web app accounts (`login`, WU3b): url, body (its password a `$secret`), where the session is. */
   web?: { logins?: Record<string, unknown> };
 }
@@ -151,6 +161,13 @@ function resolveServerSecrets(servers: Record<string, unknown>): ServerToolsConf
     if (github && typeof github === 'object' && !isSecretRef(github.token)) {
       configLogger.warn(`server "${name}": github left out — github.token must be {"$secret": "<name>"}`);
       const { github: _dropped, ...rest } = entry as Record<string, unknown>;
+      server = rest;
+    }
+    // The same for its Cloudflare token (WU6, #1214).
+    const cloudflare = (server as { cloudflare?: { token?: unknown } } | null)?.cloudflare;
+    if (cloudflare && typeof cloudflare === 'object' && !isSecretRef(cloudflare.token)) {
+      configLogger.warn(`server "${name}": cloudflare left out — cloudflare.token must be {"$secret": "<name>"}`);
+      const { cloudflare: _dropped, ...rest } = server as Record<string, unknown>;
       server = rest;
     }
     server = withSecretLogins(name, server);
@@ -757,6 +774,86 @@ export async function handleGhRead(
   }
 }
 
+// ── cf_api: an environment's Cloudflare calls (env-access WU6, #1214) ──
+
+function envCloudflare(server: unknown): { name: string; config: ServerConfig; cloudflare: EnvCloudflareConfig } {
+  const config = loadConfig();
+  if (typeof server !== 'string' || !Object.keys(config).includes(server)) throw new Error(`Unknown server: ${server}`);
+  const cloudflare = config[server].cloudflare;
+  const zones = cloudflare?.zones;
+  const zonesOk =
+    !!zones &&
+    typeof zones === 'object' &&
+    !Array.isArray(zones) &&
+    Object.values(zones).every((id) => typeof id === 'string' && /^[0-9a-f]{32}$/.test(id));
+  if (!cloudflare || typeof cloudflare.token !== 'string' || !zonesOk) {
+    throw new Error(`Server ${server} has no cloudflare section (token and zones of 32-hex IDs)`);
+  }
+  return { name: server, config: config[server], cloudflare };
+}
+
+/**
+ * One Cloudflare API call on one of the environment's zones, with its own scoped token (never shown). A read runs as
+ * is; a write needs `cloudflare.write`, a requester, and the audit ledger before and after (a write with no answer is
+ * recorded `unknown`). `fetchImpl` is for tests.
+ */
+export async function handleCfApi(
+  args: Record<string, unknown>,
+  fetchImpl: CfFetch = globalThis.fetch as unknown as CfFetch,
+) {
+  const env = envCloudflare(args.server);
+  try {
+    const request = cfRequest(env.cloudflare, args);
+    if (request.method === 'GET') {
+      const answer = await cfCall(fetchImpl, env.cloudflare, request);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(answer) }] };
+    }
+    const requester = process.env.SOMA_REQUESTER;
+    if (!requester) throw new CfError('not sent: the session has no requester to record');
+    const audit = {
+      server: env.name,
+      ...(env.config.envUser ? { envUser: env.config.envUser } : {}),
+      requester,
+      tool: 'cf_api',
+      action: request.method,
+    };
+    const detail = { zone: request.zone, path: request.path };
+    try {
+      appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'intent', detail });
+    } catch (err) {
+      throw new CfError(`not sent: ${(err as Error).message}`);
+    }
+    let answer: Awaited<ReturnType<typeof cfCall>>;
+    try {
+      answer = await cfCall(fetchImpl, env.cloudflare, request);
+    } catch (err) {
+      const phase = err instanceof CfOutcomeUnknownError ? 'unknown' : 'failed';
+      const message = err instanceof CfError ? err.message : `cf_api failed on ${env.name}`;
+      try {
+        appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase, detail: { ...detail, error: message } });
+      } catch (auditErr) {
+        throw new CfError(`${message}; the audit ledger could not record it (${(auditErr as Error).message})`);
+      }
+      throw new CfError(message);
+    }
+    try {
+      appendAudit(process.env.SOMA_AUDIT_DIR, {
+        ...audit,
+        phase: 'done',
+        detail: { ...detail, status: answer.status },
+      });
+    } catch (err) {
+      throw new CfError(
+        `Cloudflare ${request.method} was made (${answer.status}), but the audit ledger could not record it (${(err as Error).message}); do not retry`,
+      );
+    }
+    return { content: [{ type: 'text' as const, text: JSON.stringify(answer) }] };
+  } catch (err) {
+    if (err instanceof CfError) throw new Error(err.message);
+    throw new Error(`cf_api failed on ${env.name}`);
+  }
+}
+
 /**
  * view / approve / merge one PR as the environment user, with the environment's token. approve and merge run only
  * under the environment's conditions, at the head SHA the caller passes, for the person the bot names
@@ -1349,6 +1446,28 @@ class ServerToolsMCPServer extends BaseMcpServer {
         },
       },
       {
+        name: 'cf_api',
+        description:
+          "Call the Cloudflare API on one of a server's environment zones with the environment's own scoped token " +
+          '(never shown): path /zones/<zone id>/… (dns_records, settings, purge_cache, …), method GET, or POST/PUT/' +
+          'PATCH/DELETE when the environment allows writes (audited). Token, user and member paths are never ' +
+          "reachable. Returns {status, truncated, body}. Admins, or a user the environment's admin approved.",
+        inputSchema: {
+          type: 'object',
+          properties: {
+            server: {
+              type: 'string',
+              description: 'Server name from config (see list) whose cloudflare section to use.',
+            },
+            method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] },
+            path: { type: 'string', description: '/zones/<zone id>/… — no query string; put parameters in query.' },
+            query: { type: 'object', description: 'Query parameters (strings, numbers, booleans).' },
+            body: { type: 'object', description: 'JSON body for POST, PUT or PATCH.' },
+          },
+          required: ['server', 'method', 'path'],
+        },
+      },
+      {
         name: 'gh_read',
         description:
           "GET one path of a server's environment repository with the environment's own GitHub token (never shown): " +
@@ -1518,6 +1637,8 @@ class ServerToolsMCPServer extends BaseMcpServer {
         return handleSshExec(args);
       case 'login':
         return await handleLogin(args);
+      case 'cf_api':
+        return await handleCfApi(args);
       case 'gh_read':
         return await handleGhRead(args);
       case 'gh_pr':
