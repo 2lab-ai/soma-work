@@ -35,8 +35,13 @@ const LABEL_MAX_CHARS = 120;
  */
 const MAX_SCAN_LINE = 500;
 
+/**
+ * A Next Actions title, the whole of it: `다음 행동`, `다음 단계`, `Next Actions`, and the bare `다음` / `Next` / `What's
+ * next` a model also writes (SSOT 2026-11-12 — a `## 다음` answer showed no buttons). Other words after it make it
+ * another section (`다음 버전 계획`, `Next release notes`).
+ */
 const TITLE =
-  /^(?:(?:suggested\s+)?next\s+(?:actions?|steps?)|다음\s*(?:행동|액션|단계|할\s*일|작업))(?:\s*[(（][^)）]*[)）])?$/i;
+  /^(?:(?:(?:suggested|recommended)\s+)?next(?:\s+(?:actions?|steps?|up|moves?))?|what['’]s\s+next|다음(?:\s*(?:행동|액션|단계|스텝|할\s*(?:일|것)|작업|진행|순서))?)(?:\s*[(（][^)）]*[)）])?\s*[?？]?$/i;
 /**
  * The ⚠️ User follow-up required section (auto-es) holds the user's own commands. Its title ends a Next Actions section
  * whatever its form or level — `##`, `###`, bold, or a plain line (trinity R1, P1 from all three panelists).

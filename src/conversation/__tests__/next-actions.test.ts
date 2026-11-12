@@ -241,3 +241,52 @@ describe('trinity R2 — non-blocking hardening (fable P2 · P3)', () => {
     expect(extractNextActions(md)).toEqual([{ label: 'do a', command: 'a' }]);
   });
 });
+
+describe('a bare 다음 / Next title (SSOT 2026-11-12 screenshot: "## 다음" showed no buttons)', () => {
+  // The answer in the screenshot: the title is one word, each block carries its command and what it does.
+  const SCREENSHOT = [
+    '## 산출물',
+    '- skill-migration-plan.md',
+    '',
+    '## 다음',
+    FENCE,
+    'A1·A2 진행 — research-skill·import-skills를 zworkflow로 옮기는 PR',
+    FENCE,
+    FENCE,
+    'prod 복구부터 — sudoers 설정 후 $user:prod로 재배포 (prod 호스트 관리자 작업 필요)',
+    FENCE,
+  ].join('\n');
+
+  it('reads the screenshot answer: two steps, the block whole', () => {
+    expect(extractNextActions(SCREENSHOT)).toEqual([
+      { label: '', command: 'A1·A2 진행 — research-skill·import-skills를 zworkflow로 옮기는 PR' },
+      { label: '', command: 'prod 복구부터 — sudoers 설정 후 $user:prod로 재배포 (prod 호스트 관리자 작업 필요)' },
+    ]);
+  });
+
+  it.each([
+    '## 다음',
+    '### 다음:',
+    '**다음**',
+    '## 5. 다음',
+    '## 🔜 다음',
+    '## 다음 할 것',
+    '## 다음 스텝',
+    '## Next',
+    '### Next up',
+    "## What's next",
+    '## What’s next?',
+    '## Recommended next steps',
+  ])('%s is a Next Actions title', (title) => {
+    expect(extractNextActions([title, FENCE, 'go', FENCE].join('\n'))).toEqual([{ label: '', command: 'go' }]);
+  });
+
+  it.each([
+    '## 다음 버전 계획',
+    '## 다음 주 일정',
+    '## Next release notes',
+    '## 다음은 위험',
+  ])('%s is not — other words after it make it another section', (title) => {
+    expect(extractNextActions([title, FENCE, 'go', FENCE].join('\n'))).toEqual([]);
+  });
+});
