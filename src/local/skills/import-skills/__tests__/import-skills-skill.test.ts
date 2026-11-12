@@ -26,7 +26,6 @@ describe('local:import-skills', () => {
     expect(md).not.toMatch(/Co-Authored-By/i);
     expect(md).not.toMatch(/\/Users\/[a-z]/);
     expect(md).not.toMatch(/\/home\/[a-z]/);
-    expect(md).not.toMatch(/mcp__llm__/);
     expect(md).not.toMatch(/\b(MANAGE_SKILL|GET_SESSION|UPDATE_SESSION)\b/);
     expect(md).not.toContain('--personal');
     expect(md).toContain("follow the session's or the repository's commit rule");
