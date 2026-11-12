@@ -89,7 +89,7 @@ if [ -n "$mode" ] && git -C "$WT" show HEAD:scripts/sanitize-known-leaks.txt | g
   tmp=$(mktemp)
   # Commits listed as published leaks no longer carry the text: the list goes empty.
   { git -C "$WT" show HEAD:scripts/sanitize-known-leaks.txt | grep '^#' || true
-    echo "# $(date +%Y-%m-%d): the history was rewritten and no commit carries the text any more; the list is"
+    echo "# ${POST_DATE%%T*}: the history was rewritten and no commit carries the text any more; the list is"
     echo '# empty. A new hit is fixed by rewriting the commit, not by listing it.'; } > "$tmp"
   git -C "$WT" update-index --add --cacheinfo "$mode,$(git -C "$WT" hash-object -w "$tmp"),scripts/sanitize-known-leaks.txt"
   rm -f "$tmp"
@@ -103,6 +103,11 @@ if [ -x "$CFG/post-rewrite.sh" ]; then
     git -C "$WT" add -A
     git -C "$WT" commit -q -m "${CHOS_POST_MESSAGE:-docs: the history is rewritten instead of listing known leaks}"
   fi
+fi
+# The second push must carry a commit of its own, or the gate's push run never gets a `before` in the
+# rewritten history.
+if [ "$(git -C "$WT" rev-parse HEAD)" = "$LIST_COMMIT" ]; then
+  git -C "$WT" commit -q --allow-empty -m "${CHOS_POST_MESSAGE:-chore: the history was rewritten}"
 fi
 TOP_COMMIT=$(git -C "$WT" rev-parse HEAD)
 git -C "$WT" checkout -q --detach && git worktree remove --force "$WT"

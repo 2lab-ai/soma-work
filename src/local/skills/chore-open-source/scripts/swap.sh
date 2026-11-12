@@ -39,6 +39,22 @@ URL=${SWAP_URL:-https://github.com/$SLUG.git}
 # Rewrites the value of refs/heads/<main> in "<sha> <ref>" lines. Branch names travel in the
 # environment, never inside a program text.
 with_main() { M="refs/heads/$MAIN" T=$1 awk '$2 == ENVIRON["M"] { $1 = ENVIRON["T"] } { print }'; }
+landed() {
+  local proven=0 sha ref was rem
+  git -C "$NEW" fetch -q "$URL" '+refs/heads/*:refs/swap-check/heads/*' '+refs/tags/*:refs/swap-check/tags/*' 2>/dev/null || return 1
+  while read -r sha ref; do
+    was=$(R=$ref awk '$2 == ENVIRON["R"] { print $1 }' "$OUT/snapshot.refs")
+    [ "$sha" = "$was" ] && continue                      # not changed by the rewrite: proves nothing
+    rem=$(git -C "$NEW" rev-parse -q --verify "refs/swap-check/${ref#refs/}") || continue   # deleted since
+    if [ "$rem" = "$sha" ]; then proven=1
+    elif [ -n "$was" ] && [ "$rem" = "$was" ]; then proven=0; break   # still the original: not landed
+    elif case $ref in refs/heads/*) git -C "$NEW" merge-base --is-ancestor "$sha" "$rem";; *) false;; esac; then proven=1
+    else proven=0; break
+    fi
+  done < <(git -C "$NEW" for-each-ref --format='%(objectname) %(refname)' refs/heads refs/tags)
+  git -C "$NEW" for-each-ref --format='delete %(refname)' refs/swap-check | git -C "$NEW" update-ref --stdin
+  [ "$proven" = 1 ]
+}
 remote_refs() {
   git ls-remote "$URL" 'refs/heads/*' 'refs/tags/*' | grep -v '\^{}$' | grep -v " *refs/heads/$REVIEW\$" \
     | awk '{print $1" "$2}' | sort
@@ -55,12 +71,12 @@ while [ ! -e "$OUT/swapped" ]; do
   echo "==> 1. remote unchanged since the rewrite snapshot? (check $attempt)"
   remote_refs > "$OUT/remote-now.refs"
   diff -q "$OUT/snapshot.refs" "$OUT/remote-now.refs" >/dev/null && break
-  # An earlier run whose atomic push landed but which stopped before writing the marker: the remote
-  # main contains this rewrite's list commit (made only by this run), even if refs moved on since.
+  # An earlier run whose atomic push landed but which stopped before writing the marker. Proof: a ref
+  # this rewrite changed is on the remote at its rewritten value (a branch may have moved on from it),
+  # and no changed ref is still at its original value — the push is atomic, so it is all or nothing.
   # Resume; rewriting the rewritten remote would replace the commit map clone migration needs.
-  git -C "$NEW" fetch -q "$URL" "+refs/heads/$MAIN:refs/swap-check/main" 2>/dev/null || true
-  if git -C "$NEW" merge-base --is-ancestor "$(git -C "$NEW" rev-parse "refs/heads/$MAIN")" refs/swap-check/main 2>/dev/null; then
-    echo "    the remote $MAIN already holds this rewrite (an earlier push completed): resuming"
+  if landed; then
+    echo "    the remote already holds this rewrite (an earlier push completed): resuming"
     date > "$OUT/swapped"
     break
   fi
@@ -143,6 +159,11 @@ else
   while read -r sha ref; do
     grep -qxF "$sha $ref" "$OUT/expected.refs" && continue
     moved=$((moved + 1))
+    # An object of the original repository itself (a tag object pushed back, a branch reset to an
+    # original commit) is refused outright: its own text — a tag message — is not a commit.
+    if git -C "$OUT/orig.git" cat-file -e "$sha" 2>/dev/null; then
+      echo "    $ref ${sha:0:12} is an object of the original history"; bad=$((bad + 1)); continue
+    fi
     # Read the whole list before counting: `grep -q` would stop early, and under pipefail the
     # writer's SIGPIPE would turn a hit into a pass. A list that cannot be read is a failure.
     if ! list=$(git -C "$NEW" rev-list "$sha" ${exp[@]+"${exp[@]}"}); then

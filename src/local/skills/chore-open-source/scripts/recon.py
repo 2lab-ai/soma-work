@@ -66,7 +66,8 @@ def ere(p):
 
 forbidden = patterns('patterns.txt') + patterns('repo-patterns.txt')
 CLASSES = {
-    'forbidden list': re.compile('|'.join(ere(p) for p in forbidden), re.I) if forbidden else None,
+    # re.M: ^ and $ anchor at every line, as in the gate's line-by-line grep
+    'forbidden list': re.compile('|'.join(ere(p) for p in forbidden), re.I | re.M) if forbidden else None,
     'home path': re.compile(r'(/Users|/home)/(?!(runner|operator|ci|user|me|you|example|name|username|USER|\$USER|\{USER\})\b)[A-Za-z0-9._-]{2,}'),
     'e-mail': re.compile(r'\b[A-Za-z0-9._%+-]+@(?!(?:[a-z0-9-]+\.)*(?:example\.(?:com|org|net)|example|invalid|test|localhost|users\.noreply\.github\.com|noreply\.github\.com)\b)[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', re.I),
     'private address': re.compile(r'\b(?:10\.(?:\d{1,3}\.){2}\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})\b'),
@@ -290,6 +291,7 @@ if github and shutil.which('gh'):
                 incomplete.append(f'github: release asset {rel["tag_name"]}/{a["name"]} could not be downloaded')
                 continue
             data, where_ = r.stdout, f'release asset {rel["tag_name"]}/{a["name"]}'
+            scan(a['name'], f'{where_} (name)')
             # (name, bytes) of what the asset holds: archive members (their paths are scanned too), or itself.
             parts = [(a['name'], data)]
             try:

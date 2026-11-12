@@ -74,7 +74,7 @@ first_changed = [l.split()[0] for l in (fr / 'first-changed-commits').read_text(
 # The shared list and this repository's own list: a local-only commit must pass both.
 _pats = [l.strip() for name in ('patterns.txt', 'repo-patterns.txt') if (work / 'config' / name).is_file()
          for l in (work / 'config' / name).read_text().splitlines() if l.strip() and not l.startswith('#')]
-PAT = re.compile('|'.join(ere(p) for p in _pats), re.I) if _pats else None
+PAT = re.compile('|'.join(ere(p) for p in _pats), re.I | re.M) if _pats else None
 new_tags = dict((r.split()[1][10:], r.split()[0]) for r in git('for-each-ref', '--format=%(objectname) %(refname)', 'refs/tags', cwd=out / 'new.git').splitlines())
 
 
@@ -120,7 +120,8 @@ def live_worktrees():
         cd = subprocess.run(['git', '-C', path, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
                             capture_output=True, text=True).stdout.strip()
         return os.path.isdir(path) and os.path.realpath(cd) == me
-    for line in git('worktree', 'list', '--porcelain').splitlines() + ['']:
+    # -z: a path may hold any byte but NUL; the line format splits or quotes some of them.
+    for line in git('worktree', 'list', '--porcelain', '-z').split('\0') + ['']:
         if line.startswith('worktree '):
             w, head = line[9:], None
         elif line.startswith('HEAD '):
@@ -239,18 +240,25 @@ def move_worktree(wt, old, target, label, detach):
         after = git('rev-parse', '-q', '--verify', 'refs/stash', cwd=wt, check=False).strip()
         # `stash push` can save nothing and still succeed; then stash@{0} is someone else's stash.
         stash = after if after and after != before else ''
+    def drop_mine():
+        # The stash stack is shared by every worktree: drop this run's entry by position, not the top.
+        ids = git('stash', 'list', '--format=%H', cwd=wt).split()
+        if stash in ids:
+            git('stash', 'drop', '-q', f'stash@{{{ids.index(stash)}}}', cwd=wt)
     go = ['checkout', '-q', '--detach', target] if detach else ['reset', '-q', '--keep', target]
     if subprocess.run(['git', '-C', wt, *go]).returncode:
         if stash:
-            git('stash', 'pop', '-q', '--index', cwd=wt)
+            git('stash', 'apply', '-q', '--index', stash, cwd=wt)
+            drop_mine()
         return f'worktree {wt} could not move'
     if stash and subprocess.run(['git', '-C', wt, 'stash', 'apply', '-q', '--index', stash], capture_output=True).returncode:
         git('reset', '-q', '--hard', 'HEAD', cwd=wt)
         git(*(['checkout', '-q', '--detach', old] if detach else ['reset', '-q', '--keep', old]), cwd=wt)
-        git('stash', 'pop', '-q', '--index', cwd=wt)
+        git('stash', 'apply', '-q', '--index', stash, cwd=wt)
+        drop_mine()
         return f'worktree {wt} has edits in lines the rewrite changed — left exactly as it was (patch in {bdir})'
     if stash:
-        git('stash', 'drop', '-q', cwd=wt)
+        drop_mine()
     return None
 
 

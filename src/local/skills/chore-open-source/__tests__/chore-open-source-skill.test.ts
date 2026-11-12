@@ -261,7 +261,7 @@ esac
         '-c',
         `set -e
       git init -q --bare -b main remote.git && git init -q -b main seed && cd seed
-      echo "runs on secret-host-b" > a.txt && printf '\\x89PNG\\r\\n\\x1a\\n' > img.png
+      printf 'runs on secret-host-b\\nanchored-word\\n' > a.txt && printf '\\x89PNG\\r\\n\\x1a\\n' > img.png
       git add -A && git commit -q -m init && git push -q ../remote.git main && cd ..
       mkdir -p pkg/docs && echo x > pkg/docs/secret-host-c.txt && tar -czf pkg.tar.gz -C pkg docs`,
       ],
@@ -276,7 +276,8 @@ case "$*" in
   *"/actions/secrets"*) echo '{"secrets":[]}' ;;
   *"/actions/variables"*) echo '{"variables":[]}' ;;
   *"releases/assets/5"*) cat "${join(d, 'pkg.tar.gz')}" ;;
-  *"/releases"*) echo '[[{"tag_name":"v1","name":"v1","body":"","assets":[{"id":5,"name":"pkg.tar.gz"}]}]]' ;;
+  *"releases/assets/6"*) echo x ;;
+  *"/releases"*) echo '[[{"tag_name":"v1","name":"v1","body":"","assets":[{"id":5,"name":"pkg.tar.gz"},{"id":6,"name":"notes-secret-host-d.txt"}]}]]' ;;
   "api "*) echo '[[]]' ;;
   *) echo "stub gh: $*" >&2; exit 1 ;;
 esac
@@ -285,7 +286,7 @@ esac
     );
     mkdirSync(join(d, 'config'));
     // [[:alpha:]] is a POSIX class to the gate's grep -E; Python's re would read it as a set + "]".
-    writeFileSync(join(d, 'config', 'patterns.txt'), 'secret-host-[[:alpha:]]\n');
+    writeFileSync(join(d, 'config', 'patterns.txt'), 'secret-host-[[:alpha:]]\n^anchored-word$\n');
     const env = {
       ...process.env,
       PATH: `${join(d, 'bin')}:${process.env.PATH}`,
@@ -298,6 +299,8 @@ esac
     expect(report).toMatch(/at a\.txt \(blob/);
     expect(report).toMatch(/release asset v1\/pkg\.tar\.gz \(member path\)/);
     expect(report).toMatch(/1 image\/video\/PDF blob\(s\) in history were not OCR-read/);
+    expect(report).toContain('`anchored-word`'); // ^…$ anchor per line, as grep does
+    expect(report).toMatch(/release asset v1\/notes-secret-host-d\.txt \(name\)/);
   });
 
   it('swap keeps branch names out of program text (sed/awk scripts)', () => {
@@ -371,7 +374,12 @@ describe.skipIf(!hasFilterRepo)('local:chore-open-source — offline run of the 
       git init -q --bare -b main remote-sym.git && git init -q -b main sym && cd sym
       mkdir scripts && printf '# list\\n%s  #1\\n' 0123456789012345678901234567890123456789 > scripts/sanitize-known-leaks.txt
       echo "victim" > "${T}/victim.txt" && ln -s "${T}/victim.txt" scripts/sanitize-known-leaks.txt.new
-      echo "on ${W}" > app.conf && git add -A && git commit -q -m init && git push -q ../remote-sym.git main`);
+      echo "on ${W}" > app.conf && git add -A && git commit -q -m init && git push -q ../remote-sym.git main && cd ..
+      git init -q --bare -b main remote-tag.git && git init -q -b main tagseed && cd tagseed
+      echo plain > p.txt && git add -A && git commit -q -m init && git tag -a v1 -m "cut on ${W}"
+      git push -q ../remote-tag.git main v1 && cd ..
+      git clone -q remote.git clone4 && git -C clone4 branch -q nl origin/feature
+      git -C clone4 worktree add -q "$(printf '%s/wt\\nnl' "$PWD")" nl`);
   });
 
   it('a rewrite that leaves a pattern exits 1 and the swap refuses it', () => {
@@ -414,7 +422,8 @@ describe.skipIf(!hasFilterRepo)('local:chore-open-source — offline run of the 
     expect(sh('git -C clone show local-only:l.txt')).toBe('local shared-host note\n');
     expect(sh('git -C wt diff --cached')).toMatch(/^\+staged$/m);
     expect(sh('git -C wt diff')).toMatch(/^\+unstaged$/m);
-    expect(sh('git -C wt-detached rev-parse HEAD')).toBe(sh('git -C remote.git rev-parse main~1'));
+    // main = the rewrite's own top commit, so the old main~1 is the new main~2
+    expect(sh('git -C wt-detached rev-parse HEAD')).toBe(sh('git -C remote.git rev-parse main~2'));
     expect(sh("git -C clone for-each-ref refs/pre-rewrite/heads --format='%(refname)'")).toContain(
       'refs/pre-rewrite/heads/local-only',
     );
@@ -455,6 +464,16 @@ describe.skipIf(!hasFilterRepo)('local:chore-open-source — offline run of the 
     expect(r.stdout).toMatch(/merged: rebuild REFUSED/);
   });
 
+  it('a worktree whose path holds a newline moves with its branch', () => {
+    const chos = workDir('work', `${W}\n`);
+    const wt = join(T, 'wt\nnl');
+    expect(sh(`python3 -I -B "${SCRIPTS}/migrate-clone.py" o/r "${join(T, 'clone4')}" --apply`, chos)).toMatch(
+      /history 0;/,
+    );
+    expect(run('git', ['-C', wt, 'status', '--porcelain'], { env }).stdout).toBe('');
+    expect(run('git', ['-C', wt, 'rev-parse', 'HEAD'], { env }).stdout).toBe(sh('git -C remote.git rev-parse feature'));
+  });
+
   it('a worktree whose edits conflict with the rewrite is left exactly as it was', () => {
     const chos = workDir('work', `${W}\n`);
     const before = sh(
@@ -491,11 +510,35 @@ describe.skipIf(!hasFilterRepo)('local:chore-open-source — offline run of the 
 
   it('a ref pushed back with commits of the original history fails the swap verification', () => {
     const chos = workDir('work', `${W}\n`);
-    sh(
-      `git -C "${join(chos.CHOS_WORK, 'out', 'r', 'orig.git')}" push -q "${join(T, 'remote.git')}" main:refs/heads/old-again`,
-    );
+    // A new commit on top of the original history: the ref's own object is new, its ancestors are not.
+    sh(`set -e
+      git clone -q "${join(chos.CHOS_WORK, 'out', 'r', 'orig.git')}" old-again && cd old-again
+      echo again > again.txt && git add -A && git commit -q -m "on the old history"
+      git push -q "${join(T, 'remote.git')}" HEAD:refs/heads/old-again`);
     const r = shAt(`"${SCRIPTS}/swap.sh" o/r`, chos);
     expect(r.status, r.stdout + r.stderr).toBe(1);
     expect(r.stdout).toMatch(/refs\/heads\/old-again [0-9a-f]+ carries \d+ commit\(s\) of the original history/);
+  });
+
+  it('a tag-only rewrite gets its own top commit, and a resumed swap still pushes the tag', () => {
+    const chos = workDir('work-tag', `${W}\n`, 'remote-tag.git');
+    const v = sh(`"${SCRIPTS}/rewrite.sh" o/tag`, chos);
+    const [, p1, p2] = v.match(/main \(push 1\): ([0-9a-f]+)\s+top commit \(push 2\): ([0-9a-f]+)/) ?? [];
+    expect(p1 && p2 && p1 !== p2, v).toBe(true);
+    sh('git -C tagseed push -q ../remote-tag.git main:refs/heads/side'); // the remote moves after the snapshot
+    const r = shAt(`"${SCRIPTS}/swap.sh" o/tag`, chos);
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(r.stdout).not.toMatch(/already holds this rewrite/); // main unchanged proves nothing
+    expect(sh("git -C remote-tag.git for-each-ref --format='%(contents)' refs/tags")).not.toContain(W);
+  });
+
+  it('an original annotated tag pushed back fails the swap verification', () => {
+    const chos = workDir('work-tag', `${W}\n`, 'remote-tag.git');
+    sh(
+      `git -C "${join(chos.CHOS_WORK, 'out', 'tag', 'orig.git')}" push -q "${join(T, 'remote-tag.git')}" refs/tags/v1:refs/tags/v1-old`,
+    );
+    const r = shAt(`"${SCRIPTS}/swap.sh" o/tag`, chos);
+    expect(r.status, r.stdout + r.stderr).toBe(1);
+    expect(r.stdout).toMatch(/refs\/tags\/v1-old [0-9a-f]+ is an object of the original history/);
   });
 });
