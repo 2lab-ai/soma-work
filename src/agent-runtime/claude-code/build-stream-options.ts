@@ -274,10 +274,6 @@ export async function buildStreamOptions(
   const options: Options = {
     // Load settings from filesystem for backward compatibility (Agent SDK v0.1.0 breaking change)
     settingSources: ['project'],
-    // Project settings, the project MCP config and the `.claude` config trees come from an empty host directory no
-    // model writes, not from the working directory: the CLI runs their commands outside the sandbox (env-access
-    // #1242). CLAUDE.md and plan files still come from the working directory. Throws: the session does not start.
-    projectConfigRoot: projectConfigRoot(DATA_DIR),
     // Load plugins from PluginManager or fallback to local directory
     plugins: deps.getEffectivePluginPaths(),
     env: queryEnv,
@@ -363,6 +359,15 @@ export async function buildStreamOptions(
     contextIsAdmin && !sandboxDisabled ? adminSandboxProfile({ home: os.homedir(), tmpdir: realTmpdir() }) : undefined;
   const sandboxUserDir =
     contextUser && isSafePathSegment(contextUser) ? normalizeTmpPath(path.join('/tmp', contextUser)) : undefined;
+  // Project settings, the project MCP config and the `.claude` config trees come from an empty host directory no
+  // model writes, not from the working directory: the CLI runs their commands outside the sandbox (env-access
+  // #1242). CLAUDE.md and plan files still come from the working directory. It must lie outside every directory
+  // this session writes, sandbox on or off. Throws: the session does not start.
+  options.projectConfigRoot = projectConfigRoot(DATA_DIR, [
+    ...(workingDirectory ? [workingDirectory] : []),
+    ...(sandboxUserDir ? [sandboxUserDir] : []),
+    ...(adminProfile ? adminProfile.allowWrite : []),
+  ]);
   // An admin's native writes are held to the same roots as its sandboxed Bash, the temp directory
   // included (env-access WU2, #1210): a native Write anywhere else could replace a binary the bot runs.
   const nativeWriteRoots: readonly string[] | undefined = sandboxDisabled

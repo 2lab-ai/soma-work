@@ -19,7 +19,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CONFIG_FILE, DATA_DIR, SECRETS_DIR } from '../../env-paths';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import { credentialPaths } from '../../sandbox/admin-sandbox-profile';
@@ -696,11 +696,20 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
     );
   }
 
+  // An admin writes the temp directory, and the test DATA_DIR lies under it; the project config root (#1242) must
+  // not, so these tests give the session a temp directory of its own.
+  const savedTmpdir = process.env.TMPDIR;
+  beforeEach(() => {
+    process.env.TMPDIR = fs.mkdtempSync(path.join(WORK_DIR, 'admin-tmp-'));
+  });
+
   afterEach(async () => {
     if (savedAdmins === undefined) delete process.env.ADMIN_USERS;
     else process.env.ADMIN_USERS = savedAdmins;
     if (savedOffAllowed === undefined) delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
     else process.env.SOMA_SANDBOX_OFF_ALLOWED = savedOffAllowed;
+    if (savedTmpdir === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = savedTmpdir;
     (await import('../../admin-utils')).resetAdminUsersCache();
   });
 
@@ -1192,6 +1201,19 @@ describe('project config root (env-access #1242)', () => {
     expect(options.cwd).toBe(WORK_DIR);
     expect(fs.readdirSync(ROOT)).toEqual([]);
     expect(options.settingSources).toEqual(['project']);
+  });
+
+  it('fails closed: a session does not start when the root lies inside a directory it writes', async () => {
+    await expect(
+      buildStreamOptions(
+        {
+          queryEnv: {},
+          slackContext: makeSlackContext({ user: SAFE_USER }),
+          workingDirectory: path.dirname(DATA_DIR),
+        },
+        makeDeps(),
+      ),
+    ).rejects.toThrow(/lies inside/);
   });
 
   it('fails closed: a session does not start when the root holds anything', async () => {

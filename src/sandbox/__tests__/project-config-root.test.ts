@@ -42,4 +42,21 @@ describe('projectConfigRoot', () => {
     fs.writeFileSync(path.join(dataDir, 'session-project-config'), 'x');
     expect(() => projectConfigRoot(dataDir)).toThrow(ProjectConfigRootError);
   });
+
+  // The CLI also looks for .mcp.json in every directory above the root (astra R2, fable R2).
+  it('refuses to start when a directory above the root holds a project MCP config', () => {
+    fs.writeFileSync(path.join(dataDir, '.mcp.json'), '{}');
+    expect(() => projectConfigRoot(dataDir)).toThrow(/above it.*\.mcp\.json|\.mcp\.json/);
+  });
+
+  it('refuses a root inside a directory a session writes: the CLI would read the files above it', () => {
+    expect(() => projectConfigRoot(dataDir, [path.dirname(dataDir)])).toThrow(ProjectConfigRootError);
+    expect(() => projectConfigRoot(dataDir, [path.join(os.tmpdir(), 'unrelated-root')])).not.toThrow();
+  });
+
+  it('turns a filesystem error into its own error, so the reply says why the session did not start', () => {
+    const blocker = path.join(dataDir, 'not-a-dir');
+    fs.writeFileSync(blocker, 'x');
+    expect(() => projectConfigRoot(blocker)).toThrow(ProjectConfigRootError);
+  });
 });
