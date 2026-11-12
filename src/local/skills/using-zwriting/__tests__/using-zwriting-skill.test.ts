@@ -137,7 +137,9 @@ describe('local:using-zwriting — research fixes (T3)', () => {
   });
 
   it('a number that starts a sentence is written out', () => {
-    expect(read(PLAIN_MD)).toMatch(/A number that starts a sentence is written out[^\n]*except in a title or subheading/);
+    expect(read(PLAIN_MD)).toMatch(
+      /A number that starts a sentence is written out[^\n]*except in a title or subheading/,
+    );
   });
 
   it('gaps in the source stay visible and no fact is added', () => {
