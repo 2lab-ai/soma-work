@@ -71,7 +71,7 @@ getSessionKey(channelId, threadTs?) = `${channelId}-${threadTs || 'direct'}`
 
 **라이프사이클 연산:**
 - `createSession(ownerId, ownerName, channelId, threadTs, model?)` — [src/session-registry.ts:319](../../src/session-registry.ts). 새 세션을 `INITIALIZING` 상태로 생성하고 키에 저장.
-- `findSessionBySourceThread(channel, threadTs)` — [src/session-registry.ts:252](../../src/session-registry.ts). 미드-스레드에서 파생된 bot-initiated 세션을 원본 스레드로 역조회.
+- `findSessionsBySourceThread(channel, threadTs)` (연결된 세션 전부, SSOT 2026-11-12) — [src/session-registry.ts:252](../../src/session-registry.ts). 미드-스레드에서 파생된 bot-initiated 세션을 원본 스레드로 역조회.
 - `terminateSession(sessionKey)` — [src/session-registry.ts:1218](../../src/session-registry.ts). bot-initiated 마이그레이션 시 원본 세션 종료에 사용.
 
 **세션 상태 필드 (TO-BE 결정에 핵심):**
@@ -135,7 +135,7 @@ getSessionKey(channelId, threadTs?) = `${channelId}-${threadTs || 'direct'}`
 3. [L123-128](../../src/slack/event-router.ts): 첨부 파일 있으면 `file_share` 핸들러에 양보 → return.
 4. [L131-138](../../src/slack/event-router.ts): 봇 멘션만 제거하고 유저 멘션은 보존.
 5. [L150-156](../../src/slack/event-router.ts): `/z` prefix면 `maybeRouteAppMentionViaZRouter`로. terminal 처리면 return.
-6. [L166-174](../../src/slack/event-router.ts): `event.thread_ts`가 있고 기존 세션이 없으면 `findSessionsBySourceThread`로 linked session 전부 조회. 있으면 상태 카드를 회신하고, 멘션에 지시가 있으면 보낸 사람에게 DM으로 새 작업 진행 여부를 묻고(`offerSourceThreadNewTask`, SSOT 2026-11-12) return. 승인하면 같은 멘션을 첫 멘션처럼 다시 실행한다. **(여기서 thread_ts 조건을 타서 경로 2로 넘어감)**
+6. [L166-174](../../src/slack/event-router.ts): `event.thread_ts`가 있고 기존 세션이 없으면 `findSessionsBySourceThread`로 linked session 전부 조회. 있으면 상태 카드를 회신하고, 멘션에 지시가 있으면 보낸 사람에게 DM으로 새 작업 진행 여부를 묻고(`offerSourceThreadNewTask`, SSOT 2026-11-12) return. 승인하면 소스 채널에 새 작업 스레드 헤더를 올리고 그 루트에서 세션을 시작한다(`botThreadRoot` + `sourceThreadLink`) — 소스 스레드 키는 앞 작업의 첫 턴이 실행 슬롯을 잡고 있을 수 있어 쓰지 않는다. **(여기서 thread_ts 조건을 타서 경로 2로 넘어감)**
 7. thread_ts 없음(top-level) → `messageHandler`로 위임.
 8. 세션 initializer가 `dispatch`를 돌려 workflowType 결정.
 9. [src/slack/pipeline/session-initializer.ts:492 or 514](../../src/slack/pipeline/session-initializer.ts): `createBotInitiatedThread` 호출 → **새 스레드 루트 생성 + 세션 migrate** (Gap 1).

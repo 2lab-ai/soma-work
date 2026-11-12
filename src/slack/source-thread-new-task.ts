@@ -3,9 +3,12 @@
  *
  * A source thread is a thread whose earlier mention moved to its own work thread. A later mention there used to get
  * the linked session's status card and nothing else: the instruction was dropped. Now its sender is asked by DM
- * whether to run it as a new task. On 새 작업으로 진행 the original message runs exactly as a first mention there
- * would: a new work thread, linked back to the same source thread (one source thread, several work threads), whose
- * result is reported back to the source thread when the work completes.
+ * whether to run it as a new task. On 새 작업으로 진행 the instruction gets a work thread of its own — a header posted in
+ * the source channel, as a task started from the dashboard gets — linked back to the same source thread (one source
+ * thread, several work threads), whose result is reported back to the source thread when the work completes.
+ *
+ * It never runs on the source thread's own key: an earlier task started there holds that key's run slot until its
+ * first turn ends, and an instruction sent to a busy key joins that run as a follow-up instead of starting a task.
  *
  * The DM button carries only where the instruction is (channel, thread, message ts, sender). The words are read back
  * from Slack on the click, so nothing is stored and a restart between the DM and the click loses nothing.
@@ -14,6 +17,8 @@
 import type { SourceThreadNewTaskRequest } from '@soma/slack/event-router';
 import { Logger } from '../logger';
 import type { MessageEvent, MessageHandler, RespondFn, SayFn } from './actions/types';
+import { MessageFormatter } from './message-formatter';
+import { ThreadHeaderBuilder } from './thread-header-builder';
 
 const logger = new Logger('SourceThreadNewTask');
 
@@ -21,8 +26,8 @@ export const NEW_TASK_ACTION_PREFIX = 'src_new_task_';
 const START_ACTION = `${NEW_TASK_ACTION_PREFIX}start`;
 const CANCEL_ACTION = `${NEW_TASK_ACTION_PREFIX}cancel`;
 
-/** Slack section text limit is 3000; the quote leaves room for the heading. */
-const QUOTE_LIMIT = 2000;
+/** Slack section text limit is 3000; the rendered quote leaves room for the heading and a link. */
+const QUOTE_LIMIT = 2500;
 
 /** Where the instruction is and who sent it — all a click needs. */
 export interface NewTaskRef {
@@ -43,18 +48,22 @@ export interface SourceThreadNewTaskSlackApi {
   getPermalink(channel: string, ts: string): Promise<string | null>;
   getThreadMessage(channel: string, threadTs: string, ts: string): Promise<any | null>;
   getBotUserId(): Promise<string>;
+  getUserName?(userId: string): Promise<string>;
 }
 
 function escapeMrkdwn(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+/** The instruction as a Slack quote, cut by its rendered length (escaping and the `> ` prefixes grow it). */
 function quote(text: string): string {
-  const clipped = text.length > QUOTE_LIMIT ? `${text.slice(0, QUOTE_LIMIT)}…` : text;
-  return escapeMrkdwn(clipped)
+  const quoted = escapeMrkdwn(text)
     .split('\n')
     .map((line) => `> ${line}`)
     .join('\n');
+  if (quoted.length <= QUOTE_LIMIT) return quoted;
+  // Never end on half an entity (`&am`).
+  return `${quoted.slice(0, QUOTE_LIMIT).replace(/&[a-z]*$/, '')}…`;
 }
 
 function section(text: string) {
@@ -189,9 +198,14 @@ export class SourceThreadNewTask {
     }
 
     // The words come from Slack, not the button: the message must still be there and still be the sender's.
+    // A failure here leaves the button usable (a Slack read can fail for a moment).
     const original = await this.deps.slackApi.getThreadMessage(ref.channel, ref.threadTs, ref.ts);
     if (!original || original.user !== ref.user || typeof original.text !== 'string') {
-      await this.updateDm(dm, `⚠️ ${thread}에서 원본 지시를 찾을 수 없어 시작하지 못했습니다 — 다시 멘션해 주세요.`);
+      this.answered.delete(key);
+      await this.tell(
+        respond,
+        `⚠️ ${thread}에서 원본 지시를 찾을 수 없어 시작하지 못했습니다 — 지워졌다면 소스 스레드에서 다시 멘션해 주세요.`,
+      );
       return;
     }
     const botId = await this.deps.slackApi.getBotUserId().catch(() => undefined);
@@ -201,33 +215,71 @@ export class SourceThreadNewTask {
       return;
     }
 
-    await this.updateDm(dm, `✅ 새 작업으로 시작합니다 — 새 작업 스레드는 ${thread}에 안내됩니다.`);
+    // The new task's own work thread: its header, top-level in the source channel (never the source thread's key).
+    const ownerName = await this.deps.slackApi.getUserName?.(ref.user).catch(() => undefined);
+    const generated = MessageFormatter.generateSessionTitle(text);
+    const title = !generated || generated === '[link]' || generated === '새 대화' ? undefined : generated;
+    const header = ThreadHeaderBuilder.build({ title, workflow: 'default', ownerId: ref.user, ownerName });
+    const root = await this.deps.slackApi
+      .postMessage(ref.channel, header.text, { blocks: header.blocks, attachments: header.attachments })
+      .catch(() => undefined);
+    const rootTs = root?.ts;
+    if (!rootTs) {
+      this.answered.delete(key);
+      await this.tell(respond, '⚠️ 작업 스레드를 만들지 못했습니다 — 잠시 후 다시 눌러 주세요.');
+      return;
+    }
+    const instructionLink = await this.deps.slackApi.getPermalink(ref.channel, ref.ts).catch(() => null);
+    const origin = instructionLink ? `<${instructionLink}|소스 스레드>` : thread;
+    const workLink = await this.deps.slackApi.getPermalink(ref.channel, rootTs).catch(() => null);
+    const work = workLink ? `<${workLink}|작업 스레드>` : '작업 스레드';
+    await this.post(ref.channel, `<@${ref.user}> 님이 ${origin}에 남긴 지시:\n${quote(text)}`, rootTs);
+    await this.post(ref.channel, `🧵 <@${ref.user}> 님의 지시로 새 작업을 시작합니다 → ${work}`, ref.threadTs);
+    await this.updateDm(dm, `✅ 새 작업을 시작했습니다 → ${work}. 끝나면 결과를 ${thread}에 보고합니다.`);
     logger.info('Starting a source-thread instruction as a new task', {
       channel: ref.channel,
       threadTs: ref.threadTs,
       ts: ref.ts,
+      rootTs,
     });
 
-    // Exactly a first mention in the source thread: the pipeline makes the new work thread and links it back.
-    // `team` rides along as on the live event — the channel stream (`chat.startStream`) needs the recipient team.
-    const event: MessageEvent & { team?: string } = {
+    // The pipeline sees the sender's message on the new header root (as the dashboard's new task does): a new
+    // session, bot-initiated on that root, linked back to the source thread. `team` rides along as on a live
+    // event — the channel stream (`chat.startStream`) needs the recipient team.
+    const event: MessageEvent & Record<string, unknown> = {
+      type: 'message',
       channel: ref.channel,
-      thread_ts: ref.threadTs,
-      ts: ref.ts,
+      thread_ts: rootTs,
+      ts: rootTs,
       user: ref.user,
       text,
+      botThreadRoot: true,
+      sourceThreadLink: { channel: ref.channel, threadTs: ref.threadTs },
+      routeContext: { skipAutoBotThread: true },
       ...(typeof original.team === 'string' && original.team ? { team: original.team } : {}),
     };
     const say: SayFn = async (args: any) =>
       this.deps.slackApi.postMessage(ref.channel, (typeof args === 'string' ? args : args?.text) || ' ', {
-        threadTs: (typeof args === 'string' ? undefined : args?.thread_ts) || ref.threadTs,
+        threadTs: (typeof args === 'string' ? undefined : args?.thread_ts) || rootTs,
         blocks: typeof args === 'string' ? undefined : args?.blocks,
         attachments: typeof args === 'string' ? undefined : args?.attachments,
       });
     // Not awaited to its end: the turn runs on after the click is answered.
     void this.deps
       .messageHandler(event, say)
-      .catch((error) => logger.error('New task from a source thread failed to start', { key, error }));
+      .catch((error) => logger.error('New task from a source thread failed to start', { key, rootTs, error }));
+  }
+
+  private async post(channel: string, text: string, threadTs: string): Promise<void> {
+    try {
+      await this.deps.slackApi.postMessage(channel, text, { threadTs });
+    } catch (error) {
+      logger.warn('src_new_task: could not post a notice', {
+        channel,
+        threadTs,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private async updateDm(dm: { channel?: string; ts?: string }, text: string): Promise<void> {

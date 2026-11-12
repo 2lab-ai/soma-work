@@ -118,7 +118,8 @@ on app_mention(event) with event.thread_ts:
         if stripBotMention(event.text) not empty:              // 지시가 있으면 새 작업 — SSOT 2026-11-12
             offerSourceThreadNewTask(...)                       // 보낸 사람에게 DM: 새 작업으로 진행 / 취소
         post every linked session's card to thread; return    // 답하기 전에는 실행하지 않음
-    // DM에서 '새 작업으로 진행' → 같은 멘션을 messageHandler로 다시 실행 (아래 첫 멘션 경로와 동일)
+    // DM에서 '새 작업으로 진행' → 소스 채널에 새 헤더 루트 → 그 루트로 messageHandler
+    //   (botThreadRoot + sourceThreadLink + skipAutoBotThread — 소스 스레드 키의 실행 슬롯을 거치지 않음)
 
     ctx := { channelId: event.channel,
              threadTs: event.thread_ts,    // 원본 parent

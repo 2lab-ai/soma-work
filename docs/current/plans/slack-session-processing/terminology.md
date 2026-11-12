@@ -99,7 +99,7 @@
 ### 2.5 `sourceThread`
 
 - **정의:** 미드-스레드 세션이 파생된 원본 스레드 레퍼런스. `{ channel, threadTs }` — 미드-스레드에서 bot-initiated로 migrate할 때 기록.
-- **역조회:** `findSessionBySourceThread(channel, threadTs)` — [src/session-registry.ts:252](../../src/session-registry.ts).
+- **역조회:** `findSessionsBySourceThread(channel, threadTs)` (소스 스레드 1 : 작업 스레드 N — 연결된 세션 전부) — [src/session-registry.ts:252](../../src/session-registry.ts).
 
 ### 2.6 `mentionTs`
 

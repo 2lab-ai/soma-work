@@ -22,6 +22,8 @@ export interface SourceThreadConversationSession {
     channel: string;
     threadTs: string;
   };
+  /** SSOT 2026-11-12 — the result card already posted to the source thread (a later result refreshes it). */
+  sourceThreadReportTs?: string;
   links?: SessionLinks;
 }
 
@@ -32,6 +34,8 @@ export interface SourceThreadSlackApi {
     text: string,
     options?: { threadTs?: string; blocks?: SlackBlock[]; [key: string]: unknown },
   ): Promise<unknown>;
+  /** Refreshes the result card in place. Without it every result is a new post. */
+  updateMessage?(channel: string, ts: string, text: string, blocks?: SlackBlock[]): Promise<unknown>;
 }
 
 const logger = new Logger('SourceThreadSummary');
@@ -182,7 +186,7 @@ export function buildRequestCompleteBlocks(
   const safeTitle = truncate(title, SLACK_LIMITS.HEADER_TEXT);
   const model = session.model ? formatModelName(session.model) : undefined;
   const workflow = session.workflow || 'default';
-  const statusLabel = trigger === 'merged' ? '머지 완료' : '완료';
+  const statusLabel = STATUS_LABEL[trigger];
 
   // Parse turn summary for elapsed time
   const elapsed = options?.turnSummary?.match(/⏱\s*(.+?)(?:\s*·|$)/)?.[1]?.trim();
@@ -319,10 +323,17 @@ export function buildRequestCompleteBlocks(
 }
 
 /**
- * What made the work report back: its Executive Summary landed (`completed`), its PR merged, or the session closed.
- * Each renders as 완료 except `merged` (머지 완료).
+ * What made the work report back: its Executive Summary landed (`completed`, or `attention` when the summary flags
+ * unfinished work with a ⚠️ line), its PR merged, or the session closed.
  */
-export type SourceThreadSummaryTrigger = 'completed' | 'merged' | 'closed';
+export type SourceThreadSummaryTrigger = 'completed' | 'attention' | 'merged' | 'closed';
+
+const STATUS_LABEL: Record<SourceThreadSummaryTrigger, string> = {
+  completed: '완료',
+  attention: '확인 필요',
+  merged: '머지 완료',
+  closed: '완료',
+};
 
 /**
  * Post a work summary to the original (source) thread.
@@ -390,10 +401,11 @@ export async function postSourceThreadSummary(
 }
 
 /**
- * SSOT 2026-11-12 — the work is done when its Executive Summary lands (the host's turn-end summary or the model's
- * es): report that result — its TL;DR — to the source thread the work started from. Several work threads may share
- * one source thread; each reports its own result. False when the session has no source thread or no TL;DR.
- * Never throws.
+ * SSOT 2026-11-12 — a finished turn's Executive Summary (the host's turn-end summary or the model's es) is the work's
+ * result: report it — its TL;DR, links and work thread — to the source thread the work started from. One card per
+ * work session: the first result posts it (`session.sourceThreadReportTs`), later results refresh it in place. A
+ * TL;DR with a ⚠️ line (unfinished work) is labelled 확인 필요, not 완료. Several work threads may share one source
+ * thread; each keeps its own card. False when there is no source thread, no TL;DR, or Slack refused. Never throws.
  */
 export async function reportSourceThreadResult(
   slackApi: SourceThreadSlackApi,
@@ -405,9 +417,43 @@ export async function reportSourceThreadResult(
     .map((line) => plainTldrLine(cleanTldrLine(line)))
     .filter((line) => line.length > 0);
   if (tldr.length === 0) return false;
-  return postSourceThreadSummary(slackApi, session, 'completed', {
-    executiveSummary: tldr.map((line) => `• ${line}`).join('\n'),
-  });
+  const trigger: SourceThreadSummaryTrigger = tldr.some((line) => line.startsWith('⚠️')) ? 'attention' : 'completed';
+  const executiveSummary = tldr.map((line) => `• ${line}`).join('\n');
+  const { channel, threadTs } = session.sourceThread;
+
+  try {
+    const sessionThreadTs = session.threadRootTs || session.threadTs;
+    const workThreadPermalink =
+      session.channelId && sessionThreadTs
+        ? await slackApi.getPermalink(session.channelId, sessionThreadTs).catch(() => null)
+        : null;
+    const payload = buildRequestCompleteBlocks(session, trigger, { workThreadPermalink, executiveSummary });
+
+    if (session.sourceThreadReportTs && slackApi.updateMessage) {
+      try {
+        await slackApi.updateMessage(channel, session.sourceThreadReportTs, payload.text, payload.blocks);
+        logger.info('Refreshed the source thread result card', { sourceChannel: channel, sourceThreadTs: threadTs });
+        return true;
+      } catch (error) {
+        // The card is gone (deleted by someone): post a new one.
+        logger.warn('Could not refresh the source thread result card — posting a new one', { error });
+      }
+    }
+
+    const posted = (await slackApi.postMessage(channel, payload.text, { threadTs, blocks: payload.blocks })) as
+      | { ts?: string }
+      | undefined;
+    if (posted?.ts) session.sourceThreadReportTs = posted.ts;
+    logger.info('Posted the work result to its source thread', {
+      trigger,
+      sourceChannel: channel,
+      sourceThreadTs: threadTs,
+    });
+    return true;
+  } catch (error) {
+    logger.error('Failed to report the work result to its source thread', error);
+    return false;
+  }
 }
 
 // Re-export for testing

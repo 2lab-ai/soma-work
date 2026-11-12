@@ -340,6 +340,7 @@ interface SerializedSession {
   sourceWorkingDirs?: string[];
   // Mid-thread source thread reference
   sourceThread?: { channel: string; threadTs: string };
+  sourceThreadReportTs?: string;
   // Session-unique working directory for workspace isolation (#77)
   sessionWorkingDir?: string;
   // Conversation record ID (links session to conversation history)
@@ -3782,6 +3783,7 @@ export class SessionRegistry {
             sourceWorkingDirs: session.sourceWorkingDirs,
             startedAt: session.startedAt,
             sourceThread: session.sourceThread,
+            sourceThreadReportTs: session.sourceThreadReportTs,
             // Session workspace isolation (#77): persist session-unique cwd
             // so Claude SDK can find its conversation files after restart
             sessionWorkingDir: session.sessionWorkingDir,
@@ -4336,6 +4338,8 @@ export class SessionRegistry {
           threadRootTs: serialized.threadRootTs,
           isOnboarding: serialized.isOnboarding,
           sourceThread: serialized.sourceThread,
+          sourceThreadReportTs:
+            typeof serialized.sourceThreadReportTs === 'string' ? serialized.sourceThreadReportTs : undefined,
           startedAt: typeof serialized.startedAt === 'number' ? serialized.startedAt : undefined,
           sourceWorkingDirs: (serialized.sourceWorkingDirs || []).filter((d: unknown) => {
             if (typeof d !== 'string') {

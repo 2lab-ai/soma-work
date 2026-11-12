@@ -3532,8 +3532,9 @@ describe('getThreadContextHint — array mode guidance', () => {
 
 // Issue #225 — AC③: summary timer callback calls updatePanel after displayOnThread
 describe('onSummaryTimerFire — render trigger after summary display', () => {
-  // SSOT 2026-11-12 — the host summary is the work's result: a session from a source thread reports it there.
-  it('reports the summary TL;DR to the source thread of a session that came from one', async () => {
+  // SSOT 2026-11-12 — the host summary of a finished turn is the work's result: a session from a source thread
+  // reports it there — one card per work thread, refreshed by later results; never for a turn waiting on the user.
+  function sourceReportFixture() {
     const mockSummaryService = {
       execute: vi.fn().mockResolvedValue('<tldr>\n결론 한 줄\n</tldr>\nbody'),
       displayOnThread: vi.fn((s: any) => {
@@ -3545,6 +3546,7 @@ describe('onSummaryTimerFire — render trigger after summary display', () => {
     const slackApi = {
       getPermalink: vi.fn().mockResolvedValue('https://slack.test/work'),
       postMessage: vi.fn().mockResolvedValue({ ts: 'src_report' }),
+      updateMessage: vi.fn().mockResolvedValue(undefined),
     };
     const executor = new StreamExecutor({
       summaryService: mockSummaryService,
@@ -3560,8 +3562,13 @@ describe('onSummaryTimerFire — render trigger after summary display', () => {
       title: '새 작업',
       sourceThread: { channel: 'C_SRC', threadTs: '100.200' },
     } as any;
+    return { mockSummaryService, slackApi, executor, session };
+  }
 
-    await (executor as any).onSummaryTimerFire(session, 'C_WORK:900.000');
+  it('reports a finished turn’s summary TL;DR to the source thread of a session that came from one', async () => {
+    const { slackApi, executor, session } = sourceReportFixture();
+
+    await (executor as any).onSummaryTimerFire(session, 'C_WORK:900.000', 'WorkflowComplete');
 
     await vi.waitFor(() =>
       expect(slackApi.postMessage).toHaveBeenCalledWith(
@@ -3573,16 +3580,35 @@ describe('onSummaryTimerFire — render trigger after summary display', () => {
     const blocks = JSON.stringify(slackApi.postMessage.mock.calls[0][2].blocks);
     expect(blocks).toContain('결론 한 줄');
     expect(blocks).toContain('https://slack.test/work');
+    await vi.waitFor(() => expect(session.sourceThreadReportTs).toBe('src_report'));
+  });
 
-    // The same result again is not reported twice; a new result is.
-    await (executor as any).onSummaryTimerFire(session, 'C_WORK:900.000');
+  it('one card per work thread: the same result is not re-sent, a new one refreshes the card in place', async () => {
+    const { mockSummaryService, slackApi, executor, session } = sourceReportFixture();
+    await (executor as any).onSummaryTimerFire(session, 'C_WORK:900.000', 'WorkflowComplete');
+    await vi.waitFor(() => expect(session.sourceThreadReportTs).toBe('src_report'));
+
+    await (executor as any).onSummaryTimerFire(session, 'C_WORK:900.000', 'WorkflowComplete');
     await new Promise((r) => setTimeout(r, 10));
     expect(slackApi.postMessage).toHaveBeenCalledTimes(1);
+    expect(slackApi.updateMessage).not.toHaveBeenCalled();
+
     mockSummaryService.displayOnThread.mockImplementation((s: any) => {
       s.executiveSummary = { tldr: ['다음 결론'], at: 2 };
     });
-    await (executor as any).onSummaryTimerFire(session, 'C_WORK:900.000');
-    await vi.waitFor(() => expect(slackApi.postMessage).toHaveBeenCalledTimes(2));
+    await (executor as any).onSummaryTimerFire(session, 'C_WORK:900.000', 'WorkflowComplete');
+    await vi.waitFor(() =>
+      expect(slackApi.updateMessage).toHaveBeenCalledWith('C_SRC', 'src_report', expect.any(String), expect.any(Array)),
+    );
+    expect(slackApi.postMessage).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(slackApi.updateMessage.mock.calls[0][3])).toContain('다음 결론');
+  });
+
+  it('a turn that ended waiting on the user is not reported as a result', async () => {
+    const { slackApi, executor, session } = sourceReportFixture();
+    await (executor as any).onSummaryTimerFire(session, 'C_WORK:900.000', 'UIUserAskQuestion');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(slackApi.postMessage).not.toHaveBeenCalled();
   });
 
   it('calls displayOnThread then updatePanel when summary text is returned', async () => {

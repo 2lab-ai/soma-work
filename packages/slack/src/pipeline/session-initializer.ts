@@ -458,6 +458,11 @@ export class SessionInitializer {
       session.threadModel = 'bot-initiated';
       session.threadRootTs = threadTs;
     }
+    // SSOT 2026-11-12 — a task started from an instruction in a source thread reports back to that thread.
+    const sourceThreadLink = event.sourceThreadLink;
+    if (isNewSession && sourceThreadLink?.channel && sourceThreadLink.threadTs) {
+      session.sourceThread = { channel: sourceThreadLink.channel, threadTs: sourceThreadLink.threadTs };
+    }
 
     // Incident ownership is stamped BEFORE anything can query the model, so
     // the restriction is in place for the session's very first turn. Only the

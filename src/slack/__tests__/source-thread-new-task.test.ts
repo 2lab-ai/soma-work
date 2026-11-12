@@ -16,7 +16,15 @@ const REQUEST = { channel: 'C_SRC', threadTs: '100.200', ts: '200.300', user: 'U
 function makeSlackApi() {
   return {
     openDmChannel: vi.fn().mockResolvedValue('D_Z'),
-    postMessage: vi.fn().mockResolvedValue({ ts: 'dm.1', channel: 'D_Z' }),
+    // The DM gets dm.1, a top-level post in the source channel (the new work thread's header) root.1.
+    postMessage: vi.fn(async (channel: string, _text: string, options?: any): Promise<any> =>
+      channel === 'D_Z'
+        ? { ts: 'dm.1', channel: 'D_Z' }
+        : options?.threadTs
+          ? { ts: `reply.${options.threadTs}`, channel }
+          : { ts: 'root.1', channel },
+    ),
+    getUserName: vi.fn().mockResolvedValue('Z'),
     updateMessage: vi.fn().mockResolvedValue(undefined),
     getPermalink: vi.fn().mockResolvedValue('https://slack.test/archives/C_SRC/p100200'),
     getThreadMessage: vi.fn().mockResolvedValue({ ts: '200.300', user: 'U_Z', team: 'T_1', text: '<@B_BOT> $fix' }),
@@ -94,34 +102,57 @@ describe('SourceThreadNewTask.handleAction', () => {
     [start, cancel] = offeredButtons(slackApi);
   });
 
-  it('start: runs the original instruction as a first mention in the source thread (a new work thread)', async () => {
+  it('start: runs the instruction in a NEW work thread of its own, linked back to the source thread', async () => {
     await flow.handleAction(clickBody(start.action_id, start.value), respond);
 
     expect(slackApi.getThreadMessage).toHaveBeenCalledWith('C_SRC', '100.200', '200.300');
     await vi.waitFor(() => expect(messageHandler).toHaveBeenCalledTimes(1));
+    // The work thread's header is posted first, top-level in the source channel.
+    const header = slackApi.postMessage.mock.calls.find((c: any[]) => c[0] === 'C_SRC' && !c[2]?.threadTs);
+    expect(header).toBeDefined();
     const [event, say] = messageHandler.mock.calls[0];
+    // Never the source thread's key: an earlier task from that thread may still hold its run slot, and an
+    // instruction sent to a busy key joins that run as a follow-up instead of starting a new task.
+    expect(event.thread_ts).not.toBe('100.200');
     expect(event).toMatchObject({
       channel: 'C_SRC',
-      thread_ts: '100.200',
-      ts: '200.300',
+      thread_ts: 'root.1',
+      ts: 'root.1',
       user: 'U_Z',
       text: '$fix',
       team: 'T_1',
+      botThreadRoot: true,
+      sourceThreadLink: { channel: 'C_SRC', threadTs: '100.200' },
+      routeContext: { skipAutoBotThread: true },
     });
-    // The DM no longer offers the buttons.
+    // The source thread hears where the new task went; the DM no longer offers the buttons.
+    expect(slackApi.postMessage).toHaveBeenCalledWith(
+      'C_SRC',
+      expect.stringContaining('<@U_Z>'),
+      expect.objectContaining({ threadTs: '100.200' }),
+    );
     expect(slackApi.updateMessage).toHaveBeenCalledWith(
       'D_Z',
       'dm.1',
       expect.stringContaining('시작'),
       expect.any(Array),
     );
-    // `say` answers in the source thread, where the new task starts.
+    // `say` answers in the new work thread.
     await say({ text: 'hi' });
     expect(slackApi.postMessage).toHaveBeenLastCalledWith(
       'C_SRC',
       'hi',
-      expect.objectContaining({ threadTs: '100.200' }),
+      expect.objectContaining({ threadTs: 'root.1' }),
     );
+  });
+
+  it('the work thread could not be made: nothing runs, and the button stays usable', async () => {
+    slackApi.postMessage.mockImplementationOnce(async () => undefined as any);
+    await flow.handleAction(clickBody(start.action_id, start.value), respond);
+    expect(messageHandler).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
+    await flow.handleAction(clickBody(start.action_id, start.value), respond);
+    await vi.waitFor(() => expect(messageHandler).toHaveBeenCalledTimes(1));
   });
 
   it('start twice: the second click does not start a second task', async () => {
@@ -148,19 +179,17 @@ describe('SourceThreadNewTask.handleAction', () => {
     );
   });
 
-  it('the original message is gone (or not the sender’s): nothing runs, the DM says why', async () => {
+  it('the original message is gone (or not the sender’s): nothing runs, the clicker is told, a retry is possible', async () => {
     slackApi.getThreadMessage.mockResolvedValue(null);
     await flow.handleAction(clickBody(start.action_id, start.value), respond);
     expect(messageHandler).not.toHaveBeenCalled();
-    expect(slackApi.updateMessage).toHaveBeenCalledWith(
-      'D_Z',
-      'dm.1',
-      expect.stringContaining('찾을 수 없'),
-      expect.any(Array),
+    expect(respond).toHaveBeenLastCalledWith(
+      expect.objectContaining({ response_type: 'ephemeral', text: expect.stringContaining('찾을 수 없') }),
     );
 
     slackApi.getThreadMessage.mockResolvedValue({ ts: '200.300', user: 'U_SOMEONE_ELSE', text: '<@B_BOT> rm -rf' });
     await flow.handleAction(clickBody(start.action_id, start.value), respond);
+    expect(slackApi.getThreadMessage).toHaveBeenCalledTimes(2);
     expect(messageHandler).not.toHaveBeenCalled();
   });
 });
@@ -173,6 +202,15 @@ describe('buildNewTaskOfferMessage', () => {
     );
     for (const block of message.blocks as any[]) {
       if (block.type === 'section') expect(block.text.text.length).toBeLessThanOrEqual(3000);
+    }
+  });
+
+  it('stays inside the limit when escaping grows the text (& → &amp;) or every line is quoted', () => {
+    for (const text of ['&'.repeat(2_000), 'a\n'.repeat(2_000)]) {
+      const message = buildNewTaskOfferMessage({ ...REQUEST, text, linked: [] }, 'https://slack.test/p');
+      for (const block of message.blocks as any[]) {
+        if (block.type === 'section') expect(block.text.text.length).toBeLessThanOrEqual(3000);
+      }
     }
   });
 });

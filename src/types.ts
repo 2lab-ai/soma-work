@@ -731,6 +731,8 @@ export interface ConversationSession {
     channel: string;
     threadTs: string;
   };
+  // SSOT 2026-11-12 — the result card this session posted to its source thread: a later result refreshes it.
+  sourceThreadReportTs?: string;
   // Bot message ts posted to the SOURCE thread during session init
   // (dispatch status, conversation-history link, etc.). These are the ONLY
   // messages cleaned up on mid-thread migration or channel-route move/stay —
