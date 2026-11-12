@@ -24,10 +24,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 const SKILLS_DIR = resolve(__dirname, '..', '..');
 const read = (skill: string) => readFileSync(resolve(SKILLS_DIR, skill, 'SKILL.md'), 'utf8');
 
-const GITHUB_READ =
-  '{"account": "<account>", "args": ["api", "-X", "GET", "<path>", "-f", "<key>=<value>", "--jq", "<filter>"]}';
+const GITHUB_READ = '["api", "-X", "GET", "<path>", "-f", "<key>=<value>", "--jq", "<filter>"]';
 
-describe('post-deploy QA skills read GitHub through devops-tools gh_read', () => {
+describe('post-deploy QA skills read GitHub through the environment reader or gh (env-access, the broker is gone)', () => {
   for (const skill of ['deploy-qa', 'qa-issue', 'qa-report']) {
     it(`${skill} uses no gh network command and no token`, () => {
       const md = read(skill);
@@ -55,23 +54,19 @@ describe('post-deploy QA skills read GitHub through devops-tools gh_read', () =>
     it(`${skill} defines the GitHub read, what counts as an answer, and how to page`, () => {
       const md = read(skill);
       const section = md.slice(md.indexOf('## GitHub reads'), md.indexOf('\n## ', md.indexOf('## GitHub reads') + 1));
-      expect(section).toContain('`mcp__devops-tools__gh_read`');
+      // #1214: no broker. Without github.server a read is `gh` in Bash; only an admin session's sandbox reaches GitHub.
+      expect(section).not.toContain('devops-tools');
+      expect(section).not.toContain('broker');
+      expect(section).toContain('Otherwise read GitHub with `gh` in Bash.');
+      expect(section).toContain("Only an admin session's sandbox reaches GitHub");
       expect(section).toContain(GITHUB_READ);
       expect(section).toContain('`-X GET` keeps the call a read and turns the `-f` pairs into the query string');
-      // A branch name holds a `/`, which the gh_read classifier refuses inside a `?query`.
+      // A branch name holds a `/`: query values go in -f pairs, never after a `?`.
       expect(section).toContain('never after a `?` in the path, so a value may hold a `/`');
       expect(section).toContain('Never percent-encode anything');
-      expect(section).toContain('one array element per word, with no shell quotes');
-      // gh_read returns a failed gh as a result, not a tool error.
-      expect(section).toContain(
-        'An answer is a result whose `exitCode` is 0 and whose `truncated` and `timedOut` are false',
-      );
-      // The account: the profile's when named, else the single member-class account; else missing: github.
-      expect(section).toContain("the profile's `github.account` when it names one");
-      expect(section).toContain('`mcp__devops-tools__list` once and use the single account of class `member`');
+      expect(section).toContain('each one shell word (quote the filter in single quotes)');
+      expect(section).toContain('An answer is a command that exits 0');
       expect(section).toContain('`missing: github`');
-      // Hosts without the broker: gh in Bash only outside a sandbox.
-      expect(section).toContain('run `gh` in Bash with the same args when the session is not sandboxed');
       expect(section).toContain('`"-f", "per_page=100", "-f", "page=<N>"`');
       // A failed read or paging that did not reach the end is incomplete, never empty.
       expect(section).toContain('never read it as empty or complete');
@@ -82,13 +77,13 @@ describe('post-deploy QA skills read GitHub through devops-tools gh_read', () =>
     });
   }
 
-  // env-access WU5 (#1213): the environment's own reader comes first; the broker stays only until #1214.
+  // env-access WU5 (#1213): the environment's own reader comes first; without it, `gh` (the broker is gone, #1214).
   for (const skill of ['deploy-qa', 'qa-issue']) {
     it(`${skill} reads through the environment's server-tools gh_read when the profile names github.server`, () => {
       const md = read(skill);
       const section = md.slice(md.indexOf('## GitHub reads'), md.indexOf('\n## ', md.indexOf('## GitHub reads') + 1));
       expect(section.indexOf('`mcp__server-tools__gh_read`')).toBeLessThan(
-        section.indexOf('`mcp__devops-tools__gh_read`'),
+        section.indexOf('read GitHub with `gh` in Bash'),
       );
       expect(section).toContain('When the profile names `github.server`');
       expect(section).toContain('`{"server": "<github.server>", "path": "<path>", "query": {"<key>": "<value>"}}`');
@@ -98,9 +93,7 @@ describe('post-deploy QA skills read GitHub through devops-tools gh_read', () =>
       // trinity R1 (astra): a smaller page size restarts the listing and ends it at that size, not at 100.
       expect(section).toContain('restarting that listing at page 1');
       expect(section).toContain('a page holding fewer items than that `per_page` — not 100 — ends the listing');
-      expect(section).toContain(
-        'Without `github.server`, read through the broker as below until it is removed (#1214)',
-      );
+      expect(section).toContain('Without `github.server`, read with `gh` as below.');
       expect(md).toContain('`github.server`');
     });
   }
@@ -120,14 +113,15 @@ describe('post-deploy QA skills read GitHub through devops-tools gh_read', () =>
     );
   });
 
-  it('deploy-qa preflight reads the repo through gh_read and names a failure `github`', () => {
+  it('deploy-qa preflight reads the repo and names a failure `github`', () => {
     const md = read('deploy-qa');
     expect(md).toContain(
       'a GitHub read of `repos/<owner/repo>` (filter `.full_name`) that answers with that repo, for every repo',
     );
     expect(md).toContain('the GitHub checks are named `github`');
-    // github.account is optional: its absence is never a missing: answer by itself.
-    expect(md).toContain('Optional: `github.account`');
+    // The broker's account field is gone with the broker (#1214); `github.server` is the optional reader.
+    expect(md).not.toContain('github.account');
+    expect(md).toContain('Optional: `github.server`');
   });
 });
 
@@ -494,9 +488,10 @@ describe('deploy-qa computes a refused compare from the commits list', () => {
   const step2 = steps.slice(steps.indexOf('2. **Commits.**'), steps.indexOf('3. **PRs.**'));
   const step5 = steps.slice(steps.indexOf('5. **Admission.**'), steps.indexOf('5.5. **Precondition gate.**'));
 
-  it('keeps gh_read first and falls back to the commits list when the compare read is refused or fails', () => {
-    expect(github).toContain('Read `compare` with `gh_read` first.');
-    expect(github).toMatch(/not an answer[^\n]*`policy-denied`[^\n]*answer from the commits list instead/);
+  it('reads compare first and falls back to the commits list when the compare read is refused or fails', () => {
+    expect(github).toContain(
+      'Read `compare` first. When that read is not an answer, answer from the commits list instead.',
+    );
     // The classifier rules above stay as they were.
     expect(github).toContain('`compare` takes full 40-character SHAs only');
     expect(github).toContain(LIST_READ);
@@ -529,7 +524,9 @@ describe('deploy-qa computes a refused compare from the commits list', () => {
   });
 
   it('names the answer source in the report notes', () => {
-    expect(github).toContain("Add `compare via commits list: broker refused compare` to the report's `meta.notes`");
+    expect(github).toContain(
+      "Add `compare via commits list: <why the compare read failed>` to the report's `meta.notes`",
+    );
   });
 
   it('steps 1, 2 and 5 take the list answer, the two SHAs in compare order', () => {
