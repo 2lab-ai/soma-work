@@ -13877,11 +13877,16 @@ function convQueueTurns(list, fu, ownerName) {
       continue;
     }
     if (kind === 'failed' || kind === 'cancelled') continue;
-    var probe = { id: String(f.clientRef || ('queue-' + f.id)), _optimistic: true, _sent: said, _files: names.length, _by: String(f.authorId || ''), timestamp: toNum(f.enqueuedAt) };
-    var rec = ptRecorded(list, probe, held, used);
-    if (rec) {
-      used[rec] = true;
-      continue;
+    // Only a message that can have a recorded turn is looked up: one the running turn read (recorded at its
+    // read), or one dispatched as its own turn (recorded when that turn starts). A message that still waits has
+    // none — the same words in a turn just recorded are another message's ("계속" sent twice).
+    if (kind === 'applied' || f.state === 'dispatched') {
+      var probe = { id: String(f.clientRef || ('queue-' + f.id)), _optimistic: true, _sent: said, _files: names.length, _by: String(f.authorId || ''), timestamp: toNum(f.enqueuedAt) };
+      var rec = ptRecorded(list, probe, held, used);
+      if (rec) {
+        used[rec] = true;
+        continue;
+      }
     }
     var id = 'queue-' + f.id;
     out.extra.push({

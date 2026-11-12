@@ -490,6 +490,8 @@ describe('the section’s data and the element’s requests (convPaint, convRetr
     const file = { name: 'shot.png', type: 'image/png' };
     const appended: Record<string, unknown>[] = [];
     const dropped: string[] = [];
+    /** How many turns the chat held when each request went out. */
+    const appendedAtRequest: number[] = [];
     let unreadable = false;
     const api = load<{ sendCommand(text: string, ref: string, files?: unknown[]): Promise<void> }>(
       ['esc', 'escJs', 'pcCanSend', 'pcCommandBody', 'acPost', 'pcGiveBack', 'sendCommand'],
@@ -503,6 +505,7 @@ describe('the section’s data and the element’s requests (convPaint, convRetr
         dropTurnFromPanel: (id: string) => dropped.push(id) > 0,
         _viewerUserId: 'U_Z',
         fetch: (_url: string, init: { body: string }) => {
+          appendedAtRequest.push(appended.length);
           bodies.push(init.body);
           const status = statuses.shift() ?? 200;
           return Promise.resolve({ ok: status < 400, status, json: () => Promise.resolve({}) });
@@ -542,6 +545,8 @@ describe('the section’s data and the element’s requests (convPaint, convRetr
       _by: 'U_Z',
     });
     expect(JSON.parse(bodies[0])).toEqual({ ...sent, clientRef: appended[0].id });
+    // In the chat BEFORE the request went out — not when the server answered.
+    expect(appendedAtRequest[0]).toBe(1);
     expect(steer.setItemState).toHaveBeenCalledWith('as-1', 'failed', '(HTTP 500)');
     // Refused: the turn leaves the chat again; the queue row keeps the Retry.
     expect(dropped).toEqual([appended[0].id]);

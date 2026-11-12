@@ -454,13 +454,17 @@ describeReal('follow-up queue × a real CLI turn', () => {
       message({ ts: '222.336', text: QUICK }),
       vi.fn().mockResolvedValue({ ts: 'm' }) as any,
     );
-    // Wait until the CLI's result is in while the executor is held: the real turn's input stops taking steers
-    // the moment it arrives. A build without that hold never says so — there the wait is the whole 15 s, by
-    // which a one-word answer is long over, and the message below goes into the ended turn (the old behaviour).
+    // The precondition: the CLI's result is in while the executor is held — the real turn's input stops taking
+    // steers the moment it arrives. Not reached (a slow start, a build without the hold): the scenario did not
+    // happen, and the test says so instead of sending into a turn that still works.
     const inputOf = () =>
       (real as any).activeQueries.get(SESSION_KEY)?.channel as { acceptsPushes: boolean } | undefined;
-    const waitUntil = Date.now() + 15_000;
-    while (inputOf()?.acceptsPushes !== false && Date.now() < waitUntil) {
+    const waitUntil = Date.now() + 120_000;
+    while (inputOf()?.acceptsPushes !== false) {
+      if (Date.now() > waitUntil) {
+        release();
+        throw new Error('precondition not reached: no result of the first turn arrived within 120 s');
+      }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     mark('the CLI ended the turn (result arrived); the executor has not read it');

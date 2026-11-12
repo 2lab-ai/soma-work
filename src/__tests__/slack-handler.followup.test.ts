@@ -4289,6 +4289,22 @@ describe('SlackHandler — follow-up queue host', () => {
         await settle();
       });
 
+      // PR #1227 review: the signal is fired from the turn's frame loop and nobody awaits it. A settlement that
+      // rejects must end in a log line, never in an unhandled rejection (which can take the process down).
+      it('a settlement that fails is logged, not left unhandled', async () => {
+        const warn = vi.spyOn(handlerAny.logger, 'warn').mockImplementation(() => {});
+        const original = handlerAny.settleSteeredFollowup;
+        handlerAny.settleSteeredFollowup = vi.fn().mockRejectedValue(new Error('disk full'));
+        try {
+          expect(() => signals().read(SESSION_KEY, 'uuid-x')).not.toThrow();
+          await tick();
+          expect(warn.mock.calls.some(([line]) => String(line).includes('Steer read signal'))).toBe(true);
+        } finally {
+          handlerAny.settleSteeredFollowup = original;
+          warn.mockRestore();
+        }
+      });
+
       it('the same read arriving later on the stream moves nothing', async () => {
         const { uuid, settle } = await steerOne();
         signals().read(SESSION_KEY, uuid);

@@ -198,6 +198,23 @@ describe('TurnInputChannel (user-steering WU1)', () => {
     expect(channel.takeReopened()).toBe(true);
   });
 
+  it('two results in transit at once: the input stays shut until the host has processed both', () => {
+    const channel = new TurnInputChannel(userMessage('first'));
+    channel.holdPushes();
+    channel.holdPushes();
+    expect(channel.push(steerMessage('in the gap', 'u-1'))).toBe(false);
+
+    channel.releasePushes(); // one of the two processed
+    expect(channel.acceptsPushes).toBe(false);
+    expect(channel.takeReopened()).toBe(false);
+    expect(channel.push(steerMessage('still in the gap', 'u-1'))).toBe(false);
+
+    channel.releasePushes();
+    expect(channel.acceptsPushes).toBe(true);
+    expect(channel.takeReopened()).toBe(true);
+    expect(channel.push(steerMessage('now', 'u-1'))).toBe(true);
+  });
+
   it('a result in transit does not hold a host-authored message', async () => {
     const channel = new TurnInputChannel(userMessage('first'));
     channel.holdPushes();

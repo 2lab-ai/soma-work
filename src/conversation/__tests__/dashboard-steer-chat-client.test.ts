@@ -303,6 +303,22 @@ describe('the queue as turns of the chat (convQueueTurns)', () => {
     expect(q.chips).toEqual({ 'queue-k#8': 'queued' });
   });
 
+  // PR #1227 review: "계속" sent twice in Slack. The first opened the running turn (recorded, off the list); the
+  // second waits. A waiting message has no recorded turn yet — it is never mistaken for the first one's.
+  it('a waiting message with the words of a turn just recorded still shows', () => {
+    const first: Turn = { ...opening, id: 'srv-6', timestamp: T0 + 4_000, rawContent: '계속' };
+    for (const state of ['queued', 'paused', 'steered', 'reserved', 'claimed']) {
+      const q = queueApi().convQueueTurns([opening, first], {
+        turnEpoch: 3,
+        items: [row({ id: 'k#9', text: '계속', state, enqueuedAt: T0 + 6_000 })],
+      });
+      expect(
+        q.extra.map((t) => t.id),
+        state,
+      ).toEqual(['queue-k#9']);
+    }
+  });
+
   it('no queue, nothing to add', () => {
     expect(queueApi().convQueueTurns([opening], undefined)).toEqual({
       chips: {},

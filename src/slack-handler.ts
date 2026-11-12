@@ -981,7 +981,17 @@ export class SlackHandler {
     // result was in transit is offered again when the turn goes on.
     // Optional: a handler double without the seam keeps its behavior.
     this.claudeHandler.setSteerSignals?.({
-      read: (sessionKey, uuid) => void this.settleSteeredFollowup({ sessionKey, uuid, phase: 'read' }),
+      // Fired from the turn's frame loop and awaited by nobody: a settlement that fails ends here, in a log
+      // line. The row is not lost — the same receipt comes down the stream, and the turn's end settles it.
+      read: (sessionKey, uuid) => {
+        this.settleSteeredFollowup({ sessionKey, uuid, phase: 'read' }).catch((error) =>
+          this.logger.warn('Steer read signal could not be settled — left for the stream receipt', {
+            sessionKey,
+            uuid,
+            error: (error as Error)?.message ?? String(error),
+          }),
+        );
+      },
       inputReopened: (sessionKey) => this.onFollowupInputReopened(sessionKey),
     });
     // Goal stall: a question whose round ended without an answer is retracted.
