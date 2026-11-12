@@ -744,4 +744,66 @@ def evaluateToolPolicyMcp (nativeWrite : Option (Option String)) (plan : Option 
   | some inc => evaluateIncidentReadOnly i.toolName inc
   | none => modeTierMcp i
 
+/-! ## ssh for everyone, and a message per devops-secret reason (env-access WU2, #1210)
+
+Phase 8 changes two deny steps of the earlier code. Step 2, the ssh ban, leaves the admin block: a
+Bash call whose command `isSshCommand` matches is denied for every user, admins included, with
+reason `ssh-ban: ssh command` and `SSH_BAN_DENY_MESSAGE` (host commands go through server-tools'
+`ssh_exec`). Step 1b keeps its decision and reason, and its message now follows the reason:
+`SECRET_STORE_DENY_MESSAGE` for `secret store path`, `APPROVAL_RECORD_DENY_MESSAGE` for
+`approval record`, `DEVOPS_SECRET_DENY_MESSAGE` for every other reason.
+
+`evaluateToolPolicyMcp` above is the function without the change and keeps its name, so every
+theorem about it stands as proved. `evaluateToolPolicySsh` is the TS function now: steps 1 and 1b,
+then the ssh ban for everyone, then `evaluateToolPolicyMcp`, whose own steps 1 and 1b come back
+clear there and whose admin-block ssh check can no longer fire. `ProofsSsh.lean` proves the two
+agree whenever neither change applies, that every user's Bash ssh is denied, and which message a
+devops-secret reason gets. The conformance vectors are its output. -/
+
+/-- `SECRET_STORE_DENY_MESSAGE`. -/
+def secretStoreDenyMessage : String :=
+  "Blocked: the secret store is closed to every model in every permission mode. Configuration names a secret ({\"$secret\": \"<name>\"}) and the bot and its MCP servers read it; use the MCP tool that needs the secret."
+
+/-- `APPROVAL_RECORD_DENY_MESSAGE`. -/
+def approvalRecordDenyMessage : String :=
+  "Blocked: approval and grant records are written only by the bot (the approval buttons and the dashboard), never by a model. Ask for the approval instead of editing the record."
+
+/-- `devopsSecretDenyMessage(reason)`. -/
+def devopsSecretDenyMessageFor (reason : String) : String :=
+  if reason = "secret store path" then secretStoreDenyMessage
+  else if reason = "approval record" then approvalRecordDenyMessage
+  else devopsSecretDenyMessage
+
+/-- 1b. Devops-secret with the message of its reason. -/
+def devopsGuardFor (i : Input) : Option Result :=
+  match checkDevopsSecretForTool i.toolName i.prims.devopsSecret with
+  | some reason =>
+    some { decision := .deny, reason := "devops-secret: " ++ reason,
+           denyMessage := some (devopsSecretDenyMessageFor reason) }
+  | none => none
+
+/-- `SSH_BAN_DENY_MESSAGE`. -/
+def sshBanDenyMessage : String :=
+  "Blocked: Bash ssh is not available to any model, admins included. Run a host command with the server-tools ssh_exec tool (admins); it uses the bot's own keys, which no model reads."
+
+/-- 2. SSH ban (Bash), every user. -/
+def sshGuardAll (i : Input) : Option Result :=
+  if i.toolName = "Bash" ∧ i.prims.ssh = true then
+    some { decision := .deny, reason := "ssh-ban: ssh command", denyMessage := some sshBanDenyMessage }
+  else none
+
+/-- `evaluateToolPolicy`, all of it: steps 1 and 1b, the ssh ban for every user, then the steps
+of `evaluateToolPolicyMcp`. -/
+def evaluateToolPolicySsh (nativeWrite : Option (Option String)) (plan : Option (Option String))
+    (incident : Option IncidentReadOnly) (i : Input) : Result :=
+  match abortGuard i with
+  | some r => r
+  | none =>
+  match devopsGuardFor i with
+  | some r => r
+  | none =>
+  match sshGuardAll i with
+  | some r => r
+  | none => evaluateToolPolicyMcp nativeWrite plan incident i
+
 end SomaVerify.ToolPolicy

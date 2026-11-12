@@ -480,6 +480,12 @@ describe('buildStreamOptions — a non-admin session with the sandbox on', () =>
       getUserSandboxDisabled: () => true,
       getUserNetworkDisabled: () => false,
     } as never);
+    // Off takes effect only for an admin on a host that allows it (env-access WU2, #1210).
+    const savedAdmins = process.env.ADMIN_USERS;
+    process.env.ADMIN_USERS = SESSION_USER;
+    process.env.SOMA_SANDBOX_OFF_ALLOWED = 'true';
+    const { resetAdminUsersCache } = await import('../../admin-utils');
+    resetAdminUsersCache();
     try {
       const { call, options } = await writeHook(path.join(ROOT, 'repo'));
       expect(options.sandbox).toBeUndefined();
@@ -487,6 +493,10 @@ describe('buildStreamOptions — a non-admin session with the sandbox on', () =>
       expect(out.hookSpecificOutput?.permissionDecision).toBe('allow');
     } finally {
       spy.mockRestore();
+      if (savedAdmins === undefined) delete process.env.ADMIN_USERS;
+      else process.env.ADMIN_USERS = savedAdmins;
+      delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
+      resetAdminUsersCache();
     }
   });
 });

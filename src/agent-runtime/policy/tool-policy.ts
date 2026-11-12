@@ -189,6 +189,25 @@ function checkSensitiveForTool(toolName: string, input: Record<string, unknown>)
 const DEVOPS_SECRET_DENY_MESSAGE =
   'Blocked: reading GitHub or keychain credentials and touching the devops broker files is denied in every permission mode.';
 
+/** Step 1b's message for the secret store (env-access WU1/WU2, #1209 #1210). */
+const SECRET_STORE_DENY_MESSAGE =
+  'Blocked: the secret store is closed to every model in every permission mode. Configuration names a secret ({"$secret": "<name>"}) and the bot and its MCP servers read it; use the MCP tool that needs the secret.';
+
+/** Step 1b's message for an approval or grant record. */
+const APPROVAL_RECORD_DENY_MESSAGE =
+  'Blocked: approval and grant records are written only by the bot (the approval buttons and the dashboard), never by a model. Ask for the approval instead of editing the record.';
+
+/** The message step 1b gives the model for a reason of `checkDevopsSecretForTool`. */
+function devopsSecretDenyMessage(reason: string): string {
+  if (reason === 'secret store path') return SECRET_STORE_DENY_MESSAGE;
+  if (reason === 'approval record') return APPROVAL_RECORD_DENY_MESSAGE;
+  return DEVOPS_SECRET_DENY_MESSAGE;
+}
+
+/** Step 2's message (env-access WU2, #1210): host commands go through server-tools. */
+const SSH_BAN_DENY_MESSAGE =
+  "Blocked: Bash ssh is not available to any model, admins included. Run a host command with the server-tools ssh_exec tool (admins); it uses the bot's own keys, which no model reads.";
+
 /**
  * Surfaced to the model when step 6b denies an environment skill. The enforcing hook files the
  * admin approval request; on approval the requester's turn is sent again, so the model must
@@ -286,15 +305,21 @@ export function evaluateToolPolicy(
   //     broker's paths. Not a dangerous-command rule, which auto mode classifies and bypass allows.
   const devopsSecret = checkDevopsSecretForTool(toolName, input);
   if (devopsSecret !== null) {
-    return { decision: 'deny', reason: `devops-secret: ${devopsSecret}`, denyMessage: DEVOPS_SECRET_DENY_MESSAGE };
+    return {
+      decision: 'deny',
+      reason: `devops-secret: ${devopsSecret}`,
+      denyMessage: devopsSecretDenyMessage(devopsSecret),
+    };
   }
 
-  // 2-4. Admins bypass the ssh / sensitive / write-boundary / mcp guards; an incident session gets no admin privilege.
+  // 2. SSH ban (Bash) — every user, admins too (env-access WU2, #1210): no model runs ssh or reads a
+  //    key; host commands go through server-tools' `ssh_exec`.
+  if (toolName === 'Bash' && isSshCommand(command)) {
+    return { decision: 'deny', reason: 'ssh-ban: ssh command', denyMessage: SSH_BAN_DENY_MESSAGE };
+  }
+
+  // 3-4. Admins bypass the sensitive / write-boundary / mcp guards; an incident session gets no admin privilege.
   if (!ctx.isAdmin || ctx.incidentReadOnly) {
-    // 2. SSH ban (Bash).
-    if (toolName === 'Bash' && isSshCommand(command)) {
-      return { decision: 'deny', reason: 'ssh-ban: ssh command for non-admin user' };
-    }
     // 3. Sensitive-path (Bash/Read/Glob/Grep).
     const sensitive = checkSensitiveForTool(toolName, input);
     if (sensitive?.isSensitive) {

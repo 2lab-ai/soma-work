@@ -10,7 +10,9 @@
  */
 
 import * as os from 'node:os';
+import * as path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { DATA_DIR, SECRETS_DIR } from '../../env-paths';
 import { NATIVE_BYPASS_TOOLS } from '../../hooks/bypass-permission-guard';
 import type { HandoffContext } from '../../types';
 import { NATIVE_WRITE_TOOLS } from '../policy/native-write-boundary';
@@ -67,11 +69,32 @@ describe('evaluateToolPolicy — guards (epic #1023 P5)', () => {
       );
     });
 
-    it('ssh ban: non-admin Bash ssh → deny; admin → not deny', () => {
-      expect(evaluateToolPolicy('Bash', { command: 'ssh prod-host' }, makeCtx()).decision).toBe('deny');
-      expect(evaluateToolPolicy('Bash', { command: 'ssh prod-host' }, makeCtx({ isAdmin: true })).decision).not.toBe(
-        'deny',
+    it('ssh ban: Bash ssh → deny for everyone, admins too, pointing at ssh_exec (env-access WU2, #1210)', () => {
+      for (const isAdmin of [false, true]) {
+        const result = evaluateToolPolicy('Bash', { command: 'ssh prod-host' }, makeCtx({ isAdmin }));
+        expect(result.decision).toBe('deny');
+        expect(result.reason).toBe('ssh-ban: ssh command');
+        expect(result.denyMessage).toContain('ssh_exec');
+      }
+    });
+
+    it('devops-secret: the deny message names what was refused (secret store, approval record, credentials)', () => {
+      const store = evaluateToolPolicy('Read', { file_path: `${SECRETS_DIR}/x` }, makeCtx({ isAdmin: true }));
+      expect(store.reason).toBe('devops-secret: secret store path');
+      expect(store.denyMessage).toContain('secret store');
+      const record = evaluateToolPolicy(
+        'Write',
+        { file_path: path.join(DATA_DIR, 'admin-requests.json'), content: '{}' },
+        makeCtx({ isAdmin: true }),
       );
+      expect(record.reason).toBe('devops-secret: approval record');
+      expect(record.denyMessage).toContain('approval');
+      const keychain = evaluateToolPolicy(
+        'Bash',
+        { command: ['security', 'find-generic-password', '-s', 'x'].join(' ') },
+        makeCtx({ isAdmin: true }),
+      );
+      expect(keychain.denyMessage).toContain('GitHub or keychain');
     });
 
     it('sensitive-path: non-admin Read of ~/.ssh key → deny; admin → not deny', () => {
