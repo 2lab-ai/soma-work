@@ -41,7 +41,7 @@ function harness(over: Partial<EventRouterDeps> = {}) {
     } as any,
     claudeHandler: {
       getSession: vi.fn(),
-      findSessionBySourceThread: vi.fn(),
+      findSessionsBySourceThread: vi.fn().mockReturnValue([]),
       setExpiryCallbacks: vi.fn(),
       cleanupInactiveSessions: vi.fn(),
       broadcastSessionUpdate: vi.fn(),

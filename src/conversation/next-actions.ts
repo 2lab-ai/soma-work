@@ -35,8 +35,19 @@ const LABEL_MAX_CHARS = 120;
  */
 const MAX_SCAN_LINE = 500;
 
+/**
+ * A Next Actions title, the whole of it: `다음 행동`, `다음 단계`, `다음 할 것`, `Next Actions`, `Next steps`, `Next up`,
+ * `What's next` (a count in brackets allowed). Other words after it make it another section (`다음 버전 계획`,
+ * `Next release notes`).
+ */
 const TITLE =
-  /^(?:(?:suggested\s+)?next\s+(?:actions?|steps?)|다음\s*(?:행동|액션|단계|할\s*일|작업))(?:\s*[(（][^)）]*[)）])?$/i;
+  /^(?:(?:(?:suggested|recommended)\s+)?next\s+(?:actions?|steps?|up|moves?)|what['’]s\s+next|다음\s*(?:행동|액션|단계|스텝|할\s*(?:일|것)|작업|진행|순서))(?:\s*[(（][^)）]*[)）])?\s*[?？]?$/i;
+/**
+ * The bare `다음` a model also writes (SSOT 2026-11-12 — a `## 다음` answer showed no buttons) counts only as a `#`
+ * heading: in bold or italic it is a transition in prose. Bare English `Next` never counts — it also names a framework
+ * (PR #1205 review).
+ */
+const BARE_TITLE = /^다음\s*[?？]?$/;
 /**
  * The ⚠️ User follow-up required section (auto-es) holds the user's own commands. Its title ends a Next Actions section
  * whatever its form or level — `##`, `###`, bold, or a plain line (trinity R1, P1 from all three panelists).
@@ -53,6 +64,8 @@ interface Mark {
   line: number;
   level: number;
   next: boolean;
+  /** The ⚠️ User follow-up required title: no title after it opens a Next Actions section. */
+  followUp?: true;
 }
 
 /** `#`…`######` heading: its level and text (closing `#`s dropped), or null. Linear. */
@@ -184,14 +197,19 @@ function sectionMarks(lines: string[]): Mark[] {
     const em = atx ? null : emphasisLine(line);
     const words = titleWords(atx ? atx.text : (em ?? line));
     if (FOLLOW_UP_TITLE.test(words)) {
-      marks.push({ line: i, level: HARD_END, next: false });
+      // A heading or bold title, or a line that carries ⚠️: the follow-up section. A bare plain line is only an end.
+      const followUp = !!atx || em !== null || line.includes('⚠');
+      marks.push(
+        followUp ? { line: i, level: HARD_END, next: false, followUp } : { line: i, level: HARD_END, next: false },
+      );
       continue;
     }
-    const next = TITLE.test(words);
+    const next = TITLE.test(words) || (!!atx && !atx.text.startsWith('⚠') && BARE_TITLE.test(words));
     // The ⚠️ mark is reserved for the unfinished-work signal: a heading or bold title that starts with it, however
     // worded, ends the section too (trinity R2, fable P2).
+    // It opens the follow-up section as well: no title after it is the answer's (PR #1205 review, all three P2).
     if (!next && (atx || em !== null) && (atx ? atx.text : (em as string)).startsWith('⚠')) {
-      marks.push({ line: i, level: HARD_END, next: false });
+      marks.push({ line: i, level: HARD_END, next: false, followUp: true });
       continue;
     }
     if (atx) marks.push({ line: i, level: atx.level, next });
@@ -209,8 +227,16 @@ export function extractNextActions(markdown: string | null | undefined): NextAct
   const lines = markdown.split(/\r?\n/);
   const marks = sectionMarks(lines);
 
+  // The follow-up section closes the answer (auto-es): a title inside it is its own step list, never the answer's.
+  let last = marks.length - 1;
+  for (let m = 0; m < marks.length; m++) {
+    if (marks[m].followUp) {
+      last = m - 1;
+      break;
+    }
+  }
   let head = -1;
-  for (let m = marks.length - 1; m >= 0; m--) {
+  for (let m = last; m >= 0; m--) {
     if (marks[m].next) {
       head = m;
       break;

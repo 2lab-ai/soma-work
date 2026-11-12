@@ -112,7 +112,7 @@ function buildMockDeps() {
     },
     claudeHandler: {
       getSession: vi.fn().mockReturnValue(undefined),
-      findSessionBySourceThread: vi.fn().mockReturnValue(undefined),
+      findSessionsBySourceThread: vi.fn().mockReturnValue([]),
       setExpiryCallbacks: vi.fn(),
       cleanupInactiveSessions: vi.fn(),
     },

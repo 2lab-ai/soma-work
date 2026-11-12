@@ -32,7 +32,7 @@ function buildMockDeps() {
     },
     claudeHandler: {
       getSession: vi.fn(),
-      findSessionBySourceThread: vi.fn(),
+      findSessionsBySourceThread: vi.fn().mockReturnValue([]),
       setExpiryCallbacks: vi.fn(),
       cleanupInactiveSessions: vi.fn(),
     },
@@ -219,10 +219,7 @@ describe('EventRouter.app_mention — /z routing (FIX #1)', () => {
     eventRouter.zRouter = { dispatch };
 
     mockDeps.claudeHandler.getSession.mockReturnValue(null);
-    mockDeps.claudeHandler.findSessionBySourceThread.mockReturnValue({
-      channelId: 'C_WORK',
-      threadTs: 'wt.1',
-    });
+    mockDeps.claudeHandler.findSessionsBySourceThread.mockReturnValue([{ channelId: 'C_WORK', threadTs: 'wt.1' }]);
     const linkedStatusSpy = vi.fn();
     (eventRouter as any).respondWithLinkedSessionStatus = linkedStatusSpy;
 
@@ -417,10 +414,7 @@ describe('EventRouter.app_mention — /z routing (FIX #1)', () => {
 
     // Simulate: source thread has a linked work session.
     mockDeps.claudeHandler.getSession.mockReturnValue(null);
-    mockDeps.claudeHandler.findSessionBySourceThread.mockReturnValue({
-      channelId: 'C_WORK',
-      threadTs: 'wt.1',
-    });
+    mockDeps.claudeHandler.findSessionsBySourceThread.mockReturnValue([{ channelId: 'C_WORK', threadTs: 'wt.1' }]);
     // Spy on the "linked status" responder so we can assert it is NOT called.
     const linkedStatusSpy = vi.fn();
     (eventRouter as any).respondWithLinkedSessionStatus = linkedStatusSpy;

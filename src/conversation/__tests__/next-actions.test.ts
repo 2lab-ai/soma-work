@@ -241,3 +241,116 @@ describe('trinity R2 — non-blocking hardening (fable P2 · P3)', () => {
     expect(extractNextActions(md)).toEqual([{ label: 'do a', command: 'a' }]);
   });
 });
+
+describe('a bare 다음 / Next title (SSOT 2026-11-12 screenshot: "## 다음" showed no buttons)', () => {
+  // The answer in the screenshot: the title is one word, each block carries its command and what it does.
+  const SCREENSHOT = [
+    '## 산출물',
+    '- skill-migration-plan.md',
+    '',
+    '## 다음',
+    FENCE,
+    'A1·A2 진행 — research-skill·import-skills를 zworkflow로 옮기는 PR',
+    FENCE,
+    FENCE,
+    'prod 복구부터 — sudoers 설정 후 $user:prod로 재배포 (prod 호스트 관리자 작업 필요)',
+    FENCE,
+  ].join('\n');
+
+  it('reads the screenshot answer: two steps, the block whole', () => {
+    expect(extractNextActions(SCREENSHOT)).toEqual([
+      { label: '', command: 'A1·A2 진행 — research-skill·import-skills를 zworkflow로 옮기는 PR' },
+      { label: '', command: 'prod 복구부터 — sudoers 설정 후 $user:prod로 재배포 (prod 호스트 관리자 작업 필요)' },
+    ]);
+  });
+
+  it.each([
+    '## 다음',
+    '### 다음:',
+    '## 5. 다음',
+    '## 🔜 다음',
+    '## 다음 할 것',
+    '## 다음 스텝',
+    '**다음 단계**',
+    '### Next up',
+    "## What's next",
+    '## What’s next?',
+    '## Recommended next steps',
+  ])('%s is a Next Actions title', (title) => {
+    expect(extractNextActions([title, FENCE, 'go', FENCE].join('\n'))).toEqual([{ label: '', command: 'go' }]);
+  });
+
+  it.each([
+    '## 다음 버전 계획',
+    '## 다음 주 일정',
+    '## Next release notes',
+    '## 다음은 위험',
+    // review (astra P2): bare English `Next` also names a framework
+    '## Next',
+    // review (fable P2): a bold or italic one-word 다음 is a transition in prose, not a section
+    '**다음**',
+    '_다음_',
+    // review (fable P3): a qualified bare word, and a ⚠️ one
+    '## Next (v2)',
+    '## 다음 (참고)',
+    '## ⚠️ 다음',
+  ])('%s is not — other words after it make it another section', (title) => {
+    expect(extractNextActions([title, FENCE, 'go', FENCE].join('\n'))).toEqual([]);
+  });
+});
+
+describe('review of the bare title (PR #1205)', () => {
+  it('a framework comparison under `## Next` sends nothing (astra P2)', () => {
+    const md = [
+      '## Vite',
+      FENCE,
+      'export default {}',
+      FENCE,
+      '## Next',
+      FENCE,
+      'module.exports = { reactStrictMode: true }',
+      FENCE,
+    ].join('\n');
+    expect(extractNextActions(md)).toEqual([]);
+  });
+
+  it('a title after the ⚠️ follow-up section never takes over (fable P2)', () => {
+    for (const sub of ['**다음 단계**', '### Next steps', '## 다음']) {
+      const md = [
+        '## Next Actions',
+        FENCE,
+        '1193 진행',
+        FENCE,
+        '## ⚠️ User follow-up required',
+        sub,
+        FENCE,
+        'gh pr view 830',
+        FENCE,
+      ].join('\n');
+      expect(extractNextActions(md)).toEqual([{ label: '', command: '1193 진행' }]);
+    }
+  });
+
+  it('a bold 다음 between how-to steps leaves the block alone (fable P2)', () => {
+    const md = ['## 설치', '**다음**', FENCE, 'npm i', FENCE, '## 결과', 'ok'].join('\n');
+    expect(extractNextActions(md)).toEqual([]);
+  });
+});
+
+describe('review of the bare title, round 2 (PR #1205)', () => {
+  it('a reworded ⚠️ title is a follow-up too: a title after it never takes over (all three P2)', () => {
+    for (const [warn, sub] of [
+      ['## ⚠️ 사용자 조치 필요', '### 다음'],
+      ['**⚠️ 사용자 조치 필요**', '## 다음'],
+      ['## ⚠️ User follow-up required (1)', '### 다음'],
+    ]) {
+      const md = ['## 다음 행동', FENCE, '1193 진행', FENCE, warn, sub, FENCE, 'gh pr merge 830', FENCE].join('\n');
+      expect(extractNextActions(md)).toEqual([{ label: '', command: '1193 진행' }]);
+    }
+  });
+
+  it('a plain "Follow-up required" line earlier in the answer does not hide the steps (fable P3)', () => {
+    const md = ['Follow-up required', '', '## Next Actions', FENCE, 'a', FENCE].join('\n');
+    expect(extractNextActions(md)).toEqual([{ label: '', command: 'a' }]);
+  });
+});

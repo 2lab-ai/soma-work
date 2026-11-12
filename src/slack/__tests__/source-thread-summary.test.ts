@@ -764,3 +764,35 @@ describe('backtick escape in meta fields', () => {
     expect(blocksJson).toContain("my'workflow'name");
   });
 });
+
+// SSOT 2026-11-12 — a result whose TL;DR flags unfinished work (a ⚠️ line) is not called 완료.
+describe('reportSourceThreadResult', () => {
+  const session = (tldr: string[]) => ({
+    title: '작업',
+    channelId: 'C_WORK',
+    threadTs: '900.000',
+    sourceThread: { channel: 'C_SRC', threadTs: '100.200' },
+    executiveSummary: { tldr },
+  });
+  const api = () => ({
+    getPermalink: vi.fn().mockResolvedValue(null),
+    postMessage: vi.fn().mockResolvedValue({ ts: 'r1' }),
+  });
+
+  it('a finished result is 완료', async () => {
+    const { reportSourceThreadResult } = await import('../source-thread-summary');
+    const slackApi = api();
+    await reportSourceThreadResult(slackApi as any, session(['PR #1 merged']) as any);
+    const blocks = JSON.stringify(slackApi.postMessage.mock.calls[0][2].blocks);
+    expect(blocks).toContain('완료');
+    expect(blocks).not.toContain('확인 필요');
+  });
+
+  it('a ⚠️ line in the TL;DR is 확인 필요, not 완료', async () => {
+    const { reportSourceThreadResult } = await import('../source-thread-summary');
+    const slackApi = api();
+    await reportSourceThreadResult(slackApi as any, session(['PR #1 opened', '⚠️ **PR #1 not merged**']) as any);
+    const blocks = JSON.stringify(slackApi.postMessage.mock.calls[0][2].blocks);
+    expect(blocks).toContain('확인 필요');
+  });
+});

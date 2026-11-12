@@ -3532,6 +3532,85 @@ describe('getThreadContextHint — array mode guidance', () => {
 
 // Issue #225 — AC③: summary timer callback calls updatePanel after displayOnThread
 describe('onSummaryTimerFire — render trigger after summary display', () => {
+  // SSOT 2026-11-12 — the host summary of a finished turn is the work's result: a session from a source thread
+  // reports it there — one card per work thread, refreshed by later results; never for a turn waiting on the user.
+  function sourceReportFixture() {
+    const mockSummaryService = {
+      execute: vi.fn().mockResolvedValue('<tldr>\n결론 한 줄\n</tldr>\nbody'),
+      displayOnThread: vi.fn((s: any) => {
+        s.executiveSummary = { tldr: ['결론 한 줄'], at: 1 };
+      }),
+      postInThread: vi.fn().mockResolvedValue(undefined),
+      clearDisplay: vi.fn(),
+    };
+    const slackApi = {
+      getPermalink: vi.fn().mockResolvedValue('https://slack.test/work'),
+      postMessage: vi.fn().mockResolvedValue({ ts: 'src_report' }),
+      updateMessage: vi.fn().mockResolvedValue(undefined),
+    };
+    const executor = new StreamExecutor({
+      summaryService: mockSummaryService,
+      threadPanel: { updatePanel: vi.fn().mockResolvedValue(undefined) },
+      slackApi,
+    } as any);
+    const session = {
+      isActive: true,
+      actionPanel: {},
+      channelId: 'C_WORK',
+      threadTs: '900.000',
+      threadRootTs: '900.000',
+      title: '새 작업',
+      sourceThread: { channel: 'C_SRC', threadTs: '100.200' },
+    } as any;
+    return { mockSummaryService, slackApi, executor, session };
+  }
+
+  it('reports a finished turn’s summary TL;DR to the source thread of a session that came from one', async () => {
+    const { slackApi, executor, session } = sourceReportFixture();
+
+    await (executor as any).onSummaryTimerFire(session, 'C_WORK:900.000', 'WorkflowComplete');
+
+    await vi.waitFor(() =>
+      expect(slackApi.postMessage).toHaveBeenCalledWith(
+        'C_SRC',
+        expect.any(String),
+        expect.objectContaining({ threadTs: '100.200' }),
+      ),
+    );
+    const blocks = JSON.stringify(slackApi.postMessage.mock.calls[0][2].blocks);
+    expect(blocks).toContain('결론 한 줄');
+    expect(blocks).toContain('https://slack.test/work');
+    await vi.waitFor(() => expect(session.sourceThreadReportTs).toBe('src_report'));
+  });
+
+  it('one card per work thread: the same result is not re-sent, a new one refreshes the card in place', async () => {
+    const { mockSummaryService, slackApi, executor, session } = sourceReportFixture();
+    await (executor as any).onSummaryTimerFire(session, 'C_WORK:900.000', 'WorkflowComplete');
+    await vi.waitFor(() => expect(session.sourceThreadReportTs).toBe('src_report'));
+
+    await (executor as any).onSummaryTimerFire(session, 'C_WORK:900.000', 'WorkflowComplete');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(slackApi.postMessage).toHaveBeenCalledTimes(1);
+    expect(slackApi.updateMessage).not.toHaveBeenCalled();
+
+    mockSummaryService.displayOnThread.mockImplementation((s: any) => {
+      s.executiveSummary = { tldr: ['다음 결론'], at: 2 };
+    });
+    await (executor as any).onSummaryTimerFire(session, 'C_WORK:900.000', 'WorkflowComplete');
+    await vi.waitFor(() =>
+      expect(slackApi.updateMessage).toHaveBeenCalledWith('C_SRC', 'src_report', expect.any(String), expect.any(Array)),
+    );
+    expect(slackApi.postMessage).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(slackApi.updateMessage.mock.calls[0][3])).toContain('다음 결론');
+  });
+
+  it('a turn that ended waiting on the user is not reported as a result', async () => {
+    const { slackApi, executor, session } = sourceReportFixture();
+    await (executor as any).onSummaryTimerFire(session, 'C_WORK:900.000', 'UIUserAskQuestion');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(slackApi.postMessage).not.toHaveBeenCalled();
+  });
+
   it('calls displayOnThread then updatePanel when summary text is returned', async () => {
     const mockSummaryService = {
       execute: vi.fn().mockResolvedValue('Executive summary text'),
@@ -7744,6 +7823,8 @@ describe('#846 — the turn-end summary in an es turn (execute e2e)', () => {
     /** #881 B1 — the es write's receiptId (its issue time) and when each steered send was pushed. */
     receiptId?: string;
     steerPushedAt?: Record<string, number>;
+    /** SSOT 2026-11-12 — the session came from a mention in another thread (its source thread). */
+    sourceThread?: { channel: string; threadTs: string };
   }) {
     // The module mock above predates the threshold auto-compact getter; this turn reads it.
     (userSettingsStore as any).getUserCompactThreshold ??= vi.fn().mockReturnValue(undefined);
@@ -7757,6 +7838,9 @@ describe('#846 — the turn-end summary in an es turn (execute e2e)', () => {
       model: 'claude-opus-4-8',
       actionPanel: {},
       ...(opts.markerBefore ? { executiveSummary: { ...ES } } : {}),
+      ...(opts.sourceThread
+        ? { sourceThread: opts.sourceThread, channelId: 'C7', threadTs: 't7', threadRootTs: 't7', title: '작업' }
+        : {}),
     };
     const reply = (uuid: string, text: string) => ({
       type: 'assistant',
@@ -7870,6 +7954,7 @@ describe('#846 — the turn-end summary in an es turn (execute e2e)', () => {
         deleteMessage: vi.fn().mockResolvedValue(undefined),
         postSystemMessage: vi.fn().mockResolvedValue(undefined),
         getPermalink: vi.fn().mockResolvedValue(undefined),
+        postMessage: vi.fn().mockResolvedValue({ ts: 'src_report' }),
       },
       assistantStatusManager: {
         setStatus: vi.fn().mockResolvedValue(undefined),
@@ -7928,6 +8013,28 @@ describe('#846 — the turn-end summary in an es turn (execute e2e)', () => {
     expect(deps.summaryTimer.start).not.toHaveBeenCalled();
     expect(deps.summaryService.displayEsTldrOnThread).toHaveBeenCalledWith(session);
     expect(deps.threadPanel.updatePanel).toHaveBeenCalledWith(session, 'C7:t7');
+  });
+
+  // SSOT 2026-11-12 — a work thread started from a mention in another thread reports its result back there.
+  it('an es turn of a session from a source thread reports the TL;DR to that thread', async () => {
+    const { deps, done } = run({ esThisTurn: true, sourceThread: { channel: 'C_SRC', threadTs: '100.200' } });
+    expect((await done).success).toBe(true);
+    await vi.waitFor(() =>
+      expect(deps.slackApi.postMessage).toHaveBeenCalledWith(
+        'C_SRC',
+        expect.any(String),
+        expect.objectContaining({ threadTs: '100.200' }),
+      ),
+    );
+    const [, , options] = deps.slackApi.postMessage.mock.calls.find((c: any[]) => c[0] === 'C_SRC');
+    expect(JSON.stringify(options.blocks)).toContain(ES.tldr[0]);
+  });
+
+  it('an es turn of a session with no source thread posts nothing outside its own thread', async () => {
+    const { deps, done } = run({ esThisTurn: true });
+    expect((await done).success).toBe(true);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(deps.slackApi.postMessage).not.toHaveBeenCalled();
   });
 
   it('a steered message this turn consumed: the turn-end summary judges the whole turn again (the TL;DR stays until then)', async () => {
