@@ -51,6 +51,17 @@ while [ ! -e "$OUT/swapped" ]; do
   echo "==> 1. remote unchanged since the rewrite snapshot? (check $attempt)"
   remote_refs > "$OUT/remote-now.refs"
   diff -q "$OUT/snapshot.refs" "$OUT/remote-now.refs" >/dev/null && break
+  # An earlier run whose atomic push landed but which stopped before writing the marker: the remote
+  # already holds this rewrite (main at the list or the top commit). Resume; rewriting the
+  # rewritten remote would replace the commit map clone migration needs.
+  mine=$(git -C "$NEW" for-each-ref --format='%(objectname) %(refname)' refs/heads refs/tags | sort)
+  top=$(git -C "$NEW" rev-parse "refs/post/$MAIN")
+  if [ "$mine" = "$(cat "$OUT/remote-now.refs")" ] \
+     || [ "$(printf '%s\n' "$mine" | sed "s|^[0-9a-f]* refs/heads/$MAIN\$|$top refs/heads/$MAIN|" | sort)" = "$(cat "$OUT/remote-now.refs")" ]; then
+    echo "    the remote already holds this rewrite (an earlier push completed): resuming"
+    date > "$OUT/swapped"
+    break
+  fi
   { diff "$OUT/snapshot.refs" "$OUT/remote-now.refs" || true; } | head -10
   if [ "$attempt" -ge 5 ]; then
     echo "The remote keeps changing (someone is pushing). Ask them to pause, then run this again." >&2

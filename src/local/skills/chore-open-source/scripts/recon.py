@@ -71,6 +71,7 @@ CLASSES = {k: v for k, v in CLASSES.items() if v is not None}
 ALLOW = [re.compile(l) for l in patterns('allow.txt')]
 hits = defaultdict(Counter)       # class -> Counter(matched text)
 where = defaultdict(set)          # class -> {location}
+incomplete = []                   # reads that failed: the report then proves nothing clean
 
 
 def scan(text, loc):
@@ -123,7 +124,15 @@ for t in git('for-each-ref', '--format=%(refname) %(taggername) %(taggeremail) %
     scan(t, 'tags')
 for r in git('for-each-ref', '--format=%(refname)').split():
     scan(r, 'ref names')
-paths = set(l.split(' ', 1)[1] for l in git('rev-list', '--objects', '--all').splitlines() if ' ' in l)
+blob_paths = defaultdict(set)
+raw = git('log', '--all', '--format=', '--raw', '-m', '--no-renames', '--no-abbrev', '-z').split('\0')
+for i in range(0, len(raw) - 1):
+    if raw[i].startswith(':'):
+        f = raw[i].split()
+        if len(f) >= 5:
+            blob_paths[f[3]].add(raw[i + 1])
+paths = set(p for ps in blob_paths.values() for p in ps)
+paths |= set(l.split(' ', 1)[1] for l in git('rev-list', '--objects', '--all').splitlines() if ' ' in l)
 for p in paths:
     scan(p, 'path names')
 
@@ -133,6 +142,10 @@ media = {}
 for l in git('rev-list', '--objects', '--all').splitlines():
     if ' ' in l and MEDIA.search(l.split(' ', 1)[1]):
         media.setdefault(l.split(' ', 1)[0], l.split(' ', 1)[1])
+for blob, ps in blob_paths.items():
+    for p in sorted(ps):
+        if MEDIA.search(p) and blob != '0' * 40:
+            media.setdefault(blob, p)
 ocr_hits = {}
 if ocr and media:
     tmp = pathlib.Path(tempfile.mkdtemp(prefix='chos-ocr-'))
@@ -143,14 +156,31 @@ if ocr and media:
         if f.suffix in ('.gif', '.mp4', '.mov', '.webm', '.mkv'):
             fd = tmp / blob
             fd.mkdir()
-            run('ffmpeg', '-loglevel', 'error', '-i', str(f), '-vf', 'fps=1', str(fd / '%04d.png'), check=False)
+            r = subprocess.run(['ffmpeg', '-loglevel', 'error', '-i', str(f), '-vf', 'fps=1', str(fd / '%04d.png')],
+                               capture_output=True) if shutil.which('ffmpeg') else None
             frames = sorted(fd.glob('*.png'))
+            if r is None or r.returncode or not frames:
+                incomplete.append(f'media {blob[:10]} {p}: frames could not be extracted (ffmpeg)')
+                continue
         text = ''
         if f.suffix == '.pdf':
-            text = run('pdftotext', str(f), '-', check=False) if shutil.which('pdftotext') else ''
+            r = subprocess.run(['pdftotext', str(f), '-'], capture_output=True, text=True, errors='replace') \
+                if shutil.which('pdftotext') else None
+            if r is None or r.returncode:
+                incomplete.append(f'media {blob[:10]} {p}: text could not be extracted (pdftotext)')
+                continue
+            text = r.stdout
         else:
+            bad = 0
             for fr in frames:
-                text += run('tesseract', str(fr), '-', check=False) + '\n'
+                r = subprocess.run(['tesseract', str(fr), '-'], capture_output=True, text=True, errors='replace') \
+                    if shutil.which('tesseract') else None
+                if r is None or r.returncode:
+                    bad += 1
+                    continue
+                text += r.stdout + '\n'
+            if bad:
+                incomplete.append(f'media {blob[:10]} {p}: {bad} of {len(frames)} frame(s) could not be read (tesseract)')
         before = sum(sum(c.values()) for c in hits.values())
         scan(text, f'media {blob[:10]} {p}')
         n = sum(sum(c.values()) for c in hits.values()) - before
@@ -174,10 +204,15 @@ for p in git('ls-tree', '--name-only', f'{default}:.github/workflows', check=Fal
 
 # ---- GitHub side ---------------------------------------------------------------------------
 gh = {}
+if github and not shutil.which('gh'):
+    incomplete.append('github: gh is not installed (run with --no-github to skip the GitHub side on purpose)')
 if github and shutil.which('gh'):
     def ghj(*a):
         r = subprocess.run(['gh', *a], capture_output=True, text=True)
-        return json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else None
+        if r.returncode:
+            incomplete.append(f"github: gh {' '.join(a[:2])} failed: {r.stderr.strip()[:200]}")
+            return None
+        return json.loads(r.stdout) if r.stdout.strip() else None
 
     def ghpages(path):
         # --paginate prints one JSON document per page; --slurp wraps them in one array.
@@ -196,7 +231,11 @@ if github and shutil.which('gh'):
     for rel in ghpages(f'repos/{slug}/releases'):
         for a in rel.get('assets') or []:
             gh['assets'] += 1
-            data = subprocess.run(['gh', 'api', '-H', 'Accept: application/octet-stream', f'repos/{slug}/releases/assets/{a["id"]}'], capture_output=True).stdout
+            r = subprocess.run(['gh', 'api', '-H', 'Accept: application/octet-stream', f'repos/{slug}/releases/assets/{a["id"]}'], capture_output=True)
+            if r.returncode:
+                incomplete.append(f'github: release asset {rel["tag_name"]}/{a["name"]} could not be downloaded')
+                continue
+            data = r.stdout
             texts = [data]
             try:
                 if a['name'].endswith(('.tar.gz', '.tgz')):
@@ -205,8 +244,8 @@ if github and shutil.which('gh'):
                 elif a['name'].endswith('.zip'):
                     with zipfile.ZipFile(io.BytesIO(data)) as zf:
                         texts = [zf.read(n) for n in zf.namelist()]
-            except Exception:
-                pass
+            except Exception as e:
+                incomplete.append(f'github: release asset {rel["tag_name"]}/{a["name"]} could not be unpacked ({e})')
             for t in texts:
                 scan(t.decode('utf-8', 'replace'), f'release asset {rel["tag_name"]}/{a["name"]}')
 
@@ -230,6 +269,10 @@ if gh:
     L += ['', '## GitHub', f'- repo: {json.dumps(gh.get("repo"))}', f'- forks: {gh.get("forks")}',
           f'- Actions secrets: {gh.get("secrets")}', f'- Actions variables: {gh.get("variables")}',
           f'- release assets scanned: {gh.get("assets")}']
+if incomplete:
+    L += ['', f'## INCOMPLETE — {len(incomplete)} read(s) failed; this report does not prove anything clean'] + \
+         [f'- {x}' for x in incomplete]
 (rdir / f'{repo}.md').write_text('\n'.join(L) + '\n')
 print('\n'.join(l for l in L if not l.startswith('    - ')))
 print(f'\nfull report (local only): {rdir / (repo + ".md")}')
+sys.exit(3 if incomplete else 0)

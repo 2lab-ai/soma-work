@@ -95,6 +95,103 @@ describe('local:chore-open-source — SKILL.md and its engine', () => {
     }
   });
 
+  // A stub gh: every command finalize.sh issues, with the rerun refused, accepted without a new attempt,
+  // or accepted with one. The previous attempt's conclusion is always "success" — the stale result
+  // finalize must not accept.
+  const stubGh = (dir: string) => {
+    mkdirSync(join(dir, 'bin'), { recursive: true });
+    writeFileSync(
+      join(dir, 'bin', 'gh'),
+      `#!/usr/bin/env bash
+case "$1 $2" in
+  "secret set") cat >/dev/null ;;
+  "workflow list") echo .github/workflows/sanitize-gate.yml ;;
+  "api repos/o/r/commits/main") echo 0123456789abcdef0123456789abcdef01234567 ;;
+  "run list") echo 42 ;;
+  "run watch") ;;
+  "run rerun") [ "$STUB_RERUN" = refuse ] && { echo "HTTP 403" >&2; exit 1; }
+               [ "$STUB_RERUN" = attempt ] && echo 2 > "$STUB_STATE"; exit 0 ;;
+  "run view") case "$*" in *conclusion*) echo success ;; *) cat "$STUB_STATE" 2>/dev/null || echo 1 ;; esac ;;
+  *) echo "stub gh: $*" >&2; exit 1 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    mkdirSync(join(dir, 'config'), { recursive: true });
+    writeFileSync(join(dir, 'config', 'patterns.txt'), 'secret-host-a\n');
+    return {
+      ...process.env,
+      PATH: `${join(dir, 'bin')}:${process.env.PATH}`,
+      CHOS_WORK: dir,
+      CHOS_POLL_TRIES: '2',
+      CHOS_POLL_SECS: '0',
+    };
+  };
+
+  it('finalize: a refused rerun, or one with no new attempt, fails instead of reusing the old success', () => {
+    const refused = mkdtempSync(join(scratch, 'fin-refused-'));
+    const r1 = run('bash', [resolve(SCRIPTS, 'finalize.sh'), 'o/r'], {
+      env: { ...stubGh(refused), STUB_RERUN: 'refuse', STUB_STATE: join(refused, 'attempt') },
+    });
+    expect(r1.status, r1.stdout + r1.stderr).toBe(1);
+    expect(r1.stderr).toMatch(/refused — the new list is untested/);
+
+    const stale = mkdtempSync(join(scratch, 'fin-stale-'));
+    const r2 = run('bash', [resolve(SCRIPTS, 'finalize.sh'), 'o/r'], {
+      env: { ...stubGh(stale), STUB_RERUN: 'accept', STUB_STATE: join(stale, 'attempt') },
+    });
+    expect(r2.status, r2.stdout + r2.stderr).toBe(1);
+    expect(r2.stderr).toMatch(/no new attempt — the new list is untested/);
+
+    const fresh = mkdtempSync(join(scratch, 'fin-fresh-'));
+    const r3 = run('bash', [resolve(SCRIPTS, 'finalize.sh'), 'o/r'], {
+      env: { ...stubGh(fresh), STUB_RERUN: 'attempt', STUB_STATE: join(fresh, 'attempt') },
+    });
+    expect(r3.status, r3.stdout + r3.stderr).toBe(0);
+    expect(r3.stdout).toMatch(/\(attempt 2\) -> success/);
+  });
+
+  it('recon: a path name hidden behind a shared blob is found, and failed GitHub reads make it incomplete', () => {
+    const d = mkdtempSync(join(scratch, 'recon-'));
+    const git = (...a: string[]) =>
+      run('git', a, {
+        cwd: d,
+        env: {
+          ...process.env,
+          GIT_CONFIG_GLOBAL: '/dev/null',
+          GIT_AUTHOR_NAME: 'a',
+          GIT_AUTHOR_EMAIL: 'a@example.com',
+          GIT_COMMITTER_NAME: 'a',
+          GIT_COMMITTER_EMAIL: 'a@example.com',
+        },
+      });
+    git('init', '-q', '--bare', '-b', 'main', 'remote.git');
+    git('init', '-q', '-b', 'main', 'seed');
+    // The same content at two paths: `rev-list --objects` names the blob once, by the first path.
+    writeFileSync(join(d, 'seed', 'a.txt'), 'same\n');
+    writeFileSync(join(d, 'seed', 'secret-host-a-copy.txt'), 'same\n');
+    run('bash', ['-c', 'git add -A && git commit -q -m init && git push -q ../remote.git main'], {
+      cwd: join(d, 'seed'),
+      env: {
+        ...process.env,
+        GIT_CONFIG_GLOBAL: '/dev/null',
+        GIT_AUTHOR_NAME: 'a',
+        GIT_AUTHOR_EMAIL: 'a@example.com',
+        GIT_COMMITTER_NAME: 'a',
+        GIT_COMMITTER_EMAIL: 'a@example.com',
+      },
+    });
+    const env = { ...stubGh(d), CHOS_URL: join(d, 'remote.git') };
+    const local = run('python3', ['-I', '-B', resolve(SCRIPTS, 'recon.py'), 'o/r', '--no-github'], { env });
+    expect(local.status, local.stdout + local.stderr).toBe(0);
+    expect(local.stdout).toMatch(/forbidden list\*\*: [1-9]/);
+    expect(readFileSync(join(d, 'recon', 'r.md'), 'utf8')).toMatch(/at path names/);
+    // The stub answers none of recon's GitHub reads: an incomplete inventory, not an empty one.
+    const remote = run('python3', ['-I', '-B', resolve(SCRIPTS, 'recon.py'), 'o/r'], { env });
+    expect(remote.status, remote.stdout + remote.stderr).toBe(3);
+    expect(remote.stdout).toMatch(/INCOMPLETE — \d+ read\(s\) failed/);
+  });
+
   it('the engine carries no organisation of its own', () => {
     for (const f of readdirSync(SCRIPTS).filter((n) => /\.(sh|py)$/.test(n))) {
       expect(readFileSync(resolve(SCRIPTS, f), 'utf8'), f).not.toMatch(/2lab-ai/);
@@ -123,14 +220,14 @@ describe.skipIf(!hasFilterRepo)('local:chore-open-source — offline run of the 
     expect(r.status, `${script}\n${r.stdout}\n${r.stderr}`).toBe(0);
     return r.stdout;
   };
-  const workDir = (name: string, patterns: string) => {
+  const workDir = (name: string, patterns: string, remote = 'remote.git') => {
     const work = join(T, name);
     mkdirSync(join(work, 'config'), { recursive: true });
     writeFileSync(join(work, 'config', 'replace.txt'), `regex:${W}==>shared-host\n`);
     writeFileSync(join(work, 'config', 'patterns.txt'), patterns);
     writeFileSync(join(work, 'config', 'mailmap'), `Dev <dev@example.com> <dev@${W}.lan>\n`);
     writeFileSync(join(work, 'config', 'sanitize-scan.sh'), readFileSync(TRUSTED_SCAN));
-    return { CHOS_WORK: work, CHOS_URL: join(T, 'remote.git'), SWAP_URL: join(T, 'remote.git') };
+    return { CHOS_WORK: work, CHOS_URL: join(T, remote), SWAP_URL: join(T, remote) };
   };
 
   it('setup: a remote with the word in a file, a path, messages, an author line and a tag; two clones', () => {
@@ -153,7 +250,14 @@ describe.skipIf(!hasFilterRepo)('local:chore-open-source — offline run of the 
       git worktree add -q --detach ../wt-detached main~1
       cd .. && git clone -q remote.git clone2 && git -C clone2 branch -q edit-host origin/main
       git -C clone2 worktree add -q ../wt-conflict edit-host
-      sed -i.bak "s/:22/:2222/" wt-conflict/app.conf && rm wt-conflict/app.conf.bak`);
+      sed -i.bak "s/:22/:2222/" wt-conflict/app.conf && rm wt-conflict/app.conf.bak
+      git clone -q remote.git clone3 && cd clone3 && git checkout -q -b merged origin/feature
+      git merge -q --no-ff --no-commit origin/main && echo "leakword" > resolved.txt && git add -A
+      git commit -q -m "merge main" && cd ..
+      git init -q --bare -b main remote-sym.git && git init -q -b main sym && cd sym
+      mkdir scripts && printf '# list\\n%s  #1\\n' 0123456789012345678901234567890123456789 > scripts/sanitize-known-leaks.txt
+      echo "victim" > "${T}/victim.txt" && ln -s "${T}/victim.txt" scripts/sanitize-known-leaks.txt.new
+      echo "on ${W}" > app.conf && git add -A && git commit -q -m init && git push -q ../remote-sym.git main`);
   });
 
   it('a rewrite that leaves a pattern exits 1 and the swap refuses it', () => {
@@ -200,6 +304,24 @@ describe.skipIf(!hasFilterRepo)('local:chore-open-source — offline run of the 
     expect(sh("git -C clone for-each-ref refs/pre-rewrite/heads --format='%(refname)'")).toContain(
       'refs/pre-rewrite/heads/local-only',
     );
+  });
+
+  it('rewrite never writes through a symlink planted beside the leak list', () => {
+    const chos = workDir('work-sym', `${W}\n`, 'remote-sym.git');
+    const out = sh(`"${SCRIPTS}/rewrite.sh" o/sym`, chos);
+    expect(out).toMatch(/^scan: clean$/m);
+    expect(readFileSync(join(T, 'victim.txt'), 'utf8')).toBe('victim\n');
+    const list = sh(
+      `git -C "${join(T, 'work-sym', 'out', 'sym', 'new.git')}" show main:scripts/sanitize-known-leaks.txt`,
+    );
+    expect(list).not.toMatch(/^[0-9a-f]{40}/m);
+  });
+
+  it('a local-only merge whose resolution adds a forbidden word is refused, not rebuilt', () => {
+    const chos = workDir('work', `${W}\nleakword\n`);
+    const r = shAt(`python3 -I -B "${SCRIPTS}/migrate-clone.py" o/r "${join(T, 'clone3')}" --apply`, chos);
+    expect(r.status, r.stdout + r.stderr).toBe(1);
+    expect(r.stdout).toMatch(/merged: rebuild REFUSED/);
   });
 
   it('a worktree whose edits conflict with the rewrite is left exactly as it was', () => {

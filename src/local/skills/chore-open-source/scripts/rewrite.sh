@@ -77,12 +77,23 @@ export GIT_COMMITTER_NAME=$GIT_AUTHOR_NAME GIT_COMMITTER_EMAIL=$GIT_AUTHOR_EMAIL
 WT=$OUT/wt
 git worktree add -q "$WT" "$MAIN"
 LIST=$WT/scripts/sanitize-known-leaks.txt
-if [ -f "$LIST" ] && grep -qE '^[0-9a-f]{40}' "$LIST"; then
+# The checkout is repository content: read the list from the object store and write it only when
+# it is a regular tracked file reached through no symlink, so a tracked link cannot redirect the write.
+mode=$(git -C "$WT" ls-files -s -- scripts/sanitize-known-leaks.txt | awk '{print $1}')
+if [ -n "$mode" ] && git -C "$WT" show HEAD:scripts/sanitize-known-leaks.txt | grep -qE '^[0-9a-f]{40}'; then
+  if [ "$mode" != 100644 ] && [ "$mode" != 100755 ] || [ -L "$WT/scripts" ] || [ -L "$LIST" ]; then
+    echo "rewrite.sh: scripts/sanitize-known-leaks.txt is not a regular file in the checkout; refusing to write it" >&2
+    exit 1
+  fi
+  tmp=$(mktemp)
   # Commits listed as published leaks no longer carry the text: the list goes empty.
-  { grep '^#' "$LIST"; echo "# $(date +%Y-%m-%d): the history was rewritten and no commit carries the text any more; the list is"
-    echo '# empty. A new hit is fixed by rewriting the commit, not by listing it.'; } > "$LIST.new"
-  mv "$LIST.new" "$LIST"
-  git -C "$WT" commit -q -am "ci(sanitize): empty the known-leaks list after the history rewrite"
+  { git -C "$WT" show HEAD:scripts/sanitize-known-leaks.txt | grep '^#' || true
+    echo "# $(date +%Y-%m-%d): the history was rewritten and no commit carries the text any more; the list is"
+    echo '# empty. A new hit is fixed by rewriting the commit, not by listing it.'; } > "$tmp"
+  git -C "$WT" update-index --add --cacheinfo "$mode,$(git -C "$WT" hash-object -w "$tmp"),scripts/sanitize-known-leaks.txt"
+  rm -f "$tmp"
+  git -C "$WT" checkout -q -- scripts/sanitize-known-leaks.txt
+  git -C "$WT" commit -q -m "ci(sanitize): empty the known-leaks list after the history rewrite"
 fi
 LIST_COMMIT=$(git -C "$WT" rev-parse HEAD)
 if [ -x "$CFG/post-rewrite.sh" ]; then

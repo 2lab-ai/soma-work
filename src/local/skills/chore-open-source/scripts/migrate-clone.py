@@ -131,7 +131,7 @@ def report():
     heads = [r for _, _, r in rows('refs/heads') if r not in old]
     hits = 0
     if PAT and heads and git('rev-list', *heads, '--not', '--remotes', check=False).strip():
-        log = git('log', '-p', '--format=%B%an %ae%n%cn %ce', *heads, '--not', '--remotes', check=False)
+        log = git('log', '-p', '-m', '--format=%B%an %ae%n%cn %ce', *heads, '--not', '--remotes', check=False)
         hits = sum(1 for l in log.splitlines() if PAT.search(l))
     old += [f'HEAD of {w} (detached)' for w, _ in old_heads()]
     print(f'{slug} @ {clone}: refs on the old history {len(old)}; pattern lines in local-only commits {hits}')
@@ -211,7 +211,7 @@ for b in local_only:
     target = made[c]
     src = git('rev-parse', f'refs/partial-src/{b}').strip()
     ok_tree = git('rev-parse', target + '^{tree}').strip() == git('rev-parse', src + '^{tree}').strip()
-    text = git('log', '-p', '--format=%B%an %ae%n%cn %ce', target, '--not', *[A[p] for l in local for p in l[1:] if p in A])
+    text = git('log', '-p', '-m', '--format=%B%an %ae%n%cn %ce', target, '--not', *[A[p] for l in local for p in l[1:] if p in A])
     if not ok_tree or (PAT and PAT.search(text)):
         plan.append((b, c, None, 'rebuild REFUSED (tree differs or a pattern is left)'))
         continue

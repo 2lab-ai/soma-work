@@ -6,11 +6,14 @@
 # A pattern added to the shared list before the swap would have turned every gate red on the old
 # history, so the list grows only here. The value is never printed.
 # Env: CHOS_WORK, CHOS_MAIN (default main), SANITIZE_WORKFLOW (workflow file; default: the first
-# workflow whose path contains "sanitize").
+# workflow whose path contains "sanitize"), CHOS_POLL_TRIES / CHOS_POLL_SECS (waiting for a run or a
+# new attempt to appear; default 40 tries, 10 s apart).
 set -euo pipefail
 [ $# -ge 1 ] || { echo "usage: finalize.sh OWNER/REPO..." >&2; exit 2; }
 WORK=${CHOS_WORK:?set CHOS_WORK to this run folder}
 MAIN=${CHOS_MAIN:-main}
+TRIES=${CHOS_POLL_TRIES:-40}
+SECS=${CHOS_POLL_SECS:-10}
 VALUE=$(grep -v '^[[:space:]]*$' "$WORK/config/patterns.txt" | paste -sd'|' - | tr -d '\n')
 [ -n "$VALUE" ] || { echo "finalize.sh: $WORK/config/patterns.txt is empty" >&2; exit 2; }
 for slug in "$@"; do
@@ -24,19 +27,33 @@ for slug in "$@"; do
   # The run of the rewritten tip — not merely the latest one, which may predate the swap.
   tip=$(gh api "repos/$slug/commits/$MAIN" --jq .sha)
   id=""
-  for _ in $(seq 1 40); do
+  for _ in $(seq 1 "$TRIES"); do
     id=$(gh run list -R "$slug" --workflow "$wf" --branch "$MAIN" -L 20 --json databaseId,headSha \
            -q "map(select(.headSha == \"$tip\")) | .[0].databaseId // empty")
     [ -n "$id" ] && break
-    sleep 15
+    sleep "$SECS"
   done
   if [ -z "$id" ]; then echo "no $wf run for the $MAIN tip ${tip:0:12} in $slug" >&2; status=1; continue; fi
   gh run watch "$id" -R "$slug" >/dev/null 2>&1 || true
-  gh run rerun "$id" -R "$slug" >/dev/null && echo "re-running $wf run $id (tip ${tip:0:12}) in $slug with the new list"
-  sleep 10
+  # Only a new attempt has read the new secret: a refused rerun, or one that never starts, leaves
+  # the previous attempt's conclusion, which says nothing about the new list.
+  a0=$(gh run view "$id" -R "$slug" --json attempt -q .attempt)
+  if ! gh run rerun "$id" -R "$slug" >/dev/null; then
+    echo "  $slug: rerun of $wf run $id was refused — the new list is untested" >&2; status=1; continue
+  fi
+  echo "re-running $wf run $id (tip ${tip:0:12}) in $slug with the new list"
+  a=$a0
+  for _ in $(seq 1 "$TRIES"); do
+    a=$(gh run view "$id" -R "$slug" --json attempt -q .attempt)
+    [ "$a" -gt "$a0" ] && break
+    sleep "$SECS"
+  done
+  if [ "$a" -le "$a0" ]; then
+    echo "  $slug: run $id shows no new attempt — the new list is untested" >&2; status=1; continue
+  fi
   gh run watch "$id" -R "$slug" >/dev/null 2>&1 || true
-  c=$(gh run view "$id" -R "$slug" --json conclusion -q .conclusion)
-  echo "  $slug: $wf on ${tip:0:12} -> $c"
+  c=$(gh run view "$id" -R "$slug" --json conclusion,attempt -q "select(.attempt == $a) | .conclusion")
+  echo "  $slug: $wf on ${tip:0:12} (attempt $a) -> ${c:-unknown}"
   [ "$c" = success ] || status=1
 done
 cat <<'EOF'
