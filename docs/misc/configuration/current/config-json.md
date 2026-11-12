@@ -351,6 +351,7 @@ it.
           },
           "backoffice": {
             "url": "https://bo.dev2.example/login",
+            "format": "form",
             "body": { "id": "qa-admin", "pw": { "$secret": "dev2-backoffice" } },
             "token": "cookie:SESSION"
           }
@@ -363,12 +364,14 @@ it.
 
 | Field | Meaning |
 |---|---|
-| `url` | where the account is posted, as JSON. `https` only — the password travels in the body |
-| `body` | the JSON object posted; any value may be a `$secret` reference |
+| `url` | where the account is posted. `https` only — the password travels in the body |
+| `format` | `json` (default) posts `body` as JSON; `form` posts it as `application/x-www-form-urlencoded` (values must be strings, numbers or booleans) |
+| `body` | the object posted; any value may be a `$secret` reference |
 | `token` | where the session comes back: `json:<dot.path>` (a non-empty string in the JSON answer, returned as `kind: "bearer"`) or `cookie:<name>` (a cookie the answer sets, returned as `kind: "cookie"`) |
 
 `login` answers `{server, account, kind, token}` (and `cookie` for a cookie session). A refused login says only the
-host and the status — never the answer's body, which may echo what was sent. No redirect is followed. Each login
+host and the status — never the answer's body, which may echo what was sent. No redirect is followed: a `cookie:`
+session is also taken from a 3xx answer (a form login redirects), a `json:` token only from a 2xx. Each login
 writes an intent line to `DATA_DIR/env-audit/env-audit.jsonl` and a `done` (with `kind`) or `failed` line after,
 without the session or the password; if the intent cannot be written nothing is posted, and if the `done` line cannot
 be written the session is not handed out. A session that names no Slack user is refused. On an environment's server a

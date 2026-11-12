@@ -87,7 +87,6 @@ function web(answer: { status?: number; json?: unknown; setCookie?: string[] } =
     calls.push({ url, method: init.method, body: init.body, contentType: init.headers['Content-Type'] });
     const status = answer.status ?? 200;
     return {
-      ok: status < 400,
       status,
       json: async () => answer.json ?? {},
       setCookies: () => answer.setCookie ?? [],
@@ -127,6 +126,41 @@ describe('login', () => {
     const { fetch } = web({ setCookie: ['OTHER=1; Path=/', 'SESSION=s3ss; Path=/; HttpOnly; Max-Age=600'] });
     const result = JSON.parse((await handleLogin({ server: 'dev2', account: 'admin' }, fetch)).content[0].text);
     expect(result).toEqual({ server: 'dev2', account: 'admin', kind: 'cookie', cookie: 'SESSION', token: 's3ss' });
+  });
+
+  it('posts a form when the account says so, and takes the cookie of a redirect that follows a form login', async () => {
+    writeConfig({
+      bo: {
+        url: 'https://bo.example.test/login',
+        format: 'form',
+        body: { id: 'qa admin', pw: { $secret: 'dev2-player' }, remember: true },
+        token: 'cookie:SESSION',
+      },
+    });
+    const calls: { body?: string; contentType?: string }[] = [];
+    const fetch: LoginFetch = async (_url, init) => {
+      calls.push({ body: init.body, contentType: init.headers['Content-Type'] });
+      return { status: 302, json: async () => ({}), setCookies: () => ['SESSION=f0rm; Path=/'] };
+    };
+    const result = JSON.parse((await handleLogin({ server: 'dev2', account: 'bo' }, fetch)).content[0].text);
+    expect(result).toMatchObject({ kind: 'cookie', cookie: 'SESSION', token: 'f0rm' });
+    expect(calls[0].contentType).toBe('application/x-www-form-urlencoded');
+    expect(Object.fromEntries(new URLSearchParams(calls[0].body ?? ''))).toEqual({
+      id: 'qa admin',
+      pw: PASSWORD,
+      remember: 'true',
+    });
+  });
+
+  it('refuses a redirect for a JSON token, a form value that is not a plain value, and an unknown format', async () => {
+    const { fetch } = web({ status: 302, json: { data: { accessToken: 'tok' } } });
+    await expect(handleLogin({ server: 'dev2', account: 'player' }, fetch)).rejects.toThrow(/answered 302/);
+    writeConfig({
+      nested: { url: 'https://bo.example.test/login', format: 'form', body: { a: { b: 1 } }, token: 'cookie:S' },
+      odd: { url: 'https://bo.example.test/login', format: 'xml', body: {}, token: 'cookie:S' },
+    });
+    await expect(handleLogin({ server: 'dev2', account: 'nested' }, fetch)).rejects.toThrow(/form value a/);
+    await expect(handleLogin({ server: 'dev2', account: 'odd' }, fetch)).rejects.toThrow(/format must be json or form/);
   });
 
   it('never shows the password: a refused login says only its status', async () => {

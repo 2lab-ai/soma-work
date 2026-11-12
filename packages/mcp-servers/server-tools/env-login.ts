@@ -8,7 +8,6 @@
 
 /** What `login` needs of an HTTP answer. */
 export interface LoginResponse {
-  ok: boolean;
   status: number;
   json(): Promise<unknown>;
   /** Every `Set-Cookie` header of the answer. */
@@ -22,6 +21,8 @@ export type LoginFetch = (
 /** One account's login: where to post, what to post (secrets already resolved), where the session comes back. */
 export interface WebLogin {
   url: string;
+  /** `json` (default) posts the body as JSON; `form` as `application/x-www-form-urlencoded`. */
+  format: 'json' | 'form';
   body: Record<string, unknown>;
   /** `json:<dot.path>` — a string in the JSON answer; `cookie:<name>` — a cookie the answer sets. */
   token: string;
@@ -50,13 +51,22 @@ export function loginSpec(raw: unknown, account: string): WebLogin {
   }
   // The password travels in the body: only over TLS.
   if (url.protocol !== 'https:') throw new LoginError(`login ${account}: url must be https`);
+  const format = spec.format ?? 'json';
+  if (format !== 'json' && format !== 'form') throw new LoginError(`login ${account}: format must be json or form`);
   if (!spec.body || typeof spec.body !== 'object' || Array.isArray(spec.body)) {
     throw new LoginError(`login ${account}: body must be an object`);
+  }
+  if (format === 'form') {
+    for (const [key, value] of Object.entries(spec.body)) {
+      if (!['string', 'number', 'boolean'].includes(typeof value)) {
+        throw new LoginError(`login ${account}: form value ${key} must be a string, number or boolean`);
+      }
+    }
   }
   if (typeof spec.token !== 'string' || !TOKEN.test(spec.token)) {
     throw new LoginError(`login ${account}: token must be json:<path> or cookie:<name>`);
   }
-  return { url: url.toString(), body: spec.body as Record<string, unknown>, token: spec.token };
+  return { url: url.toString(), format, body: spec.body as Record<string, unknown>, token: spec.token };
 }
 
 function fromJson(json: unknown, path: string): string | undefined {
@@ -80,27 +90,38 @@ function fromCookies(cookies: string[], name: string): string | undefined {
   return undefined;
 }
 
+function encode(spec: WebLogin): { contentType: string; body: string } {
+  if (spec.format === 'json') return { contentType: 'application/json', body: JSON.stringify(spec.body) };
+  const form = new URLSearchParams();
+  for (const [key, value] of Object.entries(spec.body)) form.append(key, String(value));
+  return { contentType: 'application/x-www-form-urlencoded', body: form.toString() };
+}
+
 /** Post the account and return the session. Throws `LoginError` with the host and status only. */
 export async function login(fetch: LoginFetch, spec: WebLogin): Promise<LoginSession> {
   const host = new URL(spec.url).host;
+  const { contentType, body } = encode(spec);
   let res: LoginResponse;
   try {
     res = await fetch(spec.url, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
+        'Content-Type': contentType,
         Accept: 'application/json',
         'User-Agent': 'soma-work-server-tools',
       },
-      body: JSON.stringify(spec.body),
+      body,
       signal: AbortSignal.timeout(LOGIN_TIMEOUT_MS),
     });
   } catch (err) {
     throw new LoginError(`login to ${host} got no answer (${err instanceof Error ? err.name : 'error'})`);
   }
+  // A 2xx; for a cookie session also the redirect a form login answers with (it is not followed).
+  const cookieSession = spec.token.startsWith('cookie:');
+  const accepted = (res.status >= 200 && res.status < 300) || (cookieSession && res.status >= 300 && res.status < 400);
   // Never the answer's body: a refused login may echo what was sent.
-  if (!res.ok) throw new LoginError(`login to ${host} answered ${res.status}`);
-  if (spec.token.startsWith('cookie:')) {
+  if (!accepted) throw new LoginError(`login to ${host} answered ${res.status}`);
+  if (cookieSession) {
     const cookie = spec.token.slice('cookie:'.length);
     const token = fromCookies(res.setCookies(), cookie);
     if (!token) throw new LoginError(`login to ${host} set no session token (cookie ${cookie})`);
@@ -117,11 +138,10 @@ export async function login(fetch: LoginFetch, spec: WebLogin): Promise<LoginSes
   return { kind: 'bearer', token };
 }
 
-/** The real fetch, as `login` needs it: no redirect is followed (a session cookie comes with the first answer). */
+/** The real fetch, as `login` needs it: no redirect is followed (the session comes with the first answer). */
 export const defaultLoginFetch: LoginFetch = async (url, init) => {
   const res = await fetch(url, { ...init, redirect: 'manual' });
   return {
-    ok: res.ok,
     status: res.status,
     json: () => res.json(),
     setCookies: () =>
