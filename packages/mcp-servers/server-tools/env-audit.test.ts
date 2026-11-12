@@ -50,6 +50,22 @@ describe('appendAudit', () => {
     expect(() => appendAudit(undefined, { server: 's', tool: 't', action: 'a', phase: 'intent' })).toThrow(AuditError);
   });
 
+  // trinity R1 (astra): a torn line from an earlier failed append must not swallow the next record.
+  it('starts a new line when the ledger does not end with one', () => {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(dir, 'env-audit.jsonl'), '{"torn', { mode: 0o600 });
+    appendAudit(dir, { server: 's', tool: 't', action: 'a', phase: 'intent' });
+    const lines = fs.readFileSync(path.join(dir, 'env-audit.jsonl'), 'utf8').split('\n');
+    expect(lines[0]).toBe('{"torn');
+    expect(JSON.parse(lines[1])).toMatchObject({ server: 's', phase: 'intent' });
+  });
+
+  it('says only that the ledger failed, so the caller can tell before from after', () => {
+    expect(() => appendAudit(undefined, { server: 's', tool: 't', action: 'a', phase: 'done' })).toThrow(
+      /^the audit ledger is not configured \(SOMA_AUDIT_DIR\)$/,
+    );
+  });
+
   it('refuses to follow a link in place of the ledger file', () => {
     fs.mkdirSync(dir, { recursive: true });
     fs.symlinkSync(path.join(path.dirname(dir), 'elsewhere'), path.join(dir, 'env-audit.jsonl'));

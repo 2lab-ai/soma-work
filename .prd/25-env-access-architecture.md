@@ -69,8 +69,8 @@ Slack 유저 ──▶ soma-work 봇 프로세스 (OS 유저 = 봇 유저, 샌�
     "github": {
       "repos": ["acme/app"],
       "token": { "$secret": "gh-org-admin" },
-      "approveWhen": { "authors": ["bot-app[bot]"], "bases": ["develop"], "requiredChecksGreen": true },
-      "mergeBases": ["develop", "deploy/dev2"],
+      "approveWhen": { "authors": ["bot-app[bot]"], "bases": ["develop"] },
+      "mergeWhen": { "authors": ["bot-app[bot]"], "bases": ["develop", "deploy/dev2"] },
       "mergeMethods": ["merge"]
     },
     "web": {

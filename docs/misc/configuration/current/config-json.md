@@ -284,8 +284,8 @@ the secret store (`<config dir>/secrets/<name>`); server-tools reads it outside 
       "github": {
         "token": { "$secret": "gh-org-admin" },
         "repos": ["acme/app"],
-        "approveWhen": { "authors": ["soma-bot[bot]"], "bases": ["develop"], "requiredChecksGreen": true },
-        "mergeBases": ["develop"],
+        "approveWhen": { "authors": ["soma-bot[bot]"], "bases": ["develop"] },
+        "mergeWhen": { "authors": ["soma-bot[bot]"], "bases": ["develop"] },
         "mergeMethods": ["merge", "squash"]
       }
     }
@@ -296,11 +296,17 @@ the secret store (`<config dir>/secrets/<name>`); server-tools reads it outside 
 | `gh_pr` action | Runs when |
 |---|---|
 | `view` | the repository is one of `repos`. Returns state, author, base, head SHA and checks |
-| `approve` | the PR is open and not a draft, its author is in `approveWhen.authors`, its base in `approveWhen.bases`, every check is green (unless `requiredChecksGreen` is `false`), and `sha` is still the head |
-| `merge` | the PR is open and not a draft, its base is in `mergeBases`, every check is green, the method is in `mergeMethods` (default `merge` only), and `sha` is still the head |
+| `approve` | the PR is open and not a draft, its author is in `approveWhen.authors`, its base in `approveWhen.bases`, every check has reported and is green (unless `requiredChecksGreen` is `false`), and `sha` is still the head. If the head or base changes while the review is posted, the review is dismissed |
+| `merge` | the same conditions under `mergeWhen`, and the method is in `mergeMethods` (default `merge` only). Head and base are read once more right before the merge, which is pinned to `sha` |
+
+`token` must be a `{"$secret": …}` reference; a token written into config.json is ignored and the `github` section is
+left out. Approve and merge refuse to run for a session that names no Slack user. A retarget in the last moment
+before a merge is not caught by the tool — a branch rule on the repository is what keeps the environment's token
+out of branches it must not touch.
 
 `approve` and `merge` write an intent line to `DATA_DIR/env-audit/env-audit.jsonl` before they call GitHub, and a
-`done` or `failed` line after. If the intent cannot be written, nothing is called. Each line names the server, the
+`done` or `failed` line after. If the intent cannot be written, nothing is called. If only the outcome cannot be
+written, the tool says the write was made and must not be retried. Each line names the server, the
 `envUser` and the Slack user the session runs for. `gh_pr` is for admins only until per-environment grants land (WU4, #1212).
 
 ## Where the substitution happens in code

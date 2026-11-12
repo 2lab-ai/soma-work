@@ -3,11 +3,10 @@
 import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { ConfigCache } from '@soma/process-shared/mcp/config-cache.js';
-import { resolveSecretRefs, SecretRefError } from '@soma/process-shared/secret-ref.js';
+import { isSecretRef, resolveSecretRefs, SecretRefError } from '@soma/process-shared/secret-ref.js';
 import { StderrLogger } from '@soma/process-shared/stderr-logger.js';
 import { type ChildProcess, execFileSync, type SpawnSyncReturns, spawn, spawnSync } from 'child_process';
-import { redactLogSecrets } from './redact-logs.js';
-import { AuditError, appendAudit } from './env-audit.js';
+import { appendAudit } from './env-audit.js';
 import {
   allowedRepo,
   approvalProblem,
@@ -21,6 +20,7 @@ import {
   prNumber,
   prState,
 } from './env-github.js';
+import { redactLogSecrets } from './redact-logs.js';
 
 const configLogger = new StderrLogger('server-tools:config');
 
@@ -110,7 +110,15 @@ const configCache = new ConfigCache<ServerToolsConfig>(
  */
 function resolveServerSecrets(servers: Record<string, unknown>): ServerToolsConfig {
   const out: ServerToolsConfig = {};
-  for (const [name, server] of Object.entries(servers)) {
+  for (const [name, entry] of Object.entries(servers)) {
+    let server = entry;
+    // An environment's GitHub token lives in the secret store only, never in config.json (WU3, #1211).
+    const github = (entry as { github?: { token?: unknown } } | null)?.github;
+    if (github && typeof github === 'object' && !isSecretRef(github.token)) {
+      configLogger.warn(`server "${name}": github left out — github.token must be {"$secret": "<name>"}`);
+      const { github: _dropped, ...rest } = entry as Record<string, unknown>;
+      server = rest;
+    }
     try {
       out[name] = resolveSecretRefs(server, process.env.SOMA_SECRETS_DIR) as ServerConfig;
     } catch (error) {
@@ -684,8 +692,9 @@ function envGithub(server: unknown): { name: string; config: ServerConfig; githu
 
 /**
  * view / approve / merge one PR as the environment user, with the environment's token. approve and merge run only
- * under the environment's conditions and at the head SHA the caller passes; each is written to the audit ledger
- * before it runs, and again with its outcome. `fetchImpl` is for tests.
+ * under the environment's conditions, at the head SHA the caller passes, for the person the bot names
+ * (`SOMA_REQUESTER`); each is written to the audit ledger before it runs, and again with its outcome. `fetchImpl`
+ * is for tests.
  */
 export async function handleGhPr(
   args: Record<string, unknown>,
@@ -702,47 +711,64 @@ export async function handleGhPr(
     const state = await prState(fetchImpl, env.github, repo, number);
     if (action === 'view') return { content: [{ type: 'text' as const, text: JSON.stringify(state) }] };
 
+    const done = action === 'approve' ? 'approved' : 'merged';
     const sha = headSha(args.sha);
     const method = action === 'merge' ? (typeof args.method === 'string' ? args.method : 'merge') : undefined;
     const problem =
       action === 'approve'
         ? approvalProblem(env.github, state, sha)
         : mergeProblem(env.github, state, sha, method ?? 'merge');
-    if (problem) throw new GithubError(`not ${action === 'approve' ? 'approved' : 'merged'}: ${problem}`);
+    if (problem) throw new GithubError(`not ${done}: ${problem}`);
+    const requester = process.env.SOMA_REQUESTER;
+    if (!requester) throw new GithubError(`not ${done}: the session has no requester to record`);
 
     const audit = {
       server: env.name,
       ...(env.config.envUser ? { envUser: env.config.envUser } : {}),
-      ...(process.env.SOMA_REQUESTER ? { requester: process.env.SOMA_REQUESTER } : {}),
+      requester,
       tool: 'gh_pr',
       action,
     };
-    const detail = { repo, pr: number, sha, ...(method ? { method } : {}) };
-    appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'intent', detail });
+    const detail = { repo, pr: number, sha, base: state.base, ...(method ? { method } : {}) };
+    try {
+      appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'intent', detail });
+    } catch (err) {
+      throw new GithubError(`not ${done}: ${(err as Error).message}`);
+    }
+
+    let result: string;
     try {
       if (action === 'approve') {
         const body =
           typeof args.body === 'string' && args.body.trim() !== '' ? args.body : 'Approved by environment user.';
-        await approve(fetchImpl, env.github, repo, number, sha, body);
-        appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'done', detail });
-        return { content: [{ type: 'text' as const, text: `approved ${repo}#${number} at ${sha}` }] };
+        await approve(fetchImpl, env.github, repo, number, sha, state.base, body);
+        result = `approved ${repo}#${number} at ${sha}`;
+      } else {
+        const merged = await merge(fetchImpl, env.github, repo, number, sha, state.base, method ?? 'merge');
+        result = `merged ${repo}#${number} at ${sha} as ${merged}`;
       }
-      const merged = await merge(fetchImpl, env.github, repo, number, sha, method ?? 'merge');
-      appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'done', detail: { ...detail, mergeSha: merged } });
-      return { content: [{ type: 'text' as const, text: `merged ${repo}#${number} at ${sha} as ${merged}` }] };
     } catch (err) {
-      if (!(err instanceof AuditError)) {
-        appendAudit(process.env.SOMA_AUDIT_DIR, {
-          ...audit,
-          phase: 'failed',
-          detail: { ...detail, error: (err as Error).message },
-        });
+      const message = err instanceof GithubError ? err.message : `gh_pr failed on ${env.name}`;
+      try {
+        appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'failed', detail: { ...detail, error: message } });
+      } catch (auditErr) {
+        throw new GithubError(
+          `${message}; the audit ledger could not record the failure (${(auditErr as Error).message})`,
+        );
       }
-      throw err;
+      throw new GithubError(message);
     }
+    try {
+      appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'done', detail: { ...detail, result } });
+    } catch (err) {
+      throw new GithubError(
+        `${result}, but the audit ledger could not record it (${(err as Error).message}). It was made: do not retry.`,
+      );
+    }
+    return { content: [{ type: 'text' as const, text: result }] };
   } catch (err) {
     // Only messages this module wrote: never a token, never a raw response.
-    if (err instanceof GithubError || err instanceof AuditError) throw new Error(err.message);
+    if (err instanceof GithubError) throw new Error(err.message);
     throw new Error(`gh_pr failed on ${env.name}`);
   }
 }
@@ -1174,7 +1200,8 @@ class ServerToolsMCPServer extends BaseMcpServer {
           "Act on one GitHub PR as a server's environment user, with that environment's own token (no model reads it). " +
           "view: the PR's state, author, base, head SHA and checks. approve: only when the environment's approveWhen " +
           'holds (author, base, all checks green) and `sha` is still the head. merge: only into one of the ' +
-          "environment's mergeBases, with all checks green, at `sha`. approve and merge are audited. Admins only.",
+          "environment's mergeWhen bases, by a listed author, with all checks green, at `sha`. approve and merge " +
+          'are audited. Admins only.',
         inputSchema: {
           type: 'object',
           properties: {

@@ -5,10 +5,12 @@
  * - **view**: the PR's state, head SHA, base, author and checks.
  * - **approve**: only when the environment's `approveWhen` holds — the PR is open and not a draft, its author and
  *   base are listed, the caller's SHA is still the head, and every check is green (unless the environment sets
- *   `requiredChecksGreen: false`). The review is pinned
- *   to that SHA.
- * - **merge**: only into a listed base, with an allowed method, at the caller's SHA, with every check green. The
- *   merge is pinned to that SHA, so a push after the look does not get merged.
+ *   `requiredChecksGreen: false`). The review is pinned to that SHA; if the head or the base changed while it was
+ *   posted, the review is dismissed again.
+ * - **merge**: only when `mergeWhen` holds the same way, with an allowed method. Head and base are read once more
+ *   right before the merge, and the merge is pinned to the SHA, so a push after the look does not get merged.
+ *   A retarget in the last moment before the merge is not caught here: a branch rule on the repository is what
+ *   stops a merge into a branch this environment must not touch (.prd/24 §6).
  *
  * Every approve and merge is written to the audit ledger before it runs and again with its outcome.
  */
@@ -18,18 +20,24 @@ export interface EnvGithubConfig {
   token: string;
   /** Repositories this environment acts on, `owner/name`. */
   repos: string[];
-  approveWhen?: {
-    /** PR authors whose PRs may be approved (logins; a GitHub App's PRs are by `<app>[bot]`). */
-    authors?: string[];
-    /** Base branches PRs may be approved into. */
-    bases?: string[];
-    /** Every check run and commit status on the head must be green. Default true; only `false` turns it off. */
-    requiredChecksGreen?: boolean;
-  };
-  /** Base branches PRs may be merged into. Unset: no merges. */
-  mergeBases?: string[];
+  /** When this environment approves a PR. Unset: it approves none. */
+  approveWhen?: PrConditions;
+  /** When this environment merges a PR. Unset: it merges none. */
+  mergeWhen?: PrConditions;
   /** Allowed merge methods; default `merge`. */
   mergeMethods?: ('merge' | 'squash' | 'rebase')[];
+}
+
+export interface PrConditions {
+  /** PR authors (logins; a GitHub App's PRs are by `<app>[bot]`). */
+  authors?: string[];
+  /** Base branches. */
+  bases?: string[];
+  /**
+   * Every check run and commit status on the head must have reported and be green. Default true; only `false`
+   * turns it off.
+   */
+  requiredChecksGreen?: boolean;
 }
 
 export interface HttpResponse {
@@ -135,7 +143,7 @@ export async function prState(fetch: Fetch, config: EnvGithubConfig, repo: strin
   const head = obj(pr.head);
   const sha = str(head.sha);
   const runs = obj(await call(fetch, config.token, 'GET', `/repos/${repo}/commits/${sha}/check-runs?per_page=100`));
-  const status = obj(await call(fetch, config.token, 'GET', `/repos/${repo}/commits/${sha}/status`));
+  const status = obj(await call(fetch, config.token, 'GET', `/repos/${repo}/commits/${sha}/status?per_page=100`));
   const pending: string[] = [];
   const failing: string[] = [];
   const checkRuns = Array.isArray(runs.check_runs) ? runs.check_runs.map(obj) : [];
@@ -152,6 +160,13 @@ export async function prState(fetch: Fetch, config: EnvGithubConfig, repo: strin
     if (s.state === 'pending') pending.push(name);
     else if (s.state !== 'success') failing.push(name);
   }
+  // The combined state covers every status, also those past this page. GitHub says `pending` when there are none.
+  const statusTotal = typeof status.total_count === 'number' ? status.total_count : statuses.length;
+  if (statusTotal > statuses.length) pending.push('(more statuses)');
+  if (statusTotal > 0 && status.state !== 'success') {
+    (status.state === 'pending' ? pending : failing).push('(combined status)');
+  }
+  const total = checkRuns.length + statuses.length;
   return {
     repo,
     number,
@@ -162,8 +177,9 @@ export async function prState(fetch: Fetch, config: EnvGithubConfig, repo: strin
     base: str(obj(pr.base).ref),
     headSha: sha,
     checks: {
-      total: checkRuns.length + statuses.length,
-      green: pending.length === 0 && failing.length === 0,
+      total,
+      // Right after a push nothing has reported yet: that is not green.
+      green: total > 0 && pending.length === 0 && failing.length === 0,
       pending,
       failing,
     },
@@ -172,6 +188,9 @@ export async function prState(fetch: Fetch, config: EnvGithubConfig, repo: strin
 
 function checksProblem(pr: PrState): string | undefined {
   if (pr.checks.green) return undefined;
+  if (pr.checks.total === 0 && pr.checks.pending.length === 0 && pr.checks.failing.length === 0) {
+    return 'no check has reported on the head yet';
+  }
   const parts = [
     pr.checks.pending.length > 0 ? `not finished: ${pr.checks.pending.join(', ')}` : '',
     pr.checks.failing.length > 0 ? `not green: ${pr.checks.failing.join(', ')}` : '',
@@ -186,55 +205,91 @@ function openAtHead(pr: PrState, sha: string): string | undefined {
   return undefined;
 }
 
-/** Why this environment will not approve the PR at `sha`, or undefined when it will. */
-export function approvalProblem(config: EnvGithubConfig, pr: PrState, sha: string): string | undefined {
-  const when = config.approveWhen;
-  if (!when) return 'this environment does not approve PRs (no approveWhen)';
+function conditionsProblem(when: PrConditions, pr: PrState, sha: string, verb: string): string | undefined {
   const notOpen = openAtHead(pr, sha);
   if (notOpen) return notOpen;
-  if (!when.authors || !when.authors.includes(pr.author))
-    return `author ${pr.author} is not one this environment approves`;
-  if (!when.bases || !when.bases.includes(pr.base)) return `base ${pr.base} is not one this environment approves into`;
+  if (!when.authors?.includes(pr.author)) return `author ${pr.author} is not one this environment ${verb}`;
+  if (!when.bases?.includes(pr.base)) return `base ${pr.base} is not one this environment ${verb} into`;
   // Green checks are required unless the environment explicitly says otherwise.
   if (when.requiredChecksGreen !== false) return checksProblem(pr);
   return undefined;
 }
 
-/** Why this environment will not merge the PR at `sha` with `method`, or undefined when it will. */
-export function mergeProblem(config: EnvGithubConfig, pr: PrState, sha: string, method: string): string | undefined {
-  if (!config.mergeBases || config.mergeBases.length === 0)
-    return 'this environment does not merge PRs (no mergeBases)';
-  const notOpen = openAtHead(pr, sha);
-  if (notOpen) return notOpen;
-  if (!config.mergeBases.includes(pr.base)) return `base ${pr.base} is not one this environment merges into`;
-  const methods = config.mergeMethods ?? ['merge'];
-  if (!(methods as string[]).includes(method)) return `merge method ${method} is not allowed (${methods.join(', ')})`;
-  return checksProblem(pr);
+/** Why this environment will not approve the PR at `sha`, or undefined when it will. */
+export function approvalProblem(config: EnvGithubConfig, pr: PrState, sha: string): string | undefined {
+  if (!config.approveWhen) return 'this environment does not approve PRs (no approveWhen)';
+  return conditionsProblem(config.approveWhen, pr, sha, 'approves');
 }
 
+/** Why this environment will not merge the PR at `sha` with `method`, or undefined when it will. */
+export function mergeProblem(config: EnvGithubConfig, pr: PrState, sha: string, method: string): string | undefined {
+  if (!config.mergeWhen) return 'this environment does not merge PRs (no mergeWhen)';
+  const methods = config.mergeMethods ?? ['merge'];
+  const problem = conditionsProblem(config.mergeWhen, pr, sha, 'merges');
+  if (problem) return problem;
+  if (!(methods as string[]).includes(method)) return `merge method ${method} is not allowed (${methods.join(', ')})`;
+  return undefined;
+}
+
+/** Head and base as GitHub has them now. */
+async function headAndBase(fetch: Fetch, config: EnvGithubConfig, repo: string, number: number) {
+  const pr = obj(await call(fetch, config.token, 'GET', `/repos/${repo}/pulls/${number}`));
+  return { head: str(obj(pr.head).sha), base: str(obj(pr.base).ref) };
+}
+
+/**
+ * Approve at `sha`. The review is pinned to the SHA; afterwards the PR is read again, and if its head or base is
+ * no longer what was approved, the review is dismissed and a `GithubError` says so.
+ */
 export async function approve(
   fetch: Fetch,
   config: EnvGithubConfig,
   repo: string,
   number: number,
   sha: string,
+  base: string,
   body: string,
 ): Promise<void> {
-  await call(fetch, config.token, 'POST', `/repos/${repo}/pulls/${number}/reviews`, {
-    event: 'APPROVE',
-    commit_id: sha,
-    body,
-  });
+  const review = obj(
+    await call(fetch, config.token, 'POST', `/repos/${repo}/pulls/${number}/reviews`, {
+      event: 'APPROVE',
+      commit_id: sha,
+      body,
+    }),
+  );
+  const now = await headAndBase(fetch, config, repo, number);
+  if (now.head === sha && now.base === base) return;
+  const changed = `the PR changed while it was being approved (head ${now.head}, base ${now.base})`;
+  try {
+    if (typeof review.id !== 'number') throw new GithubError('no review id');
+    await call(fetch, config.token, 'PUT', `/repos/${repo}/pulls/${number}/reviews/${review.id}/dismissals`, {
+      message: 'The PR changed while the environment was approving it.',
+      event: 'DISMISS',
+    });
+  } catch (err) {
+    const why = err instanceof GithubError ? err.message : 'error';
+    throw new GithubError(`${changed}; dismissing the approval failed (${why}): it still stands`);
+  }
+  throw new GithubError(`${changed}; the approval was dismissed`);
 }
 
+/**
+ * Merge at `sha` with `method`. Head and base are read once more first; the merge itself is pinned to the SHA.
+ * Returns the merge commit SHA.
+ */
 export async function merge(
   fetch: Fetch,
   config: EnvGithubConfig,
   repo: string,
   number: number,
   sha: string,
+  base: string,
   method: string,
 ): Promise<string> {
+  const now = await headAndBase(fetch, config, repo, number);
+  if (now.head !== sha || now.base !== base) {
+    throw new GithubError(`the PR changed since the look (head ${now.head}, base ${now.base}): look again`);
+  }
   const res = obj(
     await call(fetch, config.token, 'PUT', `/repos/${repo}/pulls/${number}/merge`, { sha, merge_method: method }),
   );

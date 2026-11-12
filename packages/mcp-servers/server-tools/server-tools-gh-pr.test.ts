@@ -3,9 +3,9 @@
  * read from the secret store, under the environment's conditions, audited.
  */
 
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@modelcontextprotocol/sdk/server/index.js', () => ({
@@ -54,10 +54,12 @@ beforeEach(() => {
             token: { $secret: 'gh-org-admin' },
             repos: ['acme/app'],
             approveWhen: { authors: ['soma-bot[bot]'], bases: ['develop'], requiredChecksGreen: true },
-            mergeBases: ['develop'],
+            mergeWhen: { authors: ['soma-bot[bot]'], bases: ['develop'] },
           },
         },
         nogh: { ssh: { host: 'x' } },
+        // trinity R1 (fable): a token written into config.json is not used.
+        plain: { ssh: { host: 'y' }, github: { token: 'tok-in-config', repos: ['acme/app'] } },
       },
     }),
   );
@@ -74,7 +76,7 @@ afterEach(() => {
   fs.rmSync(path.join(ROOT, 'data'), { recursive: true, force: true });
 });
 
-function github(prOver: Record<string, unknown> = {}, failWrite = false) {
+function github(prOver: Record<string, unknown> = {}, failWrite = false, onWrite?: () => void) {
   const calls: { method: string; url: string; auth: string; body?: string }[] = [];
   const fetch: Fetch = async (url, init) => {
     calls.push({ method: init.method, url, auth: init.headers.Authorization, body: init.body });
@@ -93,9 +95,10 @@ function github(prOver: Record<string, unknown> = {}, failWrite = false) {
     }
     if (p.includes('/check-runs'))
       return json({ total_count: 1, check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success' }] });
-    if (p.endsWith('/status')) return json({ statuses: [] });
+    if (p.includes('/status?')) return json({ state: 'pending', total_count: 0, statuses: [] });
     if (init.method === 'POST' || init.method === 'PUT') {
-      return failWrite ? json({ message: 'Review cannot be requested' }, 422) : json({ sha: 'c'.repeat(40) });
+      onWrite?.();
+      return failWrite ? json({ message: 'Review cannot be requested' }, 422) : json({ id: 11, sha: 'c'.repeat(40) });
     }
     return json({ message: 'nope' }, 404);
   };
@@ -164,12 +167,38 @@ describe('gh_pr', () => {
     expect(ledger().map((r) => r.phase)).toEqual(['intent', 'failed']);
   });
 
+  // trinity R1 (fable): every write names the person it was made for.
+  it('refuses a write when the session has no requester', async () => {
+    delete process.env.SOMA_REQUESTER;
+    const { fetch, calls } = github();
+    await expect(
+      handleGhPr({ server: 'dev2', action: 'approve', repo: 'acme/app', pr: 7, sha: SHA }, fetch),
+    ).rejects.toThrow(/no requester/);
+    expect(calls.some((c) => c.method !== 'GET')).toBe(false);
+    expect(ledger()).toEqual([]);
+  });
+
+  // trinity R1 (fable, astra): a write made on GitHub whose outcome the ledger could not take is reported as made.
+  it('says the merge was made when only the outcome could not be recorded', async () => {
+    const file = path.join(AUDIT, 'env-audit.jsonl');
+    const { fetch } = github({}, false, () => {
+      fs.rmSync(file);
+      fs.symlinkSync(path.join(ROOT, 'elsewhere'), file);
+    });
+    await expect(
+      handleGhPr({ server: 'dev2', action: 'merge', repo: 'acme/app', pr: 7, sha: SHA }, fetch),
+    ).rejects.toThrow(/merged acme\/app#7 .*but the audit ledger could not record it.*do not retry/i);
+  });
+
   it('refuses a repository the environment does not list, and a server without github', async () => {
     const { fetch } = github();
     await expect(handleGhPr({ server: 'dev2', action: 'view', repo: 'acme/other', pr: 7 }, fetch)).rejects.toThrow(
       /not one of this environment's repositories/,
     );
     await expect(handleGhPr({ server: 'nogh', action: 'view', repo: 'acme/app', pr: 7 }, fetch)).rejects.toThrow(
+      /no github section/,
+    );
+    await expect(handleGhPr({ server: 'plain', action: 'view', repo: 'acme/app', pr: 7 }, fetch)).rejects.toThrow(
       /no github section/,
     );
   });
