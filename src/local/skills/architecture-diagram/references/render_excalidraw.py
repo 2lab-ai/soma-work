@@ -231,7 +231,7 @@ def main() -> None:
         "-s",
         type=int,
         default=1,
-        help="Device scale factor (default: 1 — Excalidraw already exports at 2x; 2 made 7000-px PNGs, 2026-11-13)",
+        help="Device scale factor (default: 1; 2 doubles every side — 7000-px PNGs unreadable in a Slack preview, 2026-11-13)",
     )
     parser.add_argument("--width", "-w", type=int, default=1920, help="Max viewport width (default: 1920)")
     parser.add_argument(

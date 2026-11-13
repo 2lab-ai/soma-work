@@ -1,7 +1,8 @@
 # Color Palette — light canvas (GENERAL and COMPARISON paths)
 
 This is the palette of the `diagram` router's light-canvas paths (GENERAL concept pictures and COMPARISON
-matrices), which share this renderer. The dark architecture diagram does **not** use it: its palette is the table in
+matrices), which share this renderer. The router's GENERAL list sets the canvas (`#ffffff`), the text (`#1e293b`) and
+the four pastel fills; the pairs below add semantic roles when a light picture needs more than four. The dark architecture diagram does **not** use it: its palette is the table in
 `SKILL.md` Step 2, the single source of truth for that skill. Edit this file to brand the light pictures only.
 
 ---

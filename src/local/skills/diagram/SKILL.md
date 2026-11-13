@@ -23,8 +23,9 @@ Before scoring, write two lines and pass them to the delegate with the request:
 A request that matches no keyword below is classified by this relation, never by the tie rule — a
 comparison with no signal word once became a dark infrastructure diagram with invented arrows.
 
-**A picture inside a report.** When the same request also asks for a report or page (`리포트`, `보고서`, `페이지로`,
-`report`), the picture is part of that page: render it, then embed the PNG in the html page (`<img src="data:image/png;base64,…" alt="<conclusion>">`)
+**A picture inside a report.** When the same request also asks you to make a report or page as its output
+(`리포트해줘`, `보고서로 만들어줘`, `페이지로`, `report on`) — not when a report is only the subject ("보고서 디자인을
+바꿀지") — the picture is part of that page: render it, then embed the PNG in the html page (`<img src="data:image/png;base64,…" alt="<conclusion>">`)
 right after the page's opening, and upload the page only — one request, one artifact. A comparison the report
 already shows as a table needs no second picture of the same table.
 
@@ -36,8 +37,8 @@ Score the user's request against these signal sets. Pick the category with the h
 |----------|----------------|-----------------|-------------|
 | **ARCHITECTURE** | 아키텍처, 아키텍쳐, 구조도, 시스템 구성, 컴포넌트, 서비스 구성, 플로우차트, 순서도, 관계도, 의존, 기대는 관계, 연결 관계, 흐름 | architecture, system diagram, component, service, flowchart, sequence, dependency graph, topology | `local:architecture-diagram` |
 | **NUMERIC** | 차트, 그래프, 매출, 증가율, 분포, 추이, 수치, 통계, 히스토그램 | chart, graph, plot, bar, line, histogram, distribution, trend, metric, percentage, over time | `stv:using-terminal-charts` |
-| **GENERAL** | 그림, 일러스트, 개념도, 설명 그림, 아이콘, 스케치 | illustration, sketch, concept, explain visually, conceptual | vendored Excalidraw renderer (see **Fallback** below) |
-| **COMPARISON** | 비교, 대조, 차이, 어떻게 다른지, 나란히, 장단점, vs, 대 | compare, comparison, versus, vs, difference, side by side, trade-off | vendored Excalidraw renderer, comparison layout (see **COMPARISON** below) |
+| **GENERAL** | 그림, 일러스트, 개념도, 설명 그림, 아이콘, 스케치 | illustration, sketch, concept, explain visually, conceptual | vendored Excalidraw renderer (see **GENERAL** below) |
+| **COMPARISON** | 비교, 대조, 차이, 어떻게 다른지, 나란히, 장단점, vs | compare, comparison, versus, vs, difference, side by side, trade-off | vendored Excalidraw renderer, comparison layout (see **COMPARISON** below) |
 | **DRAWING** | 도면, 치수, 치수 도면, 컴포넌트 해부, UI 해부, 스펙 시트, 레드라인, 사이트 뜯어줘, 컴포넌트 뜯어줘 | dimensional drawing, component anatomy, UI anatomy, spec sheet, redline, measured drawing | `local:dimensional-drawing` |
 | **MIXED** | 두 개 이상 신호 동시 등장 (예: "아키텍처 + 성능 수치") | architecture+numeric both present | ARCHITECTURE first, then NUMERIC |
 
@@ -49,7 +50,7 @@ Score the user's request against these signal sets. Pick the category with the h
 Invoke the Skill tool with `skill="local:architecture-diagram"` and pass the user's original request as context. Do not re-interpret — let the sub-skill handle palette and JSON generation.
 
 ### COMPARISON
-Draw the options as columns and the compared attributes as rows (a matrix), on the light canvas of **GENERAL** (same renderer, same steps). Show each value as itself where it can be seen — a colour as a swatch, a size or radius drawn to scale, a count as a short bar — with its text next to it; mark the cells where the options differ (a heavier border or a dot) and leave shared values plain. A row of verdicts (who is ahead on this attribute) gets its own colour key in a legend. No arrows unless the input states a flow between the options. Title = Step 0's conclusion.
+Draw the options as columns and the compared attributes as rows (a matrix), on the light canvas of **GENERAL** — its palette, and architecture-diagram's Steps 3–6.5 (bootstrap, pre-flight, render, validate, critic; read the critic's contrast item as 4.5:1 on the light canvas). Matrix cells have square corners (`roundness: null`), so a drawn radius is never confused with the cell's own. Show each value as itself where it can be seen — a colour as a swatch, a size or radius drawn to scale, a count as a short bar — with its text next to it; mark the odd one out in each row (the value that differs from the others) with a heavier border or a dot and leave shared values plain; when every option differs, mark none and say "모두 다름" in the row label. A row of verdicts (who is ahead on this attribute) gets its own colour key in a legend. No arrows unless the input states a flow between the options. Title = Step 0's conclusion.
 
 ### DRAWING
 Invoke the Skill tool with `skill="local:dimensional-drawing"` and pass the user's original request plus the source (repo file, URL or screenshot). If the user also asks for motion (영상, 애니메이션, animate), run `local:dimensional-drawing-motion` on the finished sheet afterwards.

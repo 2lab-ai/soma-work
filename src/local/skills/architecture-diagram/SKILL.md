@@ -146,6 +146,7 @@ to change it) and prints what it is loading.
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
 export UV_PROJECT_ENVIRONMENT="${TMPDIR:-/tmp}/soma-excalidraw-venv"
 JSON="$(pwd)/arch-<slug>-<ts>.excalidraw"
+rm -f "${JSON%.excalidraw}.png"   # Step 6 must never pass on an earlier render
 cd "$CLAUDE_PLUGIN_ROOT/skills/architecture-diagram/references"
 uv run python render_excalidraw.py "$JSON"
 ```
@@ -158,7 +159,8 @@ Delete any PNG of the same name before Step 5 renders, so this check can never p
 earlier attempt.
 
 ```bash
-PNG="$(pwd_of_json)/arch-<slug>-<ts>.png"
+JSON="$(pwd)/arch-<slug>-<ts>.excalidraw"   # the file Step 5 rendered (each Bash call is a fresh shell)
+PNG="${JSON%.excalidraw}.png"
 [ -f "$PNG" ] || { echo "ERROR: PNG not generated"; exit 1; }
 size=$(stat -f%z "$PNG" 2>/dev/null || stat -c%s "$PNG")
 [ "$size" -gt 5120 ] && [ "$size" -lt 10485760 ] || { echo "ERROR: PNG size suspect: $size bytes"; exit 1; }
@@ -182,9 +184,9 @@ PY
 Mechanical checks in Step 6 catch missing files and degenerate dimensions — they do **not** catch visual mistakes (misrouted arrows, overlapping boxes, clipped labels, wrong semantic colors). Run a vision-based self-critique pass:
 
 1. **Re-read the PNG** with the `Read` tool (Claude is multimodal — the rendered image becomes part of the conversation).
-2. **Walk the checklist** in `references/critic-checklist.md` — all 6 items.
+2. **Walk the checklist** in `references/critic-checklist.md` — all 7 items.
 3. **Decide**:
-   - All 6 items pass → proceed to Step 7.
+   - All 7 items pass → proceed to Step 7.
    - One or more items fail → identify the offending element IDs, revise **only** those elements in the JSON, re-run Step 5 (render) and Step 6 (validate), then re-critique. Each such revise+re-render+re-critique counts as **one** critic-driven revision against the Step 7 budget (max 2).
 
 Common failure modes to look for:
