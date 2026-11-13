@@ -1,9 +1,10 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { OutputFlag } from '@soma/slack/output-flags';
-import { isAdminUser } from '../../admin-utils';
+import { getAdminUsers, isAdminUser } from '../../admin-utils';
 import { DATA_DIR, PLUGINS_DIR } from '../../env-paths';
 import { checkEnvSkillPermission, type EnvSkillRegistry, envSkillRegistry } from '../../env-skill-registry';
+import { isEnvironmentUser } from '../../env-users';
 import { Logger } from '../../logger';
 import { isSafePathSegment } from '../../path-utils';
 import { isAdmittedPluginName } from '../../plugin/admitted-plugin-names';
@@ -14,7 +15,7 @@ import { extractCopiedFrom } from '../../user-skill-frontmatter';
 import { consumeOneTimeGrant, hasOneTimeGrant, isSkillUseAllowed } from '../../user-skill-grants-store';
 import { describeEnvSkillDelivery, requestEnvSkillPermission } from '../env-skill-permission-request';
 import { announceSessionNotice } from '../session-notice';
-import { buildPermissionRequestMessage } from '../skill-permission-blocks';
+import { buildEnvironmentPermissionRequestMessage, buildPermissionRequestMessage } from '../skill-permission-blocks';
 import { ToolFormatter } from '../tool-formatter';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 import { resolveUserIdentifier, type UserResolver } from './user-identity-resolver';
@@ -278,7 +279,10 @@ export class SkillForceHandler implements CommandHandler {
     private resolveUser: UserResolver = resolveUserIdentifier,
     private deps: Partial<
       Pick<CommandDependencies, 'claudeHandler' | 'userSettingsStore' | 'slackApi' | 'mcpManager'>
-    > = {},
+    > & {
+      /** Runs a message as another user in a new thread — the cron owner path. Defaults to the live scheduler. */
+      runAsUser?: RunAsUser;
+    } = {},
   ) {}
 
   canHandle(text: string, userId?: string): boolean {
@@ -379,6 +383,26 @@ export class SkillForceHandler implements CommandHandler {
       return { handled: true, awaitingPermission: true };
     }
 
+    // An environment user's skill (`$acme-dev2:deploy`) runs AS the environment user — an admin without a
+    // sandbox — the way a cron run request runs as the job owner. Its body never enters the requester's session.
+    const environmentOwners = [
+      ...new Set(
+        topLevelRefs
+          .map((ref) => ref.ownerUserId)
+          // Only a skill the environment user has: a missing one ends as "not found" below, with no new thread.
+          .filter(
+            (owner): owner is string =>
+              !!owner &&
+              owner !== user &&
+              isEnvironmentUser(owner) &&
+              topLevelRefs.some((ref) => ref.ownerUserId === owner && resolved.has(`user:${owner}:${ref.skill}`)),
+          ),
+      ),
+    ];
+    if (environmentOwners.length > 0) {
+      return this.runAsEnvironmentUser(ctx, environmentOwners, topLevelRefs, state.oneTime);
+    }
+
     if (resolved.size === 0) {
       // A message that is more than its skill references (a reply that quotes `$plugin:skill`, a note about a
       // skill this host lacks) still goes to the model: answering "not found" and dropping it lost the user's
@@ -475,6 +499,114 @@ export class SkillForceHandler implements CommandHandler {
   }
 
   /**
+   * Hand the message to the environment user that owns its skill: a new thread in this channel, the session the
+   * environment user's (cron's run-as-owner path). The requester's thread gets the link, then the outcome.
+   */
+  private async runAsEnvironmentUser(
+    ctx: CommandContext,
+    owners: string[],
+    refs: SkillRef[],
+    oneTime: Array<{ ownerUserId: string; skillName: string }>,
+  ): Promise<CommandResult> {
+    const { user, channel, threadTs, text, say } = ctx;
+    const owner = owners[0];
+    if (owners.length > 1 || refs.some((ref) => ref.ownerUserId !== owner)) {
+      await say({
+        text: `❌ 환경 유저 스킬(\`${owners.join('`, `')}\`)은 그 환경의 스킬만 단독으로 부를 수 있습니다. 메시지를 나눠 보내 주세요.`,
+        thread_ts: threadTs,
+      });
+      return { handled: true };
+    }
+    const run = this.deps.runAsUser ?? defaultRunAsUser;
+    for (const o of oneTime) consumeOneTimeGrant(o.ownerUserId, o.skillName, user);
+    const skills = refs.map((ref) => `\`${ref.skill}\``).join(', ');
+    this.logger.info('Environment user skill handed off', { owner, requester: user, skills });
+    const link = async (rootTs: string): Promise<string> =>
+      (await this.deps.slackApi?.getPermalink(channel, rootTs).catch(() => null)) ?? `스레드 ${rootTs}`;
+    void run({
+      owner,
+      channel,
+      rootText: `[${owner}] <@${user}> 요청 — ${skills}`,
+      text: environmentSessionText(owner, refs, user, text),
+      onOpened: (rootTs) => {
+        void link(rootTs).then((where) =>
+          say({
+            text: `▶ 환경 유저 \`${owner}\` 권한으로 실행합니다 (어드민 · 샌드박스 없음): ${where}`,
+            thread_ts: threadTs,
+          }),
+        );
+      },
+    })
+      .then(async (rootTs) => {
+        if (!rootTs) {
+          await say({ text: `❌ 환경 유저 \`${owner}\` 실행 스레드를 만들지 못했습니다.`, thread_ts: threadTs });
+          return;
+        }
+        await say({ text: `✅ 환경 유저 \`${owner}\` 실행이 끝났습니다: ${await link(rootTs)}`, thread_ts: threadTs });
+      })
+      .catch(async (error: unknown) => {
+        this.logger.error('Environment user skill run failed', { owner, requester: user, error });
+        await say({
+          text: `❌ 환경 유저 \`${owner}\` 실행 실패: ${(error as Error)?.message ?? String(error)}`,
+          thread_ts: threadTs,
+        });
+      });
+    return { handled: true };
+  }
+
+  /**
+   * An environment user is never a person, so its card goes to the admins — by DM, and into the asking thread
+   * when no DM went out. The requester is told the request is with the admins.
+   */
+  private async askAdminsForEnvironmentSkill(ctx: CommandContext, d: DeniedRef, originalText: string): Promise<void> {
+    const { user, channel, threadTs, say } = ctx;
+    const req = createPermissionRequest({
+      operation: 'invoke',
+      requesterId: user,
+      ownerId: d.ownerUserId,
+      skillName: d.skillName,
+      channel,
+      threadTs,
+      originalText,
+      ...(ctx.dashboardClientRef ? { dashboardClientRef: ctx.dashboardClientRef } : {}),
+    });
+    const msg = buildEnvironmentPermissionRequestMessage({
+      requestId: req.requestId,
+      requesterId: user,
+      ownerId: d.ownerUserId,
+      skillName: d.skillName,
+      originalText,
+    });
+    let delivered = 0;
+    const slackApi = this.deps.slackApi;
+    for (const admin of getAdminUsers()) {
+      if (!slackApi) break;
+      try {
+        const dm = await slackApi.openDmChannel(admin);
+        await slackApi.postMessage(dm, msg.text, { blocks: msg.blocks });
+        delivered++;
+      } catch (error) {
+        this.logger.warn('Environment skill card DM failed', { admin, error: (error as Error)?.message });
+      }
+    }
+    if (delivered === 0) {
+      const mentions = [...getAdminUsers()].map((a) => `<@${a}>`).join(' ');
+      await say({ text: `${mentions} ${msg.text}`.trim(), thread_ts: threadTs, blocks: msg.blocks });
+    } else {
+      await say({
+        text: `🔐 환경 유저 \`${d.ownerUserId}\`의 \`${d.skillName}\` 실행을 어드민에게 요청했습니다. 승인되면 환경 유저 권한으로 실행됩니다.`,
+        thread_ts: threadTs,
+      });
+    }
+    this.logger.info('Environment user skill denied — admins asked', {
+      requester: user,
+      owner: d.ownerUserId,
+      skill: d.skillName,
+      delivered,
+    });
+  }
+
+  /**
    * Post a permission-request prompt to each denied skill's owner (B). The
    * original message text is recorded so a grant can re-dispatch A's request to
    * fulfill it. Requests dedupe server-side, so re-running A's message after a
@@ -483,6 +615,10 @@ export class SkillForceHandler implements CommandHandler {
   private async emitPermissionRequests(ctx: CommandContext, denied: DeniedRef[], originalText: string): Promise<void> {
     const { user, channel, threadTs, say } = ctx;
     for (const d of denied) {
+      if (isEnvironmentUser(d.ownerUserId)) {
+        await this.askAdminsForEnvironmentSkill(ctx, d, originalText);
+        continue;
+      }
       const req = createPermissionRequest({
         operation: 'invoke',
         requesterId: user,
@@ -932,3 +1068,38 @@ export class SkillForceHandler implements CommandHandler {
     state.resolved.set(canonicalKey, `Base directory for this skill: ${path.dirname(skillPath)}\n\n${content}`);
   }
 }
+
+/**
+ * What the environment user's session receives. It starts with the skill invocation itself, so that session's
+ * command router hands it to this handler again and nothing else: an environment user is an admin, and a
+ * requester's text that starts with an admin command word must not reach an admin command there.
+ */
+export function environmentSessionText(
+  owner: string,
+  refs: ReadonlyArray<{ skill: string }>,
+  requester: string,
+  text: string,
+): string {
+  const label = owner.startsWith('env:') ? owner.slice('env:'.length) : owner;
+  const invocation = refs.map((ref) => `$${label}:${ref.skill}`).join(' ');
+  const trimmed = text.trimStart();
+  if (trimmed.startsWith(invocation)) return trimmed;
+  return `${invocation}\n\n<@${requester}> 요청 원문:\n${text}`;
+}
+
+/** Run `text` as `owner` in a new thread of `channel` (the cron owner path). Resolves with the root ts. */
+export type RunAsUser = (input: {
+  owner: string;
+  channel: string;
+  rootText: string;
+  text: string;
+  onOpened?: (rootTs: string) => void;
+}) => Promise<string | undefined>;
+
+/** The live cron scheduler's run-as-owner path; loaded on use so this handler does not import the scheduler. */
+const defaultRunAsUser: RunAsUser = async (input) => {
+  const { getActiveCronScheduler } = await import('../../cron-scheduler');
+  const scheduler = getActiveCronScheduler();
+  if (!scheduler) throw new Error('스케줄러가 꺼져 있어 환경 유저로 실행할 수 없습니다');
+  return scheduler.runAsUserInNewThread(input);
+};

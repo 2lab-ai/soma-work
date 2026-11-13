@@ -212,6 +212,35 @@ export class CronScheduler {
   }
 
   /**
+   * Open a bot thread in `channel` and run `text` there as `owner` — the path a scheduled fire takes, so the
+   * session is the owner's. An environment user's skill that another user asked for (and an admin approved) runs
+   * this way (env-access). `onOpened` gets the root ts as soon as the thread exists; resolves with it once the
+   * turn ends, or undefined when Slack returned no ts.
+   */
+  async runAsUserInNewThread(input: {
+    owner: string;
+    channel: string;
+    rootText: string;
+    text: string;
+    onOpened?: (rootTs: string) => void;
+  }): Promise<string | undefined> {
+    const rootTs = await this.deps.threadCreator(input.channel, input.rootText);
+    if (!rootTs) return undefined;
+    input.onOpened?.(rootTs);
+    await this.deps.messageInjector({
+      user: input.owner,
+      channel: input.channel,
+      thread_ts: rootTs,
+      ts: `${Date.now() / 1000}`,
+      text: input.text,
+      synthetic: true,
+      skipDispatch: true,
+      routeContext: { skipAutoBotThread: true },
+    });
+    return rootTs;
+  }
+
+  /**
    * Main tick: evaluate all cron jobs against every minute since the last
    * evaluated one, up to now. A job whose minute fell between two ticks (the
    * previous tick was still awaiting a turn, or the timer fired late across a

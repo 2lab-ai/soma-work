@@ -116,6 +116,13 @@ export function credentialReadDenyRules(home: string): string[] {
  * The sandbox is off only for an admin who turned it off, on a host whose operator allows that
  * (`SOMA_SANDBOX_OFF_ALLOWED`). Otherwise the setting is stored but the session stays sandboxed.
  */
-export function isSandboxOffInEffect(input: { isAdmin: boolean; requested: boolean; hostAllows: boolean }): boolean {
+export function isSandboxOffInEffect(input: {
+  isAdmin: boolean;
+  requested: boolean;
+  hostAllows: boolean;
+  /** An environment user (`env:<name>`) always runs without a sandbox: that is what it is for. */
+  environmentUser?: boolean;
+}): boolean {
+  if (input.environmentUser) return true;
   return input.isAdmin && input.requested && input.hostAllows;
 }
