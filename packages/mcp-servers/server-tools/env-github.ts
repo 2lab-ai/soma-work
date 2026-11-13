@@ -288,8 +288,9 @@ export function repoReadPath(config: EnvGithubConfig, value: unknown): string {
   if (decoded[0] === 'compare' && decoded.slice(1).some((s) => s.includes(':'))) {
     throw new GithubError('compare across forks reads another repository');
   }
-  // A branch name may hold `/` (encoded or not); one that reaches the protection settings is not read.
-  if (decoded[0] === 'branches' && decoded.slice(1).join('/').split('/').includes('protection')) {
+  // A branch name may hold `/` (encoded or not); one that reaches the protection settings is not read. GitHub routes
+  // `protection` in any case (trinity R5, fable).
+  if (decoded[0] === 'branches' && decoded.slice(1).join('/').toLowerCase().split('/').includes('protection')) {
     throw new GithubError(`${rest} is not a part gh_read reads`);
   }
   return ['repos', repo, ...segments.slice(3)].join('/');
@@ -350,15 +351,15 @@ export function readFields(value: unknown): FieldNode | null {
 }
 
 /** Only the named parts of `value`; a name the answer lacks is left out. */
-function project(value: unknown, node: FieldNode): unknown {
+function pickFields(value: unknown, node: FieldNode): unknown {
   if (node.whole) return value;
   const each = node.kids.get('[]');
-  if (Array.isArray(value)) return each ? value.map((v) => project(v, each) ?? null) : undefined;
+  if (Array.isArray(value)) return each ? value.map((v) => pickFields(v, each) ?? null) : undefined;
   if (!value || typeof value !== 'object') return undefined;
   const out: Record<string, unknown> = {};
   for (const [name, kid] of node.kids) {
     if (name === '[]' || !Object.hasOwn(value, name)) continue;
-    const kept = project((value as Record<string, unknown>)[name], kid);
+    const kept = pickFields((value as Record<string, unknown>)[name], kid);
     if (kept !== undefined) out[name] = kept;
   }
   return out;
@@ -381,7 +382,7 @@ export async function repoRead(
   // Text in the repository (an issue body, a commit message, a committed file) can hold the token: never hand it on.
   // Scrubbed whole, before `fields` picks: a base64 file is recognized by its `encoding` beside its `content`.
   const scrubbed = scrubJson(raw ?? null, config.token);
-  const json = keep ? (project(scrubbed, keep) ?? null) : scrubbed;
+  const json = keep ? (pickFields(scrubbed, keep) ?? null) : scrubbed;
   const text = JSON.stringify(json);
   return text.length > READ_MAX_CHARS
     ? { path: checked, status, truncated: true, body: text.slice(0, READ_MAX_CHARS) }

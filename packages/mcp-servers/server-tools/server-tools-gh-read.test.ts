@@ -250,6 +250,12 @@ describe('gh_read — redirects, slash refs, fields', () => {
     ]);
     const refuse = (p: string) => handleGhRead({ server: 'dev2', path: p }, fetch);
     await expect(refuse('repos/acme/app/branches/deploy/dev2/protection')).rejects.toThrow(/not a part gh_read reads/);
+    // trinity R5 (fable): GitHub routes `protection` in any case.
+    await expect(refuse('repos/acme/app/branches/main/Protection')).rejects.toThrow(/not a part gh_read reads/);
+    await expect(refuse('repos/acme/app/branches/main/PROTECTION/required_status_checks')).rejects.toThrow(
+      /not a part gh_read reads/,
+    );
+    await expect(refuse('repos/acme/app/branches/main%2FpRoTeCtIoN')).rejects.toThrow(/not a part gh_read reads/);
     await expect(refuse('repos/acme/app/compare/develop...other:deploy/dev2')).rejects.toThrow(/another repository/);
     await expect(refuse('repos/acme/app/compare/develop/../../../user')).rejects.toThrow(/path/);
     expect(calls).toHaveLength(5);

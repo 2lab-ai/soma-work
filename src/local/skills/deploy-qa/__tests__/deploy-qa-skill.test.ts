@@ -100,6 +100,8 @@ describe('post-deploy QA skills read GitHub through devops-tools gh_read', () =>
       expect(section).toContain('`"fields": ["total_commits", "commits[].sha", "commits[].parents[].sha"]`');
       expect(section).toContain('Only a truncated answer is asked again, at most twice');
       expect(section).toContain('a moved answer (3xx, never followed)');
+      // trinity R5 (fable): a read with no answer is asked once more.
+      expect(section).toContain('A read that got no answer (a timeout or a lost connection) is asked once more.');
       expect(section).toContain('An answer there is a result whose `truncated` is false');
       expect(section).toContain('A repository or path it refuses is `missing: github`');
       // trinity R1 (astra): a smaller page size restarts the listing and ends it at that size, not at 100.
