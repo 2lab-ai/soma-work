@@ -34,6 +34,9 @@ ssot = [`ssot.md`](ssot.md)
   `secrets/`로 옮긴다. 그 전에는 어드민이 샌드박스를 끈 세션의 Bash, 어드민 모델이 배포 설정을 고쳐 참조를 돌리는 길이 남아 있다.
   **2026-11-13 갱신:** WU2가 배포돼도 게이트는 닫힌 채다 — 세부를 비공개로 둔 샌드박스 탈출 두 건(#1242, #1241)이 고쳐지고
   dev에서 확인될 때까지. 둘 다 #1240 이전부터 main에 있던 것이고 #1240이 넓히지 않는다.
+  **2026-11-13 dev 실측 통과 → 게이트 열림:** v0.3.34(PR #1260, #1257이 배포 번들 검사 실패를 고친 뒤 재시도) 배포 후
+  #1242 — CLI의 프로젝트 설정 경로가 `DATA_DIR/session-project-config`로 바뀌었고 그 디렉터리는 비어 있다.
+  #1241 — 세션 `.npmrc` 프로브에 npx 서버(filesystem · github)가 시작돼도 새 로그 0개. 증거는 각 이슈 댓글.
 
 - **WU2 리뷰가 남긴 후속 (PR #1240):**
   - #1242: 세션 시작 때 CLI가 읽는 파일을 통한 샌드박스 탈출 → `projectConfigRoot`를 빈 `DATA_DIR` 디렉터리로(브랜치 `fix/env-access-1242`).
@@ -56,8 +59,8 @@ ssot = [`ssot.md`](ssot.md)
 
 ## 다음 착수점
 
-WU0–WU5 · WU6a · #1242 · #1241 머지(2026-11-13). 남은 것:
-1. dev 배포(promotion PR #1254 — 유저 지시로 보류) → #1242 · #1241 dev 실측(각 PR 본문의 확인 절차) → 출시 게이트 열림.
+WU0–WU5 · WU6a · #1242 · #1241 머지 · dev 배포(v0.3.34, PR #1260) · #1242 · #1241 dev 실측 통과 → 출시 게이트 열림(2026-11-13). 남은 것:
+1. 샌드박스 권한 번들(sandbox off를 능력별로 나눠 어드민이 유저 · 어드민 그룹 · 전체에 grant) — 플랜 A/B 유저 선택 대기.
 2. 운영자: 고객 dev 호스트 `config.json` `server-tools.<dev2|stage0>`에 `envUser` · `skills` · `github`(`$secret` · `repos` · 조건표 · `readRefs` = 통합·배포 브랜치) · `web.logins` · `cloudflare`(`$secret` · `zones`, 필요하면 `parts` — rulesets · firewall · filters · pagerules · custom_hostnames · healthchecks는 다른 시스템 자격이 담길 수 있어 opt-in), 고객 스킬 저장소 QA 프로필 `github.server` · `qaEnv.logins`, 토큰 · 비밀번호 → `secrets/`.
 3. 라이브: 비어드민 `$<env>:post-deploy` → 어드민 카드 4버튼 → "환경 전체 항상" → 다음 카드 0장 · dev2 배포 → QA 리포트(비밀번호 노출 0).
 4. 운영자: 각 호스트에서 브로커 `uninstall.sh` → #1253(WU6b) 머지 → #1214 닫기 → 가드의 브로커 경로 정리.
