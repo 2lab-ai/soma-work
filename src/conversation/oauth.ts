@@ -248,7 +248,9 @@ function lookupUser(email: string): OAuthUserLookupResult {
 /**
  * Match `email` case-insensitively against every Slack user's registered
  * email. Counts all matches instead of taking the first, so an address
- * registered by several Slack users comes back `ambiguous`.
+ * registered by several Slack users comes back `ambiguous`. An environment
+ * user (`env:<name>`, env-users.ts) is not a person and never signs in, so it
+ * never counts — it often carries an admin's email.
  */
 export function matchSlackUsersByEmail(
   users: ReadonlyArray<{ userId: string; email?: string; slackName?: string }>,
@@ -256,7 +258,7 @@ export function matchSlackUsersByEmail(
 ): OAuthUserLookupResult {
   const emailLower = email.toLowerCase();
   if (!emailLower) return { kind: 'none' };
-  const matches = users.filter((u) => u.email && u.email.toLowerCase() === emailLower);
+  const matches = users.filter((u) => !u.userId.startsWith('env:') && u.email && u.email.toLowerCase() === emailLower);
   if (matches.length === 0) return { kind: 'none' };
   if (matches.length > 1) return { kind: 'ambiguous', count: matches.length };
   return { kind: 'match', userId: matches[0].userId, name: matches[0].slackName || matches[0].userId };
