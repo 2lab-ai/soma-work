@@ -203,6 +203,15 @@ export class SkillPermissionActionHandler {
   private async fulfill(req: PermissionRequest): Promise<void> {
     const say = this.createSayFn(req.channel);
 
+    // An environment user's skill is only ever run (as the environment user), never shown or copied.
+    if (req.operation !== 'invoke' && isEnvironmentUser(req.ownerId)) {
+      await say({
+        text: `🔒 환경 유저(\`${req.ownerId}\`)의 스킬은 보거나 복사할 수 없습니다 — 실행만 요청할 수 있습니다.`,
+        thread_ts: req.threadTs,
+      });
+      return;
+    }
+
     if (req.operation === 'invoke' && req.originalText) {
       await this.ctx.messageHandler(
         {

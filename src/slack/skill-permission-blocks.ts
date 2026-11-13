@@ -92,7 +92,11 @@ export function buildEnvironmentPermissionRequestMessage(
 ): PermissionRequestMessage {
   const { requestId, requesterId, ownerId, skillName } = input;
   const label = ownerId.startsWith('env:') ? ownerId.slice(4) : ownerId;
-  const shown = input.originalText.length > 600 ? `${input.originalText.slice(0, 600)}…` : input.originalText;
+  // Callers refuse longer requests (ENVIRONMENT_REQUEST_MAX_CHARS); the cut here only guards Slack's block limit.
+  const shown =
+    input.originalText.length > 2400
+      ? `${input.originalText.slice(0, 2400)}\n[⚠️ 전체 ${input.originalText.length}자 중 앞부분만 표시]`
+      : input.originalText;
   const text = `🔐 어드민 승인 요청 — <@${requesterId}>님이 환경 \`${label}\`의 \`${skillName}\` 실행을 요청했습니다.`;
   return {
     text,
@@ -103,6 +107,7 @@ export function buildEnvironmentPermissionRequestMessage(
           type: 'mrkdwn',
           text:
             `${text}\n승인하면 환경 유저 \`${ownerId}\` 권한(어드민 · 샌드박스 없음)으로 새 스레드에서 실행됩니다.\n` +
+            `'항상'을 누르면 이 사람의 다음 요청도 묻지 않고 같은 권한으로 실행됩니다.\n` +
             `실행할 메시지:\n\`\`\`${shown.replace(/```/g, "'''")}\`\`\``,
         },
       },

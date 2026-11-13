@@ -7,6 +7,7 @@
  * post an interactive prompt, so a denial returns a message telling A to use
  * the `$user:<@owner>` list's copy button (which runs the request flow).
  */
+import { isEnvironmentUser } from './env-users';
 import { resolveUserIdentifier } from './slack/commands/user-identity-resolver';
 import { consumeOneTimeGrant, isSkillUseAllowed } from './user-skill-grants-store';
 import { copyUserSkill } from './user-skill-store';
@@ -23,6 +24,13 @@ export function gatedManageSkillCopy(
   }
   if (sourceUid === user) {
     return { ok: false, message: 'Cannot copy your own skill.' };
+  }
+  // An environment user's skills run as the environment user; a copy would run them in the requester's session.
+  if (isEnvironmentUser(sourceUid)) {
+    return {
+      ok: false,
+      message: `환경 유저(\`${sourceUid}\`)의 스킬은 복사할 수 없습니다. \`$${sourceUid.slice(4)}:${name}\`로 실행을 요청하세요.`,
+    };
   }
   if (!isSkillUseAllowed(sourceUid, name, user)) {
     return {

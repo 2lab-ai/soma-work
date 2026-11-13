@@ -100,4 +100,11 @@ describe('SkillPermissionActionHandler — environment user owner', () => {
       expect.objectContaining({ threadTs: 'T1' }),
     );
   });
+
+  it('a view or copy request for an environment skill is never fulfilled', async () => {
+    h.getReq.mockReturnValue({ ...req, operation: 'view' });
+    await handler.handleAction(body(VALUE_KIND_PERM_YES_ONCE, 'UADMIN'), respond);
+    expect(JSON.stringify(slackApi.postMessage.mock.calls)).toContain('보거나 복사할 수 없습니다');
+    expect(messageHandler).not.toHaveBeenCalled();
+  });
 });

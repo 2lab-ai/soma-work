@@ -73,9 +73,10 @@ describe('SkillForceHandler — environment user skills', () => {
 
     expect(result.handled).toBe(true);
     expect(result.continueWithPrompt).toBeUndefined();
-    expect(runAsUser).toHaveBeenCalledWith(
-      expect.objectContaining({ owner: 'env:acme-dev2', channel: 'C1', text: '$acme-dev2:deploy --preflight' }),
-    );
+    expect(runAsUser).toHaveBeenCalledWith(expect.objectContaining({ owner: 'env:acme-dev2', channel: 'C1' }));
+    const sentText = (runAsUser.mock.calls[0]?.[0] as unknown as { text: string }).text;
+    expect(sentText.split('\n')[0]).toBe('$acme-dev2:deploy');
+    expect(sentText).toContain('＄acme-dev2:deploy --preflight');
     // The requester's thread is told where it runs; the skill body never shows up there.
     const posted = JSON.stringify(say.mock.calls);
     expect(posted).toContain('env:acme-dev2');
@@ -137,14 +138,15 @@ describe('SkillForceHandler — environment user skills', () => {
     expect(result.continueWithPrompt).toContain('# Zhuge Deploy');
   });
 
-  it('the environment session always starts with the skill call, so no admin command can match it there', () => {
+  it('the environment session gets the skill call, and the requester words only as quoted data with $ neutralised', () => {
     const refs = [{ skill: 'deploy' }];
-    expect(environmentSessionText('env:acme-dev2', refs, 'U1', '$acme-dev2:deploy --preflight')).toBe(
-      '$acme-dev2:deploy --preflight',
-    );
-    const wrapped = environmentSessionText('env:acme-dev2', refs, 'U1', 'model opus 하고 $acme-dev2:deploy');
-    expect(wrapped.startsWith('$acme-dev2:deploy\n')).toBe(true);
-    expect(wrapped).toContain('model opus 하고 $acme-dev2:deploy');
+    const out = environmentSessionText('env:acme-dev2', refs, 'U1', '$acme-dev2:deploy $foo --preflight ```x');
+    expect(out.split('\n')[0]).toBe('$acme-dev2:deploy');
+    // No skill reference in the requester's words resolves again as the environment user.
+    expect(out.slice(out.indexOf('\n'))).not.toContain('$');
+    expect(out).toContain('＄foo --preflight');
+    // The quote cannot be closed early.
+    expect(out.match(/```/g)?.length).toBe(2);
   });
 
   it('hands the environment session a text that starts with the skill call', async () => {
@@ -160,5 +162,74 @@ describe('SkillForceHandler — environment user skills', () => {
     expect(runAsUser).not.toHaveBeenCalled();
     expect(result.continueWithPrompt).toBeUndefined();
     expect(JSON.stringify(say.mock.calls)).toContain('스킬을 찾을 수 없습니다');
+  });
+
+  it('a repeated request with the same words in the same thread is not sent to the admins again', async () => {
+    h.createReq.mockImplementation((i: any) => ({ requestId: 'req-old', ...i, reused: true }));
+    const result = await handler.execute(ctx('$acme-dev2:deploy'));
+    expect(result).toMatchObject({ handled: true, awaitingPermission: true });
+    expect(slackApi.openDmChannel).not.toHaveBeenCalled();
+    expect(JSON.stringify(say.mock.calls)).toContain('이미 어드민 승인 대기');
+  });
+
+  it('the card shows the stored text — the words that run on approval', async () => {
+    h.createReq.mockImplementation((i: any) => ({ requestId: 'req-1', ...i, originalText: 'STORED WORDS' }));
+    await handler.execute(ctx('$acme-dev2:deploy shown-now'));
+    const card = JSON.stringify(slackApi.postMessage.mock.calls);
+    expect(card).toContain('STORED WORDS');
+    expect(card).not.toContain('shown-now');
+  });
+
+  it('a request longer than the card can show is refused — no card, no run', async () => {
+    const long = `$acme-dev2:deploy ${'x'.repeat(2100)}`;
+    await handler.execute(ctx(long));
+    h.isAllowed.mockReturnValue(true);
+    await handler.execute(ctx(long));
+    expect(slackApi.openDmChannel).not.toHaveBeenCalled();
+    expect(runAsUser).not.toHaveBeenCalled();
+    expect(JSON.stringify(say.mock.calls)).toContain('2000자까지');
+  });
+
+  it('an environment skill nested inside another skill is refused, so its body never reaches the requester', async () => {
+    h.isAllowed.mockReturnValue(true);
+    vi.mocked(fs.existsSync).mockImplementation((p) =>
+      ['/mock/data/env:acme-dev2/skills/deploy/SKILL.md', '/mock/data/U094/skills/wrap/SKILL.md'].includes(String(p)),
+    );
+    vi.mocked(fs.readFileSync).mockImplementation((p) => {
+      if (String(p) === '/mock/data/env:acme-dev2/skills/deploy/SKILL.md') return '# ENV DEPLOY BODY' as any;
+      if (String(p) === '/mock/data/U094/skills/wrap/SKILL.md') return 'wrapper: $acme-dev2:deploy' as any;
+      throw new Error(`ENOENT ${String(p)}`);
+    });
+    const result = await handler.execute(ctx('$Zhuge:wrap'));
+    expect(runAsUser).not.toHaveBeenCalled();
+    expect(String(result.continueWithPrompt ?? '')).not.toContain('ENV DEPLOY BODY');
+    expect(slackApi.openDmChannel).not.toHaveBeenCalled();
+  });
+
+  it('a failing Slack post after the hand-off never becomes an unhandled rejection', async () => {
+    h.isAllowed.mockReturnValue(true);
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on('unhandledRejection', onRejection);
+    try {
+      let calls = 0;
+      const failingSay = vi.fn(async () => {
+        calls++;
+        if (calls > 0) throw new Error('channel_is_archived');
+        return { ts: '1' };
+      });
+      const failingRun = vi.fn(async () => {
+        throw new Error('scheduler down');
+      });
+      const h2 = new SkillForceHandler(resolveUser, { slackApi: slackApi as any, runAsUser: failingRun });
+      await h2.execute({ ...ctx('$acme-dev2:deploy'), say: failingSay } as any);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(failingRun).toHaveBeenCalled();
+      expect(rejections).toEqual([]);
+      // The run never started, so a one-time grant is not spent.
+      expect(h.consumeOneTime).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
   });
 });

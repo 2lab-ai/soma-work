@@ -21,6 +21,7 @@ import { atomicWriteJson } from '@soma/common/atomic-json';
 import * as fs from 'fs';
 import * as path from 'path';
 import { DATA_DIR } from './env-paths';
+import { isEnvironmentUser } from './env-users';
 import { Logger } from './logger';
 import { ENV_SKILL_GRANT_OWNER } from './user-skill-grants-store';
 
@@ -146,7 +147,11 @@ export function createPermissionRequest(input: CreatePermissionRequestInput): Cr
       req.requesterId === input.requesterId &&
       req.skillName === input.skillName &&
       req.operation === input.operation &&
-      (input.ownerId !== ENV_SKILL_GRANT_OWNER || (req.channel === input.channel && req.threadTs === input.threadTs))
+      (input.ownerId !== ENV_SKILL_GRANT_OWNER || (req.channel === input.channel && req.threadTs === input.threadTs)) &&
+      // An environment user's request runs the requester's words as an admin: only the very same words in the same
+      // thread are the same request, so an admin never approves one message and runs another.
+      (!isEnvironmentUser(input.ownerId) ||
+        (req.channel === input.channel && req.threadTs === input.threadTs && req.originalText === input.originalText))
     ) {
       saveAll(all); // persist any pruning
       return { ...req, reused: true };

@@ -29,6 +29,8 @@
 
 import { randomUUID } from 'node:crypto';
 import { atomicWriteJson, readJsonWithBackup } from '@soma/common/atomic-json';
+import { getAdminUsers } from './admin-utils';
+import { isEnvironmentUser } from './env-users';
 import { Logger } from './logger';
 import {
   buildInstructionApprovalDm,
@@ -310,6 +312,8 @@ export class InstructionApprovals {
     // No owner on record (or no sender): nobody to ask, nobody to protect from.
     if (!ownerId || !senderId) return true;
     if (senderId === ownerId) return true;
+    // An environment user's session belongs to its admins: they speak in it without asking.
+    if (isEnvironmentUser(ownerId) && getAdminUsers().has(senderId)) return true;
     if (session.approvedInstructors?.includes(senderId)) return true;
     if (this.deps.isTrusted(ownerId, senderId)) return true;
     if (input.approvalId) {
@@ -432,7 +436,12 @@ export class InstructionApprovals {
     const shown = request.held.length;
     let ref: { channel: string; ts: string } | undefined;
     try {
-      ref = await this.deps.postOwnerDm(request.ownerId, buildInstructionApprovalDm(this.viewOf(request)));
+      // An environment user is never a person: its admins are asked.
+      const recipients = isEnvironmentUser(request.ownerId) ? [...getAdminUsers()] : [request.ownerId];
+      for (const recipient of recipients) {
+        const posted = await this.deps.postOwnerDm(recipient, buildInstructionApprovalDm(this.viewOf(request)));
+        ref = ref ?? posted;
+      }
     } catch (error) {
       logger.warn('Instruction approval DM failed — the dashboard card still asks', {
         requestId: request.requestId,
@@ -499,7 +508,8 @@ export class InstructionApprovals {
     if (!actor || !isInstructionApprovalDecision(decision)) return { ok: false, reason: 'invalid' };
     const request = this.requests.get(requestId);
     if (!request) return { ok: false, reason: 'not_found' };
-    if (request.ownerId !== actor) return { ok: false, reason: 'not_owner', request };
+    const decidesForEnvironment = isEnvironmentUser(request.ownerId) && getAdminUsers().has(actor);
+    if (request.ownerId !== actor && !decidesForEnvironment) return { ok: false, reason: 'not_owner', request };
     if (request.status !== 'pending') {
       return { ok: false, reason: request.status === 'expired' ? 'expired' : 'already_answered', request };
     }
