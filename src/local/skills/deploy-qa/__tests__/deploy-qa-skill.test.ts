@@ -104,6 +104,8 @@ describe('post-deploy QA skills read GitHub through devops-tools gh_read', () =>
       expect(section).toContain('A read that got no answer (a timeout or a lost connection) is asked once more.');
       expect(section).toContain('An answer there is a result whose `truncated` is false');
       expect(section).toContain('A repository or path it refuses is `missing: github`');
+      // review-of-legends R6: fork-network commits answer by SHA through the repository; only SHAs it gave are read.
+      expect(section).toContain('read by SHA only commits this run got from the repository itself');
       // trinity R1 (astra): a smaller page size restarts the listing and ends it at that size, not at 100.
       expect(section).toContain('restarting that listing at page 1');
       expect(section).toContain('a page holding fewer items than that `per_page` — not 100 — ends the listing');
@@ -118,10 +120,15 @@ describe('post-deploy QA skills read GitHub through devops-tools gh_read', () =>
     const md = read('qa-issue');
     expect(md).toContain('`qaEnv.logins.<role>` = `{"server": …, "account": …}`');
     expect(md).toContain('get the session with `mcp__server-tools__login`');
-    // review-of-legends R5: the session file is the owner's alone before anything reads it.
+    // review-of-legends R5/R6: the session file is the owner's alone before the session is written into it.
     expect(md).toContain(
-      'Its one channel: write it with the Write tool to a file under the run directory, `chmod 600` that file before anything reads it',
+      'create it empty with `install -m 600 /dev/null <file>`, then write the session into it with the Write tool',
     );
+    // review-of-legends R6: a browser case gets the session, logs in through the form, or is blocked — never logged out.
+    expect(md).toContain(
+      "a cookie the profile's browser primitive loads from the file before the role's first browser case",
+    );
+    expect(md).toContain('are reported blocked (`no browser session`); a case never runs logged out');
     expect(md).toContain('Never type the token into a command line, `eval` source, `steps`, a report');
     expect(md).toContain('Optional: `qaEnv.logins`');
   });
