@@ -54,6 +54,11 @@ describe('diagram router — the reader decides, the picture shows it', () => {
     expect(between(dd, '## Delivery in soma-work', '\u0000')).toMatch(/In report mode skip steps 4 and 5/);
     expect(between(md, '## Anti-patterns', '## End turn')).toMatch(/separate images[^\n]*report mode/);
   });
+  it('an embedded sheet is escaped for srcdoc and checked on its own first — the page check does not enter the iframe (trinity R3)', () => {
+    const step0 = between(skill('html'), '### 0. Reader', '### 1. Read the catalog');
+    expect(step0).toMatch(/`&amp;`[^.]*`&quot;`/);
+    expect(step0).toMatch(/does not look inside the iframe/);
+  });
   it('the router does not retry; its end line states the conclusion first', () => {
     expect(md).toMatch(/Do NOT retry at the router/);
     expect(between(md, '## End turn', '\u0000')).toMatch(/states the picture's conclusion/);

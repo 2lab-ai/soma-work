@@ -86,7 +86,9 @@ A picture the request asked for (the `diagram` skill in report mode hands over a
 HTML sheet) goes right after the opening — a PNG as `<img src="data:image/png;base64,…" alt="<its conclusion>">`, a
 sheet as `<iframe srcdoc="…" title="<its conclusion>">` with the sheet's own size — inside an `overflow-x: auto` box, and its
 content stays on the page as text too (for a comparison, the rows as an HTML table that stacks on a phone, each with
-its source). The page is the only upload. Below them, each section opens with its own conclusion and says each fact in
+its source). Before a sheet goes into `srcdoc`, escape `&` as `&amp;` first, then `"` as `&quot;` — the sheet's own
+attributes are double-quoted and would end the attribute. Step 5's check does not look inside the iframe, so the
+sheet must already have passed its own check (dimensional-drawing's Step 3). The page is the only upload. Below them, each section opens with its own conclusion and says each fact in
 full once — a later section refers back instead of restating it.
 
 ### 1. Read the catalog

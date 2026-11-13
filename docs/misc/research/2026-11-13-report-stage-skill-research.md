@@ -15,7 +15,7 @@
 
 | 스킬 | 원인 (probe 빈도) | 고침 |
 |---|---|---|
-| architecture-diagram | 렌더러: 무버전 esm.sh(0.18.1 하위 import 404) + 15 s 대기(실측 31–61 s) + 호스트만 보는 preflight + 플러그인 폴더 venv (5/5 + 실사용) | 0.18.0 고정(템플릿 한 줄이 단일 출처), 120 s + `--load-timeout-ms` · `EXCALIDRAW_LOAD_TIMEOUT_MS`, 고정 URL preflight, `UV_PROJECT_ENVIRONMENT` 임시 폴더, scale 1, 렌더 전 옛 PNG 삭제 |
+| architecture-diagram | 렌더러: 무버전 esm.sh(0.18.1 하위 import 404) + 15 s 대기(실측 31–61 s) + 호스트만 보는 preflight + 플러그인 폴더 venv (5/5 + 실사용) | 0.18.0 고정(템플릿 한 줄이 단일 출처), 단계별 대기(라운드 1은 120 s, trinity R1 뒤 90 s) + `--load-timeout-ms` · `EXCALIDRAW_LOAD_TIMEOUT_MS`, 고정 URL preflight, `UV_PROJECT_ENVIRONMENT` 임시 폴더, scale 1, 렌더 전 옛 PNG 삭제 |
 | html | 페이지가 독자의 결정이 아니라 템플릿 순서로 짜임 — 첫 화면에 답·지도·읽기 안내 없음 (5/5 + 실사용) | Step 0(독자·결정·답·요청 항목), `data-first-screen` 세 표지 + `render.mjs --first-screen` |
 | html | 표가 있으면 data-report → KPI 타일·`[—]` 추세 칸 (5/6) | 데이터셋만 data-report, 못 채우는 칸·띠는 생략 |
 | html | 업로드 문구 첫 줄이 파이프라인 메타 (5/5) | 첫 줄 = 답, 서빙 머신 이름 |
@@ -77,8 +77,19 @@
 | D10 규모·추상화 | 3.6 | 3.8 | 3.3 → 3.7 |
 | D11 기계 검사 | 3.0 | 3.6 | 2.3 → 3.3 |
 
+## trinity 리뷰 (grok · astra · fable, 4라운드)
+
+- R1: 세 패널 모두 차단. 검사기 clip 구멍(static overflow 상자가 absolute 라벨을 자름, 한 축 clip을 네 변으로 자름), 폰 실행이 고정 캔버스 템플릿을 막음, 리포트 모드 업로드 책임이 흩어짐. → 커밋 "trinity R1"과 회귀 테스트.
+- R2: grok 승인(조건부), astra 차단 3건(absolute 라벨 안 중첩 글자, 화면 위로 벗어난 첫 화면 표지, PNG를 만들지 않는 DRAWING에 PNG 반환 요구). fable은 호스트 재시작 뒤 도구가 거부돼 미검증 차단. → 커밋 "trinity R2"와 회귀 테스트, 재현 파일 재실행.
+- R3: astra 승인, grok · fable 조건부 승인, 차단 0. 권고: `srcdoc` 이스케이프, 부모 페이지 검사가 iframe 안을 보지 않음. → 커밋 "trinity R3".
+- R4: 최종 판정은 PR 본문에 적는다.
+
+검증 범위: 위 점수는 라운드 1 커밋으로 돌린 probe다. 그 뒤 변경(라운드 2, trinity R1–R3)은 계약 · 행동 테스트와 실제 페이지 재검사로만 확인했고 probe로 다시 재지 않았다. 리포트 모드는 COMPARISON 갈래(리포트 v2)로만 끝까지 돌렸다. ARCHITECTURE · DRAWING 갈래는 문서 계약까지만 확인했다.
+
 ## 남은 공백
 
 - html: 파생 수치를 원자료와 대조하는 단계 없음, 입력의 출처·합성 표지 승계 규칙 없음, 폰 첫 화면에 지도·안내가 들어가는지 검사 안 함, ui-ux 엔진 키워드가 문서에 엉뚱한 패턴을 반환, lottie `validate.mjs`가 빈 애니메이션을 통과(lottie 스킬).
 - diagram: 상태·진행·로드맵 관계 갈래 없음, 독자의 사전 지식에 맞춘 용어 규칙 없음, Excalidraw 고정폭 글꼴의 합자.
 - 움직이지 않은 기준: H7 사실 충실(3.8 → 3.6), D5 쉬운 말(3.2 → 3.4); D6 · D8 하락분은 라운드 2에서 원인을 고쳤으나 probe로 다시 재지 않았다.
+- 렌더러: esm.sh가 단일 실패 지점이다. 버전 고정과 2단 사전 점검은 증상을 줄일 뿐이다. 번들을 저장소에 두는 안이 후속 과제다.
+- 리포트 모드: ARCHITECTURE · DRAWING 갈래를 리포트 한 건으로 끝까지 돌려 업로드가 페이지 하나인지, `srcdoc` 시트가 보이는지 확인해야 한다.
