@@ -21,10 +21,11 @@
  * Exit 0: with the root set, no project or local hook and no project MCP server (in the working directory or
  *         above it) ran, the plugin hook did, and
  *         CLAUDE.md applied; without it (the control) the project hook and server did run; the sandboxed Bash
- *         command ran and the CLI left nothing in the root but its staging directory.
+ *         command ran, the CLI made its staging directory, and left nothing else in the root.
  * Exit 1: with the root set, a project or local hook, or a project MCP server (working directory or above), ran.
- * Exit 2: inconclusive — the control did not run them, the plugin hook did not run, CLAUDE.md was not applied, or
- *         the sandboxed Bash command did not run.
+ * Exit 2: inconclusive — the control did not run them, the plugin hook did not run, CLAUDE.md was not applied, the
+ *         sandboxed Bash command did not run, or the CLI made no staging directory in the root (its sandbox did not
+ *         start, or a newer CLI stages elsewhere).
  * Exit 3: the CLI left something else in the root (`rootForeign`). `projectConfigRoot()` refuses it, so every
  *         session after the first would not start: teach the guard what the new CLI writes before shipping it.
  */
@@ -147,7 +148,8 @@ async function runSandboxedBash() {
       settingSources: ['project'],
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
-      sandbox: { enabled: true, autoAllowBashIfSandboxed: true },
+      // As in production: a sandbox that cannot start runs nothing rather than running Bash outside it.
+      sandbox: { enabled: true, autoAllowBashIfSandboxed: true, failIfUnavailable: true },
       projectConfigRoot: configRoot,
     },
   })) {
@@ -171,7 +173,10 @@ const conclusive =
   control.parentMcp &&
   withRoot.pluginHook &&
   withRoot.claudeMd &&
-  sandboxed.bashRan;
+  sandboxed.bashRan &&
+  // Proof the CLI's sandbox started, the only time it writes into the root. A CLI that no longer makes its staging
+  // directory stops here as inconclusive: look at what it does before trusting the check.
+  sandboxed.stagingMade;
 const dirtied = sandboxed.rootForeign.length > 0;
 const verdict = leaked ? 'PROJECT CONFIG RAN' : dirtied ? 'ROOT DIRTIED' : conclusive ? 'ROOT HOLDS' : 'INCONCLUSIVE';
 console.log(JSON.stringify({ verdict, model, control, withRoot, sandboxed }, null, 2));
