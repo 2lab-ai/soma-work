@@ -187,6 +187,13 @@ main 머지 시 자동 배포 없음. 명시적 브랜치 push로만 배포된�
 gh workflow run deploy --ref main -f confirm=deploy
 ```
 
+dev 배포를 일부 호스트로 좁히기(`.github/workflows/deploy.yml` "Resolve deploy targets"):
+
+- **봇**은 `repository_dispatch`로 한다. GitHub App에 actions 쓰기 권한이 없어서 `gh workflow run`은 403이고, contents 쓰기로 되는 길은 이것뿐이다: `gh api repos/2lab-ai/soma-work/dispatches -f event_type=deploy-dev -f 'client_payload[targets]=<러너 라벨>[,<러너 라벨>]'`. 기본 브랜치(main) HEAD를 preview 채널로만 배포하고, 대상을 비우면 실행이 실패한다(dev 호스트 전부로 번지지 않음).
+- **deploy/dev push**는 repo 변수 `PREVIEW_PUSH_TARGETS`(쉼표로 구분한 라벨, 비어 있으면 전부)로 좁혀진다.
+- 대상 목록 변수(`PREVIEW_DEPLOY_TARGETS`)는 **줄이지 말고 고르기만 한다.** env 플러그인·배포 샌드박스 secret 줄은 그 목록 전체를 기준으로 검사되므로, 목록에서 호스트를 빼면 그 호스트를 가리키는 줄 때문에 다른 호스트의 배포까지 실패한다.
+- 어떤 좁히기든 목록에 없는 라벨이 하나라도 있으면 실행이 실패한다.
+
 ## Key Gotchas
 
 - **듀얼 인스턴스 금지**: 같은 Slack 토큰으로 여러 인스턴스 실행 시 메시지 중복/충돌. 개발은 `npm start`만 사용.

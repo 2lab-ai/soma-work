@@ -103,6 +103,34 @@ describe('deploy config expectations', () => {
     expect(install).toBeGreaterThan(unset);
   });
 
+  // Owner policy 2026-11-13: a dev deploy goes to one host at once, the others in a daily batch. The bot holds
+  // contents:write but not actions:write, so it narrows a deploy by a repository dispatch (never by editing the
+  // channel's target list, which the secret lines are checked against), and a push to deploy/dev is narrowed by a
+  // variable.
+  it('narrows a dev deploy by a repository dispatch or a push variable, selecting from the channel list only', () => {
+    const workflow = read('.github/workflows/deploy.yml');
+
+    expect(workflow).toMatch(/repository_dispatch:\n\s+types: \[deploy-dev\]/);
+    expect(workflow).toContain(
+      "SELECT: ${{ (github.event_name == 'workflow_dispatch' && inputs.targets) || (github.event_name == 'repository_dispatch' && github.event.client_payload.targets) || (github.event_name == 'push' && github.ref_name == 'deploy/dev' && vars.PREVIEW_PUSH_TARGETS) || '' }}",
+    );
+    // A dispatch must name its targets: an empty one would deploy every dev host.
+    const guard = workflow.indexOf("if: github.event_name == 'repository_dispatch'");
+    expect(guard).toBeGreaterThan(-1);
+    expect(workflow).toContain('DISPATCH_TARGETS: ${{ github.event.client_payload.targets }}');
+    expect(workflow.slice(guard, guard + 600)).toContain('exit 1');
+    expect(guard).toBeLessThan(workflow.indexOf('- name: Resolve deploy targets'));
+    // The payload is untrusted text: an expression reading it sits only in an env assignment, never spliced
+    // into a `run:` script where it would be shell code.
+    const reads = workflow.split('\n').filter((l) => /\$\{\{[^}]*client_payload/.test(l));
+    expect(reads.length).toBeGreaterThan(0);
+    for (const line of reads) expect(line).toMatch(/^\s+[A-Z_]+: \$\{\{/);
+    // The channel's whole label set is still taken before any narrowing (the secret lines are checked against it).
+    const labels = workflow.indexOf('runner_labels=$(jq -r');
+    expect(labels).toBeGreaterThan(-1);
+    expect(labels).toBeLessThan(workflow.indexOf('SELECT_NORM="$(tr -d'));
+  });
+
   it('deploy step sets or revokes the per-runner deploy sandbox grant under the same channel rules', () => {
     const workflow = read('.github/workflows/deploy.yml');
 
