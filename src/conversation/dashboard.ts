@@ -19852,7 +19852,7 @@ function wlIsCard(el) {
 //     the top when the section box ends in view, else the tabs under the agent
 //     tabs (psecLandingTop) — made again as the parts arrive, unless the reader
 //     scrolled since.
-var _panelOnQuestion = false;
+var _panelOnQuestion = false; // false, or where this opening's question landing went: 'top' (under the title bar) · 'chat'
 var _panelLandAt = null; // where the last section landing left the scroll (null = none yet this opening)
 var _panelHold = false; // a landed section is held in place while the panel settles, until the reader acts
 var _panelHoldUntil = 0; // the settle window (3 s): after it, the panel's own moves are the reader's place too
@@ -19901,11 +19901,14 @@ function landPanel() {
       : question && question.style.display !== 'none' ? question
       : planBox && !planBox.hidden && planBox.getAttribute('data-waiting') === 'true' ? planBox : null;
     var onQuestion = !!target;
-    if (onQuestion && _panelOnQuestion) return;
+    // The landing already made, by where it went ('top' — the question under the title bar, 'chat' — the chat): a
+    // question landing is skipped only after a question landing, so a box that moved back under the title bar since
+    // a chat landing (작업 로그, a subagent) is still landed on.
+    if (onQuestion && _panelOnQuestion === 'top') return;
     // Phone chrome: what waits on the reader brings the head and the composer back (it lives in the head) — once an
     // opening: a landing after the turns arrive does not undo a reader who started reading.
-    if (inChat && !_panelOnQuestion) rdReset();
-    _panelOnQuestion = onQuestion || inChat;
+    if (inChat && _panelOnQuestion !== 'chat') rdReset();
+    _panelOnQuestion = onQuestion ? 'top' : inChat ? 'chat' : false;
     if (onQuestion) {
       // Under the title bar (off the chat — 에이전트 트리, a subagent): the head and the composer back, then the question.
       rdReset();

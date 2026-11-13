@@ -561,7 +561,7 @@ describe('N6 — an opening with the zone in the chat lands on the chat', () => 
       panelTabsHeight: () => 44,
       psecLandingTop: (secTop: number, _bottom: number, _view: number, under: number) => secTop - under,
     });
-    return { m, scrolls, rdReset };
+    return { m, scrolls, rdReset, c };
   }
 
   it('in the chat: the section landing (the chat at its newest), the composer back once an opening', () => {
@@ -569,7 +569,7 @@ describe('N6 — an opening with the zone in the chat lands on the chat', () => 
     l.m.landPanel();
     expect(l.scrolls).toEqual([700 - 44]);
     expect(l.rdReset).toHaveBeenCalledTimes(1);
-    expect(l.m.__get('_panelOnQuestion')).toBe(true);
+    expect(l.m.__get('_panelOnQuestion')).toBe('chat');
     // The landing after the turns arrive lands on the chat again, without undoing a reader who started reading.
     l.m.landPanel();
     expect(l.scrolls).toEqual([700 - 44, 700 - 44]);
@@ -580,7 +580,21 @@ describe('N6 — an opening with the zone in the chat lands on the chat', () => 
     const l = lander(false);
     l.m.landPanel();
     expect(l.scrolls).toEqual([300 - 40]);
-    expect(l.m.__get('_panelOnQuestion')).toBe(true);
+    expect(l.m.__get('_panelOnQuestion')).toBe('top');
+    // Landed on the question once: a later landing of the same opening leaves the reader be.
+    l.m.landPanel();
+    expect(l.scrolls).toEqual([300 - 40]);
+  });
+
+  it('a chat landing, then the box back under the title bar (작업 로그, a subagent): the next landing finds the question (review)', () => {
+    const l = lander(true);
+    l.m.landPanel();
+    expect(l.scrolls).toEqual([700 - 44]);
+    l.c.needs.removeAttribute('slot');
+    l.c.surf.insertBefore(l.c.needs, l.c.family);
+    l.m.landPanel();
+    expect(l.scrolls).toEqual([700 - 44, 300 - 40]);
+    expect(l.m.__get('_panelOnQuestion')).toBe('top');
   });
 });
 
@@ -717,6 +731,28 @@ describe('N8 — a decided plan alone keeps the box shown under the title bar (r
 });
 
 describe('the page and its styles', () => {
+  it('the four parts are the box’s own children in the shipped markup (review: containment, not order)', () => {
+    const open = PAGE.indexOf('<div class="panel-needs" id="panel-needs"');
+    expect(open).toBeGreaterThan(-1);
+    // Walk the <div> nesting from the box's opening tag to its own closing tag.
+    let depth = 0;
+    let close = -1;
+    const tags = /<div\b|<\/div>/g;
+    tags.lastIndex = open;
+    for (let m = tags.exec(PAGE); m; m = tags.exec(PAGE)) {
+      depth += m[0] === '</div>' ? -1 : 1;
+      if (depth === 0) {
+        close = m.index;
+        break;
+      }
+    }
+    expect(close).toBeGreaterThan(open);
+    const inside = PAGE.slice(open, close);
+    for (const id of ['panel-needs-head', 'panel-permission', 'panel-question', 'panel-plan'])
+      expect(inside, id).toContain(`id="${id}"`);
+    expect(inside).not.toContain('id="panel-family"');
+  });
+
   it('one box holds the zone, under the title bar until placePanelNeeds moves it', () => {
     const at = (s: string) => PAGE.indexOf(s);
     // Its own region name: in the chat, the turn's file row around it is named for files (이 답변이 만든 파일).
