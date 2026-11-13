@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { environmentApprovalKey } from '../../../environment-approval-key';
 import { environmentSessionText, SkillForceHandler } from '../skill-force-handler';
 
 vi.mock('node:fs');
@@ -96,7 +97,12 @@ describe('SkillForceHandler — environment user skills', () => {
     h.isAllowed.mockReturnValue(true);
     h.hasOneTime.mockReturnValue(true);
     await handler.execute(ctx('$acme-dev2:deploy'));
-    expect(h.consumeOneTime).toHaveBeenCalledWith('env:acme-dev2', 'deploy', 'U1', '$acme-dev2:deploy');
+    expect(h.consumeOneTime).toHaveBeenCalledWith(
+      'env:acme-dev2',
+      'deploy',
+      'U1',
+      environmentApprovalKey('C1', '171.1', '$acme-dev2:deploy'),
+    );
   });
 
   it('without a grant, asks the admins by DM with accept · deny · this skill always · whole environment always', async () => {
@@ -136,7 +142,7 @@ describe('SkillForceHandler — environment user skills', () => {
     expect(result.handled).toBe(true);
     expect(result.continueWithPrompt).toBeUndefined();
     expect(runAsUser).not.toHaveBeenCalled();
-    expect(JSON.stringify(say.mock.calls)).toContain('단독');
+    expect(JSON.stringify(say.mock.calls)).toContain('하나만');
   });
 
   it("another user's skill still runs in the requester's session", async () => {
@@ -278,13 +284,29 @@ describe('SkillForceHandler — environment user skills', () => {
     const h3 = new SkillForceHandler(resolveUser, { slackApi: slackApi as any, runAsUser: neverStarts });
     await h3.execute(ctx('$acme-dev2:deploy'));
     await new Promise((r) => setTimeout(r, 10));
-    expect(h.consumeOneTime).toHaveBeenCalledWith('env:acme-dev2', 'deploy', 'U1', '$acme-dev2:deploy');
-    expect(h.addOneTime).toHaveBeenCalledWith('env:acme-dev2', 'deploy', 'U1', undefined, '$acme-dev2:deploy');
+    expect(h.consumeOneTime).toHaveBeenCalledWith(
+      'env:acme-dev2',
+      'deploy',
+      'U1',
+      environmentApprovalKey('C1', '171.1', '$acme-dev2:deploy'),
+    );
+    expect(h.addOneTime).toHaveBeenCalledWith(
+      'env:acme-dev2',
+      'deploy',
+      'U1',
+      undefined,
+      environmentApprovalKey('C1', '171.1', '$acme-dev2:deploy'),
+    );
   });
 
   it('the grant check for an environment skill is bound to this message', async () => {
     await handler.execute(ctx('$acme-dev2:deploy go'));
-    expect(h.isAllowed).toHaveBeenCalledWith('env:acme-dev2', 'deploy', 'U1', '$acme-dev2:deploy go');
+    expect(h.isAllowed).toHaveBeenCalledWith(
+      'env:acme-dev2',
+      'deploy',
+      'U1',
+      environmentApprovalKey('C1', '171.1', '$acme-dev2:deploy go'),
+    );
   });
 
   it('a request no admin could be shown is retired, so asking again is not stuck behind it', async () => {
@@ -306,5 +328,22 @@ describe('SkillForceHandler — environment user skills', () => {
       threadTs: '171.1',
       originalText: '$acme-dev2:deploy go',
     });
+  });
+
+  it('one message calls one environment skill: two are refused before any card goes out', async () => {
+    const result = await handler.execute(ctx('$acme-dev2:deploy $acme-dev2:qa'));
+    expect(result.handled).toBe(true);
+    expect(h.createReq).not.toHaveBeenCalled();
+    expect(slackApi.openDmChannel).not.toHaveBeenCalled();
+    expect(runAsUser).not.toHaveBeenCalled();
+    expect(JSON.stringify(say.mock.calls)).toContain('하나만');
+  });
+
+  it('the approval key binds the message to its channel and thread', () => {
+    const a = environmentApprovalKey('C1', 'T1', 'same words');
+    expect(environmentApprovalKey('C1', 'T2', 'same words')).not.toBe(a);
+    expect(environmentApprovalKey('C2', 'T1', 'same words')).not.toBe(a);
+    expect(environmentApprovalKey('C1', undefined, 'same words')).not.toBe(a);
+    expect(environmentApprovalKey('C1', 'T1', 'same words')).toBe(a);
   });
 });

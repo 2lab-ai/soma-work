@@ -204,28 +204,6 @@ export function markRequestHandled(requestId: string, resolution?: RequestResolu
   saveAll(all);
 }
 
-/** Is any request for this one message (an environment user's) still waiting for an answer? */
-export function hasPendingRequestsFor(match: {
-  ownerId: string;
-  requesterId: string;
-  channel: string;
-  threadTs?: string;
-  originalText: string;
-}): boolean {
-  const now = Date.now();
-  return Object.values(loadAll()).some(
-    (req) =>
-      !req.handled &&
-      isLive(req, now) &&
-      req.operation === 'invoke' &&
-      req.ownerId === match.ownerId &&
-      req.requesterId === match.requesterId &&
-      req.channel === match.channel &&
-      req.threadTs === match.threadTs &&
-      req.originalText === match.originalText,
-  );
-}
-
 /**
  * Close every pending request for one message (an environment user's): once that message has been handed off, a
  * card still waiting for it must not run it a second time.

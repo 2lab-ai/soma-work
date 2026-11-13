@@ -5,6 +5,7 @@ import { getAdminUsers, isAdminUser } from '../../admin-utils';
 import { DATA_DIR, PLUGINS_DIR } from '../../env-paths';
 import { checkEnvSkillPermission, type EnvSkillRegistry, envSkillRegistry } from '../../env-skill-registry';
 import { isEnvironmentUser } from '../../env-users';
+import { environmentApprovalKey } from '../../environment-approval-key';
 import { Logger } from '../../logger';
 import { isSafePathSegment } from '../../path-utils';
 import { isAdmittedPluginName } from '../../plugin/admitted-plugin-names';
@@ -212,8 +213,8 @@ interface ResolveState {
   errors: string[];
   /** The original requester (A). Constant through recursion. */
   requesterId: string;
-  /** The message being resolved: an environment user's one-time grant serves only this message. */
-  text: string;
+  /** This message's approval key: an environment user's one-time grant serves only this message, here. */
+  approvalKey: string;
   /** Cross-user refs A may not access — drives a halt + permission request. */
   denied: DeniedRef[];
   deniedSeen: Set<string>;
@@ -361,12 +362,25 @@ export class SkillForceHandler implements CommandHandler {
       return { handled: false };
     }
 
+    // An environment user's skill runs as that user, one message at a time: a message calls one environment skill
+    // and nothing else, so one approval is one run (no cards that depend on each other).
+    const environmentRefs = topLevelRefs.filter(
+      (ref) => !!ref.ownerUserId && ref.ownerUserId !== user && isEnvironmentUser(ref.ownerUserId),
+    );
+    if (environmentRefs.length > 0 && topLevelRefs.length > 1) {
+      await say({
+        text: `❌ 환경 유저 스킬은 메시지 하나에 하나만 부를 수 있습니다(다른 스킬과 함께도 안 됩니다). 메시지를 나눠 보내 주세요.`,
+        thread_ts: threadTs,
+      });
+      return { handled: true };
+    }
+
     // Resolve all skills recursively, collecting content + permission denials.
     const state: ResolveState = {
       resolved: new Map<string, string>(),
       errors: [],
       requesterId: user,
-      text,
+      approvalKey: environmentApprovalKey(ctx.channel, threadTs, text),
       denied: [],
       deniedSeen: new Set<string>(),
       oneTime: [],
@@ -547,12 +561,13 @@ export class SkillForceHandler implements CommandHandler {
     // Claim every one-time grant now, synchronously, before anything runs: two hand-offs racing on one approval must
     // not both start. A grant another hand-off already spent leaves this one without permission — unless a lasting
     // grant still covers it. If the run never starts, the claimed grants are given back.
+    const approvalKey = environmentApprovalKey(channel, threadTs, text);
     const claimed: Array<{ ownerUserId: string; skillName: string }> = [];
     for (const o of oneTime) {
-      if (consumeOneTimeGrant(o.ownerUserId, o.skillName, user, text)) {
+      if (consumeOneTimeGrant(o.ownerUserId, o.skillName, user, approvalKey)) {
         claimed.push(o);
-      } else if (!isSkillUseAllowed(o.ownerUserId, o.skillName, user, text)) {
-        for (const c of claimed) addOneTimeGrant(c.ownerUserId, c.skillName, user, undefined, text);
+      } else if (!isSkillUseAllowed(o.ownerUserId, o.skillName, user, approvalKey)) {
+        for (const c of claimed) addOneTimeGrant(c.ownerUserId, c.skillName, user, undefined, approvalKey);
         await post(`⚠️ \`${o.skillName}\` 1회 승인은 이미 사용되었습니다. 다시 요청하면 어드민에게 승인을 받습니다.`);
         return { handled: true };
       }
@@ -560,7 +575,7 @@ export class SkillForceHandler implements CommandHandler {
     let opened = false;
     const giveBack = (): void => {
       if (opened) return;
-      for (const c of claimed) addOneTimeGrant(c.ownerUserId, c.skillName, user, undefined, text);
+      for (const c of claimed) addOneTimeGrant(c.ownerUserId, c.skillName, user, undefined, approvalKey);
     };
     // This message runs now: a card still waiting for the very same message must not run it again.
     retirePendingRequests({ ownerId: owner, requesterId: user, channel, threadTs, originalText: text });
@@ -1070,7 +1085,7 @@ export class SkillForceHandler implements CommandHandler {
     // recursion) so no portion of the owner's skill leaks.
     if (effectiveOwner && effectiveOwner !== state.requesterId) {
       // An environment user's one-time grant is bound to the message it was approved for.
-      const boundText = isEnvironmentUser(effectiveOwner) ? state.text : undefined;
+      const boundText = isEnvironmentUser(effectiveOwner) ? state.approvalKey : undefined;
       if (!isSkillUseAllowed(effectiveOwner, ref.skill, state.requesterId, boundText)) {
         const dk = `${effectiveOwner}\u0000${ref.skill}`;
         if (!state.deniedSeen.has(dk)) {

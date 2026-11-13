@@ -5,7 +5,6 @@ vi.mock('../env-users', () => ({ isEnvironmentUser: (u: string) => u === 'env:ac
 import {
   createPermissionRequest,
   getPermissionRequest,
-  hasPendingRequestsFor,
   retirePendingRequests,
 } from '../skill-permission-request-store';
 
@@ -45,21 +44,5 @@ describe('createPermissionRequest — environment user owner', () => {
     });
     expect(getPermissionRequest(a.requestId)?.handled).toBe(true);
     expect(getPermissionRequest(other.requestId)?.handled).toBe(false);
-  });
-
-  it('knows whether another request for the same message is still pending', () => {
-    const m = { ownerId: base.ownerId, requesterId: 'U1', channel: 'C7', threadTs: 'T7', originalText: 'two skills' };
-    const deploy = createPermissionRequest({
-      ...base,
-      skillName: 'deploy',
-      channel: 'C7',
-      threadTs: 'T7',
-      originalText: 'two skills',
-    });
-    createPermissionRequest({ ...base, skillName: 'qa', channel: 'C7', threadTs: 'T7', originalText: 'two skills' });
-    expect(hasPendingRequestsFor(m)).toBe(true);
-    retirePendingRequests(m);
-    expect(hasPendingRequestsFor(m)).toBe(false);
-    expect(getPermissionRequest(deploy.requestId)?.handled).toBe(true);
   });
 });
