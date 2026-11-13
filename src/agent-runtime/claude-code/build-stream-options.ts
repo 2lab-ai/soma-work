@@ -47,7 +47,7 @@ import {
   envSkillRegistry,
   envSkillSandboxDenyRead,
 } from '../../env-skill-registry';
-import { loadEnvironments } from '../../env-users';
+import { isEnvironmentUser, loadEnvironments } from '../../env-users';
 import type { IncidentEvidence, IncidentEvidenceConfig } from '../../incident/evidence';
 import { assertIncidentRequest, buildIncidentSdkOptions, type IncidentRequestLike } from '../../incident/sdk-options';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
@@ -343,13 +343,17 @@ export async function buildStreamOptions(
   // (`native-write-boundary.ts`); with the sandbox off neither is confined.
   //
   // The sandbox is off only for an admin who turned it off on a host that allows it
-  // (`SOMA_SANDBOX_OFF_ALLOWED`, env-access WU2 #1210); otherwise the admin runs with the admin profile.
+  // (`SOMA_SANDBOX_OFF_ALLOWED`, env-access WU2 #1210), or for an environment user; otherwise the admin runs with
+  // the admin profile.
   const contextIsAdmin = contextUser ? isAdminUser(contextUser) : false;
   const sandboxOffRequested = contextUser ? userSettingsStore.getUserSandboxDisabled(contextUser) : false;
   const sandboxDisabled = isSandboxOffInEffect({
     isAdmin: contextIsAdmin,
     requested: sandboxOffRequested,
     hostAllows: getSandboxOffAllowed(),
+    // An environment user (`env:<name>`) runs without a sandbox on every host — the deploy and QA work an admin
+    // approved for another user. Its skills, crons and requests are gated before its session starts.
+    environmentUser: contextUser ? isEnvironmentUser(contextUser) : false,
   });
   if (sandboxOffRequested && !sandboxDisabled) {
     logger.warn('Sandbox off is not allowed on this host (SOMA_SANDBOX_OFF_ALLOWED): running sandboxed', {

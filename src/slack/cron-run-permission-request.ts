@@ -8,7 +8,9 @@
  * in a DM with them, Slack error). Never swallow the failure silently: an
  * undelivered prompt would leave the requester waiting forever.
  */
+import { getAdminUsers } from '../admin-utils';
 import { createCronRunRequest, markCronRunRequestHandled } from '../cron-run-request-store';
+import { isEnvironmentUser } from '../env-users';
 import { Logger } from '../logger';
 import { buildCronRunPermissionMessage } from './cron-run-permission-blocks';
 
@@ -75,17 +77,24 @@ export async function requestCronRunPermission(
   });
 
   if (input.slackApi) {
-    try {
-      const dmChannel = await input.slackApi.openDmChannel(input.ownerId);
-      await input.slackApi.postMessage(dmChannel, msg.text, { blocks: msg.blocks });
-      return { requestId: req.requestId, delivered: 'dm' };
-    } catch (error) {
-      logger.warn('cron run permission DM failed — falling back to thread', {
-        ownerId: input.ownerId,
-        jobName: input.jobName,
-        error: (error as Error)?.message ?? String(error),
-      });
+    // An environment user (`env:<name>`) is never a person: its admins are asked, the way they are for its skills.
+    const recipients = isEnvironmentUser(input.ownerId) ? [...getAdminUsers()] : [input.ownerId];
+    let sent = 0;
+    for (const recipient of recipients) {
+      try {
+        const dmChannel = await input.slackApi.openDmChannel(recipient);
+        await input.slackApi.postMessage(dmChannel, msg.text, { blocks: msg.blocks });
+        sent++;
+      } catch (error) {
+        logger.warn('cron run permission DM failed — falling back to thread', {
+          ownerId: input.ownerId,
+          recipient,
+          jobName: input.jobName,
+          error: (error as Error)?.message ?? String(error),
+        });
+      }
     }
+    if (sent > 0) return { requestId: req.requestId, delivered: 'dm' };
   }
 
   if (input.postFallback) {
@@ -114,6 +123,16 @@ export async function requestCronRunPermission(
 
 /** One phrasing of the permission-request outcome, shared by both surfaces. */
 export function describeDelivery(delivered: CronRunPermissionDelivery, ownerId: string, jobName: string): string {
+  if (isEnvironmentUser(ownerId)) {
+    switch (delivered) {
+      case 'none':
+        return `⚠️ 환경 유저 \`${ownerId}\`의 \`${jobName}\` 실행 요청을 어드민에게 전달하지 못했습니다. 어드민에게 직접 문의하세요.`;
+      case 'pending':
+        return `⏳ \`${jobName}\` 실행 요청이 이미 어드민 승인 대기 중입니다. 승인되면 실행됩니다.`;
+      default:
+        return `🔐 환경 유저 \`${ownerId}\`의 \`${jobName}\` 실행을 어드민에게 요청했습니다. 승인되면 환경 유저 권한으로 실행됩니다.`;
+    }
+  }
   switch (delivered) {
     case 'none':
       return `⚠️ <@${ownerId}>님께 \`${jobName}\` 실행 권한 요청을 전달하지 못했습니다. 오너에게 직접 문의하세요.`;

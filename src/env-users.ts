@@ -128,3 +128,30 @@ export function environmentOfServer(server: string, envs: readonly Environment[]
 export function environmentsOfPlugin(plugin: string, envs: readonly Environment[]): Environment[] {
   return envs.filter((env) => env.skills.some((pattern) => pattern.startsWith(`${plugin}:`)));
 }
+
+/**
+ * Is `userId` one of this host's environment users? An environment user is an admin that runs without a sandbox
+ * (`admin-utils` `isAdminUser`, `isSandboxOffInEffect`); other users reach it through another user's skill and a
+ * cron run request, which an admin approves. Only a configured `env:<name>` is one — no Slack id has that shape.
+ */
+export function isEnvironmentUser(userId: string, envs?: readonly Environment[]): boolean {
+  if (typeof userId !== 'string' || !userId.startsWith('env:')) return false;
+  return (envs ?? environmentsOrNone()).some((env) => env.id === userId);
+}
+
+/** The environment user a person names by its label (`acme-dev2`, or `env:acme-dev2`), or null. */
+export function environmentUserNamed(name: string, envs?: readonly Environment[]): string | null {
+  if (typeof name !== 'string' || !name) return null;
+  const lower = name.toLowerCase();
+  const id = lower.startsWith('env:') ? lower : `env:${lower}`;
+  return isEnvironmentUser(id, envs) ? id : null;
+}
+
+/** `loadEnvironments()`, or none when the config path cannot be read at all (a stubbed env-paths). */
+function environmentsOrNone(): Environment[] {
+  try {
+    return loadEnvironments();
+  } catch {
+    return [];
+  }
+}

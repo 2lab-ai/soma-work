@@ -1,8 +1,10 @@
 import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
+import { getAdminUsers } from '../../admin-utils';
 import { type CronRunRequest, getCronRunRequest, markCronRunRequestHandled } from '../../cron-run-request-store';
 import { getActiveCronScheduler } from '../../cron-scheduler';
 import { DATA_DIR } from '../../env-paths';
+import { isEnvironmentUser } from '../../env-users';
 import { Logger } from '../../logger';
 import {
   VALUE_KIND_CRON_RUN_ALWAYS,
@@ -83,13 +85,19 @@ export class CronRunPermissionActionHandler {
         return;
       }
 
-      // Owner-bound: only the job owner may grant.
+      // Owner-bound: only the job owner may grant. An environment user is never a person: its admins decide.
       const clickerId: string | undefined = body?.user?.id;
-      if (!clickerId || clickerId !== req.ownerId) {
+      const environmentOwner = isEnvironmentUser(req.ownerId);
+      const mayDecide = environmentOwner
+        ? !!clickerId && getAdminUsers().has(clickerId)
+        : !!clickerId && clickerId === req.ownerId;
+      if (!mayDecide) {
         await respond({
           response_type: 'ephemeral',
           replace_original: false,
-          text: `⚠️ 이 요청은 크론잡 오너 <@${req.ownerId}>님만 처리할 수 있습니다.`,
+          text: environmentOwner
+            ? `⚠️ 환경 유저 \`${req.ownerId}\`의 크론 실행 요청은 어드민만 처리할 수 있습니다.`
+            : `⚠️ 이 요청은 크론잡 오너 <@${req.ownerId}>님만 처리할 수 있습니다.`,
         });
         return;
       }

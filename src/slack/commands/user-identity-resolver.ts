@@ -9,6 +9,8 @@
  * `SkillForceHandler` / `UserSkillsListHandler` preprocessors run synchronously
  * before the model sees the message.
  */
+import { environmentUserNamed } from '../../env-users';
+
 export interface UserDirectory {
   getAllUsers(): Array<{ userId: string; slackName?: string; slackDisplayName?: string }>;
 }
@@ -79,6 +81,11 @@ export function resolveUserIdentifier(token: string, directory: UserDirectory = 
   // 2. uid-shaped bare token → itself, BEFORE any display-name lookup, so a
   //    malicious display name equal to a uid cannot hijack that uid.
   if (UID_RE.test(bare)) return bare;
+
+  // 2b. An environment user's label (`acme-dev2` → `env:acme-dev2`), also before any display name: the operator
+  //     named it in config.json, and a person must not take it over by setting that display name.
+  const environmentUser = environmentUserNamed(bare);
+  if (environmentUser) return environmentUser;
 
   // 3. Name match (display_name OR real_name, case-insensitive), failing closed
   //    on ambiguity. The matches Set keys on uid, so a user whose display and
