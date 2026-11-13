@@ -46,6 +46,14 @@ describe('diagram router — the reader decides, the picture shows it', () => {
     const html = skill('html');
     expect(between(html, '### 0. Reader', '### 1. Read the catalog')).toMatch(/The page is the only upload/);
   });
+  it('report mode: each branch hands over what it makes — Excalidraw a PNG, DRAWING its HTML sheet (trinity R2)', () => {
+    const rm = between(md, '**Report mode', '## Classification');
+    expect(rm).toMatch(/DRAWING hands over its HTML sheet/);
+    expect(rm).toMatch(/srcdoc/);
+    const dd = skill('dimensional-drawing');
+    expect(between(dd, '## Delivery in soma-work', '\u0000')).toMatch(/In report mode skip steps 4 and 5/);
+    expect(between(md, '## Anti-patterns', '## End turn')).toMatch(/separate images[^\n]*report mode/);
+  });
   it('the router does not retry; its end line states the conclusion first', () => {
     expect(md).toMatch(/Do NOT retry at the router/);
     expect(between(md, '## End turn', '\u0000')).toMatch(/states the picture's conclusion/);

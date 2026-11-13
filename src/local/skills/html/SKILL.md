@@ -82,8 +82,9 @@ check fails the page otherwise. A card, deck, résumé or landing page keeps its
 are still written down, and the answer becomes the card's line, the deck's cover or the landing hero — no map or
 guide is forced onto it and `--first-screen` is not passed.
 
-A picture the request asked for (the `diagram` skill in report mode hands over a PNG) goes right after the
-opening as `<img src="data:image/png;base64,…" alt="<its conclusion>">` inside an `overflow-x: auto` box, and its
+A picture the request asked for (the `diagram` skill in report mode hands over a PNG, or a dimensional drawing's
+HTML sheet) goes right after the opening — a PNG as `<img src="data:image/png;base64,…" alt="<its conclusion>">`, a
+sheet as `<iframe srcdoc="…" title="<its conclusion>">` with the sheet's own size — inside an `overflow-x: auto` box, and its
 content stays on the page as text too (for a comparison, the rows as an HTML table that stacks on a phone, each with
 its source). The page is the only upload. Below them, each section opens with its own conclusion and says each fact in
 full once — a later section refers back instead of restating it.
@@ -527,19 +528,24 @@ page is one artifact, and a PNG beside it doubled every entry). The renderer
 opens the page in headless Chromium and measures it instead:
 
 ```bash
+# a reading document (doc-kami-parchment · data-report · meeting-notes · eng-runbook): first run
 node "$CLAUDE_PLUGIN_ROOT/skills/html/renderer/render.mjs" \
   --input "$(pwd)/html-<slug>-<ts>.html" \
-  --check --first-screen \
-  --template "<name>"
+  --check --first-screen --template "<name>"
+# any other template (a card, a deck, a résumé, a landing page): first run
+node "$CLAUDE_PLUGIN_ROOT/skills/html/renderer/render.mjs" \
+  --input "$(pwd)/html-<slug>-<ts>.html" \
+  --check --template "<name>"
+# every page: the phone run
 node "$CLAUDE_PLUGIN_ROOT/skills/html/renderer/render.mjs" \
   --input "$(pwd)/html-<slug>-<ts>.html" \
   --check --template "<name>" --width 390 --height 844
 ```
 
 The second run is a phone: a table or a chart that passes at the template width can collide or hide its key
-column at 390 px (seen 2026-11-13: 39 overlaps at 375 px on a page that passed at 1440). Both runs must pass;
-both pass `--template` so a fixed-canvas template (a deck, a card) keeps its sideways scroll legal, and
-`--first-screen` goes on the first run of a reading document only (Step 0).
+column at 390 px (seen 2026-11-13: 39 overlaps at 375 px on a page that passed at 1440). Run the one first run
+that fits the page, then the phone run; both must pass. Both pass `--template` so a fixed-canvas template (a deck,
+a card) keeps its sideways scroll legal, and `--first-screen` goes on a reading document's first run only (Step 0).
 `--first-screen` also fails the page when the Step 0 answer, map or guide is missing or starts below the first
 900 px; the verdict's `firstScreen.top` says where each one sits.
 

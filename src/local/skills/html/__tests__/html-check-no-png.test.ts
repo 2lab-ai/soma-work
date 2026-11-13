@@ -417,3 +417,68 @@ describe('html Step 5 — the phone run keeps a fixed-canvas template legal', ()
     expect(step0).toMatch(/reading documents/);
   });
 });
+
+/**
+ * trinity R2 (astra, reproduced): two holes the R1 fix left open.
+ * - Text wrapped inside an absolutely placed label (`<span style="position:absolute"><b>…</b></span>`) was cut
+ *   again by the static overflow box the label escapes, so its collision went unseen (overlaps 0, exit 0).
+ * - An opening pushed above the page top (top −4984 px) still counted as on the first screen.
+ * And grok: Step 5's first run printed `--first-screen` for every template, contradicting Step 0.
+ */
+describe('trinity R2 — nested text follows its absolute ancestor; an opening above the top is not seen', () => {
+  const FILL = '<p>This paragraph is long enough that the page has plenty of visible text for the check.</p>';
+
+  it('text nested inside an absolute label escapes the static overflow box and still collides', () => {
+    const r = check(
+      'abs-nested',
+      `${FILL}<div style="position:relative"><div style="overflow:hidden;height:10px"><span style="position:absolute;top:0;left:0"><b>label drawn over the line</b></span></div><p style="margin:0">text line under the label here</p></div>`,
+    );
+    expect(r.verdict.overlaps).toBeGreaterThan(0);
+    expect(r.status).toBe(3);
+  }, 150_000);
+
+  it('text nested inside an absolute label is still cut by the containing block that clips it', () => {
+    const r = check(
+      'abs-nested-clipped',
+      `${FILL}<div style="position:relative;overflow:hidden;height:10px"><span style="position:absolute;top:30px;left:0"><b>label its block clips away</b></span></div><p style="margin:20px 0 0">text line where the label would sit</p>`,
+    );
+    expect(r.verdict.overlaps).toBe(0);
+  }, 150_000);
+
+  it('an opening pushed above the top of the page fails', () => {
+    const input = join(dir, 'fs-above.html');
+    writeFileSync(
+      input,
+      '<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>t</title></head><body style="margin:0">' +
+        '<div style="position:absolute;top:-5000px">' +
+        '<p data-first-screen="answer">요약: 결론 한 줄이 여기 있다.</p>' +
+        '<ol data-first-screen="map"><li>판단</li><li>근거</li></ol>' +
+        '<p data-first-screen="guide">결정만 필요하면 판단까지 읽는다.</p></div>' +
+        '<p>보이는 본문이 충분히 길게 이어진다.</p></body></html>',
+    );
+    const r = spawnSync(
+      process.execPath,
+      [RENDERER, '--input', input, '--check', '--first-screen', '--width', '1200', '--height', '800', '--wait-ms', '0'],
+      { encoding: 'utf8', timeout: 120_000 },
+    );
+    const line = (r.stdout || '').split('\n').find((l) => l.startsWith('check: '));
+    const v = line ? JSON.parse(line.slice(7)) : null;
+    expect(r.status).toBe(3);
+    expect(v.firstScreen).toMatchObject({ answer: false, map: false, guide: false });
+  }, 150_000);
+
+  it("SKILL.md Step 5: --first-screen is printed only on a reading document's run", () => {
+    const s = md('html');
+    const step5 = s.slice(s.indexOf('### 5. Check the page'), s.indexOf('### 6.'));
+    const fence = step5.slice(step5.indexOf('```bash'), step5.indexOf('```', step5.indexOf('```bash') + 7));
+    const doc = fence.indexOf('# a reading document');
+    const other = fence.indexOf('# any other template');
+    expect(doc).toBeGreaterThan(-1);
+    expect(other).toBeGreaterThan(doc);
+    const fs = fence.indexOf('--first-screen');
+    expect(fs).toBeGreaterThan(doc);
+    expect(fs).toBeLessThan(other);
+    expect(fence.slice(other)).not.toContain('--first-screen');
+    expect(fence.slice(other)).toMatch(/--check --template "<name>"\s*\n/);
+  });
+});

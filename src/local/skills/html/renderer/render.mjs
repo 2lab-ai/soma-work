@@ -255,7 +255,9 @@ async function checkPage(page, pageErrors, { failOnOverflowX, firstScreen = fals
     // text rect is cut to every box that really clips it and dropped when nothing of it is left — so only text a
     // reader can see can collide (research-skill run 2026-11-13). Only a real clip counts (trinity R1):
     // - an absolutely positioned element is clipped only by its containing block and what clips that, not by a
-    //   static overflow box in between; a fixed one escapes them all;
+    //   static overflow box in between; a fixed one escapes them all (unless a transformed ancestor holds it);
+    // - text nested inside such an element follows it: past each box that clips, the walk asks what clips THAT
+    //   box, by that box's own position (trinity R2 — `<span style="position:absolute"><b>…</b></span>`);
     // - each axis clips on its own (`overflow-x: clip` with `overflow-y: visible` cuts sideways only).
     const axisBox = (e, cs) => {
       const r = e.getBoundingClientRect();
@@ -277,18 +279,21 @@ async function checkPage(page, pageErrors, { failOnOverflowX, firstScreen = fals
       if (hidden(own)) return null;
       const ownBox = axisBox(el, own);
       if (ownBox) out.push(ownBox);
-      let mode = own.position === 'fixed' ? 'fixed' : own.position === 'absolute' ? 'absolute' : 'flow';
+      const placed = (cs) => (cs.position === 'fixed' ? 'fixed' : cs.position === 'absolute' ? 'absolute' : 'flow');
+      // `mode` is how the box the walk has reached so far is placed: its ancestors clip it by that rule.
+      let mode = placed(own);
       for (let e = el.parentElement; e && e.nodeType === 1 && e !== document.documentElement; e = e.parentElement) {
         const cs = getComputedStyle(e);
-        const isBlock = cs.position !== 'static' || cs.transform !== 'none';
-        const clips = mode === 'flow' || (mode === 'absolute' && isBlock);
-        if (clips) {
-          if (hidden(cs)) return null;
-          const b = axisBox(e, cs);
-          if (b) out.push(b);
-        }
-        if (mode === 'absolute' && isBlock) mode = cs.position === 'fixed' ? 'fixed' : cs.position === 'absolute' ? 'absolute' : 'flow';
-        if (mode === 'fixed' && cs.transform !== 'none') mode = 'flow';
+        const transformed = cs.transform !== 'none';
+        const clips =
+          mode === 'flow' ||
+          (mode === 'absolute' && (cs.position !== 'static' || transformed)) ||
+          (mode === 'fixed' && transformed);
+        if (!clips) continue;
+        if (hidden(cs)) return null;
+        const b = axisBox(e, cs);
+        if (b) out.push(b);
+        mode = placed(cs);
       }
       return out;
     };
@@ -359,7 +364,9 @@ async function checkPage(page, pageErrors, { failOnOverflowX, firstScreen = fals
         const clips = clipBoxes(el);
         if (clips === null) return null;
         const r = cut(el.getBoundingClientRect(), clips);
-        if (!r || r.right <= 0 || r.left >= window.innerWidth) return null;
+        // Off the screen on any side — left, right or above the top — is not seen (trinity R2); below the
+        // fold is reported by its top and fails in `inside`.
+        if (!r || r.right <= 0 || r.left >= window.innerWidth || r.bottom <= 0) return null;
         return Math.round(r.top + window.scrollY);
       };
       const top = { answer: at('answer'), map: at('map'), guide: at('guide') };

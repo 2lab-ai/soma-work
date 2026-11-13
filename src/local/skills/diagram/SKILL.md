@@ -26,9 +26,11 @@ comparison with no signal word once became a dark infrastructure diagram with in
 **Report mode — a picture inside a report.** When the same request also asks you to make a report or page as its
 output (`리포트해줘`, `보고서로 만들어줘`, `페이지로`, `report on`) — not when a report is only the subject ("보고서
 디자인을 바꿀지") — report mode applies, and it overrides every upload step below (GENERAL and COMPARISON step 4,
-MIXED, architecture-diagram's Step 8, DRAWING's delivery): the delegate renders and validates, then hands over the
-PNG path without uploading; the `html` skill embeds it right after the page's opening and uploads the page — one
-request, one artifact. In report mode MIXED's two pictures both go into the page. On a phone the picture
+MIXED, architecture-diagram's Step 8, DRAWING's delivery): the delegate renders and validates, then hands over
+what it made without uploading — an Excalidraw branch hands over the
+PNG path without uploading anything; DRAWING hands over its HTML sheet (it makes no PNG), which the page holds in an
+`<iframe srcdoc>` so it stays one self-contained file. The `html` skill embeds it right after the page's opening
+and uploads the page — one request, one artifact. In report mode MIXED's two pictures both go into the page. On a phone the picture
 keeps its size inside a sideways-scrolling box (`overflow-x: auto`) rather than shrinking to unreadable text. The
 picture summarises; it never holds the only copy — the page keeps its content as text too (the compared rows as an
 HTML table that stacks on a phone, each with its source), so it can be searched, copied and read aloud.
@@ -103,7 +105,7 @@ Do not guess. Do not stall on unclassifiable input — ask once, then proceed.
 
 - Do NOT describe what you are about to do. Just classify and invoke.
 - Do NOT re-implement architecture palette here. Delegate.
-- Do NOT merge architecture + numeric into one image. Keep them as separate artifacts.
+- Do NOT merge architecture + numeric into one image. Keep them as separate images — separate artifacts, except in report mode, where both go into the one page.
 - Do NOT fall back silently. If a delegate skill is missing, log the reason in one line before falling back.
 - Do NOT retry at the router. The delegate's own retry budget (architecture-diagram Step 7) is the only one; if it is spent, surface the error once and endTurn.
 
