@@ -1507,7 +1507,7 @@ class ServerToolsMCPServer extends BaseMcpServer {
             query: {
               type: 'object',
               description:
-                'Query parameters (strings, numbers, booleans), e.g. {"per_page": 50, "sha": "deploy/dev2"}.',
+                'Query parameters (strings, numbers, booleans), e.g. {"per_page": 50, "sha": "release/v2"}.',
             },
             fields: {
               type: 'array',
