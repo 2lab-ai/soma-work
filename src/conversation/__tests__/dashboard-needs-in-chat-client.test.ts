@@ -71,6 +71,9 @@ const CSS = cook(
 // ── A small DOM: ids, a parent, ordered children, attributes (slot), hidden and style.display ──
 // Every reparent counts: a box moved when nothing changed would drop the focus in a card the reader is answering.
 let moves = 0;
+// Focus, as a browser keeps it: taking a node out of the page blurs a focused node inside it (focus falls to <body>).
+const BODY = { id: 'body' };
+const focus: { active: unknown } = { active: BODY };
 class El {
   id: string;
   children: El[] = [];
@@ -96,9 +99,16 @@ class El {
   removeAttribute(n: string) {
     delete this.attrs[n];
   }
+  contains(x: unknown): boolean {
+    return x === this || this.children.some((c) => c.contains(x));
+  }
+  focus() {
+    focus.active = this;
+  }
   remove() {
     const p = this.parentNode;
     if (!p) return;
+    if (this.contains(focus.active)) focus.active = BODY;
     p.children.splice(p.children.indexOf(this), 1);
     this.parentNode = null;
   }
@@ -139,7 +149,13 @@ function card() {
   family.hidden = true;
   for (const part of [needs, family, el('panel-needs-status'), el('panel-midbar')]) surf.appendChild(part);
   const conv = el('panel-conv');
-  const document = { getElementById: (id: string) => byId[id] ?? null };
+  focus.active = BODY;
+  const document = {
+    getElementById: (id: string) => byId[id] ?? null,
+    get activeElement() {
+      return focus.active;
+    },
+  };
   return { byId, surf, needs, head, perm, question, plan, family, conv, document };
 }
 
@@ -202,6 +218,8 @@ describe('N1 — who waits, and where the zone goes', () => {
       role: 'assistant',
       name: 'Soma',
       markdown: '아래에서 답하면 작업이 이어집니다.',
+      // A blank source: no 원본 disclosure on the ask's turn (review).
+      source: ' ',
       attachments: true,
     });
   });
@@ -259,6 +277,24 @@ describe('N2 — placePanelNeeds moves the zone into the chat and back', () => {
     p.plan.hidden = false;
     p.m.placePanelNeeds();
     expect(p.needs.hidden).toBe(false);
+  });
+
+  it('a move keeps the reader’s focus: the card they were on is focused again (review — no fall to <body>)', () => {
+    const p = placer(WAITING);
+    p.m.placePanelNeeds();
+    const card = new El('card');
+    p.perm.appendChild(card);
+    card.focus();
+    // The last ask is answered: the box leaves the chat with the card still in it, focused.
+    p.m.__set('_sessionCache', { k: { ...IDLE } });
+    p.m.placePanelNeeds();
+    expect(p.needs.parentNode).toBe(p.surf);
+    expect(p.document.activeElement).toBe(card);
+    // And into the chat again (a folded plan's summary had the focus under the title bar).
+    p.m.__set('_sessionCache', { k: { ...WAITING } });
+    p.m.placePanelNeeds();
+    expect(p.needs.parentNode).toBe(p.conv);
+    expect(p.document.activeElement).toBe(card);
   });
 
   it('after the phone moves the status bar to the surface’s top, the zone still goes back under it', () => {
@@ -336,9 +372,15 @@ describe('N3 — syncPanelNeeds repaints the chat only when the zone comes or go
 });
 
 describe('N4 — convPaint: the zone’s turn is the chat’s last, with no writing row under it', () => {
-  function painter(session: Record<string, unknown>, pendingShow = true) {
+  const LIST = [
+    { id: 'u1', role: 'user' },
+    { id: 'a1', role: 'assistant' },
+    { id: 'u2', role: 'user' },
+  ];
+  function painter(session: Record<string, unknown>, pendingShow = true, list = LIST, msg = '') {
     const c = card();
-    const sets: { turns: { id: string; role?: string }[]; pending?: boolean }[] = [];
+    const sets: { turns: { id: string; role?: string }[]; pending?: boolean; startText?: string; loading?: boolean }[] =
+      [];
     const m = load<{ convPaint(): void; __set(n: string, v: unknown): void }>(
       [...PLACE_FNS, 'needsTurnOf', 'convPaint'],
       [...NEEDS_VARS, 'CONV_EMPTY', '_resumSent'],
@@ -351,12 +393,8 @@ describe('N4 — convPaint: the zone’s turn is the chat’s last, with no writ
         _sessionCache: { k: session },
         panelConvId: 'c',
         _panelTurnsCid: 'c',
-        _panelTurnsList: [
-          { id: 'u1', role: 'user' },
-          { id: 'a1', role: 'assistant' },
-          { id: 'u2', role: 'user' },
-        ],
-        _panelTurnsMsg: '',
+        _panelTurnsList: list,
+        _panelTurnsMsg: msg,
         _panelTurnsHasMore: false,
         _panelTurnsLoading: false,
         _panelTurnsWhy: '',
@@ -374,7 +412,8 @@ describe('N4 — convPaint: the zone’s turn is the chat’s last, with no writ
           slots: [],
         }),
         convSlots: () => {},
-        convSetData: (_el: unknown, d: { turns: { id: string }[]; pending?: boolean }) => sets.push(d),
+        convSetData: (_el: unknown, d: { turns: { id: string }[]; pending?: boolean; startText?: string }) =>
+          sets.push(d),
         rbIndex: () => null,
         rewindSpansOf: () => null,
         renderAgentConv: () => {},
@@ -391,6 +430,17 @@ describe('N4 — convPaint: the zone’s turn is the chat’s last, with no writ
     expect(d.turns[3]).toMatchObject({ role: 'assistant', name: 'Soma', attachments: true });
     expect(d.pending).toBe(false);
     expect(p.needs.parentNode).toBe(p.conv);
+  });
+
+  it('the ask alone while the turns load: no “대화의 시작” above it (review); with turns the start line is back', () => {
+    const p = painter({ ...WAITING }, true, [], 'loading');
+    p.m.convPaint();
+    expect(p.last().turns.map((t) => t.id)).toEqual(['panel-needs']);
+    expect(p.last().startText).toBe('');
+    expect(p.last().loading).toBe(true);
+    const q = painter({ ...WAITING });
+    q.m.convPaint();
+    expect(q.last().startText).toBe('대화의 시작');
   });
 
   it('nothing waits: no zone turn, the writing row as before', () => {

@@ -8687,9 +8687,10 @@ var NEEDS_TURN_TEXT = '아래에서 답하면 작업이 이어집니다.';
 function panelNeedsInChat(psec, agent, n) {
   return psec === 'conv' && !agent && n > 0;
 }
-// Pure: the chat's last turn that carries the zone (the bot's name, as on its answers).
+// Pure: the chat's last turn that carries the zone (the bot's name, as on its answers). Its blank source leaves it no
+// 원본 disclosure (the element offers one for any turn whose source has text).
 function needsTurnOf(bot) {
-  return { id: NEEDS_TURN_ID, role: 'assistant', name: bot, markdown: NEEDS_TURN_TEXT, attachments: true };
+  return { id: NEEDS_TURN_ID, role: 'assistant', name: bot, markdown: NEEDS_TURN_TEXT, source: ' ', attachments: true };
 }
 // Put #panel-needs where it belongs now (a move only when that changed) and say whether that is the chat. Under the
 // title bar the box hides while none of its parts shows (the surface's rules between parts read :not([hidden])).
@@ -8700,16 +8701,24 @@ function placePanelNeeds() {
   if (!box || !conv || !surf) return false;
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   var inChat = panelNeedsInChat(_psec, _panelAgent, panelNeedsCount(s));
+  var ae = document.activeElement;
+  var had = !!(ae && box.contains(ae));
+  var moved = false;
   if (inChat) {
     if (box.parentNode !== conv) {
       box.slot = NEEDS_SLOT;
       conv.appendChild(box);
+      moved = true;
     }
   } else if (box.parentNode !== surf) {
     box.removeAttribute('slot');
     var at = document.getElementById('panel-family');
     surf.insertBefore(box, at && at.parentNode === surf ? at : surf.firstChild);
+    moved = true;
   }
+  // A move takes the focus out of the page (to <body>): the control the reader was on gets it back, so the card that
+  // answered and left still hands it to a safe place (apSafeFocus — re-agent-run D14).
+  if (moved && had && document.activeElement !== ae && ae.focus) ae.focus({ preventScroll: true });
   box.hidden = !inChat && !Array.prototype.some.call(box.children, function(part) { return !part.hidden && part.style.display !== 'none'; });
   return inChat;
 }
@@ -20945,6 +20954,8 @@ function convPaint() {
     titles: ansLinkTitles(ansSession(cid)),
   });
   var last = shown.length ? shown[shown.length - 1] : null;
+  // The ask alone (the turns still loading, failed or none): the list does not say the conversation starts above it.
+  var askOnly = needs && !built.turns.length;
   if (needs) built.turns.push(needsTurnOf(botNameOf(s)));
   var msg = _panelTurnsMsg;
   var d = {
@@ -20959,7 +20970,7 @@ function convPaint() {
     clampLines: _panelDetail ? 200 : 12,
     label: '지시와 답변',
     emptyText: CONV_EMPTY[msg] || CONV_EMPTY.none,
-    startText: '대화의 시작',
+    startText: askOnly ? '' : '대화의 시작',
   };
   var why = msg === 'failed' ? _panelTurnsWhy || '네트워크 오류' : _panelOlderWhy;
   if (why) d.error = why;
