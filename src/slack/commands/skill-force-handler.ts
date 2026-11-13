@@ -12,7 +12,12 @@ import { RETIRED_SKILL_SUCCESSORS } from '../../skill-locator';
 import { createPermissionRequest } from '../../skill-permission-request-store';
 import type { ConversationSession } from '../../types';
 import { extractCopiedFrom } from '../../user-skill-frontmatter';
-import { consumeOneTimeGrant, hasOneTimeGrant, isSkillUseAllowed } from '../../user-skill-grants-store';
+import {
+  addOneTimeGrant,
+  consumeOneTimeGrant,
+  hasOneTimeGrant,
+  isSkillUseAllowed,
+} from '../../user-skill-grants-store';
 import { describeEnvSkillDelivery, requestEnvSkillPermission } from '../env-skill-permission-request';
 import { announceSessionNotice } from '../session-notice';
 import { buildEnvironmentPermissionRequestMessage, buildPermissionRequestMessage } from '../skill-permission-blocks';
@@ -532,6 +537,24 @@ export class SkillForceHandler implements CommandHandler {
         this.logger.warn('Environment user notice not posted', { owner, error: (error as Error)?.message });
       }
     };
+    // Claim every one-time grant now, synchronously, before anything runs: two hand-offs racing on one approval must
+    // not both start. A grant another hand-off already spent leaves this one without permission — unless a lasting
+    // grant still covers it. If the run never starts, the claimed grants are given back.
+    const claimed: Array<{ ownerUserId: string; skillName: string }> = [];
+    for (const o of oneTime) {
+      if (consumeOneTimeGrant(o.ownerUserId, o.skillName, user)) {
+        claimed.push(o);
+      } else if (!isSkillUseAllowed(o.ownerUserId, o.skillName, user)) {
+        for (const c of claimed) addOneTimeGrant(c.ownerUserId, c.skillName, user);
+        await post(`⚠️ \`${o.skillName}\` 1회 승인은 이미 사용되었습니다. 다시 요청하면 어드민에게 승인을 받습니다.`);
+        return { handled: true };
+      }
+    }
+    let opened = false;
+    const giveBack = (): void => {
+      if (opened) return;
+      for (const c of claimed) addOneTimeGrant(c.ownerUserId, c.skillName, user);
+    };
     const link = async (rootTs: string): Promise<string> => {
       try {
         return (await this.deps.slackApi?.getPermalink(channel, rootTs)) ?? `스레드 ${rootTs}`;
@@ -545,8 +568,7 @@ export class SkillForceHandler implements CommandHandler {
       rootText: `[${owner}] <@${user}> 요청 — ${skills}`,
       text: environmentSessionText(owner, refs, user, text),
       onOpened: (rootTs) => {
-        // The run exists now: a one-time grant is spent here, not before (a run that never starts keeps it).
-        for (const o of oneTime) consumeOneTimeGrant(o.ownerUserId, o.skillName, user);
+        opened = true;
         void link(rootTs).then((where) =>
           post(`▶ 환경 유저 \`${owner}\` 권한으로 실행합니다 (어드민 · 샌드박스 없음): ${where}`),
         );
@@ -554,12 +576,14 @@ export class SkillForceHandler implements CommandHandler {
     })
       .then(async (rootTs) => {
         if (!rootTs) {
+          giveBack();
           await post(`❌ 환경 유저 \`${owner}\` 실행 스레드를 만들지 못했습니다.`);
           return;
         }
         await post(`⏹ 환경 유저 \`${owner}\`의 턴이 끝났습니다 — 결과는 스레드에서 확인하세요: ${await link(rootTs)}`);
       })
       .catch(async (error: unknown) => {
+        giveBack();
         this.logger.error('Environment user skill run failed', { owner, requester: user, error });
         await post(`❌ 환경 유저 \`${owner}\` 실행 실패: ${(error as Error)?.message ?? String(error)}`);
       })

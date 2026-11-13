@@ -13,12 +13,14 @@ const h = vi.hoisted(() => ({
   isAllowed: vi.fn((_o: string, _s: string, _r: string) => false),
   hasOneTime: vi.fn((_o: string, _s: string, _r: string) => false),
   consumeOneTime: vi.fn((_o: string, _s: string, _r: string) => true),
+  addOneTime: vi.fn(),
   createReq: vi.fn((i: any) => ({ requestId: 'req-1', ...i })),
 }));
 vi.mock('../../../user-skill-grants-store', () => ({
   isSkillUseAllowed: h.isAllowed,
   hasOneTimeGrant: h.hasOneTime,
   consumeOneTimeGrant: h.consumeOneTime,
+  addOneTimeGrant: h.addOneTime,
 }));
 vi.mock('../../../skill-permission-request-store', () => ({ createPermissionRequest: h.createReq }));
 vi.mock('../../../admin-utils', () => ({
@@ -226,8 +228,8 @@ describe('SkillForceHandler — environment user skills', () => {
       await new Promise((r) => setTimeout(r, 20));
       expect(failingRun).toHaveBeenCalled();
       expect(rejections).toEqual([]);
-      // The run never started, so a one-time grant is not spent.
-      expect(h.consumeOneTime).not.toHaveBeenCalled();
+      // The run never started: nothing was spent for good (no one-time grant was held here).
+      expect(h.addOneTime).not.toHaveBeenCalled();
     } finally {
       process.off('unhandledRejection', onRejection);
     }
@@ -247,5 +249,30 @@ describe('SkillForceHandler — environment user skills', () => {
     expect(vi.mocked(fs.readFileSync).mock.calls.map((c) => String(c[0]))).not.toContain(
       '/mock/data/env:acme-dev2/skills/deploy/SKILL.md',
     );
+  });
+
+  it('a one-time grant is claimed before the run: a second hand-off that finds it spent does not run', async () => {
+    h.hasOneTime.mockReturnValue(true);
+    // Allowed while resolving (the grant was there), not any more once the other hand-off spent it.
+    h.isAllowed.mockReturnValueOnce(true).mockReturnValue(false);
+    h.consumeOneTime.mockReturnValue(false);
+    const result = await handler.execute(ctx('$acme-dev2:deploy'));
+    expect(result.handled).toBe(true);
+    expect(runAsUser).not.toHaveBeenCalled();
+    expect(JSON.stringify(say.mock.calls)).toContain('이미 사용');
+  });
+
+  it('a claimed one-time grant is given back when the run never starts', async () => {
+    h.isAllowed.mockReturnValue(true);
+    h.hasOneTime.mockReturnValue(true);
+    h.consumeOneTime.mockReturnValue(true);
+    const neverStarts = vi.fn(async () => {
+      throw new Error('scheduler down');
+    });
+    const h3 = new SkillForceHandler(resolveUser, { slackApi: slackApi as any, runAsUser: neverStarts });
+    await h3.execute(ctx('$acme-dev2:deploy'));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(h.consumeOneTime).toHaveBeenCalledWith('env:acme-dev2', 'deploy', 'U1');
+    expect(h.addOneTime).toHaveBeenCalledWith('env:acme-dev2', 'deploy', 'U1');
   });
 });
