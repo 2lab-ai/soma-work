@@ -459,6 +459,29 @@ describe('gh_read — a SHA is read only when it is on the repository', () => {
     ]);
   });
 
+  // Self-review: a revision expression (`<sha>~0`, `<sha>^`, `<sha>@{0}`, encoded or not) names the same fork commit.
+  it('proves the commit under a revision suffix, and a short SHA from four characters', async () => {
+    const { fetch, calls } = repoGithub({ main: [ON] });
+    for (const p of [`repos/acme/app/commits/${FORK}~0`, `repos/acme/app/compare/${FORK}%5E...main`]) {
+      await expect(read(fetch, p)).rejects.toThrow(/not on this repository's read refs/);
+    }
+    await expect(read(fetch, 'repos/acme/app/contents/a.ts', { ref: `${FORK}~1` })).rejects.toThrow(
+      /not on this repository's read refs/,
+    );
+    await expect(read(fetch, 'repos/acme/app/commits/ffff')).rejects.toThrow(/not on this repository's read refs/);
+    // trinity R6 (fable): a number in the query is sent as digits, a short SHA.
+    await expect(read(fetch, 'repos/acme/app/contents/a.ts', { ref: 1234567 })).rejects.toThrow(
+      /not on this repository's read refs/,
+    );
+    await expect(read(fetch, 'repos/acme/app/commits', { sha: 1234567 })).rejects.toThrow(
+      /not on this repository's read refs/,
+    );
+    await read(fetch, `repos/acme/app/commits/${ON}~1`);
+    expect(calls.filter((c) => !c.includes('/compare/') && c !== 'repos/acme/app')).toEqual([
+      `repos/acme/app/commits/${ON}~1`,
+    ]);
+  });
+
   it("reads a commit's checks and statuses by SHA without a proof: they are this repository's own records", async () => {
     const { fetch, calls } = repoGithub({});
     await read(fetch, `repos/acme/app/commits/${FORK}/check-runs`);

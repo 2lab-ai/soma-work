@@ -259,8 +259,10 @@ const READ_SHAPES: readonly RegExp[] = [
   `actions/workflows/${S}`,
   `actions/workflows/${S}/runs`,
 ].map((shape) => new RegExp(`^${shape}$`));
-/** A commit named by its SHA, whole or short. */
-const HEXISH = /^[0-9a-f]{7,40}$/i;
+/** A commit named by its SHA, whole or short (git takes four characters). */
+const HEXISH = /^[0-9a-f]{4,40}$/i;
+/** The commit a revision expression starts from (`<sha>~1`, `<sha>^2`, `<sha>@{0}`, `<sha>.patch`); fails closed on a hex-led name. */
+const revisionBase = (v: string): string => v.split(/[~^@.:]/)[0];
 /** What is below `commits/<sha>` that is this repository's own record about the commit, not the commit's content. */
 const COMMIT_RECORDS = new Set(['check-runs', 'check-suites', 'status', 'statuses', 'pulls']);
 /** A branch name in `readRefs`. */
@@ -383,22 +385,26 @@ function pickFields(value: unknown, node: FieldNode): unknown {
  */
 export function shasToProve(rest: string[], query: unknown): string[] {
   const q = query && typeof query === 'object' ? (query as Record<string, unknown>) : {};
-  const hex = (v: unknown): v is string => typeof v === 'string' && HEXISH.test(v);
   const out: string[] = [];
-  if (rest[0] === 'commits' && rest.length === 1 && hex(q.sha)) out.push(q.sha);
+  const add = (v: unknown) => {
+    // A number is sent as its digits, which can name a short SHA (trinity R6, fable).
+    if (typeof v !== 'string' && typeof v !== 'number') return;
+    const base = revisionBase(String(v));
+    if (HEXISH.test(base)) out.push(base);
+  };
+  if (rest[0] === 'commits' && rest.length === 1) add(q.sha);
   if (rest[0] === 'commits' && rest.length > 1) {
     const records = rest.length === 3 && COMMIT_RECORDS.has(rest[2]);
-    const ref = rest.slice(1).join('/');
-    if (!records && hex(ref)) out.push(ref);
+    if (!records) add(rest.slice(1).join('/'));
   }
   if (rest[0] === 'compare') {
     for (const side of rest
       .slice(1)
       .join('/')
       .split(/\.{2,3}/))
-      if (hex(side)) out.push(side);
+      add(side);
   }
-  if (rest[0] === 'contents' && hex(q.ref)) out.push(q.ref);
+  if (rest[0] === 'contents') add(q.ref);
   return out;
 }
 
