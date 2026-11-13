@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 # A cold load of the pinned Excalidraw bundle from esm.sh measured 36–44 s (2026-11-13).
-DEFAULT_LOAD_TIMEOUT_MS = 120_000
+DEFAULT_LOAD_TIMEOUT_MS = 90_000
 MODULE_URL_RE = re.compile(r'EXCALIDRAW_MODULE_URL\s*=\s*"([^"]+)"')
 
 
@@ -231,7 +231,7 @@ def main() -> None:
         "-s",
         type=int,
         default=1,
-        help="Device scale factor (default: 1; 2 doubles every side — 7000-px PNGs unreadable in a Slack preview, 2026-11-13)",
+        help="Device scale factor (default: 1). 2 doubles the pixels, not the relative text size; it made 7000-px, 1–2 MB PNGs (2026-11-13)",
     )
     parser.add_argument("--width", "-w", type=int, default=1920, help="Max viewport width (default: 1920)")
     parser.add_argument(

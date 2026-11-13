@@ -295,3 +295,125 @@ describe('--first-screen — the answer, the map and the reading guide open the 
     expect(r.verdict.firstScreen).toBeUndefined();
   }, 150_000);
 });
+
+/**
+ * trinity R1 (2026-11-13) reproduced three holes in the clip-aware check and --first-screen:
+ * - an absolutely positioned label is not clipped by an overflow ancestor that is not its containing block, so
+ *   cutting it there hid a real collision;
+ * - `overflow-x: clip` with `overflow-y: visible` clips one axis only, so cutting both axes hid a collision;
+ * - an opening hidden by an ancestor (visibility:hidden) still counted as "in the first screen".
+ * And the html skill's phone run must keep a fixed-canvas template's sideways scroll legal.
+ */
+describe('review gate — what clips, clips only what it really clips', () => {
+  const FILL = '<p>This paragraph is long enough that the page has plenty of visible text for the check.</p>';
+
+  it('an absolute label escapes a static overflow box and still collides with the text under it', () => {
+    const r = check(
+      'abs-escape',
+      `${FILL}<div style="position:relative"><div style="overflow:hidden;height:10px"><span style="position:absolute;top:0;left:0">label drawn over the line</span></div><p style="margin:0">text line under the label here</p></div>`,
+    );
+    expect(r.verdict.overlaps).toBeGreaterThan(0);
+  }, 150_000);
+
+  it('a box that clips only sideways still lets two lines collide vertically', () => {
+    const r = check(
+      'one-axis',
+      `${FILL}<div style="overflow-x:clip;overflow-y:visible;height:20px"><p style="margin:0">first line of a short box</p><p style="margin:0">second line spills down</p></div><p style="margin:0">text right under the short box</p>`,
+    );
+    expect(r.verdict.overlaps).toBeGreaterThan(0);
+  }, 150_000);
+});
+
+describe('--first-screen — only an opening a reader can see counts', () => {
+  function checkFirst(name: string, body: string, extra: string[] = []) {
+    const input = join(dir, `${name}.html`);
+    writeFileSync(
+      input,
+      `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>t</title></head><body style="margin:0">${body}</body></html>`,
+    );
+    const r = spawnSync(
+      process.execPath,
+      [
+        RENDERER,
+        '--input',
+        input,
+        '--check',
+        '--first-screen',
+        '--width',
+        '1200',
+        '--height',
+        '800',
+        '--wait-ms',
+        '0',
+        ...extra,
+      ],
+      { encoding: 'utf8', timeout: 120_000 },
+    );
+    const line = (r.stdout || '').split('\n').find((l) => l.startsWith('check: '));
+    return { status: r.status, verdict: line ? JSON.parse(line.slice(7)) : null };
+  }
+  const TOP =
+    '<p data-first-screen="answer">요약: 결론 한 줄이 여기 있다.</p>' +
+    '<ol data-first-screen="map"><li>판단</li><li>근거</li></ol>' +
+    '<p data-first-screen="guide">결정만 필요하면 판단까지 읽는다.</p>';
+
+  it('an opening under visibility:hidden fails', () => {
+    const r = checkFirst(
+      'fs-hidden',
+      `<div style="visibility:hidden">${TOP}</div><p>보이는 본문이 충분히 길게 이어진다.</p>`,
+    );
+    expect(r.status).toBe(3);
+    expect(r.verdict.firstScreen).toMatchObject({ answer: false, map: false, guide: false });
+  }, 150_000);
+
+  it('an opening pushed off-screen sideways fails', () => {
+    const r = checkFirst(
+      'fs-offside',
+      `<div style="position:absolute;left:-5000px">${TOP}</div><p>보이는 본문이 충분히 길게 이어진다.</p>`,
+    );
+    expect(r.status).toBe(3);
+    expect(r.verdict.firstScreen.answer).toBe(false);
+  }, 150_000);
+});
+
+describe('html Step 5 — the phone run keeps a fixed-canvas template legal', () => {
+  it('a swipe deck checked at 390 px with its template reports the sideways scroll and passes', () => {
+    const input = join(dir, 'swipe-phone.html');
+    const slide = (n: number) =>
+      `<section style="flex:0 0 1920px;height:1080px"><h1>Slide ${n} heading</h1><p>Slide ${n} body text for the deck.</p></section>`;
+    writeFileSync(
+      input,
+      `<!doctype html><html><body style="margin:0"><main style="display:flex;width:3840px">${slide(1)}${slide(2)}</main></body></html>`,
+    );
+    const r = spawnSync(
+      process.execPath,
+      [
+        RENDERER,
+        '--input',
+        input,
+        '--check',
+        '--template',
+        'deck-simple',
+        '--width',
+        '390',
+        '--height',
+        '844',
+        '--wait-ms',
+        '0',
+      ],
+      { encoding: 'utf8', timeout: 120_000 },
+    );
+    const v = JSON.parse(((r.stdout || '').split('\n').find((l) => l.startsWith('check: ')) ?? 'check: null').slice(7));
+    expect(v.overflowX).toBeGreaterThan(0);
+    expect(v.ok).toBe(true);
+    expect(r.status).toBe(0);
+  }, 150_000);
+
+  it("SKILL.md's phone run passes the template, and the first-screen opening is for reading documents", () => {
+    const s = md('html');
+    const step5 = s.slice(s.indexOf('### 5. Check the page'), s.indexOf('### 6.'));
+    expect(step5).toMatch(/--template "<name>" --width 390 --height 844/);
+    const step0 = s.slice(s.indexOf('### 0. Reader'), s.indexOf('### 1. Read the catalog'));
+    expect(step0).toMatch(/reading documents/);
+  });
+});

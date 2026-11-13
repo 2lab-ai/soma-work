@@ -23,14 +23,15 @@ Before scoring, write two lines and pass them to the delegate with the request:
 A request that matches no keyword below is classified by this relation, never by the tie rule — a
 comparison with no signal word once became a dark infrastructure diagram with invented arrows.
 
-**A picture inside a report.** When the same request also asks you to make a report or page as its output
-(`리포트해줘`, `보고서로 만들어줘`, `페이지로`, `report on`) — not when a report is only the subject ("보고서 디자인을
-바꿀지") — the picture is part of that page: render it, then embed the PNG in the html page (`<img src="data:image/png;base64,…" alt="<conclusion>">`)
-right after the page's opening, and upload the page only — one request, one artifact. On a phone the picture
+**Report mode — a picture inside a report.** When the same request also asks you to make a report or page as its
+output (`리포트해줘`, `보고서로 만들어줘`, `페이지로`, `report on`) — not when a report is only the subject ("보고서
+디자인을 바꿀지") — report mode applies, and it overrides every upload step below (GENERAL and COMPARISON step 4,
+MIXED, architecture-diagram's Step 8, DRAWING's delivery): the delegate renders and validates, then hands over the
+PNG path without uploading; the `html` skill embeds it right after the page's opening and uploads the page — one
+request, one artifact. In report mode MIXED's two pictures both go into the page. On a phone the picture
 keeps its size inside a sideways-scrolling box (`overflow-x: auto`) rather than shrinking to unreadable text. The
 picture summarises; it never holds the only copy — the page keeps its content as text too (the compared rows as an
-HTML table that stacks on a phone, each with its source), so it can be searched, copied and read aloud. A comparison the report
-already shows as a table needs no second picture of the same table.
+HTML table that stacks on a phone, each with its source), so it can be searched, copied and read aloud.
 
 ## Classification
 
@@ -72,15 +73,15 @@ No dedicated numeric-chart or component-architecture skill fits. Use the vendore
 2. Render with architecture-diagram's Steps 3–5 (its virtualenv, pinned-module pre-flight and load wait apply here too). Resolve the path before the `cd` — after it, `$(pwd)` is the plugin folder:
    ```bash
    export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
-   export UV_PROJECT_ENVIRONMENT="${TMPDIR:-/tmp}/soma-excalidraw-venv"
+   export UV_PROJECT_ENVIRONMENT="${TMPDIR:-/tmp}/soma-excalidraw-venv-$(id -u)"
    JSON="$(pwd)/diag-<slug>-<ts>.excalidraw"
    cd "$CLAUDE_PLUGIN_ROOT/skills/architecture-diagram/references" && uv run python render_excalidraw.py "$JSON"
    ```
 3. Validate (same PNG composite checks as architecture-diagram step 6).
-4. Upload the PNG alone via `mcp__slack-mcp__send_media` — one illustration, one artifact. Keep the `.excalidraw` in the working directory and name its path in the reply; send it with `mcp__slack-mcp__send_file` only when the user asks for the editable source.
+4. Upload the PNG alone via `mcp__slack-mcp__send_media` — one illustration, one artifact (in report mode, hand the PNG path to the `html` skill instead; see Step 0). Keep the `.excalidraw` in the working directory and name its path in the reply; send it with `mcp__slack-mcp__send_file` only when the user asks for the editable source.
 
 ### MIXED
-Execute ARCHITECTURE first (full workflow, upload). Then execute NUMERIC. Each delivers its own artifact. Do not try to merge them into one image.
+Execute ARCHITECTURE first (full workflow, upload). Then execute NUMERIC. Each delivers its own artifact (in report mode both go into the page instead). Do not try to merge them into one image.
 
 ## Unclassifiable input
 

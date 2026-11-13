@@ -68,7 +68,9 @@ the reader's language — the language the user wrote in):
 3. **The asks** — every item the request names or implies ("한눈에", "비교", "시각화", "결정"), one per line.
    Step 6 ticks them off against the page.
 
-The page opens with these, in this order, before any template block (hero, KPI band, chart):
+On reading documents — the templates whose surface is `doc` or `report` (`doc-kami-parchment`, `data-report`,
+`meeting-notes`, `eng-runbook`) — the page opens with these, in this order, before any template block (hero, KPI
+band, chart):
 
 - `data-first-screen="answer"` — the answer, labelled `요약:` / `결론:` (`In short:` in English).
 - `data-first-screen="map"` — a map of the page: one line per section saying what the section **concludes**
@@ -76,7 +78,14 @@ The page opens with these, in this order, before any template block (hero, KPI b
 - `data-first-screen="guide"` — one line on how far to read ("결정만 필요하면 §1, 근거를 의심하면 §2").
 
 All three sit in the reader's first screen (the top 900 px at the template width); Step 5's `--first-screen`
-check fails the page otherwise. Below them, each section opens with its own conclusion and says each fact in
+check fails the page otherwise. A card, deck, résumé or landing page keeps its own form: Step 0's three lines
+are still written down, and the answer becomes the card's line, the deck's cover or the landing hero — no map or
+guide is forced onto it and `--first-screen` is not passed.
+
+A picture the request asked for (the `diagram` skill in report mode hands over a PNG) goes right after the
+opening as `<img src="data:image/png;base64,…" alt="<its conclusion>">` inside an `overflow-x: auto` box, and its
+content stays on the page as text too (for a comparison, the rows as an HTML table that stacks on a phone, each with
+its source). The page is the only upload. Below them, each section opens with its own conclusion and says each fact in
 full once — a later section refers back instead of restating it.
 
 ### 1. Read the catalog
@@ -524,11 +533,13 @@ node "$CLAUDE_PLUGIN_ROOT/skills/html/renderer/render.mjs" \
   --template "<name>"
 node "$CLAUDE_PLUGIN_ROOT/skills/html/renderer/render.mjs" \
   --input "$(pwd)/html-<slug>-<ts>.html" \
-  --check --width 390 --height 844
+  --check --template "<name>" --width 390 --height 844
 ```
 
 The second run is a phone: a table or a chart that passes at the template width can collide or hide its key
-column at 390 px (seen 2026-11-13: 39 overlaps at 375 px on a page that passed at 1440). Both runs must pass.
+column at 390 px (seen 2026-11-13: 39 overlaps at 375 px on a page that passed at 1440). Both runs must pass;
+both pass `--template` so a fixed-canvas template (a deck, a card) keeps its sideways scroll legal, and
+`--first-screen` goes on the first run of a reading document only (Step 0).
 `--first-screen` also fails the page when the Step 0 answer, map or guide is missing or starts below the first
 900 px; the verdict's `firstScreen.top` says where each one sits.
 

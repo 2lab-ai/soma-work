@@ -235,7 +235,7 @@ async function checkPage(page, pageErrors, { failOnOverflowX, firstScreen = fals
       await Promise.race([Promise.all(imgs.map(settled)), new Promise((ok) => setTimeout(ok, 5000))]);
     })
     .catch(() => {});
-  const m = await page.evaluate(() => {
+  const m = await page.evaluate((wantFirstScreen) => {
     const MAX_BOXES = 2000;
     const doc = document.documentElement;
     const overflowX = Math.max(0, Math.ceil(doc.scrollWidth - window.innerWidth));
@@ -252,15 +252,43 @@ async function checkPage(page, pageErrors, { failOnOverflowX, firstScreen = fals
       return true;
     };
     // What an ancestor clips is not drawn: a scroll box's hidden rows, a visually-hidden (sr-only) label. Each
-    // text rect is cut to every clipping box around it (the element itself included) and dropped when nothing
-    // of it is left — so only text a reader can see can collide (research-skill run 2026-11-13).
+    // text rect is cut to every box that really clips it and dropped when nothing of it is left — so only text a
+    // reader can see can collide (research-skill run 2026-11-13). Only a real clip counts (trinity R1):
+    // - an absolutely positioned element is clipped only by its containing block and what clips that, not by a
+    //   static overflow box in between; a fixed one escapes them all;
+    // - each axis clips on its own (`overflow-x: clip` with `overflow-y: visible` cuts sideways only).
+    const axisBox = (e, cs) => {
+      const r = e.getBoundingClientRect();
+      const x = cs.overflowX !== 'visible';
+      const y = cs.overflowY !== 'visible';
+      if (!x && !y) return null;
+      return {
+        left: x ? r.left : -Infinity,
+        right: x ? r.right : Infinity,
+        top: y ? r.top : -Infinity,
+        bottom: y ? r.bottom : Infinity,
+      };
+    };
+    const hidden = (cs) =>
+      /rect\(\s*0(px)?[\s,]+0(px)?[\s,]+0(px)?[\s,]+0(px)?\s*\)/.test(cs.clip) || /^inset\(\s*50%/.test(cs.clipPath);
     const clipBoxes = (el) => {
       const out = [];
-      for (let e = el; e && e.nodeType === 1 && e !== document.documentElement; e = e.parentElement) {
+      const own = getComputedStyle(el);
+      if (hidden(own)) return null;
+      const ownBox = axisBox(el, own);
+      if (ownBox) out.push(ownBox);
+      let mode = own.position === 'fixed' ? 'fixed' : own.position === 'absolute' ? 'absolute' : 'flow';
+      for (let e = el.parentElement; e && e.nodeType === 1 && e !== document.documentElement; e = e.parentElement) {
         const cs = getComputedStyle(e);
-        if (/rect\(\s*0(px)?[\s,]+0(px)?[\s,]+0(px)?[\s,]+0(px)?\s*\)/.test(cs.clip)) return null;
-        if (/^inset\(\s*50%/.test(cs.clipPath)) return null;
-        if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') out.push(e.getBoundingClientRect());
+        const isBlock = cs.position !== 'static' || cs.transform !== 'none';
+        const clips = mode === 'flow' || (mode === 'absolute' && isBlock);
+        if (clips) {
+          if (hidden(cs)) return null;
+          const b = axisBox(e, cs);
+          if (b) out.push(b);
+        }
+        if (mode === 'absolute' && isBlock) mode = cs.position === 'fixed' ? 'fixed' : cs.position === 'absolute' ? 'absolute' : 'flow';
+        if (mode === 'fixed' && cs.transform !== 'none') mode = 'flow';
       }
       return out;
     };
@@ -319,6 +347,25 @@ async function checkPage(page, pageErrors, { failOnOverflowX, firstScreen = fals
         if (samples.length < 5) samples.push([a.el.textContent.trim().slice(0, 40), b.el.textContent.trim().slice(0, 40)]);
       }
     }
+    // The reader's first screen: what shows before any scroll, at most 900 px tall (a laptop screen). A marker
+    // counts only when a reader can see it there — shown, not clipped away, and inside the viewport sideways.
+    let firstScreen;
+    if (wantFirstScreen) {
+      window.scrollTo(0, 0);
+      const fold = Math.min(window.innerHeight, 900);
+      const at = (role) => {
+        const el = document.querySelector(`[data-first-screen="${role}"]`);
+        if (!el || !(el.textContent || '').trim() || !seen(el)) return null;
+        const clips = clipBoxes(el);
+        if (clips === null) return null;
+        const r = cut(el.getBoundingClientRect(), clips);
+        if (!r || r.right <= 0 || r.left >= window.innerWidth) return null;
+        return Math.round(r.top + window.scrollY);
+      };
+      const top = { answer: at('answer'), map: at('map'), guide: at('guide') };
+      const inside = (y) => y !== null && y < fold;
+      firstScreen = { answer: inside(top.answer), map: inside(top.map), guide: inside(top.guide), top, fold };
+    }
     return {
       textChars,
       overflowX,
@@ -328,24 +375,10 @@ async function checkPage(page, pageErrors, { failOnOverflowX, firstScreen = fals
       width: doc.scrollWidth,
       height: doc.scrollHeight,
       ...(truncated ? { truncated: true } : {}),
+      ...(firstScreen ? { firstScreen } : {}),
     };
-  });
-  // The reader's first screen: what shows before any scroll, at most 900 px tall (a laptop screen).
-  const fs = firstScreen
-    ? await page.evaluate(() => {
-        window.scrollTo(0, 0);
-        const fold = Math.min(window.innerHeight, 900);
-        const at = (role) => {
-          const el = document.querySelector(`[data-first-screen="${role}"]`);
-          if (!el || !(el.textContent || '').trim()) return null;
-          const r = el.getBoundingClientRect();
-          return r.height > 0 ? Math.round(r.top + window.scrollY) : null;
-        };
-        const top = { answer: at('answer'), map: at('map'), guide: at('guide') };
-        const inside = (y) => y !== null && y < fold;
-        return { answer: inside(top.answer), map: inside(top.map), guide: inside(top.guide), top, fold };
-      })
-    : null;
+  }, firstScreen);
+  const fs = m.firstScreen ?? null;
   const ok =
     m.textChars >= 20 &&
     (!failOnOverflowX || m.overflowX === 0) &&
@@ -353,7 +386,7 @@ async function checkPage(page, pageErrors, { failOnOverflowX, firstScreen = fals
     m.brokenImages === 0 &&
     pageErrors.length === 0 &&
     (!fs || (fs.answer && fs.map && fs.guide));
-  return { ok, ...m, ...(fs ? { firstScreen: fs } : {}), pageErrors };
+  return { ok, ...m, pageErrors };
 }
 
 main().catch((err) => {

@@ -13,7 +13,7 @@ Produce a dark-themed system architecture diagram as two files:
 1. `arch-<slug>-<ts>.excalidraw` — editable JSON source (open at excalidraw.com)
 2. `arch-<slug>-<ts>.png` — the rendered diagram
 
-Only the PNG is uploaded to the current Slack thread (`mcp__slack-mcp__send_media`): one diagram is one artifact in the thread and the dashboard's 산출물. The `.excalidraw` source stays in the working directory — name its path in the reply, and upload it with `mcp__slack-mcp__send_file` only when the user asks for the editable source.
+Only the PNG is uploaded to the current Slack thread (`mcp__slack-mcp__send_media`): one diagram is one artifact in the thread and the dashboard's 산출물. In report mode (the `diagram` router's Step 0: the picture is part of a report page) nothing is uploaded here — Step 8 hands the PNG path to the `html` skill, which embeds it and uploads the page. The `.excalidraw` source stays in the working directory — name its path in the reply, and upload it with `mcp__slack-mcp__send_file` only when the user asks for the editable source.
 
 ## Prerequisites
 
@@ -113,7 +113,7 @@ read-only in a bot session: keep the virtualenv in the temp directory, and let i
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
-export UV_PROJECT_ENVIRONMENT="${TMPDIR:-/tmp}/soma-excalidraw-venv"
+export UV_PROJECT_ENVIRONMENT="${TMPDIR:-/tmp}/soma-excalidraw-venv-$(id -u)"
 cd "$CLAUDE_PLUGIN_ROOT/skills/architecture-diagram/references"
 uv sync
 uv run playwright install chromium
@@ -129,23 +129,26 @@ exact URL:
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
 REF="$CLAUDE_PLUGIN_ROOT/skills/architecture-diagram/references"
 URL=$(sed -n 's/.*EXCALIDRAW_MODULE_URL = "\([^"]*\)".*/\1/p' "$REF/render_template.html")
-if ! curl -fsS --max-time 60 -o /dev/null "$URL"; then
-  echo "ERROR: $URL did not load — the renderer cannot run (network, or the pinned build moved)." >&2
-  exit 2
-fi
+ENTRY=$(curl -fsS --max-time 60 "$URL") || { echo "ERROR: $URL did not load — the renderer cannot run (network, or the pinned build moved)." >&2; exit 2; }
+BUNDLE=$(printf '%s' "$ENTRY" | sed -n 's|^export \* from "\(/[^"]*\)".*|\1|p' | head -1)
+[ -z "$BUNDLE" ] || curl -fsS --max-time 60 -o /dev/null "https://esm.sh$BUNDLE" || { echo "ERROR: https://esm.sh$BUNDLE (the bundle $URL re-exports) did not load." >&2; exit 2; }
 ```
+
+This proves the entry and its bundle answer; a deeper sub-import that fails still surfaces at render time as
+`Failed to load …` (the renderer's module error), not as a silent timeout.
 
 If this fails, do NOT proceed; report the error with the URL and endTurn.
 
 ### 5. Render to PNG
 
 Resolve the JSON path before changing directory (`$(pwd)` after the `cd` is the plugin folder). The first load of
-the module takes about 40 s; the renderer waits up to 120 s (`--load-timeout-ms` or `EXCALIDRAW_LOAD_TIMEOUT_MS`
-to change it) and prints what it is loading.
+the module takes about 40 s; the renderer waits up to 90 s per stage (`--load-timeout-ms` or `EXCALIDRAW_LOAD_TIMEOUT_MS`
+to change it) and prints what it is loading. Give this Bash call a timeout of at least 300000 ms so a slow load
+reaches the renderer's own message instead of the shell's kill.
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
-export UV_PROJECT_ENVIRONMENT="${TMPDIR:-/tmp}/soma-excalidraw-venv"
+export UV_PROJECT_ENVIRONMENT="${TMPDIR:-/tmp}/soma-excalidraw-venv-$(id -u)"
 JSON="$(pwd)/arch-<slug>-<ts>.excalidraw"
 rm -f "${JSON%.excalidraw}.png"   # Step 6 must never pass on an earlier render
 cd "$CLAUDE_PLUGIN_ROOT/skills/architecture-diagram/references"
@@ -209,6 +212,8 @@ After the **initial render** (Step 5), the skill may perform up to **3 retries**
 These two allotments are independent — a mechanical failure followed later by a critic failure is legal, as long as each stays within its own cap. After the budget is exhausted, stop. `endTurn` with the captured stderr (for mechanical errors) or the final critique notes (for visual failures). Do not loop.
 
 ### 8. Upload the PNG to Slack
+
+In report mode skip this step: return the PNG path (and its conclusion line for the alt text) to the `html` skill.
 
 ```
 mcp__slack-mcp__send_media(

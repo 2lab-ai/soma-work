@@ -34,8 +34,17 @@ describe('diagram router — the reader decides, the picture shows it', () => {
     expect(md).toContain('### COMPARISON');
     expect(md).toMatch(/COMPARISON wins over ARCHITECTURE/);
   });
-  it('a picture asked for inside a report is embedded in the page, which is the one artifact', () => {
-    expect(between(md, '**A picture inside a report.**', '## Classification')).toMatch(/upload the page only/);
+  it('report mode: one rule overrides every upload step, the page is the one artifact (trinity R1)', () => {
+    const rm = between(md, '**Report mode', '## Classification');
+    expect(rm).toMatch(/overrides every upload step below/);
+    expect(rm).toMatch(/hands over the\s+PNG path without uploading/);
+    expect(rm).toMatch(/never holds the only copy/);
+    expect(between(md, '### GENERAL', '### MIXED')).toMatch(/in report mode, hand the PNG path to the `html` skill/);
+    expect(between(md, '### MIXED', '## Unclassifiable')).toMatch(/in report mode both go into the page/);
+    const arch = skill('architecture-diagram');
+    expect(between(arch, '### 8.', '### 9.')).toMatch(/In report mode skip this step/);
+    const html = skill('html');
+    expect(between(html, '### 0. Reader', '### 1. Read the catalog')).toMatch(/The page is the only upload/);
   });
   it('the router does not retry; its end line states the conclusion first', () => {
     expect(md).toMatch(/Do NOT retry at the router/);
