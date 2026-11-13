@@ -2,7 +2,7 @@
 name: architecture-diagram
 description: "Use when the user asks for a drawing of a system architecture or component structure. Triggers: '아키텍처 그려줘', '아키텍쳐 다이어그램', '구조도 그려줘', 'architecture diagram', 'system diagram', 'draw architecture'."
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
-version: 2.1.0
+version: 2.2.0
 license: MIT
 ---
 
@@ -31,9 +31,15 @@ Runtime:
 
 ## Workflow
 
-### 1. Understand the system
+### 1. Understand the system — and what the reader must see
 
 List components + directional flows. Classify each component by semantic type (see palette). If input is too thin to render safely, ask a follow-up via structured UI (UIAskUserQuestion) — do not hallucinate.
+
+Then write the picture's conclusion in one line (the router's Step 0 passes it when it ran): what the reader
+decides and what the picture must make visible. It becomes the canvas title — a finding ("업로드 전에 이미 LAN에
+게시된다"), never the scope ("요청 흐름도"). Mark the components the decision is about (the step to change, the
+gap) so they stand out from the rest, and do not draw a flow the input does not state: an inferred link is
+dashed and labelled `추정`.
 
 ### 1.5. Plan (conditional)
 
@@ -72,7 +78,17 @@ Required settings:
 - `appState.gridSize`: `20`
 - Rectangles: `roundness: { "type": 3 }`, `roughness: 0`
 - Arrows: `roundness: { "type": 2 }`, must set `startBinding` + `endBinding`
-- Text elements: `strokeColor` MUST be `#e2e8f0` (slate-200) **or** match the parent container's stroke color from the palette — black text is invisible on dark bg
+- Text inside a box: `strokeColor` `#e2e8f0` (slate-200). The palette's stroke colours are for borders and for
+  free text on the canvas only — as box text three of them fall below 4.5:1 on their own fill (Database 4.03,
+  Security 3.55, Message Bus 4.14). Black or `#1e1e1e` text is invisible on the dark canvas.
+- Title: free text at the top, `fontSize` ≥ canvas width ÷ 45, so it still reads when Slack shows the image
+  ~360 px wide. A legend under it names every colour and arrow style used.
+- Arrow labels: bound to their arrow (`containerId` = the arrow id, listed in its `boundElements`), and say what
+  happens with a verb ("이벤트 전달", "PR 생성") — not a bare number or noun.
+- Arrows with three or more points: `roundness: null` (straight elbows). A curved multi-point arrow overshoots
+  into a loop.
+- Korean labels: size the box from the text — width ≥ `fontSize` × (Hangul characters × 1.0 + other characters ×
+  0.6) + 40, and break long labels with `\n` yourself; the exporter does not re-wrap bound text.
 
 Semantic color palette (fill + stroke pair):
 
@@ -90,35 +106,56 @@ Reference: see `references/json-schema.md` and `references/element-templates.md`
 
 ### 3. Bootstrap the renderer (first run only)
 
-Idempotent — safe to re-run:
+Idempotent — safe to re-run. Bot shells do not set `CLAUDE_PLUGIN_ROOT` and every Bash call is a fresh shell, so
+each block sets it (`<base directory>` = this skill's `Base directory for this skill: …` path). The plugin folder is
+read-only in a bot session: keep the virtualenv in the temp directory, and let install errors show.
 
 ```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
+export UV_PROJECT_ENVIRONMENT="${TMPDIR:-/tmp}/soma-excalidraw-venv"
 cd "$CLAUDE_PLUGIN_ROOT/skills/architecture-diagram/references"
-uv sync 2>/dev/null
-uv run playwright install chromium 2>/dev/null
+uv sync
+uv run playwright install chromium
 ```
 
-### 4. Pre-flight esm.sh network check
+### 4. Pre-flight: the pinned module itself, not just the host
+
+`render_template.html` pins one Excalidraw build (`EXCALIDRAW_MODULE_URL`). A host that answers can still serve a
+broken build — on 2026-11-13 the unpinned URL resolved to a bundle whose sub-import answered 404 — so fetch that
+exact URL:
 
 ```bash
-if ! curl -fsSI --max-time 5 https://esm.sh/ >/dev/null 2>&1; then
-  echo "ERROR: esm.sh unreachable — renderer requires network access to esm.sh." >&2
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
+REF="$CLAUDE_PLUGIN_ROOT/skills/architecture-diagram/references"
+URL=$(sed -n 's/.*EXCALIDRAW_MODULE_URL = "\([^"]*\)".*/\1/p' "$REF/render_template.html")
+if ! curl -fsS --max-time 60 -o /dev/null "$URL"; then
+  echo "ERROR: $URL did not load — the renderer cannot run (network, or the pinned build moved)." >&2
   exit 2
 fi
 ```
 
-If this fails, do NOT proceed; report the error and endTurn.
+If this fails, do NOT proceed; report the error with the URL and endTurn.
 
 ### 5. Render to PNG
 
+Resolve the JSON path before changing directory (`$(pwd)` after the `cd` is the plugin folder). The first load of
+the module takes about 40 s; the renderer waits up to 120 s (`--load-timeout-ms` or `EXCALIDRAW_LOAD_TIMEOUT_MS`
+to change it) and prints what it is loading.
+
 ```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
+export UV_PROJECT_ENVIRONMENT="${TMPDIR:-/tmp}/soma-excalidraw-venv"
+JSON="$(pwd)/arch-<slug>-<ts>.excalidraw"
 cd "$CLAUDE_PLUGIN_ROOT/skills/architecture-diagram/references"
-uv run python render_excalidraw.py "$(pwd_of_json)/arch-<slug>-<ts>.excalidraw"
+uv run python render_excalidraw.py "$JSON"
 ```
 
 The renderer writes PNG next to the input JSON.
 
 ### 6. Validate PNG (composite check)
+
+Delete any PNG of the same name before Step 5 renders, so this check can never pass on an image left from an
+earlier attempt.
 
 ```bash
 PNG="$(pwd_of_json)/arch-<slug>-<ts>.png"
@@ -175,7 +212,7 @@ mcp__slack-mcp__send_media(
   file_path="<absolute path to PNG>",
   title="<meaningful architecture title>",
   alt_text="<1-2 sentence description of what the diagram shows>",
-  initial_comment="<optional 1-line context> — editable source: <absolute path to .excalidraw>"
+  initial_comment="<the picture's conclusion, one line> — editable source: <absolute path to .excalidraw>"
 )
 ```
 

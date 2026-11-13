@@ -16,9 +16,14 @@
     // Dynamic import + try/catch — surfaces esm.sh reachability/load failures
     // via window.__moduleError instead of leaving the renderer stuck on a
     // silent timeout.
+    // Pinned on purpose: the unversioned URL moved to 0.18.1 on 2026-11-13 and its
+    // bundle imports a module esm.sh answers with 404. Change the version here only —
+    // render_excalidraw.py and the SKILL.md pre-flight read it from this line.
+    const EXCALIDRAW_MODULE_URL = "https://esm.sh/@excalidraw/excalidraw@0.18.0?bundle";
+    window.__moduleUrl = EXCALIDRAW_MODULE_URL;
     (async () => {
       try {
-        const mod = await import("https://esm.sh/@excalidraw/excalidraw?bundle");
+        const mod = await import(EXCALIDRAW_MODULE_URL);
         const { exportToSvg } = mod;
 
         window.renderDiagram = async function(jsonData) {

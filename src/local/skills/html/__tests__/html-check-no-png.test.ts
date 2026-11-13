@@ -202,3 +202,96 @@ describe('the skills check the page with --check and render no PNG', () => {
     expect(md('html')).not.toMatch(/before the\s+screenshot/);
   });
 });
+
+/**
+ * research-skill run 2026-11-13 (html probes H1 · H4 · H5 and report v1): the overlap check failed sound pages.
+ * A visually-hidden heading (the standard sr-only pattern) and table rows clipped by a scroll box were measured
+ * as visible text, so authors deleted accessible headings and scroll boxes to get a pass. Text a reader cannot
+ * see because an ancestor clips it is not an overlap; text that really collides still is.
+ */
+describe('review gate — clipped text is not drawn, so it does not overlap', () => {
+  const FILL = '<p>This paragraph is long enough that the page has plenty of visible text for the check.</p>';
+  const SR =
+    'position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0';
+
+  it('a visually-hidden (sr-only) heading over a summary is not an overlap', () => {
+    const r = check(
+      'sronly',
+      `${FILL}<section style="position:relative"><h2 style="${SR}">방법론</h2><details><summary>방법론 · 증거 · 출처</summary><p>본문</p></details></section>`,
+    );
+    expect(r.verdict).toMatchObject({ ok: true, overlaps: 0 });
+  }, 150_000);
+
+  it('rows a scroll box clips away do not collide with the text after the box', () => {
+    const rows = Array.from({ length: 30 }, (_, i) => `<tr><td>row ${i} cell text</td><td>value ${i}</td></tr>`).join(
+      '',
+    );
+    const r = check(
+      'scrollbox',
+      `${FILL}<div style="height:120px;overflow:auto"><table>${rows}</table></div><p>Text right after the scroll box.</p><p>More text after it.</p>`,
+    );
+    expect(r.verdict).toMatchObject({ ok: true, overlaps: 0 });
+  }, 150_000);
+
+  it('text that spills out of a box with visible overflow still collides', () => {
+    const r = check(
+      'spill',
+      `${FILL}<div style="height:20px"><p style="margin:0">line one of a box that is too short</p><p style="margin:0">line two spills out</p><p style="margin:0">line three spills out</p></div><p style="margin:0">text right after the short box, under the spill</p>`,
+    );
+    expect(r.verdict.overlaps).toBeGreaterThan(0);
+  }, 150_000);
+});
+
+/**
+ * research-skill run 2026-11-13: in five of five html probes the first screen held no answer, no map of the page
+ * and no reading guide — the template's KPI band came first (owner complaint #1, weight ×2). html Step 0 now marks
+ * the three with data-first-screen="answer|map|guide"; `--first-screen` fails a page where any of them is missing
+ * or starts below the first viewport.
+ */
+describe('--first-screen — the answer, the map and the reading guide open the page', () => {
+  function checkFirst(name: string, body: string) {
+    const input = join(dir, `${name}.html`);
+    writeFileSync(
+      input,
+      `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>t</title></head><body style="margin:0">${body}</body></html>`,
+    );
+    const r = spawnSync(
+      process.execPath,
+      [RENDERER, '--input', input, '--check', '--first-screen', '--width', '1200', '--height', '800', '--wait-ms', '0'],
+      { encoding: 'utf8', timeout: 120_000 },
+    );
+    const line = (r.stdout || '').split('\n').find((l) => l.startsWith('check: '));
+    return { status: r.status, verdict: line ? JSON.parse(line.slice(7)) : null };
+  }
+  const TOP =
+    '<p data-first-screen="answer">요약: Air에서 가져올 것은 이벤트 트리거 자동화 하나가 먼저다.</p>' +
+    '<ol data-first-screen="map"><li>판단</li><li>근거</li><li>원자료</li></ol>' +
+    '<p data-first-screen="guide">결정만 필요하면 판단까지, 의심되면 근거까지 읽는다.</p>';
+
+  it('a page that opens with all three passes and reports where each sits', () => {
+    const r = checkFirst('fs-ok', `${TOP}<div style="height:3000px"></div><p>아래 본문.</p>`);
+    expect(r.status).toBe(0);
+    expect(r.verdict.firstScreen).toMatchObject({ answer: true, map: true, guide: true });
+  }, 150_000);
+
+  it('a missing reading guide fails', () => {
+    const r = checkFirst(
+      'fs-noguide',
+      TOP.replace(/<p data-first-screen="guide">.*<\/p>/, '') + '<p>본문 텍스트가 충분히 길게 이어진다.</p>',
+    );
+    expect(r.status).toBe(3);
+    expect(r.verdict.firstScreen.guide).toBe(false);
+  }, 150_000);
+
+  it('an answer pushed below the first viewport by a KPI band fails', () => {
+    const r = checkFirst('fs-below', `<div style="height:1400px">KPI 띠 자리</div>${TOP}`);
+    expect(r.status).toBe(3);
+    expect(r.verdict.firstScreen.answer).toBe(false);
+  }, 150_000);
+
+  it('without --first-screen the check does not ask for the markers (other skills share render.mjs)', () => {
+    const r = check('fs-off', '<p>첫 화면 표시가 없는 페이지지만 다른 스킬이 쓰는 검사는 그대로 통과해야 한다.</p>');
+    expect(r.status).toBe(0);
+    expect(r.verdict.firstScreen).toBeUndefined();
+  }, 150_000);
+});

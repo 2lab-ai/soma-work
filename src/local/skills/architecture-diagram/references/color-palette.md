@@ -1,6 +1,8 @@
-# Color Palette & Brand Style
+# Color Palette — light canvas (GENERAL and COMPARISON paths)
 
-**This is the single source of truth for all colors and brand-specific styles.** To customize diagrams for your own brand, edit this file — everything else in the skill is universal.
+This is the palette of the `diagram` router's light-canvas paths (GENERAL concept pictures and COMPARISON
+matrices), which share this renderer. The dark architecture diagram does **not** use it: its palette is the table in
+`SKILL.md` Step 2, the single source of truth for that skill. Edit this file to brand the light pictures only.
 
 ---
 
