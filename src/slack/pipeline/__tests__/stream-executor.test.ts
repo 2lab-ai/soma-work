@@ -19,6 +19,7 @@ vi.mock('../../../user-settings-store', () => ({
     getUserSessionTheme: vi.fn().mockReturnValue('D'),
     getUserEmail: vi.fn().mockReturnValue(undefined),
     setUserEmail: vi.fn(),
+    syncSlackAccountEmail: vi.fn(),
     ensureUserExists: vi.fn(),
     setUserSlackDisplayName: vi.fn(),
     shouldRefreshSlackIdentity: vi.fn().mockReturnValue(false),
@@ -4055,6 +4056,45 @@ describe('Email guard in execute()', () => {
       expect.objectContaining({
         text: expect.stringContaining('set email'),
       }),
+    );
+  });
+
+  // Incident 2026-11-13: the email copied on the first turn never followed a
+  // Slack account email change. Every identity refresh now hands the Slack
+  // email to the store, which decides whether `email` follows it.
+  it.each([
+    ['a stale address', 'old@x.com'],
+    ['the empty sentinel', ''],
+  ])('an identity refresh hands the Slack account email to the store (stored: %s, no first-turn copy)', async (_label, stored) => {
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue(stored);
+    vi.mocked(userSettingsStore.shouldRefreshSlackIdentity).mockReturnValueOnce(true);
+    vi.mocked(userSettingsStore.setUserEmail).mockClear();
+    vi.mocked(userSettingsStore.syncSlackAccountEmail).mockClear();
+    const deps = createFullDeps();
+    deps.slackApi.getUserProfile.mockResolvedValue({ email: 'new@x.com', displayName: 'Moved' });
+
+    // A stored address lets the turn run on past the email gate; only the refresh matters here.
+    await new StreamExecutor(deps)
+      .execute(createMinimalParams(vi.fn().mockResolvedValue({ ts: 'msg_ts' })))
+      .catch(() => undefined);
+
+    expect(userSettingsStore.syncSlackAccountEmail).toHaveBeenCalledWith('U_TEST', 'new@x.com');
+    expect(userSettingsStore.setUserEmail).not.toHaveBeenCalled();
+  });
+
+  it('the first turn copies the Slack email, then the store starts tracking it', async () => {
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue(undefined);
+    vi.mocked(userSettingsStore.setUserEmail).mockClear();
+    vi.mocked(userSettingsStore.syncSlackAccountEmail).mockClear();
+    const deps = createFullDeps();
+    deps.slackApi.getUserProfile.mockResolvedValue({ email: 'old@x.com', displayName: 'New' });
+
+    await new StreamExecutor(deps).execute(createMinimalParams(vi.fn().mockResolvedValue({ ts: 'msg_ts' })));
+
+    expect(userSettingsStore.setUserEmail).toHaveBeenCalledWith('U_TEST', 'old@x.com', 'slack');
+    expect(userSettingsStore.syncSlackAccountEmail).toHaveBeenCalledWith('U_TEST', 'old@x.com');
+    expect(vi.mocked(userSettingsStore.setUserEmail).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(userSettingsStore.syncSlackAccountEmail).mock.invocationCallOrder[0],
     );
   });
 
