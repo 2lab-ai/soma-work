@@ -19,6 +19,7 @@ import {
   requestCronRunPermission,
 } from '../cron-run-permission-request';
 import type { SlackApiHelper } from '../slack-api-helper';
+import { userMention } from '../user-mention';
 import type { RespondFn } from './types';
 
 interface CronActionContext {
@@ -72,7 +73,7 @@ export class CronActionHandler {
         await respond({
           response_type: 'ephemeral',
           replace_original: false,
-          text: `⚠️ *${name}* 은 <@${owner}>님의 크론잡입니다 — 본인 또는 admin만 수정할 수 있습니다.`,
+          text: `⚠️ *${name}* 은 ${userMention(owner)}님의 크론잡입니다 — 본인 또는 admin만 수정할 수 있습니다.`,
         });
         return;
       }
@@ -200,7 +201,7 @@ export class CronActionHandler {
       response_type: 'ephemeral',
       replace_original: false,
       text: result.ok
-        ? `▶ *${name}* 실행 트리거됨 — 실제 크론 경로(대상/모드/모델 그대로)로 발동했습니다.${clickerId !== owner ? ` (오너 <@${owner}> 권한)` : ''}`
+        ? `▶ *${name}* 실행 트리거됨 — 실제 크론 경로(대상/모드/모델 그대로)로 발동했습니다.${clickerId !== owner ? ` (오너 ${userMention(owner)} 권한)` : ''}`
         : `⚠️ *${name}* 실행 실패: ${result.message}`,
     });
     // Re-render ONLY for the owner/admin. The card is a channel message owned

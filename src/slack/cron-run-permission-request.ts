@@ -13,6 +13,7 @@ import { createCronRunRequest, markCronRunRequestHandled } from '../cron-run-req
 import { isEnvironmentUser } from '../env-users';
 import { Logger } from '../logger';
 import { buildCronRunPermissionMessage } from './cron-run-permission-blocks';
+import { userMention } from './user-mention';
 
 const logger = new Logger('CronRunPermissionRequest');
 
@@ -135,12 +136,12 @@ export function describeDelivery(delivered: CronRunPermissionDelivery, ownerId: 
   }
   switch (delivered) {
     case 'none':
-      return `⚠️ <@${ownerId}>님께 \`${jobName}\` 실행 권한 요청을 전달하지 못했습니다. 오너에게 직접 문의하세요.`;
+      return `⚠️ ${userMention(ownerId)}님께 \`${jobName}\` 실행 권한 요청을 전달하지 못했습니다. 오너에게 직접 문의하세요.`;
     case 'pending':
-      return `⏳ \`${jobName}\` 실행 권한 요청이 이미 <@${ownerId}>님께 대기 중입니다. 승인되면 실행됩니다.`;
+      return `⏳ \`${jobName}\` 실행 권한 요청이 이미 ${userMention(ownerId)}님께 대기 중입니다. 승인되면 실행됩니다.`;
     case 'dm':
-      return `🔐 <@${ownerId}>님께 \`${jobName}\` 실행 권한을 요청했습니다 (DM 발송). 승인되면 오너 권한으로 실행됩니다.`;
+      return `🔐 ${userMention(ownerId)}님께 \`${jobName}\` 실행 권한을 요청했습니다 (DM 발송). 승인되면 오너 권한으로 실행됩니다.`;
     default:
-      return `🔐 <@${ownerId}>님께 \`${jobName}\` 실행 권한을 요청했습니다. 승인되면 오너 권한으로 실행됩니다.`;
+      return `🔐 ${userMention(ownerId)}님께 \`${jobName}\` 실행 권한을 요청했습니다. 승인되면 오너 권한으로 실행됩니다.`;
   }
 }

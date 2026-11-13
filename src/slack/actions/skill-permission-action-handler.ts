@@ -14,6 +14,7 @@ import {
   VALUE_KIND_PERM_YES_ONCE,
 } from '../skill-permission-blocks';
 import type { SlackApiHelper } from '../slack-api-helper';
+import { userMention } from '../user-mention';
 import type { MessageHandler, RespondFn, SayFn } from './types';
 
 interface SkillPermissionContext {
@@ -100,7 +101,7 @@ export class SkillPermissionActionHandler {
           response_type: 'ephemeral',
           text: environmentOwner
             ? `⚠️ 환경 유저 \`${req.ownerId}\`의 권한 요청은 어드민만 처리할 수 있습니다.`
-            : `⚠️ 이 권한 요청은 스킬 소유자 <@${req.ownerId}>님만 처리할 수 있습니다.`,
+            : `⚠️ 이 권한 요청은 스킬 소유자 ${userMention(req.ownerId)}님만 처리할 수 있습니다.`,
           replace_original: false,
         });
         return;
@@ -247,7 +248,7 @@ export class SkillPermissionActionHandler {
       if (!detail) return;
       await say({
         text:
-          `👀 <@${req.requesterId}> — <@${req.ownerId}>님이 \`${req.skillName}\` 보기를 허용했습니다.\n` +
+          `👀 <@${req.requesterId}> — ${userMention(req.ownerId)}님이 \`${req.skillName}\` 보기를 허용했습니다.\n` +
           '```\n' +
           detail.content.slice(0, 2500) +
           '\n```',

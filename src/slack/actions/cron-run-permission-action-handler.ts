@@ -12,6 +12,7 @@ import {
   VALUE_KIND_CRON_RUN_ONCE,
 } from '../cron-run-permission-blocks';
 import type { SlackApiHelper } from '../slack-api-helper';
+import { userMention } from '../user-mention';
 import type { RespondFn } from './types';
 
 interface CronRunPermissionContext {
@@ -97,7 +98,7 @@ export class CronRunPermissionActionHandler {
           replace_original: false,
           text: environmentOwner
             ? `⚠️ 환경 유저 \`${req.ownerId}\`의 크론 실행 요청은 어드민만 처리할 수 있습니다.`
-            : `⚠️ 이 요청은 크론잡 오너 <@${req.ownerId}>님만 처리할 수 있습니다.`,
+            : `⚠️ 이 요청은 크론잡 오너 ${userMention(req.ownerId)}님만 처리할 수 있습니다.`,
         });
         return;
       }
@@ -165,7 +166,7 @@ export class CronRunPermissionActionHandler {
       await this.notifyRequester(
         req,
         result.ok
-          ? `▶ <@${req.requesterId}> — <@${req.ownerId}>님의 허가로 \`${job.name}\` 을 오너 권한으로 실행했습니다.`
+          ? `▶ <@${req.requesterId}> — ${userMention(req.ownerId)}님의 허가로 \`${job.name}\` 을 오너 권한으로 실행했습니다.`
           : `⚠️ \`${job.name}\` 실행 실패: ${result.message}`,
       );
       this.logger.info('cron_run_perm: granted + fired', {

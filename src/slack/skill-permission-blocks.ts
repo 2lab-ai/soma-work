@@ -1,3 +1,4 @@
+import { userMention } from './user-mention';
 /**
  * Block Kit for the cross-user skill permission-request prompt.
  *
@@ -48,7 +49,7 @@ function button(label: string, kind: string, requestId: string, style?: 'primary
  */
 export function buildPermissionRequestMessage(input: PermissionRequestMessageInput): PermissionRequestMessage {
   const { requestId, requesterId, ownerId, skillName } = input;
-  const text = `🔐 <@${ownerId}> — <@${requesterId}>님이 \`${skillName}\` 스킬을 사용하려 합니다. 허용하시겠습니까?`;
+  const text = `🔐 ${userMention(ownerId)} — <@${requesterId}>님이 \`${skillName}\` 스킬을 사용하려 합니다. 허용하시겠습니까?`;
   return {
     text,
     blocks: [
@@ -56,7 +57,7 @@ export function buildPermissionRequestMessage(input: PermissionRequestMessageInp
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `🔐 <@${ownerId}> 님께 권한 요청\n<@${requesterId}>님이 \`$user:${skillName}\` 스킬을 사용하려 합니다. 허용하시겠습니까?`,
+          text: `🔐 ${userMention(ownerId)} 님께 권한 요청\n<@${requesterId}>님이 \`$user:${skillName}\` 스킬을 사용하려 합니다. 허용하시겠습니까?`,
         },
       },
       {
