@@ -1071,6 +1071,14 @@ export class SkillForceHandler implements CommandHandler {
       return;
     }
 
+    // An environment user's skill the requester may call is handed off (`runAsEnvironmentUser`): the requester's
+    // side only authorizes the call. Its body and its dependencies are read in the environment user's session, under
+    // the identity that runs them — never here, under the requester's grants.
+    if (effectiveOwner && effectiveOwner !== state.requesterId && isEnvironmentUser(effectiveOwner)) {
+      state.resolved.set(canonicalKey, '');
+      return;
+    }
+
     const content = fs.readFileSync(skillPath, 'utf-8');
 
     // Owner context for THIS skill's nested owner-relative refs (S7/S8):

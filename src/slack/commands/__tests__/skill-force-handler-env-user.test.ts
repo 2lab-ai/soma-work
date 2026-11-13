@@ -232,4 +232,20 @@ describe('SkillForceHandler — environment user skills', () => {
       process.off('unhandledRejection', onRejection);
     }
   });
+
+  it("the environment skill's own dependencies are left to the environment session — the requester is not asked for them", async () => {
+    h.isAllowed.mockImplementation((owner: string) => owner === 'env:acme-dev2');
+    vi.mocked(fs.readFileSync).mockImplementation((p) => {
+      if (String(p) === '/mock/data/env:acme-dev2/skills/deploy/SKILL.md') return 'uses $Zhuge:deploy' as any;
+      throw new Error(`ENOENT ${String(p)}`);
+    });
+    const result = await handler.execute(ctx('$acme-dev2:deploy'));
+    expect(result).not.toMatchObject({ awaitingPermission: true });
+    expect(h.createReq).not.toHaveBeenCalled();
+    expect(runAsUser).toHaveBeenCalledTimes(1);
+    // The body was not even read on the requester's side.
+    expect(vi.mocked(fs.readFileSync).mock.calls.map((c) => String(c[0]))).not.toContain(
+      '/mock/data/env:acme-dev2/skills/deploy/SKILL.md',
+    );
+  });
 });
