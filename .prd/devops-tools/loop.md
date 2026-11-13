@@ -1,6 +1,6 @@
 # loop — devops-tools 구현 드라이브
 
-Status: done (라운드 2 닫힘 2026-11-09 — `loop.done.md` · 라운드 1 = 코드, 닫힘 · main 머지 `2da8f4e4` 2026-10-27 · 라운드 2 = 라이브: WU0 닫힘, WU7 실승인 1회 통과 2026-11-06 — 버튼 토큰·`admin:org` 입력 끝(2026-11-06), 대시보드 경유 승인 라이브 통과 2026-11-09(lease 승인 → GET → revoke, `gh_org_member` 무변경), WU8 = D6·D5 끝 · D1–D6 = ① 확정 2026-10-26) · AS-IS = [`../14-devops-tools-as-is.md`](../14-devops-tools-as-is.md) · TO-BE = [`../15-devops-tools-to-be.md`](../15-devops-tools-to-be.md) ·
+Status: superseded (env-access #1214, 2026-11-13 — 브로커 제거, 지금 설계는 `../env-access/loop.md`) · was done (라운드 2 닫힘 2026-11-09 — `loop.done.md` · 라운드 1 = 코드, 닫힘 · main 머지 `2da8f4e4` 2026-10-27 · 라운드 2 = 라이브: WU0 닫힘, WU7 실승인 1회 통과 2026-11-06 — 버튼 토큰·`admin:org` 입력 끝(2026-11-06), 대시보드 경유 승인 라이브 통과 2026-11-09(lease 승인 → GET → revoke, `gh_org_member` 무변경), WU8 = D6·D5 끝 · D1–D6 = ① 확정 2026-10-26) · AS-IS = [`../14-devops-tools-as-is.md`](../14-devops-tools-as-is.md) · TO-BE = [`../15-devops-tools-to-be.md`](../15-devops-tools-to-be.md) ·
 아키텍처 = [`../16-devops-tools-architecture.md`](../16-devops-tools-architecture.md) · 상세 = [`research/2026-10-26-detail.md`](research/2026-10-26-detail.md) · ssot = [`ssot.md`](ssot.md) ·
 완료 원장 = [`loop.done.md`](loop.done.md)
 

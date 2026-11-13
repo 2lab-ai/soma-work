@@ -1,8 +1,10 @@
 # 14 — AS-IS: soma-work 봇이 환경과 키를 다루는 지금의 방식
 
-Status: shipped — 2026-10-26 실측으로 확인한 **지금 돌아가는 계약**이다. 목표가 아니다.
+Status: superseded (#1214) — was shipped — 2026-10-26 실측으로 확인한 **지금 돌아가는 계약**이다. 목표가 아니다.
 TO-BE = [`15-devops-tools-to-be.md`](15-devops-tools-to-be.md) · SSOT = [`devops-tools/ssot.md`](devops-tools/ssot.md) ·
 근거 = [`devops-tools/research/2026-10-26-detail.md`](devops-tools/research/2026-10-26-detail.md) §1 (배포별 실측 상세는 운영 저장소의 비공개 계획 파일)
+
+> **대체됨 (2026-11-13, env-access #1214):** 별도 브로커·devops-tools는 제거됐다. 지금 설계는 [`23`](23-env-access-as-is.md) · [`24`](24-env-access-to-be.md) · [`25`](25-env-access-architecture.md)와 [`env-access/loop.md`](env-access/loop.md). 이 문서는 기록으로만 남긴다.
 
 ## 한 줄
 
