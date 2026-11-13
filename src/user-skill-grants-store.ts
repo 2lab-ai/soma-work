@@ -103,6 +103,17 @@ function saveGrants(ownerId: string, grants: SkillGrants): void {
 
 /** key = owner\0skill\0requester → expiresAt (epoch ms). */
 const oneTimeGrants = new Map<string, number>();
+/**
+ * key → the one message a one-time grant serves. An environment user's "accept once" runs the requester's words as
+ * an admin, so the approval is bound to the message the admin saw: any other message finds no grant.
+ */
+const oneTimeBoundText = new Map<string, string>();
+
+/** Does a one-time grant's message binding (if any) admit `text`? */
+function boundTextAdmits(key: string, text: string | undefined): boolean {
+  const bound = oneTimeBoundText.get(key);
+  return bound === undefined || bound === text;
+}
 
 function oneTimeKey(ownerId: string, skillName: string, requesterId: string): string {
   return `${ownerId}\u0000${skillName}\u0000${requesterId}`;
@@ -113,19 +124,31 @@ function oneTimeKey(ownerId: string, skillName: string, requesterId: string): st
  * `consumeOneTimeGrant` before `expiresAt`. `isSkillUseAllowed` observes it
  * WITHOUT consuming.
  */
-export function addOneTimeGrant(ownerId: string, skillName: string, requesterId: string, expiresAt?: number): void {
-  oneTimeGrants.set(oneTimeKey(ownerId, skillName, requesterId), expiresAt ?? Date.now() + ONE_TIME_TTL_MS);
+export function addOneTimeGrant(
+  ownerId: string,
+  skillName: string,
+  requesterId: string,
+  expiresAt?: number,
+  /** Bind the grant to this one message (environment users). */
+  boundText?: string,
+): void {
+  const key = oneTimeKey(ownerId, skillName, requesterId);
+  oneTimeGrants.set(key, expiresAt ?? Date.now() + ONE_TIME_TTL_MS);
+  if (boundText === undefined) oneTimeBoundText.delete(key);
+  else oneTimeBoundText.set(key, boundText);
 }
 
 /** Non-mutating: is there a live one-time grant for this triple? */
-export function hasOneTimeGrant(ownerId: string, skillName: string, requesterId: string): boolean {
-  const exp = oneTimeGrants.get(oneTimeKey(ownerId, skillName, requesterId));
+export function hasOneTimeGrant(ownerId: string, skillName: string, requesterId: string, text?: string): boolean {
+  const key = oneTimeKey(ownerId, skillName, requesterId);
+  const exp = oneTimeGrants.get(key);
   if (exp === undefined) return false;
   if (exp <= Date.now()) {
-    oneTimeGrants.delete(oneTimeKey(ownerId, skillName, requesterId));
+    oneTimeGrants.delete(key);
+    oneTimeBoundText.delete(key);
     return false;
   }
-  return true;
+  return boundTextAdmits(key, text);
 }
 
 /**
@@ -133,11 +156,14 @@ export function hasOneTimeGrant(ownerId: string, skillName: string, requesterId:
  * removed. Call ONLY on the successful fulfillment path so a halted turn never
  * burns the grant.
  */
-export function consumeOneTimeGrant(ownerId: string, skillName: string, requesterId: string): boolean {
+export function consumeOneTimeGrant(ownerId: string, skillName: string, requesterId: string, text?: string): boolean {
   const key = oneTimeKey(ownerId, skillName, requesterId);
   const exp = oneTimeGrants.get(key);
   if (exp === undefined) return false;
+  // A grant bound to another message stays for that message.
+  if (!boundTextAdmits(key, text)) return false;
   oneTimeGrants.delete(key);
+  oneTimeBoundText.delete(key);
   return exp > Date.now();
 }
 
@@ -264,12 +290,12 @@ export function hasThreadGrant(ownerId: string, skillName: string, requesterId: 
  *   - owner granted requester this specific skill, OR
  *   - a live one-time grant exists (observed, NOT consumed).
  */
-export function isSkillUseAllowed(ownerId: string, skillName: string, requesterId: string): boolean {
+export function isSkillUseAllowed(ownerId: string, skillName: string, requesterId: string, text?: string): boolean {
   if (ownerId === requesterId) return true;
   const grants = loadGrants(ownerId);
   if (grants.allowAll.includes(requesterId)) return true;
   if (grants.perSkill[skillName]?.includes(requesterId)) return true;
-  return hasOneTimeGrant(ownerId, skillName, requesterId);
+  return hasOneTimeGrant(ownerId, skillName, requesterId, text);
 }
 
 /** Persist a per-skill grant (idempotent). */

@@ -15,6 +15,8 @@ const h = vi.hoisted(() => ({
   consumeOneTime: vi.fn((_o: string, _s: string, _r: string) => true),
   addOneTime: vi.fn(),
   createReq: vi.fn((i: any) => ({ requestId: 'req-1', ...i })),
+  markHandled: vi.fn(),
+  retire: vi.fn(),
 }));
 vi.mock('../../../user-skill-grants-store', () => ({
   isSkillUseAllowed: h.isAllowed,
@@ -22,7 +24,11 @@ vi.mock('../../../user-skill-grants-store', () => ({
   consumeOneTimeGrant: h.consumeOneTime,
   addOneTimeGrant: h.addOneTime,
 }));
-vi.mock('../../../skill-permission-request-store', () => ({ createPermissionRequest: h.createReq }));
+vi.mock('../../../skill-permission-request-store', () => ({
+  createPermissionRequest: h.createReq,
+  markRequestHandled: h.markHandled,
+  retirePendingRequests: h.retire,
+}));
 vi.mock('../../../admin-utils', () => ({
   isAdminUser: (u: string) => u === 'UADMIN' || u === 'env:acme-dev2',
   getAdminUsers: () => new Set(['UADMIN']),
@@ -90,7 +96,7 @@ describe('SkillForceHandler — environment user skills', () => {
     h.isAllowed.mockReturnValue(true);
     h.hasOneTime.mockReturnValue(true);
     await handler.execute(ctx('$acme-dev2:deploy'));
-    expect(h.consumeOneTime).toHaveBeenCalledWith('env:acme-dev2', 'deploy', 'U1');
+    expect(h.consumeOneTime).toHaveBeenCalledWith('env:acme-dev2', 'deploy', 'U1', '$acme-dev2:deploy');
   });
 
   it('without a grant, asks the admins by DM with accept · deny · this skill always · whole environment always', async () => {
@@ -272,7 +278,33 @@ describe('SkillForceHandler — environment user skills', () => {
     const h3 = new SkillForceHandler(resolveUser, { slackApi: slackApi as any, runAsUser: neverStarts });
     await h3.execute(ctx('$acme-dev2:deploy'));
     await new Promise((r) => setTimeout(r, 10));
-    expect(h.consumeOneTime).toHaveBeenCalledWith('env:acme-dev2', 'deploy', 'U1');
-    expect(h.addOneTime).toHaveBeenCalledWith('env:acme-dev2', 'deploy', 'U1');
+    expect(h.consumeOneTime).toHaveBeenCalledWith('env:acme-dev2', 'deploy', 'U1', '$acme-dev2:deploy');
+    expect(h.addOneTime).toHaveBeenCalledWith('env:acme-dev2', 'deploy', 'U1', undefined, '$acme-dev2:deploy');
+  });
+
+  it('the grant check for an environment skill is bound to this message', async () => {
+    await handler.execute(ctx('$acme-dev2:deploy go'));
+    expect(h.isAllowed).toHaveBeenCalledWith('env:acme-dev2', 'deploy', 'U1', '$acme-dev2:deploy go');
+  });
+
+  it('a request no admin could be shown is retired, so asking again is not stuck behind it', async () => {
+    slackApi.openDmChannel.mockRejectedValueOnce(new Error('cannot_dm_bot'));
+    const failingSay = vi.fn(async () => {
+      throw new Error('not_in_channel');
+    });
+    await handler.execute({ ...ctx('$acme-dev2:deploy'), say: failingSay } as any);
+    expect(h.markHandled).toHaveBeenCalledWith('req-1');
+  });
+
+  it('handing a message off retires the other pending cards for that same message', async () => {
+    h.isAllowed.mockReturnValue(true);
+    await handler.execute(ctx('$acme-dev2:deploy go'));
+    expect(h.retire).toHaveBeenCalledWith({
+      ownerId: 'env:acme-dev2',
+      requesterId: 'U1',
+      channel: 'C1',
+      threadTs: '171.1',
+      originalText: '$acme-dev2:deploy go',
+    });
   });
 });

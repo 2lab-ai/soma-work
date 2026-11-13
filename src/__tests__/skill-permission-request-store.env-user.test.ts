@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../env-users', () => ({ isEnvironmentUser: (u: string) => u === 'env:acme-dev2' }));
 
-import { createPermissionRequest } from '../skill-permission-request-store';
+import {
+  createPermissionRequest,
+  getPermissionRequest,
+  retirePendingRequests,
+} from '../skill-permission-request-store';
 
 describe('createPermissionRequest — environment user owner', () => {
   const base = { operation: 'invoke' as const, requesterId: 'U1', ownerId: 'env:acme-dev2', skillName: 'deploy' };
@@ -26,5 +30,19 @@ describe('createPermissionRequest — environment user owner', () => {
     const b = createPermissionRequest({ ...base, channel: 'C9', threadTs: 'T9', originalText: 'again' });
     expect(b.reused).toBe(true);
     expect(b.requestId).toBe(a.requestId);
+  });
+
+  it('retires every pending request for the same message, and only those', () => {
+    const a = createPermissionRequest({ ...base, channel: 'C5', threadTs: 'T5', originalText: 'run it' });
+    const other = createPermissionRequest({ ...base, channel: 'C5', threadTs: 'T5', originalText: 'something else' });
+    retirePendingRequests({
+      ownerId: base.ownerId,
+      requesterId: 'U1',
+      channel: 'C5',
+      threadTs: 'T5',
+      originalText: 'run it',
+    });
+    expect(getPermissionRequest(a.requestId)?.handled).toBe(true);
+    expect(getPermissionRequest(other.requestId)?.handled).toBe(false);
   });
 });

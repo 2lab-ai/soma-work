@@ -158,7 +158,12 @@ export class SkillPermissionActionHandler {
           grantLabel = `<@${req.requesterId}>님을 \`${req.skillName}\` 허용 리스트에 추가했습니다.`;
           break;
         default: // VALUE_KIND_PERM_YES_ONCE
-          addOneTimeGrant(req.ownerId, req.skillName, req.requesterId);
+          // An environment user's "accept once" serves exactly the message the admin saw.
+          if (environmentOwner) {
+            addOneTimeGrant(req.ownerId, req.skillName, req.requesterId, undefined, req.originalText);
+          } else {
+            addOneTimeGrant(req.ownerId, req.skillName, req.requesterId);
+          }
           grantLabel = `<@${req.requesterId}>님에게 \`${req.skillName}\` 1회 사용을 허용했습니다.`;
           break;
       }

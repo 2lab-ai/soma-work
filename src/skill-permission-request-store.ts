@@ -204,6 +204,36 @@ export function markRequestHandled(requestId: string, resolution?: RequestResolu
   saveAll(all);
 }
 
+/**
+ * Close every pending request for one message (an environment user's): once that message has been handed off, a
+ * card still waiting for it must not run it a second time.
+ */
+export function retirePendingRequests(match: {
+  ownerId: string;
+  requesterId: string;
+  channel: string;
+  threadTs?: string;
+  originalText: string;
+}): void {
+  const all = loadAll();
+  let changed = false;
+  for (const req of Object.values(all)) {
+    if (
+      !req.handled &&
+      req.operation === 'invoke' &&
+      req.ownerId === match.ownerId &&
+      req.requesterId === match.requesterId &&
+      req.channel === match.channel &&
+      req.threadTs === match.threadTs &&
+      req.originalText === match.originalText
+    ) {
+      req.handled = true;
+      changed = true;
+    }
+  }
+  if (changed) saveAll(all);
+}
+
 /** Every live request (handled ones included) — read only, for the dashboard's admin approvals. */
 export function listPermissionRequests(): PermissionRequest[] {
   const now = Date.now();

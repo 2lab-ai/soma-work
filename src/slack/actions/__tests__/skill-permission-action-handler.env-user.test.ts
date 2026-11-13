@@ -107,4 +107,9 @@ describe('SkillPermissionActionHandler — environment user owner', () => {
     expect(JSON.stringify(slackApi.postMessage.mock.calls)).toContain('보거나 복사할 수 없습니다');
     expect(messageHandler).not.toHaveBeenCalled();
   });
+
+  it('accept once arms a one-time grant bound to the stored message', async () => {
+    await handler.handleAction(body(VALUE_KIND_PERM_YES_ONCE, 'UADMIN'), respond);
+    expect(h.addOneTime).toHaveBeenCalledWith('env:acme-dev2', 'deploy', 'U0A', undefined, '$acme-dev2:deploy');
+  });
 });
