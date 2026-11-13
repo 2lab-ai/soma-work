@@ -335,10 +335,11 @@ describe('OAuth module', () => {
       expect(issuedSession(res)).toBe(false);
     });
 
-    // `/z email` is a commit identity and often differs from the Slack account
-    // email. When it does not match, a Google login falls back to the Slack
-    // workspace directory (the account email Google just verified).
-    describe('Google: Slack workspace email fallback', () => {
+    // `/z email` is a commit identity: self-set, or a one-time copy of the Slack
+    // account email that can go stale. A Google login asks the Slack workspace
+    // directory first (the account email Google just verified) and falls back to
+    // `/z email` only when no Slack account holds the address or Slack cannot answer.
+    describe('Google: the Slack workspace account decides', () => {
       it('no `/z email` match + the directory knows the email → logs in as that Slack user', async () => {
         const oauth = await startServer('google');
         oauth.setOAuthUserLookup(() => ({ kind: 'none' }));
@@ -456,30 +457,80 @@ describe('OAuth module', () => {
         expect(vi.getTimerCount()).toBe(0);
       });
 
-      it('an ambiguous `/z email` → ambiguous_email, the directory is never asked', async () => {
+      // Incident 2026-11-13: a user moved their Slack account to a new address
+      // and a new account took the old one. The stored `/z email` of the first
+      // user still said the old address, so a Google login with it opened the first user's
+      // dashboard. Slack holds each address on one account; that account decides.
+      it('the directory names the account even when a `/z email` names another user', async () => {
+        const oauth = await startServer('google');
+        oauth.setOAuthUserLookup(() => ({ kind: 'match', userId: 'U_MOVED', name: 'Moved' }));
+        const directory = vi.fn(async (email: string) =>
+          email === 'old@x.com' ? { userId: 'U_NEW', name: 'New' } : null,
+        );
+        oauth.setOAuthDirectoryLookup(directory);
+        stubProviderFetch({ email: 'old@x.com', name: 'New', verified_email: true });
+
+        const res = await callback('google');
+        expect(res.headers.location).toBe('/dashboard/U_NEW');
+        expect(sessionUserId(res)).toBe('U_NEW');
+        expect(directory).toHaveBeenCalledWith('old@x.com');
+        expect(logInfo).toHaveBeenCalledWith('OAuth login: matched by Slack workspace email', {
+          email: 'old@x.com',
+          slackUserId: 'U_NEW',
+        });
+      });
+
+      it('the directory names the account even when several users hold the email as `/z email`', async () => {
         const oauth = await startServer('google');
         oauth.setOAuthUserLookup(() => ({ kind: 'ambiguous', count: 2 }));
-        const directory = vi.fn(async () => ({ userId: 'U_D', name: 'Dana' }));
+        oauth.setOAuthDirectoryLookup(async () => ({ userId: 'U_D', name: 'Dana' }));
+        stubProviderFetch({ email: 'shared@x.com', name: 'S', verified_email: true });
+
+        const res = await callback('google');
+        expect(res.headers.location).toBe('/dashboard/U_D');
+        expect(sessionUserId(res)).toBe('U_D');
+      });
+
+      it('no Slack account holds the email → a `/z email` match logs in', async () => {
+        const oauth = await startServer('google');
+        oauth.setOAuthUserLookup(() => ({ kind: 'match', userId: 'U_A', name: 'Alice' }));
+        const directory = vi.fn(async () => null);
         oauth.setOAuthDirectoryLookup(directory);
+        stubProviderFetch({ email: 'alice@other.com', name: 'Alice', verified_email: true });
+
+        const res = await callback('google');
+        expect(res.headers.location).toBe('/dashboard/U_A');
+        expect(sessionUserId(res)).toBe('U_A');
+        expect(directory).toHaveBeenCalledTimes(1);
+      });
+
+      it('no Slack account holds the email + an ambiguous `/z email` → ambiguous_email', async () => {
+        const oauth = await startServer('google');
+        oauth.setOAuthUserLookup(() => ({ kind: 'ambiguous', count: 2 }));
+        oauth.setOAuthDirectoryLookup(async () => null);
         stubProviderFetch({ email: 'shared@x.com', name: 'S', verified_email: true });
 
         const res = await callback('google');
         expect(res.headers.location).toBe('/login?error=ambiguous_email');
         expect(issuedSession(res)).toBe(false);
-        expect(directory).not.toHaveBeenCalled();
       });
 
-      it('a `/z email` match wins, the directory is never asked', async () => {
+      // A directory that cannot answer keeps the login working as before it existed.
+      it.each([
+        'fails',
+        'is misconfigured',
+      ])('a directory that %s → a `/z email` match still logs in', async (label) => {
         const oauth = await startServer('google');
         oauth.setOAuthUserLookup(() => ({ kind: 'match', userId: 'U_A', name: 'Alice' }));
-        const directory = vi.fn(async () => ({ userId: 'U_D', name: 'Dana' }));
-        oauth.setOAuthDirectoryLookup(directory);
+        const failure = label === 'fails' ? new Error('boom') : new oauth.DirectoryLookupMisconfigured('missing_scope');
+        oauth.setOAuthDirectoryLookup(async () => {
+          throw failure;
+        });
         stubProviderFetch({ email: 'alice@x.com', name: 'Alice', verified_email: true });
 
         const res = await callback('google');
         expect(res.headers.location).toBe('/dashboard/U_A');
         expect(sessionUserId(res)).toBe('U_A');
-        expect(directory).not.toHaveBeenCalled();
       });
     });
 
@@ -538,6 +589,21 @@ describe('OAuth module', () => {
         { userId: 'U_C', email: 'other@x.com' },
       ];
       expect(matchSlackUsersByEmail(users, 'shared@x.com')).toEqual({ kind: 'ambiguous', count: 2 });
+    });
+
+    // 2026-11-13: two environment users (`env:<name>`) were created with the admin's
+    // email, so the admin's own Google sign-in came back ambiguous. An environment
+    // user is not a person and never signs in; it must not count.
+    it('an environment user (env:<name>) never matches, even with the same email', async () => {
+      const { matchSlackUsersByEmail } = await import('../oauth');
+      const users = [
+        { userId: 'U_Z', email: 'z@x.com', slackName: 'Z' },
+        { userId: 'env:acme-dev2', email: 'z@x.com', slackName: 'acme-dev2' },
+        { userId: 'env:acme-stage0', email: 'z@x.com', slackName: 'acme-stage0' },
+        { userId: 'env:acme-qa', email: 'qa@x.com' },
+      ];
+      expect(matchSlackUsersByEmail(users, 'z@x.com')).toEqual({ kind: 'match', userId: 'U_Z', name: 'Z' });
+      expect(matchSlackUsersByEmail(users, 'qa@x.com')).toEqual({ kind: 'none' });
     });
 
     it('reports none when no Slack user registered the email (cleared emails never match)', async () => {

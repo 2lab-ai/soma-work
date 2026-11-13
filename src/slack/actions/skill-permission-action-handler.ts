@@ -1,5 +1,8 @@
 import type { WebClient } from '@slack/web-api';
+import { getAdminUsers } from '../../admin-utils';
 import type { ClaudeHandler } from '../../claude-handler';
+import { isEnvironmentUser } from '../../env-users';
+import { environmentApprovalKey } from '../../environment-approval-key';
 import { Logger } from '../../logger';
 import { getPermissionRequest, markRequestHandled, type PermissionRequest } from '../../skill-permission-request-store';
 import { addOneTimeGrant, consumeOneTimeGrant, grantAllSkills, grantSkill } from '../../user-skill-grants-store';
@@ -7,9 +10,11 @@ import { copyUserSkill, getUserSkill, userSkillExists } from '../../user-skill-s
 import {
   VALUE_KIND_PERM_ALLOW_ALL,
   VALUE_KIND_PERM_ALLOW_SKILL,
+  VALUE_KIND_PERM_DENY,
   VALUE_KIND_PERM_YES_ONCE,
 } from '../skill-permission-blocks';
 import type { SlackApiHelper } from '../slack-api-helper';
+import { userMention } from '../user-mention';
 import type { MessageHandler, RespondFn, SayFn } from './types';
 
 interface SkillPermissionContext {
@@ -18,12 +23,17 @@ interface SkillPermissionContext {
   messageHandler: MessageHandler;
 }
 
-type PermKind = typeof VALUE_KIND_PERM_YES_ONCE | typeof VALUE_KIND_PERM_ALLOW_SKILL | typeof VALUE_KIND_PERM_ALLOW_ALL;
+type PermKind =
+  | typeof VALUE_KIND_PERM_YES_ONCE
+  | typeof VALUE_KIND_PERM_ALLOW_SKILL
+  | typeof VALUE_KIND_PERM_ALLOW_ALL
+  | typeof VALUE_KIND_PERM_DENY;
 
 const KNOWN_KINDS: ReadonlySet<string> = new Set([
   VALUE_KIND_PERM_YES_ONCE,
   VALUE_KIND_PERM_ALLOW_SKILL,
   VALUE_KIND_PERM_ALLOW_ALL,
+  VALUE_KIND_PERM_DENY,
 ]);
 
 /**
@@ -80,12 +90,18 @@ export class SkillPermissionActionHandler {
         return;
       }
 
-      // Owner-bound: only B (the skill owner) may grant.
+      // Owner-bound: only B (the skill owner) may grant. An environment user is never a person: its admins decide.
       const clickerId: string | undefined = body?.user?.id;
-      if (!clickerId || clickerId !== req.ownerId) {
+      const environmentOwner = isEnvironmentUser(req.ownerId);
+      const mayDecide = environmentOwner
+        ? !!clickerId && getAdminUsers().has(clickerId)
+        : !!clickerId && clickerId === req.ownerId;
+      if (!mayDecide) {
         await respond({
           response_type: 'ephemeral',
-          text: `⚠️ 이 권한 요청은 스킬 소유자 <@${req.ownerId}>님만 처리할 수 있습니다.`,
+          text: environmentOwner
+            ? `⚠️ 환경 유저 \`${req.ownerId}\`의 권한 요청은 어드민만 처리할 수 있습니다.`
+            : `⚠️ 이 권한 요청은 스킬 소유자 ${userMention(req.ownerId)}님만 처리할 수 있습니다.`,
           replace_original: false,
         });
         return;
@@ -111,19 +127,51 @@ export class SkillPermissionActionHandler {
         return;
       }
 
+      if (kind === VALUE_KIND_PERM_DENY) {
+        markRequestHandled(requestId);
+        const denied = `🚫 <@${clickerId}>님이 <@${req.requesterId}>님의 \`${req.skillName}\` 요청을 거절했습니다.`;
+        await respond({
+          response_type: 'in_channel',
+          replace_original: true,
+          text: denied,
+          blocks: [{ type: 'section', text: { type: 'mrkdwn', text: denied } }],
+        });
+        await this.ctx.slackApi.postMessage(
+          req.channel,
+          `🚫 <@${req.requesterId}> — \`${req.skillName}\` 실행 요청이 거절되었습니다.`,
+          { threadTs: req.threadTs },
+        );
+        this.logger.info('skill_perm: denied', { ownerId: req.ownerId, requesterId: req.requesterId, by: clickerId });
+        return;
+      }
+
       // Apply the grant.
+      const environmentLabel = environmentOwner ? req.ownerId.slice('env:'.length) : '';
       let grantLabel: string;
       switch (kind) {
         case VALUE_KIND_PERM_ALLOW_ALL:
           grantAllSkills(req.ownerId, req.requesterId);
-          grantLabel = `<@${req.requesterId}>님에게 모든 스킬 사용을 허용했습니다.`;
+          grantLabel = environmentOwner
+            ? `<@${req.requesterId}>님에게 환경 \`${environmentLabel}\` 전체를 항상 허용했습니다.`
+            : `<@${req.requesterId}>님에게 모든 스킬 사용을 허용했습니다.`;
           break;
         case VALUE_KIND_PERM_ALLOW_SKILL:
           grantSkill(req.ownerId, req.skillName, req.requesterId);
           grantLabel = `<@${req.requesterId}>님을 \`${req.skillName}\` 허용 리스트에 추가했습니다.`;
           break;
         default: // VALUE_KIND_PERM_YES_ONCE
-          addOneTimeGrant(req.ownerId, req.skillName, req.requesterId);
+          // An environment user's "accept once" serves exactly the message the admin saw.
+          if (environmentOwner) {
+            addOneTimeGrant(
+              req.ownerId,
+              req.skillName,
+              req.requesterId,
+              undefined,
+              environmentApprovalKey(req.channel, req.threadTs, req.originalText ?? ''),
+            );
+          } else {
+            addOneTimeGrant(req.ownerId, req.skillName, req.requesterId);
+          }
           grantLabel = `<@${req.requesterId}>님에게 \`${req.skillName}\` 1회 사용을 허용했습니다.`;
           break;
       }
@@ -168,6 +216,15 @@ export class SkillPermissionActionHandler {
   private async fulfill(req: PermissionRequest): Promise<void> {
     const say = this.createSayFn(req.channel);
 
+    // An environment user's skill is only ever run (as the environment user), never shown or copied.
+    if (req.operation !== 'invoke' && isEnvironmentUser(req.ownerId)) {
+      await say({
+        text: `🔒 환경 유저(\`${req.ownerId}\`)의 스킬은 보거나 복사할 수 없습니다 — 실행만 요청할 수 있습니다.`,
+        thread_ts: req.threadTs,
+      });
+      return;
+    }
+
     if (req.operation === 'invoke' && req.originalText) {
       await this.ctx.messageHandler(
         {
@@ -191,7 +248,7 @@ export class SkillPermissionActionHandler {
       if (!detail) return;
       await say({
         text:
-          `👀 <@${req.requesterId}> — <@${req.ownerId}>님이 \`${req.skillName}\` 보기를 허용했습니다.\n` +
+          `👀 <@${req.requesterId}> — ${userMention(req.ownerId)}님이 \`${req.skillName}\` 보기를 허용했습니다.\n` +
           '```\n' +
           detail.content.slice(0, 2500) +
           '\n```',

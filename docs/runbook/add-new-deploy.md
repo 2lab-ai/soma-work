@@ -742,7 +742,22 @@ gh run list --repo ${REPO} --branch staging --limit 3
 gh run view <RUN_ID> --repo ${REPO} --log
 ```
 
-### 10.3 수동 배포 (CI 없이)
+### 10.3 일부 호스트에만 배포 (dev)
+
+`PREVIEW_DEPLOY_TARGETS`는 채널의 전체 목록이다. 여기서 호스트를 빼서 좁히지 않는다: env 플러그인·배포 샌드박스 secret 줄이 그 목록 전체를 기준으로 검사돼서, 빠진 호스트를 가리키는 줄이 남아 있으면 다른 호스트의 배포까지 실패한다. 대신 고른다:
+
+```bash
+# 봇·통합(contents 쓰기 권한만 있음): main HEAD를 고른 호스트에만. 대상은 반드시 적는다.
+gh api repos/${REPO}/dispatches -f event_type=deploy-dev -f 'client_payload[targets]=<러너 라벨>'
+
+# 사람(actions 쓰기 권한 있음): 같은 일을 workflow_dispatch로
+gh workflow run deploy --repo ${REPO} --ref main -f confirm=deploy -f targets=<러너 라벨>
+
+# deploy/dev push를 늘 일부 호스트로만 보내려면 (비우면 전부)
+gh variable set PREVIEW_PUSH_TARGETS --repo ${REPO} --body '<러너 라벨>[,<러너 라벨>]'
+```
+
+### 10.4 수동 배포 (CI 없이)
 
 CI 설정 전이거나 급한 경우:
 

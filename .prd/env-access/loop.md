@@ -1,6 +1,6 @@
 # loop — env-access 구현 드라이브
 
-Status: in-progress (라운드 1 — WU0–WU5 · WU6a 머지, WU6b는 운영자 단계 대기) · AS-IS = [`../23-env-access-as-is.md`](../23-env-access-as-is.md) ·
+Status: in-progress (라운드 1 — WU0–WU5 · WU6a 머지, WU5 라이브 통과 2026-11-13, WU6b는 운영자 단계 대기) · AS-IS = [`../23-env-access-as-is.md`](../23-env-access-as-is.md) ·
 TO-BE = [`../24-env-access-to-be.md`](../24-env-access-to-be.md) · 아키텍처 = [`../25-env-access-architecture.md`](../25-env-access-architecture.md) ·
 ssot = [`ssot.md`](ssot.md)
 
@@ -16,8 +16,18 @@ ssot = [`ssot.md`](ssot.md)
 | WU3a | 환경 사용자(`envUser`) + `gh_pr`(view·approve·merge) + 감사 원장 + 비어드민 거부 | ✅ | #1211 | `feat/env-access-env-users` (PR #1248 머지 `046d77a08`, #1211 닫음 2026-11-13; dev 실측은 dev 배포 뒤) | 25 §5 WU3 중 gh·원장 | 조건 충족 PR만 승인·머지, 원장 의도→결과, dev 실측 |
 | WU3b | `login`(환경 계정 → 세션). `$env:<id>:<skill>` 호출·별도 스킬 저장소는 WU4가 대체 — 환경 스킬 = 환경 플러그인 스킬을 server-tools `skills`로 묶음, 이전은 WU5 | ✅ | #1211 | `feat/env-access-login` (PR #1250 머지 `ac89e9142`; dev 실측은 dev 배포 뒤) | 25 §5 WU3 나머지 | `login` 세션으로 환경 API 200(dev 실측), 비밀번호·세션이 원장·오류에 없음(`server-tools-login.test.ts`) |
 | WU4 | 환경 grant + 4버튼 + 정책 단계 | ✅ | #1212 | `feat/env-access-env-grants` (PR #1249 머지 `07896281b`, #1212 닫음; 흐름 테스트 6건 증거는 #1212 댓글; 라이브는 고객 dev 호스트 환경 절 설정 뒤) | 환경 = server-tools `envUser`+`skills`, `perEnvironment` grant, 카드 수락·거절·이 스킬 항상·이 환경 전체 항상, 환경 서버의 server-tools는 그 환경 grant로 | 비어드민 카드 1장 → "환경 전체 항상" → 다음 카드 0장 (`env-skill-approval-flow.test.ts`), dev 실측 |
-| WU5 | 배포·QA 스킬 이전 + 배포 → QA 연결 | 🟡 | #1213 | `feat/env-access-skills` (PR #1251 머지 `358a2a50f` — 코드 끝, #1213은 라이브까지 열어 둠; 라이브 dev2 배포 → QA는 고객 dev 호스트 환경 절 + 고객 스킬 저장소 프로필 설정 뒤) | server-tools `gh_read`(환경 토큰, 저장소·부분 허용 목록) + QA 스킬(`deploy-qa`·`qa-issue`)이 `github.server`면 `gh_read`, `qaEnv.logins`면 `login` — 브로커는 별칭으로 #1214까지. 고객 스킬 저장소의 프로필 전환(`github.server`·`qaEnv.logins`)과 환경 계정 `secrets/` 이전은 운영자 | QA 없는 dev2 배포 0건, 비밀번호 노출 0 (dev2 실측) |
+| WU5 | 배포·QA 스킬 이전 + 배포 → QA 연결 | ✅ | #1213 (닫음 2026-11-13) | `feat/env-access-skills` (PR #1251 머지) → SSOT_5로 바뀐 길: 환경 유저 = 샌드박스 없는 어드민, 기존 다른 유저 스킬·크론 실행 요청 흐름 (PR #1271 머지 `2f221fbf3`) + 라이브에서 나온 고침 PR #1274(메모리 저장소가 `env:` ID를 받음, 머지 `2af59ebea`) | 환경 유저 `env:<org>-dev2` · `env:<org>-stage0`의 개인 스킬(deploy·QA)과 stage0 크론 owner = `env:<org>-stage0` | 고객 dev 호스트 라이브: 비어드민 요청 → 어드민 DM 카드 4버튼 → "전체 항상" → 새 스레드 `env:<org>-dev2` 세션(샌드박스 꺼짐) → 환경 계정 로그인·QA pass(17:59–18:13 UTC) · 다음 호출은 카드 없음 |
 | WU6 | 브로커 제거 | 🟡 | #1214 | 6a `feat/env-access-cf` (PR #1252 머지 `d7e771ebb`) → 6b `chore/env-access-remove-broker` (PR #1253 draft — 운영자 단계 뒤 머지) | 6a: server-tools `cf_api`(환경 범위 토큰, 존 한정, 쓰기 원장) — 브로커 임대 대체. 6b: 운영자가 토큰을 `secrets/`로 옮기고 브로커 `uninstall.sh`를 돌린 뒤 `packages/devops-broker`·`devops-tools`·`src/devops`·대시보드 카드·`deploy.prompt`/QA 스킬의 브로커 경로 삭제(가드의 브로커 경로는 호스트 정리 뒤) | 정기 작업 봇 PR 승인 카드 0장, 배포 번들 하나 |
+
+## 라이브 확인 (2026-11-13, 고객 dev 호스트)
+
+- 1차 15:31 UTC: 카드 → 어드민 "전체 항상" → 핸드오프 · 새 스레드 · 샌드박스 꺼짐까지 통과, 모델 호출 전에
+  `Invalid userId for memory storage: env:<org>-dev2`로 실패 → PR #1274.
+- 2차 15:58 UTC 요청: 카드 없이 실행. Claude 풀 429(호스트 전체)로 두 번 미뤄진 뒤 17:59 자동 재시도에서 18:13까지 돌아
+  QA 레인 잠금 · git 수집 · 환경 계정 로그인 · API · 화면 · Jira 코멘트 · 리포트 업로드를 마침. 판정 pass.
+- stage0 크론 owner는 `env:<org>-stage0` (첫 실행 11-14 19:00 UTC).
+- 워크플로 점검에서 나온 것: 크론 tick이 새 스레드 크론의 턴 전체를 기다려, 20:00 UTC 정기 작업이 6–8시간 도는 동안
+  다른 크론 약 10개가 catch-up 창(60분) 밖으로 밀려 매일 사라졌다(11-07부터) → PR #1275.
 
 ## 열린 질문
 

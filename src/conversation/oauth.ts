@@ -5,10 +5,9 @@
  *   1. User clicks "Sign in with Google/Microsoft" on /login
  *   2. Redirect to provider → user grants consent → redirect back to /auth/{provider}/callback
  *   3. Exchange code for access token → fetch user email
- *   4. Match email against UserSettingsStore (Slack profile emails) — Google
- *      emails must be verified, and the email must belong to exactly one
- *      Slack user; a Google email no Slack user registered falls back to the
- *      Slack account whose workspace email it is
+ *   4. Find the Slack user — Google emails must be verified and go first to
+ *      the Slack account whose workspace email it is; otherwise (and for
+ *      Microsoft) the email must be the `/z email` of exactly one Slack user
  *   5. Issue JWT → set HttpOnly cookie → redirect to the `soma_next` deep link
  *      when one was remembered, else /dashboard/<userId>
  *
@@ -249,7 +248,9 @@ function lookupUser(email: string): OAuthUserLookupResult {
 /**
  * Match `email` case-insensitively against every Slack user's registered
  * email. Counts all matches instead of taking the first, so an address
- * registered by several Slack users comes back `ambiguous`.
+ * registered by several Slack users comes back `ambiguous`. An environment
+ * user (`env:<name>`, env-users.ts) is not a person and never signs in, so it
+ * never counts — it often carries an admin's email.
  */
 export function matchSlackUsersByEmail(
   users: ReadonlyArray<{ userId: string; email?: string; slackName?: string }>,
@@ -257,7 +258,7 @@ export function matchSlackUsersByEmail(
 ): OAuthUserLookupResult {
   const emailLower = email.toLowerCase();
   if (!emailLower) return { kind: 'none' };
-  const matches = users.filter((u) => u.email && u.email.toLowerCase() === emailLower);
+  const matches = users.filter((u) => !u.userId.startsWith('env:') && u.email && u.email.toLowerCase() === emailLower);
   if (matches.length === 0) return { kind: 'none' };
   if (matches.length > 1) return { kind: 'ambiguous', count: matches.length };
   return { kind: 'match', userId: matches[0].userId, name: matches[0].slackName || matches[0].userId };
@@ -327,22 +328,33 @@ async function lookupInDirectory(
 }
 
 /**
- * Shared by the Google and Microsoft callbacks: returns the single Slack user
- * registered under `email`, or redirects to /login with the reason and
- * returns null. The ambiguity warning carries the count, never the user ids.
+ * Shared by the Google and Microsoft callbacks: returns the Slack user who
+ * owns `email`, or redirects to /login with the reason and returns null. The
+ * ambiguity warning carries the count, never the user ids.
  *
- * `directory` is consulted only when no `/z email` matches at all (an
- * ambiguous one still refuses). A directory that fails or times out sends the
- * user to `lookup_unavailable` (try again), one an admin must fix to
- * `lookup_misconfigured` — neither is `no_match`. Only the Google callback passes it: Google
- * has verified that the user owns the address, Microsoft's `mail` /
- * `userPrincipalName` claim proves no such thing.
+ * `directory` is asked first: Slack holds each workspace address on exactly
+ * one account, so that account wins over any `/z email` — a `/z email` is
+ * self-set, or a copy of the Slack email taken on the user's first turn that
+ * goes stale when they change it (2026-11-13: a user moved to a new address,
+ * a new account took the old one, and a Google login with it opened the first user's
+ * dashboard). The `/z email` match decides only when no Slack account holds
+ * the address or the directory cannot answer. With no `/z email` match either,
+ * a directory that failed or timed out sends the user to `lookup_unavailable`
+ * (try again), one an admin must fix to `lookup_misconfigured` — neither is
+ * `no_match`. Only the Google callback passes it: Google has verified that the
+ * user owns the address, Microsoft's `mail` / `userPrincipalName` claim proves
+ * no such thing.
  */
 async function matchedSlackUserOrRedirect(
   reply: FastifyReply,
   email: string,
   directory?: OAuthDirectoryLookupFn | null,
 ): Promise<{ userId: string; name: string } | null> {
+  const listed = directory ? await lookupInDirectory(directory, email) : null;
+  if (typeof listed === 'object' && listed !== null) {
+    logger.info('OAuth login: matched by Slack workspace email', { email, slackUserId: listed.userId });
+    return listed;
+  }
   const result = lookupUser(email);
   if (result.kind === 'match') return result;
   if (result.kind === 'ambiguous') {
@@ -350,7 +362,6 @@ async function matchedSlackUserOrRedirect(
     reply.redirect('/login?error=ambiguous_email');
     return null;
   }
-  const listed = directory ? await lookupInDirectory(directory, email) : null;
   if (listed === DIRECTORY_UNAVAILABLE) {
     reply.redirect('/login?error=lookup_unavailable');
     return null;
@@ -358,10 +369,6 @@ async function matchedSlackUserOrRedirect(
   if (listed === DIRECTORY_MISCONFIGURED) {
     reply.redirect('/login?error=lookup_misconfigured');
     return null;
-  }
-  if (listed) {
-    logger.info('OAuth login: matched by Slack workspace email', { email, slackUserId: listed.userId });
-    return listed;
   }
   logger.warn('OAuth login: no Slack user matched for email', { email });
   reply.redirect(`/login?error=no_match&email=${encodeURIComponent(email)}`);

@@ -17,6 +17,7 @@
 
 import type { CronJob } from 'somalib/cron/cron-storage';
 import { AVAILABLE_MODELS } from '../user-settings-store';
+import { userMention } from './user-mention';
 
 export type CronActionKind = 'model' | 'target' | 'mode' | 'edit' | 'run' | 'delete';
 
@@ -140,7 +141,7 @@ function describeTargetShort(job: CronJob): string {
  * be visible here as text (initial_option alone is too subtle to notice).
  */
 function jobSection(job: CronJob, showOwner: boolean): Record<string, any> {
-  const ownerStr = showOwner ? ` · owner <@${job.owner}>` : '';
+  const ownerStr = showOwner ? ` · owner ${userMention(job.owner)}` : '';
   const last = job.lastRunMinute || 'never';
   const prompt = job.prompt.length > 80 ? `${job.prompt.substring(0, 80)}…` : job.prompt;
   const settings = `현재 설정 → 모델: *${describeModelShort(job)}* · 출력: *${describeTargetShort(job)}* · 모드: *${job.mode === 'fastlane' ? '⚡fastlane' : 'default'}*`;

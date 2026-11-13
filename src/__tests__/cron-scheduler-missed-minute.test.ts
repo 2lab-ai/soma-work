@@ -105,8 +105,10 @@ describe('CronScheduler — no lost minutes', () => {
 
     at('2026-10-19T12:00:10Z');
     await scheduler.tick();
+    await scheduler.settled();
     at('2026-10-19T12:04:10Z');
     await scheduler.tick();
+    await scheduler.settled();
 
     expect(fired()).toEqual(['every-minute', 'every-minute']);
   });
@@ -197,7 +199,7 @@ describe('CronScheduler — no lost minutes', () => {
     expect(fired()).toEqual(['renamed-prompt']);
   });
 
-  it('does not re-fire a job that a run-now covered while an earlier job of the tick awaited', async () => {
+  it('a slow turn does not hold back another job due in the same minute', async () => {
     const { deps, fired, injected } = setup([
       { name: 'slow', expression: '0 12 * * *' },
       { name: 'other', expression: '0 12 * * *' },
@@ -210,11 +212,10 @@ describe('CronScheduler — no lost minutes', () => {
     const scheduler = new CronScheduler(deps);
 
     at('2026-10-19T12:00:30Z');
-    const ticking = scheduler.tick(); // snapshot [slow, other]; blocks on slow
-    await vi.waitFor(() => expect(fired()).toEqual(['slow']));
-    await scheduler.runJobNow('U1', 'other'); // manual fire, same minute
+    await scheduler.tick(); // launches both; does not wait for slow's turn
+    await vi.waitFor(() => expect(fired()).toEqual(['slow', 'other']));
     release();
-    await ticking;
+    await scheduler.settled();
 
     expect(fired()).toEqual(['slow', 'other']);
   });

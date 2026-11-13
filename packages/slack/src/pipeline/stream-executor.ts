@@ -1909,8 +1909,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       });
 
       // Auto-fetch user profile (email + display_name) from Slack.
-      //   - email: one-time (strict === undefined distinguishes "never fetched"
-      //     from "fetched but no email scope").
+      //   - email: copied on the first fetch (strict === undefined distinguishes
+      //     "never fetched" from "fetched but no email scope"), then handed to
+      //     the store on every refresh so it can follow a Slack email change.
       //   - display_name: refreshed on a TTL so cross-user skill invocation by
       //     display name (`$Z:skill`) tracks the user's CURRENT Slack handle —
       //     the previous one-time email gate left renamed users' display names
@@ -1922,9 +1923,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         try {
           const profile = await this.deps.slackApi.getUserProfile(user);
           if (emailUnknown) {
-            // Store email or empty sentinel to prevent re-fetching when scope is missing
-            userSettingsStore.setUserEmail(user, profile.email ?? '');
+            // Store email or empty sentinel to prevent re-fetching when scope is missing.
+            // 'slack': this copy follows later Slack email changes; a user's own choice does not.
+            userSettingsStore.setUserEmail(user, profile.email ?? '', 'slack');
           }
+          // The stored email follows a Slack account email change (the store
+          // keeps a self-set one) — a one-time copy once let a new account that
+          // took the old address sign in as this user (2026-11-13).
+          userSettingsStore.syncSlackAccountEmail?.(user, profile.email);
           if (profile.displayName && profile.displayName !== user) {
             userSettingsStore.setUserSlackDisplayName(user, profile.displayName);
           }

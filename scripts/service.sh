@@ -593,9 +593,16 @@ load_and_kickstart() {
         fi
         print_warning "launchctl kickstart -k gui/$uid/$SERVICE_NAME failed (exit $kick_status): ${kick_err:-<no stderr>}"
         # 125 = "Domain does not support specified action", i.e. this host has
-        # no GUI seat to spawn into. Any other failure is about the job, not
-        # the domain, so the headless path is the honest next step.
-        if [[ "$kick_status" -eq 125 ]]; then
+        # no GUI seat to spawn into. 113 = "Could not find service … in domain
+        # for user gui": the gui domain exists but the label is not in it — a
+        # deploy runner's Background-session `launchctl load` registered it in
+        # user/<uid> (measured 2026-11-13 on a customer dev host). A headless
+        # spawn there runs the bot outside launchd while the user-domain agent
+        # (KeepAlive) relaunches a second instance every 10 s that dies on the
+        # pid lock — two supervisors for one label. Both codes go to user/<uid>.
+        # Any other failure is about the job, not the domain, so the headless
+        # path is the honest next step.
+        if [[ "$kick_status" -eq 125 || "$kick_status" -eq 113 ]]; then
             try_user=1
         fi
     fi

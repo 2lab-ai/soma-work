@@ -29,6 +29,8 @@
 
 import { randomUUID } from 'node:crypto';
 import { atomicWriteJson, readJsonWithBackup } from '@soma/common/atomic-json';
+import { getAdminUsers } from './admin-utils';
+import { isEnvironmentUser } from './env-users';
 import { Logger } from './logger';
 import {
   buildInstructionApprovalDm,
@@ -86,6 +88,8 @@ export interface InstructionApprovalRequest {
   decidedAt?: number;
   /** Where the owner's DM landed (rewritten when the request ends). */
   dmRef?: { channel: string; ts: string };
+  /** The other admins' DMs: an environment user's session asks every admin, and each DM is kept current. */
+  extraDmRefs?: Array<{ channel: string; ts: string }>;
 }
 
 /** The pending request as the dashboard card shows it — no instruction beyond a short preview. */
@@ -310,6 +314,8 @@ export class InstructionApprovals {
     // No owner on record (or no sender): nobody to ask, nobody to protect from.
     if (!ownerId || !senderId) return true;
     if (senderId === ownerId) return true;
+    // An environment user's session belongs to its admins: they speak in it without asking.
+    if (isEnvironmentUser(ownerId) && getAdminUsers().has(senderId)) return true;
     if (session.approvedInstructors?.includes(senderId)) return true;
     if (this.deps.isTrusted(ownerId, senderId)) return true;
     if (input.approvalId) {
@@ -417,11 +423,12 @@ export class InstructionApprovals {
         );
       }
       await this.askOwner(request);
-    } else if (request.dmRef) {
-      const ref = request.dmRef;
-      await this.bestEffort('DM refresh', () =>
-        this.deps.updateDm?.(ref, buildInstructionApprovalDm(this.viewOf(request))),
-      );
+    } else {
+      for (const ref of this.dmRefsOf(request)) {
+        await this.bestEffort('DM refresh', () =>
+          this.deps.updateDm?.(ref, buildInstructionApprovalDm(this.viewOf(request))),
+        );
+      }
     }
     this.deps.broadcast?.();
     return { requestId: request.requestId, created };
@@ -430,31 +437,45 @@ export class InstructionApprovals {
   private async askOwner(request: InstructionApprovalRequest): Promise<void> {
     if (!this.deps.postOwnerDm) return;
     const shown = request.held.length;
-    let ref: { channel: string; ts: string } | undefined;
-    try {
-      ref = await this.deps.postOwnerDm(request.ownerId, buildInstructionApprovalDm(this.viewOf(request)));
-    } catch (error) {
-      logger.warn('Instruction approval DM failed — the dashboard card still asks', {
-        requestId: request.requestId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return;
+    const refs: Array<{ channel: string; ts: string }> = [];
+    // An environment user is never a person: its admins are asked. One DM that fails does not stop the others.
+    const recipients = isEnvironmentUser(request.ownerId) ? [...getAdminUsers()] : [request.ownerId];
+    for (const recipient of recipients) {
+      try {
+        const posted = await this.deps.postOwnerDm(recipient, buildInstructionApprovalDm(this.viewOf(request)));
+        if (posted) refs.push(posted);
+      } catch (error) {
+        logger.warn('Instruction approval DM failed — the dashboard card still asks', {
+          requestId: request.requestId,
+          recipient,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
-    if (!ref) return;
+    if (refs.length === 0) return;
     if (request.status !== 'pending') {
-      // Answered on the dashboard while the DM was on its way: the DM says how at once.
-      void this.bestEffort('late DM rewrite', () => this.deps.updateDm?.(ref, this.endedDm(request)));
+      // Answered on the dashboard while the DMs were on their way: each DM says how at once.
+      for (const ref of refs) {
+        void this.bestEffort('late DM rewrite', () => this.deps.updateDm?.(ref, this.endedDm(request)));
+      }
       return;
     }
-    request.dmRef = ref;
+    request.dmRef = refs[0];
+    if (refs.length > 1) request.extraDmRefs = refs.slice(1);
     this.saveQuietly('DM ref');
-    // Words that joined while the DM was on its way: the DM shows them now (its buttons name the new version).
+    // Words that joined while the DMs were on their way: the DMs show them now (their buttons name the new version).
     if (request.held.length !== shown) {
-      const posted = ref;
-      await this.bestEffort('DM refresh', () =>
-        this.deps.updateDm?.(posted, buildInstructionApprovalDm(this.viewOf(request))),
-      );
+      for (const posted of refs) {
+        await this.bestEffort('DM refresh', () =>
+          this.deps.updateDm?.(posted, buildInstructionApprovalDm(this.viewOf(request))),
+        );
+      }
     }
+  }
+
+  /** Every DM that asked about `request`: the owner's, or each admin's for an environment user's session. */
+  private dmRefsOf(request: InstructionApprovalRequest): Array<{ channel: string; ts: string }> {
+    return [...(request.dmRef ? [request.dmRef] : []), ...(request.extraDmRefs ?? [])];
   }
 
   private endedDm(r: InstructionApprovalRequest): SlackMessage {
@@ -473,8 +494,9 @@ export class InstructionApprovals {
       r.status = 'expired';
       r.decidedAt = t;
       changed = true;
-      const ref = r.dmRef;
-      if (ref) void this.bestEffort('expired DM rewrite', () => this.deps.updateDm?.(ref, this.endedDm(r)));
+      for (const ref of this.dmRefsOf(r)) {
+        void this.bestEffort('expired DM rewrite', () => this.deps.updateDm?.(ref, this.endedDm(r)));
+      }
     }
     if (changed) this.saveQuietly('expire');
   }
@@ -499,17 +521,18 @@ export class InstructionApprovals {
     if (!actor || !isInstructionApprovalDecision(decision)) return { ok: false, reason: 'invalid' };
     const request = this.requests.get(requestId);
     if (!request) return { ok: false, reason: 'not_found' };
-    if (request.ownerId !== actor) return { ok: false, reason: 'not_owner', request };
+    const decidesForEnvironment = isEnvironmentUser(request.ownerId) && getAdminUsers().has(actor);
+    if (request.ownerId !== actor && !decidesForEnvironment) return { ok: false, reason: 'not_owner', request };
     if (request.status !== 'pending') {
       return { ok: false, reason: request.status === 'expired' ? 'expired' : 'already_answered', request };
     }
     if (request.expiresAt <= this.now()) return { ok: false, reason: 'expired', request };
     if (input.revision !== undefined && input.revision !== request.held.length) {
-      const ref = request.dmRef;
-      if (ref)
+      for (const ref of this.dmRefsOf(request)) {
         void this.bestEffort('DM refresh', () =>
           this.deps.updateDm?.(ref, buildInstructionApprovalDm(this.viewOf(request))),
         );
+      }
       return { ok: false, reason: 'changed', request };
     }
     const session = this.deps.getSession(request.sessionKey);
@@ -518,8 +541,9 @@ export class InstructionApprovals {
       request.status = 'expired';
       request.decidedAt = this.now();
       this.saveQuietly('session gone');
-      const ref = request.dmRef;
-      if (ref) void this.bestEffort('ended DM rewrite', () => this.deps.updateDm?.(ref, this.endedDm(request)));
+      for (const ref of this.dmRefsOf(request)) {
+        void this.bestEffort('ended DM rewrite', () => this.deps.updateDm?.(ref, this.endedDm(request)));
+      }
       this.deps.broadcast?.();
       return { ok: false, reason: 'session_gone', request };
     }
@@ -588,11 +612,12 @@ export class InstructionApprovals {
 
   private async afterAnswer(request: InstructionApprovalRequest, notes: string[] = []): Promise<void> {
     const view = this.viewOf(request);
-    const ref = request.dmRef;
     const thread = this.threadOf(request);
     const resolvedDm = withNotes(buildInstructionApprovalResolvedDm(view), notes);
     await Promise.all([
-      ref ? this.bestEffort('DM rewrite', () => this.deps.updateDm?.(ref, resolvedDm)) : undefined,
+      ...this.dmRefsOf(request).map((ref) =>
+        this.bestEffort('DM rewrite', () => this.deps.updateDm?.(ref, resolvedDm)),
+      ),
       thread
         ? this.bestEffort('thread notice', () =>
             this.deps.postThreadNotice?.(thread, withNoteLines(instructionDecidedNotice(view), notes)),
@@ -617,9 +642,11 @@ export class InstructionApprovals {
       ),
     );
     const failures = (await Promise.all(runs)).filter((r): r is string => typeof r === 'string');
-    if (failures.length && ref) {
+    if (failures.length) {
       const failed = withNotes(resolvedDm, [`실행하지 못한 지시가 있습니다: ${failures.join(' · ').slice(0, 500)}`]);
-      await this.bestEffort('DM failure note', () => this.deps.updateDm?.(ref, failed));
+      for (const ref of this.dmRefsOf(request)) {
+        await this.bestEffort('DM failure note', () => this.deps.updateDm?.(ref, failed));
+      }
     }
   }
 

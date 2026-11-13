@@ -8,14 +8,11 @@ import * as path from 'path';
 import type { MemoryStore } from './catalog';
 import { l1FilePath, migrateLegacyL1 } from './hierarchical-memory-store';
 import { withMemoryLock } from './memory-lock';
+import { isSafeUserIdSegment } from './memory-page-id';
 
 const ENTRY_DELIMITER = '\n§\n';
 const DEFAULT_MEMORY_CHAR_LIMIT = 2200;
 const DEFAULT_USER_CHAR_LIMIT = 1375;
-
-function isSafeSegment(s: string): boolean {
-  return /^[A-Za-z0-9_-]+$/.test(s);
-}
 
 function charCount(entries: string[]): number {
   if (entries.length === 0) return 0;
@@ -26,7 +23,7 @@ export class MemoryFileStore implements MemoryStore {
   constructor(private readonly dataDir: string) {}
 
   private filePath(user: string, target: string): string {
-    if (!isSafeSegment(user)) throw new Error(`Invalid userId: ${user}`);
+    if (!isSafeUserIdSegment(user)) throw new Error(`Invalid userId: ${user}`);
     const l1 = target === 'memory' ? 'memory' : 'user';
     // Keep L1 location in lockstep with the in-process store: files live under
     // `memory/`, with one-way migration that removes the legacy root-level path.
@@ -71,7 +68,7 @@ export class MemoryFileStore implements MemoryStore {
   // Every write holds the user's memory lock — the same one the host process
   // and the dashboard take (SSOT 2026-10-23 T3).
   private locked<T>(user: string, fn: () => T): T {
-    if (!isSafeSegment(user)) throw new Error(`Invalid userId: ${user}`);
+    if (!isSafeUserIdSegment(user)) throw new Error(`Invalid userId: ${user}`);
     return withMemoryLock(this.dataDir, user, fn);
   }
 
