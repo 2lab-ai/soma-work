@@ -1,6 +1,6 @@
 # loop — env-access 구현 드라이브
 
-Status: in-progress (라운드 1 = 설계 문서 + 에픽) · AS-IS = [`../23-env-access-as-is.md`](../23-env-access-as-is.md) ·
+Status: in-progress (라운드 1 — WU0–WU5 · WU6a 머지, WU6b는 운영자 단계 대기) · AS-IS = [`../23-env-access-as-is.md`](../23-env-access-as-is.md) ·
 TO-BE = [`../24-env-access-to-be.md`](../24-env-access-to-be.md) · 아키텍처 = [`../25-env-access-architecture.md`](../25-env-access-architecture.md) ·
 ssot = [`ssot.md`](ssot.md)
 
@@ -13,11 +13,11 @@ ssot = [`ssot.md`](ssot.md)
 | WU0 | 설계 문서 | ✅ | #1208 | `docs/env-access-prd` (PR #1215 머지) | `.prd/23-25`, `.prd/env-access/` | PR 머지 |
 | WU1 | 비밀 저장소 + 전원 거부 + fail-closed 샌드박스 | ✅ | #1209 | `feat/env-access-secrets` (PR #1218 머지, dev 배포·실측 2026-11-12) | 25 §5 WU1 | 25 §5 WU1 + dev 실측 |
 | WU2 | 어드민 샌드박스 프로필 + 어드민 쓰기 경계 + ssh는 MCP로만 | ✅ | #1210 | `feat/env-access-admin-sandbox` (PR #1240 머지, dev v0.3.32 배포·실측 2026-11-13 — 결과는 #1210 댓글) | 25 §5 WU2 + #1218 리뷰가 넘긴 두 길(`sandbox off` Bash, 배포 설정 쓰기) | 25 §5 WU2 + 두 길의 적대적 테스트 |
-| WU3a | 환경 사용자(`envUser`) + `gh_pr`(view·approve·merge) + 감사 원장 + 비어드민 거부 | 🟡 | #1211 | `feat/env-access-env-users` | 25 §5 WU3 중 gh·원장 | 조건 충족 PR만 승인·머지, 원장 의도→결과, dev 실측 |
-| WU3b | `login`(환경 계정 → 세션). `$env:<id>:<skill>` 호출·별도 스킬 저장소는 WU4가 대체 — 환경 스킬 = 환경 플러그인 스킬을 server-tools `skills`로 묶음, 이전은 WU5 | 🟡 | #1211 | `feat/env-access-login` (WU4 위에 쌓음) | 25 §5 WU3 나머지 | `login` 세션으로 환경 API 200(dev 실측), 비밀번호·세션이 원장·오류에 없음(`server-tools-login.test.ts`) |
-| WU4 | 환경 grant + 4버튼 + 정책 단계 | 🟡 | #1212 | `feat/env-access-env-grants` (WU3a 위에 쌓음) | 환경 = server-tools `envUser`+`skills`, `perEnvironment` grant, 카드 수락·거절·이 스킬 항상·이 환경 전체 항상, 환경 서버의 server-tools는 그 환경 grant로 | 비어드민 카드 1장 → "환경 전체 항상" → 다음 카드 0장 (`env-skill-approval-flow.test.ts`), dev 실측 |
-| WU5 | 배포·QA 스킬 이전 + 배포 → QA 연결 | 🟡 | #1213 | `feat/env-access-skills` (WU3b 위에 쌓음) | server-tools `gh_read`(환경 토큰, 저장소·부분 허용 목록) + QA 스킬(`deploy-qa`·`qa-issue`)이 `github.server`면 `gh_read`, `qaEnv.logins`면 `login` — 브로커는 별칭으로 #1214까지. 고객 스킬 저장소의 프로필 전환(`github.server`·`qaEnv.logins`)과 환경 계정 `secrets/` 이전은 운영자 | QA 없는 dev2 배포 0건, 비밀번호 노출 0 (dev2 실측) |
-| WU6 | 브로커 제거 | 🟡 | #1214 | 6a `feat/env-access-cf` (WU5 위에 쌓음) → 6b `chore/env-access-remove-broker` | 6a: server-tools `cf_api`(환경 범위 토큰, 존 한정, 쓰기 원장) — 브로커 임대 대체. 6b: 운영자가 토큰을 `secrets/`로 옮기고 브로커 `uninstall.sh`를 돌린 뒤 `packages/devops-broker`·`devops-tools`·`src/devops`·대시보드 카드·`deploy.prompt`/QA 스킬의 브로커 경로 삭제(가드의 브로커 경로는 호스트 정리 뒤) | 정기 작업 봇 PR 승인 카드 0장, 배포 번들 하나 |
+| WU3a | 환경 사용자(`envUser`) + `gh_pr`(view·approve·merge) + 감사 원장 + 비어드민 거부 | ✅ | #1211 | `feat/env-access-env-users` (PR #1248 머지 `046d77a08`, #1211 닫음 2026-11-13; dev 실측은 dev 배포 뒤) | 25 §5 WU3 중 gh·원장 | 조건 충족 PR만 승인·머지, 원장 의도→결과, dev 실측 |
+| WU3b | `login`(환경 계정 → 세션). `$env:<id>:<skill>` 호출·별도 스킬 저장소는 WU4가 대체 — 환경 스킬 = 환경 플러그인 스킬을 server-tools `skills`로 묶음, 이전은 WU5 | ✅ | #1211 | `feat/env-access-login` (PR #1250 머지 `ac89e9142`; dev 실측은 dev 배포 뒤) | 25 §5 WU3 나머지 | `login` 세션으로 환경 API 200(dev 실측), 비밀번호·세션이 원장·오류에 없음(`server-tools-login.test.ts`) |
+| WU4 | 환경 grant + 4버튼 + 정책 단계 | ✅ | #1212 | `feat/env-access-env-grants` (PR #1249 머지 `07896281b`, #1212 닫음; 흐름 테스트 6건 증거는 #1212 댓글; 라이브는 고객 dev 호스트 환경 절 설정 뒤) | 환경 = server-tools `envUser`+`skills`, `perEnvironment` grant, 카드 수락·거절·이 스킬 항상·이 환경 전체 항상, 환경 서버의 server-tools는 그 환경 grant로 | 비어드민 카드 1장 → "환경 전체 항상" → 다음 카드 0장 (`env-skill-approval-flow.test.ts`), dev 실측 |
+| WU5 | 배포·QA 스킬 이전 + 배포 → QA 연결 | 🟡 | #1213 | `feat/env-access-skills` (PR #1251 머지 `358a2a50f` — 코드 끝, #1213은 라이브까지 열어 둠; 라이브 dev2 배포 → QA는 고객 dev 호스트 환경 절 + 고객 스킬 저장소 프로필 설정 뒤) | server-tools `gh_read`(환경 토큰, 저장소·부분 허용 목록) + QA 스킬(`deploy-qa`·`qa-issue`)이 `github.server`면 `gh_read`, `qaEnv.logins`면 `login` — 브로커는 별칭으로 #1214까지. 고객 스킬 저장소의 프로필 전환(`github.server`·`qaEnv.logins`)과 환경 계정 `secrets/` 이전은 운영자 | QA 없는 dev2 배포 0건, 비밀번호 노출 0 (dev2 실측) |
+| WU6 | 브로커 제거 | 🟡 | #1214 | 6a `feat/env-access-cf` (PR #1252 머지 `d7e771ebb`) → 6b `chore/env-access-remove-broker` (PR #1253 draft — 운영자 단계 뒤 머지) | 6a: server-tools `cf_api`(환경 범위 토큰, 존 한정, 쓰기 원장) — 브로커 임대 대체. 6b: 운영자가 토큰을 `secrets/`로 옮기고 브로커 `uninstall.sh`를 돌린 뒤 `packages/devops-broker`·`devops-tools`·`src/devops`·대시보드 카드·`deploy.prompt`/QA 스킬의 브로커 경로 삭제(가드의 브로커 경로는 호스트 정리 뒤) | 정기 작업 봇 PR 승인 카드 0장, 배포 번들 하나 |
 
 ## 열린 질문
 
@@ -56,4 +56,9 @@ ssot = [`ssot.md`](ssot.md)
 
 ## 다음 착수점
 
-WU0 · WU1 · WU2 머지 · dev 실측 완료 → #1242(`fix/env-access-1242`) · ssh 판정 오탐 PR → #1241 → WU3(#1211).
+WU0–WU5 · WU6a · #1242 · #1241 머지(2026-11-13). 남은 것:
+1. dev 배포(promotion PR #1254 — 유저 지시로 보류) → #1242 · #1241 dev 실측(각 PR 본문의 확인 절차) → 출시 게이트 열림.
+2. 운영자: 고객 dev 호스트 `config.json` `server-tools.<dev2|stage0>`에 `envUser` · `skills` · `github`(`$secret` · `repos` · 조건표 · `readRefs` = 통합·배포 브랜치) · `web.logins` · `cloudflare`(`$secret` · `zones`, 필요하면 `parts` — rulesets · firewall · filters · pagerules · custom_hostnames · healthchecks는 다른 시스템 자격이 담길 수 있어 opt-in), 고객 스킬 저장소 QA 프로필 `github.server` · `qaEnv.logins`, 토큰 · 비밀번호 → `secrets/`.
+3. 라이브: 비어드민 `$<env>:post-deploy` → 어드민 카드 4버튼 → "환경 전체 항상" → 다음 카드 0장 · dev2 배포 → QA 리포트(비밀번호 노출 0).
+4. 운영자: 각 호스트에서 브로커 `uninstall.sh` → #1253(WU6b) 머지 → #1214 닫기 → 가드의 브로커 경로 정리.
+5. 원격 셸 금지 오탐: 셸 파서로 좁히는 #1245는 리뷰마다 새 우회가 나와 보류(draft). 경계를 샌드박스로 옮기는 #1255로 간다.
