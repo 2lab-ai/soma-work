@@ -39,7 +39,8 @@ Then write the picture's conclusion in one line (the router's Step 0 passes it w
 decides and what the picture must make visible. It becomes the canvas title — a finding ("업로드 전에 이미 LAN에
 게시된다"), never the scope ("요청 흐름도"). Mark the components the decision is about (the step to change, the
 gap) so they stand out from the rest, and do not draw a flow the input does not state: an inferred link is
-dashed and labelled `추정`.
+dashed and labelled `추정`. The same holds for every note, subtitle and title claim — what the input does not
+state is marked `추정`, and a gap in the sources reads `미정` (not in the source), never "없다".
 
 ### 1.5. Plan (conditional)
 
