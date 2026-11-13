@@ -273,6 +273,12 @@ describe('cf_api — review R3', () => {
     await expect(
       handleCfApi({ server: 'dev2', method: 'GET', path: `/zones/${ZONE}/healthchecks` }, fetch),
     ).rejects.toThrow(/healthchecks is not a part cf_api reaches/);
+    // trinity R3 (astra): rules can carry static header values (an origin's key) — opt-in as well.
+    for (const part of ['rulesets', 'firewall', 'filters', 'pagerules']) {
+      await expect(
+        handleCfApi({ server: 'dev2', method: 'GET', path: `/zones/${ZONE}/${part}` }, fetch),
+      ).rejects.toThrow(new RegExp(`${part} is not a part cf_api reaches`));
+    }
     expect(calls).toEqual([]);
     writeConfig({
       token: { $secret: 'cf-dev2' },
@@ -294,7 +300,7 @@ describe('cf_api — review R3', () => {
     expect(calls).toEqual([]);
   });
 
-  it('never follows a redirect: a read fails, a write is recorded failed', async () => {
+  it('never follows a redirect: a read fails, a write is recorded unknown', async () => {
     const inits: { redirect?: string }[] = [];
     const moved: CfFetch = async (_url, init) => {
       inits.push(init as { redirect?: string });
@@ -303,11 +309,12 @@ describe('cf_api — review R3', () => {
     await expect(
       handleCfApi({ server: 'dev2', method: 'GET', path: `/zones/${ZONE}/dns_records` }, moved),
     ).rejects.toThrow(/answered 302 \(moved\): not followed/);
+    // trinity R3 (fable): a 303 can follow a write that was made, so a moved write is unknown, not failed.
     await expect(
       handleCfApi({ server: 'dev2', method: 'DELETE', path: `/zones/${ZONE}/dns_records/abc` }, moved),
-    ).rejects.toThrow(/answered 302 \(moved\): not followed/);
+    ).rejects.toThrow(/answered 302 \(moved\), not followed: the write may have been made/);
     expect(inits.every((i) => i.redirect === 'manual')).toBe(true);
-    expect(ledger().map((r) => r.phase)).toEqual(['intent', 'failed']);
+    expect(ledger().map((r) => r.phase)).toEqual(['intent', 'unknown']);
   });
 
   it('takes a write as done only on success: true; a readable 2xx without it is unknown', async () => {
@@ -319,6 +326,19 @@ describe('cf_api — review R3', () => {
       ).rejects.toThrow(/may have been made/);
       expect(ledger().map((r) => r.phase)).toEqual(['intent', 'unknown']);
     }
+  });
+
+  // trinity R3 (astra): an empty 204 answer to a write is HTTP's own "done, nothing to say" — done on purpose.
+  it('records an empty 204 answer to a write as done', async () => {
+    const fetch: CfFetch = async () => ({
+      ok: true,
+      status: 204,
+      json: async () => {
+        throw new SyntaxError('Unexpected end of JSON input');
+      },
+    });
+    await handleCfApi({ server: 'dev2', method: 'DELETE', path: `/zones/${ZONE}/dns_records/abc` }, fetch);
+    expect(ledger().map((r) => r.phase)).toEqual(['intent', 'done']);
   });
 
   it('records a 5xx answer to a write as unknown', async () => {

@@ -18,25 +18,21 @@ export interface EnvCloudflareConfig {
 }
 
 /**
- * The zone parts `cf_api` reaches by default: DNS, settings, cache, rules, TLS, custom hostnames, firewall, workers
- * routes, load balancers, health checks, analytics. Anything else (logpush destinations, access, …) only when the
- * operator lists it in `cloudflare.parts` — an answer there may carry another system's credentials.
+ * The zone parts `cf_api` reaches by default: DNS, settings, cache, TLS, custom hostnames, rate limits, workers routes,
+ * load balancers, analytics. Anything else only when the operator lists it in `cloudflare.parts`, because an answer
+ * there may carry another system's credentials: health checks (request headers), rulesets, firewall rules, filters
+ * and page rules (static header values and expressions can hold an origin's key, a forwarding URL its basic auth),
+ * logpush destinations, access.
  */
 export const DEFAULT_PARTS: readonly string[] = [
   'dns_records',
   'settings',
   'purge_cache',
-  'rulesets',
-  'pagerules',
   'ssl',
   'custom_hostnames',
-  'firewall',
-  'filters',
   'rate_limits',
   'workers',
   'load_balancers',
-  // Not `healthchecks`: a check's request headers can hold an origin's credentials (review R3). List it in
-  // `cloudflare.parts` to reach it.
   'analytics',
   'cache',
 ];
@@ -207,6 +203,12 @@ export async function cfCall(
     throw new CfError(`Cloudflare GET got no answer (${why})`);
   }
   if (res.status >= 300 && res.status < 400) {
+    // A 303 can follow a write that was made: a moved write is unknown, a moved read failed (trinity R3, fable).
+    if (request.method !== 'GET') {
+      throw new CfOutcomeUnknownError(
+        `Cloudflare ${request.method} ${request.path} answered ${res.status} (moved), not followed: the write may have been made — check before retrying`,
+      );
+    }
     throw new CfError(`Cloudflare ${request.method} ${request.path} answered ${res.status} (moved): not followed`);
   }
   let json: unknown;
@@ -235,6 +237,7 @@ export async function cfCall(
       );
     }
     // Done only when Cloudflare says so; a body that does not say `success: true` leaves the write unknown (review R3).
+    // An empty 204 is HTTP's own "done, nothing to say" and stays done (trinity R3, astra: on purpose, tested).
     if (readable && success !== true) {
       throw new CfOutcomeUnknownError(
         `Cloudflare ${request.method} answered ${res.status} without success: true: the write may have been made — check before retrying`,
