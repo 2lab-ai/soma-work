@@ -13,8 +13,9 @@
  *   - what always shows (title, status, actions, approvals, the composer) is listed with a lock, never a switch;
  *   - changes save at once (debounced PUT of the whole document) with 되돌리기 (and ⌘/Ctrl+Z) — no Save bar;
  *   - the thread card follows the task card by default; "따로 설정" starts from what it shows now;
- *   - the detail card is edited as it reads (SSOT 2026-11-03): 타이틀 바 (what follows the time), 입력 필요 (fixed),
- *     탭 바 (its tabs, closed until pressed — the preview's tabs open and close as the card's do), 아래 (대화 · 작업 로그).
+ *   - the detail card is edited as it reads (SSOT 2026-11-03): 타이틀 바 (what follows the time), 탭 바 (its tabs,
+ *     closed until pressed — the preview's tabs open and close as the card's do), 아래 (대화 · 작업 로그, 입력 필요 as
+ *     the chat's last message — SSOT 2026-11-13 — and the composer).
  *
  * Client script: String.raw, no `${…}` and no backticks (ships byte for byte). It runs after the shared layout
  * script (VIEW_LAYOUT_CLIENT_JS) and uses its layoutOf · layoutPreset · layoutsFor · faceOf · openPartsOf ·
@@ -304,17 +305,17 @@ function layZones(l) {
     { title: '항상 맨 위', fixed: cat.open.fixed, flags: [{ key: 'star', entry: cat.open.star }] },
     { key: 'parts', title: '그 아래', note: l.byCol ? '이 안은 칸마다 순서가 다릅니다 — 바꾸면 모든 칸이 이 순서를 씁니다' : '위에서 아래로', items: l.parts, cat: cat.open.parts },
   ];
-  // The detail card as it reads (SSOT 2026-11-03): the title bar, 입력 필요 under it, the tab bar, the bottom.
+  // The detail card as it reads (SSOT 2026-11-03): the title bar, the tab bar, the bottom — 입력 필요 is the chat's last
+  // message there (SSOT 2026-11-13).
   if (_laySurface === 'detail') return [
     { key: 'head', title: '타이틀 바', note: '제목 · 상태 · 시간 다음에, 왼쪽에서 오른쪽으로', fixed: [cat.detail.fixed[0]],
       flags: [{ key: 'subtitle', entry: cat.detail.toggles[0] }], items: l.head, cat: cat.detail.head },
-    { title: '입력 필요', note: '타이틀 바 바로 아래 — 탭에 넣지 않고 항상 보입니다', fixed: [cat.detail.fixed[3]] },
     { key: 'tabs', title: '탭 바', note: '처음엔 모두 닫혀 있고, 누른 탭의 내용만 열립니다 — 왼쪽에서 오른쪽으로', items: l.tabs, cat: cat.detail.tabs,
       selects: [
         { key: 'tasks', label: '작업 탭 보기', opts: cat.detail.tasks, value: l.tasks },
         { key: 'tasksMax', label: '작업 탭 높이', opts: [{ value: '34', label: '3분의 1' }, { value: '50', label: '절반' }, { value: '70', label: '3분의 2' }], value: String(l.tasksMax), off: l.tasks !== 'list' && l.tasks !== 'line' }],
       flagsLast: true, flags: [{ key: 'agenthead', entry: cat.detail.toggles[1] }, { key: 'open', entry: cat.detail.toggles[4] }] },
-    { title: '아래', note: '대화 · 작업 로그와 입력창', fixed: [cat.detail.fixed[1], cat.detail.fixed[2]],
+    { title: '아래', note: '대화 · 작업 로그와 입력창 — 입력 필요는 대화의 마지막 메시지로 항상 보입니다', fixed: [cat.detail.fixed[1], cat.detail.fixed[3], cat.detail.fixed[2]],
       flags: [{ key: 'logtab', entry: cat.detail.toggles[5] }, { key: 'sections', entry: cat.detail.toggles[2] }, { key: 'controls', entry: cat.detail.toggles[3] }] },
   ];
   var follow = layThreadMode() !== 'custom';
@@ -569,8 +570,6 @@ function layDetailHtml(d) {
   var st = _laySample === 'run' ? '● 실행 중 · 20분' : _laySample === 'wait' ? '● 입력 대기 · 3분' : '● 완료 · 32분';
   html += '<div class="pv-head"><b>결제 페이지 리뉴얼</b>' + (has('subtitle') ? '<div class="pv-sub">새 디자인 적용 · 폼 검증</div>' : '')
     + '<div class="pv-bar"><span>' + st + '</span>' + metrics + '<span class="pv-act">Slack · ☆ · ' + (_laySample === 'run' ? '중지' : '닫기') + '</span></div></div>';
-  // 입력 필요: its own zone, right under the title bar.
-  if (_laySample === 'wait') html += '<div class="lay-pv-ask"><b>입력 필요</b> dev에 먼저 배포할까요?</div>';
   // 탭 바: every tab closed until pressed — the preview's open and close as the card's do.
   if (spec.tabs.length) {
     html += '<div class="pv-midbar" role="group" aria-label="탭 바 미리보기">';
@@ -586,7 +585,9 @@ function layDetailHtml(d) {
   // 아래: 대화 · 작업 로그 (+ 에이전트 트리), the chat, the model line, the composer.
   if (has('sections')) html += '<div class="pv-tabs"><span>대화</span><span>작업 로그</span><span>에이전트 트리</span></div>';
   else if (has('logtab')) html += '<div class="pv-tabs"><span>대화</span><span>작업 로그</span></div>';
-  html += '<div class="pv-chat"><div class="pv-msg">폼 검증도 넣어 줘</div><div class="pv-msg is-bot">검증 규칙 4개를 추가했습니다. 카드 번호 · 만료일 · CVC · 이름…</div></div>';
+  // 입력 필요: the chat's last message (SSOT 2026-11-13) — the conversation above it is what the answer needs.
+  html += '<div class="pv-chat"><div class="pv-msg">폼 검증도 넣어 줘</div><div class="pv-msg is-bot">검증 규칙 4개를 추가했습니다. 카드 번호 · 만료일 · CVC · 이름…</div>'
+    + (_laySample === 'wait' ? '<div class="lay-pv-ask"><b>입력 필요</b> dev에 먼저 배포할까요?</div>' : '') + '</div>';
   if (has('controls')) html += '<div class="pv-sub">이 세션 · Opus 5.5 · 높음 ▾</div>';
   html += '<div class="pv-composer">작업 중인 에이전트에 지시…</div>';
   return html + '</div>';

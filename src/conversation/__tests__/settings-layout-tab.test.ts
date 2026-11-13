@@ -177,7 +177,7 @@ describe('E2 — every item, locks and moves', () => {
       api.layPaint();
       for (const e of cat) expect(html(), `${surface} ${e.label}`).toContain(e.label);
     }
-    // 입력 필요 in the detail card is its own zone, locked: never a switch, never in a tab.
+    // 입력 필요 in the detail card is locked: never a switch, never in a tab.
     api.set('_laySurface', 'detail');
     api.layPaint();
     expect(html()).toContain('<span class="lay-name">입력 필요</span>');
@@ -439,17 +439,26 @@ describe('E6 — 미니멀 상세 카드의 대화 · 작업 로그 탭 (SSOT 20
   });
 });
 
-describe('E7 — 상세 카드 세 구역: 타이틀 바 · 입력 필요 · 탭 바 · 아래 (SSOT 2026-11-03)', () => {
+describe('E7 — 상세 카드 세 구역: 타이틀 바 · 탭 바 · 아래 (SSOT 2026-11-03; 입력 필요 in the chat — 2026-11-13)', () => {
   const zones = (html: string) =>
     [...html.matchAll(/<section class="lay-zone"><header><h3>([^<]+)<\/h3>/g)].map((m) => m[1]);
 
-  it('the detail card is edited as it reads: 타이틀 바, 입력 필요, 탭 바, 아래', async () => {
+  it('the detail card is edited as it reads: 타이틀 바, 탭 바, 아래 (입력 필요 locked in 아래, after the chat)', async () => {
     const { api, els } = editor();
     await api.loadLayout();
     api.set('_laySurface', 'detail');
     api.layPaint();
     const html = els['lay-controls'].innerHTML as string;
-    expect(zones(html)).toEqual(['타이틀 바', '입력 필요', '탭 바', '아래']);
+    expect(zones(html)).toEqual(['타이틀 바', '탭 바', '아래']);
+    // 아래 lists, locked and as the card reads: the chat, 입력 필요 (its last message), the composer.
+    const bottom = html.slice(html.lastIndexOf('<section class="lay-zone"><header><h3>아래</h3>'));
+    expect(bottom.indexOf('<span class="lay-name">채팅</span>')).toBeGreaterThan(-1);
+    expect(bottom.indexOf('<span class="lay-name">입력 필요</span>')).toBeGreaterThan(
+      bottom.indexOf('<span class="lay-name">채팅</span>'),
+    );
+    expect(bottom.indexOf('<span class="lay-name">입력창</span>')).toBeGreaterThan(
+      bottom.indexOf('<span class="lay-name">입력 필요</span>'),
+    );
     // The title bar's items and the tabs are lists: switches and ↑ ↓.
     for (const id of ['model', 'cost', 'tokens', 'speed', 'ctx', 'owner', 'workflow'])
       expect(html, id).toContain(`data-lay="toggle" data-zone="head" data-id="${id}"`);
@@ -518,10 +527,11 @@ describe('E7 — 상세 카드 세 구역: 타이틀 바 · 입력 필요 · 탭
     expect(pv()).toContain('data-v="goal" aria-pressed="false"');
     press('tasks');
     expect(pv()).not.toContain('pv-tabbody');
-    // 입력 필요 sits between the title bar and the tab bar (the 질문 대기 sample).
+    // 입력 필요 is the chat's last message, after the tab bar and before the composer (the 질문 대기 sample).
     api.set('_laySample', 'wait');
     api.layPaint();
-    expect(pv().indexOf('<b>입력 필요</b>')).toBeGreaterThan(pv().indexOf('pv-bar'));
-    expect(pv().indexOf('<b>입력 필요</b>')).toBeLessThan(pv().indexOf('pv-midbar'));
+    expect(pv().indexOf('<b>입력 필요</b>')).toBeGreaterThan(pv().indexOf('pv-midbar'));
+    expect(pv().indexOf('<b>입력 필요</b>')).toBeGreaterThan(pv().indexOf('검증 규칙 4개를 추가했습니다'));
+    expect(pv().indexOf('<b>입력 필요</b>')).toBeLessThan(pv().indexOf('pv-composer'));
   });
 });

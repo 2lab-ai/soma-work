@@ -3302,6 +3302,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         'renderPanelQuestion',
         // re-agent-run D9: both slots keep the 입력 필요 head in step.
         'renderPanelNeedsHead',
+        'panelNeedsCount',
         'panelQuestionShown',
         'renderMultiChoicePanel',
         'renderMultiChoiceCard',
