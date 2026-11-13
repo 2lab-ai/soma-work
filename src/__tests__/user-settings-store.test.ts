@@ -70,6 +70,15 @@ describe('syncSlackAccountEmail (email follows the Slack account)', () => {
     expect(s.getUserEmail('U1')).toBe('newer@x.com');
   });
 
+  it('a Slack copy whose first sync never ran still follows the next Slack address', () => {
+    const s = makeStore();
+    s.setUserEmail('U1', 'old@x.com', 'slack'); // copied, then the process stopped before the sync
+    s.syncSlackAccountEmail('U1', 'new@x.com');
+    expect(s.getUserEmail('U1')).toBe('new@x.com');
+    s.syncSlackAccountEmail('U1', 'newer@x.com');
+    expect(s.getUserEmail('U1')).toBe('newer@x.com');
+  });
+
   it('keeps a self-set email (`set email`) when the Slack email changes', () => {
     const s = makeStore();
     s.setUserEmail('U1', 'old@x.com', 'slack');

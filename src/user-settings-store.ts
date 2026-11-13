@@ -883,7 +883,8 @@ export class UserSettingsStore {
 
   /**
    * Record the user's Slack account email and let `email` follow a change of
-   * it. `email` follows each Slack change while `emailFollowsSlack` is true. A
+   * it. `email` follows each Slack change while `emailFollowsSlack` is true,
+   * the first sync included (a copy saved without its sync still follows). A
    * record the store has not marked either way (one from before tracking) is
    * marked a Slack copy the first time the store sees its `email` equal to the
    * Slack address; one whose `email` differs is never overwritten on a guess.
@@ -895,15 +896,18 @@ export class UserSettingsStore {
     const existing = this.settings[userId];
     if (!next || !existing) return;
     const seen = existing.slackEmail;
-    if (seen === undefined) {
-      const isCopy = existing.emailFollowsSlack !== false && existing.email?.toLowerCase() === next.toLowerCase();
-      this.patchUserSettings(userId, isCopy ? { slackEmail: next, emailFollowsSlack: true } : { slackEmail: next });
-      return;
-    }
-    if (seen.toLowerCase() === next.toLowerCase()) return;
+    if (seen?.toLowerCase() === next.toLowerCase()) return;
     const previous = existing.email;
-    const follows = existing.emailFollowsSlack === true;
-    this.patchUserSettings(userId, follows ? { slackEmail: next, email: next } : { slackEmail: next });
+    const same = previous?.toLowerCase() === next.toLowerCase();
+    // Unmarked and seen for the first time: it is the Slack copy only if it equals the Slack address.
+    const followsSlack = existing.emailFollowsSlack ?? (seen === undefined && same ? true : undefined);
+    // A marked copy follows even on its first sync (the copy may have been saved without one).
+    const follows = followsSlack === true && !same;
+    this.patchUserSettings(userId, {
+      slackEmail: next,
+      ...(followsSlack === true ? { emailFollowsSlack: true } : {}),
+      ...(follows ? { email: next } : {}),
+    });
     if (follows) logger.info('User email followed the Slack account email', { userId, from: previous, to: next });
   }
 
