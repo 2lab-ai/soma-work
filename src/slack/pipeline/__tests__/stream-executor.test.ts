@@ -4091,7 +4091,7 @@ describe('Email guard in execute()', () => {
 
     await new StreamExecutor(deps).execute(createMinimalParams(vi.fn().mockResolvedValue({ ts: 'msg_ts' })));
 
-    expect(userSettingsStore.setUserEmail).toHaveBeenCalledWith('U_TEST', 'old@x.com');
+    expect(userSettingsStore.setUserEmail).toHaveBeenCalledWith('U_TEST', 'old@x.com', 'slack');
     expect(userSettingsStore.syncSlackAccountEmail).toHaveBeenCalledWith('U_TEST', 'old@x.com');
     expect(vi.mocked(userSettingsStore.setUserEmail).mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(userSettingsStore.syncSlackAccountEmail).mock.invocationCallOrder[0],

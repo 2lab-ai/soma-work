@@ -1923,8 +1923,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         try {
           const profile = await this.deps.slackApi.getUserProfile(user);
           if (emailUnknown) {
-            // Store email or empty sentinel to prevent re-fetching when scope is missing
-            userSettingsStore.setUserEmail(user, profile.email ?? '');
+            // Store email or empty sentinel to prevent re-fetching when scope is missing.
+            // 'slack': this copy follows later Slack email changes; a user's own choice does not.
+            userSettingsStore.setUserEmail(user, profile.email ?? '', 'slack');
           }
           // The stored email follows a Slack account email change (the store
           // keeps a self-set one) — a one-time copy once let a new account that

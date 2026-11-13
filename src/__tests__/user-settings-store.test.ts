@@ -53,9 +53,16 @@ describe('Slack display-name identity (cross-user skill resolution)', () => {
 // email stored on their first turn kept the old one forever, so a new account
 // that took the old address signed in to the dashboard as them.
 describe('syncSlackAccountEmail (email follows the Slack account)', () => {
+  /** A store whose file already holds `records` — e.g. one written before email tracking existed. */
+  function makeStoreWith(records: Record<string, object>): UserSettingsStore {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'uss-test-'));
+    fs.writeFileSync(path.join(dir, 'user-settings.json'), JSON.stringify(records));
+    return new UserSettingsStore(dir);
+  }
+
   it('follows every Slack email change while the stored email is the Slack copy', () => {
     const s = makeStore();
-    s.setUserEmail('U1', 'old@x.com'); // first turn: copied from Slack
+    s.setUserEmail('U1', 'old@x.com', 'slack'); // first turn: copied from Slack
     s.syncSlackAccountEmail('U1', 'old@x.com');
     s.syncSlackAccountEmail('U1', 'new@x.com');
     expect(s.getUserEmail('U1')).toBe('new@x.com');
@@ -63,9 +70,27 @@ describe('syncSlackAccountEmail (email follows the Slack account)', () => {
     expect(s.getUserEmail('U1')).toBe('newer@x.com');
   });
 
+  it('keeps a self-set email (`set email`) when the Slack email changes', () => {
+    const s = makeStore();
+    s.setUserEmail('U1', 'old@x.com', 'slack');
+    s.syncSlackAccountEmail('U1', 'old@x.com');
+    s.setUserEmail('U1', 'me@other.com'); // the user chose another commit identity
+    s.syncSlackAccountEmail('U1', 'new@x.com');
+    expect(s.getUserEmail('U1')).toBe('me@other.com');
+  });
+
+  it('saving the shown address again is a choice too — it stops following', () => {
+    const s = makeStore();
+    s.setUserEmail('U1', 'old@x.com', 'slack');
+    s.syncSlackAccountEmail('U1', 'old@x.com');
+    s.setUserEmail('U1', 'old@x.com'); // the user saved the same address on purpose
+    s.syncSlackAccountEmail('U1', 'new@x.com');
+    expect(s.getUserEmail('U1')).toBe('old@x.com');
+  });
+
   it('a self-set email stays even after Slack passes through the same address', () => {
     const s = makeStore();
-    s.setUserEmail('U1', 'work@x.com');
+    s.setUserEmail('U1', 'work@x.com', 'slack');
     s.syncSlackAccountEmail('U1', 'work@x.com');
     s.setUserEmail('U1', 'personal@x.com'); // the user chose it
     s.syncSlackAccountEmail('U1', 'personal@x.com'); // Slack happens to match it
@@ -73,18 +98,16 @@ describe('syncSlackAccountEmail (email follows the Slack account)', () => {
     expect(s.getUserEmail('U1')).toBe('personal@x.com');
   });
 
-  it('keeps a self-set email (`set email`) when the Slack email changes', () => {
+  it('a choice made before the first Slack sync is never taken for the Slack copy', () => {
     const s = makeStore();
-    s.setUserEmail('U1', 'old@x.com');
-    s.syncSlackAccountEmail('U1', 'old@x.com');
-    s.setUserEmail('U1', 'me@other.com'); // the user chose another commit identity
+    s.setUserEmail('U1', 'cur@x.com'); // chosen on the dashboard; equals the Slack address
+    s.syncSlackAccountEmail('U1', 'cur@x.com');
     s.syncSlackAccountEmail('U1', 'new@x.com');
-    expect(s.getUserEmail('U1')).toBe('me@other.com');
+    expect(s.getUserEmail('U1')).toBe('cur@x.com');
   });
 
-  it('a record from before tracking only starts tracking — it is not overwritten', () => {
-    const s = makeStore();
-    s.setUserEmail('U1', 'chosen@other.com'); // self-set or a stale copy: cannot tell
+  it('a record from before tracking whose email differs is never overwritten', () => {
+    const s = makeStoreWith({ U1: { userId: 'U1', accepted: true, email: 'chosen@other.com' } });
     s.syncSlackAccountEmail('U1', 'new@x.com');
     expect(s.getUserEmail('U1')).toBe('chosen@other.com');
     s.syncSlackAccountEmail('U1', 'k2@x.com');
@@ -92,8 +115,7 @@ describe('syncSlackAccountEmail (email follows the Slack account)', () => {
   });
 
   it('a record from before tracking whose email equals the Slack email follows from then on', () => {
-    const s = makeStore();
-    s.setUserEmail('U1', 'new@x.com'); // e.g. fixed by hand to the current Slack address
+    const s = makeStoreWith({ U1: { userId: 'U1', accepted: true, email: 'new@x.com' } });
     s.syncSlackAccountEmail('U1', 'new@x.com');
     s.syncSlackAccountEmail('U1', 'k2@x.com');
     expect(s.getUserEmail('U1')).toBe('k2@x.com');
@@ -101,7 +123,7 @@ describe('syncSlackAccountEmail (email follows the Slack account)', () => {
 
   it('compares case-insensitively', () => {
     const s = makeStore();
-    s.setUserEmail('U1', 'OLD@x.com');
+    s.setUserEmail('U1', 'OLD@x.com', 'slack');
     s.syncSlackAccountEmail('U1', 'old@x.com');
     s.syncSlackAccountEmail('U1', 'new@x.com');
     expect(s.getUserEmail('U1')).toBe('new@x.com');
@@ -109,7 +131,7 @@ describe('syncSlackAccountEmail (email follows the Slack account)', () => {
 
   it.each([undefined, '', '   '])('no Slack email (%j: missing scope, failed fetch) changes nothing', (slackEmail) => {
     const s = makeStore();
-    s.setUserEmail('U1', 'old@x.com');
+    s.setUserEmail('U1', 'old@x.com', 'slack');
     s.syncSlackAccountEmail('U1', 'old@x.com');
     s.syncSlackAccountEmail('U1', slackEmail);
     expect(s.getUserEmail('U1')).toBe('old@x.com');
