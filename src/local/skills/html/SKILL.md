@@ -61,8 +61,9 @@ the reader's language — the language the user wrote in):
 
 1. **Reader and decision** — who reads this and what they decide with it ("Z decides which of Air's features
    soma-work takes"). A page that decides nothing (a reference or wiki page) says what it is for instead.
-2. **The answer** — that decision's answer in one or two sentences, true on its own: no claim the detail below
-   contradicts or narrows ("모든 노드가 머지됐다" when one never started is false). Inferences are marked as
+2. **The answer** — that decision's answer in at most two sentences, decision first, about 150 Korean
+   characters or 40 English words at most (caveats and reasons go to the map or the section), true on its own:
+   no claim the detail below contradicts or narrows ("모든 노드가 머지됐다" when one never started is false). Inferences are marked as
    inferences. File paths, hashes and code names stay out of it.
 3. **The asks** — every item the request names or implies ("한눈에", "비교", "시각화", "결정"), one per line.
    Step 6 ticks them off against the page.
@@ -126,7 +127,8 @@ Three limits on every template contract:
   block, and the sections follow the reader's decision, not the template's part order.
 - **A slot the content cannot fill by its shape is left out, not shown as `[—]`.** A change-vs-last-period or a
   trend line needs an earlier period; a chart needs numbers that are not already a table on the page; a KPI tile
-  needs a number the reader decides on (never a count of the page's own items). `[—]` marks a value the source
+  needs a number the reader decides on (never a count of the page's own items) — when no tile does, the whole KPI
+  band goes. `[—]` marks a value the source
   should have had and does not — not a slot the template asked for.
 - **Template instructions that ask for emoji lead-ins** (data-report's insights) are overridden by Step 3.5's
   no-decorative-emoji rule; number the items instead.
@@ -642,7 +644,7 @@ mcp__slack-mcp__send_file(
   url="<url from Step 7>",
   title="<meaningful artifact title>",
   artifact_key="<slug>",
-  initial_comment="<Step 0 answer, one line>\n<template + design driver used (+ 'Impeccable — document-based application' on that driver) + any fallback note> — live on <host name>'s network: <url from Step 7>"
+  initial_comment="<Step 0 answer, one line>\nlive on <host name>'s network: <url from Step 7> (+ a font or classifier fallback note only when one happened; 'Impeccable — document-based application' on that driver)"
 )
 ```
 
