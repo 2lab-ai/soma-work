@@ -1683,3 +1683,132 @@ describe('FollowupDispatcher delivery evidence and the restart takeover', () => 
     expect(h.queue.get(SESSION, bare.id)?.state).toBe('uncertain');
   });
 });
+
+/**
+ * A halt a run WITHOUT a queue item set when it failed (an initial dispatch: a
+ * person's direct message, a host retry, a goal continuation) has no row to put
+ * a Retry on, so nothing a person can click ever lifted it. dev 2026-11-13: a
+ * pool rate limit at 16:02Z halted a goal session; the host's own error retry
+ * ran the work again an hour later and the lane stayed halted for 6.7 hours —
+ * a message sent at 22:25Z was never steered or drained, and at the
+ * auto-compact stop at 22:45Z nothing made the next turn.
+ *
+ * The lane's next healthy run is the evidence that the failure is behind it.
+ */
+describe('FollowupDispatcher — an error halt without a failed item ends with the next healthy run', () => {
+  async function failInitial(h: ReturnType<typeof harness>, reason = 'pool rate limit') {
+    const start = h.dispatcher.runInitial(SESSION, event({ ts: `${h.pending.length + 1}.0` }));
+    if (start.status !== 'dispatched') throw new Error('expected dispatch');
+    h.pending[h.pending.length - 1].settle({ result: 'error', reason });
+    await start.run.settled;
+  }
+  async function runInitial(h: ReturnType<typeof harness>, outcome: DispatchOutcome) {
+    const start = h.dispatcher.runInitial(SESSION, event({ ts: `${h.pending.length + 1}.0` }));
+    if (start.status !== 'dispatched') throw new Error('expected dispatch');
+    h.pending[h.pending.length - 1].settle(outcome);
+    return start.run.settled;
+  }
+
+  it('lifts it when a later run ends safe — and the queue drains again', async () => {
+    const h = harness();
+    await failInitial(h);
+    expect(h.dispatcher.drainHalt(SESSION)?.reason).toBe('error');
+    const waiting = enqueue(h.queue, event({ ts: '9.1', text: '대기 중인 메시지' }));
+    expect((await h.dispatcher.drainNext(SESSION)).status).toBe('idle');
+
+    const report = await runInitial(h, { result: 'safe' });
+
+    expect(report.canDrain).toBe(true);
+    expect(h.dispatcher.drainHalt(SESSION)).toBeUndefined();
+    expect(h.notices).toContainEqual({ type: 'drain-resumed', sessionKey: SESSION, trigger: 'recovered' });
+    const drained = await h.dispatcher.drainNext(SESSION);
+    expect(drained.status).toBe('dispatched');
+    expect(h.queue.get(SESSION, waiting.id)?.state).toBe('dispatched');
+  });
+
+  it('lifts it when a later run is stopped by auto-compact (a drainable boundary)', async () => {
+    const h = harness();
+    await failInitial(h);
+
+    await runInitial(h, { result: 'interrupted', reason: 'auto-compact' });
+
+    expect(h.dispatcher.drainHalt(SESSION)).toBeUndefined();
+  });
+
+  it('keeps it while the later runs keep failing, and lifts it at the first healthy one', async () => {
+    const h = harness();
+    await failInitial(h, 'pool rate limit');
+    await failInitial(h, 'pool rate limit again');
+    expect(h.dispatcher.drainHalt(SESSION)?.detail).toBe('pool rate limit again');
+
+    await runInitial(h, { result: 'interrupted', reason: 'user-stop' });
+    expect(h.dispatcher.drainHalt(SESSION)?.reason, 'a stop is not a healthy end').toBe('error');
+
+    await runInitial(h, { result: 'safe' });
+    expect(h.dispatcher.drainHalt(SESSION)).toBeUndefined();
+  });
+
+  it('keeps a halt whose failed item waits for its Retry — a healthy run elsewhere does not answer it', async () => {
+    const h = harness();
+    enqueue(h.queue, event({ ts: '1.1' }));
+    const drained = await h.dispatcher.drainNext(SESSION);
+    if (drained.status !== 'dispatched') throw new Error('expected dispatch');
+    h.pending[0].settle({ result: 'error', reason: 'model 500' });
+    await drained.run.settled;
+
+    await runInitial(h, { result: 'safe' });
+    expect(h.dispatcher.drainHalt(SESSION)).toEqual({ reason: 'error', detail: 'model 500' });
+
+    // An item-less failure on top of it does not turn it into one a healthy run lifts.
+    await failInitial(h, 'later failure');
+    await runInitial(h, { result: 'safe' });
+    expect(h.dispatcher.drainHalt(SESSION)?.reason).toBe('error');
+  });
+
+  it('settles the healthy run even when the observer throws on the recovery notice (astra R1)', async () => {
+    for (const healthy of [
+      { result: 'safe' },
+      { result: 'interrupted', reason: 'auto-compact' },
+    ] as DispatchOutcome[]) {
+      const h = harness({
+        notify: (notice) => {
+          if (notice.type === 'drain-resumed') throw new Error('observer failed');
+        },
+      });
+      await failInitial(h);
+      enqueue(h.queue, event({ ts: '9.1' }));
+
+      const report = await runInitial(h, healthy);
+
+      expect(report.canDrain).toBe(true);
+      expect(h.dispatcher.isBusy(SESSION)).toBe(false);
+      expect(h.dispatcher.drainHalt(SESSION)).toBeUndefined();
+      expect((await h.dispatcher.drainNext(SESSION)).status).toBe('dispatched');
+    }
+  });
+
+  it('a lifted halt stays lifted only for its own kind — an item failure on top is not lifted by a healthy run', async () => {
+    const h = harness();
+    await failInitial(h);
+    // The healthy run lifts it; then a drained item fails: that halt waits for its Retry.
+    await runInitial(h, { result: 'safe' });
+    enqueue(h.queue, event({ ts: '9.1' }));
+    const drained = await h.dispatcher.drainNext(SESSION);
+    if (drained.status !== 'dispatched') throw new Error('expected dispatch');
+    h.pending[h.pending.length - 1].settle({ result: 'error', reason: 'item failed' });
+    await drained.run.settled;
+
+    await runInitial(h, { result: 'safe' });
+
+    expect(h.dispatcher.drainHalt(SESSION)).toEqual({ reason: 'error', detail: 'item failed' });
+  });
+
+  it('keeps every other halt — a blocked run without an item still waits for its own door', async () => {
+    const h = harness();
+    await runInitial(h, { result: 'blocked', reason: 'awaiting user choice' });
+
+    await runInitial(h, { result: 'safe' });
+
+    expect(h.dispatcher.drainHalt(SESSION)).toEqual({ reason: 'blocked', detail: 'awaiting user choice' });
+  });
+});

@@ -144,10 +144,21 @@ export type DrainHaltReason = 'blocked' | 'error' | 'authorization';
 export interface DrainHalt {
   reason: DrainHaltReason;
   detail: string;
+  /**
+   * The halt is an `error` that a run WITHOUT a queue item settled into (an
+   * initial dispatch — a person's direct message, a host retry, a goal
+   * continuation), on a lane no other halt held. No row carries a Retry for
+   * it, so the lane's next healthy run lifts it (`recovered`).
+   */
+  withoutItem?: true;
 }
 
-/** A halt is only lifted by something the user (or a permission event) actually did. */
-export type DrainHaltTrigger = 'resume' | 'permission-change' | 'retry' | 'user-action';
+/**
+ * A halt is lifted by something the user (or a permission event) actually did —
+ * or, for a {@link DrainHalt.withoutItem} error, by the lane's next healthy run
+ * (`recovered`).
+ */
+export type DrainHaltTrigger = 'resume' | 'permission-change' | 'retry' | 'user-action' | 'recovered';
 
 export interface DispatcherSnapshot {
   sessionKey: string;
@@ -400,9 +411,12 @@ export class FollowupDispatcher {
   }
 
   /**
-   * The ONLY way a halted drain reopens — an explicit user action or a
-   * permission event. Nothing in here retries on its own (A16). Queue-level
-   * freeze/resume is the caller's business and is untouched.
+   * How a halted drain reopens on request — an explicit user action, a
+   * permission event, or the host reopening a lane it knows is clear. The one
+   * reopening from inside is a {@link DrainHalt.withoutItem} error the lane's
+   * next healthy run lifts (`liftRecoveredHalt`); nothing in here retries an
+   * item on its own (A16). Queue-level freeze/resume is the caller's business
+   * and is untouched.
    */
   clearDrainHalt(sessionKey: string, trigger: DrainHaltTrigger): void {
     if (!this.halts.delete(sessionKey)) return;
@@ -1195,11 +1209,13 @@ export class FollowupDispatcher {
     }
 
     if (outcome.result === 'blocked' || outcome.result === 'error') {
-      this.haltDrain(run.sessionKey, outcome.result, outcome.reason);
+      this.haltDrain(run.sessionKey, outcome.result, outcome.reason, this.isFailureWithoutItem(run, outcome));
     } else if (unrecorded) {
       // The item's real state is now unknown to the store. Draining past it
       // would be guessing — stop until someone acts explicitly.
       this.haltDrain(run.sessionKey, 'error', `outcome not recorded: ${unrecorded}`);
+    } else if (outcome.result === 'safe' || isAutoCompactStop(outcome)) {
+      this.liftRecoveredHalt(run.sessionKey);
     }
     return this.closeSlot(run, this.report(run, outcome, disposition));
   }
@@ -1368,9 +1384,41 @@ export class FollowupDispatcher {
     }
   }
 
-  private haltDrain(sessionKey: string, reason: DrainHaltReason, detail: string): void {
-    this.halts.set(sessionKey, { reason, detail });
+  private haltDrain(sessionKey: string, reason: DrainHaltReason, detail: string, withoutItem = false): void {
+    // Only on a lane nothing else held — or held by the same kind of halt: an
+    // item's failure waiting for its Retry, an ASK pause or a refusal is never
+    // turned into one a healthy run lifts (#911 follow-up, dev 2026-11-13).
+    const standing = this.halts.get(sessionKey);
+    const liftable = withoutItem && (standing === undefined || standing.withoutItem === true);
+    this.halts.set(sessionKey, liftable ? { reason, detail, withoutItem: true } : { reason, detail });
     this.safeNotify({ type: 'drain-halted', sessionKey, reason, detail });
+  }
+
+  /**
+   * An `error` the run settled into, with no queue item behind it: an initial
+   * dispatch, not a drained row. There is no row to put a Retry on (A13), so
+   * nothing a person can click lifts the halt it leaves.
+   */
+  private isFailureWithoutItem(run: LiveRun, outcome: DispatchOutcome): boolean {
+    return outcome.result === 'error' && run.itemId === undefined && !run.adopted?.length;
+  }
+
+  /**
+   * A run on the lane settled healthy (safe, or an auto-compact stop the host
+   * carries on): a {@link DrainHalt.withoutItem} error is behind the lane now.
+   * Left standing, it outlived its cause — dev 2026-11-13: a pool rate limit
+   * halted a goal session at 16:02Z, the host's own retry ran the work again an
+   * hour later, and for 6.7 hours no message was steered or drained; at the
+   * auto-compact stop at 22:45Z nothing made the next turn. Every other halt
+   * keeps waiting for its own door (Resume/Retry, the person's answer, a grant).
+   */
+  private liftRecoveredHalt(sessionKey: string): void {
+    if (this.halts.get(sessionKey)?.withoutItem !== true) return;
+    this.halts.delete(sessionKey);
+    // Through `safeNotify`: this runs inside the settle, before `closeSlot` —
+    // an observer that throws here must not keep the slot or `settled` open
+    // (astra R1 on #1279).
+    this.safeNotify({ type: 'drain-resumed', sessionKey, trigger: 'recovered' });
   }
 
   private report(run: LiveRun, outcome: RunOutcome, itemDisposition: ItemDisposition): RunReport {

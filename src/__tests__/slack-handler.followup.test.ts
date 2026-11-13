@@ -1648,7 +1648,7 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(items()[0].state).toBe('queued');
     });
 
-    it('leaves an error halt for Resume/Retry — the lane is broken, not waiting for a person', async () => {
+    it("does not end an error halt at the person's word — it ends when their turn runs healthy (dev 2026-11-13)", async () => {
       const gate = deferred<any>();
       startWithContinuation.mockImplementationOnce(() => gate.promise);
       const first = handler.handleMessage(message(), say());
@@ -1660,11 +1660,109 @@ describe('SlackHandler — follow-up queue host', () => {
       lastTurnSucceeded = true;
       expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toMatchObject({ reason: 'error' });
 
-      await handler.handleMessage(message({ ts: '555.666', text: '다시 해봐' }), say());
+      // The word itself is not an answer to a failure: while the person's turn runs, the lane stays halted.
+      const retry = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => retry.promise);
+      const again = handler.handleMessage(message({ ts: '555.666', text: '다시 해봐' }), say());
+      await tick();
+      expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toMatchObject({ reason: 'error' });
+
+      // Their turn ran healthy: the failure is behind the lane, and the parked message runs after it.
+      retry.resolve({ hasPendingChoice: false });
+      await again;
       for (let i = 0; i < 4; i++) await tick();
 
+      expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toBeUndefined();
+      expect(items()[0].state).toBe('resolved');
+    });
+  });
+
+  /**
+   * dev 2026-11-13, session work:C0AQ1DWLQSD:1794577698.657439 — the #911 stop again, with an
+   * `error` halt this time. A pool rate limit failed a turn that carried no queue item (16:02Z);
+   * the host's own retry ran the work again an hour later, but the halt stayed for 6.7 hours.
+   * A message sent at 22:25Z was neither steered nor drained, the auto-compact stop at 22:45Z
+   * opened no drain, the goal driver yielded to that message, and the session sat "done".
+   */
+  describe('an error halt without a failed item ends with the next healthy run (dev 2026-11-13)', () => {
+    it("keeps a goal session moving: the host's retry runs healthy, a message parked during an auto-compact-cut turn runs next", async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '도슨트북 개선', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+
+      // 16:02Z — the first turn fails (a pool rate limit), with no queue item behind it.
+      lastTurnSucceeded = false;
+      await handler.handleMessage(message(), say());
+      lastTurnSucceeded = true;
       expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toMatchObject({ reason: 'error' });
-      expect(items()[0].state).not.toBe('resolved');
+
+      // 17:02Z — the host's error retry runs the work again (a synthetic turn), healthy.
+      await handler.handleMessage(
+        message({ ts: '', text: '이전 작업을 이어서 진행합니다', synthetic: true, routeContext: { autoResume: true } }),
+        say(),
+      );
+      expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toBeUndefined();
+
+      // 22:24Z — a turn runs; 22:25Z a person's message arrives during it; 22:45Z auto-compact cuts it with no text.
+      const gate = deferred<any>();
+      let controller: AbortController | undefined;
+      createAgentSession.mockImplementationOnce((result: any) => {
+        controller = result.abortController;
+        return {
+          startWithContinuation: vi.fn(() => gate.promise),
+          getLastTurnSucceeded: () => true,
+          getRetryAfterMs: () => undefined,
+        };
+      });
+      const turn = handler.handleMessage(message({ ts: '444.555', text: '썸네일 다시 만들어줘' }), say());
+      await tick();
+      await handler.handleMessage(message({ ts: '666.777', text: '5. 실제 책 커버 이미지 사용해줘' }), say());
+      handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, []);
+      const before = startWithContinuation.mock.calls.length;
+      controller?.abort('auto-compact');
+      gate.resolve({ hasPendingChoice: false });
+      await turn;
+      for (let i = 0; i < 6; i++) await tick();
+
+      // The parked message ran as the next turn, then the goal driver.
+      expect(startWithContinuation.mock.calls.length).toBe(before + 1);
+      expect(items().find((item: any) => item.message.ts === '666.777').state).toBe('resolved');
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  /**
+   * dev 2026-11-13 17:10Z — the auto-compact stop's own continuation ("[auto-compact] … Continue the
+   * interrupted work") is replayed after the compaction as a non-synthetic message marked
+   * `hostTurn`, and autogoal promoted it to the session goal: a goal that can never be judged done,
+   * and a goal session, so the next auto-compact stop left its resume to a goal loop that waited.
+   */
+  describe('autogoal never promotes a host turn (dev 2026-11-13)', () => {
+    it('does not make the replayed auto-compact continuation a goal', async () => {
+      vi.spyOn(userSettingsStore, 'getUserAutoGoalEnabled').mockReturnValue(true);
+
+      await handler.handleMessage(
+        message({
+          ts: '444.555',
+          text: (SlackHandler as any).AUTO_COMPACT_CONTINUATION_TEXT,
+          routeContext: { compactRedispatch: true, hostTurn: true },
+        }),
+        say(),
+      );
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(registrySession.goal).toBeUndefined();
+    });
+
+    it("still promotes a person's message replayed after /compact", async () => {
+      vi.spyOn(userSettingsStore, 'getUserAutoGoalEnabled').mockReturnValue(true);
+
+      await handler.handleMessage(
+        message({ ts: '444.555', text: '도슨트북 커버 고쳐줘', routeContext: { compactRedispatch: true } }),
+        say(),
+      );
+
+      expect(registrySession.goal).toMatchObject({ objective: '도슨트북 커버 고쳐줘', status: 'active' });
     });
   });
 
