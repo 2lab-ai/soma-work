@@ -274,12 +274,13 @@ Slack 앱 설정 템플릿:
     "persona": "default",
     "email": "dev@company.com",
     "slackEmail": "dev@company.com",
+    "emailFollowsSlack": true,
     "lastUpdated": "2025-12-13T10:30:00.000Z"
   }
 }
 ```
 
-`email`은 Co-Authored-By 커밋 신원이자 대시보드 로그인 fallback이다. 첫 턴에 Slack 프로필 이메일을 복사하거나 사용자가 `set email`로 정한다. `slackEmail`은 마지막으로 본 Slack 계정 이메일이다: Slack 신원 갱신(6시간 주기) 때 Slack 이메일이 바뀌었고 `email`이 아직 이전 `slackEmail`과 같으면 `email`도 새 주소로 따라간다. 직접 정한 주소는 그대로 둔다. `slackEmail`이 없던 기존 기록은 추적만 시작하고 `email`을 바꾸지 않는다.
+`email`은 Co-Authored-By 커밋 신원이자 대시보드 로그인 fallback이다. 첫 턴에 Slack 프로필 이메일을 복사하거나 사용자가 `set email`로 정한다. `slackEmail`은 마지막으로 본 Slack 계정 이메일이다. `emailFollowsSlack`은 `email`이 Slack 복사본이라는 표시다: 처음 Slack 주소를 볼 때 `email`과 같으면 켜지고, `set email`·대시보드 설정으로 주소를 정하면 꺼진다. 켜져 있는 동안 Slack 신원 갱신(6시간 주기)에서 Slack 이메일이 바뀌면 `email`도 새 주소로 따라간다. 직접 정한 주소는 Slack이 나중에 같은 주소를 거쳐 가도 그대로 둔다. `slackEmail`이 없던 기존 기록은 `email`이 Slack 주소와 다르면 추적만 시작하고 `email`을 바꾸지 않는다.
 
 ### 5.2 Sessions (`data/sessions.json`)
 

@@ -4062,15 +4062,21 @@ describe('Email guard in execute()', () => {
   // Incident 2026-11-13: the email copied on the first turn never followed a
   // Slack account email change. Every identity refresh now hands the Slack
   // email to the store, which decides whether `email` follows it.
-  it('an identity refresh hands the Slack account email to the store (known email: no first-turn copy)', async () => {
-    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('');
+  it.each([
+    ['a stale address', 'old@x.com'],
+    ['the empty sentinel', ''],
+  ])('an identity refresh hands the Slack account email to the store (stored: %s, no first-turn copy)', async (_label, stored) => {
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue(stored);
     vi.mocked(userSettingsStore.shouldRefreshSlackIdentity).mockReturnValueOnce(true);
     vi.mocked(userSettingsStore.setUserEmail).mockClear();
     vi.mocked(userSettingsStore.syncSlackAccountEmail).mockClear();
     const deps = createFullDeps();
     deps.slackApi.getUserProfile.mockResolvedValue({ email: 'new@x.com', displayName: 'Moved' });
 
-    await new StreamExecutor(deps).execute(createMinimalParams(vi.fn().mockResolvedValue({ ts: 'msg_ts' })));
+    // A stored address lets the turn run on past the email gate; only the refresh matters here.
+    await new StreamExecutor(deps)
+      .execute(createMinimalParams(vi.fn().mockResolvedValue({ ts: 'msg_ts' })))
+      .catch(() => undefined);
 
     expect(userSettingsStore.syncSlackAccountEmail).toHaveBeenCalledWith('U_TEST', 'new@x.com');
     expect(userSettingsStore.setUserEmail).not.toHaveBeenCalled();

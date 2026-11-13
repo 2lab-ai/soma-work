@@ -504,11 +504,14 @@ export interface UserSettings {
    * from the Slack profile on the user's first turn, or self-set (`set email`).
    */
   email?: string;
-  /**
-   * The Slack account email last seen (`users.info`). `email` follows a change
-   * of it only while the two are equal — see {@link UserSettingsStore.syncSlackAccountEmail}.
-   */
+  /** The Slack account email last seen (`users.info`) — see {@link UserSettingsStore.syncSlackAccountEmail}. */
   slackEmail?: string;
+  /**
+   * `email` is the Slack copy, so it follows a Slack email change. Set when the
+   * store sees `email` equal to the Slack address; cleared by every
+   * `setUserEmail` (`set email`, the dashboard, the first-turn copy before the store sees it).
+   */
+  emailFollowsSlack?: boolean;
   /** Model rating (0-10, default 5). Used for <your_rating> context tag. */
   rating?: number;
   /** Pending rating change notification (consumed once after user changes rating). */
@@ -870,26 +873,34 @@ export class UserSettingsStore {
    * Set user's email
    */
   setUserEmail(userId: string, email: string): void {
-    this.patchUserSettings(userId, { email });
+    // A chosen address never follows Slack until the store sees it equal to the Slack one.
+    this.patchUserSettings(userId, { email, emailFollowsSlack: undefined });
     logger.info('Set user email', { userId, email });
   }
 
   /**
    * Record the user's Slack account email and let `email` follow a change of
-   * it. `email` follows only while it still equals the Slack email last seen,
-   * so a self-set address (`set email`) stays. A record from before
-   * `slackEmail` existed only starts tracking: its `email` may be self-set, so
-   * it is never overwritten on a guess. No Slack email (missing scope, failed
-   * fetch) and an unknown user change nothing.
+   * it. The first time the store sees a Slack address it marks `email` as the
+   * Slack copy when the two are equal (the first-turn copy just made). From
+   * then on `email` follows each Slack change while it is marked; any
+   * `setUserEmail` drops the mark, so a self-set address stays even if Slack
+   * later passes through it. A record from before `slackEmail` existed whose
+   * `email` differs is never overwritten on a guess. No Slack email (missing
+   * scope, failed fetch) and an unknown user change nothing.
    */
   syncSlackAccountEmail(userId: string, slackEmail: string | undefined): void {
     const next = slackEmail?.trim();
     const existing = this.settings[userId];
     if (!next || !existing) return;
     const seen = existing.slackEmail;
-    if (seen?.toLowerCase() === next.toLowerCase()) return;
+    if (seen === undefined) {
+      const isCopy = existing.email?.toLowerCase() === next.toLowerCase();
+      this.patchUserSettings(userId, isCopy ? { slackEmail: next, emailFollowsSlack: true } : { slackEmail: next });
+      return;
+    }
+    if (seen.toLowerCase() === next.toLowerCase()) return;
     const previous = existing.email;
-    const follows = seen !== undefined && previous?.toLowerCase() === seen.toLowerCase();
+    const follows = existing.emailFollowsSlack === true;
     this.patchUserSettings(userId, follows ? { slackEmail: next, email: next } : { slackEmail: next });
     if (follows) logger.info('User email followed the Slack account email', { userId, from: previous, to: next });
   }

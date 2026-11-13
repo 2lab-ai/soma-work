@@ -53,12 +53,24 @@ describe('Slack display-name identity (cross-user skill resolution)', () => {
 // email stored on their first turn kept the old one forever, so a new account
 // that took the old address signed in to the dashboard as them.
 describe('syncSlackAccountEmail (email follows the Slack account)', () => {
-  it('follows a Slack email change while the stored email is still the Slack copy', () => {
+  it('follows every Slack email change while the stored email is the Slack copy', () => {
     const s = makeStore();
     s.setUserEmail('U1', 'old@x.com'); // first turn: copied from Slack
     s.syncSlackAccountEmail('U1', 'old@x.com');
     s.syncSlackAccountEmail('U1', 'new@x.com');
     expect(s.getUserEmail('U1')).toBe('new@x.com');
+    s.syncSlackAccountEmail('U1', 'newer@x.com');
+    expect(s.getUserEmail('U1')).toBe('newer@x.com');
+  });
+
+  it('a self-set email stays even after Slack passes through the same address', () => {
+    const s = makeStore();
+    s.setUserEmail('U1', 'work@x.com');
+    s.syncSlackAccountEmail('U1', 'work@x.com');
+    s.setUserEmail('U1', 'personal@x.com'); // the user chose it
+    s.syncSlackAccountEmail('U1', 'personal@x.com'); // Slack happens to match it
+    s.syncSlackAccountEmail('U1', 'other@x.com');
+    expect(s.getUserEmail('U1')).toBe('personal@x.com');
   });
 
   it('keeps a self-set email (`set email`) when the Slack email changes', () => {
@@ -75,8 +87,14 @@ describe('syncSlackAccountEmail (email follows the Slack account)', () => {
     s.setUserEmail('U1', 'chosen@other.com'); // self-set or a stale copy: cannot tell
     s.syncSlackAccountEmail('U1', 'new@x.com');
     expect(s.getUserEmail('U1')).toBe('chosen@other.com');
-    // …and follows from now on once the stored email equals the tracked one.
-    s.setUserEmail('U1', 'new@x.com');
+    s.syncSlackAccountEmail('U1', 'k2@x.com');
+    expect(s.getUserEmail('U1')).toBe('chosen@other.com');
+  });
+
+  it('a record from before tracking whose email equals the Slack email follows from then on', () => {
+    const s = makeStore();
+    s.setUserEmail('U1', 'new@x.com'); // e.g. fixed by hand to the current Slack address
+    s.syncSlackAccountEmail('U1', 'new@x.com');
     s.syncSlackAccountEmail('U1', 'k2@x.com');
     expect(s.getUserEmail('U1')).toBe('k2@x.com');
   });
