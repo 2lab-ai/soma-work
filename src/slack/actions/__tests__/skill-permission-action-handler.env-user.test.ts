@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { environmentApprovalKey } from '../../../environment-approval-key';
 import {
   VALUE_KIND_PERM_ALLOW_ALL,
+  VALUE_KIND_PERM_ALLOW_SKILL,
   VALUE_KIND_PERM_DENY,
   VALUE_KIND_PERM_YES_ONCE,
 } from '../../skill-permission-blocks';
@@ -117,6 +118,18 @@ describe('SkillPermissionActionHandler — environment user owner', () => {
       'U0A',
       undefined,
       environmentApprovalKey('C1', 'T1', '$acme-dev2:deploy'),
+    );
+  });
+
+  it('this skill always: an admin grants that one skill (not the whole environment) and the request is sent again', async () => {
+    await handler.handleAction(body(VALUE_KIND_PERM_ALLOW_SKILL, 'UADMIN'), respond);
+    expect(h.grantSkill).toHaveBeenCalledWith('env:acme-dev2', 'deploy', 'U0A');
+    expect(h.grantAll).not.toHaveBeenCalled();
+    expect(h.addOneTime).not.toHaveBeenCalled();
+    expect(h.markHandled).toHaveBeenCalledWith('r1');
+    expect(messageHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ user: 'U0A', channel: 'C1', thread_ts: 'T1', text: '$acme-dev2:deploy' }),
+      expect.any(Function),
     );
   });
 });
