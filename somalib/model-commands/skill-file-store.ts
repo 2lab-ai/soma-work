@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { SkillStore } from './catalog';
+import { isSafeUserIdSegment } from './memory-page-id';
 import {
   invalidSkillNameMessage,
   MAX_SKILL_NAME_LENGTH,
@@ -68,7 +69,7 @@ export class SkillFileStore implements SkillStore {
   constructor(private readonly dataDir: string) {}
 
   private skillsDir(user: string): string {
-    if (!isSafeSegment(user)) throw new Error(`Invalid userId: ${user}`);
+    if (!isSafeUserIdSegment(user)) throw new Error(`Invalid userId: ${user}`);
     return path.join(this.dataDir, user, 'skills');
   }
 
