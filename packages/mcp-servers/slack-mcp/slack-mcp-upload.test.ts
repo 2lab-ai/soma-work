@@ -12,6 +12,12 @@ import { ALLOWED_MEDIA_EXTENSIONS, getMediaType, validateFilePath } from './help
 
 // ── validateFilePath tests (real filesystem) ──────────────────
 
+describe('validateFilePath — relative paths', () => {
+  it('rejects a relative path: the server does not run in the session directory (env-access #1241)', async () => {
+    await expect(validateFilePath('out.png')).rejects.toThrow('file_path must be absolute: out.png');
+  });
+});
+
 describe('validateFilePath — real filesystem', () => {
   let tmpDir: string;
 

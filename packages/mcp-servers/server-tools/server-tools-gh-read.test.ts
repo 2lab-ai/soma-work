@@ -336,10 +336,27 @@ describe('gh_read — redirects, slash refs, fields', () => {
     expect(calls).toEqual([]);
   });
 
+  // review-of-legends R6: GitHub serves any object of the fork network by SHA through an allowed repository, so the
+  // routes that read a raw object by SHA are not opened (QA reads commits, compares and contents, never raw objects).
+  it('refuses raw Git objects by SHA: blobs, trees, commits and tags of the fork network', async () => {
+    const { fetch, calls } = github();
+    const sha = 'a'.repeat(40);
+    for (const kind of ['blobs', 'trees', 'commits', 'tags']) {
+      await expect(handleGhRead({ server: 'dev2', path: `repos/acme/app/git/${kind}/${sha}` }, fetch)).rejects.toThrow(
+        /not a part gh_read reads/,
+      );
+    }
+    expect(calls).toEqual([]);
+    // Refs of the repository itself are still read.
+    await handleGhRead({ server: 'dev2', path: 'repos/acme/app/git/ref/heads/deploy/dev2' }, fetch);
+    expect(calls).toHaveLength(1);
+  });
+
   // review-of-legends R5 (tests): the handler's failure contract when GitHub gives no usable answer.
   it('fails with no answer on a transport error and on a 200 whose body cannot be read, never with a body or the token', async () => {
     const down: Fetch = async () => {
-      throw new TypeError('fetch failed');
+      // review-of-legends R6 (tests): the error's own text may carry the request (and its token); only its name shows.
+      throw new TypeError(`fetch failed: Authorization: Bearer ${TOKEN}`);
     };
     await expect(handleGhRead({ server: 'dev2', path: 'repos/acme/app/pulls/1' }, down)).rejects.toThrow(
       /GitHub GET \/repos\/acme\/app\/pulls\/1 got no answer \(TypeError\)/,
@@ -348,11 +365,137 @@ describe('gh_read — redirects, slash refs, fields', () => {
       ok: true,
       status: 200,
       json: async () => {
-        throw new SyntaxError('Unexpected token <');
+        throw new SyntaxError(`Unexpected token < in ${TOKEN}`);
       },
     });
     await expect(handleGhRead({ server: 'dev2', path: 'repos/acme/app/pulls/1' }, garbled)).rejects.toThrow(
       /answered 200 with an unreadable body/,
     );
+    for (const f of [down, garbled]) {
+      const err = await handleGhRead({ server: 'dev2', path: 'repos/acme/app/pulls/1' }, f).catch((e: Error) => e);
+      expect(String(err)).not.toContain(TOKEN);
+      expect(String(err)).not.toContain('Unexpected token');
+    }
+  });
+});
+
+// trinity R6 (astra): GitHub answers a fork's commit by SHA through the repository's own path, and a skill rule does
+// not bind a hostile model. A read that names a commit by SHA for its content proves first, on the server, that the
+// commit is on one of the repository's read refs (`github.readRefs`, else its default branch).
+describe('gh_read — a SHA is read only when it is on the repository', () => {
+  const ON = 'a'.repeat(40);
+  const FORK = 'f'.repeat(40);
+  function repoGithub(onRefs: Record<string, string[]>, defaultBranch = 'main') {
+    const calls: string[] = [];
+    const fetch: Fetch = async (url) => {
+      const p = url.replace('https://api.github.com/', '');
+      calls.push(p);
+      const ok = (json: unknown) => ({ ok: true, status: 200, json: async () => json });
+      if (p === 'repos/acme/app') return ok({ default_branch: defaultBranch });
+      const cmp = /^repos\/acme\/app\/compare\/([^?]+?)\.\.\.([^?]+)\?per_page=1$/.exec(p);
+      if (cmp) {
+        const [, sha, ref] = cmp;
+        return ok({ status: (onRefs[ref] ?? []).includes(sha) ? 'ahead' : 'diverged', commits: [], files: [] });
+      }
+      return ok({ sha: 'content', files: [{ patch: 'private diff' }] });
+    };
+    return { fetch, calls };
+  }
+  const read = (fetch: Fetch, p: string, query?: Record<string, unknown>) =>
+    handleGhRead({ server: 'dev2', path: p, ...(query ? { query } : {}) }, fetch);
+
+  it("refuses a fork's commit by SHA and never asks for its content", async () => {
+    const { fetch, calls } = repoGithub({ main: [ON] });
+    await expect(read(fetch, `repos/acme/app/commits/${FORK}`)).rejects.toThrow(/not on this repository's read refs/);
+    expect(calls).toEqual(['repos/acme/app', `repos/acme/app/compare/${FORK}...main?per_page=1`]);
+  });
+
+  it('reads a commit that is on the default branch, and asks GitHub once per SHA', async () => {
+    const { fetch, calls } = repoGithub({ main: [ON] });
+    await read(fetch, `repos/acme/app/commits/${ON}`);
+    await read(fetch, `repos/acme/app/commits/${ON}`);
+    expect(calls).toEqual([
+      'repos/acme/app',
+      `repos/acme/app/compare/${ON}...main?per_page=1`,
+      `repos/acme/app/commits/${ON}`,
+      `repos/acme/app/commits/${ON}`,
+    ]);
+  });
+
+  it('checks the read refs the environment names, any of which may hold the commit', async () => {
+    const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    cfg['server-tools'].dev2.github.readRefs = ['develop', 'deploy/dev2'];
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg));
+    resetConfigCache();
+    const { fetch, calls } = repoGithub({ 'deploy/dev2': [ON] });
+    await read(fetch, `repos/acme/app/compare/${ON}...deploy/dev2`);
+    expect(calls).toEqual([
+      `repos/acme/app/compare/${ON}...develop?per_page=1`,
+      `repos/acme/app/compare/${ON}...deploy/dev2?per_page=1`,
+      `repos/acme/app/compare/${ON}...deploy/dev2`,
+    ]);
+    await expect(read(fetch, `repos/acme/app/compare/${ON}...${FORK}`)).rejects.toThrow(
+      /not on this repository's read refs/,
+    );
+  });
+
+  it('proves a SHA named as contents ref, as a commits listing start, and as a short SHA; not a branch name', async () => {
+    const { fetch, calls } = repoGithub({ main: [ON, 'abc1234'] });
+    await read(fetch, 'repos/acme/app/contents/src/a.ts', { ref: ON });
+    await read(fetch, 'repos/acme/app/commits', { sha: 'abc1234', per_page: 5 });
+    await read(fetch, 'repos/acme/app/contents/src/a.ts', { ref: 'deploy/dev2' });
+    await expect(read(fetch, 'repos/acme/app/contents/src/a.ts', { ref: FORK })).rejects.toThrow(
+      /not on this repository's read refs/,
+    );
+    await expect(read(fetch, 'repos/acme/app/commits', { sha: FORK })).rejects.toThrow(
+      /not on this repository's read refs/,
+    );
+    expect(calls.filter((c) => c.includes('/compare/'))).toEqual([
+      `repos/acme/app/compare/${ON}...main?per_page=1`,
+      'repos/acme/app/compare/abc1234...main?per_page=1',
+      // A refusal is not remembered: a read ref may take the commit later.
+      `repos/acme/app/compare/${FORK}...main?per_page=1`,
+      `repos/acme/app/compare/${FORK}...main?per_page=1`,
+    ]);
+  });
+
+  // Self-review: a revision expression (`<sha>~0`, `<sha>^`, `<sha>@{0}`, encoded or not) names the same fork commit.
+  it('proves the commit under a revision suffix, and a short SHA from four characters', async () => {
+    const { fetch, calls } = repoGithub({ main: [ON] });
+    for (const p of [`repos/acme/app/commits/${FORK}~0`, `repos/acme/app/compare/${FORK}%5E...main`]) {
+      await expect(read(fetch, p)).rejects.toThrow(/not on this repository's read refs/);
+    }
+    await expect(read(fetch, 'repos/acme/app/contents/a.ts', { ref: `${FORK}~1` })).rejects.toThrow(
+      /not on this repository's read refs/,
+    );
+    await expect(read(fetch, 'repos/acme/app/commits/ffff')).rejects.toThrow(/not on this repository's read refs/);
+    // trinity R6 (fable): a number in the query is sent as digits, a short SHA.
+    await expect(read(fetch, 'repos/acme/app/contents/a.ts', { ref: 1234567 })).rejects.toThrow(
+      /not on this repository's read refs/,
+    );
+    await expect(read(fetch, 'repos/acme/app/commits', { sha: 1234567 })).rejects.toThrow(
+      /not on this repository's read refs/,
+    );
+    await read(fetch, `repos/acme/app/commits/${ON}~1`);
+    expect(calls.filter((c) => !c.includes('/compare/') && c !== 'repos/acme/app')).toEqual([
+      `repos/acme/app/commits/${ON}~1`,
+    ]);
+  });
+
+  it("reads a commit's checks and statuses by SHA without a proof: they are this repository's own records", async () => {
+    const { fetch, calls } = repoGithub({});
+    await read(fetch, `repos/acme/app/commits/${FORK}/check-runs`);
+    await read(fetch, `repos/acme/app/commits/${FORK}/status`);
+    await read(fetch, `repos/acme/app/statuses/${FORK}`);
+    expect(calls.some((c) => c.includes('/compare/'))).toBe(false);
+  });
+
+  it('refuses read refs that are not a list of branch names', async () => {
+    const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    cfg['server-tools'].dev2.github.readRefs = 'main';
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg));
+    resetConfigCache();
+    const { fetch } = repoGithub({});
+    await expect(read(fetch, 'repos/acme/app/pulls')).rejects.toThrow(/readRefs must be a list/);
   });
 });
