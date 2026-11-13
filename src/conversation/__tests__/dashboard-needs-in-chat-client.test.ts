@@ -29,6 +29,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { Window } from 'happy-dom';
 import { describe, expect, it, vi } from 'vitest';
 import { nextActionSeams } from '../__fixtures__/viewer-scope';
 
@@ -731,26 +732,21 @@ describe('N8 — a decided plan alone keeps the box shown under the title bar (r
 });
 
 describe('the page and its styles', () => {
-  it('the four parts are the box’s own children in the shipped markup (review: containment, not order)', () => {
-    const open = PAGE.indexOf('<div class="panel-needs" id="panel-needs"');
-    expect(open).toBeGreaterThan(-1);
-    // Walk the <div> nesting from the box's opening tag to its own closing tag.
-    let depth = 0;
-    let close = -1;
-    const tags = /<div\b|<\/div>/g;
-    tags.lastIndex = open;
-    for (let m = tags.exec(PAGE); m; m = tags.exec(PAGE)) {
-      depth += m[0] === '</div>' ? -1 : 1;
-      if (depth === 0) {
-        close = m.index;
-        break;
-      }
-    }
-    expect(close).toBeGreaterThan(open);
-    const inside = PAGE.slice(open, close);
-    for (const id of ['panel-needs-head', 'panel-permission', 'panel-question', 'panel-plan'])
-      expect(inside, id).toContain(`id="${id}"`);
-    expect(inside).not.toContain('id="panel-family"');
+  it('the four parts are the box’s own children in the shipped markup (review: containment, not order)', async () => {
+    // The shipped markup, parsed (happy-dom's parser): the box's direct children, in order.
+    const win = new Window();
+    const tpl = win.document.createElement('template');
+    tpl.innerHTML = PAGE;
+    const box = tpl.content.querySelector('#panel-needs');
+    expect(box).not.toBeNull();
+    expect(Array.from(box?.children ?? []).map((c) => c.id)).toEqual([
+      'panel-needs-head',
+      'panel-permission',
+      'panel-question',
+      'panel-plan',
+    ]);
+    expect(box?.querySelector('#panel-family')).toBeNull();
+    await win.happyDOM.close();
   });
 
   it('one box holds the zone, under the title bar until placePanelNeeds moves it', () => {
