@@ -232,7 +232,7 @@ One-line confirmation. No preamble. No follow-up question unless the input was t
 - Do NOT use rough/hand-drawn style (`roughness > 0`).
 - Do NOT omit `startBinding` / `endBinding` on arrows — breaks layout on resize.
 - Do NOT leave text `strokeColor` at the default `#1e1e1e` — it disappears on dark backgrounds.
-- Do NOT exceed ~20 components in one diagram. Split instead.
+- Do NOT exceed ~20 components in one diagram. A request for one map stays one picture: collapse a group into one framed node, or open with an overview sheet that names every part — never two unlinked sheets.
 - Do NOT exceed the Step 7 retry budget (1 mechanical + 2 critic-driven = 3 retries). Escalate to the user after the budget is exhausted.
 - Do NOT skip Step 6.5 on the assumption that the mechanical check is sufficient — it never is for visual correctness.
 
