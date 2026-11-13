@@ -749,7 +749,7 @@ export async function handleGhRead(
 ) {
   const env = envGithub(args.server);
   try {
-    const answer = await repoRead(fetchImpl, env.github, args.path, args.query);
+    const answer = await repoRead(fetchImpl, env.github, args.path, args.query, args.fields);
     return { content: [{ type: 'text' as const, text: JSON.stringify(answer) }] };
   } catch (err) {
     if (err instanceof GithubError) throw new Error(err.message);
@@ -1354,7 +1354,8 @@ class ServerToolsMCPServer extends BaseMcpServer {
           "GET one path of a server's environment repository with the environment's own GitHub token (never shown): " +
           'commits, compare, pulls, issues, actions runs/jobs/workflows, check-runs, statuses, branches, contents, ' +
           'releases, tags, deployments. Returns {path, truncated, body} (body is the JSON answer, or its first ' +
-          "200000 characters as text when truncated). For deploy confirmation and QA. Admins, or a user the environment's admin approved.",
+          '200000 characters as text when truncated). Name `fields` to get only those parts back. Redirects are not ' +
+          "followed. For deploy confirmation and QA. Admins, or a user the environment's admin approved.",
         inputSchema: {
           type: 'object',
           properties: {
@@ -1364,6 +1365,14 @@ class ServerToolsMCPServer extends BaseMcpServer {
               type: 'object',
               description:
                 'Query parameters (strings, numbers, booleans), e.g. {"per_page": 50, "sha": "deploy/dev2"}.',
+            },
+            fields: {
+              type: 'array',
+              items: { type: 'string' },
+              description:
+                'Parts of the answer to keep, as dotted names; `[]` after a name means each element of that list, and ' +
+                'a leading `[]` each element of a list answer. E.g. ["status", "total_commits", "commits[].sha", ' +
+                '"commits[].parents[].sha"] or ["[].number", "[].head.ref"]. Up to 40.',
             },
           },
           required: ['server', 'path'],
