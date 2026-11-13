@@ -18,4 +18,15 @@ describe('one-time grants bound to a message (environment users)', () => {
     expect(hasOneTimeGrant('U_OWNER', 'deploy', 'U2', 'anything')).toBe(true);
     expect(consumeOneTimeGrant('U_OWNER', 'deploy', 'U2')).toBe(true);
   });
+
+  it('approving a second message keeps the first approval', () => {
+    addOneTimeGrant('env:acme-dev2', 'qa', 'U3', undefined, 'message A');
+    addOneTimeGrant('env:acme-dev2', 'qa', 'U3', undefined, 'message B');
+    expect(hasOneTimeGrant('env:acme-dev2', 'qa', 'U3', 'message A')).toBe(true);
+    expect(hasOneTimeGrant('env:acme-dev2', 'qa', 'U3', 'message B')).toBe(true);
+    expect(consumeOneTimeGrant('env:acme-dev2', 'qa', 'U3', 'message A')).toBe(true);
+    expect(hasOneTimeGrant('env:acme-dev2', 'qa', 'U3', 'message B')).toBe(true);
+    expect(consumeOneTimeGrant('env:acme-dev2', 'qa', 'U3', 'message B')).toBe(true);
+    expect(hasOneTimeGrant('env:acme-dev2', 'qa', 'U3', 'message A')).toBe(false);
+  });
 });

@@ -3,7 +3,12 @@ import { getAdminUsers } from '../../admin-utils';
 import type { ClaudeHandler } from '../../claude-handler';
 import { isEnvironmentUser } from '../../env-users';
 import { Logger } from '../../logger';
-import { getPermissionRequest, markRequestHandled, type PermissionRequest } from '../../skill-permission-request-store';
+import {
+  getPermissionRequest,
+  hasPendingRequestsFor,
+  markRequestHandled,
+  type PermissionRequest,
+} from '../../skill-permission-request-store';
 import { addOneTimeGrant, consumeOneTimeGrant, grantAllSkills, grantSkill } from '../../user-skill-grants-store';
 import { copyUserSkill, getUserSkill, userSkillExists } from '../../user-skill-store';
 import {
@@ -168,6 +173,18 @@ export class SkillPermissionActionHandler {
           break;
       }
       markRequestHandled(requestId);
+      // One message can need several environment-skill approvals (one card per skill). Checked in the same tick as the
+      // mark above, so of two approvals racing, exactly one sees none left: only that last one sends the message again.
+      const waitForSiblings =
+        environmentOwner &&
+        req.operation === 'invoke' &&
+        hasPendingRequestsFor({
+          ownerId: req.ownerId,
+          requesterId: req.requesterId,
+          channel: req.channel,
+          threadTs: req.threadTs,
+          originalText: req.originalText ?? '',
+        });
 
       // Replace the prompt with a confirmation (buttons removed).
       await respond({
@@ -177,6 +194,14 @@ export class SkillPermissionActionHandler {
         blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `✅ ${grantLabel}` } }],
       });
 
+      if (waitForSiblings) {
+        await this.ctx.slackApi.postMessage(
+          req.channel,
+          `✅ <@${req.requesterId}> — \`${req.skillName}\` 승인 반영. 같은 메시지의 다른 스킬 승인이 끝나면 실행됩니다.`,
+          { threadTs: req.threadTs },
+        );
+        return;
+      }
       await this.fulfill(req);
       this.logger.info('skill_perm: granted + fulfilled', {
         kind,

@@ -14,11 +14,13 @@ const h = vi.hoisted(() => ({
   grantSkill: vi.fn(),
   grantAll: vi.fn(),
   userSkillExists: vi.fn(() => true),
+  pendingFor: vi.fn((_m: unknown) => false),
 }));
 
 vi.mock('../../../skill-permission-request-store', () => ({
   getPermissionRequest: h.getReq,
   markRequestHandled: h.markHandled,
+  hasPendingRequestsFor: h.pendingFor,
 }));
 vi.mock('../../../user-skill-grants-store', () => ({
   addOneTimeGrant: h.addOneTime,
@@ -111,5 +113,20 @@ describe('SkillPermissionActionHandler — environment user owner', () => {
   it('accept once arms a one-time grant bound to the stored message', async () => {
     await handler.handleAction(body(VALUE_KIND_PERM_YES_ONCE, 'UADMIN'), respond);
     expect(h.addOneTime).toHaveBeenCalledWith('env:acme-dev2', 'deploy', 'U0A', undefined, '$acme-dev2:deploy');
+  });
+
+  it('while another card for the same message is still pending, an approval does not send the message yet', async () => {
+    h.pendingFor.mockReturnValueOnce(true);
+    await handler.handleAction(body(VALUE_KIND_PERM_ALLOW_ALL, 'UADMIN'), respond);
+    expect(h.grantAll).toHaveBeenCalled();
+    expect(messageHandler).not.toHaveBeenCalled();
+    expect(h.pendingFor).toHaveBeenCalledWith({
+      ownerId: 'env:acme-dev2',
+      requesterId: 'U0A',
+      channel: 'C1',
+      threadTs: 'T1',
+      originalText: '$acme-dev2:deploy',
+    });
+    expect(JSON.stringify(slackApi.postMessage.mock.calls)).toContain('다른 스킬');
   });
 });

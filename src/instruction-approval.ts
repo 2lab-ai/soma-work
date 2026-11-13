@@ -435,19 +435,19 @@ export class InstructionApprovals {
     if (!this.deps.postOwnerDm) return;
     const shown = request.held.length;
     let ref: { channel: string; ts: string } | undefined;
-    try {
-      // An environment user is never a person: its admins are asked.
-      const recipients = isEnvironmentUser(request.ownerId) ? [...getAdminUsers()] : [request.ownerId];
-      for (const recipient of recipients) {
+    // An environment user is never a person: its admins are asked. One DM that fails does not stop the others.
+    const recipients = isEnvironmentUser(request.ownerId) ? [...getAdminUsers()] : [request.ownerId];
+    for (const recipient of recipients) {
+      try {
         const posted = await this.deps.postOwnerDm(recipient, buildInstructionApprovalDm(this.viewOf(request)));
         ref = ref ?? posted;
+      } catch (error) {
+        logger.warn('Instruction approval DM failed — the dashboard card still asks', {
+          requestId: request.requestId,
+          recipient,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
-    } catch (error) {
-      logger.warn('Instruction approval DM failed — the dashboard card still asks', {
-        requestId: request.requestId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return;
     }
     if (!ref) return;
     if (request.status !== 'pending') {

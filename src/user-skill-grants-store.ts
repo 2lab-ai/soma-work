@@ -104,25 +104,23 @@ function saveGrants(ownerId: string, grants: SkillGrants): void {
 /** key = owner\0skill\0requester → expiresAt (epoch ms). */
 const oneTimeGrants = new Map<string, number>();
 /**
- * key → the one message a one-time grant serves. An environment user's "accept once" runs the requester's words as
- * an admin, so the approval is bound to the message the admin saw: any other message finds no grant.
+ * key\0message → expiresAt. An environment user's "accept once" runs the requester's words as an admin, so the
+ * approval is bound to the message the admin saw: it serves that message only, and each approved message keeps its
+ * own grant (approving a second message does not replace the first).
  */
-const oneTimeBoundText = new Map<string, string>();
-
-/** Does a one-time grant's message binding (if any) admit `text`? */
-function boundTextAdmits(key: string, text: string | undefined): boolean {
-  const bound = oneTimeBoundText.get(key);
-  return bound === undefined || bound === text;
-}
+const boundOneTimeGrants = new Map<string, number>();
 
 function oneTimeKey(ownerId: string, skillName: string, requesterId: string): string {
   return `${ownerId}\u0000${skillName}\u0000${requesterId}`;
 }
 
+function boundKey(key: string, text: string): string {
+  return `${key}\u0000${text}`;
+}
+
 /**
- * Arm a single-use grant for (owner, skill, requester). Honored by exactly one
- * `consumeOneTimeGrant` before `expiresAt`. `isSkillUseAllowed` observes it
- * WITHOUT consuming.
+ * Arm a single-use grant for (owner, skill, requester) — or, with `boundText`, for that one message. Honored by
+ * exactly one `consumeOneTimeGrant` before `expiresAt`. `isSkillUseAllowed` observes it WITHOUT consuming.
  */
 export function addOneTimeGrant(
   ownerId: string,
@@ -133,37 +131,47 @@ export function addOneTimeGrant(
   boundText?: string,
 ): void {
   const key = oneTimeKey(ownerId, skillName, requesterId);
-  oneTimeGrants.set(key, expiresAt ?? Date.now() + ONE_TIME_TTL_MS);
-  if (boundText === undefined) oneTimeBoundText.delete(key);
-  else oneTimeBoundText.set(key, boundText);
+  const exp = expiresAt ?? Date.now() + ONE_TIME_TTL_MS;
+  if (boundText === undefined) oneTimeGrants.set(key, exp);
+  else boundOneTimeGrants.set(boundKey(key, boundText), exp);
 }
 
-/** Non-mutating: is there a live one-time grant for this triple? */
-export function hasOneTimeGrant(ownerId: string, skillName: string, requesterId: string, text?: string): boolean {
-  const key = oneTimeKey(ownerId, skillName, requesterId);
-  const exp = oneTimeGrants.get(key);
+/** Live entry of `map` at `key` (an expired one is dropped). */
+function live(map: Map<string, number>, key: string): boolean {
+  const exp = map.get(key);
   if (exp === undefined) return false;
   if (exp <= Date.now()) {
-    oneTimeGrants.delete(key);
-    oneTimeBoundText.delete(key);
+    map.delete(key);
     return false;
   }
-  return boundTextAdmits(key, text);
+  return true;
+}
+
+/** Non-mutating: is there a live one-time grant for this triple (or for this message of it)? */
+export function hasOneTimeGrant(ownerId: string, skillName: string, requesterId: string, text?: string): boolean {
+  const key = oneTimeKey(ownerId, skillName, requesterId);
+  if (text !== undefined && live(boundOneTimeGrants, boundKey(key, text))) return true;
+  return live(oneTimeGrants, key);
 }
 
 /**
  * Consume a one-time grant. Returns true iff a live grant existed and was
  * removed. Call ONLY on the successful fulfillment path so a halted turn never
- * burns the grant.
+ * burns the grant. A grant bound to a message is consumed only by that message.
  */
 export function consumeOneTimeGrant(ownerId: string, skillName: string, requesterId: string, text?: string): boolean {
   const key = oneTimeKey(ownerId, skillName, requesterId);
+  if (text !== undefined) {
+    const bk = boundKey(key, text);
+    const exp = boundOneTimeGrants.get(bk);
+    if (exp !== undefined) {
+      boundOneTimeGrants.delete(bk);
+      return exp > Date.now();
+    }
+  }
   const exp = oneTimeGrants.get(key);
   if (exp === undefined) return false;
-  // A grant bound to another message stays for that message.
-  if (!boundTextAdmits(key, text)) return false;
   oneTimeGrants.delete(key);
-  oneTimeBoundText.delete(key);
   return exp > Date.now();
 }
 

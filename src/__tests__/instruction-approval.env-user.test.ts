@@ -3,9 +3,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const admins = vi.hoisted(() => ({ set: new Set(['UADMIN']) }));
 vi.mock('../admin-utils', () => ({
-  getAdminUsers: () => new Set(['UADMIN']),
-  isAdminUser: (u: string) => u === 'UADMIN',
+  getAdminUsers: () => admins.set,
+  isAdminUser: (u: string) => admins.set.has(u),
 }));
 vi.mock('../env-users', () => ({ isEnvironmentUser: (u: string) => u === 'env:acme-dev2' }));
 
@@ -35,6 +36,7 @@ describe('InstructionApprovals — environment user session', () => {
       isTrusted: () => false,
       trust: () => undefined,
       postOwnerDm: async (ownerId: string) => {
+        if (ownerId === 'UBROKEN') throw new Error('cannot_dm');
         dms.push(ownerId);
         return { channel: `D_${ownerId}`, ts: '1' };
       },
@@ -71,5 +73,23 @@ describe('InstructionApprovals — environment user session', () => {
     const requestId = (held as { requestId: string }).requestId;
     expect(a.answer({ requestId, decision: 'approve', actor: 'U_REQ', surface: 'slack' }).ok).toBe(false);
     expect(a.answer({ requestId, decision: 'approve', actor: 'UADMIN', surface: 'slack' }).ok).toBe(true);
+  });
+
+  it('one admin DM that fails does not stop the others', async () => {
+    admins.set = new Set(['UBROKEN', 'UADMIN']);
+    try {
+      const a = approvals();
+      await a.hold({
+        sessionKey: KEY,
+        session: session as any,
+        senderId: 'U_REQ',
+        senderName: 'Req',
+        instruction: message('U_REQ'),
+      });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(dms).toEqual(['UADMIN']);
+    } finally {
+      admins.set = new Set(['UADMIN']);
+    }
   });
 });
