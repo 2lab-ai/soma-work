@@ -2887,6 +2887,10 @@ export class SlackHandler {
         !inlineNoGoal &&
         (!continueWithPrompt || (freshContextStart && !!deferredSkillFire)) &&
         !event.synthetic &&
+        // A host turn replayed after /compact is not synthetic any more, but it is still the host's
+        // text (dev 2026-11-13: "[auto-compact] … Continue the interrupted work" became the goal, a
+        // goal no eval can close — and a goal session, whose auto-compact stop waits for its loop).
+        event.routeContext?.hostTurn !== true &&
         // An incident report is not the requesting bot's long-running goal:
         // promoting it would keep the restricted session running on its own.
         !incidentTurn &&
