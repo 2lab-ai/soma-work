@@ -336,10 +336,27 @@ describe('gh_read — redirects, slash refs, fields', () => {
     expect(calls).toEqual([]);
   });
 
+  // review-of-legends R6: GitHub serves any object of the fork network by SHA through an allowed repository, so the
+  // routes that read a raw object by SHA are not opened (QA reads commits, compares and contents, never raw objects).
+  it('refuses raw Git objects by SHA: blobs, trees, commits and tags of the fork network', async () => {
+    const { fetch, calls } = github();
+    const sha = 'a'.repeat(40);
+    for (const kind of ['blobs', 'trees', 'commits', 'tags']) {
+      await expect(handleGhRead({ server: 'dev2', path: `repos/acme/app/git/${kind}/${sha}` }, fetch)).rejects.toThrow(
+        /not a part gh_read reads/,
+      );
+    }
+    expect(calls).toEqual([]);
+    // Refs of the repository itself are still read.
+    await handleGhRead({ server: 'dev2', path: 'repos/acme/app/git/ref/heads/deploy/dev2' }, fetch);
+    expect(calls).toHaveLength(1);
+  });
+
   // review-of-legends R5 (tests): the handler's failure contract when GitHub gives no usable answer.
   it('fails with no answer on a transport error and on a 200 whose body cannot be read, never with a body or the token', async () => {
     const down: Fetch = async () => {
-      throw new TypeError('fetch failed');
+      // review-of-legends R6 (tests): the error's own text may carry the request (and its token); only its name shows.
+      throw new TypeError(`fetch failed: Authorization: Bearer ${TOKEN}`);
     };
     await expect(handleGhRead({ server: 'dev2', path: 'repos/acme/app/pulls/1' }, down)).rejects.toThrow(
       /GitHub GET \/repos\/acme\/app\/pulls\/1 got no answer \(TypeError\)/,
@@ -348,11 +365,16 @@ describe('gh_read — redirects, slash refs, fields', () => {
       ok: true,
       status: 200,
       json: async () => {
-        throw new SyntaxError('Unexpected token <');
+        throw new SyntaxError(`Unexpected token < in ${TOKEN}`);
       },
     });
     await expect(handleGhRead({ server: 'dev2', path: 'repos/acme/app/pulls/1' }, garbled)).rejects.toThrow(
       /answered 200 with an unreadable body/,
     );
+    for (const f of [down, garbled]) {
+      const err = await handleGhRead({ server: 'dev2', path: 'repos/acme/app/pulls/1' }, f).catch((e: Error) => e);
+      expect(String(err)).not.toContain(TOKEN);
+      expect(String(err)).not.toContain('Unexpected token');
+    }
   });
 });

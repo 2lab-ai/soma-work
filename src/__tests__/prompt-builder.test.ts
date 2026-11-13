@@ -298,7 +298,9 @@ describe('PromptBuilder', () => {
         execution.indexOf('`mcp__devops-tools__gh_read`'),
       );
       expect(execution).toContain('names `github.server`');
-      expect(execution).toContain("apply the `--jq` filter yourself to the answer's `body`");
+      // review-of-legends R5/R6: the filter's fields go to `fields`; a segment may be percent-encoded for gh_read.
+      expect(execution).toContain('name the fields the `--jq` filter uses in `fields`');
+      expect(execution).toContain('percent-encode a space in a path there, never a `/`');
       // One GitHub read: gh_read with -X GET, query pairs only as -f (a branch holds a `/`), and a jq filter.
       expect(execution).toContain('`mcp__devops-tools__gh_read`');
       expect(execution).toContain(

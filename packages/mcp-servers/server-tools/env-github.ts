@@ -238,7 +238,8 @@ const READ_SHAPES: readonly RegExp[] = [
   'releases/tags/.+',
   'tags',
   'git/(ref|refs|matching-refs)/.+',
-  `git/(commits|trees|tags|blobs)/${S}`,
+  // No raw Git object by SHA (`git/blobs|trees|commits|tags/<sha>`): GitHub serves any object of the fork network
+  // through an allowed repository, and QA never reads raw objects (review-of-legends R6).
   'milestones',
   `milestones/${N}`,
   'labels',
