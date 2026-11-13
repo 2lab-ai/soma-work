@@ -8,9 +8,16 @@
  * directory, while CLAUDE.md, plan files and the working directory itself stay where they are (measured on CLI
  * 2.1.321: `scripts/verification/probe-cli-project-config-root.mjs`).
  *
- * That directory is this one: empty, under `DATA_DIR`, which no model writes (`protectedWriteDenyRules`). The CLI
- * also looks for `.mcp.json` in every directory above the root, so the root must not lie inside a directory a
- * session writes, and no directory above it may hold a `.mcp.json`. Anything else stops the session from starting.
+ * That directory is this one: under `DATA_DIR`, which no model writes (`protectedWriteDenyRules`), and holding no
+ * project config. The CLI also looks for `.mcp.json` in every directory above the root, so the root must not lie
+ * inside a directory a session writes, and no directory above it may hold a `.mcp.json`. Anything else stops the
+ * session from starting.
+ *
+ * The root is not always empty: the CLI writes into it itself. Whenever its sandbox starts, it makes
+ * `.claude/.cc-writes` beside the local settings file — which lives in the root — as the staging directory for
+ * atomic writes (`ensureAtomicWriteStagingDirs`, mode 0700; read from the CLI 2.1.321 binary). It reads no
+ * configuration from it. That one tree is allowed, as plain directories; anything else in the root is refused.
+ * Requiring the root to be empty refused every session after the first sandboxed one (dev, 2026-11-13).
  */
 
 import fs from 'node:fs';
@@ -18,6 +25,12 @@ import path from 'node:path';
 
 const ROOT_NAME = 'session-project-config';
 const MCP_FILE = '.mcp.json';
+
+/**
+ * The CLI's staging directory for atomic writes, relative to the root: the only thing the root may hold. Also named
+ * in `scripts/verification/probe-cli-project-config-root.mjs`, which checks what a real CLI run leaves in the root.
+ */
+export const CLI_STAGING_DIR = ['.claude', '.cc-writes'] as const;
 
 export class ProjectConfigRootError extends Error {
   constructor(message: string) {
@@ -28,6 +41,36 @@ export class ProjectConfigRootError extends Error {
 
 function fail(message: string): never {
   throw new ProjectConfigRootError(`${message}; the session was not started`);
+}
+
+/**
+ * What `root` holds apart from the CLI's staging directory, as paths relative to it; empty when nothing. The staging
+ * directory and the `.claude` directory around it must be plain directories, not links; what the CLI stages inside it
+ * is its own. Throws what `fs` throws.
+ */
+export function foreignEntries(root: string): string[] {
+  const foreign: string[] = [];
+  let dir = root;
+  for (const [depth, allowed] of CLI_STAGING_DIR.entries()) {
+    const prefix = CLI_STAGING_DIR.slice(0, depth);
+    for (const name of fs.readdirSync(dir)) {
+      if (name !== allowed) foreign.push(path.join(...prefix, name));
+    }
+    const next = path.join(dir, allowed);
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(next);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') break;
+      throw err;
+    }
+    if (!stat.isDirectory()) {
+      foreign.push(path.join(...prefix, allowed));
+      break;
+    }
+    dir = next;
+  }
+  return foreign;
 }
 
 /** The real location of `p`, through its deepest existing ancestor. */
@@ -69,15 +112,17 @@ export function projectConfigRoot(dataDir: string, writeRoots: readonly string[]
     if ((err as NodeJS.ErrnoException).code !== 'EEXIST') fail(`could not make ${root}`);
   }
   let stat: fs.Stats;
-  let entries: string[];
+  let foreign: string[];
   try {
     stat = fs.lstatSync(root);
-    entries = stat.isDirectory() ? fs.readdirSync(root) : [];
+    foreign = stat.isDirectory() ? foreignEntries(root) : [];
   } catch (err) {
     fail(`could not read ${root} (${(err as NodeJS.ErrnoException).code ?? 'error'})`);
   }
   if (!stat.isDirectory() || stat.isSymbolicLink()) fail(`${root} is not a plain directory`);
-  if (entries.length > 0) fail(`${root} must stay empty but holds ${entries.join(', ')}`);
+  if (foreign.length > 0) {
+    fail(`${root} must hold nothing but the CLI's ${CLI_STAGING_DIR.join('/')}, yet holds ${foreign.join(', ')}`);
+  }
 
   const realRoot = real(root);
   const holder = writeRootHolding(root, writeRoots);
