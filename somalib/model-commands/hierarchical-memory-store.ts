@@ -27,6 +27,7 @@ import * as path from 'path';
 import { withMemoryLock } from './memory-lock';
 import {
   isSafeSegment,
+  isSafeUserIdSegment,
   isSemanticPageType,
   type PageLocator,
   parsePageId,
@@ -162,7 +163,7 @@ function nowHM(): string {
 
 /** `{dataDir}/{userId}/memory/` — the per-user memory root. */
 export function memoryRoot(dataDir: string, userId: string): string {
-  if (!isSafeSegment(userId)) throw new Error(`Invalid userId for memory storage: ${userId}`);
+  if (!isSafeUserIdSegment(userId)) throw new Error(`Invalid userId for memory storage: ${userId}`);
   return path.join(dataDir, userId, MEMORY_DIR);
 }
 
@@ -173,7 +174,7 @@ export function l1FilePath(dataDir: string, userId: string, target: 'memory' | '
 
 /** Legacy flat L1 path at the user root (pre-hierarchy). */
 export function legacyL1FilePath(dataDir: string, userId: string, target: 'memory' | 'user'): string {
-  if (!isSafeSegment(userId)) throw new Error(`Invalid userId for memory storage: ${userId}`);
+  if (!isSafeUserIdSegment(userId)) throw new Error(`Invalid userId for memory storage: ${userId}`);
   return path.join(dataDir, userId, target === 'memory' ? 'MEMORY.md' : 'USER.md');
 }
 

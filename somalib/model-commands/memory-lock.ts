@@ -41,7 +41,7 @@ import { randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { isSafeSegment } from './memory-page-id';
+import { isSafeUserIdSegment } from './memory-page-id';
 
 export class MemoryLockTimeoutError extends Error {
   constructor(lockPath: string, waitedMs: number) {
@@ -77,7 +77,7 @@ const SLEEP = new Int32Array(new SharedArrayBuffer(4));
 
 /** `{dataDir}/{userId}/memory/.lock` (same root as `memoryRoot`, no import cycle). */
 export function memoryLockPath(dataDir: string, userId: string): string {
-  if (!isSafeSegment(userId)) throw new Error(`Invalid userId for memory storage: ${userId}`);
+  if (!isSafeUserIdSegment(userId)) throw new Error(`Invalid userId for memory storage: ${userId}`);
   return path.join(dataDir, userId, 'memory', '.lock');
 }
 

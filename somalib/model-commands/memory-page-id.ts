@@ -38,6 +38,16 @@ export function isSafeSegment(s: string): boolean {
   return /^[A-Za-z0-9_.-]+$/.test(s) && s !== '.' && s !== '..';
 }
 
+/**
+ * A user id safe to use as the user's data folder name: a Slack id, or an environment user's `env:<name>`
+ * (server-tools `envUser`), whose skills and memory live under `{dataDir}/env:<name>/`. Only the one `env:`
+ * prefix is let through; the name after it is held to `isSafeSegment`.
+ */
+export function isSafeUserIdSegment(userId: string): boolean {
+  const ENV_PREFIX = 'env:';
+  return isSafeSegment(userId.startsWith(ENV_PREFIX) ? userId.slice(ENV_PREFIX.length) : userId);
+}
+
 /** Split an id into non-empty trimmed segments, tolerating stray/edge slashes. */
 export function pageIdSegments(id: string): string[] {
   return (id || '')
