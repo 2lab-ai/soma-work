@@ -35,7 +35,8 @@ export const DEFAULT_PARTS: readonly string[] = [
   'rate_limits',
   'workers',
   'load_balancers',
-  'healthchecks',
+  // Not `healthchecks`: a check's request headers can hold an origin's credentials (review R3). List it in
+  // `cloudflare.parts` to reach it.
   'analytics',
   'cache',
 ];
@@ -47,7 +48,7 @@ export interface CfResponse {
 }
 export type CfFetch = (
   url: string,
-  init: { method: string; headers: Record<string, string>; body?: string; signal?: AbortSignal },
+  init: { method: string; headers: Record<string, string>; body?: string; signal?: AbortSignal; redirect?: 'manual' },
 ) => Promise<CfResponse>;
 
 export class CfError extends Error {
@@ -140,7 +141,10 @@ function bodyText(method: CfMethod, body: unknown): string | undefined {
   } catch {
     text = undefined;
   }
-  if (text === undefined || text.length > MAX_BODY) throw new CfError(`body must be JSON of at most ${MAX_BODY} bytes`);
+  // The cap is in bytes as sent (UTF-8), not in characters (review R3).
+  if (text === undefined || Buffer.byteLength(text, 'utf8') > MAX_BODY) {
+    throw new CfError(`body must be JSON of at most ${MAX_BODY} bytes`);
+  }
   return text;
 }
 
@@ -190,6 +194,8 @@ export async function cfCall(
       },
       ...(request.body === undefined ? {} : { body: request.body }),
       signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
+      // A redirect is never followed: it would carry the token somewhere the zone check never saw (review R3).
+      redirect: 'manual',
     });
   } catch (err) {
     const why = err instanceof Error ? err.name : 'error';
@@ -199,6 +205,9 @@ export async function cfCall(
       );
     }
     throw new CfError(`Cloudflare GET got no answer (${why})`);
+  }
+  if (res.status >= 300 && res.status < 400) {
+    throw new CfError(`Cloudflare ${request.method} ${request.path} answered ${res.status} (moved): not followed`);
   }
   let json: unknown;
   let readable = true;
@@ -219,9 +228,16 @@ export async function cfCall(
         `Cloudflare ${request.method} answered ${res.status} with an unreadable body: the write may have been made — check before retrying`,
       );
     }
-    if ((json as { success?: unknown } | null)?.success === false) {
+    const success = (json as { success?: unknown } | null)?.success;
+    if (success === false) {
       throw new CfError(
         `Cloudflare ${request.method} ${request.path} answered ${res.status}: ${errorsOf(json, config.token)}`,
+      );
+    }
+    // Done only when Cloudflare says so; a body that does not say `success: true` leaves the write unknown (review R3).
+    if (readable && success !== true) {
+      throw new CfOutcomeUnknownError(
+        `Cloudflare ${request.method} answered ${res.status} without success: true: the write may have been made — check before retrying`,
       );
     }
   }

@@ -264,3 +264,86 @@ describe('cf_api', () => {
     expect(String(err)).not.toContain(TOKEN);
   });
 });
+
+// review-of-legends R3 (5321f2efc): health checks can hold origin credentials, the body cap is in bytes, a redirect is
+// never followed, and a write is done only when Cloudflare says `success: true`.
+describe('cf_api — review R3', () => {
+  it('reads health checks only when the environment lists them in cloudflare.parts', async () => {
+    const { fetch, calls } = cloudflare();
+    await expect(
+      handleCfApi({ server: 'dev2', method: 'GET', path: `/zones/${ZONE}/healthchecks` }, fetch),
+    ).rejects.toThrow(/healthchecks is not a part cf_api reaches/);
+    expect(calls).toEqual([]);
+    writeConfig({
+      token: { $secret: 'cf-dev2' },
+      zones: { 'dev2.example': ZONE },
+      write: true,
+      parts: ['healthchecks'],
+    });
+    await handleCfApi({ server: 'dev2', method: 'GET', path: `/zones/${ZONE}/healthchecks` }, fetch);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('caps the body in UTF-8 bytes, not characters', async () => {
+    const { fetch, calls } = cloudflare();
+    // 30000 three-byte characters: under 64 KiB as characters, over it as bytes.
+    const body = { content: '가'.repeat(30_000) };
+    await expect(
+      handleCfApi({ server: 'dev2', method: 'POST', path: `/zones/${ZONE}/dns_records`, body }, fetch),
+    ).rejects.toThrow(/at most 65536 bytes/);
+    expect(calls).toEqual([]);
+  });
+
+  it('never follows a redirect: a read fails, a write is recorded failed', async () => {
+    const inits: { redirect?: string }[] = [];
+    const moved: CfFetch = async (_url, init) => {
+      inits.push(init as { redirect?: string });
+      return { ok: false, status: 302, json: async () => ({}) };
+    };
+    await expect(
+      handleCfApi({ server: 'dev2', method: 'GET', path: `/zones/${ZONE}/dns_records` }, moved),
+    ).rejects.toThrow(/answered 302 \(moved\): not followed/);
+    await expect(
+      handleCfApi({ server: 'dev2', method: 'DELETE', path: `/zones/${ZONE}/dns_records/abc` }, moved),
+    ).rejects.toThrow(/answered 302 \(moved\): not followed/);
+    expect(inits.every((i) => i.redirect === 'manual')).toBe(true);
+    expect(ledger().map((r) => r.phase)).toEqual(['intent', 'failed']);
+  });
+
+  it('takes a write as done only on success: true; a readable 2xx without it is unknown', async () => {
+    for (const json of [{ result: { id: 'x' } }, { success: 'yes' }, []]) {
+      fs.rmSync(path.join(AUDIT, 'env-audit.jsonl'), { force: true });
+      const { fetch } = cloudflare({ json });
+      await expect(
+        handleCfApi({ server: 'dev2', method: 'DELETE', path: `/zones/${ZONE}/dns_records/abc` }, fetch),
+      ).rejects.toThrow(/may have been made/);
+      expect(ledger().map((r) => r.phase)).toEqual(['intent', 'unknown']);
+    }
+  });
+
+  it('records a 5xx answer to a write as unknown', async () => {
+    const { fetch } = cloudflare({ status: 502, json: { success: false } });
+    await expect(
+      handleCfApi({ server: 'dev2', method: 'DELETE', path: `/zones/${ZONE}/dns_records/abc` }, fetch),
+    ).rejects.toThrow(/may have been made/);
+    expect(ledger().map((r) => r.phase)).toEqual(['intent', 'unknown']);
+  });
+
+  it('writes the intent before the request leaves', async () => {
+    let phasesAtSend: string[] = [];
+    const fetch: CfFetch = async () => {
+      phasesAtSend = ledger().map((r) => r.phase);
+      return { ok: true, status: 200, json: async () => ({ success: true, result: { id: 'x' } }) };
+    };
+    await handleCfApi({ server: 'dev2', method: 'DELETE', path: `/zones/${ZONE}/dns_records/abc` }, fetch);
+    expect(phasesAtSend).toEqual(['intent']);
+    expect(ledger().map((r) => r.phase)).toEqual(['intent', 'done']);
+  });
+
+  it('never hands the token back in a successful answer', async () => {
+    const { fetch } = cloudflare({ json: { success: true, result: [{ content: `v=${TOKEN}` }] } });
+    const out = await handleCfApi({ server: 'dev2', method: 'GET', path: `/zones/${ZONE}/dns_records` }, fetch);
+    expect(out.content[0].text).not.toContain(TOKEN);
+    expect(text(out).body.result[0].content).toBe('v=[redacted]');
+  });
+});
