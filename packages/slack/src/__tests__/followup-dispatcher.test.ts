@@ -1766,7 +1766,10 @@ describe('FollowupDispatcher — an error halt without a failed item ends with t
   });
 
   it('settles the healthy run even when the observer throws on the recovery notice (astra R1)', async () => {
-    for (const healthy of [{ result: 'safe' }, { result: 'interrupted', reason: 'auto-compact' }] as DispatchOutcome[]) {
+    for (const healthy of [
+      { result: 'safe' },
+      { result: 'interrupted', reason: 'auto-compact' },
+    ] as DispatchOutcome[]) {
       const h = harness({
         notify: (notice) => {
           if (notice.type === 'drain-resumed') throw new Error('observer failed');
