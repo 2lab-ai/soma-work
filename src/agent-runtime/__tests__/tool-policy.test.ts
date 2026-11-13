@@ -230,7 +230,7 @@ describe('evaluateToolPolicy — guards (epic #1023 P5)', () => {
       evaluateToolPolicy('mcp__x__y', {}, makeCtx({ isAdmin: true, checkMcpToolPermission: spy }));
       expect(spy).not.toHaveBeenCalled(); // admin skips mcp guard
       evaluateToolPolicy('mcp__x__y', {}, makeCtx({ checkMcpToolPermission: spy }));
-      expect(spy).toHaveBeenCalledWith('mcp__x__y');
+      expect(spy).toHaveBeenCalledWith('mcp__x__y', {});
     });
   });
 

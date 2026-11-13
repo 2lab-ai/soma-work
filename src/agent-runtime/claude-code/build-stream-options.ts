@@ -40,12 +40,14 @@ import {
 import { getSandboxAllowUnavailable, getSandboxOffAllowed } from '../../config';
 import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR, SECRETS_DIR } from '../../env-paths';
 import {
+  checkEnvironmentToolAccess,
   checkEnvPluginMcpAccess,
   checkEnvSkillAccess,
   type EnvSkillRegistry,
   envSkillRegistry,
   envSkillSandboxDenyRead,
 } from '../../env-skill-registry';
+import { loadEnvironments } from '../../env-users';
 import type { IncidentEvidence, IncidentEvidenceConfig } from '../../incident/evidence';
 import { assertIncidentRequest, buildIncidentSdkOptions, type IncidentRequestLike } from '../../incident/sdk-options';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
@@ -65,6 +67,8 @@ import {
 } from '../../sandbox/admin-sandbox-profile';
 import { extendSandboxWithGrant, loadDeploySandboxGrant } from '../../sandbox/deploy-sandbox-grant';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
+import { launchAllFrom, mcpLaunchDir, wrapPluginLaunchers } from '../../sandbox/mcp-launch-dir';
+import { projectConfigRoot } from '../../sandbox/project-config-root';
 import type { SessionRegistry } from '../../session-registry';
 import { isPlanPending } from '../../task-turn/task-plan';
 import type { ConversationSession, WorkflowType } from '../../types';
@@ -420,14 +424,23 @@ export async function buildStreamOptions(
         handoffContext: slackContext
           ? deps.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs)?.handoffContext
           : deps.sessionRegistry.getSessionByKey(execCtx.sessionKey)?.handoffContext,
-        // Step 4 runs for non-admins only. Host commands (`ssh_exec`, env-access WU2 #1210) are an admin's,
-        // whatever the server-tools grants say; the other tools follow the grants.
-        checkMcpToolPermission: (name) =>
-          name === SSH_EXEC_TOOL
-            ? SSH_EXEC_ADMIN_ONLY
-            : gatedServerNames.length > 0
-              ? (deps.checkMcpToolPermission(name, policyUser, cachedPermConfig, gatedServerNames) ?? null)
-              : null,
+        // Step 4 runs for non-admins only. Host commands (`ssh_exec`, env-access WU2 #1210) and an environment
+        // user's PR approvals and merges (`gh_pr`, WU3 #1211) are an admin's, whatever the server-tools grants
+        // say; the other tools follow the grants.
+        checkMcpToolPermission: (name, toolInput) => {
+          // An environment's grant opens every tool on its servers, admin-only ones included (WU4, #1212).
+          const environment = envSkillScope
+            ? checkEnvironmentToolAccess(name, toolInput, policyUser, envSkillScope, loadEnvironments())
+            : undefined;
+          if (environment === null) return null;
+          // Without it, an admin-only tool stays shut (naming the environment, when it is one's server) …
+          const adminOnly = ADMIN_ONLY_SERVER_TOOLS.get(name);
+          if (adminOnly !== undefined) return environment ?? adminOnly;
+          // … and an ordinary tool keeps following the server-tools grants, on an environment's server too.
+          return gatedServerNames.length > 0
+            ? (deps.checkMcpToolPermission(name, policyUser, cachedPermConfig, gatedServerNames) ?? null)
+            : null;
+        },
         ...(nativeWriteRoots ? { checkNativeWrite: createNativeWriteCheck(nativeWriteRoots, hookCwd) } : {}),
         checkEnvSkillPermission: (tool, toolInput) =>
           envRegistry
@@ -963,6 +976,35 @@ export async function buildStreamOptions(
     options.abortController = abortController;
   }
 
+  // Project settings, the project MCP config and the `.claude` config trees come from an empty host directory no
+  // model writes, not from the working directory: the CLI runs their commands outside the sandbox (env-access
+  // #1242). CLAUDE.md and plan files still come from the working directory. Checked last, against every directory
+  // this session writes once all of them are known — deploy grants included (astra R3), sandbox on or off.
+  // Throws: the session does not start.
+  const writeRoots = [
+    ...(workingDirectory ? [workingDirectory] : []),
+    ...(sandboxUserDir ? [sandboxUserDir] : []),
+    ...(adminProfile ? adminProfile.allowWrite : []),
+    ...(options.sandbox?.filesystem?.allowWrite ?? []),
+  ];
+  options.projectConfigRoot = projectConfigRoot(DATA_DIR, writeRoots);
+
+  // Every stdio MCP server starts from `/`, not from the working directory, where its launcher (npx, uvx …) would
+  // read package-manager config the model planted, or from any directory a launcher could walk up from (env-access
+  // #1241). soma-work's servers are wrapped here; a plugin's are wrapped in its config in the plugin cache, so the
+  // CLI still resolves everything else about them. Throws: the session does not start.
+  const launchDir = mcpLaunchDir(writeRoots);
+  if (options.mcpServers) options.mcpServers = launchAllFrom(launchDir, options.mcpServers);
+  if (options.plugins && options.plugins.length > 0) {
+    const launchers = wrapPluginLaunchers(options.plugins, launchDir, PLUGINS_DIR);
+    if (launchers.turnedOff.length > 0) {
+      logger.warn("Plugin MCP servers turned off: they could not be made to start outside the session's directory", {
+        plugins: launchers.turnedOff,
+      });
+    }
+    options.plugins = launchers.plugins;
+  }
+
   return attachStderrCapture(options, logger);
 }
 
@@ -1010,9 +1052,18 @@ function readIncidentRequest(session: ConversationSession | undefined): Incident
   return assertIncidentRequest(candidate);
 }
 
-/** server-tools' host-command tool (env-access WU2, #1210): admins only. */
-const SSH_EXEC_TOOL = 'mcp__server-tools__ssh_exec';
-const SSH_EXEC_ADMIN_ONLY = 'ssh_exec runs a command on a host and is for admins only.';
+/**
+ * server-tools tools that are an admin's whatever the server-tools grants say — or, on an environment's server, a
+ * user's that environment's admin granted it (WU4, #1212): host commands (env-access WU2, #1210), and an environment
+ * user's PR approvals and merges and web logins with its own accounts (WU3, #1211), its repository reads (WU5), and its Cloudflare calls (WU6).
+ */
+const ADMIN_ONLY_SERVER_TOOLS: ReadonlyMap<string, string> = new Map([
+  ['mcp__server-tools__ssh_exec', 'ssh_exec runs a command on a host and is for admins only.'],
+  ['mcp__server-tools__gh_pr', "gh_pr acts on a PR with an environment's own token and is for admins only."],
+  ['mcp__server-tools__login', "login signs in with an environment's own account and is for admins only."],
+  ['mcp__server-tools__gh_read', "gh_read reads a repository with an environment's own token and is for admins only."],
+  ['mcp__server-tools__cf_api', "cf_api calls Cloudflare with an environment's own token and is for admins only."],
+]);
 
 /**
  * What no model writes (env-access WU2, #1210), each as written and as the OS resolves it: the

@@ -20,12 +20,21 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { CONFIG_FILE, PLUGINS_DIR } from './env-paths';
+import {
+  type Environment,
+  environmentLabel,
+  environmentOfServer,
+  environmentOfSkill,
+  environmentsOfPlugin,
+  loadEnvironments,
+} from './env-users';
 import { Logger } from './logger';
 import { isSafePathSegment } from './path-utils';
 import { parsePluginRef } from './plugin/config-parser';
 import {
   ENV_SKILL_GRANT_OWNER,
   type GrantScope,
+  isEnvironmentToolUseAllowed,
   isEnvPluginUseAllowed,
   isEnvSkillUseAllowed,
   loadGrants,
@@ -46,6 +55,8 @@ export interface EnvSkillRegistry {
   pluginNames: ReadonlySet<string>;
   /** `PLUGINS_DIR` — `<pluginsDir>/<plugin>/skills/<skill>/SKILL.md`. */
   pluginsDir: string;
+  /** The environments of `config.json` (env-access WU4, `env-users.ts`); none when absent. */
+  environments?: readonly Environment[];
 }
 
 /**
@@ -58,10 +69,9 @@ export function envSkillRegistry(
   pluginsDir: string = PLUGINS_DIR,
   configFile?: string,
 ): EnvSkillRegistry {
-  const pluginNames = pluginManager
-    ? pluginManager.getEnvPluginNames()
-    : envPluginNamesFromConfig(configFile ?? configPath());
-  return { pluginNames, pluginsDir };
+  const file = configFile ?? configPath();
+  const pluginNames = pluginManager ? pluginManager.getEnvPluginNames() : envPluginNamesFromConfig(file);
+  return { pluginNames, pluginsDir, environments: loadEnvironments(file) };
 }
 
 /** `CONFIG_FILE`, or '' when this process has none (an embedding that resolves no config path). */
@@ -144,6 +154,20 @@ export function envSkillExists(skillKey: string, registry: EnvSkillRegistry): bo
 }
 
 /**
+ * May the requester run the environment skill `skillKey` — on a grant of it, of all environment skills, or of the
+ * environment it belongs to (env-access WU4)? The one check every caller uses: the policy, `$plugin:skill`, the
+ * skill files and the dashboard.
+ */
+export function envSkillAllowed(
+  skillKey: string,
+  requesterId: string,
+  scope: GrantScope | undefined,
+  environments: readonly Environment[],
+): boolean {
+  return isEnvSkillUseAllowed(skillKey, requesterId, scope, environmentOfSkill(skillKey, environments)?.id);
+}
+
+/**
  * `ctx.checkEnvSkillPermission` for a non-admin `requesterId` in `scope`'s thread: the environment
  * skill key when `skillId` names an environment skill the requester holds no grant for (step 6b
  * denies it with that reason), else null.
@@ -156,7 +180,7 @@ export function checkEnvSkillPermission(
 ): string | null {
   const key = resolveEnvSkillKey(skillId, registry);
   if (key === null) return null;
-  return isEnvSkillUseAllowed(key, requesterId, scope) ? null : key;
+  return envSkillAllowed(key, requesterId, scope, registry.environments ?? []) ? null : key;
 }
 
 /** The prefix the SDK gives every MCP tool of a plugin's server — policy step 6d tests the same one. */
@@ -191,9 +215,39 @@ export function checkEnvPluginMcpAccess(
   registry: EnvSkillRegistry,
 ): string | null {
   for (const plugin of envPluginsOfMcpTool(toolName, registry)) {
-    if (!isEnvPluginUseAllowed(plugin, requesterId, scope)) return plugin;
+    const environments = environmentsOfPlugin(plugin, registry.environments ?? []).map((env) => env.id);
+    if (!isEnvPluginUseAllowed(plugin, requesterId, scope, environments)) return plugin;
   }
   return null;
+}
+
+/** The prefix of server-tools' tools as the SDK names them. */
+const SERVER_TOOLS_PREFIX = 'mcp__server-tools__';
+
+/**
+ * The environment gate on server-tools (env-access WU4, #1212), for a non-admin `requesterId` in `scope`'s
+ * thread. A server-tools call that names (`server`) a server an environment acts as runs on that environment's
+ * grant — the whole environment, or one of its skills, always or in this thread — and on nothing else: then this
+ * returns null (allowed, admin-only tools included) or the deny reason. A call that names no environment's server
+ * is not this gate's: `undefined`, and the other server-tools rules decide.
+ */
+export function checkEnvironmentToolAccess(
+  toolName: string,
+  toolInput: Record<string, unknown> | undefined,
+  requesterId: string,
+  scope: GrantScope,
+  environments: readonly Environment[],
+): string | null | undefined {
+  if (!toolName.startsWith(SERVER_TOOLS_PREFIX) || environments.length === 0) return undefined;
+  const server = toolInput?.server;
+  if (typeof server !== 'string') return undefined;
+  const environment = environmentOfServer(server, environments);
+  if (!environment) return undefined;
+  const owns = (key: string) => environmentOfSkill(key, environments)?.id === environment.id;
+  if (isEnvironmentToolUseAllowed(environment, requesterId, scope, owns)) return null;
+  const label = environmentLabel(environment.id);
+  const skills = environment.skills.length > 0 ? ` (its skills: ${environment.skills.join(', ')})` : '';
+  return `${server} belongs to environment ${label}: an admin must allow you this environment or one of its skills${skills}.`;
 }
 
 /** `PLUGINS_DIR` as written and as the OS resolves it (symbolic links followed). */
@@ -363,7 +417,7 @@ export function checkEnvSkillAccess(
   const allowAll = targets.length > 0 && loadGrants(ENV_SKILL_GRANT_OWNER).allowAll.includes(requesterId);
   for (const target of targets) {
     if (allowAll) continue;
-    if (target.includes(':') && isEnvSkillUseAllowed(target, requesterId, scope)) continue;
+    if (target.includes(':') && envSkillAllowed(target, requesterId, scope, registry.environments ?? [])) continue;
     return target;
   }
   return null;

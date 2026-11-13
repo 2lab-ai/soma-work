@@ -174,7 +174,7 @@ describe('evaluateToolPolicy — incident READ-ONLY mode', () => {
     it("the grant guard is consulted for an admin's MCP call", () => {
       const spy = vi.fn(() => null);
       expect(evaluateToolPolicy(ALLOWED_MCP, {}, widestCtx({ checkMcpToolPermission: spy })).decision).toBe('allow');
-      expect(spy).toHaveBeenCalledWith(ALLOWED_MCP);
+      expect(spy).toHaveBeenCalledWith(ALLOWED_MCP, {});
     });
 
     it('an admin gets exactly the result of the same call made by a non-admin', () => {
@@ -203,7 +203,7 @@ describe('evaluateToolPolicy — incident READ-ONLY mode', () => {
     it('the mcp grant guard is consulted before the incident allowlist', () => {
       const spy = vi.fn(() => null);
       evaluateToolPolicy(ALLOWED_MCP, {}, ctx({ checkMcpToolPermission: spy }));
-      expect(spy).toHaveBeenCalledWith(ALLOWED_MCP);
+      expect(spy).toHaveBeenCalledWith(ALLOWED_MCP, {});
     });
   });
 });

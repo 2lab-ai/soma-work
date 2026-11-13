@@ -43,6 +43,8 @@ export interface PermissionRequest {
   originalText?: string;
   /** #785 — the dashboard send it was: the replay carries the ref so its turn replaces the panel's copy. */
   dashboardClientRef?: string;
+  /** Environment-skill requests (env-access WU4): the environment the card offered "always" for, if any. */
+  environment?: string;
   /** Environment-skill requests: the admin prompts posted for this request (one per admin DM). */
   prompts?: PromptRef[];
   /** How the request was answered (set with `handled`): who, which choice, from where. */
@@ -81,6 +83,8 @@ export interface CreatePermissionRequestInput {
   threadTs?: string;
   originalText?: string;
   dashboardClientRef?: string;
+  /** Environment-skill requests: the environment the card offers "always" for (env-access WU4). */
+  environment?: string;
   /** Override TTL (tests). */
   ttlMs?: number;
 }
@@ -159,6 +163,7 @@ export function createPermissionRequest(input: CreatePermissionRequestInput): Cr
     threadTs: input.threadTs,
     originalText: input.originalText,
     ...(input.dashboardClientRef ? { dashboardClientRef: input.dashboardClientRef } : {}),
+    ...(input.environment ? { environment: input.environment } : {}),
     createdAt: now,
     expiresAt: now + (input.ttlMs ?? DEFAULT_TTL_MS),
     handled: false,

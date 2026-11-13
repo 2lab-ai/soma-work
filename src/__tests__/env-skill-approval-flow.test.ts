@@ -11,8 +11,14 @@ import * as path from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetAdminUsersCache } from '../admin-utils';
 import { evaluateToolPolicy, type ToolPolicyContext } from '../agent-runtime/policy/tool-policy';
-import { DATA_DIR, PLUGINS_DIR } from '../env-paths';
-import { checkEnvPluginMcpAccess, checkEnvSkillAccess, envSkillRegistry } from '../env-skill-registry';
+import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR } from '../env-paths';
+import {
+  checkEnvironmentToolAccess,
+  checkEnvPluginMcpAccess,
+  checkEnvSkillAccess,
+  envSkillRegistry,
+} from '../env-skill-registry';
+import { loadEnvironments } from '../env-users';
 import { setAdmittedPluginNames } from '../plugin/admitted-plugin-names';
 import { EnvSkillPermissionActionHandler } from '../slack/actions/env-skill-permission-action-handler';
 import { SkillForceHandler } from '../slack/commands/skill-force-handler';
@@ -230,5 +236,71 @@ describe('environment-skill admin approval — full flow', () => {
     const result = await ask('$acme-env:post-deploy', ADMIN, { channel: 'CFLOW00004', threadTs: '1793000000.000400' });
     expect(result.continueWithPrompt).toContain('Run the environment QA profile');
     expect(slackApi.openDmChannel).not.toHaveBeenCalled();
+  });
+
+  // env-access WU4 (#1212) — the intent end to end: a non-admin asks for one dev2 skill, the admin answers
+  // "dev2, always" once, and from then on every dev2 skill and dev2's server tools run without another card;
+  // another environment still asks.
+  it('이 환경 전체 항상: one card, then no card for any skill or server tool of that environment', async () => {
+    const user = 'UREQFLOW04';
+    const where = { channel: 'CFLOW00009', threadTs: '1793000000.000900' };
+    const qaFile = path.join(PLUGINS_DIR, 'acme-env', 'skills', 'dev2-qa', 'SKILL.md');
+    fs.mkdirSync(path.dirname(qaFile), { recursive: true });
+    fs.writeFileSync(qaFile, '# acme dev2-qa\nRun the dev QA profile.');
+    const saved = fs.existsSync(CONFIG_FILE) ? fs.readFileSync(CONFIG_FILE, 'utf8') : null;
+    fs.writeFileSync(
+      CONFIG_FILE,
+      JSON.stringify({
+        'server-tools': {
+          dev2: { envUser: 'env:acme-dev2', skills: ['acme-env:post-deploy', 'acme-env:dev2-qa'] },
+          stage0: { envUser: 'env:acme-stage0', skills: ['acme-env:stage0-qa'] },
+        },
+      }),
+    );
+    // What the stream hook's server-tools gate decides for this user (build-stream-options).
+    const serverTool = (tool: string, server: string, other = where) =>
+      checkEnvironmentToolAccess(tool, { server }, user, other, loadEnvironments());
+    const HOST_TOOL = 'mcp__server-tools__' + 'ss' + 'h_exec';
+    try {
+      expect(serverTool(HOST_TOOL, 'dev2')).toMatch(/acme-dev2/);
+
+      expect((await ask('$acme-env:post-deploy', user, where)).awaitingPermission).toBe(true);
+      // The card: accept · reject · this skill · dev2 whole.
+      const dm = [...posted].reverse().find((p) => p.channel === `D-${ADMIN}` && Array.isArray(p.opts?.blocks));
+      const labels = dm?.opts?.blocks?.find((b: any) => b.type === 'actions').elements.map((e: any) => e.text.text);
+      expect(labels).toEqual([
+        '✅ 수락 (이 스레드)',
+        '❌ 거절',
+        '📋 이 스킬 항상 — `acme-env:post-deploy`',
+        '🌐 `acme-dev2` 전체 항상',
+      ]);
+
+      await click(adminButton('env_skill_env'));
+      expect(redispatched[redispatched.length - 1]?.result.continueWithPrompt).toContain(
+        'Run the environment QA profile',
+      );
+      const cards = slackApi.openDmChannel.mock.calls.length;
+
+      // Another dev2 skill, in another thread: no card, it runs.
+      const elsewhere = { channel: 'CFLOW00010', threadTs: '1793000000.001000' };
+      const qa = await ask('$acme-env:dev2-qa', user, elsewhere);
+      expect(qa.awaitingPermission).toBeFalsy();
+      expect(qa.continueWithPrompt).toContain('Run the dev QA profile');
+      expect(slackApi.openDmChannel.mock.calls.length).toBe(cards);
+      // dev2's server tools, admin-only ones included, in any thread.
+      expect(serverTool(HOST_TOOL, 'dev2', elsewhere)).toBeNull();
+      expect(serverTool('mcp__server-tools__gh_pr', 'dev2', elsewhere)).toBeNull();
+      expect(serverTool('mcp__server-tools__login', 'dev2', elsewhere)).toBeNull();
+      expect(serverTool('mcp__server-tools__gh_read', 'dev2', elsewhere)).toBeNull();
+      expect(serverTool('mcp__server-tools__cf_api', 'dev2', elsewhere)).toBeNull();
+      // stage0 is another environment: still closed.
+      expect(serverTool(HOST_TOOL, 'stage0', elsewhere)).toMatch(/acme-stage0/);
+      expect(serverTool('mcp__server-tools__login', 'stage0', elsewhere)).toMatch(/acme-stage0/);
+      expect(serverTool('mcp__server-tools__gh_read', 'stage0', elsewhere)).toMatch(/acme-stage0/);
+      expect(policy('Skill', { skill: 'acme-env:stage0-qa' }, elsewhere).decision).toBe('deny');
+    } finally {
+      if (saved === null) fs.rmSync(CONFIG_FILE, { force: true });
+      else fs.writeFileSync(CONFIG_FILE, saved);
+    }
   });
 });

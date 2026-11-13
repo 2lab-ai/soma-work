@@ -1,11 +1,37 @@
 #!/usr/bin/env node
 
+import { createHash } from 'node:crypto';
 import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { ConfigCache } from '@soma/process-shared/mcp/config-cache.js';
-import { resolveSecretRefs, SecretRefError } from '@soma/process-shared/secret-ref.js';
+import { isSecretRef, resolveSecretRefs, SecretRefError } from '@soma/process-shared/secret-ref.js';
 import { StderrLogger } from '@soma/process-shared/stderr-logger.js';
 import { type ChildProcess, execFileSync, type SpawnSyncReturns, spawn, spawnSync } from 'child_process';
+import { appendAudit } from './env-audit.js';
+import {
+  CfError,
+  type CfFetch,
+  CfOutcomeUnknownError,
+  cfCall,
+  cfRequest,
+  type EnvCloudflareConfig,
+} from './env-cloudflare.js';
+import {
+  allowedRepo,
+  approvalProblem,
+  approve,
+  type EnvGithubConfig,
+  type Fetch,
+  GithubError,
+  headSha,
+  merge,
+  mergeProblem,
+  OutcomeUnknownError,
+  prNumber,
+  prState,
+  repoRead,
+} from './env-github.js';
+import { defaultLoginFetch, LoginError, type LoginFetch, login, loginSpec } from './env-login.js';
 import { redactLogSecrets } from './redact-logs.js';
 
 const configLogger = new StderrLogger('server-tools:config');
@@ -58,8 +84,19 @@ interface ClickHouseConfig {
 type DatabaseConfig = MySQLConfig | RedisConfig | MongoDBConfig | ClickHouseConfig;
 
 interface ServerConfig {
+  /**
+   * The environment user this server acts as (env-access WU3, #1211), e.g. `env:acme-dev2`: a non-human user with
+   * the environment's own GitHub token and accounts. Its writes are audited under this name.
+   */
+  envUser?: string;
   ssh: { host: string };
   databases?: Record<string, DatabaseConfig>;
+  /** The environment's GitHub token and what it may approve and merge (`gh_pr`). */
+  github?: EnvGithubConfig;
+  /** The environment's scoped Cloudflare token and zones (`cf_api`, env-access WU6, #1214). */
+  cloudflare?: EnvCloudflareConfig;
+  /** The environment's web app accounts (`login`, WU3b): url, body (its password a `$secret`), where the session is. */
+  web?: { logins?: Record<string, unknown> };
 }
 
 type ServerToolsConfig = Record<string, ServerConfig>;
@@ -87,9 +124,54 @@ const configCache = new ConfigCache<ServerToolsConfig>(
  * resolve is left out — never run with a missing password — and only its name and the secret's name
  * are logged.
  */
+/** True when a `{"$secret": …}` reference sits anywhere in `value` (as `resolveSecretRefs` would resolve it). */
+function namesSecret(value: unknown, depth = 0): boolean {
+  if (isSecretRef(value)) return true;
+  if (depth > 32 || !value || typeof value !== 'object') return false;
+  return Object.values(value as Record<string, unknown>).some((v) => namesSecret(v, depth + 1));
+}
+
+/**
+ * An environment's web logins keep their password in the secret store (WU3b, #1211): a login whose body names no
+ * `{"$secret": …}` is left out, so a password written into config.json is never posted.
+ */
+function withSecretLogins(name: string, server: unknown): unknown {
+  const web = (server as { web?: { logins?: unknown } } | null)?.web;
+  const logins = web?.logins;
+  if (logins === undefined || logins === null) return server;
+  if (typeof logins !== 'object' || Array.isArray(logins)) {
+    configLogger.warn(`server "${name}": web.logins left out — it must be an object of named logins`);
+    return { ...(server as Record<string, unknown>), web: { ...web, logins: {} } };
+  }
+  const kept: Record<string, unknown> = {};
+  for (const [account, spec] of Object.entries(logins as Record<string, unknown>)) {
+    const body = (spec as { body?: unknown } | null)?.body;
+    if (namesSecret(body)) kept[account] = spec;
+    else
+      configLogger.warn(`server "${name}": login "${account}" left out — its body must name a {"$secret": "<name>"}`);
+  }
+  return { ...(server as Record<string, unknown>), web: { ...web, logins: kept } };
+}
+
 function resolveServerSecrets(servers: Record<string, unknown>): ServerToolsConfig {
   const out: ServerToolsConfig = {};
-  for (const [name, server] of Object.entries(servers)) {
+  for (const [name, entry] of Object.entries(servers)) {
+    let server = entry;
+    // An environment's GitHub token lives in the secret store only, never in config.json (WU3, #1211).
+    const github = (entry as { github?: { token?: unknown } } | null)?.github;
+    if (github && typeof github === 'object' && !isSecretRef(github.token)) {
+      configLogger.warn(`server "${name}": github left out — github.token must be {"$secret": "<name>"}`);
+      const { github: _dropped, ...rest } = entry as Record<string, unknown>;
+      server = rest;
+    }
+    // The same for its Cloudflare token (WU6, #1214).
+    const cloudflare = (server as { cloudflare?: { token?: unknown } } | null)?.cloudflare;
+    if (cloudflare && typeof cloudflare === 'object' && !isSecretRef(cloudflare.token)) {
+      configLogger.warn(`server "${name}": cloudflare left out — cloudflare.token must be {"$secret": "<name>"}`);
+      const { cloudflare: _dropped, ...rest } = server as Record<string, unknown>;
+      server = rest;
+    }
+    server = withSecretLogins(name, server);
     try {
       out[name] = resolveSecretRefs(server, process.env.SOMA_SECRETS_DIR) as ServerConfig;
     } catch (error) {
@@ -647,6 +729,309 @@ export function handleLogs(args: Record<string, unknown>) {
  */
 const SSH_EXEC_DEFAULT_TIMEOUT_S = 60;
 const SSH_EXEC_MAX_TIMEOUT_S = 600;
+// ── gh_pr: an environment user's PR actions (env-access WU3, #1211) ──
+
+const GH_PR_ACTIONS = ['view', 'approve', 'merge'] as const;
+
+function envGithub(server: unknown): { name: string; config: ServerConfig; github: EnvGithubConfig } {
+  const config = loadConfig();
+  if (typeof server !== 'string' || !Object.keys(config).includes(server)) throw new Error(`Unknown server: ${server}`);
+  const github = config[server].github;
+  if (!github || typeof github.token !== 'string' || !Array.isArray(github.repos)) {
+    throw new Error(`Server ${server} has no github section (token and repos)`);
+  }
+  // A string where a list belongs would match by substring (`"bot"` in `"renovate[bot]"`): refuse the section.
+  const isList = (v: unknown) => v === undefined || (Array.isArray(v) && v.every((x) => typeof x === 'string'));
+  for (const key of ['approveWhen', 'mergeWhen'] as const) {
+    const when = github[key] as Record<string, unknown> | undefined;
+    if (when === undefined) continue;
+    for (const field of ['authors', 'bases']) {
+      if (typeof when !== 'object' || !isList(when[field])) {
+        throw new Error(`Server ${server}: github.${key}.${field} must be a list`);
+      }
+    }
+  }
+  if (!isList(github.repos) || !isList(github.mergeMethods) || !isList(github.requiredChecks)) {
+    throw new Error(`Server ${server}: github.repos, github.mergeMethods and github.requiredChecks must be lists`);
+  }
+  // trinity R6 (astra): the branches a commit must be on before gh_read hands out its content by SHA.
+  const refName = /^(?!.*\.\.)[A-Za-z0-9._/-]+$/;
+  if (
+    github.readRefs !== undefined &&
+    !(
+      Array.isArray(github.readRefs) &&
+      github.readRefs.length > 0 &&
+      github.readRefs.every((r) => typeof r === 'string' && refName.test(r))
+    )
+  ) {
+    throw new Error(`Server ${server}: github.readRefs must be a list of branch names`);
+  }
+  return { name: server, config: config[server], github };
+}
+
+/**
+ * `gh_read` (env-access WU5, #1213): one GET of the environment's own repository with its token, for deploy
+ * confirmation and QA. Only the parts `repoReadPath` allows; nothing is written, so nothing is audited.
+ */
+export async function handleGhRead(
+  args: Record<string, unknown>,
+  fetchImpl: Fetch = globalThis.fetch as unknown as Fetch,
+) {
+  const env = envGithub(args.server);
+  try {
+    const answer = await repoRead(fetchImpl, env.github, args.path, args.query, args.fields);
+    return { content: [{ type: 'text' as const, text: JSON.stringify(answer) }] };
+  } catch (err) {
+    if (err instanceof GithubError) throw new Error(err.message);
+    throw new Error(`gh_read failed on ${env.name}`);
+  }
+}
+
+// ── cf_api: an environment's Cloudflare calls (env-access WU6, #1214) ──
+
+function envCloudflare(server: unknown): { name: string; config: ServerConfig; cloudflare: EnvCloudflareConfig } {
+  const config = loadConfig();
+  if (typeof server !== 'string' || !Object.keys(config).includes(server)) throw new Error(`Unknown server: ${server}`);
+  const cloudflare = config[server].cloudflare;
+  const zones = cloudflare?.zones;
+  const zonesOk =
+    !!zones &&
+    typeof zones === 'object' &&
+    !Array.isArray(zones) &&
+    Object.values(zones).every((id) => typeof id === 'string' && /^[0-9a-f]{32}$/.test(id));
+  if (!cloudflare || typeof cloudflare.token !== 'string' || !zonesOk) {
+    throw new Error(`Server ${server} has no cloudflare section (token and zones of 32-hex IDs)`);
+  }
+  // A string where a list belongs would match by substring (`"logpush_access"` → `access`): refuse the section.
+  const parts = cloudflare.parts;
+  if (parts !== undefined && !(Array.isArray(parts) && parts.every((p) => typeof p === 'string'))) {
+    throw new Error(`Server ${server}: cloudflare.parts must be a list of strings`);
+  }
+  return { name: server, config: config[server], cloudflare };
+}
+
+/**
+ * One Cloudflare API call on one of the environment's zones, with its own scoped token (never shown). A read runs as
+ * is; a write needs `cloudflare.write`, a requester, and the audit ledger before and after (a write with no answer is
+ * recorded `unknown`). `fetchImpl` is for tests.
+ */
+export async function handleCfApi(
+  args: Record<string, unknown>,
+  fetchImpl: CfFetch = globalThis.fetch as unknown as CfFetch,
+) {
+  const env = envCloudflare(args.server);
+  try {
+    const request = cfRequest(env.cloudflare, args);
+    if (request.method === 'GET') {
+      const answer = await cfCall(fetchImpl, env.cloudflare, request);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(answer) }] };
+    }
+    const requester = process.env.SOMA_REQUESTER;
+    if (!requester) throw new CfError('not sent: the session has no requester to record');
+    const audit = {
+      server: env.name,
+      ...(env.config.envUser ? { envUser: env.config.envUser } : {}),
+      requester,
+      tool: 'cf_api',
+      action: request.method,
+    };
+    // What was sent, without the body itself (it may hold a value the ledger should not keep): its SHA-256.
+    const detail = {
+      zone: request.zone,
+      path: request.path,
+      ...(request.query ? { query: request.query.slice(1) } : {}),
+      ...(request.body !== undefined ? { bodySha256: createHash('sha256').update(request.body).digest('hex') } : {}),
+    };
+    try {
+      appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'intent', detail });
+    } catch (err) {
+      throw new CfError(`not sent: ${(err as Error).message}`);
+    }
+    let answer: Awaited<ReturnType<typeof cfCall>>;
+    try {
+      answer = await cfCall(fetchImpl, env.cloudflare, request);
+    } catch (err) {
+      const phase = err instanceof CfOutcomeUnknownError ? 'unknown' : 'failed';
+      const message = err instanceof CfError ? err.message : `cf_api failed on ${env.name}`;
+      try {
+        appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase, detail: { ...detail, error: message } });
+      } catch (auditErr) {
+        throw new CfError(`${message}; the audit ledger could not record it (${(auditErr as Error).message})`);
+      }
+      throw new CfError(message);
+    }
+    try {
+      appendAudit(process.env.SOMA_AUDIT_DIR, {
+        ...audit,
+        phase: 'done',
+        detail: { ...detail, status: answer.status },
+      });
+    } catch (err) {
+      throw new CfError(
+        `Cloudflare ${request.method} was made (${answer.status}), but the audit ledger could not record it (${(err as Error).message}); do not retry`,
+      );
+    }
+    return { content: [{ type: 'text' as const, text: JSON.stringify(answer) }] };
+  } catch (err) {
+    if (err instanceof CfError) throw new Error(err.message);
+    throw new Error(`cf_api failed on ${env.name}`);
+  }
+}
+
+/**
+ * view / approve / merge one PR as the environment user, with the environment's token. approve and merge run only
+ * under the environment's conditions, at the head SHA the caller passes, for the person the bot names
+ * (`SOMA_REQUESTER`); each is written to the audit ledger before it runs, and again with its outcome. `fetchImpl`
+ * is for tests.
+ */
+export async function handleGhPr(
+  args: Record<string, unknown>,
+  fetchImpl: Fetch = globalThis.fetch as unknown as Fetch,
+) {
+  const action = args.action;
+  if (typeof action !== 'string' || !(GH_PR_ACTIONS as readonly string[]).includes(action)) {
+    throw new Error(`Invalid action: one of ${GH_PR_ACTIONS.join(', ')}`);
+  }
+  const env = envGithub(args.server);
+  try {
+    const repo = allowedRepo(env.github, args.repo);
+    const number = prNumber(args.pr);
+    const state = await prState(fetchImpl, env.github, repo, number);
+    if (action === 'view') return { content: [{ type: 'text' as const, text: JSON.stringify(state) }] };
+
+    const done = action === 'approve' ? 'approved' : 'merged';
+    const sha = headSha(args.sha);
+    const method = action === 'merge' ? (typeof args.method === 'string' ? args.method : 'merge') : undefined;
+    const problem =
+      action === 'approve'
+        ? approvalProblem(env.github, state, sha)
+        : mergeProblem(env.github, state, sha, method ?? 'merge');
+    if (problem) throw new GithubError(`not ${done}: ${problem}`);
+    const requester = process.env.SOMA_REQUESTER;
+    if (!requester) throw new GithubError(`not ${done}: the session has no requester to record`);
+
+    const audit = {
+      server: env.name,
+      ...(env.config.envUser ? { envUser: env.config.envUser } : {}),
+      requester,
+      tool: 'gh_pr',
+      action,
+    };
+    const detail = { repo, pr: number, sha, base: state.base, ...(method ? { method } : {}) };
+    try {
+      appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'intent', detail });
+    } catch (err) {
+      throw new GithubError(`not ${done}: ${(err as Error).message}`);
+    }
+
+    let result: string;
+    try {
+      if (action === 'approve') {
+        const body =
+          typeof args.body === 'string' && args.body.trim() !== '' ? args.body : 'Approved by environment user.';
+        await approve(fetchImpl, env.github, repo, number, sha, state.base, body);
+        result = `approved ${repo}#${number} at ${sha}`;
+      } else {
+        const merged = await merge(fetchImpl, env.github, repo, number, sha, state.base, method ?? 'merge');
+        result = `merged ${repo}#${number} at ${sha} as ${merged}`;
+      }
+    } catch (err) {
+      // No answer and no way to look it up: the write may have been made. Say so, and record it as such.
+      const unknown = err instanceof OutcomeUnknownError;
+      const reason = err instanceof GithubError ? err.message : `gh_pr failed on ${env.name}`;
+      const message = unknown ? `${action}: the outcome is unknown — ${reason}` : reason;
+      try {
+        appendAudit(process.env.SOMA_AUDIT_DIR, {
+          ...audit,
+          phase: unknown ? 'unknown' : 'failed',
+          detail: { ...detail, error: message },
+        });
+      } catch (auditErr) {
+        throw new GithubError(
+          `${message}; the audit ledger could not record the failure (${(auditErr as Error).message})`,
+        );
+      }
+      throw new GithubError(message);
+    }
+    try {
+      appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'done', detail: { ...detail, result } });
+    } catch (err) {
+      throw new GithubError(
+        `${result}, but the audit ledger could not record it (${(err as Error).message}). It was made: do not retry.`,
+      );
+    }
+    return { content: [{ type: 'text' as const, text: result }] };
+  } catch (err) {
+    // Only messages this module wrote: never a token, never a raw response.
+    if (err instanceof GithubError) throw new Error(err.message);
+    throw new Error(`gh_pr failed on ${env.name}`);
+  }
+}
+
+// ── login: an environment user's web session (env-access WU3b, #1211) ──
+
+/**
+ * Log in to the environment's web app as one of its accounts and return the session — never the password. Runs for
+ * the person the bot names (`SOMA_REQUESTER`) and is written to the audit ledger before and after, without the
+ * session. `fetchImpl` is for tests.
+ */
+export async function handleLogin(args: Record<string, unknown>, fetchImpl: LoginFetch = defaultLoginFetch) {
+  const server = args.server;
+  const account = args.account;
+  const config = loadConfig();
+  if (typeof server !== 'string' || !Object.keys(config).includes(server)) throw new Error(`Unknown server: ${server}`);
+  if (typeof account !== 'string' || account === '') throw new Error('account is required');
+  const logins = config[server].web?.logins;
+  if (!logins || typeof logins !== 'object' || Array.isArray(logins))
+    throw new Error(`Server ${server} has no web logins`);
+  if (!Object.keys(logins).includes(account)) throw new Error(`Server ${server} has no login named ${account}`);
+  const env = config[server];
+  try {
+    const spec = loginSpec(logins[account], account);
+    const requester = process.env.SOMA_REQUESTER;
+    if (!requester) throw new LoginError('not logged in: the session has no requester to record');
+    const audit = {
+      server,
+      ...(env.envUser ? { envUser: env.envUser } : {}),
+      requester,
+      tool: 'login',
+      action: 'login',
+    };
+    const detail = { account, host: new URL(spec.url).host };
+    try {
+      appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'intent', detail });
+    } catch (err) {
+      throw new LoginError(`not logged in: ${(err as Error).message}`);
+    }
+    let session: Awaited<ReturnType<typeof login>>;
+    try {
+      session = await login(fetchImpl, spec);
+    } catch (err) {
+      const message = err instanceof LoginError ? err.message : `login failed on ${server}`;
+      try {
+        appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'failed', detail: { ...detail, error: message } });
+      } catch (auditErr) {
+        throw new LoginError(
+          `${message}; the audit ledger could not record the failure (${(auditErr as Error).message})`,
+        );
+      }
+      throw new LoginError(message);
+    }
+    try {
+      appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'done', detail: { ...detail, kind: session.kind } });
+    } catch (err) {
+      throw new LoginError(
+        `logged in to ${detail.host} as ${account}, but the audit ledger could not record it (${(err as Error).message}); the session was not handed out`,
+      );
+    }
+    return { content: [{ type: 'text' as const, text: JSON.stringify({ server, account, ...session }) }] };
+  } catch (err) {
+    // Only messages this module wrote: never the password, never a response body.
+    if (err instanceof LoginError) throw new Error(err.message);
+    throw new Error(`login failed on ${server}`);
+  }
+}
+
 const SSH_EXEC_MAX_COMMAND_CHARS = 8192;
 const SSH_EXEC_TIMEOUT_NOTE =
   'Only the local ssh client was stopped: the remote command may still be running and its outcome is unknown. ' +
@@ -1069,6 +1454,96 @@ class ServerToolsMCPServer extends BaseMcpServer {
         },
       },
       {
+        name: 'login',
+        description:
+          "Log in to a server's environment web app as one of its configured accounts (web.logins) and get the " +
+          'session: a bearer token, or a session cookie. The account password stays in the secret store and is ' +
+          'never shown. Audited. Use the session for the API calls the task needs. Admins, or a user the ' +
+          "environment's admin approved.",
+        inputSchema: {
+          type: 'object',
+          properties: {
+            server: { type: 'string', description: 'Server name from config (see list) whose web logins to use.' },
+            account: { type: 'string', description: "One of that server's web.logins names." },
+          },
+          required: ['server', 'account'],
+        },
+      },
+      {
+        name: 'cf_api',
+        description:
+          "Call the Cloudflare API on one of a server's environment zones with the environment's own scoped token " +
+          '(never shown): path /zones/<zone id>/… (dns_records, settings, purge_cache, …), method GET, or POST/PUT/' +
+          'PATCH/DELETE when the environment allows writes (audited). Token, user and member paths are never ' +
+          "reachable. Returns {status, truncated, body}. Admins, or a user the environment's admin approved.",
+        inputSchema: {
+          type: 'object',
+          properties: {
+            server: {
+              type: 'string',
+              description: 'Server name from config (see list) whose cloudflare section to use.',
+            },
+            method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] },
+            path: { type: 'string', description: '/zones/<zone id>/… — no query string; put parameters in query.' },
+            query: { type: 'object', description: 'Query parameters (strings, numbers, booleans).' },
+            body: { type: 'object', description: 'JSON body for POST, PUT or PATCH.' },
+          },
+          required: ['server', 'method', 'path'],
+        },
+      },
+      {
+        name: 'gh_read',
+        description:
+          "GET one path of a server's environment repository with the environment's own GitHub token (never shown): " +
+          'commits, compare, pulls, issues, actions runs/jobs/workflows, check-runs, statuses, branches, contents, ' +
+          'releases, tags, deployments. Returns {path, truncated, body} (body is the JSON answer, or its first ' +
+          '200000 characters as text when truncated). Name `fields` to get only those parts back. Redirects are not ' +
+          "followed. For deploy confirmation and QA. Admins, or a user the environment's admin approved.",
+        inputSchema: {
+          type: 'object',
+          properties: {
+            server: { type: 'string', description: 'Server name from config (see list) whose github section to use.' },
+            path: { type: 'string', description: 'repos/<owner>/<name>/… — no query string; put parameters in query.' },
+            query: {
+              type: 'object',
+              description:
+                'Query parameters (strings, numbers, booleans), e.g. {"per_page": 50, "sha": "deploy/dev2"}.',
+            },
+            fields: {
+              type: 'array',
+              items: { type: 'string' },
+              description:
+                'Parts of the answer to keep, as dotted names; `[]` after a name means each element of that list, and ' +
+                'a leading `[]` each element of a list answer. E.g. ["status", "total_commits", "commits[].sha", ' +
+                '"commits[].parents[].sha"] or ["[].number", "[].head.ref"]. Up to 40.',
+            },
+          },
+          required: ['server', 'path'],
+        },
+      },
+      {
+        name: 'gh_pr',
+        description:
+          "Act on one GitHub PR as a server's environment user, with that environment's own token (no model reads it). " +
+          "view: the PR's state, author, base, head SHA and checks. approve: only when the environment's approveWhen " +
+          'holds (author, base, all checks green) and `sha` is still the head. merge: only into one of the ' +
+          "environment's mergeWhen bases, by a listed author, with all checks green, at `sha`. approve and merge " +
+          'are audited. Admins only.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            server: { type: 'string', description: 'Server name from config (see list) whose github section to use.' },
+            action: { type: 'string', enum: ['view', 'approve', 'merge'] },
+            repo: { type: 'string', description: "owner/name, one of the environment's repos." },
+            pr: { type: 'number', description: 'PR number.' },
+            sha: { type: 'string', description: 'approve/merge: the full head SHA you looked at with view.' },
+            method: { type: 'string', enum: ['merge', 'squash', 'rebase'], description: 'merge: default merge.' },
+            body: { type: 'string', description: 'approve: review text.' },
+          },
+          required: ['server', 'action', 'repo', 'pr'],
+        },
+      },
+      {
         name: 'logs',
         description:
           'Fetch Docker container logs (or Swarm service logs when stack is set) from a server via SSH. Default mode: docker logs. With stack: docker service logs (caller must pass the full <stack>_<svc> name in service). NOTE: --until is not supported in stack mode. Container stderr follows stdout under a "----- stderr -----" line. Output is redacted for common secret shapes (tokens, API keys, passwords, URL credentials, private key blocks).',
@@ -1193,6 +1668,14 @@ class ServerToolsMCPServer extends BaseMcpServer {
         return handleLogs(args);
       case 'ssh_exec':
         return handleSshExec(args);
+      case 'login':
+        return await handleLogin(args);
+      case 'cf_api':
+        return await handleCfApi(args);
+      case 'gh_read':
+        return await handleGhRead(args);
+      case 'gh_pr':
+        return await handleGhPr(args);
       case 'db_query':
         return await handleDbQuery(args);
       case 'redis_query':

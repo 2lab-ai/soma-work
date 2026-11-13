@@ -19,13 +19,14 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
-import { CONFIG_FILE, SECRETS_DIR } from '../../env-paths';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CONFIG_FILE, DATA_DIR, SECRETS_DIR } from '../../env-paths';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import { credentialPaths } from '../../sandbox/admin-sandbox-profile';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
+import { LAUNCH_SCRIPT } from '../../sandbox/mcp-launch-dir';
 import type { ConversationSession } from '../../types';
-import { addThreadGrant, ENV_SKILL_GRANT_OWNER } from '../../user-skill-grants-store';
+import { addThreadGrant, ENV_SKILL_GRANT_OWNER, grantEnvironment } from '../../user-skill-grants-store';
 import { type BuildStreamOptionsDeps, buildStreamOptions } from '../claude-code/build-stream-options';
 import { approvalRecordPaths, secretStoreDenyRules } from '../policy/devops-secret-guard';
 
@@ -106,7 +107,14 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
 
     expect(options.permissionMode).toBe('bypassPermissions');
     expect(options.allowDangerouslySkipPermissions).toBe(true);
-    expect(options.mcpServers).toEqual({ mcp__demo: { type: 'stdio', command: 'demo' } });
+    // Started from /, not the working directory (#1241).
+    expect(options.mcpServers).toEqual({
+      mcp__demo: {
+        type: 'stdio',
+        command: '/bin/sh',
+        args: ['-c', LAUNCH_SCRIPT, 'mcp-launch', '/', 'demo'],
+      },
+    });
     expect(options.allowedTools).toEqual(['Bash', 'Read']);
     expect(options.disallowedTools).toEqual(['SomeNativeInteractiveTool']);
     expect(options.permissionPromptToolName).toBe('mcp__permission-prompt__permission_prompt');
@@ -184,8 +192,8 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
           }>
         >;
       };
-      return (toolName: string) =>
-        entry.hooks[0]({ hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: {} } as never);
+      return (toolName: string, toolInput: Record<string, unknown> = {}) =>
+        entry.hooks[0]({ hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: toolInput } as never);
     }
 
     afterEach(() => {
@@ -239,6 +247,82 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
       expect(out.hookSpecificOutput?.permissionDecision).toBe('deny');
       expect(checkMcpToolPermission).not.toHaveBeenCalled();
       expect(await run('mcp__server-tools__logs')).toEqual({ continue: true });
+    });
+
+    // env-access WU4 (#1212): the tools of an environment's server follow that environment's grant.
+    it("lets a non-admin use an environment's server-tools tools on its grant, admin-only ones included", async () => {
+      fs.writeFileSync(
+        CONFIG_FILE,
+        JSON.stringify({ 'server-tools': { dev2: { envUser: 'env:acme-dev2', skills: ['acme-env:post-deploy'] } } }),
+        'utf8',
+      );
+      const checkMcpToolPermission = vi.fn(() => null);
+      const run = await mcpHook(makeDeps({ checkMcpToolPermission }));
+      const ask = (tool: string, server: string) =>
+        run(tool, { server }).then((o: any) => o.hookSpecificOutput?.permissionDecision ?? 'continue');
+      expect(await ask('mcp__server-tools__ssh_exec', 'dev2')).toBe('deny');
+      grantEnvironment('env:acme-dev2', SAFE_USER);
+      expect(await ask('mcp__server-tools__ssh_exec', 'dev2')).toBe('continue');
+      expect(await ask('mcp__server-tools__gh_pr', 'dev2')).toBe('continue');
+      expect(await ask('mcp__server-tools__login', 'dev2')).toBe('continue');
+      expect(await ask('mcp__server-tools__gh_read', 'dev2')).toBe('continue');
+      expect(await ask('mcp__server-tools__cf_api', 'dev2')).toBe('continue');
+      // A server that is no environment's stays admin-only.
+      expect(await ask('mcp__server-tools__login', 'other')).toBe('deny');
+      expect(await ask('mcp__server-tools__gh_read', 'other')).toBe('deny');
+      expect(await ask('mcp__server-tools__cf_api', 'other')).toBe('deny');
+      expect(await ask('mcp__server-tools__ssh_exec', 'other')).toBe('deny');
+      expect(checkMcpToolPermission).not.toHaveBeenCalled();
+    });
+
+    // trinity R1 (fable): without an environment grant, the ordinary tools of an environment's server keep
+    // following the server-tools grants they followed before.
+    it("keeps the existing grants for an environment server's ordinary tools", async () => {
+      fs.writeFileSync(
+        CONFIG_FILE,
+        JSON.stringify({
+          // An environment nobody holds a grant for (the test above granted acme-dev2).
+          'server-tools': { permission: { logs: 'read', db_query: 'write' }, dev2: { envUser: 'env:acme-dev9' } },
+        }),
+        'utf8',
+      );
+      const checkMcpToolPermission = vi.fn((name: string) => (name.endsWith('__db_query') ? 'no write grant' : null));
+      const run = await mcpHook(makeDeps({ checkMcpToolPermission }), '1700000000.0777');
+      const decide = (tool: string) =>
+        run(tool, { server: 'dev2' }).then((o: any) => o.hookSpecificOutput?.permissionDecision ?? 'continue');
+      expect(await decide('mcp__server-tools__logs')).toBe('continue');
+      expect(await decide('mcp__server-tools__db_query')).toBe('deny');
+      expect(await decide('mcp__server-tools__ssh_exec')).toBe('deny');
+    });
+
+    // env-access WU3 (#1211): an environment user's PR approvals and merges are an admin's until per-environment
+    // grants exist (WU4, #1212).
+    it('denies a non-admin gh_pr whatever the grants say', async () => {
+      const checkMcpToolPermission = vi.fn(() => null);
+      const run = await mcpHook(makeDeps({ checkMcpToolPermission }));
+      const out = await run('mcp__server-tools__gh_pr');
+      expect(out.hookSpecificOutput?.permissionDecision).toBe('deny');
+      expect(checkMcpToolPermission).not.toHaveBeenCalled();
+    });
+
+    // env-access WU3b (#1211): an environment account's web session is an admin's, or a user's the environment's
+    // admin approved (see the environment grant test above).
+    // env-access WU5 (#1213): an environment's repository reads use its token (maybe an org admin's).
+    it('denies a non-admin gh_read whatever the grants say, an ordinary grant included', async () => {
+      const checkMcpToolPermission = vi.fn(() => null);
+      const run = await mcpHook(makeDeps({ checkMcpToolPermission }));
+      expect((await run('mcp__server-tools__gh_read')).hookSpecificOutput?.permissionDecision).toBe('deny');
+      // env-access WU6 (#1214): the same for an environment's Cloudflare calls.
+      expect((await run('mcp__server-tools__cf_api')).hookSpecificOutput?.permissionDecision).toBe('deny');
+      expect(checkMcpToolPermission).not.toHaveBeenCalled();
+    });
+
+    it('denies a non-admin login whatever the grants say', async () => {
+      const checkMcpToolPermission = vi.fn(() => null);
+      const run = await mcpHook(makeDeps({ checkMcpToolPermission }));
+      const out = await run('mcp__server-tools__login');
+      expect(out.hookSpecificOutput?.permissionDecision).toBe('deny');
+      expect(checkMcpToolPermission).not.toHaveBeenCalled();
     });
   });
 
@@ -696,11 +780,20 @@ describe('sandbox: admin profile and write protection (env-access WU2, #1210)', 
     );
   }
 
+  // An admin writes the temp directory, and the test DATA_DIR lies under it; the project config root (#1242) must
+  // not, so these tests give the session a temp directory of its own.
+  const savedTmpdir = process.env.TMPDIR;
+  beforeEach(() => {
+    process.env.TMPDIR = fs.mkdtempSync(path.join(WORK_DIR, 'admin-tmp-'));
+  });
+
   afterEach(async () => {
     if (savedAdmins === undefined) delete process.env.ADMIN_USERS;
     else process.env.ADMIN_USERS = savedAdmins;
     if (savedOffAllowed === undefined) delete process.env.SOMA_SANDBOX_OFF_ALLOWED;
     else process.env.SOMA_SANDBOX_OFF_ALLOWED = savedOffAllowed;
+    if (savedTmpdir === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = savedTmpdir;
     (await import('../../admin-utils')).resetAdminUsersCache();
   });
 
@@ -1167,5 +1260,48 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
     expect(sandboxOf((await buildStreamOptions(input, makeDeps())).options)?.filesystem?.allowWrite).toEqual([
       path.join('/tmp', APPROVED),
     ]);
+  });
+});
+
+// env-access #1242: the CLI reads project settings and the project MCP config from an empty host directory under
+// DATA_DIR, never from the working directory a model session writes. CLAUDE.md and plan files stay in the cwd.
+describe('project config root (env-access #1242)', () => {
+  const ROOT = path.join(DATA_DIR, 'session-project-config');
+
+  afterEach(() => {
+    fs.rmSync(ROOT, { recursive: true, force: true });
+  });
+
+  async function build() {
+    return buildStreamOptions(
+      { queryEnv: {}, slackContext: makeSlackContext({ user: SAFE_USER }), workingDirectory: WORK_DIR },
+      makeDeps(),
+    );
+  }
+
+  it('points the CLI at an empty directory under DATA_DIR, not the working directory', async () => {
+    const { options } = await build();
+    expect(options.projectConfigRoot).toBe(ROOT);
+    expect(options.cwd).toBe(WORK_DIR);
+    expect(fs.readdirSync(ROOT)).toEqual([]);
+    expect(options.settingSources).toEqual(['project']);
+  });
+
+  it('fails closed: a session does not start when the root lies inside a directory it writes', async () => {
+    await expect(
+      buildStreamOptions(
+        {
+          queryEnv: {},
+          slackContext: makeSlackContext({ user: SAFE_USER }),
+          workingDirectory: path.dirname(DATA_DIR),
+        },
+        makeDeps(),
+      ),
+    ).rejects.toThrow(/lies inside/);
+  });
+
+  it('fails closed: a session does not start when the root holds anything', async () => {
+    fs.mkdirSync(path.join(ROOT, '.claude'), { recursive: true });
+    await expect(build()).rejects.toThrow(/session was not started/);
   });
 });

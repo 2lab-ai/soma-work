@@ -177,6 +177,53 @@ describe('user-skill-grants-store', () => {
   // An environment plugin as a whole (its MCP tools, policy step 6d) opens on any grant of one of
   // its skills: all environment skills, a standing grant of one of its skills, or one of its skills
   // in this thread.
+  // env-access WU4 (#1212): the admin's "this environment, always" answer.
+  describe('environment grants', () => {
+    const thread = { channel: 'C1', threadTs: '171.1' };
+    const dev2 = { id: 'env:acme-dev2', skills: ['acme-env:deploy-dev2', 'acme-env:qa-dev2'] };
+    const stage0 = { id: 'env:acme-stage0', skills: ['acme-stage:*'] };
+
+    it('opens every skill of that environment and none of another', () => {
+      store.grantEnvironment('env:acme-dev2', requester);
+      expect(store.hasEnvironmentGrant('env:acme-dev2', requester)).toBe(true);
+      expect(store.isEnvSkillUseAllowed('acme-env:qa-dev2', requester, thread, 'env:acme-dev2')).toBe(true);
+      expect(store.isEnvSkillUseAllowed('acme-stage:deploy', requester, thread, 'env:acme-stage0')).toBe(false);
+      expect(store.isEnvSkillUseAllowed('acme-env:qa-dev2', requester, thread)).toBe(false);
+      expect(store.isEnvSkillUseAllowed('acme-env:qa-dev2', 'U0OTHER', thread, 'env:acme-dev2')).toBe(false);
+    });
+
+    it('opens the tools of that environment, and of the plugins its skills come from', () => {
+      store.grantEnvironment('env:acme-dev2', requester);
+      expect(store.isEnvironmentToolUseAllowed(dev2, requester, thread)).toBe(true);
+      expect(store.isEnvironmentToolUseAllowed(stage0, requester, thread)).toBe(false);
+      expect(store.isEnvPluginUseAllowed('acme-env', requester, thread, ['env:acme-dev2'])).toBe(true);
+      expect(store.isEnvPluginUseAllowed('acme-env', requester, thread, ['env:acme-stage0'])).toBe(false);
+    });
+
+    it('lets a grant of one of its skills open its tools in the same scope', () => {
+      expect(store.isEnvironmentToolUseAllowed(dev2, requester, thread)).toBe(false);
+      store.addThreadGrant(store.ENV_SKILL_GRANT_OWNER, 'acme-env:deploy-dev2', requester, thread);
+      expect(store.isEnvironmentToolUseAllowed(dev2, requester, thread)).toBe(true);
+      expect(store.isEnvironmentToolUseAllowed(dev2, requester, { channel: 'C1', threadTs: '9.9' })).toBe(false);
+      store.addThreadGrant(store.ENV_SKILL_GRANT_OWNER, 'acme-stage:qa', requester, thread);
+      expect(store.isEnvironmentToolUseAllowed(stage0, requester, thread)).toBe(true);
+      store.grantSkill(store.ENV_SKILL_GRANT_OWNER, 'acme-stage:deploy', 'U0THIRD');
+      expect(store.isEnvironmentToolUseAllowed(stage0, 'U0THIRD')).toBe(true);
+    });
+
+    it('is persisted, revocable, and refuses a malformed environment id', () => {
+      store.grantEnvironment('env:acme-dev2', requester);
+      store.grantEnvironment('env:acme-dev2', requester);
+      const file = JSON.parse(fs.readFileSync(path.join(tempDir, 'env-skill-grants.json'), 'utf-8'));
+      expect(file.perEnvironment).toEqual({ 'env:acme-dev2': [requester] });
+      expect(store.revokeEnvironment('env:acme-dev2', requester)).toBe(true);
+      expect(store.hasEnvironmentGrant('env:acme-dev2', requester)).toBe(false);
+      expect(store.revokeEnvironment('env:acme-dev2', requester)).toBe(false);
+      expect(() => store.grantEnvironment('acme-dev2', requester)).toThrow(/environment/);
+      expect(store.hasEnvironmentGrant('__proto__', requester)).toBe(false);
+    });
+  });
+
   describe('isEnvPluginUseAllowed', () => {
     const thread = { channel: 'C1', threadTs: '171.1' };
 

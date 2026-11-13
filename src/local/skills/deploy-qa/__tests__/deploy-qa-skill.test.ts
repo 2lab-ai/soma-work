@@ -82,6 +82,59 @@ describe('post-deploy QA skills read GitHub through devops-tools gh_read', () =>
     });
   }
 
+  // env-access WU5 (#1213): the environment's own reader comes first; the broker stays only until #1214.
+  for (const skill of ['deploy-qa', 'qa-issue']) {
+    it(`${skill} reads through the environment's server-tools gh_read when the profile names github.server`, () => {
+      const md = read(skill);
+      const section = md.slice(md.indexOf('## GitHub reads'), md.indexOf('\n## ', md.indexOf('## GitHub reads') + 1));
+      // review-of-legends R5 (tests): both readers are named, so the order check cannot pass on a missing one.
+      expect(section).toContain('`mcp__server-tools__gh_read`');
+      expect(section).toContain('`mcp__devops-tools__gh_read`');
+      expect(section.indexOf('`mcp__server-tools__gh_read`')).toBeLessThan(
+        section.indexOf('`mcp__devops-tools__gh_read`'),
+      );
+      expect(section).toContain('When the profile names `github.server`');
+      expect(section).toContain('`{"server": "<github.server>", "path": "<path>", "query": {"<key>": "<value>"}}`');
+      // review-of-legends R5: the server keeps only the filter's fields, before the output cap.
+      expect(section).toContain("put the fields the read's `--jq` filter uses in `fields`");
+      expect(section).toContain('`"fields": ["total_commits", "commits[].sha", "commits[].parents[].sha"]`');
+      expect(section).toContain('A truncated answer is asked again, at most twice');
+      expect(section).toContain('a moved answer (3xx, never followed)');
+      // trinity R5 (fable): a read with no answer is asked once more.
+      expect(section).toContain('A read that got no answer (a timeout or a lost connection) is asked once more.');
+      expect(section).toContain('An answer there is a result whose `truncated` is false');
+      expect(section).toContain('A repository or path it refuses is `missing: github`');
+      // review-of-legends R6 / trinity R6 (astra): a commit by SHA is read only when it is on the read refs.
+      expect(section).toContain("is read only when it is on one of the environment's `github.readRefs`");
+      expect(section).toContain("read an open PR's changes by its number (`pulls/<n>/files`, `pulls/<n>/commits`)");
+      // trinity R1 (astra): a smaller page size restarts the listing and ends it at that size, not at 100.
+      expect(section).toContain('restarting that listing at page 1');
+      expect(section).toContain('a page holding fewer items than that `per_page` — not 100 — ends the listing');
+      expect(section).toContain(
+        'Without `github.server`, read through the broker as below until it is removed (#1214)',
+      );
+      expect(md).toContain('`github.server`');
+    });
+  }
+
+  it('qa-issue logs in through server-tools login when the profile maps the role, never typing the token', () => {
+    const md = read('qa-issue');
+    expect(md).toContain('`qaEnv.logins.<role>` = `{"server": …, "account": …}`');
+    expect(md).toContain('get the session with `mcp__server-tools__login`');
+    // review-of-legends R5/R6: the session file is the owner's alone before the session is written into it.
+    // trinity R6 (fable): the Write tool cannot overwrite a file it has not read, so the directory is made private.
+    expect(md).toContain(
+      "inside a directory that is the owner's alone before the session is in it (create `<run directory>/session` with `install -d -m 700`",
+    );
+    // review-of-legends R6: a browser case gets the session, logs in through the form, or is blocked — never logged out.
+    expect(md).toContain(
+      "a cookie the profile's browser primitive loads from the file before the role's first browser case",
+    );
+    expect(md).toContain('are reported blocked (`no browser session`); a case never runs logged out');
+    expect(md).toContain('Never type the token into a command line, `eval` source, `steps`, a report');
+    expect(md).toContain('Optional: `qaEnv.logins`');
+  });
+
   it('deploy-qa keeps only merged PRs from the closed listing', () => {
     expect(read('deploy-qa')).toContain(
       '`repos/<owner/repo>/pulls` with `"-f", "state=closed", "-f", "base=<integrationBranch>"`, keeping only PRs with `merged_at` set',

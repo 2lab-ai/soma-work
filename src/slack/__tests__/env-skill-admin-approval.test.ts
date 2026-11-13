@@ -66,11 +66,11 @@ describe('environment-skill requests as admin approvals (#620)', () => {
       recommendedId: VALUE_KIND_ENV_SKILL_ONCE,
     });
     expect(card?.title).toContain('acme-env:post-deploy');
+    // env-access WU4 (#1212): accept · reject · this skill always (· this environment always, when it has one).
     expect(card?.choices?.map((c) => c.label)).toEqual([
-      '✅ 1회 허용 (이 스레드)',
-      '📋 `acme-env:post-deploy` 항상 허용',
-      '🌐 모든 환경 스킬 항상 허용',
-      '❌ 거부',
+      '✅ 수락 (이 스레드)',
+      '❌ 거절',
+      '📋 이 스킬 항상 — `acme-env:post-deploy`',
     ]);
   });
 

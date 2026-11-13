@@ -15,10 +15,10 @@
 import * as fs from 'node:fs';
 import { t } from '@soma/common/i18n';
 import { CONFIG_FILE } from '../env-paths';
-import { envPluginNamesFromConfig } from '../env-skill-registry';
+import { envPluginNamesFromConfig, envSkillAllowed } from '../env-skill-registry';
+import { loadEnvironments } from '../env-users';
 import { Logger } from '../logger';
 import { type AvailableSkill, listAvailableSkills, skillMdFile } from '../skill-locator';
-import { isEnvSkillUseAllowed } from '../user-skill-grants-store';
 import { listUserSkills } from '../user-skill-store';
 
 const logger = new Logger('ComposerMenus');
@@ -552,7 +552,7 @@ const defaultDeps: ComposerSkillDeps = {
   listOwnSkills: (userId) => listUserSkills(userId),
   skillFile: (skill, userId) => skillMdFile(skill, userId),
   envPluginNames: () => envPluginNamesFromConfig(CONFIG_FILE ?? ''),
-  envSkillAllowed: (key, userId) => isEnvSkillUseAllowed(key, userId),
+  envSkillAllowed: (key, userId) => envSkillAllowed(key, userId, undefined, loadEnvironments()),
   fs,
   now: () => Date.now(),
 };

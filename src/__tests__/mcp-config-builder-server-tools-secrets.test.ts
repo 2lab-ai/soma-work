@@ -20,7 +20,8 @@ vi.mock('../env-paths', async (importOriginal) => {
   };
 });
 
-import { CONFIG_FILE, SECRETS_DIR } from '../env-paths';
+import path from 'node:path';
+import { CONFIG_FILE, DATA_DIR, SECRETS_DIR } from '../env-paths';
 import { McpConfigBuilder } from '../mcp-config-builder';
 import type { McpManager } from '../mcp-manager';
 
@@ -46,6 +47,20 @@ describe('server-tools wiring — secret store', () => {
     );
     const config = await new McpConfigBuilder(mcpManager()).buildConfig({ channel: 'C1', user: 'U1' });
     const env = config.mcpServers?.['server-tools']?.env as Record<string, string> | undefined;
-    expect(env).toEqual({ SOMA_CONFIG_FILE: CONFIG_FILE, SOMA_SECRETS_DIR: SECRETS_DIR });
+    expect(env).toEqual({
+      SOMA_CONFIG_FILE: CONFIG_FILE,
+      SOMA_SECRETS_DIR: SECRETS_DIR,
+      // env-access WU3 (#1211): where environment users' writes are audited, and for whom the session runs.
+      SOMA_AUDIT_DIR: path.join(DATA_DIR, 'env-audit'),
+      SOMA_REQUESTER: 'U1',
+    });
+  });
+
+  it('passes no requester that is not a Slack user ID', async () => {
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify({ 'server-tools': { dev2: { ssh: { host: 'dev2' } } } }));
+    const config = await new McpConfigBuilder(mcpManager()).buildConfig({ channel: 'C1', user: 'U1\nforged' });
+    const env = config.mcpServers?.['server-tools']?.env as Record<string, string> | undefined;
+    expect(env?.SOMA_REQUESTER).toBeUndefined();
+    expect(env?.SOMA_AUDIT_DIR).toBe(path.join(DATA_DIR, 'env-audit'));
   });
 });

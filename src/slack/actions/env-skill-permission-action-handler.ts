@@ -1,14 +1,22 @@
 import { isAdminUser } from '../../admin-utils';
 import { envSkillExists, envSkillRegistry } from '../../env-skill-registry';
+import { environmentLabel, environmentOfSkill, loadEnvironments } from '../../env-users';
 import { Logger } from '../../logger';
 import type { McpManager } from '../../mcp-manager';
 import { getPermissionRequest, markRequestHandled, type PermissionRequest } from '../../skill-permission-request-store';
-import { addThreadGrant, ENV_SKILL_GRANT_OWNER, grantAllSkills, grantSkill } from '../../user-skill-grants-store';
+import {
+  addThreadGrant,
+  ENV_SKILL_GRANT_OWNER,
+  grantAllSkills,
+  grantEnvironment,
+  grantSkill,
+} from '../../user-skill-grants-store';
 import {
   describeRequestPlace,
   VALUE_KIND_ENV_SKILL_ALL,
   VALUE_KIND_ENV_SKILL_ALWAYS,
   VALUE_KIND_ENV_SKILL_DENY,
+  VALUE_KIND_ENV_SKILL_ENV,
   VALUE_KIND_ENV_SKILL_ONCE,
 } from '../env-skill-permission-blocks';
 import type { SlackApiHelper } from '../slack-api-helper';
@@ -25,21 +33,25 @@ type EnvPermKind =
   | typeof VALUE_KIND_ENV_SKILL_ONCE
   | typeof VALUE_KIND_ENV_SKILL_ALWAYS
   | typeof VALUE_KIND_ENV_SKILL_ALL
+  | typeof VALUE_KIND_ENV_SKILL_ENV
   | typeof VALUE_KIND_ENV_SKILL_DENY;
 
 const KNOWN_KINDS: ReadonlySet<string> = new Set([
   VALUE_KIND_ENV_SKILL_ONCE,
   VALUE_KIND_ENV_SKILL_ALWAYS,
   VALUE_KIND_ENV_SKILL_ALL,
+  VALUE_KIND_ENV_SKILL_ENV,
   VALUE_KIND_ENV_SKILL_DENY,
 ]);
 
 /**
- * Handles the 4 buttons of the environment-skill permission prompt the admins receive:
- *   - ✅ 1회 허용 (이 스레드)    → thread grant, then send the requester's turn again
- *   - 📋 이 스킬 항상 허용        → persist a per-skill grant, then send the turn again
- *   - 🌐 모든 환경 스킬 항상 허용  → persist an all-environment-skills grant, then send the turn again
- *   - ❌ 거부                     → no grant; the requester is told
+ * Handles the buttons of the environment-skill permission prompt the admins receive (env-access WU4, #1212):
+ *   - ✅ 수락 (이 스레드)          → thread grant, then send the requester's turn again
+ *   - ❌ 거절                     → no grant; the requester is told
+ *   - 📋 이 스킬 항상              → persist a per-skill grant, then send the turn again
+ *   - 🌐 <환경> 전체 항상          → persist a grant of the skill's environment (every skill and server-tools
+ *                                   tool of it), then send the turn again
+ *   - 🌐 모든 환경 스킬 항상 허용   → (prompts sent before WU4 only) persist an all-environment-skills grant
  *
  * Admin-bound: any admin (ADMIN_USERS) may answer, nobody else. The button carries only a
  * `requestId`; the request is read server-side, so a forged or replayed payload cannot fabricate
@@ -166,8 +178,34 @@ export class EnvSkillPermissionActionHandler {
       };
     }
 
+    // The environment is read again now: a config change since the prompt must not grant a stale one.
+    const environment =
+      kind === VALUE_KIND_ENV_SKILL_ENV ? environmentOfSkill(req.skillName, loadEnvironments()) : null;
+    if (kind === VALUE_KIND_ENV_SKILL_ENV && !environment) {
+      return {
+        ok: false,
+        reason: 'not_found',
+        message: `⚠️ \`${req.skillName}\` 은 지금 어느 환경에도 속하지 않습니다. 다른 답을 골라 주세요.`,
+      };
+    }
+    // The card offered one environment: a config change since must not turn that answer into another's grant.
+    if (kind === VALUE_KIND_ENV_SKILL_ENV && environment && req.environment !== environment.id) {
+      const asked = req.environment ? environmentLabel(req.environment) : '(없음)';
+      return {
+        ok: false,
+        reason: 'not_found',
+        message: `⚠️ 이 카드는 환경 \`${asked}\` 기준인데 \`${req.skillName}\` 은 지금 \`${environmentLabel(environment.id)}\` 에 속합니다. 다른 답을 골라 주세요.`,
+      };
+    }
+
     let grantLabel: string;
     switch (kind) {
+      case VALUE_KIND_ENV_SKILL_ENV: {
+        const env = environment as NonNullable<typeof environment>;
+        grantEnvironment(env.id, req.requesterId);
+        grantLabel = `<@${req.requesterId}>님에게 환경 \`${environmentLabel(env.id)}\` 전체(모든 스킬과 서버 도구)를 항상 허용했습니다.`;
+        break;
+      }
       case VALUE_KIND_ENV_SKILL_ALL:
         grantAllSkills(ENV_SKILL_GRANT_OWNER, req.requesterId);
         grantLabel = `<@${req.requesterId}>님에게 모든 환경 스킬 실행을 항상 허용했습니다.`;

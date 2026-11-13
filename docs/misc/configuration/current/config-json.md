@@ -269,6 +269,183 @@ Every string value above accepts `${VAR}` substitution. Keep DB passwords out of
 }
 ```
 
+### Environment user and `gh_pr` (env-access WU3, #1211)
+
+A server entry can stand for an environment that acts as its own user: `envUser` names it, and `github` gives it the
+environment's own GitHub token and what it may approve and merge. The token is a `{"$secret": "<name>"}` reference into
+the secret store (`<config dir>/secrets/<name>`); server-tools reads it outside every model sandbox and no model sees it.
+
+```jsonc
+{
+  "server-tools": {
+    "dev2": {
+      "envUser": "env:acme-dev2",
+      "skills": ["acme-env:deploy-dev2", "acme-env:qa-dev2"],
+      "ssh": { "host": "dev2" },
+      "github": {
+        "token": { "$secret": "gh-org-admin" },
+        "repos": ["acme/app"],
+        "approveWhen": { "authors": ["soma-bot[bot]"], "bases": ["develop"] },
+        "mergeWhen": { "authors": ["soma-bot[bot]"], "bases": ["develop"] },
+        "mergeMethods": ["merge", "squash"],
+        "requiredChecks": ["ci"]
+      }
+    }
+  }
+}
+```
+
+| `gh_pr` action | Runs when |
+|---|---|
+| `view` | the repository is one of `repos`. Returns state, author, base, head SHA and checks |
+| `approve` | the PR is open and not a draft, its author is in `approveWhen.authors`, its base in `approveWhen.bases`, every check has reported and is green (unless `requiredChecksGreen` is `false`), and `sha` is still the head. If the head or base changes while the review is posted, the review is dismissed |
+| `merge` | the same conditions under `mergeWhen`, and the method is in `mergeMethods` (default `merge` only). Head and base are read once more right before the merge, which is pinned to `sha` |
+
+`token` must be a `{"$secret": …}` reference; a token written into config.json is ignored and the `github` section is
+left out. Approve and merge refuse to run for a session that names no Slack user. A retarget in the last moment
+before a merge is not caught by the tool — a branch rule on the repository is what keeps the environment's token
+out of branches it must not touch.
+
+`approve` and `merge` write an intent line to `DATA_DIR/env-audit/env-audit.jsonl` before they call GitHub, and a
+`done` or `failed` line after. If the intent cannot be written, nothing is called. If only the outcome cannot be
+written, the tool says the write was made and must not be retried. A write that gets no answer (a dropped
+connection, the 30-second timeout, an unreadable body) is looked up — the environment's own approval at that SHA,
+or whether the PR is merged — and recorded as `done` when found; anything short of that (not seen yet, a lookup
+that fails or answers something unexpected) is recorded as `unknown` and the tool says to check the PR before
+retrying. `authors`, `bases`, `repos`, `mergeMethods` and `requiredChecks` must be lists: a string there is refused,
+since it would match by substring. Each line names the server, the `envUser` and the Slack user the session runs for.
+
+"Every check is green" means: each required check has passed, and nothing else on the head is unfinished or red.
+The required checks are `requiredChecks`, else the base branch's protection (its required status checks; a check
+the protection binds to an app counts only from that app's check run — list it in `requiredChecks` if that app
+reports a commit status instead). When neither names any, or the protection cannot be read, no PR is green — a
+check that has not registered yet would otherwise go unseen. A server or gateway error (5xx) on approve or merge is
+treated like no answer: the write is looked up. An approval carries a marker unique to the call, so a lost answer is
+matched to that approval and never to an older one.
+
+`skills` lists the environment-plugin skills that belong to this environment (`plugin:skill`, or `plugin:*`).
+Entries that share an `envUser` are one environment. When a non-admin asks for one of its skills, the admins' card
+offers **accept (this thread) · reject · this skill always · `<environment>` always**; the last one grants the requester
+every skill of the environment and every server-tools tool on its servers (`ssh_exec` and `gh_pr` included), kept in
+`DATA_DIR/env-skill-grants.json` `perEnvironment` (env-access WU4, #1212). A server-tools call that names one of
+the environment's servers runs for a non-admin only on such a grant, or on a grant of one of its skills. On a server
+that is no environment's, `ssh_exec`, `gh_pr` and `login` stay admin-only.
+
+### Environment Cloudflare calls (`cf_api`, env-access WU6, #1214)
+
+`cloudflare` gives an environment its own **scoped** Cloudflare API token and the zones it acts on. server-tools
+reads the token from the secret store outside every model sandbox; no model sees it, and nothing hands it out.
+
+```jsonc
+{
+  "server-tools": {
+    "dev2": {
+      "envUser": "env:acme-dev2",
+      "cloudflare": {
+        "token": { "$secret": "cf-dev2" },
+        "zones": { "dev2.example": "0123456789abcdef0123456789abcdef" },
+        "write": true
+      }
+    }
+  }
+}
+```
+
+`cf_api {server, method, path, query, body}` calls `https://api.cloudflare.com/client/v4<path>`. `path` is
+`/zones/<id>/…` for one of `zones` (32-hex IDs), with plain segments only (no `..`, `//`, `%`, `\`, `?`, `#`); the
+query goes in `query`. Paths with `token`, `member` or a `user…` segment are never reachable, whatever the token's
+scope. Below the zone, only these parts are reachable: `dns_records`, `settings`, `purge_cache`, `ssl`,
+`rate_limits`, `workers`, `load_balancers`, `analytics`, `cache`, plus any the operator lists in
+`cloudflare.parts`. Parts that can answer with another system's credentials are reachable only once the operator lists
+them: `healthchecks` (request headers), `rulesets`, `firewall`, `filters` and `pagerules` (static header values,
+expressions, forwarding URLs), `custom_hostnames` (`ssl.custom_key`, an uploaded TLS private key), `logpush`. A redirect is never followed (a read fails, a write is `unknown`). The zone itself can be
+read but never written: no delete, pause or plan change. `GET` always runs; `POST`/`PUT`/`PATCH`/`DELETE` only with `write: true`, for a session that names a Slack
+user, with an intent line in `env-audit.jsonl` before the call and `done`/`failed` after. The line records the zone, the
+path, the query and the SHA-256 of the body, but not the body itself. A 2xx whose body says `success: false` is
+recorded `failed`; one whose body cannot be read, or does not say `success: true`, is recorded `unknown`; an empty
+204 is `done`. A write that gets no answer (or a 5xx, or a 3xx) is recorded `unknown` and the tool says to check before
+retrying. The body may be at most 64 KiB as UTF-8. Errors give Cloudflare's status
+and `errors[]` codes and messages, with the token scrubbed. A token written into config.json is ignored and the
+section left out. Like the other environment tools, `cf_api` is admin-only except on an environment's server for a
+user that environment's admin granted.
+
+This replaces the broker's Cloudflare leases (`cf_lease_request` / `cf_api` / `cf_lease_revoke`): instead of a
+token-creating "forge" key that minted short-lived tokens behind a Slack card, the operator creates one scoped token
+per environment (for example Zone · DNS · Edit on the environment's zones) and stores it under `secrets/`.
+
+### Environment repository reads (`gh_read`, env-access WU5, #1213)
+
+`gh_read {server, path, query}` GETs one path of the environment's repository with the same `github.token` that
+`gh_pr` uses, outside every model sandbox. `path` is `repos/<owner>/<name>/…` with the repository in `github.repos`
+and no query string (parameters go in `query`: strings, numbers, booleans). It reads only the routes deploy
+confirmation and QA read, as an allowlist of path shapes: the repository itself; `pulls[/<n>[/files|commits|reviews|
+comments|merge]]`; `commits[/<sha>[/check-runs|check-suites|status|statuses|pulls]]`; `compare/<base>...<head>`;
+`issues[/<n>[/comments|events|labels]]` and `issues/comments|events[/<n>]`; `branches[/<b>]`; `contents/…`;
+`statuses/<sha>`; check runs and suites; deployments; releases; tags; `git/ref(s)/…` and git objects; milestones;
+labels; `actions/runs[/<id>[/jobs|attempts/<n>[/jobs]]]`, `actions/jobs/<id>`, `actions/workflows[/<id>[/runs]]`.
+Not settings (`branches/<b>/protection`), secrets, variables, hooks, keys, environments or collaborators, and not
+routes that answer with another repository's data (`issues/<n>/parent`, `sub_issues`, a timeline's
+cross-references, a `compare` across forks with `owner:branch`, a branch path that reaches `protection`) — the token may be an org admin's. Segments may hold GitHub path characters (`(auth)`,
+`alice:branch`, `a+b`); a segment that does not decode, or decodes to a `.`/`..` component, a backslash or a NUL,
+is refused. It answers `{path, status, truncated, body}`: a 204 (`pulls/<n>/merge` of a merged PR) is
+`body: null`; a body longer than 200000 characters of JSON comes back cut, as text, with `truncated: true`. The token never comes back: every string of the answer (and a base64 file's decoded content) and GitHub's error message have it replaced with `[redacted]`. Reads are not written to the audit ledger. Like `gh_pr`, it is admin-only except on an
+environment's server for a user that environment's admin granted.
+
+The QA skills (`deploy-qa`, `qa-issue`) read through it when the environment profile names `github.server`, and
+log in through `login` when it maps a role to `qaEnv.logins.<role>` = `{server, account}`. Without `github.server`
+they read through the broker until it is removed (#1214).
+
+### Environment web logins (`login`, env-access WU3b, #1211)
+
+`web.logins` names the environment's own web app accounts. `login` posts one of them and hands back only the session —
+the password is a `{"$secret": …}` reference that server-tools resolves outside every model sandbox, and no model sees
+it.
+
+```jsonc
+{
+  "server-tools": {
+    "dev2": {
+      "envUser": "env:acme-dev2",
+      "web": {
+        "logins": {
+          "player": {
+            "url": "https://app.dev2.example/api/login",
+            "body": { "username": "qa-player", "password": { "$secret": "dev2-player" } },
+            "token": "json:data.accessToken"
+          },
+          "backoffice": {
+            "url": "https://bo.dev2.example/login",
+            "format": "form",
+            "body": { "id": "qa-admin", "pw": { "$secret": "dev2-backoffice" } },
+            "token": "cookie:SESSION",
+            "successRedirect": "/home"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `url` | where the account is posted. `https` only — the password travels in the body |
+| `format` | `json` (default) posts `body` as JSON; `form` posts it as `application/x-www-form-urlencoded` (values must be strings, numbers or booleans) |
+| `body` | the object posted; any value may be a `$secret` reference |
+| `token` | where the session comes back: `json:<dot.path>` (a non-empty string in the JSON answer, returned as `kind: "bearer"`) or `cookie:<name>` (a cookie the answer sets, returned as `kind: "cookie"`; the last `Set-Cookie` for it wins, and one that deletes it — empty value, `Max-Age` ≤ 0, or no `Max-Age` and an `Expires` already past — leaves no session) |
+| `successRedirect` | for a `cookie:` login that answers with a redirect: the path a successful login goes to. A redirect is taken only to that path (or below it; `/` means the root page only) on the login's own host, never to the login page or below it; without `successRedirect` a redirect is refused — a refused form login often redirects back to the login page with an anonymous cookie |
+
+`login` answers `{server, account, kind, token}` (and `cookie` for a cookie session). A refused login says only the
+host and the status — never the answer's body, which may echo what was sent. No redirect is followed: a `cookie:`
+session is also taken from a 3xx answer that goes to `successRedirect`, a `json:` token only from a 2xx. A login
+whose `body` names no `{"$secret": …}` anywhere in it is left out with a warning, so a password written
+into config.json is never posted; a `web.logins` that is not an object of named logins is left out the same way. With
+`successRedirect` set, a 2xx answer is refused too (a refused form login shows its page again). Each login
+writes an intent line to `DATA_DIR/env-audit/env-audit.jsonl` and a `done` (with `kind`) or `failed` line after,
+without the session or the password; if the intent cannot be written nothing is posted, and if the `done` line cannot
+be written the session is not handed out. A session that names no Slack user is refused. On an environment's server a
+non-admin needs that environment's grant (above); elsewhere `login` is admin-only.
+
 ## Where the substitution happens in code
 
 - `src/config-env-substitution.ts` — pure substitution + `.env` discovery
