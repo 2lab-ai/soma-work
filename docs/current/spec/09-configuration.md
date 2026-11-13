@@ -257,7 +257,7 @@ Slack 앱 설정 템플릿:
 }
 ```
 
-`users:read.email`은 사용자의 Slack 계정 이메일을 읽는 scope다: 프로필 이메일 수집·변경 추적(`users.info`)과 대시보드 Google 로그인 계정 확인(`users.lookupByEmail`)이 쓴다. Google 로그인은 그 이메일을 가진 Slack 계정을 먼저 찾고, Slack 계정이 없거나 Slack이 답하지 못할 때만 `/z email`로 찾는다 — `/z email`은 직접 정했거나 첫 턴에 복사한 값이라 사용자가 Slack 이메일을 바꾸면 낡는다(2026-11-13: Slack 이메일을 새 주소로 옮긴 사용자의 `/z email`이 이전 주소로 남아, 그 이전 주소로 새로 가입한 계정이 그 사용자로 로그인됐다). 로그인 조회는 봇 클라이언트와 분리된 전용 Slack 클라이언트로 한다 — 다른 API의 rate limit이 봇 클라이언트 큐 전체를 멈춰도 로그인은 막히지 않는다. 조회 실패·타임아웃은 '계정 없음'(`no_match`)이 아니라 `lookup_unavailable`(잠시 후 다시 시도)로, scope 누락은 `lookup_misconfigured`(admin 문의)로 안내한다.
+`users:read.email`은 사용자의 Slack 계정 이메일을 읽는 scope다: 프로필 이메일 수집·변경 추적(`users.info`)과 대시보드 Google 로그인 계정 확인(`users.lookupByEmail`)이 쓴다. Google 로그인은 그 이메일을 가진 Slack 계정을 먼저 찾고, Slack 계정이 없거나 Slack이 답하지 못할 때만 `/z email`로 찾는다 (환경 사용자 `env:<name>`는 사람이 아니라 로그인하지 않으므로 `/z email` 매칭에서 빠진다 — 어드민 이메일을 함께 쓰는 경우가 많다) — `/z email`은 직접 정했거나 첫 턴에 복사한 값이라 사용자가 Slack 이메일을 바꾸면 낡는다(2026-11-13: Slack 이메일을 새 주소로 옮긴 사용자의 `/z email`이 이전 주소로 남아, 그 이전 주소로 새로 가입한 계정이 그 사용자로 로그인됐다). 로그인 조회는 봇 클라이언트와 분리된 전용 Slack 클라이언트로 한다 — 다른 API의 rate limit이 봇 클라이언트 큐 전체를 멈춰도 로그인은 막히지 않는다. 조회 실패·타임아웃은 '계정 없음'(`no_match`)이 아니라 `lookup_unavailable`(잠시 후 다시 시도)로, scope 누락은 `lookup_misconfigured`(admin 문의)로 안내한다.
 
 ## 5. Data Files
 

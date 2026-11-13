@@ -591,6 +591,21 @@ describe('OAuth module', () => {
       expect(matchSlackUsersByEmail(users, 'shared@x.com')).toEqual({ kind: 'ambiguous', count: 2 });
     });
 
+    // 2026-11-13: two environment users (`env:<name>`) were created with the admin's
+    // email, so the admin's own Google sign-in came back ambiguous. An environment
+    // user is not a person and never signs in; it must not count.
+    it('an environment user (env:<name>) never matches, even with the same email', async () => {
+      const { matchSlackUsersByEmail } = await import('../oauth');
+      const users = [
+        { userId: 'U_Z', email: 'z@x.com', slackName: 'Z' },
+        { userId: 'env:acme-dev2', email: 'z@x.com', slackName: 'acme-dev2' },
+        { userId: 'env:acme-stage0', email: 'z@x.com', slackName: 'acme-stage0' },
+        { userId: 'env:acme-qa', email: 'qa@x.com' },
+      ];
+      expect(matchSlackUsersByEmail(users, 'z@x.com')).toEqual({ kind: 'match', userId: 'U_Z', name: 'Z' });
+      expect(matchSlackUsersByEmail(users, 'qa@x.com')).toEqual({ kind: 'none' });
+    });
+
     it('reports none when no Slack user registered the email (cleared emails never match)', async () => {
       const { matchSlackUsersByEmail } = await import('../oauth');
       const users = [{ userId: 'U_A', email: '' }, { userId: 'U_B' }];

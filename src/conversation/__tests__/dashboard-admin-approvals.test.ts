@@ -413,11 +413,16 @@ describe('dashboard admin approvals (#620)', () => {
 
   it('a socket stops at the end of the sign-in it was opened with (JWT expiry)', async () => {
     const saved = mockConfig.oauth.jwtExpiresIn;
-    mockConfig.oauth.jwtExpiresIn = 1;
+    // JWT `exp` is whole seconds from a floored `iat`, so a 1 s token can have
+    // well under a second left by the time sign-in, /auth/me and the socket
+    // upgrade finish; on a loaded CI runner the upgrade then got 302 (#1272).
+    // 3 s leaves at least 2 s for that, and the test still waits past expiry.
+    mockConfig.oauth.jwtExpiresIn = 3;
     try {
       const admin = await signIn('UADMIN');
       const deadline = dashboard.wsAuthDeadline('oauth_jwt', admin.cookie);
-      expect(deadline).toBeLessThanOrEqual(Date.now() + 1_000);
+      expect(deadline).toBeLessThanOrEqual(Date.now() + 3_000);
+      expect(deadline).toBeGreaterThan(Date.now() + 1_000);
       const msgs: any[] = [];
       sockets.push(
         await injectWebServerWS('/ws/dashboard', { headers: { cookie: admin.cookie } }, (s: any) =>
