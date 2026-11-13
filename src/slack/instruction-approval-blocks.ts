@@ -1,3 +1,4 @@
+import { userMention } from './user-mention';
 /**
  * #767 — the owner's Slack DM for an instruction someone else sent into their
  * work thread, and the lines the thread and the DM read once it is answered.
@@ -176,14 +177,14 @@ export function buildInstructionApprovalEndedDm(view: InstructionApprovalView, r
 /** The thread's line when an instruction is held. */
 export function instructionHeldNotice(view: Pick<InstructionApprovalView, 'requesterId' | 'ownerId'>): string {
   return (
-    `⏳ <@${view.requesterId}>님의 지시는 이 작업의 소유자 <@${view.ownerId}>님이 승인해야 실행됩니다. ` +
+    `⏳ <@${view.requesterId}>님의 지시는 이 작업의 소유자 ${userMention(view.ownerId)}님이 승인해야 실행됩니다. ` +
     '소유자에게 DM과 대시보드로 승인을 요청했습니다.'
   );
 }
 
 /** The thread's line once the owner answered. */
 export function instructionDecidedNotice(view: InstructionApprovalView): string {
-  const by = `<@${view.ownerId}>`;
+  const by = userMention(view.ownerId);
   const who = `<@${view.requesterId}>`;
   switch (view.decision) {
     case 'approve':
