@@ -74,7 +74,7 @@ function printHelp() {
   console.log(
     'Usage: node render.mjs --input <html> (--check | --output <png>) [--width N] [--height N]' +
       ' [--full-page] [--no-full-page] [--selector S] [--device-scale-factor N]' +
-      ' [--wait-ms N] [--template NAME]',
+      ' [--wait-ms N] [--template NAME] [--first-screen]',
   );
 }
 

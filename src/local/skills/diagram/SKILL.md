@@ -26,7 +26,8 @@ comparison with no signal word once became a dark infrastructure diagram with in
 **A picture inside a report.** When the same request also asks you to make a report or page as its output
 (`리포트해줘`, `보고서로 만들어줘`, `페이지로`, `report on`) — not when a report is only the subject ("보고서 디자인을
 바꿀지") — the picture is part of that page: render it, then embed the PNG in the html page (`<img src="data:image/png;base64,…" alt="<conclusion>">`)
-right after the page's opening, and upload the page only — one request, one artifact. A comparison the report
+right after the page's opening, and upload the page only — one request, one artifact. On a phone the picture
+keeps its size inside a sideways-scrolling box (`overflow-x: auto`) rather than shrinking to unreadable text. A comparison the report
 already shows as a table needs no second picture of the same table.
 
 ## Classification
