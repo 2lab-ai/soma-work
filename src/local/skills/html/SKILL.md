@@ -33,10 +33,12 @@ templates are bundled in v1; adding more is "drop a folder + one index entry".
 ### Bootstrap (idempotent — safe to re-run)
 
 ```bash
-npx playwright install chromium 2>/dev/null || true
+npx --no-install playwright install chromium
 ```
 
-Run this once per machine. On a fresh container/host the renderer will print
+`--no-install` keeps npx on the project's own Playwright: without it npx can fetch a newer
+Playwright whose install garbage-collects browser builds other tools on the machine still use
+(seen 2026-11-13). Run this once per machine. On a fresh container/host the renderer will print
 `browserType.launch: Executable doesn't exist at …` if this step was skipped.
 The bootstrap downloads ~150 MB; do it during image build, not on the
 critical path of a Slack request.

@@ -31,7 +31,7 @@ already shows as a table needs no second picture of the same table.
 
 ## Classification
 
-Score the user's request against these signal sets. Pick the category with the highest score. Ties between categories that scored go to **ARCHITECTURE**, after the DRAWING and COMPARISON precedences below; a request that scored nothing goes to Step 0's relation.
+Score the user's own request sentence against these signal sets — whole words, not substrings, and not the material they pasted (a pasted spec full of "대시보드" or "pipeline" is the subject, not the ask). Pick the category with the highest score. Ties between categories that scored go to **ARCHITECTURE**, after the DRAWING and COMPARISON precedences below; a request that scored nothing goes to Step 0's relation.
 
 | Category | Korean signals | English signals | Delegate to |
 |----------|----------------|-----------------|-------------|
