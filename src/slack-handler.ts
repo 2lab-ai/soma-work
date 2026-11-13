@@ -1653,8 +1653,9 @@ export class SlackHandler {
   /**
    * Drain each idle session of `keys`. Skipped, and left to what comes next: a busy one (its running
    * turn's end drains it), one whose goal is being judged (the eval's continuation carries the rows —
-   * steered in when it reaches the model), and a halted lane — only a person reopens a halt (A16); the
-   * rows stay queued, and the session's next turn still gets the steer-back ones.
+   * steered in when it reaches the model), and a halted lane — a person reopens a halt (A16), or, for
+   * an error no row carries, the lane's next healthy run (#1278); the rows stay queued, and the
+   * session's next turn still gets the steer-back ones.
    */
   private drainIdleRestartRequeued(keys: Iterable<string>): number {
     const dispatcher = this.followupDispatcher;
@@ -2155,7 +2156,8 @@ export class SlackHandler {
    * Only that halt. Every other `blocked` reason is a refusal, a consumed
    * message, or a wait for something a plain message is not (a grant, a route
    * decision, a free work slot); `error` and `authorization` say the lane itself
-   * is broken. Those keep waiting for Resume/Retry. A turn that is not the
+   * is broken. Those keep waiting for Resume/Retry — except an `error` no queue
+   * item carries, which the lane's next healthy run lifts (#1278, dispatcher). A turn that is not the
    * person's word — a host turn, `/compact`, or a command answered without a
    * turn (`help`, the `compact` confirmation) — never gets here.
    */

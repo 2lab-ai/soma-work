@@ -1765,6 +1765,41 @@ describe('FollowupDispatcher — an error halt without a failed item ends with t
     expect(h.dispatcher.drainHalt(SESSION)?.reason).toBe('error');
   });
 
+  it('settles the healthy run even when the observer throws on the recovery notice (astra R1)', async () => {
+    for (const healthy of [{ result: 'safe' }, { result: 'interrupted', reason: 'auto-compact' }] as DispatchOutcome[]) {
+      const h = harness({
+        notify: (notice) => {
+          if (notice.type === 'drain-resumed') throw new Error('observer failed');
+        },
+      });
+      await failInitial(h);
+      enqueue(h.queue, event({ ts: '9.1' }));
+
+      const report = await runInitial(h, healthy);
+
+      expect(report.canDrain).toBe(true);
+      expect(h.dispatcher.isBusy(SESSION)).toBe(false);
+      expect(h.dispatcher.drainHalt(SESSION)).toBeUndefined();
+      expect((await h.dispatcher.drainNext(SESSION)).status).toBe('dispatched');
+    }
+  });
+
+  it('a lifted halt stays lifted only for its own kind — an item failure on top is not lifted by a healthy run', async () => {
+    const h = harness();
+    await failInitial(h);
+    // The healthy run lifts it; then a drained item fails: that halt waits for its Retry.
+    await runInitial(h, { result: 'safe' });
+    enqueue(h.queue, event({ ts: '9.1' }));
+    const drained = await h.dispatcher.drainNext(SESSION);
+    if (drained.status !== 'dispatched') throw new Error('expected dispatch');
+    h.pending[h.pending.length - 1].settle({ result: 'error', reason: 'item failed' });
+    await drained.run.settled;
+
+    await runInitial(h, { result: 'safe' });
+
+    expect(h.dispatcher.drainHalt(SESSION)).toEqual({ reason: 'error', detail: 'item failed' });
+  });
+
   it('keeps every other halt — a blocked run without an item still waits for its own door', async () => {
     const h = harness();
     await runInitial(h, { result: 'blocked', reason: 'awaiting user choice' });

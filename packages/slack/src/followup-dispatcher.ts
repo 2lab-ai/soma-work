@@ -411,9 +411,12 @@ export class FollowupDispatcher {
   }
 
   /**
-   * The ONLY way a halted drain reopens — an explicit user action or a
-   * permission event. Nothing in here retries on its own (A16). Queue-level
-   * freeze/resume is the caller's business and is untouched.
+   * How a halted drain reopens on request — an explicit user action, a
+   * permission event, or the host reopening a lane it knows is clear. The one
+   * reopening from inside is a {@link DrainHalt.withoutItem} error the lane's
+   * next healthy run lifts (`liftRecoveredHalt`); nothing in here retries an
+   * item on its own (A16). Queue-level freeze/resume is the caller's business
+   * and is untouched.
    */
   clearDrainHalt(sessionKey: string, trigger: DrainHaltTrigger): void {
     if (!this.halts.delete(sessionKey)) return;
@@ -1411,7 +1414,11 @@ export class FollowupDispatcher {
    */
   private liftRecoveredHalt(sessionKey: string): void {
     if (this.halts.get(sessionKey)?.withoutItem !== true) return;
-    this.clearDrainHalt(sessionKey, 'recovered');
+    this.halts.delete(sessionKey);
+    // Through `safeNotify`: this runs inside the settle, before `closeSlot` —
+    // an observer that throws here must not keep the slot or `settled` open
+    // (astra R1 on #1279).
+    this.safeNotify({ type: 'drain-resumed', sessionKey, trigger: 'recovered' });
   }
 
   private report(run: LiveRun, outcome: RunOutcome, itemDisposition: ItemDisposition): RunReport {
