@@ -55,7 +55,13 @@ export interface HttpResponse {
 }
 export type Fetch = (
   url: string,
-  init: { method: string; headers: Record<string, string>; body?: string; signal?: AbortSignal },
+  init: {
+    method: string;
+    headers: Record<string, string>;
+    body?: string;
+    signal?: AbortSignal;
+    redirect?: 'manual';
+  },
 ) => Promise<HttpResponse>;
 
 export interface Checks {
@@ -155,9 +161,15 @@ async function callWithStatus(
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
+      // A redirect is never followed: GitHub moves a transferred issue to its new repository, which the environment
+      // may not list, and the token must not read it (review-of-legends R5).
+      redirect: 'manual',
     });
   } catch (err) {
     throw new NoAnswerError(`GitHub ${method} ${path} got no answer (${err instanceof Error ? err.name : 'error'})`);
+  }
+  if (res.status >= 300 && res.status < 400) {
+    throw new GithubError(`GitHub ${method} ${path} answered ${res.status} (moved): not followed`);
   }
   // A GET answered 204 (no content, e.g. `pulls/<n>/merge` for a merged PR) is an answer with no body.
   if (method === 'GET' && res.status === 204) return { status: 204, json: null };
@@ -201,16 +213,16 @@ const READ_SHAPES: readonly RegExp[] = [
   `pulls/${N}`,
   `pulls/${N}/(files|commits|reviews|comments|merge)`,
   'commits',
-  `commits/${S}`,
-  `commits/${S}/(check-runs|check-suites|status|statuses|pulls)`,
-  `compare/${S}`,
+  // A ref may hold `/` (deploy/dev2): a commit, a compare and a branch take the rest of the path.
+  'commits/.+',
+  'compare/.+',
   'issues',
   `issues/${N}`,
   `issues/${N}/(comments|events|labels)`,
   '(issues)/(comments|events)',
   `issues/(comments|events)/${N}`,
   'branches',
-  `branches/${S}`,
+  'branches/.+',
   'contents',
   'contents/.+',
   `statuses/${S}`,
@@ -223,7 +235,7 @@ const READ_SHAPES: readonly RegExp[] = [
   `deployments/${N}/statuses`,
   'releases',
   `releases/(${N}|latest)`,
-  `releases/tags/${S}`,
+  'releases/tags/.+',
   'tags',
   'git/(ref|refs|matching-refs)/.+',
   `git/(commits|trees|tags|blobs)/${S}`,
@@ -244,6 +256,9 @@ const READ_SHAPES: readonly RegExp[] = [
 /** GitHub path characters (RFC 3986 unreserved + the sub-delims paths use: `(auth)`, `alice:branch`, `a+b`). */
 const SEGMENT = /^[A-Za-z0-9_.~%()+:@,=!$*;-]+$/;
 const QUERY_KEY = /^[A-Za-z0-9_[\]]+$/;
+/** A field to keep: dotted names, `[]` after a name (or alone, first) for each element of a list. */
+const FIELD = /^(?:\[\]|[A-Za-z0-9_]+(?:\[\])?)(?:\.[A-Za-z0-9_]+(?:\[\])?)*$/;
+const MAX_FIELDS = 40;
 /** Longest answer handed back, in characters of JSON; a longer one is cut and marked. */
 const READ_MAX_CHARS = 200_000;
 
@@ -273,8 +288,9 @@ export function repoReadPath(config: EnvGithubConfig, value: unknown): string {
   if (decoded[0] === 'compare' && decoded.slice(1).some((s) => s.includes(':'))) {
     throw new GithubError('compare across forks reads another repository');
   }
-  // A branch name may hold `/` (encoded or not); one that reaches the protection settings is not read.
-  if (decoded[0] === 'branches' && decoded.slice(1).join('/').split('/').includes('protection')) {
+  // A branch name may hold `/` (encoded or not); one that reaches the protection settings is not read. GitHub routes
+  // `protection` in any case (trinity R5, fable).
+  if (decoded[0] === 'branches' && decoded.slice(1).join('/').toLowerCase().split('/').includes('protection')) {
     throw new GithubError(`${rest} is not a part gh_read reads`);
   }
   return ['repos', repo, ...segments.slice(3)].join('/');
@@ -294,17 +310,79 @@ function readQuery(value: unknown): string {
   return s ? `?${s}` : '';
 }
 
-/** GET one path of the environment's repository; a long answer comes back cut, as text, with `truncated`. */
+interface FieldNode {
+  /** The whole value here is kept. */
+  whole: boolean;
+  kids: Map<string, FieldNode>;
+}
+
+/** `fields` as a tree of names (`[]` = each element); a path that a shorter one already keeps whole adds nothing. */
+export function readFields(value: unknown): FieldNode | null {
+  if (value === undefined) return null;
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.length > MAX_FIELDS ||
+    !value.every((f) => typeof f === 'string' && f.length <= 200 && FIELD.test(f))
+  ) {
+    throw new GithubError(`fields must be 1–${MAX_FIELDS} dotted names, e.g. ["commits[].sha", "status"]`);
+  }
+  const root: FieldNode = { whole: false, kids: new Map() };
+  for (const field of value as string[]) {
+    const tokens = field
+      .split('.')
+      .flatMap((t) => (t === '[]' ? ['[]'] : t.endsWith('[]') ? [t.slice(0, -2), '[]'] : [t]));
+    let node = root;
+    for (const t of tokens) {
+      if (node.whole) break;
+      let next = node.kids.get(t);
+      if (!next) {
+        next = { whole: false, kids: new Map() };
+        node.kids.set(t, next);
+      }
+      node = next;
+    }
+    if (!node.whole) {
+      node.whole = true;
+      node.kids.clear();
+    }
+  }
+  return root;
+}
+
+/** Only the named parts of `value`; a name the answer lacks is left out. */
+function pickFields(value: unknown, node: FieldNode): unknown {
+  if (node.whole) return value;
+  const each = node.kids.get('[]');
+  if (Array.isArray(value)) return each ? value.map((v) => pickFields(v, each) ?? null) : undefined;
+  if (!value || typeof value !== 'object') return undefined;
+  const out: Record<string, unknown> = {};
+  for (const [name, kid] of node.kids) {
+    if (name === '[]' || !Object.hasOwn(value, name)) continue;
+    const kept = pickFields((value as Record<string, unknown>)[name], kid);
+    if (kept !== undefined) out[name] = kept;
+  }
+  return out;
+}
+
+/**
+ * GET one path of the environment's repository. `fields` keeps only the named parts of the answer (before the
+ * output cap: a compare's file diffs can pass it alone); a long answer comes back cut, as text, with `truncated`.
+ */
 export async function repoRead(
   fetch: Fetch,
   config: EnvGithubConfig,
   path: unknown,
   query?: unknown,
+  fields?: unknown,
 ): Promise<{ path: string; status: number; truncated: boolean; body: unknown }> {
   const checked = repoReadPath(config, path);
+  const keep = readFields(fields);
   const { status, json: raw } = await callWithStatus(fetch, config.token, 'GET', `/${checked}${readQuery(query)}`);
   // Text in the repository (an issue body, a commit message, a committed file) can hold the token: never hand it on.
-  const json = scrubJson(raw ?? null, config.token);
+  // Scrubbed whole, before `fields` picks: a base64 file is recognized by its `encoding` beside its `content`.
+  const scrubbed = scrubJson(raw ?? null, config.token);
+  const json = keep ? (pickFields(scrubbed, keep) ?? null) : scrubbed;
   const text = JSON.stringify(json);
   return text.length > READ_MAX_CHARS
     ? { path: checked, status, truncated: true, body: text.slice(0, READ_MAX_CHARS) }
