@@ -17,7 +17,7 @@ ssot = [`ssot.md`](ssot.md)
 | WU3b | `login`(환경 계정 → 세션). `$env:<id>:<skill>` 호출·별도 스킬 저장소는 WU4가 대체 — 환경 스킬 = 환경 플러그인 스킬을 server-tools `skills`로 묶음, 이전은 WU5 | 🟡 | #1211 | `feat/env-access-login` (WU4 위에 쌓음) | 25 §5 WU3 나머지 | `login` 세션으로 환경 API 200(dev 실측), 비밀번호·세션이 원장·오류에 없음(`server-tools-login.test.ts`) |
 | WU4 | 환경 grant + 4버튼 + 정책 단계 | 🟡 | #1212 | `feat/env-access-env-grants` (WU3a 위에 쌓음) | 환경 = server-tools `envUser`+`skills`, `perEnvironment` grant, 카드 수락·거절·이 스킬 항상·이 환경 전체 항상, 환경 서버의 server-tools는 그 환경 grant로 | 비어드민 카드 1장 → "환경 전체 항상" → 다음 카드 0장 (`env-skill-approval-flow.test.ts`), dev 실측 |
 | WU5 | 배포·QA 스킬 이전 + 배포 → QA 연결 | 🟡 | #1213 | `feat/env-access-skills` (WU3b 위에 쌓음) | server-tools `gh_read`(환경 토큰, 저장소·부분 허용 목록) + QA 스킬(`deploy-qa`·`qa-issue`)이 `github.server`면 `gh_read`, `qaEnv.logins`면 `login` — 브로커는 별칭으로 #1214까지. 고객 스킬 저장소의 프로필 전환(`github.server`·`qaEnv.logins`)과 환경 계정 `secrets/` 이전은 운영자 | QA 없는 dev2 배포 0건, 비밀번호 노출 0 (dev2 실측) |
-| WU6 | 브로커 제거 | 🔴 | #1214 | — | 25 §5 WU6 | 25 §5 WU6 |
+| WU6 | 브로커 제거 | 🟡 | #1214 | 6a `feat/env-access-cf` (WU5 위에 쌓음) → 6b `chore/env-access-remove-broker` | 6a: server-tools `cf_api`(환경 범위 토큰, 존 한정, 쓰기 원장) — 브로커 임대 대체. 6b: 운영자가 토큰을 `secrets/`로 옮기고 브로커 `uninstall.sh`를 돌린 뒤 `packages/devops-broker`·`devops-tools`·`src/devops`·대시보드 카드·`deploy.prompt`/QA 스킬의 브로커 경로 삭제(가드의 브로커 경로는 호스트 정리 뒤) | 정기 작업 봇 PR 승인 카드 0장, 배포 번들 하나 |
 
 ## 열린 질문
 

@@ -331,6 +331,48 @@ every skill of the environment and every server-tools tool on its servers (`ssh_
 the environment's servers runs for a non-admin only on such a grant, or on a grant of one of its skills. On a server
 that is no environment's, `ssh_exec`, `gh_pr` and `login` stay admin-only.
 
+### Environment Cloudflare calls (`cf_api`, env-access WU6, #1214)
+
+`cloudflare` gives an environment its own **scoped** Cloudflare API token and the zones it acts on. server-tools
+reads the token from the secret store outside every model sandbox; no model sees it, and nothing hands it out.
+
+```jsonc
+{
+  "server-tools": {
+    "dev2": {
+      "envUser": "env:acme-dev2",
+      "cloudflare": {
+        "token": { "$secret": "cf-dev2" },
+        "zones": { "dev2.example": "0123456789abcdef0123456789abcdef" },
+        "write": true
+      }
+    }
+  }
+}
+```
+
+`cf_api {server, method, path, query, body}` calls `https://api.cloudflare.com/client/v4<path>`. `path` is
+`/zones/<id>/…` for one of `zones` (32-hex IDs), with plain segments only (no `..`, `//`, `%`, `\`, `?`, `#`); the
+query goes in `query`. Paths with `token`, `member` or a `user…` segment are never reachable, whatever the token's
+scope. Below the zone, only these parts are reachable: `dns_records`, `settings`, `purge_cache`, `ssl`,
+`rate_limits`, `workers`, `load_balancers`, `analytics`, `cache`, plus any the operator lists in
+`cloudflare.parts`. Parts that can answer with another system's credentials are reachable only once the operator lists
+them: `healthchecks` (request headers), `rulesets`, `firewall`, `filters` and `pagerules` (static header values,
+expressions, forwarding URLs), `custom_hostnames` (`ssl.custom_key`, an uploaded TLS private key), `logpush`. A redirect is never followed (a read fails, a write is `unknown`). The zone itself can be
+read but never written: no delete, pause or plan change. `GET` always runs; `POST`/`PUT`/`PATCH`/`DELETE` only with `write: true`, for a session that names a Slack
+user, with an intent line in `env-audit.jsonl` before the call and `done`/`failed` after. The line records the zone, the
+path, the query and the SHA-256 of the body, but not the body itself. A 2xx whose body says `success: false` is
+recorded `failed`; one whose body cannot be read, or does not say `success: true`, is recorded `unknown`; an empty
+204 is `done`. A write that gets no answer (or a 5xx, or a 3xx) is recorded `unknown` and the tool says to check before
+retrying. The body may be at most 64 KiB as UTF-8. Errors give Cloudflare's status
+and `errors[]` codes and messages, with the token scrubbed. A token written into config.json is ignored and the
+section left out. Like the other environment tools, `cf_api` is admin-only except on an environment's server for a
+user that environment's admin granted.
+
+This replaces the broker's Cloudflare leases (`cf_lease_request` / `cf_api` / `cf_lease_revoke`): instead of a
+token-creating "forge" key that minted short-lived tokens behind a Slack card, the operator creates one scoped token
+per environment (for example Zone · DNS · Edit on the environment's zones) and stores it under `secrets/`.
+
 ### Environment repository reads (`gh_read`, env-access WU5, #1213)
 
 `gh_read {server, path, query}` GETs one path of the environment's repository with the same `github.token` that

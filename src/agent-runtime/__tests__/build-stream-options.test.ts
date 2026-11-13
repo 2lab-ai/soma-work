@@ -266,9 +266,11 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
       expect(await ask('mcp__server-tools__gh_pr', 'dev2')).toBe('continue');
       expect(await ask('mcp__server-tools__login', 'dev2')).toBe('continue');
       expect(await ask('mcp__server-tools__gh_read', 'dev2')).toBe('continue');
+      expect(await ask('mcp__server-tools__cf_api', 'dev2')).toBe('continue');
       // A server that is no environment's stays admin-only.
       expect(await ask('mcp__server-tools__login', 'other')).toBe('deny');
       expect(await ask('mcp__server-tools__gh_read', 'other')).toBe('deny');
+      expect(await ask('mcp__server-tools__cf_api', 'other')).toBe('deny');
       expect(await ask('mcp__server-tools__ssh_exec', 'other')).toBe('deny');
       expect(checkMcpToolPermission).not.toHaveBeenCalled();
     });
@@ -310,6 +312,8 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
       const checkMcpToolPermission = vi.fn(() => null);
       const run = await mcpHook(makeDeps({ checkMcpToolPermission }));
       expect((await run('mcp__server-tools__gh_read')).hookSpecificOutput?.permissionDecision).toBe('deny');
+      // env-access WU6 (#1214): the same for an environment's Cloudflare calls.
+      expect((await run('mcp__server-tools__cf_api')).hookSpecificOutput?.permissionDecision).toBe('deny');
       expect(checkMcpToolPermission).not.toHaveBeenCalled();
     });
 

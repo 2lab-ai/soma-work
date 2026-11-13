@@ -292,6 +292,7 @@ describe('environment-skill admin approval — full flow', () => {
       expect(serverTool('mcp__server-tools__gh_pr', 'dev2', elsewhere)).toBeNull();
       expect(serverTool('mcp__server-tools__login', 'dev2', elsewhere)).toBeNull();
       expect(serverTool('mcp__server-tools__gh_read', 'dev2', elsewhere)).toBeNull();
+      expect(serverTool('mcp__server-tools__cf_api', 'dev2', elsewhere)).toBeNull();
       // stage0 is another environment: still closed.
       expect(serverTool(HOST_TOOL, 'stage0', elsewhere)).toMatch(/acme-stage0/);
       expect(serverTool('mcp__server-tools__login', 'stage0', elsewhere)).toMatch(/acme-stage0/);
