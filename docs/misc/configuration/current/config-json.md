@@ -355,10 +355,10 @@ reads the token from the secret store outside every model sandbox; no model sees
 `/zones/<id>/…` for one of `zones` (32-hex IDs), with plain segments only (no `..`, `//`, `%`, `\`, `?`, `#`); the
 query goes in `query`. Paths with `token`, `member` or a `user…` segment are never reachable, whatever the token's
 scope. Below the zone, only these parts are reachable: `dns_records`, `settings`, `purge_cache`, `ssl`,
-`custom_hostnames`, `rate_limits`, `workers`, `load_balancers`, `analytics`, `cache`, plus any the operator lists in
+`rate_limits`, `workers`, `load_balancers`, `analytics`, `cache`, plus any the operator lists in
 `cloudflare.parts`. Parts that can answer with another system's credentials are reachable only once the operator lists
 them: `healthchecks` (request headers), `rulesets`, `firewall`, `filters` and `pagerules` (static header values,
-expressions, forwarding URLs), `logpush`. A redirect is never followed (a read fails, a write is `unknown`). The zone itself can be
+expressions, forwarding URLs), `custom_hostnames` (`ssl.custom_key`, an uploaded TLS private key), `logpush`. A redirect is never followed (a read fails, a write is `unknown`). The zone itself can be
 read but never written: no delete, pause or plan change. `GET` always runs; `POST`/`PUT`/`PATCH`/`DELETE` only with `write: true`, for a session that names a Slack
 user, with an intent line in `env-audit.jsonl` before the call and `done`/`failed` after. The line records the zone, the
 path, the query and the SHA-256 of the body, but not the body itself. A 2xx whose body says `success: false` is

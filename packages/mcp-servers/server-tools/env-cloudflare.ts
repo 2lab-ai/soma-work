@@ -18,18 +18,17 @@ export interface EnvCloudflareConfig {
 }
 
 /**
- * The zone parts `cf_api` reaches by default: DNS, settings, cache, TLS, custom hostnames, rate limits, workers routes,
- * load balancers, analytics. Anything else only when the operator lists it in `cloudflare.parts`, because an answer
+ * The zone parts `cf_api` reaches by default: DNS, settings, cache, TLS settings, rate limits, workers routes, load
+ * balancers, analytics. Anything else only when the operator lists it in `cloudflare.parts`, because an answer
  * there may carry another system's credentials: health checks (request headers), rulesets, firewall rules, filters
  * and page rules (static header values and expressions can hold an origin's key, a forwarding URL its basic auth),
- * logpush destinations, access.
+ * custom hostnames (`ssl.custom_key`, an uploaded TLS private key), logpush destinations, access.
  */
 export const DEFAULT_PARTS: readonly string[] = [
   'dns_records',
   'settings',
   'purge_cache',
   'ssl',
-  'custom_hostnames',
   'rate_limits',
   'workers',
   'load_balancers',

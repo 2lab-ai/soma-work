@@ -274,7 +274,8 @@ describe('cf_api — review R3', () => {
       handleCfApi({ server: 'dev2', method: 'GET', path: `/zones/${ZONE}/healthchecks` }, fetch),
     ).rejects.toThrow(/healthchecks is not a part cf_api reaches/);
     // trinity R3 (astra): rules can carry static header values (an origin's key) — opt-in as well.
-    for (const part of ['rulesets', 'firewall', 'filters', 'pagerules']) {
+    // trinity R3 (astra): a custom hostname's answer can carry `ssl.custom_key`, an uploaded TLS private key.
+    for (const part of ['rulesets', 'firewall', 'filters', 'pagerules', 'custom_hostnames']) {
       await expect(
         handleCfApi({ server: 'dev2', method: 'GET', path: `/zones/${ZONE}/${part}` }, fetch),
       ).rejects.toThrow(new RegExp(`${part} is not a part cf_api reaches`));
