@@ -806,9 +806,13 @@ describe('needs-input header (D8/D9)', () => {
 
   it('the count is the prompts plus an open question; none hides the header', () => {
     const els: Record<string, El> = { 'panel-needs-head': box({ hidden: true }), 'panel-needs-count': box() };
-    const m = load<{ renderPanelNeedsHead(s: unknown): void }>(['panelQuestionShown', 'renderPanelNeedsHead'], [], {
-      document: { getElementById: (id: string) => els[id] ?? null },
-    });
+    const m = load<{ renderPanelNeedsHead(s: unknown): void }>(
+      ['panelQuestionShown', 'panelNeedsCount', 'renderPanelNeedsHead'],
+      [],
+      {
+        document: { getElementById: (id: string) => els[id] ?? null },
+      },
+    );
     const q = { type: 'user_choice', question: '?', choices: [{ id: '1', label: 'a' }] };
     m.renderPanelNeedsHead(
       SESSION({ pendingPermissions: [PERM(), PERM({ approvalId: 'approval_b' })], pendingQuestion: q }),
@@ -1902,6 +1906,7 @@ describe('template hygiene', () => {
       // SSOT 2026-10-29 T2: Escape closes the detail card.
       'closeDetailCard',
       'renderPanelNeedsHead',
+      'panelNeedsCount',
       'panelQuestionShown',
       'apAnnounce',
       'apSafeFocus',
