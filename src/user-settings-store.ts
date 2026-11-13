@@ -499,7 +499,16 @@ export interface UserSettings {
   slackDisplayName?: string;
   /** Epoch ms of the last Slack identity (display_name) sync — drives TTL refresh. */
   slackIdentitySyncedAt?: number;
-  email?: string; // Slack profile email (auto-fetched via users.info)
+  /**
+   * Commit identity (Co-Authored-By) and the dashboard login fallback: copied
+   * from the Slack profile on the user's first turn, or self-set (`set email`).
+   */
+  email?: string;
+  /**
+   * The Slack account email last seen (`users.info`). `email` follows a change
+   * of it only while the two are equal — see {@link UserSettingsStore.syncSlackAccountEmail}.
+   */
+  slackEmail?: string;
   /** Model rating (0-10, default 5). Used for <your_rating> context tag. */
   rating?: number;
   /** Pending rating change notification (consumed once after user changes rating). */
@@ -863,6 +872,26 @@ export class UserSettingsStore {
   setUserEmail(userId: string, email: string): void {
     this.patchUserSettings(userId, { email });
     logger.info('Set user email', { userId, email });
+  }
+
+  /**
+   * Record the user's Slack account email and let `email` follow a change of
+   * it. `email` follows only while it still equals the Slack email last seen,
+   * so a self-set address (`set email`) stays. A record from before
+   * `slackEmail` existed only starts tracking: its `email` may be self-set, so
+   * it is never overwritten on a guess. No Slack email (missing scope, failed
+   * fetch) and an unknown user change nothing.
+   */
+  syncSlackAccountEmail(userId: string, slackEmail: string | undefined): void {
+    const next = slackEmail?.trim();
+    const existing = this.settings[userId];
+    if (!next || !existing) return;
+    const seen = existing.slackEmail;
+    if (seen?.toLowerCase() === next.toLowerCase()) return;
+    const previous = existing.email;
+    const follows = seen !== undefined && previous?.toLowerCase() === seen.toLowerCase();
+    this.patchUserSettings(userId, follows ? { slackEmail: next, email: next } : { slackEmail: next });
+    if (follows) logger.info('User email followed the Slack account email', { userId, from: previous, to: next });
   }
 
   /**

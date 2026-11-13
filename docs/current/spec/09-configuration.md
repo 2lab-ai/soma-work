@@ -257,7 +257,7 @@ Slack 앱 설정 템플릿:
 }
 ```
 
-`users:read.email`은 사용자의 Slack 계정 이메일을 읽는 scope다: 프로필 이메일 자동 수집(`users.info`)과, `/z email`이 일치하지 않을 때의 대시보드 Google 로그인 fallback(`users.lookupByEmail`)이 쓴다. 로그인 fallback은 봇 클라이언트와 분리된 전용 Slack 클라이언트로 조회한다 — 다른 API의 rate limit이 봇 클라이언트 큐 전체를 멈춰도 로그인은 막히지 않는다. 조회 실패·타임아웃은 '계정 없음'(`no_match`)이 아니라 `lookup_unavailable`(잠시 후 다시 시도)로, scope 누락은 `lookup_misconfigured`(admin 문의)로 안내한다.
+`users:read.email`은 사용자의 Slack 계정 이메일을 읽는 scope다: 프로필 이메일 수집·변경 추적(`users.info`)과 대시보드 Google 로그인 계정 확인(`users.lookupByEmail`)이 쓴다. Google 로그인은 그 이메일을 가진 Slack 계정을 먼저 찾고, Slack 계정이 없거나 Slack이 답하지 못할 때만 `/z email`로 찾는다 — `/z email`은 직접 정했거나 첫 턴에 복사한 값이라 사용자가 Slack 이메일을 바꾸면 낡는다(2026-11-13: Slack 이메일을 새 주소로 옮긴 사용자의 `/z email`이 이전 주소로 남아, 그 이전 주소로 새로 가입한 계정이 그 사용자로 로그인됐다). 로그인 조회는 봇 클라이언트와 분리된 전용 Slack 클라이언트로 한다 — 다른 API의 rate limit이 봇 클라이언트 큐 전체를 멈춰도 로그인은 막히지 않는다. 조회 실패·타임아웃은 '계정 없음'(`no_match`)이 아니라 `lookup_unavailable`(잠시 후 다시 시도)로, scope 누락은 `lookup_misconfigured`(admin 문의)로 안내한다.
 
 ## 5. Data Files
 
@@ -272,10 +272,14 @@ Slack 앱 설정 템플릿:
     "defaultDirectory": "/Users/dev/Code/project",
     "bypassPermission": false,
     "persona": "default",
+    "email": "dev@company.com",
+    "slackEmail": "dev@company.com",
     "lastUpdated": "2025-12-13T10:30:00.000Z"
   }
 }
 ```
+
+`email`은 Co-Authored-By 커밋 신원이자 대시보드 로그인 fallback이다. 첫 턴에 Slack 프로필 이메일을 복사하거나 사용자가 `set email`로 정한다. `slackEmail`은 마지막으로 본 Slack 계정 이메일이다: Slack 신원 갱신(6시간 주기) 때 Slack 이메일이 바뀌었고 `email`이 아직 이전 `slackEmail`과 같으면 `email`도 새 주소로 따라간다. 직접 정한 주소는 그대로 둔다. `slackEmail`이 없던 기존 기록은 추적만 시작하고 `email`을 바꾸지 않는다.
 
 ### 5.2 Sessions (`data/sessions.json`)
 

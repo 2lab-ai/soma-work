@@ -19,6 +19,7 @@ vi.mock('../../../user-settings-store', () => ({
     getUserSessionTheme: vi.fn().mockReturnValue('D'),
     getUserEmail: vi.fn().mockReturnValue(undefined),
     setUserEmail: vi.fn(),
+    syncSlackAccountEmail: vi.fn(),
     ensureUserExists: vi.fn(),
     setUserSlackDisplayName: vi.fn(),
     shouldRefreshSlackIdentity: vi.fn().mockReturnValue(false),
@@ -4055,6 +4056,39 @@ describe('Email guard in execute()', () => {
       expect.objectContaining({
         text: expect.stringContaining('set email'),
       }),
+    );
+  });
+
+  // Incident 2026-11-13: the email copied on the first turn never followed a
+  // Slack account email change. Every identity refresh now hands the Slack
+  // email to the store, which decides whether `email` follows it.
+  it('an identity refresh hands the Slack account email to the store (known email: no first-turn copy)', async () => {
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('');
+    vi.mocked(userSettingsStore.shouldRefreshSlackIdentity).mockReturnValueOnce(true);
+    vi.mocked(userSettingsStore.setUserEmail).mockClear();
+    vi.mocked(userSettingsStore.syncSlackAccountEmail).mockClear();
+    const deps = createFullDeps();
+    deps.slackApi.getUserProfile.mockResolvedValue({ email: 'new@x.com', displayName: 'Moved' });
+
+    await new StreamExecutor(deps).execute(createMinimalParams(vi.fn().mockResolvedValue({ ts: 'msg_ts' })));
+
+    expect(userSettingsStore.syncSlackAccountEmail).toHaveBeenCalledWith('U_TEST', 'new@x.com');
+    expect(userSettingsStore.setUserEmail).not.toHaveBeenCalled();
+  });
+
+  it('the first turn copies the Slack email, then the store starts tracking it', async () => {
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue(undefined);
+    vi.mocked(userSettingsStore.setUserEmail).mockClear();
+    vi.mocked(userSettingsStore.syncSlackAccountEmail).mockClear();
+    const deps = createFullDeps();
+    deps.slackApi.getUserProfile.mockResolvedValue({ email: 'old@x.com', displayName: 'New' });
+
+    await new StreamExecutor(deps).execute(createMinimalParams(vi.fn().mockResolvedValue({ ts: 'msg_ts' })));
+
+    expect(userSettingsStore.setUserEmail).toHaveBeenCalledWith('U_TEST', 'old@x.com');
+    expect(userSettingsStore.syncSlackAccountEmail).toHaveBeenCalledWith('U_TEST', 'old@x.com');
+    expect(vi.mocked(userSettingsStore.setUserEmail).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(userSettingsStore.syncSlackAccountEmail).mock.invocationCallOrder[0],
     );
   });
 

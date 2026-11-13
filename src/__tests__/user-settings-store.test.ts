@@ -49,6 +49,63 @@ describe('Slack display-name identity (cross-user skill resolution)', () => {
   });
 });
 
+// Incident 2026-11-13: a user moved their Slack account to a new address; the
+// email stored on their first turn kept the old one forever, so a new account
+// that took the old address signed in to the dashboard as them.
+describe('syncSlackAccountEmail (email follows the Slack account)', () => {
+  it('follows a Slack email change while the stored email is still the Slack copy', () => {
+    const s = makeStore();
+    s.setUserEmail('U1', 'old@x.com'); // first turn: copied from Slack
+    s.syncSlackAccountEmail('U1', 'old@x.com');
+    s.syncSlackAccountEmail('U1', 'new@x.com');
+    expect(s.getUserEmail('U1')).toBe('new@x.com');
+  });
+
+  it('keeps a self-set email (`set email`) when the Slack email changes', () => {
+    const s = makeStore();
+    s.setUserEmail('U1', 'old@x.com');
+    s.syncSlackAccountEmail('U1', 'old@x.com');
+    s.setUserEmail('U1', 'me@other.com'); // the user chose another commit identity
+    s.syncSlackAccountEmail('U1', 'new@x.com');
+    expect(s.getUserEmail('U1')).toBe('me@other.com');
+  });
+
+  it('a record from before tracking only starts tracking — it is not overwritten', () => {
+    const s = makeStore();
+    s.setUserEmail('U1', 'chosen@other.com'); // self-set or a stale copy: cannot tell
+    s.syncSlackAccountEmail('U1', 'new@x.com');
+    expect(s.getUserEmail('U1')).toBe('chosen@other.com');
+    // …and follows from now on once the stored email equals the tracked one.
+    s.setUserEmail('U1', 'new@x.com');
+    s.syncSlackAccountEmail('U1', 'k2@x.com');
+    expect(s.getUserEmail('U1')).toBe('k2@x.com');
+  });
+
+  it('compares case-insensitively', () => {
+    const s = makeStore();
+    s.setUserEmail('U1', 'OLD@x.com');
+    s.syncSlackAccountEmail('U1', 'old@x.com');
+    s.syncSlackAccountEmail('U1', 'new@x.com');
+    expect(s.getUserEmail('U1')).toBe('new@x.com');
+  });
+
+  it.each([undefined, '', '   '])('no Slack email (%j: missing scope, failed fetch) changes nothing', (slackEmail) => {
+    const s = makeStore();
+    s.setUserEmail('U1', 'old@x.com');
+    s.syncSlackAccountEmail('U1', 'old@x.com');
+    s.syncSlackAccountEmail('U1', slackEmail);
+    expect(s.getUserEmail('U1')).toBe('old@x.com');
+    s.syncSlackAccountEmail('U1', 'new@x.com');
+    expect(s.getUserEmail('U1')).toBe('new@x.com');
+  });
+
+  it('an unknown user is left alone (the first-turn copy creates the record)', () => {
+    const s = makeStore();
+    s.syncSlackAccountEmail('U_NEW', 'new@x.com');
+    expect(s.getUserSettings('U_NEW')).toBeUndefined();
+  });
+});
+
 // Issue #656 — 1M context variants + allow-list regression guards.
 //
 // The killshot that felled PR #652 was a silent shrinking of the user-facing
