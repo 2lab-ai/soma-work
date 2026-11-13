@@ -19888,9 +19888,10 @@ function landPanel() {
       : planBox && !planBox.hidden && planBox.getAttribute('data-waiting') === 'true' ? planBox : null;
     var onQuestion = !!target;
     if (onQuestion && _panelOnQuestion) return;
-    _panelOnQuestion = onQuestion;
-    // Phone chrome: what waits on the reader brings the head and the composer back (it lives in the head).
-    if (inChat) rdReset();
+    // Phone chrome: what waits on the reader brings the head and the composer back (it lives in the head) — once an
+    // opening: a landing after the turns arrive does not undo a reader who started reading.
+    if (inChat && !_panelOnQuestion) rdReset();
+    _panelOnQuestion = onQuestion || inChat;
     if (onQuestion) {
       // Under the title bar (off the chat — 에이전트 트리, a subagent): the head and the composer back, then the question.
       rdReset();

@@ -489,12 +489,16 @@ describe('N6 — an opening with the zone in the chat lands on the chat', () => 
     return { m, scrolls, rdReset };
   }
 
-  it('in the chat: the section landing (the chat at its newest), the composer back', () => {
+  it('in the chat: the section landing (the chat at its newest), the composer back once an opening', () => {
     const l = lander(true);
     l.m.landPanel();
     expect(l.scrolls).toEqual([700 - 44]);
-    expect(l.rdReset).toHaveBeenCalled();
-    expect(l.m.__get('_panelOnQuestion')).toBe(false);
+    expect(l.rdReset).toHaveBeenCalledTimes(1);
+    expect(l.m.__get('_panelOnQuestion')).toBe(true);
+    // The landing after the turns arrive lands on the chat again, without undoing a reader who started reading.
+    l.m.landPanel();
+    expect(l.scrolls).toEqual([700 - 44, 700 - 44]);
+    expect(l.rdReset).toHaveBeenCalledTimes(1);
   });
 
   it('under the title bar (off the chat): the question landing as before, head in view', () => {
