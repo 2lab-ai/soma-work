@@ -8710,12 +8710,7 @@ function placePanelNeeds() {
     var at = document.getElementById('panel-family');
     surf.insertBefore(box, at && at.parentNode === surf ? at : surf.firstChild);
   }
-  var shows = inChat;
-  for (var i = 0; !shows && i < box.children.length; i++) {
-    var part = box.children[i];
-    if (!part.hidden && part.style.display !== 'none') shows = true;
-  }
-  box.hidden = !shows;
+  box.hidden = !inChat && !Array.prototype.some.call(box.children, function(part) { return !part.hidden && part.style.display !== 'none'; });
   return inChat;
 }
 // A part of the zone changed: the box follows, and the chat repaints when its last turn comes or goes.

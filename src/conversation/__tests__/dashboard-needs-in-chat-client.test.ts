@@ -69,6 +69,8 @@ const CSS = cook(
 );
 
 // ── A small DOM: ids, a parent, ordered children, attributes (slot), hidden and style.display ──
+// Every reparent counts: a box moved when nothing changed would drop the focus in a card the reader is answering.
+let moves = 0;
 class El {
   id: string;
   children: El[] = [];
@@ -101,6 +103,7 @@ class El {
     this.parentNode = null;
   }
   appendChild(c: El): El {
+    moves++;
     c.remove();
     c.parentNode = this;
     this.children.push(c);
@@ -108,6 +111,7 @@ class El {
   }
   insertBefore(c: El, ref: El | null): El {
     if (!ref) return this.appendChild(c);
+    moves++;
     c.remove();
     c.parentNode = this;
     this.children.splice(this.children.indexOf(ref), 0, c);
@@ -211,8 +215,10 @@ describe('N2 — placePanelNeeds moves the zone into the chat and back', () => {
     expect(p.needs.getAttribute('slot')).toBe('attachments-panel-needs');
     expect(p.needs.hidden).toBe(false);
     expect(p.surf.children.map((x) => x.id)).toEqual(['panel-family', 'panel-needs-status', 'panel-midbar']);
-    // A second call moves nothing.
+    // A second call moves nothing (review P2: no reparent — a focused answer stays focused).
+    const before = moves;
     expect(p.m.placePanelNeeds()).toBe(true);
+    expect(moves).toBe(before);
     expect(p.conv.children.filter((x) => x.id === 'panel-needs')).toHaveLength(1);
   });
 
@@ -231,6 +237,10 @@ describe('N2 — placePanelNeeds moves the zone into the chat and back', () => {
     ]);
     expect(p.needs.getAttribute('slot')).toBeNull();
     expect(p.needs.hidden).toBe(false);
+    // Already there: no reparent.
+    const before = moves;
+    p.m.placePanelNeeds();
+    expect(moves).toBe(before);
   });
 
   it('on a subagent it stays under the title bar (the ask is the main agent’s)', () => {
