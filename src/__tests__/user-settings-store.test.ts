@@ -121,9 +121,8 @@ describe('syncSlackAccountEmail (email follows the Slack account)', () => {
     expect(s.getUserEmail('U1')).toBe('k2@x.com');
   });
 
-  it('compares case-insensitively', () => {
-    const s = makeStore();
-    s.setUserEmail('U1', 'OLD@x.com', 'slack');
+  it('compares case-insensitively when deciding a record from before tracking is the Slack copy', () => {
+    const s = makeStoreWith({ U1: { userId: 'U1', accepted: true, email: 'OLD@x.com' } });
     s.syncSlackAccountEmail('U1', 'old@x.com');
     s.syncSlackAccountEmail('U1', 'new@x.com');
     expect(s.getUserEmail('U1')).toBe('new@x.com');
