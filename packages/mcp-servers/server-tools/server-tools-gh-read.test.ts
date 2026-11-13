@@ -213,3 +213,146 @@ describe('gh_read', () => {
     expect(out.body.length).toBeLessThanOrEqual(200_000);
   });
 });
+
+// review-of-legends R5 (e2628bcae): a redirect is never followed, a ref may hold `/`, and `fields` keeps only what a
+// read needs so a compare's file diffs never push the commits past the output cap.
+describe('gh_read — redirects, slash refs, fields', () => {
+  it('never follows a redirect: GitHub may move an issue to a repository the environment does not list', async () => {
+    const inits: { redirect?: string }[] = [];
+    const moved: Fetch = async (_url, init) => {
+      inits.push(init as { redirect?: string });
+      return { ok: false, status: 301, json: async () => ({ message: 'Moved Permanently' }) };
+    };
+    await expect(handleGhRead({ server: 'dev2', path: 'repos/acme/app/issues/7' }, moved)).rejects.toThrow(
+      /answered 301 .*not followed/,
+    );
+    expect(inits).toHaveLength(1);
+    expect(inits[0].redirect).toBe('manual');
+  });
+
+  it('reads refs that hold `/`: a compare and a branch of deploy/dev2, and still refuses the protection settings', async () => {
+    const { fetch, calls } = github();
+    for (const p of [
+      'repos/acme/app/compare/develop...deploy/dev2',
+      'repos/acme/app/compare/deploy/dev2...release/2026-11',
+      'repos/acme/app/branches/deploy/dev2',
+      'repos/acme/app/commits/deploy/dev2',
+      'repos/acme/app/releases/tags/v1/rc',
+    ]) {
+      await handleGhRead({ server: 'dev2', path: p }, fetch);
+    }
+    expect(calls.map((c) => c.url.replace('https://api.github.com/', ''))).toEqual([
+      'repos/acme/app/compare/develop...deploy/dev2',
+      'repos/acme/app/compare/deploy/dev2...release/2026-11',
+      'repos/acme/app/branches/deploy/dev2',
+      'repos/acme/app/commits/deploy/dev2',
+      'repos/acme/app/releases/tags/v1/rc',
+    ]);
+    const refuse = (p: string) => handleGhRead({ server: 'dev2', path: p }, fetch);
+    await expect(refuse('repos/acme/app/branches/deploy/dev2/protection')).rejects.toThrow(/not a part gh_read reads/);
+    // trinity R5 (fable): GitHub routes `protection` in any case.
+    await expect(refuse('repos/acme/app/branches/main/Protection')).rejects.toThrow(/not a part gh_read reads/);
+    await expect(refuse('repos/acme/app/branches/main/PROTECTION/required_status_checks')).rejects.toThrow(
+      /not a part gh_read reads/,
+    );
+    await expect(refuse('repos/acme/app/branches/main%2FpRoTeCtIoN')).rejects.toThrow(/not a part gh_read reads/);
+    await expect(refuse('repos/acme/app/compare/develop...other:deploy/dev2')).rejects.toThrow(/another repository/);
+    await expect(refuse('repos/acme/app/compare/develop/../../../user')).rejects.toThrow(/path/);
+    expect(calls).toHaveLength(5);
+  });
+
+  it('keeps only the named fields, before the output cap: a compare whose file diffs alone pass it', async () => {
+    const commits = Array.from({ length: 3 }, (_, i) => ({
+      sha: `s${i}`,
+      parents: [{ sha: `p${i}` }],
+      commit: { message: `m${i}`, author: { name: 'a' } },
+    }));
+    const files = Array.from({ length: 300 }, (_, i) => ({ filename: `f${i}.ts`, patch: 'x'.repeat(2_000) }));
+    const { fetch } = github({ json: { status: 'ahead', total_commits: 3, commits, files } });
+    const whole = text(await handleGhRead({ server: 'dev2', path: 'repos/acme/app/compare/a...b' }, fetch));
+    expect(whole.truncated).toBe(true);
+    const out = text(
+      await handleGhRead(
+        {
+          server: 'dev2',
+          path: 'repos/acme/app/compare/a...b',
+          fields: ['status', 'total_commits', 'commits[].sha', 'commits[].parents[].sha'],
+        },
+        fetch,
+      ),
+    );
+    expect(out.truncated).toBe(false);
+    expect(out.body).toEqual({
+      status: 'ahead',
+      total_commits: 3,
+      commits: commits.map((c) => ({ sha: c.sha, parents: [{ sha: c.parents[0].sha }] })),
+    });
+  });
+
+  it('projects a list answer with a leading [], keeps a whole value when a shorter path names it, and skips what is absent', async () => {
+    const { fetch } = github({
+      json: [
+        { number: 1, title: 't1', head: { ref: 'a', sha: 'x' }, base: { ref: 'develop' } },
+        { number: 2, title: 't2', head: { ref: 'b', sha: 'y' } },
+      ],
+    });
+    const out = text(
+      await handleGhRead(
+        {
+          server: 'dev2',
+          path: 'repos/acme/app/pulls',
+          fields: ['[].number', '[].head', '[].head.ref', '[].base.ref'],
+        },
+        fetch,
+      ),
+    );
+    expect(out.body).toEqual([
+      { number: 1, head: { ref: 'a', sha: 'x' }, base: { ref: 'develop' } },
+      { number: 2, head: { ref: 'b', sha: 'y' } },
+    ]);
+  });
+
+  it('scrubs the token before it projects: a base64 file named alone by fields is still scrubbed', async () => {
+    const file = Buffer.from(`GH_TOKEN=${TOKEN}\n`).toString('base64');
+    const { fetch } = github({ json: { encoding: 'base64', content: file, sha: 'z' } });
+    const out = await handleGhRead(
+      { server: 'dev2', path: 'repos/acme/app/contents/.env.example', fields: ['content'] },
+      fetch,
+    );
+    expect(out.content[0].text).not.toContain(TOKEN);
+    expect(Buffer.from(text(out).body.content, 'base64').toString('utf8')).toBe('GH_TOKEN=[redacted]\n');
+  });
+
+  it('refuses fields that are not a list of dotted names, before any request', async () => {
+    const { fetch, calls } = github();
+    const bad = (fields: unknown) => handleGhRead({ server: 'dev2', path: 'repos/acme/app/pulls', fields }, fetch);
+    await expect(bad('sha')).rejects.toThrow(/fields/);
+    await expect(bad([])).rejects.toThrow(/fields/);
+    await expect(bad(['a..b'])).rejects.toThrow(/fields/);
+    await expect(bad(['.sha'])).rejects.toThrow(/fields/);
+    await expect(bad(['a[0]'])).rejects.toThrow(/fields/);
+    await expect(bad([{ a: 1 }])).rejects.toThrow(/fields/);
+    await expect(bad(Array.from({ length: 41 }, (_, i) => `f${i}`))).rejects.toThrow(/fields/);
+    expect(calls).toEqual([]);
+  });
+
+  // review-of-legends R5 (tests): the handler's failure contract when GitHub gives no usable answer.
+  it('fails with no answer on a transport error and on a 200 whose body cannot be read, never with a body or the token', async () => {
+    const down: Fetch = async () => {
+      throw new TypeError('fetch failed');
+    };
+    await expect(handleGhRead({ server: 'dev2', path: 'repos/acme/app/pulls/1' }, down)).rejects.toThrow(
+      /GitHub GET \/repos\/acme\/app\/pulls\/1 got no answer \(TypeError\)/,
+    );
+    const garbled: Fetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError('Unexpected token <');
+      },
+    });
+    await expect(handleGhRead({ server: 'dev2', path: 'repos/acme/app/pulls/1' }, garbled)).rejects.toThrow(
+      /answered 200 with an unreadable body/,
+    );
+  });
+});

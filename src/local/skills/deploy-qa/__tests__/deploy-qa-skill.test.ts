@@ -87,12 +87,21 @@ describe('post-deploy QA skills read GitHub through devops-tools gh_read', () =>
     it(`${skill} reads through the environment's server-tools gh_read when the profile names github.server`, () => {
       const md = read(skill);
       const section = md.slice(md.indexOf('## GitHub reads'), md.indexOf('\n## ', md.indexOf('## GitHub reads') + 1));
+      // review-of-legends R5 (tests): both readers are named, so the order check cannot pass on a missing one.
+      expect(section).toContain('`mcp__server-tools__gh_read`');
+      expect(section).toContain('`mcp__devops-tools__gh_read`');
       expect(section.indexOf('`mcp__server-tools__gh_read`')).toBeLessThan(
         section.indexOf('`mcp__devops-tools__gh_read`'),
       );
       expect(section).toContain('When the profile names `github.server`');
       expect(section).toContain('`{"server": "<github.server>", "path": "<path>", "query": {"<key>": "<value>"}}`');
-      expect(section).toContain("apply the read's `--jq` filter yourself to the answer's `body`");
+      // review-of-legends R5: the server keeps only the filter's fields, before the output cap.
+      expect(section).toContain("put the fields the read's `--jq` filter uses in `fields`");
+      expect(section).toContain('`"fields": ["total_commits", "commits[].sha", "commits[].parents[].sha"]`');
+      expect(section).toContain('A truncated answer is asked again, at most twice');
+      expect(section).toContain('a moved answer (3xx, never followed)');
+      // trinity R5 (fable): a read with no answer is asked once more.
+      expect(section).toContain('A read that got no answer (a timeout or a lost connection) is asked once more.');
       expect(section).toContain('An answer there is a result whose `truncated` is false');
       expect(section).toContain('A repository or path it refuses is `missing: github`');
       // trinity R1 (astra): a smaller page size restarts the listing and ends it at that size, not at 100.
@@ -109,7 +118,10 @@ describe('post-deploy QA skills read GitHub through devops-tools gh_read', () =>
     const md = read('qa-issue');
     expect(md).toContain('`qaEnv.logins.<role>` = `{"server": …, "account": …}`');
     expect(md).toContain('get the session with `mcp__server-tools__login`');
-    expect(md).toContain('Its one channel: write it with the Write tool to a file under the run directory');
+    // review-of-legends R5: the session file is the owner's alone before anything reads it.
+    expect(md).toContain(
+      'Its one channel: write it with the Write tool to a file under the run directory, `chmod 600` that file before anything reads it',
+    );
     expect(md).toContain('Never type the token into a command line, `eval` source, `steps`, a report');
     expect(md).toContain('Optional: `qaEnv.logins`');
   });
