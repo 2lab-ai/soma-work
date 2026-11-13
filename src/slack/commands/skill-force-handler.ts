@@ -253,6 +253,15 @@ type BareResolution =
  * Nested bare $skill references inherit the same fallback chain (and the
  * caller's userId for the `user` slot).
  */
+/**
+ * Whether `text` says anything besides its `$…` skill references (and their flags such as `--preflight`): a word of
+ * at least two letters or digits outside every `$token` and `--flag`.
+ */
+export function hasTextBesidesSkillRefs(text: string): boolean {
+  const rest = text.replace(/\$\S+/g, ' ').replace(/(^|\s)--?[\w-]+(=\S*)?/g, ' ');
+  return /[\p{L}\p{N}]{2,}/u.test(rest);
+}
+
 export class SkillForceHandler implements CommandHandler {
   private logger = new Logger('SkillForceHandler');
 
@@ -371,6 +380,16 @@ export class SkillForceHandler implements CommandHandler {
     }
 
     if (resolved.size === 0) {
+      // A message that is more than its skill references (a reply that quotes `$plugin:skill`, a note about a
+      // skill this host lacks) still goes to the model: answering "not found" and dropping it lost the user's
+      // words (2026-11-13). A message of skill references alone stays a failed command.
+      if (hasTextBesidesSkillRefs(text)) {
+        await say({
+          text: `⚠️ 스킬을 찾을 수 없어 호출하지 않았습니다: ${errors.join(', ')} — 메시지는 그대로 전달합니다.`,
+          thread_ts: threadTs,
+        });
+        return { handled: true, continueWithPrompt: text };
+      }
       await say({
         text: `❌ 스킬을 찾을 수 없습니다: ${errors.join(', ')}`,
         thread_ts: threadTs,
