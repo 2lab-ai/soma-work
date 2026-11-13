@@ -378,3 +378,101 @@ describe('gh_read — redirects, slash refs, fields', () => {
     }
   });
 });
+
+// trinity R6 (astra): GitHub answers a fork's commit by SHA through the repository's own path, and a skill rule does
+// not bind a hostile model. A read that names a commit by SHA for its content proves first, on the server, that the
+// commit is on one of the repository's read refs (`github.readRefs`, else its default branch).
+describe('gh_read — a SHA is read only when it is on the repository', () => {
+  const ON = 'a'.repeat(40);
+  const FORK = 'f'.repeat(40);
+  function repoGithub(onRefs: Record<string, string[]>, defaultBranch = 'main') {
+    const calls: string[] = [];
+    const fetch: Fetch = async (url) => {
+      const p = url.replace('https://api.github.com/', '');
+      calls.push(p);
+      const ok = (json: unknown) => ({ ok: true, status: 200, json: async () => json });
+      if (p === 'repos/acme/app') return ok({ default_branch: defaultBranch });
+      const cmp = /^repos\/acme\/app\/compare\/([^?]+?)\.\.\.([^?]+)\?per_page=1$/.exec(p);
+      if (cmp) {
+        const [, sha, ref] = cmp;
+        return ok({ status: (onRefs[ref] ?? []).includes(sha) ? 'ahead' : 'diverged', commits: [], files: [] });
+      }
+      return ok({ sha: 'content', files: [{ patch: 'private diff' }] });
+    };
+    return { fetch, calls };
+  }
+  const read = (fetch: Fetch, p: string, query?: Record<string, unknown>) =>
+    handleGhRead({ server: 'dev2', path: p, ...(query ? { query } : {}) }, fetch);
+
+  it("refuses a fork's commit by SHA and never asks for its content", async () => {
+    const { fetch, calls } = repoGithub({ main: [ON] });
+    await expect(read(fetch, `repos/acme/app/commits/${FORK}`)).rejects.toThrow(/not on this repository's read refs/);
+    expect(calls).toEqual(['repos/acme/app', `repos/acme/app/compare/${FORK}...main?per_page=1`]);
+  });
+
+  it('reads a commit that is on the default branch, and asks GitHub once per SHA', async () => {
+    const { fetch, calls } = repoGithub({ main: [ON] });
+    await read(fetch, `repos/acme/app/commits/${ON}`);
+    await read(fetch, `repos/acme/app/commits/${ON}`);
+    expect(calls).toEqual([
+      'repos/acme/app',
+      `repos/acme/app/compare/${ON}...main?per_page=1`,
+      `repos/acme/app/commits/${ON}`,
+      `repos/acme/app/commits/${ON}`,
+    ]);
+  });
+
+  it('checks the read refs the environment names, any of which may hold the commit', async () => {
+    const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    cfg['server-tools'].dev2.github.readRefs = ['develop', 'deploy/dev2'];
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg));
+    resetConfigCache();
+    const { fetch, calls } = repoGithub({ 'deploy/dev2': [ON] });
+    await read(fetch, `repos/acme/app/compare/${ON}...deploy/dev2`);
+    expect(calls).toEqual([
+      `repos/acme/app/compare/${ON}...develop?per_page=1`,
+      `repos/acme/app/compare/${ON}...deploy/dev2?per_page=1`,
+      `repos/acme/app/compare/${ON}...deploy/dev2`,
+    ]);
+    await expect(read(fetch, `repos/acme/app/compare/${ON}...${FORK}`)).rejects.toThrow(
+      /not on this repository's read refs/,
+    );
+  });
+
+  it('proves a SHA named as contents ref, as a commits listing start, and as a short SHA; not a branch name', async () => {
+    const { fetch, calls } = repoGithub({ main: [ON, 'abc1234'] });
+    await read(fetch, 'repos/acme/app/contents/src/a.ts', { ref: ON });
+    await read(fetch, 'repos/acme/app/commits', { sha: 'abc1234', per_page: 5 });
+    await read(fetch, 'repos/acme/app/contents/src/a.ts', { ref: 'deploy/dev2' });
+    await expect(read(fetch, 'repos/acme/app/contents/src/a.ts', { ref: FORK })).rejects.toThrow(
+      /not on this repository's read refs/,
+    );
+    await expect(read(fetch, 'repos/acme/app/commits', { sha: FORK })).rejects.toThrow(
+      /not on this repository's read refs/,
+    );
+    expect(calls.filter((c) => c.includes('/compare/'))).toEqual([
+      `repos/acme/app/compare/${ON}...main?per_page=1`,
+      'repos/acme/app/compare/abc1234...main?per_page=1',
+      // A refusal is not remembered: a read ref may take the commit later.
+      `repos/acme/app/compare/${FORK}...main?per_page=1`,
+      `repos/acme/app/compare/${FORK}...main?per_page=1`,
+    ]);
+  });
+
+  it("reads a commit's checks and statuses by SHA without a proof: they are this repository's own records", async () => {
+    const { fetch, calls } = repoGithub({});
+    await read(fetch, `repos/acme/app/commits/${FORK}/check-runs`);
+    await read(fetch, `repos/acme/app/commits/${FORK}/status`);
+    await read(fetch, `repos/acme/app/statuses/${FORK}`);
+    expect(calls.some((c) => c.includes('/compare/'))).toBe(false);
+  });
+
+  it('refuses read refs that are not a list of branch names', async () => {
+    const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    cfg['server-tools'].dev2.github.readRefs = 'main';
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg));
+    resetConfigCache();
+    const { fetch } = repoGithub({});
+    await expect(read(fetch, 'repos/acme/app/pulls')).rejects.toThrow(/readRefs must be a list/);
+  });
+});

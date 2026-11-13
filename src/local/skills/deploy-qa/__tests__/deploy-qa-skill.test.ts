@@ -104,8 +104,9 @@ describe('post-deploy QA skills read GitHub through devops-tools gh_read', () =>
       expect(section).toContain('A read that got no answer (a timeout or a lost connection) is asked once more.');
       expect(section).toContain('An answer there is a result whose `truncated` is false');
       expect(section).toContain('A repository or path it refuses is `missing: github`');
-      // review-of-legends R6: fork-network commits answer by SHA through the repository; only SHAs it gave are read.
-      expect(section).toContain('read by SHA only commits this run got from the repository itself');
+      // review-of-legends R6 / trinity R6 (astra): a commit by SHA is read only when it is on the read refs.
+      expect(section).toContain("is read only when it is on one of the environment's `github.readRefs`");
+      expect(section).toContain("read an open PR's changes by its number (`pulls/<n>/files`, `pulls/<n>/commits`)");
       // trinity R1 (astra): a smaller page size restarts the listing and ends it at that size, not at 100.
       expect(section).toContain('restarting that listing at page 1');
       expect(section).toContain('a page holding fewer items than that `per_page` — not 100 — ends the listing');
@@ -121,8 +122,9 @@ describe('post-deploy QA skills read GitHub through devops-tools gh_read', () =>
     expect(md).toContain('`qaEnv.logins.<role>` = `{"server": …, "account": …}`');
     expect(md).toContain('get the session with `mcp__server-tools__login`');
     // review-of-legends R5/R6: the session file is the owner's alone before the session is written into it.
+    // trinity R6 (fable): the Write tool cannot overwrite a file it has not read, so the directory is made private.
     expect(md).toContain(
-      'create it empty with `install -m 600 /dev/null <file>`, then write the session into it with the Write tool',
+      "inside a directory that is the owner's alone before the session is in it (create `<run directory>/session` with `install -d -m 700`",
     );
     // review-of-legends R6: a browser case gets the session, logs in through the form, or is blocked — never logged out.
     expect(md).toContain(

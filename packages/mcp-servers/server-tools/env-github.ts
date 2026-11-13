@@ -34,6 +34,11 @@ export interface EnvGithubConfig {
    * yet would otherwise go unseen.
    */
   requiredChecks?: string[];
+  /**
+   * The branches a commit must be on before `gh_read` hands out its content by SHA (GitHub answers any commit of the
+   * fork network through the repository's own path). Unset: the repository's default branch.
+   */
+  readRefs?: string[];
 }
 
 export interface PrConditions {
@@ -254,6 +259,12 @@ const READ_SHAPES: readonly RegExp[] = [
   `actions/workflows/${S}`,
   `actions/workflows/${S}/runs`,
 ].map((shape) => new RegExp(`^${shape}$`));
+/** A commit named by its SHA, whole or short. */
+const HEXISH = /^[0-9a-f]{7,40}$/i;
+/** What is below `commits/<sha>` that is this repository's own record about the commit, not the commit's content. */
+const COMMIT_RECORDS = new Set(['check-runs', 'check-suites', 'status', 'statuses', 'pulls']);
+/** A branch name in `readRefs`. */
+const REF_NAME = /^(?!.*\.\.)[A-Za-z0-9._/-]+$/;
 /** GitHub path characters (RFC 3986 unreserved + the sub-delims paths use: `(auth)`, `alice:branch`, `a+b`). */
 const SEGMENT = /^[A-Za-z0-9_.~%()+:@,=!$*;-]+$/;
 const QUERY_KEY = /^[A-Za-z0-9_[\]]+$/;
@@ -367,8 +378,96 @@ function pickFields(value: unknown, node: FieldNode): unknown {
 }
 
 /**
+ * The commits a read names by SHA for their content: the commit itself (`commits/<sha>`), a compare's sides, a
+ * contents `ref`, a commits listing's `sha`. A commit's checks, statuses and PRs are this repository's own records.
+ */
+export function shasToProve(rest: string[], query: unknown): string[] {
+  const q = query && typeof query === 'object' ? (query as Record<string, unknown>) : {};
+  const hex = (v: unknown): v is string => typeof v === 'string' && HEXISH.test(v);
+  const out: string[] = [];
+  if (rest[0] === 'commits' && rest.length === 1 && hex(q.sha)) out.push(q.sha);
+  if (rest[0] === 'commits' && rest.length > 1) {
+    const records = rest.length === 3 && COMMIT_RECORDS.has(rest[2]);
+    const ref = rest.slice(1).join('/');
+    if (!records && hex(ref)) out.push(ref);
+  }
+  if (rest[0] === 'compare') {
+    for (const side of rest
+      .slice(1)
+      .join('/')
+      .split(/\.{2,3}/))
+      if (hex(side)) out.push(side);
+  }
+  if (rest[0] === 'contents' && hex(q.ref)) out.push(q.ref);
+  return out;
+}
+
+/** Per fetch (one per process in production): the default branch of each repository, and the SHAs proven on it. */
+const defaultBranches = new WeakMap<Fetch, Map<string, string>>();
+const proven = new WeakMap<Fetch, Set<string>>();
+
+function perFetch<T>(map: WeakMap<Fetch, T>, fetch: Fetch, make: () => T): T {
+  let v = map.get(fetch);
+  if (v === undefined) {
+    v = make();
+    map.set(fetch, v);
+  }
+  return v;
+}
+
+async function readRefs(fetch: Fetch, config: EnvGithubConfig, repo: string): Promise<string[]> {
+  if (config.readRefs) return config.readRefs;
+  const known = perFetch(defaultBranches, fetch, () => new Map<string, string>());
+  const cached = known.get(repo);
+  if (cached) return [cached];
+  const { json } = await callWithStatus(fetch, config.token, 'GET', `/repos/${repo}`);
+  const branch = (json as { default_branch?: unknown } | null)?.default_branch;
+  if (typeof branch !== 'string' || !REF_NAME.test(branch)) {
+    throw new GithubError(`${repo} did not say its default branch; a commit by SHA is not read`);
+  }
+  known.set(repo, branch);
+  return [branch];
+}
+
+/**
+ * `sha` is on one of the repository's read refs: GitHub compares it with each ref, and `ahead` or `identical` means
+ * the ref holds it. GitHub answers a commit of any fork by SHA through the repository's own path, so a commit not
+ * on a read ref is refused (trinity R6, astra).
+ */
+async function proveOnRepo(fetch: Fetch, config: EnvGithubConfig, repo: string, sha: string): Promise<void> {
+  const refs = await readRefs(fetch, config, repo);
+  const done = perFetch(proven, fetch, () => new Set<string>());
+  const key = `${repo.toLowerCase()}|${refs.join(',')}|${sha.toLowerCase()}`;
+  if (done.has(key)) return;
+  for (const ref of refs) {
+    let status: unknown;
+    try {
+      const { json } = await callWithStatus(
+        fetch,
+        config.token,
+        'GET',
+        `/repos/${repo}/compare/${sha}...${ref}?per_page=1`,
+      );
+      status = (json as { status?: unknown } | null)?.status;
+    } catch (err) {
+      // A refusal (unknown commit, unknown ref) proves nothing; no answer at all is no answer.
+      if (err instanceof NoAnswerError) throw err;
+      continue;
+    }
+    if (status === 'ahead' || status === 'identical') {
+      done.add(key);
+      return;
+    }
+  }
+  throw new GithubError(
+    `${sha} is not on this repository's read refs (${refs.join(', ')}): a commit of another fork is not read`,
+  );
+}
+
+/**
  * GET one path of the environment's repository. `fields` keeps only the named parts of the answer (before the
  * output cap: a compare's file diffs can pass it alone); a long answer comes back cut, as text, with `truncated`.
+ * A commit named by SHA for its content must be on the repository first (`proveOnRepo`).
  */
 export async function repoRead(
   fetch: Fetch,
@@ -379,6 +478,14 @@ export async function repoRead(
 ): Promise<{ path: string; status: number; truncated: boolean; body: unknown }> {
   const checked = repoReadPath(config, path);
   const keep = readFields(fields);
+  const segments = checked.split('/');
+  const repo = `${segments[1]}/${segments[2]}`;
+  for (const sha of shasToProve(
+    segments.slice(3).map((x) => decodeURIComponent(x)),
+    query,
+  )) {
+    await proveOnRepo(fetch, config, repo, sha);
+  }
   const { status, json: raw } = await callWithStatus(fetch, config.token, 'GET', `/${checked}${readQuery(query)}`);
   // Text in the repository (an issue body, a commit message, a committed file) can hold the token: never hand it on.
   // Scrubbed whole, before `fields` picks: a base64 file is recognized by its `encoding` beside its `content`.
