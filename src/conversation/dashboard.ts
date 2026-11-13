@@ -8717,10 +8717,20 @@ function placePanelNeeds() {
     moved = true;
   }
   // A move takes the focus out of the page (to <body>): the control the reader was on gets it back, so the card that
-  // answered and left still hands it to a safe place (apSafeFocus — re-agent-run D14).
-  if (moved && had && document.activeElement !== ae && ae.focus) ae.focus({ preventScroll: true });
+  // answered and left still hands it to a safe place (apSafeFocus — re-agent-run D14). Into the chat the box is drawn
+  // only once its turn is (convPaint, then the element's render a microtask later): it gets it back after that,
+  // unless the reader has moved on.
+  if (moved && had && document.activeElement !== ae && ae.focus) {
+    ae.focus({ preventScroll: true });
+    if (document.activeElement !== ae) setTimeout(function() { needsRefocus(ae); }, 0);
+  }
   box.hidden = !inChat && !Array.prototype.some.call(box.children, function(part) { return !part.hidden && part.style.display !== 'none'; });
   return inChat;
+}
+// The control a move blurred, focused again once it is drawn — only while the focus is still nowhere (<body>).
+function needsRefocus(el) {
+  var now = document.activeElement;
+  if (el.isConnected && (!now || now === document.body)) el.focus({ preventScroll: true });
 }
 // A part of the zone changed: the box follows, and the chat repaints when its last turn comes or goes.
 function syncPanelNeeds() {

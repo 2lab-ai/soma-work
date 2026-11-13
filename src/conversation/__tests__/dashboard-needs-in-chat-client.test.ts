@@ -23,6 +23,8 @@
  *   N4  convPaint: the zone's turn is the chat's last, with no writing row under it
  *   N5  convSlots never drops the zone; psecClear and a subagent's chat send it back under the title bar
  *   N6  an opening with the zone in the chat lands on the chat (its newest), not on a question above it
+ *   N7  focus survives a move: the last answer hands it to a safe place; into the chat it returns once drawn
+ *   N8  a decided plan alone keeps the box shown under the title bar, through the real renderPanelPlan
  */
 
 import { readFileSync } from 'node:fs';
@@ -71,7 +73,9 @@ const CSS = cook(
 // ── A small DOM: ids, a parent, ordered children, attributes (slot), hidden and style.display ──
 // Every reparent counts: a box moved when nothing changed would drop the focus in a card the reader is answering.
 let moves = 0;
-// Focus, as a browser keeps it: taking a node out of the page blurs a focused node inside it (focus falls to <body>).
+// Focus, as a browser keeps it: only a drawn node takes it — not under a hidden (or display:none) ancestor, not in a
+// light-DOM child whose slot the host has not drawn yet (`drawn`) — and taking a node out of the page blurs a focused
+// node inside it (focus falls to <body>).
 const BODY = { id: 'body' };
 const focus: { active: unknown } = { active: BODY };
 class El {
@@ -81,6 +85,8 @@ class El {
   hidden = false;
   style = { display: '' };
   attrs: Record<string, string> = {};
+  /** A shadow host's drawn slots (the chat: the turns' slots its last render made). */
+  drawn?: Set<string>;
   constructor(id = '') {
     this.id = id;
   }
@@ -102,8 +108,25 @@ class El {
   contains(x: unknown): boolean {
     return x === this || this.children.some((c) => c.contains(x));
   }
+  /** In the page: under the card's surface or its chat (the fake's two roots). */
+  get isConnected(): boolean {
+    let n: El = this;
+    while (n.parentNode) n = n.parentNode;
+    return n.id === 'panel-surface' || n.id === 'panel-conv';
+  }
+  rendered(): boolean {
+    for (let n: El | null = this; n; n = n.parentNode) {
+      if (n.hidden || n.style.display === 'none') return false;
+      const slot = n.attrs.slot;
+      if (slot && n.parentNode?.drawn && !n.parentNode.drawn.has(slot)) return false;
+    }
+    return true;
+  }
   focus() {
-    focus.active = this;
+    if (this.rendered()) focus.active = this;
+  }
+  set innerHTML(_v: string) {
+    for (const c of [...this.children]) c.remove();
   }
   remove() {
     const p = this.parentNode;
@@ -149,8 +172,12 @@ function card() {
   family.hidden = true;
   for (const part of [needs, family, el('panel-needs-status'), el('panel-midbar')]) surf.appendChild(part);
   const conv = el('panel-conv');
+  conv.drawn = new Set();
+  el('panel-title');
+  el('panel-needs-count');
   focus.active = BODY;
   const document = {
+    body: BODY,
     getElementById: (id: string) => byId[id] ?? null,
     get activeElement() {
       return focus.active;
@@ -161,7 +188,7 @@ function card() {
 
 const WAITING = { key: 'k', activityState: 'working', pendingPermissions: [{ approvalId: 'a1', toolName: 'Bash' }] };
 const IDLE = { key: 'k', activityState: 'idle', pendingPermissions: [] };
-const PLACE_FNS = ['panelQuestionShown', 'panelNeedsCount', 'panelNeedsInChat', 'placePanelNeeds'];
+const PLACE_FNS = ['panelQuestionShown', 'panelNeedsCount', 'panelNeedsInChat', 'placePanelNeeds', 'needsRefocus'];
 const NEEDS_VARS = ['NEEDS_TURN_ID', 'NEEDS_SLOT', 'NEEDS_TURN_TEXT'];
 
 function placer(session: Record<string, unknown> | null, over: Record<string, unknown> = {}) {
@@ -277,24 +304,6 @@ describe('N2 — placePanelNeeds moves the zone into the chat and back', () => {
     p.plan.hidden = false;
     p.m.placePanelNeeds();
     expect(p.needs.hidden).toBe(false);
-  });
-
-  it('a move keeps the reader’s focus: the card they were on is focused again (review — no fall to <body>)', () => {
-    const p = placer(WAITING);
-    p.m.placePanelNeeds();
-    const card = new El('card');
-    p.perm.appendChild(card);
-    card.focus();
-    // The last ask is answered: the box leaves the chat with the card still in it, focused.
-    p.m.__set('_sessionCache', { k: { ...IDLE } });
-    p.m.placePanelNeeds();
-    expect(p.needs.parentNode).toBe(p.surf);
-    expect(p.document.activeElement).toBe(card);
-    // And into the chat again (a folded plan's summary had the focus under the title bar).
-    p.m.__set('_sessionCache', { k: { ...WAITING } });
-    p.m.placePanelNeeds();
-    expect(p.needs.parentNode).toBe(p.conv);
-    expect(p.document.activeElement).toBe(card);
   });
 
   it('after the phone moves the status bar to the surface’s top, the zone still goes back under it', () => {
@@ -452,11 +461,17 @@ describe('N4 — convPaint: the zone’s turn is the chat’s last, with no writ
     expect(p.needs.parentNode).toBe(p.surf);
   });
 
-  it('on a subagent the chat is that agent’s: the zone goes under the title bar first', () => {
+  it('on a subagent the chat is that agent’s: the zone in the chat goes back under the title bar, shown', () => {
     const p = painter({ ...WAITING });
+    p.perm.style.display = '';
+    p.m.convPaint();
+    expect(p.needs.parentNode).toBe(p.conv);
+    // The reader picks a subagent: the same box leaves the main agent's chat for the title bar, visible there.
     p.m.__set('_panelAgent', 'a3');
     p.m.convPaint();
     expect(p.needs.parentNode).toBe(p.surf);
+    expect(p.needs.getAttribute('slot')).toBeNull();
+    expect(p.needs.hidden).toBe(false);
   });
 });
 
@@ -566,6 +581,138 @@ describe('N6 — an opening with the zone in the chat lands on the chat', () => 
     l.m.landPanel();
     expect(l.scrolls).toEqual([300 - 40]);
     expect(l.m.__get('_panelOnQuestion')).toBe(true);
+  });
+});
+
+describe('N7 — focus survives a move (review on #1259)', () => {
+  const ASK_FNS = [
+    ...PLACE_FNS,
+    'syncPanelNeeds',
+    'renderPanelNeedsHead',
+    'renderPanelPermission',
+    'apSafeFocus',
+    'apAnnounce',
+  ];
+
+  it('the last ask answered from the keyboard: the box leaves the chat and focus lands on a safe place, not <body>', () => {
+    const c = card();
+    const cache: Record<string, unknown> = { k: { ...WAITING } };
+    const m = load<{ renderPanelPermission(s: unknown): void }>(ASK_FNS, NEEDS_VARS, {
+      document: c.document,
+      panelSessionKey: 'k',
+      _sessionCache: cache,
+      _psec: 'conv',
+      _panelAgent: '',
+      // The chat draws the zone's turn when it paints (convPaint → the element's render).
+      convPaint: () => c.conv.drawn?.add('attachments-panel-needs'),
+      acPermissionsHtml: (s: { pendingPermissions: unknown[] }) => (s.pendingPermissions.length ? '<card>' : ''),
+      acGoalDecisionHtml: () => '',
+      acInstructionApprovalsHtml: () => '',
+      // The prompt's card: one focusable control in the container.
+      morphInnerHtml: (el: El) => {
+        if (!el.children.length) el.appendChild(new El('ask-card'));
+      },
+      acHydrate: () => {},
+    });
+    m.renderPanelPermission(cache.k);
+    expect(c.needs.parentNode).toBe(c.conv);
+    const askCard = c.perm.children[0];
+    askCard.focus();
+    expect(c.document.activeElement).toBe(askCard);
+    // Answered: the push no longer carries the ask.
+    cache.k = { ...IDLE };
+    m.renderPanelPermission(cache.k);
+    expect(c.needs.parentNode).toBe(c.surf);
+    expect(c.document.activeElement).toBe(c.byId['panel-title']);
+  });
+
+  it('into the chat: a control focused under the title bar gets the focus back once the chat draws its slot', async () => {
+    const c = card();
+    const cache: Record<string, unknown> = { k: { ...IDLE } };
+    // The chat's render comes a microtask after its data (the element batches it).
+    const convPaint = () => queueMicrotask(() => c.conv.drawn?.add('attachments-panel-needs'));
+    const m = load<{ syncPanelNeeds(): void }>([...PLACE_FNS, 'syncPanelNeeds'], NEEDS_VARS, {
+      document: c.document,
+      panelSessionKey: 'k',
+      _sessionCache: cache,
+      _psec: 'conv',
+      _panelAgent: '',
+      convPaint,
+    });
+    // A decided plan, folded under the title bar, its summary focused.
+    c.plan.hidden = false;
+    const summary = new El('summary');
+    c.plan.appendChild(summary);
+    m.syncPanelNeeds();
+    summary.focus();
+    expect(c.document.activeElement).toBe(summary);
+    // An ask arrives: the box moves into the chat before its turn is drawn — the focus has nowhere to stay yet.
+    cache.k = { ...WAITING };
+    m.syncPanelNeeds();
+    expect(c.needs.parentNode).toBe(c.conv);
+    expect(c.document.activeElement).toBe(BODY);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(c.document.activeElement).toBe(summary);
+  });
+
+  it('into the chat: a reader who moved the focus meanwhile keeps it', async () => {
+    const c = card();
+    const cache: Record<string, unknown> = { k: { ...IDLE } };
+    const m = load<{ syncPanelNeeds(): void }>([...PLACE_FNS, 'syncPanelNeeds'], NEEDS_VARS, {
+      document: c.document,
+      panelSessionKey: 'k',
+      _sessionCache: cache,
+      _psec: 'conv',
+      _panelAgent: '',
+      convPaint: () => queueMicrotask(() => c.conv.drawn?.add('attachments-panel-needs')),
+    });
+    c.plan.hidden = false;
+    const summary = new El('summary');
+    c.plan.appendChild(summary);
+    m.syncPanelNeeds();
+    summary.focus();
+    cache.k = { ...WAITING };
+    m.syncPanelNeeds();
+    const elsewhere = new El('composer');
+    elsewhere.focus();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(c.document.activeElement).toBe(elsewhere);
+  });
+});
+
+describe('N8 — a decided plan alone keeps the box shown under the title bar (real renderPanelPlan)', () => {
+  it('a plan that waits on no one shows; once it is gone the box hides', () => {
+    const c = card();
+    const bar = new El('panel-plan-bar');
+    const cache: Record<string, unknown> = {
+      k: { key: 'k', activityState: 'working', taskPlan: { state: 'approved', revision: 2 } },
+    };
+    const m = load<{ renderPanelPlan(s: unknown): void }>(
+      [...PLACE_FNS, 'syncPanelNeeds', 'renderPanelPlan'],
+      NEEDS_VARS,
+      {
+        document: {
+          ...c.document,
+          getElementById: (id: string) => (id === 'panel-plan-bar' ? bar : c.document.getElementById(id)),
+        },
+        panelSessionKey: 'k',
+        _sessionCache: cache,
+        _psec: 'conv',
+        _panelAgent: '',
+        convPaint: () => {},
+        panelPlanHtml: () => '<details class="pp-fold">…</details>',
+        planBarHtml: () => '',
+      },
+    );
+    m.renderPanelPlan(cache.k);
+    // Nothing waits (the plan is decided): the box stays under the title bar, shown for the plan.
+    expect(c.needs.parentNode).toBe(c.surf);
+    expect(c.plan.hidden).toBe(false);
+    expect(c.needs.hidden).toBe(false);
+    cache.k = { key: 'k', activityState: 'working' };
+    m.renderPanelPlan(cache.k);
+    expect(c.plan.hidden).toBe(true);
+    expect(c.needs.hidden).toBe(true);
   });
 });
 
