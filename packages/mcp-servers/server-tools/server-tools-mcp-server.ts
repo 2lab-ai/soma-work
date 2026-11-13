@@ -754,6 +754,18 @@ function envGithub(server: unknown): { name: string; config: ServerConfig; githu
   if (!isList(github.repos) || !isList(github.mergeMethods) || !isList(github.requiredChecks)) {
     throw new Error(`Server ${server}: github.repos, github.mergeMethods and github.requiredChecks must be lists`);
   }
+  // trinity R6 (astra): the branches a commit must be on before gh_read hands out its content by SHA.
+  const refName = /^(?!.*\.\.)[A-Za-z0-9._/-]+$/;
+  if (
+    github.readRefs !== undefined &&
+    !(
+      Array.isArray(github.readRefs) &&
+      github.readRefs.length > 0 &&
+      github.readRefs.every((r) => typeof r === 'string' && refName.test(r))
+    )
+  ) {
+    throw new Error(`Server ${server}: github.readRefs must be a list of branch names`);
+  }
   return { name: server, config: config[server], github };
 }
 
