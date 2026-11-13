@@ -98,7 +98,7 @@ describe('post-deploy QA skills read GitHub through devops-tools gh_read', () =>
       // review-of-legends R5: the server keeps only the filter's fields, before the output cap.
       expect(section).toContain("put the fields the read's `--jq` filter uses in `fields`");
       expect(section).toContain('`"fields": ["total_commits", "commits[].sha", "commits[].parents[].sha"]`');
-      expect(section).toContain('Only a truncated answer is asked again, at most twice');
+      expect(section).toContain('A truncated answer is asked again, at most twice');
       expect(section).toContain('a moved answer (3xx, never followed)');
       // trinity R5 (fable): a read with no answer is asked once more.
       expect(section).toContain('A read that got no answer (a timeout or a lost connection) is asked once more.');
