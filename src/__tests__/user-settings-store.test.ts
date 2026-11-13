@@ -121,6 +121,10 @@ describe('syncSlackAccountEmail (email follows the Slack account)', () => {
     expect(s.getUserEmail('U1')).toBe('chosen@other.com');
     s.syncSlackAccountEmail('U1', 'k2@x.com');
     expect(s.getUserEmail('U1')).toBe('chosen@other.com');
+    // Slack later passing through the same address does not make it the Slack copy.
+    s.syncSlackAccountEmail('U1', 'chosen@other.com');
+    s.syncSlackAccountEmail('U1', 'k3@x.com');
+    expect(s.getUserEmail('U1')).toBe('chosen@other.com');
   });
 
   it('a record from before tracking whose email equals the Slack email follows from then on', () => {
