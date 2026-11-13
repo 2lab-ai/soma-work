@@ -564,6 +564,7 @@ describe('CronScheduler — Hardening', () => {
 
     const scheduler = new CronScheduler(deps);
     await scheduler.tick(); // should not throw
+    await scheduler.settled();
 
     const updated = storage.getAll()[0];
     expect(updated.lastRunMinute).toBe(new Date().toISOString().slice(0, 16));

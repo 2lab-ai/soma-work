@@ -195,6 +195,7 @@ describe('cron fire → session → dashboard, end to end', () => {
       threadCreator: async () => ROOT_TS,
     });
     await scheduler.tick();
+    await scheduler.settled();
     // The stubbed model never starts a turn; the SDK's first message gives the
     // session its id (the dashboard lists sessions that have one) and the turn
     // runs. Do what that first message does.
