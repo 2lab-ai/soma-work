@@ -3,7 +3,7 @@
  * renderDashboardPage()'s template literal (the harness of dashboard-view-plan-client.test.ts):
  *
  *   ┌ title bar   [실행 중] 🕐 1시간 17분 | ● Opus 5.5 | $175 | 235.1M 토큰 | 97 tok/s   Slack ☆ 중지
- *   ├ 입력 필요    approvals · the question · a plan — its own zone, never in a tab
+ *   ├ 입력 필요    approvals · the question · a plan — never in a tab; the chat's last message while 대화 shows (2026-11-13)
  *   ├ tab bar     목표 2/5 · 작업 1/7 · 에이전트 5 · 산출물 3 · 세부 — every tab closed until pressed
  *   └ bottom      대화 · 작업 로그 (+ 에이전트 트리) and the composer
  *
@@ -464,8 +464,9 @@ describe('Z5 — the page: 입력 필요 → the tab bar → the tabs’ content
     return i;
   };
 
-  it('입력 필요 sits right under the title bar, above the tab bar; the tabs’ content follows the bar', () => {
-    expect(at('id="panel-status"')).toBeLessThan(at('id="panel-needs-head"'));
+  it('off the chat, 입력 필요 sits right under the title bar, above the tab bar; the tabs’ content follows the bar', () => {
+    expect(at('id="panel-status"')).toBeLessThan(at('id="panel-needs"'));
+    expect(at('id="panel-needs"')).toBeLessThan(at('id="panel-needs-head"'));
     for (const id of ['panel-permission', 'panel-question', 'panel-plan'])
       expect(at(`id="${id}"`)).toBeLessThan(at('id="panel-midbar"'));
     for (const id of ['panel-goal', 'panel-artifacts', 'panel-info', 'panel-tasks'])

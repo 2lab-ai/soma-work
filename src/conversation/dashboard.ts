@@ -6261,6 +6261,15 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .panel-needs-head { padding: 12px 16px 8px; }
 .panel-needs-head[hidden] { display: none; }
 .panel-needs-head:focus-visible { outline-offset: -2px; }
+/* SSOT 2026-11-13 — #panel-needs holds the zone. Under the title bar its parts keep the surface's rules between them
+   (above). In the chat it is the last message's frame: the slotted child of an assistant turn (attachments-panel-needs —
+   the turn's file row is a wrapping flex row), the whole row wide, one card edged in the wait tint, its parts on it
+   without rules. */
+.panel-needs[hidden] { display: none; }
+#panel-conv > .panel-needs { flex: 1 1 100%; min-width: 0; border: 1px solid var(--tint-wait-line); border-radius: 12px; background: var(--surface); }
+#panel-conv > .panel-needs > .panel-needs-head { padding: 10px 12px 6px; }
+#panel-conv > .panel-needs > .panel-permission, #panel-conv > .panel-needs > .panel-question { padding: 0 12px 12px; border-bottom: 0; }
+#panel-conv > .panel-needs > .panel-plan { padding: 4px 12px 12px; }
 /* One section: no rule between a prompt and the question card under it. */
 .panel-permission:has(+ .panel-question[data-ap="card"]:not([style*="none"])) { border-bottom: 0; }
 /* The <ui-approval-card> slots (batch 1): a gap between two prompts, and the open card's off what follows. */
@@ -6343,8 +6352,9 @@ ui-breadcrumbs.pa-path { flex: 1 1 auto; min-width: 0; }
 }
 /* The common surface (T1.1): 세션 정보 · goal · 입력 필요 · 산출물 as one grouped block. */
 .panel-surface { border-bottom: 1px solid var(--border); background: var(--surface); }
-.panel-surface > .panel-info, .panel-surface > .panel-goal, .panel-surface > .panel-goal-paused, .panel-surface > .panel-permission, .panel-surface > .panel-artifacts { border-bottom: 0; }
-.panel-surface > :not([hidden]):not([style*="display:none"]):not([style*="display: none"]) + :not([hidden]) { border-top: 1px solid var(--border); }
+.panel-surface > .panel-info, .panel-surface > .panel-goal, .panel-surface > .panel-goal-paused, .panel-surface > .panel-needs > .panel-permission, .panel-surface > .panel-artifacts { border-bottom: 0; }
+.panel-surface > :not([hidden]):not([style*="display:none"]):not([style*="display: none"]) + :not([hidden]),
+.panel-surface > .panel-needs > :not([hidden]):not([style*="display:none"]):not([style*="display: none"]) + :not([hidden]) { border-top: 1px solid var(--border); }
 /* Agent tabs (T1.2, D4 E-19): @2lab.ai/ui <ui-tabs shared-panel> — the tabs, the ink underline, the
    sideways scroll, Main pinned at the start edge with its fade (TabItem.pinned), the type as the muted
    second label (meta), the status as the tone dot (the word in the title), arrows and Home / End are
@@ -7412,15 +7422,20 @@ ${pageTokenAliases()}
     <div class="panel-body" id="panel-body">
     <div class="panel-scroll" id="panel-scroll">
       <section class="panel-surface" id="panel-surface" aria-label="작업 정보">
-        <!-- 입력 필요 (re-agent-run D8–D17; SSOT 2026-11-03: its own zone, right under the title bar — never in a tab): a
-             head with the count (kit section head + count, D3 E-13), approval cards for the permission prompts and the
-             question; one polite status line says arrivals and answers (the cards themselves are not a live region —
-             their expiry clock ticks). -->
+        <!-- 입력 필요 (re-agent-run D8–D17): a head with the count (kit section head + count, D3 E-13), approval cards
+             for the permission prompts and the question, and a plan; one polite status line says arrivals and answers
+             (the cards themselves are not a live region — their expiry clock ticks). SSOT 2026-11-13: #panel-needs is
+             the chat's last message — while the card shows the main agent's 대화 and something waits on the user,
+             placePanelNeeds slots it into <ui-conversation> as a frame in an assistant turn at the end, so the reader
+             scrolls the chat above it for what the answer needs. Otherwise it waits here, right under the title bar
+             (never in a tab). Its own region name: in the chat the turn's file row around it is named for files. -->
+        <div class="panel-needs" id="panel-needs" role="region" aria-label="입력 필요" hidden>
         <div class="ui-section-head panel-needs-head" id="panel-needs-head" tabindex="-1" hidden><h4>입력 필요</h4><span class="ui-count" id="panel-needs-count" data-tone="wait" data-pop></span></div>
         <div class="panel-permission" id="panel-permission" style="display:none"></div>
         <div class="panel-question" id="panel-question" style="display:none"></div>
         <!-- 작업 계획 (plan mode, SSOT 2026-11-02): the task's plan, drawn by the server — high level to detail — at once when the card opens. -->
         <div class="panel-plan" id="panel-plan" role="region" aria-label="작업 계획" hidden></div>
+        </div>
         <!-- #1021 — an epic's children (one line; a press shows them all, a child opens on its own press), or a child's epic. -->
         <div class="panel-family" id="panel-family" role="region" aria-label="에픽과 자식 작업" hidden></div>
         <p class="ui-sr-only" id="panel-needs-status" role="status" aria-live="polite"></p>
@@ -8644,13 +8659,71 @@ function panelQuestionShown(s) {
   if (!q || s.activityState !== 'waiting') return false;
   return (q.type === 'user_choice' && !!q.choices) || q.type === 'user_choices';
 }
+// Pure: how many things wait on the user — the prompts, a goal decision, the instruction approvals, the question, a
+// plan to start.
+function panelNeedsCount(s) {
+  return s ? ((s.pendingPermissions || []).length + (s.pendingGoalDecision ? 1 : 0) + (s.pendingInstructionApprovals || []).length + (panelQuestionShown(s) ? 1 : 0) + (s.taskPlan && s.taskPlan.state === 'awaiting' ? 1 : 0)) : 0;
+}
 function renderPanelNeedsHead(s) {
   var head = document.getElementById('panel-needs-head');
   if (!head) return;
-  var n = s ? ((s.pendingPermissions || []).length + (s.pendingGoalDecision ? 1 : 0) + (s.pendingInstructionApprovals || []).length + (panelQuestionShown(s) ? 1 : 0) + (s.taskPlan && s.taskPlan.state === 'awaiting' ? 1 : 0)) : 0;
+  var n = panelNeedsCount(s);
   head.hidden = n === 0;
   var count = document.getElementById('panel-needs-count');
   if (count && count.textContent !== String(n)) count.textContent = String(n);
+  syncPanelNeeds();
+}
+// ── 입력 필요 as the chat's last message (SSOT 2026-11-13) ──
+// Answering needs the conversation that led to the ask, so the zone is not above the chat but its last message: an
+// assistant turn at the end of 대화 (the agent is the one asking) whose file row holds #panel-needs as a frame
+// (the turn's attachments-<id> slot — the page's own nodes stay in the light DOM, every renderer finds them by id).
+// The reader scrolls the chat above it for the context and answers in place. That holds while the card shows the
+// main agent's 대화 and something waits on the user; on 작업 로그 · 에이전트 트리, on a subagent, or with nothing
+// waiting the zone goes back under the title bar (what needs the user is never behind a tab).
+var NEEDS_TURN_ID = 'panel-needs';
+var NEEDS_SLOT = 'attachments-panel-needs';
+var NEEDS_TURN_TEXT = '아래에서 답하면 작업이 이어집니다.';
+// Pure: the zone sits in the chat — 대화 shown, on the main agent, something waiting.
+function panelNeedsInChat(psec, agent, n) {
+  return psec === 'conv' && !agent && n > 0;
+}
+// Pure: the chat's last turn that carries the zone (the bot's name, as on its answers).
+function needsTurnOf(bot) {
+  return { id: NEEDS_TURN_ID, role: 'assistant', name: bot, markdown: NEEDS_TURN_TEXT, attachments: true };
+}
+// Put #panel-needs where it belongs now (a move only when that changed) and say whether that is the chat. Under the
+// title bar the box hides while none of its parts shows (the surface's rules between parts read :not([hidden])).
+function placePanelNeeds() {
+  var box = document.getElementById('panel-needs');
+  var conv = document.getElementById('panel-conv');
+  var surf = document.getElementById('panel-surface');
+  if (!box || !conv || !surf) return false;
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var inChat = panelNeedsInChat(_psec, _panelAgent, panelNeedsCount(s));
+  if (inChat) {
+    if (box.parentNode !== conv) {
+      box.slot = NEEDS_SLOT;
+      conv.appendChild(box);
+    }
+  } else if (box.parentNode !== surf) {
+    box.removeAttribute('slot');
+    var at = document.getElementById('panel-family');
+    surf.insertBefore(box, at && at.parentNode === surf ? at : surf.firstChild);
+  }
+  var shows = inChat;
+  for (var i = 0; !shows && i < box.children.length; i++) {
+    var part = box.children[i];
+    if (!part.hidden && part.style.display !== 'none') shows = true;
+  }
+  box.hidden = !shows;
+  return inChat;
+}
+// A part of the zone changed: the box follows, and the chat repaints when its last turn comes or goes.
+function syncPanelNeeds() {
+  var box = document.getElementById('panel-needs');
+  if (!box) return;
+  var was = box.getAttribute('slot') === NEEDS_SLOT;
+  if (placePanelNeeds() !== was) convPaint();
 }
 // The first card in root still waiting on an answer (not a resolved row).
 function acFirstOpen(root) {
@@ -13249,6 +13322,8 @@ function agentAnswerData(a, io, answer, s, failed) {
 function renderAgentConv() {
   var el = convEl();
   if (!el || !_panelAgent || _psec !== 'conv') return;
+  // 입력 필요 is the main agent's: under the title bar while a subagent's chat shows (SSOT 2026-11-13).
+  placePanelNeeds();
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   var a = panelAgentOf(s);
   var io = agentConvEntries(_wl && _wl.entries, _panelAgent, !!(a && a.background));
@@ -13394,6 +13469,8 @@ function psecClear(sec) {
       convSlots(conv, [], '');
       convSetData(conv, { turns: [] });
     }
+    // 입력 필요 does not leave with the chat: back under the title bar while 대화 is not shown (SSOT 2026-11-13).
+    placePanelNeeds();
   } else if (sec === 'log') {
     wlClear();
     if (_wl) _wl.painted = false;
@@ -15461,6 +15538,8 @@ function renderPanelPlan(s) {
       bar._html = b;
     }
   }
+  // The plan is a part of 입력 필요: its box shows, hides or moves with it (SSOT 2026-11-13).
+  syncPanelNeeds();
 }
 // 시작 / 취소: the revision the user saw (a newer one meanwhile is a 409 that says so). With the detail card
 // open, 시작 approves the plan it shows — only once that is the board's revision, loaded (planShownLag), so the
@@ -19799,14 +19878,21 @@ function landPanel() {
     var permission = document.getElementById('panel-permission');
     var question = document.getElementById('panel-question');
     var planBox = document.getElementById('panel-plan');
-    var target = permission && permission.style.display !== 'none' ? permission
+    // SSOT 2026-11-13: in the chat, 입력 필요 is its last message — the section landing below brings the chat in
+    // view, at its newest (the ask, the conversation above it).
+    var needsBox = document.getElementById('panel-needs');
+    var inChat = !!(needsBox && needsBox.getAttribute('slot'));
+    var target = inChat ? null
+      : permission && permission.style.display !== 'none' ? permission
       : question && question.style.display !== 'none' ? question
       : planBox && !planBox.hidden && planBox.getAttribute('data-waiting') === 'true' ? planBox : null;
     var onQuestion = !!target;
     if (onQuestion && _panelOnQuestion) return;
     _panelOnQuestion = onQuestion;
+    // Phone chrome: what waits on the reader brings the head and the composer back (it lives in the head).
+    if (inChat) rdReset();
     if (onQuestion) {
-      // Phone chrome: what waits on the reader brings the head and the composer back (it lives in the head).
+      // Under the title bar (off the chat — 에이전트 트리, a subagent): the head and the composer back, then the question.
       rdReset();
       // The question sits under the session info that scrolls with the
       // conversation (SSOT 2026-10-24), so land on its own offset, not on 0.
@@ -20751,6 +20837,8 @@ function convSlots(el, slots, cid) {
   }
   var kids = Array.prototype.slice.call(el.children);
   for (var k = 0; k < kids.length; k++) {
+    // 입력 필요 (SSOT 2026-11-13) is placePanelNeeds' child, not a turn's file: it goes only where that puts it.
+    if (kids[k].id === 'panel-needs') continue;
     var name = kids[k].getAttribute('slot') || '';
     if (!(name in want)) {
       kids[k].remove();
@@ -20818,6 +20906,8 @@ function convSetData(el, d) {
 function convPaint() {
   var el = convEl();
   if (!el || _psec !== 'conv') return;
+  // SSOT 2026-11-13: 입력 필요 in the chat (the main agent's, while something waits) is its last turn.
+  var needs = placePanelNeeds();
   if (_panelAgent) {
     renderAgentConv();
     return;
@@ -20859,13 +20949,15 @@ function convPaint() {
     titles: ansLinkTitles(ansSession(cid)),
   });
   var last = shown.length ? shown[shown.length - 1] : null;
+  if (needs) built.turns.push(needsTurnOf(botNameOf(s)));
   var msg = _panelTurnsMsg;
   var d = {
     turns: built.turns,
     hasMore: !!_panelTurnsHasMore,
     loading: msg === 'loading' || !!_panelTurnsLoading,
-    // D12 — the writing row: the session works and the latest turn is the instruction.
-    pending: ansPendingShow(s, panelConvId, last ? last.role : ''),
+    // D12 — the writing row: the session works and the latest turn is the instruction. Not while 입력 필요 is the
+    // last turn: the agent waits on the reader, and the ask stays the chat's last message (SSOT 2026-11-13).
+    pending: !needs && ansPendingShow(s, panelConvId, last ? last.role : ''),
     assistantName: botNameOf(s),
     // T1.3 — a long instruction folds to 12 lines; 자세히 shows it whole.
     clampLines: _panelDetail ? 200 : 12,

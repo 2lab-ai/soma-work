@@ -15,6 +15,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { nextActionSeams } from '../__fixtures__/viewer-scope';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -37,6 +38,7 @@ function clientVar(name: string): string {
   return cook(TEMPLATE.slice(start + 1, end + 2));
 }
 function load<T>(fns: string[], inject: Record<string, unknown> = {}, extra = '', vars: string[] = []): T {
+  inject = { ...nextActionSeams(fns, inject), ...inject };
   const names = Object.keys(inject);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\n${extra}\nreturn { ${fns.join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
@@ -537,8 +539,8 @@ describe('U5 — the detail card: the plan inline, the bottom bar (T5)', () => {
   });
   it('the panel paints it with the needs, and the 입력 필요 count counts a waiting plan', () => {
     expect(clientFn('repaintPanelSession')).toContain('renderPanelPlan(s)');
-    const needs = clientFn('renderPanelNeedsHead');
-    expect(needs).toContain("(s.taskPlan && s.taskPlan.state === 'awaiting' ? 1 : 0)");
+    expect(clientFn('renderPanelNeedsHead')).toContain('var n = panelNeedsCount(s);');
+    expect(clientFn('panelNeedsCount')).toContain("(s.taskPlan && s.taskPlan.state === 'awaiting' ? 1 : 0)");
   });
 });
 
