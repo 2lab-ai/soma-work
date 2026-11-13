@@ -31,7 +31,7 @@ const WORKFLOW_BUDGET: Record<string, number> = {
   // 2026-11-06: + 'Before Refusing or Narrowing an Instruction' (verify the premise of a refusal; incident in the section).
   default: 11_400,
   // 2026-11-12 (#1232): + Delta and Risk Check before the confirmation, + Restart Re-Attach.
-  deploy: 36_200,
+  deploy: 36_700, // env-access WU5 (#1213): the environment's GitHub reader, ahead of the broker; R6: `fields` + path encoding
   'jira-brainstorming': 8_000,
   'jira-create-pr': 9_900,
   'jira-executive-summary': 6_500,

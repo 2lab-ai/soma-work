@@ -331,6 +331,28 @@ every skill of the environment and every server-tools tool on its servers (`ssh_
 the environment's servers runs for a non-admin only on such a grant, or on a grant of one of its skills. On a server
 that is no environment's, `ssh_exec`, `gh_pr` and `login` stay admin-only.
 
+### Environment repository reads (`gh_read`, env-access WU5, #1213)
+
+`gh_read {server, path, query}` GETs one path of the environment's repository with the same `github.token` that
+`gh_pr` uses, outside every model sandbox. `path` is `repos/<owner>/<name>/…` with the repository in `github.repos`
+and no query string (parameters go in `query`: strings, numbers, booleans). It reads only the routes deploy
+confirmation and QA read, as an allowlist of path shapes: the repository itself; `pulls[/<n>[/files|commits|reviews|
+comments|merge]]`; `commits[/<sha>[/check-runs|check-suites|status|statuses|pulls]]`; `compare/<base>...<head>`;
+`issues[/<n>[/comments|events|labels]]` and `issues/comments|events[/<n>]`; `branches[/<b>]`; `contents/…`;
+`statuses/<sha>`; check runs and suites; deployments; releases; tags; `git/ref(s)/…` and git objects; milestones;
+labels; `actions/runs[/<id>[/jobs|attempts/<n>[/jobs]]]`, `actions/jobs/<id>`, `actions/workflows[/<id>[/runs]]`.
+Not settings (`branches/<b>/protection`), secrets, variables, hooks, keys, environments or collaborators, and not
+routes that answer with another repository's data (`issues/<n>/parent`, `sub_issues`, a timeline's
+cross-references, a `compare` across forks with `owner:branch`, a branch path that reaches `protection`) — the token may be an org admin's. Segments may hold GitHub path characters (`(auth)`,
+`alice:branch`, `a+b`); a segment that does not decode, or decodes to a `.`/`..` component, a backslash or a NUL,
+is refused. It answers `{path, status, truncated, body}`: a 204 (`pulls/<n>/merge` of a merged PR) is
+`body: null`; a body longer than 200000 characters of JSON comes back cut, as text, with `truncated: true`. The token never comes back: every string of the answer (and a base64 file's decoded content) and GitHub's error message have it replaced with `[redacted]`. Reads are not written to the audit ledger. Like `gh_pr`, it is admin-only except on an
+environment's server for a user that environment's admin granted.
+
+The QA skills (`deploy-qa`, `qa-issue`) read through it when the environment profile names `github.server`, and
+log in through `login` when it maps a role to `qaEnv.logins.<role>` = `{server, account}`. Without `github.server`
+they read through the broker until it is removed (#1214).
+
 ### Environment web logins (`login`, env-access WU3b, #1211)
 
 `web.logins` names the environment's own web app accounts. `login` posts one of them and hands back only the session —

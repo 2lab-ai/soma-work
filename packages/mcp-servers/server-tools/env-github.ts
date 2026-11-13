@@ -34,6 +34,11 @@ export interface EnvGithubConfig {
    * yet would otherwise go unseen.
    */
   requiredChecks?: string[];
+  /**
+   * The branches a commit must be on before `gh_read` hands out its content by SHA (GitHub answers any commit of the
+   * fork network through the repository's own path). Unset: the repository's default branch.
+   */
+  readRefs?: string[];
 }
 
 export interface PrConditions {
@@ -55,7 +60,13 @@ export interface HttpResponse {
 }
 export type Fetch = (
   url: string,
-  init: { method: string; headers: Record<string, string>; body?: string; signal?: AbortSignal },
+  init: {
+    method: string;
+    headers: Record<string, string>;
+    body?: string;
+    signal?: AbortSignal;
+    redirect?: 'manual';
+  },
 ) => Promise<HttpResponse>;
 
 export interface Checks {
@@ -132,6 +143,16 @@ export function headSha(value: unknown): string {
 }
 
 async function call(fetch: Fetch, token: string, method: string, path: string, body?: unknown): Promise<unknown> {
+  return (await callWithStatus(fetch, token, method, path, body)).json;
+}
+
+async function callWithStatus(
+  fetch: Fetch,
+  token: string,
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<{ status: number; json: unknown }> {
   let res: HttpResponse;
   try {
     res = await fetch(`${API}${path}`, {
@@ -145,10 +166,18 @@ async function call(fetch: Fetch, token: string, method: string, path: string, b
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
+      // A redirect is never followed: GitHub moves a transferred issue to its new repository, which the environment
+      // may not list, and the token must not read it (review-of-legends R5).
+      redirect: 'manual',
     });
   } catch (err) {
     throw new NoAnswerError(`GitHub ${method} ${path} got no answer (${err instanceof Error ? err.name : 'error'})`);
   }
+  if (res.status >= 300 && res.status < 400) {
+    throw new GithubError(`GitHub ${method} ${path} answered ${res.status} (moved): not followed`);
+  }
+  // A GET answered 204 (no content, e.g. `pulls/<n>/merge` for a merged PR) is an answer with no body.
+  if (method === 'GET' && res.status === 204) return { status: 204, json: null };
   let json: unknown;
   try {
     json = await res.json();
@@ -166,9 +195,336 @@ async function call(fetch: Fetch, token: string, method: string, path: string, b
       json && typeof json === 'object' && typeof (json as { message?: unknown }).message === 'string'
         ? (json as { message: string }).message
         : 'no message';
-    throw new GithubError(`GitHub ${method} ${path} answered ${res.status}: ${message}`);
+    // GitHub's message can quote what was sent or stored; the token never rides along.
+    throw new GithubError(`GitHub ${method} ${path} answered ${res.status}: ${scrubToken(message, token)}`);
   }
-  return json;
+  return { status: res.status, json };
+}
+
+// ── gh_read: a GET of the environment's repository (env-access WU5, #1213) ──
+
+/**
+ * The routes `gh_read` reads, as shapes of the path below `repos/<owner>/<name>`: what deploy confirmation and QA
+ * read (commits, compares, PRs and issues, workflow runs and jobs, checks and statuses, branches, contents, releases).
+ * An allowlist of shapes, not of first segments: below a part QA reads there are settings (`branches/<b>/protection`)
+ * and routes that answer with another repository's data (`issues/<n>/parent`, a timeline's cross-references) — the
+ * token may be an org admin's.
+ */
+const S = '[^/]+';
+const N = '[0-9]+';
+const READ_SHAPES: readonly RegExp[] = [
+  '',
+  'pulls',
+  `pulls/${N}`,
+  `pulls/${N}/(files|commits|reviews|comments|merge)`,
+  'commits',
+  // A ref may hold `/` (deploy/dev2): a commit, a compare and a branch take the rest of the path.
+  'commits/.+',
+  'compare/.+',
+  'issues',
+  `issues/${N}`,
+  `issues/${N}/(comments|events|labels)`,
+  '(issues)/(comments|events)',
+  `issues/(comments|events)/${N}`,
+  'branches',
+  'branches/.+',
+  'contents',
+  'contents/.+',
+  `statuses/${S}`,
+  `check-runs/${N}`,
+  `check-runs/${N}/annotations`,
+  `check-suites/${N}`,
+  `check-suites/${N}/check-runs`,
+  'deployments',
+  `deployments/${N}`,
+  `deployments/${N}/statuses`,
+  'releases',
+  `releases/(${N}|latest)`,
+  'releases/tags/.+',
+  'tags',
+  'git/(ref|refs|matching-refs)/.+',
+  // No raw Git object by SHA (`git/blobs|trees|commits|tags/<sha>`): GitHub serves any object of the fork network
+  // through an allowed repository, and QA never reads raw objects (review-of-legends R6).
+  'milestones',
+  `milestones/${N}`,
+  'labels',
+  `labels/${S}`,
+  'actions/runs',
+  `actions/runs/${N}`,
+  `actions/runs/${N}/jobs`,
+  `actions/runs/${N}/attempts/${N}`,
+  `actions/runs/${N}/attempts/${N}/jobs`,
+  `actions/jobs/${N}`,
+  'actions/workflows',
+  `actions/workflows/${S}`,
+  `actions/workflows/${S}/runs`,
+].map((shape) => new RegExp(`^${shape}$`));
+/** A commit named by its SHA, whole or short (git takes four characters). */
+const HEXISH = /^[0-9a-f]{4,40}$/i;
+/** The commit a revision expression starts from (`<sha>~1`, `<sha>^2`, `<sha>@{0}`, `<sha>.patch`); fails closed on a hex-led name. */
+const revisionBase = (v: string): string => v.split(/[~^@.:]/)[0];
+/** What is below `commits/<sha>` that is this repository's own record about the commit, not the commit's content. */
+const COMMIT_RECORDS = new Set(['check-runs', 'check-suites', 'status', 'statuses', 'pulls']);
+/** A branch name in `readRefs`. */
+const REF_NAME = /^(?!.*\.\.)[A-Za-z0-9._/-]+$/;
+/** GitHub path characters (RFC 3986 unreserved + the sub-delims paths use: `(auth)`, `alice:branch`, `a+b`). */
+const SEGMENT = /^[A-Za-z0-9_.~%()+:@,=!$*;-]+$/;
+const QUERY_KEY = /^[A-Za-z0-9_[\]]+$/;
+/** A field to keep: dotted names, `[]` after a name (or alone, first) for each element of a list. */
+const FIELD = /^(?:\[\]|[A-Za-z0-9_]+(?:\[\])?)(?:\.[A-Za-z0-9_]+(?:\[\])?)*$/;
+const MAX_FIELDS = 40;
+/** Longest answer handed back, in characters of JSON; a longer one is cut and marked. */
+const READ_MAX_CHARS = 200_000;
+
+/** `repos/<owner>/<name>/…` as asked, checked: its repository is the environment's and its part one QA reads. */
+export function repoReadPath(config: EnvGithubConfig, value: unknown): string {
+  if (typeof value !== 'string') throw new GithubError('path must be repos/<owner>/<name>/…');
+  const segments = value.replace(/^\//, '').split('/');
+  // Each segment as GitHub may decode it: no `.` or `..` component, no backslash or NUL, and it must decode.
+  const unsafeDecoded = (s: string) => {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(s);
+    } catch {
+      return true;
+    }
+    return /[\\\0]/.test(decoded) || decoded.split('/').some((c) => c === '.' || c === '..');
+  };
+  const unsafe = segments.some((s) => !SEGMENT.test(s) || s === '.' || s === '..' || unsafeDecoded(s));
+  if (segments[0] !== 'repos' || segments.length < 3 || unsafe) {
+    throw new GithubError('path must be repos/<owner>/<name>/… (no query, no dot segments)');
+  }
+  const repo = allowedRepo(config, `${segments[1]}/${segments[2]}`);
+  const rest = segments.slice(3).join('/');
+  if (!READ_SHAPES.some((shape) => shape.test(rest))) throw new GithubError(`${rest} is not a part gh_read reads`);
+  const decoded = segments.slice(3).map((s) => decodeURIComponent(s));
+  // `base...owner:branch` compares across the fork network: another repository's commits.
+  if (decoded[0] === 'compare' && decoded.slice(1).some((s) => s.includes(':'))) {
+    throw new GithubError('compare across forks reads another repository');
+  }
+  // A branch name may hold `/` (encoded or not); one that reaches the protection settings is not read. GitHub routes
+  // `protection` in any case (trinity R5, fable).
+  if (decoded[0] === 'branches' && decoded.slice(1).join('/').toLowerCase().split('/').includes('protection')) {
+    throw new GithubError(`${rest} is not a part gh_read reads`);
+  }
+  return ['repos', repo, ...segments.slice(3)].join('/');
+}
+
+function readQuery(value: unknown): string {
+  if (value === undefined) return '';
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new GithubError('query must be an object');
+  const params = new URLSearchParams();
+  for (const [key, v] of Object.entries(value)) {
+    if (!QUERY_KEY.test(key) || !['string', 'number', 'boolean'].includes(typeof v)) {
+      throw new GithubError(`query ${key} must be a string, number or boolean`);
+    }
+    params.append(key, String(v));
+  }
+  const s = params.toString();
+  return s ? `?${s}` : '';
+}
+
+interface FieldNode {
+  /** The whole value here is kept. */
+  whole: boolean;
+  kids: Map<string, FieldNode>;
+}
+
+/** `fields` as a tree of names (`[]` = each element); a path that a shorter one already keeps whole adds nothing. */
+export function readFields(value: unknown): FieldNode | null {
+  if (value === undefined) return null;
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.length > MAX_FIELDS ||
+    !value.every((f) => typeof f === 'string' && f.length <= 200 && FIELD.test(f))
+  ) {
+    throw new GithubError(`fields must be 1–${MAX_FIELDS} dotted names, e.g. ["commits[].sha", "status"]`);
+  }
+  const root: FieldNode = { whole: false, kids: new Map() };
+  for (const field of value as string[]) {
+    const tokens = field
+      .split('.')
+      .flatMap((t) => (t === '[]' ? ['[]'] : t.endsWith('[]') ? [t.slice(0, -2), '[]'] : [t]));
+    let node = root;
+    for (const t of tokens) {
+      if (node.whole) break;
+      let next = node.kids.get(t);
+      if (!next) {
+        next = { whole: false, kids: new Map() };
+        node.kids.set(t, next);
+      }
+      node = next;
+    }
+    if (!node.whole) {
+      node.whole = true;
+      node.kids.clear();
+    }
+  }
+  return root;
+}
+
+/** Only the named parts of `value`; a name the answer lacks is left out. */
+function pickFields(value: unknown, node: FieldNode): unknown {
+  if (node.whole) return value;
+  const each = node.kids.get('[]');
+  if (Array.isArray(value)) return each ? value.map((v) => pickFields(v, each) ?? null) : undefined;
+  if (!value || typeof value !== 'object') return undefined;
+  const out: Record<string, unknown> = {};
+  for (const [name, kid] of node.kids) {
+    if (name === '[]' || !Object.hasOwn(value, name)) continue;
+    const kept = pickFields((value as Record<string, unknown>)[name], kid);
+    if (kept !== undefined) out[name] = kept;
+  }
+  return out;
+}
+
+/**
+ * The commits a read names by SHA for their content: the commit itself (`commits/<sha>`), a compare's sides, a
+ * contents `ref`, a commits listing's `sha`. A commit's checks, statuses and PRs are this repository's own records.
+ */
+export function shasToProve(rest: string[], query: unknown): string[] {
+  const q = query && typeof query === 'object' ? (query as Record<string, unknown>) : {};
+  const out: string[] = [];
+  const add = (v: unknown) => {
+    // A number is sent as its digits, which can name a short SHA (trinity R6, fable).
+    if (typeof v !== 'string' && typeof v !== 'number') return;
+    const base = revisionBase(String(v));
+    if (HEXISH.test(base)) out.push(base);
+  };
+  if (rest[0] === 'commits' && rest.length === 1) add(q.sha);
+  if (rest[0] === 'commits' && rest.length > 1) {
+    const records = rest.length === 3 && COMMIT_RECORDS.has(rest[2]);
+    if (!records) add(rest.slice(1).join('/'));
+  }
+  if (rest[0] === 'compare') {
+    for (const side of rest
+      .slice(1)
+      .join('/')
+      .split(/\.{2,3}/))
+      add(side);
+  }
+  if (rest[0] === 'contents') add(q.ref);
+  return out;
+}
+
+/** Per fetch (one per process in production): the default branch of each repository, and the SHAs proven on it. */
+const defaultBranches = new WeakMap<Fetch, Map<string, string>>();
+const proven = new WeakMap<Fetch, Set<string>>();
+
+function perFetch<T>(map: WeakMap<Fetch, T>, fetch: Fetch, make: () => T): T {
+  let v = map.get(fetch);
+  if (v === undefined) {
+    v = make();
+    map.set(fetch, v);
+  }
+  return v;
+}
+
+async function readRefs(fetch: Fetch, config: EnvGithubConfig, repo: string): Promise<string[]> {
+  if (config.readRefs) return config.readRefs;
+  const known = perFetch(defaultBranches, fetch, () => new Map<string, string>());
+  const cached = known.get(repo);
+  if (cached) return [cached];
+  const { json } = await callWithStatus(fetch, config.token, 'GET', `/repos/${repo}`);
+  const branch = (json as { default_branch?: unknown } | null)?.default_branch;
+  if (typeof branch !== 'string' || !REF_NAME.test(branch)) {
+    throw new GithubError(`${repo} did not say its default branch; a commit by SHA is not read`);
+  }
+  known.set(repo, branch);
+  return [branch];
+}
+
+/**
+ * `sha` is on one of the repository's read refs: GitHub compares it with each ref, and `ahead` or `identical` means
+ * the ref holds it. GitHub answers a commit of any fork by SHA through the repository's own path, so a commit not
+ * on a read ref is refused (trinity R6, astra).
+ */
+async function proveOnRepo(fetch: Fetch, config: EnvGithubConfig, repo: string, sha: string): Promise<void> {
+  const refs = await readRefs(fetch, config, repo);
+  const done = perFetch(proven, fetch, () => new Set<string>());
+  const key = `${repo.toLowerCase()}|${refs.join(',')}|${sha.toLowerCase()}`;
+  if (done.has(key)) return;
+  for (const ref of refs) {
+    let status: unknown;
+    try {
+      const { json } = await callWithStatus(
+        fetch,
+        config.token,
+        'GET',
+        `/repos/${repo}/compare/${sha}...${ref}?per_page=1`,
+      );
+      status = (json as { status?: unknown } | null)?.status;
+    } catch (err) {
+      // A refusal (unknown commit, unknown ref) proves nothing; no answer at all is no answer.
+      if (err instanceof NoAnswerError) throw err;
+      continue;
+    }
+    if (status === 'ahead' || status === 'identical') {
+      done.add(key);
+      return;
+    }
+  }
+  throw new GithubError(
+    `${sha} is not on this repository's read refs (${refs.join(', ')}): a commit of another fork is not read`,
+  );
+}
+
+/**
+ * GET one path of the environment's repository. `fields` keeps only the named parts of the answer (before the
+ * output cap: a compare's file diffs can pass it alone); a long answer comes back cut, as text, with `truncated`.
+ * A commit named by SHA for its content must be on the repository first (`proveOnRepo`).
+ */
+export async function repoRead(
+  fetch: Fetch,
+  config: EnvGithubConfig,
+  path: unknown,
+  query?: unknown,
+  fields?: unknown,
+): Promise<{ path: string; status: number; truncated: boolean; body: unknown }> {
+  const checked = repoReadPath(config, path);
+  const keep = readFields(fields);
+  const segments = checked.split('/');
+  const repo = `${segments[1]}/${segments[2]}`;
+  for (const sha of shasToProve(
+    segments.slice(3).map((x) => decodeURIComponent(x)),
+    query,
+  )) {
+    await proveOnRepo(fetch, config, repo, sha);
+  }
+  const { status, json: raw } = await callWithStatus(fetch, config.token, 'GET', `/${checked}${readQuery(query)}`);
+  // Text in the repository (an issue body, a commit message, a committed file) can hold the token: never hand it on.
+  // Scrubbed whole, before `fields` picks: a base64 file is recognized by its `encoding` beside its `content`.
+  const scrubbed = scrubJson(raw ?? null, config.token);
+  const json = keep ? (pickFields(scrubbed, keep) ?? null) : scrubbed;
+  const text = JSON.stringify(json);
+  return text.length > READ_MAX_CHARS
+    ? { path: checked, status, truncated: true, body: text.slice(0, READ_MAX_CHARS) }
+    : { path: checked, status, truncated: false, body: json ?? null };
+}
+
+/** `text` with every occurrence of `token` replaced. */
+export function scrubToken(text: string, token: string): string {
+  return token ? text.split(token).join('[redacted]') : text;
+}
+
+/**
+ * Every string in a JSON answer with the token replaced, keys included; a base64 `content` (a file, a blob) is
+ * decoded, scrubbed and encoded again. Past 64 levels the rest is scrubbed as text.
+ */
+function scrubJson(value: unknown, token: string, depth = 0): unknown {
+  if (typeof value === 'string') return scrubToken(value, token);
+  if (!value || typeof value !== 'object') return value;
+  if (depth > 64) return JSON.parse(scrubToken(JSON.stringify(value), token));
+  if (Array.isArray(value)) return value.map((v) => scrubJson(v, token, depth + 1));
+  const out: Record<string, unknown> = {};
+  const o = value as Record<string, unknown>;
+  for (const [k, v] of Object.entries(o)) out[scrubToken(k, token)] = scrubJson(v, token, depth + 1);
+  if (o.encoding === 'base64' && typeof o.content === 'string') {
+    const decoded = Buffer.from(o.content.replace(/\s/g, ''), 'base64').toString('utf8');
+    if (decoded.includes(token)) out.content = Buffer.from(scrubToken(decoded, token), 'utf8').toString('base64');
+  }
+  return out;
 }
 
 type Obj = Record<string, unknown>;

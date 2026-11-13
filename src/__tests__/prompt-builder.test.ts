@@ -292,6 +292,15 @@ describe('PromptBuilder', () => {
       expect(prompt).not.toContain('api.github.com');
       expect(prompt).not.toContain('curl -');
       expect(execution).toMatch(/PR create and merge, CI checks, CD runs, the merge commit/);
+      // env-access WU5 (#1213): an environment's repository is read with the environment's own token first.
+      expect(execution.indexOf('`mcp__server-tools__gh_read`')).toBeGreaterThan(-1);
+      expect(execution.indexOf('`mcp__server-tools__gh_read`')).toBeLessThan(
+        execution.indexOf('`mcp__devops-tools__gh_read`'),
+      );
+      expect(execution).toContain('names `github.server`');
+      // review-of-legends R5/R6: the filter's fields go to `fields`; a segment may be percent-encoded for gh_read.
+      expect(execution).toContain('name the fields the `--jq` filter uses in `fields`');
+      expect(execution).toContain('percent-encode a space in a path there, never a `/`');
       // One GitHub read: gh_read with -X GET, query pairs only as -f (a branch holds a `/`), and a jq filter.
       expect(execution).toContain('`mcp__devops-tools__gh_read`');
       expect(execution).toContain(

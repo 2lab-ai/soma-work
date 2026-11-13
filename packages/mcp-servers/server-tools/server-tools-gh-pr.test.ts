@@ -168,6 +168,29 @@ describe('gh_pr', () => {
     expect(ledger().map((r) => r.phase)).toEqual(['intent', 'failed']);
   });
 
+  // review-of-legends R6 (tests): a redirect answer to an approve or a merge is not followed and is a failed write.
+  it('does not follow a redirect on an approve or a merge, and records the write failed', async () => {
+    for (const action of ['approve', 'merge'] as const) {
+      fs.rmSync(path.join(AUDIT, 'env-audit.jsonl'), { force: true });
+      const inits: { method: string; redirect?: string }[] = [];
+      const base = github();
+      const fetch: Fetch = async (url, init) => {
+        inits.push({ method: init.method, redirect: (init as { redirect?: string }).redirect });
+        if (init.method === 'POST' || init.method === 'PUT') {
+          return { ok: false, status: 307, json: async () => ({ message: 'Temporary Redirect' }) };
+        }
+        return base.fetch(url, init);
+      };
+      const err = await handleGhPr({ server: 'dev2', action, repo: 'acme/app', pr: 7, sha: SHA }, fetch).catch(
+        (e: Error) => e,
+      );
+      expect(String(err)).toMatch(/answered 307 \(moved\): not followed/);
+      expect(inits.every((i) => i.redirect === 'manual')).toBe(true);
+      expect(inits.filter((i) => i.method !== 'GET')).toHaveLength(1);
+      expect(ledger().map((r) => r.phase)).toEqual(['intent', 'failed']);
+    }
+  });
+
   // trinity R2 (fable): a write whose outcome cannot be known is recorded as unknown, not as failed.
   it('records an unknown outcome when the connection drops and the PR cannot be read again', async () => {
     let reads = 0;
