@@ -346,4 +346,12 @@ describe('SkillForceHandler — environment user skills', () => {
     expect(environmentApprovalKey('C1', undefined, 'same words')).not.toBe(a);
     expect(environmentApprovalKey('C1', 'T1', 'same words')).toBe(a);
   });
+
+  it('an environment skill that is not found ends there — the words do not go on to the requester model', async () => {
+    h.isAllowed.mockReturnValue(true);
+    const result = await handler.execute(ctx('please $acme-dev2:nope now with some words'));
+    expect(result.continueWithPrompt).toBeUndefined();
+    expect(runAsUser).not.toHaveBeenCalled();
+    expect(JSON.stringify(say.mock.calls)).toContain('스킬을 찾을 수 없습니다');
+  });
 });

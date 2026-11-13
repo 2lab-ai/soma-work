@@ -430,6 +430,12 @@ export class SkillForceHandler implements CommandHandler {
     }
 
     if (resolved.size === 0) {
+      // An environment skill that is not there ends here: the words were meant for the environment user, never for
+      // the requester's own model.
+      if (environmentRefs.length > 0) {
+        await say({ text: `❌ 스킬을 찾을 수 없습니다: ${errors.join(', ')}`, thread_ts: threadTs });
+        return { handled: true };
+      }
       // A message that is more than its skill references (a reply that quotes `$plugin:skill`, a note about a
       // skill this host lacks) still goes to the model: answering "not found" and dropping it lost the user's
       // words (2026-11-13). A message of skill references alone stays a failed command.

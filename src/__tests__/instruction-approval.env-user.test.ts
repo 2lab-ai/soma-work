@@ -18,6 +18,7 @@ const ENV = 'env:acme-dev2';
 describe('InstructionApprovals — environment user session', () => {
   let dir: string;
   let dms: string[];
+  let updated: string[];
   const session = { ownerId: ENV, ownerName: 'acme-dev2', channelId: 'C1', threadTs: '100.000', title: 'deploy' };
   const message = (user: string): HeldInstruction => ({
     kind: 'message',
@@ -40,7 +41,9 @@ describe('InstructionApprovals — environment user session', () => {
         dms.push(ownerId);
         return { channel: `D_${ownerId}`, ts: '1' };
       },
-      updateDm: async () => undefined,
+      updateDm: async (ref: { channel: string }) => {
+        updated.push(ref.channel);
+      },
       postThreadNotice: async () => undefined,
       release: async () => undefined,
       broadcast: () => undefined,
@@ -50,6 +53,7 @@ describe('InstructionApprovals — environment user session', () => {
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'instr-env-'));
     dms = [];
+    updated = [];
   });
   afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
@@ -88,6 +92,28 @@ describe('InstructionApprovals — environment user session', () => {
       });
       await new Promise((r) => setTimeout(r, 10));
       expect(dms).toEqual(['UADMIN']);
+    } finally {
+      admins.set = new Set(['UADMIN']);
+    }
+  });
+
+  it("every admin's DM is rewritten once the request is answered", async () => {
+    admins.set = new Set(['UADMIN', 'UADMIN2']);
+    try {
+      const a = approvals();
+      const held = await a.hold({
+        sessionKey: KEY,
+        session: session as any,
+        senderId: 'U_REQ',
+        senderName: 'Req',
+        instruction: message('U_REQ'),
+      });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(dms).toEqual(['UADMIN', 'UADMIN2']);
+      const requestId = (held as { requestId: string }).requestId;
+      expect(a.answer({ requestId, decision: 'deny', actor: 'UADMIN', surface: 'slack' }).ok).toBe(true);
+      await new Promise((r) => setTimeout(r, 10));
+      expect(updated.sort()).toEqual(['D_UADMIN', 'D_UADMIN2']);
     } finally {
       admins.set = new Set(['UADMIN']);
     }
