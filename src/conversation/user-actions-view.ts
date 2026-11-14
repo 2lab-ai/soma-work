@@ -6,6 +6,12 @@ import { parseUserActionRecord, USER_ACTIONS_KEPT, type UserActionRecord } from 
 
 export type DashboardUserAction = Omit<UserActionRecord, 'slackTs'>;
 
+/** The serializer's spread: `{ userActions }` when there is something to show, else nothing. */
+export function dashboardUserActionsField(raw: unknown): { userActions?: DashboardUserAction[] } {
+  const list = dashboardUserActions(raw);
+  return list ? { userActions: list } : {};
+}
+
 /** The board's list, or undefined when there is nothing to show. */
 export function dashboardUserActions(raw: unknown): DashboardUserAction[] | undefined {
   if (!Array.isArray(raw) || raw.length === 0) return undefined;

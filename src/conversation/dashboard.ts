@@ -187,7 +187,7 @@ import {
   uiLibTokensCss,
 } from './ui-lib';
 import { getUserMediaStore } from './user-media';
-import { type DashboardUserAction, dashboardUserActions } from './user-actions-view';
+import { type DashboardUserAction, dashboardUserActionsField } from './user-actions-view';
 import { VIEW_LAYOUT_CLIENT_JS } from './view-layout-client';
 import type { WorkLogEntry } from './work-log';
 
@@ -2768,7 +2768,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     environment: _selfInstanceEnv ? { ..._selfInstanceEnv } : undefined,
     goal: goalToKanban(s),
     ...(typeof s.sessionId === 'string' && s.sessionId && s.conversationId ? { rollbackAvailable: true } : {}),
-    ...(dashboardUserActions(s.userActions) ? { userActions: dashboardUserActions(s.userActions) } : {}),
+    ...dashboardUserActionsField(s.userActions),
     ...(s.pendingRewind && typeof s.pendingRewind.label === 'string'
       ? {
           pendingRewind: {
