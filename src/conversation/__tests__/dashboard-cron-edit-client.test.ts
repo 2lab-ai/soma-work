@@ -135,6 +135,7 @@ const META_FNS = [
   'cronDetailWhen',
   'cronArmed',
   'cronActionBar',
+  'cronArmedSaid',
   'renderCronDetail',
 ];
 const META_VARS = [
@@ -145,6 +146,7 @@ const META_VARS = [
   'CRON_ACT_LABEL',
   'CRON_ARMED_SAID',
   'CRON_NOTE_OTHERS',
+  'CRON_ARMED_SAID_POST',
 ];
 
 describe('gate — 내용 보기 for whoever may manage the job, one plain line for everyone else', () => {

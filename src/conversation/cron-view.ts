@@ -45,6 +45,11 @@ export interface KanbanCronRun {
   triggeredBy?: string;
   /** Fired by hand (Slack ▶, `cron run`, 지금 실행) — the owner's press too; absent for a scheduled run. */
   manual?: boolean;
+  /**
+   * Where a thread reply was posted (target thread: the prompt text only — no session ran it), so the drawer can
+   * open it. The job's thread anchor as it is now (a channel change drops the anchor).
+   */
+  postedUrl?: string;
   error?: string;
   session?: KanbanCronRunSession;
 }
@@ -106,6 +111,8 @@ export function buildCronJobsView(args: {
   userId?: string;
   nowMs: number;
   findSession: CronRunSessionLookup;
+  /** A thread's Slack link, or null when none can be built. */
+  threadUrl?: (channel: string, threadTs: string) => string | null | undefined;
 }): KanbanCronJob[] {
   const jobs = args.userId ? args.jobs.filter((j) => j.owner === args.userId) : args.jobs;
   const byJob = new Map<string, CronExecutionRecord[]>();
@@ -153,12 +160,17 @@ export function buildCronJobsView(args: {
           session = { ...shared, activityState: 'idle' };
         }
       }
+      const postedUrl =
+        record.executionPath === 'thread_reply' && job.threadTs
+          ? (args.threadUrl?.(job.channel, job.threadTs) ?? undefined)
+          : undefined;
       return {
         executedAt,
         status: record.status,
         executionPath: record.executionPath,
         ...(record.triggeredBy ? { triggeredBy: record.triggeredBy } : {}),
         ...(record.manual ? { manual: true } : {}),
+        ...(postedUrl ? { postedUrl } : {}),
         ...(record.error ? { error: record.error } : {}),
         ...(session ? { session } : {}),
       };

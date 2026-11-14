@@ -146,6 +146,17 @@ describe('target select', () => {
     expect(j.threadTs).toBeNull();
   });
 
+  it('channel from a thread reply keeps the thread: the prompt now runs in that thread’s session', async () => {
+    seed({ target: 'thread', threadTs: '9.9' });
+    await handler.handleAction(
+      body({ actionId: 'cron_target::U_ALICE::daily-report', user: 'U_ALICE', selected: 'channel' }),
+      vi.fn(),
+    );
+    const j = storage.getJobsByOwner('U_ALICE')[0];
+    expect(j.target).toBeUndefined();
+    expect(j.threadTs).toBe('9.9');
+  });
+
   it('thread anchors to the card thread ts AND repoints channel to the card channel', async () => {
     seed(); // job.channel = C111, card lives in C_CARD
     await handler.handleAction(

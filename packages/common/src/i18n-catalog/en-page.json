@@ -1570,8 +1570,6 @@
   "실행을 요청하는 중…": "Asking to run…",
   "실행을 시작했어요 — 실행은 보드와 아래 기록에 나타나요": "The run started — it shows on the board and in the history below",
   "잡의 세션이 일하는 중이라, 끝나면 실행해요": "The job's session is working — it runs when that turn ends",
-  "DM으로 보냈어요": "Sent as a DM",
-  "스레드에 답글로 올렸어요": "Posted as a thread reply",
   "실행하지 못했어요": "Could not run it",
   "지우는 중…": "Deleting…",
   "지우지 못했어요": "Could not delete it",
@@ -1583,5 +1581,9 @@
   "편집": "Edit",
   "접기": "Collapse",
   "내용 보기": "View content",
-  "수동 실행": "Manual run"
+  "수동 실행": "Manual run",
+  "한 번 더 누르면 프롬프트 글을 스레드에 답글로 올려요 — 모델은 실행하지 않아요": "Press again to post the prompt text as a thread reply — no model runs it",
+  "한 번 더 누르면 프롬프트 글을 DM으로 보내요 — 모델은 실행하지 않아요": "Press again to send the prompt text as a DM — no model runs it",
+  "DM으로 보냈어요 — 글만 보냈고, 모델은 실행하지 않았어요": "Sent as a DM — the text only; no model ran it",
+  "스레드에 답글로 올렸어요 — 글만 올렸고, 모델은 실행하지 않았어요": "Posted as a thread reply — the text only; no model ran it"
 }

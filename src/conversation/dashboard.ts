@@ -3755,6 +3755,7 @@ export async function registerDashboardRoutes(
           userId: request.query.userId || undefined,
           nowMs: Date.now(),
           findSession: cronRunSessionIndex(),
+          threadUrl: (channel, threadTs) => buildThreadPermalink(channel, threadTs),
         });
         reply.send({ jobs });
       } catch (err) {
@@ -22428,6 +22429,8 @@ function renderCronRunRow(run, g, nowMs) {
   if (s && s.boardKey && _sessionCache[s.boardKey]) actions.push('<button type="button" class="ui-btn is-sm" data-cron-open="' + escAttr(s.boardKey) + '">작업 로그</button>');
   if (s && s.conversationId) actions.push('<a class="ui-btn is-sm" href="/conversations/' + encodeURIComponent(s.conversationId) + '" target="_blank" rel="noopener">대화 기록</a>');
   if (s && s.slackThreadUrl) actions.push('<a class="ui-btn is-sm" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">Slack</a>');
+  // A thread reply opened no session: the thread it was posted in is where to look.
+  else if (!s && run.postedUrl) actions.push('<a class="ui-btn is-sm" href="' + safeHref(run.postedUrl) + '" target="_blank" rel="noopener">Slack</a>');
   // A kit row (.ui-row): the state's glyph in its tone, the title, the facts, an error as a fail status line,
   // the actions at the end. The state's word rides along for screen readers when the title is not it.
   return '<li class="ui-row"' + (gl.tone ? ' data-tone="' + gl.tone + '"' : '') + '>'
@@ -22579,8 +22582,11 @@ var CRON_ACT_LABEL = { bar: '잡 다루기', run: '지금 실행', runArmed: '�
 var CRON_NOTE_OTHERS = '실행·편집·삭제와 프롬프트를 포함한 전체 내용은 소유자나 관리자 모드를 켠 관리자만 다룰 수 있어요';
 // What an armed press is about to do — said under the row while it waits for the second press.
 var CRON_ARMED_SAID = { run: '한 번 더 누르면 지금 바로 실행해요 — 다음 예약 실행은 그대로예요', delete: '한 번 더 누르면 이 잡을 지워요 — 되돌릴 수 없어요' };
+// A job whose output is a thread reply or a DM only posts its prompt text: nothing runs it. 지금 실행 says so before
+// the second press, so nobody waits for a session that never opens.
+var CRON_ARMED_SAID_POST = { thread: '한 번 더 누르면 프롬프트 글을 스레드에 답글로 올려요 — 모델은 실행하지 않아요', dm: '한 번 더 누르면 프롬프트 글을 DM으로 보내요 — 모델은 실행하지 않아요' };
 // What 지금 실행 says once the server answered: the scheduler's own answer when it came in time, else that it started.
-var CRON_RUN_SAID = { started: '실행을 시작했어요 — 실행은 보드와 아래 기록에 나타나요', busy_queue: '잡의 세션이 일하는 중이라, 끝나면 실행해요', dm: 'DM으로 보냈어요', thread_reply: '스레드에 답글로 올렸어요' };
+var CRON_RUN_SAID = { started: '실행을 시작했어요 — 실행은 보드와 아래 기록에 나타나요', busy_queue: '잡의 세션이 일하는 중이라, 끝나면 실행해요', dm: 'DM으로 보냈어요 — 글만 보냈고, 모델은 실행하지 않았어요', thread_reply: '스레드에 답글로 올렸어요 — 글만 올렸고, 모델은 실행하지 않았어요' };
 // The whole job may be shown to this viewer: the owner, or an admin with 관리자 모드 on.
 function cronDetailAllowed(g) {
   return !!(g && g.job && g.jobId && viewerCanManage({ ownerId: g.job.owner }));
@@ -22606,7 +22612,12 @@ function cronActionBar(g) {
     + btn('edit', '', CRON_ACT_LABEL.edit)
     + btn('delete', ' is-danger cron-act-end', armed === 'delete' ? CRON_ACT_LABEL.deleteArmed : CRON_ACT_LABEL.delete)
     + '</div>'
-    + (armed ? '<p class="cron-actions-hint" id="cron-armed-hint">' + esc(CRON_ARMED_SAID[armed]) + '</p>' : '');
+    + (armed ? '<p class="cron-actions-hint" id="cron-armed-hint">' + esc(cronArmedSaid(g, armed)) + '</p>' : '');
+}
+// What the armed press does: 지금 실행 of a job that only posts its text (output: thread reply, DM) says so.
+function cronArmedSaid(g, armed) {
+  var target = g && g.job ? g.job.target : '';
+  return armed === 'run' && CRON_ARMED_SAID_POST[target] ? CRON_ARMED_SAID_POST[target] : CRON_ARMED_SAID[armed];
 }
 // The press 지금 실행 or 삭제 is waiting on: armed within the last 4 s, else nothing.
 function cronArmed(st) {

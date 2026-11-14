@@ -126,6 +126,7 @@ const META_FNS = [
   'cronDetailGate',
   'cronDetailWhen',
   'cronActionBar',
+  'cronArmedSaid',
   'cronArmed',
   'renderCronDetail',
   'renderCronDrawerMeta',
@@ -138,6 +139,7 @@ const META_VARS = [
   'CRON_ACT_LABEL',
   'CRON_ARMED_SAID',
   'CRON_NOTE_OTHERS',
+  'CRON_ARMED_SAID_POST',
 ];
 
 /** The row's buttons, in order, as [act, label]. */
@@ -487,8 +489,8 @@ describe('run — 지금 실행', () => {
   it('says what the scheduler did when it answered in time', async () => {
     for (const [detail, said] of [
       ['busy_queue', '잡의 세션이 일하는 중이라, 끝나면 실행해요'],
-      ['dm', 'DM으로 보냈어요'],
-      ['thread_reply', '스레드에 답글로 올렸어요'],
+      ['dm', 'DM으로 보냈어요 — 글만 보냈고, 모델은 실행하지 않았어요'],
+      ['thread_reply', '스레드에 답글로 올렸어요 — 글만 올렸고, 모델은 실행하지 않았어요'],
       ['idle_inject', '실행을 시작했어요 — 실행은 보드와 아래 기록에 나타나요'],
     ] as const) {
       const a = actor([{ status: 200, body: { ok: true, detail } }]);
@@ -608,6 +610,67 @@ describe('history — a run by hand reads 수동 실행, the owner’s press too
     expect(row({ manual: true })).toContain('<span aria-hidden="true"> · </span>수동 실행');
     expect(row({})).toContain('예약 실행');
     expect(row({})).not.toContain('수동 실행');
+  });
+});
+
+describe('a job that only posts its text (output: thread reply or DM) says so before and after the press', () => {
+  it('armed, the line says the text is posted and no model runs it', () => {
+    const f = load<any>(META_FNS, META_VARS, { ...FACT_ENV, ...OWNER });
+    for (const [target, said] of [
+      ['thread', '한 번 더 누르면 프롬프트 글을 스레드에 답글로 올려요 — 모델은 실행하지 않아요'],
+      ['dm', '한 번 더 누르면 프롬프트 글을 DM으로 보내요 — 모델은 실행하지 않아요'],
+      ['channel', '한 번 더 누르면 지금 바로 실행해요 — 다음 예약 실행은 그대로예요'],
+    ] as const) {
+      const g = { ...GROUP, job: { ...LANE_JOB, target } };
+      f.__setState({ key: GROUP.key, jobId: 'job-1', job: null, armed: 'run', armSince: Date.now() });
+      expect(f.renderCronDrawerMeta(g, T0), target).toContain(`id="cron-armed-hint">${said}</p>`);
+    }
+  });
+
+  it('after the press, the result says nothing ran a model', async () => {
+    for (const [detail, said] of [
+      ['thread_reply', '스레드에 답글로 올렸어요 — 글만 올렸고, 모델은 실행하지 않았어요'],
+      ['dm', 'DM으로 보냈어요 — 글만 보냈고, 모델은 실행하지 않았어요'],
+    ] as const) {
+      const a = actor([{ status: 200, body: { ok: true, detail } }]);
+      armedFor(a, 'run');
+      await a.f.cronDetailRun();
+      expect(a.status.textContent, detail).toBe(said);
+    }
+  });
+
+  it('the run row of a thread reply links the thread it was posted in', () => {
+    const f = load<{ renderCronRunRow(run: unknown, g: unknown, now: number): string }>(
+      ['esc', 'escAttr', 'renderCronRunRow'],
+      [],
+      {
+        cronRunGlyph: () => ({ glyph: 'ring', label: '스레드 답글 (세션 없음)', tone: '' }),
+        CRON_RUN_GLYPHS: { ring: '' },
+        cronRunWhen: () => '11/14 12:23',
+        formatNmSSs: () => '',
+        formatTokens: () => '',
+        safeHref: (u: string) => u,
+        _sessionCache: {},
+      },
+    );
+    const html = f.renderCronRunRow(
+      {
+        executedAt: T0,
+        status: 'success',
+        executionPath: 'thread_reply',
+        manual: true,
+        postedUrl: 'https://slack.example/t',
+      },
+      GROUP,
+      T0,
+    );
+    expect(html).toContain(
+      '<a class="ui-btn is-sm" href="https://slack.example/t" target="_blank" rel="noopener">Slack</a>',
+    );
+    // No link known: no button.
+    expect(f.renderCronRunRow({ executedAt: T0, status: 'success', executionPath: 'dm' }, GROUP, T0)).not.toContain(
+      '<a ',
+    );
   });
 });
 
