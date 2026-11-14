@@ -187,6 +187,7 @@ import {
   uiLibTokensCss,
 } from './ui-lib';
 import { getUserMediaStore } from './user-media';
+import { type DashboardUserAction, dashboardUserActions } from './user-actions-view';
 import { VIEW_LAYOUT_CLIENT_JS } from './view-layout-client';
 import type { WorkLogEntry } from './work-log';
 
@@ -584,6 +585,14 @@ export interface KanbanSession {
    * nothing to show.
    */
   followups?: DashboardFollowups;
+  /**
+   * Tasks the agent handed the human through the `user-action` MCP (`instruct_user`): what to do, the machine, the
+   * short script and the host's check of it (the same check the agent's own Bash gets), with done / failed. Drawn in
+   * the detail card's own "사용자 할 일" section — apart from the question (`pendingQuestion`), which asks for input —
+   * and counted on the card face while a required one waits. Same audience as `pendingQuestion`; the script never
+   * holds a credential (the MCP refuses one). Absent when there are none.
+   */
+  userActions?: DashboardUserAction[];
   /**
    * A turn holds the session (dispatched, not yet settled) while `activityState`
    * does not say `working` yet — the turn is still starting, or still settling.
@@ -2759,6 +2768,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     environment: _selfInstanceEnv ? { ..._selfInstanceEnv } : undefined,
     goal: goalToKanban(s),
     ...(typeof s.sessionId === 'string' && s.sessionId && s.conversationId ? { rollbackAvailable: true } : {}),
+    ...(dashboardUserActions(s.userActions) ? { userActions: dashboardUserActions(s.userActions) } : {}),
     ...(s.pendingRewind && typeof s.pendingRewind.label === 'string'
       ? {
           pendingRewind: {
@@ -6593,6 +6603,26 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 .ptl-line[aria-expanded="true"] .ptl-caret { transform: rotate(180deg); }
 .ptl-line:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 .panel-family { padding: 4px 16px 8px; }
+.panel-user-actions { padding: 4px 16px 8px; }
+.pua-list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.pua-item { border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 6px; padding: 8px 10px; background: var(--surface); }
+.pua-item.is-done { border-left-color: var(--st-done, #2eb67d); opacity: .8; }
+.pua-item.is-failed { border-left-color: var(--text-secondary); opacity: .8; }
+.pua-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.pua-status { font-size: 11px; padding: 1px 6px; border-radius: 999px; background: var(--surface-2, rgba(127,127,127,.15)); }
+.pua-status.is-pending { background: var(--accent); color: var(--on-accent, #fff); }
+.pua-opt { font-size: 11px; color: var(--text-secondary); }
+.pua-meta { display: grid; grid-template-columns: max-content 1fr; gap: 2px 8px; margin: 6px 0; font-size: 12px; }
+.pua-meta dt, .pua-k { color: var(--text-secondary); font-size: 12px; }
+.pua-meta dd { margin: 0; }
+.pua-script { margin: 4px 0 6px; padding: 6px 8px; border-radius: 4px; background: var(--code-bg, rgba(127,127,127,.12)); white-space: pre-wrap; word-break: break-all; font-size: 12px; }
+.pua-check { margin-top: 6px; padding: 6px 8px; border-radius: 4px; border: 1px solid var(--border); font-size: 12px; }
+.pua-check.is-caution { border-color: #ecb22e; }
+.pua-check.is-danger { border-color: #e01e5a; }
+.pua-check ul { margin: 4px 0 0; padding-left: 16px; }
+.pua-verdict { font-weight: 600; }
+.pua-note { font-weight: 400; color: var(--text-secondary); }
+.pua-hint, .pua-line { margin-top: 4px; font-size: 12px; color: var(--text-secondary); }
 .pf-line .pf-peek { display: flex; align-items: center; gap: 6px; }
 .pf-line .pf-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pf-line { position: static; }
@@ -7436,6 +7466,9 @@ ${pageTokenAliases()}
         <!-- 작업 계획 (plan mode, SSOT 2026-11-02): the task's plan, drawn by the server — high level to detail — at once when the card opens. -->
         <div class="panel-plan" id="panel-plan" role="region" aria-label="작업 계획" hidden></div>
         </div>
+        <!-- 사용자 할 일 — tasks the agent handed the owner (instruct_user): where, the script, the host's check of it.
+             Its own region, outside 입력 필요: it is work for the owner, not a question, and never moves into the chat. -->
+        <div class="panel-user-actions" id="panel-user-actions" role="region" aria-label="사용자 할 일" hidden></div>
         <!-- #1021 — an epic's children (one line; a press shows them all, a child opens on its own press), or a child's epic. -->
         <div class="panel-family" id="panel-family" role="region" aria-label="에픽과 자식 작업" hidden></div>
         <p class="ui-sr-only" id="panel-needs-status" role="status" aria-live="polite"></p>
@@ -10008,6 +10041,66 @@ function panelFamilyHtml(s, open) {
   return '<button type="button" class="panel-tasks-header ptl-line pf-line pf-up" data-family-key="' + escAttr(epic.key) + '" onclick="openFamilyCard(this)">'
     + '<span class="ps-sec-title">에픽</span><span class="ptl-now pf-peek"><span class="pf-name">' + esc(title) + '</span></span></button>';
 }
+// 사용자 할 일 (instruct_user) — what the agent handed the owner to do: where, the short script, and the host's
+// check of that script (syntax, the dangerous-command rules the agent's own Bash goes through, irreversible
+// actions). Waiting ones first, in full; answered ones after, one line each. Its own section: never the question.
+var UA_STATUS_LABEL = { pending: '대기 중', done: '완료', failed: '안 됨' };
+var UA_VERDICT_LABEL = { ok: '통과', caution: '주의', danger: '위험' };
+var UA_VERDICT_ICON = { ok: '✅', caution: '⚠️', danger: '⛔' };
+var UA_LEVEL_ICON = { info: 'ℹ️', caution: '⚠️', danger: '⛔' };
+function userActionCheckHtml(ins) {
+  if (!ins) return '';
+  var v = ins.verdict || 'ok';
+  var syn = ins.syntax || {};
+  var rows = [];
+  var synText = syn.checked ? (syn.ok ? '통과' : '실패') : '검사 못 함';
+  rows.push('<li><span class="pua-k">' + '구문' + '</span> ' + (syn.tool ? '<code>' + esc(syn.tool) + '</code> ' : '') + esc(synText) + (syn.message ? ' — ' + esc(syn.message) : '') + '</li>');
+  if (ins.commands && ins.commands.length) {
+    rows.push('<li><span class="pua-k">' + '실행하는 명령' + '</span> ' + ins.commands.map(function(c) { return '<code>' + esc(c) + '</code>'; }).join(' ') + '</li>');
+  }
+  var risky = false;
+  (ins.findings || []).forEach(function(f) {
+    if (f.id === 'syntax-unchecked' || f.id === 'syntax-error') return;
+    if (f.level !== 'info') risky = true;
+    rows.push('<li class="pua-f is-' + esc(f.level) + '">' + (UA_LEVEL_ICON[f.level] || '') + ' ' + esc(f.label) + (f.detail ? ' — ' + esc(f.detail) : '') + '</li>');
+  });
+  if (!risky) rows.push('<li>' + '위험 규칙·되돌릴 수 없는 동작: 없음' + '</li>');
+  return '<div class="pua-check is-' + esc(v) + '"><div class="pua-verdict">' + (UA_VERDICT_ICON[v] || '') + ' ' + '점검 결과' + ': ' + esc(UA_VERDICT_LABEL[v] || v)
+    + ' <span class="pua-note">' + '봇이 자기 Bash 명령에 쓰는 검사와 같은 검사' + '</span></div><ul>' + rows.join('') + '</ul></div>';
+}
+function userActionItemHtml(a) {
+  var st = a.status || 'pending';
+  var head = '<div class="pua-head"><span class="pua-status is-' + esc(st) + '">' + esc(UA_STATUS_LABEL[st] || st) + '</span>'
+    + '<strong class="pua-title">' + esc(a.title) + '</strong>' + (a.optional ? '<span class="pua-opt">' + '선택' + '</span>' : '') + '</div>';
+  if (st !== 'pending') {
+    return '<li class="pua-item is-' + esc(st) + '" data-mk="' + escAttr('ua:' + a.id) + '">' + head
+      + '<div class="pua-line"><span class="pua-k">' + '어디서' + '</span> <code>' + esc(a.host) + '</code></div></li>';
+  }
+  return '<li class="pua-item is-pending" data-mk="' + escAttr('ua:' + a.id) + '">' + head
+    + '<dl class="pua-meta"><dt>' + '어디서' + '</dt><dd><code>' + esc(a.host) + '</code> · ' + esc(a.shell) + '</dd>'
+    + '<dt>' + '왜' + '</dt><dd>' + esc(a.why) + '</dd></dl>'
+    + '<div class="pua-k">' + '실행할 스크립트' + '</div><pre class="pua-script"><code>' + esc(a.script) + '</code></pre>'
+    + '<dl class="pua-meta"><dt>' + '바뀌는 것' + '</dt><dd>' + esc(a.effects) + '</dd>'
+    + '<dt>' + '성공하면' + '</dt><dd>' + esc(a.expect) + '</dd></dl>'
+    + userActionCheckHtml(a.inspection)
+    + '<div class="pua-hint">' + '실행한 뒤 Slack 카드의 완료 / 안 됨 버튼으로 알려 주세요.' + '</div></li>';
+}
+function panelUserActionsHtml(s) {
+  var list = (s && s.userActions) || [];
+  if (!list.length) return '';
+  var waiting = list.filter(function(a) { return a.status === 'pending'; });
+  var answered = list.filter(function(a) { return a.status !== 'pending'; }).reverse();
+  return '<div class="ui-section-head"><h4>' + '사용자 할 일' + '</h4>'
+    + (waiting.length ? '<span class="ui-count" data-tone="wait">' + waiting.length + '</span>' : '') + '</div>'
+    + '<ul class="pua-list" role="list">' + waiting.concat(answered).map(userActionItemHtml).join('') + '</ul>';
+}
+function renderPanelUserActions(s) {
+  var el = document.getElementById('panel-user-actions');
+  if (!el) return;
+  var html = panelUserActionsHtml(s);
+  el.hidden = !html;
+  writePanelPart(el, html);
+}
 function renderPanelFamily() {
   var el = document.getElementById('panel-family');
   if (!el) return;
@@ -11837,6 +11930,9 @@ function cardOf(s, col) {
   if (media > 0) metrics.push({ text: String(media), glyph: 'attach', title: '지시 첨부 ' + media + '개', label: '지시 첨부 ' + media + '개' });
   var pr = cardPrMetric(s);
   if (pr) metrics.push(pr);
+  // 사용자 할 일 (instruct_user): required tasks still waiting on the owner — optional ones raise no flag.
+  var uaWait = (s.userActions || []).filter(function(a) { return a && a.status === 'pending' && !a.optional; }).length;
+  if (uaWait > 0) metrics.push({ text: String(uaWait), glyph: 'alert', title: '사용자 할 일 ' + uaWait + '개', label: '사용자 할 일 ' + uaWait + '개' });
   if (metrics.length) card.metrics = metrics;
   // 작업 카드의 연결 (SSOT 2026-11-02): every linked issue, PR and wiki with its state — the face's links row.
   var links = cardLinksFace(s);
@@ -13796,6 +13892,7 @@ function repaintPanelSession() {
   renderPanelControls(s);
   renderPanelComposer(s);
   renderPanelPlan(s);
+  renderPanelUserActions(s);
   renderPanelNext();
   renderPanelFamily();
   repaintPanelScope();
