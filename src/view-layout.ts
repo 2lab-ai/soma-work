@@ -41,7 +41,7 @@ export const CARD_CHIPS = [
 export const OPEN_PARTS = ['tasks', 'agents', 'io', 'arts', 'goal', 'refs', 'model'] as const;
 /** The detail card's title bar: what follows the status and the time, in order (SSOT 2026-11-03). */
 export const DETAIL_HEAD = ['model', 'cost', 'tokens', 'speed', 'ctx', 'owner', 'workflow'] as const;
-/** The detail card's tab bar under 입력 필요: a tab's content shows only while it is pressed (SSOT 2026-11-03). */
+/** The detail card's tab bar under the title bar: a tab's content shows only while it is pressed (SSOT 2026-11-03). */
 export const DETAIL_TABS = ['goal', 'tasks', 'agents', 'artifacts', 'info'] as const;
 export const THREAD_INFO = ['owner', 'workflow', 'model', 'ctx', 'cost', 'tokens', 'task', 'steps'] as const;
 export const THREAD_NAV = ['dashboardLink', 'linkhistory', 'links', 'status'] as const;
@@ -86,9 +86,10 @@ export type DetailTasks = 'runs' | 'list' | 'line';
 
 /**
  * The detail card in three zones (SSOT 2026-11-03): the title bar (the title, status · time, then `head` in order,
- * then Slack · ☆ · the actions), 입력 필요 right under it (always — approvals, the question, a plan), the tab bar
- * (`tabs` in order — 목표 2/5 · 작업 1/7 · 에이전트 5 …; every tab starts closed and its content shows only while it
- * is pressed), then the bottom: the chat with the work log (대화 · 작업 로그) and the composer.
+ * then Slack · ☆ · the actions), the tab bar (`tabs` in order — 목표 2/5 · 작업 1/7 · 에이전트 5 …; every tab starts
+ * closed and its content shows only while it is pressed), then the bottom: the chat with the work log (대화 · 작업
+ * 로그) and the composer. 입력 필요 (always — approvals, the question, a plan) is the chat's last message (SSOT
+ * 2026-11-13), so the conversation above it is the answer's context; off the chat it sits right under the title bar.
  */
 export interface DetailLayout {
   head: LayoutItem<DetailHeadId>[];
@@ -503,7 +504,7 @@ export const LAYOUT_CATALOG = {
       { id: 'head', label: '제목 · 상태', hint: '제목 · 상태 · 시간 · Slack · 별 · 중지 — 항상', locked: true },
       { id: 'chat', label: '채팅', hint: '지시와 답변 — 항상', locked: true },
       { id: 'composer', label: '입력창', hint: '항상', locked: true },
-      { id: 'needs', label: '입력 필요', hint: '승인 · 질문 · 작업 계획 — 제목 바로 아래, 항상', locked: true },
+      { id: 'needs', label: '입력 필요', hint: '승인 · 질문 · 작업 계획 — 대화의 마지막 메시지, 항상', locked: true },
     ],
     head: [
       { id: 'model', label: '모델', hint: '회사 색 점과 이름' },

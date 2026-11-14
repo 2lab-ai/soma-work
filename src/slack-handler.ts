@@ -473,6 +473,16 @@ export class SlackHandler {
   /** Seam for the user-turn record of a steered message (tests swap it). */
   private userMediaRecorder = { capture: captureUserMedia, record: recordUserTurn };
   /**
+   * Per session, the end of the line of steered messages being recorded
+   * ({@link recordSteeredInstruction}). The model reads the messages queued at
+   * one tool boundary together, so their `read` signals come a few ms apart
+   * and nobody awaits them; each recording copies its files first. Written as
+   * each copy finished, the later message landed above the earlier one in the
+   * chat (2026-11-14) — the model had read them in order. A recording writes
+   * its turn only after every recording started before it has written.
+   */
+  private steerRecordingTails = new Map<string, Promise<void>>();
+  /**
    * The uuid each item was steered under, keyed by item id — the reverse of
    * {@link followupSteerFiles}, and the only way back to those files from a path
    * that knows the ITEM but never sees a uuid: the end-of-turn sweep (the row is
@@ -1653,8 +1663,9 @@ export class SlackHandler {
   /**
    * Drain each idle session of `keys`. Skipped, and left to what comes next: a busy one (its running
    * turn's end drains it), one whose goal is being judged (the eval's continuation carries the rows —
-   * steered in when it reaches the model), and a halted lane — only a person reopens a halt (A16); the
-   * rows stay queued, and the session's next turn still gets the steer-back ones.
+   * steered in when it reaches the model), and a halted lane — a person reopens a halt (A16), or, for
+   * an error no row carries, the lane's next healthy run (#1278); the rows stay queued, and the
+   * session's next turn still gets the steer-back ones.
    */
   private drainIdleRestartRequeued(keys: Iterable<string>): number {
     const dispatcher = this.followupDispatcher;
@@ -2155,7 +2166,8 @@ export class SlackHandler {
    * Only that halt. Every other `blocked` reason is a refusal, a consumed
    * message, or a wait for something a plain message is not (a grant, a route
    * decision, a free work slot); `error` and `authorization` say the lane itself
-   * is broken. Those keep waiting for Resume/Retry. A turn that is not the
+   * is broken. Those keep waiting for Resume/Retry — except an `error` no queue
+   * item carries, which the lane's next healthy run lifts (#1278, dispatcher). A turn that is not the
    * person's word — a host turn, `/compact`, or a command answered without a
    * turn (`help`, the `compact` confirmation) — never gets here.
    */
@@ -2887,6 +2899,10 @@ export class SlackHandler {
         !inlineNoGoal &&
         (!continueWithPrompt || (freshContextStart && !!deferredSkillFire)) &&
         !event.synthetic &&
+        // A host turn replayed after /compact is not synthetic any more, but it is still the host's
+        // text (dev 2026-11-13: "[auto-compact] … Continue the interrupted work" became the goal, a
+        // goal no eval can close — and a goal session, whose auto-compact stop waits for its loop).
+        event.routeContext?.hostTurn !== true &&
         // An incident report is not the requesting bot's long-running goal:
         // promoting it would keep the restricted session running on its own.
         !incidentTurn &&
@@ -6496,11 +6512,33 @@ export class SlackHandler {
    * conversation, with its files (user media, SSOT 2026-10-25) — the executor
    * never saw it, so nothing else records it. Best effort: a bookkeeping
    * failure must never fail the turn it was steered into.
+   *
+   * In the order of the calls, which is the order the model read the messages
+   * ({@link steerRecordingTails}): the files are copied side by side, and each
+   * turn is written after the one called before it. Never rejects.
    */
-  private async recordSteeredInstruction(
+  private recordSteeredInstruction(
     sessionKey: string,
     instruction: { text: string; user?: string; sentAt?: number; clientRef?: string },
     files: ProcessedFile[],
+  ): Promise<void> {
+    const before = this.steerRecordingTails.get(sessionKey) ?? Promise.resolve();
+    const recording = this.writeSteeredInstruction(sessionKey, instruction, files, before);
+    // The line ends when this one AND everything before it is written: one that writes nothing
+    // (no conversation) must not let the next one pass a slower one still copying.
+    const tail = Promise.all([before, recording]).then(() => undefined);
+    this.steerRecordingTails.set(sessionKey, tail);
+    void tail.then(() => {
+      if (this.steerRecordingTails.get(sessionKey) === tail) this.steerRecordingTails.delete(sessionKey);
+    });
+    return recording;
+  }
+
+  private async writeSteeredInstruction(
+    sessionKey: string,
+    instruction: { text: string; user?: string; sentAt?: number; clientRef?: string },
+    files: ProcessedFile[],
+    before: Promise<void>,
   ): Promise<void> {
     try {
       const session = this.claudeHandler?.getSessionByKey?.(sessionKey);
@@ -6508,6 +6546,8 @@ export class SlackHandler {
       if (!conversationId || (!instruction.text && files.length === 0)) return;
       let attachments: Awaited<ReturnType<typeof captureUserMedia>> | undefined;
       if (files.length > 0) attachments = await this.userMediaRecorder.capture(conversationId, files);
+      // The messages read before this one are written first.
+      await before;
       const userId = instruction.user ?? session?.ownerId ?? 'unknown';
       const userName = userSettingsStore.getUserSettings?.(userId)?.slackDisplayName ?? session?.ownerName ?? userId;
       this.userMediaRecorder.record(

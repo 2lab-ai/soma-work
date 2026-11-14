@@ -138,6 +138,14 @@ export class CronScheduler {
   private timer: ReturnType<typeof setInterval> | null = null;
   private pendingCronQueue: Map<string, CronJob[]> = new Map();
   private isRunning = false;
+  /**
+   * Jobs whose scheduled fire is still running (its turn has not ended). A tick launches a fire and moves on — it
+   * never waits for the turn — so one long job cannot hold the others past the catch-up window; this set keeps a
+   * job from being fired again on top of its own running turn.
+   */
+  private inFlight: Set<string> = new Set();
+  /** Fires launched by ticks whose turns have not ended yet. */
+  private runs: Set<Promise<void>> = new Set();
   /** Last epoch minute a completed tick evaluated; null until the first tick. */
   private lastEvaluatedMinute: number | null = null;
 
@@ -212,11 +220,40 @@ export class CronScheduler {
   }
 
   /**
+   * Open a bot thread in `channel` and run `text` there as `owner` — the path a scheduled fire takes, so the
+   * session is the owner's. An environment user's skill that another user asked for (and an admin approved) runs
+   * this way (env-access). `onOpened` gets the root ts as soon as the thread exists; resolves with it once the
+   * turn ends, or undefined when Slack returned no ts.
+   */
+  async runAsUserInNewThread(input: {
+    owner: string;
+    channel: string;
+    rootText: string;
+    text: string;
+    onOpened?: (rootTs: string) => void;
+  }): Promise<string | undefined> {
+    const rootTs = await this.deps.threadCreator(input.channel, input.rootText);
+    if (!rootTs) return undefined;
+    input.onOpened?.(rootTs);
+    await this.deps.messageInjector({
+      user: input.owner,
+      channel: input.channel,
+      thread_ts: rootTs,
+      ts: `${Date.now() / 1000}`,
+      text: input.text,
+      synthetic: true,
+      skipDispatch: true,
+      routeContext: { skipAutoBotThread: true },
+    });
+    return rootTs;
+  }
+
+  /**
    * Main tick: evaluate all cron jobs against every minute since the last
    * evaluated one, up to now. A job whose minute fell between two ticks (the
-   * previous tick was still awaiting a turn, or the timer fired late across a
-   * minute boundary) fires late instead of never. Several missed minutes of one
-   * job coalesce into a single fire.
+   * timer fired late across a minute boundary) fires late instead of never.
+   * Several missed minutes of one job coalesce into a single fire. Due fires are
+   * launched, not awaited: a long turn never holds the other jobs (see `launch`).
    * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 4, Section 3a
    */
   async tick(): Promise<void> {
@@ -261,6 +298,15 @@ export class CronScheduler {
           const dueMinute = this.findDueMinute(job, firstMinute, nowMinute);
           if (dueMinute === null) continue;
 
+          if (this.inFlight.has(job.id)) {
+            logger.warn('Cron job still running from an earlier fire — this fire is skipped', {
+              name: job.name,
+              owner: job.owner,
+              scheduledMinute: minuteKey(dueMinute),
+            });
+            continue;
+          }
+
           logger.info('Cron job due', {
             name: job.name,
             owner: job.owner,
@@ -268,23 +314,47 @@ export class CronScheduler {
             ...(dueMinute < nowMinute ? { scheduledMinute: minuteKey(dueMinute) } : {}),
           });
 
-          await this.executeJob(job, now);
+          // Launch, do not wait: a fire into a new thread resolves only when its turn ends (hours, for a long
+          // daily job), and waiting here would hold every other job past the catch-up window.
+          this.launch(job, now);
         } catch (error: any) {
-          logger.error('Cron job execution failed', {
-            name: job.name,
-            error: error?.message,
-          });
-          // Mark as run to prevent retry storm
-          try {
-            this.deps.storage.updateLastRun(job.id, now);
-          } catch {}
-          this.recordExecution(job, 'failed', 'idle_inject', undefined, error?.message);
+          this.recordTickFailure(job, now, error);
         }
       }
       this.lastEvaluatedMinute = nowMinute;
     } finally {
       this.isRunning = false;
     }
+  }
+
+  /** Run one scheduled fire in the background; the job counts as running until its turn ends. */
+  private launch(job: CronJob, now: Date): void {
+    this.inFlight.add(job.id);
+    const run: Promise<void> = this.executeJob(job, now)
+      .then(() => undefined)
+      .catch((error: any) => this.recordTickFailure(job, now, error))
+      .finally(() => {
+        this.inFlight.delete(job.id);
+        this.runs.delete(run);
+      });
+    this.runs.add(run);
+  }
+
+  /** Resolves once every fire launched by a tick so far has finished its turn. */
+  async settled(): Promise<void> {
+    while (this.runs.size > 0) await Promise.allSettled([...this.runs]);
+  }
+
+  private recordTickFailure(job: CronJob, now: Date, error: any): void {
+    logger.error('Cron job execution failed', {
+      name: job.name,
+      error: error?.message,
+    });
+    // Mark as run to prevent retry storm
+    try {
+      this.deps.storage.updateLastRun(job.id, now);
+    } catch {}
+    this.recordExecution(job, 'failed', 'idle_inject', undefined, error?.message);
   }
 
   /**

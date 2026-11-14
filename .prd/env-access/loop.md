@@ -1,6 +1,6 @@
 # loop — env-access 구현 드라이브
 
-Status: in-progress (라운드 1 = 설계 문서 + 에픽) · AS-IS = [`../23-env-access-as-is.md`](../23-env-access-as-is.md) ·
+Status: in-progress (라운드 1 — WU0–WU5 · WU6a 머지, WU5 라이브 통과 2026-11-13, WU6b는 운영자 단계 대기) · AS-IS = [`../23-env-access-as-is.md`](../23-env-access-as-is.md) ·
 TO-BE = [`../24-env-access-to-be.md`](../24-env-access-to-be.md) · 아키텍처 = [`../25-env-access-architecture.md`](../25-env-access-architecture.md) ·
 ssot = [`ssot.md`](ssot.md)
 
@@ -13,11 +13,21 @@ ssot = [`ssot.md`](ssot.md)
 | WU0 | 설계 문서 | ✅ | #1208 | `docs/env-access-prd` (PR #1215 머지) | `.prd/23-25`, `.prd/env-access/` | PR 머지 |
 | WU1 | 비밀 저장소 + 전원 거부 + fail-closed 샌드박스 | ✅ | #1209 | `feat/env-access-secrets` (PR #1218 머지, dev 배포·실측 2026-11-12) | 25 §5 WU1 | 25 §5 WU1 + dev 실측 |
 | WU2 | 어드민 샌드박스 프로필 + 어드민 쓰기 경계 + ssh는 MCP로만 | ✅ | #1210 | `feat/env-access-admin-sandbox` (PR #1240 머지, dev v0.3.32 배포·실측 2026-11-13 — 결과는 #1210 댓글) | 25 §5 WU2 + #1218 리뷰가 넘긴 두 길(`sandbox off` Bash, 배포 설정 쓰기) | 25 §5 WU2 + 두 길의 적대적 테스트 |
-| WU3a | 환경 사용자(`envUser`) + `gh_pr`(view·approve·merge) + 감사 원장 + 비어드민 거부 | 🟡 | #1211 | `feat/env-access-env-users` | 25 §5 WU3 중 gh·원장 | 조건 충족 PR만 승인·머지, 원장 의도→결과, dev 실측 |
-| WU3b | `login`(환경 계정 → 세션). `$env:<id>:<skill>` 호출·별도 스킬 저장소는 WU4가 대체 — 환경 스킬 = 환경 플러그인 스킬을 server-tools `skills`로 묶음, 이전은 WU5 | 🟡 | #1211 | `feat/env-access-login` (WU4 위에 쌓음) | 25 §5 WU3 나머지 | `login` 세션으로 환경 API 200(dev 실측), 비밀번호·세션이 원장·오류에 없음(`server-tools-login.test.ts`) |
-| WU4 | 환경 grant + 4버튼 + 정책 단계 | 🟡 | #1212 | `feat/env-access-env-grants` (WU3a 위에 쌓음) | 환경 = server-tools `envUser`+`skills`, `perEnvironment` grant, 카드 수락·거절·이 스킬 항상·이 환경 전체 항상, 환경 서버의 server-tools는 그 환경 grant로 | 비어드민 카드 1장 → "환경 전체 항상" → 다음 카드 0장 (`env-skill-approval-flow.test.ts`), dev 실측 |
-| WU5 | 배포·QA 스킬 이전 + 배포 → QA 연결 | 🟡 | #1213 | `feat/env-access-skills` (WU3b 위에 쌓음) | server-tools `gh_read`(환경 토큰, 저장소·부분 허용 목록) + QA 스킬(`deploy-qa`·`qa-issue`)이 `github.server`면 `gh_read`, `qaEnv.logins`면 `login` — 브로커는 별칭으로 #1214까지. 고객 스킬 저장소의 프로필 전환(`github.server`·`qaEnv.logins`)과 환경 계정 `secrets/` 이전은 운영자 | QA 없는 dev2 배포 0건, 비밀번호 노출 0 (dev2 실측) |
-| WU6 | 브로커 제거 | 🟡 | #1214 | 6a `feat/env-access-cf` (WU5 위에 쌓음) → 6b `chore/env-access-remove-broker` | 6a: server-tools `cf_api`(환경 범위 토큰, 존 한정, 쓰기 원장) — 브로커 임대 대체. 6b: 운영자가 토큰을 `secrets/`로 옮기고 브로커 `uninstall.sh`를 돌린 뒤 `packages/devops-broker`·`devops-tools`·`src/devops`·대시보드 카드·`deploy.prompt`/QA 스킬의 브로커 경로 삭제(가드의 브로커 경로는 호스트 정리 뒤) | 정기 작업 봇 PR 승인 카드 0장, 배포 번들 하나 |
+| WU3a | 환경 사용자(`envUser`) + `gh_pr`(view·approve·merge) + 감사 원장 + 비어드민 거부 | ✅ | #1211 | `feat/env-access-env-users` (PR #1248 머지 `046d77a08`, #1211 닫음 2026-11-13; dev 실측은 dev 배포 뒤) | 25 §5 WU3 중 gh·원장 | 조건 충족 PR만 승인·머지, 원장 의도→결과, dev 실측 |
+| WU3b | `login`(환경 계정 → 세션). `$env:<id>:<skill>` 호출·별도 스킬 저장소는 WU4가 대체 — 환경 스킬 = 환경 플러그인 스킬을 server-tools `skills`로 묶음, 이전은 WU5 | ✅ | #1211 | `feat/env-access-login` (PR #1250 머지 `ac89e9142`; dev 실측은 dev 배포 뒤) | 25 §5 WU3 나머지 | `login` 세션으로 환경 API 200(dev 실측), 비밀번호·세션이 원장·오류에 없음(`server-tools-login.test.ts`) |
+| WU4 | 환경 grant + 4버튼 + 정책 단계 | ✅ | #1212 | `feat/env-access-env-grants` (PR #1249 머지 `07896281b`, #1212 닫음; 흐름 테스트 6건 증거는 #1212 댓글; 라이브는 고객 dev 호스트 환경 절 설정 뒤) | 환경 = server-tools `envUser`+`skills`, `perEnvironment` grant, 카드 수락·거절·이 스킬 항상·이 환경 전체 항상, 환경 서버의 server-tools는 그 환경 grant로 | 비어드민 카드 1장 → "환경 전체 항상" → 다음 카드 0장 (`env-skill-approval-flow.test.ts`), dev 실측 |
+| WU5 | 배포·QA 스킬 이전 + 배포 → QA 연결 | ✅ | #1213 (닫음 2026-11-13) | `feat/env-access-skills` (PR #1251 머지) → SSOT_5로 바뀐 길: 환경 유저 = 샌드박스 없는 어드민, 기존 다른 유저 스킬·크론 실행 요청 흐름 (PR #1271 머지 `2f221fbf3`) + 라이브에서 나온 고침 PR #1274(메모리 저장소가 `env:` ID를 받음, 머지 `2af59ebea`) | 환경 유저 `env:<org>-dev2` · `env:<org>-stage0`의 개인 스킬(deploy·QA)과 stage0 크론 owner = `env:<org>-stage0` | 고객 dev 호스트 라이브: 비어드민 요청 → 어드민 DM 카드 4버튼 → "전체 항상" → 새 스레드 `env:<org>-dev2` 세션(샌드박스 꺼짐) → 환경 계정 로그인·QA pass(17:59–18:13 UTC) · 다음 호출은 카드 없음 |
+| WU6 | 브로커 제거 | 🟡 | #1214 | 6a `feat/env-access-cf` (PR #1252 머지 `d7e771ebb`) → 6b `chore/env-access-remove-broker` (PR #1253 draft — 운영자 단계 뒤 머지) | 6a: server-tools `cf_api`(환경 범위 토큰, 존 한정, 쓰기 원장) — 브로커 임대 대체. 6b: 운영자가 토큰을 `secrets/`로 옮기고 브로커 `uninstall.sh`를 돌린 뒤 `packages/devops-broker`·`devops-tools`·`src/devops`·대시보드 카드·`deploy.prompt`/QA 스킬의 브로커 경로 삭제(가드의 브로커 경로는 호스트 정리 뒤) | 정기 작업 봇 PR 승인 카드 0장, 배포 번들 하나 |
+
+## 라이브 확인 (2026-11-13, 고객 dev 호스트)
+
+- 1차 15:31 UTC: 카드 → 어드민 "전체 항상" → 핸드오프 · 새 스레드 · 샌드박스 꺼짐까지 통과, 모델 호출 전에
+  `Invalid userId for memory storage: env:<org>-dev2`로 실패 → PR #1274.
+- 2차 15:58 UTC 요청: 카드 없이 실행. Claude 풀 429(호스트 전체)로 두 번 미뤄진 뒤 17:59 자동 재시도에서 18:13까지 돌아
+  QA 레인 잠금 · git 수집 · 환경 계정 로그인 · API · 화면 · Jira 코멘트 · 리포트 업로드를 마침. 판정 pass.
+- stage0 크론 owner는 `env:<org>-stage0` (첫 실행 11-14 19:00 UTC).
+- 워크플로 점검에서 나온 것: 크론 tick이 새 스레드 크론의 턴 전체를 기다려, 20:00 UTC 정기 작업이 6–8시간 도는 동안
+  다른 크론 약 10개가 catch-up 창(60분) 밖으로 밀려 매일 사라졌다(11-07부터) → PR #1275.
 
 ## 열린 질문
 
@@ -34,6 +44,13 @@ ssot = [`ssot.md`](ssot.md)
   `secrets/`로 옮긴다. 그 전에는 어드민이 샌드박스를 끈 세션의 Bash, 어드민 모델이 배포 설정을 고쳐 참조를 돌리는 길이 남아 있다.
   **2026-11-13 갱신:** WU2가 배포돼도 게이트는 닫힌 채다 — 세부를 비공개로 둔 샌드박스 탈출 두 건(#1242, #1241)이 고쳐지고
   dev에서 확인될 때까지. 둘 다 #1240 이전부터 main에 있던 것이고 #1240이 넓히지 않는다.
+  **2026-11-13 정정 — 게이트는 닫힌 채다.** v0.3.34(PR #1260) 배포 뒤 첫 세션만 시작됐고, 그 뒤 모든 세션이
+  `session-project-config must stay empty but holds .claude`로 거부됐다. CLI 2.1.321은 샌드박스를 초기화할 때마다
+  프로젝트 설정 루트에 원자적 쓰기 스테이징 디렉터리 `.claude/.cc-writes`(0700)를 만드는데, #1244의 검사가 "완전히 빈"
+  루트만 받았기 때문이다. dev는 v0.3.32로 롤백됐다. 첫 세션에서 잰 "실측 통과"(#1242 설정 경로, #1241 npx 로그 0개)는
+  두 번째 세션 시작을 보지 않은 확인이라 철회했다(#1242 다시 열림, 정정은 각 이슈 댓글). 교훈: 세션 시작에 걸린 수정의
+  라이브 확인은 세션 둘 이상의 시작으로 한다. 샌드박스 안에서 도는 프로브는 CLI의 샌드박스 초기화가 실패해 이 디렉터리를
+  만들지 않으므로, 이런 부류는 호스트에서 잰다.
 
 - **WU2 리뷰가 남긴 후속 (PR #1240):**
   - #1242: 세션 시작 때 CLI가 읽는 파일을 통한 샌드박스 탈출 → `projectConfigRoot`를 빈 `DATA_DIR` 디렉터리로(브랜치 `fix/env-access-1242`).
@@ -56,4 +73,10 @@ ssot = [`ssot.md`](ssot.md)
 
 ## 다음 착수점
 
-WU0 · WU1 · WU2 머지 · dev 실측 완료 → #1242(`fix/env-access-1242`) · ssh 판정 오탐 PR → #1241 → WU3(#1211).
+WU0–WU5 · WU6a · #1242 · #1241 머지(2026-11-13). dev는 v0.3.32로 롤백된 상태다. 남은 것:
+0. #1242 시작 검사 수정: 루트에 CLI 자신의 `.claude/.cc-writes`만 허용하고 그 밖은 거부한다. 수정이 머지되기 전에는 추가 배포를 하지 않는다. 머지 뒤 dev 재배포 → 세션 둘 이상의 시작 + #1242 · #1241 재확인 → 출시 게이트 열림.
+1. 샌드박스 권한 번들(sandbox off를 능력별로 나눠 어드민이 유저 · 어드민 그룹 · 전체에 grant) — 플랜 A/B 유저 선택 대기.
+2. 운영자: 고객 dev 호스트 `config.json` `server-tools.<dev2|stage0>`에 `envUser` · `skills` · `github`(`$secret` · `repos` · 조건표 · `readRefs` = 통합·배포 브랜치) · `web.logins` · `cloudflare`(`$secret` · `zones`, 필요하면 `parts` — rulesets · firewall · filters · pagerules · custom_hostnames · healthchecks는 다른 시스템 자격이 담길 수 있어 opt-in), 고객 스킬 저장소 QA 프로필 `github.server` · `qaEnv.logins`, 토큰 · 비밀번호 → `secrets/`.
+3. 라이브: 비어드민 `$<env>:post-deploy` → 어드민 카드 4버튼 → "환경 전체 항상" → 다음 카드 0장 · dev2 배포 → QA 리포트(비밀번호 노출 0).
+4. 운영자: 각 호스트에서 브로커 `uninstall.sh` → #1253(WU6b) 머지 → #1214 닫기 → 가드의 브로커 경로 정리.
+5. 원격 셸 금지 오탐: 셸 파서로 좁히는 #1245는 리뷰마다 새 우회가 나와 보류(draft). 경계를 샌드박스로 옮기는 #1255로 간다.

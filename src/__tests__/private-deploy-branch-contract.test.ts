@@ -5,7 +5,8 @@
  * the dev deploy of `6eab693d`). This contract runs the same pattern over the shipped sources, so CI stops it first.
  *
  * Shipped = what scripts/deploy/stage-bundle.sh copies: the sources of `dist` (src, including the prompt, persona
- * and local `.md` it copies), packages/<pkg>/src and assets, somalib, services, and the single files it lists —
+ * and local `.md` it copies), packages/<pkg>/src and assets, each packages/mcp-servers/<server>, somalib, services, and
+ * the single files it lists —
  * minus tests and their inputs (`__tests__`, `__fixtures__`, `__mocks__`, `*.test.*`, src/test-utils), which it
  * prunes.
  */
@@ -51,7 +52,19 @@ describe('no shipped source names the private deploy branch', () => {
       .readdirSync(path.join(ROOT, 'packages'), { withFileTypes: true })
       .filter((d) => d.isDirectory())
       .flatMap((d) => [path.join(ROOT, 'packages', d.name, 'src'), path.join(ROOT, 'packages', d.name, 'assets')]);
-    const roots = [path.join(ROOT, 'src'), path.join(ROOT, 'somalib'), path.join(ROOT, 'services'), ...packages];
+    // The MCP servers keep their sources at the top of each server's directory, not under `src`
+    // (2026-11-13: server-tools named the branch in a tool description and a comment, and the dev deploy stopped).
+    const mcpServers = fs
+      .readdirSync(path.join(ROOT, 'packages', 'mcp-servers'), { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => path.join(ROOT, 'packages', 'mcp-servers', d.name));
+    const roots = [
+      path.join(ROOT, 'src'),
+      path.join(ROOT, 'somalib'),
+      path.join(ROOT, 'services'),
+      ...packages,
+      ...mcpServers,
+    ];
     const files = [
       ...roots.flatMap((r) => shipped(r)),
       ...SHIPPED_FILES.map((f) => path.join(ROOT, f)).filter((f) => fs.existsSync(f)),

@@ -14,6 +14,13 @@ on:
         required: false
         default: ''
         type: string
+  # A dev deploy narrowed to named hosts, sent by an integration that may write contents but not run workflows:
+  #   POST /repos/{owner}/{repo}/dispatches
+  #   {"event_type": "deploy-dev", "client_payload": {"targets": "<runner label>[,<runner label>...]"}}
+  # It runs on the default branch (main), so it reaches the preview channel only, and it must name its targets
+  # (checked below): an empty one would otherwise deploy every dev host.
+  repository_dispatch:
+    types: [deploy-dev]
 
 concurrency:
   group: deploy-${{ github.ref_name }}
@@ -38,6 +45,16 @@ jobs:
             exit 1
           fi
 
+      - name: Validate repository dispatch
+        if: github.event_name == 'repository_dispatch'
+        env:
+          DISPATCH_TARGETS: ${{ github.event.client_payload.targets }}
+        run: |
+          if [[ -z "$(tr -d '[:space:]' <<< "$DISPATCH_TARGETS")" ]]; then
+            echo "::error::A repository dispatch must name its targets (client_payload.targets): it never deploys every dev host."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -52,10 +69,13 @@ jobs:
       # stay topology-free (step logs do print the resolved entries).
       #
       # A manual run may narrow the set with the `targets` input (comma-separated
-      # runner labels). The variable stays the single source of truth: the input
-      # can only SELECT from it, never add to it, and a label that is not
-      # configured fails the run instead of being ignored — a typo must not turn
-      # into "deployed everywhere" or "deployed nowhere" silently.
+      # runner labels), a repository dispatch with `client_payload.targets`, and a
+      # push to deploy/dev with the repo variable PREVIEW_PUSH_TARGETS (unset or
+      # empty = every preview target). The list variable stays the single source
+      # of truth: a narrowing can only SELECT from it, never add to it, and a label
+      # that is not configured fails the run instead of being ignored — a typo must
+      # not turn into "deployed everywhere" or "deployed nowhere" silently. Narrow,
+      # never shorten the list: the secret lines below are checked against all of it.
       #
       # Environment plugins (the private per-host plugin that carries this
       # host's post-deploy QA) are configured per channel too, but as repo
@@ -99,7 +119,7 @@ jobs:
           RAW: ${{ github.ref_name == 'deploy/prod' && vars.PRODUCTION_DEPLOY_TARGETS || vars.PREVIEW_DEPLOY_TARGETS }}
           GITHUB_ENV_NAME: ${{ github.ref_name == 'deploy/prod' && 'production' || 'development' }}
           DEPLOY_ENV_NAME: ${{ github.ref_name == 'deploy/prod' && 'main' || 'dev' }}
-          SELECT: ${{ github.event_name == 'workflow_dispatch' && inputs.targets || '' }}
+          SELECT: ${{ (github.event_name == 'workflow_dispatch' && inputs.targets) || (github.event_name == 'repository_dispatch' && github.event.client_payload.targets) || (github.event_name == 'push' && github.ref_name == 'deploy/dev' && vars.PREVIEW_PUSH_TARGETS) || '' }}
         run: |
           matrix=$(jq -R -s -c --arg ge "$GITHUB_ENV_NAME" --arg de "$DEPLOY_ENV_NAME" '
             split("\n")
@@ -128,7 +148,7 @@ jobs:
               exit 1
             fi
             matrix=$(jq -c --argjson sel "$selected" '{include: [.include[] | select(.runner_label as $l | ($sel | index($l)) != null)]}' <<< "$matrix")
-            echo "targets narrowed by input to $(jq 'length' <<< "$selected") of the configured set"
+            echo "targets narrowed (${{ github.event_name }}) to $(jq 'length' <<< "$selected") of the configured set"
           fi
           count=$(jq '.include | length' <<< "$matrix")
           if [[ "$count" -eq 0 ]]; then

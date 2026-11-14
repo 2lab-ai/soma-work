@@ -2150,5 +2150,6 @@
   "⚠️ *되돌릴 수 없음*": "⚠️ *Cannot be undone*",
   "↩️ 되돌릴 수 있음": "↩️ Can be undone",
   "🚧 막힌 작업 — {0}": "🚧 Blocked work — {0}",
-  "⚖️ 걸린 것 — {0}": "⚖️ At stake — {0}"
+  "⚖️ 걸린 것 — {0}": "⚖️ At stake — {0}",
+  "승인 · 질문 · 작업 계획 — 대화의 마지막 메시지, 항상": "Approvals · questions · task plan — the chat's last message, always"
 }

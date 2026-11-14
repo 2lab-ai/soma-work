@@ -1,3 +1,4 @@
+import { userMention } from './user-mention';
 /**
  * Block Kit for the `cron run` permission prompt sent to a job owner.
  *
@@ -47,7 +48,7 @@ function button(label: string, kind: string, requestId: string, style?: 'primary
  */
 export function buildCronRunPermissionMessage(input: CronRunPermissionMessageInput): CronRunPermissionMessage {
   const { requestId, requesterId, ownerId, jobName } = input;
-  const text = `⏱️ <@${ownerId}> — <@${requesterId}>님이 크론잡 \`${jobName}\` 을 지금 실행하려 합니다. 허용하시겠습니까?`;
+  const text = `⏱️ ${userMention(ownerId)} — <@${requesterId}>님이 크론잡 \`${jobName}\` 을 지금 실행하려 합니다. 허용하시겠습니까?`;
   return {
     text,
     blocks: [
@@ -56,7 +57,7 @@ export function buildCronRunPermissionMessage(input: CronRunPermissionMessageInp
         text: {
           type: 'mrkdwn',
           text:
-            `⏱️ <@${ownerId}> 님께 크론 실행 권한 요청\n` +
+            `⏱️ ${userMention(ownerId)} 님께 크론 실행 권한 요청\n` +
             `<@${requesterId}>님이 \`${jobName}\` 을 지금 실행하려 합니다. ` +
             '허용하면 *오너 권한으로* 실제 크론 경로(대상/모드/모델 그대로)로 발동합니다.',
         },

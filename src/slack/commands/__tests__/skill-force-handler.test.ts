@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setAdmittedPluginNames } from '../../../plugin/admitted-plugin-names';
-import { SkillForceHandler } from '../skill-force-handler';
+import { hasTextBesidesSkillRefs, SkillForceHandler } from '../skill-force-handler';
 
 // The PLUGINS_DIR plugins these tests mount are ones PluginManager admitted on a real host. A
 // directory that is not admitted is not served (see src/plugin/__tests__/admitted-plugin-names.test.ts).
@@ -461,6 +461,27 @@ describe('SkillForceHandler', () => {
           text: expect.stringContaining('nonexistent'),
         }),
       );
+    });
+
+    // 2026-11-13: a reply that quoted `$plugin:skill` (a skill this host does not have) was answered with
+    // "not found" and never reached the model, so the user's message was lost.
+    it('still delivers a message that only quotes a skill it cannot resolve', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(false);
+      const userText = '니가 하란대로 했어 > $local:nonexistent --preflight 실행하면 카드가 뜬다고 했잖아';
+
+      const result = await handler.execute(makeCtx(userText));
+
+      expect(result.handled).toBe(true);
+      expect(result.continueWithPrompt).toBe(userText);
+      expect(mockSay).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining('nonexistent') }));
+    });
+
+    it('tells a message of skill references and flags apart from one that says more', () => {
+      expect(hasTextBesidesSkillRefs('$local:nonexistent')).toBe(false);
+      expect(hasTextBesidesSkillRefs('$iq-env:post-deploy --preflight')).toBe(false);
+      expect(hasTextBesidesSkillRefs('$a:b $c:d --plan-only keys=x')).toBe(true);
+      expect(hasTextBesidesSkillRefs('했다고 $iq-env:post-deploy')).toBe(true);
+      expect(hasTextBesidesSkillRefs('  $local:z  ')).toBe(false);
     });
 
     it('preserves original user text before invoked_skills block', async () => {

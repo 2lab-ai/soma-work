@@ -40,7 +40,11 @@ describe('cron fire → structured cron origin', () => {
     });
     const { deps, injected } = setup(storage);
 
-    await new CronScheduler(deps).tick();
+    {
+      const scheduler = new CronScheduler(deps);
+      await scheduler.tick();
+      await scheduler.settled();
+    }
 
     expect(injected).toHaveLength(1);
     expect(injected[0].cron).toEqual({ jobId: job.id, jobName: 'nightly-qa' });
@@ -65,7 +69,11 @@ describe('cron fire → structured cron origin', () => {
     deps.sessionRegistry.transitionToMain('C1', 't-1', 'default');
     deps.sessionRegistry.setActivityState('C1', 't-1', 'idle');
 
-    await new CronScheduler(deps).tick();
+    {
+      const scheduler = new CronScheduler(deps);
+      await scheduler.tick();
+      await scheduler.settled();
+    }
 
     expect(injected[0].cron).toEqual({ jobId: job.id, jobName: 'nightly' });
   });
@@ -85,7 +93,11 @@ describe('cron fire → structured cron origin', () => {
       throw new Error('turn crashed');
     });
 
-    await new CronScheduler(deps).tick();
+    {
+      const scheduler = new CronScheduler(deps);
+      await scheduler.tick();
+      await scheduler.settled();
+    }
 
     expect(storage.getExecutionHistory('nightly')[0]).toMatchObject({
       status: 'failed',

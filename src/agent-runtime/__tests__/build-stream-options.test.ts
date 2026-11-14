@@ -1300,8 +1300,18 @@ describe('project config root (env-access #1242)', () => {
     ).rejects.toThrow(/lies inside/);
   });
 
-  it('fails closed: a session does not start when the root holds anything', async () => {
+  it('fails closed: a session does not start when the root holds project config', async () => {
     fs.mkdirSync(path.join(ROOT, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(ROOT, '.claude', 'settings.json'), '{}');
     await expect(build()).rejects.toThrow(/session was not started/);
+  });
+
+  // dev 2026-11-13: the first sandboxed session's CLI made `.claude/.cc-writes` in the root, and every later session
+  // was refused.
+  it('starts the next session after the CLI made its staging directory in the root', async () => {
+    await build();
+    fs.mkdirSync(path.join(ROOT, '.claude', '.cc-writes'), { recursive: true, mode: 0o700 });
+    const { options } = await build();
+    expect(options.projectConfigRoot).toBe(ROOT);
   });
 });

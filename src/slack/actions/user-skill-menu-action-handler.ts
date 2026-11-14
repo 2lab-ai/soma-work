@@ -1,6 +1,8 @@
 import type { WebClient } from '@slack/web-api';
 import { SHARE_CONTENT_CHAR_LIMIT } from 'somalib/model-commands/skill-share-errors';
+import { getAdminUsers } from '../../admin-utils';
 import type { ClaudeHandler } from '../../claude-handler';
+import { isEnvironmentUser } from '../../env-users';
 import { Logger } from '../../logger';
 import { createPermissionRequest, type PermissionOperation } from '../../skill-permission-request-store';
 import { consumeOneTimeGrant, isSkillUseAllowed } from '../../user-skill-grants-store';
@@ -486,6 +488,15 @@ export class UserSkillMenuActionHandler {
     const ownerId = click.value.ownerId;
     const requesterId = click.value.requesterId;
     if (!ownerId || ownerId === requesterId) return false; // own access — no gate
+    // An environment user's skills run as the environment user: nobody else reads or copies their bodies.
+    if (operation !== 'invoke' && isEnvironmentUser(ownerId) && !getAdminUsers().has(requesterId)) {
+      await respond({
+        response_type: 'ephemeral',
+        text: `🔒 환경 유저(\`${ownerId}\`)의 스킬은 보거나 복사할 수 없습니다. \`$${ownerId.slice(4)}:${click.value.skillName}\`로 실행을 요청하세요.`,
+        replace_original: false,
+      });
+      return true;
+    }
     if (isSkillUseAllowed(ownerId, click.value.skillName, requesterId)) return false;
 
     const req = createPermissionRequest({

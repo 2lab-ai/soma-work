@@ -33,6 +33,11 @@ export const NEXT_ACTION_SEAMS: Readonly<Record<string, unknown>> = {
   // SSOT 2026-11-12 — `convPaint` asks what the session's queue adds to the chat (`convQueueTurns`): nothing,
   // unless the test loads the real one (pinned by dashboard-steer-chat-client.test.ts).
   convQueueTurns: () => ({ chips: {}, extra: [], seen: [], drop: [], edits: {} }),
+  // SSOT 2026-11-13 — 입력 필요 as the chat's last message: `convPaint`, `psecClear` and `renderAgentConv` put the zone
+  // where it belongs (`placePanelNeeds` — nothing waits, so not in the chat); `renderPanelNeedsHead` and
+  // `renderPanelPlan` let it follow its parts (`syncPanelNeeds`). Pinned by dashboard-needs-in-chat-client.test.ts.
+  placePanelNeeds: () => false,
+  syncPanelNeeds: () => {},
 };
 export function nextActionSeams(fns: readonly string[], inject: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};

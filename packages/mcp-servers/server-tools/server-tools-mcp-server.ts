@@ -1506,8 +1506,7 @@ class ServerToolsMCPServer extends BaseMcpServer {
             path: { type: 'string', description: 'repos/<owner>/<name>/… — no query string; put parameters in query.' },
             query: {
               type: 'object',
-              description:
-                'Query parameters (strings, numbers, booleans), e.g. {"per_page": 50, "sha": "deploy/dev2"}.',
+              description: 'Query parameters (strings, numbers, booleans), e.g. {"per_page": 50, "sha": "release/v2"}.',
             },
             fields: {
               type: 'array',

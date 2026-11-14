@@ -21,6 +21,7 @@ import { atomicWriteJson } from '@soma/common/atomic-json';
 import * as fs from 'fs';
 import * as path from 'path';
 import { DATA_DIR } from './env-paths';
+import { isEnvironmentUser } from './env-users';
 import { Logger } from './logger';
 import { ENV_SKILL_GRANT_OWNER } from './user-skill-grants-store';
 
@@ -146,7 +147,11 @@ export function createPermissionRequest(input: CreatePermissionRequestInput): Cr
       req.requesterId === input.requesterId &&
       req.skillName === input.skillName &&
       req.operation === input.operation &&
-      (input.ownerId !== ENV_SKILL_GRANT_OWNER || (req.channel === input.channel && req.threadTs === input.threadTs))
+      (input.ownerId !== ENV_SKILL_GRANT_OWNER || (req.channel === input.channel && req.threadTs === input.threadTs)) &&
+      // An environment user's request runs the requester's words as an admin: only the very same words in the same
+      // thread are the same request, so an admin never approves one message and runs another.
+      (!isEnvironmentUser(input.ownerId) ||
+        (req.channel === input.channel && req.threadTs === input.threadTs && req.originalText === input.originalText))
     ) {
       saveAll(all); // persist any pruning
       return { ...req, reused: true };
@@ -197,6 +202,36 @@ export function markRequestHandled(requestId: string, resolution?: RequestResolu
   req.handled = true;
   if (resolution) req.resolution = resolution;
   saveAll(all);
+}
+
+/**
+ * Close every pending request for one message (an environment user's): once that message has been handed off, a
+ * card still waiting for it must not run it a second time.
+ */
+export function retirePendingRequests(match: {
+  ownerId: string;
+  requesterId: string;
+  channel: string;
+  threadTs?: string;
+  originalText: string;
+}): void {
+  const all = loadAll();
+  let changed = false;
+  for (const req of Object.values(all)) {
+    if (
+      !req.handled &&
+      req.operation === 'invoke' &&
+      req.ownerId === match.ownerId &&
+      req.requesterId === match.requesterId &&
+      req.channel === match.channel &&
+      req.threadTs === match.threadTs &&
+      req.originalText === match.originalText
+    ) {
+      req.handled = true;
+      changed = true;
+    }
+  }
+  if (changed) saveAll(all);
 }
 
 /** Every live request (handled ones included) — read only, for the dashboard's admin approvals. */

@@ -218,7 +218,7 @@ const READ_SHAPES: readonly RegExp[] = [
   `pulls/${N}`,
   `pulls/${N}/(files|commits|reviews|comments|merge)`,
   'commits',
-  // A ref may hold `/` (deploy/dev2): a commit, a compare and a branch take the rest of the path.
+  // A ref may hold `/` (`release/v2`): a commit, a compare and a branch take the rest of the path.
   'commits/.+',
   'compare/.+',
   'issues',

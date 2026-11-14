@@ -17,8 +17,8 @@
  *   launchctl bootstrap user/<uid> <plist>  +  kickstart -k user/<uid>/<label>
  *
  * These tests pin the seven things that follow from that:
- *   1. gui first, then user/<uid> on a 125 (or when `print gui/<uid>` itself
- *      fails) — and a user-domain start counts as launchd-managed, not headless;
+ *   1. gui first, then user/<uid> on a 125 or a 113 (or when `print gui/<uid>`
+ *      itself fails) — and a user-domain start counts as launchd-managed, not headless;
  *   2. status/get_pid see a user-domain registration (`launchctl print
  *      user/<uid>/<label>` → `pid = N`), including its STALE shape;
  *   3. verify-restart accepts a PID found in the user domain;
@@ -111,6 +111,12 @@ interface LaunchctlOptions {
    * instead of claiming success).
    */
   bootoutWorks?: boolean;
+  /**
+   * Exit code of `kickstart -k gui/<uid>/<label>`. 125 (default) = the host has no GUI seat. 113 = the gui domain
+   * exists but the label is not in it — a deploy runner's Background-session `launchctl load` put it in user/<uid>
+   * (measured 2026-11-13 on a customer dev host: "Could not find service … in domain for user gui: 501").
+   */
+  guiKickstartCode?: 113 | 125;
 }
 
 /**
@@ -142,6 +148,10 @@ function installFakeLaunchctl(opts: LaunchctlOptions = {}): { bin: string; calls
   // behind it — the `pid = N` line get_pid parses is simply absent.
   if (opts.alreadyRunning) writeFileSync(marker, userPid === 'none' ? '' : String(userPid));
   const kickstartPid = opts.pidAfterKickstart ?? (userPid === 'none' ? '' : String(userPid));
+  const guiKick =
+    (opts.guiKickstartCode ?? 125) === 113
+      ? `echo "Could not kickstart service \\"$3\\": 113: Could not find service \\"${LABEL}\\" in domain for user gui: ${UID}" >&2; exit 113`
+      : `echo "Could not kickstart service \\"$3\\": 125: Domain does not support specified action" >&2; exit 125`;
 
   const script = `#!/bin/bash
 printf '%s\\n' "$*" >> "${callsLog}"
@@ -179,8 +189,7 @@ case "$1" in
   kickstart)
     case "$3" in
       "gui/${UID}/${LABEL}")
-        echo "Could not kickstart service \\"$3\\": 125: Domain does not support specified action" >&2
-        exit 125
+        ${guiKick}
         ;;
       "user/${UID}/${LABEL}")
         ${userDomainWorks ? `printf '%s' "${kickstartPid}" > "$MARKER"; exit 0` : 'echo "Could not kickstart service \\"$3\\": 3: No such process" >&2; exit 3'}
@@ -350,6 +359,20 @@ describe('scripts/service.sh — launchd domain fallback (headless host, no Aqua
     expect(result.stdout).toContain(`launchd-managed in the user/${UID} domain`);
     expect(result.stdout).toMatch(/Service started \(PID: \d+\)/);
     // launchd owns it — the direct-spawn path must not have been used.
+    expect(result.stdout).not.toMatch(/headless/i);
+  });
+
+  it('falls back to user/<uid> when the gui kickstart answers 113 (the label lives in user/<uid>), not to a headless spawn', () => {
+    // A headless spawn here runs the bot outside launchd while the user-domain agent (KeepAlive) keeps relaunching a
+    // second instance every 10 s that dies on the pid lock — two supervisors for one label.
+    const { bin, callsLog } = installFakeLaunchctl({ guiKickstartCode: 113 });
+
+    const result = run(['start'], bin, callsLog);
+
+    expect(result.calls).toContain(`kickstart -k gui/${UID}/${LABEL}`);
+    expect(result.calls).toContain(`kickstart -k user/${UID}/${LABEL}`);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(`launchd-managed in the user/${UID} domain`);
     expect(result.stdout).not.toMatch(/headless/i);
   });
 

@@ -1097,7 +1097,8 @@ describe('T1.3 / SSOT 2026-10-29 · 지시와 답변 opens on its latest turns; 
     const paint = clientFn('convPaint');
     expect(paint).toContain('hasMore: !!_panelTurnsHasMore,');
     expect(paint).toContain("loading: msg === 'loading' || !!_panelTurnsLoading,");
-    expect(paint).toContain("startText: '대화의 시작',");
+    // SSOT 2026-11-13: not above the ask alone (입력 필요 as the only turn while the turns load) — the needs test pins it.
+    expect(paint).toContain("startText: askOnly ? '' : '대화의 시작',");
   });
 
   it('the markup: the element in the conv box, no page-drawn control or marker there; no turn hidden by CSS', () => {
