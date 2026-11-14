@@ -130,8 +130,10 @@ const SECRET_PATTERNS: readonly RegExp[] = [
 ];
 
 /**
- * A shell assignment of a literal to a secret-named variable (`PASSWORD='hunter2'`, `export API_KEY="a b c"`), at any
- * length. Allowed: no value, a reference or substitution (`$X`, `$(…)`, a backtick), or a path (`/…`, `~/…`, `./…`).
+ * An assignment of a literal to a secret-named variable (`PASSWORD='hunter2'`, `export API_KEY="a b c"`), at any
+ * length — checked in every posted field, not only the script. Allowed: no value, a reference or substitution the shell
+ * expands (`$X`, `${X}`, `$(…)`, a backtick — not inside single quotes, and not `$'…'` / `$"…"`, which are literals), or
+ * a path (`/…`, `~/…`, `./…`).
  */
 function literalSecretAssignment(script: string): boolean {
   const assign =
@@ -140,7 +142,8 @@ function literalSecretAssignment(script: string): boolean {
     if (!/(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY)/i.test(m[1])) continue;
     const head = m[3] ?? '';
     if (head === '' || /^[\s;&|)]/.test(head)) continue; // NAME= (unset)
-    if (/^[$`]/.test(head)) continue; // a reference or a substitution
+    // A reference or a substitution — only where the shell expands it.
+    if (m[2] !== "'" && (head[0] === '`' || /^\$[A-Za-z_{(0-9@*#?!$-]/.test(head))) continue;
     if (/^(?:\/|~\/|\.\.?\/)/.test(head)) continue; // a path
     if (m[2] && head[0] === m[2]) continue; // NAME='' / NAME=""
     return true;
@@ -225,9 +228,9 @@ export function validateInstructUserArgs(args: unknown): ValidateInstructUserRes
     ['script', script],
     ...TEXT_FIELDS.map((f) => [f.key, out[f.key] ?? ''] as [string, string]),
   ];
-  const leaking =
-    (literalSecretAssignment(script) ? posted[0] : undefined) ??
-    posted.find(([, text]) => SECRET_PATTERNS.some((re) => re.test(text)));
+  const leaking = posted.find(
+    ([, text]) => literalSecretAssignment(text) || SECRET_PATTERNS.some((re) => re.test(text)),
+  );
   if (leaking) {
     return fail(
       'SECRET_IN_SCRIPT',
@@ -257,10 +260,14 @@ export function validateInstructUserArgs(args: unknown): ValidateInstructUserRes
 const PREFIX = new Set(['sudo', 'command', 'exec', 'nohup', 'time', 'env', 'nice', 'timeout', 'doas', 'caffeinate']);
 /** Prefix options that take the next word as their value. */
 const PREFIX_VALUE_OPTS: Readonly<Record<string, ReadonlySet<string>>> = {
-  sudo: new Set(['-u', '-g', '-U', '-C', '-h', '-p', '-r', '-t', '-D', '-R']),
+  sudo: new Set([
+    ...['-u', '-g', '-U', '-C', '-h', '-p', '-r', '-t', '-D', '-R', '-T'],
+    ...['--user', '--group', '--other-user', '--close-from', '--host', '--prompt', '--role', '--type'],
+    ...['--chdir', '--chroot', '--command-timeout', '--login-class'],
+  ]),
   doas: new Set(['-u', '-C']),
-  env: new Set(['-u', '-C', '-S', '--unset', '--chdir']),
-  nice: new Set(['-n']),
+  env: new Set(['-u', '-C', '-S', '--unset', '--chdir', '--split-string']),
+  nice: new Set(['-n', '--adjustment']),
   timeout: new Set(['-s', '-k', '--signal', '--kill-after']),
   caffeinate: new Set(['-t', '-w']),
 };
@@ -314,11 +321,15 @@ function scan(script: string, depth = 0): { segments: Segment[]; redirects: stri
     inWord = false;
   };
   let pipeline: object = {};
+  /** A `|` with no command after it yet: a line break here continues the pipeline (`a |⏎ b`). */
+  let pipeOpen = false;
   const endSegment = (pipeOn = false) => {
     endWord();
-    if (words.length) segments.push({ words, pipeline });
+    const empty = words.length === 0;
+    if (!empty) segments.push({ words, pipeline });
     words = [];
-    if (!pipeOn) pipeline = {};
+    pipeOpen = pipeOn || (empty && pipeOpen);
+    if (!pipeOpen) pipeline = {};
   };
   /** Read the substitution whose body starts at `from` and ends at `end` (exclusive); return `end`. */
   const substitute = (from: number, end: number): number => {
@@ -526,12 +537,7 @@ function commandOf(words: string[]): { cmd: string; sudo: boolean } | null {
 }
 
 function urlHosts(script: string): string[] {
-  const hosts: string[] = [];
-  for (const m of script.matchAll(/\bhttps?:\/\/([^\s'"/)?#]+)/gi)) {
-    const h = m[1].toLowerCase();
-    if (!hosts.includes(h)) hosts.push(h);
-  }
-  return hosts;
+  return [...new Set(Array.from(script.matchAll(/\bhttps?:\/\/([^\s'"/)?#]+)/gi), (m) => m[1].toLowerCase()))];
 }
 
 /**

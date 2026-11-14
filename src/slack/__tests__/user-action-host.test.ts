@@ -261,6 +261,18 @@ describe('answerUserAction — one path for the Slack button and the dashboard',
     expect(again.ok).toBe(true);
   });
 
+  it('a card rewrite that fails after the agent took the answer still keeps it answered, persisted, and told once', async () => {
+    const { session, d, notify, args } = setup();
+    d.slackApi.updateMessage.mockRejectedValueOnce(new Error('slack 500'));
+    const r = await answerUserAction(args);
+    expect(r.ok).toBe(true);
+    expect(session.userActions?.[0]).toMatchObject({ status: 'done', resolvedBy: 'U_OWNER' });
+    expect(d.slackApi.updateMessage).toHaveBeenCalledTimes(1);
+    expect(d.persistAndBroadcast).toHaveBeenCalledWith('k');
+    expect(await answerUserAction(args)).toEqual({ ok: false, code: 'already-resolved' });
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
+
   it('a second answer is refused as already answered; an unknown one as gone', async () => {
     const { args } = setup();
     await answerUserAction(args);
