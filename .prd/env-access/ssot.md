@@ -105,8 +105,13 @@ Diff (SSOT_5): added = T16 · changed = 환경 스킬 실행 방식 — 새 실�
 
 - **T4 · T6 (GitHub 권한 · 환경 계정):** 환경 유저 세션은 server-tools `gh_pr`(org-admin 토큰, WU3a #1248)과
   `login`(환경 계정 세션, WU3b #1250)을 카드 없이 쓴다 — 어드민이라서. 라이브 2차에서 환경 유저 세션이 환경 계정으로
-  백오피스에 로그인해 API·화면 QA를 끝냈다(판정 pass). PR 승인·머지 경로는 같은 세션의 같은 도구이고, 라이브로 돈 것은
-  QA 스킬(승인·머지를 하지 않는 스킬)이다.
+  백오피스에 로그인해 API·화면 QA를 끝냈다(판정 pass). **정정 (2026-11-14):** 그 로그인은 QA 스킬 자체의 로그인이었다 —
+  고객 dev 호스트의 `server-tools.dev2`에는 `web.logins`도 `github`도 없었고 `DATA_DIR/env-audit/`도 없었다. 그리고 환경
+  유저 세션은 감사 요청자(`SOMA_REQUESTER`)를 받지 못해 `gh_pr` approve·merge · `login` · `cf_api` 쓰기가 모두 거절되는
+  상태였다(#1253 trinity R1, astra) → #1286이 고침(설정된 `env:<name>`이 자기 세션의 요청자). 고객 deploy 스킬의
+  approve는 사람 gh 계정 토큰을 꺼내는 방식이라 정책이 막고 있었고, `gh_pr` view → approve로 바꿨다(호스트의 스킬 파일).
+  환경 유저의 감사 쓰기 첫 성공(`env-audit.jsonl`의 `gh_pr` done)이 T4 라이브 증거이고, 브로커 purge(운영자 2단계)의
+  조건이다.
 - **T5 (4버튼):** 어드민 DM 카드에 `수락 (1회)` · `거절` · `이 스킬 항상 — <skill>` · `<org>-dev2 전체 항상` 네 버튼이
   떴다(봇 로그의 카드 본문, action 값 perm_yes_once · perm_deny · perm_allow_skill · perm_allow_all). 어드민이
   "전체 항상"을 누른 뒤 같은 요청자의 다음 호출은 카드 없이 실행됐다. 나머지 세 버튼의 동작은 테스트로 고정
@@ -117,8 +122,11 @@ Diff (SSOT_5): added = T16 · changed = 환경 스킬 실행 방식 — 새 실�
 - **라이브에서 나온 고침:** #1274 — 메모리 저장소가 `env:` ID를 거부해 환경 유저 턴이 모델 호출 전에 죽던 것.
 - **워크플로 점검에서 나온 고침:** #1275 — 크론 tick이 새 스레드 크론의 턴 전체를 기다려, 20:00 UTC 정기 작업(6–8시간)이
   도는 동안 다른 크론 약 10개가 매일 catch-up 창(60분) 밖으로 밀려 사라지던 것.
-- **T10 · T14:** 브로커 제거(#1214, PR #1253 draft)는 운영자 단계(토큰을 `secrets/`로, 환경별 Cloudflare 토큰, 브로커
-  `uninstall.sh`(root), 브로커 Slack 앱 삭제) 뒤에 머지한다.
+- **T10 · T14:** 브로커 제거(#1214, PR #1253 draft, trinity R3 만장일치 APPROVE)는 운영자 단계 뒤에 머지한다. 운영자
+  스크립트는 두 단계다 — 1단계: 브로커 GitHub 토큰을 `secrets/`로, 환경별 존 한정 Cloudflare 토큰 발급, config 참조
+  기록(브로커는 대체 경로로 남김) · 2단계 `--uninstall`: `env-audit.jsonl`에 `gh_pr` done이 있을 때만 브로커 Slack 봇
+  토큰 revoke + `uninstall.sh --purge`(root) + `launchctl print system/ai.soma.devops-broker` not found 확인. 브로커가
+  있던 호스트는 고객 dev 호스트 하나다(owner-mac에는 없음).
 
 ## 용어 고정
 
