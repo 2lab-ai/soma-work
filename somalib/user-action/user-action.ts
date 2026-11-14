@@ -579,3 +579,38 @@ export function restoreUserActions(raw: unknown): UserActionRecord[] | undefined
   const list = raw.map(parseUserActionRecord).filter((a): a is UserActionRecord => a !== null);
   return list.length ? list.slice(-USER_ACTIONS_KEPT) : undefined;
 }
+
+// ── Tool result ─────────────────────────────────────────────────────────────
+
+/** The SDK name of the tool, as the host sees it in tool results. */
+export const INSTRUCT_USER_TOOL_NAME = 'mcp__user-action__instruct_user';
+
+/**
+ * The record inside an `instruct_user` tool result (the MCP text content holding
+ * `{ type: 'user_action', ok: true, action }`), or null for a refusal or junk.
+ */
+export function parseInstructUserToolResult(raw: unknown, depth = 0): UserActionRecord | null {
+  if (raw === null || raw === undefined || depth > 4) return null;
+  if (typeof raw === 'string') {
+    const t = raw.trim();
+    if (!t.startsWith('{') || !t.endsWith('}')) return null;
+    try {
+      return parseInstructUserToolResult(JSON.parse(t), depth + 1);
+    } catch {
+      return null;
+    }
+  }
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      const found = parseInstructUserToolResult(item, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (r.type === 'user_action') return r.ok === true ? parseUserActionRecord(r.action) : null;
+  if (Array.isArray(r.content)) return parseInstructUserToolResult(r.content, depth + 1);
+  if (typeof r.text === 'string') return parseInstructUserToolResult(r.text, depth + 1);
+  return null;
+}

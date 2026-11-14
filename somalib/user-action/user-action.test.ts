@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   appendUserAction,
   inspectUserActionScript,
+  parseInstructUserToolResult,
   parseUserActionRecord,
   resolveUserAction,
   restoreUserActions,
@@ -203,5 +204,31 @@ describe('session list helpers', () => {
     expect(restoreUserActions('x')).toBeUndefined();
     expect(restoreUserActions([rec('a'), { id: 'bad' }])).toEqual([rec('a')]);
     expect(restoreUserActions([{ id: 'bad' }])).toBeUndefined();
+  });
+});
+
+describe('parseInstructUserToolResult', () => {
+  const v = validateInstructUserArgs(base);
+  if (!v.ok) throw new Error('fixture');
+  const action = {
+    ...v.request,
+    id: 'ua_9',
+    createdAt: 5,
+    status: 'pending' as const,
+    inspection: inspectUserActionScript(v.request.script, v.request.shell, SYNTAX_OK),
+  };
+  const payload = JSON.stringify({ type: 'user_action', ok: true, action, note: 'x' });
+
+  it('reads the record from the MCP text content in any of the shapes the SDK hands over', () => {
+    expect(parseInstructUserToolResult(payload)).toEqual(action);
+    expect(parseInstructUserToolResult([{ type: 'text', text: payload }])).toEqual(action);
+    expect(parseInstructUserToolResult({ content: [{ type: 'text', text: payload }] })).toEqual(action);
+  });
+
+  it('returns null for a refusal or junk', () => {
+    const refusal = JSON.stringify({ type: 'user_action', ok: false, error: { code: 'X', message: 'm' } });
+    expect(parseInstructUserToolResult(refusal)).toBeNull();
+    expect(parseInstructUserToolResult('not json')).toBeNull();
+    expect(parseInstructUserToolResult({ type: 'model_command_result' })).toBeNull();
   });
 });

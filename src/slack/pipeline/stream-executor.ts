@@ -35,11 +35,16 @@ import { buildCompactionContext, snapshotFromSession } from '../../session/compa
 import { getTokenManager, parseCooldownTime } from '../../token-manager';
 import { coerceToAvailableModel, MODEL_ALIASES, userSettingsStore } from '../../user-settings-store';
 import { postCompactCompleteIfNeeded, postCompactStartingIfNeeded } from '../hooks/compact-hooks';
+import { captureUserActionToolResults } from '../user-action-host';
 
 const providerLogger = new Logger('StreamExecutorProviders');
 
 setStreamExecutorProviders({
   parseModelCommandRunResponse,
+  // Tasks for the human (instruct_user): stored on the session, own Slack card, dashboard push.
+  captureUserActions: async ({ slackApi, persistAndBroadcast, ...rest }) => {
+    await captureUserActionToolResults({ ...rest, session: rest.session as any, deps: { slackApi, persistAndBroadcast } });
+  },
   createTurnResultCollector: () => new TurnResultCollector(),
   getChannelDescription,
   getChannel,
