@@ -2,22 +2,44 @@
 
 Usage:
     cd "$CLAUDE_PLUGIN_ROOT/skills/architecture-diagram/references"
-    uv run python render_excalidraw.py <path-to-file.excalidraw> [--output path.png] [--scale 2] [--width 1920]
+    uv run python render_excalidraw.py <path-to-file.excalidraw> [--output path.png] [--scale 1] [--width 1920]
 
 First-time setup:
     cd "$CLAUDE_PLUGIN_ROOT/skills/architecture-diagram/references"
     uv sync
     uv run playwright install chromium
 
-Network prerequisite: esm.sh reachable (renderer imports @excalidraw/excalidraw ES module).
+Network prerequisite: esm.sh reachable (renderer imports the pinned @excalidraw/excalidraw ES module
+named in render_template.html). A cold first load of that bundle took 36–44 s on 2026-11-13, so the
+module wait defaults to DEFAULT_LOAD_TIMEOUT_MS; raise it with --load-timeout-ms or
+EXCALIDRAW_LOAD_TIMEOUT_MS.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import sys
 from pathlib import Path
+
+# A cold load of the pinned Excalidraw bundle from esm.sh measured 36–44 s (2026-11-13).
+DEFAULT_LOAD_TIMEOUT_MS = 90_000
+MODULE_URL_RE = re.compile(r'EXCALIDRAW_MODULE_URL\s*=\s*"([^"]+)"')
+
+
+def module_url_of(template_path: Path) -> str:
+    """The one Excalidraw module URL the template imports (the single place its version lives)."""
+    m = MODULE_URL_RE.search(template_path.read_text(encoding="utf-8"))
+    return m.group(1) if m else "(EXCALIDRAW_MODULE_URL not found in render_template.html)"
+
+
+def load_timeout_ms(cli_value: int | None) -> int:
+    if cli_value:
+        return cli_value
+    env = os.environ.get("EXCALIDRAW_LOAD_TIMEOUT_MS", "").strip()
+    return int(env) if env.isdigit() and int(env) > 0 else DEFAULT_LOAD_TIMEOUT_MS
 
 
 def validate_excalidraw(data: dict) -> list[str]:
@@ -74,8 +96,9 @@ def compute_bounding_box(elements: list[dict]) -> tuple[float, float, float, flo
 def render(
     excalidraw_path: Path,
     output_path: Path | None = None,
-    scale: int = 2,
+    scale: int = 1,
     max_width: int = 1920,
+    timeout_ms: int = DEFAULT_LOAD_TIMEOUT_MS,
 ) -> Path:
     """Render an .excalidraw file to PNG. Returns the output PNG path."""
     # Import playwright here so validation errors show before import errors
@@ -123,6 +146,7 @@ def render(
         sys.exit(1)
 
     template_url = template_path.as_uri()
+    module_url = module_url_of(template_path)
 
     with sync_playwright() as p:
         try:
@@ -143,16 +167,18 @@ def render(
         page.goto(template_url)
 
         # Wait for the ES module to load (imports from esm.sh) OR explicit error.
-        # Surfaces "esm.sh unreachable" as a clear error instead of a silent timeout.
+        # A cold load is slow (tens of seconds), so the wait is long and says what it waits for.
+        print(f"loading {module_url} (timeout {timeout_ms // 1000}s; a cold load can take ~40s)", file=sys.stderr)
         try:
             page.wait_for_function(
                 "window.__moduleReady === true || typeof window.__moduleError !== 'undefined'",
-                timeout=15000,
+                timeout=timeout_ms,
             )
         except Exception:
             print(
-                "ERROR: Timed out (15s) loading Excalidraw ES module from esm.sh. "
-                "Check network access to https://esm.sh/.",
+                f"ERROR: Timed out after {timeout_ms // 1000}s loading {module_url}. The host may answer while "
+                "this bundle is still building or slow; check the URL with curl, then raise the wait with "
+                "--load-timeout-ms or EXCALIDRAW_LOAD_TIMEOUT_MS.",
                 file=sys.stderr,
             )
             browser.close()
@@ -161,7 +187,8 @@ def render(
         module_error = page.evaluate("window.__moduleError")
         if module_error:
             print(
-                f"ERROR: Failed to load Excalidraw ES module from esm.sh: {module_error}",
+                f"ERROR: Failed to load {module_url}: {module_error}. If a sub-import answers 404, the pinned "
+                "version in render_template.html needs to move.",
                 file=sys.stderr,
             )
             browser.close()
@@ -178,7 +205,7 @@ def render(
             sys.exit(1)
 
         # Wait for render completion signal
-        page.wait_for_function("window.__renderComplete === true", timeout=15000)
+        page.wait_for_function("window.__renderComplete === true", timeout=timeout_ms)
 
         # Screenshot the SVG element
         svg_el = page.query_selector("#root svg")
@@ -187,7 +214,9 @@ def render(
             browser.close()
             sys.exit(1)
 
-        svg_el.screenshot(path=str(output_path))
+        # A large diagram can take longer than Playwright's 30 s default to settle and capture
+        # (seen 2026-11-13 under load: "waiting for element to be stable").
+        svg_el.screenshot(path=str(output_path), timeout=timeout_ms)
         browser.close()
 
     return output_path
@@ -197,15 +226,27 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Render Excalidraw JSON to PNG")
     parser.add_argument("input", type=Path, help="Path to .excalidraw JSON file")
     parser.add_argument("--output", "-o", type=Path, default=None, help="Output PNG path (default: same name with .png)")
-    parser.add_argument("--scale", "-s", type=int, default=2, help="Device scale factor (default: 2)")
+    parser.add_argument(
+        "--scale",
+        "-s",
+        type=int,
+        default=1,
+        help="Device scale factor (default: 1). 2 doubles the pixels, not the relative text size; it made 7000-px, 1–2 MB PNGs (2026-11-13)",
+    )
     parser.add_argument("--width", "-w", type=int, default=1920, help="Max viewport width (default: 1920)")
+    parser.add_argument(
+        "--load-timeout-ms",
+        type=int,
+        default=None,
+        help=f"Wait for the Excalidraw module and the render (default: EXCALIDRAW_LOAD_TIMEOUT_MS or {DEFAULT_LOAD_TIMEOUT_MS})",
+    )
     args = parser.parse_args()
 
     if not args.input.exists():
         print(f"ERROR: File not found: {args.input}", file=sys.stderr)
         sys.exit(1)
 
-    png_path = render(args.input, args.output, args.scale, args.width)
+    png_path = render(args.input, args.output, args.scale, args.width, load_timeout_ms(args.load_timeout_ms))
     print(str(png_path))
 
 

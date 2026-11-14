@@ -128,6 +128,8 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
 
 5. **Upload** the HTML only, with `mcp__slack-mcp__send_file` with its `url` set to the served URL (the dashboard artifact then opens the live page too; also put the URL in `initial_comment`) — never a PNG of it (none is made): one drawing is one artifact in the thread and on the dashboard (SSOT 2026-11-02, 2026-11-09). Outside Slack, print the HTML's absolute path and the URL instead.
 
+In report mode skip steps 4 and 5: when the `diagram` router delegated here because the same request asked for a report or a page (its "Report mode" rule), hand the checked HTML sheet's path back without publishing or uploading — the `html` skill embeds the sheet in the report page and uploads that page, the request's one artifact.
+
 The drawing of a third-party site is an analysis artifact: keep rule 4 (unbranded) — name it `UI-<KIND>-<NNN>` and put the source URL only in the `SOURCE` cell.
 
 To animate the finished sheet, use the `dimensional-drawing-motion` skill.

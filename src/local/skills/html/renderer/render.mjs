@@ -7,8 +7,11 @@
  *   node render.mjs --input <html-path> --output <png-path> ← only when the user asks for an image
  *                   [--width 1200] [--height 1600] [--full-page]
  *                   [--selector body] [--device-scale-factor 1]
- *                   [--wait-ms 500] [--template <name>]
+ *                   [--wait-ms 500] [--template <name>] [--first-screen]
  *
+ * --first-screen (with --check) also asks for the page's opening: the elements marked data-first-screen="answer",
+ * "map" and "guide" must exist and start inside the reader's first screen (the top min(viewport, 900) px); the
+ * verdict gains firstScreen: { answer, map, guide, top } and fails when any is false (html Step 0).
  * --check prints `check: <json>` — { ok, textChars, overflowX, overlaps, overlapSamples, brokenImages,
  * pageErrors, width, height } — and exits 3 when the page fails: under 20 characters of text a reader can see,
  * a horizontal scroll (reported only for a fixed-canvas template), visible text drawn over other visible text,
@@ -34,6 +37,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { foldUsedFonts } from './font-names.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SKILL_ROOT = resolve(__dirname, '..');
@@ -54,6 +58,7 @@ function parseArgs(argv) {
     else if (arg === '--wait-ms') out.waitMs = Number(argv[++i]);
     else if (arg === '--template') out.template = argv[++i];
     else if (arg === '--check') out.check = true;
+    else if (arg === '--first-screen') out.firstScreen = true;
     else if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
@@ -69,7 +74,7 @@ function printHelp() {
   console.log(
     'Usage: node render.mjs --input <html> (--check | --output <png>) [--width N] [--height N]' +
       ' [--full-page] [--no-full-page] [--selector S] [--device-scale-factor N]' +
-      ' [--wait-ms N] [--template NAME]',
+      ' [--wait-ms N] [--template NAME] [--first-screen]',
   );
 }
 
@@ -165,7 +170,8 @@ async function main() {
           for (const f of fonts) names.add(f.familyName);
         }
       }
-      usedFonts = [...names].sort();
+      // A variable font reports its default instance ("Noto Sans KR Thin"); fold it back to the loaded family.
+      usedFonts = foldUsedFonts([...names], loadedFonts);
     } catch {
       usedFonts = null;
     }
@@ -173,7 +179,10 @@ async function main() {
 
     if (args.check) {
       // A fixed-canvas template (fullPage false: a swipe deck, a social card) may scroll sideways on purpose.
-      const verdict = await checkPage(page, pageErrors, { failOnOverflowX: geom.fullPage !== false });
+      const verdict = await checkPage(page, pageErrors, {
+        failOnOverflowX: geom.fullPage !== false,
+        firstScreen: Boolean(args.firstScreen),
+      });
       console.log(`check: ${JSON.stringify(verdict)}`);
       if (!verdict.ok) process.exitCode = 3;
       return;
@@ -210,7 +219,7 @@ async function main() {
  * can see, no horizontal scroll (a fixed-canvas template — a swipe deck, a social card — only reports it), no
  * two pieces of visible text drawn on top of each other, no broken image, no uncaught script error.
  */
-async function checkPage(page, pageErrors, { failOnOverflowX }) {
+async function checkPage(page, pageErrors, { failOnOverflowX, firstScreen = false }) {
   // Lazy images below the fold never load without a scroll: load every image now, so a broken one is seen.
   await page
     .evaluate(async () => {
@@ -226,7 +235,7 @@ async function checkPage(page, pageErrors, { failOnOverflowX }) {
       await Promise.race([Promise.all(imgs.map(settled)), new Promise((ok) => setTimeout(ok, 5000))]);
     })
     .catch(() => {});
-  const m = await page.evaluate(() => {
+  const m = await page.evaluate((wantFirstScreen) => {
     const MAX_BOXES = 2000;
     const doc = document.documentElement;
     const overflowX = Math.max(0, Math.ceil(doc.scrollWidth - window.innerWidth));
@@ -242,6 +251,64 @@ async function checkPage(page, pageErrors, { failOnOverflowX }) {
       }
       return true;
     };
+    // What an ancestor clips is not drawn: a scroll box's hidden rows, a visually-hidden (sr-only) label. Each
+    // text rect is cut to every box that really clips it and dropped when nothing of it is left — so only text a
+    // reader can see can collide (research-skill run 2026-11-13). Only a real clip counts (trinity R1):
+    // - an absolutely positioned element is clipped only by its containing block and what clips that, not by a
+    //   static overflow box in between; a fixed one escapes them all (unless a transformed ancestor holds it);
+    // - text nested inside such an element follows it: past each box that clips, the walk asks what clips THAT
+    //   box, by that box's own position (trinity R2 — `<span style="position:absolute"><b>…</b></span>`);
+    // - each axis clips on its own (`overflow-x: clip` with `overflow-y: visible` cuts sideways only).
+    const axisBox = (e, cs) => {
+      const r = e.getBoundingClientRect();
+      const x = cs.overflowX !== 'visible';
+      const y = cs.overflowY !== 'visible';
+      if (!x && !y) return null;
+      return {
+        left: x ? r.left : -Infinity,
+        right: x ? r.right : Infinity,
+        top: y ? r.top : -Infinity,
+        bottom: y ? r.bottom : Infinity,
+      };
+    };
+    const hidden = (cs) =>
+      /rect\(\s*0(px)?[\s,]+0(px)?[\s,]+0(px)?[\s,]+0(px)?\s*\)/.test(cs.clip) || /^inset\(\s*50%/.test(cs.clipPath);
+    const clipBoxes = (el) => {
+      const out = [];
+      const own = getComputedStyle(el);
+      if (hidden(own)) return null;
+      const ownBox = axisBox(el, own);
+      if (ownBox) out.push(ownBox);
+      const placed = (cs) => (cs.position === 'fixed' ? 'fixed' : cs.position === 'absolute' ? 'absolute' : 'flow');
+      // `mode` is how the box the walk has reached so far is placed: its ancestors clip it by that rule.
+      let mode = placed(own);
+      for (let e = el.parentElement; e && e.nodeType === 1 && e !== document.documentElement; e = e.parentElement) {
+        const cs = getComputedStyle(e);
+        const transformed = cs.transform !== 'none';
+        const clips =
+          mode === 'flow' ||
+          (mode === 'absolute' && (cs.position !== 'static' || transformed)) ||
+          (mode === 'fixed' && transformed);
+        if (!clips) continue;
+        if (hidden(cs)) return null;
+        const b = axisBox(e, cs);
+        if (b) out.push(b);
+        mode = placed(cs);
+      }
+      return out;
+    };
+    const cut = (r, boxes) => {
+      let { left, top, right, bottom } = r;
+      for (const b of boxes) {
+        left = Math.max(left, b.left);
+        top = Math.max(top, b.top);
+        right = Math.min(right, b.right);
+        bottom = Math.min(bottom, b.bottom);
+      }
+      const width = right - left;
+      const height = bottom - top;
+      return width >= 2 && height >= 2 ? { left, top, right, bottom, width, height } : null;
+    };
     // A text box: an element's OWN text nodes, one rect per line — never its child elements' boxes.
     const boxes = [];
     let textChars = 0;
@@ -250,10 +317,16 @@ async function checkPage(page, pageErrors, { failOnOverflowX }) {
     for (const el of document.body ? document.body.querySelectorAll('*') : []) {
       const texts = [...el.childNodes].filter((n) => n.nodeType === 3 && n.textContent.trim());
       if (!texts.length || !seen(el)) continue;
+      const clips = clipBoxes(el);
+      if (clips === null) continue;
       const rects = [];
       for (const t of texts) {
         range.selectNodeContents(t);
-        for (const r of range.getClientRects()) if (r.width >= 1 && r.height >= 1) rects.push(r);
+        for (const r of range.getClientRects()) {
+          if (r.width < 1 || r.height < 1) continue;
+          const c = cut(r, clips);
+          if (c) rects.push(c);
+        }
       }
       if (!rects.length) continue;
       textChars += texts.reduce((n, t) => n + t.textContent.replace(/\s+/g, ' ').trim().length, 0);
@@ -279,6 +352,27 @@ async function checkPage(page, pageErrors, { failOnOverflowX }) {
         if (samples.length < 5) samples.push([a.el.textContent.trim().slice(0, 40), b.el.textContent.trim().slice(0, 40)]);
       }
     }
+    // The reader's first screen: what shows before any scroll, at most 900 px tall (a laptop screen). A marker
+    // counts only when a reader can see it there — shown, not clipped away, and inside the viewport sideways.
+    let firstScreen;
+    if (wantFirstScreen) {
+      window.scrollTo(0, 0);
+      const fold = Math.min(window.innerHeight, 900);
+      const at = (role) => {
+        const el = document.querySelector(`[data-first-screen="${role}"]`);
+        if (!el || !(el.textContent || '').trim() || !seen(el)) return null;
+        const clips = clipBoxes(el);
+        if (clips === null) return null;
+        const r = cut(el.getBoundingClientRect(), clips);
+        // Off the screen on any side — left, right or above the top — is not seen (trinity R2); below the
+        // fold is reported by its top and fails in `inside`.
+        if (!r || r.right <= 0 || r.left >= window.innerWidth || r.bottom <= 0) return null;
+        return Math.round(r.top + window.scrollY);
+      };
+      const top = { answer: at('answer'), map: at('map'), guide: at('guide') };
+      const inside = (y) => y !== null && y < fold;
+      firstScreen = { answer: inside(top.answer), map: inside(top.map), guide: inside(top.guide), top, fold };
+    }
     return {
       textChars,
       overflowX,
@@ -288,14 +382,17 @@ async function checkPage(page, pageErrors, { failOnOverflowX }) {
       width: doc.scrollWidth,
       height: doc.scrollHeight,
       ...(truncated ? { truncated: true } : {}),
+      ...(firstScreen ? { firstScreen } : {}),
     };
-  });
+  }, firstScreen);
+  const fs = m.firstScreen ?? null;
   const ok =
     m.textChars >= 20 &&
     (!failOnOverflowX || m.overflowX === 0) &&
     m.overlaps === 0 &&
     m.brokenImages === 0 &&
-    pageErrors.length === 0;
+    pageErrors.length === 0 &&
+    (!fs || (fs.answer && fs.map && fs.guide));
   return { ok, ...m, pageErrors };
 }
 
