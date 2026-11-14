@@ -4813,16 +4813,20 @@ describe('SlackHandler — follow-up queue host', () => {
       const second = claudeHandler.steerTurn.mock.calls[1][1].uuid;
       expect(second).not.toBe(first);
       const copies = { 'shot.png': deferred<unknown[]>(), 'later.mp3': deferred<unknown[]>() };
-      handlerAny.userMediaRecorder.capture = vi.fn(
+      const capture = vi.fn(
         (_conversationId: string, files: Array<{ name: string }>) =>
           copies[files[0].name as keyof typeof copies].promise,
       );
+      handlerAny.userMediaRecorder.capture = capture;
 
       // The running turn's own signal, fired from its frame loop and awaited by nobody.
       const { read } = claudeHandler.setSteerSignals.mock.calls[0][0];
       read(SESSION_KEY, first);
       read(SESSION_KEY, second);
       await tick();
+      // Both copies run side by side: the order is kept by the writes, not by copying one file at a time.
+      expect(capture.mock.calls.map((call) => call[1][0].name)).toEqual(['shot.png', 'later.mp3']);
+      expect(record).not.toHaveBeenCalled();
       // The later message's copy finishes first.
       copies['later.mp3'].resolve([]);
       await tick();
