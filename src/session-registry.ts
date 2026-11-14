@@ -28,7 +28,6 @@ import { applyFollowUp, cleanTldrLine, followUpFromTldr } from '@soma/slack/summ
 import * as fs from 'fs';
 import * as path from 'path';
 import { applyInstructionOperations } from 'somalib/model-commands/catalog';
-import { restoreUserActions } from 'somalib/user-action/user-action';
 import {
   type HostReceipt,
   type HostWriteReceipt,
@@ -37,6 +36,7 @@ import {
   receiptIssuedAt,
   withAck,
 } from 'somalib/model-commands/host-receipt';
+import { restoreUserActions } from 'somalib/user-action/user-action';
 import { DATA_DIR } from './env-paths';
 import { isPlaceholderSessionTitle, sanitizeSessionTitle } from './format/display-title';
 import { Logger } from './logger';

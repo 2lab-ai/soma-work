@@ -82,7 +82,11 @@ export function buildUserActionCard(
   const kind = action.optional ? '선택' : '해 주세요';
   const head = `🙋 *사용자 작업 (${kind})* — ${esc(action.title)}`;
   const resolved = action.status === 'pending' ? undefined : RESOLVED[action.status];
-  const color = resolved ? resolved.color : action.inspection.verdict === 'ok' ? PENDING_COLOR : VERDICT[action.inspection.verdict].color;
+  const color = resolved
+    ? resolved.color
+    : action.inspection.verdict === 'ok'
+      ? PENDING_COLOR
+      : VERDICT[action.inspection.verdict].color;
 
   const blocks: any[] = [
     { type: 'section', text: { type: 'mrkdwn', text: head } },
@@ -106,8 +110,13 @@ export function buildUserActionCard(
 
   if (resolved) {
     const who = action.resolvedBy ? ` — <@${esc(action.resolvedBy)}>` : '';
-    const when = action.resolvedAt ? ` · <!date^${Math.floor(action.resolvedAt / 1000)}^{date_short_pretty} {time}|${new Date(action.resolvedAt).toISOString()}>` : '';
-    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `${resolved.icon} *${resolved.label}*${who}${when}` }] });
+    const when = action.resolvedAt
+      ? ` · <!date^${Math.floor(action.resolvedAt / 1000)}^{date_short_pretty} {time}|${new Date(action.resolvedAt).toISOString()}>`
+      : '';
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `${resolved.icon} *${resolved.label}*${who}${when}` }],
+    });
   } else {
     const value = JSON.stringify({ sessionKey, id: action.id } satisfies UserActionButtonValue);
     blocks.push({

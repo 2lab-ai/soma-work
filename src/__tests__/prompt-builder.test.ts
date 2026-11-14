@@ -974,6 +974,18 @@ describe('PromptBuilder', () => {
       expect(prompt).toContain('system_prompt');
     });
 
+    it('common.prompt routes every task for the user through instruct_user, apart from questions', () => {
+      // A task the user must do is handed over by the user-action MCP — a short script on a named machine, checked
+      // like the agent's own Bash — and is never buried in a reply or report, nor asked as a question.
+      const prompt = builder.loadWorkflowPrompt('default');
+      expect(prompt).toContain('## Tasks for the user');
+      expect(prompt).toContain('mcp__user-action__instruct_user');
+      const section = prompt!.slice(prompt!.indexOf('## Tasks for the user'));
+      expect(section).toMatch(/short script/);
+      expect(section).toMatch(/machine/);
+      expect(section).toMatch(/ASK_USER_QUESTION/);
+    });
+
     it('common.prompt working-folder rule should anchor to <cwd>', () => {
       // Issue #799: rule example must place the working folder INSIDE <cwd>,
       // not as a sibling under /tmp/{slackId}/. Otherwise the model creates

@@ -543,7 +543,10 @@ export function parseUserActionRecord(raw: unknown): UserActionRecord | null {
 export const USER_ACTIONS_KEPT = 20;
 
 /** The list with `record` added (or replacing the one with its id), capped at {@link USER_ACTIONS_KEPT}. */
-export function appendUserAction(list: readonly UserActionRecord[] | undefined, record: UserActionRecord): UserActionRecord[] {
+export function appendUserAction(
+  list: readonly UserActionRecord[] | undefined,
+  record: UserActionRecord,
+): UserActionRecord[] {
   const out = (list ?? []).filter((a) => a.id !== record.id);
   out.push(record);
   while (out.length > USER_ACTIONS_KEPT) {

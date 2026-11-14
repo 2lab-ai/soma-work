@@ -43,7 +43,11 @@ setStreamExecutorProviders({
   parseModelCommandRunResponse,
   // Tasks for the human (instruct_user): stored on the session, own Slack card, dashboard push.
   captureUserActions: async ({ slackApi, persistAndBroadcast, ...rest }) => {
-    await captureUserActionToolResults({ ...rest, session: rest.session as any, deps: { slackApi, persistAndBroadcast } });
+    await captureUserActionToolResults({
+      ...rest,
+      session: rest.session as any,
+      deps: { slackApi, persistAndBroadcast },
+    });
   },
   createTurnResultCollector: () => new TurnResultCollector(),
   getChannelDescription,

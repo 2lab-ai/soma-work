@@ -2,11 +2,7 @@
  * The dashboard's copy of a session's user actions (`instruct_user`): what the panel's "사용자 할 일" section and the
  * card badge read. Validated record by record; the Slack message ts stays server-side.
  */
-import {
-  parseUserActionRecord,
-  USER_ACTIONS_KEPT,
-  type UserActionRecord,
-} from 'somalib/user-action/user-action';
+import { parseUserActionRecord, USER_ACTIONS_KEPT, type UserActionRecord } from 'somalib/user-action/user-action';
 
 export type DashboardUserAction = Omit<UserActionRecord, 'slackTs'>;
 

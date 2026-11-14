@@ -10,8 +10,8 @@
  * host (stream-executor) shows it in its own Slack card and dashboard section.
  */
 
-import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
@@ -28,7 +28,9 @@ import {
 
 const logger = new StderrLogger('UserActionMCP');
 
-export const INSTRUCT_USER_TOOL: ToolDefinition & { inputSchema: { type: 'object'; required: string[] } & Record<string, unknown> } = {
+export const INSTRUCT_USER_TOOL: ToolDefinition & {
+  inputSchema: { type: 'object'; required: string[] } & Record<string, unknown>;
+} = {
   name: 'instruct_user',
   description:
     'Hand the human a task they must do themselves — anything you cannot do: an owner-only verification, a login, ' +
@@ -51,7 +53,7 @@ export const INSTRUCT_USER_TOOL: ToolDefinition & { inputSchema: { type: 'object
       host: {
         type: 'string',
         description:
-          'The machine or device to run it on, by the name the human knows (e.g. their Mac\'s host name). ' +
+          "The machine or device to run it on, by the name the human knows (e.g. their Mac's host name). " +
           'Never "your computer".',
       },
       why: { type: 'string', description: 'Why the human has to do it and you cannot.' },
@@ -65,7 +67,8 @@ export const INSTRUCT_USER_TOOL: ToolDefinition & { inputSchema: { type: 'object
       expect: { type: 'string', description: 'What the human sees when it worked.' },
       effects: {
         type: 'string',
-        description: 'What the script changes, in plain words (like a Bash description). Say so when it changes nothing.',
+        description:
+          'What the script changes, in plain words (like a Bash description). Say so when it changes nothing.',
       },
       optional: { type: 'boolean', description: 'True when the work goes on fine without it.' },
     },

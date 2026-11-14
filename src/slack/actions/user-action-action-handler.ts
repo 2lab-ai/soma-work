@@ -4,7 +4,8 @@ import { parseUserActionButtonValue, USER_ACTION_DONE_ACTION_ID, userActionResol
 import { resolveSessionUserAction, type UserActionHostDeps } from '../user-action-host';
 import type { MessageHandler, RespondFn, SayFn } from './types';
 
-export const USER_ACTION_OWNER_ONLY_TEXT = '이 사용자 작업은 세션 소유자(또는 승인된 사람)만 완료로 표시할 수 있습니다.';
+export const USER_ACTION_OWNER_ONLY_TEXT =
+  '이 사용자 작업은 세션 소유자(또는 승인된 사람)만 완료로 표시할 수 있습니다.';
 export const USER_ACTION_ALREADY_TEXT = '이미 표시된 사용자 작업입니다.';
 export const USER_ACTION_GONE_TEXT = '이 사용자 작업을 찾을 수 없습니다(세션이 끝났거나 오래된 카드).';
 

@@ -96,6 +96,15 @@ The new-task composer has a **작업 계획** (plan) switch, off by default, for
 - A question can say what its answer is holding up (🚧), what is at stake (⚖️) and whether the choice can be undone (⚠️ 되돌릴 수 없음, with its reason, or ↩️ 되돌릴 수 있음) — the same lines, in the same order, on the Slack card and the dashboard (#1073). Most questions carry none and look as before. A question with these lines is answered from the opened card, never by one press on the card face. Spec: [`docs/current/spec/12-ui-ask-user-question.md` §7.10](../../current/spec/12-ui-ask-user-question.md).
 - **시작** also sets a goal for the plan: finish every phase. The goal loop then keeps the task going turn after turn until the plan is done, and picks it up again after a restart. Your own instruction or answer resets its continuation budget.
 
+### 🙋 Tasks for you (user actions)
+
+When the agent needs you to do something it cannot do itself — an owner-only verification, a login, a command on a machine it cannot reach — it never writes the steps into its reply. It hands them over through its own tool (`instruct_user`, the `user-action` MCP), and you get them in their own place: a separate Slack card in the thread and a **사용자 할 일** (your to-dos) section in the dashboard's detail card, apart from questions. A task card face shows how many required tasks wait on you.
+
+- Every task is a short script (8 lines, 600 characters at most) plus the machine to run it on, why the agent cannot do it, what the script changes and what you see when it worked. A browser or phone step still starts from a command, such as `open 'https://…'` on your Mac.
+- Before you see it, the script gets the check the agent's own Bash commands get: a syntax check (`bash -n`), the same dangerous-command rules, the irreversible-action reader, plus sudo, network access, file writes and code downloaded or hidden and then run. The result (✅ 통과 · ⚠️ 주의 · ⛔ 위험, and every finding) sits next to the script. A script carrying a credential, a bare link, or one that does not parse is refused before it reaches you.
+- After running it, press **✅ 완료했어요** or **❌ 안 됐어요** on the Slack card. The card loses its buttons, the dashboard updates, and the agent gets a message saying what you pressed, so it carries on. Only the session owner (or someone approved for the session) can answer.
+- Spec: [`docs/current/spec/15-user-action.md`](../../current/spec/15-user-action.md).
+
 ### 🗂️ One kind of work session
 
 Every task is a Slack thread, whether it starts from a channel or from the dashboard's composer, and the dashboard is one view of it. Everything a Slack session does — the follow-up queue, `!` steering, goals, resuming after a restart, compaction — works on every task. The separate Slack-less dashboard task is gone (#855): a saved one is archived when the bot loads its sessions and stays readable in the board's closed column. `/z taskentry` and its setting are gone with it; an old setting is ignored.
