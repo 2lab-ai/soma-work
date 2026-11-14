@@ -67,7 +67,15 @@ describe('user-action MCP server', () => {
     expect(bad.message).toBeTruthy();
   });
 
-  it('checkScriptSyntax reports unchecked for powershell instead of pretending it passed', () => {
-    expect(checkScriptSyntax('Get-Date', 'powershell')).toMatchObject({ checked: false, ok: false });
+  it('checkScriptSyntax reports a missing shell as unchecked instead of pretending it passed', () => {
+    const r = checkScriptSyntax('date', 'zsh', { bash: 'bash', zsh: 'no-such-shell-user-action-test', sh: 'sh' });
+    expect(r).toMatchObject({ checked: false, ok: false });
+  });
+
+  it('a script with an unchecked syntax is handed over, but its verdict is caution', () => {
+    const res = buildInstructUserResponse(args, { ...deps, checkSyntax: () => ({ checked: false, ok: false }) });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.action.inspection.verdict).toBe('caution');
   });
 });

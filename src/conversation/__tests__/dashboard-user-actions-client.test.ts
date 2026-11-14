@@ -15,7 +15,8 @@ const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8'
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
 const cook = (fragment: string): string => new Function(`return \`${fragment}\`;`)() as string;
 function clientFn(name: string): string {
-  const start = TEMPLATE.indexOf(`\nfunction ${name}(`);
+  let start = TEMPLATE.indexOf(`\nfunction ${name}(`);
+  if (start < 0) start = TEMPLATE.indexOf(`\nasync function ${name}(`);
   if (start < 0) throw new Error(`client function ${name} not found`);
   return cook(TEMPLATE.slice(start + 1, TEMPLATE.indexOf('\n}\n', start) + 2));
 }
@@ -67,6 +68,14 @@ describe('사용자 할 일 — the detail card section', () => {
     expect(html).toContain('<code>bash -n</code>');
     expect(html).toContain('<code>open</code>');
     expect(html).toContain('data-tone="wait">1<');
+    // 완료 / 안 됨 right there — the same answer as the Slack card's buttons.
+    expect(html).toContain('data-ua-id="ua_1" data-ua-status="done" onclick="answerUserAction(this)"');
+    expect(html).toContain('data-ua-status="failed"');
+  });
+
+  it('an answered task has no buttons', () => {
+    const html = api.panelUserActionsHtml({ userActions: [action({ status: 'failed' })] });
+    expect(html).not.toContain('answerUserAction');
   });
 
   it('shows the risky findings of a dangerous script', () => {
@@ -104,7 +113,7 @@ describe('사용자 할 일 — the detail card section', () => {
   });
 
   it('every Korean string of the section has its English', () => {
-    const script = `<script>\n${SOURCE}\n</script>`;
+    const script = `<script>\n${SOURCE}\n${clientFn('answerUserAction')}\n</script>`;
     const missing = scanPage(script)
       .filter((seg) => !seg.skip && pageText(seg.key) === undefined)
       .map((seg) => seg.key);

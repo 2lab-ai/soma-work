@@ -5,7 +5,7 @@ import {
 } from 'somalib/user-action/user-action';
 import { describe, expect, it, vi } from 'vitest';
 import type { ConversationSession } from '../../types';
-import { captureUserActionToolResults, resolveSessionUserAction } from '../user-action-host';
+import { answerUserAction, captureUserActionToolResults, resolveSessionUserAction } from '../user-action-host';
 
 function action(id: string): UserActionRecord {
   const script = "open 'https://example.com/verify'";
@@ -158,5 +158,71 @@ describe('resolveSessionUserAction', () => {
     expect(session.userActions?.[0].status).toBe('done');
     expect(d.slackApi.updateMessage).not.toHaveBeenCalled();
     expect(d.persistAndBroadcast).not.toHaveBeenCalled();
+  });
+});
+
+describe('answerUserAction — one path for the Slack button and the dashboard', () => {
+  function setup(opts: { may?: boolean; delivered?: boolean } = {}) {
+    const session = {
+      ownerId: 'U_OWNER',
+      channelId: 'C1',
+      userActions: [{ ...action('ua_1'), slackTs: '111.222' }],
+    } as unknown as ConversationSession;
+    const d = deps();
+    const notify = vi.fn(async () => opts.delivered ?? true);
+    const args = {
+      sessionKey: 'k',
+      id: 'ua_1',
+      status: 'done' as const,
+      actor: 'U_OWNER',
+      at: 5,
+      deps: {
+        ...d,
+        getSession: () => session,
+        mayAnswer: () => opts.may ?? true,
+        notify,
+      },
+    };
+    return { session, d, notify, args };
+  }
+
+  it('marks it, tells the agent once, and answers ok', async () => {
+    const { session, notify, args } = setup();
+    const r = await answerUserAction(args);
+    expect(r.ok).toBe(true);
+    expect(session.userActions?.[0].status).toBe('done');
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect((notify.mock.calls[0] as any[])[2]).toContain('사용자 작업 완료');
+  });
+
+  it('refuses someone who may not answer, changing nothing', async () => {
+    const { session, notify, args } = setup({ may: false });
+    expect(await answerUserAction(args)).toEqual({ ok: false, code: 'forbidden' });
+    expect(session.userActions?.[0].status).toBe('pending');
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('when the agent cannot be told, puts it back to pending with its buttons, so it can be answered again', async () => {
+    const { session, d, args } = setup({ delivered: false });
+    expect(await answerUserAction(args)).toEqual({ ok: false, code: 'not-delivered' });
+    expect(session.userActions?.[0].status).toBe('pending');
+    // The card was rewritten twice: answered, then back with its buttons.
+    const calls = d.slackApi.updateMessage.mock.calls as any[];
+    const last = calls[calls.length - 1];
+    expect(last[4][0].blocks.some((b: any) => b.type === 'actions')).toBe(true);
+    // And a second try goes through.
+    const again = await answerUserAction({ ...args, deps: { ...args.deps, notify: vi.fn(async () => true) } });
+    expect(again.ok).toBe(true);
+  });
+
+  it('a second answer is refused as already answered; an unknown one as gone', async () => {
+    const { args } = setup();
+    await answerUserAction(args);
+    expect(await answerUserAction(args)).toEqual({ ok: false, code: 'already-resolved' });
+    expect(await answerUserAction({ ...args, id: 'nope' })).toEqual({ ok: false, code: 'gone' });
+    expect(await answerUserAction({ ...args, deps: { ...args.deps, getSession: () => undefined } })).toEqual({
+      ok: false,
+      code: 'gone',
+    });
   });
 });

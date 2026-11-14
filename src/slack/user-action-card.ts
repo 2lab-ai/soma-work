@@ -29,6 +29,10 @@ const RESOLVED = {
   failed: { icon: '❌', label: '안 됨', color: '#868686' },
 } as const;
 
+/** A section's text stays under Slack's 3000-character limit (escaping can grow it), so the post never fails on it. */
+const SECTION_MAX = 2900;
+const fit = (s: string) => (s.length > SECTION_MAX ? `${s.slice(0, SECTION_MAX - 1)}…` : s);
+
 /** Text inside a code block: Slack still reads `&<>`, and a stray fence would close the block. */
 const codeBlock = (s: string) => `\`\`\`${esc(s).replace(/```/g, "'''")}\`\`\``;
 
@@ -89,23 +93,25 @@ export function buildUserActionCard(
       : VERDICT[action.inspection.verdict].color;
 
   const blocks: any[] = [
-    { type: 'section', text: { type: 'mrkdwn', text: head } },
+    { type: 'section', text: { type: 'mrkdwn', text: fit(head) } },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: [`📍 *어디서:* \`${esc(action.host)}\` · ${esc(action.shell)}`, `❓ *왜:* ${esc(action.why)}`].join('\n'),
+        text: fit(
+          [`📍 *어디서:* \`${esc(action.host)}\` · ${esc(action.shell)}`, `❓ *왜:* ${esc(action.why)}`].join('\n'),
+        ),
       },
     },
-    { type: 'section', text: { type: 'mrkdwn', text: `▶️ *실행할 스크립트*\n${codeBlock(action.script)}` } },
+    { type: 'section', text: { type: 'mrkdwn', text: fit(`▶️ *실행할 스크립트*\n${codeBlock(action.script)}`) } },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: [`📝 *바뀌는 것:* ${esc(action.effects)}`, `🎯 *성공하면:* ${esc(action.expect)}`].join('\n'),
+        text: fit([`📝 *바뀌는 것:* ${esc(action.effects)}`, `🎯 *성공하면:* ${esc(action.expect)}`].join('\n')),
       },
     },
-    { type: 'section', text: { type: 'mrkdwn', text: inspectionLines(action.inspection).join('\n') } },
+    { type: 'section', text: { type: 'mrkdwn', text: fit(inspectionLines(action.inspection).join('\n')) } },
   ];
 
   if (resolved) {

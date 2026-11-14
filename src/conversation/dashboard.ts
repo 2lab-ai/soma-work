@@ -1864,6 +1864,21 @@ export function setDashboardTaskPlanHandler(fn: TaskPlanHandler | null): void {
   _taskPlanHandlerFn = fn;
 }
 
+/**
+ * User actions (`instruct_user`) — 완료 / 안 됨 from the detail card's 사용자 할 일: the same answer path as the Slack
+ * card's buttons (`answerUserAction`, wired in src/index.ts). The answer reaches the agent as the actor's message.
+ */
+type UserActionAnswerHandler = (request: {
+  sessionKey: string;
+  id: string;
+  status: 'done' | 'failed';
+  actorUserId: string;
+}) => Promise<{ status: number; body: Record<string, unknown> }>;
+let _userActionAnswerFn: UserActionAnswerHandler | null = null;
+export function setDashboardUserActionHandler(fn: UserActionAnswerHandler | null): void {
+  _userActionAnswerFn = fn;
+}
+
 export function setDashboardChoiceAnswerHandler(fn: ChoiceAnswerHandler): void {
   _choiceAnswerHandlerFn = fn;
 }
@@ -4842,6 +4857,37 @@ export async function registerDashboardRoutes(
     },
   );
 
+  // 사용자 할 일 (instruct_user): 완료 / 안 됨 — whoever may instruct the session (the Slack button's gate too).
+  server.post<{ Params: { key: string }; Body: { id?: unknown; status?: unknown } }>(
+    '/api/dashboard/session/:key/user-action',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const { id, status } = request.body || {};
+      if (typeof id !== 'string' || !id || (status !== 'done' && status !== 'failed')) {
+        reply.status(400).send({ error: "id and status ('done' | 'failed') are required" });
+        return;
+      }
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { instruct: true });
+      if (!resolved) return;
+      if (!_userActionAnswerFn) {
+        reply.status(501).send({ error: 'User action handler not configured' });
+        return;
+      }
+      try {
+        const outcome = await _userActionAnswerFn({
+          sessionKey: resolved.originalKey,
+          id,
+          status,
+          actorUserId: signedInUserId(request) ?? '',
+        });
+        reply.status(outcome.status).send(outcome.body);
+      } catch (error) {
+        logger.error('Error answering a user action from the dashboard', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
   // ── #983 — the follow-up bar's modal: one of the card's issue or PR links, for the artifact viewer ──
   // Only a URL that is one of the card's own links; the page is never fetched — a GitHub issue or PR is read from the
   // API by its parts (parseGitHubIssueUrl). The body and comments go to the owner, an admin or the viewer token;
@@ -6623,6 +6669,11 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 .pua-verdict { font-weight: 600; }
 .pua-note { font-weight: 400; color: var(--text-secondary); }
 .pua-hint, .pua-line { margin-top: 4px; font-size: 12px; color: var(--text-secondary); }
+.pua-actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.pua-actions .pua-hint { margin: 0 auto 0 0; }
+.pua-btn { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: inherit; cursor: pointer; }
+.pua-btn.is-done { background: var(--accent); border-color: var(--accent); color: var(--on-accent, #fff); }
+.pua-btn:disabled { opacity: .6; cursor: default; }
 .pf-line .pf-peek { display: flex; align-items: center; gap: 6px; }
 .pf-line .pf-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pf-line { position: static; }
@@ -10083,7 +10134,9 @@ function userActionItemHtml(a) {
     + '<dl class="pua-meta"><dt>' + '바뀌는 것' + '</dt><dd>' + esc(a.effects) + '</dd>'
     + '<dt>' + '성공하면' + '</dt><dd>' + esc(a.expect) + '</dd></dl>'
     + userActionCheckHtml(a.inspection)
-    + '<div class="pua-hint">' + '실행한 뒤 Slack 카드의 완료 / 안 됨 버튼으로 알려 주세요.' + '</div></li>';
+    + '<div class="pua-actions"><span class="pua-hint">' + '실행한 뒤 알려 주세요' + '</span>'
+    + '<button type="button" class="pua-btn is-done" data-ua-id="' + escAttr(a.id) + '" data-ua-status="done" onclick="answerUserAction(this)">' + '완료했어요' + '</button>'
+    + '<button type="button" class="pua-btn" data-ua-id="' + escAttr(a.id) + '" data-ua-status="failed" onclick="answerUserAction(this)">' + '안 됐어요' + '</button></div></li>';
 }
 function panelUserActionsHtml(s) {
   var list = (s && s.userActions) || [];
@@ -10093,6 +10146,36 @@ function panelUserActionsHtml(s) {
   return '<div class="ui-section-head"><h4>' + '사용자 할 일' + '</h4>'
     + (waiting.length ? '<span class="ui-count" data-tone="wait">' + waiting.length + '</span>' : '') + '</div>'
     + '<ul class="pua-list" role="list">' + waiting.concat(answered).map(userActionItemHtml).join('') + '</ul>';
+}
+// 완료했어요 / 안 됐어요 — the same answer as the Slack card's buttons; the board push redraws the section.
+async function answerUserAction(btn) {
+  var key = panelSessionKey;
+  var id = btn && btn.getAttribute ? btn.getAttribute('data-ua-id') : '';
+  var status = btn && btn.getAttribute ? btn.getAttribute('data-ua-status') : '';
+  if (!key || !id || !status) return;
+  btn.disabled = true;
+  var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/user-action';
+  var body = JSON.stringify({ id: id, status: status });
+  var failed = '사용자 작업을 표시하지 못했어요';
+  try {
+    var headers = { 'Content-Type': 'application/json' };
+    if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+    var res = await fetch(url, { method: 'POST', headers: headers, body: body });
+    if (res.status === 403 && _csrfToken) {
+      await refreshCsrfToken();
+      var again = { 'Content-Type': 'application/json' };
+      if (_csrfToken) again['X-CSRF-Token'] = _csrfToken;
+      res = await fetch(url, { method: 'POST', headers: again, body: body });
+    }
+    var data = {};
+    try { data = await res.json(); } catch (_) {}
+    if (res.ok) dashToast({ title: status === 'done' ? '완료로 알렸어요' : '안 됐다고 알렸어요', tone: 'success' });
+    else dashToast({ title: failed, description: (data && data.error) || 'HTTP ' + res.status, tone: 'error' });
+  } catch (e) {
+    dashToast({ title: failed, description: '네트워크 오류 — 다시 시도하세요', tone: 'error' });
+  }
+  btn.disabled = false;
+  loadSessions();
 }
 function renderPanelUserActions(s) {
   var el = document.getElementById('panel-user-actions');

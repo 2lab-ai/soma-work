@@ -21,22 +21,24 @@ model ── mcp__user-action__instruct_user({ title, host, why, script, shell?,
            │         success · check result · ✅ 완료했어요 / ❌ 안 됐어요
            └─ dashboard: KanbanSession.userActions → detail card #panel-user-actions ("사용자 할 일"),
                          a count on the card face while a required one waits
-owner presses ✅ / ❌ ── UserActionActionHandler → resolveSessionUserAction (first answer wins, card rewritten
-                         without buttons) → a message to the agent through the normal message path
-                         ("✅ 사용자 작업 완료: …" / "❌ 사용자 작업 안 됨: …", with the script)
+owner presses ✅ / ❌ ── Slack: UserActionActionHandler · dashboard: POST /api/dashboard/session/:key/user-action
+   (either surface)      → answerUserAction: instruction gate → resolveSessionUserAction (first answer wins, card
+                         rewritten without buttons) → the agent is told through the normal message path
+                         ("✅ 사용자 작업 완료: …" / "❌ 사용자 작업 안 됨: …", with the script). When it cannot be
+                         told, the task goes back to pending with its buttons — an answer never sticks unheard.
 ```
 
 ## The contract
 
-- **Required fields**: `title` (one line, ≤ 80), `host` (the machine by the name the owner knows, one line), `why`, `script`, `expect`, `effects` (the model's own reading of what the script changes). `shell` is `bash` (default), `zsh`, `sh` or `powershell`; `optional` marks a task the work goes on without.
+- **Required fields**: `title` (one line, ≤ 80), `host` (the machine by the name the owner knows, one line), `why`, `script`, `expect`, `effects` (the model's own reading of what the script changes). `shell` is `bash` (default), `zsh` or `sh` — POSIX only, because the check reads POSIX shell; `optional` marks a task the work goes on without.
 - **Short script**: at most 8 lines and 600 characters. Longer logic goes into a file the agent prepares; the owner gets the one line that runs it.
-- **Refused** (the model gets the reason and must fix the call): a missing field, a too-long script, a bare URL or comment-only script (`NOT_A_SCRIPT` — a browser or phone step still starts from a command such as `open 'https://…'`), a credential in the script (`SECRET_IN_SCRIPT`), a script that does not parse (`SYNTAX_ERROR`).
-- **The check** shown next to the script: verdict (✅ 통과 · ⚠️ 주의 · ⛔ 위험), the syntax check that ran (`bash -n`, or "검사 못 함" when no checker exists — never shown as passed), the commands it runs, its length, and every finding:
+- **Refused** (the model gets the reason and must fix the call): a missing field, a too-long script, a bare URL or comment-only script (`NOT_A_SCRIPT` — a browser or phone step still starts from a command such as `open 'https://…'`), a credential in any posted field — script, title, host, why, expect, effects (`SECRET_IN_SCRIPT`; known token prefixes, JWTs, bearer headers, a literal assigned to a secret-named variable; the refusal never repeats it), a script that does not parse (`SYNTAX_ERROR`).
+- **The check** shown next to the script: verdict (✅ 통과 · ⚠️ 주의 · ⛔ 위험), the syntax check that ran (`bash -n`, or "검사 못 함" when no checker exists — a caution, never a pass), the commands it runs (keywords such as `if`/`while`/`for` skipped, `$(…)` and backticks read as commands of their own, heredoc bodies read as input), its length, and every finding:
   - `rule:<id>` — the same dangerous-rule catalog `evaluateToolPolicy` applies to the agent's Bash (caution);
   - `irreversible:<id>` — the irreversible-action reader the permission prompts use (caution);
   - `sudo` (caution), `remote-code` (download piped into a shell, danger), `hidden-code` (`eval`, base64-decoded execution, danger);
   - `writes-files` and `network` (info, with the targets).
-- **Who may answer**: the instruction gate (`InstructionApprovals.allows`) — the owner, someone approved for the session, or a trusted person. Anyone else gets an ephemeral note; nothing changes.
+- **Who may answer**: the instruction gate (`InstructionApprovals.allows`) — the owner, someone approved for the session, or a trusted person — on both surfaces. Anyone else is refused (Slack: an ephemeral note; dashboard: 403); nothing changes.
 - **Audience**: the board's copy has the same audience as the pending question. The Slack message ts stays server-side.
 
 ## Where the rule lives

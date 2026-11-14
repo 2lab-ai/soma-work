@@ -1585,7 +1585,11 @@
   "실행할 스크립트": "Script to run",
   "바뀌는 것": "What it changes",
   "성공하면": "When it works",
-  "실행한 뒤 Slack 카드의 완료 / 안 됨 버튼으로 알려 주세요.": "After running it, tell the bot with the Done / Didn't work buttons on the Slack card.",
   "사용자 할 일": "Your to-dos",
-  "사용자 할 일 ": "Your to-dos: "
+  "사용자 할 일 ": "Your to-dos: ",
+  "실행한 뒤 알려 주세요": "Tell the bot once you have run it",
+  "안 됐어요": "Didn't work",
+  "사용자 작업을 표시하지 못했어요": "Could not mark the task",
+  "완료로 알렸어요": "Told the bot it's done",
+  "안 됐다고 알렸어요": "Told the bot it didn't work"
 }

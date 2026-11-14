@@ -18,7 +18,7 @@ const mockConfig = {
   oauth: {
     google: { clientId: '', clientSecret: '' },
     microsoft: { clientId: '', clientSecret: '' },
-    jwtSecret: '',
+    jwtSecret: 'test-jwt-secret',
     jwtExpiresIn: 604800,
   },
 };
@@ -100,5 +100,52 @@ describe('dashboard — user actions on the board', () => {
     expect(withIt.userActions[0].inspection.syntax).toEqual({ checked: true, ok: true, tool: 'bash -n' });
     expect(withIt.userActions[0]).not.toHaveProperty('slackTs');
     expect(cards.find((c: any) => c.title === 'Without').userActions).toBeUndefined();
+  });
+
+  async function signIn(slackUserId: string) {
+    const { issueSlackToken } = await import('../oauth');
+    const token = issueSlackToken({ slackUserId, email: `${slackUserId}@slack.local`, name: 'N' });
+    const sso = await web.injectWebServer({ method: 'GET', url: `/auth/sso?token=${encodeURIComponent(token)}` });
+    const setCookie = sso.headers['set-cookie'];
+    const cookie = (Array.isArray(setCookie) ? setCookie[0] : String(setCookie)).split(';')[0];
+    const me = await web.injectWebServer({ method: 'GET', url: '/auth/me', headers: { cookie } });
+    return { cookie, 'x-csrf-token': JSON.parse(me.body).csrfToken as string, 'content-type': 'application/json' };
+  }
+
+  it('POST …/user-action answers through the handler as the signed-in user; a bad body is refused', async () => {
+    const key = 'work:C1:500.001';
+    dashboard.setDashboardSessionAccessor(
+      () => new Map([[key, { ownerId: 'U_OWNER', channelId: 'C1', threadTs: '500.001', sessionId: 's1' }]]),
+    );
+    const handler = vi.fn(async () => ({ status: 200, body: { ok: true, status: 'done' } }));
+    dashboard.setDashboardUserActionHandler(handler);
+    const headers = await signIn('U_OWNER');
+    const url = `/api/dashboard/session/${encodeURIComponent(key)}/user-action`;
+    const ok = await web.injectWebServer({ method: 'POST', url, headers, payload: { id: 'ua_1', status: 'done' } });
+    expect(ok.statusCode).toBe(200);
+    expect(handler).toHaveBeenCalledWith({ sessionKey: key, id: 'ua_1', status: 'done', actorUserId: 'U_OWNER' });
+    const bad = await web.injectWebServer({ method: 'POST', url, headers, payload: { id: 'ua_1', status: 'maybe' } });
+    expect(bad.statusCode).toBe(400);
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  // The route lets every signed-in user through to the handler, as an instruction does (SSOT 2026-11-02); the
+  // handler's gate (answerUserAction → InstructionApprovals.allows) refuses a stranger, and its status is the answer.
+  it('POST …/user-action carries a stranger to the handler as themselves and answers with its refusal', async () => {
+    const key = 'work:C1:500.002';
+    dashboard.setDashboardSessionAccessor(
+      () => new Map([[key, { ownerId: 'U_OWNER', channelId: 'C1', threadTs: '500.002', sessionId: 's2' }]]),
+    );
+    const handler = vi.fn(async () => ({ status: 403, body: { ok: false, error: 'forbidden' } }));
+    dashboard.setDashboardUserActionHandler(handler);
+    const headers = await signIn('U_STRANGER');
+    const res = await web.injectWebServer({
+      method: 'POST',
+      url: `/api/dashboard/session/${encodeURIComponent(key)}/user-action`,
+      headers,
+      payload: { id: 'ua_1', status: 'done' },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ actorUserId: 'U_STRANGER' }));
   });
 });

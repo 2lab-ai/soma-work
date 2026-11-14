@@ -6,6 +6,7 @@ import {
   parseUserActionRecord,
   resolveUserAction,
   restoreUserActions,
+  unresolveUserAction,
   USER_ACTION_LIMITS,
   USER_ACTIONS_KEPT,
   type UserActionSyntaxCheck,
@@ -81,6 +82,31 @@ describe('validateInstructUserArgs', () => {
     expect(r.error.message).not.toContain('ghp_abcdef');
   });
 
+  it.each([
+    ['a JWT', 'curl -H "x: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc" https://x.example'],
+    ['a bearer header', 'curl -H "Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345" https://x.example'],
+    ['a secret-named assignment', 'API_KEY=abcdef0123456789xyz ./run'],
+  ])('rejects %s as a credential', (_name, script) => {
+    const r = validateInstructUserArgs({ ...base, script });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe('SECRET_IN_SCRIPT');
+  });
+
+  it('lets a secret read from where it lives, or a path to it, through', () => {
+    expect(validateInstructUserArgs({ ...base, script: 'API_TOKEN=$(pass show api/token) ./run' }).ok).toBe(true);
+    expect(validateInstructUserArgs({ ...base, script: 'TOKEN_FILE=/Users/me/.config/app.json ./run' }).ok).toBe(true);
+  });
+
+  it.each(['title', 'host', 'why', 'expect', 'effects'])('rejects a credential in %s too — every field is posted', (field) => {
+    const r = validateInstructUserArgs({ ...base, [field]: 'see ghp_abcdefghijklmnopqrstuvwxyz0123456789' });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe('SECRET_IN_SCRIPT');
+    expect(r.error.message).toContain(field);
+    expect(r.error.message).not.toContain('ghp_abcdef');
+  });
+
   it('rejects an unknown shell', () => {
     const r = validateInstructUserArgs({ ...base, shell: 'fish' });
     expect(r.ok).toBe(false);
@@ -148,10 +174,34 @@ describe('inspectUserActionScript', () => {
     expect(inspectUserActionScript("echo '$(rm -rf /)'", 'bash', SYNTAX_OK).commands).toEqual(['echo']);
   });
 
-  it('records a skipped syntax check as info, not as a pass', () => {
-    const i = inspectUserActionScript('Get-Date', 'powershell', { checked: false, ok: false, message: 'no pwsh' });
+  it('sees sudo and the real command behind if / while and inside backticks — never a false pass', () => {
+    const tick = inspectUserActionScript('echo `sudo cat /etc/shadow`', 'bash', SYNTAX_OK);
+    expect(tick.verdict).not.toBe('ok');
+    expect(tick.findings.map((f) => f.id)).toContain('sudo');
+    expect(tick.commands).toEqual(['cat', 'echo']);
+    const iff = inspectUserActionScript('if sudo rm -rf ~/x; then echo ok; fi', 'bash', SYNTAX_OK);
+    expect(iff.commands).toEqual(['rm', 'echo']);
+    expect(iff.findings.map((f) => f.id)).toContain('sudo');
+    const loop = inspectUserActionScript('for f in a b; do rm "$f"; done', 'bash', SYNTAX_OK);
+    expect(loop.commands).toEqual(['rm']);
+  });
+
+  it('a heredoc body is input, not commands; the rest of its line is still read', () => {
+    const i = inspectUserActionScript("cat > ~/note.txt <<'EOF'\nrm -rf everything\nEOF\necho done", 'bash', SYNTAX_OK);
+    expect(i.commands).toEqual(['cat', 'echo']);
+    const piped = inspectUserActionScript('cat <<EOF | sh\necho hi\nEOF', 'bash', SYNTAX_OK);
+    expect(piped.commands).toEqual(['cat', 'sh']);
+  });
+
+  it('a syntax check that could not run lowers the verdict — it is never shown as a pass', () => {
+    const i = inspectUserActionScript('date', 'zsh', { checked: false, ok: false, message: 'no zsh' });
     expect(i.syntax.checked).toBe(false);
-    expect(i.findings.map((f) => f.id)).toContain('syntax-unchecked');
+    expect(i.findings.find((f) => f.id === 'syntax-unchecked')?.level).toBe('caution');
+    expect(i.verdict).toBe('caution');
+  });
+
+  it('PowerShell is refused: nothing here can check it', () => {
+    expect(validateInstructUserArgs({ ...base, shell: 'powershell' }).ok).toBe(false);
   });
 
   it('flags eval / base64-decoded execution as danger', () => {
@@ -210,6 +260,15 @@ describe('session list helpers', () => {
     const again = resolveUserAction(r.list, 'a', 'failed', 'U2', 100);
     expect(again).toEqual({ ok: false, reason: 'already-resolved', action: r.action });
     expect(resolveUserAction(list, 'zzz', 'done', 'U1', 1)).toEqual({ ok: false, reason: 'not-found' });
+  });
+
+  it('unresolveUserAction puts an answered action back to pending, without who or when', () => {
+    const r = resolveUserAction([rec('a')], 'a', 'done', 'U1', 9);
+    if (!r.ok) throw new Error('fixture');
+    const back = unresolveUserAction(r.list, 'a');
+    expect(back[0].status).toBe('pending');
+    expect(back[0]).not.toHaveProperty('resolvedBy');
+    expect(back[0]).not.toHaveProperty('resolvedAt');
   });
 
   it('restoreUserActions drops malformed entries and non-arrays', () => {

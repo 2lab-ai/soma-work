@@ -4,6 +4,7 @@ import type { ConversationSession } from '../../../types';
 import { USER_ACTION_DONE_ACTION_ID, USER_ACTION_FAILED_ACTION_ID } from '../../user-action-card';
 import {
   USER_ACTION_ALREADY_TEXT,
+  USER_ACTION_NOT_DELIVERED_TEXT,
   USER_ACTION_OWNER_ONLY_TEXT,
   UserActionActionHandler,
 } from '../user-action-action-handler';
@@ -82,6 +83,17 @@ describe('UserActionActionHandler', () => {
     expect(session.userActions?.[0].status).toBe('pending');
     expect(deps.messageHandler).not.toHaveBeenCalled();
     expect(deps.slackApi.postEphemeral).toHaveBeenCalledWith('C1', 'U_OTHER', USER_ACTION_OWNER_ONLY_TEXT);
+  });
+
+  it('when the message path throws, the task goes back to pending and the clicker is told to press again', async () => {
+    const { session, deps, handler } = setup();
+    deps.messageHandler.mockRejectedValueOnce(new Error('pipeline down'));
+    await handler.handleResolve(click(USER_ACTION_DONE_ACTION_ID), vi.fn());
+    expect(session.userActions?.[0].status).toBe('pending');
+    expect(deps.slackApi.postEphemeral).toHaveBeenCalledWith('C1', 'U_OWNER', USER_ACTION_NOT_DELIVERED_TEXT);
+    await handler.handleResolve(click(USER_ACTION_DONE_ACTION_ID), vi.fn());
+    expect(session.userActions?.[0].status).toBe('done');
+    expect(deps.messageHandler).toHaveBeenCalledTimes(2);
   });
 
   it('a second click does not tell the agent twice', async () => {

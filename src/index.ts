@@ -104,6 +104,7 @@ import {
   setDashboardTaskAccessor,
   setDashboardTaskPlanHandler,
   setDashboardTrashHandler,
+  setDashboardUserActionHandler,
   setOAuthDirectoryLookup,
   setOAuthUserLookup,
   setOnSummaryGeneratedCallback,
@@ -215,6 +216,7 @@ import { composeExecutiveSummaryMarkdown, parseExecutiveSummary } from './slack/
 import { setUiSurfacesConfig } from './slack/surface-config';
 import { threadCardProviders } from './slack/thread-card-data';
 import { setThreadHeaderProviders } from './slack/thread-header-builder';
+import { answerUserAction } from './slack/user-action-host';
 import { SlackHandler } from './slack-handler';
 import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
@@ -1580,6 +1582,38 @@ async function start() {
       logger: new Logger('SlackPlanDecider'),
     });
     setDashboardTaskPlanHandler((request) => slackPlanDecider(request));
+    // 사용자 할 일 (instruct_user): the dashboard's 완료 / 안 됨 — the Slack card's answer path; the answer is the actor's
+    // message in the thread (verbatim: its own turn, or queued behind a running one).
+    const userActionSlackApi = slackHandler.getSlackApi();
+    setDashboardUserActionHandler(async ({ sessionKey, id, status, actorUserId }) => {
+      const r = await answerUserAction({
+        sessionKey,
+        id,
+        status,
+        actor: actorUserId,
+        at: Date.now(),
+        deps: {
+          slackApi: userActionSlackApi,
+          persistAndBroadcast: (key) => claudeHandler.getSessionRegistry().persistAndBroadcast(key),
+          getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+          mayAnswer: (key, session, actor) =>
+            instructionApprovals.allows({ sessionKey: key, session, senderId: actor }),
+          notify: (key, _session, text, actor) =>
+            new Promise<boolean>((resolve) => {
+              injectDashboardMessage(key, text, undefined, [], actor || undefined, undefined, {
+                onAccepted: () => resolve(true),
+                verbatim: true,
+              }).then(
+                () => resolve(false),
+                () => resolve(false),
+              );
+            }),
+        },
+      });
+      if (r.ok) return { status: 200, body: { ok: true, status: r.action.status } };
+      const code = { gone: 404, forbidden: 403, 'already-resolved': 409, 'not-delivered': 502 }[r.code];
+      return { status: code, body: { ok: false, error: r.code } };
+    });
     // E4 ⑨b (.prd/19 D12) — the new-task composer offers an epic only to an owner who turned them on.
     setDashboardEpicTasks((userId) => userSettingsStore.getUserEpicTasks(userId));
     const workLogProviders: StreamExecutorProviders & {

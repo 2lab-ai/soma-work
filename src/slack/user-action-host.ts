@@ -10,10 +10,11 @@ import {
   type ResolveUserActionResult,
   resolveUserAction,
   type UserActionRecord,
+  unresolveUserAction,
 } from 'somalib/user-action/user-action';
 import { Logger } from '../logger';
 import type { ConversationSession } from '../types';
-import { buildUserActionCard } from './user-action-card';
+import { buildUserActionCard, userActionResolvedPrompt } from './user-action-card';
 
 const logger = new Logger('UserActionHost');
 
@@ -111,4 +112,59 @@ export async function resolveSessionUserAction(args: {
     logger.warn('user action persist/broadcast failed', { sessionKey, error: (error as Error)?.message });
   }
   return r;
+}
+
+export type AnswerUserActionCode = 'gone' | 'forbidden' | 'already-resolved' | 'not-delivered';
+
+/**
+ * The one answer path for a user action — the Slack card's buttons and the dashboard's: the instruction gate, then
+ * first answer wins (card rewritten), then the agent is told through the normal message path. When the agent cannot
+ * be told (`notify` false), the action goes back to pending with its buttons, so the human can answer again — an
+ * answer is never recorded without reaching the agent.
+ */
+export async function answerUserAction(args: {
+  sessionKey: string;
+  id: string;
+  status: 'done' | 'failed';
+  /** Slack user id of whoever answered. */
+  actor: string;
+  at: number;
+  deps: UserActionHostDeps & {
+    getSession(sessionKey: string): ConversationSession | undefined;
+    /** The instruction gate: owner, approved for the session, or trusted. */
+    mayAnswer(sessionKey: string, session: ConversationSession, actor: string): boolean;
+    /** Send `text` to the agent as `actor`'s message; true once it is taken (runs, or queued behind a turn). */
+    notify(sessionKey: string, session: ConversationSession, text: string, actor: string): Promise<boolean>;
+  };
+}): Promise<{ ok: true; action: UserActionRecord } | { ok: false; code: AnswerUserActionCode }> {
+  const { sessionKey, deps } = args;
+  const session = deps.getSession(sessionKey);
+  if (!session) return { ok: false, code: 'gone' };
+  if (!deps.mayAnswer(sessionKey, session, args.actor)) return { ok: false, code: 'forbidden' };
+  const r = await resolveSessionUserAction({ ...args, session, by: args.actor });
+  if (!r.ok) return { ok: false, code: r.reason === 'already-resolved' ? 'already-resolved' : 'gone' };
+  let delivered = false;
+  try {
+    delivered = await deps.notify(sessionKey, session, userActionResolvedPrompt(r.action), args.actor);
+  } catch (error) {
+    logger.warn('user action answer could not reach the agent', { sessionKey, id: args.id, error: (error as Error)?.message });
+  }
+  if (delivered) return { ok: true, action: r.action };
+  // Back to pending: the card gets its buttons again and the dashboard shows it waiting.
+  session.userActions = unresolveUserAction(session.userActions, args.id);
+  const back = session.userActions.find((a) => a.id === args.id);
+  if (back && session.channelId && back.slackTs) {
+    try {
+      const card = buildUserActionCard(back, sessionKey);
+      await deps.slackApi.updateMessage(session.channelId, back.slackTs, card.text, undefined, card.attachments);
+    } catch (error) {
+      logger.warn('user action card restore failed', { sessionKey, id: args.id, error: (error as Error)?.message });
+    }
+  }
+  try {
+    deps.persistAndBroadcast?.(sessionKey);
+  } catch (error) {
+    logger.warn('user action persist/broadcast failed', { sessionKey, error: (error as Error)?.message });
+  }
+  return { ok: false, code: 'not-delivered' };
 }

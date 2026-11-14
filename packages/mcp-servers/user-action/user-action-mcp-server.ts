@@ -77,14 +77,19 @@ export const INSTRUCT_USER_TOOL: ToolDefinition & {
   },
 };
 
-const SYNTAX_CHECKERS: Partial<Record<UserActionShell, string>> = { bash: 'bash', zsh: 'zsh', sh: 'sh' };
+const SYNTAX_CHECKERS: Record<UserActionShell, string> = { bash: 'bash', zsh: 'zsh', sh: 'sh' };
 
 /**
  * Parse the script with `<shell> -n` (read from stdin): the shell reads every
  * command and runs none. A missing shell is reported as unchecked, not passed.
  */
-export function checkScriptSyntax(script: string, shell: UserActionShell): UserActionSyntaxCheck {
-  const bin = SYNTAX_CHECKERS[shell];
+export function checkScriptSyntax(
+  script: string,
+  shell: UserActionShell,
+  /** The checker per shell; a test points one at a missing binary. */
+  checkers: Record<UserActionShell, string> = SYNTAX_CHECKERS,
+): UserActionSyntaxCheck {
+  const bin = checkers[shell];
   if (!bin) return { checked: false, ok: false, message: `${shell} 구문 검사기가 없다` };
   const tool = `${bin} -n`;
   const r = spawnSync(bin, ['-n'], { input: script, encoding: 'utf8', timeout: 3000, cwd: '/' });

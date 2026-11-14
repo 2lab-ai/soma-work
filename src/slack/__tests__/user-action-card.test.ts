@@ -100,3 +100,14 @@ describe('buildUserActionCard', () => {
     expect(parseUserActionButtonValue(undefined)).toBeNull();
   });
 });
+
+describe('Slack limits', () => {
+  it('no section text passes 3000 characters, even when escaping grows the longest fields', () => {
+    const card = buildUserActionCard(
+      record({ why: '&'.repeat(600), effects: '<'.repeat(300), expect: '>'.repeat(300) }),
+      'k',
+    );
+    for (const b of card.attachments[0].blocks)
+      if (b.type === 'section') expect(b.text.text.length).toBeLessThanOrEqual(3000);
+  });
+});

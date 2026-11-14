@@ -28,7 +28,8 @@ export const USER_ACTION_LIMITS = {
   scriptChars: 600,
 } as const;
 
-export const USER_ACTION_SHELLS = ['bash', 'zsh', 'sh', 'powershell'] as const;
+/** POSIX shells only: the check (syntax, rules, irreversible actions) reads POSIX shell. */
+export const USER_ACTION_SHELLS = ['bash', 'zsh', 'sh'] as const;
 export type UserActionShell = (typeof USER_ACTION_SHELLS)[number];
 
 /** What the agent asks the human to do. */
@@ -120,6 +121,10 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   /\bAKIA[0-9A-Z]{16}\b/,
   /\bAIza[0-9A-Za-z_-]{30,}/,
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  // Generic shapes: a JWT, a bearer header, an assignment to a secret-named variable with a literal value.
+  /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\./,
+  /\bBearer\s+[A-Za-z0-9._~+/=-]{20,}/i,
+  /\b[A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY)[A-Za-z0-9_]*\s*[=:]\s*['"]?(?!\$)[^\s'"$/]{12,}/i,
 ];
 
 const fail = (code: UserActionErrorCode, message: string): ValidateInstructUserResult => ({
@@ -179,11 +184,14 @@ export function validateInstructUserArgs(args: unknown): ValidateInstructUserRes
       "a URL is not a script — give the command that opens it, e.g. open 'https://…' (macOS) or xdg-open 'https://…'",
     );
   }
-  if (SECRET_PATTERNS.some((re) => re.test(script))) {
+  // Every field is posted to Slack and the dashboard: none may carry a credential. The message never repeats it.
+  const posted: Array<[string, string]> = [['script', script], ...TEXT_FIELDS.map((f) => [f.key, out[f.key] ?? ''] as [string, string])];
+  const leaking = posted.find(([, text]) => SECRET_PATTERNS.some((re) => re.test(text)));
+  if (leaking) {
     return fail(
       'SECRET_IN_SCRIPT',
-      'script contains what looks like a credential; it would be posted to Slack and the dashboard. ' +
-        'Read it from where the human keeps it (an env var, a keychain lookup) instead.',
+      `${leaking[0]} contains what looks like a credential; it would be posted to Slack and the dashboard. ` +
+        'Leave it out, and have the script read it from where the human keeps it (an env var, a password manager).',
     );
   }
 
@@ -238,6 +246,7 @@ function scan(script: string, depth = 0): { segments: Segment[]; redirects: stri
   let inWord = false;
   let quote: '' | "'" | '"' = '';
   let pendingRedirect = false;
+  const heredocs: Array<{ tag: string; stripTabs: boolean }> = [];
 
   const endWord = () => {
     if (!inWord) return;
@@ -317,6 +326,16 @@ function scan(script: string, depth = 0): { segments: Segment[]; redirects: stri
       while (i + 1 < script.length && script[i + 1] !== '\n') i++;
       continue;
     }
+    if (c === '<' && script[i + 1] === '<' && script[i + 2] !== '<') {
+      // A heredoc: its body (the lines after this one, up to its tag) is input to the command, not commands.
+      const m = /^<<(-?)[ \t]*(['"]?)([A-Za-z_][\w-]*)\2/.exec(script.slice(i));
+      if (m) {
+        endWord();
+        heredocs.push({ tag: m[3], stripTabs: m[1] === '-' });
+        i += m[0].length - 1;
+        continue;
+      }
+    }
     if (c === '>') {
       // `2>&1`, `>&2`: a descriptor, not a file.
       const prevDigit = inWord && /^\d$/.test(word);
@@ -331,6 +350,21 @@ function scan(script: string, depth = 0): { segments: Segment[]; redirects: stri
         continue;
       }
       pendingRedirect = true;
+      continue;
+    }
+    if (c === '\n' && heredocs.length) {
+      endSegment();
+      // Skip each pending heredoc's body, in order, up to the line holding only its tag.
+      let j = i + 1;
+      for (const doc of heredocs.splice(0)) {
+        while (j < script.length) {
+          const next = script.indexOf('\n', j);
+          const line = script.slice(j, next < 0 ? script.length : next);
+          j = next < 0 ? script.length : next + 1;
+          if ((doc.stripTabs ? line.replace(/^\t+/, '') : line) === doc.tag) break;
+        }
+      }
+      i = j - 1;
       continue;
     }
     if (c === ';' || c === '&' || c === '|' || c === '\n' || c === '(' || c === ')') {
@@ -348,7 +382,12 @@ function scan(script: string, depth = 0): { segments: Segment[]; redirects: stri
   return { segments, redirects };
 }
 
-/** The program a simple command runs: prefixes, `X=1` assignments and directories dropped. */
+/** Shell words that lead into the command after them (`if sudo rm …`, `then echo …`) or close a block (`fi`). */
+const LEAD_KEYWORDS = new Set(['!', '{', '}', 'if', 'elif', 'then', 'else', 'while', 'until', 'do', 'fi', 'done', 'esac']);
+/** Shell words whose segment is a header, not a command (`for x in a b`, `case $x in`, `select x in …`). */
+const HEADER_KEYWORDS = new Set(['for', 'case', 'select', 'function', 'in']);
+
+/** The program a simple command runs: prefixes, keywords, `X=1` assignments and directories dropped. */
 function commandOf(words: string[]): { cmd: string; sudo: boolean } | null {
   let i = 0;
   let sudo = false;
@@ -360,7 +399,8 @@ function commandOf(words: string[]): { cmd: string; sudo: boolean } | null {
       i += 1;
       while (i < words.length && words[i].startsWith('-')) i += 1;
       if (w === 'timeout' && i < words.length) i += 1;
-    } else if (w === '!' || w === '{' || w === '}' || w === 'then' || w === 'do' || w === 'else') i += 1;
+    } else if (LEAD_KEYWORDS.has(w)) i += 1;
+    else if (HEADER_KEYWORDS.has(w)) return sudo ? { cmd: '', sudo } : null;
     else break;
   }
   const raw = words[i];
@@ -392,8 +432,7 @@ export function inspectUserActionScript(
     if (!findings.some((x) => x.id === f.id)) findings.push(f);
   };
 
-  const posix = shell !== 'powershell';
-  const { segments, redirects } = posix ? scan(script) : { segments: [], redirects: [] };
+  const { segments, redirects } = scan(script);
   const commands: string[] = [];
   let sudo = false;
   const fileCommands: string[] = [];
@@ -409,10 +448,6 @@ export function inspectUserActionScript(
       fileCommands.push('sed -i');
     }
     if (NETWORK_COMMANDS.has(c.cmd) && !networkCommands.includes(c.cmd)) networkCommands.push(c.cmd);
-  }
-  if (!posix) {
-    const first = codeLines(script)[0]?.split(/\s+/)[0];
-    if (first) commands.push(first);
   }
 
   if (REMOTE_CODE.some((re) => re.test(script))) {
@@ -449,7 +484,7 @@ export function inspectUserActionScript(
       });
     }
   }
-  const irreversible = posix ? irreversibleAction('Bash', { command: script }) : null;
+  const irreversible = irreversibleAction('Bash', { command: script });
   if (irreversible) {
     add({
       id: `irreversible:${irreversible.id}`,
@@ -483,7 +518,7 @@ export function inspectUserActionScript(
   if (!syntax.checked) {
     add({
       id: 'syntax-unchecked',
-      level: 'info',
+      level: 'caution',
       label: '구문 검사를 하지 못함',
       detail: syntax.message ?? `${shell} 검사기가 없다.`,
     });
@@ -653,4 +688,13 @@ export function parseInstructUserToolResult(raw: unknown, depth = 0): UserAction
   if (Array.isArray(r.content)) return parseInstructUserToolResult(r.content, depth + 1);
   if (typeof r.text === 'string') return parseInstructUserToolResult(r.text, depth + 1);
   return null;
+}
+
+/** Put a resolved action back to pending (its answer could not reach the agent), so it can be answered again. */
+export function unresolveUserAction(list: readonly UserActionRecord[] | undefined, id: string): UserActionRecord[] {
+  return (list ?? []).map((a) => {
+    if (a.id !== id) return a;
+    const { resolvedAt: _at, resolvedBy: _by, ...rest } = a;
+    return { ...rest, status: 'pending' as const };
+  });
 }
