@@ -80,7 +80,7 @@ src/
 └── local/           # Claude Code SDK 로컬 플러그인 `zworkflow` (skills/, agents/, hooks/) — 범용, 하네스 호출 금지
 
 packages/            # 워크스페이스 패키지
-├── mcp-servers/     # 내장 MCP 서버 (agent, cron, model-command, permission, devops-tools, ...)
+├── mcp-servers/     # 내장 MCP 서버 (agent, cron, model-command, user-action, permission, devops-tools, ...)
 ├── devops-broker/   # 별도 OS 유저 브로커 — gh 토큰·Cloudflare forge 키 보관, admin 승인 카드
 ├── common/ · slack/ · process-shared/ · test-utils/
 

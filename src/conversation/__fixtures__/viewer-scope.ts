@@ -38,6 +38,9 @@ export const NEXT_ACTION_SEAMS: Readonly<Record<string, unknown>> = {
   // `renderPanelPlan` let it follow its parts (`syncPanelNeeds`). Pinned by dashboard-needs-in-chat-client.test.ts.
   placePanelNeeds: () => false,
   syncPanelNeeds: () => {},
+  // 사용자 할 일 (instruct_user): `cardOf` counts required tasks still waiting (`userActionsWaiting`) — none, unless the
+  // test loads the real one (pinned by dashboard-user-actions-client.test.ts).
+  userActionsWaiting: () => 0,
 };
 export function nextActionSeams(fns: readonly string[], inject: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};

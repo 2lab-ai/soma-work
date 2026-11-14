@@ -38,6 +38,10 @@ On top of the es mode template, in every mode (`brief` / `issue` / `epic`):
   - **Steps** — numbered and runnable: a fenced command (`gh pr merge 830 --squash`) or the exact click path.
   - **Verify** — how to confirm it is done (`gh pr view 830 --json state` → `MERGED`).
   - **Then tell the agent** — what to reply in this thread so it continues (`"merged"` → it runs the dev deploy).
+- **A step only the user can do is a user task, not a report line.** Hand it over with
+  `mcp__user-action__instruct_user` (a short script + the machine it runs on; the host checks the script and shows it
+  in its own Slack card and dashboard section) before the report, and in **Steps** above name that task by its title
+  (`사용자 작업: <title> (Slack 카드)`) instead of restating the script.
 
 ## Unfinished own artifacts
 

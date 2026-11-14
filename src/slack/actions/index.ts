@@ -48,6 +48,7 @@ import { TurnDismissActionHandler } from './turn-dismiss-action-handler';
 import { TurnFeedbackActionHandler } from './turn-feedback-action-handler';
 import { UsageCardActionHandler } from './usage-card-action-handler';
 import { UserAcceptanceActionHandler } from './user-acceptance-action-handler';
+import { UserActionActionHandler } from './user-action-action-handler';
 import { UserSkillDeleteConfirmViewSubmissionHandler } from './user-skill-delete-confirm-view-submission-handler';
 import { UserSkillEditViewSubmissionHandler } from './user-skill-edit-view-submission-handler';
 import { UserSkillMenuActionHandler } from './user-skill-menu-action-handler';
@@ -226,6 +227,15 @@ setActionHandlersProviders({
       dismissHandler: new TurnDismissActionHandler({
         slackApi: ctx.slackApi as any,
         completionMessageTracker: ctx.completionMessageTracker,
+      }),
+      userActionHandler: new UserActionActionHandler({
+        slackApi: ctx.slackApi as any,
+        getSessionByKey: (key) => ctx.claudeHandler.getSessionByKey(key),
+        persistAndBroadcast: (key) => ctx.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(key),
+        // The instruction gate: an answer for the session is an instruction like any other (#767).
+        mayAnswer: (sessionKey, session, userId) =>
+          getInstructionApprovals()?.allows({ sessionKey, session, senderId: userId }) ?? userId === session.ownerId,
+        messageHandler: ctx.messageHandler as any,
       }),
       safeguardHandler: new SafeguardActionHandler({
         getRegistry: () => ctx.claudeHandler.getSessionRegistry?.(),

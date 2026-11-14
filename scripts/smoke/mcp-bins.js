@@ -12,6 +12,7 @@ const bins = [
   ['permission', '@soma/mcp-server-permission/bin', 'permission-mcp-server.js'],
   ['server-tools', '@soma/mcp-server-server-tools/bin', 'server-tools-mcp-server.js'],
   ['slack-mcp', '@soma/mcp-server-slack-mcp/bin', 'slack-mcp-server.js'],
+  ['user-action', '@soma/mcp-server-user-action/bin', 'user-action-mcp-server.js'],
 ];
 
 let failures = 0;

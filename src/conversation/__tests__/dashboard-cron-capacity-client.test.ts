@@ -81,6 +81,7 @@ const CARD_OF_FNS = [
   'ctxPercent',
   'cardCtxTitle',
   'cardPrMetric',
+  'userActionsWaiting',
   'cardLinksFace',
   'cardRepoOf',
   'cardChannelOf',

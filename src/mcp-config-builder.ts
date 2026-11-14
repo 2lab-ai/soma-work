@@ -209,6 +209,10 @@ export class McpConfigBuilder {
 
     if (slackContext) {
       internalServers['model-command'] = this.buildModelCommandServer(slackContext, modelCommandContext);
+      // Tasks the agent hands the human (a short script + the machine it runs on), checked like the agent's
+      // own Bash and shown in their own Slack card and dashboard section — never a question (ASK_USER_QUESTION).
+      const { command, args } = this.getInternalServerCommand('user-action');
+      internalServers['user-action'] = { command, args };
     }
 
     // slack-mcp on every Slack turn with a thread (hasSlackThread): its file and link tools feed 산출물.
@@ -409,6 +413,7 @@ export class McpConfigBuilder {
     );
   }
 
+  /** The user-action server: stateless — it validates and inspects; the host stores and shows the record. */
   /** The model-command server process for `context` (a Slack thread's). */
   private modelCommandServerFor(context: ModelCommandContext): Record<string, any> {
     const command = this.getInternalServerCommand('model-command');
@@ -541,6 +546,7 @@ export class McpConfigBuilder {
 
     if (slackContext) {
       allowedTools.push('mcp__model-command');
+      allowedTools.push('mcp__user-action');
     }
 
     // slack-mcp tools wherever the server is built (hasSlackThread)

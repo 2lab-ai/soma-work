@@ -14,6 +14,8 @@
 
 ## 1. Overview
 
+> 질문이 아니라 **유저가 해야 할 일**(명령 실행, 기기에서 인증 등)은 이 경로가 아니라 `mcp__user-action__instruct_user`로 넘긴다 — 별도 Slack 카드와 대시보드 "사용자 할 일" 섹션. [15-user-action.md](./15-user-action.md).
+
 UIAskUserQuestion은 **모델이 유저에게 “결정이 필요한 질문”을 던져야 할 때** 텍스트로 질문을 길게 늘어놓지 않고, **구조화된 JSON(선택지)** 으로 질문을 출력하도록 강제하는 규약/스킬입니다.
 
 `soma-work`는 모델 응답에서 해당 JSON을 감지해:
