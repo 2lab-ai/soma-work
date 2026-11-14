@@ -135,6 +135,19 @@ describe('inspectUserActionScript', () => {
     expect(i.commands).toEqual(['echo']);
   });
 
+  it('reads a command substitution as its own command and keeps the word around it whole', () => {
+    const i = inspectUserActionScript('launchctl kickstart -k gui/$(id -u)/ai.example.svc', 'bash', SYNTAX_OK);
+    expect(i.commands).toEqual(['id', 'launchctl']);
+    const q = inspectUserActionScript(
+      'echo "today: `date +%F`" && echo "$(curl -s https://x.example)"',
+      'bash',
+      SYNTAX_OK,
+    );
+    expect(q.commands).toEqual(['date', 'echo', 'curl']);
+    // A substitution in single quotes is text, not a command.
+    expect(inspectUserActionScript("echo '$(rm -rf /)'", 'bash', SYNTAX_OK).commands).toEqual(['echo']);
+  });
+
   it('records a skipped syntax check as info, not as a pass', () => {
     const i = inspectUserActionScript('Get-Date', 'powershell', { checked: false, ok: false, message: 'no pwsh' });
     expect(i.syntax.checked).toBe(false);

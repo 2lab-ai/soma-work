@@ -226,9 +226,11 @@ interface Segment {
 /**
  * Split a script into simple commands (on `;`, `&`, `|`, newlines, parentheses)
  * outside quotes, and collect output-redirection targets. Quotes are kept out
- * of the words so `echo "a; rm -rf /"` stays one `echo`.
+ * of the words so `echo "a; rm -rf /"` stays one `echo`. A command substitution
+ * (`$(…)`, backticks — also inside double quotes) is read as commands of its own
+ * and leaves the word around it whole: `gui/$(id -u)/svc` is one word, `id` a command.
  */
-function scan(script: string): { segments: Segment[]; redirects: string[] } {
+function scan(script: string, depth = 0): { segments: Segment[]; redirects: string[] } {
   const segments: Segment[] = [];
   const redirects: string[] = [];
   let words: string[] = [];
@@ -253,9 +255,44 @@ function scan(script: string): { segments: Segment[]; redirects: string[] } {
     if (words.length) segments.push({ words });
     words = [];
   };
+  /** Read the substitution whose body starts at `from` and ends at `end` (exclusive); return `end`. */
+  const substitute = (from: number, end: number): number => {
+    if (depth < 4) {
+      const inner = scan(script.slice(from, end), depth + 1);
+      segments.push(...inner.segments);
+      redirects.push(...inner.redirects);
+    }
+    word += '$()';
+    inWord = true;
+    return end;
+  };
+  /** The index of the `)` closing a `$(` whose body starts at `from` (nesting counted), or the end. */
+  const closeParen = (from: number): number => {
+    let level = 1;
+    for (let j = from; j < script.length; j++) {
+      if (script[j] === '(') level++;
+      else if (script[j] === ')' && --level === 0) return j;
+    }
+    return script.length;
+  };
+  const closeTick = (from: number): number => {
+    for (let j = from; j < script.length; j++) {
+      if (script[j] === '\\') j++;
+      else if (script[j] === '`') return j;
+    }
+    return script.length;
+  };
 
   for (let i = 0; i < script.length; i++) {
     const c = script[i];
+    if (quote !== "'" && c === '$' && script[i + 1] === '(') {
+      i = substitute(i + 2, closeParen(i + 2));
+      continue;
+    }
+    if (quote !== "'" && c === '`') {
+      i = substitute(i + 1, closeTick(i + 1));
+      continue;
+    }
     if (quote) {
       if (c === quote) quote = '';
       else if (c === '\\' && quote === '"' && i + 1 < script.length) word += script[++i];
