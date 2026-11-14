@@ -239,6 +239,16 @@ describe('target change', () => {
     expect(job.threadTs).toBeNull();
   });
 
+  it('channel from a thread reply keeps the thread: the prompt now runs in that thread’s session', async () => {
+    seed({ target: 'thread', threadTs: '1.2' });
+    const ctx = makeCtx({ text: 'cron target daily-report channel' });
+    await handler.execute(ctx);
+    const job = storage.getJobsByOwner('U_ALICE')[0];
+    expect(job.target).toBeUndefined();
+    expect(job.threadTs).toBe('1.2');
+    expect(saidText(ctx)).toContain('1.2');
+  });
+
   it('thread target uses current thread ts when not given and repoints channel', async () => {
     seed(); // job.channel = C111, command ran in C123/thread123
     await handler.execute(makeCtx({ text: 'cron target daily-report thread' }));
