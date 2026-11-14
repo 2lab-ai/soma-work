@@ -625,13 +625,13 @@ describe('CronScheduler — Fastlane Mode', () => {
       prompt: 'Execute immediately',
       owner: 'U123',
       channel: 'C456',
-      threadTs: null,
+      threadTs: 'existing-thread',
       mode: 'fastlane',
     });
 
     const { deps, createdThreads, injectedMessages } = createMockDeps(storage);
 
-    // Idle session exists — default mode would inject into it
+    // The job's own thread has an idle session — default mode would inject into it
     deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'existing-thread');
     deps.sessionRegistry.transitionToMain('C456', 'existing-thread', 'default');
     deps.sessionRegistry.setActivityState('C456', 'existing-thread', 'idle');
@@ -655,13 +655,13 @@ describe('CronScheduler — Fastlane Mode', () => {
       prompt: 'Do not queue',
       owner: 'U123',
       channel: 'C456',
-      threadTs: null,
+      threadTs: 'busy-thread',
       mode: 'fastlane',
     });
 
     const { deps, createdThreads } = createMockDeps(storage);
 
-    // Busy session — default mode would enqueue
+    // The job's own thread has a busy session — default mode would enqueue
     deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'busy-thread');
     deps.sessionRegistry.transitionToMain('C456', 'busy-thread', 'default');
     deps.sessionRegistry.setActivityState('C456', 'busy-thread', 'working');
@@ -671,7 +671,7 @@ describe('CronScheduler — Fastlane Mode', () => {
 
     // Fastlane should NOT queue — should create new thread directly
     expect(createdThreads).toHaveLength(1);
-    expect(scheduler.getPendingQueueSize('C456-busy-thread')).toBe(0);
+    expect(scheduler.getPendingQueueSize('work:C456:busy-thread')).toBe(0);
   });
 
   it("default mode (no mode field) injects into the job's idle session", async () => {
@@ -1376,6 +1376,34 @@ describe('CronScheduler — a fire lands only in its own session', () => {
     expect(injectedMessages[0].thread_ts).toBe('own-thread');
     const [run] = storage.getExecutionHistory(job.name);
     expect(run).toMatchObject({ executionPath: 'idle_inject', sessionKey: 'C456-own-thread' });
+  });
+
+  it('a job with no thread picks the most recently active of the sessions its fires opened', async () => {
+    const storage = new CronStorage(tmpFile);
+    const job = storage.addJob({
+      name: 'daily-deploy',
+      expression: '* * * * *',
+      prompt: 'deploy',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
+    });
+    const { deps, injectedMessages } = createMockDeps(storage);
+    const older = mainSession(deps, 'older-run-thread');
+    older.cronJob = { id: job.id, name: job.name };
+    older.lastActivity = new Date('2026-11-12T10:00:00Z');
+    const newer = mainSession(deps, 'newer-run-thread');
+    newer.cronJob = { id: job.id, name: job.name };
+    newer.lastActivity = new Date('2026-11-13T10:00:00Z');
+    const oldest = mainSession(deps, 'oldest-run-thread');
+    oldest.cronJob = { id: job.id, name: job.name };
+    oldest.lastActivity = new Date('2026-11-11T10:00:00Z');
+
+    const scheduler = new CronScheduler(deps);
+    await scheduler.tick();
+    await scheduler.settled();
+
+    expect(injectedMessages.map((e) => e.thread_ts)).toEqual(['newer-run-thread']);
   });
 
   it('a job with no thread queues behind its own busy session, not an unrelated idle one', async () => {
