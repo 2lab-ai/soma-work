@@ -75,6 +75,20 @@ export async function captureUserActionToolResults(args: {
     if (ts) {
       // The record as it is now (it may have been answered while the post was in flight) gets the ts.
       session.userActions = (session.userActions ?? []).map((a) => (a.id === action.id ? { ...a, slackTs: ts } : a));
+      const now = session.userActions.find((a) => a.id === action.id);
+      if (now && now.status !== 'pending') {
+        // Answered (from the dashboard) before the card existed: the card shows that answer, without buttons.
+        try {
+          const answered = buildUserActionCard(now, sessionKey);
+          await deps.slackApi.updateMessage(channel, ts, answered.text, undefined, answered.attachments);
+        } catch (error) {
+          logger.warn('user action card catch-up failed', {
+            sessionKey,
+            id: action.id,
+            error: (error as Error)?.message,
+          });
+        }
+      }
     }
   }
   if (captured.length) {
@@ -91,6 +105,23 @@ export type AnswerUserActionCode = 'gone' | 'forbidden' | 'already-resolved' | '
 
 /** Answers being handed to the agent, by `sessionKey\0id`: a lock apart from the stored record, never persisted. */
 const answersInFlight = new Set<string>();
+
+/**
+ * A notifier over the host's message injection: true once `onAccepted` fires (the turn reached the model, or it is
+ * queued behind a running one); false when the injection settles or fails without it. Settling after acceptance
+ * changes nothing.
+ */
+export function notifierFromInjection(
+  inject: (sessionKey: string, text: string, actor: string, onAccepted: () => void) => Promise<unknown>,
+): UserActionNotifier {
+  return (sessionKey, text, actor) =>
+    new Promise<boolean>((resolve) => {
+      inject(sessionKey, text, actor, () => resolve(true)).then(
+        () => resolve(false),
+        () => resolve(false),
+      );
+    });
+}
 
 /** Hands an answer to the agent as `actor`'s message in the session's thread; true once it is taken. */
 export type UserActionNotifier = (sessionKey: string, text: string, actor: string) => Promise<boolean>;

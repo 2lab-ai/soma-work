@@ -220,6 +220,7 @@ import {
   type AnswerUserActionCode,
   answerUserAction,
   getUserActionNotifier,
+  notifierFromInjection,
   setUserActionNotifier,
 } from './slack/user-action-host';
 import { SlackHandler } from './slack-handler';
@@ -1591,17 +1592,13 @@ async function start() {
     // turn or queued behind a running one — and counts as delivered only once taken (onAccepted). The Slack card's
     // buttons and the dashboard's use this same notifier, so "taken" means the same on both.
     setUserActionNotifier(
-      (key, text, actor) =>
-        new Promise<boolean>((resolve) => {
-          injectDashboardMessage(key, text, undefined, [], actor || undefined, undefined, {
-            onAccepted: () => resolve(true),
-            verbatim: true,
-            echoLabel: `🙋 *<@${actor}>* 사용자 작업 응답`,
-          }).then(
-            () => resolve(false),
-            () => resolve(false),
-          );
+      notifierFromInjection((key, text, actor, onAccepted) =>
+        injectDashboardMessage(key, text, undefined, [], actor || undefined, undefined, {
+          onAccepted,
+          verbatim: true,
+          echoLabel: `🙋 *<@${actor}>* 사용자 작업 응답`,
         }),
+      ),
     );
     const userActionSlackApi = slackHandler.getSlackApi();
     setDashboardUserActionHandler(async ({ sessionKey, id, status, actorUserId }) => {

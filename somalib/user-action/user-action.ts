@@ -126,7 +126,7 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   // Generic shapes: a JWT, a bearer header, an assignment to a secret-named variable with a literal value.
   /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\./,
   /\bBearer\s+[A-Za-z0-9._~+/=-]{20,}/i,
-  /\b[A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY)[A-Za-z0-9_]*\s*[=:]\s*['"]?(?!\$)[^\s'"$/]{12,}/i,
+  /\b[A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY)[A-Za-z0-9_]*\s*[=:]\s*['"]?(?!\$|~?\/|\.\.?\/)[^\s'"$]{12,}/i,
 ];
 
 const fail = (code: UserActionErrorCode, message: string): ValidateInstructUserResult => ({
@@ -234,6 +234,15 @@ export function validateInstructUserArgs(args: unknown): ValidateInstructUserRes
 
 /** Words that run the next word as the command. */
 const PREFIX = new Set(['sudo', 'command', 'exec', 'nohup', 'time', 'env', 'nice', 'timeout', 'doas', 'caffeinate']);
+/** Prefix options that take the next word as their value. */
+const PREFIX_VALUE_OPTS: Readonly<Record<string, ReadonlySet<string>>> = {
+  sudo: new Set(['-u', '-g', '-U', '-C', '-h', '-p', '-r', '-t', '-D', '-R']),
+  doas: new Set(['-u', '-C']),
+  env: new Set(['-u', '-C', '-S', '--unset', '--chdir']),
+  nice: new Set(['-n']),
+  timeout: new Set(['-s', '-k', '--signal', '--kill-after']),
+  caffeinate: new Set(['-t', '-w']),
+};
 const FILE_COMMANDS = new Set(['rm', 'mv', 'cp', 'tee', 'chmod', 'chown', 'ln', 'mkdir', 'touch', 'rmdir', 'install']);
 const NETWORK_COMMANDS = new Set(['curl', 'wget', 'scp', 'rsync', 'sftp', 'nc', 'ssh', 'gh', 'git', 'brew', 'npm']);
 const REMOTE_CODE: readonly RegExp[] = [
@@ -464,12 +473,15 @@ function commandOf(words: string[]): { cmd: string; sudo: boolean } | null {
   let sudo = false;
   while (i < words.length) {
     const w = words[i];
+    const name = w.split('/').pop() ?? w; // `/usr/bin/sudo` is sudo
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) i += 1;
-    else if (PREFIX.has(w)) {
-      if (w === 'sudo' || w === 'doas') sudo = true;
+    else if (PREFIX.has(name)) {
+      if (name === 'sudo' || name === 'doas') sudo = true;
+      const takes = PREFIX_VALUE_OPTS[name];
       i += 1;
-      while (i < words.length && words[i].startsWith('-')) i += 1;
-      if (w === 'timeout' && i < words.length) i += 1;
+      // `sudo -u root …`, `nice -n 10 …`: an option's value is not the command.
+      while (i < words.length && words[i].startsWith('-')) i += takes?.has(words[i]) ? 2 : 1;
+      if (name === 'timeout' && i < words.length) i += 1; // the duration
     } else if (LEAD_KEYWORDS.has(w)) i += 1;
     else if (HEADER_KEYWORDS.has(w)) return sudo ? { cmd: '', sudo } : null;
     else break;
@@ -565,7 +577,7 @@ export function inspectUserActionScript(
   }
   // The word anywhere a command can stand — also as an argument (`xargs sudo rm`, `find -exec sudo …`): a false
   // caution costs a second look, a missed sudo a false pass.
-  if (sudo || /(?:^|[\s;&|(`'"=])(?:sudo|doas)(?=\s|$)/m.test(script)) {
+  if (sudo || /(?:^|[\s;&|(`'"=/])(?:sudo|doas)(?=\s|$)/m.test(script)) {
     add({ id: 'sudo', level: 'caution', label: '관리자 권한(sudo)으로 실행함', detail: '비밀번호를 물을 수 있다.' });
   }
 

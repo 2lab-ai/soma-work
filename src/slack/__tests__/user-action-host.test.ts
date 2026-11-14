@@ -5,7 +5,7 @@ import {
 } from 'somalib/user-action/user-action';
 import { describe, expect, it, vi } from 'vitest';
 import type { ConversationSession } from '../../types';
-import { answerUserAction, captureUserActionToolResults } from '../user-action-host';
+import { answerUserAction, captureUserActionToolResults, notifierFromInjection } from '../user-action-host';
 
 function action(id: string): UserActionRecord {
   const script = "open 'https://example.com/verify'";
@@ -139,7 +139,7 @@ describe('captureUserActionToolResults — ordering and retries (review)', () =>
     expect(session.userActions?.[0].slackTs).toBe('9.9');
   });
 
-  it('an answer that lands during the post is kept when the ts is stamped', async () => {
+  it('an answer that lands during the post is kept, and the card is brought up to it (no buttons)', async () => {
     const session = {} as ConversationSession;
     const d = deps();
     d.slackApi.postMessage.mockImplementationOnce(async () => {
@@ -154,6 +154,9 @@ describe('captureUserActionToolResults — ordering and retries (review)', () =>
       deps: d,
     });
     expect(session.userActions?.[0]).toMatchObject({ status: 'done', resolvedBy: 'U1', slackTs: '9.9' });
+    const [ch, ts, , , attachments] = d.slackApi.updateMessage.mock.calls[0] as any[];
+    expect([ch, ts]).toEqual(['C1', '9.9']);
+    expect(attachments[0].blocks.some((b: any) => b.type === 'actions')).toBe(false);
   });
 
   it('retries a failed post once, and a replayed result is not posted again', async () => {
@@ -267,5 +270,29 @@ describe('answerUserAction — one path for the Slack button and the dashboard',
       ok: false,
       code: 'gone',
     });
+  });
+});
+
+describe('notifierFromInjection — acceptance, not settlement, decides', () => {
+  it('true when onAccepted fires, even if the injection settles later', async () => {
+    let settle!: () => void;
+    const notify = notifierFromInjection((_k, _t, _a, onAccepted) => {
+      onAccepted();
+      return new Promise<void>((r) => {
+        settle = r;
+      });
+    });
+    const p = notify('k', 'text', 'U1');
+    settle();
+    expect(await p).toBe(true);
+  });
+
+  it('false when the injection settles without acceptance, or fails', async () => {
+    expect(await notifierFromInjection(async () => undefined)('k', 't', 'U1')).toBe(false);
+    expect(
+      await notifierFromInjection(async () => {
+        throw new Error('down');
+      })('k', 't', 'U1'),
+    ).toBe(false);
   });
 });

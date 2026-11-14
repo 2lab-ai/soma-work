@@ -92,6 +92,15 @@ describe('validateInstructUserArgs', () => {
     expect(r.error.code).toBe('SECRET_IN_SCRIPT');
   });
 
+  it('rejects a secret literal even when it holds a slash (base64, generated passwords)', () => {
+    const r = validateInstructUserArgs({ ...base, script: "PASSWORD='abc/defghijklmnopqrstuvwxyz' ./login" });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe('SECRET_IN_SCRIPT');
+    expect(validateInstructUserArgs({ ...base, script: 'TOKEN_FILE=~/config/app.json ./run' }).ok).toBe(true);
+    expect(validateInstructUserArgs({ ...base, script: 'TOKEN_FILE=./config/app.json ./run' }).ok).toBe(true);
+  });
+
   it('lets a secret read from where it lives, or a path to it, through', () => {
     expect(validateInstructUserArgs({ ...base, script: 'API_TOKEN=$(pass show api/token) ./run' }).ok).toBe(true);
     expect(validateInstructUserArgs({ ...base, script: 'TOKEN_FILE=/Users/me/.config/app.json ./run' }).ok).toBe(true);
@@ -204,6 +213,15 @@ describe('inspectUserActionScript', () => {
     expect(loop.commands).toEqual(['rm']);
   });
 
+  it('an unquoted heredoc body runs its $(…): the inner command and its effect are seen; a quoted body is inert', () => {
+    const open = inspectUserActionScript('cat <<EOF\n$(touch ~/marker)\nEOF', 'bash', SYNTAX_OK);
+    expect(open.commands).toEqual(['cat', 'touch']);
+    expect(open.findings.map((f) => f.id)).toContain('writes-files');
+    const closed = inspectUserActionScript("cat <<'EOF'\n$(touch ~/marker)\nEOF", 'bash', SYNTAX_OK);
+    expect(closed.commands).toEqual(['cat']);
+    expect(closed.findings.map((f) => f.id)).not.toContain('writes-files');
+  });
+
   it('an unquoted heredoc runs the substitutions in its body; a quoted one does not', () => {
     const open = inspectUserActionScript('cat <<EOF\n$(sudo cat /etc/shadow)\nEOF', 'bash', SYNTAX_OK);
     expect(open.verdict).not.toBe('ok');
@@ -213,6 +231,16 @@ describe('inspectUserActionScript', () => {
     expect(tick.commands).toEqual(['cat', 'date']);
     const closed = inspectUserActionScript("cat <<'EOF'\n$(rm -rf ~/x)\nEOF", 'bash', SYNTAX_OK);
     expect(closed.commands).toEqual(['cat']);
+  });
+
+  it('an option value of a wrapper is not the command; a path-qualified sudo is sudo', () => {
+    const u = inspectUserActionScript('sudo -u root touch /tmp/ua-test', 'bash', SYNTAX_OK);
+    expect(u.commands).toEqual(['touch']);
+    expect(u.findings.map((f) => f.id)).toEqual(expect.arrayContaining(['sudo', 'writes-files']));
+    expect(inspectUserActionScript('nice -n 10 touch /tmp/ua-test', 'bash', SYNTAX_OK).commands).toEqual(['touch']);
+    const path = inspectUserActionScript('/usr/bin/sudo launchctl list', 'bash', SYNTAX_OK);
+    expect(path.commands).toEqual(['launchctl']);
+    expect(path.findings.map((f) => f.id)).toContain('sudo');
   });
 
   it('sudo as an argument (xargs, find -exec) still raises the sudo caution', () => {
