@@ -120,3 +120,54 @@ describe('사용자 할 일 — the detail card section', () => {
     expect(missing).toEqual([]);
   });
 });
+
+describe('사용자 할 일 — the answer buttons (answerUserAction)', () => {
+  function harness(responses: Array<{ status: number; body?: unknown }>) {
+    const calls: Array<{ url: string; init: any }> = [];
+    const env = {
+      panelSessionKey: 'work:C1:1.0',
+      _csrfToken: 'stale',
+      toasts: [] as any[],
+      loads: 0,
+    };
+    const fetchFn = async (url: string, init: any) => {
+      calls.push({ url, init });
+      const r = responses.shift() ?? { status: 200, body: {} };
+      return { status: r.status, ok: r.status < 400, json: async () => r.body ?? {} };
+    };
+    const fn = new Function(
+      'env',
+      'fetch',
+      `var panelSessionKey = env.panelSessionKey;
+       var _csrfToken = env._csrfToken;
+       async function refreshCsrfToken() { _csrfToken = 'fresh'; }
+       function dashToast(t) { env.toasts.push(t); }
+       function loadSessions() { env.loads++; }
+       ${clientFn('answerUserAction')}
+       return answerUserAction;`,
+    )(env, fetchFn) as (btn: unknown) => Promise<void>;
+    const attrs: Record<string, string> = { 'data-ua-id': 'ua_1', 'data-ua-status': 'failed' };
+    const btn = { disabled: false, getAttribute: (k: string) => attrs[k] };
+    return { fn, btn, calls, env };
+  }
+
+  it('posts the action and status for the open session, and retries once with a fresh CSRF token on 403', async () => {
+    const { fn, btn, calls, env } = harness([{ status: 403 }, { status: 200, body: { ok: true } }]);
+    await fn(btn);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].url).toBe('/api/dashboard/session/work%3AC1%3A1.0/user-action');
+    expect(JSON.parse(calls[1].init.body)).toEqual({ id: 'ua_1', status: 'failed' });
+    expect(calls[0].init.headers['X-CSRF-Token']).toBe('stale');
+    expect(calls[1].init.headers['X-CSRF-Token']).toBe('fresh');
+    expect(btn.disabled).toBe(false);
+    expect(env.toasts[env.toasts.length - 1].tone).toBe('success');
+    expect(env.loads).toBe(1);
+  });
+
+  it('shows the server refusal and re-enables the button', async () => {
+    const { fn, btn, env } = harness([{ status: 502, body: { ok: false, error: 'not-delivered' } }]);
+    await fn(btn);
+    expect(env.toasts[env.toasts.length - 1]).toMatchObject({ tone: 'error', description: 'not-delivered' });
+    expect(btn.disabled).toBe(false);
+  });
+});

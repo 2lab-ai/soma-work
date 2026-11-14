@@ -274,17 +274,26 @@ describe('answerUserAction — one path for the Slack button and the dashboard',
 });
 
 describe('notifierFromInjection — acceptance, not settlement, decides', () => {
-  it('true when onAccepted fires, even if the injection settles later', async () => {
+  it('resolves true at acceptance, while the injection (the whole turn) is still running', async () => {
     let settle!: () => void;
+    let accept!: () => void;
     const notify = notifierFromInjection((_k, _t, _a, onAccepted) => {
-      onAccepted();
+      accept = onAccepted;
       return new Promise<void>((r) => {
         settle = r;
       });
     });
-    const p = notify('k', 'text', 'U1');
+    let resolved: boolean | undefined;
+    const p = notify('k', 'text', 'U1').then((v) => {
+      resolved = v;
+      return v;
+    });
+    await Promise.resolve();
+    expect(resolved).toBeUndefined();
+    accept();
+    await p;
+    expect(resolved).toBe(true); // before the injection settled
     settle();
-    expect(await p).toBe(true);
   });
 
   it('false when the injection settles without acceptance, or fails', async () => {

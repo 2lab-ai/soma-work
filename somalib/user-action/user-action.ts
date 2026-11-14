@@ -129,6 +129,25 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   /\b[A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY)[A-Za-z0-9_]*\s*[=:]\s*['"]?(?!\$|~?\/|\.\.?\/)[^\s'"$]{12,}/i,
 ];
 
+/**
+ * A shell assignment of a literal to a secret-named variable (`PASSWORD='hunter2'`, `export API_KEY="a b c"`), at any
+ * length. Allowed: no value, a reference or substitution (`$X`, `$(…)`, a backtick), or a path (`/…`, `~/…`, `./…`).
+ */
+function literalSecretAssignment(script: string): boolean {
+  const assign =
+    /(?:^|[\s;&|(])(?:(?:export|readonly|local|declare)\s+(?:-\S+\s+)*)?([A-Za-z_][A-Za-z0-9_]*)=(?=(['"]?)(.?.?.?))/g;
+  for (const m of script.matchAll(assign)) {
+    if (!/(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY)/i.test(m[1])) continue;
+    const head = m[3] ?? '';
+    if (head === '' || /^[\s;&|)]/.test(head)) continue; // NAME= (unset)
+    if (/^[$`]/.test(head)) continue; // a reference or a substitution
+    if (/^(?:\/|~\/|\.\.?\/)/.test(head)) continue; // a path
+    if (m[2] && head[0] === m[2]) continue; // NAME='' / NAME=""
+    return true;
+  }
+  return false;
+}
+
 const fail = (code: UserActionErrorCode, message: string): ValidateInstructUserResult => ({
   ok: false,
   error: { code, message },
@@ -206,7 +225,9 @@ export function validateInstructUserArgs(args: unknown): ValidateInstructUserRes
     ['script', script],
     ...TEXT_FIELDS.map((f) => [f.key, out[f.key] ?? ''] as [string, string]),
   ];
-  const leaking = posted.find(([, text]) => SECRET_PATTERNS.some((re) => re.test(text)));
+  const leaking =
+    (literalSecretAssignment(script) ? posted[0] : undefined) ??
+    posted.find(([, text]) => SECRET_PATTERNS.some((re) => re.test(text)));
   if (leaking) {
     return fail(
       'SECRET_IN_SCRIPT',
@@ -251,6 +272,8 @@ const REMOTE_CODE: readonly RegExp[] = [
   /\b(?:ba|z|da|k)?sh\s+(?:-\S+\s+)*<\(\s*(?:curl|wget)\b/,
   /\b(?:ba|z|da|k)?sh\s+(?:-\S+\s+)*-c\s+["']?\$\(\s*(?:curl|wget)\b/,
 ];
+/** Programs that run the code they read from standard input. */
+const INTERPRETERS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'python', 'python3', 'node', 'perl', 'ruby']);
 const HIDDEN_CODE: readonly RegExp[] = [
   /(?:^|[\s;&|(])eval\s/,
   /\bbase64\s+(?:-\S+\s+)*(?:-d|-D|--decode)\b[^\n]*\|\s*(?:\S*\/)?(?:ba|z|da|k)?sh\b/,
@@ -258,6 +281,8 @@ const HIDDEN_CODE: readonly RegExp[] = [
 
 interface Segment {
   words: string[];
+  /** Segments joined by `|` share one pipeline object. */
+  pipeline: object;
 }
 
 /**
@@ -288,10 +313,12 @@ function scan(script: string, depth = 0): { segments: Segment[]; redirects: stri
     word = '';
     inWord = false;
   };
-  const endSegment = () => {
+  let pipeline: object = {};
+  const endSegment = (pipeOn = false) => {
     endWord();
-    if (words.length) segments.push({ words });
+    if (words.length) segments.push({ words, pipeline });
     words = [];
+    if (!pipeOn) pipeline = {};
   };
   /** Read the substitution whose body starts at `from` and ends at `end` (exclusive); return `end`. */
   const substitute = (from: number, end: number): number => {
@@ -433,6 +460,13 @@ function scan(script: string, depth = 0): { segments: Segment[]; redirects: stri
       i = j - 1;
       continue;
     }
+    if (c === '|' && script[i + 1] !== '|') {
+      // A pipe: the next command reads this one's output (`|&` too).
+      endSegment(true);
+      if (script[i + 1] === '&') i++;
+      continue;
+    }
+    if (c === '|') i++; // `||`
     if (c === ';' || c === '&' || c === '|' || c === '\n' || c === '(' || c === ')') {
       endSegment();
       continue;
@@ -533,7 +567,18 @@ export function inspectUserActionScript(
     if (NETWORK_COMMANDS.has(c.cmd) && !networkCommands.includes(c.cmd)) networkCommands.push(c.cmd);
   }
 
-  if (REMOTE_CODE.some((re) => re.test(script))) {
+  // Read with line continuations joined, so `curl … \\⏎ | sh` is one line.
+  const joined = script.replace(/\\\n/g, ' ');
+  const downloadThenRun = segments.some((seg, k) => {
+    const c = commandOf(seg.words);
+    if (!c || !INTERPRETERS.has(c.cmd)) return false;
+    return segments.slice(0, k).some((prev) => {
+      if (prev.pipeline !== seg.pipeline) return false;
+      const p = commandOf(prev.words);
+      return !!p && (p.cmd === 'curl' || p.cmd === 'wget');
+    });
+  });
+  if (downloadThenRun || REMOTE_CODE.some((re) => re.test(joined))) {
     add({
       id: 'remote-code',
       level: 'danger',
@@ -541,7 +586,7 @@ export function inspectUserActionScript(
       detail: '받은 내용을 먼저 열어 보지 않고 셸이나 인터프리터로 넘긴다.',
     });
   }
-  if (HIDDEN_CODE.some((re) => re.test(script))) {
+  if (HIDDEN_CODE.some((re) => re.test(joined))) {
     add({
       id: 'hidden-code',
       level: 'danger',

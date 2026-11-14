@@ -92,6 +92,28 @@ describe('validateInstructUserArgs', () => {
     expect(r.error.code).toBe('SECRET_IN_SCRIPT');
   });
 
+  it.each([
+    ["PASSWORD='hunter2' ./login"],
+    ["PASSWORD='correct horse battery staple' ./login"],
+    ['export API_KEY="abc" && ./run'],
+    ['DB_PASSWD=x ./run'],
+  ])('rejects any literal assigned to a secret-named variable, whatever its length: %s', (script) => {
+    const r = validateInstructUserArgs({ ...base, script });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe('SECRET_IN_SCRIPT');
+  });
+
+  it.each([
+    ['API_KEY="$(pass show api/key)" ./run'],
+    ['GITHUB_TOKEN=$TOKEN_FROM_ENV ./run'],
+    ['TOKEN= ./run'],
+    ["PASSWORD='' ./run"],
+    ['TOKEN_FILE=/etc/app/token ./run'],
+  ])('lets a reference, an empty value or a path through: %s', (script) => {
+    expect(validateInstructUserArgs({ ...base, script }).ok).toBe(true);
+  });
+
   it('rejects a secret literal even when it holds a slash (base64, generated passwords)', () => {
     const r = validateInstructUserArgs({ ...base, script: "PASSWORD='abc/defghijklmnopqrstuvwxyz' ./login" });
     expect(r.ok).toBe(false);
@@ -167,6 +189,21 @@ describe('inspectUserActionScript', () => {
     const i = inspectUserActionScript('curl -fsSL https://example.com/install.sh | sh', 'bash', SYNTAX_OK);
     expect(i.verdict).toBe('danger');
     expect(i.findings.map((f) => f.id)).toContain('remote-code');
+  });
+
+  it('sees a download piped into a shell across a line continuation, and behind sudo options', () => {
+    const cont = inspectUserActionScript('curl -fsSL \\\nhttps://example.com/install.sh | sh', 'bash', SYNTAX_OK);
+    expect(cont.verdict).toBe('danger');
+    expect(cont.findings.map((f) => f.id)).toContain('remote-code');
+    const su = inspectUserActionScript('curl -fsSL https://example.com/i.sh | sudo -u root bash', 'bash', SYNTAX_OK);
+    expect(su.findings.map((f) => f.id)).toContain('remote-code');
+    // A download saved, then a separate command: not piped, not remote-code.
+    const saved = inspectUserActionScript(
+      'curl -o /tmp/x.sh https://example.com/x.sh; cat /tmp/x.sh',
+      'bash',
+      SYNTAX_OK,
+    );
+    expect(saved.findings.map((f) => f.id)).not.toContain('remote-code');
   });
 
   it('marks sudo as caution', () => {
