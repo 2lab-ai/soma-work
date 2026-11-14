@@ -1129,10 +1129,25 @@ export interface DashboardCronSource {
   getJob(id: string): CronJob | undefined;
   /** Apply a patch to the job with this id; null when it is gone. Throws DUPLICATE_NAME like CronStorage.updateJob. */
   updateJob(id: string, patch: CronJobPatch): CronJob | null;
+  /**
+   * The drawer's 지금 실행: fire the job with this id now, through the scheduler — the path a scheduled fire takes,
+   * as the job's owner — attributing the fire to `triggeredBy`. Resolves when the scheduler is done with it (a turn
+   * it started may run for hours); null when this instance runs no scheduler.
+   */
+  runJob?(id: string, triggeredBy: string): Promise<{ ok: boolean; message: string }> | null;
+  /** The drawer's 삭제: remove the job with this id; false when it is already gone. */
+  deleteJob?(id: string): boolean;
 }
 let _cronSource: DashboardCronSource | null = null;
 export function setDashboardCronSource(source: DashboardCronSource | null): void {
   _cronSource = source;
+}
+/** How long 지금 실행 waits for the scheduler's answer before it says the fire started (a turn can run for hours). */
+const CRON_RUN_ANSWER_WAIT_MS = 4000;
+let _cronRunAnswerWaitMs = CRON_RUN_ANSWER_WAIT_MS;
+/** Test seam: the wait above; undefined restores it. */
+export function setCronRunAnswerWaitMs(ms: number | undefined): void {
+  _cronRunAnswerWaitMs = ms ?? CRON_RUN_ANSWER_WAIT_MS;
 }
 
 /** Where the capacity view reads llmux from. Null = the live auth runtime. */
@@ -3775,8 +3790,8 @@ export async function registerDashboardRoutes(
   );
 
   // A cron job's whole content — its prompt too — for the drawer's 내용 보기 (#1080),
-  // and its change from the drawer's 편집. The lane above never carries a prompt, so
-  // both are for whoever may change the job: its owner, an admin with Admin mode on,
+  // its change from the drawer's 편집, and its 지금 실행 and 삭제 below. The lane above
+  // never carries a prompt, so all are for whoever may change the job: its owner, an admin with Admin mode on,
   // or the viewer token (the #716 write gate). The values are checked by the Slack
   // modal's and cron_update's rules (cron-edit.ts). The scheduler reads the storage
   // on every tick, so a change takes effect from the next minute without a restart.
@@ -3793,7 +3808,7 @@ export async function registerDashboardRoutes(
     if (!_hasWriteAccess(request, job.owner)) {
       reply
         .status(403)
-        .send({ error: "Forbidden — a cron job's content and its edits are its owner's, or an admin's in admin mode" });
+        .send({ error: "Forbidden — a cron job's content, edits, runs and removal are its owner's, or an admin's in admin mode" });
       return null;
     }
     return job;
@@ -3842,6 +3857,80 @@ export async function registerDashboardRoutes(
       if (actor === job.owner) logger.info('Cron job edited from the dashboard', edit);
       else logger.warn('Cron job edited from the dashboard by someone other than its owner', edit);
       reply.send({ job: cronJobDetail(updated, Date.now()) });
+    },
+  );
+
+  // The drawer's 지금 실행: the scheduler fires the job now, the way a scheduled fire runs (its mode, output and
+  // model, as its owner), and records who pressed it. A fire that opens a thread resolves only when that turn ends,
+  // so the answer waits a few seconds at most: what the scheduler said by then (injected, queued, delivered, or
+  // why it failed), else 202 — the fire goes on, and its session and history row reach the lane as they appear.
+  server.post<{ Params: { id: string } }>(
+    '/api/dashboard/cron/:id/run',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const job = cronJobFor(request, reply);
+      if (!job || !_cronSource) return;
+      const auth = (request as any).authContext;
+      const actor: string = auth?.userId || 'dashboard';
+      const fire = _cronSource.runJob ? _cronSource.runJob(job.id, actor) : null;
+      if (!fire) {
+        reply.status(503).send({ error: t('이 인스턴스에서는 크론 스케줄러가 돌고 있지 않아요') });
+        return;
+      }
+      const run = { jobId: job.id, name: job.name, owner: job.owner, actor };
+      if (actor === job.owner) logger.info('Cron job fired from the dashboard', run);
+      else logger.warn('Cron job fired from the dashboard by someone other than its owner', run);
+      const settled = fire.then(
+        (result) => ({ result }),
+        (err: unknown) => ({ result: { ok: false, message: (err as Error)?.message || String(err) } }),
+      );
+      settled.then(({ result }) => {
+        if (!result.ok) logger.warn('Cron job fired from the dashboard failed', { ...run, error: result.message });
+      });
+      let timer: NodeJS.Timeout | undefined;
+      const waited = new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), _cronRunAnswerWaitMs);
+      });
+      const answer = await Promise.race([settled, waited]);
+      clearTimeout(timer);
+      if (!answer) {
+        reply.status(202).send({ ok: true, started: true });
+        return;
+      }
+      if (answer.result.ok) reply.send({ ok: true, detail: answer.result.message });
+      else reply.status(502).send({ error: answer.result.message || t('크론 잡을 실행하지 못했어요') });
+    },
+  );
+
+  // The drawer's 삭제. Removed from the storage the scheduler reads every minute: it never fires again.
+  server.delete<{ Params: { id: string } }>(
+    '/api/dashboard/cron/:id',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const job = cronJobFor(request, reply);
+      if (!job || !_cronSource) return;
+      if (!_cronSource.deleteJob) {
+        reply.status(503).send({ error: t('이 인스턴스에서는 크론 잡을 지울 수 없어요') });
+        return;
+      }
+      let removed: boolean;
+      try {
+        removed = _cronSource.deleteJob(job.id);
+      } catch (err) {
+        logger.error('Cron job delete failed', err);
+        reply.status(500).send({ error: t('크론 잡을 지우지 못했어요') });
+        return;
+      }
+      if (!removed) {
+        reply.status(404).send({ error: t('크론 잡을 찾을 수 없어요 (지워졌을 수 있어요)') });
+        return;
+      }
+      const auth = (request as any).authContext;
+      const actor = auth?.userId || auth?.mode || 'unknown';
+      const gone = { jobId: job.id, name: job.name, owner: job.owner, actor };
+      if (actor === job.owner) logger.info('Cron job deleted from the dashboard', gone);
+      else logger.warn('Cron job deleted from the dashboard by someone other than its owner', gone);
+      reply.send({ ok: true });
     },
   );
 
@@ -6994,6 +7083,11 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
    and scrolls past a screenful), the form's hints, the actions in one row. */
 .cron-prompt { margin: 0; max-height: 320px; overflow: auto; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
 .cron-detail-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+/* The job's actions, above its facts: 지금 실행 · 편집, then 삭제 pushed to the end (apart from the others). */
+.cron-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 2px 0 12px; }
+.cron-actions .cron-act-end { margin-left: auto; }
+/* An armed press says what follows right under the row (the button it describes is a hand's width away). */
+.cron-actions-hint { margin: -6px 0 10px; font-size: 12px; color: var(--text-secondary); }
 .cron-detail-note, .cron-edit-hint { margin: 8px 0 0; font-size: 12px; color: var(--text-tertiary); }
 .cron-edit-hint { display: block; margin-top: 3px; }
 .cron-edit-model-id { margin-top: 6px; }
@@ -22504,7 +22598,8 @@ function renderCronRunRow(run, g, nowMs) {
   var title = s && s.earlierInThread ? '같은 스레드의 이전 실행' : s && s.headline ? s.headline : gl.label;
   var bits = [];
   bits.push('<time datetime="' + escAttr(new Date(run.executedAt).toISOString()) + '">' + esc(cronRunWhen(run.executedAt, nowMs)) + '</time>');
-  bits.push(esc(run.triggeredBy ? '수동 실행 (' + run.triggeredBy + ')' : '예약 실행'));
+  // Who pressed it when that was not the owner; 수동 실행 for any other press by hand (the owner's); else the schedule.
+  bits.push(esc(run.triggeredBy ? '수동 실행 (' + run.triggeredBy + ')' : run.manual ? '수동 실행' : '예약 실행'));
   if (s && s.activeMs) bits.push(esc('소요 ' + formatNmSSs(s.activeMs)));
   if (s && typeof s.tokens === 'number' && s.tokens > 0) bits.push(esc(formatTokens(s.tokens) + ' 토큰'));
   if (s && typeof s.costUsd === 'number' && s.costUsd > 0) bits.push(esc('$' + s.costUsd.toFixed(2)));
@@ -22534,10 +22629,10 @@ function renderCronDrawerMeta(g, nowMs) {
   var rows = [
     ['스케줄', esc(cronScheduleLabel(j.expression, j.nextRunAt) + ' · ' + j.expression + ' (UTC)')],
     ['다음 실행', j.nextRunAt ? esc(capClockLabel(j.nextRunAt / 1000, nowMs)) + ' (' + cronCountdownHtml(j.nextRunAt) + ')' : '8일 안에 없음'],
-    ['실행 방식', esc((j.mode === 'fastlane' ? '항상 새 스레드' : '세션이 쉬면 주입, 없으면 새 스레드') + ' · 출력 ' + j.target + ' · 모델 ' + j.model)],
+    ['실행 방식', esc((j.mode === 'fastlane' ? '항상 새 스레드' : '잡의 세션이 쉬면 주입, 없으면 새 스레드') + ' · 출력 ' + j.target + ' · 모델 ' + j.model)],
     ['실행 기록', esc('잡마다 최근 ' + (j.historyCap || 20) + '회까지 보관')],
   ];
-  return '<dl class="ui-dl">' + rows.map(function(r) { return '<div><dt>' + esc(r[0]) + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>' + cronDetailGate(g);
+  return cronActionBar(g) + '<dl class="ui-dl">' + rows.map(function(r) { return '<div><dt>' + esc(r[0]) + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>' + cronDetailGate(g);
 }
 // The group the drawer shows, from the last plan.
 function cronDrawerGroup() {
@@ -22656,18 +22751,87 @@ async function loadCronJobs() {
 // cron_update's rules). Its words — a refusal included — go to the drawer's status line (#cron-detail-status),
 // which no render repaints.
 var _cronDetail = null; // { key, jobId, job, loading, draft, saving, say, tone } for the drawer's job; null = the short facts
-var CRON_MODE_LABEL = { default: '세션이 쉬면 주입, 없으면 새 스레드', fastlane: '항상 새 스레드' };
+var CRON_MODE_LABEL = { default: '잡의 세션이 쉬면 주입, 없으면 새 스레드', fastlane: '항상 새 스레드' };
 var CRON_TARGET_LABEL = { channel: '채널 — 세션에서 실행', thread: '스레드 답글 — 프롬프트 글만 올림', dm: 'DM — 프롬프트 글만 보냄' };
 var CRON_MODEL_LABEL = { default: '만든 사람의 지금 기본 모델', opus: 'Opus (최신)', fable: 'Fable (최신)', fast: '빠른 모델', custom: '직접 입력' };
+var CRON_ACT_LABEL = { bar: '잡 다루기', run: '지금 실행', runArmed: '한 번 더 눌러 실행', edit: '편집', delete: '삭제', deleteArmed: '한 번 더 눌러 삭제', detail: '내용 보기', hide: '접기' };
+// Who may act on a job, for everyone else (the row is not theirs).
+var CRON_NOTE_OTHERS = '실행·편집·삭제와 프롬프트를 포함한 전체 내용은 소유자나 관리자 모드를 켠 관리자만 다룰 수 있어요';
+// What an armed press is about to do — said under the row while it waits for the second press.
+var CRON_ARMED_SAID = { run: '한 번 더 누르면 지금 바로 실행해요 — 다음 예약 실행은 그대로예요', delete: '한 번 더 누르면 이 잡을 지워요 — 되돌릴 수 없어요' };
+// What 지금 실행 says once the server answered: the scheduler's own answer when it came in time, else that it started.
+var CRON_RUN_SAID = { started: '실행을 시작했어요 — 실행은 보드와 아래 기록에 나타나요', busy_queue: '잡의 세션이 일하는 중이라, 끝나면 실행해요', dm: 'DM으로 보냈어요', thread_reply: '스레드에 답글로 올렸어요' };
 // The whole job may be shown to this viewer: the owner, or an admin with 관리자 모드 on.
 function cronDetailAllowed(g) {
   return !!(g && g.job && g.jobId && viewerCanManage({ ownerId: g.job.owner }));
 }
+// The job's actions, above its facts, for whoever may manage it (the owner, an admin in 관리자 모드): 지금 실행 and
+// 편집 first, 삭제 apart at the end in the danger tone. 지금 실행 and 삭제 cannot be undone, so each asks once — the
+// page's armed press (한 번 더 눌러 …, 4 s): armed, 지금 실행 turns primary and 삭제 fills red, and a line under the
+// row (the armed button's description) says what the second press does. A request in flight is
+// busy and holds the others (aria-disabled, so they stay where focus and a screen reader find them). An open form
+// has its own 저장 / 취소 instead: it replaces the facts, this row with them.
+function cronActionBar(g) {
+  if (!cronDetailAllowed(g)) return '';
+  var st = _cronDetail && _cronDetail.key === g.key ? _cronDetail : null;
+  var busy = st && st.busy ? st.busy : '';
+  var armed = cronArmed(st);
+  function btn(act, tone, label) {
+    return '<button type="button" class="ui-btn is-sm' + tone + '" data-cron-act="' + act + '"'
+      + (busy === act ? ' aria-busy="true"' : '') + (busy ? ' aria-disabled="true"' : '')
+      + (armed === act ? ' data-armed aria-describedby="cron-armed-hint"' : '') + '>' + esc(label) + '</button>';
+  }
+  return '<div class="cron-actions" role="toolbar" aria-label="' + escAttr(CRON_ACT_LABEL.bar) + '">'
+    + btn('run', armed === 'run' ? ' is-primary' : '', armed === 'run' ? CRON_ACT_LABEL.runArmed : CRON_ACT_LABEL.run)
+    + btn('edit', '', CRON_ACT_LABEL.edit)
+    + btn('delete', ' is-danger cron-act-end', armed === 'delete' ? CRON_ACT_LABEL.deleteArmed : CRON_ACT_LABEL.delete)
+    + '</div>'
+    + (armed ? '<p class="cron-actions-hint" id="cron-armed-hint">' + esc(CRON_ARMED_SAID[armed]) + '</p>' : '');
+}
+// The press 지금 실행 or 삭제 is waiting on: armed within the last 4 s, else nothing.
+function cronArmed(st) {
+  return st && st.armed && Date.now() - (st.armSince || 0) < 4000 ? st.armed : '';
+}
+// A press that asks once. The first arms it — its label says to press again, the line under the row says what
+// follows (cronActionBar) — and answers false; the second within 4 s answers true. A second press sooner than 0.4 s
+// is the same click doubled, not a decision: it is ignored, and the press stays armed. The arm is spent after 4 s
+// (the label and the line go back). An earlier result in the status line goes: it is not about this press.
+function cronConfirmPress(st, act) {
+  var since = Date.now() - (st.armSince || 0);
+  if (st.armed === act && since < 4000) {
+    if (since < 400) return false;
+    st.armed = '';
+    return true;
+  }
+  st.armed = act;
+  st.armSince = Date.now();
+  st.say = '';
+  st.tone = '';
+  cronDetailStatus();
+  paintCronDrawer();
+  cronDetailFocus('[data-cron-act="' + act + '"]');
+  setTimeout(function() {
+    if (_cronDetail !== st || st.armed !== act || cronArmed(st)) return;
+    var had = cronDetailHasFocus(act);
+    st.armed = '';
+    paintCronDrawer();
+    if (had) cronDetailFocus('[data-cron-act="' + act + '"]'); // the repaint replaced the button that had it
+  }, 4100);
+  return false;
+}
+// Focus is on this action's button (a repaint replaces it: whoever had it gets the new one).
+function cronDetailHasFocus(act) {
+  var a = document.activeElement;
+  return !!(a && a.getAttribute && a.getAttribute('data-cron-act') === act);
+}
 // Under the short facts: 내용 보기 for whoever may see the whole job, one plain line for everyone else.
 function cronDetailGate(g) {
-  if (!cronDetailAllowed(g)) return '<p class="cron-detail-note">프롬프트를 포함한 전체 내용과 편집은 소유자나 관리자 모드를 켠 관리자만 할 수 있어요</p>';
-  var busy = !!(_cronDetail && _cronDetail.key === g.key && _cronDetail.loading);
-  return '<div class="cron-detail-actions"><button type="button" class="ui-btn is-sm" data-cron-act="detail"' + (busy ? ' aria-busy="true"' : '') + '>내용 보기</button></div>';
+  if (!cronDetailAllowed(g)) return '<p class="cron-detail-note">' + esc(CRON_NOTE_OTHERS) + '</p>';
+  var st = _cronDetail && _cronDetail.key === g.key ? _cronDetail : null;
+  var busy = !!(st && st.loading);
+  // A run or a delete in flight holds 내용 보기 too: its answer must land on this drawer (cronDetailLoad).
+  var held = !!(st && st.busy);
+  return '<div class="cron-detail-actions"><button type="button" class="ui-btn is-sm" data-cron-act="detail"' + (busy ? ' aria-busy="true"' : '') + (held ? ' aria-disabled="true"' : '') + '>' + esc(CRON_ACT_LABEL.detail) + '</button></div>';
 }
 function cronDetailWhen(ms, nowMs) {
   return '<time datetime="' + escAttr(new Date(ms).toISOString()) + '">' + esc(cronRunWhen(ms, nowMs)) + '</time>';
@@ -22692,8 +22856,8 @@ function renderCronDetail(g, j, nowMs) {
     ['스케줄 바꾼 때', j.scheduleChangedAt ? cronDetailWhen(j.scheduleChangedAt, nowMs) : '바꾼 적 없음'],
     ['마지막 실행', j.lastRunAt ? cronDetailWhen(j.lastRunAt, nowMs) : '아직 없음'],
   ];
-  return '<dl class="ui-dl">' + rows.map(function(r) { return '<div><dt>' + esc(r[0]) + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>'
-    + '<div class="cron-detail-actions"><button type="button" class="ui-btn is-sm" data-cron-act="edit">편집</button><button type="button" class="ui-btn is-sm" data-cron-act="hide">접기</button></div>';
+  return cronActionBar(g) + '<dl class="ui-dl">' + rows.map(function(r) { return '<div><dt>' + esc(r[0]) + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>'
+    + '<div class="cron-detail-actions"><button type="button" class="ui-btn is-sm" data-cron-act="hide"' + (_cronDetail && _cronDetail.busy ? ' aria-disabled="true"' : '') + '>' + esc(CRON_ACT_LABEL.hide) + '</button></div>';
 }
 // The form's values, from the job.
 function cronDraftOf(j) {
@@ -22764,10 +22928,10 @@ function cronDetailError(res, data, failed) {
   if (data && data.error) return String(data.error);
   return res ? failed + ' (HTTP ' + res.status + ')' : failed;
 }
-// 내용 보기: the whole job, from the server.
-async function cronDetailLoad() {
+// 내용 보기: the whole job, from the server. andEdit (편집 pressed on the short facts): the form opens once it is here.
+async function cronDetailLoad(andEdit) {
   var g = cronDrawerGroup();
-  if (!cronDetailAllowed(g) || (_cronDetail && _cronDetail.key === g.key && _cronDetail.loading)) return;
+  if (!cronDetailAllowed(g) || (_cronDetail && _cronDetail.key === g.key && (_cronDetail.loading || _cronDetail.busy))) return;
   var st = { key: g.key, jobId: g.jobId, job: null, loading: true, draft: null, saving: false, say: '내용을 불러오는 중…', tone: '' };
   _cronDetail = st;
   cronDetailStatus();
@@ -22786,7 +22950,8 @@ async function cronDetailLoad() {
     st.say = '';
     cronDetailStatus();
     paintCronDrawer();
-    cronDetailFocus('[data-cron-act="edit"]');
+    if (andEdit) cronDetailEdit();
+    else cronDetailFocus('[data-cron-act="edit"]');
     return;
   }
   st.say = cronDetailError(res, data, '내용을 불러오지 못했어요');
@@ -22795,9 +22960,14 @@ async function cronDetailLoad() {
   paintCronDrawer();
 }
 // 편집: the form, drawn once — a board render never repaints it (paintCronDrawer), the typing lives in the draft.
+// One press from the short facts too: the whole job is loaded first, then the form opens.
 function cronDetailEdit() {
   var st = _cronDetail;
-  if (!st || !st.job || st.draft) return;
+  if (!st || !st.job) {
+    if (st && (st.loading || st.busy)) return;
+    return cronDetailLoad(true);
+  }
+  if (st.draft || st.busy) return;
   st.draft = cronDraftOf(st.job);
   st.say = '';
   cronDetailStatus();
@@ -22814,17 +22984,20 @@ function cronDetailCancel() {
   paintCronDrawer();
   cronDetailFocus('[data-cron-act="edit"]');
 }
-// 접기: back to the short facts.
+// 접기: back to the short facts — not while a run or a delete waits for its answer (it would land nowhere).
 function cronDetailHide() {
+  if (_cronDetail && _cronDetail.busy) return;
   _cronDetail = null;
   paintCronDrawer();
   cronDetailFocus('[data-cron-act="detail"]');
 }
 function onCronDetailClick(e) {
   var b = e.target && e.target.closest ? e.target.closest('[data-cron-act]') : null;
-  if (!b) return;
+  if (!b || b.getAttribute('aria-disabled') === 'true') return;
   var act = b.getAttribute('data-cron-act');
-  if (act === 'detail') cronDetailLoad();
+  if (act === 'run') cronDetailRun();
+  else if (act === 'delete') cronDetailDelete();
+  else if (act === 'detail') cronDetailLoad();
   else if (act === 'edit') cronDetailEdit();
   else if (act === 'cancel') cronDetailCancel();
   else if (act === 'hide') cronDetailHide();
@@ -22841,12 +23014,16 @@ function onCronDetailInput(e) {
     if (row) row.hidden = t.value !== 'custom';
   }
 }
-// PATCH with the CSRF retry (a 403 after the JWT rotated refreshes the token once).
-async function cronDetailPatch(url, body) {
+// A write (저장's PATCH, 지금 실행's POST, 삭제's DELETE) with the CSRF retry (a 403 after the JWT rotated refreshes
+// the token once). body: a JSON string, or null for none.
+async function cronDetailWrite(method, url, body) {
   function send() {
-    var headers = { 'Content-Type': 'application/json' };
+    var headers = {};
+    if (body != null) headers['Content-Type'] = 'application/json';
     if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
-    return fetch(url, { method: 'PATCH', headers: headers, body: body });
+    var init = { method: method, headers: headers };
+    if (body != null) init.body = body;
+    return fetch(url, init);
   }
   var res = await send();
   if (res.status === 403) {
@@ -22894,7 +23071,7 @@ async function cronDetailSave() {
   var res = null;
   var data = null;
   try {
-    res = await cronDetailPatch('/api/dashboard/cron/' + encodeURIComponent(st.jobId), JSON.stringify(patch));
+    res = await cronDetailWrite('PATCH', '/api/dashboard/cron/' + encodeURIComponent(st.jobId), JSON.stringify(patch));
     data = await res.json().catch(function() { return null; });
   } catch (_e) {}
   st.saving = false;
@@ -22915,6 +23092,85 @@ async function cronDetailSave() {
   st.tone = 'fail';
   cronDetailStatus();
   cronEditInvalid(data && data.field);
+}
+// The drawer's state for this job — made when an action starts on the short facts (the status line reads it).
+function cronDetailState(g) {
+  if (!_cronDetail || _cronDetail.key !== g.key) {
+    _cronDetail = { key: g.key, jobId: g.jobId, job: null, loading: false, draft: null, saving: false, say: '', tone: '' };
+  }
+  return _cronDetail;
+}
+// 지금 실행 (asks once): the scheduler fires the job now, the way a scheduled fire runs (as its owner). The server answers within
+// a few seconds — what the scheduler did, or that the fire started — and the run reaches the board and the history
+// as it happens (the lane reloads now; a run that opens a thread is on the board at once).
+async function cronDetailRun() {
+  var g = cronDrawerGroup();
+  if (!cronDetailAllowed(g)) return;
+  var st = cronDetailState(g);
+  if (st.busy || st.loading || st.saving || st.draft) return;
+  if (!cronConfirmPress(st, 'run')) return;
+  st.busy = 'run';
+  st.say = '실행을 요청하는 중…';
+  st.tone = '';
+  cronDetailStatus();
+  paintCronDrawer();
+  cronDetailFocus('[data-cron-act="run"]'); // the busy row replaced the pressed button
+  var res = null;
+  var data = null;
+  try {
+    res = await cronDetailWrite('POST', '/api/dashboard/cron/' + encodeURIComponent(st.jobId) + '/run', null);
+    data = await res.json().catch(function() { return null; });
+  } catch (_e) {}
+  st.busy = '';
+  if (_cronDetail !== st) return; // the drawer moved on meanwhile
+  if (res && res.ok && data && data.ok) {
+    st.say = (data.detail && CRON_RUN_SAID[data.detail]) || CRON_RUN_SAID.started;
+    st.tone = 'done';
+    loadCronJobs();
+  } else {
+    st.say = cronDetailError(res, data, '실행하지 못했어요');
+    st.tone = 'fail';
+  }
+  cronDetailStatus();
+  paintCronDrawer();
+  cronDetailFocus('[data-cron-act="run"]');
+}
+// 삭제 (asks once): the second press removes the job — the lane drops it at once, the drawer closes, a toast says
+// so. Never from under an open form: its typing is 저장's or 취소's first.
+async function cronDetailDelete() {
+  var g = cronDrawerGroup();
+  if (!cronDetailAllowed(g)) return;
+  var st = cronDetailState(g);
+  if (st.busy || st.loading || st.saving || st.draft) return;
+  if (!cronConfirmPress(st, 'delete')) return;
+  st.busy = 'delete';
+  st.say = '지우는 중…';
+  st.tone = '';
+  cronDetailStatus();
+  paintCronDrawer();
+  cronDetailFocus('[data-cron-act="delete"]');
+  var res = null;
+  var data = null;
+  try {
+    res = await cronDetailWrite('DELETE', '/api/dashboard/cron/' + encodeURIComponent(st.jobId), null);
+    data = await res.json().catch(function() { return null; });
+  } catch (_e) {}
+  st.busy = '';
+  if (_cronDetail !== st) return;
+  if (res && res.ok) {
+    var name = g.name;
+    _cronJobs = _cronJobs.filter(function(j) { return j.id !== st.jobId; });
+    _cronJobsRev++;
+    closeCronDrawer();
+    dashToast({ title: '크론 잡을 지웠어요', description: name, tone: 'success' });
+    loadCronJobs();
+    return;
+  }
+  st.say = cronDetailError(res, data, '지우지 못했어요');
+  st.tone = 'fail';
+  cronDetailStatus();
+  paintCronDrawer();
+  cronDetailFocus('[data-cron-act="delete"]');
 }
 
 // ── The drawer's live countdown (the Agent Queue grammar, #444 D3) ──

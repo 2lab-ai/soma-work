@@ -43,6 +43,8 @@ export interface KanbanCronRun {
   status: CronExecutionRecord['status'];
   executionPath: CronExecutionRecord['executionPath'];
   triggeredBy?: string;
+  /** Fired by hand (Slack ▶, `cron run`, 지금 실행) — the owner's press too; absent for a scheduled run. */
+  manual?: boolean;
   error?: string;
   session?: KanbanCronRunSession;
 }
@@ -156,6 +158,7 @@ export function buildCronJobsView(args: {
         status: record.status,
         executionPath: record.executionPath,
         ...(record.triggeredBy ? { triggeredBy: record.triggeredBy } : {}),
+        ...(record.manual ? { manual: true } : {}),
         ...(record.error ? { error: record.error } : {}),
         ...(session ? { session } : {}),
       };

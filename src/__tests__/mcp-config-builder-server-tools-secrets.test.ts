@@ -56,6 +56,23 @@ describe('server-tools wiring — secret store', () => {
     });
   });
 
+  // An environment user's session (an approved handoff of its skill, or a fire of its cron) is the one that approves,
+  // merges, logs in and writes to Cloudflare. Those tools refuse without a requester to record, so the session must
+  // get one: its own `env:<name>`, which only the host sets (no Slack ID contains ':').
+  it('passes a configured environment user as the requester', async () => {
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify({ 'server-tools': { dev2: { envUser: 'env:acme-dev2' } } }));
+    const config = await new McpConfigBuilder(mcpManager()).buildConfig({ channel: 'C1', user: 'env:acme-dev2' });
+    const env = config.mcpServers?.['server-tools']?.env as Record<string, string> | undefined;
+    expect(env?.SOMA_REQUESTER).toBe('env:acme-dev2');
+  });
+
+  it('passes no requester for an env: name this host does not configure', async () => {
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify({ 'server-tools': { dev2: { envUser: 'env:acme-dev2' } } }));
+    const config = await new McpConfigBuilder(mcpManager()).buildConfig({ channel: 'C1', user: 'env:other' });
+    const env = config.mcpServers?.['server-tools']?.env as Record<string, string> | undefined;
+    expect(env?.SOMA_REQUESTER).toBeUndefined();
+  });
+
   it('passes no requester that is not a Slack user ID', async () => {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify({ 'server-tools': { dev2: { ssh: { host: 'dev2' } } } }));
     const config = await new McpConfigBuilder(mcpManager()).buildConfig({ channel: 'C1', user: 'U1\nforged' });

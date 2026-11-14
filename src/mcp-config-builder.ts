@@ -22,6 +22,7 @@ import { substituteEnvVars } from './config-env-substitution';
 import { getArtifactStore } from './conversation/artifacts';
 import { devopsPendingDir } from './devops/broker-approvals';
 import { CONFIG_FILE, DATA_DIR, SECRETS_DIR } from './env-paths';
+import { isEnvironmentUser } from './env-users';
 import { NATIVE_BYPASS_TOOLS } from './hooks/bypass-permission-guard';
 import {
   type InternalMcpServerCommand,
@@ -778,8 +779,12 @@ export class McpConfigBuilder {
    */
   private buildServerToolsServer(slackContext?: SlackContext): Record<string, any> {
     const command = this.getInternalServerCommand('server-tools');
-    // The person this session runs for, as Slack signed it — only a well-formed user ID reaches the ledger.
-    const requester = slackContext?.user && /^[UW][A-Z0-9]+$/.test(slackContext.user) ? slackContext.user : undefined;
+    // Who this session runs for, as recorded in the audit ledger: a well-formed Slack user ID (as Slack signed it), or
+    // a configured environment user (`env:<name>`). Only the host starts an environment user's session — an approved
+    // handoff of its skill or a fire of its cron — and no Slack ID contains ':'. Without a requester, gh_pr approve and
+    // merge, login and cf_api writes refuse, so an environment user could not do the work it exists for.
+    const user = slackContext?.user;
+    const requester = user && (/^[UW][A-Z0-9]+$/.test(user) || isEnvironmentUser(user)) ? user : undefined;
     return {
       command: command.command,
       args: command.args,

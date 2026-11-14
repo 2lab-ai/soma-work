@@ -15,7 +15,7 @@ const logger = new StderrLogger('CronStorage');
 
 // --- Types ---
 
-/** Execution mode: default queues behind active sessions; fastlane always opens a new thread. */
+/** Execution mode: default runs in the job's own session (its thread, or one its earlier fire opened), queued while busy; fastlane always opens a new thread. */
 export type CronMode = 'default' | 'fastlane';
 
 /** Where cron results are delivered. */
@@ -115,6 +115,8 @@ export interface CronExecutionRecord {
    * the owner firing their own job.
    */
   triggeredBy?: string;
+  /** Fired by hand (Slack ▶, `cron run`, the dashboard's 지금 실행) — the owner's own press too. Absent for a scheduled fire. */
+  manual?: true;
 }
 
 interface CronHistoryData {

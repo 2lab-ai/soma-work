@@ -2017,6 +2017,16 @@ async function start() {
           const job = cronStorage.getAll().find((j) => j.id === id);
           return job ? cronStorage.updateJob(job.owner, job.name, patch) : null;
         },
+        // 지금 실행 fires through the scheduler started below (the Slack card's ▶ path), as the job's owner.
+        runJob: (id, triggeredBy) => {
+          const job = cronStorage.getAll().find((j) => j.id === id);
+          if (!job || !cronScheduler) return null;
+          return cronScheduler.runJobNow(job.owner, job.name, { triggeredBy });
+        },
+        deleteJob: (id) => {
+          const job = cronStorage.getAll().find((j) => j.id === id);
+          return job ? cronStorage.removeJob(job.owner, job.name) : false;
+        },
       });
 
       const threadCreator = async (channel: string, text: string): Promise<string | undefined> => {
