@@ -39,7 +39,17 @@ const requiredRootFiles = [
   'infra/slack/slack-app-manifest.json',
 ];
 
-const protectedPaths = ['.env', '.system.prompt', 'config.json', 'mcp-servers.json', 'data/', 'logs/', '.claude/'];
+// `secrets/` is the secret store config.json's `{"$secret": name}` references resolve from (env-access WU1).
+const protectedPaths = [
+  '.env',
+  '.system.prompt',
+  'config.json',
+  'mcp-servers.json',
+  'data/',
+  'logs/',
+  '.claude/',
+  'secrets/',
+];
 
 let failures = 0;
 
