@@ -28,6 +28,12 @@ ssot = [`ssot.md`](ssot.md)
 - stage0 크론 owner는 `env:<org>-stage0` (첫 실행 11-14 19:00 UTC).
 - 워크플로 점검에서 나온 것: 크론 tick이 새 스레드 크론의 턴 전체를 기다려, 20:00 UTC 정기 작업이 6–8시간 도는 동안
   다른 크론 약 10개가 catch-up 창(60분) 밖으로 밀려 매일 사라졌다(11-07부터) → PR #1275.
+- 11-14 사고: 1단계 실행 뒤 플릿 배포가 `secrets/`를 통째로 지웠다(`deploy/protected-paths.txt`에 없었다, WU1부터).
+  비밀을 못 푼 dev2 · stage0이 server-tools에서 빠져 dashboard에서 띄운 QA가 `Unknown server: dev2`로 멈췄다 → PR #1290
+  (목록에 `secrets/` + 동작 테스트, rsync 제외 패턴을 최상위로 고정 — `data/`가 ui-ux 스킬의 `data/`까지 빼고 있었다).
+  운영자 스크립트는 배포본 목록에 `secrets/`가 없으면 1단계를 거부하고, 새 Cloudflare 토큰이 살아 있으면 옛 `soma-env-<env>-*`를 지운다.
+- 같은 QA가 Z 세션(샌드박스)에서 돈 이유: 대시보드 `$` 메뉴에 환경 유저 스킬이 없어 환경 플러그인 스킬(`$<org>-env:post-deploy`)을 골랐다
+  → PR #1291(메뉴에 `$<env>:<skill>`을 환경 이름 묶음으로). 손으로 친 `$<env>:<skill>`은 대시보드에서도 이미 핸드오프된다.
 
 ## 열린 질문
 
@@ -78,5 +84,5 @@ WU0–WU5 · WU6a · #1242 · #1241 머지(2026-11-13). dev는 v0.3.32로 롤백
 1. 샌드박스 권한 번들(sandbox off를 능력별로 나눠 어드민이 유저 · 어드민 그룹 · 전체에 grant) — 플랜 A/B 유저 선택 대기.
 2. 운영자: 고객 dev 호스트 `config.json` `server-tools.<dev2|stage0>`에 `envUser` · `skills` · `github`(`$secret` · `repos` · 조건표 · `readRefs` = 통합·배포 브랜치) · `web.logins` · `cloudflare`(`$secret` · `zones`, 필요하면 `parts` — rulesets · firewall · filters · pagerules · custom_hostnames · healthchecks는 다른 시스템 자격이 담길 수 있어 opt-in), 고객 스킬 저장소 QA 프로필 `github.server` · `qaEnv.logins`, 토큰 · 비밀번호 → `secrets/`.
 3. 라이브: 비어드민 `$<env>:post-deploy` → 어드민 카드 4버튼 → "환경 전체 항상" → 다음 카드 0장 · dev2 배포 → QA 리포트(비밀번호 노출 0).
-4. 운영자(고객 dev 호스트 하나 — owner-mac에는 브로커 없음): 운영자 스크립트 1단계(토큰 → `secrets/`, 환경별 Cloudflare 토큰, config 참조; 브로커 유지) → #1286 배포 뒤 환경 유저의 `gh_pr` 쓰기 첫 성공(`env-audit.jsonl` done) → 2단계 `--uninstall`(브로커 Slack 봇 토큰 revoke, `uninstall.sh --purge`, launchd not found) → #1253(WU6b) 머지 → #1214 닫기 → 가드의 브로커 경로 정리.
+4. 운영자(고객 dev 호스트 하나 — owner-mac에는 브로커 없음): #1290 배포 → 운영자 스크립트 1단계 다시(토큰 → `secrets/`, 환경별 Cloudflare 토큰, config 참조; 브로커 유지) → #1286 배포 뒤 환경 유저의 `gh_pr` 쓰기 첫 성공(`env-audit.jsonl` done) → 2단계 `--uninstall`(브로커 Slack 봇 토큰 revoke, `uninstall.sh --purge`, launchd not found) → #1253(WU6b) 머지 → #1214 닫기 → 가드의 브로커 경로 정리.
 5. 원격 셸 금지 오탐: 셸 파서로 좁히는 #1245는 리뷰마다 새 우회가 나와 보류(draft). 경계를 샌드박스로 옮기는 #1255로 간다.
