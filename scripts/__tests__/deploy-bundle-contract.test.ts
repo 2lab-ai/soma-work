@@ -60,8 +60,52 @@ describe('deploy bundle contract', () => {
         'data/',
         'logs/',
         '.claude/',
+        // The secret store (`<config dir>/secrets/`, env-access WU1): `{"$secret": name}` in config.json resolves
+        // from it, and only an operator writes it. A deploy that removed it dropped every server whose secret no
+        // longer resolved from server-tools ("Unknown server").
+        'secrets/',
       ]),
     );
+  });
+
+  // The list above is only what sync-bundle.sh reads. This runs the script itself against a target that holds
+  // runtime state, the way a fleet deploy does, and checks what is left.
+  it('a deploy sync keeps the secret store, config and data, and replaces the code', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sync-bundle-'));
+    try {
+      const source = path.join(tmp, 'bundle');
+      const target = path.join(tmp, 'target');
+      fs.mkdirSync(path.join(source, 'deploy'), { recursive: true });
+      fs.copyFileSync(
+        path.join(repoRoot, 'deploy/protected-paths.txt'),
+        path.join(source, 'deploy/protected-paths.txt'),
+      );
+      fs.mkdirSync(path.join(source, 'dist'), { recursive: true });
+      fs.writeFileSync(path.join(source, 'dist/index.js'), 'new');
+
+      fs.mkdirSync(path.join(target, 'secrets'), { recursive: true });
+      fs.writeFileSync(path.join(target, 'secrets/gh-env'), 'token-value\n', { mode: 0o600 });
+      fs.mkdirSync(path.join(target, 'data'), { recursive: true });
+      fs.writeFileSync(path.join(target, 'data/state.json'), '{}');
+      fs.writeFileSync(path.join(target, 'config.json'), '{}');
+      fs.mkdirSync(path.join(target, 'dist'), { recursive: true });
+      fs.writeFileSync(path.join(target, 'dist/index.js'), 'old');
+      fs.mkdirSync(path.join(target, 'stale-code'), { recursive: true });
+
+      const run = spawnSync('bash', [path.join(repoRoot, 'scripts/deploy/sync-bundle.sh'), target, source], {
+        encoding: 'utf8',
+      });
+      expect(run.status, run.stderr).toBe(0);
+
+      expect(fs.readFileSync(path.join(target, 'secrets/gh-env'), 'utf8')).toBe('token-value\n');
+      expect(fs.statSync(path.join(target, 'secrets/gh-env')).mode & 0o777).toBe(0o600);
+      expect(fs.existsSync(path.join(target, 'data/state.json'))).toBe(true);
+      expect(fs.existsSync(path.join(target, 'config.json'))).toBe(true);
+      expect(fs.readFileSync(path.join(target, 'dist/index.js'), 'utf8')).toBe('new');
+      expect(fs.existsSync(path.join(target, 'stale-code'))).toBe(false);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   // I-4: the credential/symlink gate used to live only in a SEPARATE npm
