@@ -223,16 +223,19 @@ export class CronScheduler {
     const now = new Date();
     try {
       logger.info('Manual cron fire', { name: job.name, owner: job.owner, triggeredBy: opts?.triggeredBy });
+      // A fire by hand always carries who pressed it (the owner when the caller did not say), so the history
+      // marks it manual; recordExecution keeps the name only when it is not the owner.
+      const pressedBy = opts?.triggeredBy ?? job.owner;
       // Delivery helpers record failures internally and report via the return
       // status — surface that here so the ▶ button never claims success on a
       // swallowed Slack delivery error.
-      const result = await this.executeJob(job, now, opts?.triggeredBy);
+      const result = await this.executeJob(job, now, pressedBy);
       return result.ok
         ? { ok: true, message: result.detail }
         : { ok: false, message: `delivery failed (${result.detail}) — cron history 확인` };
     } catch (error: any) {
       logger.error('Manual cron fire failed', { name: job.name, error: error?.message });
-      this.recordExecution(job, 'failed', 'idle_inject', undefined, error?.message, opts?.triggeredBy);
+      this.recordExecution(job, 'failed', 'idle_inject', undefined, error?.message, opts?.triggeredBy ?? job.owner);
       return { ok: false, message: error?.message ?? 'unknown error' };
     }
   }
@@ -543,7 +546,19 @@ export class CronScheduler {
       return;
     }
 
-    const job = queue.shift()!;
+    // The job as it is now: one deleted while its fire waited does not run (the next queued one does), and an
+    // edited one runs as edited. A storage that cannot be read keeps the queued copy — a read error drops nothing.
+    let job: CronJob | undefined;
+    while (!job && queue.length > 0) {
+      const queued = queue.shift()!;
+      job = this.currentJob(queued);
+      if (!job)
+        logger.info('Queued cron dropped — the job was deleted while it waited', { name: queued.name, sessionKey });
+    }
+    if (!job) {
+      this.pendingCronQueue.delete(sessionKey);
+      return;
+    }
     logger.info('Draining queued cron on idle', { name: job.name, sessionKey, remaining: queue.length });
 
     // The session this fire was queued behind — the one its history row links
@@ -587,6 +602,19 @@ export class CronScheduler {
       });
     } else {
       this.pendingCronQueue.delete(sessionKey);
+    }
+  }
+
+  /** The stored job a queued fire belongs to, as it is now; undefined when it was deleted. */
+  private currentJob(queued: CronJob): CronJob | undefined {
+    try {
+      return this.deps.storage.getAll().find((j) => j.id === queued.id);
+    } catch (error: any) {
+      logger.warn('Cron storage unreadable at drain — running the queued copy', {
+        name: queued.name,
+        error: error?.message,
+      });
+      return queued;
     }
   }
 
@@ -760,6 +788,8 @@ export class CronScheduler {
         // Only recorded for a non-owner fire — an owner firing their own job is
         // the default and needs no attribution noise.
         triggeredBy: triggeredBy && triggeredBy !== job.owner ? triggeredBy : undefined,
+        // A fire with a presser is a fire by hand (runJobNow always passes one); a scheduled fire has none.
+        ...(triggeredBy !== undefined ? { manual: true as const } : {}),
       });
     } catch (err: any) {
       logger.warn('Failed to record execution history', { name: job.name, error: err?.message });
