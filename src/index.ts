@@ -1610,7 +1610,8 @@ async function start() {
           slackApi: userActionSlackApi,
           persistAndBroadcast: (key) => claudeHandler.getSessionRegistry().persistAndBroadcast(key),
           getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
-          mayAnswer: (key, session, actor) => instructionApprovals.allows({ sessionKey: key, session, senderId: actor }),
+          mayAnswer: (key, session, actor) =>
+            instructionApprovals.allows({ sessionKey: key, session, senderId: actor }),
           notify: (key, _session, text, actor) => getUserActionNotifier()?.(key, text, actor) ?? Promise.resolve(false),
         },
       });
