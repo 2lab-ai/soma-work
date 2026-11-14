@@ -187,7 +187,7 @@ describe('bar — 지금 실행 · 편집 · 삭제 above the facts, for whoever
 
   it('an armed 지금 실행 reads 한 번 더 눌러 실행 and turns primary', () => {
     const f = meta(OWNER);
-    f.__setState({ key: GROUP.key, jobId: 'job-1', job: null, armed: 'run', armedAt: Date.now() });
+    f.__setState({ key: GROUP.key, jobId: 'job-1', job: null, armed: 'run', armSince: Date.now() });
     const html = f.renderCronDrawerMeta(GROUP, T0);
     expect(bar(html)).toEqual([
       ['run', '한 번 더 눌러 실행'],
@@ -201,13 +201,13 @@ describe('bar — 지금 실행 · 편집 · 삭제 above the facts, for whoever
 
   it('an armed 삭제 reads 한 번 더 눌러 삭제 (data-armed); a request in flight is busy and the others wait', () => {
     const f = meta(OWNER);
-    f.__setState({ key: GROUP.key, jobId: 'job-1', job: null, armed: 'delete', armedAt: Date.now() });
+    f.__setState({ key: GROUP.key, jobId: 'job-1', job: null, armed: 'delete', armSince: Date.now() });
     expect(bar(f.renderCronDrawerMeta(GROUP, T0))).toContainEqual(['delete', '한 번 더 눌러 삭제']);
     expect(f.renderCronDrawerMeta(GROUP, T0)).toMatch(
       /data-cron-act="delete" data-armed aria-describedby="cron-armed-hint"/,
     );
     // An arm older than 4 s is spent.
-    f.__setState({ key: GROUP.key, jobId: 'job-1', job: null, armed: 'delete', armedAt: Date.now() - 5000 });
+    f.__setState({ key: GROUP.key, jobId: 'job-1', job: null, armed: 'delete', armSince: Date.now() - 5000 });
     expect(bar(f.renderCronDrawerMeta(GROUP, T0))).toContainEqual(['delete', '삭제']);
     f.__setState({ key: GROUP.key, jobId: 'job-1', job: null, busy: 'run' });
     const busy = f.renderCronDrawerMeta(GROUP, T0);
@@ -309,7 +309,7 @@ function actor(answers: Array<{ status: number; body: unknown } | 'offline'>, vi
 }
 /** The state after a first press a second ago: the next press is the decision. */
 function armedFor(a: ReturnType<typeof actor>, act: 'run' | 'delete', extra: Record<string, unknown> = {}) {
-  a.f.__setState({ key: GROUP.key, jobId: 'job-1', job: null, armed: act, armedAt: Date.now() - 1000, ...extra });
+  a.f.__setState({ key: GROUP.key, jobId: 'job-1', job: null, armed: act, armSince: Date.now() - 1000, ...extra });
 }
 
 describe('confirm — 지금 실행 and 삭제 ask once', () => {
@@ -331,7 +331,7 @@ describe('confirm — 지금 실행 and 삭제 ask once', () => {
 
     it(`${act}: armed, a line under the row says what the second press does, and describes the button`, () => {
       const f = load<any>(META_FNS, META_VARS, { ...FACT_ENV, ...OWNER });
-      f.__setState({ key: GROUP.key, jobId: 'job-1', job: null, armed: act, armedAt: Date.now() });
+      f.__setState({ key: GROUP.key, jobId: 'job-1', job: null, armed: act, armSince: Date.now() });
       const html: string = f.renderCronDrawerMeta(GROUP, T0);
       expect(html).toContain(`data-cron-act="${act}" data-armed aria-describedby="cron-armed-hint">${label}<`);
       expect(html).toContain(`</div><p class="cron-actions-hint" id="cron-armed-hint">${said}</p>`);
@@ -352,7 +352,7 @@ describe('confirm — 지금 실행 and 삭제 ask once', () => {
     it(`${act}: the arm is spent after 4 s — the label and the line go back`, async () => {
       const a = actor([]);
       await a.f[fn]();
-      a.f.__state().armedAt -= 5000;
+      a.f.__state().armSince -= 5000;
       const paints = a.paintCronDrawer.mock.calls.length;
       a.timers[0]();
       expect(a.f.__state().armed).toBe('');

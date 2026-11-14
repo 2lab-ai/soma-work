@@ -22607,21 +22607,21 @@ function cronActionBar(g) {
 }
 // The press 지금 실행 or 삭제 is waiting on: armed within the last 4 s, else nothing.
 function cronArmed(st) {
-  return st && st.armed && Date.now() - (st.armedAt || 0) < 4000 ? st.armed : '';
+  return st && st.armed && Date.now() - (st.armSince || 0) < 4000 ? st.armed : '';
 }
 // A press that asks once. The first arms it — its label says to press again, the line under the row says what
 // follows (cronActionBar) — and answers false; the second within 4 s answers true. A second press sooner than 0.4 s
 // is the same click doubled, not a decision: it is ignored, and the press stays armed. The arm is spent after 4 s
 // (the label and the line go back). An earlier result in the status line goes: it is not about this press.
 function cronConfirmPress(st, act) {
-  var since = Date.now() - (st.armedAt || 0);
+  var since = Date.now() - (st.armSince || 0);
   if (st.armed === act && since < 4000) {
     if (since < 400) return false;
     st.armed = '';
     return true;
   }
   st.armed = act;
-  st.armedAt = Date.now();
+  st.armSince = Date.now();
   st.say = '';
   st.tone = '';
   cronDetailStatus();
