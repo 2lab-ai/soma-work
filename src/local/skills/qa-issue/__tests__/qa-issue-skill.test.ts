@@ -242,7 +242,9 @@ describe('qa-issue reads a job log with run view, never through api', () => {
 
   it('forbids the api form and says why', () => {
     expect(jobLogs).toContain('never `api …/actions/jobs/<job id>/logs`');
-    expect(jobLogs).toMatch(/gh refuses to print it[^\n]*the policy refuses the flag/);
+    expect(jobLogs).toContain('gh refuses to print it (the log holds terminal escape sequences)');
+    // The broker's gh classifier refused the override flag; it went with the broker (#1214). No policy says so now.
+    expect(jobLogs).not.toContain('the policy refuses the flag');
     expect(md).not.toMatch(/`repos\/[^`]*\/actions\/jobs\//);
   });
 

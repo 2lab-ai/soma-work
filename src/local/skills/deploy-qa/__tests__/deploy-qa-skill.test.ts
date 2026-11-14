@@ -11,10 +11,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
  *
  *  - In such a session the `gh` CLI's network calls fail TLS verification, and
  *    the tool policy denies `gh auth token` to everyone (devops-secret-guard).
- *    So every GitHub read goes through the devops-tools `gh_read` tool, which
- *    runs gh through a broker outside the sandbox and never hands out a token.
- *  - gh_read reports a failed gh as a normal result with a non-zero
- *    `exitCode`, so the skills define what counts as an answer.
+ *    So a GitHub read is the environment's server-tools `gh_read` (with the
+ *    profile's `github.server`; it runs outside the sandbox with the
+ *    environment's token, which no session sees), else `gh` in Bash in an admin
+ *    session, else `missing: github`.
+ *  - The skills define what counts as an answer (an untruncated `gh_read`
+ *    result, a `gh` that exits 0).
  *  - The preflight answers `partial: <checks>` when only the adapter and/or
  *    lockDir checks fail, and the run then QA's in a defined reduced mode
  *    instead of not running at all.
