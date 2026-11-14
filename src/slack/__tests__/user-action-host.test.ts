@@ -5,7 +5,7 @@ import {
 } from 'somalib/user-action/user-action';
 import { describe, expect, it, vi } from 'vitest';
 import type { ConversationSession } from '../../types';
-import { answerUserAction, captureUserActionToolResults, resolveSessionUserAction } from '../user-action-host';
+import { answerUserAction, captureUserActionToolResults } from '../user-action-host';
 
 function action(id: string): UserActionRecord {
   const script = "open 'https://example.com/verify'";
@@ -90,7 +90,9 @@ describe('captureUserActionToolResults', () => {
   it('keeps the action for the dashboard when the Slack post fails, and with no channel posts nothing', async () => {
     const session = {} as ConversationSession;
     const d = deps();
-    d.slackApi.postMessage.mockRejectedValueOnce(new Error('slack down'));
+    d.slackApi.postMessage
+      .mockRejectedValueOnce(new Error('slack down'))
+      .mockRejectedValueOnce(new Error('still down'));
     await captureUserActionToolResults({
       toolResults: [toolResult(action('ua_3'))],
       session,
@@ -117,47 +119,54 @@ describe('captureUserActionToolResults', () => {
   });
 });
 
-describe('resolveSessionUserAction', () => {
-  it('marks it, rewrites the Slack card without buttons, and broadcasts', async () => {
-    const session = {
-      channelId: 'C1',
-      userActions: [{ ...action('ua_1'), slackTs: '111.222' }],
-    } as unknown as ConversationSession;
+describe('captureUserActionToolResults — ordering and retries (review)', () => {
+  it('stores the action before its card is posted, so a press during the post finds it', async () => {
+    const session = {} as ConversationSession;
     const d = deps();
-    const r = await resolveSessionUserAction({
+    let seenDuringPost: string[] | undefined;
+    d.slackApi.postMessage.mockImplementationOnce(async () => {
+      seenDuringPost = session.userActions?.map((a) => a.id);
+      return { ts: '9.9' };
+    });
+    await captureUserActionToolResults({
+      toolResults: [toolResult(action('ua_r'))],
       session,
       sessionKey: 'k',
-      id: 'ua_1',
-      status: 'done',
-      by: 'U1',
-      at: 50,
+      channel: 'C1',
       deps: d,
     });
-    expect(r.ok).toBe(true);
-    expect(session.userActions?.[0]).toMatchObject({ status: 'done', resolvedBy: 'U1', resolvedAt: 50 });
-    expect(d.slackApi.updateMessage).toHaveBeenCalledTimes(1);
-    const [channel, ts, , , attachments] = d.slackApi.updateMessage.mock.calls[0] as any[];
-    expect([channel, ts]).toEqual(['C1', '111.222']);
-    expect(attachments[0].blocks.some((b: any) => b.type === 'actions')).toBe(false);
-    expect(d.persistAndBroadcast).toHaveBeenCalledWith('k');
+    expect(seenDuringPost).toEqual(['ua_r']);
+    expect(session.userActions?.[0].slackTs).toBe('9.9');
   });
 
-  it('a second answer changes nothing', async () => {
-    const session = { userActions: [{ ...action('ua_1'), status: 'done' }] } as unknown as ConversationSession;
+  it('an answer that lands during the post is kept when the ts is stamped', async () => {
+    const session = {} as ConversationSession;
     const d = deps();
-    const r = await resolveSessionUserAction({
+    d.slackApi.postMessage.mockImplementationOnce(async () => {
+      session.userActions = session.userActions?.map((a) => ({ ...a, status: 'done' as const, resolvedBy: 'U1' }));
+      return { ts: '9.9' };
+    });
+    await captureUserActionToolResults({
+      toolResults: [toolResult(action('ua_s'))],
       session,
       sessionKey: 'k',
-      id: 'ua_1',
-      status: 'failed',
-      by: 'U2',
-      at: 60,
+      channel: 'C1',
       deps: d,
     });
-    expect(r.ok).toBe(false);
-    expect(session.userActions?.[0].status).toBe('done');
-    expect(d.slackApi.updateMessage).not.toHaveBeenCalled();
-    expect(d.persistAndBroadcast).not.toHaveBeenCalled();
+    expect(session.userActions?.[0]).toMatchObject({ status: 'done', resolvedBy: 'U1', slackTs: '9.9' });
+  });
+
+  it('retries a failed post once, and a replayed result is not posted again', async () => {
+    const session = {} as ConversationSession;
+    const d = deps();
+    d.slackApi.postMessage.mockRejectedValueOnce(new Error('timeout'));
+    const tr = toolResult(action('ua_t'));
+    await captureUserActionToolResults({ toolResults: [tr], session, sessionKey: 'k', channel: 'C1', deps: d });
+    expect(d.slackApi.postMessage).toHaveBeenCalledTimes(2);
+    expect(session.userActions?.[0].slackTs).toBe('111.222');
+    await captureUserActionToolResults({ toolResults: [tr], session, sessionKey: 'k', channel: 'C1', deps: d });
+    expect(d.slackApi.postMessage).toHaveBeenCalledTimes(2);
+    expect(session.userActions).toHaveLength(1);
   });
 });
 
@@ -202,17 +211,41 @@ describe('answerUserAction — one path for the Slack button and the dashboard',
     expect(notify).not.toHaveBeenCalled();
   });
 
-  it('when the agent cannot be told, puts it back to pending with its buttons, so it can be answered again', async () => {
+  it('records only once the agent took it: card rewritten without buttons, persisted, broadcast', async () => {
+    const { session, d, args } = setup();
+    let writtenWhileTelling = 0;
+    args.deps.notify = vi.fn(async () => {
+      // While the agent is being told, nothing has been written yet — but a second press already sees it answered.
+      writtenWhileTelling = d.slackApi.updateMessage.mock.calls.length + d.persistAndBroadcast.mock.calls.length;
+      expect(session.userActions?.[0].status).toBe('done');
+      return true;
+    });
+    expect((await answerUserAction(args)).ok).toBe(true);
+    expect(writtenWhileTelling).toBe(0);
+    const [channel, ts, , , attachments] = d.slackApi.updateMessage.mock.calls[0] as any[];
+    expect([channel, ts]).toEqual(['C1', '111.222']);
+    expect(attachments[0].blocks.some((b: any) => b.type === 'actions')).toBe(false);
+    expect(d.persistAndBroadcast).toHaveBeenCalledWith('k');
+  });
+
+  it('when the agent cannot be told, nothing is written: pending again, card untouched, answerable again', async () => {
     const { session, d, args } = setup({ delivered: false });
     expect(await answerUserAction(args)).toEqual({ ok: false, code: 'not-delivered' });
     expect(session.userActions?.[0].status).toBe('pending');
-    // The card was rewritten twice: answered, then back with its buttons.
-    const calls = d.slackApi.updateMessage.mock.calls as any[];
-    const last = calls[calls.length - 1];
-    expect(last[4][0].blocks.some((b: any) => b.type === 'actions')).toBe(true);
-    // And a second try goes through.
+    expect(session.userActions?.[0]).not.toHaveProperty('resolvedBy');
+    expect(d.slackApi.updateMessage).not.toHaveBeenCalled();
+    expect(d.persistAndBroadcast).not.toHaveBeenCalled();
     const again = await answerUserAction({ ...args, deps: { ...args.deps, notify: vi.fn(async () => true) } });
     expect(again.ok).toBe(true);
+  });
+
+  it('a notifier that throws counts as not delivered', async () => {
+    const { session, args } = setup();
+    args.deps.notify = vi.fn(async () => {
+      throw new Error('pipeline down');
+    });
+    expect(await answerUserAction(args)).toEqual({ ok: false, code: 'not-delivered' });
+    expect(session.userActions?.[0].status).toBe('pending');
   });
 
   it('a second answer is refused as already answered; an unknown one as gone', async () => {

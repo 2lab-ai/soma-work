@@ -26,6 +26,8 @@ export const USER_ACTION_LIMITS = {
   /** A script the human can read in one glance and paste in one go. */
   scriptLines: 8,
   scriptChars: 600,
+  /** The script as Slack shows it (`&<>` escaped) must fit one section with its heading — it is never cut. */
+  scriptShownChars: 2800,
 } as const;
 
 /** POSIX shells only: the check (syntax, rules, irreversible actions) reads POSIX shell. */
@@ -176,6 +178,21 @@ export function validateInstructUserArgs(args: unknown): ValidateInstructUserRes
         'and hand the human the one line that runs it.',
     );
   }
+  const shown = script.replace(/&/g, '&amp;').replace(/[<>]/g, '&lt;').length;
+  if (shown > USER_ACTION_LIMITS.scriptShownChars) {
+    return fail(
+      'SCRIPT_TOO_LONG',
+      `script is ${shown} chars once escaped for Slack (max ${USER_ACTION_LIMITS.scriptShownChars}) — too many & < > ` +
+        'to show it whole; shorten it or put it in a file and hand over the line that runs it',
+    );
+  }
+  if (script.includes('```')) {
+    // Slack shows the script in a code fence; a fence inside it would make the shown script differ from the checked one.
+    return fail(
+      'INVALID_ARGS',
+      'script must not contain ``` — the card shows it in a code block; write it another way',
+    );
+  }
   const code = codeLines(script);
   if (code.length === 0) return fail('NOT_A_SCRIPT', 'script has no command — only comments or blank lines');
   if (/^(?:https?:\/\/|www\.)/i.test(code[0])) {
@@ -185,7 +202,10 @@ export function validateInstructUserArgs(args: unknown): ValidateInstructUserRes
     );
   }
   // Every field is posted to Slack and the dashboard: none may carry a credential. The message never repeats it.
-  const posted: Array<[string, string]> = [['script', script], ...TEXT_FIELDS.map((f) => [f.key, out[f.key] ?? ''] as [string, string])];
+  const posted: Array<[string, string]> = [
+    ['script', script],
+    ...TEXT_FIELDS.map((f) => [f.key, out[f.key] ?? ''] as [string, string]),
+  ];
   const leaking = posted.find(([, text]) => SECRET_PATTERNS.some((re) => re.test(text)));
   if (leaking) {
     return fail(
@@ -246,7 +266,7 @@ function scan(script: string, depth = 0): { segments: Segment[]; redirects: stri
   let inWord = false;
   let quote: '' | "'" | '"' = '';
   let pendingRedirect = false;
-  const heredocs: Array<{ tag: string; stripTabs: boolean }> = [];
+  const heredocs: Array<{ tag: string; stripTabs: boolean; quoted: boolean }> = [];
 
   const endWord = () => {
     if (!inWord) return;
@@ -274,6 +294,35 @@ function scan(script: string, depth = 0): { segments: Segment[]; redirects: stri
     word += '$()';
     inWord = true;
     return end;
+  };
+  /** Read only the command substitutions of `text` (an unquoted heredoc body) as commands. */
+  const substitutionsIn = (text: string) => {
+    if (depth >= 4) return;
+    for (let k = 0; k < text.length; k++) {
+      if (text[k] === '\\') {
+        k++;
+        continue;
+      }
+      let from = -1;
+      let end = -1;
+      if (text[k] === '$' && text[k + 1] === '(') {
+        from = k + 2;
+        let level = 1;
+        for (end = from; end < text.length; end++) {
+          if (text[end] === '(') level++;
+          else if (text[end] === ')' && --level === 0) break;
+        }
+      } else if (text[k] === '`') {
+        from = k + 1;
+        end = text.indexOf('`', from);
+        if (end < 0) end = text.length;
+      }
+      if (from < 0) continue;
+      const inner = scan(text.slice(from, end), depth + 1);
+      segments.push(...inner.segments);
+      redirects.push(...inner.redirects);
+      k = end;
+    }
   };
   /** The index of the `)` closing a `$(` whose body starts at `from` (nesting counted), or the end. */
   const closeParen = (from: number): number => {
@@ -331,7 +380,7 @@ function scan(script: string, depth = 0): { segments: Segment[]; redirects: stri
       const m = /^<<(-?)[ \t]*(['"]?)([A-Za-z_][\w-]*)\2/.exec(script.slice(i));
       if (m) {
         endWord();
-        heredocs.push({ tag: m[3], stripTabs: m[1] === '-' });
+        heredocs.push({ tag: m[3], stripTabs: m[1] === '-', quoted: m[2] !== '' });
         i += m[0].length - 1;
         continue;
       }
@@ -357,12 +406,20 @@ function scan(script: string, depth = 0): { segments: Segment[]; redirects: stri
       // Skip each pending heredoc's body, in order, up to the line holding only its tag.
       let j = i + 1;
       for (const doc of heredocs.splice(0)) {
+        const bodyStart = j;
+        let bodyEnd = script.length;
         while (j < script.length) {
           const next = script.indexOf('\n', j);
           const line = script.slice(j, next < 0 ? script.length : next);
+          const lineStart = j;
           j = next < 0 ? script.length : next + 1;
-          if ((doc.stripTabs ? line.replace(/^\t+/, '') : line) === doc.tag) break;
+          if ((doc.stripTabs ? line.replace(/^\t+/, '') : line) === doc.tag) {
+            bodyEnd = lineStart;
+            break;
+          }
         }
+        // An unquoted tag (`<<EOF`) expands its body: `$(…)` and backticks there run. A quoted one (`<<'EOF'`) does not.
+        if (!doc.quoted) substitutionsIn(script.slice(bodyStart, bodyEnd));
       }
       i = j - 1;
       continue;
@@ -383,7 +440,21 @@ function scan(script: string, depth = 0): { segments: Segment[]; redirects: stri
 }
 
 /** Shell words that lead into the command after them (`if sudo rm …`, `then echo …`) or close a block (`fi`). */
-const LEAD_KEYWORDS = new Set(['!', '{', '}', 'if', 'elif', 'then', 'else', 'while', 'until', 'do', 'fi', 'done', 'esac']);
+const LEAD_KEYWORDS = new Set([
+  '!',
+  '{',
+  '}',
+  'if',
+  'elif',
+  'then',
+  'else',
+  'while',
+  'until',
+  'do',
+  'fi',
+  'done',
+  'esac',
+]);
 /** Shell words whose segment is a header, not a command (`for x in a b`, `case $x in`, `select x in …`). */
 const HEADER_KEYWORDS = new Set(['for', 'case', 'select', 'function', 'in']);
 
@@ -492,7 +563,9 @@ export function inspectUserActionScript(
       label: `되돌릴 수 없음: ${irreversible.label}`,
     });
   }
-  if (sudo) {
+  // The word anywhere a command can stand — also as an argument (`xargs sudo rm`, `find -exec sudo …`): a false
+  // caution costs a second look, a missed sudo a false pass.
+  if (sudo || /(?:^|[\s;&|(`'"=])(?:sudo|doas)(?=\s|$)/m.test(script)) {
     add({ id: 'sudo', level: 'caution', label: '관리자 권한(sudo)으로 실행함', detail: '비밀번호를 물을 수 있다.' });
   }
 

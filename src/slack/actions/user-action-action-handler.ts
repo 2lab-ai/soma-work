@@ -1,13 +1,20 @@
 import { Logger } from '../../logger';
 import type { ConversationSession } from '../../types';
 import { parseUserActionButtonValue, USER_ACTION_DONE_ACTION_ID } from '../user-action-card';
-import { type AnswerUserActionCode, answerUserAction, type UserActionHostDeps } from '../user-action-host';
+import {
+  type AnswerUserActionCode,
+  answerUserAction,
+  getUserActionNotifier,
+  type UserActionHostDeps,
+} from '../user-action-host';
 import type { MessageHandler, RespondFn, SayFn } from './types';
 
-export const USER_ACTION_OWNER_ONLY_TEXT = '이 사용자 작업은 세션 소유자(또는 승인된 사람)만 완료로 표시할 수 있습니다.';
+export const USER_ACTION_OWNER_ONLY_TEXT =
+  '이 사용자 작업은 세션 소유자(또는 승인된 사람)만 완료로 표시할 수 있습니다.';
 export const USER_ACTION_ALREADY_TEXT = '이미 표시된 사용자 작업입니다.';
 export const USER_ACTION_GONE_TEXT = '이 사용자 작업을 찾을 수 없습니다(세션이 끝났거나 오래된 카드).';
-export const USER_ACTION_NOT_DELIVERED_TEXT = '봇에게 전달하지 못해 대기 상태로 되돌렸습니다. 잠시 뒤 다시 눌러 주세요.';
+export const USER_ACTION_NOT_DELIVERED_TEXT =
+  '봇에게 전달하지 못해 대기 상태로 되돌렸습니다. 잠시 뒤 다시 눌러 주세요.';
 
 const REFUSAL_TEXT: Record<AnswerUserActionCode, string> = {
   gone: USER_ACTION_GONE_TEXT,
@@ -58,7 +65,13 @@ export class UserActionActionHandler {
         persistAndBroadcast: this.deps.persistAndBroadcast,
         getSession: this.deps.getSessionByKey,
         mayAnswer: this.deps.mayAnswer,
-        notify: (sessionKey, session, text, actor) => this.tellAgent(sessionKey, session, text, actor, body, channel),
+        // The host's notifier knows when the message is taken; without one (a bare harness) the message path is used.
+        notify: (sessionKey, session, text, actor) => {
+          const notifier = getUserActionNotifier();
+          return notifier
+            ? notifier(sessionKey, text, actor)
+            : this.tellAgent(sessionKey, session, text, actor, body, channel);
+        },
       },
     });
     if (!r.ok && channel) {

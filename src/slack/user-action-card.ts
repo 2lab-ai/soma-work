@@ -29,12 +29,39 @@ const RESOLVED = {
   failed: { icon: '❌', label: '안 됨', color: '#868686' },
 } as const;
 
-/** A section's text stays under Slack's 3000-character limit (escaping can grow it), so the post never fails on it. */
+/**
+ * Slack refuses a section over 3000 characters, and escaping grows text. Nothing is cut: a long text becomes several
+ * sections, split at line ends (a single longer line at the limit). The script never needs this — the MCP refuses one
+ * whose escaped form does not fit one section (USER_ACTION_LIMITS.scriptShownChars).
+ */
 const SECTION_MAX = 2900;
-const fit = (s: string) => (s.length > SECTION_MAX ? `${s.slice(0, SECTION_MAX - 1)}…` : s);
+function sections(text: string): any[] {
+  const chunks: string[] = [];
+  let current = '';
+  for (const line of text.split('\n')) {
+    let rest = line;
+    while (rest.length > SECTION_MAX) {
+      if (current) chunks.push(current);
+      current = '';
+      // Never inside an escape (`&amp;`): back up to its `&` when the cut would split one.
+      let cut = SECTION_MAX;
+      const amp = rest.lastIndexOf('&', cut - 1);
+      if (amp > cut - 6 && rest.indexOf(';', amp) >= cut) cut = amp;
+      chunks.push(rest.slice(0, cut));
+      rest = rest.slice(cut);
+    }
+    const next = current ? `${current}\n${rest}` : rest;
+    if (next.length > SECTION_MAX) {
+      chunks.push(current);
+      current = rest;
+    } else current = next;
+  }
+  if (current) chunks.push(current);
+  return chunks.map((t) => ({ type: 'section', text: { type: 'mrkdwn', text: t } }));
+}
 
-/** Text inside a code block: Slack still reads `&<>`, and a stray fence would close the block. */
-const codeBlock = (s: string) => `\`\`\`${esc(s).replace(/```/g, "'''")}\`\`\``;
+/** Text inside a code block: Slack still reads `&<>`. (The MCP refuses a script holding ``` — it would end the block.) */
+const codeBlock = (s: string) => `\`\`\`${esc(s)}\`\`\``;
 
 export interface UserActionButtonValue {
   sessionKey: string;
@@ -93,25 +120,14 @@ export function buildUserActionCard(
       : VERDICT[action.inspection.verdict].color;
 
   const blocks: any[] = [
-    { type: 'section', text: { type: 'mrkdwn', text: fit(head) } },
-    {
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: fit(
-          [`📍 *어디서:* \`${esc(action.host)}\` · ${esc(action.shell)}`, `❓ *왜:* ${esc(action.why)}`].join('\n'),
-        ),
-      },
-    },
-    { type: 'section', text: { type: 'mrkdwn', text: fit(`▶️ *실행할 스크립트*\n${codeBlock(action.script)}`) } },
-    {
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: fit([`📝 *바뀌는 것:* ${esc(action.effects)}`, `🎯 *성공하면:* ${esc(action.expect)}`].join('\n')),
-      },
-    },
-    { type: 'section', text: { type: 'mrkdwn', text: fit(inspectionLines(action.inspection).join('\n')) } },
+    ...sections(head),
+    ...sections(
+      [`📍 *어디서:* \`${esc(action.host)}\` · ${esc(action.shell)}`, `❓ *왜:* ${esc(action.why)}`].join('\n'),
+    ),
+    // The script whole, in one section — what the human runs is exactly what was checked.
+    { type: 'section', text: { type: 'mrkdwn', text: `▶️ *실행할 스크립트*\n${codeBlock(action.script)}` } },
+    ...sections([`📝 *바뀌는 것:* ${esc(action.effects)}`, `🎯 *성공하면:* ${esc(action.expect)}`].join('\n')),
+    ...sections(inspectionLines(action.inspection).join('\n')),
   ];
 
   if (resolved) {

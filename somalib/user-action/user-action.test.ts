@@ -6,10 +6,10 @@ import {
   parseUserActionRecord,
   resolveUserAction,
   restoreUserActions,
-  unresolveUserAction,
   USER_ACTION_LIMITS,
   USER_ACTIONS_KEPT,
   type UserActionSyntaxCheck,
+  unresolveUserAction,
   validateInstructUserArgs,
 } from './user-action';
 
@@ -98,13 +98,32 @@ describe('validateInstructUserArgs', () => {
     expect(validateInstructUserArgs({ ...base, script: 'TOKEN_FILE=/Users/me/.config/app.json ./run' }).ok).toBe(true);
   });
 
-  it.each(['title', 'host', 'why', 'expect', 'effects'])('rejects a credential in %s too — every field is posted', (field) => {
+  it.each([
+    'title',
+    'host',
+    'why',
+    'expect',
+    'effects',
+  ])('rejects a credential in %s too — every field is posted', (field) => {
     const r = validateInstructUserArgs({ ...base, [field]: 'see ghp_abcdefghijklmnopqrstuvwxyz0123456789' });
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.error.code).toBe('SECRET_IN_SCRIPT');
     expect(r.error.message).toContain(field);
     expect(r.error.message).not.toContain('ghp_abcdef');
+  });
+
+  it('rejects a script that would not fit one Slack section once escaped — it is never shown cut', () => {
+    const r = validateInstructUserArgs({ ...base, script: `printf '%s' '${'&'.repeat(580)}'` });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe('SCRIPT_TOO_LONG');
+    expect(validateInstructUserArgs({ ...base, script: `printf '%s' '${'&'.repeat(553)}'` }).ok).toBe(true);
+  });
+
+  it('rejects a script holding a code fence — the card would show a different script than the one checked', () => {
+    const r = validateInstructUserArgs({ ...base, script: "echo '```; touch /tmp/x; #'" });
+    expect(r.ok).toBe(false);
   });
 
   it('rejects an unknown shell', () => {
@@ -184,6 +203,23 @@ describe('inspectUserActionScript', () => {
     expect(iff.findings.map((f) => f.id)).toContain('sudo');
     const loop = inspectUserActionScript('for f in a b; do rm "$f"; done', 'bash', SYNTAX_OK);
     expect(loop.commands).toEqual(['rm']);
+  });
+
+  it('an unquoted heredoc runs the substitutions in its body; a quoted one does not', () => {
+    const open = inspectUserActionScript('cat <<EOF\n$(sudo cat /etc/shadow)\nEOF', 'bash', SYNTAX_OK);
+    expect(open.verdict).not.toBe('ok');
+    expect(open.commands).toEqual(['cat']);
+    expect(open.findings.map((f) => f.id)).toContain('sudo');
+    const tick = inspectUserActionScript('cat <<EOF\nnow `date`\nEOF', 'bash', SYNTAX_OK);
+    expect(tick.commands).toEqual(['cat', 'date']);
+    const closed = inspectUserActionScript("cat <<'EOF'\n$(rm -rf ~/x)\nEOF", 'bash', SYNTAX_OK);
+    expect(closed.commands).toEqual(['cat']);
+  });
+
+  it('sudo as an argument (xargs, find -exec) still raises the sudo caution', () => {
+    const i = inspectUserActionScript('ls | xargs sudo rm', 'bash', SYNTAX_OK);
+    expect(i.findings.map((f) => f.id)).toContain('sudo');
+    expect(i.verdict).not.toBe('ok');
   });
 
   it('a heredoc body is input, not commands; the rest of its line is still read', () => {

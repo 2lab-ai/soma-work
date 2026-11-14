@@ -9,7 +9,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { LOG_DETAIL } from '../../output-flags';
 import { StreamExecutor, setStreamExecutorProviders } from '../stream-executor';
 
-const captureUserActions = vi.fn(async () => {});
+/** The names as the provider saw them at the call (the result objects are mutable). */
+const namesAtCall: Array<Array<[string, string | undefined]>> = [];
+const captureUserActions = vi.fn(async (args: any) => {
+  namesAtCall.push(args.toolResults.map((t: any) => [t.toolUseId, t.toolName]));
+});
 
 setStreamExecutorProviders({
   captureUserActions,
@@ -165,11 +169,6 @@ function createParams(session: any, abortController: AbortController): any {
   };
 }
 
-/** Let the fire-and-forget liveness writes settle. */
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-}
-
 function stream(session: any, ...steps: Array<any | (() => void)>) {
   return () =>
     (async function* () {
@@ -214,9 +213,7 @@ describe('StreamExecutor — user actions reach the host provider', () => {
 
     expect(captureUserActions).toHaveBeenCalledTimes(1);
     const args = (captureUserActions.mock.calls[0] as any[])[0];
-    expect(args.toolResults.map((t: any) => [t.toolUseId, t.toolName])).toEqual([
-      ['tu-1', 'mcp__user-action__instruct_user'],
-    ]);
+    expect(namesAtCall[0]).toEqual([['tu-1', 'mcp__user-action__instruct_user']]);
     expect(args.session).toBe(session);
     expect([args.sessionKey, args.channel, args.threadTs]).toEqual([SESSION_KEY, 'C42', 'thread42']);
     expect(args.slackApi).toBe(deps.slackApi);

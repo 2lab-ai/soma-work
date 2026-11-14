@@ -102,12 +102,21 @@ describe('buildUserActionCard', () => {
 });
 
 describe('Slack limits', () => {
-  it('no section text passes 3000 characters, even when escaping grows the longest fields', () => {
-    const card = buildUserActionCard(
-      record({ why: '&'.repeat(600), effects: '<'.repeat(300), expect: '>'.repeat(300) }),
-      'k',
+  it('no section passes 3000 characters, and nothing is cut: long prose is split across sections', () => {
+    const why = '&'.repeat(600);
+    const card = buildUserActionCard(record({ why, effects: '<'.repeat(300), expect: '>'.repeat(300) }), 'k');
+    const texts = card.attachments[0].blocks.filter((b: any) => b.type === 'section').map((b: any) => b.text.text);
+    for (const t of texts) expect(t.length).toBeLessThanOrEqual(3000);
+    expect(texts.join('\n').split('&amp;').length - 1).toBe(600);
+  });
+
+  it('the script is shown whole in one section — the longest script the MCP accepts fits', () => {
+    const script = `printf '%s' '${'&'.repeat(553)}'`;
+    const card = buildUserActionCard(record({ script }), 'k');
+    const scriptSection = card.attachments[0].blocks.find(
+      (b: any) => b.type === 'section' && b.text.text.includes('```'),
     );
-    for (const b of card.attachments[0].blocks)
-      if (b.type === 'section') expect(b.text.text.length).toBeLessThanOrEqual(3000);
+    expect(scriptSection.text.text.length).toBeLessThanOrEqual(3000);
+    expect(scriptSection.text.text.endsWith("'```")).toBe(true);
   });
 });

@@ -2,6 +2,7 @@ import { inspectUserActionScript, type UserActionRecord } from 'somalib/user-act
 import { describe, expect, it, vi } from 'vitest';
 import type { ConversationSession } from '../../../types';
 import { USER_ACTION_DONE_ACTION_ID, USER_ACTION_FAILED_ACTION_ID } from '../../user-action-card';
+import { setUserActionNotifier } from '../../user-action-host';
 import {
   USER_ACTION_ALREADY_TEXT,
   USER_ACTION_NOT_DELIVERED_TEXT,
@@ -94,6 +95,21 @@ describe('UserActionActionHandler', () => {
     await handler.handleResolve(click(USER_ACTION_DONE_ACTION_ID), vi.fn());
     expect(session.userActions?.[0].status).toBe('done');
     expect(deps.messageHandler).toHaveBeenCalledTimes(2);
+  });
+
+  it('with the host notifier set, the click uses it (its acceptance decides), not the bare message path', async () => {
+    const { session, deps, handler } = setup();
+    const notifier = vi.fn(async () => false);
+    setUserActionNotifier(notifier);
+    try {
+      await handler.handleResolve(click(USER_ACTION_DONE_ACTION_ID), vi.fn());
+    } finally {
+      setUserActionNotifier(undefined);
+    }
+    expect(notifier).toHaveBeenCalledWith('work:C1:1.0', expect.stringContaining('사용자 작업 완료'), 'U_OWNER');
+    expect(deps.messageHandler).not.toHaveBeenCalled();
+    expect(session.userActions?.[0].status).toBe('pending');
+    expect(deps.slackApi.postEphemeral).toHaveBeenCalledWith('C1', 'U_OWNER', USER_ACTION_NOT_DELIVERED_TEXT);
   });
 
   it('a second click does not tell the agent twice', async () => {

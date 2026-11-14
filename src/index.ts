@@ -216,7 +216,7 @@ import { composeExecutiveSummaryMarkdown, parseExecutiveSummary } from './slack/
 import { setUiSurfacesConfig } from './slack/surface-config';
 import { threadCardProviders } from './slack/thread-card-data';
 import { setThreadHeaderProviders } from './slack/thread-header-builder';
-import { answerUserAction } from './slack/user-action-host';
+import { answerUserAction, getUserActionNotifier, setUserActionNotifier } from './slack/user-action-host';
 import { SlackHandler } from './slack-handler';
 import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
@@ -1582,8 +1582,22 @@ async function start() {
       logger: new Logger('SlackPlanDecider'),
     });
     setDashboardTaskPlanHandler((request) => slackPlanDecider(request));
-    // 사용자 할 일 (instruct_user): the dashboard's 완료 / 안 됨 — the Slack card's answer path; the answer is the actor's
-    // message in the thread (verbatim: its own turn, or queued behind a running one).
+    // 사용자 할 일 (instruct_user): an answer reaches the agent as the actor's message in the thread — verbatim, its own
+    // turn or queued behind a running one — and counts as delivered only once taken (onAccepted). The Slack card's
+    // buttons and the dashboard's use this same notifier, so "taken" means the same on both.
+    setUserActionNotifier(
+      (key, text, actor) =>
+        new Promise<boolean>((resolve) => {
+          injectDashboardMessage(key, text, undefined, [], actor || undefined, undefined, {
+            onAccepted: () => resolve(true),
+            verbatim: true,
+            echoLabel: `🙋 *<@${actor}>* 사용자 작업 응답`,
+          }).then(
+            () => resolve(false),
+            () => resolve(false),
+          );
+        }),
+    );
     const userActionSlackApi = slackHandler.getSlackApi();
     setDashboardUserActionHandler(async ({ sessionKey, id, status, actorUserId }) => {
       const r = await answerUserAction({
@@ -1596,18 +1610,8 @@ async function start() {
           slackApi: userActionSlackApi,
           persistAndBroadcast: (key) => claudeHandler.getSessionRegistry().persistAndBroadcast(key),
           getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
-          mayAnswer: (key, session, actor) =>
-            instructionApprovals.allows({ sessionKey: key, session, senderId: actor }),
-          notify: (key, _session, text, actor) =>
-            new Promise<boolean>((resolve) => {
-              injectDashboardMessage(key, text, undefined, [], actor || undefined, undefined, {
-                onAccepted: () => resolve(true),
-                verbatim: true,
-              }).then(
-                () => resolve(false),
-                () => resolve(false),
-              );
-            }),
+          mayAnswer: (key, session, actor) => instructionApprovals.allows({ sessionKey: key, session, senderId: actor }),
+          notify: (key, _session, text, actor) => getUserActionNotifier()?.(key, text, actor) ?? Promise.resolve(false),
         },
       });
       if (r.ok) return { status: 200, body: { ok: true, status: r.action.status } };

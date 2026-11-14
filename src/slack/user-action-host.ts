@@ -7,7 +7,6 @@ import {
   appendUserAction,
   INSTRUCT_USER_TOOL_NAME,
   parseInstructUserToolResult,
-  type ResolveUserActionResult,
   resolveUserAction,
   type UserActionRecord,
   unresolveUserAction,
@@ -31,8 +30,10 @@ export interface UserActionHostDeps {
 }
 
 /**
- * Take every successful `instruct_user` result of a tool batch: store it, post its card (when the session has a
- * Slack thread), then persist and broadcast once. A failed post keeps the record — the dashboard still shows it.
+ * Take every successful `instruct_user` result of a tool batch: store it first (so a press on its card always finds it),
+ * post its card when the session has a Slack thread (one retry), stamp the card's ts on the stored record without
+ * undoing an answer that came in meanwhile, then persist and broadcast. A result already stored (a replay) is not
+ * posted again. A card that still fails keeps the record — the dashboard shows it and answers it.
  */
 export async function captureUserActionToolResults(args: {
   toolResults: ReadonlyArray<{ toolName?: string; result: unknown; isError?: boolean }>;
@@ -47,28 +48,35 @@ export async function captureUserActionToolResults(args: {
   for (const tr of args.toolResults) {
     if (tr.toolName !== INSTRUCT_USER_TOOL_NAME || tr.isError === true) continue;
     const action = parseInstructUserToolResult(tr.result);
-    if (!action) continue;
-    let stored: UserActionRecord = action;
-    if (channel) {
+    if (!action || session.userActions?.some((a) => a.id === action.id)) continue;
+    session.userActions = appendUserAction(session.userActions, action);
+    captured.push(action);
+    if (!channel) continue;
+    const card = buildUserActionCard(action, sessionKey);
+    let ts: string | undefined;
+    for (let attempt = 1; attempt <= 2 && !ts; attempt++) {
       try {
-        const card = buildUserActionCard(action, sessionKey);
         const post = await deps.slackApi.postMessage(channel, card.text, {
           threadTs,
           attachments: card.attachments,
           unfurlLinks: false,
           unfurlMedia: false,
         });
-        if (post.ts) stored = { ...action, slackTs: post.ts };
+        ts = post.ts;
+        if (!ts) break;
       } catch (error) {
-        logger.warn('user action card post failed — kept for the dashboard', {
+        logger.warn('user action card post failed', {
           sessionKey,
           id: action.id,
+          attempt,
           error: (error as Error)?.message ?? String(error),
         });
       }
     }
-    session.userActions = appendUserAction(session.userActions, stored);
-    captured.push(stored);
+    if (ts) {
+      // The record as it is now (it may have been answered while the post was in flight) gets the ts.
+      session.userActions = (session.userActions ?? []).map((a) => (a.id === action.id ? { ...a, slackTs: ts } : a));
+    }
   }
   if (captured.length) {
     try {
@@ -77,50 +85,30 @@ export async function captureUserActionToolResults(args: {
       logger.warn('user action persist/broadcast failed', { sessionKey, error: (error as Error)?.message });
     }
   }
-  return captured;
-}
-
-/**
- * Mark a pending action done or failed (first answer wins), rewrite its Slack card without the buttons, and
- * persist + broadcast. Telling the agent is the caller's job (it owns the message path).
- */
-export async function resolveSessionUserAction(args: {
-  session: ConversationSession;
-  sessionKey: string;
-  id: string;
-  status: 'done' | 'failed';
-  by: string;
-  at: number;
-  deps: UserActionHostDeps;
-}): Promise<ResolveUserActionResult> {
-  const { session, sessionKey, deps } = args;
-  const r = resolveUserAction(session.userActions, args.id, args.status, args.by, args.at);
-  if (!r.ok) return r;
-  session.userActions = r.list;
-  const channel = session.channelId;
-  if (channel && r.action.slackTs) {
-    try {
-      const card = buildUserActionCard(r.action, sessionKey);
-      await deps.slackApi.updateMessage(channel, r.action.slackTs, card.text, undefined, card.attachments);
-    } catch (error) {
-      logger.warn('user action card update failed', { sessionKey, id: args.id, error: (error as Error)?.message });
-    }
-  }
-  try {
-    deps.persistAndBroadcast?.(sessionKey);
-  } catch (error) {
-    logger.warn('user action persist/broadcast failed', { sessionKey, error: (error as Error)?.message });
-  }
-  return r;
+  return (session.userActions ?? []).filter((a) => captured.some((c) => c.id === a.id));
 }
 
 export type AnswerUserActionCode = 'gone' | 'forbidden' | 'already-resolved' | 'not-delivered';
 
+/** Hands an answer to the agent as `actor`'s message in the session's thread; true once it is taken. */
+export type UserActionNotifier = (sessionKey: string, text: string, actor: string) => Promise<boolean>;
+let userActionNotifier: UserActionNotifier | undefined;
 /**
- * The one answer path for a user action — the Slack card's buttons and the dashboard's: the instruction gate, then
- * first answer wins (card rewritten), then the agent is told through the normal message path. When the agent cannot
- * be told (`notify` false), the action goes back to pending with its buttons, so the human can answer again — an
- * answer is never recorded without reaching the agent.
+ * The host's notifier (src/index.ts): the thread's normal message path with a real acceptance signal (its turn reached
+ * the model, or it is queued behind a running one). Both answer surfaces use it, so "taken" means the same everywhere.
+ */
+export function setUserActionNotifier(fn: UserActionNotifier | undefined): void {
+  userActionNotifier = fn;
+}
+export function getUserActionNotifier(): UserActionNotifier | undefined {
+  return userActionNotifier;
+}
+
+/**
+ * The one answer path for a user action — the Slack card's buttons and the dashboard's. The instruction gate; then the
+ * answer is held in memory (a second press sees it answered) while the agent is told; only once the message is taken is
+ * it recorded — card rewritten without buttons, persisted, broadcast. When the agent cannot be told, nothing was
+ * written: the action is pending again, its card untouched, so the human answers again. An answer never sticks unheard.
  */
 export async function answerUserAction(args: {
   sessionKey: string;
@@ -141,24 +129,30 @@ export async function answerUserAction(args: {
   const session = deps.getSession(sessionKey);
   if (!session) return { ok: false, code: 'gone' };
   if (!deps.mayAnswer(sessionKey, session, args.actor)) return { ok: false, code: 'forbidden' };
-  const r = await resolveSessionUserAction({ ...args, session, by: args.actor });
+  const r = resolveUserAction(session.userActions, args.id, args.status, args.actor, args.at);
   if (!r.ok) return { ok: false, code: r.reason === 'already-resolved' ? 'already-resolved' : 'gone' };
+  session.userActions = r.list;
   let delivered = false;
   try {
     delivered = await deps.notify(sessionKey, session, userActionResolvedPrompt(r.action), args.actor);
   } catch (error) {
-    logger.warn('user action answer could not reach the agent', { sessionKey, id: args.id, error: (error as Error)?.message });
+    logger.warn('user action answer could not reach the agent', {
+      sessionKey,
+      id: args.id,
+      error: (error as Error)?.message,
+    });
   }
-  if (delivered) return { ok: true, action: r.action };
-  // Back to pending: the card gets its buttons again and the dashboard shows it waiting.
-  session.userActions = unresolveUserAction(session.userActions, args.id);
-  const back = session.userActions.find((a) => a.id === args.id);
-  if (back && session.channelId && back.slackTs) {
+  if (!delivered) {
+    session.userActions = unresolveUserAction(session.userActions, args.id);
+    return { ok: false, code: 'not-delivered' };
+  }
+  const recorded = session.userActions.find((a) => a.id === args.id) ?? r.action;
+  if (session.channelId && recorded.slackTs) {
     try {
-      const card = buildUserActionCard(back, sessionKey);
-      await deps.slackApi.updateMessage(session.channelId, back.slackTs, card.text, undefined, card.attachments);
+      const card = buildUserActionCard(recorded, sessionKey);
+      await deps.slackApi.updateMessage(session.channelId, recorded.slackTs, card.text, undefined, card.attachments);
     } catch (error) {
-      logger.warn('user action card restore failed', { sessionKey, id: args.id, error: (error as Error)?.message });
+      logger.warn('user action card update failed', { sessionKey, id: args.id, error: (error as Error)?.message });
     }
   }
   try {
@@ -166,5 +160,5 @@ export async function answerUserAction(args: {
   } catch (error) {
     logger.warn('user action persist/broadcast failed', { sessionKey, error: (error as Error)?.message });
   }
-  return { ok: false, code: 'not-delivered' };
+  return { ok: true, action: recorded };
 }
