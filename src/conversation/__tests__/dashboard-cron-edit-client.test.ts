@@ -144,6 +144,7 @@ const META_VARS = [
   'CRON_MODEL_LABEL',
   'CRON_ACT_LABEL',
   'CRON_ARMED_SAID',
+  'CRON_NOTE_OTHERS',
 ];
 
 describe('gate — 내용 보기 for whoever may manage the job, one plain line for everyone else', () => {

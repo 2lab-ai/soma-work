@@ -1506,3 +1506,123 @@ describe('CronScheduler — a fire lands only in its own session', () => {
     expect(scheduler.getPendingQueueSize('work:C456:busy-thread')).toBe(0);
   });
 });
+
+// A fire by hand (Slack ▶, `cron run`, the dashboard's 지금 실행) is marked manual in the history — the owner's
+// too, so the run row never reads 예약 실행 (scheduled) for one somebody pressed. A queued fire runs the job as it
+// is at the drain: a job deleted meanwhile does not run, an edited one runs as edited.
+describe('CronScheduler — manual fires and what a queued fire runs', () => {
+  let tmpFile: string;
+
+  beforeEach(() => {
+    tmpFile = path.join(os.tmpdir(), `cron-sched-manual-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  });
+
+  it('a manual fire is marked manual, the owner’s included; a scheduled fire is not', async () => {
+    const storage = new CronStorage(tmpFile);
+    const job = storage.addJob({
+      name: 'dm-job',
+      expression: '* * * * *',
+      prompt: 'p',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
+      target: 'dm',
+    });
+    const { deps } = createMockDeps(storage);
+    deps.dmSender = vi.fn(async () => {});
+    const scheduler = new CronScheduler(deps);
+
+    await scheduler.tick(); // the schedule (a manual fire marks its minute as run, so it goes first)
+    await scheduler.settled();
+    await scheduler.runJobNow('U123', 'dm-job'); // the owner, no attribution
+    await scheduler.runJobNow('U123', 'dm-job', { triggeredBy: 'U123' });
+    await scheduler.runJobNow('U123', 'dm-job', { triggeredBy: 'U_ADMIN' });
+
+    const history = storage.getExecutionHistory(job.name);
+    expect(history).toHaveLength(4);
+    const [byAdmin, byOwner, plain, scheduled] = history;
+    expect(plain).toMatchObject({ manual: true });
+    expect(plain.triggeredBy).toBeUndefined();
+    expect(byOwner).toMatchObject({ manual: true });
+    expect(byOwner.triggeredBy).toBeUndefined();
+    expect(byAdmin).toMatchObject({ manual: true, triggeredBy: 'U_ADMIN' });
+    expect(scheduled.manual).toBeUndefined();
+  });
+
+  it('a queued fire of a job deleted before the drain does not run; the queue empties', async () => {
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({
+      name: 'gone-job',
+      expression: '* * * * *',
+      prompt: 'must not run',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: 'busy-thread',
+    });
+    const { deps, injectedMessages } = createMockDeps(storage);
+    deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'busy-thread');
+    deps.sessionRegistry.transitionToMain('C456', 'busy-thread', 'default');
+    deps.sessionRegistry.setActivityState('C456', 'busy-thread', 'working');
+    const scheduler = new CronScheduler(deps);
+    await scheduler.tick();
+    expect(scheduler.getPendingQueueSize('work:C456:busy-thread')).toBe(1);
+
+    storage.removeJob('U123', 'gone-job');
+    deps.sessionRegistry.setActivityState('C456', 'busy-thread', 'idle');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(injectedMessages).toHaveLength(0);
+    expect(scheduler.getPendingQueueSize('work:C456:busy-thread')).toBe(0);
+  });
+
+  it('a deleted job ahead in the queue does not hold up the live one behind it', async () => {
+    const storage = new CronStorage(tmpFile);
+    for (const name of ['gone-job', 'live-job']) {
+      storage.addJob({
+        name,
+        expression: '* * * * *',
+        prompt: name,
+        owner: 'U123',
+        channel: 'C456',
+        threadTs: 'busy-thread',
+      });
+    }
+    const { deps, injectedMessages } = createMockDeps(storage);
+    deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'busy-thread');
+    deps.sessionRegistry.transitionToMain('C456', 'busy-thread', 'default');
+    deps.sessionRegistry.setActivityState('C456', 'busy-thread', 'working');
+    const scheduler = new CronScheduler(deps);
+    await scheduler.tick();
+    expect(scheduler.getPendingQueueSize('work:C456:busy-thread')).toBe(2);
+
+    storage.removeJob('U123', 'gone-job');
+    deps.sessionRegistry.setActivityState('C456', 'busy-thread', 'idle');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(injectedMessages.map((e) => e.text)).toEqual(['[cron:live-job] live-job']);
+  });
+
+  it('a queued fire runs the job as edited before the drain', async () => {
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({
+      name: 'edited-job',
+      expression: '* * * * *',
+      prompt: 'old words',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: 'busy-thread',
+    });
+    const { deps, injectedMessages } = createMockDeps(storage);
+    deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'busy-thread');
+    deps.sessionRegistry.transitionToMain('C456', 'busy-thread', 'default');
+    deps.sessionRegistry.setActivityState('C456', 'busy-thread', 'working');
+    const scheduler = new CronScheduler(deps);
+    await scheduler.tick();
+
+    storage.updateJob('U123', 'edited-job', { prompt: 'new words' });
+    deps.sessionRegistry.setActivityState('C456', 'busy-thread', 'idle');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(injectedMessages.map((e) => e.text)).toEqual(['[cron:edited-job] new words']);
+  });
+});

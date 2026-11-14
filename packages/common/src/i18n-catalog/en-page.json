@@ -166,7 +166,6 @@
   "<div class=\"card-io\"><div class=\"io-row\"><div class=\"io-text is-muted\">지시/응답을 불러오지 못했습니다</div></div></div>": "<div class=\"card-io\"><div class=\"io-row\"><div class=\"io-text is-muted\">Couldn't load the instruction/response</div></div></div>",
   "<div class=\"card-plan-note\">새 지시를 보내면 다시 계획합니다</div>": "<div class=\"card-plan-note\">Send a new instruction to plan again</div>",
   "<div class=\"card-quick-note\">답을 보냈어요</div>": "<div class=\"card-quick-note\">Answer sent</div>",
-  "<div class=\"cron-detail-actions\"><button type=\"button\" class=\"ui-btn is-sm\" data-cron-act=\"edit\">편집</button><button type=\"button\" class=\"ui-btn is-sm\" data-cron-act=\"hide\">접기</button></div>": "<div class=\"cron-detail-actions\"><button type=\"button\" class=\"ui-btn is-sm\" data-cron-act=\"edit\">Edit</button><button type=\"button\" class=\"ui-btn is-sm\" data-cron-act=\"hide\">Collapse</button></div>",
   "<div class=\"io-row io-in\"><div class=\"io-label\">지시": "<div class=\"io-row io-in\"><div class=\"io-label\">Instruction",
   "<div class=\"io-row io-out\"><div class=\"io-label\">응답</div>": "<div class=\"io-row io-out\"><div class=\"io-label\">Response</div>",
   "<div class=\"io-text is-muted\">기록된 지시 없음</div>": "<div class=\"io-text is-muted\">No instruction recorded</div>",
@@ -232,7 +231,6 @@
   "<h2>공유 프로젝트 메모리 · ": "<h2>Shared project memory · ",
   "<option value=\"\">새 폴더</option>": "<option value=\"\">New folder</option>",
   "<p class=\"admin-inbox-empty\">대기 중인 승인 요청이 없습니다.</p>": "<p class=\"admin-inbox-empty\">No approval requests are waiting.</p>",
-  "<p class=\"cron-detail-note\">프롬프트를 포함한 전체 내용과 편집은 소유자나 관리자 모드를 켠 관리자만 할 수 있어요</p>": "<p class=\"cron-detail-note\">Only the owner, or an admin with admin mode on, can see the full content (prompt included) and edit it</p>",
   "<p class=\"lock\">아직 항목이 없습니다.": "<p class=\"lock\">No entries yet.",
   "<p class=\"lock\">왼쪽에서 프로젝트를 고르세요.</p>": "<p class=\"lock\">Pick a project on the left.</p>",
   "<p class=\"pp-note\" role=\"alert\">계획을 불러오지 못했어요 — ": "<p class=\"pp-note\" role=\"alert\">Could not load the plan — ",
@@ -272,7 +270,6 @@
   "><label class=\"ui-sr-only\" for=\"cron-edit-model-id\">모델 ID</label><input class=\"ui-input is-block\" id=\"cron-edit-model-id\" data-cron-field=\"modelId\" value=\"": "><label class=\"ui-sr-only\" for=\"cron-edit-model-id\">Model ID</label><input class=\"ui-input is-block\" id=\"cron-edit-model-id\" data-cron-field=\"modelId\" value=\"",
   "><option value=\"\">스킬 선택…</option>": "><option value=\"\">Select a skill…</option>",
   ">▶ 시작</button>": ">▶ Start</button>",
-  ">내용 보기</button></div>": ">View content</button></div>",
   ">직접 입력</button>": ">Custom input</button>",
   ">추가</button></div>": ">Add</button></div>",
   ">취소</button>": ">Cancel</button>",
@@ -1582,5 +1579,9 @@
   "실행·편집·삭제와 프롬프트를 포함한 전체 내용은 소유자나 관리자 모드를 켠 관리자만 다룰 수 있어요": "Only the owner, or an admin with admin mode on, can run, edit or delete this job and see its whole content, the prompt included",
   "한 번 더 눌러 실행": "Press again to run",
   "한 번 더 누르면 지금 바로 실행해요 — 다음 예약 실행은 그대로예요": "Press again to run it right now — the next scheduled run stays as it is",
-  "한 번 더 누르면 이 잡을 지워요 — 되돌릴 수 없어요": "Press again to delete this job — this can't be undone"
+  "한 번 더 누르면 이 잡을 지워요 — 되돌릴 수 없어요": "Press again to delete this job — this can't be undone",
+  "편집": "Edit",
+  "접기": "Collapse",
+  "내용 보기": "View content",
+  "수동 실행": "Manual run"
 }

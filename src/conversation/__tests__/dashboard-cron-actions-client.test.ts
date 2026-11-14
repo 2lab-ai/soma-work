@@ -16,6 +16,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { pageText, registerPageCatalog, scanPage } from '@soma/common/i18n-page';
 import { describe, expect, it, vi } from 'vitest';
 import { viewerScope } from '../__fixtures__/viewer-scope';
 
@@ -136,6 +137,7 @@ const META_VARS = [
   'CRON_MODEL_LABEL',
   'CRON_ACT_LABEL',
   'CRON_ARMED_SAID',
+  'CRON_NOTE_OTHERS',
 ];
 
 /** The row's buttons, in order, as [act, label]. */
@@ -238,6 +240,7 @@ function actor(answers: Array<{ status: number; body: unknown } | 'offline'>, vi
       clone: () => ({ json: async () => a.body }),
     };
   });
+  const doc: any = fakeDoc({ 'cron-detail-status': status, 'cron-drawer-meta': metaEl });
   const paintCronDrawer = vi.fn();
   const loadCronJobs = vi.fn();
   const closeCronDrawer = vi.fn();
@@ -256,6 +259,7 @@ function actor(answers: Array<{ status: number; body: unknown } | 'offline'>, vi
       'cronDetailState',
       'cronArmed',
       'cronConfirmPress',
+      'cronDetailHasFocus',
       'cronDetailWrite',
       'cronDraftOf',
       'cronEditOptions',
@@ -288,11 +292,14 @@ function actor(answers: Array<{ status: number; body: unknown } | 'offline'>, vi
         return timers.length;
       },
       _csrfToken: 'tok-1',
-      document: fakeDoc({ 'cron-detail-status': status, 'cron-drawer-meta': metaEl }),
+      document: doc,
       _cronPlan: { groups: [GROUP] },
       _cronDrawerKey: GROUP.key,
     },
   );
+  f.__setActive = (el: unknown) => {
+    doc.activeElement = el;
+  };
   return {
     f,
     fetch,
@@ -366,6 +373,72 @@ describe('confirm — 지금 실행 and 삭제 ask once', () => {
     await a.f.cronDetailDelete();
     expect(a.fetch).not.toHaveBeenCalled();
     expect(a.f.__state().armed).toBe('delete');
+  });
+});
+
+describe('busy — a run or a delete in flight holds the whole drawer, so its answer lands where it was asked', () => {
+  type Meta = { renderCronDrawerMeta(g: unknown, now: number): string; __setState(v: unknown): void };
+  it('내용 보기 and 접기 are held (aria-disabled) while busy, live otherwise', () => {
+    const f = load<Meta>(META_FNS, META_VARS, { ...FACT_ENV, ...OWNER });
+    f.__setState({ key: GROUP.key, jobId: 'job-1', job: null, busy: 'run' });
+    expect(f.renderCronDrawerMeta(GROUP, T0)).toMatch(/data-cron-act="detail" aria-disabled="true"/);
+    f.__setState({ key: GROUP.key, jobId: 'job-1', job: DETAIL, busy: 'delete' });
+    expect(f.renderCronDrawerMeta(GROUP, T0)).toMatch(/data-cron-act="hide" aria-disabled="true"/);
+    f.__setState({ key: GROUP.key, jobId: 'job-1', job: DETAIL });
+    expect(f.renderCronDrawerMeta(GROUP, T0)).not.toMatch(/aria-disabled/);
+  });
+
+  it('a 내용 보기 or 접기 that slips through while busy does nothing — the run’s answer still reaches the drawer', async () => {
+    const a = actor([{ status: 502, body: { error: 'delivery failed (dm)' } }]);
+    const loadEnv = load<any>(
+      ['cronDrawerGroup', 'cronDetailAllowed', 'cronDetailLoad', 'cronDetailHide'],
+      ['_cronDetail'],
+      {
+        ...OWNER,
+        fetch: a.fetch,
+        paintCronDrawer: vi.fn(),
+        cronDetailStatus: vi.fn(),
+        cronDetailFocus: vi.fn(),
+        cronDetailError: vi.fn(),
+        cronDetailEdit: vi.fn(),
+        _isAdminModeOn: () => false,
+        _cronPlan: { groups: [GROUP] },
+        _cronDrawerKey: GROUP.key,
+      },
+    );
+    const busy = { key: GROUP.key, jobId: 'job-1', job: null, busy: 'run' };
+    loadEnv.__setState(busy);
+    await loadEnv.cronDetailLoad();
+    loadEnv.cronDetailHide();
+    expect(loadEnv.__state()).toBe(busy);
+    expect(a.fetch).not.toHaveBeenCalled();
+  });
+
+  it('focus follows the pressed button through the busy repaint and back after a spent arm', async () => {
+    const a = actor([{ status: 202, body: { ok: true, started: true } }]);
+    armedFor(a, 'run');
+    const run = a.f.cronDetailRun();
+    expect(a.buttons['[data-cron-act="run"]'].focus).toHaveBeenCalledTimes(1); // right after the busy repaint
+    await run;
+    // A spent arm repaints the row; whoever had focus on that button gets the new one.
+    const b = actor([]);
+    await b.f.cronDetailDelete();
+    const focused = b.buttons['[data-cron-act="delete"]'];
+    focused.setAttribute('data-cron-act', 'delete');
+    focused.focus.mockClear();
+    b.f.__state().armSince -= 5000;
+    b.f.__setActive(focused);
+    b.timers[0]();
+    expect(focused.focus).toHaveBeenCalledTimes(1);
+    // Focus elsewhere (the user moved on): the spent arm does not pull it back.
+    const c = actor([]);
+    await c.f.cronDetailDelete();
+    const other = c.buttons['[data-cron-act="delete"]'];
+    other.focus.mockClear();
+    c.f.__state().armSince -= 5000;
+    c.f.__setActive(c.buttons['#cron-edit-name']);
+    c.timers[0]();
+    expect(other.focus).not.toHaveBeenCalled();
   });
 });
 
@@ -514,6 +587,30 @@ describe('delete — the second press removes', () => {
   });
 });
 
+describe('history — a run by hand reads 수동 실행, the owner’s press too', () => {
+  it('the row’s label: who pressed it, else 수동 실행 when by hand, else 예약 실행', () => {
+    const f = load<{ renderCronRunRow(run: unknown, g: unknown, now: number): string }>(
+      ['esc', 'escAttr', 'renderCronRunRow'],
+      [],
+      {
+        cronRunGlyph: () => ({ glyph: 'ok', label: '성공', tone: 'ok' }),
+        CRON_RUN_GLYPHS: { ok: '' },
+        cronRunWhen: () => '11/13 18:00',
+        formatNmSSs: () => '',
+        formatTokens: () => '',
+        safeHref: (u: string) => u,
+        _sessionCache: {},
+      },
+    );
+    const row = (over: Record<string, unknown>) =>
+      f.renderCronRunRow({ executedAt: T0, status: 'success', executionPath: 'dm', ...over }, GROUP, T0);
+    expect(row({ triggeredBy: 'U_ADMIN', manual: true })).toContain('수동 실행 (U_ADMIN)');
+    expect(row({ manual: true })).toContain('<span aria-hidden="true"> · </span>수동 실행');
+    expect(row({})).toContain('예약 실행');
+    expect(row({})).not.toContain('수동 실행');
+  });
+});
+
 describe('page wiring', () => {
   it('the buttons route by their action', () => {
     const calls: string[] = [];
@@ -538,32 +635,49 @@ describe('page wiring', () => {
     expect(calls).toEqual(['run', 'edit', 'delete', 'load', 'cancel', 'hide']);
   });
 
-  it('every new phrase has its English entry', () => {
+  it('an English viewer reads every word of the drawer: the page scanner finds an entry for each Korean string', () => {
+    // What the translator actually looks up (scanPage), not bare words: a Korean phrase inside an HTML fragment
+    // literal is a key of its own, so a label must reach the markup through a variable.
+    registerPageCatalog(
+      JSON.parse(
+        readFileSync(
+          join(__dirname, '..', '..', '..', 'packages', 'common', 'src', 'i18n-catalog', 'en-page.json'),
+          'utf-8',
+        ),
+      ),
+    );
+    const vars = ['CRON_ACT_LABEL', 'CRON_NOTE_OTHERS', 'CRON_ARMED_SAID', 'CRON_RUN_SAID'];
+    const fns = [
+      'cronActionBar',
+      'cronConfirmPress',
+      'cronDetailGate',
+      'renderCronDetail',
+      'renderCronDrawerMeta',
+      'cronDetailLoad',
+      'cronDetailEdit',
+      'cronDetailRun',
+      'cronDetailDelete',
+      'cronDetailError',
+    ];
+    const script = `<script>\n${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\n</script>`;
+    const segs = scanPage(script).filter((seg) => !seg.skip);
+    expect(segs.length).toBeGreaterThan(15);
+    expect(segs.filter((seg) => pageText(seg.key) === undefined).map((seg) => seg.key)).toEqual([]);
+  });
+
+  it('the server’s refusals have their English too', () => {
     const en = JSON.parse(
       readFileSync(
-        join(__dirname, '..', '..', '..', 'packages', 'common', 'src', 'i18n-catalog', 'en-page.json'),
+        join(__dirname, '..', '..', '..', 'packages', 'common', 'src', 'i18n-catalog', 'en-text.json'),
         'utf-8',
       ),
     );
-    for (const ko of [
-      '지금 실행',
-      '한 번 더 눌러 실행',
-      '한 번 더 눌러 삭제',
-      '한 번 더 누르면 지금 바로 실행해요 — 다음 예약 실행은 그대로예요',
-      '한 번 더 누르면 이 잡을 지워요 — 되돌릴 수 없어요',
-      '잡 다루기',
-      '실행을 요청하는 중…',
-      '실행을 시작했어요 — 실행은 보드와 아래 기록에 나타나요',
-      '잡의 세션이 일하는 중이라, 끝나면 실행해요',
-      'DM으로 보냈어요',
-      '스레드에 답글로 올렸어요',
-      '실행하지 못했어요',
-      '지우는 중…',
-      '지우지 못했어요',
-      '크론 잡을 지웠어요',
-      '실행·편집·삭제와 프롬프트를 포함한 전체 내용은 소유자나 관리자 모드를 켠 관리자만 다룰 수 있어요',
-    ]) {
-      expect(en[ko], ko).toMatch(/\S/);
-    }
+    const said = [
+      ...DASHBOARD_TS.slice(DASHBOARD_TS.indexOf("'/api/dashboard/cron/:id/run'"))
+        .slice(0, 6000)
+        .matchAll(/\bt\('([^']+)'\)/g),
+    ].map((m) => m[1]);
+    expect(said.length).toBeGreaterThanOrEqual(4);
+    for (const ko of said) expect(en[ko], ko).toMatch(/\S/);
   });
 });

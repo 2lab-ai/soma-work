@@ -22418,7 +22418,8 @@ function renderCronRunRow(run, g, nowMs) {
   var title = s && s.earlierInThread ? '같은 스레드의 이전 실행' : s && s.headline ? s.headline : gl.label;
   var bits = [];
   bits.push('<time datetime="' + escAttr(new Date(run.executedAt).toISOString()) + '">' + esc(cronRunWhen(run.executedAt, nowMs)) + '</time>');
-  bits.push(esc(run.triggeredBy ? '수동 실행 (' + run.triggeredBy + ')' : '예약 실행'));
+  // Who pressed it when that was not the owner; 수동 실행 for any other press by hand (the owner's); else the schedule.
+  bits.push(esc(run.triggeredBy ? '수동 실행 (' + run.triggeredBy + ')' : run.manual ? '수동 실행' : '예약 실행'));
   if (s && s.activeMs) bits.push(esc('소요 ' + formatNmSSs(s.activeMs)));
   if (s && typeof s.tokens === 'number' && s.tokens > 0) bits.push(esc(formatTokens(s.tokens) + ' 토큰'));
   if (s && typeof s.costUsd === 'number' && s.costUsd > 0) bits.push(esc('$' + s.costUsd.toFixed(2)));
@@ -22573,7 +22574,9 @@ var _cronDetail = null; // { key, jobId, job, loading, draft, saving, say, tone 
 var CRON_MODE_LABEL = { default: '잡의 세션이 쉬면 주입, 없으면 새 스레드', fastlane: '항상 새 스레드' };
 var CRON_TARGET_LABEL = { channel: '채널 — 세션에서 실행', thread: '스레드 답글 — 프롬프트 글만 올림', dm: 'DM — 프롬프트 글만 보냄' };
 var CRON_MODEL_LABEL = { default: '만든 사람의 지금 기본 모델', opus: 'Opus (최신)', fable: 'Fable (최신)', fast: '빠른 모델', custom: '직접 입력' };
-var CRON_ACT_LABEL = { bar: '잡 다루기', run: '지금 실행', runArmed: '한 번 더 눌러 실행', edit: '편집', delete: '삭제', deleteArmed: '한 번 더 눌러 삭제' };
+var CRON_ACT_LABEL = { bar: '잡 다루기', run: '지금 실행', runArmed: '한 번 더 눌러 실행', edit: '편집', delete: '삭제', deleteArmed: '한 번 더 눌러 삭제', detail: '내용 보기', hide: '접기' };
+// Who may act on a job, for everyone else (the row is not theirs).
+var CRON_NOTE_OTHERS = '실행·편집·삭제와 프롬프트를 포함한 전체 내용은 소유자나 관리자 모드를 켠 관리자만 다룰 수 있어요';
 // What an armed press is about to do — said under the row while it waits for the second press.
 var CRON_ARMED_SAID = { run: '한 번 더 누르면 지금 바로 실행해요 — 다음 예약 실행은 그대로예요', delete: '한 번 더 누르면 이 잡을 지워요 — 되돌릴 수 없어요' };
 // What 지금 실행 says once the server answered: the scheduler's own answer when it came in time, else that it started.
@@ -22629,16 +22632,26 @@ function cronConfirmPress(st, act) {
   cronDetailFocus('[data-cron-act="' + act + '"]');
   setTimeout(function() {
     if (_cronDetail !== st || st.armed !== act || cronArmed(st)) return;
+    var had = cronDetailHasFocus(act);
     st.armed = '';
     paintCronDrawer();
+    if (had) cronDetailFocus('[data-cron-act="' + act + '"]'); // the repaint replaced the button that had it
   }, 4100);
   return false;
 }
+// Focus is on this action's button (a repaint replaces it: whoever had it gets the new one).
+function cronDetailHasFocus(act) {
+  var a = document.activeElement;
+  return !!(a && a.getAttribute && a.getAttribute('data-cron-act') === act);
+}
 // Under the short facts: 내용 보기 for whoever may see the whole job, one plain line for everyone else.
 function cronDetailGate(g) {
-  if (!cronDetailAllowed(g)) return '<p class="cron-detail-note">실행·편집·삭제와 프롬프트를 포함한 전체 내용은 소유자나 관리자 모드를 켠 관리자만 다룰 수 있어요</p>';
-  var busy = !!(_cronDetail && _cronDetail.key === g.key && _cronDetail.loading);
-  return '<div class="cron-detail-actions"><button type="button" class="ui-btn is-sm" data-cron-act="detail"' + (busy ? ' aria-busy="true"' : '') + '>내용 보기</button></div>';
+  if (!cronDetailAllowed(g)) return '<p class="cron-detail-note">' + esc(CRON_NOTE_OTHERS) + '</p>';
+  var st = _cronDetail && _cronDetail.key === g.key ? _cronDetail : null;
+  var busy = !!(st && st.loading);
+  // A run or a delete in flight holds 내용 보기 too: its answer must land on this drawer (cronDetailLoad).
+  var held = !!(st && st.busy);
+  return '<div class="cron-detail-actions"><button type="button" class="ui-btn is-sm" data-cron-act="detail"' + (busy ? ' aria-busy="true"' : '') + (held ? ' aria-disabled="true"' : '') + '>' + esc(CRON_ACT_LABEL.detail) + '</button></div>';
 }
 function cronDetailWhen(ms, nowMs) {
   return '<time datetime="' + escAttr(new Date(ms).toISOString()) + '">' + esc(cronRunWhen(ms, nowMs)) + '</time>';
@@ -22664,7 +22677,7 @@ function renderCronDetail(g, j, nowMs) {
     ['마지막 실행', j.lastRunAt ? cronDetailWhen(j.lastRunAt, nowMs) : '아직 없음'],
   ];
   return cronActionBar(g) + '<dl class="ui-dl">' + rows.map(function(r) { return '<div><dt>' + esc(r[0]) + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>'
-    + '<div class="cron-detail-actions"><button type="button" class="ui-btn is-sm" data-cron-act="hide">접기</button></div>';
+    + '<div class="cron-detail-actions"><button type="button" class="ui-btn is-sm" data-cron-act="hide"' + (_cronDetail && _cronDetail.busy ? ' aria-disabled="true"' : '') + '>' + esc(CRON_ACT_LABEL.hide) + '</button></div>';
 }
 // The form's values, from the job.
 function cronDraftOf(j) {
@@ -22738,7 +22751,7 @@ function cronDetailError(res, data, failed) {
 // 내용 보기: the whole job, from the server. andEdit (편집 pressed on the short facts): the form opens once it is here.
 async function cronDetailLoad(andEdit) {
   var g = cronDrawerGroup();
-  if (!cronDetailAllowed(g) || (_cronDetail && _cronDetail.key === g.key && _cronDetail.loading)) return;
+  if (!cronDetailAllowed(g) || (_cronDetail && _cronDetail.key === g.key && (_cronDetail.loading || _cronDetail.busy))) return;
   var st = { key: g.key, jobId: g.jobId, job: null, loading: true, draft: null, saving: false, say: '내용을 불러오는 중…', tone: '' };
   _cronDetail = st;
   cronDetailStatus();
@@ -22791,8 +22804,9 @@ function cronDetailCancel() {
   paintCronDrawer();
   cronDetailFocus('[data-cron-act="edit"]');
 }
-// 접기: back to the short facts.
+// 접기: back to the short facts — not while a run or a delete waits for its answer (it would land nowhere).
 function cronDetailHide() {
+  if (_cronDetail && _cronDetail.busy) return;
   _cronDetail = null;
   paintCronDrawer();
   cronDetailFocus('[data-cron-act="detail"]');
@@ -22920,6 +22934,7 @@ async function cronDetailRun() {
   st.tone = '';
   cronDetailStatus();
   paintCronDrawer();
+  cronDetailFocus('[data-cron-act="run"]'); // the busy row replaced the pressed button
   var res = null;
   var data = null;
   try {
@@ -22953,6 +22968,7 @@ async function cronDetailDelete() {
   st.tone = '';
   cronDetailStatus();
   paintCronDrawer();
+  cronDetailFocus('[data-cron-act="delete"]');
   var res = null;
   var data = null;
   try {
