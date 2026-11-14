@@ -261,10 +261,24 @@ describe('composerSkillItems — every skill this user can invoke', () => {
     });
     expect(member).toContainEqual({ value: '$acme-dev2:qa-dev2', group: 'acme-dev2', description: '관리자 승인 필요' });
 
+    // The skill handler exempts no admin from an environment user's grant: an admin without one gets the card too.
     resetComposerMenuCache();
-    const admin = composerSkillItems({ userId: 'U1', admin: true }, skillDeps({ listEnvironmentSkills: envs }));
-    expect(admin).toContainEqual({ value: '$acme-dev2:deploy-dev2', group: 'acme-dev2', description: 'Deploy dev2' });
+    const admin = composerSkillItems(
+      { userId: 'UADMIN', admin: true },
+      skillDeps({
+        listEnvironmentSkills: envs,
+        envUserSkillAllowed: (_envId, skill, userId) => skill === 'qa-dev2' && userId === 'UADMIN',
+      }),
+    );
+    expect(admin).toContainEqual({ value: '$acme-dev2:qa-dev2', group: 'acme-dev2', description: 'QA dev2' });
+    expect(admin).toContainEqual({
+      value: '$acme-dev2:deploy-dev2',
+      group: 'acme-dev2',
+      description: '관리자 승인 필요',
+    });
 
+    // A grant lets a member run the skill as the environment user, never read it: nobody but an admin sees an
+    // environment user's SKILL.md words (the skill card and view/copy refuse them too).
     resetComposerMenuCache();
     const granted = composerSkillItems(
       { userId: 'U2', admin: false },
@@ -274,7 +288,7 @@ describe('composerSkillItems — every skill this user can invoke', () => {
           envId === 'env:acme-dev2' && skill === 'qa-dev2' && userId === 'U2',
       }),
     );
-    expect(granted).toContainEqual({ value: '$acme-dev2:qa-dev2', group: 'acme-dev2', description: 'QA dev2' });
+    expect(granted).toContainEqual({ value: '$acme-dev2:qa-dev2', group: 'acme-dev2' });
     expect(granted).toContainEqual({
       value: '$acme-dev2:deploy-dev2',
       group: 'acme-dev2',

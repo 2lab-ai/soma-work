@@ -546,7 +546,7 @@ export interface ComposerSkillDeps {
   envSkillAllowed(key: string, userId: string): boolean;
   /** Each configured environment user (`env:<name>`) with its personal skills. */
   listEnvironmentSkills(): Array<{ envId: string; skills: Array<{ name: string; description: string }> }>;
-  /** Whether `userId` already holds the grant to call that environment user's skill (no card would come). */
+  /** Whether `userId` already holds the grant to call that environment user's skill (no card would come; admins too). */
   envUserSkillAllowed(envId: string, skill: string, userId: string): boolean;
   fs: SkillFs;
   now(): number;
@@ -607,16 +607,17 @@ export function composerSkillItems(
     });
     // An environment's deploy and QA are its environment user's skills. `$<env>:<skill>` is the token the skill
     // handler hands off to that user (a new thread, no sandbox), so the menu names them the same way, grouped under
-    // the environment. Not granted yet: the name stays (invoking it asks an admin), the SKILL.md words are not shown.
+    // the environment. Unlike an environment plugin skill:
+    // - the handler exempts no admin from the grant, so the marker follows the grant alone;
+    // - a grant lets a member run the skill, never read it — only an admin sees its SKILL.md words.
     for (const { envId, skills } of deps.listEnvironmentSkills()) {
       if (envId === opts.userId) continue; // its own session lists them as its own skills
       const label = environmentLabel(envId);
       for (const s of skills) {
         const row: ComposerSuggestionRow & { needsApproval?: true } = { value: `$${label}:${s.name}`, group: label };
-        const description = shortDescription(s.description);
+        const description = opts.admin ? shortDescription(s.description) : '';
         if (description) row.description = description;
-        if (!opts.admin && !(opts.userId && deps.envUserSkillAllowed(envId, s.name, opts.userId)))
-          row.needsApproval = true;
+        if (!(opts.userId && deps.envUserSkillAllowed(envId, s.name, opts.userId))) row.needsApproval = true;
         rows.push(row);
       }
     }
