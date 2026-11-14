@@ -2,9 +2,8 @@
 // credentials into their logs (an SDK client that logs its options object, a connection URL, a key block), so
 // without this every log read copies them into the model context and the session transcript.
 //
-// The MCP servers do not depend on @soma/common, whose logger owns the daemon's redaction set, and the devops
-// broker keeps its own (packages/devops-broker/src/scrub.ts). Its credential shapes are repeated here, plus the
-// shapes service logs carry. One `logs` call can return a single 1 MB line, so every pattern is linear: each
+// The MCP servers do not depend on @soma/common, whose logger owns the daemon's redaction set. Its credential
+// shapes are repeated here, plus the shapes service logs carry. One `logs` call can return a single 1 MB line, so every pattern is linear: each
 // start is pinned by a literal or a lookbehind, and nothing quantified is followed by an overlapping quantifier.
 // Values are measured by hand-written scanners, and key matching resumes past every scanned value, so no
 // character is scanned twice. Secret context (a key waiting for its value, an open quoted value, an open array or

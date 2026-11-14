@@ -1,8 +1,10 @@
 # 16 — devops-tools 아키텍처 (한 층 아래: 어떻게 만드나): 키 없는 MCP 서버 + 승인까지 검증하는 별도 OS 유저 브로커
 
-Status: in-progress · Date: 2026-10-26 · 기준 main `0a7a638e` · 위 층 = [`14-devops-tools-as-is.md`](14-devops-tools-as-is.md)(지금) · [`15-devops-tools-to-be.md`](15-devops-tools-to-be.md)(요청한 끝상태) ·
+Status: superseded (#1214) — was in-progress · Date: 2026-10-26 · 기준 main `0a7a638e` · 위 층 = [`14-devops-tools-as-is.md`](14-devops-tools-as-is.md)(지금) · [`15-devops-tools-to-be.md`](15-devops-tools-to-be.md)(요청한 끝상태) ·
 상세 = [`devops-tools/research/2026-10-26-detail.md`](devops-tools/research/2026-10-26-detail.md)(실측 file:line · 결정표 원본 · 인수 시험 A1–A19)
 이 문서는 상세 §3의 확정안(D1=① · D2=① · D3=① · D4=① · D5=① · D6=① — 2026-10-26 유저 확인, ssot SSOT_4)을 기준으로 쓴다.
+
+> **대체됨 (2026-11-13, env-access #1214):** 별도 브로커·devops-tools는 제거됐다. 지금 설계는 [`23`](23-env-access-as-is.md) · [`24`](24-env-access-to-be.md) · [`25`](25-env-access-architecture.md)와 [`env-access/loop.md`](env-access/loop.md). 이 문서는 기록으로만 남긴다.
 
 ## 0. 그림 한 장
 

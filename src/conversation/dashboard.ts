@@ -6050,7 +6050,7 @@ html[lang="ko"] .lang-toggle .lang-cur[data-lang="ko"], html[lang="en"] .lang-to
 .admin-inbox-body { display: flex; flex-direction: column; gap: 12px; padding: 6px 0 16px; }
 .admin-inbox-empty { color: var(--text-secondary); font-size: 13px; padding: 12px 0; }
 /* #1131 — one pass over many: the header's alert toggle, the toolbar (전체 선택 · count · 선택 거부 / 선택 승인), each
-   pending card's line (a checkbox when it can be decided with others, the summary, risk · 대기열 · who · age) and
+   pending card's line (a checkbox when it can be decided with others, the summary, risk · who · age) and
    the confirm sheet's rows. Risk takes the status tones: high = fail, medium = wait, low = done. */
 .admin-inbox-headline { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; }
 .admin-notify-toggle[data-state="denied"], .admin-notify-toggle[data-state="unsupported"] { opacity: 0.7; }
@@ -9086,7 +9086,7 @@ var _adminState = Object.create(null); // id → this page's answer (sending · 
 var _adminInboxOpen = false;
 var _adminPushSeq = 0; // WebSocket snapshots seen — a GET that started before a push is older than it
 var _adminInboxReturn = null;
-var ADMIN_KIND_LABEL = { env_skill: '환경 스킬', mcp_grant: 'MCP 권한', new_user: '새 사용자', bot_delete: '메시지 삭제', devops_broker: 'devops 승인', session_question: '에이전트 질문' };
+var ADMIN_KIND_LABEL = { env_skill: '환경 스킬', mcp_grant: 'MCP 권한', new_user: '새 사용자', bot_delete: '메시지 삭제', session_question: '에이전트 질문' };
 // #1131 — several requests decided in one pass, and desktop alerts.
 var _adminSel = Object.create(null); // ids ticked for a decision together — kept across snapshots while still pending
 var _adminSeenEver = null; // every pending id this page has seen — the first load is the baseline (no desktop alert)
@@ -9243,7 +9243,7 @@ function paintAdminInbox() {
   if (!body) return;
   var ids = _adminApprovals.pending.map(function(a) { return a.id; });
   for (var k in _adminKeep) if (ids.indexOf(k) < 0) ids.push(k);
-  // #1131 — each card under its line (a checkbox when it can be decided with others, the summary, risk · 대기열 ·
+  // #1131 — each card under its line (a checkbox when it can be decided with others, the summary, risk ·
   // who · age); a request that ended keeps its slot (the card glides into its resolved row) without the line.
   var html = ids.length
     ? ids.map(function(id) {
@@ -9404,7 +9404,7 @@ function adminRiskChipHtml(risk) {
   var label = ADMIN_RISK_LABEL[risk];
   return label ? '<span class="ui-chip is-sm is-toned admin-risk" data-risk="' + escAttr(risk) + '">' + esc(label) + '</span>' : '';
 }
-// One pending card's line: the checkbox (when it can be decided with others), the summary, then risk · 대기열 ·
+// One pending card's line: the checkbox (when it can be decided with others), the summary, then risk ·
 // who asked · how long ago (<ui-elapsed> keeps the age current; the exact time on hover).
 function adminMetaHtml(id) {
   var a = _adminLast[id];
@@ -9416,7 +9416,6 @@ function adminMetaHtml(id) {
       + ' aria-label="' + escAttr(adminFmt('함께 처리할 요청으로 선택: {0}', summary)) + '"></label>'
     : '';
   var sub = adminRiskChipHtml(a.risk);
-  if (a.queued) sub += '<span class="ui-chip is-sm admin-queued" title="' + escAttr('요청한 에이전트는 더 기다리지 않습니다 — 승인하면 그때 실행됩니다') + '">' + esc('대기열') + '</span>';
   var who = adminUserName(a.requesterId);
   if (who) sub += '<span class="admin-item-who">' + esc(adminFmt('{0} 요청', who)) + '</span>';
   var created = toNum(a.createdAt);
@@ -9730,12 +9729,6 @@ function adminTitleBadge(title, n) {
 async function answerAdminApproval(id, choiceId) {
   var a = _adminLast[id];
   if (!a) return null;
-  // devops broker card (#1051): a card the broker does not let the dashboard decide has one choice, which opens
-  // the viewer's own Slack card. A card its policy lets the dashboard decide (#1129) names its approve / deny
-  // choices in its batch field, and those are answered here like any other approval.
-  if (a.kind === 'devops_broker' && !(a.batch && (choiceId === a.batch.approve || choiceId === a.batch.deny))) {
-    return openDevopsSlackCard(id, a);
-  }
   var cur = _adminState[id];
   if (cur && (cur.status === 'sending' || cur.status === 'resolved')) return cur;
   _adminState[id] = a.card === 'question' ? { status: 'sending', choiceId: choiceId } : { status: 'sending', decision: choiceId };
@@ -9770,32 +9763,6 @@ async function answerAdminApproval(id, choiceId) {
   paintAdminInbox();
   adminInboxLoad();
   return st;
-}
-// The viewer's own card (another admin's DM would not open for them), else a link for any admin ('*': the
-// approvals app's DM, listed for a broker that cannot list its cards itself).
-function devopsSlackLink(a) {
-  var links = (a && a.links) || [];
-  for (var i = 0; i < links.length; i++) if (links[i] && links[i].admin === _viewerUserId) return String(links[i].url || '');
-  for (var j = 0; j < links.length; j++) if (links[j] && links[j].admin === '*') return String(links[j].url || '');
-  return '';
-}
-function devopsIsSlackLink(url) {
-  try {
-    var u = new URL(url);
-    return u.protocol === 'https:' && /[.]slack[.]com$/.test(u.hostname);
-  } catch (_e) { return false; }
-}
-function openDevopsSlackCard(id, a) {
-  var url = devopsSlackLink(a);
-  if (!devopsIsSlackLink(url)) {
-    var miss = { status: 'error', message: 'Slack 카드 링크가 없어요 — Slack의 soma devops approvals 앱 DM에서 이 카드를 여세요', retry: false };
-    _adminState[id] = miss;
-    paintAdminInbox();
-    return miss;
-  }
-  window.open(url, '_blank', 'noopener');
-  dashToast({ title: 'Slack 카드를 열었어요', description: adminApprovalTitle(a) + ' — 거기서 승인·거부하면 이 카드도 사라져요', tone: 'neutral' });
-  return _adminState[id] || null;
 }
 (function initAdminInbox() {
   var d = document.getElementById('admin-inbox-drawer');

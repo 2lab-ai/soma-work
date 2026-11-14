@@ -277,7 +277,7 @@ describe('PromptBuilder', () => {
       expect(section).toMatch(/Never cancel, re-run or re-trigger a deploy run/);
     });
 
-    it('deploy workflow reads GitHub through devops-tools gh_read and writes through the github MCP', () => {
+    it('deploy workflow reads GitHub through the environment reader or gh and writes through the github MCP', () => {
       const prompt = builder.loadWorkflowPrompt('deploy')!;
       const execution = prompt.slice(prompt.indexOf('## Execution Process'), prompt.indexOf('### 1) Pre-Validation'));
 
@@ -295,33 +295,29 @@ describe('PromptBuilder', () => {
       // env-access WU5 (#1213): an environment's repository is read with the environment's own token first.
       expect(execution.indexOf('`mcp__server-tools__gh_read`')).toBeGreaterThan(-1);
       expect(execution.indexOf('`mcp__server-tools__gh_read`')).toBeLessThan(
-        execution.indexOf('`mcp__devops-tools__gh_read`'),
+        execution.indexOf('**A GitHub read** is `gh` in Bash'),
       );
+      // #1214: the broker is gone.
+      expect(prompt).not.toContain('devops-tools');
       expect(execution).toContain('names `github.server`');
       // review-of-legends R5/R6: the filter's fields go to `fields`; a segment may be percent-encoded for gh_read.
       expect(execution).toContain('name the fields the `--jq` filter uses in `fields`');
       expect(execution).toContain('percent-encode a space in a path there, never a `/`');
-      // One GitHub read: gh_read with -X GET, query pairs only as -f (a branch holds a `/`), and a jq filter.
-      expect(execution).toContain('`mcp__devops-tools__gh_read`');
+      // One GitHub read: `gh` with -X GET, query pairs only as -f (a branch holds a `/`), and a jq filter.
       expect(execution).toContain(
-        '{"account": "<account>", "args": ["api", "-X", "GET", "repos/<owner/repo>/pulls/<pr-number>", "--jq", ".head.sha"]}',
+        '`["api", "-X", "GET", "repos/<owner/repo>/pulls/<pr-number>", "--jq", ".head.sha"]`, one shell word each',
       );
-      expect(execution).toContain('one array element per word: `-X`, `GET`, the path, each `-f`');
       expect(execution).toContain('Pass every query parameter as a `-f` pair');
       expect(execution).toContain('Never percent-encode anything');
-      // gh_read returns a failed gh as a result, not a tool error.
-      expect(execution).toContain(
-        'An answer** is a result whose `exitCode` is 0 and whose `truncated` and `timedOut` are false',
-      );
+      expect(execution).toContain('**An answer** is a command that exits 0');
       expect(execution).toContain('`"-f", "per_page=100", "-f", "page=<N>"`');
-      // The account is the single member-class account from list; none or several stops the repo.
-      expect(execution).toContain('call `mcp__devops-tools__list` once and use the single account of class `member`');
-      expect(execution).toMatch(/No `member` account, more than one[^\n]*stop that repo/);
+      // No access: a repo no environment covers, in a session whose sandbox does not reach GitHub, stops that repo.
+      expect(execution).toMatch(/\*\*No access\*\*[^\n]*stop that repo/);
       // Writes go through the github MCP server; gh in Bash only outside a sandbox.
       expect(execution).toContain(
         '`mcp__github__create_pull_request` (step 3) and `mcp__github__merge_pull_request` (step 4)',
       );
-      expect(execution).toContain('run `gh` in Bash with the same args when the session is not sandboxed');
+      expect(execution).toContain("an admin session's sandbox reaches GitHub with the bot's own App identity");
       // git over https still works; it is not rewritten.
       expect(execution).toMatch(/`git` over https[^\n]*keep using it/);
       // No gh CLI network command, REST write verb, or path query string is left anywhere in the workflow.

@@ -78,5 +78,5 @@ WU0–WU5 · WU6a · #1242 · #1241 머지(2026-11-13). dev는 v0.3.32로 롤백
 1. 샌드박스 권한 번들(sandbox off를 능력별로 나눠 어드민이 유저 · 어드민 그룹 · 전체에 grant) — 플랜 A/B 유저 선택 대기.
 2. 운영자: 고객 dev 호스트 `config.json` `server-tools.<dev2|stage0>`에 `envUser` · `skills` · `github`(`$secret` · `repos` · 조건표 · `readRefs` = 통합·배포 브랜치) · `web.logins` · `cloudflare`(`$secret` · `zones`, 필요하면 `parts` — rulesets · firewall · filters · pagerules · custom_hostnames · healthchecks는 다른 시스템 자격이 담길 수 있어 opt-in), 고객 스킬 저장소 QA 프로필 `github.server` · `qaEnv.logins`, 토큰 · 비밀번호 → `secrets/`.
 3. 라이브: 비어드민 `$<env>:post-deploy` → 어드민 카드 4버튼 → "환경 전체 항상" → 다음 카드 0장 · dev2 배포 → QA 리포트(비밀번호 노출 0).
-4. 운영자: 각 호스트에서 브로커 `uninstall.sh` → #1253(WU6b) 머지 → #1214 닫기 → 가드의 브로커 경로 정리.
+4. 운영자(고객 dev 호스트 하나 — owner-mac에는 브로커 없음): 운영자 스크립트 1단계(토큰 → `secrets/`, 환경별 Cloudflare 토큰, config 참조; 브로커 유지) → #1286 배포 뒤 환경 유저의 `gh_pr` 쓰기 첫 성공(`env-audit.jsonl` done) → 2단계 `--uninstall`(브로커 Slack 봇 토큰 revoke, `uninstall.sh --purge`, launchd not found) → #1253(WU6b) 머지 → #1214 닫기 → 가드의 브로커 경로 정리.
 5. 원격 셸 금지 오탐: 셸 파서로 좁히는 #1245는 리뷰마다 새 우회가 나와 보류(draft). 경계를 샌드박스로 옮기는 #1255로 간다.
