@@ -119,6 +119,11 @@ Diff (SSOT_5): added = T16 · changed = 환경 스킬 실행 방식 — 새 실�
   닫고 요청자에게 알림, 이 스킬 항상은 그 스킬만 grant).
 - **T7 · T16 (샌드박스):** 일반 유저 세션은 샌드박스 안, 환경 유저 세션은 `Sandbox disabled by admin setting
   {user: env:<org>-dev2}`. 환경 유저 세션이 작업 폴더 밖 QA 레인 잠금을 잡고 풀었다.
+- **T16 크론 경로 (2026-11-14 04:38 UTC, 고객 dev 호스트 v0.3.47):** `env:<org>-stage0` 소유 1회성 크론이 정시에 돌았고
+  (`Cron job due … owner env:<org>-stage0`, #1275 뒤라 긴 턴에 막히지 않음), 그 세션은 `Sandbox disabled by admin setting
+  {user: env:<org>-stage0}`로 작업 폴더 밖에 파일을 썼다. `cron list` 카드는 그 owner를 `` `env:<org>-stage0` ``(inline
+  code)로 보인다(#1280). 같은 배포에서 호스트의 매분 launchd 보정 스크립트가 배포 stop 사이에 구버전 봇을 다시 올려 첫
+  배포가 실패했다 — 그 스크립트가 soma-work 러너 작업 중엔 봇을 건드리지 않게 고쳤다(호스트 스크립트, 이 레포 밖).
 - **라이브에서 나온 고침:** #1274 — 메모리 저장소가 `env:` ID를 거부해 환경 유저 턴이 모델 호출 전에 죽던 것.
 - **워크플로 점검에서 나온 고침:** #1275 — 크론 tick이 새 스레드 크론의 턴 전체를 기다려, 20:00 UTC 정기 작업(6–8시간)이
   도는 동안 다른 크론 약 10개가 매일 catch-up 창(60분) 밖으로 밀려 사라지던 것.
