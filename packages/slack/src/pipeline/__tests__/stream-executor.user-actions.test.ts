@@ -168,7 +168,7 @@ function createParams(session: any, abortController: AbortController): any {
   };
 }
 
-function stream(_session: any, ...events: any[]) {
+function stream(...events: any[]) {
   return () =>
     (async function* () {
       yield* events;
@@ -188,7 +188,7 @@ describe('StreamExecutor — user actions reach the host provider', () => {
   it('hands every tool batch, named, with the thread and a persist+broadcast hook', async () => {
     const session = createSession();
     const persistAndBroadcast = vi.fn();
-    const deps = createDeps(stream(session, toolCall('tu-1', 'mcp__user-action__instruct_user'), toolResult('tu-1')));
+    const deps = createDeps(stream(toolCall('tu-1', 'mcp__user-action__instruct_user'), toolResult('tu-1')));
     deps.claudeHandler.getSessionRegistry.mockReturnValue({
       beginTurn: vi.fn(),
       endTurn: vi.fn(),
@@ -221,7 +221,6 @@ describe('StreamExecutor — user actions reach the host provider', () => {
     const session = createSession();
     const deps = createDeps(
       stream(
-        session,
         toolCall('tu-1', 'mcp__user-action__instruct_user'),
         toolResult('tu-1'),
         toolCall('tu-2', 'mcp__user-action__instruct_user'),

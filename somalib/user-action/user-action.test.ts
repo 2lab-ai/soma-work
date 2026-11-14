@@ -321,6 +321,30 @@ describe('validateInstructUserArgs', () => {
   });
 
   it.each([
+    ['cat > /tmp/login.json <<\'EOF\'\n{"password":"hunter2"}\nEOF', 'script'],
+    ['cat > /tmp/login.json <<EOF\n{"password": "hunter2"}\nEOF', 'script'],
+    ["curl -H 'Authorization: bearer abc123' https://api.example.com", 'script'],
+    ["curl -H 'Authorization: BASIC dXNlcjpw' https://api.example.com", 'script'],
+    ['send authorization: bearer abc123', 'why'],
+  ])('also: data in a heredoc body, and auth schemes in any case: %s', (text, field) => {
+    const args = field === 'script' ? { ...base, script: text } : { ...base, [field]: text };
+    const r = validateInstructUserArgs(args);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe('SECRET_IN_SCRIPT');
+    expect(r.error.message).not.toContain('hunter2');
+  });
+
+  it.each([
+    "PASSWORD='<password>' ./login",
+    'cat <<<hello',
+    'grep -c x <<< "$(date)"',
+    'cat > /tmp/login.json <<EOF\n{"password": "$PW"}\nEOF',
+  ])('a quoted placeholder, here-strings, and a reference in heredoc data pass: %s', (script) => {
+    expect(validateInstructUserArgs({ ...base, script }).ok).toBe(true);
+  });
+
+  it.each([
     'PASSWORD="$PW" ./login',
     'PASSWORD="${PW}" ./login',
     'PASSWORD="${PW:?set PW first}" ./login',
@@ -553,6 +577,8 @@ describe('inspectUserActionScript', () => {
     expect(su.commands).toEqual(['touch']);
     expect(su.findings.map((f) => f.id)).toContain('sudo');
     expect(inspectUserActionScript('env --split-string="ls -la"', 'bash', SYNTAX_OK).commands).toEqual(['ls']);
+    const decoder = inspectUserActionScript("printf 'ZWNobyBoaQo=' | env -S 'base64 -d' | env bash", 'bash', SYNTAX_OK);
+    expect(decoder.findings.map((f) => f.id)).toContain('hidden-code');
   });
 
   it('flags eval / base64-decoded execution as danger', () => {

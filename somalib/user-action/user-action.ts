@@ -219,9 +219,13 @@ function shellWordLiteral(text: string, i: number, startQuote = ''): string {
 /** A value that holds no credential: nothing, a path, or (in prose) a reference, a substitution or a `<placeholder>`. */
 const isPath = (v: string) => /^(?:\/|~\/|\.\.?\/)/.test(v);
 
-/** The quote open at `index` of a script (`'`, `"` or none); comments are skipped. */
+/**
+ * The quote open at `index` of a script (`'`, `"` or none). Comments are skipped; a heredoc body is data, in no shell
+ * quote (`{"password":"x"}` there is JSON, not a quoted word).
+ */
 function quoteAt(script: string, index: number): string {
   let quote = '';
+  const pending: Array<{ tag: string; stripTabs: boolean }> = [];
   for (let j = 0; j < index; j++) {
     const c = script[j];
     if (c === '\\' && quote !== "'") j++;
@@ -231,7 +235,27 @@ function quoteAt(script: string, index: number): string {
     else if (c === '#' && (j === 0 || /\s/.test(script[j - 1]))) {
       const nl = script.indexOf('\n', j);
       if (nl < 0 || nl >= index) return '';
-      j = nl;
+      j = nl - 1;
+    } else if (script.startsWith('<<<', j)) j += 2;
+    else if (script.startsWith('<<', j)) {
+      const m = /^<<(-?)[ \t]*(['"]?)([A-Za-z_][\w-]*)\2/.exec(script.slice(j));
+      if (m) {
+        pending.push({ tag: m[3], stripTabs: m[1] === '-' });
+        j += m[0].length - 1;
+      }
+    } else if (c === '\n' && pending.length) {
+      let k = j + 1;
+      for (const doc of pending.splice(0)) {
+        while (k < script.length) {
+          const next = script.indexOf('\n', k);
+          const end = next < 0 ? script.length : next;
+          if (index >= k && index <= end) return ''; // inside a heredoc body
+          const line = script.slice(k, end);
+          k = end + 1;
+          if ((doc.stripTabs ? line.replace(/^\t+/, '') : line) === doc.tag) break;
+        }
+      }
+      j = k - 1;
     }
   }
   return quote;
@@ -254,7 +278,7 @@ function secretLiteral(text: string, script = false): boolean {
     const shell = /^\+?=|^[ \t]+(?=\S)/.exec(text.slice(after));
     if (shell && (shell[0].endsWith('=') || (isOption && OPTION_TAKES_SECRET.test(m[0])))) {
       const literal = shellWordLiteral(text, after + shell[0].length, script ? quoteAt(text, start) : '');
-      if (literal.trim() && !isPath(literal)) return true;
+      if (literal.trim() && !isPath(literal) && !/^<[^<>]+>$/.test(literal)) return true;
       // In the script the shell's reading is the reading: `TOKEN= date` is an empty value, not `date`.
       if (script) continue;
     }
@@ -299,7 +323,7 @@ function credentialArgLiteral(text: string, script: boolean): boolean {
     }
   }
   // An HTTP credential after its scheme: `Authorization: Bearer x`, `Basic x` — any length.
-  for (const m of text.matchAll(/\b(?:Bearer|Basic)[ \t]+/g)) {
+  for (const m of text.matchAll(/\b(?:Bearer|Basic)[ \t]+/gi)) {
     const at = (m.index ?? 0) + m[0].length;
     if (script) {
       const literal = shellWordLiteral(text, at, quoteAt(text, at)).split(/["',;}\])\s]/)[0];
@@ -468,8 +492,8 @@ const HIDDEN_CODE: readonly RegExp[] = [
   /\bbase64\s+(?:-\S+\s+)*(?:-d|-D|--decode)\b[^\n]*\|\s*(?:\S*\/)?(?:ba|z|da|k)?sh\b/,
 ];
 /** A base64 decode: what it writes is code no one can read in the script. */
-const isDecode = (words: string[], cmd: string) =>
-  cmd === 'base64' && words.some((w) => w === '--decode' || /^-[A-Za-z]*[dD][A-Za-z]*$/.test(w));
+const isDecode = (args: string[], cmd: string) =>
+  cmd === 'base64' && args.some((w) => w === '--decode' || /^-[A-Za-z]*[dD][A-Za-z]*$/.test(w));
 
 interface Segment {
   words: string[];
@@ -609,7 +633,13 @@ function scan(script: string, depth = 0): { segments: Segment[]; redirects: stri
       while (i + 1 < script.length && script[i + 1] !== '\n') i++;
       continue;
     }
-    if (c === '<' && script[i + 1] === '<' && script[i + 2] !== '<') {
+    if (c === '<' && script.startsWith('<<<', i)) {
+      // A here-string: the word after it is input, and no heredoc starts here.
+      endWord();
+      i += 2;
+      continue;
+    }
+    if (c === '<' && script[i + 1] === '<') {
       // A heredoc: its body (the lines after this one, up to its tag) is input to the command, not commands.
       const m = /^<<(-?)[ \t]*(['"]?)([A-Za-z_][\w-]*)\2/.exec(script.slice(i));
       if (m) {
@@ -703,7 +733,8 @@ const LEAD_KEYWORDS = new Set([
 const HEADER_KEYWORDS = new Set(['for', 'case', 'select', 'function', 'in']);
 
 /** The program a simple command runs: prefixes, keywords, `X=1` assignments and directories dropped. */
-function commandOf(words: string[]): { cmd: string; sudo: boolean } | null {
+/** The command a segment runs (behind any wrapper), whether sudo wraps it, and the arguments it gets. */
+function commandOf(words: string[]): { cmd: string; sudo: boolean; args: string[] } | null {
   let i = 0;
   let sudo = false;
   while (i < words.length) {
@@ -721,18 +752,18 @@ function commandOf(words: string[]): { cmd: string; sudo: boolean } | null {
           // `env -S 'bash -e'`: the string is the command line that runs.
           const line = split[1] || (words[i + 1] ?? '');
           const inner = commandOf([...line.split(/\s+/).filter(Boolean), ...words.slice(split[1] ? i + 1 : i + 2)]);
-          return inner ? { cmd: inner.cmd, sudo: sudo || inner.sudo } : sudo ? { cmd: '', sudo } : null;
+          return inner ? { ...inner, sudo: sudo || inner.sudo } : sudo ? { cmd: '', sudo, args: [] } : null;
         }
         i += takes?.has(words[i]) ? 2 : 1;
       }
       if (name === 'timeout' && i < words.length) i += 1; // the duration
     } else if (LEAD_KEYWORDS.has(w)) i += 1;
-    else if (HEADER_KEYWORDS.has(w)) return sudo ? { cmd: '', sudo } : null;
+    else if (HEADER_KEYWORDS.has(w)) return sudo ? { cmd: '', sudo, args: [] } : null;
     else break;
   }
   const raw = words[i];
-  if (!raw) return sudo ? { cmd: '', sudo } : null;
-  return { cmd: raw.split('/').pop() ?? raw, sudo };
+  if (!raw) return sudo ? { cmd: '', sudo, args: [] } : null;
+  return { cmd: raw.split('/').pop() ?? raw, sudo, args: words.slice(i + 1) };
 }
 
 function urlHosts(script: string): string[] {
@@ -775,17 +806,17 @@ export function inspectUserActionScript(
   // Read with line continuations joined, so `curl … \\⏎ | sh` is one line.
   const joined = script.replace(/\\\n/g, ' ');
   /** An interpreter (behind any wrapper) reading a pipeline that an earlier command matching `feeds` writes into. */
-  const pipedIntoInterpreter = (feeds: (words: string[], cmd: string) => boolean) =>
+  const pipedIntoInterpreter = (feeds: (args: string[], cmd: string) => boolean) =>
     segments.some((seg, k) => {
       const c = commandOf(seg.words);
       if (!c || !INTERPRETERS.has(c.cmd)) return false;
       return segments.slice(0, k).some((prev) => {
         if (prev.pipeline !== seg.pipeline) return false;
         const p = commandOf(prev.words);
-        return !!p && feeds(prev.words, p.cmd);
+        return !!p && feeds(p.args, p.cmd);
       });
     });
-  const downloadThenRun = pipedIntoInterpreter((_words, cmd) => cmd === 'curl' || cmd === 'wget');
+  const downloadThenRun = pipedIntoInterpreter((_args, cmd) => cmd === 'curl' || cmd === 'wget');
   if (downloadThenRun || REMOTE_CODE.some((re) => re.test(joined))) {
     add({
       id: 'remote-code',
