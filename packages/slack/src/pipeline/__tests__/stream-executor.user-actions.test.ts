@@ -44,7 +44,7 @@ setStreamExecutorProviders({
 
 const SESSION_KEY = 'C42:thread42';
 
-function createDeps(streamFn: () => AsyncIterable<any>, overrides: Record<string, unknown> = {}): any {
+function createDeps(streamFn: () => AsyncIterable<any>): any {
   return {
     claudeHandler: {
       setActivityState: vi.fn(),
@@ -137,7 +137,6 @@ function createDeps(streamFn: () => AsyncIterable<any>, overrides: Record<string
       clearChoice: vi.fn().mockResolvedValue(undefined),
       isCompletionMarkerActive: vi.fn().mockReturnValue(false),
     },
-    ...overrides,
   };
 }
 
@@ -192,10 +191,7 @@ describe('StreamExecutor — user actions reach the host provider', () => {
   it('hands every tool batch, named, with the thread and a persist+broadcast hook', async () => {
     const session = createSession();
     const persistAndBroadcast = vi.fn();
-    const deps = createDeps(
-      stream(session, toolCall('tu-1', 'mcp__user-action__instruct_user'), toolResult('tu-1')),
-      {},
-    );
+    const deps = createDeps(stream(session, toolCall('tu-1', 'mcp__user-action__instruct_user'), toolResult('tu-1')));
     deps.claudeHandler.getSessionRegistry.mockReturnValue({
       beginTurn: vi.fn(),
       endTurn: vi.fn(),

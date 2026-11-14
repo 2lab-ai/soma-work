@@ -231,6 +231,66 @@ describe('validateInstructUserArgs', () => {
   });
 
   it.each([
+    ['PASSWORD="$(cat <<< \'hunter2\')" ./login', 'script'],
+    ['PASSWORD="$(cat<<<hunter2)" ./login', 'script'],
+    ['node -e \'console.log({password:"hunter2"})\'', 'script'],
+    ['{password: hunter2}', 'why'],
+    ['curl -d "{\\"password\\":\\"hunter2\\"}" https://x.example/login', 'script'],
+    ['export "PASSWORD= hunter2" && ./login', 'script'],
+    ['curl -H "X-Api-Key: hunter2" https://x.example', 'script'],
+    ['curl -H "Private-Token: hunter2" https://x.example', 'script'],
+    ['./app --api-key=hunter2', 'script'],
+    ['./app --client-secret hunter2', 'script'],
+  ])('also: here-strings, object keys, escaped JSON, quoted spaces, headers and dashed options: %s', (text, field) => {
+    const args = field === 'script' ? { ...base, script: text } : { ...base, [field]: text };
+    const r = validateInstructUserArgs(args);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe('SECRET_IN_SCRIPT');
+    expect(r.error.message).not.toContain('hunter2');
+  });
+
+  it.each([
+    'TOKEN= date',
+    "PASSWORD='' date",
+    'GITHUB_TOKEN= git status',
+    'echo "$PASSWORD" | docker login --password-stdin -u me registry.example',
+    './app --api-key-file ~/.config/app/key --verbose',
+    'curl -H "X-Api-Key: $API_KEY" https://x.example',
+  ])('an empty assignment before a command, and options that only name where a secret is, pass: %s', (script) => {
+    expect(validateInstructUserArgs({ ...base, script }).ok).toBe(true);
+  });
+
+  it.each([
+    ["curl -u 'me:hunter2' https://x.example", 'script'],
+    ['curl --user=me:hunter2 https://x.example', 'script'],
+    ["curl 'https://alice:$hunter2@api.example.com/'", 'script'],
+    ['git clone "https://me:${PW:-hunter2}@git.example/x.git"', 'script'],
+    ['PASSWORD="$(/bin/echo hunter2)" ./login', 'script'],
+    ['PASSWORD="$(command printf hunter2)" ./login', 'script'],
+    ['API 키: hunter2', 'why'],
+    ['see https://me:${PW:-hunter2}@git.example', 'why'],
+  ])('also: curl -u, URL passwords the shell does not expand, path-qualified producers, API 키: %s', (text, field) => {
+    const args = field === 'script' ? { ...base, script: text } : { ...base, [field]: text };
+    const r = validateInstructUserArgs(args);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe('SECRET_IN_SCRIPT');
+    expect(r.error.message).not.toContain('hunter2');
+  });
+
+  it.each([
+    'read -rsp \'Password: \' PASSWORD; ./login "$PASSWORD"',
+    'GH_TOKEN= git status',
+    'curl -u me https://x.example',
+    'sudo -u root launchctl list',
+    'curl -u "me:$PASSWORD" https://x.example',
+    'git clone "https://me:${PW}@git.example/x.git"',
+  ])('a prompt string, an empty value, a user without a password, and expanded URL passwords pass: %s', (script) => {
+    expect(validateInstructUserArgs({ ...base, script }).ok).toBe(true);
+  });
+
+  it.each([
     'PASSWORD="$PW" ./login',
     'PASSWORD="${PW}" ./login',
     'PASSWORD="${PW:?set PW first}" ./login',

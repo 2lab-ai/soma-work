@@ -123,22 +123,28 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   /\bAKIA[0-9A-Z]{16}\b/,
   /\bAIza[0-9A-Za-z_-]{30,}/,
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
-  // Generic shapes: a JWT, a bearer header, a password in a URL. A secret-named key with a literal value is
-  // `secretLiteral`.
-  /\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@'"]+:(?!\$)[^\s/@'"]+@/i,
+  // Generic shapes: a JWT, a bearer header. A secret-named key with a literal value is `secretLiteral`; a password in a
+  // URL or a `-u name:password` is `credentialArgLiteral`.
   /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\./,
   /\bBearer\s+[A-Za-z0-9._~+/=-]{20,}/i,
 ];
 
-/** A name, or a Korean word for a secret, that is not itself a reference (`$TOKEN`, `${TOKEN…}`). */
-const KEY_CANDIDATE = /(?<![$A-Za-z0-9_{])(?:[A-Za-z0-9_]+|비밀번호|비번|암호|패스워드|토큰|시크릿|API ?키)/g;
+/**
+ * A name (`DB_PASSWORD`, `api-key`, `X-Api-Key`), or a Korean word for a secret, that is not itself a reference
+ * (`$TOKEN`, `${TOKEN…}`, `${#TOKEN}`, `${!TOKEN}`). A bare `{` before it is an object key: `{password: …}`.
+ */
+const KEY_CANDIDATE =
+  /(?<![$A-Za-z0-9_])(?<!\$\{[#!]?)(?:비밀번호|비번|암호|패스워드|토큰|시크릿|API ?키|[A-Za-z0-9_][A-Za-z0-9_-]*)/g;
 /** A secret-named key: any case, anywhere in a name; PASS / PW only as a whole part of one (`DB_PASS`, not `BYPASS`). */
 const isSecretName = (key: string) =>
   /[가-힣]/.test(key) ||
-  /TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|PASSCODE|CREDENTIAL|API_?KEY|PRIVATE_?KEY|ACCESS_?KEY/i.test(key) ||
-  /(?:^|_)(?:PASS|PW)(?:_|$)/i.test(key);
+  /TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|PASSCODE|CREDENTIAL|API[_-]?KEY|PRIVATE[_-]?KEY|ACCESS[_-]?KEY/i.test(key) ||
+  /(?:^|[_-])(?:PASS|PW)(?:[_-]|$)/i.test(key);
+/** An option that takes the secret itself (`--password x`, `--client-secret x`), not where it is (`--password-stdin`). */
+const OPTION_TAKES_SECRET = /(?:TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|PASSCODE|KEY|PASS|PW)$/i;
 /** Commands whose output is text written in the script (or encoded in it) — a substitution of one is a literal. */
-const LITERAL_PRODUCERS = /^\s*(?:echo|printf|base64|xxd|rev|openssl\s+(?:enc|base64))\b|<<</;
+const LITERAL_PRODUCERS =
+  /^\s*(?:(?:command|builtin|env)\s+)?(?:\S*\/)?(?:echo|printf|base64|xxd|rev|openssl\s+(?:enc|base64))\b|<<</;
 
 /** The index just past the `close` that balances the `open` before `from` (nesting counted), or the end. */
 function balanced(text: string, from: number, open: string, close: string): number {
@@ -155,9 +161,9 @@ function balanced(text: string, from: number, open: string, close: string): numb
  * The literal text of the shell word at `i`: quotes resolved, expansions dropped — except text the shell writes
  * itself (`'…'`, `$'…'`, `$"…"`, a `${X:-default}` default, `$(echo …)`), which is literal.
  */
-function shellWordLiteral(text: string, i: number): string {
+function shellWordLiteral(text: string, i: number, startQuote = ''): string {
   let literal = '';
-  let quote = '';
+  let quote = startQuote;
   while (i < text.length) {
     const c = text[i];
     if (!quote && /[\s;&|()<>]/.test(c)) break;
@@ -180,12 +186,12 @@ function shellWordLiteral(text: string, i: number): string {
     } else if (c === '$' && text[i + 1] === '(') {
       const end = balanced(text, i + 2, '(', ')');
       const body = text.slice(i + 2, end - 1);
-      if (LITERAL_PRODUCERS.test(body)) literal += body;
+      if (LITERAL_PRODUCERS.test(body)) literal += `$(${body})`; // never read as a path, whatever it prints
       i = end;
     } else if (c === '`') {
       const end = text.indexOf('`', i + 1) < 0 ? text.length : text.indexOf('`', i + 1) + 1;
       const body = text.slice(i + 1, end - 1);
-      if (LITERAL_PRODUCERS.test(body)) literal += body;
+      if (LITERAL_PRODUCERS.test(body)) literal += `$(${body})`; // never read as a path, whatever it prints
       i = end;
     } else if (c === '$' && text[i + 1] === '{') {
       const end = balanced(text, i + 2, '{', '}');
@@ -206,6 +212,24 @@ function shellWordLiteral(text: string, i: number): string {
 /** A value that holds no credential: nothing, a path, or (in prose) a reference, a substitution or a `<placeholder>`. */
 const isPath = (v: string) => /^(?:\/|~\/|\.\.?\/)/.test(v);
 
+/** The quote open at `index` of a script (`'`, `"` or none); comments are skipped. */
+function quoteAt(script: string, index: number): string {
+  let quote = '';
+  for (let j = 0; j < index; j++) {
+    const c = script[j];
+    if (c === '\\' && quote !== "'") j++;
+    else if (quote) {
+      if (c === quote) quote = '';
+    } else if (c === "'" || c === '"') quote = c;
+    else if (c === '#' && (j === 0 || /\s/.test(script[j - 1]))) {
+      const nl = script.indexOf('\n', j);
+      if (nl < 0 || nl >= index) return '';
+      j = nl;
+    }
+  }
+  return quote;
+}
+
 /**
  * Whether `text` gives a secret-named key a literal value, in any of the forms a field can carry it: a shell assignment
  * or option (`PASSWORD='x'`, `export "PASSWORD=x"`, `--password=x`, `--token x`), or prose, markup and data
@@ -213,20 +237,26 @@ const isPath = (v: string) => /^(?:\/|~\/|\.\.?\/)/.test(v);
  * is empty, a path, or comes from somewhere else: `$X`, `${X}`, `${X:?msg}`, `$(command)` (not `echo` / `printf`), a
  * `<placeholder>`. Checked in every posted field.
  */
-function secretLiteral(text: string): boolean {
+function secretLiteral(text: string, script = false): boolean {
   for (const m of text.matchAll(KEY_CANDIDATE)) {
     if (!isSecretName(m[0])) continue;
-    const after = (m.index ?? 0) + m[0].length;
-    const isOption = /--?$/.test(text.slice(0, m.index));
+    const start = m.index ?? 0;
+    const after = start + m[0].length;
+    const isOption = /--?$/.test(text.slice(0, start));
     // Shell: KEY=word (also inside a quoted word, or as --key=word), or --key word.
     const shell = /^\+?=|^[ \t]+(?=\S)/.exec(text.slice(after));
-    if (shell && (shell[0].endsWith('=') || isOption)) {
-      const literal = shellWordLiteral(text, after + shell[0].length);
+    if (shell && (shell[0].endsWith('=') || (isOption && OPTION_TAKES_SECRET.test(m[0])))) {
+      const literal = shellWordLiteral(text, after + shell[0].length, script ? quoteAt(text, start) : '');
       if (literal.trim() && !isPath(literal)) return true;
+      // In the script the shell's reading is the reading: `TOKEN= date` is an empty value, not `date`.
+      if (script) continue;
     }
-    // Prose, markup, data: KEY, closing marks, a separator, opening marks, then the value.
-    const prose = /^[`'"*_\]]*[ \t]*(?::=|=>|\+=|=|:|：)[ \t`'"*_]*/.exec(text.slice(after));
+    // Prose, markup, data: KEY, closing marks, a separator, opening marks, then the value (`\"` in escaped JSON too).
+    const prose = /^[`'"*_\]\\]*[ \t]*(?::=|=>|\+=|=|:|：)([ \t`'"*_\\]*)/.exec(text.slice(after));
     if (!prose) continue;
+    // In the script a quote that closes before the value ends it: `read -rsp 'Password: ' PASSWORD` gives no value.
+    const open = script ? quoteAt(text, start) : '';
+    if (open && prose[1].replace(/\\./g, '').includes(open)) continue;
     const value = text.slice(after + prose[0].length);
     if (!value || /^[\s,;)\]}]/.test(value)) continue;
     if (/^\$\(/.test(value) && !LITERAL_PRODUCERS.test(value.slice(2))) continue;
@@ -234,6 +264,31 @@ function secretLiteral(text: string): boolean {
       continue;
     if (/^<[^<>\n]+>/.test(value) || isPath(value)) continue;
     return true;
+  }
+  return false;
+}
+
+/**
+ * A password written into a credential argument: a URL's `user:password@` (in the script, read as the shell reads the
+ * word — `'…:$x@'` and `${PW:-x}` are literal), or `-u` / `--user` / `--proxy-user` `name:password` (curl and the like).
+ */
+function credentialArgLiteral(text: string, script: boolean): boolean {
+  for (const m of text.matchAll(/\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@'"]+:/gi)) {
+    const at = (m.index ?? 0) + m[0].length;
+    if (script) {
+      const literal = shellWordLiteral(text, at, quoteAt(text, at));
+      const userinfo = literal.includes('@') ? literal.slice(0, literal.indexOf('@')) : '';
+      if (userinfo.trim() && !userinfo.includes('/')) return true;
+    } else {
+      const pw = /^([^\s/@'"]*)@/.exec(text.slice(at))?.[1];
+      if (pw && !/^\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*\})$/.test(pw)) return true;
+    }
+  }
+  for (const m of text.matchAll(/(?:^|[\s;&|(])(?:-u|--user|--proxy-user)(?:=|[ \t]+)/g)) {
+    const at = (m.index ?? 0) + m[0].length;
+    const literal = shellWordLiteral(text, at, script ? quoteAt(text, at) : '');
+    const colon = literal.indexOf(':');
+    if (colon >= 0 && literal.slice(colon + 1).trim()) return true;
   }
   return false;
 }
@@ -315,7 +370,12 @@ export function validateInstructUserArgs(args: unknown): ValidateInstructUserRes
     ['script', script],
     ...TEXT_FIELDS.map((f) => [f.key, out[f.key] ?? ''] as [string, string]),
   ];
-  const leaking = posted.find(([, text]) => secretLiteral(text) || SECRET_PATTERNS.some((re) => re.test(text)));
+  const leaking = posted.find(
+    ([field, text]) =>
+      secretLiteral(text, field === 'script') ||
+      credentialArgLiteral(text, field === 'script') ||
+      SECRET_PATTERNS.some((re) => re.test(text)),
+  );
   if (leaking) {
     return fail(
       'SECRET_IN_SCRIPT',
