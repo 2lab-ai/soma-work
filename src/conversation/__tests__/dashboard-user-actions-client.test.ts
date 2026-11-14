@@ -26,10 +26,18 @@ function clientVar(name: string): string {
   return cook(TEMPLATE.slice(start + 1, TEMPLATE.indexOf(';\n', start) + 2));
 }
 const VARS = ['UA_STATUS_LABEL', 'UA_VERDICT_LABEL', 'UA_VERDICT_ICON', 'UA_LEVEL_ICON'];
-const FNS = ['esc', 'escAttr', 'userActionCheckHtml', 'userActionItemHtml', 'panelUserActionsHtml'];
+const FNS = [
+  'esc',
+  'escAttr',
+  'userActionCheckHtml',
+  'userActionItemHtml',
+  'panelUserActionsHtml',
+  'userActionsWaiting',
+];
 const SOURCE = `${VARS.map(clientVar).join('\n')}\n${FNS.map(clientFn).join('\n')}`;
-const api = new Function(`${SOURCE}\nreturn { panelUserActionsHtml };`)() as {
+const api = new Function(`${SOURCE}\nreturn { panelUserActionsHtml, userActionsWaiting };`)() as {
   panelUserActionsHtml: (s: unknown) => string;
+  userActionsWaiting: (s: unknown) => number;
 };
 
 function action(over: Record<string, unknown> = {}) {
@@ -50,6 +58,24 @@ function action(over: Record<string, unknown> = {}) {
     ...over,
   };
 }
+
+describe('사용자 할 일 — the count on the card face', () => {
+  it('counts only required tasks still waiting: optional and answered ones raise no flag', () => {
+    expect(api.userActionsWaiting({})).toBe(0);
+    expect(api.userActionsWaiting({ userActions: [action({ optional: true })] })).toBe(0);
+    expect(api.userActionsWaiting({ userActions: [action({ status: 'done' }), action({ status: 'failed' })] })).toBe(0);
+    expect(
+      api.userActionsWaiting({
+        userActions: [
+          action(),
+          action({ id: 'ua_2' }),
+          action({ id: 'ua_3', optional: true }),
+          action({ status: 'done' }),
+        ],
+      }),
+    ).toBe(2);
+  });
+});
 
 describe('사용자 할 일 — the detail card section', () => {
   it('is empty without user actions (the region stays hidden)', () => {

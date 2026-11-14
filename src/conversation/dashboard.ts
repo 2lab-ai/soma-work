@@ -10234,6 +10234,11 @@ function userActionItemHtml(a) {
     + '<button type="button" class="pua-btn is-done" data-ua-id="' + escAttr(a.id) + '" data-ua-status="done" onclick="answerUserAction(this)">' + '완료했어요' + '</button>'
     + '<button type="button" class="pua-btn" data-ua-id="' + escAttr(a.id) + '" data-ua-status="failed" onclick="answerUserAction(this)">' + '안 됐어요' + '</button></div></li>';
 }
+/** 사용자 할 일 still waiting on the owner that the card face counts: required ones only (optional ones raise no flag). */
+function userActionsWaiting(s) {
+  return ((s && s.userActions) || []).filter(function(a) { return a && a.status === 'pending' && !a.optional; }).length;
+}
+
 function panelUserActionsHtml(s) {
   var list = (s && s.userActions) || [];
   if (!list.length) return '';
@@ -12110,7 +12115,7 @@ function cardOf(s, col) {
   var pr = cardPrMetric(s);
   if (pr) metrics.push(pr);
   // 사용자 할 일 (instruct_user): required tasks still waiting on the owner — optional ones raise no flag.
-  var uaWait = (s.userActions || []).filter(function(a) { return a && a.status === 'pending' && !a.optional; }).length;
+  var uaWait = userActionsWaiting(s);
   if (uaWait > 0) metrics.push({ text: String(uaWait), glyph: 'alert', title: '사용자 할 일 ' + uaWait + '개', label: '사용자 할 일 ' + uaWait + '개' });
   if (metrics.length) card.metrics = metrics;
   // 작업 카드의 연결 (SSOT 2026-11-02): every linked issue, PR and wiki with its state — the face's links row.

@@ -240,18 +240,34 @@ function contextAt(
 ): { quote: string; heredoc: '' | 'literal' | 'expanding'; comment?: boolean } {
   let quote = '';
   const pending: Array<{ tag: string; stripTabs: boolean; quoted: boolean }> = [];
+  // A `$( … )` is a script of its own: the quote around it is set aside until its `)` (with `(`s counted).
+  const outer: Array<{ quote: string; parens: number }> = [];
   for (let j = 0; j < index; j++) {
     const c = script[j];
     if (c === '\\' && quote !== "'") j++;
-    else if (quote) {
-      if (c === quote) quote = '';
+    else if (quote === "'") {
+      if (c === "'") quote = '';
+    } else if (c === '$' && script[j + 1] === '(' && script[j + 2] !== '(') {
+      outer.push({ quote, parens: 0 });
+      quote = '';
+      j++;
+    } else if (quote === '"') {
+      if (c === '"') quote = '';
     } else if (c === "'" || c === '"') quote = c;
-    else if (c === '#' && (j === 0 || /\s/.test(script[j - 1]))) {
+    else if (outer.length && c === '(') outer[outer.length - 1].parens++;
+    else if (outer.length && c === ')') {
+      const top = outer[outer.length - 1];
+      if (top.parens > 0) top.parens--;
+      else quote = outer.pop()?.quote ?? '';
+    } else if (c === '#' && (j === 0 || /\s/.test(script[j - 1]))) {
       const nl = script.indexOf('\n', j);
       if (nl < 0 || nl >= index) return { quote: '', heredoc: '', comment: true };
       j = nl - 1;
-    } else if (script.startsWith('$((', j)) {
-      const end = script.indexOf('))', j + 3); // arithmetic: `<<` there is a shift
+    } else if (
+      script.startsWith('$((', j) ||
+      (script.startsWith('((', j) && (j === 0 || /[\s;&|]/.test(script[j - 1])))
+    ) {
+      const end = script.indexOf('))', j + 2); // arithmetic: `<<` there is a shift
       j = end < 0 ? index : end + 1;
     } else if (script.startsWith('<<<', j)) j += 2;
     else if (script.startsWith('<<', j)) {
@@ -377,7 +393,7 @@ function credentialArgLiteral(text: string, script: boolean): boolean {
     }
   }
   // An Authorization header's credential, after any scheme (`Bearer`, `Basic`, `Token`, or none) — any length.
-  for (const m of text.matchAll(/\b(?:Proxy-)?Authorization[ \t]*:[ \t]*(?:[A-Za-z][\w-]*[ \t]+)?/gi)) {
+  for (const m of text.matchAll(/\b(?:Proxy-)?Authorization[ \t]*:[ \t]*(?:[A-Za-z][\w-]*[ \t]+(?=[^\s'"]))?/gi)) {
     const at = (m.index ?? 0) + m[0].length;
     const v = script
       ? dataValue(scriptLiteralAt(text, at), '')
@@ -667,6 +683,12 @@ function scan(script: string, depth = 0): { segments: Segment[]; redirects: stri
 
   for (let i = 0; i < script.length; i++) {
     const c = script[i];
+    if (!quote && !inWord && script.startsWith('((', i)) {
+      // An arithmetic command, `(( x = 1 << 3 ))`: no heredoc, nothing run.
+      const end = script.indexOf('))', i + 2);
+      i = end < 0 ? script.length - 1 : end + 1;
+      continue;
+    }
     if (quote !== "'" && script.startsWith('$((', i)) {
       // Arithmetic: `$((1<<2))` shifts, it opens no heredoc and runs nothing.
       const end = script.indexOf('))', i + 3);
@@ -784,6 +806,23 @@ function scan(script: string, depth = 0): { segments: Segment[]; redirects: stri
     inWord = true;
   }
   endSegment();
+  // A shell's `-c` string and `eval`'s words are scripts too: their commands, pipelines and effects are read as well.
+  if (depth < 4) {
+    for (const seg of [...segments]) {
+      const c = commandOf(seg.words);
+      if (!c) continue;
+      let body: string | undefined;
+      if (c.cmd === 'eval') body = c.args.join(' ');
+      else if (/^(?:ba|z|da|k)?sh$/.test(c.cmd)) {
+        const at = c.args.findIndex((a) => /^-[A-Za-z]*c[A-Za-z]*$/.test(a));
+        if (at >= 0) body = c.args[at + 1];
+      }
+      if (!body) continue;
+      const inner = scan(body, depth + 1);
+      segments.push(...inner.segments);
+      redirects.push(...inner.redirects);
+    }
+  }
   return { segments, redirects, unclosedHeredoc: unclosedHeredoc || heredocs.length > 0 };
 }
 
@@ -901,7 +940,8 @@ export function inspectUserActionScript(
       detail: '받은 내용을 먼저 열어 보지 않고 셸이나 인터프리터로 넘긴다.',
     });
   }
-  if (pipedIntoInterpreter(isDecode) || HIDDEN_CODE.some((re) => re.test(runnable))) {
+  const runsEval = segments.some((seg) => commandOf(seg.words)?.cmd === 'eval');
+  if (runsEval || pipedIntoInterpreter(isDecode) || HIDDEN_CODE.some((re) => re.test(runnable))) {
     add({
       id: 'hidden-code',
       level: 'danger',
