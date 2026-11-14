@@ -223,7 +223,7 @@ const isPath = (v: string) => /^(?:\/|~\/|\.\.?\/)/.test(v);
 /** A heredoc operator at the start of `text`: `<<EOF`, `<<-EOF`, `<<'EOF'`, `<<"EOF"`, `<<\EOF` (quoted: no expansion). */
 function heredocStart(text: string): { length: number; tag: string; stripTabs: boolean; quoted: boolean } | null {
   // The delimiter is a whole word (`EOF.json`, `END-OF`), quotes removed; any quoting makes the body literal.
-  const m = /^<<(-?)[ \t]*((?=[A-Za-z_'"\\])(?:[^\s;&|()<>'"\\]|'[^'\n]*'|"[^"\n]*"|\\.)+)/.exec(text);
+  const m = /^<<(-?)[ \t]*((?=[A-Za-z0-9_'"\\])(?:[^\s;&|()<>'"\\]|'[^'\n]*'|"[^"\n]*"|\\.)+)/.exec(text);
   if (!m) return null;
   const tag = m[2].replace(/'([^']*)'|"([^"]*)"/g, '$1$2').replace(/\\(.)/g, '$1');
   return { length: m[0].length, tag, stripTabs: m[1] === '-', quoted: /['"\\]/.test(m[2]) };
@@ -233,10 +233,6 @@ function heredocStart(text: string): { length: number; tag: string; stripTabs: b
  * The quote open at `index` of a script (`'`, `"` or none). Comments are skipped; a heredoc body is data, in no shell
  * quote (`{"password":"x"}` there is JSON, not a quoted word).
  */
-function quoteAt(script: string, index: number): string {
-  return contextAt(script, index).quote;
-}
-
 /** Where `index` of a script sits: inside which shell quote, or inside a heredoc body (quoted: written as is). */
 function contextAt(
   script: string,
@@ -254,6 +250,9 @@ function contextAt(
       const nl = script.indexOf('\n', j);
       if (nl < 0 || nl >= index) return { quote: '', heredoc: '', comment: true };
       j = nl - 1;
+    } else if (script.startsWith('$((', j)) {
+      const end = script.indexOf('))', j + 3); // arithmetic: `<<` there is a shift
+      j = end < 0 ? index : end + 1;
     } else if (script.startsWith('<<<', j)) j += 2;
     else if (script.startsWith('<<', j)) {
       const h = heredocStart(script.slice(j));
@@ -325,29 +324,32 @@ function secretLiteral(text: string, script = false): boolean {
       if (asScript) continue;
     }
     // Prose, markup, data: KEY, closing marks, a separator, opening marks, then the value (`\"` in escaped JSON too).
-    const prose = /^[`'"*_\]\\]*[ \t]*(?::=|=>|\+=|=|:|：)([ \t`'"*_\\]*)/.exec(text.slice(after));
-    if (!prose) continue;
-    // In the script a quote that closes before the value ends it: `read -rsp 'Password: ' PASSWORD` gives no value.
-    const open = asScript ? quoteAt(text, start) : '';
-    if (open && prose[1].replace(/\\./g, '').includes(open)) continue;
-    const valueAt = after + prose[0].length;
+    const SEPARATOR = /^[`'"*_\]\\]*[ \t]*(?::=|=>|\+=|=|:|：)([ \t`'"*_\\]*)/;
     if (asScript) {
-      const opener = prose[1].replace(/[ \t]/g, '').slice(-1);
+      // The word as the shell hands it over, from right after the key: quotes closed and reopened around the
+      // separator stay one word (`"PASSWORD"="x"`, `'PASSWORD:'x`); a closing quote and a blank end it
+      // (`read -rsp 'Password: ' PASSWORD` gives no value). A `$` in single quotes stays literal.
+      const rest = scriptLiteralAt(text, after);
+      // One opening quote at most: after `$PW` is dropped from `"password":"$PW"`, `""` is an empty value.
+      const sep = /^[`'"*_\]\\]*[ \t]*(?::=|=>|\+=|=|:|：)([ \t*_\\]*[`'"]?)/.exec(rest);
+      if (!sep) continue;
+      const opener = sep[1].replace(/[ \t]/g, '').slice(-1);
+      const tail = rest.slice(sep[0].length);
       if (/COOKIE/i.test(m[0])) {
         // Every `name=value` pair of a cookie: `sid=$SID; session=x` still carries `x`.
-        const whole = scriptLiteralAt(text, valueAt);
-        const header = opener === '"' || opener === "'" ? whole.split(opener)[0] : whole;
+        const header = opener === '"' || opener === "'" ? tail.split(opener)[0] : tail;
         const pairs = header.split(';').map((pair) => pair.trim().replace(/^[\w.-]+=/, ''));
         if (pairs.some((v) => v !== '' && !isPlaceholder(v))) return true;
         continue;
       }
-      // As the shell hands it over (a `$` in single quotes stays literal), up to the end of a header or data value.
-      const value = dataValue(scriptLiteralAt(text, valueAt), opener);
-      // `sid=` left after `sid=$SID` expanded is a name with no value.
+      // Up to the end of a header or data value; `sid=` left after `sid=$SID` expanded is a name with no value.
+      const value = dataValue(tail, opener);
       if (value && !isPath(value) && !isPlaceholder(value) && !/^[\w.-]+=$/.test(value)) return true;
       continue;
     }
-    const value = text.slice(valueAt);
+    const prose = SEPARATOR.exec(text.slice(after));
+    if (!prose) continue;
+    const value = text.slice(after + prose[0].length);
     if (!value || /^[\s)\]}]/.test(value)) continue;
     if (/^\$\(/.test(value) && !LITERAL_PRODUCERS.test(value.slice(2))) continue;
     if (/^\$(?:\{[A-Za-z_][A-Za-z0-9_]*(?::?\?[^}]*)?\}|[A-Za-z_][A-Za-z0-9_]*)(?=$|[\s`'"*,;.)\]}:/])/.test(value))
@@ -397,11 +399,14 @@ function credentialArgLiteral(text: string, script: boolean): boolean {
       if (v && !reference && (/\d/.test(v) || v.length >= 12 || header)) return true;
     }
   }
-  for (const m of text.matchAll(/(?:^|[\s;&|(])(?:-u|--user|--proxy-user)(?:=|[ \t]+)/g)) {
+  // `-u name:password`, attached (`-uname:password`) or grouped (`-su name:password`); a numeric uid:gid is no password.
+  for (const m of text.matchAll(
+    /(?:^|[\s;&|(])(?:-[A-Za-z]*u(?:=|[ \t]+|(?=[^\s=-]))|--user(?:=|[ \t]+)|--proxy-user(?:=|[ \t]+))/g,
+  )) {
     const at = (m.index ?? 0) + m[0].length;
     const literal = script ? scriptLiteralAt(text, at) : shellWordLiteral(text, at);
     const colon = literal.indexOf(':');
-    if (colon >= 0 && literal.slice(colon + 1).trim()) return true;
+    if (colon >= 0 && literal.slice(colon + 1).trim() && !/^\d+:\d+$/.test(literal)) return true;
   }
   return false;
 }
@@ -549,7 +554,7 @@ const REMOTE_CODE: readonly RegExp[] = [
 /** Programs that run the code they read from standard input. */
 const INTERPRETERS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'python', 'python3', 'node', 'perl', 'ruby']);
 const HIDDEN_CODE: readonly RegExp[] = [
-  /(?:^|[\s;&|(])eval\s/,
+  /(?:^|[\s;&|('"])eval\s/,
   /\bbase64\s+(?:-\S+\s+)*(?:-d|-D|--decode)\b[^\n]*\|\s*(?:\S*\/)?(?:ba|z|da|k)?sh\b/,
 ];
 /** A base64 decode: what it writes is code no one can read in the script. */
@@ -662,6 +667,14 @@ function scan(script: string, depth = 0): { segments: Segment[]; redirects: stri
 
   for (let i = 0; i < script.length; i++) {
     const c = script[i];
+    if (quote !== "'" && script.startsWith('$((', i)) {
+      // Arithmetic: `$((1<<2))` shifts, it opens no heredoc and runs nothing.
+      const end = script.indexOf('))', i + 3);
+      i = end < 0 ? script.length - 1 : end + 1;
+      word += '0';
+      inWord = true;
+      continue;
+    }
     if (quote !== "'" && c === '$' && script[i + 1] === '(') {
       i = substitute(i + 2, closeParen(i + 2));
       continue;
@@ -866,8 +879,8 @@ export function inspectUserActionScript(
 
   // Read with line continuations joined, so `curl … \\⏎ | sh` is one line.
   const joined = script.replace(/\\\n/g, ' ');
-  // What can run: single-quoted text is inert unless a `sh -c` or `eval` runs it.
-  const runnable = joined.replace(/(?<!(?:-\w*c|eval)[ \t]+)'[^']*'/g, "''");
+  // What can run: quoted text is inert unless a `sh -c` or `eval` runs it (substitutions in it are scanned above).
+  const runnable = joined.replace(/(?<!(?:-\w*c|eval)[ \t]+)(?:'[^']*'|"(?:[^"\\]|\\.)*")/g, "''");
   /** An interpreter (behind any wrapper) reading a pipeline that an earlier command matching `feeds` writes into. */
   const pipedIntoInterpreter = (feeds: (args: string[], cmd: string) => boolean) =>
     segments.some((seg, k) => {
