@@ -22354,7 +22354,7 @@ function renderCronDrawerMeta(g, nowMs) {
   var rows = [
     ['스케줄', esc(cronScheduleLabel(j.expression, j.nextRunAt) + ' · ' + j.expression + ' (UTC)')],
     ['다음 실행', j.nextRunAt ? esc(capClockLabel(j.nextRunAt / 1000, nowMs)) + ' (' + cronCountdownHtml(j.nextRunAt) + ')' : '8일 안에 없음'],
-    ['실행 방식', esc((j.mode === 'fastlane' ? '항상 새 스레드' : '세션이 쉬면 주입, 없으면 새 스레드') + ' · 출력 ' + j.target + ' · 모델 ' + j.model)],
+    ['실행 방식', esc((j.mode === 'fastlane' ? '항상 새 스레드' : '잡의 세션이 쉬면 주입, 없으면 새 스레드') + ' · 출력 ' + j.target + ' · 모델 ' + j.model)],
     ['실행 기록', esc('잡마다 최근 ' + (j.historyCap || 20) + '회까지 보관')],
   ];
   return '<dl class="ui-dl">' + rows.map(function(r) { return '<div><dt>' + esc(r[0]) + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>' + cronDetailGate(g);
@@ -22476,7 +22476,7 @@ async function loadCronJobs() {
 // cron_update's rules). Its words — a refusal included — go to the drawer's status line (#cron-detail-status),
 // which no render repaints.
 var _cronDetail = null; // { key, jobId, job, loading, draft, saving, say, tone } for the drawer's job; null = the short facts
-var CRON_MODE_LABEL = { default: '세션이 쉬면 주입, 없으면 새 스레드', fastlane: '항상 새 스레드' };
+var CRON_MODE_LABEL = { default: '잡의 세션이 쉬면 주입, 없으면 새 스레드', fastlane: '항상 새 스레드' };
 var CRON_TARGET_LABEL = { channel: '채널 — 세션에서 실행', thread: '스레드 답글 — 프롬프트 글만 올림', dm: 'DM — 프롬프트 글만 보냄' };
 var CRON_MODEL_LABEL = { default: '만든 사람의 지금 기본 모델', opus: 'Opus (최신)', fable: 'Fable (최신)', fast: '빠른 모델', custom: '직접 입력' };
 // The whole job may be shown to this viewer: the owner, or an admin with 관리자 모드 on.

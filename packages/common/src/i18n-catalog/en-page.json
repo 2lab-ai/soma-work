@@ -785,7 +785,7 @@
   "세션을 닫았어요": "Session closed",
   "세션을 살렸어요 — 이어서 대화할 수 있어요": "Session revived — you can continue the conversation",
   "세션을 중지했어요": "Session stopped",
-  "세션이 쉬면 주입, 없으면 새 스레드": "Inject if the session is idle, otherwise a new thread",
+  "잡의 세션이 쉬면 주입, 없으면 새 스레드": "Into the job's own session when it is idle, else a new thread",
   "섹션": "Section",
   "소요 ": "Took ",
   "소유자": "Owner",
