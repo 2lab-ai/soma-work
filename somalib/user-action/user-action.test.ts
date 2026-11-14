@@ -345,6 +345,53 @@ describe('validateInstructUserArgs', () => {
   });
 
   it.each([
+    ['cat > /tmp/login.json <<\'EOF\'\n{"password":"$hunter2"}\nEOF', 'script'],
+    ["cat > /tmp/auth <<'EOF'\nAuthorization: Bearer $hunter2\nEOF", 'script'],
+    ['curl -d \'{"password":";hunter2"}\' https://x.example', 'script'],
+    ['curl -d \'{"password":")hunter2"}\' https://x.example', 'script'],
+    ['curl -d "password=,hunter2" https://x.example', 'script'],
+  ])('also: a quoted heredoc writes $ literally, and a value may start with punctuation: %s', (text, field) => {
+    const args = field === 'script' ? { ...base, script: text } : { ...base, [field]: text };
+    const r = validateInstructUserArgs(args);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe('SECRET_IN_SCRIPT');
+    expect(r.error.message).not.toContain('hunter2');
+  });
+
+  it.each([
+    'cat > /tmp/login.json <<EOF\n{"password":"$PW"}\nEOF',
+    'cat > /tmp/auth <<EOF\nAuthorization: Bearer $TOKEN\nEOF',
+    '# Basic setup\ndate',
+    'echo "Bearer tokens live in the vault"',
+  ])('an expanding heredoc reference, and the words Basic / Bearer outside a header, pass: %s', (script) => {
+    expect(validateInstructUserArgs({ ...base, script }).ok).toBe(true);
+  });
+
+  it.each([
+    ['cat > /tmp/login.json <<\\EOF\n{"password":"$hunter2"}\nEOF', 'script'],
+    ["curl -H 'Authorization: Token hunter2' https://api.example.com", 'script'],
+    ["curl -H 'Authorization: hunter2' https://api.example.com", 'script'],
+    ["curl -H 'Cookie: sid=hunter2' https://x.example", 'script'],
+    ['password: ;hunter2', 'why'],
+  ])('also: a backslash-quoted heredoc, any Authorization header value, cookies: %s', (text, field) => {
+    const args = field === 'script' ? { ...base, script: text } : { ...base, [field]: text };
+    const r = validateInstructUserArgs(args);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe('SECRET_IN_SCRIPT');
+    expect(r.error.message).not.toContain('hunter2');
+  });
+
+  it.each([
+    'curl -H "Authorization: Token $API_TOKEN" https://api.example.com',
+    'curl -H "Authorization: $AUTH_HEADER" https://api.example.com',
+    'cat <<\\EOF\nhello\nEOF',
+  ])('a referenced Authorization header and a closed backslash heredoc pass: %s', (script) => {
+    expect(validateInstructUserArgs({ ...base, script }).ok).toBe(true);
+  });
+
+  it.each([
     'PASSWORD="$PW" ./login',
     'PASSWORD="${PW}" ./login',
     'PASSWORD="${PW:?set PW first}" ./login',

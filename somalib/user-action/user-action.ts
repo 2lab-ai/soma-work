@@ -143,12 +143,12 @@ const KEY_CANDIDATE =
 /** A secret-named key: any case, anywhere in a name; PASS / PW only as a whole part of one (`DB_PASS`, not `BYPASS`). */
 const isSecretName = (key: string) =>
   /[가-힣]/.test(key) ||
-  /TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|PASSCODE|CREDENTIAL|BEARER|API[_-]?KEY|PRIVATE[_-]?KEY|ACCESS[_-]?KEY/i.test(
+  /TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|PASSCODE|CREDENTIAL|BEARER|COOKIE|API[_-]?KEY|PRIVATE[_-]?KEY|ACCESS[_-]?KEY/i.test(
     key,
   ) ||
   /(?:^|[_-])(?:PASS|PW)(?:[_-]|$)/i.test(key);
 /** An option that takes the secret itself (`--password x`, `--client-secret x`), not where it is (`--password-stdin`). */
-const OPTION_TAKES_SECRET = /(?:TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|PASSCODE|BEARER|KEY|PASS|PW)$/i;
+const OPTION_TAKES_SECRET = /(?:TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|PASSCODE|BEARER|COOKIE|KEY|PASS|PW)$/i;
 /** Commands whose output is text written in the script (or encoded in it) — a substitution of one is a literal. */
 const LITERAL_PRODUCERS =
   /^\s*(?:(?:command|builtin|env)\s+)?(?:\S*\/)?(?:echo|printf|base64|xxd|rev|openssl\s+(?:enc|base64))\b|<<</;
@@ -168,12 +168,13 @@ function balanced(text: string, from: number, open: string, close: string): numb
  * The literal text of the shell word at `i`: quotes resolved, expansions dropped — except text the shell writes
  * itself (`'…'`, `$'…'`, `$"…"`, a `${X:-default}` default, `$(echo …)`), which is literal.
  */
-function shellWordLiteral(text: string, i: number, startQuote = ''): string {
+function shellWordLiteral(text: string, i: number, startQuote = '', dataLine = false): string {
   let literal = '';
   let quote = startQuote;
   while (i < text.length) {
     const c = text[i];
-    if (!quote && /[\s;&|()<>]/.test(c)) break;
+    // A word ends at an unquoted blank or operator; a line of an expanding heredoc body only at its end.
+    if (dataLine ? c === '\n' : !quote && /[\s;&|()<>]/.test(c)) break;
     if (c === '\\' && quote !== "'") {
       literal += text[i + 1] ?? '';
       i += 2;
@@ -181,13 +182,13 @@ function shellWordLiteral(text: string, i: number, startQuote = ''): string {
       if (c === "'") quote = '';
       else literal += c;
       i++;
-    } else if (c === quote) {
+    } else if (!dataLine && c === quote) {
       quote = '';
       i++;
-    } else if (!quote && (c === "'" || c === '"')) {
+    } else if (!dataLine && !quote && (c === "'" || c === '"')) {
       quote = c;
       i++;
-    } else if (!quote && c === '$' && (text[i + 1] === "'" || text[i + 1] === '"')) {
+    } else if (!dataLine && !quote && c === '$' && (text[i + 1] === "'" || text[i + 1] === '"')) {
       quote = text[i + 1] === "'" ? "'" : '"'; // $'…' / $"…": written in the script
       i += 2;
     } else if (c === '$' && text[i + 1] === '(') {
@@ -219,13 +220,25 @@ function shellWordLiteral(text: string, i: number, startQuote = ''): string {
 /** A value that holds no credential: nothing, a path, or (in prose) a reference, a substitution or a `<placeholder>`. */
 const isPath = (v: string) => /^(?:\/|~\/|\.\.?\/)/.test(v);
 
+/** A heredoc operator at the start of `text`: `<<EOF`, `<<-EOF`, `<<'EOF'`, `<<"EOF"`, `<<\EOF` (quoted: no expansion). */
+function heredocStart(text: string): { length: number; tag: string; stripTabs: boolean; quoted: boolean } | null {
+  const m = /^<<(-?)[ \t]*(?:(['"])([A-Za-z_][\w-]*)\2|\\([A-Za-z_][\w-]*)|([A-Za-z_][\w-]*))/.exec(text);
+  if (!m) return null;
+  return { length: m[0].length, tag: m[3] ?? m[4] ?? m[5], stripTabs: m[1] === '-', quoted: m[5] === undefined };
+}
+
 /**
  * The quote open at `index` of a script (`'`, `"` or none). Comments are skipped; a heredoc body is data, in no shell
  * quote (`{"password":"x"}` there is JSON, not a quoted word).
  */
 function quoteAt(script: string, index: number): string {
+  return contextAt(script, index).quote;
+}
+
+/** Where `index` of a script sits: inside which shell quote, or inside a heredoc body (quoted: written as is). */
+function contextAt(script: string, index: number): { quote: string; heredoc: '' | 'literal' | 'expanding' } {
   let quote = '';
-  const pending: Array<{ tag: string; stripTabs: boolean }> = [];
+  const pending: Array<{ tag: string; stripTabs: boolean; quoted: boolean }> = [];
   for (let j = 0; j < index; j++) {
     const c = script[j];
     if (c === '\\' && quote !== "'") j++;
@@ -234,14 +247,14 @@ function quoteAt(script: string, index: number): string {
     } else if (c === "'" || c === '"') quote = c;
     else if (c === '#' && (j === 0 || /\s/.test(script[j - 1]))) {
       const nl = script.indexOf('\n', j);
-      if (nl < 0 || nl >= index) return '';
+      if (nl < 0 || nl >= index) return { quote: '', heredoc: '' };
       j = nl - 1;
     } else if (script.startsWith('<<<', j)) j += 2;
     else if (script.startsWith('<<', j)) {
-      const m = /^<<(-?)[ \t]*(['"]?)([A-Za-z_][\w-]*)\2/.exec(script.slice(j));
-      if (m) {
-        pending.push({ tag: m[3], stripTabs: m[1] === '-' });
-        j += m[0].length - 1;
+      const h = heredocStart(script.slice(j));
+      if (h) {
+        pending.push(h);
+        j += h.length - 1;
       }
     } else if (c === '\n' && pending.length) {
       let k = j + 1;
@@ -249,7 +262,7 @@ function quoteAt(script: string, index: number): string {
         while (k < script.length) {
           const next = script.indexOf('\n', k);
           const end = next < 0 ? script.length : next;
-          if (index >= k && index <= end) return ''; // inside a heredoc body
+          if (index >= k && index <= end) return { quote: '', heredoc: doc.quoted ? 'literal' : 'expanding' };
           const line = script.slice(k, end);
           k = end + 1;
           if ((doc.stripTabs ? line.replace(/^\t+/, '') : line) === doc.tag) break;
@@ -258,8 +271,29 @@ function quoteAt(script: string, index: number): string {
       j = k - 1;
     }
   }
-  return quote;
+  return { quote, heredoc: '' };
 }
+
+/**
+ * The text the shell hands over for the word at `at` of a script: quotes resolved, expansions dropped. In a heredoc
+ * body it is the rest of the line — as written when the delimiter is quoted (`<<'EOF'`: `$x` is literal), expanded
+ * when it is not.
+ */
+function scriptLiteralAt(script: string, at: number): string {
+  const ctx = contextAt(script, at);
+  if (ctx.heredoc === 'literal') {
+    const nl = script.indexOf('\n', at);
+    return script.slice(at, nl < 0 ? script.length : nl);
+  }
+  return shellWordLiteral(script, at, ctx.quote, ctx.heredoc === 'expanding');
+}
+
+/** A header or data value inside a literal: up to the quote that opened it (`"x"` in JSON), else to a blank. */
+function dataValue(literal: string, opener: string): string {
+  if (opener === '"' || opener === "'" || opener === '`') return literal.split(opener)[0];
+  return literal.split(/\s/)[0].replace(/[,;}\])]+$/, '');
+}
+const isPlaceholder = (v: string) => /^<[^<>]+>?$/.test(v);
 
 /**
  * Whether `text` gives a secret-named key a literal value, in any of the forms a field can carry it: a shell assignment
@@ -277,8 +311,9 @@ function secretLiteral(text: string, script = false): boolean {
     // Shell: KEY=word (also inside a quoted word, or as --key=word), or --key word.
     const shell = /^\+?=|^[ \t]+(?=\S)/.exec(text.slice(after));
     if (shell && (shell[0].endsWith('=') || (isOption && OPTION_TAKES_SECRET.test(m[0])))) {
-      const literal = shellWordLiteral(text, after + shell[0].length, script ? quoteAt(text, start) : '');
-      if (literal.trim() && !isPath(literal) && !/^<[^<>]+>$/.test(literal)) return true;
+      const at = after + shell[0].length;
+      const literal = script ? scriptLiteralAt(text, at) : shellWordLiteral(text, at);
+      if (literal.trim() && !isPath(literal) && !isPlaceholder(literal)) return true;
       // In the script the shell's reading is the reading: `TOKEN= date` is an empty value, not `date`.
       if (script) continue;
     }
@@ -291,12 +326,13 @@ function secretLiteral(text: string, script = false): boolean {
     const valueAt = after + prose[0].length;
     if (script) {
       // As the shell hands it over (a `$` in single quotes stays literal), up to the end of a header or data value.
-      const literal = shellWordLiteral(text, valueAt, quoteAt(text, valueAt)).split(/["',;}\])\s]/)[0];
-      if (literal && !isPath(literal) && !/^<[^<>]+>?$/.test(literal)) return true;
+      const value = dataValue(scriptLiteralAt(text, valueAt), prose[1].replace(/[ \t]/g, '').slice(-1));
+      // `sid=` left after `sid=$SID` expanded is a name with no value.
+      if (value && !isPath(value) && !isPlaceholder(value) && !/^[\w.-]+=$/.test(value)) return true;
       continue;
     }
     const value = text.slice(valueAt);
-    if (!value || /^[\s,;)\]}]/.test(value)) continue;
+    if (!value || /^[\s)\]}]/.test(value)) continue;
     if (/^\$\(/.test(value) && !LITERAL_PRODUCERS.test(value.slice(2))) continue;
     if (/^\$(?:\{[A-Za-z_][A-Za-z0-9_]*(?::?\?[^}]*)?\}|[A-Za-z_][A-Za-z0-9_]*)(?=$|[\s`'"*,;.)\]}:/])/.test(value))
       continue;
@@ -314,7 +350,7 @@ function credentialArgLiteral(text: string, script: boolean): boolean {
   for (const m of text.matchAll(/\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@'"]+:/gi)) {
     const at = (m.index ?? 0) + m[0].length;
     if (script) {
-      const literal = shellWordLiteral(text, at, quoteAt(text, at));
+      const literal = scriptLiteralAt(text, at);
       const userinfo = literal.includes('@') ? literal.slice(0, literal.indexOf('@')) : '';
       if (userinfo.trim() && !userinfo.includes('/')) return true;
     } else {
@@ -322,23 +358,32 @@ function credentialArgLiteral(text: string, script: boolean): boolean {
       if (pw && !/^\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*\})$/.test(pw)) return true;
     }
   }
-  // An HTTP credential after its scheme: `Authorization: Bearer x`, `Basic x` — any length.
+  // An Authorization header's credential, after any scheme (`Bearer`, `Basic`, `Token`, or none) — any length.
+  for (const m of text.matchAll(/\b(?:Proxy-)?Authorization[ \t]*:[ \t]*(?:[A-Za-z][\w-]*[ \t]+)?/gi)) {
+    const at = (m.index ?? 0) + m[0].length;
+    const v = script
+      ? dataValue(scriptLiteralAt(text, at), '')
+      : (/^[`'"]?([^\s`'",;)]+)/.exec(text.slice(at))?.[1] ?? '');
+    if (v && !isPlaceholder(v) && (script || !/^\$[A-Za-z_{(]/.test(v))) return true;
+  }
+  // An HTTP credential after its scheme elsewhere: `Bearer x`, `Basic x` — any length.
   for (const m of text.matchAll(/\b(?:Bearer|Basic)[ \t]+/gi)) {
     const at = (m.index ?? 0) + m[0].length;
+    const header = /Authorization\s*:\s*$/i.test(text.slice(0, m.index));
     if (script) {
-      const literal = shellWordLiteral(text, at, quoteAt(text, at)).split(/["',;}\])\s]/)[0];
-      if (literal && !/^<[^<>]+>?$/.test(literal)) return true;
+      // In a header any literal is the credential; elsewhere (a comment, an echo) only a token-like one.
+      const v = dataValue(scriptLiteralAt(text, at), '');
+      if (v && !isPlaceholder(v) && (header || /\d/.test(v) || v.length >= 12)) return true;
     } else {
       const v = /^[`'"]?([^\s`'",;)]+)/.exec(text.slice(at))?.[1] ?? '';
       const reference = /^(?:\$[A-Za-z_{(]|<)/.test(v);
       // Prose: a value, not a word in a sentence ("Bearer tokens are…").
-      if (v && !reference && (/\d/.test(v) || v.length >= 12 || /Authorization\s*:\s*$/i.test(text.slice(0, m.index))))
-        return true;
+      if (v && !reference && (/\d/.test(v) || v.length >= 12 || header)) return true;
     }
   }
   for (const m of text.matchAll(/(?:^|[\s;&|(])(?:-u|--user|--proxy-user)(?:=|[ \t]+)/g)) {
     const at = (m.index ?? 0) + m[0].length;
-    const literal = shellWordLiteral(text, at, script ? quoteAt(text, at) : '');
+    const literal = script ? scriptLiteralAt(text, at) : shellWordLiteral(text, at);
     const colon = literal.indexOf(':');
     if (colon >= 0 && literal.slice(colon + 1).trim()) return true;
   }
@@ -641,11 +686,11 @@ function scan(script: string, depth = 0): { segments: Segment[]; redirects: stri
     }
     if (c === '<' && script[i + 1] === '<') {
       // A heredoc: its body (the lines after this one, up to its tag) is input to the command, not commands.
-      const m = /^<<(-?)[ \t]*(['"]?)([A-Za-z_][\w-]*)\2/.exec(script.slice(i));
-      if (m) {
+      const h = heredocStart(script.slice(i));
+      if (h) {
         endWord();
-        heredocs.push({ tag: m[3], stripTabs: m[1] === '-', quoted: m[2] !== '' });
-        i += m[0].length - 1;
+        heredocs.push(h);
+        i += h.length - 1;
         continue;
       }
     }
