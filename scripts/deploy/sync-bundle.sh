@@ -18,8 +18,12 @@ mkdir -p "$TARGET"
 # temp file so we stay compatible with the macOS system bash 3.2 (no
 # associative arrays / `declare -A`).
 STRIPPED_PROTECTED="$(mktemp)"
-trap 'rm -f "$STRIPPED_PROTECTED"' EXIT
+# The same names anchored to the top of the transfer ("/data"). An unanchored rsync pattern matches at any depth, so
+# `data/` also left the ui-ux skill's dist/local/skills/ui-ux/data out of every deploy.
+ANCHORED_PROTECTED="$(mktemp)"
+trap 'rm -f "$STRIPPED_PROTECTED" "$ANCHORED_PROTECTED"' EXIT
 sed 's:/*$::' "$PROTECTED_FILE" | grep -v '^[[:space:]]*$' > "$STRIPPED_PROTECTED"
+sed 's:^:/:' "$STRIPPED_PROTECTED" > "$ANCHORED_PROTECTED"
 
 # Reliable clean-then-copy. macOS ships openrsync, whose `--delete` is
 # unreliable at removing non-empty extraneous directories (it warns
@@ -45,5 +49,5 @@ while IFS= read -r entry; do
   rm -rf "$entry"
 done < <(find "$TARGET" -mindepth 1 -maxdepth 1)
 
-rsync -a --exclude-from="$PROTECTED_FILE" "$SOURCE_DIR"/ "$TARGET"/
+rsync -a --exclude-from="$ANCHORED_PROTECTED" "$SOURCE_DIR"/ "$TARGET"/
 echo "sync-bundle: done; target packages: $(ls "$TARGET/packages" 2>/dev/null | tr '\n' ' ')"
