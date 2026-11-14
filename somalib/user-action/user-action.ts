@@ -123,15 +123,22 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   /\bAKIA[0-9A-Z]{16}\b/,
   /\bAIza[0-9A-Za-z_-]{30,}/,
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
-  // Generic shapes: a JWT, a bearer header. A secret-named key with a literal value is `secretLiteral`.
+  // Generic shapes: a JWT, a bearer header, a password in a URL. A secret-named key with a literal value is
+  // `secretLiteral`.
+  /\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@'"]+:(?!\$)[^\s/@'"]+@/i,
   /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\./,
   /\bBearer\s+[A-Za-z0-9._~+/=-]{20,}/i,
 ];
 
-/** A secret-named key (any case, anywhere in an identifier) that is not itself a reference (`$TOKEN`, `${TOKEN…}`). */
-const SECRET_KEY = /(?<![$A-Za-z0-9_{])[A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY)[A-Za-z0-9_]*/gi;
-/** Commands whose output is text written in the script — a substitution of one is a literal. */
-const LITERAL_PRODUCERS = /^\s*(?:echo|printf|cat\s*<<<)\b/;
+/** A name, or a Korean word for a secret, that is not itself a reference (`$TOKEN`, `${TOKEN…}`). */
+const KEY_CANDIDATE = /(?<![$A-Za-z0-9_{])(?:[A-Za-z0-9_]+|비밀번호|비번|암호|패스워드|토큰|시크릿|API ?키)/g;
+/** A secret-named key: any case, anywhere in a name; PASS / PW only as a whole part of one (`DB_PASS`, not `BYPASS`). */
+const isSecretName = (key: string) =>
+  /[가-힣]/.test(key) ||
+  /TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|PASSCODE|CREDENTIAL|API_?KEY|PRIVATE_?KEY|ACCESS_?KEY/i.test(key) ||
+  /(?:^|_)(?:PASS|PW)(?:_|$)/i.test(key);
+/** Commands whose output is text written in the script (or encoded in it) — a substitution of one is a literal. */
+const LITERAL_PRODUCERS = /^\s*(?:echo|printf|base64|xxd|rev|openssl\s+(?:enc|base64))\b|<<</;
 
 /** The index just past the `close` that balances the `open` before `from` (nesting counted), or the end. */
 function balanced(text: string, from: number, open: string, close: string): number {
@@ -207,17 +214,18 @@ const isPath = (v: string) => /^(?:\/|~\/|\.\.?\/)/.test(v);
  * `<placeholder>`. Checked in every posted field.
  */
 function secretLiteral(text: string): boolean {
-  for (const m of text.matchAll(SECRET_KEY)) {
+  for (const m of text.matchAll(KEY_CANDIDATE)) {
+    if (!isSecretName(m[0])) continue;
     const after = (m.index ?? 0) + m[0].length;
     const isOption = /--?$/.test(text.slice(0, m.index));
     // Shell: KEY=word (also inside a quoted word, or as --key=word), or --key word.
-    const shell = /^=|^[ \t]+(?=\S)/.exec(text.slice(after));
-    if (shell && (shell[0] === '=' || isOption)) {
+    const shell = /^\+?=|^[ \t]+(?=\S)/.exec(text.slice(after));
+    if (shell && (shell[0].endsWith('=') || isOption)) {
       const literal = shellWordLiteral(text, after + shell[0].length);
       if (literal.trim() && !isPath(literal)) return true;
     }
     // Prose, markup, data: KEY, closing marks, a separator, opening marks, then the value.
-    const prose = /^[`'"*_\]]*[ \t]*(?::=|=>|=|:)[ \t`'"*_]*/.exec(text.slice(after));
+    const prose = /^[`'"*_\]]*[ \t]*(?::=|=>|\+=|=|:|：)[ \t`'"*_]*/.exec(text.slice(after));
     if (!prose) continue;
     const value = text.slice(after + prose[0].length);
     if (!value || /^[\s,;)\]}]/.test(value)) continue;

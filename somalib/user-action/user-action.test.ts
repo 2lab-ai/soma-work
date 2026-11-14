@@ -201,6 +201,36 @@ describe('validateInstructUserArgs', () => {
   });
 
   it.each([
+    ['비밀번호: hunter2', 'why'],
+    ['로그인 암호 = hunter2', 'effects'],
+    ['토큰： hunter2', 'expect'],
+    ['DB_PASSPHRASE=hunter2 ./run', 'script'],
+    ['PRIVATE_KEY=hunter2 ./run', 'script'],
+    ['DB_PASS=hunter2 ./run', 'script'],
+    ['PW=hunter2 ./run', 'script'],
+    ['PASSWORD+=hunter2 ./run', 'script'],
+    ['git clone https://me:hunter2@git.example/x.git', 'script'],
+    ['PASSWORD="$(base64 -d <<< aHVudGVyMg==)" ./login', 'script'],
+    ['PASSWORD="$(cat <<< hunter2)" ./login', 'script'],
+  ])('also: Korean keys, more secret names, +=, URL credentials, encoded literals: %s', (text, field) => {
+    const args = field === 'script' ? { ...base, script: text } : { ...base, [field]: text };
+    const r = validateInstructUserArgs(args);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe('SECRET_IN_SCRIPT');
+    expect(r.error.message).not.toContain('hunter2');
+  });
+
+  it.each([
+    'cd "$PWD" && ls',
+    'BYPASS_CACHE=1 ./run',
+    'git clone https://me:$GIT_PASSWORD@git.example/x.git',
+    'git clone https://git.example/x.git',
+  ])('names that only contain the letters, a reference in a URL, a plain URL pass: %s', (script) => {
+    expect(validateInstructUserArgs({ ...base, script }).ok).toBe(true);
+  });
+
+  it.each([
     'PASSWORD="$PW" ./login',
     'PASSWORD="${PW}" ./login',
     'PASSWORD="${PW:?set PW first}" ./login',
