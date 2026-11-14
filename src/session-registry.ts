@@ -28,6 +28,7 @@ import { applyFollowUp, cleanTldrLine, followUpFromTldr } from '@soma/slack/summ
 import * as fs from 'fs';
 import * as path from 'path';
 import { applyInstructionOperations } from 'somalib/model-commands/catalog';
+import { restoreUserActions } from 'somalib/user-action/user-action';
 import {
   type HostReceipt,
   type HostWriteReceipt,
@@ -236,6 +237,8 @@ function restoreExecutiveSummary(
 }
 
 interface SerializedSession {
+  /** Tasks handed to the human (`instruct_user`); restored through `restoreUserActions`. */
+  userActions?: unknown;
   /** SSOT 2026-10-23 — the cron job that created the session, and a placeholder-title mark. */
   cronJob?: SessionCronJob;
   titleProvisional?: boolean;
@@ -3777,6 +3780,7 @@ export class SessionRegistry {
               ? { ...session.executiveSummary, tldr: [...session.executiveSummary.tldr] }
               : undefined,
             followUp: session.followUp ? { ...session.followUp } : undefined,
+            userActions: session.userActions?.length ? session.userActions.map((a) => ({ ...a })) : undefined,
             threadModel: session.threadModel,
             threadRootTs: session.threadRootTs,
             isOnboarding: session.isOnboarding,
@@ -4334,6 +4338,7 @@ export class SessionRegistry {
             : undefined,
           executiveSummary: restoreExecutiveSummary(serialized.executiveSummary),
           followUp: restoreFollowUp(serialized.followUp),
+          userActions: restoreUserActions(serialized.userActions),
           threadModel: serialized.threadModel,
           threadRootTs: serialized.threadRootTs,
           isOnboarding: serialized.isOnboarding,

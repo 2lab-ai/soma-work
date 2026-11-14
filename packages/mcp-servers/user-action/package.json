@@ -1,0 +1,21 @@
+{
+  "name": "@soma/mcp-server-user-action",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./dist/user-action-mcp-server.js",
+  "types": "./dist/user-action-mcp-server.d.ts",
+  "exports": {
+    "./bin": "./dist/user-action-mcp-server.js"
+  },
+  "bin": {
+    "user-action-mcp-server": "./dist/user-action-mcp-server.js"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.0",
+    "@soma/process-shared": "*"
+  }
+}

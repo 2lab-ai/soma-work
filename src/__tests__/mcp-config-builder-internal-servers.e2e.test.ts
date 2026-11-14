@@ -64,6 +64,7 @@ describe('McpConfigBuilder internal MCP servers e2e', () => {
       'model-command',
       'permission-prompt',
       'slack-mcp',
+      'user-action',
     ]);
 
     expect(config.allowedTools).toEqual(
@@ -75,6 +76,7 @@ describe('McpConfigBuilder internal MCP servers e2e', () => {
         'mcp__model-command',
         'mcp__permission-prompt__permission_prompt',
         'mcp__slack-mcp',
+        'mcp__user-action',
         'EnterPlanMode',
         'ExitPlanMode',
       ]),
@@ -89,6 +91,7 @@ describe('McpConfigBuilder internal MCP servers e2e', () => {
     expect(path.basename(executablePath(servers.cron))).toMatch(/^cron-mcp-server\.(ts|js)$/);
     expect(path.basename(executablePath(servers['model-command']))).toMatch(/^model-command-mcp-server\.(ts|js)$/);
     expect(path.basename(executablePath(servers['slack-mcp']))).toMatch(/^slack-mcp-server\.(ts|js)$/);
+    expect(path.basename(executablePath(servers['user-action']))).toMatch(/^user-action-mcp-server\.(ts|js)$/);
     expect(servers['permission-prompt']).toMatchObject({
       type: 'sdk',
       name: 'permission-prompt',
