@@ -1567,5 +1567,20 @@
   "다음 행동": "Next actions",
   "다음 행동을 보냈어요": "Sent the next action",
   "아래에서 답하면 작업이 이어집니다.": "Answer below and the work carries on.",
-  "대화 · 작업 로그와 입력창 — 입력 필요는 대화의 마지막 메시지로 항상 보입니다": "Chat · work log and the composer — Needs input is always the chat's last message"
+  "대화 · 작업 로그와 입력창 — 입력 필요는 대화의 마지막 메시지로 항상 보입니다": "Chat · work log and the composer — Needs input is always the chat's last message",
+  "잡 다루기": "Job actions",
+  "지금 실행": "Run now",
+  "실행을 요청하는 중…": "Asking to run…",
+  "실행을 시작했어요 — 실행은 보드와 아래 기록에 나타나요": "The run started — it shows on the board and in the history below",
+  "잡의 세션이 일하는 중이라, 끝나면 실행해요": "The job's session is working — it runs when that turn ends",
+  "DM으로 보냈어요": "Sent as a DM",
+  "스레드에 답글로 올렸어요": "Posted as a thread reply",
+  "실행하지 못했어요": "Could not run it",
+  "지우는 중…": "Deleting…",
+  "지우지 못했어요": "Could not delete it",
+  "크론 잡을 지웠어요": "Cron job deleted",
+  "실행·편집·삭제와 프롬프트를 포함한 전체 내용은 소유자나 관리자 모드를 켠 관리자만 다룰 수 있어요": "Only the owner, or an admin with admin mode on, can run, edit or delete this job and see its whole content, the prompt included",
+  "한 번 더 눌러 실행": "Press again to run",
+  "한 번 더 누르면 지금 바로 실행해요 — 다음 예약 실행은 그대로예요": "Press again to run it right now — the next scheduled run stays as it is",
+  "한 번 더 누르면 이 잡을 지워요 — 되돌릴 수 없어요": "Press again to delete this job — this can't be undone"
 }

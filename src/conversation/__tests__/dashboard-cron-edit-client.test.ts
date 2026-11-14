@@ -126,8 +126,25 @@ const FACT_ENV = {
   cronCountdownHtml: () => '<ui-elapsed></ui-elapsed>',
   cronRunWhen: () => '11/8 18:00 · 1일 전',
 };
-const META_FNS = ['esc', 'escAttr', 'cronDetailAllowed', 'cronDetailGate', 'cronDetailWhen', 'renderCronDetail'];
-const META_VARS = ['_cronDetail', 'CRON_MODE_LABEL', 'CRON_TARGET_LABEL', 'CRON_MODEL_LABEL'];
+// The facts open with the job's actions (지금 실행 · 편집 · 삭제 — pinned in dashboard-cron-actions-client.test.ts).
+const META_FNS = [
+  'esc',
+  'escAttr',
+  'cronDetailAllowed',
+  'cronDetailGate',
+  'cronDetailWhen',
+  'cronArmed',
+  'cronActionBar',
+  'renderCronDetail',
+];
+const META_VARS = [
+  '_cronDetail',
+  'CRON_MODE_LABEL',
+  'CRON_TARGET_LABEL',
+  'CRON_MODEL_LABEL',
+  'CRON_ACT_LABEL',
+  'CRON_ARMED_SAID',
+];
 
 describe('gate — 내용 보기 for whoever may manage the job, one plain line for everyone else', () => {
   type Meta = { renderCronDrawerMeta(g: unknown, now: number): string; __setState(v: unknown): void };
@@ -544,7 +561,7 @@ describe('save — only what changed, with the CSRF token; a refusal keeps the f
       [
         'cronDraftOf',
         'cronEditPatch',
-        'cronDetailPatch',
+        'cronDetailWrite',
         'cronEditBusy',
         'cronEditInvalid',
         'cronDetailError',
