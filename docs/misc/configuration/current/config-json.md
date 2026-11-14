@@ -313,7 +313,9 @@ connection, the 30-second timeout, an unreadable body) is looked up — the envi
 or whether the PR is merged — and recorded as `done` when found; anything short of that (not seen yet, a lookup
 that fails or answers something unexpected) is recorded as `unknown` and the tool says to check the PR before
 retrying. `authors`, `bases`, `repos`, `mergeMethods` and `requiredChecks` must be lists: a string there is refused,
-since it would match by substring. Each line names the server, the `envUser` and the Slack user the session runs for.
+since it would match by substring. Each line names the server, the `envUser` and the requester: the Slack user the
+session runs for, or — in an environment user's own session (an approved handoff of its skill, a fire of its cron) —
+that `env:<name>`, which only the host can set. A session with neither gets no requester, and its writes are refused.
 
 "Every check is green" means: each required check has passed, and nothing else on the head is unfinished or red.
 The required checks are `requiredChecks`, else the base branch's protection (its required status checks; a check

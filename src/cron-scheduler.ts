@@ -128,6 +128,24 @@ function cronOrigin(job: CronJob): { jobId: string; jobName: string } {
   return { jobId: job.id, jobName: job.name };
 }
 
+/** A session a fire may be injected into: live and not sleeping. */
+function isAwake(session: ConversationSession): boolean {
+  return session.isActive && session.state !== 'SLEEPING';
+}
+
+/** The session was opened by an earlier fire of this job (the dashboard's CRON-lane rule, cron-view.ts). */
+function openedByJob(session: ConversationSession, job: CronJob): boolean {
+  const stamp = session.cronJob;
+  if (!stamp) return false;
+  return stamp.id ? stamp.id === job.id : stamp.name === job.name;
+}
+
+function activityMs(session: ConversationSession): number {
+  const t =
+    session.lastActivity instanceof Date ? session.lastActivity.getTime() : Date.parse(String(session.lastActivity));
+  return Number.isFinite(t) ? t : 0;
+}
+
 /** The text a fire injects / posts. */
 function cronText(job: CronJob): string {
   return `[cron:${job.name}] ${job.prompt}`;
@@ -401,7 +419,7 @@ export class CronScheduler {
       return { ok: await this.executeWithNewThread(job, now, triggeredBy), detail: 'new_thread' };
     }
 
-    const session = this.findSession(job.owner, job.channel, job.threadTs);
+    const session = this.findSession(job);
 
     if (!session) {
       // Scenario 6: No session → create new thread
@@ -418,31 +436,26 @@ export class CronScheduler {
   }
 
   /**
-   * Find an active session for the given owner+channel.
+   * The job's own awake session, or undefined (→ a new thread). A job that names
+   * a thread owns the session in that thread; a job with no thread owns the
+   * sessions its earlier fires opened (stamped `cronJob`), the most recently
+   * active first. Never another of the owner's sessions in the channel: a job
+   * with no thread used to land in whichever one the registry listed first, so
+   * a daily job ran inside an unrelated old session and the dashboard linked
+   * the run to that session's card.
    * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 4, Section 3b
    */
-  private findSession(owner: string, channel: string, threadTs?: string | null): ConversationSession | undefined {
-    const sessions = this.deps.sessionRegistry.getAllSessions();
-
-    const isEligible = (s: ConversationSession) =>
-      s.ownerId === owner && s.channelId === channel && s.isActive && s.state !== 'SLEEPING'; // Sleeping sessions should not receive cron injections
-
-    // If threadTs specified, match exactly
-    if (threadTs) {
-      for (const [, session] of sessions) {
-        if (isEligible(session) && session.threadTs === threadTs) {
-          return session;
-        }
+  private findSession(job: CronJob): ConversationSession | undefined {
+    let own: ConversationSession | undefined;
+    for (const [, session] of this.deps.sessionRegistry.getAllSessions()) {
+      if (session.ownerId !== job.owner || session.channelId !== job.channel || !isAwake(session)) continue;
+      if (job.threadTs) {
+        if (session.threadTs === job.threadTs) return session;
+      } else if (openedByJob(session, job) && (!own || activityMs(session) > activityMs(own))) {
+        own = session;
       }
     }
-
-    // Fallback: match owner+channel (any thread)
-    for (const [, session] of sessions) {
-      if (isEligible(session)) {
-        return session;
-      }
-    }
-    return undefined;
+    return own;
   }
 
   /**
@@ -533,11 +546,18 @@ export class CronScheduler {
     const job = queue.shift()!;
     logger.info('Draining queued cron on idle', { name: job.name, sessionKey, remaining: queue.length });
 
-    // Find session again (it may have changed)
-    const session = this.findSession(job.owner, job.channel);
-    if (!session) {
-      logger.warn('Session gone before drain, skipping', { name: job.name });
-      if (queue.length === 0) this.pendingCronQueue.delete(sessionKey);
+    // The session this fire was queued behind — the one its history row links
+    // to. Re-searching the channel here used to hand the fire to whichever of
+    // the owner's sessions came first, not the one that just went idle.
+    const session = this.deps.sessionRegistry.getSessionByKey(sessionKey);
+    if (!session || !isAwake(session)) {
+      // Every fire still queued here waited for this same session: none of
+      // them can run, and with no idle hook left they would sit forever.
+      logger.warn('Session gone before drain, dropping its queued fires', {
+        names: [job.name, ...queue.map((queued) => queued.name)],
+        sessionKey,
+      });
+      this.pendingCronQueue.delete(sessionKey);
       return;
     }
 

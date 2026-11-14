@@ -524,13 +524,14 @@ class CronMcpServer {
               channel: { type: 'string', description: 'Target Slack channel ID. Defaults to current channel.' },
               threadTs: {
                 type: 'string',
-                description: 'Target thread timestamp. If omitted, uses active session or creates new thread.',
+                description:
+                  'Thread whose session runs the prompt (target=thread: the thread the prompt is posted in). If omitted, the prompt runs in the session an earlier fire of this job opened when that session is awake, otherwise in a new thread — never in another session of the channel.',
               },
               mode: {
                 type: 'string',
                 enum: ['default', 'fastlane'],
                 description:
-                  'Execution mode. default: queue behind busy sessions. fastlane: always create new thread immediately.',
+                  "Execution mode. default: run in the job's own session (see threadTs), queued while it is busy. fastlane: always create new thread immediately.",
               },
               target: {
                 type: 'string',
