@@ -203,6 +203,8 @@ function skillDeps(over: Partial<ComposerSkillDeps> = {}): ComposerSkillDeps {
     skillFile: (s) => (s.source === 'local' ? `/l/${s.name}` : s.source === 'user' ? null : `/p/${s.source}/${s.name}`),
     envPluginNames: () => new Set(['envp']),
     envSkillAllowed: () => false,
+    listEnvironmentSkills: () => [],
+    envUserSkillAllowed: () => false,
     fs: {
       readFileSync: (f: string) => {
         if (!(f in files)) throw new Error('ENOENT');
@@ -234,6 +236,72 @@ describe('composerSkillItems — every skill this user can invoke', () => {
     resetComposerMenuCache();
     const granted = composerSkillItems({ userId: 'U2', admin: false }, skillDeps({ envSkillAllowed: () => true }));
     expect(granted.find((r) => r.value === '$envp:secret')?.description).toBe('Env-only skill');
+  });
+
+  // A deploy or QA of an environment is the environment user's skill (`$acme-dev2:deploy`), and the hand-off to that
+  // user only happens for that token. The menu listed only the requester's, the built-in and the plugin skills, so
+  // the dashboard offered no way to it and a person picked a plugin skill that ran in their own sandboxed session.
+  it("lists each environment user's skills under the environment's name, with the token that hands off", () => {
+    const envs = () => [
+      {
+        envId: 'env:acme-dev2',
+        skills: [
+          { name: 'deploy-dev2', description: 'Deploy dev2' },
+          { name: 'qa-dev2', description: 'QA dev2' },
+        ],
+      },
+    ];
+    resetComposerMenuCache();
+    const member = composerSkillItems({ userId: 'U1', admin: false }, skillDeps({ listEnvironmentSkills: envs }));
+    // Not granted yet: named (invoking it asks an admin), its words not shown.
+    expect(member).toContainEqual({
+      value: '$acme-dev2:deploy-dev2',
+      group: 'acme-dev2',
+      description: '관리자 승인 필요',
+    });
+    expect(member).toContainEqual({ value: '$acme-dev2:qa-dev2', group: 'acme-dev2', description: '관리자 승인 필요' });
+
+    // The skill handler exempts no admin from an environment user's grant: an admin without one gets the card too.
+    resetComposerMenuCache();
+    const admin = composerSkillItems(
+      { userId: 'UADMIN', admin: true },
+      skillDeps({
+        listEnvironmentSkills: envs,
+        envUserSkillAllowed: (_envId, skill, userId) => skill === 'qa-dev2' && userId === 'UADMIN',
+      }),
+    );
+    expect(admin).toContainEqual({ value: '$acme-dev2:qa-dev2', group: 'acme-dev2', description: 'QA dev2' });
+    expect(admin).toContainEqual({
+      value: '$acme-dev2:deploy-dev2',
+      group: 'acme-dev2',
+      description: '관리자 승인 필요',
+    });
+
+    // A grant lets a member run the skill as the environment user, never read it: nobody but an admin sees an
+    // environment user's SKILL.md words (the skill card and view/copy refuse them too).
+    resetComposerMenuCache();
+    const granted = composerSkillItems(
+      { userId: 'U2', admin: false },
+      skillDeps({
+        listEnvironmentSkills: envs,
+        envUserSkillAllowed: (envId, skill, userId) =>
+          envId === 'env:acme-dev2' && skill === 'qa-dev2' && userId === 'U2',
+      }),
+    );
+    expect(granted).toContainEqual({ value: '$acme-dev2:qa-dev2', group: 'acme-dev2' });
+    expect(granted).toContainEqual({
+      value: '$acme-dev2:deploy-dev2',
+      group: 'acme-dev2',
+      description: '관리자 승인 필요',
+    });
+
+    // The environment user's own session already lists them as its own skills.
+    resetComposerMenuCache();
+    const self = composerSkillItems(
+      { userId: 'env:acme-dev2', admin: true },
+      skillDeps({ listEnvironmentSkills: envs }),
+    );
+    expect(self.some((r) => r.value.startsWith('$acme-dev2:'))).toBe(false);
   });
 
   it('an edited SKILL.md description shows once the minute is up', () => {

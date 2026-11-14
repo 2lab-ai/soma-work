@@ -16,9 +16,10 @@ import * as fs from 'node:fs';
 import { t } from '@soma/common/i18n';
 import { CONFIG_FILE } from '../env-paths';
 import { envPluginNamesFromConfig, envSkillAllowed } from '../env-skill-registry';
-import { loadEnvironments } from '../env-users';
+import { environmentLabel, loadEnvironments } from '../env-users';
 import { Logger } from '../logger';
 import { type AvailableSkill, listAvailableSkills, skillMdFile } from '../skill-locator';
+import { isSkillUseAllowed } from '../user-skill-grants-store';
 import { listUserSkills } from '../user-skill-store';
 
 const logger = new Logger('ComposerMenus');
@@ -543,8 +544,21 @@ export interface ComposerSkillDeps {
   skillFile(skill: AvailableSkill, userId?: string): string | null;
   envPluginNames(): ReadonlySet<string>;
   envSkillAllowed(key: string, userId: string): boolean;
+  /** Each configured environment user (`env:<name>`) with its personal skills. */
+  listEnvironmentSkills(): Array<{ envId: string; skills: Array<{ name: string; description: string }> }>;
+  /** Whether `userId` already holds the grant to call that environment user's skill (no card would come; admins too). */
+  envUserSkillAllowed(envId: string, skill: string, userId: string): boolean;
   fs: SkillFs;
   now(): number;
+}
+
+function environmentSkills(): Array<{ envId: string; skills: Array<{ name: string; description: string }> }> {
+  try {
+    return loadEnvironments().map((env) => ({ envId: env.id, skills: listUserSkills(env.id) }));
+  } catch (err) {
+    logger.debug('environment skills unreadable', { error: (err as Error).message });
+    return [];
+  }
 }
 
 const defaultDeps: ComposerSkillDeps = {
@@ -553,6 +567,8 @@ const defaultDeps: ComposerSkillDeps = {
   skillFile: (skill, userId) => skillMdFile(skill, userId),
   envPluginNames: () => envPluginNamesFromConfig(CONFIG_FILE ?? ''),
   envSkillAllowed: (key, userId) => envSkillAllowed(key, userId, undefined, loadEnvironments()),
+  listEnvironmentSkills: environmentSkills,
+  envUserSkillAllowed: (envId, skill, userId) => isSkillUseAllowed(envId, skill, userId),
   fs,
   now: () => Date.now(),
 };
@@ -589,6 +605,22 @@ export function composerSkillItems(
         row.needsApproval = true;
       return row;
     });
+    // An environment's deploy and QA are its environment user's skills. `$<env>:<skill>` is the token the skill
+    // handler hands off to that user (a new thread, no sandbox), so the menu names them the same way, grouped under
+    // the environment. Unlike an environment plugin skill:
+    // - the handler exempts no admin from the grant, so the marker follows the grant alone;
+    // - a grant lets a member run the skill, never read it — only an admin sees its SKILL.md words.
+    for (const { envId, skills } of deps.listEnvironmentSkills()) {
+      if (envId === opts.userId) continue; // its own session lists them as its own skills
+      const label = environmentLabel(envId);
+      for (const s of skills) {
+        const row: ComposerSuggestionRow & { needsApproval?: true } = { value: `$${label}:${s.name}`, group: label };
+        const description = opts.admin ? shortDescription(s.description) : '';
+        if (description) row.description = description;
+        if (!(opts.userId && deps.envUserSkillAllowed(envId, s.name, opts.userId))) row.needsApproval = true;
+        rows.push(row);
+      }
+    }
     // Own skills first, then the built-in ones, then each plugin — a group's rows together, by name inside.
     const rank = (r: ComposerSuggestionRow) => (r.group === '내 스킬' ? 0 : r.group === '기본 스킬' ? 1 : 2);
     rows.sort(
