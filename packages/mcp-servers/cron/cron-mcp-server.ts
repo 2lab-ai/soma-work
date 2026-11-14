@@ -346,9 +346,11 @@ function buildUpdatePatch(
       return { ok: false, errorText: `Error: Invalid target '${args.target}'. Use 'channel', 'thread', or 'dm'` };
     }
     if (args.target === 'channel') {
-      // New-channel-message delivery: drop the target override and the thread anchor.
+      // The prompt runs as a model turn. A channel job's anchor is the thread whose session runs it, so a
+      // thread reply turned into a run keeps its thread; a DM job has no thread to keep. clear_threadTs
+      // (above) drops the anchor explicitly — the job then runs in a thread of its own.
       patch.target = null;
-      patch.threadTs = null;
+      if (job.target === 'dm' && args.threadTs === undefined) patch.threadTs = null;
     } else if (args.target === 'dm') {
       patch.target = 'dm';
       patch.threadTs = null;
@@ -537,7 +539,7 @@ class CronMcpServer {
                 type: 'string',
                 enum: ['channel', 'thread', 'dm'],
                 description:
-                  'Delivery target. channel: new message in channel (default). thread: reply in existing thread (requires threadTs). dm: direct message to cron owner.',
+                  "Delivery target. channel (default): the prompt runs as a model turn — in threadTs's session when threadTs is given, else in the job's own thread. thread: posts the prompt TEXT as a reply in threadTs and nothing runs it (a reminder, not a task) — to have the model run the prompt and report in a thread, keep target channel and pass threadTs. dm: sends the prompt text to the owner as a DM; nothing runs it.",
               },
               model_type: {
                 type: 'string',

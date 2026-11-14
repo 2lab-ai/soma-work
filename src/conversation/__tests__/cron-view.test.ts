@@ -46,3 +46,33 @@ describe('buildCronJobsView — manual runs', () => {
     expect(scheduled.manual).toBeUndefined();
   });
 });
+
+describe('buildCronJobsView — where a run that opened no session went', () => {
+  const threadJob: CronJob = { ...JOB, threadTs: '1700000000.000100', target: 'thread' };
+  it('a thread reply links the thread it was posted in (the job’s anchor); a DM and a session-linked run get none', () => {
+    const [view] = buildCronJobsView({
+      jobs: [threadJob],
+      history: [
+        record('2026-11-13T09:00:00.000Z', { executionPath: 'thread_reply', manual: true }),
+        record('2026-11-13T10:00:00.000Z', { executionPath: 'dm' }),
+      ],
+      nowMs: Date.parse('2026-11-14T00:00:00.000Z'),
+      findSession: () => undefined,
+      threadUrl: (channel, ts) => `https://slack.example/archives/${channel}/p${ts.replace('.', '')}`,
+    });
+    const [dm, reply] = view.runs;
+    expect(reply.postedUrl).toBe('https://slack.example/archives/C1/p1700000000000100');
+    expect(dm.postedUrl).toBeUndefined();
+  });
+
+  it('no link when the job has no thread or no link can be built', () => {
+    const [view] = buildCronJobsView({
+      jobs: [{ ...JOB, target: 'thread' }],
+      history: [record('2026-11-13T09:00:00.000Z', { executionPath: 'thread_reply' })],
+      nowMs: Date.parse('2026-11-14T00:00:00.000Z'),
+      findSession: () => undefined,
+      threadUrl: () => null,
+    });
+    expect(view.runs[0].postedUrl).toBeUndefined();
+  });
+});

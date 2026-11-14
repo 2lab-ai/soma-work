@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { type CronJobPatch, CronStorage, isRunAllowed } from 'somalib/cron/cron-storage';
+import { type CronJob, type CronJobPatch, CronStorage, isRunAllowed } from 'somalib/cron/cron-storage';
 import { isAdminUser } from '../../admin-utils';
 import { getActiveCronScheduler } from '../../cron-scheduler';
 import { DATA_DIR } from '../../env-paths';
@@ -145,7 +145,13 @@ export class CronActionHandler {
           ? buildModelPatch(selected)
           : kind === 'mode'
             ? buildModePatch(selected)
-            : buildTargetPatch(selected, body);
+            : buildTargetPatch(
+                selected,
+                body,
+                this.storage()
+                  .getJobsByOwner(owner)
+                  .find((j) => j.name === name),
+              );
       if (!patch) {
         await respond({
           response_type: 'ephemeral',
@@ -313,8 +319,11 @@ function buildModelPatch(selected: string): CronJobPatch | null {
  * executeJob), so a threadTs from another channel would otherwise reply into a
  * nonexistent thread of the old channel.
  */
-function buildTargetPatch(selected: string, body: any): CronJobPatch | null {
-  if (selected === 'channel') return { target: null, threadTs: null };
+function buildTargetPatch(selected: string, body: any, job: CronJob | undefined): CronJobPatch | null {
+  // The prompt runs as a model turn: a thread reply turned into a run keeps its thread (runs in its session);
+  // a DM job has no thread to keep.
+  if (selected === 'channel')
+    return job && job.target !== 'dm' && job.threadTs ? { target: null } : { target: null, threadTs: null };
   if (selected === 'dm') return { target: 'dm', threadTs: null };
   if (selected === 'thread') {
     const ts: string | undefined = body?.message?.thread_ts ?? body?.message?.ts;

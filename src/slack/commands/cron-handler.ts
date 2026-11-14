@@ -233,8 +233,11 @@ export class CronCommandHandler implements CommandHandler {
     let patch: CronJobPatch;
     let desc: string;
     if (value === 'channel') {
-      patch = { target: null, threadTs: null };
-      desc = 'channel — 채널에 새 메시지';
+      // The prompt runs as a model turn. A thread reply turned into a run keeps its thread (the one it posted in)
+      // and runs in that thread's session; a DM job has no thread to keep.
+      const keep = resolved.job.target !== 'dm' ? resolved.job.threadTs : null;
+      patch = keep ? { target: null } : { target: null, threadTs: null };
+      desc = keep ? `channel — 스레드(ts:${keep}) 세션에서 실행` : 'channel — 채널에 새 메시지';
     } else if (value === 'dm') {
       patch = { target: 'dm', threadTs: null };
       desc = 'dm — 잡 오너에게 DM';
