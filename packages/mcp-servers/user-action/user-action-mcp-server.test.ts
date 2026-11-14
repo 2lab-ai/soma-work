@@ -67,6 +67,17 @@ describe('user-action MCP server', () => {
     expect(bad.message).toBeTruthy();
   });
 
+  it('an unclosed heredoc is a syntax error, though bash -n passes it: pasted, it would swallow what follows', () => {
+    for (const script of ['cat <<EOF\nhello', 'cat <<EOF', "cat <<'EOF' > /tmp/x\nhello\nEO"]) {
+      const res = buildInstructUserResponse({ ...args, script }, deps);
+      expect(res.ok).toBe(false);
+      if (res.ok) continue;
+      expect(res.error.code).toBe('SYNTAX_ERROR');
+      expect(res.error.message).toMatch(/here-document/);
+    }
+    expect(buildInstructUserResponse({ ...args, script: 'cat <<EOF\nhello\nEOF' }, deps).ok).toBe(true);
+  });
+
   it('checkScriptSyntax reports a missing shell as unchecked instead of pretending it passed', () => {
     const r = checkScriptSyntax('date', 'zsh', { bash: 'bash', zsh: 'no-such-shell-user-action-test', sh: 'sh' });
     expect(r).toMatchObject({ checked: false, ok: false });

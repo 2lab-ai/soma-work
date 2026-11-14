@@ -101,7 +101,12 @@ export interface UserActionRecord extends InstructUserRequest {
   slackTs?: string;
 }
 
-export type UserActionErrorCode = 'INVALID_ARGS' | 'SCRIPT_TOO_LONG' | 'NOT_A_SCRIPT' | 'SECRET_IN_SCRIPT';
+export type UserActionErrorCode =
+  | 'INVALID_ARGS'
+  | 'SCRIPT_TOO_LONG'
+  | 'NOT_A_SCRIPT'
+  | 'SECRET_IN_SCRIPT'
+  | 'SYNTAX_ERROR';
 
 export type ValidateInstructUserResult =
   | { ok: true; request: InstructUserRequest }
@@ -138,10 +143,12 @@ const KEY_CANDIDATE =
 /** A secret-named key: any case, anywhere in a name; PASS / PW only as a whole part of one (`DB_PASS`, not `BYPASS`). */
 const isSecretName = (key: string) =>
   /[가-힣]/.test(key) ||
-  /TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|PASSCODE|CREDENTIAL|API[_-]?KEY|PRIVATE[_-]?KEY|ACCESS[_-]?KEY/i.test(key) ||
+  /TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|PASSCODE|CREDENTIAL|BEARER|API[_-]?KEY|PRIVATE[_-]?KEY|ACCESS[_-]?KEY/i.test(
+    key,
+  ) ||
   /(?:^|[_-])(?:PASS|PW)(?:[_-]|$)/i.test(key);
 /** An option that takes the secret itself (`--password x`, `--client-secret x`), not where it is (`--password-stdin`). */
-const OPTION_TAKES_SECRET = /(?:TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|PASSCODE|KEY|PASS|PW)$/i;
+const OPTION_TAKES_SECRET = /(?:TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|PASSCODE|BEARER|KEY|PASS|PW)$/i;
 /** Commands whose output is text written in the script (or encoded in it) — a substitution of one is a literal. */
 const LITERAL_PRODUCERS =
   /^\s*(?:(?:command|builtin|env)\s+)?(?:\S*\/)?(?:echo|printf|base64|xxd|rev|openssl\s+(?:enc|base64))\b|<<</;
@@ -257,7 +264,14 @@ function secretLiteral(text: string, script = false): boolean {
     // In the script a quote that closes before the value ends it: `read -rsp 'Password: ' PASSWORD` gives no value.
     const open = script ? quoteAt(text, start) : '';
     if (open && prose[1].replace(/\\./g, '').includes(open)) continue;
-    const value = text.slice(after + prose[0].length);
+    const valueAt = after + prose[0].length;
+    if (script) {
+      // As the shell hands it over (a `$` in single quotes stays literal), up to the end of a header or data value.
+      const literal = shellWordLiteral(text, valueAt, quoteAt(text, valueAt)).split(/["',;}\])\s]/)[0];
+      if (literal && !isPath(literal) && !/^<[^<>]+>?$/.test(literal)) return true;
+      continue;
+    }
+    const value = text.slice(valueAt);
     if (!value || /^[\s,;)\]}]/.test(value)) continue;
     if (/^\$\(/.test(value) && !LITERAL_PRODUCERS.test(value.slice(2))) continue;
     if (/^\$(?:\{[A-Za-z_][A-Za-z0-9_]*(?::?\?[^}]*)?\}|[A-Za-z_][A-Za-z0-9_]*)(?=$|[\s`'"*,;.)\]}:/])/.test(value))
@@ -282,6 +296,20 @@ function credentialArgLiteral(text: string, script: boolean): boolean {
     } else {
       const pw = /^([^\s/@'"]*)@/.exec(text.slice(at))?.[1];
       if (pw && !/^\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*\})$/.test(pw)) return true;
+    }
+  }
+  // An HTTP credential after its scheme: `Authorization: Bearer x`, `Basic x` — any length.
+  for (const m of text.matchAll(/\b(?:Bearer|Basic)[ \t]+/g)) {
+    const at = (m.index ?? 0) + m[0].length;
+    if (script) {
+      const literal = shellWordLiteral(text, at, quoteAt(text, at)).split(/["',;}\])\s]/)[0];
+      if (literal && !/^<[^<>]+>?$/.test(literal)) return true;
+    } else {
+      const v = /^[`'"]?([^\s`'",;)]+)/.exec(text.slice(at))?.[1] ?? '';
+      const reference = /^(?:\$[A-Za-z_{(]|<)/.test(v);
+      // Prose: a value, not a word in a sentence ("Bearer tokens are…").
+      if (v && !reference && (/\d/.test(v) || v.length >= 12 || /Authorization\s*:\s*$/i.test(text.slice(0, m.index))))
+        return true;
     }
   }
   for (const m of text.matchAll(/(?:^|[\s;&|(])(?:-u|--user|--proxy-user)(?:=|[ \t]+)/g)) {
@@ -363,6 +391,13 @@ export function validateInstructUserArgs(args: unknown): ValidateInstructUserRes
     return fail(
       'NOT_A_SCRIPT',
       "a URL is not a script — give the command that opens it, e.g. open 'https://…' (macOS) or xdg-open 'https://…'",
+    );
+  }
+  if (scan(script).unclosedHeredoc) {
+    // bash -n passes it (some builds only warn); pasted into a terminal it would swallow every command after it.
+    return fail(
+      'SYNTAX_ERROR',
+      'a here-document is never closed — add the line holding only its delimiter (e.g. EOF), or drop the heredoc',
     );
   }
   // Every field is posted to Slack and the dashboard: none may carry a credential. The message never repeats it.
@@ -449,7 +484,7 @@ interface Segment {
  * (`$(…)`, backticks — also inside double quotes) is read as commands of its own
  * and leaves the word around it whole: `gui/$(id -u)/svc` is one word, `id` a command.
  */
-function scan(script: string, depth = 0): { segments: Segment[]; redirects: string[] } {
+function scan(script: string, depth = 0): { segments: Segment[]; redirects: string[]; unclosedHeredoc: boolean } {
   const segments: Segment[] = [];
   const redirects: string[] = [];
   let words: string[] = [];
@@ -458,6 +493,8 @@ function scan(script: string, depth = 0): { segments: Segment[]; redirects: stri
   let quote: '' | "'" | '"' = '';
   let pendingRedirect = false;
   const heredocs: Array<{ tag: string; stripTabs: boolean; quoted: boolean }> = [];
+  /** A heredoc whose delimiter line never comes. */
+  let unclosedHeredoc = false;
 
   const endWord = () => {
     if (!inWord) return;
@@ -605,6 +642,7 @@ function scan(script: string, depth = 0): { segments: Segment[]; redirects: stri
       for (const doc of heredocs.splice(0)) {
         const bodyStart = j;
         let bodyEnd = script.length;
+        let closed = false;
         while (j < script.length) {
           const next = script.indexOf('\n', j);
           const line = script.slice(j, next < 0 ? script.length : next);
@@ -612,11 +650,13 @@ function scan(script: string, depth = 0): { segments: Segment[]; redirects: stri
           j = next < 0 ? script.length : next + 1;
           if ((doc.stripTabs ? line.replace(/^\t+/, '') : line) === doc.tag) {
             bodyEnd = lineStart;
+            closed = true;
             break;
           }
         }
         // An unquoted tag (`<<EOF`) expands its body: `$(…)` and backticks there run. A quoted one (`<<'EOF'`) does not.
         if (!doc.quoted) substitutionsIn(script.slice(bodyStart, bodyEnd));
+        if (!closed) unclosedHeredoc = true;
       }
       i = j - 1;
       continue;
@@ -640,7 +680,7 @@ function scan(script: string, depth = 0): { segments: Segment[]; redirects: stri
     inWord = true;
   }
   endSegment();
-  return { segments, redirects };
+  return { segments, redirects, unclosedHeredoc: unclosedHeredoc || heredocs.length > 0 };
 }
 
 /** Shell words that lead into the command after them (`if sudo rm …`, `then echo …`) or close a block (`fi`). */

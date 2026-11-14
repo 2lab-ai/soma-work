@@ -168,13 +168,10 @@ function createParams(session: any, abortController: AbortController): any {
   };
 }
 
-function stream(session: any, ...steps: Array<any | (() => void)>) {
+function stream(_session: any, ...events: any[]) {
   return () =>
     (async function* () {
-      for (const step of steps) {
-        if (typeof step === 'function') step();
-        else yield step;
-      }
+      yield* events;
       yield { type: 'result', stopReason: 'end_turn' };
     })();
 }
@@ -215,5 +212,39 @@ describe('StreamExecutor — user actions reach the host provider', () => {
     expect(args.slackApi).toBe(deps.slackApi);
     args.persistAndBroadcast('k');
     expect(persistAndBroadcast).toHaveBeenCalledWith('k');
+  });
+
+  it('a capture that fails does not end the turn: the next batch is still captured and the turn completes', async () => {
+    captureUserActions.mockClear();
+    namesAtCall.length = 0;
+    captureUserActions.mockRejectedValueOnce(new Error('slack down'));
+    const session = createSession();
+    const deps = createDeps(
+      stream(
+        session,
+        toolCall('tu-1', 'mcp__user-action__instruct_user'),
+        toolResult('tu-1'),
+        toolCall('tu-2', 'mcp__user-action__instruct_user'),
+        toolResult('tu-2'),
+      ),
+    );
+    deps.claudeHandler.getSessionRegistry.mockReturnValue({
+      beginTurn: vi.fn(),
+      endTurn: vi.fn(),
+      broadcastSessionUpdate: vi.fn(),
+      getActivityState: vi.fn().mockReturnValue('idle'),
+      persistAndBroadcast: vi.fn(),
+    });
+    deps.toolEventProcessor.handleToolResult.mockImplementation(async (results: any[]) => {
+      for (const r of results) r.toolName ??= 'mcp__user-action__instruct_user';
+    });
+    const executor = new StreamExecutor(deps);
+
+    const result = await executor.execute(createParams(session, new AbortController()));
+
+    expect(captureUserActions).toHaveBeenCalledTimes(2);
+    // The first call rejected (its batch was tu-1); the second still came, with tu-2.
+    expect(namesAtCall.map((batch) => batch.map(([id]) => id))).toEqual([['tu-2']]);
+    expect(result).toMatchObject({ success: true });
   });
 });

@@ -67,7 +67,7 @@ describe('SessionRegistry — user actions across a restart', () => {
     });
   });
 
-  it('malformed stored entries are dropped, not crashing the load', () => {
+  it('malformed stored entries are dropped with a warning, not crashing the load', () => {
     const before = new SessionRegistry();
     const s = before.createSession('U1', 'User', 'C1', '300.002');
     s.sessionId = 'sid-2';
@@ -75,7 +75,12 @@ describe('SessionRegistry — user actions across a restart', () => {
     before.saveSessions();
 
     const after = new SessionRegistry();
+    const warn = vi.spyOn((after as any).logger, 'warn');
     after.loadSessions();
     expect(after.getSession('C1', '300.002')?.userActions?.map((a) => a.id)).toEqual(['ua_ok']);
+    expect(warn).toHaveBeenCalledWith(
+      'Dropped malformed user actions on load',
+      expect.objectContaining({ dropped: 1 }),
+    );
   });
 });

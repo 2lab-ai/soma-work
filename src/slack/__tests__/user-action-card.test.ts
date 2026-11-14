@@ -110,6 +110,16 @@ describe('Slack limits', () => {
     expect(texts.join('\n').split('&amp;').length - 1).toBe(600);
   });
 
+  it('the fenced script is exactly the checked script, escaped for Slack — every line, nothing rewritten', () => {
+    const script = "cd ~/proj && git status\nprintf '%s\\n' '<a & b>'\nopen 'https://example.com/?x=1&y=2'";
+    const card = buildUserActionCard(record({ script }), 'k');
+    const scriptSection = card.attachments[0].blocks.find(
+      (b: any) => b.type === 'section' && b.text.text.includes('```'),
+    );
+    const fenced = /```([\s\S]*)```/.exec(scriptSection.text.text)?.[1];
+    expect(fenced).toBe(script.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'));
+  });
+
   it('the script is shown whole in one section — the longest script the MCP accepts fits', () => {
     const script = `printf '%s' '${'&'.repeat(553)}'`;
     const card = buildUserActionCard(record({ script }), 'k');

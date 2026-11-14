@@ -96,6 +96,15 @@ export function checkScriptSyntax(
   if (r.error) {
     return { checked: false, ok: false, tool, message: `${bin}을 실행하지 못했다` };
   }
+  // bash/sh only warn on a heredoc whose delimiter never comes; pasted, it would swallow every command after it.
+  if (r.status === 0 && /here-document/i.test(r.stderr || '')) {
+    return {
+      checked: true,
+      ok: false,
+      tool,
+      message: 'a here-document is never closed (its delimiter line is missing)',
+    };
+  }
   if (r.status === 0) return { checked: true, ok: true, tool };
   const message = (r.stderr || '').trim().split('\n').slice(0, 3).join('\n').slice(0, 300) || `exit ${r.status}`;
   return { checked: true, ok: false, tool, message };

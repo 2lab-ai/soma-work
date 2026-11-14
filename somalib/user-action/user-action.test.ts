@@ -291,6 +291,36 @@ describe('validateInstructUserArgs', () => {
   });
 
   it.each([
+    ["curl -H 'Authorization: Bearer abc123' https://api.example.com", 'script'],
+    ['curl -H "Authorization: Basic dXNlcjpw" https://api.example.com', 'script'],
+    ['curl --oauth2-bearer abc123 https://api.example.com', 'script'],
+    ["curl -H 'X-Api-Key: $hunter2' https://x.example", 'script'],
+    ['curl -d \'{"password":"$hunter2"}\' https://x.example/login', 'script'],
+    ['send Authorization: Bearer abc123', 'why'],
+  ])('also: short bearer/basic credentials, and $ in single quotes in headers and data: %s', (text, field) => {
+    const args = field === 'script' ? { ...base, script: text } : { ...base, [field]: text };
+    const r = validateInstructUserArgs(args);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe('SECRET_IN_SCRIPT');
+    expect(r.error.message).not.toContain('hunter2');
+    expect(r.error.message).not.toContain('abc123');
+  });
+
+  it.each([
+    'curl -H "Authorization: Bearer $API_TOKEN" https://api.example.com',
+    'curl -H "X-Api-Key: $API_KEY" https://x.example',
+    'curl -d "{\\"password\\":\\"$PW\\"}" https://x.example/login',
+    'curl --oauth2-bearer "$TOKEN" https://api.example.com',
+  ])('references the shell expands in headers and data pass: %s', (script) => {
+    expect(validateInstructUserArgs({ ...base, script }).ok).toBe(true);
+  });
+
+  it('prose about bearer tokens without a value passes', () => {
+    expect(validateInstructUserArgs({ ...base, why: 'Bearer tokens are issued by the console' }).ok).toBe(true);
+  });
+
+  it.each([
     'PASSWORD="$PW" ./login',
     'PASSWORD="${PW}" ./login',
     'PASSWORD="${PW:?set PW first}" ./login',
