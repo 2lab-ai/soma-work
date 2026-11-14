@@ -123,29 +123,108 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   /\bAKIA[0-9A-Z]{16}\b/,
   /\bAIza[0-9A-Za-z_-]{30,}/,
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
-  // Generic shapes: a JWT, a bearer header, an assignment to a secret-named variable with a literal value.
+  // Generic shapes: a JWT, a bearer header. A secret-named key with a literal value is `secretLiteral`.
   /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\./,
   /\bBearer\s+[A-Za-z0-9._~+/=-]{20,}/i,
-  /\b[A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY)[A-Za-z0-9_]*\s*[=:]\s*['"]?(?!\$|~?\/|\.\.?\/)[^\s'"$]{12,}/i,
 ];
 
+/** A secret-named key (any case, anywhere in an identifier) that is not itself a reference (`$TOKEN`, `${TOKEN…}`). */
+const SECRET_KEY = /(?<![$A-Za-z0-9_{])[A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY)[A-Za-z0-9_]*/gi;
+/** Commands whose output is text written in the script — a substitution of one is a literal. */
+const LITERAL_PRODUCERS = /^\s*(?:echo|printf|cat\s*<<<)\b/;
+
+/** The index just past the `close` that balances the `open` before `from` (nesting counted), or the end. */
+function balanced(text: string, from: number, open: string, close: string): number {
+  let level = 1;
+  for (let j = from; j < text.length; j++) {
+    if (text[j] === '\\') j++;
+    else if (text[j] === open) level++;
+    else if (text[j] === close && --level === 0) return j + 1;
+  }
+  return text.length;
+}
+
 /**
- * An assignment of a literal to a secret-named variable (`PASSWORD='hunter2'`, `export API_KEY="a b c"`), at any
- * length — checked in every posted field, not only the script. Allowed: no value, a reference or substitution the shell
- * expands (`$X`, `${X}`, `$(…)`, a backtick — not inside single quotes, and not `$'…'` / `$"…"`, which are literals), or
- * a path (`/…`, `~/…`, `./…`).
+ * The literal text of the shell word at `i`: quotes resolved, expansions dropped — except text the shell writes
+ * itself (`'…'`, `$'…'`, `$"…"`, a `${X:-default}` default, `$(echo …)`), which is literal.
  */
-function literalSecretAssignment(script: string): boolean {
-  const assign =
-    /(?:^|[\s;&|(])(?:(?:export|readonly|local|declare)\s+(?:-\S+\s+)*)?([A-Za-z_][A-Za-z0-9_]*)=(?=(['"]?)(.?.?.?))/g;
-  for (const m of script.matchAll(assign)) {
-    if (!/(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY)/i.test(m[1])) continue;
-    const head = m[3] ?? '';
-    if (head === '' || /^[\s;&|)]/.test(head)) continue; // NAME= (unset)
-    // A reference or a substitution — only where the shell expands it.
-    if (m[2] !== "'" && (head[0] === '`' || /^\$[A-Za-z_{(0-9@*#?!$-]/.test(head))) continue;
-    if (/^(?:\/|~\/|\.\.?\/)/.test(head)) continue; // a path
-    if (m[2] && head[0] === m[2]) continue; // NAME='' / NAME=""
+function shellWordLiteral(text: string, i: number): string {
+  let literal = '';
+  let quote = '';
+  while (i < text.length) {
+    const c = text[i];
+    if (!quote && /[\s;&|()<>]/.test(c)) break;
+    if (c === '\\' && quote !== "'") {
+      literal += text[i + 1] ?? '';
+      i += 2;
+    } else if (quote === "'") {
+      if (c === "'") quote = '';
+      else literal += c;
+      i++;
+    } else if (c === quote) {
+      quote = '';
+      i++;
+    } else if (!quote && (c === "'" || c === '"')) {
+      quote = c;
+      i++;
+    } else if (!quote && c === '$' && (text[i + 1] === "'" || text[i + 1] === '"')) {
+      quote = text[i + 1] === "'" ? "'" : '"'; // $'…' / $"…": written in the script
+      i += 2;
+    } else if (c === '$' && text[i + 1] === '(') {
+      const end = balanced(text, i + 2, '(', ')');
+      const body = text.slice(i + 2, end - 1);
+      if (LITERAL_PRODUCERS.test(body)) literal += body;
+      i = end;
+    } else if (c === '`') {
+      const end = text.indexOf('`', i + 1) < 0 ? text.length : text.indexOf('`', i + 1) + 1;
+      const body = text.slice(i + 1, end - 1);
+      if (LITERAL_PRODUCERS.test(body)) literal += body;
+      i = end;
+    } else if (c === '$' && text[i + 1] === '{') {
+      const end = balanced(text, i + 2, '{', '}');
+      const op = /^[#!]?[A-Za-z0-9_@*#?$!-]+(:?[-=+])([\s\S]*)$/.exec(text.slice(i + 2, end - 1));
+      if (op) literal += op[2]; // ${X:-default}: the default is written here; ${X:?message} is only an error
+      i = end;
+    } else if (c === '$' && /[A-Za-z0-9_@*#?$!-]/.test(text[i + 1] ?? '')) {
+      i += 2;
+      while (/[A-Za-z0-9_]/.test(text[i] ?? '')) i++;
+    } else {
+      literal += c;
+      i++;
+    }
+  }
+  return literal;
+}
+
+/** A value that holds no credential: nothing, a path, or (in prose) a reference, a substitution or a `<placeholder>`. */
+const isPath = (v: string) => /^(?:\/|~\/|\.\.?\/)/.test(v);
+
+/**
+ * Whether `text` gives a secret-named key a literal value, in any of the forms a field can carry it: a shell assignment
+ * or option (`PASSWORD='x'`, `export "PASSWORD=x"`, `--password=x`, `--token x`), or prose, markup and data
+ * (`PASSWORD: x`, `` `PASSWORD=x` ``, `**Password**: x`, `{"password":"x"}`), at any length. A value is fine only when it
+ * is empty, a path, or comes from somewhere else: `$X`, `${X}`, `${X:?msg}`, `$(command)` (not `echo` / `printf`), a
+ * `<placeholder>`. Checked in every posted field.
+ */
+function secretLiteral(text: string): boolean {
+  for (const m of text.matchAll(SECRET_KEY)) {
+    const after = (m.index ?? 0) + m[0].length;
+    const isOption = /--?$/.test(text.slice(0, m.index));
+    // Shell: KEY=word (also inside a quoted word, or as --key=word), or --key word.
+    const shell = /^=|^[ \t]+(?=\S)/.exec(text.slice(after));
+    if (shell && (shell[0] === '=' || isOption)) {
+      const literal = shellWordLiteral(text, after + shell[0].length);
+      if (literal.trim() && !isPath(literal)) return true;
+    }
+    // Prose, markup, data: KEY, closing marks, a separator, opening marks, then the value.
+    const prose = /^[`'"*_\]]*[ \t]*(?::=|=>|=|:)[ \t`'"*_]*/.exec(text.slice(after));
+    if (!prose) continue;
+    const value = text.slice(after + prose[0].length);
+    if (!value || /^[\s,;)\]}]/.test(value)) continue;
+    if (/^\$\(/.test(value) && !LITERAL_PRODUCERS.test(value.slice(2))) continue;
+    if (/^\$(?:\{[A-Za-z_][A-Za-z0-9_]*(?::?\?[^}]*)?\}|[A-Za-z_][A-Za-z0-9_]*)(?=$|[\s`'"*,;.)\]}:/])/.test(value))
+      continue;
+    if (/^<[^<>\n]+>/.test(value) || isPath(value)) continue;
     return true;
   }
   return false;
@@ -228,14 +307,14 @@ export function validateInstructUserArgs(args: unknown): ValidateInstructUserRes
     ['script', script],
     ...TEXT_FIELDS.map((f) => [f.key, out[f.key] ?? ''] as [string, string]),
   ];
-  const leaking = posted.find(
-    ([, text]) => literalSecretAssignment(text) || SECRET_PATTERNS.some((re) => re.test(text)),
-  );
+  const leaking = posted.find(([, text]) => secretLiteral(text) || SECRET_PATTERNS.some((re) => re.test(text)));
   if (leaking) {
     return fail(
       'SECRET_IN_SCRIPT',
-      `${leaking[0]} contains what looks like a credential; it would be posted to Slack and the dashboard. ` +
-        'Leave it out, and have the script read it from where the human keeps it (an env var, a password manager).',
+      `${leaking[0]} contains what looks like a credential (a known token shape, or a secret-named key such as ` +
+        'TOKEN / PASSWORD followed by = or : and a literal); it would be posted to Slack and the dashboard. Leave it ' +
+        'out and have the script read it from where the human keeps it ($VAR, $(pass show …)), or reword so no such ' +
+        'key is followed by a value.',
     );
   }
 
@@ -266,7 +345,7 @@ const PREFIX_VALUE_OPTS: Readonly<Record<string, ReadonlySet<string>>> = {
     ...['--chdir', '--chroot', '--command-timeout', '--login-class'],
   ]),
   doas: new Set(['-u', '-C']),
-  env: new Set(['-u', '-C', '-S', '--unset', '--chdir', '--split-string']),
+  env: new Set(['-u', '-C', '--unset', '--chdir']), // -S / --split-string: see commandOf
   nice: new Set(['-n', '--adjustment']),
   timeout: new Set(['-s', '-k', '--signal', '--kill-after']),
   caffeinate: new Set(['-t', '-w']),
@@ -285,6 +364,9 @@ const HIDDEN_CODE: readonly RegExp[] = [
   /(?:^|[\s;&|(])eval\s/,
   /\bbase64\s+(?:-\S+\s+)*(?:-d|-D|--decode)\b[^\n]*\|\s*(?:\S*\/)?(?:ba|z|da|k)?sh\b/,
 ];
+/** A base64 decode: what it writes is code no one can read in the script. */
+const isDecode = (words: string[], cmd: string) =>
+  cmd === 'base64' && words.some((w) => w === '--decode' || /^-[A-Za-z]*[dD][A-Za-z]*$/.test(w));
 
 interface Segment {
   words: string[];
@@ -525,7 +607,16 @@ function commandOf(words: string[]): { cmd: string; sudo: boolean } | null {
       const takes = PREFIX_VALUE_OPTS[name];
       i += 1;
       // `sudo -u root …`, `nice -n 10 …`: an option's value is not the command.
-      while (i < words.length && words[i].startsWith('-')) i += takes?.has(words[i]) ? 2 : 1;
+      while (i < words.length && words[i].startsWith('-')) {
+        const split = name === 'env' ? /^(?:-S|--split-string=?)([\s\S]*)$/.exec(words[i]) : null;
+        if (split) {
+          // `env -S 'bash -e'`: the string is the command line that runs.
+          const line = split[1] || (words[i + 1] ?? '');
+          const inner = commandOf([...line.split(/\s+/).filter(Boolean), ...words.slice(split[1] ? i + 1 : i + 2)]);
+          return inner ? { cmd: inner.cmd, sudo: sudo || inner.sudo } : sudo ? { cmd: '', sudo } : null;
+        }
+        i += takes?.has(words[i]) ? 2 : 1;
+      }
       if (name === 'timeout' && i < words.length) i += 1; // the duration
     } else if (LEAD_KEYWORDS.has(w)) i += 1;
     else if (HEADER_KEYWORDS.has(w)) return sudo ? { cmd: '', sudo } : null;
@@ -575,15 +666,18 @@ export function inspectUserActionScript(
 
   // Read with line continuations joined, so `curl … \\⏎ | sh` is one line.
   const joined = script.replace(/\\\n/g, ' ');
-  const downloadThenRun = segments.some((seg, k) => {
-    const c = commandOf(seg.words);
-    if (!c || !INTERPRETERS.has(c.cmd)) return false;
-    return segments.slice(0, k).some((prev) => {
-      if (prev.pipeline !== seg.pipeline) return false;
-      const p = commandOf(prev.words);
-      return !!p && (p.cmd === 'curl' || p.cmd === 'wget');
+  /** An interpreter (behind any wrapper) reading a pipeline that an earlier command matching `feeds` writes into. */
+  const pipedIntoInterpreter = (feeds: (words: string[], cmd: string) => boolean) =>
+    segments.some((seg, k) => {
+      const c = commandOf(seg.words);
+      if (!c || !INTERPRETERS.has(c.cmd)) return false;
+      return segments.slice(0, k).some((prev) => {
+        if (prev.pipeline !== seg.pipeline) return false;
+        const p = commandOf(prev.words);
+        return !!p && feeds(prev.words, p.cmd);
+      });
     });
-  });
+  const downloadThenRun = pipedIntoInterpreter((_words, cmd) => cmd === 'curl' || cmd === 'wget');
   if (downloadThenRun || REMOTE_CODE.some((re) => re.test(joined))) {
     add({
       id: 'remote-code',
@@ -592,7 +686,7 @@ export function inspectUserActionScript(
       detail: '받은 내용을 먼저 열어 보지 않고 셸이나 인터프리터로 넘긴다.',
     });
   }
-  if (HIDDEN_CODE.some((re) => re.test(joined))) {
+  if (pipedIntoInterpreter(isDecode) || HIDDEN_CODE.some((re) => re.test(joined))) {
     add({
       id: 'hidden-code',
       level: 'danger',
@@ -647,7 +741,7 @@ export function inspectUserActionScript(
       id: 'network',
       level: 'info',
       label: '네트워크에 접속함',
-      detail: [...hosts, ...networkCommands.filter((c) => !hosts.length || c !== 'open')].join(', '),
+      detail: [...hosts, ...networkCommands].join(', '),
     });
   }
 
