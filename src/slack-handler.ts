@@ -473,6 +473,16 @@ export class SlackHandler {
   /** Seam for the user-turn record of a steered message (tests swap it). */
   private userMediaRecorder = { capture: captureUserMedia, record: recordUserTurn };
   /**
+   * Per session, the end of the line of steered messages being recorded
+   * ({@link recordSteeredInstruction}). The model reads the messages queued at
+   * one tool boundary together, so their `read` signals come a few ms apart
+   * and nobody awaits them; each recording copies its files first. Written as
+   * each copy finished, the later message landed above the earlier one in the
+   * chat (2026-11-14) — the model had read them in order. A recording writes
+   * its turn only after every recording started before it has written.
+   */
+  private steerRecordingTails = new Map<string, Promise<void>>();
+  /**
    * The uuid each item was steered under, keyed by item id — the reverse of
    * {@link followupSteerFiles}, and the only way back to those files from a path
    * that knows the ITEM but never sees a uuid: the end-of-turn sweep (the row is
@@ -6502,11 +6512,33 @@ export class SlackHandler {
    * conversation, with its files (user media, SSOT 2026-10-25) — the executor
    * never saw it, so nothing else records it. Best effort: a bookkeeping
    * failure must never fail the turn it was steered into.
+   *
+   * In the order of the calls, which is the order the model read the messages
+   * ({@link steerRecordingTails}): the files are copied side by side, and each
+   * turn is written after the one called before it. Never rejects.
    */
-  private async recordSteeredInstruction(
+  private recordSteeredInstruction(
     sessionKey: string,
     instruction: { text: string; user?: string; sentAt?: number; clientRef?: string },
     files: ProcessedFile[],
+  ): Promise<void> {
+    const before = this.steerRecordingTails.get(sessionKey) ?? Promise.resolve();
+    const recording = this.writeSteeredInstruction(sessionKey, instruction, files, before);
+    // The line ends when this one AND everything before it is written: one that writes nothing
+    // (no conversation) must not let the next one pass a slower one still copying.
+    const tail = Promise.all([before, recording]).then(() => undefined);
+    this.steerRecordingTails.set(sessionKey, tail);
+    void tail.then(() => {
+      if (this.steerRecordingTails.get(sessionKey) === tail) this.steerRecordingTails.delete(sessionKey);
+    });
+    return recording;
+  }
+
+  private async writeSteeredInstruction(
+    sessionKey: string,
+    instruction: { text: string; user?: string; sentAt?: number; clientRef?: string },
+    files: ProcessedFile[],
+    before: Promise<void>,
   ): Promise<void> {
     try {
       const session = this.claudeHandler?.getSessionByKey?.(sessionKey);
@@ -6514,6 +6546,8 @@ export class SlackHandler {
       if (!conversationId || (!instruction.text && files.length === 0)) return;
       let attachments: Awaited<ReturnType<typeof captureUserMedia>> | undefined;
       if (files.length > 0) attachments = await this.userMediaRecorder.capture(conversationId, files);
+      // The messages read before this one are written first.
+      await before;
       const userId = instruction.user ?? session?.ownerId ?? 'unknown';
       const userName = userSettingsStore.getUserSettings?.(userId)?.slackDisplayName ?? session?.ownerName ?? userId;
       this.userMediaRecorder.record(

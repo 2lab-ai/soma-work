@@ -4784,6 +4784,89 @@ describe('SlackHandler — follow-up queue host', () => {
       await vi.waitFor(() => expect(order).toEqual(['capture-start', 'capture-done', 'record', 'cleanup']));
     });
 
+    // Two messages the model reads at the same tool boundary arrive as two `read` signals a few ms apart
+    // (2026-11-14: 17 ms). Each recording copies its own files first, and the chat listed the messages in the
+    // order those copies FINISHED: the later message, its copy done first, sat above the earlier one — though
+    // the model had read them in the order they were sent. The conversation lists them in the order read.
+    it('two messages read together are recorded in the order the model read them, whichever copy ends first', async () => {
+      const { uuid: first, settle, record } = await steerWithFile('먼저 보낸 지시');
+      const secondFiles = [{ name: 'later.mp3', path: '/tmp/slack-file-2-later.mp3', isImage: false }];
+      processFiles.mockResolvedValueOnce({ files: secondFiles, shouldContinue: true });
+      await handler.handleMessage(
+        message({
+          ts: '1792900000.000200',
+          text: '나중에 보낸 지시',
+          files: [
+            {
+              id: 'F2',
+              name: 'later.mp3',
+              mimetype: 'audio/mpeg',
+              filetype: 'mp3',
+              url_private: 'https://x/2',
+              url_private_download: 'https://x/2d',
+              size: 4,
+            },
+          ],
+        }),
+        say(),
+      );
+      const second = claudeHandler.steerTurn.mock.calls[1][1].uuid;
+      expect(second).not.toBe(first);
+      const copies = { 'shot.png': deferred<unknown[]>(), 'later.mp3': deferred<unknown[]>() };
+      const capture = vi.fn(
+        (_conversationId: string, files: Array<{ name: string }>) =>
+          copies[files[0].name as keyof typeof copies].promise,
+      );
+      handlerAny.userMediaRecorder.capture = capture;
+
+      // The running turn's own signal, fired from its frame loop and awaited by nobody.
+      const { read } = claudeHandler.setSteerSignals.mock.calls[0][0];
+      read(SESSION_KEY, first);
+      read(SESSION_KEY, second);
+      await tick();
+      // Both copies run side by side: the order is kept by the writes, not by copying one file at a time.
+      expect(capture.mock.calls.map((call) => call[1][0].name)).toEqual(['shot.png', 'later.mp3']);
+      expect(record).not.toHaveBeenCalled();
+      // The later message's copy finishes first.
+      copies['later.mp3'].resolve([]);
+      await tick();
+      await tick();
+      copies['shot.png'].resolve([]);
+      await vi.waitFor(() => expect(record).toHaveBeenCalledTimes(2));
+
+      expect(record.mock.calls.map((call: unknown[]) => call[1])).toEqual(['먼저 보낸 지시', '나중에 보낸 지시']);
+      await settle();
+    });
+
+    // A recording in the middle that writes nothing (here: no words, no files) still holds its place: the one
+    // after it waits for the one before it, which is still copying.
+    it('a recording that writes nothing does not let the next one pass a slower one before it', async () => {
+      const record = vi.fn();
+      const slow = deferred<unknown[]>();
+      handlerAny.userMediaRecorder = {
+        capture: vi.fn((_conversationId: string, files: Array<{ name: string }>) =>
+          files[0].name === 'slow.png' ? slow.promise : Promise.resolve([]),
+        ),
+        record,
+      };
+      registrySession.conversationId = 'conv_steer';
+      const file = (name: string) => [{ name, path: `/tmp/slack-file-${name}`, isImage: true }];
+
+      const first = handlerAny.recordSteeredInstruction(SESSION_KEY, { text: '첫째' }, file('slow.png'));
+      const empty = handlerAny.recordSteeredInstruction(SESSION_KEY, { text: '' }, []);
+      const third = handlerAny.recordSteeredInstruction(SESSION_KEY, { text: '셋째' }, file('fast.png'));
+      await empty;
+      await tick();
+      await tick();
+      expect(record).not.toHaveBeenCalled();
+
+      slow.resolve([]);
+      await Promise.all([first, third]);
+      expect(record.mock.calls.map((call: unknown[]) => call[1])).toEqual(['첫째', '셋째']);
+      // The line is forgotten once it has drained.
+      await vi.waitFor(() => expect(handlerAny.steerRecordingTails.size).toBe(0));
+    });
+
     it('a dashboard send steered into the running turn keeps its ref on the turn it records (#785)', async () => {
       const { uuid, settle, record } = await steerWithFile('대시보드에서 보낸 지시', {
         dashboardClientRef: 'optimistic-1-ab',
