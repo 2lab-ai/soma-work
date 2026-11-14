@@ -762,12 +762,3 @@ export function parseInstructUserToolResult(raw: unknown, depth = 0): UserAction
   if (typeof r.text === 'string') return parseInstructUserToolResult(r.text, depth + 1);
   return null;
 }
-
-/** Put a resolved action back to pending (its answer could not reach the agent), so it can be answered again. */
-export function unresolveUserAction(list: readonly UserActionRecord[] | undefined, id: string): UserActionRecord[] {
-  return (list ?? []).map((a) => {
-    if (a.id !== id) return a;
-    const { resolvedAt: _at, resolvedBy: _by, ...rest } = a;
-    return { ...rest, status: 'pending' as const };
-  });
-}

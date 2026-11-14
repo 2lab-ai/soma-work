@@ -216,7 +216,12 @@ import { composeExecutiveSummaryMarkdown, parseExecutiveSummary } from './slack/
 import { setUiSurfacesConfig } from './slack/surface-config';
 import { threadCardProviders } from './slack/thread-card-data';
 import { setThreadHeaderProviders } from './slack/thread-header-builder';
-import { answerUserAction, getUserActionNotifier, setUserActionNotifier } from './slack/user-action-host';
+import {
+  type AnswerUserActionCode,
+  answerUserAction,
+  getUserActionNotifier,
+  setUserActionNotifier,
+} from './slack/user-action-host';
 import { SlackHandler } from './slack-handler';
 import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
@@ -1616,7 +1621,14 @@ async function start() {
         },
       });
       if (r.ok) return { status: 200, body: { ok: true, status: r.action.status } };
-      const code = { gone: 404, forbidden: 403, 'already-resolved': 409, 'not-delivered': 502 }[r.code];
+      const statusOf: Record<AnswerUserActionCode, number> = {
+        gone: 404,
+        forbidden: 403,
+        'already-resolved': 409,
+        'in-flight': 409,
+        'not-delivered': 502,
+      };
+      const code = statusOf[r.code];
       return { status: code, body: { ok: false, error: r.code } };
     });
     // E4 ⑨b (.prd/19 D12) — the new-task composer offers an epic only to an owner who turned them on.

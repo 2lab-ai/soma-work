@@ -9,7 +9,6 @@ import {
   USER_ACTION_LIMITS,
   USER_ACTIONS_KEPT,
   type UserActionSyntaxCheck,
-  unresolveUserAction,
   validateInstructUserArgs,
 } from './user-action';
 
@@ -296,15 +295,6 @@ describe('session list helpers', () => {
     const again = resolveUserAction(r.list, 'a', 'failed', 'U2', 100);
     expect(again).toEqual({ ok: false, reason: 'already-resolved', action: r.action });
     expect(resolveUserAction(list, 'zzz', 'done', 'U1', 1)).toEqual({ ok: false, reason: 'not-found' });
-  });
-
-  it('unresolveUserAction puts an answered action back to pending, without who or when', () => {
-    const r = resolveUserAction([rec('a')], 'a', 'done', 'U1', 9);
-    if (!r.ok) throw new Error('fixture');
-    const back = unresolveUserAction(r.list, 'a');
-    expect(back[0].status).toBe('pending');
-    expect(back[0]).not.toHaveProperty('resolvedBy');
-    expect(back[0]).not.toHaveProperty('resolvedAt');
   });
 
   it('restoreUserActions drops malformed entries and non-arrays', () => {

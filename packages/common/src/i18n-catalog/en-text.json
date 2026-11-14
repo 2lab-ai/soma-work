@@ -2191,5 +2191,6 @@
   "✅ 사용자 작업 완료: \"{0}\" — 사용자가 {1}에서 실행하고 '완료했어요'를 눌렀습니다.": "✅ Task done: \"{0}\" — the user ran it on {1} and pressed 'Done'.",
   "❌ 사용자 작업 안 됨: \"{0}\" — 사용자가 {1}에서 '안 됐어요'를 눌렀습니다. 무엇이 안 됐는지 확인하고 다른 길을 찾으세요.": "❌ Task didn't work: \"{0}\" — the user pressed 'Didn't work' on {1}. Find out what failed and find another way.",
   "{0}\n[user-action {1}] 스크립트:\n```\n{2}\n```": "{0}\n[user-action {1}] script:\n```\n{2}\n```",
-  "봇에게 전달하지 못해 대기 상태로 되돌렸습니다. 잠시 뒤 다시 눌러 주세요.": "Could not pass this to the bot, so it is waiting again. Press it again in a moment."
+  "봇에게 전달하지 못했습니다. 작업은 그대로 대기 중이니 잠시 뒤 다시 눌러 주세요.": "Could not pass this to the bot. The task is still waiting; press it again in a moment.",
+  "이 작업의 응답을 봇에게 전달하는 중입니다.": "This task's answer is being passed to the bot."
 }

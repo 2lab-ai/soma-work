@@ -22,11 +22,12 @@ model ── mcp__user-action__instruct_user({ title, host, why, script, shell?,
            └─ dashboard: KanbanSession.userActions → detail card #panel-user-actions ("사용자 할 일"),
                          a count on the card face while a required one waits
 owner presses ✅ / ❌ ── Slack: UserActionActionHandler · dashboard: POST /api/dashboard/session/:key/user-action
-   (either surface)      → answerUserAction: instruction gate → the answer held in memory (first answer wins) →
+   (either surface)      → answerUserAction: instruction gate → a lock kept apart from the stored record (a second
+                         press meanwhile is "in flight"; the record stays pending on disk whatever else saves) →
                          the host notifier (setUserActionNotifier, src/index.ts) sends "✅ 사용자 작업 완료: …" /
                          "❌ 사용자 작업 안 됨: …" (with the script) as the actor's message in the thread and waits for
                          it to be taken (onAccepted) → only then: card rewritten without buttons, persisted, broadcast.
-                         Not taken → nothing was written; pending again, answerable again.
+                         Not taken → nothing was ever written; lock released, answerable again (also after a restart).
 ```
 
 ## The contract

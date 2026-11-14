@@ -9,7 +9,6 @@ import {
   parseInstructUserToolResult,
   resolveUserAction,
   type UserActionRecord,
-  unresolveUserAction,
 } from 'somalib/user-action/user-action';
 import { Logger } from '../logger';
 import type { ConversationSession } from '../types';
@@ -88,7 +87,10 @@ export async function captureUserActionToolResults(args: {
   return (session.userActions ?? []).filter((a) => captured.some((c) => c.id === a.id));
 }
 
-export type AnswerUserActionCode = 'gone' | 'forbidden' | 'already-resolved' | 'not-delivered';
+export type AnswerUserActionCode = 'gone' | 'forbidden' | 'already-resolved' | 'in-flight' | 'not-delivered';
+
+/** Answers being handed to the agent, by `sessionKey\0id`: a lock apart from the stored record, never persisted. */
+const answersInFlight = new Set<string>();
 
 /** Hands an answer to the agent as `actor`'s message in the session's thread; true once it is taken. */
 export type UserActionNotifier = (sessionKey: string, text: string, actor: string) => Promise<boolean>;
@@ -105,10 +107,11 @@ export function getUserActionNotifier(): UserActionNotifier | undefined {
 }
 
 /**
- * The one answer path for a user action — the Slack card's buttons and the dashboard's. The instruction gate; then the
- * answer is held in memory (a second press sees it answered) while the agent is told; only once the message is taken is
- * it recorded — card rewritten without buttons, persisted, broadcast. When the agent cannot be told, nothing was
- * written: the action is pending again, its card untouched, so the human answers again. An answer never sticks unheard.
+ * The one answer path for a user action — the Slack card's buttons and the dashboard's. The instruction gate; then a
+ * lock held apart from the stored record (a second press meanwhile is refused as in flight; the record stays pending
+ * on disk whatever else saves) while the agent is told; only once the message is taken is the answer written — record,
+ * card without buttons, persist, broadcast. Not taken: nothing was written, the lock is released, the human answers
+ * again. An answer never sticks unheard, and a restart mid-way leaves it answerable.
  */
 export async function answerUserAction(args: {
   sessionKey: string;
@@ -129,24 +132,30 @@ export async function answerUserAction(args: {
   const session = deps.getSession(sessionKey);
   if (!session) return { ok: false, code: 'gone' };
   if (!deps.mayAnswer(sessionKey, session, args.actor)) return { ok: false, code: 'forbidden' };
-  const r = resolveUserAction(session.userActions, args.id, args.status, args.actor, args.at);
-  if (!r.ok) return { ok: false, code: r.reason === 'already-resolved' ? 'already-resolved' : 'gone' };
-  session.userActions = r.list;
+  const lock = `${sessionKey}\u0000${args.id}`;
+  if (answersInFlight.has(lock)) return { ok: false, code: 'in-flight' };
+  // Checked on a copy: the stored record is not touched until the agent took the answer.
+  const preview = resolveUserAction(session.userActions, args.id, args.status, args.actor, args.at);
+  if (!preview.ok) return { ok: false, code: preview.reason === 'already-resolved' ? 'already-resolved' : 'gone' };
+  answersInFlight.add(lock);
   let delivered = false;
   try {
-    delivered = await deps.notify(sessionKey, session, userActionResolvedPrompt(r.action), args.actor);
+    delivered = await deps.notify(sessionKey, session, userActionResolvedPrompt(preview.action), args.actor);
   } catch (error) {
     logger.warn('user action answer could not reach the agent', {
       sessionKey,
       id: args.id,
       error: (error as Error)?.message,
     });
+  } finally {
+    answersInFlight.delete(lock);
   }
-  if (!delivered) {
-    session.userActions = unresolveUserAction(session.userActions, args.id);
-    return { ok: false, code: 'not-delivered' };
-  }
-  const recorded = session.userActions.find((a) => a.id === args.id) ?? r.action;
+  if (!delivered) return { ok: false, code: 'not-delivered' };
+  // Taken: write it now, against the record as it is now.
+  const r = resolveUserAction(session.userActions, args.id, args.status, args.actor, args.at);
+  if (!r.ok) return { ok: false, code: r.reason === 'already-resolved' ? 'already-resolved' : 'gone' };
+  session.userActions = r.list;
+  const recorded = r.action;
   if (session.channelId && recorded.slackTs) {
     try {
       const card = buildUserActionCard(recorded, sessionKey);

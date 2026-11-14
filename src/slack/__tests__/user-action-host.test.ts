@@ -211,24 +211,32 @@ describe('answerUserAction — one path for the Slack button and the dashboard',
     expect(notify).not.toHaveBeenCalled();
   });
 
-  it('records only once the agent took it: card rewritten without buttons, persisted, broadcast', async () => {
+  it('records only once the agent took it; while it is told, the stored record stays pending and a second press is in flight', async () => {
     const { session, d, args } = setup();
-    let writtenWhileTelling = 0;
+    let duringTelling: { status?: string; writes: number; second?: unknown } = { writes: 0 };
     args.deps.notify = vi.fn(async () => {
-      // While the agent is being told, nothing has been written yet — but a second press already sees it answered.
-      writtenWhileTelling = d.slackApi.updateMessage.mock.calls.length + d.persistAndBroadcast.mock.calls.length;
-      expect(session.userActions?.[0].status).toBe('done');
+      duringTelling = {
+        // What any save of the registry would write right now.
+        status: JSON.parse(JSON.stringify(session.userActions))[0].status,
+        writes: d.slackApi.updateMessage.mock.calls.length + d.persistAndBroadcast.mock.calls.length,
+        second: await answerUserAction({
+          ...args,
+          status: 'failed',
+          deps: { ...args.deps, notify: vi.fn(async () => true) },
+        }),
+      };
       return true;
     });
     expect((await answerUserAction(args)).ok).toBe(true);
-    expect(writtenWhileTelling).toBe(0);
+    expect(duringTelling).toEqual({ status: 'pending', writes: 0, second: { ok: false, code: 'in-flight' } });
+    expect(session.userActions?.[0]).toMatchObject({ status: 'done', resolvedBy: 'U_OWNER' });
     const [channel, ts, , , attachments] = d.slackApi.updateMessage.mock.calls[0] as any[];
     expect([channel, ts]).toEqual(['C1', '111.222']);
     expect(attachments[0].blocks.some((b: any) => b.type === 'actions')).toBe(false);
     expect(d.persistAndBroadcast).toHaveBeenCalledWith('k');
   });
 
-  it('when the agent cannot be told, nothing is written: pending again, card untouched, answerable again', async () => {
+  it('when the agent cannot be told, nothing was ever written: still pending, card untouched, answerable again', async () => {
     const { session, d, args } = setup({ delivered: false });
     expect(await answerUserAction(args)).toEqual({ ok: false, code: 'not-delivered' });
     expect(session.userActions?.[0].status).toBe('pending');
@@ -239,13 +247,15 @@ describe('answerUserAction — one path for the Slack button and the dashboard',
     expect(again.ok).toBe(true);
   });
 
-  it('a notifier that throws counts as not delivered', async () => {
+  it('a notifier that throws counts as not delivered, and releases the lock', async () => {
     const { session, args } = setup();
     args.deps.notify = vi.fn(async () => {
       throw new Error('pipeline down');
     });
     expect(await answerUserAction(args)).toEqual({ ok: false, code: 'not-delivered' });
     expect(session.userActions?.[0].status).toBe('pending');
+    const again = await answerUserAction({ ...args, deps: { ...args.deps, notify: vi.fn(async () => true) } });
+    expect(again.ok).toBe(true);
   });
 
   it('a second answer is refused as already answered; an unknown one as gone', async () => {

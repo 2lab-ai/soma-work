@@ -13,13 +13,15 @@ export const USER_ACTION_OWNER_ONLY_TEXT =
   '이 사용자 작업은 세션 소유자(또는 승인된 사람)만 완료로 표시할 수 있습니다.';
 export const USER_ACTION_ALREADY_TEXT = '이미 표시된 사용자 작업입니다.';
 export const USER_ACTION_GONE_TEXT = '이 사용자 작업을 찾을 수 없습니다(세션이 끝났거나 오래된 카드).';
+export const USER_ACTION_IN_FLIGHT_TEXT = '이 작업의 응답을 봇에게 전달하는 중입니다.';
 export const USER_ACTION_NOT_DELIVERED_TEXT =
-  '봇에게 전달하지 못해 대기 상태로 되돌렸습니다. 잠시 뒤 다시 눌러 주세요.';
+  '봇에게 전달하지 못했습니다. 작업은 그대로 대기 중이니 잠시 뒤 다시 눌러 주세요.';
 
 const REFUSAL_TEXT: Record<AnswerUserActionCode, string> = {
   gone: USER_ACTION_GONE_TEXT,
   forbidden: USER_ACTION_OWNER_ONLY_TEXT,
   'already-resolved': USER_ACTION_ALREADY_TEXT,
+  'in-flight': USER_ACTION_IN_FLIGHT_TEXT,
   'not-delivered': USER_ACTION_NOT_DELIVERED_TEXT,
 };
 
