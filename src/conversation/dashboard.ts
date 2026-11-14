@@ -187,7 +187,7 @@ import {
   uiLibTokensCss,
 } from './ui-lib';
 import { getUserMediaStore } from './user-media';
-import { type DashboardUserAction, dashboardUserActions } from './user-actions-view';
+import { restoreUserActions, type UserActionRecord } from 'somalib/user-action/user-action';
 import { VIEW_LAYOUT_CLIENT_JS } from './view-layout-client';
 import type { WorkLogEntry } from './work-log';
 
@@ -592,7 +592,8 @@ export interface KanbanSession {
    * and counted on the card face while a required one waits. Same audience as `pendingQuestion`; the script never
    * holds a credential (the MCP refuses one). Absent when there are none.
    */
-  userActions?: DashboardUserAction[];
+  /** Tasks handed to the human (`instruct_user`), validated; the Slack message ts stays server-side. */
+  userActions?: Omit<UserActionRecord, 'slackTs'>[];
   /**
    * A turn holds the session (dispatched, not yet settled) while `activityState`
    * does not say `working` yet — the turn is still starting, or still settling.
@@ -2798,7 +2799,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     environment: _selfInstanceEnv ? { ..._selfInstanceEnv } : undefined,
     goal: goalToKanban(s),
     ...(typeof s.sessionId === 'string' && s.sessionId && s.conversationId ? { rollbackAvailable: true } : {}),
-    userActions: dashboardUserActions(s.userActions),
+    userActions: restoreUserActions(s.userActions)?.map(({ slackTs: _ts, ...view }) => view),
     ...(s.pendingRewind && typeof s.pendingRewind.label === 'string'
       ? {
           pendingRewind: {

