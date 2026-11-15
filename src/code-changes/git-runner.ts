@@ -263,11 +263,8 @@ export async function checkoutSafety(dir: string, roots: string[], git: GitRun =
   if (!inside(top, realRoots) || !inside(gitDir, realRoots) || !inside(common, realRoots)) {
     return { ok: false, reason: 'outside-session' };
   }
-  // Another object store (alternates — any entry, even one that cannot be read) or a symlink anywhere in the git dirs
-  // (objects, refs, index, logs pointed at another repository) would make git read outside the session.
-  const alt = await fs.lstat(path.join(common, 'objects', 'info', 'alternates')).catch(() => undefined);
-  if (alt && (!alt.isFile() || alt.size > 0)) return { ok: false, reason: 'repo-alternates', top };
-  // The folders from the session folder down to each git dir, then everything in the git dirs: a link on the way
+  // The folders from the session folder down to each git dir, then everything in the git dirs (a symlink anywhere in
+  // them — objects, refs, index, logs pointed at another repository — would make git read outside): a link on the way
   // refuses the checkout now, and a swap after this is seen when the read is checked (PathWitness). The session folder
   // itself is noted (renaming it away and back changes its own ctime); what is above it the sandbox does not write.
   const witness = new PathWitness();
@@ -281,6 +278,11 @@ export async function checkoutSafety(dir: string, roots: string[], git: GitRun =
       if ((await witness.note(path.join(d, f))) === 'link') return { ok: false, reason: 'repo-links-outside', top };
     }
   }
+  // Another object store (alternates — any entry, even one that cannot be read) would make git read outside the session.
+  // Checked only now, after its folder and the file itself are noted: one created between a check and the notes would
+  // otherwise be noted as it is, and pass (#1299 review). After this, the witness sees it appear or change.
+  const alt = await fs.lstat(path.join(common, 'objects', 'info', 'alternates')).catch(() => undefined);
+  if (alt && (!alt.isFile() || alt.size > 0)) return { ok: false, reason: 'repo-alternates', top };
   // What git resolved before the folders were noted could have been rewritten meanwhile (a `commondir` pointing at
   // another repository): ask again, pinned the way every later call is, now that a rewrite after this is witnessed.
   const again = await git(top, [

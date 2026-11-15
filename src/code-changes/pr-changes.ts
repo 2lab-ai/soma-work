@@ -82,6 +82,8 @@ export async function sessionPrChanges(
   startedAt: number | undefined,
   prev: PrChanges[],
   deps: PrDeps,
+  /** Cuts the patches of each PR's freshly read files as they arrive; true when it dropped some. */
+  trim?: (files: ChangedFile[]) => boolean,
 ): Promise<PrChanges[]> {
   const seen = new Set<string>();
   const out: PrChanges[] = [];
@@ -117,10 +119,12 @@ export async function sessionPrChanges(
     let files = reusable ? old.files : undefined;
     let filesTruncated = files ? old?.filesTruncated : undefined;
     let filesStale = false;
+    let patchesDropped = false;
     if (!files) {
       const listed = await deps.fetchPullFiles(ref.owner, ref.repo, ref.number, MAX_PR_FILES);
       if (listed) {
         files = listed.files.map(prFileOf);
+        if (trim?.(files)) patchesDropped = true;
         filesTruncated = listed.truncated || undefined;
         filesStale = listed.complete === false;
       } else {
@@ -152,6 +156,7 @@ export async function sessionPrChanges(
     if (mergedAt !== undefined) pr.mergedAt = mergedAt;
     if (filesTruncated) pr.filesTruncated = true;
     if (filesStale) pr.filesStale = true;
+    if (patchesDropped) pr.patchesDropped = true;
     out.push(pr);
   }
   return out.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));

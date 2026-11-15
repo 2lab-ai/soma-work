@@ -632,4 +632,57 @@ describe('the fourth review round (#1299)', () => {
     await sessionPrChanges([url], START, first, pushed);
     expect(pushed.fetchPullFiles).toHaveBeenCalledTimes(1);
   });
+
+  it('patches are cut as each checkout arrives, not only once the document is whole', async () => {
+    const s2 = store();
+    const big = 'x'.repeat(4 * 1024 * 1024);
+    const made: CheckoutChanges[] = [];
+    const seenAtCall: Array<boolean | undefined> = [];
+    const deps = {
+      ...prDeps({}),
+      store: s2,
+      listCheckoutDirs: async () => ({ dirs: ['/s/a', '/s/b', '/s/c'] }),
+      checkoutChanges: vi.fn(async ({ dir }: { dir: string }) => {
+        // When the third checkout is read, the second's patch is already gone (the budget is 6 MiB).
+        seenAtCall.push(made[1] ? made[1].uncommitted.files[0].patch === undefined : undefined);
+        const c = checkout({
+          id: dir,
+          dir,
+          uncommitted: {
+            files: [{ path: 'f', status: 'modified', additions: 1, deletions: 0, patch: big }],
+            additions: 1,
+            deletions: 0,
+          },
+        });
+        made.push(c);
+        return c;
+      }),
+    };
+    await collectCodeChanges({ conversationId: 'cut', owner: { id: 'U', name: 'u' }, dirs: ['/s'], prUrls: [] }, deps);
+    expect(seenAtCall).toEqual([undefined, undefined, true]);
+    expect(made[0].uncommitted.files[0].patch).toBe(big);
+  });
+
+  it('a moved PR head or base gives the new files, not the stored ones', async () => {
+    const url = 'https://github.com/acme/web/pull/10';
+    const first = await sessionPrChanges(
+      [url],
+      START,
+      [],
+      prDeps({ 10: detail(10, { head_sha: 'a'.repeat(40), base_sha: 'b1' }) }),
+    );
+    expect(first[0].files[0].patch).toContain('+b');
+    const NEW: GitHubPullFile = { ...FILE, filename: 'src/new.ts', patch: '@@ -0,0 +1 @@\n+fresh' };
+    for (const over of [
+      { head_sha: 'c'.repeat(40), base_sha: 'b1' },
+      { head_sha: 'a'.repeat(40), base_sha: 'b2' },
+    ]) {
+      const deps = {
+        ...prDeps({ 10: detail(10, over) }),
+        fetchPullFiles: vi.fn(async () => ({ files: [NEW], truncated: false })),
+      };
+      const next = await sessionPrChanges([url], START, first, deps);
+      expect(next[0].files.map((f) => [f.path, f.patch])).toEqual([['src/new.ts', '@@ -0,0 +1 @@\n+fresh']]);
+    }
+  });
 });

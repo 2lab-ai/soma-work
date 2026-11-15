@@ -83,29 +83,48 @@ export function keepLastRead(c: CheckoutChanges, old: CheckoutChanges | undefine
   return out;
 }
 
-/** Drop patches past the document budget, in layer order (uncommitted, committed, then PRs). */
-export function applyPatchBudget(doc: CodeChangesDoc, max = MAX_DOC_PATCH_BYTES): void {
-  let used = 0;
-  const visit = (f: ChangedFile): boolean => {
-    if (!f.patch) return true;
+/** A running patch budget: bytes kept so far, and the most a document keeps. */
+export interface PatchBudget {
+  used: number;
+  max: number;
+}
+
+/** Keep each file's patch while the budget holds it; past it, the patch goes and the file is marked. True if any went. */
+export function trimPatches(files: ChangedFile[], budget: PatchBudget): boolean {
+  let dropped = false;
+  for (const f of files) {
+    if (typeof f.patch !== 'string' || !f.patch) continue;
     const bytes = Buffer.byteLength(f.patch, 'utf8');
-    if (used + bytes > max) {
+    if (budget.used + bytes > budget.max) {
       delete f.patch;
       f.patchTruncated = true;
-      return false;
+      dropped = true;
+    } else {
+      budget.used += bytes;
     }
-    used += bytes;
-    return true;
-  };
-  for (const c of doc.checkouts) c.uncommitted.files.forEach(visit);
-  for (const c of doc.checkouts) c.committed.files.forEach(visit);
+  }
+  return dropped;
+}
+
+/** Drop patches past the document budget, in layer order (uncommitted, committed, then PRs). */
+export function applyPatchBudget(doc: CodeChangesDoc, max = MAX_DOC_PATCH_BYTES): void {
+  const budget: PatchBudget = { used: 0, max };
+  for (const c of doc.checkouts) trimPatches(c.uncommitted.files, budget);
+  for (const c of doc.checkouts) trimPatches(c.committed.files, budget);
   // A PR whose patches were dropped reads its files again next time — the budget may have room by then.
-  for (const p of doc.prs) if (p.files.map(visit).includes(false)) p.patchesDropped = true;
+  for (const p of doc.prs) if (trimPatches(p.files, budget)) p.patchesDropped = true;
 }
 
 export async function collectCodeChanges(input: CollectInput, deps: CollectDeps): Promise<CollectResult> {
   const prev = deps.store.read(input.conversationId);
-  const prs = await sessionPrChanges(input.prUrls, input.startedAt, prev?.prs ?? [], deps);
+  // Patches are cut as they arrive, not only once the document is whole: twenty checkouts and twenty PRs of full patches
+  // would otherwise sit in memory before the budget drops all but 6 MiB of them (#1299 review). The document's own
+  // order (uncommitted, committed, PRs) is applied again at the end.
+  const prBudget: PatchBudget = { used: 0, max: MAX_DOC_PATCH_BYTES };
+  const prs = await sessionPrChanges(input.prUrls, input.startedAt, prev?.prs ?? [], deps, (files) =>
+    trimPatches(files, prBudget),
+  );
+  const checkoutBudget: PatchBudget = { used: 0, max: MAX_DOC_PATCH_BYTES };
   const prHeads = prs.map((p) => ({ repo: p.repo, headRepo: p.headRepo, headSha: p.headSha }));
   const list = deps.listCheckoutDirs ?? listCheckoutDirs;
   const readCheckout = deps.checkoutChanges ?? checkoutChanges;
@@ -127,6 +146,8 @@ export async function collectCodeChanges(input: CollectInput, deps: CollectDeps)
     if (!read) continue;
     const { sessionCommits: made, ...changes } = read;
     const c = keepLastRead(changes, lastRead.get(changes.id));
+    trimPatches(c.uncommitted.files, checkoutBudget);
+    trimPatches(c.committed.files, checkoutBudget);
     if (hasChanges(c)) checkouts.push(c);
     // A checkout not read (refused, or changed during the read) hands on no commits either.
     if (UNREAD_CHECKOUT.has(read.uncommitted.skipped ?? '')) continue;

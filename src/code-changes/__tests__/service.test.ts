@@ -230,4 +230,49 @@ describe('code-changes service', () => {
       vi.useRealTimers();
     }
   });
+
+  it('a session terminated while its collect ran: nothing is written or handed on', async () => {
+    const session: SessionLike = { conversationId: 'conv1', sessionWorkingDir: '/tmp/x/session_1794756694405_a' };
+    const t = setup(session, {
+      listCheckoutDirs: async () => {
+        session.terminated = true;
+        return { dirs: [] };
+      },
+    });
+    t.svc.snapshot({ sessionKey: 'k1' });
+    await t.svc.scheduler.idle();
+    expect(session.codeChanges).toBeUndefined();
+    expect(t.persist).not.toHaveBeenCalled();
+    expect(t.onResult).not.toHaveBeenCalled();
+  });
+
+  it('a merge whose hand-off failed is handed on again, and marked once it went through', async () => {
+    const session: SessionLike = {
+      conversationId: 'conv1',
+      startedAt: Date.parse('2026-11-16T00:00:00Z'),
+      sessionWorkingDir: '/tmp/x/session_1794756694405_a',
+      links: { pr: { url: 'https://github.com/acme/web/pull/3' } },
+    };
+    const t = setup(session, {
+      fetchPullDetail: async () => ({
+        html_url: 'https://github.com/acme/web/pull/3',
+        number: 3,
+        state: 'closed',
+        merged: true,
+        merged_at: '2026-11-16T02:00:00Z',
+        created_at: '2026-11-16T01:00:00Z',
+        head_sha: 'a'.repeat(40),
+      }),
+      fetchPullFiles: async () => ({ files: [], truncated: false }),
+    });
+    t.onResult.mockImplementationOnce(async () => {
+      throw new Error('metrics down');
+    });
+    await t.svc.refresh('conv1');
+    await t.svc.refresh('conv1');
+    expect(t.onResult.mock.calls[1][2].newMerges.map((p: { id: string }) => p.id)).toEqual(['acme/web#3']);
+    expect(t.store.read('conv1')?.counted.merges).toEqual(['acme/web#3']);
+    await t.svc.refresh('conv1');
+    expect(t.onResult.mock.calls[2][2].newMerges).toEqual([]);
+  });
 });

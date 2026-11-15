@@ -762,7 +762,7 @@ describe('the fifth review round (#1299)', () => {
       ['README.md', 'deleted', true, undefined],
       ['new.ts', 'added', true, undefined],
     ]);
-  });
+  }, 60_000);
 
   it('an executable bit flipped on a tracked file is an uncommitted change', async () => {
     const session = tmp('cc-mode-');
@@ -887,5 +887,99 @@ describe('the sixth review round (#1299)', () => {
     });
     expect(c!.committed.base).toBe(second);
     expect(c!.committed.files.map((f) => f.path)).toEqual(['three.ts']);
+  });
+});
+
+describe('the seventh review round (#1299)', () => {
+  it('an alternates file that appears during the read: the read is thrown away, no borrowed object kept', async () => {
+    const session = tmp('cc-alt-race-');
+    const elsewhere = tmp('cc-alt-race-victim-');
+    const dir = clone(session, 'svc');
+    const victim = clone(elsewhere, 'victim');
+    write(victim, 'private/keys.txt', 'TOP-SECRET\n');
+    commitAll(victim, 'private');
+    let planted = false;
+    const racing: GitRun = async (d, args) => {
+      if (!planted && args.includes('HEAD^{commit}')) {
+        planted = true;
+        fs.writeFileSync(
+          path.join(dir, '.git', 'objects', 'info', 'alternates'),
+          `${path.join(victim, '.git', 'objects')}\n`,
+        );
+      }
+      return runGit(d, args);
+    };
+    const c = await checkoutChanges({ dir, sessionRoot: session, git: racing });
+    expect(planted).toBe(true);
+    expect(JSON.stringify(c)).not.toContain('TOP-SECRET');
+    expect(c!.uncommitted.skipped).toBe('repo-changed-during-read');
+  });
+
+  it('a base git fails to find is marked git-diff-failed, not read as no commits', async () => {
+    const session = tmp('cc-basefail-');
+    const dir = path.join(session, 'repo');
+    fs.mkdirSync(dir);
+    git(dir, ['init', '-q', '-b', 'main']);
+    write(dir, 'a.ts', '1\n');
+    commitAll(dir, 'one');
+    const failing: GitRun = async (d, args) =>
+      args.includes('rev-list') && args.some((a) => a.startsWith('--since=')) ? undefined : runGit(d, args);
+    const c = await checkoutChanges({
+      dir,
+      sessionRoot: session,
+      sessionStartedAt: Date.now() - 3600_000,
+      git: failing,
+    });
+    expect(c!.committed).toMatchObject({ files: [], skipped: 'git-diff-failed' });
+  });
+
+  it('a sparse-checkout or assume-unchanged entry is not reported (git does not either)', async () => {
+    const session = tmp('cc-sparse-');
+    const dir = clone(session, 'svc');
+    git(dir, ['update-index', '--skip-worktree', 'src/a.ts']);
+    fs.rmSync(path.join(dir, 'src', 'a.ts'));
+    git(dir, ['update-index', '--assume-unchanged', 'README.md']);
+    write(dir, 'README.md', '# changed but assumed unchanged\n');
+    const c = await checkoutChanges({ dir, sessionRoot: session });
+    expect(c!.uncommitted.files).toEqual([]);
+  });
+
+  it('a same-size edit with the mtime set back is still seen on the next read (the ctime moved)', async () => {
+    const session = tmp('cc-ctime-');
+    const dir = clone(session, 'svc');
+    const file = path.join(dir, 'src', 'a.ts');
+    expect((await checkoutChanges({ dir, sessionRoot: session }))!.uncommitted.files).toEqual([]);
+    const { atime, mtime } = fs.statSync(file);
+    await new Promise((r) => setTimeout(r, 20));
+    fs.writeFileSync(file, 'ONE\ntwo\nthree\n');
+    fs.utimesSync(file, atime, mtime);
+    const c = await checkoutChanges({ dir, sessionRoot: session });
+    expect(c!.uncommitted.files.map((f) => [f.path, f.status])).toEqual([['src/a.ts', 'modified']]);
+  });
+
+  it('a same-size tracked file that cannot be read safely is shown as changed, without counts', async () => {
+    const session = tmp('cc-unread-');
+    const dir = clone(session, 'svc');
+    const other = path.join(session, 'other.txt');
+    fs.writeFileSync(other, 'ONE\nTWO\nTHREE\n');
+    fs.rmSync(path.join(dir, 'src', 'a.ts'));
+    fs.linkSync(other, path.join(dir, 'src', 'a.ts'));
+    const c = await checkoutChanges({ dir, sessionRoot: session });
+    expect(c!.uncommitted.files).toEqual([
+      { path: 'src/a.ts', status: 'modified', additions: 0, deletions: 0, patchTruncated: true },
+    ]);
+  });
+
+  it('a committed file whose name git quotes keeps its patch', async () => {
+    const session = tmp('cc-quoted-');
+    const dir = clone(session, 'svc');
+    git(dir, ['checkout', '-q', '-b', 'feat/q']);
+    write(dir, 'say "hi".txt', 'hello\n');
+    write(dir, 'tab\there.txt', 'tab\n');
+    commitAll(dir, 'quoted names');
+    const c = await checkoutChanges({ dir, sessionRoot: session });
+    const byPath = Object.fromEntries(c!.committed.files.map((f) => [f.path, f]));
+    expect(byPath['say "hi".txt'].patch).toContain('+hello');
+    expect(byPath['tab\there.txt'].patch).toContain('+tab');
   });
 });

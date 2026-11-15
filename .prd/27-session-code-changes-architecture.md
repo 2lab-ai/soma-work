@@ -81,7 +81,7 @@ worktree. 브랜치 · 원격 조건 없이 전부(재조정기는 여기에 자
 
 커밋 안 함 — git은 작업 트리 파일의 내용을 읽지 않는다(§5, #1299 리뷰의 검사/사용 경쟁):
 1. `git ls-tree -r -z -l HEAD`(객체 읽기)로 추적 파일의 blob id · 크기.
-2. 파일마다 이 프로세스가 lstat → 크기가 다르면 바뀜, 같으면 바이트의 git blob id(sha1 · sha256)를 계산해 비교. 같다고 확인한 파일은 stat(크기 · mtime · inode)로 기억해 다음엔 읽지 않는다. 없으면 삭제. 심볼릭 링크는 따라가지 않고 링크 대상 문자열을 blob과 비교만 한다 — 바뀌었다는 사실만 남기고 대상 문자열은 싣지 않는다. 파일 읽기는 전부 `readInside`(§5).
+2. 파일마다 이 프로세스가 lstat → 크기가 다르면 바뀜, 같으면 바이트의 git blob id(sha1 · sha256)를 계산해 비교(안전하게 읽지 못하면 — 이름 둘, 경로의 링크 — 바뀐 것으로, 줄 수 없이). 같다고 확인한 파일은 stat(크기 · mtime · ctime · inode)로 기억해 다음엔 읽지 않는다. sparse checkout(skip-worktree) · assume-unchanged 항목은 git처럼 보고하지 않는다(`ls-files -v`). 없으면 삭제. 심볼릭 링크는 따라가지 않고 링크 대상 문자열을 blob과 비교만 한다 — 바뀌었다는 사실만 남기고 대상 문자열은 싣지 않는다. 파일 읽기는 전부 `readInside`(§5).
 3. 바뀐 파일의 패치 = `git cat-file blob`(객체 읽기)과 파일 바이트의 줄 diff(`lineDiff`, Myers, 문맥 3줄). 줄 끝만 다르면 바뀌지 않은 것으로 본다. 패치를 남기지 않는 파일(1 MiB 초과, 패치 300개 소진, diff 한도 초과)도 줄 수는 센다 — 1 MiB까지는 `lineDiff`, 8 MiB까지는 줄 다중집합 차(옮긴 줄은 안 바뀐 것으로), 층당 읽기 64 MiB까지. 추적 파일이 1,000개에서 멈추면 `truncated`.
 4. 새 파일 = 인덱스에만 있는 것(`ls-files --cached` − HEAD) + 추적 안 하는 것(`ls-files --others --exclude-standard`, 이름만) — 경로마다 한 번(충돌 중인 경로는 stage마다 나온다), HEAD에 있는 경로는 빼고. HEAD에 있는데 인덱스에만 없는 파일(`git rm --cached`)은 삭제 하나로 센다(blob의 줄 수). lstat 일반 파일만 `readInside`로 읽고, 앞 8 KiB에 NUL이면 바이너리, 내용으로 `@@ -0,0 +1,N @@` 패치(패치도 256 KiB로 자름). `ls-tree` · `ls-files`가 실패하면 층은 `skipped: 'git-diff-failed'`.
 5. 이름 바꾸기는 찾지 않는다(삭제 + 추가로 보인다).
@@ -89,7 +89,7 @@ worktree. 브랜치 · 원격 조건 없이 전부(재조정기는 여기에 자
 커밋함:
 1. base 후보 — 이 체크아웃 브랜치를 head로 하는 세션 PR의 head sha가 HEAD의 조상이면 그것(여럿이면 가장 최근).
 2. 아니면 `refs/remotes/origin/HEAD` → `origin/main` → `origin/master` 중 처음 있는 것과의 `merge-base`.
-3. 원격 참조가 없으면 `rev-list --since=<세션 시작> HEAD`의 가장 오래된 커밋의 부모(루트면 빈 트리).
+3. 원격 참조가 없으면 `rev-list --since=<세션 시작> HEAD`의 가장 오래된 커밋의 부모(`rev-list --parents`, 루트면 빈 트리). 이 답들을 git이 못 주면 층은 `skipped: 'git-diff-failed'` — 빈 이력이 아니다.
 4. 기준점이 세션 PR head가 아니면, base..HEAD의 첫 부모 줄에서 세션 시작 전에 만든 가장 최근 커밋(base의 자손)으로 base를 올린다 — 세션 전 브랜치 작업은 세지 않고, 옆 줄에서 merge로 들어온 옛 커밋이 기준점이 되지 않는다.
 5. `git log base..HEAD -n 50`(커밋 목록) + `git diff base HEAD -M`(numstat · name-status · 패치). 파일 목록(numstat · name-status)을 못 읽으면 `skipped: 'git-diff-failed'` — "커밋 없음"이 아니다. 상태(추가 · 삭제 · 이름 바꿈)는 name-status에서 오므로, 패치를 안 남긴 파일(1,000개 초과, 패치 명령 실패 · 출력 상한 초과)도 상태를 지키고 `patchTruncated`로 표시된다.
 6. 세션 PR head는 PR 저장소 또는 head 저장소(포크의 브랜치, `headRepo`)가 이 체크아웃의 원격과 같을 때 후보가 된다.
@@ -108,6 +108,9 @@ sha256 저장소는 제 빈 트리(`6ef19b41…`)를 루트 커밋 범위의 기
 받은 뒤에만 늘어난다(`markCounted`, 서비스가 `onResult` 성공 뒤) — 넘기기에 실패하면 다음 수집이 다시 넘긴다(지표 행은 먼저 쓴 쪽이 이긴다).
 `onResult`가 없으면(받을 쪽 없음) 아무것도 표시하지 않는다. 머지도 같다: `newMerges` = 머지됨 중 `counted.merges`에 없는 PR(저장본의
 이전 상태가 아니라) — 넘기기에 실패한 머지는 다음 수집이 다시 넘긴다. 목록마다 최근 2,000개.
+
+패치 예산은 도착하는 대로 적용한다 — 체크아웃마다 읽은 직후, PR마다 파일을 받은 직후(각 6 MiB 누적). 문서가 다 모인 뒤에는 층 순서(커밋 안 함 → 커밋함 → PR)로
+한 번 더 6 MiB를 적용한다. 그래서 체크아웃 20개 · PR 20개의 패치 전부가 메모리에 쌓이지 않는다. git이 따옴표로 쓴 경로(`"b/say \"hi\".txt"`)도 패치 구간과 맞춘다.
 
 PR — 세션의 PR 링크(현재 + 기록) 중 GitHub URL만, 최대 20. 저장본에 머지 기록이 있고 파일이 온전하면(`filesStale` · `patchesDropped` 없음) 다시 묻지 않는다(바뀌지 않는다). 닫힌 PR은 다시 열리고 나중에 머지될 수 있으니 매번 묻는다.
 그 밖에는 `GET pulls/{n}`(상태 · 크기 · head · head 저장소 · base sha · 생성/머지 시각) → 생성 시각이 세션 시작 − 2분 이후일 때만 `GET pulls/{n}/files`.
@@ -135,7 +138,7 @@ PR — 세션의 PR 링크(현재 + 기록) 중 GitHub URL만, 최대 20. 저장
   1. 작업 트리 · git dir · common dir의 실경로가 세션 폴더(`sessionDirs`) 안 — 아니면 이 세션의 체크아웃이 아니다(목록에도 없음). `.git` 파일이 다른 저장소를 가리키거나 `core.worktree`가 밖을 가리키는 경우.
      세션 폴더는 가장 바깥 것만 루트다(`trustedRoots`): 다른 루트 안의 폴더(세션 폴더 안의 턴 폴더)는 담는 범위에 보태는 것이 없고,
      모델이 그 자리를 다른 세션 체크아웃으로 가는 링크로 바꾸면 그 체크아웃이 루트가 되어 버리므로 뺀다. 가장 바깥 폴더가 링크면 루트가 아니다.
-  2. `objects/info/alternates`가 없거나 빈 일반 파일이고(lstat만 — FIFO도 읽지 않는다), git dir · common dir 안에 심볼릭 링크가 하나도 없음(objects · refs · index · logs를 다른 저장소로 돌리는 길, 10만 항목까지 lstat). 아니면 `skipped: 'repo-alternates'` · `'repo-links-outside'`.
+  2. `objects/info/alternates`가 없거나 빈 일반 파일이고(lstat만 — FIFO도 읽지 않는다; 그 폴더와 파일을 증인이 적은 **뒤에** 본다 — 확인과 기록 사이에 생긴 파일이 그대로 적혀 통과하지 않게), git dir · common dir 안에 심볼릭 링크가 하나도 없음(objects · refs · index · logs를 다른 저장소로 돌리는 길, 10만 항목까지 lstat). 아니면 `skipped: 'repo-alternates'` · `'repo-links-outside'`.
   3. `git config --list --name-only --show-scope`(우리 `-c`의 command 범위 제외 = 저장소 · worktree · include)에 `filter.*`, `*.textconv`,
      `*.command`, `*.process`, `gpg.*`, `log.showSignature`, `core.worktree`, `pager.*`, `core.fsmonitor`, `core.sshCommand`,
      `core.pager`, `core.askPass`, `diff.external`, `protocol.*`, `remote.*.promisor` · `uploadpack` · `receivepack` · `vcs`,

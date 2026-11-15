@@ -116,8 +116,32 @@ export function joinDiff(numstat: NumstatEntry[], sections: PatchSection[], maxP
   return files;
 }
 
+/**
+ * A path as git writes it in a quoted header (`core.quotePath=false`: bytes past ASCII stay as they are): `\` and `"`
+ * escaped, the C escapes for \a \b \t \n \v \f \r, any other control byte as three octal digits.
+ */
+export function gitQuote(path: string): string {
+  const named: Record<string, string> = {
+    '\x07': 'a',
+    '\b': 'b',
+    '\t': 't',
+    '\n': 'n',
+    '\v': 'v',
+    '\f': 'f',
+    '\r': 'r',
+  };
+  let out = '';
+  for (const ch of path) {
+    if (ch === '\\' || ch === '"') out += `\\${ch}`;
+    else if (named[ch]) out += `\\${named[ch]}`;
+    else if (ch < ' ' || ch === '\x7f') out += `\\${ch.charCodeAt(0).toString(8).padStart(3, '0')}`;
+    else out += ch;
+  }
+  return out;
+}
+
 function headerNames(header: string, path: string): boolean {
-  return header.endsWith(` b/${path}`) || header.endsWith(` "b/${path}"`);
+  return header.endsWith(` b/${path}`) || header.endsWith(` "b/${gitQuote(path)}"`);
 }
 
 function findSection(sections: PatchSection[], path: string): PatchSection | undefined {

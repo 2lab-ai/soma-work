@@ -23,6 +23,9 @@ import {
 import { checkoutSafety, type GitRun, type GitRunBytes, pinGit, runGit, runGitBytes } from './git-runner';
 import type { ChangedFile, CheckoutChanges, CommitRef, LayerFiles } from './types';
 
+/** A git read whose answer the layer needs did not come (a timeout, a lock): the layer is marked, not emptied. */
+class GitReadFailed extends Error {}
+
 /** git's empty tree (sha1): the base of a checkout with no commit, and of a root commit's range. */
 export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 /** The same in a sha256 repository. */
@@ -181,7 +184,7 @@ export function blobId(bytes: Buffer, format: 'sha1' | 'sha256'): string {
 }
 
 /** A file known equal to its HEAD blob, by its stat — so an unchanged file is not read again next time. */
-const sameAsHead = new Map<string, { size: number; mtimeMs: number; ino: number; sha: string }>();
+const sameAsHead = new Map<string, { size: number; mtimeMs: number; ctimeMs: number; ino: number; sha: string }>();
 const MAX_STAT_CACHE = 200_000;
 
 /** macOS 11+: the open fails on a symlink anywhere in the path, the kernel checking each folder as it walks it. */
@@ -346,16 +349,25 @@ async function contentChange(
     return uncounted(e.path, 'modified');
   }
   if (!st.isFile()) return uncounted(e.path, 'modified');
+  // The ctime too: a write that keeps size and mtime (mtime set back) still moves the ctime.
   const hit = sameAsHead.get(abs);
-  if (hit && hit.sha === e.sha && hit.size === st.size && hit.mtimeMs === st.mtimeMs && hit.ino === st.ino)
+  if (
+    hit &&
+    hit.sha === e.sha &&
+    hit.size === st.size &&
+    hit.mtimeMs === st.mtimeMs &&
+    hit.ctimeMs === st.ctimeMs &&
+    hit.ino === st.ino
+  )
     return undefined;
   if (st.size === e.size) {
     if (st.size > MAX_HASH_BYTES) return undefined;
     const bytes = await readInside(realTop, e.path, MAX_HASH_BYTES);
-    if (!bytes) return undefined;
+    // Not readable (a second name, a link on the way): not known to be unchanged — shown, without counts.
+    if (!bytes) return uncounted(e.path, 'modified');
     if (blobId(bytes, format) === e.sha) {
       if (sameAsHead.size > MAX_STAT_CACHE) sameAsHead.clear();
-      sameAsHead.set(abs, { size: st.size, mtimeMs: st.mtimeMs, ino: st.ino, sha: e.sha });
+      sameAsHead.set(abs, { size: st.size, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs, ino: st.ino, sha: e.sha });
       return undefined;
     }
     return change(e.path, 'modified', affordable(e.size) ? await blob() : undefined, bytes, budget);
@@ -437,11 +449,20 @@ async function uncommittedLayer(
   const tree = parseLsTree(listing);
   if (tree.length > MAX_TRACKED) return failed('too-many-files');
   // New files: in the index only (git add, not committed), and untracked — names from git, bytes read here.
-  const indexed = await git(top, ['ls-files', '-z', '--cached']);
+  // `-v` tags each index entry: a skip-worktree one (sparse checkout, `S`/`s`) or an assume-unchanged one (lowercase)
+  // is not in the work tree on purpose — git does not report it, nor does this.
+  const indexed = await git(top, ['ls-files', '-z', '-v', '--cached']);
   const others = await git(top, ['ls-files', '--others', '--exclude-standard', '-z']);
   if (indexed === undefined || others === undefined) return failed('git-diff-failed');
   // One name per path: a conflicted path is listed once per stage.
-  const inIndex = new Set(indexed.split('\0').filter(Boolean));
+  const inIndex = new Set<string>();
+  const notInTree = new Set<string>();
+  for (const rec of indexed.split('\0')) {
+    const m = /^(\S) (.+)$/s.exec(rec);
+    if (!m) continue;
+    inIndex.add(m[2]);
+    if (m[1] === 'S' || m[1] !== m[1].toUpperCase()) notInTree.add(m[2]);
+  }
   // `top` is the gate's real path, witnessed: files are read under it as checked, never under a fresh resolve.
   const realTop = top;
   const budget: Budget = { patches: MAX_PATCHES, countBytes: MAX_COUNT_BYTES };
@@ -452,6 +473,7 @@ async function uncommittedLayer(
       truncated = true;
       break;
     }
+    if (notInTree.has(e.path)) continue;
     // Removed from the index only (`git rm --cached`): committing now deletes it, whatever the work tree holds.
     const f = inIndex.has(e.path)
       ? await trackedChange(gitBytes, realTop, e, format, budget, filemode)
@@ -522,19 +544,26 @@ export async function committedBase(
     }
   }
   const since = startedAt !== undefined ? Math.floor(startedAt / 1000) : undefined;
+  // An answer git failed to give is not "no commits": the layer is marked failed, not read as empty (#1299 review).
+  const must = async (args: string[]) => {
+    const out = await git(dir, args);
+    if (out === undefined) throw new GitReadFailed(args[0]);
+    return out.trim();
+  };
   if (!base) {
     if (since === undefined) return undefined;
-    const list = trim(await git(dir, ['rev-list', `--since=${since}`, '--max-count=500', head]));
-    const shas = (list ?? '').split('\n').filter(Boolean);
+    const shas = (await must(['rev-list', `--since=${since}`, '--max-count=500', head])).split('\n').filter(Boolean);
     if (shas.length === 0) return head;
     const oldest = shas[shas.length - 1];
-    base = trim(await git(dir, ['rev-parse', '--verify', '--quiet', `${oldest}^`])) || emptyTree;
+    // `<sha> <parent>…`: a root commit lists no parent, and its range starts at the empty tree.
+    const parents = (await must(['rev-list', '--parents', '--max-count=1', oldest])).split(/\s+/).slice(1);
+    base = parents[0] && SHA.test(parents[0]) ? parents[0] : emptyTree;
   }
   // Only for a base that is not a session PR head (that one is the session's own baseline), and only along the base's
   // own line: a pre-session commit merged in from elsewhere (a second parent) never becomes the base (#1299 review).
   if (since !== undefined && base !== head && !fromPr) {
     const range = base === emptyTree ? [head] : [`${base}..${head}`];
-    const before = trim(await git(dir, ['rev-list', '--first-parent', `--before=${since}`, '--max-count=1', ...range]));
+    const before = await must(['rev-list', '--first-parent', `--before=${since}`, '--max-count=1', ...range]);
     const onLine = base === emptyTree || (!!before && (await isAncestor(git, dir, base, before)));
     if (before && SHA.test(before) && onLine && (await isAncestor(git, dir, before, head))) base = before;
   }
@@ -576,7 +605,13 @@ async function committedLayer(
 ): Promise<CheckoutChanges['committed']> {
   const empty = { files: [], additions: 0, deletions: 0, commits: [] };
   if (!head) return empty;
-  const base = await committedBase(git, dir, head, prHeads, startedAt, emptyTree);
+  let base: string | undefined;
+  try {
+    base = await committedBase(git, dir, head, prHeads, startedAt, emptyTree);
+  } catch (error) {
+    if (error instanceof GitReadFailed) return { ...empty, skipped: 'git-diff-failed' };
+    throw error;
+  }
   if (!base || base === head) return base ? { ...empty, base } : empty;
   const files = await diffFiles(git, dir, base, head);
   // A failed diff is not "nothing committed": the collector keeps the last layer read, with the reason.
