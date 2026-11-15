@@ -6,7 +6,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GitHubPullDetail, GitHubPullFile } from '../../link-metadata-fetcher';
-import { applyPatchBudget, collectCodeChanges, createCodeChangesScheduler, fileSources, listView } from '../collector';
+import {
+  applyPatchBudget,
+  collectCodeChanges,
+  createCodeChangesScheduler,
+  fileSources,
+  keepLastRead,
+  listView,
+} from '../collector';
 import { prFileOf, pullRefOf, sessionPrChanges } from '../pr-changes';
 import { CodeChangesStore, isStoreKey } from '../store';
 import { sanitizeCodeChangesSummary, summarizeCodeChanges } from '../summary';
@@ -167,15 +174,15 @@ describe('collectCodeChanges', () => {
       ...prDeps({ 1: detail(1, { merged: true, merged_at: '2026-11-16T02:00:00Z' }), 2: detail(2) }),
       store: s,
       listCheckoutDirs: async () => ({ dirs: ['/s/web', '/s/clean'] }),
-      checkoutChanges: vi.fn(async ({ dir }: { dir: string }) =>
+      checkoutChanges: vi.fn(async ({ dir, commits }: { dir: string; commits?: { skip: ReadonlySet<string> } }) =>
         dir === '/s/web'
-          ? checkout()
+          ? {
+              ...checkout(),
+              sessionCommits: commits?.skip.has('f'.repeat(40))
+                ? []
+                : [{ sha: 'f'.repeat(40), at: START + 60_000, additions: 4, deletions: 1 }],
+            }
           : checkout({ id: 'c2', dir: 'clean', uncommitted: { files: [], additions: 0, deletions: 0 } }),
-      ),
-      sessionCommits: vi.fn(async (dir: string, _since: number, skip: ReadonlySet<string>) =>
-        dir === '/s/web' && !skip.has('f'.repeat(40))
-          ? [{ sha: 'f'.repeat(40), at: START + 60_000, additions: 4, deletions: 1 }]
-          : [],
       ),
     };
     const input = {
@@ -198,6 +205,14 @@ describe('collectCodeChanges', () => {
     expect(r.newCommits).toEqual([
       { sha: 'f'.repeat(40), at: START + 60_000, additions: 4, deletions: 1, repo: 'acme/web' },
     ]);
+    // Not counted until the metrics took them: a collect before that hands them on again.
+    expect(s.read('conv1')?.counted.commits).toEqual([]);
+    expect((await collectCodeChanges(input, deps)).newCommits).toHaveLength(1);
+    expect(r.doc.checkouts[0]).not.toHaveProperty('sessionCommits');
+    s.markCounted(
+      'conv1',
+      r.newCommits.map((c) => c.sha),
+    );
     expect(s.read('conv1')?.counted.commits).toEqual(['f'.repeat(40)]);
 
     const again = await collectCodeChanges(input, deps);
@@ -438,5 +453,120 @@ describe('createCodeChangesScheduler', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('the fourth review round (#1299)', () => {
+  it('PR files are read again when the base moved, or the budget dropped their patches; a fork head is kept', async () => {
+    const url = 'https://github.com/acme/web/pull/6';
+    const deps = prDeps({ 6: detail(6, { base_sha: 'b1', head_repo: 'Someone/Web' }) });
+    const first = await sessionPrChanges([url], START, [], deps);
+    expect(first[0]).toMatchObject({ baseSha: 'b1', headRepo: 'someone/web' });
+    await sessionPrChanges([url], START, first, deps);
+    expect(deps.fetchPullFiles).toHaveBeenCalledTimes(1);
+    const moved = prDeps({ 6: detail(6, { base_sha: 'b2' }) });
+    await sessionPrChanges([url], START, first, moved);
+    expect(moved.fetchPullFiles).toHaveBeenCalledTimes(1);
+    const cut = prDeps({ 6: detail(6, { base_sha: 'b1' }) });
+    await sessionPrChanges([url], START, [{ ...first[0], patchesDropped: true }], cut);
+    expect(cut.fetchPullFiles).toHaveBeenCalledTimes(1);
+    // A settled PR whose patches were cut is read again too.
+    const merged = prDeps({ 6: detail(6, { merged: true, base_sha: 'b1' }) });
+    await sessionPrChanges([url], START, [{ ...first[0], state: 'merged', patchesDropped: true }], merged);
+    expect(merged.fetchPullDetail).toHaveBeenCalledTimes(1);
+    // Same repository: no headRepo.
+    const own = await sessionPrChanges([url], START, [], prDeps({ 6: detail(6, { head_repo: 'acme/web' }) }));
+    expect(own[0].headRepo).toBeUndefined();
+  });
+
+  it('applyPatchBudget marks a PR whose patches it dropped', () => {
+    const big = 'x'.repeat(100);
+    const pr = (id: string) => ({
+      id,
+      url: `https://github.com/acme/web/pull/${id}`,
+      repo: 'acme/web',
+      number: 1,
+      state: 'open' as const,
+      additions: 1,
+      deletions: 0,
+      changedFiles: 1,
+      files: [{ path: 'a', status: 'modified' as const, additions: 1, deletions: 0, patch: big }],
+      fetchedAt: 1,
+    });
+    const doc: CodeChangesDoc = {
+      version: 1,
+      conversationId: 'c',
+      owner: { id: 'U', name: 'u' },
+      updatedAt: 1,
+      checkouts: [],
+      prs: [pr('1'), pr('2')],
+      counted: { commits: [] },
+    };
+    applyPatchBudget(doc, 150);
+    expect(doc.prs[0].patchesDropped).toBeUndefined();
+    expect(doc.prs[1]).toMatchObject({ patchesDropped: true, files: [{ patchTruncated: true }] });
+  });
+
+  it('keepLastRead: a layer that failed keeps the last read with the reason; a read thrown away keeps all of it', () => {
+    const old = checkout({
+      committed: {
+        files: [{ path: 'c.ts', status: 'added', additions: 2, deletions: 0 }],
+        additions: 2,
+        deletions: 0,
+        commits: [],
+      },
+    });
+    const failed = checkout({
+      uncommitted: { files: [], additions: 0, deletions: 0 },
+      committed: { files: [], additions: 0, deletions: 0, commits: [], skipped: 'git-diff-failed' },
+    });
+    const kept = keepLastRead(failed, old);
+    expect(kept.uncommitted.files).toEqual([]);
+    expect(kept.committed).toMatchObject({ skipped: 'git-diff-failed', additions: 2, files: [{ path: 'c.ts' }] });
+    const changed = checkout({
+      repo: 'local:web',
+      uncommitted: { files: [], additions: 0, deletions: 0, skipped: 'repo-changed-during-read' },
+      committed: { files: [], additions: 0, deletions: 0, commits: [], skipped: 'repo-changed-during-read' },
+    });
+    const whole = keepLastRead(changed, old);
+    expect(whole.repo).toBe('acme/web');
+    expect(whole.uncommitted).toMatchObject({ skipped: 'repo-changed-during-read', additions: 1 });
+    expect(whole.committed).toMatchObject({ skipped: 'repo-changed-during-read', additions: 2 });
+    expect(keepLastRead(failed, undefined)).toBe(failed);
+    const fine = checkout();
+    expect(keepLastRead(fine, old)).toBe(fine);
+  });
+
+  it('a stored file whose patch is not text sends the read to the backup; markCounted adds and caps', () => {
+    const s = store();
+    const doc: CodeChangesDoc = {
+      version: 1,
+      conversationId: 'abc-3',
+      owner: { id: 'U', name: 'u' },
+      updatedAt: 5,
+      checkouts: [checkout()],
+      prs: [],
+      counted: { commits: [] },
+    };
+    s.write(doc);
+    s.write({ ...doc, updatedAt: 6 });
+    const bad = {
+      ...doc,
+      updatedAt: 7,
+      checkouts: [
+        checkout({
+          uncommitted: {
+            files: [{ path: 'a', status: 'modified', additions: 1, deletions: 0, patch: 1 as unknown as string }],
+            additions: 1,
+            deletions: 0,
+          },
+        }),
+      ],
+    };
+    fs.writeFileSync(path.join(s.baseDir, 'abc-3.json'), JSON.stringify(bad));
+    expect(s.read('abc-3')?.updatedAt).toBe(5);
+    s.markCounted('abc-3', ['a'.repeat(40)]);
+    s.markCounted('abc-3', ['a'.repeat(40), 'b'.repeat(40)]);
+    expect(s.read('abc-3')?.counted.commits).toEqual(['a'.repeat(40), 'b'.repeat(40)]);
   });
 });

@@ -81,7 +81,15 @@ export interface ReconcileArgs {
 export type SessionPrReconciler = ((args: ReconcileArgs) => void) & {
   /** Resolves when every reconcile in flight has finished (tests, shutdown). */
   idle: () => Promise<void>;
+  /**
+   * Resolves when the session has no reconcile running or waiting (one deferred by the interval included), or after
+   * `maxWaitMs` — what reads the session's PR links after a turn (the code-changes collector) waits for it.
+   */
+  settled: (sessionKey: string, maxWaitMs?: number) => Promise<void>;
 };
+
+/** How long `settled` waits at most: past the interval a deferred run waits, plus the run itself. */
+export const RECONCILE_SETTLE_MAX_MS = 45_000;
 
 const MAX_CLOSING_ISSUES = 5;
 const CLOSING = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+(?:([\w.-]+)\/([\w.-]+))?#(\d+)\b/gi;
@@ -140,6 +148,16 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
   const timers = new Map<string, NodeJS.Timeout>();
   /** `owner/name#branch` → the head sha and PRs of a found answer. */
   const found = new Map<string, { sha: string; pulls: PullSummary[] }>();
+  /** Who waits for a session's reconciles to settle. */
+  const waiters = new Map<string, Array<() => void>>();
+
+  const busy = (sessionKey: string) => inFlight.has(sessionKey) || pending.has(sessionKey) || timers.has(sessionKey);
+  function wake(sessionKey: string): void {
+    if (busy(sessionKey)) return;
+    const list = waiters.get(sessionKey);
+    waiters.delete(sessionKey);
+    for (const w of list ?? []) w();
+  }
 
   async function reconcileOne(sessionKey: string, session: SessionLike, workingDirectory: string): Promise<void> {
     const dirs = sessionDirs(session, workingDirectory);
@@ -201,6 +219,7 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
       const next = pending.get(sessionKey);
       pending.delete(sessionKey);
       if (next) trigger(next);
+      wake(sessionKey);
     }, waitMs);
     t.unref?.();
     timers.set(sessionKey, t);
@@ -228,6 +247,7 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
         // A trigger that came meanwhile runs once, after the interval.
         if (pending.has(sessionKey))
           later(sessionKey, Math.max(0, (lastRun.get(sessionKey) ?? 0) + minInterval - now()));
+        wake(sessionKey);
       });
     inFlight.set(sessionKey, run);
   }
@@ -244,6 +264,20 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
   reconcile.idle = async () => {
     while (inFlight.size > 0) await Promise.all([...inFlight.values()]);
   };
+  reconcile.settled = (sessionKey, maxWaitMs = RECONCILE_SETTLE_MAX_MS) =>
+    new Promise<void>((resolve) => {
+      if (!busy(sessionKey)) return resolve();
+      const timer = setTimeout(done, maxWaitMs);
+      timer.unref?.();
+      function done() {
+        clearTimeout(timer);
+        const list = waiters.get(sessionKey)?.filter((w) => w !== done);
+        if (list?.length) waiters.set(sessionKey, list);
+        else waiters.delete(sessionKey);
+        resolve();
+      }
+      waiters.set(sessionKey, [...(waiters.get(sessionKey) ?? []), done]);
+    });
   return reconcile;
 }
 

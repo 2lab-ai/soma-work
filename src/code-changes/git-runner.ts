@@ -8,14 +8,16 @@
  *   - git never reads a working-tree file's content: the uncommitted layer is compared in this process
  *     (checkout-changes.ts), so no clean filter or textconv ever runs. `ls-files --others` lists names only;
  *   - command-line `-c` wins over the repository's config: fsmonitor, hooks, external diff and signature checks are off;
- *     transports are refused (`protocol.allow=never`) and lazy fetching is off (`GIT_NO_LAZY_FETCH`), so a partial clone
- *     cannot fetch through a configured remote; no pager; no auto gc;
+ *     every transport is refused, by name too (a repository's `protocol.<name>.allow` outranks a general
+ *     `protocol.allow`), and lazy fetching is off (`GIT_NO_LAZY_FETCH`); submodules are never entered; no pager; no gc;
  *   - no global or system config, no tokens in the environment, no optional index writes;
  *   - diffs are between two commits only, with `--no-ext-diff --no-textconv`, and logs with `--no-show-signature`.
  *
  * `checkoutSafety` adds what a check can give: the work tree, git dir and common dir inside the session's folders, no
- * alternates, and no command-running key in the config (a repository that asks for one is listed, not read). The paths
- * it resolves are then pinned on every later call (`pinGit`), so a `.git` file rewritten meanwhile is not followed.
+ * alternates, no link anywhere in the git dirs, and no command-running key in the config (a repository that asks for one
+ * is listed, not read). The paths it resolves are pinned on every later call (`pinGit`), so a `.git` file rewritten
+ * meanwhile is not followed; and the folders it walked are noted (`PathWitness`), so a git dir swapped for a link to
+ * another repository while git reads it is seen afterwards and the read is thrown away (checkout-changes.ts).
  *
  * Every call is bounded (10 s, 16 MiB of output) and answers undefined on any failure — never throws.
  */
@@ -23,6 +25,7 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { PathWitness } from './path-witness';
 
 const GIT_ENV: NodeJS.ProcessEnv = {
   PATH: process.env.PATH ?? '/usr/bin:/bin',
@@ -37,6 +40,9 @@ const GIT_ENV: NodeJS.ProcessEnv = {
   GIT_PAGER: 'cat',
   PAGER: 'cat',
 };
+
+/** The transports git knows by name. */
+const TRANSPORTS = ['ext', 'file', 'git', 'ssh', 'http', 'https'];
 
 const SAFE_FLAGS = [
   '-c',
@@ -59,6 +65,12 @@ const SAFE_FLAGS = [
   'diff.relative=false',
   '-c',
   'protocol.allow=never',
+  // A repository's `protocol.<name>.allow=always` outranks the general key: each transport is refused by name too.
+  ...TRANSPORTS.flatMap((name) => ['-c', `protocol.${name}.allow=never`]),
+  '-c',
+  'diff.submodule=short',
+  '-c',
+  'submodule.recurse=false',
   '-c',
   'gc.auto=0',
   '-c',
@@ -71,20 +83,9 @@ export const GIT_MAX_BUFFER = 16 * 1024 * 1024;
 
 export type GitRun = (dir: string, args: string[]) => Promise<string | undefined>;
 
-/** Run git in `dir` with the hardened flags; the raw stdout (not trimmed), or undefined on failure. */
-export const runGit: GitRun = (dir, args) =>
-  new Promise((resolve) => {
-    execFile(
-      'git',
-      [...SAFE_FLAGS, '-C', dir, ...args],
-      { timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER, env: GIT_ENV, encoding: 'utf8' },
-      (error, stdout) => resolve(error ? undefined : String(stdout)),
-    );
-  });
-
 export type GitRunBytes = (dir: string, args: string[]) => Promise<Buffer | undefined>;
 
-/** {@link runGit} for output that may not be text (a blob's bytes). */
+/** Run git in `dir` with the hardened flags; the raw stdout bytes, or undefined on failure. */
 export const runGitBytes: GitRunBytes = (dir, args) =>
   new Promise((resolve) => {
     execFile(
@@ -95,12 +96,18 @@ export const runGitBytes: GitRunBytes = (dir, args) =>
     );
   });
 
-/** A runner whose every call names the git dir and work tree `checkoutSafety` resolved (not whatever `.git` says now). */
+/** {@link runGitBytes} as text (not trimmed). */
+export const runGit: GitRun = (dir, args) => runGitBytes(dir, args).then((out) => out?.toString('utf8'));
+
+/**
+ * A runner whose every call starts in the work tree and names the git dir `checkoutSafety` resolved (not whatever `.git`
+ * says now). The `dir` a caller passes is ignored: every path git prints is relative to the work tree's top.
+ */
 export function pinGit<T>(
   git: (dir: string, args: string[]) => Promise<T>,
   pin: { gitDir: string; top: string },
 ): (dir: string, args: string[]) => Promise<T> {
-  return (dir, args) => git(dir, [`--git-dir=${pin.gitDir}`, `--work-tree=${pin.top}`, ...args]);
+  return (_dir, args) => git(pin.top, [`--git-dir=${pin.gitDir}`, `--work-tree=${pin.top}`, ...args]);
 }
 
 /**
@@ -123,6 +130,13 @@ const RUNS_COMMANDS = [
   /^core\.pager$/,
   /^core\.askpass$/,
   /^diff\.external$/,
+  // Transports and what fetches through them (a partial clone's promisor remote, a custom upload-pack).
+  /^protocol\./,
+  /^remote\..*\.promisor$/,
+  /^remote\..*\.(?:uploadpack|receivepack|vcs)$/,
+  /^extensions\.partialclone$/,
+  /^core\.alternaterefscommand$/,
+  /^uploadpack\./,
 ];
 
 /**
@@ -153,7 +167,13 @@ export async function configSafe(dir: string, git: GitRun = runGit): Promise<{ s
 }
 
 export type CheckoutSafety =
-  | { ok: true; top: string; gitDir: string }
+  | {
+      ok: true;
+      top: string;
+      gitDir: string;
+      /** The git dirs' folders (and the folders above them, from the session folder down) as checked. */
+      witness: PathWitness;
+    }
   | { ok: false; reason: 'not-a-checkout' | 'outside-session' }
   | {
       ok: false;
@@ -166,16 +186,21 @@ const real = (p: string) => fs.realpath(p).catch(() => path.resolve(p));
 /** How many entries of a git dir `noLinksIn` reads before it gives up (and refuses the checkout). */
 export const MAX_GIT_ENTRIES = 100_000;
 
+/** Files of a git dir whose content sends git elsewhere: noted, so one rewritten during a read is seen. */
+const POINTER_FILES = ['commondir', 'config', 'config.worktree', path.join('objects', 'info', 'alternates')];
+
 /**
  * Whether the tree under `dir` holds no symlink (lstat only — nothing is followed or read). A git dir whose objects,
- * refs, index or logs are links can point git at another repository the daemon can read (#1299 review). Gives up past
- * MAX_GIT_ENTRIES — a repository that large is not read.
+ * refs, index or logs are links can point git at another repository the daemon can read (#1299 review). Every folder is
+ * noted on `witness` before it is listed, so one swapped later is seen. Gives up past MAX_GIT_ENTRIES — a repository
+ * that large is not read.
  */
-export async function noLinksIn(dir: string, max = MAX_GIT_ENTRIES): Promise<boolean> {
+export async function noLinksIn(dir: string, max = MAX_GIT_ENTRIES, witness = new PathWitness()): Promise<boolean> {
   const stack = [dir];
   let seen = 0;
   while (stack.length > 0) {
     const cur = stack.pop()!;
+    if ((await witness.note(cur)) !== 'dir') return false;
     let entries: import('node:fs').Dirent[];
     try {
       entries = await fs.readdir(cur, { withFileTypes: true });
@@ -216,10 +241,20 @@ export async function checkoutSafety(dir: string, roots: string[], git: GitRun =
   // (objects, refs, index, logs pointed at another repository) would make git read outside the session.
   const alt = await fs.lstat(path.join(common, 'objects', 'info', 'alternates')).catch(() => undefined);
   if (alt && (!alt.isFile() || alt.size > 0)) return { ok: false, reason: 'repo-alternates', top };
+  // The folders from the session folder down to each git dir, then everything in the git dirs: a link on the way
+  // refuses the checkout now, and a swap after this is seen when the read is checked (PathWitness). The session folder
+  // itself is noted (renaming it away and back changes its own ctime); what is above it the sandbox does not write.
+  const witness = new PathWitness();
+  const outermost = [...realRoots].sort((a, b) => a.length - b.length);
   for (const d of new Set([gitDir, common])) {
-    if (!(await noLinksIn(d))) return { ok: false, reason: 'repo-links-outside', top };
+    const root = outermost.find((r) => inside(d, [r]))!;
+    if (!(await witness.noteChain(root, d))) return { ok: false, reason: 'repo-links-outside', top };
+    if (!(await noLinksIn(d, MAX_GIT_ENTRIES, witness))) return { ok: false, reason: 'repo-links-outside', top };
+    for (const f of POINTER_FILES) {
+      if ((await witness.note(path.join(d, f))) === 'link') return { ok: false, reason: 'repo-links-outside', top };
+    }
   }
   const config = await configSafe(dir, git);
   if (!config.safe) return { ok: false, reason: config.reason as 'repo-config-runs-commands', top };
-  return { ok: true, top, gitDir };
+  return { ok: true, top, gitDir, witness };
 }

@@ -14,7 +14,7 @@ afterEach(() => {
   for (const r of roots.splice(0)) fs.rmSync(r, { recursive: true, force: true });
 });
 
-function setup(session: SessionLike & { key?: string }) {
+function setup(session: SessionLike & { key?: string }, collect: Record<string, unknown> = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-svc-'));
   roots.push(dir);
   const sessions = new Map<string, SessionLike>([['k1', session]]);
@@ -34,10 +34,11 @@ function setup(session: SessionLike & { key?: string }) {
       fetchPullDetail: async () => undefined,
       fetchPullFiles: async () => undefined,
       now: () => 7,
+      ...collect,
     },
     scheduler: { delayMs: 0, minIntervalMs: 0 },
   });
-  return { svc, sessions, persist, pushCard, onResult, listCheckoutDirs };
+  return { svc, sessions, persist, pushCard, onResult, listCheckoutDirs, store: new CodeChangesStore(dir) };
 }
 
 describe('code-changes service', () => {
@@ -102,5 +103,53 @@ describe('code-changes service', () => {
     expect(await t.svc.refresh('conv-none')).toBe(false);
     session.terminated = true;
     expect(await t.svc.refresh('conv1')).toBe(false);
+  });
+
+  it('new commits are marked counted only once the result was handed on; a failed hand-off hands them on again', async () => {
+    const sha = 'c'.repeat(40);
+    const session: SessionLike = {
+      conversationId: 'conv1',
+      startedAt: 1,
+      sessionWorkingDir: '/tmp/x/session_1794756694405_a',
+    };
+    const checkoutChanges = vi.fn(async ({ commits }: { commits?: { skip: ReadonlySet<string> } }) => ({
+      id: 'c1',
+      repo: 'acme/web',
+      dir: 'web',
+      uncommitted: { files: [], additions: 0, deletions: 0 },
+      committed: { files: [], additions: 0, deletions: 0, commits: [] },
+      sessionCommits: commits?.skip.has(sha) ? [] : [{ sha, at: 5, additions: 1, deletions: 0 }],
+    }));
+    const t = setup(session, {
+      listCheckoutDirs: async () => ({ dirs: ['/tmp/x/session_1794756694405_a/web'] }),
+      checkoutChanges,
+    });
+    t.onResult.mockImplementationOnce(async () => {
+      throw new Error('metrics down');
+    });
+    expect(await t.svc.refresh('conv1')).toBe(true);
+    expect(t.store.read('conv1')?.counted.commits).toEqual([]);
+    expect(await t.svc.refresh('conv1')).toBe(true);
+    expect(t.onResult.mock.calls[1][2].newCommits.map((c: { sha: string }) => c.sha)).toEqual([sha]);
+    expect(t.store.read('conv1')?.counted.commits).toEqual([sha]);
+    expect(await t.svc.refresh('conv1')).toBe(true);
+    expect(t.onResult.mock.calls[2][2].newCommits).toEqual([]);
+  });
+
+  it('turn folders of sessions that ended or were replaced are dropped', async () => {
+    const a: SessionLike = { conversationId: 'ca', sessionWorkingDir: '/tmp/x/session_1794756694405_a' };
+    const t = setup(a);
+    t.svc.snapshot({ sessionKey: 'k1', session: a, workingDirectory: '/tmp/x/session_1794756694405_a/repo' });
+    await t.svc.scheduler.idle();
+    expect(t.svc.turnDirCount()).toBe(1);
+    t.sessions.set('k1', { conversationId: 'cb', sessionWorkingDir: '/tmp/x/session_1794756694406_b' });
+    const c: SessionLike = { conversationId: 'cc', sessionWorkingDir: '/tmp/x/session_1794756694407_c' };
+    t.sessions.set('k2', c);
+    t.svc.snapshot({ sessionKey: 'k2', session: c, workingDirectory: '/tmp/x/session_1794756694407_c/repo' });
+    await t.svc.scheduler.idle();
+    expect(t.svc.turnDirCount()).toBe(1);
+    c.terminated = true;
+    t.svc.snapshot({ sessionKey: 'k3' });
+    expect(t.svc.turnDirCount()).toBe(0);
   });
 });

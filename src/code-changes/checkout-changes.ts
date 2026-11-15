@@ -12,6 +12,7 @@ import { githubRemoteOf } from '../session-pr-reconciler';
 import {
   capPatch,
   joinDiff,
+  lineCounts,
   looksBinary,
   MAX_PATCH_BYTES,
   newFilePatch,
@@ -27,19 +28,33 @@ export const MAX_LAYER_FILES = 1000;
 const MAX_UNTRACKED_PATCHES = 200;
 const MAX_COMMITS_LISTED = 50;
 const MAX_PR_HEADS = 20;
-const DIFF_FLAGS = ['-M', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/'];
+const DIFF_FLAGS = [
+  '-M',
+  '--no-color',
+  '--no-ext-diff',
+  '--no-textconv',
+  '--ignore-submodules=all',
+  '--submodule=short',
+  '--src-prefix=a/',
+  '--dst-prefix=b/',
+];
 const SHA = /^[0-9a-f]{40,64}$/;
+/** The git dirs changed while they were read (a folder swapped, a pointer rewritten): the read is thrown away. */
+export const CHANGED_DURING_READ = 'repo-changed-during-read';
 /** The checkout is this session's but is not read at all: its config runs commands, or it borrows another object store. */
 export const UNREAD_CHECKOUT = new Set([
   'repo-config-runs-commands',
   'git-config-unreadable',
   'repo-alternates',
   'repo-links-outside',
+  CHANGED_DURING_READ,
 ]);
 
 export interface PrHead {
-  /** `owner/name` (lower case): a head of another repository never bounds this checkout. */
+  /** `owner/name` (lower case) the PR is in: a head of an unrelated repository never bounds this checkout. */
   repo?: string;
+  /** The head's own repository when it is a fork's branch: a checkout of the fork matches it. */
+  headRepo?: string;
   headRef?: string;
   headSha?: string;
   createdAt?: number;
@@ -54,8 +69,15 @@ export interface CheckoutInput {
   sessionStartedAt?: number;
   /** The session's PRs in this checkout's repository: one whose head is this branch bounds the committed layer. */
   prHeads?: PrHead[];
+  /** The commits made here since `since` (epoch ms), past the `skip` shas, are read too (`sessionCommits`). */
+  commits?: { since: number; skip: ReadonlySet<string> };
   git?: GitRun;
   gitBytes?: GitRunBytes;
+}
+
+/** A checkout read: its changes (stored) and the commits the session made in it (handed to the metrics). */
+export interface CheckoutRead extends CheckoutChanges {
+  sessionCommits?: SessionCommit[];
 }
 
 const trim = (s: string | undefined) => (s === undefined ? undefined : s.trim());
@@ -103,13 +125,16 @@ async function diffFiles(git: GitRun, dir: string, from: string, to: string): Pr
 // ── The uncommitted layer, compared in this process ────────────────────────────────────────────────────────────────
 // git never reads a working-tree file here (a clean filter or textconv would run then — git-runner.ts): the HEAD tree's
 // blob ids are compared with the git hash of each file's bytes, and a changed file's patch is a line diff of the blob
-// (`cat-file`, an object read) and the file. Files are read only through lstat'd, contained paths — never a symlink.
+// (`cat-file`, an object read) and the file. A file is read only through `readInside` — never through a symlink.
 
-/** Files above this are compared by size only; above MAX_PATCH_SOURCE no patch is made. */
+/** Files above this are compared by size only, and their lines are not counted. */
 const MAX_HASH_BYTES = 8 * 1024 * 1024;
+/** Files above this get no patch (their lines are still counted). */
 const MAX_PATCH_SOURCE = 1024 * 1024;
 const MAX_TRACKED = 50_000;
 const MAX_PATCHES = 300;
+/** The bytes one layer reads to count the lines of files it keeps no patch for. */
+const MAX_COUNT_BYTES = 64 * 1024 * 1024;
 
 interface TreeEntry {
   mode: string;
@@ -137,51 +162,38 @@ export function blobId(bytes: Buffer, format: 'sha1' | 'sha256'): string {
 const sameAsHead = new Map<string, { size: number; mtimeMs: number; ino: number; sha: string }>();
 const MAX_STAT_CACHE = 200_000;
 
-async function contained(realTop: string, abs: string): Promise<boolean> {
-  const real = await fs.realpath(abs).catch(() => '');
-  return !!real && real.startsWith(`${realTop}${path.sep}`);
-}
-
-/** The line diff of two texts as a change; binary when either side looks binary. */
-function textChange(
-  rel: string,
-  status: ChangedFile['status'],
-  before: Buffer,
-  after: Buffer,
-): ChangedFile | undefined {
-  const file: ChangedFile = { path: rel, status, additions: 0, deletions: 0 };
-  if (looksBinary(before) || looksBinary(after)) {
-    file.binary = true;
-    return file;
-  }
-  const d = lineDiff(before.toString('utf8'), after.toString('utf8'));
-  if (d.truncated) {
-    file.patchTruncated = true;
-    return file;
-  }
-  // Only line endings differ (lineDiff reads \r\n as \n): no change a reader can see.
-  if (!d.text && status === 'modified') return undefined;
-  file.additions = d.added;
-  file.deletions = d.removed;
-  if (d.text) {
-    const capped = capPatch(d.text);
-    file.patch = capped.patch;
-    if (capped.truncated) file.patchTruncated = true;
-  }
-  return file;
-}
+/** macOS 11+: the open fails on a symlink anywhere in the path, the kernel checking each folder as it walks it. */
+export const O_NOFOLLOW_ANY = 0x20000000;
 
 /**
- * A working-tree file's bytes, only if it is (still) a regular file of at most `max` bytes: opened without following a
- * final symlink and without blocking (a FIFO swapped in after the lstat cannot hang the collect), checked on the open
- * handle (#1299 review).
+ * A working-tree file's bytes, only if what is opened is a regular file of at most `max` bytes with this one name,
+ * reached from `realTop` (a real path) without a symlink anywhere on the way. A check on the path before the open would
+ * not do: a folder of it can be swapped for a link to anywhere between the check and the open (#1299 review). So the
+ * kernel refuses a link on every component (macOS, O_NOFOLLOW_ANY), or the path it opened is read back from the open
+ * handle and must be inside `realTop` (Linux, /proc/self/fd); elsewhere nothing is read. One name only (a hard link
+ * to a file outside is that file), and opened without blocking (a FIFO swapped in cannot hang the collect).
  */
-export async function readRegular(abs: string, max: number): Promise<Buffer | undefined> {
+export async function readInside(
+  realTop: string,
+  rel: string,
+  max: number,
+  platform: NodeJS.Platform = process.platform,
+): Promise<Buffer | undefined> {
+  if (!rel || rel.split('/').some((s) => s === '' || s === '.' || s === '..')) return undefined;
+  const abs = path.join(realTop, rel);
   let fh: import('node:fs/promises').FileHandle | undefined;
   try {
-    fh = await fs.open(abs, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW);
+    if (platform === 'darwin') {
+      fh = await fs.open(abs, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK | O_NOFOLLOW_ANY);
+    } else if (platform === 'linux') {
+      fh = await fs.open(abs, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW);
+      const opened = await fs.readlink(`/proc/self/fd/${fh.fd}`);
+      if (!opened.startsWith(`${realTop}${path.sep}`)) return undefined;
+    } else {
+      return undefined;
+    }
     const st = await fh.stat();
-    if (!st.isFile() || st.size > max) return undefined;
+    if (!st.isFile() || st.nlink !== 1 || st.size > max) return undefined;
     const buf = Buffer.alloc(st.size);
     const { bytesRead } = await fh.read(buf, 0, st.size, 0);
     return buf.subarray(0, bytesRead);
@@ -199,76 +211,119 @@ const countLines = (buf: Buffer) => {
   return buf[buf.length - 1] === 10 ? n : n + 1;
 };
 
-async function readSmall(abs: string, size: number): Promise<Buffer | undefined> {
-  if (size > MAX_PATCH_SOURCE) return undefined;
-  return readRegular(abs, MAX_PATCH_SOURCE);
+/** What one layer may still read: patches to keep, and bytes to read for counting lines. */
+interface Budget {
+  patches: number;
+  countBytes: number;
+}
+
+/** A change whose lines could not be counted (a side unreadable or too large). */
+const uncounted = (rel: string, status: ChangedFile['status']): ChangedFile => ({
+  path: rel,
+  status,
+  additions: 0,
+  deletions: 0,
+  patchTruncated: true,
+});
+
+/**
+ * Two versions of a file as a change: lines counted whether or not the patch is kept (a 1.5 MiB lockfile is still
+ * +N −M), the patch only within the budget. Undefined when only line endings differ.
+ */
+function change(
+  rel: string,
+  status: ChangedFile['status'],
+  before: Buffer | undefined,
+  after: Buffer | undefined,
+  budget: Budget,
+): ChangedFile | undefined {
+  if (!before || !after) return uncounted(rel, status);
+  const file: ChangedFile = { path: rel, status, additions: 0, deletions: 0 };
+  if (looksBinary(before) || looksBinary(after)) {
+    file.binary = true;
+    return file;
+  }
+  if (before.length <= MAX_PATCH_SOURCE && after.length <= MAX_PATCH_SOURCE) {
+    const d = lineDiff(before.toString('utf8'), after.toString('utf8'));
+    if (!d.truncated) {
+      // Only line endings differ (lineDiff reads \r\n as \n): no change a reader can see.
+      if (!d.text && status === 'modified') return undefined;
+      file.additions = d.added;
+      file.deletions = d.removed;
+      if (d.text && budget.patches > 0) {
+        budget.patches--;
+        const capped = capPatch(d.text);
+        file.patch = capped.patch;
+        if (capped.truncated) file.patchTruncated = true;
+      } else if (d.text) {
+        file.patchTruncated = true;
+      }
+      return file;
+    }
+  }
+  // Too large or too changed to diff here: counted as multisets, no patch.
+  const counts = lineCounts(before, after);
+  file.additions = counts.additions;
+  file.deletions = counts.deletions;
+  file.patchTruncated = true;
+  return file;
 }
 
 /** One HEAD entry against the working tree: undefined when unchanged (or not safely readable). */
 async function trackedChange(
   gitBytes: GitRunBytes,
-  dir: string,
-  top: string,
   realTop: string,
   e: TreeEntry,
   format: 'sha1' | 'sha256',
-  withPatch: boolean,
+  budget: Budget,
 ): Promise<ChangedFile | undefined> {
-  const abs = path.join(top, e.path);
+  const abs = path.join(realTop, e.path);
   const st = await fs.lstat(abs).catch(() => undefined);
-  const before = async () =>
-    withPatch && e.size <= MAX_PATCH_SOURCE ? gitBytes(dir, ['cat-file', 'blob', e.sha]) : undefined;
-  const counted = (status: ChangedFile['status']): ChangedFile => ({
-    path: e.path,
-    status,
-    additions: 0,
-    deletions: 0,
-    patchTruncated: true,
-  });
-  if (!st) {
-    const old = await before();
-    return old ? textChange(e.path, 'deleted', old, Buffer.alloc(0)) : counted('deleted');
-  }
-  if (!(await contained(realTop, abs)) && !st.isSymbolicLink()) return undefined;
+  // A side is read when it fits the patch source, or the counting budget still holds it.
+  const affordable = (size: number) => {
+    if (size <= MAX_PATCH_SOURCE) return true;
+    if (size > MAX_HASH_BYTES || budget.countBytes < size) return false;
+    budget.countBytes -= size;
+    return true;
+  };
+  const blob = async () => (affordable(e.size) ? gitBytes(realTop, ['cat-file', 'blob', e.sha]) : undefined);
+  if (!st) return change(e.path, 'deleted', await blob(), Buffer.alloc(0), budget);
   if (e.mode === '120000' || st.isSymbolicLink()) {
-    // A link's blob is its target path; never follow it.
+    // A link's blob is its target path; never followed. Whether it changed is all that is told: a target read here
+    // would be read through folders the model can swap.
     const target = st.isSymbolicLink() ? await fs.readlink(abs).catch(() => undefined) : undefined;
     if (target !== undefined && e.mode === '120000' && blobId(Buffer.from(target), format) === e.sha) return undefined;
-    const old = await before();
-    return old && target !== undefined ? textChange(e.path, 'modified', old, Buffer.from(target)) : counted('modified');
+    return uncounted(e.path, 'modified');
   }
-  if (!st.isFile()) return counted('modified');
+  if (!st.isFile()) return uncounted(e.path, 'modified');
   const hit = sameAsHead.get(abs);
   if (hit && hit.sha === e.sha && hit.size === st.size && hit.mtimeMs === st.mtimeMs && hit.ino === st.ino)
     return undefined;
   if (st.size === e.size) {
     if (st.size > MAX_HASH_BYTES) return undefined;
-    const bytes = await readRegular(abs, MAX_HASH_BYTES);
+    const bytes = await readInside(realTop, e.path, MAX_HASH_BYTES);
     if (!bytes) return undefined;
     if (blobId(bytes, format) === e.sha) {
       if (sameAsHead.size > MAX_STAT_CACHE) sameAsHead.clear();
       sameAsHead.set(abs, { size: st.size, mtimeMs: st.mtimeMs, ino: st.ino, sha: e.sha });
       return undefined;
     }
+    return change(e.path, 'modified', affordable(e.size) ? await blob() : undefined, bytes, budget);
   }
-  const [old, now] = await Promise.all([before(), withPatch ? readSmall(abs, st.size) : undefined]);
-  return old && now ? textChange(e.path, 'modified', old, now) : counted('modified');
+  const now = affordable(st.size) ? await readInside(realTop, e.path, MAX_HASH_BYTES) : undefined;
+  return change(e.path, 'modified', now ? await blob() : undefined, now, budget);
 }
 
 /** A new file (untracked, or added to the index only) as a change: a regular file inside the checkout. */
-async function newFile(
-  top: string,
-  realTop: string,
-  rel: string,
-  withPatch: boolean,
-): Promise<ChangedFile | undefined> {
-  const abs = path.join(top, rel);
-  const st = await fs.lstat(abs).catch(() => undefined);
-  // Never through a symlink: its target can be any file the daemon can read.
-  if (!st?.isFile() || !(await contained(realTop, abs))) return undefined;
+async function newFile(realTop: string, rel: string, budget: Budget): Promise<ChangedFile | undefined> {
+  const st = await fs.lstat(path.join(realTop, rel)).catch(() => undefined);
+  // Never a symlink: its target can be any file the daemon can read.
+  if (!st?.isFile()) return undefined;
   const file: ChangedFile = { path: rel, status: 'added', additions: 0, deletions: 0 };
   // Its lines count whether or not its patch is kept (a large lockfile is still +N lines).
-  const buf = await readRegular(abs, MAX_HASH_BYTES);
+  const fits = st.size <= MAX_PATCH_SOURCE || (st.size <= MAX_HASH_BYTES && budget.countBytes >= st.size);
+  if (fits && st.size > MAX_PATCH_SOURCE) budget.countBytes -= st.size;
+  const buf = fits ? await readInside(realTop, rel, MAX_HASH_BYTES) : undefined;
   if (!buf) {
     file.patchTruncated = true;
     return file;
@@ -278,12 +333,13 @@ async function newFile(
     return file;
   }
   file.additions = countLines(buf);
-  if (buf.length > MAX_PATCH_BYTES || !withPatch) {
+  if (buf.length > MAX_PATCH_BYTES || budget.patches <= 0) {
     file.patchTruncated = true;
     return file;
   }
   const { patch } = newFilePatch(buf.toString('utf8'));
   if (patch) {
+    budget.patches--;
     const capped = capPatch(patch);
     file.patch = capped.patch;
     if (capped.truncated) file.patchTruncated = true;
@@ -294,39 +350,41 @@ async function newFile(
 async function uncommittedLayer(
   git: GitRun,
   gitBytes: GitRunBytes,
-  dir: string,
   top: string,
   head: string | undefined,
 ): Promise<CheckoutChanges['uncommitted']> {
   const failed = (skipped: string) => ({ files: [], additions: 0, deletions: 0, skipped });
-  const format = trim(await git(dir, ['rev-parse', '--show-object-format'])) === 'sha256' ? 'sha256' : 'sha1';
-  const listing = head ? await git(dir, ['ls-tree', '-r', '-z', '-l', '--full-tree', head]) : '';
+  const format = trim(await git(top, ['rev-parse', '--show-object-format'])) === 'sha256' ? 'sha256' : 'sha1';
+  const listing = head ? await git(top, ['ls-tree', '-r', '-z', '-l', '--full-tree', head]) : '';
   if (listing === undefined) return failed('git-diff-failed');
   const tree = parseLsTree(listing);
   if (tree.length > MAX_TRACKED) return failed('too-many-files');
-  const realTop = await fs.realpath(top).catch(() => top);
-  const files: ChangedFile[] = [];
-  let patches = 0;
-  for (const e of tree) {
-    if (files.length >= MAX_LAYER_FILES) break;
-    const f = await trackedChange(gitBytes, dir, top, realTop, e, format, patches < MAX_PATCHES);
-    if (f) {
-      files.push(f);
-      if (f.patch) patches++;
-    }
-  }
   // New files: in the index only (git add, not committed), and untracked — names from git, bytes read here.
-  const inTree = new Set(tree.map((e) => e.path));
-  const indexed = (await git(dir, ['ls-files', '-z', '--cached'])) ?? '';
-  const others = (await git(dir, ['ls-files', '--others', '--exclude-standard', '-z'])) ?? '';
-  const names = [...indexed.split('\0').filter((n) => n && !inTree.has(n)), ...others.split('\0').filter(Boolean)];
+  const indexed = await git(top, ['ls-files', '-z', '--cached']);
+  const others = await git(top, ['ls-files', '--others', '--exclude-standard', '-z']);
+  if (indexed === undefined || others === undefined) return failed('git-diff-failed');
+  const realTop = await fs.realpath(top).catch(() => top);
+  const budget: Budget = { patches: MAX_PATCHES, countBytes: MAX_COUNT_BYTES };
+  const files: ChangedFile[] = [];
   let truncated = false;
-  for (let i = 0; i < names.length; i++) {
+  for (const e of tree) {
     if (files.length >= MAX_LAYER_FILES) {
       truncated = true;
       break;
     }
-    const f = await newFile(top, realTop, names[i], i < MAX_UNTRACKED_PATCHES);
+    const f = await trackedChange(gitBytes, realTop, e, format, budget);
+    if (f) files.push(f);
+  }
+  const inTree = new Set(tree.map((e) => e.path));
+  const names = [...indexed.split('\0').filter((n) => n && !inTree.has(n)), ...others.split('\0').filter(Boolean)];
+  const newBudget: Budget = { patches: Math.min(budget.patches, MAX_UNTRACKED_PATCHES), countBytes: budget.countBytes };
+  for (const name of names) {
+    if (truncated) break;
+    if (files.length >= MAX_LAYER_FILES) {
+      truncated = true;
+      break;
+    }
+    const f = await newFile(realTop, name, newBudget);
     if (f) files.push(f);
   }
   files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
@@ -348,7 +406,6 @@ export async function committedBase(
   git: GitRun,
   dir: string,
   head: string,
-  branch: string | undefined,
   prHeads: PrHead[],
   startedAt?: number,
 ): Promise<string | undefined> {
@@ -418,25 +475,26 @@ async function committedLayer(
   git: GitRun,
   dir: string,
   head: string | undefined,
-  branch: string | undefined,
   prHeads: PrHead[],
   startedAt?: number,
 ): Promise<CheckoutChanges['committed']> {
   const empty = { files: [], additions: 0, deletions: 0, commits: [] };
   if (!head) return empty;
-  const base = await committedBase(git, dir, head, branch, prHeads, startedAt);
+  const base = await committedBase(git, dir, head, prHeads, startedAt);
   if (!base || base === head) return base ? { ...empty, base } : empty;
   const files = await diffFiles(git, dir, base, head);
-  if (!files) return { ...empty, base };
+  // A failed diff is not "nothing committed": the collector keeps the last layer read, with the reason.
+  if (!files) return { ...empty, base, skipped: 'git-diff-failed' };
   return { ...layer(files, false), base, commits: await commitsOf(git, dir, base, head) };
 }
 
 /**
  * The checkout at `dir`: its repository, branch, and two local layers. Undefined when it is not a git checkout or not
- * this session's (its work tree or git dir is outside the session's folders); a checkout the gate refuses to read
- * (git-runner `checkoutSafety`) comes back with both layers empty and the reason in `uncommitted.skipped`.
+ * this session's (its work tree or git dir is outside the session's folders). A checkout the gate refuses to read
+ * (git-runner `checkoutSafety`), or whose git dirs changed while they were read, comes back with both layers empty and
+ * the reason in `skipped` — and nothing read from it.
  */
-export async function checkoutChanges(input: CheckoutInput): Promise<CheckoutChanges | undefined> {
+export async function checkoutChanges(input: CheckoutInput): Promise<CheckoutRead | undefined> {
   const dir = input.dir;
   const safety = await checkoutSafety(
     dir,
@@ -444,23 +502,31 @@ export async function checkoutChanges(input: CheckoutInput): Promise<CheckoutCha
     input.git ?? runGit,
   );
   if (!safety.ok && (safety.reason === 'not-a-checkout' || safety.reason === 'outside-session')) return undefined;
+  const unread = (skipped: string): CheckoutRead => ({
+    id: checkoutId(dir),
+    // Not even the remote is read from a checkout that is not read.
+    repo: `local:${path.basename(dir)}`,
+    dir: labelOf(dir, input.sessionRoot),
+    uncommitted: { files: [], additions: 0, deletions: 0, skipped },
+    committed: { files: [], additions: 0, deletions: 0, commits: [], skipped },
+  });
+  if (!safety.ok) return unread(safety.reason);
   // Every later call names the git dir and work tree resolved above, not whatever `.git` says by then.
-  const git = safety.ok ? pinGit(input.git ?? runGit, safety) : (input.git ?? runGit);
-  const gitBytes = safety.ok ? pinGit(input.gitBytes ?? runGitBytes, safety) : (input.gitBytes ?? runGitBytes);
-  const head = trim(await git(dir, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'])) || undefined;
-  const branch = trim(await git(dir, ['symbolic-ref', '--quiet', '--short', 'HEAD'])) || undefined;
-  const remote = githubRemoteOf(trim(await git(dir, ['config', '--get', 'remote.origin.url'])));
+  const git = pinGit(input.git ?? runGit, safety);
+  const gitBytes = pinGit(input.gitBytes ?? runGitBytes, safety);
+  const top = safety.top;
+  const head = trim(await git(top, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'])) || undefined;
+  const branch = trim(await git(top, ['symbolic-ref', '--quiet', '--short', 'HEAD'])) || undefined;
+  const remote = githubRemoteOf(trim(await git(top, ['config', '--get', 'remote.origin.url'])));
   const repo = remote ? `${remote.owner}/${remote.name}`.toLowerCase() : `local:${path.basename(dir)}`;
-  // A checkout the gate refuses is listed (its reason shows) and nothing else of it is read.
-  const uncommitted: CheckoutChanges['uncommitted'] = !safety.ok
-    ? { files: [], additions: 0, deletions: 0, skipped: safety.reason }
-    : await uncommittedLayer(git, gitBytes, dir, safety.top, head);
-  const unread = !safety.ok;
-  const prHeads = (input.prHeads ?? []).filter((p) => !p.repo || p.repo === repo);
-  const committed: CheckoutChanges['committed'] = unread
-    ? { files: [], additions: 0, deletions: 0, commits: [] }
-    : await committedLayer(git, dir, head, branch, prHeads, input.sessionStartedAt);
-  const out: CheckoutChanges = {
+  const uncommitted = await uncommittedLayer(git, gitBytes, top, head);
+  // A PR bounds this checkout when it is this repository's, or its head is (a fork's branch, the PR upstream).
+  const prHeads = (input.prHeads ?? []).filter((p) => !p.repo || p.repo === repo || p.headRepo === repo);
+  const committed = await committedLayer(git, top, head, prHeads, input.sessionStartedAt);
+  const made = input.commits ? await sessionCommits(top, input.commits.since, input.commits.skip, git) : undefined;
+  // Everything above came from the git dirs as checked — or they changed meanwhile, and none of it is kept.
+  if (!(await safety.witness.intact())) return unread(CHANGED_DURING_READ);
+  const out: CheckoutRead = {
     id: checkoutId(dir),
     repo,
     dir: labelOf(dir, input.sessionRoot),
@@ -469,6 +535,7 @@ export async function checkoutChanges(input: CheckoutInput): Promise<CheckoutCha
   };
   if (branch) out.branch = branch;
   if (head) out.head = head;
+  if (made) out.sessionCommits = made;
   return out;
 }
 
@@ -521,20 +588,21 @@ export async function sessionCommits(
       'show',
       '--no-show-signature',
       '--numstat',
+      '-z',
       '--format=',
       '--no-ext-diff',
       '--no-textconv',
       '--no-renames',
+      '--ignore-submodules=all',
       c.sha,
+      '--',
     ]);
     if (stat === undefined) continue;
     let additions = 0;
     let deletions = 0;
-    for (const line of stat.split('\n')) {
-      const m = /^(\d+)\t(\d+)\t/.exec(line);
-      if (!m) continue;
-      additions += Number(m[1]);
-      deletions += Number(m[2]);
+    for (const e of parseNumstatZ(stat)) {
+      additions += e.additions;
+      deletions += e.deletions;
     }
     commits.push({ ...c, additions, deletions });
   }

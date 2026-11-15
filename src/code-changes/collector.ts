@@ -9,16 +9,15 @@
 
 import path from 'node:path';
 import { listCheckoutDirs } from '../session-pr-reconciler';
-import { checkoutChanges, type SessionCommit, sessionCommits, UNREAD_CHECKOUT } from './checkout-changes';
+import { CHANGED_DURING_READ, checkoutChanges, type SessionCommit, UNREAD_CHECKOUT } from './checkout-changes';
 import { type PrDeps, sessionPrChanges } from './pr-changes';
-import type { CodeChangesStore } from './store';
+import { type CodeChangesStore, MAX_COUNTED_COMMITS } from './store';
 import { summarizeCodeChanges } from './summary';
 import type { ChangedFile, CheckoutChanges, CodeChangesDoc, CodeChangesSummary, PrChanges } from './types';
 
 export const MAX_CHECKOUTS = 20;
 /** The patches one document keeps, all layers together; past it the later files keep their counts only. */
 export const MAX_DOC_PATCH_BYTES = 6 * 1024 * 1024;
-const MAX_COUNTED_COMMITS = 2000;
 
 export interface CollectInput {
   conversationId: string;
@@ -36,7 +35,6 @@ export interface CollectDeps extends PrDeps {
   store: CodeChangesStore;
   listCheckoutDirs?: (dirs: string[], max: number) => Promise<{ dirs: string[] }>;
   checkoutChanges?: typeof checkoutChanges;
-  sessionCommits?: typeof sessionCommits;
 }
 
 export interface CollectResult {
@@ -44,59 +42,89 @@ export interface CollectResult {
   summary: CodeChangesSummary;
   /** PRs merged since the stored copy (or every merged PR on a first run). */
   newMerges: PrChanges[];
-  /** Commits made in the session's checkouts that the metrics do not hold yet. */
+  /**
+   * Commits made in the session's checkouts that the metrics do not hold yet. Handed on until the caller marks them
+   * counted (`CodeChangesStore.markCounted`) — a delivery that failed is tried again on the next collect.
+   */
   newCommits: Array<SessionCommit & { repo: string }>;
 }
 
 const hasChanges = (c: CheckoutChanges) =>
-  c.uncommitted.files.length > 0 || c.committed.files.length > 0 || !!c.uncommitted.skipped;
+  c.uncommitted.files.length > 0 || c.committed.files.length > 0 || !!c.uncommitted.skipped || !!c.committed.skipped;
+
+/** Reasons a layer was not read this time though it can be: the last layer read stands, with the reason. */
+const RETRY_LATER = new Set(['git-diff-failed', CHANGED_DURING_READ]);
+
+/**
+ * A checkout read against the stored one: a layer that could not be read this time (git failed, the git dir changed
+ * during the read) keeps what was read last, marked with the reason — a failure is not "no changes".
+ */
+export function keepLastRead(c: CheckoutChanges, old: CheckoutChanges | undefined): CheckoutChanges {
+  if (!old) return c;
+  const u = c.uncommitted.skipped;
+  const k = c.committed.skipped;
+  if (!RETRY_LATER.has(u ?? '') && !RETRY_LATER.has(k ?? '')) return c;
+  // Nothing of a checkout changed during the read is kept, not even its name: the last read stands whole.
+  const base = u === CHANGED_DURING_READ ? old : c;
+  const out: CheckoutChanges = { ...base };
+  if (RETRY_LATER.has(u ?? '')) out.uncommitted = { ...old.uncommitted, skipped: u };
+  if (RETRY_LATER.has(k ?? '')) out.committed = { ...old.committed, skipped: k };
+  return out;
+}
 
 /** Drop patches past the document budget, in layer order (uncommitted, committed, then PRs). */
 export function applyPatchBudget(doc: CodeChangesDoc, max = MAX_DOC_PATCH_BYTES): void {
   let used = 0;
-  const visit = (f: ChangedFile) => {
-    if (!f.patch) return;
+  const visit = (f: ChangedFile): boolean => {
+    if (!f.patch) return true;
     const bytes = Buffer.byteLength(f.patch, 'utf8');
     if (used + bytes > max) {
       delete f.patch;
       f.patchTruncated = true;
-      return;
+      return false;
     }
     used += bytes;
+    return true;
   };
   for (const c of doc.checkouts) c.uncommitted.files.forEach(visit);
   for (const c of doc.checkouts) c.committed.files.forEach(visit);
-  for (const p of doc.prs) p.files.forEach(visit);
+  // A PR whose patches were dropped reads its files again next time — the budget may have room by then.
+  for (const p of doc.prs) if (p.files.map(visit).includes(false)) p.patchesDropped = true;
 }
 
 export async function collectCodeChanges(input: CollectInput, deps: CollectDeps): Promise<CollectResult> {
   const prev = deps.store.read(input.conversationId);
   const prs = await sessionPrChanges(input.prUrls, input.startedAt, prev?.prs ?? [], deps);
-  const prHeads = prs.map((p) => ({ repo: p.repo, headRef: p.headRef, headSha: p.headSha, createdAt: p.createdAt }));
+  const prHeads = prs.map((p) => ({
+    repo: p.repo,
+    headRepo: p.headRepo,
+    headRef: p.headRef,
+    headSha: p.headSha,
+    createdAt: p.createdAt,
+  }));
   const list = deps.listCheckoutDirs ?? listCheckoutDirs;
   const readCheckout = deps.checkoutChanges ?? checkoutChanges;
-  const readCommits = deps.sessionCommits ?? sessionCommits;
   const { dirs } = await list(input.dirs, MAX_CHECKOUTS);
   const counted = new Set(prev?.counted.commits ?? []);
+  const lastRead = new Map((prev?.checkouts ?? []).map((c) => [c.id, c]));
   const checkouts: CheckoutChanges[] = [];
   const newCommits: CollectResult['newCommits'] = [];
   for (const dir of dirs.slice(0, MAX_CHECKOUTS)) {
-    const c = await readCheckout({
+    const read = await readCheckout({
       dir,
       sessionRoot: input.sessionRoot,
       roots: input.dirs,
       sessionStartedAt: input.startedAt,
       prHeads,
+      ...(input.startedAt !== undefined ? { commits: { since: input.startedAt, skip: counted } } : {}),
     });
-    if (!c) continue;
+    if (!read) continue;
+    const { sessionCommits: made, ...changes } = read;
+    const c = keepLastRead(changes, lastRead.get(changes.id));
     if (hasChanges(c)) checkouts.push(c);
-    // A checkout the gate refused is not read for commits either.
-    if (input.startedAt !== undefined && !UNREAD_CHECKOUT.has(c.uncommitted.skipped ?? '')) {
-      for (const commit of await readCommits(dir, input.startedAt, counted)) {
-        counted.add(commit.sha);
-        newCommits.push({ ...commit, repo: c.repo });
-      }
-    }
+    // A checkout not read (refused, or changed during the read) hands on no commits either.
+    if (UNREAD_CHECKOUT.has(read.uncommitted.skipped ?? '')) continue;
+    for (const commit of made ?? []) newCommits.push({ ...commit, repo: c.repo });
   }
   checkouts.sort((a, b) => (a.repo < b.repo ? -1 : a.repo > b.repo ? 1 : a.dir < b.dir ? -1 : 1));
   const doc: CodeChangesDoc = {
@@ -106,6 +134,7 @@ export async function collectCodeChanges(input: CollectInput, deps: CollectDeps)
     updatedAt: deps.now(),
     checkouts,
     prs,
+    // Only what the metrics took: new commits are marked once handed on (CodeChangesStore.markCounted).
     counted: { commits: [...counted].slice(-MAX_COUNTED_COMMITS) },
   };
   if (input.startedAt !== undefined) doc.sessionStartedAt = input.startedAt;

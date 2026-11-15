@@ -139,3 +139,28 @@ export function newFilePatch(content: string): { patch: string; additions: numbe
 export function looksBinary(buf: Buffer): boolean {
   return buf.subarray(0, 8192).includes(0);
 }
+
+const linesOf = (buf: Buffer): string[] => {
+  if (buf.length === 0) return [];
+  const lines = buf.toString('utf8').split(/\r?\n/);
+  if (lines[lines.length - 1] === '') lines.pop();
+  return lines;
+};
+
+/**
+ * Lines added and removed between two texts too large (or too changed) to diff here, counted as multisets: a line
+ * moved within the file counts as unchanged, an edited line as one removed and one added — what a diff would say for
+ * every change but a move.
+ */
+export function lineCounts(before: Buffer, after: Buffer): { additions: number; deletions: number } {
+  const count = new Map<string, number>();
+  for (const l of linesOf(before)) count.set(l, (count.get(l) ?? 0) + 1);
+  for (const l of linesOf(after)) count.set(l, (count.get(l) ?? 0) - 1);
+  let additions = 0;
+  let deletions = 0;
+  for (const n of count.values()) {
+    if (n > 0) deletions += n;
+    else additions -= n;
+  }
+  return { additions, deletions };
+}

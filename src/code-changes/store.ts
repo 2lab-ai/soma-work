@@ -23,9 +23,23 @@ export function isStoreKey(conversationId: unknown): conversationId is string {
   );
 }
 
+/** The commit shas one document remembers as counted (the newest). */
+export const MAX_COUNTED_COMMITS = 2000;
+
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
-const filesOk = (v: unknown) => Array.isArray(v) && v.every((f) => isObj(f) && typeof f.path === 'string');
-const layerOk = (v: unknown) => isObj(v) && filesOk(v.files);
+const isNum = (v: unknown) => typeof v === 'number' && Number.isFinite(v);
+const optStr = (v: unknown) => v === undefined || typeof v === 'string';
+/** Every field a reader uses without a check of its own: a path, the counts, the status, a patch (sized by bytes). */
+const fileOk = (f: unknown) =>
+  isObj(f) &&
+  typeof f.path === 'string' &&
+  typeof f.status === 'string' &&
+  isNum(f.additions) &&
+  isNum(f.deletions) &&
+  optStr(f.patch) &&
+  optStr(f.oldPath);
+const filesOk = (v: unknown) => Array.isArray(v) && v.every(fileOk);
+const layerOk = (v: unknown) => isObj(v) && filesOk(v.files) && isNum(v.additions) && isNum(v.deletions);
 
 /** The shape every reader relies on — a damaged live file falls back to `.bak` instead of breaking reads and collects. */
 function validate(raw: unknown): CodeChangesDoc {
@@ -36,13 +50,33 @@ function validate(raw: unknown): CodeChangesDoc {
     !Array.isArray(d.checkouts) ||
     !Array.isArray(d.prs) ||
     !d.checkouts.every(
-      (c) => isObj(c) && typeof c.repo === 'string' && layerOk(c.uncommitted) && layerOk(c.committed),
+      (c) =>
+        isObj(c) &&
+        typeof c.id === 'string' &&
+        typeof c.repo === 'string' &&
+        typeof c.dir === 'string' &&
+        layerOk(c.uncommitted) &&
+        layerOk(c.committed) &&
+        Array.isArray(c.committed.commits),
     ) ||
-    !d.prs.every((p) => isObj(p) && typeof p.id === 'string' && typeof p.repo === 'string' && filesOk(p.files))
+    !d.prs.every(
+      (p) =>
+        isObj(p) &&
+        typeof p.id === 'string' &&
+        typeof p.url === 'string' &&
+        typeof p.repo === 'string' &&
+        typeof p.state === 'string' &&
+        isNum(p.number) &&
+        isNum(p.additions) &&
+        isNum(p.deletions) &&
+        optStr(p.headSha) &&
+        filesOk(p.files),
+    )
   ) {
     throw new Error('not a code-changes document');
   }
   if (!isObj(d.counted) || !Array.isArray(d.counted.commits)) d.counted = { commits: [] };
+  d.counted.commits = d.counted.commits.filter((c): c is string => typeof c === 'string');
   return d;
 }
 
@@ -66,6 +100,17 @@ export class CodeChangesStore {
   write(doc: CodeChangesDoc): void {
     if (!isStoreKey(doc.conversationId)) return;
     atomicWriteJson(this.file(doc.conversationId), doc);
+  }
+
+  /** The metrics took these commits: later collects do not hand them on again. */
+  markCounted(conversationId: string, shas: string[]): void {
+    if (shas.length === 0) return;
+    const doc = this.read(conversationId);
+    if (!doc) return;
+    const counted = new Set(doc.counted.commits);
+    for (const sha of shas) counted.add(sha);
+    doc.counted = { commits: [...counted].slice(-MAX_COUNTED_COMMITS) };
+    this.write(doc);
   }
 }
 

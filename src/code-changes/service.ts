@@ -36,7 +36,8 @@ export interface CodeChangesServiceDeps<S extends SessionLike> {
   allSessions: () => Iterable<[string, S]>;
   persist: (key: string) => void;
   pushCard: (key: string) => void;
-  onResult?: (key: string, session: S, result: CollectResult) => void;
+  /** The result handed on (metrics). Its new commits are marked counted once it returns without throwing. */
+  onResult?: (key: string, session: S, result: CollectResult) => void | Promise<void>;
   store?: CodeChangesStore;
   collect?: Partial<CollectDeps>;
   scheduler?: SchedulerOptions;
@@ -67,9 +68,20 @@ export function createCodeChangesService<S extends SessionLike>(deps: CodeChange
    */
   const turnDirs = new Map<string, { session: unknown; dir: string }>();
 
+  /** Drops the turn folders of sessions that ended or were replaced: the map lives as long as the daemon. */
+  function sweepTurnDirs(): void {
+    for (const [key, t] of turnDirs) {
+      const live = deps.getSessionByKey(key);
+      if (!live || live !== t.session || live.terminated) turnDirs.delete(key);
+    }
+  }
+
   async function run(key: string): Promise<void> {
     const session = deps.getSessionByKey(key);
-    if (!session || session.terminated || !session.conversationId) return;
+    if (!session || session.terminated || !session.conversationId) {
+      turnDirs.delete(key);
+      return;
+    }
     const turn = turnDirs.get(key);
     const dirs = sessionDirs(
       session as Record<string, unknown>,
@@ -93,19 +105,28 @@ export function createCodeChangesService<S extends SessionLike>(deps: CodeChange
     deps.persist(key);
     deps.pushCard(key);
     try {
-      deps.onResult?.(key, session, result);
+      await deps.onResult?.(key, session, result);
     } catch (error) {
+      // Not marked: the next collect hands these commits on again (their metric rows are written first-wins).
       deps.logger?.debug('code-changes onResult threw', { key, error: (error as Error)?.message });
+      return;
     }
+    store.markCounted(
+      result.doc.conversationId,
+      result.newCommits.map((c) => c.sha),
+    );
   }
 
   const scheduler = createCodeChangesScheduler(run, { logger: deps.logger, ...deps.scheduler });
 
   return {
     scheduler,
+    /** Turn folders held (tests). */
+    turnDirCount: () => turnDirs.size,
     /** Turn end: snapshot soon (fire-and-forget). */
     snapshot(args: { sessionKey: string; session?: unknown; workingDirectory?: string }): void {
       if (!args?.sessionKey) return;
+      sweepTurnDirs();
       if (args.workingDirectory) {
         turnDirs.set(args.sessionKey, {
           session: args.session ?? deps.getSessionByKey(args.sessionKey),

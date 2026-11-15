@@ -123,13 +123,32 @@ describe('code changes API', () => {
     expect(file.statusCode).toBe(403);
   });
 
-  it('the owner reads the list without patches; refresh=1 asks the host first', async () => {
-    const refresher = vi.fn(async () => true);
+  it('the owner reads the list without patches; refresh=1 waits for the host and answers the new snapshot', async () => {
+    const { getCodeChangesStore } = await import('../../code-changes/store');
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    // The host's run writes a newer snapshot, and only then resolves.
+    const refresher = vi.fn(async () => {
+      await gate;
+      getCodeChangesStore().write({ ...JSON.parse(JSON.stringify(DOC)), updatedAt: 424242 });
+      return true;
+    });
     routes.setCodeChangesRefresher(refresher);
-    const res = await get('/api/dashboard/session/conv-1/changes?refresh=1', { cookie: userCookie('U_OWNER') });
+    let answered = false;
+    const pending = get('/api/dashboard/session/conv-1/changes?refresh=1', { cookie: userCookie('U_OWNER') }).then(
+      (r) => {
+        answered = true;
+        return r;
+      },
+    );
+    await new Promise((r) => setTimeout(r, 50));
+    expect(refresher).toHaveBeenCalledWith('conv-1');
+    expect(answered).toBe(false);
+    release();
+    const res = await pending;
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(refresher).toHaveBeenCalledWith('conv-1');
+    expect(body.doc.updatedAt).toBe(424242);
     expect(body.live).toBe(true);
     expect(body.doc.checkouts[0].uncommitted.files[0]).toEqual({
       path: 'src/a.ts',

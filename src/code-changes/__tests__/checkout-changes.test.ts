@@ -6,9 +6,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { checkoutChanges, sessionCommits } from '../checkout-changes';
-import { capPatch, joinDiff, newFilePatch, parseNumstatZ, splitPatch } from '../git-diff-parse';
+import { checkoutChanges, readInside, sessionCommits } from '../checkout-changes';
+import { capPatch, joinDiff, lineCounts, newFilePatch, parseNumstatZ, splitPatch } from '../git-diff-parse';
 import { commandKeys, configSafe, type GitRun, runGit } from '../git-runner';
+import { PathWitness } from '../path-witness';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -211,7 +212,7 @@ describe('checkoutSafety — the doors the #1299 review found', () => {
 });
 
 describe('the check/use race (#1299 review): no defence rests on the gate alone', () => {
-  it('a clean filter installed right after the gate passed never runs — git never reads a working-tree file', async () => {
+  it('a clean filter installed right after the gate passed never runs, and the read it raced is thrown away', async () => {
     const session = tmp('cc-race-');
     const dir = clone(session, 'svc');
     const marker = path.join(session, 'FILTER-RAN');
@@ -233,11 +234,21 @@ describe('the check/use race (#1299 review): no defence rests on the gate alone'
     const c = await checkoutChanges({ dir, sessionRoot: session, git: racing });
     expect(armed).toBe(true);
     expect(fs.existsSync(marker)).toBe(false);
-    // The change is still seen — read by this process, not by git.
+    // The config was rewritten during the read: nothing of it is kept.
+    expect(c!.uncommitted).toMatchObject({ files: [], skipped: 'repo-changed-during-read' });
+    expect(c!.committed).toMatchObject({ files: [], skipped: 'repo-changed-during-read' });
+    expect(c!.repo).toBe('local:svc');
+  });
+
+  it('attributes naming a filter git knows nothing of: the change is read by this process, not by git', async () => {
+    const session = tmp('cc-attr-');
+    const dir = clone(session, 'svc');
+    write(dir, 'src/a.ts', 'changed by the model\n');
+    write(dir, '.gitattributes', '* filter=evil diff=evil\n');
+    const c = await checkoutChanges({ dir, sessionRoot: session });
     expect(c!.uncommitted.files.map((f) => [f.path, f.status])).toEqual([
       ['.gitattributes', 'added'],
       ['src/a.ts', 'modified'],
-      ['src/new.ts', 'added'],
     ]);
     expect(c!.uncommitted.files[1].patch).toContain('+changed by the model');
   });
@@ -468,5 +479,186 @@ describe('sessionCommits — HEAD reflog commits since the session started', () 
     expect(all.find((c) => c.sha === amended)).toMatchObject({ additions: 3, deletions: 0 });
     expect((await sessionCommits(dir, since, new Set([first]))).map((c) => c.sha)).toEqual([amended]);
     expect(await sessionCommits(dir, Date.now() + 60_000, new Set())).toEqual([]);
+  });
+});
+
+describe('the fourth review round (#1299)', () => {
+  it('readInside: a file reached through a linked folder, a second name, or on another platform is not read', async () => {
+    const top = tmp('cc-inside-');
+    const outside = tmp('cc-inside-out-');
+    fs.writeFileSync(path.join(outside, 'a.ts'), 'secret\n');
+    fs.mkdirSync(path.join(top, 'src'));
+    fs.writeFileSync(path.join(top, 'src', 'a.ts'), 'mine\n');
+    expect((await readInside(top, 'src/a.ts', 1024))?.toString()).toBe('mine\n');
+    // A folder on the way swapped for a link: the open itself refuses it (no check before it to race).
+    fs.renameSync(path.join(top, 'src'), path.join(top, 'src.real'));
+    fs.symlinkSync(outside, path.join(top, 'src'));
+    expect(await readInside(top, 'src/a.ts', 1024)).toBeUndefined();
+    // A hard link into the checkout is the outside file under a second name.
+    fs.unlinkSync(path.join(top, 'src'));
+    fs.renameSync(path.join(top, 'src.real'), path.join(top, 'src'));
+    fs.linkSync(path.join(outside, 'a.ts'), path.join(top, 'src', 'b.ts'));
+    expect(await readInside(top, 'src/b.ts', 1024)).toBeUndefined();
+    expect(await readInside(top, '../x', 1024)).toBeUndefined();
+    expect(await readInside(top, 'src/a.ts', 1024, 'win32')).toBeUndefined();
+  });
+
+  it('the git dir swapped for another repository during the read, then put back: nothing read is kept', async () => {
+    const session = tmp('cc-swap-');
+    const elsewhere = tmp('cc-swap-victim-');
+    const dir = clone(session, 'svc');
+    // Another checkout the daemon can read, with a private file at a HEAD of its own.
+    const victim = clone(elsewhere, 'victim');
+    write(victim, 'private/keys.txt', 'TOP-SECRET\n');
+    commitAll(victim, 'private');
+    let swapped = false;
+    let restored = false;
+    const racing: GitRun = async (d, args) => {
+      if (!swapped && args.some((a) => a.startsWith('--git-dir='))) {
+        swapped = true;
+        fs.renameSync(path.join(dir, '.git'), path.join(dir, '.git-real'));
+        fs.symlinkSync(path.join(victim, '.git'), path.join(dir, '.git'));
+      }
+      const out = await runGit(d, args);
+      if (swapped && !restored && args.includes('-g')) {
+        restored = true;
+        fs.unlinkSync(path.join(dir, '.git'));
+        fs.renameSync(path.join(dir, '.git-real'), path.join(dir, '.git'));
+      }
+      return out;
+    };
+    const c = await checkoutChanges({
+      dir,
+      sessionRoot: session,
+      commits: { since: 0, skip: new Set() },
+      git: racing,
+    });
+    expect(swapped && restored).toBe(true);
+    expect(JSON.stringify(c)).not.toContain('TOP-SECRET');
+    expect(JSON.stringify(c)).not.toContain('keys.txt');
+    expect(c).toMatchObject({
+      repo: 'local:svc',
+      uncommitted: { files: [], skipped: 'repo-changed-during-read' },
+      committed: { files: [], skipped: 'repo-changed-during-read' },
+    });
+    expect(c!.sessionCommits).toBeUndefined();
+  });
+
+  it('PathWitness: a folder renamed away and back, or a file rewritten in place, is seen', async () => {
+    const root = tmp('cc-witness-');
+    fs.mkdirSync(path.join(root, 'a', 'b'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'a', 'config'), 'x');
+    const w = new PathWitness();
+    expect(await w.noteChain(root, path.join(root, 'a', 'b'))).toBe(true);
+    expect(await w.note(path.join(root, 'a', 'config'))).toBe('file');
+    expect(await w.intact()).toBe(true);
+    await new Promise((r) => setTimeout(r, 5));
+    fs.renameSync(path.join(root, 'a', 'b'), path.join(root, 'a', 'b2'));
+    fs.renameSync(path.join(root, 'a', 'b2'), path.join(root, 'a', 'b'));
+    expect(await w.intact()).toBe(false);
+    const w2 = new PathWitness();
+    await w2.note(path.join(root, 'a', 'config'));
+    await new Promise((r) => setTimeout(r, 5));
+    fs.writeFileSync(path.join(root, 'a', 'config'), 'y');
+    expect(await w2.intact()).toBe(false);
+    fs.symlinkSync(root, path.join(root, 'link'));
+    expect(await new PathWitness().noteChain(root, path.join(root, 'link'))).toBe(false);
+  });
+
+  it('a tracked file too large for a patch keeps its line counts; a link change tells no target', async () => {
+    const session = tmp('cc-count-');
+    const dir = clone(session, 'svc');
+    const lines = (n: number, tag: string) => Array.from({ length: n }, (_, i) => `${tag}${i}`).join('\n') + '\n';
+    write(dir, 'lock.json', lines(150_000, 'v1-'));
+    fs.symlinkSync('README.md', path.join(dir, 'link'));
+    commitAll(dir, 'big');
+    // Same line count, 10 lines edited, 5 added: larger than the patch source, so no patch — the counts still hold.
+    const next = lines(150_000, 'v1-').split('\n');
+    for (let i = 0; i < 10; i++) next[i * 1000] = `edited${i}`;
+    write(dir, 'lock.json', `${next.join('\n')}${lines(5, 'new-')}`);
+    fs.unlinkSync(path.join(dir, 'link'));
+    fs.symlinkSync('../../somewhere/private', path.join(dir, 'link'));
+    const c = await checkoutChanges({ dir, sessionRoot: session });
+    const lock = c!.uncommitted.files.find((f) => f.path === 'lock.json')!;
+    expect(lock).toMatchObject({ additions: 15, deletions: 10, patchTruncated: true });
+    expect(lock.patch).toBeUndefined();
+    const link = c!.uncommitted.files.find((f) => f.path === 'link')!;
+    expect(link).toMatchObject({ status: 'modified', patchTruncated: true });
+    expect(JSON.stringify(c)).not.toContain('somewhere/private');
+  });
+
+  it('lineCounts: an edit is one removed and one added; a moved line is unchanged; CRLF is LF', () => {
+    const b = (s: string) => Buffer.from(s);
+    expect(lineCounts(b('a\nb\nc\n'), b('a\nB\nc\nd\n'))).toEqual({ additions: 2, deletions: 1 });
+    expect(lineCounts(b('a\nb\n'), b('b\na\n'))).toEqual({ additions: 0, deletions: 0 });
+    expect(lineCounts(b('a\r\nb\r\n'), b('a\nb\n'))).toEqual({ additions: 0, deletions: 0 });
+    expect(lineCounts(b(''), b('x'))).toEqual({ additions: 1, deletions: 0 });
+  });
+
+  it('more tracked changes than the layer keeps is marked truncated', async () => {
+    const session = tmp('cc-many-');
+    const dir = clone(session, 'svc');
+    for (let i = 0; i < 1005; i++) write(dir, `m/${i}.txt`, `${i}\n`);
+    commitAll(dir, 'many');
+    for (let i = 0; i < 1005; i++) write(dir, `m/${i}.txt`, `${i} changed\n`);
+    const c = await checkoutChanges({ dir, sessionRoot: session });
+    expect(c!.uncommitted.files).toHaveLength(1000);
+    expect(c!.uncommitted.truncated).toBe(true);
+  }, 60_000);
+
+  it('a committed diff that fails is marked, not read as "nothing committed"', async () => {
+    const session = tmp('cc-difffail-');
+    const dir = clone(session, 'svc');
+    git(dir, ['checkout', '-q', '-b', 'feat/x']);
+    write(dir, 'one.ts', '1\n');
+    commitAll(dir, 'one');
+    const failing: GitRun = async (d, args) => (args.includes('--numstat') ? undefined : runGit(d, args));
+    const c = await checkoutChanges({ dir, sessionRoot: session, git: failing });
+    expect(c!.committed).toMatchObject({ files: [], skipped: 'git-diff-failed' });
+  });
+
+  it("a fork's PR head bounds the fork's checkout (the PR is upstream's)", async () => {
+    const session = tmp('cc-forkhead-');
+    const dir = clone(session, 'project');
+    git(dir, ['remote', 'set-url', 'origin', 'https://github.com/contributor/project.git']);
+    git(dir, ['checkout', '-q', '-b', 'feat/z']);
+    write(dir, 'one.ts', '1\n');
+    const sha = commitAll(dir, 'in the PR');
+    write(dir, 'two.ts', '2\n');
+    commitAll(dir, 'after the PR');
+    const c = await checkoutChanges({
+      dir,
+      sessionRoot: session,
+      prHeads: [{ repo: 'org/project', headRepo: 'contributor/project', headRef: 'feat/z', headSha: sha }],
+    });
+    expect(c!.committed.base).toBe(sha);
+    expect(c!.committed.files.map((f) => f.path)).toEqual(['two.ts']);
+  });
+
+  it('commandKeys refuses transports and what fetches through them', () => {
+    const listing = [
+      'local\tprotocol.ext.allow',
+      'local\tremote.origin.promisor',
+      'local\tremote.origin.uploadpack',
+      'local\textensions.partialclone',
+      'local\tremote.origin.url',
+    ].join('\n');
+    expect(commandKeys(listing)).toEqual([
+      'protocol.ext.allow',
+      'remote.origin.promisor',
+      'remote.origin.uploadpack',
+      'extensions.partialclone',
+    ]);
+  });
+
+  it('sessionCommits counts a commit whose file name has a tab in it', async () => {
+    const session = tmp('cc-tabname-');
+    const dir = clone(session, 'svc');
+    const since = Date.now() - 1000;
+    write(dir, 'a\tb.txt', '1\n2\n3\n');
+    const sha = commitAll(dir, 'tab');
+    expect(await sessionCommits(dir, since, new Set())).toEqual([
+      expect.objectContaining({ sha, additions: 3, deletions: 0 }),
+    ]);
   });
 });

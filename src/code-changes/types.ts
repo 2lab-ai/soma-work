@@ -53,14 +53,18 @@ export interface CheckoutChanges {
   dir: string;
   branch?: string;
   head?: string;
+  /**
+   * `skipped` says why a layer was not read this time (the repository's config runs commands, git failed, the git dir
+   * changed during the read). A layer read before is kept as it was then, with the reason; else it is empty.
+   */
   uncommitted: LayerFiles & {
-    /** Why the working tree was not read (the repository's config runs commands, git failed). */
     skipped?: string;
   };
   committed: LayerFiles & {
     /** The commit the layer is measured from. */
     base?: string;
     commits: CommitRef[];
+    skipped?: string;
   };
 }
 
@@ -79,6 +83,10 @@ export interface PrChanges {
   changedFiles: number;
   headRef?: string;
   headSha?: string;
+  /** The head's repository (`owner/name`, lower case) when it is not `repo` — a fork's branch. */
+  headRepo?: string;
+  /** The base commit the files were read against: a moved base changes them, the head staying put. */
+  baseSha?: string;
   /** Epoch ms. */
   createdAt?: number;
   /** Epoch ms. */
@@ -87,6 +95,8 @@ export interface PrChanges {
   filesTruncated?: true;
   /** The last files request failed (or stopped part-way): the next collect asks again, whatever the head. */
   filesStale?: true;
+  /** Patches were dropped for the document's size budget: the next collect reads the files again. */
+  patchesDropped?: true;
   fetchedAt: number;
 }
 

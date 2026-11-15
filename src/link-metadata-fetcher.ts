@@ -361,6 +361,9 @@ export interface GitHubPullDetail {
   changed_files?: number;
   head_ref?: string;
   head_sha?: string;
+  /** `owner/name` of the head's repository (a fork's, for a PR from a fork). */
+  head_repo?: string;
+  base_sha?: string;
 }
 
 /** One file of `GET /repos/{o}/{r}/pulls/{n}/files`. */
@@ -419,6 +422,8 @@ export async function fetchGitHubPullDetail(
       changed_files: num(p.changed_files),
       head_ref: str(p.head?.ref),
       head_sha: str(p.head?.sha),
+      head_repo: str(p.head?.repo?.full_name),
+      base_sha: str(p.base?.sha),
     };
     const status =
       detail.merged || detail.merged_at ? 'merged' : detail.draft && p.state !== 'closed' ? 'draft' : p.state;

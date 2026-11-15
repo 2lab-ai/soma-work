@@ -91,8 +91,8 @@ export async function sessionPrChanges(
     seen.add(ref.id);
     if (seen.size > MAX_SESSION_PRS) break;
     const old = prev.find((p) => p.id === ref.id);
-    // A settled PR does not change — unless its files never arrived whole.
-    if (old && (old.state === 'merged' || old.state === 'closed') && !old.filesStale) {
+    // A settled PR does not change — unless its files never arrived whole, or the budget dropped their patches.
+    if (old && (old.state === 'merged' || old.state === 'closed') && !old.filesStale && !old.patchesDropped) {
       out.push(old);
       continue;
     }
@@ -104,8 +104,16 @@ export async function sessionPrChanges(
     const createdAt = time(detail.created_at);
     // Not this session's: a PR it only looked at (created before it started).
     if (startedAt !== undefined && createdAt !== undefined && createdAt < startedAt - PR_START_SLACK_MS) continue;
-    // The stored files are this head's only when they arrived whole; a failed or partial read is asked again.
-    let files = old && !old.filesStale && old.headSha && old.headSha === detail.head_sha ? old.files : undefined;
+    // The stored files are this head's against this base only when they arrived whole and kept their patches; a failed
+    // or partial read, or one the budget cut, is asked again.
+    const reusable =
+      !!old &&
+      !old.filesStale &&
+      !old.patchesDropped &&
+      !!old.headSha &&
+      old.headSha === detail.head_sha &&
+      old.baseSha === detail.base_sha;
+    let files = reusable ? old.files : undefined;
     let filesTruncated = files ? old?.filesTruncated : undefined;
     let filesStale = false;
     if (!files) {
@@ -135,6 +143,9 @@ export async function sessionPrChanges(
     if (detail.title) pr.title = detail.title;
     if (detail.head_ref) pr.headRef = detail.head_ref;
     if (detail.head_sha) pr.headSha = detail.head_sha;
+    if (detail.base_sha) pr.baseSha = detail.base_sha;
+    const headRepo = detail.head_repo?.toLowerCase();
+    if (headRepo && headRepo !== pr.repo) pr.headRepo = headRepo;
     if (createdAt !== undefined) pr.createdAt = createdAt;
     const mergedAt = time(detail.merged_at);
     if (mergedAt !== undefined) pr.mergedAt = mergedAt;
