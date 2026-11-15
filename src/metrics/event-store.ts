@@ -364,6 +364,9 @@ const IMPORT_BATCH = 500;
 const UPSERT_SQL = `INSERT INTO metrics_events (id, ts, day, event_type, json) VALUES (?, ?, ?, ?, ?)
   ON CONFLICT(id) DO UPDATE SET ts = excluded.ts, day = excluded.day,
     event_type = excluded.event_type, json = excluded.json`;
+/** First writer wins, in one statement: a row already there (written by any process) is left as it is. */
+const INSERT_IF_ABSENT_SQL = `INSERT INTO metrics_events (id, ts, day, event_type, json) VALUES (?, ?, ?, ?, ?)
+  ON CONFLICT(id) DO NOTHING`;
 
 /** One open database per metrics dir (shared by every store instance). */
 const dbs = new Map<string, DatabaseSync>();
@@ -409,6 +412,7 @@ function isValidEvent(ev: unknown): ev is MetricsEvent {
 interface Stmts {
   dayOf: ReturnType<DatabaseSync['prepare']>;
   upsert: ReturnType<DatabaseSync['prepare']>;
+  insertIfAbsent: ReturnType<DatabaseSync['prepare']>;
   bump: ReturnType<DatabaseSync['prepare']>;
 }
 const stmtCache = new WeakMap<DatabaseSync, Stmts>();
@@ -419,6 +423,7 @@ function stmts(db: DatabaseSync): Stmts {
     st = {
       dayOf: db.prepare('SELECT day FROM metrics_events WHERE id = ?'),
       upsert: db.prepare(UPSERT_SQL),
+      insertIfAbsent: db.prepare(INSERT_IF_ABSENT_SQL),
       bump: db.prepare(
         'INSERT INTO metrics_day_rev (day, rev) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET rev = rev + 1',
       ),
@@ -434,10 +439,16 @@ function stmts(db: DatabaseSync): Stmts {
  */
 function upsert(db: DatabaseSync, ev: MetricsEvent, day: string, ifAbsent = false): void {
   const st = stmts(db);
+  const eventType = typeof ev.eventType === 'string' ? ev.eventType : null;
+  if (ifAbsent) {
+    // A first-writer-wins event (.prd/26 §5): the row already there keeps its owner, session and time — decided by the
+    // insert itself, not by a look before it (another process can write between the two).
+    const done = st.insertIfAbsent.run(ev.id, ev.timestamp, day, eventType, JSON.stringify(ev)) as { changes: number | bigint };
+    if (Number(done.changes) > 0) st.bump.run(day);
+    return;
+  }
   const prev = st.dayOf.get(ev.id) as { day: string } | undefined;
-  // A first-writer-wins event (.prd/26 §5): the row already there keeps its owner, session and time.
-  if (ifAbsent && prev) return;
-  st.upsert.run(ev.id, ev.timestamp, day, typeof ev.eventType === 'string' ? ev.eventType : null, JSON.stringify(ev));
+  st.upsert.run(ev.id, ev.timestamp, day, eventType, JSON.stringify(ev));
   st.bump.run(day);
   if (prev && prev.day !== day) st.bump.run(prev.day);
 }

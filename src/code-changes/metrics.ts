@@ -18,24 +18,20 @@
  */
 
 import type { MetricsEventEmitter } from '../metrics/event-emitter';
+import type { ConversationSession } from '../types';
 import type { CollectResult } from './collector';
 
-export interface MergeStats {
-  totalLinesAdded: number;
-  totalLinesDeleted: number;
-  mergedPRs: Array<{ prNumber: number; prUrl?: string; linesAdded: number; linesDeleted: number; mergedAt: number }>;
-}
+/** A session's merge total on its card — the session's own type. */
+export type MergeStats = NonNullable<ConversationSession['mergeStats']>;
 
-export interface MergedPr {
-  prNumber: number;
-  prUrl: string;
-  linesAdded: number;
-  linesDeleted: number;
-  mergedAt: number;
-}
+/** A merged PR as the collector records it: always with its URL. */
+export type MergedPr = Omit<MergeStats['mergedPRs'][number], 'prUrl' | 'fromParser'> & { prUrl: string };
 
-/** How a session's `mergeStats` already holds a PR: by its URL (the collector's record), by number only (the old parser's), or not. */
-export type MergeRecord = 'url' | 'legacy' | undefined;
+/**
+ * How a session's `mergeStats` already holds a PR: by its URL (the collector's record), by its URL after it replaced the
+ * old parser's record (`parser` — that parser wrote the merge's row), by number only (the old parser's, `legacy`), or not.
+ */
+export type MergeRecord = 'url' | 'parser' | 'legacy' | undefined;
 
 /**
  * The record of `pr` in a session's `mergeStats`: by URL; else one the old command-output parser wrote (it kept no URL)
@@ -43,34 +39,56 @@ export type MergeRecord = 'url' | 'legacy' | undefined;
  * other repository has a PR with that number.
  */
 export function mergeRecordOf(stats: MergeStats, pr: MergedPr, sessionPrUrls: string[] = []): MergeRecord {
-  if (stats.mergedPRs.some((m) => m.prUrl === pr.prUrl)) return 'url';
+  const byUrl = stats.mergedPRs.find((m) => m.prUrl === pr.prUrl);
+  if (byUrl) return byUrl.fromParser ? 'parser' : 'url';
   const numberOf = (url: string) => Number(/\/pull\/(\d+)/.exec(url)?.[1]);
-  const sameNumber = new Set(sessionPrUrls.filter((u) => numberOf(u) === pr.prNumber));
-  sameNumber.add(pr.prUrl);
-  if (sameNumber.size !== 1) return undefined;
+  const others = sessionPrUrls.some((u) => u !== pr.prUrl && numberOf(u) === pr.prNumber);
+  if (others) return undefined;
   return stats.mergedPRs.some((m) => !m.prUrl && m.prNumber === pr.prNumber) ? 'legacy' : undefined;
 }
 
 /**
  * Put a merged PR in a session's `mergeStats` once, with GitHub's counts: added when it is not there; an old parser's
  * record of it — which may be a view of the PR while it was open, with that day's counts (#1301 review) — is replaced
- * and the totals moved by the difference. True when the stats changed.
+ * (marked `fromParser`) and the totals moved by the difference. True when the stats changed.
  */
 export function addMergedPr(stats: MergeStats, pr: MergedPr, sessionPrUrls: string[] = []): boolean {
   const record = mergeRecordOf(stats, pr, sessionPrUrls);
-  if (record === 'url') return false;
+  if (record === 'url' || record === 'parser') return false;
   if (record === 'legacy') {
     const i = stats.mergedPRs.findIndex((m) => !m.prUrl && m.prNumber === pr.prNumber);
     const old = stats.mergedPRs[i];
     stats.totalLinesAdded += pr.linesAdded - old.linesAdded;
     stats.totalLinesDeleted += pr.linesDeleted - old.linesDeleted;
-    stats.mergedPRs[i] = { ...pr };
+    stats.mergedPRs[i] = { ...pr, fromParser: true };
     return true;
   }
   stats.totalLinesAdded += pr.linesAdded;
   stats.totalLinesDeleted += pr.linesDeleted;
   stats.mergedPRs.push({ ...pr });
   return true;
+}
+
+/**
+ * The card side of the sink for one session — only while the key still names that session: a `/new` during the metric
+ * write must not put the old conversation's PR into the new session's merge total (#1301 review).
+ */
+export function sessionMergeSink(
+  registry: {
+    getSessionByKey(key: string): unknown;
+    mergeRecordByKey(key: string, pr: MergedPr): MergeRecord;
+    recordMergedPrByKey(key: string, pr: MergedPr): boolean;
+  },
+  key: string,
+  session: unknown,
+): Pick<CodeMetricsSink, 'mergeRecord' | 'recordMerge'> {
+  const live = () => registry.getSessionByKey(key) === session;
+  return {
+    mergeRecord: (pr) => (live() ? registry.mergeRecordByKey(key, pr) : undefined),
+    recordMerge: (pr) => {
+      if (live()) registry.recordMergedPrByKey(key, pr);
+    },
+  };
 }
 
 export interface CodeMetricsSink {
@@ -119,8 +137,11 @@ export async function emitCodeMetrics(
         mergedAt: pr.mergedAt ?? Date.now(),
       };
       const record = sink.mergeRecord?.(merged);
-      // The old parser counted this merge itself (it saw the PR merged, before this host took over counting).
-      const theirs = record === 'legacy' && merged.mergedAt < (sink.countingSince ?? Number.POSITIVE_INFINITY);
+      // The old parser counted this merge itself (it saw the PR merged, before this host took over counting) — whether
+      // its record is still there or was already replaced by a run whose batch failed later.
+      const theirs =
+        (record === 'legacy' || record === 'parser') &&
+        merged.mergedAt < (sink.countingSince ?? Number.POSITIVE_INFINITY);
       const write = theirs
         ? Promise.resolve()
         : sink.emitter.emitGitHubEvent(
@@ -134,7 +155,7 @@ export async function emitCodeMetrics(
       track(
         'merge_lines_added',
         write.then(() => {
-          if (record !== 'url') sink.recordMerge?.(merged);
+          if (record === undefined || record === 'legacy') sink.recordMerge?.(merged);
         }),
       );
     } catch (err) {

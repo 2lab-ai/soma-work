@@ -59,7 +59,7 @@ import { isLlmuxUp } from './auth/llmux-client';
 import { setQueryEnvAdditional } from './auth/query-env-builder';
 import { getAllChannels, getChannel, scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
-import { emitCodeMetrics } from './code-changes/metrics';
+import { emitCodeMetrics, sessionMergeSink } from './code-changes/metrics';
 import { createCodeChangesService } from './code-changes/service';
 import { getCodeChangesStore } from './code-changes/store';
 import {
@@ -1754,10 +1754,7 @@ async function start() {
           { userId: session.ownerId ?? '', userName: session.ownerName || 'unknown', sessionKey: key },
           {
             emitter: getMetricsEmitter(),
-            mergeRecord: (pr) => claudeHandler.getSessionRegistry().mergeRecordByKey(key, pr),
-            recordMerge: (pr) => {
-              claudeHandler.getSessionRegistry().recordMergedPrByKey(key, pr);
-            },
+            ...sessionMergeSink(claudeHandler.getSessionRegistry(), key, session),
             countingSince: getCodeChangesStore().countingSince(),
             logger,
           },

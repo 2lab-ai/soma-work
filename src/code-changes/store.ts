@@ -134,14 +134,18 @@ export class CodeChangesStore {
     } catch (error) {
       logger.warn('code-changes counting start unreadable — starting now', { error: (error as Error).message });
     }
-    const t = now();
+    // Fixed at the first attempt for this process, and saved again on each call until it is on disk: a restart after a
+    // failed save would otherwise pick a later start and skip the commits in between for good (#1301 review).
+    this.pendingStart ??= now();
     try {
-      atomicWriteJson(file, t);
+      atomicWriteJson(file, this.pendingStart);
     } catch (error) {
-      logger.warn('code-changes counting start not saved', { error: (error as Error).message });
+      logger.warn('code-changes counting start not saved — will try again', { error: (error as Error).message });
     }
-    return t;
+    return this.pendingStart;
   }
+
+  private pendingStart: number | undefined;
 }
 
 let _store: CodeChangesStore | undefined;
