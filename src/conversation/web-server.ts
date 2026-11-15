@@ -21,6 +21,7 @@ import { registerHookRoutes } from '../hooks';
 import { Logger } from '../logger';
 import { userSettingsStore } from '../user-settings-store';
 import { registerArtifactRoutes } from './artifact-routes';
+import { registerCodeChangesRoutes } from './code-changes-routes';
 import {
   registerDashboardRoutes,
   setSelfInstanceEnv,
@@ -724,6 +725,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   // 받아쓰기 — the server's Whisper (epic #737, #739): after the dashboard routes, which register @fastify/websocket.
   registerDictationRoutes(server, authMiddleware, dictationWhisperFromA2t(getDictationA2tService, dictationA2tError));
   await registerWorkLogRoutes(server, authMiddleware);
+  await registerCodeChangesRoutes(server, authMiddleware);
   await registerArtifactRoutes(server, authMiddleware);
   await registerUserMediaRoutes(server, authMiddleware);
   // Personal settings (SSOT 2026-10-23 T2) — self only, auth + CSRF on writes.

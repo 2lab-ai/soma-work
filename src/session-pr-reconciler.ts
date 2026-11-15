@@ -81,7 +81,15 @@ export interface ReconcileArgs {
 export type SessionPrReconciler = ((args: ReconcileArgs) => void) & {
   /** Resolves when every reconcile in flight has finished (tests, shutdown). */
   idle: () => Promise<void>;
+  /**
+   * Resolves when the session has no reconcile running or waiting (one deferred by the interval included), or after
+   * `maxWaitMs` — what reads the session's PR links after a turn (the code-changes collector) waits for it.
+   */
+  settled: (sessionKey: string, maxWaitMs?: number) => Promise<void>;
 };
+
+/** How long `settled` waits at most: past the interval a deferred run waits, plus the run itself. */
+export const RECONCILE_SETTLE_MAX_MS = 45_000;
 
 const MAX_CLOSING_ISSUES = 5;
 const CLOSING = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+(?:([\w.-]+)\/([\w.-]+))?#(\d+)\b/gi;
@@ -140,6 +148,16 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
   const timers = new Map<string, NodeJS.Timeout>();
   /** `owner/name#branch` → the head sha and PRs of a found answer. */
   const found = new Map<string, { sha: string; pulls: PullSummary[] }>();
+  /** Who waits for a session's reconciles to settle. */
+  const waiters = new Map<string, Array<() => void>>();
+
+  const busy = (sessionKey: string) => inFlight.has(sessionKey) || pending.has(sessionKey) || timers.has(sessionKey);
+  function wake(sessionKey: string): void {
+    if (busy(sessionKey)) return;
+    const list = waiters.get(sessionKey);
+    waiters.delete(sessionKey);
+    for (const w of list ?? []) w();
+  }
 
   async function reconcileOne(sessionKey: string, session: SessionLike, workingDirectory: string): Promise<void> {
     const dirs = sessionDirs(session, workingDirectory);
@@ -201,6 +219,7 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
       const next = pending.get(sessionKey);
       pending.delete(sessionKey);
       if (next) trigger(next);
+      wake(sessionKey);
     }, waitMs);
     t.unref?.();
     timers.set(sessionKey, t);
@@ -228,6 +247,7 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
         // A trigger that came meanwhile runs once, after the interval.
         if (pending.has(sessionKey))
           later(sessionKey, Math.max(0, (lastRun.get(sessionKey) ?? 0) + minInterval - now()));
+        wake(sessionKey);
       });
     inFlight.set(sessionKey, run);
   }
@@ -244,6 +264,20 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
   reconcile.idle = async () => {
     while (inFlight.size > 0) await Promise.all([...inFlight.values()]);
   };
+  reconcile.settled = (sessionKey, maxWaitMs = RECONCILE_SETTLE_MAX_MS) =>
+    new Promise<void>((resolve) => {
+      if (!busy(sessionKey)) return resolve();
+      const timer = setTimeout(done, maxWaitMs);
+      timer.unref?.();
+      function done() {
+        clearTimeout(timer);
+        const list = waiters.get(sessionKey)?.filter((w) => w !== done);
+        if (list?.length) waiters.set(sessionKey, list);
+        else waiters.delete(sessionKey);
+        resolve();
+      }
+      waiters.set(sessionKey, [...(waiters.get(sessionKey) ?? []), done]);
+    });
   return reconcile;
 }
 
@@ -290,17 +324,22 @@ async function isCheckout(dir: string): Promise<boolean> {
 const GITHUB_REMOTE =
   /^(?:https:\/\/(?:[^@/\s]+@)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/;
 
+/** `{ owner, name }` of a raw `remote.origin.url` value on github.com; undefined for anything else. */
+export function githubRemoteOf(url: string | undefined): { owner: string; name: string } | undefined {
+  const m = url?.trim().match(GITHUB_REMOTE);
+  return m ? { owner: m[1], name: m[2] } : undefined;
+}
+
 /**
  * The git checkouts in `dirs`, their immediate children, and the worktrees those repositories list under `dirs`
- * (`.claude/worktrees/…`), whose current branch is a work branch (not main, master, deploy/*, or a detached HEAD) on a
- * GitHub remote. At most `max` directories are read; `complete` says whether every candidate was. `stop` ends the scan
- * at the first checkout it accepts.
+ * (`.claude/worktrees/…`) — any branch, any remote. At most `max` repositories are asked for their worktrees; `complete`
+ * says whether every candidate directory was read (a dir past MAX_CHILDREN, or one that could not be read, is not).
+ * Shared by the PR reconcile (#833) and the code-changes collector (.prd/27 §4).
  */
-export async function scanGitCheckouts(
+export async function listCheckoutDirs(
   dirs: string[],
   max = MAX_CHECKOUTS,
-  stop?: (c: Checkout) => boolean,
-): Promise<{ checkouts: Checkout[]; complete: boolean }> {
+): Promise<{ dirs: string[]; complete: boolean }> {
   const roots = [...new Set(dirs)].map((d) => path.resolve(d));
   const candidates: string[] = [];
   // Whether every directory was read: a dir past MAX_CHILDREN or one that could not be read (not merely absent)
@@ -336,17 +375,29 @@ export async function scanGitCheckouts(
       candidates.push(wt);
     }
   }
-  const unique = [...new Set(candidates)];
+  return { dirs: [...new Set(candidates)], complete: read };
+}
+
+/**
+ * The git checkouts {@link listCheckoutDirs} finds whose current branch is a work branch (not main, master, deploy/*, or
+ * a detached HEAD) on a GitHub remote. At most `max` directories are read; `complete` says whether every candidate was.
+ * `stop` ends the scan at the first checkout it accepts.
+ */
+export async function scanGitCheckouts(
+  dirs: string[],
+  max = MAX_CHECKOUTS,
+  stop?: (c: Checkout) => boolean,
+): Promise<{ checkouts: Checkout[]; complete: boolean }> {
+  const { dirs: unique, complete: read } = await listCheckoutDirs(dirs, max);
   const out: Checkout[] = [];
   for (const dir of unique.slice(0, max)) {
     const branch = await git(dir, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
     if (!branch || /^(?:main|master)$/.test(branch) || branch.startsWith('deploy/')) continue;
-    const remote = await git(dir, ['config', '--get', 'remote.origin.url']);
-    const m = remote?.match(GITHUB_REMOTE);
-    if (!m) continue;
+    const remote = githubRemoteOf(await git(dir, ['config', '--get', 'remote.origin.url']));
+    if (!remote) continue;
     const sha = await git(dir, ['rev-parse', 'HEAD']);
     if (!sha) continue;
-    const c = { dir, owner: m[1], name: m[2], branch, sha };
+    const c = { dir, owner: remote.owner, name: remote.name, branch, sha };
     out.push(c);
     if (stop?.(c)) return { checkouts: out, complete: true };
   }

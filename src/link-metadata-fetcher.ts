@@ -346,6 +346,138 @@ export async function fetchGitHubPullsForHead(
   }
 }
 
+/** A PR as `GET /repos/{o}/{r}/pulls/{n}` describes it — what the code-changes collector reads (.prd/27 §4). */
+export interface GitHubPullDetail {
+  html_url: string;
+  number: number;
+  title?: string;
+  state?: string;
+  draft?: boolean;
+  merged?: boolean;
+  merged_at?: string | null;
+  created_at?: string;
+  additions?: number;
+  deletions?: number;
+  changed_files?: number;
+  head_ref?: string;
+  head_sha?: string;
+  /** `owner/name` of the head's repository (a fork's, for a PR from a fork). */
+  head_repo?: string;
+  base_sha?: string;
+}
+
+/** One file of `GET /repos/{o}/{r}/pulls/{n}/files`. */
+export interface GitHubPullFile {
+  filename: string;
+  previous_filename?: string;
+  status?: string;
+  additions?: number;
+  deletions?: number;
+  changes?: number;
+  patch?: string;
+}
+
+async function githubGet(token: string, url: string): Promise<unknown | undefined> {
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `token ${token}`,
+      Accept: 'application/vnd.github.v3+json',
+      'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
+    },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) return undefined;
+  return response.json();
+}
+
+const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
+
+/** The PR's state, size and head — undefined when the query failed. Also fills the metadata cache (the card's chip). */
+export async function fetchGitHubPullDetail(
+  owner: string,
+  repo: string,
+  number: number,
+): Promise<GitHubPullDetail | undefined> {
+  const token = await getGitHubToken();
+  if (!token) return undefined;
+  try {
+    const p = (await githubGet(
+      token,
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${number}`,
+    )) as Record<string, any> | undefined;
+    if (!p || typeof p.html_url !== 'string' || typeof p.number !== 'number') return undefined;
+    const title = typeof p.title === 'string' ? p.title.slice(0, MAX_CACHED_TITLE_LENGTH) : undefined;
+    const detail: GitHubPullDetail = {
+      html_url: p.html_url,
+      number: p.number,
+      title,
+      state: str(p.state),
+      draft: p.draft === true,
+      merged: p.merged === true,
+      merged_at: str(p.merged_at) ?? null,
+      created_at: str(p.created_at),
+      additions: num(p.additions),
+      deletions: num(p.deletions),
+      changed_files: num(p.changed_files),
+      head_ref: str(p.head?.ref),
+      head_sha: str(p.head?.sha),
+      head_repo: str(p.head?.repo?.full_name),
+      base_sha: str(p.base?.sha),
+    };
+    const status =
+      detail.merged || detail.merged_at ? 'merged' : detail.draft && p.state !== 'closed' ? 'draft' : p.state;
+    metadataCache.set(p.html_url, { title, status, fetchedAt: Date.now() });
+    return detail;
+  } catch (error) {
+    logger.debug('Failed to read a PR', { owner, repo, number, error: (error as Error).message });
+    return undefined;
+  }
+}
+
+/**
+ * The PR's files with their patches, up to `max` (100 per page) — undefined when the first page failed. `truncated` when
+ * fewer files were read than the PR has; `complete` false when that is because a later page failed.
+ */
+export async function fetchGitHubPullFiles(
+  owner: string,
+  repo: string,
+  number: number,
+  max = 300,
+): Promise<{ files: GitHubPullFile[]; truncated: boolean; complete: boolean } | undefined> {
+  const token = await getGitHubToken();
+  if (!token) return undefined;
+  const files: GitHubPullFile[] = [];
+  const pages = Math.max(1, Math.ceil(max / 100));
+  try {
+    for (let page = 1; page <= pages; page++) {
+      const data = await githubGet(
+        token,
+        `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${number}/files?per_page=100&page=${page}`,
+      );
+      if (!Array.isArray(data)) return page === 1 ? undefined : { files, truncated: true, complete: false };
+      for (const f of data) {
+        if (!f || typeof f.filename !== 'string') continue;
+        files.push({
+          filename: f.filename,
+          previous_filename: str(f.previous_filename),
+          status: str(f.status),
+          additions: num(f.additions),
+          deletions: num(f.deletions),
+          changes: num(f.changes),
+          patch: str(f.patch),
+        });
+      }
+      if (data.length < 100) return { files, truncated: false, complete: true };
+    }
+    // More files than `max`: a deliberate cut, not a failure.
+    return { files, truncated: true, complete: true };
+  } catch (error) {
+    logger.debug("Failed to list a PR's files", { owner, repo, number, error: (error as Error).message });
+    return files.length ? { files, truncated: true, complete: false } : undefined;
+  }
+}
+
 /**
  * Fetch Jira issue metadata (title + status) from REST API.
  */

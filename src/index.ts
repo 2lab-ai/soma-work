@@ -59,6 +59,7 @@ import { isLlmuxUp } from './auth/llmux-client';
 import { setQueryEnvAdditional } from './auth/query-env-builder';
 import { getAllChannels, getChannel, scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
+import { createCodeChangesService } from './code-changes/service';
 import {
   config,
   getIncidentTrustedSource,
@@ -114,6 +115,7 @@ import {
   stopWebServer,
 } from './conversation';
 import { getArtifactStore } from './conversation/artifacts';
+import { setCodeChangesRefresher } from './conversation/code-changes-routes';
 import type { NewTaskAttachment } from './conversation/new-task';
 import { createNewTaskProvider, createSlackSteerUploader } from './conversation/new-task-provider';
 import { setProjectRepoSource } from './conversation/project-memory-routes';
@@ -1707,35 +1709,50 @@ async function start() {
     setStreamExecutorProviders(workLogProviders);
     // #833 (epic #831) — turn end: the PRs GitHub says the session's own branches have go on its card, however they
     // were made (REST, the web UI). Recorded by key (Slack sessions and tasks alike), then the card is pushed.
-    setStreamExecutorProviders({
-      reconcileSessionPrs: createSessionPrReconciler({
-        findCheckouts: findGitCheckouts,
-        fetchPulls: fetchGitHubPullsForHead,
-        containsCommit: gitContainsCommit,
-        // Asked only when a new PR would become current: does another session check the same branch out? Read with the
-        // same directories the session's own scan uses; a scan that could not read them all counts as shared.
-        checkedOutElsewhere: async (sessionKey, owner, name, branch) => {
-          const dirs: string[] = [];
-          for (const [key, other] of claudeHandler.getSessionRegistry().getAllSessions()) {
-            if (key === sessionKey || other.terminated) continue;
-            dirs.push(...sessionDirs(other));
-          }
-          const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
-          const match = (c: { owner: string; name: string; branch: string }) =>
-            same(c.owner, owner) && same(c.name, name) && c.branch === branch;
-          const scan = await scanGitCheckouts(dirs, 100, match);
-          return !scan.complete || scan.checkouts.some(match);
-        },
-        noteLinks: (sessionKey, links, mode) =>
-          claudeHandler.getSessionRegistry().noteSessionLinksByKey(sessionKey, links, mode),
-        pushCard: (sessionKey) => scheduleLiveSessionUpdate(sessionKey),
-        isCurrent: (sessionKey, session) => {
-          const live = claudeHandler.getSessionRegistry().getAllSessions().get(sessionKey);
-          return live === session && !live.terminated;
-        },
-        logger,
-      }),
+    const reconcileSessionPrs = createSessionPrReconciler({
+      findCheckouts: findGitCheckouts,
+      fetchPulls: fetchGitHubPullsForHead,
+      containsCommit: gitContainsCommit,
+      // Asked only when a new PR would become current: does another session check the same branch out? Read with the
+      // same directories the session's own scan uses; a scan that could not read them all counts as shared.
+      checkedOutElsewhere: async (sessionKey, owner, name, branch) => {
+        const dirs: string[] = [];
+        for (const [key, other] of claudeHandler.getSessionRegistry().getAllSessions()) {
+          if (key === sessionKey || other.terminated) continue;
+          dirs.push(...sessionDirs(other));
+        }
+        const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+        const match = (c: { owner: string; name: string; branch: string }) =>
+          same(c.owner, owner) && same(c.name, name) && c.branch === branch;
+        const scan = await scanGitCheckouts(dirs, 100, match);
+        return !scan.complete || scan.checkouts.some(match);
+      },
+      noteLinks: (sessionKey, links, mode) =>
+        claudeHandler.getSessionRegistry().noteSessionLinksByKey(sessionKey, links, mode),
+      pushCard: (sessionKey) => scheduleLiveSessionUpdate(sessionKey),
+      isCurrent: (sessionKey, session) => {
+        const live = claudeHandler.getSessionRegistry().getAllSessions().get(sessionKey);
+        return live === session && !live.terminated;
+      },
+      logger,
     });
+    setStreamExecutorProviders({ reconcileSessionPrs });
+    // .prd/26 (epic #1294) — turn end: the session's code changes (its checkouts' uncommitted and committed layers, its
+    // own PRs) → DATA_DIR/code-changes, the summary on the session, the card pushed. The dashboard's 변경점 tab reads it.
+    const codeChanges = createCodeChangesService({
+      getSessionByKey: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+      allSessions: () => claudeHandler.getSessionRegistry().getAllSessions().entries(),
+      persist: (key) => claudeHandler.getSessionRegistry().persistAndBroadcast(key),
+      pushCard: (key) => scheduleLiveSessionUpdate(key),
+      logger,
+    });
+    // After the turn's PR reconcile settles: a PR it finds goes in the PR layer, not the committed one (#1299 review).
+    setStreamExecutorProviders({
+      snapshotCodeChanges: (args) => {
+        void reconcileSessionPrs.settled(args.sessionKey).then(() => codeChanges.snapshot(args));
+      },
+    });
+    setCodeChangesRefresher((conversationId) => codeChanges.refresh(conversationId));
     // SSOT 2026-10-26 T2 — subagents that ended before this process started
     // fire no more events: read the loaded sessions' spend once, in the
     // background, so every card shows its subagents' spend after a restart.

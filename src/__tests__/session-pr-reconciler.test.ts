@@ -241,6 +241,45 @@ describe('createSessionPrReconciler (#833)', () => {
     }
   });
 
+  it('R13 — settled waits for the running and the deferred reconcile of a session, and no longer (#1299 review)', async () => {
+    vi.useFakeTimers();
+    try {
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      const findCheckouts = vi.fn(async () => {
+        await gate;
+        return [checkout()];
+      });
+      const h = harness({ findCheckouts, minIntervalMs: 20_000, now: () => Date.now() });
+      const reconcile = createSessionPrReconciler(h.deps);
+      const go = () =>
+        reconcile({ sessionKey: 'S1', session: { sessionWorkingDir: SESSION_DIR }, workingDirectory: SESSION_DIR });
+      let settled = false;
+      await reconcile.settled('nobody');
+      go();
+      go(); // during the run: deferred past the interval
+      void reconcile.settled('S1').then(() => (settled = true));
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(findCheckouts).toHaveBeenCalledTimes(1);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(findCheckouts).toHaveBeenCalledTimes(2);
+      expect(settled).toBe(true);
+      // A reconcile that never ends: settled gives up after its bound.
+      const stuck = createSessionPrReconciler({ ...h.deps, findCheckouts: () => new Promise(() => {}) });
+      stuck({ sessionKey: 'S2', session: { sessionWorkingDir: SESSION_DIR }, workingDirectory: SESSION_DIR });
+      let gaveUp = false;
+      void stuck.settled('S2', 5_000).then(() => (gaveUp = true));
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(gaveUp).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(gaveUp).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('R7 — one at a time per session, and it never throws', async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
