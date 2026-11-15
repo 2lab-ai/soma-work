@@ -190,8 +190,15 @@ export class MetricsEventEmitter {
     userName: string,
     sessionKey: string,
     metadata: Record<string, unknown>,
+    /**
+     * .prd/26 §5 — a fixed id makes the event idempotent (the store upserts by id: emitting the same merge or commit
+     * twice keeps one row); `timestamp` puts it on the day it happened (a merge seen later counts on its merge day).
+     */
+    opts?: { id?: string; timestamp?: number },
   ): Promise<void> {
     const event = this.buildEvent(eventType, userId, userName, sessionKey, metadata);
+    if (opts?.id) event.id = opts.id;
+    if (typeof opts?.timestamp === 'number' && Number.isFinite(opts.timestamp)) event.timestamp = opts.timestamp;
     await this.emit(event);
   }
 }

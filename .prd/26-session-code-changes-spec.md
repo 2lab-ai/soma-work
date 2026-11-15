@@ -87,7 +87,7 @@ SSOT = [`code-changes/ssot.md`](code-changes/ssot.md) · 아키텍처 = [`27-ses
 - 머지 줄(`merge_lines_added`): 세션이 만든 PR이 머지된 것을 수집기가 처음 볼 때 한 번. 값 = GitHub의 additions · deletions, 시각 = GitHub의 머지 시각, id = PR URL로 정한 값 — 몇 번 다시 보더라도 지표 저장소의 id upsert로 한 줄이다. 세션 카드의 `mergeStats`도 같은 PR을 두 번 더하지 않는다.
 - 커밋 줄(`commit_created` · `code_lines_added`): 세션 시작 뒤 그 체크아웃에서 만든 커밋(HEAD reflog의 `commit` 계열 항목). 값 = 그 커밋의 numstat, 시각 = reflog 시각, id = 커밋 sha로 정한 값.
 - 명령 출력 파싱(`gh pr view` JSON, `git commit` 출력)은 지표를 더 이상 만들지 않는다 — 출처는 수집기 하나.
-- 세션이 쉬는 동안 머지된 PR: 저장된 스냅샷 중 14일 안에 갱신됐고 열린 PR이 있는 것을 10분마다 확인한다.
+- 세션이 쉬는 동안 머지된 PR: 세션 PR 감시(#928, 60초마다 살아 있는 세션의 현재 PR)가 머지를 보면 그 세션을 다시 모은다 — 같은 머지는 고정 id라 한 줄이다. 닫힌(terminated) 세션의 PR이 그 뒤 머지되면 세지 않는다(loop G3).
 
 ## 6. 모델
 

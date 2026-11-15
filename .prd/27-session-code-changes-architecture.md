@@ -34,7 +34,7 @@ stream-executor 턴 끝 (finally)
                                └─► 카드 푸시 (KanbanSession.codeChangesAt) ─► 열린 탭이 다시 읽음
 대시보드  GET /api/dashboard/session/:cid/changes[?refresh=1]      ─► 목록 (패치 없음)
           GET /api/dashboard/session/:cid/changes/file?repo=&path=  ─► 그 파일의 층별 패치
-주기     PR sweeper (10분) — 14일 안의 저장 문서 중 열린 PR만 GitHub 상세로 다시 확인
+PR 감시  session-pr-watch(#928)가 세션 PR의 머지를 보면 snapshotCodeChanges — 쉬는 사이의 머지도 지표에 들어간다
 ```
 
 ## 2. 모듈 배치
@@ -179,9 +179,12 @@ PR — 세션의 PR 링크(현재 + 기록) 중 GitHub URL만, 최대 20. 저장
 
 - `emitGitHubEvent(type, …, metadata, { id, timestamp })` — 선택 인자로 결정적 id · 시각. id: `merge_lines:<PR URL>`, `commit:<sha>`, `commit_lines:<sha>`.
 - `interceptToolResults`의 `git commit` · `gh pr view` 파싱 제거. `pr_created` · `pr_merged`(GitHub 효과)는 그대로.
+- `src/code-changes/metrics.ts` `emitCodeMetrics(result)` — 수집 결과의 새 머지 · 새 커밋만. 세션 카드의 `mergeStats`는 `addMergedPr`로
+  PR URL(옛 파서 기록은 번호)당 한 번. 배선: `createCodeChangesService({ onResult })`(index.ts), PR 감시의 `updateStatus(…, 'merged')` → `snapshot`.
 - 세션 요약 `session.codeChanges` — 영속 필드(세션 저장 · 복원 · 아카이브), `buildSessionResourceSnapshot` → `SessionResourceSnapshot.codeChanges`
   (somalib · process-shared 타입, host-receipt 파서가 보존).
-- 턴 컨텍스트: `getContextInfo`에 `<uncommitted-changes>`(커밋 안 함 · PR 없는 커밋) 한 줄, 레포 ≤ 3, 경로 ≤ 5.
+- 턴 컨텍스트: `getContextInfo`에 `<uncommitted-changes as-of=…>`(커밋 안 함 · PR 없는 커밋이 있을 때만), 레포 ≤ 3, 경로 ≤ 5, 7일 넘은 요약은 안 붙임
+  (`packages/slack/src/pipeline/code-changes-context.ts`). 요약 타입은 somalib `CodeChangesSummary` 하나(src는 그 이름을 다시 내보냄).
 
 ## 8. 작업 단위 · 게이트
 

@@ -44,6 +44,22 @@ describe('readHostReceipt', () => {
     expect(readHostReceipt(file)).toEqual(receipt());
   });
 
+  it('keeps the session’s code changes the host wrote (.prd/26 §6); drops a malformed one', () => {
+    const codeChanges = { updatedAt: 9, layers: {}, repos: [], prs: [] };
+    const file = path.join(dir, 'cc.json');
+    fs.writeFileSync(
+      file,
+      JSON.stringify(receipt({ session: { ...getDefaultSessionSnapshot(), sequence: 4, codeChanges } as never })),
+    );
+    expect(readHostReceipt(file)?.session.codeChanges).toEqual(codeChanges);
+    const bad = path.join(dir, 'cc-bad.json');
+    fs.writeFileSync(
+      bad,
+      JSON.stringify(receipt({ session: { ...getDefaultSessionSnapshot(), sequence: 4, codeChanges: 'x' } as never })),
+    );
+    expect(readHostReceipt(bad)?.session).not.toHaveProperty('codeChanges');
+  });
+
   it('drops malformed acks instead of trusting them (astra R2 P2)', () => {
     const file = path.join(dir, 'acks.json');
     fs.writeFileSync(

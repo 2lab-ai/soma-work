@@ -10,7 +10,19 @@
  * (`ConversationSession.codeChanges`), which the model reads and the board stamps.
  */
 
-export type ChangeLayer = 'uncommitted' | 'committed' | 'pr' | 'merged';
+import type {
+  CodeChangeLayer,
+  CodeChangePrState,
+  CodeChangesSummary,
+  CodeChangeTotals,
+} from 'somalib/model-commands/session-types';
+
+/** The summary type lives with the session snapshot the model reads (somalib); these are its names here. */
+export type ChangeLayer = CodeChangeLayer;
+export type PrState = CodeChangePrState;
+export type LayerTotals = CodeChangeTotals;
+export type { CodeChangesSummary };
+
 export const CHANGE_LAYERS: readonly ChangeLayer[] = ['uncommitted', 'committed', 'pr', 'merged'];
 
 export type ChangedFileStatus = 'added' | 'modified' | 'deleted' | 'renamed';
@@ -70,8 +82,6 @@ export interface CheckoutChanges {
   };
 }
 
-export type PrState = 'open' | 'draft' | 'merged' | 'closed';
-
 export interface PrChanges {
   /** `owner/name#number` (lower-case repo). */
   id: string;
@@ -116,27 +126,4 @@ export interface CodeChangesDoc {
    * handed on (`CodeChangesStore.markCounted`); until then each collect hands them on again.
    */
   counted: { commits: string[]; merges?: string[] };
-}
-
-export interface LayerTotals {
-  files: number;
-  additions: number;
-  deletions: number;
-}
-
-/** What the session keeps and the model reads: counts and a few paths, never a patch. */
-export interface CodeChangesSummary {
-  updatedAt: number;
-  layers: Record<ChangeLayer, LayerTotals>;
-  repos: Array<{
-    repo: string;
-    dir?: string;
-    branch?: string;
-    uncommitted: LayerTotals;
-    committed: LayerTotals & { commits: number };
-    /** The first paths of the uncommitted, then committed, layer (≤ 8). */
-    paths: string[];
-    skipped?: string;
-  }>;
-  prs: Array<Pick<PrChanges, 'url' | 'number' | 'repo' | 'state' | 'additions' | 'deletions' | 'changedFiles'>>;
 }

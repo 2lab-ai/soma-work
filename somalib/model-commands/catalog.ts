@@ -605,6 +605,7 @@ export function normalizeSessionSnapshot(snapshot: SessionResourceSnapshot | und
     },
     instructions: Array.isArray(snapshot.instructions) ? snapshot.instructions : [],
     sequence: Number.isFinite(snapshot.sequence) ? snapshot.sequence : 0,
+    ...(snapshot.codeChanges && typeof snapshot.codeChanges === 'object' ? { codeChanges: snapshot.codeChanges } : {}),
   };
 }
 
@@ -613,8 +614,10 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
     {
       id: 'GET_SESSION',
       description:
-        'Read current session resources (issues/prs/docs + active + instructions + sequence) and the host receipt ' +
-        '(`host`, `hostPending`). After an UPDATE_SESSION pass `waitForAckMs` to wait for the host to handle it.',
+        "Read current session resources (issues/prs/docs + active + instructions + sequence), the session's code " +
+        'changes (`codeChanges`: uncommitted · committed-not-in-a-PR · PR · merged files and lines per repo, as of the ' +
+        'last turn end) and the host receipt (`host`, `hostPending`). After an UPDATE_SESSION pass `waitForAckMs` to ' +
+        'wait for the host to handle it.',
       paramsSchema: {
         type: 'object',
         properties: {

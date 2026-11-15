@@ -185,6 +185,44 @@ export interface SessionInstruction {
   completedAt?: number;
 }
 
+/** A layer of a session's code changes (.prd/26 §3): not committed, committed but in no session PR, an open PR, merged. */
+export type CodeChangeLayer = 'uncommitted' | 'committed' | 'pr' | 'merged';
+export type CodeChangePrState = 'open' | 'draft' | 'merged' | 'closed';
+export interface CodeChangeTotals {
+  files: number;
+  additions: number;
+  deletions: number;
+}
+
+/**
+ * .prd/26 §6 — what the session's code changes come to, as counts and a few paths (never a patch): the session keeps it,
+ * the board stamps it, the model reads it (GET_SESSION `session.codeChanges`, the turn context's uncommitted line).
+ */
+export interface CodeChangesSummary {
+  /** When it was collected (epoch ms) — the last turn end, or a dashboard refresh. */
+  updatedAt: number;
+  layers: Record<CodeChangeLayer, CodeChangeTotals>;
+  repos: Array<{
+    repo: string;
+    dir?: string;
+    branch?: string;
+    uncommitted: CodeChangeTotals;
+    committed: CodeChangeTotals & { commits: number };
+    /** The first paths of the uncommitted, then committed, layer (≤ 8). */
+    paths: string[];
+    skipped?: string;
+  }>;
+  prs: Array<{
+    url: string;
+    number: number;
+    repo: string;
+    state: CodeChangePrState;
+    additions: number;
+    deletions: number;
+    changedFiles: number;
+  }>;
+}
+
 export interface SessionResourceSnapshot {
   issues: SessionLink[];
   prs: SessionLink[];
@@ -192,6 +230,8 @@ export interface SessionResourceSnapshot {
   active: SessionLinks;
   instructions: SessionInstruction[];
   sequence: number;
+  /** .prd/26 — the session's code changes as of its last collect; absent before the first one. Read-only. */
+  codeChanges?: CodeChangesSummary;
 }
 
 export interface SessionResourceAddOperation {

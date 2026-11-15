@@ -37,6 +37,7 @@ import {
   withAck,
 } from 'somalib/model-commands/host-receipt';
 import { parseUserActionRecord, restoreUserActions } from 'somalib/user-action/user-action';
+import { addMergedPr } from './code-changes/metrics';
 import { sanitizeCodeChangesSummary } from './code-changes/summary';
 import { DATA_DIR } from './env-paths';
 import { isPlaceholderSessionTitle, sanitizeSessionTitle } from './format/display-title';
@@ -375,6 +376,8 @@ interface SerializedSession {
     totalLinesDeleted: number;
     mergedPRs: Array<{
       prNumber: number;
+      /** The PR's URL (since .prd/26): a record without one was written by the old command-output parser. */
+      prUrl?: string;
       linesAdded: number;
       linesDeleted: number;
       mergedAt: number;
@@ -2345,39 +2348,19 @@ export class SessionRegistry {
   }
 
   /**
-   * Record merge code change stats (lines added/deleted) for a merged PR in this session.
+   * .prd/26 §5 — a merged PR of this session, once: its lines go into `mergeStats` unless a record of the same PR is
+   * already there (by URL, or by number for a record written before URLs were kept). True when it was added.
    */
-  addMergeStats(
-    channelId: string,
-    threadTs: string | undefined,
-    prNumber: number,
-    linesAdded: number,
-    linesDeleted: number,
-  ): void {
-    this.addMergeStatsOn(this.getSession(channelId, threadTs), prNumber, linesAdded, linesDeleted);
-  }
-
-  private addMergeStatsOn(
-    session: ConversationSession | undefined,
-    prNumber: number,
-    linesAdded: number,
-    linesDeleted: number,
-  ): void {
-    if (!session) return;
-
-    if (!session.mergeStats) {
-      session.mergeStats = { totalLinesAdded: 0, totalLinesDeleted: 0, mergedPRs: [] };
-    }
-
-    session.mergeStats.totalLinesAdded += linesAdded;
-    session.mergeStats.totalLinesDeleted += linesDeleted;
-    session.mergeStats.mergedPRs.push({
-      prNumber,
-      linesAdded,
-      linesDeleted,
-      mergedAt: Date.now(),
-    });
+  recordMergedPrByKey(
+    sessionKey: string,
+    pr: { prNumber: number; prUrl: string; linesAdded: number; linesDeleted: number; mergedAt: number },
+  ): boolean {
+    const session = this.getSessionByKey(sessionKey);
+    if (!session) return false;
+    session.mergeStats ??= { totalLinesAdded: 0, totalLinesDeleted: 0, mergedPRs: [] };
+    if (!addMergedPr(session.mergeStats, pr)) return false;
     this.saveSessions();
+    return true;
   }
 
   /**
@@ -2813,6 +2796,7 @@ export class SessionRegistry {
       },
       instructions: (session.instructions || []).map((i) => ({ ...i })),
       sequence: session.linkSequence ?? 0,
+      ...(session.codeChanges ? { codeChanges: structuredClone(session.codeChanges) } : {}),
     };
   }
 

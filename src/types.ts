@@ -831,6 +831,8 @@ export interface ConversationSession {
     totalLinesDeleted: number;
     mergedPRs: Array<{
       prNumber: number;
+      /** The PR's URL (since .prd/26): a record without one was written by the old command-output parser. */
+      prUrl?: string;
       linesAdded: number;
       linesDeleted: number;
       mergedAt: number; // Unix ms
