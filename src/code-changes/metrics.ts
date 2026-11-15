@@ -58,13 +58,26 @@ export interface CodeMetricsSink {
   logger?: { error: (msg: string, err?: unknown) => void };
 }
 
-/** Emit the metrics a collect found new (fire-and-forget; never throws). */
-export function emitCodeMetrics(
+/**
+ * Emit the metrics a collect found new. Merges are fire-and-forget. The promise settles once every commit row was
+ * written, and rejects when one was not: the caller marks the commits counted only after it resolves, so a commit
+ * whose row failed is handed on again next time (its rows are written first-wins, so a second write adds nothing).
+ */
+export async function emitCodeMetrics(
   result: Pick<CollectResult, 'newMerges' | 'newCommits'>,
   who: { userId: string; userName: string; sessionKey: string },
   sink: CodeMetricsSink,
-): void {
+): Promise<void> {
   const fail = (what: string) => (err: unknown) => sink.logger?.error(`Failed to emit ${what}`, err);
+  const commitWrites: Array<Promise<unknown>> = [];
+  let commitFailed = false;
+  const track = (what: string, write: Promise<unknown>) =>
+    commitWrites.push(
+      write.catch((err) => {
+        commitFailed = true;
+        fail(what)(err);
+      }),
+    );
   for (const pr of result.newMerges) {
     try {
       const mergedAt = pr.mergedAt ?? Date.now();
@@ -94,27 +107,32 @@ export function emitCodeMetrics(
   for (const c of result.newCommits) {
     try {
       const meta = { commitSha: c.sha, repo: c.repo, linesAdded: c.additions, linesDeleted: c.deletions };
-      sink.emitter
-        .emitGitHubEvent('commit_created', who.userId, who.userName, who.sessionKey, meta, {
+      track(
+        'commit_created',
+        sink.emitter.emitGitHubEvent('commit_created', who.userId, who.userName, who.sessionKey, meta, {
           id: `commit:${c.sha}`,
           timestamp: c.at,
           ifAbsent: true,
-        })
-        .catch(fail('commit_created'));
+        }),
+      );
       if (c.additions > 0 || c.deletions > 0) {
-        sink.emitter
-          .emitGitHubEvent(
+        track(
+          'code_lines_added',
+          sink.emitter.emitGitHubEvent(
             'code_lines_added',
             who.userId,
             who.userName,
             who.sessionKey,
             { linesAdded: c.additions, linesDeleted: c.deletions, commitSha: c.sha },
             { id: `commit_lines:${c.sha}`, timestamp: c.at, ifAbsent: true },
-          )
-          .catch(fail('code_lines_added'));
+          ),
+        );
       }
     } catch (err) {
+      commitFailed = true;
       fail('commit_created')(err);
     }
   }
+  await Promise.all(commitWrites);
+  if (commitFailed) throw new Error('a commit metric was not written');
 }

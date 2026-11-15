@@ -311,7 +311,7 @@ describe('the counting start (#1301 review)', () => {
     const s = store();
     expect(s.countingSince(() => 111)).toBe(111);
     expect(s.countingSince(() => 999)).toBe(111);
-    const readCommits = vi.fn(async () => []);
+    const readCheckout = vi.fn(async () => checkout());
     await collectCodeChanges(
       {
         conversationId: 'c9',
@@ -325,11 +325,12 @@ describe('the counting start (#1301 review)', () => {
         ...prDeps({}),
         store: s,
         listCheckoutDirs: async () => ({ dirs: ['/s/web'] }),
-        checkoutChanges: async () => checkout(),
-        sessionCommits: readCommits,
+        checkoutChanges: readCheckout,
       },
     );
-    expect(readCommits).toHaveBeenCalledWith('/s/web', 111, expect.any(Set));
+    expect(readCheckout).toHaveBeenCalledWith(
+      expect.objectContaining({ dir: '/s/web', commits: { since: 111, skip: expect.any(Set) } }),
+    );
   });
 });
 

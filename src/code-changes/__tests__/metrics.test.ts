@@ -42,6 +42,30 @@ function sink() {
 }
 
 describe('emitCodeMetrics', () => {
+  it('rejects when a commit row was not written (the commits are handed on again); a failed merge row does not', async () => {
+    const sha = 'd'.repeat(40);
+    const commit = { sha, at: 5000, additions: 1, deletions: 0, repo: 'acme/web' };
+    const who = { userId: 'U1', userName: 'z', sessionKey: 'k' };
+    const failing = {
+      emitGitHubEvent: vi.fn(async (type: string) => {
+        if (type !== 'merge_lines_added') throw new Error('disk full');
+      }),
+    };
+    await expect(emitCodeMetrics({ newMerges: [], newCommits: [commit] }, who, { emitter: failing })).rejects.toThrow(
+      'a commit metric was not written',
+    );
+    const mergeFails = {
+      emitGitHubEvent: vi.fn(async (type: string) => {
+        if (type === 'merge_lines_added') throw new Error('disk full');
+      }),
+    };
+    await expect(
+      emitCodeMetrics({ newMerges: [PR], newCommits: [commit] }, who, { emitter: mergeFails }),
+    ).resolves.toBeUndefined();
+    const { emitter } = sink();
+    await expect(emitCodeMetrics({ newMerges: [], newCommits: [commit] }, who, { emitter })).resolves.toBeUndefined();
+  });
+
   it('a merged PR: merge_lines_added with GitHub’s counts, on its merge day, id from its URL; the card total once', () => {
     const { calls, emitter } = sink();
     const recordMerge = vi.fn(() => true);
