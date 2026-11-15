@@ -280,6 +280,85 @@ describe('the check/use race (#1299 review): no defence rests on the gate alone'
   });
 });
 
+describe('the third review round (#1299)', () => {
+  it('a symlink inside the git dir (objects or refs pointed elsewhere) refuses the checkout', async () => {
+    const session = tmp('cc-gitlink-');
+    const elsewhere = tmp('cc-gitlink-other-');
+    const victim = clone(elsewhere, 'victim');
+    const dir = clone(session, 'svc');
+    fs.symlinkSync(path.join(victim, '.git', 'refs', 'heads'), path.join(dir, '.git', 'refs', 'stolen'));
+    const c = await checkoutChanges({ dir, sessionRoot: session });
+    expect(c?.uncommitted.skipped).toBe('repo-links-outside');
+    expect(c?.committed.files).toEqual([]);
+  });
+
+  it('a FIFO in the working tree does not hang the collect', async () => {
+    const session = tmp('cc-fifo-');
+    const dir = clone(session, 'svc');
+    execFileSync('mkfifo', [path.join(dir, 'pipe')]);
+    write(dir, 'real.txt', 'r\n');
+    const c = await checkoutChanges({ dir, sessionRoot: session });
+    expect(c!.uncommitted.files.map((f) => f.path)).toEqual(['real.txt']);
+  }, 15_000);
+
+  it('a pre-session commit merged in from a side line never replaces the session PR head as the base', async () => {
+    const session = tmp('cc-cutoff-');
+    const dir = clone(session, 'api');
+    const old = new Date(Date.now() - 2 * 3600_000).toISOString();
+    git(dir, ['checkout', '-q', '-b', 'side']);
+    write(dir, 'side.ts', 'old side work\n');
+    commitAll(dir, 'side, before the session', { GIT_COMMITTER_DATE: old, GIT_AUTHOR_DATE: old });
+    git(dir, ['checkout', '-q', 'main']);
+    git(dir, ['checkout', '-q', '-b', 'feat/pr']);
+    write(dir, 'pr.ts', 'in the PR\n');
+    const prHead = commitAll(dir, 'the PR');
+    git(dir, ['merge', '-q', '--no-edit', 'side']);
+    const c = await checkoutChanges({
+      dir,
+      sessionRoot: session,
+      sessionStartedAt: Date.now() - 3600_000,
+      prHeads: [{ headRef: 'feat/pr', headSha: prHead, createdAt: Date.now() }],
+    });
+    expect(c!.committed.base).toBe(prHead);
+    expect(c!.committed.files.map((f) => f.path)).toEqual(['side.ts']);
+  });
+
+  it('diff.noprefix in the repository does not lose the committed patches', async () => {
+    const session = tmp('cc-noprefix-');
+    const dir = clone(session, 'svc');
+    git(dir, ['config', 'diff.noprefix', 'true']);
+    git(dir, ['checkout', '-q', '-b', 'feat/n']);
+    write(dir, 'src/a.ts', 'one\nTWO\nthree\n');
+    commitAll(dir, 'edit');
+    const c = await checkoutChanges({ dir, sessionRoot: session });
+    expect(c!.committed.files[0]).toMatchObject({ path: 'src/a.ts', status: 'modified' });
+    expect(c!.committed.files[0].patch).toContain('+TWO');
+  });
+
+  it('staged-only changes (working tree equal to the index) are in the uncommitted layer', async () => {
+    const session = tmp('cc-staged-');
+    const dir = clone(session, 'svc');
+    write(dir, 'src/a.ts', 'one\nstaged\nthree\n');
+    git(dir, ['add', 'src/a.ts']);
+    git(dir, ['rm', '-q', 'README.md']);
+    const c = await checkoutChanges({ dir, sessionRoot: session });
+    expect(c!.uncommitted.files.map((f) => [f.path, f.status, f.additions, f.deletions])).toEqual([
+      ['README.md', 'deleted', 0, 1],
+      ['src/a.ts', 'modified', 1, 1],
+    ]);
+  });
+
+  it('a large new file keeps its line count when its patch is not kept', async () => {
+    const session = tmp('cc-lock-');
+    const dir = clone(session, 'svc');
+    write(dir, 'package-lock.json', 'x'.repeat(39) + '\n'.repeat(1) + 'y\n'.repeat(150_000));
+    const c = await checkoutChanges({ dir, sessionRoot: session });
+    const f = c!.uncommitted.files.find((x) => x.path === 'package-lock.json')!;
+    expect(f).toMatchObject({ additions: 150_001, patchTruncated: true });
+    expect(f.patch).toBeUndefined();
+  });
+});
+
 describe('checkoutChanges — the two local layers', () => {
   it('A1 — uncommitted: modified + new file (no symlink); committed: the branch commit past origin/main', async () => {
     const session = tmp('cc-a1-');

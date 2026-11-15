@@ -90,7 +90,7 @@ worktree. 브랜치 · 원격 조건 없이 전부(재조정기는 여기에 자
 1. base 후보 — 이 체크아웃 브랜치를 head로 하는 세션 PR의 head sha가 HEAD의 조상이면 그것(여럿이면 가장 최근).
 2. 아니면 `refs/remotes/origin/HEAD` → `origin/main` → `origin/master` 중 처음 있는 것과의 `merge-base`.
 3. 원격 참조가 없으면 `rev-list --since=<세션 시작> HEAD`의 가장 오래된 커밋의 부모(루트면 빈 트리).
-4. base..HEAD 안에서 세션 시작 전에 만든 커밋이 있으면 base를 그 가장 최근 것으로 올린다 — 세션 전 브랜치 작업은 세지 않는다.
+4. 기준점이 세션 PR head가 아니면, base..HEAD의 첫 부모 줄에서 세션 시작 전에 만든 가장 최근 커밋(base의 자손)으로 base를 올린다 — 세션 전 브랜치 작업은 세지 않고, 옆 줄에서 merge로 들어온 옛 커밋이 기준점이 되지 않는다.
 5. `git log base..HEAD -n 50`(커밋 목록) + `git diff base HEAD -M`(numstat · 패치).
 
 새 커밋(통계) — `git log -g --date=unix --format=%H%x1f%gs%x1f%gd HEAD -n 300`에서 reflog 시각이 세션 시작 이후이고 제목이
@@ -116,12 +116,12 @@ PR — 세션의 PR 링크(현재 + 기록) 중 GitHub URL만, 최대 20. 저장
   게이트가 확인한 git dir · 작업 트리는 이후 모든 호출에 `--git-dir` · `--work-tree`로 고정한다(`.git` 파일을 나중에 바꿔도 따라가지 않음).
 - **체크아웃 게이트**(`checkoutSafety`, 체크아웃마다 맨 먼저 — 통과 전에는 rev-parse 하나만 돈다):
   1. 작업 트리 · git dir · common dir의 실경로가 세션 폴더(`sessionDirs`) 안 — 아니면 이 세션의 체크아웃이 아니다(목록에도 없음). `.git` 파일이 다른 저장소를 가리키거나 `core.worktree`가 밖을 가리키는 경우.
-  2. `objects/info/alternates`가 비어 있음 — 다른 객체 저장소를 빌려 쓰면 그 내용이 diff로 나온다. 아니면 `skipped: 'repo-alternates'`.
+  2. `objects/info/alternates`가 없거나 빈 일반 파일이고(lstat만 — FIFO도 읽지 않는다), git dir · common dir 안에 심볼릭 링크가 하나도 없음(objects · refs · index · logs를 다른 저장소로 돌리는 길, 10만 항목까지 lstat). 아니면 `skipped: 'repo-alternates'` · `'repo-links-outside'`.
   3. `git config --list --name-only --show-scope`(우리 `-c`의 command 범위 제외 = 저장소 · worktree · include)에 `filter.*`, `*.textconv`,
      `*.command`, `*.process`, `gpg.*`, `log.showSignature`, `core.worktree`, `pager.*`, `core.fsmonitor`, `core.sshCommand`,
      `core.pager`, `core.askPass`, `diff.external`가 없음 — 아니면 `skipped: 'repo-config-runs-commands'`.
   2 · 3에 걸리면 두 층도 새 커밋(지표)도 읽지 않는다 — 체크아웃은 사유와 함께 목록에만 남는다.
-- 새 파일 · 추적 파일: 일반 파일만, 심볼릭 링크 따라가지 않음, 실경로가 체크아웃 안일 때만.
+- 새 파일 · 추적 파일: `O_NOFOLLOW | O_NONBLOCK`으로 열고 연 핸들에서 일반 파일 · 크기를 확인한 뒤에만 읽는다(lstat 뒤 FIFO로 바꿔도 멈추지 않음), 실경로가 체크아웃 안일 때만. diff 접두사는 `--src-prefix=a/ --dst-prefix=b/`로 고정(`diff.noprefix` 저장소에서도 패치가 맞음).
 - 남는 위험: 경로 구성 요소를 심볼릭 링크로 바꿔치는 경쟁(검사 뒤 · git 호출 전)은 막지 못한다 — 실경로 확인과 고정 경로로 창을 좁힐 뿐이다. 세션 샌드박스가 다른 유저 폴더 읽기를 OS 수준에서 막지 않는 기존 공백(#732)과 같은 종류다.
 - 시간 · 크기: 호출마다 10 s, 출력 16 MiB.
 

@@ -4,6 +4,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { constants as fsConstants } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { lineDiff } from '../conversation/artifact-diff';
@@ -26,10 +27,15 @@ export const MAX_LAYER_FILES = 1000;
 const MAX_UNTRACKED_PATCHES = 200;
 const MAX_COMMITS_LISTED = 50;
 const MAX_PR_HEADS = 20;
-const DIFF_FLAGS = ['-M', '--no-color', '--no-ext-diff', '--no-textconv'];
+const DIFF_FLAGS = ['-M', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/'];
 const SHA = /^[0-9a-f]{40,64}$/;
 /** The checkout is this session's but is not read at all: its config runs commands, or it borrows another object store. */
-export const UNREAD_CHECKOUT = new Set(['repo-config-runs-commands', 'git-config-unreadable', 'repo-alternates']);
+export const UNREAD_CHECKOUT = new Set([
+  'repo-config-runs-commands',
+  'git-config-unreadable',
+  'repo-alternates',
+  'repo-links-outside',
+]);
 
 export interface PrHead {
   /** `owner/name` (lower case): a head of another repository never bounds this checkout. */
@@ -165,9 +171,37 @@ function textChange(
   return file;
 }
 
+/**
+ * A working-tree file's bytes, only if it is (still) a regular file of at most `max` bytes: opened without following a
+ * final symlink and without blocking (a FIFO swapped in after the lstat cannot hang the collect), checked on the open
+ * handle (#1299 review).
+ */
+export async function readRegular(abs: string, max: number): Promise<Buffer | undefined> {
+  let fh: import('node:fs/promises').FileHandle | undefined;
+  try {
+    fh = await fs.open(abs, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW);
+    const st = await fh.stat();
+    if (!st.isFile() || st.size > max) return undefined;
+    const buf = Buffer.alloc(st.size);
+    const { bytesRead } = await fh.read(buf, 0, st.size, 0);
+    return buf.subarray(0, bytesRead);
+  } catch {
+    return undefined;
+  } finally {
+    await fh?.close().catch(() => {});
+  }
+}
+
+const countLines = (buf: Buffer) => {
+  if (buf.length === 0) return 0;
+  let n = 0;
+  for (let i = buf.indexOf(10); i !== -1; i = buf.indexOf(10, i + 1)) n++;
+  return buf[buf.length - 1] === 10 ? n : n + 1;
+};
+
 async function readSmall(abs: string, size: number): Promise<Buffer | undefined> {
   if (size > MAX_PATCH_SOURCE) return undefined;
-  return fs.readFile(abs).catch(() => undefined);
+  return readRegular(abs, MAX_PATCH_SOURCE);
 }
 
 /** One HEAD entry against the working tree: undefined when unchanged (or not safely readable). */
@@ -209,7 +243,7 @@ async function trackedChange(
     return undefined;
   if (st.size === e.size) {
     if (st.size > MAX_HASH_BYTES) return undefined;
-    const bytes = await fs.readFile(abs).catch(() => undefined);
+    const bytes = await readRegular(abs, MAX_HASH_BYTES);
     if (!bytes) return undefined;
     if (blobId(bytes, format) === e.sha) {
       if (sameAsHead.size > MAX_STAT_CACHE) sameAsHead.clear();
@@ -233,18 +267,22 @@ async function newFile(
   // Never through a symlink: its target can be any file the daemon can read.
   if (!st?.isFile() || !(await contained(realTop, abs))) return undefined;
   const file: ChangedFile = { path: rel, status: 'added', additions: 0, deletions: 0 };
-  if (st.size > MAX_PATCH_BYTES || !withPatch) {
-    if (st.size > MAX_PATCH_BYTES) file.patchTruncated = true;
+  // Its lines count whether or not its patch is kept (a large lockfile is still +N lines).
+  const buf = await readRegular(abs, MAX_HASH_BYTES);
+  if (!buf) {
+    file.patchTruncated = true;
     return file;
   }
-  const buf = await fs.readFile(abs).catch(() => undefined);
-  if (!buf) return file;
   if (looksBinary(buf)) {
     file.binary = true;
     return file;
   }
-  const { patch, additions } = newFilePatch(buf.toString('utf8'));
-  file.additions = additions;
+  file.additions = countLines(buf);
+  if (buf.length > MAX_PATCH_BYTES || !withPatch) {
+    file.patchTruncated = true;
+    return file;
+  }
+  const { patch } = newFilePatch(buf.toString('utf8'));
   if (patch) {
     const capped = capPatch(patch);
     file.patch = capped.patch;
@@ -328,6 +366,7 @@ export async function committedBase(
       base = sha;
     }
   }
+  const fromPr = base !== undefined;
   if (!base) {
     for (const ref of ['refs/remotes/origin/HEAD', 'refs/remotes/origin/main', 'refs/remotes/origin/master']) {
       const sha = trim(await git(dir, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]));
@@ -345,10 +384,13 @@ export async function committedBase(
     const oldest = shas[shas.length - 1];
     base = trim(await git(dir, ['rev-parse', '--verify', '--quiet', `${oldest}^`])) || EMPTY_TREE;
   }
-  if (since !== undefined && base !== head) {
+  // Only for a base that is not a session PR head (that one is the session's own baseline), and only along the base's
+  // own line: a pre-session commit merged in from elsewhere (a second parent) never becomes the base (#1299 review).
+  if (since !== undefined && base !== head && !fromPr) {
     const range = base === EMPTY_TREE ? [head] : [`${base}..${head}`];
-    const before = trim(await git(dir, ['rev-list', `--before=${since}`, '--max-count=1', ...range]));
-    if (before && SHA.test(before) && (await isAncestor(git, dir, before, head))) base = before;
+    const before = trim(await git(dir, ['rev-list', '--first-parent', `--before=${since}`, '--max-count=1', ...range]));
+    const onLine = base === EMPTY_TREE || (!!before && (await isAncestor(git, dir, base, before)));
+    if (before && SHA.test(before) && onLine && (await isAncestor(git, dir, before, head))) base = before;
   }
   return base;
 }

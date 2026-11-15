@@ -211,8 +211,29 @@ describe('collectCodeChanges', () => {
       conversationId: 'c',
       owner: { id: 'U', name: 'u' },
       updatedAt: 1,
-      checkouts: [checkout()],
+      checkouts: [
+        checkout({
+          committed: {
+            files: [{ path: 'src/a.ts', status: 'modified', additions: 3, deletions: 0, patch: '@@ c' }],
+            additions: 3,
+            deletions: 0,
+            commits: [],
+          },
+        }),
+      ],
       prs: [
+        {
+          id: 'acme/web#2',
+          url: 'https://github.com/acme/web/pull/2',
+          repo: 'acme/web',
+          number: 2,
+          state: 'open',
+          additions: 4,
+          deletions: 0,
+          changedFiles: 1,
+          files: [{ path: 'src/a.ts', status: 'modified', additions: 4, deletions: 0, patch: '@@ p' }],
+          fetchedAt: 1,
+        },
         {
           id: 'acme/web#1',
           url: 'https://github.com/acme/web/pull/1',
@@ -232,9 +253,11 @@ describe('collectCodeChanges', () => {
     expect(JSON.stringify(lv)).not.toContain('"patch"');
     expect(lv.counted.commits).toEqual([]);
     expect(doc.checkouts[0].uncommitted.files[0].patch).toBeDefined();
-    expect(fileSources(doc, 'acme/web', 'src/a.ts').map((x) => [x.layer, x.label])).toEqual([
-      ['uncommitted', 'web'],
-      ['merged', '#1'],
+    expect(fileSources(doc, 'acme/web', 'src/a.ts').map((x) => [x.layer, x.label, x.prNumber, x.file.patch])).toEqual([
+      ['uncommitted', 'web', undefined, '@@ -1 +1 @@\n-x\n+y'],
+      ['committed', 'web', undefined, '@@ c'],
+      ['pr', '#2', 2, '@@ p'],
+      ['merged', '#1', 1, '@@'],
     ]);
     expect(fileSources(doc, 'acme/other', 'src/a.ts')).toEqual([]);
   });

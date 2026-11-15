@@ -52,6 +52,12 @@ const SAFE_FLAGS = [
   '-c',
   'log.showSignature=false',
   '-c',
+  'diff.noprefix=false',
+  '-c',
+  'diff.mnemonicPrefix=false',
+  '-c',
+  'diff.relative=false',
+  '-c',
   'protocol.allow=never',
   '-c',
   'gc.auto=0',
@@ -149,9 +155,41 @@ export async function configSafe(dir: string, git: GitRun = runGit): Promise<{ s
 export type CheckoutSafety =
   | { ok: true; top: string; gitDir: string }
   | { ok: false; reason: 'not-a-checkout' | 'outside-session' }
-  | { ok: false; reason: 'repo-config-runs-commands' | 'git-config-unreadable' | 'repo-alternates'; top: string };
+  | {
+      ok: false;
+      reason: 'repo-config-runs-commands' | 'git-config-unreadable' | 'repo-alternates' | 'repo-links-outside';
+      top: string;
+    };
 
 const real = (p: string) => fs.realpath(p).catch(() => path.resolve(p));
+
+/** How many entries of a git dir `noLinksIn` reads before it gives up (and refuses the checkout). */
+export const MAX_GIT_ENTRIES = 100_000;
+
+/**
+ * Whether the tree under `dir` holds no symlink (lstat only — nothing is followed or read). A git dir whose objects,
+ * refs, index or logs are links can point git at another repository the daemon can read (#1299 review). Gives up past
+ * MAX_GIT_ENTRIES — a repository that large is not read.
+ */
+export async function noLinksIn(dir: string, max = MAX_GIT_ENTRIES): Promise<boolean> {
+  const stack = [dir];
+  let seen = 0;
+  while (stack.length > 0) {
+    const cur = stack.pop()!;
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = await fs.readdir(cur, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    for (const e of entries) {
+      if (++seen > max) return false;
+      if (e.isSymbolicLink()) return false;
+      if (e.isDirectory()) stack.push(path.join(cur, e.name));
+    }
+  }
+  return true;
+}
 const inside = (p: string, roots: string[]) => roots.some((r) => p === r || p.startsWith(`${r}${path.sep}`));
 
 /**
@@ -174,8 +212,13 @@ export async function checkoutSafety(dir: string, roots: string[], git: GitRun =
   if (!inside(top, realRoots) || !inside(gitDir, realRoots) || !inside(common, realRoots)) {
     return { ok: false, reason: 'outside-session' };
   }
-  const alternates = await fs.readFile(path.join(common, 'objects', 'info', 'alternates'), 'utf8').catch(() => '');
-  if (alternates.trim()) return { ok: false, reason: 'repo-alternates', top };
+  // Another object store (alternates — any entry, even one that cannot be read) or a symlink anywhere in the git dirs
+  // (objects, refs, index, logs pointed at another repository) would make git read outside the session.
+  const alt = await fs.lstat(path.join(common, 'objects', 'info', 'alternates')).catch(() => undefined);
+  if (alt && (!alt.isFile() || alt.size > 0)) return { ok: false, reason: 'repo-alternates', top };
+  for (const d of new Set([gitDir, common])) {
+    if (!(await noLinksIn(d))) return { ok: false, reason: 'repo-links-outside', top };
+  }
   const config = await configSafe(dir, git);
   if (!config.safe) return { ok: false, reason: config.reason as 'repo-config-runs-commands', top };
   return { ok: true, top, gitDir };
