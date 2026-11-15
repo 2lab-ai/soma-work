@@ -251,7 +251,9 @@ describe('the page', () => {
 
   it("the page's Escape leaves the detail card alone while the 변경점 viewer is open", () => {
     const html = renderDashboardPage();
-    const guard = html.indexOf("if (e.key === 'Escape' && typeof chgViewerOpen === 'function' && chgViewerOpen()) return;");
+    const guard = html.indexOf(
+      "if (e.key === 'Escape' && typeof chgViewerOpen === 'function' && chgViewerOpen()) return;",
+    );
     const closes = html.indexOf("if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artViewerIsOpen()");
     expect(guard).toBeGreaterThan(0);
     expect(closes - guard).toBeGreaterThan(0);
