@@ -127,6 +127,10 @@ export async function sessionPrChanges(
         if (trim?.(files)) patchesDropped = true;
         filesTruncated = listed.truncated || undefined;
         filesStale = listed.complete === false;
+        // The files are of whatever head GitHub had when they were listed: a push between the two reads would store
+        // one revision's counts with another's patches. Asked again next time unless the head and base held.
+        const after = await deps.fetchPullDetail(ref.owner, ref.repo, ref.number);
+        if (!after || after.head_sha !== detail.head_sha || after.base_sha !== detail.base_sha) filesStale = true;
       } else {
         files = old?.files ?? [];
         filesTruncated = old?.filesTruncated;
