@@ -5,10 +5,16 @@
  *   commit_created      a commit made in a session checkout (HEAD reflog), on the day it was made
  *   code_lines_added    the same commit's line counts
  *
- * Every event carries a fixed id (the PR URL, the commit sha), so the store's upsert keeps one row however often the
- * same merge or commit is seen — a restart, a second collect, the merge seen by a turn end and by the PR watch.
+ * Every event carries a fixed id (the PR URL, the commit sha) and is written first-writer-wins: the store keeps one row
+ * however often the same merge or commit is seen — a restart, a second collect, the PR watch — and a second session that
+ * links the same PR does not move it to its owner (#1301 review).
+ *
+ * What the old command-output parsers already recorded is not counted again: a merge the session's `mergeStats` already
+ * holds (that parser wrote both) is skipped, and commits count only from the moment this host started counting them
+ * (`CodeChangesStore.countingSince`) — the parser's commit rows have random ids that no fixed id could replace.
  */
 
+import type { MetricsEventEmitter } from '../metrics/event-emitter';
 import type { CollectResult } from './collector';
 
 export interface MergeStats {
@@ -27,29 +33,26 @@ export interface MergedPr {
 
 /**
  * Add a merged PR to a session's `mergeStats` once: not when a record of the same PR is there — by URL, or by number for
- * a record the old command-output parser wrote (it kept no URL). True when it was added.
+ * a record the old command-output parser wrote (it kept no URL), but only when the number is unambiguous: among the
+ * session's PR links (`sessionPrUrls`) no other repository has a PR with that number. True when it was added.
  */
-export function addMergedPr(stats: MergeStats, pr: MergedPr): boolean {
-  if (stats.mergedPRs.some((m) => (m.prUrl ? m.prUrl === pr.prUrl : m.prNumber === pr.prNumber))) return false;
+export function addMergedPr(stats: MergeStats, pr: MergedPr, sessionPrUrls: string[] = []): boolean {
+  const numberOf = (url: string) => Number(/\/pull\/(\d+)/.exec(url)?.[1]);
+  const sameNumber = new Set(sessionPrUrls.filter((u) => numberOf(u) === pr.prNumber));
+  sameNumber.add(pr.prUrl);
+  const legacyMatches = sameNumber.size === 1;
+  const seen = stats.mergedPRs.some((m) =>
+    m.prUrl ? m.prUrl === pr.prUrl : legacyMatches && m.prNumber === pr.prNumber,
+  );
+  if (seen) return false;
   stats.totalLinesAdded += pr.linesAdded;
   stats.totalLinesDeleted += pr.linesDeleted;
   stats.mergedPRs.push({ ...pr });
   return true;
 }
 
-export interface CodeMetricsEmitter {
-  emitGitHubEvent(
-    eventType: 'commit_created' | 'code_lines_added' | 'merge_lines_added',
-    userId: string,
-    userName: string,
-    sessionKey: string,
-    metadata: Record<string, unknown>,
-    opts?: { id?: string; timestamp?: number },
-  ): Promise<void>;
-}
-
 export interface CodeMetricsSink {
-  emitter: CodeMetricsEmitter;
+  emitter: Pick<MetricsEventEmitter, 'emitGitHubEvent'>;
   /** The session's merge total on its card (`mergeStats`): false when the PR is already there. */
   recordMerge?: (pr: MergedPr) => boolean;
   logger?: { error: (msg: string, err?: unknown) => void };
@@ -65,13 +68,15 @@ export function emitCodeMetrics(
   for (const pr of result.newMerges) {
     try {
       const mergedAt = pr.mergedAt ?? Date.now();
-      sink.recordMerge?.({
+      const added = sink.recordMerge?.({
         prNumber: pr.number,
         prUrl: pr.url,
         linesAdded: pr.additions,
         linesDeleted: pr.deletions,
         mergedAt,
       });
+      // Already in the session's merge total: the old parser wrote that record and its metric together.
+      if (added === false) continue;
       sink.emitter
         .emitGitHubEvent(
           'merge_lines_added',
@@ -79,7 +84,7 @@ export function emitCodeMetrics(
           who.userName,
           who.sessionKey,
           { prNumber: pr.number, prUrl: pr.url, linesAdded: pr.additions, linesDeleted: pr.deletions },
-          { id: `merge_lines:${pr.url}`, timestamp: mergedAt },
+          { id: `merge_lines:${pr.url}`, timestamp: mergedAt, ifAbsent: true },
         )
         .catch(fail('merge_lines_added'));
     } catch (err) {
@@ -93,6 +98,7 @@ export function emitCodeMetrics(
         .emitGitHubEvent('commit_created', who.userId, who.userName, who.sessionKey, meta, {
           id: `commit:${c.sha}`,
           timestamp: c.at,
+          ifAbsent: true,
         })
         .catch(fail('commit_created'));
       if (c.additions > 0 || c.deletions > 0) {
@@ -103,7 +109,7 @@ export function emitCodeMetrics(
             who.userName,
             who.sessionKey,
             { linesAdded: c.additions, linesDeleted: c.deletions, commitSha: c.sha },
-            { id: `commit_lines:${c.sha}`, timestamp: c.at },
+            { id: `commit_lines:${c.sha}`, timestamp: c.at, ifAbsent: true },
           )
           .catch(fail('code_lines_added'));
       }

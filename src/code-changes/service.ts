@@ -62,6 +62,8 @@ export function createCodeChangesService<S extends SessionLike>(deps: CodeChange
     ...deps.collect,
     store,
   };
+  // Commits before this host counted them were the old parser's (CodeChangesStore.countingSince): read once.
+  const countingSince = store.countingSince();
   /**
    * The turn's working directory per session key, with the session it belongs to: a `/new` that replaced the session
    * before the run must not hand the old turn's folder to the new conversation (#1299 review).
@@ -95,6 +97,7 @@ export function createCodeChangesService<S extends SessionLike>(deps: CodeChange
         sessionRoot: session.sessionWorkingDir ?? sessionRootOf(dirs),
         dirs,
         startedAt: sessionStartMs(session),
+        commitsSince: countingSince,
         prUrls: sessionPrUrls(session),
       },
       collectDeps,

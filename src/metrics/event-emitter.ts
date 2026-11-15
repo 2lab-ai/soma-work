@@ -73,9 +73,9 @@ export class MetricsEventEmitter {
   /**
    * Emit and append. Fire-and-forget: errors are caught and logged.
    */
-  private async emit(event: MetricsEvent): Promise<void> {
+  private async emit(event: MetricsEvent, opts?: { ifAbsent?: boolean }): Promise<void> {
     try {
-      await this.store.append(event);
+      await this.store.append(event, opts);
       logger.debug(`Emitted ${event.eventType} for user ${event.userName}`);
     } catch (error) {
       // Fire-and-forget: must never block caller
@@ -191,15 +191,16 @@ export class MetricsEventEmitter {
     sessionKey: string,
     metadata: Record<string, unknown>,
     /**
-     * .prd/26 §5 — a fixed id makes the event idempotent (the store upserts by id: emitting the same merge or commit
-     * twice keeps one row); `timestamp` puts it on the day it happened (a merge seen later counts on its merge day).
+     * .prd/26 §5 — a fixed id makes the event idempotent; `ifAbsent` keeps the first row with that id as it is (the
+     * session that saw the merge or commit first owns it — a second session linking the same PR does not move it);
+     * `timestamp` puts it on the day it happened (a merge seen later counts on its merge day).
      */
-    opts?: { id?: string; timestamp?: number },
+    opts?: { id?: string; timestamp?: number; ifAbsent?: boolean },
   ): Promise<void> {
     const event = this.buildEvent(eventType, userId, userName, sessionKey, metadata);
     if (opts?.id) event.id = opts.id;
     if (typeof opts?.timestamp === 'number' && Number.isFinite(opts.timestamp)) event.timestamp = opts.timestamp;
-    await this.emit(event);
+    await this.emit(event, opts?.id && opts.ifAbsent ? { ifAbsent: true } : undefined);
   }
 }
 

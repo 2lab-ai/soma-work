@@ -306,6 +306,33 @@ describe('collectCodeChanges', () => {
   });
 });
 
+describe('the counting start (#1301 review)', () => {
+  it('is fixed at the first call and kept; commits before it are not read for the metrics', async () => {
+    const s = store();
+    expect(s.countingSince(() => 111)).toBe(111);
+    expect(s.countingSince(() => 999)).toBe(111);
+    const readCommits = vi.fn(async () => []);
+    await collectCodeChanges(
+      {
+        conversationId: 'c9',
+        owner: { id: 'U', name: 'u' },
+        dirs: ['/s'],
+        startedAt: 50,
+        commitsSince: 111,
+        prUrls: [],
+      },
+      {
+        ...prDeps({}),
+        store: s,
+        listCheckoutDirs: async () => ({ dirs: ['/s/web'] }),
+        checkoutChanges: async () => checkout(),
+        sessionCommits: readCommits,
+      },
+    );
+    expect(readCommits).toHaveBeenCalledWith('/s/web', 111, expect.any(Set));
+  });
+});
+
 describe('store + summary', () => {
   it('round trip; an unsafe id is neither read nor written', () => {
     const s = store();

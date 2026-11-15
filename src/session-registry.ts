@@ -2358,7 +2358,10 @@ export class SessionRegistry {
     const session = this.getSessionByKey(sessionKey);
     if (!session) return false;
     session.mergeStats ??= { totalLinesAdded: 0, totalLinesDeleted: 0, mergedPRs: [] };
-    if (!addMergedPr(session.mergeStats, pr)) return false;
+    const prUrls = [session.links?.pr?.url, ...(session.linkHistory?.prs ?? []).map((l) => l?.url)].filter(
+      (u): u is string => typeof u === 'string',
+    );
+    if (!addMergedPr(session.mergeStats, pr, prUrls)) return false;
     this.saveSessions();
     return true;
   }

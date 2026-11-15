@@ -426,9 +426,11 @@ function stmts(db: DatabaseSync): Stmts {
  * Upsert one event and bump the revision of every day it touches (its day,
  * and the day it moved away from), so a changed day is backed up again.
  */
-function upsert(db: DatabaseSync, ev: MetricsEvent, day: string): void {
+function upsert(db: DatabaseSync, ev: MetricsEvent, day: string, ifAbsent = false): void {
   const st = stmts(db);
   const prev = st.dayOf.get(ev.id) as { day: string } | undefined;
+  // A first-writer-wins event (.prd/26 §5): the row already there keeps its owner, session and time.
+  if (ifAbsent && prev) return;
   st.upsert.run(ev.id, ev.timestamp, day, typeof ev.eventType === 'string' ? ev.eventType : null, JSON.stringify(ev));
   st.bump.run(day);
   if (prev && prev.day !== day) st.bump.run(prev.day);
@@ -670,8 +672,10 @@ export class MetricsEventStore {
   /**
    * Append a single event (upsert by id) into its report-day partition.
    * Fire-and-forget safe — errors are logged but not thrown.
+   * `ifAbsent`: keep a row that already has this id as it is (first writer wins) — on the database; the day-file
+   * fallback cannot look, and appends.
    */
-  async append(event: MetricsEvent): Promise<void> {
+  async append(event: MetricsEvent, opts: { ifAbsent?: boolean } = {}): Promise<void> {
     const day = timestampToDateStr(event.timestamp);
     let db: DatabaseSync | null = null;
     try {
@@ -687,7 +691,7 @@ export class MetricsEventStore {
         return;
       }
       try {
-        upsert(db, event, day);
+        upsert(db, event, day, opts.ifAbsent === true);
       } catch (err) {
         // SQLITE_BUSY/FULL/…: spill to the day file — the next sync sees its
         // size change and imports it, so the event is not lost.
