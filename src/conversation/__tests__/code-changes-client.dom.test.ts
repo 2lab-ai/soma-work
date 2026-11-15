@@ -21,6 +21,8 @@ interface El {
   querySelectorAll(sel: string): ArrayLike<El>;
   dispatchEvent(e: unknown): boolean;
   close(): void;
+  click(): void;
+  open?: boolean;
 }
 const dom = globalThis as unknown as {
   document: {
@@ -41,6 +43,9 @@ type Api = {
   chgOpen: (cid: string) => void;
   chgLoad: (cid: string, refresh: boolean) => Promise<void>;
   chgOpenViewer: (key: string, opener?: El) => void;
+  chgNoteCard: (cid: string, at: number) => void;
+  chgViewerOpen: () => boolean;
+  chgStep: (delta: number) => void;
   state: () => Record<string, any>;
 };
 
@@ -63,7 +68,7 @@ function load(fetchFn: unknown): Api {
   const fn = new Function(
     'fetch',
     `${CODE_CHANGES_JS}
-    return { chgOpen, chgLoad, chgOpenViewer, state: function() { return _chg; } };`,
+    return { chgOpen, chgLoad, chgOpenViewer, chgNoteCard, chgViewerOpen, chgStep, state: function() { return _chg; } };`,
   );
   return fn(fetchFn) as Api;
 }
@@ -234,5 +239,123 @@ describe('the 변경점 client in a DOM (#1300 review)', () => {
     const main = byId('chg-v-main').textContent!;
     expect(main).toContain('실행 권한이 바뀜 · 100644 → 100755');
     expect(main).not.toContain('너무 커서');
+  });
+
+  it('D6 — folding a folder in the viewer keeps focus in it; the page sees the viewer open', async () => {
+    const f = controlledFetch();
+    const api = load(f.fetchFn);
+    api.chgOpen('c1');
+    f.calls[0].resolve({ doc: doc(100) });
+    await flush();
+    const key = 'f:acme/web\nsrc/a.ts';
+    api.chgOpenViewer(key);
+    const dialog = byId('chg-viewer');
+    // The viewer's clicks go through its own handler (wired on the dialog).
+    const folder = Array.from(byId('chg-v-tree').querySelectorAll('[data-chg-dir]'))[0];
+    const folderKey = folder.getAttribute('data-chg-dir');
+    folder.click();
+    const active = dom.document.activeElement as El;
+    expect(active.getAttribute('data-chg-dir')).toBe(folderKey);
+    expect(api.chgViewerOpen()).toBe(dialog.open !== false);
+  });
+
+  it('D7 — a late empty answer never clears what is shown; after a 403 a card push asks nothing', async () => {
+    const f = controlledFetch();
+    const api = load(f.fetchFn);
+    api.chgOpen('c1');
+    f.calls[0].resolve({ doc: doc(100) });
+    await flush();
+    const late = api.chgLoad('c1', false);
+    f.calls[f.calls.length - 1].resolve({ doc: null });
+    await late;
+    expect(api.state().doc.updatedAt).toBe(100);
+    const f2 = controlledFetch();
+    const api2 = load(f2.fetchFn);
+    api2.chgOpen('c2');
+    f2.calls[0].resolve({ denied: true });
+    await flush();
+    // (the denied shape comes from a 403; the test hands it over directly)
+    api2.state().state = 'denied';
+    const before = f2.calls.length;
+    api2.chgNoteCard('c2', 999);
+    expect(f2.calls.length).toBe(before);
+  });
+
+  it('D8 — a file answer from a newer collect than the list reads the list again', async () => {
+    const f = controlledFetch();
+    const api = load(f.fetchFn);
+    api.chgOpen('c1');
+    f.calls[0].resolve({ doc: doc(100) });
+    await flush();
+    api.chgOpenViewer('f:acme/web\nsrc/a.ts');
+    const fileCall = f.calls.find((c) => c.url.includes('/changes/file'))!;
+    const lists = () => f.calls.filter((c) => !c.url.includes('/changes/file') && !c.url.includes('refresh=1')).length;
+    const before = lists();
+    fileCall.resolve({
+      updatedAt: 200,
+      sources: [{ layer: 'uncommitted', label: 'web', file: { path: 'src/a.ts', patch: '@@ -1 +1 @@\n-x\n+NEW' } }],
+    });
+    await flush();
+    expect(lists()).toBe(before + 1);
+    expect(byId('chg-v-main').innerHTML).not.toContain('NEW');
+  });
+
+  it('D9 — a failed file read is asked again when the viewer steps back onto it', async () => {
+    const f = controlledFetch();
+    const api = load(f.fetchFn);
+    const two = doc(100);
+    two.checkouts[0].uncommitted.files.push({ path: 'src/b.ts', status: 'modified', additions: 1, deletions: 1 });
+    api.chgOpen('c1');
+    f.calls[0].resolve({ doc: two });
+    await flush();
+    api.chgOpenViewer('f:acme/web\nsrc/a.ts');
+    f.calls.filter((c) => c.url.includes('/changes/file'))[0].fail();
+    await flush();
+    api.chgStep(1);
+    api.chgStep(-1);
+    const reads = f.calls.filter((c) => c.url.includes('path=src%2Fa.ts'));
+    expect(reads.length).toBe(2);
+  });
+
+  it('D10 — the viewer shows only the sources of its scope; a rename without an edit says no content changed', async () => {
+    const f = controlledFetch();
+    const api = load(f.fetchFn);
+    const d = doc(100);
+    (d as Record<string, unknown>).prs = [
+      {
+        id: 'acme/web#5',
+        url: 'https://github.com/acme/web/pull/5',
+        repo: 'acme/web',
+        number: 5,
+        state: 'open',
+        files: [{ path: 'src/a.ts', status: 'modified', additions: 1, deletions: 0 }],
+      },
+    ];
+    api.chgOpen('c1');
+    f.calls[0].resolve({ doc: d });
+    await flush();
+    api.state().scope = 'pr:acme/web#5';
+    api.chgOpenViewer('f:acme/web\nsrc/a.ts');
+    f.calls
+      .find((c) => c.url.includes('/changes/file'))!
+      .resolve({
+        sources: [
+          {
+            layer: 'uncommitted',
+            label: 'web',
+            file: { path: 'src/a.ts', additions: 1, deletions: 0, patch: '@@ -1 +1 @@\n+LOCAL' },
+          },
+          {
+            layer: 'pr',
+            label: '#5',
+            prNumber: 5,
+            file: { path: 'src/a.ts', status: 'renamed', oldPath: 'src/z.ts', additions: 0, deletions: 0 },
+          },
+        ],
+      });
+    await flush();
+    const main = byId('chg-v-main').textContent!;
+    expect(main).not.toContain('LOCAL');
+    expect(main).toContain('내용 변경 없음');
   });
 });

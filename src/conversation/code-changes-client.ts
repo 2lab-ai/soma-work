@@ -56,6 +56,7 @@ var CHG_SKIPPED_COMMITTED = {
 };
 var CHG_FILE_FAILED = '이 파일의 변경을 불러오지 못했어요';
 var CHG_MODE = '실행 권한이 바뀜';
+var CHG_NO_CONTENT = '내용 변경 없음';
 var CHG_RENAMED_FROM = '이전 이름';
 
 var _chg = { cid: '', doc: null, state: 'idle', scope: 'all', closed: Object.create(null), files: Object.create(null), viewer: null, gen: 0 };
@@ -180,7 +181,10 @@ function chgHunkRows(patch) {
   var rows = [];
   var a = 0;
   var b = 0;
-  String(patch || '').split('\n').forEach(function(line) {
+  var lines = String(patch || '').split('\n');
+  // A patch ending in a newline is no extra empty line.
+  if (lines.length && lines[lines.length - 1] === '') lines.pop();
+  lines.forEach(function(line) {
     var m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(line);
     if (m) {
       a = Number(m[1]);
@@ -240,7 +244,8 @@ function chgLoad(cid, refresh) {
       if (gen !== _chg.gen || _chg.cid !== cid) return;
       if (body && body.denied) { _chg.state = 'denied'; chgPaint(); return; }
       var doc = body && body.doc;
-      if (!doc && refresh && _chg.doc) return;
+      // No document (not collected yet) never clears one that is shown.
+      if (!doc && _chg.doc) return;
       // Two loads of one conversation can land in either order: an older collect never replaces a newer one.
       if (doc && _chg.doc && Number(doc.updatedAt) < Number(_chg.doc.updatedAt)) return;
       if (doc && _chg.doc && doc.updatedAt === _chg.doc.updatedAt && _chg.state === 'ok') return;
@@ -257,7 +262,7 @@ function chgLoad(cid, refresh) {
 }
 // A card push says the session's changes moved (codeChangesAt): read the stored list again.
 function chgNoteCard(cid, at) {
-  if (!cid || cid !== _chg.cid || !at) return;
+  if (!cid || cid !== _chg.cid || !at || _chg.state === 'denied') return;
   if (_chg.doc && Number(at) <= Number(_chg.doc.updatedAt)) return;
   chgLoad(cid, false);
 }
@@ -318,7 +323,7 @@ function chgSkippedNote(doc) {
   var notes = [];
   ((doc && doc.checkouts) || []).forEach(function(c) {
     var u = c.uncommitted && CHG_SKIPPED[c.uncommitted.skipped];
-    var k = c.committed && c.committed.skipped !== (c.uncommitted && c.uncommitted.skipped) && CHG_SKIPPED_COMMITTED[c.committed.skipped];
+    var k = c.committed && CHG_SKIPPED_COMMITTED[c.committed.skipped];
     [u, k].forEach(function(text) {
       if (text) notes.push('<div class="chg-note">' + chgEsc(c.repo) + ' · ' + chgEsc(c.dir) + ' — ' + chgEsc(text) + '</div>');
     });
@@ -441,6 +446,8 @@ function chgSourceHtml(s) {
   var mode = f.modeChange ? '<div class="chg-note">' + chgEsc(CHG_MODE) + ' · ' + chgEsc(f.modeChange) + '</div>' : '';
   if (f.binary) body = '<div class="chg-note">' + chgEsc(CHG_BINARY) + '</div>';
   else if (!f.patch && mode && !f.additions && !f.deletions) body = '';
+  // A rename with no edit, an empty file added or removed: nothing to show, and nothing too big either.
+  else if (!f.patch && !f.patchTruncated && !f.additions && !f.deletions) body = '<div class="chg-note">' + chgEsc(CHG_NO_CONTENT) + '</div>';
   else if (!f.patch) body = '<div class="chg-note">' + chgEsc(CHG_TOO_BIG) + '</div>';
   else {
     body = '<table class="chg-diff"><tbody>' + chgHunkRows(f.patch).map(function(r) {
@@ -464,8 +471,29 @@ function chgFetchFile(key, f) {
   var url = '/api/dashboard/session/' + encodeURIComponent(cid) + '/changes/file?repo=' + encodeURIComponent(f.repo) + '&path=' + encodeURIComponent(f.path);
   fetch(url, { credentials: 'same-origin' })
     .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-    .then(function(body) { if (current()) { _chg.files[key] = body; chgViewerPaint(); } })
+    .then(function(body) {
+      if (!body || !Array.isArray(body.sources)) throw new Error('no sources');
+      if (!current()) return;
+      // A newer collect than the list: read the list again (it clears the cache and asks for this file anew).
+      if (body.updatedAt != null && body.updatedAt !== ver) { delete _chg.files[key]; chgLoad(cid, false); return; }
+      _chg.files[key] = body;
+      chgViewerPaint();
+    })
     .catch(function() { if (current()) { _chg.files[key] = 'error'; chgViewerPaint(); } });
+}
+// Whether the viewer is open (the page's Escape leaves the detail card alone then).
+function chgViewerOpen() {
+  var d = document.getElementById('chg-viewer');
+  return !!(d && d.open);
+}
+// After the viewer's tree is painted again, focus the row it was on (else the viewer's body): a node replaced under focus
+// drops focus to the page.
+function chgRefocus(attr, key) {
+  var tree = document.getElementById('chg-v-tree');
+  var rows = tree ? tree.querySelectorAll('[' + attr + ']') : [];
+  for (var i = 0; i < rows.length; i++) if (rows[i].getAttribute(attr) === key) { rows[i].focus(); return; }
+  var main = document.getElementById('chg-v-main');
+  if (main) main.focus();
 }
 // A file whose read failed is asked again when it is opened or chosen.
 function chgRetry(key) {
@@ -495,8 +523,10 @@ function chgOnClick(e) {
   } else if (t.hasAttribute('data-chg-dir')) {
     var k = t.getAttribute('data-chg-dir');
     _chg.closed[k] = !_chg.closed[k];
-    if (inViewer) chgViewerPaint();
-    else chgPaint();
+    if (inViewer) {
+      chgViewerPaint();
+      chgRefocus('data-chg-dir', k);
+    } else chgPaint();
   } else if (t.hasAttribute('data-chg-file')) {
     var fk = t.getAttribute('data-chg-file');
     if (inViewer && _chg.viewer) {
@@ -506,6 +536,7 @@ function chgOnClick(e) {
       var dv = document.getElementById('chg-viewer');
       if (dv && window.matchMedia && window.matchMedia('(max-width: 720px)').matches) dv.setAttribute('data-tree', 'off');
       chgViewerPaint();
+      chgRefocus('data-chg-file', fk);
     }
     else chgOpenViewer(fk, t);
   } else if (t.hasAttribute('data-chg-refresh')) {

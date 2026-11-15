@@ -230,4 +230,31 @@ describe('the page', () => {
     expect(note).toContain('acme/b · b — 커밋한 변경을 이번에 읽지 못했습니다');
     expect(note).not.toContain('acme/c');
   });
+
+  it('both layers failed this time: both notes show; a patch ending in a newline has no extra row', () => {
+    const api = load();
+    const layer = (skipped?: string) => ({
+      files: [],
+      additions: 0,
+      deletions: 0,
+      commits: [],
+      ...(skipped ? { skipped } : {}),
+    });
+    const note = api.chgSkippedNote({
+      checkouts: [
+        { repo: 'acme/a', dir: 'a', uncommitted: layer('git-diff-failed'), committed: layer('git-diff-failed') },
+      ],
+    });
+    expect(note.match(/chg-note/g)).toHaveLength(2);
+    expect(api.chgHunkRows('@@ -1 +1 @@\n-a\n+b\n').map((r) => r.type)).toEqual(['hunk', 'del', 'add']);
+  });
+
+  it("the page's Escape leaves the detail card alone while the 변경점 viewer is open", () => {
+    const html = renderDashboardPage();
+    const guard = html.indexOf("if (e.key === 'Escape' && typeof chgViewerOpen === 'function' && chgViewerOpen()) return;");
+    const closes = html.indexOf("if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artViewerIsOpen()");
+    expect(guard).toBeGreaterThan(0);
+    expect(closes - guard).toBeGreaterThan(0);
+    expect(closes - guard).toBeLessThan(200);
+  });
 });

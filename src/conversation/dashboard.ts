@@ -21857,6 +21857,9 @@ document.addEventListener('keydown', function(e) {
   // Escape in the artifact viewer closes the viewer only (its dialog's own).
   // The cron drawer opens over a docked panel: Escape closes only that, the topmost. An element on top that
   // took the key (the drawer, the defaults menu, a dialog: preventDefault) keeps it from the panel too.
+  // The 변경점 viewer too: wherever focus is when Escape comes (a repaint inside it can drop focus to the page), the
+  // dialog closes and the card stays.
+  if (e.key === 'Escape' && typeof chgViewerOpen === 'function' && chgViewerOpen()) return;
   if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artViewerIsOpen() && !_cronDrawerKey) closeDetailCard();
 });
 // Esc inside the drawer and a press on its scrim arrive as <ui-drawer>'s cancelable ui-close (D4 E-01, E-02): the
