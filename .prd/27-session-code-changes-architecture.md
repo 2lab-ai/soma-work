@@ -104,13 +104,18 @@ PR — 세션의 PR 링크(현재 + 기록) 중 GitHub URL만, 최대 20. 저장
 
 ## 5. 안전 — 데몬이 세션 폴더의 git을 돌린다
 
-세션 폴더의 저장소 설정은 모델이 쓸 수 있다. 데몬이 거기서 git을 돌리면 설정이 부르는 명령이 샌드박스 밖에서 돈다(23 ESC 계열과 같은 종류). 막는 것:
+세션 폴더의 저장소 설정은 모델이 쓸 수 있다. 데몬이 거기서 git을 돌리면 설정이 부르는 명령이 샌드박스 밖에서 돌고, 설정 · 포인터가 가리키는 다른 곳(다른 유저의 폴더)을 읽게 된다(23 ESC 계열과 같은 종류). 막는 것:
 
 - env: 재조정기의 `GIT_ENV`(전역 · 시스템 설정 없음, 토큰 없음) + `GIT_OPTIONAL_LOCKS=0`(status가 인덱스를 쓰지 않음) + `GIT_PAGER=cat`.
-- 모든 호출: `-c core.fsmonitor=false -c core.hooksPath=/dev/null -c diff.external= -c core.untrackedCache=false`, diff는 `--no-ext-diff --no-textconv`.
-- **게이트**: 작업 트리를 읽는 명령(커밋 안 함 층) 전에 `git config --list --name-only`(전역 · 시스템 없이 = 저장소 · worktree · include)에서
-  `filter.*`, `*.textconv`, `*.command`, `*.process`, `core.fsmonitor`, `core.sshcommand`, `core.pager` 가 하나라도 있으면 그 체크아웃의
-  커밋 안 함 층을 건너뛰고 `skipped: 'repo-config-runs-commands'`. 커밋끼리의 diff는 작업 트리 변환을 부르지 않으므로 그대로 센다.
+- 모든 호출: `-c core.fsmonitor=false -c core.hooksPath=/dev/null -c diff.external= -c core.untrackedCache=false -c log.showSignature=false --no-pager`,
+  diff는 `--no-ext-diff --no-textconv`, log · show는 `--no-show-signature`(서명 검사가 `gpg.program`을 부른다 — #1299 리뷰).
+- **체크아웃 게이트**(`checkoutSafety`, 체크아웃마다 맨 먼저 — 통과 전에는 rev-parse 하나만 돈다):
+  1. 작업 트리 · git dir · common dir의 실경로가 세션 폴더(`sessionDirs`) 안 — 아니면 이 세션의 체크아웃이 아니다(목록에도 없음). `.git` 파일이 다른 저장소를 가리키거나 `core.worktree`가 밖을 가리키는 경우.
+  2. `objects/info/alternates`가 비어 있음 — 다른 객체 저장소를 빌려 쓰면 그 내용이 diff로 나온다. 아니면 `skipped: 'repo-alternates'`.
+  3. `git config --list --name-only --show-scope`(우리 `-c`의 command 범위 제외 = 저장소 · worktree · include)에 `filter.*`, `*.textconv`,
+     `*.command`, `*.process`, `gpg.*`, `log.showSignature`, `core.worktree`, `pager.*`, `core.fsmonitor`, `core.sshCommand`,
+     `core.pager`, `core.askPass`, `diff.external`가 없음 — 아니면 `skipped: 'repo-config-runs-commands'`.
+  2 · 3에 걸리면 두 층도 새 커밋(지표)도 읽지 않는다 — 체크아웃은 사유와 함께 목록에만 남는다.
 - 새 파일: 일반 파일만, 심볼릭 링크 따라가지 않음, 실경로가 체크아웃 안일 때만.
 - 시간 · 크기: 호출마다 10 s, 출력 16 MiB.
 

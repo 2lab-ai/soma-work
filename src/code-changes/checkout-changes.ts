@@ -8,7 +8,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { githubRemoteOf } from '../session-pr-reconciler';
 import { joinDiff, looksBinary, MAX_PATCH_BYTES, newFilePatch, parseNumstatZ, splitPatch } from './git-diff-parse';
-import { type GitRun, runGit, worktreeSafe } from './git-runner';
+import { checkoutSafety, type GitRun, runGit } from './git-runner';
 import type { ChangedFile, CheckoutChanges, CommitRef, LayerFiles } from './types';
 
 /** git's empty tree: the base of a checkout with no commit, and of a root commit's range. */
@@ -16,8 +16,11 @@ export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 export const MAX_LAYER_FILES = 1000;
 const MAX_UNTRACKED_PATCHES = 200;
 const MAX_COMMITS_LISTED = 50;
+const MAX_PR_HEADS = 20;
 const DIFF_FLAGS = ['-M', '--no-color', '--no-ext-diff', '--no-textconv'];
 const SHA = /^[0-9a-f]{40,64}$/;
+/** The checkout is this session's but is not read at all: its config runs commands, or it borrows another object store. */
+export const UNREAD_CHECKOUT = new Set(['repo-config-runs-commands', 'git-config-unreadable', 'repo-alternates']);
 
 export interface PrHead {
   headRef?: string;
@@ -29,6 +32,8 @@ export interface CheckoutInput {
   dir: string;
   /** The session's own folder: the checkout's `dir` label is relative to it. */
   sessionRoot?: string;
+  /** The session's folders: a checkout whose work tree or git dir is outside them is not read (default: the session root). */
+  roots?: string[];
   sessionStartedAt?: number;
   /** The session's PRs in this checkout's repository: one whose head is this branch bounds the committed layer. */
   prHeads?: PrHead[];
@@ -117,8 +122,6 @@ async function uncommittedLayer(
   dir: string,
   head: string | undefined,
 ): Promise<CheckoutChanges['uncommitted']> {
-  const gate = await worktreeSafe(dir, git);
-  if (!gate.safe) return { files: [], additions: 0, deletions: 0, skipped: gate.reason };
   const tracked = await diffFiles(git, dir, head ?? EMPTY_TREE);
   if (tracked === undefined) return { files: [], additions: 0, deletions: 0, skipped: 'git-diff-failed' };
   const others = await git(dir, ['ls-files', '--others', '--exclude-standard', '-z']);
@@ -153,13 +156,16 @@ export async function committedBase(
   startedAt?: number,
 ): Promise<string | undefined> {
   let base: string | undefined;
-  const own = prHeads
-    .filter((p) => branch && p.headRef === branch && p.headSha)
-    .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
-  for (const p of own) {
-    if (await isAncestor(git, dir, p.headSha!, head)) {
-      base = p.headSha!;
-      break;
+  // Every session PR head HEAD contains — this branch's own, or one under it (stacked branches) — and of those the one
+  // fewest commits behind HEAD. A PR on this branch's name whose head is not in HEAD is not this work.
+  let nearest = Number.POSITIVE_INFINITY;
+  const heads = [...new Set(prHeads.map((p) => p.headSha).filter((h): h is string => !!h))].slice(0, MAX_PR_HEADS);
+  for (const sha of heads) {
+    if (!(await isAncestor(git, dir, sha, head))) continue;
+    const behind = Number(trim(await git(dir, ['rev-list', '--count', `${sha}..${head}`])));
+    if (Number.isFinite(behind) && behind < nearest) {
+      nearest = behind;
+      base = sha;
     }
   }
   if (!base) {
@@ -189,7 +195,14 @@ export async function committedBase(
 
 async function commitsOf(git: GitRun, dir: string, base: string, head: string): Promise<CommitRef[]> {
   const range = base === EMPTY_TREE ? [head] : [`${base}..${head}`];
-  const out = await git(dir, ['log', `--max-count=${MAX_COMMITS_LISTED}`, '--format=%H%x1f%s%x1f%ct', ...range, '--']);
+  const out = await git(dir, [
+    'log',
+    '--no-show-signature',
+    `--max-count=${MAX_COMMITS_LISTED}`,
+    '--format=%H%x1f%s%x1f%ct',
+    ...range,
+    '--',
+  ]);
   const commits: CommitRef[] = [];
   for (const line of (out ?? '').split('\n')) {
     const [sha, subject, ct] = line.split('\x1f');
@@ -216,18 +229,28 @@ async function committedLayer(
   return { ...layer(files, false), base, commits: await commitsOf(git, dir, base, head) };
 }
 
-/** The checkout at `dir`: its repository, branch, and two local layers; undefined when it is not a git checkout. */
+/**
+ * The checkout at `dir`: its repository, branch, and two local layers. Undefined when it is not a git checkout or not
+ * this session's (its work tree or git dir is outside the session's folders); a checkout the gate refuses to read
+ * (git-runner `checkoutSafety`) comes back with both layers empty and the reason in `uncommitted.skipped`.
+ */
 export async function checkoutChanges(input: CheckoutInput): Promise<CheckoutChanges | undefined> {
   const git = input.git ?? runGit;
   const dir = input.dir;
-  const top = trim(await git(dir, ['rev-parse', '--show-toplevel']));
-  if (!top) return undefined;
+  const safety = await checkoutSafety(dir, input.roots ?? (input.sessionRoot ? [input.sessionRoot] : []), git);
+  if (!safety.ok && (safety.reason === 'not-a-checkout' || safety.reason === 'outside-session')) return undefined;
   const head = trim(await git(dir, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'])) || undefined;
   const branch = trim(await git(dir, ['symbolic-ref', '--quiet', '--short', 'HEAD'])) || undefined;
   const remote = githubRemoteOf(trim(await git(dir, ['config', '--get', 'remote.origin.url'])));
   const repo = remote ? `${remote.owner}/${remote.name}`.toLowerCase() : `local:${path.basename(dir)}`;
-  const uncommitted = await uncommittedLayer(git, dir, head);
-  const committed = await committedLayer(git, dir, head, branch, input.prHeads ?? [], input.sessionStartedAt);
+  // A checkout the gate refuses is listed (its reason shows) and nothing else of it is read.
+  const unread = safety.ok ? undefined : safety.reason;
+  const uncommitted: CheckoutChanges['uncommitted'] = unread
+    ? { files: [], additions: 0, deletions: 0, skipped: unread }
+    : await uncommittedLayer(git, dir, head);
+  const committed: CheckoutChanges['committed'] = unread
+    ? { files: [], additions: 0, deletions: 0, commits: [] }
+    : await committedLayer(git, dir, head, branch, input.prHeads ?? [], input.sessionStartedAt);
   const out: CheckoutChanges = {
     id: checkoutId(dir),
     repo,
@@ -265,6 +288,7 @@ export async function sessionCommits(
   const out = await git(dir, [
     'log',
     '-g',
+    '--no-show-signature',
     '--date=unix',
     '--format=%H%x1f%gs%x1f%gd',
     '--max-count=300',
@@ -286,6 +310,7 @@ export async function sessionCommits(
   for (const c of found) {
     const stat = await git(dir, [
       'show',
+      '--no-show-signature',
       '--numstat',
       '--format=',
       '--no-ext-diff',

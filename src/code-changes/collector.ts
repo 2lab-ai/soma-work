@@ -9,7 +9,7 @@
 
 import path from 'node:path';
 import { listCheckoutDirs } from '../session-pr-reconciler';
-import { checkoutChanges, type SessionCommit, sessionCommits } from './checkout-changes';
+import { checkoutChanges, type SessionCommit, sessionCommits, UNREAD_CHECKOUT } from './checkout-changes';
 import { type PrDeps, sessionPrChanges } from './pr-changes';
 import type { CodeChangesStore } from './store';
 import { summarizeCodeChanges } from './summary';
@@ -81,10 +81,17 @@ export async function collectCodeChanges(input: CollectInput, deps: CollectDeps)
   const checkouts: CheckoutChanges[] = [];
   const newCommits: CollectResult['newCommits'] = [];
   for (const dir of dirs.slice(0, MAX_CHECKOUTS)) {
-    const c = await readCheckout({ dir, sessionRoot: input.sessionRoot, sessionStartedAt: input.startedAt, prHeads });
+    const c = await readCheckout({
+      dir,
+      sessionRoot: input.sessionRoot,
+      roots: input.dirs,
+      sessionStartedAt: input.startedAt,
+      prHeads,
+    });
     if (!c) continue;
     if (hasChanges(c)) checkouts.push(c);
-    if (input.startedAt !== undefined) {
+    // A checkout the gate refused is not read for commits either.
+    if (input.startedAt !== undefined && !UNREAD_CHECKOUT.has(c.uncommitted.skipped ?? '')) {
       for (const commit of await readCommits(dir, input.startedAt, counted)) {
         counted.add(commit.sha);
         newCommits.push({ ...commit, repo: c.repo });

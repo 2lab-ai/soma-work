@@ -8,7 +8,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { checkoutChanges, sessionCommits } from '../checkout-changes';
 import { capPatch, joinDiff, newFilePatch, parseNumstatZ, splitPatch } from '../git-diff-parse';
-import { commandKeys, worktreeSafe } from '../git-runner';
+import { commandKeys, configSafe } from '../git-runner';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -128,10 +128,85 @@ describe('git-runner gate', () => {
     git(dir, ['config', 'filter.evil.clean', `sh -c 'touch ${marker}; cat'`]);
     write(dir, '.gitattributes', '*.ts filter=evil\n');
     write(dir, 'src/a.ts', 'changed\n');
-    expect(await worktreeSafe(dir)).toEqual({ safe: false, reason: 'repo-config-runs-commands' });
+    expect(await configSafe(dir)).toEqual({ safe: false, reason: 'repo-config-runs-commands' });
     const c = await checkoutChanges({ dir, sessionRoot: session });
     expect(c?.uncommitted).toMatchObject({ files: [], skipped: 'repo-config-runs-commands' });
     expect(fs.existsSync(marker)).toBe(false);
+  });
+});
+
+describe('checkoutSafety — the doors the #1299 review found', () => {
+  it('a signed-looking commit with gpg.program + log.showSignature: the program never runs, the checkout is not read', async () => {
+    const session = tmp('cc-gpg-');
+    const dir = clone(session, 'svc');
+    const marker = path.join(session, 'GPG-RAN');
+    const evil = path.join(session, 'evil.sh');
+    fs.writeFileSync(evil, `#!/bin/sh\ntouch ${marker}\nexit 1\n`, { mode: 0o755 });
+    const tree = git(dir, ['rev-parse', 'HEAD^{tree}']);
+    const parent = git(dir, ['rev-parse', 'HEAD']);
+    const body = [
+      `tree ${tree}`,
+      `parent ${parent}`,
+      'author t <t@t> 1794756694 +0000',
+      'committer t <t@t> 1794756694 +0000',
+      'gpgsig -----BEGIN PGP SIGNATURE-----',
+      ' ',
+      ' -----END PGP SIGNATURE-----',
+      '',
+      'signed',
+      '',
+    ].join('\n');
+    const raw = path.join(session, 'commit.txt');
+    fs.writeFileSync(raw, body);
+    const sha = git(dir, ['hash-object', '-t', 'commit', '-w', raw]);
+    git(dir, ['update-ref', 'HEAD', sha]);
+    git(dir, ['config', 'log.showSignature', 'true']);
+    git(dir, ['config', 'gpg.program', evil]);
+    const c = await checkoutChanges({ dir, sessionRoot: session, sessionStartedAt: Date.now() - 3600_000 });
+    expect(c?.uncommitted.skipped).toBe('repo-config-runs-commands');
+    expect(c?.committed.files).toEqual([]);
+    expect(await sessionCommits(dir, 0, new Set())).toBeDefined();
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
+  it('core.worktree pointing outside the session: not this session’s checkout (nothing read)', async () => {
+    const session = tmp('cc-wt-');
+    const outside = tmp('cc-wt-outside-');
+    fs.writeFileSync(path.join(outside, '.env'), 'SECRET_TOKEN=leak\n');
+    const dir = clone(session, 'svc');
+    git(dir, ['config', 'core.worktree', outside]);
+    expect(await checkoutChanges({ dir, sessionRoot: session })).toBeUndefined();
+  });
+
+  it('core.worktree inside the session is refused by the gate', async () => {
+    const session = tmp('cc-wt2-');
+    const dir = clone(session, 'svc');
+    const other = path.join(session, 'other');
+    fs.mkdirSync(other);
+    fs.writeFileSync(path.join(other, 'x.txt'), 'x\n');
+    git(dir, ['config', 'core.worktree', other]);
+    const c = await checkoutChanges({ dir, sessionRoot: session });
+    expect(c?.uncommitted).toMatchObject({ files: [], skipped: 'repo-config-runs-commands' });
+  });
+
+  it('a .git file naming a repository outside the session: not read', async () => {
+    const session = tmp('cc-gitfile-');
+    const elsewhere = tmp('cc-gitfile-other-');
+    const victim = clone(elsewhere, 'victim');
+    write(victim, 'secret.txt', 'other user data\n');
+    const dir = path.join(session, 'x');
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, '.git'), `gitdir: ${path.join(victim, '.git')}\n`);
+    expect(await checkoutChanges({ dir, sessionRoot: session })).toBeUndefined();
+  });
+
+  it('objects/info/alternates (another object store) is refused', async () => {
+    const session = tmp('cc-alt-');
+    const dir = clone(session, 'svc');
+    fs.mkdirSync(path.join(dir, '.git', 'objects', 'info'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.git', 'objects', 'info', 'alternates'), '/somewhere/objects\n');
+    const c = await checkoutChanges({ dir, sessionRoot: session });
+    expect(c?.uncommitted.skipped).toBe('repo-alternates');
   });
 });
 
@@ -174,6 +249,27 @@ describe('checkoutChanges — the two local layers', () => {
       dir,
       sessionRoot: session,
       prHeads: [{ headRef: 'feat/y', headSha: prHead, createdAt: Date.now() }],
+    });
+    expect(c!.committed.base).toBe(prHead);
+    expect(c!.committed.files.map((f) => f.path)).toEqual(['two.ts']);
+  });
+
+  it('stacked branches: a session PR head under HEAD on another branch is the base (committed ≠ that PR again)', async () => {
+    const session = tmp('cc-stack-');
+    const dir = clone(session, 'api');
+    git(dir, ['checkout', '-q', '-b', 'feat/base']);
+    write(dir, 'one.ts', '1\n');
+    const prHead = commitAll(dir, 'in the first PR');
+    git(dir, ['checkout', '-q', '-b', 'feat/next']);
+    write(dir, 'two.ts', '2\n');
+    commitAll(dir, 'on the next branch');
+    const c = await checkoutChanges({
+      dir,
+      sessionRoot: session,
+      prHeads: [
+        { headRef: 'feat/base', headSha: prHead, createdAt: Date.now() },
+        { headRef: 'feat/next', headSha: 'f'.repeat(40), createdAt: Date.now() },
+      ],
     });
     expect(c!.committed.base).toBe(prHead);
     expect(c!.committed.files.map((f) => f.path)).toEqual(['two.ts']);

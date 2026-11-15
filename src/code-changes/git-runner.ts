@@ -9,10 +9,20 @@
  *     repository's own config (includes and worktree config expanded) that runs a command. Diffs between two commits never
  *     convert working-tree files and run with `--no-ext-diff --no-textconv`.
  *
+ * Two more doors the review of #1299 found and this module now shuts:
+ *
+ *   - a commit's signature check runs `gpg.program` (`log.showSignature`): every call turns it off, and the gate refuses
+ *     any `gpg.*` key or `log.showSignature`;
+ *   - a pointer can send git outside the checkout — `core.worktree` (the gate refuses it), a `.git` file naming another
+ *     repository, or `objects/info/alternates` borrowing another store: `checkoutSafety` requires the work tree, the git
+ *     dir and the common dir to be inside the session's folders, and no alternates.
+ *
  * Every call is bounded (10 s, 16 MiB of output) and answers undefined on any failure — never throws.
  */
 
 import { execFile } from 'node:child_process';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 
 const GIT_ENV: NodeJS.ProcessEnv = {
   PATH: process.env.PATH ?? '/usr/bin:/bin',
@@ -37,6 +47,8 @@ const SAFE_FLAGS = [
   'core.untrackedCache=false',
   '-c',
   'core.quotePath=false',
+  '-c',
+  'log.showSignature=false',
   '--no-pager',
 ];
 
@@ -57,10 +69,16 @@ export const runGit: GitRun = (dir, args) =>
   });
 
 /**
- * Config keys that make git run a command while it reads or converts working-tree files. `core.fsmonitor` is turned off
- * on every call but still refuses the working tree (a repository that asks for it is not one to read blindly).
+ * Config keys that make git run a command (or read outside the checkout) while it reads a repository: filters and diff
+ * drivers on working-tree files, signature checks on commits, pagers, a relocated work tree. The ones every call already
+ * turns off (`core.fsmonitor`, `log.showSignature`, external diff) still refuse the repository: one that asks for them is
+ * not one to read blindly.
  */
 const RUNS_COMMANDS = [
+  /^gpg\./,
+  /^log\.showsignature$/,
+  /^core\.worktree$/,
+  /^pager\./,
   /^filter\./,
   /\.textconv$/,
   /\.command$/,
@@ -89,12 +107,47 @@ export function commandKeys(listing: string): string[] {
 }
 
 /**
- * Whether the working tree of the checkout at `dir` may be read: its config (repository, worktree, includes — no global or
- * system) names no command. Unknown (git failed) is not safe.
+ * Whether the checkout's config (repository, worktree, includes — no global or system) names no command. Unknown (git
+ * failed) is not safe.
  */
-export async function worktreeSafe(dir: string, git: GitRun = runGit): Promise<{ safe: boolean; reason?: string }> {
+export async function configSafe(dir: string, git: GitRun = runGit): Promise<{ safe: boolean; reason?: string }> {
   const names = await git(dir, ['config', '--list', '--name-only', '--show-scope']);
   if (names === undefined) return { safe: false, reason: 'git-config-unreadable' };
   const keys = commandKeys(names);
   return keys.length ? { safe: false, reason: 'repo-config-runs-commands' } : { safe: true };
+}
+
+export type CheckoutSafety =
+  | { ok: true; top: string }
+  | { ok: false; reason: 'not-a-checkout' | 'outside-session' }
+  | { ok: false; reason: 'repo-config-runs-commands' | 'git-config-unreadable' | 'repo-alternates'; top: string };
+
+const real = (p: string) => fs.realpath(p).catch(() => path.resolve(p));
+const inside = (p: string, roots: string[]) => roots.some((r) => p === r || p.startsWith(`${r}${path.sep}`));
+
+/**
+ * Whether the daemon may read the checkout at `dir` at all (.prd/27 §5): its work tree, git dir and common dir are inside
+ * `roots` (the session's folders), it borrows no other object store, and its config runs no command. `outside-session`
+ * and `not-a-checkout` mean it is not this session's checkout; the config reasons mean it is, but is not read.
+ */
+export async function checkoutSafety(dir: string, roots: string[], git: GitRun = runGit): Promise<CheckoutSafety> {
+  const out = await git(dir, [
+    'rev-parse',
+    '--path-format=absolute',
+    '--show-toplevel',
+    '--absolute-git-dir',
+    '--git-common-dir',
+  ]);
+  const lines = (out ?? '').split('\n').map((l) => l.trim());
+  if (lines.length < 3 || !lines[0] || !lines[1] || !lines[2]) return { ok: false, reason: 'not-a-checkout' };
+  const realRoots = await Promise.all((roots.length ? roots : [dir]).map(real));
+  const [top, gitDir, common] = await Promise.all(lines.slice(0, 3).map(real));
+  if (!inside(top, realRoots) || !inside(gitDir, realRoots) || !inside(common, realRoots)) {
+    return { ok: false, reason: 'outside-session' };
+  }
+  const alternates = await fs.readFile(path.join(common, 'objects', 'info', 'alternates'), 'utf8').catch(() => '');
+  if (alternates.trim()) return { ok: false, reason: 'repo-alternates', top };
+  const config = await configSafe(dir, git);
+  if (!config.safe) return { ok: false, reason: config.reason as 'repo-config-runs-commands', top };
+  return { ok: true, top };
 }
