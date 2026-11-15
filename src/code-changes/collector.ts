@@ -59,9 +59,12 @@ const hasChanges = (c: CheckoutChanges) =>
   c.uncommitted.files.length > 0 || c.committed.files.length > 0 || !!c.uncommitted.skipped || !!c.committed.skipped;
 
 /** Reasons a layer was not read this time though it can be: the last layer read stands, with the reason. */
-const RETRY_LATER = new Set(['git-diff-failed', CHANGED_DURING_READ, GIT_FAILED]);
-/** Reasons nothing of the checkout was read this time (not even its name): the last read stands whole. */
-const KEEP_WHOLE = new Set([CHANGED_DURING_READ, GIT_FAILED]);
+const RETRY_LATER = new Set(['git-diff-failed', 'git-config-unreadable', CHANGED_DURING_READ, GIT_FAILED]);
+/**
+ * Reasons nothing of the checkout was read this time (not even its name) and the next read may succeed: the last read
+ * stands whole. A refusal (the config runs commands, another object store, links) is not one — that checkout shows why.
+ */
+const KEEP_WHOLE = new Set(['git-config-unreadable', CHANGED_DURING_READ, GIT_FAILED]);
 
 /**
  * A checkout read against the stored one: a layer that could not be read this time (git failed, the git dir changed

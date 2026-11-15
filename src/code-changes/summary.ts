@@ -47,7 +47,9 @@ export function summarizeCodeChanges(doc: CodeChangesDoc): CodeChangesSummary {
       paths: [...new Set(paths)].slice(0, MAX_PATHS),
     };
     if (c.branch) entry.branch = c.branch;
-    if (c.uncommitted.skipped) entry.skipped = c.uncommitted.skipped;
+    // A layer not read this time says so, the committed one too: its counts are the last read's, not this one's.
+    const skipped = c.uncommitted.skipped ?? c.committed.skipped;
+    if (skipped) entry.skipped = skipped;
     repos.push(entry);
   }
   for (const p of doc.prs) {

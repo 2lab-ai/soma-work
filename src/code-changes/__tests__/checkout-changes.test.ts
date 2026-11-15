@@ -511,7 +511,7 @@ describe('the fourth review round (#1299)', () => {
     let swapped = false;
     let restored = false;
     const racing: GitRun = async (d, args) => {
-      if (!swapped && args.some((a) => a.startsWith('--git-dir='))) {
+      if (!swapped && args.includes('HEAD^{commit}')) {
         swapped = true;
         fs.renameSync(path.join(dir, '.git'), path.join(dir, '.git-real'));
         fs.symlinkSync(path.join(victim, '.git'), path.join(dir, '.git'));
@@ -701,7 +701,7 @@ describe('the fifth review round (#1299)', () => {
     let swapped = false;
     let restored = false;
     const racing: GitRun = async (d, args) => {
-      if (!swapped && args.some((a) => a.startsWith('--git-dir='))) {
+      if (!swapped && args.includes('HEAD^{commit}')) {
         swapped = true;
         fs.renameSync(wt, `${wt}.real`);
         fs.symlinkSync(victim, wt);
@@ -774,5 +774,118 @@ describe('the fifth review round (#1299)', () => {
     ]);
     git(dir, ['config', 'core.filemode', 'false']);
     expect((await checkoutChanges({ dir, sessionRoot: session }))!.uncommitted.files).toEqual([]);
+  });
+});
+
+describe('the sixth review round (#1299)', () => {
+  it("a linked worktree's commondir rewritten right after the gate first asked: the re-check refuses it", async () => {
+    const session = tmp('cc-commondir-');
+    const elsewhere = tmp('cc-commondir-victim-');
+    const dir = clone(session, 'svc');
+    git(dir, ['branch', 'side']);
+    const wt = path.join(session, 'wt');
+    git(dir, ['worktree', 'add', '-q', wt, 'side']);
+    // Another repository the daemon can read, with a private file on a branch of the same name.
+    const victim = clone(elsewhere, 'victim');
+    git(victim, ['checkout', '-q', '-b', 'side']);
+    write(victim, 'private/keys.txt', 'TOP-SECRET\n');
+    commitAll(victim, 'private');
+    const commondir = path.join(dir, '.git', 'worktrees', 'wt', 'commondir');
+    let rewritten = false;
+    const racing: GitRun = async (d, args) => {
+      const out = await runGit(d, args);
+      if (!rewritten && args.includes('--show-toplevel')) {
+        rewritten = true;
+        fs.writeFileSync(commondir, `${path.join(victim, '.git')}\n`);
+      }
+      return out;
+    };
+    const c = await checkoutChanges({ dir: wt, sessionRoot: session, git: racing });
+    expect(rewritten).toBe(true);
+    expect(JSON.stringify(c)).not.toContain('TOP-SECRET');
+    expect(JSON.stringify(c)).not.toContain('keys.txt');
+    expect(c!.uncommitted.skipped).toBe('repo-links-outside');
+  });
+
+  it('a file removed from the index only is one deletion, not a deletion and a new file', async () => {
+    const session = tmp('cc-rmcached-');
+    const dir = clone(session, 'svc');
+    git(dir, ['rm', '-q', '--cached', 'src/a.ts']);
+    const c = await checkoutChanges({ dir, sessionRoot: session });
+    expect(c!.uncommitted.files.map((f) => [f.path, f.status, f.deletions])).toEqual([['src/a.ts', 'deleted', 3]]);
+  });
+
+  it('a conflicted path with several index stages is listed once', async () => {
+    const session = tmp('cc-stages-');
+    const dir = clone(session, 'svc');
+    git(dir, ['checkout', '-q', '-b', 'feat']);
+    write(dir, 'src/a.ts', 'one\ntwo\nthree\nfour\n');
+    commitAll(dir, 'modify on feat');
+    git(dir, ['checkout', '-q', 'main']);
+    git(dir, ['rm', '-q', 'src/a.ts']);
+    git(dir, ['commit', '-q', '-m', 'delete on main']);
+    try {
+      git(dir, ['merge', '-q', 'feat']);
+    } catch {
+      // modify/delete conflict: src/a.ts is in the index at stages 1 and 3, not in HEAD.
+    }
+    const c = await checkoutChanges({ dir, sessionRoot: session });
+    expect(c!.uncommitted.files.filter((f) => f.path === 'src/a.ts')).toHaveLength(1);
+  });
+
+  it('HEAD that git fails to read is git-failed; a branch with no commit yet is read as one', async () => {
+    const session = tmp('cc-head-');
+    const dir = clone(session, 'svc');
+    const failing: GitRun = async (d, args) => (args.includes('HEAD^{commit}') ? undefined : runGit(d, args));
+    const c = await checkoutChanges({ dir, sessionRoot: session, git: failing });
+    expect(c).toMatchObject({ uncommitted: { files: [], skipped: 'git-failed' } });
+    const fresh = path.join(session, 'fresh');
+    fs.mkdirSync(fresh);
+    git(fresh, ['init', '-q', '-b', 'main']);
+    write(fresh, 'new.ts', 'n\n');
+    const f = await checkoutChanges({ dir: fresh, sessionRoot: session });
+    expect(f!.uncommitted.files.map((x) => [x.path, x.status])).toEqual([['new.ts', 'added']]);
+  });
+
+  it('a sha256 repository: the root commit range uses its own empty tree', async () => {
+    const session = tmp('cc-sha256-');
+    const dir = path.join(session, 'repo');
+    fs.mkdirSync(dir);
+    git(dir, ['init', '-q', '--object-format=sha256', '-b', 'main']);
+    write(dir, 'a.ts', '1\n2\n');
+    commitAll(dir, 'root');
+    const c = await checkoutChanges({ dir, sessionRoot: session, sessionStartedAt: Date.now() - 3600_000 });
+    expect(c!.committed.base).toBe('6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321');
+    expect(c!.committed.files.map((f) => [f.path, f.status, f.additions])).toEqual([['a.ts', 'added', 2]]);
+  });
+
+  it('a large file whose only change is CRLF line endings is unchanged', async () => {
+    const session = tmp('cc-crlf-');
+    const dir = clone(session, 'svc');
+    const body = Array.from({ length: 120_000 }, (_, i) => `line ${i}`);
+    write(dir, 'big.txt', `${body.join('\n')}\n`);
+    commitAll(dir, 'big');
+    write(dir, 'big.txt', `${body.join('\r\n')}\r\n`);
+    const c = await checkoutChanges({ dir, sessionRoot: session });
+    expect(c!.uncommitted.files).toEqual([]);
+  });
+
+  it('the nearest of several session PR heads under HEAD is the base', async () => {
+    const session = tmp('cc-nearest-');
+    const dir = clone(session, 'svc');
+    git(dir, ['checkout', '-q', '-b', 'feat/stack']);
+    write(dir, 'one.ts', '1\n');
+    const first = commitAll(dir, 'first PR');
+    write(dir, 'two.ts', '2\n');
+    const second = commitAll(dir, 'second PR');
+    write(dir, 'three.ts', '3\n');
+    commitAll(dir, 'after both');
+    const c = await checkoutChanges({
+      dir,
+      sessionRoot: session,
+      prHeads: [{ headSha: first }, { headSha: second }],
+    });
+    expect(c!.committed.base).toBe(second);
+    expect(c!.committed.files.map((f) => f.path)).toEqual(['three.ts']);
   });
 });

@@ -281,6 +281,25 @@ export async function checkoutSafety(dir: string, roots: string[], git: GitRun =
       if ((await witness.note(path.join(d, f))) === 'link') return { ok: false, reason: 'repo-links-outside', top };
     }
   }
+  // What git resolved before the folders were noted could have been rewritten meanwhile (a `commondir` pointing at
+  // another repository): ask again, pinned the way every later call is, now that a rewrite after this is witnessed.
+  const again = await git(top, [
+    `--git-dir=${gitDir}`,
+    `--work-tree=${top}`,
+    'rev-parse',
+    '--path-format=absolute',
+    '--absolute-git-dir',
+    '--git-common-dir',
+  ]);
+  const [gitDir2, common2] = await Promise.all(
+    (again ?? '')
+      .split('\n')
+      .map((l) => l.trim())
+      .slice(0, 2)
+      .map(real),
+  );
+  if (again === undefined) return { ok: false, reason: 'git-failed' };
+  if (gitDir2 !== gitDir || common2 !== common) return { ok: false, reason: 'repo-links-outside', top };
   const config = await configSafe(dir, git);
   if (!config.safe) return { ok: false, reason: config.reason as 'repo-config-runs-commands', top };
   return { ok: true, top, gitDir, witness };

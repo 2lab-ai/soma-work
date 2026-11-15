@@ -591,4 +591,45 @@ describe('the fourth review round (#1299)', () => {
     await sessionPrChanges([url], START, merged, again);
     expect(again.fetchPullDetail).not.toHaveBeenCalled();
   });
+
+  it('a config that could not be read this time keeps the last read whole; the summary says a committed layer was not read', () => {
+    const old = checkout();
+    const unread = checkout({
+      repo: 'local:web',
+      uncommitted: { files: [], additions: 0, deletions: 0, skipped: 'git-config-unreadable' },
+      committed: { files: [], additions: 0, deletions: 0, commits: [], skipped: 'git-config-unreadable' },
+    });
+    const kept = keepLastRead(unread, old);
+    expect(kept.repo).toBe('acme/web');
+    expect(kept.uncommitted).toMatchObject({ skipped: 'git-config-unreadable', additions: 1 });
+    // A refusal is not kept over: that checkout shows why it is not read.
+    const refused = checkout({
+      uncommitted: { files: [], additions: 0, deletions: 0, skipped: 'repo-config-runs-commands' },
+      committed: { files: [], additions: 0, deletions: 0, commits: [], skipped: 'repo-config-runs-commands' },
+    });
+    expect(keepLastRead(refused, old)).toBe(refused);
+    const doc: CodeChangesDoc = {
+      version: 1,
+      conversationId: 'c',
+      owner: { id: 'U', name: 'u' },
+      updatedAt: 1,
+      checkouts: [
+        checkout({ committed: { files: [], additions: 0, deletions: 0, commits: [], skipped: 'git-diff-failed' } }),
+      ],
+      prs: [],
+      counted: { commits: [] },
+    };
+    expect(summarizeCodeChanges(doc).repos[0].skipped).toBe('git-diff-failed');
+  });
+
+  it('a moved PR head reads its files again', async () => {
+    const url = 'https://github.com/acme/web/pull/9';
+    const first = await sessionPrChanges([url], START, [], prDeps({ 9: detail(9, { head_sha: 'a'.repeat(40) }) }));
+    const same = prDeps({ 9: detail(9, { head_sha: 'a'.repeat(40) }) });
+    await sessionPrChanges([url], START, first, same);
+    expect(same.fetchPullFiles).not.toHaveBeenCalled();
+    const pushed = prDeps({ 9: detail(9, { head_sha: 'b'.repeat(40) }) });
+    await sessionPrChanges([url], START, first, pushed);
+    expect(pushed.fetchPullFiles).toHaveBeenCalledTimes(1);
+  });
 });

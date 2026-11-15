@@ -52,8 +52,4 @@ export class PathWitness {
     }
     return true;
   }
-
-  get size(): number {
-    return this.marks.size;
-  }
 }

@@ -55,6 +55,25 @@ describe('code-changes service', () => {
         },
       }),
     ).toEqual(['https://github.com/a/b/pull/3', 'https://github.com/a/b/pull/1']);
+    // The history is oldest first on the session: the newest comes right after the current one (the collect's cap
+    // keeps the first ones).
+    expect(
+      sessionPrUrls({
+        links: { pr: { url: 'https://github.com/a/b/pull/9' } },
+        linkHistory: {
+          prs: [
+            { url: 'https://github.com/a/b/pull/4' },
+            { url: 'https://github.com/a/b/pull/5' },
+            { url: 'https://github.com/a/b/pull/6' },
+          ],
+        },
+      }),
+    ).toEqual([
+      'https://github.com/a/b/pull/9',
+      'https://github.com/a/b/pull/6',
+      'https://github.com/a/b/pull/5',
+      'https://github.com/a/b/pull/4',
+    ]);
   });
 
   it('a turn-end snapshot reads the session’s folders and writes its summary, persists, pushes the card', async () => {

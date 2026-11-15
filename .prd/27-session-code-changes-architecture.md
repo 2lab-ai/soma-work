@@ -83,7 +83,7 @@ worktree. 브랜치 · 원격 조건 없이 전부(재조정기는 여기에 자
 1. `git ls-tree -r -z -l HEAD`(객체 읽기)로 추적 파일의 blob id · 크기.
 2. 파일마다 이 프로세스가 lstat → 크기가 다르면 바뀜, 같으면 바이트의 git blob id(sha1 · sha256)를 계산해 비교. 같다고 확인한 파일은 stat(크기 · mtime · inode)로 기억해 다음엔 읽지 않는다. 없으면 삭제. 심볼릭 링크는 따라가지 않고 링크 대상 문자열을 blob과 비교만 한다 — 바뀌었다는 사실만 남기고 대상 문자열은 싣지 않는다. 파일 읽기는 전부 `readInside`(§5).
 3. 바뀐 파일의 패치 = `git cat-file blob`(객체 읽기)과 파일 바이트의 줄 diff(`lineDiff`, Myers, 문맥 3줄). 줄 끝만 다르면 바뀌지 않은 것으로 본다. 패치를 남기지 않는 파일(1 MiB 초과, 패치 300개 소진, diff 한도 초과)도 줄 수는 센다 — 1 MiB까지는 `lineDiff`, 8 MiB까지는 줄 다중집합 차(옮긴 줄은 안 바뀐 것으로), 층당 읽기 64 MiB까지. 추적 파일이 1,000개에서 멈추면 `truncated`.
-4. 새 파일 = 인덱스에만 있는 것(`ls-files --cached` − HEAD) + 추적 안 하는 것(`ls-files --others --exclude-standard`, 이름만). lstat 일반 파일만 `readInside`로 읽고, 앞 8 KiB에 NUL이면 바이너리, 내용으로 `@@ -0,0 +1,N @@` 패치(패치도 256 KiB로 자름). `ls-tree` · `ls-files`가 실패하면 층은 `skipped: 'git-diff-failed'`.
+4. 새 파일 = 인덱스에만 있는 것(`ls-files --cached` − HEAD) + 추적 안 하는 것(`ls-files --others --exclude-standard`, 이름만) — 경로마다 한 번(충돌 중인 경로는 stage마다 나온다), HEAD에 있는 경로는 빼고. HEAD에 있는데 인덱스에만 없는 파일(`git rm --cached`)은 삭제 하나로 센다(blob의 줄 수). lstat 일반 파일만 `readInside`로 읽고, 앞 8 KiB에 NUL이면 바이너리, 내용으로 `@@ -0,0 +1,N @@` 패치(패치도 256 KiB로 자름). `ls-tree` · `ls-files`가 실패하면 층은 `skipped: 'git-diff-failed'`.
 5. 이름 바꾸기는 찾지 않는다(삭제 + 추가로 보인다).
 
 커밋함:
@@ -94,8 +94,11 @@ worktree. 브랜치 · 원격 조건 없이 전부(재조정기는 여기에 자
 5. `git log base..HEAD -n 50`(커밋 목록) + `git diff base HEAD -M`(numstat · name-status · 패치). 파일 목록(numstat · name-status)을 못 읽으면 `skipped: 'git-diff-failed'` — "커밋 없음"이 아니다. 상태(추가 · 삭제 · 이름 바꿈)는 name-status에서 오므로, 패치를 안 남긴 파일(1,000개 초과, 패치 명령 실패 · 출력 상한 초과)도 상태를 지키고 `patchTruncated`로 표시된다.
 6. 세션 PR head는 PR 저장소 또는 head 저장소(포크의 브랜치, `headRepo`)가 이 체크아웃의 원격과 같을 때 후보가 된다.
 
-읽기에 실패한 층(`git-diff-failed`, `repo-changed-during-read`, `git-failed`)은 저장본의 마지막 읽기를 사유와 함께 그대로 둔다(`keepLastRead`).
-`repo-changed-during-read` · `git-failed`(`.git`이 있는 폴더에서 git이 답하지 않음 — 시간 초과 · 잠금; 체크아웃이 없는 것과 다르다)면
+HEAD를 못 읽으면 커밋이 아직 없는 브랜치인지(`for-each-ref`가 빈 답으로 성공) 확인하고, 아니면 `git-failed` — 모든 파일을 새 파일로 읽지 않는다.
+sha256 저장소는 제 빈 트리(`6ef19b41…`)를 루트 커밋 범위의 기준점으로 쓴다. 1 MiB 넘는 파일이 줄 끝(CRLF)만 다르면 바뀌지 않은 것이다.
+
+읽기에 실패한 층(`git-diff-failed`, `git-config-unreadable`, `repo-changed-during-read`, `git-failed`)은 저장본의 마지막 읽기를 사유와 함께 그대로 둔다(`keepLastRead`).
+`git-config-unreadable` · `repo-changed-during-read` · `git-failed`(`.git`이 있는 폴더에서 git이 답하지 않음 — 시간 초과 · 잠금; 체크아웃이 없는 것과 다르다)면
 그 체크아웃의 이번 읽기는 이름(원격)까지 전부 버린다. 추적 파일의 실행 권한이 바뀌면(`core.filemode`가 false가 아닐 때) 내용이
 같아도 바뀐 것이다(`modeChange: '100644 → 100755'`).
 
@@ -149,6 +152,10 @@ PR — 세션의 PR 링크(현재 + 기록) 중 GitHub URL만, 최대 20. 저장
     항목은 제 ctime이 바뀌고 어떤 프로세스도 ctime을 되돌리지 못한다(`utimes`는 지금으로 만든다) — 하나라도 다르면 그 읽기를 버리고
     `skipped: 'repo-changed-during-read'`(지표로 넘기는 새 커밋도 없음). 시험: 읽는 동안 `.git`을 다른 저장소로 바꿨다 되돌리면, 증인
     확인을 빼면 그 저장소의 비공개 파일이 패치로 새고, 넣으면 아무것도 남지 않는다.
+  - 처음 물은 답과 기록 사이: 게이트가 처음 `rev-parse`로 git dir · common dir을 얻은 뒤 폴더 · 포인터 파일을 적기 전에 `commondir`가
+    다른 저장소로 바뀔 수 있다. 그래서 다 적은 뒤 이후 호출과 똑같이 고정한 git으로 다시 묻고, 같은 git dir · common dir이 아니면 읽지
+    않는다(`repo-links-outside`) — 그 뒤의 재작성은 증인이 본다. 시험: 첫 답 직후 `commondir`을 다른 저장소로 바꾸면, 다시 묻기를 빼면
+    그 저장소의 비공개 파일이 새고, 넣으면 거절된다.
   - 경계: 세션 폴더 위(유저 폴더 등)는 샌드박스가 쓰지 못한다는 전제다 — 세션 폴더 자신을 옮겼다 되돌리면 제 ctime으로 잡힌다.
 - diff 접두사는 `--src-prefix=a/ --dst-prefix=b/`로 고정(`diff.noprefix` 저장소에서도 패치가 맞음).
 - 저장본 검증: 읽는 쪽이 검사 없이 쓰는 필드(경로 · 상태 · 줄 수 · 패치 문자열 · PR 번호 · 상태)가 틀리면 `.bak`으로 넘어간다.

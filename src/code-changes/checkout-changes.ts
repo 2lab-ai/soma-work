@@ -23,8 +23,11 @@ import {
 import { checkoutSafety, type GitRun, type GitRunBytes, pinGit, runGit, runGitBytes } from './git-runner';
 import type { ChangedFile, CheckoutChanges, CommitRef, LayerFiles } from './types';
 
-/** git's empty tree: the base of a checkout with no commit, and of a root commit's range. */
+/** git's empty tree (sha1): the base of a checkout with no commit, and of a root commit's range. */
 export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+/** The same in a sha256 repository. */
+export const EMPTY_TREE_SHA256 = '6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321';
+const emptyTreeOf = (format: 'sha1' | 'sha256') => (format === 'sha256' ? EMPTY_TREE_SHA256 : EMPTY_TREE);
 export const MAX_LAYER_FILES = 1000;
 const MAX_UNTRACKED_PATCHES = 200;
 const MAX_COMMITS_LISTED = 50;
@@ -236,6 +239,12 @@ interface Budget {
   countBytes: number;
 }
 
+/** Two texts equal once every \r before a \n is dropped (a checkout with CRLF line endings, its blob with LF). */
+function sameIgnoringCr(a: Buffer, b: Buffer): boolean {
+  const strip = (buf: Buffer) => buf.toString('latin1').replace(/\r\n/g, '\n');
+  return strip(a) === strip(b);
+}
+
 /** A change whose lines could not be counted (a side unreadable or too large). */
 const uncounted = (rel: string, status: ChangedFile['status']): ChangedFile => ({
   path: rel,
@@ -280,7 +289,8 @@ function change(
       return file;
     }
   }
-  // Too large or too changed to diff here: counted as multisets, no patch.
+  // Too large or too changed to diff here: counted as multisets, no patch. Only line endings differing is no change.
+  if (status === 'modified' && sameIgnoringCr(before, after)) return undefined;
   const counts = lineCounts(before, after);
   file.additions = counts.additions;
   file.deletions = counts.deletions;
@@ -387,14 +397,39 @@ async function newFile(realTop: string, rel: string, budget: Budget): Promise<Ch
   return file;
 }
 
+/** A HEAD file the index no longer has: a deletion, its lines counted from the blob. */
+async function stagedDeletion(
+  gitBytes: GitRunBytes,
+  realTop: string,
+  e: TreeEntry,
+  budget: Budget,
+): Promise<ChangedFile | undefined> {
+  if (e.mode === '120000') return uncounted(e.path, 'deleted');
+  const fits = e.size <= MAX_PATCH_SOURCE || (e.size <= MAX_HASH_BYTES && budget.countBytes >= e.size);
+  if (fits && e.size > MAX_PATCH_SOURCE) budget.countBytes -= e.size;
+  const blob = fits ? await gitBytes(realTop, ['cat-file', 'blob', e.sha]) : undefined;
+  return change(e.path, 'deleted', blob, Buffer.alloc(0), budget);
+}
+
+/**
+ * Whether HEAD names a branch with no commit yet. `for-each-ref` answers an empty list (and succeeds) for a ref that does
+ * not exist, so a failed git (undefined) is told apart from a branch not born yet.
+ */
+async function unborn(git: GitRun, top: string): Promise<boolean> {
+  const ref = trim(await git(top, ['symbolic-ref', '--quiet', 'HEAD']));
+  if (!ref) return false;
+  const tip = await git(top, ['for-each-ref', '--format=%(objectname)', ref]);
+  return tip !== undefined && tip.trim() === '';
+}
+
 async function uncommittedLayer(
   git: GitRun,
   gitBytes: GitRunBytes,
   top: string,
   head: string | undefined,
+  format: 'sha1' | 'sha256',
 ): Promise<CheckoutChanges['uncommitted']> {
   const failed = (skipped: string) => ({ files: [], additions: 0, deletions: 0, skipped });
-  const format = trim(await git(top, ['rev-parse', '--show-object-format'])) === 'sha256' ? 'sha256' : 'sha1';
   const listing = head ? await git(top, ['ls-tree', '-r', '-z', '-l', '--full-tree', head]) : '';
   // git's own default is true; a checkout on a filesystem without modes says false.
   const filemode = trim(await git(top, ['config', '--bool', 'core.filemode'])) !== 'false';
@@ -405,6 +440,8 @@ async function uncommittedLayer(
   const indexed = await git(top, ['ls-files', '-z', '--cached']);
   const others = await git(top, ['ls-files', '--others', '--exclude-standard', '-z']);
   if (indexed === undefined || others === undefined) return failed('git-diff-failed');
+  // One name per path: a conflicted path is listed once per stage.
+  const inIndex = new Set(indexed.split('\0').filter(Boolean));
   // `top` is the gate's real path, witnessed: files are read under it as checked, never under a fresh resolve.
   const realTop = top;
   const budget: Budget = { patches: MAX_PATCHES, countBytes: MAX_COUNT_BYTES };
@@ -415,11 +452,19 @@ async function uncommittedLayer(
       truncated = true;
       break;
     }
-    const f = await trackedChange(gitBytes, realTop, e, format, budget, filemode);
+    // Removed from the index only (`git rm --cached`): committing now deletes it, whatever the work tree holds.
+    const f = inIndex.has(e.path)
+      ? await trackedChange(gitBytes, realTop, e, format, budget, filemode)
+      : await stagedDeletion(gitBytes, realTop, e, budget);
     if (f) files.push(f);
   }
   const inTree = new Set(tree.map((e) => e.path));
-  const names = [...indexed.split('\0').filter((n) => n && !inTree.has(n)), ...others.split('\0').filter(Boolean)];
+  // A HEAD path is reported once, above — not again as untracked when only the index lost it.
+  const names = [
+    ...new Set(
+      [...inIndex].filter((n) => !inTree.has(n)).concat(others.split('\0').filter((n) => n && !inTree.has(n))),
+    ),
+  ];
   const newBudget: Budget = { patches: Math.min(budget.patches, MAX_UNTRACKED_PATCHES), countBytes: budget.countBytes };
   for (const name of names) {
     if (truncated) break;
@@ -451,6 +496,7 @@ export async function committedBase(
   head: string,
   prHeads: PrHead[],
   startedAt?: number,
+  emptyTree: string = EMPTY_TREE,
 ): Promise<string | undefined> {
   let base: string | undefined;
   // Every session PR head HEAD contains — this branch's own, or one under it (stacked branches) — and of those the one
@@ -482,21 +528,27 @@ export async function committedBase(
     const shas = (list ?? '').split('\n').filter(Boolean);
     if (shas.length === 0) return head;
     const oldest = shas[shas.length - 1];
-    base = trim(await git(dir, ['rev-parse', '--verify', '--quiet', `${oldest}^`])) || EMPTY_TREE;
+    base = trim(await git(dir, ['rev-parse', '--verify', '--quiet', `${oldest}^`])) || emptyTree;
   }
   // Only for a base that is not a session PR head (that one is the session's own baseline), and only along the base's
   // own line: a pre-session commit merged in from elsewhere (a second parent) never becomes the base (#1299 review).
   if (since !== undefined && base !== head && !fromPr) {
-    const range = base === EMPTY_TREE ? [head] : [`${base}..${head}`];
+    const range = base === emptyTree ? [head] : [`${base}..${head}`];
     const before = trim(await git(dir, ['rev-list', '--first-parent', `--before=${since}`, '--max-count=1', ...range]));
-    const onLine = base === EMPTY_TREE || (!!before && (await isAncestor(git, dir, base, before)));
+    const onLine = base === emptyTree || (!!before && (await isAncestor(git, dir, base, before)));
     if (before && SHA.test(before) && onLine && (await isAncestor(git, dir, before, head))) base = before;
   }
   return base;
 }
 
-async function commitsOf(git: GitRun, dir: string, base: string, head: string): Promise<CommitRef[]> {
-  const range = base === EMPTY_TREE ? [head] : [`${base}..${head}`];
+async function commitsOf(
+  git: GitRun,
+  dir: string,
+  base: string,
+  head: string,
+  emptyTree: string,
+): Promise<CommitRef[]> {
+  const range = base === emptyTree ? [head] : [`${base}..${head}`];
   const out = await git(dir, [
     'log',
     '--no-show-signature',
@@ -519,16 +571,17 @@ async function committedLayer(
   dir: string,
   head: string | undefined,
   prHeads: PrHead[],
+  emptyTree: string,
   startedAt?: number,
 ): Promise<CheckoutChanges['committed']> {
   const empty = { files: [], additions: 0, deletions: 0, commits: [] };
   if (!head) return empty;
-  const base = await committedBase(git, dir, head, prHeads, startedAt);
+  const base = await committedBase(git, dir, head, prHeads, startedAt, emptyTree);
   if (!base || base === head) return base ? { ...empty, base } : empty;
   const files = await diffFiles(git, dir, base, head);
   // A failed diff is not "nothing committed": the collector keeps the last layer read, with the reason.
   if (!files) return { ...empty, base, skipped: 'git-diff-failed' };
-  return { ...layer(files, false), base, commits: await commitsOf(git, dir, base, head) };
+  return { ...layer(files, false), base, commits: await commitsOf(git, dir, base, head, emptyTree) };
 }
 
 /**
@@ -561,12 +614,15 @@ export async function checkoutChanges(input: CheckoutInput): Promise<CheckoutRea
   const top = safety.top;
   const head = trim(await git(top, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'])) || undefined;
   const branch = trim(await git(top, ['symbolic-ref', '--quiet', '--short', 'HEAD'])) || undefined;
+  // No HEAD commit: a branch with no commit yet — or git failed, which must not read every file as new.
+  if (!head && !(await unborn(git, top))) return unread(GIT_FAILED);
+  const format = trim(await git(top, ['rev-parse', '--show-object-format'])) === 'sha256' ? 'sha256' : 'sha1';
   const remote = githubRemoteOf(trim(await git(top, ['config', '--get', 'remote.origin.url'])));
   const repo = remote ? `${remote.owner}/${remote.name}`.toLowerCase() : `local:${path.basename(dir)}`;
-  const uncommitted = await uncommittedLayer(git, gitBytes, top, head);
+  const uncommitted = await uncommittedLayer(git, gitBytes, top, head, format);
   // A PR bounds this checkout when it is this repository's, or its head is (a fork's branch, the PR upstream).
   const prHeads = (input.prHeads ?? []).filter((p) => !p.repo || p.repo === repo || p.headRepo === repo);
-  const committed = await committedLayer(git, top, head, prHeads, input.sessionStartedAt);
+  const committed = await committedLayer(git, top, head, prHeads, emptyTreeOf(format), input.sessionStartedAt);
   const made = input.commits ? await sessionCommits(top, input.commits.since, input.commits.skip, git) : undefined;
   // Everything above came from the git dirs as checked — or they changed meanwhile, and none of it is kept.
   if (!(await safety.witness.intact())) return unread(CHANGED_DURING_READ);
