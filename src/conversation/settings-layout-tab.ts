@@ -583,8 +583,8 @@ function layDetailHtml(d) {
     if (spec.tabs.indexOf(_layPvTab) >= 0) html += '<div class="pv-tabbody">' + layDetailTabBody(_layPvTab, spec) + '</div>';
   }
   // 아래: 대화 · 작업 로그 (+ 에이전트 트리), the chat, the model line, the composer.
-  if (has('sections')) html += '<div class="pv-tabs"><span>대화</span><span>작업 로그</span><span>에이전트 트리</span></div>';
-  else if (has('logtab')) html += '<div class="pv-tabs"><span>대화</span><span>작업 로그</span></div>';
+  if (has('sections')) html += '<div class="pv-tabs"><span>대화</span><span>작업 로그</span><span>변경점</span><span>에이전트 트리</span></div>';
+  else if (has('logtab')) html += '<div class="pv-tabs"><span>대화</span><span>작업 로그</span><span>변경점</span></div>';
   // 입력 필요: the chat's last message (SSOT 2026-11-13) — the conversation above it is what the answer needs.
   html += '<div class="pv-chat"><div class="pv-msg">폼 검증도 넣어 줘</div><div class="pv-msg is-bot">검증 규칙 4개를 추가했습니다. 카드 번호 · 만료일 · CVC · 이름…</div>'
     + (_laySample === 'wait' ? '<div class="lay-pv-ask"><b>입력 필요</b> dev에 먼저 배포할까요?</div>' : '') + '</div>';

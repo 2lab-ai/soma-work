@@ -887,19 +887,19 @@ describe('P5 — 미니멀’s detail card: the chat is a tab view with the work
     }
   });
 
-  it('the strip’s tabs are the plan’s: 대화 · 작업 로그 in minimal, 대화 · 작업 로그 · 에이전트 트리 in advanced', () => {
+  it('the strip’s tabs are the plan’s: 대화 · 작업 로그 · 변경점 in minimal, 대화 · 작업 로그 · 변경점 · 에이전트 트리 in advanced (.prd/26)', () => {
     for (const p of PLANS) {
       const el = strip();
       const env = sectionsEnv(el);
       env.__set('_viewPlan', p);
       env.renderPanelSections();
-      expect(ids(el.data), `minimal ${p}`).toEqual(['conv', 'log']);
-      expect(el.data.tabs.map((t: { label: string }) => t.label)).toEqual(['대화', '작업 로그']);
+      expect(ids(el.data), `minimal ${p}`).toEqual(['conv', 'log', 'changes']);
+      expect(el.data.tabs.map((t: { label: string }) => t.label)).toEqual(['대화', '작업 로그', '변경점']);
       expect(el.data.value).toBe('conv');
       // The same section in another mode is another strip: it draws again.
       env.__set('_viewMode', 'advanced');
       env.renderPanelSections();
-      expect(ids(el.data), `advanced ${p}`).toEqual(['conv', 'log', 'tree']);
+      expect(ids(el.data), `advanced ${p}`).toEqual(['conv', 'log', 'changes', 'tree']);
     }
   });
 
@@ -910,12 +910,12 @@ describe('P5 — 미니멀’s detail card: the chat is a tab view with the work
     env.__set('_viewMode', 'advanced');
     env.__set('_psec', 'tree');
     env.renderPanelSections();
-    expect(ids(el.data)).toEqual(['conv', 'log', 'tree']);
+    expect(ids(el.data)).toEqual(['conv', 'log', 'changes', 'tree']);
     env.__set('_viewMode', 'minimal');
     env.rerenderForViewMode();
     expect(env.__get('_psec')).toBe('conv');
     expect(el.data.value).toBe('conv');
-    expect(ids(el.data)).toEqual(['conv', 'log']);
+    expect(ids(el.data)).toEqual(['conv', 'log', 'changes']);
     expect(calls).toContain('paint:conv');
     // 작업 로그 is in both strips: the reader stays on it, and the strip redraws with the mode's tabs.
     env.__set('_viewMode', 'advanced');
@@ -926,11 +926,11 @@ describe('P5 — 미니멀’s detail card: the chat is a tab view with the work
     env.rerenderForViewMode();
     expect(env.__get('_psec')).toBe('log');
     expect(el.data.value).toBe('log');
-    expect(ids(el.data)).toEqual(['conv', 'log']);
+    expect(ids(el.data)).toEqual(['conv', 'log', 'changes']);
     expect(calls.filter((c) => c.startsWith('clear:') || c.startsWith('paint:'))).toEqual([]);
     env.__set('_viewMode', 'advanced');
     env.rerenderForViewMode();
-    expect(ids(el.data)).toEqual(['conv', 'log', 'tree']);
+    expect(ids(el.data)).toEqual(['conv', 'log', 'changes', 'tree']);
   });
 
   it('a subagent’s 열기 in the work log moves the card only with the 에이전트 tab (its strip is the way back)', () => {

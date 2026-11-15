@@ -176,6 +176,7 @@ import { soundClientJs } from './sound-client';
 import { bootScreenCss, withBootScreen } from './boot-screen';
 import { themeClientJs } from './theme-client';
 import { renderTaskPlanHtml, renderTaskPlanPage, TASK_PLAN_CSS, TASK_PLAN_PAGE_CSP } from './task-plan-html';
+import { CODE_CHANGES_CSS, CODE_CHANGES_JS } from './code-changes-client';
 import { ensureTitleSub, regenerateTitleSub, type TitleSubResult } from './title-sub';
 import {
   fillUiIcons,
@@ -297,6 +298,11 @@ export interface KanbanSession {
     totalLinesAdded: number;
     totalLinesDeleted: number;
   };
+  /**
+   * .prd/26 — when the session's code changes were last collected (epoch ms): an open 변경점 tab reads them again when
+   * this moves. A time only — the board goes to every signed-in viewer, the changes to the owner and admins.
+   */
+  codeChangesAt?: number;
   /**
    * Token usage — session totals of every token kind and the API-equivalent
    * cost. While a turn runs, the calls it has made so far are folded in
@@ -2765,6 +2771,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
           totalLinesDeleted: s.mergeStats.totalLinesDeleted,
         }
       : undefined,
+    codeChangesAt: s.codeChanges?.updatedAt,
     tokenUsage: tokenUsageOf(s),
     sessionOutputTokens: sessionOutputTokensOf(s),
     doneAt: liveDoneAt(s),
@@ -5962,6 +5969,10 @@ ${uiLibKitCss()}
 <style id="task-plan-css">
 ${TASK_PLAN_CSS}
 </style>
+<!-- 변경점 (.prd/26 §4): the detail card's changes tab and its full-screen file viewer (src/conversation/code-changes-client.ts). -->
+<style id="code-changes-css">
+${CODE_CHANGES_CSS}
+</style>
 <style>
 /* ═══ @2lab.ai/ui language (ui.2lab.ai) ═══ Calm neutral planes, soft 6–16px rounding, medium weights,
    colour only where it carries status, one ink primary per surface, short ease-out motion. */
@@ -7663,6 +7674,11 @@ ${pageTokenAliases()}
                this page's <ui-tool-call-card> children in each entry's tool-<seq> slot (wlPaint). -->
           <div class="psec psec-el ui-tok" id="psec-log" slot="log">
             <ui-work-log class="worklog-list" id="worklog-list" lang="ko"></ui-work-log>
+          </div>
+          <!-- 변경점 (.prd/26 §4): what the session did to code — summary, scope, its PRs, repo → directory → file tree;
+               a file opens the full-screen viewer (#chg-viewer). Painted by chgPaint (code-changes-client.ts). -->
+          <div class="psec psec-el ui-tok" id="psec-changes" slot="changes">
+            <div class="panel-changes" id="panel-changes"></div>
           </div>
           <!-- 지시와 답변 (D3 G-01..G-13, E-25): @2lab.ai/ui <ui-conversation> — its own scroll box
                (<ui-log-scroller>: follows the newest turn, keeps the place while older pages go in
@@ -13305,6 +13321,7 @@ var VIEW_BUILTINS = ${JSON.stringify(BUILTIN_PRESETS)};
 ${VIEW_LAYOUT_CLIENT_JS}
 ${DICTATION_PREF_JS}
 ${DICTATION_SERVER_JS}
+${CODE_CHANGES_JS}
 ${DICTATION_BROWSER_JS}
 var VIEW_LAYOUT_KEY = 'soma-view-layout';
 var _viewLayout = { v: 1 }; // the user's saved layouts (GET /api/settings/dashboard-layout); the device keeps a copy
@@ -13649,12 +13666,12 @@ function renderAgentConv() {
 // is the keyboard path; ui-load-older → this page's loader) and the reader keeps
 // their place. A new item at the bottom follows a reader who is there; one
 // reading higher keeps their place and gets the element's pill to the newest.
-var PSEC_ORDER = ['conv', 'log', 'tree'];
+var PSEC_ORDER = ['conv', 'log', 'changes', 'tree'];
 // The element that draws each section as its own scroll box: 지시와 답변
 // (<ui-conversation>), 작업 로그 (<ui-work-log>), 에이전트 트리 (<ui-log-scroller>
 // around the one <ui-agent-tree> — D3-GAPS G1-1, closed by 0.12.0: the scroller
 // holds the reader's row through the tree's open shadow root).
-var PSEC_EL = { conv: 'panel-conv', log: 'worklog-list', tree: 'panel-tree' };
+var PSEC_EL = { conv: 'panel-conv', log: 'worklog-list', changes: 'panel-changes', tree: 'panel-tree' };
 function psecEl(sec) {
   var id = PSEC_EL[sec || _psec];
   return id ? document.getElementById(id) : null;
@@ -13674,7 +13691,7 @@ function psecForLanding(land) {
 // 2026-11-03) the chat and the work log; a layout with neither, the chat alone (SSOT 2026-11-01).
 function psecShown() {
   if (detailShows('sections')) return PSEC_ORDER;
-  return detailShows('logtab') ? ['conv', 'log'] : ['conv'];
+  return detailShows('logtab') ? ['conv', 'log', 'changes'] : ['conv'];
 }
 // The section an opening lands on: the landing's, when the strip shows it — else the chat (미니멀's default too).
 function psecForMode(land) {
@@ -13686,6 +13703,7 @@ function psecForMode(land) {
 var PSEC_TABS = [
   { id: 'conv', label: '대화', title: '지시와 답변' },
   { id: 'log', label: '작업 로그' },
+  { id: 'changes', label: '변경점', title: '세션이 바꾼 코드' },
   { id: 'tree', label: '에이전트 트리', icon: 'tree', end: true },
 ];
 // Pure: the section box height — the rest of the panel under the surface, Tasks
@@ -13768,6 +13786,13 @@ function psecClear(sec) {
   } else if (sec === 'log') {
     wlClear();
     if (_wl) _wl.painted = false;
+  } else if (sec === 'changes') {
+    // .prd/26: its state (_chg) stays; the tree's nodes go.
+    var chg = document.getElementById('panel-changes');
+    if (chg) {
+      chg.innerHTML = '';
+      chg._chgHtml = '';
+    }
   } else if (sec === 'tree') {
     var tree = document.getElementById('panel-tree');
     if (tree) {
@@ -13784,7 +13809,12 @@ function psecClear(sec) {
 function paintSection(sec) {
   if (sec === 'conv') convPaint();
   else if (sec === 'log') wlPaint();
-  else paintTreeTab();
+  else if (sec === 'changes') {
+    if (typeof chgOpen === 'function') {
+      chgWire();
+      chgOpen(panelConvId || '');
+    }
+  } else paintTreeTab();
 }
 // Show the section tab sec: the others leave the DOM; this one is painted from
 // its data and lands on its newest items. (A key or a click keeps the element's
@@ -18957,6 +18987,8 @@ function connectWs() {
           // Spec 12: the agent tree moved (spawn, status, tool count, a node's tasks);
           // spec 13: the live numbers (tokens, cost, timer) move with every push.
           repaintPanelSession();
+          // .prd/26: the session's code changes were collected again — the open 변경점 tab reads them.
+          if (_psec === 'changes' && typeof chgNoteCard === 'function') chgNoteCard(panelConvId, msg.session.codeChangesAt);
         }
       } else if (msg.type === 'artifact_update' && msg.conversationId) {
         // SSOT 2026-10-23 — a new file / markdown answer; the card face itself

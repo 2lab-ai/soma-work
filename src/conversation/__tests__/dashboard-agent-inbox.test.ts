@@ -442,7 +442,7 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     expect(body.indexOf('_psec = psecForMode(_panelLand);')).toBeGreaterThan(-1);
     expect(fnBody('psecForMode')).toContain('var sec = psecForLanding(land);');
     expect(fnBody('psecForMode')).toContain("return psecShown().indexOf(sec) >= 0 ? sec : 'conv';");
-    expect(fnBody('psecShown')).toContain("return detailShows('logtab') ? ['conv', 'log'] : ['conv'];");
+    expect(fnBody('psecShown')).toContain("return detailShows('logtab') ? ['conv', 'log', 'changes'] : ['conv'];");
     expect(body.indexOf('selectPanelSection(_psec);')).toBeGreaterThan(reset);
     expect(fnBody('psecForLanding')).toContain("land === 'worklog' ? 'log'");
     expect(TEMPLATE).toMatch(/^var _panelDetail = false;/m);

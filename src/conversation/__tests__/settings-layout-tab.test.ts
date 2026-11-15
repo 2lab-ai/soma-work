@@ -419,8 +419,9 @@ describe('E6 — 미니멀 상세 카드의 대화 · 작업 로그 탭 (SSOT 20
     api.layPaint();
     const controls = () => els['lay-controls'].innerHTML as string;
     const preview = () => els['lay-preview'].innerHTML as string;
-    const TWO = '<div class="pv-tabs"><span>대화</span><span>작업 로그</span></div>';
-    const ALL = '<div class="pv-tabs"><span>대화</span><span>작업 로그</span><span>에이전트 트리</span></div>';
+    const TWO = '<div class="pv-tabs"><span>대화</span><span>작업 로그</span><span>변경점</span></div>';
+    const ALL =
+      '<div class="pv-tabs"><span>대화</span><span>작업 로그</span><span>변경점</span><span>에이전트 트리</span></div>';
     expect(controls()).toContain('대화 · 작업 로그 탭');
     expect(controls()).toContain('data-lay="flag" data-key="logtab" checked');
     expect(preview()).toContain(TWO);
