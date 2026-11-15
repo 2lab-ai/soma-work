@@ -8,7 +8,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { checkoutChanges, sessionCommits } from '../checkout-changes';
 import { capPatch, joinDiff, newFilePatch, parseNumstatZ, splitPatch } from '../git-diff-parse';
-import { commandKeys, configSafe } from '../git-runner';
+import { commandKeys, configSafe, type GitRun, runGit } from '../git-runner';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -207,6 +207,76 @@ describe('checkoutSafety — the doors the #1299 review found', () => {
     fs.writeFileSync(path.join(dir, '.git', 'objects', 'info', 'alternates'), '/somewhere/objects\n');
     const c = await checkoutChanges({ dir, sessionRoot: session });
     expect(c?.uncommitted.skipped).toBe('repo-alternates');
+  });
+});
+
+describe('the check/use race (#1299 review): no defence rests on the gate alone', () => {
+  it('a clean filter installed right after the gate passed never runs — git never reads a working-tree file', async () => {
+    const session = tmp('cc-race-');
+    const dir = clone(session, 'svc');
+    const marker = path.join(session, 'FILTER-RAN');
+    write(dir, 'src/a.ts', 'changed by the model\n');
+    write(dir, 'src/new.ts', 'new\n');
+    git(dir, ['add', 'src/new.ts']);
+    let armed = false;
+    // The model wins the race: the config and attributes appear between the gate and every later call.
+    const racing: GitRun = async (d, args) => {
+      const out = await runGit(d, args);
+      if (!armed && args.includes('--show-scope')) {
+        armed = true;
+        git(dir, ['config', 'filter.evil.clean', `sh -c 'touch ${marker}; cat'`]);
+        git(dir, ['config', 'filter.evil.smudge', `sh -c 'touch ${marker}; cat'`]);
+        write(dir, '.gitattributes', '* filter=evil\n');
+      }
+      return out;
+    };
+    const c = await checkoutChanges({ dir, sessionRoot: session, git: racing });
+    expect(armed).toBe(true);
+    expect(fs.existsSync(marker)).toBe(false);
+    // The change is still seen — read by this process, not by git.
+    expect(c!.uncommitted.files.map((f) => [f.path, f.status])).toEqual([
+      ['.gitattributes', 'added'],
+      ['src/a.ts', 'modified'],
+      ['src/new.ts', 'added'],
+    ]);
+    expect(c!.uncommitted.files[1].patch).toContain('+changed by the model');
+  });
+
+  it('a tracked file behind a symlinked parent folder is not read', async () => {
+    const session = tmp('cc-parent-link-');
+    const outside = tmp('cc-parent-link-out-');
+    fs.writeFileSync(path.join(outside, 'a.ts'), 'secret\n');
+    const dir = clone(session, 'svc');
+    fs.rmSync(path.join(dir, 'src'), { recursive: true, force: true });
+    fs.symlinkSync(outside, path.join(dir, 'src'));
+    const c = await checkoutChanges({ dir, sessionRoot: session });
+    expect(JSON.stringify(c)).not.toContain('secret');
+  });
+
+  it('an untracked file whose patch outgrows the per-file budget is cut and marked', async () => {
+    const session = tmp('cc-big-');
+    const dir = clone(session, 'svc');
+    write(dir, 'many.txt', 'a\n'.repeat(100_000));
+    const c = await checkoutChanges({ dir, sessionRoot: session });
+    const f = c!.uncommitted.files.find((x) => x.path === 'many.txt')!;
+    expect(f.patchTruncated).toBe(true);
+    expect(Buffer.byteLength(f.patch ?? '', 'utf8')).toBeLessThanOrEqual(256 * 1024);
+    expect(f.additions).toBe(100_000);
+  });
+
+  it('a PR head of another repository never bounds this checkout', async () => {
+    const session = tmp('cc-fork-');
+    const dir = clone(session, 'api');
+    git(dir, ['checkout', '-q', '-b', 'feat/z']);
+    write(dir, 'one.ts', '1\n');
+    const sha = commitAll(dir, 'shared history');
+    const c = await checkoutChanges({
+      dir,
+      sessionRoot: session,
+      prHeads: [{ repo: 'someone/fork', headRef: 'feat/z', headSha: sha }],
+    });
+    expect(c!.committed.base).not.toBe(sha);
+    expect(c!.committed.files.map((f) => f.path)).toEqual(['one.ts']);
   });
 });
 

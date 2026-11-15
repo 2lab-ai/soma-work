@@ -137,7 +137,5 @@ export function newFilePatch(content: string): { patch: string; additions: numbe
 
 /** Whether bytes look binary: a NUL in the first 8 KiB, the test git itself uses. */
 export function looksBinary(buf: Buffer): boolean {
-  const n = Math.min(buf.length, 8192);
-  for (let i = 0; i < n; i++) if (buf[i] === 0) return true;
-  return false;
+  return buf.subarray(0, 8192).includes(0);
 }

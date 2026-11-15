@@ -20,7 +20,7 @@ export interface PrDeps {
     repo: string,
     number: number,
     max: number,
-  ) => Promise<{ files: GitHubPullFile[]; truncated: boolean } | undefined>;
+  ) => Promise<{ files: GitHubPullFile[]; truncated: boolean; complete?: boolean } | undefined>;
   now: () => number;
 }
 
@@ -91,7 +91,8 @@ export async function sessionPrChanges(
     seen.add(ref.id);
     if (seen.size > MAX_SESSION_PRS) break;
     const old = prev.find((p) => p.id === ref.id);
-    if (old && (old.state === 'merged' || old.state === 'closed')) {
+    // A settled PR does not change — unless its files never arrived whole.
+    if (old && (old.state === 'merged' || old.state === 'closed') && !old.filesStale) {
       out.push(old);
       continue;
     }
@@ -103,16 +104,20 @@ export async function sessionPrChanges(
     const createdAt = time(detail.created_at);
     // Not this session's: a PR it only looked at (created before it started).
     if (startedAt !== undefined && createdAt !== undefined && createdAt < startedAt - PR_START_SLACK_MS) continue;
-    let files = old && old.headSha && old.headSha === detail.head_sha ? old.files : undefined;
+    // The stored files are this head's only when they arrived whole; a failed or partial read is asked again.
+    let files = old && !old.filesStale && old.headSha && old.headSha === detail.head_sha ? old.files : undefined;
     let filesTruncated = files ? old?.filesTruncated : undefined;
+    let filesStale = false;
     if (!files) {
       const listed = await deps.fetchPullFiles(ref.owner, ref.repo, ref.number, MAX_PR_FILES);
       if (listed) {
         files = listed.files.map(prFileOf);
         filesTruncated = listed.truncated || undefined;
+        filesStale = listed.complete === false;
       } else {
         files = old?.files ?? [];
         filesTruncated = old?.filesTruncated;
+        filesStale = true;
       }
     }
     const pr: PrChanges = {
@@ -134,6 +139,7 @@ export async function sessionPrChanges(
     const mergedAt = time(detail.merged_at);
     if (mergedAt !== undefined) pr.mergedAt = mergedAt;
     if (filesTruncated) pr.filesTruncated = true;
+    if (filesStale) pr.filesStale = true;
     out.push(pr);
   }
   return out.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));

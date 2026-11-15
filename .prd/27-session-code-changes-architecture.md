@@ -79,10 +79,12 @@ interface CodeChangesSummary { updatedAt; layers: Record<ChangeLayer, { files; a
 체크아웃 — `listCheckoutDirs(sessionDirs(session))`: 세션 폴더와 그 바로 아래, 그들이 `git worktree list`로 내놓는 세션 폴더 안
 worktree. 브랜치 · 원격 조건 없이 전부(재조정기는 여기에 자기 조건을 그대로 얹는다).
 
-커밋 안 함 (작업 트리 명령 — §5 게이트 통과 시에만):
-1. base = `HEAD`가 있으면 HEAD, 없으면 빈 트리.
-2. `git diff <base> -M --numstat -z` + `git diff <base> -M -U3 --no-color` → 추적 파일.
-3. `git ls-files --others --exclude-standard -z` → 새 파일. lstat로 일반 파일만(심볼릭 링크 제외), 앞 8 KiB에 NUL이면 바이너리, 내용으로 `@@ -0,0 +1,N @@` 패치.
+커밋 안 함 — git은 작업 트리 파일의 내용을 읽지 않는다(§5, #1299 리뷰의 검사/사용 경쟁):
+1. `git ls-tree -r -z -l HEAD`(객체 읽기)로 추적 파일의 blob id · 크기.
+2. 파일마다 이 프로세스가 lstat → 크기가 다르면 바뀜, 같으면 바이트의 git blob id(sha1 · sha256)를 계산해 비교. 같다고 확인한 파일은 stat(크기 · mtime · inode)로 기억해 다음엔 읽지 않는다. 없으면 삭제, 심볼릭 링크는 따라가지 않고 링크 대상 문자열을 비교, 실경로가 체크아웃 밖(부모 폴더가 링크)이면 읽지 않는다.
+3. 바뀐 파일의 패치 = `git cat-file blob`(객체 읽기)과 파일 바이트의 줄 diff(`lineDiff`, Myers, 문맥 3줄). 줄 끝만 다르면 바뀌지 않은 것으로 본다.
+4. 새 파일 = 인덱스에만 있는 것(`ls-files --cached` − HEAD) + 추적 안 하는 것(`ls-files --others --exclude-standard`, 이름만). lstat 일반 파일 + 실경로가 체크아웃 안일 때만 읽고, 앞 8 KiB에 NUL이면 바이너리, 내용으로 `@@ -0,0 +1,N @@` 패치(패치도 256 KiB로 자름).
+5. 이름 바꾸기는 찾지 않는다(삭제 + 추가로 보인다).
 
 커밋함:
 1. base 후보 — 이 체크아웃 브랜치를 head로 하는 세션 PR의 head sha가 HEAD의 조상이면 그것(여럿이면 가장 최근).
@@ -107,8 +109,11 @@ PR — 세션의 PR 링크(현재 + 기록) 중 GitHub URL만, 최대 20. 저장
 세션 폴더의 저장소 설정은 모델이 쓸 수 있다. 데몬이 거기서 git을 돌리면 설정이 부르는 명령이 샌드박스 밖에서 돌고, 설정 · 포인터가 가리키는 다른 곳(다른 유저의 폴더)을 읽게 된다(23 ESC 계열과 같은 종류). 막는 것:
 
 - env: 재조정기의 `GIT_ENV`(전역 · 시스템 설정 없음, 토큰 없음) + `GIT_OPTIONAL_LOCKS=0`(status가 인덱스를 쓰지 않음) + `GIT_PAGER=cat`.
-- 모든 호출: `-c core.fsmonitor=false -c core.hooksPath=/dev/null -c diff.external= -c core.untrackedCache=false -c log.showSignature=false --no-pager`,
-  diff는 `--no-ext-diff --no-textconv`, log · show는 `--no-show-signature`(서명 검사가 `gpg.program`을 부른다 — #1299 리뷰).
+- **검사에 기대지 않는 것(모든 호출, 그때 설정이 무엇이든)**: git은 작업 트리 파일 내용을 읽지 않는다(커밋 안 함 층은 이 프로세스가 비교 — §4)
+  → clean filter · textconv가 돌 자리가 없다. 명령줄 `-c`가 저장소 설정을 이긴다: `core.fsmonitor=false core.hooksPath=/dev/null diff.external=
+  core.untrackedCache=false log.showSignature=false protocol.allow=never gc.auto=0 maintenance.auto=false` + `--no-pager`, env `GIT_NO_LAZY_FETCH=1`
+  (부분 클론의 lazy fetch가 원격 전송 명령을 부르지 않게). diff는 두 커밋 사이만, `--no-ext-diff --no-textconv`, log · show는 `--no-show-signature`.
+  게이트가 확인한 git dir · 작업 트리는 이후 모든 호출에 `--git-dir` · `--work-tree`로 고정한다(`.git` 파일을 나중에 바꿔도 따라가지 않음).
 - **체크아웃 게이트**(`checkoutSafety`, 체크아웃마다 맨 먼저 — 통과 전에는 rev-parse 하나만 돈다):
   1. 작업 트리 · git dir · common dir의 실경로가 세션 폴더(`sessionDirs`) 안 — 아니면 이 세션의 체크아웃이 아니다(목록에도 없음). `.git` 파일이 다른 저장소를 가리키거나 `core.worktree`가 밖을 가리키는 경우.
   2. `objects/info/alternates`가 비어 있음 — 다른 객체 저장소를 빌려 쓰면 그 내용이 diff로 나온다. 아니면 `skipped: 'repo-alternates'`.
@@ -116,7 +121,8 @@ PR — 세션의 PR 링크(현재 + 기록) 중 GitHub URL만, 최대 20. 저장
      `*.command`, `*.process`, `gpg.*`, `log.showSignature`, `core.worktree`, `pager.*`, `core.fsmonitor`, `core.sshCommand`,
      `core.pager`, `core.askPass`, `diff.external`가 없음 — 아니면 `skipped: 'repo-config-runs-commands'`.
   2 · 3에 걸리면 두 층도 새 커밋(지표)도 읽지 않는다 — 체크아웃은 사유와 함께 목록에만 남는다.
-- 새 파일: 일반 파일만, 심볼릭 링크 따라가지 않음, 실경로가 체크아웃 안일 때만.
+- 새 파일 · 추적 파일: 일반 파일만, 심볼릭 링크 따라가지 않음, 실경로가 체크아웃 안일 때만.
+- 남는 위험: 경로 구성 요소를 심볼릭 링크로 바꿔치는 경쟁(검사 뒤 · git 호출 전)은 막지 못한다 — 실경로 확인과 고정 경로로 창을 좁힐 뿐이다. 세션 샌드박스가 다른 유저 폴더 읽기를 OS 수준에서 막지 않는 기존 공백(#732)과 같은 종류다.
 - 시간 · 크기: 호출마다 10 s, 출력 16 MiB.
 
 ## 6. API · 화면

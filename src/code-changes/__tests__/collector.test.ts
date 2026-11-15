@@ -133,6 +133,33 @@ function checkout(over: Partial<CheckoutChanges> = {}): CheckoutChanges {
   };
 }
 
+describe('pr-changes — a failed files read is asked again (#1299 review)', () => {
+  it('files failure → filesStale; the next collect with the same head asks again and clears it', async () => {
+    const d = detail(4, { merged: true, merged_at: '2026-11-16T03:00:00Z' });
+    const failing = { ...prDeps({ 4: d }), fetchPullFiles: vi.fn(async () => undefined) };
+    const first = await sessionPrChanges(['https://github.com/acme/web/pull/4'], START, [], failing);
+    expect(first[0]).toMatchObject({ state: 'merged', filesStale: true, files: [] });
+    const ok = prDeps({ 4: d });
+    const second = await sessionPrChanges(['https://github.com/acme/web/pull/4'], START, first, ok);
+    expect(ok.fetchPullFiles).toHaveBeenCalledTimes(1);
+    expect(second[0].filesStale).toBeUndefined();
+    expect(second[0].files.map((f) => f.path)).toEqual(['src/a.ts']);
+    // Settled and whole now: not asked again.
+    const third = await sessionPrChanges(['https://github.com/acme/web/pull/4'], START, second, ok);
+    expect(ok.fetchPullDetail).toHaveBeenCalledTimes(1);
+    expect(third).toEqual(second);
+  });
+
+  it('a partial read (a later page failed) is stale too', async () => {
+    const deps = {
+      ...prDeps({ 5: detail(5) }),
+      fetchPullFiles: vi.fn(async () => ({ files: [FILE], truncated: true, complete: false })),
+    };
+    const prs = await sessionPrChanges(['https://github.com/acme/web/pull/5'], START, [], deps);
+    expect(prs[0]).toMatchObject({ filesStale: true, filesTruncated: true });
+  });
+});
+
 describe('collectCodeChanges', () => {
   it('stores one document, summarises the four layers, reports new merges and new commits once', async () => {
     const s = store();
@@ -212,11 +239,32 @@ describe('collectCodeChanges', () => {
     expect(fileSources(doc, 'acme/other', 'src/a.ts')).toEqual([]);
   });
 
-  it('applyPatchBudget drops the patches past the document budget and marks them', () => {
-    const doc = { checkouts: [checkout()], prs: [] } as unknown as CodeChangesDoc;
-    applyPatchBudget(doc, 4);
-    expect(doc.checkouts[0].uncommitted.files[0]).toMatchObject({ patchTruncated: true });
-    expect(doc.checkouts[0].uncommitted.files[0].patch).toBeUndefined();
+  it('applyPatchBudget keeps patches in layer order until the sum passes the budget; counts stay', () => {
+    const f = (p: string) => ({
+      path: p,
+      status: 'modified' as const,
+      additions: 2,
+      deletions: 1,
+      patch: 'x'.repeat(10),
+    });
+    const doc = {
+      checkouts: [
+        checkout({
+          uncommitted: { files: [f('u1'), f('u2')], additions: 4, deletions: 2 },
+          committed: { files: [f('c1')], additions: 2, deletions: 1, commits: [] },
+        }),
+      ],
+      prs: [{ files: [f('p1')] }],
+    } as unknown as CodeChangesDoc;
+    applyPatchBudget(doc, 25);
+    const all = [...doc.checkouts[0].uncommitted.files, ...doc.checkouts[0].committed.files, ...doc.prs[0].files];
+    expect(all.map((x) => [x.path, !!x.patch, !!x.patchTruncated])).toEqual([
+      ['u1', true, false],
+      ['u2', true, false],
+      ['c1', false, true],
+      ['p1', false, true],
+    ]);
+    expect(all.every((x) => x.additions === 2 && x.deletions === 1)).toBe(true);
   });
 });
 
@@ -234,9 +282,28 @@ describe('store + summary', () => {
     };
     s.write(doc);
     expect(s.read('abc-1')).toEqual(doc);
-    expect(s.list().map((x) => x.conversationId)).toEqual(['abc-1']);
     expect(isStoreKey('../x')).toBe(false);
     expect(s.read('../x')).toBeUndefined();
+    s.write({ ...doc, conversationId: '../escape' });
+    expect(fs.existsSync(path.join(s.baseDir, '..', 'escape.json'))).toBe(false);
+    expect(s.read('abc-1')).toEqual(doc);
+  });
+
+  it('a damaged nested record sends the read to the backup instead of breaking every reader', () => {
+    const s = store();
+    const doc: CodeChangesDoc = {
+      version: 1,
+      conversationId: 'abc-2',
+      owner: { id: 'U', name: 'u' },
+      updatedAt: 5,
+      checkouts: [],
+      prs: [],
+      counted: { commits: [] },
+    };
+    s.write(doc);
+    s.write({ ...doc, updatedAt: 6 });
+    fs.writeFileSync(path.join(s.baseDir, 'abc-2.json'), JSON.stringify({ ...doc, prs: [null] }));
+    expect(s.read('abc-2')?.updatedAt).toBe(5);
   });
 
   it('sanitizeCodeChangesSummary keeps a summary and drops anything malformed', () => {
@@ -263,6 +330,47 @@ describe('store + summary', () => {
       repos: [],
       prs: [],
     });
+  });
+});
+
+describe('createCodeChangesScheduler — across sessions (#1299 review)', () => {
+  it('at most `concurrency` runs; a failed run frees its slot; one key never runs twice at once', async () => {
+    const started: string[] = [];
+    const active = new Set<string>();
+    let overlap = false;
+    const releases: Record<string, (fail?: boolean) => void> = {};
+    const run = (key: string) =>
+      new Promise<void>((resolve, reject) => {
+        if (active.has(key)) overlap = true;
+        active.add(key);
+        started.push(key);
+        releases[key] = (fail) => {
+          active.delete(key);
+          fail ? reject(new Error('boom')) : resolve();
+        };
+      });
+    const sch = createCodeChangesScheduler(run, { delayMs: 0, minIntervalMs: 0, concurrency: 2 });
+    const tick = () => new Promise((r) => setTimeout(r, 5));
+    sch.trigger('a');
+    sch.trigger('b');
+    sch.trigger('c');
+    await tick();
+    expect(started).toEqual(['a', 'b']);
+    // While a and b hold the slots, a is triggered again and c waits: nothing more starts.
+    sch.trigger('a');
+    sch.trigger('c');
+    await tick();
+    expect(started).toEqual(['a', 'b']);
+    releases.a(true);
+    await tick();
+    expect(started.slice(0, 3)).toEqual(['a', 'b', 'c']);
+    releases.b();
+    await tick();
+    expect(started).toEqual(['a', 'b', 'c', 'a']);
+    releases.c();
+    releases.a();
+    await sch.idle();
+    expect(overlap).toBe(false);
   });
 });
 

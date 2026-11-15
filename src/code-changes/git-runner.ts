@@ -1,21 +1,21 @@
 /**
  * The git the daemon runs in a session's folder (.prd/27 §5). The folder's repositories are the model's to write — their
- * config can name commands (a clean filter, an fsmonitor hook, a textconv) that git would then run as the daemon, outside
- * the sandbox. So:
+ * config can name commands (a clean filter, an fsmonitor hook, a textconv, a signature program, a lazy-fetch transport)
+ * that git would run as the daemon, outside the sandbox, and pointers (`core.worktree`, a `.git` file, alternates) that
+ * send git outside the checkout. The model can change that config at any moment, so no defence may rest on a check made
+ * before the call (the #1299 review's check/use race). What holds on every call, whatever the config says then:
  *
- *   - no global or system config, no tokens in the environment, no pager, no optional index writes;
- *   - every call turns off the fsmonitor hook, the hooks path, external diff and the untracked cache;
- *   - a command that reads the working tree (status, diff against it) runs only after `worktreeSafe` found no key in the
- *     repository's own config (includes and worktree config expanded) that runs a command. Diffs between two commits never
- *     convert working-tree files and run with `--no-ext-diff --no-textconv`.
+ *   - git never reads a working-tree file's content: the uncommitted layer is compared in this process
+ *     (checkout-changes.ts), so no clean filter or textconv ever runs. `ls-files --others` lists names only;
+ *   - command-line `-c` wins over the repository's config: fsmonitor, hooks, external diff and signature checks are off;
+ *     transports are refused (`protocol.allow=never`) and lazy fetching is off (`GIT_NO_LAZY_FETCH`), so a partial clone
+ *     cannot fetch through a configured remote; no pager; no auto gc;
+ *   - no global or system config, no tokens in the environment, no optional index writes;
+ *   - diffs are between two commits only, with `--no-ext-diff --no-textconv`, and logs with `--no-show-signature`.
  *
- * Two more doors the review of #1299 found and this module now shuts:
- *
- *   - a commit's signature check runs `gpg.program` (`log.showSignature`): every call turns it off, and the gate refuses
- *     any `gpg.*` key or `log.showSignature`;
- *   - a pointer can send git outside the checkout — `core.worktree` (the gate refuses it), a `.git` file naming another
- *     repository, or `objects/info/alternates` borrowing another store: `checkoutSafety` requires the work tree, the git
- *     dir and the common dir to be inside the session's folders, and no alternates.
+ * `checkoutSafety` adds what a check can give: the work tree, git dir and common dir inside the session's folders, no
+ * alternates, and no command-running key in the config (a repository that asks for one is listed, not read). The paths
+ * it resolves are then pinned on every later call (`pinGit`), so a `.git` file rewritten meanwhile is not followed.
  *
  * Every call is bounded (10 s, 16 MiB of output) and answers undefined on any failure — never throws.
  */
@@ -32,6 +32,8 @@ const GIT_ENV: NodeJS.ProcessEnv = {
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_CONFIG_NOSYSTEM: '1',
   GIT_OPTIONAL_LOCKS: '0',
+  GIT_NO_LAZY_FETCH: '1',
+  GIT_PROTOCOL_FROM_USER: '0',
   GIT_PAGER: 'cat',
   PAGER: 'cat',
 };
@@ -49,6 +51,12 @@ const SAFE_FLAGS = [
   'core.quotePath=false',
   '-c',
   'log.showSignature=false',
+  '-c',
+  'protocol.allow=never',
+  '-c',
+  'gc.auto=0',
+  '-c',
+  'maintenance.auto=false',
   '--no-pager',
 ];
 
@@ -67,6 +75,27 @@ export const runGit: GitRun = (dir, args) =>
       (error, stdout) => resolve(error ? undefined : String(stdout)),
     );
   });
+
+export type GitRunBytes = (dir: string, args: string[]) => Promise<Buffer | undefined>;
+
+/** {@link runGit} for output that may not be text (a blob's bytes). */
+export const runGitBytes: GitRunBytes = (dir, args) =>
+  new Promise((resolve) => {
+    execFile(
+      'git',
+      [...SAFE_FLAGS, '-C', dir, ...args],
+      { timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER, env: GIT_ENV, encoding: 'buffer' },
+      (error, stdout) => resolve(error ? undefined : (stdout as Buffer)),
+    );
+  });
+
+/** A runner whose every call names the git dir and work tree `checkoutSafety` resolved (not whatever `.git` says now). */
+export function pinGit<T>(
+  git: (dir: string, args: string[]) => Promise<T>,
+  pin: { gitDir: string; top: string },
+): (dir: string, args: string[]) => Promise<T> {
+  return (dir, args) => git(dir, [`--git-dir=${pin.gitDir}`, `--work-tree=${pin.top}`, ...args]);
+}
 
 /**
  * Config keys that make git run a command (or read outside the checkout) while it reads a repository: filters and diff
@@ -118,7 +147,7 @@ export async function configSafe(dir: string, git: GitRun = runGit): Promise<{ s
 }
 
 export type CheckoutSafety =
-  | { ok: true; top: string }
+  | { ok: true; top: string; gitDir: string }
   | { ok: false; reason: 'not-a-checkout' | 'outside-session' }
   | { ok: false; reason: 'repo-config-runs-commands' | 'git-config-unreadable' | 'repo-alternates'; top: string };
 
@@ -149,5 +178,5 @@ export async function checkoutSafety(dir: string, roots: string[], git: GitRun =
   if (alternates.trim()) return { ok: false, reason: 'repo-alternates', top };
   const config = await configSafe(dir, git);
   if (!config.safe) return { ok: false, reason: config.reason as 'repo-config-runs-commands', top };
-  return { ok: true, top };
+  return { ok: true, top, gitDir };
 }

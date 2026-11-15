@@ -432,14 +432,14 @@ export async function fetchGitHubPullDetail(
 
 /**
  * The PR's files with their patches, up to `max` (100 per page) — undefined when the first page failed. `truncated` when
- * a later page failed or more files exist than were read.
+ * fewer files were read than the PR has; `complete` false when that is because a later page failed.
  */
 export async function fetchGitHubPullFiles(
   owner: string,
   repo: string,
   number: number,
   max = 300,
-): Promise<{ files: GitHubPullFile[]; truncated: boolean } | undefined> {
+): Promise<{ files: GitHubPullFile[]; truncated: boolean; complete: boolean } | undefined> {
   const token = await getGitHubToken();
   if (!token) return undefined;
   const files: GitHubPullFile[] = [];
@@ -450,7 +450,7 @@ export async function fetchGitHubPullFiles(
         token,
         `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${number}/files?per_page=100&page=${page}`,
       );
-      if (!Array.isArray(data)) return page === 1 ? undefined : { files, truncated: true };
+      if (!Array.isArray(data)) return page === 1 ? undefined : { files, truncated: true, complete: false };
       for (const f of data) {
         if (!f || typeof f.filename !== 'string') continue;
         files.push({
@@ -463,12 +463,13 @@ export async function fetchGitHubPullFiles(
           patch: str(f.patch),
         });
       }
-      if (data.length < 100) return { files, truncated: false };
+      if (data.length < 100) return { files, truncated: false, complete: true };
     }
-    return { files, truncated: true };
+    // More files than `max`: a deliberate cut, not a failure.
+    return { files, truncated: true, complete: true };
   } catch (error) {
     logger.debug("Failed to list a PR's files", { owner, repo, number, error: (error as Error).message });
-    return files.length ? { files, truncated: true } : undefined;
+    return files.length ? { files, truncated: true, complete: false } : undefined;
   }
 }
 

@@ -3,7 +3,6 @@
  * with `atomicWriteJson` (+ `.bak`, rules/config.md). The dashboard and the sweeper read it; only the collector writes.
  */
 
-import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteJson, readJsonWithBackup } from '@soma/common/atomic-json';
 import { isSafePathSegment } from '@soma/common/path-utils';
@@ -24,12 +23,26 @@ export function isStoreKey(conversationId: unknown): conversationId is string {
   );
 }
 
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+const filesOk = (v: unknown) => Array.isArray(v) && v.every((f) => isObj(f) && typeof f.path === 'string');
+const layerOk = (v: unknown) => isObj(v) && filesOk(v.files);
+
+/** The shape every reader relies on — a damaged live file falls back to `.bak` instead of breaking reads and collects. */
 function validate(raw: unknown): CodeChangesDoc {
   const d = raw as CodeChangesDoc;
-  if (!d || typeof d !== 'object' || d.version !== 1 || !Array.isArray(d.checkouts) || !Array.isArray(d.prs)) {
+  if (
+    !isObj(d) ||
+    d.version !== 1 ||
+    !Array.isArray(d.checkouts) ||
+    !Array.isArray(d.prs) ||
+    !d.checkouts.every(
+      (c) => isObj(c) && typeof c.repo === 'string' && layerOk(c.uncommitted) && layerOk(c.committed),
+    ) ||
+    !d.prs.every((p) => isObj(p) && typeof p.id === 'string' && typeof p.repo === 'string' && filesOk(p.files))
+  ) {
     throw new Error('not a code-changes document');
   }
-  if (!d.counted || !Array.isArray(d.counted.commits)) d.counted = { commits: [] };
+  if (!isObj(d.counted) || !Array.isArray(d.counted.commits)) d.counted = { commits: [] };
   return d;
 }
 
@@ -53,28 +66,6 @@ export class CodeChangesStore {
   write(doc: CodeChangesDoc): void {
     if (!isStoreKey(doc.conversationId)) return;
     atomicWriteJson(this.file(doc.conversationId), doc);
-  }
-
-  /** The conversation ids with a document, each with its last write time (the sweeper's list). */
-  list(): Array<{ conversationId: string; mtimeMs: number }> {
-    let names: string[];
-    try {
-      names = fs.readdirSync(this.baseDir);
-    } catch {
-      return [];
-    }
-    const out: Array<{ conversationId: string; mtimeMs: number }> = [];
-    for (const name of names) {
-      if (!name.endsWith('.json')) continue;
-      const conversationId = name.slice(0, -'.json'.length);
-      if (!isStoreKey(conversationId)) continue;
-      try {
-        out.push({ conversationId, mtimeMs: fs.statSync(path.join(this.baseDir, name)).mtimeMs });
-      } catch {
-        /* removed meanwhile */
-      }
-    }
-    return out;
   }
 }
 

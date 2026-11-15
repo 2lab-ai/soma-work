@@ -85,6 +85,8 @@ export interface PrChanges {
   mergedAt?: number;
   files: ChangedFile[];
   filesTruncated?: true;
+  /** The last files request failed (or stopped part-way): the next collect asks again, whatever the head. */
+  filesStale?: true;
   fetchedAt: number;
 }
 

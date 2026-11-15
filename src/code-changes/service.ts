@@ -61,13 +61,20 @@ export function createCodeChangesService<S extends SessionLike>(deps: CodeChange
     ...deps.collect,
     store,
   };
-  /** The turn's working directory per session key (the last one a trigger named). */
-  const turnDirs = new Map<string, string>();
+  /**
+   * The turn's working directory per session key, with the session it belongs to: a `/new` that replaced the session
+   * before the run must not hand the old turn's folder to the new conversation (#1299 review).
+   */
+  const turnDirs = new Map<string, { session: unknown; dir: string }>();
 
   async function run(key: string): Promise<void> {
     const session = deps.getSessionByKey(key);
     if (!session || session.terminated || !session.conversationId) return;
-    const dirs = sessionDirs(session as Record<string, unknown>, turnDirs.get(key));
+    const turn = turnDirs.get(key);
+    const dirs = sessionDirs(
+      session as Record<string, unknown>,
+      turn && turn.session === session ? turn.dir : undefined,
+    );
     if (dirs.length === 0) return;
     const result = await collectCodeChanges(
       {
@@ -97,9 +104,14 @@ export function createCodeChangesService<S extends SessionLike>(deps: CodeChange
   return {
     scheduler,
     /** Turn end: snapshot soon (fire-and-forget). */
-    snapshot(args: { sessionKey: string; workingDirectory?: string }): void {
+    snapshot(args: { sessionKey: string; session?: unknown; workingDirectory?: string }): void {
       if (!args?.sessionKey) return;
-      if (args.workingDirectory) turnDirs.set(args.sessionKey, args.workingDirectory);
+      if (args.workingDirectory) {
+        turnDirs.set(args.sessionKey, {
+          session: args.session ?? deps.getSessionByKey(args.sessionKey),
+          dir: args.workingDirectory,
+        });
+      }
       void scheduler.trigger(args.sessionKey);
     },
     /**

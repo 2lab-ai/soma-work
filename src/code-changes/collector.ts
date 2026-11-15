@@ -72,7 +72,7 @@ export function applyPatchBudget(doc: CodeChangesDoc, max = MAX_DOC_PATCH_BYTES)
 export async function collectCodeChanges(input: CollectInput, deps: CollectDeps): Promise<CollectResult> {
   const prev = deps.store.read(input.conversationId);
   const prs = await sessionPrChanges(input.prUrls, input.startedAt, prev?.prs ?? [], deps);
-  const prHeads = prs.map((p) => ({ headRef: p.headRef, headSha: p.headSha, createdAt: p.createdAt }));
+  const prHeads = prs.map((p) => ({ repo: p.repo, headRef: p.headRef, headSha: p.headSha, createdAt: p.createdAt }));
   const list = deps.listCheckoutDirs ?? listCheckoutDirs;
   const readCheckout = deps.checkoutChanges ?? checkoutChanges;
   const readCommits = deps.sessionCommits ?? sessionCommits;
@@ -200,13 +200,20 @@ export function createCodeChangesScheduler(
   const running = new Map<string, Promise<void>>();
   const waiting: string[] = [];
 
+  // A key runs once at a time: a key already running stays queued (its finally schedules it again), a key waiting for a
+  // slot has no timer (schedule skips it), and starting a key clears any timer its queued entry still had.
   const startOrWait = (key: string) => {
+    if (running.has(key)) return;
     if (running.size >= concurrency) {
       if (!waiting.includes(key)) waiting.push(key);
       return;
     }
     const q = queued.get(key);
     if (!q) return;
+    if (q.timer) {
+      clearTimeout(q.timer);
+      q.timer = undefined;
+    }
     queued.delete(key);
     lastRun.set(key, now());
     const p = run(key)
@@ -214,16 +221,19 @@ export function createCodeChangesScheduler(
       .finally(() => {
         running.delete(key);
         q.resolve();
-        const next = waiting.shift();
-        if (next) startOrWait(next);
         if (queued.has(key)) schedule(key, false);
+        // A slot is free: the next waiting key that is not running takes it.
+        while (waiting.length > 0 && running.size < concurrency) {
+          const next = waiting.shift()!;
+          startOrWait(next);
+        }
       });
     running.set(key, p);
   };
 
   const schedule = (key: string, immediate: boolean) => {
     const q = queued.get(key);
-    if (!q || q.timer || running.has(key)) return;
+    if (!q || q.timer || running.has(key) || waiting.includes(key)) return;
     const since = (lastRun.get(key) ?? Number.NEGATIVE_INFINITY) + minInterval - now();
     const wait = Math.max(immediate ? 0 : delay, since, 0);
     q.timer = setTimeout(() => {

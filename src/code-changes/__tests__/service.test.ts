@@ -84,6 +84,16 @@ describe('code-changes service', () => {
     expect(t.persist).not.toHaveBeenCalled();
   });
 
+  it('a /new between the turn end and the run: the old turn’s folder is not read for the new session', async () => {
+    const old: SessionLike = { conversationId: 'conv-old', sessionWorkingDir: '/tmp/x/session_1794756694405_old' };
+    const t = setup(old);
+    const fresh: SessionLike = { conversationId: 'conv-new', sessionWorkingDir: '/tmp/x/session_1794756694406_new' };
+    t.svc.snapshot({ sessionKey: 'k1', session: old, workingDirectory: '/tmp/x/session_1794756694405_old/repo' });
+    t.sessions.set('k1', fresh);
+    await t.svc.scheduler.idle();
+    expect(t.listCheckoutDirs).toHaveBeenCalledWith(['/tmp/x/session_1794756694406_new'], expect.any(Number));
+  });
+
   it('refresh runs now for the live session of a conversation; false when none holds it', async () => {
     const session: SessionLike = { conversationId: 'conv1', sessionWorkingDir: '/tmp/x/session_1794756694405_a' };
     const t = setup(session);
