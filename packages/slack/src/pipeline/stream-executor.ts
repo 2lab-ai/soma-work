@@ -229,6 +229,20 @@ export interface CompactTurnResult {
 
 export interface StreamExecutorProviders {
   parseModelCommandRunResponse?: (result: unknown) => any;
+  /**
+   * User actions — tasks the agent hands the human through the `user-action` MCP (`instruct_user`). The host keeps
+   * each on the session (apart from the pending question), posts its own Slack card and pushes the dashboard.
+   * Called with every tool batch, subagents' included. Must never throw. No-op by default.
+   */
+  captureUserActions?: (args: {
+    toolResults: ReadonlyArray<{ toolUseId: string; toolName?: string; result: unknown; isError?: boolean }>;
+    session: ConversationSession;
+    sessionKey: string;
+    channel: string;
+    threadTs?: string;
+    slackApi: SlackApiHelper;
+    persistAndBroadcast: (sessionKey: string) => void;
+  }) => Promise<void>;
   createTurnResultCollector?: () => TurnResultCollectorLike;
   getChannelDescription?: (client: any, channel: string) => Promise<string>;
   getChannel?: (channel: string) => any;
@@ -349,6 +363,7 @@ const SLACK_BLOCK_KIT_CHANNEL_NAME = 'slack-block-kit';
 
 let streamExecutorProviders: Required<StreamExecutorProviders> = {
   parseModelCommandRunResponse: () => null,
+  captureUserActions: async () => {},
   createTurnResultCollector: createNoopTurnResultCollector,
   getChannelDescription: async () => '',
   getChannel: () => undefined,
@@ -2348,6 +2363,23 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             );
           }
           const commandResult = await this.handleModelCommandToolResults(allToolResults, session, ctx, turnEpochToken);
+          // Tasks for the human (instruct_user): their own card and dashboard section, never the question form.
+          await streamExecutorProviders
+            .captureUserActions({
+              toolResults: allToolResults,
+              session,
+              sessionKey: ctx.sessionKey,
+              channel: ctx.channel,
+              threadTs: ctx.threadTs,
+              slackApi: this.deps.slackApi,
+              persistAndBroadcast: (key) => this.deps.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(key),
+            })
+            .catch((error: unknown) =>
+              this.logger.warn('captureUserActions failed', {
+                sessionKey: ctx.sessionKey,
+                error: (error as Error)?.message ?? String(error),
+              }),
+            );
           if (commandResult.hasPendingChoice) {
             toolChoicePending = true;
             // renderAskUserQuestionFromCommand raised the open-choice bit.

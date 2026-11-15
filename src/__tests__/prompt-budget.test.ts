@@ -28,21 +28,23 @@ const WORKFLOWS_DIR = path.join(PROMPT_DIR, 'workflows');
 
 /** System prompt per workflow: 'default' plus every src/prompt/workflows/*.prompt. */
 const WORKFLOW_BUDGET: Record<string, number> = {
+  // 2026-11-14 (#1284): + common.prompt 'Tasks for the user' (~700 chars, every workflow but the two with headroom) —
+  // a task for the user goes through instruct_user, apart from questions.
   // 2026-11-06: + 'Before Refusing or Narrowing an Instruction' (verify the premise of a refusal; incident in the section).
-  default: 11_400,
+  default: 12_100,
   // 2026-11-12 (#1232): + Delta and Risk Check before the confirmation, + Restart Re-Attach.
-  deploy: 36_700, // env-access WU5 (#1213): the environment's GitHub reader, ahead of the broker; R6: `fields` + path encoding
-  'jira-brainstorming': 8_000,
-  'jira-create-pr': 9_900,
-  'jira-executive-summary': 6_500,
-  'jira-planning': 6_900,
-  onboarding: 12_400,
-  'pr-docs-confluence': 10_400,
+  deploy: 37_400, // env-access WU5 (#1213): the environment's GitHub reader, ahead of the broker; R6: `fields` + path encoding
+  'jira-brainstorming': 8_700,
+  'jira-create-pr': 10_600,
+  'jira-executive-summary': 7_200,
+  'jira-planning': 7_600,
+  onboarding: 13_100,
+  'pr-docs-confluence': 11_100,
   'pr-fix-and-update': 14_200,
   'pr-review': 28_900,
-  'z-epic-update': 6_300,
-  'z-plan-to-work': 7_000,
-  zwork: 5_200,
+  'z-epic-update': 7_000,
+  'z-plan-to-work': 7_700,
+  zwork: 5_900,
 };
 
 /** Prompts sent whole on their own call: the dispatch classifier, goal evaluation, the restart resume turn. */

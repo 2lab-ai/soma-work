@@ -115,6 +115,8 @@ export interface CronExecutionRecord {
    * the owner firing their own job.
    */
   triggeredBy?: string;
+  /** Fired by hand (Slack ▶, `cron run`, the dashboard's 지금 실행) — the owner's own press too. Absent for a scheduled fire. */
+  manual?: true;
 }
 
 interface CronHistoryData {

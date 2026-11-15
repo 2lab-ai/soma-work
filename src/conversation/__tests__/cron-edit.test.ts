@@ -169,6 +169,8 @@ describe('buildCronEditPatch — what the form may change', () => {
   it('target as cron_update maps it; a thread reply needs the anchor the job already has', () => {
     expect(patchOf({ target: 'dm' }, job({ threadTs: '1700.1' }))).toEqual({ target: 'dm', threadTs: null });
     expect(patchOf({ target: 'channel' }, job({ target: 'dm' }))).toEqual({ target: null, threadTs: null });
+    // A thread reply turned into a run keeps its thread: the thread it posted in is the one whose session runs it.
+    expect(patchOf({ target: 'channel' }, job({ target: 'thread', threadTs: '1700.1' }))).toEqual({ target: null });
     expect(patchOf({ target: 'thread' }, job({ threadTs: '1700.1' }))).toEqual({ target: 'thread' });
     // The dashboard cannot pick a Slack thread.
     expect(refusal({ target: 'thread' }).field).toBe('target');

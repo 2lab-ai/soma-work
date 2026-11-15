@@ -7,3 +7,4 @@ logs/
 .claude/
 .main-bootstrap.json
 plugins/
+secrets/

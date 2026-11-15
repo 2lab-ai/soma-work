@@ -588,6 +588,24 @@ describe('handleUpdate', () => {
     expect(job.threadTs).toBeNull();
   });
 
+  it('changes target thread→channel: keeps the thread anchor, so the prompt runs in that thread’s session', () => {
+    seedJob(storage, { target: 'thread', threadTs: '1.2' });
+    const r = handleUpdate({ name: 'daily', target: 'channel' }, ownerContext, storage);
+    expect(r.isError).toBe(false);
+    const job = storage.getJobsByOwner('U_OWNER')[0];
+    expect(job.target).toBeUndefined();
+    expect(job.threadTs).toBe('1.2');
+  });
+
+  it('changes target to channel with clear_threadTs: drops the anchor (a new thread of its own)', () => {
+    seedJob(storage, { target: 'thread', threadTs: '1.2' });
+    const r = handleUpdate({ name: 'daily', target: 'channel', clear_threadTs: true }, ownerContext, storage);
+    expect(r.isError).toBe(false);
+    const job = storage.getJobsByOwner('U_OWNER')[0];
+    expect(job.target).toBeUndefined();
+    expect(job.threadTs).toBeNull();
+  });
+
   it('target=thread requires a threadTs (arg or existing)', () => {
     seedJob(storage);
     const r = handleUpdate({ name: 'daily', target: 'thread' }, ownerContext, storage);

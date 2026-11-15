@@ -36,6 +36,7 @@ import {
   receiptIssuedAt,
   withAck,
 } from 'somalib/model-commands/host-receipt';
+import { parseUserActionRecord, restoreUserActions } from 'somalib/user-action/user-action';
 import { DATA_DIR } from './env-paths';
 import { isPlaceholderSessionTitle, sanitizeSessionTitle } from './format/display-title';
 import { Logger } from './logger';
@@ -236,6 +237,8 @@ function restoreExecutiveSummary(
 }
 
 interface SerializedSession {
+  /** Tasks handed to the human (`instruct_user`); restored through `restoreUserActions`. */
+  userActions?: unknown;
   /** SSOT 2026-10-23 — the cron job that created the session, and a placeholder-title mark. */
   cronJob?: SessionCronJob;
   titleProvisional?: boolean;
@@ -691,6 +694,16 @@ export class SessionRegistry {
   /** E4 ① — live child tasks by their epic's task id; rebuilt from the records on load. */
   private childrenByParent: Map<string, Set<ConversationSession>> = new Map();
   private logger = new Logger('SessionRegistry');
+
+  /** A saved session's user actions; a record that no longer parses is dropped with a warning, never silently. */
+  private restoreUserActionsOf(serialized: { key?: unknown; userActions?: unknown }) {
+    const raw = serialized.userActions;
+    const dropped = Array.isArray(raw) ? raw.filter((r) => parseUserActionRecord(r) === null).length : 0;
+    if (dropped) {
+      this.logger.warn('Dropped malformed user actions on load', { sessionKey: serialized.key, dropped });
+    }
+    return restoreUserActions(raw);
+  }
   /** See {@link SAFEGUARD_TOMBSTONES_FILE}. */
   private safeguardTombstones = new Map<string, SafeguardHalt>();
   /** The tombstone file could not be read: never overwrite it with a partial set. */
@@ -3777,6 +3790,7 @@ export class SessionRegistry {
               ? { ...session.executiveSummary, tldr: [...session.executiveSummary.tldr] }
               : undefined,
             followUp: session.followUp ? { ...session.followUp } : undefined,
+            userActions: session.userActions?.length ? session.userActions.map((a) => ({ ...a })) : undefined,
             threadModel: session.threadModel,
             threadRootTs: session.threadRootTs,
             isOnboarding: session.isOnboarding,
@@ -4334,6 +4348,7 @@ export class SessionRegistry {
             : undefined,
           executiveSummary: restoreExecutiveSummary(serialized.executiveSummary),
           followUp: restoreFollowUp(serialized.followUp),
+          userActions: this.restoreUserActionsOf(serialized),
           threadModel: serialized.threadModel,
           threadRootTs: serialized.threadRootTs,
           isOnboarding: serialized.isOnboarding,

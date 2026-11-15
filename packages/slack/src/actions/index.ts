@@ -173,6 +173,8 @@ export interface ActionHandlerDelegates {
   };
   feedbackHandler: { handleFeedback(body: any, respond: RespondFn): Promise<void> };
   dismissHandler: { handleDismiss(body: any, respond: RespondFn): Promise<void> };
+  /** ✅ 완료했어요 / ❌ 안 됐어요 on a user-action card (`instruct_user`). Optional for older delegate providers. */
+  userActionHandler?: { handleResolve(body: any, respond: RespondFn): Promise<void> };
   /** The admin unlock button on a "세이프가드 에러" notice. Optional for older delegate providers. */
   safeguardHandler?: { handleAdminRetry(body: any, respond: RespondFn): Promise<void> };
   goalHandler: {
@@ -557,6 +559,12 @@ export class ActionHandlers {
     app.action(TURN_DISMISS_ACTION_ID, async ({ ack, body, respond }) => {
       await ack();
       await this.delegates.dismissHandler.handleDismiss(body, respond as RespondFn);
+    });
+
+    // A task the agent handed the human (user-action card): done / failed. ACK first, then resolve.
+    app.action(/^user_action_(done|failed)$/, async ({ ack, body, respond }) => {
+      await ack();
+      await this.delegates.userActionHandler?.handleResolve(body, respond as RespondFn);
     });
 
     // Safeguards halt — the admin unlock button (the only way to lift it).

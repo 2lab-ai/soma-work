@@ -173,11 +173,12 @@ export function buildCronEditPatch(body: unknown, job: CronJob): CronEditResult 
       patch.target = 'dm';
       patch.threadTs = null;
     } else if (input.target === 'channel') {
-      // cron_update's mapping: a new channel message, no thread anchor. The target the job
-      // already has changes nothing — a channel job's anchor is the thread whose session it runs in.
+      // cron_update's mapping: the prompt runs as a model turn. A channel job's anchor is the thread whose
+      // session runs it, so a thread reply turned into a run keeps its thread (the one it posted in); a DM
+      // job has no thread to keep. The target the job already has changes nothing.
       if ((job.target ?? 'channel') !== 'channel') {
         patch.target = null;
-        patch.threadTs = null;
+        if (job.target === 'dm') patch.threadTs = null;
       }
     } else {
       return refuse('target', t('출력은 channel, thread, dm 중 하나여야 해요'));

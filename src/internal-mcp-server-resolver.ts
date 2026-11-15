@@ -8,7 +8,8 @@ export type InternalMcpServerName =
   | 'model-command'
   | 'permission'
   | 'server-tools'
-  | 'slack-mcp';
+  | 'slack-mcp'
+  | 'user-action';
 
 export type InternalMcpServerMode = 'source' | 'package';
 
@@ -53,6 +54,11 @@ const INTERNAL_MCP_SERVER_SPECS: Record<InternalMcpServerName, InternalMcpServer
     dir: 'slack-mcp',
     basename: 'slack-mcp-server',
     packageBinSpecifier: '@soma/mcp-server-slack-mcp/bin',
+  },
+  'user-action': {
+    dir: 'user-action',
+    basename: 'user-action-mcp-server',
+    packageBinSpecifier: '@soma/mcp-server-user-action/bin',
   },
 };
 

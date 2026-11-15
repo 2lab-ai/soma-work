@@ -1,8 +1,11 @@
 /**
  * #1080 — the cron drawer's 내용 보기 and 편집, server half:
- *   GET   /api/dashboard/cron/:id  — the whole job, prompt included
- *   PATCH /api/dashboard/cron/:id  — the form's change
- * Both for the job's owner, an admin with Admin mode on, or the viewer token
+ *   GET    /api/dashboard/cron/:id      — the whole job, prompt included
+ *   PATCH  /api/dashboard/cron/:id      — the form's change
+ * and the drawer's 지금 실행 and 삭제:
+ *   POST   /api/dashboard/cron/:id/run  — fire it now, through the scheduler, as its owner
+ *   DELETE /api/dashboard/cron/:id      — remove it
+ * All for the job's owner, an admin with Admin mode on, or the viewer token
  * (the #716 write gate) — never for anyone else. The lane
  * (GET /api/dashboard/cron) still never carries a prompt.
  *
@@ -99,6 +102,9 @@ describe('Dashboard cron editor API (#1080)', () => {
   });
 
   afterEach(async () => {
+    fire = async () => ({ ok: true, message: 'idle_inject' });
+    runJob.mockClear();
+    dashboard.setCronRunAnswerWaitMs(undefined);
     dashboard.setDashboardCronSource(null);
     await stopWebServer();
     delete process.env.ADMIN_USERS;
@@ -106,7 +112,14 @@ describe('Dashboard cron editor API (#1080)', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  /** The source src/index.ts wires: the jobs by id, a change by (owner, name). */
+  /** What the scheduler answers a manual fire with; null = no scheduler on this instance. */
+  let fire: (() => Promise<{ ok: boolean; message: string }>) | null = async () => ({
+    ok: true,
+    message: 'idle_inject',
+  });
+  const runJob = vi.fn((_id: string, _triggeredBy: string) => (fire ? fire() : null));
+
+  /** The source src/index.ts wires: the jobs by id, a change and a removal by (owner, name), a fire through the scheduler. */
   function source() {
     return {
       listJobs: () => storage.getAll(),
@@ -115,6 +128,11 @@ describe('Dashboard cron editor API (#1080)', () => {
       updateJob: (id: string, patch: any) => {
         const job = storage.getAll().find((j) => j.id === id);
         return job ? storage.updateJob(job.owner, job.name, patch) : null;
+      },
+      runJob,
+      deleteJob: (id: string) => {
+        const job = storage.getAll().find((j) => j.id === id);
+        return job ? storage.removeJob(job.owner, job.name) : false;
       },
     };
   }
@@ -143,6 +161,10 @@ describe('Dashboard cron editor API (#1080)', () => {
       headers: { ...headers, ...JSON_HEADERS },
       payload,
     });
+  const runNow = (id: string, headers: Record<string, string> = AUTH_HEADER) =>
+    injectWebServer({ method: 'POST', url: `/api/dashboard/cron/${encodeURIComponent(id)}/run`, headers });
+  const remove = (id: string, headers: Record<string, string> = AUTH_HEADER) =>
+    injectWebServer({ method: 'DELETE', url: `/api/dashboard/cron/${encodeURIComponent(id)}`, headers });
 
   describe('GET /api/dashboard/cron/:id — the whole job', () => {
     it('the owner reads every field, the prompt included', async () => {
@@ -355,6 +377,116 @@ describe('Dashboard cron editor API (#1080)', () => {
       expect((await patch('no-such-job', { prompt: 'x' })).statusCode).toBe(404);
       dashboard.setDashboardCronSource(null);
       expect((await patch(nightly.id, { prompt: 'x' })).statusCode).toBe(503);
+    });
+  });
+
+  describe('POST /api/dashboard/cron/:id/run — 지금 실행', () => {
+    it('the owner fires it through the scheduler, attributed to them; a quick answer is passed on', async () => {
+      const { cookie, csrfToken } = await signIn('U_OWNER');
+      const res = await runNow(nightly.id, { cookie, 'x-csrf-token': csrfToken });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true, detail: 'idle_inject' });
+      expect(runJob).toHaveBeenCalledTimes(1);
+      expect(runJob).toHaveBeenCalledWith(nightly.id, 'U_OWNER');
+    });
+
+    it('a fire still running when the wait ends is answered as started — the request never waits for the turn', async () => {
+      dashboard.setCronRunAnswerWaitMs(30);
+      let finish!: (v: { ok: boolean; message: string }) => void;
+      fire = () => new Promise((resolve) => (finish = resolve));
+      const res = await runNow(nightly.id);
+      expect(res.statusCode).toBe(202);
+      expect(JSON.parse(res.body)).toEqual({ ok: true, started: true });
+      finish({ ok: true, message: 'new_thread' }); // the turn ends later; nothing is left waiting on it
+    });
+
+    it('a fire the scheduler could not deliver is 502 with its reason', async () => {
+      fire = async () => ({ ok: false, message: 'delivery failed (dm) — cron history 확인' });
+      const res = await runNow(nightly.id);
+      expect(res.statusCode).toBe(502);
+      expect(JSON.parse(res.body).error).toBe('delivery failed (dm) — cron history 확인');
+    });
+
+    it('a fire that throws is 502, not a hung request', async () => {
+      fire = async () => {
+        throw new Error('slack down');
+      };
+      const res = await runNow(nightly.id);
+      expect(res.statusCode).toBe(502);
+      expect(JSON.parse(res.body).error).toMatch(/slack down/);
+    });
+
+    it('another signed-in user gets 403 and nothing fires', async () => {
+      const { cookie, csrfToken } = await signIn('U_STRANGER');
+      expect((await runNow(nightly.id, { cookie, 'x-csrf-token': csrfToken })).statusCode).toBe(403);
+      expect(runJob).not.toHaveBeenCalled();
+    });
+
+    it('an admin needs Admin mode on; the fire is attributed to the admin', async () => {
+      const { cookie, csrfToken } = await asAdmin();
+      expect((await runNow(nightly.id, { cookie, 'x-csrf-token': csrfToken })).statusCode).toBe(403);
+      expect(runJob).not.toHaveBeenCalled();
+      const res = await runNow(nightly.id, { cookie, 'x-csrf-token': csrfToken, 'x-admin-mode': 'on' });
+      expect(res.statusCode).toBe(200);
+      expect(runJob).toHaveBeenCalledWith(nightly.id, 'U_ADMIN');
+    });
+
+    it('the viewer token fires it; anonymous callers and a missing CSRF token cannot', async () => {
+      expect((await runNow(nightly.id)).statusCode).toBe(200);
+      expect(runJob).toHaveBeenLastCalledWith(nightly.id, 'dashboard');
+      expect((await runNow(nightly.id, {})).statusCode).toBe(401);
+      const { cookie } = await signIn('U_OWNER');
+      expect((await runNow(nightly.id, { cookie })).statusCode).toBe(403);
+      expect(runJob).toHaveBeenCalledTimes(1);
+    });
+
+    it('an unknown id is 404; no scheduler on this instance is 503', async () => {
+      expect((await runNow('no-such-job')).statusCode).toBe(404);
+      fire = null;
+      const res = await runNow(nightly.id);
+      expect(res.statusCode).toBe(503);
+      expect(JSON.parse(res.body).error).toMatch(/\S/);
+    });
+  });
+
+  describe('DELETE /api/dashboard/cron/:id — 삭제', () => {
+    it('the owner removes it; the other owner’s job of the same name stays', async () => {
+      const { cookie, csrfToken } = await signIn('U_OWNER');
+      const res = await remove(nightly.id, { cookie, 'x-csrf-token': csrfToken });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true });
+      expect(storage.getAll().find((j) => j.id === nightly.id)).toBeUndefined();
+      expect(stored(others.id).name).toBe('nightly-qa');
+      expect((await remove(nightly.id)).statusCode).toBe(404); // already gone
+    });
+
+    it('another signed-in user gets 403 and the job stays', async () => {
+      const { cookie, csrfToken } = await signIn('U_STRANGER');
+      expect((await remove(nightly.id, { cookie, 'x-csrf-token': csrfToken })).statusCode).toBe(403);
+      expect(stored(nightly.id).prompt).toBe(PROMPT_MARKER);
+    });
+
+    it('an admin needs Admin mode on', async () => {
+      const { cookie, csrfToken } = await asAdmin();
+      expect((await remove(nightly.id, { cookie, 'x-csrf-token': csrfToken })).statusCode).toBe(403);
+      expect(stored(nightly.id)).toBeDefined();
+      const res = await remove(nightly.id, { cookie, 'x-csrf-token': csrfToken, 'x-admin-mode': 'on' });
+      expect(res.statusCode).toBe(200);
+      expect(storage.getAll().find((j) => j.id === nightly.id)).toBeUndefined();
+    });
+
+    it('anonymous callers and a missing CSRF token cannot; the viewer token can', async () => {
+      expect((await remove(nightly.id, {})).statusCode).toBe(401);
+      const { cookie } = await signIn('U_OWNER');
+      expect((await remove(nightly.id, { cookie })).statusCode).toBe(403);
+      expect(stored(nightly.id)).toBeDefined();
+      expect((await remove(nightly.id)).statusCode).toBe(200);
+    });
+
+    it('an unknown id is 404; no cron source is 503', async () => {
+      expect((await remove('no-such-job')).statusCode).toBe(404);
+      dashboard.setDashboardCronSource(null);
+      expect((await remove(nightly.id)).statusCode).toBe(503);
     });
   });
 });

@@ -7,6 +7,8 @@ description: "Use when the user must choose between options or answer a question
 
 When your turn ends and you need the user to make a real decision, call the `ASK_USER_QUESTION` model-command with a `user_choice` or `user_choice_group` payload. Slack renders it as buttons + a `✏️ 직접 입력` (direct input) button that is **added automatically by the renderer** — the dashboard card offers the same free-text answer. Never put a "직접 입력" / "Other" option in your `choices`.
 
+**A question, not a task.** When the user must *do* something (run a command, verify on a device) rather than decide, and the `user-action` MCP is available, hand it over with `mcp__user-action__instruct_user` (a short script + the machine it runs on) — never as a choice here.
+
 **Every question has one shape (#917):** choice 1 = the recommended action, choices 2–3 (at most 4 in total) = alternative actions, and the host's direct input last. `ASK_USER_QUESTION` refuses fewer than 3 or more than 4 choices, and a `recommendedChoiceId` that is not the first choice; with no `recommendedChoiceId`, choice 1 is the recommended one. Waiting on the user without such a question is never allowed — a turn that stops for the user ends with this call.
 
 ## Pre-requisite: decision-gate

@@ -75,6 +75,7 @@ export type SessionState = 'INITIALIZING' | 'MAIN' | 'SLEEPING';
 export type { ActivityState } from 'soma-lib';
 
 import type { ActivityState } from 'soma-lib';
+import type { UserActionRecord } from 'somalib/user-action/user-action';
 
 /**
  * Token usage tracking for a session.
@@ -437,6 +438,13 @@ export interface ConversationSession {
    * SSOT 2026-11-02 T7 — the TL;DR of the Executive Summary the thread head shows, for the
    * dashboard's task card (SummaryService sets it, the next input clears it).
    */
+  /**
+   * Tasks the agent handed the human through the `user-action` MCP (`instruct_user`): a short script, the machine
+   * it runs on and the host's check of it, oldest first, at most {@link USER_ACTIONS_KEPT}. Kept apart from the
+   * pending question (`actionPanel.pendingQuestion`) — a question asks for input, this asks for work — and shown in
+   * its own Slack card and dashboard section. Survives a restart.
+   */
+  userActions?: UserActionRecord[];
   executiveSummary?: {
     tldr: string[];
     at: number;
