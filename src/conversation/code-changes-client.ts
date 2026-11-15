@@ -48,15 +48,17 @@ var CHG_SKIPPED = {
   'git-config-unreadable': '저장소 설정을 읽지 못해 이 체크아웃은 읽지 않았습니다',
   'git-diff-failed': '커밋 안 한 변경을 읽지 못했습니다',
   'repo-changed-during-read': '읽는 동안 저장소 폴더가 바뀌어 이번 읽기는 버렸습니다 — 마지막으로 읽은 변경입니다',
+  'git-failed': 'git이 응답하지 않아 이번에는 읽지 못했습니다 — 마지막으로 읽은 변경입니다',
 };
 // The committed layer's own reasons (the uncommitted note names the checkout-wide ones).
 var CHG_SKIPPED_COMMITTED = {
   'git-diff-failed': '커밋한 변경을 이번에 읽지 못했습니다 — 마지막으로 읽은 변경입니다',
 };
 var CHG_FILE_FAILED = '이 파일의 변경을 불러오지 못했어요';
+var CHG_MODE = '실행 권한이 바뀜';
 var CHG_RENAMED_FROM = '이전 이름';
 
-var _chg = { cid: '', doc: null, state: 'idle', scope: 'all', closed: {}, files: {}, viewer: null, gen: 0 };
+var _chg = { cid: '', doc: null, state: 'idle', scope: 'all', closed: Object.create(null), files: Object.create(null), viewer: null, gen: 0 };
 
 function chgEsc(s) {
   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -73,20 +75,15 @@ function chgPrLayer(p) {
 // working tree changed again is still "added"), +/− summed over its layers, the layers it is in.
 // scope: 'all' | a layer | 'pr:<id>' (one PR — closed ones only this way).
 function chgFilesOf(doc, scope) {
-  var rows = {};
-  var order = [];
-  var add = function(repo, f, layer, src) {
+  var rows = Object.create(null);
+  var add = function(repo, f, layer) {
     if (!f || !f.path) return;
     var key = repo + '\n' + f.path;
     var r = rows[key];
-    if (!r) {
-      r = rows[key] = { repo: repo, path: String(f.path), status: f.status || 'modified', oldPath: f.oldPath || '', additions: 0, deletions: 0, layers: [], srcs: [] };
-      order.push(key);
-    }
+    if (!r) r = rows[key] = { repo: repo, path: String(f.path), status: f.status || 'modified', oldPath: f.oldPath || '', additions: 0, deletions: 0, layers: [] };
     r.additions += chgNum(f.additions);
     r.deletions += chgNum(f.deletions);
     if (r.layers.indexOf(layer) < 0) r.layers.push(layer);
-    r.srcs.push(src);
   };
   var prs = (doc && doc.prs) || [];
   var checkouts = (doc && doc.checkouts) || [];
@@ -96,17 +93,17 @@ function chgFilesOf(doc, scope) {
     var p = prs[i];
     var pl = chgPrLayer(p);
     var take = scope === 'pr:' + p.id || (pl !== 'closed' && want(pl));
-    if (take && pl === 'merged') (p.files || []).forEach(function(f) { add(p.repo, f, 'merged', '#' + p.number); });
+    if (take && pl === 'merged') (p.files || []).forEach(function(f) { add(p.repo, f, 'merged'); });
   }
   for (var j = prs.length - 1; j >= 0; j--) {
     var q = prs[j];
     var ql = chgPrLayer(q);
     var takeq = scope === 'pr:' + q.id || (ql !== 'closed' && want(ql));
-    if (takeq && ql !== 'merged') (q.files || []).forEach(function(f) { add(q.repo, f, ql, '#' + q.number); });
+    if (takeq && ql !== 'merged') (q.files || []).forEach(function(f) { add(q.repo, f, ql); });
   }
-  if (want('committed')) checkouts.forEach(function(c) { ((c.committed && c.committed.files) || []).forEach(function(f) { add(c.repo, f, 'committed', c.dir); }); });
-  if (want('uncommitted')) checkouts.forEach(function(c) { ((c.uncommitted && c.uncommitted.files) || []).forEach(function(f) { add(c.repo, f, 'uncommitted', c.dir); }); });
-  return order.map(function(k) { return rows[k]; }).sort(function(a, b) {
+  if (want('committed')) checkouts.forEach(function(c) { ((c.committed && c.committed.files) || []).forEach(function(f) { add(c.repo, f, 'committed'); }); });
+  if (want('uncommitted')) checkouts.forEach(function(c) { ((c.uncommitted && c.uncommitted.files) || []).forEach(function(f) { add(c.repo, f, 'uncommitted'); }); });
+  return Object.keys(rows).map(function(k) { return rows[k]; }).sort(function(a, b) {
     return a.repo < b.repo ? -1 : a.repo > b.repo ? 1 : a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
   });
 }
@@ -122,11 +119,12 @@ function chgCounts(doc) {
 // ('src/conversation'). Every node carries its +/− and file count; key is stable across paints (the open state).
 function chgTree(files) {
   var repos = [];
-  var byRepo = {};
+  // Maps without a prototype: a folder may be called constructor or __proto__.
+  var byRepo = Object.create(null);
   files.forEach(function(f) {
     var r = byRepo[f.repo];
     if (!r) {
-      r = byRepo[f.repo] = { type: 'repo', name: f.repo, key: 'r:' + f.repo, children: [], dirs: {}, additions: 0, deletions: 0, count: 0 };
+      r = byRepo[f.repo] = { type: 'repo', name: f.repo, key: 'r:' + f.repo, children: [], dirs: Object.create(null), additions: 0, deletions: 0, count: 0 };
       repos.push(r);
     }
     var parts = f.path.split('/');
@@ -136,7 +134,7 @@ function chgTree(files) {
       key = key + '/' + parts[i];
       var d = node.dirs[parts[i]];
       if (!d) {
-        d = node.dirs[parts[i]] = { type: 'dir', name: parts[i], key: key, children: [], dirs: {}, additions: 0, deletions: 0, count: 0 };
+        d = node.dirs[parts[i]] = { type: 'dir', name: parts[i], key: key, children: [], dirs: Object.create(null), additions: 0, deletions: 0, count: 0 };
         node.children.push(d);
       }
       node = d;
@@ -224,8 +222,8 @@ function chgEl() { return document.getElementById('panel-changes'); }
 // The tab opened (or the panel's conversation changed): the stored list at once, then — for a live session — a fresh
 // collect (refresh=1) painted when it lands. A load for a conversation the panel left is dropped.
 function chgOpen(cid) {
-  if (!cid) { _chg = { cid: '', doc: null, state: 'idle', scope: 'all', closed: {}, files: {}, viewer: null, gen: _chg.gen + 1 }; chgPaint(); return; }
-  if (_chg.cid !== cid) _chg = { cid: cid, doc: null, state: 'loading', scope: 'all', closed: {}, files: {}, viewer: null, gen: _chg.gen + 1 };
+  if (!cid) { _chg = { cid: '', doc: null, state: 'idle', scope: 'all', closed: Object.create(null), files: Object.create(null), viewer: null, gen: _chg.gen + 1 }; chgPaint(); return; }
+  if (_chg.cid !== cid) _chg = { cid: cid, doc: null, state: 'loading', scope: 'all', closed: Object.create(null), files: Object.create(null), viewer: null, gen: _chg.gen + 1 };
   chgPaint();
   chgLoad(cid, false).then(function() { return chgLoad(cid, true); });
 }
@@ -243,8 +241,10 @@ function chgLoad(cid, refresh) {
       if (body && body.denied) { _chg.state = 'denied'; chgPaint(); return; }
       var doc = body && body.doc;
       if (!doc && refresh && _chg.doc) return;
+      // Two loads of one conversation can land in either order: an older collect never replaces a newer one.
+      if (doc && _chg.doc && Number(doc.updatedAt) < Number(_chg.doc.updatedAt)) return;
       if (doc && _chg.doc && doc.updatedAt === _chg.doc.updatedAt && _chg.state === 'ok') return;
-      if (doc && (!_chg.doc || doc.updatedAt !== _chg.doc.updatedAt)) _chg.files = {};
+      if (doc && (!_chg.doc || doc.updatedAt !== _chg.doc.updatedAt)) _chg.files = Object.create(null);
       _chg.doc = doc || null;
       _chg.state = 'ok';
       chgPaint();
@@ -375,6 +375,8 @@ function chgViewerEl() {
     var v = _chg.viewer;
     _chg.viewer = null;
     if (!v) return;
+    // The viewer's tree folds the tab's folders too: paint the tab as they are now.
+    chgPaint();
     // The row that opened it — or, when the tab was painted again meanwhile, the row of the file last shown.
     var back = v.opener && v.opener.isConnected ? v.opener : chgRowOf(v.key) || chgRowOf(v.openedKey);
     if (back && typeof back.focus === 'function') back.focus();
@@ -393,6 +395,7 @@ function chgRowOf(key) {
 function chgOpenViewer(key, opener) {
   if (!_chg.doc) return;
   var d = chgViewerEl();
+  chgRetry(key);
   _chg.viewer = { key: key, openedKey: key, opener: opener || null };
   chgViewerPaint();
   if (!d.open && typeof d.showModal === 'function') d.showModal();
@@ -415,9 +418,9 @@ function chgViewerPaint() {
   var cached = _chg.files[v.key];
   var head = '<div class="chg-v-file"><span class="chg-mark chg-mark-' + chgEsc(f.status) + '">' + chgEsc(CHG_STATUS_MARK[f.status] || 'M') + '</span> <b>' + chgEsc(f.path) + '</b> ' + chgDelta(f.additions, f.deletions) +
     (f.oldPath ? ' <span class="chg-muted">' + chgEsc(CHG_RENAMED_FROM) + ': ' + chgEsc(f.oldPath) + '</span>' : '') + '</div>';
-  if (!cached) {
+  if (!cached || cached === 'loading') {
     main.innerHTML = head + '<div class="chg-empty">' + chgEsc(CHG_LOADING) + '</div>';
-    chgFetchFile(v.key, f);
+    if (!cached) chgFetchFile(v.key, f);
     return;
   }
   if (cached === 'error') { main.innerHTML = head + '<div class="chg-empty">' + chgEsc(CHG_FILE_FAILED) + '</div>'; return; }
@@ -435,7 +438,9 @@ function chgSourceHtml(s) {
   var label = CHG_LAYER_LABEL[s.layer] + ' · ' + s.label;
   var link = s.prUrl && /^https:\/\/github\.com\//.test(String(s.prUrl)) ? ' <a href="' + chgEsc(s.prUrl + '/files') + '" target="_blank" rel="noopener noreferrer">' + chgEsc(CHG_OPEN_GITHUB) + '</a>' : '';
   var body;
+  var mode = f.modeChange ? '<div class="chg-note">' + chgEsc(CHG_MODE) + ' · ' + chgEsc(f.modeChange) + '</div>' : '';
   if (f.binary) body = '<div class="chg-note">' + chgEsc(CHG_BINARY) + '</div>';
+  else if (!f.patch && mode && !f.additions && !f.deletions) body = '';
   else if (!f.patch) body = '<div class="chg-note">' + chgEsc(CHG_TOO_BIG) + '</div>';
   else {
     body = '<table class="chg-diff"><tbody>' + chgHunkRows(f.patch).map(function(r) {
@@ -445,16 +450,26 @@ function chgSourceHtml(s) {
       return '<tr class="chg-d-' + r.type + '"><td class="chg-ln">' + r.old + '</td><td class="chg-ln">' + r.nu + '</td><td class="chg-code"><span class="chg-sign">' + sign + '</span>' + chgEsc(r.text) + '</td></tr>';
     }).join('') + '</tbody></table>' + (f.patchTruncated ? '<div class="chg-note">' + chgEsc(CHG_TOO_BIG) + '</div>' : '');
   }
-  return '<div class="chg-src"><div class="chg-src-head"><span class="chg-badge chg-badge-' + chgEsc(s.layer) + '">' + chgEsc(label) + '</span> ' + chgDelta(f.additions, f.deletions) + link + '</div>' + body + '</div>';
+  return '<div class="chg-src"><div class="chg-src-head"><span class="chg-badge chg-badge-' + chgEsc(s.layer) + '">' + chgEsc(label) + '</span> ' + chgDelta(f.additions, f.deletions) + link + '</div>' + mode + body + '</div>';
 }
+// One file's layers, for the collect the list came from: an answer that lands after the list moved on (a newer collect
+// cleared the cache) is dropped — it would put an old patch under new counts. A failure shows, and is asked again the
+// next time the file is opened or chosen.
 function chgFetchFile(key, f) {
   var cid = _chg.cid;
   var gen = _chg.gen;
+  var ver = _chg.doc ? _chg.doc.updatedAt : null;
+  var current = function() { return gen === _chg.gen && cid === _chg.cid && !!_chg.doc && _chg.doc.updatedAt === ver; };
+  _chg.files[key] = 'loading';
   var url = '/api/dashboard/session/' + encodeURIComponent(cid) + '/changes/file?repo=' + encodeURIComponent(f.repo) + '&path=' + encodeURIComponent(f.path);
   fetch(url, { credentials: 'same-origin' })
     .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-    .then(function(body) { if (gen === _chg.gen) { _chg.files[key] = body; chgViewerPaint(); } })
-    .catch(function() { if (gen === _chg.gen) { _chg.files[key] = 'error'; chgViewerPaint(); } });
+    .then(function(body) { if (current()) { _chg.files[key] = body; chgViewerPaint(); } })
+    .catch(function() { if (current()) { _chg.files[key] = 'error'; chgViewerPaint(); } });
+}
+// A file whose read failed is asked again when it is opened or chosen.
+function chgRetry(key) {
+  if (_chg.files[key] === 'error') delete _chg.files[key];
 }
 function chgStep(delta) {
   var v = _chg.viewer;
@@ -464,6 +479,7 @@ function chgStep(delta) {
   var at = (found.at + delta + found.list.length) % found.list.length;
   var f = found.list[at];
   v.key = 'f:' + f.repo + '\n' + f.path;
+  chgRetry(v.key);
   chgViewerPaint();
 }
 
@@ -485,6 +501,7 @@ function chgOnClick(e) {
     var fk = t.getAttribute('data-chg-file');
     if (inViewer && _chg.viewer) {
       _chg.viewer.key = fk;
+      chgRetry(fk);
       // A phone's tree panel covers the file: it steps aside once a file is chosen.
       var dv = document.getElementById('chg-viewer');
       if (dv && window.matchMedia && window.matchMedia('(max-width: 720px)').matches) dv.setAttribute('data-tree', 'off');
