@@ -443,7 +443,9 @@ function upsert(db: DatabaseSync, ev: MetricsEvent, day: string, ifAbsent = fals
   if (ifAbsent) {
     // A first-writer-wins event (.prd/26 §5): the row already there keeps its owner, session and time — decided by the
     // insert itself, not by a look before it (another process can write between the two).
-    const done = st.insertIfAbsent.run(ev.id, ev.timestamp, day, eventType, JSON.stringify(ev)) as { changes: number | bigint };
+    const done = st.insertIfAbsent.run(ev.id, ev.timestamp, day, eventType, JSON.stringify(ev)) as {
+      changes: number | bigint;
+    };
     if (Number(done.changes) > 0) st.bump.run(day);
     return;
   }
