@@ -16,6 +16,7 @@ import {
   looksBinary,
   MAX_PATCH_BYTES,
   newFilePatch,
+  parseNameStatusZ,
   parseNumstatZ,
   splitPatch,
 } from './git-diff-parse';
@@ -41,6 +42,8 @@ const DIFF_FLAGS = [
 const SHA = /^[0-9a-f]{40,64}$/;
 /** The git dirs changed while they were read (a folder swapped, a pointer rewritten): the read is thrown away. */
 export const CHANGED_DURING_READ = 'repo-changed-during-read';
+/** git did not answer for a folder that has a `.git`: nothing read this time, the last read stands. */
+export const GIT_FAILED = 'git-failed';
 /** The checkout is this session's but is not read at all: its config runs commands, or it borrows another object store. */
 export const UNREAD_CHECKOUT = new Set([
   'repo-config-runs-commands',
@@ -48,6 +51,7 @@ export const UNREAD_CHECKOUT = new Set([
   'repo-alternates',
   'repo-links-outside',
   CHANGED_DURING_READ,
+  GIT_FAILED,
 ]);
 
 export interface PrHead {
@@ -55,9 +59,7 @@ export interface PrHead {
   repo?: string;
   /** The head's own repository when it is a fork's branch: a checkout of the fork matches it. */
   headRepo?: string;
-  headRef?: string;
   headSha?: string;
-  createdAt?: number;
 }
 
 export interface CheckoutInput {
@@ -95,7 +97,9 @@ function labelOf(dir: string, root?: string): string {
   return path.basename(dir);
 }
 
-function totals(files: ChangedFile[]): Pick<LayerFiles, 'additions' | 'deletions'> {
+function totals(
+  files: Array<Pick<ChangedFile, 'additions' | 'deletions'>>,
+): Pick<LayerFiles, 'additions' | 'deletions'> {
   let additions = 0;
   let deletions = 0;
   for (const f of files) {
@@ -112,14 +116,29 @@ function layer(files: ChangedFile[], truncated: boolean): LayerFiles {
   return out;
 }
 
-/** The files `git diff <from> <to>` reports between two commits (never the working tree — git-runner.ts). */
+/**
+ * The files `git diff <from> <to>` reports between two commits (never the working tree — git-runner.ts). Undefined when
+ * the file list could not be read. Each file's status comes from `--name-status`, not from its patch, so a file whose
+ * patch is not kept — past MAX_LAYER_FILES, or the patch command failed or outgrew its output cap — keeps its status and
+ * is marked `patchTruncated`.
+ */
 async function diffFiles(git: GitRun, dir: string, from: string, to: string): Promise<ChangedFile[] | undefined> {
   const numstat = await git(dir, ['diff', ...DIFF_FLAGS, '--numstat', '-z', from, to, '--']);
   if (numstat === undefined) return undefined;
   const entries = parseNumstatZ(numstat);
   if (entries.length === 0) return [];
-  const patch = entries.length > MAX_LAYER_FILES ? '' : await git(dir, ['diff', ...DIFF_FLAGS, '-U3', from, to, '--']);
-  return joinDiff(entries, splitPatch(patch ?? ''));
+  const names = await git(dir, ['diff', ...DIFF_FLAGS, '--name-status', '-z', from, to, '--']);
+  if (names === undefined) return undefined;
+  const statuses = parseNameStatusZ(names);
+  const patch =
+    entries.length > MAX_LAYER_FILES ? undefined : await git(dir, ['diff', ...DIFF_FLAGS, '-U3', from, to, '--']);
+  const files = joinDiff(entries, splitPatch(patch ?? ''));
+  for (const f of files) {
+    const status = statuses.get(f.path);
+    if (status) f.status = status;
+    if (!f.patch && !f.binary && f.additions + f.deletions > 0) f.patchTruncated = true;
+  }
+  return files;
 }
 
 // ── The uncommitted layer, compared in this process ────────────────────────────────────────────────────────────────
@@ -276,9 +295,30 @@ async function trackedChange(
   e: TreeEntry,
   format: 'sha1' | 'sha256',
   budget: Budget,
+  filemode = true,
+): Promise<ChangedFile | undefined> {
+  const st = await fs.lstat(path.join(realTop, e.path)).catch(() => undefined);
+  const file = await contentChange(gitBytes, realTop, e, format, budget, st);
+  if (!filemode || (e.mode !== '100644' && e.mode !== '100755')) return file;
+  // An executable bit flipped on a file git tracks the mode of is a change, with or without a content change.
+  if (!st?.isFile()) return file;
+  const now = st.mode & 0o111 ? '100755' : '100644';
+  if (now === e.mode) return file;
+  return {
+    ...(file ?? { path: e.path, status: 'modified', additions: 0, deletions: 0 }),
+    modeChange: `${e.mode} → ${now}`,
+  };
+}
+
+async function contentChange(
+  gitBytes: GitRunBytes,
+  realTop: string,
+  e: TreeEntry,
+  format: 'sha1' | 'sha256',
+  budget: Budget,
+  st: import('node:fs').Stats | undefined,
 ): Promise<ChangedFile | undefined> {
   const abs = path.join(realTop, e.path);
-  const st = await fs.lstat(abs).catch(() => undefined);
   // A side is read when it fits the patch source, or the counting budget still holds it.
   const affordable = (size: number) => {
     if (size <= MAX_PATCH_SOURCE) return true;
@@ -356,6 +396,8 @@ async function uncommittedLayer(
   const failed = (skipped: string) => ({ files: [], additions: 0, deletions: 0, skipped });
   const format = trim(await git(top, ['rev-parse', '--show-object-format'])) === 'sha256' ? 'sha256' : 'sha1';
   const listing = head ? await git(top, ['ls-tree', '-r', '-z', '-l', '--full-tree', head]) : '';
+  // git's own default is true; a checkout on a filesystem without modes says false.
+  const filemode = trim(await git(top, ['config', '--bool', 'core.filemode'])) !== 'false';
   if (listing === undefined) return failed('git-diff-failed');
   const tree = parseLsTree(listing);
   if (tree.length > MAX_TRACKED) return failed('too-many-files');
@@ -363,7 +405,8 @@ async function uncommittedLayer(
   const indexed = await git(top, ['ls-files', '-z', '--cached']);
   const others = await git(top, ['ls-files', '--others', '--exclude-standard', '-z']);
   if (indexed === undefined || others === undefined) return failed('git-diff-failed');
-  const realTop = await fs.realpath(top).catch(() => top);
+  // `top` is the gate's real path, witnessed: files are read under it as checked, never under a fresh resolve.
+  const realTop = top;
   const budget: Budget = { patches: MAX_PATCHES, countBytes: MAX_COUNT_BYTES };
   const files: ChangedFile[] = [];
   let truncated = false;
@@ -372,7 +415,7 @@ async function uncommittedLayer(
       truncated = true;
       break;
     }
-    const f = await trackedChange(gitBytes, realTop, e, format, budget);
+    const f = await trackedChange(gitBytes, realTop, e, format, budget, filemode);
     if (f) files.push(f);
   }
   const inTree = new Set(tree.map((e) => e.path));
@@ -502,6 +545,7 @@ export async function checkoutChanges(input: CheckoutInput): Promise<CheckoutRea
     input.git ?? runGit,
   );
   if (!safety.ok && (safety.reason === 'not-a-checkout' || safety.reason === 'outside-session')) return undefined;
+  // (`git-failed` falls through to `unread`: the collector keeps the checkout's last read, whole.)
   const unread = (skipped: string): CheckoutRead => ({
     id: checkoutId(dir),
     // Not even the remote is read from a checkout that is not read.
@@ -598,13 +642,7 @@ export async function sessionCommits(
       '--',
     ]);
     if (stat === undefined) continue;
-    let additions = 0;
-    let deletions = 0;
-    for (const e of parseNumstatZ(stat)) {
-      additions += e.additions;
-      deletions += e.deletions;
-    }
-    commits.push({ ...c, additions, deletions });
+    commits.push({ ...c, ...totals(parseNumstatZ(stat)) });
   }
   return commits;
 }

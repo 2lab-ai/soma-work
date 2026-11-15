@@ -91,18 +91,22 @@ worktree. 브랜치 · 원격 조건 없이 전부(재조정기는 여기에 자
 2. 아니면 `refs/remotes/origin/HEAD` → `origin/main` → `origin/master` 중 처음 있는 것과의 `merge-base`.
 3. 원격 참조가 없으면 `rev-list --since=<세션 시작> HEAD`의 가장 오래된 커밋의 부모(루트면 빈 트리).
 4. 기준점이 세션 PR head가 아니면, base..HEAD의 첫 부모 줄에서 세션 시작 전에 만든 가장 최근 커밋(base의 자손)으로 base를 올린다 — 세션 전 브랜치 작업은 세지 않고, 옆 줄에서 merge로 들어온 옛 커밋이 기준점이 되지 않는다.
-5. `git log base..HEAD -n 50`(커밋 목록) + `git diff base HEAD -M`(numstat · 패치). diff가 실패하면 `skipped: 'git-diff-failed'` — "커밋 없음"이 아니다.
+5. `git log base..HEAD -n 50`(커밋 목록) + `git diff base HEAD -M`(numstat · name-status · 패치). 파일 목록(numstat · name-status)을 못 읽으면 `skipped: 'git-diff-failed'` — "커밋 없음"이 아니다. 상태(추가 · 삭제 · 이름 바꿈)는 name-status에서 오므로, 패치를 안 남긴 파일(1,000개 초과, 패치 명령 실패 · 출력 상한 초과)도 상태를 지키고 `patchTruncated`로 표시된다.
 6. 세션 PR head는 PR 저장소 또는 head 저장소(포크의 브랜치, `headRepo`)가 이 체크아웃의 원격과 같을 때 후보가 된다.
 
-읽기에 실패한 층(`git-diff-failed`, `repo-changed-during-read`)은 저장본의 마지막 읽기를 사유와 함께 그대로 둔다(`keepLastRead`).
-`repo-changed-during-read`면 그 체크아웃의 이번 읽기는 이름(원격)까지 전부 버린다.
+읽기에 실패한 층(`git-diff-failed`, `repo-changed-during-read`, `git-failed`)은 저장본의 마지막 읽기를 사유와 함께 그대로 둔다(`keepLastRead`).
+`repo-changed-during-read` · `git-failed`(`.git`이 있는 폴더에서 git이 답하지 않음 — 시간 초과 · 잠금; 체크아웃이 없는 것과 다르다)면
+그 체크아웃의 이번 읽기는 이름(원격)까지 전부 버린다. 추적 파일의 실행 권한이 바뀌면(`core.filemode`가 false가 아닐 때) 내용이
+같아도 바뀐 것이다(`modeChange: '100644 → 100755'`).
 
 새 커밋(통계) — `git log -g --date=unix --format=%H%x1f%gs%x1f%gd HEAD -n 300`에서 reflog 시각이 세션 시작 이후이고 제목이
 `commit`(`commit:`, `commit (amend):`, `commit (initial):`, `commit (merge):`)으로 시작하는 것. 아직 `counted.commits`에 없는 것만
 `git show --numstat -z --format= <sha>`로 줄 수를 세 지표로 보낸다 — 같은 고정 git dir로, 같은 증인 확인 안에서. `counted`는 지표가
 받은 뒤에만 늘어난다(`markCounted`, 서비스가 `onResult` 성공 뒤) — 넘기기에 실패하면 다음 수집이 다시 넘긴다(지표 행은 먼저 쓴 쪽이 이긴다).
+`onResult`가 없으면(받을 쪽 없음) 아무것도 표시하지 않는다. 머지도 같다: `newMerges` = 머지됨 중 `counted.merges`에 없는 PR(저장본의
+이전 상태가 아니라) — 넘기기에 실패한 머지는 다음 수집이 다시 넘긴다. 목록마다 최근 2,000개.
 
-PR — 세션의 PR 링크(현재 + 기록) 중 GitHub URL만, 최대 20. 저장본에 머지 · 닫힘 기록이 있고 파일이 온전하면(`filesStale` · `patchesDropped` 없음) 다시 묻지 않는다(바뀌지 않는다).
+PR — 세션의 PR 링크(현재 + 기록) 중 GitHub URL만, 최대 20. 저장본에 머지 기록이 있고 파일이 온전하면(`filesStale` · `patchesDropped` 없음) 다시 묻지 않는다(바뀌지 않는다). 닫힌 PR은 다시 열리고 나중에 머지될 수 있으니 매번 묻는다.
 그 밖에는 `GET pulls/{n}`(상태 · 크기 · head · head 저장소 · base sha · 생성/머지 시각) → 생성 시각이 세션 시작 − 2분 이후일 때만 `GET pulls/{n}/files`.
 저장된 파일은 head sha와 base sha가 같고 온전할 때만 다시 쓴다. 문서 예산이 패치를 덜어낸 PR은 `patchesDropped`로 다음에 다시 읽는다.
 실패한 PR은 저장본의 이전 기록을 그대로 둔다.
@@ -126,6 +130,8 @@ PR — 세션의 PR 링크(현재 + 기록) 중 GitHub URL만, 최대 20. 저장
   --git-dir --work-tree`로 고정한다(`.git` 파일을 나중에 바꿔도 따라가지 않음).
 - **체크아웃 게이트**(`checkoutSafety`, 체크아웃마다 맨 먼저 — 통과 전에는 rev-parse 하나만 돈다):
   1. 작업 트리 · git dir · common dir의 실경로가 세션 폴더(`sessionDirs`) 안 — 아니면 이 세션의 체크아웃이 아니다(목록에도 없음). `.git` 파일이 다른 저장소를 가리키거나 `core.worktree`가 밖을 가리키는 경우.
+     세션 폴더는 가장 바깥 것만 루트다(`trustedRoots`): 다른 루트 안의 폴더(세션 폴더 안의 턴 폴더)는 담는 범위에 보태는 것이 없고,
+     모델이 그 자리를 다른 세션 체크아웃으로 가는 링크로 바꾸면 그 체크아웃이 루트가 되어 버리므로 뺀다. 가장 바깥 폴더가 링크면 루트가 아니다.
   2. `objects/info/alternates`가 없거나 빈 일반 파일이고(lstat만 — FIFO도 읽지 않는다), git dir · common dir 안에 심볼릭 링크가 하나도 없음(objects · refs · index · logs를 다른 저장소로 돌리는 길, 10만 항목까지 lstat). 아니면 `skipped: 'repo-alternates'` · `'repo-links-outside'`.
   3. `git config --list --name-only --show-scope`(우리 `-c`의 command 범위 제외 = 저장소 · worktree · include)에 `filter.*`, `*.textconv`,
      `*.command`, `*.process`, `gpg.*`, `log.showSignature`, `core.worktree`, `pager.*`, `core.fsmonitor`, `core.sshCommand`,
@@ -136,7 +142,8 @@ PR — 세션의 PR 링크(현재 + 기록) 중 GitHub URL만, 최대 20. 저장
   - 작업 트리 파일(`readInside`): 연 경로 전체에 링크가 없어야 한다. macOS는 `O_NOFOLLOW_ANY`(커널이 경로를 걸으며 구성 요소마다 링크를
     거부 — 실측: 링크 조상 경유 시 ELOOP), Linux는 연 핸들의 실제 경로(`/proc/self/fd/N`)가 작업 트리 안. 그 밖의 OS는 읽지 않는다.
     연 핸들에서 일반 파일 · 이름 하나(`nlink == 1`, 밖 파일의 하드 링크 거부) · 크기를 확인하고 `O_NONBLOCK`(FIFO로 바꿔도 멈추지 않음).
-  - git dir(`PathWitness`): git이 경로를 직접 여니 막을 수 없다 — 대신 게이트가 세션 폴더부터 git dir까지의 폴더, git dir · common dir
+  - git dir(`PathWitness`): git이 경로를 직접 여니 막을 수 없다 — 대신 게이트가 세션 폴더부터 작업 트리 · git dir까지의 폴더(따로 놓인
+    linked worktree의 작업 트리 경로 포함 — 파일은 게이트가 확인한 그 실경로 아래에서만 읽는다), git dir · common dir
     안의 모든 폴더, 포인터 파일(`commondir` · `config` · `config.worktree` · `objects/info/alternates`)의 (장치, inode, 종류, ctime)을 적고,
     체크아웃의 모든 git 호출(새 커밋 포함)이 끝난 뒤 다시 본다. 항목을 바꾸면(이름 바꾸기 · 교체 · 생성 · 삭제) 그 폴더의 ctime이, 옮긴
     항목은 제 ctime이 바뀌고 어떤 프로세스도 ctime을 되돌리지 못한다(`utimes`는 지금으로 만든다) — 하나라도 다르면 그 읽기를 버리고

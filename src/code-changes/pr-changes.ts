@@ -1,7 +1,7 @@
 /**
  * The session's own pull requests as change layers (.prd/26 §3, .prd/27 §4): a PR on the session's card that GitHub
- * says was created after the session started. Its files and patches come from GitHub; a merged or closed PR whose head
- * did not move is read from the stored record instead (it does not change).
+ * says was created after the session started. Its files and patches come from GitHub; a merged PR is read from the
+ * stored record instead (it does not change), and any other whose head and base did not move keeps its stored files.
  */
 
 import type { GitHubPullDetail, GitHubPullFile } from '../link-metadata-fetcher';
@@ -91,8 +91,9 @@ export async function sessionPrChanges(
     seen.add(ref.id);
     if (seen.size > MAX_SESSION_PRS) break;
     const old = prev.find((p) => p.id === ref.id);
-    // A settled PR does not change — unless its files never arrived whole, or the budget dropped their patches.
-    if (old && (old.state === 'merged' || old.state === 'closed') && !old.filesStale && !old.patchesDropped) {
+    // A merged PR does not change — unless its files never arrived whole, or the budget dropped their patches. A closed
+    // one is asked again: it can be reopened, and merged later.
+    if (old && old.state === 'merged' && !old.filesStale && !old.patchesDropped) {
       out.push(old);
       continue;
     }

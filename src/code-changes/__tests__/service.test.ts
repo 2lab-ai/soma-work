@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createCodeChangesService, type SessionLike, sessionPrUrls } from '../service';
+import { createCodeChangesService, REFRESH_WAIT_MS, type SessionLike, sessionPrUrls } from '../service';
 import { CodeChangesStore } from '../store';
 
 const roots: string[] = [];
@@ -14,7 +14,11 @@ afterEach(() => {
   for (const r of roots.splice(0)) fs.rmSync(r, { recursive: true, force: true });
 });
 
-function setup(session: SessionLike & { key?: string }, collect: Record<string, unknown> = {}) {
+function setup(
+  session: SessionLike & { key?: string },
+  collect: Record<string, unknown> = {},
+  opts: { noConsumer?: boolean } = {},
+) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-svc-'));
   roots.push(dir);
   const sessions = new Map<string, SessionLike>([['k1', session]]);
@@ -27,7 +31,7 @@ function setup(session: SessionLike & { key?: string }, collect: Record<string, 
     allSessions: () => sessions.entries(),
     persist,
     pushCard,
-    onResult,
+    ...(opts.noConsumer ? {} : { onResult }),
     store: new CodeChangesStore(dir),
     collect: {
       listCheckoutDirs,
@@ -151,5 +155,60 @@ describe('code-changes service', () => {
     c.terminated = true;
     t.svc.snapshot({ sessionKey: 'k3' });
     expect(t.svc.turnDirCount()).toBe(0);
+  });
+
+  it('with no consumer of the result, nothing is marked counted — a consumer installed later still gets them', async () => {
+    const sha = 'e'.repeat(40);
+    const session: SessionLike = {
+      conversationId: 'conv1',
+      startedAt: 1,
+      sessionWorkingDir: '/tmp/x/session_1794756694405_a',
+    };
+    const t = setup(
+      session,
+      {
+        listCheckoutDirs: async () => ({ dirs: ['/tmp/x/session_1794756694405_a/web'] }),
+        checkoutChanges: async () => ({
+          id: 'c1',
+          repo: 'acme/web',
+          dir: 'web',
+          uncommitted: { files: [], additions: 0, deletions: 0 },
+          committed: { files: [], additions: 0, deletions: 0, commits: [] },
+          sessionCommits: [{ sha, at: 5, additions: 1, deletions: 0 }],
+        }),
+      },
+      { noConsumer: true },
+    );
+    expect(await t.svc.refresh('conv1')).toBe(true);
+    expect(session.codeChanges).toBeDefined();
+    expect(t.store.read('conv1')?.counted.commits).toEqual([]);
+  });
+
+  it('refresh answers by its deadline while the collect is held, and the collect still lands afterwards', async () => {
+    vi.useFakeTimers();
+    try {
+      let release!: () => void;
+      const held = new Promise<void>((r) => (release = r));
+      const session: SessionLike = { conversationId: 'conv1', sessionWorkingDir: '/tmp/x/session_1794756694405_a' };
+      const t = setup(session, {
+        listCheckoutDirs: async () => {
+          await held;
+          return { dirs: [] };
+        },
+      });
+      let answered: boolean | undefined;
+      void t.svc.refresh('conv1').then((v) => (answered = v));
+      await vi.advanceTimersByTimeAsync(REFRESH_WAIT_MS - 1);
+      expect(answered).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(answered).toBe(true);
+      expect(session.codeChanges).toBeUndefined();
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      await t.svc.scheduler.idle();
+      expect(session.codeChanges?.updatedAt).toBe(7);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

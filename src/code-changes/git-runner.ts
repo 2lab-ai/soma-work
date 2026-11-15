@@ -171,10 +171,12 @@ export type CheckoutSafety =
       ok: true;
       top: string;
       gitDir: string;
-      /** The git dirs' folders (and the folders above them, from the session folder down) as checked. */
+      /** The work tree's and git dirs' folders (from the session folder down, and all inside the git dirs) as checked. */
       witness: PathWitness;
     }
   | { ok: false; reason: 'not-a-checkout' | 'outside-session' }
+  /** git did not answer for a folder that has a `.git` (a timeout, a lock): not "no checkout" — try again later. */
+  | { ok: false; reason: 'git-failed' }
   | {
       ok: false;
       reason: 'repo-config-runs-commands' | 'git-config-unreadable' | 'repo-alternates' | 'repo-links-outside';
@@ -218,6 +220,25 @@ export async function noLinksIn(dir: string, max = MAX_GIT_ENTRIES, witness = ne
 const inside = (p: string, roots: string[]) => roots.some((r) => p === r || p.startsWith(`${r}${path.sep}`));
 
 /**
+ * The session's folders as real paths, anchored where the model cannot move them (#1299 review): only the outermost
+ * folders count — one inside another (the turn's folder inside the session's) adds nothing to the containment but a
+ * path the model can swap for a link to another session's checkout, so it is dropped — and an outermost folder that is
+ * itself a link is no root. What is above an outermost folder is the daemon's, not the model's.
+ */
+export async function trustedRoots(roots: string[]): Promise<string[]> {
+  const lexical = [...new Set(roots.map((r) => path.resolve(r)))];
+  const outermost = lexical.filter((r) => !lexical.some((o) => o !== r && inside(r, [o])));
+  const out: string[] = [];
+  for (const r of outermost) {
+    const st = await fs.lstat(r).catch(() => undefined);
+    if (!st?.isDirectory()) continue;
+    const realRoot = await fs.realpath(r).catch(() => undefined);
+    if (realRoot) out.push(realRoot);
+  }
+  return out;
+}
+
+/**
  * Whether the daemon may read the checkout at `dir` at all (.prd/27 §5): its work tree, git dir and common dir are inside
  * `roots` (the session's folders), it borrows no other object store, and its config runs no command. `outside-session`
  * and `not-a-checkout` mean it is not this session's checkout; the config reasons mean it is, but is not read.
@@ -230,9 +251,14 @@ export async function checkoutSafety(dir: string, roots: string[], git: GitRun =
     '--absolute-git-dir',
     '--git-common-dir',
   ]);
-  const lines = (out ?? '').split('\n').map((l) => l.trim());
+  if (out === undefined) {
+    // git failed: a folder with a `.git` is still a checkout — its last read stands; one without is none.
+    const dotGit = await fs.lstat(path.join(dir, '.git')).catch(() => undefined);
+    return dotGit ? { ok: false, reason: 'git-failed' } : { ok: false, reason: 'not-a-checkout' };
+  }
+  const lines = out.split('\n').map((l) => l.trim());
   if (lines.length < 3 || !lines[0] || !lines[1] || !lines[2]) return { ok: false, reason: 'not-a-checkout' };
-  const realRoots = await Promise.all((roots.length ? roots : [dir]).map(real));
+  const realRoots = await trustedRoots(roots.length ? roots : [dir]);
   const [top, gitDir, common] = await Promise.all(lines.slice(0, 3).map(real));
   if (!inside(top, realRoots) || !inside(gitDir, realRoots) || !inside(common, realRoots)) {
     return { ok: false, reason: 'outside-session' };
@@ -245,10 +271,11 @@ export async function checkoutSafety(dir: string, roots: string[], git: GitRun =
   // refuses the checkout now, and a swap after this is seen when the read is checked (PathWitness). The session folder
   // itself is noted (renaming it away and back changes its own ctime); what is above it the sandbox does not write.
   const witness = new PathWitness();
-  const outermost = [...realRoots].sort((a, b) => a.length - b.length);
+  const rootOf = (p: string) => realRoots.find((r) => inside(p, [r]))!;
+  // The work tree's own path too (a linked worktree's lies apart from its git dirs): files are read under `top`.
+  if (!(await witness.noteChain(rootOf(top), top))) return { ok: false, reason: 'repo-links-outside', top };
   for (const d of new Set([gitDir, common])) {
-    const root = outermost.find((r) => inside(d, [r]))!;
-    if (!(await witness.noteChain(root, d))) return { ok: false, reason: 'repo-links-outside', top };
+    if (!(await witness.noteChain(rootOf(d), d))) return { ok: false, reason: 'repo-links-outside', top };
     if (!(await noLinksIn(d, MAX_GIT_ENTRIES, witness))) return { ok: false, reason: 'repo-links-outside', top };
     for (const f of POINTER_FILES) {
       if ((await witness.note(path.join(d, f))) === 'link') return { ok: false, reason: 'repo-links-outside', top };

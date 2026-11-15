@@ -23,7 +23,7 @@ export function isStoreKey(conversationId: unknown): conversationId is string {
   );
 }
 
-/** The commit shas one document remembers as counted (the newest). */
+/** The commit shas (and, apart, the merged PR ids) one document remembers as counted — the newest. */
 export const MAX_COUNTED_COMMITS = 2000;
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -76,7 +76,11 @@ function validate(raw: unknown): CodeChangesDoc {
     throw new Error('not a code-changes document');
   }
   if (!isObj(d.counted) || !Array.isArray(d.counted.commits)) d.counted = { commits: [] };
-  d.counted.commits = d.counted.commits.filter((c): c is string => typeof c === 'string');
+  const strings = (v: unknown) => (Array.isArray(v) ? v.filter((c): c is string => typeof c === 'string') : []);
+  d.counted = {
+    commits: strings(d.counted.commits),
+    ...(d.counted.merges !== undefined ? { merges: strings(d.counted.merges) } : {}),
+  };
   return d;
 }
 
@@ -102,14 +106,16 @@ export class CodeChangesStore {
     atomicWriteJson(this.file(doc.conversationId), doc);
   }
 
-  /** The metrics took these commits: later collects do not hand them on again. */
-  markCounted(conversationId: string, shas: string[]): void {
-    if (shas.length === 0) return;
+  /** The metrics took these commits and merges: later collects do not hand them on again. Each list keeps its newest. */
+  markCounted(conversationId: string, done: { commits?: string[]; merges?: string[] }): void {
+    const commits = done.commits ?? [];
+    const merges = done.merges ?? [];
+    if (commits.length === 0 && merges.length === 0) return;
     const doc = this.read(conversationId);
     if (!doc) return;
-    const counted = new Set(doc.counted.commits);
-    for (const sha of shas) counted.add(sha);
-    doc.counted = { commits: [...counted].slice(-MAX_COUNTED_COMMITS) };
+    const add = (have: string[] | undefined, more: string[]) =>
+      [...new Set([...(have ?? []), ...more])].slice(-MAX_COUNTED_COMMITS);
+    doc.counted = { commits: add(doc.counted.commits, commits), merges: add(doc.counted.merges, merges) };
     this.write(doc);
   }
 }

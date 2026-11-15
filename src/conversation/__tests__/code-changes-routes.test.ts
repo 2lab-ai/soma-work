@@ -121,6 +121,12 @@ describe('code changes API', () => {
       cookie: userCookie('U_OTHER'),
     });
     expect(file.statusCode).toBe(403);
+    // A refresh asked by a reader who may not read is refused before the host is asked to collect.
+    const refresher = vi.fn(async () => true);
+    routes.setCodeChangesRefresher(refresher);
+    const refused = await get('/api/dashboard/session/conv-1/changes?refresh=1', { cookie: userCookie('U_OTHER') });
+    expect(refused.statusCode).toBe(403);
+    expect(refresher).not.toHaveBeenCalled();
   });
 
   it('the owner reads the list without patches; refresh=1 waits for the host and answers the new snapshot', async () => {

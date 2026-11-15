@@ -9,7 +9,13 @@
 
 import path from 'node:path';
 import { listCheckoutDirs } from '../session-pr-reconciler';
-import { CHANGED_DURING_READ, checkoutChanges, type SessionCommit, UNREAD_CHECKOUT } from './checkout-changes';
+import {
+  CHANGED_DURING_READ,
+  checkoutChanges,
+  GIT_FAILED,
+  type SessionCommit,
+  UNREAD_CHECKOUT,
+} from './checkout-changes';
 import { type PrDeps, sessionPrChanges } from './pr-changes';
 import { type CodeChangesStore, MAX_COUNTED_COMMITS } from './store';
 import { summarizeCodeChanges } from './summary';
@@ -40,7 +46,7 @@ export interface CollectDeps extends PrDeps {
 export interface CollectResult {
   doc: CodeChangesDoc;
   summary: CodeChangesSummary;
-  /** PRs merged since the stored copy (or every merged PR on a first run). */
+  /** Merged PRs the metrics have not taken yet (`counted.merges`) — marked like `newCommits`. */
   newMerges: PrChanges[];
   /**
    * Commits made in the session's checkouts that the metrics do not hold yet. Handed on until the caller marks them
@@ -53,7 +59,9 @@ const hasChanges = (c: CheckoutChanges) =>
   c.uncommitted.files.length > 0 || c.committed.files.length > 0 || !!c.uncommitted.skipped || !!c.committed.skipped;
 
 /** Reasons a layer was not read this time though it can be: the last layer read stands, with the reason. */
-const RETRY_LATER = new Set(['git-diff-failed', CHANGED_DURING_READ]);
+const RETRY_LATER = new Set(['git-diff-failed', CHANGED_DURING_READ, GIT_FAILED]);
+/** Reasons nothing of the checkout was read this time (not even its name): the last read stands whole. */
+const KEEP_WHOLE = new Set([CHANGED_DURING_READ, GIT_FAILED]);
 
 /**
  * A checkout read against the stored one: a layer that could not be read this time (git failed, the git dir changed
@@ -64,8 +72,8 @@ export function keepLastRead(c: CheckoutChanges, old: CheckoutChanges | undefine
   const u = c.uncommitted.skipped;
   const k = c.committed.skipped;
   if (!RETRY_LATER.has(u ?? '') && !RETRY_LATER.has(k ?? '')) return c;
-  // Nothing of a checkout changed during the read is kept, not even its name: the last read stands whole.
-  const base = u === CHANGED_DURING_READ ? old : c;
+  // Nothing of a checkout changed during the read (or that git did not answer for) is kept, not even its name.
+  const base = KEEP_WHOLE.has(u ?? '') ? old : c;
   const out: CheckoutChanges = { ...base };
   if (RETRY_LATER.has(u ?? '')) out.uncommitted = { ...old.uncommitted, skipped: u };
   if (RETRY_LATER.has(k ?? '')) out.committed = { ...old.committed, skipped: k };
@@ -95,17 +103,12 @@ export function applyPatchBudget(doc: CodeChangesDoc, max = MAX_DOC_PATCH_BYTES)
 export async function collectCodeChanges(input: CollectInput, deps: CollectDeps): Promise<CollectResult> {
   const prev = deps.store.read(input.conversationId);
   const prs = await sessionPrChanges(input.prUrls, input.startedAt, prev?.prs ?? [], deps);
-  const prHeads = prs.map((p) => ({
-    repo: p.repo,
-    headRepo: p.headRepo,
-    headRef: p.headRef,
-    headSha: p.headSha,
-    createdAt: p.createdAt,
-  }));
+  const prHeads = prs.map((p) => ({ repo: p.repo, headRepo: p.headRepo, headSha: p.headSha }));
   const list = deps.listCheckoutDirs ?? listCheckoutDirs;
   const readCheckout = deps.checkoutChanges ?? checkoutChanges;
   const { dirs } = await list(input.dirs, MAX_CHECKOUTS);
   const counted = new Set(prev?.counted.commits ?? []);
+  const countedMerges = new Set(prev?.counted.merges ?? []);
   const lastRead = new Map((prev?.checkouts ?? []).map((c) => [c.id, c]));
   const checkouts: CheckoutChanges[] = [];
   const newCommits: CollectResult['newCommits'] = [];
@@ -134,17 +137,17 @@ export async function collectCodeChanges(input: CollectInput, deps: CollectDeps)
     updatedAt: deps.now(),
     checkouts,
     prs,
-    // Only what the metrics took: new commits are marked once handed on (CodeChangesStore.markCounted).
-    counted: { commits: [...counted].slice(-MAX_COUNTED_COMMITS) },
+    // Only what the metrics took: new commits and merges are marked once handed on (CodeChangesStore.markCounted).
+    counted: { commits: [...counted].slice(-MAX_COUNTED_COMMITS), merges: [...countedMerges] },
   };
   if (input.startedAt !== undefined) doc.sessionStartedAt = input.startedAt;
   applyPatchBudget(doc);
   deps.store.write(doc);
-  const wasMerged = new Set((prev?.prs ?? []).filter((p) => p.state === 'merged').map((p) => p.id));
   return {
     doc,
     summary: summarizeCodeChanges(doc),
-    newMerges: prs.filter((p) => p.state === 'merged' && !wasMerged.has(p.id)),
+    // Not "merged since the stored copy": a hand-off that failed hands the merge on again until it is marked.
+    newMerges: prs.filter((p) => p.state === 'merged' && !countedMerges.has(p.id)),
     newCommits,
   };
 }

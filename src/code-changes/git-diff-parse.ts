@@ -164,3 +164,25 @@ export function lineCounts(before: Buffer, after: Buffer): { additions: number; 
   }
   return { additions, deletions };
 }
+
+const NAME_STATUS: Record<string, ChangedFileStatus> = { A: 'added', C: 'added', D: 'deleted', R: 'renamed' };
+
+/**
+ * `git diff --name-status -z`: `<X>\0<path>\0`, or `<R|C><score>\0<old>\0<new>\0` — the status of each file by its
+ * (new) path. M and T (a type change) are modified.
+ */
+export function parseNameStatusZ(out: string): Map<string, ChangedFileStatus> {
+  const parts = out.split('\0');
+  const map = new Map<string, ChangedFileStatus>();
+  for (let i = 0; i < parts.length; i++) {
+    const code = parts[i].replace(/^\n+/, '');
+    if (!/^[ACDMRTUX]\d*$/.test(code)) continue;
+    const letter = code[0];
+    const two = letter === 'R' || letter === 'C';
+    const p = parts[i + (two ? 2 : 1)];
+    i += two ? 2 : 1;
+    if (p === undefined) break;
+    map.set(p, NAME_STATUS[letter] ?? 'modified');
+  }
+  return map;
+}

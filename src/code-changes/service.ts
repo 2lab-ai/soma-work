@@ -104,17 +104,19 @@ export function createCodeChangesService<S extends SessionLike>(deps: CodeChange
     session.codeChanges = result.summary;
     deps.persist(key);
     deps.pushCard(key);
+    // Nothing takes the result: nothing is marked — a consumer installed later still gets every commit and merge.
+    if (!deps.onResult) return;
     try {
-      await deps.onResult?.(key, session, result);
+      await deps.onResult(key, session, result);
     } catch (error) {
-      // Not marked: the next collect hands these commits on again (their metric rows are written first-wins).
+      // Not marked: the next collect hands these on again (their metric rows are written first-wins).
       deps.logger?.debug('code-changes onResult threw', { key, error: (error as Error)?.message });
       return;
     }
-    store.markCounted(
-      result.doc.conversationId,
-      result.newCommits.map((c) => c.sha),
-    );
+    store.markCounted(result.doc.conversationId, {
+      commits: result.newCommits.map((c) => c.sha),
+      merges: result.newMerges.map((p) => p.id),
+    });
   }
 
   const scheduler = createCodeChangesScheduler(run, { logger: deps.logger, ...deps.scheduler });

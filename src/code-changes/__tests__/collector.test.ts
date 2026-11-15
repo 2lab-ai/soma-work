@@ -15,7 +15,7 @@ import {
   listView,
 } from '../collector';
 import { prFileOf, pullRefOf, sessionPrChanges } from '../pr-changes';
-import { CodeChangesStore, isStoreKey } from '../store';
+import { CodeChangesStore, isStoreKey, MAX_COUNTED_COMMITS } from '../store';
 import { sanitizeCodeChangesSummary, summarizeCodeChanges } from '../summary';
 import type { CheckoutChanges, CodeChangesDoc } from '../types';
 
@@ -207,13 +207,13 @@ describe('collectCodeChanges', () => {
     ]);
     // Not counted until the metrics took them: a collect before that hands them on again.
     expect(s.read('conv1')?.counted.commits).toEqual([]);
-    expect((await collectCodeChanges(input, deps)).newCommits).toHaveLength(1);
+    const unmarked = await collectCodeChanges(input, deps);
+    expect(unmarked.newCommits).toHaveLength(1);
+    expect(unmarked.newMerges.map((p) => p.number)).toEqual([1]);
     expect(r.doc.checkouts[0]).not.toHaveProperty('sessionCommits');
-    s.markCounted(
-      'conv1',
-      r.newCommits.map((c) => c.sha),
-    );
-    expect(s.read('conv1')?.counted.commits).toEqual(['f'.repeat(40)]);
+    expect(r.newMerges.map((p) => p.number)).toEqual([1]);
+    s.markCounted('conv1', { commits: r.newCommits.map((c) => c.sha), merges: r.newMerges.map((p) => p.id) });
+    expect(s.read('conv1')?.counted).toEqual({ commits: ['f'.repeat(40)], merges: ['acme/web#1'] });
 
     const again = await collectCodeChanges(input, deps);
     expect(again.newMerges).toEqual([]);
@@ -565,8 +565,30 @@ describe('the fourth review round (#1299)', () => {
     };
     fs.writeFileSync(path.join(s.baseDir, 'abc-3.json'), JSON.stringify(bad));
     expect(s.read('abc-3')?.updatedAt).toBe(5);
-    s.markCounted('abc-3', ['a'.repeat(40)]);
-    s.markCounted('abc-3', ['a'.repeat(40), 'b'.repeat(40)]);
-    expect(s.read('abc-3')?.counted.commits).toEqual(['a'.repeat(40), 'b'.repeat(40)]);
+    s.markCounted('abc-3', { commits: ['a'.repeat(40)] });
+    s.markCounted('abc-3', { commits: ['a'.repeat(40), 'b'.repeat(40)], merges: ['acme/web#1'] });
+    expect(s.read('abc-3')?.counted).toEqual({ commits: ['a'.repeat(40), 'b'.repeat(40)], merges: ['acme/web#1'] });
+    // Past the cap the oldest go first; the newest stay.
+    const sha = (i: number) => i.toString(16).padStart(40, '0');
+    s.markCounted('abc-3', { commits: Array.from({ length: 1500 }, (_, i) => sha(i)) });
+    s.markCounted('abc-3', { commits: Array.from({ length: 1500 }, (_, i) => sha(1500 + i)) });
+    const kept = s.read('abc-3')!.counted.commits;
+    expect(kept).toHaveLength(MAX_COUNTED_COMMITS);
+    expect(kept).not.toContain('a'.repeat(40));
+    expect(kept).not.toContain(sha(999));
+    expect(kept[kept.length - 1]).toBe(sha(2999));
+  });
+
+  it('a closed PR is asked again (it can be reopened); a merged one is not', async () => {
+    const url = 'https://github.com/acme/web/pull/8';
+    const closed = await sessionPrChanges([url], START, [], prDeps({ 8: detail(8, { state: 'closed' }) }));
+    expect(closed[0].state).toBe('closed');
+    const reopened = prDeps({ 8: detail(8, { state: 'open' }) });
+    expect((await sessionPrChanges([url], START, closed, reopened))[0].state).toBe('open');
+    expect(reopened.fetchPullDetail).toHaveBeenCalledTimes(1);
+    const merged = await sessionPrChanges([url], START, [], prDeps({ 8: detail(8, { merged: true }) }));
+    const again = prDeps({ 8: detail(8, { merged: true }) });
+    await sessionPrChanges([url], START, merged, again);
+    expect(again.fetchPullDetail).not.toHaveBeenCalled();
   });
 });

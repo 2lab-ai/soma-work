@@ -27,6 +27,8 @@ export interface ChangedFile {
   patch?: string;
   /** The patch was cut at the per-file budget. */
   patchTruncated?: true;
+  /** The executable bit changed: `100644 → 100755` (uncommitted layer). */
+  modeChange?: string;
 }
 
 export interface LayerFiles {
@@ -109,8 +111,11 @@ export interface CodeChangesDoc {
   checkouts: CheckoutChanges[];
   /** The session's own pull requests (created after it started), newest first. */
   prs: PrChanges[];
-  /** What the metrics already hold for this conversation — commit shas whose lines were recorded. */
-  counted: { commits: string[] };
+  /**
+   * What the metrics already took for this conversation — commit shas and merged PR ids — marked once the result was
+   * handed on (`CodeChangesStore.markCounted`); until then each collect hands them on again.
+   */
+  counted: { commits: string[]; merges?: string[] };
 }
 
 export interface LayerTotals {
@@ -133,13 +138,5 @@ export interface CodeChangesSummary {
     paths: string[];
     skipped?: string;
   }>;
-  prs: Array<{
-    url: string;
-    number: number;
-    repo: string;
-    state: PrState;
-    additions: number;
-    deletions: number;
-    changedFiles: number;
-  }>;
+  prs: Array<Pick<PrChanges, 'url' | 'number' | 'repo' | 'state' | 'additions' | 'deletions' | 'changedFiles'>>;
 }

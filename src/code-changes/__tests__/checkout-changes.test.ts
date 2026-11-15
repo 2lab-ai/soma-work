@@ -8,7 +8,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { checkoutChanges, readInside, sessionCommits } from '../checkout-changes';
 import { capPatch, joinDiff, lineCounts, newFilePatch, parseNumstatZ, splitPatch } from '../git-diff-parse';
-import { commandKeys, configSafe, type GitRun, runGit } from '../git-runner';
+import { commandKeys, configSafe, type GitRun, runGit, trustedRoots } from '../git-runner';
 import { PathWitness } from '../path-witness';
 
 const roots: string[] = [];
@@ -284,7 +284,7 @@ describe('the check/use race (#1299 review): no defence rests on the gate alone'
     const c = await checkoutChanges({
       dir,
       sessionRoot: session,
-      prHeads: [{ repo: 'someone/fork', headRef: 'feat/z', headSha: sha }],
+      prHeads: [{ repo: 'someone/fork', headSha: sha }],
     });
     expect(c!.committed.base).not.toBe(sha);
     expect(c!.committed.files.map((f) => f.path)).toEqual(['one.ts']);
@@ -328,7 +328,7 @@ describe('the third review round (#1299)', () => {
       dir,
       sessionRoot: session,
       sessionStartedAt: Date.now() - 3600_000,
-      prHeads: [{ headRef: 'feat/pr', headSha: prHead, createdAt: Date.now() }],
+      prHeads: [{ headSha: prHead }],
     });
     expect(c!.committed.base).toBe(prHead);
     expect(c!.committed.files.map((f) => f.path)).toEqual(['side.ts']);
@@ -408,7 +408,7 @@ describe('checkoutChanges — the two local layers', () => {
     const c = await checkoutChanges({
       dir,
       sessionRoot: session,
-      prHeads: [{ headRef: 'feat/y', headSha: prHead, createdAt: Date.now() }],
+      prHeads: [{ headSha: prHead }],
     });
     expect(c!.committed.base).toBe(prHead);
     expect(c!.committed.files.map((f) => f.path)).toEqual(['two.ts']);
@@ -426,10 +426,7 @@ describe('checkoutChanges — the two local layers', () => {
     const c = await checkoutChanges({
       dir,
       sessionRoot: session,
-      prHeads: [
-        { headRef: 'feat/base', headSha: prHead, createdAt: Date.now() },
-        { headRef: 'feat/next', headSha: 'f'.repeat(40), createdAt: Date.now() },
-      ],
+      prHeads: [{ headSha: prHead }, { headSha: 'f'.repeat(40) }],
     });
     expect(c!.committed.base).toBe(prHead);
     expect(c!.committed.files.map((f) => f.path)).toEqual(['two.ts']);
@@ -629,7 +626,7 @@ describe('the fourth review round (#1299)', () => {
     const c = await checkoutChanges({
       dir,
       sessionRoot: session,
-      prHeads: [{ repo: 'org/project', headRepo: 'contributor/project', headRef: 'feat/z', headSha: sha }],
+      prHeads: [{ repo: 'org/project', headRepo: 'contributor/project', headSha: sha }],
     });
     expect(c!.committed.base).toBe(sha);
     expect(c!.committed.files.map((f) => f.path)).toEqual(['two.ts']);
@@ -660,5 +657,122 @@ describe('the fourth review round (#1299)', () => {
     expect(await sessionCommits(dir, since, new Set())).toEqual([
       expect.objectContaining({ sha, additions: 3, deletions: 0 }),
     ]);
+  });
+});
+
+describe('the fifth review round (#1299)', () => {
+  it('trustedRoots: a folder inside another adds nothing; an outermost folder that is a link is no root', async () => {
+    const session = tmp('cc-roots-');
+    const other = tmp('cc-roots-other-');
+    fs.mkdirSync(path.join(session, 'repo'));
+    fs.symlinkSync(other, path.join(session, 'turn'));
+    fs.symlinkSync(other, path.join(session, '..', `${path.basename(session)}-alias`));
+    roots.push(path.join(session, '..', `${path.basename(session)}-alias`));
+    expect(await trustedRoots([session, path.join(session, 'turn'), path.join(session, 'repo')])).toEqual([session]);
+    expect(await trustedRoots([path.join(session, '..', `${path.basename(session)}-alias`)])).toEqual([]);
+  });
+
+  it("the turn's folder swapped for a link to another session's checkout: that checkout is not this session's", async () => {
+    const session = tmp('cc-turnlink-');
+    const elsewhere = tmp('cc-turnlink-victim-');
+    const victim = clone(elsewhere, 'victim');
+    write(victim, 'private.txt', 'TOP-SECRET\n');
+    fs.symlinkSync(victim, path.join(session, 'turn'));
+    const c = await checkoutChanges({
+      dir: path.join(session, 'turn'),
+      sessionRoot: session,
+      roots: [session, path.join(session, 'turn')],
+    });
+    expect(c).toBeUndefined();
+  });
+
+  it('a linked worktree swapped for a link during the read: nothing read is kept, not even names', async () => {
+    const session = tmp('cc-wt-');
+    const elsewhere = tmp('cc-wt-victim-');
+    const dir = clone(session, 'svc');
+    git(dir, ['branch', 'side']);
+    // Under a folder of its own, off the git dirs' path: only the work tree's own chain sees a swap there.
+    fs.mkdirSync(path.join(session, 'trees'));
+    const wt = path.join(session, 'trees', 'wt');
+    git(dir, ['worktree', 'add', '-q', wt, 'side']);
+    write(wt, 'src/a.ts', 'mine\n');
+    const victim = clone(elsewhere, 'victim');
+    write(victim, 'private-name.txt', 'TOP-SECRET\n');
+    let swapped = false;
+    let restored = false;
+    const racing: GitRun = async (d, args) => {
+      if (!swapped && args.some((a) => a.startsWith('--git-dir='))) {
+        swapped = true;
+        fs.renameSync(wt, `${wt}.real`);
+        fs.symlinkSync(victim, wt);
+      }
+      const out = await runGit(d, args);
+      if (swapped && !restored && args.includes('-g')) {
+        restored = true;
+        fs.unlinkSync(wt);
+        fs.renameSync(`${wt}.real`, wt);
+      }
+      return out;
+    };
+    const c = await checkoutChanges({
+      dir: wt,
+      sessionRoot: session,
+      commits: { since: 0, skip: new Set() },
+      git: racing,
+    });
+    expect(swapped && restored).toBe(true);
+    expect(JSON.stringify(c)).not.toContain('private-name');
+    expect(JSON.stringify(c)).not.toContain('TOP-SECRET');
+    expect(c).toMatchObject({ uncommitted: { files: [], skipped: 'repo-changed-during-read' } });
+  });
+
+  it('git not answering for a folder with a .git is git-failed, not "no checkout"', async () => {
+    const session = tmp('cc-gitfail-');
+    const dir = clone(session, 'svc');
+    const failing: GitRun = async (d, args) => (args[0] === 'rev-parse' ? undefined : runGit(d, args));
+    const c = await checkoutChanges({ dir, sessionRoot: session, git: failing });
+    expect(c).toMatchObject({ uncommitted: { skipped: 'git-failed' }, committed: { skipped: 'git-failed' } });
+    const plain = path.join(session, 'plain');
+    fs.mkdirSync(plain);
+    expect(await checkoutChanges({ dir: plain, sessionRoot: session, git: failing })).toBeUndefined();
+  });
+
+  it('committed files keep their status when no patch is kept: past the file limit, or the patch command failed', async () => {
+    const session = tmp('cc-status-');
+    const dir = clone(session, 'svc');
+    git(dir, ['checkout', '-q', '-b', 'feat/many']);
+    for (let i = 0; i < 1001; i++) write(dir, `n/${i}.txt`, `${i}\n`);
+    fs.rmSync(path.join(dir, 'README.md'));
+    commitAll(dir, 'many new');
+    const c = await checkoutChanges({ dir, sessionRoot: session });
+    const files = c!.committed.files;
+    expect(c!.committed.truncated).toBe(true);
+    expect(files.filter((f) => f.status === 'added').length).toBeGreaterThan(990);
+    expect(files.every((f) => !f.patch && f.patchTruncated)).toBe(true);
+
+    const small = tmp('cc-status-small-');
+    const d2 = clone(small, 'svc');
+    git(d2, ['checkout', '-q', '-b', 'feat/x']);
+    write(d2, 'new.ts', 'n\n');
+    fs.rmSync(path.join(d2, 'README.md'));
+    commitAll(d2, 'add and delete');
+    const noPatch: GitRun = async (d, args) => (args.includes('-U3') ? undefined : runGit(d, args));
+    const c2 = await checkoutChanges({ dir: d2, sessionRoot: small, git: noPatch });
+    expect(c2!.committed.files.map((f) => [f.path, f.status, !!f.patchTruncated, f.patch])).toEqual([
+      ['README.md', 'deleted', true, undefined],
+      ['new.ts', 'added', true, undefined],
+    ]);
+  });
+
+  it('an executable bit flipped on a tracked file is an uncommitted change', async () => {
+    const session = tmp('cc-mode-');
+    const dir = clone(session, 'svc');
+    fs.chmodSync(path.join(dir, 'src', 'a.ts'), 0o755);
+    const c = await checkoutChanges({ dir, sessionRoot: session });
+    expect(c!.uncommitted.files).toEqual([
+      { path: 'src/a.ts', status: 'modified', additions: 0, deletions: 0, modeChange: '100644 → 100755' },
+    ]);
+    git(dir, ['config', 'core.filemode', 'false']);
+    expect((await checkoutChanges({ dir, sessionRoot: session }))!.uncommitted.files).toEqual([]);
   });
 });
