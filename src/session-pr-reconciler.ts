@@ -290,17 +290,22 @@ async function isCheckout(dir: string): Promise<boolean> {
 const GITHUB_REMOTE =
   /^(?:https:\/\/(?:[^@/\s]+@)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/;
 
+/** `{ owner, name }` of a raw `remote.origin.url` value on github.com; undefined for anything else. */
+export function githubRemoteOf(url: string | undefined): { owner: string; name: string } | undefined {
+  const m = url?.trim().match(GITHUB_REMOTE);
+  return m ? { owner: m[1], name: m[2] } : undefined;
+}
+
 /**
  * The git checkouts in `dirs`, their immediate children, and the worktrees those repositories list under `dirs`
- * (`.claude/worktrees/…`), whose current branch is a work branch (not main, master, deploy/*, or a detached HEAD) on a
- * GitHub remote. At most `max` directories are read; `complete` says whether every candidate was. `stop` ends the scan
- * at the first checkout it accepts.
+ * (`.claude/worktrees/…`) — any branch, any remote. At most `max` repositories are asked for their worktrees; `complete`
+ * says whether every candidate directory was read (a dir past MAX_CHILDREN, or one that could not be read, is not).
+ * Shared by the PR reconcile (#833) and the code-changes collector (.prd/27 §4).
  */
-export async function scanGitCheckouts(
+export async function listCheckoutDirs(
   dirs: string[],
   max = MAX_CHECKOUTS,
-  stop?: (c: Checkout) => boolean,
-): Promise<{ checkouts: Checkout[]; complete: boolean }> {
+): Promise<{ dirs: string[]; complete: boolean }> {
   const roots = [...new Set(dirs)].map((d) => path.resolve(d));
   const candidates: string[] = [];
   // Whether every directory was read: a dir past MAX_CHILDREN or one that could not be read (not merely absent)
@@ -336,17 +341,29 @@ export async function scanGitCheckouts(
       candidates.push(wt);
     }
   }
-  const unique = [...new Set(candidates)];
+  return { dirs: [...new Set(candidates)], complete: read };
+}
+
+/**
+ * The git checkouts {@link listCheckoutDirs} finds whose current branch is a work branch (not main, master, deploy/*, or
+ * a detached HEAD) on a GitHub remote. At most `max` directories are read; `complete` says whether every candidate was.
+ * `stop` ends the scan at the first checkout it accepts.
+ */
+export async function scanGitCheckouts(
+  dirs: string[],
+  max = MAX_CHECKOUTS,
+  stop?: (c: Checkout) => boolean,
+): Promise<{ checkouts: Checkout[]; complete: boolean }> {
+  const { dirs: unique, complete: read } = await listCheckoutDirs(dirs, max);
   const out: Checkout[] = [];
   for (const dir of unique.slice(0, max)) {
     const branch = await git(dir, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
     if (!branch || /^(?:main|master)$/.test(branch) || branch.startsWith('deploy/')) continue;
-    const remote = await git(dir, ['config', '--get', 'remote.origin.url']);
-    const m = remote?.match(GITHUB_REMOTE);
-    if (!m) continue;
+    const remote = githubRemoteOf(await git(dir, ['config', '--get', 'remote.origin.url']));
+    if (!remote) continue;
     const sha = await git(dir, ['rev-parse', 'HEAD']);
     if (!sha) continue;
-    const c = { dir, owner: m[1], name: m[2], branch, sha };
+    const c = { dir, owner: remote.owner, name: remote.name, branch, sha };
     out.push(c);
     if (stop?.(c)) return { checkouts: out, complete: true };
   }

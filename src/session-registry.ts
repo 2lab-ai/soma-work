@@ -37,6 +37,7 @@ import {
   withAck,
 } from 'somalib/model-commands/host-receipt';
 import { parseUserActionRecord, restoreUserActions } from 'somalib/user-action/user-action';
+import { sanitizeCodeChangesSummary } from './code-changes/summary';
 import { DATA_DIR } from './env-paths';
 import { isPlaceholderSessionTitle, sanitizeSessionTitle } from './format/display-title';
 import { Logger } from './logger';
@@ -366,6 +367,8 @@ interface SerializedSession {
   closedBy?: unknown;
   /** Plan mode — a plan-mode task's gate; validated on load (`sanitizeTaskPlanGate`). */
   taskPlan?: unknown;
+  /** .prd/26 — the code-changes summary; validated on load (`sanitizeCodeChangesSummary`). */
+  codeChanges?: unknown;
   // Merge code change stats
   mergeStats?: {
     totalLinesAdded: number;
@@ -3815,6 +3818,7 @@ export class SessionRegistry {
             closedBy: session.closedBy,
             // Merge code change stats
             mergeStats: session.mergeStats,
+            codeChanges: session.codeChanges,
             // User SSOT instructions (persisted)
             instructions: session.instructions,
             // Host-managed session goal (persisted)
@@ -4016,6 +4020,7 @@ export class SessionRegistry {
         conversationId: serialized.conversationId,
         taskId: typeof serialized.taskId === 'string' ? serialized.taskId : undefined,
         mergeStats: serialized.mergeStats,
+        codeChanges: sanitizeCodeChangesSummary(serialized.codeChanges),
         instructions: serialized.instructions,
         goal: migrateLegacyGoal(serialized.goal),
         goalQueue: migrateLegacyGoalArray(serialized.goalQueue),
@@ -4410,6 +4415,7 @@ export class SessionRegistry {
           lastTurnOutcome: sanitizeTurnOutcome(serialized.lastTurnOutcome),
           // Merge code change stats
           mergeStats: serialized.mergeStats,
+          codeChanges: sanitizeCodeChangesSummary(serialized.codeChanges),
           // User SSOT instructions (restored from disk).
           // Legacy migration: entries saved before the lifecycle-status
           // extension lack `status`. Seed them to 'active' so the block

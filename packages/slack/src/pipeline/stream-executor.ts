@@ -349,6 +349,11 @@ export interface StreamExecutorProviders {
    * card, however they were made. Fire-and-forget; must never throw or block. No-op by default.
    */
   reconcileSessionPrs?: (args: { sessionKey: string; session: ConversationSession; workingDirectory: string }) => void;
+  /**
+   * .prd/26 — the turn ended: the host snapshots the session's code changes (its checkouts' uncommitted and committed
+   * layers, its own PRs) for the dashboard, the metrics and the model. Fire-and-forget; must never throw or block.
+   */
+  snapshotCodeChanges?: (args: { sessionKey: string; session: ConversationSession; workingDirectory: string }) => void;
   /** API-equivalent cost of calls folded from an interrupted turn. 0 by default. */
   priceLiveUsage?: (
     model: string | undefined,
@@ -415,6 +420,7 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   notifyLiveUsage: () => {},
   confirmGithubEffects: ({ effects }) => effects,
   reconcileSessionPrs: () => {},
+  snapshotCodeChanges: () => {},
   priceLiveUsage: () => 0,
 };
 
@@ -3939,6 +3945,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           streamExecutorProviders.reconcileSessionPrs?.({ sessionKey, session, workingDirectory });
         } catch (err) {
           this.logger.debug('stream-executor: reconcileSessionPrs threw', {
+            sessionKey,
+            error: (err as Error)?.message ?? String(err),
+          });
+        }
+        // .prd/26 — the session's code changes (after the reconcile above, which may add the turn's PR).
+        try {
+          streamExecutorProviders.snapshotCodeChanges?.({ sessionKey, session, workingDirectory });
+        } catch (err) {
+          this.logger.debug('stream-executor: snapshotCodeChanges threw', {
             sessionKey,
             error: (err as Error)?.message ?? String(err),
           });

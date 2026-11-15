@@ -59,6 +59,7 @@ import { isLlmuxUp } from './auth/llmux-client';
 import { setQueryEnvAdditional } from './auth/query-env-builder';
 import { getAllChannels, getChannel, scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
+import { createCodeChangesService } from './code-changes/service';
 import {
   config,
   getIncidentTrustedSource,
@@ -114,6 +115,7 @@ import {
   stopWebServer,
 } from './conversation';
 import { getArtifactStore } from './conversation/artifacts';
+import { setCodeChangesRefresher } from './conversation/code-changes-routes';
 import type { NewTaskAttachment } from './conversation/new-task';
 import { createNewTaskProvider, createSlackSteerUploader } from './conversation/new-task-provider';
 import { setProjectRepoSource } from './conversation/project-memory-routes';
@@ -1736,6 +1738,17 @@ async function start() {
         logger,
       }),
     });
+    // .prd/26 (epic #1294) — turn end: the session's code changes (its checkouts' uncommitted and committed layers, its
+    // own PRs) → DATA_DIR/code-changes, the summary on the session, the card pushed. The dashboard's 변경점 tab reads it.
+    const codeChanges = createCodeChangesService({
+      getSessionByKey: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+      allSessions: () => claudeHandler.getSessionRegistry().getAllSessions().entries(),
+      persist: (key) => claudeHandler.getSessionRegistry().persistAndBroadcast(key),
+      pushCard: (key) => scheduleLiveSessionUpdate(key),
+      logger,
+    });
+    setStreamExecutorProviders({ snapshotCodeChanges: (args) => codeChanges.snapshot(args) });
+    setCodeChangesRefresher((conversationId) => codeChanges.refresh(conversationId));
     // SSOT 2026-10-26 T2 — subagents that ended before this process started
     // fire no more events: read the loaded sessions' spend once, in the
     // background, so every card shows its subagents' spend after a restart.
