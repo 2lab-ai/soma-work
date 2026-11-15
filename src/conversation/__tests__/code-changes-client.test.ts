@@ -13,6 +13,7 @@ type Api = {
   chgHunkRows: (patch: string) => Array<Record<string, any>>;
   chgSummaryText: (doc: unknown) => Record<string, any>;
   chgTreeHtml: (tree: unknown[], current: string) => string;
+  chgSkippedNote: (doc: unknown) => string;
   chgPaint: () => void;
   state: () => Record<string, any>;
   setState: (s: Record<string, any>) => void;
@@ -23,7 +24,7 @@ function load(el?: { innerHTML: string; _chgHtml?: string }): Api {
   const fn = new Function(
     'document',
     `${CODE_CHANGES_JS}
-    return { chgFilesOf, chgCounts, chgTree, chgHunkRows, chgSummaryText, chgTreeHtml, chgPaint,
+    return { chgFilesOf, chgCounts, chgTree, chgHunkRows, chgSummaryText, chgTreeHtml, chgSkippedNote, chgPaint,
       state: function() { return _chg; }, setState: function(s) { _chg = s; } };`,
   );
   return fn(document) as Api;
@@ -201,5 +202,32 @@ describe('the page', () => {
     expect(page).toContain('function chgOpen(cid)');
     expect(page).toContain(CODE_CHANGES_CSS.trim().slice(0, 40));
     expect(CODE_CHANGES_JS).not.toContain('${');
+  });
+
+  it('names why a checkout or a layer was not read this time (the last read stands), once per reason', () => {
+    const api = load();
+    const layer = (skipped?: string) => ({
+      files: [],
+      additions: 0,
+      deletions: 0,
+      commits: [],
+      ...(skipped ? { skipped } : {}),
+    });
+    const note = api.chgSkippedNote({
+      checkouts: [
+        {
+          repo: 'acme/a',
+          dir: 'a',
+          uncommitted: layer('repo-changed-during-read'),
+          committed: layer('repo-changed-during-read'),
+        },
+        { repo: 'acme/b', dir: 'b', uncommitted: layer(), committed: layer('git-diff-failed') },
+        { repo: 'acme/c', dir: 'c', uncommitted: layer(), committed: layer() },
+      ],
+    });
+    expect(note.match(/chg-note/g)).toHaveLength(2);
+    expect(note).toContain('acme/a · a — 읽는 동안 저장소 폴더가 바뀌어 이번 읽기는 버렸습니다');
+    expect(note).toContain('acme/b · b — 커밋한 변경을 이번에 읽지 못했습니다');
+    expect(note).not.toContain('acme/c');
   });
 });

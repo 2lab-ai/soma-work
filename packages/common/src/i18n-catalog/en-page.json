@@ -1643,5 +1643,7 @@
   "저장소 설정을 읽지 못해 이 체크아웃은 읽지 않았습니다": "This checkout was not read: its repository config could not be read",
   "커밋 안 한 변경을 읽지 못했습니다": "Could not read the uncommitted changes",
   "저장소 폴더 안에 심볼릭 링크가 있어 이 체크아웃은 읽지 않았습니다": "This checkout was not read: its git folder holds symlinks",
-  "추적 파일이 너무 많아 커밋 안 한 변경을 읽지 않았습니다": "Uncommitted changes were not read: too many tracked files"
+  "추적 파일이 너무 많아 커밋 안 한 변경을 읽지 않았습니다": "Uncommitted changes were not read: too many tracked files",
+  "읽는 동안 저장소 폴더가 바뀌어 이번 읽기는 버렸습니다 — 마지막으로 읽은 변경입니다": "The repository folder changed while it was read, so that read was dropped — these are the changes read last",
+  "커밋한 변경을 이번에 읽지 못했습니다 — 마지막으로 읽은 변경입니다": "Could not read the committed changes this time — these are the changes read last"
 }

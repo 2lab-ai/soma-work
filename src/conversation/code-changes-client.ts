@@ -47,6 +47,11 @@ var CHG_SKIPPED = {
   'too-many-files': '추적 파일이 너무 많아 커밋 안 한 변경을 읽지 않았습니다',
   'git-config-unreadable': '저장소 설정을 읽지 못해 이 체크아웃은 읽지 않았습니다',
   'git-diff-failed': '커밋 안 한 변경을 읽지 못했습니다',
+  'repo-changed-during-read': '읽는 동안 저장소 폴더가 바뀌어 이번 읽기는 버렸습니다 — 마지막으로 읽은 변경입니다',
+};
+// The committed layer's own reasons (the uncommitted note names the checkout-wide ones).
+var CHG_SKIPPED_COMMITTED = {
+  'git-diff-failed': '커밋한 변경을 이번에 읽지 못했습니다 — 마지막으로 읽은 변경입니다',
 };
 var CHG_FILE_FAILED = '이 파일의 변경을 불러오지 못했어요';
 var CHG_RENAMED_FROM = '이전 이름';
@@ -307,11 +312,18 @@ function chgTreeHtml(tree, current) {
   tree.forEach(function(r) { walk(r, 0); });
   return out.join('');
 }
-// A checkout the server did not read (its config runs commands, it borrows another store): say which, and why.
+// A checkout the server did not read (its config runs commands, it borrows another store), or a layer it could not
+// read this time (the last read stands): say which, and why.
 function chgSkippedNote(doc) {
-  return ((doc && doc.checkouts) || []).filter(function(c) { return c.uncommitted && CHG_SKIPPED[c.uncommitted.skipped]; }).map(function(c) {
-    return '<div class="chg-note">' + chgEsc(c.repo) + ' · ' + chgEsc(c.dir) + ' — ' + chgEsc(CHG_SKIPPED[c.uncommitted.skipped]) + '</div>';
-  }).join('');
+  var notes = [];
+  ((doc && doc.checkouts) || []).forEach(function(c) {
+    var u = c.uncommitted && CHG_SKIPPED[c.uncommitted.skipped];
+    var k = c.committed && c.committed.skipped !== (c.uncommitted && c.uncommitted.skipped) && CHG_SKIPPED_COMMITTED[c.committed.skipped];
+    [u, k].forEach(function(text) {
+      if (text) notes.push('<div class="chg-note">' + chgEsc(c.repo) + ' · ' + chgEsc(c.dir) + ' — ' + chgEsc(text) + '</div>');
+    });
+  });
+  return notes.join('');
 }
 
 function chgPaint() {
