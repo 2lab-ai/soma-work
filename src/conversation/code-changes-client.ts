@@ -43,6 +43,8 @@ var CHG_TREE_TOGGLE = '파일 목록';
 var CHG_SKIPPED = {
   'repo-config-runs-commands': '저장소 설정이 명령을 실행하게 되어 있어 이 체크아웃은 읽지 않았습니다',
   'repo-alternates': '다른 저장소의 객체를 빌려 쓰는 체크아웃이라 읽지 않았습니다',
+  'repo-links-outside': '저장소 폴더 안에 심볼릭 링크가 있어 이 체크아웃은 읽지 않았습니다',
+  'too-many-files': '추적 파일이 너무 많아 커밋 안 한 변경을 읽지 않았습니다',
   'git-config-unreadable': '저장소 설정을 읽지 못해 이 체크아웃은 읽지 않았습니다',
   'git-diff-failed': '커밋 안 한 변경을 읽지 못했습니다',
 };
