@@ -2,7 +2,7 @@
 name: html
 description: "Use when content (markdown, notes, JSON, CSV, a report) should become a styled web page, card, deck or poster, or a PNG of one. Triggers: 'html로 만들어줘', 'HTML로 변환', '이걸 페이지로', 'render as html', 'convert to html', 'make a card', 'make a deck', 'make a poster'."
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
-version: 0.7.0
+version: 0.8.0
 license: ISC
 ---
 
@@ -33,10 +33,12 @@ templates are bundled in v1; adding more is "drop a folder + one index entry".
 ### Bootstrap (idempotent — safe to re-run)
 
 ```bash
-npx playwright install chromium 2>/dev/null || true
+npx --no-install playwright install chromium
 ```
 
-Run this once per machine. On a fresh container/host the renderer will print
+`--no-install` keeps npx on the project's own Playwright: without it npx can fetch a newer
+Playwright whose install garbage-collects browser builds other tools on the machine still use
+(seen 2026-11-13). Run this once per machine. On a fresh container/host the renderer will print
 `browserType.launch: Executable doesn't exist at …` if this step was skipped.
 The bootstrap downloads ~150 MB; do it during image build, not on the
 critical path of a Slack request.
@@ -51,6 +53,43 @@ critical path of a Slack request.
 | **Design** (optional) | `design=<value>` picks the design driver: `default` (the registry default reference, currently `openai`), any reference name registered in `ui-ux/references/index.json` (`openai`, `claude`, `il-capo-production`, `toss-blue`, `toss-black`, …), or `impeccable`. Callers (for example `autoz`) can pass it explicitly; users may also just name a reference. Resolved in Step 3.4 — an unknown value stops the run. |
 
 ## Workflow
+
+### 0. Reader, decision and first screen (before any template)
+
+A page answers a reader's question; the template only lays it out. Before Step 1, write three things down (in
+the reader's language — the language the user wrote in):
+
+1. **Reader and decision** — who reads this and what they decide with it ("Z decides which of Air's features
+   soma-work takes"). A page that decides nothing (a reference or wiki page) says what it is for instead.
+2. **The answer** — that decision's answer in at most two sentences, decision first, about 150 Korean
+   characters or 40 English words at most (caveats and reasons go to the map or the section), true on its own:
+   no claim the detail below contradicts or narrows ("모든 노드가 머지됐다" when one never started is false). Inferences are marked as
+   inferences. File paths, hashes and code names stay out of it.
+3. **The asks** — every item the request names or implies ("한눈에", "비교", "시각화", "결정"), one per line.
+   Step 6 ticks them off against the page.
+
+On reading documents — the templates whose surface is `doc` or `report` (`doc-kami-parchment`, `data-report`,
+`meeting-notes`, `eng-runbook`) — the page opens with these, in this order, before any template block (hero, KPI
+band, chart):
+
+- `data-first-screen="answer"` — the answer, labelled `요약:` / `결론:` (`In short:` in English).
+- `data-first-screen="map"` — a map of the page: one line per section saying what the section **concludes**
+  ("§2 근거 — 12축 중 4축은 soma-work가 앞선다"), not its label ("근거").
+- `data-first-screen="guide"` — one line on how far to read ("결정만 필요하면 §1, 근거를 의심하면 §2").
+
+All three sit in the reader's first screen (the top 900 px at the template width); Step 5's `--first-screen`
+check fails the page otherwise. A card, deck, résumé or landing page keeps its own form: Step 0's three lines
+are still written down, and the answer becomes the card's line, the deck's cover or the landing hero — no map or
+guide is forced onto it and `--first-screen` is not passed.
+
+A picture the request asked for (the `diagram` skill in report mode hands over a PNG, or a dimensional drawing's
+HTML sheet) goes right after the opening — a PNG as `<img src="data:image/png;base64,…" alt="<its conclusion>">`, a
+sheet as `<iframe srcdoc="…" title="<its conclusion>">` with the sheet's own size — inside an `overflow-x: auto` box, and its
+content stays on the page as text too (for a comparison, the rows as an HTML table that stacks on a phone, each with
+its source). Before a sheet goes into `srcdoc`, escape `&` as `&amp;` first, then `"` as `&quot;` — the sheet's own
+attributes are double-quoted and would end the attribute. Step 5's check does not look inside the iframe, so the
+sheet must already have passed its own check (dimensional-drawing's Step 3). The page is the only upload. Below them, each section opens with its own conclusion and says each fact in
+full once — a later section refers back instead of restating it.
 
 ### 1. Read the catalog
 
@@ -69,7 +108,7 @@ Otherwise score the content against these buckets in order; first match wins.
 
 | Bucket | Signal | Template |
 |---|---|---|
-| **Tabular data** | CSV / TSV header row, JSON array of objects, markdown table with ≥ 2 columns × ≥ 3 rows, SQL `SELECT … FROM` with sample rows, numeric metric stream. | `data-report` |
+| **Tabular data** | The content **is** a dataset: CSV / TSV header row, JSON array of objects, SQL `SELECT … FROM` with sample rows, a numeric metric stream, or a markdown table of measurements that is the whole input. A document that **contains** tables — a spec, PRD, comparison, status or progress report — is not tabular data; it falls through to the default. | `data-report` |
 | **Meeting** | Words "agenda", "attendees", "action items", "decisions", or transcript shape (speaker labels + lines). | `meeting-notes` |
 | **Résumé** | Words "experience", "education", "skills", "summary" + dated work history bullets. | `resume-modern` |
 | **Deck outline** | Numbered slide headers, "slide 1", "intro / agenda / cta" pattern, or the user said "make a deck". | `deck-simple` |
@@ -79,7 +118,7 @@ Otherwise score the content against these buckets in order; first match wins.
 | **Default** | Anything else — long-form prose, memo, letter, report, raw notes. | `doc-kami-parchment` |
 
 **Do not ask the user a follow-up.** If the classifier is ambiguous, fall
-through to `doc-kami-parchment` and mention the fallback in Step 6's upload
+through to `doc-kami-parchment` and mention the fallback in Step 8's upload
 comment ("classifier fell back to doc-kami-parchment — pass --template=… to
 override").
 
@@ -93,6 +132,18 @@ This is the design-system contract for that template (layout sections, hard
 typography constraints, palette). The agent obeys this contract when
 generating HTML. If the upstream template's `SKILL.md` is in Chinese or
 mixed CJK, that's fine — the structural intent translates.
+
+Three limits on every template contract:
+
+- **Step 0's opening comes first.** The answer, the map and the guide sit above the template's own hero or KPI
+  block, and the sections follow the reader's decision, not the template's part order.
+- **A slot the content cannot fill by its shape is left out, not shown as `[—]`.** A change-vs-last-period or a
+  trend line needs an earlier period; a chart needs numbers that are not already a table on the page; a KPI tile
+  needs a number the reader decides on (never a count of the page's own items) — when no tile does, the whole KPI
+  band goes. `[—]` marks a value the source
+  should have had and does not — not a slot the template asked for.
+- **Template instructions that ask for emoji lead-ins** (data-report's insights) are overridden by Step 3.5's
+  no-decorative-emoji rule; number the items instead.
 
 ### 3.4. Resolve the design driver (`design=`) — `ui-ux` registry, always on
 
@@ -356,7 +407,7 @@ the user anything.
 
 ### 3.7. Plan the motion layer (`lottie` skill)
 
-Every page gets a **Lottie motion layer** unless the user opts out
+A page gets a **Lottie motion layer** only where a motion has a job, and unless the user opts out
 (`--no-motion`), the surface is print-shaped (`resume-modern`), or the driver is
 `impeccable` — there the automatic layer is off and at most one Lottie may serve
 as craft-floor's single authored moment. Reference drivers, the toss themes
@@ -375,13 +426,18 @@ lottie-web CDN snippet from that skill. Placement is template-driven:
 
 | Template | Motion job (pick 1–2) |
 |---|---|
-| `data-report` | KPI pulse on the headline number; a drawing-in trim-path underline on the title. |
+| `data-report` | A drawing-in trim-path underline on the title (plays once, `loop: false`); a pulse only on a number that is live (it changes while the page is open) — never on a historical count. |
 | `deck-simple` | Cover-slide hero accent (looping geometric motif); subtle slide-marker pulse. |
 | `saas-landing` | Hero accent next to the headline; animated checkmark on the primary feature. |
 | `meeting-notes` / `eng-runbook` | One status cue: animated check (decisions/done) or pulsing dot (open items / on-call). |
 | `social-x-post-card` | One ambient accent behind/beside the quote — slow, ≤ 6 s loop. |
 | `doc-kami-parchment` | A single subtle ambient texture or header ornament — or none if it fights the parchment calm. |
 | `resume-modern` | **None.** Print surface. |
+
+A decorative loop with no job is slop: when no row fits the content, ship no Lottie. Under reduced motion, hold
+a frame where the mark is fully drawn (`anim.goToAndStop(<drawn frame>, true)`), not the last frame — a drawn-in
+or seamless loop often ends empty. Keep the authored JSON (and any validator preview) in a `work/` folder beside
+the page, never next to the deliverable.
 
 Hard rules (the `design` skill's anti-slop discipline extends to motion):
 palette-locked colors (0–1 RGBA from the chosen direction), eased keyframes,
@@ -427,9 +483,15 @@ Contrast, real data and reduced motion are never overridden:
   `:lang(ko) { word-break: keep-all; line-break: strict; overflow-wrap: break-word; }`
   `:lang(ja), :lang(zh) { word-break: normal; line-break: strict; overflow-wrap: anywhere; }`
   — never `keep-all` for Japanese or Chinese (they have no spaces, so keep-all
-  stops wrapping and overflows). Code, paths and URLs get
+  stops wrapping and overflows). Long code blocks, paths and URLs get
   `overflow-wrap: anywhere; word-break: normal` so they never push the page
-  wider than the viewport.
+  wider than the viewport. Short tokens a reader scans as one word — host names
+  (`team-host`), dates (`2026-11-13`), versions, inline code inside a sentence —
+  stay whole (`white-space: nowrap` on that inline element); they must never
+  split at a hyphen or inside a Korean word.
+- **Every script the content uses has a face** — when the selected reference's
+  font has no Hangul (Inter, the `openai` reference) or no kana, append the
+  matching face from the stack below after it (`Inter, "Noto Sans KR", …`).
 - **8 px baseline grid** — every spacing, line-height, font-size is a
   multiple of 8 (allowed mid-step: 4 for hairline details).
 - **Contrast ≥ 4.5** for any body text against its background. WCAG AA.
@@ -468,11 +530,26 @@ page is one artifact, and a PNG beside it doubled every entry). The renderer
 opens the page in headless Chromium and measures it instead:
 
 ```bash
+# a reading document (doc-kami-parchment · data-report · meeting-notes · eng-runbook): first run
 node "$CLAUDE_PLUGIN_ROOT/skills/html/renderer/render.mjs" \
   --input "$(pwd)/html-<slug>-<ts>.html" \
-  --check \
-  --template "<name>"
+  --check --first-screen --template "<name>"
+# any other template (a card, a deck, a résumé, a landing page): first run
+node "$CLAUDE_PLUGIN_ROOT/skills/html/renderer/render.mjs" \
+  --input "$(pwd)/html-<slug>-<ts>.html" \
+  --check --template "<name>"
+# every page: the phone run
+node "$CLAUDE_PLUGIN_ROOT/skills/html/renderer/render.mjs" \
+  --input "$(pwd)/html-<slug>-<ts>.html" \
+  --check --template "<name>" --width 390 --height 844
 ```
+
+The second run is a phone: a table or a chart that passes at the template width can collide or hide its key
+column at 390 px (seen 2026-11-13: 39 overlaps at 375 px on a page that passed at 1440). Run the one first run
+that fits the page, then the phone run; both must pass. Both pass `--template` so a fixed-canvas template (a deck,
+a card) keeps its sideways scroll legal, and `--first-screen` goes on a reading document's first run only (Step 0).
+`--first-screen` also fails the page when the Step 0 answer, map or guide is missing or starts below the first
+900 px; the verdict's `firstScreen.top` says where each one sits.
 
 The renderer pulls geometry from `templates/index.json` based on
 `--template <name>`. Pass `--width` / `--height` to override. A fixed-canvas
@@ -485,7 +562,8 @@ measurement lands on a populated frame.
 It prints three lines for Step 6: `fonts loaded: <families>` (web fonts that
 finished loading), `fonts used: <families>` (the fonts Chromium actually drew
 a sample of headings, paragraphs, list items and table cells with — `unknown`
-when the probe failed), and `check: <json>` — `{ ok, textChars, overflowX,
+when the probe failed; a variable font's instance name such as `Noto Sans KR Thin`
+is folded back to the family that loaded), and `check: <json>` — `{ ok, textChars, overflowX,
 overlaps, overlapSamples, brokenImages, pageErrors, width, height }`. Exit 3
 means the check failed.
 
@@ -494,7 +572,9 @@ means the check failed.
 1. **Check verdict.** `ok: false` (exit 3) names what is wrong: under 20
    characters of text (an empty or unrendered page), `overflowX` > 0 (a
    horizontal scroll — something is wider than the viewport), `overlaps` > 0
-   (text boxes drawn on top of each other; `overlapSamples` quotes them), a
+   (text boxes drawn on top of each other; `overlapSamples` quotes them — text an
+   ancestor clips, such as a scroll box's hidden rows or a visually-hidden label, is
+   not counted, so keep accessible headings and scroll boxes), a
    broken image, or an uncaught script error (`pageErrors`). Fix what it
    names, check once more, then move on — this is a delivery check, not a
    design critique loop.
@@ -506,6 +586,9 @@ means the check failed.
    the page as rendered in the declared font. A locally installed face counts
    as used. If either line reads `unknown`, say the font check was
    unavailable — do not claim success or fallback.
+3. **The asks.** Tick each item of Step 0's list against the page: where it is
+   answered (section) or why it is not. An ask with no place on the page is a
+   defect to fix before delivery, not a note.
 
 ### 7. Publish to the local web server (access link + durable archive)
 
@@ -580,9 +663,13 @@ mcp__slack-mcp__send_file(
   url="<url from Step 7>",
   title="<meaningful artifact title>",
   artifact_key="<slug>",
-  initial_comment="<template + design driver used (+ 'Impeccable — document-based application' on that driver) + any fallback note> — live (with motion): <url from Step 7>"
+  initial_comment="<Step 0 answer, one line>\nlive on <host name>'s network: <url from Step 7> (+ a font or classifier fallback note only when one happened; 'Impeccable — document-based application' on that driver)"
 )
 ```
+
+The comment's first line is the page's answer (Step 0), not the pipeline: a reader
+of the thread decides from it whether to open the page. Name the machine that
+serves the link (`hostname -s`) — a LAN IP alone does not say where it opens.
 
 `url` ties the served page to the same artifact: the dashboard's 산출물 card
 opens the uploaded copy, and its viewer offers 라이브로 열기 for the live page

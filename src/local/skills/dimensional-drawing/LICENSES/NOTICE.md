@@ -31,4 +31,6 @@ about 18 MB). The two example HTML files render the same sheets.
   ships with soma-work, render the PNG with the `html` skill renderer, publish
   with the `html` skill server, upload to Slack). It replaces the claude.ai
   Artifact step for this runtime.
+- 2026-11-13: `Delivery in soma-work` gained the report-mode exception (skip publish and upload, hand the sheet
+  to the `html` skill's report page).
 - 2026-11-12: the frontmatter `description` was rewritten to say only when to use the skill (zworkflow `skill-description` rule). What the skill does stays in the body.

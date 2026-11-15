@@ -35,7 +35,7 @@ The skill's retry budget (Step 7) allows **up to 2 critic-driven revisions**. Us
 ## 4. Contrast on dark background
 
 - Every stroke color is readable against `#020617` (slate-950).
-- Every text `strokeColor` is `#e2e8f0` (slate-200) or lighter, **or** matches its container's stroke color from the palette.
+- Every text inside a box is `#e2e8f0` (slate-200) or lighter. A palette stroke colour is allowed only for free text on the canvas — inside a box three pairs fall below 4.5:1 (Database 4.03, Security 3.55, Message Bus 4.14).
 - No element uses the Excalidraw default `#1e1e1e` — that color is effectively invisible on this background.
 
 **Fail signal:** a component appears empty because its text is the same shade as the canvas.
@@ -44,7 +44,7 @@ The skill's retry budget (Step 7) allows **up to 2 critic-driven revisions**. Us
 
 - Every component of the same semantic role uses the **same** palette pair. Example: all Frontend components share `fill #083344` + `stroke #22d3ee`; all Database components share `fill #4c1d95` + `stroke #a78bfa`.
 - Arrows between semantically identical pairs use the same stroke color.
-- No "artistic" color mixing — the palette in `color-palette.md` is the single source of truth.
+- No "artistic" color mixing — the dark palette table in `SKILL.md` Step 2 is the single source of truth for this skill. (`color-palette.md` is the light palette of the router's GENERAL and COMPARISON paths.)
 
 **Fail signal:** two databases in different colors, or a Frontend component rendered in emerald.
 
@@ -76,3 +76,11 @@ When an item fails:
 - It is not a correctness check for the *architecture itself* — that is the user's judgment, not the skill's.
 - It is not a style guide — palette and spacing rules live in `color-palette.md` and `json-schema.md`.
 - It is not a substitute for Step 6's mechanical validation — both run, in that order.
+
+## 7. The reader's conclusion
+
+- The canvas title states the picture's conclusion (Step 1), not its scope.
+- The components the decision is about stand out (a marked border or a callout), and a legend names every colour and arrow style used.
+- Every arrow label is bound to its arrow and has a verb; an inferred link is dashed and says `추정`.
+
+**Fail signal:** a title such as "요청 흐름도", or the finding only in a footnote.

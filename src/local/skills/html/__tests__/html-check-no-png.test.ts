@@ -202,3 +202,283 @@ describe('the skills check the page with --check and render no PNG', () => {
     expect(md('html')).not.toMatch(/before the\s+screenshot/);
   });
 });
+
+/**
+ * research-skill run 2026-11-13 (html probes H1 · H4 · H5 and report v1): the overlap check failed sound pages.
+ * A visually-hidden heading (the standard sr-only pattern) and table rows clipped by a scroll box were measured
+ * as visible text, so authors deleted accessible headings and scroll boxes to get a pass. Text a reader cannot
+ * see because an ancestor clips it is not an overlap; text that really collides still is.
+ */
+describe('review gate — clipped text is not drawn, so it does not overlap', () => {
+  const FILL = '<p>This paragraph is long enough that the page has plenty of visible text for the check.</p>';
+  const SR =
+    'position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0';
+
+  it('a visually-hidden (sr-only) heading over a summary is not an overlap', () => {
+    const r = check(
+      'sronly',
+      `${FILL}<section style="position:relative"><h2 style="${SR}">방법론</h2><details><summary>방법론 · 증거 · 출처</summary><p>본문</p></details></section>`,
+    );
+    expect(r.verdict).toMatchObject({ ok: true, overlaps: 0 });
+  }, 150_000);
+
+  it('rows a scroll box clips away do not collide with the text after the box', () => {
+    const rows = Array.from({ length: 30 }, (_, i) => `<tr><td>row ${i} cell text</td><td>value ${i}</td></tr>`).join(
+      '',
+    );
+    const r = check(
+      'scrollbox',
+      `${FILL}<div style="height:120px;overflow:auto"><table>${rows}</table></div><p>Text right after the scroll box.</p><p>More text after it.</p>`,
+    );
+    expect(r.verdict).toMatchObject({ ok: true, overlaps: 0 });
+  }, 150_000);
+
+  it('text that spills out of a box with visible overflow still collides', () => {
+    const r = check(
+      'spill',
+      `${FILL}<div style="height:20px"><p style="margin:0">line one of a box that is too short</p><p style="margin:0">line two spills out</p><p style="margin:0">line three spills out</p></div><p style="margin:0">text right after the short box, under the spill</p>`,
+    );
+    expect(r.verdict.overlaps).toBeGreaterThan(0);
+  }, 150_000);
+});
+
+/**
+ * research-skill run 2026-11-13: in five of five html probes the first screen held no answer, no map of the page
+ * and no reading guide — the template's KPI band came first (owner complaint #1, weight ×2). html Step 0 now marks
+ * the three with data-first-screen="answer|map|guide"; `--first-screen` fails a page where any of them is missing
+ * or starts below the first viewport.
+ */
+describe('--first-screen — the answer, the map and the reading guide open the page', () => {
+  function checkFirst(name: string, body: string) {
+    const input = join(dir, `${name}.html`);
+    writeFileSync(
+      input,
+      `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>t</title></head><body style="margin:0">${body}</body></html>`,
+    );
+    const r = spawnSync(
+      process.execPath,
+      [RENDERER, '--input', input, '--check', '--first-screen', '--width', '1200', '--height', '800', '--wait-ms', '0'],
+      { encoding: 'utf8', timeout: 120_000 },
+    );
+    const line = (r.stdout || '').split('\n').find((l) => l.startsWith('check: '));
+    return { status: r.status, verdict: line ? JSON.parse(line.slice(7)) : null };
+  }
+  const TOP =
+    '<p data-first-screen="answer">요약: Air에서 가져올 것은 이벤트 트리거 자동화 하나가 먼저다.</p>' +
+    '<ol data-first-screen="map"><li>판단</li><li>근거</li><li>원자료</li></ol>' +
+    '<p data-first-screen="guide">결정만 필요하면 판단까지, 의심되면 근거까지 읽는다.</p>';
+
+  it('a page that opens with all three passes and reports where each sits', () => {
+    const r = checkFirst('fs-ok', `${TOP}<div style="height:3000px"></div><p>아래 본문.</p>`);
+    expect(r.status).toBe(0);
+    expect(r.verdict.firstScreen).toMatchObject({ answer: true, map: true, guide: true });
+  }, 150_000);
+
+  it('a missing reading guide fails', () => {
+    const r = checkFirst(
+      'fs-noguide',
+      TOP.replace(/<p data-first-screen="guide">.*<\/p>/, '') + '<p>본문 텍스트가 충분히 길게 이어진다.</p>',
+    );
+    expect(r.status).toBe(3);
+    expect(r.verdict.firstScreen.guide).toBe(false);
+  }, 150_000);
+
+  it('an answer pushed below the first viewport by a KPI band fails', () => {
+    const r = checkFirst('fs-below', `<div style="height:1400px">KPI 띠 자리</div>${TOP}`);
+    expect(r.status).toBe(3);
+    expect(r.verdict.firstScreen.answer).toBe(false);
+  }, 150_000);
+
+  it('without --first-screen the check does not ask for the markers (other skills share render.mjs)', () => {
+    const r = check('fs-off', '<p>첫 화면 표시가 없는 페이지지만 다른 스킬이 쓰는 검사는 그대로 통과해야 한다.</p>');
+    expect(r.status).toBe(0);
+    expect(r.verdict.firstScreen).toBeUndefined();
+  }, 150_000);
+});
+
+/**
+ * trinity R1 (2026-11-13) reproduced three holes in the clip-aware check and --first-screen:
+ * - an absolutely positioned label is not clipped by an overflow ancestor that is not its containing block, so
+ *   cutting it there hid a real collision;
+ * - `overflow-x: clip` with `overflow-y: visible` clips one axis only, so cutting both axes hid a collision;
+ * - an opening hidden by an ancestor (visibility:hidden) still counted as "in the first screen".
+ * And the html skill's phone run must keep a fixed-canvas template's sideways scroll legal.
+ */
+describe('review gate — what clips, clips only what it really clips', () => {
+  const FILL = '<p>This paragraph is long enough that the page has plenty of visible text for the check.</p>';
+
+  it('an absolute label escapes a static overflow box and still collides with the text under it', () => {
+    const r = check(
+      'abs-escape',
+      `${FILL}<div style="position:relative"><div style="overflow:hidden;height:10px"><span style="position:absolute;top:0;left:0">label drawn over the line</span></div><p style="margin:0">text line under the label here</p></div>`,
+    );
+    expect(r.verdict.overlaps).toBeGreaterThan(0);
+  }, 150_000);
+
+  it('a box that clips only sideways still lets two lines collide vertically', () => {
+    const r = check(
+      'one-axis',
+      `${FILL}<div style="overflow-x:clip;overflow-y:visible;height:20px"><p style="margin:0">first line of a short box</p><p style="margin:0">second line spills down</p></div><p style="margin:0">text right under the short box</p>`,
+    );
+    expect(r.verdict.overlaps).toBeGreaterThan(0);
+  }, 150_000);
+});
+
+describe('--first-screen — only an opening a reader can see counts', () => {
+  function checkFirst(name: string, body: string, extra: string[] = []) {
+    const input = join(dir, `${name}.html`);
+    writeFileSync(
+      input,
+      `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>t</title></head><body style="margin:0">${body}</body></html>`,
+    );
+    const r = spawnSync(
+      process.execPath,
+      [
+        RENDERER,
+        '--input',
+        input,
+        '--check',
+        '--first-screen',
+        '--width',
+        '1200',
+        '--height',
+        '800',
+        '--wait-ms',
+        '0',
+        ...extra,
+      ],
+      { encoding: 'utf8', timeout: 120_000 },
+    );
+    const line = (r.stdout || '').split('\n').find((l) => l.startsWith('check: '));
+    return { status: r.status, verdict: line ? JSON.parse(line.slice(7)) : null };
+  }
+  const TOP =
+    '<p data-first-screen="answer">요약: 결론 한 줄이 여기 있다.</p>' +
+    '<ol data-first-screen="map"><li>판단</li><li>근거</li></ol>' +
+    '<p data-first-screen="guide">결정만 필요하면 판단까지 읽는다.</p>';
+
+  it('an opening under visibility:hidden fails', () => {
+    const r = checkFirst(
+      'fs-hidden',
+      `<div style="visibility:hidden">${TOP}</div><p>보이는 본문이 충분히 길게 이어진다.</p>`,
+    );
+    expect(r.status).toBe(3);
+    expect(r.verdict.firstScreen).toMatchObject({ answer: false, map: false, guide: false });
+  }, 150_000);
+
+  it('an opening pushed off-screen sideways fails', () => {
+    const r = checkFirst(
+      'fs-offside',
+      `<div style="position:absolute;left:-5000px">${TOP}</div><p>보이는 본문이 충분히 길게 이어진다.</p>`,
+    );
+    expect(r.status).toBe(3);
+    expect(r.verdict.firstScreen.answer).toBe(false);
+  }, 150_000);
+});
+
+describe('html Step 5 — the phone run keeps a fixed-canvas template legal', () => {
+  it('a swipe deck checked at 390 px with its template reports the sideways scroll and passes', () => {
+    const input = join(dir, 'swipe-phone.html');
+    const slide = (n: number) =>
+      `<section style="flex:0 0 1920px;height:1080px"><h1>Slide ${n} heading</h1><p>Slide ${n} body text for the deck.</p></section>`;
+    writeFileSync(
+      input,
+      `<!doctype html><html><body style="margin:0"><main style="display:flex;width:3840px">${slide(1)}${slide(2)}</main></body></html>`,
+    );
+    const r = spawnSync(
+      process.execPath,
+      [
+        RENDERER,
+        '--input',
+        input,
+        '--check',
+        '--template',
+        'deck-simple',
+        '--width',
+        '390',
+        '--height',
+        '844',
+        '--wait-ms',
+        '0',
+      ],
+      { encoding: 'utf8', timeout: 120_000 },
+    );
+    const v = JSON.parse(((r.stdout || '').split('\n').find((l) => l.startsWith('check: ')) ?? 'check: null').slice(7));
+    expect(v.overflowX).toBeGreaterThan(0);
+    expect(v.ok).toBe(true);
+    expect(r.status).toBe(0);
+  }, 150_000);
+
+  it("SKILL.md's phone run passes the template, and the first-screen opening is for reading documents", () => {
+    const s = md('html');
+    const step5 = s.slice(s.indexOf('### 5. Check the page'), s.indexOf('### 6.'));
+    expect(step5).toMatch(/--template "<name>" --width 390 --height 844/);
+    const step0 = s.slice(s.indexOf('### 0. Reader'), s.indexOf('### 1. Read the catalog'));
+    expect(step0).toMatch(/reading documents/);
+  });
+});
+
+/**
+ * trinity R2 (astra, reproduced): two holes the R1 fix left open.
+ * - Text wrapped inside an absolutely placed label (`<span style="position:absolute"><b>…</b></span>`) was cut
+ *   again by the static overflow box the label escapes, so its collision went unseen (overlaps 0, exit 0).
+ * - An opening pushed above the page top (top −4984 px) still counted as on the first screen.
+ * And grok: Step 5's first run printed `--first-screen` for every template, contradicting Step 0.
+ */
+describe('trinity R2 — nested text follows its absolute ancestor; an opening above the top is not seen', () => {
+  const FILL = '<p>This paragraph is long enough that the page has plenty of visible text for the check.</p>';
+
+  it('text nested inside an absolute label escapes the static overflow box and still collides', () => {
+    const r = check(
+      'abs-nested',
+      `${FILL}<div style="position:relative"><div style="overflow:hidden;height:10px"><span style="position:absolute;top:0;left:0"><b>label drawn over the line</b></span></div><p style="margin:0">text line under the label here</p></div>`,
+    );
+    expect(r.verdict.overlaps).toBeGreaterThan(0);
+    expect(r.status).toBe(3);
+  }, 150_000);
+
+  it('text nested inside an absolute label is still cut by the containing block that clips it', () => {
+    const r = check(
+      'abs-nested-clipped',
+      `${FILL}<div style="position:relative;overflow:hidden;height:10px"><span style="position:absolute;top:30px;left:0"><b>label its block clips away</b></span></div><p style="margin:20px 0 0">text line where the label would sit</p>`,
+    );
+    expect(r.verdict.overlaps).toBe(0);
+  }, 150_000);
+
+  it('an opening pushed above the top of the page fails', () => {
+    const input = join(dir, 'fs-above.html');
+    writeFileSync(
+      input,
+      '<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>t</title></head><body style="margin:0">' +
+        '<div style="position:absolute;top:-5000px">' +
+        '<p data-first-screen="answer">요약: 결론 한 줄이 여기 있다.</p>' +
+        '<ol data-first-screen="map"><li>판단</li><li>근거</li></ol>' +
+        '<p data-first-screen="guide">결정만 필요하면 판단까지 읽는다.</p></div>' +
+        '<p>보이는 본문이 충분히 길게 이어진다.</p></body></html>',
+    );
+    const r = spawnSync(
+      process.execPath,
+      [RENDERER, '--input', input, '--check', '--first-screen', '--width', '1200', '--height', '800', '--wait-ms', '0'],
+      { encoding: 'utf8', timeout: 120_000 },
+    );
+    const line = (r.stdout || '').split('\n').find((l) => l.startsWith('check: '));
+    const v = line ? JSON.parse(line.slice(7)) : null;
+    expect(r.status).toBe(3);
+    expect(v.firstScreen).toMatchObject({ answer: false, map: false, guide: false });
+  }, 150_000);
+
+  it("SKILL.md Step 5: --first-screen is printed only on a reading document's run", () => {
+    const s = md('html');
+    const step5 = s.slice(s.indexOf('### 5. Check the page'), s.indexOf('### 6.'));
+    const fence = step5.slice(step5.indexOf('```bash'), step5.indexOf('```', step5.indexOf('```bash') + 7));
+    const doc = fence.indexOf('# a reading document');
+    const other = fence.indexOf('# any other template');
+    expect(doc).toBeGreaterThan(-1);
+    expect(other).toBeGreaterThan(doc);
+    const fs = fence.indexOf('--first-screen');
+    expect(fs).toBeGreaterThan(doc);
+    expect(fs).toBeLessThan(other);
+    expect(fence.slice(other)).not.toContain('--first-screen');
+    expect(fence.slice(other)).toMatch(/--check --template "<name>"\s*\n/);
+  });
+});
