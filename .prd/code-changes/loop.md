@@ -25,5 +25,3 @@ Status: in-progress (라운드 1) · 스펙 = [`../26-session-code-changes-spec.
 - 클론 직후: `npm ci` → `npm run build:packages` → `npm run build:somalib` → `npx vitest run <files>`.
 - dashboard.ts를 import하는 라우트 테스트는 첫 변환이 ~30 s — 로컬은 `--hookTimeout 120000`.
 - i18n: `npx tsx scripts/i18n/extract.ts --write` → `scripts/i18n/out/missing-page.json`을 main과 diff.
-</content>
-</invoke>

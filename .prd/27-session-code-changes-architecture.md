@@ -148,5 +148,3 @@ PR — 세션의 PR 링크(현재 + 기록) 중 GitHub URL만, 최대 20. 저장
 
 게이트(레포 공통): `npx tsc --noEmit` · `npx vitest run`(변경 영역) · `npx biome check src/ somalib/ scripts/ packages/ --diagnostic-level=error` ·
 i18n 추출 diff 0. dev 배포 후 실측: 이 작업 세션 자신의 변경점 탭.
-</content>
-</invoke>

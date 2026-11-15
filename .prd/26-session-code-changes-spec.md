@@ -108,5 +108,3 @@ SSOT = [`code-changes/ssot.md`](code-changes/ssot.md) · 아키텍처 = [`27-ses
 | A8 | 모델이 `gh pr view --json additions,deletions,number` 실행 | 지표 없음 |
 | A9 | 커밋 안 한 변경이 남은 세션의 다음 턴 | `<context>`에 그 변경 한 줄, GET_SESSION에 `codeChanges` |
 | A10 | `.git/config`에 `filter.x.clean` 이 있는 체크아웃 | 작업 트리 명령을 돌리지 않음, 그 체크아웃의 커밋 안 함 층은 "건너뜀" 사유 |
-</content>
-</invoke>
