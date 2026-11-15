@@ -34,6 +34,13 @@ ssot = [`ssot.md`](ssot.md)
   운영자 스크립트는 배포본 목록에 `secrets/`가 없으면 1단계를 거부하고, 새 Cloudflare 토큰이 살아 있으면 옛 `soma-env-<env>-*`를 지운다.
 - 같은 QA가 Z 세션(샌드박스)에서 돈 이유: 대시보드 `$` 메뉴에 환경 유저 스킬이 없어 환경 플러그인 스킬(`$<org>-env:post-deploy`)을 골랐다
   → PR #1291(메뉴에 `$<env>:<skill>`을 환경 이름 묶음으로). 손으로 친 `$<env>:<skill>`은 대시보드에서도 이미 핸드오프된다.
+- 11-14 16:23 UTC 운영자 1단계 재실행(#1290 배포 뒤): 옛 Cloudflare 토큰 2개 삭제, 참조 3개 복원, server-tools 로더 실측 dev2 github·cloudflare / stage0 cloudflare resolved.
+  11-15 14:23 UTC 같은 버전 재배포 로그 `sync-bundle: keep secrets` — 비밀이 있는 상태에서 배포 뒤 생존 실측.
+- 11-15 브로커 의존 전수 조사(개인·환경 스킬): 실제 의존은 오너 정기 작업의 develop PR 승인 한 줄(브로커 카드) → 질문 카드 → `gh_pr approve`로 교체.
+  14:18 UTC 첫 감사 기록 — 봇 PR 5개 `gh_pr approve` intent→done(server dev2, envUser `env:<org>-dev2`, requester 오너).
+  `github.readRefs` = 통합·배포 브랜치를 넣어 `gh_read`가 배포 브랜치 머지 커밋을 읽음(200 실측).
+- 남은 넘김: 고객 플러그인 `dev2-qa` 프로필의 GitHub 줄이 아직 devops-tools(고객 레포, 봇 push 권한 없음) · 브로커의 옛 Slack 앱 사본은 다른 사람이 만들어 우리가 지우지 못함 ·
+  어드민 샌드박스가 사람 자격 파일(`~/.config/gcloud`·`~/.aws`)을 막아 오너 크론 3개 실패(허용 여부 = 오너 결정).
 
 ## 열린 질문
 
