@@ -10,7 +10,11 @@ interface Totals {
   deletions: number;
 }
 
-/** The fields of the session's code-changes summary this line reads (somalib `CodeChangesSummary`). */
+/**
+ * The fields of the session's code-changes summary this line reads. Declared here, not picked from somalib's
+ * `CodeChangesSummary`: this package depends on `@soma/common` only. The host passes the somalib summary, and tsc checks
+ * it against this shape at that call (a field renamed there fails the build here).
+ */
 export interface CodeChangesContextInput {
   updatedAt: number;
   repos: Array<{

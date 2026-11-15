@@ -331,6 +331,21 @@ describe('the counting start (#1301 review)', () => {
     expect(readCheckout).toHaveBeenCalledWith(
       expect.objectContaining({ dir: '/s/web', commits: { since: 111, skip: expect.any(Set) } }),
     );
+    // A session that started after the counting start: its own start bounds the commits.
+    await collectCodeChanges(
+      {
+        conversationId: 'c10',
+        owner: { id: 'U', name: 'u' },
+        dirs: ['/s'],
+        startedAt: 500,
+        commitsSince: 111,
+        prUrls: [],
+      },
+      { ...prDeps({}), store: s, listCheckoutDirs: async () => ({ dirs: ['/s/web'] }), checkoutChanges: readCheckout },
+    );
+    expect(readCheckout).toHaveBeenLastCalledWith(
+      expect.objectContaining({ commits: { since: 500, skip: expect.any(Set) } }),
+    );
   });
 });
 

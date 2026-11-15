@@ -37,7 +37,7 @@ import {
   withAck,
 } from 'somalib/model-commands/host-receipt';
 import { parseUserActionRecord, restoreUserActions } from 'somalib/user-action/user-action';
-import { addMergedPr } from './code-changes/metrics';
+import { addMergedPr, type MergedPr, type MergeRecord, mergeRecordOf } from './code-changes/metrics';
 import { sanitizeCodeChangesSummary } from './code-changes/summary';
 import { DATA_DIR } from './env-paths';
 import { isPlaceholderSessionTitle, sanitizeSessionTitle } from './format/display-title';
@@ -2347,21 +2347,28 @@ export class SessionRegistry {
     return true;
   }
 
+  private sessionPrUrlsOf(session: ConversationSession): string[] {
+    return [session.links?.pr?.url, ...(session.linkHistory?.prs ?? []).map((l) => l?.url)].filter(
+      (u): u is string => typeof u === 'string',
+    );
+  }
+
+  /** .prd/26 §5 — how this session's `mergeStats` holds a merged PR now (`mergeRecordOf`). */
+  mergeRecordByKey(sessionKey: string, pr: MergedPr): MergeRecord {
+    const session = this.getSessionByKey(sessionKey);
+    if (!session?.mergeStats) return undefined;
+    return mergeRecordOf(session.mergeStats, pr, this.sessionPrUrlsOf(session));
+  }
+
   /**
-   * .prd/26 §5 — a merged PR of this session, once: its lines go into `mergeStats` unless a record of the same PR is
-   * already there (by URL, or by number for a record written before URLs were kept). True when it was added.
+   * .prd/26 §5 — a merged PR of this session, once, with GitHub's counts (`addMergedPr`: added, or an old parser's record
+   * of it replaced). True when the stats changed.
    */
-  recordMergedPrByKey(
-    sessionKey: string,
-    pr: { prNumber: number; prUrl: string; linesAdded: number; linesDeleted: number; mergedAt: number },
-  ): boolean {
+  recordMergedPrByKey(sessionKey: string, pr: MergedPr): boolean {
     const session = this.getSessionByKey(sessionKey);
     if (!session) return false;
     session.mergeStats ??= { totalLinesAdded: 0, totalLinesDeleted: 0, mergedPRs: [] };
-    const prUrls = [session.links?.pr?.url, ...(session.linkHistory?.prs ?? []).map((l) => l?.url)].filter(
-      (u): u is string => typeof u === 'string',
-    );
-    if (!addMergedPr(session.mergeStats, pr, prUrls)) return false;
+    if (!addMergedPr(session.mergeStats, pr, this.sessionPrUrlsOf(session))) return false;
     this.saveSessions();
     return true;
   }

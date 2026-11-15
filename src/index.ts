@@ -61,6 +61,7 @@ import { getAllChannels, getChannel, scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
 import { emitCodeMetrics } from './code-changes/metrics';
 import { createCodeChangesService } from './code-changes/service';
+import { getCodeChangesStore } from './code-changes/store';
 import {
   config,
   getIncidentTrustedSource,
@@ -1753,7 +1754,11 @@ async function start() {
           { userId: session.ownerId ?? '', userName: session.ownerName || 'unknown', sessionKey: key },
           {
             emitter: getMetricsEmitter(),
-            recordMerge: (pr) => claudeHandler.getSessionRegistry().recordMergedPrByKey(key, pr),
+            mergeRecord: (pr) => claudeHandler.getSessionRegistry().mergeRecordByKey(key, pr),
+            recordMerge: (pr) => {
+              claudeHandler.getSessionRegistry().recordMergedPrByKey(key, pr);
+            },
+            countingSince: getCodeChangesStore().countingSince(),
             logger,
           },
         ),
