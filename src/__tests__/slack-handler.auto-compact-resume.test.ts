@@ -449,7 +449,7 @@ describe('SlackHandler — resume after an auto-compact stop (T3)', () => {
       expect(resumed()).toBe(true);
     });
 
-    it('a stop inside a run that failed is that run\'s own end — and a later unrelated run does not resume it', async () => {
+    it("a stop inside a run that failed is that run's own end — and a later unrelated run does not resume it", async () => {
       lastTurnSucceeded = false;
       await compactRunWith(() => replay('auto-compact'));
       lastTurnSucceeded = true;
@@ -470,6 +470,48 @@ describe('SlackHandler — resume after an auto-compact stop (T3)', () => {
       });
 
       expect(routedTexts()).toContain('세번째 지시');
+      expect(resumed()).toBe(false);
+    });
+
+    /** A dispatcher report of generation `turnEpoch` ending as `outcome`. */
+    const reportOf = (turnEpoch: number, outcome: { result: string; reason?: string }, canDrain = false) => ({
+      sessionKey: SESSION_KEY,
+      runId: 100 + turnEpoch,
+      turnEpoch,
+      kind: 'drain',
+      outcome,
+      canDrain,
+    });
+
+    it("an older run's late boundary does not take the mark of a stop inside a newer run (R2 astra P1)", async () => {
+      // A replay inside the run of generation 7 was cut; generation 6's epilogue is still settling.
+      handlerAny.nestedAutoCompactStops.set(SESSION_KEY, 7);
+
+      await handlerAny.drainFollowups(SESSION_KEY, reportOf(6, { result: 'error', reason: 'boom' }));
+      await settleTicks();
+      expect(resumed()).toBe(false);
+      expect(handlerAny.nestedAutoCompactStops.get(SESSION_KEY)).toBe(7);
+
+      // Generation 7's own boundary takes it and carries the work on — once.
+      await handlerAny.drainFollowups(SESSION_KEY, reportOf(7, { result: 'safe' }));
+      await until(resumed);
+      expect(resumed()).toBe(true);
+      expect(handlerAny.nestedAutoCompactStops.has(SESSION_KEY)).toBe(false);
+      expect(routedTexts().filter((t) => /\[auto-compact\]/.test(t))).toHaveLength(1);
+    });
+
+    it("Send now that ends unhealthy: the stop inside it is that run's own end — a later run does not resume it (R2 astra P2)", async () => {
+      handlerAny.nestedAutoCompactStops.set(SESSION_KEY, 7);
+
+      handlerAny.followupActionDeps.chainSettled(SESSION_KEY, reportOf(7, { result: 'error', reason: 'boom' }));
+      await settleTicks();
+      expect(handlerAny.nestedAutoCompactStops.has(SESSION_KEY)).toBe(false);
+      expect(resumed()).toBe(false);
+
+      handlerAny.followupDispatcher.clearDrainHalt(SESSION_KEY, 'retry');
+      await handler.handleMessage(message({ ts: '222.991', text: '무관한 다음 지시' }), say());
+      await settleTicks();
+      expect(routedTexts()).toContain('무관한 다음 지시');
       expect(resumed()).toBe(false);
     });
   });

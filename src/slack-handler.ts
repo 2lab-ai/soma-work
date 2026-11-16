@@ -462,9 +462,12 @@ export class SlackHandler {
    * `auto-compact`: the replay a `/compact` turn runs from its own teardown
    * (the busy fence runs a `compactRedispatch` live). The run that holds the
    * slot settles on its own turn's outcome, so its boundary would not see the
-   * stop; it reads this mark instead (dev 2026-11-15, 8h idle).
+   * stop; it reads this mark instead (dev 2026-11-15, 8h idle). Keyed by the
+   * canonical session key, valued by the turn generation of the run that held
+   * the slot: only that run's boundary takes it (astra R2 — an older run's late
+   * epilogue must not take a newer run's mark).
    */
-  private readonly nestedAutoCompactStops = new Set<string>();
+  private readonly nestedAutoCompactStops = new Map<string, number>();
   /**
    * Files downloaded for a message that was STEERED into a running turn, keyed
    * by the uuid it was pushed under (06 §3.2/D2). They must survive until the
@@ -1293,7 +1296,11 @@ export class SlackHandler {
           // The other boundary a dispatcher run settles into (`Send now`,
           // Resume, Retry): an auto-compact stop — the click's own run, or the
           // drain's last — hands its work on here exactly as in `drainFollowups`.
-          this.resumeIfAutoCompactStop(sessionKey, last ?? settled, this.takeNestedAutoCompactStop(sessionKey));
+          this.resumeIfAutoCompactStop(
+            sessionKey,
+            last ?? settled,
+            this.takeNestedAutoCompactStop(sessionKey, last ?? settled),
+          );
           // A human-driven drain (Resume / Retry) is a boundary too: release
           // the §3.6 deferral it may just have cleared instead of waiting for
           // a turn end that a deferred loop would never produce. With nothing
@@ -1310,7 +1317,7 @@ export class SlackHandler {
       chainSettled: (sessionKey, settled) => {
         // #1305 — the click's run ended without a drain (not healthy): a stop
         // inside it is that run's own end, never a later run's.
-        this.takeNestedAutoCompactStop(sessionKey);
+        this.takeNestedAutoCompactStop(sessionKey, settled);
         this.noteChainSettled(sessionKey, settled.outcome);
         // #891 — the click's run is over, so a driver it held for its slot (a
         // turn that left no text) is released here too: an error or a stall
@@ -1701,7 +1708,7 @@ export class SlackHandler {
       void this.runFollowupDrainLoop(sessionKey)
         .then((last) => {
           // #1305 — the last drained run's boundary: an auto-compact stop of it (or inside it) carries on.
-          this.resumeIfAutoCompactStop(sessionKey, last, this.takeNestedAutoCompactStop(sessionKey));
+          this.resumeIfAutoCompactStop(sessionKey, last, this.takeNestedAutoCompactStop(sessionKey, last));
           if (last) this.releaseDeferredGoalDriver(sessionKey, last);
         })
         .catch((error) =>
@@ -2094,10 +2101,12 @@ export class SlackHandler {
       // The one turn that runs here is a post-compact replay, from the teardown
       // of the `/compact` turn that holds the slot: an auto-compact stop of it
       // is handed to that run's boundary (`nestedAutoCompactStops`).
+      // The run that holds the slot now — its boundary owns a stop inside it.
+      const holderEpoch = dispatcher.snapshot(slotOwner).turnEpoch;
       const outcome = await this.processMessage(event, say);
       if (isAutoCompactStop(outcome)) {
         // Under the key the holding run's boundary reads (its canonical key).
-        this.nestedAutoCompactStops.add(this.canonicalFollowupKey(slotOwner));
+        this.nestedAutoCompactStops.set(this.canonicalFollowupKey(slotOwner), holderEpoch);
         this.logger.info('Auto-compact stop inside a running slot — its run resumes the work at its boundary', {
           sessionKey,
         });
@@ -6977,8 +6986,8 @@ export class SlackHandler {
     const last = report.canDrain ? await this.runFollowupDrainLoop(sessionKey) : undefined;
     const final = last ?? report;
     // Read AFTER the drain: a stop inside a run the drain started belongs to
-    // that run (the loop retires the mark of every run it starts after).
-    this.resumeIfAutoCompactStop(sessionKey, final, this.takeNestedAutoCompactStop(sessionKey));
+    // that run, and only the boundary of the run that held the slot takes it.
+    this.resumeIfAutoCompactStop(sessionKey, final, this.takeNestedAutoCompactStop(sessionKey, final));
     this.releaseDeferredGoalDriver(sessionKey, final);
     this.noteChainSettled(sessionKey, final.outcome);
   }
@@ -7009,9 +7018,23 @@ export class SlackHandler {
    * `auto-compact`, resume its work. Every boundary a dispatcher run settles
    * into calls this — `drainFollowups` and the action controls' `runDrain`.
    */
-  /** #1305 — take (read and clear) the mark of a stop inside the run that held `key`'s slot. */
-  private takeNestedAutoCompactStop(key: string): boolean {
-    return this.nestedAutoCompactStops.delete(this.canonicalFollowupKey(key));
+  /**
+   * #1305 — take (read and clear) the mark of a stop inside `report`'s run.
+   * Another run's mark stays for that run's own boundary.
+   */
+  private takeNestedAutoCompactStop(key: string, report: RunReport | undefined): boolean {
+    const canonical = this.canonicalFollowupKey(key);
+    const epoch = this.nestedAutoCompactStops.get(canonical);
+    if (epoch === undefined || report === undefined || report.turnEpoch !== epoch) return false;
+    this.nestedAutoCompactStops.delete(canonical);
+    return true;
+  }
+
+  /** #1305 — a run of generation `turnEpoch` started: a stop inside an earlier run is carried on by it. */
+  private retireNestedAutoCompactStopsBefore(key: string, turnEpoch: number): void {
+    const canonical = this.canonicalFollowupKey(key);
+    const epoch = this.nestedAutoCompactStops.get(canonical);
+    if (epoch !== undefined && epoch < turnEpoch) this.nestedAutoCompactStops.delete(canonical);
   }
 
   private resumeIfAutoCompactStop(sessionKey: string, final: RunReport | undefined, nestedStop = false): void {
@@ -7258,7 +7281,7 @@ export class SlackHandler {
       if (drained.status !== 'dispatched') break;
       // #1305 — this run carries on any earlier stop inside the slot (the armed
       // flag makes it compact first): a stop inside it is its own, read at the end.
-      this.takeNestedAutoCompactStop(sessionKey);
+      this.retireNestedAutoCompactStopsBefore(sessionKey, drained.run.turnEpoch);
       const drainedItemId = drained.run.itemId;
       last = await drained.run.settled;
       // An auto-compact stop opens the boundary (`canDrain`): the next item this
