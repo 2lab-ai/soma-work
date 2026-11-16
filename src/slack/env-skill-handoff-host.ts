@@ -23,9 +23,10 @@ import type { CommandResult, EnvironmentRunEnd, SayFn } from './commands/types';
 const logger = new Logger('EnvSkillHandoff');
 
 /**
- * Host turns a session gets in a row for hand-offs that made no progress (rejected, or waiting for an admin). Each
+ * Host turns a session gets in a row for hand-offs that made no progress (rejected, waiting for an admin, or a run
+ * that failed to launch). Each
  * such host turn can make the model send another request, so without a cap a model (or a prompt injection) could
- * loop host turns forever without approval. Only a run that starts resets the count.
+ * loop host turns forever without approval. Only a run that went and ended resets the count.
  */
 export const MAX_UNPRODUCTIVE_WAKES = 3;
 
@@ -169,7 +170,7 @@ export function createEnvSkillHandoffHost(
 
   /**
    * Tell the requesting session, as the requester, while it is still the session that asked. `progress` (a run that
-   * started) resets the count; anything else counts against {@link MAX_UNPRODUCTIVE_WAKES}.
+   * went and ended) resets the count; anything else counts against {@link MAX_UNPRODUCTIVE_WAKES}.
    */
   const tell = (request: EnvSkillHandoffRequest, current: () => boolean, progress: boolean, text: string): void => {
     if (!current()) {
@@ -192,7 +193,7 @@ export function createEnvSkillHandoffHost(
     void sendWake({ sessionKey: request.sessionKey, user: request.user, text, current });
   };
 
-  /** A run started: progress. The count starts again and pending requests may be told again. */
+  /** A run went and ended: progress. The count starts again and pending requests may be told again. */
   const madeProgress = (sessionKey: string): void => {
     unproductiveInARow.delete(sessionKey);
     for (const key of pendingTold) if (key.startsWith(`${sessionKey}\0`)) pendingTold.delete(key);
@@ -228,10 +229,12 @@ export function createEnvSkillHandoffHost(
     const result: CommandResult = await deps.handler.execute({ user, channel, threadTs, text: message, say });
 
     if (result.environmentRun) {
-      madeProgress(request.sessionKey);
-      const finished = result.environmentRun.finished.then((end) =>
-        tell(request, current, true, endedText(skill, check.owner, end)),
-      );
+      // Progress only once the run really went: a launch that fails (no thread, the run threw) counts against the
+      // no-progress budget like a rejection, or a launch that keeps failing would wake the session forever.
+      const finished = result.environmentRun.finished.then((end) => {
+        if (end.ok) madeProgress(request.sessionKey);
+        tell(request, current, end.ok, endedText(skill, check.owner, end));
+      });
       return { outcome: { status: 'started', owner: check.owner }, finished };
     }
     if (result.awaitingPermission) {

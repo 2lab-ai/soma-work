@@ -292,6 +292,25 @@ describe('env-skill hand-off host (#1304)', () => {
     expect(wake.mock.calls[0][0].text).toContain('scheduler off');
   });
 
+  // RoL #1308 r2 (maintainability P1): a run that never got going is no progress. Counted as progress, a launch that
+  // keeps failing woke the session every time and the model could send the same request forever.
+  it('runs that fail to launch count against the no-progress budget and do not reset it', async () => {
+    h.isAllowed.mockReturnValue(true);
+    runAsUser.mockImplementation(async () => {
+      throw new Error('scheduler off');
+    });
+    for (let i = 0; i < MAX_UNPRODUCTIVE_WAKES + 2; i++) {
+      await host(request());
+      await flush();
+      await flush();
+    }
+    expect(wake).toHaveBeenCalledTimes(MAX_UNPRODUCTIVE_WAKES);
+    for (const [w] of wake.mock.calls) expect(w.text).toContain('scheduler off');
+    // A rejection after them is still over the budget: the failed launches did not reset it.
+    await host(request({ skill: '$acme-dev2:nope' }));
+    expect(wake).toHaveBeenCalledTimes(MAX_UNPRODUCTIVE_WAKES);
+  });
+
   it('a host error anywhere becomes a rejection the model is told about — a submitted request never goes silent', async () => {
     vi.spyOn(handler, 'checkEnvironmentHandoff').mockImplementation(() => {
       throw new Error('resolver broke');
