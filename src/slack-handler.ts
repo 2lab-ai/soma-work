@@ -7026,8 +7026,7 @@ export class SlackHandler {
     const canonical = this.canonicalFollowupKey(key);
     const epoch = this.nestedAutoCompactStops.get(canonical);
     if (epoch === undefined || report === undefined || report.turnEpoch !== epoch) return false;
-    this.nestedAutoCompactStops.delete(canonical);
-    return true;
+    return this.nestedAutoCompactStops.delete(canonical);
   }
 
   /** #1305 — a run of generation `turnEpoch` started: a stop inside an earlier run is carried on by it. */

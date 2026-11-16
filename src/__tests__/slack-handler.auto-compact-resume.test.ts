@@ -473,6 +473,40 @@ describe('SlackHandler — resume after an auto-compact stop (T3)', () => {
       expect(resumed()).toBe(false);
     });
 
+    /**
+     * A message waiting in an idle lane is drained by `start` as a /compact run
+     * (the armed flag), and that run's replay of the parked message is cut again.
+     */
+    async function drainedCompactRunCut(start: () => Promise<unknown>): Promise<void> {
+      handlerAny.followupQueue.enqueue(SESSION_KEY, message({ ts: '222.960', text: '큐에 남은 지시' }));
+      startWithContinuation.mockImplementationOnce(async () => {
+        await replay('auto-compact');
+        return { hasPendingChoice: false };
+      });
+      await start();
+      await until(resumed);
+      await settleTicks();
+    }
+    const continuations = () => routedTexts().filter((t) => /\[auto-compact\]/.test(t));
+
+    it('Resume / Retry: a drained /compact run whose replay is cut resumes the work at the click boundary', async () => {
+      await drainedCompactRunCut(() => runDrain());
+
+      expect(routedTexts()).toContain('큐에 남은 지시');
+      expect(routedTexts()).toContain('압축 전에 하던 지시');
+      expect(continuations()).toHaveLength(1);
+    });
+
+    it('restart drain: a requeued /compact run whose replay is cut resumes the work at its boundary', async () => {
+      await drainedCompactRunCut(async () => {
+        expect(handlerAny.drainIdleRestartRequeued([SESSION_KEY])).toBe(1);
+      });
+
+      expect(routedTexts()).toContain('큐에 남은 지시');
+      expect(routedTexts()).toContain('압축 전에 하던 지시');
+      expect(continuations()).toHaveLength(1);
+    });
+
     /** A dispatcher report of generation `turnEpoch` ending as `outcome`. */
     const reportOf = (turnEpoch: number, outcome: { result: string; reason?: string }, canDrain = false) => ({
       sessionKey: SESSION_KEY,
