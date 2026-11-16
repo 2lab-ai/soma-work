@@ -17,48 +17,14 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 
 describe('code-changes service → issue tree', () => {
   it('notes the PR relations, then reads the unchecked issues and notes them', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-tree-'));
-    roots.push(dir);
-    const session: SessionLike = {
-      conversationId: 'conv1',
-      startedAt: Date.parse('2026-11-16T00:00:00Z'),
-      sessionWorkingDir: '/tmp/x/session_1794756694405_a',
-      links: { pr: { url: 'https://github.com/acme/web/pull/3' } },
-    };
-    const sessions = new Map([['k1', session]]);
     const calls: string[] = [];
-    const note = vi.fn((_k: string, entries: ReadonlyArray<{ url: string }>) => {
+    const fetchIssue = vi.fn(async () => ({ title: 'login', state: 'open' }));
+    const { svc, note, pushCard } = harness({ fetchIssue });
+    note.mockImplementation((_k, entries) => {
       calls.push(`note:${entries.map((e) => e.url.split('/').slice(-2).join('/')).join(',')}`);
       return true;
     });
-    const pushCard = vi.fn(() => calls.push('push'));
-    const fetchIssue = vi.fn(async () => ({ title: 'login', state: 'open' }));
-    const svc = createCodeChangesService({
-      getSessionByKey: (k) => sessions.get(k),
-      allSessions: () => sessions.entries(),
-      persist: () => {},
-      pushCard,
-      store: new CodeChangesStore(dir),
-      issueTree: { note, toCheck: () => ['https://github.com/acme/web/issues/9'] },
-      fetchIssue,
-      collect: {
-        listCheckoutDirs: async () => ({ dirs: [] }),
-        fetchPullDetail: async () => ({
-          html_url: 'https://github.com/acme/web/pull/3',
-          number: 3,
-          title: 'Fix login',
-          state: 'open',
-          created_at: '2026-11-16T01:00:00Z',
-          head_sha: 'a'.repeat(40),
-          base_sha: 'b'.repeat(40),
-          base_ref: 'main',
-          body: 'Closes #9',
-        }),
-        fetchPullFiles: async () => ({ files: [], truncated: false }),
-        now: () => 7,
-      },
-      scheduler: { delayMs: 0, minIntervalMs: 0 },
-    });
+    pushCard.mockImplementation(() => calls.push('push'));
     await svc.refresh('conv1');
     await flush();
     await flush();
@@ -89,6 +55,8 @@ describe('code-changes service → issue tree', () => {
 
   function harness(opts: {
     body?: () => string;
+    merged?: boolean;
+    now?: () => number;
     fetchIssue: (o: string, r: string, n: number) => Promise<{ title?: string; state?: string } | undefined>;
   }) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-tree-'));
@@ -108,6 +76,18 @@ describe('code-changes service → issue tree', () => {
       ],
       truncated: false,
     }));
+    const fetchPullDetail = vi.fn(async () => ({
+      html_url: 'https://github.com/acme/web/pull/3',
+      number: 3,
+      title: 'Fix login',
+      state: opts.merged ? 'closed' : 'open',
+      ...(opts.merged ? { merged: true, merged_at: '2026-11-16T02:00:00Z' } : {}),
+      created_at: '2026-11-16T01:00:00Z',
+      head_sha: 'a'.repeat(40),
+      base_sha: 'b'.repeat(40),
+      base_ref: 'main',
+      body: opts.body ? opts.body() : 'Closes #9',
+    }));
     const svc = createCodeChangesService({
       getSessionByKey: (k) => sessions.get(k),
       allSessions: () => sessions.entries(),
@@ -118,25 +98,14 @@ describe('code-changes service → issue tree', () => {
       fetchIssue: opts.fetchIssue,
       collect: {
         listCheckoutDirs: async () => ({ dirs: [] }),
-        fetchPullDetail: async () => ({
-          html_url: 'https://github.com/acme/web/pull/3',
-          number: 3,
-          title: 'Fix login',
-          state: 'open',
-          created_at: '2026-11-16T01:00:00Z',
-          head_sha: 'a'.repeat(40),
-          base_sha: 'b'.repeat(40),
-          base_ref: 'main',
-          body: opts.body ? opts.body() : 'Closes #9',
-        }),
+        fetchPullDetail,
         fetchPullFiles,
-        now: () => 7,
+        now: opts.now ?? (() => 7),
       },
       scheduler: { delayMs: 0, minIntervalMs: 0 },
     });
-    return { svc, sessions, session, note, pushCard, fetchPullFiles };
+    return { svc, sessions, session, note, pushCard, fetchPullFiles, fetchPullDetail };
   }
-
   it('an issue read that lands after the session was replaced (or ended) notes nothing and pushes nothing', async () => {
     let answer!: (v: { title: string; state: string }) => void;
     const fetchIssue = vi.fn(() => new Promise<{ title: string; state: string }>((r) => (answer = r)));
@@ -202,5 +171,41 @@ describe('code-changes service → issue tree', () => {
     expect(prNote(2).rel).toEqual({ closes: [], base: null });
     // The files were listed once: the head and base held, so the stored files were reused.
     expect(h.fetchPullFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it('a merged PR reused from the store tells no relations (only this collect’s reads do)', async () => {
+    let clock = 100;
+    const h = harness({ merged: true, now: () => clock++, fetchIssue: async () => ({ state: 'open' }) });
+    await h.svc.refresh('conv1');
+    await flush();
+    const prNotes = () => h.note.mock.calls.filter((c) => c[1][0]?.url.includes('/pull/')).map((c) => c[1][0]);
+    expect(prNotes()[0]).toMatchObject({ status: 'merged', rel: { closes: ['https://github.com/acme/web/issues/9'] } });
+    const reads = h.fetchPullDetail.mock.calls.length;
+    await h.svc.refresh('conv1');
+    await flush();
+    // Not read again (merged, files whole): its entry keeps the state, and leaves the relations to newer reads.
+    expect(h.fetchPullDetail.mock.calls.length).toBe(reads);
+    expect(prNotes()[1]).toMatchObject({ status: 'merged' });
+    expect(prNotes()[1].rel).toEqual({});
+  });
+
+  it('a rejected issue read frees the session for the next collect, whose read reaches the tree and the card', async () => {
+    const fetchIssue = vi
+      .fn<(o: string, r: string, n: number) => Promise<{ title?: string; state?: string } | undefined>>()
+      .mockRejectedValueOnce(new Error('network'))
+      .mockResolvedValue({ title: 'login', state: 'open' });
+    const h = harness({ fetchIssue });
+    await h.svc.refresh('conv1');
+    await flush();
+    await flush();
+    expect(fetchIssue).toHaveBeenCalledTimes(1);
+    const pushes = h.pushCard.mock.calls.length;
+    await h.svc.refresh('conv1');
+    await flush();
+    await flush();
+    expect(fetchIssue).toHaveBeenCalledTimes(2);
+    const issueNotes = h.note.mock.calls.filter((c) => c[1].some((e) => e.url.includes('/issues/')));
+    expect(issueNotes).toHaveLength(1);
+    expect(h.pushCard.mock.calls.length).toBeGreaterThan(pushes + 1);
   });
 });

@@ -405,7 +405,7 @@ function chgIssueTreeHtml(doc) {
 }
 // A push for the open card (repaintPanelSession): the tab is painted again only when its issue tree changed.
 function chgNoteTree() {
-  if (!_chg.cid || !_chg.doc) return;
+  if (!_chg.cid || _chg.state === 'denied') return;
   var sig = JSON.stringify(chgIssueTreeView());
   if (sig === _chg.treeSig) return;
   chgPaint();
@@ -454,8 +454,9 @@ function chgPaint() {
   if (!el) return;
   var html;
   if (_chg.state === 'denied') html = '<div class="chg-empty">' + chgEsc(CHG_DENIED) + '</div>';
-  else if (_chg.state === 'error') html = '<div class="chg-empty">' + chgEsc(CHG_FAILED) + '</div>';
-  else if (!_chg.doc) html = '<div class="chg-empty">' + chgEsc(_chg.state === 'loading' ? CHG_LOADING : CHG_EMPTY) + '</div>';
+  // No changes document (still loading, none, or its read failed): the card's issue tree still shows, from the board.
+  else if (_chg.state === 'error') html = '<div class="chg-empty">' + chgEsc(CHG_FAILED) + '</div>' + chgIssueTreeHtml(null);
+  else if (!_chg.doc) html = '<div class="chg-empty">' + chgEsc(_chg.state === 'loading' ? CHG_LOADING : CHG_EMPTY) + '</div>' + chgIssueTreeHtml(null);
   else {
     var doc = _chg.doc;
     var s = chgSummaryText(doc);

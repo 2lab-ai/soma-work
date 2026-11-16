@@ -748,4 +748,16 @@ describe('the 변경점 issue tree in a DOM (.prd/29 §6)', () => {
     toggle('*')!.click();
     expect(rows()).toHaveLength(3);
   });
+
+  it('D12 — the changes read failed: the card’s issue tree still shows (from the board), and folds', async () => {
+    const f = controlledFetch();
+    const api = loadWithTree(f.fetchFn);
+    api.chgWire();
+    api.chgOpen('c1');
+    f.calls[0].fail();
+    await flush();
+    expect(rows()).toEqual([nid('issues/10'), nid('issues/11'), nid('pull/7')]);
+    toggle(nid('issues/10'))!.click();
+    expect(rows()).toEqual([nid('issues/10')]);
+  });
 });

@@ -101,6 +101,7 @@ export function createCodeChangesService<S extends SessionLike>(deps: CodeChange
       turn && turn.session === session ? turn.dir : undefined,
     );
     if (dirs.length === 0) return;
+    const readFrom = collectDeps.now();
     const result = await collectCodeChanges(
       {
         conversationId: session.conversationId,
@@ -119,7 +120,12 @@ export function createCodeChangesService<S extends SessionLike>(deps: CodeChange
     deps.persist(key);
     if (deps.issueTree) {
       try {
-        deps.issueTree.note(key, prTreeEntries(result.doc.prs));
+        // A merged PR's stored record is reused without a read: it tells nothing new about its relations (the
+        // reconciler may have read an edited body since), so only this collect's reads carry them.
+        const read = result.doc.prs.map((pr) =>
+          pr.fetchedAt >= readFrom ? pr : { ...pr, closes: undefined, baseRef: undefined },
+        );
+        deps.issueTree.note(key, prTreeEntries(read));
       } catch (error) {
         deps.logger?.debug('issue tree: PR relations not noted', { key, error: (error as Error)?.message });
       }

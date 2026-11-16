@@ -402,6 +402,39 @@ describe('issue tree — .prd/29 §3', () => {
     expect(upsertIssueTreeLink(t, { kind: 'issue', url: issue(5000), title: 'x' }, now())).toMatchObject({ ok: true });
     rebalanceIssueTree(t, now());
     expect(t.nodes.length).toBe(ISSUE_TREE_MAX_NODES);
+    // add_internal is refused too, with nothing changed (not the nodes, not the counter); an edit of one still works.
+    const full = emptyIssueTree();
+    const made = addInternalIssue(full, { title: '조사' }, now());
+    for (let i = 0; full.nodes.length < ISSUE_TREE_MAX_NODES; i++)
+      upsertIssueTreeLink(full, { kind: 'issue', url: issue(6000 + i) }, now());
+    rebalanceIssueTree(full, now());
+    const snapshot = JSON.stringify(full);
+    expect(addInternalIssue(full, { title: '하나 더' }, now())).toMatchObject({ ok: false });
+    expect(JSON.stringify(full)).toBe(snapshot);
+    const madeId = (made as { id: string }).id;
+    expect(addInternalIssue(full, { id: madeId, status: 'closed' }, now())).toMatchObject({ ok: true, id: madeId });
+  });
+
+  it('a full tree whose last root issue a GitHub read puts under the model’s issue takes no 201st node', () => {
+    // A (root) ← P (host PR) ← B (the model's issue under P); the rest fills the tree, all under A.
+    const t = tree();
+    add(t, 'issue', issue(1));
+    add(t, 'pr', pr(10));
+    add(t, 'issue', issue(2), { parent: pr(10) });
+    for (let i = 0; t.nodes.length < ISSUE_TREE_MAX_NODES; i++)
+      upsertIssueTreeLink(t, { kind: 'pr', url: pr(7000 + i) }, now());
+    rebalanceIssueTree(t, now());
+    expect(t.nodes.length).toBe(ISSUE_TREE_MAX_NODES);
+    // GitHub: A's parent is B. Placing A under B would leave no root issue: A stays the root, no seed is made.
+    upsertIssueTreeLink(t, { kind: 'issue', url: issue(1), rel: { subOf: issue(2) } }, now());
+    rebalanceIssueTree(t, now());
+    expect(t.nodes.length).toBe(ISSUE_TREE_MAX_NODES);
+    expect(t.nodes.some((n) => n.placed === 'seed')).toBe(false);
+    expect(shape(t)).toMatchObject({ 'issues/1': '', 'pull/10': 'issues/1', 'issues/2': 'pull/10' });
+    expect(t.nodes.filter((n) => n.kind === 'pr' && !n.parent)).toEqual([]);
+    const once = JSON.stringify(t);
+    rebalanceIssueTree(t, now());
+    expect(JSON.stringify(t)).toBe(once);
   });
 
   it('a session made before the tree: its link records become one (issues roots, PRs under the representative)', () => {

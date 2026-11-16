@@ -105,9 +105,11 @@ export async function refreshIssueEntries(
   max = 8,
 ): Promise<IssueTreeNote[]> {
   const out: IssueTreeNote[] = [];
-  for (const url of urls.slice(0, max)) {
-    const m = ISSUE_URL.exec(url.replace(/\/+$/, ''));
-    if (!m) continue;
+  // A query or a comment anchor (`#issuecomment-1`) is the same issue; a URL that is not an issue takes no read slot.
+  const issues = urls
+    .map((url) => ({ url, m: ISSUE_URL.exec(url.replace(/[?#].*$/, '').replace(/\/+$/, '')) }))
+    .filter((x): x is { url: string; m: RegExpExecArray } => !!x.m);
+  for (const { url, m } of issues.slice(0, max)) {
     const meta = await fetchIssue(m[1], m[2], Number(m[3]));
     if (!meta) {
       out.push({ kind: 'issue', url, triedAt: now, onlyIfPresent: true });

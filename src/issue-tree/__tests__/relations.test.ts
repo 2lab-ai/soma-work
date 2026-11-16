@@ -134,6 +134,23 @@ describe('issue-tree relations', () => {
     });
   });
 
+  it('an issue URL with a query or a comment anchor is read; a URL that is no issue takes no read slot', async () => {
+    const fetchIssue = vi.fn(async () => ({ state: 'open' }));
+    const junk = Array.from({ length: 8 }, (_, i) => `https://github.com/a/b/pull/${i}`);
+    const out = await refreshIssueEntries(
+      [...junk, `${GH}/issues/7#issuecomment-123`, `${GH}/issues/8?x=1`],
+      fetchIssue,
+      50,
+      2,
+    );
+    expect(fetchIssue.mock.calls).toEqual([
+      ['a', 'b', 7],
+      ['a', 'b', 8],
+    ]);
+    // Each entry keeps the URL the node has (its id is the same canonical one).
+    expect(out.map((e) => e.url)).toEqual([`${GH}/issues/7#issuecomment-123`, `${GH}/issues/8?x=1`]);
+  });
+
   it('an issue is read once: its title, state and GitHub parent (which joins while the issue is there); a failed read is stamped', async () => {
     const fetchIssue = vi.fn(async (_o: string, _r: string, n: number) =>
       n === 7

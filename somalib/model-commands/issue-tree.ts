@@ -236,6 +236,10 @@ export function addInternalIssue(
   return { ok: true, id };
 }
 
+function firstSubIssue(tree: SessionIssueTree): IssueTreeNode | undefined {
+  return tree.nodes.find((n) => n.kind === 'issue' && n.placed === 'sub-issue');
+}
+
 /** A fresh seed: `internal:1` unless the model's own issue holds that id. */
 function newSeed(tree: SessionIssueTree, now: number): IssueTreeNode {
   const free = !tree.nodes.some((n) => n.id === SEED_ID);
@@ -335,9 +339,14 @@ export function rebalanceIssueTree(tree: SessionIssueTree, now: number): void {
       n.placed = 'default';
     }
   }
-  // A root issue, always (a PR is never a root): the seed when no other issue is one.
+  // A root issue, always (a PR is never a root): the seed when no other issue is one. A full tree takes no new seed —
+  // the first issue the host put under a GitHub parent goes back to the root instead.
   if (!tree.nodes.some((n) => n.kind === 'issue' && !n.parent)) {
-    tree.nodes.unshift(retired || newSeed(tree, now));
+    const lifted = retired ? undefined : tree.nodes.length >= ISSUE_TREE_MAX_NODES ? firstSubIssue(tree) : undefined;
+    if (lifted) {
+      lifted.parent = undefined;
+      lifted.placed = 'default';
+    } else tree.nodes.unshift(retired || newSeed(tree, now));
     nodes = byId(tree);
   }
   // 3. PRs: under an issue they close, else the PR they are stacked on, else the representative issue.
