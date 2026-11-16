@@ -5,8 +5,8 @@ import {
   captureSessionIdentity,
   createEnvSkillHandoffHost,
   envSkillWakeState,
-  MAX_UNPRODUCTIVE_WAKES,
   inertSkillRefs,
+  MAX_UNPRODUCTIVE_WAKES,
 } from '../env-skill-handoff-host';
 
 vi.mock('node:fs');
