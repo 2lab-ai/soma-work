@@ -1,6 +1,6 @@
 # SSOT — devops-tools (gh 계정 · Cloudflare 환경 키를 모델 밖에 두는 운영 도구)
 
-Status: in-progress · 작성 2026-10-26 · 기준 커밋 main `0a7a638e` · 유저 확인 2026-10-26(SSOT_4)
+Status: superseded (env-access #1214, 2026-11-13 — 브로커 제거, 지금 설계는 `../env-access/loop.md`) · was in-progress · 작성 2026-10-26 · 기준 커밋 main `0a7a638e` · 유저 확인 2026-10-26(SSOT_4)
 
 ## SSOT-LIST (시간 순, append-only)
 

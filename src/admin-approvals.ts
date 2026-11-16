@@ -1,7 +1,7 @@
 /**
  * Admin approvals — the requests that reach the admins by Slack DM (an
  * environment skill run, an MCP tool grant, a new user, a bot-message
- * delete; a devops broker card; a question the model asked for an admin), shown to admins signed in to the dashboard as approval cards and
+ * delete; a question the model asked for an admin), shown to admins signed in to the dashboard as approval cards and
  * answerable there. An answer on either surface resolves both: the dashboard
  * answer runs the same decision the Slack button runs, which rewrites every
  * admin's DM; a Slack answer drops the card from the dashboard.
@@ -21,7 +21,6 @@ export type AdminApprovalKind =
   | 'mcp_grant'
   | 'new_user'
   | 'bot_delete'
-  | 'devops_broker'
   /** #1070 — a question the model asked for an admin (`ASK_USER_QUESTION` with `audience: 'admins'`). */
   | 'session_question';
 
@@ -30,7 +29,6 @@ export const ADMIN_APPROVAL_KINDS: readonly AdminApprovalKind[] = [
   'mcp_grant',
   'new_user',
   'bot_delete',
-  'devops_broker',
   'session_question',
 ];
 
@@ -73,21 +71,10 @@ export interface AdminApproval {
   createdAt: number;
   expiresAt?: number;
   /**
-   * `devops_broker` (#1051): each admin's own Slack card, or (`admin: '*'`, for a broker that cannot list its
-   * cards) the approvals app's DM for any admin. The card's one choice opens the viewer's link in the browser
-   * instead of answering — a devops broker card is decided only in Slack.
-   */
-  links?: { admin: string; url: string }[];
-  /**
    * #1131 — the choice ids that mean approve and deny for this request. Present: it can be selected and decided
    * with others in one pass ({@link answerAdminApprovals}). Absent: it is decided one at a time only (a free question).
    */
   batch?: { approve: string; deny: string };
-  /**
-   * #1131 — the requester's live wait is over and the request waits in a queue until an admin decides it (the
-   * devops broker sets it). The dashboard shows a 대기열 badge and no countdown.
-   */
-  queued?: boolean;
 }
 
 /** A request that ended recently — the card shows who answered and how. */

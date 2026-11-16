@@ -53,11 +53,9 @@ packages/                           # Workspace packages
 │   ├── model-command/              # Session/UI model commands
 │   ├── slack-mcp/                  # Thread context + file upload
 │   ├── cron/                       # Cron job management
-│   ├── server-tools/               # Server administration
-│   ├── devops-tools/               # Keyless relay to the devops broker (gh / Cloudflare)
+│   ├── server-tools/               # Server administration + environment tools (gh_read · gh_pr · login · cf_api)
 │   ├── permission/                 # Permission prompt service
 │   └── mcp-tool-permission/        # Per-tool permission gating
-├── devops-broker/                  # Separate-OS-user broker: holds gh tokens + Cloudflare forge keys, admin-approved via its own Slack app
 ├── common/ · slack/ · process-shared/ · test-utils/
 
 somalib/                            # Shared soma-family library

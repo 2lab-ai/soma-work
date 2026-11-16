@@ -1,8 +1,10 @@
 # 15 — TO-BE: 모델은 부탁만 하고, 키는 보관소가, 허락은 어드민이
 
-Status: in-progress · Date: 2026-10-26
+Status: superseded (#1214) — was in-progress · Date: 2026-10-26
 AS-IS = [`14-devops-tools-as-is.md`](14-devops-tools-as-is.md) · SSOT = [`devops-tools/ssot.md`](devops-tools/ssot.md) ·
 한 층 아래(어떻게) = [`16-devops-tools-architecture.md`](16-devops-tools-architecture.md)
+
+> **대체됨 (2026-11-13, env-access #1214):** 별도 브로커·devops-tools는 제거됐다. 지금 설계는 [`23`](23-env-access-as-is.md) · [`24`](24-env-access-to-be.md) · [`25`](25-env-access-architecture.md)와 [`env-access/loop.md`](env-access/loop.md). 이 문서는 기록으로만 남긴다.
 
 ## 한 줄
 

@@ -175,9 +175,10 @@ describe('qa-issue computes a refused compare from the commits list', () => {
   const procedure = section('Procedure');
   const deployCheck = procedure.slice(procedure.indexOf('2. Deploy check'), procedure.indexOf('3. Build cases'));
 
-  it('keeps gh_read first and falls back to the commits list when the compare read is refused or fails', () => {
-    expect(github).toContain('Read `compare` with `gh_read` first.');
-    expect(github).toMatch(/not an answer[^\n]*`policy-denied`[^\n]*answer from the commits list instead/);
+  it('reads compare first and falls back to the commits list when the compare read is refused or fails', () => {
+    expect(github).toContain(
+      'Read `compare` first. When that read is not an answer, answer from the commits list instead.',
+    );
     expect(github).toContain('`compare` takes full 40-character SHAs only');
     expect(github).toContain(
       '`repos/<repo>/commits` with `"-f", "sha=<sha>", "-f", "per_page=100", "-f", "page=<N>"` and the filter `[.[] | {sha, parents: [.parents[].sha]}]`',
@@ -195,7 +196,7 @@ describe('qa-issue computes a refused compare from the commits list', () => {
 
   it('names the answer source where qa-report reads it', () => {
     expect(github).toContain(
-      'Name the source in `deployConfirm.provenance` and the tracker comment: `compare via commits list: broker refused compare`',
+      'Name the source in `deployConfirm.provenance` and the tracker comment: `compare via commits list: <why the compare read failed>`',
     );
   });
 
@@ -241,7 +242,9 @@ describe('qa-issue reads a job log with run view, never through api', () => {
 
   it('forbids the api form and says why', () => {
     expect(jobLogs).toContain('never `api …/actions/jobs/<job id>/logs`');
-    expect(jobLogs).toMatch(/gh refuses to print it[^\n]*the policy refuses the flag/);
+    expect(jobLogs).toContain('gh refuses to print it (the log holds terminal escape sequences)');
+    // The broker's gh classifier refused the override flag; it went with the broker (#1214). No policy says so now.
+    expect(jobLogs).not.toContain('the policy refuses the flag');
     expect(md).not.toMatch(/`repos\/[^`]*\/actions\/jobs\//);
   });
 

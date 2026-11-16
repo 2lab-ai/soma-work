@@ -39,7 +39,7 @@ Slack 유저 ──▶ soma-work 봇 프로세스 (OS 유저 = 봇 유저, 샌�
 | 샌드박스가 뜨지 못한 틈 | `failIfUnavailable: true` — 모델 명령 실행 안 함 |
 | ssh 키로 직접 접속 | Bash ssh 금지(모든 모델) + `~/.ssh` 읽기 금지. 호스트 명령은 `ssh_exec`만 |
 | 환경 도구를 grant 없이 호출 | 정책의 환경 grant 단계 (어드민 = 통과) |
-| 환경 도구로 허용 밖 GitHub 작업 | `gh` 허용표 (`packages/process-shared/src/devops/gh-policy.ts` 재사용) + 승인 조건 검사 |
+| 환경 도구로 허용 밖 GitHub 작업 | 경로 모양 허용 목록(`env-github.ts` `READ_SHAPES`, 읽기) + `gh_pr` 조건표(`approveWhen`·`mergeWhen`·`requiredChecks`, 쓰기) — 브로커의 `gh-policy.ts`는 #1214에서 브로커와 함께 지웠다 |
 | 봇 App 토큰으로 배포 브랜치 머지 | **남는 위험** — 24 §6. 고객 레포 배포 브랜치 규칙이 근본 해결 |
 
 ## 2. 구성 요소와 파일 배치

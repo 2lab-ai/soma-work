@@ -3,7 +3,7 @@
  * 있으면 즉시 알림이 가서 즉시 처리할 수 있도록".
  *
  * The shipped client functions of the 관리자 승인 drawer, cut out of the page by name: each pending card's line
- * (summary, risk, age, 대기열, who asked), selection that survives a refresh, 전체 선택 that leaves high-risk
+ * (summary, risk, age, who asked), selection that survives a refresh, 전체 선택 that leaves high-risk
  * requests to be ticked one by one, the confirm sheet (every effect listed, each high-risk one ticked, one
  * confirm, the outcome per item), desktop alerts (asked for only from the toggle, only for a hidden tab, only
  * for requests never seen) and the pending count in the tab title.
@@ -185,12 +185,12 @@ describe('dashboard admin approvals in one pass (#1131)', () => {
       expect(c.adminApprovalData('env_skill:r1').expiresAt).toBeUndefined();
     });
 
-    it('falls back to the title; a queued request carries the 대기열 badge', () => {
+    it('falls back to the title; there is no 대기열 badge (the broker queue went with the broker, #1214)', () => {
       const { c } = client();
       c.applyAdminApprovals({ pending: [{ ...USER, summary: undefined, queued: true }], resolved: [] });
       const html = c.adminMetaHtml('new_user:U0USER02');
       expect(html).toContain('새 사용자 접근 요청');
-      expect(html).toContain('대기열');
+      expect(html).not.toContain('대기열');
     });
 
     it('a request that can be decided with others has a checkbox; a free question has none', () => {
