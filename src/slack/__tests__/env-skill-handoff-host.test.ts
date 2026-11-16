@@ -6,6 +6,7 @@ import {
   createEnvSkillHandoffHost,
   envSkillWakeState,
   MAX_UNPRODUCTIVE_WAKES,
+  inertSkillRefs,
 } from '../env-skill-handoff-host';
 
 vi.mock('node:fs');
@@ -203,7 +204,7 @@ describe('env-skill hand-off host (#1304)', () => {
     expect(h.consumeOneTime).not.toHaveBeenCalled();
     expect(wake).toHaveBeenCalledTimes(1);
     expect(wake.mock.calls[0][0]).toMatchObject({ user: 'U1' });
-    expect(wake.mock.calls[0][0].text).toContain(outcome.reason as string);
+    expect(wake.mock.calls[0][0].text).toContain(inertSkillRefs(outcome.reason as string));
   });
 
   it.each([
@@ -230,7 +231,7 @@ describe('env-skill hand-off host (#1304)', () => {
     }
     expect(wake).toHaveBeenCalledTimes(1);
     expect(wake.mock.calls[0][0].text).toContain('[env-skill]');
-    expect(wake.mock.calls[0][0].text).toContain(outcome.reason as string);
+    expect(wake.mock.calls[0][0].text).toContain(inertSkillRefs(outcome.reason as string));
   });
 
   it('the same tool result handled twice runs once', async () => {
@@ -336,7 +337,7 @@ describe('env-skill hand-off host (#1304)', () => {
     await host(request({ skill: '$acme-dev2:nope' }));
     expect(wake).toHaveBeenCalledTimes(2);
     expect(wake.mock.calls[0][0].text).toContain('https://slack.example/p900');
-    expect(wake.mock.calls[1][0].text).toMatch(/\$acme-dev2:nope was rejected/);
+    expect(wake.mock.calls[1][0].text).toMatch(/`acme-dev2:nope` was rejected/);
   });
 
   it('waiting for an admin is not progress: it does not reset the count, and the same pending request wakes once', async () => {
@@ -380,7 +381,7 @@ describe('env-skill hand-off host (#1304)', () => {
     await generations(request({ skill: '$acme-dev2:nope' }));
     expect(wake).toHaveBeenCalledTimes(2);
     expect(wake.mock.calls[0][0].text).toMatch(/admin/i);
-    expect(wake.mock.calls[1][0].text).toMatch(/\$acme-dev2:nope was rejected/);
+    expect(wake.mock.calls[1][0].text).toMatch(/`acme-dev2:nope` was rejected/);
   });
 
   // RoL #1308 r4 (tests P1): a run the closed session A started may end after B took the key — A's success must not
@@ -469,6 +470,24 @@ describe('env-skill hand-off host (#1304)', () => {
     expect(runAsUser).not.toHaveBeenCalled();
   });
 
+  // Belt to the verbatim injection: no wake text names the skill as a callable reference (`$env:skill` or a bare
+  // `env:skill`), so even a path that routed it could not start the skill again.
+  it('no wake text carries a callable skill reference', async () => {
+    h.isAllowed.mockReturnValue(true);
+    await host(request());
+    finishRun('900.1');
+    await flush();
+    await flush();
+    h.isAllowed.mockReturnValue(false);
+    await host(request({ text: 'another range' }));
+    await host(request({ skill: '$acme-dev2:nope' }));
+    expect(wake.mock.calls.length).toBeGreaterThanOrEqual(3);
+    for (const [w] of wake.mock.calls) {
+      expect(w.text).not.toMatch(/\$[\w.-]+:[a-z0-9]/);
+      expect(w.text).not.toMatch(/(?:^|\s)[\w.-]+:[a-z0-9][a-z0-9-]*(?=\s|$|[.,!?)])/);
+    }
+  });
+
   it('a wake the session cannot take (gone, asleep) is dropped without an error', async () => {
     h.isAllowed.mockReturnValue(true);
     wake.mockReturnValue(false);
@@ -525,5 +544,17 @@ describe('entry point wiring (#1304)', () => {
     // The session is captured at request time (in the host) and the delivery is bound to it.
     expect(index).toMatch(/captureSession: \(sessionKey\) =>\s*captureSessionIdentity\(/);
     expect(index).toMatch(/envSkillDelivery\.deliver\(sessionKey, text, undefined, current, user\)/);
+  });
+
+  // Live on the customer dev host (2026-11-16 06:46Z): the wake reached the requesting session, the command router
+  // read the `$<env>:<skill>` in it as a skill call and ran the environment skill a second time — the model never got
+  // the result. A host turn's own text is never a command: the wake goes in verbatim (no command routing).
+  it('the wake is injected verbatim, so the command router never reads it as a skill call', async () => {
+    const realFs = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const path = await vi.importActual<typeof import('node:path')>('node:path');
+    const index = realFs.readFileSync(path.join(__dirname, '..', '..', 'index.ts'), 'utf-8');
+    const block = index.slice(index.indexOf('const envSkillDelivery = createSettledDelivery('));
+    const inject = block.slice(0, block.indexOf('logger,'));
+    expect(inject).toMatch(/routeContext: \{[^}]*verbatimPrompt: true[^}]*hostTurn: true[^}]*\}/);
   });
 });

@@ -2192,7 +2192,10 @@ async function start() {
           text,
           synthetic: true,
           skipDispatch: true,
-          routeContext: { skipAutoBotThread: true },
+          // The host's own text, never a command: verbatim skips command routing, so a skill named in the wake is
+          // not called again (live 2026-11-16 — the router ran the environment skill a second time). A host turn,
+          // never the user's answer.
+          routeContext: { skipAutoBotThread: true, verbatimPrompt: true, hostTurn: true },
         });
       },
       logger,
