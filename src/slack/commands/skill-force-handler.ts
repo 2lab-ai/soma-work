@@ -197,11 +197,6 @@ interface SkillRef {
   ownerUserId?: string;
 }
 
-/** How a ref reads in a message: `$plugin:skill`, or `$<owner>:skill` for another user's skill. */
-function refLabel(ref: SkillRef): string {
-  return `$${ref.ownerUserId ?? ref.plugin}:${ref.skill}`;
-}
-
 /** A cross-user (owner, skill) the requester is not (yet) permitted to access. */
 interface DeniedRef {
   ownerUserId: string;
@@ -350,14 +345,15 @@ export class SkillForceHandler implements CommandHandler {
     }
     const ref = refs[0];
     if (!ref) return { ok: false, reason: 'no skill reference resolves in the message' };
+    const label = `$${ref.ownerUserId ?? ref.plugin}:${ref.skill}`;
     const owner = ref.ownerUserId;
     if (!owner || !isEnvironmentUser(owner)) {
-      return { ok: false, reason: `\`${refLabel(ref)}\` is not an environment user's skill` };
+      return { ok: false, reason: `\`${label}\` is not an environment user's skill` };
     }
     if (owner === user) {
       return {
         ok: false,
-        reason: `this session already runs as ${owner} — invoke \`${refLabel(ref)}\` directly instead of handing it off`,
+        reason: `this session already runs as ${owner} — invoke \`${label}\` directly instead of handing it off`,
       };
     }
     let exists = false;

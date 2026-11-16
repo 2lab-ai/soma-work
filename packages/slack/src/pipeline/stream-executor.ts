@@ -6691,14 +6691,17 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // #1304: RUN_ENV_SKILL host-apply — the MCP layer only checked the shape and answered `submitted`. The host
       // hands the request to the typed `$<env>:<skill>` path (the provider: SkillForceHandler in src) as the TURN's
       // user, in this thread — never wider than what that user could type. Fail closed without a turn user, and
-      // never on a wire-level error (the model was told the call failed and may send it again). Nothing is posted
-      // from here: the typed path posts what it posts, a rejection posts nothing, and the model hears the outcome
-      // in a host turn — this records it in the work log.
+      // never on a wire-level error (the model was told the call failed and may send it again). Normally nothing is
+      // posted from here: the typed path posts what it posts, a rejection posts nothing, and the model hears the
+      // outcome in a host turn — this records it in the work log. Only a provider that threw is posted.
       if (parsed.commandId === 'RUN_ENV_SKILL') {
         const payload = parsed.payload as { skill?: unknown; text?: unknown };
         const skill = typeof payload?.skill === 'string' ? payload.skill : '';
         const text = typeof payload?.text === 'string' ? payload.text : '';
         let outcome: { status: string; owner?: string; reason?: string };
+        // The provider tells the model every outcome itself (a host turn). One that threw could not — the model was
+        // told `submitted` and waits for that turn — so this failure goes to the thread at every verbosity.
+        let providerThrew = false;
         if (toolResult.isError === true) {
           outcome = { status: 'rejected', reason: 'the tool call itself failed (wire-level error) — not handed off' };
         } else if (!context.turnUser) {
@@ -6715,6 +6718,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               sessionKey: context.sessionKey,
             });
           } catch (err) {
+            providerThrew = true;
             outcome = { status: 'rejected', reason: (err as Error)?.message ?? String(err) };
           }
         }
@@ -6735,7 +6739,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           },
           session,
           context,
-          { logOnly: true },
+          { logOnly: !providerThrew, alwaysPost: providerThrew },
         );
         continue;
       }

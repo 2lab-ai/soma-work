@@ -311,6 +311,7 @@ const RUN_ENV_SKILL_HELP: CommandHelp = {
   commandId: 'RUN_ENV_SKILL',
   summary:
     "Hand a task to an environment user's skill, as if the turn's user had typed `<skill> <text>` in this thread. " +
+    "Only for an admin's turn — for anyone else the host refuses; ask that user to type it themselves. " +
     'skill: exactly one environment skill ref, `$<env>:<skill>` (the environment name without `env:`). ' +
     'text: optional instructions/arguments for that skill — no other `$skill` refs in it. ' +
     'The call answers `submitted`; the host decides after it and tells you in a host turn: rejected (why), waiting ' +

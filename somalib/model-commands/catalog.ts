@@ -747,14 +747,17 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
     );
   }
 
-  // #1304: RUN_ENV_SKILL — the host acts as the turn's user, in the turn's thread: offered only when there is one.
-  if (context.user && context.channel) {
+  // #1304: RUN_ENV_SKILL — the host acts as the turn's user, in the turn's thread, and tells the outcome there: offered
+  // only on a turn that has both.
+  if (context.user && context.channel && context.threadTs) {
     commands.push({
       id: 'RUN_ENV_SKILL',
       description:
         "Hand a task to an environment user's skill (`$<env>:<skill>`, e.g. `$acme-dev2:qa-dev2`) exactly as if " +
         'the user of this turn had typed `$<env>:<skill> <text>` in this thread: it runs as the environment user ' +
         "(an admin without a sandbox, with that environment's own credentials) in a new thread of this channel. " +
+        "Only for an admin's turn: for anyone else the host refuses — ask that user to type it themselves (a " +
+        "non-admin's session is sandboxed and the environment user is not, so only a person's request crosses). " +
         'Same rules as typing: without a grant the request goes to the admins as a card and runs only once one ' +
         "approves. Only an environment user's existing skill; one per call; no other `$skill` refs in text. " +
         'The call answers `submitted`; the host decides after it and tells you in a host turn (`[env-skill]`, ' +
@@ -1402,6 +1405,13 @@ export function runModelCommand(
   if (request.commandId === 'RUN_ENV_SKILL') {
     if (!context.user) {
       return toRunError('RUN_ENV_SKILL', { code: 'CONTEXT_ERROR', message: 'No user context available' });
+    }
+    // The host hands off in this thread and tells the outcome there: without one it could do neither.
+    if (!context.channel || !context.threadTs) {
+      return toRunError('RUN_ENV_SKILL', {
+        code: 'CONTEXT_ERROR',
+        message: 'RUN_ENV_SKILL needs a Slack thread for this turn — none here',
+      });
     }
     const { skill, text } = request.params;
     return {

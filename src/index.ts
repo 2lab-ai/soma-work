@@ -198,7 +198,7 @@ import {
   installRespondTranslation,
   installSlackDisplayTranslation,
 } from './slack/display-translate';
-import { createEnvSkillHandoffHost, envSkillWakeState } from './slack/env-skill-handoff-host';
+import { captureSessionIdentity, createEnvSkillHandoffHost, envSkillWakeState } from './slack/env-skill-handoff-host';
 import {
   answerGoalCapDecision,
   flushGoalCapDmSync,
@@ -2187,17 +2187,12 @@ async function start() {
           mcpManager,
         }),
         slackApi: slackHandler.getSlackApi(),
-        wake: ({ sessionKey, user, text }) => {
-          // The same session it was asked in: a thread whose session was closed and opened again is not woken.
-          const asked = envWakeRegistry.getSessionByKey(sessionKey);
-          return envSkillDelivery.deliver(
-            sessionKey,
-            text,
-            undefined,
-            () => !!asked && envWakeRegistry.getSessionByKey(sessionKey) === asked,
-            user,
-          );
-        },
+        // The session that asked, captured when the request came in (not when the run ends): a session closed and
+        // opened again meanwhile is not woken, and a delivery still waiting drops the message then.
+        captureSession: (sessionKey) =>
+          captureSessionIdentity((key) => envWakeRegistry.getSessionByKey(key), sessionKey),
+        wake: ({ sessionKey, user, text, current }) =>
+          envSkillDelivery.deliver(sessionKey, text, undefined, current, user),
       }),
     });
 
