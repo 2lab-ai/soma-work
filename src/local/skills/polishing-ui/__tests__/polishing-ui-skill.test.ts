@@ -1,23 +1,16 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 
 const SKILL_ROOT = resolve(__dirname, '..');
 const read = (rel: string): string => readFileSync(resolve(SKILL_ROOT, rel), 'utf8');
 
+/** The front matter as a YAML loader reads it: an unquoted `: ` in a value fails here, as it fails the skill loader. */
 function frontmatter(md: string): Record<string, string> {
   const match = md.match(/^---\n([\s\S]*?)\n---/);
-  const out: Record<string, string> = {};
-  if (!match) return out;
-  for (const line of match[1].split('\n')) {
-    const colon = line.indexOf(':');
-    if (colon === -1) continue;
-    out[line.slice(0, colon).trim()] = line
-      .slice(colon + 1)
-      .trim()
-      .replace(/^"(.*)"$/, '$1');
-  }
-  return out;
+  if (!match) return {};
+  return parse(match[1]) as Record<string, string>;
 }
 
 /** The value of `key: <number>` inside the named preset block of audit.mjs's THRESHOLDS. */

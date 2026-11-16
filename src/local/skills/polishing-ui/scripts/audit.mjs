@@ -281,7 +281,10 @@ function measure(cfg) {
     const fg = parseColor(s.color);
     const bg = backdrop(el);
     if (fg && bg && !el.closest('[disabled],[aria-disabled="true"]')) {
-      const r = ratio(over({ ...fg, a: fg.a * (px(s.opacity) || 1) }, bg), bg);
+      // Opacity is not inherited but composes per group: a faded wrapper fades its text too. Multiply up the tree.
+      let fade = 1;
+      for (let e = el; e; e = e.parentElement || host(e)) fade *= parseFloat(style(e).opacity);
+      const r = ratio(over({ ...fg, a: fg.a * fade }, bg), bg);
       const large = size >= 24 || (size >= 18.66 && Number(s.fontWeight) >= 700);
       const need = large ? T.contrastLarge : T.contrastText;
       if (r < need) results.contrast.push({ level: 'red', el: label(el), ratio: round(r), need, text: snippet(el) });
@@ -397,6 +400,25 @@ function measure(cfg) {
   }
 
   // 8. Accessible names: empty, or carrying a timestamp that belongs in the description.
+  // Name from content: text, image alt, svg <title> and descendants' aria-label, skipping what the accessibility tree
+  // leaves out (aria-hidden, hidden, display: none, <style>/<script>).
+  const fromContent = (node) => {
+    let out = '';
+    for (const n of node.childNodes) {
+      if (n.nodeType === 3) {
+        out += n.data;
+        continue;
+      }
+      if (n.nodeType !== 1) continue;
+      if (n.matches('style,script,template,[hidden],[aria-hidden="true"]') || getComputedStyle(n).display === 'none') continue;
+      const label = n.getAttribute('aria-label');
+      if (label && label.trim()) out += ` ${label.trim()} `;
+      else if (n.localName === 'img') out += ` ${n.getAttribute('alt') || ''} `;
+      else if (n.localName === 'svg') out += ` ${n.querySelector('title')?.textContent || ''} `;
+      else out += ` ${fromContent(n)} `;
+    }
+    return out;
+  };
   const nameOf = (el) => {
     const by = el.getAttribute('aria-labelledby');
     if (by) {
@@ -406,18 +428,21 @@ function measure(cfg) {
     }
     const al = el.getAttribute('aria-label');
     if (al && al.trim()) return al.trim();
-    if (el.matches('input[type=submit],input[type=button],input[type=reset]')) return (el.value || el.getAttribute('title') || '').trim();
+    // Button-like inputs are named by their value; submit and reset have a default word when it is empty.
+    if (el.matches('input[type=submit],input[type=button],input[type=reset]')) {
+      const v = (el.getAttribute('value') ?? '').trim();
+      if (v) return v;
+      if (el.type === 'submit') return 'Submit';
+      if (el.type === 'reset') return 'Reset';
+      return (el.getAttribute('title') || '').trim();
+    }
     if (el.matches('input[type=image]')) return (el.getAttribute('alt') || el.getAttribute('title') || '').trim();
     if (el.matches('input,select,textarea')) {
       if (el.labels && el.labels.length) return [...el.labels].map((l) => l.textContent).join(' ').trim();
       return (el.getAttribute('placeholder') || el.getAttribute('title') || '').trim();
     }
-    const text = (el.innerText || el.textContent || '').trim();
+    const text = fromContent(el).replace(/\s+/g, ' ').trim();
     if (text) return text;
-    const img = el.querySelector('img[alt]');
-    if (img && img.alt.trim()) return img.alt.trim();
-    const svgTitle = el.querySelector('svg title');
-    if (svgTitle && svgTitle.textContent.trim()) return svgTitle.textContent.trim();
     if (el.shadowRoot) {
       // Rendered text only: a <style> or <script> in the shadow root is not part of the name.
       const tw = document.createTreeWalker(el.shadowRoot, NodeFilter.SHOW_TEXT, {
@@ -442,7 +467,6 @@ function measure(cfg) {
 
   // 9. One row, one control height: controls side by side in a flex row should share a height and a shape.
   const CONTROL = 'button,select,input:not([type=checkbox]):not([type=radio]):not([type=hidden]),a.ui-chip,a.ui-btn,[role=button],[role=tab],ui-segmented,ui-model-picker';
-  const seenRows = new Set();
   for (const el of all) {
     if (!visible(el)) continue;
     const s = style(el);
@@ -462,8 +486,7 @@ function measure(cfg) {
     if (line.length < 2) continue;
     const hs = line.map((k) => round(k.getBoundingClientRect().height));
     const spread = Math.max(...hs) - Math.min(...hs);
-    if (spread > 4 && !seenRows.has(el)) {
-      seenRows.add(el);
+    if (spread > 4) {
       results.rowHeight.push({ level: 'amber', el: label(el), heights: [...new Set(hs)].sort((a, b) => a - b).join(' / '), controls: line.length });
     }
   }
@@ -512,6 +535,8 @@ async function main() {
         hasTouch: p.hasTouch,
         deviceScaleFactor: p.deviceScaleFactor,
         colorScheme: args.theme === 'dark' ? 'dark' : args.theme === 'light' ? 'light' : undefined,
+        // The phone preset is a phone to the server too (a site may pick its phone layout from the user agent).
+        userAgent: p.isMobile ? pw.devices?.['iPhone 13']?.userAgent : undefined,
       });
       const u = new URL(args.url);
       if (args.cookies.length) {
@@ -527,13 +552,19 @@ async function main() {
           const i = s.indexOf('=');
           return [s.slice(0, i), s.slice(i + 1)];
         });
-        await ctx.addInitScript((kv) => {
-          for (const [k, v] of kv) {
-            try {
-              localStorage.setItem(k, v);
-            } catch {}
-          }
-        }, pairs);
+        // The init script runs in every frame and after every navigation: seed only the audited origin, so a value
+        // such as a session token never lands in an embedded or redirected-to site's storage.
+        await ctx.addInitScript(
+          ({ origin, kv }) => {
+            if (location.origin !== origin) return;
+            for (const [k, v] of kv) {
+              try {
+                localStorage.setItem(k, v);
+              } catch {}
+            }
+          },
+          { origin: u.origin, kv: pairs },
+        );
       }
       const page = await ctx.newPage();
       // A page that did not load must fail the run, never pass as an empty page with no findings.
