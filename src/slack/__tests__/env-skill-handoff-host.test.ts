@@ -1,7 +1,12 @@
 import * as fs from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SkillForceHandler } from '../commands/skill-force-handler';
-import { createEnvSkillHandoffHost, envSkillWakeState } from '../env-skill-handoff-host';
+import {
+  captureSessionIdentity,
+  createEnvSkillHandoffHost,
+  envSkillWakeState,
+  MAX_UNPRODUCTIVE_WAKES,
+} from '../env-skill-handoff-host';
 
 vi.mock('node:fs');
 
@@ -65,14 +70,22 @@ describe('env-skill hand-off host (#1304)', () => {
     postMessage: vi.fn(async (_channel: string, _text: string, _opts?: unknown) => ({ ts: '5' })),
     getPermalink: vi.fn(async () => 'https://slack.example/p900'),
   };
-  const wake = vi.fn((_w: { sessionKey: string; user: string; text: string }) => true);
+  const wake = vi.fn((_w: { sessionKey: string; user: string; text: string; current: () => boolean }) => true);
+  /** The requesting session as it was when the request came in: false once it was closed (or closed and reopened). */
+  let sessionAlive = true;
+  const order: string[] = [];
+  const captureSession = vi.fn((_key: string) => {
+    order.push('capture');
+    return () => sessionAlive;
+  });
+  let handler: SkillForceHandler;
   let host: ReturnType<typeof createEnvSkillHandoffHost>;
 
   const request = (over: Partial<Parameters<typeof host>[0]> = {}) => ({
     toolUseId: `tu-${Math.random()}`,
     skill: '$acme-dev2:qa-dev2',
     text: 'QA 1.4.0..1.4.2',
-    user: 'U1',
+    user: 'UADMIN',
     channel: 'C1',
     threadTs: '171.1',
     sessionKey: 'C1-171.1',
@@ -88,23 +101,43 @@ describe('env-skill hand-off host (#1304)', () => {
     h.hasOneTime.mockReturnValue(false);
     h.createReq.mockImplementation((i: any) => ({ requestId: 'req-1', ...i }));
     vi.mocked(fs.existsSync).mockImplementation((p) =>
-      [ENV_SKILL, '/mock/data/U094/skills/deploy/SKILL.md', '/mock/plugins/stv'].includes(String(p)),
+      [
+        ENV_SKILL,
+        '/mock/data/U094/skills/deploy/SKILL.md',
+        '/mock/data/UADMIN/skills/deploy/SKILL.md',
+        '/mock/plugins/stv',
+      ].includes(String(p)),
     );
     vi.mocked(fs.readFileSync).mockImplementation((p) => {
       throw new Error(`no read expected: ${String(p)}`);
     });
-    const handler = new SkillForceHandler(resolveUser, { slackApi: slackApi as any, runAsUser });
-    host = createEnvSkillHandoffHost({ handler, slackApi, wake });
+    sessionAlive = true;
+    order.length = 0;
+    wake.mockImplementation(() => true);
+    runAsUser.mockImplementation(
+      (input: { onOpened?: (ts: string) => void }) =>
+        new Promise<string | undefined>((resolve) => {
+          order.push('run');
+          input.onOpened?.('900.1');
+          finishRun = resolve;
+        }),
+    );
+    handler = new SkillForceHandler(resolveUser, { slackApi: slackApi as any, runAsUser });
+    host = createEnvSkillHandoffHost({ handler, slackApi, wake, captureSession });
   });
 
-  it('a granted requester: runs as the environment user, ▶/⏹ in the thread, and the session wakes when the run ends', async () => {
+  it('an admin with a grant: runs as the environment user, ▶/⏹ in the thread, and the session wakes when the run ends', async () => {
     h.isAllowed.mockReturnValue(true);
     const outcome = await host(request());
 
     expect(outcome).toEqual({ status: 'started', owner: 'env:acme-dev2' });
     // The typed path, as the turn's user: the environment session gets the skill call and the request quoted.
     expect(runAsUser).toHaveBeenCalledWith(
-      expect.objectContaining({ owner: 'env:acme-dev2', channel: 'C1', rootText: expect.stringContaining('<@U1>') }),
+      expect.objectContaining({
+        owner: 'env:acme-dev2',
+        channel: 'C1',
+        rootText: expect.stringContaining('<@UADMIN>'),
+      }),
     );
     const sent = (runAsUser.mock.calls[0]?.[0] as unknown as { text: string }).text;
     expect(sent.split('\n')[0]).toBe('$acme-dev2:qa-dev2');
@@ -120,22 +153,23 @@ describe('env-skill hand-off host (#1304)', () => {
     expect(threadPosts().some((t) => t.startsWith('⏹'))).toBe(true);
     expect(wake).toHaveBeenCalledTimes(1);
     const w = wake.mock.calls[0][0];
-    expect(w).toMatchObject({ sessionKey: 'C1-171.1', user: 'U1' });
+    expect(w).toMatchObject({ sessionKey: 'C1-171.1', user: 'UADMIN' });
     expect(w.text).toContain('[env-skill]');
     expect(w.text).toContain('env:acme-dev2');
     expect(w.text).toContain('https://slack.example/p900');
     expect(w.text).toMatch(/not the user/i);
   });
 
-  it('a requester without a grant gets the admin card and no run — exactly what typing gets', async () => {
+  it('an admin without a grant gets the admin card and no run — exactly what typing gets, no wider', async () => {
     const outcome = await host(request());
 
     expect(outcome).toEqual({ status: 'awaiting_admin', owner: 'env:acme-dev2' });
     expect(runAsUser).not.toHaveBeenCalled();
+    expect(h.isAllowed).toHaveBeenCalledWith('env:acme-dev2', 'qa-dev2', 'UADMIN', expect.anything());
     expect(h.createReq).toHaveBeenCalledWith(
       expect.objectContaining({
         operation: 'invoke',
-        requesterId: 'U1',
+        requesterId: 'UADMIN',
         ownerId: 'env:acme-dev2',
         skillName: 'qa-dev2',
         channel: 'C1',
@@ -150,22 +184,37 @@ describe('env-skill hand-off host (#1304)', () => {
     expect(wake.mock.calls[0][0].text).toMatch(/admin/i);
   });
 
-  it('an admin without a grant also gets the card — the model command is no wider than typing', async () => {
-    const outcome = await host(request({ user: 'UADMIN' }));
-    expect(outcome.status).toBe('awaiting_admin');
+  // A non-admin's session is sandboxed; the environment user is an admin with no sandbox. Only a person's typed
+  // request may cross that line — a model in a non-admin session (a prompt injection, say) must not, grant or not.
+  it.each([
+    ['with a lasting grant', true],
+    ['without a grant', false],
+  ])('a non-admin requester %s is refused: nothing posted, carded or run — the model is told to ask the user to type it', async (_label, granted) => {
+    h.isAllowed.mockReturnValue(granted);
+    const outcome = await host(request({ user: 'U1' }));
+
+    expect(outcome.status).toBe('rejected');
+    expect(outcome.reason).toMatch(/only for an admin/i);
+    expect(outcome.reason).toContain('$acme-dev2:qa-dev2');
+    expect(slackApi.postMessage).not.toHaveBeenCalled();
+    expect(slackApi.openDmChannel).not.toHaveBeenCalled();
+    expect(h.createReq).not.toHaveBeenCalled();
     expect(runAsUser).not.toHaveBeenCalled();
-    expect(h.isAllowed).toHaveBeenCalledWith('env:acme-dev2', 'qa-dev2', 'UADMIN', expect.anything());
+    expect(h.consumeOneTime).not.toHaveBeenCalled();
+    expect(wake).toHaveBeenCalledTimes(1);
+    expect(wake.mock.calls[0][0]).toMatchObject({ user: 'U1' });
+    expect(wake.mock.calls[0][0].text).toContain(outcome.reason as string);
   });
 
   it.each([
-    ['your own skill', { skill: '$user:deploy', user: 'U094' }],
+    ['your own skill', { skill: '$user:deploy' }],
     ["another person's skill", { skill: '$Zhuge:deploy' }],
     ['a plugin skill', { skill: '$stv:new-task' }],
     ['a missing environment skill', { skill: '$acme-dev2:nope' }],
     ['text naming another skill', { text: 'then run $Zhuge:deploy' }],
     ['a session with no Slack thread', { channel: '', threadTs: '' }],
     ['a turn with no user', { user: '' }],
-  ])('rejects %s: nothing posted, asked or run — the reason comes back as a host turn', async (_label, over) => {
+  ])("rejects an admin's request for %s: nothing posted, asked or run — the reason comes back as a host turn", async (_label, over) => {
     h.isAllowed.mockReturnValue(true);
     const outcome = await host(request(over));
 
@@ -193,6 +242,43 @@ describe('env-skill hand-off host (#1304)', () => {
     expect(runAsUser).toHaveBeenCalledTimes(1);
   });
 
+  it('a run still going is never forgotten: a late duplicate of its tool result does not start a second run', async () => {
+    h.isAllowed.mockReturnValue(true);
+    const long = request({ toolUseId: 'tu-long' });
+    await host(long);
+    // Many other tool results later (more than the cache keeps) — all settled at once.
+    for (let i = 0; i < 260; i++) await host(request({ skill: '$acme-dev2:nope' }));
+    await host(long);
+    expect(runAsUser).toHaveBeenCalledTimes(1);
+  });
+
+  it('the session is captured when the request comes in, before anything runs', async () => {
+    h.isAllowed.mockReturnValue(true);
+    await host(request());
+    expect(captureSession).toHaveBeenCalledWith('C1-171.1');
+    expect(order).toEqual(['capture', 'run']);
+  });
+
+  it('a session closed (and reopened) while the run went on is not woken with the old result', async () => {
+    h.isAllowed.mockReturnValue(true);
+    await host(request());
+    sessionAlive = false;
+    finishRun('900.1');
+    await flush();
+    await flush();
+    expect(threadPosts().some((t) => t.startsWith('⏹'))).toBe(true);
+    expect(wake).not.toHaveBeenCalled();
+  });
+
+  it('every wake carries the captured session, so a delivery that waits drops it once the session is replaced', async () => {
+    await host(request());
+    expect(wake).toHaveBeenCalledTimes(1);
+    const { current } = wake.mock.calls[0][0];
+    expect(current()).toBe(true);
+    sessionAlive = false;
+    expect(current()).toBe(false);
+  });
+
   it('a run that fails wakes the session with why it did not run', async () => {
     h.isAllowed.mockReturnValue(true);
     runAsUser.mockImplementationOnce(async () => {
@@ -206,15 +292,45 @@ describe('env-skill hand-off host (#1304)', () => {
     expect(wake.mock.calls[0][0].text).toContain('scheduler off');
   });
 
-  it('a model that keeps sending rejected requests stops getting host turns for them', async () => {
-    for (let i = 0; i < 5; i++) await host(request({ skill: '$acme-dev2:nope' }));
-    expect(wake.mock.calls.length).toBeLessThan(5);
-    expect(wake.mock.calls.length).toBeGreaterThan(0);
-    // An accepted request starts the count again.
+  it('a host error anywhere becomes a rejection the model is told about — a submitted request never goes silent', async () => {
+    vi.spyOn(handler, 'checkEnvironmentHandoff').mockImplementation(() => {
+      throw new Error('resolver broke');
+    });
+    const outcome = await host(request());
+    expect(outcome.status).toBe('rejected');
+    expect(outcome.reason).toContain('resolver broke');
+    expect(wake).toHaveBeenCalledTimes(1);
+    expect(wake.mock.calls[0][0].text).toContain('resolver broke');
+  });
+
+  it('rejected requests in a row wake the session only up to the cap; a started run resets it', async () => {
+    for (let i = 0; i < MAX_UNPRODUCTIVE_WAKES + 2; i++) await host(request({ skill: '$acme-dev2:nope' }));
+    expect(wake).toHaveBeenCalledTimes(MAX_UNPRODUCTIVE_WAKES);
+
+    // A run that starts (and ends) is progress: the count starts again.
     wake.mockClear();
+    h.isAllowed.mockReturnValue(true);
     await host(request());
+    finishRun('900.1');
+    await flush();
+    await flush();
     await host(request({ skill: '$acme-dev2:nope' }));
-    expect(wake.mock.calls[wake.mock.calls.length - 1]?.[0].text).toContain('[env-skill]');
+    expect(wake).toHaveBeenCalledTimes(2);
+    expect(wake.mock.calls[0][0].text).toContain('https://slack.example/p900');
+    expect(wake.mock.calls[1][0].text).toMatch(/\$acme-dev2:nope was rejected/);
+  });
+
+  it('waiting for an admin is not progress: it does not reset the count, and the same pending request wakes once', async () => {
+    // The same ungranted request three times: one wake.
+    for (let i = 0; i < 3; i++) await host(request());
+    expect(wake).toHaveBeenCalledTimes(1);
+    expect(wake.mock.calls[0][0].text).toMatch(/admin/i);
+    // Rejections after it still count against the same budget — the wait did not reset it.
+    for (let i = 0; i < MAX_UNPRODUCTIVE_WAKES + 2; i++) await host(request({ skill: '$acme-dev2:nope' }));
+    expect(wake).toHaveBeenCalledTimes(MAX_UNPRODUCTIVE_WAKES);
+    // Nor does a new pending request get past the budget.
+    await host(request({ text: 'another range' }));
+    expect(wake).toHaveBeenCalledTimes(MAX_UNPRODUCTIVE_WAKES);
   });
 
   it('a wake the session cannot take (gone, asleep) is dropped without an error', async () => {
@@ -225,6 +341,24 @@ describe('env-skill hand-off host (#1304)', () => {
     await flush();
     await flush();
     expect(wake).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('captureSessionIdentity (#1304)', () => {
+  it('is true only while the same, unclosed session object holds the key', () => {
+    const a = { terminated: false };
+    const registry = new Map<string, { terminated?: boolean }>([['k', a]]);
+    const same = captureSessionIdentity((key) => registry.get(key), 'k');
+    expect(same()).toBe(true);
+    // Closed and reopened at the same key: a different session.
+    registry.set('k', { terminated: false });
+    expect(same()).toBe(false);
+    registry.set('k', a);
+    a.terminated = true;
+    expect(same()).toBe(false);
+    registry.delete('k');
+    expect(same()).toBe(false);
+    expect(captureSessionIdentity((key) => registry.get(key), 'missing')()).toBe(false);
   });
 });
 
@@ -252,5 +386,8 @@ describe('entry point wiring (#1304)', () => {
     expect(index).toContain('envSkillWakeState(');
     // The host turn is injected as the user it was told for (the requester), synthetic — never the user's answer.
     expect(index).toMatch(/envSkillDelivery = createSettledDelivery\(\{[\s\S]*?user: as \?\? [\s\S]*?synthetic: true/);
+    // The session is captured at request time (in the host) and the delivery is bound to it.
+    expect(index).toMatch(/captureSession: \(sessionKey\) =>\s*captureSessionIdentity\(/);
+    expect(index).toMatch(/envSkillDelivery\.deliver\(sessionKey, text, undefined, current, user\)/);
   });
 });

@@ -626,6 +626,9 @@ describe('RUN_ENV_SKILL — MCP server wire-up (#1304)', () => {
     expect(buildModelCommandListResponse({ session: baseSession }).commands.map((c) => c.id)).not.toContain(
       'RUN_ENV_SKILL',
     );
+    expect(
+      buildModelCommandListResponse({ session: baseSession, user: 'U123', channel: 'C1' }).commands.map((c) => c.id),
+    ).not.toContain('RUN_ENV_SKILL');
   });
 
   it('run validates and echoes the request as submitted', () => {
@@ -640,6 +643,16 @@ describe('RUN_ENV_SKILL — MCP server wire-up (#1304)', () => {
       skill: '$acme-dev2:qa-dev2',
       request: '$acme-dev2:qa-dev2 QA 1.4.0..1.4.2',
     });
+  });
+
+  it('a turn without a thread is answered CONTEXT_ERROR, never submitted', () => {
+    const result = buildModelCommandRunResponse(
+      { commandId: 'RUN_ENV_SKILL', params: { skill: '$acme-dev2:qa-dev2' } },
+      { session: baseSession, user: 'U123', channel: 'C1' },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('CONTEXT_ERROR');
   });
 
   it('a malformed ref fails at once with INVALID_ARGS + help — nothing reaches the host', () => {

@@ -14,26 +14,8 @@ import { StreamExecutor, setStreamExecutorProviders } from '../stream-executor';
 const handOffEnvironmentSkill = vi.fn(async (_req: any) => ({ status: 'started' as const, owner: 'env:acme-dev2' }));
 const appendWorkLog = vi.fn();
 
-/** The model-command result as the MCP server returns it: `{ content: [{ type: 'text', text: <json> }] }`. */
-function parseRun(raw: unknown): any {
-  const texts: string[] = [];
-  const visit = (v: any): void => {
-    if (typeof v === 'string') texts.push(v);
-    else if (Array.isArray(v)) v.forEach(visit);
-    else if (v && typeof v === 'object') {
-      if (typeof v.text === 'string') texts.push(v.text);
-      if (Array.isArray(v.content)) v.content.forEach(visit);
-    }
-  };
-  visit(raw);
-  for (const t of texts) {
-    try {
-      const parsed = JSON.parse(t);
-      if (parsed?.type === 'model_command_result') return parsed;
-    } catch {}
-  }
-  return null;
-}
+/** Every fixture here carries one model-command result JSON block (a content array or its text item). */
+const parseRun = (raw: any) => JSON.parse(typeof raw === 'string' ? raw : (raw.text ?? (raw.content ?? raw)[0].text));
 
 setStreamExecutorProviders({
   parseModelCommandRunResponse: parseRun,
@@ -200,11 +182,7 @@ function stream(...events: any[]) {
 
 const RUN_TOOL = 'mcp__model-command__run';
 
-function runEnvSkillResult(
-  id: string,
-  payload: Record<string, unknown> = {},
-  extra: Record<string, unknown> = {},
-): any {
+function runEnvSkillResult(id: string): any {
   return {
     type: 'tool_result',
     toolCallId: id,
@@ -221,18 +199,20 @@ function runEnvSkillResult(
             text: 'QA 1.4.0..1.4.2',
             request: '$acme-dev2:qa-dev2 QA 1.4.0..1.4.2',
             next: '…',
-            ...payload,
           },
         }),
       },
     ],
-    ...extra,
   };
 }
 
-function runToolResult(toolUseId: string, payload: Record<string, unknown> = {}, isError?: boolean): any {
-  const r = runEnvSkillResult(toolUseId, payload);
-  return { toolUseId, toolName: RUN_TOOL, result: r.content, ...(isError !== undefined ? { isError } : {}) };
+function runToolResult(toolUseId: string, isError?: boolean): any {
+  return {
+    toolUseId,
+    toolName: RUN_TOOL,
+    result: runEnvSkillResult(toolUseId).content,
+    ...(isError !== undefined ? { isError } : {}),
+  };
 }
 
 function directContext(over: Record<string, unknown> = {}): any {
@@ -308,12 +288,12 @@ describe('StreamExecutor — RUN_ENV_SKILL host-apply (#1304)', () => {
     const executor = new StreamExecutor(createDeps(stream()));
     const context = directContext();
 
-    await (executor as any).handleModelCommandToolResults([runToolResult('tu-3', {}, true)], createSession(), context);
+    await (executor as any).handleModelCommandToolResults([runToolResult('tu-3', true)], createSession(), context);
 
     expect(handOffEnvironmentSkill).not.toHaveBeenCalled();
   });
 
-  it('a provider that throws does not break the tool batch', async () => {
+  it('a provider that throws does not break the tool batch, and the failure is posted — never silent', async () => {
     handOffEnvironmentSkill.mockRejectedValueOnce(new Error('boom'));
     const executor = new StreamExecutor(createDeps(stream()));
     const context = directContext();
@@ -322,6 +302,10 @@ describe('StreamExecutor — RUN_ENV_SKILL host-apply (#1304)', () => {
       (executor as any).handleModelCommandToolResults([runToolResult('tu-4')], createSession(), context),
     ).resolves.toMatchObject({ hasPendingChoice: false });
     expect(JSON.stringify(context.workLog.mock.calls)).toContain('boom');
+    // The model was told `submitted` and promised a host turn the host can no longer send: the thread hears it.
+    const posted = context.say.mock.calls.map((c: any[]) => c[0]?.text ?? '').join('\n');
+    expect(posted).toContain('RUN_ENV_SKILL');
+    expect(posted).toContain('boom');
   });
 
   it('a failed (ok:false) RUN_ENV_SKILL never reaches the provider', async () => {
@@ -335,9 +319,9 @@ describe('StreamExecutor — RUN_ENV_SKILL host-apply (#1304)', () => {
           type: 'text',
           text: JSON.stringify({
             type: 'model_command_result',
-            commandId: 'UNKNOWN',
+            commandId: 'RUN_ENV_SKILL',
             ok: false,
-            error: { code: 'INVALID_ARGS', message: 'bad ref' },
+            error: { code: 'CONTEXT_ERROR', message: 'No Slack thread for this turn' },
           }),
         },
       ],

@@ -91,6 +91,7 @@ describe('RUN_ENV_SKILL — catalog descriptor', () => {
     expect(listModelCommands(makeContext()).map((c) => c.id)).toContain('RUN_ENV_SKILL');
     expect(listModelCommands(makeContext({ user: undefined })).map((c) => c.id)).not.toContain('RUN_ENV_SKILL');
     expect(listModelCommands(makeContext({ channel: undefined })).map((c) => c.id)).not.toContain('RUN_ENV_SKILL');
+    expect(listModelCommands(makeContext({ threadTs: undefined })).map((c) => c.id)).not.toContain('RUN_ENV_SKILL');
   });
 
   it('says what it does, who it runs as, the admin gate, and how the outcome comes back', () => {
@@ -100,6 +101,8 @@ describe('RUN_ENV_SKILL — catalog descriptor', () => {
     expect(description).toContain('$acme-dev2:qa-dev2');
     expect(description).toMatch(/typed/i);
     expect(description).toMatch(/admin/i);
+    // Only an admin's turn hands off: a model in a non-admin (sandboxed) session must not reach an unsandboxed run.
+    expect(description).toMatch(/only for an admin/i);
     expect(description).toMatch(/host turn/i);
     const schema = descriptor?.paramsSchema as { required?: string[]; properties?: Record<string, unknown> };
     expect(schema.required).toEqual(['skill']);
@@ -118,6 +121,15 @@ describe('RUN_ENV_SKILL — runModelCommand (MCP-side echo)', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe('CONTEXT_ERROR');
+  });
+
+  it('refuses without a thread (CONTEXT_ERROR) — the host could not tell the outcome anywhere', () => {
+    for (const over of [{ threadTs: undefined }, { channel: undefined }, { threadTs: '' }]) {
+      const result = runModelCommand(request, makeContext(over));
+      expect(result.ok, JSON.stringify(over)).toBe(false);
+      if (result.ok) continue;
+      expect(result.error.code).toBe('CONTEXT_ERROR');
+    }
   });
 
   it('echoes the request as submitted — the host decides and runs it after this call', () => {
