@@ -306,8 +306,28 @@ const GET_SESSION_HELP: CommandHelp = {
   ],
 };
 
+// #1304: RUN_ENV_SKILL self-correcting help.
+const RUN_ENV_SKILL_HELP: CommandHelp = {
+  commandId: 'RUN_ENV_SKILL',
+  summary:
+    "Hand a task to an environment user's skill, as if the turn's user had typed `<skill> <text>` in this thread. " +
+    "Only for an admin's turn — for anyone else the host refuses; ask that user to type it themselves. " +
+    'skill: exactly one environment skill ref, `$<env>:<skill>` (the environment name without `env:`). ' +
+    'text: optional instructions/arguments for that skill — no other `$skill` refs in it. ' +
+    'The call answers `submitted`; the host decides after it and tells you in a host turn: rejected (why), waiting ' +
+    "for an admin, or — once the environment user's turn ends — the link to its thread.",
+  examples: [
+    {
+      title: 'Hand QA on dev2 to the environment user',
+      params: { skill: '$acme-dev2:qa-dev2', text: 'QA the tickets deployed in 1.4.0..1.4.2' },
+    },
+    { title: 'Run the skill with no arguments', params: { skill: '$acme-dev2:deploy-dev2' } },
+  ],
+};
+
 const COMMAND_HELP: Partial<Record<ModelCommandId, CommandHelp>> = {
   GET_SESSION: GET_SESSION_HELP,
+  RUN_ENV_SKILL: RUN_ENV_SKILL_HELP,
   SAVE_MEMORY: SAVE_MEMORY_HELP,
   MEMORY: MEMORY_HELP,
   MANAGE_SKILL: MANAGE_SKILL_HELP,

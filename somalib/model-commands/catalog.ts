@@ -543,6 +543,27 @@ const SET_GOAL_SCHEMA = {
   required: ['objective', 'userRequestEvidence'],
 };
 
+// #1304: RUN_ENV_SKILL params schema.
+const RUN_ENV_SKILL_SCHEMA = {
+  type: 'object',
+  properties: {
+    skill: {
+      type: 'string',
+      description:
+        "The environment user's skill as you would type it: `$<env>:<skill>`, e.g. `$acme-dev2:qa-dev2` " +
+        '(the environment name, without `env:`).',
+    },
+    text: {
+      type: 'string',
+      description:
+        'What follows the ref in the typed message: the instructions or arguments for that skill. ' +
+        'The whole message is at most 2000 characters (the admin card shows it whole).',
+    },
+  },
+  required: ['skill'],
+  additionalProperties: false,
+};
+
 const CONTINUE_SESSION_SCHEMA = {
   type: 'object',
   properties: {
@@ -727,6 +748,26 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
         paramsSchema: SET_GOAL_SCHEMA,
       },
     );
+  }
+
+  // #1304: RUN_ENV_SKILL — the host acts as the turn's user, in the turn's thread, and tells the outcome there: offered
+  // only on a turn that has both.
+  if (context.user && context.channel && context.threadTs) {
+    commands.push({
+      id: 'RUN_ENV_SKILL',
+      description:
+        "Hand a task to an environment user's skill (`$<env>:<skill>`, e.g. `$acme-dev2:qa-dev2`) exactly as if " +
+        'the user of this turn had typed `$<env>:<skill> <text>` in this thread: it runs as the environment user ' +
+        "(an admin without a sandbox, with that environment's own credentials) in a new thread of this channel. " +
+        "Only for an admin's turn: for anyone else the host refuses — ask that user to type it themselves (a " +
+        "non-admin's session is sandboxed and the environment user is not, so only a person's request crosses). " +
+        'Same rules as typing: without a grant the request goes to the admins as a card and runs only once one ' +
+        "approves. Only an environment user's existing skill; one per call; no other `$skill` refs in text. " +
+        'The call answers `submitted`; the host decides after it and tells you in a host turn (`[env-skill]`, ' +
+        "not the user's words): rejected with the reason, waiting for an admin, or — when the environment " +
+        "user's turn ends — the link to its thread. Do not wait for it inside this turn.",
+      paramsSchema: RUN_ENV_SKILL_SCHEMA,
+    });
   }
 
   if (context.renewState === 'pending_save') {
@@ -1357,6 +1398,39 @@ export function runModelCommand(
       payload: {
         objective: request.params.objective,
         userRequestEvidence: request.params.userRequestEvidence,
+      },
+    };
+  }
+
+  // #1304: RUN_ENV_SKILL — pure echo on the MCP side, like SET_GOAL. The HOST (stream-executor → the
+  // `handOffEnvironmentSkill` provider) routes `request` through SkillForceHandler as the turn's user once this call
+  // has returned, and reports the outcome back in a host turn.
+  if (request.commandId === 'RUN_ENV_SKILL') {
+    if (!context.user) {
+      return toRunError('RUN_ENV_SKILL', { code: 'CONTEXT_ERROR', message: 'No user context available' });
+    }
+    // The host hands off in this thread and tells the outcome there: without one it could do neither.
+    if (!context.channel || !context.threadTs) {
+      return toRunError('RUN_ENV_SKILL', {
+        code: 'CONTEXT_ERROR',
+        message: 'RUN_ENV_SKILL needs a Slack thread for this turn — none here',
+      });
+    }
+    const { skill, text } = request.params;
+    return {
+      type: 'model_command_result',
+      commandId: 'RUN_ENV_SKILL',
+      ok: true,
+      payload: {
+        status: 'submitted',
+        skill,
+        text,
+        request: text ? `${skill} ${text}` : skill,
+        next:
+          'The host now hands this to the environment user exactly as a typed message — nothing has run yet. ' +
+          'You will get a host turn ([env-skill]) with the outcome: rejected (with the reason), waiting for an ' +
+          "admin's approval, or the link to the environment user's thread once its turn ends. Do not call this " +
+          'again for the same task; end this turn or continue with work that does not depend on it.',
       },
     };
   }

@@ -86,6 +86,11 @@ export interface StreamContext {
    */
   isUserInputTurn?: boolean;
   /**
+   * #1304 — whose turn this is: the event's user (the job owner on a cron fire, the person whose message started
+   * it otherwise). A model's RUN_ENV_SKILL is handed off as this user — never wider than what they could type.
+   */
+  turnUser?: string;
+  /**
    * The turn is an Eagle incident attempt (the session owns an
    * `incidentRequest`). Its text is the host's own conclusion
    * (`src/incident/attempt-output.ts`), and that conclusion echoes validated

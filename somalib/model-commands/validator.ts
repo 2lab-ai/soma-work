@@ -42,6 +42,12 @@ const WORKFLOW_TYPES: WorkflowType[] = [
   'z-epic-update',
 ];
 
+/**
+ * #1304 — one `$<env>:<skill>` ref, the shape a typed hand-off has (`SKILL_REF_PATTERN` in skill-force-handler):
+ * the `$` may be left out, and an `env:` prefix (the environment user's id) is dropped.
+ */
+const ENV_SKILL_REF = /^\$?(?:env:)?([\w-]+):([\w-]+)$/;
+
 const ASK_USER_QUESTION_ALLOWED_TYPES = ['user_choice', 'user_choice_group'] as const;
 
 const ASK_USER_QUESTION_EXAMPLES = {
@@ -123,7 +129,8 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
     commandId !== 'MEMORY' &&
     commandId !== 'MANAGE_SKILL' &&
     commandId !== 'RATE' &&
-    commandId !== 'SET_GOAL'
+    commandId !== 'SET_GOAL' &&
+    commandId !== 'RUN_ENV_SKILL'
   ) {
     return {
       ok: false,
@@ -438,6 +445,41 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
       request: {
         commandId: 'SET_GOAL',
         params: { objective, userRequestEvidence },
+      },
+    };
+  }
+
+  // #1304: RUN_ENV_SKILL — shape only. Whether the ref is an environment user's skill, whether the turn's user may
+  // call it, and the run are the host's (`SkillForceHandler`, the typed path), after this call returns.
+  if (commandId === 'RUN_ENV_SKILL') {
+    if (!isRecord(params)) {
+      return invalidArgsFor(
+        'RUN_ENV_SKILL',
+        'RUN_ENV_SKILL params must be an object: { skill: "$<env>:<skill>", text? }',
+      );
+    }
+    const unknown = Object.keys(params).filter((k) => k !== 'skill' && k !== 'text');
+    if (unknown.length > 0) {
+      return invalidArgsFor(
+        'RUN_ENV_SKILL',
+        `RUN_ENV_SKILL takes only skill and text (the instructions go in text), got: ${unknown.join(', ')}`,
+      );
+    }
+    const ref = typeof params.skill === 'string' ? ENV_SKILL_REF.exec(params.skill.trim()) : null;
+    if (!ref) {
+      return invalidArgsFor(
+        'RUN_ENV_SKILL',
+        `RUN_ENV_SKILL skill must be one environment skill ref like "$acme-dev2:qa-dev2", got: ${JSON.stringify(params.skill)}`,
+      );
+    }
+    if (params.text !== undefined && typeof params.text !== 'string') {
+      return invalidArgsFor('RUN_ENV_SKILL', `RUN_ENV_SKILL text must be a string, got: ${typeof params.text}`);
+    }
+    return {
+      ok: true,
+      request: {
+        commandId: 'RUN_ENV_SKILL',
+        params: { skill: `$${ref[1]}:${ref[2]}`, text: typeof params.text === 'string' ? params.text.trim() : '' },
       },
     };
   }

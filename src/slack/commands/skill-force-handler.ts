@@ -27,7 +27,7 @@ import { describeEnvSkillDelivery, requestEnvSkillPermission } from '../env-skil
 import { announceSessionNotice } from '../session-notice';
 import { buildEnvironmentPermissionRequestMessage, buildPermissionRequestMessage } from '../skill-permission-blocks';
 import { ToolFormatter } from '../tool-formatter';
-import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
+import type { CommandContext, CommandDependencies, CommandHandler, CommandResult, EnvironmentRunEnd } from './types';
 import { resolveUserIdentifier, type UserResolver } from './user-identity-resolver';
 
 /**
@@ -326,21 +326,78 @@ export class SkillForceHandler implements CommandHandler {
     return false;
   }
 
+  /**
+   * #1304 — may a model's RUN_ENV_SKILL hand `text` (`$<env>:<skill> …`) to an environment user? Read-only: the same
+   * top-level resolution {@link execute} applies, and nothing is posted, asked, granted or run. Accepted only when the
+   * message names exactly one skill, it is an existing skill of an environment user other than `user`, and the message
+   * fits the admin card. Whether `user` may call it (grant, admin card) is still {@link execute}'s, unchanged.
+   */
+  checkEnvironmentHandoff(
+    text: string,
+    user: string,
+  ): { ok: true; owner: string; skill: string } | { ok: false; reason: string } {
+    const { refs, ambiguous } = this.collectTopLevelRefs(text, user);
+    if (ambiguous.length > 0 || refs.length > 1) {
+      return {
+        ok: false,
+        reason: 'one environment skill per hand-off — the text must not name other skills ($… or user:skill)',
+      };
+    }
+    const ref = refs[0];
+    if (!ref) return { ok: false, reason: 'no skill reference resolves in the message' };
+    const label = `$${ref.ownerUserId ?? ref.plugin}:${ref.skill}`;
+    const owner = ref.ownerUserId;
+    if (!owner || !isEnvironmentUser(owner)) {
+      return { ok: false, reason: `\`${label}\` is not an environment user's skill` };
+    }
+    if (owner === user) {
+      return {
+        ok: false,
+        reason: `this session already runs as ${owner} — invoke \`${label}\` directly instead of handing it off`,
+      };
+    }
+    let exists = false;
+    try {
+      exists = fs.existsSync(this.resolveSkillPath(ref, user));
+    } catch {
+      exists = false;
+    }
+    if (!exists) return { ok: false, reason: `skill not found: ${owner} has no skill \`${ref.skill}\`` };
+    if (text.length > ENVIRONMENT_REQUEST_MAX_CHARS) {
+      return {
+        ok: false,
+        reason: `the request is ${text.length} characters; an environment request is at most ${ENVIRONMENT_REQUEST_MAX_CHARS}`,
+      };
+    }
+    return { ok: true, owner, skill: ref.skill };
+  }
+
+  /**
+   * Every top-level skill reference of a message: explicit `$` forms plus soft (no-$) cross-user refs (S2), the soft
+   * ones merged in and deduplicated by canonical key. Bare refs that hit several plugins come back as `ambiguous`.
+   */
+  private collectTopLevelRefs(
+    text: string,
+    user: string | undefined,
+  ): { refs: SkillRef[]; ambiguous: { name: string; matches: string[] }[] } {
+    const { refs: dollarRefs, ambiguous } = this.extractSkillRefs(text, user);
+    const refs = [...dollarRefs];
+    const seen = new Set(dollarRefs.map((r) => r.key));
+    for (const softRef of this.extractTopLevelSoftRefs(text, user)) {
+      if (!seen.has(softRef.key)) {
+        seen.add(softRef.key);
+        refs.push(softRef);
+      }
+    }
+    return { refs, ambiguous };
+  }
+
   async execute(ctx: CommandContext): Promise<CommandResult> {
     const { text, say, threadTs, user } = ctx;
 
     // Collect all top-level skill references from user text: explicit `$` forms
-    // plus soft (no-$) cross-user refs (S2). Soft refs are merged with `$` refs
-    // and deduplicated by canonical key.
-    const { refs: dollarRefs, ambiguous } = this.extractSkillRefs(text, user);
-    const topLevelRefs = [...dollarRefs];
-    const seenTopLevel = new Set(dollarRefs.map((r) => r.key));
-    for (const softRef of this.extractTopLevelSoftRefs(text, user)) {
-      if (!seenTopLevel.has(softRef.key)) {
-        seenTopLevel.add(softRef.key);
-        topLevelRefs.push(softRef);
-      }
-    }
+    // plus soft (no-$) cross-user refs (S2).
+    const { refs: topLevelRefs, ambiguous } = this.collectTopLevelRefs(text, user);
 
     if (ambiguous.length > 0) {
       // Ambiguous bare reference — surface immediately so the user knows to
@@ -592,7 +649,9 @@ export class SkillForceHandler implements CommandHandler {
         return `스레드 ${rootTs}`;
       }
     };
-    void run({
+    // The run is not awaited (it lasts the environment user's whole turn); `finished` settles once it ended and the
+    // outcome line went to the requester's thread. It never rejects.
+    const finished: Promise<EnvironmentRunEnd> = run({
       owner,
       channel,
       rootText: `[${owner}] <@${user}> 요청 — ${skills}`,
@@ -604,21 +663,25 @@ export class SkillForceHandler implements CommandHandler {
         );
       },
     })
-      .then(async (rootTs) => {
+      .then(async (rootTs): Promise<EnvironmentRunEnd> => {
         if (!rootTs) {
           giveBack();
           await post(`❌ 환경 유저 \`${owner}\` 실행 스레드를 만들지 못했습니다.`);
-          return;
+          return { ok: false, reason: 'the run thread could not be opened' };
         }
-        await post(`⏹ 환경 유저 \`${owner}\`의 턴이 끝났습니다 — 결과는 스레드에서 확인하세요: ${await link(rootTs)}`);
+        const where = await link(rootTs);
+        await post(`⏹ 환경 유저 \`${owner}\`의 턴이 끝났습니다 — 결과는 스레드에서 확인하세요: ${where}`);
+        return { ok: true, rootTs, link: where };
       })
-      .catch(async (error: unknown) => {
+      .catch(async (error: unknown): Promise<EnvironmentRunEnd> => {
         giveBack();
         this.logger.error('Environment user skill run failed', { owner, requester: user, error });
-        await post(`❌ 환경 유저 \`${owner}\` 실행 실패: ${(error as Error)?.message ?? String(error)}`);
+        const reason = (error as Error)?.message ?? String(error);
+        await post(`❌ 환경 유저 \`${owner}\` 실행 실패: ${reason}`);
+        return { ok: false, reason };
       })
-      .catch(() => undefined);
-    return { handled: true };
+      .catch((): EnvironmentRunEnd => ({ ok: false, reason: 'the run failed' }));
+    return { handled: true, environmentRun: { owner, finished } };
   }
 
   /**

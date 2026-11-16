@@ -570,7 +570,8 @@ export type DeliveryOutcome = 'injected' | 'expired' | 'gone';
 export interface SettledDeliveryDeps {
   /** 'ready' = idle, no request running and no dispatch slot held (a synthetic turn would otherwise be dropped). */
   state: (sessionKey: string) => DeliveryState;
-  inject: (sessionKey: string, text: string) => Promise<void>;
+  /** `as` — the user the message was delivered for (#1304), when the caller named one; else the injector's default. */
+  inject: (sessionKey: string, text: string, as?: string) => Promise<void>;
   retryMs?: number;
   /** A message still waiting this long is dropped: a CI result hours old would only mislead. */
   maxWaitMs?: number;
@@ -593,13 +594,20 @@ export function createSettledDelivery(deps: SettledDeliveryDeps): {
     text: string,
     done?: (outcome: DeliveryOutcome) => void,
     current?: () => boolean,
+    as?: string,
   ) => Promise<boolean>;
   stop: () => void;
 } {
   const now = deps.now ?? Date.now;
   const retryMs = deps.retryMs ?? 5_000;
   const maxWaitMs = deps.maxWaitMs ?? 6 * 60 * 60 * 1000;
-  type Item = { text: string; at: number; done?: (outcome: DeliveryOutcome) => void; current?: () => boolean };
+  type Item = {
+    text: string;
+    at: number;
+    done?: (outcome: DeliveryOutcome) => void;
+    current?: () => boolean;
+    as?: string;
+  };
   const stale = (item: Item): boolean => {
     try {
       return item.current?.() === false;
@@ -643,7 +651,7 @@ export function createSettledDelivery(deps: SettledDeliveryDeps): {
     if (state === 'ready' && queue.length > 0) {
       const next = queue.shift() as Item;
       settle(next, 'injected');
-      deps.inject(sessionKey, next.text).catch((error) => {
+      deps.inject(sessionKey, next.text, next.as).catch((error) => {
         deps.logger?.debug('PR watch injection failed', { sessionKey, error: (error as Error)?.message });
       });
     }
@@ -663,10 +671,16 @@ export function createSettledDelivery(deps: SettledDeliveryDeps): {
   };
 
   return {
-    async deliver(sessionKey, text, done, current) {
+    async deliver(sessionKey, text, done, current, as) {
       if (deps.state(sessionKey) === 'gone' || current?.() === false) return false;
       const queue = pending.get(sessionKey) ?? [];
-      queue.push({ text, at: now(), ...(done ? { done } : {}), ...(current ? { current } : {}) });
+      queue.push({
+        text,
+        at: now(),
+        ...(done ? { done } : {}),
+        ...(current ? { current } : {}),
+        ...(as ? { as } : {}),
+      });
       pending.set(sessionKey, queue);
       flush(sessionKey);
       ensureTimer();
