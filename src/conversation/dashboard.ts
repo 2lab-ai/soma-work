@@ -198,6 +198,7 @@ import {
 import { getUserMediaStore } from './user-media';
 import { restoreUserActions, type UserActionRecord } from 'somalib/user-action/user-action';
 import { VIEW_LAYOUT_CLIENT_JS } from './view-layout-client';
+import { CARD_FINISH_CLIENT_JS, CARD_FINISH_CSS } from './card-finish-client';
 import type { WorkLogEntry } from './work-log';
 
 const logger = new Logger('Dashboard');
@@ -7606,6 +7607,11 @@ body.nt-open .new-task-fab { display: none !important; }
 ${uiLibTokensCss()}
 ${pageTokenAliases()}
 </style>
+<!-- The task card's finish by model (SSOT 2026-11-17, card-finish-client.ts): the theme's inputs on :root. The cards
+     are in each <ui-agent-inbox>'s shadow root, so the rules go there (syncCardFinish); these inherit into it. -->
+<style id="card-finish-css">
+${CARD_FINISH_CSS}
+</style>
 </head>
 <body data-view-mode="minimal" data-view-plan="1" data-detail="" data-tasks="list">
 <!-- boot-screen -->
@@ -11629,6 +11635,8 @@ function renderBoard(board, partial) {
   // the board. Unspecified means whatever the load state says, so a re-render
   // (cron poll, visibility, toggles) of partial data stays quiet too.
   if (partial === undefined) partial = _boardLoad !== 'ready';
+  // The task card's finish (card-finish-client.ts) once, after the board and every CRON lane box are painted.
+  if (typeof cardFinishHold === 'function') cardFinishHold(true);
   _sessionCache = Object.create(null); // Clear stale cache each render cycle
   // Populate cache from the entire board first so the env-palette pass
   // (which reads every card's environment) and the per-card renders share
@@ -11736,6 +11744,7 @@ function renderBoard(board, partial) {
   }
   // The CRON lane (Option A): each job's lead run in its own one-column element.
   paintCronLaneCards(cronLaneSlots(cronPlan));
+  if (typeof cardFinishHold === 'function') cardFinishHold(false);
   // Cards that left every element: closed for good (a card that comes back
   // comes back closed), their bodies and retry timers released.
   for (var gone in prevHost) {
@@ -11804,6 +11813,58 @@ function inboxPaint(host) {
     return col;
   });
   host.data = { columns: columns, load: p.load, announce: p.announce, expanded: open, strings: BOARD_STRINGS, openLabel: false };
+  if (typeof syncCardFinish === 'function') syncCardFinish();
+}
+
+// The task card's finish by model (SSOT 2026-11-17, card-finish-client.ts): each element — the board, each CRON lane
+// box — gets the drawn cards it holds, with the model each runs now, as one sheet in its shadow root (cardFinishPaint
+// rewrites it only when those cards' finishes changed). Also once the element is defined: a paint before its upgrade
+// had no root.
+// renderBoard holds it while it paints the board and then each lane box, so a sheet without the lane's cards is never
+// written in between; the release syncs in the same task, before the element's batched render (its move animation
+// measures the 2px edge). A render that throws lets go on the next microtask.
+var _cardFinishHeld = false;
+var _cardFinishDirty = false;
+var _cardFinishGen = 0; // which hold the pending let-go belongs to: an earlier hold's never releases a later one
+var _cardFinishSeen = Object.create(null); // card key → the finish the last sync drew it with
+function cardFinishHold(on) {
+  if (on) {
+    if (_cardFinishHeld) return;
+    _cardFinishHeld = true;
+    _cardFinishDirty = false;
+    var gen = ++_cardFinishGen;
+    Promise.resolve().then(function() { if (gen === _cardFinishGen) cardFinishHold(false); });
+    return;
+  }
+  if (!_cardFinishHeld) return;
+  _cardFinishHeld = false;
+  if (_cardFinishDirty) syncCardFinish();
+}
+function syncCardFinish() {
+  if (_cardFinishHeld) {
+    _cardFinishDirty = true;
+    return;
+  }
+  // Every element, also one whose last finished card left (its sheet empties).
+  var lists = new Map(Array.from(document.querySelectorAll('ui-agent-inbox'), function(h) { return [h, []]; }));
+  var seen = Object.create(null);
+  for (var k in _cardData) {
+    if (!_cardDrawn[k] || !_sessionCache[k]) continue;
+    seen[k] = cardFinishOf(_sessionCache[k].model);
+    var list = lists.get(_cardHost[k]);
+    if (list) list.push({ key: k, model: _sessionCache[k].model });
+  }
+  _cardFinishSeen = seen;
+  lists.forEach(function(cards, host) { cardFinishPaint(host, cards); });
+}
+// One card's update: whether its model now asks for another finish than the last sync drew (refreshCard's no-repaint
+// path — a push that changed nothing the finish reads costs no board-wide pass).
+function cardFinishStale(key) {
+  var s = _sessionCache[key];
+  return !!s && cardFinishOf(s.model) !== (_cardFinishSeen[key] || '');
+}
+if (window.customElements && typeof customElements.whenDefined === 'function') {
+  customElements.whenDefined('ui-agent-inbox').then(function() { syncCardFinish(); });
 }
 
 // The CRON lane (Option A): each job's card box (cronLaneSlots) holds its own
@@ -12043,6 +12104,9 @@ function refreshCard(key) {
     if (JSON.stringify(c) !== JSON.stringify(_cardData[key])) {
       _cardData[key] = c;
       inboxPaint(host);
+    } else if (typeof cardFinishStale === 'function' && cardFinishStale(key)) {
+      // A model switch changes the card's finish even when the face is the same (no model chip, no repaint above).
+      syncCardFinish();
     }
   }
   paintCardBody(key);
@@ -13529,6 +13593,7 @@ function rerenderForViewMode() {
 // script (view-layout-client.ts) turns a layout into a face, the open card's parts and the detail card's switches.
 var VIEW_BUILTINS = ${JSON.stringify(BUILTIN_PRESETS)};
 ${VIEW_LAYOUT_CLIENT_JS}
+${CARD_FINISH_CLIENT_JS}
 ${DICTATION_PREF_JS}
 ${DICTATION_SERVER_JS}
 ${CODE_CHANGES_JS}
