@@ -1,6 +1,6 @@
 # 27 — 작업 세션의 변경점: 아키텍처
 
-Status: in-progress · Date: 2026-11-16 · 기준 main `ab7597d9` · 스펙 = [`26`](26-session-code-changes-spec.md)
+Status: shipped (main `cda9d40a`, dev v0.3.56-dev) · Date: 2026-11-16 · 기준 main `ab7597d9` · 스펙 = [`26`](26-session-code-changes-spec.md)
 
 요약: 턴이 끝나면 데몬이 세션 폴더의 git 체크아웃과 세션이 만든 PR을 읽어 스냅샷 하나를 만든다. 패치는 대화별 파일에, 요약은 세션에 둔다. 대시보드 탭 · 뷰어 · 통계 · 모델은 모두 이 스냅샷만 읽는다.
 

@@ -1,6 +1,6 @@
 # SSOT — code-changes (작업 세션의 변경점: 보기 · 저장 · 통계 · 모델 인지)
 
-Status: in-progress · 작성 2026-11-16 · 기준 커밋 main `ab7597d9`
+Status: shipped (main `cda9d40a`, dev v0.3.56-dev) · 작성 2026-11-16 · 기준 커밋 main `ab7597d9`
 스펙 = [`../26-session-code-changes-spec.md`](../26-session-code-changes-spec.md) ·
 아키텍처 = [`../27-session-code-changes-architecture.md`](../27-session-code-changes-architecture.md) · 드라이버 = [`loop.md`](loop.md)
 
