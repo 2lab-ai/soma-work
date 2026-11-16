@@ -1,6 +1,6 @@
 # SSOT — detail-card (상세 카드: 사용자 할 일 자리 · 변경점 뷰어 두 모드 · 리뷰 리포트)
 
-Status: in-progress · 작성 2026-11-16 · 기준 커밋 main `f50fd991`
+Status: shipped (main `1effc9c6`, dev v0.3.61 실측 — 28 §7) · 작성 2026-11-16 · 기준 커밋 main `f50fd991`
 스펙 = [`../28-detail-card-user-tasks-and-viewer-panel-spec.md`](../28-detail-card-user-tasks-and-viewer-panel-spec.md) · 드라이버 = [`loop.md`](loop.md) ·
 앞선 워크스트림 = [`../code-changes/ssot.md`](../code-changes/ssot.md)(SSOT_1, 같은 스레드)
 

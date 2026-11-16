@@ -1,10 +1,10 @@
-# 28 — 상세 카드: 사용자 할 일은 목표 탭 안, 변경점 뷰어는 두 모드
+# 28 — 상세 카드: 탭 줄의 양 끝(작업 계획 · 사용자 작업), 변경점 뷰어는 두 모드
 
-Status: in-progress · Date: 2026-11-16 · 기준 main `f50fd991` · SSOT = [`detail-card/ssot.md`](detail-card/ssot.md) ·
+Status: shipped (구현된 계약 — 미래 목표가 아니다) · Date: 2026-11-16 · 기준 main `f50fd991` · 구현 = https://github.com/2lab-ai/soma-work/pull/1311 (`1effc9c6`), https://github.com/2lab-ai/soma-work/pull/1313 (`effabad3`) · SSOT = [`detail-card/ssot.md`](detail-card/ssot.md) ·
 앞선 계약: [`26`](26-session-code-changes-spec.md) §4.2(뷰어), [`docs/current/spec/15-user-action.md`](../docs/current/spec/15-user-action.md)(사용자 할 일),
 [`15`](15-dashboard-detail-deck-spec.md)(상세 카드, 탭 줄 SSOT 2026-11-03)
 
-요약: 상세 카드의 사용자 할 일이 탭 줄 위에서 카드 절반을 차지해 대화를 밀어낸다. 이제 탭 줄은 `[작업 계획] | 목표 | 작업 … | 세부 | 사용자 작업`이다. 사용자 할 일은 맨 끝 탭 안에 들어가 누르면 보이고 다시 누르면 접히며, 대기 수는 탭 배지로 남는다. 작업 계획은 맨 앞에서 눈에 띄게 그려진다. 변경점 뷰어는 두 모드다. 데스크톱에서 상세 카드 왼쪽이 넓으면 그 자리(보드)에 파일만 띄우는 패널, 아니면 지금의 전체 화면.
+요약: 상세 카드의 사용자 할 일이 탭 줄 위에서 카드 절반을 차지해 대화를 밀어냈다(§1). 탭 줄은 `[작업 계획] | 목표 | 작업 … | 세부 | 사용자 작업`이다. 사용자 할 일은 맨 끝 탭 안에 들어가 누르면 보이고 다시 누르면 접히며, 대기 수는 탭 배지로 남는다. 작업 계획은 맨 앞에서 눈에 띄게 그려진다. 변경점 뷰어는 두 모드다. 데스크톱에서 상세 카드 왼쪽이 넓으면 그 자리(보드)에 파일만 띄우는 패널, 아니면 지금의 전체 화면.
 
 ## 0. 미니맵
 
@@ -15,10 +15,11 @@ Status: in-progress · Date: 2026-11-16 · 기준 main `f50fd991` · SSOT = [`de
 ├─ 3. 탭 줄 — 작업 계획 · … · 사용자 작업 (WU-A, SSOT_3)
 ├─ 4. 변경점 뷰어 — 패널 · 전체 화면 (WU-B)
 ├─ 5. 구현 경계
-└─ 6. 인수 시나리오
+├─ 6. 인수 시나리오
+└─ 7. 실측 결과 (dev 배포 빌드)
 ```
 
-읽는 법: 무엇이 바뀌는지는 §3 · §4, 왜인지는 §1, 확인 방법은 §6.
+읽는 법: 계약은 §3 · §4, 왜인지는 §1, 확인 방법은 §6, 확인한 값은 §7.
 
 ## 1. 문제 (AS-IS, [LIVE] dev v0.3.56 `cda9d40a`, 하네스 = 배포 빌드 + dev 저장본 사본, 사용자 할 일 대기 1 · 완료 1)
 
@@ -82,19 +83,21 @@ Status: in-progress · Date: 2026-11-16 · 기준 main `f50fd991` · SSOT = [`de
 ## 5. 구현 경계
 
 - WU-A — `src/conversation/dashboard.ts`
-  - `panelBarTabIds(layoutTabs)` = `['plan', …layoutTabs, 'useractions']`. `renderPanelMidbar`이 이것으로 탭을 만든다.
+  - `panelBarTabIds(layoutTabs)` = `['plan', …layoutTabs, 'useractions']`(레이아웃 목록에 양 끝이 있어도 한 번씩). `renderPanelMidbar`가 이것으로 탭을 만든다.
   - `panelMidTabsOf`: `plan`(버전 · 상태 · tone · waiting, 없으면 empty), `useractions`(수 · `wait` = `userActionsWaiting`, 없으면 empty).
-  - `panelMidTabHtml`: 계획이 있으면 `is-plan` 클래스 · `data-waiting` · 아이콘(`<i data-ui-icon="list" class="pm-icon">` — `fillUiIcons`는 이 속성 순서만 채운다) · 상태 칩. 사용자 작업은 대기 배지.
-  - 마크업: `#panel-plan`을 `#panel-needs`에서 꺼내 탭 줄 바로 아래로, `#panel-user-actions`를 탭 내용 끝으로 옮긴다. CSS: 두 영역은 각자의 `data-midtab`일 때만 보인다.
-  - `panelNeedsCount`에서 승인 대기 계획을 뺀다. `renderPanelPlan`은 `syncPanelNeeds` 대신 `renderPanelMidbar`를 부른다.
-  - `openPanel`: 새로 열 때 계획이 시작을 기다리면(`taskPlan.state === 'awaiting'`) `_panelMid = 'plan'`. 랜딩 대상 계획 상자는 그 탭이 열려 있을 때만.
-  - en-page 카탈로그에 새 문구를 넣는다.
+  - `panelMidTabHtml`: 계획이 있으면 `is-plan` 클래스 · `data-waiting` · 아이콘(`<i data-ui-icon="list" class="pm-icon">` — `fillUiIcons`는 이 속성 순서만 채운다) · 상태 칩. 사용자 작업은 대기 배지(`aria-label` `사용자 할 일 대기 n`).
+  - 마크업: `#panel-plan`은 `#panel-needs` 밖, 탭 줄 바로 아래에 있다. `#panel-user-actions`는 탭 내용 끝에 있다. CSS: 두 영역은 각자의 `data-midtab`일 때만 보인다.
+  - `panelNeedsCount`에 승인 대기 계획은 없다. `renderPanelPlan`은 끝에 `renderPanelMidbar`를 부른다(탭 라벨이 버전 · 상태를 따른다).
+  - `openPanel`: 다른 세션을 새로 열 때 계획이 시작을 기다리면(`taskPlan.state === 'awaiting'`) `_panelMid = 'plan'`이다. 같은 세션 재랜딩은 독자의 탭을 지킨다. 랜딩 대상 계획 상자는 그 탭이 열려 있을 때만이다.
+  - 세션 푸시는 `repaintPanelSession` → `renderPanelMidbar` · `renderPanelUserActions`로 탭과 영역을 함께 갱신한다.
+  - `renderPanelQuestion` · `renderPanelPermission`은 자기 상자를 바꾼 뒤 `syncPanelNeeds`로 입력 필요 영역을 한 번 더 배치한다. 계획은 더 이상 그 영역을 다시 배치하지 않으므로, 답한 뒤 빈 영역이 남지 않게 하는 일은 이 두 렌더러가 맡는다.
+  - en-page 카탈로그: `작업 계획 없음` · `사용자 작업` · `사용자 작업 ` · `사용자 작업 없음` · `사용자 할 일 대기 `.
 - WU-B — `src/conversation/code-changes-client.ts`
-  - 순수 함수 `chgViewerModeFor(vw, panelW, docked, pref)` → `panel` | `full`. 기억은 `localStorage['soma-chg-viewer']`(`full` | 없음).
-  - dialog `data-mode`: 패널 = `show()`, 전체 화면 = `showModal()`. 모드를 바꿀 때는 닫았다 다시 연다(`_chg.switching`이 close 정리를 막는다).
-  - `chgCloseViewer()`. 패널에서는 `chgPaint`가 지금 파일 줄을 강조한다.
-  - 창 `resize`와 상세 카드 `ui-resize`에서 `chgSyncViewerMode()`를 부른다.
-  - `src/conversation/dashboard.ts`: `closePanel`과 세션 전환에서 뷰어를 닫는다. 상세 카드의 `ui-close`와 페이지 Esc는 패널이 열려 있으면 패널만 닫는다.
+  - 순수 함수 `chgViewerModeFor(vw, panelW, docked, pref)` → `panel` | `full`. 기억은 `localStorage['soma-chg-viewer']`(`full` | 없음, 저장소가 막히면 메모리).
+  - dialog `data-mode`: 패널 = `show()`, 전체 화면 = `showModal()`. 모드를 바꿀 때는 닫았다 다시 연다. `_chgSkipClose`가 그 닫힘의 정리를 건너뛴다.
+  - `chgCloseViewer()`. 패널에서는 `chgPaint`가 지금 파일 줄을 강조한다. 패널 Esc는 캡처 단계에서 받아 상세 카드가 닫히지 않는다.
+  - 상세 카드 폭이 바뀌면(`syncPanelWidth` — 창 `resize`, 카드 `ui-resize`) `chgSyncViewerMode()`가 모드를 다시 고른다.
+  - 상세 카드가 닫히면(`dashboard.ts` `closePanel`) 뷰어도 닫힌다. 다른 세션의 대화로 바뀌면 `chgOpen`이 닫는다.
 
 ## 6. 인수 시나리오 — 리시트는 좌표를 남긴다
 
@@ -112,3 +115,22 @@ Status: in-progress · Date: 2026-11-16 · 기준 main `f50fd991` · SSOT = [`de
 | V4 | 1024×768(카드 왼쪽 584 < 640) | `data-mode=full`, modal, rect 0,0 1024×768 |
 | V5 | 패널에서 "전체 화면" → 다시 열기 | 전체 화면(기억); "패널로" → 패널 |
 | V6 | 패널이 열린 채 창을 1024로 줄임 | 같은 파일로 전체 화면 |
+
+## 7. 실측 결과 (dev 배포 빌드 v0.3.61 `1effc9c6`, 하네스 = 배포 빌드 + dev 저장본 사본, scratch 설정 폴더)
+
+사용자 할 일은 대기 1 · 완료 1이다. 계획은 하네스가 붙인 `taskPlan`(v2)이라 탭 내용은 "계획을 불러오지 못했어요"로 보인다. 계획 파일이 없기 때문이고 탭과 상자의 자리는 같다.
+
+| ID | 관측 (1440×900, 상세 카드 1000,56 440×844) | 판정 |
+|---|---|---|
+| A1 | 시작된 계획, 열 때 `data-midtab` '', 계획 상자 · 할 일 영역 안 보임, 첫 섹션 탭 y 227 (AS-IS 471) | ✅ |
+| A2 | 탭 순서 plan · goal · tasks · agents · artifacts · useractions. plan `is-plan`: 시작됨이면 accent 12% 바탕 · accent 글자, 승인 대기면 accent 채움 rgb(31,109,194) · 흰 글자, 둘 다 굵기 650. 사용자 작업 `사용자 작업 2` + 배지 `1` | ✅ |
+| A3 | 사용자 작업 누름 → 영역 1001,226 439×461, 다시 누름 → 숨음 | ✅ |
+| A4 | 승인 대기 계획, 열 때 `data-midtab` plan, 계획 상자 1001,226 439×84. 탭을 닫으면 `#panel-plan-bar` 1017,749 407×50(시작 · 취소) | ✅ |
+| V1 | 파일 누름 → `data-mode` panel, modal 아님, 0,56 1000×844(오른쪽 끝 = 카드 x 1000, 위 = 카드 y 56), 뷰어 트리 없음 | ✅ |
+| V2 | 카드 트리의 다른 파일 → 제목이 그 파일(`ssot.md`), `.on` 1개 | ✅ |
+| V3 | Esc → 뷰어 닫힘, 카드 열림 | ✅ |
+| V4 | 1024×768 → full, modal, 0,0 1024×768(트리 300px) | ✅ |
+| V5 | 전체 화면 → full modal 0,0 1440×900, 다시 열면 full(기억), 패널로 → panel 0,56 1000×844, 기억 지워짐 | ✅ |
+| V6 | 패널이 열린 채 1000으로 → full 0,0 1000×900, 1440으로 → panel 0,56 1000×844 | ✅ |
+
+페이지 오류 0. 탭 줄은 440px 카드에서 두 줄이 된다(y 154 · y 190). 남은 일로 [`detail-card/loop.md`](detail-card/loop.md) G2에 적었다.

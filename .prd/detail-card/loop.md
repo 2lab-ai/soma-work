@@ -1,16 +1,13 @@
 # loop — detail-card 구현 드라이브
 
-Status: in-progress (라운드 1) · 스펙 = [`../28-detail-card-user-tasks-and-viewer-panel-spec.md`](../28-detail-card-user-tasks-and-viewer-panel-spec.md) · ssot = [`ssot.md`](ssot.md)
+Status: done (라운드 1 닫힘) · 열린 gap = G1 · G2 · 스펙 = [`../28-detail-card-user-tasks-and-viewer-panel-spec.md`](../28-detail-card-user-tasks-and-viewer-panel-spec.md) · ssot = [`ssot.md`](ssot.md) · 끝난 것 = [`loop.done.md`](loop.done.md)
 
-## 라운드 1 — WU-A · WU-B · 리뷰 리포트 (2026-11-16 열림)
+## 열린 gap
 
-계획: AS-IS 실측(28 §1, 끝남) → WU-A · WU-B를 서로소 파일로 나눠 TDD → PR 각각 → 머지 → dev 배포 → 하네스 좌표 실측(28 §6) → 리뷰 리포트(T13) → 28 shipped.
-
-| ID | WU | Status | 브랜치 · 워크트리 | 스코프 | 끝상태 확인 |
-|---|---|---|---|---|---|
-| WU-A | 탭 줄 [작업 계획] · … · 사용자 작업 (SSOT_3가 목표 탭 안 → 독립 탭으로 고침) | 🟡 | `feat/detail-card-user-tasks-goal` · `wt-wu3` · PR #1311 | `dashboard.ts`(마크업 · CSS · `panelBarTabIds` · `panelMidTabsOf` · `panelMidTabHtml` · `panelNeedsCount` · `renderPanelPlan` · `openPanel`), 시험 하네스 대역, en-page 카탈로그 | 28 §6 A1–A4 |
-| WU-B | 변경점 뷰어 두 모드 | 🟡 | `feat/changes-viewer-panel` · `wt-wu2` · PR #1313 머지 `effabad3` | `code-changes-client.ts`, `dashboard.ts`(`closePanel` · `syncPanelWidth`), 26 §4.2 | 28 §6 V1–V6 (소스 실측 끝, dev 실측 남음) |
-| R1 | 리뷰 리포트 | 🟡 | — | 독립 리뷰어 + dev 실측 | Slack 리포트 · 개선 항목을 gap 행으로 |
+| ID | gap | Status | 다음 |
+|---|---|---|---|
+| G1 | 탭 줄의 펼침 화살표(`<i class="pm-caret" data-ui-icon="chevron-down">`)가 처음부터 그려지지 않는다 — `fillUiIcons`는 `data-ui-icon`이 먼저인 슬롯만 채운다(같은 꼴의 슬롯은 코드에 이것 하나). 리뷰 리포트 F9 | 🔴 | 속성 순서를 바꾼다. 화살표가 생기면 탭마다 폭이 늘어 G2와 같이 본다 |
+| G2 | 440px 상세 카드에서 탭 줄이 두 줄이 된다(dev v0.3.61, 1440×900: y 154 · y 190 — 사용자 작업이 둘째 줄) | 🚪 | 탭 수가 많은 레이아웃만. 좁을 때 숫자만 남기거나 가로 스크롤로 한 줄 — 요청이 오면 |
 
 ## build facts (실측)
 
