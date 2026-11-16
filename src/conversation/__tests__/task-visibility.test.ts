@@ -549,6 +549,84 @@ describe('task-visibility — board, live pushes and routes', () => {
     expect(epicPush(owner)?.session.epic.children.map((c: any) => c.conversationId)).toEqual(['conv-child']);
   });
 
+  it('archived cards: a private one is on its owner’s and admins’ board (marked), not a stranger’s', async () => {
+    const archived = (id: string, channelId: string) => ({
+      sessionKey: `${channelId}:${id}.9`,
+      archivedAt: 1_700_000_000_000,
+      ownerId: 'U_OWNER',
+      ownerName: 'Owner',
+      channelId,
+      threadTs: `${id}.9`,
+      sessionId: `sid-${id}`,
+      conversationId: `conv-${id}`,
+      title: `Archived ${id}`,
+      lastActivity: Date.now(),
+    });
+    archive.recent = [archived('old-pub', 'C_PUB'), archived('old-priv', 'C_PRIV')];
+    const closed = async (headers: Record<string, string>) => {
+      const res = await web.injectWebServer({ method: 'GET', url: '/api/dashboard/sessions', headers });
+      return (JSON.parse(res.body).board.closed as Array<Record<string, unknown>>)
+        .map((c) => [c.conversationId, c.privateTask])
+        .sort();
+    };
+    expect(await closed(AS.other)).toEqual([['conv-old-pub', false]]);
+    expect(await closed(AS.owner)).toEqual([
+      ['conv-old-priv', true],
+      ['conv-old-pub', false],
+    ]);
+  });
+
+  it('the conversation page’s side list is the viewer’s too', async () => {
+    const viewer = await import('../viewer');
+    const res = await web.injectWebServer({ method: 'GET', url: '/conversations/conv-pub', headers: AS.other });
+    expect(res.statusCode).toBe(200);
+    const calls = (viewer.renderConversationViewPage as any).mock.calls;
+    const list = calls[calls.length - 1][1] as Array<Record<string, unknown>>;
+    expect(list.map((c) => c.id)).toEqual(['conv-pub']);
+    expect(list[0]).not.toHaveProperty('channelId');
+  });
+
+  it('a session key that names no task when the gate reads it is refused — a task that appears before the route reads is never served', async () => {
+    // The gate's read finds nothing; the route's read (a moment later) finds the private task with a plan.
+    let reads = 0;
+    dashboard.setDashboardSessionAccessor(() => (reads++ === 0 ? new Map() : sessions));
+    const res = await web.injectWebServer({
+      method: 'GET',
+      url: `/api/dashboard/session/${encodeURIComponent(keyOf('priv'))}/plan`,
+      headers: AS.other,
+    });
+    expect(res.statusCode).toBe(404);
+    expect(reads).toBe(1);
+    dashboard.setDashboardSessionAccessor(() => sessions);
+  });
+
+  it('the socket: an artifact whose conversation cannot be read goes to admins only', async () => {
+    const recorder = await import('../recorder');
+    const real = (recorder.getConversation as any).getMockImplementation();
+    (recorder.getConversation as any).mockImplementation(async (id: string) => {
+      if (id === 'conv-broken') throw new Error('disk gone');
+      return CONVERSATIONS.get(id) ?? null;
+    });
+    try {
+      const owner = await connect(AS.owner);
+      const admin = await connect(AS.admin);
+      await vi.waitFor(() => [owner, admin].forEach((c) => expect(c.messages.length).toBeGreaterThan(0)));
+      dashboard.broadcastArtifactUpdate({
+        id: 'a',
+        conversationId: 'conv-broken',
+        name: 'x.md',
+        kind: 'markdown',
+        createdAt: 1,
+      } as any);
+      const arts = (c: { messages: any[] }) => c.messages.filter((m) => m.type === 'artifact_update').length;
+      await vi.waitFor(() => expect(arts(admin)).toBe(1));
+      await flushAll([owner, admin]);
+      expect(arts(owner)).toBe(0);
+    } finally {
+      (recorder.getConversation as any).mockImplementation(real);
+    }
+  });
+
   it('every read route of a private task answers 404 to a stranger, as if it did not exist; the owner and an admin read it', async () => {
     const reads = (id: string) => [
       `/api/dashboard/session/conv-${id}`,

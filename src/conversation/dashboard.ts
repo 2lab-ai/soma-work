@@ -1457,41 +1457,41 @@ async function privateTaskGate(request: any, reply: any): Promise<unknown> {
     reply.status(404).send({ error: 'Not found' });
     return reply;
   }
-  if (task === UNRESOLVED_CONVERSATION || (task && !('unresolved' in task) && !canViewTask(viewer, task))) {
+  if (task === UNRESOLVED_TASK || (task && !('unresolved' in task) && !canViewTask(viewer, task))) {
     reply.status(404).send({ error: 'Not found' });
     return reply;
   }
 }
 
 /**
- * A conversation id that names no conversation: refused at the gate, not passed on — a record written between this
- * read and the route's own read would otherwise be served to whoever asked.
+ * A session key or conversation id that names no task: refused at the gate, not passed on — a task that appears
+ * between this read and the route's own read would otherwise be served to whoever asked.
  */
-const UNRESOLVED_CONVERSATION = Object.freeze({ unresolved: true as const });
+const UNRESOLVED_TASK = Object.freeze({ unresolved: true as const });
 
 /**
  * The task a gated route names: a live session by its key (an archived card's key: that archive), else the
- * conversation by its id — the record a pre-handler before the gate already loaded, when one did. Undefined: no task
- * by that key, and the route answers (404, 409 for a sibling's key, or its owner check). A conversation id that names
- * nothing: UNRESOLVED_CONVERSATION, refused. A failed read throws.
+ * conversation by its id — the record a pre-handler before the gate already loaded, when one did. A key or id that
+ * names nothing: UNRESOLVED_TASK, refused. Undefined: a sibling instance's key (the route answers 409) or a route
+ * with neither. A failed read throws.
  */
 async function gatedTaskOf(
   params: Record<string, unknown>,
   loaded?: unknown,
-): Promise<{ channelId?: unknown; ownerId?: unknown } | typeof UNRESOLVED_CONVERSATION | undefined> {
+): Promise<{ channelId?: unknown; ownerId?: unknown } | typeof UNRESOLVED_TASK | undefined> {
   if (typeof params.key === 'string' && params.key) {
     const local = stripSelfInstancePrefix(params.key);
     if (local === null) return undefined;
     const card = parseArchivedCardKey(local);
-    if (card) return getArchiveStore().load(card.sessionKey, card.archivedAt) ?? undefined;
+    if (card) return getArchiveStore().load(card.sessionKey, card.archivedAt) ?? UNRESOLVED_TASK;
     const sessions = getAllSessions();
-    return sessions.get(local) ?? sessions.get(normalizeSessionKey(local)) ?? undefined;
+    return sessions.get(local) ?? sessions.get(normalizeSessionKey(local)) ?? UNRESOLVED_TASK;
   }
   const id =
     typeof params.conversationId === 'string' ? params.conversationId : typeof params.id === 'string' ? params.id : '';
   if (!id) return undefined;
   if (loaded && typeof loaded === 'object') return loaded as { channelId?: unknown; ownerId?: unknown };
-  return liveTaskOfConversation(id) ?? (await getConversation(id)) ?? UNRESOLVED_CONVERSATION;
+  return liveTaskOfConversation(id) ?? (await getConversation(id)) ?? UNRESOLVED_TASK;
 }
 
 /** A Slack DM channel id (`D…`) — a conversation only its two members can write in. */
