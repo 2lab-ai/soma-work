@@ -53,7 +53,7 @@ export interface PrRelationSource {
  * .prd/29 (no `closes`, no `baseRef`) read neither, so it leaves them as they are. The entries change only nodes still in
  * the tree: a PR the model removed while the collect ran does not come back.
  */
-export function prTreeEntries(prs: ReadonlyArray<PrRelationSource>): IssueTreeNote[] {
+export function prTreeEntries(prs: ReadonlyArray<PrRelationSource>, relReadAt?: number): IssueTreeNote[] {
   return prs.map((pr) => {
     // Stacked: its base branch is the head branch of another session PR in the same repository (not a fork's).
     const bases = pr.baseRef
@@ -73,6 +73,7 @@ export function prTreeEntries(prs: ReadonlyArray<PrRelationSource>): IssueTreeNo
         ...(pr.closes ? { closes: pr.closes } : {}),
         ...(pr.baseRef !== undefined ? { base: base ? base.url : null } : {}),
       },
+      ...(relReadAt !== undefined ? { relReadAt } : {}),
       onlyIfPresent: true,
     };
   });
@@ -110,7 +111,8 @@ export async function refreshIssueEntries(
     .map((url) => ({ url, m: ISSUE_URL.exec(url.replace(/[?#].*$/, '').replace(/\/+$/, '')) }))
     .filter((x): x is { url: string; m: RegExpExecArray } => !!x.m);
   for (const { url, m } of issues.slice(0, max)) {
-    const meta = await fetchIssue(m[1], m[2], Number(m[3]));
+    // One failed read (a rejection too) is that issue's: the others' reads are kept, and it goes to the back.
+    const meta = await fetchIssue(m[1], m[2], Number(m[3])).catch(() => undefined);
     if (!meta) {
       out.push({ kind: 'issue', url, triedAt: now, onlyIfPresent: true });
       continue;

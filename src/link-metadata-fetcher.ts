@@ -458,7 +458,8 @@ export async function fetchGitHubIssueMeta(
       token,
       `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${number}`,
     )) as Record<string, any> | undefined;
-    if (!i || typeof i.number !== 'number') return undefined;
+    // An answer without a known state is not a read (it would clear the parent and mark the issue checked).
+    if (!i || typeof i.number !== 'number' || (i.state !== 'open' && i.state !== 'closed')) return undefined;
     const parentUrl = issueWebUrl(str(i.parent_issue_url));
     return {
       title: typeof i.title === 'string' ? i.title.slice(0, MAX_CACHED_TITLE_LENGTH) : undefined,

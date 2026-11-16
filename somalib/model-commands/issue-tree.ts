@@ -135,6 +135,8 @@ export interface IssueTreeLinkInput {
   title?: string;
   status?: string;
   rel?: IssueTreeRelationsInput;
+  /** When the read behind `rel` began: relations from an older read than the node's are not applied. */
+  relReadAt?: number;
   /** The model's placement: a node to sit under, `null` for the root (issues), absent for the host to place it. */
   parent?: string | null;
 }
@@ -161,7 +163,12 @@ export function upsertIssueTreeLink(tree: SessionIssueTree, input: IssueTreeLink
     // Merged is final (as on the card): a late or cached read of an earlier state does not undo it.
     if (input.status && !(existing.kind === 'pr' && existing.status === 'merged')) existing.status = input.status;
     if (input.label) existing.label = input.label;
-    mergeRel(existing, input.rel);
+    // Two readers (the collect, the turn-end reconciler) can land out of order: the later read's relations win.
+    const stale = input.relReadAt !== undefined && (existing.relReadAt ?? Number.NEGATIVE_INFINITY) > input.relReadAt;
+    if (!stale) {
+      mergeRel(existing, input.rel);
+      if (input.rel && input.relReadAt !== undefined) existing.relReadAt = input.relReadAt;
+    }
     if (pinned) {
       existing.parent = parent;
       existing.placed = 'model';
@@ -182,6 +189,7 @@ export function upsertIssueTreeLink(tree: SessionIssueTree, input: IssueTreeLink
     ...(parent ? { parent } : {}),
     placed: pinned ? 'model' : 'default',
     addedAt: now,
+    ...(input.rel && input.relReadAt !== undefined ? { relReadAt: input.relReadAt } : {}),
   };
   mergeRel(node, input.rel);
   tree.nodes.push(node);
@@ -297,7 +305,8 @@ export function removeIssueTreeNode(tree: SessionIssueTree, ref: string): IssueT
 
 /** The representative issue: the first external root issue to come in, else the first root issue. */
 export function representativeIssue(tree: SessionIssueTree): IssueTreeNode | undefined {
-  const roots = tree.nodes.filter((n) => n.kind === 'issue' && !n.parent);
+  // In the order they came (`addedAt`, as the view lists them): the preview rebuilt from the view picks the same one.
+  const roots = tree.nodes.filter((n) => n.kind === 'issue' && !n.parent).sort((a, b) => a.addedAt - b.addedAt);
   return roots.find((n) => n.source !== 'internal') || roots[0];
 }
 
@@ -475,6 +484,7 @@ export function sanitizeIssueTree(raw: unknown): SessionIssueTree | undefined {
       addedAt: n.addedAt as number,
       ...(typeof n.checkedAt === 'number' ? { checkedAt: n.checkedAt } : {}),
       ...(typeof n.triedAt === 'number' ? { triedAt: n.triedAt } : {}),
+      ...(typeof n.relReadAt === 'number' ? { relReadAt: n.relReadAt } : {}),
     });
   }
   const next = typeof r.nextInternal === 'number' && r.nextInternal >= 1 ? Math.floor(r.nextInternal) : 1;
@@ -491,22 +501,12 @@ export function issueTreeFromView(view: IssueTreeView | undefined): SessionIssue
   (view?.nodes || []).forEach((v, i) => {
     const m = INTERNAL_RE.exec(v.id);
     if (m) max = Math.max(max, Number(m[1]));
-    // The relations the host holds (one not in force yet included — a PR that closes an issue not in the tree).
-    const rel: IssueTreeRelations | undefined = v.rel ? structuredClone(v.rel) : undefined;
-    tree.nodes.push({
-      id: v.id,
-      kind: v.kind,
-      source: v.source,
-      ...(v.url ? { url: v.url } : {}),
-      ...(v.label ? { label: v.label } : {}),
-      // The seed's shown title is the session's, not its own.
-      ...(v.title && !(v.source === 'internal' && v.placed === 'seed') ? { title: v.title } : {}),
-      ...(v.status ? { status: v.status } : {}),
-      ...(v.parent ? { parent: v.parent } : {}),
-      placed: v.placed,
-      ...(rel ? { rel } : {}),
-      addedAt: i,
-    });
+    // The stored node without the host's read bookkeeping — its relations too (one not in force yet: a PR that closes
+    // an issue not in the tree), so the preview places nodes as the host does.
+    const node: IssueTreeNode = { ...structuredClone(v), addedAt: i };
+    // The seed's shown title is the session's, not its own.
+    if (node.source === 'internal' && node.placed === 'seed') delete node.title;
+    tree.nodes.push(node);
   });
   // The host's counter (a retired seed still took internal:1): a new internal issue gets the number the host gives it.
   tree.nextInternal = Math.max(max + 1, Math.floor(Number(view?.nextInternal) || 1));

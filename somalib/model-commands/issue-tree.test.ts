@@ -4,6 +4,7 @@ import {
   emptyIssueTree,
   ISSUE_TREE_MAX_NODES,
   issueTreeFromLinks,
+  issueTreeFromView,
   issueTreeNodeId,
   issueTreeView,
   moveIssueTreeNode,
@@ -356,6 +357,47 @@ describe('issue tree — .prd/29 §3', () => {
       pr: { url: pr(8), type: 'pr', provider: 'github' },
     });
     expect(shape(t)).toEqual({ 'issues/7': '', 'pull/8': 'issues/7' });
+  });
+
+  it('relations from an older read (the other reader, slower) do not replace a newer read’s', () => {
+    const t = tree();
+    add(t, 'issue', issue(1));
+    add(t, 'issue', issue(2));
+    upsertIssueTreeLink(t, { kind: 'pr', url: pr(10), rel: { closes: [issue(2)] }, relReadAt: 200 }, now());
+    rebalanceIssueTree(t, now());
+    expect(shape(t)['pull/10']).toBe('issues/2');
+    // The collect that began earlier lands now with the old body's ref: ignored.
+    upsertIssueTreeLink(t, { kind: 'pr', url: pr(10), rel: { closes: [issue(1)] }, relReadAt: 100 }, now());
+    rebalanceIssueTree(t, now());
+    expect(shape(t)['pull/10']).toBe('issues/2');
+    // A newer read moves it.
+    upsertIssueTreeLink(t, { kind: 'pr', url: pr(10), rel: { closes: [issue(1)] }, relReadAt: 300 }, now());
+    rebalanceIssueTree(t, now());
+    expect(shape(t)['pull/10']).toBe('issues/1');
+    // Saved and loaded, the read time stays (and never reaches the view).
+    const loaded = sanitizeIssueTree(JSON.parse(JSON.stringify(t)));
+    expect(loaded?.nodes.find((n) => n.id === issueTreeNodeId(pr(10)))?.relReadAt).toBe(300);
+    expect(issueTreeView(t).nodes.find((n) => n.id === issueTreeNodeId(pr(10)))).not.toHaveProperty('relReadAt');
+  });
+
+  it('the representative is the same in the preview rebuilt from the view (the order the issues came)', () => {
+    // A (external root) ← P ← X (the model's follow-up under P); A removed: a new seed stands in, first in the array
+    // but newer than X. The model names the seed, then moves X to the root.
+    const t = tree();
+    add(t, 'issue', issue(1));
+    add(t, 'pr', pr(10));
+    const x = (addInternalIssue(t, { title: '후속', parent: pr(10) }, now()) as { id: string }).id;
+    rebalanceIssueTree(t, now());
+    removeIssueTreeNode(t, issue(1));
+    rebalanceIssueTree(t, now());
+    const seed = t.nodes.find((n) => n.placed === 'seed')!.id;
+    addInternalIssue(t, { id: seed, title: '탐색' }, now());
+    expect(moveIssueTreeNode(t, x, null)).toMatchObject({ ok: true });
+    rebalanceIssueTree(t, now());
+    const preview = issueTreeFromView(issueTreeView(t, 'S'));
+    rebalanceIssueTree(preview, now());
+    expect(representativeIssue(t)?.id).toBe(x);
+    expect(representativeIssue(preview)?.id).toBe(x);
   });
 
   it('the seed stays when the model kept something under it, or named it', () => {

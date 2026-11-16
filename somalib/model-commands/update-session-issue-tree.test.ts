@@ -198,6 +198,19 @@ describe('the MCP preview applies them with the host’s function', () => {
     expect(JSON.stringify(s)).toBe(before);
   });
 
+  it('a snapshot with links and no tree (an older host): the preview builds the tree from them, as the host does', () => {
+    const s = getDefaultSessionSnapshot();
+    s.issues = [{ url: `${GH}/issues/5`, type: 'issue', provider: 'github' }];
+    s.prs = [{ url: `${GH}/pull/7`, type: 'pr', provider: 'github' }];
+    s.active = { issue: s.issues[0], pr: s.prs[0] };
+    const r = run(s, [{ action: 'add', resourceType: 'pr', url: `${GH}/pull/9`, parent: `${GH}/issues/5` }]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const after = (r.payload as { session: SessionResourceSnapshot }).session;
+    expect(parentOf(after, `${GH}/pull/7`)).toBe(issueTreeNodeId(`${GH}/issues/5`));
+    expect(parentOf(after, `${GH}/pull/9`)).toBe(issueTreeNodeId(`${GH}/issues/5`));
+  });
+
   it('refuses what would break the tree, naming why', () => {
     const r = run(snapshotWithTree(), [{ action: 'move', resourceType: 'pr', node: `${GH}/pull/7`, parent: null }]);
     expect(r).toMatchObject({

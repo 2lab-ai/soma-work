@@ -145,8 +145,8 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
   /** A trigger that came while one ran or within the interval: run once, later, with its latest arguments. */
   const pending = new Map<string, ReconcileArgs>();
   const timers = new Map<string, NodeJS.Timeout>();
-  /** `owner/name#branch` → the head sha and PRs of a found answer. */
-  const found = new Map<string, { sha: string; pulls: PullSummary[] }>();
+  /** `owner/name#branch` → the head sha and PRs of a found answer, and when that read began. */
+  const found = new Map<string, { sha: string; pulls: PullSummary[]; at: number }>();
   /** Who waits for a session's reconciles to settle. */
   const waiters = new Map<string, Array<() => void>>();
 
@@ -170,11 +170,15 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
       const key = `${c.owner.toLowerCase()}/${c.name.toLowerCase()}#${c.branch}`;
       if (asked.has(key)) continue;
       asked.add(key);
-      let pulls = found.get(key)?.sha === c.sha ? found.get(key)!.pulls : undefined;
+      const cached = found.get(key)?.sha === c.sha ? found.get(key) : undefined;
+      let pulls = cached?.pulls;
+      // When the read behind these PRs (their bodies' closing refs) began: an older read does not replace newer relations.
+      let readAt = cached?.at ?? now();
       if (!pulls) {
+        readAt = now();
         const answer = await deps.fetchPulls(c.owner, c.name, c.branch);
         if (!answer) continue;
-        if (answer.length > 0) found.set(key, { sha: c.sha, pulls: answer });
+        if (answer.length > 0) found.set(key, { sha: c.sha, pulls: answer, at: readAt });
         else found.delete(key);
         pulls = answer;
       }
@@ -191,7 +195,13 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
         issues.push(...closes);
         // The body as read now is the truth: no closing ref clears what an older body said.
         // Only for a PR the link notes above admitted (one the tree holds): a relation never adds a node.
-        relations.push({ kind: 'pr', url: link.url, rel: { closes: closes.map((l) => l.url) }, onlyIfPresent: true });
+        relations.push({
+          kind: 'pr',
+          url: link.url,
+          rel: { closes: closes.map((l) => l.url) },
+          relReadAt: readAt,
+          onlyIfPresent: true,
+        });
         const created = p.created_at ? Date.parse(p.created_at) : Number.NaN;
         const isNew = start !== undefined && Number.isFinite(created) && created >= start;
         // A candidate for the current link: this checkout's own PR — made after the session started, its head commit in

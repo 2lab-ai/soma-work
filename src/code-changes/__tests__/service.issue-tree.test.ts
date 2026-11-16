@@ -36,6 +36,7 @@ describe('code-changes service → issue tree', () => {
         title: 'Fix login',
         status: 'open',
         rel: { closes: ['https://github.com/acme/web/issues/9'], base: null },
+        relReadAt: 7, // when this collect's reads began (its clock)
         onlyIfPresent: true,
       },
     ]);
@@ -189,23 +190,60 @@ describe('code-changes service → issue tree', () => {
     expect(prNotes()[1].rel).toEqual({});
   });
 
-  it('a rejected issue read frees the session for the next collect, whose read reaches the tree and the card', async () => {
+  it('a rejected issue read is that issue’s failed read; a batch that throws still frees the session', async () => {
     const fetchIssue = vi
       .fn<(o: string, r: string, n: number) => Promise<{ title?: string; state?: string } | undefined>>()
       .mockRejectedValueOnce(new Error('network'))
       .mockResolvedValue({ title: 'login', state: 'open' });
     const h = harness({ fetchIssue });
+    const issueNotes = () => h.note.mock.calls.filter((c) => c[1].some((e) => e.url.includes('/issues/')));
     await h.svc.refresh('conv1');
     await flush();
     await flush();
-    expect(fetchIssue).toHaveBeenCalledTimes(1);
+    // The rejection is noted as a failed read (stamped, so the next pass reads the others first).
+    expect(issueNotes()[0][1]).toEqual([expect.objectContaining({ triedAt: expect.any(Number), onlyIfPresent: true })]);
+    // The tree write throws once: the batch ends, and the session is free for the next collect.
+    let threw = false;
+    h.note.mockImplementation((_k, entries) => {
+      if (!threw && entries.some((e) => e.url.includes('/issues/'))) {
+        threw = true;
+        throw new Error('disk full');
+      }
+      return true;
+    });
+    await h.svc.refresh('conv1');
+    await flush();
+    await flush();
+    expect(threw).toBe(true);
     const pushes = h.pushCard.mock.calls.length;
     await h.svc.refresh('conv1');
     await flush();
     await flush();
-    expect(fetchIssue).toHaveBeenCalledTimes(2);
-    const issueNotes = h.note.mock.calls.filter((c) => c[1].some((e) => e.url.includes('/issues/')));
-    expect(issueNotes).toHaveLength(1);
+    expect(fetchIssue).toHaveBeenCalledTimes(3);
+    expect(issueNotes().at(-1)?.[1]).toEqual([expect.objectContaining({ title: 'login' })]);
     expect(h.pushCard.mock.calls.length).toBeGreaterThan(pushes + 1);
+  });
+
+  it('a session that replaced the old one under its key reads its issues even while the old one’s batch is out', async () => {
+    const answers: Array<(v: { title: string; state: string }) => void> = [];
+    const fetchIssue = vi.fn(() => new Promise<{ title: string; state: string }>((r) => answers.push(r)));
+    const h = harness({ fetchIssue });
+    await h.svc.refresh('conv1');
+    await flush();
+    expect(fetchIssue).toHaveBeenCalledTimes(1);
+    const fresh = { ...h.session };
+    h.sessions.set('k1', fresh); // /new under the same key
+    await h.svc.refresh('conv1');
+    await flush();
+    expect(fetchIssue).toHaveBeenCalledTimes(2);
+    const before = h.note.mock.calls.length;
+    answers[0]({ title: 'old', state: 'open' }); // the old session's answer: dropped
+    await flush();
+    await flush();
+    expect(h.note.mock.calls.length).toBe(before);
+    answers[1]({ title: 'new', state: 'open' }); // the new session's: noted
+    await flush();
+    await flush();
+    expect(h.note.mock.calls.length).toBe(before + 1);
   });
 });

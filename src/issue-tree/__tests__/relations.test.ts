@@ -134,6 +134,24 @@ describe('issue-tree relations', () => {
     });
   });
 
+  it('one issue read that rejects is that issue’s failed read: the others in the batch are kept', async () => {
+    const fetchIssue = vi.fn(async (_o: string, _r: string, n: number) => {
+      if (n === 8) throw new Error('network');
+      return { state: 'open' };
+    });
+    const out = await refreshIssueEntries([`${GH}/issues/7`, `${GH}/issues/8`, `${GH}/issues/9`], fetchIssue, 50);
+    expect(out.map((e) => [e.url.split('/').pop(), e.checkedAt ?? null, e.triedAt ?? null])).toEqual([
+      ['7', 50, null],
+      ['8', null, 50],
+      ['9', 50, null],
+    ]);
+  });
+
+  it('PR entries carry when their read began, so an older read from the other reader does not replace them', () => {
+    const [e] = prTreeEntries([{ url: `${GH}/pull/1`, repo: 'a/b', state: 'open', closes: [] }], 123);
+    expect(e.relReadAt).toBe(123);
+  });
+
   it('an issue URL with a query or a comment anchor is read; a URL that is no issue takes no read slot', async () => {
     const fetchIssue = vi.fn(async () => ({ state: 'open' }));
     const junk = Array.from({ length: 8 }, (_, i) => `https://github.com/a/b/pull/${i}`);

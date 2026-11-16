@@ -208,9 +208,16 @@ describe('createSessionPrReconciler (#833)', () => {
         kind: 'pr',
         url: 'https://github.com/a/b/pull/12',
         rel: { closes: ['https://github.com/a/b/issues/832', 'https://github.com/acme/other/issues/3'] },
+        relReadAt: expect.any(Number),
         onlyIfPresent: true,
       },
-      { kind: 'pr', url: 'https://github.com/a/b/pull/13', rel: { closes: [] }, onlyIfPresent: true },
+      {
+        kind: 'pr',
+        url: 'https://github.com/a/b/pull/13',
+        rel: { closes: [] },
+        relReadAt: expect.any(Number),
+        onlyIfPresent: true,
+      },
     ]);
   });
 

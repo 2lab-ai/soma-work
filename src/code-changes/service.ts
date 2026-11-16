@@ -125,7 +125,7 @@ export function createCodeChangesService<S extends SessionLike>(deps: CodeChange
         const read = result.doc.prs.map((pr) =>
           pr.fetchedAt >= readFrom ? pr : { ...pr, closes: undefined, baseRef: undefined },
         );
-        deps.issueTree.note(key, prTreeEntries(read));
+        deps.issueTree.note(key, prTreeEntries(read, readFrom));
       } catch (error) {
         deps.logger?.debug('issue tree: PR relations not noted', { key, error: (error as Error)?.message });
       }
@@ -147,14 +147,17 @@ export function createCodeChangesService<S extends SessionLike>(deps: CodeChange
     });
   }
 
-  /** Sessions whose issue reads are under way: one batch at a time each (a later collect does not ask the same again). */
-  const refreshing = new Set<string>();
+  /**
+   * The session (by key, the instance) whose issue reads are under way: one batch at a time each. A session that replaced
+   * it under the same key (`/new`) is not held back by the old one's batch.
+   */
+  const refreshing = new Map<string, unknown>();
 
   /** .prd/29 — the tree's GitHub issues not read yet: their titles, states and parents (once each), then the card. */
   async function refreshIssues(key: string, session: S): Promise<void> {
     const tree = deps.issueTree;
-    if (!tree || refreshing.has(key)) return;
-    refreshing.add(key);
+    if (!tree || refreshing.get(key) === session) return;
+    refreshing.set(key, session);
     try {
       const urls = tree.toCheck(key);
       if (urls.length === 0) return;
@@ -165,7 +168,7 @@ export function createCodeChangesService<S extends SessionLike>(deps: CodeChange
     } catch (error) {
       deps.logger?.debug('issue tree: issues not read', { key, error: (error as Error)?.message });
     } finally {
-      refreshing.delete(key);
+      if (refreshing.get(key) === session) refreshing.delete(key);
     }
   }
 

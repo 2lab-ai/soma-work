@@ -258,6 +258,8 @@ export interface IssueTreeNode {
   checkedAt?: number;
   /** When a read of it last failed (a deleted issue, no access): the next reads go to the others first. */
   triedAt?: number;
+  /** When the read behind its relations began: an older read (another reader, slower) does not replace them. */
+  relReadAt?: number;
 }
 export interface SessionIssueTree {
   nodes: IssueTreeNode[];
@@ -268,7 +270,7 @@ export interface SessionIssueTree {
  * A node as GET_SESSION and the dashboard read it: the stored node (its relations included, so a preview rebuilt from
  * the view places nodes as the host does) without the host's read bookkeeping.
  */
-export type IssueTreeViewNode = Omit<IssueTreeNode, 'addedAt' | 'checkedAt' | 'triedAt'>;
+export type IssueTreeViewNode = Omit<IssueTreeNode, 'addedAt' | 'checkedAt' | 'triedAt' | 'relReadAt'>;
 /** What the model (GET_SESSION) and the dashboard read: the nodes in the order they came, the seed's title filled in. */
 export interface IssueTreeView {
   nodes: IssueTreeViewNode[];

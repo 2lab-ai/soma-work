@@ -50,4 +50,11 @@ describe('fetchGitHubIssueMeta (.prd/29)', () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('timeout')));
     expect(await fetchGitHubIssueMeta('acme', 'web', 7)).toBeUndefined();
   });
+
+  it('an answer without a known state is a failed read (it would clear the parent and mark the issue checked)', async () => {
+    for (const body of [{ number: 7 }, { number: 7, state: 'weird' }]) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => body }));
+      expect(await fetchGitHubIssueMeta('acme', 'web', 7)).toBeUndefined();
+    }
+  });
 });

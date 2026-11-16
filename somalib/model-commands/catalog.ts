@@ -152,7 +152,7 @@ function getRatingStore(): RatingStore | null {
 }
 
 import { attachCommandHelp } from './command-help';
-import { applyIssueTreeOperations, issueTreeFromView, issueTreeView } from './issue-tree';
+import { applyIssueTreeOperations, issueTreeFromLinks, issueTreeFromView, issueTreeView } from './issue-tree';
 import {
   getSuccessMessage,
   SHARE_CONTENT_CHAR_LIMIT,
@@ -914,7 +914,11 @@ function applySessionUpdateToSnapshot(
   const treeOps = request.operations ?? [];
   if (treeOps.some((op) => op.resourceType !== 'doc' && op.action !== 'set_active')) {
     const seedTitle = snapshot.issueTree?.nodes.find((n) => n.placed === 'seed')?.title;
-    const applied = applyIssueTreeOperations(issueTreeFromView(snapshot.issueTree), treeOps, Date.now());
+    // A snapshot with links and no tree (a session read before its tree was made): the tree the host makes from them.
+    const base = snapshot.issueTree
+      ? issueTreeFromView(snapshot.issueTree)
+      : issueTreeFromLinks({ issues: snapshot.issues, prs: snapshot.prs, docs: [] }, 0, snapshot.active);
+    const applied = applyIssueTreeOperations(base, treeOps, Date.now());
     if (!applied.ok) {
       return { ok: false, error: { code: 'INVALID_OPERATION', message: applied.error } };
     }
