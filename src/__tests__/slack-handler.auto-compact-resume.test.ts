@@ -483,21 +483,45 @@ describe('SlackHandler — resume after an auto-compact stop (T3)', () => {
       canDrain,
     });
 
-    it("an older run's late boundary does not take the mark of a stop inside a newer run (R2 astra P1)", async () => {
-      // A replay inside the run of generation 7 was cut; generation 6's epilogue is still settling.
-      handlerAny.nestedAutoCompactStops.set(SESSION_KEY, 7);
+    /** The lane's current turn generation (the last run the dispatcher started). */
+    const currentEpoch = (): number => handlerAny.followupDispatcher.snapshot(SESSION_KEY).turnEpoch;
 
-      await handlerAny.drainFollowups(SESSION_KEY, reportOf(6, { result: 'error', reason: 'boom' }));
+    it("an older run's late boundary does not take the mark of a stop inside a newer run (R2 astra P1)", async () => {
+      // A run on the lane; a replay inside it was cut. The previous generation's epilogue is still settling.
+      await handler.handleMessage(message({ ts: '222.970', text: '앞선 지시' }), say());
+      await settleTicks();
+      const newer = currentEpoch();
+      handlerAny.nestedAutoCompactStops.set(SESSION_KEY, newer);
+
+      await handlerAny.drainFollowups(SESSION_KEY, reportOf(newer - 1, { result: 'error', reason: 'boom' }));
       await settleTicks();
       expect(resumed()).toBe(false);
-      expect(handlerAny.nestedAutoCompactStops.get(SESSION_KEY)).toBe(7);
+      expect(handlerAny.nestedAutoCompactStops.get(SESSION_KEY)).toBe(newer);
 
-      // Generation 7's own boundary takes it and carries the work on — once.
-      await handlerAny.drainFollowups(SESSION_KEY, reportOf(7, { result: 'safe' }));
+      // The newer run's own boundary takes it and carries the work on — once.
+      await handlerAny.drainFollowups(SESSION_KEY, reportOf(newer, { result: 'safe' }));
       await until(resumed);
       expect(resumed()).toBe(true);
       expect(handlerAny.nestedAutoCompactStops.has(SESSION_KEY)).toBe(false);
       expect(routedTexts().filter((t) => /\[auto-compact\]/.test(t))).toHaveLength(1);
+    });
+
+    it('a boundary that settles after a newer run already started adds no continuation (R3 astra P2)', async () => {
+      // Run A: a replay inside it was cut; A settled safe, but its boundary is still settling.
+      await handler.handleMessage(message({ ts: '222.980', text: '런 A' }), say());
+      await settleTicks();
+      const runA = currentEpoch();
+      handlerAny.nestedAutoCompactStops.set(SESSION_KEY, runA);
+      // Meanwhile a person's message starts run B, which carries the conversation on and completes.
+      await handler.handleMessage(message({ ts: '222.981', text: '런 B' }), say());
+      await settleTicks();
+      expect(currentEpoch()).toBeGreaterThan(runA);
+      expect(routedTexts()).toContain('런 B');
+
+      // A's boundary finally runs.
+      await handlerAny.drainFollowups(SESSION_KEY, reportOf(runA, { result: 'safe' }));
+      await settleTicks();
+      expect(resumed()).toBe(false);
     });
 
     it("Send now that ends unhealthy: the stop inside it is that run's own end — a later run does not resume it (R2 astra P2)", async () => {

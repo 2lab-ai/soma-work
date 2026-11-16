@@ -7049,6 +7049,15 @@ export class SlackHandler {
     // it starts after. Not after a run that failed or was stopped — that is its
     // own end.
     if (nestedStop && final?.outcome?.result === 'safe') {
+      // A newer run already started on the lane while this boundary was still
+      // settling (astra R3): it carried the conversation on, so no continuation.
+      const current = this.followupDispatcher?.snapshot(final.sessionKey).turnEpoch;
+      if (current !== undefined && current !== final.turnEpoch) {
+        this.logger.info('Auto-compact stop of a replay inside the run — a newer run already carried it on', {
+          sessionKey,
+        });
+        return;
+      }
       this.logger.info('Auto-compact stop of a replay inside the run — resuming the work at its boundary', {
         sessionKey,
       });
