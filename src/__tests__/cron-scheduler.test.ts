@@ -314,6 +314,63 @@ describe('CronScheduler — Busy Queue + Idle Drain', () => {
     expect(injectedMessages).toHaveLength(2);
   });
 
+  // #1292 — a session waiting on its user's answer runs no turn. A fire that queued behind it waited for that
+  // answer: a job's own poll cron (created to carry on while an approval question is open) never ran.
+  it('injects into a waiting session at once — an open question runs no turn (#1292)', async () => {
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({
+      name: 'poll-while-asking',
+      expression: '* * * * *',
+      prompt: 'check the approvals',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: 'thread-1',
+    });
+
+    const { deps, injectedMessages } = createMockDeps(storage);
+    deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'thread-1');
+    deps.sessionRegistry.transitionToMain('C456', 'thread-1', 'default');
+    deps.sessionRegistry.setActivityState('C456', 'thread-1', 'working');
+    deps.sessionRegistry.setActivityState('C456', 'thread-1', 'waiting');
+
+    const scheduler = new CronScheduler(deps);
+    await scheduler.tick();
+
+    expect(injectedMessages).toHaveLength(1);
+    expect(injectedMessages[0].text).toContain('[cron:poll-while-asking]');
+    expect(injectedMessages[0].synthetic).toBe(true);
+    expect(scheduler.getPendingQueueSize('work:C456:thread-1')).toBe(0);
+  });
+
+  it('runs a fire queued behind a turn when that turn ends waiting on a question (#1292)', async () => {
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({
+      name: 'queued-behind-question',
+      expression: '* * * * *',
+      prompt: 'carry on',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: 'thread-1',
+    });
+
+    const { deps, injectedMessages } = createMockDeps(storage);
+    deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'thread-1');
+    deps.sessionRegistry.transitionToMain('C456', 'thread-1', 'default');
+    deps.sessionRegistry.setActivityState('C456', 'thread-1', 'working');
+
+    const scheduler = new CronScheduler(deps);
+    await scheduler.tick();
+    expect(scheduler.getPendingQueueSize('work:C456:thread-1')).toBe(1);
+
+    // The turn ends with a question to the user: no turn runs now, so the queued fire runs.
+    deps.sessionRegistry.setActivityState('C456', 'thread-1', 'waiting');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(injectedMessages).toHaveLength(1);
+    expect(injectedMessages[0].text).toContain('[cron:queued-behind-question]');
+    expect(scheduler.getPendingQueueSize('work:C456:thread-1')).toBe(0);
+  });
+
   // Trace: S5, Section 5 — Side-Effect (orphan cleanup)
   it('orphaned queue cleaned on session removal', async () => {
     const storage = new CronStorage(tmpFile);
@@ -377,6 +434,24 @@ describe('SessionRegistry — onIdle callbacks', () => {
     registry.setActivityState('C1', 't1', 'working');
     registry.setActivityState('C1', 't1', 'idle');
     expect(fired).toEqual([]);
+  });
+
+  // #1292 — waiting runs no turn either: the queued fires go, by key as well as by channel/thread.
+  it('callbacks fire when the session starts waiting on a question', () => {
+    const registry = new SessionRegistry();
+    registry.createSession('U1', 'Test', 'C1', 't1');
+    registry.transitionToMain('C1', 't1', 'default');
+    registry.setActivityState('C1', 't1', 'working');
+
+    const fired: string[] = [];
+    registry.registerOnIdle('C1-t1', () => fired.push('by-thread'));
+    registry.setActivityState('C1', 't1', 'waiting');
+    expect(fired).toEqual(['by-thread']);
+
+    registry.setActivityState('C1', 't1', 'working');
+    registry.registerOnIdle('C1-t1', () => fired.push('by-key'));
+    registry.setActivityStateByKey(registry.getSessionKey('C1', 't1'), 'waiting');
+    expect(fired).toEqual(['by-thread', 'by-key']);
   });
 
   it('callback error does not break others', () => {

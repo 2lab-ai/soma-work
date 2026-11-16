@@ -2174,6 +2174,9 @@ export class SessionRegistry {
 
     // Persist on idle and on entering or leaving waiting (#1072) — working starts every turn.
     if (state === 'waiting' || (leftWaiting && state !== 'idle')) this.saveSessions();
+    // #1292 — a session waiting on its user's answer runs no turn either: the cron fires queued behind its
+    // last turn run now. Only those: the goal loop (the post-drain hook below) still waits for the answer.
+    if (state === 'waiting') this.drainOnIdleCallbacks(this.getSessionKey(channelId, threadTs));
     if (state === 'idle') {
       this.saveSessions();
       // Drain onIdle callbacks (e.g., pending cron jobs)
@@ -2210,6 +2213,8 @@ export class SessionRegistry {
 
     // #1072 — entering and leaving waiting are saved too (see setActivityState).
     if (state === 'waiting' || (leftWaiting && state !== 'idle')) this.saveSessions();
+    // #1292 — queued cron fires run while the session waits on its user (see setActivityState).
+    if (state === 'waiting') this.drainOnIdleCallbacks(sessionKey);
     if (state === 'idle') {
       this.saveSessions();
       // Drain onIdle callbacks (e.g., pending cron jobs)
@@ -2243,7 +2248,8 @@ export class SessionRegistry {
   }
 
   /**
-   * Register a callback to be fired when a session transitions to idle.
+   * Register a callback to be fired when a session stops running turns: on the switch to idle, and on the
+   * switch to waiting (an open question to the user runs no turn, #1292).
    * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 5, Section 3c
    */
   registerOnIdle(sessionKey: string, callback: () => void): void {
