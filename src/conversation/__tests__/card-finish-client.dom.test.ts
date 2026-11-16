@@ -119,12 +119,14 @@ type Page = {
   card(key: string, model: string, host: El): void;
   setModel(key: string, model: string): void;
   repaints(): number;
+  syncs(): number;
 };
 function page(): Page {
   return new Function(
     `${CARD_FINISH_CLIENT_JS}
 var _cardData = {}, _cardDrawn = {}, _sessionCache = {}, _cardHost = {}, _cardCol = {};
 var _repaints = 0;
+var _syncs = 0;
 function viewCardOf(s) { return { id: s.key, title: s.title }; }
 function inboxPaint() { _repaints++; syncCardFinish(); }
 function paintCardBody() {}
@@ -133,7 +135,7 @@ var _cardFinishDirty = false;
 var _cardFinishGen = 0;
 var _cardFinishSeen = Object.create(null);
 ${clientFn('cardFinishHold')}
-${clientFn('syncCardFinish')}
+${clientFn('syncCardFinish').replace('function syncCardFinish() {', 'function syncCardFinish() {\n  _syncs++;')}
 ${clientFn('cardFinishStale')}
 ${clientFn('refreshCard')}
 return {
@@ -149,6 +151,7 @@ return {
   },
   setModel: function(key, model) { _sessionCache[key].model = model; },
   repaints: function() { return _repaints; },
+  syncs: function() { return _syncs; },
 };`,
   )() as Page;
 }
@@ -166,8 +169,12 @@ describe('the page’s sync — a model switch on a card whose face stays the sa
 
     // A push that changes nothing the finish reads costs no board-wide pass.
     expect(p.stale('C:1')).toBe(false);
+    const before = p.syncs();
+    p.refresh('C:1');
     p.setModel('C:1', 'claude-sonnet-4-6');
     expect(p.stale('C:1')).toBe(false);
+    p.refresh('C:1');
+    expect(p.syncs()).toBe(before);
 
     p.setModel('C:1', 'claude-fable-5-2[1m]');
     expect(p.stale('C:1')).toBe(true);
