@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { FollowupItem } from '@soma/slack/followup-queue';
 import type { FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { registerPublicChannel } from '../__fixtures__/public-channel';
 
 /**
  * Dashboard batch 2 — the session's follow-up queue on the panel (<ui-agent-steering>). Z: "show each
@@ -207,6 +208,8 @@ describe('Dashboard — the follow-up queue (batch 2)', () => {
     act = vi.fn(async () => ({ ok: true }));
     dashboard.setDashboardFollowupHandler({ view: (key) => (key === KEY ? view : undefined), act: act as any });
     await webServer.startWebServer({ listen: false });
+    // #1315 — another signed-in user reads these tasks: their channels are public ones.
+    await registerPublicChannel('C1', 'C2');
   }, 60_000);
 
   afterEach(async () => {

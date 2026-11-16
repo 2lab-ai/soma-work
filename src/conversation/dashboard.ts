@@ -176,6 +176,14 @@ import { soundClientJs } from './sound-client';
 import { bootScreenCss, withBootScreen } from './boot-screen';
 import { themeClientJs } from './theme-client';
 import { renderTaskPlanHtml, renderTaskPlanPage, TASK_PLAN_CSS, TASK_PLAN_PAGE_CSP } from './task-plan-html';
+import {
+  boardForViewer,
+  canViewTask,
+  cardForViewer,
+  isPrivateTask,
+  type TaskViewer,
+  type VisibleCard,
+} from './task-visibility';
 import { CODE_CHANGES_CSS, CODE_CHANGES_JS } from './code-changes-client';
 import { ensureTitleSub, regenerateTitleSub, type TitleSubResult } from './title-sub';
 import {
@@ -254,6 +262,13 @@ export interface KanbanSession {
   repo?: string;
   /** The channel is private (card-where.ts): no name and no channel-mapped repo go to the board's viewers. */
   channelPrivate?: true;
+  /**
+   * #1315 — 비공개 작업: the task's Slack conversation is not everyone's to read (a private channel, a DM, a channel
+   * the registry does not say is public — task-visibility.ts). Only its owner and admins get this card, and its face
+   * carries the key. Every card this build makes says true or false; a card without it (a sibling instance on an older
+   * build) counts as private.
+   */
+  privateTask?: boolean;
   /**
    * SSOT 2026-11-05 — the board's sort clocks (epoch ms): when the task started (its own start, else its Slack
    * thread's first message) and when its work last moved (the later of its last input and its last change of
@@ -1239,7 +1254,11 @@ async function readCapacity(): Promise<CapacityView> {
 }
 
 /** A cron run's session, live or archived, keyed by its canonical session key. */
-function cronRunSessionIndex(): CronRunSessionLookup {
+/**
+ * `viewer` (#1315) — a run's task this viewer may not see (a private one: the job moved off its private channel, or
+ * fired into someone's private thread) is left out, so its run shows no title, link or usage.
+ */
+function cronRunSessionIndex(viewer: TaskViewer | undefined): CronRunSessionLookup {
   const index = new Map<string, NonNullable<ReturnType<CronRunSessionLookup>> & { archivedAt?: number }>();
   const usageOf = (u: any) =>
     u
@@ -1254,7 +1273,7 @@ function cronRunSessionIndex(): CronRunSessionLookup {
       : {};
   try {
     for (const archived of getArchiveStore().listRecent(CRON_RUN_ARCHIVE_WINDOW_MS)) {
-      if (!archived?.sessionKey) continue;
+      if (!archived?.sessionKey || !canViewTask(viewer, archived)) continue;
       const key = normalizeSessionKey(archived.sessionKey);
       // listRecent is not ordered: a thread archived twice keeps its newest archive.
       const prev = index.get(key);
@@ -1294,6 +1313,10 @@ function cronRunSessionIndex(): CronRunSessionLookup {
   }
   for (const [key, s] of getAllSessions().entries()) {
     if (!s?.channelId) continue;
+    if (!canViewTask(viewer, s)) {
+      index.delete(buildWorkSessionKey(s.channelId, s.threadTs));
+      continue;
+    }
     const u = tokenUsageOf(s);
     index.set(buildWorkSessionKey(s.channelId, s.threadTs), {
       cronJobId: s.cronJob?.id,
@@ -1386,7 +1409,89 @@ function requireInstructAccess(request: any, reply: any, sessionKey: string): bo
       return false;
     }
   }
+  // #1315 — a private task (a private channel, or one the registry cannot say is public): the same as a DM. Anyone
+  // else never reaches here (the private-task gate answered 404); an admin who may see it writes in admin mode.
+  if (target && isPrivateTask(target.channelId) && actor !== target.ownerId) {
+    if (!_hasWriteAccess(request, target.ownerId)) {
+      reply
+        .status(403)
+        .send({ error: 'Forbidden — a private task takes instructions from its owner, or an admin in admin mode' });
+      return false;
+    }
+  }
   return true;
+}
+
+/**
+ * #1315 — 비공개 작업: a private task's routes answer 404 to anyone but its owner and admins, as if the task did not
+ * exist (task-visibility.ts). One gate for every route that reads or acts on one task, wherever it is registered:
+ * under /api/dashboard/session/ (by session key or conversation id), the plan page, and the conversation pages and
+ * JSON. It is appended to each matching route's pre-handlers as the route is added, so it runs after the sign-in
+ * check: install it before those routes (web-server.ts does, before any; registerDashboardRoutes does too).
+ */
+const PRIVATE_TASK_ROUTE = /^\/(?:api\/dashboard\/session|dashboard\/plan|conversations|api\/conversations)\/:/;
+const _privateTaskGated = new WeakSet<object>();
+export function installPrivateTaskGate(server: FastifyInstance): void {
+  if (_privateTaskGated.has(server)) return;
+  _privateTaskGated.add(server);
+  server.addHook('onRoute', (route) => {
+    if (typeof route.url !== 'string' || !PRIVATE_TASK_ROUTE.test(route.url)) return;
+    const pre = route.preHandler;
+    const list = Array.isArray(pre) ? pre : pre ? [pre] : [];
+    route.preHandler = [...list, privateTaskGate] as typeof route.preHandler;
+  });
+}
+
+async function privateTaskGate(request: any, reply: any): Promise<unknown> {
+  if (reply.sent) return;
+  // An admin sees every task: nothing to look up. A request with no viewer at all (a sign-in check that let it through
+  // without one) sees what a stranger sees — public tasks only.
+  const viewer = request.authContext as TaskViewer | undefined;
+  if (viewer?.isAdmin === true) return;
+  let task: Awaited<ReturnType<typeof gatedTaskOf>>;
+  try {
+    task = await gatedTaskOf(request.params ?? {}, request.authorizedResource);
+  } catch (error) {
+    // A lookup that fails cannot say the task is public: fail closed, as for a task this viewer may not see.
+    logger.warn('Private-task gate could not read the task — refused', { url: request.url, error: String(error) });
+    reply.status(404).send({ error: 'Not found' });
+    return reply;
+  }
+  if (task === UNRESOLVED_TASK || (task && !('unresolved' in task) && !canViewTask(viewer, task))) {
+    reply.status(404).send({ error: 'Not found' });
+    return reply;
+  }
+}
+
+/**
+ * A session key or conversation id that names no task: refused at the gate, not passed on — a task that appears
+ * between this read and the route's own read would otherwise be served to whoever asked.
+ */
+const UNRESOLVED_TASK = Object.freeze({ unresolved: true as const });
+
+/**
+ * The task a gated route names: a live session by its key (an archived card's key: that archive), else the
+ * conversation by its id — the record a pre-handler before the gate already loaded, when one did. A key or id that
+ * names nothing: UNRESOLVED_TASK, refused. Undefined: a sibling instance's key (the route answers 409) or a route
+ * with neither. A failed read throws.
+ */
+async function gatedTaskOf(
+  params: Record<string, unknown>,
+  loaded?: unknown,
+): Promise<{ channelId?: unknown; ownerId?: unknown } | typeof UNRESOLVED_TASK | undefined> {
+  if (typeof params.key === 'string' && params.key) {
+    const local = stripSelfInstancePrefix(params.key);
+    if (local === null) return undefined;
+    const card = parseArchivedCardKey(local);
+    if (card) return getArchiveStore().load(card.sessionKey, card.archivedAt) ?? UNRESOLVED_TASK;
+    const sessions = getAllSessions();
+    return sessions.get(local) ?? sessions.get(normalizeSessionKey(local)) ?? UNRESOLVED_TASK;
+  }
+  const id =
+    typeof params.conversationId === 'string' ? params.conversationId : typeof params.id === 'string' ? params.id : '';
+  if (!id) return undefined;
+  if (loaded && typeof loaded === 'object') return loaded as { channelId?: unknown; ownerId?: unknown };
+  return liveTaskOfConversation(id) ?? (await getConversation(id)) ?? UNRESOLVED_TASK;
 }
 
 /** A Slack DM channel id (`D…`) — a conversation only its two members can write in. */
@@ -1396,7 +1501,7 @@ function isDirectMessageChannel(channelId: unknown): boolean {
 
 /**
  * Write-gate for kanban session actions (stop / close / trash / command /
- * answer-* / submit-recommended). Reads remain world-readable per #716.
+ * answer-* / submit-recommended). Reads remain world-readable per #716, a private task's excepted (#1315).
  */
 function requireSessionOwner(request: any, reply: any, sessionKey: string): boolean {
   const sessions = _getSessionsFn?.();
@@ -2601,8 +2706,8 @@ function cardUserMedia(conversationId: string | undefined): { count: number } | 
 }
 
 /**
- * A new artifact: tell every dashboard (the list is readable by any signed-in
- * user — artifact-routes.ts) and re-push the live card so its face row grows.
+ * A new artifact: tell every dashboard that may see its task (#1315 — a private task's: its owner and admins) and
+ * re-push the live card so its face row grows.
  */
 export function broadcastArtifactUpdate(artifact: SessionArtifact): void {
   if (wsClients.size > 0) {
@@ -2613,13 +2718,22 @@ export function broadcastArtifactUpdate(artifact: SessionArtifact): void {
         conversationId: artifact.conversationId,
         artifact: boardArtifact(artifact),
       });
-      for (const client of wsClients) {
-        try {
-          client.send(payload);
-        } catch {
-          wsClients.delete(client);
-        }
-      }
+      // #1315 — only the sockets that may see the task (a private task's: its owner and admins). A task no longer live
+      // (an archived card's backfill) is read from its conversation record.
+      const live = liveTaskOfConversation(artifact.conversationId);
+      if (live) sendToTaskViewers(live, payload);
+      else
+        void getConversation(artifact.conversationId)
+          .then((record) => sendToTaskViewers(record ?? undefined, payload))
+          .catch((error) => {
+            // A storage failure, not a visibility decision: say so, and tell admins only (nobody else can be shown).
+            logger.warn('Artifact push: could not read the conversation — admins only', {
+              conversationId: artifact.conversationId,
+              artifactId: artifact.id,
+              error: String(error),
+            });
+            sendToTaskViewers(undefined, payload);
+          });
     } catch (error) {
       logger.error('Failed to broadcast artifact update', error);
     }
@@ -2743,6 +2857,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     channelId: s.channelId,
     threadTs: s.threadTs,
     ...cardWhereOf(s),
+    privateTask: isPrivateTask(s.channelId),
     ...liveCardClocks(s),
     // A turn blocked on a permission prompt waits for its user (projection
     // only — the session's own activityState is untouched).
@@ -2950,6 +3065,7 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
     channelId: archived.channelId,
     threadTs: archived.threadTs,
     ...cardWhereOf(archived),
+    privateTask: isPrivateTask(archived.channelId),
     ...archivedCardClocks(archived),
     activityState: 'idle', // Archived sessions are not active
     sessionState: archived.archiveReason === 'sleep_expired' ? 'SLEEPING' : 'TERMINATED',
@@ -3422,13 +3538,76 @@ type WsClient = {
 };
 const wsClients = new Set<WsClient>();
 
-/** Broadcast session state update to all connected WebSocket clients */
+/**
+ * #1315 — one board, each socket its own view of it (task-visibility.ts): a private task's card goes to its owner and
+ * admins only. Serialised once for everyone who sees all of it, once for everyone who owns no private card on it (the
+ * public cards), and once per owner of a private card.
+ */
+function sessionUpdatePayloads(board: KanbanBoard): (client: WsClient) => string {
+  const privateOwners = new Set<string>();
+  const note = (card: VisibleCard): void => {
+    if (card.privateTask !== false && card.ownerId) privateOwners.add(card.ownerId);
+    for (const kid of card.epic?.children ?? []) note(kid);
+  };
+  for (const column of Object.values(board) as KanbanSession[][]) for (const card of column) note(card);
+  let whole: string | undefined;
+  const byViewer = new Map<string, string>();
+  return (client) => {
+    const id =
+      client.isAdmin === true
+        ? 'admin'
+        : client.userId && privateOwners.has(client.userId)
+          ? `u:${client.userId}`
+          : 'public';
+    const known = byViewer.get(id);
+    if (known !== undefined) return known;
+    const shown = boardForViewer(board, client);
+    const payload =
+      shown === board
+        ? (whole ??= JSON.stringify({ type: 'session_update', board }))
+        : JSON.stringify({ type: 'session_update', board: shown });
+    byViewer.set(id, payload);
+    return payload;
+  };
+}
+
+/**
+ * #1315 — a push about one task goes to the sockets that may see it. A task this instance cannot find any more goes to
+ * admins only: nobody else can be shown to see it.
+ */
+function sendToTaskViewers(task: { channelId?: unknown; ownerId?: unknown } | undefined, payload: string): void {
+  for (const client of wsClients) {
+    if (task ? !canViewTask(client, task) : client.isAdmin !== true) continue;
+    try {
+      client.send(payload);
+    } catch {
+      wsClients.delete(client);
+    }
+  }
+}
+
+/** The live session (or, failing that, the conversation's live session) a push is about. */
+function liveTaskOfConversation(conversationId: string): { channelId?: unknown; ownerId?: unknown } | undefined {
+  const sessions = _getSessionsFn?.();
+  if (!sessions) return undefined;
+  for (const [, s] of sessions) if (s?.conversationId === conversationId) return s;
+  return undefined;
+}
+
+/** Broadcast session state update to all connected WebSocket clients — each its own view (#1315). */
 export function broadcastSessionUpdate(): void {
   if (wsClients.size === 0) return;
   try {
-    const board = buildKanbanBoard();
-    const payload = JSON.stringify({ type: 'session_update', board });
+    const payloadFor = sessionUpdatePayloads(buildKanbanBoard());
     for (const client of wsClients) {
+      // A board that cannot be serialised is not the socket's fault: it stays registered for the next push.
+      let payload: string;
+      try {
+        payload = payloadFor(client);
+      } catch (error) {
+        logger.error('Failed to build a viewer board for a session update', error);
+        continue;
+      }
       try {
         client.send(payload);
       } catch {
@@ -3462,13 +3641,7 @@ export function broadcastTaskUpdate(
       earlierTasks,
       tasksOutside: tasksOutside ?? null,
     });
-    for (const client of wsClients) {
-      try {
-        client.send(payload);
-      } catch {
-        wsClients.delete(client);
-      }
-    }
+    sendToTaskViewers(live, payload);
   } catch (error) {
     logger.error('Failed to broadcast task update', error);
   }
@@ -3490,7 +3663,9 @@ function sendToConversationAudience(conversationId: string, payload: string): vo
     for (const [, s] of sessions) {
       if (s.conversationId === conversationId) {
         ownerId = s.ownerId;
-        initiatorId = s.currentInitiatorId;
+        // #1315 — a private task's turns are its owner's and the admins': whoever else instructed it from Slack (a
+        // member of the private channel) does not follow it on the dashboard.
+        initiatorId = isPrivateTask(s.channelId) ? undefined : s.currentInitiatorId;
         break;
       }
     }
@@ -3571,13 +3746,7 @@ export function broadcastSummaryTitleChanged(sessionKey: string, summaryTitle: s
       summaryTitle,
       displayHeadline: displayTitle(session),
     });
-    for (const client of wsClients) {
-      try {
-        client.send(payload);
-      } catch {
-        wsClients.delete(client);
-      }
-    }
+    sendToTaskViewers(session, payload);
   } catch (error) {
     logger.error('Failed to broadcast summaryTitleChanged', error);
   }
@@ -3602,9 +3771,13 @@ export function broadcastSingleSessionUpdate(sessionKey: string): void {
     const [key, shown] = bundlingEpicOf(session) ?? [sessionKey, session];
     const kanban = sessionToKanban(key, shown);
     const payload = JSON.stringify({ type: 'sessionUpdated', session: kanban });
+    // #1315 — the card as each socket may see it: none for a private task's stranger, an epic without its private
+    // children.
     for (const client of wsClients) {
+      const card = cardForViewer(kanban, client);
+      if (!card) continue;
       try {
-        client.send(payload);
+        client.send(card === kanban ? payload : JSON.stringify({ type: 'sessionUpdated', session: card }));
       } catch {
         wsClients.delete(client);
       }
@@ -3653,17 +3826,15 @@ export const scheduleLiveSessionUpdate = createLiveUpdateThrottle((key) => broad
 export const CLOSE_REFUSED_TEXT =
   '남은 처리(슬랙 스레드 알림이나 대기 중인 후속 메시지)를 넘기지 못해 닫지 않았어요 — 잠시 뒤 다시 시도하거나 관리자에게 알려 주세요.';
 
-function broadcastSessionAction(sessionKey: string, action: 'stop' | 'close' | 'trash'): void {
+/** `task` — the session as it was before the action (a close or a trash may have taken it away): who may see it. */
+function broadcastSessionAction(
+  sessionKey: string,
+  action: 'stop' | 'close' | 'trash',
+  task: { channelId?: unknown; ownerId?: unknown } | undefined,
+): void {
   if (wsClients.size === 0) return;
   try {
-    const payload = JSON.stringify({ type: 'session_action', sessionKey, action });
-    for (const client of wsClients) {
-      try {
-        client.send(payload);
-      } catch {
-        wsClients.delete(client);
-      }
-    }
+    sendToTaskViewers(task, JSON.stringify({ type: 'session_action', sessionKey, action }));
   } catch (error) {
     logger.error('Failed to broadcast session action', error);
   }
@@ -3689,6 +3860,8 @@ export async function registerDashboardRoutes(
   authMiddleware: (req: any, reply: any) => Promise<void>,
   csrfMiddleware?: (req: any, reply: any) => Promise<void>,
 ): Promise<void> {
+  // #1315 — before any route below: a private task's routes are its owner's and the admins'.
+  installPrivateTaskGate(server);
   const store = new MetricsEventStore();
 
   // ── JSON API ──
@@ -3706,15 +3879,19 @@ export async function registerDashboardRoutes(
       const board = buildKanbanBoard(userId);
       // The admin Lifecycle dialog reads the policy from the board poll.
       const lifecycle = lifecycleView();
+      // #1315 — every answer is this viewer's board: a private task's card (this instance's or a sibling's) only for
+      // its owner and admins. A sibling's board arrives whole (the viewer token): it is filtered here, after the merge.
+      const viewer = (request as { authContext?: TaskViewer }).authContext;
+      const send = (b: KanbanBoard) => reply.send({ board: boardForViewer(b, viewer), lifecycle });
 
       // #814 — when not the recursion-guarded selfOnly path, ask the
       // aggregator to fan out to sibling instances on the same host.
       // Skip pre-listen / single-instance.
       if (!_selfInstanceEnv) {
-        return reply.send({ board, lifecycle });
+        return send(board);
       }
       if (selfOnly) {
-        return reply.send({ board, lifecycle });
+        return send(board);
       }
 
       try {
@@ -3731,7 +3908,7 @@ export async function registerDashboardRoutes(
             siblingCount,
           })
         ) {
-          return reply.send({ board, lifecycle });
+          return send(board);
         }
         // Per-poll TTL cache — multiple browser tabs polling /sessions
         // every 30 s shouldn't independently fan out N×HTTP each time.
@@ -3755,14 +3932,14 @@ export async function registerDashboardRoutes(
           selfEnv: _selfInstanceEnv,
           siblings,
         });
-        return reply.send({ board: merged, lifecycle });
+        return send(merged);
       } catch (err) {
         // Hard failure of the aggregator must never surface a 500 —
         // fall back to self-only. Log at error (with stack) so a
         // genuine bug in mergeBoards / fetch wiring is visible, not
         // confused with the warn-throttled per-sibling failures.
         logger.error('Aggregator failed; serving self-only board', err);
-        return reply.send({ board, lifecycle });
+        return send(board);
       }
     },
   );
@@ -3782,12 +3959,15 @@ export async function registerDashboardRoutes(
         return;
       }
       try {
+        // #1315 — a job that runs in a private channel (or a DM) makes private tasks: its runs, their titles and links
+        // are its owner's and the admins'. Anyone else does not see the job.
+        const viewer = (request as { authContext?: TaskViewer }).authContext;
         const jobs = buildCronJobsView({
-          jobs: _cronSource.listJobs(),
+          jobs: _cronSource.listJobs().filter((job) => canViewTask(viewer, { channelId: job.channel, ownerId: job.owner })),
           history: _cronSource.listHistory(),
           userId: request.query.userId || undefined,
           nowMs: Date.now(),
-          findSession: cronRunSessionIndex(),
+          findSession: cronRunSessionIndex(viewer),
           threadUrl: (channel, threadTs) => buildThreadPermalink(channel, threadTs),
         });
         reply.send({ jobs });
@@ -4183,7 +4363,9 @@ export async function registerDashboardRoutes(
         reply.status(404).send({ error: 'Conversation not found' });
         return;
       }
-      // #716: session details world-readable for any authenticated user.
+      // #716: session details world-readable for any authenticated user —
+      // except a private task's (#1315): the private-task gate has answered
+      // anyone but its owner and admins 404 before this runs.
       // Writes (resummarize/title/close/command/answer-choice/...) still
       // run requireSessionOwner so cross-user reads do not imply
       // cross-user writes.
@@ -4348,12 +4530,14 @@ export async function registerDashboardRoutes(
       const resolved = resolveSelfActionKeyAndOwner(request, reply);
       if (!resolved) return;
       const { wireKey: key, originalKey } = resolved;
+      // Who may see the task, read before the stop (it may take the session away).
+      const task = _getSessionsFn?.()?.get(originalKey);
       try {
         if (_stopHandlerFn) {
           await _stopHandlerFn(originalKey);
         }
         // Broadcast uses wire-format so the client cache lookup matches.
-        broadcastSessionAction(key, 'stop');
+        broadcastSessionAction(key, 'stop', task);
         broadcastSessionUpdate();
         reply.send({ ok: true });
       } catch (error) {
@@ -4370,11 +4554,13 @@ export async function registerDashboardRoutes(
       const resolved = resolveSelfActionKeyAndOwner(request, reply);
       if (!resolved) return;
       const { wireKey: key, originalKey } = resolved;
+      // Who may see the task, read before the close (it may take the session away).
+      const task = _getSessionsFn?.()?.get(originalKey);
       try {
         if (_closeHandlerFn) {
           await _closeHandlerFn(originalKey);
         }
-        broadcastSessionAction(key, 'close');
+        broadcastSessionAction(key, 'close', task);
         broadcastSessionUpdate();
         reply.send({ ok: true });
       } catch (error) {
@@ -4403,11 +4589,13 @@ export async function registerDashboardRoutes(
         reply.status(409).send({ error: '즐겨찾기한 세션은 휴지통으로 옮길 수 없어요 — 먼저 별을 해제하세요' });
         return;
       }
+      // Who may see the task, read before the trash (it may take the session away).
+      const task = _getSessionsFn?.()?.get(originalKey);
       try {
         if (_trashHandlerFn) {
           await _trashHandlerFn(originalKey);
         }
-        broadcastSessionAction(key, 'trash');
+        broadcastSessionAction(key, 'trash', task);
         broadcastSessionUpdate();
         reply.send({ ok: true });
       } catch (error) {
@@ -5840,8 +6028,8 @@ export async function registerDashboardRoutes(
       // Send initial state — the build first (hello): a tab on another build reloads before it reads the board.
       try {
         socket.send(JSON.stringify({ type: 'hello', build: dashboardBuildId() }));
-        const board = buildKanbanBoard();
-        socket.send(JSON.stringify({ type: 'session_update', board }));
+        // #1315 — this viewer's board: a private task's card only for its owner and admins.
+        socket.send(JSON.stringify({ type: 'session_update', board: boardForViewer(buildKanbanBoard(), client) }));
       } catch {
         /* ignore */
       }
@@ -12025,9 +12213,11 @@ function cardOf(s, col) {
   // summaryTitleChanged / sessionUpdated may have rewritten only a subset.
   var headline = s.displayHeadline || s.summaryTitle || s.title;
   var trunc = dhTruncate('title');
+  // #1315 — 비공개 작업 (a private channel's, a DM's): the key leads its title — only its owner and admins see it.
+  var keyMark = s.privateTask === true ? '🔑 ' : '';
   var card = {
     id: s.key,
-    title: dhShow('title') ? String(trunc ? String(headline || '').slice(0, trunc) : (headline || '')) : '',
+    title: dhShow('title') ? keyMark + String(trunc ? String(headline || '').slice(0, trunc) : (headline || '')) : keyMark.trim(),
     status: 'done',
     bodyMode: 'slot',
   };
@@ -18976,7 +19166,7 @@ function connectWs() {
         refreshCard(msg.sessionKey);
         if (panelOpen && panelSessionKey === msg.sessionKey) {
           var pt = document.getElementById('panel-title');
-          if (pt) pt.textContent = headline;
+          if (pt) pt.textContent = (cached && cached.privateTask === true ? '🔑 ' : '') + headline;
         }
       } else if (msg.type === 'sessionUpdated' && msg.session && msg.session.key) {
         // #762 — single-session card refresh from broadcastSingleSessionUpdate.
@@ -19005,7 +19195,7 @@ function connectWs() {
           renderPanelPermission(msg.session);
           renderPanelQuestion(msg.session); // the form shows the ask its actions answer (#637 R2)
           var pt2 = document.getElementById('panel-title');
-          if (pt2) pt2.textContent = msg.session.displayHeadline || msg.session.summaryTitle || msg.session.title || '제목 없음';
+          if (pt2) pt2.textContent = (msg.session.privateTask === true ? '🔑 ' : '') + (msg.session.displayHeadline || msg.session.summaryTitle || msg.session.title || '제목 없음');
           // Spec 12: the agent tree moved (spawn, status, tool count, a node's tasks);
           // spec 13: the live numbers (tokens, cost, timer) move with every push.
           repaintPanelSession();
@@ -20397,7 +20587,10 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // #762 — single source of truth for headline. displayHeadline carries the
   // server-resolved priority chain; older WS messages without it still get a
   // sensible fallback.
-  document.getElementById('panel-title').textContent = s.displayHeadline || s.summaryTitle || s.title || '제목 없음';
+  // #1315 — a private task's title carries the key here too, and says why on hover.
+  var panelTitleEl = document.getElementById('panel-title');
+  panelTitleEl.textContent = (s.privateTask === true ? '🔑 ' : '') + (s.displayHeadline || s.summaryTitle || s.title || '제목 없음');
+  panelTitleEl.title = s.privateTask === true ? '비공개 작업 — 작업 주인과 관리자만 볼 수 있어요' : '';
 
   // TitleSub
   var titleSubTextEl = document.getElementById('panel-title-sub-text');
@@ -22608,7 +22801,7 @@ function epicFamilyOf(s) {
 // own card reads it (the same column the board gives it: epicChildCol).
 function epicChildFace(c) {
   var own = cardOf(c, epicChildCol(c));
-  var kid = { id: String(c.key), title: String(c.displayHeadline || c.summaryTitle || c.title || c.key), status: own.status };
+  var kid = { id: String(c.key), title: (c.privateTask === true ? '🔑 ' : '') + String(c.displayHeadline || c.summaryTitle || c.title || c.key), status: own.status };
   if (own.statusText) kid.statusText = String(own.statusText);
   return kid;
 }

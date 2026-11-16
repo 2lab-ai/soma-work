@@ -12,6 +12,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { registerPublicChannel } from '../__fixtures__/public-channel';
 
 const mockConfig = {
   conversation: {
@@ -129,6 +130,8 @@ describe('dashboard goal cap decision — board, route, shipped client (T1/T2)',
 
   beforeEach(async () => {
     const channel = `C_GD_${Math.random().toString(36).slice(2, 10)}`;
+    // #1315 — another signed-in user reads this task: its channel is a public one.
+    await registerPublicChannel(channel);
     key = `${channel}:t1`;
     dmUpdates = [];
     resumed = [];

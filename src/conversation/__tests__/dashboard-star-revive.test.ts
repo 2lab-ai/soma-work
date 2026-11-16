@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { registerPublicChannel } from '../__fixtures__/public-channel';
 
 /**
  * Task star + revive (SSOT 2026-10-30) — the HTTP half.
@@ -93,6 +94,8 @@ describe('Dashboard — task star + revive (SSOT 2026-10-30)', () => {
     injectWebServer = webServer.injectWebServer;
     dashboard = await import('../dashboard');
     await webServer.startWebServer({ listen: false });
+    // #1315 — another signed-in user reads these tasks: their channels are public ones.
+    await registerPublicChannel('C1');
     sessions = new Map([['C1:t1', liveSession()]]);
     dashboard.setDashboardSessionAccessor(() => sessions);
     // The first import transforms the whole dashboard module (cold, under parallel load).

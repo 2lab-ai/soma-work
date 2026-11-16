@@ -13,6 +13,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { registerPublicChannel } from '../__fixtures__/public-channel';
 
 const mockConfig = {
   conversation: {
@@ -129,6 +130,8 @@ describe('dashboard instruction approvals — board, route, shipped client (#767
 
   beforeEach(async () => {
     const channel = `C_IA_${Math.random().toString(36).slice(2, 10)}`;
+    // #1315 — another signed-in user reads this task: its channel is a public one.
+    await registerPublicChannel(channel);
     key = `${channel}:t1`;
     released = [];
     dmUpdates = [];

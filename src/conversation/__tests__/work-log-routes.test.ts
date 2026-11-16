@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as jwt from 'jsonwebtoken';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { registerPublicChannel } from '../__fixtures__/public-channel';
 
 // ── Mocks (same shape as dashboard.test.ts) ──
 
@@ -78,6 +79,8 @@ describe('GET /api/dashboard/session/:conversationId/worklog', () => {
     const { getConversation } = await import('../recorder');
     (getConversation as any).mockImplementation(async (id: string) => (id === 'conv-1' ? CONVERSATION : null));
     await web.startWebServer({ listen: false });
+    // #1315 — another signed-in user reads these tasks: their channels are public ones.
+    await registerPublicChannel('C1');
   });
 
   afterEach(async () => {
@@ -471,6 +474,8 @@ describe('work log raw route behind the canonical-origin redirect', () => {
     paths.dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'soma-worklog-redirect-'));
     web = await import('../web-server');
     await web.startWebServer({ listen: false });
+    // #1315 — another signed-in user reads these tasks: their channels are public ones.
+    await registerPublicChannel('C1');
   });
 
   afterEach(async () => {
@@ -502,6 +507,8 @@ describe('work log read authorization with auth disabled', () => {
     const { getConversation } = await import('../recorder');
     (getConversation as any).mockImplementation(async (id: string) => (id === 'conv-1' ? CONVERSATION : null));
     await web.startWebServer({ listen: false });
+    // #1315 — another signed-in user reads these tasks: their channels are public ones.
+    await registerPublicChannel('C1');
   });
 
   afterEach(async () => {
@@ -585,6 +592,8 @@ describe('work_log WebSocket broadcast scoping', () => {
         ]),
     );
     await web.startWebServer({ listen: false });
+    // #1315 — another signed-in user reads these tasks: their channels are public ones.
+    await registerPublicChannel('C1');
   });
 
   afterEach(async () => {

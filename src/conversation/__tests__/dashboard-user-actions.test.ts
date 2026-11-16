@@ -6,6 +6,7 @@
 import * as fs from 'node:fs';
 import { inspectUserActionScript } from 'somalib/user-action/user-action';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { registerPublicChannel } from '../__fixtures__/public-channel';
 
 const mockConfig = {
   conversation: {
@@ -57,6 +58,8 @@ describe('dashboard — user actions on the board', () => {
     web = await import('../web-server');
     dashboard = await import('../dashboard');
     await web.startWebServer({ listen: false });
+    // #1315 — another signed-in user reads these tasks: their channels are public ones.
+    await registerPublicChannel('C1', 'C2');
   });
 
   afterEach(async () => {

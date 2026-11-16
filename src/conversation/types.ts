@@ -105,6 +105,12 @@ export interface ConversationRecord {
  */
 export interface ConversationMeta {
   id: string;
+  /**
+   * #1315 — who owns it and where it lives, for the server to decide who may list it (task-visibility.ts). The list
+   * routes drop both before they answer.
+   */
+  ownerId?: string;
+  channelId?: string;
   ownerName: string;
   title?: string;
   titleSub?: string;

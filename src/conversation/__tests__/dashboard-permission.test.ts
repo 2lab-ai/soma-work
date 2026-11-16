@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { registerPublicChannel } from '../__fixtures__/public-channel';
 
 /**
  * SSOT 2026-10-24 — "퍼미션 물어보는거 대시보드에도 UI로 출력하고 입력 받을수 있도록해줘".
@@ -128,6 +129,8 @@ describe('Dashboard — permission prompts (SSOT 2026-10-24)', () => {
     ({ answerPermissionPrompt } = await import('../../permission-prompt-response'));
     await webServer.startWebServer({ listen: false });
     channel = `C_DP_${Math.random().toString(36).slice(2, 10)}`;
+    // #1315 — another signed-in user reads this task: its channel is a public one.
+    await registerPublicChannel(channel);
     key = `${channel}:t1`;
     dashboard.setDashboardSessionAccessor(
       () =>

@@ -23,6 +23,7 @@ import { userSettingsStore } from '../user-settings-store';
 import { registerArtifactRoutes } from './artifact-routes';
 import { registerCodeChangesRoutes } from './code-changes-routes';
 import {
+  installPrivateTaskGate,
   registerDashboardRoutes,
   setSelfInstanceEnv,
   startDashboardAdminApprovalWatch,
@@ -57,7 +58,8 @@ import {
 import { getConversation, getTurnRawContent, listConversations } from './recorder';
 import { registerSettingsRoutes } from './settings-routes';
 import { registerSkillsRoutes } from './skills-routes';
-import type { ConversationTurn } from './types';
+import { canViewTask } from './task-visibility';
+import type { ConversationMeta, ConversationTurn } from './types';
 import { registerUserMediaRoutes } from './user-media-routes';
 import { renderConversationListPage, renderConversationViewPage } from './viewer';
 import { registerWorkLogRoutes } from './work-log-routes';
@@ -259,7 +261,9 @@ async function csrfMiddleware(request: FastifyRequest, reply: FastifyReply): Pro
  * #716 changed conversation/dashboard reads to be world-readable for any
  * authenticated user, so this middleware no longer enforces ownership.
  * It just loads the resource (404 on miss) and attaches it to the
- * request — write routes use `requireWriteAccess` separately.
+ * request — write routes use `requireWriteAccess` separately. A private
+ * task's conversation (#1315) is refused before this runs, by the gate
+ * `installPrivateTaskGate` puts on every conversation route.
  *
  * The `getOwnerId` parameter is still accepted (and unused) so call
  * sites do not have to be touched in the same change as the policy
@@ -282,6 +286,17 @@ function authorizeResource<T>(
     // Attach loaded resource to avoid double-fetch
     (request as any).authorizedResource = resource;
   };
+}
+
+/**
+ * #1315 — the conversation list as this viewer may see it: a private task's conversation only for its owner and
+ * admins (task-visibility.ts). The owner and channel the storage lists them with stay on the server.
+ */
+async function listConversationsFor(request: FastifyRequest): Promise<ConversationMeta[]> {
+  const viewer = (request as { authContext?: AuthContext }).authContext;
+  return (await listConversations())
+    .filter((c) => canViewTask(viewer, c))
+    .map(({ ownerId: _owner, channelId: _channel, ...meta }) => meta);
 }
 
 /**
@@ -535,6 +550,9 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   // (saved setting → `soma_lang` cookie → ko). Before any route and before the
   // compression plugin: its response hook must see a page before it is compressed.
   registerDisplayLang(server, { savedLangOf: (userId) => userSettingsStore.getUserSettings(userId)?.displayLanguage });
+  // #1315 — before any route: a private task's routes (the conversation pages and JSON here, the dashboard's session
+  // routes below) answer 404 to anyone but its owner and admins.
+  installPrivateTaskGate(server);
 
   // Required for HTML form POSTs (e.g. the SSO session-switch interstitial
   // at `POST /auth/sso/confirm`, #704). Fastify does not parse
@@ -550,9 +568,9 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   // ---- HTML Routes (require auth when token is configured) ----
 
   // Conversation list page
-  server.get('/conversations', { preHandler: [authMiddleware] }, async (_request, reply) => {
+  server.get('/conversations', { preHandler: [authMiddleware] }, async (request, reply) => {
     try {
-      const conversations = await listConversations();
+      const conversations = await listConversationsFor(request);
       const html = renderConversationListPage(conversations);
       reply.type('text/html; charset=utf-8').send(html);
     } catch (error) {
@@ -581,7 +599,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
           return;
         }
         // The list beside it (M-08, the archive page); a list that fails to load leaves the conversation alone.
-        const conversations = await listConversations().catch((error) => {
+        const conversations = await listConversationsFor(request).catch((error) => {
           logger.warn('Conversation list unavailable beside a conversation', error);
           return undefined;
         });
@@ -597,9 +615,9 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   // ---- JSON API Routes (require auth when token is configured) ----
 
   // List conversations (JSON)
-  server.get('/api/conversations', { preHandler: [authMiddleware] }, async (_request, reply) => {
+  server.get('/api/conversations', { preHandler: [authMiddleware] }, async (request, reply) => {
     try {
-      const conversations = await listConversations();
+      const conversations = await listConversationsFor(request);
       reply.send({ conversations });
     } catch (error) {
       logger.error('Error listing conversations API', error);

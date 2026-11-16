@@ -8,6 +8,7 @@
  */
 import * as jwt from 'jsonwebtoken';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { registerPublicChannel } from '../__fixtures__/public-channel';
 
 const VIEWER_TOKEN = 'test-token';
 const mockConfig = {
@@ -97,6 +98,8 @@ describe('Dashboard — follow-up embed route (#983)', () => {
     web = await import('../web-server');
     dashboard = await import('../dashboard');
     await web.startWebServer({ listen: false });
+    // #1315 — another signed-in user reads these tasks: their channels are public ones.
+    await registerPublicChannel('C1');
     dashboard.setDashboardSessionAccessor(() => new Map([['C1:t1', liveSession()]]));
     fetcher = vi.fn(async () => EMBED);
     dashboard.setDashboardLinkEmbedFetcher(fetcher);

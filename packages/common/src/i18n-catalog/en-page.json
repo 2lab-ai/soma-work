@@ -1432,6 +1432,7 @@
   "비공개 채널": "Private channel",
   "채널: 비공개 채널": "Channel: private channel",
   "본문과 댓글은 이 작업의 주인과 관리자만 볼 수 있습니다.": "Only the task's owner and admins can see the body and comments.",
+  "비공개 작업 — 작업 주인과 관리자만 볼 수 있어요": "Private task — only its owner and admins can see it",
   "이 페이지는 대시보드에서 내용을 보여 줄 수 없습니다.": "The dashboard cannot show this page's content.",
   "지금은 내용을 가져올 수 없습니다. GitHub에서 열어 보세요.": "The content cannot be fetched right now. Open it on GitHub.",
   "작성자: ": "Author: ",

@@ -1,3 +1,4 @@
+import * as jwt from 'jsonwebtoken';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ── Mocks ──
@@ -224,6 +225,58 @@ describe('Dashboard multi-instance aggregation (#814)', () => {
       port: 33001,
       host: '127.0.0.1',
     });
+  });
+
+  // #1315 — a sibling's board arrives whole (the viewer token) and is filtered per viewer after the merge. A card
+  // that does not say whether it is private (an instance on an older build) counts as private.
+  it('a sibling’s private card — or one that does not say — reaches only its owner, admins and the viewer token', async () => {
+    setSelfInstanceEnv({ instanceName: 'self-host', port: 33000, host: '127.0.0.1' });
+    setDashboardSessionAccessor(() => new Map());
+    mockReadAllInstances.mockResolvedValue([
+      { port: 33001, instanceName: 'devbox-a-dev', host: '127.0.0.1', pid: 1001, lastSeen: Date.now() },
+    ]);
+    const card = (key: string, extra: Record<string, unknown>) => ({
+      key,
+      title: key,
+      ownerId: 'U2',
+      channelId: 'C9',
+      activityState: 'working',
+      lastActivity: '2026-04-01T09:30:00Z',
+      ...extra,
+    });
+    mockFetchSiblingBoards.mockResolvedValue([
+      {
+        instanceName: 'devbox-a-dev',
+        port: 33001,
+        host: '127.0.0.1',
+        board: {
+          working: [
+            card('C9:open', { privateTask: false }),
+            card('C9:secret', { privateTask: true }),
+            card('C9:old', {}),
+          ],
+          waiting: [],
+          idle: [],
+          closed: [],
+        },
+      },
+    ]);
+    const as = async (headers: Record<string, string>) => {
+      const res = await injectWebServer({ method: 'GET', url: '/api/dashboard/sessions', headers });
+      expect(res.statusCode).toBe(200);
+      return JSON.parse(res.body).board.working.map((c: any) => [c.key, c.privateTask]);
+    };
+    const cookie = (sub: string) => ({
+      cookie: `soma_dash_token=${encodeURIComponent(jwt.sign({ sub, email: `${sub}@x`, name: sub, provider: 'slack' }, 'test-token', { expiresIn: 3600 }))}`,
+    });
+    expect(await as(cookie('U3'))).toEqual([['devbox-a-dev::C9:open', false]]);
+    const all = [
+      ['devbox-a-dev::C9:open', false],
+      ['devbox-a-dev::C9:secret', true],
+      ['devbox-a-dev::C9:old', true],
+    ];
+    expect(await as(cookie('U2'))).toEqual(all);
+    expect(await as(AUTH_HEADER)).toEqual(all);
   });
 
   it('falls back to self-only board when aggregator throws', async () => {
