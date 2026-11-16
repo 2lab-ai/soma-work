@@ -16,6 +16,8 @@ export type IssueTreeNote = IssueTreeLinkInput & {
   triedAt?: number;
   onlyIfPresent?: boolean;
   addedFor?: string;
+  /** When the read began: a parent the model removed after it does not come back. */
+  readAt?: number;
 };
 
 const CLOSING = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+(?:([\w.-]+)\/([\w.-]+))?#(\d+)\b/gi;
@@ -54,11 +56,13 @@ export interface PrRelationSource {
 export function prTreeEntries(prs: ReadonlyArray<PrRelationSource>): IssueTreeNote[] {
   return prs.map((pr) => {
     // Stacked: its base branch is the head branch of another session PR in the same repository (not a fork's).
-    const base = pr.baseRef
-      ? prs.find(
+    const bases = pr.baseRef
+      ? prs.filter(
           (o) => o !== pr && o.repo === pr.repo && !o.headRepo && o.headRef === pr.baseRef && o.state !== 'closed',
         )
-      : undefined;
+      : [];
+    // A branch reused in one session: the live PR (open or draft) before a merged one.
+    const base = bases.find((o) => o.state !== 'merged') ?? bases[0];
     return {
       kind: 'pr' as const,
       url: pr.url,
@@ -109,7 +113,8 @@ export async function refreshIssueEntries(
       out.push({ kind: 'issue', url, triedAt: now, onlyIfPresent: true });
       continue;
     }
-    if (meta.parentUrl) out.push({ kind: 'issue', url: meta.parentUrl, provider: 'github', addedFor: url });
+    if (meta.parentUrl)
+      out.push({ kind: 'issue', url: meta.parentUrl, provider: 'github', addedFor: url, readAt: now });
     out.push({
       kind: 'issue',
       url,

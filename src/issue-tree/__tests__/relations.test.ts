@@ -97,6 +97,30 @@ describe('issue-tree relations', () => {
     expect(closed[1].rel).toEqual({ closes: [], base: null });
   });
 
+  it('a stack base is this repo’s live PR: a fork’s branch of the same name is none; a reused branch takes the open PR', () => {
+    // Only a fork has the head branch: no stack.
+    const forkOnly = prTreeEntries([
+      {
+        url: `${GH}/pull/3`,
+        repo: 'a/b',
+        state: 'open',
+        headRef: 'feat/one',
+        headRepo: 'fork/b',
+        baseRef: 'main',
+        closes: [],
+      },
+      { url: `${GH}/pull/5`, repo: 'a/b', state: 'open', headRef: 'x', baseRef: 'feat/one', closes: [] },
+    ]);
+    expect(forkOnly[1].rel).toEqual({ closes: [], base: null });
+    // The branch was merged once (#1) and opened again (#2): a PR based on it stacks on the live one.
+    const reused = prTreeEntries([
+      { url: `${GH}/pull/1`, repo: 'a/b', state: 'merged', headRef: 'feat/one', baseRef: 'main', closes: [] },
+      { url: `${GH}/pull/2`, repo: 'a/b', state: 'open', headRef: 'feat/one', baseRef: 'main', closes: [] },
+      { url: `${GH}/pull/3`, repo: 'a/b', state: 'open', headRef: 'x', baseRef: 'feat/one', closes: [] },
+    ]);
+    expect(reused[2].rel).toEqual({ closes: [], base: `${GH}/pull/2` });
+  });
+
   it('a stored PR from before .prd/29 (no closes, no base branch) read neither: its entry leaves the relations alone', () => {
     // A merged PR's record is reused as is by the collect, so an upgrade meets these until it is read again.
     const [legacy] = prTreeEntries([{ url: `${GH}/pull/1`, repo: 'a/b', state: 'merged', headRef: 'feat/one' }]);
@@ -124,7 +148,7 @@ describe('issue-tree relations', () => {
       50,
     );
     expect(out).toEqual([
-      { kind: 'issue', url: `${GH}/issues/1`, provider: 'github', addedFor: `${GH}/issues/7` },
+      { kind: 'issue', url: `${GH}/issues/1`, provider: 'github', addedFor: `${GH}/issues/7`, readAt: 50 },
       {
         kind: 'issue',
         url: `${GH}/issues/7`,

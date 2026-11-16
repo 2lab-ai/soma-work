@@ -319,6 +319,45 @@ describe('issue tree — .prd/29 §3', () => {
     expect(t.nodes.find((n) => n.id === issueTreeNodeId(issue(5)))?.status).toBe('open');
   });
 
+  it('a moved seed keeps the session title (it has none of its own)', () => {
+    // A fresh session: the model pins the seed at the root (move internal:1, parent null).
+    const t = tree();
+    expect(moveIssueTreeNode(t, SEED_ID, null)).toMatchObject({ ok: true });
+    rebalanceIssueTree(t, now());
+    expect(issueTreeView(t, '대시보드 개선').nodes.find((n) => n.id === SEED_ID)).toMatchObject({
+      title: '대시보드 개선',
+      placed: 'model',
+    });
+    // Pinned, it no longer gives way to an external issue.
+    add(t, 'issue', issue(5));
+    expect(t.nodes.map((n) => n.id)).toContain(SEED_ID);
+  });
+
+  it('a stack retargeted in one read settles in one pass, whatever the order (A then B: B was on A, now A on B)', () => {
+    const t = tree();
+    add(t, 'issue', issue(5));
+    add(t, 'pr', pr(10));
+    add(t, 'pr', pr(11), { rel: { base: pr(10) } });
+    expect(shape(t)).toMatchObject({ 'pull/10': 'issues/5', 'pull/11': 'pull/10' });
+    // One collect: #11 now targets main, #10 is rebased onto #11's branch.
+    upsertIssueTreeLink(t, { kind: 'pr', url: pr(10), rel: { base: pr(11) } }, now());
+    upsertIssueTreeLink(t, { kind: 'pr', url: pr(11), rel: { base: null } }, now());
+    rebalanceIssueTree(t, now());
+    expect(shape(t)).toMatchObject({ 'pull/11': 'issues/5', 'pull/10': 'pull/11' });
+    expect(placed(t, pr(10))).toBe('stack');
+    const once = JSON.stringify(t);
+    rebalanceIssueTree(t, now());
+    expect(JSON.stringify(t)).toBe(once);
+  });
+
+  it('an old session with current links and no history: its tree holds them (issue at the root, the PR under it)', () => {
+    const t = issueTreeFromLinks(undefined, now(), {
+      issue: { url: issue(7), type: 'issue', provider: 'github' },
+      pr: { url: pr(8), type: 'pr', provider: 'github' },
+    });
+    expect(shape(t)).toEqual({ 'issues/7': '', 'pull/8': 'issues/7' });
+  });
+
   it('the seed stays when the model kept something under it, or named it', () => {
     const kept = tree();
     add(kept, 'pr', pr(10), { parent: SEED_ID });
@@ -338,6 +377,13 @@ describe('issue tree — .prd/29 §3', () => {
       'https://acme.atlassian.net/browse/PROJ-12',
     );
     expect(issueTreeNodeId('internal:3')).toBe('internal:3');
+    // A non-default port is another server; the scheme's default port is no port.
+    expect(issueTreeNodeId('https://jira.example.com:8443/browse/WEB-7')).not.toBe(
+      issueTreeNodeId('https://jira.example.com:9443/browse/WEB-7'),
+    );
+    expect(issueTreeNodeId('https://jira.example.com:443/browse/WEB-7')).toBe(
+      issueTreeNodeId('https://jira.example.com/browse/WEB-7'),
+    );
     const t = tree();
     add(t, 'pr', pr(7), { title: 'a' });
     add(t, 'pr', 'https://github.com/2lab-ai/soma-work/pull/7/', { title: 'b', status: 'merged' });

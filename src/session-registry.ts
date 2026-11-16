@@ -2838,8 +2838,20 @@ export class SessionRegistry {
    * .prd/29 — the session's issue tree, made on first read: from the link records of a session that predates it, or
    * the seed (the session's own internal issue) for one that has none.
    */
+  /** .prd/29 — when the model took nodes out (in memory, per session): a parent a read found while it ran stays out. */
+  private readonly issueTreeRemovals = new Map<string, Map<string, number>>();
+
+  private noteIssueTreeRemovals(sessionKey: string, ids: ReadonlyArray<string>): void {
+    const at = Date.now();
+    const map = this.issueTreeRemovals.get(sessionKey) ?? new Map<string, number>();
+    for (const id of ids) map.set(id, at);
+    // Only recent ones matter (a read lasts seconds): the oldest go first.
+    while (map.size > 50) map.delete(map.keys().next().value as string);
+    this.issueTreeRemovals.set(sessionKey, map);
+  }
+
   private ensureIssueTree(session: ConversationSession) {
-    if (!session.issueTree) session.issueTree = issueTreeFromLinks(session.linkHistory, Date.now());
+    if (!session.issueTree) session.issueTree = issueTreeFromLinks(session.linkHistory, Date.now(), session.links);
     return session.issueTree;
   }
 
@@ -2856,10 +2868,13 @@ export class SessionRegistry {
     const now = Date.now();
     const has = (url: string) => tree.nodes.some((n) => n.id === issueTreeNodeId(url));
     for (const entry of entries) {
-      const { parent: _ignored, checkedAt, triedAt, onlyIfPresent, addedFor, ...input } = entry;
+      const { parent: _ignored, checkedAt, triedAt, onlyIfPresent, addedFor, readAt, ...input } = entry;
       // A read that lands after the model removed its node does not bring the node (or its parent) back.
       if (onlyIfPresent && !has(input.url)) continue;
       if (addedFor && !has(addedFor)) continue;
+      // A parent found by a read that started before the model removed it stays out (a later read may add it again).
+      const removedAt = this.issueTreeRemovals.get(sessionKey)?.get(issueTreeNodeId(input.url));
+      if (addedFor && removedAt !== undefined && (readAt === undefined || removedAt >= readAt)) continue;
       const r = upsertIssueTreeLink(tree, input, now);
       const node = r.ok ? tree.nodes.find((n) => n.id === r.id) : undefined;
       if (node && checkedAt) node.checkedAt = checkedAt;
@@ -3064,6 +3079,9 @@ export class SessionRegistry {
 
     // .prd/29 — the issue tree: every issue/PR add, remove, add_internal and move.
     if (tree.changed) {
+      const kept = new Set(tree.tree.nodes.map((n) => n.id));
+      const gone = (session.issueTree?.nodes ?? []).filter((n) => !kept.has(n.id)).map((n) => n.id);
+      if (gone.length) this.noteIssueTreeRemovals(this.keyOf(session), gone);
       session.issueTree = tree.tree;
       changed = true;
     }

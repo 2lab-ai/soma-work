@@ -46,6 +46,7 @@ import type {
   DecisionFields,
   IssueTreeView,
   SessionIssueTree,
+  SessionLink,
   SessionLinkHistory,
 } from 'somalib/model-commands/session-types';
 import { normalizeDecisionFields } from 'somalib/model-commands/validator';
@@ -2830,8 +2831,9 @@ function kanbanIssueTree(
   tree: SessionIssueTree | undefined,
   history: SessionLinkHistory | undefined,
   title: string | undefined,
+  active?: { issue?: SessionLink; pr?: SessionLink } | null,
 ): IssueTreeView {
-  const view = issueTreeView(tree ?? issueTreeFromLinks(history, 0), title);
+  const view = issueTreeView(tree ?? issueTreeFromLinks(history, 0, active), title);
   // The board draws placements only: the relations (the model's preview replays them) stay on the server.
   return { ...view, nodes: view.nodes.map(({ rel: _rel, ...node }) => node) };
 }
@@ -2909,7 +2911,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
         }
       : undefined,
     codeChangesAt: s.codeChanges?.updatedAt,
-    issueTree: kanbanIssueTree(s.issueTree, s.linkHistory, s.title),
+    issueTree: kanbanIssueTree(s.issueTree, s.linkHistory, s.title, s.links),
     tokenUsage: tokenUsageOf(s),
     sessionOutputTokens: sessionOutputTokensOf(s),
     doneAt: liveDoneAt(s),
@@ -3112,7 +3114,7 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
     prTitle: archived.links?.pr?.title,
     prStatus: archived.links?.pr?.status,
     ...archivedCardLinks(archived),
-    issueTree: kanbanIssueTree(sanitizeIssueTree(archived.issueTree), archived.linkHistory, archived.title),
+    issueTree: kanbanIssueTree(sanitizeIssueTree(archived.issueTree), archived.linkHistory, archived.title, archived.links),
     mergeStats: archived.mergeStats
       ? {
           totalLinesAdded: archived.mergeStats.totalLinesAdded,

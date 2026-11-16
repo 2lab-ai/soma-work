@@ -42,7 +42,9 @@ export function issueTreeNodeId(url: string): string {
     const host = u.hostname.toLowerCase();
     let path = u.pathname.replace(/\/+$/, '');
     if (host === 'github.com' || host === 'www.github.com') path = path.toLowerCase();
-    return `${u.protocol.toLowerCase()}//${host.replace(/^www\.github\.com$/, 'github.com')}${path}`;
+    // A non-default port names another server (`URL.port` is empty for the scheme's default).
+    const port = u.port ? `:${u.port}` : '';
+    return `${u.protocol.toLowerCase()}//${host.replace(/^www\.github\.com$/, 'github.com')}${port}${path}`;
   } catch {
     return raw.toLowerCase();
   }
@@ -317,6 +319,9 @@ export function rebalanceIssueTree(tree: SessionIssueTree, now: number): void {
     retired = seed;
   }
   nodes = byId(tree);
+  // Every host placement is made afresh from the relations, on a tree without the host's old edges: a stack retargeted
+  // in one read settles in one pass, and the result does not depend on the nodes' order.
+  for (const n of tree.nodes) if (n.placed !== 'model' && n.placed !== 'seed') n.parent = undefined;
   // 2. Issues: under their GitHub parent when it is here, else roots.
   for (const n of tree.nodes) {
     if (n.kind !== 'issue' || n.placed === 'model' || n.placed === 'seed') continue;
@@ -372,7 +377,8 @@ export function issueTreeView(tree: SessionIssueTree, sessionTitle?: string): Is
   const nodes: IssueTreeViewNode[] = [...tree.nodes]
     .sort((a, b) => a.addedAt - b.addedAt)
     .map((n) => {
-      const title = n.title || (n.placed === 'seed' ? sessionTitle : undefined);
+      // The seed (the one internal issue with no title of its own) shows the session's title, moved or not.
+      const title = n.title || (n.source === 'internal' ? sessionTitle : undefined);
       return {
         id: n.id,
         kind: n.kind,
@@ -389,8 +395,15 @@ export function issueTreeView(tree: SessionIssueTree, sessionTitle?: string): Is
   return { nodes, nextInternal: tree.nextInternal };
 }
 
-/** A tree for a session that has only its link records (made before .prd/29): issues and PRs in the order they came. */
-export function issueTreeFromLinks(history: SessionLinkHistory | undefined, now: number): SessionIssueTree {
+/**
+ * A tree for a session that has only its link records (made before .prd/29): issues and PRs in the order they came,
+ * then the current ones (an old archived session may have those and no history).
+ */
+export function issueTreeFromLinks(
+  history: SessionLinkHistory | undefined,
+  now: number,
+  active?: { issue?: SessionLink; pr?: SessionLink } | null,
+): SessionIssueTree {
   const tree = emptyIssueTree();
   const add = (links: SessionLink[] | undefined, kind: IssueTreeNodeKind) => {
     for (const link of links || []) {
@@ -404,8 +417,8 @@ export function issueTreeFromLinks(history: SessionLinkHistory | undefined, now:
       );
     }
   };
-  add(history?.issues, 'issue');
-  add(history?.prs, 'pr');
+  add([...(history?.issues || []), ...(active?.issue ? [active.issue] : [])], 'issue');
+  add([...(history?.prs || []), ...(active?.pr ? [active.pr] : [])], 'pr');
   rebalanceIssueTree(tree, now);
   return tree;
 }
@@ -469,24 +482,16 @@ export function issueTreeFromView(view: IssueTreeView | undefined): SessionIssue
   (view?.nodes || []).forEach((v, i) => {
     const m = INTERNAL_RE.exec(v.id);
     if (m) max = Math.max(max, Number(m[1]));
-    // The relations the host holds (one not in force yet included — a PR that closes an issue not in the tree); a view
-    // without them (older host) gets back the one its placement shows.
-    const rel: IssueTreeRelations | undefined = v.rel
-      ? structuredClone(v.rel)
-      : v.placed === 'closes' && v.parent
-        ? { closes: [v.parent] }
-        : v.placed === 'stack' && v.parent
-          ? { base: v.parent }
-          : v.placed === 'sub-issue' && v.parent
-            ? { subOf: v.parent }
-            : undefined;
+    // The relations the host holds (one not in force yet included — a PR that closes an issue not in the tree).
+    const rel: IssueTreeRelations | undefined = v.rel ? structuredClone(v.rel) : undefined;
     tree.nodes.push({
       id: v.id,
       kind: v.kind,
       source: v.source,
       ...(v.url ? { url: v.url } : {}),
       ...(v.label ? { label: v.label } : {}),
-      ...(v.title && v.placed !== 'seed' ? { title: v.title } : {}),
+      // The seed's shown title is the session's, not its own.
+      ...(v.title && !(v.source === 'internal' && v.placed === 'seed') ? { title: v.title } : {}),
       ...(v.status ? { status: v.status } : {}),
       ...(v.parent ? { parent: v.parent } : {}),
       placed: v.placed,

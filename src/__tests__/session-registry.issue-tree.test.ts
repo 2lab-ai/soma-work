@@ -7,6 +7,7 @@
  *   T3  'update' (a merge or close) changes a node's state and adds nothing; merged is final
  *   T4  UPDATE_SESSION: parent on add, add_internal, move, remove; a refusal changes neither the tree nor the sequence
  *   T5  noteIssueTree: a PR's closing refs place it; a checked issue is not asked again; the PR stacked on another sits under it
+ *   T5c a parent found by a read that began before the model removed it stays out
  *   T6  the tree survives save / load
  */
 import fs from 'fs';
@@ -181,6 +182,27 @@ describe('the session issue tree (host)', () => {
     expect(reg.issueTreeIssuesToCheck(key)).toEqual([`${GH}/issues/5`, `${GH}/issues/7`]);
     reg.noteIssueTree(key, [{ kind: 'issue', url: `${GH}/issues/5`, triedAt: 9, onlyIfPresent: true }]);
     expect(reg.issueTreeIssuesToCheck(key)).toEqual([`${GH}/issues/7`, `${GH}/issues/5`]);
+  });
+
+  it('T5c: a parent a read found stays out when the model removed it after the read began; a later read adds it', () => {
+    const { reg, key } = setup();
+    reg.noteSessionLinks('C1', '100.001', [ISSUE(5), ISSUE(6)], 'history');
+    const readAt = Date.now() - 1_000; // the read of #6 began before the removal
+    reg.updateSessionResources('C1', '100.001', {
+      operations: [{ action: 'remove', resourceType: 'issue', url: `${GH}/issues/5` }],
+    });
+    // #6's read says its GitHub parent is #5 — the node the model just removed.
+    reg.noteIssueTree(key, [
+      { kind: 'issue', url: `${GH}/issues/5`, provider: 'github', addedFor: `${GH}/issues/6`, readAt },
+      { kind: 'issue', url: `${GH}/issues/6`, rel: { subOf: `${GH}/issues/5` }, checkedAt: 5, onlyIfPresent: true },
+    ]);
+    expect(tree(reg).map((n) => n.id)).not.toContain(id(`${GH}/issues/5`));
+    expect(parentOf(reg, `${GH}/issues/6`)).toBeUndefined();
+    // A read that began after the removal may add it (GitHub still says so).
+    reg.noteIssueTree(key, [
+      { kind: 'issue', url: `${GH}/issues/5`, provider: 'github', addedFor: `${GH}/issues/6`, readAt: Date.now() + 1 },
+    ]);
+    expect(parentOf(reg, `${GH}/issues/6`)).toBe(id(`${GH}/issues/5`));
   });
 
   it('T6b: a noted link reaches sessions.json with its tree change, without another save', () => {

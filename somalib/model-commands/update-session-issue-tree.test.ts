@@ -186,6 +186,18 @@ describe('the MCP preview applies them with the host’s function', () => {
     expect(parentOf(preview, `${GH}/issues/5`)).toBe(issueTreeNodeId(`${GH}/pull/7`));
   });
 
+  it('a refused batch in the preview leaves the caller’s snapshot as it was: links, current link, tree, sequence', () => {
+    const s = snapshotWithTree();
+    const before = JSON.stringify(s);
+    const r = run(s, [
+      { action: 'add', resourceType: 'pr', url: `${GH}/pull/9` },
+      { action: 'add_internal', resourceType: 'issue', title: '조사' },
+      { action: 'move', resourceType: 'pr', node: `${GH}/pull/7`, parent: null },
+    ]);
+    expect(r).toMatchObject({ ok: false, error: { message: expect.stringContaining('PR cannot be a root') } });
+    expect(JSON.stringify(s)).toBe(before);
+  });
+
   it('refuses what would break the tree, naming why', () => {
     const r = run(snapshotWithTree(), [{ action: 'move', resourceType: 'pr', node: `${GH}/pull/7`, parent: null }]);
     expect(r).toMatchObject({
