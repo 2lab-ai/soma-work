@@ -3271,6 +3271,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     // .prd/28 §3: the plan document (its 작업 계획 tab's content) sits under the title bar too — CSS-hidden behind
     // another tab, where its hidden attribute is still false.
     Object.assign(el('panel-plan'), { getBoundingClientRect: () => ({ top: AREA_TOP - scroll.scrollTop, height: 0 }) });
+    // A goal landing (목표 links) lands on the goal's box, under the title bar too.
+    Object.assign(el('panel-goal'), { getBoundingClientRect: () => ({ top: AREA_TOP - scroll.scrollTop, height: 0 }) });
     // D4 E-19: the agent strip is <ui-tabs>' sticky list — none in this rig (its shared panel starts at its host's top).
     for (const id of ['panel-tabs', 'panel-tabpanel']) {
       Object.assign(el(id), { getBoundingClientRect: () => ({ top: AREA_TOP + qH() - scroll.scrollTop, height: 0 }) });
@@ -3394,6 +3396,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         pcFreshSteer: () => {},
         // Phone chrome (SSOT 2026-11-04): every opening starts with the head and the composer in — a seam here.
         rdReset: () => {},
+        panelReading: () => false,
         // Plan mode (SSOT 2026-11-02): the plan document and the bar above the composer (their markup is not this harness's).
         panelPlanHtml: () => '<details class="pp-fold">plan</details>',
         planBarHtml: () => '',
@@ -3440,6 +3443,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
             show: ['subtitle', 'info', 'goal', 'artifacts', 'agenthead', 'agenttabs', 'sections', 'controls'],
             tasks: 'runs',
             open: true,
+            // The tab bar's layout tabs (between 작업 계획 and 사용자 작업) — only drawn with opts.bar.
+            tabs: ['goal'],
           },
         }),
         detailShows: () => true,
@@ -3620,7 +3625,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     expect(p.settled()).toBe('');
     expect(p.drawer.getAttribute('data-midtab')).toBe('plan');
     expect(p.midbar.innerHTML).toContain('class="pm-tab is-plan" data-mid="plan" aria-expanded="true"');
-    expect(expanded(p.midbar.innerHTML)).toEqual(['plan:true', 'useractions:false']);
+    expect(expanded(p.midbar.innerHTML)).toEqual(['plan:true', 'goal:false', 'useractions:false']);
     // The page's renderPanelPlan painted the waiting plan, and the opening landed on it (under the title bar).
     expect([p.planBox.hidden, p.planBox.getAttribute('data-waiting')]).toEqual([false, 'true']);
     expect(p.m.landedOn()).toBe('top');
@@ -3633,7 +3638,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     await flush();
     expect(p.m.midNow()).toBe('useractions');
     expect(p.drawer.getAttribute('data-midtab')).toBe('useractions');
-    expect(expanded(p.midbar.innerHTML)).toEqual(['plan:false', 'useractions:true']);
+    expect(expanded(p.midbar.innerHTML)).toEqual(['plan:false', 'goal:false', 'useractions:true']);
     expect([p.planBox.hidden, p.planBox.getAttribute('data-waiting')]).toEqual([false, 'true']);
     expect(p.m.landedOn()).toBe(false);
     // Another session — its plan already started — opened from this one: the reader's tab closes, every tab collapsed,
@@ -3645,9 +3650,17 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     await flush();
     expect(p.m.keyNow()).toBe(KEY2);
     expect(p.drawer.getAttribute('data-midtab')).toBe('');
-    expect(expanded(p.midbar.innerHTML)).toEqual(['plan:false', 'useractions:false']);
+    expect(expanded(p.midbar.innerHTML)).toEqual(['plan:false', 'goal:false', 'useractions:false']);
     expect([p.planBox.hidden, p.planBox.getAttribute('data-waiting')]).toEqual([false, 'false']);
     expect(p.m.landedOn()).toBe(false);
+    // An explicit landing (a goal link) on a session whose plan waits for 시작: the landing's tab wins over the plan's.
+    const KEY3 = 'inst::work:C1:1700000000.000300';
+    p.cache[KEY3] = { ...planned('awaiting'), key: KEY3, conversationId: 'conv3' };
+    p.m.openPanel(KEY3, 'goal' as unknown as boolean);
+    await flush();
+    await flush();
+    expect(p.drawer.getAttribute('data-midtab')).toBe('goal');
+    expect(expanded(p.midbar.innerHTML)).toEqual(['plan:false', 'goal:true', 'useractions:false']);
   });
 
   it('the form is in view as soon as the panel opens, before the turns arrive', () => {
