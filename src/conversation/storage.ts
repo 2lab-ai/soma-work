@@ -86,6 +86,8 @@ export class ConversationStorage {
 
           metas.push({
             id: record.id,
+            ownerId: record.ownerId,
+            channelId: record.channelId,
             ownerName: record.ownerName,
             title: record.title,
             workflow: record.workflow,

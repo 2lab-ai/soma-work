@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { registerPublicChannel } from '../__fixtures__/public-channel';
 
 /**
  * SSOT 2026-10-23 T1 — the dashboard changes a session's reasoning effort.
@@ -71,6 +72,8 @@ describe('Dashboard — session effort switch (SSOT 2026-10-23 T1)', () => {
     injectWebServer = webServer.injectWebServer;
     dashboard = await import('../dashboard');
     await webServer.startWebServer({ listen: false });
+    // #1315 — another signed-in user reads these tasks: their channels are public ones.
+    await registerPublicChannel('C1');
     dashboard.setDashboardSessionAccessor(() => new Map([['C1:t1', liveSession()]]));
   });
 

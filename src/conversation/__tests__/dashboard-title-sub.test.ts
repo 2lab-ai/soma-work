@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { registerPublicChannel } from '../__fixtures__/public-channel';
 import type { ConversationRecord } from '../types';
 
 const mockConfig = {
@@ -133,6 +134,8 @@ describe('dashboard subtitle routes (ensure-title / generate-title)', () => {
     web = await import('../web-server');
     recorder = await import('../recorder');
     await web.startWebServer({ listen: false });
+    // #1315 — another signed-in user reads these tasks: their channels are public ones.
+    await registerPublicChannel('C1');
   }, 60_000);
 
   afterEach(async () => {

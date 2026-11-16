@@ -25,7 +25,10 @@
  * answer) — the same exposure as an assistant turn, whose raw text is already
  * readable there (`/api/conversations/:id/turns/:turnId/raw`). The work log
  * stays owner/admin-only: the backfill reads it server-side and publishes only
- * those two kinds of entry, never tool inputs or other results.
+ * those two kinds of entry, never tool inputs or other results. A private
+ * task's (#1315 — a private channel, a DM): its owner and admins only, like its
+ * turns; the gate `installPrivateTaskGate` puts on every session route answers
+ * anyone else 404 before these handlers run.
  *
  * Active content never runs with the dashboard's origin: html / svg / markdown /
  * text carry `Content-Security-Policy: sandbox …` without `allow-same-origin`,

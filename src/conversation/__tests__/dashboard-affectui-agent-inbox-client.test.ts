@@ -1404,3 +1404,31 @@ describe('D10 — the open card renders one approval card per prompt; only what 
     expect(client('U1').renderCardBody(s, 'closed')).not.toContain('ui-approval-card');
   });
 });
+
+// #1315 — "슬랙 비공개 채널의 작업은 … 비공개 작업이라고 열쇠 표시를 둔다": the key leads a private task's title.
+describe('#1315 — a private task’s card carries the key', () => {
+  it('a private card’s title starts with 🔑; a public one’s, or one that does not say, does not', () => {
+    const { cardOf } = mapper();
+    expect(cardOf(faceCard({ privateTask: true }), 'idle').title).toBe('🔑 Agent inbox');
+    expect(cardOf(faceCard({ privateTask: false }), 'idle').title).toBe('Agent inbox');
+    expect(cardOf(faceCard(), 'idle').title).toBe('Agent inbox');
+  });
+
+  it('the key stays when the board hides titles', () => {
+    const { cardOf } = mapper({ dhShow: (f: string) => f !== 'title' });
+    expect(cardOf(faceCard({ privateTask: true }), 'idle').title).toBe('🔑');
+    expect(cardOf(faceCard({ privateTask: false }), 'idle').title).toBe('');
+  });
+
+  it('the detail card’s title carries it too and says why, in Korean and English', () => {
+    const why = '비공개 작업 — 작업 주인과 관리자만 볼 수 있어요';
+    expect(TEMPLATE).toContain(`panelTitleEl.title = s.privateTask === true ? '${why}' : '';`);
+    const en = JSON.parse(
+      readFileSync(
+        join(__dirname, '..', '..', '..', 'packages', 'common', 'src', 'i18n-catalog', 'en-page.json'),
+        'utf-8',
+      ),
+    ) as Record<string, string>;
+    expect(en[why]).toBe('Private task — only its owner and admins can see it');
+  });
+});

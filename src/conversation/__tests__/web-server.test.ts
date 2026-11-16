@@ -212,9 +212,8 @@ describe('ConversationWebServer Authentication', () => {
       const withList = await injectWebServer({ method: 'GET', url: '/conversations/c1', headers });
       expect(withList.statusCode).toBe(200);
       expect(withList.headers['content-type']).toContain('text/html');
-      expect(viewer.renderConversationViewPage).toHaveBeenLastCalledWith(record, [
-        { id: 'c1', ownerId: 'U1', turnCount: 0 },
-      ]);
+      // #1315 — the list is the viewer's, and the owner and channel it was filtered by stay on the server.
+      expect(viewer.renderConversationViewPage).toHaveBeenLastCalledWith(record, [{ id: 'c1', turnCount: 0 }]);
 
       vi.mocked(recorder.listConversations).mockRejectedValueOnce(new Error('index unreadable'));
       const alone = await injectWebServer({ method: 'GET', url: '/conversations/c1', headers });
