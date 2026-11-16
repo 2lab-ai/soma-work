@@ -130,7 +130,7 @@ async function probe(page: Page): Promise<Record<string, Probe>> {
   );
 }
 /** Relative luminance of an rgb()/rgba()/color(srgb …) string (alpha ignored). */
-function lum(c: string): number {
+function relLuminance(c: string): number {
   const n = (c.match(/[\d.]+/g) || []).map(Number);
   const [r, g, b] = c.startsWith('color(') ? n.slice(0, 3).map((v) => v * 255) : n.slice(0, 3);
   const f = (v: number) => {
@@ -198,7 +198,7 @@ async function main() {
       for (const id of ['opus', 'sol']) {
         const c = p[id];
         const brighter =
-          !!c && !!plain && (theme.scheme === 'dark' ? lum(c.bc) > lum(plain.bc) : lum(c.bc) < lum(plain.bc));
+          !!c && !!plain && (theme.scheme === 'dark' ? relLuminance(c.bc) > relLuminance(plain.bc) : relLuminance(c.bc) < relLuminance(plain.bc));
         check(
           !!c && c.bw === '2px' && brighter && c.layers === 0,
           `${theme.tag} F2 ${id}: 2px, a brighter edge than the plain card's (${theme.scheme === 'dark' ? 'lighter' : 'more ink'} on this ground)`,
