@@ -10,7 +10,8 @@
 #   main:        v0.2.1-dev, v0.2.2-dev, ... (auto patch bump, -dev suffix)
 #
 # Outputs: dist/version.json with version metadata and release notes
-# Side effect: creates and pushes a new git tag (vX.Y.Z or vX.Y.Z-dev)
+# Side effect: creates and pushes a new git tag (vX.Y.Z or vX.Y.Z-dev). A dev tag whose push is refused is dropped and
+# the deploy goes on (the next dev deploy reuses the number); a production tag whose push is refused stops the deploy.
 
 set -euo pipefail
 
@@ -275,10 +276,19 @@ git tag -a "$NEW_TAG" -m "Release $NEW_TAG" HEAD
 echo "[version-bump] Created tag: $NEW_TAG"
 
 # Push tag (uses default git credentials from checkout action)
-git push origin "$NEW_TAG" || {
-  echo "[version-bump] ERROR: failed to push tag $NEW_TAG — version will not persist!"
-  echo "[version-bump] Next deploy will re-create the same version number."
-  exit 1
-}
+if ! git push origin "$NEW_TAG"; then
+  if [[ "$RELEASE_TRACK" == "dev" ]]; then
+    # A dev deploy goes on without its tag: dist/version.json above already names the version, and the next dev
+    # deploy numbers from the last tag that did land (this number again). A refused tag push — the workflow token
+    # lost its write on the runner side (2026-11-16: 403 to github-actions[bot] while the token listed contents:
+    # write) — must not stop every dev deploy. A production deploy still stops: its versions are the release record.
+    echo "[version-bump] WARNING: failed to push tag $NEW_TAG — dev deploy continues; the next dev deploy reuses this number."
+    git tag -d "$NEW_TAG" >/dev/null 2>&1 || true
+  else
+    echo "[version-bump] ERROR: failed to push tag $NEW_TAG — version will not persist!"
+    echo "[version-bump] Next deploy will re-create the same version number."
+    exit 1
+  fi
+fi
 
 echo "[version-bump] Done: $NEW_TAG"
