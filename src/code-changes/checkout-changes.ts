@@ -310,7 +310,11 @@ async function trackedChange(
   budget: Budget,
   filemode = true,
 ): Promise<ChangedFile | undefined> {
-  const st = await fs.lstat(path.join(realTop, e.path)).catch(() => undefined);
+  // Gone (ENOENT, ENOTDIR) is a deletion; any other error (EACCES, EIO) is not known — shown, without counts.
+  const looked = await fs.lstat(path.join(realTop, e.path)).catch((err: NodeJS.ErrnoException) => err);
+  if (looked instanceof Error && looked.code !== 'ENOENT' && looked.code !== 'ENOTDIR')
+    return uncounted(e.path, 'modified');
+  const st = looked instanceof Error ? undefined : looked;
   const file = await contentChange(gitBytes, realTop, e, format, budget, st);
   if (!filemode || (e.mode !== '100644' && e.mode !== '100755')) return file;
   // An executable bit flipped on a file git tracks the mode of is a change, with or without a content change.
@@ -501,9 +505,20 @@ async function uncommittedLayer(
   return layer(files, truncated);
 }
 
+/**
+ * Whether `sha` is in `head`'s history. A commit this checkout does not have is not; a git that fails to answer throws
+ * (GitReadFailed) — a failed answer is not "no", which would pick a wrong base (#1299 review). `rev-list` answers both
+ * questions with a plain success: `--ignore-missing` lists nothing for an unknown object, and `<sha> --not <head>` lists
+ * nothing exactly when `head` contains it.
+ */
 async function isAncestor(git: GitRun, dir: string, sha: string, head: string): Promise<boolean> {
   if (!/^[0-9a-f]{7,64}$/i.test(sha)) return false;
-  return (await git(dir, ['merge-base', '--is-ancestor', sha, head])) !== undefined;
+  const known = await git(dir, ['rev-list', '--ignore-missing', '--no-walk', sha, '--']);
+  if (known === undefined) throw new GitReadFailed('rev-list');
+  if (!known.trim()) return false;
+  const outside = await git(dir, ['rev-list', '--max-count=1', sha, '--not', head, '--']);
+  if (outside === undefined) throw new GitReadFailed('rev-list');
+  return outside.trim() === '';
 }
 
 /**
@@ -586,8 +601,9 @@ async function commitsOf(
     ...range,
     '--',
   ]);
+  if (out === undefined) throw new GitReadFailed('log');
   const commits: CommitRef[] = [];
-  for (const line of (out ?? '').split('\n')) {
+  for (const line of out.split('\n')) {
     const [sha, subject, ct] = line.split('\x1f');
     if (!sha || !SHA.test(sha)) continue;
     commits.push({ sha, subject: (subject ?? '').slice(0, 200), at: Number(ct) * 1000 || 0 });
@@ -616,7 +632,12 @@ async function committedLayer(
   const files = await diffFiles(git, dir, base, head);
   // A failed diff is not "nothing committed": the collector keeps the last layer read, with the reason.
   if (!files) return { ...empty, base, skipped: 'git-diff-failed' };
-  return { ...layer(files, false), base, commits: await commitsOf(git, dir, base, head, emptyTree) };
+  try {
+    return { ...layer(files, false), base, commits: await commitsOf(git, dir, base, head, emptyTree) };
+  } catch (error) {
+    if (error instanceof GitReadFailed) return { ...empty, base, skipped: 'git-diff-failed' };
+    throw error;
+  }
 }
 
 /**
@@ -712,7 +733,8 @@ export async function sessionCommits(
     const [sha, subject, selector] = line.split('\x1f');
     if (!sha || !SHA.test(sha) || !COMMIT_REFLOG.test(subject ?? '')) continue;
     const at = Number(/@\{(\d+)\}/.exec(selector ?? '')?.[1]) * 1000;
-    if (!Number.isFinite(at) || at < sinceMs || seen.has(sha) || skip.has(sha)) continue;
+    // The reflog keeps whole seconds: a commit in the session's first second is not before it.
+    if (!Number.isFinite(at) || at < Math.floor(sinceMs / 1000) * 1000 || seen.has(sha) || skip.has(sha)) continue;
     seen.add(sha);
     found.push({ sha, at });
     if (found.length >= max) break;

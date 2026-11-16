@@ -590,6 +590,8 @@ describe('the fourth review round (#1299)', () => {
     expect(lineCounts(b('a\nb\n'), b('b\na\n'))).toEqual({ additions: 0, deletions: 0 });
     expect(lineCounts(b('a\r\nb\r\n'), b('a\nb\n'))).toEqual({ additions: 0, deletions: 0 });
     expect(lineCounts(b(''), b('x'))).toEqual({ additions: 1, deletions: 0 });
+    // Multisets, not sets: two fewer copies of a repeated line are two deletions.
+    expect(lineCounts(b('a\na\na\nb\n'), b('a\nb\n'))).toEqual({ additions: 0, deletions: 2 });
   });
 
   it('more tracked changes than the layer keeps is marked truncated', async () => {
@@ -981,5 +983,60 @@ describe('the seventh review round (#1299)', () => {
     const byPath = Object.fromEntries(c!.committed.files.map((f) => [f.path, f]));
     expect(byPath['say "hi".txt'].patch).toContain('+hello');
     expect(byPath['tab\there.txt'].patch).toContain('+tab');
+  });
+});
+
+describe('the eighth review round (#1299)', () => {
+  it('an ancestry check git fails to answer marks the committed layer, not a wrong base', async () => {
+    const session = tmp('cc-anc-');
+    const dir = clone(session, 'svc');
+    git(dir, ['checkout', '-q', '-b', 'feat/x']);
+    write(dir, 'one.ts', '1\n');
+    const pr = commitAll(dir, 'in the PR');
+    write(dir, 'two.ts', '2\n');
+    commitAll(dir, 'after');
+    const failing: GitRun = async (d, args) => (args.includes('--not') ? undefined : runGit(d, args));
+    const c = await checkoutChanges({ dir, sessionRoot: session, prHeads: [{ headSha: pr }], git: failing });
+    expect(c!.committed).toMatchObject({ files: [], skipped: 'git-diff-failed' });
+    // A PR head this checkout does not have is simply not its base.
+    const other = await checkoutChanges({ dir, sessionRoot: session, prHeads: [{ headSha: 'e'.repeat(40) }] });
+    expect(other!.committed.skipped).toBeUndefined();
+    expect(other!.committed.files.map((f) => f.path)).toEqual(['one.ts', 'two.ts']);
+  });
+
+  it('a commit log git fails to read marks the committed layer', async () => {
+    const session = tmp('cc-logfail-');
+    const dir = clone(session, 'svc');
+    git(dir, ['checkout', '-q', '-b', 'feat/x']);
+    write(dir, 'one.ts', '1\n');
+    commitAll(dir, 'one');
+    const failing: GitRun = async (d, args) =>
+      args.includes('log') && args.includes('--format=%H%x1f%s%x1f%ct') ? undefined : runGit(d, args);
+    const c = await checkoutChanges({ dir, sessionRoot: session, git: failing });
+    expect(c!.committed).toMatchObject({ files: [], skipped: 'git-diff-failed' });
+  });
+
+  it('a tracked file whose stat fails (not ENOENT) is shown, not read as deleted', async () => {
+    if (process.getuid?.() === 0) return; // root reads through a 000 folder
+    const session = tmp('cc-eacces-');
+    const dir = clone(session, 'svc');
+    fs.chmodSync(path.join(dir, 'src'), 0o000);
+    try {
+      const c = await checkoutChanges({ dir, sessionRoot: session });
+      expect(c!.uncommitted.files).toEqual([
+        { path: 'src/a.ts', status: 'modified', additions: 0, deletions: 0, patchTruncated: true },
+      ]);
+    } finally {
+      fs.chmodSync(path.join(dir, 'src'), 0o755);
+    }
+  });
+
+  it("a commit in the session's first second counts (the reflog keeps whole seconds)", async () => {
+    const session = tmp('cc-second-');
+    const dir = clone(session, 'svc');
+    write(dir, 'a.txt', 'a\n');
+    const sha = commitAll(dir, 'now');
+    const at = Number(/@\{(\d+)\}/.exec(git(dir, ['log', '-g', '-1', '--date=unix', '--format=%gd']))?.[1]) * 1000;
+    expect((await sessionCommits(dir, at + 999, new Set())).map((c) => c.sha)).toEqual([sha]);
   });
 });

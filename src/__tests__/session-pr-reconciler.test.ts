@@ -263,8 +263,18 @@ describe('createSessionPrReconciler (#833)', () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(findCheckouts).toHaveBeenCalledTimes(1);
       expect(settled).toBe(false);
+      // The deferred run starts at the interval and is held: settled waits for it to finish, not only to start.
+      let releaseSecond!: () => void;
+      const secondGate = new Promise<void>((r) => (releaseSecond = r));
+      findCheckouts.mockImplementationOnce(async () => {
+        await secondGate;
+        return [checkout()];
+      });
       await vi.advanceTimersByTimeAsync(20_000);
       expect(findCheckouts).toHaveBeenCalledTimes(2);
+      expect(settled).toBe(false);
+      releaseSecond();
+      await vi.advanceTimersByTimeAsync(0);
       expect(settled).toBe(true);
       // A reconcile that never ends: settled gives up after its bound.
       const stuck = createSessionPrReconciler({ ...h.deps, findCheckouts: () => new Promise(() => {}) });

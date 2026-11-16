@@ -100,7 +100,8 @@ describe('pr-changes', () => {
     expect(prs.map((p) => [p.number, p.state])).toEqual([[1, 'merged']]);
     expect(prs[0]).toMatchObject({ additions: 10, deletions: 2, mergedAt: Date.parse('2026-11-16T02:00:00Z') });
     expect(prs[0].files[0]).toMatchObject({ path: 'src/a.ts', patch: '@@ -1 +1 @@\n-a\n+b' });
-    expect(deps.fetchPullDetail).toHaveBeenCalledTimes(2);
+    // Each PR's detail once, and once more for #1 after its files (the head and base must have held).
+    expect(deps.fetchPullDetail).toHaveBeenCalledTimes(3);
   });
 
   it('a settled PR is read from the stored record; a failed query keeps the stored record', async () => {
@@ -151,9 +152,9 @@ describe('pr-changes — a failed files read is asked again (#1299 review)', () 
     expect(ok.fetchPullFiles).toHaveBeenCalledTimes(1);
     expect(second[0].filesStale).toBeUndefined();
     expect(second[0].files.map((f) => f.path)).toEqual(['src/a.ts']);
-    // Settled and whole now: not asked again.
+    // Settled and whole now: not asked again (the two detail reads were around the files read).
     const third = await sessionPrChanges(['https://github.com/acme/web/pull/4'], START, second, ok);
-    expect(ok.fetchPullDetail).toHaveBeenCalledTimes(1);
+    expect(ok.fetchPullDetail).toHaveBeenCalledTimes(2);
     expect(third).toEqual(second);
   });
 
@@ -516,7 +517,7 @@ describe('the fourth review round (#1299)', () => {
     // A settled PR whose patches were cut is read again too.
     const merged = prDeps({ 6: detail(6, { merged: true, base_sha: 'b1' }) });
     await sessionPrChanges([url], START, [{ ...first[0], state: 'merged', patchesDropped: true }], merged);
-    expect(merged.fetchPullDetail).toHaveBeenCalledTimes(1);
+    expect(merged.fetchPullFiles).toHaveBeenCalledTimes(1);
     // Same repository: no headRepo.
     const own = await sessionPrChanges([url], START, [], prDeps({ 6: detail(6, { head_repo: 'acme/web' }) }));
     expect(own[0].headRepo).toBeUndefined();
@@ -727,5 +728,55 @@ describe('the fourth review round (#1299)', () => {
       const next = await sessionPrChanges([url], START, first, deps);
       expect(next[0].files.map((f) => [f.path, f.patch])).toEqual([['src/new.ts', '@@ -0,0 +1 @@\n+fresh']]);
     }
+  });
+
+  it('a push between the detail and the files read marks the files stale (one revision, not two)', async () => {
+    const url = 'https://github.com/acme/web/pull/11';
+    const heads = ['a'.repeat(40), 'b'.repeat(40)];
+    const deps = {
+      ...prDeps({}),
+      fetchPullDetail: vi.fn(async () => detail(11, { head_sha: heads.shift() ?? 'b'.repeat(40) })),
+    };
+    const prs = await sessionPrChanges([url], START, [], deps);
+    expect(prs[0].filesStale).toBe(true);
+  });
+
+  it("an earlier checkout's committed patches never push out a later checkout's uncommitted one", async () => {
+    const s3 = store();
+    const big = 'y'.repeat(4 * 1024 * 1024);
+    const one = (patchIn: 'uncommitted' | 'committed', id: string) =>
+      checkout({
+        id,
+        dir: id,
+        uncommitted: {
+          files:
+            patchIn === 'uncommitted'
+              ? [{ path: 'u', status: 'modified', additions: 1, deletions: 0, patch: big }]
+              : [],
+          additions: 1,
+          deletions: 0,
+        },
+        committed: {
+          files:
+            patchIn === 'committed' ? [{ path: 'c', status: 'modified', additions: 1, deletions: 0, patch: big }] : [],
+          additions: 1,
+          deletions: 0,
+          commits: [],
+        },
+      });
+    const r = await collectCodeChanges(
+      { conversationId: 'order', owner: { id: 'U', name: 'u' }, dirs: ['/s'], prUrls: [] },
+      {
+        ...prDeps({}),
+        store: s3,
+        listCheckoutDirs: async () => ({ dirs: ['/s/a', '/s/b'] }),
+        checkoutChanges: async ({ dir }: { dir: string }) =>
+          dir === '/s/a' ? one('committed', 'a') : one('uncommitted', 'b'),
+      },
+    );
+    const b = r.doc.checkouts.find((c) => c.id === 'b')!;
+    const a = r.doc.checkouts.find((c) => c.id === 'a')!;
+    expect(b.uncommitted.files[0].patch).toBe(big);
+    expect(a.committed.files[0].patch).toBeUndefined();
   });
 });

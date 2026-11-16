@@ -126,7 +126,10 @@ export async function collectCodeChanges(input: CollectInput, deps: CollectDeps)
   const prs = await sessionPrChanges(input.prUrls, input.startedAt, prev?.prs ?? [], deps, (files) =>
     trimPatches(files, prBudget),
   );
-  const checkoutBudget: PatchBudget = { used: 0, max: MAX_DOC_PATCH_BYTES };
+  // One running budget per layer: a later checkout's uncommitted patch is never pushed out by an earlier checkout's
+  // committed one — the end-of-document pass (uncommitted first) would never have dropped it (#1299 review).
+  const uncommittedBudget: PatchBudget = { used: 0, max: MAX_DOC_PATCH_BYTES };
+  const committedBudget: PatchBudget = { used: 0, max: MAX_DOC_PATCH_BYTES };
   const prHeads = prs.map((p) => ({ repo: p.repo, headRepo: p.headRepo, headSha: p.headSha }));
   const list = deps.listCheckoutDirs ?? listCheckoutDirs;
   const readCheckout = deps.checkoutChanges ?? checkoutChanges;
@@ -151,8 +154,8 @@ export async function collectCodeChanges(input: CollectInput, deps: CollectDeps)
     if (!read) continue;
     const { sessionCommits: made, ...changes } = read;
     const c = keepLastRead(changes, lastRead.get(changes.id));
-    trimPatches(c.uncommitted.files, checkoutBudget);
-    trimPatches(c.committed.files, checkoutBudget);
+    trimPatches(c.uncommitted.files, uncommittedBudget);
+    trimPatches(c.committed.files, committedBudget);
     if (hasChanges(c)) checkouts.push(c);
     // A checkout not read (refused, or changed during the read) hands on no commits either.
     if (UNREAD_CHECKOUT.has(read.uncommitted.skipped ?? '')) continue;
