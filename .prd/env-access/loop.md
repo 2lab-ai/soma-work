@@ -39,6 +39,11 @@ ssot = [`ssot.md`](ssot.md)
 - 11-15 브로커 의존 전수 조사(개인·환경 스킬): 실제 의존은 오너 정기 작업의 develop PR 승인 한 줄(브로커 카드) → 질문 카드 → `gh_pr approve`로 교체.
   14:18 UTC 첫 감사 기록 — 봇 PR 5개 `gh_pr approve` intent→done(server dev2, envUser `env:<org>-dev2`, requester 오너).
   `github.readRefs` = 통합·배포 브랜치를 넣어 `gh_read`가 배포 브랜치 머지 커밋을 읽음(200 실측).
+- 11-15 dev2 두 묶음 실측: 봇 PR 5개 머지 → 승격 PR 2개 `gh_pr approve`(base 배포 브랜치, 감사 원장) → 배포 브랜치 머지 → 배포 워크플로 성공(1회는 GitHub 502로 push 트리거 누락 → 고객 워치독 재실행) → 이슈 5건 QA(dev2) 전환. 원장 14줄.
+  승인은 환경 도구(org-admin 토큰)지만 머지·QA 세션은 오너의 정기 작업 세션(샌드박스 + 배포 grant) — 환경 유저 세션으로 돌리려면 `$<env>:deploy`/`qa` 핸드오프.
+  배포 grant secret의 고객 dev 호스트 줄에 오너를 추가(오너 세션 QA의 잠금 폴더 쓰기가 배포마다 지워지던 것).
+- 11-16 01:20 UTC 운영자 2단계 `--uninstall`(감사 게이트 통과, force 없이): 브로커 Slack 봇 토큰 revoke, `uninstall.sh --purge`(원장 archive 보관), launchd not found, 데이터 루트 없음 — 실측.
+- 오너 결정(11-16): 환경 웹 로그인은 B — QA는 환경 유저 `$<env>:qa`(샌드박스 없음)로. server-tools `login`의 2단계(CheckIn→SignIn) 지원은 하지 않는다(필요해지면 새 이슈).
 - 남은 넘김: 고객 플러그인 `dev2-qa` 프로필의 GitHub 줄이 아직 devops-tools(고객 레포, 봇 push 권한 없음) · 브로커의 옛 Slack 앱 사본은 다른 사람이 만들어 우리가 지우지 못함 ·
   어드민 샌드박스가 사람 자격 파일(`~/.config/gcloud`·`~/.aws`)을 막아 오너 크론 3개 실패(허용 여부 = 오너 결정).
 
@@ -91,5 +96,5 @@ WU0–WU5 · WU6a · #1242 · #1241 머지(2026-11-13). dev는 v0.3.32로 롤백
 1. 샌드박스 권한 번들(sandbox off를 능력별로 나눠 어드민이 유저 · 어드민 그룹 · 전체에 grant) — 플랜 A/B 유저 선택 대기.
 2. 운영자: 고객 dev 호스트 `config.json` `server-tools.<dev2|stage0>`에 `envUser` · `skills` · `github`(`$secret` · `repos` · 조건표 · `readRefs` = 통합·배포 브랜치) · `web.logins` · `cloudflare`(`$secret` · `zones`, 필요하면 `parts` — rulesets · firewall · filters · pagerules · custom_hostnames · healthchecks는 다른 시스템 자격이 담길 수 있어 opt-in), 고객 스킬 저장소 QA 프로필 `github.server` · `qaEnv.logins`, 토큰 · 비밀번호 → `secrets/`.
 3. 라이브: 비어드민 `$<env>:post-deploy` → 어드민 카드 4버튼 → "환경 전체 항상" → 다음 카드 0장 · dev2 배포 → QA 리포트(비밀번호 노출 0).
-4. 운영자(고객 dev 호스트 하나 — owner-mac에는 브로커 없음): #1290 배포 → 운영자 스크립트 1단계 다시(토큰 → `secrets/`, 환경별 Cloudflare 토큰, config 참조; 브로커 유지) → #1286 배포 뒤 환경 유저의 `gh_pr` 쓰기 첫 성공(`env-audit.jsonl` done) → 2단계 `--uninstall`(브로커 Slack 봇 토큰 revoke, `uninstall.sh --purge`, launchd not found) → #1253(WU6b) 머지 → #1214 닫기 → 가드의 브로커 경로 정리.
+4. ✅ (11-16 01:20 UTC) 운영자(고객 dev 호스트 하나 — owner-mac에는 브로커 없음): #1290 배포 → 운영자 스크립트 1단계 다시(토큰 → `secrets/`, 환경별 Cloudflare 토큰, config 참조; 브로커 유지) → #1286 배포 뒤 환경 유저의 `gh_pr` 쓰기 첫 성공(`env-audit.jsonl` done) → 2단계 `--uninstall`(브로커 Slack 봇 토큰 revoke, `uninstall.sh --purge`, launchd not found) → #1253(WU6b) 머지 → #1214 닫기 → 가드의 브로커 경로 정리.
 5. 원격 셸 금지 오탐: 셸 파서로 좁히는 #1245는 리뷰마다 새 우회가 나와 보류(draft). 경계를 샌드박스로 옮기는 #1255로 간다.
