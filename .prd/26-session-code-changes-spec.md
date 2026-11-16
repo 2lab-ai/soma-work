@@ -1,6 +1,6 @@
 # 26 — 작업 세션의 변경점: 탭 · 파일 뷰어 · 네 층 · 통계 · 모델
 
-Status: in-progress · Date: 2026-11-16 · 기준 main `ab7597d9`
+Status: shipped (main `cda9d40a`, dev v0.3.56-dev) · Date: 2026-11-16 · 기준 main `ab7597d9`
 SSOT = [`code-changes/ssot.md`](code-changes/ssot.md) · 아키텍처 = [`27-session-code-changes-architecture.md`](27-session-code-changes-architecture.md) ·
 앞선 계약: [`15`](15-dashboard-detail-deck-spec.md)(상세 카드 섹션 탭), [`22`](22-task-card-links-spec.md)(카드의 PR 연결)
 

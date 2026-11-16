@@ -22,3 +22,21 @@ Loop: ./loop.md · Each round close appends one block at the bottom; nothing abo
 계획: 이 문서들을 WU1 PR에 싣는다 → 에픽 #1294 + 서브이슈 #1295–#1297 (만듦, 2026-11-16) → WU1(서버) 머지 → WU3(통계 · 모델)과 WU2(화면)를 WU1 위에서 → dev 배포 → 실측.
 
 결과: WU1 #1299(`29c4435c`) → WU2 #1300(`36fd1598`) → WU3 #1301(`1ac87877`) → WU1 후속 #1302(`d29a3fc6`) 머지. 리뷰에서 나온 안전 지적(경로 바꿔치기, 루트 고정, 실패를 "없음"으로 읽기, 지표 전달 재시도)을 모두 코드와 시험으로 닫았다. dev 배포는 배포 워크플로의 태그 push 403으로 막혀 R2로 넘긴다(우회 https://github.com/2lab-ai/soma-work/pull/1307).
+
+## R2 — closed 2026-11-16
+
+- measured D1✅ · result: dev runs the four layers, the 변경점 tab and file viewer, the fixed-id metrics and the model's view; two defects dev showed were fixed and measured again · closed rows: D1 · commit/PR: https://github.com/2lab-ai/soma-work/pull/1307 (`be65858b`), https://github.com/2lab-ai/soma-work/pull/1309 (`cda9d40a`)
+
+### Closed rows
+
+| ID | Source | Universe Item | Observable Acceptance | AS-IS Evidence | Status | Gap | Dispatch | Verification Evidence | Last Measured |
+|---|---|---|---|---|---|---|---|---|---|
+| D1 | loop R2 | dev 배포 · 실측 | 변경점 탭 스크린샷 · `session.codeChanges` · `merge_lines:` · `commit:` 행 | 배포 prepare의 태그 push 403(03:37 UTC부터) | ✅ | — | #1294 · PR #1307 · PR #1309 | v0.3.54-dev(`be65858b`) → v0.3.56-dev(`cda9d40a`). 머지 줄 6행(#1299 #1300 #1301 #1302 #1307 #1309, id `merge_lines:<PR URL>`) = GitHub additions/deletions(#1309 +73/−12). 커밋 줄 3쌍(`commit:` · `commit_lines:` c4d7f287 +42/−11, da8bb1c1 +4/−1, e34c8ee6 +27/−0) = `git show --numstat`, 경계(`.counting-since.json`) 전 커밋은 세지 않음. GET_SESSION `session.codeChanges`, 다음 턴 `<context>`의 `<uncommitted-changes>` 줄. 배포 빌드 + dev 저장본 사본으로 탭 · 뷰어 스크린샷(1440 · 390). dev가 보여 준 결함 2개 — 커밋함 기준점이 머지된 PR head라 남이 main에 머지한 파일이 섞임, 폰 뷰어 머리줄의 `+24`가 세로로 꺾임(11.8px × 52px) — 는 #1309로 고쳤다. 다시 잼(v0.3.56-dev 배포 코드): 같은 체크아웃의 커밋함 층이 남의 #1306 파일 5개 · 커밋 7개 → 이 세션의 `loop.md` · `loop.done.md`와 커밋 1개(기준점 = origin/main `cda9d40a`); 폰 머리줄 `+24`는 22.7px × 17.4px 한 줄, 영어 화면의 한글은 PR 제목 · 파일 내용(데이터)뿐. | 2026-11-16 main `cda9d40a` |
+
+### Round section (as it was in loop.md)
+
+## 라운드 2 — dev 배포 · 실측 (2026-11-16 열림)
+
+계획: main(`d29a3fc6` 이후)을 dev에 배포 → 대시보드 변경점 탭 · `GET_SESSION` `session.codeChanges` · 고정 id 지표 행을 실서버에서 확인 → 번호 문서를 shipped로.
+
+결과: 태그 push 403은 #1307(dev는 태그 없이 계속)로 넘겼다. dev 실측에서 결함 2개가 나와 #1309로 고치고 다시 배포 · 측정했다. 26 · 27 · ssot는 shipped.
