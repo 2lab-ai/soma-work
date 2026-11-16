@@ -124,11 +124,13 @@ export function createCodeChangesService<S extends SessionLike>(deps: CodeChange
         // from the store replays its own older read — a newer read (the reconciler's) wins over it, and a node recreated
         // since (or a lost delivery) gets them back. A record from before that field: its collect's bound.
         const prs = result.doc.prs;
-        const entries = prTreeEntries(prs).map((e, i) =>
-          e.rel && Object.keys(e.rel).length
-            ? { ...e, relReadAt: prs[i].relReadAt ?? Math.min(readFrom, prs[i].fetchedAt) }
-            : e,
-        );
+        // The state comes from the same read as the relations: a reused record (merged, or kept when GitHub did not
+        // answer) carries its own older time, so a newer read's state stays (G1). A relation the record does not give
+        // moves no time (the tree applies read times per relation given).
+        const entries = prTreeEntries(prs).map((e, i) => {
+          const readAt = prs[i].relReadAt ?? Math.min(readFrom, prs[i].fetchedAt);
+          return { ...e, relReadAt: readAt, statusReadAt: readAt };
+        });
         deps.issueTree.note(key, entries);
       } catch (error) {
         deps.logger?.debug('issue tree: PR relations not noted', { key, error: (error as Error)?.message });

@@ -37,6 +37,7 @@ describe('code-changes service → issue tree', () => {
         status: 'open',
         rel: { closes: ['https://github.com/acme/web/issues/9'], base: null },
         relReadAt: 7, // when this collect's reads began (its clock)
+        statusReadAt: 7, // the state comes from the same read (G1)
         onlyIfPresent: true,
       },
     ]);

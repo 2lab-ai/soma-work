@@ -760,4 +760,78 @@ describe('the 변경점 issue tree in a DOM (.prd/29 §6)', () => {
     toggle(nid('issues/10'))!.click();
     expect(rows()).toEqual([nid('issues/10')]);
   });
+
+  it('D13 (G3) — a rendered nested or stacked PR row, clicked, shows that PR’s files only', async () => {
+    const view = {
+      nodes: [
+        {
+          id: nid('issues/10'),
+          kind: 'issue',
+          source: 'github',
+          url: `${GH}/issues/10`,
+          label: '#10',
+          placed: 'default',
+        },
+        {
+          id: nid('pull/7'),
+          kind: 'pr',
+          source: 'github',
+          url: `${GH}/pull/7`,
+          parent: nid('issues/10'),
+          placed: 'closes',
+        },
+        {
+          id: nid('pull/8'),
+          kind: 'pr',
+          source: 'github',
+          url: `${GH}/pull/8`,
+          parent: nid('pull/7'),
+          placed: 'stack',
+        },
+      ],
+    };
+    dom.document.body.innerHTML = '<div id="panel-changes"></div>';
+    const ctl = controlledFetch();
+    const tab = new Function(
+      'fetch',
+      'view',
+      `var _sessionCache = { k1: { issueTree: view } }; var panelSessionKey = 'k1';
+      ${CODE_CHANGES_JS}
+      return { chgOpen: chgOpen, chgWire: chgWire };`,
+    )(ctl.fetchFn, view) as { chgOpen: (cid: string) => void; chgWire: () => void };
+    tab.chgWire();
+    tab.chgOpen('c1');
+    const pr = (n: number, path: string, state = 'merged') => ({
+      id: `acme/web#${n}`,
+      url: `${GH}/pull/${n}`,
+      repo: 'acme/web',
+      number: n,
+      title: `PR ${n}`,
+      state,
+      additions: 1,
+      deletions: 0,
+      changedFiles: 1,
+      files: [{ path, status: 'modified', additions: 1, deletions: 0 }],
+    });
+    // The stacked PR is still open (its files are its own layer); the one under the issue is merged.
+    ctl.calls[0].resolve({ doc: { ...doc(100), prs: [pr(8, 'pr8/two.ts', 'open'), pr(7, 'pr7/one.ts')] } });
+    await flush();
+    const files = () =>
+      Array.from(byId('panel-changes').querySelectorAll('[data-chg-file]')).map(
+        (r) => (r.getAttribute('data-chg-file') || '').split('\n')[1],
+      );
+    const rowButton = (n: number) =>
+      Array.from(byId('panel-changes').querySelectorAll('[data-chg-scope]')).find(
+        (b) => b.getAttribute('data-chg-scope') === `pr:acme/web#${n}`,
+      )!;
+    // The stacked PR's row (under #7): only its files.
+    rowButton(8).click();
+    expect(files()).toEqual(['pr8/two.ts']);
+    expect(rowButton(8).getAttribute('aria-pressed')).toBe('true');
+    // The nested PR's row (under the issue): only its files.
+    rowButton(7).click();
+    expect(files()).toEqual(['pr7/one.ts']);
+    expect(rowButton(7).getAttribute('aria-pressed')).toBe('true');
+    expect(rowButton(8).getAttribute('aria-pressed')).toBe('false');
+  });
 });

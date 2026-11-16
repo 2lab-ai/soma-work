@@ -190,7 +190,13 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
       for (const p of pulls) {
         const base = classifyLinkUrl(p.html_url);
         if (!base || base.type !== 'pr') continue;
-        const link: SessionLink = { ...base, status: pullStatus(p), ...(p.title ? { title: p.title } : {}) };
+        // `statusCheckedAt`: when the read behind this state began (the tree orders states by it, G1).
+        const link: SessionLink = {
+          ...base,
+          status: pullStatus(p),
+          statusCheckedAt: readAt,
+          ...(p.title ? { title: p.title } : {}),
+        };
         const closes = closingIssues(p, c.owner, c.name);
         issues.push(...closes);
         // The body as read now is the truth: no closing ref clears what an older body said.
@@ -198,6 +204,8 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
         relations.push({
           kind: 'pr',
           url: link.url,
+          // The state as this read saw it, with the read's start: a slower, older collect does not undo it (G1).
+          ...(link.status ? { status: link.status, statusReadAt: readAt } : {}),
           rel: { closes: closes.map((l) => l.url) },
           relReadAt: readAt,
           onlyIfPresent: true,

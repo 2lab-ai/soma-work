@@ -2927,6 +2927,8 @@ export class SessionRegistry {
           label: link.label,
           title: link.title,
           ...(link.status ? { status: link.status } : {}),
+          // When the read behind the state began, if the noter knows it (the reconciler); else it is noted as read now.
+          ...(link.status && typeof link.statusCheckedAt === 'number' ? { statusReadAt: link.statusCheckedAt } : {}),
         },
         now,
       );

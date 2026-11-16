@@ -130,7 +130,7 @@ export async function refreshIssueEntries(
       url,
       provider: 'github',
       ...(meta.title ? { title: meta.title } : {}),
-      ...(meta.state ? { status: meta.state } : {}),
+      ...(meta.state ? { status: meta.state, statusReadAt: now } : {}),
       rel: { subOf: meta.parentUrl ?? null },
       checkedAt: now,
       onlyIfPresent: true,
