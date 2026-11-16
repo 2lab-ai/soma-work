@@ -663,11 +663,53 @@ function parseSessionOperation(
 
   const action = raw.action;
   const resourceType = raw.resourceType;
-  if (action !== 'add' && action !== 'remove' && action !== 'set_active') {
+  if (
+    action !== 'add' &&
+    action !== 'remove' &&
+    action !== 'set_active' &&
+    action !== 'add_internal' &&
+    action !== 'move'
+  ) {
     return invalidArgs(`Unsupported operation action: ${String(action)}`);
   }
   if (!RESOURCE_TYPES.includes(resourceType as SessionResourceType)) {
     return invalidArgs(`Unsupported resourceType: ${String(resourceType)}`);
+  }
+  // .prd/29 — a node's place in the session's issue tree: a node (URL or id), `null` for the root, absent = the host's.
+  const parent = raw.parent;
+  if (parent !== undefined && parent !== null && (typeof parent !== 'string' || parent.trim() === '')) {
+    return invalidArgs('parent must be a node URL or id, or null for the root');
+  }
+
+  if (action === 'add_internal') {
+    if (resourceType !== 'issue') return invalidArgs('add_internal makes an issue: resourceType must be "issue"');
+    const id =
+      raw.id === undefined ? undefined : typeof raw.id === 'string' && /^internal:\d+$/.test(raw.id) ? raw.id : null;
+    if (id === null) return invalidArgs('add_internal id must be an internal issue id (internal:<n>)');
+    const title = typeof raw.title === 'string' ? raw.title.trim() : '';
+    if (!id && !title) return invalidArgs('add_internal requires a title (or the id of the internal issue to change)');
+    if (raw.status !== undefined && raw.status !== 'open' && raw.status !== 'closed') {
+      return invalidArgs('add_internal status must be open or closed');
+    }
+    return {
+      ok: true,
+      value: {
+        action: 'add_internal',
+        resourceType: 'issue',
+        title: title.slice(0, 200),
+        ...(raw.status ? { status: raw.status as 'open' | 'closed' } : {}),
+        ...(parent !== undefined ? { parent: parent as string | null } : {}),
+        ...(id ? { id } : {}),
+      },
+    };
+  }
+
+  if (action === 'move') {
+    if (resourceType === 'doc') return invalidArgs('move works on the issue tree: resourceType must be issue or pr');
+    const node = typeof raw.node === 'string' ? raw.node : typeof raw.url === 'string' ? raw.url : raw.id;
+    if (typeof node !== 'string' || node.trim() === '') return invalidArgs('move requires node (a URL or id)');
+    if (parent === undefined) return invalidArgs('move requires parent (a node URL or id, or null for the root)');
+    return { ok: true, value: { action: 'move', resourceType, node, parent: parent as string | null } };
   }
 
   if (action === 'add') {
@@ -678,12 +720,16 @@ function parseSessionOperation(
     if (!link) {
       return invalidArgs('add operation requires link with url');
     }
+    if (parent !== undefined && resourceType === 'doc') {
+      return invalidArgs('parent places an issue or a PR in the issue tree, not a doc');
+    }
     return {
       ok: true,
       value: {
         action: 'add',
         resourceType: resourceType as SessionResourceType,
         link,
+        ...(parent !== undefined ? { parent: parent as string | null } : {}),
       },
     };
   }

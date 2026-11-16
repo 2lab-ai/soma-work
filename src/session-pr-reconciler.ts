@@ -19,6 +19,7 @@ import { canonicalLinkUrl, classifyLinkUrl } from '@soma/slack/session-link-capt
 import { execFile } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
+import { closingIssueUrls, type IssueTreeNote } from './issue-tree/relations';
 import { isParkedRemoval } from './path-utils';
 import type { SessionLink } from './types';
 
@@ -51,6 +52,8 @@ export interface ReconcilerDeps {
   /** Whether another, not terminated session has a checkout on `owner/name#branch` (the branch is then ambiguous). */
   checkedOutElsewhere: (sessionKey: string, owner: string, name: string, branch: string) => Promise<boolean>;
   noteLinks: (sessionKey: string, links: SessionLink[], mode: 'always' | 'history') => boolean;
+  /** .prd/29 — what the PRs say about the session's issue tree (the issues each closes). */
+  noteTree?: (sessionKey: string, entries: IssueTreeNote[]) => boolean;
   pushCard: (sessionKey: string) => void;
   /**
    * Whether `sessionKey` still names this session, not terminated — asked before every write. A reconcile can end after
@@ -91,9 +94,6 @@ export type SessionPrReconciler = ((args: ReconcileArgs) => void) & {
 /** How long `settled` waits at most: past the interval a deferred run waits, plus the run itself. */
 export const RECONCILE_SETTLE_MAX_MS = 45_000;
 
-const MAX_CLOSING_ISSUES = 5;
-const CLOSING = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+(?:([\w.-]+)\/([\w.-]+))?#(\d+)\b/gi;
-
 /** The directories a session works in: its own folder, the turn's and the session's cwd, and its source checkouts. */
 export function sessionDirs(session: SessionLike | Record<string, unknown>, workingDirectory?: string): string[] {
   const s = session as SessionLike;
@@ -128,12 +128,11 @@ function onCard(session: SessionLike, url: string): boolean {
 function closingIssues(p: PullSummary, owner: string, name: string): SessionLink[] {
   const out: SessionLink[] = [];
   const seen = new Set<string>();
-  for (const m of (p.body ?? '').matchAll(CLOSING)) {
-    const link = classifyLinkUrl(`https://github.com/${m[1] ?? owner}/${m[2] ?? name}/issues/${m[3]}`);
+  for (const url of closingIssueUrls(p.body, owner, name)) {
+    const link = classifyLinkUrl(url);
     if (!link || seen.has(link.url)) continue;
     seen.add(link.url);
     out.push(link);
-    if (out.length >= MAX_CLOSING_ISSUES) break;
   }
   return out;
 }
@@ -146,8 +145,8 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
   /** A trigger that came while one ran or within the interval: run once, later, with its latest arguments. */
   const pending = new Map<string, ReconcileArgs>();
   const timers = new Map<string, NodeJS.Timeout>();
-  /** `owner/name#branch` → the head sha and PRs of a found answer. */
-  const found = new Map<string, { sha: string; pulls: PullSummary[] }>();
+  /** `owner/name#branch` → the head sha and PRs of a found answer, and when that read began. */
+  const found = new Map<string, { sha: string; pulls: PullSummary[]; at: number }>();
   /** Who waits for a session's reconciles to settle. */
   const waiters = new Map<string, Array<() => void>>();
 
@@ -171,22 +170,38 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
       const key = `${c.owner.toLowerCase()}/${c.name.toLowerCase()}#${c.branch}`;
       if (asked.has(key)) continue;
       asked.add(key);
-      let pulls = found.get(key)?.sha === c.sha ? found.get(key)!.pulls : undefined;
+      const cached = found.get(key)?.sha === c.sha ? found.get(key) : undefined;
+      let pulls = cached?.pulls;
+      // When the read behind these PRs (their bodies' closing refs) began: an older read does not replace newer relations.
+      let readAt = cached?.at ?? now();
       if (!pulls) {
+        readAt = now();
         const answer = await deps.fetchPulls(c.owner, c.name, c.branch);
         if (!answer) continue;
-        if (answer.length > 0) found.set(key, { sha: c.sha, pulls: answer });
+        if (answer.length > 0) found.set(key, { sha: c.sha, pulls: answer, at: readAt });
         else found.delete(key);
         pulls = answer;
       }
       const candidates: Array<{ link: SessionLink; open: boolean; created: number }> = [];
       const history: SessionLink[] = [];
       const issues: SessionLink[] = [];
+      /** .prd/29 — which issues each PR closes: the PR sits under them in the session's issue tree. */
+      const relations: IssueTreeNote[] = [];
       for (const p of pulls) {
         const base = classifyLinkUrl(p.html_url);
         if (!base || base.type !== 'pr') continue;
         const link: SessionLink = { ...base, status: pullStatus(p), ...(p.title ? { title: p.title } : {}) };
-        issues.push(...closingIssues(p, c.owner, c.name));
+        const closes = closingIssues(p, c.owner, c.name);
+        issues.push(...closes);
+        // The body as read now is the truth: no closing ref clears what an older body said.
+        // Only for a PR the link notes above admitted (one the tree holds): a relation never adds a node.
+        relations.push({
+          kind: 'pr',
+          url: link.url,
+          rel: { closes: closes.map((l) => l.url) },
+          relReadAt: readAt,
+          onlyIfPresent: true,
+        });
         const created = p.created_at ? Date.parse(p.created_at) : Number.NaN;
         const isNew = start !== undefined && Number.isFinite(created) && created >= start;
         // A candidate for the current link: this checkout's own PR — made after the session started, its head commit in
@@ -208,6 +223,7 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
       if (current.length > 0 && deps.noteLinks(sessionKey, current, 'always')) changed = true;
       if (history.length > 0 && deps.noteLinks(sessionKey, history, 'history')) changed = true;
       if (issues.length > 0 && deps.noteLinks(sessionKey, issues, 'history')) changed = true;
+      if (relations.length > 0 && deps.noteTree?.(sessionKey, relations)) changed = true;
     }
     if (changed && deps.isCurrent(sessionKey, session)) deps.pushCard(sessionKey);
   }

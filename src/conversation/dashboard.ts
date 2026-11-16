@@ -41,7 +41,14 @@ import { plainTldrLine } from '@soma/slack/summary-service';
 import type { FastifyInstance } from 'fastify';
 import { SDK_EFFORT_LEVELS } from 'soma-lib';
 import type { CronExecutionRecord, CronJob, CronJobPatch } from 'somalib/cron/cron-storage';
-import type { DecisionFields } from 'somalib/model-commands/session-types';
+import { issueTreeFromLinks, issueTreeView, sanitizeIssueTree } from 'somalib/model-commands/issue-tree';
+import type {
+  DecisionFields,
+  IssueTreeView,
+  SessionIssueTree,
+  SessionLink,
+  SessionLinkHistory,
+} from 'somalib/model-commands/session-types';
 import { normalizeDecisionFields } from 'somalib/model-commands/validator';
 import {
   type AdminApprovalResolution,
@@ -319,6 +326,11 @@ export interface KanbanSession {
    * this moves. A time only — the board goes to every signed-in viewer, the changes to the owner and admins.
    */
   codeChangesAt?: number;
+  /**
+   * .prd/29 — the session's issue tree (external issues, internal issues, PRs): the 변경점 tab draws it in place of a PR
+   * list. Small (the host keeps at most 200 nodes); the owner's and every viewer's card carries it like its links.
+   */
+  issueTree?: IssueTreeView;
   /**
    * Token usage — session totals of every token kind and the API-equivalent
    * cost. While a turn runs, the calls it has made so far are folded in
@@ -2815,6 +2827,20 @@ function liveCardLinks(s: any): Pick<KanbanSession, 'cardLinks' | 'followupLinks
   };
 }
 /** An archived card's links: the cache's state when it has one, else the recorded one; nothing is fetched. */
+/** .prd/29 — a session's issue tree for its card; one made before the tree reads it from its link records. */
+function kanbanIssueTree(
+  tree: SessionIssueTree | undefined,
+  history: SessionLinkHistory | undefined,
+  title: string | undefined,
+  active?: { issue?: SessionLink; pr?: SessionLink } | null,
+): IssueTreeView {
+  const view = issueTreeView(tree ?? issueTreeFromLinks(history, 0, active), title);
+  // The board draws placements only: the relations (the model's preview replays them) stay on the server, and the
+  // card has its title already.
+  const { title: _title, ...rest } = view;
+  return { ...rest, nodes: view.nodes.map(({ rel: _rel, ...node }) => node) };
+}
+
 function archivedCardLinks(archived: ArchivedSession): Pick<KanbanSession, 'cardLinks'> {
   const cardLinks = cardLinksOf(archived as any, peekLinkMetadata);
   return cardLinks.length ? { cardLinks } : {};
@@ -2888,6 +2914,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
         }
       : undefined,
     codeChangesAt: s.codeChanges?.updatedAt,
+    issueTree: kanbanIssueTree(s.issueTree, s.linkHistory, s.title, s.links),
     tokenUsage: tokenUsageOf(s),
     sessionOutputTokens: sessionOutputTokensOf(s),
     doneAt: liveDoneAt(s),
@@ -3090,6 +3117,7 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
     prTitle: archived.links?.pr?.title,
     prStatus: archived.links?.pr?.status,
     ...archivedCardLinks(archived),
+    issueTree: kanbanIssueTree(sanitizeIssueTree(archived.issueTree), archived.linkHistory, archived.title, archived.links),
     mergeStats: archived.mergeStats
       ? {
           totalLinesAdded: archived.mergeStats.totalLinesAdded,
@@ -14385,6 +14413,8 @@ function repaintPanelSession() {
   renderPanelNext();
   renderPanelFamily();
   repaintPanelScope();
+  // .prd/29 — the open 변경점 tab follows the session's issue tree.
+  if (typeof chgNoteTree === 'function' && _psec === 'changes') chgNoteTree();
   convPaint(); // re-ai-answer D12 — the 응답 작성 중 row (and a /compact's progress) follow the session state
   restorePanelLiveAnchor(anchor);
 }

@@ -223,6 +223,67 @@ export interface CodeChangesSummary {
   }>;
 }
 
+/**
+ * .prd/29 — the session's issue tree: external issues (GitHub · Jira …), issues that live only in this session
+ * (internal), and PRs. Every session has an issue node; no PR is a root (its parent is an issue or a PR). The host keeps
+ * the invariants (`rebalanceIssueTree`); the model shapes the tree through UPDATE_SESSION (`parent`, `add_internal`,
+ * `move`, `remove`).
+ */
+export type IssueTreeNodeKind = 'issue' | 'pr';
+export type IssueTreeSource = 'github' | 'jira' | 'linear' | 'confluence' | 'internal' | 'unknown';
+/** Why a node sits where it sits: `model` is the model's choice (the host never moves it); the rest are the host's. */
+export type IssueTreePlacement = 'model' | 'sub-issue' | 'closes' | 'stack' | 'default' | 'seed';
+/** Relations the host knows from GitHub (node ids): the parent issue, the issues a PR closes, the PR a PR is stacked on. */
+export interface IssueTreeRelations {
+  subOf?: string;
+  closes?: string[];
+  base?: string;
+}
+export interface IssueTreeNode {
+  /** An external node's canonical URL (`issueTreeNodeId`), or `internal:<n>`. */
+  id: string;
+  kind: IssueTreeNodeKind;
+  source: IssueTreeSource;
+  url?: string;
+  label?: string;
+  /** Absent on the seed: it shows the session's title. */
+  title?: string;
+  status?: string;
+  /** The parent node's id; absent = a root. */
+  parent?: string;
+  placed: IssueTreePlacement;
+  rel?: IssueTreeRelations;
+  addedAt: number;
+  /** When the host read this GitHub node's relations (the issue's parent) — once per node. */
+  checkedAt?: number;
+  /** When a read of it last failed (a deleted issue, no access): the next reads go to the others first. */
+  triedAt?: number;
+  /**
+   * Per relation, when the read behind it began: an older read of that relation (another reader, slower) does not
+   * replace it. Each reader reads its own relations (the reconciler `closes`; the collect `closes` and `base`).
+   */
+  relReadAt?: IssueTreeRelationReadAt;
+}
+export type IssueTreeRelationReadAt = Partial<Record<keyof IssueTreeRelations, number>>;
+export interface SessionIssueTree {
+  nodes: IssueTreeNode[];
+  /** The next internal issue number (`internal:<n>`). */
+  nextInternal: number;
+}
+/**
+ * A node as GET_SESSION and the dashboard read it: the stored node (its relations included, so a preview rebuilt from
+ * the view places nodes as the host does) without the host's read bookkeeping.
+ */
+export type IssueTreeViewNode = Omit<IssueTreeNode, 'addedAt' | 'checkedAt' | 'triedAt' | 'relReadAt'>;
+/** What the model (GET_SESSION) and the dashboard read: the nodes in the order they came, the seed's title filled in. */
+export interface IssueTreeView {
+  nodes: IssueTreeViewNode[];
+  /** The next internal issue number — so a preview made from the view numbers a new internal issue as the host will. */
+  nextInternal?: number;
+  /** The session's title (the seed's) — so a seed the preview makes is titled as the host titles it. */
+  title?: string;
+}
+
 export interface SessionResourceSnapshot {
   issues: SessionLink[];
   prs: SessionLink[];
@@ -232,12 +293,37 @@ export interface SessionResourceSnapshot {
   sequence: number;
   /** .prd/26 — the session's code changes as of its last collect; absent before the first one. Read-only. */
   codeChanges?: CodeChangesSummary;
+  /** .prd/29 — the session's issue tree. */
+  issueTree?: IssueTreeView;
 }
 
 export interface SessionResourceAddOperation {
   action: 'add';
   resourceType: SessionResourceType;
   link: SessionLink;
+  /**
+   * .prd/29 — an issue or PR's place in the issue tree: a node (URL or id) to sit under, `null` for "unrelated" (an
+   * issue at the root), absent for the host to place it.
+   */
+  parent?: string | null;
+}
+
+/** .prd/29 — an issue that lives only in this session (no tracker): new, or `id` to retitle / close it. */
+export interface SessionIssueAddInternalOperation {
+  action: 'add_internal';
+  resourceType: 'issue';
+  title: string;
+  status?: 'open' | 'closed';
+  parent?: string | null;
+  id?: string;
+}
+
+/** .prd/29 — move a node of the issue tree (by URL or id) under another node, or to the root (`null`, issues only). */
+export interface SessionIssueMoveOperation {
+  action: 'move';
+  resourceType: 'issue' | 'pr';
+  node: string;
+  parent: string | null;
 }
 
 export interface SessionResourceRemoveOperation {
@@ -255,7 +341,9 @@ export interface SessionResourceSetActiveOperation {
 export type SessionResourceOperation =
   | SessionResourceAddOperation
   | SessionResourceRemoveOperation
-  | SessionResourceSetActiveOperation;
+  | SessionResourceSetActiveOperation
+  | SessionIssueAddInternalOperation
+  | SessionIssueMoveOperation;
 
 /**
  * Operations for managing user SSOT instructions in a session.

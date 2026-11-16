@@ -3,6 +3,7 @@
 
 import type { ContextRewindRecord, PendingRewind } from '@soma/slack/context-anchor';
 import type { SessionGoalFirstFailure, SessionGoalStall } from '@soma/slack/session-goal';
+import type { SessionIssueTree } from 'somalib/model-commands/session-types';
 import type { CodeChangesSummary } from './code-changes/types';
 
 export type {
@@ -825,6 +826,11 @@ export interface ConversationSession {
    * `DATA_DIR/code-changes/<conversationId>.json`. Persisted; the model reads it (GET_SESSION, the turn context).
    */
   codeChanges?: CodeChangesSummary;
+  /**
+   * .prd/29 — the session's issue tree (external issues, internal issues, PRs). Made from the link records on first
+   * read; kept by the host on every link it notes and every UPDATE_SESSION; persisted.
+   */
+  issueTree?: SessionIssueTree;
   // Merge code change stats — accumulated from merged PRs in this session
   mergeStats?: {
     totalLinesAdded: number;

@@ -184,3 +184,38 @@ describe('사용자 작업 follows the session live (the page’s repaintPanelSe
     expect(region.innerHTML).toContain('완료');
   });
 });
+
+// .prd/29 §6 — the open 변경점 tab follows the session's issue tree on every push (repaintPanelSession).
+describe('a push repaints the 변경점 tab’s issue tree while that tab is open', () => {
+  it('chgNoteTree runs on the changes tab, not on another', () => {
+    const stubs = [
+      'renderPanelHead',
+      'renderPanelTitleActions',
+      'renderPanelOwner',
+      'renderPanelMidbar',
+      'renderPanelInfo',
+      'renderPanelGoal',
+      'renderPanelControls',
+      'renderPanelComposer',
+      'renderPanelPlan',
+      'renderPanelUserActions',
+      'renderPanelNext',
+      'renderPanelFamily',
+      'repaintPanelScope',
+      'convPaint',
+      'restorePanelLiveAnchor',
+    ];
+    const run = new Function(
+      'section',
+      `var panelSessionKey = 'k1'; var _sessionCache = { k1: {} }; var _psec = section; var noted = 0;
+      ${clientFn('repaintPanelSession')}
+      ${stubs.map((n) => `function ${n}() {}`).join('\n')}
+      function panelLiveAnchor() { return null; }
+      function chgNoteTree() { noted++; }
+      repaintPanelSession();
+      return noted;`,
+    ) as (section: string) => number;
+    expect(run('changes')).toBe(1);
+    expect(run('conv')).toBe(0);
+  });
+});

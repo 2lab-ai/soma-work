@@ -36,11 +36,21 @@ import {
   receiptIssuedAt,
   withAck,
 } from 'somalib/model-commands/host-receipt';
+import {
+  applyIssueTreeOperations,
+  issueTreeFromLinks,
+  issueTreeNodeId,
+  issueTreeView,
+  rebalanceIssueTree,
+  sanitizeIssueTree,
+  upsertIssueTreeLink,
+} from 'somalib/model-commands/issue-tree';
 import { parseUserActionRecord, restoreUserActions } from 'somalib/user-action/user-action';
 import { addMergedPr, type MergedPr, type MergeRecord, mergeRecordOf } from './code-changes/metrics';
 import { sanitizeCodeChangesSummary } from './code-changes/summary';
 import { DATA_DIR } from './env-paths';
 import { isPlaceholderSessionTitle, sanitizeSessionTitle } from './format/display-title';
+import type { IssueTreeNote } from './issue-tree/relations';
 import { Logger } from './logger';
 import { getMetricsEmitter } from './metrics/event-emitter';
 import { repriceBaseline } from './metrics/host-pricing';
@@ -370,6 +380,8 @@ interface SerializedSession {
   taskPlan?: unknown;
   /** .prd/26 — the code-changes summary; validated on load (`sanitizeCodeChangesSummary`). */
   codeChanges?: unknown;
+  /** .prd/29 — the issue tree; validated on load (`sanitizeIssueTree`). */
+  issueTree?: unknown;
   // Merge code change stats
   mergeStats?: {
     totalLinesAdded: number;
@@ -2432,8 +2444,13 @@ export class SessionRegistry {
   ): boolean {
     if (!session || !Array.isArray(links) || links.length === 0) return false;
     this.ensureSessionLinkState(session);
-    const changed =
+    const linksChanged =
       mode === 'update' ? this.updateNotedLinkStates(session, links) : this.noteNewLinks(session, links, mode);
+    // .prd/29 — the tree follows the links the host notes (a closed or merged one: its node's state).
+    const treeChanged = this.noteLinksInIssueTree(session, links, mode === 'update');
+    // The link helpers saved before the tree moved: save again, or a restart loses the tree's change.
+    if (treeChanged) this.saveSessions();
+    const changed = linksChanged || treeChanged;
     // #881 C2 — the receipt is the host's state: a link the host noted itself reaches it now, not at the next write.
     if (changed) this.writeModelCommandReceiptFor(this.keyOf(session), session, undefined);
     return changed;
@@ -2813,7 +2830,109 @@ export class SessionRegistry {
       instructions: (session.instructions || []).map((i) => ({ ...i })),
       sequence: session.linkSequence ?? 0,
       ...(session.codeChanges ? { codeChanges: structuredClone(session.codeChanges) } : {}),
+      issueTree: issueTreeView(this.ensureIssueTree(session), session.title),
     };
+  }
+
+  /**
+   * .prd/29 — the session's issue tree, made on first read: from the link records of a session that predates it, or
+   * the seed (the session's own internal issue) for one that has none.
+   */
+  /** .prd/29 — when the model took nodes out (in memory, per session): a parent a read found while it ran stays out. */
+  private readonly issueTreeRemovals = new Map<string, Map<string, number>>();
+
+  private noteIssueTreeRemovals(sessionKey: string, ids: ReadonlyArray<string>): void {
+    const at = Date.now();
+    const map = this.issueTreeRemovals.get(sessionKey) ?? new Map<string, number>();
+    for (const id of ids) map.set(id, at);
+    // Only recent ones matter (a read lasts seconds): the oldest go first.
+    while (map.size > 50) map.delete(map.keys().next().value as string);
+    this.issueTreeRemovals.set(sessionKey, map);
+  }
+
+  private ensureIssueTree(session: ConversationSession) {
+    if (!session.issueTree) session.issueTree = issueTreeFromLinks(session.linkHistory, Date.now(), session.links);
+    return session.issueTree;
+  }
+
+  /**
+   * .prd/29 — what the host learned about issues and PRs (their titles, states and relations: the issue a PR closes,
+   * the PR it is stacked on, an issue's GitHub parent): each joins the tree or refreshes its node, and the tree is
+   * placed again. An entry that cannot be placed is skipped. Returns whether anything changed (then it is saved).
+   */
+  noteIssueTree(sessionKey: string, entries: ReadonlyArray<IssueTreeNote>): boolean {
+    const session = this.getSessionByKey(sessionKey);
+    if (!session || entries.length === 0) return false;
+    const tree = this.ensureIssueTree(session);
+    const before = JSON.stringify(tree);
+    const now = Date.now();
+    const has = (url: string) => tree.nodes.some((n) => n.id === issueTreeNodeId(url));
+    for (const entry of entries) {
+      const { parent: _ignored, checkedAt, triedAt, onlyIfPresent, addedFor, readAt, ...input } = entry;
+      // A read that lands after the model removed its node does not bring the node (or its parent) back.
+      if (onlyIfPresent && !has(input.url)) continue;
+      if (addedFor && !has(addedFor)) continue;
+      // A parent found by a read that started before the model removed it stays out (a later read may add it again).
+      const removedAt = this.issueTreeRemovals.get(sessionKey)?.get(issueTreeNodeId(input.url));
+      if (addedFor && removedAt !== undefined && (readAt === undefined || removedAt >= readAt)) continue;
+      const r = upsertIssueTreeLink(tree, input, now);
+      const node = r.ok ? tree.nodes.find((n) => n.id === r.id) : undefined;
+      if (node && checkedAt) node.checkedAt = checkedAt;
+      if (node && triedAt) node.triedAt = triedAt;
+    }
+    rebalanceIssueTree(tree, now);
+    if (JSON.stringify(tree) === before) return false;
+    this.saveSessions();
+    this.writeModelCommandReceiptFor(sessionKey, session, undefined);
+    return true;
+  }
+
+  /** .prd/29 — the GitHub issues of a session's tree not read yet (their titles, states and parents), at most `max`. */
+  issueTreeIssuesToCheck(sessionKey: string, max = 8): string[] {
+    const session = this.getSessionByKey(sessionKey);
+    if (!session) return [];
+    return (
+      this.ensureIssueTree(session)
+        .nodes.filter((n) => n.kind === 'issue' && n.source === 'github' && !n.checkedAt && !!n.url)
+        // Never-tried first, then the longest-failed: a read that keeps failing does not hold the others back.
+        .sort((a, b) => (a.triedAt ?? 0) - (b.triedAt ?? 0))
+        .map((n) => n.url as string)
+        .slice(0, max)
+    );
+  }
+
+  /** The links the host noted, in the tree too: new issues and PRs join it; a state change reaches its node. */
+  private noteLinksInIssueTree(
+    session: ConversationSession,
+    links: ReadonlyArray<SessionLink>,
+    statesOnly: boolean,
+  ): boolean {
+    const tree = this.ensureIssueTree(session);
+    const before = JSON.stringify(tree);
+    const now = Date.now();
+    for (const link of links) {
+      if (!link?.url || (link.type !== 'issue' && link.type !== 'pr')) continue;
+      const existing = tree.nodes.find(
+        (n) => n.url && canonicalLinkUrl(n.url).toLowerCase() === canonicalLinkUrl(link.url).toLowerCase(),
+      );
+      // A merge or close changes the state of a node already there, and adds nothing (as on the card).
+      if (statesOnly && !existing) continue;
+      // Merged is final (upsertIssueTreeLink keeps it), as on the card.
+      upsertIssueTreeLink(
+        tree,
+        {
+          kind: link.type,
+          url: existing?.url ?? canonicalLinkUrl(link.url),
+          provider: link.provider,
+          label: link.label,
+          title: link.title,
+          ...(link.status ? { status: link.status } : {}),
+        },
+        now,
+      );
+    }
+    rebalanceIssueTree(tree, now);
+    return JSON.stringify(tree) !== before;
   }
 
   private ensureSessionLinkState(session: ConversationSession): void {
@@ -2875,9 +2994,15 @@ export class SessionRegistry {
   ): { ok: true; changed: boolean } | { ok: false; changed: boolean; error: string } {
     this.ensureSessionLinkState(session);
 
+    // .prd/29 — the issue tree first (all or nothing): a refused tree operation changes no card link either.
+    const tree = applyIssueTreeOperations(this.ensureIssueTree(session), operations, Date.now());
+    if (!tree.ok) return { ok: false, changed: false, error: tree.error };
+
     let changed = false;
 
     for (const operation of operations) {
+      // .prd/29 — the issue tree's own operations change no card link (applied below).
+      if (operation.action === 'add_internal' || operation.action === 'move') continue;
       const historyKey = HISTORY_KEY_BY_RESOURCE[operation.resourceType];
       const activeKey = ACTIVE_KEY_BY_RESOURCE[operation.resourceType];
       const history = session.linkHistory![historyKey];
@@ -2950,6 +3075,15 @@ export class SessionRegistry {
         session.links![activeKey] = { ...found };
         changed = true;
       }
+    }
+
+    // .prd/29 — the issue tree: every issue/PR add, remove, add_internal and move.
+    if (tree.changed) {
+      const kept = new Set(tree.tree.nodes.map((n) => n.id));
+      const gone = (session.issueTree?.nodes ?? []).filter((n) => !kept.has(n.id)).map((n) => n.id);
+      if (gone.length) this.noteIssueTreeRemovals(this.keyOf(session), gone);
+      session.issueTree = tree.tree;
+      changed = true;
     }
 
     return { ok: true, changed };
@@ -3819,6 +3953,7 @@ export class SessionRegistry {
             // Merge code change stats
             mergeStats: session.mergeStats,
             codeChanges: session.codeChanges,
+            issueTree: session.issueTree,
             // User SSOT instructions (persisted)
             instructions: session.instructions,
             // Host-managed session goal (persisted)
@@ -4021,6 +4156,7 @@ export class SessionRegistry {
         taskId: typeof serialized.taskId === 'string' ? serialized.taskId : undefined,
         mergeStats: serialized.mergeStats,
         codeChanges: sanitizeCodeChangesSummary(serialized.codeChanges),
+        issueTree: sanitizeIssueTree(serialized.issueTree),
         instructions: serialized.instructions,
         goal: migrateLegacyGoal(serialized.goal),
         goalQueue: migrateLegacyGoalArray(serialized.goalQueue),
@@ -4416,6 +4552,7 @@ export class SessionRegistry {
           // Merge code change stats
           mergeStats: serialized.mergeStats,
           codeChanges: sanitizeCodeChangesSummary(serialized.codeChanges),
+          issueTree: sanitizeIssueTree(serialized.issueTree),
           // User SSOT instructions (restored from disk).
           // Legacy migration: entries saved before the lifecycle-status
           // extension lack `status`. Seed them to 'active' so the block

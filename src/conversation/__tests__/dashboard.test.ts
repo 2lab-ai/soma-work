@@ -410,6 +410,74 @@ describe('Dashboard API', () => {
     expect(emptySummary.summaryTitle).toBeUndefined();
   });
 
+  it('.prd/29: a card carries its session issue tree — the stored one, or one made from the link records', async () => {
+    const GH = 'https://github.com/a/b';
+    const sessions = new Map<string, any>();
+    const base = { ownerId: 'U1', ownerName: 'Alice', activityState: 'idle', state: 'MAIN', lastActivity: new Date() };
+    sessions.set('C1:t1', {
+      ...base,
+      sessionId: 's1',
+      title: '탐색',
+      channelId: 'C1',
+      threadTs: 't1',
+      issueTree: {
+        nextInternal: 2,
+        nodes: [
+          { id: 'internal:1', kind: 'issue', source: 'internal', placed: 'seed', addedAt: 1 },
+          {
+            id: `${GH}/pull/3`,
+            kind: 'pr',
+            source: 'github',
+            url: `${GH}/pull/3`,
+            parent: 'internal:1',
+            placed: 'default',
+            addedAt: 2,
+            rel: { closes: [] },
+            checkedAt: 9,
+          },
+        ],
+      },
+    });
+    sessions.set('C2:t2', {
+      ...base,
+      sessionId: 's2',
+      title: 'old',
+      channelId: 'C2',
+      threadTs: 't2',
+      linkHistory: {
+        issues: [{ url: `${GH}/issues/7`, type: 'issue', provider: 'github' }],
+        prs: [{ url: `${GH}/pull/8`, type: 'pr', provider: 'github' }],
+        docs: [],
+      },
+    });
+    setDashboardSessionAccessor(() => sessions);
+    const res = await injectWebServer({ method: 'GET', url: '/api/dashboard/sessions', headers: AUTH_HEADER });
+    const body = JSON.parse(res.body);
+    const one = body.board.idle.find((s: any) => s.key === 'C1:t1');
+    // The view: the seed titled with the session; no host bookkeeping (relations, read times) leaves the server.
+    expect(one.issueTree).toEqual({
+      nodes: [
+        { id: 'internal:1', kind: 'issue', source: 'internal', title: '탐색', placed: 'seed' },
+        {
+          id: `${GH}/pull/3`,
+          kind: 'pr',
+          source: 'github',
+          url: `${GH}/pull/3`,
+          parent: 'internal:1',
+          placed: 'default',
+        },
+      ],
+      nextInternal: 2,
+    });
+    const two = body.board.idle.find((s: any) => s.key === 'C2:t2');
+    expect(two.issueTree.nodes.map((n: any) => [n.id, n.parent ?? ''])).toEqual([
+      [`${GH}/issues/7`, ''],
+      [`${GH}/pull/8`, `${GH}/issues/7`],
+    ]);
+    // Made for the card only: the session itself is not written by a board read.
+    expect(sessions.get('C2:t2').issueTree).toBeUndefined();
+  });
+
   it('should include merge stats in kanban sessions', async () => {
     const sessions = new Map<string, any>();
     sessions.set('C1:t1', {

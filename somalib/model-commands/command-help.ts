@@ -160,12 +160,41 @@ const UPDATE_SESSION_HELP: CommandHelp = {
   summary:
     'Update session resources and/or title. Provide at least one of: operations (add/remove/set_active on ' +
     'issue/pr/doc), instructionOperations (user SSOT, y/n gated), title, or executiveSummary (the task ' +
-    "card's TL;DR; a line starting with ⚠️ keeps the card waiting for the user).",
+    "card's TL;DR; a line starting with ⚠️ keeps the card waiting for the user). Issues and PRs also form the " +
+    "session's issue tree (GET_SESSION `issueTree`): give `parent` on add (a node's URL or id; null = an unrelated " +
+    'issue at the root; every PR has a parent issue or PR), `add_internal` for an issue only this session has, ' +
+    '`move` to re-place a node.',
   examples: [
     {
       title: 'Link a PR and make it active',
       params: {
         operations: [{ action: 'add', resourceType: 'pr', link: { url: 'https://github.com/acme/repo/pull/1' } }],
+      },
+    },
+    {
+      title: 'Link a PR under the issue it works on (issue tree)',
+      params: {
+        operations: [
+          {
+            action: 'add',
+            resourceType: 'pr',
+            link: { url: 'https://github.com/acme/repo/pull/2' },
+            parent: 'https://github.com/acme/repo/issues/1',
+          },
+        ],
+      },
+    },
+    {
+      title: 'An issue only this session has (no tracker), then a PR under it',
+      params: { operations: [{ action: 'add_internal', resourceType: 'issue', title: '로그인 오류 조사' }] },
+    },
+    {
+      title: 'Move a node: an unrelated issue to the root, a PR under another issue',
+      params: {
+        operations: [
+          { action: 'move', resourceType: 'issue', node: 'https://github.com/acme/repo/issues/9', parent: null },
+          { action: 'move', resourceType: 'pr', node: 'https://github.com/acme/repo/pull/2', parent: 'internal:2' },
+        ],
       },
     },
     { title: 'Set the session title', params: { title: 'Fix model-command help' } },

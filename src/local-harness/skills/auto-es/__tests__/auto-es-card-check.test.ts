@@ -123,6 +123,10 @@ describe('C3 — the harness prompts route to local:auto-es', () => {
     expect(section).toContain('`local:auto-es` §Card check');
     expect(section).toContain('full URL');
     expect(section).not.toContain('operations');
+    // .prd/29 — the session's issue tree is the model's to shape (UPDATE_SESSION's parent · add_internal · move).
+    expect(section).toContain('`parent`');
+    expect(section).toContain('`add_internal`');
+    expect(section).toContain('`move`');
     expect(section.length).toBeLessThan(700);
   });
 

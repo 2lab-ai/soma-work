@@ -4,6 +4,7 @@
  * stored record instead (it does not change), and any other whose head and base did not move keeps its stored files.
  */
 
+import { closingIssueUrls } from '../issue-tree/relations';
 import type { GitHubPullDetail, GitHubPullFile } from '../link-metadata-fetcher';
 import { capPatch } from './git-diff-parse';
 import type { ChangedFile, ChangedFileStatus, PrChanges, PrState } from './types';
@@ -99,6 +100,7 @@ export async function sessionPrChanges(
       out.push(old);
       continue;
     }
+    const readAt = deps.now();
     const detail = await deps.fetchPullDetail(ref.owner, ref.repo, ref.number);
     if (!detail) {
       if (old) out.push(old);
@@ -153,6 +155,10 @@ export async function sessionPrChanges(
     if (detail.head_ref) pr.headRef = detail.head_ref;
     if (detail.head_sha) pr.headSha = detail.head_sha;
     if (detail.base_sha) pr.baseSha = detail.base_sha;
+    if (detail.base_ref) pr.baseRef = detail.base_ref;
+    // Always set on a fresh read (an empty list too): a stored record without it predates .prd/29 and says nothing.
+    pr.closes = closingIssueUrls(detail.body, ref.owner, ref.repo);
+    pr.relReadAt = readAt;
     const headRepo = detail.head_repo?.toLowerCase();
     if (headRepo && headRepo !== pr.repo) pr.headRepo = headRepo;
     if (createdAt !== undefined) pr.createdAt = createdAt;

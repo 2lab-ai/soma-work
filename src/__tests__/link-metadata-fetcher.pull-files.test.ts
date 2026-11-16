@@ -7,6 +7,7 @@
  *   F2  page 2 throws (timeout, network) → the same
  *   F3  page 1 fails → undefined; a short page ends a complete read; `max` reached → truncated but complete
  *   F4  detail: head_repo and base_sha
+ *   F5  detail: the whole body — a `Closes #N` after a long summary is still read (.prd/29)
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -93,5 +94,21 @@ describe('fetchGitHubPullFiles — partial pages (#1299 review)', () => {
       head_repo: 'Contributor/p',
       base_sha: 'b1',
     });
+  });
+
+  it('F5 — the detail keeps the whole body: a closing ref after a long summary is still there (.prd/29)', async () => {
+    const body = `${'A long generated summary line.\n'.repeat(300)}\nCloses #1294`;
+    expect(body.length).toBeGreaterThan(8000);
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          ok({ html_url: 'https://github.com/org/p/pull/9', number: 9, state: 'open', base: { ref: 'main' }, body }),
+        ),
+    );
+    const detail = await fetchGitHubPullDetail('org', 'p', 9);
+    expect(detail?.base_ref).toBe('main');
+    expect(detail?.body?.endsWith('Closes #1294')).toBe(true);
   });
 });

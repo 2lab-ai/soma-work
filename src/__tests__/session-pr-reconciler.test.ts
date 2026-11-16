@@ -194,6 +194,33 @@ describe('createSessionPrReconciler (#833)', () => {
     ]);
   });
 
+  it('R6b — .prd/29: each PR goes under the issues it closes in the session issue tree', async () => {
+    const noteTree = vi.fn(() => true);
+    const h = harness({
+      fetchPulls: vi.fn(async () => [pull(12, { body: 'Closes #832. Also fixes acme/other#3.' }), pull(13, {})]),
+      noteTree,
+    });
+    await h.run('S1');
+    // Every PR read says what it closes now — none included, so an edited body's old refs clear. A relation changes only
+    // a PR the link notes admitted (one the tree holds); it never adds a node of its own.
+    expect(noteTree).toHaveBeenCalledWith('S1', [
+      {
+        kind: 'pr',
+        url: 'https://github.com/a/b/pull/12',
+        rel: { closes: ['https://github.com/a/b/issues/832', 'https://github.com/acme/other/issues/3'] },
+        relReadAt: expect.any(Number),
+        onlyIfPresent: true,
+      },
+      {
+        kind: 'pr',
+        url: 'https://github.com/a/b/pull/13',
+        rel: { closes: [] },
+        relReadAt: expect.any(Number),
+        onlyIfPresent: true,
+      },
+    ]);
+  });
+
   it('R9 — a reconcile that ends after its session was replaced writes nothing (review round 3, astra P1)', async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));

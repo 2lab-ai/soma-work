@@ -34,9 +34,19 @@ export interface SessionLink {
 }
 
 export type SessionResourceOperation =
-  | { action: 'add'; resourceType: SessionResourceType; link: SessionLink }
+  | { action: 'add'; resourceType: SessionResourceType; link: SessionLink; parent?: string | null }
   | { action: 'remove'; resourceType: SessionResourceType; url: string }
-  | { action: 'set_active'; resourceType: SessionResourceType; url?: string };
+  | { action: 'set_active'; resourceType: SessionResourceType; url?: string }
+  // .prd/29 — the issue tree's operations (somalib session-types is the source).
+  | {
+      action: 'add_internal';
+      resourceType: 'issue';
+      title: string;
+      status?: 'open' | 'closed';
+      parent?: string | null;
+      id?: string;
+    }
+  | { action: 'move'; resourceType: 'issue' | 'pr'; node: string; parent: string | null };
 
 export interface SessionResourceUpdateRequest {
   expectedSequence?: number;

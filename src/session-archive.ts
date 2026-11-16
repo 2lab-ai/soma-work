@@ -13,6 +13,7 @@ import * as path from 'node:path';
 import { sumLiveUsage } from '@soma/slack/live-usage';
 import { findTranscriptPath } from '@soma/slack/pipeline/transcript-sanitizer';
 import type { TaskUsage } from '@soma/slack/session-usage-math';
+import type { SessionIssueTree } from 'somalib/model-commands/session-types';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
 import { calculateTokenCost } from './metrics/model-registry';
@@ -95,6 +96,8 @@ export interface ArchivedSession {
   // Work artifacts
   links?: SessionLinks;
   linkHistory?: SessionLinkHistory;
+  /** .prd/29 — the session's issue tree (the 변경점 tab of a closed card shows it). */
+  issueTree?: SessionIssueTree;
   instructions?: SessionInstruction[];
   mergeStats?: {
     totalLinesAdded: number;
@@ -223,6 +226,7 @@ function sessionToArchive(
     // Deep copy mutable objects to capture snapshot
     links: session.links ? JSON.parse(JSON.stringify(session.links)) : undefined,
     linkHistory: session.linkHistory ? JSON.parse(JSON.stringify(session.linkHistory)) : undefined,
+    issueTree: session.issueTree ? JSON.parse(JSON.stringify(session.issueTree)) : undefined,
     instructions: session.instructions ? JSON.parse(JSON.stringify(session.instructions)) : undefined,
     mergeStats: session.mergeStats ? JSON.parse(JSON.stringify(session.mergeStats)) : undefined,
     usage: session.usage ? JSON.parse(JSON.stringify(session.usage)) : undefined,

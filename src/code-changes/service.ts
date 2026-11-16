@@ -4,7 +4,8 @@
  * A run writes only while the key still names the same, not terminated session (a close or a /new can land meanwhile).
  */
 
-import { fetchGitHubPullDetail, fetchGitHubPullFiles } from '../link-metadata-fetcher';
+import { type GitHubIssueMeta, type IssueTreeNote, prTreeEntries, refreshIssueEntries } from '../issue-tree/relations';
+import { fetchGitHubIssueMeta, fetchGitHubPullDetail, fetchGitHubPullFiles } from '../link-metadata-fetcher';
 import { sessionDirs, sessionStartMs } from '../session-pr-reconciler';
 import {
   type CollectDeps,
@@ -40,6 +41,16 @@ export interface CodeChangesServiceDeps<S extends SessionLike> {
   onResult?: (key: string, session: S, result: CollectResult) => void | Promise<void>;
   store?: CodeChangesStore;
   collect?: Partial<CollectDeps>;
+  /**
+   * .prd/29 — the session's issue tree: what a collect learned about its PRs (titles, states, the issues they close,
+   * stacks) and its GitHub issues (title, state, parent — each read once) goes in.
+   */
+  issueTree?: {
+    note: (key: string, entries: ReadonlyArray<IssueTreeNote>) => boolean;
+    /** The GitHub issue URLs the tree has not read yet. */
+    toCheck: (key: string) => string[];
+  };
+  fetchIssue?: (owner: string, repo: string, number: number) => Promise<GitHubIssueMeta | undefined>;
   scheduler?: SchedulerOptions;
   logger?: { debug: (msg: string, meta?: Record<string, unknown>) => void };
 }
@@ -90,6 +101,7 @@ export function createCodeChangesService<S extends SessionLike>(deps: CodeChange
       turn && turn.session === session ? turn.dir : undefined,
     );
     if (dirs.length === 0) return;
+    const readFrom = collectDeps.now();
     const result = await collectCodeChanges(
       {
         conversationId: session.conversationId,
@@ -106,7 +118,24 @@ export function createCodeChangesService<S extends SessionLike>(deps: CodeChange
     if (live !== session || live.terminated) return;
     session.codeChanges = result.summary;
     deps.persist(key);
+    if (deps.issueTree) {
+      try {
+        // Each PR's relations with the time the read behind them began (stored with the record): a merged record reused
+        // from the store replays its own older read — a newer read (the reconciler's) wins over it, and a node recreated
+        // since (or a lost delivery) gets them back. A record from before that field: its collect's bound.
+        const prs = result.doc.prs;
+        const entries = prTreeEntries(prs).map((e, i) =>
+          e.rel && Object.keys(e.rel).length
+            ? { ...e, relReadAt: prs[i].relReadAt ?? Math.min(readFrom, prs[i].fetchedAt) }
+            : e,
+        );
+        deps.issueTree.note(key, entries);
+      } catch (error) {
+        deps.logger?.debug('issue tree: PR relations not noted', { key, error: (error as Error)?.message });
+      }
+    }
     deps.pushCard(key);
+    void refreshIssues(key, session);
     // Nothing takes the result: nothing is marked — a consumer installed later still gets every commit and merge.
     if (!deps.onResult) return;
     try {
@@ -120,6 +149,31 @@ export function createCodeChangesService<S extends SessionLike>(deps: CodeChange
       commits: result.newCommits.map((c) => c.sha),
       merges: result.newMerges.map((p) => p.id),
     });
+  }
+
+  /**
+   * The session (by key, the instance) whose issue reads are under way: one batch at a time each. A session that replaced
+   * it under the same key (`/new`) is not held back by the old one's batch.
+   */
+  const refreshing = new Map<string, unknown>();
+
+  /** .prd/29 — the tree's GitHub issues not read yet: their titles, states and parents (once each), then the card. */
+  async function refreshIssues(key: string, session: S): Promise<void> {
+    const tree = deps.issueTree;
+    if (!tree || refreshing.get(key) === session) return;
+    refreshing.set(key, session);
+    try {
+      const urls = tree.toCheck(key);
+      if (urls.length === 0) return;
+      const entries = await refreshIssueEntries(urls, deps.fetchIssue ?? fetchGitHubIssueMeta, Date.now());
+      const live = deps.getSessionByKey(key);
+      if (live !== session || live.terminated || entries.length === 0) return;
+      if (tree.note(key, entries)) deps.pushCard(key);
+    } catch (error) {
+      deps.logger?.debug('issue tree: issues not read', { key, error: (error as Error)?.message });
+    } finally {
+      if (refreshing.get(key) === session) refreshing.delete(key);
+    }
   }
 
   const scheduler = createCodeChangesScheduler(run, { logger: deps.logger, ...deps.scheduler });
