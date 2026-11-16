@@ -415,6 +415,46 @@ describe('env-skill hand-off host (#1304)', () => {
     expect(wake).toHaveBeenCalledTimes(MAX_UNPRODUCTIVE_WAKES);
   });
 
+  // RoL #1308 r5 (red-team P1): A's approval wait that returns after B took the key must not mark the request as told
+  // in B's record — B sending the same request is still told it waits for an admin.
+  it("an old session's late approval wait does not touch the new session's told-pending set", async () => {
+    let generation = 0;
+    const captures: Array<{ alive: boolean }> = [];
+    const generations = createEnvSkillHandoffHost({
+      handler,
+      slackApi,
+      wake,
+      captureSession: () => {
+        const g = captures[generation] ?? { alive: true };
+        captures[generation] = g;
+        return () => g.alive;
+      },
+    });
+    // A's request is held while its card goes out; meanwhile A closes and B takes the key.
+    let release: () => void = () => {};
+    const execute = handler.execute.bind(handler);
+    const slow = vi.spyOn(handler, 'execute').mockImplementationOnce(async (ctx) => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return execute(ctx);
+    });
+    const late = generations(request());
+    await flush();
+    captures[generation].alive = false;
+    generation++;
+    // B opens with a request of its own first (so B holds the key's record), then A's wait lands.
+    await generations(request({ skill: '$acme-dev2:nope' }));
+    release();
+    expect((await late).status).toBe('awaiting_admin');
+    slow.mockRestore();
+    wake.mockClear();
+    // B sends the very request A was waiting on: B is told.
+    expect((await generations(request())).status).toBe('awaiting_admin');
+    expect(wake).toHaveBeenCalledTimes(1);
+    expect(wake.mock.calls[0][0].text).toMatch(/admin/i);
+  });
+
   // RoL #1308 r4 (red-team P1): a request waiting for an admin keeps its dedupe entry while its card can still be
   // approved — however many other hand-offs come in meanwhile — so a late duplicate of the same tool result never
   // starts a second run once the approval lands.

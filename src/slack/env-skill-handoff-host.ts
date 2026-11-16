@@ -171,6 +171,9 @@ export function createEnvSkillHandoffHost(
    */
   const budgets = new Map<string, { current: () => boolean; unproductive: number; pendingTold: Set<string> }>();
   const budgetFor = (sessionKey: string, current: () => boolean) => {
+    // A session that is gone gets a throwaway record: whatever it does late never touches the record of the session
+    // that holds the key now.
+    if (!current()) return { current, unproductive: 0, pendingTold: new Set<string>() };
     const known = budgets.get(sessionKey);
     if (known?.current()) return known;
     if (budgets.size >= REMEMBERED_RESULTS) {
