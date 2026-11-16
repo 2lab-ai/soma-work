@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { getDefaultSessionSnapshot, listModelCommands, runModelCommand } from './catalog';
-import { emptyIssueTree, issueTreeNodeId, issueTreeView, rebalanceIssueTree, upsertIssueTreeLink } from './issue-tree';
+import {
+  applyIssueTreeOperations,
+  emptyIssueTree,
+  issueTreeNodeId,
+  issueTreeView,
+  rebalanceIssueTree,
+  upsertIssueTreeLink,
+} from './issue-tree';
 import type { SessionResourceSnapshot } from './session-types';
 import type { ModelCommandRunRequest } from './types';
 import { validateModelCommandRunArgs } from './validator';
@@ -143,6 +150,40 @@ describe('the MCP preview applies them with the host’s function', () => {
     const after = (r.payload as { session: SessionResourceSnapshot }).session;
     expect(after.issueTree?.nodes.find((n) => n.title === '정리')?.id).toBe('internal:2');
     expect(after.issueTree?.nextInternal).toBe(3);
+  });
+
+  it('host/preview parity: a closing ref whose issue is not in the tree yet places the PR the same way on both', () => {
+    // Host: #5, and PR #7 that closes #6 — not in the tree yet, so #7 sits under #5 for now.
+    const host = emptyIssueTree();
+    upsertIssueTreeLink(host, { kind: 'issue', url: `${GH}/issues/5`, provider: 'github' }, 1);
+    upsertIssueTreeLink(
+      host,
+      { kind: 'pr', url: `${GH}/pull/7`, provider: 'github', rel: { closes: [`${GH}/issues/6`] } },
+      2,
+    );
+    rebalanceIssueTree(host, 3);
+    const s = getDefaultSessionSnapshot();
+    s.issues = [{ url: `${GH}/issues/5`, type: 'issue', provider: 'github' }];
+    s.issueTree = issueTreeView(host, 'S');
+    expect(parentOf(s, `${GH}/pull/7`)).toBe(issueTreeNodeId(`${GH}/issues/5`));
+    // One batch: add #6 (the host moves #7 under it), then put #5 under #7 — valid only once #7 left #5.
+    const ops = [
+      { action: 'add', resourceType: 'issue', url: `${GH}/issues/6` },
+      { action: 'move', resourceType: 'issue', node: `${GH}/issues/5`, parent: `${GH}/pull/7` },
+    ];
+    const r = run(s, ops);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const preview = (r.payload as { session: SessionResourceSnapshot }).session;
+    const v = validateModelCommandRunArgs({ commandId: 'UPDATE_SESSION', params: { operations: ops } });
+    const hostOps = (v.ok ? (v.request.params as { operations: never[] }).operations : []) as never[];
+    const onHost = applyIssueTreeOperations(host, hostOps, 4);
+    expect(onHost.ok).toBe(true);
+    const shapeOf = (nodes: ReadonlyArray<{ id: string; parent?: string }>) =>
+      Object.fromEntries(nodes.map((n) => [n.id, n.parent ?? '']));
+    expect(shapeOf(preview.issueTree?.nodes ?? [])).toEqual(shapeOf(onHost.ok ? onHost.tree.nodes : []));
+    expect(parentOf(preview, `${GH}/pull/7`)).toBe(issueTreeNodeId(`${GH}/issues/6`));
+    expect(parentOf(preview, `${GH}/issues/5`)).toBe(issueTreeNodeId(`${GH}/pull/7`));
   });
 
   it('refuses what would break the tree, naming why', () => {

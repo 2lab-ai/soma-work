@@ -69,22 +69,10 @@ export interface SessionResourceSetActiveOperation {
   url?: string;
 }
 
-/** .prd/29 — the issue tree's operations (somalib session-types is the source). */
-export interface SessionIssueAddInternalOperation {
-  action: 'add_internal';
-  resourceType: 'issue';
-  title: string;
-  status?: 'open' | 'closed';
-  parent?: string | null;
-  id?: string;
-}
+// .prd/29 — the issue tree's operations: one body, in somalib (this package already re-exports somalib).
+import type { SessionIssueAddInternalOperation, SessionIssueMoveOperation } from 'somalib/model-commands/session-types';
 
-export interface SessionIssueMoveOperation {
-  action: 'move';
-  resourceType: 'issue' | 'pr';
-  node: string;
-  parent: string | null;
-}
+export type { SessionIssueAddInternalOperation, SessionIssueMoveOperation };
 
 export type SessionResourceOperation =
   | SessionResourceAddOperation

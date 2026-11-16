@@ -365,7 +365,7 @@ export interface GitHubPullDetail {
   /** `owner/name` of the head's repository (a fork's, for a PR from a fork). */
   head_repo?: string;
   base_sha?: string;
-  /** .prd/29 — the base branch (a stacked PR's base is another PR's head) and the body (its `Closes #N`), cut. */
+  /** .prd/29 — the base branch (a stacked PR's base is another PR's head) and the body (its `Closes #N`), whole. */
   base_ref?: string;
   body?: string;
 }
@@ -429,7 +429,8 @@ export async function fetchGitHubPullDetail(
       head_repo: str(p.head?.repo?.full_name),
       base_sha: str(p.base?.sha),
       base_ref: str(p.base?.ref),
-      body: typeof p.body === 'string' ? p.body.slice(0, 4000) : undefined,
+      // Whole: a `Closes #N` can follow a long summary. Read for its closing refs, never stored.
+      body: typeof p.body === 'string' ? p.body : undefined,
     };
     const status =
       detail.merged || detail.merged_at ? 'merged' : detail.draft && p.state !== 'closed' ? 'draft' : p.state;

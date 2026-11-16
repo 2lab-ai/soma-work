@@ -23,7 +23,15 @@ describe('issue-tree relations', () => {
 
   it('PR entries: title and state, the issues each closes, and a stack — the base is another session PR’s head', () => {
     const prs = [
-      { url: `${GH}/pull/1`, repo: 'a/b', state: 'merged', title: 'base', headRef: 'feat/one', baseRef: 'main' },
+      {
+        url: `${GH}/pull/1`,
+        repo: 'a/b',
+        state: 'merged',
+        title: 'base',
+        headRef: 'feat/one',
+        baseRef: 'main',
+        closes: [],
+      },
       {
         url: `${GH}/pull/2`,
         repo: 'a/b',
@@ -33,10 +41,19 @@ describe('issue-tree relations', () => {
         closes: [`${GH}/issues/9`],
       },
       // A fork's head of the same name is not this repo's branch.
-      { url: `${GH}/pull/3`, repo: 'a/b', state: 'open', headRef: 'feat/one', headRepo: 'fork/b', baseRef: 'main' },
-      { url: `${GH}/pull/4`, repo: 'a/b', state: 'open', headRef: 'x', baseRef: 'feat/two' },
+      {
+        url: `${GH}/pull/3`,
+        repo: 'a/b',
+        state: 'open',
+        headRef: 'feat/one',
+        headRepo: 'fork/b',
+        baseRef: 'main',
+        closes: [],
+      },
+      { url: `${GH}/pull/4`, repo: 'a/b', state: 'open', headRef: 'x', baseRef: 'feat/two', closes: [] },
     ];
-    // A read is the truth: no closing ref and no stack are said as such, so an older body's relations clear.
+    // A read is the truth: no closing ref and no stack are said as such, so an older body's relations clear. Each entry
+    // changes only a node still in the tree (a PR removed while the collect ran stays removed).
     expect(prTreeEntries(prs)).toEqual([
       {
         kind: 'pr',
@@ -45,6 +62,7 @@ describe('issue-tree relations', () => {
         title: 'base',
         status: 'merged',
         rel: { closes: [], base: null },
+        onlyIfPresent: true,
       },
       {
         kind: 'pr',
@@ -52,22 +70,44 @@ describe('issue-tree relations', () => {
         provider: 'github',
         status: 'open',
         rel: { closes: [`${GH}/issues/9`], base: `${GH}/pull/1` },
+        onlyIfPresent: true,
       },
-      { kind: 'pr', url: `${GH}/pull/3`, provider: 'github', status: 'open', rel: { closes: [], base: null } },
+      {
+        kind: 'pr',
+        url: `${GH}/pull/3`,
+        provider: 'github',
+        status: 'open',
+        rel: { closes: [], base: null },
+        onlyIfPresent: true,
+      },
       {
         kind: 'pr',
         url: `${GH}/pull/4`,
         provider: 'github',
         status: 'open',
         rel: { closes: [], base: `${GH}/pull/2` },
+        onlyIfPresent: true,
       },
     ]);
     // A closed PR is not a stack's base.
     const closed = prTreeEntries([
-      { url: `${GH}/pull/1`, repo: 'a/b', state: 'closed', headRef: 'feat/one' },
-      { url: `${GH}/pull/2`, repo: 'a/b', state: 'open', baseRef: 'feat/one' },
+      { url: `${GH}/pull/1`, repo: 'a/b', state: 'closed', headRef: 'feat/one', closes: [] },
+      { url: `${GH}/pull/2`, repo: 'a/b', state: 'open', baseRef: 'feat/one', closes: [] },
     ]);
     expect(closed[1].rel).toEqual({ closes: [], base: null });
+  });
+
+  it('a stored PR from before .prd/29 (no closes, no base branch) read neither: its entry leaves the relations alone', () => {
+    // A merged PR's record is reused as is by the collect, so an upgrade meets these until it is read again.
+    const [legacy] = prTreeEntries([{ url: `${GH}/pull/1`, repo: 'a/b', state: 'merged', headRef: 'feat/one' }]);
+    expect(legacy).toEqual({
+      kind: 'pr',
+      url: `${GH}/pull/1`,
+      provider: 'github',
+      status: 'merged',
+      rel: {},
+      onlyIfPresent: true,
+    });
   });
 
   it('an issue is read once: its title, state and GitHub parent (which joins while the issue is there); a failed read is stamped', async () => {

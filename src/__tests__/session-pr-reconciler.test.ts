@@ -201,14 +201,16 @@ describe('createSessionPrReconciler (#833)', () => {
       noteTree,
     });
     await h.run('S1');
-    // Every PR read says what it closes now — none included, so an edited body's old refs clear.
+    // Every PR read says what it closes now — none included, so an edited body's old refs clear. A relation changes only
+    // a PR the link notes admitted (one the tree holds); it never adds a node of its own.
     expect(noteTree).toHaveBeenCalledWith('S1', [
       {
         kind: 'pr',
         url: 'https://github.com/a/b/pull/12',
         rel: { closes: ['https://github.com/a/b/issues/832', 'https://github.com/acme/other/issues/3'] },
+        onlyIfPresent: true,
       },
-      { kind: 'pr', url: 'https://github.com/a/b/pull/13', rel: { closes: [] } },
+      { kind: 'pr', url: 'https://github.com/a/b/pull/13', rel: { closes: [] }, onlyIfPresent: true },
     ]);
   });
 

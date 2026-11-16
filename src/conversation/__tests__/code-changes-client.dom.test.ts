@@ -7,6 +7,8 @@
  *   D2  a file answer that lands after a newer collect is dropped; a failed one is asked again when reopened
  *   D3  Escape in the viewer stops at the viewer; closing it paints the tab again and focuses the file's row
  *   D4  a patch line, a source label and a folder named `constructor` show as text
+ *   D11 the issue tree (.prd/29): a click on a node's fold button hides its subtree and focus lands on the button drawn
+ *       in its place; the head folds the whole tree the same way
  */
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CODE_CHANGES_JS } from '../code-changes-client';
@@ -653,5 +655,97 @@ describe('the viewer’s two modes — a panel beside the card, or the full scre
     api.chgOpen('c2');
     expect(api.chgViewerOpen()).toBe(false);
     expect(api.state().viewer).toBeNull();
+  });
+});
+
+describe('the 변경점 issue tree in a DOM (.prd/29 §6)', () => {
+  const GH = 'https://github.com/acme/web';
+  const nid = (p: string) => `${GH}/${p}`.toLowerCase();
+  const VIEW = {
+    nodes: [
+      {
+        id: nid('issues/10'),
+        kind: 'issue',
+        source: 'github',
+        url: `${GH}/issues/10`,
+        label: '#10',
+        title: 'EPIC',
+        placed: 'default',
+      },
+      {
+        id: nid('issues/11'),
+        kind: 'issue',
+        source: 'github',
+        url: `${GH}/issues/11`,
+        label: '#11',
+        title: 'collector',
+        parent: nid('issues/10'),
+        placed: 'model',
+      },
+      {
+        id: nid('pull/7'),
+        kind: 'pr',
+        source: 'github',
+        url: `${GH}/pull/7`,
+        parent: nid('issues/11'),
+        placed: 'closes',
+      },
+    ],
+  };
+  function loadWithTree(fetchFn: unknown) {
+    dom.document.body.innerHTML = '<div id="panel-changes"></div>';
+    const fn = new Function(
+      'fetch',
+      'view',
+      `var _sessionCache = { k1: { issueTree: view } }; var panelSessionKey = 'k1';
+      ${CODE_CHANGES_JS}
+      return { chgOpen: chgOpen, chgWire: chgWire };`,
+    );
+    return fn(fetchFn, VIEW) as { chgOpen: (cid: string) => void; chgWire: () => void };
+  }
+  const rows = () =>
+    Array.from(byId('panel-changes').querySelectorAll('.chg-inode')).map((r) => r.getAttribute('data-chg-node'));
+  const toggle = (key: string) =>
+    Array.from(byId('panel-changes').querySelectorAll('[data-chg-itree]')).find(
+      (b) => b.getAttribute('data-chg-itree') === key,
+    ) as (El & { focus(): void }) | undefined;
+
+  it('D11 — a node’s fold button hides its subtree, focus stays on it; the head folds the whole tree', async () => {
+    const f = controlledFetch();
+    const api = loadWithTree(f.fetchFn);
+    api.chgWire(); // as the page does once the panel is there
+    api.chgOpen('c1');
+    const pr7 = {
+      id: 'acme/web#7',
+      url: `${GH}/pull/7`,
+      repo: 'acme/web',
+      number: 7,
+      title: 'PR 7',
+      state: 'merged',
+      additions: 3,
+      deletions: 1,
+      changedFiles: 1,
+      files: [],
+    };
+    f.calls[0].resolve({ doc: { ...doc(100), prs: [pr7] } });
+    await flush();
+    expect(rows()).toEqual([nid('issues/10'), nid('issues/11'), nid('pull/7')]);
+    // A real click on the rendered button, as a browser sends it (the panel's own delegated handler).
+    const epic = toggle(nid('issues/10'))!;
+    epic.focus();
+    epic.click();
+    expect(rows()).toEqual([nid('issues/10')]);
+    const after = dom.document.activeElement as El;
+    expect(after.getAttribute('data-chg-itree')).toBe(nid('issues/10'));
+    expect(after.getAttribute('aria-expanded')).toBe('false');
+    expect(after).not.toBe(epic); // the tab was painted again: focus moved to the new button
+    toggle(nid('issues/10'))!.click();
+    expect(rows()).toEqual([nid('issues/10'), nid('issues/11'), nid('pull/7')]);
+    // The head: the whole tree folds, focus stays on the head.
+    toggle('*')!.click();
+    expect(rows()).toEqual([]);
+    expect((dom.document.activeElement as El).getAttribute('data-chg-itree')).toBe('*');
+    toggle('*')!.click();
+    expect(rows()).toHaveLength(3);
   });
 });

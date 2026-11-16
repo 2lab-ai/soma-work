@@ -155,8 +155,8 @@ export async function sessionPrChanges(
     if (detail.head_sha) pr.headSha = detail.head_sha;
     if (detail.base_sha) pr.baseSha = detail.base_sha;
     if (detail.base_ref) pr.baseRef = detail.base_ref;
-    const closes = closingIssueUrls(detail.body, ref.owner, ref.repo);
-    if (closes.length) pr.closes = closes;
+    // Always set on a fresh read (an empty list too): a stored record without it predates .prd/29 and says nothing.
+    pr.closes = closingIssueUrls(detail.body, ref.owner, ref.repo);
     const headRepo = detail.head_repo?.toLowerCase();
     if (headRepo && headRepo !== pr.repo) pr.headRepo = headRepo;
     if (createdAt !== undefined) pr.createdAt = createdAt;

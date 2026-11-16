@@ -141,10 +141,14 @@ export function createCodeChangesService<S extends SessionLike>(deps: CodeChange
     });
   }
 
+  /** Sessions whose issue reads are under way: one batch at a time each (a later collect does not ask the same again). */
+  const refreshing = new Set<string>();
+
   /** .prd/29 — the tree's GitHub issues not read yet: their titles, states and parents (once each), then the card. */
   async function refreshIssues(key: string, session: S): Promise<void> {
     const tree = deps.issueTree;
-    if (!tree) return;
+    if (!tree || refreshing.has(key)) return;
+    refreshing.add(key);
     try {
       const urls = tree.toCheck(key);
       if (urls.length === 0) return;
@@ -154,6 +158,8 @@ export function createCodeChangesService<S extends SessionLike>(deps: CodeChange
       if (tree.note(key, entries)) deps.pushCard(key);
     } catch (error) {
       deps.logger?.debug('issue tree: issues not read', { key, error: (error as Error)?.message });
+    } finally {
+      refreshing.delete(key);
     }
   }
 

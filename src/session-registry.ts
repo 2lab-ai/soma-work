@@ -2902,8 +2902,7 @@ export class SessionRegistry {
       );
       // A merge or close changes the state of a node already there, and adds nothing (as on the card).
       if (statesOnly && !existing) continue;
-      // Merged is final, as on the card.
-      const status = existing?.status === 'merged' ? undefined : link.status;
+      // Merged is final (upsertIssueTreeLink keeps it), as on the card.
       upsertIssueTreeLink(
         tree,
         {
@@ -2912,7 +2911,7 @@ export class SessionRegistry {
           provider: link.provider,
           label: link.label,
           title: link.title,
-          ...(status ? { status } : {}),
+          ...(link.status ? { status: link.status } : {}),
         },
         now,
       );

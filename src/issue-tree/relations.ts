@@ -47,9 +47,11 @@ export interface PrRelationSource {
 
 /**
  * The session's PRs as tree entries: title and state, the issues each closes, the session PR each is stacked on. A read
- * is the truth for both relations: no closing ref or no stack clears what an older body said.
+ * is the truth for both relations: no closing ref or no stack clears what an older body said. A record from before
+ * .prd/29 (no `closes`, no `baseRef`) read neither, so it leaves them as they are. The entries change only nodes still in
+ * the tree: a PR the model removed while the collect ran does not come back.
  */
-export function prTreeEntries(prs: ReadonlyArray<PrRelationSource>): IssueTreeLinkInput[] {
+export function prTreeEntries(prs: ReadonlyArray<PrRelationSource>): IssueTreeNote[] {
   return prs.map((pr) => {
     // Stacked: its base branch is the head branch of another session PR in the same repository (not a fork's).
     const base = pr.baseRef
@@ -63,7 +65,11 @@ export function prTreeEntries(prs: ReadonlyArray<PrRelationSource>): IssueTreeLi
       provider: 'github' as const,
       ...(pr.title ? { title: pr.title } : {}),
       status: pr.state,
-      rel: { closes: pr.closes ?? [], base: base ? base.url : null },
+      rel: {
+        ...(pr.closes ? { closes: pr.closes } : {}),
+        ...(pr.baseRef !== undefined ? { base: base ? base.url : null } : {}),
+      },
+      onlyIfPresent: true,
     };
   });
 }

@@ -223,6 +223,102 @@ describe('issue tree — .prd/29 §3', () => {
     expect(t.nodes.filter((n) => n.kind === 'pr' && !n.parent)).toEqual([]);
   });
 
+  it('a learned closing ref never puts a PR under its own descendant, nor moves the model’s node (both orders)', () => {
+    // Order 1: issues A, B, then PR P (P defaults under A); the model puts B under P; GitHub then says P closes B.
+    const t = tree();
+    add(t, 'issue', issue(1));
+    add(t, 'issue', issue(2));
+    add(t, 'pr', pr(10));
+    expect(moveIssueTreeNode(t, issue(2), pr(10))).toMatchObject({ ok: true });
+    rebalanceIssueTree(t, now());
+    add(t, 'pr', pr(10), { rel: { closes: [issue(2)] } });
+    expect(shape(t)).toEqual({ 'issues/1': '', 'issues/2': 'pull/10', 'pull/10': 'issues/1' });
+    expect(placed(t, issue(2))).toBe('model');
+    // Order 2: PR P first, then the issues.
+    const u = tree();
+    add(u, 'pr', pr(10));
+    add(u, 'issue', issue(1));
+    add(u, 'issue', issue(2));
+    expect(moveIssueTreeNode(u, issue(2), pr(10))).toMatchObject({ ok: true });
+    rebalanceIssueTree(u, now());
+    add(u, 'pr', pr(10), { rel: { closes: [issue(2)] } });
+    expect(shape(u)).toMatchObject({ 'issues/2': 'pull/10', 'pull/10': 'issues/1' });
+    expect(placed(u, issue(2))).toBe('model');
+    // The closing ref is skipped, not followed and then undone: the PR takes its next relation (its stack base).
+    const w = tree();
+    add(w, 'issue', issue(1));
+    add(w, 'issue', issue(2));
+    add(w, 'pr', pr(9));
+    add(w, 'pr', pr(10));
+    expect(moveIssueTreeNode(w, issue(2), pr(10))).toMatchObject({ ok: true });
+    rebalanceIssueTree(w, now());
+    add(w, 'pr', pr(10), { rel: { closes: [issue(2)], base: pr(9) } });
+    expect(shape(w)).toMatchObject({ 'issues/2': 'pull/10', 'pull/10': 'pull/9', 'pull/9': 'issues/1' });
+    expect(placed(w, pr(10))).toBe('stack');
+    // A cycle in stored data through a host edge: the host re-places its PR; the model's issue keeps its place.
+    const broken = sanitizeIssueTree({
+      nodes: [
+        { id: issueTreeNodeId(issue(1)), kind: 'issue', source: 'github', placed: 'default', addedAt: 1 },
+        {
+          id: issueTreeNodeId(issue(2)),
+          kind: 'issue',
+          source: 'github',
+          parent: issueTreeNodeId(pr(10)),
+          placed: 'model',
+          addedAt: 2,
+        },
+        {
+          id: issueTreeNodeId(pr(10)),
+          kind: 'pr',
+          source: 'github',
+          parent: issueTreeNodeId(issue(2)),
+          placed: 'stack',
+          addedAt: 3,
+        },
+      ],
+      nextInternal: 1,
+    }) as SessionIssueTree;
+    rebalanceIssueTree(broken, now());
+    expect(shape(broken)).toEqual({ 'issues/1': '', 'issues/2': 'pull/10', 'pull/10': 'issues/1' });
+  });
+
+  it('a status-only edit leaves the seed the seed, titled with the session title', () => {
+    const t = tree();
+    expect(addInternalIssue(t, { id: SEED_ID, status: 'closed' }, now())).toMatchObject({ ok: true });
+    rebalanceIssueTree(t, now());
+    expect(issueTreeView(t, '대시보드 개선').nodes[0]).toMatchObject({
+      id: SEED_ID,
+      title: '대시보드 개선',
+      status: 'closed',
+      placed: 'seed',
+    });
+  });
+
+  it('a PR-only link history at the cap leaves room for the seed: the tree stays within the cap', () => {
+    const prs = Array.from({ length: ISSUE_TREE_MAX_NODES + 5 }, (_, i) => ({
+      url: pr(3000 + i),
+      type: 'pr' as const,
+      provider: 'github' as const,
+    }));
+    const t = issueTreeFromLinks({ issues: [], prs, docs: [] }, now());
+    expect(t.nodes.length).toBe(ISSUE_TREE_MAX_NODES);
+    expect(t.nodes[0]).toMatchObject({ id: SEED_ID, placed: 'seed' });
+    expect(t.nodes.filter((n) => n.kind === 'pr' && !n.parent)).toEqual([]);
+    // Save and load keep every node.
+    expect(sanitizeIssueTree(JSON.parse(JSON.stringify(t)))?.nodes.length).toBe(ISSUE_TREE_MAX_NODES);
+  });
+
+  it('merged is final: a late or cached read of an earlier state does not undo it', () => {
+    const t = tree();
+    add(t, 'pr', pr(10), { status: 'merged' });
+    add(t, 'pr', pr(10), { status: 'open' });
+    expect(t.nodes.find((n) => n.id === issueTreeNodeId(pr(10)))?.status).toBe('merged');
+    // An issue's state still follows its reads.
+    add(t, 'issue', issue(5), { status: 'closed' });
+    add(t, 'issue', issue(5), { status: 'open' });
+    expect(t.nodes.find((n) => n.id === issueTreeNodeId(issue(5)))?.status).toBe('open');
+  });
+
   it('the seed stays when the model kept something under it, or named it', () => {
     const kept = tree();
     add(kept, 'pr', pr(10), { parent: SEED_ID });

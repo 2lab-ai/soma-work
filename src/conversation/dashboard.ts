@@ -2831,7 +2831,9 @@ function kanbanIssueTree(
   history: SessionLinkHistory | undefined,
   title: string | undefined,
 ): IssueTreeView {
-  return issueTreeView(tree ?? issueTreeFromLinks(history, 0), title);
+  const view = issueTreeView(tree ?? issueTreeFromLinks(history, 0), title);
+  // The board draws placements only: the relations (the model's preview replays them) stay on the server.
+  return { ...view, nodes: view.nodes.map(({ rel: _rel, ...node }) => node) };
 }
 
 function archivedCardLinks(archived: ArchivedSession): Pick<KanbanSession, 'cardLinks'> {

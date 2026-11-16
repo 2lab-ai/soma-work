@@ -156,7 +156,8 @@ export function upsertIssueTreeLink(tree: SessionIssueTree, input: IssueTreeLink
   }
   if (existing) {
     if (input.title) existing.title = input.title;
-    if (input.status) existing.status = input.status;
+    // Merged is final (as on the card): a late or cached read of an earlier state does not undo it.
+    if (input.status && !(existing.kind === 'pr' && existing.status === 'merged')) existing.status = input.status;
     if (input.label) existing.label = input.label;
     mergeRel(existing, input.rel);
     if (pinned) {
@@ -199,8 +200,9 @@ export function addInternalIssue(
       if (!checked.ok) return checked;
       node.parent = checked.parent;
       node.placed = 'model';
-    } else if (node.placed === 'seed') {
-      // Named by the model, the seed is this session's own issue now: it no longer gives way to an external one.
+    } else if (node.placed === 'seed' && input.title?.trim()) {
+      // Named by the model, the seed is this session's own issue now: it no longer gives way to an external one. A
+      // status-only edit leaves it the seed (still titled with the session's title).
       node.placed = 'default';
     }
     if (input.title && input.title.trim()) node.title = input.title.trim();
@@ -338,7 +340,8 @@ export function rebalanceIssueTree(tree: SessionIssueTree, now: number): void {
   for (const n of tree.nodes) {
     if (n.kind !== 'pr' || n.placed === 'model') continue;
     n.parent = undefined;
-    const closes = (n.rel?.closes || []).find((c) => nodes.get(c)?.kind === 'issue');
+    // Never under its own descendant (an issue the model put under this PR): no learned relation makes a cycle.
+    const closes = (n.rel?.closes || []).find((c) => nodes.get(c)?.kind === 'issue' && !isAncestor(nodes, n.id, c));
     if (closes) {
       n.parent = closes;
       n.placed = 'closes';
@@ -353,7 +356,9 @@ export function rebalanceIssueTree(tree: SessionIssueTree, now: number): void {
     n.parent = rep?.id;
     n.placed = 'default';
   }
-  // 4. No cycle survives (a stack loop in the data): the node falls to the representative (PR) or the root (issue).
+  // 4. No cycle survives. Every placement above checks ancestry against the tree as it stands, so the host never makes
+  // one; what is left is a cycle in stored data, of the model's own edges: the node falls to the representative (PR) or
+  // the root (issue).
   nodes = byId(tree);
   for (const n of tree.nodes) {
     if (!n.parent || !isAncestor(nodes, n.id, n.parent)) continue;
@@ -378,6 +383,7 @@ export function issueTreeView(tree: SessionIssueTree, sessionTitle?: string): Is
         ...(n.status ? { status: n.status } : {}),
         ...(n.parent ? { parent: n.parent } : {}),
         placed: n.placed,
+        ...(n.rel ? { rel: structuredClone(n.rel) } : {}),
       };
     });
   return { nodes, nextInternal: tree.nextInternal };
@@ -388,6 +394,9 @@ export function issueTreeFromLinks(history: SessionLinkHistory | undefined, now:
   const tree = emptyIssueTree();
   const add = (links: SessionLink[] | undefined, kind: IssueTreeNodeKind) => {
     for (const link of links || []) {
+      // A PR-only history leaves room for the seed the rebalance adds (the cap holds after it too).
+      const noIssue = !tree.nodes.some((n) => n.kind === 'issue');
+      if (kind === 'pr' && noIssue && tree.nodes.length >= ISSUE_TREE_MAX_NODES - 1) break;
       upsertIssueTreeLink(
         tree,
         { kind, url: link.url, provider: link.provider, label: link.label, title: link.title, status: link.status },
@@ -460,8 +469,11 @@ export function issueTreeFromView(view: IssueTreeView | undefined): SessionIssue
   (view?.nodes || []).forEach((v, i) => {
     const m = INTERNAL_RE.exec(v.id);
     if (m) max = Math.max(max, Number(m[1]));
-    const rel: IssueTreeRelations | undefined =
-      v.placed === 'closes' && v.parent
+    // The relations the host holds (one not in force yet included — a PR that closes an issue not in the tree); a view
+    // without them (older host) gets back the one its placement shows.
+    const rel: IssueTreeRelations | undefined = v.rel
+      ? structuredClone(v.rel)
+      : v.placed === 'closes' && v.parent
         ? { closes: [v.parent] }
         : v.placed === 'stack' && v.parent
           ? { base: v.parent }

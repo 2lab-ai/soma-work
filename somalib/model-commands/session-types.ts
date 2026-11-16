@@ -264,18 +264,12 @@ export interface SessionIssueTree {
   /** The next internal issue number (`internal:<n>`). */
   nextInternal: number;
 }
+/**
+ * A node as GET_SESSION and the dashboard read it: the stored node (its relations included, so a preview rebuilt from
+ * the view places nodes as the host does) without the host's read bookkeeping.
+ */
+export type IssueTreeViewNode = Omit<IssueTreeNode, 'addedAt' | 'checkedAt' | 'triedAt'>;
 /** What the model (GET_SESSION) and the dashboard read: the nodes in the order they came, the seed's title filled in. */
-export interface IssueTreeViewNode {
-  id: string;
-  kind: IssueTreeNodeKind;
-  source: IssueTreeSource;
-  url?: string;
-  label?: string;
-  title?: string;
-  status?: string;
-  parent?: string;
-  placed: IssueTreePlacement;
-}
 export interface IssueTreeView {
   nodes: IssueTreeViewNode[];
   /** The next internal issue number — so a preview made from the view numbers a new internal issue as the host will. */

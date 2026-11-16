@@ -64,10 +64,12 @@ Status: in-progress · Date: 2026-11-16 · 기준 main `5fe1f0cf` · SSOT = [`is
 
 자리 정하기 — `placed: model`이 아닌 노드마다, 위에서 먼저 맞는 것:
 - 이슈: `rel.subOf`가 트리에 있으면 그 아래(`sub-issue`). 아니면 루트(`default`).
-- PR: `rel.closes` 중 트리에 있는 첫 이슈 아래(`closes`) → `rel.base`가 트리에 있으면 그 PR 아래(`stack`) → 대표 이슈 아래(`default`).
+- PR: `rel.closes` 중 트리에 있는 첫 이슈 아래(`closes`) → `rel.base`가 트리에 있으면 그 PR 아래(`stack`) → 대표 이슈 아래(`default`). 어느 관계든 자기 자손(모델이 그 PR 아래 둔 이슈)을 가리키면 건너뛴다 — 호스트는 순환을 만들지 않고, 모델이 둔 자리를 옮기지 않는다.
 - 대표 이슈 = 루트 이슈 중 가장 먼저 들어온 외부 이슈, 없으면 가장 먼저 들어온 내부 이슈.
 - 시드가 물러나는 조건: 시드 없이도 루트 이슈(외부, 또는 모델이 만든 내부)가 남고, 시드가 `placed: seed` 그대로이며(모델이 이름을 붙이거나 옮기지 않음), 시드 아래에 `model`로 둔 노드가 없다. 시드 아래의 `default` 노드들은 새 대표 이슈 아래로 간다. 마지막 루트 이슈가 지워져 남은 이슈가 모두 PR 아래면 시드가 다시 선다.
 - 형제 순서는 들어온 순서(`addedAt`)다.
+- PR 상태 `merged`는 끝이다: 늦게 오거나 저장본에서 온 읽기가 이전 상태로 되돌리지 않는다.
+- 읽기의 관계는 읽은 것만 바꾼다: `closes`가 없는 저장본(.prd/29 이전)은 관계를 건드리지 않는다. 수집 · 재조정기의 PR 항목은 트리에 있는 노드만 고친다(지운 PR을 되살리지 않는다).
 
 ## 4. 관계의 출처
 
@@ -85,7 +87,7 @@ UPDATE_SESSION `operations`에 더하는 것(기존 `add` · `remove` · `set_ac
 - `remove` — 링크와 함께 노드를 지운다. 자식은 지운 노드의 부모로 올라간다.
 - 실패: 없는 부모 · 순환 · PR을 루트로 · 200개 초과는 그 연산만 거부하고 이유를 돌려준다.
 
-GET_SESSION `payload.session.issueTree` = `{ nodes: [{ id, kind, source, url?, label?, title?, status?, parent?, placed }] }` — 시드의 제목은 세션 제목으로 채워진다.
+GET_SESSION `payload.session.issueTree` = `{ nodes: [{ id, kind, source, url?, label?, title?, status?, parent?, placed, rel? }], nextInternal }` — 시드의 제목은 세션 제목으로 채워진다. `rel`(아직 트리에 없는 이슈를 닫는 PR의 관계 포함)은 MCP 미리보기가 호스트와 같은 자리를 계산하게 한다. 대시보드 보드에는 `rel`을 보내지 않는다.
 
 시스템 프롬프트(작업 카드 절): 이슈 · PR을 만들거나 다룰 때 관계가 있으면 `parent`를 준다. 관계없는 이슈는 `parent: null`. 외부 이슈 없이 일의 덩어리가 바뀌면 `add_internal`. 자리가 틀렸으면 `move`.
 

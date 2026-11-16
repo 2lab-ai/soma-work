@@ -19,8 +19,7 @@ import { canonicalLinkUrl, classifyLinkUrl } from '@soma/slack/session-link-capt
 import { execFile } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
-import type { IssueTreeLinkInput } from 'somalib/model-commands/issue-tree';
-import { closingIssueUrls } from './issue-tree/relations';
+import { closingIssueUrls, type IssueTreeNote } from './issue-tree/relations';
 import { isParkedRemoval } from './path-utils';
 import type { SessionLink } from './types';
 
@@ -54,7 +53,7 @@ export interface ReconcilerDeps {
   checkedOutElsewhere: (sessionKey: string, owner: string, name: string, branch: string) => Promise<boolean>;
   noteLinks: (sessionKey: string, links: SessionLink[], mode: 'always' | 'history') => boolean;
   /** .prd/29 — what the PRs say about the session's issue tree (the issues each closes). */
-  noteTree?: (sessionKey: string, entries: IssueTreeLinkInput[]) => boolean;
+  noteTree?: (sessionKey: string, entries: IssueTreeNote[]) => boolean;
   pushCard: (sessionKey: string) => void;
   /**
    * Whether `sessionKey` still names this session, not terminated — asked before every write. A reconcile can end after
@@ -183,7 +182,7 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
       const history: SessionLink[] = [];
       const issues: SessionLink[] = [];
       /** .prd/29 — which issues each PR closes: the PR sits under them in the session's issue tree. */
-      const relations: IssueTreeLinkInput[] = [];
+      const relations: IssueTreeNote[] = [];
       for (const p of pulls) {
         const base = classifyLinkUrl(p.html_url);
         if (!base || base.type !== 'pr') continue;
@@ -191,7 +190,8 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
         const closes = closingIssues(p, c.owner, c.name);
         issues.push(...closes);
         // The body as read now is the truth: no closing ref clears what an older body said.
-        relations.push({ kind: 'pr', url: link.url, rel: { closes: closes.map((l) => l.url) } });
+        // Only for a PR the link notes above admitted (one the tree holds): a relation never adds a node.
+        relations.push({ kind: 'pr', url: link.url, rel: { closes: closes.map((l) => l.url) }, onlyIfPresent: true });
         const created = p.created_at ? Date.parse(p.created_at) : Number.NaN;
         const isNew = start !== undefined && Number.isFinite(created) && created >= start;
         // A candidate for the current link: this checkout's own PR — made after the session started, its head commit in

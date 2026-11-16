@@ -101,6 +101,7 @@ export interface PrChanges {
   baseSha?: string;
   /** .prd/29 — the base branch (a stacked PR: another session PR's head) and the issues its body closes (URLs). */
   baseRef?: string;
+  /** Set by every read since .prd/29 (`[]` = closes nothing); absent on an older record, which tells nothing. */
   closes?: string[];
   /** Epoch ms. */
   createdAt?: number;
