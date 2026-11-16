@@ -63,6 +63,14 @@ function parseArgs(argv) {
     console.error('usage: node audit.mjs <url> [--preset desktop|mobile|both] [--engine chromium|webkit] [--out dir] [--cookie k=v] [--storage k=v] [--theme light|dark] [--click css] [--wait ms] [--scope css] [--full]');
     process.exit(2);
   }
+  if (!['desktop', 'mobile', 'both'].includes(out.preset)) {
+    console.error(`--preset must be desktop, mobile or both (got ${out.preset})`);
+    process.exit(2);
+  }
+  if (!['chromium', 'webkit', 'firefox'].includes(out.engine)) {
+    console.error(`--engine must be chromium, webkit or firefox (got ${out.engine})`);
+    process.exit(2);
+  }
   if (!out.out) out.out = resolve(process.cwd(), 'polish-audit');
   return out;
 }
@@ -85,19 +93,26 @@ async function loadPlaywright() {
 function measure(cfg) {
   const T = cfg.t;
   const scopeRoot = cfg.scope ? document.querySelector(cfg.scope) : document.documentElement;
+  if (!scopeRoot) throw new Error(`--scope ${cfg.scope} matches nothing`);
   const results = { overflowX: null, target: [], fontMin: [], inputZoom: [], hairline: [], corner: [], radius: [], contrast: [], lineLength: [], name: [], rowHeight: [], fontSizes: {} };
 
   const all = [];
-  (function walk(root) {
+  const walk = (root) => {
     for (const el of root.querySelectorAll('*')) {
       all.push(el);
       if (el.shadowRoot) walk(el.shadowRoot);
     }
-  })(scopeRoot && scopeRoot.shadowRoot ? scopeRoot.shadowRoot : scopeRoot || document);
-  if (scopeRoot && scopeRoot !== document.documentElement) all.unshift(scopeRoot);
+  };
+  if (scopeRoot !== document.documentElement) {
+    all.push(scopeRoot);
+    if (scopeRoot.shadowRoot) walk(scopeRoot.shadowRoot);
+  }
+  walk(scopeRoot);
 
-  const vw = innerWidth;
-  const vh = innerHeight;
+  // The layout width of the preset. A phone browser widens innerWidth to fit content that overflows, so innerWidth
+  // cannot show the overflow it is measuring.
+  const vw = cfg.width;
+  const vh = cfg.height;
   const cs = new Map();
   const style = (el) => {
     let s = cs.get(el);
@@ -138,14 +153,16 @@ function measure(cfg) {
   const round = (n) => Math.round(n * 10) / 10;
 
   // 1. Horizontal overflow (the page scrolls sideways).
-  const sw = document.documentElement.scrollWidth;
+  const sw = Math.max(document.documentElement.scrollWidth, document.body ? document.body.scrollWidth : 0);
   results.overflowX = sw > vw + 1 ? { scrollWidth: sw, viewport: vw } : null;
 
   // 2. Hit targets.
   const INTERACTIVE = 'a[href],button,input:not([type=hidden]),select,textarea,summary,[role=button],[role=link],[role=tab],[role=switch],[role=checkbox],[role=radio],[role=menuitem],[role=option],[tabindex]:not([tabindex="-1"])';
   const targets = all.filter((el) => el.matches(INTERACTIVE) && visible(el) && !el.disabled && !el.closest('[disabled]'));
-  // A target nested in another target is one target (the outer one is what the finger hits).
-  const outer = targets.filter((el) => !targets.some((o) => o !== el && o.contains(el)));
+  // A target nested in a control is one target (the control is what the finger hits). A focusable container (a
+  // scroll box with tabindex) is not a control: what it holds is measured on its own.
+  const CONTROL_TARGET = 'a[href],button,summary,label,[role=button],[role=link],[role=tab],[role=switch],[role=checkbox],[role=radio],[role=menuitem],[role=option]';
+  const outer = targets.filter((el) => !targets.some((o) => o !== el && o.matches(CONTROL_TARGET) && o.contains(el)));
   // The hit area: the box, grown by an absolutely placed ::before/::after with negative insets (a common way to give a
   // small control a 44px target without changing its look).
   const hitRect = (el) => {
@@ -179,25 +196,47 @@ function measure(cfg) {
     const h = r.height;
     if (Math.min(w, h) >= T.targetPlatform) return;
     if (inlineLink(el)) return; // WCAG 2.5.8 inline exception
-    // WCAG 2.5.8 spacing exception: a 24px circle on the centre touches no other target.
+    // WCAG 2.5.8 spacing exception: a 24px circle on the centre touches no other target, and no other undersized
+    // target's circle (two such circles touch when the centres are under 24px apart).
     const cx = r.left + w / 2;
     const cy = r.top + h / 2;
     const spaced = rects.every((o, j) => {
       if (j === i) return true;
       const dx = Math.max(o.left - cx, 0, cx - o.right);
       const dy = Math.max(o.top - cy, 0, cy - o.bottom);
-      return Math.hypot(dx, dy) >= T.targetMin / 2;
+      if (Math.hypot(dx, dy) < T.targetMin / 2) return false;
+      if (Math.min(o.width, o.height) < T.targetMin) {
+        return Math.hypot(o.left + o.width / 2 - cx, o.top + o.height / 2 - cy) >= T.targetMin;
+      }
+      return true;
     });
     const level = Math.min(w, h) < T.targetMin && !spaced ? 'red' : 'amber';
     results.target.push({ level, el: label(el), w: round(w), h: round(h), need: Math.min(w, h) < T.targetMin ? T.targetMin : T.targetPlatform });
   });
 
   // 3. Text: minimum size, the size spread, line length, contrast.
+  // Any CSS colour (rgb, hex, oklch, color(), …) drawn on a 1×1 canvas and read back as sRGB. null when the canvas
+  // cannot take it — the caller then skips the element rather than guess.
+  const ink = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+  const colorCache = new Map();
   const parseColor = (c) => {
-    const m = c && c.match(/rgba?\(([^)]+)\)/);
-    if (!m) return null;
-    const p = m[1].split(/[ ,/]+/).filter(Boolean).map(Number);
-    return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
+    if (!c || !ink) return null;
+    if (colorCache.has(c)) return colorCache.get(c);
+    let out = null;
+    if (c === 'transparent' || c === 'rgba(0, 0, 0, 0)') out = { r: 0, g: 0, b: 0, a: 0 };
+    else {
+      ink.fillStyle = '#010203';
+      ink.fillStyle = c;
+      // An unparsable value leaves fillStyle unchanged; a colour that really is #010203 is fine either way.
+      if (ink.fillStyle !== '#010203' || /^#?010203$/i.test(c.trim())) {
+        ink.clearRect(0, 0, 1, 1);
+        ink.fillRect(0, 0, 1, 1);
+        const d = ink.getImageData(0, 0, 1, 1).data;
+        out = { r: d[0], g: d[1], b: d[2], a: d[3] / 255 };
+      }
+    }
+    colorCache.set(c, out);
+    return out;
   };
   const over = (top, bottom) => ({ r: top.r * top.a + bottom.r * (1 - top.a), g: top.g * top.a + bottom.g * (1 - top.a), b: top.b * top.a + bottom.b * (1 - top.a), a: 1 });
   const lum = (c) => {
@@ -218,31 +257,34 @@ function measure(cfg) {
       const s = style(e);
       if (s.backgroundImage && s.backgroundImage !== 'none') return null;
       const c = parseColor(s.backgroundColor);
-      if (c && c.a > 0) {
+      if (!c) return null;
+      if (c.a > 0) {
         layers.push(c);
         if (c.a >= 1) break;
       }
     }
     let base = { r: 255, g: 255, b: 255, a: 1 };
     const rootBg = parseColor(getComputedStyle(document.documentElement).backgroundColor);
-    if (rootBg && rootBg.a > 0) base = over(rootBg, base);
+    if (!rootBg) return null;
+    if (rootBg.a > 0) base = over(rootBg, base);
     for (let i = layers.length - 1; i >= 0; i--) base = over(layers[i], base);
     return base;
   };
+  const snippet = (el) => (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40);
   const textEls = all.filter((el) => visible(el) && [...el.childNodes].some((n) => n.nodeType === 3 && /\S/.test(n.data)));
   for (const el of textEls) {
     const s = style(el);
     const size = px(s.fontSize);
     const key = String(round(size));
     results.fontSizes[key] = (results.fontSizes[key] || 0) + 1;
-    if (size < T.fontMin) results.fontMin.push({ level: 'red', el: label(el), size: round(size), text: el.textContent.trim().slice(0, 40) });
+    if (size < T.fontMin) results.fontMin.push({ level: 'red', el: label(el), size: round(size), text: snippet(el) });
     const fg = parseColor(s.color);
     const bg = backdrop(el);
     if (fg && bg && !el.closest('[disabled],[aria-disabled="true"]')) {
       const r = ratio(over({ ...fg, a: fg.a * (px(s.opacity) || 1) }, bg), bg);
       const large = size >= 24 || (size >= 18.66 && Number(s.fontWeight) >= 700);
       const need = large ? T.contrastLarge : T.contrastText;
-      if (r < need) results.contrast.push({ level: r < 3 ? 'red' : 'amber', el: label(el), ratio: round(r), need, text: el.textContent.trim().slice(0, 40) });
+      if (r < need) results.contrast.push({ level: 'red', el: label(el), ratio: round(r), need, text: snippet(el) });
     }
     const lh = px(s.lineHeight) || size * 1.2;
     const h = el.getBoundingClientRect().height;
@@ -254,9 +296,10 @@ function measure(cfg) {
   }
 
   // 4. Inputs that make iOS Safari zoom in on focus.
+  const TEXT_FIELD = 'input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=hidden]):not([type=submit]):not([type=button]):not([type=reset]):not([type=image]):not([type=file])';
   if (T.inputMinFont) {
     for (const el of all) {
-      if (!el.matches('input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=hidden]),textarea,select,[contenteditable=""],[contenteditable=true]') || !visible(el)) continue;
+      if (!el.matches(`${TEXT_FIELD},textarea,select,[contenteditable=""],[contenteditable=true]`) || !visible(el)) continue;
       const size = px(style(el).fontSize);
       if (size < T.inputMinFont) results.inputZoom.push({ level: 'red', el: label(el), size: round(size) });
     }
@@ -277,11 +320,19 @@ function measure(cfg) {
 
   // 6. Corners: a non-text element in a surface's corner sits the same distance from both edges.
   //    7. Nested radius: an inner rounded box near the corner uses outer radius - inset.
+  // The corner radius as drawn: a percentage of the box, and never more than half its shorter side (a 999px pill is
+  // drawn with half its height).
+  const drawnRadius = (el) => {
+    const r = el.getBoundingClientRect();
+    const v = style(el).borderTopLeftRadius.split(' ')[0];
+    const raw = /%$/.test(v) ? (parseFloat(v) / 100) * Math.min(r.width, r.height) : px(v);
+    return Math.min(raw, r.width / 2, r.height / 2);
+  };
   const surface = (el) => {
     const s = style(el);
     const r = el.getBoundingClientRect();
     if (r.width < 48 || r.height < 28) return false;
-    const radius = px(s.borderTopLeftRadius);
+    const radius = drawnRadius(el);
     const bg = parseColor(s.backgroundColor);
     const hasBg = bg && bg.a > 0.02;
     const hasBorder = px(s.borderTopWidth) > 0 && s.borderTopStyle !== 'none';
@@ -307,7 +358,12 @@ function measure(cfg) {
     (function collect(root) {
       for (const k of root.querySelectorAll('*')) {
         if (k.shadowRoot) collect(k.shadowRoot);
-        if (k !== sEl && visible(k) && isGlyph(k) && !k.parentElement?.closest('svg')) kids.push(k);
+        if (k === sEl || !visible(k) || !isGlyph(k) || k.parentElement?.closest('svg')) continue;
+        // A glyph inside a small control inside this surface: the control's box is what sits in the corner (Haz
+        // step 3 — measure the control, not only its glyph).
+        const ctl = k.parentElement?.closest(CONTROL_TARGET);
+        const box = ctl && ctl !== sEl && sEl.contains(ctl) ? ctl.getBoundingClientRect() : null;
+        kids.push(box && box.width <= 64 && box.height <= 64 ? ctl : k);
       }
     })(sEl.shadowRoot || sEl);
     const corners = [
@@ -319,18 +375,17 @@ function measure(cfg) {
       for (const k of kids) {
         const r = k.getBoundingClientRect();
         const [a, b] = dist(r);
-        if (a < 0 || b < 0 || a > 40 || b > 40) continue;
-        // Skip a child that is a surface of its own nested deeper than the corner box.
+        // A corner element sits near both edges (Haz's examples: 8–16px); farther in it is content, not the corner.
+        if (a < 0 || b < 0 || a > 24 || b > 24) continue;
         if (!best || a + b < best.a + best.b) best = { k, a, b, r };
       }
       if (!best) continue;
-      // Only count it as the corner element when nothing else sits closer to that corner.
       const diff = Math.abs(best.a - best.b);
       if (diff > T.cornerTolerance) {
         results.corner.push({ level: 'amber', surface: label(sEl), corner: name, el: label(best.k), edges: name === 'top-left' ? `top ${round(best.a)} / left ${round(best.b)}` : `top ${round(best.a)} / right ${round(best.b)}` });
       }
-      const kr = px(style(best.k).borderTopLeftRadius);
-      const Rr = px(s.borderTopLeftRadius);
+      const kr = drawnRadius(best.k);
+      const Rr = drawnRadius(sEl);
       const inset = Math.max(best.a, best.b);
       // Concentric corners matter for a box that hugs the corner (inset well inside the outer radius) and is big
       // enough to show its own corner; a pill (radius = half its height) keeps its shape.
@@ -351,6 +406,8 @@ function measure(cfg) {
     }
     const al = el.getAttribute('aria-label');
     if (al && al.trim()) return al.trim();
+    if (el.matches('input[type=submit],input[type=button],input[type=reset]')) return (el.value || el.getAttribute('title') || '').trim();
+    if (el.matches('input[type=image]')) return (el.getAttribute('alt') || el.getAttribute('title') || '').trim();
     if (el.matches('input,select,textarea')) {
       if (el.labels && el.labels.length) return [...el.labels].map((l) => l.textContent).join(' ').trim();
       return (el.getAttribute('placeholder') || el.getAttribute('title') || '').trim();
@@ -362,13 +419,21 @@ function measure(cfg) {
     const svgTitle = el.querySelector('svg title');
     if (svgTitle && svgTitle.textContent.trim()) return svgTitle.textContent.trim();
     if (el.shadowRoot) {
-      const t = (el.shadowRoot.textContent || '').trim();
+      // Rendered text only: a <style> or <script> in the shadow root is not part of the name.
+      const tw = document.createTreeWalker(el.shadowRoot, NodeFilter.SHOW_TEXT, {
+        acceptNode: (n) => (n.parentElement && n.parentElement.closest('style,script,template') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+      });
+      let t = '';
+      for (let n = tw.nextNode(); n; n = tw.nextNode()) t += n.data;
+      t = t.trim();
       if (t) return t;
     }
     return (el.getAttribute('title') || '').trim();
   };
   const TIME = /(\d+\s*(초|분|시간|일|주|개월|년)\s*전|\b\d+\s*(s|m|h|d|w|mo|y|sec|min|hr|hour|day|week|month|year)s?\s+ago\b|\b\d{1,2}:\d{2}\b|어제|오늘|yesterday|today)/i;
   for (const el of outer) {
+    // Controls and fields need a name; a focusable container (a scroll box with tabindex) is not a control.
+    if (!el.matches(`${CONTROL_TARGET},input,select,textarea`)) continue;
     const n = nameOf(el).replace(/\s+/g, ' ');
     if (!n) results.name.push({ level: 'red', el: label(el), issue: 'no accessible name' });
     else if (n.length > 80) results.name.push({ level: 'amber', el: label(el), issue: `name is ${n.length} chars — keep the name to what it is, the rest to aria-describedby`, name: n.slice(0, 60) });
@@ -389,12 +454,12 @@ function measure(cfg) {
       else if (k.children && style(k).display === 'contents') for (const c of k.children) take(c);
     };
     for (const k of el.children) take(k);
-    if (kids.length < 3) continue;
+    if (kids.length < 2) continue;
     // Only controls on one visual line.
     const tops = kids.map((k) => k.getBoundingClientRect());
     const mid = tops.map((r) => r.top + r.height / 2);
     const line = kids.filter((k, i) => Math.abs(mid[i] - mid[0]) < 12);
-    if (line.length < 3) continue;
+    if (line.length < 2) continue;
     const hs = line.map((k) => round(k.getBoundingClientRect().height));
     const spread = Math.max(...hs) - Math.min(...hs);
     if (spread > 4 && !seenRows.has(el)) {
@@ -471,7 +536,13 @@ async function main() {
         }, pairs);
       }
       const page = await ctx.newPage();
-      await page.goto(args.url, { waitUntil: 'networkidle', timeout: 60_000 }).catch(() => page.waitForLoadState('load'));
+      // A page that did not load must fail the run, never pass as an empty page with no findings.
+      const resp = await page.goto(args.url, { waitUntil: 'load', timeout: 60_000 });
+      if (!resp || !resp.ok()) throw new Error(`${args.url} did not load (${resp ? `HTTP ${resp.status()}` : 'no response'})`);
+      // Pages with a live socket never go network-idle; give it a moment and move on.
+      await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch((e) => {
+        if (e?.name !== 'TimeoutError') throw e;
+      });
       await page.waitForTimeout(args.wait);
       for (const sel of args.clicks) {
         await page.locator(sel).first().click({ timeout: 10_000 });
@@ -479,7 +550,7 @@ async function main() {
       }
       await page.screenshot({ path: join(args.out, `${preset}.png`), fullPage: args.full });
       const t = { ...p, ...THRESHOLDS, desktop: undefined, mobile: undefined };
-      const r = await page.evaluate(measure, { t, scope: args.scope, full: args.full });
+      const r = await page.evaluate(measure, { t, scope: args.scope, full: args.full, width: p.viewport.width, height: p.viewport.height });
       report.presets[preset] = r;
       console.log(summarize(`${preset} ${p.viewport.width}×${p.viewport.height}`, r));
       await ctx.close();

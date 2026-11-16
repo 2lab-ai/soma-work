@@ -50,15 +50,15 @@ The audit prints one table per preset. Red is a defect; amber is a decision you 
 | min text size | under 10 px on desktop, under 11 px on the phone | — | HIG smallest text style |
 | input zoom | a phone field under 16 px | — | WebKit zooms into it on focus |
 | hairline edge | a border thinner than 1 px | — | renders unevenly at 1x and fractional scale |
-| row height | — | controls on one line differ by more than 4 px | one bar, one control size |
-| corner distance | — | a corner icon or badge sits unequally far from its two edges | Haz step 1 |
+| row height | — | two or more controls on one line differ by more than 4 px | one bar, one control size |
+| corner distance | — | an icon, badge or small control within 24 px of a corner sits unequally far from its two edges | Haz steps 1 and 3 |
 | nested radius | — | an inner box near a corner is not concentric with it | HIG "concentric" |
-| contrast | text under 3:1 | text under 4.5:1 (3:1 for large text) | WCAG 1.4.3; HIG |
+| contrast | text under 4.5:1, or 3:1 for large text | — | WCAG 1.4.3; HIG |
 | line length | — | a paragraph over 90 characters per line | 45–75 is the usual band |
 | accessible name | a control with no name | a name over 80 characters, or with a time in it | Haz step 8 |
 | type sizes in use | — | read it: many sizes a pixel apart means the scale drifted | your type scale |
 
-The hit-target check counts a `::before`/`::after` that extends the box with negative insets — a 24 px chip with a 44 px invisible hit area passes on the phone. Fix in this order: change a token, then a component rule, then one page rule. Never add a one-off override when the token is wrong.
+The hit-target check counts a `::before`/`::after` that extends the box with negative insets — a 24 px chip with a 44 px invisible hit area passes on the phone. Colours are read through a canvas, so `oklch()` and `color()` work; an element over an image or gradient is skipped, not guessed. A page that does not load fails the run instead of auditing an empty page. Fix in this order: change a token, then a component rule, then one page rule. Never add a one-off override when the token is wrong.
 
 ## 3. The detail pass — Haz's ten steps
 
@@ -88,7 +88,7 @@ This is the order of fixes in Haz's video "Fixing a Claude-generated UI with obs
 The phone is not a smaller desktop. Apple's own numbers (`reference/apple-metrics.md`):
 
 - **Targets grow.** A pointer needs 28 pt (macOS default control), a finger 44 pt (iOS) — 1.57 times. Grow the hit area on touch (`@media (pointer: coarse)`), not only under a width breakpoint: a tablet has a wide screen and a finger.
-- **App text grows too.** iOS body is 17 pt where macOS body is 13 pt; every HIG text style is about 1.3 times larger on the phone. A dashboard on a phone keeps or raises its text size. Do not shrink app text to fit a phone — wrap or drop a column instead.
+- **App text grows too.** iOS body is 17 pt where macOS body is 13 pt; most HIG text styles are about 1.3 times larger on the phone (the captions 1.1–1.2 times). A dashboard on a phone keeps or raises its text size. Do not shrink app text to fit a phone — wrap or drop a column instead.
 - **Only display headlines shrink.** apple.com cuts its headlines 1.4–1.75 times on a phone (80 → 48, 64 → 40, 48 → 32) and keeps body text at 17 px at every width. That is a reading page's rule; it applies to a page title, not to UI text.
 - **Fields are 16 px on touch.** Under 16 px iOS Safari zooms in on focus and stays zoomed.
 - **Edges and safe areas.** Keep content inside `env(safe-area-inset-*)`. apple.com's phone margin is about 24 px a side (87.5% of the window); 16–24 px is the working range.
