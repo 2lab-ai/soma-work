@@ -120,12 +120,14 @@ export function createCodeChangesService<S extends SessionLike>(deps: CodeChange
     deps.persist(key);
     if (deps.issueTree) {
       try {
-        // Each PR's relations with the time of the read behind them: this collect's start for a fresh read; a merged
-        // record reused from the store keeps its own older read — a newer read (the reconciler's) wins over it, and a
-        // node recreated since (or a lost delivery) gets them back.
+        // Each PR's relations with the time the read behind them began (stored with the record): a merged record reused
+        // from the store replays its own older read — a newer read (the reconciler's) wins over it, and a node recreated
+        // since (or a lost delivery) gets them back. A record from before that field: its collect's bound.
         const prs = result.doc.prs;
         const entries = prTreeEntries(prs).map((e, i) =>
-          e.rel && Object.keys(e.rel).length ? { ...e, relReadAt: Math.min(readFrom, prs[i].fetchedAt) } : e,
+          e.rel && Object.keys(e.rel).length
+            ? { ...e, relReadAt: prs[i].relReadAt ?? Math.min(readFrom, prs[i].fetchedAt) }
+            : e,
         );
         deps.issueTree.note(key, entries);
       } catch (error) {

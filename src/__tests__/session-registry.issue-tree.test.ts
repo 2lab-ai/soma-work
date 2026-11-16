@@ -133,6 +133,10 @@ describe('the session issue tree (host)', () => {
     expect(up([{ action: 'remove', resourceType: 'issue', url: `${GH}/issues/5` }]).ok).toBe(true);
     expect(tree(reg).some((n) => n.id === id(`${GH}/issues/5`))).toBe(false);
     expect(tree(reg).find((n) => n.id === internal!.id)?.parent).toBeUndefined();
+    // remove names a node of its own kind: an issue's URL removed as a PR is refused, the tree as it was.
+    const treeBefore = JSON.stringify(tree(reg));
+    expect(up([{ action: 'remove', resourceType: 'pr', url: `${GH}/issues/9` }])).toMatchObject({ ok: false });
+    expect(JSON.stringify(tree(reg))).toBe(treeBefore);
     // An internal issue is removed by its id (`url: internal:<n>`): its PR goes up, the card's links stay.
     const cardBefore = reg.getSessionResourceSnapshot('C1', '100.001');
     expect(up([{ action: 'remove', resourceType: 'issue', url: internal!.id }]).ok).toBe(true);

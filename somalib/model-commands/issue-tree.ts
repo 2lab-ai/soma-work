@@ -518,6 +518,7 @@ function readAtOf(raw: unknown): IssueTreeRelationReadAt | undefined {
 
 /** The internal-issue counter from stored or sent data: a small whole number (a huge one could stop counting). */
 function safeCounter(raw: unknown): number {
+  if (typeof raw !== 'number' && typeof raw !== 'string') return 1; // an object could throw on conversion
   const n = Math.floor(Number(raw));
   return Number.isSafeInteger(n) && n >= 1 && n <= 1_000_000 ? n : 1;
 }
@@ -540,7 +541,9 @@ export function issueTreeFromView(view: IssueTreeView | undefined): SessionIssue
     tree.nodes.push(node);
   });
   // The host's counter (a retired seed still took internal:1): a new internal issue gets the number the host gives it.
-  tree.nextInternal = Math.max(max + 1, safeCounter(view?.nextInternal));
+  // The host's counter as given (a repaired one too — allocation skips taken ids, as on the host); one past the highest
+  // internal id only when the view has none.
+  tree.nextInternal = view?.nextInternal !== undefined ? safeCounter(view.nextInternal) : max + 1;
   return tree;
 }
 
@@ -574,8 +577,17 @@ export function applyIssueTreeOperations(
         now,
       );
     } else if (op.action === 'remove') {
-      if (!resolveIssueTreeRef(next, op.url)) continue;
-      result = removeIssueTreeNode(next, op.url);
+      const id = resolveIssueTreeRef(next, op.url);
+      if (!id) continue;
+      const kind = next.nodes.find((n) => n.id === id)?.kind;
+      // The card removes the link from that kind's list: the tree removes only a node of that kind.
+      result =
+        kind === op.resourceType
+          ? removeIssueTreeNode(next, op.url)
+          : {
+              ok: false,
+              reason: `${op.url} is an ${kind === 'pr' ? 'PR' : 'issue'} in the tree, not ${op.resourceType === 'pr' ? 'a PR' : 'an issue'}`,
+            };
     } else if (op.action === 'add_internal') {
       result = addInternalIssue(next, op, now);
     } else if (op.action === 'move') {

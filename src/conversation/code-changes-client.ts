@@ -300,8 +300,11 @@ function chgIssueTreeView() {
   var s = typeof _sessionCache !== 'undefined' && typeof panelSessionKey !== 'undefined' && panelSessionKey ? _sessionCache[panelSessionKey] : null;
   return s && s.issueTree && Array.isArray(s.issueTree.nodes) ? s.issueTree : null;
 }
+// As the host's node id (issueTreeNodeId): www.github.com is github.com, the scheme's default port is no port.
 function chgCanonUrl(u) {
-  return String(u || '').toLowerCase().replace(/[?#].*$/, '').replace(/\/+$/, '');
+  return String(u || '').toLowerCase().replace(/[?#].*$/, '').replace(/\/+$/, '')
+    .replace(/^(https?:\/\/)www\.github\.com(?=[:/]|$)/, '$1github.com')
+    .replace(/^(https:\/\/[^/:]+):443(?=\/|$)/, '$1').replace(/^(http:\/\/[^/:]+):80(?=\/|$)/, '$1');
 }
 // Pure: the tree's roots — the session's issue tree with each PR's collected numbers. A collected PR the tree does not
 // have (a session from before the tree) sits under the representative issue (the first external root issue, else the

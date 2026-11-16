@@ -422,6 +422,8 @@ describe('issue tree — .prd/29 §3', () => {
       nextInternal: 9007199254740992,
     }) as SessionIssueTree;
     expect(loaded.nextInternal).toBe(1);
+    // A stored value that would throw on conversion is a bad counter too, not a crash.
+    expect(sanitizeIssueTree({ nodes: [], nextInternal: { toString: null } })?.nextInternal).toBe(1);
     const a = addInternalIssue(loaded, { title: 'a' }, now());
     const b = addInternalIssue(loaded, { title: 'b' }, now());
     expect([a, b]).toEqual([

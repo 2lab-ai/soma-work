@@ -182,7 +182,7 @@ describe('code-changes service → issue tree', () => {
     const prNotes = () => h.note.mock.calls.filter((c) => c[1][0]?.url.includes('/pull/')).map((c) => c[1][0]);
     const first = prNotes()[0] as { relReadAt?: number };
     expect(prNotes()[0]).toMatchObject({ status: 'merged', rel: { closes: ['https://github.com/acme/web/issues/9'] } });
-    expect(first.relReadAt).toBe(100); // this collect's start
+    expect(first.relReadAt).toBeGreaterThanOrEqual(100); // when its detail read began, in this collect
     const reads = h.fetchPullDetail.mock.calls.length;
     const secondStart = clock; // the second collect begins at or after this
     await h.svc.refresh('conv1');
@@ -194,7 +194,7 @@ describe('code-changes service → issue tree', () => {
     const second = prNotes()[1] as { relReadAt?: number; rel?: unknown };
     expect(second.rel).toEqual({ closes: ['https://github.com/acme/web/issues/9'], base: null });
     expect(second.relReadAt).toBeLessThan(secondStart);
-    expect(second.relReadAt).toBeGreaterThanOrEqual(100);
+    expect(second.relReadAt).toBe(first.relReadAt); // the original read's start, not a later stamp
   });
 
   it('a rejected issue read is that issue’s failed read; a batch that throws still frees the session', async () => {
@@ -258,5 +258,19 @@ describe('code-changes service → issue tree', () => {
     await flush();
     await flush();
     expect(issueNotes()).toBe(before + 1);
+  });
+
+  it('a PR tree write that fails does not stop the collect: the card is pushed and the issues are still read', async () => {
+    const fetchIssue = vi.fn(async () => ({ title: 'login', state: 'open' }));
+    const h = harness({ fetchIssue });
+    h.note.mockImplementation((_k, entries) => {
+      if (entries.some((e) => e.url.includes('/pull/'))) throw new Error('disk full');
+      return true;
+    });
+    await h.svc.refresh('conv1');
+    await flush();
+    await flush();
+    expect(h.pushCard).toHaveBeenCalled();
+    expect(fetchIssue).toHaveBeenCalledWith('acme', 'web', 9);
   });
 });

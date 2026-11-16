@@ -6,9 +6,10 @@ import {
   issueTreeNodeId,
   issueTreeView,
   rebalanceIssueTree,
+  sanitizeIssueTree,
   upsertIssueTreeLink,
 } from './issue-tree';
-import type { SessionResourceSnapshot } from './session-types';
+import type { SessionIssueTree, SessionResourceSnapshot } from './session-types';
 import type { ModelCommandRunRequest } from './types';
 import { validateModelCommandRunArgs } from './validator';
 
@@ -32,7 +33,8 @@ function snapshotWithTree(): SessionResourceSnapshot {
   rebalanceIssueTree(t, 3);
   const s = getDefaultSessionSnapshot();
   s.issues = [{ url: `${GH}/issues/5`, type: 'issue', provider: 'github', label: '#5' }];
-  s.active = { issue: s.issues[0] };
+  s.prs = [{ url: `${GH}/pull/7`, type: 'pr', provider: 'github', label: 'PR #7' }];
+  s.active = { issue: s.issues[0], pr: s.prs[0] };
   s.issueTree = issueTreeView(t, 'S');
   return s;
 }
@@ -136,6 +138,9 @@ describe('the MCP preview applies them with the host’s function', () => {
     const after = (m.payload as { session: SessionResourceSnapshot }).session;
     expect(parentOf(after, `${GH}/pull/7`)).toBe(id);
     expect(after.active.issue?.url).toBe(`${GH}/issues/5`);
+    // Moving the PR leaves its card link and the current PR as they were.
+    expect(after.active.pr?.url).toBe(`${GH}/pull/7`);
+    expect(after.prs).toEqual(before.prs);
     expect(after.sequence).toBe(2);
   });
 
@@ -251,6 +256,38 @@ describe('the MCP preview applies them with the host’s function', () => {
     expect(parentOf(after, `${GH}/pull/7`)).toBeDefined();
     expect(after.issues).toEqual(s2.issues);
     expect(after.active).toEqual(s2.active);
+  });
+
+  it('host/preview parity after the host repaired its counter: a new internal issue gets the same id', () => {
+    const host = sanitizeIssueTree({
+      nodes: [{ id: 'internal:2', kind: 'issue', source: 'internal', title: 'x', placed: 'default', addedAt: 1 }],
+      nextInternal: 9007199254740992,
+    }) as SessionIssueTree;
+    const s = getDefaultSessionSnapshot();
+    s.issueTree = issueTreeView(host, 'S');
+    const ops = [{ action: 'add_internal', resourceType: 'issue', title: '새 조사' }];
+    const r = run(s, ops);
+    if (!r.ok) throw new Error('preview failed');
+    const previewId = (r.payload as { session: SessionResourceSnapshot }).session.issueTree?.nodes.find(
+      (n) => n.title === '새 조사',
+    )?.id;
+    const v = validateModelCommandRunArgs({ commandId: 'UPDATE_SESSION', params: { operations: ops } });
+    const onHost = applyIssueTreeOperations(
+      host,
+      (v.ok ? (v.request.params as { operations: never[] }).operations : []) as never[],
+      2,
+    );
+    const hostId = onHost.ok ? onHost.tree.nodes.find((n) => n.title === '새 조사')?.id : undefined;
+    expect(previewId).toBe('internal:1');
+    expect(hostId).toBe(previewId);
+  });
+
+  it('remove names a node of its own kind: an issue URL removed as a PR is refused, nothing changes', () => {
+    const s = snapshotWithTree();
+    const before = JSON.stringify(s);
+    const r = run(s, [{ action: 'remove', resourceType: 'pr', url: `${GH}/issues/5` }]);
+    expect(r).toMatchObject({ ok: false, error: { message: expect.stringContaining('not a PR') } });
+    expect(JSON.stringify(s)).toBe(before);
   });
 
   it('refuses what would break the tree, naming why', () => {

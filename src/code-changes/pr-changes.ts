@@ -100,6 +100,7 @@ export async function sessionPrChanges(
       out.push(old);
       continue;
     }
+    const readAt = deps.now();
     const detail = await deps.fetchPullDetail(ref.owner, ref.repo, ref.number);
     if (!detail) {
       if (old) out.push(old);
@@ -157,6 +158,7 @@ export async function sessionPrChanges(
     if (detail.base_ref) pr.baseRef = detail.base_ref;
     // Always set on a fresh read (an empty list too): a stored record without it predates .prd/29 and says nothing.
     pr.closes = closingIssueUrls(detail.body, ref.owner, ref.repo);
+    pr.relReadAt = readAt;
     const headRepo = detail.head_repo?.toLowerCase();
     if (headRepo && headRepo !== pr.repo) pr.headRepo = headRepo;
     if (createdAt !== undefined) pr.createdAt = createdAt;

@@ -103,6 +103,8 @@ export interface PrChanges {
   baseRef?: string;
   /** Set by every read since .prd/29 (`[]` = closes nothing); absent on an older record, which tells nothing. */
   closes?: string[];
+  /** When the read behind `closes`/`baseRef` began: a reused record replays them with this time, not a newer one. */
+  relReadAt?: number;
   /** Epoch ms. */
   createdAt?: number;
   /** Epoch ms. */

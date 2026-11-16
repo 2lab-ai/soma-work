@@ -153,6 +153,35 @@ describe('the 변경점 tab’s issue tree', () => {
     ]);
   });
 
+  it('joins a collected PR to its node as the host names it: www.github.com and a default port are the same PR', () => {
+    const view = {
+      nodes: [
+        { id: id('issues/10'), kind: 'issue', source: 'github', url: `${GH}/issues/10`, placed: 'default' },
+        {
+          id: id('pull/1'),
+          kind: 'pr',
+          source: 'github',
+          url: 'https://www.github.com/acme/web/pull/1/',
+          parent: id('issues/10'),
+          placed: 'default',
+        },
+        {
+          id: id('pull/2'),
+          kind: 'pr',
+          source: 'github',
+          url: 'https://github.com:443/acme/web/pull/2',
+          parent: id('issues/10'),
+          placed: 'default',
+        },
+      ],
+    };
+    const api = load({ innerHTML: '' }, view);
+    const roots = api.chgIssueForest(view, { ...DOC, prs: [pr(1), pr(2)] });
+    // One issue with its two PRs, each joined to its collected numbers — no second copy as a stray.
+    expect(roots).toHaveLength(1);
+    expect(roots[0].children.map((c: Record<string, any>) => c.pr?.id)).toEqual(['acme/web#1', 'acme/web#2']);
+  });
+
   it('folds a node and the whole tree; a press keeps the PR scope working', () => {
     const el: El = { innerHTML: '', querySelectorAll: () => [] };
     const api = load(el, TREE);
