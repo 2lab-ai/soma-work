@@ -432,6 +432,27 @@ describe('checkoutChanges — the two local layers', () => {
     expect(c!.committed.files.map((f) => f.path)).toEqual(['two.ts']);
   });
 
+  it('a branch cut from main after the session PR merged: the merge-base is the base, not that PR head (others’ merges are not committed here)', async () => {
+    const session = tmp('cc-after-merge-');
+    const dir = clone(session, 'api');
+    git(dir, ['checkout', '-q', '-b', 'feat/x']);
+    write(dir, 'one.ts', '1\n');
+    const prHead = commitAll(dir, 'in the PR');
+    // On the default branch: the PR merges, then someone else's change merges after it.
+    git(dir, ['checkout', '-q', 'main']);
+    git(dir, ['merge', '-q', '--no-ff', '-m', 'Merge the PR', 'feat/x']);
+    write(dir, 'other.ts', 'not this session\n');
+    const mainTip = commitAll(dir, "someone else's PR");
+    git(dir, ['update-ref', 'refs/remotes/origin/main', mainTip]);
+    git(dir, ['checkout', '-q', '-b', 'docs/y', mainTip]);
+    write(dir, 'docs.md', 'the session\n');
+    commitAll(dir, 'docs');
+    const c = await checkoutChanges({ dir, sessionRoot: session, prHeads: [{ headSha: prHead }] });
+    expect(c!.committed.base).toBe(mainTip);
+    expect(c!.committed.files.map((f) => f.path)).toEqual(['docs.md']);
+    expect(c!.committed.commits.map((x) => x.subject)).toEqual(['docs']);
+  });
+
   it('no remote: commits since the session started, not the earlier history', async () => {
     const session = tmp('cc-local-');
     const dir = path.join(session, 'scratch');
