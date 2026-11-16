@@ -204,7 +204,7 @@ describe('the board’s head on a phone: the search with Board | List, then the 
     );
     // 16px: iOS zooms into a smaller field.
     expect(phone).toContain(
-      '.inbox-tools > .bf-search { grid-column: 1; grid-row: 1; width: 100%; max-width: none; height: 40px; font-size: 16px; }',
+      '.inbox-tools > .bf-search { grid-column: 1; grid-row: 1; width: 100%; max-width: none; font-size: 16px; }',
     );
     expect(phone).toContain('.inbox-tools > .view-seg { grid-column: 2; grid-row: 1; }');
     expect(phone).toContain(
