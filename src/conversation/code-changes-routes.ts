@@ -5,7 +5,8 @@
  *     → 200 { doc: CodeChangesDoc without patches | null, live: boolean }
  *       refresh=1: a live session of the conversation is collected first (waiting up to 20 s) — `live` says one was.
  *   GET /api/dashboard/session/:conversationId/changes/file?repo=<repo>&path=<path>
- *     → 200 { repo, path, sources: [{ layer, label, prUrl?, prNumber?, file }] } — every layer's patch of one file
+ *     → 200 { repo, path, updatedAt, sources: [{ layer, label, prUrl?, prNumber?, file }] } — every layer's patch of one
+ *       file, and the collect it is from
  *     → 404 { error: 'not_found' } when no layer has it
  *
  * Who may read: the work log's rule (work-log-routes.ts) — the conversation's recorded owner and admins. The patches are
@@ -109,7 +110,8 @@ export async function registerCodeChangesRoutes(
           reply.status(404).send({ error: 'not_found' });
           return;
         }
-        reply.send({ repo, path, sources });
+        // The collect these layers come from: the tab drops an answer of a collect other than the one it lists.
+        reply.send({ repo, path, updatedAt: doc?.updatedAt, sources });
       } catch (error) {
         logger.error('Error reading a changed file', error);
         reply.status(500).send({ error: 'Internal Server Error' });
