@@ -1254,7 +1254,11 @@ async function readCapacity(): Promise<CapacityView> {
 }
 
 /** A cron run's session, live or archived, keyed by its canonical session key. */
-function cronRunSessionIndex(): CronRunSessionLookup {
+/**
+ * `viewer` (#1315) — a run's task this viewer may not see (a private one: the job moved off its private channel, or
+ * fired into someone's private thread) is left out, so its run shows no title, link or usage.
+ */
+function cronRunSessionIndex(viewer: TaskViewer | undefined): CronRunSessionLookup {
   const index = new Map<string, NonNullable<ReturnType<CronRunSessionLookup>> & { archivedAt?: number }>();
   const usageOf = (u: any) =>
     u
@@ -1269,7 +1273,7 @@ function cronRunSessionIndex(): CronRunSessionLookup {
       : {};
   try {
     for (const archived of getArchiveStore().listRecent(CRON_RUN_ARCHIVE_WINDOW_MS)) {
-      if (!archived?.sessionKey) continue;
+      if (!archived?.sessionKey || !canViewTask(viewer, archived)) continue;
       const key = normalizeSessionKey(archived.sessionKey);
       // listRecent is not ordered: a thread archived twice keeps its newest archive.
       const prev = index.get(key);
@@ -1309,6 +1313,10 @@ function cronRunSessionIndex(): CronRunSessionLookup {
   }
   for (const [key, s] of getAllSessions().entries()) {
     if (!s?.channelId) continue;
+    if (!canViewTask(viewer, s)) {
+      index.delete(buildWorkSessionKey(s.channelId, s.threadTs));
+      continue;
+    }
     const u = tokenUsageOf(s);
     index.set(buildWorkSessionKey(s.channelId, s.threadTs), {
       cronJobId: s.cronJob?.id,
@@ -1439,26 +1447,42 @@ async function privateTaskGate(request: any, reply: any): Promise<unknown> {
   const viewer = request.authContext as TaskViewer | undefined;
   // Not signed in: the sign-in check before this one has answered. An admin sees every task: nothing to look up.
   if (!viewer || viewer.isAdmin === true) return;
-  const task = await gatedTaskOf(request.params ?? {});
+  let task: { channelId?: unknown; ownerId?: unknown } | undefined;
+  try {
+    task = await gatedTaskOf(request.params ?? {}, request.authorizedResource);
+  } catch (error) {
+    // A lookup that fails cannot say the task is public: fail closed, as for a task this viewer may not see.
+    logger.warn('Private-task gate could not read the task — refused', { url: request.url, error: String(error) });
+    reply.status(404).send({ error: 'Not found' });
+    return reply;
+  }
   if (!task || canViewTask(viewer, task)) return;
   reply.status(404).send({ error: 'Not found' });
   return reply;
 }
 
-/** The task a gated route names: a live session by its key, else the conversation by its id; undefined — the route answers. */
-async function gatedTaskOf(params: Record<string, unknown>): Promise<{ channelId?: unknown; ownerId?: unknown } | undefined> {
+/**
+ * The task a gated route names: a live session by its key (an archived card's key: that archive), else the
+ * conversation by its id — the record a pre-handler before the gate already loaded, when one did. Undefined: there is
+ * no such task, and the route answers (404, 409 for a sibling's key, or its owner check). A failed read throws.
+ */
+async function gatedTaskOf(
+  params: Record<string, unknown>,
+  loaded?: unknown,
+): Promise<{ channelId?: unknown; ownerId?: unknown } | undefined> {
   if (typeof params.key === 'string' && params.key) {
     const local = stripSelfInstancePrefix(params.key);
-    // A sibling's key: the route answers 409. A key this instance does not hold: the route answers 404 (or its owner
-    // check refuses).
     if (local === null) return undefined;
+    const card = parseArchivedCardKey(local);
+    if (card) return getArchiveStore().load(card.sessionKey, card.archivedAt) ?? undefined;
     const sessions = getAllSessions();
     return sessions.get(local) ?? sessions.get(normalizeSessionKey(local)) ?? undefined;
   }
   const id =
     typeof params.conversationId === 'string' ? params.conversationId : typeof params.id === 'string' ? params.id : '';
   if (!id) return undefined;
-  return liveTaskOfConversation(id) ?? (await getConversation(id).catch(() => null)) ?? undefined;
+  if (loaded && typeof loaded === 'object') return loaded as { channelId?: unknown; ownerId?: unknown };
+  return liveTaskOfConversation(id) ?? (await getConversation(id)) ?? undefined;
 }
 
 /** A Slack DM channel id (`D…`) — a conversation only its two members can write in. */
@@ -2685,8 +2709,14 @@ export function broadcastArtifactUpdate(artifact: SessionArtifact): void {
         conversationId: artifact.conversationId,
         artifact: boardArtifact(artifact),
       });
-      // #1315 — only the sockets that may see the task (a private task's: its owner and admins).
-      sendToTaskViewers(liveTaskOfConversation(artifact.conversationId), payload);
+      // #1315 — only the sockets that may see the task (a private task's: its owner and admins). A task no longer live
+      // (an archived card's backfill) is read from its conversation record.
+      const live = liveTaskOfConversation(artifact.conversationId);
+      if (live) sendToTaskViewers(live, payload);
+      else
+        void getConversation(artifact.conversationId)
+          .then((record) => sendToTaskViewers(record ?? undefined, payload))
+          .catch(() => sendToTaskViewers(undefined, payload));
     } catch (error) {
       logger.error('Failed to broadcast artifact update', error);
     }
@@ -3553,8 +3583,16 @@ export function broadcastSessionUpdate(): void {
   try {
     const payloadFor = sessionUpdatePayloads(buildKanbanBoard());
     for (const client of wsClients) {
+      // A board that cannot be serialised is not the socket's fault: it stays registered for the next push.
+      let payload: string;
       try {
-        client.send(payloadFor(client));
+        payload = payloadFor(client);
+      } catch (error) {
+        logger.error('Failed to build a viewer board for a session update', error);
+        continue;
+      }
+      try {
+        client.send(payload);
       } catch {
         wsClients.delete(client);
       }
@@ -3912,7 +3950,7 @@ export async function registerDashboardRoutes(
           history: _cronSource.listHistory(),
           userId: request.query.userId || undefined,
           nowMs: Date.now(),
-          findSession: cronRunSessionIndex(),
+          findSession: cronRunSessionIndex(viewer),
           threadUrl: (channel, threadTs) => buildThreadPermalink(channel, threadTs),
         });
         reply.send({ jobs });

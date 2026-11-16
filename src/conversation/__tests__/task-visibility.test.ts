@@ -51,8 +51,14 @@ vi.mock('../viewer', () => ({
   renderConversationListPage: vi.fn().mockReturnValue('<html></html>'),
   renderConversationViewPage: vi.fn().mockReturnValue('<html></html>'),
 }));
+// The archive store: empty unless a test puts an archived task in it.
+const archive = vi.hoisted(() => ({ recent: [] as Array<Record<string, any>> }));
 vi.mock('../../session-archive', () => ({
-  getArchiveStore: () => ({ listRecent: vi.fn().mockReturnValue([]) }),
+  getArchiveStore: () => ({
+    listRecent: () => archive.recent,
+    load: (sessionKey: string, archivedAt: number) =>
+      archive.recent.find((a) => a.sessionKey === sessionKey && a.archivedAt === archivedAt) ?? null,
+  }),
 }));
 
 // ── The rule (pure) ──
@@ -195,6 +201,7 @@ describe('task-visibility — board, live pushes and routes', () => {
 
   beforeEach(async () => {
     vi.resetModules();
+    archive.recent = [];
     paths.dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'soma-task-visibility-'));
     web = await import('../web-server');
     dashboard = await import('../dashboard');
@@ -350,6 +357,114 @@ describe('task-visibility — board, live pushes and routes', () => {
     expect(turns(owner)).toEqual(['conv-priv', 'conv-pub']);
   });
 
+  it('a private task with no live session (archived) is read from its record: 404 to a stranger, its owner reads it', async () => {
+    CONVERSATIONS.set('conv-gone', conversation('gone', 'C_PRIV'));
+    try {
+      for (const url of [
+        '/api/dashboard/session/conv-gone',
+        '/api/dashboard/session/conv-gone/media',
+        '/conversations/conv-gone',
+      ]) {
+        expect((await web.injectWebServer({ method: 'GET', url, headers: AS.other })).statusCode).toBe(404);
+      }
+      const own = await web.injectWebServer({
+        method: 'GET',
+        url: '/api/dashboard/session/conv-gone',
+        headers: AS.owner,
+      });
+      expect(own.statusCode).toBe(200);
+      expect(own.body).toContain('secret instruction gone');
+    } finally {
+      CONVERSATIONS.delete('conv-gone');
+    }
+  });
+
+  it('a lookup that fails refuses (fail closed) — a record a pre-handler already loaded is never served past it', async () => {
+    const recorder = await import('../recorder');
+    const real = (recorder.getConversation as any).getMockImplementation();
+    CONVERSATIONS.set('conv-gone', conversation('gone', 'C_PRIV'));
+    // The first read (the conversation route's loader) succeeds; every later one fails.
+    let reads = 0;
+    (recorder.getConversation as any).mockImplementation(async (id: string) => {
+      if (id === 'conv-gone' && reads++ > 0) throw new Error('disk gone');
+      return CONVERSATIONS.get(id) ?? null;
+    });
+    try {
+      const res = await web.injectWebServer({ method: 'GET', url: '/api/conversations/conv-gone', headers: AS.other });
+      expect(res.statusCode).toBe(404);
+      expect(res.body).not.toContain('secret');
+      // A read the gate itself cannot make: refused too.
+      reads = 1;
+      const detail = await web.injectWebServer({
+        method: 'GET',
+        url: '/api/dashboard/session/conv-gone',
+        headers: AS.other,
+      });
+      expect(detail.statusCode).toBe(404);
+    } finally {
+      (recorder.getConversation as any).mockImplementation(real);
+      CONVERSATIONS.delete('conv-gone');
+    }
+  });
+
+  it('the socket: a board that cannot be serialised keeps the sockets registered for the next push', async () => {
+    const other = await connect(AS.other);
+    await vi.waitFor(() => expect(other.messages.some((m) => m.type === 'session_update')).toBe(true));
+    // A value JSON cannot write (a bigint) on a public card: this push fails for everyone.
+    sessions.set('C_PUB:bad.1', liveSession('bad', 'C_PUB', { model: BigInt(1) }));
+    dashboard.broadcastSessionUpdate();
+    sessions.delete('C_PUB:bad.1');
+    await flushAll([other]);
+    {
+      const u = other.messages.filter((m) => m.type === 'session_update');
+      expect(boardIds(u[u.length - 1])).toEqual(['conv-pub']);
+    }
+  });
+
+  it('the socket: an artifact of a task no longer live goes to whoever may see its conversation record', async () => {
+    CONVERSATIONS.set('conv-gone-pub', conversation('gone-pub', 'C_PUB'));
+    CONVERSATIONS.set('conv-gone', conversation('gone', 'C_PRIV'));
+    try {
+      const other = await connect(AS.other);
+      const owner = await connect(AS.owner);
+      await vi.waitFor(() => [other, owner].forEach((c) => expect(c.messages.length).toBeGreaterThan(0)));
+      for (const conversationId of ['conv-gone-pub', 'conv-gone'])
+        dashboard.broadcastArtifactUpdate({
+          id: 'a',
+          conversationId,
+          name: 'x.md',
+          kind: 'markdown',
+          createdAt: 1,
+        } as any);
+      const arts = (c: { messages: any[] }) =>
+        c.messages
+          .filter((m) => m.type === 'artifact_update')
+          .map((m) => m.conversationId)
+          .sort();
+      await vi.waitFor(() => expect(arts(owner)).toEqual(['conv-gone', 'conv-gone-pub']));
+      await flushAll([other, owner]);
+      expect(arts(other)).toEqual(['conv-gone-pub']);
+    } finally {
+      CONVERSATIONS.delete('conv-gone-pub');
+      CONVERSATIONS.delete('conv-gone');
+    }
+  });
+
+  it('the socket: two owners of private tasks each get their own private task and the public ones, never the other’s', async () => {
+    sessions.set('C_PRIV:priv2.1', liveSession('priv2', 'C_PRIV', { ownerId: 'U_OWNER2', ownerName: 'Owner 2' }));
+    const owner = await connect(AS.owner);
+    const owner2 = await connect({ cookie: userCookie('U_OWNER2') });
+    const other = await connect(AS.other);
+    await flushAll([owner, owner2, other]);
+    const last = (c: { messages: any[] }) => {
+      const updates = c.messages.filter((m) => m.type === 'session_update');
+      return boardIds(updates[updates.length - 1]);
+    };
+    expect(last(owner)).toEqual(['conv-dm', 'conv-priv', 'conv-pub', 'conv-unk']);
+    expect(last(owner2)).toEqual(['conv-priv2', 'conv-pub']);
+    expect(last(other)).toEqual(['conv-pub']);
+  });
+
   it('every read route of a private task answers 404 to a stranger, as if it did not exist; the owner and an admin read it', async () => {
     const reads = (id: string) => [
       `/api/dashboard/session/conv-${id}`,
@@ -443,22 +558,63 @@ describe('task-visibility — board, live pushes and routes', () => {
     expect(await jobs(AS.owner)).toEqual(['j-dm', 'j-priv', 'j-pub']);
     expect(await jobs(AS.admin)).toEqual(['j-dm', 'j-priv', 'j-pub']);
   });
+
+  it('the cron lane: a public job’s run that is a private task (the job moved, or it ran in a private thread) shows no task to a stranger', async () => {
+    const run = (sessionKey: string) => ({
+      jobId: 'j-moved',
+      jobName: 'job-moved',
+      executedAt: '2026-11-15T09:00:00Z',
+      status: 'success',
+      executionPath: 'new_thread',
+      sessionKey,
+    });
+    dashboard.setDashboardCronSource({
+      listJobs: () =>
+        [
+          {
+            id: 'j-moved',
+            name: 'job-moved',
+            expression: '0 9 * * *',
+            prompt: 'p',
+            owner: 'U_OWNER',
+            channel: 'C_PUB',
+            threadTs: null,
+            createdAt: '2026-11-01T00:00:00Z',
+            lastRunAt: null,
+            lastRunMinute: null,
+          },
+        ] as any,
+      // A run names its thread by the work-session key (`work:<channel>:<thread>`).
+      listHistory: () => [run(`work:${keyOf('priv')}`), run(`work:${keyOf('pub')}`)] as any,
+      getJob: () => undefined,
+      updateJob: () => null,
+    });
+    const runs = async (headers: Record<string, string>) => {
+      const body = JSON.parse((await web.injectWebServer({ method: 'GET', url: '/api/dashboard/cron', headers })).body);
+      return (body.jobs[0].runs as Array<{ session?: { headline?: string } }>).map((r) => r.session?.headline ?? null);
+    };
+    expect(await runs(AS.other)).toEqual([null, 'Task pub']);
+    expect(await runs(AS.owner)).toEqual(['Task priv', 'Task pub']);
+    expect(await runs(AS.admin)).toEqual(['Task priv', 'Task pub']);
+  });
 });
 
 describe('task-visibility — instructions', () => {
   let web: typeof import('../web-server');
   let dashboard: typeof import('../dashboard');
   let sent: Array<[string, string | undefined]>;
+  let sessions: Map<string, any>;
 
   beforeEach(async () => {
     vi.resetModules();
+    archive.recent = [];
     paths.dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'soma-task-visibility-cmd-'));
     web = await import('../web-server');
     dashboard = await import('../dashboard');
     const registry = await import('../../channel-registry');
     registry.upsertChannel({ id: 'C_PUB', name: 'open', isPrivate: false });
     registry.upsertChannel({ id: 'C_PRIV', name: 'acquisition', isPrivate: true });
-    const sessions = new Map(SESSIONS.map(([id, ch]) => [keyOf(id), liveSession(id, ch, { activityState: 'idle' })]));
+    sessions = new Map(SESSIONS.map(([id, ch]) => [keyOf(id), liveSession(id, ch, { activityState: 'idle' })]));
     dashboard.setDashboardSessionAccessor(() => sessions);
     sent = [];
     dashboard.setDashboardCommandHandler(async (k: string, _m: string, _a: unknown, actor?: string) => {
@@ -488,8 +644,11 @@ describe('task-visibility — instructions', () => {
       payload: JSON.stringify({ message: 'do it' }),
     });
 
-  it('stopping a private task tells its owner’s and admins’ sockets, not a stranger’s', async () => {
-    dashboard.setDashboardStopHandler(async () => {});
+  it('stopping a private task tells its owner’s and admins’ sockets, not a stranger’s — also when the stop takes the session away', async () => {
+    // The stop removes the session: who may see it is read before, not after.
+    dashboard.setDashboardStopHandler(async (key: string) => {
+      sessions.delete(key);
+    });
     const sockets: any[] = [];
     const connect = async (who: string) => {
       const messages: any[] = [];
@@ -504,6 +663,7 @@ describe('task-visibility — instructions', () => {
     try {
       const other = await connect('U_OTHER');
       const admin = await connect('U_ADMIN');
+      const ownerSocket = await connect('U_OWNER');
       const owner = await signIn('U_OWNER');
       const res = await web.injectWebServer({
         method: 'POST',
@@ -512,15 +672,53 @@ describe('task-visibility — instructions', () => {
         payload: '{}',
       });
       expect(res.statusCode).toBe(200);
+      expect(sessions.has(keyOf('priv'))).toBe(false);
       // The stop's board push follows its action push on every socket (one socket keeps order).
       await vi.waitFor(() => {
-        for (const m of [other, admin]) expect(m.filter((x) => x.type === 'session_update').length).toBeGreaterThan(1);
+        for (const m of [other, admin, ownerSocket])
+          expect(m.filter((x) => x.type === 'session_update').length).toBeGreaterThan(1);
       });
-      expect(admin.filter((m) => m.type === 'session_action').map((m) => m.sessionKey)).toEqual([keyOf('priv')]);
+      for (const m of [admin, ownerSocket])
+        expect(m.filter((x) => x.type === 'session_action').map((x) => x.sessionKey)).toEqual([keyOf('priv')]);
       expect(other.filter((m) => m.type === 'session_action')).toEqual([]);
     } finally {
       for (const ws of sockets) ws.terminate();
     }
+  });
+
+  it('an archived private task’s card key answers a stranger 404, as a key that does not exist does', async () => {
+    archive.recent = [
+      {
+        sessionKey: 'C_PRIV:old.1',
+        archivedAt: 1_700_000_000_000,
+        ownerId: 'U_OWNER',
+        ownerName: 'Owner',
+        channelId: 'C_PRIV',
+        threadTs: 'old.1',
+        sessionId: 'sid-old',
+        conversationId: 'conv-old',
+      },
+    ];
+    // The real handler's answers do not matter here: the gate answers first, and the route's own 404 for a missing archive.
+    dashboard.setDashboardLifecycleHandler({
+      star: () => ({ ok: true }) as any,
+      revive: () => ({ ok: true }) as any,
+      restore: () => ({ ok: true }) as any,
+    });
+    const star = (key: string, headers: Record<string, string>) =>
+      web.injectWebServer({
+        method: 'POST',
+        url: `/api/dashboard/session/${encodeURIComponent(key)}/star`,
+        headers,
+        payload: JSON.stringify({ starred: true }),
+      });
+    const other = await signIn('U_OTHER');
+    expect((await star('archived_C_PRIV:old.1_1700000000000', other)).statusCode).toBe(404);
+    expect((await star('archived_C_PRIV:gone.1_1700000000000', other)).statusCode).toBe(404);
+    // Its owner reaches the route's own answer.
+    const owner = await signIn('U_OWNER');
+    expect((await star('archived_C_PRIV:old.1_1700000000000', owner)).statusCode).not.toBe(404);
+    dashboard.setDashboardLifecycleHandler(null);
   });
 
   it('a stranger cannot instruct a private task (404, nothing sent); an admin needs admin mode; the owner can', async () => {
