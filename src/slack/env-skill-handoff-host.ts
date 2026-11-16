@@ -111,6 +111,18 @@ export function envSkillWakeState(
 
 const FROM_HOST = 'This comes from the host, not the user.';
 
+/**
+ * A wake's text with every skill reference made inert: `$<env>:<skill>` and a bare `<owner>:<skill>` become a quoted
+ * `<owner>:<skill>`, which neither the `$` parser nor the soft cross-user parser reads as a call. The wake is already
+ * injected verbatim (no command routing, `src/index.ts`); this keeps a host turn from ever starting a skill even if
+ * that changes. Live 2026-11-16: a wake naming `$<env>:handoff-check` was routed as a skill call and ran it again.
+ */
+export function inertSkillRefs(text: string): string {
+  return text
+    .replace(/\$([\w.-]+):([a-z0-9][a-z0-9-]*)/g, '`$1:$2`')
+    .replace(/(^|\s)([\w.-]+):([a-z0-9][a-z0-9-]*)(?=\s|$|[.,!?)])/g, '$1`$2:$3`');
+}
+
 function notAdminReason(skill: string): string {
   return (
     `a model hands off only for an admin; ask the user to type \`${skill} …\` themselves (the admin card shows the ` +
@@ -219,7 +231,7 @@ export function createEnvSkillHandoffHost(
         return;
       }
     }
-    void sendWake({ sessionKey: request.sessionKey, user: request.user, text, current });
+    void sendWake({ sessionKey: request.sessionKey, user: request.user, text: inertSkillRefs(text), current });
   };
 
   /** A run went and ended: progress. The count starts again and pending requests may be told again. */

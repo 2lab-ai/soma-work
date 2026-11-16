@@ -8343,6 +8343,8 @@ function syncPanelWidth() {
   if (panel.getAttribute('max-width') !== String(half)) panel.setAttribute('max-width', String(half));
   var w = typeof panel.width === 'number' ? panel.width : Math.min(parseInt(panel.getAttribute('width') || '', 10) || 440, half);
   document.documentElement.style.setProperty('--panel-w', w + 'px');
+  // The 변경점 viewer's mode follows the room left of the card (.prd/28 §4).
+  if (typeof chgSyncViewerMode === 'function') chgSyncViewerMode();
 }
 
 // ── Panel tasks rendering ──
@@ -21766,6 +21768,8 @@ async function generateTitleSub(convId, regenerate) {
 function closePanel() {
   var closingKey = panelSessionKey;
   if (closingKey) deckRemove(closingKey);
+  // The 변경점 viewer belongs to this card — its panel sits beside it (.prd/28 §4).
+  if (typeof chgCloseViewer === 'function') chgCloseViewer();
   // Task view: a closed panel keeps no mic, no files and watches no answers.
   pcReset();
   if (_ansIo) { _ansIo.disconnect(); _ansIo = null; }

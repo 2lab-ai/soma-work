@@ -55,6 +55,10 @@ export interface SyntheticMessageEvent {
   /** Route context — skipAutoBotThread prevents duplicate root message creation */
   routeContext?: {
     skipAutoBotThread?: boolean;
+    /** The text goes to the model as-is: no command routing, no `!`/`%` parsing (a host turn's own words). */
+    verbatimPrompt?: boolean;
+    /** A host turn, never the user's answer. */
+    hostTurn?: boolean;
     /** Goal auto-continuation marker — never supersede a live turn (M2). */
     goalContinuation?: boolean;
     /**
