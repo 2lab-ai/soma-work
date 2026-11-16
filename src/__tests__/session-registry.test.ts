@@ -1304,6 +1304,19 @@ describe('setOnIdleAfterDrainHook — goal ralph-loop entry point', () => {
     expect(hook).not.toHaveBeenCalled();
   });
 
+  // #1292 — a queued cron fire runs while the session waits on its user; the goal loop still waits for the answer.
+  it('drains queued cron fires on waiting without firing the goal hook', () => {
+    const registry = new SessionRegistry();
+    registry.createSession('U-z', 'Z', 'C-G', 't-G');
+    const sessionKey = registry.getSessionKey('C-G', 't-G');
+    const order: string[] = [];
+    registry.registerOnIdle(sessionKey, () => order.push('cron-drain'));
+    registry.setOnIdleAfterDrainHook((sk) => order.push(`goal-hook:${sk}`));
+    registry.setActivityState('C-G', 't-G', 'working');
+    registry.setActivityState('C-G', 't-G', 'waiting');
+    expect(order).toEqual(['cron-drain']);
+  });
+
   it('swallows goal-hook errors without breaking the activity-state machine', () => {
     const registry = new SessionRegistry();
     registry.createSession('U-z', 'Z', 'C-G', 't-G');

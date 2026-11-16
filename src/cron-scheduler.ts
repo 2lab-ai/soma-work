@@ -428,12 +428,14 @@ export class CronScheduler {
       // Scenario 6: No session → create new thread
       return { ok: await this.executeWithNewThread(job, now, triggeredBy), detail: 'new_thread' };
     }
-    if (session.activityState === 'idle') {
-      // Scenario 4: Idle → inject immediately
+    if (session.activityState === 'idle' || session.activityState === 'waiting') {
+      // Scenario 4: Idle → inject immediately. #1292 — so does a session waiting on its user's answer: it runs no
+      // turn, and a job queued behind it used to wait for that answer (a self-poll cron never ran). The injected
+      // turn is a host turn: the open question stays open (only the user's own word answers it).
       await this.injectMessage(job, session, now, triggeredBy);
       return { ok: true, detail: 'idle_inject' };
     }
-    // Scenario 5: Busy → queue and wait for idle
+    // Scenario 5: Busy (a turn is running) → queue and wait for it to end (idle or waiting)
     this.enqueueForIdle(job, session, now, triggeredBy);
     return { ok: true, detail: 'busy_queue' };
   }

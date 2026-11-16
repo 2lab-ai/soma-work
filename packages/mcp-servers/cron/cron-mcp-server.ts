@@ -533,7 +533,7 @@ class CronMcpServer {
                 type: 'string',
                 enum: ['default', 'fastlane'],
                 description:
-                  "Execution mode. default: run in the job's own session (see threadTs), queued while it is busy. fastlane: always create new thread immediately.",
+                  "Execution mode. default: run in the job's own session (see threadTs), queued while a turn runs there — a session waiting on its user's answer runs the prompt at once and its question stays open. fastlane: always create new thread immediately.",
               },
               target: {
                 type: 'string',
