@@ -489,6 +489,52 @@ describe('the viewer’s two modes — a panel beside the card, or the full scre
     expect(viewer().open).toBe(true);
   });
 
+  it('M7 — a newer collect while a file is shown (each turn end): the file and its scroll stay until the new read lands', async () => {
+    // Independent review #6: the panel stays open while the session works, so every collect used to blank it to
+    // "불러오는 중…" and jump to the top.
+    const f = controlledFetch();
+    dom.document.body.innerHTML = '<div id="panel-changes"></div>';
+    const api = new Function(
+      'fetch',
+      `${CODE_CHANGES_JS}
+      return { chgOpen, chgLoad, chgOpenViewer, chgNoteCard, chgViewerOpen, chgStep, state: function() { return _chg; } };`,
+    )(f.fetchFn) as Api;
+    const two = (at: number) => {
+      const d = doc(at);
+      d.checkouts[0].uncommitted.files.push({ path: 'src/b.ts', status: 'modified', additions: 2, deletions: 0 });
+      return d;
+    };
+    api.chgOpen('c1');
+    f.calls[0].resolve({ doc: two(100) });
+    await flush();
+    api.chgOpenViewer(A);
+    const src = (text: string) => ({
+      updatedAt: 100,
+      sources: [{ layer: 'uncommitted', label: 'web', file: { path: 'src/a.ts', patch: `@@ -1 +1 @@\n-x\n+${text}` } }],
+    });
+    f.calls.find((c) => c.url.includes('/changes/file'))!.resolve(src('OLD'));
+    await flush();
+    const main = byId('chg-v-main') as El & { scrollTop: number };
+    expect(main.innerHTML).toContain('OLD');
+    main.scrollTop = 120;
+    api.chgNoteCard('c1', 200);
+    f.calls[f.calls.length - 1].resolve({ doc: two(200) });
+    await flush();
+    // The list moved on: the shown file stays (not "불러오는 중…") while its new read is out.
+    expect(main.innerHTML).toContain('OLD');
+    expect(main.innerHTML).not.toContain('불러오는 중');
+    const again = f.calls.filter((c) => c.url.includes('/changes/file'));
+    expect(again).toHaveLength(2);
+    again[1].resolve({ ...src('NEW'), updatedAt: 200 });
+    await flush();
+    expect(main.innerHTML).toContain('NEW');
+    expect(main.scrollTop).toBe(120);
+    // Another file starts at its top.
+    api.chgStep(1);
+    expect(api.state().viewer.key).toBe(B);
+    expect(main.scrollTop).toBe(0);
+  });
+
   it('M6 — the card turns to another session, or closes (chgCloseViewer): the viewer closes', async () => {
     const api = await opened(1440);
     api.chgOpenViewer(A, rowOf(A));

@@ -526,13 +526,31 @@ function chgViewerPaint() {
   var head = '<div class="chg-v-file"><span class="chg-mark chg-mark-' + chgEsc(f.status) + '">' + chgEsc(CHG_STATUS_MARK[f.status] || 'M') + '</span> <b>' + chgEsc(f.path) + '</b> ' + chgDelta(f.additions, f.deletions) +
     (f.oldPath ? ' <span class="chg-muted">' + chgEsc(CHG_RENAMED_FROM) + ': ' + chgEsc(f.oldPath) + '</span>' : '') + '</div>';
   if (!cached || cached === 'loading') {
+    // A newer collect emptied the cache (each turn end, while the panel stays open): the file already shown stays — and
+    // where the reader is in it — until its new read lands (.prd/28 §4, independent review #6).
+    if (main._chgKey === v.key && main._chgShown) {
+      if (!cached) chgFetchFile(v.key, f);
+      return;
+    }
     main.innerHTML = head + '<div class="chg-empty">' + chgEsc(CHG_LOADING) + '</div>';
+    main._chgKey = v.key;
+    main._chgShown = false;
+    main.scrollTop = 0;
     if (!cached) chgFetchFile(v.key, f);
     return;
   }
-  if (cached === 'error') { main.innerHTML = head + '<div class="chg-empty">' + chgEsc(CHG_FILE_FAILED) + '</div>'; return; }
+  if (cached === 'error') {
+    main.innerHTML = head + '<div class="chg-empty">' + chgEsc(CHG_FILE_FAILED) + '</div>';
+    main._chgKey = v.key;
+    main._chgShown = false;
+    return;
+  }
   var srcs = (cached.sources || []).filter(function(s) { return chgSourceInScope(s); });
+  var keep = main._chgKey === v.key ? main.scrollTop : 0;
   main.innerHTML = head + srcs.map(chgSourceHtml).join('');
+  main._chgKey = v.key;
+  main._chgShown = true;
+  main.scrollTop = keep;
 }
 function chgSourceInScope(s) {
   var scope = _chg.scope;
