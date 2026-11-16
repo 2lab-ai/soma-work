@@ -21,7 +21,8 @@ export type ModelCommandId =
   | 'MEMORY'
   | 'MANAGE_SKILL'
   | 'RATE'
-  | 'SET_GOAL';
+  | 'SET_GOAL'
+  | 'RUN_ENV_SKILL';
 
 export interface ModelCommandContext {
   channel?: string;
@@ -168,6 +169,21 @@ export interface SetGoalParams {
   userRequestEvidence: string;
 }
 
+/**
+ * #1304 — RUN_ENV_SKILL: hand a task to an environment user's skill, exactly as if the turn's user had typed
+ * `$<env>:<skill> <text>` in the thread.
+ *
+ * The MCP layer only checks the shape and echoes it (`status: 'submitted'`). The HOST (stream-executor → the
+ * `handOffEnvironmentSkill` provider in `src/`) routes the message through `SkillForceHandler` after the call returns:
+ * resolution, the grant check, the admin card, one-time grants and the run as the environment user are that path's.
+ */
+export interface RunEnvSkillParams {
+  /** The environment user's skill as typed: `$acme-dev2:qa-dev2` (normalized: one `$`, no `env:`). */
+  skill: string;
+  /** What follows the ref in the typed message — the instructions/arguments ('' when none). */
+  text: string;
+}
+
 /** #881 A — GET_SESSION params. */
 export interface GetSessionParams {
   /** Wait up to this many ms (≤ 30 000) for the host's ack of this server's last UPDATE_SESSION before answering. */
@@ -186,6 +202,7 @@ export interface ModelCommandParamsMap {
   MANAGE_SKILL: ManageSkillParams;
   RATE: undefined;
   SET_GOAL: SetGoalParams;
+  RUN_ENV_SKILL: RunEnvSkillParams;
 }
 
 export interface ModelCommandPayloadMap {
@@ -297,6 +314,17 @@ export interface ModelCommandPayloadMap {
   SET_GOAL: {
     objective: string;
     userRequestEvidence: string;
+  };
+  // #1304: pure echo — the host routes `request` through SkillForceHandler after this call returns.
+  RUN_ENV_SKILL: {
+    /** Only the shape was checked here; the host decides (and the outcome comes back as a host turn). */
+    status: 'submitted';
+    skill: string;
+    text: string;
+    /** The message the host routes, as if the turn's user had typed it: `<skill> <text>`. */
+    request: string;
+    /** What happens next, for the model. */
+    next: string;
   };
 }
 

@@ -185,6 +185,47 @@ export async function runModelCommandAwaitingHost(
   return result;
 }
 
+/** The server's two tools. `run`'s `commandId` enum must name every command the catalog can offer. */
+export function modelCommandToolDefinitions(): ToolDefinition[] {
+  return [
+    {
+      name: 'list',
+      description: 'List available model commands for current session context',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    },
+    {
+      name: 'run',
+      description: 'Run a model command with typed params',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          commandId: {
+            type: 'string',
+            enum: [
+              'GET_SESSION',
+              'UPDATE_SESSION',
+              'ASK_USER_QUESTION',
+              'CONTINUE_SESSION',
+              'SAVE_CONTEXT_RESULT',
+              'SAVE_MEMORY',
+              'GET_MEMORY',
+              'MEMORY',
+              'MANAGE_SKILL',
+              'RATE',
+              // Issue #1082 T2: model-initiated session goal (set-only).
+              'SET_GOAL',
+              // #1304: hand a task to an environment user's skill (the host runs it as a typed message).
+              'RUN_ENV_SKILL',
+            ],
+          },
+          params: { type: 'object', description: 'Command params object' },
+        },
+        required: ['commandId'],
+      },
+    },
+  ];
+}
+
 class ModelCommandMcpServer extends BaseMcpServer {
   private context: ModelCommandContext;
 
@@ -216,41 +257,7 @@ class ModelCommandMcpServer extends BaseMcpServer {
   }
 
   defineTools(): ToolDefinition[] {
-    return [
-      {
-        name: 'list',
-        description: 'List available model commands for current session context',
-        inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-      },
-      {
-        name: 'run',
-        description: 'Run a model command with typed params',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            commandId: {
-              type: 'string',
-              enum: [
-                'GET_SESSION',
-                'UPDATE_SESSION',
-                'ASK_USER_QUESTION',
-                'CONTINUE_SESSION',
-                'SAVE_CONTEXT_RESULT',
-                'SAVE_MEMORY',
-                'GET_MEMORY',
-                'MEMORY',
-                'MANAGE_SKILL',
-                'RATE',
-                // Issue #1082 T2: model-initiated session goal (set-only).
-                'SET_GOAL',
-              ],
-            },
-            params: { type: 'object', description: 'Command params object' },
-          },
-          required: ['commandId'],
-        },
-      },
-    ];
+    return modelCommandToolDefinitions();
   }
 
   async handleTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {

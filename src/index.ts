@@ -192,11 +192,13 @@ import {
   type SessionPrWatch,
 } from './session-pr-watch';
 import { applySummaryTitle } from './session-title-policy';
+import { SkillForceHandler } from './slack/commands/skill-force-handler';
 import {
   displayLangMiddleware,
   installRespondTranslation,
   installSlackDisplayTranslation,
 } from './slack/display-translate';
+import { createEnvSkillHandoffHost, envSkillWakeState } from './slack/env-skill-handoff-host';
 import {
   answerGoalCapDecision,
   flushGoalCapDmSync,
@@ -2151,6 +2153,54 @@ async function start() {
       timing('Session PR watch started');
     }
 
+    // #1304 — a model's RUN_ENV_SKILL: the typed `$<env>:<skill>` path (SkillForceHandler, the command router's
+    // dependencies) as the turn's user. Its outcome reaches the requesting session as a host turn, injected as that
+    // requester once the session has settled (the PR watch's settled delivery); skipped when it is gone or asleep.
+    const envWakeRegistry = claudeHandler.getSessionRegistry();
+    const envSkillDelivery = createSettledDelivery({
+      state: (sessionKey) =>
+        envSkillWakeState(envWakeRegistry.getSessionByKey(sessionKey), (channel, threadTs) =>
+          slackHandler.isHostTurnFree(channel, threadTs),
+        ),
+      inject: async (sessionKey, text, as) => {
+        const s = envWakeRegistry.getSessionByKey(sessionKey);
+        if (!s?.channelId) return;
+        await messageInjector({
+          user: as ?? s.ownerId,
+          channel: s.channelId,
+          thread_ts: s.threadTs,
+          ts: `${Date.now() / 1000}`,
+          text,
+          synthetic: true,
+          skipDispatch: true,
+          routeContext: { skipAutoBotThread: true },
+        });
+      },
+      logger,
+    });
+    setStreamExecutorProviders({
+      handOffEnvironmentSkill: createEnvSkillHandoffHost({
+        handler: new SkillForceHandler(undefined, {
+          claudeHandler,
+          userSettingsStore,
+          slackApi: slackHandler.getSlackApi(),
+          mcpManager,
+        }),
+        slackApi: slackHandler.getSlackApi(),
+        wake: ({ sessionKey, user, text }) => {
+          // The same session it was asked in: a thread whose session was closed and opened again is not woken.
+          const asked = envWakeRegistry.getSessionByKey(sessionKey);
+          return envSkillDelivery.deliver(
+            sessionKey,
+            text,
+            undefined,
+            () => !!asked && envWakeRegistry.getSessionByKey(sessionKey) === asked,
+            user,
+          );
+        },
+      }),
+    });
+
     // Goal auto-continuation loop — idle-settle driver.
     //
     // Spec (docs/goal-command/spec.md §Auto-Continuation Loop):
@@ -2437,6 +2487,7 @@ async function start() {
         }
         sessionPrWatch?.stop();
         prWatchDelivery?.stop();
+        envSkillDelivery.stop();
 
         // Stop CCT usage refresh scheduler before TM so no pump fires mid-teardown
         if (usageRefreshScheduler) {

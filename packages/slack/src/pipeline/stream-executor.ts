@@ -227,8 +227,36 @@ export interface CompactTurnResult {
   trigger?: 'manual' | 'auto';
 }
 
+/** #1304 — a model's RUN_ENV_SKILL, as the host hands it to {@link StreamExecutorProviders.handOffEnvironmentSkill}. */
+export interface EnvSkillHandoffRequest {
+  /** The tool result's id: one tool result is handed off once. */
+  toolUseId: string;
+  /** `$<env>:<skill>`, as the model-command server normalized it. */
+  skill: string;
+  /** The rest of the typed message ('' when none). */
+  text: string;
+  /** The turn's user ({@link StreamContext.turnUser}) — the requester. */
+  user: string;
+  channel: string;
+  threadTs: string;
+  sessionKey: string;
+}
+
+/** What the host did with it. `rejected`: nothing was posted, asked or run (or the typed path stopped and said why). */
+export interface EnvSkillHandoffOutcome {
+  status: 'started' | 'awaiting_admin' | 'rejected';
+  /** The environment user (`env:<name>`), when the ref resolved to one. */
+  owner?: string;
+  reason?: string;
+}
+
 export interface StreamExecutorProviders {
   parseModelCommandRunResponse?: (result: unknown) => any;
+  /**
+   * #1304 — RUN_ENV_SKILL: route the request through the typed `$<env>:<skill>` path (src: `SkillForceHandler`) as the
+   * turn's user, in its thread, and tell the model the outcome in a host turn. Default: rejected (no host wiring).
+   */
+  handOffEnvironmentSkill?: (request: EnvSkillHandoffRequest) => Promise<EnvSkillHandoffOutcome>;
   /**
    * User actions — tasks the agent hands the human through the `user-action` MCP (`instruct_user`). The host keeps
    * each on the session (apart from the pending question), posts its own Slack card and pushes the dashboard.
@@ -369,6 +397,10 @@ const SLACK_BLOCK_KIT_CHANNEL_NAME = 'slack-block-kit';
 
 let streamExecutorProviders: Required<StreamExecutorProviders> = {
   parseModelCommandRunResponse: () => null,
+  handOffEnvironmentSkill: async () => ({
+    status: 'rejected',
+    reason: 'this host does not hand off environment skills',
+  }),
   captureUserActions: async () => {},
   createTurnResultCollector: createNoopTurnResultCollector,
   getChannelDescription: async () => '',
@@ -2086,6 +2118,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // A host turn (a goal replay, an epic waking, a child instructed, the goal loop) is
         // soma-work's words, never the person's: it cannot set a goal.
         isUserInputTurn: params.isUserInput === true && params.hostTurn !== true,
+        // #1304: a RUN_ENV_SKILL is handed off as the user whose turn this is.
+        turnUser: user,
         incidentAttempt,
         ...(incidentAttemptId
           ? {
@@ -6452,7 +6486,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     entry: { kind: 'error' | 'notice'; text: string },
     session: ConversationSession,
     context: StreamContext,
-    { flag = OutputFlag.TOOL_CALL, alwaysPost = false }: { flag?: number; alwaysPost?: boolean } = {},
+    {
+      flag = OutputFlag.TOOL_CALL,
+      alwaysPost = false,
+      logOnly = false,
+    }: { flag?: number; alwaysPost?: boolean; logOnly?: boolean } = {},
   ): Promise<void> {
     try {
       context.workLog?.(entry);
@@ -6463,6 +6501,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         error: (err as Error)?.message ?? String(err),
       });
     }
+    // `logOnly`: the outcome is told elsewhere (a host turn, the typed path's own posts) — the thread gets nothing.
+    if (logOnly) return;
     if (alwaysPost || shouldOutput(flag, resolveVerbosityMask(session.logVerbosity))) {
       await context.say({ text: entry.text, thread_ts: context.threadTs });
     }
@@ -6645,6 +6685,58 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           origin: 'model',
           dispatchTextPreview: continuation.dispatchText?.slice(0, 120),
         });
+        continue;
+      }
+
+      // #1304: RUN_ENV_SKILL host-apply — the MCP layer only checked the shape and answered `submitted`. The host
+      // hands the request to the typed `$<env>:<skill>` path (the provider: SkillForceHandler in src) as the TURN's
+      // user, in this thread — never wider than what that user could type. Fail closed without a turn user, and
+      // never on a wire-level error (the model was told the call failed and may send it again). Nothing is posted
+      // from here: the typed path posts what it posts, a rejection posts nothing, and the model hears the outcome
+      // in a host turn — this records it in the work log.
+      if (parsed.commandId === 'RUN_ENV_SKILL') {
+        const payload = parsed.payload as { skill?: unknown; text?: unknown };
+        const skill = typeof payload?.skill === 'string' ? payload.skill : '';
+        const text = typeof payload?.text === 'string' ? payload.text : '';
+        let outcome: { status: string; owner?: string; reason?: string };
+        if (toolResult.isError === true) {
+          outcome = { status: 'rejected', reason: 'the tool call itself failed (wire-level error) — not handed off' };
+        } else if (!context.turnUser) {
+          outcome = { status: 'rejected', reason: 'no user for this turn (fail closed)' };
+        } else {
+          try {
+            outcome = await streamExecutorProviders.handOffEnvironmentSkill({
+              toolUseId: toolResult.toolUseId,
+              skill,
+              text,
+              user: context.turnUser,
+              channel: context.channel,
+              threadTs: context.threadTs,
+              sessionKey: context.sessionKey,
+            });
+          } catch (err) {
+            outcome = { status: 'rejected', reason: (err as Error)?.message ?? String(err) };
+          }
+        }
+        this.logger.info('Handled RUN_ENV_SKILL from model-command on host', {
+          sessionKey: context.sessionKey,
+          skill,
+          requester: context.turnUser,
+          status: outcome.status,
+          reason: outcome.reason,
+        });
+        await this.reportModelCommandOutcome(
+          {
+            kind: outcome.status === 'rejected' ? 'error' : 'notice',
+            text:
+              `RUN_ENV_SKILL ${skill}: ${outcome.status}` +
+              (outcome.owner ? ` (${outcome.owner})` : '') +
+              (outcome.reason ? ` — ${outcome.reason}` : ''),
+          },
+          session,
+          context,
+          { logOnly: true },
+        );
         continue;
       }
 

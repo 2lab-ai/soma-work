@@ -141,7 +141,17 @@ export interface CommandResult {
    * carried (a `$skill` part, attachments) can ride along.
    */
   goalQueued?: boolean;
+  /**
+   * #1304 — the message was handed to an environment user and its run is under way in a new thread
+   * (`SkillForceHandler.runAsEnvironmentUser`). `finished` settles (never rejects) once that run ends, after the `⏹`
+   * or `❌` line went to the requester's thread. A typed message ignores it; a model's RUN_ENV_SKILL wakes its
+   * session with it.
+   */
+  environmentRun?: { owner: string; finished: Promise<EnvironmentRunEnd> };
 }
+
+/** How an environment user's run ended: its thread, or why it did not run. */
+export type EnvironmentRunEnd = { ok: true; rootTs: string; link: string } | { ok: false; reason: string };
 
 /**
  * Slack say function type
