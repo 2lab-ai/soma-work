@@ -280,9 +280,10 @@ export function rebalanceIssueTree(tree: SessionIssueTree, now: number): void {
     tree.nodes.unshift({ id: SEED_ID, kind: 'issue', source: 'internal', placed: 'seed', addedAt: now });
     if (tree.nextInternal <= 1) tree.nextInternal = 2;
   }
-  // The seed gives way to an external issue unless the model kept something under it.
+  // The seed stands in only while the session has no other issue: it gives way to the first one (an external issue, or
+  // an internal one the model made) unless the model kept something under it.
   const seed = tree.nodes.find((n) => n.placed === 'seed');
-  if (seed && tree.nodes.some((n) => n.kind === 'issue' && n.source !== 'internal')) {
+  if (seed && tree.nodes.some((n) => n.kind === 'issue' && n.id !== seed.id)) {
     const kept = tree.nodes.some((n) => n.parent === seed.id && n.placed === 'model');
     if (!kept) {
       for (const n of tree.nodes) if (n.parent === seed.id) n.parent = undefined;

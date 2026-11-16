@@ -164,6 +164,16 @@ describe('issue tree — .prd/29 §3', () => {
     expect(t.nodes.map((n) => n.id)).toEqual([issueTreeNodeId(issue(5)), issueTreeNodeId(issue(6))]);
   });
 
+  it('the seed gives way to an internal issue the model made too: one issue, the model’s, takes the PRs', () => {
+    const t = tree();
+    add(t, 'pr', pr(10));
+    const made = addInternalIssue(t, { title: '로그인 오류 조사' }, now());
+    rebalanceIssueTree(t, now());
+    const id = (made as { id: string }).id;
+    expect(shape(t)).toEqual({ [id]: '', 'pull/10': id });
+    expect(id).not.toBe(SEED_ID);
+  });
+
   it('the seed stays when the model kept something under it, or named it', () => {
     const kept = tree();
     add(kept, 'pr', pr(10), { parent: SEED_ID });
