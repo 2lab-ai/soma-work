@@ -6,7 +6,7 @@
  *   1. there is an issue node — without one, the seed (`internal:1`, the session's own issue) is made;
  *   2. no PR is a root — its parent is an issue or a PR;
  *   3. every parent is a node of the tree and there is no cycle;
- *   4. at most ISSUE_TREE_MAX_NODES nodes — the oldest PRs the host placed go first.
+ *   4. at most ISSUE_TREE_MAX_NODES nodes — a new node past it is refused (the seed only ever replaces a node that left).
  * The model's placements (`placed: 'model'`) are never moved by the host.
  */
 import type {
@@ -30,16 +30,6 @@ export type IssueTreeResult = { ok: true; id: string } | { ok: false; reason: st
 
 export function emptyIssueTree(): SessionIssueTree {
   return { nodes: [], nextInternal: 1 };
-}
-
-export function cloneIssueTree(tree: SessionIssueTree): SessionIssueTree {
-  return {
-    nextInternal: tree.nextInternal,
-    nodes: tree.nodes.map((n) => ({
-      ...n,
-      ...(n.rel ? { rel: { ...n.rel, ...(n.rel.closes ? { closes: [...n.rel.closes] } : {}) } } : {}),
-    })),
-  };
 }
 
 /** An external node's id: its URL with the host lower-cased, no query, hash or trailing slash (GitHub paths lower-cased too). */
@@ -104,16 +94,34 @@ function checkParent(
   return { ok: true, parent: pid };
 }
 
-function mergeRel(node: IssueTreeNode, rel: IssueTreeRelations | undefined): void {
+/**
+ * Relations as a fresh read of GitHub tells them: a key given replaces what the node had (`null`, or no closing refs,
+ * clears it); a key not given leaves it. An edited PR body that now closes another issue moves the PR there.
+ */
+export interface IssueTreeRelationsInput {
+  subOf?: string | null;
+  closes?: string[];
+  base?: string | null;
+}
+
+function mergeRel(node: IssueTreeNode, rel: IssueTreeRelationsInput | undefined): void {
   if (!rel) return;
   const next: IssueTreeRelations = { ...(node.rel || {}) };
-  if (rel.subOf) next.subOf = issueTreeNodeId(rel.subOf);
-  if (rel.base) next.base = issueTreeNodeId(rel.base);
-  if (rel.closes && rel.closes.length) {
-    const all = new Set([...(next.closes || []), ...rel.closes.map(issueTreeNodeId)]);
-    next.closes = [...all].slice(0, 10);
+  if (rel.subOf !== undefined) {
+    if (rel.subOf) next.subOf = issueTreeNodeId(rel.subOf);
+    else delete next.subOf;
   }
-  node.rel = next;
+  if (rel.base !== undefined) {
+    if (rel.base) next.base = issueTreeNodeId(rel.base);
+    else delete next.base;
+  }
+  if (rel.closes !== undefined) {
+    const all = [...new Set(rel.closes.map(issueTreeNodeId))].slice(0, 10);
+    if (all.length) next.closes = all;
+    else delete next.closes;
+  }
+  if (Object.keys(next).length) node.rel = next;
+  else delete node.rel;
 }
 
 export interface IssueTreeLinkInput {
@@ -123,7 +131,7 @@ export interface IssueTreeLinkInput {
   label?: string;
   title?: string;
   status?: string;
-  rel?: IssueTreeRelations;
+  rel?: IssueTreeRelationsInput;
   /** The model's placement: a node to sit under, `null` for the root (issues), absent for the host to place it. */
   parent?: string | null;
 }
@@ -156,7 +164,7 @@ export function upsertIssueTreeLink(tree: SessionIssueTree, input: IssueTreeLink
     }
     return { ok: true, id };
   }
-  if (tree.nodes.length >= ISSUE_TREE_MAX_NODES && pinned) {
+  if (tree.nodes.length >= ISSUE_TREE_MAX_NODES) {
     return { ok: false, reason: `the issue tree holds at most ${ISSUE_TREE_MAX_NODES} nodes` };
   }
   const node: IssueTreeNode = {
@@ -243,16 +251,28 @@ export function moveIssueTreeNode(tree: SessionIssueTree, ref: string, parent: s
   return { ok: true, id };
 }
 
-/** Take a node out; its children go up to its parent. */
+/**
+ * Take a node out; its children go up one level, to its parent, and stay there (a relation that named the node is
+ * dropped, so the next rebalance does not flatten them). A PR left with no parent is placed again by the host.
+ */
 export function removeIssueTreeNode(tree: SessionIssueTree, ref: string): IssueTreeResult {
   const id = resolveIssueTreeRef(tree, ref);
   if (!id) return { ok: false, reason: `${ref} is not in the issue tree` };
   const node = tree.nodes.find((n) => n.id === id) as IssueTreeNode;
-  for (const child of tree.nodes) {
-    if (child.parent !== id) continue;
-    child.parent = node.parent;
-    // A PR the model put under it, now with no parent left, is placed again by the host (no PR is a root).
-    if (!child.parent && child.kind === 'pr') child.placed = 'default';
+  for (const other of tree.nodes) {
+    if (other.rel) {
+      const rel = other.rel;
+      if (rel.subOf === id) delete rel.subOf;
+      if (rel.base === id) delete rel.base;
+      if (rel.closes) {
+        rel.closes = rel.closes.filter((c) => c !== id);
+        if (!rel.closes.length) delete rel.closes;
+      }
+      if (!Object.keys(rel).length) delete other.rel;
+    }
+    if (other.parent !== id) continue;
+    other.parent = node.parent;
+    other.placed = other.kind === 'pr' && !other.parent ? 'default' : 'model';
   }
   tree.nodes = tree.nodes.filter((n) => n.id !== id);
   return { ok: true, id };
@@ -331,12 +351,6 @@ export function rebalanceIssueTree(tree: SessionIssueTree, now: number): void {
     n.parent = n.kind === 'pr' && rep && rep.id !== n.id ? rep.id : undefined;
     n.placed = 'default';
   }
-  // 5. The cap: the oldest PRs the host placed go first; their children go up.
-  while (tree.nodes.length > ISSUE_TREE_MAX_NODES) {
-    const victim = tree.nodes.find((n) => n.kind === 'pr' && n.placed !== 'model');
-    if (!victim) break;
-    removeIssueTreeNode(tree, victim.id);
-  }
 }
 
 /** What GET_SESSION and the dashboard read: the nodes in the order they came, the seed titled with the session's title. */
@@ -357,7 +371,7 @@ export function issueTreeView(tree: SessionIssueTree, sessionTitle?: string): Is
         placed: n.placed,
       };
     });
-  return { nodes };
+  return { nodes, nextInternal: tree.nextInternal };
 }
 
 /** A tree for a session that has only its link records (made before .prd/29): issues and PRs in the order they came. */
@@ -420,6 +434,7 @@ export function sanitizeIssueTree(raw: unknown): SessionIssueTree | undefined {
       ...(rel && Object.keys(rel).length ? { rel } : {}),
       addedAt: n.addedAt as number,
       ...(typeof n.checkedAt === 'number' ? { checkedAt: n.checkedAt } : {}),
+      ...(typeof n.triedAt === 'number' ? { triedAt: n.triedAt } : {}),
     });
   }
   const next = typeof r.nextInternal === 'number' && r.nextInternal >= 1 ? Math.floor(r.nextInternal) : 1;
@@ -458,7 +473,8 @@ export function issueTreeFromView(view: IssueTreeView | undefined): SessionIssue
       addedAt: i,
     });
   });
-  tree.nextInternal = max + 1;
+  // The host's counter (a retired seed still took internal:1): a new internal issue gets the number the host gives it.
+  tree.nextInternal = Math.max(max + 1, Math.floor(Number(view?.nextInternal) || 1));
   return tree;
 }
 
@@ -472,7 +488,7 @@ export function applyIssueTreeOperations(
   operations: SessionResourceOperation[],
   now: number,
 ): { ok: true; tree: SessionIssueTree; changed: boolean } | { ok: false; error: string } {
-  const next = cloneIssueTree(tree);
+  const next = structuredClone(tree);
   let changed = false;
   for (const op of operations) {
     if (op.resourceType === 'doc' || op.action === 'set_active') continue;
@@ -495,16 +511,7 @@ export function applyIssueTreeOperations(
       if (!resolveIssueTreeRef(next, op.url)) continue;
       result = removeIssueTreeNode(next, op.url);
     } else if (op.action === 'add_internal') {
-      result = addInternalIssue(
-        next,
-        {
-          title: op.title,
-          ...(op.status ? { status: op.status } : {}),
-          ...(op.parent !== undefined ? { parent: op.parent } : {}),
-          ...(op.id ? { id: op.id } : {}),
-        },
-        now,
-      );
+      result = addInternalIssue(next, op, now);
     } else if (op.action === 'move') {
       result = moveIssueTreeNode(next, op.node, op.parent);
     }

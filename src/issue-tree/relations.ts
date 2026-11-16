@@ -6,6 +6,18 @@
  */
 import type { IssueTreeLinkInput } from 'somalib/model-commands/issue-tree';
 
+/**
+ * What a read tells the tree, beyond the node itself: a read result changes a node that is still there and never brings
+ * a removed one back (`onlyIfPresent`); a parent issue joins only while the issue it was read for is there (`addedFor`);
+ * a failed read is stamped (`triedAt`) so the next pass reads the others first.
+ */
+export type IssueTreeNote = IssueTreeLinkInput & {
+  checkedAt?: number;
+  triedAt?: number;
+  onlyIfPresent?: boolean;
+  addedFor?: string;
+};
+
 const CLOSING = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+(?:([\w.-]+)\/([\w.-]+))?#(\d+)\b/gi;
 export const MAX_CLOSING_ISSUES = 5;
 
@@ -33,7 +45,10 @@ export interface PrRelationSource {
   closes?: string[];
 }
 
-/** The session's PRs as tree entries: title and state, the issues each closes, the session PR each is stacked on. */
+/**
+ * The session's PRs as tree entries: title and state, the issues each closes, the session PR each is stacked on. A read
+ * is the truth for both relations: no closing ref or no stack clears what an older body said.
+ */
 export function prTreeEntries(prs: ReadonlyArray<PrRelationSource>): IssueTreeLinkInput[] {
   return prs.map((pr) => {
     // Stacked: its base branch is the head branch of another session PR in the same repository (not a fork's).
@@ -42,17 +57,13 @@ export function prTreeEntries(prs: ReadonlyArray<PrRelationSource>): IssueTreeLi
           (o) => o !== pr && o.repo === pr.repo && !o.headRepo && o.headRef === pr.baseRef && o.state !== 'closed',
         )
       : undefined;
-    const rel = {
-      ...(pr.closes && pr.closes.length ? { closes: pr.closes } : {}),
-      ...(base ? { base: base.url } : {}),
-    };
     return {
       kind: 'pr' as const,
       url: pr.url,
       provider: 'github' as const,
       ...(pr.title ? { title: pr.title } : {}),
       status: pr.state,
-      ...(Object.keys(rel).length ? { rel } : {}),
+      rel: { closes: pr.closes ?? [], base: base ? base.url : null },
     };
   });
 }
@@ -82,22 +93,26 @@ export async function refreshIssueEntries(
   fetchIssue: (owner: string, repo: string, number: number) => Promise<GitHubIssueMeta | undefined>,
   now: number,
   max = 8,
-): Promise<Array<IssueTreeLinkInput & { checkedAt?: number }>> {
-  const out: Array<IssueTreeLinkInput & { checkedAt?: number }> = [];
+): Promise<IssueTreeNote[]> {
+  const out: IssueTreeNote[] = [];
   for (const url of urls.slice(0, max)) {
     const m = ISSUE_URL.exec(url.replace(/\/+$/, ''));
     if (!m) continue;
     const meta = await fetchIssue(m[1], m[2], Number(m[3]));
-    if (!meta) continue;
-    if (meta.parentUrl) out.push({ kind: 'issue', url: meta.parentUrl, provider: 'github' });
+    if (!meta) {
+      out.push({ kind: 'issue', url, triedAt: now, onlyIfPresent: true });
+      continue;
+    }
+    if (meta.parentUrl) out.push({ kind: 'issue', url: meta.parentUrl, provider: 'github', addedFor: url });
     out.push({
       kind: 'issue',
       url,
       provider: 'github',
       ...(meta.title ? { title: meta.title } : {}),
       ...(meta.state ? { status: meta.state } : {}),
-      ...(meta.parentUrl ? { rel: { subOf: meta.parentUrl } } : {}),
+      rel: { subOf: meta.parentUrl ?? null },
       checkedAt: now,
+      onlyIfPresent: true,
     });
   }
   return out;

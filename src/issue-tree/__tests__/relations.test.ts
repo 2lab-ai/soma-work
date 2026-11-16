@@ -36,8 +36,16 @@ describe('issue-tree relations', () => {
       { url: `${GH}/pull/3`, repo: 'a/b', state: 'open', headRef: 'feat/one', headRepo: 'fork/b', baseRef: 'main' },
       { url: `${GH}/pull/4`, repo: 'a/b', state: 'open', headRef: 'x', baseRef: 'feat/two' },
     ];
+    // A read is the truth: no closing ref and no stack are said as such, so an older body's relations clear.
     expect(prTreeEntries(prs)).toEqual([
-      { kind: 'pr', url: `${GH}/pull/1`, provider: 'github', title: 'base', status: 'merged' },
+      {
+        kind: 'pr',
+        url: `${GH}/pull/1`,
+        provider: 'github',
+        title: 'base',
+        status: 'merged',
+        rel: { closes: [], base: null },
+      },
       {
         kind: 'pr',
         url: `${GH}/pull/2`,
@@ -45,18 +53,24 @@ describe('issue-tree relations', () => {
         status: 'open',
         rel: { closes: [`${GH}/issues/9`], base: `${GH}/pull/1` },
       },
-      { kind: 'pr', url: `${GH}/pull/3`, provider: 'github', status: 'open' },
-      { kind: 'pr', url: `${GH}/pull/4`, provider: 'github', status: 'open', rel: { base: `${GH}/pull/2` } },
+      { kind: 'pr', url: `${GH}/pull/3`, provider: 'github', status: 'open', rel: { closes: [], base: null } },
+      {
+        kind: 'pr',
+        url: `${GH}/pull/4`,
+        provider: 'github',
+        status: 'open',
+        rel: { closes: [], base: `${GH}/pull/2` },
+      },
     ]);
     // A closed PR is not a stack's base.
     const closed = prTreeEntries([
       { url: `${GH}/pull/1`, repo: 'a/b', state: 'closed', headRef: 'feat/one' },
       { url: `${GH}/pull/2`, repo: 'a/b', state: 'open', baseRef: 'feat/one' },
     ]);
-    expect(closed[1]).not.toHaveProperty('rel');
+    expect(closed[1].rel).toEqual({ closes: [], base: null });
   });
 
-  it('an issue is read once: its title, state and GitHub parent (which joins too); a failed read is skipped', async () => {
+  it('an issue is read once: its title, state and GitHub parent (which joins while the issue is there); a failed read is stamped', async () => {
     const fetchIssue = vi.fn(async (_o: string, _r: string, n: number) =>
       n === 7
         ? { title: 'seven', state: 'open', parentUrl: `${GH}/issues/1` }
@@ -70,7 +84,7 @@ describe('issue-tree relations', () => {
       50,
     );
     expect(out).toEqual([
-      { kind: 'issue', url: `${GH}/issues/1`, provider: 'github' },
+      { kind: 'issue', url: `${GH}/issues/1`, provider: 'github', addedFor: `${GH}/issues/7` },
       {
         kind: 'issue',
         url: `${GH}/issues/7`,
@@ -79,8 +93,18 @@ describe('issue-tree relations', () => {
         status: 'open',
         rel: { subOf: `${GH}/issues/1` },
         checkedAt: 50,
+        onlyIfPresent: true,
       },
-      { kind: 'issue', url: `${GH}/issues/9`, provider: 'github', status: 'closed', checkedAt: 50 },
+      { kind: 'issue', url: `${GH}/issues/8`, triedAt: 50, onlyIfPresent: true },
+      {
+        kind: 'issue',
+        url: `${GH}/issues/9`,
+        provider: 'github',
+        status: 'closed',
+        rel: { subOf: null },
+        checkedAt: 50,
+        onlyIfPresent: true,
+      },
     ]);
     expect(fetchIssue).toHaveBeenCalledTimes(3);
     // At most `max` reads per pass.

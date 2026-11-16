@@ -132,6 +132,19 @@ describe('the MCP preview applies them with the host’s function', () => {
     expect(after.sequence).toBe(2);
   });
 
+  it('a new internal issue gets the number the host will give it, also after the seed gave way', () => {
+    // The host's tree: the seed (internal:1) retired when #5 came in, its counter at 2.
+    const s = snapshotWithTree();
+    expect(s.issueTree?.nextInternal).toBe(1);
+    s.issueTree = { ...s.issueTree!, nextInternal: 2 };
+    const r = run(s, [{ action: 'add_internal', resourceType: 'issue', title: '정리' }]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const after = (r.payload as { session: SessionResourceSnapshot }).session;
+    expect(after.issueTree?.nodes.find((n) => n.title === '정리')?.id).toBe('internal:2');
+    expect(after.issueTree?.nextInternal).toBe(3);
+  });
+
   it('refuses what would break the tree, naming why', () => {
     const r = run(snapshotWithTree(), [{ action: 'move', resourceType: 'pr', node: `${GH}/pull/7`, parent: null }]);
     expect(r).toMatchObject({

@@ -6,6 +6,7 @@
 import { config } from './config';
 import { getGitHubAppAuth } from './github-auth';
 import type { GitHubReceiptObject } from './github-receipt';
+import { issueWebUrl } from './issue-tree/relations';
 import { Logger } from './logger';
 import { type ActivityAnswer, type ActivityItem, type ChecksAnswer, checksConclusionOf } from './session-pr-watch';
 import type { SessionLink } from './types';
@@ -457,13 +458,11 @@ export async function fetchGitHubIssueMeta(
       `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${number}`,
     )) as Record<string, any> | undefined;
     if (!i || typeof i.number !== 'number') return undefined;
-    const parent = /^https:\/\/api\.github\.com\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)$/i.exec(
-      str(i.parent_issue_url) ?? '',
-    );
+    const parentUrl = issueWebUrl(str(i.parent_issue_url));
     return {
       title: typeof i.title === 'string' ? i.title.slice(0, MAX_CACHED_TITLE_LENGTH) : undefined,
       state: str(i.state),
-      ...(parent ? { parentUrl: `https://github.com/${parent[1]}/${parent[2]}/issues/${parent[3]}` } : {}),
+      ...(parentUrl ? { parentUrl } : {}),
     };
   } catch (error) {
     logger.debug('Failed to read an issue', { owner, repo, number, error: (error as Error).message });

@@ -69,7 +69,7 @@ describe('code-changes service → issue tree', () => {
         provider: 'github',
         title: 'Fix login',
         status: 'open',
-        rel: { closes: ['https://github.com/acme/web/issues/9'] },
+        rel: { closes: ['https://github.com/acme/web/issues/9'], base: null },
       },
     ]);
     expect(fetchIssue).toHaveBeenCalledWith('acme', 'web', 9);
@@ -79,6 +79,7 @@ describe('code-changes service → issue tree', () => {
         url: 'https://github.com/acme/web/issues/9',
         title: 'login',
         status: 'open',
+        onlyIfPresent: true,
       }),
     ]);
     // The PR relations reach the card with the collect's own push; the issues read after it push it again.

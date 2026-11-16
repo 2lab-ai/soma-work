@@ -91,6 +91,12 @@ describe('issue tree — .prd/29 §3', () => {
     // A closing ref to an issue not in the tree is kept but does not place it.
     add(t, 'pr', pr(13), { rel: { closes: [issue(99)] } });
     expect(shape(t)['pull/13']).toBe('issues/5');
+    // A fresh read is the truth (review of #1321): the body now closes #5 — the PR moves; no closing ref — it clears.
+    add(t, 'pr', pr(12), { rel: { closes: [issue(5)] } });
+    expect(t.nodes.find((n) => n.id === issueTreeNodeId(pr(12)))?.rel).toEqual({ closes: [issueTreeNodeId(issue(5))] });
+    add(t, 'pr', pr(12), { rel: { closes: [] } });
+    expect(t.nodes.find((n) => n.id === issueTreeNodeId(pr(12)))?.rel).toBeUndefined();
+    expect(placed(t, pr(12))).toBe('default');
   });
 
   it('S6: a stacked PR (based on another session PR) sits under that PR', () => {
@@ -106,6 +112,20 @@ describe('issue tree — .prd/29 §3', () => {
     expect([s['pull/20'], s['pull/21']]).toContain('issues/5');
   });
 
+  it('remove lifts the children one level and keeps them there (a relation naming the removed node is dropped)', () => {
+    const t = tree();
+    add(t, 'issue', issue(1));
+    add(t, 'issue', issue(2), { rel: { subOf: issue(1) } });
+    add(t, 'issue', issue(3), { rel: { subOf: issue(2) } });
+    add(t, 'pr', pr(40), { rel: { closes: [issue(3)] } });
+    expect(shape(t)).toMatchObject({ 'issues/2': 'issues/1', 'issues/3': 'issues/2', 'pull/40': 'issues/3' });
+    removeIssueTreeNode(t, issue(2));
+    rebalanceIssueTree(t, now());
+    expect(shape(t)).toMatchObject({ 'issues/1': '', 'issues/3': 'issues/1', 'pull/40': 'issues/3' });
+    expect(placed(t, issue(3))).toBe('model');
+    expect(t.nodes.find((n) => n.id === issueTreeNodeId(issue(3)))?.rel).toBeUndefined();
+  });
+
   it('S7: a sub-issue sits under its parent issue when the parent is here, else at the root', () => {
     const t = tree();
     add(t, 'issue', issue(7), { rel: { subOf: issue(1) } });
@@ -113,6 +133,9 @@ describe('issue tree — .prd/29 §3', () => {
     add(t, 'issue', issue(1));
     expect(shape(t)).toMatchObject({ 'issues/1': '', 'issues/7': 'issues/1' });
     expect(placed(t, issue(7))).toBe('sub-issue');
+    // A fresh read with no parent clears the relation: the issue is a root again.
+    add(t, 'issue', issue(7), { rel: { subOf: null } });
+    expect(shape(t)['issues/7']).toBe('');
   });
 
   it('S8: move pins a node; remove lifts its children; add_internal makes and edits a session-only issue', () => {
@@ -200,16 +223,17 @@ describe('issue tree — .prd/29 §3', () => {
     expect(t.nodes.find((n) => n.kind === 'pr')).toMatchObject({ title: 'b', status: 'merged' });
   });
 
-  it('the cap: past the limit the oldest PRs the host placed go first', () => {
-    const t = tree();
-    add(t, 'issue', issue(1));
-    for (let i = 0; i < ISSUE_TREE_MAX_NODES + 5; i++) {
-      upsertIssueTreeLink(t, { kind: 'pr', url: pr(1000 + i) }, now());
-    }
+  it('the cap holds for everything the host notes too: at the limit a new node is refused', () => {
+    const t = emptyIssueTree();
+    for (let i = 0; i < ISSUE_TREE_MAX_NODES; i++)
+      upsertIssueTreeLink(t, { kind: 'issue', url: issue(5000 + i) }, now());
     rebalanceIssueTree(t, now());
     expect(t.nodes.length).toBe(ISSUE_TREE_MAX_NODES);
-    expect(t.nodes.some((n) => n.id === issueTreeNodeId(pr(1000)))).toBe(false);
-    expect(t.nodes.some((n) => n.id === issueTreeNodeId(issue(1)))).toBe(true);
+    expect(upsertIssueTreeLink(t, { kind: 'issue', url: issue(9999) }, now())).toMatchObject({ ok: false });
+    // A node already there is still refreshed.
+    expect(upsertIssueTreeLink(t, { kind: 'issue', url: issue(5000), title: 'x' }, now())).toMatchObject({ ok: true });
+    rebalanceIssueTree(t, now());
+    expect(t.nodes.length).toBe(ISSUE_TREE_MAX_NODES);
   });
 
   it('a session made before the tree: its link records become one (issues roots, PRs under the representative)', () => {
@@ -232,6 +256,8 @@ describe('issue tree — .prd/29 §3', () => {
     const t = tree();
     add(t, 'pr', pr(10), { title: 'PR ten', status: 'open', label: 'PR #10' });
     const v = issueTreeView(t, 'S');
+    // The host's next internal number travels with the view (a preview numbers a new internal issue the same way).
+    expect(v.nextInternal).toBe(2);
     expect(v.nodes).toEqual([
       { id: SEED_ID, kind: 'issue', source: 'internal', title: 'S', placed: 'seed' },
       {

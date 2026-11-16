@@ -38,8 +38,8 @@ import {
 } from 'somalib/model-commands/host-receipt';
 import {
   applyIssueTreeOperations,
-  type IssueTreeLinkInput,
   issueTreeFromLinks,
+  issueTreeNodeId,
   issueTreeView,
   rebalanceIssueTree,
   sanitizeIssueTree,
@@ -50,6 +50,7 @@ import { addMergedPr, type MergedPr, type MergeRecord, mergeRecordOf } from './c
 import { sanitizeCodeChangesSummary } from './code-changes/summary';
 import { DATA_DIR } from './env-paths';
 import { isPlaceholderSessionTitle, sanitizeSessionTitle } from './format/display-title';
+import type { IssueTreeNote } from './issue-tree/relations';
 import { Logger } from './logger';
 import { getMetricsEmitter } from './metrics/event-emitter';
 import { repriceBaseline } from './metrics/host-pricing';
@@ -2447,7 +2448,8 @@ export class SessionRegistry {
       mode === 'update' ? this.updateNotedLinkStates(session, links) : this.noteNewLinks(session, links, mode);
     // .prd/29 — the tree follows the links the host notes (a closed or merged one: its node's state).
     const treeChanged = this.noteLinksInIssueTree(session, links, mode === 'update');
-    if (treeChanged && !linksChanged) this.saveSessions();
+    // The link helpers saved before the tree moved: save again, or a restart loses the tree's change.
+    if (treeChanged) this.saveSessions();
     const changed = linksChanged || treeChanged;
     // #881 C2 — the receipt is the host's state: a link the host noted itself reaches it now, not at the next write.
     if (changed) this.writeModelCommandReceiptFor(this.keyOf(session), session, undefined);
@@ -2841,29 +2843,27 @@ export class SessionRegistry {
     return session.issueTree;
   }
 
-  /** The issue tree view of a session (the dashboard reads it with the card). */
-  getIssueTreeView(session: ConversationSession) {
-    return issueTreeView(this.ensureIssueTree(session), session.title);
-  }
-
   /**
    * .prd/29 — what the host learned about issues and PRs (their titles, states and relations: the issue a PR closes,
    * the PR it is stacked on, an issue's GitHub parent): each joins the tree or refreshes its node, and the tree is
    * placed again. An entry that cannot be placed is skipped. Returns whether anything changed (then it is saved).
    */
-  noteIssueTree(sessionKey: string, entries: ReadonlyArray<IssueTreeLinkInput & { checkedAt?: number }>): boolean {
+  noteIssueTree(sessionKey: string, entries: ReadonlyArray<IssueTreeNote>): boolean {
     const session = this.getSessionByKey(sessionKey);
     if (!session || entries.length === 0) return false;
     const tree = this.ensureIssueTree(session);
     const before = JSON.stringify(tree);
     const now = Date.now();
+    const has = (url: string) => tree.nodes.some((n) => n.id === issueTreeNodeId(url));
     for (const entry of entries) {
-      const { parent: _ignored, checkedAt, ...input } = entry;
+      const { parent: _ignored, checkedAt, triedAt, onlyIfPresent, addedFor, ...input } = entry;
+      // A read that lands after the model removed its node does not bring the node (or its parent) back.
+      if (onlyIfPresent && !has(input.url)) continue;
+      if (addedFor && !has(addedFor)) continue;
       const r = upsertIssueTreeLink(tree, input, now);
-      if (r.ok && checkedAt) {
-        const node = tree.nodes.find((n) => n.id === r.id);
-        if (node) node.checkedAt = checkedAt;
-      }
+      const node = r.ok ? tree.nodes.find((n) => n.id === r.id) : undefined;
+      if (node && checkedAt) node.checkedAt = checkedAt;
+      if (node && triedAt) node.triedAt = triedAt;
     }
     rebalanceIssueTree(tree, now);
     if (JSON.stringify(tree) === before) return false;
@@ -2876,10 +2876,14 @@ export class SessionRegistry {
   issueTreeIssuesToCheck(sessionKey: string, max = 8): string[] {
     const session = this.getSessionByKey(sessionKey);
     if (!session) return [];
-    return this.ensureIssueTree(session)
-      .nodes.filter((n) => n.kind === 'issue' && n.source === 'github' && !n.checkedAt && !!n.url)
-      .map((n) => n.url as string)
-      .slice(0, max);
+    return (
+      this.ensureIssueTree(session)
+        .nodes.filter((n) => n.kind === 'issue' && n.source === 'github' && !n.checkedAt && !!n.url)
+        // Never-tried first, then the longest-failed: a read that keeps failing does not hold the others back.
+        .sort((a, b) => (a.triedAt ?? 0) - (b.triedAt ?? 0))
+        .map((n) => n.url as string)
+        .slice(0, max)
+    );
   }
 
   /** The links the host noted, in the tree too: new issues and PRs join it; a state change reaches its node. */
@@ -2976,6 +2980,10 @@ export class SessionRegistry {
   ): { ok: true; changed: boolean } | { ok: false; changed: boolean; error: string } {
     this.ensureSessionLinkState(session);
 
+    // .prd/29 — the issue tree first (all or nothing): a refused tree operation changes no card link either.
+    const tree = applyIssueTreeOperations(this.ensureIssueTree(session), operations, Date.now());
+    if (!tree.ok) return { ok: false, changed: false, error: tree.error };
+
     let changed = false;
 
     for (const operation of operations) {
@@ -3055,9 +3063,7 @@ export class SessionRegistry {
       }
     }
 
-    // .prd/29 — the issue tree: every issue/PR add, remove, add_internal and move (all or nothing).
-    const tree = applyIssueTreeOperations(this.ensureIssueTree(session), operations, Date.now());
-    if (!tree.ok) return { ok: false, changed, error: tree.error };
+    // .prd/29 — the issue tree: every issue/PR add, remove, add_internal and move.
     if (tree.changed) {
       session.issueTree = tree.tree;
       changed = true;

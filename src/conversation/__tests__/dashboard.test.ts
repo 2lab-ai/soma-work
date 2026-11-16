@@ -467,6 +467,7 @@ describe('Dashboard API', () => {
           placed: 'default',
         },
       ],
+      nextInternal: 2,
     });
     const two = body.board.idle.find((s: any) => s.key === 'C2:t2');
     expect(two.issueTree.nodes.map((n: any) => [n.id, n.parent ?? ''])).toEqual([

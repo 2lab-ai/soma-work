@@ -190,7 +190,8 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
         const link: SessionLink = { ...base, status: pullStatus(p), ...(p.title ? { title: p.title } : {}) };
         const closes = closingIssues(p, c.owner, c.name);
         issues.push(...closes);
-        if (closes.length) relations.push({ kind: 'pr', url: link.url, rel: { closes: closes.map((l) => l.url) } });
+        // The body as read now is the truth: no closing ref clears what an older body said.
+        relations.push({ kind: 'pr', url: link.url, rel: { closes: closes.map((l) => l.url) } });
         const created = p.created_at ? Date.parse(p.created_at) : Number.NaN;
         const isNew = start !== undefined && Number.isFinite(created) && created >= start;
         // A candidate for the current link: this checkout's own PR — made after the session started, its head commit in

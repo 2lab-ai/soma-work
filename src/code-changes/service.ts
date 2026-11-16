@@ -4,8 +4,7 @@
  * A run writes only while the key still names the same, not terminated session (a close or a /new can land meanwhile).
  */
 
-import type { IssueTreeLinkInput } from 'somalib/model-commands/issue-tree';
-import { type GitHubIssueMeta, prTreeEntries, refreshIssueEntries } from '../issue-tree/relations';
+import { type GitHubIssueMeta, type IssueTreeNote, prTreeEntries, refreshIssueEntries } from '../issue-tree/relations';
 import { fetchGitHubIssueMeta, fetchGitHubPullDetail, fetchGitHubPullFiles } from '../link-metadata-fetcher';
 import { sessionDirs, sessionStartMs } from '../session-pr-reconciler';
 import {
@@ -47,7 +46,7 @@ export interface CodeChangesServiceDeps<S extends SessionLike> {
    * stacks) and its GitHub issues (title, state, parent — each read once) goes in.
    */
   issueTree?: {
-    note: (key: string, entries: ReadonlyArray<IssueTreeLinkInput & { checkedAt?: number }>) => boolean;
+    note: (key: string, entries: ReadonlyArray<IssueTreeNote>) => boolean;
     /** The GitHub issue URLs the tree has not read yet. */
     toCheck: (key: string) => string[];
   };

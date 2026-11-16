@@ -256,6 +256,8 @@ export interface IssueTreeNode {
   addedAt: number;
   /** When the host read this GitHub node's relations (the issue's parent) — once per node. */
   checkedAt?: number;
+  /** When a read of it last failed (a deleted issue, no access): the next reads go to the others first. */
+  triedAt?: number;
 }
 export interface SessionIssueTree {
   nodes: IssueTreeNode[];
@@ -276,6 +278,8 @@ export interface IssueTreeViewNode {
 }
 export interface IssueTreeView {
   nodes: IssueTreeViewNode[];
+  /** The next internal issue number — so a preview made from the view numbers a new internal issue as the host will. */
+  nextInternal?: number;
 }
 
 export interface SessionResourceSnapshot {

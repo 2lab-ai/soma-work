@@ -112,14 +112,21 @@ describe('the session issue tree (host)', () => {
     // The card keeps its links: add_internal and move are not set_active.
     expect(reg.getSessionResourceSnapshot('C1', '100.001').active.pr?.url).toBe(`${GH}/pull/11`);
     const before = reg.getSessionResourceSnapshot('C1', '100.001');
-    const refused = up([{ action: 'move', resourceType: 'pr', node: `${GH}/pull/11`, parent: null }]);
+    const refused = up([
+      { action: 'add', resourceType: 'issue', link: ISSUE(77) },
+      { action: 'add_internal', resourceType: 'issue', title: '먼저 성공하는 연산' },
+      { action: 'move', resourceType: 'pr', node: `${GH}/pull/11`, parent: null },
+    ]);
     expect(refused).toMatchObject({
       ok: false,
       reason: 'INVALID_OPERATION',
       error: expect.stringContaining('PR cannot be a root'),
     });
     const after = reg.getSessionResourceSnapshot('C1', '100.001');
+    // All or nothing: the valid add and add_internal before the refused move changed neither the tree nor the card.
     expect(after.issueTree).toEqual(before.issueTree);
+    expect(after.issues).toEqual(before.issues);
+    expect(after.active).toEqual(before.active);
     expect(after.sequence).toBe(before.sequence);
     // remove: the link and the node; its children go up.
     expect(up([{ action: 'remove', resourceType: 'issue', url: `${GH}/issues/5` }]).ok).toBe(true);
@@ -156,6 +163,46 @@ describe('the session issue tree (host)', () => {
     expect(reg.noteIssueTree(key, [{ kind: 'pr', url: `${GH}/pull/20`, rel: { closes: [`${GH}/issues/6`] } }])).toBe(
       false,
     );
+  });
+
+  it('T5b: a read that lands after the model removed its issue brings nothing back; a failed read rotates', () => {
+    const { reg, key } = setup();
+    reg.noteSessionLinks('C1', '100.001', [ISSUE(5), ISSUE(6), ISSUE(7)], 'history');
+    reg.updateSessionResources('C1', '100.001', {
+      operations: [{ action: 'remove', resourceType: 'issue', url: `${GH}/issues/6` }],
+    });
+    reg.noteIssueTree(key, [
+      { kind: 'issue', url: `${GH}/issues/1`, provider: 'github', addedFor: `${GH}/issues/6` },
+      { kind: 'issue', url: `${GH}/issues/6`, provider: 'github', title: 'six', checkedAt: 5, onlyIfPresent: true },
+    ]);
+    expect(tree(reg).map((n) => n.id)).not.toContain(id(`${GH}/issues/6`));
+    expect(tree(reg).map((n) => n.id)).not.toContain(id(`${GH}/issues/1`));
+    // #5 failed to read: the next pass asks #7 first.
+    expect(reg.issueTreeIssuesToCheck(key)).toEqual([`${GH}/issues/5`, `${GH}/issues/7`]);
+    reg.noteIssueTree(key, [{ kind: 'issue', url: `${GH}/issues/5`, triedAt: 9, onlyIfPresent: true }]);
+    expect(reg.issueTreeIssuesToCheck(key)).toEqual([`${GH}/issues/7`, `${GH}/issues/5`]);
+  });
+
+  it('T6b: a noted link reaches sessions.json with its tree change, without another save', () => {
+    const { reg } = setup();
+    reg.saveSessions();
+    reg.noteSessionLinks('C1', '100.001', [ISSUE(5), PR(30)], 'if-empty');
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    expect(
+      reader.getSessionResourceSnapshot('C1', '100.001').issueTree!.nodes.map((n) => [n.id, n.parent ?? '']),
+    ).toEqual([
+      [id(`${GH}/issues/5`), ''],
+      [id(`${GH}/pull/30`), id(`${GH}/issues/5`)],
+    ]);
+    // A state change alone (update mode) too: the link helper saved before the tree moved.
+    reg.noteSessionLinks('C1', '100.001', [PR(30, { status: 'merged' })], 'update');
+    const again = new SessionRegistry();
+    again.loadSessions();
+    expect(
+      again.getSessionResourceSnapshot('C1', '100.001').issueTree!.nodes.find((n) => n.id === id(`${GH}/pull/30`))
+        ?.status,
+    ).toBe('merged');
   });
 
   it('T6: the tree survives save / load', () => {

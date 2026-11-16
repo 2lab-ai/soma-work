@@ -201,12 +201,14 @@ describe('createSessionPrReconciler (#833)', () => {
       noteTree,
     });
     await h.run('S1');
+    // Every PR read says what it closes now — none included, so an edited body's old refs clear.
     expect(noteTree).toHaveBeenCalledWith('S1', [
       {
         kind: 'pr',
         url: 'https://github.com/a/b/pull/12',
         rel: { closes: ['https://github.com/a/b/issues/832', 'https://github.com/acme/other/issues/3'] },
       },
+      { kind: 'pr', url: 'https://github.com/a/b/pull/13', rel: { closes: [] } },
     ]);
   });
 
