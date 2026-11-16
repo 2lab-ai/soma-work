@@ -3,7 +3,8 @@
  *
  *   tab     summary line · scope chips (전체 · 커밋 안 함 · 커밋함 · PR · 머지됨) · the session's PRs (a row = that PR as the
  *           scope) · repo → directory → file tree (single-child directory chains folded, every row with its +/−)
- *   viewer  a modal <dialog> over the whole page: the same tree on the left (the shown file marked), the file's layers on
+ *   viewer  two modes (.prd/28 §4): beside a docked detail card with room on its left, a panel where the board is
+ *           (not modal — the card's tree picks the file); else a modal <dialog> over the whole page: the same tree on the left (the shown file marked), the file's layers on
  *           the right — each a block of hunks with old and new line numbers, like a GitHub PR
  *
  * Data: GET /api/dashboard/session/:cid/changes (list, no patches) and …/changes/file?repo=&path= (one file's layers).
@@ -40,6 +41,12 @@ var CHG_CLOSE = '닫기';
 var CHG_PREV = '이전 파일';
 var CHG_NEXT = '다음 파일';
 var CHG_TREE_TOGGLE = '파일 목록';
+var CHG_FULL = '전체 화면';
+var CHG_TO_PANEL = '패널로';
+// .prd/28 §4 — the panel needs 640px left of the card (two line-number columns and the code); the card docks from 840px.
+var CHG_PANEL_MIN = 640;
+var CHG_DOCK_AT = 840;
+var CHG_PREF_KEY = 'soma-chg-viewer';
 var CHG_SKIPPED = {
   'repo-config-runs-commands': '저장소 설정이 명령을 실행하게 되어 있어 이 체크아웃은 읽지 않았습니다',
   'repo-alternates': '다른 저장소의 객체를 빌려 쓰는 체크아웃이라 읽지 않았습니다',
@@ -60,6 +67,8 @@ var CHG_NO_CONTENT = '내용 변경 없음';
 var CHG_RENAMED_FROM = '이전 이름';
 
 var _chg = { cid: '', doc: null, state: 'idle', scope: 'all', closed: Object.create(null), files: Object.create(null), viewer: null, gen: 0 };
+// Closes the viewer makes itself to change mode: their close events (queued in a browser, at once in a test DOM) skip the clean-up.
+var _chgSkipClose = 0;
 
 function chgEsc(s) {
   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -227,7 +236,11 @@ function chgEl() { return document.getElementById('panel-changes'); }
 // collect (refresh=1) painted when it lands. A load for a conversation the panel left is dropped.
 function chgOpen(cid) {
   if (!cid) { _chg = { cid: '', doc: null, state: 'idle', scope: 'all', closed: Object.create(null), files: Object.create(null), viewer: null, gen: _chg.gen + 1 }; chgPaint(); return; }
-  if (_chg.cid !== cid) _chg = { cid: cid, doc: null, state: 'loading', scope: 'all', closed: Object.create(null), files: Object.create(null), viewer: null, gen: _chg.gen + 1 };
+  if (_chg.cid !== cid) {
+    // Another session's card: a viewer still open shows the last one's file — it closes (.prd/28 §4).
+    chgCloseViewer();
+    _chg = { cid: cid, doc: null, state: 'loading', scope: 'all', closed: Object.create(null), files: Object.create(null), viewer: null, gen: _chg.gen + 1 };
+  }
   chgPaint();
   chgLoad(cid, false).then(function() { return chgLoad(cid, true); });
 }
@@ -346,7 +359,7 @@ function chgPaint() {
       (s.at ? '<span class="chg-muted">' + chgEsc(CHG_AS_OF) + ' ' + chgEsc(s.at) + '</span>' : '') +
       '<button type="button" class="chg-refresh" data-chg-refresh="1">' + chgEsc(CHG_REFRESH) + '</button></div>' +
       chgScopeChips(doc) + chgPrRows(doc) + chgSkippedNote(doc) +
-      (files.length ? '<div class="chg-tree" role="tree">' + chgTreeHtml(chgTree(files), '') + '</div>' : '<div class="chg-empty">' + chgEsc(CHG_NO_FILES) + '</div>');
+      (files.length ? '<div class="chg-tree" role="tree">' + chgTreeHtml(chgTree(files), chgPanelKey()) + '</div>' : '<div class="chg-empty">' + chgEsc(CHG_NO_FILES) + '</div>');
   }
   if (el._chgHtml !== html) {
     el._chgHtml = html;
@@ -371,23 +384,101 @@ function chgViewerEl() {
     '<span class="chg-v-title" id="chg-v-title"></span>' +
     '<button type="button" data-chg-v="prev" aria-label="' + chgEsc(CHG_PREV) + '" title="' + chgEsc(CHG_PREV) + '">‹</button>' +
     '<button type="button" data-chg-v="next" aria-label="' + chgEsc(CHG_NEXT) + '" title="' + chgEsc(CHG_NEXT) + '">›</button>' +
+    '<button type="button" class="chg-v-full" data-chg-v="full">' + chgEsc(CHG_FULL) + '</button>' +
+    '<button type="button" class="chg-v-panel" data-chg-v="panel">' + chgEsc(CHG_TO_PANEL) + '</button>' +
     '<button type="button" data-chg-v="close" aria-label="' + chgEsc(CHG_CLOSE) + '" title="' + chgEsc(CHG_CLOSE) + '">✕</button></div>' +
     '<div class="chg-v-body"><nav class="chg-v-tree" id="chg-v-tree" aria-label="' + chgEsc(CHG_FILE_LIST) + '"></nav><section class="chg-v-main" id="chg-v-main" tabindex="-1"></section></div>';
   d.addEventListener('click', chgOnClick);
   // Escape closes this dialog only (its native cancel): the page's own Escape (which closes the detail card) never sees it.
   d.addEventListener('keydown', function(e) { if (e.key === 'Escape') e.stopPropagation(); });
   d.addEventListener('close', function() {
+    if (_chgSkipClose > 0) { _chgSkipClose--; return; }
     var v = _chg.viewer;
     _chg.viewer = null;
     if (!v) return;
-    // The viewer's tree folds the tab's folders too: paint the tab as they are now.
+    // The viewer's tree folds the tab's folders too (and the panel's file is marked there): paint the tab as it is now.
     chgPaint();
     // The row that opened it — or, when the tab was painted again meanwhile, the row of the file last shown.
     var back = v.opener && v.opener.isConnected ? v.opener : chgRowOf(v.key) || chgRowOf(v.openedKey);
     if (back && typeof back.focus === 'function') back.focus();
   });
+  // The panel is no modal dialog, so no native cancel: Escape — wherever focus is — closes it first, and marks the key
+  // handled so the detail card (its drawer's own Escape, the page's) leaves itself open.
+  document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Escape' || e.isComposing || !chgViewerPanelOpen()) return;
+    e.preventDefault();
+    chgCloseViewer();
+  }, true);
   document.body.appendChild(d);
   return d;
+}
+// ── The viewer's two modes (.prd/28 §4) ──
+// Pure: 'panel' beside a docked detail card with CHG_PANEL_MIN on its left, unless the device chose the full screen.
+function chgViewerModeFor(vw, panelW, docked, pref) {
+  if (pref === 'full' || !docked || vw < CHG_DOCK_AT) return 'full';
+  return vw - panelW >= CHG_PANEL_MIN ? 'panel' : 'full';
+}
+// The choice this page made wins over the device's copy: storage that is denied or full never undoes it (#1313 review).
+var _chgPrefMem = null;
+function chgPref() {
+  if (_chgPrefMem !== null) return _chgPrefMem;
+  try { return localStorage.getItem(CHG_PREF_KEY) || ''; } catch (_e) { return ''; }
+}
+function chgSetPref(v) {
+  _chgPrefMem = v || '';
+  try { if (v) localStorage.setItem(CHG_PREF_KEY, v); else localStorage.removeItem(CHG_PREF_KEY); } catch (_e) {}
+}
+// The card's width as the page keeps it (syncPanelWidth writes --panel-w on the root), and whether it is open beside the board.
+function chgCardWidth() {
+  var w = parseFloat(document.documentElement.style.getPropertyValue('--panel-w'));
+  return w > 0 ? w : 440;
+}
+function chgCardDocked() {
+  var card = document.getElementById('slide-panel');
+  return !!card && card.hasAttribute('open');
+}
+function chgModeNow(pref) {
+  return chgViewerModeFor(window.innerWidth, chgCardWidth(), chgCardDocked(), pref);
+}
+function chgViewerPanelOpen() {
+  var d = document.getElementById('chg-viewer');
+  return !!(d && d.open && d.getAttribute('data-mode') === 'panel');
+}
+// The panel's file, which the tab's tree marks (the full screen marks it in its own tree).
+function chgPanelKey() {
+  return _chg.viewer && chgViewerPanelOpen() ? _chg.viewer.key : '';
+}
+function chgShowViewer(d, mode) {
+  d.setAttribute('data-mode', mode);
+  if (chgModeNow('') === 'panel') d.setAttribute('data-fits', '');
+  else d.removeAttribute('data-fits');
+  if (mode === 'panel') { if (typeof d.show === 'function') d.show(); }
+  else if (typeof d.showModal === 'function') d.showModal();
+}
+// The same file in the other mode: a dialog shown modal cannot turn modeless (or back), so it closes and opens again.
+function chgSetMode(mode) {
+  var d = document.getElementById('chg-viewer');
+  if (!d || !d.open || !_chg.viewer || d.getAttribute('data-mode') === mode) return;
+  _chgSkipClose++;
+  d.close();
+  chgViewerPaint();
+  chgShowViewer(d, mode);
+  chgPaint();
+  var main = document.getElementById('chg-v-main');
+  if (main) main.focus();
+}
+// The window or the card changed width: the mode follows (the device's full-screen choice stays).
+function chgSyncViewerMode() {
+  var d = document.getElementById('chg-viewer');
+  if (!d || !d.open || !_chg.viewer) return;
+  var want = chgModeNow(chgPref());
+  if (want !== d.getAttribute('data-mode')) chgSetMode(want);
+  else if (chgModeNow('') === 'panel') d.setAttribute('data-fits', '');
+  else d.removeAttribute('data-fits');
+}
+function chgCloseViewer() {
+  var d = document.getElementById('chg-viewer');
+  if (d && d.open) d.close();
 }
 // The tab's row of a file key (keys hold a newline, so no attribute selector).
 function chgRowOf(key) {
@@ -401,9 +492,20 @@ function chgOpenViewer(key, opener) {
   if (!_chg.doc) return;
   var d = chgViewerEl();
   chgRetry(key);
+  // The panel is open: a row of the card's tree switches its file (the tab is painted again — focus that file's row).
+  if (d.open && _chg.viewer && chgViewerPanelOpen()) {
+    _chg.viewer.key = key;
+    _chg.viewer.opener = null;
+    chgViewerPaint();
+    chgPaint();
+    var row = chgRowOf(key);
+    if (row && typeof row.focus === 'function') row.focus();
+    return;
+  }
   _chg.viewer = { key: key, openedKey: key, opener: opener || null };
   chgViewerPaint();
-  if (!d.open && typeof d.showModal === 'function') d.showModal();
+  if (!d.open) chgShowViewer(d, chgModeNow(chgPref()));
+  if (chgViewerPanelOpen()) chgPaint();
   var main = document.getElementById('chg-v-main');
   if (main) main.focus();
 }
@@ -424,13 +526,33 @@ function chgViewerPaint() {
   var head = '<div class="chg-v-file"><span class="chg-mark chg-mark-' + chgEsc(f.status) + '">' + chgEsc(CHG_STATUS_MARK[f.status] || 'M') + '</span> <b>' + chgEsc(f.path) + '</b> ' + chgDelta(f.additions, f.deletions) +
     (f.oldPath ? ' <span class="chg-muted">' + chgEsc(CHG_RENAMED_FROM) + ': ' + chgEsc(f.oldPath) + '</span>' : '') + '</div>';
   if (!cached || cached === 'loading') {
+    // A newer collect emptied the cache (each turn end, while the panel stays open): the file already shown — this
+    // session's, never the same path of another — stays, and where the reader is in it, until its new read lands
+    // (.prd/28 §4, independent review #6).
+    if (main._chgFor === _chg.cid + '\n' + v.key && main._chgShown) {
+      if (!cached) chgFetchFile(v.key, f);
+      return;
+    }
     main.innerHTML = head + '<div class="chg-empty">' + chgEsc(CHG_LOADING) + '</div>';
+    main._chgFor = _chg.cid + '\n' + v.key;
+    main._chgShown = false;
+    main.scrollTop = 0;
     if (!cached) chgFetchFile(v.key, f);
     return;
   }
-  if (cached === 'error') { main.innerHTML = head + '<div class="chg-empty">' + chgEsc(CHG_FILE_FAILED) + '</div>'; return; }
+  if (cached === 'error') {
+    main.innerHTML = head + '<div class="chg-empty">' + chgEsc(CHG_FILE_FAILED) + '</div>';
+    main._chgFor = _chg.cid + '\n' + v.key;
+    main._chgShown = false;
+    return;
+  }
   var srcs = (cached.sources || []).filter(function(s) { return chgSourceInScope(s); });
+  // The same file of the same session keeps its scroll; another file — or the same path in another session — starts at the top.
+  var keep = main._chgFor === _chg.cid + '\n' + v.key ? main.scrollTop : 0;
   main.innerHTML = head + srcs.map(chgSourceHtml).join('');
+  main._chgFor = _chg.cid + '\n' + v.key;
+  main._chgShown = true;
+  main.scrollTop = keep;
 }
 function chgSourceInScope(s) {
   var scope = _chg.scope;
@@ -509,6 +631,7 @@ function chgStep(delta) {
   v.key = 'f:' + f.repo + '\n' + f.path;
   chgRetry(v.key);
   chgViewerPaint();
+  if (chgViewerPanelOpen()) chgPaint();
 }
 
 // One delegated handler for the tab and the viewer.
@@ -547,6 +670,8 @@ function chgOnClick(e) {
     if (act === 'close' && d) d.close();
     else if (act === 'prev') chgStep(-1);
     else if (act === 'next') chgStep(1);
+    else if (act === 'full') { chgSetPref('full'); chgSetMode('full'); }
+    else if (act === 'panel') { chgSetPref(''); if (chgModeNow('') === 'panel') chgSetMode('panel'); }
     else if (act === 'tree' && d) {
       var panel = document.getElementById('chg-v-tree');
       var shown = !!panel && getComputedStyle(panel).display !== 'none';
@@ -612,6 +737,11 @@ export const CODE_CHANGES_CSS = String.raw`
 dialog.chg-viewer { position: fixed; inset: 0; width: 100vw; height: 100vh; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; background: var(--bg); color: var(--text); display: none; flex-direction: column; }
 dialog.chg-viewer[open] { display: flex; }
 dialog.chg-viewer::backdrop { background: rgba(0, 0, 0, .4); }
+/* .prd/28 §4 — the panel: where the board is, under the top bar, from the left edge to the docked card's; not modal. */
+dialog.chg-viewer[data-mode="panel"] { inset: var(--topbar-b, 0px) var(--panel-w, 440px) 0 0; width: auto; height: auto; z-index: 99; border-right: 1px solid var(--border); }
+dialog.chg-viewer[data-mode="panel"] .chg-v-tree, dialog.chg-viewer[data-mode="panel"] .chg-v-tree-toggle, dialog.chg-viewer[data-mode="panel"] .chg-v-panel { display: none; }
+dialog.chg-viewer[data-mode="full"] .chg-v-full, dialog.chg-viewer[data-mode="full"]:not([data-fits]) .chg-v-panel { display: none; }
+body:has(dialog.chg-viewer[open][data-mode="panel"]) .new-task-fab { display: none !important; }
 .chg-v-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
 .chg-v-head button { flex: 0 0 auto; white-space: nowrap; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 6px; padding: 2px 10px; font: inherit; cursor: pointer; }
 .chg-v-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
