@@ -198,6 +198,7 @@ import {
 import { getUserMediaStore } from './user-media';
 import { restoreUserActions, type UserActionRecord } from 'somalib/user-action/user-action';
 import { VIEW_LAYOUT_CLIENT_JS } from './view-layout-client';
+import { CARD_FINISH_CLIENT_JS, CARD_FINISH_CSS } from './card-finish-client';
 import type { WorkLogEntry } from './work-log';
 
 const logger = new Logger('Dashboard');
@@ -7606,6 +7607,11 @@ body.nt-open .new-task-fab { display: none !important; }
 ${uiLibTokensCss()}
 ${pageTokenAliases()}
 </style>
+<!-- The task card's finish by model (SSOT 2026-11-17, card-finish-client.ts): the theme's inputs on :root. The cards
+     are in each <ui-agent-inbox>'s shadow root, so the rules go there (syncCardFinish); these inherit into it. -->
+<style id="card-finish-css">
+${CARD_FINISH_CSS}
+</style>
 </head>
 <body data-view-mode="minimal" data-view-plan="1" data-detail="" data-tasks="list">
 <!-- boot-screen -->
@@ -11804,6 +11810,21 @@ function inboxPaint(host) {
     return col;
   });
   host.data = { columns: columns, load: p.load, announce: p.announce, expanded: open, strings: BOARD_STRINGS, openLabel: false };
+  if (typeof syncCardFinish === 'function') syncCardFinish();
+}
+
+// The task card's finish by model (SSOT 2026-11-17, card-finish-client.ts): every drawn card on every element — the
+// board, the CRON lane — with the model it runs now, as one sheet in each element's shadow root (cardFinishPaint
+// writes it only where its text changed). Also once the element is defined: a paint before its upgrade had no root.
+function syncCardFinish() {
+  var cards = [];
+  for (var k in _cardData) if (_cardDrawn[k] && _sessionCache[k]) cards.push({ key: k, model: _sessionCache[k].model });
+  var css = cardFinishSheet(cards);
+  var hosts = document.querySelectorAll('ui-agent-inbox');
+  for (var i = 0; i < hosts.length; i++) cardFinishPaint(hosts[i], css);
+}
+if (window.customElements && typeof customElements.whenDefined === 'function') {
+  customElements.whenDefined('ui-agent-inbox').then(function() { syncCardFinish(); });
 }
 
 // The CRON lane (Option A): each job's card box (cronLaneSlots) holds its own
@@ -12045,6 +12066,8 @@ function refreshCard(key) {
       inboxPaint(host);
     }
   }
+  // A model switch changes the card's finish even when the face shows no model chip (no repaint above).
+  if (typeof syncCardFinish === 'function') syncCardFinish();
   paintCardBody(key);
 }
 
@@ -13529,6 +13552,7 @@ function rerenderForViewMode() {
 // script (view-layout-client.ts) turns a layout into a face, the open card's parts and the detail card's switches.
 var VIEW_BUILTINS = ${JSON.stringify(BUILTIN_PRESETS)};
 ${VIEW_LAYOUT_CLIENT_JS}
+${CARD_FINISH_CLIENT_JS}
 ${DICTATION_PREF_JS}
 ${DICTATION_SERVER_JS}
 ${CODE_CHANGES_JS}
