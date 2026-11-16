@@ -6390,7 +6390,7 @@ ui-breadcrumbs.crumbs { flex: 1 1 160px; min-width: 0; }
    the filters in force (its .ui-count). The search is a kit-sized field that grows a little while focused. */
 .bf-menu, .bs-menu { flex: none; }
 .bf-trigger .ui-count[hidden] { display: none; }
-.bf-search { flex: 0 1 140px; min-width: 96px; height: 32px; box-sizing: border-box; padding: 0 10px; border-radius: 999px;
+.bf-search { flex: 0 1 140px; min-width: 96px; height: 34px; box-sizing: border-box; padding: 0 10px; border-radius: 999px;
   border: 1px solid var(--ib-card-border); background: var(--ib-card); color: var(--ib-text); font: inherit; font-size: 13px;
   transition: flex-basis var(--dur-fade, 180ms) var(--ease-out, ease); }
 .bf-search:focus { flex-basis: 200px; outline: 2px solid var(--border-focus); outline-offset: 1px; }
@@ -7228,7 +7228,7 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
   .inbox-head { margin-bottom: 10px; }
   .inbox-head > .crumbs { display: none; }
   .inbox-tools { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; flex: 1 1 100%; width: 100%; margin-left: 0; }
-  .inbox-tools > .bf-search { grid-column: 1; grid-row: 1; width: 100%; max-width: none; height: 40px; font-size: 16px; }
+  .inbox-tools > .bf-search { grid-column: 1; grid-row: 1; width: 100%; max-width: none; font-size: 16px; }
   .inbox-tools > .bf-search:focus { flex-basis: auto; }
   .inbox-tools > .view-seg { grid-column: 2; grid-row: 1; }
   .inbox-tools > .inbox-chips { --ui-bleed: 12px; grid-column: 1 / -1; grid-row: 2; display: flex; gap: 6px; padding-block: 2px; }
@@ -7266,6 +7266,37 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
   .card-body .card-refs a { display: inline-flex; align-items: center; min-height: 44px; }
   .pi-links a, .panel-tasks-toggle { min-height: 44px; }
   .cgl-go, .card-more-link { min-height: 44px; }
+}
+/* ── ONE ROW, ONE HEIGHT (polishing-ui, 2026-11-16) — the top bar and the board's tools are toolbars, and every boxed
+   control on one of their rows has one height. Measured before: desktop bar 24 (kit chips) / 30 (user select) / 32
+   (새 작업) / 34 (the bar's own icon buttons and account), board tools 24 / 32 (search) / 34 (Board | List track); on
+   a touch screen the bar's chips stayed 24px beside its 44px buttons and the search was 40px beside the 50px track.
+   Desktop: 34px, the bar's own buttons and the track. Touch: 44px (HIG iOS default control) — in the bar on touch
+   (its own buttons grow on touch only), in the board's tools on touch or under 640px (where the select chip and the
+   Board | List options are 44px), the search there the track's 50px (44px options + 3px padding). A 44px chip is its
+   own target, so the kit's taller hit area (::after, 10px above and below) folds back to the box. A chip's glyph is
+   the size of the bar's own glyphs at that height: 14px beside the 14px link glyphs, 16px beside the 16px icon
+   buttons on touch. ── */
+:is(.topbar, .inbox-tools) :is(.ui-chip, select.ui-select-chip) { height: 34px; min-height: 34px; font-size: 13px; }
+:is(.topbar, .inbox-tools) .ui-chip { padding-inline: 12px; }
+:is(.topbar, .inbox-tools) .ui-chip > svg { width: 14px; height: 14px; }
+:is(.topbar, .inbox-tools) .td-picker::part(trigger) { min-height: 34px; }
+.topbar .new-task-btn { min-height: 34px; }
+@media (pointer: coarse) {
+  .topbar :is(.ui-chip, select.ui-select-chip) { height: 44px; min-height: 44px; font-size: 16px; }
+  .topbar .ui-chip { min-width: 44px; padding-inline: 14px; justify-content: center; }
+  .topbar .ui-chip > svg { width: 16px; height: 16px; }
+  .topbar .ui-chip::after { inset: 0; }
+  .topbar .td-picker::part(trigger) { min-height: 44px; }
+  .topbar .new-task-btn { min-height: 44px; }
+}
+@media (max-width: 639px), (pointer: coarse) {
+  .inbox-tools :is(.ui-chip, select.ui-select-chip) { height: 44px; min-height: 44px; font-size: 16px; }
+  .inbox-tools .ui-chip { min-width: 44px; padding-inline: 14px; justify-content: center; }
+  .inbox-tools .ui-chip > svg { width: 16px; height: 16px; }
+  .inbox-tools .ui-chip::after { inset: 0; }
+  .inbox-tools .td-picker::part(trigger) { min-height: 44px; }
+  .inbox-tools > .bf-search { height: 50px; }
 }
 
 /* ── CRON lane · drawer (SSOT 2026-10-23 T3/T4/T5); the drawer head's CRON badge is a kit chip with the clock glyph
