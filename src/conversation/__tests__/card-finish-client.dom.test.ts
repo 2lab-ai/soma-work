@@ -41,8 +41,8 @@ const client = new Function(`${CARD_FINISH_CLIENT_JS}\nreturn { cardFinishPaint,
 };
 
 /** A host shaped like UiElement: an open shadow root with the element's own <style> and its .ui-root. */
-function host(): El {
-  const el = doc.createElement('div');
+function host(tag = 'div'): El {
+  const el = doc.createElement(tag);
   const root = el.attachShadow({ mode: 'open' });
   const own = doc.createElement('style');
   own.textContent = '.ib-card { border: 1px solid var(--ib-card-border); }';
@@ -152,12 +152,7 @@ return {
 };`,
   )() as Page;
 }
-function inbox(): El {
-  const el = doc.createElement('ui-agent-inbox');
-  el.attachShadow({ mode: 'open' });
-  doc.body.append(el);
-  return el;
-}
+const inbox = () => host('ui-agent-inbox');
 const sheetOf = (el: El) => sheets(el)[0]?.textContent ?? '';
 
 describe('the page’s sync — a model switch on a card whose face stays the same', () => {
@@ -212,14 +207,21 @@ describe('the page’s sync — a model switch on a card whose face stays the sa
     expect(sheetOf(board)).toContain('[data-card="C:2"]');
     await Promise.resolve(); // the first hold's let-go runs and finds nothing held
 
-    // An earlier hold's pending let-go never releases a later hold.
-    p.hold(true);
+    // An earlier hold's pending let-go never releases a later hold: between the two let-goes the later hold still
+    // holds (without the generation the earlier one would release it and write the foil there).
+    p.hold(true); // A — its let-go queued first
     p.hold(false);
-    p.hold(true);
+    let between = '';
+    Promise.resolve().then(() => {
+      between = sheetOf(board);
+    });
+    p.hold(true); // B — its let-go queued after the check above
     p.setModel('C:2', 'fable');
     p.sync();
-    await Promise.resolve(); // the stale let-go (gen 2) runs first
     await Promise.resolve();
+    await Promise.resolve();
+    expect(between).toContain('[data-card="C:2"]');
+    expect(between).not.toContain('border: 2px solid transparent;');
     expect(sheetOf(board)).toContain('li.ib-card:is([data-card="C:2"]) { border: 2px solid transparent;');
     p.setModel('C:2', 'opus');
     p.sync();

@@ -267,12 +267,10 @@ describe('the dashboard draws it', () => {
   it('syncCardFinish lists every drawn card with its model and paints every board element', () => {
     const body = fnBody('syncCardFinish');
     expect(body).toContain('if (!_cardDrawn[k] || !_sessionCache[k]) continue;');
-    expect(body).toContain("var hosts = document.querySelectorAll('ui-agent-inbox');");
+    expect(body).toContain("Array.from(document.querySelectorAll('ui-agent-inbox'), function(h) { return [h, []]; })");
     // Each element gets only the cards it draws (_cardHost), not the whole board.
-    expect(body).toContain(
-      'if (h && hosts[h._finishAt] === h) lists[h._finishAt].push({ key: k, model: _sessionCache[k].model });',
-    );
-    expect(body).toContain('cardFinishPaint(hosts[j], lists[j]);');
+    expect(body).toContain('var list = lists.get(_cardHost[k]);');
+    expect(body).toContain('lists.forEach(function(cards, host) { cardFinishPaint(host, cards); });');
     // A paint before the element was defined found no shadow root: once it is, the sheet goes in.
     expect(TEMPLATE).toContain("customElements.whenDefined('ui-agent-inbox').then(function() { syncCardFinish(); });");
   });

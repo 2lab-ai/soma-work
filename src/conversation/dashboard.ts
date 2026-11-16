@@ -11845,21 +11845,17 @@ function syncCardFinish() {
     _cardFinishDirty = true;
     return;
   }
-  var hosts = document.querySelectorAll('ui-agent-inbox');
-  var lists = [];
-  for (var i = 0; i < hosts.length; i++) {
-    hosts[i]._finishAt = i;
-    lists.push([]);
-  }
+  // Every element, also one whose last finished card left (its sheet empties).
+  var lists = new Map(Array.from(document.querySelectorAll('ui-agent-inbox'), function(h) { return [h, []]; }));
   var seen = Object.create(null);
   for (var k in _cardData) {
     if (!_cardDrawn[k] || !_sessionCache[k]) continue;
     seen[k] = cardFinishOf(_sessionCache[k].model);
-    var h = _cardHost[k];
-    if (h && hosts[h._finishAt] === h) lists[h._finishAt].push({ key: k, model: _sessionCache[k].model });
+    var list = lists.get(_cardHost[k]);
+    if (list) list.push({ key: k, model: _sessionCache[k].model });
   }
   _cardFinishSeen = seen;
-  for (var j = 0; j < hosts.length; j++) cardFinishPaint(hosts[j], lists[j]);
+  lists.forEach(function(cards, host) { cardFinishPaint(host, cards); });
 }
 // One card's update: whether its model now asks for another finish than the last sync drew (refreshCard's no-repaint
 // path — a push that changed nothing the finish reads costs no board-wide pass).
