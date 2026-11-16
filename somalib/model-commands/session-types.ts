@@ -258,9 +258,13 @@ export interface IssueTreeNode {
   checkedAt?: number;
   /** When a read of it last failed (a deleted issue, no access): the next reads go to the others first. */
   triedAt?: number;
-  /** When the read behind its relations began: an older read (another reader, slower) does not replace them. */
-  relReadAt?: number;
+  /**
+   * Per relation, when the read behind it began: an older read of that relation (another reader, slower) does not
+   * replace it. Each reader reads its own relations (the reconciler `closes`; the collect `closes` and `base`).
+   */
+  relReadAt?: IssueTreeRelationReadAt;
 }
+export type IssueTreeRelationReadAt = Partial<Record<keyof IssueTreeRelations, number>>;
 export interface SessionIssueTree {
   nodes: IssueTreeNode[];
   /** The next internal issue number (`internal:<n>`). */

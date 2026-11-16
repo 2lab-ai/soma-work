@@ -237,14 +237,19 @@ describe('code-changes service → issue tree', () => {
     await h.svc.refresh('conv1');
     await flush();
     expect(fetchIssue).toHaveBeenCalledTimes(2);
-    const before = h.note.mock.calls.length;
+    const issueNotes = () => h.note.mock.calls.filter((c) => c[1].some((e) => e.url.includes('/issues/'))).length;
+    const before = issueNotes();
     answers[0]({ title: 'old', state: 'open' }); // the old session's answer: dropped
     await flush();
     await flush();
-    expect(h.note.mock.calls.length).toBe(before);
+    expect(issueNotes()).toBe(before);
+    // The old batch did not free the new session's guard: a collect now asks nothing while the new batch is out.
+    await h.svc.refresh('conv1');
+    await flush();
+    expect(fetchIssue).toHaveBeenCalledTimes(2);
     answers[1]({ title: 'new', state: 'open' }); // the new session's: noted
     await flush();
     await flush();
-    expect(h.note.mock.calls.length).toBe(before + 1);
+    expect(issueNotes()).toBe(before + 1);
   });
 });

@@ -851,6 +851,11 @@ function applySessionUpdateToSnapshot(
   }
 
   let changed = false;
+  // .prd/29 — the tree before the batch (the link loop below changes the links): from the view, or — a snapshot with
+  // links and no tree (a session read before its tree was made) — the one the host makes from its links.
+  const treeBefore = snapshot.issueTree
+    ? issueTreeFromView(snapshot.issueTree)
+    : issueTreeFromLinks({ issues: [...snapshot.issues], prs: [...snapshot.prs], docs: [] }, 0, { ...snapshot.active });
 
   for (const operation of request.operations ?? []) {
     // The issue tree's own operations change no card link (applied below).
@@ -914,11 +919,7 @@ function applySessionUpdateToSnapshot(
   const treeOps = request.operations ?? [];
   if (treeOps.some((op) => op.resourceType !== 'doc' && op.action !== 'set_active')) {
     const seedTitle = snapshot.issueTree?.nodes.find((n) => n.placed === 'seed')?.title;
-    // A snapshot with links and no tree (a session read before its tree was made): the tree the host makes from them.
-    const base = snapshot.issueTree
-      ? issueTreeFromView(snapshot.issueTree)
-      : issueTreeFromLinks({ issues: snapshot.issues, prs: snapshot.prs, docs: [] }, 0, snapshot.active);
-    const applied = applyIssueTreeOperations(base, treeOps, Date.now());
+    const applied = applyIssueTreeOperations(treeBefore, treeOps, Date.now());
     if (!applied.ok) {
       return { ok: false, error: { code: 'INVALID_OPERATION', message: applied.error } };
     }

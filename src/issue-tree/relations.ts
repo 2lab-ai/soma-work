@@ -20,14 +20,19 @@ export type IssueTreeNote = IssueTreeLinkInput & {
   readAt?: number;
 };
 
-const CLOSING = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+(?:([\w.-]+)\/([\w.-]+))?#(\d+)\b/gi;
+// keyword, then `:` (spaces optional) or spaces — one branch each, so a long run of spaces cannot backtrack — then
+// `#N`, `owner/repo#N` or the issue's URL.
+const CLOSING =
+  /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)(?::[ \t]*|[ \t]+)(?:https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/issues\/(\d+)|(?:([\w.-]+)\/([\w.-]+))?#(\d+))\b/gi;
 export const MAX_CLOSING_ISSUES = 5;
 
 /** The GitHub issues a PR body says it closes (`Closes #12`, `fixes owner/repo#3`), as issue URLs, at most five. */
 export function closingIssueUrls(body: string | null | undefined, owner: string, repo: string): string[] {
   const out: string[] = [];
   for (const m of (body ?? '').matchAll(CLOSING)) {
-    const url = `https://github.com/${m[1] ?? owner}/${m[2] ?? repo}/issues/${m[3]}`;
+    const url = m[3]
+      ? `https://github.com/${m[1]}/${m[2]}/issues/${m[3]}`
+      : `https://github.com/${m[4] ?? owner}/${m[5] ?? repo}/issues/${m[6]}`;
     if (out.some((u) => u.toLowerCase() === url.toLowerCase())) continue;
     out.push(url);
     if (out.length >= MAX_CLOSING_ISSUES) break;
@@ -73,7 +78,8 @@ export function prTreeEntries(prs: ReadonlyArray<PrRelationSource>, relReadAt?: 
         ...(pr.closes ? { closes: pr.closes } : {}),
         ...(pr.baseRef !== undefined ? { base: base ? base.url : null } : {}),
       },
-      ...(relReadAt !== undefined ? { relReadAt } : {}),
+      // A record reused without a read gives no relation, and so no read time.
+      ...(relReadAt !== undefined && (pr.closes || pr.baseRef !== undefined) ? { relReadAt } : {}),
       onlyIfPresent: true,
     };
   });

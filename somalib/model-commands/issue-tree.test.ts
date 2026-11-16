@@ -376,8 +376,45 @@ describe('issue tree — .prd/29 §3', () => {
     expect(shape(t)['pull/10']).toBe('issues/1');
     // Saved and loaded, the read time stays (and never reaches the view).
     const loaded = sanitizeIssueTree(JSON.parse(JSON.stringify(t)));
-    expect(loaded?.nodes.find((n) => n.id === issueTreeNodeId(pr(10)))?.relReadAt).toBe(300);
+    expect(loaded?.nodes.find((n) => n.id === issueTreeNodeId(pr(10)))?.relReadAt).toEqual({ closes: 300 });
     expect(issueTreeView(t).nodes.find((n) => n.id === issueTreeNodeId(pr(10)))).not.toHaveProperty('relReadAt');
+  });
+
+  it('read times are per relation: the reconciler’s newer closes do not block an older collect’s stack base', () => {
+    const t = tree();
+    add(t, 'issue', issue(1));
+    add(t, 'pr', pr(9));
+    add(t, 'pr', pr(10));
+    // The reconciler (began at 200) reads only closing refs: none.
+    upsertIssueTreeLink(t, { kind: 'pr', url: pr(10), rel: { closes: [] }, relReadAt: 200 }, now());
+    // The collect (began at 100, landed later) read a new stack base and the old body's closing ref.
+    upsertIssueTreeLink(
+      t,
+      { kind: 'pr', url: pr(10), rel: { closes: [issue(1)], base: pr(9) }, relReadAt: 100 },
+      now(),
+    );
+    rebalanceIssueTree(t, now());
+    const node = t.nodes.find((n) => n.id === issueTreeNodeId(pr(10)))!;
+    expect(node.rel).toEqual({ base: issueTreeNodeId(pr(9)) }); // base taken, the older closes not
+    expect(node.relReadAt).toEqual({ closes: 200, base: 100 });
+    expect(shape(t)['pull/10']).toBe('pull/9');
+    // A note with no relation (a record reused without a read) moves no read time.
+    upsertIssueTreeLink(t, { kind: 'pr', url: pr(10), rel: {}, relReadAt: 999 }, now());
+    expect(t.nodes.find((n) => n.id === issueTreeNodeId(pr(10)))!.relReadAt).toEqual({ closes: 200, base: 100 });
+  });
+
+  it('a stored counter too large to count with is replaced: internal issues still get fresh ids', () => {
+    const loaded = sanitizeIssueTree({
+      nodes: [{ id: 'internal:2', kind: 'issue', source: 'internal', title: 'x', placed: 'default', addedAt: 1 }],
+      nextInternal: 9007199254740992,
+    }) as SessionIssueTree;
+    expect(loaded.nextInternal).toBe(1);
+    const a = addInternalIssue(loaded, { title: 'a' }, now());
+    const b = addInternalIssue(loaded, { title: 'b' }, now());
+    expect([a, b]).toEqual([
+      { ok: true, id: 'internal:1' },
+      { ok: true, id: 'internal:3' },
+    ]);
   });
 
   it('the representative is the same in the preview rebuilt from the view (the order the issues came)', () => {

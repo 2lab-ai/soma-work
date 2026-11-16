@@ -13,6 +13,7 @@
 import type {
   IssueTreeNode,
   IssueTreeNodeKind,
+  IssueTreeRelationReadAt,
   IssueTreeRelations,
   IssueTreeSource,
   IssueTreeView,
@@ -127,6 +128,26 @@ function mergeRel(node: IssueTreeNode, rel: IssueTreeRelationsInput | undefined)
   else delete node.rel;
 }
 
+const REL_KEYS = ['subOf', 'closes', 'base'] as const;
+
+/**
+ * A read's relations onto a node, field by field: a relation read before the one the node has (two readers landing out
+ * of order: the collect, the turn-end reconciler) is skipped; each relation applied keeps its read's start. A field the
+ * read did not give is left alone — and its time too.
+ */
+function applyRelRead(node: IssueTreeNode, rel: IssueTreeRelationsInput | undefined, readAt: number | undefined): void {
+  if (!rel) return;
+  const fresh: IssueTreeRelationsInput = {};
+  for (const key of REL_KEYS) {
+    if (rel[key] === undefined) continue;
+    const seen = node.relReadAt?.[key];
+    if (readAt !== undefined && seen !== undefined && seen > readAt) continue;
+    (fresh as Record<string, unknown>)[key] = rel[key];
+    if (readAt !== undefined) node.relReadAt = { ...(node.relReadAt || {}), [key]: readAt };
+  }
+  mergeRel(node, fresh);
+}
+
 export interface IssueTreeLinkInput {
   kind: IssueTreeNodeKind;
   url: string;
@@ -135,7 +156,7 @@ export interface IssueTreeLinkInput {
   title?: string;
   status?: string;
   rel?: IssueTreeRelationsInput;
-  /** When the read behind `rel` began: relations from an older read than the node's are not applied. */
+  /** When the read behind `rel` began: a relation from an older read than the node's is not applied. */
   relReadAt?: number;
   /** The model's placement: a node to sit under, `null` for the root (issues), absent for the host to place it. */
   parent?: string | null;
@@ -163,12 +184,7 @@ export function upsertIssueTreeLink(tree: SessionIssueTree, input: IssueTreeLink
     // Merged is final (as on the card): a late or cached read of an earlier state does not undo it.
     if (input.status && !(existing.kind === 'pr' && existing.status === 'merged')) existing.status = input.status;
     if (input.label) existing.label = input.label;
-    // Two readers (the collect, the turn-end reconciler) can land out of order: the later read's relations win.
-    const stale = input.relReadAt !== undefined && (existing.relReadAt ?? Number.NEGATIVE_INFINITY) > input.relReadAt;
-    if (!stale) {
-      mergeRel(existing, input.rel);
-      if (input.rel && input.relReadAt !== undefined) existing.relReadAt = input.relReadAt;
-    }
+    applyRelRead(existing, input.rel, input.relReadAt);
     if (pinned) {
       existing.parent = parent;
       existing.placed = 'model';
@@ -189,9 +205,8 @@ export function upsertIssueTreeLink(tree: SessionIssueTree, input: IssueTreeLink
     ...(parent ? { parent } : {}),
     placed: pinned ? 'model' : 'default',
     addedAt: now,
-    ...(input.rel && input.relReadAt !== undefined ? { relReadAt: input.relReadAt } : {}),
   };
-  mergeRel(node, input.rel);
+  applyRelRead(node, input.rel, input.relReadAt);
   tree.nodes.push(node);
   return { ok: true, id };
 }
@@ -484,11 +499,27 @@ export function sanitizeIssueTree(raw: unknown): SessionIssueTree | undefined {
       addedAt: n.addedAt as number,
       ...(typeof n.checkedAt === 'number' ? { checkedAt: n.checkedAt } : {}),
       ...(typeof n.triedAt === 'number' ? { triedAt: n.triedAt } : {}),
-      ...(typeof n.relReadAt === 'number' ? { relReadAt: n.relReadAt } : {}),
+      ...(readAtOf(n.relReadAt) ? { relReadAt: readAtOf(n.relReadAt) } : {}),
     });
   }
-  const next = typeof r.nextInternal === 'number' && r.nextInternal >= 1 ? Math.floor(r.nextInternal) : 1;
-  return { nodes: nodes.slice(0, ISSUE_TREE_MAX_NODES), nextInternal: next };
+  return { nodes: nodes.slice(0, ISSUE_TREE_MAX_NODES), nextInternal: safeCounter(r.nextInternal) };
+}
+
+/** A stored relation read-time record: numbers per known relation, nothing else. */
+function readAtOf(raw: unknown): IssueTreeRelationReadAt | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const out: IssueTreeRelationReadAt = {};
+  for (const key of REL_KEYS) {
+    const v = (raw as Record<string, unknown>)[key];
+    if (typeof v === 'number' && Number.isFinite(v)) out[key] = v;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** The internal-issue counter from stored or sent data: a small whole number (a huge one could stop counting). */
+function safeCounter(raw: unknown): number {
+  const n = Math.floor(Number(raw));
+  return Number.isSafeInteger(n) && n >= 1 && n <= 1_000_000 ? n : 1;
 }
 
 /**
@@ -500,7 +531,7 @@ export function issueTreeFromView(view: IssueTreeView | undefined): SessionIssue
   let max = 0;
   (view?.nodes || []).forEach((v, i) => {
     const m = INTERNAL_RE.exec(v.id);
-    if (m) max = Math.max(max, Number(m[1]));
+    if (m && Number(m[1]) < 1_000_000) max = Math.max(max, Number(m[1]));
     // The stored node without the host's read bookkeeping — its relations too (one not in force yet: a PR that closes
     // an issue not in the tree), so the preview places nodes as the host does.
     const node: IssueTreeNode = { ...structuredClone(v), addedAt: i };
@@ -509,7 +540,7 @@ export function issueTreeFromView(view: IssueTreeView | undefined): SessionIssue
     tree.nodes.push(node);
   });
   // The host's counter (a retired seed still took internal:1): a new internal issue gets the number the host gives it.
-  tree.nextInternal = Math.max(max + 1, Math.floor(Number(view?.nextInternal) || 1));
+  tree.nextInternal = Math.max(max + 1, safeCounter(view?.nextInternal));
   return tree;
 }
 

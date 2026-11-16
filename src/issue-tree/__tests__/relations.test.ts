@@ -150,6 +150,21 @@ describe('issue-tree relations', () => {
   it('PR entries carry when their read began, so an older read from the other reader does not replace them', () => {
     const [e] = prTreeEntries([{ url: `${GH}/pull/1`, repo: 'a/b', state: 'open', closes: [] }], 123);
     expect(e.relReadAt).toBe(123);
+    // A record reused without a read (no closes, no base branch) tells no relation: no read time either.
+    const [cached] = prTreeEntries([{ url: `${GH}/pull/1`, repo: 'a/b', state: 'merged' }], 123);
+    expect(cached.rel).toEqual({});
+    expect(cached).not.toHaveProperty('relReadAt');
+  });
+
+  it('closing refs as GitHub reads them: the issue URL form too; a long run of spaces is read in linear time', () => {
+    expect(closingIssueUrls('Closes https://github.com/acme/web/issues/9 and fixes: #4', 'a', 'b')).toEqual([
+      'https://github.com/acme/web/issues/9',
+      `${GH}/issues/4`,
+    ]);
+    const evil = `closes${' '.repeat(200_000)}x`;
+    const t0 = Date.now();
+    expect(closingIssueUrls(evil, 'a', 'b')).toEqual([]);
+    expect(Date.now() - t0).toBeLessThan(500);
   });
 
   it('an issue URL with a query or a comment anchor is read; a URL that is no issue takes no read slot', async () => {

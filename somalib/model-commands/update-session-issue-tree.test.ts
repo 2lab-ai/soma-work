@@ -211,6 +211,21 @@ describe('the MCP preview applies them with the host’s function', () => {
     expect(parentOf(after, `${GH}/pull/9`)).toBe(issueTreeNodeId(`${GH}/issues/5`));
   });
 
+  it('a link-only snapshot: the preview’s tree is the one before the batch (a PR only: seed → PR → the new issue)', () => {
+    const s = getDefaultSessionSnapshot();
+    s.prs = [{ url: `${GH}/pull/7`, type: 'pr', provider: 'github' }];
+    const r = run(s, [{ action: 'add', resourceType: 'issue', url: `${GH}/issues/5`, parent: `${GH}/pull/7` }]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const after = (r.payload as { session: SessionResourceSnapshot }).session;
+    expect(parentOf(after, `${GH}/pull/7`)).toBe('internal:1');
+    expect(parentOf(after, `${GH}/issues/5`)).toBe(issueTreeNodeId(`${GH}/pull/7`));
+    // No external issue yet: the first one can go under the seed, as on the host.
+    const e = getDefaultSessionSnapshot();
+    const r2 = run(e, [{ action: 'add', resourceType: 'issue', url: `${GH}/issues/6`, parent: 'internal:1' }]);
+    expect(r2.ok).toBe(true);
+  });
+
   it('refuses what would break the tree, naming why', () => {
     const r = run(snapshotWithTree(), [{ action: 'move', resourceType: 'pr', node: `${GH}/pull/7`, parent: null }]);
     expect(r).toMatchObject({
