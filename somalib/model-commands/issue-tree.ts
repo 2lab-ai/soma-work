@@ -3,7 +3,8 @@
  * MCP server's preview both apply writes through these, so what the model reads back is what the host stored.
  *
  * Invariants (kept by `rebalanceIssueTree` after every write):
- *   1. there is an issue node — without one, the seed (`internal:1`, the session's own issue) is made;
+ *   1. there is a root issue — without one (no issue, or every issue under a PR), the seed (`internal:1`, the session's
+ *      own issue) stands in;
  *   2. no PR is a root — its parent is an issue or a PR;
  *   3. every parent is a node of the tree and there is no cycle;
  *   4. at most ISSUE_TREE_MAX_NODES nodes — a new node past it is refused (the seed only ever replaces a node that left).
@@ -231,6 +232,14 @@ export function addInternalIssue(
   return { ok: true, id };
 }
 
+/** A fresh seed: `internal:1` unless the model's own issue holds that id. */
+function newSeed(tree: SessionIssueTree, now: number): IssueTreeNode {
+  const free = !tree.nodes.some((n) => n.id === SEED_ID);
+  const id = free ? SEED_ID : nextInternalId(tree);
+  if (free && tree.nextInternal <= 1) tree.nextInternal = 2;
+  return { id, kind: 'issue', source: 'internal', placed: 'seed', addedAt: now };
+}
+
 function nextInternalId(tree: SessionIssueTree): string {
   let n = Math.max(1, tree.nextInternal || 1);
   const taken = new Set(tree.nodes.map((x) => x.id));
@@ -295,20 +304,15 @@ export function rebalanceIssueTree(tree: SessionIssueTree, now: number): void {
     }
     if (n.kind === 'pr' && !n.parent && n.placed === 'model') n.placed = 'default';
   }
-  // 1. An issue node, always: the seed when there is none.
-  if (!tree.nodes.some((n) => n.kind === 'issue')) {
-    tree.nodes.unshift({ id: SEED_ID, kind: 'issue', source: 'internal', placed: 'seed', addedAt: now });
-    if (tree.nextInternal <= 1) tree.nextInternal = 2;
-  }
-  // The seed stands in only while the session has no other issue: it gives way to the first one (an external issue, or
-  // an internal one the model made) unless the model kept something under it.
+  // 1. The seed stands in only while the session has no other root issue: it gives way to the first one (an external
+  // issue, or an internal one the model made) unless the model kept something under it. It is taken out here and put
+  // back after the issues are placed when no root issue is left (every other issue under a PR).
   const seed = tree.nodes.find((n) => n.placed === 'seed');
-  if (seed && tree.nodes.some((n) => n.kind === 'issue' && n.id !== seed.id)) {
-    const kept = tree.nodes.some((n) => n.parent === seed.id && n.placed === 'model');
-    if (!kept) {
-      for (const n of tree.nodes) if (n.parent === seed.id) n.parent = undefined;
-      tree.nodes = tree.nodes.filter((n) => n.id !== seed.id);
-    }
+  let retired: IssueTreeNode | undefined;
+  if (seed && !tree.nodes.some((n) => n.parent === seed.id && n.placed === 'model')) {
+    for (const n of tree.nodes) if (n.parent === seed.id) n.parent = undefined;
+    tree.nodes = tree.nodes.filter((n) => n !== seed);
+    retired = seed;
   }
   nodes = byId(tree);
   // 2. Issues: under their GitHub parent when it is here, else roots.
@@ -323,6 +327,11 @@ export function rebalanceIssueTree(tree: SessionIssueTree, now: number): void {
       n.parent = undefined;
       n.placed = 'default';
     }
+  }
+  // A root issue, always (a PR is never a root): the seed when no other issue is one.
+  if (!tree.nodes.some((n) => n.kind === 'issue' && !n.parent)) {
+    tree.nodes.unshift(retired || newSeed(tree, now));
+    nodes = byId(tree);
   }
   // 3. PRs: under an issue they close, else the PR they are stacked on, else the representative issue.
   const rep = representativeIssue(tree);

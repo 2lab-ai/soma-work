@@ -197,6 +197,32 @@ describe('issue tree — .prd/29 §3', () => {
     expect(id).not.toBe(SEED_ID);
   });
 
+  it('the seed stays while every other issue sits under a PR: the tree keeps a root issue, no PR becomes a root', () => {
+    const t = tree();
+    add(t, 'pr', pr(10));
+    // The model files a follow-up under the PR (its only parent choice besides the seed).
+    expect(addInternalIssue(t, { title: '후속 조사', parent: pr(10) }, now())).toMatchObject({ ok: true });
+    rebalanceIssueTree(t, now());
+    const followUp = t.nodes.find((n) => n.title === '후속 조사')?.id as string;
+    expect(shape(t)).toEqual({ [SEED_ID]: '', 'pull/10': SEED_ID, [followUp]: 'pull/10' });
+    const before = JSON.stringify(t);
+    rebalanceIssueTree(t, now());
+    expect(JSON.stringify(t)).toBe(before);
+  });
+
+  it('removing the last root issue while the others sit under PRs brings a seed back to hold the PRs', () => {
+    const t = tree();
+    add(t, 'issue', issue(5));
+    add(t, 'pr', pr(10));
+    expect(shape(t)).toEqual({ 'issues/5': '', 'pull/10': 'issues/5' });
+    addInternalIssue(t, { title: '후속 조사', parent: pr(10) }, now());
+    expect(removeIssueTreeNode(t, issue(5))).toMatchObject({ ok: true });
+    rebalanceIssueTree(t, now());
+    const followUp = t.nodes.find((n) => n.title === '후속 조사')?.id as string;
+    expect(shape(t)).toEqual({ [SEED_ID]: '', 'pull/10': SEED_ID, [followUp]: 'pull/10' });
+    expect(t.nodes.filter((n) => n.kind === 'pr' && !n.parent)).toEqual([]);
+  });
+
   it('the seed stays when the model kept something under it, or named it', () => {
     const kept = tree();
     add(kept, 'pr', pr(10), { parent: SEED_ID });
