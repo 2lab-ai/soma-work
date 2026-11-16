@@ -41,11 +41,9 @@ export const NEXT_ACTION_SEAMS: Readonly<Record<string, unknown>> = {
   // 사용자 할 일 (instruct_user): `cardOf` counts required tasks still waiting (`userActionsWaiting`) — none, unless the
   // test loads the real one (pinned by dashboard-user-actions-client.test.ts).
   userActionsWaiting: () => 0,
-  // SSOT 2026-11-16 (.prd/28 §3) — the plan is the 작업 계획 tab's: `renderPanelPlan` repaints the bar (`renderPanelMidbar`),
-  // and `openPanel` lands on that tab while a plan waits for 시작 (`planWaitsOnReader`) — neither, unless the test loads
-  // the real one (pinned by dashboard-detail-zones-client.test.ts).
+  // SSOT 2026-11-16 (.prd/28 §3) — the plan is the 작업 계획 tab's: `renderPanelPlan` repaints the bar (`renderPanelMidbar`)
+  // — nothing, unless the test loads the real one (pinned by dashboard-detail-zones-client.test.ts).
   renderPanelMidbar: () => {},
-  planWaitsOnReader: () => false,
 };
 export function nextActionSeams(fns: readonly string[], inject: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};

@@ -87,7 +87,7 @@ Status: in-progress · Date: 2026-11-16 · 기준 main `f50fd991` · SSOT = [`de
   - `panelMidTabHtml`: 계획이 있으면 `is-plan` 클래스 · `data-waiting` · 아이콘(`<i data-ui-icon="list" class="pm-icon">` — `fillUiIcons`는 이 속성 순서만 채운다) · 상태 칩. 사용자 작업은 대기 배지.
   - 마크업: `#panel-plan`을 `#panel-needs`에서 꺼내 탭 줄 바로 아래로, `#panel-user-actions`를 탭 내용 끝으로 옮긴다. CSS: 두 영역은 각자의 `data-midtab`일 때만 보인다.
   - `panelNeedsCount`에서 승인 대기 계획을 뺀다. `renderPanelPlan`은 `syncPanelNeeds` 대신 `renderPanelMidbar`를 부른다.
-  - `openPanel`: 새로 열 때 `planWaitsOnReader(s)`면 `_panelMid = 'plan'`. 랜딩 대상 계획 상자는 그 탭이 열려 있을 때만.
+  - `openPanel`: 새로 열 때 계획이 시작을 기다리면(`taskPlan.state === 'awaiting'`) `_panelMid = 'plan'`. 랜딩 대상 계획 상자는 그 탭이 열려 있을 때만.
   - en-page 카탈로그에 새 문구를 넣는다.
 - WU-B — `src/conversation/code-changes-client.ts`
   - 순수 함수 `chgViewerModeFor(vw, panelW, docked, pref)` → `panel` | `full`. 기억은 `localStorage['soma-chg-viewer']`(`full` | 없음).

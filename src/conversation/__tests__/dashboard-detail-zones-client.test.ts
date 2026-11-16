@@ -460,10 +460,8 @@ describe('Z4 — an opening lands on its tab', () => {
     expect(open).toContain(
       "var midLand = _panelLand === 'goal' ? 'goal' : _panelLand === 'tasks' ? 'tasks' : _panelLand === 'agent' ? 'agents' : _panelLand === 'artifacts' ? 'artifacts' : '';",
     );
-    // .prd/28 §3: a new opening on a plan waiting for 시작 opens the 작업 계획 tab.
-    expect(open).toContain(
-      "if (midLand) _panelMid = midLand;\n  else if (!sameSession) _panelMid = planWaitsOnReader(_sessionCache[sessionKey]) ? 'plan' : '';",
-    );
+    // .prd/28 §3: a new opening on a plan waiting for 시작 opens the 작업 계획 tab — run through openPanel in
+    // dashboard-agent-inbox-client.test.ts (the landing, a re-landing, a started plan).
     // Before the panel paints (repaintPanelSession → renderPanelMidbar draws the bar with it).
     expect(open.indexOf('var midLand')).toBeLessThan(open.indexOf('repaintPanelSession();'));
     // The open card's 전체 N개 → lands on the 산출물 tab (review P2).
@@ -542,18 +540,8 @@ describe('Z6 — the bar’s two ends: 작업 계획 first (drawn to stand out),
       panelMidTabsOf(s: unknown, t: string[], c: unknown): Tab[];
       panelMidTabHtml(t: unknown, on: boolean): string;
       panelBarTabIds(t: string[]): string[];
-      planWaitsOnReader(s: unknown): boolean;
     }>(
-      [
-        'toNum',
-        'esc',
-        'escAttr',
-        'userActionsWaiting',
-        'panelBarTabIds',
-        'panelMidTabsOf',
-        'panelMidTabHtml',
-        'planWaitsOnReader',
-      ],
+      ['toNum', 'esc', 'escAttr', 'userActionsWaiting', 'panelBarTabIds', 'panelMidTabsOf', 'panelMidTabHtml'],
       ['MID_TAB_LABEL', 'MID_TAB_PANEL', 'TASK_PLAN_STATE_LABEL', 'TASK_PLAN_TONE'],
     );
   let n = 0;
@@ -644,12 +632,10 @@ describe('Z6 — the bar’s two ends: 작업 계획 first (drawn to stand out),
     );
   });
 
-  it('their content shows only while their tab is open; a plan waiting for 시작 opens the card on 작업 계획', () => {
+  // A plan waiting for 시작 opens the card on 작업 계획: run through openPanel in dashboard-agent-inbox-client.test.ts.
+  it('their content shows only while their tab is open', () => {
     expect(CSS).toContain('.slide-panel:not([data-midtab="plan"]) #panel-plan,');
     expect(CSS).toContain('.slide-panel:not([data-midtab="useractions"]) #panel-user-actions,');
-    expect(m().planWaitsOnReader({ taskPlan: { state: 'awaiting', revision: 1 } })).toBe(true);
-    expect(m().planWaitsOnReader({ taskPlan: { state: 'approved', revision: 1 } })).toBe(false);
-    expect(m().planWaitsOnReader(null)).toBe(false);
     expect(clientFn('renderPanelMidbar')).toContain(
       'panelMidTabsOf(s, panelBarTabIds(viewSpec().detail.tabs), panelMidContext(s))',
     );

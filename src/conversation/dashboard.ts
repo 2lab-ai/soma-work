@@ -15800,10 +15800,6 @@ function planBarHtml(s) {
 function planAskKey(tp) {
   return (tp ? tp.revision : '') + ':' + (tp ? tp.state : '');
 }
-// A plan waiting for 시작: the card opens on the 작업 계획 tab — the reader reads it to decide (.prd/28 §3).
-function planWaitsOnReader(s) {
-  return !!(s && s.taskPlan && s.taskPlan.state === 'awaiting');
-}
 function panelPlanHtml(s, tp) {
   var key = s.key;
   var head = '<div class="pp-head"><span class="pp-title">작업 계획' + (tp.revision > 0 ? ' v' + tp.revision : '') + '</span>'
@@ -20354,10 +20350,10 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   }
   // The tab bar (SSOT 2026-11-03): every tab closed on an opening — or its landing's tab open (a goal, a task, an
   // agent, the open card's 전체 N개 → the files); a re-landing on the session already open moves to its tab, a plain
-  // one keeps the reader's.
+  // one keeps the reader's. A plan waiting for 시작 opens its 작업 계획 tab: the reader reads it to decide (.prd/28 §3).
   var midLand = _panelLand === 'goal' ? 'goal' : _panelLand === 'tasks' ? 'tasks' : _panelLand === 'agent' ? 'agents' : _panelLand === 'artifacts' ? 'artifacts' : '';
   if (midLand) _panelMid = midLand;
-  else if (!sameSession) _panelMid = planWaitsOnReader(_sessionCache[sessionKey]) ? 'plan' : '';
+  else if (!sameSession) _panelMid = s && s.taskPlan && s.taskPlan.state === 'awaiting' ? 'plan' : '';
 
   // Reset pagination state before loading this session's turns. A new panel
   // generation makes every request of the previous one stale — including a
