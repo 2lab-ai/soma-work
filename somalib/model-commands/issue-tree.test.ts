@@ -359,6 +359,19 @@ describe('issue tree — .prd/29 §3', () => {
     expect(shape(t)).toEqual({ 'issues/7': '', 'pull/8': 'issues/7' });
   });
 
+  it('a closing ref wins over a valid stack; the stack takes over when the closing refs clear', () => {
+    const t = tree();
+    add(t, 'issue', issue(1));
+    add(t, 'issue', issue(2));
+    add(t, 'pr', pr(9));
+    add(t, 'pr', pr(10), { rel: { closes: [issue(2)], base: pr(9) } });
+    expect(shape(t)).toMatchObject({ 'pull/9': 'issues/1', 'pull/10': 'issues/2' });
+    expect(placed(t, pr(10))).toBe('closes');
+    add(t, 'pr', pr(10), { rel: { closes: [] } });
+    expect(shape(t)['pull/10']).toBe('pull/9');
+    expect(placed(t, pr(10))).toBe('stack');
+  });
+
   it('relations from an older read (the other reader, slower) do not replace a newer read’s', () => {
     const t = tree();
     add(t, 'issue', issue(1));

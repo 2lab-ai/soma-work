@@ -174,20 +174,27 @@ describe('code-changes service → issue tree', () => {
     expect(h.fetchPullFiles).toHaveBeenCalledTimes(1);
   });
 
-  it('a merged PR reused from the store tells no relations (only this collect’s reads do)', async () => {
+  it('a merged PR reused from the store replays its relations with its own older read time', async () => {
     let clock = 100;
     const h = harness({ merged: true, now: () => clock++, fetchIssue: async () => ({ state: 'open' }) });
     await h.svc.refresh('conv1');
     await flush();
     const prNotes = () => h.note.mock.calls.filter((c) => c[1][0]?.url.includes('/pull/')).map((c) => c[1][0]);
+    const first = prNotes()[0] as { relReadAt?: number };
     expect(prNotes()[0]).toMatchObject({ status: 'merged', rel: { closes: ['https://github.com/acme/web/issues/9'] } });
+    expect(first.relReadAt).toBe(100); // this collect's start
     const reads = h.fetchPullDetail.mock.calls.length;
+    const secondStart = clock; // the second collect begins at or after this
     await h.svc.refresh('conv1');
     await flush();
-    // Not read again (merged, files whole): its entry keeps the state, and leaves the relations to newer reads.
+    // Not read again (merged, files whole): its relations come again, with the time of the read behind them — older
+    // than this collect, so a newer read of the same relation (the reconciler's) is not replaced; a node recreated
+    // since gets them back.
     expect(h.fetchPullDetail.mock.calls.length).toBe(reads);
-    expect(prNotes()[1]).toMatchObject({ status: 'merged' });
-    expect(prNotes()[1].rel).toEqual({});
+    const second = prNotes()[1] as { relReadAt?: number; rel?: unknown };
+    expect(second.rel).toEqual({ closes: ['https://github.com/acme/web/issues/9'], base: null });
+    expect(second.relReadAt).toBeLessThan(secondStart);
+    expect(second.relReadAt).toBeGreaterThanOrEqual(100);
   });
 
   it('a rejected issue read is that issue’s failed read; a batch that throws still frees the session', async () => {

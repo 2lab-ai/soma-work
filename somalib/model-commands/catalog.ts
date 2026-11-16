@@ -918,7 +918,7 @@ function applySessionUpdateToSnapshot(
   // .prd/29 — the issue tree, with the host's own function (the host's write is the truth; this is its preview).
   const treeOps = request.operations ?? [];
   if (treeOps.some((op) => op.resourceType !== 'doc' && op.action !== 'set_active')) {
-    const seedTitle = snapshot.issueTree?.nodes.find((n) => n.placed === 'seed')?.title;
+    const seedTitle = snapshot.issueTree?.title ?? snapshot.issueTree?.nodes.find((n) => n.placed === 'seed')?.title;
     const applied = applyIssueTreeOperations(treeBefore, treeOps, Date.now());
     if (!applied.ok) {
       return { ok: false, error: { code: 'INVALID_OPERATION', message: applied.error } };

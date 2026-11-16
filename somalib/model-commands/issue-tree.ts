@@ -425,7 +425,7 @@ export function issueTreeView(tree: SessionIssueTree, sessionTitle?: string): Is
         ...(n.rel ? { rel: structuredClone(n.rel) } : {}),
       };
     });
-  return { nodes, nextInternal: tree.nextInternal };
+  return { nodes, nextInternal: tree.nextInternal, ...(sessionTitle ? { title: sessionTitle } : {}) };
 }
 
 /**

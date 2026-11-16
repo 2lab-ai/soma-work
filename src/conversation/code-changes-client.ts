@@ -38,7 +38,6 @@ var CHG_ITREE = '이슈 · PR';
 var CHG_INTERNAL = '내부';
 var CHG_FOLD = '접기';
 var CHG_UNFOLD = '펼치기';
-var CHG_ISSUE_STATE = { open: '열림', closed: '닫힘', merged: '머지됨', draft: '초안' };
 var CHG_NO_FILES = '이 범위에 바뀐 파일이 없습니다';
 var CHG_BINARY = '바이너리 파일 — 줄 단위 변경을 보여 주지 않습니다';
 var CHG_TOO_BIG = '변경이 너무 커서 여기에 다 보여 주지 않습니다';
@@ -393,7 +392,7 @@ function chgIssueTreeHtml(doc) {
       }
     } else {
       out.push('<div class="chg-inode chg-issue chg-issue-' + chgEsc(n.source || 'unknown') + '"' + pad + ' data-chg-node="' + chgEsc(n.id) + '">' + caret +
-        '<span class="chg-imain"><span class="chg-imark">' + chgEsc(chgIssueMark(n)) + '</span> <span class="chg-pr-title">' + chgEsc(n.title || n.url || '') + '</span>' + chgStateChip(n.status, CHG_ISSUE_STATE) + '</span>' +
+        '<span class="chg-imain"><span class="chg-imark">' + chgEsc(chgIssueMark(n)) + '</span> <span class="chg-pr-title">' + chgEsc(n.title || n.url || '') + '</span>' + chgStateChip(n.status, CHG_PR_STATE) + '</span>' +
         chgLinkOut(n.url) + '</div>');
     }
     if (!shut) it.children.forEach(function(c) { walk(c, depth + 1); });

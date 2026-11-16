@@ -133,6 +133,14 @@ describe('the session issue tree (host)', () => {
     expect(up([{ action: 'remove', resourceType: 'issue', url: `${GH}/issues/5` }]).ok).toBe(true);
     expect(tree(reg).some((n) => n.id === id(`${GH}/issues/5`))).toBe(false);
     expect(tree(reg).find((n) => n.id === internal!.id)?.parent).toBeUndefined();
+    // An internal issue is removed by its id (`url: internal:<n>`): its PR goes up, the card's links stay.
+    const cardBefore = reg.getSessionResourceSnapshot('C1', '100.001');
+    expect(up([{ action: 'remove', resourceType: 'issue', url: internal!.id }]).ok).toBe(true);
+    expect(tree(reg).some((n) => n.id === internal!.id)).toBe(false);
+    expect(parentOf(reg, `${GH}/pull/11`)).toBe(id(`${GH}/issues/9`));
+    const cardAfter = reg.getSessionResourceSnapshot('C1', '100.001');
+    expect(cardAfter.issues).toEqual(cardBefore.issues);
+    expect(cardAfter.active).toEqual(cardBefore.active);
   });
 
   it('T5: what GitHub tells places nodes — closing refs, stacks, a parent issue; a checked issue is not asked again', () => {

@@ -226,6 +226,33 @@ describe('the MCP preview applies them with the host’s function', () => {
     expect(r2.ok).toBe(true);
   });
 
+  it('removing the last external issue in the preview: the new seed is titled with the session, as on the host', () => {
+    const r = run(snapshotWithTree(), [{ action: 'remove', resourceType: 'issue', url: `${GH}/issues/5` }]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const after = (r.payload as { session: SessionResourceSnapshot }).session;
+    expect(after.issueTree?.nodes.find((n) => n.placed === 'seed')).toMatchObject({ id: 'internal:1', title: 'S' });
+    expect(parentOf(after, `${GH}/pull/7`)).toBe('internal:1');
+  });
+
+  it('an internal issue is removed by its id through the command boundary (validator and preview)', () => {
+    const made = run(snapshotWithTree(), [{ action: 'add_internal', resourceType: 'issue', title: '조사' }]);
+    if (!made.ok) throw new Error('add_internal failed');
+    const s = (made.payload as { session: SessionResourceSnapshot }).session;
+    const internalId = s.issueTree?.nodes.find((n) => n.title === '조사')?.id as string;
+    const moved = run(s, [{ action: 'move', resourceType: 'pr', node: `${GH}/pull/7`, parent: internalId }]);
+    if (!moved.ok) throw new Error('move failed');
+    const s2 = (moved.payload as { session: SessionResourceSnapshot }).session;
+    const r = run(s2, [{ action: 'remove', resourceType: 'issue', url: internalId }]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const after = (r.payload as { session: SessionResourceSnapshot }).session;
+    expect(after.issueTree?.nodes.some((n) => n.id === internalId)).toBe(false);
+    expect(parentOf(after, `${GH}/pull/7`)).toBeDefined();
+    expect(after.issues).toEqual(s2.issues);
+    expect(after.active).toEqual(s2.active);
+  });
+
   it('refuses what would break the tree, naming why', () => {
     const r = run(snapshotWithTree(), [{ action: 'move', resourceType: 'pr', node: `${GH}/pull/7`, parent: null }]);
     expect(r).toMatchObject({

@@ -280,6 +280,8 @@ export interface IssueTreeView {
   nodes: IssueTreeViewNode[];
   /** The next internal issue number — so a preview made from the view numbers a new internal issue as the host will. */
   nextInternal?: number;
+  /** The session's title (the seed's) — so a seed the preview makes is titled as the host titles it. */
+  title?: string;
 }
 
 export interface SessionResourceSnapshot {

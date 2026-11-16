@@ -120,12 +120,14 @@ export function createCodeChangesService<S extends SessionLike>(deps: CodeChange
     deps.persist(key);
     if (deps.issueTree) {
       try {
-        // A merged PR's stored record is reused without a read: it tells nothing new about its relations (the
-        // reconciler may have read an edited body since), so only this collect's reads carry them.
-        const read = result.doc.prs.map((pr) =>
-          pr.fetchedAt >= readFrom ? pr : { ...pr, closes: undefined, baseRef: undefined },
+        // Each PR's relations with the time of the read behind them: this collect's start for a fresh read; a merged
+        // record reused from the store keeps its own older read — a newer read (the reconciler's) wins over it, and a
+        // node recreated since (or a lost delivery) gets them back.
+        const prs = result.doc.prs;
+        const entries = prTreeEntries(prs).map((e, i) =>
+          e.rel && Object.keys(e.rel).length ? { ...e, relReadAt: Math.min(readFrom, prs[i].fetchedAt) } : e,
         );
-        deps.issueTree.note(key, prTreeEntries(read, readFrom));
+        deps.issueTree.note(key, entries);
       } catch (error) {
         deps.logger?.debug('issue tree: PR relations not noted', { key, error: (error as Error)?.message });
       }
