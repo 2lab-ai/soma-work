@@ -353,6 +353,228 @@ describe('SlackHandler — resume after an auto-compact stop (T3)', () => {
   });
 
   /**
+   * dev 2026-11-15 19:34Z (work:C0AKY7W2UGZ:1794756692.798509) — the turn an
+   * auto-compact stop cut does not always belong to the dispatcher run. A
+   * `/compact` turn replays the message the compaction parked from its own
+   * teardown, and that replay runs INSIDE the `/compact` turn's run (the busy
+   * fence runs a `compactRedispatch` live). When the replay crosses the trigger
+   * again and is stopped by `auto-compact`, the run itself settles on the
+   * `/compact` turn's outcome — `safe` — so its boundary never resumed the
+   * work: the session (no goal) sat idle for 8 hours with the flag armed.
+   */
+  describe('a replay inside a /compact run that an auto-compact stop cuts (dev 2026-11-15)', () => {
+    /** The /compact run holds the slot; `during` runs while it does; then it settles safe. */
+    async function compactRunWith(during: () => Promise<void>): Promise<void> {
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const run = handler.handleMessage(message({ ts: '222.900', text: '/compact' }), say());
+      await tick();
+      await during();
+      gate.resolve({ hasPendingChoice: false });
+      await run;
+      await settleTicks();
+    }
+    /** The replay of the parked message, run live inside the busy slot, ending as `stop` says. */
+    async function replay(stop?: string): Promise<void> {
+      const controller = new AbortController();
+      initialize.mockImplementationOnce(async () => ({
+        session: registrySession,
+        sessionKey: SESSION_KEY,
+        isNewSession: false,
+        userName: 'Owner',
+        workingDirectory: '/tmp/work',
+        abortController: controller,
+        halted: false,
+      }));
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const replayed = handler.handleMessage(
+        message({ ts: '222.901', text: '압축 전에 하던 지시', routeContext: { compactRedispatch: true } }),
+        say(),
+      );
+      await tick();
+      if (stop) controller.abort(stop);
+      gate.resolve({ hasPendingChoice: false });
+      await replayed;
+    }
+
+    it('resumes the work when the /compact run settles', async () => {
+      await compactRunWith(() => replay('auto-compact'));
+
+      expect(routedTexts()).toContain('압축 전에 하던 지시');
+      expect(resumed()).toBe(true);
+    });
+
+    it('does not resume after a replay that ended on its own', async () => {
+      await compactRunWith(() => replay());
+
+      expect(resumed()).toBe(false);
+    });
+
+    it('leaves a goal session to its goal loop', async () => {
+      registrySession.goal = { goalId: 'g1', objective: '$fix', status: 'active', createdBy: 'U_OWNER' };
+      await compactRunWith(() => replay('auto-compact'));
+
+      expect(resumed()).toBe(false);
+    });
+
+    it('does not resume when a person stopped the session after the cut', async () => {
+      await compactRunWith(async () => {
+        registrySession.autoCompactStoppedAtMs = Date.now() - 1000;
+        await replay('auto-compact');
+        registrySession.lastStopAtMs = Date.now();
+      });
+
+      expect(resumed()).toBe(false);
+    });
+
+    it('a queued message drained as a /compact run whose replay is cut resumes at the drain boundary (R1, all three)', async () => {
+      // Turn A holds the slot; a message is queued behind it; the armed flag makes that message a /compact run.
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const first = handler.handleMessage(message({ ts: '222.800', text: '긴 작업' }), say());
+      await tick();
+      await handler.handleMessage(message({ ts: '222.801', text: '큐에 넣은 지시' }), say());
+      // The drained run: its /compact turn replays the parked message, and the replay is cut again.
+      startWithContinuation.mockImplementationOnce(async () => {
+        await replay('auto-compact');
+        return { hasPendingChoice: false };
+      });
+      gate.resolve({ hasPendingChoice: false });
+      await first;
+      await settleTicks();
+
+      expect(routedTexts()).toContain('큐에 넣은 지시');
+      expect(routedTexts()).toContain('압축 전에 하던 지시');
+      expect(resumed()).toBe(true);
+    });
+
+    it("a stop inside a run that failed is that run's own end — and a later unrelated run does not resume it", async () => {
+      lastTurnSucceeded = false;
+      await compactRunWith(() => replay('auto-compact'));
+      lastTurnSucceeded = true;
+      expect(resumed()).toBe(false);
+
+      handlerAny.followupDispatcher.clearDrainHalt(SESSION_KEY, 'retry');
+      await handler.handleMessage(message({ ts: '222.990', text: '무관한 다음 지시' }), say());
+      await settleTicks();
+
+      expect(resumed()).toBe(false);
+    });
+
+    it('a message queued during the replay runs next instead — no second continuation', async () => {
+      await compactRunWith(async () => {
+        await replay('auto-compact');
+        await handler.handleMessage(message({ ts: '222.950', text: '세번째 지시' }), say());
+        await tick();
+      });
+
+      expect(routedTexts()).toContain('세번째 지시');
+      expect(resumed()).toBe(false);
+    });
+
+    /**
+     * A message waiting in an idle lane is drained by `start` as a /compact run
+     * (the armed flag), and that run's replay of the parked message is cut again.
+     */
+    async function drainedCompactRunCut(start: () => Promise<unknown>): Promise<void> {
+      handlerAny.followupQueue.enqueue(SESSION_KEY, message({ ts: '222.960', text: '큐에 남은 지시' }));
+      startWithContinuation.mockImplementationOnce(async () => {
+        await replay('auto-compact');
+        return { hasPendingChoice: false };
+      });
+      await start();
+      await until(resumed);
+      await settleTicks();
+    }
+    const continuations = () => routedTexts().filter((t) => /\[auto-compact\]/.test(t));
+
+    it('Resume / Retry: a drained /compact run whose replay is cut resumes the work at the click boundary', async () => {
+      await drainedCompactRunCut(() => runDrain());
+
+      expect(routedTexts()).toContain('큐에 남은 지시');
+      expect(routedTexts()).toContain('압축 전에 하던 지시');
+      expect(continuations()).toHaveLength(1);
+    });
+
+    it('restart drain: a requeued /compact run whose replay is cut resumes the work at its boundary', async () => {
+      await drainedCompactRunCut(async () => {
+        expect(handlerAny.drainIdleRestartRequeued([SESSION_KEY])).toBe(1);
+      });
+
+      expect(routedTexts()).toContain('큐에 남은 지시');
+      expect(routedTexts()).toContain('압축 전에 하던 지시');
+      expect(continuations()).toHaveLength(1);
+    });
+
+    /** A dispatcher report of generation `turnEpoch` ending as `outcome`. */
+    const reportOf = (turnEpoch: number, outcome: { result: string; reason?: string }, canDrain = false) => ({
+      sessionKey: SESSION_KEY,
+      runId: 100 + turnEpoch,
+      turnEpoch,
+      kind: 'drain',
+      outcome,
+      canDrain,
+    });
+
+    /** The lane's current turn generation (the last run the dispatcher started). */
+    const currentEpoch = (): number => handlerAny.followupDispatcher.snapshot(SESSION_KEY).turnEpoch;
+
+    it("an older run's late boundary does not take the mark of a stop inside a newer run (R2 astra P1)", async () => {
+      // A run on the lane; a replay inside it was cut. The previous generation's epilogue is still settling.
+      await handler.handleMessage(message({ ts: '222.970', text: '앞선 지시' }), say());
+      await settleTicks();
+      const newer = currentEpoch();
+      handlerAny.nestedAutoCompactStops.set(SESSION_KEY, newer);
+
+      await handlerAny.drainFollowups(SESSION_KEY, reportOf(newer - 1, { result: 'error', reason: 'boom' }));
+      await settleTicks();
+      expect(resumed()).toBe(false);
+      expect(handlerAny.nestedAutoCompactStops.get(SESSION_KEY)).toBe(newer);
+
+      // The newer run's own boundary takes it and carries the work on — once.
+      await handlerAny.drainFollowups(SESSION_KEY, reportOf(newer, { result: 'safe' }));
+      await until(resumed);
+      expect(resumed()).toBe(true);
+      expect(handlerAny.nestedAutoCompactStops.has(SESSION_KEY)).toBe(false);
+      expect(routedTexts().filter((t) => /\[auto-compact\]/.test(t))).toHaveLength(1);
+    });
+
+    it('a boundary that settles after a newer run already started adds no continuation (R3 astra P2)', async () => {
+      // Run A: a replay inside it was cut; A settled safe, but its boundary is still settling.
+      await handler.handleMessage(message({ ts: '222.980', text: '런 A' }), say());
+      await settleTicks();
+      const runA = currentEpoch();
+      handlerAny.nestedAutoCompactStops.set(SESSION_KEY, runA);
+      // Meanwhile a person's message starts run B, which carries the conversation on and completes.
+      await handler.handleMessage(message({ ts: '222.981', text: '런 B' }), say());
+      await settleTicks();
+      expect(currentEpoch()).toBeGreaterThan(runA);
+      expect(routedTexts()).toContain('런 B');
+
+      // A's boundary finally runs.
+      await handlerAny.drainFollowups(SESSION_KEY, reportOf(runA, { result: 'safe' }));
+      await settleTicks();
+      expect(resumed()).toBe(false);
+    });
+
+    it("Send now that ends unhealthy: the stop inside it is that run's own end — a later run does not resume it (R2 astra P2)", async () => {
+      handlerAny.nestedAutoCompactStops.set(SESSION_KEY, 7);
+
+      handlerAny.followupActionDeps.chainSettled(SESSION_KEY, reportOf(7, { result: 'error', reason: 'boom' }));
+      await settleTicks();
+      expect(handlerAny.nestedAutoCompactStops.has(SESSION_KEY)).toBe(false);
+      expect(resumed()).toBe(false);
+
+      handlerAny.followupDispatcher.clearDrainHalt(SESSION_KEY, 'retry');
+      await handler.handleMessage(message({ ts: '222.991', text: '무관한 다음 지시' }), say());
+      await settleTicks();
+      expect(routedTexts()).toContain('무관한 다음 지시');
+      expect(resumed()).toBe(false);
+    });
+  });
+
+  /**
    * A Stop the user pressed after the auto-compact stop is the last word: the
    * automatic continuation must not start the work again. The Stop can land in
    * the window between the stop and the boundary (here: before the turn's slot
