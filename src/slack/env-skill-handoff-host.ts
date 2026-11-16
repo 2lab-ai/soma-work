@@ -33,6 +33,13 @@ export const MAX_UNPRODUCTIVE_WAKES = 3;
 /** Settled tool results remembered (one result handled twice runs once). A run still going is always remembered. */
 const REMEMBERED_RESULTS = 200;
 
+/**
+ * How long a request waiting for an admin keeps its dedupe entry: the life of its card (the skill permission request
+ * store's 24 h TTL). Approved later, the card runs the request through the typed path; a late duplicate of the same
+ * tool result must still find the entry and not start it a second time.
+ */
+const AWAITING_PROTECT_MS = 24 * 60 * 60 * 1000;
+
 /** Pending (awaiting-admin) requests remembered, so the same one does not wake the session again. */
 const REMEMBERED_PENDING = 500;
 
@@ -149,8 +156,14 @@ interface HandOffResult {
 export function createEnvSkillHandoffHost(
   deps: EnvSkillHandoffHostDeps,
 ): (request: EnvSkillHandoffRequest) => Promise<EnvSkillHandoffOutcome> {
-  /** By tool result. `active` until the hand-off settled and any run it started ended — those are never evicted. */
-  const handled = new Map<string, { outcome: Promise<EnvSkillHandoffOutcome>; active: boolean }>();
+  /**
+   * By tool result. `active` until the hand-off settled and any run it started ended, and a request waiting for an
+   * admin protected until its card expires ({@link AWAITING_PROTECT_MS}) — neither is evicted.
+   */
+  const handled = new Map<
+    string,
+    { outcome: Promise<EnvSkillHandoffOutcome>; active: boolean; protectUntil: number }
+  >();
   /**
    * What a session has used of its wake budget, and the waiting-for-an-admin requests it was already told about —
    * per session, not per key: a thread closed and opened again is a new session at the same key, and what the old one
@@ -246,7 +259,8 @@ export function createEnvSkillHandoffHost(
       // Progress only once the run really went: a launch that fails (no thread, the run threw) counts against the
       // no-progress budget like a rejection, or a launch that keeps failing would wake the session forever.
       const finished = result.environmentRun.finished.then((end) => {
-        if (end.ok) madeProgress(request.sessionKey, current);
+        // Only the session that asked: a run a closed session started must not reset its successor's budget.
+        if (end.ok && current()) madeProgress(request.sessionKey, current);
         tell(request, current, end.ok, endedText(skill, check.owner, end));
       });
       return { outcome: { status: 'started', owner: check.owner }, finished };
@@ -271,11 +285,12 @@ export function createEnvSkillHandoffHost(
     return { outcome: { status: 'rejected', owner: check.owner, reason } };
   };
 
-  /** Forget the oldest settled entries past {@link REMEMBERED_RESULTS}; an active one is kept whatever its age. */
+  /** Forget the oldest settled entries past {@link REMEMBERED_RESULTS}; an active or protected one is kept. */
   const evict = (): void => {
+    const now = Date.now();
     for (const [id, entry] of handled) {
       if (handled.size <= REMEMBERED_RESULTS) return;
-      if (!entry.active) handled.delete(id);
+      if (!entry.active && entry.protectUntil <= now) handled.delete(id);
     }
   };
 
@@ -284,7 +299,11 @@ export function createEnvSkillHandoffHost(
     if (seen) return seen.outcome;
     // The session that asked, captured now — never the one there when the run ends.
     const current = deps.captureSession(request.sessionKey);
-    const entry = { outcome: undefined as unknown as Promise<EnvSkillHandoffOutcome>, active: true };
+    const entry = {
+      outcome: undefined as unknown as Promise<EnvSkillHandoffOutcome>,
+      active: true,
+      protectUntil: 0,
+    };
     const settle = (): void => {
       entry.active = false;
       evict();
@@ -297,6 +316,7 @@ export function createEnvSkillHandoffHost(
         return { outcome: { status: 'rejected', reason } };
       })
       .then(({ outcome, finished }) => {
+        if (outcome.status === 'awaiting_admin') entry.protectUntil = Date.now() + AWAITING_PROTECT_MS;
         if (finished) void finished.then(settle, settle);
         else settle();
         return outcome;
