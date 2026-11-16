@@ -866,19 +866,6 @@ export class ClaudeHandler implements TurnSteeringPort {
   }
 
   /**
-   * Record merge code change stats for a PR in this session.
-   */
-  addMergeStats(
-    channelId: string,
-    threadTs: string | undefined,
-    prNumber: number,
-    linesAdded: number,
-    linesDeleted: number,
-  ): void {
-    this.sessionRegistry.addMergeStats(channelId, threadTs, prNumber, linesAdded, linesDeleted);
-  }
-
-  /**
    * Mark a session as bot-initiated with its root message ts
    */
   setBotThread(channelId: string, threadTs: string | undefined, rootTs: string): void {

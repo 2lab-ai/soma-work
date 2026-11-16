@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { interceptToolResults, parseGitCommitResult } from '../tool-result-interceptor';
+import { interceptToolResults } from '../tool-result-interceptor';
 
 // Contract tests — Scenario 3 (extended): ToolResultInterceptor
 // Trace: docs/archive/features/daily-weekly-report/trace.md
@@ -25,55 +25,22 @@ describe('ToolResultInterceptor', () => {
     vi.clearAllMocks();
   });
 
-  describe('parseGitCommitResult', () => {
-    it('parses standard git commit output', () => {
-      const output = `[main abc1234f] feat: add daily report
- 3 files changed, 50 insertions(+), 10 deletions(-)`;
-      const result = parseGitCommitResult(output);
-      expect(result).toEqual({ sha: 'abc1234f', linesAdded: 50, linesDeleted: 10 });
-    });
-
-    it('parses commit with branch name containing slashes', () => {
-      const output = `[feat/daily-report b6848d3] fix: update scheduler
- 1 file changed, 5 insertions(+)`;
-      const result = parseGitCommitResult(output);
-      expect(result).toEqual({ sha: 'b6848d3', linesAdded: 5, linesDeleted: 0 });
-    });
-
-    it('returns null for non-commit output', () => {
-      expect(parseGitCommitResult('On branch main')).toBeNull();
-      expect(parseGitCommitResult('nothing to commit')).toBeNull();
-    });
-
-    it('handles singular insertion/deletion', () => {
-      const output = `[main abc1234] fix typo
- 1 file changed, 1 insertion(+), 1 deletion(-)`;
-      const result = parseGitCommitResult(output);
-      expect(result).toEqual({ sha: 'abc1234', linesAdded: 1, linesDeleted: 1 });
-    });
-  });
-
   describe('interceptToolResults', () => {
-    it('emits commit_created and code_lines_added on git commit', () => {
-      const toolResults = [
-        {
-          toolName: 'Bash',
-          toolUseId: 'tu-1',
-          result: `[main abc1234] feat: add feature
- 3 files changed, 100 insertions(+), 20 deletions(-)`,
-        },
-      ];
-
-      interceptToolResults(toolResults, 'U123', 'TestUser', 'session-key');
-
-      expect(mockEmitter.emitGitHubEvent).toHaveBeenCalledTimes(2);
-      // First call: commit_created
-      expect(mockEmitter.emitGitHubEvent.mock.calls[0][0]).toBe('commit_created');
-      expect(mockEmitter.emitGitHubEvent.mock.calls[0][4]).toEqual(
-        expect.objectContaining({ commitSha: 'abc1234', linesAdded: 100, linesDeleted: 20 }),
+    it('command output is not a code-change metric (.prd/26 §5): git commit and gh pr view --json additions', () => {
+      interceptToolResults(
+        [
+          {
+            toolName: 'Bash',
+            toolUseId: 'c',
+            result: '[main abc1234] feat: add feature\n 3 files changed, 100 insertions(+), 20 deletions(-)',
+          },
+          { toolName: 'Bash', toolUseId: 'v', result: '{"additions":150,"deletions":30,"number":12}' },
+        ],
+        'U123',
+        'TestUser',
+        'session-key',
       );
-      // Second call: code_lines_added
-      expect(mockEmitter.emitGitHubEvent.mock.calls[1][0]).toBe('code_lines_added');
+      expect(mockEmitter.emitGitHubEvent).not.toHaveBeenCalled();
     });
 
     it('emits pr_created and pr_merged from the write effects (#832), for any tool', () => {
@@ -83,7 +50,7 @@ describe('ToolResultInterceptor', () => {
         provider: 'github' as const,
         label: `PR #${n}`,
       });
-      interceptToolResults([], 'U123', 'TestUser', 'session-key', undefined, [
+      interceptToolResults([], 'U123', 'TestUser', 'session-key', [
         { op: 'create', link: pr(81) },
         { op: 'merge', link: pr(82) },
         // A close and an issue are not PR metrics.
@@ -138,22 +105,6 @@ describe('ToolResultInterceptor', () => {
 
       interceptToolResults(toolResults, 'U123', 'TestUser', 'session-key');
       expect(mockEmitter.emitGitHubEvent).not.toHaveBeenCalled();
-    });
-
-    it('does not emit code_lines_added when linesAdded is 0', () => {
-      const toolResults = [
-        {
-          toolName: 'Bash',
-          toolUseId: 'tu-5',
-          result: `[main abc1234] empty commit
- 0 files changed`,
-        },
-      ];
-
-      interceptToolResults(toolResults, 'U123', 'TestUser', 'session-key');
-      // Only commit_created, no code_lines_added
-      expect(mockEmitter.emitGitHubEvent).toHaveBeenCalledTimes(1);
-      expect(mockEmitter.emitGitHubEvent.mock.calls[0][0]).toBe('commit_created');
     });
   });
 });

@@ -37,6 +37,7 @@ import {
   withAck,
 } from 'somalib/model-commands/host-receipt';
 import { parseUserActionRecord, restoreUserActions } from 'somalib/user-action/user-action';
+import { addMergedPr, type MergedPr, type MergeRecord, mergeRecordOf } from './code-changes/metrics';
 import { sanitizeCodeChangesSummary } from './code-changes/summary';
 import { DATA_DIR } from './env-paths';
 import { isPlaceholderSessionTitle, sanitizeSessionTitle } from './format/display-title';
@@ -375,6 +376,8 @@ interface SerializedSession {
     totalLinesDeleted: number;
     mergedPRs: Array<{
       prNumber: number;
+      /** The PR's URL (since .prd/26): a record without one was written by the old command-output parser. */
+      prUrl?: string;
       linesAdded: number;
       linesDeleted: number;
       mergedAt: number;
@@ -2344,40 +2347,30 @@ export class SessionRegistry {
     return true;
   }
 
-  /**
-   * Record merge code change stats (lines added/deleted) for a merged PR in this session.
-   */
-  addMergeStats(
-    channelId: string,
-    threadTs: string | undefined,
-    prNumber: number,
-    linesAdded: number,
-    linesDeleted: number,
-  ): void {
-    this.addMergeStatsOn(this.getSession(channelId, threadTs), prNumber, linesAdded, linesDeleted);
+  private sessionPrUrlsOf(session: ConversationSession): string[] {
+    return [session.links?.pr?.url, ...(session.linkHistory?.prs ?? []).map((l) => l?.url)].filter(
+      (u): u is string => typeof u === 'string',
+    );
   }
 
-  private addMergeStatsOn(
-    session: ConversationSession | undefined,
-    prNumber: number,
-    linesAdded: number,
-    linesDeleted: number,
-  ): void {
-    if (!session) return;
+  /** .prd/26 §5 — how this session's `mergeStats` holds a merged PR now (`mergeRecordOf`). */
+  mergeRecordByKey(sessionKey: string, pr: MergedPr): MergeRecord {
+    const session = this.getSessionByKey(sessionKey);
+    if (!session?.mergeStats) return undefined;
+    return mergeRecordOf(session.mergeStats, pr, this.sessionPrUrlsOf(session));
+  }
 
-    if (!session.mergeStats) {
-      session.mergeStats = { totalLinesAdded: 0, totalLinesDeleted: 0, mergedPRs: [] };
-    }
-
-    session.mergeStats.totalLinesAdded += linesAdded;
-    session.mergeStats.totalLinesDeleted += linesDeleted;
-    session.mergeStats.mergedPRs.push({
-      prNumber,
-      linesAdded,
-      linesDeleted,
-      mergedAt: Date.now(),
-    });
+  /**
+   * .prd/26 §5 — a merged PR of this session, once, with GitHub's counts (`addMergedPr`: added, or an old parser's record
+   * of it replaced). True when the stats changed.
+   */
+  recordMergedPrByKey(sessionKey: string, pr: MergedPr): boolean {
+    const session = this.getSessionByKey(sessionKey);
+    if (!session) return false;
+    session.mergeStats ??= { totalLinesAdded: 0, totalLinesDeleted: 0, mergedPRs: [] };
+    if (!addMergedPr(session.mergeStats, pr, this.sessionPrUrlsOf(session))) return false;
     this.saveSessions();
+    return true;
   }
 
   /**
@@ -2813,6 +2806,7 @@ export class SessionRegistry {
       },
       instructions: (session.instructions || []).map((i) => ({ ...i })),
       sequence: session.linkSequence ?? 0,
+      ...(session.codeChanges ? { codeChanges: structuredClone(session.codeChanges) } : {}),
     };
   }
 

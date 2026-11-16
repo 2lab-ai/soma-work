@@ -235,6 +235,61 @@ describe('UPDATE_SESSION instructionOperations are gated for user y/n', () => {
   });
 });
 
+describe('GET_SESSION carries the session’s code changes (.prd/26 §6, #1297)', () => {
+  const codeChanges = {
+    updatedAt: 1794756694405,
+    layers: {
+      uncommitted: { files: 2, additions: 10, deletions: 1 },
+      committed: { files: 0, additions: 0, deletions: 0 },
+      pr: { files: 3, additions: 30, deletions: 2 },
+      merged: { files: 0, additions: 0, deletions: 0 },
+    },
+    repos: [
+      {
+        repo: 'acme/web',
+        dir: 'web',
+        uncommitted: { files: 2, additions: 10, deletions: 1 },
+        committed: { files: 0, additions: 0, deletions: 0, commits: 0 },
+        paths: ['src/a.ts', 'src/b.ts'],
+      },
+    ],
+    prs: [
+      {
+        url: 'https://github.com/acme/web/pull/1',
+        number: 1,
+        repo: 'acme/web',
+        state: 'open' as const,
+        additions: 30,
+        deletions: 2,
+        changedFiles: 3,
+      },
+    ],
+  };
+
+  it('returns codeChanges from the session snapshot as given', () => {
+    const ctx = makeContext({ session: { ...getDefaultSessionSnapshot(), codeChanges } });
+    const result = runModelCommand({ commandId: 'GET_SESSION', params: undefined } as ModelCommandRunRequest, ctx);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect((result.payload as { session: { codeChanges?: unknown } }).session.codeChanges).toEqual(codeChanges);
+  });
+
+  it('a session with no collect yet has no codeChanges key', () => {
+    const result = runModelCommand(
+      { commandId: 'GET_SESSION', params: undefined } as ModelCommandRunRequest,
+      makeContext(),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect((result.payload as { session: object }).session).not.toHaveProperty('codeChanges');
+  });
+
+  it('the GET_SESSION description names it', () => {
+    const d = listModelCommands(makeContext()).find((c) => c.id === 'GET_SESSION');
+    expect(d?.description).toContain('codeChanges');
+  });
+});
+
 describe('GET_SESSION includes title', () => {
   it('returns title from context', () => {
     const ctx = makeContext({ sessionTitle: 'Existing Title' });

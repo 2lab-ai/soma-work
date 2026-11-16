@@ -138,6 +138,9 @@ export function readHostReceipt(file: string): HostReceipt | undefined {
           )
         : [],
       sequence: typeof s.sequence === 'number' && Number.isFinite(s.sequence) ? s.sequence : r.sequence,
+      ...(s.codeChanges && typeof s.codeChanges === 'object' && typeof s.codeChanges.updatedAt === 'number'
+        ? { codeChanges: s.codeChanges }
+        : {}),
     },
     ...(typeof title === 'string' ? { title } : {}),
     ...(Array.isArray(tldr) && tldr.every((l) => typeof l === 'string') ? { tldr } : {}),

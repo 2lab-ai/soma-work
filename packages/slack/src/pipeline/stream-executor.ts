@@ -122,6 +122,7 @@ import { UserChoiceHandler } from '../user-choice-handler';
 import type { TurnAttachment } from '../user-media';
 import type { WorkLogInput } from '../work-log';
 import { decideBackgroundWaitContinuation, getBackgroundWaitCap, type LiveBackgroundWork } from './background-wait';
+import { type CodeChangesContextInput, uncommittedChangesContext } from './code-changes-context';
 import { appendDisplayLangTag } from './display-lang-tag';
 import { shouldForwardAsLocalSlashCommand } from './local-slash-command';
 import { SESSION_TITLE_PENDING_NOTICE, shouldInjectSessionTitleNotice } from './session-title-notice';
@@ -1219,6 +1220,7 @@ export class StreamExecutor {
     workingDirectory: string,
     threadTs?: string,
     mentionTs?: string,
+    codeChanges?: CodeChangesContextInput,
   ): Promise<string> {
     // Prepare the prompt with file attachments
     const rawPrompt =
@@ -1228,7 +1230,7 @@ export class StreamExecutor {
     let finalPrompt = `<speaker>${userName}</speaker>\n${rawPrompt}`;
 
     // Inject user and environment context
-    const contextInfo = this.getContextInfo(userId, workingDirectory);
+    const contextInfo = this.getContextInfo(userId, workingDirectory, codeChanges);
     if (contextInfo) {
       finalPrompt = `${finalPrompt}\n\n${contextInfo}`;
     }
@@ -1718,6 +1720,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           workingDirectory,
           threadTs,
           params.mentionTs,
+          session.codeChanges,
         );
       }
 
@@ -2321,20 +2324,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             githubWriteStarts.delete(tr.toolUseId);
             githubWriteInputs.delete(tr.toolUseId);
           }
-          // Metrics: the git commands in Bash output now (fire-and-forget) — every agent's; the PR effects (pr_created,
-          // pr_merged) when GitHub confirms them, like the card.
+          // Metrics: the PR effects (pr_created, pr_merged) when GitHub confirms them, like the card.
           const recordMetrics = (results: typeof allToolResults, confirmed: ReadonlyArray<GitHubEffect>) => {
-            interceptToolResults(
-              results,
-              session.ownerId,
-              session.ownerName || 'unknown',
-              ctx.sessionKey,
-              // Callback to record merge stats into session
-              (_sessionKey: string, prNumber: number, linesAdded: number, linesDeleted: number) => {
-                this.deps.claudeHandler.addMergeStats(ctx.channel, ctx.threadTs, prNumber, linesAdded, linesDeleted);
-              },
-              confirmed,
-            );
+            // Code-change lines come from the session's code changes (.prd/26 §5), not from command output.
+            interceptToolResults(results, session.ownerId, session.ownerName || 'unknown', ctx.sessionKey, confirmed);
           };
           recordMetrics(allToolResults, []);
           const noteOnCard = (confirmed: ReadonlyArray<GitHubEffect>) => {
@@ -5975,7 +5968,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   /**
    * Build context info including user info and environment
    */
-  private getContextInfo(userId: string, workingDirectory: string): string {
+  private getContextInfo(userId: string, workingDirectory: string, codeChanges?: CodeChangesContextInput): string {
     const settings = userSettingsStore.getUserSettings(userId);
     const slackName = settings?.slackName;
     const jiraName = userSettingsStore.getUserJiraName(userId);
@@ -6010,6 +6003,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Environment context - always include cwd and timestamp
     contextItems.push(`  <cwd>${workingDirectory}</cwd>`);
     contextItems.push(`  <timestamp>${new Date().toISOString()}</timestamp>`);
+
+    // .prd/26 §6 — work the session left uncommitted or outside a PR (only when there is some).
+    const pending = uncommittedChangesContext(codeChanges);
+    if (pending) contextItems.push(pending.replace(/^/gm, '  '));
 
     return ['<context>', ...contextItems, '</context>'].join('\n');
   }

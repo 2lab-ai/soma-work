@@ -306,6 +306,49 @@ describe('collectCodeChanges', () => {
   });
 });
 
+describe('the counting start (#1301 review)', () => {
+  it('is fixed at the first call and kept; commits before it are not read for the metrics', async () => {
+    const s = store();
+    expect(s.countingSince(() => 111)).toBe(111);
+    expect(s.countingSince(() => 999)).toBe(111);
+    const readCheckout = vi.fn(async () => checkout());
+    await collectCodeChanges(
+      {
+        conversationId: 'c9',
+        owner: { id: 'U', name: 'u' },
+        dirs: ['/s'],
+        startedAt: 50,
+        commitsSince: 111,
+        prUrls: [],
+      },
+      {
+        ...prDeps({}),
+        store: s,
+        listCheckoutDirs: async () => ({ dirs: ['/s/web'] }),
+        checkoutChanges: readCheckout,
+      },
+    );
+    expect(readCheckout).toHaveBeenCalledWith(
+      expect.objectContaining({ dir: '/s/web', commits: { since: 111, skip: expect.any(Set) } }),
+    );
+    // A session that started after the counting start: its own start bounds the commits.
+    await collectCodeChanges(
+      {
+        conversationId: 'c10',
+        owner: { id: 'U', name: 'u' },
+        dirs: ['/s'],
+        startedAt: 500,
+        commitsSince: 111,
+        prUrls: [],
+      },
+      { ...prDeps({}), store: s, listCheckoutDirs: async () => ({ dirs: ['/s/web'] }), checkoutChanges: readCheckout },
+    );
+    expect(readCheckout).toHaveBeenLastCalledWith(
+      expect.objectContaining({ commits: { since: 500, skip: expect.any(Set) } }),
+    );
+  });
+});
+
 describe('store + summary', () => {
   it('round trip; an unsafe id is neither read nor written', () => {
     const s = store();

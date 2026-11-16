@@ -59,7 +59,9 @@ import { isLlmuxUp } from './auth/llmux-client';
 import { setQueryEnvAdditional } from './auth/query-env-builder';
 import { getAllChannels, getChannel, scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
+import { emitCodeMetrics, sessionMergeSink } from './code-changes/metrics';
 import { createCodeChangesService } from './code-changes/service';
+import { getCodeChangesStore } from './code-changes/store';
 import {
   config,
   getIncidentTrustedSource,
@@ -147,6 +149,7 @@ import {
 import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 import { startLinkLeakReport, startReportScheduler, stopLinkLeakReport, stopReportScheduler } from './metrics';
+import { getMetricsEmitter } from './metrics/event-emitter';
 import { MetricsEventStore } from './metrics/event-store';
 import { creatorDays, creatorsOf, fetchBotItems } from './metrics/link-leak-report';
 import { calculateTokenCost, hasModelPricing } from './metrics/model-registry';
@@ -1742,6 +1745,18 @@ async function start() {
       allSessions: () => claudeHandler.getSessionRegistry().getAllSessions().entries(),
       persist: (key) => claudeHandler.getSessionRegistry().persistAndBroadcast(key),
       pushCard: (key) => scheduleLiveSessionUpdate(key),
+      // .prd/26 §5 (#1297) — the code-change metrics: merges and commits the collect found new, once each.
+      onResult: (key, session, result) =>
+        emitCodeMetrics(
+          result,
+          { userId: session.ownerId ?? '', userName: session.ownerName || 'unknown', sessionKey: key },
+          {
+            emitter: getMetricsEmitter(),
+            ...sessionMergeSink(claudeHandler.getSessionRegistry(), key, session),
+            countingSince: getCodeChangesStore().countingSince(),
+            logger,
+          },
+        ),
       logger,
     });
     // After the turn's PR reconcile settles: a PR it finds goes in the PR layer, not the committed one (#1299 review).
@@ -2119,12 +2134,16 @@ async function start() {
           }
         },
         fetchPull: fetchGitHubPullState,
-        updateStatus: (sessionKey, url, status) =>
-          prWatchRegistry.noteSessionLinksByKey(
+        updateStatus: (sessionKey, url, status) => {
+          const changed = prWatchRegistry.noteSessionLinksByKey(
             sessionKey,
             [{ url, type: 'pr', provider: 'github', status }],
             'update',
-          ),
+          );
+          // .prd/26 §5 — a merge seen between turns: collect the session's changes again, so the merge's lines count.
+          if (changed && status === 'merged') codeChanges.snapshot({ sessionKey });
+          return changed;
+        },
         pushCard: (sessionKey) => scheduleLiveSessionUpdate(sessionKey),
         notify: async (sessionKey, text) => {
           const s = prWatchRegistry.getSessionByKey(sessionKey);

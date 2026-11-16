@@ -375,7 +375,6 @@ describe('StreamExecutor — the links a turn names are recorded on its session'
         _u: string,
         _n: string,
         _k: string,
-        _cb: unknown,
         effects: Array<{ op: string }>,
       ) => {
         intercepted.push([results.length, (effects ?? []).map((e) => e.op)]);

@@ -831,9 +831,16 @@ export interface ConversationSession {
     totalLinesDeleted: number;
     mergedPRs: Array<{
       prNumber: number;
+      /** The PR's URL (since .prd/26): a record without one was written by the old command-output parser. */
+      prUrl?: string;
       linesAdded: number;
       linesDeleted: number;
       mergedAt: number; // Unix ms
+      /**
+       * This record replaced one the old parser wrote, which wrote its own metric row: kept, so a retry never takes the
+       * replaced record for the collector's own and counts the merge a second time.
+       */
+      fromParser?: true;
     }>;
   };
   // Task list timestamps for display in thread header

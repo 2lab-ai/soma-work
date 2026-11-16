@@ -33,6 +33,8 @@ export interface CollectInput {
   /** Every folder the session works in (`sessionDirs`). */
   dirs: string[];
   startedAt?: number;
+  /** Commits made before this are not counted (the host's counting start — CodeChangesStore.countingSince). */
+  commitsSince?: number;
   /** The PR links on the session's card (current first, then history). */
   prUrls: string[];
 }
@@ -141,7 +143,10 @@ export async function collectCodeChanges(input: CollectInput, deps: CollectDeps)
       roots: input.dirs,
       sessionStartedAt: input.startedAt,
       prHeads,
-      ...(input.startedAt !== undefined ? { commits: { since: input.startedAt, skip: counted } } : {}),
+      // Commits before the host's counting start were the old parser's to count (CodeChangesStore.countingSince).
+      ...(input.startedAt !== undefined
+        ? { commits: { since: Math.max(input.startedAt, input.commitsSince ?? 0), skip: counted } }
+        : {}),
     });
     if (!read) continue;
     const { sessionCommits: made, ...changes } = read;

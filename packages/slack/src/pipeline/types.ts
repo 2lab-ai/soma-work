@@ -21,6 +21,8 @@ export interface ProcessedFile {
 
 export interface ConversationSession {
   channelId: string;
+  /** .prd/26 — the session's code changes as of its last collect (somalib `CodeChangesSummary`). */
+  codeChanges?: import('./code-changes-context').CodeChangesContextInput;
   threadTs?: string;
   threadRootTs?: string;
   /**

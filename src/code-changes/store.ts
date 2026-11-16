@@ -118,6 +118,34 @@ export class CodeChangesStore {
     doc.counted = { commits: add(doc.counted.commits, commits), merges: add(doc.counted.merges, merges) };
     this.write(doc);
   }
+
+  /**
+   * When this host started counting commits from the collector (epoch ms), fixed at the first call and kept on disk.
+   * Commits made before it were the old command-output parser's to count (.prd/26 §5): they are not counted again.
+   */
+  countingSince(now: () => number = Date.now): number {
+    const file = path.join(this.baseDir, '.counting-since.json');
+    try {
+      const v = readJsonWithBackup(file, (raw) => {
+        if (typeof raw !== 'number' || !Number.isFinite(raw)) throw new Error('not a time');
+        return raw;
+      });
+      if (v !== undefined) return v;
+    } catch (error) {
+      logger.warn('code-changes counting start unreadable — starting now', { error: (error as Error).message });
+    }
+    // Fixed at the first attempt for this process, and saved again on each call until it is on disk: a restart after a
+    // failed save would otherwise pick a later start and skip the commits in between for good (#1301 review).
+    this.pendingStart ??= now();
+    try {
+      atomicWriteJson(file, this.pendingStart);
+    } catch (error) {
+      logger.warn('code-changes counting start not saved — will try again', { error: (error as Error).message });
+    }
+    return this.pendingStart;
+  }
+
+  private pendingStart: number | undefined;
 }
 
 let _store: CodeChangesStore | undefined;

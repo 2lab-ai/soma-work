@@ -229,7 +229,8 @@ async function copyThenUnlink(src: string, dst: string): Promise<void> {
 /**
  * Merge multiple JSONL buffers into a single deterministic JSONL output.
  *
- * - Deduplicates by `event.id` (later wins — insertion order follows argument order).
+ * - Deduplicates by `event.id` (later wins — insertion order follows argument order — except a line flagged
+ *   `ifAbsent`, which never replaces the one before it; the flag is dropped from the output).
  * - Skips lines that fail JSON.parse or lack `id`/`timestamp` required fields.
  * - Sorts by `(timestamp asc, id asc)` for stable, deterministic output.
  *
@@ -258,8 +259,13 @@ export function mergeJsonl(...contents: string[]): {
         corrupt++;
         continue;
       }
-      if (byId.has(ev.id)) duplicates++;
-      byId.set(ev.id, ev); // later wins
+      const { ifAbsent, ...clean } = ev as MetricsEvent & { ifAbsent?: boolean };
+      if (byId.has(ev.id)) {
+        duplicates++;
+        // A first-writer-wins line never replaces the one before it.
+        if (ifAbsent === true) continue;
+      }
+      byId.set(ev.id, clean as MetricsEvent); // later wins
     }
   }
 
@@ -358,6 +364,9 @@ const IMPORT_BATCH = 500;
 const UPSERT_SQL = `INSERT INTO metrics_events (id, ts, day, event_type, json) VALUES (?, ?, ?, ?, ?)
   ON CONFLICT(id) DO UPDATE SET ts = excluded.ts, day = excluded.day,
     event_type = excluded.event_type, json = excluded.json`;
+/** First writer wins, in one statement: a row already there (written by any process) is left as it is. */
+const INSERT_IF_ABSENT_SQL = `INSERT INTO metrics_events (id, ts, day, event_type, json) VALUES (?, ?, ?, ?, ?)
+  ON CONFLICT(id) DO NOTHING`;
 
 /** One open database per metrics dir (shared by every store instance). */
 const dbs = new Map<string, DatabaseSync>();
@@ -403,6 +412,7 @@ function isValidEvent(ev: unknown): ev is MetricsEvent {
 interface Stmts {
   dayOf: ReturnType<DatabaseSync['prepare']>;
   upsert: ReturnType<DatabaseSync['prepare']>;
+  insertIfAbsent: ReturnType<DatabaseSync['prepare']>;
   bump: ReturnType<DatabaseSync['prepare']>;
 }
 const stmtCache = new WeakMap<DatabaseSync, Stmts>();
@@ -413,6 +423,7 @@ function stmts(db: DatabaseSync): Stmts {
     st = {
       dayOf: db.prepare('SELECT day FROM metrics_events WHERE id = ?'),
       upsert: db.prepare(UPSERT_SQL),
+      insertIfAbsent: db.prepare(INSERT_IF_ABSENT_SQL),
       bump: db.prepare(
         'INSERT INTO metrics_day_rev (day, rev) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET rev = rev + 1',
       ),
@@ -426,10 +437,20 @@ function stmts(db: DatabaseSync): Stmts {
  * Upsert one event and bump the revision of every day it touches (its day,
  * and the day it moved away from), so a changed day is backed up again.
  */
-function upsert(db: DatabaseSync, ev: MetricsEvent, day: string): void {
+function upsert(db: DatabaseSync, ev: MetricsEvent, day: string, ifAbsent = false): void {
   const st = stmts(db);
+  const eventType = typeof ev.eventType === 'string' ? ev.eventType : null;
+  if (ifAbsent) {
+    // A first-writer-wins event (.prd/26 §5): the row already there keeps its owner, session and time — decided by the
+    // insert itself, not by a look before it (another process can write between the two).
+    const done = st.insertIfAbsent.run(ev.id, ev.timestamp, day, eventType, JSON.stringify(ev)) as {
+      changes: number | bigint;
+    };
+    if (Number(done.changes) > 0) st.bump.run(day);
+    return;
+  }
   const prev = st.dayOf.get(ev.id) as { day: string } | undefined;
-  st.upsert.run(ev.id, ev.timestamp, day, typeof ev.eventType === 'string' ? ev.eventType : null, JSON.stringify(ev));
+  st.upsert.run(ev.id, ev.timestamp, day, eventType, JSON.stringify(ev));
   st.bump.run(day);
   if (prev && prev.day !== day) st.bump.run(prev.day);
 }
@@ -506,7 +527,9 @@ async function syncJsonlFilesNow(db: DatabaseSync, metricsDir: string): Promise<
             continue;
           }
           try {
-            upsert(db, ev, day);
+            // A spilled first-writer-wins line keeps the row already there (its flag is not stored).
+            const { ifAbsent, ...clean } = ev as MetricsEvent & { ifAbsent?: boolean };
+            upsert(db, clean as MetricsEvent, day, ifAbsent === true);
             events++;
           } catch (err) {
             // One unbindable event must not hide the rest of the day.
@@ -670,8 +693,11 @@ export class MetricsEventStore {
   /**
    * Append a single event (upsert by id) into its report-day partition.
    * Fire-and-forget safe — errors are logged but not thrown.
+   * `ifAbsent`: keep a row that already has this id as it is (first writer wins). A row spilled to the day file
+   * carries the flag, so the import keeps the first row there too (#1301 review).
+   * `strict`: throw when the event was written nowhere (the database and the day file both failed).
    */
-  async append(event: MetricsEvent): Promise<void> {
+  async append(event: MetricsEvent, opts: { ifAbsent?: boolean; strict?: boolean } = {}): Promise<void> {
     const day = timestampToDateStr(event.timestamp);
     let db: DatabaseSync | null = null;
     try {
@@ -681,18 +707,20 @@ export class MetricsEventStore {
       // still goes to its day file, which a later sync imports.
       logger.error('[metrics] database unavailable — event spilled to the day file', err);
     }
+    // What goes to the day file keeps the first-writer rule for the import (`ifAbsent` on the line, stripped there).
+    const spilled: MetricsEvent = opts.ifAbsent ? ({ ...event, ifAbsent: true } as MetricsEvent) : event;
     try {
       if (!db) {
-        await this.appendJsonl(day, event);
+        await this.appendJsonl(day, spilled);
         return;
       }
       try {
-        upsert(db, event, day);
+        upsert(db, event, day, opts.ifAbsent === true);
       } catch (err) {
         // SQLITE_BUSY/FULL/…: spill to the day file — the next sync sees its
         // size change and imports it, so the event is not lost.
         logger.warn('[metrics] database write failed — event spilled to the day file', err);
-        await this.appendJsonl(day, event);
+        await this.appendJsonl(day, spilled);
         return;
       }
       logger.debug(`Appended event ${event.eventType} for ${day}`);
@@ -707,6 +735,7 @@ export class MetricsEventStore {
       }
     } catch (error) {
       logger.error('Failed to append metrics event', error);
+      if (opts.strict) throw error;
     }
   }
 
@@ -756,16 +785,23 @@ export class MetricsEventStore {
     return events;
   }
 
-  /** JSONL fallback: one day's events in file order; a missing file is an empty day. */
+  /**
+   * JSONL fallback: one day's events in file order; a missing file is an empty day. A first-writer-wins line (`ifAbsent`)
+   * whose id came earlier in the day is not a second event — the day file could not look when it was appended.
+   */
   private async readDay(dateStr: string): Promise<MetricsEvent[]> {
     const filePath = this.getFilePath(dateStr);
     const events: MetricsEvent[] = [];
+    const ids = new Set<string>();
     try {
       const content = await fs.promises.readFile(filePath, 'utf-8');
       const lines = content.split('\n').filter((line) => line.trim().length > 0);
       for (let i = 0; i < lines.length; i++) {
         try {
-          events.push(JSON.parse(lines[i]) as MetricsEvent);
+          const { ifAbsent, ...ev } = JSON.parse(lines[i]) as MetricsEvent & { ifAbsent?: boolean };
+          if (ifAbsent === true && ids.has(ev.id)) continue;
+          ids.add(ev.id);
+          events.push(ev as MetricsEvent);
         } catch {
           logger.warn(`Skipped corrupted line in ${path.basename(filePath)}:${i + 1}`);
         }
