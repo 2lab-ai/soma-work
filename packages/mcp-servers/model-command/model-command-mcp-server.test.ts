@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildModelCommandListResponse,
   buildModelCommandRunResponse,
+  modelCommandToolDefinitions,
   parseModelCommandContext,
   runModelCommandAwaitingHost,
 } from './model-command-mcp-server';
@@ -601,6 +602,55 @@ describe('SET_GOAL — MCP server wire-up (#1082)', () => {
     expect(result.error.code).toBe('INVALID_ARGS');
     const help = (result.error.details as { help?: { commandId?: string } } | undefined)?.help;
     expect(help?.commandId).toBe('SET_GOAL');
+  });
+});
+
+/**
+ * #1304 — RUN_ENV_SKILL through the MCP server process: offered on a turn with a user and a thread, accepted by the
+ * `run` tool's schema, and echoed as `submitted` (the host routes it through SkillForceHandler after the call).
+ */
+describe('RUN_ENV_SKILL — MCP server wire-up (#1304)', () => {
+  const baseSession = { issues: [], prs: [], docs: [], active: {}, sequence: 0 };
+  const turn = { session: baseSession, user: 'U123', channel: 'C1', threadTs: '1.1' };
+
+  it('the run tool accepts every command the catalog offers — RUN_ENV_SKILL included', () => {
+    const run = modelCommandToolDefinitions().find((tool) => tool.name === 'run');
+    const enumIds = (run?.inputSchema as { properties: { commandId: { enum: string[] } } }).properties.commandId.enum;
+    expect(enumIds).toContain('RUN_ENV_SKILL');
+    const offered = buildModelCommandListResponse({ ...turn, renewState: 'pending_save' }).commands.map((c) => c.id);
+    for (const id of offered) expect(enumIds).toContain(id);
+  });
+
+  it('list exposes RUN_ENV_SKILL on a turn with a user, hides it otherwise', () => {
+    expect(buildModelCommandListResponse(turn).commands.map((c) => c.id)).toContain('RUN_ENV_SKILL');
+    expect(buildModelCommandListResponse({ session: baseSession }).commands.map((c) => c.id)).not.toContain(
+      'RUN_ENV_SKILL',
+    );
+  });
+
+  it('run validates and echoes the request as submitted', () => {
+    const result = buildModelCommandRunResponse(
+      { commandId: 'RUN_ENV_SKILL', params: { skill: 'acme-dev2:qa-dev2', text: 'QA 1.4.0..1.4.2' } },
+      { ...turn },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.commandId !== 'RUN_ENV_SKILL') return;
+    expect(result.payload).toMatchObject({
+      status: 'submitted',
+      skill: '$acme-dev2:qa-dev2',
+      request: '$acme-dev2:qa-dev2 QA 1.4.0..1.4.2',
+    });
+  });
+
+  it('a malformed ref fails at once with INVALID_ARGS + help — nothing reaches the host', () => {
+    const result = buildModelCommandRunResponse(
+      { commandId: 'RUN_ENV_SKILL', params: { skill: 'qa-dev2' } },
+      { ...turn },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect((result.error.details as { help?: { commandId?: string } }).help?.commandId).toBe('RUN_ENV_SKILL');
   });
 });
 

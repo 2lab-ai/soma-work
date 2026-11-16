@@ -125,6 +125,28 @@ describe('createSettledDelivery (#929)', () => {
     await vi.advanceTimersByTimeAsync(5000);
     expect(h.injected).toEqual([]);
   });
+
+  // #1304 — a host turn told on someone's behalf (a model's RUN_ENV_SKILL) runs as that someone, not the owner.
+  it('a message delivered for a user reaches inject with that user, after the wait too', async () => {
+    const injected: Array<[string, string, string | undefined]> = [];
+    let state: DeliveryState = 'busy';
+    const d = createSettledDelivery({
+      state: () => state,
+      inject: async (key, text, as) => {
+        injected.push([key, text, as]);
+      },
+      retryMs: 1000,
+    });
+    await d.deliver('s1', 'run ended', undefined, undefined, 'U_REQ');
+    await d.deliver('s2', 'plain');
+    state = 'ready';
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(injected).toEqual([
+      ['s1', 'run ended', 'U_REQ'],
+      ['s2', 'plain', undefined],
+    ]);
+    d.stop();
+  });
 });
 
 describe('entry point wiring (#929 review)', () => {
