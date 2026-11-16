@@ -3173,6 +3173,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     selectPanelMid(id: string): void;
     midNow(): string;
     landedOn(): string | false;
+    keyNow(): string;
     renderPanelPlan(s: Session): void;
   };
 
@@ -3494,13 +3495,14 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         'function deck() { return _deck.slice(); }',
         'function midNow() { return _panelMid; }',
         'function landedOn() { return _panelOnQuestion; }',
+        'function keyNow() { return panelSessionKey; }',
       ],
     );
     // The live repaint's parts this harness draws (repaintPanelSession: the bar, then the plan).
     if (opts.bar)
       repaint = () => {
         m.renderPanelMidbar();
-        m.renderPanelPlan(cache[KEY]);
+        m.renderPanelPlan(cache[m.keyNow()]);
       };
     /** Click the card's 답변하기 button: run its shipped onclick against the shipped openPanel. */
     const clickAnswer = () => {
@@ -3634,15 +3636,18 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     expect(expanded(p.midbar.innerHTML)).toEqual(['plan:false', 'useractions:true']);
     expect([p.planBox.hidden, p.planBox.getAttribute('data-waiting')]).toEqual([false, 'true']);
     expect(p.m.landedOn()).toBe(false);
-    // A plan already started: a new opening closes every tab.
-    const q = page({ session: planned('approved'), bar: true });
-    q.m.openPanel(KEY);
+    // Another session — its plan already started — opened from this one: the reader's tab closes, every tab collapsed,
+    // and the opening does not land on its plan.
+    const KEY2 = 'inst::work:C1:1700000000.000200';
+    p.cache[KEY2] = { ...planned('approved'), key: KEY2, conversationId: 'conv2' };
+    p.m.openPanel(KEY2);
     await flush();
     await flush();
-    expect(q.drawer.getAttribute('data-midtab')).toBe('');
-    expect(expanded(q.midbar.innerHTML)).toEqual(['plan:false', 'useractions:false']);
-    expect([q.planBox.hidden, q.planBox.getAttribute('data-waiting')]).toEqual([false, 'false']);
-    expect(q.m.landedOn()).toBe(false);
+    expect(p.m.keyNow()).toBe(KEY2);
+    expect(p.drawer.getAttribute('data-midtab')).toBe('');
+    expect(expanded(p.midbar.innerHTML)).toEqual(['plan:false', 'useractions:false']);
+    expect([p.planBox.hidden, p.planBox.getAttribute('data-waiting')]).toEqual([false, 'false']);
+    expect(p.m.landedOn()).toBe(false);
   });
 
   it('the form is in view as soon as the panel opens, before the turns arrive', () => {
