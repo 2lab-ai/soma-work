@@ -98,7 +98,7 @@ type Probe = {
   attention: boolean;
   railLeft: string;
 };
-async function probe(page: Page): Promise<Record<string, Probe>> {
+async function probeCards(page: Page): Promise<Record<string, Probe>> {
   return page.evaluate(
     (cards) => {
       const root = document.getElementById('kanban')?.shadowRoot;
@@ -180,7 +180,7 @@ async function main() {
         { timeout: 20_000 },
       );
       await sleep(900);
-      const p = await probe(page);
+      const p = await probeCards(page);
       log(
         `probe ${JSON.stringify(Object.fromEntries(Object.entries(p).map(([k, v]) => [k, [v.bw, v.bc, v.layers]])))}`,
       );
@@ -198,7 +198,11 @@ async function main() {
       for (const id of ['opus', 'sol']) {
         const c = p[id];
         const brighter =
-          !!c && !!plain && (theme.scheme === 'dark' ? relLuminance(c.bc) > relLuminance(plain.bc) : relLuminance(c.bc) < relLuminance(plain.bc));
+          !!c &&
+          !!plain &&
+          (theme.scheme === 'dark'
+            ? relLuminance(c.bc) > relLuminance(plain.bc)
+            : relLuminance(c.bc) < relLuminance(plain.bc));
         check(
           !!c && c.bw === '2px' && brighter && c.layers === 0,
           `${theme.tag} F2 ${id}: 2px, a brighter edge than the plain card's (${theme.scheme === 'dark' ? 'lighter' : 'more ink'} on this ground)`,
