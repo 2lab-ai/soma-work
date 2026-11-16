@@ -19,8 +19,9 @@ model ── mcp__user-action__instruct_user({ title, host, why, script, shell?,
         session.userActions (persisted, ≤ 20, resolved ones dropped first)
            ├─ Slack: its own colored card (src/slack/user-action-card.ts) — where · script · what changes ·
            │         success · check result · ✅ 완료했어요 / ❌ 안 됐어요
-           └─ dashboard: KanbanSession.userActions → detail card #panel-user-actions ("사용자 할 일"),
-                         a count on the card face while a required one waits
+           └─ dashboard: KanbanSession.userActions → detail card #panel-user-actions ("사용자 할 일") — the content
+                         of the tab bar's last tab "사용자 작업" (.prd/28 §3), a count on that tab and on the card
+                         face while a required one waits
 owner presses ✅ / ❌ ── Slack: UserActionActionHandler · dashboard: POST /api/dashboard/session/:key/user-action
    (either surface)      → answerUserAction: instruction gate → a lock kept apart from the stored record (a second
                          press meanwhile is "in flight"; the record stays pending on disk whatever else saves) →
