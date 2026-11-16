@@ -1,7 +1,9 @@
 // Session types live in somalib (shared with mcp-servers).
 // Re-export for backward compatibility — all src/ files import from './types'.
+
 import type { ContextRewindRecord, PendingRewind } from '@soma/slack/context-anchor';
 import type { SessionGoalFirstFailure, SessionGoalStall } from '@soma/slack/session-goal';
+import type { CodeChangesSummary } from './code-changes/types';
 
 export type {
   Continuation,
@@ -817,6 +819,12 @@ export interface ConversationSession {
      */
     expiresAt: number;
   };
+  /**
+   * .prd/26 — the session's code changes, as counts: four layers (uncommitted · committed · PR · merged), per
+   * repository and per PR, a few paths. Written by the code-changes collector at each turn end; the patches live in
+   * `DATA_DIR/code-changes/<conversationId>.json`. Persisted; the model reads it (GET_SESSION, the turn context).
+   */
+  codeChanges?: CodeChangesSummary;
   // Merge code change stats — accumulated from merged PRs in this session
   mergeStats?: {
     totalLinesAdded: number;
