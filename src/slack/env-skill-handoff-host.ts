@@ -151,9 +151,22 @@ export function createEnvSkillHandoffHost(
 ): (request: EnvSkillHandoffRequest) => Promise<EnvSkillHandoffOutcome> {
   /** By tool result. `active` until the hand-off settled and any run it started ended — those are never evicted. */
   const handled = new Map<string, { outcome: Promise<EnvSkillHandoffOutcome>; active: boolean }>();
-  const unproductiveInARow = new Map<string, number>();
-  /** `<sessionKey>\0<message>` of requests already told as waiting for an admin. */
-  const pendingTold = new Set<string>();
+  /**
+   * What a session has used of its wake budget, and the waiting-for-an-admin requests it was already told about —
+   * per session, not per key: a thread closed and opened again is a new session at the same key, and what the old one
+   * used up must not silence it. A record whose session is gone is replaced by the next request's.
+   */
+  const budgets = new Map<string, { current: () => boolean; unproductive: number; pendingTold: Set<string> }>();
+  const budgetFor = (sessionKey: string, current: () => boolean) => {
+    const known = budgets.get(sessionKey);
+    if (known?.current()) return known;
+    if (budgets.size >= REMEMBERED_RESULTS) {
+      for (const [key, record] of budgets) if (!record.current()) budgets.delete(key);
+    }
+    const fresh = { current, unproductive: 0, pendingTold: new Set<string>() };
+    budgets.set(sessionKey, fresh);
+    return fresh;
+  };
 
   const sendWake = async (wake: EnvSkillWake): Promise<void> => {
     try {
@@ -180,8 +193,8 @@ export function createEnvSkillHandoffHost(
       return;
     }
     if (!progress) {
-      const inARow = (unproductiveInARow.get(request.sessionKey) ?? 0) + 1;
-      unproductiveInARow.set(request.sessionKey, inARow);
+      const budget = budgetFor(request.sessionKey, current);
+      const inARow = ++budget.unproductive;
       if (inARow > MAX_UNPRODUCTIVE_WAKES) {
         logger.warn('RUN_ENV_SKILL outcome not told — too many without progress in a row', {
           sessionKey: request.sessionKey,
@@ -194,9 +207,10 @@ export function createEnvSkillHandoffHost(
   };
 
   /** A run went and ended: progress. The count starts again and pending requests may be told again. */
-  const madeProgress = (sessionKey: string): void => {
-    unproductiveInARow.delete(sessionKey);
-    for (const key of pendingTold) if (key.startsWith(`${sessionKey}\0`)) pendingTold.delete(key);
+  const madeProgress = (sessionKey: string, current: () => boolean): void => {
+    const budget = budgetFor(sessionKey, current);
+    budget.unproductive = 0;
+    budget.pendingTold.clear();
   };
 
   const handOff = async (request: EnvSkillHandoffRequest, current: () => boolean): Promise<HandOffResult> => {
@@ -232,16 +246,16 @@ export function createEnvSkillHandoffHost(
       // Progress only once the run really went: a launch that fails (no thread, the run threw) counts against the
       // no-progress budget like a rejection, or a launch that keeps failing would wake the session forever.
       const finished = result.environmentRun.finished.then((end) => {
-        if (end.ok) madeProgress(request.sessionKey);
+        if (end.ok) madeProgress(request.sessionKey, current);
         tell(request, current, end.ok, endedText(skill, check.owner, end));
       });
       return { outcome: { status: 'started', owner: check.owner }, finished };
     }
     if (result.awaitingPermission) {
       // The same request still waiting is not told again (the typed path already said so in the thread).
-      const pendingKey = `${request.sessionKey}\0${message}`;
-      if (!pendingTold.has(pendingKey)) {
-        pendingTold.add(pendingKey);
+      const { pendingTold } = budgetFor(request.sessionKey, current);
+      if (!pendingTold.has(message)) {
+        pendingTold.add(message);
         if (pendingTold.size > REMEMBERED_PENDING) {
           const oldest = pendingTold.values().next().value;
           if (oldest !== undefined) pendingTold.delete(oldest);

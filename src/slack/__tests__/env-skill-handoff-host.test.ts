@@ -352,6 +352,37 @@ describe('env-skill hand-off host (#1304)', () => {
     expect(wake).toHaveBeenCalledTimes(MAX_UNPRODUCTIVE_WAKES);
   });
 
+  // RoL #1308 r3 (reliability P1): the wake budget and the told-pending set belong to the session that asked, not to
+  // its key. A thread closed and opened again is a new session: what the old one used up must not silence it.
+  it('a session opened again at the same key starts with its own budget and pending set', async () => {
+    let generation = 0;
+    const captures: Array<{ alive: boolean }> = [];
+    const generations = createEnvSkillHandoffHost({
+      handler,
+      slackApi,
+      wake,
+      captureSession: () => {
+        const g = captures[generation] ?? { alive: true };
+        captures[generation] = g;
+        return () => g.alive;
+      },
+    });
+    // Session A: the same ungranted request (told once), then rejections up to the budget.
+    await generations(request());
+    for (let i = 0; i < MAX_UNPRODUCTIVE_WAKES + 1; i++) await generations(request({ skill: '$acme-dev2:nope' }));
+    expect(wake).toHaveBeenCalledTimes(MAX_UNPRODUCTIVE_WAKES);
+
+    // A is closed; B opens at the same key and sends the same pending request, then a bad one.
+    captures[generation].alive = false;
+    generation++;
+    wake.mockClear();
+    await generations(request());
+    await generations(request({ skill: '$acme-dev2:nope' }));
+    expect(wake).toHaveBeenCalledTimes(2);
+    expect(wake.mock.calls[0][0].text).toMatch(/admin/i);
+    expect(wake.mock.calls[1][0].text).toMatch(/\$acme-dev2:nope was rejected/);
+  });
+
   it('a wake the session cannot take (gone, asleep) is dropped without an error', async () => {
     h.isAllowed.mockReturnValue(true);
     wake.mockReturnValue(false);
