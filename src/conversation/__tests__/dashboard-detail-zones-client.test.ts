@@ -309,6 +309,7 @@ describe('Z3 — every tab starts closed; a press opens one, a second press clos
         'viewPlanFrom',
         'viewSpec',
         'userActionsWaiting',
+        'panelBarTabIds',
         'panelMidTabsOf',
         'panelMidTabHtml',
         'artSortForDisplay',
@@ -317,7 +318,15 @@ describe('Z3 — every tab starts closed; a press opens one, a second press clos
         'renderPanelMidbar',
         'selectPanelMid',
       ],
-      ['MID_TAB_LABEL', 'MID_TAB_PANEL', '_panelMid', '_viewMode', '_viewPlan'],
+      [
+        'MID_TAB_LABEL',
+        'MID_TAB_PANEL',
+        'TASK_PLAN_STATE_LABEL',
+        'TASK_PLAN_TONE',
+        '_panelMid',
+        '_viewMode',
+        '_viewPlan',
+      ],
       {
         document: {
           getElementById: (id: string) => (id === 'panel-midbar' ? bar : id === 'slide-panel' ? panel : null),
@@ -371,12 +380,15 @@ describe('Z3 — every tab starts closed; a press opens one, a second press clos
     env.renderPanelMidbar();
     expect(bar.hidden).toBe(false);
     expect(panel.attrs['data-midtab']).toBe('');
+    // .prd/28 §3: [작업 계획] | the layout's tabs | 사용자 작업.
     expect(expanded(bar.innerHTML)).toEqual([
+      'plan:false',
       'goal:false',
       'tasks:false',
       'agents:false',
       'artifacts:false',
       'info:false',
+      'useractions:false',
     ]);
     expect(bar.innerHTML).toContain('aria-controls="panel-goal"');
     expect(bar.innerHTML).toContain('aria-controls="panel-tasks"');
@@ -391,7 +403,7 @@ describe('Z3 — every tab starts closed; a press opens one, a second press clos
     env.renderPanelMidbar();
     env.selectPanelMid('goal');
     expect(panel.attrs['data-midtab']).toBe('goal');
-    expect(expanded(bar.innerHTML)[0]).toBe('goal:true');
+    expect(expanded(bar.innerHTML).filter((x) => x.endsWith(':true'))).toEqual(['goal:true']);
     expect(painted).toEqual(['goal', 'size']);
     painted.length = 0;
     env.selectPanelMid('tasks');
@@ -419,7 +431,7 @@ describe('Z3 — every tab starts closed; a press opens one, a second press clos
     expect(painted).toEqual(['strip', 'agenthead', 'size']);
   });
 
-  it('an open tab the layout no longer has closes; no tabs at all hides the bar', () => {
+  it('an open tab the layout no longer has closes; a layout with no tabs still has 작업 계획 and 사용자 작업', () => {
     const a = rig();
     a.env.selectPanelMid('info');
     expect(a.panel.attrs['data-midtab']).toBe('info');
@@ -429,7 +441,8 @@ describe('Z3 — every tab starts closed; a press opens one, a second press clos
     expect(b.panel.attrs['data-midtab']).toBe('');
     const c = rig([]);
     c.env.renderPanelMidbar();
-    expect(c.bar.hidden).toBe(true);
+    expect(c.bar.hidden).toBe(false);
+    expect(expanded(c.bar.innerHTML)).toEqual(['plan:false', 'useractions:false']);
   });
 
   it('an empty tab is disabled — no press, out of the Tab order (review P3); the 에이전트 tab controls the strip', () => {
@@ -447,7 +460,10 @@ describe('Z4 — an opening lands on its tab', () => {
     expect(open).toContain(
       "var midLand = _panelLand === 'goal' ? 'goal' : _panelLand === 'tasks' ? 'tasks' : _panelLand === 'agent' ? 'agents' : _panelLand === 'artifacts' ? 'artifacts' : '';",
     );
-    expect(open).toContain("if (midLand) _panelMid = midLand;\n  else if (!sameSession) _panelMid = '';");
+    // .prd/28 §3: a new opening on a plan waiting for 시작 opens the 작업 계획 tab.
+    expect(open).toContain(
+      "if (midLand) _panelMid = midLand;\n  else if (!sameSession) _panelMid = planWaitsOnReader(_sessionCache[sessionKey]) ? 'plan' : '';",
+    );
     // Before the panel paints (repaintPanelSession → renderPanelMidbar draws the bar with it).
     expect(open.indexOf('var midLand')).toBeLessThan(open.indexOf('repaintPanelSession();'));
     // The open card's 전체 N개 → lands on the 산출물 tab (review P2).
@@ -469,9 +485,10 @@ describe('Z5 — the page: 입력 필요 → the tab bar → the tabs’ content
   it('off the chat, 입력 필요 sits right under the title bar, above the tab bar; the tabs’ content follows the bar', () => {
     expect(at('id="panel-status"')).toBeLessThan(at('id="panel-needs"'));
     expect(at('id="panel-needs"')).toBeLessThan(at('id="panel-needs-head"'));
-    for (const id of ['panel-permission', 'panel-question', 'panel-plan'])
+    for (const id of ['panel-permission', 'panel-question'])
       expect(at(`id="${id}"`)).toBeLessThan(at('id="panel-midbar"'));
-    for (const id of ['panel-goal', 'panel-artifacts', 'panel-info', 'panel-tasks'])
+    // .prd/28 §3: 작업 계획 and 사용자 작업 are the bar's tabs too — their content follows it.
+    for (const id of ['panel-plan', 'panel-goal', 'panel-artifacts', 'panel-info', 'panel-tasks', 'panel-user-actions'])
       expect(at(`id="${id}"`)).toBeGreaterThan(at('id="panel-midbar"'));
     expect(PAGE).toContain(
       '<div class="panel-midbar" id="panel-midbar" role="group" aria-label="작업 정보 탭" hidden></div>',
@@ -489,11 +506,13 @@ describe('Z5 — the page: 입력 필요 → the tab bar → the tabs’ content
   });
 
   it('what needs the user is never behind a tab (no data-midtab rule names it)', () => {
+    // The plan document is the 작업 계획 tab's (owner 2026-11-16, .prd/28 §3); its 시작 · 취소 stay in the title bar and the
+    // bar above the composer (#panel-plan-bar), so no decision is behind a tab.
     for (const sel of [
       '#panel-needs-head',
       '#panel-permission',
       '#panel-question',
-      '#panel-plan',
+      '#panel-plan-bar',
       '#panel-status',
       '#panel-command',
     ])
@@ -506,146 +525,133 @@ describe('Z5 — the page: 입력 필요 → the tab bar → the tabs’ content
   });
 });
 
-describe('Z6 — 사용자 할 일 lives in the 목표 tab (.prd/28 §3)', () => {
-  type Tab = { id: string; label: string; count: string; title: string; empty: boolean; wait?: number };
-  const tabsOf = (s: unknown, tabs: string[], c: Record<string, unknown> = {}) =>
-    load<{ panelMidTabsOf(s: unknown, t: string[], c: unknown): Tab[] }>(
-      ['toNum', 'userActionsWaiting', 'panelMidTabsOf'],
-      ['MID_TAB_LABEL'],
-    ).panelMidTabsOf(s, tabs, c);
-  let n = 0;
-  const ua = (status: string, optional = false) => ({ id: `ua_${++n}`, status, optional });
-
-  it('the 목표 tab counts the required tasks still waiting, and opens on user tasks alone', () => {
-    const [t] = tabsOf({ userActions: [ua('pending'), ua('pending', true), ua('done')] }, ['goal']);
-    expect(t).toMatchObject({ id: 'goal', count: '', empty: false, wait: 1 });
-    expect(t.title).toBe('목표 없음 · 사용자 할 일 대기 1');
-    // Only answered ones: the tab still opens (their history is in it), with no wait badge.
-    expect(tabsOf({ userActions: [ua('done')] }, ['goal'])[0]).toMatchObject({ empty: false, wait: 0 });
-    // None: as before.
-    expect(tabsOf({}, ['goal'])[0]).toMatchObject({ empty: true, wait: 0, title: '목표 없음' });
-    // With goals: the count stays the goals', the wait is beside it.
-    const [g] = tabsOf({ goal: { current: { goalId: 'g' } }, userActions: [ua('pending')] }, ['goal']);
-    expect(g).toMatchObject({ count: '1/1', wait: 1 });
-    expect(g.title).toBe('목표 — 지난 0 · 지금 1 · 대기 0 · 사용자 할 일 대기 1');
-  });
-
-  it('the bar draws the wait badge after the count (the tab is the only place the waiting task shows now)', () => {
-    const tab = load<{ panelMidTabHtml(t: unknown, on: boolean): string }>(
-      ['esc', 'escAttr', 'panelMidTabHtml'],
-      ['MID_TAB_PANEL'],
-    ).panelMidTabHtml;
-    const html = tab({ id: 'goal', label: '목표', count: '1/1', title: 'x', empty: false, wait: 1 }, false);
-    expect(html).toContain(
-      '<span class="pm-label">목표</span><span class="pm-count">1/1</span><span class="pm-wait ui-count" data-tone="wait" aria-label="사용자 할 일 대기 1">1</span>',
-    );
-    expect(tab({ id: 'goal', label: '목표', count: '', title: '', empty: false, wait: 0 }, false)).not.toContain(
-      'pm-wait',
-    );
-    // An empty tab is disabled unless open; the open one never is.
-    expect(tab({ id: 'tasks', label: '작업', count: '', title: '', empty: true }, false)).toContain(' disabled');
-    expect(tab({ id: 'tasks', label: '작업', count: '', title: '', empty: true }, true)).not.toContain(' disabled');
-  });
-
-  it('a 목표 tab with user tasks alone opens and closes through the bar’s own handler (review P2)', () => {
-    const bar: Record<string, any> = { hidden: false, innerHTML: '', addEventListener: vi.fn() };
-    const panel: Record<string, any> = {
-      attrs: {} as Record<string, string>,
-      setAttribute(k: string, v: string) {
-        this.attrs[k] = v;
-      },
-    };
-    const env = load<{
-      renderPanelMidbar(): void;
-      selectPanelMid(id: string): void;
-      __set(n: string, v: unknown): void;
+describe('Z6 — the bar’s two ends: 작업 계획 first (drawn to stand out), 사용자 작업 last (.prd/28 §3)', () => {
+  type Tab = {
+    id: string;
+    label: string;
+    count: string;
+    title: string;
+    empty: boolean;
+    wait?: number;
+    state?: string;
+    tone?: string;
+    waiting?: boolean;
+  };
+  const m = () =>
+    load<{
+      panelMidTabsOf(s: unknown, t: string[], c: unknown): Tab[];
+      panelMidTabHtml(t: unknown, on: boolean): string;
+      panelBarTabIds(t: string[]): string[];
+      planWaitsOnReader(s: unknown): boolean;
     }>(
       [
         'toNum',
         'esc',
         'escAttr',
-        'viewModeFrom',
-        'viewPlanFrom',
-        'viewSpec',
         'userActionsWaiting',
+        'panelBarTabIds',
         'panelMidTabsOf',
         'panelMidTabHtml',
-        'artSortForDisplay',
-        'artLatestOnly',
-        'panelMidContext',
-        'renderPanelMidbar',
-        'selectPanelMid',
+        'planWaitsOnReader',
       ],
-      ['MID_TAB_LABEL', 'MID_TAB_PANEL', '_panelMid', '_viewMode', '_viewPlan'],
+      ['MID_TAB_LABEL', 'MID_TAB_PANEL', 'TASK_PLAN_STATE_LABEL', 'TASK_PLAN_TONE'],
+    );
+  let n = 0;
+  const ua = (status: string, optional = false) => ({ id: `ua_${++n}`, status, optional });
+
+  it('the bar is [작업 계획] | the layout’s tabs | 사용자 작업 — whatever the layout, and never twice', () => {
+    expect(m().panelBarTabIds(['goal', 'tasks', 'agents', 'artifacts', 'info'])).toEqual([
+      'plan',
+      'goal',
+      'tasks',
+      'agents',
+      'artifacts',
+      'info',
+      'useractions',
+    ]);
+    expect(m().panelBarTabIds([])).toEqual(['plan', 'useractions']);
+    expect(m().panelBarTabIds(['useractions', 'goal', 'plan'])).toEqual(['plan', 'goal', 'useractions']);
+  });
+
+  it('작업 계획: its version and state; none — an empty tab', () => {
+    const [t] = m().panelMidTabsOf({ taskPlan: { state: 'awaiting', revision: 2 } }, ['plan'], {});
+    expect(t).toMatchObject({
+      id: 'plan',
+      label: '작업 계획',
+      count: 'v2',
+      state: '승인 대기',
+      tone: 'wait',
+      waiting: true,
+      empty: false,
+    });
+    expect(t.title).toBe('작업 계획 v2 · 승인 대기');
+    const [d] = m().panelMidTabsOf({ taskPlan: { state: 'drafting', revision: 0 } }, ['plan'], {});
+    expect(d).toMatchObject({ count: '', state: '계획 작성 중', waiting: false, empty: false });
+    expect(m().panelMidTabsOf({}, ['plan'], {})[0]).toMatchObject({ empty: true, title: '작업 계획 없음' });
+  });
+
+  it('작업 계획 is drawn to stand out (is-plan, its icon and state), and marks a plan waiting for 시작', () => {
+    const tab = m().panelMidTabHtml;
+    const html = tab(
       {
-        document: {
-          getElementById: (id: string) => (id === 'panel-midbar' ? bar : id === 'slide-panel' ? panel : null),
-        },
-        _viewLayout: { v: 1 },
-        panelSessionKey: 'k1',
-        panelConvId: 'c1',
-        // Someone else's card (no goal editor) with no goal: only the user task can open the tab.
-        _sessionCache: { k1: { key: 'k1', ownerId: 'U2', userActions: [ua('pending')] } },
-        _artCache: {},
-        _umList: {},
-        rdReset: () => {},
-        currentUserId: 'U1',
-        sessionColOf: () => 'working',
-        isSiblingSession: () => false,
-        panelAgentTasks: () => [],
-        panelAgentEarlier: () => [],
-        panelAgentOutside: () => null,
-        writePanelPart: (el: Record<string, string>, html: string) => {
-          el.innerHTML = html;
-        },
-        renderPanelInfo: () => {},
-        renderPanelGoal: () => {},
-        repaintPanelTasks: () => {},
-        renderPanelArtifactsSection: () => {},
-        renderPanelTabs: () => {},
-        renderPanelAgents: () => {},
-        sizePanelSections: () => {},
-        _panelInfoOpen: false,
-        _panelTasksOpen: false,
-        _panelTasksExpanded: false,
-        _panelTaskLineOpen: false,
+        id: 'plan',
+        label: '작업 계획',
+        count: 'v2',
+        title: 'x',
+        empty: false,
+        state: '승인 대기',
+        tone: 'wait',
+        waiting: true,
       },
+      false,
     );
-    env.__set('_viewMode', 'advanced');
-    env.renderPanelMidbar();
-    const goalTab = () => bar.innerHTML.match(/<button[^>]*data-mid="goal"[^>]*>/)![0];
-    expect(goalTab()).not.toContain(' disabled');
-    expect(bar.innerHTML).toContain('aria-label="사용자 할 일 대기 1">1</span>');
-    expect(panel.attrs['data-midtab']).toBe('');
-    env.selectPanelMid('goal');
-    expect(panel.attrs['data-midtab']).toBe('goal');
-    expect(goalTab()).toContain('aria-expanded="true"');
-    env.selectPanelMid('goal');
-    expect(panel.attrs['data-midtab']).toBe('');
+    expect(html).toContain('class="pm-tab is-plan" data-mid="plan"');
+    expect(html).toContain('data-waiting="true"');
+    expect(html).toContain(
+      '<i data-ui-icon="list" class="pm-icon"></i><span class="pm-label">작업 계획</span><span class="pm-count">v2</span>',
+    );
+    expect(html).toContain('<span class="pm-state ui-status" data-tone="wait">승인 대기</span>');
+    // No plan: a plain, disabled tab.
+    const none = tab({ id: 'plan', label: '작업 계획', count: '', title: '작업 계획 없음', empty: true }, false);
+    expect(none).toContain('class="pm-tab" data-mid="plan"');
+    expect(none).toContain(' disabled');
+    expect(none).not.toContain('pm-icon');
+    // The CSS draws it apart: the accent tint, and a ring while it waits.
+    expect(CSS).toContain('.pm-tab.is-plan {');
+    expect(CSS).toContain('.pm-tab.is-plan[data-waiting="true"]:not([aria-expanded="true"]) {');
   });
 
-  it('a layout with the 목표 tab says so to the CSS (goaltab); one without keeps the section in view', () => {
-    const detailSpecOf = load<{ __get(n: string): (d: unknown) => { show: string[] } }>([], []).__get('detailSpecOf');
-    expect(detailSpecOf({ tabs: [{ id: 'goal', on: true }] }).show).toContain('goaltab');
-    expect(
-      detailSpecOf({
-        tabs: [
-          { id: 'tasks', on: true },
-          { id: 'goal', on: false },
-        ],
-      }).show,
-    ).not.toContain('goaltab');
-    // A layout saved before the tab bar gets the lean tabs, 목표 among them.
-    expect(detailSpecOf(undefined).show).toContain('goaltab');
+  it('사용자 작업: how many, the required ones still waiting as its badge; none — an empty tab', () => {
+    const [t] = m().panelMidTabsOf(
+      { userActions: [ua('pending'), ua('pending', true), ua('done')] },
+      ['useractions'],
+      {},
+    );
+    expect(t).toMatchObject({ id: 'useractions', label: '사용자 작업', count: '3', wait: 1, empty: false });
+    expect(t.title).toBe('사용자 작업 3 · 사용자 할 일 대기 1');
+    expect(m().panelMidTabsOf({ userActions: [ua('done')] }, ['useractions'], {})[0]).toMatchObject({
+      empty: false,
+      wait: 0,
+    });
+    expect(m().panelMidTabsOf({}, ['useractions'], {})[0]).toMatchObject({
+      empty: true,
+      wait: 0,
+      title: '사용자 작업 없음',
+    });
+    const html = m().panelMidTabHtml({ ...t }, false);
+    expect(html).toContain(
+      '<span class="pm-label">사용자 작업</span><span class="pm-count">3</span><span class="pm-wait ui-count" data-tone="wait" aria-label="사용자 할 일 대기 1">1</span>',
+    );
   });
 
-  it('the page: the section follows the 목표 tab’s content and shows only while that tab is open', () => {
-    expect(PAGE).toMatch(/id="panel-goal-paused"[\s\S]*id="panel-user-actions"/);
-    expect(PAGE).toMatch(/id="panel-midbar"[\s\S]*id="panel-user-actions"/);
-    expect(CSS).toContain(
-      'body[data-detail~="goaltab"] .slide-panel:not([data-midtab="goal"]) #panel-user-actions { display: none !important; }',
+  it('their content shows only while their tab is open; a plan waiting for 시작 opens the card on 작업 계획', () => {
+    expect(CSS).toContain('.slide-panel:not([data-midtab="plan"]) #panel-plan,');
+    expect(CSS).toContain('.slide-panel:not([data-midtab="useractions"]) #panel-user-actions,');
+    expect(m().planWaitsOnReader({ taskPlan: { state: 'awaiting', revision: 1 } })).toBe(true);
+    expect(m().planWaitsOnReader({ taskPlan: { state: 'approved', revision: 1 } })).toBe(false);
+    expect(m().planWaitsOnReader(null)).toBe(false);
+    expect(clientFn('renderPanelMidbar')).toContain(
+      'panelMidTabsOf(s, panelBarTabIds(viewSpec().detail.tabs), panelMidContext(s))',
     );
-    // The midbar is drawn through the one tab helper.
-    expect(clientFn('renderPanelMidbar')).toContain('html += panelMidTabHtml(tabs[j], tabs[j].id === _panelMid);');
   });
 });

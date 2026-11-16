@@ -3287,6 +3287,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     const m = load<Panel>(
       [
         'openPanel',
+        // .prd/28 §3 — an opening on a plan waiting for 시작 lands on the 작업 계획 tab.
+        'planWaitsOnReader',
         'loadPanelTurns',
         'renderPanelPermission',
         // affectUI batch 1: the prompts are <ui-approval-card> slots (none in this harness).

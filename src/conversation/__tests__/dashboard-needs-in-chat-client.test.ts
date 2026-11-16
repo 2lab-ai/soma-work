@@ -168,7 +168,8 @@ function card() {
   question.style.display = 'none';
   plan.hidden = true;
   needs.hidden = true;
-  for (const part of [head, perm, question, plan]) needs.appendChild(part);
+  // SSOT 2026-11-16 (.prd/28 §3): the plan is the 작업 계획 tab's content, after the bar — not a part of the zone.
+  for (const part of [head, perm, question]) needs.appendChild(part);
   const family = el('panel-family');
   family.hidden = true;
   for (const part of [needs, family, el('panel-needs-status'), el('panel-midbar')]) surf.appendChild(part);
@@ -215,7 +216,7 @@ describe('N1 — who waits, and where the zone goes', () => {
     needsTurnOf(bot: string): Record<string, unknown>;
   }>(['panelQuestionShown', 'panelNeedsCount', 'panelNeedsInChat', 'needsTurnOf'], NEEDS_VARS);
 
-  it('counts the prompts, a goal decision, the instruction approvals, the question and a plan to start', () => {
+  it('counts the prompts, a goal decision, the instruction approvals and the question — a plan to start is its tab’s', () => {
     expect(m.panelNeedsCount(null)).toBe(0);
     expect(m.panelNeedsCount(IDLE)).toBe(0);
     expect(
@@ -227,7 +228,9 @@ describe('N1 — who waits, and where the zone goes', () => {
         pendingQuestion: { type: 'user_choice', choices: [{}] },
         taskPlan: { state: 'awaiting', revision: 1 },
       }),
-    ).toBe(6);
+    ).toBe(5);
+    // .prd/28 §3: a plan waiting for 시작 is the 작업 계획 tab's (its 시작 · 취소 are the title bar's and the composer's bar).
+    expect(m.panelNeedsCount({ activityState: 'waiting', taskPlan: { state: 'awaiting', revision: 1 } })).toBe(0);
     // An approved plan waits on no one.
     expect(m.panelNeedsCount({ activityState: 'working', taskPlan: { state: 'approved', revision: 2 } })).toBe(0);
   });
@@ -301,8 +304,8 @@ describe('N2 — placePanelNeeds moves the zone into the chat and back', () => {
     expect(p.m.placePanelNeeds()).toBe(false);
     expect(p.needs.parentNode).toBe(p.surf);
     expect(p.needs.hidden).toBe(true);
-    // A decided plan still shows there (folded), as before.
-    p.plan.hidden = false;
+    // A part that shows (a question card still drawn) shows the box there. (The plan is its tab's now, .prd/28 §3.)
+    p.question.style.display = '';
     p.m.placePanelNeeds();
     expect(p.needs.hidden).toBe(false);
   });
@@ -654,10 +657,10 @@ describe('N7 — focus survives a move (review on #1259)', () => {
       _panelAgent: '',
       convPaint,
     });
-    // A decided plan, folded under the title bar, its summary focused.
-    c.plan.hidden = false;
+    // A part drawn under the title bar (a question card), its control focused. (The plan is its tab's now, .prd/28 §3.)
+    c.question.style.display = '';
     const summary = new El('summary');
-    c.plan.appendChild(summary);
+    c.question.appendChild(summary);
     m.syncPanelNeeds();
     summary.focus();
     expect(c.document.activeElement).toBe(summary);
@@ -681,9 +684,9 @@ describe('N7 — focus survives a move (review on #1259)', () => {
       _panelAgent: '',
       convPaint: () => queueMicrotask(() => c.conv.drawn?.add('attachments-panel-needs')),
     });
-    c.plan.hidden = false;
+    c.question.style.display = '';
     const summary = new El('summary');
-    c.plan.appendChild(summary);
+    c.question.appendChild(summary);
     m.syncPanelNeeds();
     summary.focus();
     cache.k = { ...WAITING };
@@ -696,12 +699,13 @@ describe('N7 — focus survives a move (review on #1259)', () => {
 });
 
 describe('N8 — a decided plan alone keeps the box shown under the title bar (real renderPanelPlan)', () => {
-  it('a plan that waits on no one shows; once it is gone the box hides', () => {
+  it('the plan paints in its tab and repaints the bar; the 입력 필요 box is not touched', () => {
     const c = card();
     const bar = new El('panel-plan-bar');
     const cache: Record<string, unknown> = {
       k: { key: 'k', activityState: 'working', taskPlan: { state: 'approved', revision: 2 } },
     };
+    let bars = 0;
     const m = load<{ renderPanelPlan(s: unknown): void }>(
       [...PLACE_FNS, 'syncPanelNeeds', 'renderPanelPlan'],
       NEEDS_VARS,
@@ -717,22 +721,26 @@ describe('N8 — a decided plan alone keeps the box shown under the title bar (r
         convPaint: () => {},
         panelPlanHtml: () => '<details class="pp-fold">…</details>',
         planBarHtml: () => '',
+        renderPanelMidbar: () => {
+          bars++;
+        },
       },
     );
     m.renderPanelPlan(cache.k);
-    // Nothing waits (the plan is decided): the box stays under the title bar, shown for the plan.
-    expect(c.needs.parentNode).toBe(c.surf);
+    // The plan shows in its tab; the bar repaints (its 작업 계획 tab names the version and state); the zone stays hidden.
     expect(c.plan.hidden).toBe(false);
-    expect(c.needs.hidden).toBe(false);
+    expect(bars).toBe(1);
+    expect(c.needs.parentNode).toBe(c.surf);
+    expect(c.needs.hidden).toBe(true);
     cache.k = { key: 'k', activityState: 'working' };
     m.renderPanelPlan(cache.k);
     expect(c.plan.hidden).toBe(true);
-    expect(c.needs.hidden).toBe(true);
+    expect(bars).toBe(2);
   });
 });
 
 describe('the page and its styles', () => {
-  it('the four parts are the box’s own children in the shipped markup (review: containment, not order)', async () => {
+  it('the three parts are the box’s own children in the shipped markup (review: containment, not order)', async () => {
     // The shipped markup, parsed (happy-dom's parser): the box's direct children, in order.
     const win = new Window();
     const tpl = win.document.createElement('template');
@@ -743,9 +751,10 @@ describe('the page and its styles', () => {
       'panel-needs-head',
       'panel-permission',
       'panel-question',
-      'panel-plan',
     ]);
     expect(box?.querySelector('#panel-family')).toBeNull();
+    // SSOT 2026-11-16 (.prd/28 §3): the plan is the 작업 계획 tab's content, outside the zone.
+    expect(box?.querySelector('#panel-plan')).toBeNull();
     await win.happyDOM.close();
   });
 
@@ -753,9 +762,10 @@ describe('the page and its styles', () => {
     const at = (s: string) => PAGE.indexOf(s);
     // Its own region name: in the chat, the turn's file row around it is named for files (이 답변이 만든 파일).
     expect(PAGE).toContain('<div class="panel-needs" id="panel-needs" role="region" aria-label="입력 필요" hidden>');
-    for (const id of ['panel-needs-head', 'panel-permission', 'panel-question', 'panel-plan'])
+    for (const id of ['panel-needs-head', 'panel-permission', 'panel-question'])
       expect(at(`id="${id}"`), id).toBeGreaterThan(at('id="panel-needs"'));
-    expect(at('id="panel-family"')).toBeGreaterThan(at('id="panel-plan"'));
+    expect(at('id="panel-family"')).toBeGreaterThan(at('id="panel-question"'));
+    expect(at('id="panel-plan"')).toBeGreaterThan(at('id="panel-midbar"'));
   });
 
   it('in the chat it is one framed card the width of the turn; under the title bar its parts keep their rules', () => {

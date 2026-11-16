@@ -6707,6 +6707,8 @@ body:not([data-detail~="controls"]) #panel-controls { display: none !important; 
    agent's head are the 에이전트 tab's — and stay while the card looks at a subagent (data-agent-scoped), so the reader
    always sees whose chat and log these are. The section strip under it: all three (sections), 대화 · 작업 로그
    (logtab — renderPanelSections gives it those tabs), or none — one section, the chat. ── */
+.slide-panel:not([data-midtab="plan"]) #panel-plan,
+.slide-panel:not([data-midtab="useractions"]) #panel-user-actions,
 .slide-panel:not([data-midtab="goal"]) #panel-goal,
 .slide-panel:not([data-midtab="goal"]) #panel-goal-paused,
 .slide-panel:not([data-midtab="artifacts"]) #panel-artifacts,
@@ -6714,8 +6716,6 @@ body:not([data-detail~="controls"]) #panel-controls { display: none !important; 
 .slide-panel:not([data-midtab="tasks"]) #panel-tasks,
 .slide-panel:not([data-midtab="agents"]):not([data-agent-scoped]) #panel-agents,
 body:not([data-detail~="agenthead"]) #panel-agents { display: none !important; }
-/* .prd/28 §3 — 사용자 할 일 is the 목표 tab's when the layout has that tab (else it stays in view: nowhere to fold it). */
-body[data-detail~="goaltab"] .slide-panel:not([data-midtab="goal"]) #panel-user-actions { display: none !important; }
 .slide-panel:not([data-midtab="agents"]):not([data-agent-scoped]) .panel-tabs::part(list),
 body:not([data-detail~="agenttabs"]) .panel-tabs::part(list),
 body:not([data-detail~="sections"]):not([data-detail~="logtab"]) .panel-sections::part(list) { display: none; }
@@ -6728,7 +6728,15 @@ body:not([data-detail~="sections"]):not([data-detail~="logtab"]) .panel-sections
 .pm-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; }
 .pm-count { font-variant-numeric: tabular-nums; color: var(--text-tertiary); font-weight: 500; }
 .pm-tab[aria-expanded="true"] .pm-count { color: var(--text-secondary); }
-.pm-wait { margin-left: 2px; } /* .prd/28 §3 — the 목표 tab's waiting 사용자 할 일 (kit .ui-count, wait tone) */
+/* .prd/28 §3 — 작업 계획 leads the bar and stands out (owner 2026-11-16: "눈에 띄게 — 되게 중요한 거니까"): the accent
+   tint, its icon, its state; stronger while it waits for 시작. 사용자 작업 closes the bar with its waiting count. */
+.pm-tab.is-plan { margin: 4px 4px 4px 0; min-height: 28px; padding: 0 10px; border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); font-weight: 650; }
+.pm-tab.is-plan[aria-expanded="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent, #fff); }
+.pm-tab.is-plan[aria-expanded="true"] .pm-count, .pm-tab.is-plan[aria-expanded="true"] .pm-state { color: inherit; }
+.pm-tab.is-plan[data-waiting="true"]:not([aria-expanded="true"]) { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent); }
+.pm-icon { width: 14px; height: 14px; }
+.pm-state { font-size: 11px; font-weight: 600; }
+.pm-wait { margin-left: 2px; }
 .pm-caret { flex: none; transition: transform 120ms ease; opacity: .6; }
 .pm-tab[aria-expanded="true"] .pm-caret { transform: rotate(180deg); }
 @media (prefers-reduced-motion: reduce) { .pm-caret { transition: none; } }
@@ -7624,8 +7632,6 @@ ${pageTokenAliases()}
         <div class="ui-section-head panel-needs-head" id="panel-needs-head" tabindex="-1" hidden><h4>입력 필요</h4><span class="ui-count" id="panel-needs-count" data-tone="wait" data-pop></span></div>
         <div class="panel-permission" id="panel-permission" style="display:none"></div>
         <div class="panel-question" id="panel-question" style="display:none"></div>
-        <!-- 작업 계획 (plan mode, SSOT 2026-11-02): the task's plan, drawn by the server — high level to detail — at once when the card opens. -->
-        <div class="panel-plan" id="panel-plan" role="region" aria-label="작업 계획" hidden></div>
         </div>
         <!-- #1021 — an epic's children (one line; a press shows them all, a child opens on its own press), or a child's epic. -->
         <div class="panel-family" id="panel-family" role="region" aria-label="에픽과 자식 작업" hidden></div>
@@ -7634,20 +7640,23 @@ ${pageTokenAliases()}
              closed at first; a press opens that tab's content under the bar (and a second press closes it). Each tab
              is a disclosure button (aria-expanded · aria-controls) in one group: renderPanelMidbar · selectPanelMid. -->
         <div class="panel-midbar" id="panel-midbar" role="group" aria-label="작업 정보 탭" hidden></div>
+        <!-- 작업 계획 (plan mode, SSOT 2026-11-02): the task's plan, drawn by the server — high level to detail. SSOT 2026-11-16
+             (.prd/28 §3): the bar's first tab, drawn to stand out; its content shows while that tab is open, and a plan that
+             waits for 시작 opens the card on it. 시작 · 취소 stay in the title bar and the bar above the composer. -->
+        <div class="panel-plan" id="panel-plan" role="region" aria-label="작업 계획" hidden></div>
         <!-- Goal (spec 13): the editor's home — current, queue, add / delete, completed goals. The 목표 tab. -->
         <div class="panel-goal" id="panel-goal" role="region" tabindex="-1" aria-label="목표" style="display:none"></div>
         <!-- Paused goals (SSOT 2026-11-06): the goals the owner set aside, each with 재개 / 삭제. The 목표 tab too. -->
         <div class="panel-goal-paused" id="panel-goal-paused" role="region" aria-label="일시정지된 목표" style="display:none"></div>
-        <!-- 사용자 할 일 — tasks the agent handed the owner (instruct_user): where, the script, the host's check of it.
-             Its own region, outside 입력 필요: it is work for the owner, not a question, and never moves into the chat.
-             .prd/28 §3: it is the 목표 tab's too (under the goals) — shown while that tab is open, the waiting count on
-             the tab itself; a layout without the 목표 tab keeps it in view here (body[data-detail~="goaltab"]). -->
-        <div class="panel-user-actions" id="panel-user-actions" role="region" aria-label="사용자 할 일" hidden></div>
         <!-- 산출물 (SSOT 2026-10-23 T6): what the task produced, and the files the user attached. The 산출물 tab. -->
         <div class="panel-artifacts" id="panel-artifacts" style="display:none"></div>
         <!-- 세션 정보 (spec 13): the summary line + the links, every number of the session, the context — live. The 세부 tab
              (its summary line's numbers are the title bar's now). -->
         <div class="panel-info" id="panel-info"></div>
+        <!-- 사용자 할 일 — tasks the agent handed the owner (instruct_user): where, the script, the host's check of it.
+             Not a question (never in 입력 필요 or the chat). SSOT 2026-11-16 (.prd/28 §3): the 사용자 작업 tab's content —
+             the bar's last tab, with the required ones still waiting as its badge; a press shows it, a second hides it. -->
+        <div class="panel-user-actions" id="panel-user-actions" role="region" aria-label="사용자 할 일" hidden></div>
       </section>
       <!-- Agent tabs (task view T1.2, D4 E-19): @2lab.ai/ui <ui-tabs shared-panel> — Main always first and pinned at the
            left (TabItem.pinned), then every subagent in spawn order (renderPanelTabs: label · type as meta · status as the
@@ -8865,7 +8874,8 @@ function panelQuestionShown(s) {
 // Pure: how many things wait on the user — the prompts, a goal decision, the instruction approvals, the question, a
 // plan to start.
 function panelNeedsCount(s) {
-  return s ? ((s.pendingPermissions || []).length + (s.pendingGoalDecision ? 1 : 0) + (s.pendingInstructionApprovals || []).length + (panelQuestionShown(s) ? 1 : 0) + (s.taskPlan && s.taskPlan.state === 'awaiting' ? 1 : 0)) : 0;
+  // A plan waiting for 시작 is the 작업 계획 tab's (.prd/28 §3): its 시작 · 취소 are the title bar's and the bar above the composer.
+  return s ? ((s.pendingPermissions || []).length + (s.pendingGoalDecision ? 1 : 0) + (s.pendingInstructionApprovals || []).length + (panelQuestionShown(s) ? 1 : 0)) : 0;
 }
 function renderPanelNeedsHead(s) {
   var head = document.getElementById('panel-needs-head');
@@ -14490,8 +14500,14 @@ function onPanelHeadAction(e) {
 // one at a time, and a second press closes it (.slide-panel[data-midtab] — the CSS of THE TAB BAR). A tab with
 // nothing in it yet is disabled (out of the Tab order too); the open one never is (its content says it is empty).
 var _panelMid = ''; // the open tab ('' = none)
-var MID_TAB_LABEL = { goal: '목표', tasks: '작업', agents: '에이전트', artifacts: '산출물', info: '세부' };
-var MID_TAB_PANEL = { goal: 'panel-goal', tasks: 'panel-tasks', agents: 'panel-tabs', artifacts: 'panel-artifacts', info: 'panel-info' };
+var MID_TAB_LABEL = { plan: '작업 계획', goal: '목표', tasks: '작업', agents: '에이전트', artifacts: '산출물', info: '세부', useractions: '사용자 작업' };
+var MID_TAB_PANEL = { plan: 'panel-plan', goal: 'panel-goal', tasks: 'panel-tasks', agents: 'panel-tabs', artifacts: 'panel-artifacts', info: 'panel-info', useractions: 'panel-user-actions' };
+// Pure (.prd/28 §3, owner 2026-11-16): the bar is [작업 계획] | the layout's tabs (목표 · 작업 · … · 세부) | 사용자 작업 —
+// the two ends are every layout's, not a layout's to drop.
+function panelBarTabIds(layoutTabs) {
+  var mid = (layoutTabs || []).filter(function(id) { return id !== 'plan' && id !== 'useractions'; });
+  return ['plan'].concat(mid, ['useractions']);
+}
 // Pure: the bar's tabs — { id, label, count, title, empty } — from the session and what only the page knows (c: the
 // goal editor's right, the focused agent's tasks and earlier plans, the files).
 function panelMidTabsOf(s, tabs, c) {
@@ -14501,7 +14517,27 @@ function panelMidTabsOf(s, tabs, c) {
     var id = tabs[i];
     if (!MID_TAB_LABEL[id]) continue;
     var t = { id: id, label: MID_TAB_LABEL[id], count: '', title: '', empty: false };
-    if (id === 'goal') {
+    if (id === 'plan') {
+      // The task's plan: its version and where it stands, the tab drawn to stand out (is-plan); none — an empty tab.
+      var tp = s && s.taskPlan;
+      if (tp) {
+        t.count = tp.revision > 0 ? 'v' + tp.revision : '';
+        t.state = TASK_PLAN_STATE_LABEL[tp.state] || String(tp.state || '');
+        t.tone = TASK_PLAN_TONE[tp.state] || 'idle';
+        t.waiting = tp.state === 'awaiting';
+        t.title = '작업 계획' + (t.count ? ' ' + t.count : '') + (t.state ? ' · ' + t.state : '');
+      } else {
+        t.empty = true;
+        t.title = '작업 계획 없음';
+      }
+    } else if (id === 'useractions') {
+      // 사용자 할 일 (instruct_user): how many, and the required ones still waiting — the card face's count — as its badge.
+      var ua = (s && s.userActions) || [];
+      t.wait = userActionsWaiting(s);
+      if (ua.length) t.count = String(ua.length);
+      t.empty = !ua.length;
+      t.title = ua.length ? '사용자 작업 ' + ua.length + (t.wait ? ' · ' + '사용자 할 일 대기 ' + t.wait : '') : '사용자 작업 없음';
+    } else if (id === 'goal') {
       var g = (s && s.goal) || {};
       var past = (g.history || []).length;
       var cur = g.current ? 1 : 0;
@@ -14512,13 +14548,9 @@ function panelMidTabsOf(s, tabs, c) {
         t.count = (cur ? past + 1 : past) + '/' + all;
         t.title = '목표 — 지난 ' + past + ' · 지금 ' + cur + ' · 대기 ' + q + (held ? ' · 일시정지 ' + held : '');
       } else {
-        // 사용자 할 일 lives in this tab too (.prd/28 §3): its history alone opens it.
-        t.empty = !ctx.goalEditable && !((s && s.userActions) || []).length;
-        t.title = ctx.goalEditable ? '목표 없음 — 눌러서 추가' : '목표 없음';
+        t.empty = !ctx.goalEditable;
+        t.title = t.empty ? '목표 없음' : '목표 없음 — 눌러서 추가';
       }
-      // The required tasks still waiting — the card face's count — shown on the tab, the only place it is while folded.
-      t.wait = userActionsWaiting(s);
-      if (t.wait) t.title += ' · ' + '사용자 할 일 대기 ' + t.wait;
     } else if (id === 'tasks') {
       var list = ctx.tasks || [];
       var done = 0;
@@ -14571,7 +14603,7 @@ function renderPanelMidbar() {
     });
   }
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  var tabs = s ? panelMidTabsOf(s, viewSpec().detail.tabs, panelMidContext(s)) : [];
+  var tabs = s ? panelMidTabsOf(s, panelBarTabIds(viewSpec().detail.tabs), panelMidContext(s)) : [];
   // An open tab the layout no longer has closes.
   var kept = false;
   for (var i = 0; i < tabs.length; i++) if (tabs[i].id === _panelMid) kept = true;
@@ -14583,11 +14615,17 @@ function renderPanelMidbar() {
   for (var j = 0; j < tabs.length; j++) html += panelMidTabHtml(tabs[j], tabs[j].id === _panelMid);
   writePanelPart(bar, html);
 }
-// Pure: one tab of the bar — a disclosure button with its count, and the 목표 tab's waiting 사용자 할 일 (.prd/28 §3).
+// Pure: one tab of the bar — a disclosure button with its count; 작업 계획 with its icon and state, drawn to stand out
+// while there is a plan; 사용자 작업 with the required tasks still waiting (.prd/28 §3).
 function panelMidTabHtml(t, on) {
-  return '<button type="button" class="pm-tab" data-mid="' + t.id + '" aria-expanded="' + (on ? 'true' : 'false') + '" aria-controls="' + MID_TAB_PANEL[t.id] + '"'
+  var plan = t.id === 'plan' && !t.empty;
+  return '<button type="button" class="pm-tab' + (plan ? ' is-plan' : '') + '" data-mid="' + t.id + '" aria-expanded="' + (on ? 'true' : 'false') + '" aria-controls="' + MID_TAB_PANEL[t.id] + '"'
+    + (plan ? ' data-waiting="' + (t.waiting ? 'true' : 'false') + '"' : '')
     + (t.empty && !on ? ' disabled' : '') + (t.title ? ' title="' + escAttr(t.title) + '"' : '') + '>'
+    // An icon slot is filled only as <i data-ui-icon="…" class="…"> (fillUiIcons — attribute order matters).
+    + (plan ? '<i data-ui-icon="list" class="pm-icon"></i>' : '')
     + '<span class="pm-label">' + esc(t.label) + '</span>' + (t.count ? '<span class="pm-count">' + esc(t.count) + '</span>' : '')
+    + (plan && t.state ? '<span class="pm-state ui-status" data-tone="' + escAttr(t.tone || 'idle') + '">' + esc(t.state) + '</span>' : '')
     + (t.wait ? '<span class="pm-wait ui-count" data-tone="wait" aria-label="' + escAttr('사용자 할 일 대기 ' + t.wait) + '">' + t.wait + '</span>' : '')
     + '<i class="pm-caret" data-ui-icon="chevron-down"></i></button>';
 }
@@ -15762,6 +15800,10 @@ function planBarHtml(s) {
 function planAskKey(tp) {
   return (tp ? tp.revision : '') + ':' + (tp ? tp.state : '');
 }
+// A plan waiting for 시작: the card opens on the 작업 계획 tab — the reader reads it to decide (.prd/28 §3).
+function planWaitsOnReader(s) {
+  return !!(s && s.taskPlan && s.taskPlan.state === 'awaiting');
+}
 function panelPlanHtml(s, tp) {
   var key = s.key;
   var head = '<div class="pp-head"><span class="pp-title">작업 계획' + (tp.revision > 0 ? ' v' + tp.revision : '') + '</span>'
@@ -15842,8 +15884,8 @@ function renderPanelPlan(s) {
       bar._html = b;
     }
   }
-  // The plan is a part of 입력 필요: its box shows, hides or moves with it (SSOT 2026-11-13).
-  syncPanelNeeds();
+  // The plan is the 작업 계획 tab's (.prd/28 §3): its version and state are the tab's label.
+  renderPanelMidbar();
 }
 // 시작 / 취소: the revision the user saw (a newer one meanwhile is a 409 that says so). With the detail card
 // open, 시작 approves the plan it shows — only once that is the board's revision, loaded (planShownLag), so the
@@ -20191,7 +20233,7 @@ function landPanel() {
     var target = inChat ? null
       : permission && permission.style.display !== 'none' ? permission
       : question && question.style.display !== 'none' ? question
-      : planBox && !planBox.hidden && planBox.getAttribute('data-waiting') === 'true' ? planBox : null;
+      : planBox && !planBox.hidden && _panelMid === 'plan' && planBox.getAttribute('data-waiting') === 'true' ? planBox : null;
     var onQuestion = !!target;
     // The landing already made, by where it went ('top' — the question under the title bar, 'chat' — the chat): a
     // question landing is skipped only after a question landing, so a box that moved back under the title bar since
@@ -20315,7 +20357,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // one keeps the reader's.
   var midLand = _panelLand === 'goal' ? 'goal' : _panelLand === 'tasks' ? 'tasks' : _panelLand === 'agent' ? 'agents' : _panelLand === 'artifacts' ? 'artifacts' : '';
   if (midLand) _panelMid = midLand;
-  else if (!sameSession) _panelMid = '';
+  else if (!sameSession) _panelMid = planWaitsOnReader(_sessionCache[sessionKey]) ? 'plan' : '';
 
   // Reset pagination state before loading this session's turns. A new panel
   // generation makes every request of the previous one stale — including a

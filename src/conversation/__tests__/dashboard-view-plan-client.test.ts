@@ -639,18 +639,17 @@ describe('P4 — the detail card follows the plan', () => {
     // #805 — the detail card names the model (the task card shows it as icons only): its model · effort line stays.
     // SSOT 2026-11-03: the chat is a tab view with the work log (logtab — 대화 · 작업 로그).
     // SSOT 2026-11-03: the agent strip is the 에이전트 tab's (agenttabs) in every built-in.
-    // .prd/28 §3: every built-in has the 목표 tab, so 사용자 할 일 folds into it (goaltab).
-    expect(b.attrs['data-detail'].split(' ').sort()).toEqual(['agenttabs', 'controls', 'goaltab', 'logtab']);
+    expect(b.attrs['data-detail'].split(' ').sort()).toEqual(['agenttabs', 'controls', 'logtab']);
     expect(b.attrs['data-tasks']).toBe('list');
     expect(b.props['--ptl-max']).toBe('34cqh');
     expect(env.__get('_panelDetail')).toBe(false);
     env.__set('_viewPlan', '2');
     env.applyViewMode();
-    expect(b.attrs['data-detail'].split(' ').sort()).toEqual(['agenttabs', 'controls', 'goaltab', 'logtab']);
+    expect(b.attrs['data-detail'].split(' ').sort()).toEqual(['agenttabs', 'controls', 'logtab']);
     expect(b.props['--ptl-max']).toBe('50cqh');
     env.__set('_viewPlan', '3');
     env.applyViewMode();
-    expect(b.attrs['data-detail'].split(' ').sort()).toEqual(['agenttabs', 'controls', 'goaltab', 'logtab']);
+    expect(b.attrs['data-detail'].split(' ').sort()).toEqual(['agenttabs', 'controls', 'logtab']);
     expect(b.attrs['data-tasks']).toBe('line');
     // The task line's checklist opens up to the same share.
     expect(b.props['--ptl-max']).toBe('34cqh');
@@ -658,7 +657,7 @@ describe('P4 — the detail card follows the plan', () => {
     env.__set('_viewPlan', '1');
     env.applyViewMode();
     expect(b.attrs['data-detail'].split(' ').sort()).toEqual(
-      ['agenthead', 'agenttabs', 'controls', 'goaltab', 'sections', 'subtitle'].sort(),
+      ['agenthead', 'agenttabs', 'controls', 'sections', 'subtitle'].sort(),
     );
     expect(b.attrs['data-tasks']).toBe('runs');
     // A layout without the 작업 tab: no task list at all (data-tasks="none").

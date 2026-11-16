@@ -263,8 +263,6 @@ function detailSpecOf(d) {
   if (d && d.subtitle) show.push('subtitle');
   if (d && d.agenthead) show.push('agenthead');
   if (tabs.indexOf('agents') >= 0) show.push('agenttabs');
-  // .prd/28 §3: 사용자 할 일 folds into the 목표 tab — only when the layout has that tab.
-  if (tabs.indexOf('goal') >= 0) show.push('goaltab');
   if (d && d.sections) show.push('sections');
   if (d && d.logtab) show.push('logtab');
   if (d && d.controls) show.push('controls');

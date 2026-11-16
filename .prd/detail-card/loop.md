@@ -8,8 +8,8 @@ Status: in-progress (라운드 1) · 스펙 = [`../28-detail-card-user-tasks-and
 
 | ID | WU | Status | 브랜치 · 워크트리 | 스코프 | 끝상태 확인 |
 |---|---|---|---|---|---|
-| WU-A | 사용자 할 일 → 목표 탭 | 🟡 | `feat/detail-card-user-tasks-goal` · `wt-wu3` | `dashboard.ts`(마크업 · CSS · `panelMidTabsOf` · `renderPanelMidbar`), `view-layout-client.ts`(`detailSpecOf`), en-page 카탈로그 | 28 §6 A1–A4 |
-| WU-B | 변경점 뷰어 두 모드 | 🟡 | `feat/changes-viewer-panel` · `wt-wu2` | `code-changes-client.ts`, `dashboard.ts`(`closePanel` · Esc · `ui-close`), 26 §4.2 | 28 §6 V1–V6 |
+| WU-A | 탭 줄 [작업 계획] · … · 사용자 작업 (SSOT_3가 목표 탭 안 → 독립 탭으로 고침) | 🟡 | `feat/detail-card-user-tasks-goal` · `wt-wu3` · PR #1311 | `dashboard.ts`(마크업 · CSS · `panelBarTabIds` · `panelMidTabsOf` · `panelMidTabHtml` · `panelNeedsCount` · `renderPanelPlan` · `openPanel`), 시험 하네스 대역, en-page 카탈로그 | 28 §6 A1–A4 |
+| WU-B | 변경점 뷰어 두 모드 | 🟡 | `feat/changes-viewer-panel` · `wt-wu2` · PR #1313 머지 `effabad3` | `code-changes-client.ts`, `dashboard.ts`(`closePanel` · `syncPanelWidth`), 26 §4.2 | 28 §6 V1–V6 (소스 실측 끝, dev 실측 남음) |
 | R1 | 리뷰 리포트 | 🟡 | — | 독립 리뷰어 + dev 실측 | Slack 리포트 · 개선 항목을 gap 행으로 |
 
 ## build facts (실측)
