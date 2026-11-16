@@ -698,15 +698,14 @@ describe('N7 — focus survives a move (review on #1259)', () => {
   });
 });
 
-describe('N8 — a decided plan alone keeps the box shown under the title bar (real renderPanelPlan)', () => {
-  it('the plan paints in its tab and repaints the bar; the 입력 필요 box is not touched', () => {
+describe('N8 — a plan is its tab’s: rendering one never brings back the 입력 필요 zone (real renderPanelPlan · syncPanelNeeds)', () => {
+  it('the zone the answered prompt left in the chat goes back and stays hidden under a plan waiting for 시작 or started', () => {
     const c = card();
     const bar = new El('panel-plan-bar');
-    const cache: Record<string, unknown> = {
-      k: { key: 'k', activityState: 'working', taskPlan: { state: 'approved', revision: 2 } },
-    };
+    const cache: Record<string, unknown> = { k: { ...WAITING } };
     let bars = 0;
-    const m = load<{ renderPanelPlan(s: unknown): void }>(
+    let paints = 0;
+    const m = load<{ renderPanelPlan(s: unknown): void; syncPanelNeeds(): void }>(
       [...PLACE_FNS, 'syncPanelNeeds', 'renderPanelPlan'],
       NEEDS_VARS,
       {
@@ -718,7 +717,9 @@ describe('N8 — a decided plan alone keeps the box shown under the title bar (r
         _sessionCache: cache,
         _psec: 'conv',
         _panelAgent: '',
-        convPaint: () => {},
+        convPaint: () => {
+          paints++;
+        },
         panelPlanHtml: () => '<details class="pp-fold">…</details>',
         planBarHtml: () => '',
         renderPanelMidbar: () => {
@@ -726,16 +727,33 @@ describe('N8 — a decided plan alone keeps the box shown under the title bar (r
         },
       },
     );
+    // A prompt waits: the zone is the chat's last message.
+    m.syncPanelNeeds();
+    expect(c.needs.parentNode).toBe(c.conv);
+    expect(paints).toBe(1);
+    // It was answered, and the plan now waits for 시작: the plan paints in its tab, the bar repaints (its 작업 계획 tab
+    // names the version and state), and the placement pass takes the zone out of the chat — nothing in it waits.
+    cache.k = { key: 'k', activityState: 'waiting', taskPlan: { state: 'awaiting', revision: 2 } };
     m.renderPanelPlan(cache.k);
-    // The plan shows in its tab; the bar repaints (its 작업 계획 tab names the version and state); the zone stays hidden.
+    m.syncPanelNeeds();
     expect(c.plan.hidden).toBe(false);
     expect(bars).toBe(1);
     expect(c.needs.parentNode).toBe(c.surf);
     expect(c.needs.hidden).toBe(true);
+    expect(paints).toBe(2);
+    // Started: the same — the zone stays out and hidden, and the chat is not repainted for it.
+    cache.k = { key: 'k', activityState: 'working', taskPlan: { state: 'approved', revision: 2 } };
+    m.renderPanelPlan(cache.k);
+    m.syncPanelNeeds();
+    expect(c.plan.hidden).toBe(false);
+    expect(c.needs.parentNode).toBe(c.surf);
+    expect(c.needs.hidden).toBe(true);
+    expect(paints).toBe(2);
+    // No plan: its tab's content goes.
     cache.k = { key: 'k', activityState: 'working' };
     m.renderPanelPlan(cache.k);
     expect(c.plan.hidden).toBe(true);
-    expect(bars).toBe(2);
+    expect(bars).toBe(3);
   });
 });
 
