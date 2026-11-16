@@ -458,6 +458,14 @@ export class SlackHandler {
    */
   private goalDriverKickOnRelease?: Set<string>;
   /**
+   * Sessions where a turn that ran INSIDE another run's slot was stopped by
+   * `auto-compact`: the replay a `/compact` turn runs from its own teardown
+   * (the busy fence runs a `compactRedispatch` live). The run that holds the
+   * slot settles on its own turn's outcome, so its boundary would not see the
+   * stop; it reads this mark instead (dev 2026-11-15, 8h idle).
+   */
+  private readonly nestedAutoCompactStops = new Set<string>();
+  /**
    * Files downloaded for a message that was STEERED into a running turn, keyed
    * by the uuid it was pushed under (06 §3.2/D2). They must survive until the
    * turn settles that uuid — the model reads them from disk at a later tool
@@ -1281,11 +1289,12 @@ export class SlackHandler {
       runDrain: (sessionKey, settled) => {
         // A click's run that an auto-compact stop ended: the drain below carries it on.
         this.noteAutoCompactCut(sessionKey, settled);
+        const nestedStop = this.nestedAutoCompactStops.delete(this.canonicalFollowupKey(sessionKey));
         return this.runFollowupDrainLoop(sessionKey).then((last) => {
           // The other boundary a dispatcher run settles into (`Send now`,
           // Resume, Retry): an auto-compact stop — the click's own run, or the
           // drain's last — hands its work on here exactly as in `drainFollowups`.
-          this.resumeIfAutoCompactStop(sessionKey, last ?? settled);
+          this.resumeIfAutoCompactStop(sessionKey, last ?? settled, nestedStop && last === undefined);
           // A human-driven drain (Resume / Retry) is a boundary too: release
           // the §3.6 deferral it may just have cleared instead of waiting for
           // a turn end that a deferred loop would never produce. With nothing
@@ -1391,6 +1400,7 @@ export class SlackHandler {
     this.goalErrorResumeSpent?.delete(sessionKey);
     this.goalDriverKickOnRelease?.delete(sessionKey);
     this.goalTurnOrder.delete(sessionKey);
+    this.nestedAutoCompactStops.delete(sessionKey);
   }
 
   /** #893 — the session's turn begin/end order, created on first use. */
@@ -2077,7 +2087,16 @@ export class SlackHandler {
       // Immediate controls only (`!`, DM cleanup links, commands that answer
       // without starting a turn) keep working live — they cannot supersede the
       // running request. A command that WOULD dispatch was classified queueable.
-      await this.processMessage(event, say);
+      // The one turn that runs here is a post-compact replay, from the teardown
+      // of the `/compact` turn that holds the slot: an auto-compact stop of it
+      // is handed to that run's boundary (`nestedAutoCompactStops`).
+      const outcome = await this.processMessage(event, say);
+      if (isAutoCompactStop(outcome)) {
+        this.nestedAutoCompactStops.add(sessionKey);
+        this.logger.info('Auto-compact stop inside a running slot — its run resumes the work at its boundary', {
+          sessionKey,
+        });
+      }
       return;
     }
 
@@ -6950,9 +6969,11 @@ export class SlackHandler {
     // the slot with pushed copies of its own, and sweeping those back to
     // `queued` would have the drain below deliver them a second time (§3.2).
     await this.sweepSteerBucketsIfIdle(sessionKey);
+    // Read BEFORE the drain: a run the drain starts carries the work on itself.
+    const nestedStop = this.nestedAutoCompactStops.delete(sessionKey);
     const last = report.canDrain ? await this.runFollowupDrainLoop(sessionKey) : undefined;
     const final = last ?? report;
-    this.resumeIfAutoCompactStop(sessionKey, final);
+    this.resumeIfAutoCompactStop(sessionKey, final, nestedStop && last === undefined);
     this.releaseDeferredGoalDriver(sessionKey, final);
     this.noteChainSettled(sessionKey, final.outcome);
   }
@@ -6983,8 +7004,21 @@ export class SlackHandler {
    * `auto-compact`, resume its work. Every boundary a dispatcher run settles
    * into calls this — `drainFollowups` and the action controls' `runDrain`.
    */
-  private resumeIfAutoCompactStop(sessionKey: string, final: RunReport | undefined): void {
-    if (final && isAutoCompactStop(final.outcome)) this.resumeAfterAutoCompactStop(sessionKey);
+  private resumeIfAutoCompactStop(sessionKey: string, final: RunReport | undefined, nestedStop = false): void {
+    if (final && isAutoCompactStop(final.outcome)) {
+      this.resumeAfterAutoCompactStop(sessionKey);
+      return;
+    }
+    // A replay inside this run was cut by auto-compact, and the run itself
+    // ended on its own turn (dev 2026-11-15: the `/compact` turn settled
+    // `safe`): the work it was replaying carries on here, as for a run the stop
+    // cut. Not after a run that failed or was stopped — that is its own end.
+    if (nestedStop && final?.outcome?.result === 'safe') {
+      this.logger.info('Auto-compact stop of a replay inside the run — resuming the work at its boundary', {
+        sessionKey,
+      });
+      this.resumeAfterAutoCompactStop(this.canonicalFollowupKey(sessionKey));
+    }
   }
 
   /** Record a stop-class abort on the session (`beforeAbort`). */

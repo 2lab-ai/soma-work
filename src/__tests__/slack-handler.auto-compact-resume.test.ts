@@ -353,6 +353,94 @@ describe('SlackHandler — resume after an auto-compact stop (T3)', () => {
   });
 
   /**
+   * dev 2026-11-15 19:34Z (work:C0AKY7W2UGZ:1794756692.798509) — the turn an
+   * auto-compact stop cut does not always belong to the dispatcher run. A
+   * `/compact` turn replays the message the compaction parked from its own
+   * teardown, and that replay runs INSIDE the `/compact` turn's run (the busy
+   * fence runs a `compactRedispatch` live). When the replay crosses the trigger
+   * again and is stopped by `auto-compact`, the run itself settles on the
+   * `/compact` turn's outcome — `safe` — so its boundary never resumed the
+   * work: the session (no goal) sat idle for 8 hours with the flag armed.
+   */
+  describe('a replay inside a /compact run that an auto-compact stop cuts (dev 2026-11-15)', () => {
+    /** The /compact run holds the slot; `during` runs while it does; then it settles safe. */
+    async function compactRunWith(during: () => Promise<void>): Promise<void> {
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const run = handler.handleMessage(message({ ts: '222.900', text: '/compact' }), say());
+      await tick();
+      await during();
+      gate.resolve({ hasPendingChoice: false });
+      await run;
+      await settleTicks();
+    }
+    /** The replay of the parked message, run live inside the busy slot, ending as `stop` says. */
+    async function replay(stop?: string): Promise<void> {
+      const controller = new AbortController();
+      initialize.mockImplementationOnce(async () => ({
+        session: registrySession,
+        sessionKey: SESSION_KEY,
+        isNewSession: false,
+        userName: 'Owner',
+        workingDirectory: '/tmp/work',
+        abortController: controller,
+        halted: false,
+      }));
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const replayed = handler.handleMessage(
+        message({ ts: '222.901', text: '압축 전에 하던 지시', routeContext: { compactRedispatch: true } }),
+        say(),
+      );
+      await tick();
+      if (stop) controller.abort(stop);
+      gate.resolve({ hasPendingChoice: false });
+      await replayed;
+    }
+
+    it('resumes the work when the /compact run settles', async () => {
+      await compactRunWith(() => replay('auto-compact'));
+
+      expect(routedTexts()).toContain('압축 전에 하던 지시');
+      expect(resumed()).toBe(true);
+    });
+
+    it('does not resume after a replay that ended on its own', async () => {
+      await compactRunWith(() => replay());
+
+      expect(resumed()).toBe(false);
+    });
+
+    it('leaves a goal session to its goal loop', async () => {
+      registrySession.goal = { goalId: 'g1', objective: '$fix', status: 'active', createdBy: 'U_OWNER' };
+      await compactRunWith(() => replay('auto-compact'));
+
+      expect(resumed()).toBe(false);
+    });
+
+    it('does not resume when a person stopped the session after the cut', async () => {
+      await compactRunWith(async () => {
+        registrySession.autoCompactStoppedAtMs = Date.now() - 1000;
+        await replay('auto-compact');
+        registrySession.lastStopAtMs = Date.now();
+      });
+
+      expect(resumed()).toBe(false);
+    });
+
+    it('a message queued during the replay runs next instead — no second continuation', async () => {
+      await compactRunWith(async () => {
+        await replay('auto-compact');
+        await handler.handleMessage(message({ ts: '222.950', text: '세번째 지시' }), say());
+        await tick();
+      });
+
+      expect(routedTexts()).toContain('세번째 지시');
+      expect(resumed()).toBe(false);
+    });
+  });
+
+  /**
    * A Stop the user pressed after the auto-compact stop is the last word: the
    * automatic continuation must not start the work again. The Stop can land in
    * the window between the stop and the boundary (here: before the turn's slot
