@@ -33,6 +33,12 @@ var CHG_FILES = '파일 수';
 var CHG_FILE_LIST = '바뀐 파일';
 var CHG_AS_OF = '기준 시각';
 var CHG_PRS = 'PR';
+// .prd/29 — the session's issue tree (in place of the PR list).
+var CHG_ITREE = '이슈 · PR';
+var CHG_INTERNAL = '내부';
+var CHG_FOLD = '접기';
+var CHG_UNFOLD = '펼치기';
+var CHG_ISSUE_STATE = { open: '열림', closed: '닫힘', merged: '머지됨', draft: '초안' };
 var CHG_NO_FILES = '이 범위에 바뀐 파일이 없습니다';
 var CHG_BINARY = '바이너리 파일 — 줄 단위 변경을 보여 주지 않습니다';
 var CHG_TOO_BIG = '변경이 너무 커서 여기에 다 보여 주지 않습니다';
@@ -66,7 +72,7 @@ var CHG_MODE = '실행 권한이 바뀜';
 var CHG_NO_CONTENT = '내용 변경 없음';
 var CHG_RENAMED_FROM = '이전 이름';
 
-var _chg = { cid: '', doc: null, state: 'idle', scope: 'all', closed: Object.create(null), files: Object.create(null), viewer: null, gen: 0 };
+var _chg = { cid: '', doc: null, state: 'idle', scope: 'all', closed: Object.create(null), files: Object.create(null), viewer: null, gen: 0, treeClosed: Object.create(null), treeHidden: false, treeSig: '' };
 // Closes the viewer makes itself to change mode: their close events (queued in a browser, at once in a test DOM) skip the clean-up.
 var _chgSkipClose = 0;
 
@@ -235,11 +241,11 @@ function chgEl() { return document.getElementById('panel-changes'); }
 // The tab opened (or the panel's conversation changed): the stored list at once, then — for a live session — a fresh
 // collect (refresh=1) painted when it lands. A load for a conversation the panel left is dropped.
 function chgOpen(cid) {
-  if (!cid) { _chg = { cid: '', doc: null, state: 'idle', scope: 'all', closed: Object.create(null), files: Object.create(null), viewer: null, gen: _chg.gen + 1 }; chgPaint(); return; }
+  if (!cid) { _chg = { cid: '', doc: null, state: 'idle', scope: 'all', closed: Object.create(null), files: Object.create(null), viewer: null, gen: _chg.gen + 1, treeClosed: Object.create(null), treeHidden: false, treeSig: '' }; chgPaint(); return; }
   if (_chg.cid !== cid) {
     // Another session's card: a viewer still open shows the last one's file — it closes (.prd/28 §4).
     chgCloseViewer();
-    _chg = { cid: cid, doc: null, state: 'loading', scope: 'all', closed: Object.create(null), files: Object.create(null), viewer: null, gen: _chg.gen + 1 };
+    _chg = { cid: cid, doc: null, state: 'loading', scope: 'all', closed: Object.create(null), files: Object.create(null), viewer: null, gen: _chg.gen + 1, treeClosed: Object.create(null), treeHidden: false, treeSig: '' };
   }
   chgPaint();
   chgLoad(cid, false).then(function() { return chgLoad(cid, true); });
@@ -290,20 +296,119 @@ function chgScopeChips(doc) {
     return '<button type="button" class="chg-chip' + (on ? ' on' : '') + '" data-chg-scope="' + chgEsc(c.id) + '"' + (off ? ' disabled' : '') + ' aria-pressed="' + (on ? 'true' : 'false') + '">' + chgEsc(c.label) + ' <b>' + c.n + '</b></button>';
   }).join('') + '</div>';
 }
-function chgPrRows(doc) {
+// .prd/29 — the open card's issue tree (its session's, on the board's card data): null when the page has none.
+function chgIssueTreeView() {
+  var s = typeof _sessionCache !== 'undefined' && typeof panelSessionKey !== 'undefined' && panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  return s && s.issueTree && Array.isArray(s.issueTree.nodes) ? s.issueTree : null;
+}
+function chgCanonUrl(u) {
+  return String(u || '').toLowerCase().replace(/[?#].*$/, '').replace(/\/+$/, '');
+}
+// Pure: the tree's roots — the session's issue tree with each PR's collected numbers. A collected PR the tree does not
+// have (a session from before the tree) sits under the representative issue (the first external root issue, else the
+// first root issue); with no tree at all, under one stand-in issue for the session.
+function chgIssueForest(view, doc) {
   var prs = (doc && doc.prs) || [];
-  if (!prs.length) return '';
-  return '<div class="chg-prs"><div class="chg-h">' + chgEsc(CHG_PRS) + '</div>' + prs.map(function(p) {
-    var on = _chg.scope === 'pr:' + p.id;
-    var href = /^https:\/\/github\.com\//.test(String(p.url || '')) ? String(p.url) : '';
-    return '<div class="chg-pr' + (on ? ' on' : '') + '">' +
-      '<button type="button" class="chg-pr-main" data-chg-scope="pr:' + chgEsc(p.id) + '" aria-pressed="' + (on ? 'true' : 'false') + '">' +
-      '<span class="chg-pr-num">#' + chgNum(p.number) + '</span> <span class="chg-pr-title">' + chgEsc(p.title || p.repo) + '</span>' +
-      ' <span class="chg-state chg-state-' + chgEsc(p.state) + '">' + chgEsc(CHG_PR_STATE[p.state] || p.state) + '</span> <span>' + chgDelta(p.additions, p.deletions) + '</span>' +
-      ' <span class="chg-muted">' + chgEsc(CHG_FILES) + ' ' + chgNum(p.changedFiles) + '</span></button>' +
-      (href ? '<a class="chg-pr-link" href="' + chgEsc(href) + '" target="_blank" rel="noopener noreferrer" title="' + chgEsc(CHG_OPEN_GITHUB) + '">↗</a>' : '') +
-      '</div>';
-  }).join('') + '</div>';
+  var byUrl = Object.create(null);
+  prs.forEach(function(p) { byUrl[chgCanonUrl(p.url)] = p; });
+  var items = ((view && view.nodes) || []).map(function(n) {
+    return { node: n, pr: n.kind === 'pr' ? byUrl[chgCanonUrl(n.url)] || null : null, children: [] };
+  });
+  var byId = Object.create(null);
+  items.forEach(function(it) { byId[it.node.id] = it; });
+  var roots = [];
+  items.forEach(function(it) {
+    var parent = it.node.parent && byId[it.node.parent];
+    if (parent && parent !== it) parent.children.push(it);
+    else roots.push(it);
+  });
+  var listed = Object.create(null);
+  items.forEach(function(it) { if (it.pr) listed[it.pr.id] = true; });
+  var stray = prs.filter(function(p) { return !listed[p.id]; });
+  if (stray.length) {
+    var issues = roots.filter(function(it) { return it.node.kind === 'issue'; });
+    var rep = issues.filter(function(it) { return it.node.source !== 'internal'; })[0] || issues[0];
+    if (!rep) {
+      rep = { node: { id: 'session', kind: 'issue', source: 'internal' }, pr: null, children: [] };
+      roots.unshift(rep);
+    }
+    stray.forEach(function(p) {
+      rep.children.push({ node: { id: 'pr:' + p.id, kind: 'pr', source: 'github', url: p.url, title: p.title, status: p.state }, pr: p, children: [] });
+    });
+  }
+  return roots;
+}
+function chgForestCount(items) {
+  return items.reduce(function(n, it) { return n + 1 + chgForestCount(it.children); }, 0);
+}
+// An issue's mark: GitHub "#12", a Jira key, a session-only issue "내부".
+function chgIssueMark(n) {
+  if (n.source === 'internal') return CHG_INTERNAL;
+  if (n.label) return String(n.label);
+  var u = String(n.url || '');
+  var gh = /\/issues\/(\d+)$/.exec(u);
+  if (gh) return '#' + gh[1];
+  var jira = /\/browse\/([A-Z][A-Z0-9_]*-\d+)$/i.exec(u);
+  return jira ? jira[1].toUpperCase() : '';
+}
+function chgLinkOut(url) {
+  var href = /^https:\/\//.test(String(url || '')) ? String(url) : '';
+  return href ? '<a class="chg-pr-link" href="' + chgEsc(href) + '" target="_blank" rel="noopener noreferrer" title="' + chgEsc(CHG_OPEN_GITHUB) + '">↗</a>' : '';
+}
+function chgStateChip(state, labels) {
+  if (!state) return '';
+  return ' <span class="chg-state chg-state-' + chgEsc(state) + '">' + chgEsc(labels[state] || state) + '</span>';
+}
+// The issue tree as rows: an issue — its mark, title and state; a PR — the PR row (pressed: that PR's files). Each node
+// with children folds; the head folds the whole tree.
+function chgIssueTreeHtml(doc) {
+  var roots = chgIssueForest(chgIssueTreeView(), doc);
+  if (!roots.length) return '';
+  var hidden = !!_chg.treeHidden;
+  var out = [];
+  var walk = function(it, depth) {
+    var n = it.node;
+    var kids = it.children.length;
+    var shut = !!_chg.treeClosed[n.id];
+    var caret = kids
+      ? '<button type="button" class="chg-icaret" data-chg-itree="' + chgEsc(n.id) + '" aria-expanded="' + (shut ? 'false' : 'true') + '" aria-label="' + chgEsc(shut ? CHG_UNFOLD : CHG_FOLD) + '">' + (shut ? '▸' : '▾') + '</button>'
+      : '<span class="chg-icaret" aria-hidden="true"></span>';
+    var pad = ' style="--chg-depth:' + depth + '"';
+    if (n.kind === 'pr') {
+      var p = it.pr;
+      var num = p ? chgNum(p.number) : chgNum((/\/pull\/(\d+)/.exec(String(n.url || '')) || [])[1]);
+      var title = (p && p.title) || n.title || (p && p.repo) || '';
+      var state = (p && p.state) || n.status || '';
+      if (p) {
+        var on = _chg.scope === 'pr:' + p.id;
+        out.push('<div class="chg-inode chg-pr' + (on ? ' on' : '') + '"' + pad + ' data-chg-node="' + chgEsc(n.id) + '">' + caret +
+          '<button type="button" class="chg-pr-main" data-chg-scope="pr:' + chgEsc(p.id) + '" aria-pressed="' + (on ? 'true' : 'false') + '">' +
+          '<span class="chg-pr-num">#' + num + '</span> <span class="chg-pr-title">' + chgEsc(title) + '</span>' + chgStateChip(state, CHG_PR_STATE) +
+          ' <span>' + chgDelta(p.additions, p.deletions) + '</span> <span class="chg-muted">' + chgEsc(CHG_FILES) + ' ' + chgNum(p.changedFiles) + '</span></button>' +
+          chgLinkOut(p.url) + '</div>');
+      } else {
+        out.push('<div class="chg-inode chg-pr chg-pr-bare"' + pad + ' data-chg-node="' + chgEsc(n.id) + '">' + caret +
+          '<span class="chg-pr-main">' + (num ? '<span class="chg-pr-num">#' + num + '</span> ' : '') + '<span class="chg-pr-title">' + chgEsc(title) + '</span>' + chgStateChip(state, CHG_PR_STATE) + '</span>' +
+          chgLinkOut(n.url) + '</div>');
+      }
+    } else {
+      out.push('<div class="chg-inode chg-issue chg-issue-' + chgEsc(n.source || 'unknown') + '"' + pad + ' data-chg-node="' + chgEsc(n.id) + '">' + caret +
+        '<span class="chg-imain"><span class="chg-imark">' + chgEsc(chgIssueMark(n)) + '</span> <span class="chg-pr-title">' + chgEsc(n.title || n.url || '') + '</span>' + chgStateChip(n.status, CHG_ISSUE_STATE) + '</span>' +
+        chgLinkOut(n.url) + '</div>');
+    }
+    if (!shut) it.children.forEach(function(c) { walk(c, depth + 1); });
+  };
+  if (!hidden) roots.forEach(function(r) { walk(r, 0); });
+  return '<div class="chg-itree"><button type="button" class="chg-h chg-ith" data-chg-itree="*" aria-expanded="' + (hidden ? 'false' : 'true') + '">' +
+    '<span class="chg-caret">' + (hidden ? '▸' : '▾') + '</span>' + chgEsc(CHG_ITREE) + ' <span class="chg-muted">' + chgForestCount(roots) + '</span></button>' +
+    (hidden ? '' : '<div class="chg-itree-rows" role="tree">' + out.join('') + '</div>') + '</div>';
+}
+// A push for the open card (repaintPanelSession): the tab is painted again only when its issue tree changed.
+function chgNoteTree() {
+  if (!_chg.cid || !_chg.doc) return;
+  var sig = JSON.stringify(chgIssueTreeView());
+  if (sig === _chg.treeSig) return;
+  chgPaint();
 }
 function chgLayerBadges(f) {
   return f.layers.map(function(l) { return '<span class="chg-badge chg-badge-' + l + '">' + chgEsc(CHG_LAYER_LABEL[l]) + '</span>'; }).join('');
@@ -358,9 +463,10 @@ function chgPaint() {
     html = '<div class="chg-summary"><span>' + chgEsc(CHG_REPOS) + ' <b>' + s.repos + '</b></span><span>' + chgEsc(CHG_FILES) + ' <b>' + s.files + '</b></span><span>' + chgDelta(s.additions, s.deletions) + '</span>' +
       (s.at ? '<span class="chg-muted">' + chgEsc(CHG_AS_OF) + ' ' + chgEsc(s.at) + '</span>' : '') +
       '<button type="button" class="chg-refresh" data-chg-refresh="1">' + chgEsc(CHG_REFRESH) + '</button></div>' +
-      chgScopeChips(doc) + chgPrRows(doc) + chgSkippedNote(doc) +
+      chgScopeChips(doc) + chgIssueTreeHtml(doc) + chgSkippedNote(doc) +
       (files.length ? '<div class="chg-tree" role="tree">' + chgTreeHtml(chgTree(files), chgPanelKey()) + '</div>' : '<div class="chg-empty">' + chgEsc(CHG_NO_FILES) + '</div>');
   }
+  _chg.treeSig = JSON.stringify(chgIssueTreeView());
   if (el._chgHtml !== html) {
     el._chgHtml = html;
     el.innerHTML = html;
@@ -636,10 +742,20 @@ function chgStep(delta) {
 
 // One delegated handler for the tab and the viewer.
 function chgOnClick(e) {
-  var t = e.target && e.target.closest ? e.target.closest('[data-chg-scope],[data-chg-dir],[data-chg-file],[data-chg-refresh],[data-chg-v]') : null;
+  var t = e.target && e.target.closest ? e.target.closest('[data-chg-scope],[data-chg-dir],[data-chg-file],[data-chg-refresh],[data-chg-v],[data-chg-itree]') : null;
   if (!t) return;
   var inViewer = !!(t.closest && t.closest('#chg-viewer'));
-  if (t.hasAttribute('data-chg-scope')) {
+  if (t.hasAttribute('data-chg-itree')) {
+    // .prd/29 — fold a node of the issue tree, or the whole tree (its head).
+    var nid = t.getAttribute('data-chg-itree');
+    if (nid === '*') _chg.treeHidden = !_chg.treeHidden;
+    else _chg.treeClosed[nid] = !_chg.treeClosed[nid];
+    chgPaint();
+    // The rows were drawn again: the toggle that was pressed keeps the focus.
+    var host = chgEl();
+    var again = host ? host.querySelectorAll('[data-chg-itree]') : [];
+    for (var ti = 0; ti < again.length; ti++) if (again[ti].getAttribute('data-chg-itree') === nid) { again[ti].focus(); break; }
+  } else if (t.hasAttribute('data-chg-scope')) {
     var sc = t.getAttribute('data-chg-scope');
     _chg.scope = _chg.scope === sc && sc.indexOf('pr:') === 0 ? 'all' : sc;
     chgPaint();
@@ -702,7 +818,18 @@ export const CODE_CHANGES_CSS = String.raw`
 .chg-chip.on { border-color: var(--accent); color: var(--text); }
 .chg-chip:disabled { opacity: .45; cursor: default; }
 .chg-h { color: var(--text-tertiary); font-size: 12px; margin: 6px 0 2px; }
-.chg-prs { margin-bottom: 8px; }
+.chg-itree { margin-bottom: 8px; }
+.chg-ith { display: flex; align-items: center; gap: 4px; border: 0; background: none; padding: 0; cursor: pointer; font: inherit; font-size: 12px; color: var(--text-tertiary); }
+.chg-inode { display: flex; align-items: center; gap: 4px; padding-left: calc(var(--chg-depth, 0) * 14px); }
+.chg-icaret { flex: 0 0 auto; width: 16px; height: 18px; padding: 0; border: 0; background: none; color: var(--text-tertiary); font: inherit; font-size: 11px; cursor: pointer; }
+span.chg-icaret { cursor: default; }
+.chg-imain { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 3px 6px; white-space: nowrap; }
+.chg-imain > * { flex: 0 0 auto; }
+.chg-imain > .chg-pr-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.chg-issue .chg-pr-title { font-weight: 600; }
+.chg-imark { font-size: 11px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.chg-issue-internal .chg-imark { border: 1px dashed var(--border); border-radius: 4px; padding: 0 4px; }
+.chg-pr-bare .chg-pr-main { cursor: default; }
 .chg-pr { display: flex; align-items: center; gap: 6px; }
 .chg-pr-main { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 6px; text-align: left; border: 1px solid transparent; background: none; color: inherit; font: inherit; padding: 3px 6px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
 .chg-pr-main > * { flex: 0 0 auto; }

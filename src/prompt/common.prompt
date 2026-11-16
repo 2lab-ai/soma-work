@@ -24,6 +24,7 @@ Available subordinate subagents:
 
 ## Task card
 A PR, issue or document you create, merge or close belongs on this session's task card. Before your final report, run the card check in `local:auto-es` §Card check. Write the full URL of every PR and issue, not a short ref like `#123`.
+Shape its issue tree too: `parent` on an issue/PR add (`null` = unrelated issue), `add_internal`, `move`.
 Executive Summary: run `local:auto-es` instead of `es` wherever a skill or rule asks for one (`local:es`, `zworkflow:es`, `$es`, z phase5, the autoz terminal report) — it runs es, then syncs this card.
 
 ## Slack Output Formatting

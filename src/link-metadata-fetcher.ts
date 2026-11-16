@@ -364,6 +364,9 @@ export interface GitHubPullDetail {
   /** `owner/name` of the head's repository (a fork's, for a PR from a fork). */
   head_repo?: string;
   base_sha?: string;
+  /** .prd/29 — the base branch (a stacked PR's base is another PR's head) and the body (its `Closes #N`), cut. */
+  base_ref?: string;
+  body?: string;
 }
 
 /** One file of `GET /repos/{o}/{r}/pulls/{n}/files`. */
@@ -424,6 +427,8 @@ export async function fetchGitHubPullDetail(
       head_sha: str(p.head?.sha),
       head_repo: str(p.head?.repo?.full_name),
       base_sha: str(p.base?.sha),
+      base_ref: str(p.base?.ref),
+      body: typeof p.body === 'string' ? p.body.slice(0, 4000) : undefined,
     };
     const status =
       detail.merged || detail.merged_at ? 'merged' : detail.draft && p.state !== 'closed' ? 'draft' : p.state;
@@ -431,6 +436,37 @@ export async function fetchGitHubPullDetail(
     return detail;
   } catch (error) {
     logger.debug('Failed to read a PR', { owner, repo, number, error: (error as Error).message });
+    return undefined;
+  }
+}
+
+/**
+ * .prd/29 — one GitHub issue for the session's issue tree: its title, state and GitHub parent (`parent_issue_url`, a
+ * sub-issue's) — undefined when the query failed.
+ */
+export async function fetchGitHubIssueMeta(
+  owner: string,
+  repo: string,
+  number: number,
+): Promise<{ title?: string; state?: string; parentUrl?: string } | undefined> {
+  const token = await getGitHubToken();
+  if (!token) return undefined;
+  try {
+    const i = (await githubGet(
+      token,
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${number}`,
+    )) as Record<string, any> | undefined;
+    if (!i || typeof i.number !== 'number') return undefined;
+    const parent = /^https:\/\/api\.github\.com\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)$/i.exec(
+      str(i.parent_issue_url) ?? '',
+    );
+    return {
+      title: typeof i.title === 'string' ? i.title.slice(0, MAX_CACHED_TITLE_LENGTH) : undefined,
+      state: str(i.state),
+      ...(parent ? { parentUrl: `https://github.com/${parent[1]}/${parent[2]}/issues/${parent[3]}` } : {}),
+    };
+  } catch (error) {
+    logger.debug('Failed to read an issue', { owner, repo, number, error: (error as Error).message });
     return undefined;
   }
 }

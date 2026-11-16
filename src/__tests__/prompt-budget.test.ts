@@ -44,7 +44,7 @@ const WORKFLOW_BUDGET: Record<string, number> = {
   'pr-review': 28_900,
   'z-epic-update': 7_000,
   'z-plan-to-work': 7_700,
-  zwork: 5_900,
+  zwork: 6_000, // +100 on purpose (2026-11-16): the task card line on the session issue tree (.prd/29).
 };
 
 /** Prompts sent whole on their own call: the dispatch classifier, goal evaluation, the restart resume turn. */

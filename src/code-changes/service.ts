@@ -4,7 +4,9 @@
  * A run writes only while the key still names the same, not terminated session (a close or a /new can land meanwhile).
  */
 
-import { fetchGitHubPullDetail, fetchGitHubPullFiles } from '../link-metadata-fetcher';
+import type { IssueTreeLinkInput } from 'somalib/model-commands/issue-tree';
+import { type GitHubIssueMeta, prTreeEntries, refreshIssueEntries } from '../issue-tree/relations';
+import { fetchGitHubIssueMeta, fetchGitHubPullDetail, fetchGitHubPullFiles } from '../link-metadata-fetcher';
 import { sessionDirs, sessionStartMs } from '../session-pr-reconciler';
 import {
   type CollectDeps,
@@ -40,6 +42,16 @@ export interface CodeChangesServiceDeps<S extends SessionLike> {
   onResult?: (key: string, session: S, result: CollectResult) => void | Promise<void>;
   store?: CodeChangesStore;
   collect?: Partial<CollectDeps>;
+  /**
+   * .prd/29 — the session's issue tree: what a collect learned about its PRs (titles, states, the issues they close,
+   * stacks) and its GitHub issues (title, state, parent — each read once) goes in.
+   */
+  issueTree?: {
+    note: (key: string, entries: ReadonlyArray<IssueTreeLinkInput & { checkedAt?: number }>) => boolean;
+    /** The GitHub issue URLs the tree has not read yet. */
+    toCheck: (key: string) => string[];
+  };
+  fetchIssue?: (owner: string, repo: string, number: number) => Promise<GitHubIssueMeta | undefined>;
   scheduler?: SchedulerOptions;
   logger?: { debug: (msg: string, meta?: Record<string, unknown>) => void };
 }
@@ -106,7 +118,15 @@ export function createCodeChangesService<S extends SessionLike>(deps: CodeChange
     if (live !== session || live.terminated) return;
     session.codeChanges = result.summary;
     deps.persist(key);
+    if (deps.issueTree) {
+      try {
+        deps.issueTree.note(key, prTreeEntries(result.doc.prs));
+      } catch (error) {
+        deps.logger?.debug('issue tree: PR relations not noted', { key, error: (error as Error)?.message });
+      }
+    }
     deps.pushCard(key);
+    void refreshIssues(key, session);
     // Nothing takes the result: nothing is marked — a consumer installed later still gets every commit and merge.
     if (!deps.onResult) return;
     try {
@@ -120,6 +140,22 @@ export function createCodeChangesService<S extends SessionLike>(deps: CodeChange
       commits: result.newCommits.map((c) => c.sha),
       merges: result.newMerges.map((p) => p.id),
     });
+  }
+
+  /** .prd/29 — the tree's GitHub issues not read yet: their titles, states and parents (once each), then the card. */
+  async function refreshIssues(key: string, session: S): Promise<void> {
+    const tree = deps.issueTree;
+    if (!tree) return;
+    try {
+      const urls = tree.toCheck(key);
+      if (urls.length === 0) return;
+      const entries = await refreshIssueEntries(urls, deps.fetchIssue ?? fetchGitHubIssueMeta, Date.now());
+      const live = deps.getSessionByKey(key);
+      if (live !== session || live.terminated || entries.length === 0) return;
+      if (tree.note(key, entries)) deps.pushCard(key);
+    } catch (error) {
+      deps.logger?.debug('issue tree: issues not read', { key, error: (error as Error)?.message });
+    }
   }
 
   const scheduler = createCodeChangesScheduler(run, { logger: deps.logger, ...deps.scheduler });

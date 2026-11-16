@@ -4,6 +4,7 @@
  * stored record instead (it does not change), and any other whose head and base did not move keeps its stored files.
  */
 
+import { closingIssueUrls } from '../issue-tree/relations';
 import type { GitHubPullDetail, GitHubPullFile } from '../link-metadata-fetcher';
 import { capPatch } from './git-diff-parse';
 import type { ChangedFile, ChangedFileStatus, PrChanges, PrState } from './types';
@@ -153,6 +154,9 @@ export async function sessionPrChanges(
     if (detail.head_ref) pr.headRef = detail.head_ref;
     if (detail.head_sha) pr.headSha = detail.head_sha;
     if (detail.base_sha) pr.baseSha = detail.base_sha;
+    if (detail.base_ref) pr.baseRef = detail.base_ref;
+    const closes = closingIssueUrls(detail.body, ref.owner, ref.repo);
+    if (closes.length) pr.closes = closes;
     const headRepo = detail.head_repo?.toLowerCase();
     if (headRepo && headRepo !== pr.repo) pr.headRepo = headRepo;
     if (createdAt !== undefined) pr.createdAt = createdAt;

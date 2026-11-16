@@ -1732,6 +1732,8 @@ async function start() {
       },
       noteLinks: (sessionKey, links, mode) =>
         claudeHandler.getSessionRegistry().noteSessionLinksByKey(sessionKey, links, mode),
+      // .prd/29 — a PR under the issues its body closes, in the session's issue tree.
+      noteTree: (sessionKey, entries) => claudeHandler.getSessionRegistry().noteIssueTree(sessionKey, entries),
       pushCard: (sessionKey) => scheduleLiveSessionUpdate(sessionKey),
       isCurrent: (sessionKey, session) => {
         const live = claudeHandler.getSessionRegistry().getAllSessions().get(sessionKey);
@@ -1747,6 +1749,11 @@ async function start() {
       allSessions: () => claudeHandler.getSessionRegistry().getAllSessions().entries(),
       persist: (key) => claudeHandler.getSessionRegistry().persistAndBroadcast(key),
       pushCard: (key) => scheduleLiveSessionUpdate(key),
+      // .prd/29 — the session's issue tree learns its PRs' relations and its GitHub issues' titles, states and parents.
+      issueTree: {
+        note: (key, entries) => claudeHandler.getSessionRegistry().noteIssueTree(key, entries),
+        toCheck: (key) => claudeHandler.getSessionRegistry().issueTreeIssuesToCheck(key),
+      },
       // .prd/26 §5 (#1297) — the code-change metrics: merges and commits the collect found new, once each.
       onResult: (key, session, result) =>
         emitCodeMetrics(

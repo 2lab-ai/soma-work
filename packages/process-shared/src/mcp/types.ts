@@ -54,6 +54,7 @@ export interface SessionResourceAddOperation {
   action: 'add';
   resourceType: SessionResourceType;
   link: SessionLink;
+  parent?: string | null;
 }
 
 export interface SessionResourceRemoveOperation {
@@ -68,10 +69,29 @@ export interface SessionResourceSetActiveOperation {
   url?: string;
 }
 
+/** .prd/29 — the issue tree's operations (somalib session-types is the source). */
+export interface SessionIssueAddInternalOperation {
+  action: 'add_internal';
+  resourceType: 'issue';
+  title: string;
+  status?: 'open' | 'closed';
+  parent?: string | null;
+  id?: string;
+}
+
+export interface SessionIssueMoveOperation {
+  action: 'move';
+  resourceType: 'issue' | 'pr';
+  node: string;
+  parent: string | null;
+}
+
 export type SessionResourceOperation =
   | SessionResourceAddOperation
   | SessionResourceRemoveOperation
-  | SessionResourceSetActiveOperation;
+  | SessionResourceSetActiveOperation
+  | SessionIssueAddInternalOperation
+  | SessionIssueMoveOperation;
 
 export interface SessionResourceUpdateRequest {
   expectedSequence?: number;

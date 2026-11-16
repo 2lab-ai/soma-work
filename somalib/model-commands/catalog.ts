@@ -152,6 +152,7 @@ function getRatingStore(): RatingStore | null {
 }
 
 import { attachCommandHelp } from './command-help';
+import { applyIssueTreeOperations, issueTreeFromView, issueTreeView } from './issue-tree';
 import {
   getSuccessMessage,
   SHARE_CONTENT_CHAR_LIMIT,
@@ -210,7 +211,11 @@ const UPDATE_SESSION_SCHEMA = {
         properties: {
           action: {
             type: 'string',
-            enum: ['add', 'remove', 'set_active'],
+            enum: ['add', 'remove', 'set_active', 'add_internal', 'move'],
+            description:
+              "add/remove/set_active: the card's links (an issue or PR also enters/leaves the session issue tree). " +
+              'add_internal: an issue that lives only in this session (title; `id` to retitle or close one). ' +
+              'move: put an issue-tree node (`node`) under `parent`, or at the root with `parent: null`.',
           },
           resourceType: {
             type: 'string',
@@ -218,6 +223,21 @@ const UPDATE_SESSION_SCHEMA = {
           },
           link: { type: 'object' },
           url: { type: 'string' },
+          parent: {
+            type: ['string', 'null'],
+            description:
+              'Issue tree (add · add_internal · move): the node to sit under — its URL, or an id from ' +
+              'GET_SESSION `issueTree` (`internal:<n>`). `null` = unrelated, a root (issues only: every PR has a ' +
+              'parent issue or PR). Omit on add to let the host place it (an issue it closes, the PR it is stacked ' +
+              'on, the GitHub parent issue, else the representative issue).',
+          },
+          node: { type: 'string', description: 'move: the node to move (URL or id).' },
+          title: { type: 'string', description: "add_internal: the internal issue's title." },
+          status: { type: 'string', enum: ['open', 'closed'], description: 'add_internal: open or closed.' },
+          id: {
+            type: 'string',
+            description: 'add_internal: change this internal issue (internal:<n>) instead of making one.',
+          },
         },
         required: ['action', 'resourceType'],
       },
@@ -627,6 +647,7 @@ export function normalizeSessionSnapshot(snapshot: SessionResourceSnapshot | und
     instructions: Array.isArray(snapshot.instructions) ? snapshot.instructions : [],
     sequence: Number.isFinite(snapshot.sequence) ? snapshot.sequence : 0,
     ...(snapshot.codeChanges && typeof snapshot.codeChanges === 'object' ? { codeChanges: snapshot.codeChanges } : {}),
+    ...(snapshot.issueTree && Array.isArray(snapshot.issueTree.nodes) ? { issueTree: snapshot.issueTree } : {}),
   };
 }
 
@@ -637,8 +658,9 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
       description:
         "Read current session resources (issues/prs/docs + active + instructions + sequence), the session's code " +
         'changes (`codeChanges`: uncommitted · committed-not-in-a-PR · PR · merged files and lines per repo, as of the ' +
-        'last turn end) and the host receipt (`host`, `hostPending`). After an UPDATE_SESSION pass `waitForAckMs` to ' +
-        'wait for the host to handle it.',
+        "last turn end), the session's issue tree (`issueTree.nodes`: id · kind · source · title · status · parent · " +
+        'placed — external issues, internal issues and PRs) and the host receipt (`host`, `hostPending`). After an ' +
+        'UPDATE_SESSION pass `waitForAckMs` to wait for the host to handle it.',
       paramsSchema: {
         type: 'object',
         properties: {
@@ -656,7 +678,8 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
     {
       id: 'UPDATE_SESSION',
       description:
-        'Update session resources (issues/prs/docs) with add/remove/set_active operations. ' +
+        'Update session resources (issues/prs/docs) with add/remove/set_active operations, and shape the session ' +
+        'issue tree: `parent` on an issue/PR add, `add_internal` (an issue only this session has), `move`. ' +
         'Instruction writes via `instructionOperations` (add/remove/clear/complete/setStatus) ' +
         'are **gated**: the host posts a user y/n button and only commits on `y`. ' +
         'Until `y`, the model’s view of `session.instructions` is unchanged.',
@@ -830,6 +853,8 @@ function applySessionUpdateToSnapshot(
   let changed = false;
 
   for (const operation of request.operations ?? []) {
+    // The issue tree's own operations change no card link (applied below).
+    if (operation.action === 'add_internal' || operation.action === 'move') continue;
     const historyKey = HISTORY_KEY_BY_RESOURCE[operation.resourceType];
     const activeKey = ACTIVE_KEY_BY_RESOURCE[operation.resourceType];
     const links = snapshot[historyKey];
@@ -881,6 +906,20 @@ function applySessionUpdateToSnapshot(
 
     if (snapshot.active[activeKey]?.url !== found.url) {
       snapshot.active[activeKey] = found;
+      changed = true;
+    }
+  }
+
+  // .prd/29 — the issue tree, with the host's own function (the host's write is the truth; this is its preview).
+  const treeOps = request.operations ?? [];
+  if (treeOps.some((op) => op.resourceType !== 'doc' && op.action !== 'set_active')) {
+    const seedTitle = snapshot.issueTree?.nodes.find((n) => n.placed === 'seed')?.title;
+    const applied = applyIssueTreeOperations(issueTreeFromView(snapshot.issueTree), treeOps, Date.now());
+    if (!applied.ok) {
+      return { ok: false, error: { code: 'INVALID_OPERATION', message: applied.error } };
+    }
+    if (applied.changed) {
+      snapshot.issueTree = issueTreeView(applied.tree, seedTitle);
       changed = true;
     }
   }

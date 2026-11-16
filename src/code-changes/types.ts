@@ -99,6 +99,9 @@ export interface PrChanges {
   headRepo?: string;
   /** The base commit the files were read against: a moved base changes them, the head staying put. */
   baseSha?: string;
+  /** .prd/29 — the base branch (a stacked PR: another session PR's head) and the issues its body closes (URLs). */
+  baseRef?: string;
+  closes?: string[];
   /** Epoch ms. */
   createdAt?: number;
   /** Epoch ms. */

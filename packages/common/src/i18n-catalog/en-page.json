@@ -1652,5 +1652,8 @@
   "커밋한 변경을 이번에 읽지 못했습니다 — 마지막으로 읽은 변경입니다": "Could not read the committed changes this time — these are the changes read last",
   "git이 응답하지 않아 이번에는 읽지 못했습니다 — 마지막으로 읽은 변경입니다": "git did not answer, so nothing was read this time — these are the changes read last",
   "실행 권한이 바뀜": "Executable bit changed",
-  "내용 변경 없음": "No content change"
+  "내용 변경 없음": "No content change",
+  "이슈 · PR": "Issues · PRs",
+  "내부": "Internal",
+  "펼치기": "Expand"
 }
