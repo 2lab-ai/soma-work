@@ -453,6 +453,33 @@ describe('checkoutChanges — the two local layers', () => {
     expect(c!.committed.commits.map((x) => x.subject)).toEqual(['docs']);
   });
 
+  it('that merge-base is not a session PR head: branch work from before the session started still moves the base up', async () => {
+    const session = tmp('cc-after-merge-start-');
+    const dir = clone(session, 'api');
+    git(dir, ['checkout', '-q', '-b', 'feat/x']);
+    write(dir, 'one.ts', '1\n');
+    const prHead = commitAll(dir, 'in the PR');
+    git(dir, ['checkout', '-q', 'main']);
+    git(dir, ['merge', '-q', '--no-ff', '-m', 'Merge the PR', 'feat/x']);
+    const mainTip = git(dir, ['rev-parse', 'HEAD']);
+    git(dir, ['update-ref', 'refs/remotes/origin/main', mainTip]);
+    git(dir, ['checkout', '-q', '-b', 'docs/y', mainTip]);
+    const old = new Date(Date.now() - 2 * 3600_000).toISOString();
+    write(dir, 'before.md', 'earlier branch work\n');
+    const before = commitAll(dir, 'before', { GIT_COMMITTER_DATE: old, GIT_AUTHOR_DATE: old });
+    write(dir, 'during.md', 'the session\n');
+    commitAll(dir, 'during');
+    const c = await checkoutChanges({
+      dir,
+      sessionRoot: session,
+      prHeads: [{ headSha: prHead }],
+      sessionStartedAt: Date.now() - 3600_000,
+    });
+    expect(c!.committed.base).toBe(before);
+    expect(c!.committed.files.map((f) => f.path)).toEqual(['during.md']);
+    expect(c!.committed.commits.map((x) => x.subject)).toEqual(['during']);
+  });
+
   it('no remote: commits since the session started, not the earlier history', async () => {
     const session = tmp('cc-local-');
     const dir = path.join(session, 'scratch');
