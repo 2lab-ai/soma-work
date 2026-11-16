@@ -1,6 +1,6 @@
 # 29 — 세션 이슈 트리: 변경점의 PR 목록을 이슈 · PR 트리로
 
-Status: in-progress · Date: 2026-11-16 · 기준 main `5fe1f0cf` · SSOT = [`issue-tree/ssot.md`](issue-tree/ssot.md) ·
+Status: shipped (구현된 계약 — 미래 목표가 아니다) · Date: 2026-11-16 · 기준 main `5fe1f0cf` · 구현 = https://github.com/2lab-ai/soma-work/pull/1321 (머지 `5069eafe`, dev 배포 2026-11-16) · SSOT = [`issue-tree/ssot.md`](issue-tree/ssot.md) ·
 앞선 계약: [`26`](26-session-code-changes-spec.md)(변경점), [`22`](22-task-card-links-spec.md)(작업 카드 링크)
 
 요약: 변경점 탭의 PR 목록은 세션의 PR을 평평하게 늘어놓을 뿐, 어느 이슈의 일인지 말하지 않는다. 이제 세션마다 **이슈 트리**가 있다. 노드는 외부 이슈(GitHub · Jira …), 세션 안에만 있는 내부 이슈, PR이다. 모든 세션은 대표 이슈를 하나 이상 갖고, 모든 PR은 부모 이슈나 부모 PR 아래에 있다. 관계없는 이슈는 루트에 선다. 새 노드가 들어오면 트리가 다시 정리된다. 모델은 작업 카드를 갱신하던 그 MCP 명령(UPDATE_SESSION)으로 트리를 직접 고친다. 변경점 탭은 PR 목록 대신 이 트리를 접을 수 있게 그린다.
@@ -125,3 +125,13 @@ GET_SESSION `payload.session.issueTree` = `{ nodes: [{ id, kind, source, url?, l
 | S8 | 모델 `move` · `add_internal` · `remove` | 고정 · 내부 이슈 · 자식이 위로 |
 | S9 | 변경점 탭 | PR 목록 대신 트리, 노드 · 전체 접기, PR 줄 누르면 그 PR 범위 |
 | S10 | 이 세션(dev) | 실제 이슈 · PR이 트리로 보인다(스크린샷) |
+
+## 9. 실측 결과 (dev 배포 빌드 `5069eafe`, 하네스 = 배포 빌드 + 이 세션 저장본 사본, scratch 설정 폴더)
+
+| ID | 근거 | 판정 |
+|---|---|---|
+| S1–S8 | 단위 · 통합 시험: `somalib/model-commands/issue-tree.test.ts` · `update-session-issue-tree.test.ts` · `src/__tests__/session-registry.issue-tree.test.ts` · `src/issue-tree/__tests__/relations.test.ts` · `src/code-changes/__tests__/service.issue-tree.test.ts` · 재조정기 R6b. 관련 33파일 629 시험 통과, CI quality-gates 통과(`8d7f0e1b`). 리뷰 11라운드의 수정마다 변이 시험(각 수정을 되돌리면 그 시험이 실패) | ✅ |
+| S9 | `code-changes-client.issue-tree.test.ts` · DOM D11(실제 클릭으로 접기 · 포커스) · D12(변경점 문서 없이도 트리) | ✅ |
+| S10 | 배포 후 이 세션: 호스트가 링크 기록에서 트리를 만듦(루트 이슈 4, PR 11은 대표 이슈 #1295 아래) → 모델이 MCP `UPDATE_SESSION` 두 번(`move` 8 · `add_internal` 2, 이어서 `move` 5)으로 정리 → 호스트 저장본: 노드 17, 루트 이슈 #1294 하나, 루트 PR 0, 내부 이슈 2(`internal:1` 닫힘 · `internal:2` 열림), #1302 · #1309는 PR #1299 아래. 배포 빌드 변경점 탭(1440×900): 17줄, 깊이 0–3, #1294 접으면 1줄 · 포커스는 그 버튼. 스크린샷: 스레드 파일 `s10-tree-crop.png` | ✅ |
+
+남은 일은 [`issue-tree/loop.md`](issue-tree/loop.md) G1–G4.
