@@ -698,23 +698,24 @@ describe('N7 — focus survives a move (review on #1259)', () => {
   });
 });
 
-describe('N8 — a plan is its tab’s: an answered prompt’s zone leaves the chat under a plan (the push path)', () => {
-  it('the push for the open card (the prompts, the question, the repaint’s plan) moves the zone out and hides it', () => {
+describe('N8 — an answered prompt leaves no 입력 필요 zone, whichever renderer runs last (the plan is its tab’s)', () => {
+  const QUESTION: Record<string, unknown> = {
+    type: 'user_choice',
+    question: '배포할까요?',
+    choices: [{ id: '1', label: '지금' }],
+  };
+  const rig = () => {
     const c = card();
     const bar = new El('panel-plan-bar');
     const cache: Record<string, unknown> = {};
-    let bars = 0;
-    let paints = 0;
-    const m = load<{
-      renderPanelPermission(s: unknown): void;
-      renderPanelNeedsHead(s: unknown): void;
-      renderPanelPlan(s: unknown): void;
-    }>(
+    const seen = { bars: 0, paints: 0 };
+    const m = load<{ renderPanelPermission(s: unknown): void; renderPanelQuestion(s: unknown): void }>(
       [
         ...PLACE_FNS,
         'syncPanelNeeds',
         'renderPanelNeedsHead',
         'renderPanelPermission',
+        'renderPanelQuestion',
         'apSafeFocus',
         'apAnnounce',
         'renderPanelPlan',
@@ -730,12 +731,14 @@ describe('N8 — a plan is its tab’s: an answered prompt’s zone leaves the c
         _psec: 'conv',
         _panelAgent: '',
         convPaint: () => {
-          paints++;
+          seen.paints++;
         },
         acPermissionsHtml: (s: { pendingPermissions?: unknown[] }) =>
           (s.pendingPermissions || []).length ? '<card>' : '',
         acGoalDecisionHtml: () => '',
         acInstructionApprovalsHtml: () => '',
+        acQuestionHtml: () => '<card>',
+        renderMultiChoicePanel: () => {},
         morphInnerHtml: (el: El, html: string) => {
           el.innerHTML = html;
         },
@@ -743,38 +746,56 @@ describe('N8 — a plan is its tab’s: an answered prompt’s zone leaves the c
         panelPlanHtml: () => '<details class="pp-fold">…</details>',
         planBarHtml: () => '',
         renderPanelMidbar: () => {
-          bars++;
+          seen.bars++;
         },
       },
     );
-    // What the page does with a push for the open card (sessionUpdated): renderPanelPermission, renderPanelQuestion —
-    // each starts with the 입력 필요 head and its placement (renderPanelNeedsHead; the question box itself is N7's) —
-    // then the live repaint (repaintPanelSession → renderPanelPlan). No placement call of the test's own.
-    const push = (session: Record<string, unknown>) => {
-      cache.k = session;
-      m.renderPanelPermission(session);
-      m.renderPanelNeedsHead(session);
-      m.renderPanelPlan(session);
+    return { c, cache, m, seen };
+  };
+
+  it('the poll path (renderPanelQuestion last): an answered question under a plan waiting for 시작', () => {
+    const { c, cache, m, seen } = rig();
+    cache.k = {
+      key: 'k',
+      activityState: 'waiting',
+      pendingQuestion: QUESTION,
+      taskPlan: { state: 'drafting', revision: 1 },
     };
-    push({ ...WAITING, taskPlan: { state: 'drafting', revision: 1 } });
+    m.renderPanelQuestion(cache.k);
     expect(c.needs.parentNode).toBe(c.conv);
-    expect(paints).toBe(1);
-    // Answered, and the plan now waits for 시작: the zone leaves the chat and hides; the plan is in its tab, the bar
-    // repainted (its 작업 계획 tab names the version and state).
-    push({ key: 'k', activityState: 'waiting', pendingPermissions: [], taskPlan: { state: 'awaiting', revision: 2 } });
+    expect(c.question.style.display).toBe('');
+    // Answered; the plan now waits for 시작. The poll repaints the panel, then the question — no placement of the test's.
+    cache.k = { key: 'k', activityState: 'waiting', taskPlan: { state: 'awaiting', revision: 2 } };
+    m.renderPanelQuestion(cache.k);
+    expect(c.question.style.display).toBe('none');
+    expect(c.needs.parentNode).toBe(c.surf);
+    expect(c.needs.hidden).toBe(true);
+    // The plan is in its tab, the bar repainted with it (its 작업 계획 tab names the version and state).
+    expect(c.plan.hidden).toBe(false);
+    expect(seen.bars).toBe(2);
+    expect(seen.paints).toBe(2);
+  });
+
+  it('repaintViewerControls’ order (renderPanelPermission last): the last prompt answered under a started plan', () => {
+    const { c, cache, m, seen } = rig();
+    cache.k = { ...WAITING, taskPlan: { state: 'approved', revision: 2 } };
+    m.renderPanelQuestion(cache.k);
+    m.renderPanelPermission(cache.k);
+    expect(c.needs.parentNode).toBe(c.conv);
+    expect(c.perm.style.display).toBe('');
+    cache.k = {
+      key: 'k',
+      activityState: 'working',
+      pendingPermissions: [],
+      taskPlan: { state: 'approved', revision: 2 },
+    };
+    m.renderPanelQuestion(cache.k);
+    m.renderPanelPermission(cache.k);
+    expect(c.perm.style.display).toBe('none');
     expect(c.needs.parentNode).toBe(c.surf);
     expect(c.needs.hidden).toBe(true);
     expect(c.plan.hidden).toBe(false);
-    expect(paints).toBe(2);
-    expect(bars).toBe(2);
-    // Started: the zone stays out and hidden, and the chat is not repainted for it.
-    push({ key: 'k', activityState: 'working', pendingPermissions: [], taskPlan: { state: 'approved', revision: 2 } });
-    expect(c.needs.parentNode).toBe(c.surf);
-    expect(c.needs.hidden).toBe(true);
-    expect(paints).toBe(2);
-    // No plan: its tab's content goes.
-    push({ key: 'k', activityState: 'working', pendingPermissions: [] });
-    expect(c.plan.hidden).toBe(true);
+    expect(seen.paints).toBe(2);
   });
 });
 

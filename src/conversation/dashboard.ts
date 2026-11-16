@@ -8800,6 +8800,9 @@ function renderPanelQuestion(s) {
   } else {
     container.style.display = 'none';
   }
+  // The zone was placed before this box changed (renderPanelNeedsHead): place it again, so an answered question
+  // leaves no empty 입력 필요 box (the plan is its tab's now and no longer re-places it — .prd/28 §3).
+  syncPanelNeeds();
   if (had && !container.contains(document.activeElement)) apSafeFocus();
   // Plan mode — the plan sits with what the task asks (it is painted wherever the question is).
   renderPanelPlan(s);
@@ -8849,6 +8852,8 @@ function renderPanelPermission(s) {
     }
     acHydrate(container);
   }
+  // Placed before this box changed (renderPanelNeedsHead): again, so the last prompt answered leaves no empty zone.
+  syncPanelNeeds();
   if (had && !container.contains(document.activeElement)) apSafeFocus();
   if (said.length) apAnnounce(said.join('. '));
 }
