@@ -457,7 +457,7 @@ function chgSourceHtml(s) {
       return '<tr class="chg-d-' + r.type + '"><td class="chg-ln">' + r.old + '</td><td class="chg-ln">' + r.nu + '</td><td class="chg-code"><span class="chg-sign">' + sign + '</span>' + chgEsc(r.text) + '</td></tr>';
     }).join('') + '</tbody></table>' + (f.patchTruncated ? '<div class="chg-note">' + chgEsc(CHG_TOO_BIG) + '</div>' : '');
   }
-  return '<div class="chg-src"><div class="chg-src-head"><span class="chg-badge chg-badge-' + chgEsc(s.layer) + '">' + chgEsc(label) + '</span> ' + chgDelta(f.additions, f.deletions) + link + '</div>' + mode + body + '</div>';
+  return '<div class="chg-src"><div class="chg-src-head"><span class="chg-badge chg-badge-' + chgEsc(s.layer) + '" title="' + chgEsc(label) + '">' + chgEsc(label) + '</span> ' + chgDelta(f.additions, f.deletions) + link + '</div>' + mode + body + '</div>';
 }
 // One file's layers, for the collect the list came from: an answer that lands after the list moved on (a newer collect
 // cleared the cache) is dropped — it would put an old patch under new counts. A failure shows, and is asked again the
@@ -623,6 +623,9 @@ dialog.chg-viewer[data-tree="off"] .chg-v-tree { display: none; }
 .chg-src { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 14px; overflow: hidden; }
 .chg-src-head { display: flex; gap: 8px; align-items: center; padding: 6px 10px; background: var(--surface); border-bottom: 1px solid var(--border); font-size: 12px; }
 .chg-src-head a { margin-left: auto; color: var(--accent); }
+/* A long folder name gives way (ellipsis); the +/− counts never wrap (dev phone, 2026-11-16). */
+.chg-src-head > .chg-badge { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.chg-src-head > .chg-add, .chg-src-head > .chg-del { flex-shrink: 0; white-space: nowrap; }
 .chg-diff { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; line-height: 1.5; }
 .chg-diff td { padding: 0 8px; vertical-align: top; }
 .chg-ln { width: 1%; min-width: 40px; text-align: right; color: var(--text-tertiary); user-select: none; white-space: nowrap; }

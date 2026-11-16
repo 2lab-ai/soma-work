@@ -55,7 +55,7 @@ SSOT = [`code-changes/ssot.md`](code-changes/ssot.md) · 아키텍처 = [`27-ses
 | 층 | 뜻 | 출처 |
 |---|---|---|
 | 커밋 안 함 | 작업 트리 + 인덱스 vs HEAD, 추적 안 하는 새 파일 포함 | 체크아웃의 git |
-| 커밋함 | HEAD에 있지만 아직 어느 PR에도 없는 커밋 | 체크아웃의 git — 기준점은 이 브랜치 PR의 head(HEAD의 조상일 때), 없으면 원격 기본 브랜치와의 merge-base, 원격도 없으면 세션 시작 뒤 첫 커밋의 부모 |
+| 커밋함 | HEAD에 있지만 아직 어느 PR에도 없는 커밋 | 체크아웃의 git — 기준점은 이 브랜치 PR의 head(HEAD의 조상일 때 — 단 원격 기본 브랜치와의 merge-base가 그 head를 품으면 merge-base), 없으면 원격 기본 브랜치와의 merge-base, 원격도 없으면 세션 시작 뒤 첫 커밋의 부모 |
 | PR | 세션이 만든 열린 PR(초안 포함)의 파일 | GitHub `pulls/{n}` · `pulls/{n}/files` |
 | 머지됨 | 세션이 만든 PR 중 머지된 것의 파일 | 같음 |
 

@@ -88,7 +88,10 @@ worktree. 브랜치 · 원격 조건 없이 전부(재조정기는 여기에 자
 
 커밋함:
 1. base 후보 — 이 체크아웃 브랜치를 head로 하는 세션 PR의 head sha가 HEAD의 조상이면 그것(여럿이면 가장 최근).
-2. 아니면 `refs/remotes/origin/HEAD` → `origin/main` → `origin/master` 중 처음 있는 것과의 `merge-base`.
+2. 아니면 `refs/remotes/origin/HEAD` → `origin/main` → `origin/master` 중 처음 있는 것과의 `merge-base`. 1의 PR head가 있어도 이
+   merge-base가 그 head를 품으면(PR이 머지된 뒤 main에서 새 브랜치를 땄거나 main을 받아 왔으면) merge-base가 기준점이다 — 그 사이는 남이 머지한
+   일이지 이 세션의 커밋이 아니다(dev 실측 2026-11-16: #1302 head 기준점이 #1303의 cron 파일 5개를 "커밋함"에 넣었다). 둘이 갈라져 있으면(PR
+   브랜치에 main을 merge) PR head를 그대로 쓴다.
 3. 원격 참조가 없으면 `rev-list --since=<세션 시작> HEAD`의 가장 오래된 커밋의 부모(`rev-list --parents`, 루트면 빈 트리). 이 답들을 git이 못 주면 층은 `skipped: 'git-diff-failed'` — 빈 이력이 아니다.
 4. 기준점이 세션 PR head가 아니면, base..HEAD의 첫 부모 줄에서 세션 시작 전에 만든 가장 최근 커밋(base의 자손)으로 base를 올린다 — 세션 전 브랜치 작업은 세지 않고, 옆 줄에서 merge로 들어온 옛 커밋이 기준점이 되지 않는다.
 5. `git log base..HEAD -n 50`(커밋 목록) + `git diff base HEAD -M`(numstat · name-status · 패치). 파일 목록(numstat · name-status)을 못 읽으면 `skipped: 'git-diff-failed'` — "커밋 없음"이 아니다. 상태(추가 · 삭제 · 이름 바꿈)는 name-status에서 오므로, 패치를 안 남긴 파일(1,000개 초과, 패치 명령 실패 · 출력 상한 초과)도 상태를 지키고 `patchTruncated`로 표시된다.

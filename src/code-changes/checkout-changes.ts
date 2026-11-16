@@ -523,7 +523,8 @@ async function isAncestor(git: GitRun, dir: string, sha: string, head: string): 
 
 /**
  * Where the committed layer starts: the newest session PR head on this branch that HEAD contains, else the merge-base with
- * the remote's default branch, else (no remote refs) the parent of the oldest commit since the session started. Then a
+ * the remote's default branch, else (no remote refs) the parent of the oldest commit since the session started. When the
+ * merge-base contains that PR head, the merge-base wins — it is the nearer of the two. Then a
  * commit made before the session started inside that range moves the base up to it — earlier branch work is not this
  * session's.
  */
@@ -549,14 +550,20 @@ export async function committedBase(
       base = sha;
     }
   }
-  const fromPr = base !== undefined;
-  if (!base) {
-    for (const ref of ['refs/remotes/origin/HEAD', 'refs/remotes/origin/main', 'refs/remotes/origin/master']) {
-      const sha = trim(await git(dir, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]));
-      if (!sha) continue;
-      base = trim(await git(dir, ['merge-base', head, sha]));
-      if (base) break;
-    }
+  let fromPr = base !== undefined;
+  let mergeBase: string | undefined;
+  for (const ref of ['refs/remotes/origin/HEAD', 'refs/remotes/origin/main', 'refs/remotes/origin/master']) {
+    const sha = trim(await git(dir, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]));
+    if (!sha) continue;
+    mergeBase = trim(await git(dir, ['merge-base', head, sha])) || undefined;
+    if (mergeBase) break;
+  }
+  if (!base) base = mergeBase;
+  else if (mergeBase && mergeBase !== base && (await isAncestor(git, dir, base, mergeBase))) {
+    // The default branch went past the PR head and this branch has it — a branch cut from main after the PR merged, or
+    // main merged in. What lies between is other merged work, not this session's commits (dev, 2026-11-16).
+    base = mergeBase;
+    fromPr = false;
   }
   const since = startedAt !== undefined ? Math.floor(startedAt / 1000) : undefined;
   // An answer git failed to give is not "no commits": the layer is marked failed, not read as empty (#1299 review).
