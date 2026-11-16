@@ -428,6 +428,40 @@ describe('SlackHandler — resume after an auto-compact stop (T3)', () => {
       expect(resumed()).toBe(false);
     });
 
+    it('a queued message drained as a /compact run whose replay is cut resumes at the drain boundary (R1, all three)', async () => {
+      // Turn A holds the slot; a message is queued behind it; the armed flag makes that message a /compact run.
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const first = handler.handleMessage(message({ ts: '222.800', text: '긴 작업' }), say());
+      await tick();
+      await handler.handleMessage(message({ ts: '222.801', text: '큐에 넣은 지시' }), say());
+      // The drained run: its /compact turn replays the parked message, and the replay is cut again.
+      startWithContinuation.mockImplementationOnce(async () => {
+        await replay('auto-compact');
+        return { hasPendingChoice: false };
+      });
+      gate.resolve({ hasPendingChoice: false });
+      await first;
+      await settleTicks();
+
+      expect(routedTexts()).toContain('큐에 넣은 지시');
+      expect(routedTexts()).toContain('압축 전에 하던 지시');
+      expect(resumed()).toBe(true);
+    });
+
+    it('a stop inside a run that failed is that run\'s own end — and a later unrelated run does not resume it', async () => {
+      lastTurnSucceeded = false;
+      await compactRunWith(() => replay('auto-compact'));
+      lastTurnSucceeded = true;
+      expect(resumed()).toBe(false);
+
+      handlerAny.followupDispatcher.clearDrainHalt(SESSION_KEY, 'retry');
+      await handler.handleMessage(message({ ts: '222.990', text: '무관한 다음 지시' }), say());
+      await settleTicks();
+
+      expect(resumed()).toBe(false);
+    });
+
     it('a message queued during the replay runs next instead — no second continuation', async () => {
       await compactRunWith(async () => {
         await replay('auto-compact');
