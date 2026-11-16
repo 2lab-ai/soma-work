@@ -308,7 +308,9 @@ describe('Z3 — every tab starts closed; a press opens one, a second press clos
         'viewModeFrom',
         'viewPlanFrom',
         'viewSpec',
+        'userActionsWaiting',
         'panelMidTabsOf',
+        'panelMidTabHtml',
         'artSortForDisplay',
         'artLatestOnly',
         'panelMidContext',
@@ -501,5 +503,77 @@ describe('Z5 — the page: 입력 필요 → the tab bar → the tabs’ content
   it('the agent strip shows with the 에이전트 tab, or while the card looks at a subagent', () => {
     expect(CSS).toContain('.slide-panel:not([data-midtab="agents"]):not([data-agent-scoped]) .panel-tabs::part(list),');
     expect(CSS).toContain('.slide-panel:not([data-midtab="agents"]):not([data-agent-scoped]) #panel-agents,');
+  });
+});
+
+describe('Z6 — 사용자 할 일 lives in the 목표 tab (.prd/28 §3)', () => {
+  type Tab = { id: string; label: string; count: string; title: string; empty: boolean; wait?: number };
+  const tabsOf = (s: unknown, tabs: string[], c: Record<string, unknown> = {}) =>
+    load<{ panelMidTabsOf(s: unknown, t: string[], c: unknown): Tab[] }>(
+      ['toNum', 'userActionsWaiting', 'panelMidTabsOf'],
+      ['MID_TAB_LABEL'],
+    ).panelMidTabsOf(s, tabs, c);
+  let n = 0;
+  const ua = (status: string, optional = false) => ({ id: `ua_${++n}`, status, optional });
+  const at = (needle: string) => {
+    const i = PAGE.indexOf(needle);
+    if (i < 0) throw new Error(`missing ${needle}`);
+    return i;
+  };
+
+  it('the 목표 tab counts the required tasks still waiting, and opens on user tasks alone', () => {
+    const [t] = tabsOf({ userActions: [ua('pending'), ua('pending', true), ua('done')] }, ['goal']);
+    expect(t).toMatchObject({ id: 'goal', count: '', empty: false, wait: 1 });
+    expect(t.title).toBe('목표 없음 · 사용자 할 일 대기 1');
+    // Only answered ones: the tab still opens (their history is in it), with no wait badge.
+    expect(tabsOf({ userActions: [ua('done')] }, ['goal'])[0]).toMatchObject({ empty: false, wait: 0 });
+    // None: as before.
+    expect(tabsOf({}, ['goal'])[0]).toMatchObject({ empty: true, wait: 0, title: '목표 없음' });
+    // With goals: the count stays the goals', the wait is beside it.
+    const [g] = tabsOf({ goal: { current: { goalId: 'g' } }, userActions: [ua('pending')] }, ['goal']);
+    expect(g).toMatchObject({ count: '1/1', wait: 1 });
+    expect(g.title).toBe('목표 — 지난 0 · 지금 1 · 대기 0 · 사용자 할 일 대기 1');
+  });
+
+  it('the bar draws the wait badge after the count (the tab is the only place the waiting task shows now)', () => {
+    const tab = load<{ panelMidTabHtml(t: unknown, on: boolean): string }>(
+      ['esc', 'escAttr', 'panelMidTabHtml'],
+      ['MID_TAB_PANEL'],
+    ).panelMidTabHtml;
+    const html = tab({ id: 'goal', label: '목표', count: '1/1', title: 'x', empty: false, wait: 1 }, false);
+    expect(html).toContain(
+      '<span class="pm-label">목표</span><span class="pm-count">1/1</span><span class="pm-wait ui-count" data-tone="wait" aria-label="사용자 할 일 대기 1">1</span>',
+    );
+    expect(tab({ id: 'goal', label: '목표', count: '', title: '', empty: false, wait: 0 }, false)).not.toContain(
+      'pm-wait',
+    );
+    // An empty tab is disabled unless open; the open one never is.
+    expect(tab({ id: 'tasks', label: '작업', count: '', title: '', empty: true }, false)).toContain(' disabled');
+    expect(tab({ id: 'tasks', label: '작업', count: '', title: '', empty: true }, true)).not.toContain(' disabled');
+  });
+
+  it('a layout with the 목표 tab says so to the CSS (goaltab); one without keeps the section in view', () => {
+    const detailSpecOf = load<{ __get(n: string): (d: unknown) => { show: string[] } }>([], []).__get('detailSpecOf');
+    expect(detailSpecOf({ tabs: [{ id: 'goal', on: true }] }).show).toContain('goaltab');
+    expect(
+      detailSpecOf({
+        tabs: [
+          { id: 'tasks', on: true },
+          { id: 'goal', on: false },
+        ],
+      }).show,
+    ).not.toContain('goaltab');
+    // A layout saved before the tab bar gets the lean tabs, 목표 among them.
+    expect(detailSpecOf(undefined).show).toContain('goaltab');
+  });
+
+  it('the page: the section follows the 목표 tab’s content and shows only while that tab is open', () => {
+    expect(at('id="panel-user-actions"')).toBeGreaterThan(at('id="panel-goal-paused"'));
+    expect(at('id="panel-user-actions"')).toBeGreaterThan(at('id="panel-midbar"'));
+    expect(CSS).toContain(
+      'body[data-detail~="goaltab"] .slide-panel:not([data-midtab="goal"]) #panel-user-actions { display: none !important; }',
+    );
+    // The midbar is drawn through the one tab helper.
+    expect(clientFn('renderPanelMidbar')).toContain('html += panelMidTabHtml(tabs[j], tabs[j].id === _panelMid);');
   });
 });

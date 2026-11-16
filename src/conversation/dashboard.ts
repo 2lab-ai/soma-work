@@ -6714,6 +6714,8 @@ body:not([data-detail~="controls"]) #panel-controls { display: none !important; 
 .slide-panel:not([data-midtab="tasks"]) #panel-tasks,
 .slide-panel:not([data-midtab="agents"]):not([data-agent-scoped]) #panel-agents,
 body:not([data-detail~="agenthead"]) #panel-agents { display: none !important; }
+/* .prd/28 §3 — 사용자 할 일 is the 목표 tab's when the layout has that tab (else it stays in view: nowhere to fold it). */
+body[data-detail~="goaltab"] .slide-panel:not([data-midtab="goal"]) #panel-user-actions { display: none !important; }
 .slide-panel:not([data-midtab="agents"]):not([data-agent-scoped]) .panel-tabs::part(list),
 body:not([data-detail~="agenttabs"]) .panel-tabs::part(list),
 body:not([data-detail~="sections"]):not([data-detail~="logtab"]) .panel-sections::part(list) { display: none; }
@@ -6726,6 +6728,7 @@ body:not([data-detail~="sections"]):not([data-detail~="logtab"]) .panel-sections
 .pm-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; }
 .pm-count { font-variant-numeric: tabular-nums; color: var(--text-tertiary); font-weight: 500; }
 .pm-tab[aria-expanded="true"] .pm-count { color: var(--text-secondary); }
+.pm-wait { margin-left: 2px; } /* .prd/28 §3 — the 목표 tab's waiting 사용자 할 일 (kit .ui-count, wait tone) */
 .pm-caret { flex: none; transition: transform 120ms ease; opacity: .6; }
 .pm-tab[aria-expanded="true"] .pm-caret { transform: rotate(180deg); }
 @media (prefers-reduced-motion: reduce) { .pm-caret { transition: none; } }
@@ -7624,9 +7627,6 @@ ${pageTokenAliases()}
         <!-- 작업 계획 (plan mode, SSOT 2026-11-02): the task's plan, drawn by the server — high level to detail — at once when the card opens. -->
         <div class="panel-plan" id="panel-plan" role="region" aria-label="작업 계획" hidden></div>
         </div>
-        <!-- 사용자 할 일 — tasks the agent handed the owner (instruct_user): where, the script, the host's check of it.
-             Its own region, outside 입력 필요: it is work for the owner, not a question, and never moves into the chat. -->
-        <div class="panel-user-actions" id="panel-user-actions" role="region" aria-label="사용자 할 일" hidden></div>
         <!-- #1021 — an epic's children (one line; a press shows them all, a child opens on its own press), or a child's epic. -->
         <div class="panel-family" id="panel-family" role="region" aria-label="에픽과 자식 작업" hidden></div>
         <p class="ui-sr-only" id="panel-needs-status" role="status" aria-live="polite"></p>
@@ -7638,6 +7638,11 @@ ${pageTokenAliases()}
         <div class="panel-goal" id="panel-goal" role="region" tabindex="-1" aria-label="목표" style="display:none"></div>
         <!-- Paused goals (SSOT 2026-11-06): the goals the owner set aside, each with 재개 / 삭제. The 목표 tab too. -->
         <div class="panel-goal-paused" id="panel-goal-paused" role="region" aria-label="일시정지된 목표" style="display:none"></div>
+        <!-- 사용자 할 일 — tasks the agent handed the owner (instruct_user): where, the script, the host's check of it.
+             Its own region, outside 입력 필요: it is work for the owner, not a question, and never moves into the chat.
+             .prd/28 §3: it is the 목표 tab's too (under the goals) — shown while that tab is open, the waiting count on
+             the tab itself; a layout without the 목표 tab keeps it in view here (body[data-detail~="goaltab"]). -->
+        <div class="panel-user-actions" id="panel-user-actions" role="region" aria-label="사용자 할 일" hidden></div>
         <!-- 산출물 (SSOT 2026-10-23 T6): what the task produced, and the files the user attached. The 산출물 tab. -->
         <div class="panel-artifacts" id="panel-artifacts" style="display:none"></div>
         <!-- 세션 정보 (spec 13): the summary line + the links, every number of the session, the context — live. The 세부 tab
@@ -14505,9 +14510,13 @@ function panelMidTabsOf(s, tabs, c) {
         t.count = (cur ? past + 1 : past) + '/' + all;
         t.title = '목표 — 지난 ' + past + ' · 지금 ' + cur + ' · 대기 ' + q + (held ? ' · 일시정지 ' + held : '');
       } else {
-        t.empty = !ctx.goalEditable;
-        t.title = t.empty ? '목표 없음' : '목표 없음 — 눌러서 추가';
+        // 사용자 할 일 lives in this tab too (.prd/28 §3): its history alone opens it.
+        t.empty = !ctx.goalEditable && !((s && s.userActions) || []).length;
+        t.title = ctx.goalEditable ? '목표 없음 — 눌러서 추가' : '목표 없음';
       }
+      // The required tasks still waiting — the card face's count — shown on the tab, the only place it is while folded.
+      t.wait = userActionsWaiting(s);
+      if (t.wait) t.title += ' · ' + '사용자 할 일 대기 ' + t.wait;
     } else if (id === 'tasks') {
       var list = ctx.tasks || [];
       var done = 0;
@@ -14569,15 +14578,16 @@ function renderPanelMidbar() {
   if (panel) panel.setAttribute('data-midtab', _panelMid);
   bar.hidden = !tabs.length;
   var html = '';
-  for (var j = 0; j < tabs.length; j++) {
-    var t = tabs[j];
-    var on = t.id === _panelMid;
-    html += '<button type="button" class="pm-tab" data-mid="' + t.id + '" aria-expanded="' + (on ? 'true' : 'false') + '" aria-controls="' + MID_TAB_PANEL[t.id] + '"'
-      + (t.empty && !on ? ' disabled' : '') + (t.title ? ' title="' + escAttr(t.title) + '"' : '') + '>'
-      + '<span class="pm-label">' + esc(t.label) + '</span>' + (t.count ? '<span class="pm-count">' + esc(t.count) + '</span>' : '')
-      + '<i class="pm-caret" data-ui-icon="chevron-down"></i></button>';
-  }
+  for (var j = 0; j < tabs.length; j++) html += panelMidTabHtml(tabs[j], tabs[j].id === _panelMid);
   writePanelPart(bar, html);
+}
+// Pure: one tab of the bar — a disclosure button with its count, and the 목표 tab's waiting 사용자 할 일 (.prd/28 §3).
+function panelMidTabHtml(t, on) {
+  return '<button type="button" class="pm-tab" data-mid="' + t.id + '" aria-expanded="' + (on ? 'true' : 'false') + '" aria-controls="' + MID_TAB_PANEL[t.id] + '"'
+    + (t.empty && !on ? ' disabled' : '') + (t.title ? ' title="' + escAttr(t.title) + '"' : '') + '>'
+    + '<span class="pm-label">' + esc(t.label) + '</span>' + (t.count ? '<span class="pm-count">' + esc(t.count) + '</span>' : '')
+    + (t.wait ? '<span class="pm-wait ui-count" data-tone="wait" aria-label="' + escAttr('사용자 할 일 대기 ' + t.wait) + '">' + t.wait + '</span>' : '')
+    + '<i class="pm-caret" data-ui-icon="chevron-down"></i></button>';
 }
 // A press on a tab: it opens (the one open before closes), or closes when it was open. What it shows is painted
 // now — 세부 the full record, 작업 the list unfolded, 에이전트 the strip — and the section boxes below are sized again.

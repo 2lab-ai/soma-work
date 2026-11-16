@@ -486,7 +486,8 @@ describe('T4 — minimal: the detail card is the task list and the chat', () => 
       ['viewModeFrom', 'viewPlanFrom', 'viewSpec'],
       ['_viewMode', '_viewPlan', '_viewLayout'],
     );
-    expect(env.viewSpec().detail.show).toEqual(['agenttabs', 'logtab', 'controls']);
+    // goaltab (.prd/28 §3): the layout has the 목표 tab, so 사용자 할 일 folds into it.
+    expect(env.viewSpec().detail.show).toEqual(['agenttabs', 'goaltab', 'logtab', 'controls']);
     expect(env.viewSpec().detail.tabs).toEqual(['goal', 'tasks', 'agents', 'artifacts']);
     expect(env.viewSpec().detail.head).toEqual(['model', 'cost', 'tokens', 'speed']);
     for (const [tok, sel] of [
