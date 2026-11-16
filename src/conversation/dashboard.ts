@@ -11635,6 +11635,8 @@ function renderBoard(board, partial) {
   // the board. Unspecified means whatever the load state says, so a re-render
   // (cron poll, visibility, toggles) of partial data stays quiet too.
   if (partial === undefined) partial = _boardLoad !== 'ready';
+  // The task card's finish (card-finish-client.ts) once, after the board and every CRON lane box are painted.
+  if (typeof cardFinishHold === 'function') cardFinishHold(true);
   _sessionCache = Object.create(null); // Clear stale cache each render cycle
   // Populate cache from the entire board first so the env-palette pass
   // (which reads every card's environment) and the per-card renders share
@@ -11742,6 +11744,7 @@ function renderBoard(board, partial) {
   }
   // The CRON lane (Option A): each job's lead run in its own one-column element.
   paintCronLaneCards(cronLaneSlots(cronPlan));
+  if (typeof cardFinishHold === 'function') cardFinishHold(false);
   // Cards that left every element: closed for good (a card that comes back
   // comes back closed), their bodies and retry timers released.
   for (var gone in prevHost) {
@@ -11816,7 +11819,28 @@ function inboxPaint(host) {
 // The task card's finish by model (SSOT 2026-11-17, card-finish-client.ts): every drawn card on every element — the
 // board, the CRON lane — with the model it runs now, as one sheet in each element's shadow root (cardFinishPaint
 // writes it only where its text changed). Also once the element is defined: a paint before its upgrade had no root.
+// renderBoard holds it while it paints the board and then each lane box, so a sheet without the lane's cards is never
+// written in between; the release syncs in the same task, before the element's batched render (its move animation
+// measures the 2px edge). A render that throws lets go on the next microtask.
+var _cardFinishHeld = false;
+var _cardFinishDirty = false;
+function cardFinishHold(on) {
+  if (on) {
+    if (_cardFinishHeld) return;
+    _cardFinishHeld = true;
+    _cardFinishDirty = false;
+    Promise.resolve().then(function() { cardFinishHold(false); });
+    return;
+  }
+  if (!_cardFinishHeld) return;
+  _cardFinishHeld = false;
+  if (_cardFinishDirty) syncCardFinish();
+}
 function syncCardFinish() {
+  if (_cardFinishHeld) {
+    _cardFinishDirty = true;
+    return;
+  }
   var cards = [];
   for (var k in _cardData) if (_cardDrawn[k] && _sessionCache[k]) cards.push({ key: k, model: _sessionCache[k].model });
   var css = cardFinishSheet(cards);
@@ -12064,10 +12088,11 @@ function refreshCard(key) {
     if (JSON.stringify(c) !== JSON.stringify(_cardData[key])) {
       _cardData[key] = c;
       inboxPaint(host);
+    } else if (typeof syncCardFinish === 'function') {
+      // A model switch changes the card's finish even when the face is the same (no model chip, no repaint above).
+      syncCardFinish();
     }
   }
-  // A model switch changes the card's finish even when the face shows no model chip (no repaint above).
-  if (typeof syncCardFinish === 'function') syncCardFinish();
   paintCardBody(key);
 }
 

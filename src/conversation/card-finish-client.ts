@@ -36,31 +36,33 @@ function cardFinishOf(model) {
 }
 // What a finished card reads, on every card so each resolves against its own state: an idle card (the element dims a
 // parked card with colour) keeps its dimmed surface and a fainter sheen. The theme's inputs come from :root
-// (CARD_FINISH_CSS); the fallbacks are the dark theme's.
+// (CARD_FINISH_CSS), their one source.
 var CARD_FINISH_CARD_CSS = [
   'li.ib-card {',
   '  --finish-base: var(--ib-card);',
-  '  --finish-sheen-a: var(--finish-sheen-a-on, 9%);',
-  '  --finish-bright: color-mix(in srgb, var(--ib-text) var(--finish-bright-mix, 50%), var(--ib-card-border));',
-  '  --finish-bright-hover: color-mix(in srgb, var(--ib-text) var(--finish-bright-hover-mix, 70%), var(--ib-card-border));',
-  '  --finish-bright-idle: color-mix(in srgb, var(--ib-text) var(--finish-bright-idle-mix, 30%), var(--ib-card-border));',
+  '  --finish-sheen-a: var(--finish-sheen-a-on);',
+  '  --finish-bright: color-mix(in srgb, var(--ib-text) var(--finish-bright-mix), var(--ib-card-border));',
+  '  --finish-bright-hover: color-mix(in srgb, var(--ib-text) var(--finish-bright-hover-mix), var(--ib-card-border));',
+  '  --finish-bright-idle: color-mix(in srgb, var(--ib-text) var(--finish-bright-idle-mix), var(--ib-card-border));',
   '  --finish-sheen: linear-gradient(115deg,',
-  '    color-mix(in srgb, var(--finish-sheen-1, var(--purple)) var(--finish-sheen-a), transparent) 0%,',
-  '    color-mix(in srgb, var(--finish-sheen-2, var(--accent)) var(--finish-sheen-a), transparent) 22%,',
+  '    color-mix(in srgb, var(--finish-sheen-1) var(--finish-sheen-a), transparent) 0%,',
+  '    color-mix(in srgb, var(--finish-sheen-2) var(--finish-sheen-a), transparent) 22%,',
   '    transparent 38%,',
-  '    color-mix(in srgb, var(--finish-sheen-3, var(--green)) var(--finish-sheen-a), transparent) 52%,',
-  '    color-mix(in srgb, var(--finish-sheen-4, var(--yellow)) var(--finish-sheen-a), transparent) 70%,',
+  '    color-mix(in srgb, var(--finish-sheen-3) var(--finish-sheen-a), transparent) 52%,',
+  '    color-mix(in srgb, var(--finish-sheen-4) var(--finish-sheen-a), transparent) 70%,',
   '    transparent 84%,',
-  '    color-mix(in srgb, var(--finish-sheen-5, var(--red)) var(--finish-sheen-a), transparent) 100%);',
+  '    color-mix(in srgb, var(--finish-sheen-5) var(--finish-sheen-a), transparent) 100%);',
   '}',
-  'li.ib-card[data-status="idle"] { --finish-base: var(--ib-card-dim); --finish-sheen-a: var(--finish-sheen-a-idle, 5%); }',
+  'li.ib-card[data-status="idle"] { --finish-base: var(--ib-card-dim); --finish-sheen-a: var(--finish-sheen-a-idle); }',
 ].join('\n');
 // Each finish's rules; & is the finished cards' selector. Hover only where a pointer hovers (the element's rule).
 var CARD_FINISH_RULES = {
   bright: [
     '& { border-width: 2px; border-color: var(--finish-bright); }',
     '@media (hover: hover) and (pointer: fine) { &:hover { border-color: var(--finish-bright-hover); } }',
-    '&[data-status="idle"], &[data-status="idle"]:hover { border-color: var(--finish-bright-idle); }',
+    // After the hover rule at the same (0,3,1), so an idle card keeps its edge under the pointer — and stays below the
+    // epic family's mark (0,4,0), which must recolour it.
+    '&[data-status="idle"] { border-color: var(--finish-bright-idle); }',
   ],
   // Four layers: the foil sheen and the card's own surface inside the edge, the glint and the holo foil under it.
   foil: [
@@ -92,7 +94,9 @@ function cardFinishRules(rules, keys) {
   return rules.map(function(r) { return r.split('&').join(sel); }).join('\n');
 }
 // The sheet for these cards ({ key, model } each): what a card reads, then the rules of each finish over its cards'
-// keys, in key order so the text only changes when a card's finish does. '' when no card has one.
+// keys, in key order so the text only changes when a card's finish does. '' when no card has one. The same cards give
+// the same string back (the last one kept), so a repeat costs the sort and no rebuild, and a host compares by reference.
+var _cardFinishLast = { sig: '', css: '' };
 function cardFinishSheet(cards) {
   var by = { bright: [], foil: [] };
   var seen = Object.create(null);
@@ -108,11 +112,14 @@ function cardFinishSheet(cards) {
   by.foil.sort();
   var all = by.bright.concat(by.foil);
   if (!all.length) return '';
+  var sig = by.bright.join('\n') + '\n\n' + by.foil.join('\n');
+  if (sig === _cardFinishLast.sig) return _cardFinishLast.css;
   var out = [CARD_FINISH_CARD_CSS];
   if (by.bright.length) out.push(cardFinishRules(CARD_FINISH_RULES.bright, by.bright));
   if (by.foil.length) out.push(cardFinishRules(CARD_FINISH_RULES.foil, by.foil));
   out.push(cardFinishRules(CARD_FINISH_EDGE_2PX, all));
-  return out.join('\n');
+  _cardFinishLast = { sig: sig, css: out.join('\n') };
+  return _cardFinishLast.css;
 }
 // The sheet into one element's shadow root, after the element's own <style> and outside the .ui-root it re-renders:
 // one <style data-card-finish>, written only when its text changes. An element not yet upgraded (no shadow root)
@@ -120,8 +127,7 @@ function cardFinishSheet(cards) {
 function cardFinishPaint(host, css) {
   var root = host && host.shadowRoot;
   if (!root) return;
-  var el = null;
-  for (var n = root.firstElementChild; n; n = n.nextElementSibling) if (n.localName === 'style' && n.hasAttribute('data-card-finish')) el = n;
+  var el = root.querySelector('style[data-card-finish]');
   if (!el) {
     if (!css) return;
     el = document.createElement('style');

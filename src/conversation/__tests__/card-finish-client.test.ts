@@ -104,13 +104,36 @@ describe('cardFinishSheet — one sheet for every drawn card', () => {
   });
 
   it('beats the element’s plain states but not its cues (NEEDS YOU, the epic family)', () => {
-    const css = client.cardFinishSheet([{ key: 'o1', model: 'claude-opus-5-5[1m]' }]);
+    const css = client.cardFinishSheet([
+      { key: 'o1', model: 'claude-opus-5-5[1m]' },
+      { key: 'f1', model: 'fable' },
+    ]);
+    const rules = css.split('\n');
     // li.ib-card:is([data-card]) is (0,2,1): above .ib-card[data-status] and .ib-card:hover (0,2,0), below
     // .ib-card.is-attention:not(.is-open) (0,3,0).
     expect(css).toContain('\nli.ib-card:is([data-card="o1"]) { border-width: 2px;');
     expect(css).not.toContain('!important');
     expect(css).not.toMatch(/is-attention:not\(\.is-open\)\s*\{/);
     expect(css).not.toContain('is-kin');
+    // Every border rule tops out at (0,3,1) — one pseudo-class or attribute on the card selector — so the element's
+    // cues at (0,4,0) (NEEDS YOU under the pointer, the epic family's mark) still win; an idle card under the pointer
+    // takes no rule of its own (it would be (0,4,1), above the family mark).
+    expect(css).not.toContain('[data-status="idle"]:hover');
+    const borderRules = rules.filter((r) => /border(-color|-width)?:/.test(r));
+    for (const r of borderRules) {
+      const sel = r.slice(r.lastIndexOf('li.ib-card:is('), r.lastIndexOf(' {'));
+      const tail = sel.slice(sel.indexOf(')') + 1);
+      expect((tail.match(/:hover|\[data-status/g) ?? []).length, r).toBeLessThanOrEqual(1);
+    }
+    // At the same (0,3,1), the idle rule comes after the hover rule, so an idle card keeps its edge under the pointer.
+    const hoverAt = rules.findIndex((r) =>
+      r.includes('[data-card="o1"]):hover { border-color: var(--finish-bright-hover)'),
+    );
+    const idleAt = rules.findIndex((r) =>
+      r.includes('[data-card="o1"])[data-status="idle"] { border-color: var(--finish-bright-idle)'),
+    );
+    expect(hoverAt).toBeGreaterThanOrEqual(0);
+    expect(idleAt).toBeGreaterThan(hoverAt);
   });
 
   it('keeps hover where a pointer hovers, stills the sheen under reduced motion, and yields to forced colours', () => {
@@ -129,6 +152,29 @@ describe('cardFinishSheet — one sheet for every drawn card', () => {
     );
     expect(css).toContain(
       '@media (forced-colors: active) { li.ib-card:is([data-card="f1"]) { border-color: CanvasText; background: Canvas; } }',
+    );
+  });
+
+  it('gives back the very same string for the same cards (a host compares by reference), a new one when a finish changes', () => {
+    const a = client.cardFinishSheet([
+      { key: 'm1', model: 'opus' },
+      { key: 'm2', model: 'fable' },
+    ]);
+    expect(
+      client.cardFinishSheet([
+        { key: 'm2', model: 'fable' },
+        { key: 'm1', model: 'opus' },
+      ]),
+    ).toBe(a);
+    const b = client.cardFinishSheet([
+      { key: 'm1', model: 'fable' },
+      { key: 'm2', model: 'fable' },
+    ]);
+    expect(b).not.toBe(a);
+    expect(keysOf(b.split('\n').find((r) => r.includes('border: 2px solid transparent;')) ?? '')).toEqual(['m1', 'm2']);
+    // bright a / foil none and bright none / foil a are different sheets.
+    expect(client.cardFinishSheet([{ key: 'z', model: 'opus' }])).not.toBe(
+      client.cardFinishSheet([{ key: 'z', model: 'fable' }]),
     );
   });
 
@@ -189,10 +235,16 @@ describe('the finish’s values — themes, mono, an idle card', () => {
     const css = client.cardFinishSheet([{ key: 'f1', model: 'fable' }]);
     expect(css.startsWith('li.ib-card {\n  --finish-base: var(--ib-card);')).toBe(true);
     expect(css).toContain(
-      'li.ib-card[data-status="idle"] { --finish-base: var(--ib-card-dim); --finish-sheen-a: var(--finish-sheen-a-idle, 5%); }',
+      'li.ib-card[data-status="idle"] { --finish-base: var(--ib-card-dim); --finish-sheen-a: var(--finish-sheen-a-idle); }',
     );
     // The theme sets only the inputs, never the per-card values the idle rule sets.
     expect(CARD_FINISH_CSS).not.toMatch(/--finish-sheen-a:|--finish-base:/);
+    // Every input the card reads has its one source on :root — no second value hidden in a fallback.
+    for (const input of css.slice(0, css.indexOf('\nli.ib-card:is(')).matchAll(/var\((--finish-[a-z0-9-]+)\)/g)) {
+      if (['--finish-base', '--finish-sheen-a'].includes(input[1])) continue;
+      expect(CARD_FINISH_CSS, input[1]).toContain(`${input[1]}:`);
+    }
+    expect(css.slice(0, css.indexOf('\nli.ib-card:is('))).not.toMatch(/var\(--finish-[a-z0-9-]+,/);
   });
 
   it('is plain text for the browser: no template syntax, no backtick', () => {
@@ -222,6 +274,18 @@ describe('the dashboard draws it', () => {
 
   it('refreshes after every paint and after a card’s own update (a model switch the face may not show)', () => {
     expect(fnBody('inboxPaint')).toContain("if (typeof syncCardFinish === 'function') syncCardFinish();");
-    expect(fnBody('refreshCard')).toContain("if (typeof syncCardFinish === 'function') syncCardFinish();");
+    // Once per update: the repaint above already synced; only an unchanged face needs its own pass.
+    expect(fnBody('refreshCard')).toContain("} else if (typeof syncCardFinish === 'function') {");
+  });
+
+  it('renderBoard syncs once, after the board and every CRON lane box are painted', () => {
+    const body = fnBody('renderBoard');
+    const hold = body.indexOf("if (typeof cardFinishHold === 'function') cardFinishHold(true);");
+    const firstPaint = body.indexOf('inboxPaint(kb);');
+    const lanes = body.indexOf('paintCronLaneCards(cronLaneSlots(cronPlan));');
+    const release = body.indexOf("if (typeof cardFinishHold === 'function') cardFinishHold(false);");
+    expect(hold).toBeGreaterThan(0);
+    expect(hold).toBeLessThan(firstPaint);
+    expect(release).toBeGreaterThan(lanes);
   });
 });

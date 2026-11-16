@@ -13,7 +13,8 @@
  *   F3  astra and fable: a 2px transparent border over a gradient (the holo foil), four background layers (sheen,
  *       surface, glint, holo) — the surface is not the plain card's flat colour
  *   F4  a finished (DONE) fable card keeps the foil
- *   F5  NEEDS YOU still wins on an opus card: the edge takes the attention tone, the rail sits on the 2px edge
+ *   F5  NEEDS YOU still wins on an opus card: its edge is the same attention tone a plain (sonnet) waiting card's is,
+ *       at rest and under the pointer, and the rail sits on the 2px edge
  *   F6  no page errors
  *
  * Run from the repo root with a clean env:
@@ -43,7 +44,10 @@ const CARDS = [
   { id: 'fable', model: 'claude-fable-5-2[1m]', state: 'working', title: 'Fable — 대시보드 카드 효과' },
   { id: 'fable-idle', model: 'claude-fable-5-2[1m]', state: 'idle', title: 'Fable — 끝난 작업' },
   { id: 'opus-wait', model: 'claude-opus-5-5[1m]', state: 'waiting', title: 'Opus — 배포 순서 확인 필요' },
+  { id: 'sonnet-wait', model: 'claude-sonnet-5-5[1m]', state: 'waiting', title: 'Sonnet — 대기 중 비교용' },
 ] as const;
+const selOf = (id: string) =>
+  `li.ib-card[data-card$=".0001${String(CARDS.findIndex((c) => c.id === id)).padStart(2, '0')}"]`;
 const keyOf = (i: number) => `${CH}:1793000000.0001${String(i).padStart(2, '0')}`;
 
 const failures: string[] = [];
@@ -103,10 +107,8 @@ async function probeCards(page: Page): Promise<Record<string, Probe>> {
     (cards) => {
       const root = document.getElementById('kanban')?.shadowRoot;
       const out: Record<string, Probe> = {};
-      cards.forEach((c, i) => {
-        const li = Array.from(root?.querySelectorAll<HTMLElement>('li.ib-card[data-card]') ?? []).find((el) =>
-          (el.getAttribute('data-card') || '').endsWith(`.0001${String(i).padStart(2, '0')}`),
-        );
+      cards.forEach((c) => {
+        const li = root?.querySelector<HTMLElement>(c.sel);
         if (!li) return;
         const cs = getComputedStyle(li);
         const rail = getComputedStyle(li, '::before');
@@ -126,7 +128,7 @@ async function probeCards(page: Page): Promise<Record<string, Probe>> {
       });
       return out;
     },
-    CARDS as unknown as Array<{ id: string }>,
+    CARDS.map((c) => ({ id: c.id, sel: selOf(c.id) })),
   );
 }
 /** Relative luminance of an rgb()/rgba()/color(srgb …) string (alpha ignored). */
@@ -224,25 +226,42 @@ async function main() {
         idle && { bw: idle.bw, layers: idle.layers, bg: idle.bgColor },
       );
       const wait = p['opus-wait'];
+      const plainWait = p['sonnet-wait'];
       check(
-        !!wait && wait.attention && wait.bw === '2px' && wait.bc !== p.opus?.bc && wait.railLeft === '-2px',
-        `${theme.tag} F5 NEEDS YOU still recolours the opus card's 2px edge; the rail sits on it (left -2px)`,
-        wait && { attention: wait.attention, bc: wait.bc, opus: p.opus?.bc, rail: wait.railLeft },
+        !!wait &&
+          !!plainWait &&
+          wait.attention &&
+          plainWait.attention &&
+          wait.bw === '2px' &&
+          wait.bc === plainWait.bc &&
+          wait.railLeft === '-2px',
+        `${theme.tag} F5 NEEDS YOU wins on the opus card: the same attention edge as a plain waiting card's; the rail sits on the 2px edge (left -2px)`,
+        wait && { bc: wait.bc, plainWait: plainWait?.bc, rail: wait.railLeft },
       );
+      // Under the pointer the element's attention hover (0,4,0) still beats the bright hover (0,3,1).
+      await page.locator(`#kanban ${selOf('opus-wait')}`).hover();
+      await sleep(400);
+      const hovered = await probeCards(page);
+      await page.locator(`#kanban ${selOf('sonnet-wait')}`).hover();
+      await sleep(400);
+      const hoveredPlain = await probeCards(page);
+      check(
+        hovered['opus-wait']?.bc === hoveredPlain['sonnet-wait']?.bc && hovered['opus-wait']?.bc !== wait?.bc,
+        `${theme.tag} F5 under the pointer the opus NEEDS YOU card takes the attention hover tone, as a plain one does`,
+        { opus: hovered['opus-wait']?.bc, plain: hoveredPlain['sonnet-wait']?.bc, rest: wait?.bc },
+      );
+      await page.mouse.move(0, 0);
+      await sleep(300);
 
       await page.evaluate(() => window.scrollTo(0, 0));
       await page.locator('#kanban').screenshot({ path: path.join(OUT, `${theme.tag}-board.png`) });
       // The foil under the pointer: its sheen and glint have slid across (900 ms ease-out).
-      const fableIdx = CARDS.findIndex((c) => c.id === 'fable');
-      const fableCard = page.locator(`#kanban li.ib-card[data-card$=".0001${String(fableIdx).padStart(2, '0')}"]`);
+      const fableCard = page.locator(`#kanban ${selOf('fable')}`);
       await fableCard.screenshot({ path: path.join(OUT, `${theme.tag}-fable.png`) });
       await fableCard.hover();
       await sleep(1100);
       await fableCard.screenshot({ path: path.join(OUT, `${theme.tag}-fable-hover.png`) });
-      const opusIdx = CARDS.findIndex((c) => c.id === 'opus');
-      await page
-        .locator(`#kanban li.ib-card[data-card$=".0001${String(opusIdx).padStart(2, '0')}"]`)
-        .screenshot({ path: path.join(OUT, `${theme.tag}-opus.png`) });
+      await page.locator(`#kanban ${selOf('opus')}`).screenshot({ path: path.join(OUT, `${theme.tag}-opus.png`) });
       check(errors.length === 0, `${theme.tag} F6 no page errors`, errors);
       await ctx.close();
       await browser.close();
