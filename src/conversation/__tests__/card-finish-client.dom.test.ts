@@ -111,6 +111,7 @@ type Page = {
   sync(): void;
   hold(on: boolean): void;
   refresh(key: string): void;
+  stale(key: string): boolean;
   card(key: string, model: string, host: El): void;
   setModel(key: string, model: string): void;
   repaints(): number;
@@ -125,13 +126,16 @@ function inboxPaint() { _repaints++; syncCardFinish(); }
 function paintCardBody() {}
 var _cardFinishHeld = false;
 var _cardFinishDirty = false;
+var _cardFinishSeen = Object.create(null);
 ${clientFn('cardFinishHold')}
 ${clientFn('syncCardFinish')}
+${clientFn('cardFinishStale')}
 ${clientFn('refreshCard')}
 return {
   sync: syncCardFinish,
   hold: cardFinishHold,
   refresh: refreshCard,
+  stale: cardFinishStale,
   card: function(key, model, host) {
     _sessionCache[key] = { key: key, title: 'T', model: model };
     _cardData[key] = viewCardOf(_sessionCache[key]);
@@ -160,8 +164,15 @@ describe('the page’s sync — a model switch on a card whose face stays the sa
     p.sync();
     expect(sheets(board)).toHaveLength(0);
 
+    // A push that changes nothing the finish reads costs no board-wide pass.
+    expect(p.stale('C:1')).toBe(false);
+    p.setModel('C:1', 'claude-sonnet-4-6');
+    expect(p.stale('C:1')).toBe(false);
+
     p.setModel('C:1', 'claude-fable-5-2[1m]');
+    expect(p.stale('C:1')).toBe(true);
     p.refresh('C:1');
+    expect(p.stale('C:1')).toBe(false);
     expect(p.repaints()).toBe(0);
     expect(sheetOf(board)).toContain('li.ib-card:is([data-card="C:1"]) { border: 2px solid transparent;');
     expect(sheetOf(lane)).toBe(sheetOf(board));

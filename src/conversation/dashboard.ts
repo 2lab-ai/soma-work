@@ -11824,6 +11824,7 @@ function inboxPaint(host) {
 // measures the 2px edge). A render that throws lets go on the next microtask.
 var _cardFinishHeld = false;
 var _cardFinishDirty = false;
+var _cardFinishSeen = Object.create(null); // card key → the finish the last sync drew it with
 function cardFinishHold(on) {
   if (on) {
     if (_cardFinishHeld) return;
@@ -11842,10 +11843,22 @@ function syncCardFinish() {
     return;
   }
   var cards = [];
-  for (var k in _cardData) if (_cardDrawn[k] && _sessionCache[k]) cards.push({ key: k, model: _sessionCache[k].model });
+  var seen = Object.create(null);
+  for (var k in _cardData) {
+    if (!_cardDrawn[k] || !_sessionCache[k]) continue;
+    cards.push({ key: k, model: _sessionCache[k].model });
+    seen[k] = cardFinishOf(_sessionCache[k].model);
+  }
+  _cardFinishSeen = seen;
   var css = cardFinishSheet(cards);
   var hosts = document.querySelectorAll('ui-agent-inbox');
   for (var i = 0; i < hosts.length; i++) cardFinishPaint(hosts[i], css);
+}
+// One card's update: whether its model now asks for another finish than the last sync drew (refreshCard's no-repaint
+// path — a push that changed nothing the finish reads costs no board-wide pass).
+function cardFinishStale(key) {
+  var s = _sessionCache[key];
+  return !!s && cardFinishOf(s.model) !== (_cardFinishSeen[key] || '');
 }
 if (window.customElements && typeof customElements.whenDefined === 'function') {
   customElements.whenDefined('ui-agent-inbox').then(function() { syncCardFinish(); });
@@ -12088,7 +12101,7 @@ function refreshCard(key) {
     if (JSON.stringify(c) !== JSON.stringify(_cardData[key])) {
       _cardData[key] = c;
       inboxPaint(host);
-    } else if (typeof syncCardFinish === 'function') {
+    } else if (typeof cardFinishStale === 'function' && cardFinishStale(key)) {
       // A model switch changes the card's finish even when the face is the same (no model chip, no repaint above).
       syncCardFinish();
     }

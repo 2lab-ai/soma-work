@@ -93,20 +93,17 @@ function cardFinishRules(rules, keys) {
   var sel = 'li.ib-card:is(' + keys.map(function(k) { return '[data-card="' + cardFinishKeyCss(k) + '"]'; }).join(', ') + ')';
   return rules.map(function(r) { return r.split('&').join(sel); }).join('\n');
 }
-// The sheet for these cards ({ key, model } each): what a card reads, then the rules of each finish over its cards'
+// The sheet for these cards ({ key, model } each, keys unique — the page's card map): what a card reads, then the rules of each finish over its cards'
 // keys, in key order so the text only changes when a card's finish does. '' when no card has one. The same cards give
 // the same string back (the last one kept), so a repeat costs the sort and no rebuild, and a host compares by reference.
 var _cardFinishLast = { sig: '', css: '' };
 function cardFinishSheet(cards) {
   var by = { bright: [], foil: [] };
-  var seen = Object.create(null);
   for (var i = 0; i < (cards || []).length; i++) {
     var c = cards[i];
-    if (!c || c.key === undefined || c.key === null || c.key === '' || seen[c.key]) continue;
+    if (!c || c.key === undefined || c.key === null || c.key === '') continue;
     var f = cardFinishOf(c.model);
-    if (!f) continue;
-    seen[c.key] = true;
-    by[f].push(String(c.key));
+    if (f) by[f].push(String(c.key));
   }
   by.bright.sort();
   by.foil.sort();

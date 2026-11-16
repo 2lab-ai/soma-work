@@ -178,7 +178,7 @@ describe('cardFinishSheet — one sheet for every drawn card', () => {
     );
   });
 
-  it('is the same text whatever order the cards come in, and lists a key once', () => {
+  it('is the same text whatever order the cards come in', () => {
     const a = client.cardFinishSheet([
       { key: 'b', model: 'opus' },
       { key: 'a', model: 'opus' },
@@ -188,7 +188,6 @@ describe('cardFinishSheet — one sheet for every drawn card', () => {
       { key: 'c', model: 'fable' },
       { key: 'a', model: 'opus' },
       { key: 'b', model: 'opus' },
-      { key: 'a', model: 'opus' },
     ]);
     expect(a).toBe(b);
     expect(keysOf(a.split('\n').find((r) => r.includes('border-width: 2px')) ?? '')).toEqual(['a', 'b']);
@@ -263,9 +262,8 @@ describe('the dashboard draws it', () => {
 
   it('syncCardFinish lists every drawn card with its model and paints every board element', () => {
     const body = fnBody('syncCardFinish');
-    expect(body).toContain(
-      'if (_cardDrawn[k] && _sessionCache[k]) cards.push({ key: k, model: _sessionCache[k].model });',
-    );
+    expect(body).toContain('if (!_cardDrawn[k] || !_sessionCache[k]) continue;');
+    expect(body).toContain('cards.push({ key: k, model: _sessionCache[k].model });');
     expect(body).toContain("var hosts = document.querySelectorAll('ui-agent-inbox');");
     expect(body).toContain('cardFinishPaint(hosts[i], css);');
     // A paint before the element was defined found no shadow root: once it is, the sheet goes in.
@@ -275,7 +273,9 @@ describe('the dashboard draws it', () => {
   it('refreshes after every paint and after a card’s own update (a model switch the face may not show)', () => {
     expect(fnBody('inboxPaint')).toContain("if (typeof syncCardFinish === 'function') syncCardFinish();");
     // Once per update: the repaint above already synced; only an unchanged face needs its own pass.
-    expect(fnBody('refreshCard')).toContain("} else if (typeof syncCardFinish === 'function') {");
+    expect(fnBody('refreshCard')).toContain(
+      "} else if (typeof cardFinishStale === 'function' && cardFinishStale(key)) {",
+    );
   });
 
   it('renderBoard syncs once, after the board and every CRON lane box are painted', () => {
