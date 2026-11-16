@@ -259,7 +259,10 @@ describe('the page', () => {
     expect(CODE_CHANGES_CSS).toContain(
       'dialog.chg-viewer[data-mode="panel"] { inset: var(--topbar-b, 0px) var(--panel-w, 440px) 0 0; width: auto; height: auto; z-index: 99; border-right: 1px solid var(--border); }',
     );
-    expect(CODE_CHANGES_CSS).toContain('body[data-chg-panel] .new-task-fab { display: none !important; }');
+    // The FAB steps aside while the panel is open — read from the dialog itself, no mirrored state (review P3).
+    expect(CODE_CHANGES_CSS).toContain(
+      'body:has(dialog.chg-viewer[open][data-mode="panel"]) .new-task-fab { display: none !important; }',
+    );
   });
 
   it("the page's Escape leaves the detail card alone while the 변경점 viewer is open", () => {

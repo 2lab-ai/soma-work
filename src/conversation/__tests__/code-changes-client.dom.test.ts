@@ -8,7 +8,7 @@
  *   D3  Escape in the viewer stops at the viewer; closing it paints the tab again and focuses the file's row
  *   D4  a patch line, a source label and a folder named `constructor` show as text
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CODE_CHANGES_JS } from '../code-changes-client';
 
 /** The bits of happy-dom's globals these tests touch (the project's tsconfig has no DOM lib). */
@@ -410,18 +410,46 @@ describe('the viewer’s two modes — a panel beside the card, or the full scre
     return api;
   }
   const viewer = () => byId('chg-viewer') as El & { hasAttribute(n: string): boolean };
-  afterEach(() => g.localStorage.removeItem('soma-chg-viewer'));
+  // Which way the dialog opened (review P2): show() leaves the card usable, showModal() makes the rest inert — the
+  // test DOM sets \`open\` for both, so the calls are what tell them apart.
+  const proto = (globalThis as unknown as { HTMLDialogElement: { prototype: object } }).HTMLDialogElement.prototype;
+  const shown: string[] = [];
+  const spies = [
+    vi.spyOn(proto as { show(): void }, 'show').mockImplementation(function (
+      this: El & { setAttribute(k: string, v: string): void },
+    ) {
+      shown.push('show');
+      this.setAttribute('open', '');
+    }),
+    vi.spyOn(proto as { showModal(): void }, 'showModal').mockImplementation(function (
+      this: El & { setAttribute(k: string, v: string): void },
+    ) {
+      shown.push('showModal');
+      this.setAttribute('open', '');
+    }),
+  ];
+  beforeEach(() => {
+    shown.length = 0;
+  });
+  afterEach(() => {
+    g.localStorage.removeItem('soma-chg-viewer');
+  });
+  afterAll(() => {
+    for (const sp of spies) sp.mockRestore();
+  });
 
   it('M1 — beside a docked card with room on its left: a panel (not modal); the tab marks the file; another row switches it', async () => {
     const api = await opened(1440);
     api.chgOpenViewer(A, rowOf(A));
     expect(viewer().getAttribute('data-mode')).toBe('panel');
     expect(viewer().open).toBe(true);
-    expect(dom.document.body.getAttribute('data-chg-panel')).not.toBeNull();
+    expect(shown).toEqual(['show']);
     expect(rowOf(A).getAttribute('aria-current')).toBe('true');
     rowOf(B).click();
     expect(api.state().viewer.key).toBe(B);
     expect(viewer().open).toBe(true);
+    // Switched in place: no second opening.
+    expect(shown).toEqual(['show']);
     expect(byId('chg-v-title').textContent).toContain('src/b.ts');
     expect(rowOf(B).getAttribute('aria-current')).toBe('true');
     expect(rowOf(A).getAttribute('aria-current')).toBeNull();
@@ -439,7 +467,6 @@ describe('the viewer’s two modes — a panel beside the card, or the full scre
     rowOf(A).dispatchEvent(new dom.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
     expect(api.chgViewerOpen()).toBe(false);
     expect(cardSaw).toBe(false);
-    expect(dom.document.body.getAttribute('data-chg-panel')).toBeNull();
     expect(dom.document.activeElement).toBe(rowOf(A));
     // With the viewer closed the next Escape is the card's again.
     rowOf(A).dispatchEvent(new dom.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
@@ -450,6 +477,7 @@ describe('the viewer’s two modes — a panel beside the card, or the full scre
     const api = await opened(1024);
     api.chgOpenViewer(A, rowOf(A));
     expect(viewer().getAttribute('data-mode')).toBe('full');
+    expect(shown).toEqual(['showModal']);
     expect(viewer().hasAttribute('data-fits')).toBe(false);
     api.chgCloseViewer();
     const closed = await opened(1440, false);
@@ -463,6 +491,7 @@ describe('the viewer’s two modes — a panel beside the card, or the full scre
     viewer().querySelector('[data-chg-v="full"]')!.click();
     expect(viewer().getAttribute('data-mode')).toBe('full');
     expect(viewer().open).toBe(true);
+    expect(shown).toEqual(['show', 'showModal']);
     expect(api.state().viewer.key).toBe(A);
     expect(g.localStorage.getItem('soma-chg-viewer')).toBe('full');
     api.chgCloseViewer();
@@ -472,6 +501,7 @@ describe('the viewer’s two modes — a panel beside the card, or the full scre
     viewer().querySelector('[data-chg-v="panel"]')!.click();
     expect(viewer().getAttribute('data-mode')).toBe('panel');
     expect(viewer().open).toBe(true);
+    expect(shown.slice(-2)).toEqual(['showModal', 'show']);
     expect(g.localStorage.getItem('soma-chg-viewer')).toBeNull();
   });
 
@@ -487,6 +517,7 @@ describe('the viewer’s two modes — a panel beside the card, or the full scre
     api.chgSyncViewerMode();
     expect(viewer().getAttribute('data-mode')).toBe('panel');
     expect(viewer().open).toBe(true);
+    expect(shown).toEqual(['show', 'showModal', 'show']);
   });
 
   it('M7 — a newer collect while a file is shown (each turn end): the file and its scroll stay until the new read lands', async () => {
@@ -529,10 +560,91 @@ describe('the viewer’s two modes — a panel beside the card, or the full scre
     await flush();
     expect(main.innerHTML).toContain('NEW');
     expect(main.scrollTop).toBe(120);
-    // Another file starts at its top.
+    // Another file starts at its top — read for the first time, and again once it is cached (review P2).
     api.chgStep(1);
     expect(api.state().viewer.key).toBe(B);
     expect(main.scrollTop).toBe(0);
+    f.calls
+      .filter((c) => c.url.includes('/changes/file') && c.url.includes('b.ts'))[0]
+      .resolve({
+        updatedAt: 200,
+        sources: [{ layer: 'uncommitted', label: 'web', file: { path: 'src/b.ts', patch: '@@ -1 +1 @@\n-y\n+B' } }],
+      });
+    await flush();
+    api.chgStep(1);
+    expect(api.state().viewer.key).toBe(A);
+    main.scrollTop = 90;
+    api.chgStep(1);
+    expect(main.innerHTML).toContain('+</span>B');
+    expect(main.scrollTop).toBe(0);
+  });
+
+  it('M8 — the same path in another session never shows the last session’s patch while its read is out (review P1)', async () => {
+    const api = await opened(1440);
+    api.chgOpenViewer(A, rowOf(A));
+    // c1's file is shown…
+    const main = byId('chg-v-main');
+    (main as unknown as { _chgShown: boolean })._chgShown = true;
+    main.innerHTML = '<div>c1 PATCH</div>';
+    (main as unknown as { _chgFor: string })._chgFor = `c1\n${A}`;
+    api.chgCloseViewer();
+    // …the card turns to c2, which has the same repo and path.
+    api.chgOpen('c2');
+    api.state().doc = { ...doc(300), conversationId: 'c2' };
+    api.state().state = 'ok';
+    api.chgOpenViewer(A, rowOf(A));
+    expect(main.innerHTML).not.toContain('c1 PATCH');
+    expect(main.innerHTML).toContain('불러오는 중');
+  });
+
+  it('M9 — mode switches whose close events arrive later (as in a browser) keep the file and the panel; a real close cleans up', async () => {
+    const dialogProto = proto as { close(this: El & { removeAttribute(k: string): void; open?: boolean }): void };
+    const realClose = vi.spyOn(dialogProto, 'close').mockImplementation(function (
+      this: El & { removeAttribute(k: string): void; open?: boolean; dispatchEvent(e: unknown): boolean },
+    ) {
+      const was = this.open;
+      this.removeAttribute('open');
+      if (was) setTimeout(() => this.dispatchEvent(new dom.Event('close')), 0);
+    });
+    try {
+      const api = await opened(1440);
+      api.chgOpenViewer(A, rowOf(A));
+      viewer().querySelector('[data-chg-v="full"]')!.click();
+      viewer().querySelector('[data-chg-v="panel"]')!.click();
+      // Both switches' close events are still queued here.
+      expect(viewer().getAttribute('data-mode')).toBe('panel');
+      await flush();
+      expect(viewer().open).toBe(true);
+      expect(viewer().getAttribute('data-mode')).toBe('panel');
+      expect(api.state().viewer.key).toBe(A);
+      expect(rowOf(A).getAttribute('aria-current')).toBe('true');
+      // A real close: its (queued) event clears the viewer and puts focus back on the row.
+      api.chgCloseViewer();
+      await flush();
+      expect(api.state().viewer).toBeNull();
+      expect(rowOf(A).getAttribute('aria-current')).toBeNull();
+      expect(dom.document.activeElement).toBe(rowOf(A));
+    } finally {
+      realClose.mockRestore();
+    }
+  });
+
+  it('M10 — storage that refuses writes never undoes the chosen mode (review P2)', async () => {
+    const api = await opened(1440);
+    const saved = g.localStorage.setItem;
+    g.localStorage.setItem = () => {
+      throw new Error('QuotaExceededError');
+    };
+    try {
+      api.chgOpenViewer(A, rowOf(A));
+      viewer().querySelector('[data-chg-v="full"]')!.click();
+      expect(viewer().getAttribute('data-mode')).toBe('full');
+      // The card's width changes: the page's choice stands.
+      api.chgSyncViewerMode();
+      expect(viewer().getAttribute('data-mode')).toBe('full');
+    } finally {
+      g.localStorage.setItem = saved;
+    }
   });
 
   it('M6 — the card turns to another session, or closes (chgCloseViewer): the viewer closes', async () => {
@@ -541,6 +653,5 @@ describe('the viewer’s two modes — a panel beside the card, or the full scre
     api.chgOpen('c2');
     expect(api.chgViewerOpen()).toBe(false);
     expect(api.state().viewer).toBeNull();
-    expect(dom.document.body.getAttribute('data-chg-panel')).toBeNull();
   });
 });

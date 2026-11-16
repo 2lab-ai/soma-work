@@ -393,7 +393,6 @@ function chgViewerEl() {
   d.addEventListener('keydown', function(e) { if (e.key === 'Escape') e.stopPropagation(); });
   d.addEventListener('close', function() {
     if (_chgSkipClose > 0) { _chgSkipClose--; return; }
-    document.body.removeAttribute('data-chg-panel');
     var v = _chg.viewer;
     _chg.viewer = null;
     if (!v) return;
@@ -410,7 +409,6 @@ function chgViewerEl() {
     e.preventDefault();
     chgCloseViewer();
   }, true);
-  window.addEventListener('resize', chgSyncViewerMode, { passive: true });
   document.body.appendChild(d);
   return d;
 }
@@ -420,10 +418,14 @@ function chgViewerModeFor(vw, panelW, docked, pref) {
   if (pref === 'full' || !docked || vw < CHG_DOCK_AT) return 'full';
   return vw - panelW >= CHG_PANEL_MIN ? 'panel' : 'full';
 }
+// The choice this page made wins over the device's copy: storage that is denied or full never undoes it (#1313 review).
+var _chgPrefMem = null;
 function chgPref() {
+  if (_chgPrefMem !== null) return _chgPrefMem;
   try { return localStorage.getItem(CHG_PREF_KEY) || ''; } catch (_e) { return ''; }
 }
 function chgSetPref(v) {
+  _chgPrefMem = v || '';
   try { if (v) localStorage.setItem(CHG_PREF_KEY, v); else localStorage.removeItem(CHG_PREF_KEY); } catch (_e) {}
 }
 // The card's width as the page keeps it (syncPanelWidth writes --panel-w on the root), and whether it is open beside the board.
@@ -450,8 +452,6 @@ function chgShowViewer(d, mode) {
   d.setAttribute('data-mode', mode);
   if (chgModeNow('') === 'panel') d.setAttribute('data-fits', '');
   else d.removeAttribute('data-fits');
-  if (mode === 'panel') document.body.setAttribute('data-chg-panel', '');
-  else document.body.removeAttribute('data-chg-panel');
   if (mode === 'panel') { if (typeof d.show === 'function') d.show(); }
   else if (typeof d.showModal === 'function') d.showModal();
 }
@@ -526,14 +526,15 @@ function chgViewerPaint() {
   var head = '<div class="chg-v-file"><span class="chg-mark chg-mark-' + chgEsc(f.status) + '">' + chgEsc(CHG_STATUS_MARK[f.status] || 'M') + '</span> <b>' + chgEsc(f.path) + '</b> ' + chgDelta(f.additions, f.deletions) +
     (f.oldPath ? ' <span class="chg-muted">' + chgEsc(CHG_RENAMED_FROM) + ': ' + chgEsc(f.oldPath) + '</span>' : '') + '</div>';
   if (!cached || cached === 'loading') {
-    // A newer collect emptied the cache (each turn end, while the panel stays open): the file already shown stays — and
-    // where the reader is in it — until its new read lands (.prd/28 §4, independent review #6).
-    if (main._chgKey === v.key && main._chgShown) {
+    // A newer collect emptied the cache (each turn end, while the panel stays open): the file already shown — this
+    // session's, never the same path of another — stays, and where the reader is in it, until its new read lands
+    // (.prd/28 §4, independent review #6).
+    if (main._chgFor === _chg.cid + '\n' + v.key && main._chgShown) {
       if (!cached) chgFetchFile(v.key, f);
       return;
     }
     main.innerHTML = head + '<div class="chg-empty">' + chgEsc(CHG_LOADING) + '</div>';
-    main._chgKey = v.key;
+    main._chgFor = _chg.cid + '\n' + v.key;
     main._chgShown = false;
     main.scrollTop = 0;
     if (!cached) chgFetchFile(v.key, f);
@@ -541,14 +542,15 @@ function chgViewerPaint() {
   }
   if (cached === 'error') {
     main.innerHTML = head + '<div class="chg-empty">' + chgEsc(CHG_FILE_FAILED) + '</div>';
-    main._chgKey = v.key;
+    main._chgFor = _chg.cid + '\n' + v.key;
     main._chgShown = false;
     return;
   }
   var srcs = (cached.sources || []).filter(function(s) { return chgSourceInScope(s); });
-  var keep = main._chgKey === v.key ? main.scrollTop : 0;
+  // The same file of the same session keeps its scroll; another file — or the same path in another session — starts at the top.
+  var keep = main._chgFor === _chg.cid + '\n' + v.key ? main.scrollTop : 0;
   main.innerHTML = head + srcs.map(chgSourceHtml).join('');
-  main._chgKey = v.key;
+  main._chgFor = _chg.cid + '\n' + v.key;
   main._chgShown = true;
   main.scrollTop = keep;
 }
@@ -739,7 +741,7 @@ dialog.chg-viewer::backdrop { background: rgba(0, 0, 0, .4); }
 dialog.chg-viewer[data-mode="panel"] { inset: var(--topbar-b, 0px) var(--panel-w, 440px) 0 0; width: auto; height: auto; z-index: 99; border-right: 1px solid var(--border); }
 dialog.chg-viewer[data-mode="panel"] .chg-v-tree, dialog.chg-viewer[data-mode="panel"] .chg-v-tree-toggle, dialog.chg-viewer[data-mode="panel"] .chg-v-panel { display: none; }
 dialog.chg-viewer[data-mode="full"] .chg-v-full, dialog.chg-viewer[data-mode="full"]:not([data-fits]) .chg-v-panel { display: none; }
-body[data-chg-panel] .new-task-fab { display: none !important; }
+body:has(dialog.chg-viewer[open][data-mode="panel"]) .new-task-fab { display: none !important; }
 .chg-v-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
 .chg-v-head button { flex: 0 0 auto; white-space: nowrap; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 6px; padding: 2px 10px; font: inherit; cursor: pointer; }
 .chg-v-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
