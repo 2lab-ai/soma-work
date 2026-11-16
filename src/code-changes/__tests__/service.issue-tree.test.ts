@@ -220,7 +220,8 @@ describe('code-changes service → issue tree', () => {
     await flush();
     await flush();
     expect(fetchIssue).toHaveBeenCalledTimes(3);
-    expect(issueNotes().at(-1)?.[1]).toEqual([expect.objectContaining({ title: 'login' })]);
+    const notes = issueNotes();
+    expect(notes[notes.length - 1][1]).toEqual([expect.objectContaining({ title: 'login' })]);
     expect(h.pushCard.mock.calls.length).toBeGreaterThan(pushes + 1);
   });
 
