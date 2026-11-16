@@ -249,6 +249,19 @@ describe('the page', () => {
     expect(api.chgHunkRows('@@ -1 +1 @@\n-a\n+b\n').map((r) => r.type)).toEqual(['hunk', 'del', 'add']);
   });
 
+  it('the card closing, and its width or the window changing, reach the viewer (.prd/28 §4)', () => {
+    const html = renderDashboardPage();
+    const close = html.slice(html.indexOf('function closePanel()'), html.indexOf('function closePanel()') + 1200);
+    expect(close).toContain("if (typeof chgCloseViewer === 'function') chgCloseViewer();");
+    const sync = html.slice(html.indexOf('function syncPanelWidth()'), html.indexOf('function syncPanelWidth()') + 700);
+    expect(sync).toContain("if (typeof chgSyncViewerMode === 'function') chgSyncViewerMode();");
+    // The panel sits where the board is: under the top bar, from the left edge to the card's.
+    expect(CODE_CHANGES_CSS).toContain(
+      'dialog.chg-viewer[data-mode="panel"] { inset: var(--topbar-b, 0px) var(--panel-w, 440px) 0 0; width: auto; height: auto; z-index: 99; border-right: 1px solid var(--border); }',
+    );
+    expect(CODE_CHANGES_CSS).toContain('body[data-chg-panel] .new-task-fab { display: none !important; }');
+  });
+
   it("the page's Escape leaves the detail card alone while the 변경점 viewer is open", () => {
     const html = renderDashboardPage();
     const guard = html.indexOf(
@@ -258,5 +271,27 @@ describe('the page', () => {
     expect(guard).toBeGreaterThan(0);
     expect(closes - guard).toBeGreaterThan(0);
     expect(closes - guard).toBeLessThan(200);
+  });
+});
+
+describe('chgViewerModeFor — the viewer’s two modes (.prd/28 §4)', () => {
+  const mode = new Function(`${CODE_CHANGES_JS}\nreturn chgViewerModeFor;`)() as (
+    vw: number,
+    panelW: number,
+    docked: boolean,
+    pref: string,
+  ) => string;
+  it('a docked detail card with 640px or more on its left: the panel; else the full screen', () => {
+    expect(mode(1440, 440, true, '')).toBe('panel');
+    expect(mode(1080, 440, true, '')).toBe('panel'); // exactly 640 on the left
+    expect(mode(1079, 440, true, '')).toBe('full');
+    expect(mode(1024, 440, true, '')).toBe('full'); // 584 on the left (dev 1024×768)
+    expect(mode(1440, 720, true, '')).toBe('panel'); // the card dragged to half the window still leaves 720
+    expect(mode(1440, 801, true, '')).toBe('full'); // a wider card leaves 639
+  });
+  it('never beside a sheet (under 840px) or a closed card; the device’s "full screen" choice wins', () => {
+    expect(mode(839, 100, true, '')).toBe('full');
+    expect(mode(1440, 440, false, '')).toBe('full');
+    expect(mode(1440, 440, true, 'full')).toBe('full');
   });
 });

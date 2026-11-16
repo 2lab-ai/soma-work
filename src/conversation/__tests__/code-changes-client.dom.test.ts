@@ -359,3 +359,142 @@ describe('the 변경점 client in a DOM (#1300 review)', () => {
     expect(main).toContain('내용 변경 없음');
   });
 });
+
+describe('the viewer’s two modes — a panel beside the card, or the full screen (.prd/28 §4)', () => {
+  const g = globalThis as unknown as {
+    window?: object;
+    localStorage: {
+      getItem(k: string): string | null;
+      setItem(k: string, v: string): void;
+      removeItem(k: string): void;
+    };
+    document: {
+      documentElement: { style: { setProperty(k: string, v: string): void } };
+      createElement(t: string): any;
+    };
+  };
+  const setWidth = (w: number) =>
+    Object.defineProperty(g.window ?? globalThis, 'innerWidth', { value: w, configurable: true, writable: true });
+  const A = 'f:acme/web\nsrc/a.ts';
+  const B = 'f:acme/web\nsrc/b.ts';
+  type ModeApi = Api & { chgCloseViewer: () => void; chgSyncViewerMode: () => void; chgWire: () => void };
+  // This test DOM has no Web Storage: a small one stands in (the device keeps the full-screen choice there).
+  const kept = new Map<string, string>();
+  g.localStorage = {
+    getItem: (k) => (kept.has(k) ? (kept.get(k) as string) : null),
+    setItem: (k, v) => void kept.set(k, String(v)),
+    removeItem: (k) => void kept.delete(k),
+  };
+  async function opened(width: number, docked = true) {
+    const f = controlledFetch();
+    dom.document.body.innerHTML = '<div id="panel-changes"></div>';
+    const api = new Function(
+      'fetch',
+      `${CODE_CHANGES_JS}
+      return { chgOpen, chgLoad, chgOpenViewer, chgNoteCard, chgViewerOpen, chgStep, chgCloseViewer, chgSyncViewerMode,
+        chgWire, state: function() { return _chg; } };`,
+    )(f.fetchFn) as ModeApi;
+    setWidth(width);
+    g.document.documentElement.style.setProperty('--panel-w', '440px');
+    const card = g.document.createElement('div');
+    card.id = 'slide-panel';
+    if (docked) card.setAttribute('open', '');
+    (dom.document.body as unknown as { appendChild(n: unknown): void }).appendChild(card);
+    api.chgOpen('c1');
+    const two = doc(100);
+    two.checkouts[0].uncommitted.files.push({ path: 'src/b.ts', status: 'modified', additions: 2, deletions: 0 });
+    f.calls[0].resolve({ doc: two });
+    await flush();
+    // The page wires the tab's clicks once (initPanelSections → chgWire).
+    api.chgWire();
+    return api;
+  }
+  const viewer = () => byId('chg-viewer') as El & { hasAttribute(n: string): boolean };
+  afterEach(() => g.localStorage.removeItem('soma-chg-viewer'));
+
+  it('M1 — beside a docked card with room on its left: a panel (not modal); the tab marks the file; another row switches it', async () => {
+    const api = await opened(1440);
+    api.chgOpenViewer(A, rowOf(A));
+    expect(viewer().getAttribute('data-mode')).toBe('panel');
+    expect(viewer().open).toBe(true);
+    expect(dom.document.body.getAttribute('data-chg-panel')).not.toBeNull();
+    expect(rowOf(A).getAttribute('aria-current')).toBe('true');
+    rowOf(B).click();
+    expect(api.state().viewer.key).toBe(B);
+    expect(viewer().open).toBe(true);
+    expect(byId('chg-v-title').textContent).toContain('src/b.ts');
+    expect(rowOf(B).getAttribute('aria-current')).toBe('true');
+    expect(rowOf(A).getAttribute('aria-current')).toBeNull();
+    expect(dom.document.activeElement).toBe(rowOf(B));
+  });
+
+  it('M2 — Escape closes the panel only, wherever focus is: the card sees it handled, focus goes back to the row', async () => {
+    const api = await opened(1440);
+    api.chgOpenViewer(A, rowOf(A));
+    let cardSaw = false;
+    const page = (e: { key: string; defaultPrevented?: boolean }) => {
+      if (e.key === 'Escape' && !e.defaultPrevented) cardSaw = true;
+    };
+    dom.document.addEventListener('keydown', page);
+    rowOf(A).dispatchEvent(new dom.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    expect(api.chgViewerOpen()).toBe(false);
+    expect(cardSaw).toBe(false);
+    expect(dom.document.body.getAttribute('data-chg-panel')).toBeNull();
+    expect(dom.document.activeElement).toBe(rowOf(A));
+    // With the viewer closed the next Escape is the card's again.
+    rowOf(A).dispatchEvent(new dom.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    expect(cardSaw).toBe(true);
+  });
+
+  it('M3 — no room on the left (1024 beside a 440 card) or no docked card: the full screen, with no "패널로"', async () => {
+    const api = await opened(1024);
+    api.chgOpenViewer(A, rowOf(A));
+    expect(viewer().getAttribute('data-mode')).toBe('full');
+    expect(viewer().hasAttribute('data-fits')).toBe(false);
+    api.chgCloseViewer();
+    const closed = await opened(1440, false);
+    closed.chgOpenViewer(A, rowOf(A));
+    expect(viewer().getAttribute('data-mode')).toBe('full');
+  });
+
+  it('M4 — "전체 화면" moves the same file to the full screen and remembers it; "패널로" goes back and forgets', async () => {
+    const api = await opened(1440);
+    api.chgOpenViewer(A, rowOf(A));
+    viewer().querySelector('[data-chg-v="full"]')!.click();
+    expect(viewer().getAttribute('data-mode')).toBe('full');
+    expect(viewer().open).toBe(true);
+    expect(api.state().viewer.key).toBe(A);
+    expect(g.localStorage.getItem('soma-chg-viewer')).toBe('full');
+    api.chgCloseViewer();
+    api.chgOpenViewer(A, rowOf(A));
+    expect(viewer().getAttribute('data-mode')).toBe('full');
+    expect(viewer().hasAttribute('data-fits')).toBe(true);
+    viewer().querySelector('[data-chg-v="panel"]')!.click();
+    expect(viewer().getAttribute('data-mode')).toBe('panel');
+    expect(viewer().open).toBe(true);
+    expect(g.localStorage.getItem('soma-chg-viewer')).toBeNull();
+  });
+
+  it('M5 — the window narrows under the panel: the same file goes full screen; it widens: back to the panel', async () => {
+    const api = await opened(1440);
+    api.chgOpenViewer(A, rowOf(A));
+    setWidth(1000);
+    api.chgSyncViewerMode();
+    expect(viewer().getAttribute('data-mode')).toBe('full');
+    expect(viewer().open).toBe(true);
+    expect(api.state().viewer.key).toBe(A);
+    setWidth(1440);
+    api.chgSyncViewerMode();
+    expect(viewer().getAttribute('data-mode')).toBe('panel');
+    expect(viewer().open).toBe(true);
+  });
+
+  it('M6 — the card turns to another session, or closes (chgCloseViewer): the viewer closes', async () => {
+    const api = await opened(1440);
+    api.chgOpenViewer(A, rowOf(A));
+    api.chgOpen('c2');
+    expect(api.chgViewerOpen()).toBe(false);
+    expect(api.state().viewer).toBeNull();
+    expect(dom.document.body.getAttribute('data-chg-panel')).toBeNull();
+  });
+});
