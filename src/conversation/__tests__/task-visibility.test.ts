@@ -465,6 +465,90 @@ describe('task-visibility — board, live pushes and routes', () => {
     expect(last(other)).toEqual(['conv-pub']);
   });
 
+  it('a private task’s stored bytes — an attachment, an artifact — answer a stranger 404; its owner gets them', async () => {
+    // An attachment kept under the conversation, named on its user turn.
+    const mediaDir = path.join(paths.dataDir, 'user-media', 'conv-priv');
+    fs.mkdirSync(mediaDir, { recursive: true });
+    fs.writeFileSync(path.join(mediaDir, 'm1'), 'secret attachment bytes');
+    const record = CONVERSATIONS.get('conv-priv') as any;
+    const turn = record.turns[0];
+    turn.attachments = [{ id: 'm1', name: 'plan.txt', kind: 'file', mime: 'text/plain', size: 23, stored: true }];
+    // An artifact the model posted.
+    // The store copies an upload only from under /tmp (artifacts.ts UPLOAD_ROOTS).
+    const srcDir = fs.mkdtempSync('/tmp/soma-task-visibility-art-');
+    const src = path.join(srcDir, 'report.md');
+    fs.writeFileSync(src, '# secret artifact bytes');
+    const { getArtifactStore } = await import('../artifacts');
+    const art = await getArtifactStore().recordSlackUpload({
+      conversationId: 'conv-priv',
+      filePath: src,
+      filename: 'report.md',
+      slackFileId: 'F1',
+    });
+    try {
+      const urls = [
+        '/api/dashboard/session/conv-priv/media/m1/content',
+        `/api/dashboard/session/conv-priv/artifacts/${art?.id}/content`,
+      ];
+      for (const url of urls) {
+        const stranger = await web.injectWebServer({ method: 'GET', url, headers: AS.other });
+        expect({ url, status: stranger.statusCode }).toEqual({ url, status: 404 });
+        expect(stranger.body).not.toContain('secret');
+        const own = await web.injectWebServer({ method: 'GET', url, headers: AS.owner });
+        expect({ url, status: own.statusCode }).toEqual({ url, status: 200 });
+        expect(own.body).toContain('secret');
+      }
+    } finally {
+      delete turn.attachments;
+      fs.rmSync(srcDir, { recursive: true, force: true });
+    }
+  });
+
+  it('a request that reaches a task route with no viewer at all sees public tasks only', async () => {
+    // A sign-in check that let a request through without saying who it is: the gate still refuses private tasks.
+    const fastify = (await import('fastify')).default;
+    const app = fastify();
+    dashboard.installPrivateTaskGate(app);
+    app.get('/api/dashboard/session/:conversationId', { preHandler: [async () => {}] }, async () => ({ served: true }));
+    await app.ready();
+    expect((await app.inject({ method: 'GET', url: '/api/dashboard/session/conv-priv' })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'GET', url: '/api/dashboard/session/conv-nope' })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'GET', url: '/api/dashboard/session/conv-pub' })).json()).toEqual({
+      served: true,
+    });
+    await app.close();
+  });
+
+  it('the socket: a public epic’s push carries its private child to its owner only — a stranger gets the epic without it', async () => {
+    sessions.set(
+      'C_PUB:epic.1',
+      liveSession('epic', 'C_PUB', {
+        kind: 'epic',
+        taskId: 'T-EPIC',
+        plan: { nodes: [{ id: 'n1', title: 'node one', kind: 'issue' }] },
+      }),
+    );
+    sessions.set(
+      'C_PRIV:child.1',
+      liveSession('child', 'C_PRIV', {
+        parentTaskId: 'T-EPIC',
+        planNodeId: 'n1',
+        taskId: 'T-CHILD',
+        title: 'secret child',
+      }),
+    );
+    const other = await connect(AS.other);
+    const owner = await connect(AS.owner);
+    await vi.waitFor(() => [other, owner].forEach((c) => expect(c.messages.length).toBeGreaterThan(0)));
+    dashboard.broadcastSingleSessionUpdate('C_PRIV:child.1');
+    await flushAll([other, owner]);
+    const epicPush = (c: { messages: any[] }) => c.messages.find((m) => m.type === 'sessionUpdated');
+    expect(epicPush(other)?.session.conversationId).toBe('conv-epic');
+    expect(epicPush(other)?.session.epic.children).toEqual([]);
+    expect(JSON.stringify(epicPush(other))).not.toContain('secret child');
+    expect(epicPush(owner)?.session.epic.children.map((c: any) => c.conversationId)).toEqual(['conv-child']);
+  });
+
   it('every read route of a private task answers 404 to a stranger, as if it did not exist; the owner and an admin read it', async () => {
     const reads = (id: string) => [
       `/api/dashboard/session/conv-${id}`,
@@ -686,7 +770,7 @@ describe('task-visibility — instructions', () => {
     }
   });
 
-  it('an archived private task’s card key answers a stranger 404, as a key that does not exist does', async () => {
+  it('an archived private task’s card key answers a stranger 404, as a key that does not exist does; its owner revives it', async () => {
     archive.recent = [
       {
         sessionKey: 'C_PRIV:old.1',
@@ -699,26 +783,34 @@ describe('task-visibility — instructions', () => {
         conversationId: 'conv-old',
       },
     ];
-    // The real handler's answers do not matter here: the gate answers first, and the route's own 404 for a missing archive.
+    const restored: string[] = [];
     dashboard.setDashboardLifecycleHandler({
-      star: () => ({ ok: true }) as any,
-      revive: () => ({ ok: true }) as any,
-      restore: () => ({ ok: true }) as any,
+      star: () => ({ ok: false, code: 'not_found' }) as any,
+      revive: () => ({ ok: false, code: 'not_found' }) as any,
+      restore: (archived: any) => {
+        restored.push(archived.sessionKey);
+        return { ok: true, sessionKey: archived.sessionKey, starred: false, revived: true } as any;
+      },
     });
-    const star = (key: string, headers: Record<string, string>) =>
+    const revive = (key: string, headers: Record<string, string>) =>
       web.injectWebServer({
         method: 'POST',
-        url: `/api/dashboard/session/${encodeURIComponent(key)}/star`,
+        url: `/api/dashboard/session/${encodeURIComponent(key)}/revive`,
         headers,
-        payload: JSON.stringify({ starred: true }),
+        payload: '{}',
       });
-    const other = await signIn('U_OTHER');
-    expect((await star('archived_C_PRIV:old.1_1700000000000', other)).statusCode).toBe(404);
-    expect((await star('archived_C_PRIV:gone.1_1700000000000', other)).statusCode).toBe(404);
-    // Its owner reaches the route's own answer.
-    const owner = await signIn('U_OWNER');
-    expect((await star('archived_C_PRIV:old.1_1700000000000', owner)).statusCode).not.toBe(404);
-    dashboard.setDashboardLifecycleHandler(null);
+    try {
+      const other = await signIn('U_OTHER');
+      expect((await revive('archived_C_PRIV:old.1_1700000000000', other)).statusCode).toBe(404);
+      expect((await revive('archived_C_PRIV:gone.1_1700000000000', other)).statusCode).toBe(404);
+      expect(restored).toEqual([]);
+      const owner = await signIn('U_OWNER');
+      const res = await revive('archived_C_PRIV:old.1_1700000000000', owner);
+      expect(res.statusCode).toBe(200);
+      expect(restored).toEqual(['C_PRIV:old.1']);
+    } finally {
+      dashboard.setDashboardLifecycleHandler(null);
+    }
   });
 
   it('a stranger cannot instruct a private task (404, nothing sent); an admin needs admin mode; the owner can', async () => {

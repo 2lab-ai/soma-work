@@ -1444,10 +1444,11 @@ export function installPrivateTaskGate(server: FastifyInstance): void {
 
 async function privateTaskGate(request: any, reply: any): Promise<unknown> {
   if (reply.sent) return;
+  // An admin sees every task: nothing to look up. A request with no viewer at all (a sign-in check that let it through
+  // without one) sees what a stranger sees — public tasks only.
   const viewer = request.authContext as TaskViewer | undefined;
-  // Not signed in: the sign-in check before this one has answered. An admin sees every task: nothing to look up.
-  if (!viewer || viewer.isAdmin === true) return;
-  let task: { channelId?: unknown; ownerId?: unknown } | undefined;
+  if (viewer?.isAdmin === true) return;
+  let task: Awaited<ReturnType<typeof gatedTaskOf>>;
   try {
     task = await gatedTaskOf(request.params ?? {}, request.authorizedResource);
   } catch (error) {
@@ -1456,20 +1457,28 @@ async function privateTaskGate(request: any, reply: any): Promise<unknown> {
     reply.status(404).send({ error: 'Not found' });
     return reply;
   }
-  if (!task || canViewTask(viewer, task)) return;
-  reply.status(404).send({ error: 'Not found' });
-  return reply;
+  if (task === UNRESOLVED_CONVERSATION || (task && !('unresolved' in task) && !canViewTask(viewer, task))) {
+    reply.status(404).send({ error: 'Not found' });
+    return reply;
+  }
 }
 
 /**
+ * A conversation id that names no conversation: refused at the gate, not passed on — a record written between this
+ * read and the route's own read would otherwise be served to whoever asked.
+ */
+const UNRESOLVED_CONVERSATION = Object.freeze({ unresolved: true as const });
+
+/**
  * The task a gated route names: a live session by its key (an archived card's key: that archive), else the
- * conversation by its id — the record a pre-handler before the gate already loaded, when one did. Undefined: there is
- * no such task, and the route answers (404, 409 for a sibling's key, or its owner check). A failed read throws.
+ * conversation by its id — the record a pre-handler before the gate already loaded, when one did. Undefined: no task
+ * by that key, and the route answers (404, 409 for a sibling's key, or its owner check). A conversation id that names
+ * nothing: UNRESOLVED_CONVERSATION, refused. A failed read throws.
  */
 async function gatedTaskOf(
   params: Record<string, unknown>,
   loaded?: unknown,
-): Promise<{ channelId?: unknown; ownerId?: unknown } | undefined> {
+): Promise<{ channelId?: unknown; ownerId?: unknown } | typeof UNRESOLVED_CONVERSATION | undefined> {
   if (typeof params.key === 'string' && params.key) {
     const local = stripSelfInstancePrefix(params.key);
     if (local === null) return undefined;
@@ -1482,7 +1491,7 @@ async function gatedTaskOf(
     typeof params.conversationId === 'string' ? params.conversationId : typeof params.id === 'string' ? params.id : '';
   if (!id) return undefined;
   if (loaded && typeof loaded === 'object') return loaded as { channelId?: unknown; ownerId?: unknown };
-  return liveTaskOfConversation(id) ?? (await getConversation(id)) ?? undefined;
+  return liveTaskOfConversation(id) ?? (await getConversation(id)) ?? UNRESOLVED_CONVERSATION;
 }
 
 /** A Slack DM channel id (`D…`) — a conversation only its two members can write in. */
@@ -2716,7 +2725,15 @@ export function broadcastArtifactUpdate(artifact: SessionArtifact): void {
       else
         void getConversation(artifact.conversationId)
           .then((record) => sendToTaskViewers(record ?? undefined, payload))
-          .catch(() => sendToTaskViewers(undefined, payload));
+          .catch((error) => {
+            // A storage failure, not a visibility decision: say so, and tell admins only (nobody else can be shown).
+            logger.warn('Artifact push: could not read the conversation — admins only', {
+              conversationId: artifact.conversationId,
+              artifactId: artifact.id,
+              error: String(error),
+            });
+            sendToTaskViewers(undefined, payload);
+          });
     } catch (error) {
       logger.error('Failed to broadcast artifact update', error);
     }
