@@ -11,9 +11,12 @@ import { describe, expect, it } from 'vitest';
 import { CARD_FINISH_CLIENT_JS, CARD_FINISH_CSS } from '../card-finish-client';
 
 type Card = { key: unknown; model?: unknown };
-const client = new Function(`${CARD_FINISH_CLIENT_JS}\nreturn { cardFinishOf, cardFinishSheet };`)() as {
+const client = new Function(
+  `${CARD_FINISH_CLIENT_JS}\nreturn { cardFinishOf, cardFinishSheet, cardFinishPlan };`,
+)() as {
   cardFinishOf(model: unknown): '' | 'bright' | 'foil';
   cardFinishSheet(cards: Card[]): string;
+  cardFinishPlan(cards: Card[]): { bright: string[]; foil: string[]; sig: string };
 };
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
@@ -155,27 +158,28 @@ describe('cardFinishSheet — one sheet for every drawn card', () => {
     );
   });
 
-  it('gives back the very same string for the same cards (a host compares by reference), a new one when a finish changes', () => {
-    const a = client.cardFinishSheet([
+  it('plans a signature that changes only when a card’s finish does', () => {
+    const plan = (cards: Card[]) => client.cardFinishPlan(cards).sig;
+    const a = plan([
       { key: 'm1', model: 'opus' },
       { key: 'm2', model: 'fable' },
+      { key: 's', model: 'sonnet' },
     ]);
     expect(
-      client.cardFinishSheet([
-        { key: 'm2', model: 'fable' },
-        { key: 'm1', model: 'opus' },
+      plan([
+        { key: 'm2', model: 'claude-fable-5-2[1m]' },
+        { key: 'm1', model: 'gpt-6.1-sol[1m]' },
       ]),
     ).toBe(a);
-    const b = client.cardFinishSheet([
-      { key: 'm1', model: 'fable' },
-      { key: 'm2', model: 'fable' },
-    ]);
-    expect(b).not.toBe(a);
-    expect(keysOf(b.split('\n').find((r) => r.includes('border: 2px solid transparent;')) ?? '')).toEqual(['m1', 'm2']);
-    // bright a / foil none and bright none / foil a are different sheets.
-    expect(client.cardFinishSheet([{ key: 'z', model: 'opus' }])).not.toBe(
-      client.cardFinishSheet([{ key: 'z', model: 'fable' }]),
-    );
+    expect(
+      plan([
+        { key: 'm1', model: 'fable' },
+        { key: 'm2', model: 'fable' },
+      ]),
+    ).not.toBe(a);
+    // bright z and foil z are different plans; no finished card is the empty plan.
+    expect(plan([{ key: 'z', model: 'opus' }])).not.toBe(plan([{ key: 'z', model: 'fable' }]));
+    expect(plan([{ key: 's', model: 'sonnet' }])).toBe(plan([]));
   });
 
   it('is the same text whatever order the cards come in', () => {
@@ -263,9 +267,12 @@ describe('the dashboard draws it', () => {
   it('syncCardFinish lists every drawn card with its model and paints every board element', () => {
     const body = fnBody('syncCardFinish');
     expect(body).toContain('if (!_cardDrawn[k] || !_sessionCache[k]) continue;');
-    expect(body).toContain('cards.push({ key: k, model: _sessionCache[k].model });');
     expect(body).toContain("var hosts = document.querySelectorAll('ui-agent-inbox');");
-    expect(body).toContain('cardFinishPaint(hosts[i], css);');
+    // Each element gets only the cards it draws (_cardHost), not the whole board.
+    expect(body).toContain(
+      'if (h && hosts[h._finishAt] === h) lists[h._finishAt].push({ key: k, model: _sessionCache[k].model });',
+    );
+    expect(body).toContain('cardFinishPaint(hosts[j], lists[j]);');
     // A paint before the element was defined found no shadow root: once it is, the sheet goes in.
     expect(TEMPLATE).toContain("customElements.whenDefined('ui-agent-inbox').then(function() { syncCardFinish(); });");
   });

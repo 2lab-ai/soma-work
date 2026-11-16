@@ -11816,21 +11816,24 @@ function inboxPaint(host) {
   if (typeof syncCardFinish === 'function') syncCardFinish();
 }
 
-// The task card's finish by model (SSOT 2026-11-17, card-finish-client.ts): every drawn card on every element — the
-// board, the CRON lane — with the model it runs now, as one sheet in each element's shadow root (cardFinishPaint
-// writes it only where its text changed). Also once the element is defined: a paint before its upgrade had no root.
+// The task card's finish by model (SSOT 2026-11-17, card-finish-client.ts): each element — the board, each CRON lane
+// box — gets the drawn cards it holds, with the model each runs now, as one sheet in its shadow root (cardFinishPaint
+// rewrites it only when those cards' finishes changed). Also once the element is defined: a paint before its upgrade
+// had no root.
 // renderBoard holds it while it paints the board and then each lane box, so a sheet without the lane's cards is never
 // written in between; the release syncs in the same task, before the element's batched render (its move animation
 // measures the 2px edge). A render that throws lets go on the next microtask.
 var _cardFinishHeld = false;
 var _cardFinishDirty = false;
+var _cardFinishGen = 0; // which hold the pending let-go belongs to: an earlier hold's never releases a later one
 var _cardFinishSeen = Object.create(null); // card key → the finish the last sync drew it with
 function cardFinishHold(on) {
   if (on) {
     if (_cardFinishHeld) return;
     _cardFinishHeld = true;
     _cardFinishDirty = false;
-    Promise.resolve().then(function() { cardFinishHold(false); });
+    var gen = ++_cardFinishGen;
+    Promise.resolve().then(function() { if (gen === _cardFinishGen) cardFinishHold(false); });
     return;
   }
   if (!_cardFinishHeld) return;
@@ -11842,17 +11845,21 @@ function syncCardFinish() {
     _cardFinishDirty = true;
     return;
   }
-  var cards = [];
+  var hosts = document.querySelectorAll('ui-agent-inbox');
+  var lists = [];
+  for (var i = 0; i < hosts.length; i++) {
+    hosts[i]._finishAt = i;
+    lists.push([]);
+  }
   var seen = Object.create(null);
   for (var k in _cardData) {
     if (!_cardDrawn[k] || !_sessionCache[k]) continue;
-    cards.push({ key: k, model: _sessionCache[k].model });
     seen[k] = cardFinishOf(_sessionCache[k].model);
+    var h = _cardHost[k];
+    if (h && hosts[h._finishAt] === h) lists[h._finishAt].push({ key: k, model: _sessionCache[k].model });
   }
   _cardFinishSeen = seen;
-  var css = cardFinishSheet(cards);
-  var hosts = document.querySelectorAll('ui-agent-inbox');
-  for (var i = 0; i < hosts.length; i++) cardFinishPaint(hosts[i], css);
+  for (var j = 0; j < hosts.length; j++) cardFinishPaint(hosts[j], lists[j]);
 }
 // One card's update: whether its model now asks for another finish than the last sync drew (refreshCard's no-repaint
 // path — a push that changed nothing the finish reads costs no board-wide pass).

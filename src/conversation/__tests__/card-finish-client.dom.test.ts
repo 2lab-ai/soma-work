@@ -36,7 +36,7 @@ interface Root {
 const doc = (globalThis as unknown as { document: { createElement(tag: string): El; body: El } }).document;
 
 const client = new Function(`${CARD_FINISH_CLIENT_JS}\nreturn { cardFinishPaint, cardFinishSheet };`)() as {
-  cardFinishPaint(host: El | null, css: string): void;
+  cardFinishPaint(host: El | null, cards: Array<{ key: string; model: string }>): void;
   cardFinishSheet(cards: Array<{ key: string; model: string }>): string;
 };
 
@@ -58,42 +58,46 @@ const sheets = (el: El): El[] => Array.from(el.shadowRoot?.querySelectorAll('sty
 describe('cardFinishPaint — the sheet inside the element’s shadow root', () => {
   it('adds one <style data-card-finish> after the element’s own, outside the part it re-renders', () => {
     const el = host();
-    const css = client.cardFinishSheet([{ key: 'C1:1.0', model: 'claude-fable-5' }]);
-    client.cardFinishPaint(el, css);
+    const cards = [{ key: 'C1:1.0', model: 'claude-fable-5' }];
+    client.cardFinishPaint(el, cards);
     const root = el.shadowRoot as Root;
     expect(sheets(el)).toHaveLength(1);
     expect(root.lastElementChild?.matches('style[data-card-finish]')).toBe(true);
     expect(root.firstElementChild?.textContent).toContain('.ib-card { border: 1px solid');
-    expect(sheets(el)[0].textContent).toBe(css);
+    expect(sheets(el)[0].textContent).toBe(client.cardFinishSheet(cards));
     // The element re-renders by replacing .ui-root's content: the sheet stays.
     (root.querySelector('.ui-root') as El).innerHTML = '<ul><li class="ib-card" data-card="C1:1.0"></li></ul>';
     expect(sheets(el)).toHaveLength(1);
   });
 
-  it('rewrites the text only when it changes, and empties it when no card has a finish any more', () => {
+  it('rebuilds and writes only when the cards’ finishes change, and empties it when none has one any more', () => {
     const el = host();
-    const a = client.cardFinishSheet([{ key: 'k', model: 'opus' }]);
-    client.cardFinishPaint(el, a);
+    client.cardFinishPaint(el, [{ key: 'k', model: 'opus' }]);
     const style = sheets(el)[0];
-    // A mark the paint would overwrite if it wrote: the same text again writes nothing.
+    // A mark the paint would overwrite if it wrote: the same finishes again — another opus id, a sonnet card added —
+    // write nothing.
     style.textContent = 'untouched';
-    client.cardFinishPaint(el, a);
+    client.cardFinishPaint(el, [
+      { key: 'k', model: 'claude-opus-4-7' },
+      { key: 's', model: 'sonnet' },
+    ]);
     expect(style.textContent).toBe('untouched');
-    const b = client.cardFinishSheet([{ key: 'k', model: 'fable' }]);
+    const b = [{ key: 'k', model: 'fable' }];
     client.cardFinishPaint(el, b);
-    expect(style.textContent).toBe(b);
-    client.cardFinishPaint(el, '');
+    expect(style.textContent).toBe(client.cardFinishSheet(b));
+    client.cardFinishPaint(el, [{ key: 'k', model: 'sonnet' }]);
     expect(sheets(el)).toHaveLength(1);
     expect(style.textContent).toBe('');
   });
 
   it('adds nothing to an element without a finished card, or one not yet upgraded (no shadow root)', () => {
     const el = host();
-    client.cardFinishPaint(el, '');
+    client.cardFinishPaint(el, []);
+    client.cardFinishPaint(el, [{ key: 's', model: 'sonnet' }]);
     expect(sheets(el)).toHaveLength(0);
     const bare = doc.createElement('ui-agent-inbox');
-    expect(() => client.cardFinishPaint(bare, 'li.ib-card {}')).not.toThrow();
-    expect(() => client.cardFinishPaint(null, 'li.ib-card {}')).not.toThrow();
+    expect(() => client.cardFinishPaint(bare, [{ key: 'k', model: 'opus' }])).not.toThrow();
+    expect(() => client.cardFinishPaint(null, [{ key: 'k', model: 'opus' }])).not.toThrow();
   });
 });
 
@@ -126,6 +130,7 @@ function inboxPaint() { _repaints++; syncCardFinish(); }
 function paintCardBody() {}
 var _cardFinishHeld = false;
 var _cardFinishDirty = false;
+var _cardFinishGen = 0;
 var _cardFinishSeen = Object.create(null);
 ${clientFn('cardFinishHold')}
 ${clientFn('syncCardFinish')}
@@ -175,7 +180,15 @@ describe('the page’s sync — a model switch on a card whose face stays the sa
     expect(p.stale('C:1')).toBe(false);
     expect(p.repaints()).toBe(0);
     expect(sheetOf(board)).toContain('li.ib-card:is([data-card="C:1"]) { border: 2px solid transparent;');
-    expect(sheetOf(lane)).toBe(sheetOf(board));
+    // The lane box draws none of the board's cards: it gets no sheet for them.
+    expect(sheets(lane)).toHaveLength(0);
+
+    // A card the lane draws is the lane's alone.
+    p.card('C:L', 'claude-opus-5-5[1m]', lane);
+    p.sync();
+    expect(sheetOf(lane)).toContain('li.ib-card:is([data-card="C:L"]) { border-width: 2px;');
+    expect(sheetOf(lane)).not.toContain('"C:1"');
+    expect(sheetOf(board)).not.toContain('"C:L"');
 
     p.setModel('C:1', 'claude-opus-5-5[1m]');
     p.refresh('C:1');
@@ -197,6 +210,20 @@ describe('the page’s sync — a model switch on a card whose face stays the sa
     expect(sheets(board)).toHaveLength(0);
     p.hold(false);
     expect(sheetOf(board)).toContain('[data-card="C:2"]');
+    await Promise.resolve(); // the first hold's let-go runs and finds nothing held
+
+    // An earlier hold's pending let-go never releases a later hold.
+    p.hold(true);
+    p.hold(false);
+    p.hold(true);
+    p.setModel('C:2', 'fable');
+    p.sync();
+    await Promise.resolve(); // the stale let-go (gen 2) runs first
+    await Promise.resolve();
+    expect(sheetOf(board)).toContain('li.ib-card:is([data-card="C:2"]) { border: 2px solid transparent;');
+    p.setModel('C:2', 'opus');
+    p.sync();
+    expect(sheetOf(board)).not.toContain('border: 2px solid transparent;');
 
     p.hold(true);
     p.setModel('C:2', 'fable');

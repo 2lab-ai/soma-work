@@ -8,10 +8,10 @@
  *
  * Where it is drawn: <ui-agent-inbox> (the board, each CRON lane box) draws its cards as
  * `li.ib-card[data-card="<session key>"]` inside its open shadow root, where the page's sheets do not reach, and gives
- * a card no style hook of its own. So the page puts one `<style data-card-finish>` into each element's shadow root —
- * beside the element's own <style>, outside the part it re-renders — whose selectors list the cards of each finish by
- * key (`cardFinishSheet`, written by `cardFinishPaint`, driven by the page's `syncCardFinish`). The inputs that depend
- * on the theme on <html> — light or dark, the mono palette — are custom properties on :root (`CARD_FINISH_CSS`, a page
+ * a card no style hook of its own. So the page puts one `<style data-card-finish>` into each element's shadow root,
+ * beside the element's own <style> and outside the part it re-renders. Its selectors list, by key, the cards of each
+ * finish that this element draws (`cardFinishPaint`, driven by the page's `syncCardFinish`). The inputs that depend on
+ * the theme on <html> — light or dark, the mono palette — are custom properties on :root (`CARD_FINISH_CSS`, a page
  * sheet); custom properties inherit into the shadow tree, selectors do not.
  *
  * Specificity: a finished card's selector, `li.ib-card:is([data-card="…"])`, is (0,2,1). It beats the element's
@@ -93,48 +93,53 @@ function cardFinishRules(rules, keys) {
   var sel = 'li.ib-card:is(' + keys.map(function(k) { return '[data-card="' + cardFinishKeyCss(k) + '"]'; }).join(', ') + ')';
   return rules.map(function(r) { return r.split('&').join(sel); }).join('\n');
 }
-// The sheet for these cards ({ key, model } each, keys unique — the page's card map): what a card reads, then the rules of each finish over its cards'
-// keys, in key order so the text only changes when a card's finish does. '' when no card has one. The same cards give
-// the same string back (the last one kept), so a repeat costs the sort and no rebuild, and a host compares by reference.
-var _cardFinishLast = { sig: '', css: '' };
-function cardFinishSheet(cards) {
-  var by = { bright: [], foil: [] };
+// The finishes these cards need ({ key, model } each, keys unique — the page's card map): each finish's keys in key
+// order, and a signature that changes only when a card's finish does.
+function cardFinishPlan(cards) {
+  var plan = { bright: [], foil: [], sig: '' };
   for (var i = 0; i < (cards || []).length; i++) {
     var c = cards[i];
     if (!c || c.key === undefined || c.key === null || c.key === '') continue;
     var f = cardFinishOf(c.model);
-    if (f) by[f].push(String(c.key));
+    if (f) plan[f].push(String(c.key));
   }
-  by.bright.sort();
-  by.foil.sort();
-  var all = by.bright.concat(by.foil);
-  if (!all.length) return '';
-  var sig = by.bright.join('\n') + '\n\n' + by.foil.join('\n');
-  if (sig === _cardFinishLast.sig) return _cardFinishLast.css;
-  var out = [CARD_FINISH_CARD_CSS];
-  if (by.bright.length) out.push(cardFinishRules(CARD_FINISH_RULES.bright, by.bright));
-  if (by.foil.length) out.push(cardFinishRules(CARD_FINISH_RULES.foil, by.foil));
-  out.push(cardFinishRules(CARD_FINISH_EDGE_2PX, all));
-  _cardFinishLast = { sig: sig, css: out.join('\n') };
-  return _cardFinishLast.css;
+  plan.bright.sort();
+  plan.foil.sort();
+  plan.sig = plan.bright.join('\n') + '\n\n' + plan.foil.join('\n');
+  return plan;
 }
-// The sheet into one element's shadow root, after the element's own <style> and outside the .ui-root it re-renders:
-// one <style data-card-finish>, written only when its text changes. An element not yet upgraded (no shadow root)
-// waits for the next paint.
-function cardFinishPaint(host, css) {
+// A plan's sheet: what a card reads, then the rules of each finish over its cards' keys. '' when no card has one.
+function cardFinishCss(plan) {
+  var all = plan.bright.concat(plan.foil);
+  if (!all.length) return '';
+  var out = [CARD_FINISH_CARD_CSS];
+  if (plan.bright.length) out.push(cardFinishRules(CARD_FINISH_RULES.bright, plan.bright));
+  if (plan.foil.length) out.push(cardFinishRules(CARD_FINISH_RULES.foil, plan.foil));
+  out.push(cardFinishRules(CARD_FINISH_EDGE_2PX, all));
+  return out.join('\n');
+}
+function cardFinishSheet(cards) {
+  return cardFinishCss(cardFinishPlan(cards));
+}
+// One element's sheet for the cards it draws, in its shadow root after the element's own <style> and outside the
+// .ui-root it re-renders: one <style data-card-finish>, rebuilt and written only when those cards' finishes changed
+// (the element keeps the signature it was last written for). An element not yet upgraded (no shadow root) waits for
+// the next paint.
+function cardFinishPaint(host, cards) {
   var root = host && host.shadowRoot;
   if (!root) return;
+  var plan = cardFinishPlan(cards);
   var el = root.querySelector('style[data-card-finish]');
+  if (host._finishSig === plan.sig && (el || plan.sig === '\n\n')) return;
+  var css = cardFinishCss(plan);
+  host._finishSig = plan.sig;
   if (!el) {
     if (!css) return;
     el = document.createElement('style');
     el.setAttribute('data-card-finish', '');
     root.appendChild(el);
   }
-  if (el._finishCss !== css) {
-    el.textContent = css;
-    el._finishCss = css;
-  }
+  el.textContent = css;
 }
 `;
 
