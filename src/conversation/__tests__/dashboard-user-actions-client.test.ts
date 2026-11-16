@@ -127,14 +127,15 @@ describe('사용자 할 일 — the detail card section', () => {
     expect(html).toContain('data-tone="wait">1<');
   });
 
-  it('the panel region sits outside 입력 필요 (the question zone) and is its own named region', () => {
-    const needsEnd = TEMPLATE.indexOf('<div class="panel-plan" id="panel-plan"');
-    const region = TEMPLATE.indexOf('id="panel-user-actions"');
+  it('the panel region sits outside 입력 필요 (the question zone), after the tab bar — the 사용자 작업 tab’s content', () => {
     const needsStart = TEMPLATE.indexOf('id="panel-needs"');
-    expect(region).toBeGreaterThan(needsEnd);
-    expect(needsStart).toBeLessThan(needsEnd);
-    // The </div> closing panel-needs comes between the plan region and ours.
-    expect(TEMPLATE.slice(needsEnd, region)).toContain('</div>\n        </div>');
+    const question = TEMPLATE.indexOf('id="panel-question"');
+    const bar = TEMPLATE.indexOf('id="panel-midbar"');
+    const region = TEMPLATE.indexOf('id="panel-user-actions"');
+    expect(needsStart).toBeLessThan(question);
+    // .prd/28 §3: after the bar, never inside the zone (the zone closes before the bar).
+    expect(region).toBeGreaterThan(bar);
+    expect(TEMPLATE.slice(question, bar)).toContain('</div>');
     expect(TEMPLATE).toContain('aria-label="사용자 할 일"');
   });
 

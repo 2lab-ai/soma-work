@@ -3169,6 +3169,12 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     turnsMsg(): string;
     turnsHeld(): number;
     deck(): string[];
+    renderPanelMidbar(): void;
+    selectPanelMid(id: string): void;
+    midNow(): string;
+    landedOn(): string | false;
+    keyNow(): string;
+    renderPanelPlan(s: Session): void;
   };
 
   const waitingMulti = (over: Session = {}): Session => ({
@@ -3204,6 +3210,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     settle?: 'ok' | 'empty' | 'fail';
     /** 자세히 on: the whole conversation, landed on the newest turns. */
     detail?: boolean;
+    /** The live repaint draws the tab bar (the page's renderPanelMidbar); a no-op otherwise. */
+    bar?: boolean;
   }) {
     const els: Record<string, FakeEl & Record<string, unknown>> = {};
     const el = (id: string) => {
@@ -3260,6 +3268,9 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
       getBoundingClientRect: () => ({ top: AREA_TOP, bottom: AREA_TOP + VIEW, height: VIEW }),
     });
     Object.assign(question, { getBoundingClientRect: () => ({ top: AREA_TOP - scroll.scrollTop, height: qH() }) });
+    // .prd/28 §3: the plan document (its 작업 계획 tab's content) sits under the title bar too — CSS-hidden behind
+    // another tab, where its hidden attribute is still false.
+    Object.assign(el('panel-plan'), { getBoundingClientRect: () => ({ top: AREA_TOP - scroll.scrollTop, height: 0 }) });
     // D4 E-19: the agent strip is <ui-tabs>' sticky list — none in this rig (its shared panel starts at its host's top).
     for (const id of ['panel-tabs', 'panel-tabpanel']) {
       Object.assign(el(id), { getBoundingClientRect: () => ({ top: AREA_TOP + qH() - scroll.scrollTop, height: 0 }) });
@@ -3284,9 +3295,22 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
       return Promise.resolve(res);
     };
     const cache: Record<string, Session> = { [KEY]: opts.session };
+    // The bar's click listener (renderPanelMidbar wires it once): a press goes to the page's selectPanelMid.
+    Object.assign(el('panel-midbar'), { addEventListener() {} });
+    let repaint: () => void = () => {};
     const m = load<Panel>(
       [
         'openPanel',
+        // .prd/28 §3 — an opening on a plan waiting for 시작 lands on the 작업 계획 tab, drawn by the bar's own render, its
+        // plan box painted by the page's renderPanelPlan.
+        'renderPanelPlan',
+        'userActionsWaiting',
+        'panelBarTabIds',
+        'panelMidTabsOf',
+        'panelMidTabHtml',
+        'renderPanelMidbar',
+        'selectPanelMid',
+        'writePanelPart',
         'loadPanelTurns',
         'renderPanelPermission',
         // affectUI batch 1: the prompts are <ui-approval-card> slots (none in this harness).
@@ -3359,14 +3383,20 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         '_psec',
         '_treeWindow',
         '_treeMaxN',
+        '_panelMid',
+        'MID_TAB_LABEL',
+        'MID_TAB_PANEL',
+        'TASK_PLAN_STATE_LABEL',
+        'TASK_PLAN_TONE',
       ],
       {
         // affectUI batch 2b: openPanel gives each opening a fresh <ui-agent-steering>; this harness has no composer.
         pcFreshSteer: () => {},
         // Phone chrome (SSOT 2026-11-04): every opening starts with the head and the composer in — a seam here.
         rdReset: () => {},
-        // Plan mode (SSOT 2026-11-02): the panel's plan is painted with the question (none in this harness).
-        renderPanelPlan: () => {},
+        // Plan mode (SSOT 2026-11-02): the plan document and the bar above the composer (their markup is not this harness's).
+        panelPlanHtml: () => '<details class="pp-fold">plan</details>',
+        planBarHtml: () => '',
         document: {
           getElementById: el,
           createElement: (tag: string) => Object.assign(fakeEl(), { tagName: tag.toUpperCase() }),
@@ -3429,8 +3459,11 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         isSiblingSession: () => false,
         // main's own openPanel deps since this harness was written (#372 panel controls, spec 12 agent views).
         renderPanelControls: () => {},
-        // Spec 13: the session parts go through one live path; a keyboard opening focuses its landing.
-        repaintPanelSession: () => {},
+        // Spec 13: the session parts go through one live path; a keyboard opening focuses its landing. With opts.bar
+        // that path draws the tab bar (the page's renderPanelMidbar, bound below).
+        repaintPanelSession: () => repaint(),
+        // The tab bar's counts that only the page knows (the goal editor's right, the files): none here.
+        panelMidContext: () => ({}),
         renderPanelComposer: () => {},
         focusPanelLanding: () => {},
         _panelTasksEarlier: false,
@@ -3460,8 +3493,17 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         'function turnsMsg() { return _panelTurnsMsg; }',
         'function turnsHeld() { return _panelTurnsList.length; }',
         'function deck() { return _deck.slice(); }',
+        'function midNow() { return _panelMid; }',
+        'function landedOn() { return _panelOnQuestion; }',
+        'function keyNow() { return panelSessionKey; }',
       ],
     );
+    // The live repaint's parts this harness draws (repaintPanelSession: the bar, then the plan).
+    if (opts.bar)
+      repaint = () => {
+        m.renderPanelMidbar();
+        m.renderPanelPlan(cache[m.keyNow()]);
+      };
     /** Click the card's 답변하기 button: run its shipped onclick against the shipped openPanel. */
     const clickAnswer = () => {
       const html = m.renderMultiChoiceCard(cache[KEY], '');
@@ -3491,6 +3533,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
       question,
       cache,
       drawer,
+      midbar: el('panel-midbar'),
+      planBox: el('panel-plan'),
       clickAnswer,
       formInView,
       settled,
@@ -3553,6 +3597,57 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     await flush();
     await flush();
     expect(p.formInView()).toBe(true);
+  });
+
+  // .prd/28 §3 (review P2): an opening on a plan waiting for 시작 lands on the 작업 계획 tab — the bar's own render draws
+  // it expanded through the live repaint — and a re-landing on the session already open keeps the reader's tab.
+  it('a plan waiting for 시작 opens on the 작업 계획 tab; a re-landing keeps the reader’s tab; an approved plan does not', async () => {
+    const planned = (state: string): Session => ({
+      key: KEY,
+      conversationId: 'conv1',
+      ownerId: 'U1',
+      activityState: 'waiting',
+      title: 'S',
+      taskPlan: { state, revision: 2 },
+      userActions: [{ id: 'ua_1', status: 'pending' }],
+    });
+    const expanded = (html: string) =>
+      [...html.matchAll(/data-mid="(\w+)" aria-expanded="(true|false)"/g)].map((x) => `${x[1]}:${x[2]}`);
+    const p = page({ session: planned('awaiting'), bar: true });
+    p.m.openPanel(KEY);
+    await flush();
+    await flush();
+    expect(p.settled()).toBe('');
+    expect(p.drawer.getAttribute('data-midtab')).toBe('plan');
+    expect(p.midbar.innerHTML).toContain('class="pm-tab is-plan" data-mid="plan" aria-expanded="true"');
+    expect(expanded(p.midbar.innerHTML)).toEqual(['plan:true', 'useractions:false']);
+    // The page's renderPanelPlan painted the waiting plan, and the opening landed on it (under the title bar).
+    expect([p.planBox.hidden, p.planBox.getAttribute('data-waiting')]).toEqual([false, 'true']);
+    expect(p.m.landedOn()).toBe('top');
+    // The reader opens 사용자 작업; a re-landing on this session (관리 →, a tree item) keeps it, the plan still waiting —
+    // and does not land on the plan, CSS-hidden behind that tab (its hidden attribute still false).
+    p.m.selectPanelMid('useractions');
+    expect(p.drawer.getAttribute('data-midtab')).toBe('useractions');
+    p.m.openPanel(KEY);
+    await flush();
+    await flush();
+    expect(p.m.midNow()).toBe('useractions');
+    expect(p.drawer.getAttribute('data-midtab')).toBe('useractions');
+    expect(expanded(p.midbar.innerHTML)).toEqual(['plan:false', 'useractions:true']);
+    expect([p.planBox.hidden, p.planBox.getAttribute('data-waiting')]).toEqual([false, 'true']);
+    expect(p.m.landedOn()).toBe(false);
+    // Another session — its plan already started — opened from this one: the reader's tab closes, every tab collapsed,
+    // and the opening does not land on its plan.
+    const KEY2 = 'inst::work:C1:1700000000.000200';
+    p.cache[KEY2] = { ...planned('approved'), key: KEY2, conversationId: 'conv2' };
+    p.m.openPanel(KEY2);
+    await flush();
+    await flush();
+    expect(p.m.keyNow()).toBe(KEY2);
+    expect(p.drawer.getAttribute('data-midtab')).toBe('');
+    expect(expanded(p.midbar.innerHTML)).toEqual(['plan:false', 'useractions:false']);
+    expect([p.planBox.hidden, p.planBox.getAttribute('data-waiting')]).toEqual([false, 'false']);
+    expect(p.m.landedOn()).toBe(false);
   });
 
   it('the form is in view as soon as the panel opens, before the turns arrive', () => {

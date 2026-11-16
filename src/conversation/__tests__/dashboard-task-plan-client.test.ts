@@ -308,9 +308,11 @@ describe('U4 — the detail card’s top: 시작 · 취소 first (T6)', () => {
 });
 
 describe('U5 — the detail card: the plan inline, the bottom bar (T5)', () => {
-  it('the page has the plan in 입력 필요 and a plan bar above the composer', () => {
-    const needs = PAGE.slice(PAGE.indexOf('id="panel-needs-head"'), PAGE.indexOf('id="panel-artifacts"'));
-    expect(needs).toContain('id="panel-plan"');
+  it('the page has the plan as the 작업 계획 tab’s content (.prd/28 §3) and a plan bar above the composer', () => {
+    // SSOT 2026-11-16: the plan left 입력 필요 for the bar's first tab — its content right after the bar.
+    const needs = PAGE.slice(PAGE.indexOf('id="panel-needs-head"'), PAGE.indexOf('id="panel-midbar"'));
+    expect(needs).not.toContain('id="panel-plan"');
+    expect(PAGE.indexOf('id="panel-plan"')).toBeGreaterThan(PAGE.indexOf('id="panel-midbar"'));
     const command = PAGE.slice(PAGE.indexOf('id="panel-command"'), PAGE.indexOf('id="cmd-steer"'));
     expect(command).toContain('id="panel-plan-bar"');
     // The model · effort controls are the composer's own row (#918: its slot "end"), under the plan bar.
@@ -537,10 +539,12 @@ describe('U5 — the detail card: the plan inline, the bottom bar (T5)', () => {
       expect(fetchFn).toHaveBeenCalledTimes(1);
     }
   });
-  it('the panel paints it with the needs, and the 입력 필요 count counts a waiting plan', () => {
+  it('the panel paints it with the session; a waiting plan is its tab’s, not a count of 입력 필요 (.prd/28 §3)', () => {
     expect(clientFn('repaintPanelSession')).toContain('renderPanelPlan(s)');
     expect(clientFn('renderPanelNeedsHead')).toContain('var n = panelNeedsCount(s);');
-    expect(clientFn('panelNeedsCount')).toContain("(s.taskPlan && s.taskPlan.state === 'awaiting' ? 1 : 0)");
+    expect(clientFn('panelNeedsCount')).not.toContain('taskPlan');
+    expect(clientFn('renderPanelPlan')).toContain('renderPanelMidbar();');
+    expect(clientFn('renderPanelPlan')).not.toContain('syncPanelNeeds();');
   });
 });
 
