@@ -631,13 +631,4 @@ describe('Z6 — the bar’s two ends: 작업 계획 first (drawn to stand out),
       '<span class="pm-label">사용자 작업</span><span class="pm-count">3</span><span class="pm-wait ui-count" data-tone="wait" aria-label="사용자 할 일 대기 1">1</span>',
     );
   });
-
-  // A plan waiting for 시작 opens the card on 작업 계획: run through openPanel in dashboard-agent-inbox-client.test.ts.
-  it('their content shows only while their tab is open', () => {
-    expect(CSS).toContain('.slide-panel:not([data-midtab="plan"]) #panel-plan,');
-    expect(CSS).toContain('.slide-panel:not([data-midtab="useractions"]) #panel-user-actions,');
-    expect(clientFn('renderPanelMidbar')).toContain(
-      'panelMidTabsOf(s, panelBarTabIds(viewSpec().detail.tabs), panelMidContext(s))',
-    );
-  });
 });

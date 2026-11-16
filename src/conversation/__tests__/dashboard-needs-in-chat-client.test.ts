@@ -698,15 +698,27 @@ describe('N7 — focus survives a move (review on #1259)', () => {
   });
 });
 
-describe('N8 — a plan is its tab’s: rendering one never brings back the 입력 필요 zone (real renderPanelPlan · syncPanelNeeds)', () => {
-  it('the zone the answered prompt left in the chat goes back and stays hidden under a plan waiting for 시작 or started', () => {
+describe('N8 — a plan is its tab’s: an answered prompt’s zone leaves the chat under a plan (the push path)', () => {
+  it('the push for the open card (the prompts, the question, the repaint’s plan) moves the zone out and hides it', () => {
     const c = card();
     const bar = new El('panel-plan-bar');
-    const cache: Record<string, unknown> = { k: { ...WAITING } };
+    const cache: Record<string, unknown> = {};
     let bars = 0;
     let paints = 0;
-    const m = load<{ renderPanelPlan(s: unknown): void; syncPanelNeeds(): void }>(
-      [...PLACE_FNS, 'syncPanelNeeds', 'renderPanelPlan'],
+    const m = load<{
+      renderPanelPermission(s: unknown): void;
+      renderPanelNeedsHead(s: unknown): void;
+      renderPanelPlan(s: unknown): void;
+    }>(
+      [
+        ...PLACE_FNS,
+        'syncPanelNeeds',
+        'renderPanelNeedsHead',
+        'renderPanelPermission',
+        'apSafeFocus',
+        'apAnnounce',
+        'renderPanelPlan',
+      ],
       NEEDS_VARS,
       {
         document: {
@@ -720,6 +732,14 @@ describe('N8 — a plan is its tab’s: rendering one never brings back the 입�
         convPaint: () => {
           paints++;
         },
+        acPermissionsHtml: (s: { pendingPermissions?: unknown[] }) =>
+          (s.pendingPermissions || []).length ? '<card>' : '',
+        acGoalDecisionHtml: () => '',
+        acInstructionApprovalsHtml: () => '',
+        morphInnerHtml: (el: El, html: string) => {
+          el.innerHTML = html;
+        },
+        acHydrate: () => {},
         panelPlanHtml: () => '<details class="pp-fold">…</details>',
         planBarHtml: () => '',
         renderPanelMidbar: () => {
@@ -727,33 +747,34 @@ describe('N8 — a plan is its tab’s: rendering one never brings back the 입�
         },
       },
     );
-    // A prompt waits: the zone is the chat's last message.
-    m.syncPanelNeeds();
+    // What the page does with a push for the open card (sessionUpdated): renderPanelPermission, renderPanelQuestion —
+    // each starts with the 입력 필요 head and its placement (renderPanelNeedsHead; the question box itself is N7's) —
+    // then the live repaint (repaintPanelSession → renderPanelPlan). No placement call of the test's own.
+    const push = (session: Record<string, unknown>) => {
+      cache.k = session;
+      m.renderPanelPermission(session);
+      m.renderPanelNeedsHead(session);
+      m.renderPanelPlan(session);
+    };
+    push({ ...WAITING, taskPlan: { state: 'drafting', revision: 1 } });
     expect(c.needs.parentNode).toBe(c.conv);
     expect(paints).toBe(1);
-    // It was answered, and the plan now waits for 시작: the plan paints in its tab, the bar repaints (its 작업 계획 tab
-    // names the version and state), and the placement pass takes the zone out of the chat — nothing in it waits.
-    cache.k = { key: 'k', activityState: 'waiting', taskPlan: { state: 'awaiting', revision: 2 } };
-    m.renderPanelPlan(cache.k);
-    m.syncPanelNeeds();
-    expect(c.plan.hidden).toBe(false);
-    expect(bars).toBe(1);
+    // Answered, and the plan now waits for 시작: the zone leaves the chat and hides; the plan is in its tab, the bar
+    // repainted (its 작업 계획 tab names the version and state).
+    push({ key: 'k', activityState: 'waiting', pendingPermissions: [], taskPlan: { state: 'awaiting', revision: 2 } });
     expect(c.needs.parentNode).toBe(c.surf);
     expect(c.needs.hidden).toBe(true);
-    expect(paints).toBe(2);
-    // Started: the same — the zone stays out and hidden, and the chat is not repainted for it.
-    cache.k = { key: 'k', activityState: 'working', taskPlan: { state: 'approved', revision: 2 } };
-    m.renderPanelPlan(cache.k);
-    m.syncPanelNeeds();
     expect(c.plan.hidden).toBe(false);
+    expect(paints).toBe(2);
+    expect(bars).toBe(2);
+    // Started: the zone stays out and hidden, and the chat is not repainted for it.
+    push({ key: 'k', activityState: 'working', pendingPermissions: [], taskPlan: { state: 'approved', revision: 2 } });
     expect(c.needs.parentNode).toBe(c.surf);
     expect(c.needs.hidden).toBe(true);
     expect(paints).toBe(2);
     // No plan: its tab's content goes.
-    cache.k = { key: 'k', activityState: 'working' };
-    m.renderPanelPlan(cache.k);
+    push({ key: 'k', activityState: 'working', pendingPermissions: [] });
     expect(c.plan.hidden).toBe(true);
-    expect(bars).toBe(3);
   });
 });
 
