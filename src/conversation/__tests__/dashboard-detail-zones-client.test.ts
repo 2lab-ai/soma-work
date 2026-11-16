@@ -515,11 +515,6 @@ describe('Z6 — 사용자 할 일 lives in the 목표 tab (.prd/28 §3)', () =>
     ).panelMidTabsOf(s, tabs, c);
   let n = 0;
   const ua = (status: string, optional = false) => ({ id: `ua_${++n}`, status, optional });
-  const at = (needle: string) => {
-    const i = PAGE.indexOf(needle);
-    if (i < 0) throw new Error(`missing ${needle}`);
-    return i;
-  };
 
   it('the 목표 tab counts the required tasks still waiting, and opens on user tasks alone', () => {
     const [t] = tabsOf({ userActions: [ua('pending'), ua('pending', true), ua('done')] }, ['goal']);
@@ -552,6 +547,83 @@ describe('Z6 — 사용자 할 일 lives in the 목표 tab (.prd/28 §3)', () =>
     expect(tab({ id: 'tasks', label: '작업', count: '', title: '', empty: true }, true)).not.toContain(' disabled');
   });
 
+  it('a 목표 tab with user tasks alone opens and closes through the bar’s own handler (review P2)', () => {
+    const bar: Record<string, any> = { hidden: false, innerHTML: '', addEventListener: vi.fn() };
+    const panel: Record<string, any> = {
+      attrs: {} as Record<string, string>,
+      setAttribute(k: string, v: string) {
+        this.attrs[k] = v;
+      },
+    };
+    const env = load<{
+      renderPanelMidbar(): void;
+      selectPanelMid(id: string): void;
+      __set(n: string, v: unknown): void;
+    }>(
+      [
+        'toNum',
+        'esc',
+        'escAttr',
+        'viewModeFrom',
+        'viewPlanFrom',
+        'viewSpec',
+        'userActionsWaiting',
+        'panelMidTabsOf',
+        'panelMidTabHtml',
+        'artSortForDisplay',
+        'artLatestOnly',
+        'panelMidContext',
+        'renderPanelMidbar',
+        'selectPanelMid',
+      ],
+      ['MID_TAB_LABEL', 'MID_TAB_PANEL', '_panelMid', '_viewMode', '_viewPlan'],
+      {
+        document: {
+          getElementById: (id: string) => (id === 'panel-midbar' ? bar : id === 'slide-panel' ? panel : null),
+        },
+        _viewLayout: { v: 1 },
+        panelSessionKey: 'k1',
+        panelConvId: 'c1',
+        // Someone else's card (no goal editor) with no goal: only the user task can open the tab.
+        _sessionCache: { k1: { key: 'k1', ownerId: 'U2', userActions: [ua('pending')] } },
+        _artCache: {},
+        _umList: {},
+        rdReset: () => {},
+        currentUserId: 'U1',
+        sessionColOf: () => 'working',
+        isSiblingSession: () => false,
+        panelAgentTasks: () => [],
+        panelAgentEarlier: () => [],
+        panelAgentOutside: () => null,
+        writePanelPart: (el: Record<string, string>, html: string) => {
+          el.innerHTML = html;
+        },
+        renderPanelInfo: () => {},
+        renderPanelGoal: () => {},
+        repaintPanelTasks: () => {},
+        renderPanelArtifactsSection: () => {},
+        renderPanelTabs: () => {},
+        renderPanelAgents: () => {},
+        sizePanelSections: () => {},
+        _panelInfoOpen: false,
+        _panelTasksOpen: false,
+        _panelTasksExpanded: false,
+        _panelTaskLineOpen: false,
+      },
+    );
+    env.__set('_viewMode', 'advanced');
+    env.renderPanelMidbar();
+    const goalTab = () => bar.innerHTML.match(/<button[^>]*data-mid="goal"[^>]*>/)![0];
+    expect(goalTab()).not.toContain(' disabled');
+    expect(bar.innerHTML).toContain('aria-label="사용자 할 일 대기 1">1</span>');
+    expect(panel.attrs['data-midtab']).toBe('');
+    env.selectPanelMid('goal');
+    expect(panel.attrs['data-midtab']).toBe('goal');
+    expect(goalTab()).toContain('aria-expanded="true"');
+    env.selectPanelMid('goal');
+    expect(panel.attrs['data-midtab']).toBe('');
+  });
+
   it('a layout with the 목표 tab says so to the CSS (goaltab); one without keeps the section in view', () => {
     const detailSpecOf = load<{ __get(n: string): (d: unknown) => { show: string[] } }>([], []).__get('detailSpecOf');
     expect(detailSpecOf({ tabs: [{ id: 'goal', on: true }] }).show).toContain('goaltab');
@@ -568,8 +640,8 @@ describe('Z6 — 사용자 할 일 lives in the 목표 tab (.prd/28 §3)', () =>
   });
 
   it('the page: the section follows the 목표 tab’s content and shows only while that tab is open', () => {
-    expect(at('id="panel-user-actions"')).toBeGreaterThan(at('id="panel-goal-paused"'));
-    expect(at('id="panel-user-actions"')).toBeGreaterThan(at('id="panel-midbar"'));
+    expect(PAGE).toMatch(/id="panel-goal-paused"[\s\S]*id="panel-user-actions"/);
+    expect(PAGE).toMatch(/id="panel-midbar"[\s\S]*id="panel-user-actions"/);
     expect(CSS).toContain(
       'body[data-detail~="goaltab"] .slide-panel:not([data-midtab="goal"]) #panel-user-actions { display: none !important; }',
     );
