@@ -37,4 +37,12 @@ describe('openVoiceDialog().close()', () => {
     expect(left).toEqual([]);
     expect(dialog.send('늦은 말')).toBe(false);
   });
+
+  it('when the SDK stream ends on its own (the CLI died), the input closes too: nothing is sent into the void', async () => {
+    const dialog = openVoiceDialog({ model: 'm', systemPrompt: 's', env: {}, tools: [] });
+    const seen: string[] = [];
+    for await (const ev of dialog.events) seen.push(ev.type);
+    expect(seen).toEqual(['closed']);
+    expect(dialog.send('들리세요?')).toBe(false);
+  });
 });

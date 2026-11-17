@@ -366,6 +366,17 @@ describe('phone_calls', () => {
     expect(text((await handlePhoneCalls({ server: '2lab-ai-dev' })) as never).calls).toEqual([]); // none yet
   });
 
+  it('a call whose record and backup are both unreadable is reported as unreadable, not as missing', async () => {
+    writeCall('CA6');
+    const file = path.join(PHONE, 'calls', 'CA6.json');
+    fs.writeFileSync(file, '{"id": "CA6", "env": "2lab-');
+    await expect(handlePhoneCalls({ server: '2lab-ai-dev', call_id: 'CA6' })).rejects.toThrow(/unreadable/);
+    writeCall('CA7');
+    const list = text((await handlePhoneCalls({ server: '2lab-ai-dev' })) as never);
+    expect(list.calls.map((c: { id: string }) => c.id)).toEqual(['CA7']);
+    expect(list.unreadable).toBe(1);
+  });
+
   it('a session with no requester reads no calls at all', async () => {
     writeCall('CA1');
     delete process.env.SOMA_REQUESTER;
