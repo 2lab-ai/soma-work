@@ -403,10 +403,11 @@ secrets, make a D1 database — except hand out a credential.
 }
 ```
 
-`cf_api` takes `account`: one of the server's account names. It may be left out when the server has one account. The
+`cf_api` takes `account`: one of the server's account names. It may be left out when the server has one account.
+Fields beside `accounts` are ignored (and logged), so a leftover top-level `token` never affects the server. The
 original one-account shape (token and zones at the top of `cloudflare`) is the account `default`, with
 `reach: "zones"`, and keeps every rule above. `list` shows each server's accounts (name, reach, writes), its GitHub
-repositories and its web login names — never a token.
+repositories and its web login names — never a token. An account entry shows its `id` when it has one.
 
 An account entry with `"reach": "account"` needs its 32-hex account `id`. It reaches:
 
@@ -430,8 +431,9 @@ Whatever the reach, these paths are never reachable, because they would hand a m
 server-tools, or change who is a member:
 
 - Any segment `tokens`, `token`, `service_tokens`, `members`, `memberships`, `temp-access-credentials`, `tails`
-  (a Worker's live log stream), `upload-token` or `assets-upload-session` (Pages and Workers asset upload JWTs), in
-  any case, even with `parts: ["*"]`. A whole segment must match, so a Worker named
+  (a Worker's live log stream), `upload-token` or `assets-upload-session` (Pages and Workers asset upload JWTs),
+  `direct_upload` (Images and Stream upload URLs), `deploy_hooks` (a Pages hook ID alone triggers a deployment) or
+  `edge-preview`, in any case, even with `parts: ["*"]`. A whole segment must match, so a Worker named
   `token-refresher` stays reachable.
 - Stream and Images signing keys (`stream/keys`, `images/v1/keys`).
 - `/user…`, `/memberships`, `/graphql` and any path outside `/accounts` and `/zones`.
@@ -441,7 +443,8 @@ server-tools, or change who is a member:
 
 Whatever the path, a JSON answer's credential fields are replaced with `[redacted]` before it is handed back:
 `token`, `secret`, `client_secret`, `tunnel_secret`, `credentials_file`, `private_key`, `custom_key`, `streamKey`,
-`passphrase`, `secret_access_key` (any case, at any depth). So a part an operator opens, or `"*"`, still never hands
+`passphrase`, `secret_access_key`, and bearer URLs `uploadURL`, `upload_url`, `signed_url`, `exchange_url` (any case,
+at any depth). So a part an operator opens, or `"*"`, still never hands
 a model a credential. Path segments may hold `@` for Workers AI model names (`/ai/run/@cf/meta/…`).
 
 Writes need the entry's `write: true` and go to the audit ledger as above. The ledger line also records `account`.

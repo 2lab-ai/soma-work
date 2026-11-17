@@ -209,8 +209,8 @@ describe('cf_api — several accounts', () => {
     expect(out.servers[0]).toMatchObject({
       name: 'dev2',
       cloudflare: [
-        { account: 'iq-dev', reach: 'account', write: true },
-        { account: 'iq-hq', reach: 'account', write: false },
+        { account: 'iq-dev', reach: 'account', write: true, id: DEV },
+        { account: 'iq-hq', reach: 'account', write: false, id: HQ },
       ],
       github: ['acme/app'],
       logins: ['qa'],
@@ -689,5 +689,97 @@ describe('cf_api — review-of-legends R3', () => {
       [`/zones/${DEV_ZONE}`, `Bearer ${HQ_TOKEN}`],
     ]);
     expect(ledger()).toEqual([]);
+  });
+});
+
+// review-of-legends R4 (47058fe8): bearer URLs, a leftover top-level token beside named accounts, module-name
+// segments, and an answer body that cannot be read.
+describe('cf_api — review-of-legends R4', () => {
+  const writable = { token: { $secret: 'cf-dev' }, id: DEV, reach: 'account', write: true };
+
+  it('never reaches an endpoint that hands out a bearer URL, and hides bearer URLs in answers', async () => {
+    writeConfig(accounts({ 'iq-dev': { ...writable, parts: ['*'] } }));
+    const { fetch, calls } = cloudflare();
+    for (const [method, p] of [
+      ['POST', `/accounts/${DEV}/images/v2/direct_upload`],
+      ['POST', `/accounts/${DEV}/images/v1/direct_upload`],
+      ['POST', `/accounts/${DEV}/stream/direct_upload`],
+      ['GET', `/accounts/${DEV}/pages/projects/site/deploy_hooks`],
+      ['POST', `/accounts/${DEV}/pages/webhooks/deploy_hooks/h1`],
+      ['POST', `/accounts/${DEV}/workers/scripts/api/edge-preview`],
+    ] as const) {
+      await expect(
+        cf({ account: 'iq-dev', method, path: p, ...(method === 'POST' ? { body: {} } : {}) }, fetch),
+      ).rejects.toThrow(/never reachable/);
+    }
+    expect(calls).toEqual([]);
+    expect(ledger()).toEqual([]);
+    const answer = cloudflare({
+      json: {
+        success: true,
+        result: { signed_url: 'https://x/dump?sig=1', upload_url: 'https://y', uploadURL: 'z', at: 1 },
+      },
+    });
+    const out = await cf(
+      { account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/d1/database/d1/export` },
+      answer.fetch,
+    );
+    expect(text(out).body.result).toEqual({
+      signed_url: '[redacted]',
+      upload_url: '[redacted]',
+      uploadURL: '[redacted]',
+      at: 1,
+    });
+  });
+
+  it('ignores fields beside accounts, so a leftover top-level token never drops the server', async () => {
+    writeConfig({ token: { $secret: 'cf-missing' }, zones: { 'x.example': LISTED_ZONE }, ...accounts() });
+    const config = loadConfig();
+    expect(config.dev2).toBeDefined();
+    expect(config.dev2.databases?.app).toBeDefined();
+    expect(Object.keys(config.dev2.cloudflare ?? {})).toEqual(['accounts']);
+    const { fetch } = cloudflare();
+    await cf({ account: 'iq-hq', method: 'GET', path: `/accounts/${HQ}/workers/scripts` }, fetch);
+  });
+
+  it('refuses a module name with an empty, . or .. segment, as name or filename', async () => {
+    writeConfig(accounts({ 'iq-dev': writable }));
+    const { fetch, calls } = cloudflare();
+    for (const bad of ['chunks/../x.js', 'chunks/./x.js', 'chunks//x.js', 'chunks/x.js/']) {
+      for (const file of [
+        { name: bad, filename: 'x.js', text: '' },
+        { name: 'x.js', filename: bad, text: '' },
+      ]) {
+        await expect(
+          cf(
+            { account: 'iq-dev', method: 'PUT', path: `/accounts/${DEV}/workers/scripts/api`, form: { files: [file] } },
+            fetch,
+          ),
+        ).rejects.toThrow(/name/);
+      }
+    }
+    expect(calls).toEqual([]);
+    expect(ledger()).toEqual([]);
+  });
+
+  it('fails a read whose body cannot be read, and records a write like that as unknown', async () => {
+    writeConfig(accounts({ 'iq-dev': writable }));
+    const broken: CfFetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new Error('stream reset');
+      },
+      text: async () => {
+        throw new Error('stream reset');
+      },
+    });
+    await expect(
+      cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/workers/scripts` }, broken),
+    ).rejects.toThrow(/unreadable body/);
+    await expect(
+      cf({ account: 'iq-dev', method: 'DELETE', path: `/accounts/${DEV}/workers/scripts/api` }, broken),
+    ).rejects.toThrow(/may have been made/);
+    expect(ledger().map((r) => r.phase)).toEqual(['intent', 'unknown']);
   });
 });

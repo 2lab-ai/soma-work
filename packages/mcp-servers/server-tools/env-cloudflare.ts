@@ -102,9 +102,10 @@ export const DEFAULT_ACCOUNT_PARTS: readonly string[] = [
  * Path segments that make a credential or change who is a member, under any account or zone: API tokens (and their
  * verify and permission groups), members and memberships, Access service tokens, a tunnel's connector token, R2
  * temporary access keys, a Worker's live tail (a URL that streams its logs), Pages and Workers asset upload tokens
- * (short-lived JWTs that work outside the tool; cf_api always sends the account token, so it cannot use them itself).
- * Matched as whole segments, so a Worker
- * named `token-refresher` stays reachable. Even `parts: ["*"]` does not open them.
+ * (short-lived JWTs that work outside the tool; cf_api always sends the account token, so it cannot use them itself),
+ * bearer URLs: Images and Stream direct uploads (`uploadURL` uploads without the account token), Pages deploy hooks
+ * (a hook ID alone triggers a deployment), Worker edge previews. Matched as whole segments, so a Worker named
+ * `token-refresher` stays reachable. Even `parts: ["*"]` does not open them.
  */
 const NEVER_SEGMENTS = new Set([
   'tokens',
@@ -116,6 +117,9 @@ const NEVER_SEGMENTS = new Set([
   'tails',
   'upload-token',
   'assets-upload-session',
+  'direct_upload',
+  'deploy_hooks',
+  'edge-preview',
 ]);
 
 export interface CfResponse {
@@ -264,8 +268,9 @@ function handsOutCredential(segments: string[], method: CfMethod): boolean {
 
 /**
  * Answer fields that hold a credential, whatever the path: a tunnel's token and secret, an app's or widget's secret,
- * a TLS private key, a live input's stream key and passphrase, S3-style access keys. Their values are replaced, so a
- * part an operator opened (or `"*"`) still never hands one to a model.
+ * a TLS private key, a live input's stream key and passphrase, S3-style access keys, and bearer URLs that act
+ * without the account token (an upload URL, a signed download URL, a preview exchange URL). Their values are
+ * replaced, so a part an operator opened (or `"*"`) still never hands one to a model.
  */
 const CREDENTIAL_FIELDS = new Set([
   'token',
@@ -279,6 +284,10 @@ const CREDENTIAL_FIELDS = new Set([
   'streamkey',
   'passphrase',
   'secret_access_key',
+  'uploadurl',
+  'upload_url',
+  'signed_url',
+  'exchange_url',
 ]);
 
 function redactCredentials(value: unknown, depth = 0): unknown {

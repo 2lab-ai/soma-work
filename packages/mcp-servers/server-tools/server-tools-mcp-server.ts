@@ -196,7 +196,15 @@ function withSecretCloudflare(name: string, server: unknown): unknown {
       configLogger.warn(`server "${name}": cloudflare account "${account}" left out: ${error.message}`);
     }
   }
-  return { ...rest, cloudflare: { ...(cloudflare as Record<string, unknown>), accounts: kept } };
+  // With named accounts, fields beside `accounts` are ignored: dropped here, so a leftover top-level `token` reference
+  // is never resolved with the server (a missing secret there would leave the whole server out).
+  const ignored = Object.keys(cloudflare).filter((k) => k !== 'accounts');
+  if (ignored.length > 0) {
+    configLogger.warn(
+      `server "${name}": cloudflare.${ignored.join(', cloudflare.')} ignored beside cloudflare.accounts`,
+    );
+  }
+  return { ...rest, cloudflare: { accounts: kept } };
 }
 
 function resolveServerSecrets(servers: Record<string, unknown>): ServerToolsConfig {
@@ -553,6 +561,7 @@ function envApis(srv: ServerConfig): Record<string, unknown> {
     account,
     reach: (entry as CfAccountConfig).reach === 'account' ? 'account' : 'zones',
     write: (entry as CfAccountConfig).write === true,
+    ...(typeof (entry as CfAccountConfig).id === 'string' ? { id: (entry as CfAccountConfig).id } : {}),
   }));
   if (accounts.length > 0) out.cloudflare = accounts;
   const repos = srv.github?.repos;
