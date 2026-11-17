@@ -436,13 +436,24 @@ server-tools, or change who is a member:
 - Stream and Images signing keys (`stream/keys`, `images/v1/keys`).
 - `/user…`, `/memberships`, `/graphql` and any path outside `/accounts` and `/zones`.
 - Writes to the account or a zone itself: creating, deleting, pausing or renaming them.
+- Creating a tunnel (`POST /accounts/<id>/cfd_tunnel`, `tunnels`, `warp_connector`): the answer carries the
+  connector's token and credentials file.
+
+Whatever the path, a JSON answer's credential fields are replaced with `[redacted]` before it is handed back:
+`token`, `secret`, `client_secret`, `tunnel_secret`, `credentials_file`, `private_key`, `custom_key`, `streamKey`,
+`passphrase`, `secret_access_key` (any case, at any depth). So a part an operator opens, or `"*"`, still never hands
+a model a credential. Path segments may hold `@` for Workers AI model names (`/ai/run/@cf/meta/…`).
 
 Writes need the entry's `write: true` and go to the audit ledger as above. The ledger line also records `account`.
 `form` sends a multipart body instead of `body`, for example a Worker upload:
 `{"fields": {"metadata": "<JSON text>"}, "files": [{"name", "filename", "type", "text" | "base64"}]}`. A module name
-may sit in a folder (`chunks/x.js`), never above it. A form may hold
+may sit in a folder (`chunks/x.js`), never above it. `base64` must be whole (4-character groups, padding only at the
+end). A form may hold
 up to 50 parts and 10 MiB. The ledger keeps one SHA-256 of the whole form (`formSha256`), not its content. A read whose
-answer is not JSON (a Worker's source, a KV value) comes back as text, token scrubbed, at most 200,000 characters. A
+answer is not JSON (a Worker's source, a KV value) comes back as text, token scrubbed, at most 200,000 characters;
+an empty successful read comes back as `""`. A zone the entry does not list is refused when Cloudflare says it is
+another account's, and also, with "could not confirm", when the lookup fails (no answer, a non-2xx status, an
+unreadable answer); nothing is sent and nothing is written to the ledger, and the next call asks again. A
 write whose answer is not JSON stays `unknown`.
 
 Each account's token is resolved on its own. An account whose token is not a `{"$secret": …}`, or whose secret file is

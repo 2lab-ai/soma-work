@@ -155,7 +155,8 @@ const API = 'https://api.cloudflare.com/client/v4';
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
 export type CfMethod = (typeof METHODS)[number];
 const BODY_METHODS: readonly CfMethod[] = ['POST', 'PUT', 'PATCH'];
-const SEGMENT = /^[A-Za-z0-9._~-]+$/;
+/** Plain path characters; `@` for Workers AI model names (`ai/run/@cf/meta/…`), after the host so it is no userinfo. */
+const SEGMENT = /^[A-Za-z0-9._~@-]+$/;
 const HEX32 = /^[0-9a-f]{32}$/;
 const QUERY_KEY = /^[A-Za-z0-9_.[\]-]{1,100}$/;
 const FORM_NAME = /^[A-Za-z0-9_.[\]-]{1,100}$/;
@@ -164,7 +165,12 @@ const MODULE_NAME = /^[A-Za-z0-9_][A-Za-z0-9_./-]{0,199}$/;
 const moduleName = (v: unknown): v is string =>
   typeof v === 'string' && MODULE_NAME.test(v) && v.split('/').every((s) => s !== '' && s !== '.' && s !== '..');
 const MEDIA_TYPE = /^[a-z]+\/[A-Za-z0-9.+-]{1,100}$/;
-const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
+const BASE64_CHARS = /^[A-Za-z0-9+/]*={0,2}$/;
+/**
+ * Whole base64: 4-character groups, padding only at the end (Node would silently drop a dangling character). Checked
+ * by length, not by a grouped pattern, which overflows the regex stack on a multi-megabyte upload.
+ */
+const wholeBase64 = (v: string): boolean => v.length % 4 === 0 && BASE64_CHARS.test(v);
 const CALL_TIMEOUT_MS = 30_000;
 const MAX_PATH = 512;
 const MAX_BODY = 64 * 1024;
@@ -191,7 +197,7 @@ function pathSegments(value: unknown): string[] {
   }
   const segments = value.slice(1).split('/');
   if (segments.some((s) => s === '' || s === '.' || !SEGMENT.test(s))) {
-    throw new CfError('path segments must be runs of A-Z a-z 0-9 . _ ~ -');
+    throw new CfError('path segments must be runs of A-Z a-z 0-9 . _ ~ @ -');
   }
   return segments;
 }
@@ -235,14 +241,55 @@ function zonesTarget(account: CfAccountConfig, segments: string[], method: CfMet
   return { zone: zone[0] };
 }
 
-/** A segment run that hands out a credential or changes who is a member (`NEVER_SEGMENTS`, signing keys). */
-function handsOutCredential(segments: string[]): boolean {
+/** Tunnel collections: creating a tunnel answers with its connector token and credentials file. */
+const TUNNEL_PARTS = new Set(['cfd_tunnel', 'tunnels', 'warp_connector']);
+
+/**
+ * A call that hands out a credential or changes who is a member: a `NEVER_SEGMENTS` segment, Stream and Images
+ * signing keys (the private key comes back on creation), or creating a tunnel (`POST /accounts/<id>/cfd_tunnel`).
+ */
+function handsOutCredential(segments: string[], method: CfMethod): boolean {
   const lower = segments.map((s) => s.toLowerCase());
-  return lower.some(
-    (s, i) =>
-      NEVER_SEGMENTS.has(s) ||
-      // Stream and Images signing keys: the private key comes back on creation.
-      (s === 'keys' && (lower[i - 1] === 'stream' || (lower[i - 1] === 'v1' && lower[i - 2] === 'images'))),
+  const createsTunnel =
+    method === 'POST' && lower[0] === 'accounts' && lower.length === 3 && TUNNEL_PARTS.has(lower[2]);
+  return (
+    createsTunnel ||
+    lower.some(
+      (s, i) =>
+        NEVER_SEGMENTS.has(s) ||
+        (s === 'keys' && (lower[i - 1] === 'stream' || (lower[i - 1] === 'v1' && lower[i - 2] === 'images'))),
+    )
+  );
+}
+
+/**
+ * Answer fields that hold a credential, whatever the path: a tunnel's token and secret, an app's or widget's secret,
+ * a TLS private key, a live input's stream key and passphrase, S3-style access keys. Their values are replaced, so a
+ * part an operator opened (or `"*"`) still never hands one to a model.
+ */
+const CREDENTIAL_FIELDS = new Set([
+  'token',
+  'secret',
+  'client_secret',
+  'tunnel_secret',
+  'tunnelsecret',
+  'credentials_file',
+  'private_key',
+  'custom_key',
+  'streamkey',
+  'passphrase',
+  'secret_access_key',
+]);
+
+function redactCredentials(value: unknown, depth = 0): unknown {
+  if (depth > 64 || !value || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map((v) => redactCredentials(v, depth + 1));
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([k, v]) =>
+      CREDENTIAL_FIELDS.has(k.toLowerCase()) && v !== null && v !== ''
+        ? [k, '[redacted]']
+        : [k, redactCredentials(v, depth + 1)],
+    ),
   );
 }
 
@@ -254,7 +301,7 @@ function handsOutCredential(segments: string[]): boolean {
 function accountTarget(name: string, account: CfAccountConfig, segments: string[], method: CfMethod): CfTarget {
   const shape = `path must be /accounts/<account ${name}>/…, /zones or /zones/<zone of account ${name}>/…`;
   if (segments[0] !== 'accounts' && segments[0] !== 'zones') throw new CfError(shape);
-  if (handsOutCredential(segments)) {
+  if (handsOutCredential(segments, method)) {
     throw new CfError('tokens, members, service tokens and other credentials are never reachable');
   }
   const part = segments[2];
@@ -338,14 +385,34 @@ function formBody(method: CfMethod, form: unknown): { data: FormData; sha256: st
   if (fieldEntries.length + files.length === 0 || fieldEntries.length + files.length > MAX_FORM_PARTS) {
     throw new CfError(`form must hold 1 to ${MAX_FORM_PARTS} parts`);
   }
-  const data = new FormData();
-  const hash = createHash('sha256');
+  // The whole budget is checked before any content is decoded or copied.
   let bytes = 0;
   for (const [key, value] of fieldEntries) {
     if (!FORM_NAME.test(key) || typeof value !== 'string') {
       throw new CfError(`form field ${key} must be a string under a plain name`);
     }
     bytes += Buffer.byteLength(value, 'utf8');
+  }
+  for (const file of files) {
+    const { name, text, base64 } = (file ?? {}) as Record<string, unknown>;
+    if ((text === undefined) === (base64 === undefined)) {
+      throw new CfError(`form file ${String(name)}: give its content as text or base64, one of them`);
+    }
+    if (text !== undefined && typeof text !== 'string') {
+      throw new CfError(`form file ${String(name)}: text must be a string`);
+    }
+    if (base64 !== undefined && (typeof base64 !== 'string' || !wholeBase64(base64))) {
+      throw new CfError(`form file ${String(name)}: base64 must be whole, padded base64`);
+    }
+    bytes +=
+      typeof text === 'string'
+        ? Buffer.byteLength(text, 'utf8')
+        : ((base64 as string).length / 4) * 3 - ((base64 as string).match(/=*$/)?.[0].length ?? 0);
+  }
+  if (bytes > MAX_FORM) throw new CfError(`form must hold at most ${MAX_FORM} bytes`);
+  const data = new FormData();
+  const hash = createHash('sha256');
+  for (const [key, value] of fieldEntries as [string, string][]) {
     hash.update(`field ${key} ${Buffer.byteLength(value, 'utf8')}\n`).update(value);
     data.append(key, value);
   }
@@ -357,24 +424,10 @@ function formBody(method: CfMethod, form: unknown): { data: FormData; sha256: st
     if (typeof mediaType !== 'string' || !MEDIA_TYPE.test(mediaType)) {
       throw new CfError(`form file ${name}: type must be a media type`);
     }
-    if ((text === undefined) === (base64 === undefined)) {
-      throw new CfError(`form file ${name}: give its content as text or base64, one of them`);
-    }
-    let content: Buffer;
-    if (text !== undefined) {
-      if (typeof text !== 'string') throw new CfError(`form file ${name}: text must be a string`);
-      content = Buffer.from(text, 'utf8');
-    } else {
-      if (typeof base64 !== 'string' || !BASE64.test(base64)) {
-        throw new CfError(`form file ${name}: base64 must be base64`);
-      }
-      content = Buffer.from(base64, 'base64');
-    }
-    bytes += content.length;
+    const content = typeof text === 'string' ? Buffer.from(text, 'utf8') : Buffer.from(base64 as string, 'base64');
     hash.update(`file ${name} ${filename} ${mediaType} ${content.length}\n`).update(content);
     data.append(name, new Blob([content], { type: mediaType }), filename);
   }
-  if (bytes > MAX_FORM) throw new CfError(`form must hold at most ${MAX_FORM} bytes`);
   return { data, sha256: hash.digest('hex') };
 }
 
@@ -460,30 +513,29 @@ export async function cfProve(fetch: CfFetch, account: CfAccountConfig, request:
   if (!seen) provenZones.set(fetch, (seen = new Set()));
   const key = `${account.id}/${zone}`;
   if (seen.has(key)) return;
-  let owner: unknown;
-  let status = 0;
+  // Fails closed either way; a lookup that failed says so instead of claiming the zone is another account's.
+  const unconfirmed = (why: string) =>
+    new CfError(`could not confirm that ${zone} is a zone of account ${request.account} (${why}); nothing was sent`);
+  let res: CfResponse;
   try {
-    const res = await fetch(`${API}/zones/${zone}`, {
+    res = await fetch(`${API}/zones/${zone}`, {
       method: 'GET',
       headers: headers(account, false),
       signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
       redirect: 'manual',
     });
-    status = res.status;
-    const json = res.ok
-      ? ((typeof res.text === 'function' ? JSON.parse(await res.text()) : await res.json()) as unknown)
-      : null;
-    owner = (json as { result?: { account?: { id?: unknown } } } | null)?.result?.account?.id;
+  } catch (err) {
+    throw unconfirmed(`no answer: ${err instanceof Error ? err.name : 'error'}`);
+  }
+  if (!res.ok) throw unconfirmed(`Cloudflare answered ${res.status}`);
+  let owner: unknown;
+  try {
+    owner = ((await res.json()) as { result?: { account?: { id?: unknown } } } | null)?.result?.account?.id;
   } catch {
-    owner = undefined;
+    throw unconfirmed('the answer could not be read');
   }
-  if (owner !== account.id) {
-    throw new CfError(
-      status && status !== 200
-        ? `${zone} is not a zone of account ${request.account} (Cloudflare answered ${status} when asked)`
-        : `${zone} is not a zone of account ${request.account}`,
-    );
-  }
+  if (typeof owner !== 'string') throw unconfirmed('the answer names no account');
+  if (owner !== account.id) throw new CfError(`${zone} is not a zone of account ${request.account}`);
   seen.add(key);
 }
 
@@ -547,8 +599,11 @@ export async function cfCall(
   if (typeof res.text === 'function') {
     try {
       const answer = await res.text();
-      if (answer === '') readable = false;
-      else {
+      if (answer === '') {
+        readable = false;
+        // An empty 2xx read is an answer (a zero-length KV value); an empty write answer stays as before.
+        if (request.method === 'GET' && res.ok && res.status !== 204) raw = '';
+      } else {
         try {
           json = JSON.parse(answer);
         } catch {
@@ -608,7 +663,7 @@ export async function cfCall(
       `Cloudflare ${request.method} ${request.path} answered ${res.status}: ${errorsOf(json, account.token)}`,
     );
   }
-  const text = scrub(JSON.stringify(keepOwn(json, request.keep, account.id) ?? null), account.token);
+  const text = scrub(JSON.stringify(redactCredentials(keepOwn(json, request.keep, account.id)) ?? null), account.token);
   return text.length > MAX_ANSWER_CHARS
     ? { status: res.status, truncated: true, body: text.slice(0, MAX_ANSWER_CHARS) }
     : { status: res.status, truncated: false, body: JSON.parse(text) };

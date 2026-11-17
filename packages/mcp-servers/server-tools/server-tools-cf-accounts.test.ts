@@ -516,3 +516,178 @@ describe('cf_api — uploads and answers that are not JSON', () => {
     expect(ledger().map((r) => r.phase)).toEqual(['intent', 'unknown']);
   });
 });
+
+// review-of-legends R3 (3c32dea3): tunnel creation answers with a connector credential, Workers AI names models with
+// `@cf`, an empty read is an answer, base64 must be whole, the upload budget and digest, and the zone proof's failures.
+describe('cf_api — review-of-legends R3', () => {
+  const writable = { token: { $secret: 'cf-dev' }, id: DEV, reach: 'account', write: true };
+
+  it('never creates a tunnel, and hides credential fields in any answer, even with parts "*"', async () => {
+    writeConfig(accounts({ 'iq-dev': { ...writable, parts: ['*'] } }));
+    const { fetch, calls } = cloudflare();
+    for (const part of ['cfd_tunnel', 'tunnels', 'warp_connector']) {
+      await expect(
+        cf({ account: 'iq-dev', method: 'POST', path: `/accounts/${DEV}/${part}`, body: { name: 't' } }, fetch),
+      ).rejects.toThrow(/never reachable/);
+    }
+    expect(calls).toEqual([]);
+    expect(ledger()).toEqual([]);
+    const answer = cloudflare({
+      json: {
+        success: true,
+        result: [
+          {
+            id: 't1',
+            name: 'edge',
+            token: 'eyJhIjoi',
+            credentials_file: { TunnelSecret: 's3cr3t' },
+            config: { secret: 'w1', streamKey: 'k1', ok: 'kept' },
+          },
+        ],
+      },
+    });
+    const out = await cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/cfd_tunnel` }, answer.fetch);
+    expect(text(out).body.result).toEqual([
+      {
+        id: 't1',
+        name: 'edge',
+        token: '[redacted]',
+        credentials_file: '[redacted]',
+        config: { secret: '[redacted]', streamKey: '[redacted]', ok: 'kept' },
+      },
+    ]);
+  });
+
+  it('runs a Workers AI model named with @cf', async () => {
+    writeConfig(accounts({ 'iq-dev': writable }));
+    const { fetch, calls } = cloudflare({ json: { success: true, result: { response: 'hi' } } });
+    await cf(
+      {
+        account: 'iq-dev',
+        method: 'POST',
+        path: `/accounts/${DEV}/ai/run/@cf/meta/llama-3.1-8b-instruct`,
+        body: { prompt: 'hi' },
+      },
+      fetch,
+    );
+    expect(calls[0].url).toBe(`${API}/accounts/${DEV}/ai/run/@cf/meta/llama-3.1-8b-instruct`);
+  });
+
+  it('returns an empty successful read as empty text', async () => {
+    const { fetch } = cloudflare({ text: '' });
+    const out = await cf(
+      { account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/storage/kv/namespaces/n1/values/empty` },
+      fetch,
+    );
+    expect(text(out)).toEqual({ status: 200, truncated: false, body: '' });
+  });
+
+  it('refuses base64 that is not whole, before anything is sent', async () => {
+    writeConfig(accounts({ 'iq-dev': writable }));
+    const { fetch, calls } = cloudflare();
+    for (const base64 of ['aGVsb', 'YWJjZ', 'YQ', 'YQ=', 'Y===']) {
+      await expect(
+        cf(
+          {
+            account: 'iq-dev',
+            method: 'PUT',
+            path: `/accounts/${DEV}/workers/scripts/api`,
+            form: { files: [{ name: 'a', filename: 'a', base64 }] },
+          },
+          fetch,
+        ),
+      ).rejects.toThrow(/whole, padded base64/);
+    }
+    expect(calls).toEqual([]);
+    expect(ledger()).toEqual([]);
+  });
+
+  it('keeps the upload budget of 50 parts and 10 MiB, checked before sending', async () => {
+    writeConfig(accounts({ 'iq-dev': writable }));
+    const { fetch, calls } = cloudflare({ json: { success: true, result: {} } });
+    const put = (form: unknown) =>
+      cf({ account: 'iq-dev', method: 'PUT', path: `/accounts/${DEV}/workers/scripts/api`, form }, fetch);
+    const fields = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`f${i}`, 'x']));
+    await put({ fields: fields(49), files: [{ name: 'a', filename: 'a', text: 'x' }] });
+    await expect(put({ fields: fields(50), files: [{ name: 'a', filename: 'a', text: 'x' }] })).rejects.toThrow(
+      /1 to 50 parts/,
+    );
+    const MiB10 = 10 * 1024 * 1024;
+    // Exactly 10 MiB: 3 bytes per character for 가, the rest in one decoded base64 file.
+    const korean = '가'.repeat(1000);
+    const rest = MiB10 - 3000;
+    await put({
+      fields: { metadata: korean },
+      files: [{ name: 'b', filename: 'b', base64: Buffer.alloc(rest).toString('base64') }],
+    });
+    await expect(
+      put({
+        fields: { metadata: korean },
+        files: [{ name: 'b', filename: 'b', base64: Buffer.alloc(rest + 1).toString('base64') }],
+      }),
+    ).rejects.toThrow(/at most 10485760 bytes/);
+    expect(calls).toHaveLength(2);
+    expect(ledger().filter((r) => r.phase === 'intent')).toHaveLength(2);
+  });
+
+  it('records a digest that follows what is sent', async () => {
+    writeConfig(accounts({ 'iq-dev': writable }));
+    const { fetch } = cloudflare({ json: { success: true, result: {} } });
+    const digest = async (metadata: string, content: string) => {
+      await cf(
+        {
+          account: 'iq-dev',
+          method: 'PUT',
+          path: `/accounts/${DEV}/workers/scripts/api`,
+          form: { fields: { metadata }, files: [{ name: 'w.js', filename: 'w.js', text: content }] },
+        },
+        fetch,
+      );
+      return ledger()
+        .filter((r) => r.phase === 'intent')
+        .at(-1).detail.formSha256;
+    };
+    const first = await digest('{"a":1}', 'export default 1');
+    expect(await digest('{"a":1}', 'export default 1')).toBe(first);
+    expect(await digest('{"a":1}', 'export default 2')).not.toBe(first);
+    expect(await digest('{"a":2}', 'export default 1')).not.toBe(first);
+  });
+
+  it('says a zone could not be confirmed when the lookup fails, sends nothing, and asks again next time', async () => {
+    writeConfig(accounts({ 'iq-hq': { token: { $secret: 'cf-hq' }, id: HQ, reach: 'account', write: true } }));
+    const probes: string[] = [];
+    const failing =
+      (mode: 'status' | 'throw' | 'bad-json'): CfFetch =>
+      async (url) => {
+        probes.push(`${mode} ${url}`);
+        if (mode === 'throw') throw new TypeError('fetch failed');
+        if (mode === 'status') return { ok: false, status: 403, json: async () => ({}), text: async () => '{}' };
+        return { ok: true, status: 200, json: async () => JSON.parse('{oops'), text: async () => '{oops' };
+      };
+    const write = (fetch: CfFetch) =>
+      cf({ account: 'iq-hq', method: 'POST', path: `/zones/${HQ_ZONE}/dns_records`, body: {} }, fetch);
+    await expect(write(failing('status'))).rejects.toThrow(/could not confirm .* \(Cloudflare answered 403\)/);
+    await expect(write(failing('throw'))).rejects.toThrow(/could not confirm .* \(no answer: TypeError\)/);
+    const bad = failing('bad-json');
+    await expect(write(bad)).rejects.toThrow(/could not confirm .* could not be read/);
+    await expect(write(bad)).rejects.toThrow(/could not confirm/);
+    expect(probes).toHaveLength(4);
+    expect(probes.every((p) => p.endsWith(`/zones/${HQ_ZONE}`))).toBe(true);
+    expect(ledger()).toEqual([]);
+  });
+
+  it('proves a zone again for another account, even after one account proved it on the same fetch', async () => {
+    writeConfig(accounts({ 'iq-hq': { token: { $secret: 'cf-hq' }, id: HQ, reach: 'account', write: true } }));
+    const { fetch, calls } = cloudflare({}, { [DEV_ZONE]: DEV });
+    await cf({ account: 'iq-dev', method: 'GET', path: `/zones/${DEV_ZONE}/dns_records` }, fetch);
+    await expect(
+      cf({ account: 'iq-hq', method: 'POST', path: `/zones/${DEV_ZONE}/dns_records`, body: {} }, fetch),
+    ).rejects.toThrow(/is not a zone of account iq-hq/);
+    expect(calls.map((c) => [c.url.replace(API, ''), c.auth])).toEqual([
+      [`/zones/${DEV_ZONE}`, `Bearer ${DEV_TOKEN}`],
+      [`/zones/${DEV_ZONE}/dns_records`, `Bearer ${DEV_TOKEN}`],
+      [`/zones/${DEV_ZONE}`, `Bearer ${HQ_TOKEN}`],
+    ]);
+    expect(ledger()).toEqual([]);
+  });
+});
