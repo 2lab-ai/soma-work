@@ -172,12 +172,12 @@ describe('chgPaint — the tab', () => {
     expect(html).toContain('data-chg-file="f:acme/web\nsrc/conversation/dashboard.ts"');
   });
 
-  it('owner-only and empty states', () => {
+  it('refused (a server on an older build) and empty states', () => {
     const el: { innerHTML: string; _chgHtml?: string } = { innerHTML: '' };
     const api = load(el);
     api.setState({ ...api.state(), cid: 'c1', doc: null, state: 'denied' });
     api.chgPaint();
-    expect(el.innerHTML).toContain('변경점은 세션 소유자만 볼 수 있어요');
+    expect(el.innerHTML).toContain('이 작업의 변경점은 볼 수 없어요');
     api.setState({ ...api.state(), state: 'ok', doc: null });
     el._chgHtml = '';
     api.chgPaint();

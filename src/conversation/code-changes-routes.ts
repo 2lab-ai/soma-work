@@ -9,9 +9,10 @@
  *       file, and the collect it is from
  *     → 404 { error: 'not_found' } when no layer has it
  *
- * Who may read: the work log's rule (work-log-routes.ts) — the conversation's recorded owner and admins. The patches are
- * source code, and the board goes to every signed-in viewer. Unknown conversation → 404, anyone else → 403. Every
- * answer carries no-store.
+ * Who may read: whoever may see the task's card (task-visibility.ts, SSOT 2026-11-17 "다른 사람의 작업도 변경점 읽을수
+ * 있게 해줘") — any signed-in viewer for a public channel's task, its owner and admins for a private one. A task this
+ * viewer may not see answers 404, as the private-task gate does for every session route: as if it did not exist.
+ * Unknown conversation → 404. Every answer carries no-store.
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -20,6 +21,7 @@ import { getCodeChangesStore, isStoreKey } from '../code-changes/store';
 import { Logger } from '../logger';
 import type { AuthContext } from './oauth';
 import { getConversation } from './recorder';
+import { canViewTask } from './task-visibility';
 
 const logger = new Logger('CodeChangesRoutes');
 
@@ -29,12 +31,6 @@ let refresher: Refresher | undefined;
 /** The host's "collect this conversation's live session now" (index.ts). */
 export function setCodeChangesRefresher(fn: Refresher | undefined): void {
   refresher = fn;
-}
-
-function canRead(auth: AuthContext | undefined, ownerId: string | undefined): boolean {
-  if (!auth) return false;
-  if (auth.isAdmin) return true;
-  return !!ownerId && auth.userId === ownerId;
 }
 
 const MAX_PARAM = 2048;
@@ -48,7 +44,7 @@ export async function registerCodeChangesRoutes(
     return payload;
   };
 
-  /** 404 / 403 answered here; the conversation id when the viewer may read it. */
+  /** 404 answered here; true when the viewer may read the conversation's changes. */
   async function readable(request: FastifyRequest, reply: FastifyReply, conversationId: string): Promise<boolean> {
     if (!isStoreKey(conversationId)) {
       reply.status(404).send({ error: 'Conversation not found' });
@@ -59,9 +55,10 @@ export async function registerCodeChangesRoutes(
       reply.status(404).send({ error: 'Conversation not found' });
       return false;
     }
+    // The card's rule, checked here too: the gate in front of this route reads the live session first, this the record.
     const auth = (request as FastifyRequest & { authContext?: AuthContext }).authContext;
-    if (!canRead(auth, record.ownerId || undefined)) {
-      reply.status(403).send({ error: 'forbidden' });
+    if (!auth || !canViewTask(auth, record)) {
+      reply.status(404).send({ error: 'Conversation not found' });
       return false;
     }
     return true;

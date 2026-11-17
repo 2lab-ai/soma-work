@@ -48,7 +48,7 @@ PR 감시  session-pr-watch(#928)가 세션 PR의 머지를 보면 snapshotCodeC
 | `src/code-changes/pr-changes.ts` | GitHub PR 상세 · 파일 (토큰은 `link-metadata-fetcher`의 `getGitHubToken`) |
 | `src/code-changes/collector.ts` | 세션 하나 수집 · 요약 · 지표 · 스케줄(세션당 직렬, 최소 간격) · sweeper |
 | `src/code-changes/store.ts` | 대화별 문서 읽기/쓰기 |
-| `src/conversation/code-changes-routes.ts` | 두 라우트, 권한 = 작업 로그 |
+| `src/conversation/code-changes-routes.ts` | 두 라우트, 권한 = 카드 공개 규칙(`task-visibility.ts`, SSOT_6) |
 | `src/conversation/code-changes-client.ts` | 탭 · 트리 · 뷰어 클라이언트 JS(`String.raw`) + CSS |
 | `src/session-pr-reconciler.ts` | 체크아웃 후보 찾기(`listCheckoutDirs`)를 꺼내 두 소비자가 공유 |
 

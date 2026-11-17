@@ -1,5 +1,5 @@
 /**
- * .prd/26 §4.1 · A6 — the code changes API: the work log's readers only, the list without patches, one file's layers.
+ * .prd/26 §4.1 · A6 — the code changes API: whoever may see the card reads it, the list without patches, one file's layers.
  */
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -111,22 +111,85 @@ describe('code changes API', () => {
   const get = (url: string, headers: Record<string, string> = AUTH_HEADER) =>
     web.injectWebServer({ method: 'GET', url, headers });
 
-  it('401 without credentials, 404 for an unknown conversation, 403 for a signed-in non-owner (A6)', async () => {
+  it('401 without credentials, 404 for an unknown conversation; another signed-in user reads a public task (A6)', async () => {
     expect((await get('/api/dashboard/session/conv-1/changes', {})).statusCode).toBe(401);
     expect((await get('/api/dashboard/session/conv-nope/changes')).statusCode).toBe(404);
-    const other = await get('/api/dashboard/session/conv-1/changes', { cookie: userCookie('U_OTHER') });
-    expect(other.statusCode).toBe(403);
+    // conv-1 has no Slack conversation: an old dashboard task, everyone's (task-visibility.ts).
+    const refresher = vi.fn(async () => true);
+    routes.setCodeChangesRefresher(refresher);
+    const other = await get('/api/dashboard/session/conv-1/changes?refresh=1', { cookie: userCookie('U_OTHER') });
+    expect(other.statusCode).toBe(200);
     expect(other.headers['cache-control']).toBe('no-store');
+    expect(JSON.parse(other.body).doc.updatedAt).toBe(42);
+    expect(refresher).toHaveBeenCalledWith('conv-1');
     const file = await get('/api/dashboard/session/conv-1/changes/file?repo=acme/web&path=src/a.ts', {
       cookie: userCookie('U_OTHER'),
     });
-    expect(file.statusCode).toBe(403);
-    // A refresh asked by a reader who may not read is refused before the host is asked to collect.
+    expect(file.statusCode).toBe(200);
+    expect(JSON.parse(file.body).sources[0].file.patch).toBe('@@ -1 +1 @@\n-x\n+y');
+  });
+
+  it("who reads follows the card: a public channel's task anyone; a private channel's or a DM's its owner and admins", async () => {
+    const { registerPublicChannel } = await import('../__fixtures__/public-channel');
+    await registerPublicChannel('C_PUB');
+    const { getConversation } = await import('../recorder');
+    const where: Record<string, string> = { 'conv-1': 'C_PUB', 'conv-2': 'C_PRIV', 'conv-3': 'D_DM' };
+    (getConversation as any).mockImplementation(async (id: string) =>
+      where[id] ? { ...CONVERSATION, id, channelId: where[id] } : null,
+    );
+    const { getCodeChangesStore } = await import('../../code-changes/store');
+    for (const id of ['conv-2', 'conv-3'])
+      getCodeChangesStore().write({ ...JSON.parse(JSON.stringify(DOC)), conversationId: id });
     const refresher = vi.fn(async () => true);
     routes.setCodeChangesRefresher(refresher);
-    const refused = await get('/api/dashboard/session/conv-1/changes?refresh=1', { cookie: userCookie('U_OTHER') });
-    expect(refused.statusCode).toBe(403);
-    expect(refresher).not.toHaveBeenCalled();
+    const read = async (id: string, who: string) => ({
+      list: (await get(`/api/dashboard/session/${id}/changes?refresh=1`, { cookie: userCookie(who) })).statusCode,
+      file: (
+        await get(`/api/dashboard/session/${id}/changes/file?repo=acme/web&path=src/a.ts`, { cookie: userCookie(who) })
+      ).statusCode,
+    });
+    expect(await read('conv-1', 'U_OTHER')).toEqual({ list: 200, file: 200 });
+    // As if the task did not exist — and the host is not asked to collect it.
+    expect(await read('conv-2', 'U_OTHER')).toEqual({ list: 404, file: 404 });
+    expect(await read('conv-3', 'U_OTHER')).toEqual({ list: 404, file: 404 });
+    expect(refresher.mock.calls).toEqual([['conv-1']]);
+    for (const who of ['U_OWNER', 'U_ADMIN']) {
+      expect(await read('conv-2', who)).toEqual({ list: 200, file: 200 });
+      expect(await read('conv-3', who)).toEqual({ list: 200, file: 200 });
+    }
+  });
+
+  it('the routes check the card rule themselves, with no private-task gate in front of them', async () => {
+    const { registerPublicChannel } = await import('../__fixtures__/public-channel');
+    await registerPublicChannel('C_PUB');
+    const { getConversation } = await import('../recorder');
+    const where: Record<string, string> = { 'conv-1': 'C_PUB', 'conv-2': 'C_PRIV' };
+    (getConversation as any).mockImplementation(async (id: string) =>
+      where[id] ? { ...CONVERSATION, id, channelId: where[id] } : null,
+    );
+    const { getCodeChangesStore } = await import('../../code-changes/store');
+    getCodeChangesStore().write({ ...JSON.parse(JSON.stringify(DOC)), conversationId: 'conv-2' });
+    const Fastify = (await import('fastify')).default;
+    const bare = Fastify();
+    await routes.registerCodeChangesRoutes(bare, async (request) => {
+      (request as any).authContext = { mode: 'oauth_jwt', userId: request.headers['x-user'], isAdmin: false };
+    });
+    const as = async (url: string, user: string) =>
+      (await bare.inject({ method: 'GET', url, headers: { 'x-user': user } })).statusCode;
+    const refresher = vi.fn(async () => true);
+    routes.setCodeChangesRefresher(refresher);
+    try {
+      expect(await as('/api/dashboard/session/conv-1/changes', 'U_OTHER')).toBe(200);
+      expect(await as('/api/dashboard/session/conv-2/changes', 'U_OTHER')).toBe(404);
+      // A refresh from a reader who may not see the task is refused before the host is asked to collect.
+      expect(await as('/api/dashboard/session/conv-2/changes?refresh=1', 'U_OTHER')).toBe(404);
+      expect(refresher).not.toHaveBeenCalled();
+      expect(await as('/api/dashboard/session/conv-2/changes/file?repo=acme/web&path=src/a.ts', 'U_OTHER')).toBe(404);
+      expect(await as('/api/dashboard/session/conv-2/changes?refresh=1', 'U_OWNER')).toBe(200);
+      expect(refresher.mock.calls).toEqual([['conv-2']]);
+    } finally {
+      await bare.close();
+    }
   });
 
   it('the owner reads the list without patches; refresh=1 waits for the host and answers the new snapshot', async () => {

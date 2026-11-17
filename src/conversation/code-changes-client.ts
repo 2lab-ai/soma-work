@@ -23,7 +23,8 @@ var CHG_PR_STATE = { open: '열림', draft: '초안', merged: '머지됨', close
 var CHG_STATUS_MARK = { added: 'A', modified: 'M', deleted: 'D', renamed: 'R' };
 var CHG_STATUS_TITLE = { added: '추가된 파일', modified: '수정된 파일', deleted: '삭제된 파일', renamed: '이름이 바뀐 파일' };
 var CHG_EMPTY = '아직 변경 기록이 없습니다';
-var CHG_DENIED = '변경점은 세션 소유자만 볼 수 있어요';
+// A server on an older build still answers 403 to anyone but the owner and admins (this build: whoever sees the card).
+var CHG_DENIED = '이 작업의 변경점은 볼 수 없어요';
 var CHG_FAILED = '변경점을 불러오지 못했어요';
 var CHG_LOADING = '불러오는 중…';
 var CHG_SCOPE_ALL = '전체';
