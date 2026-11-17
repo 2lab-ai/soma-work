@@ -375,6 +375,104 @@ This replaces the broker's Cloudflare leases (`cf_lease_request` / `cf_api` / `c
 token-creating "forge" key that minted short-lived tokens behind a Slack card, the operator creates one scoped token
 per environment (for example Zone · DNS · Edit on the environment's zones) and stores it under `secrets/`.
 
+#### Several Cloudflare accounts, and a whole account (`cloudflare.accounts`)
+
+In short: an environment can hold several Cloudflare accounts, each with its own token, and an account entry with
+`"reach": "account"` lets `cf_api` do everything that token can do on that account — deploy a Worker, set its
+secrets, make a D1 database — except hand out a credential.
+
+```jsonc
+{
+  "server-tools": {
+    "dev2": {
+      "envUser": "env:acme-dev2",
+      "cloudflare": {
+        "accounts": {
+          "acme-dev2": {
+            "token": { "$secret": "cf-acme-dev2" },
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "reach": "account",
+            "write": true,
+            "zones": { "dev2.example": "0123456789abcdef0123456789abcdef" }
+          },
+          "acme-hq": { "token": { "$secret": "cf-acme-hq" }, "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "reach": "account", "write": true }
+        }
+      }
+    }
+  }
+}
+```
+
+`cf_api` takes `account`: one of the server's account names. It may be left out when the server has one account.
+Fields beside `accounts` are ignored (and logged), so a leftover top-level `token` never affects the server. The
+original one-account shape (token and zones at the top of `cloudflare`) is the account `default`, with
+`reach: "zones"`, and keeps every rule above. `list` shows each server's accounts (name, reach, writes), its GitHub
+repositories and its web login names — never a token. An account entry shows its `id` when it has one.
+
+An account entry with `"reach": "account"` needs its 32-hex account `id`. It reaches:
+
+- `GET /accounts/<id>`. The list of every account (`GET /accounts`) is not reachable: a page of it may not even
+  hold this account.
+- `/accounts/<id>/<part>/…` for these parts by default: `workers` (scripts, versions, deployments, secrets, routes,
+  domains, Durable Objects), `d1`, `storage` (KV), `r2`, `pages`, `queues`, `hyperdrive`, `vectorize`, `ai`,
+  `ai-gateway`, `workflows`, `images`, `rules` (lists), `browser-rendering`. Any other part only
+  when the entry lists it in `parts`; there is no "every part" switch. Listing a part is the operator's decision that
+  the environment may see what it answers, which for some parts (logpush destinations, monitor headers in
+  `load_balancers`, alerting) can include another system's credential. One `parts` list serves both levels: listing
+  `logpush` opens both the account's and its zones' logpush.
+- `GET /zones`. The tool adds `account.id=<id>` and `match=all`, refuses another value for either in `query`, and
+  cuts the answer down to this account's zones.
+- `/zones/<zone>/…` for a zone the entry lists, or one Cloudflare says belongs to this account. The tool asks
+  `GET /zones/<zone>` with the entry's token once per process before the first call (concurrent calls share the
+question; a refusal or a failed lookup is asked again next time). This keeps one token that sees
+  several accounts from acting on another account through this entry. Zone parts follow the same rule as
+  `reach: "zones"`: the default list above plus what `parts` lists.
+
+Whatever the reach, these are never reachable, listed in `parts` or not, because they would hand a model a credential
+to use outside server-tools, or change who is a member:
+
+- Account parts that issue credentials for other systems: `calls` (TURN keys, app secrets), `cfd_tunnel`, `tunnels`,
+  `warp_connector` (a tunnel's token, and a secret the caller can set), `secondary_dns` (TSIG secrets), `challenges`
+  (Turnstile secrets), `stream` (live-input and signing keys), `access`, `gateway`, `devices`, `zerotrust`, `teamnet`
+  (Zero Trust service tokens and device secrets), `mtls_certificates`, `magic` (IPsec pre-shared keys), `iam` (who
+  holds which permission), `pubsub` (broker credentials).
+- Any segment `tokens`, `token`, `service_tokens`, `members`, `memberships`, `temp-access-credentials`, `tails`
+  (a Worker's live log stream), `upload-token` or `assets-upload-session` (Pages and Workers asset upload JWTs),
+  `direct_upload` (Images upload URLs), `deploy_hooks` (a Pages hook ID alone triggers a deployment) or
+  `edge-preview`, in any case. A whole segment must match, so a Worker named `token-refresher` stays reachable.
+- Images signing keys (`images/v1/keys`).
+- `/user…`, `/memberships`, `/graphql` and any path outside `/accounts` and `/zones`.
+- Writes to the account or a zone itself: creating, deleting, pausing or renaming them.
+
+As a second line, a JSON answer's credential fields are replaced with `[redacted]` before it is handed back: `token`,
+`api_token`, `secret`, `client_secret`, `tunnel_secret`, `credentials_file`, `private_key`, `custom_key`,
+`streamKey`, `passphrase`, `secret_access_key`, and bearer URLs `uploadURL`, `upload_url`, `signed_url`,
+`exchange_url` (any case, at any depth; JSON nested deeper than 64 levels is replaced as a whole). Path segments may hold `@` for Workers AI model names
+(`/ai/run/@cf/meta/…`).
+
+Writes need the entry's `write: true` and go to the audit ledger as above. The ledger line also records `account`.
+`form` sends a multipart body instead of `body`, for example a Worker upload:
+`{"fields": {"metadata": "<JSON text>"}, "files": [{"name", "filename", "type", "text" | "base64"}]}`. A module name
+may sit in a folder (`chunks/x.js`), never above it. `base64` must be whole (4-character groups, padding only at the
+end). A form may hold
+up to 50 parts and 10 MiB. The ledger keeps one SHA-256 of the whole form (`formSha256`), not its content. A read whose
+answer is not JSON (a Worker's source, a KV value) comes back as text, token scrubbed, at most 200,000 characters
+(`truncated: true` when cut); an answer whose bytes are not UTF-8 (a binary KV value, an image) comes back as base64
+with `encoding: "base64"`, the token's bytes scrubbed and the bytes cut to 150,000 before encoding. An answer is
+read up to 8 MiB and no further (a large R2 object is cut there and marked `truncated`; JSON cut there is refused,
+since its fields could not be redacted — narrow it with `per_page`, a cursor or a smaller object); credential fields
+inside a text answer (`"secret": "…"`) are redacted as well;
+an empty successful read comes back as `""`. A zone the entry does not list is refused when Cloudflare says it is
+another account's, and also, with "could not confirm", when the lookup fails (no answer, a non-2xx status, an
+unreadable answer); nothing is sent and nothing is written to the ledger, and the next call asks again. A
+write whose answer is not JSON stays `unknown`.
+
+Each account's token is resolved on its own. An account whose token is not a `{"$secret": …}`, or whose secret file is
+missing, is left out alone; the server, its other accounts and its other tools stay. Give each token only what the
+environment should do: Cloudflare enforces the token's permissions on every call. Leave out API Tokens, Members,
+Billing and Registrar. An entry with `write` that can deploy a Worker can also deploy code that reads that Worker's
+secrets: give `write` only to an account the environment may run code on.
+
 ### Environment repository reads (`gh_read`, env-access WU5, #1213)
 
 `gh_read {server, path, query}` GETs one path of the environment's repository with the same `github.token` that

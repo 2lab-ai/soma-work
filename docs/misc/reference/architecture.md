@@ -156,7 +156,7 @@ updates inside its terminal-cleanup boundary, including setup failures.
 ### MCP (`src/mcp-manager.ts`, `src/mcp-config-builder.ts`, `packages/mcp-servers/`)
 - 내장 서버(등록 조건은 `McpConfigBuilder`가 SSOT): slack-mcp(스레드가 있는 모든 Slack 턴), agent, model-command, user-action, server-tools, permission, cron, mcp-tool-permission
 - user-action(`instruct_user`, Slack 컨텍스트가 있는 턴): 모델이 유저에게 시킬 일을 짧은 스크립트 + 실행 머신으로 넘긴다. 서버가 검증·`bash -n`·위험 규칙·비가역 판정을 하고, 호스트(`captureUserActions` 프로바이더 → `src/slack/user-action-host.ts`)가 `session.userActions`에 저장하고 전용 Slack 카드와 대시보드 "사용자 할 일" 섹션에 보인다. 스펙: [`docs/current/spec/15-user-action.md`](../../current/spec/15-user-action.md)
-- 환경 도구(server-tools `gh_read` · `gh_pr` · `login` · `cf_api`): config.json `server-tools.<server>` 절의 `envUser`·`skills`·`github`·`web.logins`·`cloudflare`가 환경을 정의하고, 토큰·비밀번호는 `{"$secret"}`라 어떤 모델도 읽지 않는다. 쓰기는 감사 원장(`env-audit.jsonl`, 의도 → done/failed/unknown)에 남는다. 비어드민은 그 환경 서버에서 그 환경 허용(4버튼 카드)이 있을 때만(`checkEnvironmentToolAccess`). 별도 브로커(devops-tools·devops-broker)는 #1214에서 제거됐다
+- 환경 도구(server-tools `gh_read` · `gh_pr` · `login` · `cf_api`): config.json `server-tools.<server>` 절의 `envUser`·`skills`·`github`·`web.logins`·`cloudflare`(이름 붙은 계정 여럿 `cloudflare.accounts`, 계정마다 토큰·`reach`)가 환경을 정의하고, 토큰·비밀번호는 `{"$secret"}`라 어떤 모델도 읽지 않는다. 쓰기는 감사 원장(`env-audit.jsonl`, 의도 → done/failed/unknown)에 남는다. 비어드민은 그 환경 서버에서 그 환경 허용(4버튼 카드)이 있을 때만(`checkEnvironmentToolAccess`). 별도 브로커(devops-tools·devops-broker)는 #1214에서 제거됐다
 - 외부 MCP는 config.json 기반 프로비저닝, GitHub 인증 주입
 
 ### Security (`src/sandbox/`, `somalib/permission/`, `src/dangerous-command-filter.ts`)
