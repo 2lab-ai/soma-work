@@ -54,6 +54,16 @@ describe('PhoneCallStore', () => {
     expect(seen).toEqual(['dialing', 'dialing', 'ended']);
   });
 
+  it('stamps every change with a strictly newer updatedAt', () => {
+    const store = new PhoneCallStore(dir);
+    const a = store.create(rec()).updatedAt ?? 0;
+    const b = store.update('CA1', (r) => (r.title = 'x'))?.updatedAt ?? 0;
+    const c = store.update('CA1', (r) => (r.title = 'y'))?.updatedAt ?? 0;
+    expect(a).toBeGreaterThan(0);
+    expect(b).toBeGreaterThan(a);
+    expect(c).toBeGreaterThan(b);
+  });
+
   it('caps the work log', () => {
     const store = new PhoneCallStore(dir);
     store.create(rec());
@@ -83,6 +93,50 @@ describe('PhoneCallStore', () => {
     });
     fs.writeFileSync(store.fileOf('CA1'), '{"id":');
     expect(new PhoneCallStore(dir).get('CA1')?.id).toBe('CA1');
+  });
+
+  it('a write that fails is kept and written again — the ended state is never lost', () => {
+    const store = new PhoneCallStore(dir);
+    store.create(rec({ id: 'CA9' }));
+    const calls = path.join(dir, 'calls');
+    fs.chmodSync(calls, 0o500); // the disk refuses writes for a moment
+    try {
+      store.update('CA9', (r) => {
+        r.status = 'ended';
+        r.endedStatus = 'completed';
+      });
+    } finally {
+      fs.chmodSync(calls, 0o700);
+    }
+    expect(JSON.parse(fs.readFileSync(store.fileOf('CA9'), 'utf-8')).status).not.toBe('ended');
+    store.flushAll(); // shutdown (or the retry timer) writes it
+    expect(JSON.parse(fs.readFileSync(store.fileOf('CA9'), 'utf-8')).status).toBe('ended');
+  });
+
+  it('keeps live calls in memory, not finished ones: a finished record is read from disk', () => {
+    const store = new PhoneCallStore(dir);
+    store.create(rec({ id: 'OLD1', status: 'ended' }));
+    store.create(rec({ id: 'LIVE1', status: 'active' }));
+    expect(store.list()).toHaveLength(2);
+    const file = store.fileOf('OLD1');
+    const onDisk = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    fs.writeFileSync(file, JSON.stringify({ ...onDisk, title: 'changed on disk' }));
+    expect(store.get('OLD1')?.title).toBe('changed on disk');
+    // A finished record can still be changed (its summary lands after the end) and is saved.
+    store.update('OLD1', (r) => (r.summary = '요약'));
+    expect(JSON.parse(fs.readFileSync(file, 'utf-8')).summary).toBe('요약');
+  });
+
+  it('closes calls a restart cut off: every record still dialing or active ends as interrupted', () => {
+    const before = new PhoneCallStore(dir);
+    before.create(rec({ id: 'A1', status: 'active', answeredAt: 1_000 }));
+    before.create(rec({ id: 'D1', status: 'dialing' }));
+    before.create(rec({ id: 'E1', status: 'ended', endedStatus: 'completed' }));
+    const after = new PhoneCallStore(dir);
+    expect(after.endUnfinished('interrupted', 61_000)).toBe(2);
+    expect(after.get('A1')).toMatchObject({ status: 'ended', endedStatus: 'interrupted', durationSec: 60 });
+    expect(after.get('D1')).toMatchObject({ status: 'ended', endedStatus: 'interrupted', durationSec: 0 });
+    expect(after.get('E1')?.endedStatus).toBe('completed');
   });
 
   it('summarizes for a card: the last four lines, no work log', () => {

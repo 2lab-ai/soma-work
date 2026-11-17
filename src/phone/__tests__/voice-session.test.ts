@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import type { VoiceDialog, VoiceDialogEvent, VoiceDialogTool } from '../../agent-runtime/voice-dialog';
 import type { PhoneCallRecord } from '../call-store';
 import type { CallSessionLike } from '../koreaaitel';
-import { OPENING_CUE } from '../phone-prompt';
+import { OPENING_CUE, SILENCE_CUE } from '../phone-prompt';
 import type { VoiceClient } from '../voice-client';
 import { CallRun, type CallRunPlan, PhoneVoiceSession } from '../voice-session';
 
@@ -316,6 +316,53 @@ describe('CallRun — conversation', () => {
   });
 });
 
+describe('CallRun — a quiet line', () => {
+  it('after the opening, a silent line gets one nudge, then is put down — even though the nudge was answered', async () => {
+    const { run, clock, dialog } = setup();
+    run.begin();
+    dialog().reply('안녕하세요, 소마예요.');
+    await settleAll();
+    const call = fakeCall();
+    run.attach(call as unknown as CallSessionLike);
+    clock.advance(1300); // released: the opening plays
+    await settleAll();
+    clock.advance(16_000);
+    expect(dialog().sent[dialog().sent.length - 1]).toBe(SILENCE_CUE);
+    dialog().reply('여보세요, 제 말 들리세요?');
+    await settleAll();
+    expect(call.hungUp).toBe(0);
+    clock.advance(31_000);
+    await settleAll();
+    expect(call.hungUp).toBe(1);
+  });
+
+  it('after the inbound greeting, a silent caller is nudged', async () => {
+    const { run, clock, dialog } = setup({
+      direction: 'inbound',
+      greeting: { text: '안녕하세요', frames: [Buffer.alloc(160), Buffer.alloc(160)] },
+    });
+    run.begin();
+    run.attach(fakeCall() as unknown as CallSessionLike);
+    clock.advance(16_000);
+    expect(dialog().sent).toEqual([SILENCE_CUE]);
+  });
+
+  it('a sound that transcribes to nothing does not leave the line waiting forever', async () => {
+    const { run, clock, dialog } = setup({ direction: 'inbound' }, ['']);
+    run.begin();
+    run.attach(fakeCall() as unknown as CallSessionLike);
+    dialog().reply('네, 말씀하세요.');
+    await settleAll();
+    clock.advance(1000);
+    run.feedAudio(quiet(300));
+    run.feedAudio(tone(500, 0.3)); // a cough: the timer is cleared while it lasts
+    run.feedAudio(quiet(800));
+    await settleAll();
+    clock.advance(16_000);
+    expect(dialog().sent[dialog().sent.length - 1]).toBe(SILENCE_CUE);
+  });
+});
+
 describe('CallRun — inbound', () => {
   it('plays the prepared greeting the moment the line opens', async () => {
     const { run, record, dialog } = setup({
@@ -349,6 +396,30 @@ describe('PhoneVoiceSession', () => {
     const call = fakeCall();
     await session.start(call as unknown as CallSessionLike);
     session.end('CA1');
+    expect(session.busy).toBe(false);
+  });
+
+  it('prepares an unprepared call once, however many times the SDK starts it', async () => {
+    const { run } = setup({ direction: 'inbound' });
+    let made = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const session = new PhoneVoiceSession(async () => {
+      made++;
+      await gate;
+      run.begin();
+      return run;
+    });
+    const call = fakeCall();
+    const a = session.start(call as unknown as CallSessionLike);
+    const b = session.start(call as unknown as CallSessionLike);
+    release();
+    await Promise.all([a, b]);
+    expect(made).toBe(1);
+    expect(session.busy).toBe(true);
+    await session.stop();
     expect(session.busy).toBe(false);
   });
 

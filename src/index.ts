@@ -1900,8 +1900,9 @@ async function start() {
     // Phone (.prd/30-phone-calls-spec.md): one line per server-tools environment with a `phone` section. Every
     // change of a call reaches the dashboards that may see it (its card, live); none configured → nothing starts.
     getPhoneCallStore().onChange((record) => broadcastPhoneCallUpdate(summarizeCall(record)));
+    // Not awaited: the lines open in the background, so a phone platform that is down never holds up the boot.
     try {
-      phoneService = await startPhoneService({
+      phoneService = startPhoneService({
         notifyOwner: async (userId, text) => {
           const dm = await app.client.conversations.open({ users: userId });
           const channel = dm.channel?.id;
@@ -1909,7 +1910,6 @@ async function start() {
         },
         dashboardUrl: () => effectiveViewerUrl() || undefined,
       });
-      if (phoneService.environments.length) timing('Phone lines connected');
     } catch (error) {
       logger.warn('Phone service not started (non-critical)', error);
     }

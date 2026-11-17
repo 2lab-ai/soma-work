@@ -24,7 +24,10 @@ class FakeAgent implements AgentLike {
   handlers: Record<string, (...a: any[]) => unknown> = {};
   incoming?: (call: IncomingCallLike) => void | Promise<void>;
   connected = false;
+  disconnects = 0;
   dialed: string[] = [];
+  /** The platform does not answer: connect() never settles (the SDK retries forever). */
+  static hang = false;
   constructor(readonly options: AgentOptions) {}
   on(event: string, handler: (...a: any[]) => unknown) {
     this.handlers[event] = handler;
@@ -35,10 +38,16 @@ class FakeAgent implements AgentLike {
     return this;
   }
   async connect() {
+    if (FakeAgent.hang) return new Promise<void>(() => undefined);
     this.connected = true;
   }
   async disconnect() {
+    this.disconnects++;
     this.connected = false;
+  }
+  /** The SDK starting a call's media: the session object the agent was made with. */
+  start(call: CallSessionLike) {
+    return (this.options.session as unknown as { start(c: CallSessionLike): Promise<void> }).start(call);
   }
   async call(to: string): Promise<CallSessionLike> {
     this.dialed.push(to);
@@ -91,10 +100,32 @@ function serverTools(phone: Record<string, unknown> = {}) {
   };
 }
 
+/** Timers the test fires by hand. */
+class Timers {
+  pending: { fn: () => void; ms: number; id: number }[] = [];
+  private seq = 0;
+  set = (fn: () => void, ms: number) => {
+    const id = ++this.seq;
+    this.pending.push({ fn, ms, id });
+    return id;
+  };
+  clear = (id: unknown) => {
+    this.pending = this.pending.filter((t) => t.id !== id);
+  };
+  /** Fire every timer of at least `ms`. */
+  fire(ms: number) {
+    const due = this.pending.filter((t) => t.ms >= ms);
+    this.pending = this.pending.filter((t) => t.ms < ms);
+    for (const t of due) t.fn();
+  }
+}
+
 function make(
   section: Record<string, unknown> | (() => Record<string, unknown>) = serverTools(),
   secret = () => 'sk_test',
+  over: Partial<PhoneServiceDeps> = {},
 ) {
+  const timers = new Timers();
   const agents: FakeAgent[] = [];
   const dialogs: SilentDialog[] = [];
   const notices: Array<[string, string]> = [];
@@ -141,9 +172,23 @@ function make(
       transcribe: async () => ({ text: '', ms: 0 }),
       speak: async () => ({ sampleRate: 8000, headersMs: 0, chunks: (async function* () {})() }),
     }),
+    setTimer: timers.set,
+    clearTimer: timers.clear,
+    connectTimeoutMs: 30,
+    ...over,
   };
-  return { svc: new PhoneService(deps), agents, dialogs, notices, released, store };
+  return { svc: new PhoneService(deps), agents, dialogs, notices, released, store, timers };
 }
+
+const incoming = (id: string, rejected: string[]): IncomingCallLike => ({
+  callId: id,
+  fromNumber: '01099998888',
+  toNumber: '07012345678',
+  callerIdRestricted: false,
+  reject: async (o) => {
+    rejected.push(`${id}:${o?.reason}`);
+  },
+});
 
 const request = (over: Record<string, unknown> = {}) => ({
   rid: 'abc123def456',
@@ -243,24 +288,17 @@ describe('PhoneService', () => {
     await svc.stop();
   });
 
-  it('inbound: busy while a call is up; else a record and run for the owner, and a notice when it ends', async () => {
+  it('inbound: the hook only screens; the call is set up when the SDK starts it, for the owner, with a notice at the end', async () => {
     const { svc, agents, store, notices } = make();
     await svc.start();
     const rejected: string[] = [];
-    const incoming = (id: string): IncomingCallLike => ({
-      callId: id,
-      fromNumber: '01099998888',
-      toNumber: '07012345678',
-      callerIdRestricted: false,
-      reject: async (o) => {
-        rejected.push(`${id}:${o?.reason}`);
-      },
-    });
-    await agents[0].incoming?.(incoming('IN1'));
+    await agents[0].incoming?.(incoming('IN1', rejected));
     expect(rejected).toEqual([]);
+    expect(store.get('IN1')).toBeUndefined(); // nothing slow inside the SDK's 5 s screening window
+    await agents[0].incoming?.(incoming('IN2', rejected));
+    expect(rejected).toEqual(['IN2:busy']); // the line is held for IN1
+    await agents[0].start(fakeCall('IN1', 'inbound'));
     expect(store.get('IN1')).toMatchObject({ direction: 'inbound', requester: 'U0OWNER', peerNumber: '01099998888' });
-    await agents[0].incoming?.(incoming('IN2'));
-    expect(rejected).toEqual(['IN2:busy']);
     store.update('IN1', (r) => r.transcript.push({ role: 'peer', text: '여보세요', at: 1 }));
     await agents[0].handlers.call_end(fakeCall('IN1', 'inbound', 'completed'));
     expect(notices).toHaveLength(1);
@@ -268,6 +306,135 @@ describe('PhoneService', () => {
     expect(notices[0][1]).toContain('010-9999-8888에서 온 전화');
     expect(notices[0][1]).toContain('https://soma.example/dashboard?phoneCall=IN1');
     await svc.stop();
+  });
+
+  it('a caller who hangs up while being screened does not keep the line', async () => {
+    const { svc, agents, timers } = make();
+    await svc.start();
+    await agents[0].incoming?.(incoming('IN1', []));
+    expect(await svc.dial(request() as never)).toMatchObject({ ok: false, error: expect.stringContaining('busy') });
+    timers.fire(10_000); // the SDK never started IN1 (it ended during screening)
+    expect(await svc.dial(request() as never)).toMatchObject({ ok: true });
+    await svc.stop();
+  });
+
+  it('one call at a time, also while the first is still being set up', async () => {
+    let letAuthGo!: () => void;
+    const authGate = new Promise<void>((r) => {
+      letAuthGo = r;
+    });
+    const { svc, agents } = make(serverTools(), undefined, {
+      dialogAuth: async ({ requester }) => {
+        await authGate;
+        return { env: {}, model: `m-${requester}`, release: async () => undefined };
+      },
+    });
+    await svc.start();
+    const first = svc.dial(request() as never);
+    const rejected: string[] = [];
+    await agents[0].incoming?.(incoming('IN9', rejected)); // arrives while the outbound call waits for auth
+    const second = await svc.dial(request({ rid: 'zzz999yyy888' }) as never);
+    letAuthGo();
+    expect(await first).toMatchObject({ ok: true });
+    expect(rejected).toEqual(['IN9:busy']);
+    expect(second).toMatchObject({ ok: false, error: expect.stringContaining('busy') });
+    expect(agents[0].dialed).toHaveLength(1);
+    await svc.stop();
+  });
+
+  it('an outbound call that never gets a final event is ended by a watchdog', async () => {
+    const { svc, store, released, timers } = make();
+    await svc.start();
+    await svc.dial(request() as never);
+    timers.fire(45_000);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(store.get('CA1')).toMatchObject({ status: 'ended', endedStatus: 'no-answer' });
+    expect(released).toEqual(['U0REQ']);
+    expect(await svc.dial(request({ rid: 'zzz999yyy888' }) as never)).toMatchObject({ ok: true });
+    await svc.stop();
+  });
+
+  it('a call ends once: call_failed then call_end for the same call give one summary and one notice', async () => {
+    let summaries = 0;
+    const { svc, agents, store, notices } = make(serverTools(), undefined, {
+      summarize: async () => {
+        summaries++;
+        return '요약';
+      },
+    });
+    await svc.start();
+    await agents[0].incoming?.(incoming('IN1', []));
+    await agents[0].start(fakeCall('IN1', 'inbound'));
+    store.update('IN1', (r) => r.transcript.push({ role: 'peer', text: '네', at: 1 }));
+    await Promise.all([
+      agents[0].handlers.call_failed(fakeCall('IN1', 'inbound', 'failed'), 'failed'),
+      agents[0].handlers.call_end(fakeCall('IN1', 'inbound', 'failed')),
+    ]);
+    expect(summaries).toBe(1);
+    expect(notices).toHaveLength(1);
+    await svc.stop();
+  });
+
+  it('an inbound call that ends while its run is being made gives its lease back', async () => {
+    let letAuthGo!: () => void;
+    const authGate = new Promise<void>((r) => {
+      letAuthGo = r;
+    });
+    const leases: string[] = [];
+    const { svc, agents } = make(serverTools(), undefined, {
+      dialogAuth: async () => {
+        await authGate;
+        leases.push('taken');
+        return { env: {}, model: 'm', release: async () => void leases.push('released') };
+      },
+    });
+    await svc.start();
+    await agents[0].incoming?.(incoming('IN1', []));
+    const starting = agents[0].start(fakeCall('IN1', 'inbound'));
+    await agents[0].handlers.call_failed(fakeCall('IN1', 'inbound', 'canceled'), 'canceled');
+    letAuthGo();
+    await starting;
+    expect(leases).toEqual(['taken', 'released']);
+    expect(await svc.dial(request() as never)).toMatchObject({ ok: true }); // the line is free
+    await svc.stop();
+  });
+
+  it('a restart closes the calls it cut off, and stop() closes the live ones', async () => {
+    const before = new PhoneCallStore(dir);
+    before.create({
+      id: 'OLD1',
+      env: '2lab-ai-dev',
+      direction: 'outbound',
+      ourNumber: '07012345678',
+      peerNumber: '01011112222',
+      title: 't',
+      status: 'active',
+      createdAt: 1,
+      transcript: [],
+      work: [],
+    });
+    const { svc, store } = make();
+    await svc.start();
+    expect(store.get('OLD1')).toMatchObject({ status: 'ended', endedStatus: 'interrupted' });
+    await svc.dial(request() as never);
+    await svc.stop();
+    expect(new PhoneCallStore(dir).get('CA1')).toMatchObject({ status: 'ended', endedStatus: 'interrupted' });
+  });
+
+  it('a platform that does not answer: start() returns, the attempt is dropped, the line is retried later', async () => {
+    FakeAgent.hang = true;
+    try {
+      const { svc, agents } = make();
+      await svc.start();
+      expect(svc.environments).toEqual([]);
+      expect(agents[0].disconnects).toBe(1); // the SDK's reconnect loop is stopped
+      FakeAgent.hang = false;
+      await svc.sync();
+      expect(svc.environments).toEqual(['2lab-ai-dev']);
+      await svc.stop();
+    } finally {
+      FakeAgent.hang = false;
+    }
   });
 
   it('follows the configuration: a key put in place later opens the line; a removed section closes it', async () => {

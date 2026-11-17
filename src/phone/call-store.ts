@@ -4,7 +4,11 @@
  * The daemon is the only writer. Every change goes through {@link PhoneCallStore.update}, which persists the record
  * with `atomicWriteJson` (a `.bak` of the last good generation) and tells the subscribers — the dashboard pushes
  * the card, server-tools reads the file. Writes are coalesced: a burst of updates during speech (a transcript line,
- * then its synthesis timing) costs one write per 250 ms per call, and the last state always lands.
+ * then its synthesis timing) costs one write per 250 ms per call, and the last state always lands: a write that
+ * fails stays pending and is tried again (and at shutdown).
+ *
+ * Memory holds only records that are live or not yet written; a finished, written record is read from disk when
+ * asked for, so the daemon does not grow with the call history.
  */
 
 import * as fs from 'node:fs';
@@ -60,6 +64,8 @@ export interface PhoneCallRecord {
   transcript: PhoneTranscriptLine[];
   work: PhoneWorkEvent[];
   summary?: string;
+  /** Stamped on every change, strictly increasing: a dashboard keeps the newer of two copies of a call. */
+  updatedAt?: number;
 }
 
 /** What a card needs: everything but the full transcript and the work log. */
@@ -73,6 +79,7 @@ export const WORK_EVENT_CAP = 500;
 export const TRANSCRIPT_CAP = 400;
 const TAIL_LINES = 4;
 const WRITE_DELAY_MS = 250;
+const WRITE_RETRY_MS = 5_000;
 const CALL_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 export function isCallId(id: unknown): id is string {
@@ -98,8 +105,11 @@ function validRecord(raw: unknown): raw is PhoneCallRecord {
 
 export class PhoneCallStore {
   private readonly dir: string;
+  /** Live records and records with changes not yet on disk. */
   private readonly records = new Map<string, PhoneCallRecord>();
   private readonly timers = new Map<string, NodeJS.Timeout>();
+  /** Ids whose last change is not on disk yet. */
+  private readonly dirty = new Set<string>();
   private readonly listeners = new Set<(record: PhoneCallRecord) => void>();
 
   constructor(phoneDir: string) {
@@ -118,6 +128,7 @@ export class PhoneCallStore {
   /** A new record (written at once). A second create of the same id replaces the first. */
   create(record: PhoneCallRecord): PhoneCallRecord {
     if (!isCallId(record.id)) throw new Error('phone call id is not a safe file name');
+    record.updatedAt = Math.max(Date.now(), (record.updatedAt ?? 0) + 1);
     this.records.set(record.id, record);
     this.flush(record.id);
     this.emit(record);
@@ -128,7 +139,9 @@ export class PhoneCallStore {
   update(id: string, mutate: (record: PhoneCallRecord) => void): PhoneCallRecord | undefined {
     const record = this.get(id);
     if (!record) return undefined;
+    this.records.set(id, record); // held until written
     mutate(record);
+    record.updatedAt = Math.max(Date.now(), (record.updatedAt ?? 0) + 1);
     if (record.work.length > WORK_EVENT_CAP) record.work.splice(0, record.work.length - WORK_EVENT_CAP);
     if (record.transcript.length > TRANSCRIPT_CAP)
       record.transcript.splice(0, record.transcript.length - TRANSCRIPT_CAP);
@@ -149,7 +162,7 @@ export class PhoneCallStore {
         return raw;
       });
       if (loaded) {
-        this.records.set(id, loaded);
+        if (loaded.status !== 'ended') this.records.set(id, loaded);
         return loaded;
       }
     } catch (err) {
@@ -177,18 +190,43 @@ export class PhoneCallStore {
     return out.sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
   }
 
+  /**
+   * End every record still dialing or active — calls a restart (or crash) cut off: no event will ever close them.
+   * Run once at start, before any line is open. Returns how many were closed.
+   */
+  endUnfinished(endedStatus: string, now = Date.now()): number {
+    let closed = 0;
+    for (const record of this.list({}, Number.MAX_SAFE_INTEGER)) {
+      if (record.status === 'ended') continue;
+      this.update(record.id, (r) => {
+        r.status = 'ended';
+        r.endedStatus = endedStatus;
+        r.endedAt = now;
+        r.durationSec = r.answeredAt ? Math.max(0, Math.round((now - r.answeredAt) / 1000)) : 0;
+        r.work.push({ kind: 'event', at: now, text: `통화 끝 (${endedStatus})` });
+      });
+      closed++;
+    }
+    return closed;
+  }
+
   /** Write every pending record now (shutdown). */
   flushAll(): void {
-    for (const id of [...this.timers.keys()]) this.flush(id);
+    for (const id of new Set([...this.timers.keys(), ...this.dirty])) this.flush(id);
   }
 
   private schedule(id: string, now: boolean): void {
+    this.dirty.add(id);
     if (now) {
       this.flush(id);
       return;
     }
     if (this.timers.has(id)) return;
-    const timer = setTimeout(() => this.flush(id), WRITE_DELAY_MS);
+    this.later(id, WRITE_DELAY_MS);
+  }
+
+  private later(id: string, ms: number): void {
+    const timer = setTimeout(() => this.flush(id), ms);
     timer.unref?.();
     this.timers.set(id, timer);
   }
@@ -198,12 +236,20 @@ export class PhoneCallStore {
     if (timer) clearTimeout(timer);
     this.timers.delete(id);
     const record = this.records.get(id);
-    if (!record) return;
+    if (!record) {
+      this.dirty.delete(id);
+      return;
+    }
     try {
       atomicWriteJson(this.fileOf(id), record, { validatePrevious: validRecord });
     } catch (err) {
-      logger.error('phone call record not saved', { id, error: (err as Error).message });
+      // Kept dirty and in memory: tried again shortly, and by flushAll() at shutdown.
+      logger.error('phone call record not saved — retrying', { id, error: (err as Error).message });
+      this.later(id, WRITE_RETRY_MS);
+      return;
     }
+    this.dirty.delete(id);
+    if (record.status === 'ended') this.records.delete(id);
   }
 
   private emit(record: PhoneCallRecord): void {

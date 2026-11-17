@@ -32,6 +32,18 @@ const REQUEST_POLL_MS = 1000;
 /** How often the configuration is read again (a line added, changed, removed, or its secret put in place). */
 export const CONFIG_SYNC_MS = 30_000;
 const DIAL_TIMEOUT_S = 45;
+/**
+ * An outbound call still not answered this long after the dial is ended here: the platform's final event can be
+ * lost (it races the dial's response, or arrives while the control connection reconnects) and is never resent.
+ */
+const DIAL_WATCHDOG_MS = (DIAL_TIMEOUT_S + 30) * 1000;
+/**
+ * An accepted inbound call holds the line until the SDK starts it. A caller who hangs up during screening is never
+ * started (and gets no end event), so the hold lapses after this.
+ */
+const INBOUND_HOLD_MS = 10_000;
+/** The SDK's connect() retries forever on network errors and 5xx; a line that is not up by then is retried later. */
+const CONNECT_TIMEOUT_MS = 15_000;
 
 export interface DialogAuth {
   env: Record<string, string | undefined>;
@@ -65,6 +77,10 @@ export interface PhoneServiceDeps {
   dashboardUrl?(): string | undefined;
   log(level: 'info' | 'warn' | 'error', message: string, data?: Record<string, unknown>): void;
   voiceClientFor?(cfg: PhoneEnvConfig): VoiceClient;
+  /** Timers (tests fire them by hand). */
+  setTimer?(fn: () => void, ms: number): unknown;
+  clearTimer?(handle: unknown): void;
+  connectTimeoutMs?: number;
 }
 
 interface PhoneLine {
@@ -76,6 +92,15 @@ interface PhoneLine {
   greeting?: { text: string; frames: Buffer[] };
   /** Lease of each call's dialog, released when the call ends. */
   auths: Map<string, DialogAuth>;
+  /**
+   * Calls being set up that have no run yet (an outbound dial waiting for auth or the platform; an inbound call
+   * accepted but not yet started). Taken synchronously, before the first await: the line takes one call at a time.
+   */
+  pending: number;
+  /** Accepted inbound calls not yet started by the SDK, with the timer that lets the hold lapse. */
+  holds: Map<string, unknown>;
+  /** Outbound calls not yet answered, with their watchdog. */
+  watchdogs: Map<string, unknown>;
 }
 
 export class PhoneService {
@@ -89,8 +114,26 @@ export class PhoneService {
   /** The `phone` section (JSON) each open line was opened with, and the last one that failed to open. */
   private readonly openedWith = new Map<string, string>();
   private readonly failedWith = new Map<string, string>();
+  /** Calls already finished: the SDK can report one call's end twice (call_failed and call_end). */
+  private readonly finished = new Set<string>();
+  private readonly setTimer: (fn: () => void, ms: number) => unknown;
+  private readonly clearTimer: (handle: unknown) => void;
 
-  constructor(private readonly deps: PhoneServiceDeps) {}
+  constructor(private readonly deps: PhoneServiceDeps) {
+    this.setTimer =
+      deps.setTimer ??
+      ((fn, ms) => {
+        const t = setTimeout(fn, ms);
+        t.unref?.();
+        return t;
+      });
+    this.clearTimer = deps.clearTimer ?? ((h) => clearTimeout(h as NodeJS.Timeout));
+  }
+
+  /** The line has a call up or being set up. */
+  private busy(line: PhoneLine): boolean {
+    return line.session.busy || line.pending > 0;
+  }
 
   /** Environments with a working phone line. */
   get environments(): string[] {
@@ -103,6 +146,9 @@ export class PhoneService {
    * {@link CONFIG_SYNC_MS} — no restart. Lines that fail are logged (once per section) and retried.
    */
   async start(): Promise<void> {
+    // Calls a restart cut off get no end event: close them before any line opens.
+    const closed = this.deps.store.endUnfinished('interrupted');
+    if (closed) this.deps.log('info', 'phone: closed calls cut off by a restart', { count: closed });
     await this.sync();
     const dir = phoneRequestsDir(this.deps.phoneDir);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -133,7 +179,7 @@ export class PhoneService {
       // Removed or changed: close (a line in a call waits for the next pass).
       for (const [env, line] of [...this.lines]) {
         if (wanted.get(env) === this.openedWith.get(env)) continue;
-        if (line.session.busy) continue;
+        if (this.busy(line)) continue;
         await this.closeLine(env, line);
       }
       for (const [env, json] of wanted) {
@@ -172,7 +218,22 @@ export class PhoneService {
     if (this.poll) clearInterval(this.poll);
     if (this.configPoll) clearInterval(this.configPoll);
     this.watcher?.close();
+    const now = Date.now();
     for (const line of this.lines.values()) {
+      // Calls still up end here, on disk, before the process goes: their end event would come too late.
+      for (const callId of line.session.callIds) {
+        this.finished.add(callId);
+        this.deps.store.update(callId, (r) => {
+          if (r.status === 'ended') return;
+          r.status = 'ended';
+          r.endedStatus = 'interrupted';
+          r.endedAt = now;
+          r.durationSec = r.answeredAt ? Math.round((now - r.answeredAt) / 1000) : 0;
+          r.work.push({ kind: 'event', at: now, text: '통화 끝 (interrupted)' });
+        });
+        line.session.end(callId);
+      }
+      for (const t of [...line.holds.values(), ...line.watchdogs.values()]) this.clearTimer(t);
       try {
         await line.agent.disconnect();
       } catch {
@@ -194,6 +255,9 @@ export class PhoneService {
       cfg,
       voice,
       auths: new Map(),
+      pending: 0,
+      holds: new Map(),
+      watchdogs: new Map(),
       session: undefined as unknown as PhoneVoiceSession,
       agent: undefined as unknown as AgentLike,
     };
@@ -211,10 +275,28 @@ export class PhoneService {
     line.agent.on('call_failed', (call: CallSessionLike, reason: string) =>
       this.finish(line, call, reason || 'failed'),
     );
-    await line.agent.connect();
+    await this.connect(line);
     this.lines.set(env, line);
     this.deps.log('info', `phone: ${env} connected`, { number: formatPhoneNumber(cfg.number) });
     if (cfg.inbound.enabled) void this.prepareGreeting(line);
+  }
+
+  /** connect(), bounded: past the limit the attempt is dropped (its reconnect loop stopped) and sync() retries. */
+  private async connect(line: PhoneLine): Promise<void> {
+    const limit = this.deps.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
+    let timer: unknown;
+    const timedOut = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), limit);
+    });
+    try {
+      const outcome = await Promise.race([line.agent.connect().then(() => 'up' as const), timedOut]);
+      if (outcome === 'timeout') {
+        await line.agent.disconnect().catch(() => undefined);
+        throw new Error(`the phone platform did not answer within ${Math.round(limit / 1000)} s`);
+      }
+    } finally {
+      clearTimeout(timer as NodeJS.Timeout);
+    }
   }
 
   // ── outbound ────────────────────────────────────────────────
@@ -262,7 +344,16 @@ export class PhoneService {
     const allow = line.cfg.outbound.allowTo;
     if (allow && !allow.includes(req.to))
       return { ok: false, error: `${formatPhoneNumber(req.to)} is not in ${req.env}'s outbound.allowTo` };
-    if (line.session.busy) return { ok: false, error: `phone line ${req.env} is busy with another call` };
+    if (this.busy(line)) return { ok: false, error: `phone line ${req.env} is busy with another call` };
+    line.pending++; // taken before the first await: nothing else gets the line while this call is set up
+    try {
+      return await this.placeCall(line, req);
+    } finally {
+      line.pending--;
+    }
+  }
+
+  private async placeCall(line: PhoneLine, req: PhoneCallRequest): Promise<PhoneCallRequestResult> {
     let auth: DialogAuth;
     try {
       auth = await this.deps.dialogAuth({ requester: req.requester, model: line.cfg.model });
@@ -314,6 +405,16 @@ export class PhoneService {
     const run = this.makeRun(line, call.callId, 'outbound', maxMinutes, systemPrompt, auth);
     line.session.register(run);
     run.begin();
+    line.watchdogs.set(
+      call.callId,
+      this.setTimer(() => {
+        line.watchdogs.delete(call.callId);
+        if (this.deps.store.get(call.callId)?.status !== 'dialing') return;
+        this.deps.log('warn', 'phone: no final event for an unanswered call — ending it', { callId: call.callId });
+        void call.hangup().catch(() => undefined);
+        void this.finish(line, call, 'no-answer');
+      }, DIAL_WATCHDOG_MS),
+    );
     this.deps.log('info', 'phone: dialing', { env: req.env, callId: call.callId });
     return { ok: true, callId: call.callId };
   }
@@ -345,26 +446,40 @@ export class PhoneService {
 
   // ── inbound ─────────────────────────────────────────────────
 
+  /**
+   * The SDK's screening hook: decide at once — it runs inside a 5 s window, and a caller who hangs up meanwhile is
+   * never started. An accepted call only holds the line; its run is made when the SDK starts it ({@link inboundRun}).
+   */
   private async screenIncoming(line: PhoneLine, call: IncomingCallLike): Promise<void> {
-    if (!line.cfg.inbound.enabled) {
-      await call.reject({ reason: 'rejected' });
-      return;
-    }
-    if (line.session.busy) {
-      await call.reject({ reason: 'busy' });
-      return;
-    }
-    const run = await this.prepareInbound(line, call.callId, call.fromNumber);
-    if (!run) await call.reject({ reason: 'busy' });
+    if (!line.cfg.inbound.enabled) return call.reject({ reason: 'rejected' });
+    if (this.busy(line)) return call.reject({ reason: 'busy' });
+    line.pending++;
+    line.holds.set(
+      call.callId,
+      this.setTimer(() => this.releaseHold(line, call.callId), INBOUND_HOLD_MS),
+    );
   }
 
-  /**
-   * The SDK started a call no run was registered for: screening took longer than the SDK's 5 s and it answered
-   * anyway. An inbound call gets its run now; anything else is put down.
-   */
+  /** Give back an accepted call's hold on the line. True when it was still held. */
+  private releaseHold(line: PhoneLine, callId: string): boolean {
+    const timer = line.holds.get(callId);
+    if (timer === undefined) return false;
+    this.clearTimer(timer);
+    line.holds.delete(callId);
+    line.pending--;
+    return true;
+  }
+
+  /** The SDK started a call with no run: an accepted inbound call gets its run now; anything else is put down. */
   private async inboundRun(line: PhoneLine, call: CallSessionLike): Promise<CallRun | null> {
     if (call.direction !== 'inbound' || !line.cfg.inbound.enabled) {
       this.deps.log('warn', 'phone: call started without a prepared run', { callId: call.callId });
+      return null;
+    }
+    const held = this.releaseHold(line, call.callId);
+    // The hold lapsed and another call took the line meanwhile: this one is put down.
+    if (!held && (line.pending > 0 || line.session.callIds.length > 0)) {
+      this.deps.log('warn', 'phone: inbound call started after its hold lapsed — line busy', { callId: call.callId });
       return null;
     }
     return this.prepareInbound(line, call.callId, call.fromNumber);
@@ -380,7 +495,11 @@ export class PhoneService {
       this.deps.log('warn', 'phone: inbound call refused — no model credentials', { error: (err as Error).message });
       return null;
     }
-    // Only a greeting made earlier: synthesizing now would outlast the SDK's 5 s screening window.
+    if (this.finished.has(callId)) {
+      await auth.release().catch(() => undefined); // the caller hung up while the run was being made
+      return null;
+    }
+    // Only a greeting made earlier: synthesizing now would keep the caller waiting in silence.
     const greeting = line.greeting;
     const systemPrompt = buildCallSystemPrompt({
       direction: 'inbound',
@@ -417,7 +536,6 @@ export class PhoneService {
       auth,
       greeting ?? undefined,
     );
-    line.session.register(run);
     run.begin();
     return run;
   }
@@ -450,13 +568,23 @@ export class PhoneService {
   // ── ending ──────────────────────────────────────────────────
 
   private async finish(line: PhoneLine, call: CallSessionLike, endedStatus: string): Promise<void> {
+    // The clean-up runs on every end event (it is idempotent): a run set up after the first one — an inbound call
+    // ended while its run was being made — still has its lease given back by the second.
+    const first = !this.finished.has(call.callId);
+    this.finished.add(call.callId);
+    if (this.finished.size > 1000) this.finished.delete(this.finished.values().next().value as string);
+    const watchdog = line.watchdogs.get(call.callId);
+    if (watchdog !== undefined) this.clearTimer(watchdog);
+    line.watchdogs.delete(call.callId);
+    this.releaseHold(line, call.callId);
     line.session.end(call.callId);
     const auth = line.auths.get(call.callId);
     line.auths.delete(call.callId);
     if (auth) await auth.release().catch(() => undefined);
+    if (!first) return; // the record, the summary and the owner's notice: once per call
     const now = Date.now();
+    if (this.deps.store.get(call.callId)?.status === 'ended') return;
     const record = this.deps.store.update(call.callId, (r) => {
-      if (r.status === 'ended') return;
       r.status = 'ended';
       r.endedStatus = endedStatus;
       r.endedAt = now;

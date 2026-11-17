@@ -293,6 +293,88 @@ describe('the call in the chat (convTurnsOf)', () => {
   });
 });
 
+describe('live state (.prd/31 §5)', () => {
+  type Live = {
+    ensurePhoneCalls(cid: string, force?: boolean): void;
+    onPhoneCallUpdate(cid: string, call: Record<string, unknown>): void;
+    phoneCallsOf(cid: string): Array<Record<string, unknown>>;
+  };
+  function live(fetchFn: (url: string) => Promise<unknown>) {
+    return load<Live>(['phoneNewer', 'phoneMerge', 'phoneCallsOf', 'ensurePhoneCalls', 'onPhoneCallUpdate'], [], {
+      _phoneCalls: Object.create(null),
+      fetch: fetchFn,
+      panelOpen: false,
+      panelConvId: '',
+      convPaintSoon: () => undefined,
+      toNum: (v: unknown) => Number(v) || 0,
+      _phoneView: null,
+      phoneRefetchSoon: () => undefined,
+    });
+  }
+
+  it('a list that arrives after a live update does not undo it (the call ended while the list loaded)', async () => {
+    let respond!: (v: unknown) => void;
+    const m = live(
+      () =>
+        new Promise((r) => {
+          respond = r;
+        }),
+    );
+    m.ensurePhoneCalls('c1');
+    m.onPhoneCallUpdate('c1', { id: 'CA1', status: 'ended', updatedAt: 5, createdAt: 1 });
+    respond({
+      ok: true,
+      json: async () => ({
+        calls: [
+          { id: 'CA1', status: 'dialing', updatedAt: 3, createdAt: 1 },
+          { id: 'CA0', status: 'ended', updatedAt: 1, createdAt: 0 },
+        ],
+      }),
+    });
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+    expect(m.phoneCallsOf('c1').map((c) => `${c.id}:${c.status}`)).toEqual(['CA0:ended', 'CA1:ended']);
+  });
+
+  it('a newer list wins over an older live update', async () => {
+    const m = live(async () => ({
+      ok: true,
+      json: async () => ({ calls: [{ id: 'CA1', status: 'ended', updatedAt: 9, createdAt: 1 }] }),
+    }));
+    m.onPhoneCallUpdate('c1', { id: 'CA1', status: 'active', updatedAt: 4, createdAt: 1 });
+    m.ensurePhoneCalls('c1', true);
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+    expect(m.phoneCallsOf('c1')[0].status).toBe('ended');
+  });
+
+  it('a reader who scrolled up the call is left where they were when a new line arrives', () => {
+    let html = 'v1';
+    let body = { scrollTop: 0, clientHeight: 100, scrollHeight: 1000 };
+    const inner: Record<string, unknown> = {
+      _html: '',
+      querySelector: () => body,
+      set innerHTML(_v: string) {
+        body = { scrollTop: 0, clientHeight: 100, scrollHeight: body.scrollHeight + 50 }; // a new element
+      },
+    };
+    const view = { id: 'CA1', tab: 'call' };
+    const m = load<{ renderPhoneDialog(): void }>(['renderPhoneDialog'], [], {
+      document: { getElementById: () => inner },
+      _phoneView: view,
+      phoneDialogHtml: () => html,
+    });
+    m.renderPhoneDialog();
+    expect(body.scrollTop).toBe(body.scrollHeight); // a fresh view follows the newest line
+    body.scrollTop = 200; // the reader scrolls up
+    html = 'v2';
+    m.renderPhoneDialog();
+    expect(body.scrollTop).toBe(200);
+    body.scrollTop = body.scrollHeight - body.clientHeight; // back at the bottom: follows again
+    html = 'v3';
+    m.renderPhoneDialog();
+    expect(body.scrollTop).toBe(body.scrollHeight);
+  });
+});
+
 describe('wiring (.prd/31 §5)', () => {
   it('the page has the call view, the panel load, the live push and the deep link', () => {
     expect(TEMPLATE).toContain('<dialog id="phone-call-dialog" class="phone-dialog"');

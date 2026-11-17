@@ -110,7 +110,7 @@ export interface StartPhoneServiceInput {
  * — or its secret put in place later — opens within 30 s), so it always runs; the SDK is loaded only when a line
  * opens.
  */
-export async function startPhoneService(input: StartPhoneServiceInput = {}): Promise<PhoneService> {
+export function startPhoneService(input: StartPhoneServiceInput = {}): PhoneService {
   const sdk = (): ReturnType<typeof loadKoreaAiTelSdk> => loadKoreaAiTelSdk();
   const service = new PhoneService({
     sdk: {
@@ -133,7 +133,12 @@ export async function startPhoneService(input: StartPhoneServiceInput = {}): Pro
     dashboardUrl: input.dashboardUrl,
     log: (level, message, data) => logger[level](message, data),
   });
-  await service.start();
-  if (service.environments.length) logger.info('phone: service started', { lines: service.environments });
+  // In the background: a phone platform that is slow or down must never hold up the bot's boot.
+  service
+    .start()
+    .then(() => {
+      if (service.environments.length) logger.info('phone: service started', { lines: service.environments });
+    })
+    .catch((err) => logger.warn('phone: service did not start', { error: (err as Error).message }));
   return service;
 }

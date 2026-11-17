@@ -109,8 +109,49 @@ describe('StreamResampler', () => {
     expect(Math.abs(total - 8000)).toBeLessThanOrEqual(2);
   });
 
-  it('passes the rate through when nothing changes', () => {
+  it('passes the rate through when nothing changes, holding a split sample for the next chunk', () => {
     const rs = new StreamResampler(8000, 8000);
-    expect(rs.push(Buffer.from([1, 0, 2, 0, 3])).length).toBe(4);
+    const a = rs.push(Buffer.from([1, 0, 2, 0, 3]));
+    const b = rs.push(Buffer.from([0, 4, 0]));
+    expect([...Buffer.concat([a, b])]).toEqual([1, 0, 2, 0, 3, 0, 4, 0]);
+  });
+
+  /** Samples of a 1 s 300 Hz sine at `rate`. */
+  function sine(rate: number): Buffer {
+    const b = Buffer.alloc(rate * 2);
+    for (let i = 0; i < rate; i++) b.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 300 * i) / rate) * 10000), i * 2);
+    return b;
+  }
+  const samples = (b: Buffer) => Array.from({ length: b.length / 2 }, (_, i) => b.readInt16LE(i * 2));
+  function chunked(src: Buffer, sizes: number[]): Buffer {
+    const rs = new StreamResampler(44100, 8000);
+    const out: Buffer[] = [];
+    let off = 0;
+    for (let k = 0; off < src.length; k++) {
+      const n = sizes[k % sizes.length];
+      out.push(rs.push(src.subarray(off, off + n)));
+      off += n;
+    }
+    return Buffer.concat(out);
+  }
+
+  it('gives the same samples whatever the chunk sizes — odd byte counts and split samples included', () => {
+    const src = sine(44100);
+    const whole = samples(new StreamResampler(44100, 8000).push(src));
+    // Network chunks: odd sizes split a sample across two chunks; 2010 and 8192 leave a fractional last interval.
+    for (const sizes of [[8192], [2010], [1001, 7, 333], [1, 2, 3]]) {
+      const got = samples(chunked(src, sizes));
+      expect(got.length).toBe(whole.length);
+      const worst = got.reduce((m, v, i) => Math.max(m, Math.abs(v - whole[i])), 0);
+      expect(worst, `chunks ${sizes.join('/')}`).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('keeps the waveform: the 8 kHz samples are the 44.1 kHz sine read at the new rate', () => {
+    const got = samples(new StreamResampler(44100, 8000).push(sine(44100)));
+    for (const i of [1, 17, 400, 7999]) {
+      const expected = Math.sin((2 * Math.PI * 300 * i) / 8000) * 10000;
+      expect(Math.abs(got[i] - expected)).toBeLessThan(60);
+    }
   });
 });

@@ -357,6 +357,37 @@ describe('task-visibility — board, live pushes and routes', () => {
     expect(turns(owner)).toEqual(['conv-priv', 'conv-pub']);
   });
 
+  it('the socket: a phone call’s update reaches its requester, the conversation owner and admins — not whoever else instructed the thread', async () => {
+    sessions.get(keyOf('pub')).currentInitiatorId = 'U_OTHER';
+    const other = await connect(AS.other);
+    const owner = await connect(AS.owner);
+    const admin = await connect(AS.admin);
+    const all = [other, owner, admin];
+    await vi.waitFor(() => all.forEach((c) => expect(c.messages.length).toBeGreaterThan(0)));
+    const call = {
+      id: 'CA1',
+      env: 'e',
+      direction: 'outbound',
+      ourNumber: '07000000000',
+      peerNumber: '01000000000',
+      title: 't',
+      status: 'active',
+      createdAt: 1,
+      requester: 'U_REQ',
+      conversationId: 'conv-pub',
+      tail: [{ role: 'peer', text: 'private words', at: 1 }],
+      lines: 1,
+    };
+    dashboard.broadcastPhoneCallUpdate(call as any);
+    dashboard.broadcastPhoneCallUpdate({ ...call, id: 'CA2', requester: 'U_OTHER', conversationId: undefined } as any);
+    await flushAll(all);
+    const calls = (c: { messages: any[] }) =>
+      c.messages.filter((m) => m.type === 'phone_call_update').map((m) => m.call.id);
+    expect(calls(other)).toEqual(['CA2']); // only the call they asked for
+    expect(calls(owner)).toEqual(['CA1']);
+    expect(calls(admin)).toEqual(['CA1', 'CA2']);
+  });
+
   it('a private task with no live session (archived) is read from its record: 404 to a stranger, its owner reads it', async () => {
     CONVERSATIONS.set('conv-gone', conversation('gone', 'C_PRIV'));
     try {

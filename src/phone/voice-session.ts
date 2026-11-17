@@ -122,7 +122,7 @@ export class CallRun {
 
   /** The other side answered: the call's media is up. */
   attach(call: CallSessionLike): void {
-    if (this.ended) return;
+    if (this.ended || this.call) return;
     this.call = call;
     this.answered = true;
     const at = this.now();
@@ -135,6 +135,7 @@ export class CallRun {
       if (this.plan.greeting) {
         this.addAgentLine(this.plan.greeting.text);
         for (const f of this.plan.greeting.frames) this.sendFrame(f);
+        this.armSilenceIfIdle();
       } else {
         this.sendToDialog(INBOUND_CUE);
       }
@@ -152,7 +153,9 @@ export class CallRun {
     const pcm = this.deps.ulawToPcm16(ulaw);
     for (const ev of this.vad.push(pcm, this.agentSpeaking())) {
       if (ev.type === 'speech_start') {
+        // The other side is talking: no silence timer, and the next quiet spell starts with a fresh nudge.
         this.clearSilence();
+        this.silenceNudged = false;
         if (this.released && this.agentSpeaking()) this.bargeIn();
       } else if (ev.type === 'utterance') {
         const first = this.peerUtterances++ === 0;
@@ -294,6 +297,7 @@ export class CallRun {
     const peer = this.heldPeer.filter((t) => !isBareGreeting(t));
     this.heldPeer = [];
     if (peer.length) this.sendToDialog(peer.join(' '));
+    else this.armSilenceIfIdle();
   }
 
   private bargeIn(): void {
@@ -328,11 +332,15 @@ export class CallRun {
       ms = t.ms;
     } catch (err) {
       this.fail('stt', err);
+      this.armSilenceIfIdle();
       return;
     }
     if (this.ended) return;
     this.work({ kind: 'stt', at, text, ms, audioMs });
-    if (!text) return;
+    if (!text) {
+      this.armSilenceIfIdle(); // a cough or line noise: nothing for the model, but the line is quiet again
+      return;
+    }
     this.deps.update((r) => {
       r.transcript.push({ role: 'peer', text, at });
     });
@@ -343,7 +351,10 @@ export class CallRun {
     }
     if (this.hangupRequested) return;
     // The other side's "여보세요" as it picks up is heard and logged, but it is not a turn: the opening answers it.
-    if (first && this.plan.direction === 'outbound' && isBareGreeting(text)) return;
+    if (first && this.plan.direction === 'outbound' && isBareGreeting(text)) {
+      this.armSilenceIfIdle();
+      return;
+    }
     this.sendToDialog(text);
   }
 
@@ -406,6 +417,8 @@ export class CallRun {
           if (this.hangupRequested) {
             this.dropAfterHangup = true;
             this.finishWhenQuiet();
+          } else {
+            this.armSilenceIfIdle(); // a turn that said nothing; one that did arms it when its speech ends
           }
           break;
         }
@@ -469,9 +482,19 @@ export class CallRun {
     }, TIME_UP_GRACE_MS);
   }
 
+  /** Arm the silence timer unless the agent is still speaking or thinking (they arm it when they finish). */
+  private armSilenceIfIdle(): void {
+    if (this.ended || this.speaking || this.queue.length || this.generating) return;
+    this.armSilence();
+  }
+
+  /**
+   * The line went quiet after the agent: nudge the dialog after {@link SILENCE_NUDGE_MS}; if the line is still quiet
+   * after the nudge was answered, twice that and put the phone down. Only the other side's speech resets the nudge.
+   */
   private armSilence(): void {
     this.clearSilence();
-    if (!this.released || this.hangupRequested) return;
+    if (!this.released || this.hangupRequested || this.ended) return;
     const wait = Math.max(0, this.playEndAt - this.now()) + SILENCE_NUDGE_MS * (this.silenceNudged ? 2 : 1);
     this.silenceTimer = this.later(() => {
       if (this.ended || this.vad.speaking || this.generating) return;
@@ -491,7 +514,6 @@ export class CallRun {
       this.timers.delete(this.silenceTimer);
       this.silenceTimer = null;
     }
-    this.silenceNudged = false;
   }
 
   // ── bookkeeping ─────────────────────────────────────────────
@@ -524,6 +546,8 @@ export class CallRun {
  */
 export class PhoneVoiceSession implements SessionLike {
   private readonly runs = new Map<string, CallRun>();
+  /** Calls being prepared by the fallback: a second start() of the same call waits for the first. */
+  private readonly starting = new Map<string, Promise<CallRun | null>>();
   private current: CallRun | null = null;
 
   constructor(private readonly fallback: (call: CallSessionLike) => Promise<CallRun | null>) {}
@@ -538,7 +562,12 @@ export class PhoneVoiceSession implements SessionLike {
 
   /** True while a call is up or being set up — the phone takes one call at a time. */
   get busy(): boolean {
-    return this.current !== null || this.runs.size > 0;
+    return this.current !== null || this.runs.size > 0 || this.starting.size > 0;
+  }
+
+  /** Calls with a run (live or being set up). */
+  get callIds(): string[] {
+    return [...this.runs.keys()];
   }
 
   end(callId: string): void {
@@ -560,7 +589,19 @@ export class PhoneVoiceSession implements SessionLike {
   async start(call: CallSessionLike): Promise<void> {
     let run = this.runs.get(call.callId);
     if (!run) {
-      const made = await this.fallback(call);
+      const inFlight = this.starting.get(call.callId);
+      if (inFlight) {
+        await inFlight; // the first start() attaches it
+        return;
+      }
+      const pending = this.fallback(call);
+      this.starting.set(call.callId, pending);
+      let made: CallRun | null = null;
+      try {
+        made = await pending;
+      } finally {
+        this.starting.delete(call.callId);
+      }
       if (!made) {
         await call.hangup().catch(() => undefined);
         return;

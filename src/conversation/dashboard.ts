@@ -3741,20 +3741,27 @@ export function broadcastConversationUpdate(conversationId: string, turn: any): 
 }
 
 /**
- * A phone call changed (.prd/31-phone-calls-architecture.md §5): its card's summary, never the work log. A call in
- * a conversation goes to that conversation's audience; a call with none (an inbound call) to its requester — the
- * line's owner — and admins.
+ * A phone call changed (.prd/31-phone-calls-architecture.md §5): its card's summary, never the work log. A call's
+ * words are a person's, so the audience is the same as the phone routes' (`canReadCall`): the call's requester, the
+ * owner of the conversation it was placed from, and admins — not whoever else instructed that thread.
  */
 export function broadcastPhoneCallUpdate(call: PhoneCallSummaryLike): void {
   if (wsClients.size === 0) return;
   try {
     const payload = JSON.stringify({ type: 'phone_call_update', conversationId: call.conversationId ?? null, call });
+    let ownerId: string | undefined;
     if (call.conversationId) {
-      sendToConversationAudience(call.conversationId, payload);
-      return;
+      for (const [, s] of getAllSessions()) {
+        if (s.conversationId === call.conversationId) {
+          ownerId = s.ownerId;
+          break;
+        }
+      }
     }
     for (const client of wsClients) {
-      if (!client.isAdmin && (!client.userId || client.userId !== call.requester)) continue;
+      const reader =
+        client.isAdmin || (!!client.userId && (client.userId === call.requester || client.userId === ownerId));
+      if (!reader) continue;
       try {
         client.send(payload);
       } catch {
@@ -24317,7 +24324,23 @@ function phoneCallsOf(cid) {
   var c = cid ? _phoneCalls[cid] : null;
   return c && c.list ? c.list : [];
 }
-// The conversation's calls, fetched when its panel opens and kept fresh by phone_call_update.
+// Two copies of one call: a is at least as new as b (the server stamps every change).
+function phoneNewer(a, b) {
+  return toNum(a && a.updatedAt) >= toNum(b && b.updatedAt);
+}
+// The list with this copy of a call in it — unless the list already holds a newer copy.
+function phoneMerge(list, call) {
+  var cur = null;
+  var out = (list || []).filter(function(x) {
+    if (x && x.id === call.id) { cur = x; return false; }
+    return !!x;
+  });
+  out.push(cur && !phoneNewer(call, cur) ? cur : call);
+  out.sort(function(a, b) { return toNum(a.createdAt) - toNum(b.createdAt); });
+  return out;
+}
+// The conversation's calls, fetched when its panel opens and kept fresh by phone_call_update. A push that lands
+// while the list loads stays: the list is merged copy by copy, the newer of each call winning.
 function ensurePhoneCalls(cid, force) {
   if (!cid) return;
   var c = _phoneCalls[cid];
@@ -24328,8 +24351,10 @@ function ensurePhoneCalls(cid, force) {
   fetch('/api/dashboard/session/' + encodeURIComponent(cid) + '/phone-calls')
     .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
     .then(function(data) {
+      var list = Array.isArray(data && data.calls) ? data.calls : [];
+      (entry.list || []).forEach(function(x) { if (x && x.id) list = phoneMerge(list, x); });
+      entry.list = list;
       entry.state = 'ok';
-      entry.list = Array.isArray(data && data.calls) ? data.calls : [];
       if (panelOpen && panelConvId === cid) convPaintSoon();
     })
     .catch(function() { entry.state = 'error'; });
@@ -24339,10 +24364,7 @@ function onPhoneCallUpdate(cid, call) {
   if (!call || !call.id) return;
   if (cid) {
     var c = _phoneCalls[cid] || (_phoneCalls[cid] = { state: 'ok', list: [] });
-    var list = (c.list || []).filter(function(x) { return x && x.id !== call.id; });
-    list.push(call);
-    list.sort(function(a, b) { return toNum(a.createdAt) - toNum(b.createdAt); });
-    c.list = list;
+    c.list = phoneMerge(c.list, call);
     if (panelOpen && panelConvId === cid) convPaintSoon();
   }
   if (_phoneView && _phoneView.id === call.id) phoneRefetchSoon();
@@ -24471,13 +24493,19 @@ function renderPhoneDialog() {
   if (!inner || !v) return;
   var html = phoneDialogHtml(v);
   if (inner._html === html) return;
+  var key = v.id + ':' + v.tab;
+  var fresh = inner._view !== key;
   var sc = inner.querySelector('.ph-dbody');
   var atEnd = !sc || sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 24;
+  var top = sc ? sc.scrollTop : 0;
   inner.innerHTML = html;
   inner._html = html;
+  inner._view = key;
   sc = inner.querySelector('.ph-dbody');
-  // A live call keeps the newest line in view, unless the reader scrolled up.
-  if (sc && atEnd) sc.scrollTop = sc.scrollHeight;
+  if (!sc) return;
+  // A new view, or a reader at the bottom, follows the newest line; a reader who scrolled up stays put.
+  if (fresh || atEnd) sc.scrollTop = sc.scrollHeight;
+  else sc.scrollTop = top;
 }
 // Deep link: /dashboard?phoneCall=<id> (the owner's notice of an inbound call) opens the call view.
 var _deepLinkPhoneCall = (function() {

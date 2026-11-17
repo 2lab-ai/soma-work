@@ -63,13 +63,7 @@ export function envPhone(server: string, section: unknown): PhoneEnvConfig {
   }
 }
 
-export interface PhoneCallArgs {
-  to: string;
-  title: string;
-  purpose: string;
-  scenario?: string;
-  maxMinutes: number;
-}
+export type PhoneCallArgs = Pick<PhoneCallRequest, 'to' | 'title' | 'purpose' | 'scenario' | 'maxMinutes'>;
 
 /** The tool's arguments, checked against the environment's own limits. */
 export function phoneCallArgs(cfg: PhoneEnvConfig, args: Record<string, unknown>): PhoneCallArgs {
@@ -154,14 +148,29 @@ interface CallRecordLike {
   [key: string]: unknown;
 }
 
-function readRecord(phoneDir: string, id: string): CallRecordLike | null {
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) return null;
+function parseRecord(file: string): CallRecordLike | null {
   try {
-    const v = JSON.parse(fs.readFileSync(path.join(phoneCallsDir(phoneDir), `${id}.json`), 'utf-8')) as CallRecordLike;
-    return v && typeof v === 'object' && typeof v.id === 'string' ? v : null;
+    const v = JSON.parse(fs.readFileSync(file, 'utf-8')) as CallRecordLike;
+    return v && typeof v === 'object' && typeof v.id === 'string' && typeof v.env === 'string' ? v : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * One call record, as the daemon's store reads it: the live file, else its last good copy (`.bak`, kept by the
+ * store's atomic writes) with a warning — a torn file must not make a call vanish from `phone_calls`.
+ */
+function readRecord(phoneDir: string, id: string): CallRecordLike | null {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) return null;
+  const file = path.join(phoneCallsDir(phoneDir), `${id}.json`);
+  const live = parseRecord(file);
+  if (live || !fs.existsSync(file)) return live;
+  const backup = parseRecord(`${file}.bak`);
+  process.stderr.write(
+    `[server-tools] phone call record ${id} is unreadable — ${backup ? 'read from its .bak' : 'and so is its .bak'}\n`,
+  );
+  return backup;
 }
 
 /** One call as the model reads it: no work log (it is for people), the transcript as lines. */
@@ -183,7 +192,10 @@ export async function readCalls(
   requester: string | undefined,
   isAdmin: boolean,
 ): Promise<unknown> {
-  const visible = (r: CallRecordLike) => r.env === server && (isAdmin || !requester || r.requester === requester);
+  // A call's words are its requester's: a session with no requester reads nothing (fail closed).
+  if (!requester && !isAdmin)
+    throw new PhoneToolError('phone_calls: the session has no requester, so no call is visible');
+  const visible = (r: CallRecordLike) => r.env === server && (isAdmin || r.requester === requester);
   if (typeof args.call_id === 'string' && args.call_id) {
     const id = args.call_id;
     const wait = typeof args.wait_seconds === 'number' ? Math.max(0, Math.min(args.wait_seconds, MAX_WAIT_S)) : 0;

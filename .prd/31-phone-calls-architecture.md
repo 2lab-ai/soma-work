@@ -63,6 +63,23 @@ Status: in-progress
 SDK는 세션 객체 하나를 모든 통화에 쓴다. 그래서 래퍼 하나가 통화마다 `CallRun`(상태 묶음)을 만들고, 통화 중에는
 다른 통화를 받지 않는다(`onIncoming` → `reject({reason:'busy'})`).
 
+**회선 예약 (한 번에 한 통화)** — `busy` = 등록된 run · 준비 중인 run · `line.pending`. `pending`은 첫 `await` 전에
+동기로 올린다: 발신은 `dial()` 진입 때(인증·`agent.call` 동안), 수신은 선별 훅이 받기로 정할 때.
+
+**수신 선별** — SDK의 `onIncoming` 훅은 5 s 안에 끝나야 하고, 그 사이 상대가 끊으면 SDK는 `start()`도 끝 이벤트도
+부르지 않는다. 그래서 훅은 **결정만** 한다(꺼짐 → rejected, 바쁨 → busy, 아니면 회선을 잡아 둠). run(인증 · 기록 ·
+대화)은 SDK가 `start()`할 때 만든다. 잡아 둔 회선은 10 s 안에 `start()`가 없으면 풀린다. 같은 통화의 `start()`가
+두 번 와도 run은 하나(진행 중 promise 공유, `attach`는 한 번).
+
+**끝** — 발신은 응답 전 최종 이벤트가 사라질 수 있다(다이얼 응답과 경합, control WS 재연결 중 — 재전송 없음).
+`dial` 뒤 75 s(45 s 다이얼 + 30 s) 동안 받지 않은 통화는 워치독이 `no-answer`로 끝낸다. `call_failed`와
+`call_end`가 한 통화에 둘 다 올 수 있어 `finish()`는 통화마다 한 번만(요약 · 소유자 DM 한 번).
+
+**재시작** — 시작 때 `dialing`/`active`로 남은 기록을 `interrupted`로 닫는다(끝 이벤트가 다시 오지 않는다). `stop()`은
+살아 있는 통화를 디스크에 먼저 닫고 연결을 끊는다. 회선 연결(`connect()`)은 SDK가 네트워크 오류 · 5xx에 영원히
+재시도하므로 15 s 상한 — 넘으면 끊고(재연결 루프 정지) 30 s 설정 동기화가 다시 연다. 데몬 부팅은 전화 서비스를
+기다리지 않는다(백그라운드 시작).
+
 1. **듣기** — `feedAudio(ulaw)` → `ulawToPcm16` → `EnergyVad.push(pcm, agentSpeaking)`.
    - `speech_start`이고 에이전트가 말하는 중이면 끼어들기(§3.4).
    - `utterance` → WAV(8 kHz) → `POST /api/stt`(language ko) → 상대 전사 한 줄.
@@ -78,6 +95,10 @@ SDK는 세션 객체 하나를 모든 통화에 쓴다. 그래서 래퍼 하나�
    `inbound.greeting`을 기동 때 합성해 두고 받는 즉시 보낸다.
 6. **끊기** — `hang_up` 뒤 말하기 큐가 비고 `playEndAt`이 지나면 `callSession.hangup()`. `max_minutes`가 되면 작별 한
    문장을 합성해 보내고 끊는다. 통화가 끝나면 입력 스트림을 닫고(CLI 종료) 리스를 반납한다.
+7. **조용한 회선** — 에이전트가 말을 마치고(첫 마디 · 수신 인사 · 아무 말 없는 턴 · 받아쓰기가 빈 소리 포함) 15 s
+   조용하면 대화에 한 번 재촉하고, 그 답 뒤에도 30 s 조용하면 끊는다. 재촉 횟수는 **상대가 말할 때만** 초기화된다.
+8. **리샘플** — HTTP 청크는 샘플(2바이트) 경계에서 끝나지 않는다: 남은 1바이트는 다음 청크 앞에 붙인다. 청크
+   마지막 소수 구간까지 보간한다(청크로 나눠도 한 번에 넣은 것과 같은 샘플).
 
 ### 3.1 대화 모델 (`voice-dialog`)
 
@@ -111,6 +132,8 @@ SDK는 세션 객체 하나를 모든 통화에 쓴다. 그래서 래퍼 하나�
 
 - `ssh`가 없는 환경을 허용한다(`list`의 `ssh_host`는 `null`, ssh를 쓰는 도구는 "ssh 없음"으로 거절).
 - `apiKey`는 `{"$secret"}`만 받는다(아니면 그 `phone` 절을 버린다 — github · cloudflare와 같은 규칙).
+- server-tools는 `apiKey`를 **풀지 않는다**(자리표시 문자열로 바꿈) — 회선은 데몬이 쥔다. 키가 아직 저장소에 없어도
+  그 환경의 다른 도구(ssh · DB)가 빠지지 않는다.
 
 ### 4.2 요청 · 결과 파일 (`DATA_DIR/phone/requests/`)
 
@@ -118,6 +141,8 @@ SDK는 세션 객체 하나를 모든 통화에 쓴다. 그래서 래퍼 하나�
   conversationId }, createdAt }` — server-tools가 `atomicWriteJson`.
 - 데몬이 `<rid>.json` → `<rid>.claimed.json`으로 옮겨 한 번만 처리하고, `<rid>.result.json` = `{ ok, callId? , error? }`.
 - server-tools는 결과를 최대 20 s 기다린다. 데몬이 없으면 "phone service is not running"으로 실패, 요청 파일을 지운다.
+- 통화가 걸린 뒤 닫는 감사 줄을 못 써도 `callId`를 돌려준다(`warning` 포함) — 실패로 보이면 모델이 다시 걸 수 있다.
+- `phone_calls`: 요청자가 없는 세션은 아무 통화도 못 본다(fail closed). 기록 파일이 깨졌으면 `.bak`에서 읽는다.
 
 ### 4.3 통화 기록 (`DATA_DIR/phone/calls/<callId>.json`)
 
@@ -133,6 +158,7 @@ interface PhoneCallRecord {
   transcript: { role: 'agent' | 'peer'; text: string; at: number; interrupted?: boolean }[];
   work: PhoneWorkEvent[];   // 상한 500
   summary?: string;
+  updatedAt?: number;       // 바뀔 때마다 엄격히 증가 — 대시보드는 같은 통화의 두 사본 중 새 것을 남긴다
 }
 type PhoneWorkEvent =
   | { kind: 'instruction'; at; text }                          // 통화 지시(목적 · 시나리오)
@@ -161,13 +187,17 @@ type PhoneWorkEvent =
 | `GET /api/dashboard/session/:conversationId/phone-calls` | 그 대화의 통화 요약 목록 | 비공개 작업 게이트(onRoute)가 자동으로 붙는 경로 |
 | `GET /api/dashboard/session/:conversationId/phone-calls/:callId` | 통화 전체(전사 · 작업) | 같음 |
 | `GET /api/dashboard/phone-calls/:callId` | 대화 없는 통화(받은 전화) | 통화의 owner · 요청자 · 어드민 |
-| WS `phone_call_update` | `{ conversationId?, call: 요약 }` | 대화가 있으면 대화의 청중(`sendToConversationAudience`), 없으면 owner · 어드민 |
+| WS `phone_call_update` | `{ conversationId?, call: 요약 }` | REST와 같은 규칙: 요청자 · 대화 주인 · 어드민. 그 스레드에 지시만 한 다른 사람은 받지 않는다 |
 
 - 카드의 클릭은 요소 데이터(`data-phone-call` · `data-phone-cid`)로 `openPhoneCallEl(this)` — 인라인 핸들러에 이스케이프한 인자를 싣지 않는 페이지 규칙.
 - 카드: `convTurnsOf`가 `c.calls`를 답 턴의 첨부 칸에 시간 창으로 넣는다(`createdAt ∈ (이전 턴, 이 턴]`). 남은 최근
   통화는 마지막 턴에 붙는다. `convSlots`가 카드 HTML을 그린다.
 - 통화 보기: `<dialog id="phone-call-dialog">` — 머리글 + 탭(통화 = 말풍선 대화, 상대 왼쪽 · 에이전트 오른쪽, 위에 요약;
   작업 = 시간순 목록). 열린 동안 WS 갱신이 다시 읽어 그린다(0.5 s 묶음). `?phoneCall=<id>`로 바로 열린다.
+- 목록을 읽는 동안 온 WS 갱신은 덮이지 않는다: 응답과 캐시를 통화별로 합치고 `updatedAt`이 큰 쪽이 이긴다.
+- 위로 스크롤해 읽는 사람은 새 줄이 와도 그 자리; 맨 아래에 있거나 새로 연 보기는 최신 줄을 따라간다.
+- 저장소 메모리: 살아 있는 통화와 아직 디스크에 못 쓴 기록만 둔다. 끝나고 쓴 기록은 디스크에서 읽는다. 쓰기
+  실패는 dirty로 남아 5 s 뒤 · 종료 때 다시 쓴다.
 
 ## 6. 시험
 

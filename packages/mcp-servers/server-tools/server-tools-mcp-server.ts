@@ -157,6 +157,9 @@ function withSecretLogins(name: string, server: unknown): unknown {
   return { ...(server as Record<string, unknown>), web: { ...web, logins: kept } };
 }
 
+/** What server-tools keeps in place of a phone line's key: the daemon resolves the real one. */
+const PHONE_KEY_HELD_BY_DAEMON = '(held by the phone service)';
+
 function resolveServerSecrets(servers: Record<string, unknown>): ServerToolsConfig {
   const out: ServerToolsConfig = {};
   for (const [name, entry] of Object.entries(servers)) {
@@ -175,12 +178,17 @@ function resolveServerSecrets(servers: Record<string, unknown>): ServerToolsConf
       const { cloudflare: _dropped, ...rest } = server as Record<string, unknown>;
       server = rest;
     }
-    // The phone line's API key too (.prd/30 D9).
+    // The phone line's API key too (.prd/30 D9). server-tools never uses it — the daemon holds the line — so it is
+    // not resolved here: a key not yet in the store must not take the environment's other tools with it.
     const phone = (server as { phone?: { apiKey?: unknown } } | null)?.phone;
-    if (phone && typeof phone === 'object' && !isSecretRef(phone.apiKey)) {
-      configLogger.warn(`server "${name}": phone left out — phone.apiKey must be {"$secret": "<name>"}`);
-      const { phone: _dropped, ...rest } = server as Record<string, unknown>;
-      server = rest;
+    if (phone && typeof phone === 'object') {
+      const { phone: _phone, ...rest } = server as Record<string, unknown>;
+      if (!isSecretRef(phone.apiKey)) {
+        configLogger.warn(`server "${name}": phone left out — phone.apiKey must be {"$secret": "<name>"}`);
+        server = rest;
+      } else {
+        server = { ...rest, phone: { ...phone, apiKey: PHONE_KEY_HELD_BY_DAEMON } };
+      }
     }
     server = withSecretLogins(name, server);
     try {
@@ -1036,7 +1044,19 @@ export async function handlePhoneCall(args: Record<string, unknown>, phoneDir = 
       requester,
       context: phoneContextFromEnv(process.env.SOMA_PHONE_CONTEXT),
     });
-    appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'done', detail: { ...detail, callId: placed.callId } });
+    // The call is placed: from here on nothing may turn it into a failure (a retry would dial a second call).
+    let warning: string | undefined;
+    try {
+      appendAudit(process.env.SOMA_AUDIT_DIR, {
+        ...audit,
+        phase: 'done',
+        detail: { ...detail, callId: placed.callId },
+      });
+    } catch (err) {
+      warning = `the call is placed, but its audit line was not written: ${(err as Error).message}`;
+      configLogger.warn('phone_call: closing audit line not written', { callId: placed.callId, error: warning });
+    }
+    audit = undefined;
     const answer = {
       callId: placed.callId,
       status: 'dialing',
@@ -1044,6 +1064,7 @@ export async function handlePhoneCall(args: Record<string, unknown>, phoneDir = 
       title: call.title,
       maxMinutes: call.maxMinutes,
       next: 'The call runs on its own. Follow it with phone_calls {server, call_id, wait_seconds}; it ends with a transcript.',
+      ...(warning ? { warning } : {}),
     };
     return { content: [{ type: 'text' as const, text: JSON.stringify(answer) }] };
   } catch (err) {

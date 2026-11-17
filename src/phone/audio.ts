@@ -197,16 +197,24 @@ export function pcm16ToWav(pcm: Buffer, sampleRate: number): Buffer {
 export class StreamResampler {
   private pos = 0;
   private last: number | null = null;
+  /** A byte of a sample split across two chunks (HTTP chunks end anywhere, not on sample boundaries). */
+  private split: Buffer | null = null;
 
   constructor(
     private readonly fromRate: number,
     private readonly toRate: number,
   ) {}
 
-  push(pcm: Buffer): Buffer {
-    const n = Math.floor(pcm.length / 2);
+  push(chunk: Buffer): Buffer {
+    let pcm = this.split ? Buffer.concat([this.split, chunk]) : chunk;
+    this.split = null;
+    if (pcm.length % 2) {
+      this.split = Buffer.from(pcm.subarray(pcm.length - 1));
+      pcm = pcm.subarray(0, pcm.length - 1);
+    }
+    const n = pcm.length / 2;
     if (n === 0) return Buffer.alloc(0);
-    if (this.fromRate === this.toRate) return pcm.subarray(0, n * 2);
+    if (this.fromRate === this.toRate) return Buffer.from(pcm);
     const src = new Array<number>(n + (this.last === null ? 0 : 1));
     let offset = 0;
     if (this.last !== null) src[offset++] = this.last;
@@ -214,7 +222,9 @@ export class StreamResampler {
     const step = this.fromRate / this.toRate;
     const out: number[] = [];
     let p = this.pos;
-    while (p <= src.length - 2) {
+    // Every position with both neighbours in this chunk, the last fractional interval included; what is left
+    // starts the next chunk, whose index 0 is this chunk's last sample.
+    while (p < src.length - 1) {
       const i = Math.floor(p);
       const frac = p - i;
       out.push(Math.round(src[i] * (1 - frac) + src[i + 1] * frac));

@@ -133,6 +133,19 @@ describe('config', () => {
     expect(servers.find((s: { name: string }) => s.name === 'dev2')).toMatchObject({ ssh_host: 'dev2' });
   });
 
+  it('a phone key not yet in the secret store leaves the environment and its other tools in place', () => {
+    writeConfig({
+      mixed: { ssh: { host: 'mixed-host' }, phone: { ...PHONE_SECTION, apiKey: { $secret: 'not-yet' } } },
+    });
+    const { servers } = text(handleList() as never);
+    expect(servers.find((s: { name: string }) => s.name === 'mixed')).toMatchObject({
+      ssh_host: 'mixed-host',
+      phone: true,
+    });
+    // server-tools never holds the line's key: only the daemon resolves it.
+    expect(JSON.stringify(loadConfig()['2lab-ai-dev'])).not.toContain('sk_test_key');
+  });
+
   it('a host tool on a phone-only environment says there is no host', () => {
     expect(() => handleSshExec({ server: '2lab-ai-dev', command: 'uptime' })).toThrow(/no host to reach/);
   });
@@ -207,6 +220,20 @@ describe('phone_call', () => {
     expect(fs.existsSync(path.join(PHONE, 'requests'))).toBe(false);
   });
 
+  it('a call placed whose closing audit line cannot be written still returns its id', async () => {
+    startDaemon(() => {
+      fs.chmodSync(path.join(AUDIT, 'env-audit.jsonl'), 0o400); // the audit log turns read-only mid-call
+      return { ok: true, callId: 'CA77' };
+    });
+    try {
+      const r = text((await handlePhoneCall({ server: '2lab-ai-dev', to: '010-1234-5678', purpose: '확인' })) as never);
+      expect(r).toMatchObject({ callId: 'CA77', status: 'dialing' });
+      expect(r.warning).toMatch(/audit/);
+    } finally {
+      fs.chmodSync(path.join(AUDIT, 'env-audit.jsonl'), 0o600);
+    }
+  });
+
   it('withdraws the request when no daemon answers', async () => {
     await expect(
       requestCall(PHONE, { env: 'e', to: '01012345678', title: '', purpose: 'p', maxMinutes: 1, requester: 'U1' }, 200),
@@ -261,5 +288,23 @@ describe('phone_calls', () => {
   it('does not show another person’s call', async () => {
     writeCall('CA8', { requester: 'U999' });
     await expect(handlePhoneCalls({ server: '2lab-ai-dev', call_id: 'CA8' })).rejects.toThrow(/has no call CA8/);
+  });
+
+  it('a session with no requester reads no calls at all', async () => {
+    writeCall('CA1');
+    delete process.env.SOMA_REQUESTER;
+    await expect(handlePhoneCalls({ server: '2lab-ai-dev' })).rejects.toThrow(/no requester/);
+    await expect(handlePhoneCalls({ server: '2lab-ai-dev', call_id: 'CA1' })).rejects.toThrow(/no requester/);
+  });
+
+  it('reads a call whose file was torn from its last good copy', async () => {
+    writeCall('CA5');
+    const file = path.join(PHONE, 'calls', 'CA5.json');
+    fs.copyFileSync(file, `${file}.bak`);
+    fs.writeFileSync(file, '{"id": "CA5", "env": "2lab-');
+    const one = text((await handlePhoneCalls({ server: '2lab-ai-dev', call_id: 'CA5' })) as never);
+    expect(one.transcript).toHaveLength(2);
+    const list = text((await handlePhoneCalls({ server: '2lab-ai-dev' })) as never);
+    expect(list.calls.map((c: { id: string }) => c.id)).toContain('CA5');
   });
 });
