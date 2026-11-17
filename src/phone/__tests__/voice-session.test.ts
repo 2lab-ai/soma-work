@@ -337,7 +337,7 @@ describe('CallRun — a quiet line', () => {
     expect(call.hungUp).toBe(1);
   });
 
-  it('never nudges while the agent is still speaking a reply (the timer armed before that reply)', async () => {
+  it('never nudges while a later sentence of the same reply is still being spoken; nudges after it', async () => {
     let slow = false;
     let letGo!: () => void;
     const { run, clock, dialog } = setup({ direction: 'inbound' }, [], {
@@ -350,17 +350,20 @@ describe('CallRun — a quiet line', () => {
     });
     run.begin();
     run.attach(fakeCall() as unknown as CallSessionLike);
-    dialog().reply('네, 말씀하세요.');
-    await settleAll(); // spoken: the silence timer is armed
-    clock.advance(5_000);
-    slow = true; // the next sentence takes long to synthesize, as a long recap does
-    run.feedDtmf('1'); // a new turn that no speech of the caller started
-    dialog().reply('정리해 드릴게요. 연락처와 용건을 담당자에게 전하겠습니다.');
+    // The first sentence is spoken while the model is still writing: the queue drains and the timer is armed.
+    dialog().emit({ type: 'text_delta', text: '정리해 드릴게요. ' });
     await settleAll();
-    clock.advance(12_000); // past the timer armed before this reply
+    // The next sentence takes long to synthesize; the turn ends meanwhile (nothing is generating any more).
+    slow = true;
+    dialog().emit({ type: 'text_delta', text: '연락처와 용건을 담당자에게 그대로 전하겠습니다.' });
+    dialog().emit({ type: 'turn_end', isError: false });
+    await settleAll();
+    clock.advance(16_000); // past the timer armed after the first sentence
     expect(dialog().sent.filter((t) => t === SILENCE_CUE)).toEqual([]);
     letGo();
     await settleAll();
+    clock.advance(16_000); // the reply has played out: now the line is quiet
+    expect(dialog().sent.filter((t) => t === SILENCE_CUE)).toEqual([SILENCE_CUE]);
   });
 
   it('after the inbound greeting, a silent caller is nudged', async () => {

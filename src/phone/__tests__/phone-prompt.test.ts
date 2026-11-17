@@ -24,7 +24,10 @@ describe('buildCallSystemPrompt (.prd/30 D5)', () => {
     expect(p).toContain('hang_up');
     expect(p).toContain('AI 비서라고 사실대로');
     // Measured in the service harness: after "네 맞아요 … 감사합니다" the agent asked to confirm again and never hung up.
-    expect(p).toContain('같은 확인을 다시 묻지 않고');
+    expect(p).toContain('이미 답한 확인은 다시 묻지 않는다');
+    // … but a confirmation alone is no reason to hang up: only a met purpose and a closing caller are.
+    expect(p).toContain('목적을 이뤘고 상대가');
+    expect(p).toContain('목적이 남았으면 끊지 않는다');
     expect(p).toContain('통화 시간 한도: 5분');
     expect(p).toContain('2026년 11월 17일');
   });
