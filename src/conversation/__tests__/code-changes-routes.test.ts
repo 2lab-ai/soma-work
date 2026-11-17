@@ -176,11 +176,17 @@ describe('code changes API', () => {
     });
     const as = async (url: string, user: string) =>
       (await bare.inject({ method: 'GET', url, headers: { 'x-user': user } })).statusCode;
+    const refresher = vi.fn(async () => true);
+    routes.setCodeChangesRefresher(refresher);
     try {
       expect(await as('/api/dashboard/session/conv-1/changes', 'U_OTHER')).toBe(200);
       expect(await as('/api/dashboard/session/conv-2/changes', 'U_OTHER')).toBe(404);
+      // A refresh from a reader who may not see the task is refused before the host is asked to collect.
+      expect(await as('/api/dashboard/session/conv-2/changes?refresh=1', 'U_OTHER')).toBe(404);
+      expect(refresher).not.toHaveBeenCalled();
       expect(await as('/api/dashboard/session/conv-2/changes/file?repo=acme/web&path=src/a.ts', 'U_OTHER')).toBe(404);
-      expect(await as('/api/dashboard/session/conv-2/changes', 'U_OWNER')).toBe(200);
+      expect(await as('/api/dashboard/session/conv-2/changes?refresh=1', 'U_OWNER')).toBe(200);
+      expect(refresher.mock.calls).toEqual([['conv-2']]);
     } finally {
       await bare.close();
     }
