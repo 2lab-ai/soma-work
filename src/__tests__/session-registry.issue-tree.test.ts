@@ -230,9 +230,10 @@ describe('the session issue tree (host)', () => {
       { kind: 'pr', url: `${GH}/pull/12`, status: 'open', statusReadAt: now - 2_000, onlyIfPresent: true },
     ]);
     expect(tree(reg).find((n) => n.id === id(`${GH}/pull/12`))?.status).toBe('closed');
-    // A read that began after it (reopened): open.
+    // A read that began after the reconciler's read (1 s ago) but before its note was written (now): it reopens —
+    // only when the note carried its read time (stamped at the note's own time, this read would be refused).
     reg.noteIssueTree(key, [
-      { kind: 'pr', url: `${GH}/pull/12`, status: 'open', statusReadAt: now, onlyIfPresent: true },
+      { kind: 'pr', url: `${GH}/pull/12`, status: 'open', statusReadAt: now - 500, onlyIfPresent: true },
     ]);
     expect(tree(reg).find((n) => n.id === id(`${GH}/pull/12`))?.status).toBe('open');
   });
