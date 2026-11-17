@@ -7,7 +7,8 @@
  *      own issue) stands in;
  *   2. no PR is a root — its parent is an issue or a PR;
  *   3. every parent is a node of the tree and there is no cycle;
- *   4. at most ISSUE_TREE_MAX_NODES nodes — a new node past it is refused (the seed only ever replaces a node that left).
+ *   4. at most ISSUE_TREE_MAX_NODES nodes — a new node past it is refused. The seed takes a node's place (a removed one, or
+ *      in a full tree of PRs only the oldest host PR nothing depends on); when no PR can make room it is the one node over.
  * The model's placements (`placed: 'model'`) are never moved by the host.
  */
 import type {
@@ -158,6 +159,8 @@ export interface IssueTreeLinkInput {
   rel?: IssueTreeRelationsInput;
   /** When the read behind `rel` began: a relation from an older read than the node's is not applied. */
   relReadAt?: number;
+  /** When the read behind `status` began; absent = a read made as it is noted (`now`). */
+  statusReadAt?: number;
   /** The model's placement: a node to sit under, `null` for the root (issues), absent for the host to place it. */
   parent?: string | null;
 }
@@ -181,8 +184,17 @@ export function upsertIssueTreeLink(tree: SessionIssueTree, input: IssueTreeLink
   }
   if (existing) {
     if (input.title) existing.title = input.title;
-    // Merged is final (as on the card): a late or cached read of an earlier state does not undo it.
-    if (input.status && !(existing.kind === 'pr' && existing.status === 'merged')) existing.status = input.status;
+    // Merged is final (as on the card): a late or cached read of an earlier state does not undo it. Any other state
+    // follows the newest read: one that began before the node's last state read (a slower collect, a reused record)
+    // is not applied; a newer one is (a reopen too).
+    const statusAt = input.statusReadAt ?? now;
+    // A merge cannot be undone: a read that saw it merged is taken whenever it began (an older read can see it).
+    const merging = existing.kind === 'pr' && input.status === 'merged';
+    const newer = merging || existing.statusReadAt === undefined || statusAt >= existing.statusReadAt;
+    if (input.status && !(existing.kind === 'pr' && existing.status === 'merged') && newer) {
+      existing.status = input.status;
+      existing.statusReadAt = statusAt;
+    }
     if (input.label) existing.label = input.label;
     applyRelRead(existing, input.rel, input.relReadAt);
     if (pinned) {
@@ -201,7 +213,7 @@ export function upsertIssueTreeLink(tree: SessionIssueTree, input: IssueTreeLink
     url: input.url,
     ...(input.label ? { label: input.label } : {}),
     ...(input.title ? { title: input.title } : {}),
-    ...(input.status ? { status: input.status } : {}),
+    ...(input.status ? { status: input.status, statusReadAt: input.statusReadAt ?? now } : {}),
     ...(parent ? { parent } : {}),
     placed: pinned ? 'model' : 'default',
     addedAt: now,
@@ -257,6 +269,21 @@ export function addInternalIssue(
     addedAt: now,
   });
   return { ok: true, id };
+}
+
+/**
+ * Make room for the seed in a full tree: the oldest host-placed PR nothing depends on (no child, no `base` · `closes` ·
+ * `subOf` naming it) leaves. When every host PR has something on it, nothing is removed: the seed is the one node over
+ * the cap (`sanitizeIssueTree` keeps it), so no PR and no model placement is lost.
+ */
+function evictForSeed(tree: SessionIssueTree): void {
+  const dependedOn = new Set(
+    tree.nodes.flatMap((n) => [n.parent, n.rel?.base, n.rel?.subOf, ...(n.rel?.closes ?? [])]),
+  );
+  const out = tree.nodes
+    .filter((n) => n.kind === 'pr' && n.placed !== 'model' && !dependedOn.has(n.id))
+    .sort((a, b) => a.addedAt - b.addedAt)[0];
+  if (out) tree.nodes = tree.nodes.filter((n) => n !== out);
 }
 
 function firstSubIssue(tree: SessionIssueTree): IssueTreeNode | undefined {
@@ -366,11 +393,17 @@ export function rebalanceIssueTree(tree: SessionIssueTree, now: number): void {
   // A root issue, always (a PR is never a root): the seed when no other issue is one. A full tree takes no new seed —
   // the first issue the host put under a GitHub parent goes back to the root instead.
   if (!tree.nodes.some((n) => n.kind === 'issue' && !n.parent)) {
-    const lifted = retired ? undefined : tree.nodes.length >= ISSUE_TREE_MAX_NODES ? firstSubIssue(tree) : undefined;
+    const full = !retired && tree.nodes.length >= ISSUE_TREE_MAX_NODES;
+    const lifted = full ? firstSubIssue(tree) : undefined;
     if (lifted) {
       lifted.parent = undefined;
       lifted.placed = 'default';
-    } else tree.nodes.unshift(retired || newSeed(tree, now));
+    } else {
+      // Full and no issue at all (a stored tree of PRs only): the oldest PR the host placed gives way to the seed, so
+      // the tree stays within the cap and a save/load does not cut a node (G2).
+      if (full) evictForSeed(tree);
+      tree.nodes.unshift(retired || newSeed(tree, now));
+    }
     nodes = byId(tree);
   }
   // 3. PRs: under an issue they close, else the PR they are stacked on, else the representative issue.
@@ -500,9 +533,14 @@ export function sanitizeIssueTree(raw: unknown): SessionIssueTree | undefined {
       ...(typeof n.checkedAt === 'number' ? { checkedAt: n.checkedAt } : {}),
       ...(typeof n.triedAt === 'number' ? { triedAt: n.triedAt } : {}),
       ...(readAtOf(n.relReadAt) ? { relReadAt: readAtOf(n.relReadAt) } : {}),
+      ...(typeof n.statusReadAt === 'number' && Number.isFinite(n.statusReadAt)
+        ? { statusReadAt: n.statusReadAt }
+        : {}),
     });
   }
-  return { nodes: nodes.slice(0, ISSUE_TREE_MAX_NODES), nextInternal: safeCounter(r.nextInternal) };
+  // The cap, plus the seed when it is the one node over it (a full tree where no PR could make room for it).
+  const cap = ISSUE_TREE_MAX_NODES + (nodes.some((n) => n.placed === 'seed') ? 1 : 0);
+  return { nodes: nodes.slice(0, cap), nextInternal: safeCounter(r.nextInternal) };
 }
 
 /** A stored relation read-time record: numbers per known relation, nothing else. */

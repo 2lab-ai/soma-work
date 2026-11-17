@@ -263,6 +263,8 @@ export interface IssueTreeNode {
    * replace it. Each reader reads its own relations (the reconciler `closes`; the collect `closes` and `base`).
    */
   relReadAt?: IssueTreeRelationReadAt;
+  /** When the read behind `status` began: an older read (a slower collect, a reused record) does not replace it. */
+  statusReadAt?: number;
 }
 export type IssueTreeRelationReadAt = Partial<Record<keyof IssueTreeRelations, number>>;
 export interface SessionIssueTree {
@@ -274,7 +276,7 @@ export interface SessionIssueTree {
  * A node as GET_SESSION and the dashboard read it: the stored node (its relations included, so a preview rebuilt from
  * the view places nodes as the host does) without the host's read bookkeeping.
  */
-export type IssueTreeViewNode = Omit<IssueTreeNode, 'addedAt' | 'checkedAt' | 'triedAt' | 'relReadAt'>;
+export type IssueTreeViewNode = Omit<IssueTreeNode, 'addedAt' | 'checkedAt' | 'triedAt' | 'relReadAt' | 'statusReadAt'>;
 /** What the model (GET_SESSION) and the dashboard read: the nodes in the order they came, the seed's title filled in. */
 export interface IssueTreeView {
   nodes: IssueTreeViewNode[];

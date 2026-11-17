@@ -209,6 +209,8 @@ describe('createSessionPrReconciler (#833)', () => {
         url: 'https://github.com/a/b/pull/12',
         rel: { closes: ['https://github.com/a/b/issues/832', 'https://github.com/acme/other/issues/3'] },
         relReadAt: expect.any(Number),
+        status: 'open',
+        statusReadAt: expect.any(Number),
         onlyIfPresent: true,
       },
       {
@@ -216,9 +218,21 @@ describe('createSessionPrReconciler (#833)', () => {
         url: 'https://github.com/a/b/pull/13',
         rel: { closes: [] },
         relReadAt: expect.any(Number),
+        status: 'open',
+        statusReadAt: expect.any(Number),
         onlyIfPresent: true,
       },
     ]);
+    // G1: the state carries the read's start (the same as the relations'), on the tree entry and on the noted link.
+    const [entry] = (
+      noteTree.mock.calls[0] as unknown as [string, Array<{ relReadAt: number; statusReadAt: number }>]
+    )[1];
+    expect(entry.statusReadAt).toBe(entry.relReadAt);
+    const notedPrs = (h.deps.noteLinks as ReturnType<typeof vi.fn>).mock.calls
+      .flatMap((c) => c[1] as Array<{ type?: string; statusCheckedAt?: number }>)
+      .filter((l) => l.type === 'pr');
+    expect(notedPrs.length).toBeGreaterThan(0);
+    expect(notedPrs.every((l) => l.statusCheckedAt === entry.relReadAt)).toBe(true);
   });
 
   it('R9 — a reconcile that ends after its session was replaced writes nothing (review round 3, astra P1)', async () => {

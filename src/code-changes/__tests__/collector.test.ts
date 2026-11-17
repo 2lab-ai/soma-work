@@ -141,6 +141,28 @@ function checkout(over: Partial<CheckoutChanges> = {}): CheckoutChanges {
   };
 }
 
+describe('pr-changes — a merged record from before .prd/29 is read once for its closing refs (G4)', () => {
+  it('no closes stored: the detail is read again (files reused, not listed); the next collect reads nothing', async () => {
+    const merged = detail(1, { merged: true, merged_at: '2026-11-16T02:00:00Z', base_sha: 'b'.repeat(40) });
+    const first = await sessionPrChanges(['https://github.com/acme/web/pull/1'], START, [], prDeps({ 1: merged }));
+    // As stored before .prd/29: no closing refs, no relation read time.
+    const { closes: _c, relReadAt: _r, ...legacyRecord } = first[0];
+    const legacy = [legacyRecord];
+    const deps = prDeps({ 1: { ...merged, body: 'Closes #9' } });
+    const again = await sessionPrChanges(['https://github.com/acme/web/pull/1'], START, legacy, deps);
+    expect(deps.fetchPullDetail).toHaveBeenCalledTimes(1);
+    expect(deps.fetchPullFiles).not.toHaveBeenCalled();
+    expect(again[0]).toMatchObject({ state: 'merged', closes: ['https://github.com/acme/web/issues/9'] });
+    expect(again[0].files).toEqual(legacyRecord.files);
+    expect(typeof again[0].relReadAt).toBe('number');
+    // Read once: the record has its closing refs now, so it is reused as is.
+    const deps3 = prDeps({ 1: merged });
+    const third = await sessionPrChanges(['https://github.com/acme/web/pull/1'], START, again, deps3);
+    expect(deps3.fetchPullDetail).not.toHaveBeenCalled();
+    expect(third).toEqual(again);
+  });
+});
+
 describe('pr-changes — a failed files read is asked again (#1299 review)', () => {
   it('files failure → filesStale; the next collect with the same head asks again and clears it', async () => {
     const d = detail(4, { merged: true, merged_at: '2026-11-16T03:00:00Z' });

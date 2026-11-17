@@ -1,6 +1,6 @@
 # SSOT — issue-tree (세션 이슈 트리: 변경점의 PR 목록을 이슈 · PR 트리로)
 
-Status: done (T20–T28 → https://github.com/2lab-ai/soma-work/pull/1321, 머지 `5069eafe`, dev 실측 29 §9) · 작성 2026-11-16 · 기준 커밋 main `5fe1f0cf`
+Status: in-progress (라운드 2: T29–T32) · T20–T28 done → https://github.com/2lab-ai/soma-work/pull/1321 (머지 `5069eafe`, dev 실측 29 §9) · 작성 2026-11-16 · 기준 커밋 main `5fe1f0cf`
 스펙 = [`../29-session-issue-tree-spec.md`](../29-session-issue-tree-spec.md) · 드라이버 = [`loop.md`](loop.md) ·
 앞선 워크스트림 = [`../code-changes/ssot.md`](../code-changes/ssot.md)(SSOT_1), [`../detail-card/ssot.md`](../detail-card/ssot.md)(SSOT_2 · SSOT_3) — 같은 스레드
 
@@ -23,6 +23,12 @@ Status: done (T20–T28 → https://github.com/2lab-ai/soma-work/pull/1321, 머�
 충분히 리서치하고 구현하고 개선해줘
 ```
 
+**SSOT_5** (Z, 2026-11-16 23:32 UTC, 같은 스레드 — SSOT_4 최종 보고의 "다음 할 일" 줄을 그대로 지시)
+
+```
+G1–G4 후속 라운드: PR 상태 읽기 순서 · 꽉 찬 PR만의 트리 · 그려진 PR 줄 DOM 시험 · 옛 머지 PR closes 1회 재조회
+```
+
 ## SSOT-TASK-TREE
 
 - **T20** — 변경점 탭의 평평한 PR 목록을 없앤다 (SSOT_4 1, "현재의 단순한 PR 리스트 대체")
@@ -34,6 +40,10 @@ Status: done (T20–T28 → https://github.com/2lab-ai/soma-work/pull/1321, 머�
 - **T26** — 이슈 트리가 변경점 탭에 그려지고 접을 수 있다 (SSOT_4 2-6)
 - **T27** — 모델이 MCP로 트리를 스스로 갱신한다(작업 카드를 갱신하듯) (SSOT_4 2-7)
 - **T28** — 충분히 리서치하고, 구현하고, 개선한다 (SSOT_4 끝 줄)
+- **T29** — PR 상태도 읽은 순서를 따른다: 늦게 도착한 옛 읽기가 새 상태를 덮지 않는다. 더 새 읽기만 다시 연다 (SSOT_5, loop G1)
+- **T30** — 노드 200개가 PR뿐인 저장 트리를 다시 맞춰도 201번째가 생기지 않는다, 저장·불러오기 왕복에서 노드가 더 사라지지 않는다 (SSOT_5, G2)
+- **T31** — 그려진 PR 줄을 실제로 누르면 그 PR의 파일만 보인다(중첩 PR · 쌓인 PR), DOM 시험 (SSOT_5, G3)
+- **T32** — .prd/29 이전에 수집된 머지 PR(저장본에 `closes` 없음)은 PR 상세를 한 번만 다시 읽어 닫는 이슈를 채운다, 파일은 다시 받지 않는다 (SSOT_5, G4)
 
 ## 확정 스코프
 

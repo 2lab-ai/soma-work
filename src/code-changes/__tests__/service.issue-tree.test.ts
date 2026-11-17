@@ -37,6 +37,7 @@ describe('code-changes service → issue tree', () => {
         status: 'open',
         rel: { closes: ['https://github.com/acme/web/issues/9'], base: null },
         relReadAt: 7, // when this collect's reads began (its clock)
+        statusReadAt: 7, // the state comes from the same read (G1)
         onlyIfPresent: true,
       },
     ]);
@@ -272,5 +273,28 @@ describe('code-changes service → issue tree', () => {
     await flush();
     expect(h.pushCard).toHaveBeenCalled();
     expect(fetchIssue).toHaveBeenCalledWith('acme', 'web', 9);
+  });
+
+  it('G1: a record kept because GitHub did not answer carries its own older read time, not this collect’s', async () => {
+    let clock = 100;
+    const h = harness({ now: () => clock++, fetchIssue: async () => ({ state: 'open' }) });
+    await h.svc.refresh('conv1');
+    await flush();
+    const prNotes = () =>
+      h.note.mock.calls
+        .filter((c) => c[1][0]?.url.includes('/pull/'))
+        .map((c) => c[1][0] as { status?: string; statusReadAt?: number });
+    const first = prNotes()[0];
+    expect(first).toMatchObject({ status: 'open' });
+    clock = 300; // the next collect starts well after; GitHub does not answer it
+    h.fetchPullDetail.mockResolvedValue(undefined as never);
+    await h.svc.refresh('conv1');
+    await flush();
+    const second = prNotes()[1];
+    // The kept record's state goes out with the time its own read began — older than a reconciler read at 200 that saw
+    // it closed, so the tree keeps closed (the tree's rule is tested in issue-tree G1 and registry T5d).
+    expect(second.status).toBe('open');
+    expect(second.statusReadAt).toBe(first.statusReadAt);
+    expect(second.statusReadAt).toBeLessThan(200);
   });
 });

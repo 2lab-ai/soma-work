@@ -8,6 +8,7 @@
  *   T4  UPDATE_SESSION: parent on add, add_internal, move, remove; a refusal changes neither the tree nor the sequence
  *   T5  noteIssueTree: a PR's closing refs place it; a checked issue is not asked again; the PR stacked on another sits under it
  *   T5c a parent found by a read that began before the model removed it stays out
+ *   T5d a PR state from an older read landing late does not undo a newer one (G1)
  *   T6  the tree survives save / load
  */
 import fs from 'fs';
@@ -215,6 +216,26 @@ describe('the session issue tree (host)', () => {
       { kind: 'issue', url: `${GH}/issues/5`, provider: 'github', addedFor: `${GH}/issues/6`, readAt: Date.now() + 1 },
     ]);
     expect(parentOf(reg, `${GH}/issues/6`)).toBe(id(`${GH}/issues/5`));
+  });
+
+  it('T5d (G1): a noted link’s state carries its read time; a slower, older read landing after it does not undo it', () => {
+    const { reg, key } = setup();
+    const now = Date.now();
+    reg.noteSessionLinks('C1', '100.001', [ISSUE(5)], 'history');
+    reg.noteSessionLinks('C1', '100.001', [PR(12, { status: 'open', statusCheckedAt: now - 3_000 })], 'history');
+    // The reconciler read it closed (its read began 1 s ago)…
+    reg.noteSessionLinks('C1', '100.001', [PR(12, { status: 'closed', statusCheckedAt: now - 1_000 })], 'update');
+    // …then a collect that began 2 s ago lands with the open state it read: it stays closed.
+    reg.noteIssueTree(key, [
+      { kind: 'pr', url: `${GH}/pull/12`, status: 'open', statusReadAt: now - 2_000, onlyIfPresent: true },
+    ]);
+    expect(tree(reg).find((n) => n.id === id(`${GH}/pull/12`))?.status).toBe('closed');
+    // A read that began after the reconciler's read (1 s ago) but before its note was written (now): it reopens —
+    // only when the note carried its read time (stamped at the note's own time, this read would be refused).
+    reg.noteIssueTree(key, [
+      { kind: 'pr', url: `${GH}/pull/12`, status: 'open', statusReadAt: now - 500, onlyIfPresent: true },
+    ]);
+    expect(tree(reg).find((n) => n.id === id(`${GH}/pull/12`))?.status).toBe('open');
   });
 
   it('T6b: a noted link reaches sessions.json with its tree change, without another save', () => {

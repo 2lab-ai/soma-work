@@ -95,8 +95,9 @@ export async function sessionPrChanges(
     if (seen.size > MAX_SESSION_PRS) break;
     const old = prev.find((p) => p.id === ref.id);
     // A merged PR does not change — unless its files never arrived whole, or the budget dropped their patches. A closed
-    // one is asked again: it can be reopened, and merged later.
-    if (old && old.state === 'merged' && !old.filesStale && !old.patchesDropped) {
+    // one is asked again: it can be reopened, and merged later. A merged record from before .prd/29 (no `closes`) is
+    // read once more for its closing refs; its files are reused below (same head and base), not listed again (G4).
+    if (old && old.state === 'merged' && !old.filesStale && !old.patchesDropped && old.closes !== undefined) {
       out.push(old);
       continue;
     }
