@@ -35,6 +35,7 @@ import {
   repoRead,
 } from './env-github.js';
 import { defaultLoginFetch, LoginError, type LoginFetch, login, loginSpec } from './env-login.js';
+import { envPhone, PhoneToolError, phoneCallArgs, phoneContextFromEnv, readCalls, requestCall } from './env-phone.js';
 import { redactLogSecrets } from './redact-logs.js';
 
 const configLogger = new StderrLogger('server-tools:config');
@@ -92,7 +93,8 @@ interface ServerConfig {
    * the environment's own GitHub token and accounts. Its writes are audited under this name.
    */
   envUser?: string;
-  ssh: { host: string };
+  /** The host the shell-based tools reach. An environment with only a phone line has none. */
+  ssh?: { host: string };
   databases?: Record<string, DatabaseConfig>;
   /** The environment's GitHub token and what it may approve and merge (`gh_pr`). */
   github?: EnvGithubConfig;
@@ -103,6 +105,8 @@ interface ServerConfig {
   cloudflare?: EnvCloudflareConfig;
   /** The environment's web app accounts (`login`, WU3b): url, body (its password a `$secret`), where the session is. */
   web?: { logins?: Record<string, unknown> };
+  /** The environment's phone line (`phone_call` · `phone_calls`, .prd/30-phone-calls-spec.md): its key a `$secret`. */
+  phone?: Record<string, unknown>;
 }
 
 type ServerToolsConfig = Record<string, ServerConfig>;
@@ -158,6 +162,9 @@ function withSecretLogins(name: string, server: unknown): unknown {
   }
   return { ...(server as Record<string, unknown>), web: { ...web, logins: kept } };
 }
+
+/** What server-tools keeps in place of a phone line's key: the daemon resolves the real one. */
+const PHONE_KEY_HELD_BY_DAEMON = '(held by the phone service)';
 
 /**
  * An environment's Cloudflare tokens live in the secret store only, never in config.json (WU6, #1214). In the original
@@ -219,6 +226,18 @@ function resolveServerSecrets(servers: Record<string, unknown>): ServerToolsConf
       server = rest;
     }
     server = withSecretCloudflare(name, server);
+    // The phone line's API key too (.prd/30 D9). server-tools never uses it — the daemon holds the line — so it is
+    // not resolved here: a key not yet in the store must not take the environment's other tools with it.
+    const phone = (server as { phone?: { apiKey?: unknown } } | null)?.phone;
+    if (phone && typeof phone === 'object') {
+      const { phone: _phone, ...rest } = server as Record<string, unknown>;
+      if (!isSecretRef(phone.apiKey)) {
+        configLogger.warn(`server "${name}": phone left out — phone.apiKey must be {"$secret": "<name>"}`);
+        server = rest;
+      } else {
+        server = { ...rest, phone: { ...phone, apiKey: PHONE_KEY_HELD_BY_DAEMON } };
+      }
+    }
     server = withSecretLogins(name, server);
     try {
       out[name] = resolveSecretRefs(server, process.env.SOMA_SECRETS_DIR) as ServerConfig;
@@ -236,6 +255,14 @@ export function loadConfig(): ServerToolsConfig {
 
 export function resetConfigCache(): void {
   configCache.reset();
+}
+
+/** The host a shell-based tool reaches on `server` — an environment with only a phone line has none. */
+function hostOf(config: ServerToolsConfig, server: string): string {
+  const host = config[server]?.ssh?.host;
+  if (typeof host !== 'string' || host === '')
+    throw new Error(`Server ${server} has no host to reach (no ssh section)`);
+  return host;
 }
 
 // ── Response Helpers ──────────────────────────────────────
@@ -328,7 +355,7 @@ function resolveServerAndDb(server: string, database: string): { sshHost: string
   }
 
   return {
-    sshHost: config[server].ssh.host,
+    sshHost: hostOf(config, server),
     dbConfig: config[server].databases![database],
   };
 }
@@ -577,7 +604,8 @@ export function handleList() {
   const config = loadConfig();
   const servers = Object.entries(config).map(([name, srv]) => ({
     name,
-    ssh_host: srv.ssh?.host,
+    ssh_host: srv.ssh?.host ?? null,
+    ...(srv.phone ? { phone: true } : {}),
     databases: srv.databases
       ? Object.entries(srv.databases).map(([dbName, dbCfg]) => ({ name: dbName, type: dbCfg.type }))
       : [],
@@ -639,7 +667,7 @@ export function handleListService(args: Record<string, unknown>) {
     throw new Error(`Unknown server: ${server}`);
   }
 
-  const sshHost = config[server].ssh.host;
+  const sshHost = hostOf(config, server);
 
   let dockerArgs: string[];
   let source: string;
@@ -668,7 +696,7 @@ export function handleListStack(args: Record<string, unknown>) {
     throw new Error(`Unknown server: ${server}`);
   }
 
-  const sshHost = config[server].ssh.host;
+  const sshHost = hostOf(config, server);
   const output = runSshDocker(sshHost, ['docker', 'stack', 'ls', '--format', 'json'], server);
   const stacks = parseNdjson(output, 'docker stack ls');
 
@@ -751,7 +779,7 @@ export function handleLogs(args: Record<string, unknown>) {
     );
   }
 
-  const sshHost = config[server].ssh.host;
+  const sshHost = hostOf(config, server);
   const sshArgs: string[] = [sshHost];
 
   if (stack !== undefined) {
@@ -1077,6 +1105,104 @@ export async function handleGhPr(
   }
 }
 
+// ── phone_call · phone_calls: an environment's phone line (.prd/30-phone-calls-spec.md) ──
+
+function phoneServer(server: unknown): { name: string; config: ServerConfig } {
+  const config = loadConfig();
+  if (typeof server !== 'string' || !Object.keys(config).includes(server)) throw new Error(`Unknown server: ${server}`);
+  return { name: server, config: config[server] };
+}
+
+/**
+ * Dial a number on the environment's line. The daemon holds the line, so this hands it a request file and waits
+ * for the call id. A real call costs money and reaches a person: it needs a requester and is audited before and
+ * after, like the other environment writes. `phoneDir` is for tests.
+ */
+export async function handlePhoneCall(args: Record<string, unknown>, phoneDir = process.env.SOMA_PHONE_DIR) {
+  const env = phoneServer(args.server);
+  let audit: Omit<Parameters<typeof appendAudit>[1], 'phase'> | undefined;
+  let detail: Record<string, unknown> = {};
+  try {
+    const cfg = envPhone(env.name, env.config.phone);
+    const call = phoneCallArgs(cfg, args);
+    if (!phoneDir) throw new PhoneToolError('not dialed: the phone service is not configured (SOMA_PHONE_DIR)');
+    const requester = process.env.SOMA_REQUESTER;
+    if (!requester) throw new PhoneToolError('not dialed: the session has no requester to record');
+    audit = {
+      server: env.name,
+      ...(env.config.envUser ? { envUser: env.config.envUser } : {}),
+      requester,
+      tool: 'phone_call',
+      action: 'dial',
+    };
+    detail = {
+      to: call.to,
+      title: call.title,
+      maxMinutes: call.maxMinutes,
+      purposeSha256: createHash('sha256').update(call.purpose).digest('hex'),
+    };
+    try {
+      appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'intent', detail });
+    } catch (err) {
+      audit = undefined;
+      throw new PhoneToolError(`not dialed: ${(err as Error).message}`);
+    }
+    const placed = await requestCall(phoneDir, {
+      env: env.name,
+      ...call,
+      requester,
+      context: phoneContextFromEnv(process.env.SOMA_PHONE_CONTEXT),
+    });
+    // The call is placed: from here on nothing may turn it into a failure (a retry would dial a second call).
+    let warning: string | undefined;
+    try {
+      appendAudit(process.env.SOMA_AUDIT_DIR, {
+        ...audit,
+        phase: 'done',
+        detail: { ...detail, callId: placed.callId },
+      });
+    } catch (err) {
+      warning = `the call is placed, but its audit line was not written: ${(err as Error).message}`;
+      configLogger.warn('phone_call: closing audit line not written', { callId: placed.callId, error: warning });
+    }
+    audit = undefined;
+    const answer = {
+      callId: placed.callId,
+      status: 'dialing',
+      to: call.to,
+      title: call.title,
+      maxMinutes: call.maxMinutes,
+      next: 'The call runs on its own. Follow it with phone_calls {server, call_id, wait_seconds}; it ends with a transcript.',
+      ...(warning ? { warning } : {}),
+    };
+    return { content: [{ type: 'text' as const, text: JSON.stringify(answer) }] };
+  } catch (err) {
+    const message = err instanceof PhoneToolError ? err.message : `phone_call failed on ${env.name}`;
+    if (audit) {
+      try {
+        appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'failed', detail: { ...detail, error: message } });
+      } catch {
+        // The intent is on the ledger; the failure is reported to the caller either way.
+      }
+    }
+    throw new Error(message);
+  }
+}
+
+/** The environment's recent calls, or one call with its transcript (optionally waiting for it to end). */
+export async function handlePhoneCalls(args: Record<string, unknown>, phoneDir = process.env.SOMA_PHONE_DIR) {
+  const env = phoneServer(args.server);
+  try {
+    envPhone(env.name, env.config.phone);
+    if (!phoneDir) throw new PhoneToolError('the phone service is not configured (SOMA_PHONE_DIR)');
+    const answer = await readCalls(phoneDir, env.name, args, process.env.SOMA_REQUESTER, false);
+    return { content: [{ type: 'text' as const, text: JSON.stringify(answer) }] };
+  } catch (err) {
+    if (err instanceof PhoneToolError) throw new Error(err.message);
+    throw new Error(`phone_calls failed on ${env.name}`);
+  }
+}
+
 // ── login: an environment user's web session (env-access WU3b, #1211) ──
 
 /**
@@ -1173,7 +1299,7 @@ export function handleSshExec(args: Record<string, unknown>) {
   // this host, as the bot, outside every sandbox. The remote shell runs `command` as one string.
   const result = spawnSync(
     'ssh',
-    ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '--', config[server].ssh.host, command],
+    ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '--', hostOf(config, server), command],
     {
       timeout: timeoutS * 1000,
       maxBuffer: LOGS_MAX_BUFFER,
@@ -1672,6 +1798,55 @@ class ServerToolsMCPServer extends BaseMcpServer {
         },
       },
       {
+        name: 'phone_call',
+        description:
+          "Call a phone number from a server's environment phone line (its `phone` section; see list). An AI voice agent " +
+          'talks to the person: it follows `purpose` (and `scenario`), speaks in the configured voice, answers through ' +
+          "soma-work's own model path, and hangs up when done or at the time limit. Returns {callId, status} at once — " +
+          'the call runs on its own and shows as a card in this conversation on the dashboard. Follow it with ' +
+          'phone_calls (call_id, wait_seconds). A real call costs money and reaches a person: audited. Admins, or a ' +
+          "user the environment's admin approved.",
+        inputSchema: {
+          type: 'object',
+          properties: {
+            server: { type: 'string', description: 'Server name from config (see list) whose phone line to use.' },
+            to: { type: 'string', description: 'Korean phone number to call, e.g. 010-1234-5678 or 1544-0000.' },
+            title: { type: 'string', description: "Short title for the call's card, e.g. '반품 접수 재통화'." },
+            purpose: {
+              type: 'string',
+              description:
+                'What the call is for and what to find out or get done — the agent follows it. Include the facts it ' +
+                'needs (order numbers, dates, names) and what counts as done.',
+            },
+            scenario: {
+              type: 'string',
+              description: 'Optional conversation scenario: steps, what to say if refused, when to give up.',
+            },
+            max_minutes: {
+              type: 'number',
+              description: 'Hang up after this many minutes. Default 5, capped by the line.',
+            },
+          },
+          required: ['server', 'to', 'purpose'],
+        },
+      },
+      {
+        name: 'phone_calls',
+        description:
+          "List a server's recent phone calls you placed (status, duration, lines), or read one call by call_id: " +
+          'status, endedStatus (completed only when answered), duration and the transcript (상대 = the other party, ' +
+          '에이전트 = the voice agent). With wait_seconds (≤ 300) it waits for the call to end first.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            server: { type: 'string', description: 'Server name from config (see list) whose phone line to read.' },
+            call_id: { type: 'string', description: 'One call (from phone_call). Omit to list recent calls.' },
+            wait_seconds: { type: 'number', description: 'With call_id: wait up to this long for the call to end.' },
+          },
+          required: ['server'],
+        },
+      },
+      {
         name: 'logs',
         description:
           'Fetch Docker container logs (or Swarm service logs when stack is set) from a server via SSH. Default mode: docker logs. With stack: docker service logs (caller must pass the full <stack>_<svc> name in service). NOTE: --until is not supported in stack mode. Container stderr follows stdout under a "----- stderr -----" line. Output is redacted for common secret shapes (tokens, API keys, passwords, URL credentials, private key blocks).',
@@ -1804,6 +1979,10 @@ class ServerToolsMCPServer extends BaseMcpServer {
         return await handleGhRead(args);
       case 'gh_pr':
         return await handleGhPr(args);
+      case 'phone_call':
+        return await handlePhoneCall(args);
+      case 'phone_calls':
+        return await handlePhoneCalls(args);
       case 'db_query':
         return await handleDbQuery(args);
       case 'redis_query':

@@ -62,6 +62,7 @@
     "@fastify/compress": "^9.2.2",
     "@fastify/formbody": "^8.0.2",
     "@fastify/websocket": "^11.2.0",
+    "@koreaaitel/sdk": "0.62.3",
     "@modelcontextprotocol/sdk": "^1.27.0",
     "@resvg/resvg-js": "^2.6.2",
     "@slack/bolt": "=4.7.0",

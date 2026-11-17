@@ -105,6 +105,30 @@ When the agent needs you to do something it cannot do itself — an owner-only v
 - After running it, press **✅ 완료했어요** or **❌ 안 됐어요** on the Slack card or in the dashboard section. The card loses its buttons, the dashboard updates, and the agent gets a message saying what you pressed, so it carries on. If that message cannot reach the agent, the task goes back to waiting so you can press again. Only the session owner (or someone approved for the session) can answer.
 - Spec: [`docs/current/spec/15-user-action.md`](../../current/spec/15-user-action.md).
 
+### 📞 Phone calls (server-tools)
+
+The agent can call a phone and take calls on a server-tools environment's own number ([한국AI통신](https://platform.koreaaitel.com/docs/getting-started), formerly ClawOps). It talks with its own voice and brain: it hears the other party through the voice service's speech-to-text, answers through the same model path every soma-work call takes (Agent SDK `query()` → llmux, the requester's key), and speaks with the voice service's streaming TTS (Drama 3, `cwon` by default).
+
+- **Place a call**: `phone_call {server, to, title, purpose, scenario?, max_minutes?}` returns the call id at once; the call runs on its own. `phone_calls {server, call_id, wait_seconds}` reads its status, length and transcript (waiting up to 300 s for it to end). `phone_call` is an admin tool (or one an environment grant opens), needs a requester and is written to the audit ledger before and after.
+- **In the chat**: a call is a card under the answer of the turn that placed it — title, number, length, state and its last lines (the other party left, the agent right), live while the call runs. Click it for the call view: **통화** (the call as a chat) and **작업** (the call agent's own log: the instruction it got, each transcription, model reply, tool call and synthesis with its timings).
+- **Inbound**: a call to the number is answered with the environment's inbound instruction and a prepared greeting; when it ends, the line's owner gets a Slack DM with a summary and a `/dashboard?phoneCall=<id>` link.
+- **One call at a time** per number (a call arriving during one hears busy). The line is held by the daemon, not the MCP server: the platform keeps one connection per number.
+- **Setup**: a `phone` section on a server-tools environment, its key in the secret store (`{"$secret": …}`; a key written into config.json is ignored). An environment with only a phone needs no host section.
+
+```json
+"my-env": {
+  "phone": {
+    "apiKey": { "$secret": "koreaaitel-my-env" },
+    "accountId": "AC…", "number": "070…", "owner": "U…",
+    "voice": { "url": "http://<voice host>:9999", "voice": "cwon", "model": "drama-3" },
+    "outbound": { "systemPrompt": "…", "maxMinutes": 10, "allowTo": ["010…"] },
+    "inbound": { "enabled": true, "systemPrompt": "…", "greeting": "…" }
+  }
+}
+```
+
+Spec: [`.prd/30-phone-calls-spec.md`](../../../.prd/30-phone-calls-spec.md), architecture: [`.prd/31-phone-calls-architecture.md`](../../../.prd/31-phone-calls-architecture.md).
+
 ### 🗂️ One kind of work session
 
 Every task is a Slack thread, whether it starts from a channel or from the dashboard's composer, and the dashboard is one view of it. Everything a Slack session does — the follow-up queue, `!` steering, goals, resuming after a restart, compaction — works on every task. The separate Slack-less dashboard task is gone (#855): a saved one is archived when the bot loads its sessions and stays readable in the board's closed column. `/z taskentry` and its setting are gone with it; an old setting is ignored.

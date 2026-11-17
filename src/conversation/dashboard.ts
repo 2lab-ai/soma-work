@@ -100,6 +100,7 @@ import {
   subagentSpendOf,
 } from '../session/agent-registry';
 import { resolveEffectiveAutoCompact } from '../session/autocompact-policy';
+import type { PhoneCallSummary as PhoneCallSummaryLike } from '../phone/call-store';
 import { CONTEXT_ROLLBACK_REFUSAL_TEXT } from '../session/context-rollback';
 import { sanitizeCronJob } from '../session/cron-job';
 import { effortMenuOf } from '../session/effort-menu';
@@ -3736,6 +3737,47 @@ export function broadcastConversationUpdate(conversationId: string, turn: any): 
     sendToConversationAudience(conversationId, payload);
   } catch (error) {
     logger.error('Failed to broadcast conversation update', error);
+  }
+}
+
+/**
+ * A phone call changed (.prd/31-phone-calls-architecture.md §5): its card's summary, never the work log. A call's
+ * words are a person's, so the audience is the same as the phone routes' (`canReadCall`): the call's requester, the
+ * owner of the conversation it was placed from, and admins — not whoever else instructed that thread.
+ */
+export function broadcastPhoneCallUpdate(call: PhoneCallSummaryLike): void {
+  if (wsClients.size === 0) return;
+  try {
+    const payload = JSON.stringify({ type: 'phone_call_update', conversationId: call.conversationId ?? null, call });
+    const send = (ownerId: string | undefined) => {
+      for (const client of wsClients) {
+        const reader =
+          client.isAdmin || (!!client.userId && (client.userId === call.requester || client.userId === ownerId));
+        if (!reader) continue;
+        try {
+          client.send(payload);
+        } catch {
+          wsClients.delete(client);
+        }
+      }
+    };
+    if (!call.conversationId) return send(undefined);
+    for (const [, s] of getAllSessions()) {
+      if (s.conversationId === call.conversationId) return send(s.ownerId);
+    }
+    // The conversation is no longer live (archived while the call ran): its owner is read from its record.
+    const conversationId = call.conversationId;
+    void getConversation(conversationId)
+      .then((record) => send(record?.ownerId))
+      .catch((error) => {
+        logger.warn('Phone call push: could not read the conversation — requester and admins only', {
+          conversationId,
+          error: String(error),
+        });
+        send(undefined);
+      });
+  } catch (error) {
+    logger.error('Failed to broadcast phone call update', error);
   }
 }
 
@@ -7470,6 +7512,63 @@ body.nt-open .new-task-fab { display: none !important; }
 .panel-arts-hint { margin-left: auto; font-size: 11px; font-weight: 400; color: var(--text-tertiary); }
 .art-strip-panel .art-tile { --fc-tile-w: 152px; }
 .turn-arts-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+/* Phone calls (.prd/30 §3.2–3.3): a call card in the chat, and the call view. */
+.ph-cards { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.ph-card { border: 1px solid var(--border); border-radius: 14px; background: var(--surface); padding: 10px 12px; cursor: pointer; max-width: 560px; }
+.ph-card:hover, .ph-card:focus-visible { border-color: var(--accent); outline: none; }
+.ph-card.is-live { border-color: var(--st-wait, var(--accent)); }
+.ph-head { display: flex; align-items: center; gap: 10px; }
+.ph-ico { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 10px; background: var(--bg); flex: none; }
+.ph-ttl { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+.ph-ttl b { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ph-num { font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.ph-meta { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; flex: none; }
+.ph-state { color: var(--text-tertiary); }
+.ph-wave { display: inline-flex; align-items: center; gap: 1.5px; height: 12px; flex: none; }
+.ph-wave i { display: block; width: 2px; border-radius: 1px; background: currentColor; opacity: .7; }
+.ph-wave i:nth-child(1) { height: 5px; } .ph-wave i:nth-child(2) { height: 11px; } .ph-wave i:nth-child(3) { height: 7px; } .ph-wave i:nth-child(4) { height: 9px; }
+.ph-card.is-live .ph-wave i { animation: ph-wave 1s ease-in-out infinite alternate; }
+.ph-card.is-live .ph-wave i:nth-child(2) { animation-delay: .2s; } .ph-card.is-live .ph-wave i:nth-child(3) { animation-delay: .4s; }
+@keyframes ph-wave { from { transform: scaleY(.5); } to { transform: scaleY(1); } }
+@media (prefers-reduced-motion: reduce) { .ph-card.is-live .ph-wave i { animation: none; } }
+.ph-tail { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; padding: 8px; border-radius: 10px; background: var(--bg); }
+.ph-line { display: flex; align-items: flex-start; gap: 6px; max-width: 85%; padding: 5px 9px; border-radius: 12px; font-size: 13px; line-height: 1.4; color: var(--text); background: var(--surface); }
+.ph-line.is-agent { align-self: flex-end; }
+.ph-line.is-peer { align-self: flex-start; }
+.ph-line .ph-wave { margin-top: 3px; color: var(--text-tertiary); }
+.ph-cut { font-style: normal; font-size: 11px; color: var(--text-tertiary); }
+.ph-sum { margin-top: 8px; font-size: 13px; line-height: 1.5; color: var(--text-secondary); }
+.ph-sum b { color: var(--text); margin-right: 4px; }
+.phone-dialog { width: min(720px, 94vw); max-height: 86vh; padding: 0; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--text); }
+.phone-dialog::backdrop { background: rgba(0, 0, 0, .45); }
+.phone-dialog-inner { display: flex; flex-direction: column; max-height: 86vh; }
+.ph-dhead { display: flex; align-items: center; gap: 10px; padding: 14px 16px 8px; }
+.ph-dttl { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+.ph-dttl b { font-size: 16px; font-weight: 600; }
+.ph-dttl span { font-size: 12px; color: var(--text-secondary); }
+.ph-close { flex: none; width: 32px; height: 32px; border: 0; border-radius: 8px; background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 16px; }
+.ph-close:hover { background: var(--bg); color: var(--text); }
+.ph-tabs { display: flex; gap: 4px; padding: 0 16px; border-bottom: 1px solid var(--border); }
+.ph-tab { border: 0; background: transparent; padding: 8px 12px; color: var(--text-secondary); cursor: pointer; border-bottom: 2px solid transparent; font: inherit; }
+.ph-tab.is-on { color: var(--text); border-bottom-color: var(--accent); }
+.ph-count { font-size: 11px; color: var(--text-tertiary); }
+.ph-dbody { overflow: auto; padding: 12px 16px 16px; min-height: 160px; }
+.ph-chat { display: flex; flex-direction: column; gap: 10px; }
+.ph-msg { display: flex; flex-direction: column; max-width: 78%; }
+.ph-msg.is-agent { align-self: flex-end; align-items: flex-end; }
+.ph-msg.is-peer { align-self: flex-start; align-items: flex-start; }
+.ph-who { font-size: 11px; color: var(--text-tertiary); margin: 0 6px 2px; }
+.ph-bubble { display: flex; gap: 6px; align-items: flex-start; padding: 8px 12px; border-radius: 14px; background: var(--bg); line-height: 1.5; }
+.ph-msg.is-agent .ph-bubble { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
+.ph-bubble .ph-wave { margin-top: 4px; color: var(--text-tertiary); }
+.ph-empty { color: var(--text-tertiary); font-size: 13px; text-align: center; padding: 24px 0; }
+.ph-work { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.ph-w { display: grid; grid-template-columns: 64px 76px 1fr; gap: 8px; align-items: start; padding: 6px 8px; border-radius: 8px; background: var(--bg); }
+.ph-w.is-error { color: var(--st-fail-text, var(--red)); }
+.ph-wtime { color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+.ph-wkind { color: var(--text-secondary); font-weight: 600; }
+.ph-wtext { word-break: break-word; }
+.ph-pre { grid-column: 3; margin: 0; white-space: pre-wrap; font: 12px/1.5 var(--mono, monospace); color: var(--text-secondary); }
 /* #1074 — an artifact uploaded again is its next version: a small "판 N" pill on its card's corner (the tile's meta
    line and the viewer say the whole "판 N · 이전 판 이후 바뀜"). */
 .art-ver-wrap { position: relative; display: inline-block; }
@@ -8045,6 +8144,10 @@ ${CARD_FINISH_CSS}
 <ui-artifact-viewer id="art-viewer" tiles="none" lang="ko"></ui-artifact-viewer>
 <!-- #983: the follow-up viewer — a card's open issues and PRs as markdown pages (ui-followup). -->
 <ui-artifact-viewer id="fu-viewer" tiles="none" lang="ko"></ui-artifact-viewer>
+<!-- Phone call view (.prd/30-phone-calls-spec.md §3.3): a call card's click opens the call as a chat (통화) and the
+     call agent's work log (작업). Filled by renderPhoneDialog. -->
+<dialog id="phone-call-dialog" class="phone-dialog" aria-labelledby="phone-dialog-title" onclose="_phoneView=null"
+  onclick="if(event.target===this)closePhoneCall()"><div class="phone-dialog-inner" id="phone-dialog-body"></div></dialog>
 
 <script>
 const INIT_USER = ${initUser};
@@ -19328,6 +19431,9 @@ function connectWs() {
           // .prd/26: the session's code changes were collected again — the open 변경점 tab reads them.
           if (_psec === 'changes' && typeof chgNoteCard === 'function') chgNoteCard(panelConvId, msg.session.codeChangesAt);
         }
+      } else if (msg.type === 'phone_call_update' && msg.call) {
+        // .prd/30 §3.2–3.3 — a call's card (and the open call view) follow the call as it happens.
+        if (typeof onPhoneCallUpdate === 'function') onPhoneCallUpdate(msg.conversationId || '', msg.call);
       } else if (msg.type === 'artifact_update' && msg.conversationId) {
         // SSOT 2026-10-23 — a new file / markdown answer; the card face itself
         // follows through the sessionUpdated push the server sends with it.
@@ -20699,6 +20805,8 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // Artifacts (T6): the summary now, the full list as soon as it arrives.
   renderPanelArtifactsSection();
   if (panelConvId && !isSiblingSession(s)) ensureArtifacts(panelConvId, true);
+  // .prd/30 §3.2 — the conversation's phone calls (cards under the answers that placed them).
+  if (panelConvId && !isSiblingSession(s) && typeof ensurePhoneCalls === 'function') ensurePhoneCalls(panelConvId, true);
   if (panelConvId && !isSiblingSession(s) && s.userMedia && toNum(s.userMedia.count) > 0) ensureUserMedia(panelConvId);
   // Every opening starts with the defaults (§3.1-6, task view T1.3): Tasks
   // folded — or every detail open with 자세히; the goal folded either way.
@@ -21485,13 +21593,36 @@ function convTurnsOf(list, c) {
       } else a.markdown = '';
       var mine = (c.arts || []).filter(function(x) { return x && !used[x.id] && artInTurn(x, start, ts); });
       mine.forEach(function(x) { used[x.id] = true; });
-      if (mine.length) {
+      // .prd/30 §3.2 — a phone call goes under the answer of the turn that placed it (its start in the turn's window).
+      var calls = (c.calls || []).filter(function(x) {
+        var t0 = x ? toNum(x.createdAt) : 0;
+        return x && x.id && !used['call:' + x.id] && t0 > 0 && t0 >= toNum(start) - 5000 && t0 <= ts;
+      });
+      calls.forEach(function(x) { used['call:' + x.id] = true; });
+      if (mine.length || calls.length) {
         a.attachments = true;
         slots.push({ name: 'attachments-' + id, kind: 'arts', list: mine, start: start, end: ts });
+        if (calls.length) slots[slots.length - 1].calls = calls;
       }
       turns.push(a);
     }
     start = ts;
+  }
+  // A call newer than the last recorded turn (the turn that placed it still runs, or it was answered later) rides
+  // the last turn, so a live call is in view as it happens.
+  var late = (c.calls || []).filter(function(x) { return x && x.id && !used['call:' + x.id]; });
+  if (late.length && turns.length) {
+    var lt = turns[turns.length - 1];
+    var lslot = lt.role === 'assistant' ? 'attachments-' + lt.id : 'media-' + lt.id;
+    var have = slots.filter(function(sl) { return sl.name === lslot; })[0];
+    if (have) have.calls = (have.calls || []).concat(late);
+    else if (lt.role === 'assistant') {
+      lt.attachments = true;
+      slots.push({ name: lslot, kind: 'arts', list: [], calls: late, start: start, end: start });
+    } else {
+      lt.media = true;
+      slots.push({ name: lslot, kind: 'media', list: [], turn: list[list.length - 1] || {}, calls: late });
+    }
   }
   return { turns: turns, slots: slots };
 }
@@ -21503,9 +21634,11 @@ function convSlots(el, slots, cid) {
   for (var i = 0; i < slots.length; i++) {
     var sl = slots[i];
     if (sl.kind === 'media') umRegister(cid, sl.list, sl.turn);
-    want[sl.name] = sl.kind === 'media'
+    want[sl.name] = (sl.kind === 'media'
       ? (sl.chip ? steerChipHtml(sl.chip) : '') + (sl.rb ? rbTurnButtonHtml(sl.rb, sl.turn.id) : '') + renderUserMedia(cid, sl.list)
-      : renderTurnArtifacts(sl.list, cid, sl.start, sl.end);
+      : renderTurnArtifacts(sl.list, cid, sl.start, sl.end))
+      // .prd/30 §3.2 — the turn's phone calls, as cards.
+      + (sl.calls && sl.calls.length && typeof phoneCardsHtml === 'function' ? phoneCardsHtml(sl.calls, cid) : '');
   }
   var kids = Array.prototype.slice.call(el.children);
   for (var k = 0; k < kids.length; k++) {
@@ -21618,6 +21751,7 @@ function convPaint() {
     chips: q.chips,
     answers: _rawLoadedCache, failed: _ansFailed, resum: _resumSent,
     arts: cid && _artCache[cid] ? _artCache[cid].list || [] : [],
+    calls: typeof phoneCallsOf === 'function' ? phoneCallsOf(cid) : [],
     titles: ansLinkTitles(ansSession(cid)),
   });
   var last = shown.length ? shown[shown.length - 1] : null;
@@ -24122,6 +24256,273 @@ function renderTurnArtifacts(list, cid, startTs, endTs) {
   if (!hits.length) return '';
   return '<div class="turn-arts-row">' + hits.map(function(a) { return artChip(cid, a); }).join('') + '</div>';
 }
+
+// ── Phone calls (.prd/30-phone-calls-spec.md §3.2–3.3) ──
+// A call the agent placed is a card under the answer of the turn that placed it (title, number, length, the last
+// lines — the other party left, the voice agent right); a click opens the call view: the call as a chat (통화) and
+// the call agent's own work (작업) — STT, model replies, tools, speech — live while the call runs.
+var _phoneCalls = Object.create(null);
+var _phoneView = null;
+var PH_LBL_PEER = '상대';
+var PH_LBL_AGENT = '에이전트';
+var PH_TAB_CALL = '통화';
+var PH_TAB_WORK = '작업';
+var PH_CUT = '끊김';
+var PH_DIR_OUT = '건 전화';
+var PH_DIR_IN = '받은 전화';
+var PH_EMPTY = '아직 오간 말이 없어요';
+var PH_LOADING = '불러오는 중…';
+var PH_FAILED = '통화를 불러오지 못했어요';
+var PH_SUMMARY = '요약';
+var PH_CLOSE = '닫기';
+var PH_FIRST_TOKEN = '첫 토큰';
+var PH_FIRST_BYTE = '첫 소리';
+var PH_SEC = '초';
+var PH_STATUS = { dialing: '거는 중', active: '통화 중', ended: '통화 끝' };
+var PH_ENDED = { completed: '통화 끝', 'no-answer': '안 받음', busy: '통화 중이라 못 받음', rejected: '거절됨', canceled: '취소됨', failed: '실패' };
+var PH_WORK = { instruction: '통화 지시', stt: '받아쓰기', reply: '모델 응답', tool: '도구', tts: '음성 합성', event: '이벤트', error: '오류' };
+var PH_WAVE = '<span class="ph-wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>';
+
+function phoneNum(n) {
+  var d = String(n || '').replace(/[^0-9]/g, '');
+  if (d.length === 11) return d.slice(0, 3) + '-' + d.slice(3, 7) + '-' + d.slice(7);
+  if (d.length === 10 && d.indexOf('02') === 0) return '02-' + d.slice(2, 6) + '-' + d.slice(6);
+  if (d.length === 10) return d.slice(0, 3) + '-' + d.slice(3, 6) + '-' + d.slice(6);
+  if (d.length === 9 && d.indexOf('02') === 0) return '02-' + d.slice(2, 5) + '-' + d.slice(5);
+  if (d.length === 8) return d.slice(0, 4) + '-' + d.slice(4);
+  return String(n || '');
+}
+// m:ss — the server's length once the call ended, the running length while it is up.
+function phoneDur(c, now) {
+  var sec = toNum(c && c.durationSec);
+  if (!sec && c && c.status === 'active' && toNum(c.answeredAt)) sec = Math.max(0, Math.round(((now || Date.now()) - toNum(c.answeredAt)) / 1000));
+  var m = Math.floor(sec / 60);
+  var s = sec % 60;
+  return m + ':' + (s < 10 ? '0' : '') + s;
+}
+function phoneStatus(c) {
+  if (!c) return '';
+  if (c.status === 'ended') return PH_ENDED[c.endedStatus] || PH_STATUS.ended;
+  return PH_STATUS[c.status] || '';
+}
+function phoneLineHtml(l) {
+  var mine = !!l && l.role === 'agent';
+  return '<div class="ph-line ' + (mine ? 'is-agent' : 'is-peer') + '">' + PH_WAVE + '<span class="ph-text">' + esc(l && l.text)
+    + (l && l.interrupted ? ' <em class="ph-cut">' + PH_CUT + '</em>' : '') + '</span></div>';
+}
+function phoneCardHtml(c, cid) {
+  if (!c || !c.id) return '';
+  var tail = Array.isArray(c.tail) ? c.tail : [];
+  // The ids travel as element data (escJs inside a double-quoted handler is the pattern the page avoids).
+  return '<div class="ph-card' + (c.status !== 'ended' ? ' is-live' : '') + '" role="button" tabindex="0" data-phone-call="' + escAttr(c.id) + '"'
+    + ' data-phone-cid="' + escAttr(cid || '') + '" onclick="openPhoneCallEl(this)"'
+    + ' onkeydown="if(event.key===\\'Enter\\'){event.preventDefault();openPhoneCallEl(this)}">'
+    + '<div class="ph-head"><span class="ph-ico" aria-hidden="true">📞</span>'
+    + '<span class="ph-ttl"><b>' + esc(c.title || phoneNum(c.peerNumber)) + '</b><span class="ph-num">' + esc(phoneNum(c.peerNumber)) + '</span></span>'
+    + '<span class="ph-meta">' + PH_WAVE + '<span>' + esc(phoneDur(c)) + '</span><span class="ph-state">' + esc(phoneStatus(c)) + '</span></span></div>'
+    + (tail.length ? '<div class="ph-tail">' + tail.map(phoneLineHtml).join('') + '</div>' : '')
+    + (c.summary ? '<div class="ph-sum">' + esc(c.summary) + '</div>' : '')
+    + '</div>';
+}
+function phoneCardsHtml(list, cid) {
+  if (!list || !list.length) return '';
+  return '<div class="ph-cards">' + list.map(function(c) { return phoneCardHtml(c, cid); }).join('') + '</div>';
+}
+function phoneCallsOf(cid) {
+  var c = cid ? _phoneCalls[cid] : null;
+  return c && c.list ? c.list : [];
+}
+// Two copies of one call: a is at least as new as b (the server stamps every change).
+function phoneNewer(a, b) {
+  return toNum(a && a.updatedAt) >= toNum(b && b.updatedAt);
+}
+// The list with this copy of a call in it — unless the list already holds a newer copy.
+function phoneMerge(list, call) {
+  var cur = null;
+  var out = (list || []).filter(function(x) {
+    if (x && x.id === call.id) { cur = x; return false; }
+    return !!x;
+  });
+  out.push(cur && !phoneNewer(call, cur) ? cur : call);
+  out.sort(function(a, b) { return toNum(a.createdAt) - toNum(b.createdAt); });
+  return out;
+}
+// The conversation's calls, fetched when its panel opens and kept fresh by phone_call_update. A push that lands
+// while the list loads stays: the list is merged copy by copy, the newer of each call winning.
+function ensurePhoneCalls(cid, force) {
+  if (!cid) return;
+  var c = _phoneCalls[cid];
+  if (c && c.state === 'loading') return;
+  if (c && c.state === 'ok' && !force) return;
+  var entry = { state: 'loading', list: c ? c.list : [] };
+  _phoneCalls[cid] = entry;
+  fetch('/api/dashboard/session/' + encodeURIComponent(cid) + '/phone-calls')
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function(data) {
+      var list = Array.isArray(data && data.calls) ? data.calls : [];
+      (entry.list || []).forEach(function(x) { if (x && x.id) list = phoneMerge(list, x); });
+      entry.list = list;
+      entry.state = 'ok';
+      if (panelOpen && panelConvId === cid) convPaintSoon();
+    })
+    .catch(function() { entry.state = 'error'; });
+}
+// WS phone_call_update: a call's card changed (its state, a new line, its length, its summary).
+function onPhoneCallUpdate(cid, call) {
+  if (!call || !call.id) return;
+  if (cid) {
+    var c = _phoneCalls[cid] || (_phoneCalls[cid] = { state: 'ok', list: [] });
+    c.list = phoneMerge(c.list, call);
+    if (panelOpen && panelConvId === cid) convPaintSoon();
+  }
+  if (_phoneView && _phoneView.id === call.id) phoneRefetchSoon();
+}
+var _phoneRefetchTimer = null;
+function phoneRefetchSoon() {
+  if (_phoneRefetchTimer) return;
+  _phoneRefetchTimer = setTimeout(function() {
+    _phoneRefetchTimer = null;
+    if (_phoneView) loadPhoneCall();
+  }, 500);
+}
+function phoneDialogEl() {
+  return document.getElementById('phone-call-dialog');
+}
+// A card's click: its call and conversation are the element's data.
+function openPhoneCallEl(el) {
+  if (!el || !el.getAttribute) return;
+  openPhoneCall(el.getAttribute('data-phone-call') || '', el.getAttribute('data-phone-cid') || '');
+}
+function openPhoneCall(id, cid) {
+  var dlg = phoneDialogEl();
+  if (!dlg || !id) return;
+  var tab = _phoneView && _phoneView.id === id ? _phoneView.tab : 'call';
+  _phoneView = { id: id, cid: cid || '', call: null, tab: tab, state: 'loading' };
+  renderPhoneDialog();
+  if (!dlg.open) {
+    try { dlg.showModal(); } catch (_e) { dlg.setAttribute('open', ''); }
+  }
+  loadPhoneCall();
+}
+function loadPhoneCall() {
+  var v = _phoneView;
+  if (!v) return;
+  var url = v.cid
+    ? '/api/dashboard/session/' + encodeURIComponent(v.cid) + '/phone-calls/' + encodeURIComponent(v.id)
+    : '/api/dashboard/phone-calls/' + encodeURIComponent(v.id);
+  fetch(url)
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function(data) {
+      if (_phoneView !== v) return;
+      var call = data && data.call ? data.call : null;
+      // Refreshes can overlap and come back out of order: an older copy never replaces a newer one.
+      if (call && v.call && !phoneNewer(call, v.call)) return;
+      v.call = call;
+      v.state = v.call ? 'ok' : 'error';
+      renderPhoneDialog();
+    })
+    .catch(function() {
+      if (_phoneView !== v) return;
+      v.state = 'error';
+      renderPhoneDialog();
+    });
+}
+function closePhoneCall() {
+  var dlg = phoneDialogEl();
+  _phoneView = null;
+  if (dlg && dlg.open) dlg.close();
+}
+function phoneTab(tab) {
+  if (!_phoneView) return;
+  _phoneView.tab = tab === 'work' ? 'work' : 'call';
+  renderPhoneDialog();
+}
+function phoneClock(at) {
+  var t = toNum(at);
+  if (!t) return '';
+  var d = new Date(t);
+  var two = function(n) { return (n < 10 ? '0' : '') + n; };
+  return two(d.getHours()) + ':' + two(d.getMinutes()) + ':' + two(d.getSeconds());
+}
+// 통화: the call as a chat — the other party left, the voice agent right, as the call went.
+function phoneTranscriptHtml(call) {
+  var lines = call && Array.isArray(call.transcript) ? call.transcript : [];
+  if (!lines.length) return '<p class="ph-empty">' + PH_EMPTY + '</p>';
+  return '<div class="ph-chat">' + lines.map(function(l) {
+    var mine = l && l.role === 'agent';
+    return '<div class="ph-msg ' + (mine ? 'is-agent' : 'is-peer') + '">'
+      + '<div class="ph-who">' + (mine ? PH_LBL_AGENT : PH_LBL_PEER) + ' · ' + esc(phoneClock(l && l.at)) + '</div>'
+      + '<div class="ph-bubble">' + PH_WAVE + '<span>' + esc(l && l.text) + (l && l.interrupted ? ' <em class="ph-cut">' + PH_CUT + '</em>' : '') + '</span></div></div>';
+  }).join('') + '</div>';
+}
+function phoneWorkText(w) {
+  if (!w) return '';
+  if (w.kind === 'stt') return (w.text || '∅') + ' — ' + toNum(w.ms) + 'ms (' + (toNum(w.audioMs) / 1000).toFixed(1) + PH_SEC + ')';
+  if (w.kind === 'reply') return (w.text || '') + ' — ' + (w.model || '') + (w.firstTokenMs != null ? ', ' + PH_FIRST_TOKEN + ' ' + toNum(w.firstTokenMs) + 'ms' : '') + ', ' + toNum(w.ms) + 'ms';
+  if (w.kind === 'tts') return (w.text || '') + ' — ' + PH_FIRST_BYTE + ' ' + toNum(w.firstByteMs) + 'ms, ' + (toNum(w.audioMs) / 1000).toFixed(1) + PH_SEC;
+  if (w.kind === 'tool') return (w.name || '') + ' ' + JSON.stringify(w.input || {}) + (w.result ? ' → ' + w.result : '');
+  if (w.kind === 'error') return (w.stage || '') + ': ' + (w.message || '');
+  return w.text || '';
+}
+// 작업: the call agent's own log, the way a child session's work log reads.
+function phoneWorkHtml(call) {
+  // In the order things happened (a synthesis is logged when it ends, with the time it started).
+  var work = (call && Array.isArray(call.work) ? call.work : []).slice().sort(function(a, b) { return toNum(a && a.at) - toNum(b && b.at); });
+  if (!work.length) return '<p class="ph-empty">' + PH_EMPTY + '</p>';
+  return '<ol class="ph-work">' + work.map(function(w) {
+    var body = w && w.kind === 'instruction'
+      ? '<pre class="ph-pre">' + esc(w.text) + '</pre>'
+      : '<span class="ph-wtext">' + esc(phoneWorkText(w)) + '</span>';
+    return '<li class="ph-w is-' + escAttr(w && w.kind) + '"><span class="ph-wtime">' + esc(phoneClock(w && w.at)) + '</span>'
+      + '<span class="ph-wkind">' + esc(PH_WORK[w && w.kind] || (w && w.kind) || '') + '</span>' + body + '</li>';
+  }).join('') + '</ol>';
+}
+function phoneDialogHtml(v) {
+  var c = v && v.call;
+  var meta = c
+    ? [c.direction === 'inbound' ? PH_DIR_IN : PH_DIR_OUT, phoneNum(c.peerNumber), phoneStatus(c), phoneDur(c), c.model || '', c.voice || '']
+      .filter(function(x) { return !!x; }).join(' · ')
+    : '';
+  var head = '<div class="ph-dhead"><span class="ph-ico" aria-hidden="true">📞</span><div class="ph-dttl"><b id="phone-dialog-title">'
+    + esc(c ? c.title || phoneNum(c.peerNumber) : '') + '</b><span>' + esc(meta) + '</span></div>'
+    + '<button type="button" class="ph-close" onclick="closePhoneCall()" aria-label="' + PH_CLOSE + '">✕</button></div>';
+  var tabs = '<div class="ph-tabs" role="tablist">' + ['call', 'work'].map(function(t) {
+    var on = v.tab === t;
+    var n = t === 'work' && c && Array.isArray(c.work) ? ' <span class="ph-count">' + c.work.length + '</span>' : '';
+    return '<button type="button" role="tab" aria-selected="' + (on ? 'true' : 'false') + '" class="ph-tab' + (on ? ' is-on' : '') + '"'
+      + ' onclick="phoneTab(\\'' + t + '\\')">' + (t === 'call' ? PH_TAB_CALL : PH_TAB_WORK) + n + '</button>';
+  }).join('') + '</div>';
+  var body;
+  if (!c) body = '<p class="ph-empty">' + (v.state === 'loading' ? PH_LOADING : PH_FAILED) + '</p>';
+  else if (v.tab === 'work') body = phoneWorkHtml(c);
+  else body = (c.summary ? '<div class="ph-sum"><b>' + PH_SUMMARY + '</b> ' + esc(c.summary) + '</div>' : '') + phoneTranscriptHtml(c);
+  return head + tabs + '<div class="ph-dbody">' + body + '</div>';
+}
+function renderPhoneDialog() {
+  var inner = document.getElementById('phone-dialog-body');
+  var v = _phoneView;
+  if (!inner || !v) return;
+  var html = phoneDialogHtml(v);
+  if (inner._html === html) return;
+  var key = v.id + ':' + v.tab;
+  var fresh = inner._view !== key;
+  var sc = inner.querySelector('.ph-dbody');
+  var atEnd = !sc || sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 24;
+  var top = sc ? sc.scrollTop : 0;
+  inner.innerHTML = html;
+  inner._html = html;
+  inner._view = key;
+  sc = inner.querySelector('.ph-dbody');
+  if (!sc) return;
+  // A new view, or a reader at the bottom, follows the newest line; a reader who scrolled up stays put.
+  if (fresh || atEnd) sc.scrollTop = sc.scrollHeight;
+  else sc.scrollTop = top;
+}
+// Deep link: /dashboard?phoneCall=<id> (the owner's notice of an inbound call) opens the call view.
+var _deepLinkPhoneCall = (function() {
+  try { return new URLSearchParams(location.search).get('phoneCall'); } catch (_e) { return null; }
+})();
+if (_deepLinkPhoneCall) setTimeout(function() { openPhoneCall(_deepLinkPhoneCall, ''); }, 0);
 
 // The viewer's pages: the files, newest first — never a link (SSOT 2026-11-09 T3: it opens its URL instead).
 function artViewerPages(list) {

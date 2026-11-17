@@ -52,6 +52,9 @@ describe('server-tools wiring — secret store', () => {
       SOMA_SECRETS_DIR: SECRETS_DIR,
       // env-access WU3 (#1211): where environment users' writes are audited, and for whom the session runs.
       SOMA_AUDIT_DIR: path.join(DATA_DIR, 'env-audit'),
+      // .prd/31 §4.2: the phone line's request/call files, and where a call's card goes (no secret in either).
+      SOMA_PHONE_DIR: path.join(DATA_DIR, 'phone'),
+      SOMA_PHONE_CONTEXT: JSON.stringify({ channel: 'C1' }),
       SOMA_REQUESTER: 'U1',
     });
   });

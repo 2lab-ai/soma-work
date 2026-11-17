@@ -19,6 +19,7 @@ import { config } from '../config';
 import { IS_DEV } from '../env-paths';
 import { registerHookRoutes } from '../hooks';
 import { Logger } from '../logger';
+import { getPhoneCallStore } from '../phone/store-instance';
 import { userSettingsStore } from '../user-settings-store';
 import { registerArtifactRoutes } from './artifact-routes';
 import { registerCodeChangesRoutes } from './code-changes-routes';
@@ -45,6 +46,7 @@ import {
   validateCsrfToken,
   verifyDashboardTokenRaw,
 } from './oauth';
+import { registerPhoneRoutes } from './phone-routes';
 import { registerProjectMemoryRoutes } from './project-memory-routes';
 import {
   effectiveViewerUrl,
@@ -745,6 +747,8 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   await registerWorkLogRoutes(server, authMiddleware);
   await registerCodeChangesRoutes(server, authMiddleware);
   await registerArtifactRoutes(server, authMiddleware);
+  // Phone calls (.prd/31-phone-calls-architecture.md §5): the cards in a conversation and the call view.
+  await registerPhoneRoutes(server, authMiddleware, getPhoneCallStore);
   await registerUserMediaRoutes(server, authMiddleware);
   // Personal settings (SSOT 2026-10-23 T2) — self only, auth + CSRF on writes.
   registerSettingsRoutes(server, authMiddleware, csrfMiddleware);

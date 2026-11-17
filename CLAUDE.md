@@ -76,6 +76,7 @@ src/
 │   ├── service.ts   # launchd user agent 설치/기동
 │   ├── production-seams.ts  # 실제 배선 + 패키징된 asset 경로 상수
 │   └── setup/       # 온보딩 state machine (orchestrator, materialize, slack-*, llmux)
+├── phone/           # 전화: 한국AI통신 회선(PhoneService) · 통화 음성 세션(VAD→STT→query()→TTS) · 통화 기록 (.prd/30·31)
 ├── local-harness/   # soma-work 전용 플러그인 `local` — 하네스 MCP(작업 카드)를 부르는 스킬 (auto-es). 마켓플레이스에 없음
 └── local/           # Claude Code SDK 로컬 플러그인 `zworkflow` (skills/, agents/, hooks/) — 범용, 하네스 호출 금지
 

@@ -2196,5 +2196,20 @@
   "❌ 사용자 작업 안 됨: \"{0}\" — 사용자가 {1}에서 '안 됐어요'를 눌렀습니다. 무엇이 안 됐는지 확인하고 다른 길을 찾으세요.": "❌ Task didn't work: \"{0}\" — the user pressed 'Didn't work' on {1}. Find out what failed and find another way.",
   "{0}\n[user-action {1}] 스크립트:\n```\n{2}\n```": "{0}\n[user-action {1}] script:\n```\n{2}\n```",
   "봇에게 전달하지 못했습니다. 작업은 그대로 대기 중이니 잠시 뒤 다시 눌러 주세요.": "Could not pass this to the bot. The task is still waiting; press it again in a moment.",
-  "이 작업의 응답을 봇에게 전달하는 중입니다.": "This task's answer is being passed to the bot."
+  "이 작업의 응답을 봇에게 전달하는 중입니다.": "This task's answer is being passed to the bot.",
+  "{0} 통화": "Call with {0}",
+  "{0}에서 온 전화": "Call from {0}",
+  "통화 끝 ({0})": "Call ended ({0})",
+  "\n<{0}/dashboard?phoneCall={1}|통화 보기>": "\n<{0}/dashboard?phoneCall={1}|View the call>",
+  "📞 {0}에서 온 전화 ({1}:{2}, {3})\n{4}{5}": "📞 Call from {0} ({1}:{2}, {3})\n{4}{5}",
+  "상대": "Other party",
+  "에이전트": "Agent",
+  "상대가 전화를 받음": "The other party answered",
+  "상대가 조용해서 첫 마디 시작": "The line was quiet — opening line started",
+  "상대의 첫 말이 끝남": "The other party finished their hello",
+  "상대가 끼어듦 — 말하기 멈춤": "The other party talked over the agent — speech stopped",
+  "말을 마치면 끊음": "Hangs up after the last sentence",
+  "보낼 수 없음": "Could not send",
+  "통화 시간 한도({0}분) 도달": "Call time limit ({0} min) reached",
+  "상대가 오래 말이 없어 통화를 끝냄": "The other party was silent too long — call ended"
 }
