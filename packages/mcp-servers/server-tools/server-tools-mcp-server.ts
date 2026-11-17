@@ -8,14 +8,18 @@ import { isSecretRef, resolveSecretRefs, SecretRefError } from '@soma/process-sh
 import { StderrLogger } from '@soma/process-shared/stderr-logger.js';
 import { type ChildProcess, execFileSync, type SpawnSyncReturns, spawn, spawnSync } from 'child_process';
 import { appendAudit } from './env-audit.js';
+import { sourceCommit, sourceDir, sourceFile, sourcePath, sourceRef, staticAssets } from './env-cf-sources.js';
 import {
   type CfAccountConfig,
   CfError,
   type CfFetch,
   CfOutcomeUnknownError,
+  type CfRequest,
   cfCall,
+  cfMethod,
   cfProve,
   cfRequest,
+  checkAssets,
   cloudflareAccounts,
   type EnvCloudflareConfig,
 } from './env-cloudflare.js';
@@ -589,6 +593,7 @@ function envApis(srv: ServerConfig): Record<string, unknown> {
     reach: (entry as CfAccountConfig).reach === 'account' ? 'account' : 'zones',
     write: (entry as CfAccountConfig).write === true,
     ...(typeof (entry as CfAccountConfig).id === 'string' ? { id: (entry as CfAccountConfig).id } : {}),
+    ...((entry as CfAccountConfig).sources ? { sources: (entry as CfAccountConfig).sources } : {}),
   }));
   if (accounts.length > 0) out.cloudflare = accounts;
   const repos = srv.github?.repos;
@@ -940,7 +945,103 @@ function envCloudflare(
   if (parts !== undefined && !(Array.isArray(parts) && parts.every((p) => typeof p === 'string'))) {
     throw new Error(`Server ${server}: cloudflare.parts must be a list of strings`);
   }
+  const sources = entry.sources;
+  if (
+    sources !== undefined &&
+    !(
+      sources &&
+      typeof sources === 'object' &&
+      !Array.isArray(sources) &&
+      Object.values(sources).every((refs) => Array.isArray(refs) && refs.every((r) => typeof r === 'string'))
+    )
+  ) {
+    throw new Error(
+      `Server ${server}: cloudflare account ${account}: sources must map "owner/name" to a list of branches`,
+    );
+  }
   return { name: server, config: config[server], account, cloudflare: entry };
+}
+
+/**
+ * Files a call names in the account entry's `sources` — `form.repo` with `form.files[].source`, and `assets` — read
+ * from GitHub with the server's own token at one commit of the named branch. The form's files come back as base64
+ * parts; the assets as Cloudflare's upload takes them. Nothing is read for a call that names no source.
+ */
+/** Bytes of form files read from sources in one call: the multipart form's own cap. */
+const MAX_SOURCE_FORM = 10 * 1024 * 1024;
+
+async function readSources(
+  fetchImpl: CfFetch,
+  env: ReturnType<typeof envCloudflare>,
+  args: Record<string, unknown>,
+): Promise<{
+  args: Record<string, unknown>;
+  assets?: CfRequest['assets'];
+  source?: { repo: string; ref: string; commit: string };
+}> {
+  const form = args.form as { repo?: unknown; files?: unknown; fields?: unknown } | undefined;
+  const files = Array.isArray(form?.files) ? (form?.files as Record<string, unknown>[]) : [];
+  const named = files.some((f) => f && typeof f === 'object' && 'source' in f);
+  const assetsArg = args.assets as { repo?: unknown; ref?: unknown; dir?: unknown; config?: unknown } | undefined;
+  if (!named && form?.repo === undefined && assetsArg === undefined) return { args };
+  const method = cfMethod(args.method);
+  if (method !== 'POST' && method !== 'PUT' && method !== 'PATCH') {
+    throw new CfError('a form is only sent with POST, PUT or PATCH');
+  }
+  if (assetsArg !== undefined) checkAssets(method, args.path as string, args);
+  const token = env.config.github?.token;
+  if (typeof token !== 'string' || token === '') {
+    throw new CfError(`sources are read with server ${env.name}'s GitHub token: it has no github section`);
+  }
+  const formRef = form?.repo === undefined ? undefined : sourceRef(env.cloudflare.sources, form.repo, env.account);
+  if (named && !formRef)
+    throw new CfError('form.files[].source needs form.repo: {"repo": "owner/name", "ref": "<branch>"}');
+  // assets name their own repository and branch, or neither (then form.repo's); a ref alone is not defaulted.
+  const assetsRef =
+    assetsArg === undefined
+      ? undefined
+      : assetsArg.repo === undefined && assetsArg.ref === undefined && formRef
+        ? formRef
+        : sourceRef(env.cloudflare.sources, assetsArg, env.account);
+  if (formRef && assetsRef && (formRef.repo !== assetsRef.repo || formRef.ref !== assetsRef.ref)) {
+    throw new CfError('one call deploys from one source: form.repo and assets name the same repository and branch');
+  }
+  const ref = (formRef ?? assetsRef) as { repo: string; ref: string };
+  const commit = await sourceCommit(fetchImpl, token, ref.repo, ref.ref);
+  const out = { ...args };
+  if (form) {
+    const read: Record<string, unknown>[] = [];
+    // The form's budget is kept while reading: a file past it stops the read, not the final form check.
+    let left = MAX_SOURCE_FORM;
+    for (const file of files) {
+      if (!file || typeof file !== 'object' || !('source' in file)) {
+        read.push(file);
+        continue;
+      }
+      if ('text' in file || 'base64' in file)
+        throw new CfError('a form file gives source, text or base64, one of them');
+      const { source, ...rest } = file;
+      const bytes = await sourceFile(fetchImpl, token, ref.repo, commit, sourcePath(source), left);
+      left -= bytes.length;
+      read.push({ ...rest, base64: bytes.toString('base64') });
+    }
+    const { repo: _repo, ...formRest } = form;
+    out.form = { ...formRest, files: read };
+  }
+  let assets: CfRequest['assets'];
+  if (assetsArg !== undefined) {
+    const config = assetsArg.config;
+    if (config !== undefined && (!config || typeof config !== 'object' || Array.isArray(config))) {
+      throw new CfError('assets.config must be an object (html_handling, not_found_handling, …)');
+    }
+    const dir = sourcePath(assetsArg.dir);
+    assets = {
+      files: staticAssets(await sourceDir(fetchImpl, token, ref.repo, commit, dir)),
+      ...(config ? { config: config as Record<string, unknown> } : {}),
+    };
+    delete out.assets;
+  }
+  return { args: out, ...(assets ? { assets } : {}), source: { ...ref, commit } };
 }
 
 /**
@@ -954,7 +1055,10 @@ export async function handleCfApi(
 ) {
   const env = envCloudflare(args.server, args.account);
   try {
-    const request = cfRequest(env.account, env.cloudflare, args);
+    // The call is checked as asked before anything is read from GitHub; then again with what was read.
+    cfRequest(env.account, env.cloudflare, { ...args, form: undefined, assets: undefined });
+    const sourced = await readSources(fetchImpl, env, args);
+    const request = cfRequest(env.account, env.cloudflare, sourced.args, sourced.assets);
     // A zone the account entry does not list must be the account's before anything is sent or written to the ledger.
     await cfProve(fetchImpl, env.cloudflare, request);
     if (request.method === 'GET') {
@@ -978,6 +1082,18 @@ export async function handleCfApi(
       ...(request.query ? { query: request.query.slice(1) } : {}),
       ...(request.body !== undefined ? { bodySha256: createHash('sha256').update(request.body).digest('hex') } : {}),
       ...(request.formSha256 ? { formSha256: request.formSha256 } : {}),
+      ...(sourced.source ? { source: sourced.source } : {}),
+      ...(request.assets
+        ? {
+            assets: {
+              files: request.assets.files.length,
+              bytes: request.assets.files.reduce((n, f) => n + f.size, 0),
+              manifestSha256: createHash('sha256')
+                .update(JSON.stringify(request.assets.files.map((f) => [f.path, f.hash, f.size])))
+                .digest('hex'),
+            },
+          }
+        : {}),
     };
     try {
       appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'intent', detail });
@@ -1713,7 +1829,9 @@ class ServerToolsMCPServer extends BaseMcpServer {
           'workers, d1, storage (KV), r2, pages, queues, hyperdrive, vectorize, ai, ai-gateway, workflows, ' +
           'images, rules, browser-rendering; other parts when the account lists them), /zones (its ' +
           'zones) and /zones/<its zone>/…. GET, or POST/PUT/PATCH/DELETE when the account allows writes (audited). A JSON body goes in ' +
-          'body; a multipart upload (a Worker: a metadata field and its module files) goes in form. Paths that hand ' +
+          'body; a multipart upload (a Worker: a metadata field and its module files) goes in form. A Worker deploy ' +
+          'can read its modules and static assets from a repository branch the account lists in its sources (see ' +
+          'list): form.repo + files[].source, and assets. Paths that hand ' +
           'out a credential (tokens, members, service tokens, tunnel tokens, R2 access keys, signing keys), user ' +
           'paths, and creating or deleting the account or a zone are never reachable. Returns {status, truncated, ' +
           "body} (body is text when the answer is not JSON). Admins, or a user the environment's admin approved.",
@@ -1740,7 +1858,17 @@ class ServerToolsMCPServer extends BaseMcpServer {
               description:
                 'Multipart body for POST, PUT or PATCH instead of body: {"fields": {"metadata": "<JSON text>"}, ' +
                 '"files": [{"name": "worker.js", "filename": "worker.js", "type": "application/javascript+module", ' +
-                '"text": "…"}]}. A file gives its content as text or base64. At most 10 MiB.',
+                '"text": "…"}]}. A file gives its content as text, base64, or source: a path in form.repo ' +
+                '({"repo": "owner/name", "ref": "<branch>"}, one of the account\'s sources), read at the branch\'s ' +
+                'current commit (recorded in the audit). At most 10 MiB.',
+            },
+            assets: {
+              type: 'object',
+              description:
+                'Static assets for PUT /accounts/<id>/workers/scripts/<name>: {"dir": "static", "config": ' +
+                '{"html_handling": "auto-trailing-slash"}} (repo and ref default to form.repo). Every file below dir ' +
+                'is uploaded through an assets upload session and attached to the script; leave assets and ' +
+                'keep_assets out of the metadata. Up to 2000 files, 64 MiB.',
             },
           },
           required: ['server', 'method', 'path'],

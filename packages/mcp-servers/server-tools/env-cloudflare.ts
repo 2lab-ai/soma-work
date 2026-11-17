@@ -12,6 +12,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import type { CfSources, StaticAsset } from './env-cf-sources.js';
 
 /** What a Cloudflare account entry reaches. */
 export type CfReach = 'zones' | 'account';
@@ -30,6 +31,11 @@ export interface CfAccountConfig {
   parts?: string[];
   /** Default `"zones"`. */
   reach?: CfReach;
+  /**
+   * Repositories and branches this account deploys from (`{"owner/name": ["main"]}`): `cf_api` reads a Worker's
+   * modules (`form.files[].source`) and static assets (`assets`) from them with the server's GitHub token.
+   */
+  sources?: CfSources;
 }
 
 /**
@@ -521,10 +527,44 @@ export interface CfRequest {
   body?: string;
   form?: FormData;
   formSha256?: string;
+  /** Static assets to upload before a Worker script, attached to it by the completion token (never handed back). */
+  assets?: { files: StaticAsset[]; config?: Record<string, unknown> };
+}
+
+/** A Worker script upload: the only call static assets go with. */
+const SCRIPT_UPLOAD =
+  /^\/accounts\/[0-9a-f]{32}\/workers\/(?:dispatch\/namespaces\/[A-Za-z0-9._~-]+\/)?scripts\/[A-Za-z0-9._~-]+$/;
+
+/**
+ * Static assets ride only with a Worker script upload (PUT) whose form holds a JSON `metadata` field that neither
+ * attaches assets itself nor keeps the old ones: the tool attaches what it uploads.
+ */
+export function checkAssets(method: CfMethod, path: string, args: Record<string, unknown>): void {
+  if (method !== 'PUT' || !SCRIPT_UPLOAD.test(path)) {
+    throw new CfError('assets go only with PUT /accounts/<id>/workers/scripts/<name>');
+  }
+  const metadata = ((args.form as { fields?: Record<string, unknown> } | undefined)?.fields ?? {}).metadata;
+  let parsed: unknown;
+  try {
+    parsed = typeof metadata === 'string' ? JSON.parse(metadata) : undefined;
+  } catch {
+    parsed = undefined;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new CfError('assets need form.fields.metadata: the script metadata as JSON text');
+  }
+  if ('assets' in parsed || 'keep_assets' in parsed) {
+    throw new CfError('with assets, the tool attaches them: leave assets and keep_assets out of the metadata');
+  }
 }
 
 /** Check a call before it is made: the method, the path, the query and the body or form; writes need `write`. */
-export function cfRequest(name: string, account: CfAccountConfig, args: Record<string, unknown>): CfRequest {
+export function cfRequest(
+  name: string,
+  account: CfAccountConfig,
+  args: Record<string, unknown>,
+  assets?: CfRequest['assets'],
+): CfRequest {
   const method = cfMethod(args.method);
   const segments = pathSegments(args.path);
   const target =
@@ -534,6 +574,7 @@ export function cfRequest(name: string, account: CfAccountConfig, args: Record<s
   if (method !== 'GET' && account.write !== true)
     throw new CfError(`account ${name} reads only (its cloudflare entry's write is not true)`);
   if (args.body !== undefined && args.form !== undefined) throw new CfError('send either body or form, not both');
+  if (assets) checkAssets(method, args.path as string, args);
   const form = formBody(method, args.form);
   return {
     method,
@@ -545,6 +586,7 @@ export function cfRequest(name: string, account: CfAccountConfig, args: Record<s
     query: queryString(args.query, target.addQuery),
     body: bodyText(method, args.body),
     ...(form ? { form: form.data, formSha256: form.sha256 } : {}),
+    ...(assets ? { assets } : {}),
   };
 }
 
@@ -675,6 +717,89 @@ function scrubBytes(bytes: Buffer, token: string): Buffer {
 /** Bytes handed back at most, so their base64 stays within `MAX_ANSWER_CHARS`. */
 const MAX_ANSWER_BYTES = Math.floor(MAX_ANSWER_CHARS / 4) * 3;
 
+/** A Cloudflare answer's `result`, read as JSON from a 2xx; anything else fails without a token in the message. */
+async function resultOf(res: CfResponse, what: string, secrets: string[]): Promise<Record<string, unknown>> {
+  let json: unknown;
+  try {
+    json = await res.json();
+  } catch {
+    json = undefined;
+  }
+  const result = (json as { success?: unknown; result?: unknown } | null)?.result;
+  if (res.status < 200 || res.status >= 300 || (json as { success?: unknown } | null)?.success === false || !result) {
+    let message = errorsOf(json, secrets[0] ?? '');
+    for (const secret of secrets) message = scrub(message, secret);
+    throw new CfError(`Cloudflare ${what} answered ${res.status}: ${message}; the script was not sent`);
+  }
+  return result as Record<string, unknown>;
+}
+
+/**
+ * Upload static assets for a Worker script and return the completion token that attaches them: open an upload
+ * session with the manifest (account token), upload the files Cloudflare asks for, bucket by bucket, with the
+ * session's own token, and keep the token from the last answer. Neither token is ever handed back.
+ */
+async function uploadAssets(fetch: CfFetch, account: CfAccountConfig, scriptPath: string, files: StaticAsset[]) {
+  const manifest = Object.fromEntries(files.map((f) => [f.path, { hash: f.hash, size: f.size }]));
+  const byHash = new Map(files.map((f) => [f.hash, f]));
+  const call = async (url: string, init: Parameters<CfFetch>[1], what: string) => {
+    try {
+      return await fetch(url, { ...init, signal: AbortSignal.timeout(CALL_TIMEOUT_MS), redirect: 'manual' });
+    } catch (err) {
+      throw new CfError(
+        `Cloudflare ${what} got no answer (${err instanceof Error ? err.name : 'error'}); the script was not sent`,
+      );
+    }
+  };
+  const session = await resultOf(
+    await call(
+      `${API}${scriptPath}/assets-upload-session`,
+      { method: 'POST', headers: headers(account, true), body: JSON.stringify({ manifest }) },
+      'assets upload session',
+    ),
+    'assets upload session',
+    [account.token],
+  );
+  let jwt = session.jwt;
+  const buckets = session.buckets ?? [];
+  if (typeof jwt !== 'string' || jwt === '' || !Array.isArray(buckets)) {
+    throw new CfError('Cloudflare opened no usable assets upload session; the script was not sent');
+  }
+  const sessionJwt = jwt;
+  for (const bucket of buckets) {
+    if (!Array.isArray(bucket) || bucket.length === 0) continue;
+    const data = new FormData();
+    for (const hash of bucket) {
+      const file = typeof hash === 'string' ? byHash.get(hash) : undefined;
+      if (!file)
+        throw new CfError('Cloudflare asked for an asset that was not in the manifest; the script was not sent');
+      data.append(hash, new Blob([file.base64], { type: file.type }), hash);
+    }
+    const uploaded = await resultOf(
+      await call(
+        `${API}/accounts/${account.id}/workers/assets/upload?base64=true`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${sessionJwt}`,
+            Accept: 'application/json',
+            'User-Agent': 'soma-work-server-tools',
+          },
+          body: data,
+        },
+        'assets upload',
+      ),
+      'assets upload',
+      [sessionJwt, account.token],
+    );
+    if (typeof uploaded.jwt === 'string' && uploaded.jwt !== '') jwt = uploaded.jwt;
+  }
+  if (buckets.some((b) => Array.isArray(b) && b.length > 0) && jwt === sessionJwt) {
+    throw new CfError('Cloudflare gave no completion token for the uploaded assets; the script was not sent');
+  }
+  return jwt;
+}
+
 /** Make a checked call. A write that gets no answer throws `CfOutcomeUnknownError`. */
 export async function cfCall(
   fetch: CfFetch,
@@ -683,6 +808,13 @@ export async function cfCall(
 ): Promise<{ status: number; truncated: boolean; body: unknown; encoding?: 'base64' }> {
   // Proven before the audit by the caller; asked again only if it was not (a proven zone is remembered).
   await cfProve(fetch, account, request);
+  if (request.assets && request.form) {
+    // The script is not sent yet: a failure here leaves nothing deployed.
+    const jwt = await uploadAssets(fetch, account, request.path, request.assets.files);
+    const metadata = JSON.parse(String(request.form.get('metadata'))) as Record<string, unknown>;
+    metadata.assets = { jwt, ...(request.assets.config ? { config: request.assets.config } : {}) };
+    request.form.set('metadata', JSON.stringify(metadata));
+  }
   const sent = request.form ?? request.body;
   let res: CfResponse;
   try {
