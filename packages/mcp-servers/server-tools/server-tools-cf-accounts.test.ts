@@ -1,0 +1,421 @@
+/**
+ * cf_api on several Cloudflare accounts per environment (`cloudflare.accounts`), each with its own token, and
+ * `reach: "account"`: everything the account's token can do on that account — its `/accounts/<id>/…` paths, its
+ * zones (proven to be its own), every zone part, multipart uploads (a Worker) and answers that are not JSON — except
+ * the paths that would hand a model a credential to use outside server-tools (tokens, members, service tokens, …).
+ */
+
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('@modelcontextprotocol/sdk/server/index.js', () => ({
+  Server: class {
+    setRequestHandler() {}
+    connect() {}
+  },
+}));
+vi.mock('@modelcontextprotocol/sdk/server/stdio.js', () => ({ StdioServerTransport: class {} }));
+vi.mock('@modelcontextprotocol/sdk/types.js', () => ({
+  CallToolRequestSchema: Symbol('CallToolRequestSchema'),
+  ListToolsRequestSchema: Symbol('ListToolsRequestSchema'),
+}));
+vi.mock('@soma/process-shared/stderr-logger.js', () => ({
+  StderrLogger: class {
+    debug() {}
+    info() {}
+    warn() {}
+    error() {}
+  },
+}));
+
+import type { CfFetch } from './env-cloudflare.js';
+import { handleCfApi, handleList, loadConfig, resetConfigCache } from './server-tools-mcp-server.js';
+
+const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'server-tools-cf-accounts-'));
+const CONFIG_FILE = path.join(ROOT, 'config.json');
+const SECRETS = path.join(ROOT, 'secrets');
+const AUDIT = path.join(ROOT, 'data', 'env-audit');
+const DEV_TOKEN = 'cf-dev-account-token-41';
+const HQ_TOKEN = 'cf-hq-account-token-77';
+const DEV = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const HQ = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+const LISTED_ZONE = '0123456789abcdef0123456789abcdef';
+const DEV_ZONE = '11111111111111111111111111111111';
+const HQ_ZONE = '22222222222222222222222222222222';
+const API = 'https://api.cloudflare.com/client/v4';
+const saved = { ...process.env };
+
+afterAll(() => fs.rmSync(ROOT, { recursive: true, force: true }));
+
+const accounts = (extra: Record<string, unknown> = {}) => ({
+  accounts: {
+    'iq-dev': {
+      token: { $secret: 'cf-dev' },
+      id: DEV,
+      reach: 'account',
+      write: true,
+      zones: { 'dev.example': LISTED_ZONE },
+    },
+    'iq-hq': { token: { $secret: 'cf-hq' }, id: HQ, reach: 'account' },
+    ...extra,
+  },
+});
+
+function writeConfig(cloudflare: Record<string, unknown>, more: Record<string, unknown> = {}) {
+  fs.writeFileSync(
+    CONFIG_FILE,
+    JSON.stringify({
+      'server-tools': {
+        dev2: {
+          envUser: 'env:acme-dev2',
+          ssh: { host: 'dev2' },
+          databases: { app: { type: 'mysql', host: 'h', port: 3306, user: 'u', password: 'p' } },
+          github: { token: { $secret: 'gh' }, repos: ['acme/app'] },
+          web: { logins: { qa: { url: 'https://x.example/login', body: { pw: { $secret: 'gh' } } } } },
+          cloudflare,
+        },
+        ...more,
+      },
+    }),
+  );
+  resetConfigCache();
+  loadConfig();
+}
+
+beforeEach(() => {
+  fs.mkdirSync(SECRETS, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(SECRETS, 'cf-dev'), `${DEV_TOKEN}\n`, { mode: 0o600 });
+  fs.writeFileSync(path.join(SECRETS, 'cf-hq'), `${HQ_TOKEN}\n`, { mode: 0o600 });
+  fs.writeFileSync(path.join(SECRETS, 'gh'), 'gh-token\n', { mode: 0o600 });
+  process.env.SOMA_CONFIG_FILE = CONFIG_FILE;
+  process.env.SOMA_SECRETS_DIR = SECRETS;
+  process.env.SOMA_AUDIT_DIR = AUDIT;
+  process.env.SOMA_REQUESTER = 'U123';
+  writeConfig(accounts());
+});
+
+afterEach(() => {
+  process.env = { ...saved };
+  fs.rmSync(path.join(ROOT, 'data'), { recursive: true, force: true });
+});
+
+interface Call {
+  url: string;
+  method: string;
+  auth?: string;
+  contentType?: string;
+  body?: unknown;
+}
+
+/** A Cloudflare double: a zone answers with its account; anything else with `answer`. */
+function cloudflare(
+  answer: { status?: number; json?: unknown; text?: string } = {},
+  zoneAccounts: Record<string, string> = { [DEV_ZONE]: DEV, [HQ_ZONE]: HQ, [LISTED_ZONE]: DEV },
+) {
+  const calls: Call[] = [];
+  const fetch: CfFetch = async (url, init) => {
+    calls.push({
+      url,
+      method: init.method,
+      auth: init.headers.Authorization,
+      contentType: init.headers['Content-Type'],
+      body: init.body,
+    });
+    const zone = /\/zones\/([0-9a-f]{32})$/.exec(url)?.[1];
+    if (init.method === 'GET' && zone && zoneAccounts[zone] && answer.json === undefined && answer.text === undefined) {
+      const body = JSON.stringify({ success: true, result: { id: zone, account: { id: zoneAccounts[zone] } } });
+      return { ok: true, status: 200, json: async () => JSON.parse(body), text: async () => body };
+    }
+    const status = answer.status ?? 200;
+    const raw = answer.text ?? JSON.stringify(answer.json ?? { success: true, result: [] });
+    return { ok: status < 300, status, json: async () => JSON.parse(raw), text: async () => raw };
+  };
+  return { fetch, calls };
+}
+
+const ledger = () =>
+  fs.existsSync(path.join(AUDIT, 'env-audit.jsonl'))
+    ? fs
+        .readFileSync(path.join(AUDIT, 'env-audit.jsonl'), 'utf8')
+        .trim()
+        .split('\n')
+        .map((l) => JSON.parse(l))
+    : [];
+const text = (out: { content: { text: string }[] }) => JSON.parse(out.content[0].text);
+const cf = (args: Record<string, unknown>, fetch: CfFetch) => handleCfApi({ server: 'dev2', ...args }, fetch);
+
+describe('cf_api — several accounts', () => {
+  it("calls the named account with that account's own token", async () => {
+    const { fetch, calls } = cloudflare({ json: { success: true, result: [{ id: 'w1' }] } });
+    await cf({ account: 'iq-hq', method: 'GET', path: `/accounts/${HQ}/workers/scripts` }, fetch);
+    await cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/d1/database` }, fetch);
+    expect(calls.map((c) => [c.url, c.auth])).toEqual([
+      [`${API}/accounts/${HQ}/workers/scripts`, `Bearer ${HQ_TOKEN}`],
+      [`${API}/accounts/${DEV}/d1/database`, `Bearer ${DEV_TOKEN}`],
+    ]);
+  });
+
+  it('needs the account named when there are several, and refuses one it does not have', async () => {
+    const { fetch, calls } = cloudflare();
+    await expect(cf({ method: 'GET', path: `/accounts/${HQ}` }, fetch)).rejects.toThrow(
+      /name one of its cloudflare accounts: iq-dev, iq-hq/,
+    );
+    await expect(cf({ account: 'iq-stage', method: 'GET', path: `/accounts/${HQ}` }, fetch)).rejects.toThrow(
+      /has no cloudflare account named iq-stage/,
+    );
+    expect(calls).toEqual([]);
+    // One account: it is the default.
+    writeConfig({ accounts: { 'iq-hq': { token: { $secret: 'cf-hq' }, id: HQ, reach: 'account' } } });
+    await cf({ method: 'GET', path: `/accounts/${HQ}` }, fetch);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("refuses another account's paths through an account entry", async () => {
+    const { fetch, calls } = cloudflare();
+    await expect(
+      cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${HQ}/workers/scripts` }, fetch),
+    ).rejects.toThrow(/is not account iq-dev/);
+    expect(calls).toEqual([]);
+  });
+
+  it('leaves out only the account whose secret does not resolve; the server and its other tools stay', async () => {
+    writeConfig(accounts({ 'iq-stage': { token: { $secret: 'cf-missing' }, id: DEV, reach: 'account' } }));
+    const config = loadConfig();
+    expect(config.dev2.databases?.app).toBeDefined();
+    expect(config.dev2.github).toBeDefined();
+    const { fetch } = cloudflare();
+    await cf({ account: 'iq-hq', method: 'GET', path: `/accounts/${HQ}` }, fetch);
+    await expect(cf({ account: 'iq-stage', method: 'GET', path: `/accounts/${DEV}` }, fetch)).rejects.toThrow(
+      /has no cloudflare account named iq-stage/,
+    );
+    // A token written into config.json leaves that account out.
+    writeConfig(accounts({ 'iq-plain': { token: 'raw-token-in-config', id: DEV, reach: 'account' } }));
+    await expect(cf({ account: 'iq-plain', method: 'GET', path: `/accounts/${DEV}` }, fetch)).rejects.toThrow(
+      /has no cloudflare account named iq-plain/,
+    );
+  });
+
+  it('refuses an account entry with reach "account" and no 32-hex id', async () => {
+    writeConfig({ accounts: { bad: { token: { $secret: 'cf-hq' }, id: 'IQ-hq', reach: 'account' } } });
+    const { fetch, calls } = cloudflare();
+    await expect(cf({ method: 'GET', path: `/accounts/${HQ}` }, fetch)).rejects.toThrow(/32-hex id/);
+    expect(calls).toEqual([]);
+  });
+
+  it('lists each server with its environment APIs: Cloudflare accounts, GitHub repos, web logins', () => {
+    const out = JSON.parse(handleList().content[0].text);
+    expect(out.servers[0]).toMatchObject({
+      name: 'dev2',
+      cloudflare: [
+        { account: 'iq-dev', reach: 'account', write: true },
+        { account: 'iq-hq', reach: 'account', write: false },
+      ],
+      github: ['acme/app'],
+      logins: ['qa'],
+    });
+    expect(JSON.stringify(out)).not.toContain(DEV_TOKEN);
+  });
+});
+
+describe('cf_api — reach "account"', () => {
+  it('reads and writes everything below the account, the write audited with its account', async () => {
+    const { fetch, calls } = cloudflare({ json: { success: true, result: { uuid: 'd1-1' } } });
+    await cf({ account: 'iq-dev', method: 'POST', path: `/accounts/${DEV}/d1/database`, body: { name: 'qa' } }, fetch);
+    await cf(
+      {
+        account: 'iq-dev',
+        method: 'PUT',
+        path: `/accounts/${DEV}/workers/scripts/api/secrets`,
+        body: { name: 'KEY', text: 'v', type: 'secret_text' },
+      },
+      fetch,
+    );
+    expect(calls.map((c) => c.method)).toEqual(['POST', 'PUT']);
+    expect(ledger().map((r) => [r.phase, r.action, r.detail.account, r.detail.path])).toEqual([
+      ['intent', 'POST', 'iq-dev', `/accounts/${DEV}/d1/database`],
+      ['done', 'POST', 'iq-dev', `/accounts/${DEV}/d1/database`],
+      ['intent', 'PUT', 'iq-dev', `/accounts/${DEV}/workers/scripts/api/secrets`],
+      ['done', 'PUT', 'iq-dev', `/accounts/${DEV}/workers/scripts/api/secrets`],
+    ]);
+  });
+
+  it('writes only on an account whose entry allows writes', async () => {
+    const { fetch, calls } = cloudflare();
+    await expect(
+      cf({ account: 'iq-hq', method: 'DELETE', path: `/accounts/${HQ}/workers/scripts/api` }, fetch),
+    ).rejects.toThrow(/reads only/);
+    expect(calls).toEqual([]);
+  });
+
+  it('reads the account and the account list, but never writes the account itself', async () => {
+    const { fetch, calls } = cloudflare();
+    await cf({ account: 'iq-dev', method: 'GET', path: '/accounts' }, fetch);
+    await cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}` }, fetch);
+    await expect(
+      cf({ account: 'iq-dev', method: 'PUT', path: `/accounts/${DEV}`, body: { name: 'x' } }, fetch),
+    ).rejects.toThrow(/account itself is never written/);
+    await expect(cf({ account: 'iq-dev', method: 'POST', path: '/accounts', body: {} }, fetch)).rejects.toThrow(
+      /account list is read only/,
+    );
+    expect(calls).toHaveLength(2);
+  });
+
+  it("lists the account's zones only, adding the account to the query", async () => {
+    const { fetch, calls } = cloudflare();
+    await cf({ account: 'iq-hq', method: 'GET', path: '/zones', query: { per_page: 50 } }, fetch);
+    expect(calls[0].url).toBe(`${API}/zones?per_page=50&account.id=${HQ}`);
+    await expect(
+      cf({ account: 'iq-hq', method: 'GET', path: '/zones', query: { 'account.id': DEV } }, fetch),
+    ).rejects.toThrow(/account.id must be this account/);
+    await expect(cf({ account: 'iq-dev', method: 'POST', path: '/zones', body: { name: 'x' } }, fetch)).rejects.toThrow(
+      /zone itself is never written/,
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it('reaches a zone it does not list once Cloudflare says the zone is this account’s, and remembers it', async () => {
+    const { fetch, calls } = cloudflare();
+    await cf({ account: 'iq-hq', method: 'GET', path: `/zones/${HQ_ZONE}/rulesets` }, fetch);
+    await cf({ account: 'iq-hq', method: 'GET', path: `/zones/${HQ_ZONE}/custom_hostnames` }, fetch);
+    expect(calls.map((c) => c.url)).toEqual([
+      `${API}/zones/${HQ_ZONE}`,
+      `${API}/zones/${HQ_ZONE}/rulesets`,
+      `${API}/zones/${HQ_ZONE}/custom_hostnames`,
+    ]);
+    expect(calls.every((c) => c.auth === `Bearer ${HQ_TOKEN}`)).toBe(true);
+  });
+
+  it("refuses a zone of another account, after asking Cloudflare only for the zone's account", async () => {
+    writeConfig(accounts({ 'iq-hq': { token: { $secret: 'cf-hq' }, id: HQ, reach: 'account', write: true } }));
+    const { fetch, calls } = cloudflare();
+    await expect(
+      cf({ account: 'iq-hq', method: 'POST', path: `/zones/${DEV_ZONE}/dns_records`, body: {} }, fetch),
+    ).rejects.toThrow(/is not a zone of account iq-hq/);
+    expect(calls.map((c) => [c.method, c.url])).toEqual([['GET', `${API}/zones/${DEV_ZONE}`]]);
+    expect(ledger()).toEqual([]);
+  });
+
+  it('reaches a listed zone without asking, and every part of it', async () => {
+    const { fetch, calls } = cloudflare({ json: { success: true, result: [] } });
+    await cf({ account: 'iq-dev', method: 'GET', path: `/zones/${LISTED_ZONE}/logpush/jobs` }, fetch);
+    expect(calls.map((c) => c.url)).toEqual([`${API}/zones/${LISTED_ZONE}/logpush/jobs`]);
+    await expect(cf({ account: 'iq-dev', method: 'DELETE', path: `/zones/${LISTED_ZONE}` }, fetch)).rejects.toThrow(
+      /zone itself is never written/,
+    );
+  });
+
+  it('never reaches a path that hands out a credential or changes who is a member', async () => {
+    const { fetch, calls } = cloudflare();
+    for (const p of [
+      `/accounts/${DEV}/tokens`,
+      `/accounts/${DEV}/tokens/verify`,
+      `/accounts/${DEV}/members`,
+      `/accounts/${DEV}/access/service_tokens`,
+      `/accounts/${DEV}/cfd_tunnel/t1/token`,
+      `/accounts/${DEV}/r2/temp-access-credentials`,
+      `/accounts/${DEV}/stream/keys`,
+      `/accounts/${DEV}/images/v1/keys`,
+      `/accounts/${DEV}/Tokens`,
+      `/zones/${LISTED_ZONE}/access/apps/x/tokens`,
+    ]) {
+      await expect(cf({ account: 'iq-dev', method: 'GET', path: p }, fetch)).rejects.toThrow(/never reachable/);
+    }
+    for (const p of ['/user/tokens', '/user', '/memberships', '/certificates', '/graphql']) {
+      await expect(cf({ account: 'iq-dev', method: 'GET', path: p }, fetch)).rejects.toThrow(/path must be/);
+    }
+    expect(calls).toEqual([]);
+    // A name that only contains such a word is not refused: a Worker named `token-refresher`, a KV key list.
+    await cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/workers/scripts/token-refresher` }, fetch);
+    await cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/storage/kv/namespaces/n1/keys` }, fetch);
+    expect(calls).toHaveLength(2);
+  });
+});
+
+describe('cf_api — uploads and answers that are not JSON', () => {
+  const worker = {
+    fields: { metadata: JSON.stringify({ main_module: 'worker.js', compatibility_date: '2026-11-01' }) },
+    files: [
+      { name: 'worker.js', filename: 'worker.js', type: 'application/javascript+module', text: 'export default {}' },
+    ],
+  };
+
+  it('uploads a Worker as multipart form data, audited with a digest of what was sent', async () => {
+    const { fetch, calls } = cloudflare({ json: { success: true, result: { id: 'api' } } });
+    await cf({ account: 'iq-dev', method: 'PUT', path: `/accounts/${DEV}/workers/scripts/api`, form: worker }, fetch);
+    const sent = calls[0];
+    expect(sent.contentType).toBeUndefined();
+    expect(sent.body).toBeInstanceOf(FormData);
+    const form = sent.body as FormData;
+    expect(form.get('metadata')).toBe(worker.fields.metadata);
+    const file = form.get('worker.js') as File;
+    expect(file.name).toBe('worker.js');
+    expect(file.type).toBe('application/javascript+module');
+    expect(await file.text()).toBe('export default {}');
+    const intent = ledger().find((r) => r.phase === 'intent');
+    expect(intent.detail.formSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(ledger().map((r) => r.phase)).toEqual(['intent', 'done']);
+  });
+
+  it('takes a file as base64 too, and refuses a form with a body, on a read, or with bad parts', async () => {
+    const { fetch, calls } = cloudflare({ json: { success: true, result: {} } });
+    await cf(
+      {
+        account: 'iq-dev',
+        method: 'PUT',
+        path: `/accounts/${DEV}/workers/scripts/api`,
+        form: { files: [{ name: 'a.wasm', filename: 'a.wasm', type: 'application/wasm', base64: 'AGFzbQ==' }] },
+      },
+      fetch,
+    );
+    const wasm = (calls[0].body as FormData).get('a.wasm') as File;
+    expect(Buffer.from(await wasm.arrayBuffer()).toString('hex')).toBe('0061736d');
+    const path_ = `/accounts/${DEV}/workers/scripts/api`;
+    await expect(cf({ account: 'iq-dev', method: 'PUT', path: path_, form: worker, body: {} }, fetch)).rejects.toThrow(
+      /either body or form/,
+    );
+    await expect(cf({ account: 'iq-dev', method: 'GET', path: path_, form: worker }, fetch)).rejects.toThrow(
+      /only sent with POST, PUT or PATCH/,
+    );
+    await expect(
+      cf(
+        { account: 'iq-dev', method: 'PUT', path: path_, form: { files: [{ name: 'a', filename: '../x', text: '' }] } },
+        fetch,
+      ),
+    ).rejects.toThrow(/filename/);
+    await expect(
+      cf(
+        {
+          account: 'iq-dev',
+          method: 'PUT',
+          path: path_,
+          form: { files: [{ name: 'a', filename: 'a', text: 'x', base64: 'eA==' }] },
+        },
+        fetch,
+      ),
+    ).rejects.toThrow(/text or base64/);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('returns a read whose answer is not JSON as text, without the token', async () => {
+    const { fetch } = cloudflare({ text: `export default { fetch() { return "${HQ_TOKEN}" } }` });
+    const out = await cf(
+      { account: 'iq-hq', method: 'GET', path: `/accounts/${HQ}/workers/scripts/api/content/v2` },
+      fetch,
+    );
+    expect(text(out)).toEqual({
+      status: 200,
+      truncated: false,
+      body: 'export default { fetch() { return "[redacted]" } }',
+    });
+  });
+
+  it('still takes a write whose answer is not JSON as unknown', async () => {
+    const { fetch } = cloudflare({ text: 'ok' });
+    await expect(
+      cf({ account: 'iq-dev', method: 'DELETE', path: `/accounts/${DEV}/workers/scripts/api` }, fetch),
+    ).rejects.toThrow(/may have been made/);
+    expect(ledger().map((r) => r.phase)).toEqual(['intent', 'unknown']);
+  });
+});

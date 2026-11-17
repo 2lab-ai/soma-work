@@ -9,11 +9,14 @@ import { StderrLogger } from '@soma/process-shared/stderr-logger.js';
 import { type ChildProcess, execFileSync, type SpawnSyncReturns, spawn, spawnSync } from 'child_process';
 import { appendAudit } from './env-audit.js';
 import {
+  type CfAccountConfig,
   CfError,
   type CfFetch,
   CfOutcomeUnknownError,
   cfCall,
+  cfProve,
   cfRequest,
+  cloudflareAccounts,
   type EnvCloudflareConfig,
 } from './env-cloudflare.js';
 import {
@@ -93,7 +96,10 @@ interface ServerConfig {
   databases?: Record<string, DatabaseConfig>;
   /** The environment's GitHub token and what it may approve and merge (`gh_pr`). */
   github?: EnvGithubConfig;
-  /** The environment's scoped Cloudflare token and zones (`cf_api`, env-access WU6, #1214). */
+  /**
+   * The environment's Cloudflare accounts (`cf_api`, env-access WU6, #1214): named accounts, each with its own scoped
+   * token, or the original one-account shape (token and zones at the top, the account `default`).
+   */
   cloudflare?: EnvCloudflareConfig;
   /** The environment's web app accounts (`login`, WU3b): url, body (its password a `$secret`), where the session is. */
   web?: { logins?: Record<string, unknown> };
@@ -153,6 +159,46 @@ function withSecretLogins(name: string, server: unknown): unknown {
   return { ...(server as Record<string, unknown>), web: { ...web, logins: kept } };
 }
 
+/**
+ * An environment's Cloudflare tokens live in the secret store only, never in config.json (WU6, #1214). In the original
+ * one-account shape a token that is not a `{"$secret": …}` leaves the section out. With named accounts each account is
+ * resolved on its own: one whose token is not a reference, or whose secret is missing, is left out alone — the server
+ * and its other accounts and tools stay.
+ */
+function withSecretCloudflare(name: string, server: unknown): unknown {
+  const cloudflare = (server as { cloudflare?: unknown } | null)?.cloudflare;
+  if (!cloudflare || typeof cloudflare !== 'object') return server;
+  const { cloudflare: _section, ...rest } = server as Record<string, unknown>;
+  const accounts = (cloudflare as { accounts?: unknown }).accounts;
+  if (accounts === undefined) {
+    if (isSecretRef((cloudflare as { token?: unknown }).token)) return server;
+    configLogger.warn(`server "${name}": cloudflare left out — cloudflare.token must be {"$secret": "<name>"}`);
+    return rest;
+  }
+  if (!accounts || typeof accounts !== 'object' || Array.isArray(accounts)) {
+    configLogger.warn(
+      `server "${name}": cloudflare left out — cloudflare.accounts must be an object of named accounts`,
+    );
+    return rest;
+  }
+  const kept: Record<string, unknown> = {};
+  for (const [account, entry] of Object.entries(accounts as Record<string, unknown>)) {
+    if (!isSecretRef((entry as { token?: unknown } | null)?.token)) {
+      configLogger.warn(
+        `server "${name}": cloudflare account "${account}" left out — its token must be {"$secret": "<name>"}`,
+      );
+      continue;
+    }
+    try {
+      kept[account] = resolveSecretRefs(entry, process.env.SOMA_SECRETS_DIR);
+    } catch (error) {
+      if (!(error instanceof SecretRefError)) throw error;
+      configLogger.warn(`server "${name}": cloudflare account "${account}" left out: ${error.message}`);
+    }
+  }
+  return { ...rest, cloudflare: { ...(cloudflare as Record<string, unknown>), accounts: kept } };
+}
+
 function resolveServerSecrets(servers: Record<string, unknown>): ServerToolsConfig {
   const out: ServerToolsConfig = {};
   for (const [name, entry] of Object.entries(servers)) {
@@ -164,13 +210,7 @@ function resolveServerSecrets(servers: Record<string, unknown>): ServerToolsConf
       const { github: _dropped, ...rest } = entry as Record<string, unknown>;
       server = rest;
     }
-    // The same for its Cloudflare token (WU6, #1214).
-    const cloudflare = (server as { cloudflare?: { token?: unknown } } | null)?.cloudflare;
-    if (cloudflare && typeof cloudflare === 'object' && !isSecretRef(cloudflare.token)) {
-      configLogger.warn(`server "${name}": cloudflare left out — cloudflare.token must be {"$secret": "<name>"}`);
-      const { cloudflare: _dropped, ...rest } = server as Record<string, unknown>;
-      server = rest;
-    }
+    server = withSecretCloudflare(name, server);
     server = withSecretLogins(name, server);
     try {
       out[name] = resolveSecretRefs(server, process.env.SOMA_SECRETS_DIR) as ServerConfig;
@@ -503,14 +543,36 @@ function toDockerTime(value: string): string {
 
 // ── Tool Handlers ──────────────────────────────────────────
 
+/**
+ * The environment APIs a server holds, without any secret: its Cloudflare accounts (name, reach, writes), the GitHub
+ * repositories its token acts on, and its web login names. Only the ones it has.
+ */
+function envApis(srv: ServerConfig): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const accounts = Object.entries(cloudflareAccounts(srv.cloudflare)).map(([account, entry]) => ({
+    account,
+    reach: (entry as CfAccountConfig).reach === 'account' ? 'account' : 'zones',
+    write: (entry as CfAccountConfig).write === true,
+  }));
+  if (accounts.length > 0) out.cloudflare = accounts;
+  const repos = srv.github?.repos;
+  if (Array.isArray(repos) && repos.length > 0) out.github = repos.filter((r) => typeof r === 'string');
+  const logins = srv.web?.logins;
+  if (logins && typeof logins === 'object' && !Array.isArray(logins) && Object.keys(logins).length > 0) {
+    out.logins = Object.keys(logins);
+  }
+  return out;
+}
+
 export function handleList() {
   const config = loadConfig();
   const servers = Object.entries(config).map(([name, srv]) => ({
     name,
-    ssh_host: srv.ssh.host,
+    ssh_host: srv.ssh?.host,
     databases: srv.databases
       ? Object.entries(srv.databases).map(([dbName, dbCfg]) => ({ name: dbName, type: dbCfg.type }))
       : [],
+    ...envApis(srv),
   }));
   return {
     content: [{ type: 'text' as const, text: JSON.stringify({ servers }) }],
@@ -789,39 +851,75 @@ export async function handleGhRead(
 
 // ── cf_api: an environment's Cloudflare calls (env-access WU6, #1214) ──
 
-function envCloudflare(server: unknown): { name: string; config: ServerConfig; cloudflare: EnvCloudflareConfig } {
+function envCloudflare(
+  server: unknown,
+  accountArg: unknown,
+): { name: string; config: ServerConfig; account: string; cloudflare: CfAccountConfig } {
   const config = loadConfig();
   if (typeof server !== 'string' || !Object.keys(config).includes(server)) throw new Error(`Unknown server: ${server}`);
-  const cloudflare = config[server].cloudflare;
-  const zones = cloudflare?.zones;
+  const accounts = cloudflareAccounts(config[server].cloudflare);
+  const names = Object.keys(accounts);
+  if (names.length === 0) throw new Error(`Server ${server} has no cloudflare section (an account with a token)`);
+  let account: string;
+  if (accountArg === undefined || accountArg === '') {
+    if (names.length !== 1) {
+      throw new Error(`Server ${server}: name one of its cloudflare accounts: ${names.join(', ')}`);
+    }
+    account = names[0];
+  } else {
+    if (typeof accountArg !== 'string' || !names.includes(accountArg)) {
+      throw new Error(
+        `Server ${server} has no cloudflare account named ${String(accountArg)} (it has: ${names.join(', ')})`,
+      );
+    }
+    account = accountArg;
+  }
+  const entry = accounts[account] as CfAccountConfig | null;
+  const zones = entry?.zones;
   const zonesOk =
-    !!zones &&
-    typeof zones === 'object' &&
-    !Array.isArray(zones) &&
-    Object.values(zones).every((id) => typeof id === 'string' && /^[0-9a-f]{32}$/.test(id));
-  if (!cloudflare || typeof cloudflare.token !== 'string' || !zonesOk) {
-    throw new Error(`Server ${server} has no cloudflare section (token and zones of 32-hex IDs)`);
+    zones === undefined ||
+    (!!zones &&
+      typeof zones === 'object' &&
+      !Array.isArray(zones) &&
+      Object.values(zones).every((id) => typeof id === 'string' && /^[0-9a-f]{32}$/.test(id)));
+  const reach = entry?.reach ?? 'zones';
+  const zonesNamed = zones !== undefined && Object.keys(zones).length > 0;
+  if (
+    !entry ||
+    typeof entry.token !== 'string' ||
+    !zonesOk ||
+    (reach !== 'zones' && reach !== 'account') ||
+    (reach === 'zones' && !zonesNamed)
+  ) {
+    throw new Error(
+      `Server ${server} has no cloudflare section (token and zones of 32-hex IDs) for account ${account}`,
+    );
+  }
+  if (reach === 'account' && !(typeof entry.id === 'string' && /^[0-9a-f]{32}$/.test(entry.id))) {
+    throw new Error(`Server ${server}: cloudflare account ${account} with reach "account" needs its 32-hex id`);
   }
   // A string where a list belongs would match by substring (`"logpush_access"` → `access`): refuse the section.
-  const parts = cloudflare.parts;
+  const parts = entry.parts;
   if (parts !== undefined && !(Array.isArray(parts) && parts.every((p) => typeof p === 'string'))) {
     throw new Error(`Server ${server}: cloudflare.parts must be a list of strings`);
   }
-  return { name: server, config: config[server], cloudflare };
+  return { name: server, config: config[server], account, cloudflare: entry };
 }
 
 /**
- * One Cloudflare API call on one of the environment's zones, with its own scoped token (never shown). A read runs as
- * is; a write needs `cloudflare.write`, a requester, and the audit ledger before and after (a write with no answer is
- * recorded `unknown`). `fetchImpl` is for tests.
+ * One Cloudflare API call on one of the environment's Cloudflare accounts, with that account's own scoped token
+ * (never shown). A read runs as is; a write needs the account's `write`, a requester, and the audit ledger before and
+ * after (a write with no answer is recorded `unknown`). `fetchImpl` is for tests.
  */
 export async function handleCfApi(
   args: Record<string, unknown>,
   fetchImpl: CfFetch = globalThis.fetch as unknown as CfFetch,
 ) {
-  const env = envCloudflare(args.server);
+  const env = envCloudflare(args.server, args.account);
   try {
-    const request = cfRequest(env.cloudflare, args);
+    const request = cfRequest(env.account, env.cloudflare, args);
+    // A zone the account entry does not list must be the account's before anything is sent or written to the ledger.
+    await cfProve(fetchImpl, env.cloudflare, request);
     if (request.method === 'GET') {
       const answer = await cfCall(fetchImpl, env.cloudflare, request);
       return { content: [{ type: 'text' as const, text: JSON.stringify(answer) }] };
@@ -837,10 +935,12 @@ export async function handleCfApi(
     };
     // What was sent, without the body itself (it may hold a value the ledger should not keep): its SHA-256.
     const detail = {
-      zone: request.zone,
+      account: request.account,
+      ...(request.zone ? { zone: request.zone } : {}),
       path: request.path,
       ...(request.query ? { query: request.query.slice(1) } : {}),
       ...(request.body !== undefined ? { bodySha256: createHash('sha256').update(request.body).digest('hex') } : {}),
+      ...(request.formSha256 ? { formSha256: request.formSha256 } : {}),
     };
     try {
       appendAudit(process.env.SOMA_AUDIT_DIR, { ...audit, phase: 'intent', detail });
@@ -1472,21 +1572,40 @@ class ServerToolsMCPServer extends BaseMcpServer {
       {
         name: 'cf_api',
         description:
-          "Call the Cloudflare API on one of a server's environment zones with the environment's own scoped token " +
-          '(never shown): path /zones/<zone id>/… (dns_records, settings, purge_cache, …), method GET, or POST/PUT/' +
-          'PATCH/DELETE when the environment allows writes (audited). Token, user and member paths are never ' +
-          "reachable. Returns {status, truncated, body}. Admins, or a user the environment's admin approved.",
+          "Call the Cloudflare API on one of a server's Cloudflare accounts (see list) with that account's own token " +
+          '(never shown). An account with reach "zones" reaches /zones/<one of its zones>/… (dns_records, settings, ' +
+          'purge_cache, …); one with reach "account" reaches everything its token can do on that account: ' +
+          '/accounts/<its id>/… (workers, d1, kv, r2, pages, queues, …), /zones (its zones) and /zones/<its zone>/… ' +
+          '(every part). GET, or POST/PUT/PATCH/DELETE when the account allows writes (audited). A JSON body goes in ' +
+          'body; a multipart upload (a Worker: a metadata field and its module files) goes in form. Paths that hand ' +
+          'out a credential (tokens, members, service tokens, tunnel tokens, R2 access keys, signing keys), user ' +
+          'paths, and creating or deleting the account or a zone are never reachable. Returns {status, truncated, ' +
+          "body} (body is text when the answer is not JSON). Admins, or a user the environment's admin approved.",
         inputSchema: {
           type: 'object',
           properties: {
             server: {
               type: 'string',
-              description: 'Server name from config (see list) whose cloudflare section to use.',
+              description: 'Server name from config (see list) whose cloudflare accounts to use.',
+            },
+            account: {
+              type: 'string',
+              description: "One of the server's cloudflare account names (see list); needed when it has several.",
             },
             method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] },
-            path: { type: 'string', description: '/zones/<zone id>/… — no query string; put parameters in query.' },
+            path: {
+              type: 'string',
+              description: '/accounts/<account id>/… or /zones/<zone id>/… — no query string; put parameters in query.',
+            },
             query: { type: 'object', description: 'Query parameters (strings, numbers, booleans).' },
             body: { type: 'object', description: 'JSON body for POST, PUT or PATCH.' },
+            form: {
+              type: 'object',
+              description:
+                'Multipart body for POST, PUT or PATCH instead of body: {"fields": {"metadata": "<JSON text>"}, ' +
+                '"files": [{"name": "worker.js", "filename": "worker.js", "type": "application/javascript+module", ' +
+                '"text": "…"}]}. A file gives its content as text or base64. At most 10 MiB.',
+            },
           },
           required: ['server', 'method', 'path'],
         },
