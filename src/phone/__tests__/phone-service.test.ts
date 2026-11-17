@@ -100,22 +100,23 @@ function serverTools(phone: Record<string, unknown> = {}) {
   };
 }
 
-/** Timers the test fires by hand. */
+/** A manual clock for the service's timers: advance(ms) fires exactly the timers whose deadline has come. */
 class Timers {
-  pending: { fn: () => void; ms: number; id: number }[] = [];
+  now = 0;
+  pending: { fn: () => void; at: number; id: number }[] = [];
   private seq = 0;
   set = (fn: () => void, ms: number) => {
     const id = ++this.seq;
-    this.pending.push({ fn, ms, id });
+    this.pending.push({ fn, at: this.now + ms, id });
     return id;
   };
   clear = (id: unknown) => {
     this.pending = this.pending.filter((t) => t.id !== id);
   };
-  /** Fire every timer of at least `ms`. */
-  fire(ms: number) {
-    const due = this.pending.filter((t) => t.ms >= ms);
-    this.pending = this.pending.filter((t) => t.ms < ms);
+  advance(ms: number) {
+    this.now += ms;
+    const due = this.pending.filter((t) => t.at <= this.now);
+    this.pending = this.pending.filter((t) => t.at > this.now);
     for (const t of due) t.fn();
   }
 }
@@ -313,7 +314,10 @@ describe('PhoneService', () => {
     await svc.start();
     await agents[0].incoming?.(incoming('IN1', []));
     expect(await svc.dial(request() as never)).toMatchObject({ ok: false, error: expect.stringContaining('busy') });
-    timers.fire(10_000); // the SDK never started IN1 (it ended during screening)
+    // The SDK never starts IN1 (it ended during screening): the hold lapses after 10 s, not before.
+    timers.advance(9_999);
+    expect(await svc.dial(request() as never)).toMatchObject({ ok: false, error: expect.stringContaining('busy') });
+    timers.advance(1);
     expect(await svc.dial(request() as never)).toMatchObject({ ok: true });
     await svc.stop();
   });
@@ -346,7 +350,10 @@ describe('PhoneService', () => {
     const { svc, store, released, timers } = make();
     await svc.start();
     await svc.dial(request() as never);
-    timers.fire(45_000);
+    // 45 s of ringing + 30 s of grace for the platform's own final event, then the watchdog — not before.
+    timers.advance(74_999);
+    expect(store.get('CA1')?.status).toBe('dialing');
+    timers.advance(1);
     await new Promise((r) => setTimeout(r, 0));
     expect(store.get('CA1')).toMatchObject({ status: 'ended', endedStatus: 'no-answer' });
     expect(released).toEqual(['U0REQ']);

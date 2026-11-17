@@ -116,7 +116,11 @@ export async function requestCall(
         await sleep(POLL_MS);
         continue;
       }
-      fs.rmSync(resultFile, { force: true });
+      try {
+        fs.rmSync(resultFile, { force: true });
+      } catch {
+        // Tidying only: a placed call must never turn into a failure (a retry would dial again).
+      }
       if (!result.ok || !result.callId)
         throw new PhoneToolError(`not dialed: ${result.error ?? 'the phone service refused'}`);
       return { rid, callId: result.callId };
@@ -211,8 +215,10 @@ export async function readCalls(
   let names: string[] = [];
   try {
     names = fs.readdirSync(phoneCallsDir(phoneDir)).filter((n) => n.endsWith('.json'));
-  } catch {
-    return { calls: [] };
+  } catch (err) {
+    // No directory yet = no calls yet. Anything else must not look like "no call was placed".
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { calls: [] };
+    throw new PhoneToolError(`phone_calls: the call records are unreadable (${(err as NodeJS.ErrnoException).code})`);
   }
   const calls = names
     .map((n) => readRecord(phoneDir, n.slice(0, -5)))

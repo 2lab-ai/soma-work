@@ -3749,25 +3749,33 @@ export function broadcastPhoneCallUpdate(call: PhoneCallSummaryLike): void {
   if (wsClients.size === 0) return;
   try {
     const payload = JSON.stringify({ type: 'phone_call_update', conversationId: call.conversationId ?? null, call });
-    let ownerId: string | undefined;
-    if (call.conversationId) {
-      for (const [, s] of getAllSessions()) {
-        if (s.conversationId === call.conversationId) {
-          ownerId = s.ownerId;
-          break;
+    const send = (ownerId: string | undefined) => {
+      for (const client of wsClients) {
+        const reader =
+          client.isAdmin || (!!client.userId && (client.userId === call.requester || client.userId === ownerId));
+        if (!reader) continue;
+        try {
+          client.send(payload);
+        } catch {
+          wsClients.delete(client);
         }
       }
+    };
+    if (!call.conversationId) return send(undefined);
+    for (const [, s] of getAllSessions()) {
+      if (s.conversationId === call.conversationId) return send(s.ownerId);
     }
-    for (const client of wsClients) {
-      const reader =
-        client.isAdmin || (!!client.userId && (client.userId === call.requester || client.userId === ownerId));
-      if (!reader) continue;
-      try {
-        client.send(payload);
-      } catch {
-        wsClients.delete(client);
-      }
-    }
+    // The conversation is no longer live (archived while the call ran): its owner is read from its record.
+    const conversationId = call.conversationId;
+    void getConversation(conversationId)
+      .then((record) => send(record?.ownerId))
+      .catch((error) => {
+        logger.warn('Phone call push: could not read the conversation — requester and admins only', {
+          conversationId,
+          error: String(error),
+        });
+        send(undefined);
+      });
   } catch (error) {
     logger.error('Failed to broadcast phone call update', error);
   }
@@ -24406,7 +24414,10 @@ function loadPhoneCall() {
     .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
     .then(function(data) {
       if (_phoneView !== v) return;
-      v.call = data && data.call ? data.call : null;
+      var call = data && data.call ? data.call : null;
+      // Refreshes can overlap and come back out of order: an older copy never replaces a newer one.
+      if (call && v.call && !phoneNewer(call, v.call)) return;
+      v.call = call;
       v.state = v.call ? 'ok' : 'error';
       renderPhoneDialog();
     })

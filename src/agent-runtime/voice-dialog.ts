@@ -74,8 +74,10 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
     return true;
   }
 
+  /** No more input: what is still queued is dropped (the call is over), and the iterator ends. */
   close(): void {
     this.closed = true;
+    this.items.length = 0;
     this.wake?.();
   }
 
@@ -190,7 +192,16 @@ export function openVoiceDialog(opts: VoiceDialogOptions): VoiceDialog {
         // Nothing was running, or the CLI is gone: either way there is nothing left to stop.
       }
     },
-    close: () => input.close(),
+    // Ending the input is only EOF — a reply being written would still finish, with its CLI. The call is over, so
+    // the query is closed too: process, MCP transport and pending requests go now.
+    close: () => {
+      input.close();
+      try {
+        q.close();
+      } catch {
+        // Already gone.
+      }
+    },
     events,
   };
 }

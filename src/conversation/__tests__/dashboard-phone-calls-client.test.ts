@@ -346,6 +346,32 @@ describe('live state (.prd/31 §5)', () => {
     expect(m.phoneCallsOf('c1')[0].status).toBe('ended');
   });
 
+  it('the open call view keeps the newest copy when two refreshes come back out of order', async () => {
+    const pending: Array<(v: unknown) => void> = [];
+    const view: Record<string, unknown> = { id: 'CA1', cid: 'c1', call: null, tab: 'call', state: 'loading' };
+    let renders = 0;
+    const m = load<{ loadPhoneCall(): void }>(['phoneNewer', 'loadPhoneCall'], [], {
+      _phoneView: view,
+      fetch: () =>
+        new Promise((r) => {
+          pending.push(r);
+        }),
+      renderPhoneDialog: () => {
+        renders++;
+      },
+      toNum: (v: unknown) => Number(v) || 0,
+    });
+    m.loadPhoneCall(); // a push while the call is up
+    m.loadPhoneCall(); // the push that the call ended
+    const answer = (call: Record<string, unknown>) => ({ ok: true, json: async () => ({ call }) });
+    pending[1](answer({ id: 'CA1', status: 'ended', updatedAt: 9 }));
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+    pending[0](answer({ id: 'CA1', status: 'active', updatedAt: 5 }));
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+    expect((view.call as { status: string }).status).toBe('ended');
+    expect(renders).toBe(1);
+  });
+
   it('a reader who scrolled up the call is left where they were when a new line arrives', () => {
     let html = 'v1';
     let body = { scrollTop: 0, clientHeight: 100, scrollHeight: 1000 };

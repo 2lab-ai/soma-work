@@ -234,6 +234,73 @@ describe('phone_call', () => {
     }
   });
 
+  it('an intent line that cannot be written stops the call before the daemon hears of it', async () => {
+    startDaemon(() => ({ ok: true, callId: 'CA88' }));
+    fs.mkdirSync(path.dirname(AUDIT), { recursive: true });
+    fs.writeFileSync(AUDIT, 'not a directory'); // the audit dir cannot be made
+    try {
+      await expect(handlePhoneCall({ server: '2lab-ai-dev', to: '010-1234-5678', purpose: '확인' })).rejects.toThrow(
+        /not dialed/,
+      );
+      await new Promise((r) => setTimeout(r, 100));
+      expect(seen).toEqual([]);
+    } finally {
+      fs.rmSync(AUDIT, { force: true });
+    }
+  });
+
+  it('a result file that cannot be removed does not hide a placed call', async () => {
+    const dir = path.join(PHONE, 'requests');
+    daemon = setInterval(() => {
+      let names: string[] = [];
+      try {
+        names = fs.readdirSync(dir);
+      } catch {
+        return;
+      }
+      for (const n of names) {
+        const m = /^([a-z0-9]+)\.json$/.exec(n);
+        if (!m) continue;
+        fs.rmSync(path.join(dir, n));
+        fs.writeFileSync(path.join(dir, `${m[1]}.result.json`), JSON.stringify({ ok: true, callId: 'CA66' }));
+        fs.chmodSync(dir, 0o500); // the directory turns read-only: the result stays where it is
+      }
+    }, 20);
+    try {
+      const placed = await requestCall(PHONE, {
+        env: 'e',
+        to: '01012345678',
+        title: '',
+        purpose: 'p',
+        maxMinutes: 1,
+        requester: 'U1',
+      });
+      expect(placed.callId).toBe('CA66');
+    } finally {
+      fs.chmodSync(dir, 0o700);
+    }
+  });
+
+  it('a request the daemon took but did not answer is reported as uncertain, not as "not dialed"', async () => {
+    const dir = path.join(PHONE, 'requests');
+    daemon = setInterval(() => {
+      let names: string[] = [];
+      try {
+        names = fs.readdirSync(dir);
+      } catch {
+        return;
+      }
+      for (const n of names) if (/^[a-z0-9]+\.json$/.test(n)) fs.renameSync(path.join(dir, n), path.join(dir, `x${n}`));
+    }, 20);
+    const err = await requestCall(
+      PHONE,
+      { env: 'e', to: '01012345678', title: '', purpose: 'p', maxMinutes: 1, requester: 'U1' },
+      300,
+    ).catch((e: Error) => e);
+    expect(String(err)).toMatch(/took the request but did not answer/);
+    expect(String(err)).not.toMatch(/not dialed/);
+  });
+
   it('withdraws the request when no daemon answers', async () => {
     await expect(
       requestCall(PHONE, { env: 'e', to: '01012345678', title: '', purpose: 'p', maxMinutes: 1, requester: 'U1' }, 200),
@@ -288,6 +355,15 @@ describe('phone_calls', () => {
   it('does not show another person’s call', async () => {
     writeCall('CA8', { requester: 'U999' });
     await expect(handlePhoneCalls({ server: '2lab-ai-dev', call_id: 'CA8' })).rejects.toThrow(/has no call CA8/);
+  });
+
+  it('call records that cannot be read are an error, not an empty history', async () => {
+    const calls = path.join(PHONE, 'calls');
+    fs.mkdirSync(path.dirname(calls), { recursive: true });
+    fs.writeFileSync(calls, 'not a directory');
+    await expect(handlePhoneCalls({ server: '2lab-ai-dev' })).rejects.toThrow(/unreadable/);
+    fs.rmSync(calls, { force: true });
+    expect(text((await handlePhoneCalls({ server: '2lab-ai-dev' })) as never).calls).toEqual([]); // none yet
   });
 
   it('a session with no requester reads no calls at all', async () => {

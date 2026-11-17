@@ -388,6 +388,36 @@ describe('task-visibility — board, live pushes and routes', () => {
     expect(calls(admin)).toEqual(['CA1', 'CA2']);
   });
 
+  it('the socket: a call from a conversation no longer live still reaches that conversation’s owner (from its record)', async () => {
+    CONVERSATIONS.set('conv-archived', conversation('archived', 'C_PUB'));
+    try {
+      const other = await connect(AS.other);
+      const owner = await connect(AS.owner);
+      await vi.waitFor(() => [other, owner].forEach((c) => expect(c.messages.length).toBeGreaterThan(0)));
+      dashboard.broadcastPhoneCallUpdate({
+        id: 'CA3',
+        env: 'e',
+        direction: 'outbound',
+        ourNumber: '07000000000',
+        peerNumber: '01000000000',
+        title: 't',
+        status: 'ended',
+        createdAt: 1,
+        requester: 'U_REQ',
+        conversationId: 'conv-archived',
+        tail: [],
+        lines: 0,
+      } as any);
+      await vi.waitFor(() =>
+        expect(owner.messages.filter((m) => m.type === 'phone_call_update').map((m) => m.call.id)).toEqual(['CA3']),
+      );
+      await flushAll([other, owner]);
+      expect(other.messages.some((m) => m.type === 'phone_call_update')).toBe(false);
+    } finally {
+      CONVERSATIONS.delete('conv-archived');
+    }
+  });
+
   it('a private task with no live session (archived) is read from its record: 404 to a stranger, its owner reads it', async () => {
     CONVERSATIONS.set('conv-gone', conversation('gone', 'C_PRIV'));
     try {

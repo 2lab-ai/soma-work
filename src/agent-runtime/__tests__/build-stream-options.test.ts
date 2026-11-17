@@ -317,6 +317,20 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
       expect(checkMcpToolPermission).not.toHaveBeenCalled();
     });
 
+    // .prd/30 D7: a phone call reaches a real person and costs money — an admin's, whatever the grants say.
+    it('denies a non-admin phone_call whatever the grants say; reading calls stays with the grants', async () => {
+      const checkMcpToolPermission = vi.fn(() => null);
+      const run = await mcpHook(makeDeps({ checkMcpToolPermission }));
+      const out = await run('mcp__server-tools__phone_call', {
+        server: '2lab-ai-dev',
+        to: '010-1234-5678',
+        purpose: 'p',
+      });
+      expect(out.hookSpecificOutput?.permissionDecision).toBe('deny');
+      expect(checkMcpToolPermission).not.toHaveBeenCalled();
+      expect(await run('mcp__server-tools__phone_calls', { server: '2lab-ai-dev' })).toEqual({ continue: true });
+    });
+
     it('denies a non-admin login whatever the grants say', async () => {
       const checkMcpToolPermission = vi.fn(() => null);
       const run = await mcpHook(makeDeps({ checkMcpToolPermission }));

@@ -108,6 +108,8 @@ SDK는 세션 객체 하나를 모든 통화에 쓴다. 그래서 래퍼 하나�
   `thinking: { type: 'disabled' }`, `env: buildQueryEnv(lease, { llmuxTenant })`, `persistSession: false`.
 - 이벤트: `text_delta`(stream_event의 text_delta) · `assistant_text`(완성 메시지) · `tool_use` · `turn_end`(result) · `error`.
 - `rules/auth.md`: SDK 런타임 import는 `src/agent-runtime/` 안에만 둔다.
+- `close()`는 입력을 닫고(대기 중인 입력은 버림) `query.close()`로 CLI까지 끝낸다 — 입력 종료는 EOF일 뿐이라 쓰던 답과
+  그 프로세스가 통화 뒤에도 남는다.
 
 ## 4. 데이터
 
@@ -194,7 +196,9 @@ type PhoneWorkEvent =
   통화는 마지막 턴에 붙는다. `convSlots`가 카드 HTML을 그린다.
 - 통화 보기: `<dialog id="phone-call-dialog">` — 머리글 + 탭(통화 = 말풍선 대화, 상대 왼쪽 · 에이전트 오른쪽, 위에 요약;
   작업 = 시간순 목록). 열린 동안 WS 갱신이 다시 읽어 그린다(0.5 s 묶음). `?phoneCall=<id>`로 바로 열린다.
-- 목록을 읽는 동안 온 WS 갱신은 덮이지 않는다: 응답과 캐시를 통화별로 합치고 `updatedAt`이 큰 쪽이 이긴다.
+- 목록을 읽는 동안 온 WS 갱신은 덮이지 않는다: 응답과 캐시를 통화별로 합치고 `updatedAt`이 큰 쪽이 이긴다. 열린 통화
+  보기의 새로 읽기도 겹쳐 순서가 바뀔 수 있어, 더 오래된 사본은 버린다.
+- WS 수신자의 "대화 주인"은 살아 있는 세션에서, 없으면(통화 중 보관됨) 대화 기록에서 읽는다.
 - 위로 스크롤해 읽는 사람은 새 줄이 와도 그 자리; 맨 아래에 있거나 새로 연 보기는 최신 줄을 따라간다.
 - 저장소 메모리: 살아 있는 통화와 아직 디스크에 못 쓴 기록만 둔다. 끝나고 쓴 기록은 디스크에서 읽는다. 쓰기
   실패는 dirty로 남아 5 s 뒤 · 종료 때 다시 쓴다.
