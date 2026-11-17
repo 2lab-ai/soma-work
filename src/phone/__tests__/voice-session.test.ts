@@ -130,7 +130,7 @@ function fakeCall() {
   return call;
 }
 
-function setup(plan: Partial<CallRunPlan> = {}, stt: string[] = []) {
+function setup(plan: Partial<CallRunPlan> = {}, stt: string[] = [], opts: { speakGate?: () => Promise<void> } = {}) {
   const clock = new Clock();
   const record: PhoneCallRecord = {
     id: 'CA1',
@@ -152,6 +152,7 @@ function setup(plan: Partial<CallRunPlan> = {}, stt: string[] = []) {
     },
     async speak(text) {
       spoken.push(text);
+      await opts.speakGate?.();
       const pcm = tone(400, 0.2); // 400 ms of speech per sentence = 20 frames of 160 B (identity codec)
       return {
         sampleRate: RATE,
@@ -334,6 +335,35 @@ describe('CallRun — a quiet line', () => {
     clock.advance(31_000);
     await settleAll();
     expect(call.hungUp).toBe(1);
+  });
+
+  it('never nudges while a later sentence of the same reply is still being spoken; nudges after it', async () => {
+    let slow = false;
+    let letGo!: () => void;
+    const { run, clock, dialog } = setup({ direction: 'inbound' }, [], {
+      speakGate: () =>
+        slow
+          ? new Promise<void>((r) => {
+              letGo = r;
+            })
+          : Promise.resolve(),
+    });
+    run.begin();
+    run.attach(fakeCall() as unknown as CallSessionLike);
+    // The first sentence is spoken while the model is still writing: the queue drains and the timer is armed.
+    dialog().emit({ type: 'text_delta', text: '정리해 드릴게요. ' });
+    await settleAll();
+    // The next sentence takes long to synthesize; the turn ends meanwhile (nothing is generating any more).
+    slow = true;
+    dialog().emit({ type: 'text_delta', text: '연락처와 용건을 담당자에게 그대로 전하겠습니다.' });
+    dialog().emit({ type: 'turn_end', isError: false });
+    await settleAll();
+    clock.advance(16_000); // past the timer armed after the first sentence
+    expect(dialog().sent.filter((t) => t === SILENCE_CUE)).toEqual([]);
+    letGo();
+    await settleAll();
+    clock.advance(16_000); // the reply has played out: now the line is quiet
+    expect(dialog().sent.filter((t) => t === SILENCE_CUE)).toEqual([SILENCE_CUE]);
   });
 
   it('after the inbound greeting, a silent caller is nudged', async () => {
