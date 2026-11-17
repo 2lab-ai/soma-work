@@ -423,7 +423,8 @@ An account entry with `"reach": "account"` needs its 32-hex account `id`. It rea
 - `GET /zones`. The tool adds `account.id=<id>` and `match=all`, refuses another value for either in `query`, and
   cuts the answer down to this account's zones.
 - `/zones/<zone>/…` for a zone the entry lists, or one Cloudflare says belongs to this account. The tool asks
-  `GET /zones/<zone>` with the entry's token once per process before the first call. This keeps one token that sees
+  `GET /zones/<zone>` with the entry's token once per process before the first call (concurrent calls share the
+question; a refusal or a failed lookup is asked again next time). This keeps one token that sees
   several accounts from acting on another account through this entry. Zone parts follow the same rule as
   `reach: "zones"`: the default list above plus what `parts` lists.
 
@@ -457,7 +458,7 @@ end). A form may hold
 up to 50 parts and 10 MiB. The ledger keeps one SHA-256 of the whole form (`formSha256`), not its content. A read whose
 answer is not JSON (a Worker's source, a KV value) comes back as text, token scrubbed, at most 200,000 characters
 (`truncated: true` when cut); an answer whose bytes are not UTF-8 (a binary KV value, an image) comes back as base64
-with `encoding: "base64"`;
+with `encoding: "base64"`, the token's bytes scrubbed and the bytes cut to 150,000 before encoding;
 an empty successful read comes back as `""`. A zone the entry does not list is refused when Cloudflare says it is
 another account's, and also, with "could not confirm", when the lookup fails (no answer, a non-2xx status, an
 unreadable answer); nothing is sent and nothing is written to the ledger, and the next call asks again. A

@@ -944,3 +944,51 @@ describe('cf_api — review-of-legends R6', () => {
     expect(calls).toHaveLength(1);
   });
 });
+
+// review-of-legends R7 (a3823c95): the token inside a binary answer, the binary cap, shared and retried zone proofs.
+describe('cf_api — review-of-legends R7', () => {
+  const bytesFetch =
+    (bytes: Buffer): CfFetch =>
+    async () => ({
+      ok: true,
+      status: 200,
+      arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+      json: async () => ({}),
+    });
+  const kv = `/accounts/${DEV}/storage/kv/namespaces/n1/values/k`;
+
+  it('scrubs the token from a binary answer before encoding it', async () => {
+    const bytes = Buffer.concat([Buffer.from([0xff, 0x00]), Buffer.from(DEV_TOKEN), Buffer.from([0xfe])]);
+    const out = text(await cf({ account: 'iq-dev', method: 'GET', path: kv }, bytesFetch(bytes)));
+    expect(out.encoding).toBe('base64');
+    const decoded = Buffer.from(out.body, 'base64');
+    expect(decoded.includes(Buffer.from(DEV_TOKEN))).toBe(false);
+    expect(decoded).toEqual(Buffer.concat([Buffer.from([0xff, 0x00]), Buffer.from('[redacted]'), Buffer.from([0xfe])]));
+  });
+
+  it('cuts a binary answer before encoding, within 200,000 characters of base64', async () => {
+    const bytes = Buffer.alloc(300_000, 0xff);
+    const out = text(await cf({ account: 'iq-dev', method: 'GET', path: kv }, bytesFetch(bytes)));
+    expect(out.truncated).toBe(true);
+    expect(out.body.length).toBeLessThanOrEqual(200_000);
+    expect(Buffer.from(out.body, 'base64')).toHaveLength(150_000);
+  });
+
+  it('shares one proof between concurrent calls, and asks again after a refusal', async () => {
+    writeConfig(accounts({ 'iq-hq': { token: { $secret: 'cf-hq' }, id: HQ, reach: 'account', write: true } }));
+    const { fetch, calls } = cloudflare({}, { [HQ_ZONE]: HQ, [DEV_ZONE]: DEV });
+    await Promise.all([
+      cf({ account: 'iq-hq', method: 'GET', path: `/zones/${HQ_ZONE}/dns_records` }, fetch),
+      cf({ account: 'iq-hq', method: 'GET', path: `/zones/${HQ_ZONE}/settings` }, fetch),
+    ]);
+    expect(calls.filter((c) => c.url === `${API}/zones/${HQ_ZONE}`)).toHaveLength(1);
+    // A zone Cloudflare said is another account's is asked again next time, never taken as proven.
+    for (let i = 0; i < 2; i++) {
+      await expect(
+        cf({ account: 'iq-hq', method: 'POST', path: `/zones/${DEV_ZONE}/dns_records`, body: {} }, fetch),
+      ).rejects.toThrow(/is not a zone of account iq-hq/);
+    }
+    expect(calls.filter((c) => c.url === `${API}/zones/${DEV_ZONE}`)).toHaveLength(2);
+    expect(ledger()).toEqual([]);
+  });
+});

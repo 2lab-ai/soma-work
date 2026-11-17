@@ -528,8 +528,11 @@ function headers(account: CfAccountConfig, json: boolean): Record<string, string
   };
 }
 
-/** Zones Cloudflare has said belong to an account, per fetch (one per process in production). */
-const provenZones = new WeakMap<CfFetch, Set<string>>();
+/**
+ * Zone proofs per fetch (one per process in production), by account and zone: a proof in flight is shared by
+ * concurrent calls; a failed one is forgotten, so the next call asks again.
+ */
+const provenZones = new WeakMap<CfFetch, Map<string, Promise<void>>>();
 
 /**
  * A zone the entry does not list is reached only when Cloudflare, asked with the entry's own token, says the zone's
@@ -537,14 +540,22 @@ const provenZones = new WeakMap<CfFetch, Set<string>>();
  */
 export async function cfProve(fetch: CfFetch, account: CfAccountConfig, request: CfRequest): Promise<void> {
   if (!request.prove) return;
-  const zone = request.prove;
-  let seen = provenZones.get(fetch);
-  if (!seen) provenZones.set(fetch, (seen = new Set()));
-  const key = `${account.id}/${zone}`;
-  if (seen.has(key)) return;
+  let proofs = provenZones.get(fetch);
+  if (!proofs) provenZones.set(fetch, (proofs = new Map()));
+  const key = `${account.id}/${request.prove}`;
+  let proof = proofs.get(key);
+  if (!proof) {
+    proof = askZoneAccount(fetch, account, request.prove, request.account);
+    proofs.set(key, proof);
+    proof.catch(() => proofs.delete(key));
+  }
+  return proof;
+}
+
+async function askZoneAccount(fetch: CfFetch, account: CfAccountConfig, zone: string, name: string): Promise<void> {
   // Fails closed either way; a lookup that failed says so instead of claiming the zone is another account's.
   const unconfirmed = (why: string) =>
-    new CfError(`could not confirm that ${zone} is a zone of account ${request.account} (${why}); nothing was sent`);
+    new CfError(`could not confirm that ${zone} is a zone of account ${name} (${why}); nothing was sent`);
   let res: CfResponse;
   try {
     res = await fetch(`${API}/zones/${zone}`, {
@@ -564,8 +575,7 @@ export async function cfProve(fetch: CfFetch, account: CfAccountConfig, request:
     throw unconfirmed('the answer could not be read');
   }
   if (typeof owner !== 'string') throw unconfirmed('the answer names no account');
-  if (owner !== account.id) throw new CfError(`${zone} is not a zone of account ${request.account}`);
-  seen.add(key);
+  if (owner !== account.id) throw new CfError(`${zone} is not a zone of account ${name}`);
 }
 
 /**
@@ -579,18 +589,37 @@ function keepOwn(json: unknown, keep: CfRequest['keep'], id: string | undefined)
   return { ...(json as Record<string, unknown>), result: own };
 }
 
-/** The answer as UTF-8 text, or as base64 when its bytes are not UTF-8. */
-async function readBody(res: CfResponse): Promise<{ text?: string; base64?: string }> {
+/** The answer as UTF-8 text, or its bytes when they are not UTF-8. */
+async function readBody(res: CfResponse): Promise<{ text?: string; bytes?: Buffer }> {
   if (typeof res.arrayBuffer === 'function') {
     const bytes = Buffer.from(await res.arrayBuffer());
     try {
       return { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes) };
     } catch {
-      return { base64: bytes.toString('base64') };
+      return { bytes };
     }
   }
   return { text: await (res.text as () => Promise<string>)() };
 }
+
+/** `scrub` for bytes: the token's UTF-8 bytes never leave in a binary answer either. */
+function scrubBytes(bytes: Buffer, token: string): Buffer {
+  if (!token) return bytes;
+  const needle = Buffer.from(token, 'utf8');
+  const mark = Buffer.from('[redacted]', 'utf8');
+  const parts: Buffer[] = [];
+  let at = 0;
+  for (let i = bytes.indexOf(needle); i !== -1; i = bytes.indexOf(needle, at)) {
+    parts.push(bytes.subarray(at, i), mark);
+    at = i + needle.length;
+  }
+  if (at === 0) return bytes;
+  parts.push(bytes.subarray(at));
+  return Buffer.concat(parts);
+}
+
+/** Bytes handed back at most, so their base64 stays within `MAX_ANSWER_CHARS`. */
+const MAX_ANSWER_BYTES = Math.floor(MAX_ANSWER_CHARS / 4) * 3;
 
 /** Make a checked call. A write that gets no answer throws `CfOutcomeUnknownError`. */
 export async function cfCall(
@@ -635,12 +664,12 @@ export async function cfCall(
   /** The raw answer when it is not JSON (a Worker's source, a log line): a read hands it back as text. */
   let raw: string | undefined;
   /** An answer that is not UTF-8 (a binary KV value, an image): a read hands it back as base64. */
-  let binary: string | undefined;
+  let binary: Buffer | undefined;
   if (typeof res.arrayBuffer === 'function' || typeof res.text === 'function') {
     try {
       const answer = await readBody(res);
-      if (answer.base64 !== undefined) {
-        binary = answer.base64;
+      if (answer.bytes !== undefined) {
+        binary = answer.bytes;
         readable = false;
       } else if (answer.text === '') {
         readable = false;
@@ -666,10 +695,11 @@ export async function cfCall(
     }
   }
   if (res.ok && request.method === 'GET' && binary !== undefined) {
-    const cut = MAX_ANSWER_CHARS - (MAX_ANSWER_CHARS % 4);
-    return binary.length > cut
-      ? { status: res.status, truncated: true, body: binary.slice(0, cut), encoding: 'base64' }
-      : { status: res.status, truncated: false, body: binary, encoding: 'base64' };
+    // The token is scrubbed from the bytes before they are cut and encoded: base64 would only hide it.
+    const clean = scrubBytes(binary, account.token);
+    const truncated = clean.length > MAX_ANSWER_BYTES;
+    const body = (truncated ? clean.subarray(0, MAX_ANSWER_BYTES) : clean).toString('base64');
+    return { status: res.status, truncated, body, encoding: 'base64' };
   }
   if (res.ok && request.method === 'GET' && raw !== undefined) {
     const text = scrub(raw, account.token);
