@@ -8,7 +8,7 @@
  * repositories and branches the account entry lists are read; the GitHub token never leaves server-tools.
  */
 
-import { createHash } from 'node:crypto';
+import { blake3 } from '@noble/hashes/blake3';
 import { CfError, type CfFetch, type CfResponse } from './env-cloudflare.js';
 
 const GITHUB = 'https://api.github.com';
@@ -247,8 +247,9 @@ export interface StaticAsset {
 }
 
 /**
- * Static assets as Cloudflare's upload takes them: hash = the first 32 hex characters of the SHA-256 of the file's
- * base64 followed by its extension (no dot), as wrangler computes it.
+ * Static assets as Cloudflare's upload takes them, hashed exactly as wrangler does (deploy-helpers `hashFile`,
+ * blake3-wasm): the first 32 hex characters of the BLAKE3 of the file's base64 followed by its extension (no dot).
+ * The same hash as wrangler's lets Cloudflare skip files a wrangler deploy already uploaded.
  */
 export function staticAssets(files: SourceFile[]): StaticAsset[] {
   return files.map(({ path, bytes }) => {
@@ -257,9 +258,8 @@ export function staticAssets(files: SourceFile[]): StaticAsset[] {
     const extension = dot > path.lastIndexOf('/') && dot >= 0 ? path.slice(dot + 1) : '';
     return {
       path: `/${path}`,
-      hash: createHash('sha256')
-        .update(base64 + extension)
-        .digest('hex')
+      hash: Buffer.from(blake3(Buffer.from(base64 + extension, 'utf8')))
+        .toString('hex')
         .slice(0, 32),
       size: bytes.length,
       type: MEDIA_TYPES[extension.toLowerCase()] ?? 'application/octet-stream',

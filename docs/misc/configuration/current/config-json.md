@@ -489,7 +489,7 @@ repository branches it deploys from, and `cf_api` reads the files from GitHub it
   whose `metadata` field is JSON without `assets` or `keep_assets`. `assets` names its own `repo` and `ref`, or
   neither (then `form.repo`'s). Every file below `dir` is listed from the commit's whole Git tree (a tree GitHub
   truncated is refused, so a deploy never goes out with files missing; symbolic links and submodules are refused by
-  their Git mode; up to 2000 files, 25 MiB each, 64 MiB in all, checked before reading), hashed as Cloudflare expects, uploaded
+  their Git mode; up to 2000 files, 25 MiB each, 64 MiB in all, checked before reading), hashed as wrangler hashes it (BLAKE3 of the base64 and extension, 32 hex), uploaded
   through an assets upload session, and attached to the script with the completion token. Neither the session nor
   the completion token is handed back; the intent line records the file count, bytes and a SHA-256 of the manifest.
   When an upload fails the script is not sent and the write is recorded `failed`.

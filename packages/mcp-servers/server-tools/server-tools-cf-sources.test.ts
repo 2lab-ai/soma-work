@@ -5,10 +5,10 @@
  * session and completion tokens are never handed back.
  */
 
-import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { blake3 } from '@noble/hashes/blake3';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@modelcontextprotocol/sdk/server/index.js', () => ({
@@ -44,6 +44,7 @@ const HQ = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const COMMIT = '0123456789abcdef0123456789abcdef01234567';
 const CF = 'https://api.cloudflare.com/client/v4';
 const GH = 'https://api.github.com';
+const WRANGLER_INDEX_HASH = '9a43f62b308ef20fc63d0b5eab6dbd1a';
 const SCRIPT = `/accounts/${HQ}/workers/scripts/site`;
 const saved = { ...process.env };
 
@@ -224,10 +225,10 @@ const deploy = (fetch: CfFetch, extra: Record<string, unknown> = {}) =>
     },
     fetch,
   );
+// As wrangler hashes a static asset: BLAKE3 of the base64 followed by the extension, the first 32 hex characters.
 const hashOf = (bytes: Buffer, ext: string) =>
-  createHash('sha256')
-    .update(bytes.toString('base64') + ext)
-    .digest('hex')
+  Buffer.from(blake3(Buffer.from(bytes.toString('base64') + ext, 'utf8')))
+    .toString('hex')
     .slice(0, 32);
 
 describe('cf_api sources — Worker modules from a repository branch', () => {
@@ -463,5 +464,23 @@ describe('cf_api sources — review R1', () => {
     const { fetch } = world({ onSession: () => (phases = ledger().map((r) => r.phase)) });
     await deploy(fetch, { assets });
     expect(phases).toEqual(['intent']);
+  });
+});
+
+// wrangler 4.163 (deploy-helpers hash.ts) hashes with blake3-wasm; a known vector pins the algorithm, not just this
+// file's own helper.
+describe("cf_api sources — the asset hash is wrangler's", () => {
+  it('hashes like wrangler: BLAKE3(base64 + extension), first 32 hex characters', async () => {
+    const { fetch, calls } = world({
+      files: {
+        'cloud/src/worker.mjs': REPO['cloud/src/worker.mjs'],
+        'cloud/src/a.mjs': REPO['cloud/src/a.mjs'],
+        'static/index.html': Buffer.from('<!doctype html>'),
+      },
+    });
+    await deploy(fetch, { assets: { dir: 'static' } });
+    const session = calls.find((c) => c.url.endsWith('/assets-upload-session')) as Call;
+    // blake3-wasm 2.1.5: hash(Buffer.from('<!doctype html>').toString('base64') + 'html').toString('hex').slice(0, 32)
+    expect(JSON.parse(String(session.body)).manifest['/index.html'].hash).toBe(WRANGLER_INDEX_HASH);
   });
 });
