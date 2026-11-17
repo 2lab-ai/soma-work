@@ -74,11 +74,10 @@ export const DEFAULT_PARTS: readonly string[] = [
  * The account parts `reach: "account"` reaches by default: what deploying and running an app on Cloudflare takes —
  * Workers (scripts, versions, deployments, secrets, routes, domains, Durable Objects), D1, KV (`storage`), R2, Pages,
  * Queues, Hyperdrive, Vectorize, Workers AI and AI Gateway, Workflows, Analytics Engine, Images, Lists (`rules`),
- * Browser Rendering. Anything else only when the operator lists it in `parts` (or `"*"` for every part), because an
- * answer there can carry another system's credential: Secondary DNS TSIG secrets, Stream live-input keys, Turnstile
- * widget secrets (`challenges`), Realtime TURN keys and app secrets (`calls`), logpush destinations, a tunnel created
- * with a chosen secret (`cfd_tunnel`), Zero Trust (`access`, `gateway`, `devices`), monitor headers
- * (`load_balancers`), mTLS certificates, billing and registrar.
+ * Browser Rendering. Anything else only when the operator lists it in `parts`: listing a part is the operator's
+ * decision that the environment may see what it answers, which for some parts (logpush destinations, monitor headers
+ * in `load_balancers`, alerting) can include another system's credential. Parts that issue credentials are never
+ * reachable, listed or not (`NEVER_PARTS`).
  */
 export const DEFAULT_ACCOUNT_PARTS: readonly string[] = [
   'workers',
@@ -97,6 +96,31 @@ export const DEFAULT_ACCOUNT_PARTS: readonly string[] = [
   'rules',
   'browser-rendering',
 ];
+
+/**
+ * Account parts that issue credentials for other systems, which not even `parts` opens: Realtime TURN keys and app
+ * secrets (`calls`), tunnels and WARP connectors (a tunnel's secret can be set by the caller and its token read),
+ * Secondary DNS TSIG secrets, Turnstile widget secrets (`challenges`), Stream live-input keys and signing keys, Zero
+ * Trust service tokens and device secrets (`access`, `gateway`, `devices`, `zerotrust`, `teamnet`), mTLS certificates,
+ * Magic IPsec pre-shared keys, and IAM user groups (who holds which permission).
+ */
+const NEVER_PARTS = new Set([
+  'calls',
+  'cfd_tunnel',
+  'tunnels',
+  'warp_connector',
+  'secondary_dns',
+  'challenges',
+  'stream',
+  'access',
+  'gateway',
+  'devices',
+  'zerotrust',
+  'teamnet',
+  'mtls_certificates',
+  'magic',
+  'iam',
+]);
 
 /**
  * Path segments that make a credential or change who is a member, under any account or zone: API tokens (and their
@@ -214,13 +238,12 @@ interface CfTarget {
   zone?: string;
   prove?: string;
   addQuery?: Record<string, string>;
-  keep?: 'accounts' | 'zones';
+  keep?: 'zones';
 }
 
-/** A part the entry reaches: a default one, one it lists, or any when it lists `"*"`. */
+/** A part the entry reaches: a default one, or one it lists. */
 function reachesPart(account: CfAccountConfig, defaults: readonly string[], part: string): boolean {
-  const listed = account.parts ?? [];
-  return defaults.includes(part) || listed.includes(part) || listed.includes('*');
+  return defaults.includes(part) || (account.parts ?? []).includes(part);
 }
 
 /**
@@ -245,19 +268,14 @@ function zonesTarget(account: CfAccountConfig, segments: string[], method: CfMet
   return { zone: zone[0] };
 }
 
-/** Tunnel collections: creating a tunnel answers with its connector token and credentials file. */
-const TUNNEL_PARTS = new Set(['cfd_tunnel', 'tunnels', 'warp_connector']);
-
 /**
- * A call that hands out a credential or changes who is a member: a `NEVER_SEGMENTS` segment, Stream and Images
- * signing keys (the private key comes back on creation), or creating a tunnel (`POST /accounts/<id>/cfd_tunnel`).
+ * A path that hands out a credential or changes who is a member: a `NEVER_SEGMENTS` segment, Stream and Images signing
+ * keys (the private key comes back on creation), or a `NEVER_PARTS` part of the account.
  */
-function handsOutCredential(segments: string[], method: CfMethod): boolean {
+function handsOutCredential(segments: string[]): boolean {
   const lower = segments.map((s) => s.toLowerCase());
-  const createsTunnel =
-    method === 'POST' && lower[0] === 'accounts' && lower.length === 3 && TUNNEL_PARTS.has(lower[2]);
   return (
-    createsTunnel ||
+    (lower[0] === 'accounts' && lower[2] !== undefined && NEVER_PARTS.has(lower[2])) ||
     lower.some(
       (s, i) =>
         NEVER_SEGMENTS.has(s) ||
@@ -288,6 +306,7 @@ const CREDENTIAL_FIELDS = new Set([
   'upload_url',
   'signed_url',
   'exchange_url',
+  'api_token',
 ]);
 
 function redactCredentials(value: unknown, depth = 0): unknown {
@@ -310,15 +329,13 @@ function redactCredentials(value: unknown, depth = 0): unknown {
 function accountTarget(name: string, account: CfAccountConfig, segments: string[], method: CfMethod): CfTarget {
   const shape = `path must be /accounts/<account ${name}>/…, /zones or /zones/<zone of account ${name}>/…`;
   if (segments[0] !== 'accounts' && segments[0] !== 'zones') throw new CfError(shape);
-  if (handsOutCredential(segments, method)) {
+  if (handsOutCredential(segments)) {
     throw new CfError('tokens, members, service tokens and other credentials are never reachable');
   }
   const part = segments[2];
   if (segments[0] === 'accounts') {
-    if (segments.length === 1) {
-      if (method !== 'GET') throw new CfError('the account list is read only');
-      return { keep: 'accounts' };
-    }
+    // The list of every account the token sees is not this account's: read /accounts/<id>.
+    if (segments.length === 1) throw new CfError(`the account list is not reachable: read /accounts/${account.id}`);
     if (segments[1] !== account.id) throw new CfError(`${segments[1]} is not account ${name}`);
     if (method !== 'GET' && segments.length === 2) throw new CfError('the account itself is never written');
     if (part !== undefined && !reachesPart(account, DEFAULT_ACCOUNT_PARTS, part)) {
@@ -466,8 +483,8 @@ export interface CfRequest {
   zone?: string;
   /** A zone not listed: Cloudflare must say it is this account's before the call. */
   prove?: string;
-  /** A list answer cut down to this account before it is handed back. */
-  keep?: 'accounts' | 'zones';
+  /** A zone list answer cut down to this account's zones before it is handed back. */
+  keep?: 'zones';
   query: string;
   body?: string;
   form?: FormData;
@@ -549,17 +566,13 @@ export async function cfProve(fetch: CfFetch, account: CfAccountConfig, request:
 }
 
 /**
- * A list of accounts or zones cut down to this account's: one token can see several accounts, and `GET /accounts` or
- * `GET /zones` answers with all it sees.
+ * A zone list cut down to this account's zones: one token can see several accounts. The query already asks for this
+ * account only (`account.id`, `match=all`); this holds even if Cloudflare ignored a filter.
  */
 function keepOwn(json: unknown, keep: CfRequest['keep'], id: string | undefined): unknown {
   const result = (json as { result?: unknown } | null)?.result;
   if (!keep || !Array.isArray(result)) return json;
-  const own = result.filter((r) =>
-    keep === 'accounts'
-      ? (r as { id?: unknown } | null)?.id === id
-      : (r as { account?: { id?: unknown } } | null)?.account?.id === id,
-  );
+  const own = result.filter((r) => (r as { account?: { id?: unknown } } | null)?.account?.id === id);
   return { ...(json as Record<string, unknown>), result: own };
 }
 

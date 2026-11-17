@@ -109,6 +109,19 @@ interface Call {
   body?: unknown;
 }
 
+/** Like a native fetch body, an answer can be read once: a second read throws. */
+function once<T extends { json(): Promise<unknown>; text(): Promise<string> }>(res: T): T {
+  let used = false;
+  const guard =
+    <R>(read: () => Promise<R>) =>
+    async () => {
+      if (used) throw new TypeError('Body is unusable: Body has already been read');
+      used = true;
+      return read();
+    };
+  return { ...res, json: guard(res.json), text: guard(res.text) };
+}
+
 /** A Cloudflare double: a zone answers with its account; anything else with `answer`. */
 function cloudflare(
   answer: { status?: number; json?: unknown; text?: string } = {},
@@ -126,11 +139,11 @@ function cloudflare(
     const zone = /\/zones\/([0-9a-f]{32})$/.exec(url)?.[1];
     if (init.method === 'GET' && zone && zoneAccounts[zone] && answer.json === undefined && answer.text === undefined) {
       const body = JSON.stringify({ success: true, result: { id: zone, account: { id: zoneAccounts[zone] } } });
-      return { ok: true, status: 200, json: async () => JSON.parse(body), text: async () => body };
+      return once({ ok: true, status: 200, json: async () => JSON.parse(body), text: async () => body });
     }
     const status = answer.status ?? 200;
     const raw = answer.text ?? JSON.stringify(answer.json ?? { success: true, result: [] });
-    return { ok: status < 300, status, json: async () => JSON.parse(raw), text: async () => raw };
+    return once({ ok: status < 300, status, json: async () => JSON.parse(raw), text: async () => raw });
   };
   return { fetch, calls };
 }
@@ -249,29 +262,20 @@ describe('cf_api — reach "account"', () => {
     expect(calls).toEqual([]);
   });
 
-  it('reads the account and the account list, but never writes the account itself', async () => {
-    // The token sees two accounts; the answer keeps this one.
-    const both = cloudflare({
-      json: {
-        success: true,
-        result: [
-          { id: DEV, name: 'IQ-dev' },
-          { id: HQ, name: 'IQ-hq' },
-        ],
-      },
-    });
-    const listed = await cf({ account: 'iq-dev', method: 'GET', path: '/accounts' }, both.fetch);
-    expect(text(listed).body.result).toEqual([{ id: DEV, name: 'IQ-dev' }]);
+  it('reads the account, never the list of every account, and never writes the account itself', async () => {
     const { fetch, calls } = cloudflare();
-    await cf({ account: 'iq-dev', method: 'GET', path: '/accounts' }, fetch);
+    // review-of-legends R5: a page of every account the token sees may not even hold this one.
+    await expect(cf({ account: 'iq-dev', method: 'GET', path: '/accounts' }, fetch)).rejects.toThrow(
+      /account list is not reachable: read \/accounts\/a{32}/,
+    );
     await cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}` }, fetch);
     await expect(
       cf({ account: 'iq-dev', method: 'PUT', path: `/accounts/${DEV}`, body: { name: 'x' } }, fetch),
     ).rejects.toThrow(/account itself is never written/);
     await expect(cf({ account: 'iq-dev', method: 'POST', path: '/accounts', body: {} }, fetch)).rejects.toThrow(
-      /account list is read only/,
+      /account list is not reachable/,
     );
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(1);
   });
 
   it("lists the account's zones only, adding the account to the query", async () => {
@@ -389,31 +393,35 @@ describe('cf_api — reach "account"', () => {
       await cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/${part}` }, fetch);
     }
     expect(calls).toHaveLength(8);
+    // Opt-in parts; the parts that issue credentials are never reachable at all.
+    for (const p of [`/accounts/${DEV}/logpush/jobs`, `/accounts/${DEV}/load_balancers/monitors`]) {
+      await expect(cf({ account: 'iq-dev', method: 'GET', path: p }, fetch)).rejects.toThrow(
+        /is not an account part cf_api reaches/,
+      );
+    }
     for (const p of [
       `/accounts/${DEV}/secondary_dns/tsigs`,
       `/accounts/${DEV}/stream/live_inputs`,
       `/accounts/${DEV}/challenges/widgets`,
       `/accounts/${DEV}/calls/apps`,
-      `/accounts/${DEV}/logpush/jobs`,
       `/accounts/${DEV}/cfd_tunnel`,
-      `/accounts/${DEV}/load_balancers/monitors`,
       `/accounts/${DEV}/access/apps`,
     ]) {
-      await expect(cf({ account: 'iq-dev', method: 'GET', path: p }, fetch)).rejects.toThrow(
-        /is not an account part cf_api reaches/,
-      );
+      await expect(cf({ account: 'iq-dev', method: 'GET', path: p }, fetch)).rejects.toThrow(/never reachable/);
     }
     expect(calls).toHaveLength(8);
     const entry = { token: { $secret: 'cf-dev' }, id: DEV, reach: 'account', write: true };
     writeConfig(accounts({ 'iq-dev': { ...entry, parts: ['logpush'] } }));
     await cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/logpush/jobs` }, fetch);
-    // "*" opens every part, and never a credential path.
-    writeConfig(accounts({ 'iq-dev': { ...entry, parts: ['*'] } }));
-    await cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/secondary_dns/tsigs` }, fetch);
-    await expect(cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/tokens` }, fetch)).rejects.toThrow(
-      /never reachable/,
+    // review-of-legends R5: no "every part" switch, and a part that issues credentials stays closed when listed.
+    writeConfig(accounts({ 'iq-dev': { ...entry, parts: ['*', 'secondary_dns', 'challenges'] } }));
+    for (const p of [`/accounts/${DEV}/secondary_dns/tsigs`, `/accounts/${DEV}/challenges/widgets`]) {
+      await expect(cf({ account: 'iq-dev', method: 'GET', path: p }, fetch)).rejects.toThrow(/never reachable/);
+    }
+    await expect(cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/email` }, fetch)).rejects.toThrow(
+      /is not an account part cf_api reaches/,
     );
-    expect(calls).toHaveLength(10);
+    expect(calls).toHaveLength(9);
   });
 });
 
@@ -522,14 +530,21 @@ describe('cf_api — uploads and answers that are not JSON', () => {
 describe('cf_api — review-of-legends R3', () => {
   const writable = { token: { $secret: 'cf-dev' }, id: DEV, reach: 'account', write: true };
 
-  it('never creates a tunnel, and hides credential fields in any answer, even with parts "*"', async () => {
-    writeConfig(accounts({ 'iq-dev': { ...writable, parts: ['*'] } }));
+  it('never reaches tunnels, even listed, and hides credential fields in any answer', async () => {
+    writeConfig(accounts({ 'iq-dev': { ...writable, parts: ['cfd_tunnel', 'tunnels', 'warp_connector'] } }));
     const { fetch, calls } = cloudflare();
     for (const part of ['cfd_tunnel', 'tunnels', 'warp_connector']) {
       await expect(
         cf({ account: 'iq-dev', method: 'POST', path: `/accounts/${DEV}/${part}`, body: { name: 't' } }, fetch),
       ).rejects.toThrow(/never reachable/);
     }
+    // review-of-legends R5: setting an existing tunnel's secret is closed too.
+    await expect(
+      cf(
+        { account: 'iq-dev', method: 'PATCH', path: `/accounts/${DEV}/cfd_tunnel/t1`, body: { tunnel_secret: 'x' } },
+        fetch,
+      ),
+    ).rejects.toThrow(/never reachable/);
     expect(calls).toEqual([]);
     expect(ledger()).toEqual([]);
     const answer = cloudflare({
@@ -546,7 +561,7 @@ describe('cf_api — review-of-legends R3', () => {
         ],
       },
     });
-    const out = await cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/cfd_tunnel` }, answer.fetch);
+    const out = await cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/workers/scripts` }, answer.fetch);
     expect(text(out).body.result).toEqual([
       {
         id: 't1',
@@ -698,7 +713,7 @@ describe('cf_api — review-of-legends R4', () => {
   const writable = { token: { $secret: 'cf-dev' }, id: DEV, reach: 'account', write: true };
 
   it('never reaches an endpoint that hands out a bearer URL, and hides bearer URLs in answers', async () => {
-    writeConfig(accounts({ 'iq-dev': { ...writable, parts: ['*'] } }));
+    writeConfig(accounts({ 'iq-dev': { ...writable, parts: ['stream'] } }));
     const { fetch, calls } = cloudflare();
     for (const [method, p] of [
       ['POST', `/accounts/${DEV}/images/v2/direct_upload`],
@@ -781,5 +796,74 @@ describe('cf_api — review-of-legends R4', () => {
       cf({ account: 'iq-dev', method: 'DELETE', path: `/accounts/${DEV}/workers/scripts/api` }, broken),
     ).rejects.toThrow(/may have been made/);
     expect(ledger().map((r) => r.phase)).toEqual(['intent', 'unknown']);
+  });
+});
+
+// review-of-legends R5 (53af8a86): parts that issue credentials stay closed when listed, the TURN api_token, isolation
+// between named zone-scoped accounts, and a KV value that looks like a failed envelope.
+describe('cf_api — review-of-legends R5', () => {
+  const writable = { token: { $secret: 'cf-dev' }, id: DEV, reach: 'account', write: true };
+
+  it('never reaches a part that issues credentials, even when the entry lists it', async () => {
+    const parts = ['calls', 'access', 'gateway', 'devices', 'mtls_certificates', 'magic', 'iam', 'stream'];
+    writeConfig(accounts({ 'iq-dev': { ...writable, parts } }));
+    const { fetch, calls } = cloudflare();
+    for (const p of [
+      `/accounts/${DEV}/calls/turn_keys`,
+      `/accounts/${DEV}/calls/apps`,
+      `/accounts/${DEV}/access/apps`,
+      `/accounts/${DEV}/gateway/rules`,
+      `/accounts/${DEV}/devices/policy`,
+      `/accounts/${DEV}/mtls_certificates`,
+      `/accounts/${DEV}/magic/ipsec_tunnels`,
+      `/accounts/${DEV}/iam/user_groups`,
+      `/accounts/${DEV}/stream/live_inputs`,
+    ]) {
+      await expect(cf({ account: 'iq-dev', method: 'POST', path: p, body: {} }, fetch)).rejects.toThrow(
+        /never reachable/,
+      );
+    }
+    expect(calls).toEqual([]);
+    expect(ledger()).toEqual([]);
+  });
+
+  it('hides an api_token field in any answer', async () => {
+    const { fetch } = cloudflare({ json: { success: true, result: { uid: 'k1', api_token: 'tk', name: 'n' } } });
+    const out = await cf({ account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/ai-gateway/gateways` }, fetch);
+    expect(text(out).body.result).toEqual({ uid: 'k1', api_token: '[redacted]', name: 'n' });
+  });
+
+  it("keeps named zone-scoped accounts apart: one never reaches the other's zones", async () => {
+    writeConfig({
+      accounts: {
+        a: { token: { $secret: 'cf-dev' }, zones: { 'a.example': DEV_ZONE }, write: true },
+        b: { token: { $secret: 'cf-hq' }, zones: { 'b.example': HQ_ZONE }, write: true },
+      },
+    });
+    const { fetch, calls } = cloudflare({ json: { success: true, result: {} } });
+    await cf({ account: 'a', method: 'POST', path: `/zones/${DEV_ZONE}/dns_records`, body: {} }, fetch);
+    await expect(
+      cf({ account: 'a', method: 'POST', path: `/zones/${HQ_ZONE}/dns_records`, body: {} }, fetch),
+    ).rejects.toThrow(/not one of this environment's zones/);
+    await expect(cf({ account: 'b', method: 'GET', path: `/accounts/${HQ}` }, fetch)).rejects.toThrow(
+      /path must be \/zones/,
+    );
+    expect(calls.map((c) => [c.url.replace(API, ''), c.auth])).toEqual([
+      [`/zones/${DEV_ZONE}/dns_records`, `Bearer ${DEV_TOKEN}`],
+    ]);
+    expect(ledger().map((r) => [r.phase, r.detail.account])).toEqual([
+      ['intent', 'a'],
+      ['done', 'a'],
+    ]);
+  });
+
+  it('hands back a KV value that is JSON with success: false as the value it is', async () => {
+    const value = { success: false, errors: ['app-level'], n: 1 };
+    const { fetch } = cloudflare({ json: value });
+    const out = await cf(
+      { account: 'iq-dev', method: 'GET', path: `/accounts/${DEV}/storage/kv/namespaces/n1/values/k` },
+      fetch,
+    );
+    expect(text(out)).toEqual({ status: 200, truncated: false, body: value });
   });
 });

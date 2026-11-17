@@ -411,15 +411,15 @@ repositories and its web login names — never a token. An account entry shows i
 
 An account entry with `"reach": "account"` needs its 32-hex account `id`. It reaches:
 
-- `GET /accounts` (cut down to this account, even when the token sees more) and `GET /accounts/<id>`.
+- `GET /accounts/<id>`. The list of every account (`GET /accounts`) is not reachable: a page of it may not even
+  hold this account.
 - `/accounts/<id>/<part>/…` for these parts by default: `workers` (scripts, versions, deployments, secrets, routes,
   domains, Durable Objects), `d1`, `storage` (KV), `r2`, `pages`, `queues`, `hyperdrive`, `vectorize`, `ai`,
   `ai-gateway`, `workflows`, `analytics_engine`, `images`, `rules` (lists), `browser-rendering`. Any other part only
-  when the entry lists it in `parts`, or `"*"` for every part. One `parts` list serves both levels: listing
-  `logpush` opens both the account's and its zones' logpush. They are opt-in because an answer there can carry
-  another system's credential: Secondary DNS TSIG secrets, Stream live-input keys, Turnstile secrets (`challenges`),
-  Realtime keys (`calls`), logpush destinations, tunnels (`cfd_tunnel`), Zero Trust (`access`, `gateway`, `devices`),
-  monitor headers (`load_balancers`).
+  when the entry lists it in `parts`; there is no "every part" switch. Listing a part is the operator's decision that
+  the environment may see what it answers, which for some parts (logpush destinations, monitor headers in
+  `load_balancers`, alerting) can include another system's credential. One `parts` list serves both levels: listing
+  `logpush` opens both the account's and its zones' logpush.
 - `GET /zones`. The tool adds `account.id=<id>` and `match=all`, refuses another value for either in `query`, and
   cuts the answer down to this account's zones.
 - `/zones/<zone>/…` for a zone the entry lists, or one Cloudflare says belongs to this account. The tool asks
@@ -427,25 +427,27 @@ An account entry with `"reach": "account"` needs its 32-hex account `id`. It rea
   several accounts from acting on another account through this entry. Zone parts follow the same rule as
   `reach: "zones"`: the default list above plus what `parts` lists.
 
-Whatever the reach, these paths are never reachable, because they would hand a model a credential to use outside
-server-tools, or change who is a member:
+Whatever the reach, these are never reachable, listed in `parts` or not, because they would hand a model a credential
+to use outside server-tools, or change who is a member:
 
+- Account parts that issue credentials for other systems: `calls` (TURN keys, app secrets), `cfd_tunnel`, `tunnels`,
+  `warp_connector` (a tunnel's token, and a secret the caller can set), `secondary_dns` (TSIG secrets), `challenges`
+  (Turnstile secrets), `stream` (live-input and signing keys), `access`, `gateway`, `devices`, `zerotrust`, `teamnet`
+  (Zero Trust service tokens and device secrets), `mtls_certificates`, `magic` (IPsec pre-shared keys), `iam` (who
+  holds which permission).
 - Any segment `tokens`, `token`, `service_tokens`, `members`, `memberships`, `temp-access-credentials`, `tails`
   (a Worker's live log stream), `upload-token` or `assets-upload-session` (Pages and Workers asset upload JWTs),
-  `direct_upload` (Images and Stream upload URLs), `deploy_hooks` (a Pages hook ID alone triggers a deployment) or
-  `edge-preview`, in any case, even with `parts: ["*"]`. A whole segment must match, so a Worker named
-  `token-refresher` stays reachable.
-- Stream and Images signing keys (`stream/keys`, `images/v1/keys`).
+  `direct_upload` (Images upload URLs), `deploy_hooks` (a Pages hook ID alone triggers a deployment) or
+  `edge-preview`, in any case. A whole segment must match, so a Worker named `token-refresher` stays reachable.
+- Images signing keys (`images/v1/keys`).
 - `/user…`, `/memberships`, `/graphql` and any path outside `/accounts` and `/zones`.
 - Writes to the account or a zone itself: creating, deleting, pausing or renaming them.
-- Creating a tunnel (`POST /accounts/<id>/cfd_tunnel`, `tunnels`, `warp_connector`): the answer carries the
-  connector's token and credentials file.
 
-Whatever the path, a JSON answer's credential fields are replaced with `[redacted]` before it is handed back:
-`token`, `secret`, `client_secret`, `tunnel_secret`, `credentials_file`, `private_key`, `custom_key`, `streamKey`,
-`passphrase`, `secret_access_key`, and bearer URLs `uploadURL`, `upload_url`, `signed_url`, `exchange_url` (any case,
-at any depth). So a part an operator opens, or `"*"`, still never hands
-a model a credential. Path segments may hold `@` for Workers AI model names (`/ai/run/@cf/meta/…`).
+As a second line, a JSON answer's credential fields are replaced with `[redacted]` before it is handed back: `token`,
+`api_token`, `secret`, `client_secret`, `tunnel_secret`, `credentials_file`, `private_key`, `custom_key`,
+`streamKey`, `passphrase`, `secret_access_key`, and bearer URLs `uploadURL`, `upload_url`, `signed_url`,
+`exchange_url` (any case, at any depth). Path segments may hold `@` for Workers AI model names
+(`/ai/run/@cf/meta/…`).
 
 Writes need the entry's `write: true` and go to the audit ledger as above. The ledger line also records `account`.
 `form` sends a multipart body instead of `body`, for example a Worker upload:
