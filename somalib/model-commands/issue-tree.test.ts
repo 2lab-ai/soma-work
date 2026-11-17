@@ -473,6 +473,10 @@ describe('issue tree — .prd/29 §3', () => {
     const loaded = sanitizeIssueTree(JSON.parse(JSON.stringify(t)));
     expect(loaded?.nodes.find((n) => n.id === issueTreeNodeId(pr(10)))?.statusReadAt).toBe(5_000);
     expect(issueTreeView(t).nodes.find((n) => n.id === issueTreeNodeId(pr(10)))).not.toHaveProperty('statusReadAt');
+    // A merge cannot be undone: a read that saw it merged is taken even when it began before the last state read.
+    upsertIssueTreeLink(t, { kind: 'pr', url: pr(11), status: 'open', statusReadAt: 200 }, now());
+    upsertIssueTreeLink(t, { kind: 'pr', url: pr(11), status: 'merged', statusReadAt: 100 }, now());
+    expect(t.nodes.find((n) => n.id === issueTreeNodeId(pr(11)))?.status).toBe('merged');
     // Merged stays final whatever the read time.
     upsertIssueTreeLink(t, { kind: 'pr', url: pr(10), status: 'merged', statusReadAt: 6_000 }, 6_000);
     upsertIssueTreeLink(t, { kind: 'pr', url: pr(10), status: 'open', statusReadAt: 7_000 }, 7_000);
@@ -532,6 +536,52 @@ describe('issue tree — .prd/29 §3', () => {
     expect(ids.has(issueTreeNodeId(pr(8001)))).toBe(false);
     expect(ids.has(issueTreeNodeId(pr(8003)))).toBe(true);
     expect(t.nodes.find((n) => n.id === issueTreeNodeId(pr(8002)))?.parent).toBe(issueTreeNodeId(pr(8000)));
+  });
+
+  it('G2: a PR named only by a relation (another PR’s stack base) is protected too', () => {
+    const nodes = Array.from({ length: ISSUE_TREE_MAX_NODES }, (_, i) => ({
+      id: issueTreeNodeId(pr(8000 + i)),
+      kind: 'pr',
+      source: 'github',
+      url: pr(8000 + i),
+      placed: 'default',
+      addedAt: i + 1,
+    })) as Array<Record<string, unknown>>;
+    // #8005 is stacked on #8000 by relation, but the model placed it under #8003: #8000 has no child.
+    nodes[5] = {
+      ...nodes[5],
+      parent: issueTreeNodeId(pr(8003)),
+      placed: 'model',
+      rel: { base: issueTreeNodeId(pr(8000)) },
+    };
+    const t = sanitizeIssueTree({ nodes, nextInternal: 1 }) as SessionIssueTree;
+    rebalanceIssueTree(t, now());
+    const ids = new Set(t.nodes.map((n) => n.id));
+    expect(t.nodes.length).toBe(ISSUE_TREE_MAX_NODES);
+    expect(ids.has(issueTreeNodeId(pr(8000)))).toBe(true);
+    expect(ids.has(issueTreeNodeId(pr(8001)))).toBe(false);
+  });
+
+  it('G2: when every host PR has something on it, nothing is removed — the seed is the one node over, kept on load', () => {
+    // One host PR and 199 of the model's PRs under it.
+    const nodes = Array.from({ length: ISSUE_TREE_MAX_NODES }, (_, i) => ({
+      id: issueTreeNodeId(pr(8000 + i)),
+      kind: 'pr',
+      source: 'github',
+      url: pr(8000 + i),
+      ...(i ? { parent: issueTreeNodeId(pr(8000)), placed: 'model' } : { placed: 'default' }),
+      addedAt: i + 1,
+    }));
+    const t = sanitizeIssueTree({ nodes, nextInternal: 1 }) as SessionIssueTree;
+    rebalanceIssueTree(t, now());
+    expect(t.nodes.length).toBe(ISSUE_TREE_MAX_NODES + 1);
+    expect(t.nodes[0]).toMatchObject({ placed: 'seed' });
+    expect(t.nodes.filter((n) => n.placed === 'model')).toHaveLength(ISSUE_TREE_MAX_NODES - 1);
+    expect(t.nodes.filter((n) => n.kind === 'pr' && !n.parent)).toEqual([]);
+    const reloaded = sanitizeIssueTree(JSON.parse(JSON.stringify(t))) as SessionIssueTree;
+    expect(reloaded.nodes.length).toBe(ISSUE_TREE_MAX_NODES + 1);
+    // Still full: a new node is refused.
+    expect(upsertIssueTreeLink(reloaded, { kind: 'issue', url: issue(1) }, now())).toMatchObject({ ok: false });
   });
 
   it('the seed stays when the model kept something under it, or named it', () => {

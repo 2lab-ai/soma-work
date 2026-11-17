@@ -7,7 +7,8 @@
  *      own issue) stands in;
  *   2. no PR is a root — its parent is an issue or a PR;
  *   3. every parent is a node of the tree and there is no cycle;
- *   4. at most ISSUE_TREE_MAX_NODES nodes — a new node past it is refused (the seed only ever replaces a node that left).
+ *   4. at most ISSUE_TREE_MAX_NODES nodes — a new node past it is refused. The seed takes a node's place (a removed one, or
+ *      in a full tree of PRs only the oldest host PR nothing depends on); when no PR can make room it is the one node over.
  * The model's placements (`placed: 'model'`) are never moved by the host.
  */
 import type {
@@ -187,7 +188,9 @@ export function upsertIssueTreeLink(tree: SessionIssueTree, input: IssueTreeLink
     // follows the newest read: one that began before the node's last state read (a slower collect, a reused record)
     // is not applied; a newer one is (a reopen too).
     const statusAt = input.statusReadAt ?? now;
-    const newer = existing.statusReadAt === undefined || statusAt >= existing.statusReadAt;
+    // A merge cannot be undone: a read that saw it merged is taken whenever it began (an older read can see it).
+    const merging = existing.kind === 'pr' && input.status === 'merged';
+    const newer = merging || existing.statusReadAt === undefined || statusAt >= existing.statusReadAt;
     if (input.status && !(existing.kind === 'pr' && existing.status === 'merged') && newer) {
       existing.status = input.status;
       existing.statusReadAt = statusAt;
@@ -268,26 +271,19 @@ export function addInternalIssue(
   return { ok: true, id };
 }
 
-/** Make room for the seed in a full tree: the oldest host-placed PR nothing depends on (else the oldest host-placed PR). */
+/**
+ * Make room for the seed in a full tree: the oldest host-placed PR nothing depends on (no child, no `base` · `closes` ·
+ * `subOf` naming it) leaves. When every host PR has something on it, nothing is removed: the seed is the one node over
+ * the cap (`sanitizeIssueTree` keeps it), so no PR and no model placement is lost.
+ */
 function evictForSeed(tree: SessionIssueTree): void {
-  const dependedOn = new Set<string>();
-  for (const n of tree.nodes) {
-    if (n.parent) dependedOn.add(n.parent);
-    if (n.rel?.base) dependedOn.add(n.rel.base);
-    if (n.rel?.subOf) dependedOn.add(n.rel.subOf);
-    for (const c of n.rel?.closes || []) dependedOn.add(c);
-  }
-  const hostPrs = tree.nodes
-    .filter((n) => n.kind === 'pr' && n.placed !== 'model')
-    .sort((a, b) => a.addedAt - b.addedAt);
-  const out = hostPrs.find((n) => !dependedOn.has(n.id)) ?? hostPrs[0];
-  if (!out) return;
-  for (const n of tree.nodes) {
-    if (n.parent !== out.id) continue;
-    n.parent = undefined; // placed again below (a model PR loses the place it no longer has)
-    if (n.placed === 'model' && n.kind === 'pr') n.placed = 'default';
-  }
-  tree.nodes = tree.nodes.filter((n) => n !== out);
+  const dependedOn = new Set(
+    tree.nodes.flatMap((n) => [n.parent, n.rel?.base, n.rel?.subOf, ...(n.rel?.closes ?? [])]),
+  );
+  const out = tree.nodes
+    .filter((n) => n.kind === 'pr' && n.placed !== 'model' && !dependedOn.has(n.id))
+    .sort((a, b) => a.addedAt - b.addedAt)[0];
+  if (out) tree.nodes = tree.nodes.filter((n) => n !== out);
 }
 
 function firstSubIssue(tree: SessionIssueTree): IssueTreeNode | undefined {
@@ -542,7 +538,9 @@ export function sanitizeIssueTree(raw: unknown): SessionIssueTree | undefined {
         : {}),
     });
   }
-  return { nodes: nodes.slice(0, ISSUE_TREE_MAX_NODES), nextInternal: safeCounter(r.nextInternal) };
+  // The cap, plus the seed when it is the one node over it (a full tree where no PR could make room for it).
+  const cap = ISSUE_TREE_MAX_NODES + (nodes.some((n) => n.placed === 'seed') ? 1 : 0);
+  return { nodes: nodes.slice(0, cap), nextInternal: safeCounter(r.nextInternal) };
 }
 
 /** A stored relation read-time record: numbers per known relation, nothing else. */

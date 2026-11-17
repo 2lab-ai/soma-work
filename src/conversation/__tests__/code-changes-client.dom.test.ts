@@ -820,10 +820,7 @@ describe('the 변경점 issue tree in a DOM (.prd/29 §6)', () => {
       Array.from(byId('panel-changes').querySelectorAll('[data-chg-file]')).map(
         (r) => (r.getAttribute('data-chg-file') || '').split('\n')[1],
       );
-    const rowButton = (n: number) =>
-      Array.from(byId('panel-changes').querySelectorAll('[data-chg-scope]')).find(
-        (b) => b.getAttribute('data-chg-scope') === `pr:acme/web#${n}`,
-      )!;
+    const rowButton = (n: number) => byId('panel-changes').querySelector(`[data-chg-scope="pr:acme/web#${n}"]`)!;
     // The stacked PR's row (under #7): only its files.
     rowButton(8).click();
     expect(files()).toEqual(['pr8/two.ts']);
